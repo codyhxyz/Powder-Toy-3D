@@ -188,9 +188,7 @@ Mat mixMat(Mat a, Mat b, float k) {
   return a;
 }
 
-// Lava freezes back into its ctype at MELT - LAVA_FREEZE_DROP (the same
-// 150 °C as the freezing rule in shaders/react.js).
-const float LAVA_FREEZE_DROP = 150.0;   // °C
+// Lava freezes back into its ctype at MELT - LAVA_FREEZE_DROP (shaders/common.js).
 float solidusOf(float ctype) {
   int ct = int(ctype);
   if (ct <= 0 || ct >= NE || MELT[ct] <= 0.0) ct = E_STONE;

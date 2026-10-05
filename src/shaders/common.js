@@ -31,6 +31,8 @@ precision highp sampler2D;
 #define MZ ${g.mz}
 #define MTX ${g.mtx}
 #define AMBIENT 20.0
+// lava freezes back into what it melted from this far below that element's melting point (°C)
+#define LAVA_FREEZE_DROP 150.0
 
 ${elementsGLSL()}
 

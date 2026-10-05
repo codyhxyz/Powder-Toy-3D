@@ -186,7 +186,7 @@ void main() {
   } else if (id == E_LAVA) {
     int ct = int(ctype);
     if (ct <= 0 || ct >= NE) ct = E_STONE;
-    if (T < MELT[ct] - 150.0) { nidOut = ct; reset = true; ctype = 0.0; }
+    if (T < MELT[ct] - LAVA_FREEZE_DROP) { nidOut = ct; reset = true; ctype = 0.0; }
   } else if (id == E_FIRE) {
     life -= 0.02 + 0.02 * rnd(rs);
     if (life <= 0.0 || T < 350.0) { nidOut = rnd(rs) < 0.35 ? E_SMOKE : E_EMPTY; reset = true; }

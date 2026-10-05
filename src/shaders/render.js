@@ -967,10 +967,10 @@ void main() {
 // media add optical depth.
 export const shadowFrag = (g) => /* glsl */ `
 ${lib(g)}
-// Texel encoding, decoded by sunShadow (gfx/lighting.js): the two must agree.
-// w = tint element id * SHADOW_TINT_ID_SCALE + optical depth (capped below it).
-#define SHADOW_TINT_ID_SCALE 1000.0
-#define SHADOW_TAU_MAX 999.0
+// Texel encoding, decoded by sunShadow (gfx/lighting.js, which defines
+// SHADOW_TINT_ID_SCALE): w = tint element id * SHADOW_TINT_ID_SCALE + optical
+// depth (capped below it).
+#define SHADOW_TAU_MAX (SHADOW_TINT_ID_SCALE - 1.0)
 #define SHADOW_NO_HIT 1e5       // depth stored where nothing is hit: past any receiver
 #define SHADOW_MEDIA_MIN_K 1e-4  // gas with less transport extinction (1/cell) casts nothing
 out vec4 oC;

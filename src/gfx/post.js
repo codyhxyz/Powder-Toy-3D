@@ -41,7 +41,7 @@ const MIPS = 6;
 const JITTER_PERIOD = 16;
 // TAA current-frame blend weight where history agrees with the present (stable)
 // and where it doesn't (changing); the shader blends between them per pixel.
-const TAA_WEIGHT_STABLE = 0.07;
+export const TAA_WEIGHT_STABLE = 0.07;
 const TAA_WEIGHT_CHANGING = 0.16;
 // History is dropped when the camera jumps: moves farther than this share of its
 // distance from the origin (at least 1 world unit) in one frame…

@@ -74,17 +74,20 @@ const giProbeUniforms = () => Object.fromEntries([0, 1, 2, 3].map((i) => [`tGI${
 // Share of each update's new GI probes blended into the probe volume (the rest
 // is history): smooths cells popping between bricks over a few frames. Each
 // probe is updated every other frame.
-const GI_BLEND = 0.4;
+export const GI_BLEND = 0.4;
 
 const fieldBlurUniforms = () => ({
   t0: { value: null }, t1: { value: null }, t2: { value: null }, uAxis: { value: 0 },
   uW: { value: [...Array(5)].map(() => new THREE.Vector4()) },
 });
 
+let nextSimId = 0;
+
 // GPU simulation driver: owns the state ping-pong targets and runs passes.
 export class Simulation {
   constructor(renderer, nx, ny, nz) {
     this.renderer = renderer;
+    this.id = nextSimId++;   // tells a rebuilt simulation from the old one
     this.g = gridLayout(nx, ny, nz);
     const g = this.g;
     this.frame = 0;

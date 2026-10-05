@@ -16,7 +16,10 @@ import { createHud, createHelp } from './ui/hud.js';
 import { inkFor, luminance } from './ui/dom.js';
 import { logoMark } from './ui/logo.js';
 import { gfx, gfxUniforms, updateGfxUniforms } from './gfx/uniforms.js';
-import { createPost } from './gfx/post.js';
+import { createPost, TAA_WEIGHT_STABLE } from './gfx/post.js';
+import { createPacer, settleFrames, sceneKey } from './gfx/pacing.js';
+import { CHANNELS, MEDIA } from './gfx/materials.js';
+import { GI_BLEND } from './sim.js';
 import { createMultiplayer } from './net/multiplayer.js';
 
 // Optional modules (built in parallel); the app works without them.
@@ -602,6 +605,19 @@ addEventListener('resize', () => {
 // ---------------------------------------------------------------- loop
 const clock = new THREE.Timer();
 let frames = 0, fpsTime = 0, fps = 60;
+// Render on demand (gfx/pacing.js). The derived passes settle once the slowest
+// field EMA and the GI blend (each probe is traced every other frame) have
+// converged; the view once TAA's history has.
+const GI_PROBE_EVERY = 2;
+const pacer = createPacer({
+  derivedSettle: Math.max(...[...CHANNELS, ...MEDIA].map((c) => settleFrames(c.ema)), settleFrames(GI_BLEND, GI_PROBE_EVERY)),
+  viewSettle: settleFrames(TAA_WEIGHT_STABLE),
+});
+// input of any kind may change what the view shows
+for (const type of ['pointermove', 'pointerdown', 'pointerup', 'wheel', 'keydown', 'keyup', 'input', 'change', 'resize']) {
+  addEventListener(type, () => pacer.wake(), { capture: true, passive: true });
+}
+let lastVersion = -1, renderedLast = false;
 let resTime = 0, resFrames = 0, resDt = 0;
 const invVol = new THREE.Matrix4();
 
@@ -644,13 +660,15 @@ function saveScreenshot() {
   });
 }
 
-function frame() {
-  clock.update();
+function frame(now) {
+  requestAnimationFrame(frame);
+  if (!pacer.due(now)) return;
+  clock.update(now);
   const dt = Math.min(clock.getDelta(), 0.1);
-  frames++;
   fpsTime += dt;
-  if (fpsTime > 0.5) { fps = frames / fpsTime; frames = 0; fpsTime = 0; }
-  autoResolution(dt, clock.getElapsed());
+  if (fpsTime > 0.5) { if (frames > 0) fps = frames / fpsTime; frames = 0; fpsTime = 0; }
+  // only frames that rendered measure how expensive rendering is
+  if (renderedLast) autoResolution(dt, clock.getElapsed());
 
   rig.update(dt);
   controls.update();
@@ -672,33 +690,47 @@ function frame() {
     visible: brushValid && pointerInside && !uiHover, center: brushCenter, painting,
     radius: settings.radius, shape: settings.shape, tool: settings.tool,
   });
-  updateGfxUniforms(sim, SUN);
-  sim.updateBricks();
-  if (settings.shadows && settings.view === 0) {
-    shadowMat.uniforms.tA.value = sim.stateA;
-    shadowMat.uniforms.tBrick.value = sim.brick.texture;
-    sim.run(shadowMat, shadowTarget);
+  const worldChanged = sim.version !== lastVersion;
+  lastVersion = sim.version;
+  const runDerived = pacer.derived(
+    `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${settings.shadows}|${settings.view}|${gfx.smoothing}`);
+  const runView = pacer.view(
+    `${camera.matrixWorld.elements}|${camera.projectionMatrix.elements}|${pixelRatio}|${innerWidth}x${innerHeight}`
+    + `|${JSON.stringify(settings)}|${JSON.stringify(gfx)}|${JSON.stringify(post.settings)}|${sceneKey(scene)}`,
+    runDerived || wantShot);
+  renderedLast = runView;
+  if (runView) updateGfxUniforms(sim, SUN);   // (runDerived implies runView)
+  if (runDerived) {
+    sim.updateBricks();
+    if (settings.shadows && settings.view === 0) {
+      shadowMat.uniforms.tA.value = sim.stateA;
+      shadowMat.uniforms.tBrick.value = sim.brick.texture;
+      sim.run(shadowMat, shadowTarget);
+    }
+    if (settings.view === 0) sim.updateGI(SUN, shadowTarget.texture, shadowMat.uniforms.uShadowRes.value, settings.shadows);
   }
-  if (settings.view === 0) sim.updateGI(SUN, shadowTarget.texture, shadowMat.uniforms.uShadowRes.value, settings.shadows);
 
-  volume.updateMatrixWorld();
-  const u = volume.material.uniforms;
-  u.tA.value = sim.stateA;
-  u.tB.value = sim.stateB;
-  u.tBrick.value = sim.brick.texture;
-  u.tLight.value = sim.lightTexture;
-  u.uCam.value.copy(camera.position).applyMatrix4(invVol.copy(volume.matrixWorld).invert());
-  u.uView.value = settings.view;
-  u.uShadows.value = settings.shadows;
-  u.uLightGain.value = settings.glow;
-  u.uTime.value += dt;
+  if (runView) {
+    frames++;
+    volume.updateMatrixWorld();
+    const u = volume.material.uniforms;
+    u.tA.value = sim.stateA;
+    u.tB.value = sim.stateB;
+    u.tBrick.value = sim.brick.texture;
+    u.tLight.value = sim.lightTexture;
+    u.uCam.value.copy(camera.position).applyMatrix4(invVol.copy(volume.matrixWorld).invert());
+    u.uView.value = settings.view;
+    u.uShadows.value = settings.shadows;
+    u.uLightGain.value = settings.glow;
+    if (worldChanged) u.uTime.value += dt;   // animated looks (lava, ripples) hold still while the world does
 
-  post.settings.raw = settings.view !== 0;
-  post.render(scene, camera);
-  if (wantShot) { wantShot = false; saveScreenshot(); }
+    post.settings.raw = settings.view !== 0;
+    post.render(scene, camera);
+    if (wantShot) { wantShot = false; saveScreenshot(); }
 
-  signs?.update();
-  requestPick();
+    signs?.update();
+    requestPick();
+  }
 
   if (pointerInside && !uiHover && hover.valid && hover.id >= 0 && !painting) {
     const el = ELEMENTS[hover.id];
@@ -713,7 +745,6 @@ function frame() {
     cellsV: `${(g.nx * g.ny * g.nz / 1e6).toFixed(1)}M`,
     resV: settings.autoRes ? `${Math.round(pixelRatio * 100)}% res` : '',
   });
-  requestAnimationFrame(frame);
 }
 
 // ---------------------------------------------------------------- boot
@@ -742,6 +773,7 @@ try {
   window.__app = {
     get sim() { return sim; }, get volume() { return volume; }, get scale() { return scale; }, get signs() { return signs; }, get builds() { return builds; },
     SUN, scene, settings, camera, controls, loadPreset, selectTool, setView, hover, renderer, rig, renderThumb, gfx, post, mp,
+    requestRender: () => pacer.wake(),   // for changes the frame loop can't see (async results)
   };
   requestAnimationFrame(frame);
 } catch (err) {
