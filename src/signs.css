@@ -1,0 +1,184 @@
+/* Text signs (src/signs.js). Every element is positioned relative to the
+   sign's anchor point, which sits at the origin of .tpt-sign. */
+
+.tpt-signs {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  contain: layout style;
+}
+
+.tpt-sign {
+  --s: 1;
+  --stem: 22px;
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+  font-family: 'Archivo', system-ui, sans-serif;
+}
+
+.tpt-sign-dot {
+  position: absolute;
+  left: -2px;
+  top: -2px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: rgba(231, 234, 240, 0.95);
+  box-shadow: 0 0 0 1px rgba(8, 10, 14, 0.8);
+  transition: opacity 0.18s;
+}
+
+.tpt-sign-stem {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 1px;
+  height: var(--stem);
+  background: rgba(231, 234, 240, 0.55);
+  transition: opacity 0.18s;
+}
+
+.tpt-sign-plate {
+  position: absolute;
+  left: 0; /* re-centred over the stem in whole pixels by signs.js */
+  bottom: var(--stem);
+  width: max-content;
+  max-width: 22em;
+  padding: 0.34em 0.62em 0.38em;
+  border: 1px solid var(--line, rgba(160, 180, 215, 0.16));
+  border-radius: 6px;
+  background: var(--panel, rgba(22, 26, 35, 0.88));
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 6px 18px -6px rgba(0, 0, 0, 0.55), 0 1px 2px rgba(0, 0, 0, 0.3);
+  color: var(--text, #e7eaf0);
+  font-size: calc(13px * var(--s));
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: 0.005em;
+  overflow-wrap: anywhere;
+  cursor: text;
+  outline: none;
+  pointer-events: auto;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: opacity 0.18s, border-color 0.12s;
+}
+
+.tpt-sign-plate:hover,
+.tpt-sign-plate:focus,
+.tpt-sign.is-editing .tpt-sign-plate {
+  border-color: var(--accent, #dcbc74);
+}
+
+.tpt-sign:hover,
+.tpt-sign.is-editing {
+  z-index: 100001 !important;
+}
+
+/* many plates on screen: backdrop blur gets expensive, use a denser fill instead */
+.tpt-signs.is-crowded .tpt-sign-plate {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  background: rgba(19, 23, 31, 0.94);
+}
+
+/* anchor near the top edge: hang the plate below it */
+.tpt-sign.is-below .tpt-sign-stem { top: 0; bottom: auto; }
+.tpt-sign.is-below .tpt-sign-plate { top: var(--stem); bottom: auto; }
+
+/* live placeholder values */
+.tpt-sign-val {
+  font-variant-numeric: tabular-nums;
+}
+
+/* hidden behind voxels: dim the plate and drop the stem */
+.tpt-sign.is-occluded .tpt-sign-plate { opacity: 0.35; }
+.tpt-sign.is-occluded .tpt-sign-stem,
+.tpt-sign.is-occluded .tpt-sign-dot { opacity: 0; }
+.tpt-sign.is-occluded .tpt-sign-plate:hover,
+.tpt-sign.is-occluded .tpt-sign-plate:focus { opacity: 1; }
+
+/* editing */
+.tpt-sign-edit,
+.tpt-sign-hint { display: none; }
+.tpt-sign.is-editing .tpt-sign-text { display: none; }
+
+.tpt-sign.is-editing .tpt-sign-edit {
+  display: inline-grid;
+  min-width: 9em;
+  max-width: 20em;
+  vertical-align: top;
+}
+/* invisible copy of the value sizes the input to its text */
+.tpt-sign-edit::after {
+  content: attr(data-value) ' ';
+  grid-area: 1 / 1;
+  overflow: hidden;
+  white-space: pre;
+  visibility: hidden;
+}
+.tpt-sign-edit input {
+  grid-area: 1 / 1;
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  caret-color: var(--accent, #dcbc74);
+  user-select: text;
+  -webkit-user-select: text;
+}
+.tpt-sign-edit input::placeholder {
+  color: var(--muted, #8d95a5);
+  font-weight: 500;
+}
+
+.tpt-sign.is-editing .tpt-sign-hint {
+  display: block;
+  margin-top: 0.4em;
+  padding-top: 0.4em;
+  border-top: 1px solid var(--line, rgba(160, 180, 215, 0.16));
+  color: var(--muted, #8d95a5);
+  font-size: 11px;
+  font-weight: 500;
+  font-stretch: 88%;
+  white-space: nowrap;
+}
+
+/* delete button, shown on hover / focus */
+.tpt-sign-del {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid var(--line, rgba(160, 180, 215, 0.16));
+  border-radius: 50%;
+  background: rgba(22, 26, 35, 0.96);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  color: var(--muted, #8d95a5);
+  cursor: pointer;
+}
+.tpt-sign-plate:hover .tpt-sign-del,
+.tpt-sign-plate:focus .tpt-sign-del,
+.tpt-sign.is-editing .tpt-sign-del { display: flex; }
+.tpt-sign-del:hover {
+  border-color: rgba(255, 138, 120, 0.55);
+  color: #ffb3a7;
+}
+.tpt-sign-del svg { display: block; }
