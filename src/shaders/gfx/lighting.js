@@ -41,7 +41,7 @@ vec3 skyRadiance(vec3 d) {
   // the integral over height of e^(-tau ms x) e^(-tau mv (1 - x)) (x = relative air density)
   float dm = mv - ms;
   vec3 ev = exp(-TAU_AIR * mv);
-  vec3 path = abs(dm) < 1e-3 ? TAU_AIR * mv * ev : mv * (uSunExt - ev) / dm;
+  vec3 path = abs(dm) < AIRMASS_EQ_EPS ? TAU_AIR * mv * ev : mv * (uSunExt - ev) / dm;
   return SKY_MULTI * PI_L * SUN_TOA * (TAU_RAYLEIGH * pR + TAU_AEROSOL * pM) / TAU_AIR * path;
 }
 
@@ -60,10 +60,26 @@ vec3 skyAmbient(vec3 n) {
 // ---- sun shadow map ----
 // An orthographic shadow map covering the box, traced once per frame from the
 // sun. Each texel stores (depth of first opaque surface, depth where
-// translucent material starts, depth where it ends, tint element id * 1000 +
-// optical depth accumulated through it). Points in between get a proportional share.
+// translucent material starts, depth where it ends, tint element id *
+// SHADOW_TINT_ID_SCALE + optical depth accumulated through it). Points in
+// between get a proportional share.
 uniform sampler2D tShadow;
 uniform int uShadowRes;
+const float SHADOW_TINT_ID_SCALE = 1000.0; // w packing: id * this + optical depth (< this); written by render.js's shadow pass
+const float SHADOW_PAD = 1.0;              // voxels the map's disc reaches past the box's bounding sphere
+const float SHADOW_NORMAL_OFFSET = 0.002;  // voxels a surface lookup moves off the surface along its normal
+// Hard-map depth bias (voxels), see sunShadow: at least SHADOW_BIAS_MIN, else the
+// PCF slope term (n.sun floored at SHADOW_BIAS_NS_MIN) plus SHADOW_BIAS_PAD.
+const float SHADOW_BIAS_MIN = 0.8;
+const float SHADOW_BIAS_NS_MIN = 0.25;
+const float SHADOW_BIAS_PAD = 0.1;
+const float VOLUME_SHADOW_BIAS = 0.6;      // depth bias (voxels) for points inside volumes (no normal)
+// Exact sun rays: a smooth opaque surface's own cells are ignored for this many
+// voxels from the start, and the ray stops this far past the nearest occluder
+// depth the shadow-map taps saw.
+const float SUN_RAY_SELF_SKIP = 1.2;
+const float SUN_RAY_REACH_PAD = 1.5;
+const float SUN_RAY_NUDGE = 1e-4;          // voxels past the box entry at which the start cell is looked up
 
 // Soft shadows (PCSS): the sun is a disc, so a shadow's edge blurs with the
 // distance from its caster. tan of the sun's apparent radius: the real sun is
@@ -78,15 +94,15 @@ const float GOLDEN_ANGLE = ${GOLDEN_ANGLE.toFixed(8)};
 
 void sunBasis(out vec3 c, out float R, out vec3 u, out vec3 v) {
   c = vec3(GRID) * 0.5;
-  R = 0.5 * length(vec3(GRID)) + 1.0;
+  R = 0.5 * length(vec3(GRID)) + SHADOW_PAD;
   u = normalize(cross(vec3(0.0, 1.0, 0.0), uSun));
   v = cross(uSun, u);
 }
 
 // 1 if the ray from ro toward the sun gets tLim voxels without entering an
 // opaque voxel, else 0 (exact DDA, same traversal as the view rays). Cells of
-// a smooth opaque surface only count beyond 1.2 voxels: the surface the ray
-// starts on may sit inside its own cells.
+// a smooth opaque surface only count beyond SUN_RAY_SELF_SKIP: the surface the
+// ray starts on may sit inside its own cells.
 float sunRayClear(vec3 ro, float tLim) {
   vec3 rd = safeDir(uSun);
   vec3 bh = boxHit(ro, rd);
@@ -94,7 +110,7 @@ float sunRayClear(vec3 ro, float tLim) {
   if (bh.y <= t) return 1.0;
   ivec3 istp = ivec3(sign(rd));
   vec3 tDelta = abs(1.0 / rd);
-  ivec3 cell = clamp(ivec3(floor(ro + rd * (t + 1e-4))), ivec3(0), GRID - 1);
+  ivec3 cell = clamp(ivec3(floor(ro + rd * (t + SUN_RAY_NUDGE))), ivec3(0), GRID - 1);
   vec3 tMax = (vec3(cell) + step(0.0, rd) - ro) / rd;
   float tEnter = t;
   ivec3 lastB = ivec3(-1);
@@ -105,7 +121,7 @@ float sunRayClear(vec3 ro, float tLim) {
     if (bc != lastB) { lastB = bc; occ = brickOcc(bc); }
     if (occ < 0.5) { skipBrick(bc, ro, rd, istp, cell, tMax, tEnter); continue; }
     int id = eid(cellA(cell));
-    if (id != E_EMPTY && RCLASS[id] == R_OPAQUE && (isCrisp(id) || tEnter - t > 1.2)) return 0.0;
+    if (id != E_EMPTY && RCLASS[id] == R_OPAQUE && (isCrisp(id) || tEnter - t > SUN_RAY_SELF_SKIP)) return 0.0;
     int ax = argmin3(tMax);
     tEnter = tMax[ax];
     cell[ax] += istp[ax];
@@ -121,7 +137,7 @@ const vec2 VOGEL[PCSS_TAPS] = vec2[PCSS_TAPS](${vogel(PCSS_TAPS)});
 vec3 sunShadow(vec3 hp, vec3 n) {
   vec3 c, u, v; float R;
   sunBasis(c, R, u, v);
-  vec3 p = hp + n * 0.002;
+  vec3 p = hp + n * SHADOW_NORMAL_OFFSET;
   vec3 q = p - c;
   vec2 st = vec2(dot(q, u), dot(q, v)) / R * 0.5 + 0.5;
   float d = R - dot(q, uSun);
@@ -130,7 +146,7 @@ vec3 sunShadow(vec3 hp, vec3 n) {
   // sees that wall up to ~0.6 closer: hence >= 0.8. It must stay well below
   // 1/uSun.y (1.23), the depth gap to the top of a 1-voxel step.
   float T = 2.0 * R / float(uShadowRes);
-  float bias = max(0.8, T * (abs(dot(n, u)) + abs(dot(n, v))) / max(dot(n, uSun), 0.25) + 0.1);
+  float bias = max(SHADOW_BIAS_MIN, T * (abs(dot(n, u)) + abs(dot(n, v))) / max(dot(n, uSun), SHADOW_BIAS_NS_MIN) + SHADOW_BIAS_PAD);
   vec2 f = st * float(uShadowRes) - 0.5;
   ivec2 i0 = ivec2(floor(f));
   vec2 w = f - vec2(i0);
@@ -141,9 +157,9 @@ vec3 sunShadow(vec3 hp, vec3 n) {
     vec4 sm = texelFetch(tShadow, clamp(i0 + o, ivec2(0), ivec2(uShadowRes - 1)), 0);
     float lit = d < sm.x + bias ? 1.0 : 0.0;
     vec3 att = vec3(1.0);
-    int tid = int(sm.w / 1000.0);
+    int tid = int(sm.w / SHADOW_TINT_ID_SCALE);
     if (tid > 0 && d > sm.y) {
-      float tau = sm.w - float(tid) * 1000.0;
+      float tau = sm.w - float(tid) * SHADOW_TINT_ID_SCALE;
       float frac = clamp((d - sm.y) / max(sm.z - sm.y, 1e-3), 0.0, 1.0);
       vec3 tint = SIGMA[tid] / max(dot(SIGMA[tid], vec3(1.0 / 3.0)), 1e-4);
       att = exp(-tint * tau * frac);
@@ -181,7 +197,7 @@ vec3 sunShadow(vec3 hp, vec3 n) {
     // within a texel (~0.44 voxels at 128^3) of a shadow edge, where the map
     // can only blur: settle it with an exact ray, traced only as far as the
     // occluders those taps saw.
-    if (nLit > 0.0) return tr * sunRayClear(p, d - dMin + 1.5);
+    if (nLit > 0.0) return tr * sunRayClear(p, d - dMin + SUN_RAY_REACH_PAD);
     return acc;
   }
   // The filtered visibility is 1/2 on the hard edge and falls to 0 a penumbra
@@ -209,10 +225,10 @@ vec3 sunShadow(vec3 p) {
   for (int k = 0; k < 4; k++) {
     ivec2 o = ivec2(k & 1, k >> 1);
     vec4 sm = texelFetch(tShadow, clamp(i0 + o, ivec2(0), ivec2(uShadowRes - 1)), 0);
-    vec3 lit = d < sm.x + 0.6 ? vec3(1.0) : vec3(0.0);
-    int tid = int(sm.w / 1000.0);
+    vec3 lit = d < sm.x + VOLUME_SHADOW_BIAS ? vec3(1.0) : vec3(0.0);
+    int tid = int(sm.w / SHADOW_TINT_ID_SCALE);
     if (tid > 0 && d > sm.y) {
-      float tau = sm.w - float(tid) * 1000.0;
+      float tau = sm.w - float(tid) * SHADOW_TINT_ID_SCALE;
       float frac = clamp((d - sm.y) / max(sm.z - sm.y, 1e-3), 0.0, 1.0);
       vec3 tint = SIGMA[tid] / max(dot(SIGMA[tid], vec3(1.0 / 3.0)), 1e-4);
       lit *= exp(-tint * tau * frac);
@@ -301,6 +317,7 @@ bool occluder(ivec3 c) {
 }
 
 // Smooth per-corner AO on a crisp voxel face (Minecraft style).
+const float FACE_AO_MIN = 0.25;   // light left in a fully enclosed corner
 float faceAO(ivec3 cell, ivec3 n, vec3 hp) {
   ivec3 u = n.x != 0 ? ivec3(0, 1, 0) : ivec3(1, 0, 0);
   ivec3 w = n.z != 0 ? ivec3(0, 1, 0) : ivec3(0, 0, 1);
@@ -315,24 +332,29 @@ float faceAO(ivec3 cell, ivec3 n, vec3 hp) {
   float aMM = s2 * s4 > 0.0 ? 0.0 : 3.0 - (s2 + s4 + c4);
   float fu = fract(dot(hp, vec3(u))), fw = fract(dot(hp, vec3(w)));
   float ao = mix(mix(aMM, aPM, fu), mix(aMP, aPP, fu), fw) / 3.0;
-  return 0.25 + 0.75 * ao;
+  return FACE_AO_MIN + (1.0 - FACE_AO_MIN) * ao;
 }
 
 // How solid the world is at p, 0..1 (smooth surfaces from the fields, crisp
 // voxels and the floor from the state).
+const float AO_LIQUID_SOLIDITY = 0.6;   // how much liquid occludes, relative to solid matter
 float solidity(vec3 p) {
   if (p.y < 0.0) return 1.0;
   vec4 s = surfField(p);
-  float o = max(max(s.y, s.z), max(s.w, s.x * 0.6));
+  float o = max(max(s.y, s.z), max(s.w, s.x * AO_LIQUID_SOLIDITY));
   ivec3 c = ivec3(floor(p));
   if (!outside(c) && isCrisp(eid(cellA(c)))) o = 1.0;
   return clamp(o, 0.0, 1.0);
 }
 
 // AO for smooth surfaces: probe the solidity along the normal (a flat surface
-// sees ~0 from 1.5 cells out, crevices and the foot of piles see more).
+// sees ~0 from FIELD_AO_D1 out, crevices and the foot of piles see more).
+const float FIELD_AO_D1 = 1.5, FIELD_AO_D2 = 3.0, FIELD_AO_D3 = 5.0;    // probe distances (cells)
+const float FIELD_AO_W1 = 0.45, FIELD_AO_W2 = 0.3, FIELD_AO_W3 = 0.2;   // their weights
+const float FIELD_AO_MIN = 0.2;   // light left in the deepest crevice
 float fieldAO(vec3 p, vec3 n) {
-  float occ = 0.45 * solidity(p + n * 1.5) + 0.3 * solidity(p + n * 3.0) + 0.2 * solidity(p + n * 5.0);
-  return clamp(1.0 - occ, 0.2, 1.0);
+  float occ = FIELD_AO_W1 * solidity(p + n * FIELD_AO_D1) + FIELD_AO_W2 * solidity(p + n * FIELD_AO_D2)
+            + FIELD_AO_W3 * solidity(p + n * FIELD_AO_D3);
+  return clamp(1.0 - occ, FIELD_AO_MIN, 1.0);
 }
 `;

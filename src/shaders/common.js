@@ -1,5 +1,5 @@
 import { elementsGLSL } from '../elements.js';
-import { incandescenceGLSL } from '../gfx/incandescence.js';
+import { incandescenceGLSL, KELVIN } from '../gfx/incandescence.js';
 
 // Shared GLSL prelude. The 3D grid (NX × NY × NZ) is stored as a 2D atlas of
 // horizontal Y-slices, TX slices per atlas row. Every pass reads cells with
@@ -76,9 +76,12 @@ bool isGasLike(int id) { return KIND[id] == K_GAS || id == E_EMPTY; }
 bool isFluid(int id) { return KIND[id] == K_LIQUID || isGasLike(id); }
 bool movable(int id) { return KIND[id] != K_SOLID; }
 
-// Rough blackbody colour (normalised) for a temperature in °C.
+// Rough blackbody colour (normalised) for a temperature in °C: Tanner Helland's
+// fit (2012), in hundreds of kelvin with its knee at 6600 K; the numbers are the
+// fit's coefficients.
+#define C_TO_K ${KELVIN}
 vec3 blackbody(float tC) {
-  float t = (tC + 273.15) / 100.0;
+  float t = (tC + C_TO_K) / 100.0;
   float r = t <= 66.0 ? 1.0 : clamp(1.292936 * pow(t - 60.0, -0.1332047), 0.0, 1.0);
   float g = t <= 66.0 ? clamp(0.3900816 * log(t) - 0.6318414, 0.0, 1.0)
                       : clamp(1.1298909 * pow(t - 60.0, -0.0755148), 0.0, 1.0);

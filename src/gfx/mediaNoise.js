@@ -21,8 +21,13 @@ const WISP_PERIODS = [5, 10, 16];
 const TONGUE_PERIODS = [4, 8, 16];
 const FLICKER_PERIODS = [4, 8, 16];
 const OCTAVE_WEIGHTS = [0.57, 0.29, 0.14];
+// Hash seeds of the channels (each octave adds its index), so they're independent.
+const BILLOW_SEED = 11, WISP_SEED = 23, TONGUE_SEED = 37, FLICKER_SEED = 53;
 const HIST_BINS = 4096;               // equalisation histogram resolution
+const TEXEL_MAX = 255;                // 8-bit texel value of 1.0
 
+// Integer lattice hash to [0, 1): large odd multipliers per coordinate, then an
+// xorshift-multiply avalanche (the constants are the hash's, not tuning).
 function hash(i, j, k, seed) {
   let h = (i * 374761393 + j * 668265263 + k * 2147483647 + seed * 974634541) | 0;
   h = Math.imul(h ^ (h >>> 13), 1274126177);
@@ -103,15 +108,15 @@ function equalise(vals) {
 export function createMediaNoise() {
   const N = MEDIA_NOISE_SIZE, n3 = N * N * N;
   const ch = [
-    fbmTile(N, worley, featurePoints, BILLOW_PERIODS, 11, -1),   // inverted: puffs around the feature points
-    fbmTile(N, perlin, gradients, WISP_PERIODS, 23, 1),
-    fbmTile(N, perlin, gradients, TONGUE_PERIODS, 37, 1),
-    fbmTile(N, perlin, gradients, FLICKER_PERIODS, 53, 1),
+    fbmTile(N, worley, featurePoints, BILLOW_PERIODS, BILLOW_SEED, -1),   // inverted: puffs around the feature points
+    fbmTile(N, perlin, gradients, WISP_PERIODS, WISP_SEED, 1),
+    fbmTile(N, perlin, gradients, TONGUE_PERIODS, TONGUE_SEED, 1),
+    fbmTile(N, perlin, gradients, FLICKER_PERIODS, FLICKER_SEED, 1),
   ];
   const eq = ch.map(equalise);
   const data = new Uint8Array(n3 * 4);
   for (let i = 0; i < n3; i++)
-    for (let c = 0; c < 4; c++) data[i * 4 + c] = Math.round(eq[c][i] * 255);
+    for (let c = 0; c < 4; c++) data[i * 4 + c] = Math.round(eq[c][i] * TEXEL_MAX);
   const tex = new THREE.Data3DTexture(data, N, N, N);
   tex.format = THREE.RGBAFormat;
   tex.type = THREE.UnsignedByteType;

@@ -33,9 +33,11 @@ export const INCAND = {
 
 const LUMA = [0.2126, 0.7152, 0.0722];   // Rec.709 luminance weights (linear sRGB)
 const LAMBDA = [360, 830, 1];            // nm: integration range and step
-const KELVIN = 273.15;
+export const KELVIN = 273.15;            // °C to K (GLSL: C_TO_K in shaders/common.js)
 // physical constants (SI) and the luminous efficacy of 555 nm light
 const H = 6.62607015e-34, C = 2.99792458e8, KB = 1.380649e-23, KM = 683;
+const M_PER_NM = 1e-9;                   // metres per nanometre
+const GLSL_DIGITS = 6;                   // significant digits of the table as GLSL literals
 // CIE XYZ (D65) to linear sRGB
 const XYZ_TO_SRGB = [
   [3.2406, -1.5372, -0.4986],
@@ -58,8 +60,8 @@ function cmf(l) {
 }
 // spectral radiance, W / (m² sr nm)
 function planck(lnm, tK) {
-  const l = lnm * 1e-9;
-  return (2 * H * C * C) / l ** 5 / (Math.exp((H * C) / (l * KB * tK)) - 1) * 1e-9;
+  const l = lnm * M_PER_NM;
+  return (2 * H * C * C) / l ** 5 / (Math.exp((H * C) / (l * KB * tK)) - 1) * M_PER_NM;
 }
 // blackbody at tC (°C): linear sRGB with unit luminance, and luminance in cd/m²
 function blackbody(tC) {
@@ -89,7 +91,7 @@ export const INCAND_TABLE = (() => {
   });
 })();
 
-const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(+x.toPrecision(6)));
+const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(+x.toPrecision(GLSL_DIGITS)));
 
 export function incandescenceGLSL() {
   return /* glsl */ `
