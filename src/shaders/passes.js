@@ -125,7 +125,8 @@ void main() {
   }
   if (pm > 0.04) flags |= 2;
   if (vm > 0.05 * 0.05) flags |= 4;
-  bool hasSurf = surf > 0.03, hasMedia = media > 0.01, hasOpaque = opaque > 0.03;
+  const float FIELD_HERE = 0.03;   // a surface field this strong may hold a surface nearby
+  bool hasSurf = surf > FIELD_HERE, hasMedia = media > 0.01, hasOpaque = opaque > FIELD_HERE;
   float air = flags > 0 ? -1.0 - float(flags) / 8.0 : 0.0;
   float matter = 1.0 + gas / 64.0 + (hasMedia ? 2.0 : 0.0) + (hasSurf ? 4.0 : 0.0) + (hasOpaque ? 8.0 : 0.0)
                + float(flags) / 65536.0;

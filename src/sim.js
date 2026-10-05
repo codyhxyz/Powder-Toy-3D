@@ -205,14 +205,15 @@ export class Simulation {
     // between prev and tmp; stage 0 reads the blurred fields and the state,
     // the last writes the final fields
     const boost = this.mats.fieldBoost;
-    const dst = (s) => (s === BOOST_STAGES - 1 ? this.fields : s % 2 ? this.fieldTmp : prev);
+    const last = BOOST_STAGES - 1;
+    const dst = (s) => (s === last ? this.fields : s % 2 ? this.fieldTmp : prev);
+    const lu = boost[last].uniforms;
+    lu.tPhi.value = this.fieldsBlurred.textures[0];
+    lu.tMed.value = this.fieldsBlurred.textures[1];
+    lu.uBulk.value.set(...k.map((w, i) => (CHANNELS[i].cubic ? bulkPeakCubic(w) : bulkPeak(w))));
     boost.forEach((mat, s) => {
-      const u = mat.uniforms;
-      u.t0.value = s ? dst(s - 1).textures[0] : this.fieldsBlurred.textures[0];
-      u.t1.value = s ? dst(s - 1).textures[1] : this.stateA;
-      u.tPhi.value = this.fieldsBlurred.textures[0];
-      u.tMed.value = this.fieldsBlurred.textures[1];
-      u.uBulk.value.set(...k.map((w, i) => (CHANNELS[i].cubic ? bulkPeakCubic(w) : bulkPeak(w))));
+      mat.uniforms.t0.value = s ? dst(s - 1).textures[0] : this.fieldsBlurred.textures[0];
+      mat.uniforms.t1.value = s ? dst(s - 1).textures[1] : this.stateA;
       this.run(mat, dst(s));
     });
   }

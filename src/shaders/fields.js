@@ -29,9 +29,9 @@ import { materialsGLSL } from '../gfx/materials.js';
 // copy per surface channel since each channel has its own blur radius (the
 // media share the liquid kernel and its weight).
 // Final output: 0 = surface φ (0.5 is the surface), 1 = media densities,
-// 2 = thin mask: 1 where a channel was boosted. Only cubic channels need it
-// (the tracer reads them cubic only there; bulk surfaces read the same either
-// way, and trilinear is 8x cheaper).
+// 2 = thin mask, rising from 0 to 1 with a channel's boost (THIN_MASK_FULL).
+// Only cubic channels need it: the tracer reads them cubic only there (bulk
+// surfaces read the same either way, and trilinear is 8x cheaper).
 
 export const fieldEmaFrag = (g) => /* glsl */ `
 ${prelude(g)}

@@ -20,8 +20,9 @@ import { ELEMENTS } from '../elements.js';
 // Smooth-surface channels. sigma = blur radius in cells (how much the
 // blockiness is smoothed away), ema = per-frame blend toward the new state
 // (temporal smoothing; 1 = none). Liquids smooth the most, built structures not at all.
-// cubic: the tracer reads the channel as a cubic B-spline near its surface
-// instead of trilinearly (shaders/gfx/core.js surfSample), so drops are round.
+// cubic: thin features of the channel (drops, streams, films) are read as a
+// cubic B-spline instead of trilinearly (shaders/gfx/core.js surfSample), so
+// they come out round instead of faceted.
 export const CHANNELS = [
   { key: 'LIQUID', sigma: 1.0, ema: 0.35, transparent: true, cubic: true },
   { key: 'MOLTEN', sigma: 0.85, ema: 0.5 },

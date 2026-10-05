@@ -85,14 +85,13 @@ vec3 liquidRipple(vec3 p, vec3 n) {
 #define REFL_F_HI 0.1       // ... and take over
 #define REFL_MAX_STEPS 48   // DDA steps (cells or skipped bricks) before falling back to the sky
 #define REFL_START 0.05     // start offset off the surface, cells
-#define REFL_PROBE 0.5      // how far inside a smooth surface to look for its element, cells
+#define REFL_PROBE 0.5      // a smooth hit's element is looked up this far inside it, then twice that
 #define REFL_NORMAL_STEP 0.5   // forward-difference step of a reflected smooth hit's normal, cells
 // What the reflection shows of a hit: the element's albedo under the sun (with
 // the shadow map) and the sky, plus its own glow when hot. Reflections are
 // dimmed by Fresnel and wobbled by ripples, so texture detail, AO and the
 // glow it receives wouldn't show.
-vec3 reflShade(ivec3 c, vec3 p, vec3 n) {
-  vec4 a = outside(c) ? vec4(0.0) : cellA(c);
+vec3 reflShade(vec4 a, vec3 p, vec3 n) {
   int id = eid(a);
   vec3 sun = SUN_COL * max(dot(n, uSun), 0.0) * (uShadows ? sunShadow(p + n * REFL_PROBE) : vec3(1.0));
   return ALBEDO[id] * (sun + skyAmbient(n)) + incandescence(a.y);
@@ -123,7 +122,7 @@ vec3 reflectTrace(vec3 ro, vec3 rd, vec3 sunVis) {
         vec3 nh = vec3(0.0);
         nh[ax] = -float(istp[ax]);
         float th = tEnter;
-        if (crispHit(cell, id, ro, rd, tEnter, tExit, th, nh)) return reflShade(cell, ro + rd * th, nh);
+        if (crispHit(cell, id, ro, rd, tEnter, tExit, th, nh)) return reflShade(a, ro + rd * th, nh);
       }
       stale = true;
     } else if (brickSurf(flags)) {
@@ -141,7 +140,10 @@ vec3 reflectTrace(vec3 ro, vec3 rd, vec3 sunVis) {
         const vec2 e = vec2(REFL_NORMAL_STEP, 0.0);
         vec3 gr = vec3(surfField(hp + e.xyy)[ch], surfField(hp + e.yxy)[ch], surfField(hp + e.yyx)[ch]) - 0.5;
         vec3 n = dot(gr, gr) > 1e-10 ? -normalize(gr) : -rd;
-        return reflShade(ivec3(floor(hp - n * REFL_PROBE)), hp, n);
+        ivec3 c1 = clamp(ivec3(floor(hp - n * REFL_PROBE)), ivec3(0), GRID - 1);
+        vec4 ah = cellA(c1);
+        if (SURFCH[eid(ah)] != ch) ah = cellA(clamp(ivec3(floor(hp - n * (2.0 * REFL_PROBE))), ivec3(0), GRID - 1));
+        return reflShade(ah, hp, n);
       }
       phiA = phiB;
       stale = false;
