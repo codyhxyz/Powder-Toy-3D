@@ -108,18 +108,19 @@ ${final ? `
 // along; stage 5 applies the boost to φ, passes the media through and writes
 // the thin mask.
 export const BOOST_STAGES = 6;
+const LAST = BOOST_STAGES - 1;
 export const fieldBoostFrag = (g, stage) => /* glsl */ `
 ${prelude(g)}
 ${materialsGLSL()}
 uniform sampler2D t0;   // stage 0: φ, else the previous stage's field
 uniform sampler2D t1;   // stage 0: state A, else the occupancy so far
 ${stage < 3 ? 'uniform vec4 uS;      // per-channel centre weight of the lattice smoothing (1 = none)' : ''}
-${stage === 5 ? `uniform sampler2D tPhi;
+${stage === LAST ? `uniform sampler2D tPhi;
 uniform sampler2D tMed;
 uniform vec4 uBulk;     // per-channel bulk peak` : ''}
 layout(location = 0) out vec4 o0;
 layout(location = 1) out vec4 o1;
-layout(location = 2) out vec4 o2;   // ${stage < 5 ? 'the scratch targets have three attachments: unused' : 'thin mask'}
+layout(location = 2) out vec4 o2;   // ${stage < LAST ? 'the scratch targets have three attachments: unused' : 'thin mask'}
 void main() {
   ivec2 f = ivec2(gl_FragCoord.xy);
   ivec3 p = cellFromFrag(f);
@@ -137,7 +138,7 @@ ${stage === 0 ? `    int ch = SURFCH[eid(texelFetch(t1, t, 0))];
     if (inGrid(q)) acc = max(acc, texelFetch(t0, atlas(q), 0));`}
   }
 ${stage >= 3 ? '  occ = texelFetch(t1, f, 0);' : ''}
-${stage === 5 ? `  vec4 k = max(vec4(1.0), uBulk / max(acc, vec4(THIN_MIN_PEAK)));
+${stage === LAST ? `  vec4 k = max(vec4(1.0), uBulk / max(acc, vec4(THIN_MIN_PEAK)));
   vec4 boosted = step(0.5, occ);
   o0 = texelFetch(tPhi, f, 0) * mix(vec4(1.0), k, boosted);
   o1 = texelFetch(tMed, f, 0);

@@ -1,5 +1,17 @@
 import { prelude } from './common.js';
-import { MEDIA_FLOOR } from '../gfx/materials.js';
+import { materialsGLSL } from '../gfx/materials.js';
+
+// What a brick holding matter carries (brickFrag): a = 1 + gas/BRICK_GAS_DIV +
+// 2·bits + air flags/BRICK_FLAG_DIV. Decoded by gfx/core.js (brickInfo & co.)
+// and the data views' brickFlags (render.js). float32 holds the sum exactly
+// while it stays under 2^8, which leaves room for one more bit.
+const BRICK_BITS = { MEDIA: 1, SURF: 2, OPAQUE: 4, THIN: 8, MIXED: 16 };
+export const brickGLSL = [
+  ...Object.entries(BRICK_BITS).map(([k, v]) => `#define BRICK_${k} ${v}`),
+  '#define BRICK_GAS_DIV 64.0       // gas fraction = steam/smoke cells / cells per brick',
+  '#define BRICK_FLAG_DIV 65536.0   // air flags (1..7) sit below the gas fraction\'s steps',
+  '#define BRICK_AIR_DIV 8.0        // air-only bricks: a = -(1 + flags/BRICK_AIR_DIV)',
+].join('\n');
 
 // Brush: spawns elements / applies tools inside a sphere or cube.
 export const paintFrag = (g) => /* glsl */ `
@@ -71,19 +83,23 @@ void main() {
 // a also carries what each brick holds, and flags for what the data views draw
 // in air (1 warmer/colder than ambient, 2 pressure, 4 moving):
 //   0                          empty
-//   1 + gas/64 + 2·media + 4·surf + flags/65536
+//   1 + gas/64 + 2·bits + flags/65536
 //                              holds matter (gas = steam/smoke cells), or a
 //                              smooth surface / media field reaches into it.
 //                              The render fields are already blurred, so a brick
 //                              next to a surface or plume sees them in its own
 //                              cells: the skip map is dilated for free. The
-//                              flags sit below the 1/64 step.
+//                              flags sit below the 1/64 step. bits (BRICK_BITS):
+//                              1 media, 2 smooth surface, 4 opaque matter (crisp
+//                              or an opaque surface field), 8 thin liquid (the
+//                              tracer reads it cubic), 16 more than one liquid.
 //   -(1 + flags/8)             only air, but air a data view draws; the
 //                              realistic view, picking and the shadow map
 //                              skip it like an empty brick (they test a < 0.5)
 export const brickFrag = (g) => /* glsl */ `
 ${prelude(g)}
-#define MEDIA_FLOOR ${MEDIA_FLOOR}   // gas density the renderer treats as none (gfx/materials.js)
+${materialsGLSL()}
+${brickGLSL}
 uniform sampler2D tA;
 uniform sampler2D tB;
 uniform sampler2D tFS;
@@ -112,7 +128,7 @@ void main() {
   if (bc.y >= BY) { oC = vec4(0.0); return; }
   float occ = 0.0, gas = 0.0, surf = 0.0, media = 0.0, opaque = 0.0, thin = 0.0;
   int flags = 0;
-  int liq0 = E_EMPTY;     // first liquid-look element seen (liquids and ice)
+  int liq0 = E_EMPTY;     // first liquid-channel element seen (liquids, ice)
   bool mixed = false;     // a second one too
   vec3 em = vec3(0.0);
   ivec3 o = bc * BS;
@@ -132,7 +148,7 @@ void main() {
     if (id != E_EMPTY && KIND[id] != K_GAS && RCLASS[id] != R_LIQUID && RCLASS[id] != R_GLASS) opaque = 1.0;
     opaque = max(opaque, max(s.y, max(s.z, s.w)));
     thin = max(thin, texelFetch(tFT, t, 0).x);
-    if (RCLASS[id] == R_LIQUID || id == E_ICE) {
+    if (SURFCH[id] == CH_LIQUID) {
       if (liq0 == E_EMPTY) liq0 = id;
       else if (id != liq0) mixed = true;
     }
@@ -158,9 +174,10 @@ void main() {
   if (vm > 0.05 * 0.05) flags |= 4;
   const float FIELD_HERE = 0.03;   // a surface field this strong may hold a surface nearby
   bool hasSurf = surf > FIELD_HERE, hasMedia = media > MEDIA_FLOOR, hasOpaque = opaque > FIELD_HERE;
-  float air = flags > 0 ? -1.0 - float(flags) / 8.0 : 0.0;
-  float matter = 1.0 + gas / 64.0 + (hasMedia ? 2.0 : 0.0) + (hasSurf ? 4.0 : 0.0) + (hasOpaque ? 8.0 : 0.0)
-               + (thin > 0.0 ? 16.0 : 0.0) + (mixed ? 32.0 : 0.0) + float(flags) / 65536.0;
+  int bits = (hasMedia ? BRICK_MEDIA : 0) | (hasSurf ? BRICK_SURF : 0) | (hasOpaque ? BRICK_OPAQUE : 0)
+           | (thin > 0.0 ? BRICK_THIN : 0) | (mixed ? BRICK_MIXED : 0);
+  float air = flags > 0 ? -1.0 - float(flags) / BRICK_AIR_DIV : 0.0;
+  float matter = 1.0 + gas / BRICK_GAS_DIV + 2.0 * float(bits) + float(flags) / BRICK_FLAG_DIV;
   oC = vec4(em / 64.0, (occ > 0.0 || hasSurf || hasMedia) ? matter : air);
 }
 `;

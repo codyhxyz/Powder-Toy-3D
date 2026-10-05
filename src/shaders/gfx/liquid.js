@@ -6,10 +6,19 @@ float fresnelSchlick(float cosi, float ior) {
   return f0 + (1.0 - f0) * pow(1.0 - clamp(cosi, 0.0, 1.0), 5.0);
 }
 
-// Radiance arriving along reflected direction r at an interface at p.
+// Radiance arriving along reflected direction r at an interface at p: the sky
+// plus the sun's highlight (a tight lobe standing in for the sun's disc).
+#define SUN_GLINT_EXP 400.0   // sharpness of the highlight lobe
+#define SUN_GLINT_GAIN 6.0    // its peak, relative to the sun's colour
 vec3 envReflect(vec3 p, vec3 r, vec3 sunVis) {
-  return skyColor(r) + SUN_COL * sunVis * pow(max(dot(r, uSun), 0.0), 400.0) * 6.0;
+  return skyColor(r) + SUN_COL * sunVis * pow(max(dot(r, uSun), 0.0), SUN_GLINT_EXP) * SUN_GLINT_GAIN;
 }
+
+// Offsets off a transparent interface (cells): a ray restarts IFACE_NUDGE past
+// it, and the sun's visibility and which liquid is there are read IFACE_PROBE
+// to either side (half a cell: clear of the surface, still in its cell).
+#define IFACE_NUDGE 0.03
+#define IFACE_PROBE 0.5
 
 // Light scattered toward the eye inside a liquid or glass, per unit
 // (1 - transmittance): the scattered share of the extinction (SCATALB) of the
@@ -55,13 +64,14 @@ int liquidIdAt(vec3 p, int fallback) {
 #define RIPPLE_UP_LO 0.6       // n.y where ripples start ...
 #define RIPPLE_UP_HI 0.9       // ... and reach full strength
 #define RIPPLE_EPS 0.1         // finite-difference step, noise space
-#define RIPPLE_OCT2 2.1        // second octave: frequency multiple (half the height) ...
+#define RIPPLE_OCT2 2.1        // second octave: frequency multiple ...
+#define RIPPLE_OCT2_AMP 0.5    // ... height multiple ...
 #define RIPPLE_OCT2_DRIFT 1.3  // ... drift multiple ...
 #define RIPPLE_OCT2_SHIFT 7.3  // ... and offset, so it doesn't line up with the first
 #define RIPPLE_LOD_LO 0.25     // finer octave's cycles per pixel where ripples start to fade ...
 #define RIPPLE_LOD_HI 0.6      // ... and where they're gone
 float rippleH(vec2 q, float t) {
-  return vnoise(vec3(q, t)) + 0.5 * vnoise(vec3(q * RIPPLE_OCT2 + RIPPLE_OCT2_SHIFT, t * RIPPLE_OCT2_DRIFT));
+  return vnoise(vec3(q, t)) + RIPPLE_OCT2_AMP * vnoise(vec3(q * RIPPLE_OCT2 + RIPPLE_OCT2_SHIFT, t * RIPPLE_OCT2_DRIFT));
 }
 vec3 liquidRipple(vec3 p, vec3 n) {
   float k = smoothstep(RIPPLE_UP_LO, RIPPLE_UP_HI, n.y)
@@ -168,7 +178,7 @@ bool liquidInterface(vec3 hp, vec3 n, bool entering, int id, bool mirror, inout 
   if (entering) {
     if (dot(n, rd) > 0.0) n = -n;
     float F = fresnelSchlick(-dot(n, rd), ior);
-    mediumLight = uShadows ? sunShadow(hp + n * 0.5) : vec3(1.0);
+    mediumLight = uShadows ? sunShadow(hp + n * IFACE_PROBE) : vec3(1.0);
     vec3 r = reflect(rd, n);
     vec3 env = envReflect(hp, r, mediumLight);
     float wr = mirror ? smoothstep(REFL_F_LO, REFL_F_HI, F) : 0.0;
@@ -176,19 +186,19 @@ bool liquidInterface(vec3 hp, vec3 n, bool entering, int id, bool mirror, inout 
     col += trans * F * env;
     trans *= 1.0 - F;
     rd = refract(rd, n, 1.0 / ior);
-    ro = hp + rd * 0.03;
+    ro = hp + rd * IFACE_NUDGE;
     return true;
   }
   if (dot(n, rd) < 0.0) n = -n;
   vec3 rt = refract(rd, -n, ior);
   if (dot(rt, rt) < 1e-6) {           // total internal reflection
     rd = reflect(rd, -n);
-    ro = hp + rd * 0.03;
+    ro = hp + rd * IFACE_NUDGE;
     return true;
   }
   trans *= 1.0 - fresnelSchlick(dot(rt, n), ior);
   rd = rt;
-  ro = hp + rd * 0.03;
+  ro = hp + rd * IFACE_NUDGE;
   return false;
 }
 `;

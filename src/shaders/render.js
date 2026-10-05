@@ -208,8 +208,9 @@ ${xrayMu()}
 // Bricks carry flags (see brickFrag) saying what the data views would draw in
 // their air: 1 = warmer/colder than ambient, 2 = pressure, 4 = moving.
 int brickFlags(float occ) {
-  if (occ > 0.5) return int(fract((occ - 1.0) * 64.0) * 1024.0 + 0.5);
-  return occ < -0.5 ? int((-occ - 1.0) * 8.0 + 0.5) : 0;
+  // the gas count and the bits are whole multiples of 1/BRICK_GAS_DIV: only the flags are left
+  if (occ > 0.5) return int(fract((occ - 1.0) * BRICK_GAS_DIV) * (BRICK_FLAG_DIV / BRICK_GAS_DIV) + 0.5);
+  return occ < -0.5 ? int((-occ - 1.0) * BRICK_AIR_DIV + 0.5) : 0;
 }
 
 float clay(ivec3 cell, vec3 hp, vec3 n) {
@@ -522,6 +523,12 @@ void dataView(vec3 ro, vec3 rd, float t0, vec3 bh) {
 // half this many cells, so their boundary is dithered across a cell, which
 // TAA blends, instead of showing voxel steps inside the smooth surface.
 #define LIQ_ID_DITHER 1.0
+// Leaving liquid, an opaque surface this close (cells) past the exit wins:
+// sand under the water line is at both, and must not show a sliver of air.
+#define OPAQUE_TIE 0.05
+// Glass reflects less from inside liquid than from air (the index contrast is
+// smaller); share of its Fresnel reflectance kept there.
+#define GLASS_IN_LIQUID_F 0.3
 
 void main() {
   vec3 ro = uCam;
@@ -558,7 +565,6 @@ void main() {
   float lightY = 0.0;
   vec3 liqDither = (hash33(vec3(gl_FragCoord.xy, float(uFrame))) - 0.5) * LIQ_ID_DITHER;
   int bends = 0;
-  const bool liqOpaque = false;
   bool stop = false;
 
   ivec3 lastB = ivec3(-1);
@@ -576,14 +582,14 @@ void main() {
       n0[ax] = -float(istp[ax]);
       vec3 hp = ro + rd * tEnter;
       anyHit = true; hitPos = hp;
-      if (ch != CH_LIQUID || liqOpaque) {
+      if (ch != CH_LIQUID) {
         col = shadeSurf(gatherSurf(hp, n0, ch), rd);
         trans = vec3(0.0);
         stop = true;
       } else {
-        int lid = liquidIdAt(hp - n0 * 0.5, E_WATER);
+        int lid = liquidIdAt(hp - n0 * IFACE_PROBE, E_WATER);
         if (liquidInterface(hp, n0, true, lid, false, ro, rd, col, trans, mediumLight)) liq = lid;
-        lightRef = uShadows ? sunShadow(hp - n0 * 0.5) : vec3(1.0);   // inside: the map carries the liquid above
+        lightRef = uShadows ? sunShadow(hp - n0 * IFACE_PROBE) : vec3(1.0);   // inside: the map carries the liquid above
         lightY = hp.y;
         rd = safeDir(rd); istp = ivec3(sign(rd)); tDelta = abs(1.0 / rd);
         cell = ivec3(floor(ro)); tMax = (vec3(cell) + step(0.0, rd) - ro) / rd;
@@ -627,8 +633,8 @@ void main() {
       if (!anyHit) { anyHit = true; hitPos = hp; }
       if (id != prevCrisp) {
         // glass interface (flat faces: no bending)
-        float F = fresnelSchlick(abs(dot(nFace, rd)), IOR[id]) * (liq == E_EMPTY ? 1.0 : 0.3);
-        mediumLight = uShadows ? sunShadow(hp + nFace * 0.5) : vec3(1.0);
+        float F = fresnelSchlick(abs(dot(nFace, rd)), IOR[id]) * (liq == E_EMPTY ? 1.0 : GLASS_IN_LIQUID_F);
+        mediumLight = uShadows ? sunShadow(hp + nFace * IFACE_PROBE) : vec3(1.0);
         col += trans * F * envReflect(hp, reflect(rd, nFace), mediumLight);
         trans *= 1.0 - F;
       }
@@ -652,8 +658,8 @@ void main() {
             int ic = -1;
             float best = 0.5;
             for (int c = 0; c < 4; c++) if (phiA[c] >= best) { best = phiA[c]; ic = c; }
-            if (ic == CH_LIQUID && !liqOpaque) {
-              liq = liquidIdAt(ro + rd * (tEnter + 0.5), E_WATER);
+            if (ic == CH_LIQUID) {
+              liq = liquidIdAt(ro + rd * (tEnter + IFACE_PROBE), E_WATER);
               vec3 p0 = ro + rd * tEnter;
               lightRef = uShadows ? sunShadow(p0) : vec3(1.0);   // inside: the map carries the liquid above
               lightY = p0.y;
@@ -674,7 +680,7 @@ void main() {
         } else if (liq == E_EMPTY) {
           for (int c = 0; c < 4; c++) {
             float t = surfCross(ro, rd, c, true, tEnter, tM, tExit, phiA[c], phiM[c], phiB[c]);
-            if (t < tEv) { tEv = t; evCh = c; ev = (c == CH_LIQUID && !liqOpaque) ? EV_ENTER : EV_OPAQUE; }
+            if (t < tEv) { tEv = t; evCh = c; ev = c == CH_LIQUID ? EV_ENTER : EV_OPAQUE; }
           }
         } else {
           float tx = surfCross(ro, rd, CH_LIQUID, false, tEnter, tM, tExit, phiA.x, phiM.x, phiB.x);
@@ -685,8 +691,7 @@ void main() {
           }
           for (int c = 1; c < 4; c++) {
             float t = surfCross(ro, rd, c, true, tEnter, tM, tExit, phiA[c], phiM[c], phiB[c]);
-            // opaque wins near-ties (the sand/water boundary is both)
-            if (t <= tEv + 0.05) { tEv = min(t, tEv); evCh = c; ev = EV_OPAQUE; }
+            if (t <= tEv + OPAQUE_TIE) { tEv = min(t, tEv); evCh = c; ev = EV_OPAQUE; }
           }
         }
         phiStale = false;
@@ -727,7 +732,7 @@ void main() {
         } else {
           // liquid surface: refract in or out
           vec3 n = liquidRipple(hp, surfNormal(hp, CH_LIQUID, ev == EV_ENTER ? -rd : rd));
-          int lid = ev == EV_ENTER ? liquidIdAt(hp - n * 0.5, E_WATER) : liq;
+          int lid = ev == EV_ENTER ? liquidIdAt(hp - n * IFACE_PROBE, E_WATER) : liq;
           if (bends < MAX_BENDS) {
             bends++;
             // the scene shows in the reflection only off the first surface the eye ray meets
@@ -749,7 +754,9 @@ void main() {
             }
             continue;
           }
-          liq = ev == EV_ENTER ? lid : E_EMPTY;   // out of bends: switch medium, keep straight
+          // out of bends: switch medium, keep straight
+          liq = ev == EV_ENTER ? lid : E_EMPTY;
+          if (ev == EV_ENTER) { lightRef = uShadows ? sunShadow(hp + n * IFACE_PROBE) : vec3(1.0); lightY = hp.y; }
         }
       }
       phiA = phiB;

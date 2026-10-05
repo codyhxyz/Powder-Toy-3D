@@ -1,6 +1,9 @@
+import { brickGLSL } from '../passes.js';
+
 // Shared render core: state/brick/field access, the DDA helpers and the
 // smooth-surface machinery (sampling, root finding, normals).
 export const coreGLSL = (g) => /* glsl */ `
+${brickGLSL}
 uniform sampler2D tA;
 uniform sampler2D tB;    // velocity xyz (cells/step), air pressure
 uniform sampler2D tBrick;
@@ -24,22 +27,21 @@ bool outside(ivec3 c) { return any(lessThan(c, ivec3(0))) || any(greaterThanEqua
 // Crisp elements are drawn as voxels; everything else is a field.
 bool isCrisp(int id) { return id != E_EMPTY && SURFCH[id] < 0 && MEDIACH[id] < 0; }
 
-// ---- bricks (see brickFrag in passes.js) ----
+// ---- bricks (see brickFrag and BRICK_BITS in passes.js) ----
 // a = 0: empty. a < 0: air only, flagged for the data views.
-// a >= 1: 1 + gas fraction + 2·media + 4·smooth surface nearby + 8·opaque
-// matter nearby + 16·thin liquid feature + 32·more than one kind of liquid
-// (+ air flags / 65536).
+// a >= 1: 1 + gas fraction + 2·bits (+ air flags / BRICK_FLAG_DIV); the gas
+// fraction is at most 1, so halving leaves the bits in the integer part.
 float brickOcc(ivec3 bc) { return texelFetch(tBrick, brickAtlas(bc), 0).a; }
 int brickBits(float occ) { return int((occ - 1.0) * 0.5); }
 float brickGas(float occ) { return occ > 0.5 ? clamp(occ - 1.0 - 2.0 * float(brickBits(occ)), 0.0, 1.0) : 0.0; }
-// realistic view: 0 = skip the brick, else 1 + bits (1 media, 2 surface,
-// 4 opaque, 8 thin liquid, 16 mixed liquids)
+// realistic view: 0 = skip the brick, else 1 + bits
 int brickInfo(ivec3 bc) { float a = brickOcc(bc); return a < 0.5 ? 0 : 1 + brickBits(a); }
-bool brickMedia(int f) { return f > 0 && ((f - 1) & 1) != 0; }
-bool brickSurf(int f) { return f > 0 && ((f - 1) & 2) != 0; }
-bool brickOpaque(int f) { return f > 0 && ((f - 1) & 4) != 0; }
-bool brickThin(int f) { return f > 0 && ((f - 1) & 8) != 0; }
-bool brickMixed(int f) { return f > 0 && ((f - 1) & 16) != 0; }
+bool brickHas(int f, int bit) { return f > 0 && ((f - 1) & bit) != 0; }
+bool brickMedia(int f) { return brickHas(f, BRICK_MEDIA); }
+bool brickSurf(int f) { return brickHas(f, BRICK_SURF); }
+bool brickOpaque(int f) { return brickHas(f, BRICK_OPAQUE); }   // crisp or opaque smooth matter
+bool brickThin(int f) { return brickHas(f, BRICK_THIN); }       // thin liquid: read cubic
+bool brickMixed(int f) { return brickHas(f, BRICK_MIXED); }     // more than one liquid
 
 vec3 safeDir(vec3 rd) {
   return vec3(abs(rd.x) < 1e-6 ? 1e-6 : rd.x, abs(rd.y) < 1e-6 ? 1e-6 : rd.y, abs(rd.z) < 1e-6 ? 1e-6 : rd.z);
