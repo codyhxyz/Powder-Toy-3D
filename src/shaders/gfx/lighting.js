@@ -1,5 +1,14 @@
 import { skyGLSL } from '../../gfx/sky.js';
 
+// Soft-shadow taps per pass (blocker search, then filter).
+const PCSS_TAPS = 8;
+const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
+// Points of an n-point Vogel (sunflower) disc of radius 1, as GLSL vec2s.
+const vogel = (n) => Array.from({ length: n }, (_, i) => {
+  const r = Math.sqrt((i + 0.5) / n), a = i * GOLDEN_ANGLE;
+  return `vec2(${(r * Math.cos(a)).toFixed(5)}, ${(r * Math.sin(a)).toFixed(5)})`;
+}).join(', ');
+
 // Lighting: sun + shadow map, sky, the GI probe volume, the glow (emission)
 // volume and ambient occlusion. Shading code only talks to the scene's light
 // through these.
@@ -61,11 +70,11 @@ uniform int uShadowRes;
 // 0.27 deg; 1.2 deg stands in for a slightly hazy sky, so penumbrae read at
 // the scale of the box while contact shadows stay crisp.
 const float SUN_TAN_RADIUS = 0.021;
-#define PCSS_TAPS 12                 // taps for the blocker search, and again for the filter
+#define PCSS_TAPS ${PCSS_TAPS}                 // taps for the blocker search, and again for the filter
 const float PCSS_HARD_TEXELS = 1.0;  // penumbra radius (texels) below which the hard path settles the edge
 const float PCSS_NS_MIN = 0.2;       // n.sun floor for the receiver-plane slope (grazing receivers)
 const float PCSS_BIAS = 0.35;        // depth bias (voxels) on top of the receiver plane
-const float GOLDEN_ANGLE = 2.39996323;
+const float GOLDEN_ANGLE = ${GOLDEN_ANGLE.toFixed(8)};
 
 void sunBasis(out vec3 c, out float R, out vec3 u, out vec3 v) {
   c = vec3(GRID) * 0.5;
@@ -105,12 +114,8 @@ float sunRayClear(vec3 ro, float tLim) {
   return 1.0;
 }
 
-// Point i of an n-point Vogel (sunflower) disc of radius 1, rotated by rot.
-vec2 vogel(int i, int n, float rot) {
-  float r = sqrt((float(i) + 0.5) / float(n));
-  float a = float(i) * GOLDEN_ANGLE + rot;
-  return r * vec2(cos(a), sin(a));
-}
+// The taps: a Vogel (sunflower) disc of radius 1, rotated per pixel and frame.
+const vec2 VOGEL[PCSS_TAPS] = vec2[PCSS_TAPS](${vogel(PCSS_TAPS)});
 
 // Sun visibility at a surface point hp with normal n.
 vec3 sunShadow(vec3 hp, vec3 n) {
@@ -150,6 +155,10 @@ vec3 sunShadow(vec3 hp, vec3 n) {
     dMin = min(dMin, sm.x);
   }
 
+  // Clearly lit by the hard map: done. Penumbrae are only grown inward, into
+  // the hard shadow (below), so lit pixels (most of them) skip the search.
+  if (nLit == 4.0) return acc;
+
   // PCSS. Taps are compared against the receiver's plane (its depth moves by
   // slope per voxel along u, v), so wide kernels don't shadow sloped receivers.
   float ns = max(dot(n, uSun), PCSS_NS_MIN);
@@ -157,11 +166,12 @@ vec3 sunShadow(vec3 hp, vec3 n) {
   vec2 ft = st * float(uShadowRes);
   ivec2 hi = ivec2(uShadowRes - 1);
   float rot = 2.0 * PI_L * ign(gl_FragCoord.xy, float(uFrame));
+  mat2 R2 = mat2(cos(rot), sin(rot), -sin(rot), cos(rot));
   // blocker search over the widest penumbra anything in front of p could cast
   float rs = SUN_TAN_RADIUS * d;
   float bSum = 0.0, bN = 0.0;
   for (int i = 0; i < PCSS_TAPS; i++) {
-    vec2 o = vogel(i, PCSS_TAPS, rot) * rs;
+    vec2 o = R2 * VOGEL[i] * rs;
     float sm = texelFetch(tShadow, clamp(ivec2(floor(ft + o / T)), ivec2(0), hi), 0).x;
     if (sm + PCSS_BIAS < d + dot(o, slope)) { bSum += sm; bN += 1.0; }
   }
@@ -171,16 +181,18 @@ vec3 sunShadow(vec3 hp, vec3 n) {
     // within a texel (~0.44 voxels at 128^3) of a shadow edge, where the map
     // can only blur: settle it with an exact ray, traced only as far as the
     // occluders those taps saw.
-    if (nLit > 0.0 && nLit < 4.0) return tr * sunRayClear(p, d - dMin + 1.5);
+    if (nLit > 0.0) return tr * sunRayClear(p, d - dMin + 1.5);
     return acc;
   }
+  // The filtered visibility is 1/2 on the hard edge and falls to 0 a penumbra
+  // inside it: doubled, it meets the lit side continuously.
   float lit = 0.0;
   for (int i = 0; i < PCSS_TAPS; i++) {
-    vec2 o = vogel(i, PCSS_TAPS, rot + GOLDEN_ANGLE) * pen;
+    vec2 o = R2 * VOGEL[i] * pen;
     float sm = texelFetch(tShadow, clamp(ivec2(floor(ft + o / T)), ivec2(0), hi), 0).x;
     lit += sm + PCSS_BIAS >= d + dot(o, slope) ? 1.0 : 0.0;
   }
-  return tr * (lit / float(PCSS_TAPS));
+  return tr * min(2.0 * lit / float(PCSS_TAPS), 1.0);
 }
 
 // Sun visibility at a point inside a volume (media, liquid interiors).
@@ -251,6 +263,12 @@ Probe surfProbe(vec3 p, vec3 n) { return probeAt(p + n * GI_OFFSET); }
 // Indirect irradiance / pi on a surface facing n.
 vec3 giIrradiance(Probe g, vec3 n) {
   return max(SH_Y0 * g.c0.rgb + SH_COS1 * SH_Y1 * (g.cx.rgb * n.x + g.cy.rgb * n.y + g.cz.rgb * n.z), 0.0);
+}
+// Indirect radiance arriving from direction d, as blurry as L1 allows; blur
+// in [0, 1] widens it further, to the irradiance lobe (rough reflections).
+vec3 giRadiance(Probe g, vec3 d, float blur) {
+  float k1 = SH_Y1 * mix(1.0, SH_COS1, blur);
+  return max(SH_Y0 * g.c0.rgb + k1 * (g.cx.rgb * d.x + g.cy.rgb * d.y + g.cz.rgb * d.z), 0.0);
 }
 // Share of the open sky a surface facing n sees (1 in the open, less under
 // overhangs, in pits and between tall things).

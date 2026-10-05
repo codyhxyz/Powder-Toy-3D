@@ -17,7 +17,7 @@ export const SKY = {
   // ~40 at the horizon (Rozenberg 1966)
   airmassHorizon: 0.025,
   airmassFalloff: 11,
-  groundAlb: [0.075, 0.078, 0.085], // the floor's albedo, continued as open ground around the box
+  groundAlb: [0.11, 0.106, 0.102], // the floor's albedo (weathered concrete), continued as open ground around the box
 };
 
 // Quadrature for the open-sky irradiance: rings in elevation × steps in azimuth.

@@ -569,7 +569,6 @@ vec3 shadeSurf(Surf s, vec3 rd) {
   vec3 ng = s.ng;
   float ao = s.ch >= 0 ? fieldAO(s.p, ng) : faceAO(s.cell, s.face, s.p);
   vec3 local = sampleLight(s.p + ng * 0.75) * uLightGain;
-  Probe gi = surfProbe(s.p, ng);
   // keep the bumped normal on the visible side
   vec3 n = s.n;
   float nvr = dot(n, v);
@@ -613,9 +612,8 @@ vec3 shadeSurf(Surf s, vec3 rd) {
   }
 
   // environment: specular (anisotropic lobes bend the lookup normal, rough
-  // lobes reflect toward the normal), horizon- and AO-occluded. Glossy lobes
-  // see the sky, dimmed by how much of it the probes say is visible; rough
-  // ones blur into the probes' light (sky + bounce, already occluded).
+  // lobes reflect toward the normal), horizon- and AO-occluded. The probes'
+  // light toward r (sky + bounce, already occluded), blurrier for rough lobes.
   vec3 nb = n;
   if (s.aniso > 0.0) {
     vec3 at = cross(s.tang, v);
@@ -624,8 +622,10 @@ vec3 shadeSurf(Surf s, vec3 rd) {
   vec3 r = reflect(rd, nb);
   r = normalize(mix(r, nb, s.rough * s.rough));
   float hor = clamp(1.0 + dot(r, ng), 0.0, 1.0);
+  // (fetched here, after the shadow loops, so the probe isn't held across them)
+  Probe gi = surfProbe(s.p, ng);
   vec3 irr = giIrradiance(gi, n);
-  vec3 envL = mix(skyColor(r) * giSkyVis(gi, n), giIrradiance(gi, r), smoothstep(0.25, 0.9, s.rough));
+  vec3 envL = giRadiance(gi, r, smoothstep(0.25, 0.9, s.rough));
   float specAO = clamp(pow(nv + aoT, exp2(-16.0 * s.rough - 1.0)) - 1.0 + aoT, 0.0, 1.0);
   c += (envL * FssEss * hor * hor + irr * Fms * Ems) * specAO;
   // indirect (sky + bounce) and glow volume: diffuse
@@ -633,11 +633,12 @@ vec3 shadeSurf(Surf s, vec3 rd) {
   return c + s.emit;
 }
 
+const vec3 FLOOR_LINE_ALB = vec3(0.075, 0.078, 0.085);   // the grid's seams, darker than the floor
 vec3 shadeFloor(vec3 hp, vec3 rd) {
   vec2 q = hp.xz / 8.0;
   vec2 gq = abs(fract(q - 0.5) - 0.5) / max(fwidth(q), vec2(1e-4));
   float line = 1.0 - min(min(gq.x, gq.y), 1.0);
-  vec3 alb = mix(GROUND_ALB, vec3(0.14, 0.15, 0.17), line);
+  vec3 alb = mix(GROUND_ALB, FLOOR_LINE_ALB, line);
   vec3 n = vec3(0.0, 1.0, 0.0);
   float ndl = max(uSun.y, 0.0);
   vec3 sh = uShadows ? sunShadow(hp, n) : vec3(1.0);
