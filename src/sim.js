@@ -3,8 +3,8 @@ import { quadVert } from './shaders/common.js';
 import { moveBlockFrag, moveGatherFrag } from './shaders/move.js';
 import { reactFrag } from './shaders/react.js';
 import { paintFrag, copyFrag, brickFrag, blurFrag } from './shaders/passes.js';
-import { fieldEmaFrag, fieldBlurFrag, fieldBoostFrag } from './shaders/fields.js';
-import { CHANNELS, MEDIA, gauss5, bulkPeak } from './gfx/materials.js';
+import { fieldEmaFrag, fieldBlurFrag, fieldBoostFrag, BOOST_STAGES } from './shaders/fields.js';
+import { CHANNELS, MEDIA, gauss5, bulkPeak, bulkPeakCubic, CUBIC_LATTICE } from './gfx/materials.js';
 
 export function gridLayout(nx, ny, nz) {
   const tx = Math.ceil(Math.sqrt((ny * nz) / nx));
@@ -76,13 +76,13 @@ export class Simulation {
     this.brick = makeTarget(g.bwidth, g.bheight, 1);
     this.light = [makeTarget(g.bwidth, g.bheight, 1), makeTarget(g.bwidth, g.bheight, 1)];
     // render fields (see shaders/fields.js): EMA ping-pong + blur scratch in
-    // RGBA8, the blurred fields in half floats, the boosted final fields in
-    // filterable half floats
+    // RGBA8, the blurred fields in half floats, the boosted final fields (and
+    // the thin-feature mask) in filterable half floats
     const U8 = THREE.UnsignedByteType, NEAR = THREE.NearestFilter, HALF = THREE.HalfFloatType;
     this.fieldEma = [makeFieldTarget(g.width, g.height, 3, U8, NEAR), makeFieldTarget(g.width, g.height, 3, U8, NEAR)];
     this.fieldTmp = makeFieldTarget(g.width, g.height, 3, U8, NEAR);
     this.fieldsBlurred = makeFieldTarget(g.width, g.height, 2, HALF, NEAR);
-    this.fields = makeFieldTarget(g.width, g.height, 2, HALF, THREE.LinearFilter);
+    this.fields = makeFieldTarget(g.width, g.height, 3, HALF, THREE.LinearFilter);
     this.fieldCur = 0;
     this.fieldReset = true;
     this.smoothing = 1;
@@ -113,8 +113,9 @@ export class Simulation {
       }),
       fieldBlur: rawMat(fieldBlurFrag(g, false), fieldBlurUniforms()),
       fieldFinal: rawMat(fieldBlurFrag(g, true), fieldBlurUniforms()),
-      fieldBoost: [0, 1, 2].map((stage) => rawMat(fieldBoostFrag(g, stage), {
+      fieldBoost: [...Array(BOOST_STAGES).keys()].map((stage) => rawMat(fieldBoostFrag(g, stage), {
         t0: { value: null }, t1: { value: null }, tPhi: { value: null }, tMed: { value: null },
+        uS: { value: new THREE.Vector4(...CHANNELS.map((c) => (c.cubic ? CUBIC_LATTICE[1] : 1))) },
         uBulk: { value: new THREE.Vector4() },
       })),
       blur: rawMat(blurFrag(g), { tSrc: { value: null }, uAxis: { value: 0 } }),
@@ -171,6 +172,7 @@ export class Simulation {
 
   get fieldSurf() { return this.fields.textures[0]; }
   get fieldMedia() { return this.fields.textures[1]; }
+  get fieldThin() { return this.fields.textures[2]; }
 
   // Rebuild the renderer's continuous fields (shaders/fields.js).
   updateFields() {
@@ -199,20 +201,20 @@ export class Simulation {
       mat.uniforms.t2.value = src.textures[2];
       this.run(mat, dst);
     });
-    // thin-feature boost: x: blurred + state -> prev, y: prev -> tmp, z: tmp -> fields
-    const [bx, by, bz] = this.mats.fieldBoost;
-    bx.uniforms.t0.value = this.fieldsBlurred.textures[0];
-    bx.uniforms.t1.value = this.stateA;
-    this.run(bx, prev);
-    by.uniforms.t0.value = prev.textures[0];
-    by.uniforms.t1.value = prev.textures[1];
-    this.run(by, this.fieldTmp);
-    bz.uniforms.t0.value = this.fieldTmp.textures[0];
-    bz.uniforms.t1.value = this.fieldTmp.textures[1];
-    bz.uniforms.tPhi.value = this.fieldsBlurred.textures[0];
-    bz.uniforms.tMed.value = this.fieldsBlurred.textures[1];
-    bz.uniforms.uBulk.value.set(...k.map(bulkPeak));
-    this.run(bz, this.fields);
+    // thin-feature boost: smooth x, y, z then peak x, y, z, ping-ponging
+    // between prev and tmp; stage 0 reads the blurred fields and the state,
+    // the last writes the final fields
+    const boost = this.mats.fieldBoost;
+    const dst = (s) => (s === BOOST_STAGES - 1 ? this.fields : s % 2 ? this.fieldTmp : prev);
+    boost.forEach((mat, s) => {
+      const u = mat.uniforms;
+      u.t0.value = s ? dst(s - 1).textures[0] : this.fieldsBlurred.textures[0];
+      u.t1.value = s ? dst(s - 1).textures[1] : this.stateA;
+      u.tPhi.value = this.fieldsBlurred.textures[0];
+      u.tMed.value = this.fieldsBlurred.textures[1];
+      u.uBulk.value.set(...k.map((w, i) => (CHANNELS[i].cubic ? bulkPeakCubic(w) : bulkPeak(w))));
+      this.run(mat, dst(s));
+    });
   }
 
   // Rebuild the render fields, the empty-space bricks and the blurred light volume.

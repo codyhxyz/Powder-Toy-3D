@@ -13,6 +13,7 @@ export const gfxUniforms = {
   tB: { value: null },        // velocity xyz (cells/step), pressure
   tFS: { value: null },       // smooth-surface fields
   tFM: { value: null },       // media fields
+  tFT: { value: null },       // thin-feature mask (cubic liquid)
   uFrame: { value: 0 },       // frame counter (for temporal jitter)
   uMatDetail: { value: 1 },
   uBevel: { value: 0.12 },
@@ -24,6 +25,7 @@ export function updateGfxUniforms(sim) {
   gfxUniforms.tB.value = sim.stateB;
   gfxUniforms.tFS.value = sim.fieldSurf;
   gfxUniforms.tFM.value = sim.fieldMedia;
+  gfxUniforms.tFT.value = sim.fieldThin;
   gfxUniforms.uFrame.value = (gfxUniforms.uFrame.value + 1) % 1048576;
   gfxUniforms.uMatDetail.value = gfx.materials;
   gfxUniforms.uBevel.value = Math.min(Math.max(gfx.bevel, 0), 0.45);

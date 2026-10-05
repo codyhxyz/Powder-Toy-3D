@@ -512,6 +512,9 @@ void dataView(vec3 ro, vec3 rd, float t0, vec3 bh) {
 #define EV_ENTER 2
 #define EV_EXIT 3
 #define MAX_BENDS 6
+// Inside a liquid, sunlight fades with depth: re-read the sun's visibility
+// (shadow map, which carries the liquid's optical depth) every this many cells.
+#define LIQ_LIGHT_STEP 2.0
 
 void main() {
   vec3 ro = uCam;
@@ -540,13 +543,14 @@ void main() {
   int liq = E_EMPTY;          // smooth liquid the ray is inside (E_EMPTY = air)
   int prevCrisp = E_EMPTY;    // crisp transparent cell the ray just came through
   vec3 mediumLight = vec3(1.0);
+  float lightAge = 0.0;       // ray length inside liquid since mediumLight was read
   int bends = 0;
   const bool liqOpaque = false;
   bool stop = false;
 
   ivec3 lastB = ivec3(-1);
   int flags = 0;
-  vec4 phiA = surfField(ro + rd * tEnter);   // fields at the current segment start
+  vec4 phiA = surfSample(ro + rd * tEnter);   // fields at the current segment start
   bool phiStale = false;
 
   // Entering the box inside a smooth material: the box wall cuts it open.
@@ -568,7 +572,7 @@ void main() {
         if (liquidInterface(hp, n0, true, lid, ro, rd, col, trans, mediumLight)) liq = lid;
         rd = safeDir(rd); istp = ivec3(sign(rd)); tDelta = abs(1.0 / rd);
         cell = ivec3(floor(ro)); tMax = (vec3(cell) + step(0.0, rd) - ro) / rd;
-        tEnter = 0.0; phiA = surfField(ro);
+        tEnter = 0.0; phiA = surfSample(ro);
       }
     }
   }
@@ -626,7 +630,7 @@ void main() {
       vec4 phiB = vec4(0.0);
       if (brickSurf(flags)) {
         if (phiStale) {
-          phiA = surfField(ro + rd * tEnter);
+          phiA = surfSample(ro + rd * tEnter);
           // Already inside a smooth material at the start of this segment: we
           // came through glass (a tank of water), or the crossing was missed.
           if (liq == E_EMPTY) {
@@ -637,13 +641,13 @@ void main() {
             else if (ic >= 0) { ev = EV_OPAQUE; evCh = ic; tEv = tEnter; evN = vec3(0.0); evN[ax] = -float(istp[ax]); }
           }
         }
-        phiB = surfField(ro + rd * tExit);
+        phiB = surfSample(ro + rd * tExit);
         // smooth matter in this cell may be a lone droplet or grain
         float tM = tExit;
         vec4 phiM = phiB;
         if (SURFCH[id] >= 0) {
           tM = tClosest(cell, ro, rd, tEnter, tExit);
-          phiM = surfField(ro + rd * tM);
+          phiM = surfSample(ro + rd * tM);
         }
         if (ev != EV_NONE) {
           // handled below
@@ -673,6 +677,8 @@ void main() {
       // ---- what lies along [tEnter, tEv] ----
       if (liq != E_EMPTY) {
         if (SURFCH[id] == CH_LIQUID) liq = id;
+        lightAge += tEv - tEnter;
+        if (uShadows && lightAge > LIQ_LIGHT_STEP) { mediumLight = sunShadow(ro + rd * (0.5 * (tEnter + tEv))); lightAge = 0.0; }
         absorbSegment(liq, ro + rd * tEnter, tEv - tEnter, mediumLight, SURFCH[id] == CH_LIQUID ? a.y : AMBIENT, col, trans);
       } else if (brickMedia(flags)) {
         float al = mediaSegment(ro, rd, tEnter, tEv, jit, col, trans);
@@ -690,16 +696,17 @@ void main() {
           break;
         } else {
           // liquid surface: refract in or out
-          vec3 n = surfNormal(hp, CH_LIQUID, ev == EV_ENTER ? -rd : rd);
+          vec3 n = liquidRipple(hp, surfNormal(hp, CH_LIQUID, ev == EV_ENTER ? -rd : rd));
           int lid = ev == EV_ENTER ? liquidIdAt(hp - n * 0.5, E_WATER) : liq;
           if (bends < MAX_BENDS) {
             bends++;
             bool inside = liquidInterface(hp, n, ev == EV_ENTER, lid, ro, rd, col, trans, mediumLight);
             liq = inside ? lid : E_EMPTY;
+            lightAge = 0.0;
             rd = safeDir(rd); istp = ivec3(sign(rd)); tDelta = abs(1.0 / rd);
             cell = ivec3(floor(ro)); tMax = (vec3(cell) + step(0.0, rd) - ro) / rd;
             tEnter = 0.0; lastB = ivec3(-1); ax = 1;
-            phiA = surfField(ro); phiStale = false;
+            phiA = surfSample(ro); phiStale = false;
             // restarted inside something opaque (sand under the water line)
             int oc = -1;
             for (int c = 1; c < 4; c++) if (phiA[c] >= 0.5) oc = c;
@@ -824,7 +831,7 @@ void main() {
   int lid = E_WATER;
   float tau = 0.0;
   bool hit = false;
-  vec4 phiA = surfField(ro + rd * tEnter);
+  vec4 phiA = surfSample(ro + rd * tEnter);
   bool phiStale = false;
   if (max(phiA.y, max(phiA.z, phiA.w)) >= 0.5) { oC.x = tEnter; hit = true; }
   for (int i = 0; i < ${g.maxSteps}; i++) {
@@ -842,11 +849,11 @@ void main() {
       oC.z = tExit;
       phiStale = true;
     } else if (brickSurf(flags) || brickMedia(flags)) {
-      if (phiStale) phiA = surfField(ro + rd * tEnter);
-      vec4 phiB = surfField(ro + rd * tExit);
+      if (phiStale) phiA = surfSample(ro + rd * tEnter);
+      vec4 phiB = surfSample(ro + rd * tExit);
       float tM = tExit;
       vec4 phiM = phiB;
-      if (SURFCH[id] >= 0) { tM = tClosest(cell, ro, rd, tEnter, tExit); phiM = surfField(ro + rd * tM); }
+      if (SURFCH[id] >= 0) { tM = tClosest(cell, ro, rd, tEnter, tExit); phiM = surfSample(ro + rd * tM); }
       float tOp = NO_HIT;
       for (int c = 1; c < 4; c++)
         tOp = min(tOp, surfCross(ro, rd, c, true, tEnter, tM, tExit, phiA[c], phiM[c], phiB[c]));

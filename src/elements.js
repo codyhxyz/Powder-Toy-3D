@@ -15,6 +15,8 @@
 //   melt   temperature above which it becomes LAVA (remembering what it was)
 //   ignite temperature above which it burns (if it touches air)
 //   rad    radiative cooling rate toward ambient
+//   sigma  render only: light extinction per cell (RGB), absorption + scattering
+//          (the scattering part is in gfx/materials.js); also tints shadows
 
 export const K = { EMPTY: 0, SOLID: 1, POWDER: 2, LIQUID: 3, GAS: 4 };
 export const R = { NONE: 0, OPAQUE: 1, LIQUID: 2, GLASS: 3, GAS: 4, FIRE: 5 };
@@ -43,14 +45,14 @@ const defs = [
 
   { key: 'WATER', abbr: 'WATR', name: 'Water', kind: K.LIQUID, render: R.LIQUID, color: '#2a78d4',
     dens: 10, cond: 0.03, cap: 1.0, drag: 0.01, flow: 0.9, spawn: 0.35,
-    sigma: [0.30, 0.075, 0.035], desc: 'Flows and levels out. Freezes at 0 °C and boils at 100 °C, with real latent heat.' },
+    sigma: [0.037, 0.011, 0.009], desc: 'Flows and levels out. Freezes at 0 °C and boils at 100 °C, with real latent heat.' },
   { key: 'OIL', abbr: 'OIL', name: 'Oil', kind: K.LIQUID, render: R.LIQUID, color: '#5a3c12',
     dens: 8, cond: 0.008, cap: 0.45, drag: 0.03, flow: 0.55, ignite: 220, burnRate: 0.008,
     burnHeat: 5, flameT: 1000, life: 1, spawn: 0.35,
-    sigma: [0.35, 0.55, 0.9], desc: 'Lighter than water, so it floats on top. Catches fire at 220 °C.' },
+    sigma: [0.4, 0.65, 1.8], desc: 'Lighter than water, so it floats on top. Catches fire at 220 °C.' },
   { key: 'ACID', abbr: 'ACID', name: 'Acid', kind: K.LIQUID, render: R.LIQUID, color: '#86f23c',
     dens: 11, cond: 0.03, cap: 1.0, drag: 0.015, flow: 0.8, life: 1, spawn: 0.35,
-    sigma: [0.45, 0.04, 0.55], desc: 'Eats through most things except glass and walls, using itself up as it goes.' },
+    sigma: [0.24, 0.06, 0.3], desc: 'Eats through most things except glass and walls, using itself up as it goes.' },
   { key: 'LAVA', abbr: 'LAVA', name: 'Lava', kind: K.LIQUID, render: R.OPAQUE, color: '#ff5a1a', var: 0.1,
     dens: 25, cond: 0.03, cap: 0.6, drag: 0.2, flow: 0.3, temp: 1600, spawn: 0.35,
     desc: 'Molten rock at 1600 °C. Cools back into whatever melted to make it.' },
@@ -76,7 +78,7 @@ const defs = [
   { key: 'GLASS', abbr: 'GLAS', name: 'Glass', kind: K.SOLID, render: R.GLASS, color: '#d2ecf2',
     cond: 0.015, cap: 0.5, melt: 1400, sigma: [0.05, 0.025, 0.03], desc: 'Clear and acid-proof. Melts at 1400 °C.' },
   { key: 'ICE', abbr: 'ICE', name: 'Ice', kind: K.SOLID, render: R.GLASS, color: '#a9d8f2',
-    cond: 0.04, cap: 0.5, temp: -20, sigma: [0.12, 0.05, 0.025], desc: 'Frozen water. Melts at 0 °C and chills whatever it touches.' },
+    cond: 0.04, cap: 0.5, temp: -20, sigma: [0.055, 0.031, 0.028], desc: 'Frozen water. Melts at 0 °C and chills whatever it touches.' },
   { key: 'CLONE', abbr: 'CLNE', name: 'Clone', kind: K.SOLID, render: R.OPAQUE, color: '#d9b81e', var: 0.05,
     cond: 0.001, cap: 1.0, desc: 'Copies the first element that touches it, forever.' },
   // New elements go at the end so existing ids (saved scenes, presets) stay stable.

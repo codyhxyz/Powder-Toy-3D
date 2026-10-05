@@ -11,10 +11,18 @@ vec3 envReflect(vec3 p, vec3 r, vec3 sunVis) {
   return skyColor(r) + SUN_COL * sunVis * pow(max(dot(r, uSun), 0.0), 400.0) * 6.0;
 }
 
-// Light scattered toward the eye inside a liquid/glass, per unit (1 - transmittance).
+// Light scattered toward the eye inside a liquid or glass, per unit
+// (1 - transmittance): the scattered share of the extinction (SCATALB) of the
+// light arriving at p. sunVis is the sun's visibility there, including its
+// fade through the liquid above (the tracer refreshes it with depth); sky
+// light fades the same way, but never below a floor, so shaded liquid
+// still shows its body colour.
+#define SKY_IN_FLOOR 0.25   // share of the sky light that reaches liquid in shade
+#define SUN_IN_GAIN 0.6     // sunlight scattered per unit of sun elevation
 vec3 interiorScatter(int id, vec3 p, vec3 sunVis, float T) {
-  vec3 amb = vec3(0.3, 0.35, 0.42) + SUN_COL * sunVis * max(uSun.y, 0.0) * 0.6 + sampleLight(p) * uLightGain;
-  return COLOR[id] * amb * (RCLASS[id] == R_GLASS ? 0.15 : 0.55) + incandescence(T);
+  vec3 L = skyAmbient(vec3(0.0, 1.0, 0.0)) * mix(vec3(SKY_IN_FLOOR), vec3(1.0), sunVis)
+         + SUN_COL * sunVis * max(uSun.y, 0.0) * SUN_IN_GAIN + sampleLight(p) * uLightGain;
+  return SCATALB[id] * L + incandescence(T);
 }
 
 // Beer–Lambert through a segment of length seg inside element id.
@@ -35,6 +43,35 @@ int liquidIdAt(vec3 p, int fallback) {
     if (SURFCH[id] == CH_LIQUID) return id;
   }
   return fallback;
+}
+
+// Wind ripples on open liquid: a slowly drifting two-octave value-noise
+// height field tilts the normal of upward-facing surfaces by a few degrees
+// (the surface itself doesn't move), breaking up an otherwise perfect mirror
+// of the sky. Fades out before it would alias.
+#define RIPPLE_FREQ 0.3        // cycles per cell, first octave
+#define RIPPLE_SLOPE 0.05      // height-field slope per unit noise gradient
+#define RIPPLE_DRIFT 0.6       // noise-space speed, per second
+#define RIPPLE_UP_LO 0.6       // n.y where ripples start ...
+#define RIPPLE_UP_HI 0.9       // ... and reach full strength
+#define RIPPLE_EPS 0.1         // finite-difference step, noise space
+#define RIPPLE_OCT2 2.1        // second octave: frequency multiple (half the height) ...
+#define RIPPLE_OCT2_DRIFT 1.3  // ... drift multiple ...
+#define RIPPLE_OCT2_SHIFT 7.3  // ... and offset, so it doesn't line up with the first
+#define RIPPLE_LOD_LO 0.25     // finer octave's cycles per pixel where ripples start to fade ...
+#define RIPPLE_LOD_HI 0.6      // ... and where they're gone
+float rippleH(vec2 q, float t) {
+  return vnoise(vec3(q, t)) + 0.5 * vnoise(vec3(q * RIPPLE_OCT2 + RIPPLE_OCT2_SHIFT, t * RIPPLE_OCT2_DRIFT));
+}
+vec3 liquidRipple(vec3 p, vec3 n) {
+  float k = smoothstep(RIPPLE_UP_LO, RIPPLE_UP_HI, n.y)
+          * (1.0 - smoothstep(RIPPLE_LOD_LO, RIPPLE_LOD_HI, footprint(p) * RIPPLE_FREQ * RIPPLE_OCT2));
+  if (k <= 0.0) return n;
+  vec2 q = p.xz * RIPPLE_FREQ;
+  float t = uTime * RIPPLE_DRIFT;
+  float h = rippleH(q, t);
+  vec2 g = vec2(rippleH(q + vec2(RIPPLE_EPS, 0.0), t) - h, rippleH(q + vec2(0.0, RIPPLE_EPS), t) - h) / RIPPLE_EPS;
+  return normalize(n - vec3(g.x, 0.0, g.y) * RIPPLE_SLOPE * k);
 }
 
 // Refraction at a smooth liquid surface. n = outward normal of the liquid.
