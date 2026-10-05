@@ -237,10 +237,12 @@ export function runGenerator(fn, { size, seed, variant }) {
 const SHADOWED = ['self', 'globalThis', 'window', 'postMessage', 'fetch', 'importScripts', 'XMLHttpRequest',
   'WebSocket', 'EventSource', 'Worker', 'indexedDB', 'caches', 'localStorage', 'document'];
 
-// Default runner: compile with new Function in strict mode.
+// Compile construction code (without running it) the way the default runner does.
+export const compileConstruction = (code) => new Function(...API_NAMES, ...SHADOWED, `"use strict";\n${code}\n`);
+
+// Default runner: compile with new Function in strict mode, then run.
 const runWithFunction = (code, api) => {
-  const fn = new Function(...API_NAMES, ...SHADOWED, `"use strict";\n${code}\n`);
-  fn(...API_NAMES.map((k) => api[k]));
+  compileConstruction(code)(...API_NAMES.map((k) => api[k]));
 };
 
 // Run construction code (the body of a function that uses the API names as

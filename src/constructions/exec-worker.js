@@ -5,7 +5,7 @@
 // removes every way out it has: network APIs, storage, nested workers and its
 // own postMessage (a private handle is kept for the single reply).
 
-import { execConstruction, cellBuffers } from './runtime.js';
+import { execConstruction, compileConstruction, cellBuffers } from './runtime.js';
 import { lint } from './lint.js';
 
 const reply = self.postMessage.bind(self);
@@ -22,10 +22,25 @@ for (const name of BLOCKED) {
 
 // new Function puts two header lines and our "use strict" line above the code.
 const HEADER_LINES = 3;
-function describe(err) {
+const MAX_SCAN_LINES = 2000; // longest code we search for a syntax error's line
+
+// V8 gives syntax errors from new Function no position, so find the first line
+// at which a prefix of the code fails to compile with the same message. This only
+// compiles, it never runs anything.
+function syntaxLine(code, message) {
+  const lines = code.split('\n');
+  for (let k = 1; k <= Math.min(lines.length, MAX_SCAN_LINES); k++) {
+    try { compileConstruction(lines.slice(0, k).join('\n')); } catch (e) { if (e.message === message) return k; }
+  }
+  return null;
+}
+
+function describe(err, code) {
   const msg = err?.message ?? String(err);
   const m = /<anonymous>:(\d+):(\d+)/.exec(err?.stack ?? '');
-  return m ? `${msg} (line ${Number(m[1]) - HEADER_LINES}, column ${m[2]})` : msg;
+  if (m) return `${msg} (line ${Number(m[1]) - HEADER_LINES}, column ${m[2]})`;
+  const line = err instanceof SyntaxError && typeof code === 'string' ? syntaxLine(code, msg) : null;
+  return line ? `${msg} (line ${line})` : msg;
 }
 
 self.onmessage = (e) => {
@@ -34,6 +49,6 @@ self.onmessage = (e) => {
     const cells = execConstruction(code, { size, seed });
     reply({ ok: true, cells, report: lint(cells, { maxSpan }) }, cellBuffers(cells));
   } catch (err) {
-    reply({ ok: false, error: describe(err) });
+    reply({ ok: false, error: describe(err, code) });
   }
 };

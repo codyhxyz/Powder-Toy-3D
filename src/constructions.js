@@ -99,7 +99,7 @@ export class Constructions {
 
     // PROMPT: the player's own constructions, their sandbox results, and the agent
     this.mine = loadJSON(MINE_STORE, []).filter((m) => m && typeof m.code === 'string');
-    this.results = new Map();   // `${id}|${seed}|${size}` → { cells, report } | { error }
+    this.results = new Map();   // _itemKey() → { cells, report } | { error }
     this.pendingKey = null;
     this.draft = '';            // the prompt being typed
     this.status = '';
@@ -166,7 +166,7 @@ export class Constructions {
     if (build.key === PROMPT) {
       const item = this.activeItem();
       if (!item) return null;
-      const key = `${item.id}|${this.seed}|${size}`;
+      const key = this._itemKey(item, this.seed, size);
       const res = this.results.get(key);
       if (!res) this._runItem(item, key);
       if (!res || res.error) return null;
@@ -303,6 +303,11 @@ export class Constructions {
       .finally(() => { this.pendingKey = null; });
   }
 
+  // cache key for a saved construction's cells: its code revision, seed and size
+  _itemKey(item, seed = this.seed, size = this.settings.radius) {
+    return `${item.id}:${item.rev ?? 0}|${seed}|${size}`;
+  }
+
   _remember(key, value) {
     this.results.set(key, value);
     while (this.results.size > RESULT_CACHE) this.results.delete(this.results.keys().next().value);
@@ -322,7 +327,7 @@ export class Constructions {
     this.barFor = null;
     const item = this.activeItem();
     this._setStatus(item ? 'Checking…' : '');
-    if (item) this._runItem(item, `${item.id}|${this.seed}|${this.settings.radius}`);
+    if (item) this._runItem(item, this._itemKey(item));
   }
 
   async _generate() {
@@ -356,7 +361,7 @@ export class Constructions {
       // show the player exactly what the model checked
       this.seed = AGENT_SEED;
       const item = { id: newId() };
-      this._remember(`${item.id}|${AGENT_SEED}|${size}`, { cells: result.cells, report: result.report });
+      this._remember(this._itemKey(item, AGENT_SEED, size), { cells: result.cells, report: result.report });
       this._addItem({ id: item.id, name: result.name, prompt: request, code: result.code, model: provider.name, description: result.description });
       const tokens = result.usage.inputTokens + result.usage.outputTokens;
       this._setStatus(`${result.finished ? 'Done' : 'Stopped at the step limit'}: ${summarizeReport(result.report)}${tokens ? ` · ${tokens.toLocaleString()} tokens` : ''}`);
@@ -417,8 +422,9 @@ export class Constructions {
       try { await this._saveEdited(item, src, name.value.trim()); close(); } catch (err) { out.textContent = `Error: ${err.message}`; }
     });
     const cancel = h('button.chip', { type: 'button', text: 'Cancel', on: { click: close } });
-    this.editor = h('div.build-editor.panel', { role: 'dialog', 'aria-label': 'Construction code' },
-      h('h3', { text: item ? 'Edit construction' : 'Paste construction code' }), name, code, out, h('div.row', {}, run, cancel));
+    // a dim backdrop, so the dialog reads as modal over the bar and the scene
+    this.editor = h('div.build-editor-backdrop', {}, h('div.build-editor.panel', { role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Construction code' },
+      h('h3', { text: item ? 'Edit construction' : 'Paste construction code' }), name, code, out, h('div.row', {}, run, cancel)));
     this.editor.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); e.stopPropagation(); });
     document.body.append(this.editor);
     (item || name.value ? code : name).focus();
@@ -428,14 +434,15 @@ export class Constructions {
   async _saveEdited(item, src, name) {
     const res = await execSandboxed(src, { size: this.settings.radius, seed: this.seed, maxSpan: this.maxSpan });
     if (item) {
-      Object.assign(item, { code: src, name: name || item.name });
+      // a new revision, so the ghost and the cache stop using the old code's cells
+      for (const k of [...this.results.keys()]) if (k.startsWith(`${item.id}:`)) this.results.delete(k);
+      Object.assign(item, { code: src, name: name || item.name, rev: (item.rev ?? 0) + 1 });
       this._saveMine();
-      for (const k of [...this.results.keys()]) if (k.startsWith(`${item.id}|`)) this.results.delete(k);
-      this._select(item.id);
     } else {
-      this._addItem({ name: name || 'Untitled', prompt: this.draft.trim(), code: src });
+      item = { id: newId(), name: name || 'Untitled', prompt: this.draft.trim(), code: src };
     }
-    this._remember(`${this.activeItem().id}|${this.seed}|${this.settings.radius}`, res);
+    this._remember(this._itemKey(item), res); // before selecting, so it doesn't run twice
+    if (this.mine.includes(item)) this._select(item.id); else this._addItem(item);
     this._setStatus(summarizeReport(res.report));
   }
 
