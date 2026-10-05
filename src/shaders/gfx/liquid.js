@@ -74,17 +74,88 @@ vec3 liquidRipple(vec3 p, vec3 n) {
   return normalize(n - vec3(g.x, 0.0, g.y) * RIPPLE_SLOPE * k);
 }
 
+// ---- reflections of the scene ----
+// Where a liquid surface reflects a lot (grazing views: Fresnel climbs fast
+// past ~60°), the reflected ray is traced through the grid to the first
+// opaque thing (crisp voxels, opaque smooth surfaces, the floor) and that is
+// shaded like a primary hit; liquids, glass and media along it are skipped.
+// Elsewhere the sky stands in, which is mostly what such a surface shows.
+// Blended over a Fresnel range so the switch doesn't show.
+#define REFL_F_LO 0.03      // Fresnel reflectance where traced reflections start ...
+#define REFL_F_HI 0.08      // ... and take over
+#define REFL_MAX_STEPS 96   // DDA steps (cells or skipped bricks) before falling back to the sky
+#define REFL_START 0.05     // start offset off the surface, cells
+vec3 reflectTrace(vec3 ro, vec3 rd, vec3 sunVis) {
+  rd = safeDir(rd);
+  ivec3 istp = ivec3(sign(rd));
+  vec3 tDelta = abs(1.0 / rd);
+  ivec3 cell = ivec3(floor(ro));
+  vec3 tMax = (vec3(cell) + step(0.0, rd) - ro) / rd;
+  float tEnter = 0.0;
+  int ax = 1;   // entry face axis: unknown in the start cell
+  ivec3 lastB = ivec3(-1);
+  int flags = 0;
+  vec4 phiA = surfField(ro);
+  bool stale = false;
+  for (int i = 0; i < REFL_MAX_STEPS; i++) {
+    if (outside(cell)) break;
+    ivec3 bc = cell / BS;
+    if (bc != lastB) { lastB = bc; flags = brickInfo(bc); }
+    if (flags == 0) { ax = skipBrick(bc, ro, rd, istp, cell, tMax, tEnter); stale = true; continue; }
+    float tExit = min(tMax.x, min(tMax.y, tMax.z));
+    vec4 a = cellA(cell);
+    int id = eid(a);
+    if (isCrisp(id)) {
+      if (RCLASS[id] != R_GLASS) {
+        vec3 nh = vec3(0.0);
+        nh[ax] = -float(istp[ax]);
+        float th = tEnter;
+        if (crispHit(cell, id, ro, rd, tEnter, tExit, th, nh)) return shadeSurf(crispSurf(cell, id, a, ro + rd * th, nh), rd);
+      }
+      stale = true;
+    } else if (brickSurf(flags)) {
+      if (stale) phiA = surfField(ro + rd * tEnter);
+      vec4 phiB = surfField(ro + rd * tExit);
+      float tOp = NO_HIT;
+      int ch = -1;
+      for (int c = 1; c < 4; c++) {
+        float t = surfCross(ro, rd, c, true, tEnter, tExit, tExit, phiA[c], phiB[c], phiB[c]);
+        if (t < tOp) { tOp = t; ch = c; }
+      }
+      if (ch > 0) {
+        vec3 hp = ro + rd * tOp;
+        return shadeSurf(gatherSurf(hp, surfNormal(hp, ch, -rd), ch), rd);
+      }
+      phiA = phiB;
+      stale = false;
+    } else {
+      stale = true;
+    }
+    ax = argmin3(tMax);
+    tEnter = tExit;
+    cell[ax] += istp[ax];
+    tMax[ax] += tDelta[ax];
+  }
+  if (cell.y < 0 && rd.y < 0.0) return shadeFloor(ro - rd * (ro.y / rd.y), rd);
+  return envReflect(ro, rd, sunVis);
+}
+
 // Refraction at a smooth liquid surface. n = outward normal of the liquid.
 // Updates the ray (restarting just past the interface) and returns true if
 // the ray now travels inside the liquid (entering, or total internal reflection).
-bool liquidInterface(vec3 hp, vec3 n, bool entering, int id, inout vec3 ro, inout vec3 rd,
+// mirror: trace the scene in the reflection (else the sky only).
+bool liquidInterface(vec3 hp, vec3 n, bool entering, int id, bool mirror, inout vec3 ro, inout vec3 rd,
                      inout vec3 col, inout vec3 trans, inout vec3 mediumLight) {
   float ior = IOR[id];
   if (entering) {
     if (dot(n, rd) > 0.0) n = -n;
     float F = fresnelSchlick(-dot(n, rd), ior);
     mediumLight = uShadows ? sunShadow(hp + n * 0.5) : vec3(1.0);
-    col += trans * F * envReflect(hp, reflect(rd, n), mediumLight);
+    vec3 r = reflect(rd, n);
+    vec3 env = envReflect(hp, r, mediumLight);
+    float wr = mirror ? smoothstep(REFL_F_LO, REFL_F_HI, F) : 0.0;
+    if (wr > 0.0) env = mix(env, reflectTrace(hp + n * REFL_START, r, mediumLight), wr);
+    col += trans * F * env;
     trans *= 1.0 - F;
     rd = refract(rd, n, 1.0 / ior);
     ro = hp + rd * 0.03;

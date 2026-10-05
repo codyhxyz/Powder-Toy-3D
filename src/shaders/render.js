@@ -513,8 +513,14 @@ void dataView(vec3 ro, vec3 rd, float t0, vec3 bh) {
 #define EV_EXIT 3
 #define MAX_BENDS 6
 // Inside a liquid, sunlight fades with depth: re-read the sun's visibility
-// (shadow map, which carries the liquid's optical depth) every this many cells.
-#define LIQ_LIGHT_STEP 2.0
+// (shadow map, which carries the liquid's optical depth) every this many
+// cells, at a per-pixel jittered phase that TAA averages out.
+#define LIQ_LIGHT_STEP 6.0
+// Which liquid a segment is in is read at a per-pixel random offset of up to
+// half this many cells, so a boundary between liquids (ice in water, acid
+// mixing in) is dithered across a cell, which TAA blends, instead of showing
+// voxel steps inside the smooth surface.
+#define LIQ_ID_DITHER 1.0
 
 void main() {
   vec3 ro = uCam;
@@ -543,7 +549,8 @@ void main() {
   int liq = E_EMPTY;          // smooth liquid the ray is inside (E_EMPTY = air)
   int prevCrisp = E_EMPTY;    // crisp transparent cell the ray just came through
   vec3 mediumLight = vec3(1.0);
-  float lightAge = 0.0;       // ray length inside liquid since mediumLight was read
+  float lightAge = jit * LIQ_LIGHT_STEP;   // ray length inside liquid since mediumLight was read
+  vec3 liqDither = (hash33(vec3(gl_FragCoord.xy, float(uFrame))) - 0.5) * LIQ_ID_DITHER;
   int bends = 0;
   const bool liqOpaque = false;
   bool stop = false;
@@ -569,7 +576,7 @@ void main() {
         stop = true;
       } else {
         int lid = liquidIdAt(hp - n0 * 0.5, E_WATER);
-        if (liquidInterface(hp, n0, true, lid, ro, rd, col, trans, mediumLight)) liq = lid;
+        if (liquidInterface(hp, n0, true, lid, false, ro, rd, col, trans, mediumLight)) liq = lid;
         rd = safeDir(rd); istp = ivec3(sign(rd)); tDelta = abs(1.0 / rd);
         cell = ivec3(floor(ro)); tMax = (vec3(cell) + step(0.0, rd) - ro) / rd;
         tEnter = 0.0; phiA = surfSample(ro);
@@ -676,7 +683,10 @@ void main() {
 
       // ---- what lies along [tEnter, tEv] ----
       if (liq != E_EMPTY) {
-        if (SURFCH[id] == CH_LIQUID) liq = id;
+        ivec3 cj = clamp(ivec3(floor(ro + rd * (0.5 * (tEnter + tEv)) + liqDither)), ivec3(0), GRID - 1);
+        int lj = cj == cell ? id : eid(cellA(cj));
+        if (SURFCH[lj] == CH_LIQUID) liq = lj;
+        else if (SURFCH[id] == CH_LIQUID) liq = id;
         lightAge += tEv - tEnter;
         if (uShadows && lightAge > LIQ_LIGHT_STEP) { mediumLight = sunShadow(ro + rd * (0.5 * (tEnter + tEv))); lightAge = 0.0; }
         absorbSegment(liq, ro + rd * tEnter, tEv - tEnter, mediumLight, SURFCH[id] == CH_LIQUID ? a.y : AMBIENT, col, trans);
@@ -700,9 +710,10 @@ void main() {
           int lid = ev == EV_ENTER ? liquidIdAt(hp - n * 0.5, E_WATER) : liq;
           if (bends < MAX_BENDS) {
             bends++;
-            bool inside = liquidInterface(hp, n, ev == EV_ENTER, lid, ro, rd, col, trans, mediumLight);
+            // the scene shows in the reflection only off the first surface the eye ray meets
+            bool inside = liquidInterface(hp, n, ev == EV_ENTER, lid, bends == 1, ro, rd, col, trans, mediumLight);
             liq = inside ? lid : E_EMPTY;
-            lightAge = 0.0;
+            lightAge = jit * LIQ_LIGHT_STEP;
             rd = safeDir(rd); istp = ivec3(sign(rd)); tDelta = abs(1.0 / rd);
             cell = ivec3(floor(ro)); tMax = (vec3(cell) + step(0.0, rd) - ro) / rd;
             tEnter = 0.0; lastB = ivec3(-1); ax = 1;
