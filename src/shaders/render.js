@@ -1,141 +1,33 @@
 import { prelude } from './common.js';
 import { ELEMENTS } from '../elements.js';
 import { COLORMAPS, xrayDensity } from '../views.js';
+import { materialsGLSL } from '../gfx/materials.js';
+import { coreGLSL } from './gfx/core.js';
+import { noiseGLSL } from './gfx/noise.js';
+import { lightingGLSL } from './gfx/lighting.js';
+import { surfaceGLSL } from './gfx/surface.js';
+import { liquidGLSL } from './gfx/liquid.js';
+import { mediaGLSL } from './gfx/media.js';
+import { particlesGLSL } from './gfx/particles.js';
 
-// Voxel raymarcher. Rays are traced through the grid with an Amanatides–Woo
-// DDA. A 4×4×4 brick occupancy map lets the ray jump over empty space in one
-// step. Opaque voxels are lit by the sun (with a secondary shadow ray), sky
-// ambient with per-face corner AO, and a blurred light volume carrying the
-// glow of lava/fire/hot metal. Liquids and glass are traced through with
-// Beer–Lambert absorption and a Fresnel reflection at each interface; gases
-// and flames are integrated as participating media.
+// Hybrid raymarcher. Rays walk the voxel grid with an Amanatides–Woo DDA
+// (4×4×4 bricks skip empty space). What they hit depends on the element's look
+// (gfx/materials.js):
+// - crisp elements (wall, metal, glass, clone) are voxels;
+// - liquids, lava, powders and organics are smooth surfaces: the 0.5
+//   isosurface of blurred occupancy fields (shaders/fields.js), found by
+//   root-finding inside each cell segment. Cells too isolated to form a
+//   surface are drawn as droplets / grains;
+// - liquids refract (real bent rays), absorb (Beer–Lambert) and reflect;
+// - smoke, steam and fire are density volumes.
+// Views 1-4 (heat, pressure, flow, X-ray) are false-colour data views with
+// their own marches (below); view 0 is the realistic render.
 export const lib = (g) => /* glsl */ `
 ${prelude(g)}
-uniform sampler2D tA;
-uniform sampler2D tBrick;
-uniform sampler2D tLight;
-
-const ivec3 GRID = ivec3(NX, NY, NZ);
-
-vec4 cellA(ivec3 c) { return texelFetch(tA, atlas(c), 0); }
-float brickOcc(ivec3 bc) { return texelFetch(tBrick, brickAtlas(bc), 0).a; }
-bool outside(ivec3 c) { return any(lessThan(c, ivec3(0))) || any(greaterThanEqual(c, GRID)); }
-
-vec3 safeDir(vec3 rd) {
-  return vec3(abs(rd.x) < 1e-6 ? 1e-6 : rd.x, abs(rd.y) < 1e-6 ? 1e-6 : rd.y, abs(rd.z) < 1e-6 ? 1e-6 : rd.z);
-}
-// returns (tNear, tFar, entryAxis)
-vec3 boxHit(vec3 ro, vec3 rd) {
-  vec3 t0 = (vec3(0.0) - ro) / rd, t1 = (vec3(GRID) - ro) / rd;
-  vec3 tn = min(t0, t1), tf = max(t0, t1);
-  float n = max(max(tn.x, tn.y), tn.z);
-  float axis = tn.x >= tn.y && tn.x >= tn.z ? 0.0 : (tn.y >= tn.z ? 1.0 : 2.0);
-  return vec3(n, min(min(tf.x, tf.y), tf.z), axis);
-}
-int argmin3(vec3 v) { return v.x <= v.y && v.x <= v.z ? 0 : (v.y <= v.z ? 1 : 2); }
-
-// Jump the DDA to the exit of empty brick bc. Updates cell/tMax/tEnter, returns axis crossed.
-int skipBrick(ivec3 bc, vec3 ro, vec3 rd, ivec3 istp, inout ivec3 cell, inout vec3 tMax, inout float tEnter) {
-  vec3 bmin = vec3(bc * BS), bmax = bmin + float(BS);
-  vec3 tb = (mix(bmin, bmax, step(0.0, rd)) - ro) / rd;
-  int ax = argmin3(tb);
-  float tx = tb[ax];
-  cell = ivec3(floor(ro + rd * tx));
-  cell[ax] = istp[ax] > 0 ? int(bmax[ax]) : int(bmin[ax]) - 1;
-  tMax = (vec3(cell) + step(0.0, rd) - ro) / rd;
-  tEnter = tx;
-  return ax;
-}
-
-// ---- sun shadow map ----
-// An orthographic shadow map covering the box, traced once per frame from the
-// sun. Each texel stores (depth of first opaque voxel, depth where translucent
-// material starts, depth where it ends, tint element id * 1000 + optical depth
-// accumulated through it). Points in between get a proportional share.
-uniform vec3 uSun;
-uniform sampler2D tShadow;
-uniform int uShadowRes;
-
-void sunBasis(out vec3 c, out float R, out vec3 u, out vec3 v) {
-  c = vec3(GRID) * 0.5;
-  R = 0.5 * length(vec3(GRID)) + 1.0;
-  u = normalize(cross(vec3(0.0, 1.0, 0.0), uSun));
-  v = cross(uSun, u);
-}
-
-// 1 if the ray from ro toward the sun gets tLim voxels without entering an
-// opaque voxel, else 0 (exact DDA, same traversal as the view rays).
-float sunRayClear(vec3 ro, float tLim) {
-  vec3 rd = safeDir(uSun);
-  vec3 bh = boxHit(ro, rd);
-  float t = max(bh.x, 0.0);
-  if (bh.y <= t) return 1.0;
-  ivec3 istp = ivec3(sign(rd));
-  vec3 tDelta = abs(1.0 / rd);
-  ivec3 cell = clamp(ivec3(floor(ro + rd * (t + 1e-4))), ivec3(0), GRID - 1);
-  vec3 tMax = (vec3(cell) + step(0.0, rd) - ro) / rd;
-  float tEnter = t;
-  ivec3 lastB = ivec3(-1);
-  float occ = 0.0;
-  for (int i = 0; i < ${g.maxSteps}; i++) {
-    if (outside(cell) || tEnter > tLim) break;
-    ivec3 bc = cell / BS;
-    if (bc != lastB) { lastB = bc; occ = brickOcc(bc); }
-    if (occ < 0.5) { skipBrick(bc, ro, rd, istp, cell, tMax, tEnter); continue; }
-    int id = eid(cellA(cell));
-    if (id != E_EMPTY && RCLASS[id] == R_OPAQUE) return 0.0;
-    int ax = argmin3(tMax);
-    tEnter = tMax[ax];
-    cell[ax] += istp[ax];
-    tMax[ax] += tDelta[ax];
-  }
-  return 1.0;
-}
-
-// hp: a point on a voxel face, n: that face's normal.
-vec3 sunShadow(vec3 hp, vec3 n) {
-  vec3 c, u, v; float R;
-  sunBasis(c, R, u, v);
-  vec3 p = hp + n * 0.002;
-  vec3 q = p - c;
-  vec2 st = vec2(dot(q, u), dot(q, v)) / R * 0.5 + 0.5;
-  float d = R - dot(q, uSun);
-  // Depth bias. A PCF tap one texel (T voxels) away sees the receiver's own face
-  // up to T*(|n.u|+|n.v|)/(n.s) closer, and at the foot of a sun-facing wall it
-  // sees that wall up to ~0.6 closer: hence >= 0.8. It must stay well below
-  // 1/uSun.y (1.23), the depth gap to the top of a 1-voxel step.
-  float T = 2.0 * R / float(uShadowRes);
-  float bias = max(0.8, T * (abs(dot(n, u)) + abs(dot(n, v))) / max(dot(n, uSun), 0.25) + 0.1);
-  vec2 f = st * float(uShadowRes) - 0.5;
-  ivec2 i0 = ivec2(floor(f));
-  vec2 w = f - vec2(i0);
-  vec3 acc = vec3(0.0), tr = vec3(0.0);
-  float nLit = 0.0, dMin = 1e9;
-  for (int k = 0; k < 4; k++) {
-    ivec2 o = ivec2(k & 1, k >> 1);
-    vec4 sm = texelFetch(tShadow, clamp(i0 + o, ivec2(0), ivec2(uShadowRes - 1)), 0);
-    float lit = d < sm.x + bias ? 1.0 : 0.0;
-    vec3 att = vec3(1.0);
-    int tid = int(sm.w / 1000.0);
-    if (tid > 0 && d > sm.y) {
-      float tau = sm.w - float(tid) * 1000.0;
-      float frac = clamp((d - sm.y) / max(sm.z - sm.y, 1e-3), 0.0, 1.0);
-      vec3 tint = SIGMA[tid] / max(dot(SIGMA[tid], vec3(1.0 / 3.0)), 1e-4);
-      att = exp(-tint * tau * frac);
-    }
-    float wk = (o.x == 1 ? w.x : 1.0 - w.x) * (o.y == 1 ? w.y : 1.0 - w.y);
-    acc += lit * att * wk;
-    tr += att * wk;
-    nLit += lit;
-    dMin = min(dMin, sm.x);
-  }
-  // The taps disagree, so p is within a texel (~0.44 voxels at 128^3) of a shadow
-  // edge, where the map can only blur. Settle it with an exact ray, traced only
-  // as far as the occluders those taps saw.
-  if (nLit > 0.0 && nLit < 4.0) return tr * sunRayClear(p, d - dMin + 1.5);
-  return acc;
-}
-
+${materialsGLSL()}
+${coreGLSL(g)}
+${noiseGLSL}
+${lightingGLSL}
 `;
 
 export const volumeVert = /* glsl */ `
@@ -268,12 +160,11 @@ ${flush}
 
   return /* glsl */ `
 ${lib(g)}
-uniform sampler2D tB;
+${surfaceGLSL}
+${liquidGLSL}
+${mediaGLSL}
+${particlesGLSL}
 uniform vec3 uCam;
-uniform int uView;
-uniform bool uShadows;
-uniform float uTime;
-uniform float uLightGain;
 uniform mat4 projectionMatrix;
 uniform mat4 modelMatrix;
 in vec3 vGrid;
@@ -285,111 +176,6 @@ in vec3 vGrid;
 #else
 #define CUR_VIEW uView
 #endif
-
-const vec3 SUN_COL = vec3(1.25, 1.15, 1.0);
-
-bool occluder(ivec3 c) {
-  if (c.y < 0) return true;
-  if (outside(c)) return false;
-  int id = eid(cellA(c));
-  return id != E_EMPTY && RCLASS[id] != R_GAS && RCLASS[id] != R_FIRE;
-}
-
-// Smooth per-corner ambient occlusion on a voxel face (Minecraft style).
-float faceAO(ivec3 cell, ivec3 n, vec3 hp) {
-  ivec3 u = n.x != 0 ? ivec3(0, 1, 0) : ivec3(1, 0, 0);
-  ivec3 w = n.z != 0 ? ivec3(0, 1, 0) : ivec3(0, 0, 1);
-  ivec3 b = cell + n;
-  float s1 = float(occluder(b + u)), s2 = float(occluder(b - u));
-  float s3 = float(occluder(b + w)), s4 = float(occluder(b - w));
-  float c1 = float(occluder(b + u + w)), c2 = float(occluder(b + u - w));
-  float c3 = float(occluder(b - u + w)), c4 = float(occluder(b - u - w));
-  float aPP = s1 * s3 > 0.0 ? 0.0 : 3.0 - (s1 + s3 + c1);
-  float aPM = s1 * s4 > 0.0 ? 0.0 : 3.0 - (s1 + s4 + c2);
-  float aMP = s2 * s3 > 0.0 ? 0.0 : 3.0 - (s2 + s3 + c3);
-  float aMM = s2 * s4 > 0.0 ? 0.0 : 3.0 - (s2 + s4 + c4);
-  float fu = fract(dot(hp, vec3(u))), fw = fract(dot(hp, vec3(w)));
-  float ao = mix(mix(aMM, aPM, fu), mix(aMP, aPP, fu), fw) / 3.0;
-  return 0.25 + 0.75 * ao;
-}
-
-vec3 sampleLight(vec3 gp) {
-  vec3 bpos = gp / float(BS) - 0.5;
-  ivec3 b0 = ivec3(floor(bpos));
-  vec3 f = bpos - vec3(b0);
-  ivec3 hi = ivec3(BX, BY, BZ) - 1;
-  vec3 s = vec3(0.0);
-  for (int i = 0; i < 8; i++) {
-    ivec3 o = ivec3(i & 1, (i >> 1) & 1, (i >> 2) & 1);
-    vec3 wv = mix(1.0 - f, f, vec3(o));
-    s += texelFetch(tLight, brickAtlas(clamp(b0 + o, ivec3(0), hi)), 0).rgb * wv.x * wv.y * wv.z;
-  }
-  return s;
-}
-
-vec3 skyColor(vec3 d) {
-  float y = d.y * 0.5 + 0.5;
-  return mix(vec3(0.05, 0.05, 0.06), vec3(0.42, 0.52, 0.68), smoothstep(0.2, 1.0, y));
-}
-
-float occupied(ivec3 c) {
-  if (c.y < 0) return 1.0;
-  if (outside(c)) return 0.0;
-  int id = eid(cellA(c));
-  return (id == E_EMPTY || KIND[id] == K_GAS) ? 0.0 : 1.0;
-}
-// smooth-ish normal for liquid surfaces from the occupancy gradient
-vec3 liquidNormal(ivec3 c, vec3 faceN) {
-  vec3 gr = vec3(
-    occupied(c + ivec3(1, 0, 0)) - occupied(c - ivec3(1, 0, 0)),
-    occupied(c + ivec3(0, 1, 0)) - occupied(c - ivec3(0, 1, 0)),
-    occupied(c + ivec3(0, 0, 1)) - occupied(c - ivec3(0, 0, 1)));
-  vec3 n = faceN - gr * 0.6;
-  return normalize(n);
-}
-
-vec3 shadeOpaque(ivec3 cell, int id, vec4 a, vec3 hp, vec3 n, vec3 rd) {
-  float seed = fract(a.w);
-  float T = a.y;
-  vec3 alb = COLOR[id] * (1.0 + COLORVAR[id] * (seed * 2.0 - 1.0));
-  vec3 emit = vec3(0.0);
-  if (id == E_LAVA) {
-    float flick = 0.85 + 0.15 * sin(uTime * 3.0 + seed * 40.0);
-    alb = vec3(0.05, 0.03, 0.02);
-    emit = incandescence(T) * flick;
-  } else {
-    // hot surfaces read as glowing: the emission dominates and the
-    // reflected light fades (think of a red-hot poker)
-    emit = incandescence(T);
-    alb *= mix(1.0, 0.2, smoothstep(350.0, 1000.0, T));
-  }
-  if (id == E_PLANT) alb *= 0.8 + 0.4 * fract(seed * 7.3);
-  float ndl = max(dot(n, uSun), 0.0);
-  vec3 sh = (uShadows && ndl > 0.0) ? sunShadow(hp, n) : vec3(1.0);
-  float ao = faceAO(cell, ivec3(n), hp);
-  vec3 sky = mix(vec3(0.07, 0.065, 0.06), vec3(0.32, 0.38, 0.5), n.y * 0.5 + 0.5);
-  vec3 local = sampleLight(hp + n * 0.75) * uLightGain;
-  vec3 c = alb * (SUN_COL * ndl * sh + sky * ao + local * (0.35 + 0.65 * ao));
-  if (id == E_METAL || id == E_WALL) {
-    vec3 h = normalize(uSun - rd);
-    float sp = pow(max(dot(n, h), 0.0), id == E_METAL ? 48.0 : 16.0) * (id == E_METAL ? 0.8 : 0.08);
-    c += SUN_COL * sh * sp;
-  }
-  return c + emit;
-}
-
-vec3 shadeFloor(vec3 hp, vec3 rd) {
-  vec2 q = hp.xz / 8.0;
-  vec2 gq = abs(fract(q - 0.5) - 0.5) / max(fwidth(q), vec2(1e-4));
-  float line = 1.0 - min(min(gq.x, gq.y), 1.0);
-  vec3 alb = mix(vec3(0.075, 0.078, 0.085), vec3(0.14, 0.15, 0.17), line);
-  vec3 n = vec3(0.0, 1.0, 0.0);
-  float ndl = max(uSun.y, 0.0);
-  vec3 sh = uShadows ? sunShadow(hp, n) : vec3(1.0);
-  float ao = faceAO(ivec3(floor(hp.x), -1, floor(hp.z)), ivec3(0, 1, 0), hp);
-  vec3 local = sampleLight(vec3(hp.x, 0.5, hp.z)) * uLightGain;
-  return alb * (SUN_COL * ndl * sh + vec3(0.3, 0.35, 0.45) * ao + local * (0.35 + 0.65 * ao));
-}
 
 float softBlob(ivec3 cell, vec3 ro, vec3 rd, float t0, float t1) {
   vec3 cc = vec3(cell) + 0.5;
@@ -461,7 +247,7 @@ ${march('marchHeat', 1, /* glsl */ `
       float T = a.y;
       if (KIND[id] == K_GAS) {
         // steam, smoke and flames: soft blobs coloured by their temperature
-        float local = clamp(occ - 1.0, 0.0, 1.0);
+        float local = brickGas(occ);
         float dens = softBlob(cell, ro, rd, tEnter, tExit) * (0.4 + 2.0 * local)
                    * (id == E_SMOKE ? clamp(a.z, 0.0, 1.0) : 1.0);
         float al = 1.0 - exp(-(id == E_FIRE ? 0.6 : 0.3) * seg * dens);
@@ -623,7 +409,7 @@ ${march('marchFlow', 4, /* glsl */ `
       }
     } else if (KIND[id] == K_GAS) {
       vec3 v = texelFetch(tB, atlas(cell), 0).xyz;
-      float local = clamp(occ - 1.0, 0.0, 1.0);
+      float local = brickGas(occ);
       float dens = softBlob(cell, ro, rd, tEnter, tExit) * (0.4 + 2.0 * local)
                  * (id == E_SMOKE ? clamp(a.z, 0.0, 1.0) : 1.0);
       float al = 1.0 - exp(-0.25 * seg * dens);
@@ -714,22 +500,36 @@ void dataView(vec3 ro, vec3 rd, float t0, vec3 bh) {
   if (alpha < 0.002) discard;
   vec3 c = col / alpha;
   if (CUR_VIEW == 4) c = 1.0 - exp(-1.25 * c);  // X-ray: soft clip, overlaps add up
-  gl_FragColor = vec4(toSrgb(clamp(c, 0.0, 1.0)) * alpha, alpha);
+  // linear; post (raw mode for data views) only encodes to sRGB, so a fully
+  // lit surface still shows exactly its legend colour
+  gl_FragColor = vec4(clamp(c, 0.0, 1.0) * alpha, alpha);
   // depth: where the ray became mostly opaque, else where it leaves the box
   float td = tHit >= 0.0 ? tHit : bh.y;
   vec4 clip = projectionMatrix * viewMatrix * modelMatrix * vec4(ro + rd * td, 1.0);
   gl_FragDepth = clamp(clip.z / clip.w * 0.5 + 0.5, 0.0, 1.0);
 }
 
+#define EV_NONE 0
+#define EV_OPAQUE 1
+#define EV_ENTER 2
+#define EV_EXIT 3
+#define EV_DROP 4
+#define MAX_BENDS 6
+
 void main() {
   vec3 ro = uCam;
   vec3 rd = safeDir(normalize(vGrid - uCam));
   if (CUR_VIEW == 3) gPix = length(fwidth(rd));
+  surfView(uCam, rd);   // pixel footprint for material LOD (needs uniform control flow)
   vec3 bh = boxHit(ro, rd);
   float t0 = max(bh.x, 0.0);
   if (bh.y <= t0) discard;
   if (CUR_VIEW != 0) { dataView(ro, rd, t0, bh); return; }
+  float jit = ign(gl_FragCoord.xy, float(uFrame));
+  // hot air bends light (heat shimmer): perturb the ray once, up front
+  rd = safeDir(hazeBend(uCam, rd, t0, bh.y));
 
+  // ray (ro, rd) and its DDA state; refraction restarts both
   ivec3 istp = ivec3(sign(rd));
   vec3 tDelta = abs(1.0 / rd);
   ivec3 cell = clamp(ivec3(floor(ro + rd * (t0 + 1e-4))), ivec3(0), GRID - 1);
@@ -737,84 +537,208 @@ void main() {
   float tEnter = t0;
   int ax = int(bh.z);
 
-  vec3 col = vec3(0.0);
-  vec3 trans = vec3(1.0);
-  float tHit = -1.0;
-  int prevId = E_EMPTY;
+  vec3 col = vec3(0.0), trans = vec3(1.0);
+  bool anyHit = false;
+  vec3 hitPos = vec3(0.0);
+  int liq = E_EMPTY;          // smooth liquid the ray is inside (E_EMPTY = air)
+  int prevCrisp = E_EMPTY;    // crisp transparent cell the ray just came through
   vec3 mediumLight = vec3(1.0);
-  ivec3 lastB = ivec3(-1);
-  float occ = 0.0;
+  int bends = 0;
+  const bool liqOpaque = false;
+  bool stop = false;
 
-  for (int i = 0; i < ${g.maxSteps}; i++) {
-    if (outside(cell)) break;
+  ivec3 lastB = ivec3(-1);
+  int flags = 0;
+  vec4 phiA = surfField(ro + rd * tEnter);   // fields at the current segment start
+  bool phiStale = false;
+
+  // Entering the box inside a smooth material: the box wall cuts it open.
+  {
+    int ch = -1;
+    float best = 0.5;
+    for (int c = 0; c < 4; c++) if (phiA[c] >= best) { best = phiA[c]; ch = c; }
+    if (ch >= 0) {
+      vec3 n0 = vec3(0.0);
+      n0[ax] = -float(istp[ax]);
+      vec3 hp = ro + rd * tEnter;
+      anyHit = true; hitPos = hp;
+      if (ch != CH_LIQUID || liqOpaque) {
+        col = shadeSurf(gatherSurf(hp, n0, ch), rd);
+        trans = vec3(0.0);
+        stop = true;
+      } else {
+        int lid = liquidIdAt(hp - n0 * 0.5, E_WATER);
+        if (liquidInterface(hp, n0, true, lid, ro, rd, col, trans, mediumLight)) liq = lid;
+        rd = safeDir(rd); istp = ivec3(sign(rd)); tDelta = abs(1.0 / rd);
+        cell = ivec3(floor(ro)); tMax = (vec3(cell) + step(0.0, rd) - ro) / rd;
+        tEnter = 0.0; phiA = surfField(ro);
+      }
+    }
+  }
+
+  for (int i = 0; i < ${g.maxSteps + 128}; i++) {
+    if (stop || outside(cell)) break;
     ivec3 bc = cell / BS;
-    if (bc != lastB) { lastB = bc; occ = brickOcc(bc); }
-    if (occ < 0.5) {
+    if (bc != lastB) { lastB = bc; flags = brickInfo(bc); }
+    if (flags == 0) {
       ax = skipBrick(bc, ro, rd, istp, cell, tMax, tEnter);
-      prevId = E_EMPTY;
+      prevCrisp = E_EMPTY;
+      phiStale = true;
       continue;
     }
     float tExit = min(tMax.x, min(tMax.y, tMax.z));
-    float seg = tExit - tEnter;
     vec4 a = cellA(cell);
     int id = eid(a);
-    vec3 n = vec3(0.0);
-    n[ax] = -float(istp[ax]);
 
-    if (id != E_EMPTY) {
-      int rc = RCLASS[id];
-      if (tHit < 0.0) tHit = tEnter;
-      vec3 hp = ro + rd * tEnter;
-
-      if (rc == R_OPAQUE) {
-        col += trans * shadeOpaque(cell, id, a, hp, n, rd);
-        trans = vec3(0.0);
-        break;
-      } else if (rc == R_LIQUID || rc == R_GLASS) {
-        if (id != prevId) {
-          // interface: Fresnel reflection of sky + sun glint
-          vec3 sn = rc == R_LIQUID ? liquidNormal(cell, n) : n;
-          if (dot(sn, rd) > 0.0) sn = n;
-          float cosi = clamp(-dot(sn, rd), 0.0, 1.0);
-          float f0 = rc == R_LIQUID ? 0.02 : 0.045;
-          bool fromAir = prevId == E_EMPTY || KIND[prevId] == K_GAS;
-          float F = (f0 + (1.0 - f0) * pow(1.0 - cosi, 5.0)) * (fromAir ? 1.0 : 0.3);
-          vec3 r = reflect(rd, sn);
-          mediumLight = uShadows ? sunShadow(hp, n) : vec3(1.0);
-          vec3 refl = skyColor(r) + SUN_COL * mediumLight * pow(max(dot(r, uSun), 0.0), 400.0) * 6.0;
-          col += trans * F * refl;
-          trans *= 1.0 - F;
+    if (isCrisp(id)) {
+      // ---- crisp voxel ----
+      vec3 nFace = vec3(0.0);
+      nFace[ax] = -float(istp[ax]);
+      if (RCLASS[id] != R_GLASS) {
+        // the voxel's shape may be smaller than the cell (bevels): it can miss
+        float th = tEnter;
+        vec3 nh = nFace;
+        if (crispHit(cell, id, ro, rd, tEnter, tExit, th, nh)) {
+          vec3 hp = ro + rd * th;
+          if (!anyHit) { anyHit = true; hitPos = hp; }
+          col += trans * shadeSurf(crispSurf(cell, id, a, hp, nh), rd);
+          trans = vec3(0.0);
+          break;
         }
-        vec3 ext = SIGMA[id];
-        vec3 att = exp(-ext * seg);
-        // in-scattering so deep liquid reads as its own colour, not black
-        vec3 amb = vec3(0.3, 0.35, 0.42) + SUN_COL * mediumLight * max(uSun.y, 0.0) * 0.6
-                 + sampleLight(hp) * uLightGain;
-        vec3 sc = COLOR[id] * amb * (rc == R_LIQUID ? 0.55 : 0.15) + incandescence(a.y);
-        col += trans * (1.0 - att) * sc;
-        trans *= att;
-      } else if (rc == R_GAS) {
-        // render each gas voxel as a soft blob rather than a hard cube
-        // Lone gas voxels read as faint wisps, dense plumes as thick cloud.
-        float local = clamp(occ - 1.0, 0.0, 1.0);
-        float dens = (id == E_SMOKE ? clamp(a.z, 0.0, 1.0) : 1.0) * softBlob(cell, ro, rd, tEnter, tExit)
-                   * (0.3 + 3.0 * local);
-        vec3 alb = COLOR[id];
-        float alpha = 1.0 - exp(-SIGMA[id].x * seg * dens);
-        vec3 light = vec3(0.3, 0.34, 0.4) + SUN_COL * 0.45 + sampleLight(hp) * uLightGain;
-        col += trans * alpha * alb * light;
-        trans *= 1.0 - alpha;
-      } else if (rc == R_FIRE) {
-        float T = a.y;
-        vec3 e = blackbody(T) * pow(T / 1000.0, 2.0) * (0.4 + 0.6 * clamp(a.z, 0.0, 1.0)) * 2.2
-               * softBlob(cell, ro, rd, tEnter, tExit);
-        col += trans * e * seg;
-        trans *= exp(-0.12 * seg);
+        phiStale = true;
+      } else {
+      vec3 hp = ro + rd * tEnter;
+      if (!anyHit) { anyHit = true; hitPos = hp; }
+      if (id != prevCrisp) {
+        // glass interface (flat faces: no bending)
+        float F = fresnelSchlick(abs(dot(nFace, rd)), IOR[id]) * (liq == E_EMPTY ? 1.0 : 0.3);
+        mediumLight = uShadows ? sunShadow(hp + nFace * 0.5) : vec3(1.0);
+        col += trans * F * envReflect(hp, reflect(rd, nFace), mediumLight);
+        trans *= 1.0 - F;
       }
+      absorbSegment(id, hp, tExit - tEnter, mediumLight, a.y, col, trans);
+      prevCrisp = id;
+      phiStale = true;
+      }
+    } else {
+      prevCrisp = E_EMPTY;
+      // ---- smooth surfaces crossing this segment ----
+      int ev = EV_NONE, evCh = -1;
+      float tEv = tExit;
+      vec3 evN = vec3(0.0);   // forced normal (else from the field)
+      vec4 phiB = vec4(0.0);
+      if (brickSurf(flags)) {
+        if (phiStale) {
+          phiA = surfField(ro + rd * tEnter);
+          // Already inside a smooth material at the start of this segment: we
+          // came through glass (a tank of water), or the crossing was missed.
+          if (liq == E_EMPTY) {
+            int ic = -1;
+            float best = 0.5;
+            for (int c = 0; c < 4; c++) if (phiA[c] >= best) { best = phiA[c]; ic = c; }
+            if (ic == CH_LIQUID && !liqOpaque) liq = liquidIdAt(ro + rd * (tEnter + 0.5), E_WATER);
+            else if (ic >= 0) { ev = EV_OPAQUE; evCh = ic; tEv = tEnter; evN = vec3(0.0); evN[ax] = -float(istp[ax]); }
+          }
+        }
+        phiB = surfField(ro + rd * tExit);
+        if (ev != EV_NONE) {
+          // handled below
+        } else if (liq == E_EMPTY) {
+          for (int c = 0; c < 4; c++) {
+            if (phiA[c] < 0.5 && phiB[c] >= 0.5) {
+              float t = surfRoot(ro, rd, c, tEnter, tExit, phiA[c] - 0.5, phiB[c] - 0.5);
+              if (t < tEv) { tEv = t; evCh = c; ev = (c == CH_LIQUID && !liqOpaque) ? EV_ENTER : EV_OPAQUE; }
+            }
+          }
+        } else {
+          if (phiA.x >= 0.5 && phiB.x < 0.5) {
+            tEv = surfRoot(ro, rd, CH_LIQUID, tEnter, tExit, phiA.x - 0.5, phiB.x - 0.5);
+            evCh = CH_LIQUID; ev = EV_EXIT;
+          } else if (phiA.x < 0.5 && phiB.x < 0.5) {
+            liq = E_EMPTY;   // lost the surface (grazing ray): quietly back in air
+          }
+          for (int c = 1; c < 4; c++) {
+            if (phiA[c] < 0.5 && phiB[c] >= 0.5) {
+              float t = surfRoot(ro, rd, c, tEnter, tExit, phiA[c] - 0.5, phiB[c] - 0.5);
+              // opaque wins near-ties (the sand/water boundary is both)
+              if (t <= tEv + 0.05) { tEv = min(t, tEv); evCh = c; ev = EV_OPAQUE; }
+            }
+          }
+        }
+        phiStale = false;
+      } else {
+        phiStale = true;
+      }
+
+      // ---- droplets and grains: cells too isolated to form a surface ----
+      int dch = SURFCH[id];
+      vec3 dropN = vec3(0.0);
+      float dropChord = 0.0;
+      if (liq == E_EMPTY && dch >= 0 && surfCell(cell)[dch] < 0.5) {
+        float tp;
+        if (particleHit(cell, id, dch, a, ro, rd, tEnter, tEv, tp, dropN, dropChord)) {
+          tEv = tp; ev = EV_DROP; evCh = dch;
+        }
+      }
+
+      // ---- what lies along [tEnter, tEv] ----
+      if (liq != E_EMPTY) {
+        if (SURFCH[id] == CH_LIQUID) liq = id;
+        absorbSegment(liq, ro + rd * tEnter, tEv - tEnter, mediumLight, SURFCH[id] == CH_LIQUID ? a.y : AMBIENT, col, trans);
+      } else if (brickMedia(flags)) {
+        float al = mediaSegment(ro, rd, tEnter, tEv, jit, col, trans);
+        if (!anyHit && al > 0.02) { anyHit = true; hitPos = ro + rd * tEnter; }
+      }
+
+      // ---- the event ----
+      if (ev != EV_NONE) {
+        vec3 hp = ro + rd * tEv;
+        if (!anyHit) { anyHit = true; hitPos = hp; }
+        if (ev == EV_OPAQUE) {
+          vec3 n = dot(evN, evN) > 0.0 ? evN : surfNormal(hp, evCh, -rd);
+          col += trans * shadeSurf(gatherSurf(hp, n, evCh), rd);
+          trans = vec3(0.0);
+          break;
+        } else if (ev == EV_DROP) {
+          vec3 n = dropN;
+          if (evCh == CH_LIQUID && !liqOpaque) {
+            shadeDroplet(id, hp, n, rd, dropChord, col, trans);   // and carry on
+          } else {
+            Surf s = crispSurf(cell, id, a, hp, n);
+            s.ch = evCh;
+            col += trans * shadeSurf(s, rd);
+            trans = vec3(0.0);
+            break;
+          }
+        } else {
+          // liquid surface: refract in or out
+          vec3 n = surfNormal(hp, CH_LIQUID, ev == EV_ENTER ? -rd : rd);
+          int lid = ev == EV_ENTER ? liquidIdAt(hp - n * 0.5, E_WATER) : liq;
+          if (bends < MAX_BENDS) {
+            bends++;
+            bool inside = liquidInterface(hp, n, ev == EV_ENTER, lid, ro, rd, col, trans, mediumLight);
+            liq = inside ? lid : E_EMPTY;
+            rd = safeDir(rd); istp = ivec3(sign(rd)); tDelta = abs(1.0 / rd);
+            cell = ivec3(floor(ro)); tMax = (vec3(cell) + step(0.0, rd) - ro) / rd;
+            tEnter = 0.0; lastB = ivec3(-1); ax = 1;
+            phiA = surfField(ro); phiStale = false;
+            // restarted inside something opaque (sand under the water line)
+            int oc = -1;
+            for (int c = 1; c < 4; c++) if (phiA[c] >= 0.5) oc = c;
+            if (oc > 0) {
+              col += trans * shadeSurf(gatherSurf(ro, surfNormal(ro, oc, -rd), oc), rd);
+              trans = vec3(0.0);
+              break;
+            }
+            continue;
+          }
+          liq = ev == EV_ENTER ? lid : E_EMPTY;   // out of bends: switch medium, keep straight
+        }
+      }
+      phiA = phiB;
     }
 
     if (max(trans.x, max(trans.y, trans.z)) < 0.01) break;
-    prevId = id;
     ax = argmin3(tMax);
     tEnter = tExit;
     cell[ax] += istp[ax];
@@ -825,18 +749,17 @@ void main() {
   if (max(trans.x, max(trans.y, trans.z)) >= 0.01 && cell.y < 0 && rd.y < 0.0) {
     float tf = -ro.y / rd.y;
     vec3 hp = ro + rd * tf;
-    if (tHit < 0.0) tHit = tf;
+    if (!anyHit) { anyHit = true; hitPos = hp; }
     col += trans * shadeFloor(hp, rd);
     trans = vec3(0.0);
   }
 
-  if (tHit < 0.0) discard;
+  if (!anyHit) discard;
   float alpha = 1.0 - dot(trans, vec3(1.0 / 3.0));
-  vec3 outc = aces(col * 1.1);
-  outc = pow(outc, vec3(1.0 / 2.2));
-  gl_FragColor = vec4(outc * (alpha > 0.0 ? 1.0 : 0.0), alpha);
+  // linear HDR radiance, premultiplied; tone mapping happens in post (src/gfx/post.js)
+  gl_FragColor = vec4(col * (alpha > 0.0 ? 1.0 : 0.0), alpha);
 
-  vec4 clip = projectionMatrix * viewMatrix * modelMatrix * vec4(ro + rd * tHit, 1.0);
+  vec4 clip = projectionMatrix * viewMatrix * modelMatrix * vec4(hitPos, 1.0);
   gl_FragDepth = clamp(clip.z / clip.w * 0.5 + 0.5, 0.0, 1.0);
 }
 `;
@@ -846,7 +769,6 @@ void main() {
 // non-gas voxel it hits. Pixel 0 = (cell xyz, face), pixel 1 = (id, T, P, life).
 export const pickFrag = (g) => /* glsl */ `
 ${lib(g)}
-uniform sampler2D tB;
 uniform vec3 uRo;
 uniform vec3 uRd;
 out vec4 oC;
@@ -866,13 +788,13 @@ void main() {
   float tEnter = t0;
   int ax = int(bh.z);
   ivec3 lastB = ivec3(-1);
-  float occ = 0.0;
+  int flags = 0;
 
   for (int i = 0; i < ${g.maxSteps}; i++) {
     if (outside(cell)) break;
     ivec3 bc = cell / BS;
-    if (bc != lastB) { lastB = bc; occ = brickOcc(bc); }
-    if (occ < 0.5) { ax = skipBrick(bc, ro, rd, istp, cell, tMax, tEnter); continue; }
+    if (bc != lastB) { lastB = bc; flags = brickInfo(bc); }
+    if (flags == 0) { ax = skipBrick(bc, ro, rd, istp, cell, tMax, tEnter); continue; }
     vec4 a = cellA(cell);
     int id = eid(a);
     if (id != E_EMPTY && KIND[id] != K_GAS) {
@@ -897,6 +819,9 @@ void main() {
 `;
 
 // Shadow map pass: one ray per texel, marching from the sun toward the box.
+// Opaque = crisp voxels and the smooth opaque surfaces (same root finding as
+// the camera rays, so shadows line up with what is drawn). Liquids, glass and
+// media add optical depth.
 export const shadowFrag = (g) => /* glsl */ `
 ${lib(g)}
 out vec4 oC;
@@ -916,28 +841,56 @@ void main() {
   vec3 tMax = (vec3(cell) + step(0.0, rd) - ro) / rd;
   float tEnter = t;
   ivec3 lastB = ivec3(-1);
-  float occ = 0.0;
+  int flags = 0;
   int tid = 0;
+  int lid = E_WATER;
   float tau = 0.0;
   bool hit = false;
+  vec4 phiA = surfField(ro + rd * tEnter);
+  bool phiStale = false;
+  if (max(phiA.y, max(phiA.z, phiA.w)) >= 0.5) { oC.x = tEnter; hit = true; }
   for (int i = 0; i < ${g.maxSteps}; i++) {
-    if (outside(cell)) break;
+    if (hit || outside(cell)) break;
     ivec3 bc = cell / BS;
-    if (bc != lastB) { lastB = bc; occ = brickOcc(bc); }
-    if (occ < 0.5) { skipBrick(bc, ro, rd, istp, cell, tMax, tEnter); continue; }
+    if (bc != lastB) { lastB = bc; flags = brickInfo(bc); }
+    if (flags == 0) { skipBrick(bc, ro, rd, istp, cell, tMax, tEnter); phiStale = true; continue; }
     int ax = argmin3(tMax);
     float tExit = tMax[ax];
     int id = eid(cellA(cell));
-    if (id != E_EMPTY) {
-      int rc = RCLASS[id];
-      if (rc == R_OPAQUE) { oC.x = tEnter; hit = true; break; }
-      if (rc == R_LIQUID || rc == R_GLASS || rc == R_GAS) {
-        float k = dot(SIGMA[id], vec3(1.0 / 3.0)) * (rc == R_GAS ? 0.25 : 1.0);
-        if (tid == 0) { oC.y = tEnter; tid = id; }
-        else if (RCLASS[tid] == R_GAS && rc != R_GAS) tid = id; // liquids tint over gases
-        tau += k * (tExit - tEnter);
-        oC.z = tExit;
+    if (isCrisp(id)) {
+      if (RCLASS[id] != R_GLASS) { oC.x = tEnter; hit = true; break; }
+      if (tid == 0 || RCLASS[tid] == R_GAS) { if (tid == 0) oC.y = tEnter; tid = id; }
+      tau += dot(SIGMA[id], vec3(1.0 / 3.0)) * (tExit - tEnter);
+      oC.z = tExit;
+      phiStale = true;
+    } else if (brickSurf(flags) || brickMedia(flags)) {
+      if (phiStale) phiA = surfField(ro + rd * tEnter);
+      vec4 phiB = surfField(ro + rd * tExit);
+      float tOp = 1e9;
+      for (int c = 1; c < 4; c++)
+        if (phiA[c] < 0.5 && phiB[c] >= 0.5) tOp = min(tOp, surfRoot(ro, rd, c, tEnter, tExit, phiA[c] - 0.5, phiB[c] - 0.5));
+      float tEnd = min(tOp, tExit);
+      float inL = (phiA.x >= 0.5 ? 0.5 : 0.0) + (phiB.x >= 0.5 ? 0.5 : 0.0);
+      if (inL > 0.0) {
+        if (SURFCH[id] == CH_LIQUID) lid = id;
+        if (tid == 0 || RCLASS[tid] == R_GAS) { if (tid == 0) oC.y = tEnter; tid = lid; }
+        tau += dot(SIGMA[lid], vec3(1.0 / 3.0)) * inL * (tEnd - tEnter);
+        oC.z = tEnd;
       }
+      if (brickMedia(flags)) {
+        vec4 m = mediaField(ro + rd * (0.5 * (tEnter + tEnd)));
+        float k = (SIGMA[E_SMOKE].x * m.x + SIGMA[E_STEAM].x * m.y) * 2.5 * 0.35;
+        if (k > 1e-4) {
+          if (tid == 0) { oC.y = tEnter; tid = m.x > m.y ? E_SMOKE : E_STEAM; }
+          tau += k * (tEnd - tEnter);
+          oC.z = tEnd;
+        }
+      }
+      if (tOp < 1e8) { oC.x = tOp; hit = true; break; }
+      phiA = phiB;
+      phiStale = false;
+    } else {
+      phiStale = true;
     }
     tEnter = tExit;
     cell[ax] += istp[ax];

@@ -15,6 +15,8 @@ import { createSettings } from './ui/settings.js';
 import { createHud, createHelp } from './ui/hud.js';
 import { inkFor, luminance } from './ui/dom.js';
 import { logoMark } from './ui/logo.js';
+import { gfx, gfxUniforms, updateGfxUniforms } from './gfx/uniforms.js';
+import { createPost } from './gfx/post.js';
 
 // Optional modules (built in parallel); the app works without them.
 const optional = import.meta.glob(['./views.js', './signs.js', './constructions.js'], { eager: true });
@@ -35,9 +37,11 @@ const DEFAULTS = {
   steps: 4, gravity: 0.025, paused: false,
   view: 0, shadows: true, autoRes: true, res: Math.min(devicePixelRatio, 1.5), glow: 1.6,
   sunAz: 38, sunEl: 55, camSpeed: 1, dockCollapsed: false,
+  smoothing: 1, taa: true, bloom: 0.3, exposure: 0.7,
 };
 const PERSIST = ['size', 'preset', 'tool', 'radius', 'shape', 'rate', 'replace', 'steps', 'gravity', 'view',
-  'shadows', 'autoRes', 'res', 'glow', 'sunAz', 'sunEl', 'camSpeed', 'dockCollapsed'];
+  'shadows', 'autoRes', 'res', 'glow', 'sunAz', 'sunEl', 'camSpeed', 'dockCollapsed',
+  'smoothing', 'taa', 'bloom', 'exposure'];
 const STORE = 'powder-toy-3d:settings';
 
 const settings = { ...DEFAULTS };
@@ -66,6 +70,13 @@ renderer.setPixelRatio(pixelRatio);
 renderer.setSize(innerWidth, innerHeight);
 renderer.autoClear = false;
 document.getElementById('app').appendChild(renderer.domElement);
+// HDR post: TAA, bloom, AgX tone mapping (src/gfx/post.js)
+const post = createPost(renderer);
+function applyGfx() {
+  gfx.smoothing = settings.smoothing;
+  Object.assign(post.settings, { taa: settings.taa, bloom: settings.bloom, exposure: settings.exposure });
+}
+applyGfx();
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.05, 200);
@@ -127,6 +138,7 @@ function build() {
       uCam: { value: new THREE.Vector3() },
       uSun: { value: SUN }, tShadow: { value: null }, uShadowRes: { value: 0 },
       uView: { value: 0 }, uShadows: { value: true }, uTime: { value: 0 }, uLightGain: { value: settings.glow },
+      ...gfxUniforms,
     },
     side: THREE.BackSide,
     transparent: true,
@@ -170,6 +182,7 @@ function build() {
     uniforms: {
       tA: { value: null }, tBrick: { value: null }, tLight: { value: null },
       uSun: { value: SUN }, tShadow: { value: null }, uShadowRes: { value: shadowRes },
+      ...gfxUniforms,
     },
     depthTest: false,
     depthWrite: false,
@@ -189,6 +202,7 @@ function loadPreset(name, undoable = true) {
   settings.preset = name;
   if (name === 'empty') sim.clear();
   else buildPreset(name, sim);
+  post.reset();
   signs?.clear();
   save();
 }
@@ -365,6 +379,15 @@ const settingsPanel = createSettings({
       { type: 'slider', key: 'sunEl', label: 'Sun height', min: 12, max: 85, step: 1, def: DEFAULTS.sunEl,
         fmt: (v) => `${v}°`, onChange: () => { updateSun(); save(); } },
     ] },
+    { title: 'Graphics', rows: [
+      { type: 'slider', key: 'smoothing', label: 'Surface smoothing', min: 0, max: 2, step: 0.05, def: DEFAULTS.smoothing,
+        fmt: (v) => (v === 0 ? 'Off' : `${v.toFixed(2)}×`), onChange: () => { applyGfx(); save(); } },
+      { type: 'switch', key: 'taa', label: 'Temporal anti-aliasing', onChange: () => { applyGfx(); post.reset(); save(); } },
+      { type: 'slider', key: 'bloom', label: 'Bloom', min: 0, max: 1, step: 0.05, def: DEFAULTS.bloom,
+        fmt: (v) => v.toFixed(2), onChange: () => { applyGfx(); save(); } },
+      { type: 'slider', key: 'exposure', label: 'Exposure', min: -3, max: 3, step: 0.1, def: DEFAULTS.exposure,
+        fmt: (v) => `${v > 0 ? '+' : ''}${v.toFixed(1)} EV`, onChange: () => { applyGfx(); save(); } },
+    ] },
     { title: 'Camera', rows: [
       { type: 'slider', key: 'camSpeed', label: 'Move speed (WASD)', min: 0.25, max: 3, step: 0.05, def: DEFAULTS.camSpeed,
         fmt: (v) => `${v.toFixed(2)}×`, onChange: (v) => { rig.setSpeed(v); save(); } },
@@ -380,6 +403,7 @@ function resetSettings() {
   sim.gravity = settings.gravity;
   rig.setSpeed(settings.camSpeed);
   updateSun();
+  applyGfx();
   setPixelRatio(settings.autoRes ? Math.min(settings.res, 1) : settings.res);
   dock.sync();
   toolbar.sync();
@@ -401,6 +425,7 @@ function setPaused(p) {
 
 function setView(id) {
   if (!VIEWS.some((v) => v.id === id)) return;
+  if (settings.view !== id) post.reset();
   settings.view = id;
   toolbar.sync();
   hud.setLegend(VIEWS.find((v) => v.id === id));
@@ -438,9 +463,10 @@ function renderThumb(viewId, canvas) {
   u.uView.value = viewId;
   const brushWas = brush.mesh.visible;
   brush.mesh.visible = false;
-  renderer.setRenderTarget(thumbTarget);
-  renderer.clear();
-  renderer.render(scene, thumbCam);
+  const rawWas = post.settings.raw;
+  post.settings.raw = viewId !== 0;
+  post.renderStill(scene, thumbCam, thumbTarget);
+  post.settings.raw = rawWas;
   renderer.readRenderTargetPixels(thumbTarget, 0, 0, 320, 200, thumbPixels);
   renderer.setRenderTarget(null);
   u.uView.value = prev;
@@ -622,6 +648,7 @@ function frame() {
     for (let i = 0; i < settings.steps; i++) sim.step();
     stepOnce = false;
   }
+  updateGfxUniforms(sim);
   sim.updateBricks();
   if (settings.shadows && settings.view === 0) {
     shadowMat.uniforms.tA.value = sim.stateA;
@@ -641,9 +668,8 @@ function frame() {
   u.uLightGain.value = settings.glow;
   u.uTime.value += dt;
 
-  renderer.setRenderTarget(null);
-  renderer.clear();
-  renderer.render(scene, camera);
+  post.settings.raw = settings.view !== 0;
+  post.render(scene, camera);
   if (wantShot) { wantShot = false; saveScreenshot(); }
 
   signs?.update();
@@ -690,7 +716,7 @@ try {
   toolbar.setUndoEnabled(false);
   window.__app = {
     get sim() { return sim; }, get volume() { return volume; }, get scale() { return scale; }, get signs() { return signs; }, get builds() { return builds; },
-    SUN, scene, settings, camera, controls, loadPreset, selectTool, setView, hover, renderer, rig, renderThumb,
+    SUN, scene, settings, camera, controls, loadPreset, selectTool, setView, hover, renderer, rig, renderThumb, gfx, post,
   };
   requestAnimationFrame(frame);
 } catch (err) {

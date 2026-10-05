@@ -79,6 +79,10 @@ const defs = [
     cond: 0.04, cap: 0.5, temp: -20, sigma: [0.12, 0.05, 0.025], desc: 'Frozen water. Melts at 0 °C and chills whatever it touches.' },
   { key: 'CLONE', abbr: 'CLNE', name: 'Clone', kind: K.SOLID, render: R.OPAQUE, color: '#d9b81e', var: 0.05,
     cond: 0.001, cap: 1.0, desc: 'Copies the first element that touches it, forever.' },
+  // New elements go at the end so existing ids (saved scenes, presets) stay stable.
+  { key: 'ROCK', abbr: 'ROCK', name: 'Rock', kind: K.SOLID, render: R.OPAQUE, color: '#6a6560', var: 0.12,
+    cond: 0.03, cap: 0.5, melt: 0,
+    desc: 'Natural bedrock for terrain and mountains. Never moves and never melts; conducts heat like stone.' },
 ];
 
 export const ELEMENTS = defs.map((d, id) => ({
@@ -133,7 +137,7 @@ export const PALETTE = [
   { name: 'Powders', items: ['SAND', 'STONE', 'GUNPOWDER', 'ASH', 'SNOW'] },
   { name: 'Liquids', items: ['WATER', 'ACID', 'OIL', 'LAVA'] },
   { name: 'Gases', items: ['STEAM', 'SMOKE', 'FIRE'] },
-  { name: 'Solids', items: ['WALL', 'METAL', 'GLASS', 'ICE', 'WOOD', 'PLANT', 'CLONE'] },
+  { name: 'Solids', items: ['WALL', 'ROCK', 'METAL', 'GLASS', 'ICE', 'WOOD', 'PLANT', 'CLONE'] },
   { name: 'Tools', items: ['HEAT', 'COOL', 'ERASE', 'BLAST', 'SIGN'] },
   { name: 'Constructions', items: ['HOUSE', 'TREE', 'CAMPFIRE', 'IGLOO', 'BARREL', 'AQUARIUM', 'FOUNTAIN'] },
 ];

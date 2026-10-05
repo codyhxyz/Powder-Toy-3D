@@ -104,18 +104,33 @@ Density decides whether it can displace its neighbour, so sand sinks through wat
 
 ## Rendering
 
-`src/shaders/render.js` raymarches the voxel grid directly with an Amanatides–Woo DDA:
-- A 4×4×4 brick occupancy map skips empty space.
-- A per-frame voxel shadow map is traced from the sun. It records the opaque depth plus optical depth through liquids, glass and gas,
-  so water casts tinted shadows and smoke casts soft ones. Where the map's filter taps disagree (within a texel of a shadow edge),
-  an exact DDA ray toward the sun settles it. Edges stay crisp and match per-pixel ray-traced shadows to within 0.3%,
-  for a fraction of the cost.
-- Opaque faces get smooth per-corner AO.
-- Liquids and glass get Beer–Lambert absorption, a Fresnel reflection with a smoothed surface normal, and in-scattering.
-- Steam and smoke are participating media, rendered as soft blobs whose opacity scales with local gas density, so plumes read as clouds.
-- Anything above ~500 °C glows with blackbody incandescence (hot metal turns red, lava yellow-white).
-  That glow is blurred into a coarse light volume that lights the surroundings.
-- The raymarcher writes depth, so three.js lines and the brush composite correctly.
+The simulation stays a blocky cellular automaton; the renderer draws it as continuous matter.
+
+**Render fields** (`src/shaders/fields.js`, rebuilt once per frame, never read by the sim). Each element has a *look*
+(`src/gfx/materials.js`): liquids, lava, powders and natural solids (wood, plant, rock) belong to a smooth-surface channel;
+smoke, steam and fire are media; wall, metal, glass and clone stay crisp voxels. Per channel, cell occupancy is
+smoothed over time (so cells swapping every step don't shimmer), blurred with a per-channel Gaussian, and normalised by the
+blurred weight of non-crisp cells, so walls and the floor count neither way: a one-cell water film keeps its height and
+surfaces meet walls cleanly. The *Surface smoothing* setting scales every blur radius (0 = off).
+
+**Tracer** (`src/shaders/render.js` + `src/shaders/gfx/*`). An Amanatides–Woo DDA walks the grid, skipping empty 4×4×4 bricks
+(the brick map is built from the blurred fields, so it's dilated for free). In each cell it root-finds where a field crosses
+0.5 and shades that point:
+- liquids refract (the ray really bends, with total internal reflection), reflect the sky with Fresnel, and absorb (Beer–Lambert);
+- powders, lava and organics are opaque smooth surfaces with world-space textures and bump detail (`gfx/surface.js`), the
+  material blended between neighbouring cells; lava grows a cooling crust with glowing cracks;
+- cells too isolated to form a surface are drawn as droplets and grains;
+- crisp voxels get rounded edges where they're exposed;
+- smoke, steam and fire are density volumes, flames emit blackbody light.
+
+A per-frame voxel shadow map is traced from the sun with the same surfaces. It records the opaque depth plus optical depth
+through liquids, glass and gas, so water casts tinted shadows and smoke casts soft ones. Where the map's filter taps disagree
+(within a texel of a shadow edge), an exact DDA ray toward the sun settles it. Anything above ~500 °C glows with blackbody
+incandescence, blurred into a coarse light volume that lights the surroundings. The raymarcher writes depth, so three.js
+lines and the brush composite correctly.
+
+**Post** (`src/gfx/post.js`): linear HDR → TAA (Halton jitter, reprojection, variance clipping) → energy-conserving bloom →
+AgX tone mapping. The data views skip the tone curve so their legend colours stay exact.
 
 ### Views
 

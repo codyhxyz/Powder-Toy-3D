@@ -59,7 +59,7 @@ export function buildPreset(name, sim) {
       for (let x = 0; x < nx; x++) {
         const d = Math.hypot(x - cx + 0.5, z - cz + 0.5);
         const h = Math.max(0, Math.round(H * (1 - d / R)));
-        for (let y = 0; y < h; y++) set(x, y, z, E.WALL);
+        for (let y = 0; y < h; y++) set(x, y, z, E.ROCK);
         // sea around it
         for (let y = h; y < Math.round(8 * s); y++) set(x, y, z, E.WATER);
       }

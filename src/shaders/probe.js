@@ -13,7 +13,6 @@ export const MAX_SIGNS = 64;
 // with the same Beer–Lambert extinction the renderer uses; gases and fire don't block.
 export const signProbeFrag = (g) => /* glsl */ `
 ${lib(g)}
-uniform sampler2D tB;
 uniform sampler2D tSigns;
 uniform vec3 uCam;
 uniform int uCount;

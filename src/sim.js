@@ -3,6 +3,8 @@ import { quadVert } from './shaders/common.js';
 import { moveBlockFrag, moveGatherFrag } from './shaders/move.js';
 import { reactFrag } from './shaders/react.js';
 import { paintFrag, copyFrag, brickFrag, blurFrag } from './shaders/passes.js';
+import { fieldEmaFrag, fieldBlurFrag } from './shaders/fields.js';
+import { CHANNELS, MEDIA, gauss5 } from './gfx/materials.js';
 
 export function gridLayout(nx, ny, nz) {
   const tx = Math.ceil(Math.sqrt((ny * nz) / nx));
@@ -36,6 +38,13 @@ function makeTarget(w, h, count = 2) {
   });
 }
 
+function makeFieldTarget(w, h, count, type, filter) {
+  return new THREE.WebGLRenderTarget(w, h, {
+    count, type, format: THREE.RGBAFormat, minFilter: filter, magFilter: filter,
+    depthBuffer: false, stencilBuffer: false, generateMipmaps: false,
+  });
+}
+
 function rawMat(frag, uniforms) {
   return new THREE.RawShaderMaterial({
     glslVersion: THREE.GLSL3,
@@ -46,6 +55,11 @@ function rawMat(frag, uniforms) {
     depthWrite: false,
   });
 }
+
+const fieldBlurUniforms = () => ({
+  t0: { value: null }, t1: { value: null }, t2: { value: null }, uAxis: { value: 0 },
+  uW: { value: [...Array(5)].map(() => new THREE.Vector4()) },
+});
 
 // GPU simulation driver: owns the state ping-pong targets and runs passes.
 export class Simulation {
@@ -61,6 +75,15 @@ export class Simulation {
     this.blocks = makeTarget(g.mwidth, g.mheight, 8);
     this.brick = makeTarget(g.bwidth, g.bheight, 1);
     this.light = [makeTarget(g.bwidth, g.bheight, 1), makeTarget(g.bwidth, g.bheight, 1)];
+    // render fields (see shaders/fields.js): EMA ping-pong + blur scratch in
+    // RGBA8, final fields in filterable half floats
+    const U8 = THREE.UnsignedByteType, NEAR = THREE.NearestFilter;
+    this.fieldEma = [makeFieldTarget(g.width, g.height, 3, U8, NEAR), makeFieldTarget(g.width, g.height, 3, U8, NEAR)];
+    this.fieldTmp = makeFieldTarget(g.width, g.height, 3, U8, NEAR);
+    this.fields = makeFieldTarget(g.width, g.height, 2, THREE.HalfFloatType, THREE.LinearFilter);
+    this.fieldCur = 0;
+    this.fieldReset = true;
+    this.smoothing = 1;
 
     this.scene = new THREE.Scene();
     this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
@@ -81,7 +104,13 @@ export class Simulation {
         uShape: { value: 0 }, uTool: { value: 2 }, uRate: { value: 1 }, uReplace: { value: false },
       }),
       copy: rawMat(copyFrag(g), state()),
-      brick: rawMat(brickFrag(g), { tA: { value: null }, tB: { value: null } }),
+      brick: rawMat(brickFrag(g), { tA: { value: null }, tB: { value: null }, tFS: { value: null }, tFM: { value: null } }),
+      fieldEma: rawMat(fieldEmaFrag(g), {
+        tA: { value: null }, tP0: { value: null }, tP1: { value: null },
+        uEmaS: { value: new THREE.Vector4() }, uEmaM: { value: new THREE.Vector4() },
+      }),
+      fieldBlur: rawMat(fieldBlurFrag(g, false), fieldBlurUniforms()),
+      fieldFinal: rawMat(fieldBlurFrag(g, true), fieldBlurUniforms()),
       blur: rawMat(blurFrag(g), { tSrc: { value: null }, uAxis: { value: 0 } }),
     };
     this.clear();
@@ -134,10 +163,45 @@ export class Simulation {
     this.pass(this.mats.paint);
   }
 
-  // Rebuild the empty-space bricks and the blurred light volume.
+  get fieldSurf() { return this.fields.textures[0]; }
+  get fieldMedia() { return this.fields.textures[1]; }
+
+  // Rebuild the renderer's continuous fields (shaders/fields.js).
+  updateFields() {
+    const { fieldEma, fieldBlur, fieldFinal } = this.mats;
+    const prev = this.fieldEma[this.fieldCur], next = this.fieldEma[1 - this.fieldCur];
+    const reset = this.fieldReset;
+    this.fieldReset = false;
+    const u = fieldEma.uniforms;
+    u.tA.value = this.stateA;
+    u.tP0.value = prev.textures[0];
+    u.tP1.value = prev.textures[1];
+    u.uEmaS.value.set(...CHANNELS.map((c) => (reset ? 1 : c.ema)));
+    u.uEmaM.value.set(...MEDIA.map((m) => (reset ? 1 : m.ema)));
+    this.run(fieldEma, next);
+    this.fieldCur = 1 - this.fieldCur;
+    // per-channel kernels, tap-major
+    const k = CHANNELS.map((c) => gauss5(Math.max(c.sigma * this.smoothing, 0.05)));
+    const setW = (mat) => mat.uniforms.uW.value.forEach((v, i) => v.set(k[0][i], k[1][i], k[2][i], k[3][i]));
+    // x: next -> prev (free until the next frame), y: prev -> tmp, z: tmp -> fields
+    const passes = [[fieldBlur, next, prev], [fieldBlur, prev, this.fieldTmp], [fieldFinal, this.fieldTmp, this.fields]];
+    passes.forEach(([mat, src, dst], axis) => {
+      setW(mat);
+      mat.uniforms.uAxis.value = axis;
+      mat.uniforms.t0.value = src.textures[0];
+      mat.uniforms.t1.value = src.textures[1];
+      mat.uniforms.t2.value = src.textures[2];
+      this.run(mat, dst);
+    });
+  }
+
+  // Rebuild the render fields, the empty-space bricks and the blurred light volume.
   updateBricks() {
+    this.updateFields();
     this.mats.brick.uniforms.tA.value = this.stateA;
     this.mats.brick.uniforms.tB.value = this.stateB;
+    this.mats.brick.uniforms.tFS.value = this.fieldSurf;
+    this.mats.brick.uniforms.tFM.value = this.fieldMedia;
     this.run(this.mats.brick, this.brick);
     const blur = this.mats.blur;
     let src = this.brick.texture;
@@ -161,6 +225,7 @@ export class Simulation {
     u.tA.value = texA;
     u.tB.value = texB;
     this.run(this.mats.copy, this.targets[this.cur]);
+    this.fieldReset = true;
     texA.dispose();
     texB.dispose();
   }
@@ -228,6 +293,9 @@ export class Simulation {
     this.brick.dispose();
     this.blocks.dispose();
     this.light.forEach((t) => t.dispose());
+    this.fieldEma.forEach((t) => t.dispose());
+    this.fieldTmp.dispose();
+    this.fields.dispose();
     this.history?.forEach((t) => t.dispose());
     Object.values(this.mats).forEach((m) => m.dispose());
     this.quad.geometry.dispose();

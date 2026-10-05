@@ -1,0 +1,31 @@
+// Graphics settings and the uniforms shared by the render shaders (volume and
+// shadow pass). Entry points spread `gfxUniforms` into their materials and
+// call `updateGfxUniforms(sim)` once per frame before rendering, so new
+// graphics features only need to touch this file, not the app wiring.
+export const gfx = {
+  smoothing: 1,          // multiplier on every smooth channel's blur radius
+  materials: 1,          // textured materials (0 = flat albedo, for A/B timing)
+  bevel: 0.12,           // crisp-voxel edge radius in cells (0 = sharp cubes)
+  glints: 0.4,           // sun glints on sand, snow and gunpowder (untuned: kept low to avoid fireflies)
+};
+
+export const gfxUniforms = {
+  tB: { value: null },        // velocity xyz (cells/step), pressure
+  tFS: { value: null },       // smooth-surface fields
+  tFM: { value: null },       // media fields
+  uFrame: { value: 0 },       // frame counter (for temporal jitter)
+  uMatDetail: { value: 1 },
+  uBevel: { value: 0.12 },
+  uGlints: { value: 0.4 },
+};
+
+export function updateGfxUniforms(sim) {
+  sim.smoothing = gfx.smoothing;
+  gfxUniforms.tB.value = sim.stateB;
+  gfxUniforms.tFS.value = sim.fieldSurf;
+  gfxUniforms.tFM.value = sim.fieldMedia;
+  gfxUniforms.uFrame.value = (gfxUniforms.uFrame.value + 1) % 1048576;
+  gfxUniforms.uMatDetail.value = gfx.materials;
+  gfxUniforms.uBevel.value = Math.min(Math.max(gfx.bevel, 0), 0.45);
+  gfxUniforms.uGlints.value = gfx.glints;
+}
