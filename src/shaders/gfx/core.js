@@ -1,4 +1,4 @@
-import { brickGLSL } from '../passes.js';
+import { brickGLSL, BRICK_DIST_SCALE } from '../passes.js';
 
 // Shared render core: state/brick/field access, the DDA helpers and the
 // smooth-surface machinery (sampling, root finding, normals).
@@ -7,6 +7,8 @@ ${brickGLSL}
 uniform sampler2D tA;
 uniform sampler2D tB;    // velocity xyz (cells/step), air pressure
 uniform sampler2D tBrick;
+uniform sampler2D tBrickDist;   // empty-space distance per brick (shaders/passes.js)
+#define BRICK_DIST_SCALE ${BRICK_DIST_SCALE.toFixed(1)}
 uniform sampler2D tLight;
 uniform sampler2D tFS;   // smooth-surface fields (liquid, molten, granular, organic); SURF_ISO = surface
 uniform sampler2D tFM;   // media fields (smoke, steam, fire, heat)
@@ -63,6 +65,24 @@ int argmin3(vec3 v) { return v.x <= v.y && v.x <= v.z ? 0 : (v.y <= v.z ? 1 : 2)
 // Jump the DDA to the exit of empty brick bc. Updates cell/tMax/tEnter, returns axis crossed.
 int skipBrick(ivec3 bc, vec3 ro, vec3 rd, ivec3 istp, inout ivec3 cell, inout vec3 tMax, inout float tEnter) {
   vec3 bmin = vec3(bc * BS), bmax = bmin + float(BS);
+  vec3 tb = (mix(bmin, bmax, step(0.0, rd)) - ro) / rd;
+  int ax = argmin3(tb);
+  float tx = tb[ax];
+  cell = ivec3(floor(ro + rd * tx));
+  cell[ax] = istp[ax] > 0 ? int(bmax[ax]) : int(bmin[ax]) - 1;
+  tMax = (vec3(cell) + step(0.0, rd) - ro) / rd;
+  tEnter = tx;
+  return ax;
+}
+
+// Jump the DDA out of the empty region around empty brick bc: every brick
+// within (distance - 1) of it is empty (shaders/passes.js brickDistFrag), so
+// the ray crosses that whole cube in one step. Same contract as skipBrick.
+// Only for walks that treat "brick alpha < 0.5" as empty (not the data views,
+// which also visit flagged air).
+int skipEmpty(ivec3 bc, vec3 ro, vec3 rd, ivec3 istp, inout ivec3 cell, inout vec3 tMax, inout float tEnter) {
+  int r = max(int(texelFetch(tBrickDist, brickAtlas(bc), 0).x * BRICK_DIST_SCALE + 0.5) - 1, 0);
+  vec3 bmin = vec3((bc - r) * BS), bmax = vec3((bc + r + 1) * BS);
   vec3 tb = (mix(bmin, bmax, step(0.0, rd)) - ro) / rd;
   int ax = argmin3(tb);
   float tx = tb[ax];

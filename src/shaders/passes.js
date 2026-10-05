@@ -203,3 +203,34 @@ void main() {
   oC = vec4(s * 1.15, 1.0);
 }
 `;
+
+// Empty-space distance: for each brick, the Chebyshev distance (in bricks) to
+// the nearest brick the realistic view must visit (brick alpha >= 0.5),
+// capped at BRICK_DIST_MAX. Every brick within (distance - 1) of an empty one
+// is empty too, so a ray can cross that whole cube in one step instead of
+// brick by brick (gfx/core.js skipEmpty). L∞ distance is separable: three
+// passes, each a min over a 1D window along one axis.
+export const BRICK_DIST_MAX = 8;          // bricks; also the half-width of each pass's window
+export const BRICK_DIST_SCALE = 255;      // stored as distance / this in an 8-bit channel
+export const brickDistFrag = (g, axis = 0) => /* glsl */ `
+${prelude(g)}
+uniform sampler2D tSrc;   // axis 0: the brick map, else the distance so far
+out vec4 oC;
+#define DIST_MAX ${BRICK_DIST_MAX}
+#define DIST_SCALE ${BRICK_DIST_SCALE.toFixed(1)}
+void main() {
+  ivec3 bc = brickFromFrag(ivec2(gl_FragCoord.xy));
+  if (bc.y >= BY) { oC = vec4(0.0); return; }
+  const ivec3 dir = ivec3(${['1, 0, 0', '0, 1, 0', '0, 0, 1'][axis]});
+  ivec3 hi = ivec3(BX, BY, BZ) - 1;
+  float d = float(DIST_MAX);
+  for (int k = -DIST_MAX; k <= DIST_MAX; k++) {
+    ivec3 q = bc + dir * k;
+    if (any(lessThan(q, ivec3(0))) || any(greaterThan(q, hi))) continue;
+    vec4 t = texelFetch(tSrc, brickAtlas(q), 0);
+    float v = ${axis === 0 ? 't.a >= 0.5 ? 0.0 : float(DIST_MAX)' : 't.x * DIST_SCALE'};
+    d = min(d, max(float(abs(k)), v));
+  }
+  oC = vec4(d / DIST_SCALE);
+}
+`;

@@ -20,7 +20,8 @@ export const gfxUniforms = {
   tB: { value: null },        // velocity xyz (cells/step), pressure
   tFS: { value: null },       // smooth-surface fields
   tFM: { value: null },       // media fields
-  tFT: { value: null },       // thin-feature mask (cubic liquid)
+  tFT: { value: null },
+  tBrickDist: { value: null }, // empty-space distance per brick (shaders/passes.js)       // thin-feature mask (cubic liquid)
   uFrame: { value: 0 },       // frame counter (for temporal jitter)
   uSimClock: { value: 0 },    // simulation steps (wrapped): media detail drifts with it, frozen when paused
   tMediaNoise: mediaNoiseUniform(),   // tileable detail noise for smoke, steam and fire
@@ -55,6 +56,7 @@ export function updateGfxUniforms(sim, sun) {
   gfxUniforms.tFS.value = sim.fieldSurf;
   gfxUniforms.tFM.value = sim.fieldMedia;
   gfxUniforms.tFT.value = sim.fieldThin;
+  gfxUniforms.tBrickDist.value = sim.brickDistTexture;
   sim.giTextures.forEach((t, i) => { gfxUniforms[`tGI${i}`].value = t; });
   gfxUniforms.uFrame.value = (gfxUniforms.uFrame.value + 1) % 1048576;
   gfxUniforms.uSimClock.value = sim.frame % SIM_CLOCK_WRAP;

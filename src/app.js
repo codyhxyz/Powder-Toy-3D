@@ -169,6 +169,7 @@ function build() {
     fragmentShader: pickFrag(sim.g),
     uniforms: {
       tA: { value: null }, tB: { value: null }, tBrick: { value: null }, tLight: { value: null },
+      tBrickDist: gfxUniforms.tBrickDist,
       uRo: { value: new THREE.Vector3() }, uRd: { value: new THREE.Vector3() },
     },
     depthTest: false,

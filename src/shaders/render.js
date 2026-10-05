@@ -717,7 +717,7 @@ void main() {
     ivec3 bc = cell / BS;
     if (bc != lastB) { lastB = bc; flags = brickInfo(bc); gThin = brickThin(flags); }
     if (flags == 0) {
-      ax = skipBrick(bc, ro, rd, istp, cell, tMax, tEnter);
+      ax = skipEmpty(bc, ro, rd, istp, cell, tMax, tEnter);
       prevCrisp = E_EMPTY;
       phiStale = true;
       continue;
@@ -937,7 +937,7 @@ void main() {
     if (outside(cell)) break;
     ivec3 bc = cell / BS;
     if (bc != lastB) { lastB = bc; flags = brickInfo(bc); }
-    if (flags == 0) { ax = skipBrick(bc, ro, rd, istp, cell, tMax, tEnter); continue; }
+    if (flags == 0) { ax = skipEmpty(bc, ro, rd, istp, cell, tMax, tEnter); continue; }
     vec4 a = cellA(cell);
     int id = eid(a);
     if (id != E_EMPTY && KIND[id] != K_GAS) {
@@ -1002,7 +1002,7 @@ void main() {
     if (hit || outside(cell)) break;
     ivec3 bc = cell / BS;
     if (bc != lastB) { lastB = bc; flags = brickInfo(bc); gThin = brickThin(flags); }
-    if (flags == 0) { skipBrick(bc, ro, rd, istp, cell, tMax, tEnter); phiStale = true; continue; }
+    if (flags == 0) { skipEmpty(bc, ro, rd, istp, cell, tMax, tEnter); phiStale = true; continue; }
     int ax = argmin3(tMax);
     float tExit = tMax[ax];
     int id = eid(cellA(cell));

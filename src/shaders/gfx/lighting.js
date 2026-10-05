@@ -119,7 +119,7 @@ float sunRayClear(vec3 ro, float tLim) {
     if (outside(cell) || tEnter > tLim) break;
     ivec3 bc = cell / BS;
     if (bc != lastB) { lastB = bc; occ = brickOcc(bc); }
-    if (occ < 0.5) { skipBrick(bc, ro, rd, istp, cell, tMax, tEnter); continue; }
+    if (occ < 0.5) { skipEmpty(bc, ro, rd, istp, cell, tMax, tEnter); continue; }
     int id = eid(cellA(cell));
     if (id != E_EMPTY && RCLASS[id] == R_OPAQUE && (isCrisp(id) || tEnter - t > SUN_RAY_SELF_SKIP)) return 0.0;
     int ax = argmin3(tMax);

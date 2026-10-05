@@ -123,7 +123,12 @@ vec3 reflectTrace(vec3 ro, vec3 rd, vec3 sunVis) {
     ivec3 bc = cell / BS;
     if (bc != lastB) { lastB = bc; flags = brickInfo(bc); }
     // only bricks with something opaque can stop it
-    if (!brickOpaque(flags)) { ax = skipBrick(bc, ro, rd, istp, cell, tMax, tEnter); stale = true; continue; }
+    if (!brickOpaque(flags)) {
+      // an empty brick may sit in a larger empty region: cross all of it
+      ax = flags == 0 ? skipEmpty(bc, ro, rd, istp, cell, tMax, tEnter) : skipBrick(bc, ro, rd, istp, cell, tMax, tEnter);
+      stale = true;
+      continue;
+    }
     float tExit = min(tMax.x, min(tMax.y, tMax.z));
     vec4 a = cellA(cell);
     int id = eid(a);

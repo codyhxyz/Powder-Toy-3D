@@ -3,7 +3,7 @@ import { quadVert, BRICK } from './shaders/common.js';
 import { inertFrag, quietFrag, activityPeriod } from './shaders/activity.js';
 import { moveBlockFrag, moveGatherFrag } from './shaders/move.js';
 import { reactFrag } from './shaders/react.js';
-import { paintFrag, copyFrag, brickFrag, blurFrag } from './shaders/passes.js';
+import { paintFrag, copyFrag, brickFrag, blurFrag, brickDistFrag } from './shaders/passes.js';
 import { fieldEmaFrag, fieldBlurFrag, fieldBoostFrag, BOOST_STAGES } from './shaders/fields.js';
 import { giSourceFrag, giGatherFrag } from './shaders/gi.js';
 import { CHANNELS, MEDIA, gauss5, bulkPeak, bulkPeakCubic, CUBIC_LATTICE } from './gfx/materials.js';
@@ -120,6 +120,8 @@ export class Simulation {
     // activity map (shaders/activity.js): inert bricks, then the quiet ones the
     // step passes skip. Rebuilt every ACTIVITY_PERIOD steps and after any
     // write that isn't a step (painting, loads), which may wake a brick.
+    // empty-space distance per brick (shaders/passes.js brickDistFrag), and its scratch
+    this.brickDist = [makeFieldTarget(g.bwidth, g.bheight, 1, U8, NEAR), makeFieldTarget(g.bwidth, g.bheight, 1, U8, NEAR)];
     this.actInert = makeFieldTarget(g.bwidth, g.bheight, 1, U8, NEAR);
     this.actQuiet = makeFieldTarget(g.bwidth, g.bheight, 1, U8, NEAR);
     this.actAge = ACTIVITY_PERIOD;
@@ -163,6 +165,7 @@ export class Simulation {
         uBulk: { value: new THREE.Vector4() },
       })),
       blur: rawMat(blurFrag(g), { tSrc: { value: null }, uAxis: { value: 0 } }),
+      brickDist: [0, 1, 2].map((axis) => rawMat(brickDistFrag(g, axis), { tSrc: { value: null } })),
       giSource: rawMat(giSourceFrag(g), { ...giUniforms(), ...giProbeUniforms() }),
       giGather: rawMat(giGatherFrag(g), {
         ...giUniforms(), tGIRad: { value: null }, tGICov: { value: null }, tGIDir: { value: null },
@@ -303,6 +306,14 @@ export class Simulation {
     this.mats.brick.uniforms.tFM.value = this.fieldMedia;
     this.mats.brick.uniforms.tFT.value = this.fieldThin;
     this.run(this.mats.brick, this.brick);
+    // empty-space distance: x from the brick map, then y, then z (ends in brickDist[0])
+    const [dx, dy, dz] = this.mats.brickDist;
+    dx.uniforms.tSrc.value = this.brick.texture;
+    this.run(dx, this.brickDist[0]);
+    dy.uniforms.tSrc.value = this.brickDist[0].texture;
+    this.run(dy, this.brickDist[1]);
+    dz.uniforms.tSrc.value = this.brickDist[1].texture;
+    this.run(dz, this.brickDist[0]);
     const blur = this.mats.blur;
     let src = this.brick.texture;
     for (let i = 0; i < 6; i++) {
@@ -316,6 +327,7 @@ export class Simulation {
   }
 
   get giTextures() { return this.giProbes.textures; }
+  get brickDistTexture() { return this.brickDist[0].texture; }
 
   // Rebuild the GI probe volume (realistic view; after the shadow map, which it
   // reads for sunlight). sun: unit vector toward the sun.
@@ -425,6 +437,7 @@ export class Simulation {
     this.fieldTmp.dispose();
     this.fieldsBlurred.dispose();
     this.fields.dispose();
+    this.brickDist.forEach((t) => t.dispose());
     this.actInert.dispose();
     this.actQuiet.dispose();
     this.giSrc.dispose();

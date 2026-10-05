@@ -61,6 +61,7 @@ for (const [label, dims] of Object.entries(grids)) {
   check(`pick-${label}`, raw + opt(render.pickFrag), 'frag');
   check(`shadow-${label}`, raw + opt(render.shadowFrag), 'frag');
   for (const [k, v] of Object.entries(passes)) if (typeof v === 'function') check(`${k}-${label}`, raw + v(g), 'frag');
+  for (const axis of [0, 1, 2]) check(`brickDist${axis}-${label}`, raw + passes.brickDistFrag(g, axis), 'frag');
   check(`inert-${label}`, raw + activity.inertFrag(g), 'frag');
   check(`quiet-${label}`, raw + activity.quietFrag(g), 'frag');
   check(`fieldEma-${label}`, raw + fields.fieldEmaFrag(g), 'frag');
