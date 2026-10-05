@@ -45,11 +45,11 @@ const swap = (i, j) => `{
 // support: the approaching velocity is cancelled.
 const collide = (i, j, c) => `{
       float rel = v${i}.${c} - v${j}.${c};
-      if (rel > 0.15) {
+      if (rel > COLLIDE_V) {
         float mi = d${i}, mj = d${j}, inv = 1.0 / (mi + mj);
         float vc = (mi * v${i}.${c} + mj * v${j}.${c}) * inv;
-        v${i}.${c} = vc - 0.3 * mj * inv * rel;
-        v${j}.${c} = vc + 0.3 * mi * inv * rel;
+        v${i}.${c} = vc - RESTITUTION * mj * inv * rel;
+        v${j}.${c} = vc + RESTITUTION * mi * inv * rel;
       } else if (rel > 0.0) {
         if (v${i}.${c} > 0.0) v${i}.${c} = 0.0;
         if (v${j}.${c} < 0.0) v${j}.${c} = 0.0;
@@ -103,9 +103,9 @@ const diagonal = (i) => {
   if (s${i} && !m${i}) {
     int kd = KIND[k${i}];
     if (${kindOk} && (kd != K_POWDER || rnd(rs) <= SLIDE[k${i}])) {
-      float sA = ${ok(cols[0])} ? ${dirs[0]} + rnd(rs) * 0.6 : -9.0;
-      float sB = ${ok(cols[1])} ? ${dirs[1]} + rnd(rs) * 0.6 : -9.0;
-      float sC = ${ok(cols[2])} ? ${dirs[2]} + rnd(rs) * 0.6 : -9.0;
+      float sA = ${ok(cols[0])} ? ${dirs[0]} + rnd(rs) * DIAG_NOISE : -9.0;
+      float sB = ${ok(cols[1])} ? ${dirs[1]} + rnd(rs) * DIAG_NOISE : -9.0;
+      float sC = ${ok(cols[2])} ? ${dirs[2]} + rnd(rs) * DIAG_NOISE : -9.0;
       if (max(sA, max(sB, sC)) > -8.0) {
         if (sA >= sB && sA >= sC) ${swap(i, cols[0] + yo)}
         else if (sB >= sC) ${swap(i, cols[1] + yo)}
@@ -153,8 +153,8 @@ bool canMove(int a, int b, float da, float db, int dir) {
   if (!movable(a) || !movable(b)) return false;
   if (a == b && a != E_EMPTY) return false;
   if (isGasLike(a) && isGasLike(b)) {
-    if (dir == 0) return da > db - 0.02;
-    if (dir == 1) return da < db + 0.02;
+    if (dir == 0) return da > db - GAS_DENS_TOL;
+    if (dir == 1) return da < db + GAS_DENS_TOL;
     return true;
   }
   if (!isFluid(a) && !isFluid(b)) return false; // grains don't sink into grains
@@ -167,7 +167,7 @@ bool canMove(int a, int b, float da, float db, int dir) {
 float dragF(int a, int b, float da, float db) {
   bool la = KIND[a] == K_LIQUID, lb = KIND[b] == K_LIQUID;
   if ((la && !isGasLike(b)) || (lb && !isGasLike(a)))
-    return 0.25 + 0.75 * clamp(2.0 * abs(da - db) / max(da, db), 0.0, 1.0);
+    return DRAG_LIQUID_MIN + DRAG_LIQUID_SPAN * clamp(DRAG_LIQUID_DENS * abs(da - db) / max(da, db), 0.0, 1.0);
   return 1.0;
 }
 
@@ -175,28 +175,28 @@ float dragF(int a, int b, float da, float db) {
 vec3 land(vec3 v, int id) {
   float vy = v.y;
   v.y = 0.0;
-  if (KIND[id] == K_LIQUID && vy < -0.15) {
+  if (KIND[id] == K_LIQUID && vy < -LAND_SPLASH_V) {
     // A real impact: liquids convert vertical momentum into a sideways splash.
     // (Resting liquid gets its flow from the react pass instead.)
     vec2 h = v.xz;
     float f = FLOW[id];
-    if (dot(h, h) < f * f * 0.25) {
+    if (dot(h, h) < f * f * LAND_SPLASH_FLOW) {
       float ang = rnd(rs) * 6.2831853;
       h = vec2(cos(ang), sin(ang)) * f;
     }
-    h += normalize(h) * (-vy) * 0.3;
-    v.xz = clamp(h, -1.0, 1.0);
+    h += normalize(h) * (-vy) * LAND_SPLASH_GAIN;
+    v.xz = clamp(h, -V_MAX, V_MAX);
   } else if (KIND[id] == K_POWDER) {
     // Grains scatter a little when they land hard, then friction takes over.
     float ang = rnd(rs) * 6.2831853;
-    v.xz = v.xz * 0.3 + vec2(cos(ang), sin(ang)) * (-vy) * 0.12;
+    v.xz = v.xz * LAND_POWDER_KEEP + vec2(cos(ang), sin(ang)) * (-vy) * LAND_POWDER_SCATTER;
   }
   return v;
 }
 
 float bounceR(int id) {
   int k = KIND[id];
-  return k == K_LIQUID ? -0.7 : (k == K_POWDER ? 0.0 : -0.5);
+  return k == K_LIQUID ? BOUNCE_LIQUID : (k == K_POWDER ? 0.0 : BOUNCE_GAS);
 }
 
 void main() {

@@ -53,6 +53,14 @@ The dock groups elements like a periodic-table strip, each tile in the element's
 - **Constructions:** HOUS (cottage, log cabin, brick, greenhouse), TREE (oak, pine, birch, palm, willow, dead), CAMP, IGLO, BRRL (oil drum, powder keg), AQUA, FNTN, AI (your own, written by a model or pasted)
 
 All element properties live in one table (`src/elements.js`) that is baked into the shaders as GLSL constants.
+The rules around them (latent heats, pressure diffusion, collision restitution, tool strengths...) live in `src/physics.js`,
+which reaches the shaders as `#define`s.
+
+Each element tile is a tiny live scene. Hover it and a CPU port of the same engine (`src/ui/tiles/`) runs a small box of that element,
+with the same table, the same constants from `src/physics.js`, and the game's gravity, speed and flow settings.
+The cursor uses the game's own tools: Pressure on powders and liquids, the element's own brush on gases, and Heat on solids.
+A new element with only a table row needs nothing else. One that gets its own special case in the GPU passes needs the same case
+in `src/ui/tiles/engine.js`; `node scripts/check-tile-engine.mjs` lists any that are missing.
 
 ## Constructions
 

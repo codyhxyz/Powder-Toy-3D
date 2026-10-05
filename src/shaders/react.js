@@ -27,9 +27,6 @@ uniform float uGravity;
 layout(location = 0) out vec4 oA;
 layout(location = 1) out vec4 oB;
 
-#define L_FUSE 80.0
-#define L_BOIL 540.0
-
 const ivec3 DIRS[6] = ivec3[6](ivec3(1,0,0), ivec3(-1,0,0), ivec3(0,1,0), ivec3(0,-1,0), ivec3(0,0,1), ivec3(0,0,-1));
 
 // Latent heat bookkeeping. acc is energy banked toward a transition at Tp.
@@ -79,7 +76,7 @@ void main() {
   for (int i = 0; i < 6; i++) dE += min(COND[id], COND[nid[i]]) * (na[i].y - T);
   T += dE / C;
   // the open world above the box slowly pulls air back to ambient; gases radiate
-  T += (AMBIENT - T) * (id == E_EMPTY ? 0.002 : RAD[id]);
+  T += (AMBIENT - T) * (id == E_EMPTY ? AIR_AMBIENT_PULL : RAD[id]);
 
   // ---- air pressure ----
   bool solid = KIND[id] == K_SOLID;
@@ -94,7 +91,7 @@ void main() {
       lap += pn[i] - P0;
       front = max(front, pn[i]);
     }
-    P = max(P0 + 0.12 * lap, front * 0.88) * 0.97;
+    P = max(P0 + P_DIFFUSE * lap, front * P_FRONT) * P_DECAY;
     gradP = 0.5 * vec3(pn[0] - pn[1], pn[2] - pn[3], pn[4] - pn[5]);
   } else {
     P = 0.0;
@@ -102,9 +99,9 @@ void main() {
 
   // ---- forces ----
   if (!solid) {
-    float rho = max(densityOf(id, T) * 0.1, 0.25);
-    v -= gradP * 0.06 / rho;
-    if (id == E_EMPTY) v.y += uGravity * clamp((T - AMBIENT) / (AMBIENT + 273.15), -0.5, 2.0);
+    float rho = max(densityOf(id, T) * RHO_SCALE, RHO_MIN);
+    v -= gradP * P_ACCEL / rho;
+    if (id == E_EMPTY) v.y += uGravity * clamp((T - AMBIENT) / (AMBIENT + KELVIN), AIR_BUOY_LO, AIR_BUOY_HI);
     else v.y -= uGravity * GRAV[id];
     v *= 1.0 - DRAG[id];
     // grains only feel friction while resting on something
@@ -120,8 +117,8 @@ void main() {
       float hv = length(v.xz);
       if (head || onLiquid) {
         // keep flowing in some direction until the level evens out
-        float want = head ? f : f * 0.6;
-        if (hv < want * 0.5) {
+        float want = head ? f : f * FLOW_SURFACE;
+        if (hv < want * FLOW_KICK) {
           float ang = rnd(rs) * 6.2831853;
           v.xz = vec2(cos(ang), sin(ang)) * want;
         }
@@ -135,16 +132,16 @@ void main() {
         if (KIND[nid[5]] == K_LIQUID) coh.y -= 1.0;
         bool alone = KIND[nid[0]] != K_LIQUID && KIND[nid[1]] != K_LIQUID
                   && KIND[nid[4]] != K_LIQUID && KIND[nid[5]] != K_LIQUID;
-        v.xz = v.xz * 0.5 + coh * f * 0.3;
-        if (alone && rnd(rs) < 0.1) {
+        v.xz = v.xz * FILM_KEEP + coh * f * FILM_COHESION;
+        if (alone && rnd(rs) < DROPLET_WANDER) {
           // isolated droplets wander until they meet others
           float ang = rnd(rs) * 6.2831853;
-          v.xz = vec2(cos(ang), sin(ang)) * f * 0.5;
+          v.xz = vec2(cos(ang), sin(ang)) * f * DROPLET_SPEED;
         }
       }
     }
     if (JITTER[id] > 0.0) v += (vec3(rnd(rs), rnd(rs), rnd(rs)) - 0.5) * JITTER[id];
-    v = clamp(v, -1.0, 1.0);
+    v = clamp(v, -V_MAX, V_MAX);
   } else {
     v = vec3(0.0);
   }
@@ -172,9 +169,9 @@ void main() {
     bool boil = latent(T, up, 100.0, C, L_BOIL, true);
     bool freeze = latent(T, dn, 0.0, C, L_FUSE, false);
     life = up - dn;
-    if (boil) { nidOut = E_STEAM; life = 0.0; P += 1.5; }
+    if (boil) { nidOut = E_STEAM; life = 0.0; P += STEAM_BOIL_PUFF; }
     else if (freeze) { nidOut = E_ICE; life = 0.0; }
-    if (nPlant > 0 && rnd(rs) < 0.006 * float(nPlant)) { nidOut = E_PLANT; reset = true; }
+    if (nPlant > 0 && rnd(rs) < PLANT_GROW * float(nPlant)) { nidOut = E_PLANT; reset = true; }
   } else if (id == E_ICE || id == E_SNOW) {
     if (latent(T, life, 0.0, C, L_FUSE, true)) { nidOut = E_WATER; life = 0.0; }
   } else if (id == E_STEAM) {
@@ -182,12 +179,12 @@ void main() {
   } else if (id == E_LAVA) {
     int ct = int(ctype);
     if (ct <= 0 || ct >= NE) ct = E_STONE;
-    if (T < MELT[ct] - 150.0) { nidOut = ct; reset = true; ctype = 0.0; }
+    if (T < MELT[ct] - LAVA_FREEZE_BELOW) { nidOut = ct; reset = true; ctype = 0.0; }
   } else if (id == E_FIRE) {
-    life -= 0.02 + 0.02 * rnd(rs);
-    if (life <= 0.0 || T < 350.0) { nidOut = rnd(rs) < 0.35 ? E_SMOKE : E_EMPTY; reset = true; }
+    life -= FIRE_BURN + FIRE_BURN_SPREAD * rnd(rs);
+    if (life <= 0.0 || T < FIRE_MIN_T) { nidOut = rnd(rs) < FIRE_TO_SMOKE ? E_SMOKE : E_EMPTY; reset = true; }
   } else if (id == E_SMOKE) {
-    life -= 0.003;
+    life -= SMOKE_FADE;
     if (life <= 0.0) { nidOut = E_EMPTY; reset = true; }
   } else if (id == E_ACID) {
     int victims = 0;
@@ -195,16 +192,16 @@ void main() {
       int j = nid[i];
       if (j != E_EMPTY && j != E_ACID && j != E_WALL && j != E_GLASS && j != E_WATER && KIND[j] != K_GAS) victims++;
     }
-    life -= 0.03 * float(victims);
-    if (life <= 0.0) { nidOut = rnd(rs) < 0.3 ? E_SMOKE : E_EMPTY; reset = true; }
+    life -= ACID_USE * float(victims);
+    if (life <= 0.0) { nidOut = rnd(rs) < ACID_TO_SMOKE ? E_SMOKE : E_EMPTY; reset = true; }
   } else if (id == E_EMPTY) {
     // flames lick out of anything burning next to us
-    if (nBurning > 0 && rnd(rs) < 0.25 * float(nBurning)) {
-      nidOut = E_FIRE; reset = true; T = max(T, flame * (0.85 + 0.15 * rnd(rs)));
-    } else if (cloneOf > 0 && rnd(rs) < 0.06) {
+    if (nBurning > 0 && rnd(rs) < FLAME_SPREAD * float(nBurning)) {
+      nidOut = E_FIRE; reset = true; T = max(T, flame * (FLAME_T_MIN + FLAME_T_SPREAD * rnd(rs)));
+    } else if (cloneOf > 0 && rnd(rs) < CLONE_RATE) {
       nidOut = cloneOf; reset = true; T = SPAWNT[cloneOf];
       ctype = cloneOf == E_LAVA ? float(E_STONE) : 0.0;
-      v = vec3(0.0, KIND[cloneOf] == K_GAS ? 0.0 : -0.3, 0.0);
+      v = vec3(0.0, KIND[cloneOf] == K_GAS ? 0.0 : SPAWN_DROP_V, 0.0);
     }
   } else if (id == E_CLONE && ctype < 1.0) {
     for (int i = 0; i < 6; i++) {
@@ -221,17 +218,17 @@ void main() {
   // combustion
   if (nidOut == id && IGNITE[id] > 0.0) {
     if (id == E_GUNPOWDER) {
-      if (T >= IGNITE[id] || (nFire > 0 && rnd(rs) < 0.7)) {
-        nidOut = E_FIRE; reset = true; T = 2200.0; P += 60.0;
+      if (T >= IGNITE[id] || (nFire > 0 && rnd(rs) < GUNPOWDER_FIRE)) {
+        nidOut = E_FIRE; reset = true; T = GUNPOWDER_T; P += GUNPOWDER_P;
       }
     } else if (T >= IGNITE[id] && (nAir > 0 || nFire > 0)) {
       life -= BURNRATE[id];
       T = max(T, min(T + BURNHEAT[id] / C, FLAMET[id]));
-      P += 0.02;
+      P += BURN_P;
       if (life <= 0.0) {
-        nidOut = (id != E_OIL && rnd(rs) < 0.5) ? E_ASH : E_FIRE;
+        nidOut = (id != E_OIL && rnd(rs) < ASH_SHARE) ? E_ASH : E_FIRE;
         reset = true;
-        T = max(T, 600.0);
+        T = max(T, BURNT_MIN_T);
       }
     }
   }
@@ -239,17 +236,17 @@ void main() {
   // acid eats its neighbours
   if (nidOut == id && nAcid > 0 && id != E_EMPTY && id != E_ACID && id != E_WALL && id != E_GLASS
       && id != E_WATER && KIND[id] != K_GAS) {
-    if (rnd(rs) < 0.03 * float(nAcid)) { nidOut = rnd(rs) < 0.3 ? E_SMOKE : E_EMPTY; reset = true; }
+    if (rnd(rs) < ACID_USE * float(nAcid)) { nidOut = rnd(rs) < ACID_TO_SMOKE ? E_SMOKE : E_EMPTY; reset = true; }
   }
 
   if (nidOut != id) {
     if (reset) life = SPAWNLIFE[nidOut];
     if (KIND[nidOut] == K_SOLID) v = vec3(0.0);
-    if (nidOut == E_FIRE) life = 0.5 + 0.5 * rnd(rs);
+    if (nidOut == E_FIRE) life = FIRE_LIFE_MIN + FIRE_LIFE_SPREAD * rnd(rs);
   }
 
-  T = clamp(T, -273.15, 6000.0);
+  T = clamp(T, CELL_TEMP_MIN, CELL_TEMP_MAX);
   oA = vec4(float(nidOut), T, life, ctype + seed);
-  oB = vec4(v, clamp(P, -50.0, 200.0));
+  oB = vec4(v, clamp(P, P_MIN, P_MAX));
 }
 `;

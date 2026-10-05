@@ -165,7 +165,7 @@ const vec3Arr = (name, fn) =>
   `const vec3 ${name}[NE] = vec3[NE](${ELEMENTS.map((e) => `vec3(${fn(e).map(f).join(', ')})`).join(', ')});`;
 
 // Melting product: sand turns into glass when it re-solidifies.
-const meltInto = (e) => (e.key === 'SAND' ? E.GLASS : e.id);
+export const meltInto = (e) => (e.key === 'SAND' ? E.GLASS : e.id);
 
 export function elementsGLSL() {
   return [

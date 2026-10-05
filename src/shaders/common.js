@@ -1,5 +1,6 @@
 import { elementsGLSL } from '../elements.js';
 import { incandescenceGLSL } from '../gfx/incandescence.js';
+import { physicsGLSL } from '../physics.js';
 
 // Shared GLSL prelude. The 3D grid (NX × NY × NZ) is stored as a 2D atlas of
 // horizontal Y-slices, TX slices per atlas row. Every pass reads cells with
@@ -26,7 +27,7 @@ precision highp sampler2D;
 #define MY ${g.my}
 #define MZ ${g.mz}
 #define MTX ${g.mtx}
-#define AMBIENT 20.0
+${physicsGLSL()}
 
 ${elementsGLSL()}
 
@@ -70,7 +71,7 @@ float rnd(inout uint s) {
   return float(s) * (1.0 / 4294967296.0);
 }
 
-float airDensity(float T) { return 1.0 - clamp((T - AMBIENT) / 2000.0, -0.2, 0.45); }
+float airDensity(float T) { return 1.0 - clamp((T - AMBIENT) / AIR_DENS_SPAN, AIR_DENS_LO, AIR_DENS_HI); }
 float densityOf(int id, float T) { return id == E_EMPTY ? airDensity(T) : DENS[id]; }
 bool isGasLike(int id) { return KIND[id] == K_GAS || id == E_EMPTY; }
 bool isFluid(int id) { return KIND[id] == K_LIQUID || isGasLike(id); }

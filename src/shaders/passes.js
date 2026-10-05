@@ -38,7 +38,7 @@ void main() {
   vec3 d = vec3(p) + 0.5 - uCenter;
   float r = uShape == 0 ? length(d) : max(abs(d.x), max(abs(d.y), abs(d.z)));
   if (r > uRadius) return;
-  float falloff = 1.0 - smoothstep(uRadius * 0.6, uRadius + 0.001, r);
+  float falloff = 1.0 - smoothstep(uRadius * TOOL_FALLOFF, uRadius + 0.001, r);
 
   uint rs = seed3(p, uFrame, 0xb7u);
   int id = eid(a);
@@ -50,17 +50,17 @@ void main() {
     float T = SPAWNT[uTool];
     float ctype = uTool == E_LAVA ? float(E_STONE) : 0.0;
     oA = vec4(float(uTool), T, SPAWNLIFE[uTool], ctype + rnd(rs) * 0.999);
-    float vy = KIND[uTool] == K_POWDER || KIND[uTool] == K_LIQUID ? -0.3 : 0.0;
+    float vy = KIND[uTool] == K_POWDER || KIND[uTool] == K_LIQUID ? SPAWN_DROP_V : 0.0;
     oB = vec4(0.0, vy, 0.0, b.w);
   } else if (uTool == T_ERASE) {
     oA = vec4(float(E_EMPTY), AMBIENT, 0.0, rnd(rs) * 0.999);
     oB = vec4(0.0, 0.0, 0.0, b.w);
   } else if (uTool == T_HEAT) {
-    oA.y = min(a.y + 30.0 * falloff, 6000.0);
+    oA.y = min(a.y + TOOL_HEAT * falloff, CELL_TEMP_MAX);
   } else if (uTool == T_COOL) {
-    oA.y = max(a.y - 30.0 * falloff, -273.15);
+    oA.y = max(a.y - TOOL_HEAT * falloff, CELL_TEMP_MIN);
   } else if (uTool == T_BLAST) {
-    oB.w = b.w + 6.0 * falloff;
+    oB.w = b.w + TOOL_PRESSURE * falloff;
   }
 }
 `;
