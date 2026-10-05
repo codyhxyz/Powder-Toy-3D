@@ -50,7 +50,7 @@ The dock groups elements like a periodic-table strip, each tile in the element's
 - **Gases:** WTRV (steam), SMKE, FIRE
 - **Solids:** WALL, METL, GLAS, ICE, WOOD, PLNT, CLNE
 - **Tools:** HEAT, COOL, ERAS, PRES (pressure), SIGN
-- **Constructions:** HOUS (cottage, log cabin, brick, greenhouse), TREE (oak, pine, birch, palm, willow, dead), CAMP, IGLO, BRRL (oil drum, powder keg), AQUA, FNTN
+- **Constructions:** HOUS (cottage, log cabin, brick, greenhouse), TREE (oak, pine, birch, palm, willow, dead), CAMP, IGLO, BRRL (oil drum, powder keg), AQUA, FNTN, AI (your own, written by a model or pasted)
 
 All element properties live in one table (`src/elements.js`) that is baked into the shaders as GLSL constants.
 
@@ -65,6 +65,18 @@ They are made of ordinary elements and behave like them: wooden walls burn, the 
 an igloo melts, a powder keg goes off. Placing one uploads it as a small 3D texture that a single GPU pass (`src/shaders/stamp.js`)
 writes into the grid. Solid bases grow a footing straight down to the first thing that can bear weight (up to 32 cells), so a house
 on a ledge gets a plinth and one in a lake stands on stilts.
+
+Every construction is a small program written against one API (`src/constructions/runtime.js`: `put`, `box`, `ball`, `disc`,
+`rod`, ...). The built-ins in `src/constructions/builtins.js` use it, and so can a model, a chatbot or a coding agent:
+
+- **AI tile:** describe a construction and *Generate* asks a model to write it. The model's code runs in a sandboxed worker
+  (no network, 5 s limit) and is checked by a physics lint (`src/constructions/lint.js`: liquid that can leak through
+  diagonal gaps, unsupported powder, clones with no source). The report and two pictures go back to the model until the build
+  is clean. Model providers are plug-ins (`src/ai/providers.js`); until one is registered, *Copy prompt* gives a prompt for
+  any chatbot and *Paste code* runs its reply. Your constructions are saved, and export and import as `.json`.
+- **Coding agents:** `npm run construct -- my-thing.js --png out.png` runs code headlessly and prints the lint report;
+  `npm run construct -- --builtins` lints every built-in; `npm run mcp:construct` serves the same tools over MCP.
+  See [docs/constructions.md](docs/constructions.md).
 
 ## How the physics works
 

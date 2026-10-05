@@ -1,7 +1,7 @@
 import { prelude } from './common.js';
+import { MAX_FOOT } from '../constructions/runtime.js';
 
-// Deepest footing a construction can grow below its base, in cells.
-export const MAX_FOOT = 32;
+export { MAX_FOOT };
 
 // Stamp pass: writes a construction (a small 3D texture) into the grid.
 //

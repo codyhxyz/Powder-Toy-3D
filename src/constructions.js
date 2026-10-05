@@ -1,17 +1,31 @@
 import * as THREE from 'three';
 import { quadVert } from './shaders/common.js';
-import { stampFrag, MAX_FOOT } from './shaders/stamp.js';
-import { ELEMENTS, E, K, BUILDS, isBuild } from './elements.js';
+import { stampFrag } from './shaders/stamp.js';
+import { ELEMENTS, BUILDS, isBuild } from './elements.js';
 import { h } from './ui/dom.js';
+import { runGenerator, bake, newSeed, makeRng, MAX_FOOT } from './constructions/runtime.js';
+import { BUILTINS } from './constructions/builtins.js';
+import builtinsSource from './constructions/builtins.js?raw';
+import { renderIso, hexBytes, cellNoise, PREVIEW_VIEWS } from './constructions/preview.js';
+import { summarizeReport } from './constructions/lint.js';
+import { execSandboxed } from './constructions/sandbox.js';
+import { buildSystemPrompt, buildChatPrompt, extractCode } from './ai/prompt.js';
+import { runAgent, MAX_NAME_CHARS } from './ai/agent.js';
+import { getProvider, registerProvider, onProvidersChange } from './ai/providers.js';
 import './constructions.css';
 
 // Constructions: whole structures (houses, trees, ...) placed with one click.
 //
-// Unlike TPT's stamps these are generators, not saved snapshots: each one is
-// built procedurally from a seed, a size (the brush size) and a variant, so no
-// two trees come out the same. They are made of ordinary elements and behave
-// like them: a cottage's wooden walls burn while its stone chimney carries the
-// fireplace smoke away, an igloo melts, a powder keg goes off.
+// Unlike TPT's stamps these are generators, not saved snapshots: each one is a
+// small program (constructions/runtime.js) built from a seed, a size (the brush
+// size) and a variant, so no two trees come out the same. They are made of
+// ordinary elements and behave like them: a cottage's wooden walls burn while
+// its stone chimney carries the fireplace smoke away, an igloo melts.
+//
+// The PROMPT construction runs code written by a model (through a provider
+// plug-in, see ai/providers.js), pasted from any chatbot, or imported from a
+// file. That code only ever runs in a sandboxed worker and is linted for
+// physics problems before it can be placed.
 //
 // A ghost of the exact model follows the cursor and turns its front (+z) to
 // face the camera. Clicking uploads the model as a small 3D texture and one GPU
@@ -19,524 +33,26 @@ import './constructions.css';
 // base where the ground falls away.
 
 const STORE = 'powder-toy-3d:builds';
-const TAU = Math.PI * 2;
-// Built stonework (slabs, chimneys, brick, basins) is WALL: it renders as crisp
-// voxels, whereas ROCK is drawn as smoothed natural terrain.
-const MASONRY = E.WALL;
-const odd = (x) => Math.round(x) | 1;
-const v3 = (x, y, z) => new THREE.Vector3(x, y, z);
-const scaleFor = (size) => 0.45 + size * 0.11; // brush size 5 (the default) → 1
+const MINE_STORE = 'powder-toy-3d:my-constructions';
+const PROMPT = 'PROMPT';           // the BUILDS key of the AI / custom construction
+const NEW = 'new';                 // PROMPT choice: write a new one
+const AGENT_SEED = 1;              // the seed generated code is checked at
+const PREVIEW_PX = 512;            // longest side of each picture sent to the model
+const RESULT_CACHE = 16;           // sandbox results kept (per code, seed and size)
+const FILE_FORMAT = 'powder-toy-3d/construction';
+const FILE_VERSION = 1;
+const SEED_SALT = 0x9e3779b9;      // decorrelates the shuffle pick from the generator's own rnd
+const GHOST_ALPHA = 0.6;
+const GHOST_SHADE_MIN = 0.92;      // ghost cubes vary in brightness from this
+const GHOST_TEXTURE = 0.16;        // ... to this much brighter
+const HOLD_PX = 6;                 // pointer travel that brings the ghost back after placing
+const DOCK_MARGIN_PX = 14;         // the dock's gap to the bottom of the window
+const BAR_GAP_PX = 8;              // gap between the dock and the construction bar
+const IMPORT_NAME_CHARS = 60;
 
-// mulberry32
-function makeRng(seed) {
-  let s = seed >>> 0;
-  const r = () => {
-    s = (s + 0x6d2b79f5) >>> 0;
-    let t = s;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-  r.range = (lo, hi) => lo + (hi - lo) * r();
-  r.int = (lo, hi) => lo + Math.floor((hi - lo + 1) * r());
-  r.pick = (arr) => arr[Math.floor(r() * arr.length)];
-  return r;
-}
-const newSeed = () => (Math.random() * 4294967296) >>> 0;
-
-// ---------------------------------------------------------------- model
-
-// A construction being assembled: sparse cells around its base point (0, 0, 0),
-// nothing below y = 0. Shapes take options { temp, ctype, soft }; soft cells
-// never replace cells already placed (leaves around branches, fire between logs).
-class Model {
-  constructor(rnd) {
-    this.cells = new Map();
-    this.rnd = rnd;
-    this.foot = 0; // how deep solid base cells may grow a footing
-  }
-
-  static key(x, y, z) { return ((x + 1024) * 2048 + y) * 2048 + (z + 1024); }
-
-  put(x, y, z, id, o) {
-    x = Math.round(x); y = Math.round(y); z = Math.round(z);
-    if (y < 0) return;
-    const k = Model.key(x, y, z);
-    if (o?.soft && this.cells.has(k)) return;
-    this.cells.set(k, { x, y, z, id, temp: o?.temp ?? ELEMENTS[id].temp, ctype: o?.ctype ?? 0 });
-  }
-
-  // inclusive bounds
-  box(x0, y0, z0, x1, y1, z1, id, o) {
-    for (let y = y0; y <= y1; y++)
-      for (let z = z0; z <= z1; z++)
-        for (let x = x0; x <= x1; x++) this.put(x, y, z, id, o);
-  }
-
-  // Horizontal disc; `rough` frays the edge by up to ±rough/2 cells.
-  disc(cx, y, cz, r, id, o = {}) {
-    const R = Math.ceil(r + 1), rough = o.rough ?? 0, holes = o.holes ?? 0;
-    for (let z = Math.floor(cz - R); z <= Math.ceil(cz + R); z++)
-      for (let x = Math.floor(cx - R); x <= Math.ceil(cx + R); x++) {
-        const d = Math.hypot(x - cx, z - cz);
-        if (d > r + rough * (this.rnd() - 0.5)) continue;
-        if (holes && this.rnd() < holes) continue;
-        this.put(x, y, z, id, o);
-      }
-  }
-
-  // Ellipsoid of radius r, squashed vertically by sy, with a frayed edge and gaps.
-  ball(cx, cy, cz, r, id, o = {}) {
-    const sy = o.sy ?? 1, rough = o.rough ?? 0, holes = o.holes ?? 0;
-    const R = Math.ceil(r + 1), Ry = Math.ceil(r * sy + 1);
-    for (let y = Math.floor(cy - Ry); y <= Math.ceil(cy + Ry); y++)
-      for (let z = Math.floor(cz - R); z <= Math.ceil(cz + R); z++)
-        for (let x = Math.floor(cx - R); x <= Math.ceil(cx + R); x++) {
-          const d = Math.hypot(x - cx, (y - cy) / sy, z - cz) / r;
-          if (d > 1 + rough * (this.rnd() - 0.5)) continue;
-          if (holes && this.rnd() < holes) continue;
-          this.put(x, y, z, id, o);
-        }
-  }
-
-  // Thick segment from a to b (Vector3s). r = 0.5 draws a single-cell line,
-  // kept face-connected so thin trunks and branches don't touch only at corners.
-  rod(a, b, r, id, o) {
-    const n = Math.max(1, Math.ceil(a.distanceTo(b) * 2));
-    const R = Math.ceil(r), r2 = r * r;
-    let lx, ly, lz;
-    for (let i = 0; i <= n; i++) {
-      const t = i / n;
-      const px = Math.round(a.x + (b.x - a.x) * t);
-      const py = Math.round(a.y + (b.y - a.y) * t);
-      const pz = Math.round(a.z + (b.z - a.z) * t);
-      if (i > 0 && r2 < 1) {
-        if (px !== lx && (py !== ly || pz !== lz)) this.put(px, ly, lz, id, o);
-        if (pz !== lz && py !== ly) this.put(px, py, lz, id, o);
-      }
-      lx = px; ly = py; lz = pz;
-      for (let dy = -R; dy <= R; dy++)
-        for (let dz = -R; dz <= R; dz++)
-          for (let dx = -R; dx <= R; dx++)
-            if (dx * dx + dy * dy + dz * dz <= r2) this.put(px + dx, py + dy, pz + dz, id, o);
-    }
-  }
-}
-
-// Turn a direction by `ang` radians toward a random perpendicular.
-function bend(dir, ang, rnd) {
-  const perp = v3(rnd() - 0.5, rnd() - 0.5, rnd() - 0.5).cross(dir);
-  if (perp.lengthSq() < 1e-6) perp.set(1, 0, 0);
-  perp.normalize();
-  return dir.clone().multiplyScalar(Math.cos(ang)).addScaledVector(perp, Math.sin(ang)).normalize();
-}
-
-// ---------------------------------------------------------------- houses
-
-function house(m, rnd, t, variant) {
-  const W = odd(17 * t * rnd.range(0.92, 1.08));
-  const D = odd(W * rnd.range(0.62, 0.74));
-  const hw = (W - 1) / 2, hd = (D - 1) / 2;
-  const H = Math.max(4, Math.round(W * 0.4)); // wall height above the slab
-  const green = variant === 'greenhouse', cabin = variant === 'cabin';
-  const wall = variant === 'brick' ? MASONRY : green ? E.GLASS : E.WOOD;
-  const roof = green ? E.GLASS : E.WOOD;
-  m.foot = MAX_FOOT;
-
-  // stone slab, one cell wider than the walls (it grows a plinth on uneven ground)
-  m.box(-hw - 1, 0, -hd - 1, hw + 1, 0, hd + 1, MASONRY);
-
-  // walls around an empty room
-  const post = (x, z) => (Math.abs(x) === hw && Math.abs(z) === hd) ||
-    (Math.abs(z) === hd && x % 4 === 0) || (Math.abs(x) === hw && z % 4 === 0);
-  for (let y = 1; y <= H; y++)
-    for (let z = -hd; z <= hd; z++)
-      for (let x = -hw; x <= hw; x++) {
-        if (Math.abs(x) !== hw && Math.abs(z) !== hd) { m.put(x, y, z, E.EMPTY); continue; }
-        // a greenhouse is glass on a steel frame over a low stone wall
-        m.put(x, y, z, !green ? wall : y <= 2 ? MASONRY : y === H || post(x, z) ? E.METAL : E.GLASS);
-      }
-  if (cabin) {
-    // log ends cross at the corners, alternating course by course
-    for (let y = 1; y <= H; y++)
-      for (const sx of [-1, 1])
-        for (const sz of [-1, 1]) {
-          if (y % 2) m.put(sx * (hw + 1), y, sz * hd, E.WOOD);
-          else m.put(sx * hw, y, sz * (hd + 1), E.WOOD);
-        }
-  }
-
-  // gable roof with its ridge along x and one cell of overhang. The slope is two
-  // cells thick so each step overlaps the next and nothing leaks diagonally.
-  const gable = green ? E.GLASS : wall;
-  for (let i = 0; hd + 1 - i >= 0; i++) {
-    const zr = hd + 1 - i, y = H + 1 + i;
-    for (let z = -zr; z <= zr; z++)
-      for (let x = -hw - 1; x <= hw + 1; x++) {
-        if (Math.abs(z) >= zr - 1) m.put(x, y, z, green && (x % 4 === 0 || zr <= 1) ? E.METAL : roof);
-        else if (Math.abs(x) === hw) m.put(x, y, z, gable);
-        else if (Math.abs(x) < hw) m.put(x, y, z, E.EMPTY);
-      }
-  }
-
-  // openings: u runs along the wall, faces are front (+z, the door), back, left, right
-  const cut = (face, u0, u1, y0, y1, id) => {
-    for (let y = y0; y <= y1; y++)
-      for (let u = u0; u <= u1; u++) {
-        if (face === 'front') m.put(u, y, hd, id);
-        else if (face === 'back') m.put(u, y, -hd, id);
-        else m.put(face === 'left' ? -hw : hw, y, u, id);
-      }
-  };
-  const dw = odd(1.6 * t), dh = Math.min(H - 1, Math.max(3, Math.round(H * 0.72)));
-  cut('front', -(dw - 1) / 2, (dw - 1) / 2, 1, dh, E.EMPTY);
-  if (!green) {
-    const ww = Math.max(1, Math.round((cabin ? 1.4 : 2) * t));
-    const wy0 = Math.max(2, Math.round(H * (cabin ? 0.42 : 0.32))), wy1 = Math.max(wy0 + 1, Math.round(H * 0.72));
-    const win = (face, c) => cut(face, c - Math.floor(ww / 2), c - Math.floor(ww / 2) + ww - 1, wy0, wy1, E.GLASS);
-    const off = Math.round(hw * 0.55);
-    if (off - ww / 2 > (dw - 1) / 2 + 1) { win('front', -off); win('front', off); }
-    win('back', -off); win('back', off);
-    if (hd >= 3) win('left', 0);
-  }
-
-  // stone chimney on the right gable with an open fireplace and a log in the hearth
-  if (!green) {
-    const cz = -Math.round(hd * 0.35);
-    const top = H + 1 + (hd + 1 - Math.max(0, Math.abs(cz) - 1)) + 2;
-    for (let y = 1; y <= top; y++)
-      for (let z = cz - 1; z <= cz + 1; z++)
-        for (let x = hw - 1; x <= hw + 1; x++) {
-          const flue = x === hw && z === cz;
-          m.put(x, y, z, flue ? (y === 1 ? E.WOOD : E.EMPTY) : MASONRY);
-        }
-    m.box(hw - 1, 1, cz, hw - 1, 2, cz, E.EMPTY); // fireplace mouth
-  }
-
-  // greenhouse beds: water troughs along both long walls, seeded with plants
-  if (green && hd >= 3) {
-    for (const s of [-1, 1])
-      for (let x = -hw + 1; x <= hw - 1; x++) {
-        if (s > 0 && Math.abs(x) <= (dw + 1) / 2) { m.put(x, 1, s * (hd - 1), MASONRY); continue; } // doorstep
-        m.put(x, 1, s * (hd - 1), E.WATER);
-        m.put(x, 1, s * (hd - 2), MASONRY);
-        if ((x + hw) % 3 === 1) m.put(x, 2, s * (hd - 1), E.PLANT);
-      }
-  }
-}
-
-// ---------------------------------------------------------------- trees
-
-const TREES = {
-  oak(m, rnd, t) {
-    const H = Math.round(rnd.range(21, 26) * t);
-    const th = Math.round(H * rnd.range(0.36, 0.44));
-    const tr = Math.max(0.5, 1.1 * t);
-    m.foot = 10;
-    m.rod(v3(0, 0, 0), v3(0, th, 0), tr + 0.4, E.WOOD);
-    m.disc(0, 0, 0, tr + 1.6, E.WOOD); // root flare
-    const crowns = [v3(0, th + H * 0.3, 0)];
-    const n = rnd.int(3, 5), a0 = rnd() * TAU;
-    for (let i = 0; i < n; i++) {
-      const az = a0 + (i / n) * TAU + rnd.range(-0.3, 0.3), el = rnd.range(0.5, 1.0);
-      const a = v3(0, th - rnd.int(0, 2), 0);
-      const dir = v3(Math.cos(az) * Math.cos(el), Math.sin(el), Math.sin(az) * Math.cos(el));
-      const b = a.clone().addScaledVector(dir, H * rnd.range(0.26, 0.36));
-      m.rod(a, b, Math.max(0.5, tr * 0.6), E.WOOD);
-      crowns.push(b);
-    }
-    for (const c of crowns)
-      m.ball(c.x, c.y, c.z, H * rnd.range(0.2, 0.26), E.PLANT, { sy: 0.75, rough: 0.35, holes: 0.04, soft: true });
-  },
-
-  pine(m, rnd, t) {
-    const H = Math.round(rnd.range(26, 32) * t);
-    m.foot = 10;
-    m.rod(v3(0, 0, 0), v3(0, H - 2, 0), t > 1.5 ? 1 : 0.5, E.WOOD);
-    const y0 = Math.round(H * rnd.range(0.14, 0.22));
-    const R = H * rnd.range(0.22, 0.27);
-    const tiers = Math.max(3, Math.round(rnd.range(4, 5.5) * Math.sqrt(t)));
-    for (let y = y0; y <= H; y++) {
-      const u = (y - y0) / (H - y0);
-      const phase = (u * tiers) % 1; // each tier flares at its bottom
-      const r = R * Math.pow(1 - u, 0.9) * (1 - 0.5 * phase) + 0.6;
-      m.disc(0, y, 0, r, E.PLANT, { rough: 0.9, holes: 0.03, soft: true });
-    }
-  },
-
-  birch(m, rnd, t) {
-    const H = Math.round(rnd.range(28, 34) * t);
-    const tr = t > 1.6 ? 1 : 0.5;
-    m.foot = 10;
-    // a slender, slightly wandering trunk
-    const pts = [v3(0, 0, 0)];
-    for (let y = 5; y < H - 2; y += 5) {
-      const p = pts[pts.length - 1];
-      pts.push(v3(THREE.MathUtils.clamp(p.x + rnd.range(-0.8, 0.8), -2, 2), y,
-        THREE.MathUtils.clamp(p.z + rnd.range(-0.8, 0.8), -2, 2)));
-    }
-    const tip = pts[pts.length - 1];
-    pts.push(v3(tip.x, H - 2, tip.z));
-    for (let i = 1; i < pts.length; i++) m.rod(pts[i - 1], pts[i], tr, E.WOOD);
-    const trunkAt = (y) => pts[Math.min(pts.length - 1, Math.round(y / 5))];
-    // small, airy leaf clusters on short twigs
-    const k = rnd.int(7, 10);
-    for (let i = 0; i < k; i++) {
-      const y = H * rnd.range(0.4, 0.9), az = rnd() * TAU, d = rnd.range(1, Math.max(1.5, H * 0.1));
-      const base = trunkAt(y);
-      const c = v3(base.x + Math.cos(az) * d, y, base.z + Math.sin(az) * d);
-      m.rod(v3(base.x, y - 1, base.z), c, 0.5, E.WOOD);
-      m.ball(c.x, c.y, c.z, H * rnd.range(0.07, 0.1), E.PLANT, { sy: 1.5, rough: 0.4, holes: 0.18, soft: true });
-    }
-    const top = pts[pts.length - 1];
-    m.ball(top.x, H - 1, top.z, H * 0.08, E.PLANT, { sy: 1.6, rough: 0.4, holes: 0.12, soft: true });
-  },
-
-  palm(m, rnd, t) {
-    const H = Math.round(rnd.range(20, 25) * t);
-    const az = rnd() * TAU, lean = H * rnd.range(0.18, 0.32);
-    const tr = t > 1.2 ? 1 : 0.5;
-    m.foot = 10;
-    const at = (y) => { const k = (y / H) ** 2 * lean; return v3(Math.cos(az) * k, y, Math.sin(az) * k); };
-    for (let y = 0; y < H; y += 2) m.rod(at(y), at(Math.min(H, y + 2)), tr, E.WOOD);
-    const top = at(H);
-    // fronds rise a little, then droop; leaflets fan out sideways
-    const n = rnd.int(7, 9), a0 = rnd() * TAU;
-    for (let i = 0; i < n; i++) {
-      const a = a0 + (i / n) * TAU + rnd.range(-0.2, 0.2);
-      const L = H * rnd.range(0.36, 0.46);
-      const dir = v3(Math.cos(a), 0, Math.sin(a)), side = v3(-dir.z, 0, dir.x);
-      let prev = top;
-      for (let s = 1; s <= L; s++) {
-        const p = top.clone().addScaledVector(dir, s);
-        p.y += 0.7 * s - (1.25 * s * s) / L;
-        m.rod(prev, p, 0.5, E.PLANT, { soft: true });
-        const lw = Math.round(2.8 * t * (1 - s / L));
-        if (lw > 0)
-          for (const sg of [-1, 1])
-            m.rod(p, p.clone().addScaledVector(side, sg * lw).add(v3(0, -0.6 * lw, 0)), 0.5, E.PLANT, { soft: true });
-        prev = p;
-      }
-    }
-    for (let i = rnd.int(2, 4); i > 0; i--) {
-      const a = rnd() * TAU;
-      m.ball(top.x + Math.cos(a) * 1.3, top.y - 1.5, top.z + Math.sin(a) * 1.3, 0.9, E.WOOD, { soft: true });
-    }
-  },
-
-  willow(m, rnd, t) {
-    const H = Math.round(rnd.range(19, 23) * t);
-    const tr = Math.max(0.5, 1.3 * t);
-    const th = Math.round(H * 0.42);
-    m.foot = 10;
-    m.rod(v3(0, 0, 0), v3(0, th, 0), tr + 0.4, E.WOOD);
-    m.disc(0, 0, 0, tr + 1.4, E.WOOD);
-    const R = H * rnd.range(0.48, 0.56); // a wide, low dome
-    const cy = H - R * 0.45;
-    const n = rnd.int(4, 6), a0 = rnd() * TAU;
-    for (let i = 0; i < n; i++) {
-      const a = a0 + (i / n) * TAU;
-      m.rod(v3(0, th - 1, 0), v3(Math.cos(a) * R * 0.55, cy + rnd.range(-1, 2), Math.sin(a) * R * 0.55),
-        Math.max(0.5, tr * 0.55), E.WOOD);
-    }
-    m.ball(0, cy, 0, R, E.PLANT, { sy: 0.45, rough: 0.3, holes: 0.08, soft: true });
-    // curtains of strands hanging from the underside, longest at the rim
-    const strands = Math.round(R * R * 0.9);
-    for (let i = 0; i < strands; i++) {
-      const a = rnd() * TAU, d = R * Math.sqrt(rnd.range(0.2, 1)) * 0.98;
-      const x = Math.cos(a) * d, z = Math.sin(a) * d;
-      const y0 = cy - R * 0.45 * Math.sqrt(Math.max(0, 1 - (d / R) ** 2));
-      const len = Math.max(0, rnd.range(0.35, 0.85) * (y0 - 2) * (0.4 + 0.6 * d / R));
-      m.rod(v3(x, y0, z), v3(x + rnd.range(-0.6, 0.6), Math.max(2, y0 - len), z + rnd.range(-0.6, 0.6)), 0.5,
-        E.PLANT, { soft: true });
-    }
-  },
-
-  dead(m, rnd, t) {
-    const H = Math.round(rnd.range(17, 22) * t);
-    m.foot = 10;
-    const grow = (a, dir, len, r, depth) => {
-      const b = a.clone().addScaledVector(dir, len);
-      m.rod(a, b, r, E.WOOD);
-      if (depth === 0) return;
-      for (let i = rnd.int(2, 3); i > 0; i--) {
-        const d = bend(dir, rnd.range(0.35, 0.8), rnd).add(v3(0, 0.25, 0)).normalize();
-        grow(b, d, len * rnd.range(0.55, 0.75), Math.max(0.5, r * 0.62), depth - 1);
-      }
-    };
-    m.disc(0, 0, 0, 1.2 * t + 1.2, E.WOOD);
-    grow(v3(0, 0, 0), v3(rnd.range(-0.1, 0.1), 1, rnd.range(-0.1, 0.1)).normalize(), H * 0.42, Math.max(0.5, t), 3);
-  },
-};
-
-// ---------------------------------------------------------------- the rest
-
-function campfire(m, rnd, t, variant) {
-  const lit = variant === 'lit';
-  const R = Math.max(3, Math.round(4 * t));
-  for (let z = -R - 1; z <= R + 1; z++)
-    for (let x = -R - 1; x <= R + 1; x++) {
-      const d = Math.hypot(x, z);
-      if (Math.abs(d - R) < 0.6) m.put(x, 0, z, E.STONE);
-      else if (lit && d < R - 0.4) m.put(x, 0, z, E.ASH);
-    }
-  // logs leaning together; a lit fire starts above wood's 300 °C ignition point
-  const n = rnd.int(4, 5), a0 = rnd() * TAU, top = Math.round(R * 1.4);
-  const o = { temp: lit ? 450 : undefined };
-  for (let i = 0; i < n; i++) {
-    const a = a0 + (i / n) * TAU;
-    const foot = v3(Math.cos(a) * (R - 1), 0, Math.sin(a) * (R - 1));
-    m.rod(foot, foot.clone().lerp(v3(0, top, 0), 0.85), t > 1.6 ? 1 : 0.5, E.WOOD, o);
-  }
-  if (lit) m.ball(0, 1, 0, Math.max(1, R * 0.35), E.FIRE, { soft: true });
-}
-
-// Ice is the only static frozen solid, and it renders clear like glass, so the
-// dome is a thick ice shell with snow lying on the gentle upper part (snow on
-// the steep sides would just slide off: it's a powder).
-function igloo(m, rnd, t) {
-  const R = Math.max(5, Math.round(7.5 * t)), th = Math.max(2, Math.round(2.2 * t));
-  const ri = R - th, drift = Math.max(2, Math.round(3 * t));
-  m.foot = 8;
-  for (let y = 0; y <= R + 2; y++)
-    for (let z = -R - drift - 1; z <= R + drift + 1; z++)
-      for (let x = -R - drift - 1; x <= R + drift + 1; x++) {
-        const d = Math.hypot(x, y, z), dh = Math.hypot(x, z);
-        if (d <= R + 0.3) m.put(x, y, z, d > ri ? E.ICE : E.EMPTY);
-        else if (d <= R + 1.3 && y > 0.78 * d && rnd() > 0.12) m.put(x, y, z, E.SNOW);
-        // a drift banked against the wall, no steeper than snow's angle of repose
-        else if (y < drift - (dh - R) && rnd() > 0.08) m.put(x, y, z, E.SNOW);
-      }
-  // entrance tunnel toward the front
-  const tr = Math.max(3, Math.round(R * 0.45));
-  for (let z = 0; z <= R + Math.round(R * 0.45); z++)
-    for (let y = 0; y <= tr + 1; y++)
-      for (let x = -tr - 1; x <= tr + 1; x++) {
-        const e = Math.hypot(x, y);
-        if (e > tr + 0.3) continue;
-        if (e <= tr - 1.5) m.put(x, y, z, E.EMPTY);
-        else if (Math.hypot(x, y, z) >= ri - 0.5) m.put(x, y, z, E.ICE);
-      }
-}
-
-function barrel(m, rnd, t, variant) {
-  const keg = variant === 'keg';
-  const R0 = Math.max(2, Math.round(3.6 * t)), H = Math.round(R0 * (keg ? 2.4 : 2.8));
-  const shell = keg ? E.WOOD : E.METAL, fill = keg ? E.GUNPOWDER : E.OIL;
-  // steel hoops on the keg, rolling rims on the drum (flush with the shell)
-  const hoops = keg ? [1, Math.round(H * 0.3), Math.round(H * 0.7), H - 2] : [Math.round(H / 3), Math.round((2 * H) / 3)];
-  const B = Math.ceil(R0 * 1.15) + 1;
-  for (let y = 0; y < H; y++) {
-    const R = keg ? R0 * (1 + 0.14 * Math.sin((Math.PI * (y + 0.5)) / H)) : R0; // kegs bulge
-    const band = hoops.includes(y) ? E.METAL : shell;
-    for (let z = -B; z <= B; z++)
-      for (let x = -B; x <= B; x++) {
-        const d = Math.hypot(x, z);
-        if (d > R + 0.35) continue;
-        // a shell band 1.5 cells wide is face-connected, so nothing seeps out diagonally
-        if (y === 0 || y === H - 1) m.put(x, y, z, shell);
-        else m.put(x, y, z, d > R - 1.15 ? band : fill);
-      }
-  }
-}
-
-function aquarium(m, rnd, t) {
-  const W = odd(17 * t), D = odd(W * 0.6), H = Math.max(5, Math.round(W * 0.62));
-  const hw = (W - 1) / 2, hd = (D - 1) / 2;
-  const p1 = rnd() * TAU, p2 = rnd() * TAU;
-  m.foot = 12;
-  for (let y = 0; y < H; y++)
-    for (let z = -hd; z <= hd; z++)
-      for (let x = -hw; x <= hw; x++) {
-        const sand = 1 + Math.round(0.8 + 0.7 * Math.sin(x * 0.45 + p1) + 0.5 * Math.sin(z * 0.6 + p2));
-        if (y === 0 || Math.abs(x) === hw || Math.abs(z) === hd) m.put(x, y, z, E.GLASS);
-        else if (y <= sand) m.put(x, y, z, E.SAND);
-        else if (y <= H - 2) m.put(x, y, z, E.WATER);
-      }
-  for (let i = rnd.int(2, 4); i > 0; i--)
-    m.ball(rnd.range(-hw + 2, hw - 2), 2.5, rnd.range(-hd + 2, hd - 2), rnd.range(0.8, 1.6), E.STONE);
-}
-
-function fountain(m, rnd, t) {
-  const R = Math.max(3, Math.round(6.5 * t));
-  m.foot = 12;
-  for (let z = -R - 1; z <= R + 1; z++)
-    for (let x = -R - 1; x <= R + 1; x++) {
-      const d = Math.hypot(x, z);
-      if (d > R + 0.3) continue;
-      m.put(x, 0, z, MASONRY);
-      if (d > R - 1.2) m.box(x, 1, z, x, 2, z, MASONRY);
-      else m.put(x, 1, z, E.WATER);
-    }
-  const ph = Math.max(3, Math.round(R * 1.2)), br = Math.max(2, Math.round(R * 0.38));
-  m.rod(v3(0, 1, 0), v3(0, ph, 0), Math.max(1, t), MASONRY);
-  m.disc(0, ph + 1, 0, br + 0.3, MASONRY);
-  for (let z = -br - 1; z <= br + 1; z++)
-    for (let x = -br - 1; x <= br + 1; x++) {
-      const d = Math.hypot(x, z);
-      if (d > br - 1.2 && d <= br + 0.3) m.put(x, ph + 2, z, MASONRY);
-    }
-  m.put(0, ph + 2, 0, E.CLONE, { ctype: E.WATER }); // the spout
-}
-
-const GENERATORS = {
-  HOUSE: house,
-  TREE: (m, rnd, t, variant) => TREES[variant](m, rnd, t),
-  CAMPFIRE: campfire,
-  IGLOO: igloo,
-  BARREL: barrel,
-  AQUARIUM: aquarium,
-  FOUNTAIN: fountain,
-};
-
-function generate(build, variant, seed, size) {
-  const rnd = makeRng(seed);
-  const m = new Model(rnd);
-  GENERATORS[build.key](m, rnd, scaleFor(size), variant);
-  return m;
-}
-
-// ---------------------------------------------------------------- bake
-
-const TURN = [(x, z) => [x, z], (x, z) => [z, -x], (x, z) => [-x, -z], (x, z) => [-z, x]];
-
-// Rotate a model by quarter turns about y (the front, +z, ends up facing
-// +z, +x, -z or -x) and pack it into the stamp texture layout.
-function bake(model, quarter) {
-  const turn = TURN[quarter];
-  const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
-  const list = [];
-  for (const c of model.cells.values()) {
-    const [x, z] = turn(c.x, c.z);
-    const p = [x, c.y, z];
-    for (let i = 0; i < 3; i++) { min[i] = Math.min(min[i], p[i]); max[i] = Math.max(max[i], p[i]); }
-    list.push([p, c]);
-  }
-  if (!list.length) return null;
-  const w = max[0] - min[0] + 1, h = max[1] - min[1] + 1, d = max[2] - min[2] + 1;
-  const data = new Float32Array(w * h * d * 4);
-  const ids = new Int16Array(w * h * d).fill(-1);
-  const at = (x, y, z) => (z * h + y) * w + x;
-  for (const [p, c] of list) {
-    const x = p[0] - min[0], y = p[1] - min[1], z = p[2] - min[2];
-    const i = at(x, y, z);
-    ids[i] = c.id;
-    data.set([c.id + 1, c.temp, c.ctype, model.foot && c.y === 0 && ELEMENTS[c.id].kind === K.SOLID ? 1 : 0], i * 4);
-  }
-  // ghost: every non-air cell that isn't buried inside the model
-  const ghost = [];
-  const solid = (x, y, z) => x >= 0 && y >= 0 && z >= 0 && x < w && y < h && z < d && ids[at(x, y, z)] > 0;
-  for (let z = 0; z < d; z++)
-    for (let y = 0; y < h; y++)
-      for (let x = 0; x < w; x++) {
-        const id = ids[at(x, y, z)];
-        if (id <= 0) continue;
-        if (solid(x - 1, y, z) && solid(x + 1, y, z) && solid(x, y - 1, z) && solid(x, y + 1, z) &&
-          solid(x, y, z - 1) && solid(x, y, z + 1)) continue;
-        ghost.push(x, y, z, id);
-      }
-  return { w, h, d, data, ghost, foot: model.foot, base: v3(-min[0], -min[1], -min[2]) };
-}
+const loadJSON = (key, fallback) => { try { return JSON.parse(localStorage.getItem(key) || 'null') ?? fallback; } catch { return fallback; } };
+const saveJSON = (key, value) => { try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* storage unavailable */ } };
+const newId = () => `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 
 // ---------------------------------------------------------------- ghost
 
@@ -557,15 +73,11 @@ void main() {
   gl_FragColor = vec4(vColor * lit * uAlpha, uAlpha);
 }`;
 
-function hexRGB(hex) {
-  const n = parseInt(hex.slice(1), 16);
-  return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
-}
-
 // ---------------------------------------------------------------- UI
 
 const ICON_SHUFFLE = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h3.5c3 0 4 10 7 10H20M4 17h3.5c1.3 0 2.2-1.8 3-4M20 7h-5.5c-1.3 0-2.2 1.8-3 4"/><path d="M17 4l3 3-3 3M17 14l3 3-3 3"/></svg>';
 const ICON_DICE = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3.5"/><circle cx="9" cy="9" r="1.1"/><circle cx="15" cy="15" r="1.1"/><circle cx="15" cy="9" r="1.1"/><circle cx="9" cy="15" r="1.1"/></svg>';
+const ICON_PLUS = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 6v12M6 12h12"/></svg>';
 
 // ---------------------------------------------------------------- module
 
@@ -577,14 +89,23 @@ export class Constructions {
     this.getVolume = getVolume;
     this.getScale = getScale;
 
-    this.choice = {}; // build key -> variant key or 'shuffle'
-    try { Object.assign(this.choice, JSON.parse(localStorage.getItem(STORE) || '{}').choice); } catch { /* storage unavailable */ }
+    this.choice = loadJSON(STORE, {}).choice ?? {}; // build key -> variant, 'shuffle', or (PROMPT) an item id
     this.seed = newSeed();
-    this.model = null; this.modelKey = '';
+    this.cells = null; this.cellsKey = '';
     this.baked = null; this.bakeKey = '';
     this.origin = new THREE.Vector3();
     this.valid = false;
     this.mat = null; this.gridKey = '';
+
+    // PROMPT: the player's own constructions, their sandbox results, and the agent
+    this.mine = loadJSON(MINE_STORE, []).filter((m) => m && typeof m.code === 'string');
+    this.results = new Map();   // `${id}|${seed}|${size}` → { cells, report } | { error }
+    this.pendingKey = null;
+    this.draft = '';            // the prompt being typed
+    this.status = '';
+    this.running = null;        // AbortController of a generation in progress
+    this.registerProvider = registerProvider; // for wiring a provider from the console
+    onProvidersChange(() => { this.barFor = null; });
 
     // ghost: a depth-only pass, then a translucent colour pass that only keeps
     // the frontmost faces, so it reads as one solid object rather than a jumble
@@ -594,7 +115,7 @@ export class Constructions {
     this.depthMat = new THREE.MeshBasicMaterial({ colorWrite: false, transparent: true });
     this.colorMat = new THREE.ShaderMaterial({
       vertexShader: ghostVert, fragmentShader: ghostFrag,
-      uniforms: { uAlpha: { value: 0.6 } },
+      uniforms: { uAlpha: { value: GHOST_ALPHA } },
       transparent: true, depthWrite: false, depthFunc: THREE.LessEqualDepth,
       blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor,
     });
@@ -611,15 +132,18 @@ export class Constructions {
     this.hold = null;
     this._onMove = (e) => {
       this.pointer = [e.clientX, e.clientY];
-      if (this.hold && Math.hypot(e.clientX - this.hold[0], e.clientY - this.hold[1]) > 6) this.hold = null;
+      if (this.hold && Math.hypot(e.clientX - this.hold[0], e.clientY - this.hold[1]) > HOLD_PX) this.hold = null;
     };
     addEventListener('pointermove', this._onMove);
 
-    this.bar = this._createBar();
+    this.bar = h('div.build-bar.panel', { role: 'toolbar', 'aria-label': 'Construction options' });
+    document.body.append(this.bar);
     this._tmp = new THREE.Vector3();
   }
 
   get ready() { return this.valid; }
+
+  get maxSpan() { const g = this.getSim().g; return Math.min(g.nx, g.ny, g.nz); }
 
   // Call every frame. `active`: a construction is selected and the pointer is over the scene.
   update({ hover, active }) {
@@ -629,28 +153,51 @@ export class Constructions {
     this.valid = false;
     this.group.visible = false;
     if (!build || !active || !hover.valid || this.hold) return;
+    const key = this._loadCells(build);
+    if (!key || !this._bakeFacingCamera(key)) return;
+    this._placeGhost(hover);
+    this.valid = true;
+  }
 
-    // turn the front toward the camera, snapped to the grid axes
+  // Make this.cells the construction to place. Returns its cache key, or null
+  // while the player's code is still running in the sandbox (or failed).
+  _loadCells(build) {
+    const size = this.settings.radius;
+    if (build.key === PROMPT) {
+      const item = this.activeItem();
+      if (!item) return null;
+      const key = `${item.id}|${this.seed}|${size}`;
+      const res = this.results.get(key);
+      if (!res) this._runItem(item, key);
+      if (!res || res.error) return null;
+      if (key !== this.cellsKey) Object.assign(this, { cells: res.cells, cellsKey: key, bakeKey: '' });
+      return key;
+    }
+    const variant = this.variantFor(build);
+    const key = `${build.key}|${variant}|${this.seed}|${size}`;
+    if (key !== this.cellsKey) {
+      const cells = runGenerator(BUILTINS[build.key], { size, seed: this.seed, variant });
+      Object.assign(this, { cells, cellsKey: key, bakeKey: '' });
+    }
+    return key;
+  }
+
+  // Bake the cells with the front (+z) turned toward the camera, snapped to the grid axes.
+  _bakeFacingCamera(key) {
     const f = this.camera.getWorldDirection(this._tmp);
     const quarter = Math.abs(f.x) > Math.abs(f.z) ? (f.x > 0 ? 3 : 1) : (f.z > 0 ? 2 : 0);
-    const variant = this.variantFor(build);
-    const mk = `${build.key}|${variant}|${this.seed}|${this.settings.radius}`;
-    if (mk !== this.modelKey) {
-      this.model = generate(build, variant, this.seed, this.settings.radius);
-      this.modelKey = mk;
-      this.bakeKey = '';
-    }
-    const bk = `${mk}|${quarter}`;
+    const bk = `${key}|${quarter}`;
     if (bk !== this.bakeKey) {
-      this.baked = bake(this.model, quarter);
+      this.baked = bake(this.cells, quarter);
       this.bakeKey = bk;
       if (this.baked) this._setGhost(this.baked);
     }
-    const s = this.baked;
-    if (!s) return;
+    return !!this.baked;
+  }
 
-    // sit the base on the hovered face (or hang it under / beside it)
-    const g = this.getSim().g;
+  // Sit the base on the hovered face (or hang it under / beside it) and move the ghost there.
+  _placeGhost(hover) {
+    const s = this.baked, g = this.getSim().g;
     const axis = Math.floor(hover.face / 2), dir = hover.face % 2 === 0 ? 1 : -1;
     const a = this._tmp.copy(hover.cell).setComponent(axis, hover.cell.getComponent(axis) + dir);
     const o = this.origin.copy(a).sub(s.base);
@@ -666,7 +213,6 @@ export class Constructions {
     this.group.scale.setScalar(scale);
     this.group.position.copy(o).multiplyScalar(scale).add(this.getVolume().position);
     this.group.visible = true;
-    this.valid = true;
   }
 
   // Stamp the previewed construction into the grid. The caller snapshots for undo first.
@@ -720,15 +266,276 @@ export class Constructions {
     if (!build.variants) return undefined;
     const c = this.choice[build.key] ?? (build.shuffle ? 'shuffle' : build.variants[0][0]);
     if (c !== 'shuffle') return build.variants.some(([k]) => k === c) ? c : build.variants[0][0];
-    return makeRng(this.seed ^ 0x9e3779b9).pick(build.variants)[0];
+    return makeRng(this.seed ^ SEED_SALT).pick(build.variants)[0];
   }
 
   setVariant(build, key) {
     this.choice[build.key] = key;
-    try { localStorage.setItem(STORE, JSON.stringify({ choice: this.choice })); } catch { /* ignore */ }
+    saveJSON(STORE, { choice: this.choice });
     this.reroll();
     this.barFor = null; // resync chips
   }
+
+  // ---------------------------------------------------------------- PROMPT
+
+  activeItem() {
+    const c = this.choice[PROMPT];
+    return c && c !== NEW ? this.mine.find((m) => m.id === c) ?? null : null;
+  }
+
+  _saveMine() { saveJSON(MINE_STORE, this.mine); }
+
+  _setStatus(text) {
+    this.status = text;
+    if (this.statusEl) this.statusEl.textContent = text;
+  }
+
+  // Run a saved construction's code in the sandbox at the current seed and size.
+  _runItem(item, key) {
+    const known = this.results.get(key);
+    if (known) { this._setStatus(known.error ? `Error: ${known.error}` : summarizeReport(known.report)); return; }
+    if (this.pendingKey) return;
+    this.pendingKey = key;
+    const [, seed, size] = key.split('|').map(Number);
+    execSandboxed(item.code, { size, seed, maxSpan: this.maxSpan })
+      .then((res) => { this._remember(key, res); if (this.activeItem() === item) this._setStatus(summarizeReport(res.report)); })
+      .catch((err) => { this._remember(key, { error: err.message }); if (this.activeItem() === item) this._setStatus(`Error: ${err.message}`); })
+      .finally(() => { this.pendingKey = null; });
+  }
+
+  _remember(key, value) {
+    this.results.set(key, value);
+    while (this.results.size > RESULT_CACHE) this.results.delete(this.results.keys().next().value);
+  }
+
+  _addItem(fields) {
+    const item = { id: newId(), name: 'Untitled', prompt: '', model: '', created: new Date().toISOString(), ...fields };
+    this.mine.push(item);
+    this._saveMine();
+    this._select(item.id);
+    return item;
+  }
+
+  _select(id) {
+    this.choice[PROMPT] = id;
+    saveJSON(STORE, { choice: this.choice });
+    this.barFor = null;
+    const item = this.activeItem();
+    this._setStatus(item ? 'Checking…' : '');
+    if (item) this._runItem(item, `${item.id}|${this.seed}|${this.settings.radius}`);
+  }
+
+  async _generate() {
+    const provider = getProvider(this.choice.provider);
+    const request = this.draft.trim();
+    if (!provider || !request || this.running) return;
+    this.running = new AbortController();
+    this.barFor = null;
+    const size = this.settings.radius;
+    try {
+      this._setStatus(`Asking ${provider.name}…`);
+      const result = await runAgent({
+        provider,
+        system: buildSystemPrompt({ examples: builtinsSource }),
+        request,
+        signal: this.running.signal,
+        exec: (code) => execSandboxed(code, { size, seed: AGENT_SEED, maxSpan: this.maxSpan }),
+        preview: async (cells) => PREVIEW_VIEWS.map((quarter) => {
+          const img = renderIso(cells, { quarter, maxPx: PREVIEW_PX });
+          const canvas = Object.assign(document.createElement('canvas'), { width: img.width, height: img.height });
+          canvas.getContext('2d').putImageData(new ImageData(img.data, img.width, img.height), 0, 0);
+          return { mediaType: 'image/png', data: canvas.toDataURL('image/png').split(',')[1] };
+        }),
+        onEvent: (e) => {
+          if (e.type === 'exec') this._setStatus(`Running attempt ${e.attempt}…`);
+          else if (e.type === 'report') this._setStatus(`Attempt ${e.attempt}: ${summarizeReport(e.report)}`);
+          else if (e.type === 'exec_error') this._setStatus(`Attempt ${e.attempt} failed: ${e.message}`);
+          else if (e.type === 'step' && e.step > 1) this._setStatus(`${this.status} · thinking…`);
+        },
+      });
+      // show the player exactly what the model checked
+      this.seed = AGENT_SEED;
+      const item = { id: newId() };
+      this._remember(`${item.id}|${AGENT_SEED}|${size}`, { cells: result.cells, report: result.report });
+      this._addItem({ id: item.id, name: result.name, prompt: request, code: result.code, model: provider.name, description: result.description });
+      const tokens = result.usage.inputTokens + result.usage.outputTokens;
+      this._setStatus(`${result.finished ? 'Done' : 'Stopped at the step limit'}: ${summarizeReport(result.report)}${tokens ? ` · ${tokens.toLocaleString()} tokens` : ''}`);
+    } catch (err) {
+      this._setStatus(err.name === 'AbortError' ? 'Cancelled.' : `Generation failed: ${err.message}`);
+    } finally {
+      this.running = null;
+      this.barFor = null;
+    }
+  }
+
+  async _copyPrompt() {
+    const request = this.draft.trim();
+    if (!request) { this._setStatus('Describe the construction first.'); return; }
+    try {
+      await navigator.clipboard.writeText(buildChatPrompt({ examples: builtinsSource, request }));
+      this._setStatus('Prompt copied. Paste it into any chatbot, then bring its code back with Paste code.');
+    } catch {
+      this._setStatus('Copying was blocked by the browser.');
+    }
+  }
+
+  _export(item) {
+    const blob = new Blob([JSON.stringify({ format: FILE_FORMAT, version: FILE_VERSION, name: item.name, prompt: item.prompt, description: item.description ?? '', code: item.code }, null, 2)], { type: 'application/json' });
+    const a = h('a', { href: URL.createObjectURL(blob), download: `${item.name.replace(/[^\w-]+/g, '-').toLowerCase() || 'construction'}.json` });
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+
+  _import() {
+    const input = h('input', { type: 'file', accept: '.json,application/json' });
+    input.addEventListener('change', async () => {
+      try {
+        const data = JSON.parse(await input.files[0].text());
+        if (data?.format !== FILE_FORMAT || typeof data.code !== 'string') throw new Error('not a construction file');
+        this._addItem({ name: String(data.name || 'Imported').slice(0, IMPORT_NAME_CHARS), prompt: String(data.prompt ?? ''), description: String(data.description ?? ''), code: data.code });
+      } catch (err) {
+        this._setStatus(`Import failed: ${err.message}`);
+      }
+    });
+    input.click();
+  }
+
+  // Code editor for pasted, imported or hand-written constructions. The code is
+  // only saved once it has run in the sandbox.
+  _openEditor(item = null) {
+    this.editor?.remove();
+    const name = h('input.name', { type: 'text', placeholder: 'Name', value: item?.name ?? this.draft.trim().slice(0, MAX_NAME_CHARS), spellcheck: 'false' });
+    const code = h('textarea.code', { spellcheck: 'false', placeholder: "Paste construction code, or a chatbot's whole reply.\n\nbox(-4, 0, -4, 4, 0, 4, 'WALL');\nball(0, 5, 0, 4, 'WATER');" });
+    code.value = item?.code ?? '';
+    const out = h('p.report');
+    const close = () => { this.editor?.remove(); this.editor = null; };
+    const run = h('button.chip.on', { type: 'button', text: item ? 'Run and save' : 'Run and add' });
+    run.addEventListener('click', async () => {
+      const src = extractCode(code.value);
+      if (!src) { out.textContent = 'Nothing to run.'; return; }
+      out.textContent = 'Running…';
+      try { await this._saveEdited(item, src, name.value.trim()); close(); } catch (err) { out.textContent = `Error: ${err.message}`; }
+    });
+    const cancel = h('button.chip', { type: 'button', text: 'Cancel', on: { click: close } });
+    this.editor = h('div.build-editor.panel', { role: 'dialog', 'aria-label': 'Construction code' },
+      h('h3', { text: item ? 'Edit construction' : 'Paste construction code' }), name, code, out, h('div.row', {}, run, cancel));
+    this.editor.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); e.stopPropagation(); });
+    document.body.append(this.editor);
+    (item || name.value ? code : name).focus();
+  }
+
+  // Run edited code in the sandbox; only code that runs is saved (throws otherwise).
+  async _saveEdited(item, src, name) {
+    const res = await execSandboxed(src, { size: this.settings.radius, seed: this.seed, maxSpan: this.maxSpan });
+    if (item) {
+      Object.assign(item, { code: src, name: name || item.name });
+      this._saveMine();
+      for (const k of [...this.results.keys()]) if (k.startsWith(`${item.id}|`)) this.results.delete(k);
+      this._select(item.id);
+    } else {
+      this._addItem({ name: name || 'Untitled', prompt: this.draft.trim(), code: src });
+    }
+    this._remember(`${this.activeItem().id}|${this.seed}|${this.settings.radius}`, res);
+    this._setStatus(summarizeReport(res.report));
+  }
+
+  // ---------------------------------------------------------------- bar
+
+  _syncBar(build) {
+    this.bar.classList.toggle('show', !!build);
+    if (build) this._positionBar();
+    const sel = this._barKey(build);
+    if (sel === this.barFor) return;
+    this.barFor = sel;
+    this.bar.classList.toggle('prompt', build?.key === PROMPT);
+    if (build?.key === PROMPT) this._promptBar();
+    else if (build) this._variantBar(build);
+  }
+
+  // sit just above the dock (or its collapsed tab)
+  _positionBar() {
+    const dock = document.querySelector('.dock:not(.collapsed)') ?? document.querySelector('.dock-tab');
+    const top = dock ? dock.getBoundingClientRect().top : innerHeight - DOCK_MARGIN_PX;
+    this.bar.style.bottom = `${Math.round(innerHeight - top + BAR_GAP_PX)}px`;
+  }
+
+  // what the bar shows; it is rebuilt only when this changes
+  _barKey(build) {
+    if (!build) return null;
+    if (build.key !== PROMPT) return `${build.key}|${this.choice[build.key] ?? ''}`;
+    return `${PROMPT}|${this.choice[PROMPT] ?? ''}|${this.mine.length}|${!!this.running}|${!!getProvider(this.choice.provider)}`;
+  }
+
+  // built-ins: variant chips (with shuffle) and a reroll
+  _variantBar(build) {
+    const current = build.variants ? (this.choice[build.key] ?? (build.shuffle ? 'shuffle' : build.variants[0][0])) : null;
+    const chip = (key, label, icon) => h(`button.chip${current === key ? '.on' : ''}`, {
+      type: 'button', 'aria-pressed': String(current === key),
+      html: `${icon ?? ''}<span>${label}</span>`,
+      on: { click: () => this.setVariant(build, key) },
+    });
+    this.bar.replaceChildren(...[
+      build.variants && h('div.chips', {},
+        chip('shuffle', 'Shuffle', ICON_SHUFFLE),
+        build.variants.map(([k, label]) => chip(k, label))),
+      h('button.chip.roll', {
+        type: 'button', title: 'Roll a different one', html: `${ICON_DICE}<span>New seed</span>`,
+        on: { click: () => this.reroll() },
+      }),
+    ].filter(Boolean));
+  }
+
+  _promptBar() {
+    const item = this.activeItem();
+    const current = item ? item.id : NEW;
+    const provider = getProvider(this.choice.provider);
+    const button = (label, opts, fn) => h(`button.chip${opts.on ? '.on' : ''}`, {
+      type: 'button', title: opts.title, disabled: !!opts.disabled, html: `${opts.icon ?? ''}<span>${label}</span>`, on: { click: fn },
+    });
+    const chips = h('div.chips', {},
+      this.mine.map((m) => h(`button.chip${current === m.id ? '.on' : ''}`, {
+        type: 'button', title: m.prompt || m.name, 'aria-pressed': String(current === m.id), text: m.name,
+        on: { click: () => this._select(m.id) },
+      })),
+      h(`button.chip${current === NEW ? '.on' : ''}`, { type: 'button', html: `${ICON_PLUS}<span>New</span>`, on: { click: () => this._select(NEW) } }));
+
+    let actions;
+    if (item) {
+      actions = h('div.row', {},
+        button('New seed', { icon: ICON_DICE, title: 'Run it again with a different seed' }, () => this.reroll()),
+        button('Edit code', {}, () => this._openEditor(item)),
+        button('Export', { title: 'Save as a .json file to share' }, () => this._export(item)),
+        button('Delete', {}, () => {
+          if (!confirm(`Delete "${item.name}"?`)) return;
+          this.mine = this.mine.filter((m) => m !== item);
+          this._saveMine();
+          this._select(NEW);
+        }));
+    } else {
+      const input = h('textarea.prompt-input', { rows: 2, spellcheck: true, placeholder: 'Describe a construction: a lighthouse on a rocky island, a log bridge, a pagoda…' });
+      input.value = this.draft;
+      input.addEventListener('input', () => { this.draft = input.value; });
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); this._generate(); }
+        e.stopPropagation();
+      });
+      actions = h('div.row', {},
+        input,
+        this.running
+          ? button('Cancel', {}, () => this.running?.abort())
+          : button('Generate', {
+            on: !!provider, disabled: !provider,
+            title: provider ? `Write it with ${provider.name} (⌘↵)` : 'No model connected yet. Providers are plug-ins: see src/ai/providers.js',
+          }, () => this._generate()),
+        button('Copy prompt', { title: 'Copy a prompt for any chatbot' }, () => this._copyPrompt()),
+        button('Paste code', { title: 'Run code from a chatbot or your own' }, () => this._openEditor()),
+        button('Import', { title: 'Add a construction from a .json file' }, () => this._import()));
+    }
+    this.statusEl = h('p.status', { 'aria-live': 'polite', text: this.status });
+    this.bar.replaceChildren(chips, actions, this.statusEl);
+  }
+
+  // ---------------------------------------------------------------- ghost
 
   _setGhost(s) {
     const n = s.ghost.length / 4;
@@ -751,11 +558,11 @@ export class Constructions {
     }
     const [depth, color] = this.meshes;
     const mat = depth.instanceMatrix.array, col = depth.instanceColor.array;
-    const rgb = ELEMENTS.map((e) => hexRGB(e.color));
+    const rgb = ELEMENTS.map((e) => hexBytes(e.color).map((v) => v / 255));
     for (let i = 0; i < n; i++) {
       const x = s.ghost[i * 4], y = s.ghost[i * 4 + 1], z = s.ghost[i * 4 + 2], id = s.ghost[i * 4 + 3];
       mat.set([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x + 0.5, y + 0.5, z + 0.5, 1], i * 16);
-      const c = rgb[id], k = 0.92 + 0.16 * (((x * 73856093) ^ (y * 19349663) ^ (z * 83492791)) & 255) / 255;
+      const c = rgb[id], k = GHOST_SHADE_MIN + GHOST_TEXTURE * cellNoise(x, y, z);
       col[i * 3] = c[0] * k; col[i * 3 + 1] = c[1] * k; col[i * 3 + 2] = c[2] * k;
     }
     depth.count = color.count = n;
@@ -769,44 +576,9 @@ export class Constructions {
     this.outline.position.set(s.w / 2, s.h / 2, s.d / 2);
   }
 
-  _createBar() {
-    const el = h('div.build-bar.panel', { role: 'toolbar', 'aria-label': 'Construction options' });
-    document.body.append(el);
-    return el;
-  }
-
-  _syncBar(build) {
-    const el = this.bar;
-    el.classList.toggle('show', !!build);
-    if (build) {
-      // sit just above the dock (or its collapsed tab)
-      const dock = document.querySelector('.dock:not(.collapsed)') ?? document.querySelector('.dock-tab');
-      const top = dock ? dock.getBoundingClientRect().top : innerHeight - 14;
-      el.style.bottom = `${Math.round(innerHeight - top + 8)}px`;
-    }
-    const sel = build ? `${build.key}|${this.choice[build.key] ?? ''}` : null;
-    if (sel === this.barFor) return;
-    this.barFor = sel;
-    if (!build) return;
-    const current = build.variants ? (this.choice[build.key] ?? (build.shuffle ? 'shuffle' : build.variants[0][0])) : null;
-    const chip = (key, label, icon) => h(`button.chip${current === key ? '.on' : ''}`, {
-      type: 'button', 'aria-pressed': String(current === key),
-      html: `${icon ?? ''}<span>${label}</span>`,
-      on: { click: () => this.setVariant(build, key) },
-    });
-    el.replaceChildren(...[
-      build.variants && h('div.chips', {},
-        chip('shuffle', 'Shuffle', ICON_SHUFFLE),
-        build.variants.map(([k, label]) => chip(k, label))),
-      h('button.chip.roll', {
-        type: 'button', title: 'Roll a different one', html: `${ICON_DICE}<span>New seed</span>`,
-        on: { click: () => this.reroll() },
-      }),
-    ].filter(Boolean));
-  }
-
   dispose() {
     removeEventListener('pointermove', this._onMove);
+    this.running?.abort();
     for (const m of this.meshes) m.dispose();
     this.group.removeFromParent();
     this.geo.dispose();
@@ -816,5 +588,6 @@ export class Constructions {
     this.outline.material.dispose();
     this.mat?.dispose();
     this.bar.remove();
+    this.editor?.remove();
   }
 }
