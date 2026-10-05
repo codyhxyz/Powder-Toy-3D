@@ -1,4 +1,5 @@
 import { prelude } from './common.js';
+import { quietGLSL } from './activity.js';
 
 // Movement pass: Margolus block cellular automaton.
 //
@@ -144,6 +145,7 @@ uniform sampler2D tB;
 uniform int uParity;
 uniform uint uFrame;
 ${CELLS.map((i) => `layout(location = ${i}) out vec4 o${i};`).join('\n')}
+${quietGLSL}
 
 uint rs;
 
@@ -202,6 +204,15 @@ float bounceR(int id) {
 void main() {
   ivec3 bc = blockFromFrag(ivec2(gl_FragCoord.xy));
   ivec3 base = bc * 2 - ivec3(uParity);
+  // A block whose base cell is in a quiet brick (shaders/activity.js) lies
+  // within that brick's inert halo: it stays put, velocities and all.
+  if (quietCell(base)) {
+    ${CELLS.map((i) => `{
+    ivec3 q = base + ivec3(${i & 1}, ${(i >> 1) & 1}, ${(i >> 2) & 1});
+    o${i} = vec4(float(${i}), inGrid(q) ? texelFetch(tB, atlas(q), 0).xyz : vec3(0.0));
+    }`).join('\n    ')}
+    return;
+  }
 
   ${CELLS.map((i) => `vec4 a${i}; vec3 v${i}; int k${i}; float d${i}; int n${i} = ${i}; bool m${i} = false, s${i} = false;`).join('\n  ')}
   ${CELLS.map((i) => `{

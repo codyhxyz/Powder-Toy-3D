@@ -7,6 +7,10 @@ import { incandescenceGLSL } from '../gfx/incandescence.js';
 //
 // State texture A: (element id, temperature °C, life/latent/fuel, ctype + seed)
 // State texture B: (velocity xyz in cells/step, air pressure)
+// Edge of a brick, in cells: the unit of empty-space skipping, the light and
+// GI volumes, and the simulation's activity map.
+export const BRICK = 4;
+
 export function prelude(g) {
   return /* glsl */ `
 precision highp float;
@@ -17,10 +21,10 @@ precision highp sampler2D;
 #define NY ${g.ny}
 #define NZ ${g.nz}
 #define TX ${g.tx}
-#define BS 4
-#define BX ${g.nx / 4}
-#define BY ${g.ny / 4}
-#define BZ ${g.nz / 4}
+#define BS ${BRICK}
+#define BX ${g.nx / BRICK}
+#define BY ${g.ny / BRICK}
+#define BZ ${g.nz / BRICK}
 #define BTX ${g.btx}
 #define MX ${g.mx}
 #define MY ${g.my}

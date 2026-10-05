@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { quadVert } from './shaders/common.js';
+import { quadVert, BRICK } from './shaders/common.js';
+import { inertFrag, quietFrag, activityPeriod } from './shaders/activity.js';
 import { moveBlockFrag, moveGatherFrag } from './shaders/move.js';
 import { reactFrag } from './shaders/react.js';
 import { paintFrag, copyFrag, brickFrag, blurFrag } from './shaders/passes.js';
@@ -8,10 +9,13 @@ import { giSourceFrag, giGatherFrag } from './shaders/gi.js';
 import { CHANNELS, MEDIA, gauss5, bulkPeak, bulkPeakCubic, CUBIC_LATTICE } from './gfx/materials.js';
 import { gfxUniforms } from './gfx/uniforms.js';
 
+// Steps an activity map stays valid (shaders/activity.js).
+const ACTIVITY_PERIOD = activityPeriod(BRICK);
+
 export function gridLayout(nx, ny, nz) {
   const tx = Math.ceil(Math.sqrt((ny * nz) / nx));
   const ty = Math.ceil(ny / tx);
-  const bx = nx / 4, by = ny / 4, bz = nz / 4;
+  const bx = nx / BRICK, by = ny / BRICK, bz = nz / BRICK;
   const btx = Math.ceil(Math.sqrt((by * bz) / bx));
   const bty = Math.ceil(by / btx);
   // Margolus blocks: 2×2×2, partition offset by 0 or 1, so N/2+1 per axis.
@@ -85,6 +89,9 @@ export class Simulation {
     const g = this.g;
     this.frame = 0;
     this.gravity = 0.025;
+    // bumped by every write to the state (steps, painting, loads, undo, network
+    // updates), so callers can tell when the world changed
+    this.version = 0;
 
     this.targets = [makeTarget(g.width, g.height), makeTarget(g.width, g.height)];
     this.cur = 0;
@@ -107,6 +114,15 @@ export class Simulation {
     this.giSrc = makeFieldTarget(g.bwidth, g.bheight, 3, HALF, NEAR);
     this.giProbes = makeFieldTarget(g.bwidth, g.bheight, 4, HALF, THREE.LinearFilter);
     this.giReset = true;
+    // activity map (shaders/activity.js): inert bricks, then the quiet ones the
+    // step passes skip. Rebuilt every ACTIVITY_PERIOD steps and after any
+    // write that isn't a step (painting, loads), which may wake a brick.
+    this.actInert = makeFieldTarget(g.bwidth, g.bheight, 1, U8, NEAR);
+    this.actQuiet = makeFieldTarget(g.bwidth, g.bheight, 1, U8, NEAR);
+    this.actAge = ACTIVITY_PERIOD;
+    this.actDirty = true;
+    this.stepping = false;
+    this.skipQuiet = true;   // false: step every brick (A/B testing)
 
     this.scene = new THREE.Scene();
     this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
@@ -116,12 +132,14 @@ export class Simulation {
 
     const state = () => ({ tA: { value: null }, tB: { value: null } });
     this.mats = {
-      moveBlock: rawMat(moveBlockFrag(g), { ...state(), uParity: { value: 0 }, uFrame: { value: 0 } }),
+      moveBlock: rawMat(moveBlockFrag(g), { ...state(), uParity: { value: 0 }, uFrame: { value: 0 }, tQuiet: { value: null } }),
       moveGather: rawMat(moveGatherFrag(g), {
         ...state(), uParity: { value: 0 },
         ...Object.fromEntries([...Array(8).keys()].map((i) => [`tM${i}`, { value: null }])),
       }),
-      react: rawMat(reactFrag(g), { ...state(), uFrame: { value: 0 }, uGravity: { value: this.gravity } }),
+      react: rawMat(reactFrag(g), { ...state(), uFrame: { value: 0 }, uGravity: { value: this.gravity }, tQuiet: { value: null } }),
+      inert: rawMat(inertFrag(g), state()),
+      quiet: rawMat(quietFrag(g), { tInert: { value: null }, uEnabled: { value: true } }),
       paint: rawMat(paintFrag(g), {
         ...state(), uFrame: { value: 0 }, uCenter: { value: new THREE.Vector3() }, uRadius: { value: 4 },
         uShape: { value: 0 }, uTool: { value: 2 }, uRate: { value: 1 }, uReplace: { value: false },
@@ -163,6 +181,23 @@ export class Simulation {
     this.quad.material = mat;
     this.renderer.setRenderTarget(target);
     this.renderer.render(this.scene, this.camera);
+    if (target === this.targets[0] || target === this.targets[1]) {
+      this.version++;
+      if (!this.stepping) this.actDirty = true;
+    }
+  }
+
+  // Rebuild the activity map from the current state (shaders/activity.js).
+  updateActivity() {
+    const { inert, quiet } = this.mats;
+    inert.uniforms.tA.value = this.stateA;
+    inert.uniforms.tB.value = this.stateB;
+    this.run(inert, this.actInert);
+    quiet.uniforms.tInert.value = this.actInert.texture;
+    quiet.uniforms.uEnabled.value = this.skipQuiet;
+    this.run(quiet, this.actQuiet);
+    this.actAge = 0;
+    this.actDirty = false;
   }
 
   // Ping-pong pass over the state.
@@ -175,7 +210,11 @@ export class Simulation {
 
   step() {
     this.frame++;
+    if (this.actDirty || this.actAge >= ACTIVITY_PERIOD) this.updateActivity();
+    this.actAge++;
+    this.stepping = true;
     const { moveBlock, moveGather, react } = this.mats;
+    moveBlock.uniforms.tQuiet.value = react.uniforms.tQuiet.value = this.actQuiet.texture;
     // movement: solve each 2×2×2 block once, then every cell gathers its result
     moveBlock.uniforms.uParity.value = this.frame & 1;
     moveBlock.uniforms.uFrame.value = this.frame;
@@ -188,6 +227,7 @@ export class Simulation {
     react.uniforms.uFrame.value = this.frame;
     react.uniforms.uGravity.value = this.gravity;
     this.pass(react);
+    this.stepping = false;
   }
 
   paint({ center, radius, shape, tool, rate, replace }) {
@@ -382,6 +422,8 @@ export class Simulation {
     this.fieldTmp.dispose();
     this.fieldsBlurred.dispose();
     this.fields.dispose();
+    this.actInert.dispose();
+    this.actQuiet.dispose();
     this.giSrc.dispose();
     this.giProbes.dispose();
     this.history?.forEach((t) => t.dispose());

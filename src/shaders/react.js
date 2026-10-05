@@ -1,4 +1,5 @@
 import { prelude } from './common.js';
+import { quietGLSL } from './activity.js';
 
 // React pass: everything that only changes a cell in place, using its six
 // face neighbours.
@@ -26,6 +27,7 @@ uniform uint uFrame;
 uniform float uGravity;
 layout(location = 0) out vec4 oA;
 layout(location = 1) out vec4 oB;
+${quietGLSL}
 
 #define L_FUSE 80.0
 #define L_BOIL 540.0
@@ -51,6 +53,8 @@ void main() {
 
   vec4 a = texelFetch(tA, atlas(p), 0);
   vec4 b = texelFetch(tB, atlas(p), 0);
+  // quiet brick (shaders/activity.js): nothing here can change, keep it as is
+  if (quietCell(p)) { oA = a; oB = b; return; }
   int id = eid(a);
   float T = a.y, life = a.z;
   float ctype = floor(a.w), seed = fract(a.w);

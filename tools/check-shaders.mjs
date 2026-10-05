@@ -10,6 +10,7 @@ import { gridLayout } from '../src/sim.js';
 import * as render from '../src/shaders/render.js';
 import * as passes from '../src/shaders/passes.js';
 import * as fields from '../src/shaders/fields.js';
+import * as activity from '../src/shaders/activity.js';
 import * as move from '../src/shaders/move.js';
 import * as react from '../src/shaders/react.js';
 import { quadVert } from '../src/shaders/common.js';
@@ -60,6 +61,8 @@ for (const [label, dims] of Object.entries(grids)) {
   check(`pick-${label}`, raw + opt(render.pickFrag), 'frag');
   check(`shadow-${label}`, raw + opt(render.shadowFrag), 'frag');
   for (const [k, v] of Object.entries(passes)) if (typeof v === 'function') check(`${k}-${label}`, raw + v(g), 'frag');
+  check(`inert-${label}`, raw + activity.inertFrag(g), 'frag');
+  check(`quiet-${label}`, raw + activity.quietFrag(g), 'frag');
   check(`fieldEma-${label}`, raw + fields.fieldEmaFrag(g), 'frag');
   check(`fieldBlur-${label}`, raw + fields.fieldBlurFrag(g, false), 'frag');
   check(`fieldFinal-${label}`, raw + fields.fieldBlurFrag(g, true), 'frag');
