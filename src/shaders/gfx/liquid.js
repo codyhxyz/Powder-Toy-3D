@@ -42,9 +42,10 @@ void absorbSegment(int id, vec3 p, float seg, vec3 sunVis, float T, inout vec3 c
 }
 
 // Which liquid is at p (the cell itself, else a neighbour), for absorption.
+#define LIQ_ID_PROBES 7   // cells tried: p's own, then its 6 face neighbours
 int liquidIdAt(vec3 p, int fallback) {
   ivec3 c = ivec3(floor(p));
-  for (int i = 0; i < 7; i++) {
+  for (int i = 0; i < LIQ_ID_PROBES; i++) {
     ivec3 q = c;
     if (i > 0) q[(i - 1) >> 1] += ((i & 1) == 1) ? -1 : 1;
     if (outside(q)) continue;
@@ -145,9 +146,9 @@ vec3 reflectTrace(vec3 ro, vec3 rd, vec3 sunVis) {
       }
       if (ch > 0) {
         vec3 hp = ro + rd * tOp;
-        // forward difference: the field is 0.5 at hp
+        // forward difference: the field is SURF_ISO at hp
         const vec2 e = vec2(REFL_NORMAL_STEP, 0.0);
-        vec3 gr = vec3(surfField(hp + e.xyy)[ch], surfField(hp + e.yxy)[ch], surfField(hp + e.yyx)[ch]) - 0.5;
+        vec3 gr = vec3(surfField(hp + e.xyy)[ch], surfField(hp + e.yxy)[ch], surfField(hp + e.yyx)[ch]) - SURF_ISO;
         vec3 n = dot(gr, gr) > 1e-10 ? -normalize(gr) : -rd;
         ivec3 c1 = clamp(ivec3(floor(hp - n * REFL_PROBE)), ivec3(0), GRID - 1);
         vec4 ah = cellA(c1);
