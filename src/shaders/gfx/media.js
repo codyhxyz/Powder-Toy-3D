@@ -47,6 +47,7 @@ uniform float uSimClock;               // simulation steps (wrapped)
 #define GAS_WARP 0.8            // how far the noise displaces the gas (cells)
 #define GAS_EDGE 0.1            // density over which gas fades in from nothing: edges sharper than
                                 // the blurred field's ~3 cells, and lone cells (peak ~0.065) stay faint
+#define NOISE_MEAN 0.5          // mean of every detail-noise channel (equalised to uniform on [0, 1])
 // Flames are sheets with a sharp luminous edge: the fire density, displaced by
 // rising tongue noise, crosses FLAME_LEVEL there.
 #define FLAME_STRETCH 2.0       // tongues are this much taller than wide (a power of 2: seamless clock wrap)
@@ -56,7 +57,6 @@ uniform float uSimClock;               // simulation steps (wrapped)
 #define FLAME_FLICKER 0.12      // turbulent temperature fluctuation of flames (relative)
 
 // ---- light ----
-#define PI_M 3.14159265
 #define PHASE_BACK_G -0.3       // anisotropy of the weak back lobe (droplets and soot backscatter a little)
 #define PHASE_FWD_W 0.85        // weight of the forward lobe
 #define MS_OCTAVES 3
@@ -82,7 +82,6 @@ uniform float uSimClock;               // simulation steps (wrapped)
 #define FLAME_MIN_FIRE 0.02     // fire density below which there is no flame to draw
 #define FLAME_T_PRIOR 800.0     // typical burning-gas temperature in the simulation (°C)...
 #define FLAME_PRIOR_W 0.15      // ...weighted as this much fire density
-#define C_TO_K 273.15
 
 // Gas densities (smoke, steam, fire) from the fields, the brick floor removed.
 vec3 gasBase(vec4 m) { return max(m.xyz - MEDIA_FLOOR, 0.0) * (1.0 / (1.0 - MEDIA_FLOOR)); }
@@ -112,7 +111,7 @@ vec2 gasDetail(vec2 d, vec4 n) {
 // star-shaped blobs. m returns the fields read, nf the flame noise.
 vec3 gasDensity(vec3 p, float warp, out vec4 m, out vec4 nf) {
   m = mediaField(p);
-  nf = vec4(0.5);
+  nf = vec4(NOISE_MEAN);
   if (max(m.x, max(m.y, m.z)) <= MEDIA_FLOOR) return vec3(0.0);
   vec4 n = gasNoise(p, MD_RISE.y, 1.0);
   if (warp > 0.0) {
@@ -123,7 +122,7 @@ vec3 gasDensity(vec3 p, float warp, out vec4 m, out vec4 nf) {
   d.xy = gasDetail(d.xy, n);
   if (d.z > 0.0) {
     nf = gasNoise(p, MD_RISE.z, FLAME_STRETCH);
-    float v = d.z + FLAME_DETAIL * (nf.b - 0.5);
+    float v = d.z + FLAME_DETAIL * (nf.b - NOISE_MEAN);
     d.z = smoothstep(FLAME_LEVEL - FLAME_SOFT, FLAME_LEVEL + FLAME_SOFT, v);
   }
   return d;
@@ -131,7 +130,7 @@ vec3 gasDensity(vec3 p, float warp, out vec4 m, out vec4 nf) {
 
 float hgPhase(float mu, float g) {
   float k = 1.0 + g * g - 2.0 * g * mu;
-  return (1.0 - g * g) / (4.0 * PI_M * k * sqrt(k));
+  return (1.0 - g * g) / (4.0 * PI_L * k * sqrt(k));
 }
 float gasPhase(float mu, float g) { return mix(hgPhase(mu, PHASE_BACK_G * g), hgPhase(mu, g), PHASE_FWD_W); }
 
@@ -196,7 +195,7 @@ float mediaSegment(vec3 ro, vec3 rd, float ta, float tb, inout float next, inout
       }
       if (amb.x < 0.0) amb = gasAmbient(ro + rd * (0.5 * (ta + tb)));
       // SUN_COL is irradiance / pi
-      S = sigS * (PI_M * SUN_COL * Lsun + amb);
+      S = sigS * (PI_L * SUN_COL * Lsun + amb);
     }
     if (sig.z > 0.0 && m.z > FLAME_MIN_FIRE) {
       // flames: soot emits blackbody light at the burning gas's temperature

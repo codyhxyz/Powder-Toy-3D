@@ -39,6 +39,14 @@ export const POST_DEFAULTS = {
 
 const MIPS = 6;
 const JITTER_PERIOD = 16;
+// TAA current-frame blend weight where history agrees with the present (stable)
+// and where it doesn't (changing); the shader blends between them per pixel.
+const TAA_WEIGHT_STABLE = 0.07;
+const TAA_WEIGHT_CHANGING = 0.16;
+// History is dropped when the camera jumps: moves farther than this share of its
+// distance from the origin (at least 1 world unit) in one frame…
+const JUMP_MOVE_FRAC = 0.25;
+const JUMP_TURN = 0.5; // …or turns more than this (radians)
 
 const VERT = /* glsl */ `
 in vec3 position;
@@ -51,15 +59,18 @@ precision highp int;
 precision highp sampler2D;
 out vec4 oColor;
 
-float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+const vec3 LUMA_709 = vec3(0.2126, 0.7152, 0.0722); // Rec.709 luminance weights (linear sRGB)
+float luma(vec3 c) { return dot(c, LUMA_709); }
 
 // NaN → 0, +Inf → large, negatives → 0, then a hue-preserving cap. The NaN/Inf test is
 // done on the bits, so it survives compilers that assume finite maths.
 const float MAX_RADIANCE = 4096.0;
+const uint F32_INF = 0x7f800000u;  // IEEE-754 +Inf bits; any larger magnitude is a NaN
+const uint F32_ABS = 0x7fffffffu;  // mask that clears the sign bit
 vec4 sanitize(vec4 c) {
   uvec4 b = floatBitsToUint(c);
-  c = mix(c, vec4(MAX_RADIANCE), equal(b, uvec4(0x7f800000u)));
-  c = mix(c, vec4(0.0), greaterThan(b & 0x7fffffffu, uvec4(0x7f800000u)));
+  c = mix(c, vec4(MAX_RADIANCE), equal(b, uvec4(F32_INF)));
+  c = mix(c, vec4(0.0), greaterThan(b & F32_ABS, uvec4(F32_INF)));
   c = max(c, vec4(0.0));
   float m = max(c.r, max(c.g, c.b));
   c.rgb *= m > MAX_RADIANCE ? MAX_RADIANCE / m : 1.0;
@@ -76,6 +87,7 @@ vec3 bright(vec3 c) {
   return c * (max(rq, br - uThresh.x) / max(br, 1e-4));
 }
 
+// 3×3 tent: binomial weights 1-2-1 ⊗ 1-2-1 (sum 16).
 vec3 tent9(sampler2D t, vec2 uv, vec2 texel) {
   vec4 d = vec4(texel, -texel.x, 0.0);
   vec3 s = texture(t, uv - d.xy).rgb + texture(t, uv - d.zy).rgb
@@ -97,6 +109,8 @@ uniform vec2 uJitter;      // where this frame sampled, in pixels from the pixel
 uniform vec2 uSize;
 uniform bool uHistoryValid;
 uniform vec2 uWeight;      // current-frame weight (stable, changing)
+const float BLACKMAN_HARRIS_K = 2.29;  // Gaussian fit of the Blackman-Harris reconstruction filter: w = exp(-k d²), d in pixels
+const float FLICKER_LUMA_FLOOR = 0.2;  // anti-flicker: differences are relative to max(luma, this) (tone-mapped luma)
 
 vec3 rgb2ycocg(vec3 c) { return vec3(dot(c, vec3(0.25, 0.5, 0.25)), dot(c, vec3(0.5, 0.0, -0.5)), dot(c, vec3(-0.25, 0.5, -0.25))); }
 vec3 ycocg2rgb(vec3 c) { return vec3(c.x + c.y - c.z, c.x + c.z, c.x - c.y - c.z); }
@@ -148,7 +162,7 @@ void main() {
     ivec2 o = ivec2(i % 3 - 1, i / 3 - 1);
     vec4 t = toSpace(sanitize(texelFetch(tColor, clamp(p + o, ivec2(0), hi), 0)));
     vec2 d = vec2(o) - uJitter;
-    float w = exp(-2.29 * dot(d, d)); // Blackman-Harris fit
+    float w = exp(-BLACKMAN_HARRIS_K * dot(d, d));
     acc += t * w; wsum += w;
     m1 += t; m2 += t * t;
     mn = min(mn, t); mx = max(mx, t);
@@ -177,7 +191,7 @@ void main() {
     vec4 bmin = max(mn, mean - sd), bmax = min(mx, mean + sd);
     h = clipBox(bmin, bmax, clamp(cur, bmin, bmax), h);
     // anti-flicker: lean on history while it agrees with the present
-    float diff = abs(cur.x - h.x) / max(max(cur.x, h.x), 0.2);
+    float diff = abs(cur.x - h.x) / max(max(cur.x, h.x), FLICKER_LUMA_FLOOR);
     float k = 1.0 - diff;
     res = mix(h, cur, mix(uWeight.y, uWeight.x, k * k));
   }
@@ -204,13 +218,19 @@ ${COMMON}
 uniform sampler2D tSrc;
 uniform vec2 uTexel; // source texel
 uniform vec2 uDst;
+// Jimenez 2014 13-tap downsample: five overlapping 2×2-texel boxes (the inner one
+// weighted 1/2, the four corner ones 1/8 each), as per-tap weights.
+const float DOWN_W_CENTRE = 0.125;   // centre tap (shared by the four corner boxes)
+const float DOWN_W_CORNER = 0.03125; // outer corners (one corner box each)
+const float DOWN_W_EDGE = 0.0625;    // outer edge midpoints (two corner boxes each)
+const float DOWN_W_INNER = 0.125;    // inner box taps (all bilinear, ±1 texel)
 vec3 tap(vec2 uv, vec2 o) { return texture(tSrc, uv + uTexel * o).rgb; }
 void main() {
   vec2 uv = gl_FragCoord.xy / uDst;
-  vec3 c = tap(uv, vec2(0.0)) * 0.125;
-  c += (tap(uv, vec2(-2.0, 2.0)) + tap(uv, vec2(2.0, 2.0)) + tap(uv, vec2(-2.0, -2.0)) + tap(uv, vec2(2.0, -2.0))) * 0.03125;
-  c += (tap(uv, vec2(0.0, 2.0)) + tap(uv, vec2(-2.0, 0.0)) + tap(uv, vec2(2.0, 0.0)) + tap(uv, vec2(0.0, -2.0))) * 0.0625;
-  c += (tap(uv, vec2(-1.0, 1.0)) + tap(uv, vec2(1.0, 1.0)) + tap(uv, vec2(-1.0, -1.0)) + tap(uv, vec2(1.0, -1.0))) * 0.125;
+  vec3 c = tap(uv, vec2(0.0)) * DOWN_W_CENTRE;
+  c += (tap(uv, vec2(-2.0, 2.0)) + tap(uv, vec2(2.0, 2.0)) + tap(uv, vec2(-2.0, -2.0)) + tap(uv, vec2(2.0, -2.0))) * DOWN_W_CORNER;
+  c += (tap(uv, vec2(0.0, 2.0)) + tap(uv, vec2(-2.0, 0.0)) + tap(uv, vec2(2.0, 0.0)) + tap(uv, vec2(0.0, -2.0))) * DOWN_W_EDGE;
+  c += (tap(uv, vec2(-1.0, 1.0)) + tap(uv, vec2(1.0, 1.0)) + tap(uv, vec2(-1.0, -1.0)) + tap(uv, vec2(1.0, -1.0))) * DOWN_W_INNER;
   oColor = vec4(c, 1.0);
 }
 `;
@@ -255,7 +275,11 @@ const mat3 AGX_OUTSET = mat3(
   vec3(-0.016493938717834573, -0.016493938717834257, 1.2519364065950405));
 const float AGX_MIN_EV = -12.47393; // log2(2^-10 · 0.18)
 const float AGX_MAX_EV = 4.026069;  // log2(2^6.5 · 0.18)
+const float AGX_GAMMA = 2.2;        // display gamma AgX's curve encodes for (decoded after the outset)
+const float PUNCHY_POWER = 1.35;    // Blender's AgX "Punchy" look: power on the encoded values…
+const float PUNCHY_SAT = 1.4;       // …and saturation around their luma
 
+// AgX base contrast sigmoid: 6th-order polynomial fit (Wrensch 2023, as in three.js).
 vec3 agxContrast(vec3 x) {
   vec3 x2 = x * x, x4 = x2 * x2;
   return 15.5 * x4 * x2 - 40.14 * x4 * x + 31.96 * x4 - 6.868 * x2 * x + 0.4298 * x2 + 0.1191 * x - 0.00232;
@@ -265,15 +289,15 @@ vec3 agxContrast(vec3 x) {
 vec3 agxCurve(vec3 c) {
   c = clamp((log2(max(c, 1e-10)) - AGX_MIN_EV) / (AGX_MAX_EV - AGX_MIN_EV), 0.0, 1.0);
   c = agxContrast(c);
-  c = pow(max(c, 0.0), vec3(mix(1.0, 1.35, uLook)));
-  float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
-  return l + mix(1.0, 1.4, uLook) * (c - l);
+  c = pow(max(c, 0.0), vec3(mix(1.0, PUNCHY_POWER, uLook)));
+  float l = dot(c, LUMA_709);
+  return l + mix(1.0, PUNCHY_SAT, uLook) * (c - l);
 }
 
 // AgX (Blender / Filament / three.js) with an optional blend toward the "Punchy" look.
 vec3 agx(vec3 c) {
   c = agxCurve(AGX_INSET * (SRGB_TO_REC2020 * c));
-  c = pow(max(AGX_OUTSET * c, 0.0), vec3(2.2));
+  c = pow(max(AGX_OUTSET * c, 0.0), vec3(AGX_GAMMA));
   return clamp(REC2020_TO_SRGB * c, 0.0, 1.0);
 }
 
@@ -293,16 +317,25 @@ vec3 tonemap(vec3 c) {
   float sat = 1.0 - min(c.r, min(c.g, c.b)) / max(mx, 1e-6);
   float w = smoothstep(uHot.x, uHot.y, mx) * pow(sat, HOT_SAT_POW);
   if (w <= 0.0) return a;
-  vec3 pc = pow(max(agxCurve(SRGB_TO_REC2020 * c), 0.0), vec3(2.2));
+  vec3 pc = pow(max(agxCurve(SRGB_TO_REC2020 * c), 0.0), vec3(AGX_GAMMA));
   return mix(a, clamp(REC2020_TO_SRGB * pc, 0.0, 1.0), w);
 }
 
+// sRGB transfer function (IEC 61966-2-1).
 vec3 srgbEncode(vec3 c) {
   return mix(1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, c * 12.92, lessThanEqual(c, vec3(0.0031308)));
 }
 
 vec3 tm(vec3 c) { return c / (1.0 + luma(c)); }
 vec3 itm(vec3 c) { return c / max(1.0 - luma(c), 1e-3); }
+
+// AMD CAS: the cross taps get the negative lobe -amp / mix(SOFT, HARD, sharpen).
+const float CAS_LOBE_SOFT = 8.0;
+const float CAS_LOBE_HARD = 5.0;
+// Output dither: interleaved gradient noise (Jimenez 2014), ±½ of one 8-bit step.
+const vec3 IGN = vec3(0.06711056, 0.00583715, 52.9829189);
+const float DITHER_LEVELS = 255.0;  // output code values above 0
+const float DITHER_BLACK = 1e-5;    // max channel at or below which a pixel counts as exact black (no dither)
 
 void main() {
   ivec2 p = ivec2(gl_FragCoord.xy);
@@ -321,7 +354,7 @@ void main() {
     float mnL = min(le, min(min(ln, ls), min(lw, lr)));
     float mxL = max(le, max(max(ln, ls), max(lw, lr)));
     float amp = sqrt(clamp(min(mnL, 1.0 - mxL) / max(mxL, 1e-4), 0.0, 1.0));
-    float k = -amp / mix(8.0, 5.0, uSharpen);
+    float k = -amp / mix(CAS_LOBE_SOFT, CAS_LOBE_HARD, uSharpen);
     rad = itm(max((e + k * (n + s + w + r)) / (1.0 + 4.0 * k), 0.0));
   }
 
@@ -332,8 +365,8 @@ void main() {
 
   vec3 o = uRaw > 0.5 ? srgbEncode(clamp(rad, 0.0, 1.0)) : srgbEncode(tonemap(max(rad, 0.0) * uExposure));
   // ±½ LSB dither against 8-bit banding; keep exact zeros exact
-  float ign = fract(52.9829189 * fract(dot(vec2(p), vec2(0.06711056, 0.00583715))));
-  o += (ign - 0.5) / 255.0 * step(1e-5, max(o.r, max(o.g, o.b)));
+  float ign = fract(IGN.z * fract(dot(vec2(p), IGN.xy)));
+  o += (ign - 0.5) / DITHER_LEVELS * step(DITHER_BLACK, max(o.r, max(o.g, o.b)));
   oColor = vec4(clamp(o, 0.0, 1.0), c.a);
 }
 `;
@@ -363,13 +396,13 @@ export function createPost(renderer) {
     tColor: { value: null }, tDepth: { value: null }, tHistory: { value: null },
     uReproj: { value: new THREE.Matrix4() }, uJitter: { value: new THREE.Vector2() },
     uSize: { value: new THREE.Vector2() }, uHistoryValid: { value: false },
-    uWeight: { value: new THREE.Vector2(0.07, 0.16) }, uThresh: thresh,
+    uWeight: { value: new THREE.Vector2(TAA_WEIGHT_STABLE, TAA_WEIGHT_CHANGING) }, uThresh: thresh,
   });
   const prefilterMat = mat(PREFILTER_FRAG, { tSrc: { value: null }, uThresh: thresh });
   const downMat = mat(DOWN_FRAG, { tSrc: { value: null }, uTexel: { value: new THREE.Vector2() }, uDst: { value: new THREE.Vector2() }, uThresh: thresh });
   const upMat = mat(UP_FRAG, {
     tLow: { value: null }, tHigh: { value: null }, uLowTexel: { value: new THREE.Vector2() },
-    uDst: { value: new THREE.Vector2() }, uScatter: { value: 0.7 }, uThresh: thresh,
+    uDst: { value: new THREE.Vector2() }, uScatter: { value: POST_DEFAULTS.bloomScatter }, uThresh: thresh,
   });
   const compMat = mat(COMPOSITE_FRAG, {
     tColor: { value: null }, tBloom: { value: null }, uBloomTexel: { value: new THREE.Vector2() },
@@ -588,7 +621,7 @@ export function createPost(renderer) {
     _p.setFromMatrixPosition(camera.matrixWorld);
     _q.setFromRotationMatrix(camera.matrixWorld);
     const move = _p.distanceTo(prevPos);
-    return move > 0.25 * Math.max(prevPos.length(), 1) || _q.angleTo(prevQuat) > 0.5;
+    return move > JUMP_MOVE_FRAC * Math.max(prevPos.length(), 1) || _q.angleTo(prevQuat) > JUMP_TURN;
   }
 
   return post;

@@ -22,6 +22,9 @@ export const SKY = {
 
 // Quadrature for the open-sky irradiance: rings in elevation × steps in azimuth.
 const IRR_RINGS = 16, IRR_STEPS = 32;
+// View and sun air masses closer than this use the limit of the path integral
+// (their difference divides it).
+const AIRMASS_EQ_EPS = 1e-3;
 
 const tauAir = SKY.tauRayleigh.map((t) => t + SKY.tauAerosol);
 
@@ -39,7 +42,7 @@ function skyRadiance(d, sun, sunExt) {
   const pM = (1 - g2) / (4 * Math.PI * Math.pow(1 + g2 - 2 * g * mu, 1.5));
   return tauAir.map((t, i) => {
     const dm = mv - ms;
-    const path = Math.abs(dm) < 1e-3 ? t * mv * Math.exp(-t * mv) : (mv * (sunExt[i] - Math.exp(-t * mv))) / dm;
+    const path = Math.abs(dm) < AIRMASS_EQ_EPS ? t * mv * Math.exp(-t * mv) : (mv * (sunExt[i] - Math.exp(-t * mv))) / dm;
     return SKY.multi * Math.PI * SKY.sunTOA * ((SKY.tauRayleigh[i] * pR + SKY.tauAerosol * pM) / t) * path;
   });
 }
@@ -85,6 +88,7 @@ export function skyGLSL() {
     `const float SKY_MULTI = ${glf(SKY.multi)};`,
     `const float AIRMASS_HORIZON = ${glf(SKY.airmassHorizon)};`,
     `const float AIRMASS_FALLOFF = ${glf(SKY.airmassFalloff)};`,
+    `const float AIRMASS_EQ_EPS = ${glf(AIRMASS_EQ_EPS)};`,
     `const vec3 GROUND_ALB = ${vec3(SKY.groundAlb)};`,
   ].join('\n');
 }
