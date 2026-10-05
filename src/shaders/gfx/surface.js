@@ -36,17 +36,20 @@ struct Surf {
 };
 
 // ---- view: set once per pixel by the tracer, in uniform control flow ----
+const float PIX_ANG_INIT = 0.002;   // radians per pixel until surfView sets it
+const float PIX_ANG_MIN = 1e-5, PIX_ANG_MAX = 0.05;   // clamp on a pixel's angular size (radians)
 vec3 gEye = vec3(0.0);
-float gPixAng = 0.002;
+float gPixAng = PIX_ANG_INIT;
 void surfView(vec3 eye, vec3 rd) {
   gEye = eye;
-  gPixAng = clamp(max(length(dFdx(rd)), length(dFdy(rd))), 1e-5, 0.05);
+  gPixAng = clamp(max(length(dFdx(rd)), length(dFdy(rd))), PIX_ANG_MIN, PIX_ANG_MAX);
 }
 // size of a pixel at p, in grid units
 float footprint(vec3 p) { return distance(p, gEye) * gPixAng; }
 // weight of detail with spatial frequency f (cycles per cell): fades out
 // before it would alias (Nyquist = 0.5 cycles per pixel)
-float lodFade(float f, float fp) { return 1.0 - smoothstep(0.15, 0.4, f * fp); }
+const float DETAIL_FADE_LO = 0.15, DETAIL_FADE_HI = 0.4;   // fade range, cycles per pixel
+float lodFade(float f, float fp) { return 1.0 - smoothstep(DETAIL_FADE_LO, DETAIL_FADE_HI, f * fp); }
 
 // ---- material noise (all world space; the lattice is rotated so it never lines up with the grid) ----
 const mat3 M_ROT = mat3(0.00, 0.80, 0.60, -0.80, 0.36, -0.48, -0.60, -0.48, 0.64);
@@ -72,19 +75,24 @@ vec4 mNoiseJ(vec3 p, mat3 J, vec3 off) {
 
 // fBm with gradient, centred on 0 (about ±0.45). Base frequency f cycles per
 // cell; octaves finer than the pixel footprint fp fade out instead of aliasing.
+const int MFBM_MAX_OCT = 4;          // most octaves a caller may ask for
+const float MFBM_AMP0 = 0.5;         // amplitude of the first octave
+const float MFBM_GAIN = 0.5;         // amplitude ratio between octaves
+const float MFBM_LACUNARITY = 2.03;  // frequency ratio between octaves (not 2, so they don't line up)
+const float MFBM_OCT_SHIFT = 7.31;   // lattice offset per octave (decorrelates them)
 vec4 mFbmD(vec3 p, float f, int oct, float fp) {
   vec4 s = vec4(0.0);
-  float a = 0.5;
+  float a = MFBM_AMP0;
   mat3 J = M_ROT * f;
-  for (int i = 0; i < 4; i++) {
+  for (int i = 0; i < MFBM_MAX_OCT; i++) {
     if (i >= oct) break;
     float lw = lodFade(f, fp);
     if (lw <= 0.0) break;
-    vec4 n = mNoiseD(J * p + float(i) * 7.31);
+    vec4 n = mNoiseD(J * p + float(i) * MFBM_OCT_SHIFT);
     s += a * lw * vec4(n.x - 0.5, transpose(J) * n.yzw);
-    J = M_ROT * J * 2.03;
-    f *= 2.03;
-    a *= 0.5;
+    J = M_ROT * J * MFBM_LACUNARITY;
+    f *= MFBM_LACUNARITY;
+    a *= MFBM_GAIN;
   }
   return s;
 }
@@ -92,9 +100,12 @@ vec4 mFbmD(vec3 p, float f, int oct, float fp) {
 // Cellular (Worley) noise: (F1, distance to the border with the second
 // nearest cell, two hashes of the nearest cell). ge = gradient of that border
 // distance, r1 = vector to the nearest seed.
+const float CELL_FAR = 1e9;   // "none yet": beyond any squared distance a search can find
+// (scale, offset) of the nearest cell's position for its two hashes
+const vec2 CELL_HASH_Z = vec2(1.31, 4.7), CELL_HASH_W = vec2(0.71, 9.2);
 vec4 mCell(vec3 p, out vec3 ge, out vec3 r1) {
   vec3 i = floor(p), f = p - i;
-  float d1 = 1e9, d2 = 1e9;
+  float d1 = CELL_FAR, d2 = CELL_FAR;
   vec3 s1 = vec3(0.0), s2 = vec3(1.0), c1 = vec3(0.0);
   for (int k = 0; k < 27; k++) {
     vec3 o = vec3(float(k % 3), float((k / 3) % 3), float(k / 9)) - 1.0;
@@ -106,7 +117,7 @@ vec4 mCell(vec3 p, out vec3 ge, out vec3 r1) {
   vec3 u = normalize(s2 - s1 + 1e-6);
   ge = -u;
   r1 = s1;
-  return vec4(sqrt(d1), dot(0.5 * (s1 + s2), u), hash13(c1 * 1.31 + 4.7), hash13(c1 * 0.71 + 9.2));
+  return vec4(sqrt(d1), dot(0.5 * (s1 + s2), u), hash13(c1 * CELL_HASH_Z.x + CELL_HASH_Z.y), hash13(c1 * CELL_HASH_W.x + CELL_HASH_W.y));
 }
 
 float sminP(float a, float b, float k) {     // polynomial smooth minimum, blend width k
@@ -140,8 +151,9 @@ const float DOT_RMIN = 0.4;    // smallest ball, as a fraction of rmax
 const float DOT_SALT = 23.7;   // decorrelates the position hash from the size hash
 // E[r^3] / rmax^3 for r uniform in [DOT_RMIN, 1] rmax, times the volume of a
 // unit ball with that soft rim (taken at the rim's middle; within 2%)
+const float UNIT_BALL_VOL = 4.18879;   // 4π/3
 const float DOT_VOL = (1.0 - DOT_RMIN * DOT_RMIN * DOT_RMIN * DOT_RMIN) / (4.0 * (1.0 - DOT_RMIN))
-                    * 4.18879 * (1.0 - 0.5 * DOT_RIM) * (1.0 - 0.5 * DOT_RIM) * (1.0 - 0.5 * DOT_RIM);
+                    * UNIT_BALL_VOL * (1.0 - 0.5 * DOT_RIM) * (1.0 - 0.5 * DOT_RIM) * (1.0 - 0.5 * DOT_RIM);
 vec4 mDots(vec3 p, float f, float prob, float rmax, float fp, out float h) {
   vec3 q = M_ROT * p * f;
   vec3 i = floor(q);
@@ -176,11 +188,13 @@ Mat mixMat(Mat a, Mat b, float k) {
   return a;
 }
 
-// Lava freezes back into its ctype at MELT - 150 °C (shaders/react.js).
+// Lava freezes back into its ctype at MELT - LAVA_FREEZE_DROP (the same
+// 150 °C as the freezing rule in shaders/react.js).
+const float LAVA_FREEZE_DROP = 150.0;   // °C
 float solidusOf(float ctype) {
   int ct = int(ctype);
   if (ct <= 0 || ct >= NE || MELT[ct] <= 0.0) ct = E_STONE;
-  return MELT[ct] - 150.0;
+  return MELT[ct] - LAVA_FREEZE_DROP;
 }
 
 // Thermal glow of an opaque surface whose bulk is at T (°C). Kirchhoff: a
@@ -205,6 +219,7 @@ const vec3 OXIDE_ALB = vec3(0.03, 0.027, 0.025);   // black, a touch of rust bro
 const float OXIDE_F0 = 0.05;      // porous, dull: little sky in it, even at grazing angles
 const float OXIDE_ROUGH = 0.8;
 const float SCALE_FREQ = 1.1;     // patches of thick scale, per cell
+const int SCALE_OCT = 3;          // fBm octaves of the scale thickness
 const float SCALE_SPLIT = 0.18;   // thin → thick over this much of the thickness noise
 const float SCALE_COVER = 0.06;   // shifts the thickness noise: most of the steel is under thick scale
 const float SCALE_ALB_VAR = 0.6;  // thick scale is a little greyer
@@ -214,12 +229,15 @@ const float SCALE_DROP = 150.0;   // °C thick scale runs below the steel
 // Lava (E_LAVA)
 const float LAVA_CHURN = 0.12;        // drift of the molten skin pattern, cells per second
 const float LAVA_SKIN_FREQ = 0.4;     // skin pattern frequency, per cell
+const int LAVA_SKIN_OCT = 2;          // fBm octaves of the skin pattern
 const float LAVA_SKIN_VAR = 0.6;      // how far the skin pattern shifts the crust line
 const float LAVA_SKIN_DT = 150.0;     // °C: skin temperature swing on the melt
 const float LAVA_MELT_RANGE = 450.0;  // °C above the solidus where it is fully molten
 const float LAVA_CRUST_X0 = 0.2;      // crust starts to break up (fraction of that range)…
 const float LAVA_CRUST_X1 = 0.8;      // …and is gone
 const float LAVA_PLATE_FREQ = 0.8;    // crust plates per cell
+const float LAVA_CRACK_LOD = 4.0;     // cracks are narrow: fade them at this multiple of the plate frequency
+const float LAVA_CRACK_CORE = 0.5;    // fraction of the crack half-width that is fully open melt
 const float LAVA_CRACK_OPEN = 1.0;    // crack half-width once the crust has broken up (no plates left)…
 const float LAVA_CRACK_SHUT = 0.04;   // …and once it has set (cellular-noise units)
 const float LAVA_RIM = 0.12;          // plate edge still glowing beside a crack
@@ -234,6 +252,9 @@ const float LAVA_CRACK_CAV = 0.5;     // cavity term down in a crack
 const float LAVA_PLATE_BUMP = 0.2;    // relief of the plate edges
 const float LAVA_PLATE_EDGE = 0.35;   // width of the rounded plate edge
 const float LAVA_SKIN_BUMP = 0.1;     // ripples on the melt
+
+// Turns a lattice 30° about y, so bark plates and rain streaks don't line up with the grid.
+const mat3 TURN_Y30 = mat3(0.866, 0.0, 0.5, 0.0, 1.0, 0.0, -0.5, 0.0, 0.866);
 
 // The look of element id at world point p (grid units) on a surface with
 // normal n, temperature T (°C). fp = pixel footprint (grid units) for LOD.
@@ -261,14 +282,17 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
     const float DARK_P = 0.4, DARK_R = 0.25;   // how many, how big (lattice units)
     const float DARK_ALB = 0.45;               // their albedo relative to the sand
     const float DARK_WARP = 0.005;             // bends the grains out of round (cells per unit slope)
-    vec4 lo = mFbmD(p, PATCH_F, 2, fp);
-    vec4 gr = mFbmD(p, CLUMP_F, 3, fp);
-    vec4 fg = mFbmD(p, GRAIN_F, 2, fp);
+    const int PATCH_OCT = 2, CLUMP_OCT = 3, GRAIN_OCT = 2;              // fBm octaves
+    const float PATCH_ALB = 0.25, CLUMP_ALB = 0.18, GRAIN_ALB = 0.3;   // albedo swing per unit of each noise
+    const float CLUMP_CAV = 0.4;               // cavity swing of the clumps
+    vec4 lo = mFbmD(p, PATCH_F, PATCH_OCT, fp);
+    vec4 gr = mFbmD(p, CLUMP_F, CLUMP_OCT, fp);
+    vec4 fg = mFbmD(p, GRAIN_F, GRAIN_OCT, fp);
     float dh;
     vec4 dk = mDots(p + DARK_WARP * fg.yzw, DARK_F, DARK_P, DARK_R, fp, dh);
-    m.alb *= (1.0 + 0.25 * lo.x + 0.18 * gr.x + 0.3 * fg.x) * (1.0 + HUE * lo.x) * mix(1.0, DARK_ALB, dk.x);
+    m.alb *= (1.0 + PATCH_ALB * lo.x + CLUMP_ALB * gr.x + GRAIN_ALB * fg.x) * (1.0 + HUE * lo.x) * mix(1.0, DARK_ALB, dk.x);
     m.g = PATCH_H * lo.yzw + CLUMP_H * gr.yzw + GRAIN_H * fg.yzw;
-    m.cav = 1.0 + 0.4 * gr.x;
+    m.cav = 1.0 + CLUMP_CAV * gr.x;
   } else if (id == E_STONE) {
     // Gravel: rounded pebbles of mixed rock. Each pebble is a disc of its own
     // size around a cellular seed (measured within the surface, so every
@@ -291,47 +315,63 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
     // rock types (relative albedo; their mean is ~1)
     const vec3 GRANITE = vec3(1.0, 1.02, 1.05), BASALT = vec3(0.6, 0.6, 0.63);
     const vec3 SANDSTONE = vec3(1.22, 1.08, 0.92), QUARTZ = vec3(1.3), RUST = vec3(1.15, 0.92, 0.8);
+    // cumulative shares of the rock types (the rest is rust)
+    const float GRANITE_UPTO = 0.35, BASALT_UPTO = 0.6, SANDSTONE_UPTO = 0.8, QUARTZ_UPTO = 0.9;
+    const float SHADE_MIN = 0.8, SHADE_RANGE = 0.4;   // pebble-to-pebble shade
+    const float ROUGH_VAR = 0.3;               // pebble-to-pebble roughness spread
+    const float MOTTLE_ALB = 0.35, GRIT_ALB = 0.8;    // albedo swing per unit of each noise
+    const float PEBBLE_LOD = 2.0;              // outlines are sharp: fade them at this multiple of the pebble frequency
+    const int MOTTLE_OCT = 2, GRIT_OCT = 2;    // fBm octaves
     vec3 ge, r1;
     vec4 c = mCell(p * PEBBLE_F, ge, r1);
-    float lw = lodFade(PEBBLE_F * 2.0, fp);
+    float lw = lodFade(PEBBLE_F * PEBBLE_LOD, fp);
     vec3 rt = r1 - n * dot(r1, n);             // to the seed, within the surface
     float d = length(rt);
     float e = sminP(R_MIN + R_VAR * c.w - d, c.y - GAP, ROUND);   // distance in from the pebble's outline
     float u = clamp(d / max(d + e, 1e-3), 0.0, U_MAX);    // 0 at the pebble's middle, 1 at its outline
     float sh = sqrt(1.0 - u * u);
     float pm = smoothstep(0.0, RIM, e);        // 1 on a pebble, 0 in a void
-    vec4 gr = mFbmD(p, MOTTLE_F, 2, fp);
-    vec4 gt = mFbmD(p, GRIT_F, 2, fp);
-    vec3 type = c.z < 0.35 ? GRANITE : (c.z < 0.6 ? BASALT : (c.z < 0.8 ? SANDSTONE : (c.z < 0.9 ? QUARTZ : RUST)));
-    vec3 peb = type * (0.8 + 0.4 * c.w) * (1.0 + 0.35 * gr.x);
-    m.alb *= mix(vec3(MEAN), mix(VOID_ALB * (1.0 + 0.8 * gt.x) * vec3(1.0), peb, pm), lw);
+    vec4 gr = mFbmD(p, MOTTLE_F, MOTTLE_OCT, fp);
+    vec4 gt = mFbmD(p, GRIT_F, GRIT_OCT, fp);
+    vec3 type = c.z < GRANITE_UPTO ? GRANITE : (c.z < BASALT_UPTO ? BASALT
+              : (c.z < SANDSTONE_UPTO ? SANDSTONE : (c.z < QUARTZ_UPTO ? QUARTZ : RUST)));
+    vec3 peb = type * (SHADE_MIN + SHADE_RANGE * c.w) * (1.0 + MOTTLE_ALB * gr.x);
+    m.alb *= mix(vec3(MEAN), mix(VOID_ALB * (1.0 + GRIT_ALB * gt.x) * vec3(1.0), peb, pm), lw);
     m.g = lw * (pm * (u / sh) * rt / max(d, 1e-4) + (1.0 - pm) * GRIT_H * gt.yzw) + MOTTLE_H * gr.yzw;
     m.cav = mix(MEAN, mix(VOID_CAV, mix(RIM_CAV, 1.0, sh), pm), lw);
-    m.rough += (0.3 * (c.w - 0.5) - POLISH * pm) * lw;
+    m.rough += (ROUGH_VAR * (c.w - 0.5) - POLISH * pm) * lw;
   } else if (id == E_SNOW) {
     // Old powder snow: soft drifts, clumps and (up close) a sugary crust of
     // crystals; the sparkle comes from the glints.
     const float DRIFT_F = 0.22, CLUMP_F = 2.6, CRYSTAL_F = 10.0;
     const float DRIFT_H = 0.6, CLUMP_H = 0.06, CRYSTAL_H = 0.008;
-    vec4 lo = mFbmD(p, DRIFT_F, 2, fp);
-    vec4 gr = mFbmD(p, CLUMP_F, 2, fp);
-    vec4 cr = mFbmD(p, CRYSTAL_F, 2, fp);
-    m.alb *= 1.0 + 0.03 * lo.x + 0.04 * gr.x;
+    const int DRIFT_OCT = 2, CLUMP_OCT = 2, CRYSTAL_OCT = 2;   // fBm octaves
+    const float DRIFT_ALB = 0.03, CLUMP_ALB = 0.04;           // albedo swing per unit of each noise
+    const vec3 DEEP_TINT = vec3(0.8, 0.94, 1.12);  // deep-scattered light: ice absorbs red
+    const float GLINT_DENS = 1.4;              // ice crystals: more facets than sand
+    vec4 lo = mFbmD(p, DRIFT_F, DRIFT_OCT, fp);
+    vec4 gr = mFbmD(p, CLUMP_F, CLUMP_OCT, fp);
+    vec4 cr = mFbmD(p, CRYSTAL_F, CRYSTAL_OCT, fp);
+    m.alb *= 1.0 + DRIFT_ALB * lo.x + CLUMP_ALB * gr.x;
     m.g = DRIFT_H * lo.yzw + CLUMP_H * gr.yzw + CRYSTAL_H * cr.yzw;
-    m.sssCol = vec3(0.8, 0.94, 1.12);          // deep-scattered light: ice absorbs red
-    m.glintDens = 1.4;                         // ice crystals: more facets than sand
+    m.sssCol = DEEP_TINT;
+    m.glintDens = GLINT_DENS;
   } else if (id == E_GUNPOWDER) {
     // Black powder: graphite-glazed granules (~1 mm) with a soft silvery
     // sheen, a granular mottle in colour and gloss, and many tiny glints.
     const float LUMP_F = 0.6, GRAIN_F = 9.0;
     const float LUMP_H = 0.08, GRAIN_H = 0.004;
-    vec4 lo = mFbmD(p, LUMP_F, 2, fp);
-    vec4 gr = mFbmD(p, GRAIN_F, 3, fp);
-    m.alb *= (1.0 + 0.2 * lo.x) * (1.0 + 0.7 * gr.x);
+    const int LUMP_OCT = 2, GRAIN_OCT = 3;     // fBm octaves
+    const float LUMP_ALB = 0.2, GRAIN_ALB = 0.7;   // albedo swing per unit of each noise
+    const float GRAIN_ROUGH = 0.1, GRAIN_CAV = 0.6;   // gloss and cavity swing of the granules
+    const float GLINT_DENS = 1.3;              // relative glint density (fine granules)
+    vec4 lo = mFbmD(p, LUMP_F, LUMP_OCT, fp);
+    vec4 gr = mFbmD(p, GRAIN_F, GRAIN_OCT, fp);
+    m.alb *= (1.0 + LUMP_ALB * lo.x) * (1.0 + GRAIN_ALB * gr.x);
     m.g = LUMP_H * lo.yzw + GRAIN_H * gr.yzw;
-    m.rough += 0.1 * gr.x;
-    m.cav = 1.0 + 0.6 * gr.x;
-    m.glintDens = 1.3;
+    m.rough += GRAIN_ROUGH * gr.x;
+    m.cav = 1.0 + GRAIN_CAV * gr.x;
+    m.glintDens = GLINT_DENS;
   } else if (id == E_ASH) {
     // Wood ash: pale, very fine and soft, with flecks of charcoal.
     const float LUMP_F = 0.45, FINE_F = 9.0;
@@ -341,16 +381,21 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
     const float FLECK_SETTLE = 1.5;            // how strongly flecks gather in the hollows
     const vec3 CHARCOAL = vec3(0.025, 0.024, 0.023);
     const float CHARCOAL_ROUGH = 0.6;
-    vec4 lo = mFbmD(p, LUMP_F, 3, fp);
-    vec4 gr = mFbmD(p, FINE_F, 2, fp);
+    const float FLECK_SHARE = 0.5;             // share of fleck sites filled where the lumps are at their mean height
+    const float FLECK_BLACK_MIN = 0.4, FLECK_BLACK_RANGE = 0.6;   // fleck-to-fleck blackness
+    const int LUMP_OCT = 3, FINE_OCT = 2;      // fBm octaves
+    const float LUMP_ALB = 0.2, FINE_ALB = 0.2;   // albedo swing per unit of each noise
+    const float LUMP_CAV = 0.4;                // cavity swing of the lumps
+    vec4 lo = mFbmD(p, LUMP_F, LUMP_OCT, fp);
+    vec4 gr = mFbmD(p, FINE_F, FINE_OCT, fp);
     float fh;
     // flecks gather where the lumps are low (they settle) and vary in blackness
-    vec4 fl = mDots(p + FLECK_WARP * gr.yzw, FLECK_F, FLECK_P * clamp(0.5 - FLECK_SETTLE * lo.x, 0.0, 1.0), FLECK_R, fp, fh);
-    m.alb *= 1.0 + 0.2 * lo.x + 0.2 * gr.x;
-    m.alb = mix(m.alb, CHARCOAL, fl.x * mix(1.0, 0.4 + 0.6 * fh, lodFade(FLECK_F, fp)));
+    vec4 fl = mDots(p + FLECK_WARP * gr.yzw, FLECK_F, FLECK_P * clamp(FLECK_SHARE - FLECK_SETTLE * lo.x, 0.0, 1.0), FLECK_R, fp, fh);
+    m.alb *= 1.0 + LUMP_ALB * lo.x + FINE_ALB * gr.x;
+    m.alb = mix(m.alb, CHARCOAL, fl.x * mix(1.0, FLECK_BLACK_MIN + FLECK_BLACK_RANGE * fh, lodFade(FLECK_F, fp)));
     m.rough = mix(m.rough, CHARCOAL_ROUGH, fl.x);
     m.g = LUMP_H * lo.yzw + FINE_H * gr.yzw;
-    m.cav = 1.0 + 0.4 * lo.x;
+    m.cav = 1.0 + LUMP_CAV * lo.x;
   } else if (id == E_WOOD) {
     // Bark: long corky plates split by deep V furrows. The plates are
     // cellular cells stretched along y (and turned about it so nothing lines
@@ -368,29 +413,35 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
     const float RIDGE_MEAN = 0.7;                  // area fraction of plate (the far-away mix)
     const vec3 FURROW = vec3(0.25, 0.2, 0.18);     // inner bark in shade, relative to the base colour
     const vec3 GREY = vec3(1.05, 1.1, 1.22);       // weathered outer bark
-    const mat3 TURN = mat3(0.866, 0.0, 0.5, 0.0, 1.0, 0.0, -0.5, 0.0, 0.866);   // 30° about y
-    mat3 J = TURN * mat3(PLATE_FH, 0.0, 0.0, 0.0, PLATE_FV, 0.0, 0.0, 0.0, PLATE_FH);
-    vec4 mv = mFbmD(p, MEANDER_F, 2, fp);
-    vec4 wv = mFbmD(p, WAVE_F, 1, fp);
+    const float PLATE_SHADE_MIN = 0.7, PLATE_SHADE_RANGE = 0.6;   // plate-to-plate shade
+    const float MEANDER_ALB = 0.4, FLAKE_ALB = 0.3, FIB_ALB = 0.25;   // albedo swing per unit of each noise
+    const float FURROW_CAV = 0.3;                  // cavity term down in a furrow
+    const float FURROW_LOD = 3.0;                  // narrow furrows alias sooner: fade at this multiple of PLATE_FH
+    const int MEANDER_OCT = 2, WAVE_OCT = 1;       // fBm octaves
+    const vec3 FLAKE_SALT = vec3(13.1), FIB_SALT = vec3(5.7);   // noise offsets (decorrelate the layers)
+    const vec2 TOP_EDGE = vec2(0.6, 0.9);          // |n.y| range over which a face turns into end grain
+    mat3 J = TURN_Y30 * mat3(PLATE_FH, 0.0, 0.0, 0.0, PLATE_FV, 0.0, 0.0, 0.0, PLATE_FH);
+    vec4 mv = mFbmD(p, MEANDER_F, MEANDER_OCT, fp);
+    vec4 wv = mFbmD(p, WAVE_F, WAVE_OCT, fp);
     vec3 pw = p + MEANDER * mv.x * vec3(1.0, 0.0, 1.0) + WAVE * wv.yzw;
     vec3 ge, r1;
     vec4 c = mCell(J * pw, ge, r1);
-    vec4 fl = mNoiseJ(p, TURN * mat3(FLAKE_FH, 0.0, 0.0, 0.0, FLAKE_FV, 0.0, 0.0, 0.0, FLAKE_FH), vec3(13.1));
-    vec4 fb = mNoiseJ(p, TURN * mat3(FIB_FH, 0.0, 0.0, 0.0, FIB_FV, 0.0, 0.0, 0.0, FIB_FH), vec3(5.7));
+    vec4 fl = mNoiseJ(p, TURN_Y30 * mat3(FLAKE_FH, 0.0, 0.0, 0.0, FLAKE_FV, 0.0, 0.0, 0.0, FLAKE_FH), FLAKE_SALT);
+    vec4 fb = mNoiseJ(p, TURN_Y30 * mat3(FIB_FH, 0.0, 0.0, 0.0, FIB_FV, 0.0, 0.0, 0.0, FIB_FH), FIB_SALT);
     // narrow furrows alias sooner than the plate frequency says
-    float lwF = lodFade(PLATE_FH * 3.0, fp), lwL = lodFade(FLAKE_FV, fp), lwB = lodFade(FIB_FH, fp);
+    float lwF = lodFade(PLATE_FH * FURROW_LOD, fp), lwL = lodFade(FLAKE_FV, fp), lwB = lodFade(FIB_FH, fp);
     float ridge = smoothstep(0.0, FUR_W, c.y);     // 0 in a furrow, 1 on a plate
     float rl = mix(RIDGE_MEAN, ridge, lwF);
-    vec3 plate = mix(vec3(1.0), (0.7 + 0.6 * c.z) * mix(vec3(1.0), GREY, c.w), lwF);
-    m.alb *= mix(FURROW, plate, rl) * (1.0 + 0.4 * mv.x) * (1.0 + 0.3 * lwL * (fl.x - 0.5))
-           * (1.0 + 0.25 * lwB * (fb.x - 0.5));
+    vec3 plate = mix(vec3(1.0), (PLATE_SHADE_MIN + PLATE_SHADE_RANGE * c.z) * mix(vec3(1.0), GREY, c.w), lwF);
+    m.alb *= mix(FURROW, plate, rl) * (1.0 + MEANDER_ALB * mv.x) * (1.0 + FLAKE_ALB * lwL * (fl.x - 0.5))
+           * (1.0 + FIB_ALB * lwB * (fb.x - 0.5));
     m.g = lwF * transpose(J) * (FUR_DEPTH * dSmooth(0.0, FUR_W, c.y) * ge + PLATE_DOME * r1)
         + lwL * FLAKE_H * ridge * fl.yzw + lwB * FIB_H * fb.yzw;
-    m.cav = mix(0.3, 1.0, rl);
+    m.cav = mix(FURROW_CAV, 1.0, rl);
     // Sawn end grain on top faces: growth rings around the pith of each log
     // (piths on a coarse jittered lattice), wobbling with the grain, latewood
     // bands darker, heartwood darker than sapwood.
-    float top = smoothstep(0.6, 0.9, abs(n.y));
+    float top = smoothstep(TOP_EDGE.x, TOP_EDGE.y, abs(n.y));
     if (top > 0.0) {
       const float LOG_SIZE = 16.0;             // cells between piths
       const float RING_F = 6.0;                // growth rings per cell (~1.3 cm apart)
@@ -399,23 +450,28 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
       const float HEART_R = 3.0;               // heartwood radius, cells
       const vec3 SAPWOOD = vec3(0.42, 0.28, 0.16), HEARTWOOD = vec3(0.3, 0.17, 0.09);
       const float LATEWOOD = 0.6;              // albedo of the latewood bands
-      const mat2 TURN2 = mat2(0.8, 0.6, -0.6, 0.8);
+      const vec2 LATE_EDGE = vec2(0.55, 0.95); // ring phase over which a latewood band fades in
+      const float RING_LOD = 2.0;              // rings are sharp: fade them at this multiple of RING_F
+      const float HEART_EDGE = 0.7;            // heartwood fades to sapwood from this fraction of HEART_R
+      const float END_ROUGH = 0.65;            // sawn end grain
+      const float PITH_SALT = 7.7;             // decorrelates the pith hash
+      const mat2 TURN2 = mat2(0.8, 0.6, -0.6, 0.8);   // turns the pith lattice off the grid (~37°)
       vec2 xz = TURN2 * p.xz / LOG_SIZE;
       vec2 ci = floor(xz);
-      float r2 = 1e9;
+      float r2 = CELL_FAR;
       for (int k = 0; k < 9; k++) {
         vec2 o = vec2(float(k % 3), float(k / 3)) - 1.0;
-        vec2 dv = ci + o + 0.5 + PITH_JITTER * (hash33(vec3(ci + o, 7.7)).xy - 0.5) - xz;
+        vec2 dv = ci + o + 0.5 + PITH_JITTER * (hash33(vec3(ci + o, PITH_SALT)).xy - 0.5) - xz;
         r2 = min(r2, dot(dv, dv));
       }
       float r = sqrt(r2) * LOG_SIZE;
       float rr = r * RING_F + RING_WOBBLE * vnoise(M_ROT * p * RING_WOBBLE_F);
-      float ring = smoothstep(0.55, 0.95, fract(rr)) * lodFade(RING_F * 2.0, fp);
-      vec3 endg = mix(HEARTWOOD, SAPWOOD, smoothstep(0.7 * HEART_R, HEART_R, r)) * mix(1.0, LATEWOOD, ring);
+      float ring = smoothstep(LATE_EDGE.x, LATE_EDGE.y, fract(rr)) * lodFade(RING_F * RING_LOD, fp);
+      vec3 endg = mix(HEARTWOOD, SAPWOOD, smoothstep(HEART_EDGE * HEART_R, HEART_R, r)) * mix(1.0, LATEWOOD, ring);
       m.alb = mix(m.alb, endg, top);
       m.g *= 1.0 - top;
       m.cav = mix(m.cav, 1.0, top);
-      m.rough = mix(m.rough, 0.65, top);
+      m.rough = mix(m.rough, END_ROUGH, top);
     }
   } else if (id == E_PLANT) {
     // Foliage: each cellular cell holds a leaf, an ellipse around its seed
@@ -430,10 +486,16 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
     const float DEPTH_ALB = 0.35, DEPTH_CAV = 0.2;  // the clump's shaded interior
     const float MEAN = 0.88;                   // area-average shade of leaves and depth (the far look)
     const float RIB_W = 0.04, RIB_ALB = 1.2;   // midrib half-width (lattice units), brightness
+    const vec3 HUE_BLUE = vec3(0.8, 1.0, 0.6), HUE_YELLOW = vec3(1.3, 1.1, 0.55);   // leaf hue range
+    const float SHADE_MIN = 0.65, SHADE_RANGE = 0.7;   // leaf-to-leaf shade
+    const float WAX_VAR = 0.25;                // leaf-to-leaf roughness spread
+    const vec3 DEEP_TINT = vec3(0.85, 1.15, 0.55);   // light that scattered through leaves
+    const float LEAF_LOD = 1.5;                // fade leaves at this multiple of LEAF_F
+    const float TILT_SALT = 0.37, TILT_HASH_SCALE = 157.0;   // hash input for a leaf's tilt
     vec3 ge, r1;
     vec4 c = mCell(p * LEAF_F, ge, r1);
-    float lw = lodFade(LEAF_F * 1.5, fp);
-    vec3 tilt = hash33(vec3(c.z, c.w, 0.37) * 157.0) - 0.5;
+    float lw = lodFade(LEAF_F * LEAF_LOD, fp);
+    vec3 tilt = hash33(vec3(c.z, c.w, TILT_SALT) * TILT_HASH_SCALE) - 0.5;
     vec3 rt = r1 - n * dot(r1, n);             // to the seed, within the surface
     vec3 ax = normalize(tilt - n * dot(tilt, n) + 1e-4);
     float along = dot(rt, ax), across = dot(rt, cross(n, ax));
@@ -441,13 +503,13 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
     float e = min(LEAF_R + LEAF_RV * c.w - de, c.y - GAP);
     float pm = smoothstep(0.0, RIM, e);        // 1 on a leaf, 0 in the depth between
     float rib = (1.0 - smoothstep(0.0, RIB_W, abs(across))) * pm;
-    vec3 hue = mix(vec3(0.8, 1.0, 0.6), vec3(1.3, 1.1, 0.55), c.z);   // blue-green .. yellow-green
-    vec3 leaf = hue * (0.65 + 0.7 * c.w) * mix(1.0, RIB_ALB, rib);
+    vec3 hue = mix(HUE_BLUE, HUE_YELLOW, c.z);   // blue-green .. yellow-green
+    vec3 leaf = hue * (SHADE_MIN + SHADE_RANGE * c.w) * mix(1.0, RIB_ALB, rib);
     m.g = lw * pm * (LEAF_TILT * tilt + LEAF_CURL * rt * LEAF_F);
     m.cav = mix(MEAN, mix(DEPTH_CAV, 1.0, pm), lw);
     m.alb *= mix(vec3(MEAN), mix(DEPTH_ALB * hue, leaf, pm), lw);
-    m.rough += 0.25 * (c.z - 0.5) * lw;        // some leaves waxier than others
-    m.sssCol = vec3(0.85, 1.15, 0.55);
+    m.rough += WAX_VAR * (c.z - 0.5) * lw;     // some leaves waxier than others
+    m.sssCol = DEEP_TINT;
     m.trans = 1.0;
   } else if (id == E_METAL) {
     // brushed steel: fine grooves along a fixed world direction, anisotropic highlight
@@ -460,15 +522,21 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
     const float STREAK_F = 12.0, GROOVE_F = 40.0;   // streaks across the brushing, per cell
     const float STREAK_LEN = 0.1;              // streak length, as a fraction of their spacing
     const float SMUDGE_F = 0.35;
+    const int SMUDGE_OCT = 2;                  // fBm octaves
+    const float STREAK_SLICE = 0.5, GROOVE_SLICE = 7.5;   // noise z slices (decorrelate the two)
+    const float GROOVE_W = 0.6;                // grooves' weight relative to the streaks
+    const float SMUDGE_ROUGH = 0.1, BRUSH_ROUGH = 0.08;   // roughness swing per unit of each
+    const float SMUDGE_ALB = 0.06, BRUSH_ALB = 0.05;      // albedo swing per unit of each
+    const float BRUSH_ANISO = 0.7;             // anisotropy of the brushed highlight
     float u = dot(p, t), w = dot(p, b);
-    float s1 = vnoise(vec3(u * STREAK_F * STREAK_LEN, w * STREAK_F, 0.5));
-    float s2 = vnoise(vec3(u * GROOVE_F * STREAK_LEN, w * GROOVE_F, 7.5));
+    float s1 = vnoise(vec3(u * STREAK_F * STREAK_LEN, w * STREAK_F, STREAK_SLICE));
+    float s2 = vnoise(vec3(u * GROOVE_F * STREAK_LEN, w * GROOVE_F, GROOVE_SLICE));
     float l1 = lodFade(STREAK_F, fp), l2 = lodFade(GROOVE_F, fp);
-    vec4 lo = mFbmD(p, SMUDGE_F, 2, fp);
-    float br = l1 * (s1 - 0.5) + 0.6 * l2 * (s2 - 0.5);
-    m.rough = ROUGH[id] + 0.1 * lo.x + 0.08 * br;
-    m.alb *= 1.0 + 0.06 * lo.x + 0.05 * br;
-    m.tang = t; m.aniso = 0.7;
+    vec4 lo = mFbmD(p, SMUDGE_F, SMUDGE_OCT, fp);
+    float br = l1 * (s1 - 0.5) + GROOVE_W * l2 * (s2 - 0.5);
+    m.rough = ROUGH[id] + SMUDGE_ROUGH * lo.x + BRUSH_ROUGH * br;
+    m.alb *= 1.0 + SMUDGE_ALB * lo.x + BRUSH_ALB * br;
+    m.tang = t; m.aniso = BRUSH_ANISO;
     // Hot steel grows black mill scale (magnetite): a rough dielectric, no
     // longer a metal mirroring the sky. It is patchy; where it is thick it
     // blisters off the steel and runs cooler, so the glow is mottled with dark
@@ -476,7 +544,7 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
     float ox = smoothstep(OXIDE_T0, OXIDE_T1, T);
     float flakeT = T;   // temperature of the visible surface
     if (ox > 0.0) {
-      vec4 th = mFbmD(p, SCALE_FREQ, 3, fp);   // scale thickness, centred on 0
+      vec4 th = mFbmD(p, SCALE_FREQ, SCALE_OCT, fp);   // scale thickness, centred on 0
       m.alb = mix(m.alb, OXIDE_ALB * (1.0 + SCALE_ALB_VAR * th.x), ox);
       m.metal *= 1.0 - ox;
       m.f0 = mix(m.f0, OXIDE_F0, ox);
@@ -492,10 +560,12 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
     // in the gloss. No blotches: gold doesn't tarnish.
     const float WAVE_F = 0.5, HAZE_F = 6.0;
     const float WAVE_H = 0.015;
-    vec4 lo = mFbmD(p, WAVE_F, 2, fp);
-    vec4 hz = mFbmD(p, HAZE_F, 2, fp);
+    const int WAVE_OCT = 2, HAZE_OCT = 2;      // fBm octaves
+    const float WAVE_ROUGH = 0.05, HAZE_ROUGH = 0.03;   // roughness swing per unit of each noise
+    vec4 lo = mFbmD(p, WAVE_F, WAVE_OCT, fp);
+    vec4 hz = mFbmD(p, HAZE_F, HAZE_OCT, fp);
     m.g = WAVE_H * lo.yzw;
-    m.rough += 0.05 * lo.x + 0.03 * hz.x;
+    m.rough += WAVE_ROUGH * lo.x + HAZE_ROUGH * hz.x;
   } else if (id == E_WALL) {
     // Cast concrete: cloudy mottling from the pour, fine sand-and-cement
     // grit, scattered round air-bubble pits ("bug holes", up to ~1 cm) and
@@ -506,17 +576,21 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
     const float PIT_ALB = 0.45;                // a pit's shadowed floor
     const float STREAK_FH = 2.5, STREAK_FV = 0.12, STREAK_DARK = 0.12;
     const vec2 STREAK_EDGE = vec2(0.45, 0.85);    // noise range over which a streak fades in
-    const mat3 TURN = mat3(0.866, 0.0, 0.5, 0.0, 1.0, 0.0, -0.5, 0.0, 0.866);   // 30° about y
-    vec4 lo = mFbmD(p, MOTTLE_F, 3, fp);
-    vec4 gr = mFbmD(p, GRIT_F, 3, fp);
+    const float STREAK_SALT = 2.3;             // noise offset of the streaks
+    const int MOTTLE_OCT = 3, GRIT_OCT = 3;    // fBm octaves
+    const float MOTTLE_ALB = 0.35, GRIT_ALB = 0.25;   // albedo swing per unit of each noise
+    const float PIT_CAV = 0.6, GRIT_CAV = 0.3; // cavity: down in a pit, swing with the grit
+    const float GRIT_ROUGH = 0.08;             // roughness swing with the grit
+    vec4 lo = mFbmD(p, MOTTLE_F, MOTTLE_OCT, fp);
+    vec4 gr = mFbmD(p, GRIT_F, GRIT_OCT, fp);
     float ph;
     vec4 pit = mDots(p, PIT_F, PIT_P, PIT_R, fp, ph);
-    float st = vnoise(TURN * (p * vec3(STREAK_FH, STREAK_FV, STREAK_FH)) + 2.3);
+    float st = vnoise(TURN_Y30 * (p * vec3(STREAK_FH, STREAK_FV, STREAK_FH)) + STREAK_SALT);
     float streak = STREAK_DARK * (1.0 - abs(n.y)) * smoothstep(STREAK_EDGE.x, STREAK_EDGE.y, st) * lodFade(STREAK_FH, fp);
-    m.alb *= (1.0 + 0.35 * lo.x + 0.25 * gr.x) * mix(1.0, PIT_ALB, pit.x) * (1.0 - streak);
+    m.alb *= (1.0 + MOTTLE_ALB * lo.x + GRIT_ALB * gr.x) * mix(1.0, PIT_ALB, pit.x) * (1.0 - streak);
     m.g = MOTTLE_H * lo.yzw + GRIT_H * gr.yzw - PIT_DEPTH * pit.yzw;
-    m.cav = (1.0 - 0.6 * pit.x) * (1.0 + 0.3 * gr.x);
-    m.rough += 0.08 * gr.x;
+    m.cav = (1.0 - PIT_CAV * pit.x) * (1.0 + GRIT_CAV * gr.x);
+    m.rough += GRIT_ROUGH * gr.x;
   } else if (id == E_ROCK) {
     // Weathered volcanic rock: big lumps, then craggy relief from several
     // octaves of crease noise (flat-topped knobs between sharp V creases,
@@ -544,15 +618,22 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
     const float VES_CLUSTER_F = 0.3;           // vesicles come in patches
     const vec2 VES_CLUSTER_EDGE = vec2(0.45, 0.7);
     const float VES_WARP = 0.02;               // bends vesicles out of round (cells per unit slope)
-    vec4 lo = mFbmD(p, LUMP_F, 3, fp);
+    const int LUMP_OCT = 3, CRAG_OCT = 3, GRAIN_OCT = 3;   // octaves (fBm; crease noise)
+    const float CRAG_LOD = 2.0;                // creases are sharp: fade them at this multiple of their frequency
+    const float CRAG_SALT = 3.1, CRAG_SALT_STEP = 5.3;   // noise offset of the first crag octave, added per octave
+    const float TINT_SALT = 1.7, VES_CLUSTER_SALT = 6.1;  // noise offsets
+    const float LUMP_ALB = 0.35, GRAIN_ALB = 0.6, CRAG_ALB = 0.6;   // albedo swing per unit of each
+    const float HOLLOW_CAV = 0.8, VES_CAV = 0.6, GRAIN_CAV = 0.6;   // cavity: hollows of the relief, vesicles, grit
+    const float GRAIN_ROUGH = 0.1;             // roughness swing with the grit
+    vec4 lo = mFbmD(p, LUMP_F, LUMP_OCT, fp);
     vec3 pw = p + WARP * lo.yzw;
     float hc = 0.0, ws = 0.0;                  // relief (relative to its mean), weight
     vec3 gc = vec3(0.0);
     mat3 J = M_ROT * CRAG_F;
     float f = CRAG_F, a = 1.0;
-    for (int i = 0; i < 3; i++) {
-      float lw = lodFade(2.0 * f, fp);         // creases are sharp: fade them early
-      vec4 c = mCreaseJ(pw, J, vec3(3.1 + 5.3 * float(i)));
+    for (int i = 0; i < CRAG_OCT; i++) {
+      float lw = lodFade(CRAG_LOD * f, fp);
+      vec4 c = mCreaseJ(pw, J, vec3(CRAG_SALT + CRAG_SALT_STEP * float(i)));
       float r2 = (1.0 - c.x) * (1.0 - c.x);
       vec3 dr2 = -2.0 * (1.0 - c.x) * c.yzw;
       hc += a * lw * (i == 0 ? 1.0 - r2 - CREASE_MEAN : r2 - RIDGE_MEAN);
@@ -561,37 +642,37 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
       J = M_ROT * J * CRAG_LAC; f *= CRAG_LAC; a *= CRAG_GAIN;
     }
     hc /= ws;                                  // relief about its mean, roughly ±0.5
-    vec4 gr = mFbmD(p, GRAIN_F, 3, fp);
-    float tn = vnoise(M_ROT * p * TINT_F + 1.7);
+    vec4 gr = mFbmD(p, GRAIN_F, GRAIN_OCT, fp);
+    float tn = vnoise(M_ROT * p * TINT_F + TINT_SALT);
     float rust = smoothstep(RUST_EDGE.x, RUST_EDGE.y, tn);
     float pale = smoothstep(PALE_EDGE.x, PALE_EDGE.y, tn) * smoothstep(SKY_EDGE.x, SKY_EDGE.y, n.y);   // weathering on what faces the sky
     float band = vnoise(vec3(p.x * BAND_FH, p.y * BAND_FV, p.z * BAND_FH));
     float vh;
-    float vp = VES_P * smoothstep(VES_CLUSTER_EDGE.x, VES_CLUSTER_EDGE.y, vnoise(M_ROT * p * VES_CLUSTER_F + 6.1));
+    float vp = VES_P * smoothstep(VES_CLUSTER_EDGE.x, VES_CLUSTER_EDGE.y, vnoise(M_ROT * p * VES_CLUSTER_F + VES_CLUSTER_SALT));
     vec4 ves = mDots(p + VES_WARP * gr.yzw, VES_F, vp, VES_R, fp, vh);
-    m.alb *= (1.0 + 0.35 * lo.x + 0.6 * gr.x) * (1.0 + 0.6 * hc)
+    m.alb *= (1.0 + LUMP_ALB * lo.x + GRAIN_ALB * gr.x) * (1.0 + CRAG_ALB * hc)
            * mix(vec3(1.0), RUST, rust) * mix(vec3(1.0), PALE, pale) * mix(BAND_LO, BAND_HI, band)
            * mix(1.0, VES_ALB, ves.x);
     m.g = LUMP_H * lo.yzw + CRAG_H * gc + GRAIN_H * gr.yzw - VES_DEPTH * ves.yzw;
-    m.cav = (1.0 + 0.8 * min(hc, 0.0)) * (1.0 - 0.6 * ves.x) * (1.0 + 0.6 * gr.x);
-    m.rough += 0.1 * gr.x;
+    m.cav = (1.0 + HOLLOW_CAV * min(hc, 0.0)) * (1.0 - VES_CAV * ves.x) * (1.0 + GRAIN_CAV * gr.x);
+    m.rough += GRAIN_ROUGH * gr.x;
   } else if (id == E_LAVA) {
     // Molten well above the solidus; nearer it a crust skins over. The crust
     // radiates its heat away far below the bulk temperature and breaks into
     // plates: the cracks between them show the melt, brightest down the middle
     // and dull red where they meet the cooler plate edges.
     float Ts = solidusOf(ctype);
-    vec4 sk = mFbmD(p + vec3(0.0, uTime * LAVA_CHURN, 0.0), LAVA_SKIN_FREQ, 2, fp);   // churning skin
+    vec4 sk = mFbmD(p + vec3(0.0, uTime * LAVA_CHURN, 0.0), LAVA_SKIN_FREQ, LAVA_SKIN_OCT, fp);   // churning skin
     float x = (T - Ts) / LAVA_MELT_RANGE + LAVA_SKIN_VAR * sk.x;   // 0 = at the solidus, 1 = fully molten
     float crust = 1.0 - smoothstep(LAVA_CRUST_X0, LAVA_CRUST_X1, x);
     vec3 ge, r1;
     vec4 c = mCell(p * LAVA_PLATE_FREQ, ge, r1);   // crust plates
-    float lwc = lodFade(LAVA_PLATE_FREQ * 4.0, fp);
+    float lwc = lodFade(LAVA_PLATE_FREQ * LAVA_CRACK_LOD, fp);
     // crack half-width: hairlines once the crust has set, wide enough to
     // swallow the plates once it has broken up
     float w = mix(LAVA_CRACK_SHUT, LAVA_CRACK_OPEN, (1.0 - crust) * (1.0 - crust));
-    float crk = mix(1.0 - smoothstep(0.5 * w, w, c.y), min(LAVA_CRACK_AREA * w, 1.0), 1.0 - lwc);   // open melt
-    float rim = 1.0 - smoothstep(0.5 * w, w + LAVA_RIM, c.y);   // 1 in the melt .. 0 on the plate
+    float crk = mix(1.0 - smoothstep(LAVA_CRACK_CORE * w, w, c.y), min(LAVA_CRACK_AREA * w, 1.0), 1.0 - lwc);   // open melt
+    float rim = 1.0 - smoothstep(LAVA_CRACK_CORE * w, w + LAVA_RIM, c.y);   // 1 in the melt .. 0 on the plate
     float Tmelt = T + LAVA_SKIN_DT * sk.x;
     // young crust is thin and still glows; old crust is cold on top
     float Tcrust = mix(T, min(T, LAVA_CRUST_T + LAVA_CRUST_K * (T - Ts)), crust);
@@ -614,14 +695,16 @@ vec3 albedoOf(int id, vec3 p, float seed) {
   return matOf(id, p, vec3(0.0, 1.0, 0.0), AMBIENT, 0.0, 0.0).alb;
 }
 
+const float MAT_ROUGH_MIN = 0.04;   // smoothest a textured surface may get (GGX roughness)
+const float BUMP_MAX_SLOPE = 1.5;   // cap on the bump's tangential height gradient
 void applyMat(inout Surf s, Mat m) {
-  s.albedo = max(m.alb, vec3(0.0)); s.rough = clamp(m.rough, 0.04, 1.0); s.metal = m.metal; s.f0 = m.f0;
+  s.albedo = max(m.alb, vec3(0.0)); s.rough = clamp(m.rough, MAT_ROUGH_MIN, 1.0); s.metal = m.metal; s.f0 = m.f0;
   s.sss = m.sss; s.sssCol = m.sssCol; s.glint = m.glint; s.glintDens = m.glintDens;
   s.cav = clamp(m.cav, 0.0, 1.0); s.aniso = m.aniso; s.tang = m.tang; s.trans = m.trans; s.emit = m.emit;
   // bump: tilt the normal by the tangential part of the height gradient
   vec3 gt = m.g - s.ng * dot(s.ng, m.g);
   float gl = length(gt);
-  if (gl > 1.5) gt *= 1.5 / gl;
+  if (gl > BUMP_MAX_SLOPE) gt *= BUMP_MAX_SLOPE / gl;
   s.n = normalize(s.ng - gt);
 }
 
@@ -629,11 +712,18 @@ void applyMat(inout Surf s, Mat m) {
 // that channel around the point, weighted trilinearly. The two most common
 // elements get a full material each; their border is broken up with noise so
 // it doesn't follow the cell lattice.
+const float GATHER_DEPTH = 0.4;      // cells below the surface where the cells are weighted
+const float GATHER_W_MIN = 1e-3;     // weight floor: every cell of the channel counts a little
+const float GATHER_DEEP = 0.9;       // cells below the surface for the fallback search
+const vec2 MAT_BORDER_EDGE = vec2(0.25, 0.75);   // share of the second element over which it takes over
+const float MAT_BORDER_F = 1.7;      // frequency of the noise breaking up that border, per cell
+const float MAT_BORDER_SALT = 2.9;   // its noise offset
+const float MAT_BORDER_AMP = 0.6;    // how far it shifts the share
 Surf gatherSurf(vec3 hp, vec3 n, int ch) {
   Surf s;
   s.p = hp; s.n = n; s.ng = n; s.ch = ch; s.id = E_EMPTY; s.cell = ivec3(floor(hp - n * 0.5)); s.seed = 0.0;
   s.face = ivec3(0, 1, 0);
-  vec3 q = hp - n * 0.4 - 0.5;
+  vec3 q = hp - n * GATHER_DEPTH - 0.5;
   ivec3 c0 = ivec3(floor(q));
   vec3 f = q - vec3(c0);
   int id1 = -1, id2 = -1;
@@ -646,7 +736,7 @@ Surf gatherSurf(vec3 hp, vec3 n, int ch) {
     int id = eid(a);
     if (SURFCH[id] != ch) continue;
     vec3 wv = mix(1.0 - f, f, vec3(o));
-    float w = wv.x * wv.y * wv.z + 1e-3;
+    float w = wv.x * wv.y * wv.z + GATHER_W_MIN;
     T += w * a.y;
     wsum += w;
     if (id1 < 0 || id == id1) {
@@ -659,7 +749,7 @@ Surf gatherSurf(vec3 hp, vec3 n, int ch) {
   }
   if (wsum == 0.0) {
     // the smoothed surface spilled past its own cells: look a bit deeper
-    ivec3 cc = ivec3(floor(hp - n * 0.9));
+    ivec3 cc = ivec3(floor(hp - n * GATHER_DEEP));
     for (int i = 0; i < 27 && wsum == 0.0; i++) {
       ivec3 c = cc + ivec3(i % 3, (i / 3) % 3, i / 9) - 1;
       if (outside(c)) continue;
@@ -680,7 +770,8 @@ Surf gatherSurf(vec3 hp, vec3 n, int ch) {
   Mat m = matOf(id1, hp, n, s.T, ct1, fp);
   if (id2 >= 0) {
     float r = w2 / (w1 + w2);
-    float k = smoothstep(0.25, 0.75, r + (vnoise(M_ROT * hp * 1.7 + 2.9) - 0.5) * 0.6);
+    float k = smoothstep(MAT_BORDER_EDGE.x, MAT_BORDER_EDGE.y,
+                         r + (vnoise(M_ROT * hp * MAT_BORDER_F + MAT_BORDER_SALT) - 0.5) * MAT_BORDER_AMP);
     if (k > 0.0) m = mixMat(m, matOf(id2, hp, n, s.T, ct2, fp), k);
   }
   applyMat(s, m);
@@ -697,7 +788,10 @@ bool flushNb(ivec3 c) {
 }
 
 // Ray vs rounded box (Inigo Quilez): centred at the origin, inner half-size b,
-// radius r. Returns the entry t, -1 on a miss, -2 if ro is inside the bounds.
+// radius r. Returns the entry t, RBOX_MISS on a miss, RBOX_INSIDE if ro is inside the bounds.
+const float RBOX_MISS = -1.0, RBOX_INSIDE = -2.0;
+const float RBOX_NONE = 1e20;        // "no root yet"
+const float RBOX_NONE_TEST = 1e19;   // a t above this is still RBOX_NONE
 float rboxHit(vec3 ro, vec3 rd, vec3 b, float r) {
   vec3 m = 1.0 / rd;
   vec3 nn = m * ro;
@@ -705,8 +799,8 @@ float rboxHit(vec3 ro, vec3 rd, vec3 b, float r) {
   vec3 t1 = -nn - k, t2 = -nn + k;
   float tN = max(max(t1.x, t1.y), t1.z);
   float tF = min(min(t2.x, t2.y), t2.z);
-  if (tN > tF || tF < 0.0) return -1.0;
-  if (tN < 0.0) return -2.0;
+  if (tN > tF || tF < 0.0) return RBOX_MISS;
+  if (tN < 0.0) return RBOX_INSIDE;
   float t = tN;
   vec3 pos = ro + t * rd;
   vec3 s = sign(pos);
@@ -717,7 +811,7 @@ float rboxHit(vec3 ro, vec3 rd, vec3 b, float r) {
   vec3 oc = ro - b;
   vec3 dd = rd * rd, oo = oc * oc, od = oc * rd;
   float ra2 = r * r;
-  t = 1e20;
+  t = RBOX_NONE;
   { float bb = od.x + od.y + od.z, c = oo.x + oo.y + oo.z - ra2, h = bb * bb - c;
     if (h > 0.0) t = -bb - sqrt(h); }
   { float a = dd.y + dd.z, bb = od.y + od.z, c = oo.y + oo.z - ra2, h = bb * bb - a * c;
@@ -726,7 +820,7 @@ float rboxHit(vec3 ro, vec3 rd, vec3 b, float r) {
     if (h > 0.0) { h = (-bb - sqrt(h)) / a; if (h > 0.0 && h < t && abs(ro.y + rd.y * h) < b.y) t = h; } }
   { float a = dd.x + dd.y, bb = od.x + od.y, c = oo.x + oo.y - ra2, h = bb * bb - a * c;
     if (h > 0.0) { h = (-bb - sqrt(h)) / a; if (h > 0.0 && h < t && abs(ro.z + rd.z * h) < b.z) t = h; } }
-  return t > 1e19 ? -1.0 : t;
+  return t > RBOX_NONE_TEST ? RBOX_MISS : t;
 }
 
 // Shape of a crisp voxel: the ray enters the cell at tEnter through face
@@ -734,6 +828,7 @@ float rboxHit(vec3 ro, vec3 rd, vec3 b, float r) {
 // exposed: on sides with a flush crisp neighbour the box reaches past the cell,
 // so a wall of many voxels is one flat slab with rounded outer edges (concave
 // edges stay sharp). Returns false if the shape is missed within [tEnter, tExit).
+const float CRISP_EPS = 1e-4;   // tolerance of the entry tests (cells)
 bool crispHit(ivec3 cell, int id, vec3 ro, vec3 rd, float tEnter, float tExit, inout float t, inout vec3 n) {
   float R = uBevel;
   if (R <= 0.0 || RCLASS[id] == R_GLASS) return true;
@@ -747,13 +842,13 @@ bool crispHit(ivec3 cell, int id, vec3 ro, vec3 rd, float tEnter, float tExit, i
   vec3 b = 0.5 * (hi - lo) - R;
   vec3 c = vec3(cell) + 0.5 * (lo + hi);
   vec3 pe = ro + rd * tEnter - c;
-  if (length(max(abs(pe) - b, 0.0)) <= R + 1e-4) return true;   // entered through a flat part
+  if (length(max(abs(pe) - b, 0.0)) <= R + CRISP_EPS) return true;   // entered through a flat part
   float tb = tEnter - 1.0;
   float th = rboxHit(ro + rd * tb - c, rd, b, R);
-  if (th == -2.0) return true;
+  if (th == RBOX_INSIDE) return true;
   if (th < 0.0) return false;
   th += tb;
-  if (th < tEnter - 1e-4 || th >= tExit) return false;
+  if (th < tEnter - CRISP_EPS || th >= tExit) return false;
   t = max(th, tEnter);
   vec3 ph = ro + rd * t - c;
   vec3 q = max(abs(ph) - b, 0.0);
@@ -769,7 +864,8 @@ Surf crispSurf(ivec3 cell, int id, vec4 a, vec3 hp, vec3 n) {
   s.face = an.x >= an.y && an.x >= an.z ? ivec3(int(sign(n.x)), 0, 0)
          : (an.y >= an.z ? ivec3(0, int(sign(n.y)), 0) : ivec3(0, 0, int(sign(n.z))));
   // an isolated grain carries its texture with it (its seed moves with the grain)
-  vec3 tp = SURFCH[id] >= 0 ? hp - vec3(cell) + s.seed * 61.0 : hp;
+  const float GRAIN_TEX_SPREAD = 61.0;   // cells of texture space the seed spreads grains over
+  vec3 tp = SURFCH[id] >= 0 ? hp - vec3(cell) + s.seed * GRAIN_TEX_SPREAD : hp;
   applyMat(s, matOf(id, tp, n, a.y, floor(a.w), footprint(hp)));
   return s;
 }
@@ -777,12 +873,17 @@ Surf crispSurf(ivec3 cell, int id, vec4 a, vec3 hp, vec3 n) {
 // ---- shading ----
 // Split-sum environment BRDF, analytic fit (Karis 2014): (scale, bias) on F0.
 vec2 envBRDF(float nv, float rough) {
+  // the fit's coefficients
   const vec4 c0 = vec4(-1.0, -0.0275, -0.572, 0.022);
   const vec4 c1 = vec4(1.0, 0.0425, 1.04, -0.04);
+  const float c2 = -9.28;
+  const vec2 c3 = vec2(-1.04, 1.04);
   vec4 r = rough * c0 + c1;
-  float a004 = min(r.x * r.x, exp2(-9.28 * nv)) * r.x + r.y;
-  return vec2(-1.04, 1.04) * a004 + r.zw;
+  float a004 = min(r.x * r.x, exp2(c2 * nv)) * r.x + r.y;
+  return c3 * a004 + r.zw;
 }
+
+const float GGX_ALPHA_MIN = 2e-3;   // floor on GGX alpha (= roughness²): keeps the lobe finite
 
 // Height-correlated Smith visibility, V = G2 / (4 n·l n·v).
 float smithV(float nl, float nv, float a) {
@@ -799,12 +900,12 @@ vec3 ggxSpecA(vec3 n, vec3 v, vec3 l, float rough, vec3 F0, vec3 t, float aniso)
   if (nl <= 0.0) return vec3(0.0);
   vec3 h = normalize(v + l);
   float nv = max(dot(n, v), 1e-4), nh = max(dot(n, h), 0.0), vh = max(dot(v, h), 0.0);
-  float a = max(rough * rough, 2e-3);
+  float a = max(rough * rough, GGX_ALPHA_MIN);
   float D;
   if (aniso > 0.0) {
     vec3 b = normalize(cross(n, t));
     t = cross(b, n);
-    float at = max(a * (1.0 - aniso), 2e-3), ab = max(a * (1.0 + aniso), 2e-3);
+    float at = max(a * (1.0 - aniso), GGX_ALPHA_MIN), ab = max(a * (1.0 + aniso), GGX_ALPHA_MIN);
     float th = dot(t, h) / at, bh = dot(b, h) / ab;
     float d = th * th + bh * bh + nh * nh;
     D = 1.0 / (PI_S * at * ab * d * d);
@@ -845,6 +946,9 @@ const float GLINT_OMEGA = PI_S * GLINT_DELTA * GLINT_DELTA * 0.5;   // integral 
 // reflection instead of peppering the whole surface.
 const float GLINT_FACET_ROUGH = 0.5;
 const float GLINT_LEVEL_SALT = 17.3;   // decorrelates the facets of different levels
+const float GLINT_NORMAL_SALT = 41.7;  // decorrelates a facet's normal from its position
+const float GLINT_FRAME_UP_MAX = 0.9;  // |n.y| above which the tangent frame is built from x instead of y
+const float TWO_PI_S = 6.2831853;
 
 // Kernel weight times coverage of the facet in q's lattice cell.
 float glintFacet(vec3 q, vec3 n, vec3 t1, vec3 t2, vec3 h, float a2, float salt) {
@@ -852,8 +956,8 @@ float glintFacet(vec3 q, vec3 n, vec3 t1, vec3 t2, vec3 h, float a2, float salt)
   vec3 h1 = hash33(ci + salt);
   float cov = 1.0 - smoothstep(GLINT_R0, GLINT_R1, length(q - ci - (GLINT_R1 + (1.0 - 2.0 * GLINT_R1) * h1)));
   if (cov <= 0.0) return 0.0;
-  vec3 h2 = hash33(ci + salt + 41.7);
-  float phi = 6.2831853 * h2.x;
+  vec3 h2 = hash33(ci + salt + GLINT_NORMAL_SALT);
+  float phi = TWO_PI_S * h2.x;
   float ct = sqrt((1.0 - h2.y) / (1.0 + (a2 - 1.0) * h2.y));
   float st = sqrt(max(1.0 - ct * ct, 0.0));
   vec3 m = (t1 * cos(phi) + t2 * sin(phi)) * st + n * ct;
@@ -867,9 +971,9 @@ vec3 glintSpec(vec3 p, vec3 n, vec3 v, vec3 l, float rough, vec3 F0, float dens)
   float lv = log2(dens / (GLINT_CELL_PX * footprint(p)));   // lattice level wanted
   float L0 = floor(lv), t = lv - L0;
   float r = min(rough, GLINT_FACET_ROUGH);
-  float a = max(r * r, 2e-3);
+  float a = max(r * r, GGX_ALPHA_MIN);
   vec3 h = normalize(v + l);
-  vec3 t1 = normalize(cross(n, abs(n.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)));
+  vec3 t1 = normalize(cross(n, abs(n.y) < GLINT_FRAME_UP_MAX ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)));
   vec3 t2 = cross(n, t1);
   vec3 q = M_ROT * p;
   float k = (1.0 - t) * glintFacet(q * exp2(L0), n, t1, t2, h, a * a, L0 * GLINT_LEVEL_SALT)
@@ -893,15 +997,30 @@ float orenNayar(float nl, float nv, float lv, float sigma) {
 // Reflections go from a sharp sky to the probes' blurred light over this roughness range.
 const float ENV_SHARP_ROUGH = 0.25;
 const float ENV_BLUR_ROUGH = 0.9;
+const float LOCAL_PROBE_LIFT = 0.75;   // cells off the surface where the glow volume is sampled
+// Glow-volume light: this much reaches even fully occluded spots, plus LOCAL_AO_GAIN × AO.
+const float LOCAL_AO_MIN = 0.35, LOCAL_AO_GAIN = 0.65;
+const float SHADE_NV_MIN = 0.05;       // the bumped normal faces the eye at least this much (cosine)
+// Oren–Nayar slope spread: none up to ON_ROUGH_START, then ON_SIGMA_RATE radians per unit roughness.
+const float ON_ROUGH_START = 0.45, ON_SIGMA_RATE = 1.6;
+// Sun diffuse: this much ignores the cavity term, plus SUN_CAV_GAIN × cavity.
+const float SUN_CAV_MIN = 0.5, SUN_CAV_GAIN = 0.5;
+// Leaves: thickness of the clump toward the sun, from two samples of the natural-solids field
+// (distance along the sun ray, cells; cells of path each stands for).
+const float LEAF_TH_D1 = 0.9, LEAF_TH_W1 = 0.9, LEAF_TH_D2 = 2.2, LEAF_TH_W2 = 1.3;
+const float LEAF_SHADOW_D = 3.0;       // cells toward the sun where the light through them is shadow-tested
+const float LEAF_TRANS_GAIN = 1.6;     // brightness of the light through
+const float LEAF_EXT = 2.5;            // its extinction per cell of clump
+const float ANISO_BEND_RATE = 5.0;     // anisotropic lookup bend reaches full strength by roughness 1/this
 vec3 shadeSurf(Surf s, vec3 rd) {
   vec3 v = -rd;
   vec3 ng = s.ng;
   float ao = s.ch >= 0 ? fieldAO(s.p, ng) : faceAO(s.cell, s.face, s.p);
-  vec3 local = sampleLight(s.p + ng * 0.75) * uLightGain;
+  vec3 local = sampleLight(s.p + ng * LOCAL_PROBE_LIFT) * uLightGain;
   // keep the bumped normal on the visible side
   vec3 n = s.n;
   float nvr = dot(n, v);
-  if (nvr < 0.05) n = normalize(n + v * (0.05 - nvr));
+  if (nvr < SHADE_NV_MIN) n = normalize(n + v * (SHADE_NV_MIN - nvr));
   float nv = clamp(dot(n, v), 1e-4, 1.0);
   vec3 l = uSun;
   float nl = dot(n, l), ngl = dot(ng, l);
@@ -922,7 +1041,7 @@ vec3 shadeSurf(Surf s, vec3 rd) {
   vec3 kD = s.albedo * (1.0 - s.metal) * (1.0 - FssEss - Fms * Ems);
 
   // sun: diffuse (rough powders back-scatter; porous stuff wraps light past the terminator)
-  float sigma = max(s.rough - 0.45, 0.0) * 1.6;
+  float sigma = max(s.rough - ON_ROUGH_START, 0.0) * ON_SIGMA_RATE;
   float lam = orenNayar(nl, nv, dot(l, v), sigma);
   float wrap = max(nl + w, 0.0) / ((1.0 + w) * (1.0 + w));
   vec3 dSun = kD * mix(vec3(lam), wrap * s.sssCol, w);
@@ -931,13 +1050,14 @@ vec3 shadeSurf(Surf s, vec3 rd) {
   float g = s.glint * uGlints;   // (glintSpec sizes its facets to the pixel, so no distance fade)
   if (g > 0.0) spec = mix(spec, glintSpec(s.p, n, v, l, s.rough, F0, s.glintDens), g);
   // (SUN_COL is irradiance / pi in this renderer's units, hence the pi on the BRDF term)
-  vec3 c = SUN_COL * sh * (dSun * (0.5 + 0.5 * s.cav) + PI_S * spec);
+  vec3 c = SUN_COL * sh * (dSun * (SUN_CAV_MIN + SUN_CAV_GAIN * s.cav) + PI_S * spec);
 
   // leaves: sunlight through a thin clump (thickness from the natural-solids field)
   if (s.trans > 0.0 && ngl < 0.0) {
-    float th = surfField(s.p + l * 0.9)[CH_ORGANIC] * 0.9 + surfField(s.p + l * 2.2)[CH_ORGANIC] * 1.3;
-    vec3 shT = uShadows ? sunShadow(s.p + l * 3.0) : vec3(1.0);
-    c += s.trans * SUN_COL * shT * (s.albedo * s.sssCol * 1.6) * (-ngl) * exp(-2.5 * th);
+    float th = surfField(s.p + l * LEAF_TH_D1)[CH_ORGANIC] * LEAF_TH_W1
+             + surfField(s.p + l * LEAF_TH_D2)[CH_ORGANIC] * LEAF_TH_W2;
+    vec3 shT = uShadows ? sunShadow(s.p + l * LEAF_SHADOW_D) : vec3(1.0);
+    c += s.trans * SUN_COL * shT * (s.albedo * s.sssCol * LEAF_TRANS_GAIN) * (-ngl) * exp(-LEAF_EXT * th);
   }
 
   // environment: specular (anisotropic lobes bend the lookup normal, rough
@@ -946,7 +1066,7 @@ vec3 shadeSurf(Surf s, vec3 rd) {
   vec3 nb = n;
   if (s.aniso > 0.0) {
     vec3 at = cross(s.tang, v);
-    nb = normalize(mix(n, cross(at, s.tang), s.aniso * clamp(5.0 * s.rough, 0.0, 1.0)));
+    nb = normalize(mix(n, cross(at, s.tang), s.aniso * clamp(ANISO_BEND_RATE * s.rough, 0.0, 1.0)));
   }
   vec3 r = reflect(rd, nb);
   r = normalize(mix(r, nb, s.rough * s.rough));
@@ -960,16 +1080,18 @@ vec3 shadeSurf(Surf s, vec3 rd) {
   float blur = smoothstep(ENV_SHARP_ROUGH, ENV_BLUR_ROUGH, s.rough);
   vec3 envSharp = mix(giRadiance(gi, r, 0.0), skyColor(r), giSkyVis(gi, r));
   vec3 envL = mix(envSharp, giRadiance(gi, r, blur), blur);
+  // specular occlusion (Lagarde & de Rousiers 2014)
   float specAO = clamp(pow(nv + aoT, exp2(-16.0 * s.rough - 1.0)) - 1.0 + aoT, 0.0, 1.0);
   c += (envL * FssEss * hor * hor + irr * Fms * Ems) * specAO;
   // indirect (sky + bounce) and glow volume: diffuse
-  c += kD * (irr * aoT + local * (0.35 + 0.65 * aoT));
+  c += kD * (irr * aoT + local * (LOCAL_AO_MIN + LOCAL_AO_GAIN * aoT));
   return c + s.emit;
 }
 
 const vec3 FLOOR_LINE_ALB = vec3(0.075, 0.078, 0.085);   // the grid's seams, darker than the floor
+const float FLOOR_LINE_CELLS = 8.0;   // cells between the floor's grid lines
 vec3 shadeFloor(vec3 hp, vec3 rd) {
-  vec2 q = hp.xz / 8.0;
+  vec2 q = hp.xz / FLOOR_LINE_CELLS;
   vec2 gq = abs(fract(q - 0.5) - 0.5) / max(fwidth(q), vec2(1e-4));
   float line = 1.0 - min(min(gq.x, gq.y), 1.0);
   vec3 alb = mix(GROUND_ALB, FLOOR_LINE_ALB, line);
@@ -979,6 +1101,6 @@ vec3 shadeFloor(vec3 hp, vec3 rd) {
   float ao = min(faceAO(ivec3(floor(hp.x), -1, floor(hp.z)), ivec3(0, 1, 0), hp), fieldAO(vec3(hp.x, 0.0, hp.z), n));
   vec3 local = sampleLight(vec3(hp.x, 0.5, hp.z)) * uLightGain;
   vec3 irr = giIrradiance(surfProbe(vec3(hp.x, 0.0, hp.z), n), n);
-  return alb * (SUN_COL * ndl * sh + irr * ao + local * (0.35 + 0.65 * ao));
+  return alb * (SUN_COL * ndl * sh + irr * ao + local * (LOCAL_AO_MIN + LOCAL_AO_GAIN * ao));
 }
 `;
