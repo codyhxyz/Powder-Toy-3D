@@ -1,7 +1,10 @@
 import * as THREE from 'three';
 
-// WASD/QE fly movement layered on top of OrbitControls (camera and orbit
-// target move together), plus an animated reset to the home view.
+const TURN_RATE = THREE.MathUtils.degToRad(90); // Q/E turn speed, rad/s
+
+// WASD fly movement layered on top of OrbitControls (camera and orbit target
+// move together), Q/E turning around the orbit target, plus an animated reset
+// to the home view.
 export function createCameraRig(camera, controls, isTyping) {
   const keys = new Set();
   const home = { pos: new THREE.Vector3(), target: new THREE.Vector3() };
@@ -16,7 +19,7 @@ export function createCameraRig(camera, controls, isTyping) {
   addEventListener('keyup', (e) => keys.delete(e.code));
   addEventListener('blur', () => keys.clear());
 
-  const fwd = new THREE.Vector3(), right = new THREE.Vector3(), move = new THREE.Vector3();
+  const fwd = new THREE.Vector3(), right = new THREE.Vector3(), move = new THREE.Vector3(), offset = new THREE.Vector3();
   const UP = new THREE.Vector3(0, 1, 0);
 
   return {
@@ -41,6 +44,14 @@ export function createCameraRig(camera, controls, isTyping) {
         if (anim.t >= 1) anim = null;
       }
       if (!keys.size || isTyping()) return;
+      const fast = keys.has('ShiftLeft') || keys.has('ShiftRight') ? 2.5 : 1;
+      const turn = (keys.has('KeyQ') ? 1 : 0) - (keys.has('KeyE') ? 1 : 0);
+      if (turn) {
+        // swing the camera around the orbit target: Q turns the view left, E right
+        offset.subVectors(camera.position, controls.target).applyAxisAngle(UP, turn * TURN_RATE * fast * dt);
+        camera.position.addVectors(controls.target, offset);
+        anim = null;
+      }
       camera.getWorldDirection(fwd);
       fwd.y = 0;
       if (fwd.lengthSq() < 1e-6) fwd.set(0, 0, -1);
@@ -51,12 +62,9 @@ export function createCameraRig(camera, controls, isTyping) {
       if (keys.has('KeyS')) move.sub(fwd);
       if (keys.has('KeyD')) move.add(right);
       if (keys.has('KeyA')) move.sub(right);
-      if (keys.has('KeyE')) move.y += 1;
-      if (keys.has('KeyQ')) move.y -= 1;
       if (move.lengthSq() === 0) return;
       // scale with how far we are from what we're looking at, so close-ups stay controllable
       const dist = camera.position.distanceTo(controls.target);
-      const fast = keys.has('ShiftLeft') || keys.has('ShiftRight') ? 2.5 : 1;
       move.normalize().multiplyScalar(THREE.MathUtils.clamp(dist * 0.6, 1.2, 14) * speed * fast * dt);
       camera.position.add(move);
       controls.target.add(move);

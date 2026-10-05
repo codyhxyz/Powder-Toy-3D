@@ -9,7 +9,7 @@ import { prelude, quadVert } from '../shaders/common.js';
 //   R  element id
 //   G  temperature code (see TEMP below); air is always sent as ambient
 //   B  life, only for elements whose look depends on it (smoke density, fire)
-//   A  unused
+//   A  ctype (what lava melted from sets where its crust forms; what a clone copies)
 // Velocity and pressure aren't sent, and the per-grain colour seed is
 // re-derived from the cell position on the guest.
 
@@ -71,7 +71,7 @@ void main() {
   int id = eid(a);
   float T = encodeTemp(id == E_EMPTY ? AMBIENT : a.y);
   float life = sendsLife(id) ? round(clamp(a.z, 0.0, 1.0) * BYTE_MAX) : 0.0;
-  oP = vec4(float(id), T, life, 0.0) / BYTE_MAX;
+  oP = vec4(float(id), T, life, clamp(floor(a.w), 0.0, BYTE_MAX)) / BYTE_MAX;
 }
 `;
 
@@ -85,7 +85,7 @@ void main() {
   ivec2 fc = ivec2(gl_FragCoord.xy);
   vec4 q = round(texelFetch(tPacked, fc, 0) * BYTE_MAX);
   uint rs = seed3(cellFromFrag(fc), 0u, SEED_SALT);
-  oA = vec4(q.x, decodeTemp(q.y), q.z / BYTE_MAX, rnd(rs) * SEED_SPAN);
+  oA = vec4(q.x, decodeTemp(q.y), q.z / BYTE_MAX, q.w + rnd(rs) * SEED_SPAN);
   oB = vec4(0.0);
 }
 `;

@@ -30,6 +30,8 @@ const BRUSH_SHAPES = new Set([0, 1]); // sphere, cube (see brush.js)
 const PEER_COLORS = ['#ffb84d', '#5ad1ff', '#ff6fa8', '#8ce36b', '#c49bff', '#ff8a5c', '#4de0c0', '#f4e04d'];
 const PAINTABLE = new Set([...ELEMENTS.map((e) => e.id), ...TOOLS.filter((t) => t.key !== 'SIGN').map((t) => t.id)]);
 const GUEST_BLOCKED = 'Only the host can do that';
+const HOST_AWAY = 'The host switched to another tab, so the world is paused until they come back';
+const HOST_BACK = 'The host is back';
 
 const ICON_PLAYERS = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18 14.5a6.5 6.5 0 0 1 3.5 5.5"/></svg>';
 
@@ -137,6 +139,9 @@ export function createMultiplayer({ renderer, scene, camera, hud, getSim, getVol
       case 'key':
         if (role === 'host') wantKey = true;
         break;
+      case 'away':
+        if (from?.role === 'host') hud.toast(m.away ? HOST_AWAY : HOST_BACK);
+        break;
     }
     syncButton();
   }
@@ -235,6 +240,9 @@ export function createMultiplayer({ renderer, scene, camera, hud, getSim, getVol
     button.setAttribute('aria-label', button.title);
   }
   syncButton();
+
+  // A background tab stops animating, and with it the host's simulation and stream.
+  document.addEventListener('visibilitychange', () => { if (role === 'host') send({ t: 'away', away: document.hidden }); });
 
   const joinCode = new URLSearchParams(location.search).get(JOIN_PARAM);
   if (joinCode && RELAY_URL) connect('guest', joinCode);

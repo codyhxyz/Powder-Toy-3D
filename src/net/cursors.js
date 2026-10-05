@@ -1,13 +1,15 @@
 import * as THREE from 'three';
 import { createBrushCursor } from '../brush.js';
 import { toolById } from '../elements.js';
+import { inkFor } from '../ui/dom.js';
 
 // Time constant (s) for easing a remote cursor toward its latest reported
 // position, so 20 Hz updates read as smooth motion.
 const SMOOTHING_S = 0.06;
 
-// Other players' brushes: the same glass bubble as the local brush (tinted
-// with their tool) plus a name tag in their player colour.
+// Other players' brushes, the usual multiplayer-cursor way: each player has
+// one colour, used for their brush bubble and their name tag, so they never
+// look like your own brush. A swatch on the tag shows the tool they hold.
 export function createRemoteCursors({ scene, camera, getVolume }) {
   const layer = Object.assign(document.createElement('div'), { className: 'net-cursors' });
   document.body.append(layer);
@@ -34,8 +36,9 @@ export function createRemoteCursors({ scene, camera, getVolume }) {
         scene.add(brush.mesh);
         const label = Object.assign(document.createElement('div'), { className: 'net-cursor', textContent: name });
         label.style.setProperty('--peer', color);
+        label.style.setProperty('--peer-ink', inkFor(color));
         layer.append(label);
-        p = { brush, label, pos: new THREE.Vector3(), target: null };
+        p = { brush, label, color, pos: new THREE.Vector3(), target: null };
         peers.set(id, p);
       }
       const shown = Array.isArray(msg.c);
@@ -58,13 +61,15 @@ export function createRemoteCursors({ scene, camera, getVolume }) {
         }
         p.pos.lerp(p.target, ease);
         world.copy(p.pos).applyMatrix4(vol.matrixWorld);
-        p.brush.set({ visible: true, position: world, radius: p.radius * vol.scale.x, shape: p.shape, color: tool.color });
+        p.brush.set({ visible: true, position: world, radius: p.radius * vol.scale.x, shape: p.shape, color: p.color });
         ndc.copy(world).project(camera);
         const onScreen = Math.abs(ndc.z) <= 1;
         p.label.hidden = !onScreen;
         if (onScreen) {
           p.label.style.translate = `${((ndc.x + 1) / 2) * innerWidth}px ${((1 - ndc.y) / 2) * innerHeight}px`;
           p.label.classList.toggle('painting', p.painting);
+          p.label.style.setProperty('--tool', tool.color);
+          p.label.title = tool.name;
         }
       }
     },

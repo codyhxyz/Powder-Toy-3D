@@ -208,7 +208,7 @@ function setGrid(dims) {
 }
 
 function loadPreset(name, undoable = true) {
-  if (undoable && mp.guard()) return;
+  if (undoable && mp.guard()) return false;
   if (undoable) sim.snapshot();
   settings.preset = name;
   if (name === 'empty') sim.clear();
@@ -216,6 +216,7 @@ function loadPreset(name, undoable = true) {
   post.reset();
   signs?.clear();
   save();
+  return true;
 }
 
 // ---------------------------------------------------------------- signs (optional module)
@@ -363,10 +364,10 @@ const settingsPanel = createSettings({
   sections: [
     { title: 'Scene', rows: [
       { type: 'seg', key: 'preset', options: [['empty', 'Empty'], ['lab', 'Lab'], ['volcano', 'Volcano']],
-        onChange: (v) => { loadPreset(v); hud.toast(`Loaded ${v === 'empty' ? 'an empty box' : `the ${v}`}`); } },
+        onChange: (v) => { if (loadPreset(v)) hud.toast(`Loaded ${v === 'empty' ? 'an empty box' : `the ${v}`}`); } },
       { type: 'buttons', buttons: [
-        ['Reload scene', () => { loadPreset(settings.preset); hud.toast('Scene reloaded'); }],
-        ['Clear everything', () => { loadPreset('empty'); hud.toast('Cleared'); }, '.danger'],
+        ['Reload scene', () => { if (loadPreset(settings.preset)) hud.toast('Scene reloaded'); }],
+        ['Clear everything', () => { if (loadPreset('empty')) hud.toast('Cleared'); }, '.danger'],
       ] },
     ] },
     { title: 'Grid size', rows: [
@@ -708,7 +709,7 @@ function frame() {
   const g = sim.g;
   hud.setStats({
     fpsV: fps,
-    stepsV: settings.paused ? 0 : settings.steps * fps,
+    stepsV: settings.paused || mp.isGuest ? 0 : settings.steps * fps, // guests don't simulate
     cellsV: `${(g.nx * g.ny * g.nz / 1e6).toFixed(1)}M`,
     resV: settings.autoRes ? `${Math.round(pixelRatio * 100)}% res` : '',
   });

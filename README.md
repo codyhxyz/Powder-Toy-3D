@@ -28,7 +28,7 @@ Press `?` in the app for the full list.
 | Right-drag or ⌥-drag | orbit |
 | Shift + right-drag or middle-drag | pan |
 | Scroll | zoom |
-| `W` `A` `S` `D`, `Q` `E` | move, down/up (hold Shift to go faster) |
+| `W` `A` `S` `D`, `Q` `E` | move, turn left/right (hold Shift to go faster) |
 | `R` | reset the camera |
 
 | Everything else | |
@@ -50,7 +50,7 @@ The dock groups elements like a periodic-table strip, each tile in the element's
 - **Gases:** WTRV (steam), SMKE, FIRE
 - **Solids:** WALL, METL, GLAS, ICE, WOOD, PLNT, CLNE
 - **Tools:** HEAT, COOL, ERAS, PRES (pressure), SIGN
-- **Constructions:** HOUS (cottage, log cabin, brick, greenhouse), TREE (oak, pine, birch, palm, willow, dead), CAMP, IGLO, BRRL (oil drum, powder keg), AQUA, FNTN
+- **Constructions:** HOUS (cottage, log cabin, brick, greenhouse), TREE (oak, pine, birch, palm, willow, dead), CAMP, IGLO, BRRL (oil drum, powder keg), AQUA, FNTN, AI (your own, written by a model or pasted)
 
 All element properties live in one table (`src/elements.js`) that is baked into the shaders as GLSL constants.
 
@@ -65,6 +65,18 @@ They are made of ordinary elements and behave like them: wooden walls burn, the 
 an igloo melts, a powder keg goes off. Placing one uploads it as a small 3D texture that a single GPU pass (`src/shaders/stamp.js`)
 writes into the grid. Solid bases grow a footing straight down to the first thing that can bear weight (up to 32 cells), so a house
 on a ledge gets a plinth and one in a lake stands on stilts.
+
+Every construction is a small program written against one API (`src/constructions/runtime.js`: `put`, `box`, `ball`, `disc`,
+`rod`, ...). The built-ins in `src/constructions/builtins.js` use it, and so can a model, a chatbot or a coding agent:
+
+- **AI tile:** describe a construction and *Generate* asks a model to write it. The model's code runs in a sandboxed worker
+  (no network, 5 s limit) and is checked by a physics lint (`src/constructions/lint.js`: liquid that can leak through
+  diagonal gaps, unsupported powder, clones with no source). The report and two pictures go back to the model until the build
+  is clean. Model providers are plug-ins (`src/ai/providers.js`); until one is registered, *Copy prompt* gives a prompt for
+  any chatbot and *Paste code* runs its reply. Your constructions are saved, and export and import as `.json`.
+- **Coding agents:** `npm run construct -- my-thing.js --png out.png` runs code headlessly and prints the lint report;
+  `npm run construct -- --builtins` lints every built-in; `npm run mcp:construct` serves the same tools over MCP.
+  See [docs/constructions.md](docs/constructions.md).
 
 ## How the physics works
 
@@ -175,19 +187,22 @@ A small GPU probe pass reads those values and dims signs that are hidden behind 
 
 Click the players button in the toolbar to host the current world. This copies an invite link.
 Guests see the host's world from their own camera, paint into it, and everyone sees everyone's brush with a name tag.
-Undo, scenes, grid size and pause stay with the host. If the host leaves, guests keep a copy of the world and play on alone.
+Undo, scenes, grid size and pause stay with the host. If the host switches to another tab, the world pauses and guests are told.
+If the host leaves, guests keep a copy of the world and play on alone.
 
 ```sh
 npm run relay      # local relay on ws://localhost:8787 (needs wrangler); then npm run dev
 ```
 
 The host runs the only simulation. About 10 times a second it packs the state on the GPU into 4 bytes per cell,
-keeping only what guests draw (element, an 8-bit temperature, smoke and fire density). It reads that back without stalling,
+keeping only what guests draw (element, an 8-bit temperature, smoke and fire density, what lava melted from). It reads that back without stalling,
 XORs it against the last frame it sent and deflates it. A 128³ world is a 30–80 KB keyframe to join and about 2–3 Mbit/s while things move.
-The relay (`relay/worker.js`, one Cloudflare Durable Object per room) only forwards messages.
+The relay (`relay/worker.js`, one Cloudflare Durable Object per room) only forwards messages. It accepts pages from the site,
+its Pages previews and local development (`SITE_HOSTS` and friends in `relay/worker.js`), and players can't forge its own messages.
 To deploy it, run `wrangler deploy --config relay/wrangler.toml`. The production relay lives at `wss://tpt3d-relay.codyh.xyz` (set in `.env.production`).
 The site itself deploys with `npm run deploy` (Cloudflare Pages project `tpt3d`, served at https://tpt3d.codyh.xyz).
-Without that variable, production builds hide multiplayer.
+Without `VITE_RELAY_URL`, production builds hide multiplayer.
+Guests don't receive velocity, pressure or air temperature, so their pressure and flow views look empty, the heat view shows no warm air and flames look a little dimmer. Signs aren't shared.
 
 ## Known simplifications
 
