@@ -71,7 +71,7 @@ const LOOKS = {
   SAND: { ch: 'GRANULAR', rough: 0.9, ior: 1.54, alb: '#c4a77c', glint: 0.55 },
   STONE: { ch: 'GRANULAR', rough: 0.75, alb: '#7f7c77' },
   SNOW: { ch: 'GRANULAR', rough: 0.55, ior: 1.31, alb: '#f3f6fb', sss: 0.55, glint: 0.8 },
-  GUNPOWDER: { ch: 'GRANULAR', rough: 0.45, alb: '#38383d', glint: 0.7 },
+  GUNPOWDER: { ch: 'GRANULAR', rough: 0.6, alb: '#38383d', glint: 0.7 },   // graphite glaze: a soft sheen, many glints
   ASH: { ch: 'GRANULAR', rough: 0.98, alb: '#a29e97', sss: 0.3 },
   WATER: { ch: 'LIQUID', ior: 1.333, rough: 0.02 },
   OIL: { ch: 'LIQUID', ior: 1.47, rough: 0.03 },
@@ -80,16 +80,16 @@ const LOOKS = {
   STEAM: { media: 'STEAM' },
   SMOKE: { media: 'SMOKE' },
   FIRE: { media: 'FIRE' },
-  WOOD: { ch: 'ORGANIC', rough: 0.8, alb: '#5c4231' },
+  WOOD: { ch: 'ORGANIC', rough: 0.8, alb: '#5a4637' },
   PLANT: { ch: 'ORGANIC', rough: 0.5, alb: '#4b7a2f', sss: 0.25 },
   METAL: { rough: 0.32, metal: 1, alb: [0.56, 0.57, 0.58] },
   GLASS: { ior: 1.5, rough: 0.02 },
   // Ice shares the liquid surface: ice in water is nearly invisible in real
   // life too (n = 1.31 vs 1.33).
   ICE: { ch: 'LIQUID', ior: 1.31, rough: 0.06 },
-  CLONE: { rough: 0.28, metal: 1, alb: [1.0, 0.766, 0.336] },
+  CLONE: { rough: 0.25, metal: 1, alb: [1.0, 0.766, 0.336] },   // polished gold
   // natural rock (terrain): weathered basalt, part of the natural-solids surface
-  ROCK: { ch: 'ORGANIC', rough: 0.8, alb: '#6a6560' },
+  ROCK: { ch: 'ORGANIC', rough: 0.85, alb: '#4e4b48' },
 };
 
 const srgbToLinear = (c) => (c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4));
