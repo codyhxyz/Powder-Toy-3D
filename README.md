@@ -114,7 +114,8 @@ Density decides whether it can displace its neighbour, so sand sinks through wat
 - **Latent heat.** Water, ice, snow and steam pin their temperature at 0 °C or 100 °C while banking energy until a full latent heat
   (80 for fusion, 540 for vaporisation, in water-heat-capacity units) has been absorbed or released.
   That's why ice keeps water at 0 °C, why boiling takes a while, and why lava hitting the sea makes a burst of steam and a rock crust.
-- **Convection.** Air density depends on temperature, so hot air rises and carries heat.
+- **Convection.** Air and gases thin with temperature the way an ideal gas does, so hot air rises and carries heat,
+  and smoke from a fire rises with it.
 - **Combustion.** Flammables above their ignition temperature that touch air burn their fuel, release heat and spawn flames into
   neighbouring air. Fire spreads purely through temperature. Gunpowder detonates.
 - **Phase changes.** Melting turns material into lava that remembers its origin: stone becomes stone again, sand becomes glass, metal becomes metal.

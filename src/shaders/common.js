@@ -72,7 +72,12 @@ float rnd(inout uint s) {
 }
 
 float airDensity(float T) { return 1.0 - clamp((T - AMBIENT) / AIR_DENS_SPAN, AIR_DENS_LO, AIR_DENS_HI); }
-float densityOf(int id, float T) { return id == E_EMPTY ? airDensity(T) : DENS[id]; }
+// Gases thin with heat the way air does (ideal gas): a gas's DENS is its density
+// at its spawn temperature, so hot smoke rises through the hot air around a fire.
+float densityOf(int id, float T) {
+  if (id == E_EMPTY) return airDensity(T);
+  return KIND[id] == K_GAS ? DENS[id] * airDensity(T) / airDensity(SPAWNT[id]) : DENS[id];
+}
 bool isGasLike(int id) { return KIND[id] == K_GAS || id == E_EMPTY; }
 bool isFluid(int id) { return KIND[id] == K_LIQUID || isGasLike(id); }
 bool movable(int id) { return KIND[id] != K_SOLID; }

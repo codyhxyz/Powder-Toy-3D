@@ -41,7 +41,11 @@ const isGasLike = (id) => KIND[id] === K.GAS || id === E.EMPTY;
 const isFluid = (id) => KIND[id] === K.LIQUID || isGasLike(id);
 const movable = (id) => KIND[id] !== K.SOLID;
 const airDensity = (T) => 1 - Math.min(PHYS.AIR_DENS_HI, Math.max(PHYS.AIR_DENS_LO, (T - AMBIENT) / PHYS.AIR_DENS_SPAN));
-export const densityOf = (id, T) => (id === E.EMPTY ? airDensity(T) : DENS[id]);
+// gases thin with heat the way air does; DENS is a gas's density at its spawn temperature (common.js)
+export const densityOf = (id, T) => {
+  if (id === E.EMPTY) return airDensity(T);
+  return KIND[id] === K.GAS ? DENS[id] * airDensity(T) / airDensity(SPAWNT[id]) : DENS[id];
+};
 const rnd = Math.random;
 const randDir = () => Math.cos(rnd() * Math.PI * 2); // x part of a random xz direction
 const smoothstep = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };

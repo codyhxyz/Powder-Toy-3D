@@ -3,6 +3,7 @@
 //
 // Units
 //   dens   relative density (air = 1, water = 10). Only ordering + ratios matter.
+//          Gases give it at their spawn temperature and thin with heat like air.
 //   cond   thermal conductance per face (pairwise flux uses min(cond_a, cond_b))
 //   cap    volumetric heat capacity (water = 1). Stability needs 6*cond/cap < 1.
 //   temp   spawn temperature, °C
