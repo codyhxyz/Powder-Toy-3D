@@ -49,6 +49,7 @@ export const MEDIA = [
   { key: 'FIRE', ema: 0.6, ext: 0.12, albedo: 0, g: 0, rise: 0.25 },
   { key: 'FLAME_T', ema: 0.6 },
 ];
+const N_GASES = 3;   // MEDIA entries that are gases with optical properties (the first three)
 // A fire cell's density: FIRE_BASE at the end of its life, 1 when fresh.
 export const FIRE_BASE = 0.4;
 // Temperature range packed into the flame-temperature channel.
@@ -104,7 +105,19 @@ const LOOKS = {
   ROCK: { ch: 'ORGANIC', rough: 0.85, alb: '#4e4b48' },
 };
 
-const srgbToLinear = (c) => (c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4));
+// Defaults for elements LOOKS leaves out (the rest default to 0: none).
+const DEFAULT_ROUGH = 0.7;
+const DEFAULT_IOR = 1.5;
+// Decimal places the baked material values are rounded to.
+const GLSL_DIGITS = 4;
+
+// sRGB decoding (IEC 61966-2-1)
+const SRGB_LINEAR_MAX = 0.04045;   // encoded value where the linear segment ends
+const SRGB_LINEAR_SLOPE = 12.92;   // slope of that segment
+const SRGB_OFFSET = 0.055;         // offset of the power segment
+const SRGB_GAMMA = 2.4;            // its exponent
+const srgbToLinear = (c) => (c <= SRGB_LINEAR_MAX ? c / SRGB_LINEAR_SLOPE
+  : Math.pow((c + SRGB_OFFSET) / (1 + SRGB_OFFSET), SRGB_GAMMA));
 const linearOf = (c) => {
   if (Array.isArray(c)) return c;
   const n = parseInt(c.slice(1), 16);
@@ -117,10 +130,10 @@ const mediaIndex = (k) => (k ? MEDIA.findIndex((m) => m.key === k) : -1);
 export const LOOK = ELEMENTS.map((e) => {
   const l = LOOKS[e.key] ?? {};
   return {
-    ch: chIndex(l.ch), media: mediaIndex(l.media), rough: l.rough ?? 0.7, metal: l.metal ?? 0, ior: l.ior ?? 1.5,
-    alb: linearOf(l.alb ?? e.color).map((v) => +v.toFixed(4)), sss: l.sss ?? 0, glint: l.glint ?? 0,
+    ch: chIndex(l.ch), media: mediaIndex(l.media), rough: l.rough ?? DEFAULT_ROUGH, metal: l.metal ?? 0, ior: l.ior ?? DEFAULT_IOR,
+    alb: linearOf(l.alb ?? e.color).map((v) => +v.toFixed(GLSL_DIGITS)), sss: l.sss ?? 0, glint: l.glint ?? 0,
     // single-scattering albedo: the scattered share of the extinction
-    scatAlb: (l.scatter ?? [0, 0, 0]).map((s, i) => +(e.sigma[i] > 0 ? Math.min(1, s / e.sigma[i]) : 0).toFixed(4)),
+    scatAlb: (l.scatter ?? [0, 0, 0]).map((s, i) => +(e.sigma[i] > 0 ? Math.min(1, s / e.sigma[i]) : 0).toFixed(GLSL_DIGITS)),
   };
 });
 
@@ -195,7 +208,7 @@ export function materialsGLSL() {
     `#define MEDIA_NOISE_CELLS ${f(MEDIA_NOISE_CELLS)}`,
     // per gas (smoke, steam, fire)
     ...['ext', 'albedo', 'g', 'rise'].map((k) =>
-      `const vec3 MD_${k.toUpperCase()} = vec3(${MEDIA.slice(0, 3).map((m) => f(m[k])).join(', ')});`),
+      `const vec3 MD_${k.toUpperCase()} = vec3(${MEDIA.slice(0, N_GASES).map((m) => f(m[k])).join(', ')});`),
     `#define THIN_MIN_PEAK ${f(THIN_MIN_PEAK)}`,
     `#define THIN_MASK_LO ${f(THIN_MASK_LO)}`,
     `#define THIN_MASK_HI ${f(THIN_MASK_HI)}`,
