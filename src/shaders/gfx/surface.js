@@ -27,7 +27,7 @@ struct Surf {
   float sss;    // wrap / subsurface amount
   vec3 sssCol;  // tint of light that scattered deep (snow: blue)
   float glint;  // fraction of the sun's specular that arrives as glints
-  float glintDens; // glint facets per cell
+  float glintDens; // relative glint density on screen (1 = one facet per GLINT_CELL_PX² pixels)
   float cav;    // cavity (micro) occlusion from the texture, 1 = open
   float aniso;  // brushed anisotropy along tang (0 = isotropic)
   vec3 tang;
@@ -109,9 +109,52 @@ vec4 mCell(vec3 p, out vec3 ge, out vec3 r1) {
   return vec4(sqrt(d1), dot(0.5 * (s1 + s2), u), hash13(c1 * 1.31 + 4.7), hash13(c1 * 0.71 + 9.2));
 }
 
+float sminP(float a, float b, float k) {     // polynomial smooth minimum, blend width k
+  float h = max(k - abs(a - b), 0.0) / k;
+  return min(a, b) - h * h * k * 0.25;
+}
+
 float dSmooth(float a, float b, float x) {   // derivative of smoothstep(a, b, x)
   float t = clamp((x - a) / (b - a), 0.0, 1.0);
   return 6.0 * t * (1.0 - t) / (b - a);
+}
+
+// Crease noise: |2n - 1| of the noise of q = J p, with its gradient. It is 0
+// along the n = 0.5 isolines, which meander and merge instead of tiling, so it
+// makes natural cracks, furrows and V-shaped creases.
+vec4 mCreaseJ(vec3 p, mat3 J, vec3 off) {
+  vec4 n = mNoiseJ(p, J, off);
+  float s = 2.0 * n.x - 1.0;
+  return vec4(abs(s), 2.0 * sign(s) * n.yzw);
+}
+
+// Sparse round spots (grains, flecks, pits) on a rotated lattice of f cells
+// per grid unit. Each lattice cell holds, with probability prob, a ball of
+// radius up to rmax (lattice units) kept inside its cell, so one lookup is
+// enough. Returns (coverage in [0, 1] with a soft rim, gradient of a dome of
+// height 1 over the ball, in grid units); h = a hash of the spot. Beyond the
+// pixel footprint the coverage fades to its mean (the balls' volume fraction,
+// which is also the area fraction they cover on any plane cut).
+const float DOT_RIM = 0.3;     // soft rim, as a fraction of the radius
+const float DOT_RMIN = 0.4;    // smallest ball, as a fraction of rmax
+const float DOT_SALT = 23.7;   // decorrelates the position hash from the size hash
+// E[r^3] / rmax^3 for r uniform in [DOT_RMIN, 1] rmax, times the volume of a
+// unit ball with that soft rim (taken at the rim's middle; within 2%)
+const float DOT_VOL = (1.0 - DOT_RMIN * DOT_RMIN * DOT_RMIN * DOT_RMIN) / (4.0 * (1.0 - DOT_RMIN))
+                    * 4.18879 * (1.0 - 0.5 * DOT_RIM) * (1.0 - 0.5 * DOT_RIM) * (1.0 - 0.5 * DOT_RIM);
+vec4 mDots(vec3 p, float f, float prob, float rmax, float fp, out float h) {
+  vec3 q = M_ROT * p * f;
+  vec3 i = floor(q);
+  vec3 a = hash33(i), b = hash33(i + DOT_SALT);
+  h = a.z;
+  float r = rmax * mix(DOT_RMIN, 1.0, a.y);
+  vec3 d = q - (i + 0.5 + (b - 0.5) * (1.0 - 2.0 * r));
+  float dl = length(d);
+  float on = step(a.x, prob);
+  float cov = on * (1.0 - smoothstep((1.0 - DOT_RIM) * r, r, dl));
+  vec3 g = on * step(dl, r) * (-2.0 * f / (r * r)) * (transpose(M_ROT) * d);
+  float lw = lodFade(f, fp);
+  return vec4(mix(prob * DOT_VOL * rmax * rmax * rmax, cov, lw), lw * g);
 }
 
 // ---- materials ----
@@ -147,93 +190,211 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
   m.alb = ALBEDO[id]; m.g = vec3(0.0); m.tang = vec3(1.0, 0.0, 0.0); m.sssCol = vec3(1.0);
   m.rough = ROUGH[id]; m.metal = METAL[id];
   m.f0 = (IOR[id] - 1.0) / (IOR[id] + 1.0); m.f0 *= m.f0;
-  m.sss = SSS[id]; m.glint = GLINT[id]; m.glintDens = 3.0; m.cav = 1.0; m.aniso = 0.0; m.trans = 0.0;
+  m.sss = SSS[id]; m.glint = GLINT[id]; m.glintDens = 1.0; m.cav = 1.0; m.aniso = 0.0; m.trans = 0.0;
   // anything hot glows (blackbody); lava does its own thing below
   m.emit = incandescence(T);
   if (uMatDetail < 0.5) return m;
 
+  // Scale: a cell is ~8 cm. Frequencies below are cycles (or lattice cells)
+  // per cell; the *_H / *_DEPTH bump amplitudes are heights in cells.
   if (id == E_SAND) {
-    vec4 lo = mFbmD(p, 0.3, 2, fp);            // patches (sorting, damp/dry)
-    vec4 gr = mFbmD(p, 3.2, 3, fp);            // clumps of grains
-    float sp = vnoise(M_ROT * p * 11.0 + 3.7); // single grains of other minerals
-    float spw = lodFade(11.0, fp);
-    m.alb *= (1.0 + 0.28 * lo.x + 0.35 * gr.x) * (1.0 - spw * 0.6 * smoothstep(0.74, 0.86, sp))
-           * (1.0 + spw * 0.25 * smoothstep(0.26, 0.14, sp));
-    m.g = 0.11 * gr.yzw + 0.35 * lo.yzw;
-    m.cav = 1.0 + 0.5 * gr.x;
-    m.glintDens = 3.0;
+    // Dry sand. Its grains (~0.3 mm) are far below a pixel, so it reads as a
+    // matte surface with soft mottling (sorting, damp patches), shallow
+    // dimples, a faint grain-scale mottle and, up close, scattered dark
+    // mineral grains. The sparkle of the quartz faces comes from the glints.
+    const float PATCH_F = 0.3, CLUMP_F = 3.2, GRAIN_F = 12.0;
+    const float PATCH_H = 0.35, CLUMP_H = 0.08, GRAIN_H = 0.006;
+    const vec3 HUE = vec3(0.07, 0.0, -0.1);    // patches drift yellow-red .. grey
+    const float DARK_F = 18.0;                 // lattice of coarse dark grains (~4 mm apart)
+    const float DARK_P = 0.4, DARK_R = 0.25;   // how many, how big (lattice units)
+    const float DARK_ALB = 0.45;               // their albedo relative to the sand
+    const float DARK_WARP = 0.005;             // bends the grains out of round (cells per unit slope)
+    vec4 lo = mFbmD(p, PATCH_F, 2, fp);
+    vec4 gr = mFbmD(p, CLUMP_F, 3, fp);
+    vec4 fg = mFbmD(p, GRAIN_F, 2, fp);
+    float dh;
+    vec4 dk = mDots(p + DARK_WARP * fg.yzw, DARK_F, DARK_P, DARK_R, fp, dh);
+    m.alb *= (1.0 + 0.25 * lo.x + 0.18 * gr.x + 0.3 * fg.x) * (1.0 + HUE * lo.x) * mix(1.0, DARK_ALB, dk.x);
+    m.g = PATCH_H * lo.yzw + CLUMP_H * gr.yzw + GRAIN_H * fg.yzw;
+    m.cav = 1.0 + 0.4 * gr.x;
   } else if (id == E_STONE) {
-    // gravel: rounded pebbles of mixed rock with dark crevices between them
+    // Gravel: rounded pebbles of mixed rock. Each pebble is a disc of its own
+    // size around a cellular seed (measured within the surface, so every
+    // cell the surface cuts shows a whole pebble), cut by its cell where it
+    // would touch a neighbour, so outlines run from round to polygonal. It is
+    // shaded as a dome steepening toward its outline; between pebbles are
+    // dark voids with grit in them. Each has its own rock type, shade and polish.
+    const float PEBBLE_F = 1.7;                // pebbles per cell along a line (~5 cm)
+    const float R_MIN = 0.42, R_VAR = 0.35;    // pebble radius range, lattice units
+    const float GAP = 0.04;                    // gap where two pebbles meet, lattice units
+    const float RIM = 0.05;                    // pebble edge softness, lattice units
+    const float ROUND = 0.25;                  // rounds off the corners where the cell cuts a pebble
+    const float RIM_CAV = 0.35;                // occlusion toward a pebble's outline (it curves away)
+    const float POLISH = 0.15;                 // pebbles are smoother than the gravel's overall roughness
+    const float U_MAX = 0.95;                  // caps the dome's slope at the outline
+    const float VOID_ALB = 0.1, VOID_CAV = 0.15;    // the voids: crevices in deep shade, not a matrix
+    const float MEAN = 0.82;                   // area-average shade of pebbles and voids (the far look)
+    const float MOTTLE_F = 5.0, GRIT_F = 11.0; // texture within a pebble; grit in the voids
+    const float MOTTLE_H = 0.03, GRIT_H = 0.01;
+    // rock types (relative albedo; their mean is ~1)
+    const vec3 GRANITE = vec3(1.0, 1.02, 1.05), BASALT = vec3(0.6, 0.6, 0.63);
+    const vec3 SANDSTONE = vec3(1.22, 1.08, 0.92), QUARTZ = vec3(1.3), RUST = vec3(1.15, 0.92, 0.8);
     vec3 ge, r1;
-    const float fs = 1.7;
-    vec4 c = mCell(p * fs, ge, r1);
-    float lw = lodFade(fs * 1.5, fp);
-    float e4 = c.y * 4.0;
-    float hh = sqrt(clamp(e4, 0.0, 1.0));
-    float dh = e4 < 1.0 ? 2.0 / max(hh, 0.2) : 0.0;
-    vec4 gr = mFbmD(p, 5.0, 2, fp);
-    m.g = lw * (0.1 * dh * ge * fs + 0.25 * r1 * fs) + 0.05 * gr.yzw;
-    vec3 tint = c.w > 0.72 ? vec3(1.18, 1.0, 0.8) : (c.w < 0.2 ? vec3(0.9, 0.95, 1.05) : vec3(1.0));
-    m.alb *= mix(vec3(1.0), (0.5 + 1.0 * c.z) * tint, lw) * (1.0 + 0.3 * gr.x);
-    m.cav = mix(1.0, mix(0.3, 1.0, hh), lw);
-    m.rough += 0.2 * (c.z - 0.5) * lw;
+    vec4 c = mCell(p * PEBBLE_F, ge, r1);
+    float lw = lodFade(PEBBLE_F * 2.0, fp);
+    vec3 rt = r1 - n * dot(r1, n);             // to the seed, within the surface
+    float d = length(rt);
+    float e = sminP(R_MIN + R_VAR * c.w - d, c.y - GAP, ROUND);   // distance in from the pebble's outline
+    float u = clamp(d / max(d + e, 1e-3), 0.0, U_MAX);    // 0 at the pebble's middle, 1 at its outline
+    float sh = sqrt(1.0 - u * u);
+    float pm = smoothstep(0.0, RIM, e);        // 1 on a pebble, 0 in a void
+    vec4 gr = mFbmD(p, MOTTLE_F, 2, fp);
+    vec4 gt = mFbmD(p, GRIT_F, 2, fp);
+    vec3 type = c.z < 0.35 ? GRANITE : (c.z < 0.6 ? BASALT : (c.z < 0.8 ? SANDSTONE : (c.z < 0.9 ? QUARTZ : RUST)));
+    vec3 peb = type * (0.8 + 0.4 * c.w) * (1.0 + 0.35 * gr.x);
+    m.alb *= mix(vec3(MEAN), mix(VOID_ALB * (1.0 + 0.8 * gt.x) * vec3(1.0), peb, pm), lw);
+    m.g = lw * (pm * (u / sh) * rt / max(d, 1e-4) + (1.0 - pm) * GRIT_H * gt.yzw) + MOTTLE_H * gr.yzw;
+    m.cav = mix(MEAN, mix(VOID_CAV, mix(RIM_CAV, 1.0, sh), pm), lw);
+    m.rough += (0.3 * (c.w - 0.5) - POLISH * pm) * lw;
   } else if (id == E_SNOW) {
-    vec4 lo = mFbmD(p, 0.22, 2, fp);           // soft drifts
-    vec4 gr = mFbmD(p, 2.6, 2, fp);            // crystal clusters
-    m.alb *= 1.0 + 0.03 * lo.x + 0.03 * gr.x;
-    m.g = 0.6 * lo.yzw + 0.04 * gr.yzw;
+    // Old powder snow: soft drifts, clumps and (up close) a sugary crust of
+    // crystals; the sparkle comes from the glints.
+    const float DRIFT_F = 0.22, CLUMP_F = 2.6, CRYSTAL_F = 10.0;
+    const float DRIFT_H = 0.6, CLUMP_H = 0.06, CRYSTAL_H = 0.008;
+    vec4 lo = mFbmD(p, DRIFT_F, 2, fp);
+    vec4 gr = mFbmD(p, CLUMP_F, 2, fp);
+    vec4 cr = mFbmD(p, CRYSTAL_F, 2, fp);
+    m.alb *= 1.0 + 0.03 * lo.x + 0.04 * gr.x;
+    m.g = DRIFT_H * lo.yzw + CLUMP_H * gr.yzw + CRYSTAL_H * cr.yzw;
     m.sssCol = vec3(0.8, 0.94, 1.12);          // deep-scattered light: ice absorbs red
-    m.glintDens = 2.5;
+    m.glintDens = 1.4;                         // ice crystals: more facets than sand
   } else if (id == E_GUNPOWDER) {
-    vec4 gr = mFbmD(p, 4.0, 2, fp);
-    m.alb *= 1.0 + 0.8 * gr.x;
-    m.g = 0.12 * gr.yzw;
+    // Black powder: graphite-glazed granules (~1 mm) with a soft silvery
+    // sheen, a granular mottle in colour and gloss, and many tiny glints.
+    const float LUMP_F = 0.6, GRAIN_F = 9.0;
+    const float LUMP_H = 0.08, GRAIN_H = 0.004;
+    vec4 lo = mFbmD(p, LUMP_F, 2, fp);
+    vec4 gr = mFbmD(p, GRAIN_F, 3, fp);
+    m.alb *= (1.0 + 0.2 * lo.x) * (1.0 + 0.7 * gr.x);
+    m.g = LUMP_H * lo.yzw + GRAIN_H * gr.yzw;
+    m.rough += 0.1 * gr.x;
     m.cav = 1.0 + 0.6 * gr.x;
-    m.glintDens = 3.5;
+    m.glintDens = 1.3;
   } else if (id == E_ASH) {
-    vec4 lo = mFbmD(p, 0.45, 3, fp);
-    float sp = vnoise(M_ROT * p * 6.0 + 1.3);
-    float spk = lodFade(6.0, fp) * smoothstep(0.76, 0.86, sp);   // charcoal bits
-    m.alb *= 1.0 + 0.25 * lo.x;
-    m.alb = mix(m.alb, vec3(0.025, 0.024, 0.023), spk);
-    m.rough = mix(m.rough, 0.6, spk);
-    m.g = 0.15 * lo.yzw;
+    // Wood ash: pale, very fine and soft, with flecks of charcoal.
+    const float LUMP_F = 0.45, FINE_F = 9.0;
+    const float LUMP_H = 0.15, FINE_H = 0.006;
+    const float FLECK_F = 6.0, FLECK_P = 0.6, FLECK_R = 0.3;   // flecks up to ~8 mm
+    const float FLECK_WARP = 0.025;            // bends flecks out of round (cells per unit slope)
+    const float FLECK_SETTLE = 1.5;            // how strongly flecks gather in the hollows
+    const vec3 CHARCOAL = vec3(0.025, 0.024, 0.023);
+    const float CHARCOAL_ROUGH = 0.6;
+    vec4 lo = mFbmD(p, LUMP_F, 3, fp);
+    vec4 gr = mFbmD(p, FINE_F, 2, fp);
+    float fh;
+    // flecks gather where the lumps are low (they settle) and vary in blackness
+    vec4 fl = mDots(p + FLECK_WARP * gr.yzw, FLECK_F, FLECK_P * clamp(0.5 - FLECK_SETTLE * lo.x, 0.0, 1.0), FLECK_R, fp, fh);
+    m.alb *= 1.0 + 0.2 * lo.x + 0.2 * gr.x;
+    m.alb = mix(m.alb, CHARCOAL, fl.x * mix(1.0, 0.4 + 0.6 * fh, lodFade(FLECK_F, fp)));
+    m.rough = mix(m.rough, CHARCOAL_ROUGH, fl.x);
+    m.g = LUMP_H * lo.yzw + FINE_H * gr.yzw;
     m.cav = 1.0 + 0.4 * lo.x;
   } else if (id == E_WOOD) {
-    // bark: plates split by deep furrows, with the grain running along y
-    const mat3 WJ = mat3(1.21, 0.0, 0.7, 0.0, 0.16, 0.0, -0.7, 0.0, 1.21);
-    vec4 b1 = mNoiseJ(p, WJ, vec3(0.0));
-    vec4 b2 = mNoiseJ(p, WJ * 3.3, vec3(11.0));
-    float lw1 = lodFade(1.4, fp), lw2 = lodFade(4.6, fp);
-    float fur = abs(2.0 * b1.x - 1.0);          // 0 along the furrows
-    vec3 gfur = 2.0 * sign(2.0 * b1.x - 1.0) * b1.yzw;
-    float sf = smoothstep(0.0, 0.4, fur);
-    m.alb *= mix(1.0, mix(0.4, 1.15, sf), lw1) * (1.0 + lw2 * 0.3 * (b2.x - 0.5));
-    m.g = lw1 * 0.12 * gfur + lw2 * 0.03 * b2.yzw;
-    m.cav = mix(1.0, mix(0.45, 1.0, sf), lw1);
-    // end grain on top faces: pale wood with growth rings
+    // Bark: long corky plates split by deep V furrows. The plates are
+    // cellular cells stretched along y (and turned about it so nothing lines
+    // up with the grid), so the furrows interlace like oak or pine bark
+    // instead of closing into loops. Each plate is slightly domed, has its
+    // own shade and greyness, and flaky layers across it; the furrows are
+    // in shade and show the darker, redder inner bark.
+    const float PLATE_FH = 2.0, PLATE_FV = 0.33;   // plates per cell: across (~4 cm wide), along (~25 cm)
+    const float MEANDER_F = 0.3, MEANDER = 0.3;    // furrow meander: frequency, amplitude (cells)
+    const float WAVE_F = 1.3, WAVE = 0.08;         // furrow edges wander: frequency, cells per unit slope
+    const float FUR_W = 0.3;                       // furrow half-width, lattice units
+    const float FUR_DEPTH = 0.05, PLATE_DOME = 0.05;
+    const float FLAKE_FH = 3.0, FLAKE_FV = 9.0, FLAKE_H = 0.004;   // flaky layers across a plate
+    const float FIB_FH = 14.0, FIB_FV = 1.6, FIB_H = 0.003;         // fibres
+    const float RIDGE_MEAN = 0.7;                  // area fraction of plate (the far-away mix)
+    const vec3 FURROW = vec3(0.25, 0.2, 0.18);     // inner bark in shade, relative to the base colour
+    const vec3 GREY = vec3(1.05, 1.1, 1.22);       // weathered outer bark
+    const mat3 TURN = mat3(0.866, 0.0, 0.5, 0.0, 1.0, 0.0, -0.5, 0.0, 0.866);   // 30° about y
+    mat3 J = TURN * mat3(PLATE_FH, 0.0, 0.0, 0.0, PLATE_FV, 0.0, 0.0, 0.0, PLATE_FH);
+    vec4 mv = mFbmD(p, MEANDER_F, 2, fp);
+    vec4 wv = mFbmD(p, WAVE_F, 1, fp);
+    vec3 pw = p + MEANDER * mv.x * vec3(1.0, 0.0, 1.0) + WAVE * wv.yzw;
+    vec3 ge, r1;
+    vec4 c = mCell(J * pw, ge, r1);
+    vec4 fl = mNoiseJ(p, TURN * mat3(FLAKE_FH, 0.0, 0.0, 0.0, FLAKE_FV, 0.0, 0.0, 0.0, FLAKE_FH), vec3(13.1));
+    vec4 fb = mNoiseJ(p, TURN * mat3(FIB_FH, 0.0, 0.0, 0.0, FIB_FV, 0.0, 0.0, 0.0, FIB_FH), vec3(5.7));
+    // narrow furrows alias sooner than the plate frequency says
+    float lwF = lodFade(PLATE_FH * 3.0, fp), lwL = lodFade(FLAKE_FV, fp), lwB = lodFade(FIB_FH, fp);
+    float ridge = smoothstep(0.0, FUR_W, c.y);     // 0 in a furrow, 1 on a plate
+    float rl = mix(RIDGE_MEAN, ridge, lwF);
+    vec3 plate = mix(vec3(1.0), (0.7 + 0.6 * c.z) * mix(vec3(1.0), GREY, c.w), lwF);
+    m.alb *= mix(FURROW, plate, rl) * (1.0 + 0.4 * mv.x) * (1.0 + 0.3 * lwL * (fl.x - 0.5))
+           * (1.0 + 0.25 * lwB * (fb.x - 0.5));
+    m.g = lwF * transpose(J) * (FUR_DEPTH * dSmooth(0.0, FUR_W, c.y) * ge + PLATE_DOME * r1)
+        + lwL * FLAKE_H * ridge * fl.yzw + lwB * FIB_H * fb.yzw;
+    m.cav = mix(0.3, 1.0, rl);
+    // Sawn end grain on top faces: growth rings around the pith of each log
+    // (piths on a coarse jittered lattice), wobbling with the grain, latewood
+    // bands darker, heartwood darker than sapwood.
     float top = smoothstep(0.6, 0.9, abs(n.y));
     if (top > 0.0) {
-      float r = 9.0 * vnoise(M_ROT * vec3(p.x, 0.0, p.z) * 0.07) + 0.5 * vnoise(M_ROT * p * 0.9);
-      float ring = smoothstep(0.0, 0.3, abs(fract(r) - 0.5) * 2.0);
-      vec3 endg = vec3(0.36, 0.22, 0.12) * mix(0.62, 1.0, mix(1.0, ring, lodFade(1.0, fp)));
+      const float LOG_SIZE = 16.0;             // cells between piths
+      const float RING_F = 6.0;                // growth rings per cell (~1.3 cm apart)
+      const float RING_WOBBLE = 0.6, RING_WOBBLE_F = 0.8;   // irregularity: amplitude (rings), frequency
+      const float PITH_JITTER = 0.6;           // spread of a pith within its lattice cell
+      const float HEART_R = 3.0;               // heartwood radius, cells
+      const vec3 SAPWOOD = vec3(0.42, 0.28, 0.16), HEARTWOOD = vec3(0.3, 0.17, 0.09);
+      const float LATEWOOD = 0.6;              // albedo of the latewood bands
+      const mat2 TURN2 = mat2(0.8, 0.6, -0.6, 0.8);
+      vec2 xz = TURN2 * p.xz / LOG_SIZE;
+      vec2 ci = floor(xz);
+      float r2 = 1e9;
+      for (int k = 0; k < 9; k++) {
+        vec2 o = vec2(float(k % 3), float(k / 3)) - 1.0;
+        vec2 dv = ci + o + 0.5 + PITH_JITTER * (hash33(vec3(ci + o, 7.7)).xy - 0.5) - xz;
+        r2 = min(r2, dot(dv, dv));
+      }
+      float r = sqrt(r2) * LOG_SIZE;
+      float rr = r * RING_F + RING_WOBBLE * vnoise(M_ROT * p * RING_WOBBLE_F);
+      float ring = smoothstep(0.55, 0.95, fract(rr)) * lodFade(RING_F * 2.0, fp);
+      vec3 endg = mix(HEARTWOOD, SAPWOOD, smoothstep(0.7 * HEART_R, HEART_R, r)) * mix(1.0, LATEWOOD, ring);
       m.alb = mix(m.alb, endg, top);
       m.g *= 1.0 - top;
       m.cav = mix(m.cav, 1.0, top);
       m.rough = mix(m.rough, 0.65, top);
     }
   } else if (id == E_PLANT) {
-    // leafy clumps: each cellular cell is a leaf facing its own way
+    // Foliage: each cellular cell holds a leaf, an ellipse around its seed
+    // (measured within the surface) along a random axis, with its own tilt,
+    // size, hue and gloss and a paler midrib, cut by its cell where it meets
+    // a neighbour. Between leaves the eye sees into the shaded depth of the clump.
+    const float LEAF_F = 2.3;                  // leaves per cell along a line (~3.5 cm)
+    const float LEAF_R = 0.5, LEAF_RV = 0.3;   // leaf half-length range, lattice units
+    const float LEAF_ASPECT = 0.55;            // half-width / half-length
+    const float LEAF_TILT = 1.3, LEAF_CURL = 0.3;   // facing jitter; cupping toward the rim
+    const float GAP = 0.04, RIM = 0.05;        // lattice units
+    const float DEPTH_ALB = 0.35, DEPTH_CAV = 0.2;  // the clump's shaded interior
+    const float MEAN = 0.88;                   // area-average shade of leaves and depth (the far look)
+    const float RIB_W = 0.04, RIB_ALB = 1.2;   // midrib half-width (lattice units), brightness
     vec3 ge, r1;
-    const float fs = 2.3;
-    vec4 c = mCell(p * fs, ge, r1);
-    float lw = lodFade(fs * 1.5, fp);
+    vec4 c = mCell(p * LEAF_F, ge, r1);
+    float lw = lodFade(LEAF_F * 1.5, fp);
     vec3 tilt = hash33(vec3(c.z, c.w, 0.37) * 157.0) - 0.5;
-    m.g = lw * (1.3 * tilt + 0.3 * r1 * fs);
-    float gap = smoothstep(0.0, 0.12, c.y);
-    m.cav = mix(1.0, mix(0.2, 1.0, gap), lw);
+    vec3 rt = r1 - n * dot(r1, n);             // to the seed, within the surface
+    vec3 ax = normalize(tilt - n * dot(tilt, n) + 1e-4);
+    float along = dot(rt, ax), across = dot(rt, cross(n, ax));
+    float de = length(vec2(along, across / LEAF_ASPECT));
+    float e = min(LEAF_R + LEAF_RV * c.w - de, c.y - GAP);
+    float pm = smoothstep(0.0, RIM, e);        // 1 on a leaf, 0 in the depth between
+    float rib = (1.0 - smoothstep(0.0, RIB_W, abs(across))) * pm;
     vec3 hue = mix(vec3(0.8, 1.0, 0.6), vec3(1.3, 1.1, 0.55), c.z);   // blue-green .. yellow-green
-    m.alb *= mix(vec3(1.0), hue * (0.65 + 0.7 * c.w), lw);
+    vec3 leaf = hue * (0.65 + 0.7 * c.w) * mix(1.0, RIB_ALB, rib);
+    m.g = lw * pm * (LEAF_TILT * tilt + LEAF_CURL * rt * LEAF_F);
+    m.cav = mix(MEAN, mix(DEPTH_CAV, 1.0, pm), lw);
+    m.alb *= mix(vec3(MEAN), mix(DEPTH_ALB * hue, leaf, pm), lw);
+    m.rough += 0.25 * (c.z - 0.5) * lw;        // some leaves waxier than others
     m.sssCol = vec3(0.85, 1.15, 0.55);
     m.trans = 1.0;
   } else if (id == E_METAL) {
@@ -241,47 +402,111 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
     const vec3 BD = vec3(1.0, 0.1, 0.35);
     vec3 t = normalize(BD - n * dot(n, BD) + 1e-5);
     vec3 b = cross(n, t);
+    // Brushing marks are far below a pixel: what shows is the stretched
+    // highlight and faint streaks where the brushing pressure varied, plus
+    // smudges where the polish is uneven.
+    const float STREAK_F = 12.0, GROOVE_F = 40.0;   // streaks across the brushing, per cell
+    const float STREAK_LEN = 0.1;              // streak length, as a fraction of their spacing
+    const float SMUDGE_F = 0.35;
     float u = dot(p, t), w = dot(p, b);
-    float s1 = vnoise(vec3(u * 0.7, w * 7.0, 0.5)), s2 = vnoise(vec3(u * 1.3, w * 23.0, 7.5));
-    float l1 = lodFade(7.0, fp), l2 = lodFade(23.0, fp);
-    vec4 lo = mFbmD(p, 0.35, 2, fp);           // smudges, faint oxide
+    float s1 = vnoise(vec3(u * STREAK_F * STREAK_LEN, w * STREAK_F, 0.5));
+    float s2 = vnoise(vec3(u * GROOVE_F * STREAK_LEN, w * GROOVE_F, 7.5));
+    float l1 = lodFade(STREAK_F, fp), l2 = lodFade(GROOVE_F, fp);
+    vec4 lo = mFbmD(p, SMUDGE_F, 2, fp);
     float br = l1 * (s1 - 0.5) + 0.6 * l2 * (s2 - 0.5);
-    m.rough = ROUGH[id] + 0.12 * lo.x + 0.12 * br;
-    m.alb *= 1.0 + 0.1 * lo.x + 0.08 * br;
+    m.rough = ROUGH[id] + 0.1 * lo.x + 0.08 * br;
+    m.alb *= 1.0 + 0.06 * lo.x + 0.05 * br;
     m.tang = t; m.aniso = 0.7;
     // hot steel grows a dark oxide scale (explicitly a look, not simulated)
     float ox = smoothstep(400.0, 900.0, T);
     m.alb *= mix(1.0, 0.3, ox); m.rough = mix(m.rough, 0.75, ox); m.aniso *= 1.0 - ox;
   } else if (id == E_CLONE) {
-    vec4 lo = mFbmD(p, 0.8, 2, fp);            // gently hammered gold
-    m.g = 0.08 * lo.yzw;
-    m.rough += 0.1 * lo.x;
+    // Polished gold: a faint waviness left by the polishing and a fine haze
+    // in the gloss. No blotches: gold doesn't tarnish.
+    const float WAVE_F = 0.5, HAZE_F = 6.0;
+    const float WAVE_H = 0.015;
+    vec4 lo = mFbmD(p, WAVE_F, 2, fp);
+    vec4 hz = mFbmD(p, HAZE_F, 2, fp);
+    m.g = WAVE_H * lo.yzw;
+    m.rough += 0.05 * lo.x + 0.03 * hz.x;
   } else if (id == E_WALL) {
-    // concrete: blotchy mottling, sandy grit and the odd air-bubble pit
-    vec4 lo = mFbmD(p, 0.18, 3, fp);
-    vec4 gr = mFbmD(p, 3.0, 2, fp);
-    vec4 pt = mNoiseJ(p, M_ROT * 1.9, vec3(5.3));
-    float lwp = lodFade(6.0, fp);
-    float pit = smoothstep(0.8, 0.88, pt.x) * lwp;
-    m.alb *= (1.0 + 0.45 * lo.x + 0.2 * gr.x) * (1.0 - 0.45 * pit);
-    m.g = 0.12 * lo.yzw + 0.04 * gr.yzw - lwp * 0.05 * dSmooth(0.8, 0.88, pt.x) * pt.yzw;
-    m.cav = (1.0 - 0.6 * pit) * (1.0 + 0.3 * gr.x);
+    // Cast concrete: cloudy mottling from the pour, fine sand-and-cement
+    // grit, scattered round air-bubble pits ("bug holes", up to ~1 cm) and
+    // faint rain streaks down vertical faces.
+    const float MOTTLE_F = 0.18, GRIT_F = 5.0;
+    const float MOTTLE_H = 0.06, GRIT_H = 0.012;
+    const float PIT_F = 2.2, PIT_P = 0.3, PIT_R = 0.22, PIT_DEPTH = 0.004;
+    const float PIT_ALB = 0.45;                // a pit's shadowed floor
+    const float STREAK_FH = 2.5, STREAK_FV = 0.12, STREAK_DARK = 0.12;
+    const vec2 STREAK_EDGE = vec2(0.45, 0.85);    // noise range over which a streak fades in
+    const mat3 TURN = mat3(0.866, 0.0, 0.5, 0.0, 1.0, 0.0, -0.5, 0.0, 0.866);   // 30° about y
+    vec4 lo = mFbmD(p, MOTTLE_F, 3, fp);
+    vec4 gr = mFbmD(p, GRIT_F, 3, fp);
+    float ph;
+    vec4 pit = mDots(p, PIT_F, PIT_P, PIT_R, fp, ph);
+    float st = vnoise(TURN * (p * vec3(STREAK_FH, STREAK_FV, STREAK_FH)) + 2.3);
+    float streak = STREAK_DARK * (1.0 - abs(n.y)) * smoothstep(STREAK_EDGE.x, STREAK_EDGE.y, st) * lodFade(STREAK_FH, fp);
+    m.alb *= (1.0 + 0.35 * lo.x + 0.25 * gr.x) * mix(1.0, PIT_ALB, pit.x) * (1.0 - streak);
+    m.g = MOTTLE_H * lo.yzw + GRIT_H * gr.yzw - PIT_DEPTH * pit.yzw;
+    m.cav = (1.0 - 0.6 * pit.x) * (1.0 + 0.3 * gr.x);
     m.rough += 0.08 * gr.x;
   } else if (id == E_ROCK) {
-    // weathered basalt: lumpy relief, joint blocks with cracks, faint strata
-    vec4 lo = mFbmD(p, 0.2, 3, fp);
-    vec4 gr = mFbmD(p, 2.6, 2, fp);
-    vec3 ge, r1;
-    const float fs = 0.55;
-    vec4 c = mCell(p * fs, ge, r1);
-    float lwc = lodFade(fs * 4.0, fp);
-    float crack = 1.0 - smoothstep(0.0, 0.05, c.y);
-    float sh = smoothstep(0.0, 0.3, c.y);
-    float band = vnoise(vec3(p.x * 0.05, p.y * 0.4, p.z * 0.05));
-    m.alb *= (1.0 + 0.4 * lo.x + 0.3 * gr.x) * mix(1.0, (0.8 + 0.4 * c.z) * (1.0 - 0.6 * crack), lwc)
-           * mix(vec3(0.92, 0.95, 1.0), vec3(1.1, 1.0, 0.9), band);
-    m.g = 0.7 * lo.yzw + 0.08 * gr.yzw + lwc * 0.3 * dSmooth(0.0, 0.3, c.y) * ge * fs;
-    m.cav = mix(1.0, 0.4 + 0.6 * sh, lwc) * (1.0 + 0.3 * gr.x);
+    // Weathered volcanic rock: big lumps, then craggy relief from several
+    // octaves of crease noise (flat-topped knobs between sharp V creases,
+    // each octave turned and warped by the lumps, so the creases of one
+    // scale break up those of the next instead of drawing a network), dark
+    // in its hollows; rusty oxidised and pale weathered patches, faint
+    // flow banding and, up close, clusters of gas vesicles. No cell
+    // lattice: that read as paving.
+    const float LUMP_F = 0.16, LUMP_H = 0.9;
+    const float CRAG_F = 0.55, CRAG_H = 0.14;  // first crag octave: frequency, relief (cells)
+    const float CRAG_LAC = 2.13, CRAG_GAIN = 0.55;   // per octave: frequency x, relief x
+    // The first octave is creases (h = 1 - (1 - c)^2: flat knobs, V valleys),
+    // the finer ones sharp ridges (h = (1 - c)^2): broken, angular edges
+    // instead of the soft knobs that read as clay.
+    const float CREASE_MEAN = 0.6, RIDGE_MEAN = 0.4;   // mean heights of the two profiles
+    const float GRAIN_F = 4.5, GRAIN_H = 0.045;    // gritty surface (3 octaves, to ~2 mm)
+    const float WARP = 3.0;                    // crag warp per unit of the lumps' slope (cells)
+    const float TINT_F = 0.09;                 // oxidised / weathered patches
+    const vec3 RUST = vec3(1.18, 0.98, 0.86), PALE = vec3(1.3, 1.3, 1.28);
+    const vec2 RUST_EDGE = vec2(0.6, 0.8), PALE_EDGE = vec2(0.35, 0.15);   // tint-noise ranges of the patches
+    const vec2 SKY_EDGE = vec2(0.2, 0.8);      // n.y range over which a face counts as sky-facing
+    const float BAND_FH = 0.05, BAND_FV = 0.4; // lava-flow banding
+    const vec3 BAND_LO = vec3(0.94, 0.96, 1.0), BAND_HI = vec3(1.06, 1.0, 0.94);
+    const float VES_F = 7.0, VES_P = 0.55, VES_R = 0.32, VES_DEPTH = 0.003, VES_ALB = 0.35;
+    const float VES_CLUSTER_F = 0.3;           // vesicles come in patches
+    const vec2 VES_CLUSTER_EDGE = vec2(0.45, 0.7);
+    const float VES_WARP = 0.02;               // bends vesicles out of round (cells per unit slope)
+    vec4 lo = mFbmD(p, LUMP_F, 3, fp);
+    vec3 pw = p + WARP * lo.yzw;
+    float hc = 0.0, ws = 0.0;                  // relief (relative to its mean), weight
+    vec3 gc = vec3(0.0);
+    mat3 J = M_ROT * CRAG_F;
+    float f = CRAG_F, a = 1.0;
+    for (int i = 0; i < 3; i++) {
+      float lw = lodFade(2.0 * f, fp);         // creases are sharp: fade them early
+      vec4 c = mCreaseJ(pw, J, vec3(3.1 + 5.3 * float(i)));
+      float r2 = (1.0 - c.x) * (1.0 - c.x);
+      vec3 dr2 = -2.0 * (1.0 - c.x) * c.yzw;
+      hc += a * lw * (i == 0 ? 1.0 - r2 - CREASE_MEAN : r2 - RIDGE_MEAN);
+      gc += a * lw * (i == 0 ? -dr2 : dr2);
+      ws += a;
+      J = M_ROT * J * CRAG_LAC; f *= CRAG_LAC; a *= CRAG_GAIN;
+    }
+    hc /= ws;                                  // relief about its mean, roughly ±0.5
+    vec4 gr = mFbmD(p, GRAIN_F, 3, fp);
+    float tn = vnoise(M_ROT * p * TINT_F + 1.7);
+    float rust = smoothstep(RUST_EDGE.x, RUST_EDGE.y, tn);
+    float pale = smoothstep(PALE_EDGE.x, PALE_EDGE.y, tn) * smoothstep(SKY_EDGE.x, SKY_EDGE.y, n.y);   // weathering on what faces the sky
+    float band = vnoise(vec3(p.x * BAND_FH, p.y * BAND_FV, p.z * BAND_FH));
+    float vh;
+    float vp = VES_P * smoothstep(VES_CLUSTER_EDGE.x, VES_CLUSTER_EDGE.y, vnoise(M_ROT * p * VES_CLUSTER_F + 6.1));
+    vec4 ves = mDots(p + VES_WARP * gr.yzw, VES_F, vp, VES_R, fp, vh);
+    m.alb *= (1.0 + 0.35 * lo.x + 0.6 * gr.x) * (1.0 + 0.6 * hc)
+           * mix(vec3(1.0), RUST, rust) * mix(vec3(1.0), PALE, pale) * mix(BAND_LO, BAND_HI, band)
+           * mix(1.0, VES_ALB, ves.x);
+    m.g = LUMP_H * lo.yzw + CRAG_H * gc + GRAIN_H * gr.yzw - VES_DEPTH * ves.yzw;
+    m.cav = (1.0 + 0.8 * min(hc, 0.0)) * (1.0 - 0.6 * ves.x) * (1.0 + 0.6 * gr.x);
     m.rough += 0.1 * gr.x;
   } else if (id == E_LAVA) {
     // Molten above the solidus, a cooling crust near it. The crust radiates
@@ -520,38 +745,63 @@ vec3 ggxSpec(vec3 n, vec3 v, vec3 l, float rough, vec3 F0) {
   return ggxSpecA(n, v, l, rough, F0, vec3(1.0, 0.0, 0.0), 0.0);
 }
 
-// Glints: a world-space lattice of tiny mirror facets (one disc per lattice
-// cell around a jittered centre) whose normals are drawn from the material's
-// GGX distribution. A facet lights up when it reflects the sun into the eye
-// (within an angular tolerance standing in for the sun's disc plus facet
-// curvature). The result is normalised so its expected value equals the
-// smooth GGX lobe it replaces (an unbiased estimator), so it converges to the
-// same brightness when averaged (TAA, distance). A cheap stand-in for Deliot &
-// Belcour 2023 (no multi-scale binomial counting: we fade out instead).
-vec3 glintSpec(vec3 p, vec3 n, vec3 v, vec3 l, float rough, vec3 F0, float dens) {
-  vec3 q = M_ROT * p * dens + 0.5;
+// Glints: a world-space lattice of tiny mirror facets (one ball per lattice
+// cell around a jittered centre, cut by the surface into a disc) whose
+// normals are drawn from a GGX distribution. A facet lights up when it
+// reflects the sun into the eye (within an angular tolerance standing in for
+// the sun's disc plus facet curvature). The result is normalised so its
+// expected value equals the smooth GGX lobe it replaces (an unbiased
+// estimator), so it converges to the same brightness when averaged (TAA,
+// distance). A cheap stand-in for Deliot & Belcour 2023.
+//
+// The grains that sparkle are far below a pixel, so a sparkle is a point of
+// light at any distance. The lattice is anchored in the world but its scale
+// follows the pixel footprint: the two power-of-two levels around
+// GLINT_CELL_PX pixels per lattice cell are blended, so a facet stays ~2 px
+// across (wide enough that TAA's sub-pixel jitter can't make it blink).
+const float GLINT_CELL_PX = 6.0;       // lattice cell size in pixels, at glintDens 1
+const float GLINT_R0 = 0.17, GLINT_R1 = 0.25;   // facet ball radius: solid core, soft edge (lattice units)
+const float GLINT_COV = 0.0396;        // volume of that soft ball = the disc area it covers on average
+const float GLINT_DELTA = 0.12;        // angular tolerance (radians)
+const float GLINT_OMEGA = PI_S * GLINT_DELTA * GLINT_DELTA * 0.5;   // integral of the kernel below
+// Cap on the facets' slope spread: the crystal faces that flash lie flatter
+// than the grains' overall roughness, so sparkles gather around the sun's
+// reflection instead of peppering the whole surface.
+const float GLINT_FACET_ROUGH = 0.5;
+const float GLINT_LEVEL_SALT = 17.3;   // decorrelates the facets of different levels
+
+// Kernel weight times coverage of the facet in q's lattice cell.
+float glintFacet(vec3 q, vec3 n, vec3 t1, vec3 t2, vec3 h, float a2, float salt) {
   vec3 ci = floor(q);
-  vec3 h1 = hash33(ci);
-  float cov = 1.0 - smoothstep(0.17, 0.25, length(q - ci - (0.25 + 0.5 * h1)));
-  float nl = dot(n, l);
-  if (cov <= 0.0 || nl <= 0.0) return vec3(0.0);
-  vec3 h2 = hash33(ci + 41.7);
-  float a = max(rough * rough, 2e-3);
+  vec3 h1 = hash33(ci + salt);
+  float cov = 1.0 - smoothstep(GLINT_R0, GLINT_R1, length(q - ci - (GLINT_R1 + (1.0 - 2.0 * GLINT_R1) * h1)));
+  if (cov <= 0.0) return 0.0;
+  vec3 h2 = hash33(ci + salt + 41.7);
   float phi = 6.2831853 * h2.x;
-  float ct = sqrt((1.0 - h2.y) / (1.0 + (a * a - 1.0) * h2.y));
+  float ct = sqrt((1.0 - h2.y) / (1.0 + (a2 - 1.0) * h2.y));
   float st = sqrt(max(1.0 - ct * ct, 0.0));
-  vec3 t1 = normalize(cross(n, abs(n.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)));
-  vec3 m = (t1 * cos(phi) + cross(n, t1) * sin(phi)) * st + n * ct;
+  vec3 m = (t1 * cos(phi) + t2 * sin(phi)) * st + n * ct;
+  float x = length(m - h) / GLINT_DELTA;
+  return max(1.0 - x * x, 0.0) * cov;
+}
+
+vec3 glintSpec(vec3 p, vec3 n, vec3 v, vec3 l, float rough, vec3 F0, float dens) {
+  float nl = dot(n, l);
+  if (nl <= 0.0) return vec3(0.0);
+  float lv = log2(dens / (GLINT_CELL_PX * footprint(p)));   // lattice level wanted
+  float L0 = floor(lv), t = lv - L0;
+  float r = min(rough, GLINT_FACET_ROUGH);
+  float a = max(r * r, 2e-3);
   vec3 h = normalize(v + l);
-  const float DELTA = 0.12;                        // angular tolerance (radians)
-  const float OMEGA = PI_S * DELTA * DELTA * 0.5;  // integral of the kernel below
-  const float COV = 0.034;                         // mean disc coverage of a lattice cell
-  float x = length(m - h) / DELTA;
-  float k = max(1.0 - x * x, 0.0);
+  vec3 t1 = normalize(cross(n, abs(n.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)));
+  vec3 t2 = cross(n, t1);
+  vec3 q = M_ROT * p;
+  float k = (1.0 - t) * glintFacet(q * exp2(L0), n, t1, t2, h, a * a, L0 * GLINT_LEVEL_SALT)
+          + t * glintFacet(q * exp2(L0 + 1.0), n, t1, t2, h, a * a, (L0 + 1.0) * GLINT_LEVEL_SALT);
   if (k <= 0.0) return vec3(0.0);
   float nv = max(dot(n, v), 1e-4), nh = max(dot(n, h), 1e-3), vh = max(dot(v, h), 0.0);
   vec3 F = F0 + (1.0 - F0) * pow(1.0 - vh, 5.0);
-  return F * smithV(nl, nv, a) * nl * k * cov / (nh * OMEGA * COV);
+  return F * smithV(nl, nv, a) * nl * k / (nh * GLINT_OMEGA * GLINT_COV);
 }
 
 // Diffuse of a rough (powdery) surface relative to Lambert, times n·l: Fujii's
@@ -599,7 +849,7 @@ vec3 shadeSurf(Surf s, vec3 rd) {
   vec3 dSun = kD * mix(vec3(lam), wrap * s.sssCol, w);
   // sun: specular, with multiple-scattering energy compensation
   vec3 spec = ggxSpecA(n, v, l, s.rough, F0, s.tang, s.aniso) * (1.0 + F0 * (1.0 / max(Ess, 1e-3) - 1.0));
-  float g = s.glint * uGlints * smoothstep(0.8, 2.0, 0.5 / (s.glintDens * footprint(s.p)));
+  float g = s.glint * uGlints;   // (glintSpec sizes its facets to the pixel, so no distance fade)
   if (g > 0.0) spec = mix(spec, glintSpec(s.p, n, v, l, s.rough, F0, s.glintDens), g);
   // (SUN_COL is irradiance / pi in this renderer's units, hence the pi on the BRDF term)
   vec3 c = SUN_COL * sh * (dSun * (0.5 + 0.5 * s.cav) + PI_S * spec);
