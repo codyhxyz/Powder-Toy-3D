@@ -3,8 +3,8 @@ import { quadVert } from './shaders/common.js';
 import { moveBlockFrag, moveGatherFrag } from './shaders/move.js';
 import { reactFrag } from './shaders/react.js';
 import { paintFrag, copyFrag, brickFrag, blurFrag } from './shaders/passes.js';
-import { fieldEmaFrag, fieldBlurFrag } from './shaders/fields.js';
-import { CHANNELS, MEDIA, gauss5 } from './gfx/materials.js';
+import { fieldEmaFrag, fieldBlurFrag, fieldBoostFrag } from './shaders/fields.js';
+import { CHANNELS, MEDIA, gauss5, bulkPeak } from './gfx/materials.js';
 
 export function gridLayout(nx, ny, nz) {
   const tx = Math.ceil(Math.sqrt((ny * nz) / nx));
@@ -76,11 +76,13 @@ export class Simulation {
     this.brick = makeTarget(g.bwidth, g.bheight, 1);
     this.light = [makeTarget(g.bwidth, g.bheight, 1), makeTarget(g.bwidth, g.bheight, 1)];
     // render fields (see shaders/fields.js): EMA ping-pong + blur scratch in
-    // RGBA8, final fields in filterable half floats
-    const U8 = THREE.UnsignedByteType, NEAR = THREE.NearestFilter;
+    // RGBA8, the blurred fields in half floats, the boosted final fields in
+    // filterable half floats
+    const U8 = THREE.UnsignedByteType, NEAR = THREE.NearestFilter, HALF = THREE.HalfFloatType;
     this.fieldEma = [makeFieldTarget(g.width, g.height, 3, U8, NEAR), makeFieldTarget(g.width, g.height, 3, U8, NEAR)];
     this.fieldTmp = makeFieldTarget(g.width, g.height, 3, U8, NEAR);
-    this.fields = makeFieldTarget(g.width, g.height, 2, THREE.HalfFloatType, THREE.LinearFilter);
+    this.fieldsBlurred = makeFieldTarget(g.width, g.height, 2, HALF, NEAR);
+    this.fields = makeFieldTarget(g.width, g.height, 2, HALF, THREE.LinearFilter);
     this.fieldCur = 0;
     this.fieldReset = true;
     this.smoothing = 1;
@@ -111,6 +113,10 @@ export class Simulation {
       }),
       fieldBlur: rawMat(fieldBlurFrag(g, false), fieldBlurUniforms()),
       fieldFinal: rawMat(fieldBlurFrag(g, true), fieldBlurUniforms()),
+      fieldBoost: [0, 1, 2].map((stage) => rawMat(fieldBoostFrag(g, stage), {
+        t0: { value: null }, t1: { value: null }, tPhi: { value: null }, tMed: { value: null },
+        uBulk: { value: new THREE.Vector4() },
+      })),
       blur: rawMat(blurFrag(g), { tSrc: { value: null }, uAxis: { value: 0 } }),
     };
     this.clear();
@@ -183,8 +189,8 @@ export class Simulation {
     // per-channel kernels, tap-major
     const k = CHANNELS.map((c) => gauss5(Math.max(c.sigma * this.smoothing, 0.05)));
     const setW = (mat) => mat.uniforms.uW.value.forEach((v, i) => v.set(k[0][i], k[1][i], k[2][i], k[3][i]));
-    // x: next -> prev (free until the next frame), y: prev -> tmp, z: tmp -> fields
-    const passes = [[fieldBlur, next, prev], [fieldBlur, prev, this.fieldTmp], [fieldFinal, this.fieldTmp, this.fields]];
+    // x: next -> prev (free until the next frame), y: prev -> tmp, z: tmp -> blurred
+    const passes = [[fieldBlur, next, prev], [fieldBlur, prev, this.fieldTmp], [fieldFinal, this.fieldTmp, this.fieldsBlurred]];
     passes.forEach(([mat, src, dst], axis) => {
       setW(mat);
       mat.uniforms.uAxis.value = axis;
@@ -193,6 +199,20 @@ export class Simulation {
       mat.uniforms.t2.value = src.textures[2];
       this.run(mat, dst);
     });
+    // thin-feature boost: x: blurred + state -> prev, y: prev -> tmp, z: tmp -> fields
+    const [bx, by, bz] = this.mats.fieldBoost;
+    bx.uniforms.t0.value = this.fieldsBlurred.textures[0];
+    bx.uniforms.t1.value = this.stateA;
+    this.run(bx, prev);
+    by.uniforms.t0.value = prev.textures[0];
+    by.uniforms.t1.value = prev.textures[1];
+    this.run(by, this.fieldTmp);
+    bz.uniforms.t0.value = this.fieldTmp.textures[0];
+    bz.uniforms.t1.value = this.fieldTmp.textures[1];
+    bz.uniforms.tPhi.value = this.fieldsBlurred.textures[0];
+    bz.uniforms.tMed.value = this.fieldsBlurred.textures[1];
+    bz.uniforms.uBulk.value.set(...k.map(bulkPeak));
+    this.run(bz, this.fields);
   }
 
   // Rebuild the render fields, the empty-space bricks and the blurred light volume.
@@ -295,6 +315,7 @@ export class Simulation {
     this.light.forEach((t) => t.dispose());
     this.fieldEma.forEach((t) => t.dispose());
     this.fieldTmp.dispose();
+    this.fieldsBlurred.dispose();
     this.fields.dispose();
     this.history?.forEach((t) => t.dispose());
     Object.values(this.mats).forEach((m) => m.dispose());

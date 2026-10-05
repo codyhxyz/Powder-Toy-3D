@@ -1,4 +1,4 @@
-// Transparent media: liquids (smooth surfaces), crisp glass and droplets.
+// Transparent media: liquids (smooth surfaces) and crisp glass.
 export const liquidGLSL = /* glsl */ `
 float fresnelSchlick(float cosi, float ior) {
   float f0 = (1.0 - ior) / (1.0 + ior);
@@ -35,16 +35,6 @@ int liquidIdAt(vec3 p, int fallback) {
     if (SURFCH[id] == CH_LIQUID) return id;
   }
   return fallback;
-}
-
-// A droplet too small to form a surface: a tiny lens. Reflect the sky, let
-// the rest through tinted by the chord length; no ray bending at this scale.
-void shadeDroplet(int id, vec3 p, vec3 n, vec3 rd, float chord, inout vec3 col, inout vec3 trans) {
-  float F = fresnelSchlick(-dot(n, rd), IOR[id]);
-  vec3 sunVis = uShadows ? sunShadow(p + n * 0.5) : vec3(1.0);
-  col += trans * F * envReflect(p, reflect(rd, n), sunVis);
-  trans *= 1.0 - F;
-  absorbSegment(id, p, chord * 2.5, sunVis, AMBIENT, col, trans);
 }
 
 // Refraction at a smooth liquid surface. n = outward normal of the liquid.

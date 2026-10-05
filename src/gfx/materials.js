@@ -97,6 +97,28 @@ export function gauss5(sigma) {
   return w.map((x) => x / s);
 }
 
+// Field value of the drawn surface (the isosurface level).
+export const ISO = 0.5;
+
+// Thin features (a lone grain or droplet, a one-cell trunk, a film, a falling
+// stream) blur below the isosurface and would vanish. Next to cells that hold
+// the channel right now, a feature whose local peak is under the channel's
+// bulk peak is scaled up so its surface sits THIN_RADIUS cells from the cell
+// centre (shaders/fields.js, boost passes).
+export const THIN_RADIUS = 0.5;     // cells
+// Peaks below this are never scaled (keeps the divide sane); a cell's first
+// frame under the slowest EMA is still well above it.
+export const THIN_MIN_PEAK = 0.01;
+
+// The local peak at or above which a feature needs no boost, for a blur with
+// 5-tap weights w. Along an axis the trilinear field falls from a lone cell's
+// peak to fall·peak at the next cell centre, so it crosses THIN_RADIUS at
+// (1 - THIN_RADIUS·(1 - fall))·peak: put ISO there.
+export function bulkPeak(w) {
+  const fall = w[3] / w[2];
+  return Math.min(1, ISO / (1 - THIN_RADIUS * (1 - fall)));
+}
+
 const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
 
 export function materialsGLSL() {
@@ -106,6 +128,7 @@ export function materialsGLSL() {
     ...CHANNELS.map((c, i) => `#define CH_${c.key} ${i}`),
     ...MEDIA.map((m, i) => `#define MD_${m.key} ${i}`),
     `#define HEAT_RANGE ${f(HEAT_RANGE)}`,
+    `#define THIN_MIN_PEAK ${f(THIN_MIN_PEAK)}`,
     ints('SURFCH', 'ch'),
     ints('MEDIACH', 'media'),
     floats('ROUGH', 'rough'),

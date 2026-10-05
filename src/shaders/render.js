@@ -8,7 +8,6 @@ import { lightingGLSL } from './gfx/lighting.js';
 import { surfaceGLSL } from './gfx/surface.js';
 import { liquidGLSL } from './gfx/liquid.js';
 import { mediaGLSL } from './gfx/media.js';
-import { particlesGLSL } from './gfx/particles.js';
 
 // Hybrid raymarcher. Rays walk the voxel grid with an Amanatides–Woo DDA
 // (4×4×4 bricks skip empty space). What they hit depends on the element's look
@@ -163,7 +162,6 @@ ${lib(g)}
 ${surfaceGLSL}
 ${liquidGLSL}
 ${mediaGLSL}
-${particlesGLSL}
 uniform vec3 uCam;
 uniform mat4 projectionMatrix;
 uniform mat4 modelMatrix;
@@ -513,7 +511,6 @@ void dataView(vec3 ro, vec3 rd, float t0, vec3 bh) {
 #define EV_OPAQUE 1
 #define EV_ENTER 2
 #define EV_EXIT 3
-#define EV_DROP 4
 #define MAX_BENDS 6
 
 void main() {
@@ -641,44 +638,36 @@ void main() {
           }
         }
         phiB = surfField(ro + rd * tExit);
+        // smooth matter in this cell may be a lone droplet or grain
+        float tM = tExit;
+        vec4 phiM = phiB;
+        if (SURFCH[id] >= 0) {
+          tM = tClosest(cell, ro, rd, tEnter, tExit);
+          phiM = surfField(ro + rd * tM);
+        }
         if (ev != EV_NONE) {
           // handled below
         } else if (liq == E_EMPTY) {
           for (int c = 0; c < 4; c++) {
-            if (phiA[c] < 0.5 && phiB[c] >= 0.5) {
-              float t = surfRoot(ro, rd, c, tEnter, tExit, phiA[c] - 0.5, phiB[c] - 0.5);
-              if (t < tEv) { tEv = t; evCh = c; ev = (c == CH_LIQUID && !liqOpaque) ? EV_ENTER : EV_OPAQUE; }
-            }
+            float t = surfCross(ro, rd, c, true, tEnter, tM, tExit, phiA[c], phiM[c], phiB[c]);
+            if (t < tEv) { tEv = t; evCh = c; ev = (c == CH_LIQUID && !liqOpaque) ? EV_ENTER : EV_OPAQUE; }
           }
         } else {
-          if (phiA.x >= 0.5 && phiB.x < 0.5) {
-            tEv = surfRoot(ro, rd, CH_LIQUID, tEnter, tExit, phiA.x - 0.5, phiB.x - 0.5);
-            evCh = CH_LIQUID; ev = EV_EXIT;
-          } else if (phiA.x < 0.5 && phiB.x < 0.5) {
+          float tx = surfCross(ro, rd, CH_LIQUID, false, tEnter, tM, tExit, phiA.x, phiM.x, phiB.x);
+          if (tx < tEv) {
+            tEv = tx; evCh = CH_LIQUID; ev = EV_EXIT;
+          } else if (max(phiA.x, max(phiM.x, phiB.x)) < 0.5) {
             liq = E_EMPTY;   // lost the surface (grazing ray): quietly back in air
           }
           for (int c = 1; c < 4; c++) {
-            if (phiA[c] < 0.5 && phiB[c] >= 0.5) {
-              float t = surfRoot(ro, rd, c, tEnter, tExit, phiA[c] - 0.5, phiB[c] - 0.5);
-              // opaque wins near-ties (the sand/water boundary is both)
-              if (t <= tEv + 0.05) { tEv = min(t, tEv); evCh = c; ev = EV_OPAQUE; }
-            }
+            float t = surfCross(ro, rd, c, true, tEnter, tM, tExit, phiA[c], phiM[c], phiB[c]);
+            // opaque wins near-ties (the sand/water boundary is both)
+            if (t <= tEv + 0.05) { tEv = min(t, tEv); evCh = c; ev = EV_OPAQUE; }
           }
         }
         phiStale = false;
       } else {
         phiStale = true;
-      }
-
-      // ---- droplets and grains: cells too isolated to form a surface ----
-      int dch = SURFCH[id];
-      vec3 dropN = vec3(0.0);
-      float dropChord = 0.0;
-      if (liq == E_EMPTY && dch >= 0 && surfCell(cell)[dch] < 0.5) {
-        float tp;
-        if (particleHit(cell, id, dch, a, ro, rd, tEnter, tEv, tp, dropN, dropChord)) {
-          tEv = tp; ev = EV_DROP; evCh = dch;
-        }
       }
 
       // ---- what lies along [tEnter, tEv] ----
@@ -699,17 +688,6 @@ void main() {
           col += trans * shadeSurf(gatherSurf(hp, n, evCh), rd);
           trans = vec3(0.0);
           break;
-        } else if (ev == EV_DROP) {
-          vec3 n = dropN;
-          if (evCh == CH_LIQUID && !liqOpaque) {
-            shadeDroplet(id, hp, n, rd, dropChord, col, trans);   // and carry on
-          } else {
-            Surf s = crispSurf(cell, id, a, hp, n);
-            s.ch = evCh;
-            col += trans * shadeSurf(s, rd);
-            trans = vec3(0.0);
-            break;
-          }
         } else {
           // liquid surface: refract in or out
           vec3 n = surfNormal(hp, CH_LIQUID, ev == EV_ENTER ? -rd : rd);
@@ -866,15 +844,20 @@ void main() {
     } else if (brickSurf(flags) || brickMedia(flags)) {
       if (phiStale) phiA = surfField(ro + rd * tEnter);
       vec4 phiB = surfField(ro + rd * tExit);
-      float tOp = 1e9;
+      float tM = tExit;
+      vec4 phiM = phiB;
+      if (SURFCH[id] >= 0) { tM = tClosest(cell, ro, rd, tEnter, tExit); phiM = surfField(ro + rd * tM); }
+      float tOp = NO_HIT;
       for (int c = 1; c < 4; c++)
-        if (phiA[c] < 0.5 && phiB[c] >= 0.5) tOp = min(tOp, surfRoot(ro, rd, c, tEnter, tExit, phiA[c] - 0.5, phiB[c] - 0.5));
+        tOp = min(tOp, surfCross(ro, rd, c, true, tEnter, tM, tExit, phiA[c], phiM[c], phiB[c]));
       float tEnd = min(tOp, tExit);
-      float inL = (phiA.x >= 0.5 ? 0.5 : 0.0) + (phiB.x >= 0.5 ? 0.5 : 0.0);
-      if (inL > 0.0) {
+      // path length inside liquid: trapezoid over the three samples
+      vec3 inL = step(0.5, vec3(phiA.x, phiM.x, phiB.x));
+      float lenL = 0.5 * ((inL.x + inL.y) * (tM - tEnter) + (inL.y + inL.z) * (tExit - tM));
+      if (lenL > 0.0) {
         if (SURFCH[id] == CH_LIQUID) lid = id;
         if (tid == 0 || RCLASS[tid] == R_GAS) { if (tid == 0) oC.y = tEnter; tid = lid; }
-        tau += dot(SIGMA[lid], vec3(1.0 / 3.0)) * inL * (tEnd - tEnter);
+        tau += dot(SIGMA[lid], vec3(1.0 / 3.0)) * lenL * (tEnd - tEnter) / max(tExit - tEnter, 1e-6);
         oC.z = tEnd;
       }
       if (brickMedia(flags)) {
@@ -886,7 +869,7 @@ void main() {
           oC.z = tEnd;
         }
       }
-      if (tOp < 1e8) { oC.x = tOp; hit = true; break; }
+      if (tOp < NO_HIT) { oC.x = tOp; hit = true; break; }
       phiA = phiB;
       phiStale = false;
     } else {

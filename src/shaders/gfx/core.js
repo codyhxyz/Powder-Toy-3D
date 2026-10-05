@@ -76,7 +76,6 @@ vec4 fieldTex(sampler2D t, vec3 p) {
 }
 vec4 surfField(vec3 p) { return fieldTex(tFS, p); }
 vec4 mediaField(vec3 p) { return fieldTex(tFM, p); }
-vec4 surfCell(ivec3 c) { return texelFetch(tFS, atlas(c), 0); }
 
 // Root of φ_ch(t) = 0.5 bracketed by [ta, tb] (fa, fb = φ - 0.5 at the ends,
 // opposite signs). Clamped regula falsi: the field is smooth, so a few steps do.
@@ -87,6 +86,26 @@ float surfRoot(vec3 ro, vec3 rd, int ch, float ta, float tb, float fa, float fb)
     if ((fm < 0.0) == (fa < 0.0)) { ta = tm; fa = fm; } else { tb = tm; fb = fm; }
   }
   return mix(ta, tb, clamp(fa / (fa - fb), 0.0, 1.0));
+}
+
+#define NO_HIT 1e9
+
+// Where along [ta, tb] the ray first crosses channel ch's surface, going into
+// the material (into = true) or out of it; NO_HIT if it doesn't. The field is
+// sampled at both ends and at tm, where the ray passes closest to a cell
+// centre: a lone droplet or grain can sit entirely between the ends. With no
+// middle sample, pass tm = tb and phiM = phiB.
+float surfCross(vec3 ro, vec3 rd, int ch, bool into, float ta, float tm, float tb,
+                float phiA, float phiM, float phiB) {
+  float a = phiA - 0.5, m = phiM - 0.5, b = phiB - 0.5;
+  if (into ? (a < 0.0 && m >= 0.0) : (a >= 0.0 && m < 0.0)) return surfRoot(ro, rd, ch, ta, tm, a, m);
+  if (tm < tb && (into ? (m < 0.0 && b >= 0.0) : (m >= 0.0 && b < 0.0))) return surfRoot(ro, rd, ch, tm, tb, m, b);
+  return NO_HIT;
+}
+
+// Where in [ta, tb] the ray passes closest to the centre of cell c.
+float tClosest(ivec3 c, vec3 ro, vec3 rd, float ta, float tb) {
+  return clamp(dot(vec3(c) + 0.5 - ro, rd), ta, tb);
 }
 
 // Outward surface normal (−∇φ) from a tetrahedral central difference. The

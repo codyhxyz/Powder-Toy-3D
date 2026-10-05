@@ -12,6 +12,14 @@ import { materialsGLSL } from '../gfx/materials.js';
 //    walls, the floor and the box sides count neither way: a liquid film one
 //    cell deep keeps its height, and surfaces meet walls at a clean angle.
 //
+// 3. Thin-feature boost: three separable passes over the 3-cell neighbourhood
+//    (x, y, z) find each channel's local peak and whether the channel holds
+//    any of those cells right now. There, a feature whose peak is under the
+//    channel's bulk peak (gfx/materials.js bulkPeak) is scaled up so its
+//    surface sits THIN_RADIUS from the cell centre instead of blurring away:
+//    lone grains and droplets, one-cell trunks, films, streams. Ghosts of
+//    cells that moved on hold no matter now, so they still fade with the EMA.
+//
 // Attachments (RGBA): 0 = surface channels (liquid, molten, granular,
 // organic), 1 = media (smoke, steam, fire, heat), 2 = non-crisp weight, one
 // copy per surface channel since each channel has its own blur radius (the
@@ -81,5 +89,41 @@ ${final ? `
 ` : `
   o0 = s; o1 = m; o2 = d;
 `}
+}
+`;
+
+// stage 0 (x): φ and the state in; local peak and current occupancy out.
+// stage 1 (y): peak and occupancy, extended along y.
+// stage 2 (z): extended along z, then applied to φ; media pass through.
+export const fieldBoostFrag = (g, stage) => /* glsl */ `
+${prelude(g)}
+${materialsGLSL()}
+uniform sampler2D t0;   // stage 0: φ, else the local peak so far
+uniform sampler2D t1;   // stage 0: state A, else the occupancy so far
+${stage === 2 ? `uniform sampler2D tPhi;
+uniform sampler2D tMed;
+uniform vec4 uBulk;     // per-channel bulk peak` : ''}
+layout(location = 0) out vec4 o0;
+layout(location = 1) out vec4 o1;
+${stage < 2 ? 'layout(location = 2) out vec4 o2;   // the scratch targets have three attachments: unused' : ''}
+void main() {
+  ivec2 f = ivec2(gl_FragCoord.xy);
+  ivec3 p = cellFromFrag(f);
+  ${stage < 2 ? 'o2 = vec4(0.0);' : ''}
+  if (p.y >= NY) { o0 = o1 = vec4(0.0); return; }
+  const ivec3 dir = ivec3(${['1, 0, 0', '0, 1, 0', '0, 0, 1'][stage]});
+  vec4 peak = vec4(0.0), occ = vec4(0.0);
+  for (int i = -1; i <= 1; i++) {
+    ivec3 q = p + dir * i;
+    if (!inGrid(q)) continue;
+    ivec2 t = atlas(q);
+    peak = max(peak, texelFetch(t0, t, 0));
+${stage === 0 ? `    int ch = SURFCH[eid(texelFetch(t1, t, 0))];
+    if (ch >= 0) occ[ch] = 1.0;` : `    occ = max(occ, texelFetch(t1, t, 0));`}
+  }
+${stage === 2 ? `  vec4 k = max(vec4(1.0), uBulk / max(peak, vec4(THIN_MIN_PEAK)));
+  o0 = texelFetch(tPhi, f, 0) * mix(vec4(1.0), k, step(0.5, occ));
+  o1 = texelFetch(tMed, f, 0);` : `  o0 = peak;
+  o1 = occ;`}
 }
 `;
