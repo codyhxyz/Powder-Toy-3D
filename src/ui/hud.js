@@ -81,7 +81,7 @@ export function createHelp(onClose) {
         row('Pan', 'Shift', 'Right drag'),
         row('Zoom', 'Scroll'),
         row('Move', 'W', 'A', 'S', 'D'),
-        row('Down / up', 'Q', 'E'),
+        row('Turn left / right', 'Q', 'E'),
         row('Move faster', 'Shift'),
         row('Reset camera', 'R'),
         h('h3', { text: 'Simulation and interface' }),

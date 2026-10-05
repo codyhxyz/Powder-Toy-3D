@@ -28,7 +28,7 @@ Press `?` in the app for the full list.
 | Right-drag or ⌥-drag | orbit |
 | Shift + right-drag or middle-drag | pan |
 | Scroll | zoom |
-| `W` `A` `S` `D`, `Q` `E` | move, down/up (hold Shift to go faster) |
+| `W` `A` `S` `D`, `Q` `E` | move, turn left/right (hold Shift to go faster) |
 | `R` | reset the camera |
 
 | Everything else | |
