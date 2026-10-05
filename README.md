@@ -114,6 +114,12 @@ Density decides whether it can displace its neighbour, so sand sinks through wat
 
 **3. Brush** (only while painting).
 
+**Quiet bricks** (`src/shaders/activity.js`). Most of the box is still air or resting solid, and stepping it only
+reshuffles the air's jitter. Every couple of steps a pass marks 4×4×4 bricks whose cells are all air at ambient with no
+wind or pressure (or a solid at ambient that spawns nothing); a brick whose 26 neighbours are inert too is skipped by the
+move and react passes. A change travels at most two cells per step, so nothing can reach a skipped brick before the
+next map. Typical scenes skip about half the box, which makes a step 1.6–1.7× cheaper.
+
 ## Rendering
 
 The simulation stays a blocky cellular automaton; the renderer draws it as continuous matter.
@@ -158,6 +164,15 @@ physical luminance compressed by a power law, so steel reads dull red at 600–7
 molten rock outshines daylight. Surfaces emit what they don't reflect (Kirchhoff), and the open skin of hot rock runs cooler
 than its cracks; hot steel grows a patchy black scale. Exposed hot faces feed a coarse light volume that lights the
 surroundings. The raymarcher writes depth, so three.js lines and the brush composite correctly.
+
+**Empty space** is crossed in jumps: a distance map over the bricks (`brickDistFrag` in `src/shaders/passes.js`) says
+how far each empty brick is from anything, and camera, shadow, sun and reflection rays leap that whole empty cube at once.
+
+**On demand** (`src/gfx/pacing.js`). Frames are capped at 60 per second (a 120 Hz screen would otherwise double every
+frame's work and the simulation speed). The passes rebuilt from the state (fields, bricks, shadow map, GI) only run when
+the state, sun or their settings change, plus the few frames their temporal filters need to settle; the view only
+renders when the camera, scene, settings or state change, or on input, until TAA has converged. A paused, still scene
+costs no GPU work at all. Code that changes the picture in ways the frame loop can't see calls `__app.requestRender()`.
 
 **Post** (`src/gfx/post.js`): linear HDR → TAA (Halton jitter, reprojection, variance clipping) → energy-conserving bloom →
 AgX tone mapping. Bright saturated light (lava, flames) blends toward the same curve per channel, so it runs through
