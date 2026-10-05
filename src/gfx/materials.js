@@ -161,7 +161,7 @@ export function bulkPeak(w) {
 }
 
 // Uniform cubic B-spline kernel (support ±2 cells).
-export function bspline3(x) {
+function bspline3(x) {
   const a = Math.abs(x);
   if (a < 1) return (4 - 6 * a * a + 3 * a * a * a) / 6;
   return a < 2 ? (2 - a) ** 3 / 6 : 0;

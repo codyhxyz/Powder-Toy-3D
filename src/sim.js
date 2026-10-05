@@ -91,9 +91,9 @@ export class Simulation {
     this.blocks = makeTarget(g.mwidth, g.mheight, 8);
     this.brick = makeTarget(g.bwidth, g.bheight, 1);
     this.light = [makeTarget(g.bwidth, g.bheight, 1), makeTarget(g.bwidth, g.bheight, 1)];
-    // render fields (see shaders/fields.js): EMA ping-pong + blur scratch in
-    // RGBA8, the blurred fields in half floats, the boosted final fields (and
-    // the thin-feature mask) in filterable half floats
+    // render fields (see shaders/fields.js): EMA ping-pong + blur and boost
+    // scratch in RGBA8, the blurred fields in half floats, the boosted final
+    // fields (and the thin-feature mask) in filterable half floats
     const U8 = THREE.UnsignedByteType, NEAR = THREE.NearestFilter, HALF = THREE.HalfFloatType;
     this.fieldEma = [makeFieldTarget(g.width, g.height, 3, U8, NEAR), makeFieldTarget(g.width, g.height, 3, U8, NEAR)];
     this.fieldTmp = makeFieldTarget(g.width, g.height, 3, U8, NEAR);

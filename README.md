@@ -111,15 +111,20 @@ The simulation stays a blocky cellular automaton; the renderer draws it as conti
 smoke, steam and fire are media; wall, metal, glass and clone stay crisp voxels. Per channel, cell occupancy is
 smoothed over time (so cells swapping every step don't shimmer), blurred with a per-channel Gaussian, and normalised by the
 blurred weight of non-crisp cells, so walls and the floor count neither way: a one-cell water film keeps its height and
-surfaces meet walls cleanly. The *Surface smoothing* setting scales every blur radius (0 = off).
+surfaces meet walls cleanly. Features the blur would dissolve (a lone drop or grain, a falling stream, a one-cell trunk)
+are scaled back up next to current matter so their surface sits half a cell from the cell centre; ghosts of cells that
+moved on still fade. The *Surface smoothing* setting scales every blur radius (0 = off).
 
 **Tracer** (`src/shaders/render.js` + `src/shaders/gfx/*`). An Amanatides–Woo DDA walks the grid, skipping empty 4×4×4 bricks
 (the brick map is built from the blurred fields, so it's dilated for free). In each cell it root-finds where a field crosses
 0.5 and shades that point:
-- liquids refract (the ray really bends, with total internal reflection), reflect the sky with Fresnel, and absorb (Beer–Lambert);
+- liquids refract (the ray really bends, with total internal reflection) and reflect with Fresnel: the sky, plus the
+  scene itself at grazing angles, traced through the grid; faint wind ripples keep open water from being a perfect mirror.
+  Inside, light is absorbed and scattered per colour (Beer–Lambert, `scatter` in `gfx/materials.js`), and sunlight fades
+  with depth: water is clear when shallow and blue-green when deep, oil amber, acid a milky green, ice cloudy. Thin
+  liquid (drops, streams) is read as a cubic B-spline instead of trilinearly, so drops are round lenses, not faceted gems;
 - powders, lava and organics are opaque smooth surfaces with world-space textures and bump detail (`gfx/surface.js`), the
   material blended between neighbouring cells; lava grows a cooling crust with glowing cracks;
-- cells too isolated to form a surface are drawn as droplets and grains;
 - crisp voxels get rounded edges where they're exposed;
 - smoke, steam and fire are density volumes (`gfx/media.js`), sampled on a jittered lattice along the ray with sub-cell
   noise that curls and frays them and rises with the gas, so a lone cell is a faint wisp, not a sprite. They scatter
