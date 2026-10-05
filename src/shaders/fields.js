@@ -5,7 +5,7 @@ import { materialsGLSL } from '../gfx/materials.js';
 // frame for the renderer only (the simulation never reads them).
 //
 // 1. EMA pass: per cell, one-hot occupancy of each smooth-surface channel,
-//    media densities and heat, blended toward the previous frame's values
+//    media densities and flame temperature, blended toward the previous frame's values
 //    (temporal smoothing, so cells swapping every sim step don't shimmer).
 // 2. Three separable 5-tap Gaussian passes (x, y, z) with a per-channel
 //    radius. The last pass normalises by the blurred "non-crisp" weight, so
@@ -21,7 +21,7 @@ import { materialsGLSL } from '../gfx/materials.js';
 //    cells that moved on hold no matter now, so they still fade with the EMA.
 //
 // Attachments (RGBA): 0 = surface channels (liquid, molten, granular,
-// organic), 1 = media (smoke, steam, fire, heat), 2 = non-crisp weight, one
+// organic), 1 = media (smoke, steam, fire, flame temperature), 2 = non-crisp weight, one
 // copy per surface channel since each channel has its own blur radius (the
 // media share the liquid kernel and its weight).
 // Final output: 0 = surface φ (0.5 is the surface), 1 = media densities.
@@ -49,8 +49,11 @@ void main() {
   if (ch >= 0) s[ch] = 1.0;
   if (md == MD_SMOKE) m.x = clamp(a.z, 0.0, 1.0);
   else if (md == MD_STEAM) m.y = 1.0;
-  else if (md == MD_FIRE) m.z = 0.4 + 0.6 * clamp(a.z, 0.0, 1.0);
-  if (!crisp) m.w = clamp((a.y - AMBIENT) / HEAT_RANGE, 0.0, 1.0);
+  else if (md == MD_FIRE) {
+    m.z = mix(FIRE_BASE, 1.0, clamp(a.z, 0.0, 1.0));
+    // flame temperature, weighted by density (see MEDIA in gfx/materials.js)
+    m.w = m.z * clamp((a.y - AMBIENT) / HEAT_RANGE, 0.0, 1.0);
+  }
   o0 = mix(texelFetch(tP0, f, 0), s, uEmaS);
   o1 = mix(texelFetch(tP1, f, 0), m, uEmaM);
   o2 = vec4(crisp ? 0.0 : 1.0);

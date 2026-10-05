@@ -523,6 +523,8 @@ void main() {
   if (bh.y <= t0) discard;
   if (CUR_VIEW != 0) { dataView(ro, rd, t0, bh); return; }
   float jit = ign(gl_FragCoord.xy, float(uFrame));
+  float mNext = jit * MEDIA_STEP;   // next media sample along the ray (gfx/media.js)
+  float mOp = 0.0;                  // opacity of the media so far
   // hot air bends light (heat shimmer): perturb the ray once, up front
   rd = safeDir(hazeBend(uCam, rd, t0, bh.y));
 
@@ -675,8 +677,12 @@ void main() {
         if (SURFCH[id] == CH_LIQUID) liq = id;
         absorbSegment(liq, ro + rd * tEnter, tEv - tEnter, mediumLight, SURFCH[id] == CH_LIQUID ? a.y : AMBIENT, col, trans);
       } else if (brickMedia(flags)) {
-        float al = mediaSegment(ro, rd, tEnter, tEv, jit, col, trans);
-        if (!anyHit && al > 0.02) { anyHit = true; hitPos = ro + rd * tEnter; }
+        float al = mediaSegment(ro, rd, tEnter, tEv, mNext, col, trans);
+        // until something is hit, hitPos tracks the first gas, and the gas
+        // that has become mostly opaque counts as a hit
+        if (!anyHit && al > 0.0 && mOp == 0.0) hitPos = ro + rd * tEnter;
+        mOp = 1.0 - (1.0 - mOp) * (1.0 - al);
+        if (!anyHit && mOp > MEDIA_DEPTH_ALPHA) anyHit = true;
       }
 
       // ---- the event ----
@@ -732,6 +738,8 @@ void main() {
     trans = vec3(0.0);
   }
 
+  // only thin gas: keep it (and its glow), at its depth
+  if (!anyHit && (mOp > MEDIA_KEEP_ALPHA || dot(col, vec3(1.0)) > MEDIA_KEEP_RADIANCE)) anyHit = true;
   if (!anyHit) discard;
   float alpha = 1.0 - dot(trans, vec3(1.0 / 3.0));
   // linear HDR radiance, premultiplied; tone mapping happens in post (src/gfx/post.js)
@@ -861,8 +869,11 @@ void main() {
         oC.z = tEnd;
       }
       if (brickMedia(flags)) {
+        // smoke and steam (gfx/media.js), with transport extinction: light
+        // scattered forward still gets through, so gas casts soft shadows
         vec4 m = mediaField(ro + rd * (0.5 * (tEnter + tEnd)));
-        float k = (SIGMA[E_SMOKE].x * m.x + SIGMA[E_STEAM].x * m.y) * 2.5 * 0.35;
+        vec2 dm = max(m.xy - MEDIA_FLOOR, 0.0) * (1.0 / (1.0 - MEDIA_FLOOR));
+        float k = dot(MD_EXT.xy * (1.0 - MD_ALBEDO.xy * MD_G.xy), dm);
         if (k > 1e-4) {
           if (tid == 0) { oC.y = tEnter; tid = m.x > m.y ? E_SMOKE : E_STEAM; }
           tau += k * (tEnd - tEnter);
