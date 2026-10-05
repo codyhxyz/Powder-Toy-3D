@@ -23,16 +23,36 @@ export const CHANNELS = [
   { key: 'GRANULAR', sigma: 0.75, ema: 0.6 },
   { key: 'ORGANIC', sigma: 0.6, ema: 1.0 },   // natural solids: wood, plant, rock
 ];
-// Media channels share the liquid blur kernel. The 4th component is heat
-// (normalised temperature excess) of everything that isn't a crisp solid.
+// Media channels share the liquid blur kernel. The first three are gases with
+// optical properties (shaders/gfx/media.js), per cell at full density (field 1):
+//   ext     extinction σt (1/cell). Fire: soot absorption, which also sets
+//           its emission (Kirchhoff)
+//   albedo  single-scattering albedo σs/σt, grey (no tint). Water droplets
+//           ~1; wood smoke 0.5-0.9; soot ~0.2
+//   g       Henyey–Greenstein anisotropy of the forward lobe (Mie: cloud and
+//           fog droplets ~0.85, smoke ~0.6)
+//   rise    drift of the sub-cell detail (cells/step): the gas rises and its
+//           wisps ride along. Keep it a multiple of 1/256: then the drift at
+//           the clock wrap (gfx/uniforms.js) is a whole number of noise tiles
+// The 4th channel is the flame temperature weighted by fire density, so
+// blurring averages the temperature of the burning gas, not of the air around
+// it: T = AMBIENT + (w / fire) * HEAT_RANGE. It shares fire's EMA.
 export const MEDIA = [
-  { key: 'SMOKE', ema: 0.5 },
-  { key: 'STEAM', ema: 0.5 },
-  { key: 'FIRE', ema: 0.6 },
-  { key: 'HEAT', ema: 0.5 },
+  { key: 'SMOKE', ema: 0.5, ext: 0.75, albedo: 0.35, g: 0.6, rise: 0.0625 },
+  { key: 'STEAM', ema: 0.5, ext: 0.8, albedo: 0.98, g: 0.8, rise: 0.0625 },
+  { key: 'FIRE', ema: 0.6, ext: 0.12, albedo: 0, g: 0, rise: 0.25 },
+  { key: 'FLAME_T', ema: 0.6 },
 ];
-// Temperature range packed into the heat channel: T = AMBIENT + heat * HEAT_RANGE.
+// A fire cell's density: FIRE_BASE at the end of its life, 1 when fresh.
+export const FIRE_BASE = 0.4;
+// Temperature range packed into the flame-temperature channel.
 export const HEAT_RANGE = 2500;
+// Gas density (field value) below which a brick counts as holding no media.
+// The renderer subtracts it, so the gas is exactly 0 where bricks get skipped.
+export const MEDIA_FLOOR = 0.02;
+// World cells per tile of the media detail noise (gfx/mediaNoise.js). A power
+// of two, so the clock wrap stays seamless.
+export const MEDIA_NOISE_CELLS = 64;
 
 // Opaque materials (gfx/surface.js turns these into textured PBR surfaces):
 //   alb    albedo: measured-ish real-world reflectance, as sRGB hex, or a
@@ -128,6 +148,12 @@ export function materialsGLSL() {
     ...CHANNELS.map((c, i) => `#define CH_${c.key} ${i}`),
     ...MEDIA.map((m, i) => `#define MD_${m.key} ${i}`),
     `#define HEAT_RANGE ${f(HEAT_RANGE)}`,
+    `#define FIRE_BASE ${f(FIRE_BASE)}`,
+    `#define MEDIA_FLOOR ${f(MEDIA_FLOOR)}`,
+    `#define MEDIA_NOISE_CELLS ${f(MEDIA_NOISE_CELLS)}`,
+    // per gas (smoke, steam, fire)
+    ...['ext', 'albedo', 'g', 'rise'].map((k) =>
+      `const vec3 MD_${k.toUpperCase()} = vec3(${MEDIA.slice(0, 3).map((m) => f(m[k])).join(', ')});`),
     `#define THIN_MIN_PEAK ${f(THIN_MIN_PEAK)}`,
     ints('SURFCH', 'ch'),
     ints('MEDIACH', 'media'),

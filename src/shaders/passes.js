@@ -1,4 +1,5 @@
 import { prelude } from './common.js';
+import { MEDIA_FLOOR } from '../gfx/materials.js';
 
 // Brush: spawns elements / applies tools inside a sphere or cube.
 export const paintFrag = (g) => /* glsl */ `
@@ -82,6 +83,7 @@ void main() {
 //                              skip it like an empty brick (they test a < 0.5)
 export const brickFrag = (g) => /* glsl */ `
 ${prelude(g)}
+#define MEDIA_FLOOR ${MEDIA_FLOOR}   // gas density the renderer treats as none (gfx/materials.js)
 uniform sampler2D tA;
 uniform sampler2D tB;
 uniform sampler2D tFS;
@@ -122,7 +124,7 @@ void main() {
   }
   if (pm > 0.04) flags |= 2;
   if (vm > 0.05 * 0.05) flags |= 4;
-  bool hasSurf = surf > 0.03, hasMedia = media > 0.01;
+  bool hasSurf = surf > 0.03, hasMedia = media > MEDIA_FLOOR;
   float air = flags > 0 ? -1.0 - float(flags) / 8.0 : 0.0;
   float matter = 1.0 + gas / 64.0 + (hasMedia ? 2.0 : 0.0) + (hasSurf ? 4.0 : 0.0) + float(flags) / 65536.0;
   oC = vec4(em / 64.0, (occ > 0.0 || hasSurf || hasMedia) ? matter : air);

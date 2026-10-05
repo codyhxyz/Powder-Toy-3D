@@ -2,6 +2,12 @@
 // shadow pass). Entry points spread `gfxUniforms` into their materials and
 // call `updateGfxUniforms(sim)` once per frame before rendering, so new
 // graphics features only need to touch this file, not the app wiring.
+import { mediaNoiseUniform } from './mediaNoise.js';
+
+// The media detail clock (simulation steps) wraps here, seamlessly for the
+// drift speeds allowed in gfx/materials.js (MEDIA rise).
+const SIM_CLOCK_WRAP = 1 << 20;
+
 export const gfx = {
   smoothing: 1,          // multiplier on every smooth channel's blur radius
   materials: 1,          // textured materials (0 = flat albedo, for A/B timing)
@@ -14,6 +20,8 @@ export const gfxUniforms = {
   tFS: { value: null },       // smooth-surface fields
   tFM: { value: null },       // media fields
   uFrame: { value: 0 },       // frame counter (for temporal jitter)
+  uSimClock: { value: 0 },    // simulation steps (wrapped): media detail drifts with it, frozen when paused
+  tMediaNoise: mediaNoiseUniform(),   // tileable detail noise for smoke, steam and fire
   uMatDetail: { value: 1 },
   uBevel: { value: 0.12 },
   uGlints: { value: 0.4 },
@@ -25,6 +33,7 @@ export function updateGfxUniforms(sim) {
   gfxUniforms.tFS.value = sim.fieldSurf;
   gfxUniforms.tFM.value = sim.fieldMedia;
   gfxUniforms.uFrame.value = (gfxUniforms.uFrame.value + 1) % 1048576;
+  gfxUniforms.uSimClock.value = sim.frame % SIM_CLOCK_WRAP;
   gfxUniforms.uMatDetail.value = gfx.materials;
   gfxUniforms.uBevel.value = Math.min(Math.max(gfx.bevel, 0), 0.45);
   gfxUniforms.uGlints.value = gfx.glints;

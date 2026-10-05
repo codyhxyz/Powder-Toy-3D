@@ -121,7 +121,10 @@ surfaces meet walls cleanly. The *Surface smoothing* setting scales every blur r
   material blended between neighbouring cells; lava grows a cooling crust with glowing cracks;
 - cells too isolated to form a surface are drawn as droplets and grains;
 - crisp voxels get rounded edges where they're exposed;
-- smoke, steam and fire are density volumes, flames emit blackbody light.
+- smoke, steam and fire are density volumes (`gfx/media.js`), sampled on a jittered lattice along the ray with sub-cell
+  noise that curls and frays them and rises with the gas, so a lone cell is a faint wisp, not a sprite. They scatter
+  sunlight forward (Henyey–Greenstein, plus multiple-scattering octaves), shade themselves, and are lit by the sky and
+  the glow; flames are soot sheets in rising tongues that emit blackbody light, hotter in the core.
 
 A per-frame voxel shadow map is traced from the sun with the same surfaces. It records the opaque depth plus optical depth
 through liquids, glass and gas, so water casts tinted shadows and smoke casts soft ones. Where the map's filter taps disagree
