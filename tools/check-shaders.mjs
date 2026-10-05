@@ -62,7 +62,7 @@ for (const [label, dims] of Object.entries(grids)) {
   check(`fieldEma-${label}`, raw + fields.fieldEmaFrag(g), 'frag');
   check(`fieldBlur-${label}`, raw + fields.fieldBlurFrag(g, false), 'frag');
   check(`fieldFinal-${label}`, raw + fields.fieldBlurFrag(g, true), 'frag');
-  for (const stage of [0, 1, 2]) check(`fieldBoost${stage}-${label}`, raw + fields.fieldBoostFrag(g, stage), 'frag');
+  for (let stage = 0; stage < fields.BOOST_STAGES; stage++) check(`fieldBoost${stage}-${label}`, raw + fields.fieldBoostFrag(g, stage), 'frag');
   for (const [k, v] of Object.entries({ ...move, ...react, ...probe, ...stamp })) if (typeof v === 'function') check(`${k}-${label}`, raw + v(g), 'frag');
 }
 check('volumeVert', shaderMatVert + render.volumeVert, 'vert');

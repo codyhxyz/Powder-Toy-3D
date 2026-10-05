@@ -512,6 +512,16 @@ void dataView(vec3 ro, vec3 rd, float t0, vec3 bh) {
 #define EV_ENTER 2
 #define EV_EXIT 3
 #define MAX_BENDS 6
+// Inside a liquid, sunlight fades with depth: the sun's visibility is read
+// where the ray got in (shadow map) and then attenuated by the liquid between
+// that height and the point, along the sun's slant (sun elevation floored at
+// this sine, so a low sun doesn't black out everything).
+#define LIQ_SUN_Y_MIN 0.2
+// Where liquids of different kinds share a brick (ice in water, acid mixing
+// in), which one a segment is in is read at a per-pixel random offset of up to
+// half this many cells, so their boundary is dithered across a cell, which
+// TAA blends, instead of showing voxel steps inside the smooth surface.
+#define LIQ_ID_DITHER 1.0
 
 void main() {
   vec3 ro = uCam;
@@ -542,13 +552,18 @@ void main() {
   int liq = E_EMPTY;          // smooth liquid the ray is inside (E_EMPTY = air)
   int prevCrisp = E_EMPTY;    // crisp transparent cell the ray just came through
   vec3 mediumLight = vec3(1.0);
+  // sun visibility inside liquid: read at a reference point (where the ray
+  // got in), then faded with depth below it
+  vec3 lightRef = vec3(1.0);
+  float lightY = 0.0;
+  vec3 liqDither = (hash33(vec3(gl_FragCoord.xy, float(uFrame))) - 0.5) * LIQ_ID_DITHER;
   int bends = 0;
   const bool liqOpaque = false;
   bool stop = false;
 
   ivec3 lastB = ivec3(-1);
   int flags = 0;
-  vec4 phiA = surfField(ro + rd * tEnter);   // fields at the current segment start
+  vec4 phiA = surfSample(ro + rd * tEnter);   // fields at the current segment start
   bool phiStale = false;
 
   // Entering the box inside a smooth material: the box wall cuts it open.
@@ -567,10 +582,12 @@ void main() {
         stop = true;
       } else {
         int lid = liquidIdAt(hp - n0 * 0.5, E_WATER);
-        if (liquidInterface(hp, n0, true, lid, ro, rd, col, trans, mediumLight)) liq = lid;
+        if (liquidInterface(hp, n0, true, lid, false, ro, rd, col, trans, mediumLight)) liq = lid;
+        lightRef = uShadows ? sunShadow(hp - n0 * 0.5) : vec3(1.0);   // inside: the map carries the liquid above
+        lightY = hp.y;
         rd = safeDir(rd); istp = ivec3(sign(rd)); tDelta = abs(1.0 / rd);
         cell = ivec3(floor(ro)); tMax = (vec3(cell) + step(0.0, rd) - ro) / rd;
-        tEnter = 0.0; phiA = surfField(ro);
+        tEnter = 0.0; phiA = surfSample(ro);
       }
     }
   }
@@ -578,7 +595,7 @@ void main() {
   for (int i = 0; i < ${g.maxSteps + 128}; i++) {
     if (stop || outside(cell)) break;
     ivec3 bc = cell / BS;
-    if (bc != lastB) { lastB = bc; flags = brickInfo(bc); }
+    if (bc != lastB) { lastB = bc; flags = brickInfo(bc); gThin = brickThin(flags); }
     if (flags == 0) {
       ax = skipBrick(bc, ro, rd, istp, cell, tMax, tEnter);
       prevCrisp = E_EMPTY;
@@ -628,24 +645,29 @@ void main() {
       vec4 phiB = vec4(0.0);
       if (brickSurf(flags)) {
         if (phiStale) {
-          phiA = surfField(ro + rd * tEnter);
+          phiA = surfSample(ro + rd * tEnter);
           // Already inside a smooth material at the start of this segment: we
           // came through glass (a tank of water), or the crossing was missed.
           if (liq == E_EMPTY) {
             int ic = -1;
             float best = 0.5;
             for (int c = 0; c < 4; c++) if (phiA[c] >= best) { best = phiA[c]; ic = c; }
-            if (ic == CH_LIQUID && !liqOpaque) liq = liquidIdAt(ro + rd * (tEnter + 0.5), E_WATER);
+            if (ic == CH_LIQUID && !liqOpaque) {
+              liq = liquidIdAt(ro + rd * (tEnter + 0.5), E_WATER);
+              vec3 p0 = ro + rd * tEnter;
+              lightRef = uShadows ? sunShadow(p0) : vec3(1.0);   // inside: the map carries the liquid above
+              lightY = p0.y;
+            }
             else if (ic >= 0) { ev = EV_OPAQUE; evCh = ic; tEv = tEnter; evN = vec3(0.0); evN[ax] = -float(istp[ax]); }
           }
         }
-        phiB = surfField(ro + rd * tExit);
+        phiB = surfSample(ro + rd * tExit);
         // smooth matter in this cell may be a lone droplet or grain
         float tM = tExit;
         vec4 phiM = phiB;
         if (SURFCH[id] >= 0) {
           tM = tClosest(cell, ro, rd, tEnter, tExit);
-          phiM = surfField(ro + rd * tM);
+          phiM = surfSample(ro + rd * tM);
         }
         if (ev != EV_NONE) {
           // handled below
@@ -674,7 +696,15 @@ void main() {
 
       // ---- what lies along [tEnter, tEv] ----
       if (liq != E_EMPTY) {
-        if (SURFCH[id] == CH_LIQUID) liq = id;
+        vec3 pm = ro + rd * (0.5 * (tEnter + tEv));
+        int lj = id;
+        if (brickMixed(flags)) {
+          ivec3 cj = clamp(ivec3(floor(pm + liqDither)), ivec3(0), GRID - 1);
+          if (cj != cell) lj = eid(cellA(cj));
+        }
+        if (SURFCH[lj] == CH_LIQUID) liq = lj;
+        else if (SURFCH[id] == CH_LIQUID) liq = id;
+        mediumLight = lightRef * exp(-SIGMA[liq] * max(lightY - pm.y, 0.0) / max(uSun.y, LIQ_SUN_Y_MIN));
         absorbSegment(liq, ro + rd * tEnter, tEv - tEnter, mediumLight, SURFCH[id] == CH_LIQUID ? a.y : AMBIENT, col, trans);
       } else if (brickMedia(flags)) {
         float al = mediaSegment(ro, rd, tEnter, tEv, mNext, col, trans);
@@ -696,16 +726,19 @@ void main() {
           break;
         } else {
           // liquid surface: refract in or out
-          vec3 n = surfNormal(hp, CH_LIQUID, ev == EV_ENTER ? -rd : rd);
+          vec3 n = liquidRipple(hp, surfNormal(hp, CH_LIQUID, ev == EV_ENTER ? -rd : rd));
           int lid = ev == EV_ENTER ? liquidIdAt(hp - n * 0.5, E_WATER) : liq;
           if (bends < MAX_BENDS) {
             bends++;
-            bool inside = liquidInterface(hp, n, ev == EV_ENTER, lid, ro, rd, col, trans, mediumLight);
+            // the scene shows in the reflection only off the first surface the eye ray meets
+            bool inside = liquidInterface(hp, n, ev == EV_ENTER, lid, bends == 1, ro, rd, col, trans, mediumLight);
             liq = inside ? lid : E_EMPTY;
+            if (ev == EV_ENTER) { lightRef = mediumLight; lightY = hp.y; }
             rd = safeDir(rd); istp = ivec3(sign(rd)); tDelta = abs(1.0 / rd);
             cell = ivec3(floor(ro)); tMax = (vec3(cell) + step(0.0, rd) - ro) / rd;
             tEnter = 0.0; lastB = ivec3(-1); ax = 1;
-            phiA = surfField(ro); phiStale = false;
+            gThin = brickThin(brickInfo(clamp(cell, ivec3(0), GRID - 1) / BS));
+            phiA = surfSample(ro); phiStale = false;
             // restarted inside something opaque (sand under the water line)
             int oc = -1;
             for (int c = 1; c < 4; c++) if (phiA[c] >= 0.5) oc = c;
@@ -832,13 +865,13 @@ void main() {
   int lid = E_WATER;
   float tau = 0.0;
   bool hit = false;
-  vec4 phiA = surfField(ro + rd * tEnter);
+  vec4 phiA = surfSample(ro + rd * tEnter);
   bool phiStale = false;
   if (max(phiA.y, max(phiA.z, phiA.w)) >= 0.5) { oC.x = tEnter; hit = true; }
   for (int i = 0; i < ${g.maxSteps}; i++) {
     if (hit || outside(cell)) break;
     ivec3 bc = cell / BS;
-    if (bc != lastB) { lastB = bc; flags = brickInfo(bc); }
+    if (bc != lastB) { lastB = bc; flags = brickInfo(bc); gThin = brickThin(flags); }
     if (flags == 0) { skipBrick(bc, ro, rd, istp, cell, tMax, tEnter); phiStale = true; continue; }
     int ax = argmin3(tMax);
     float tExit = tMax[ax];
@@ -850,11 +883,11 @@ void main() {
       oC.z = tExit;
       phiStale = true;
     } else if (brickSurf(flags) || brickMedia(flags)) {
-      if (phiStale) phiA = surfField(ro + rd * tEnter);
-      vec4 phiB = surfField(ro + rd * tExit);
+      if (phiStale) phiA = surfSample(ro + rd * tEnter);
+      vec4 phiB = surfSample(ro + rd * tExit);
       float tM = tExit;
       vec4 phiM = phiB;
-      if (SURFCH[id] >= 0) { tM = tClosest(cell, ro, rd, tEnter, tExit); phiM = surfField(ro + rd * tM); }
+      if (SURFCH[id] >= 0) { tM = tClosest(cell, ro, rd, tEnter, tExit); phiM = surfSample(ro + rd * tM); }
       float tOp = NO_HIT;
       for (int c = 1; c < 4; c++)
         tOp = min(tOp, surfCross(ro, rd, c, true, tEnter, tM, tExit, phiA[c], phiM[c], phiB[c]));
