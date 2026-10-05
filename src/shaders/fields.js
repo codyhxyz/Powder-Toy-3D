@@ -29,7 +29,7 @@ import { materialsGLSL } from '../gfx/materials.js';
 // copy per surface channel since each channel has its own blur radius (the
 // media share the liquid kernel and its weight).
 // Final output: 0 = surface φ (0.5 is the surface), 1 = media densities,
-// 2 = thin mask, rising from 0 to 1 with a channel's boost (THIN_MASK_FULL).
+// 2 = thin mask, rising from 0 to 1 with a channel's boost (THIN_MASK_LO..HI).
 // Only cubic channels need it: the tracer reads them cubic only there (bulk
 // surfaces read the same either way, and trilinear is 8x cheaper).
 
@@ -138,7 +138,7 @@ ${stage === 5 ? `  vec4 k = max(vec4(1.0), uBulk / max(acc, vec4(THIN_MIN_PEAK))
   vec4 boosted = step(0.5, occ);
   o0 = texelFetch(tPhi, f, 0) * mix(vec4(1.0), k, boosted);
   o1 = texelFetch(tMed, f, 0);
-  o2 = boosted * clamp((k - 1.0) / (THIN_MASK_FULL - 1.0), 0.0, 1.0);` : `  o0 = acc;
+  o2 = boosted * smoothstep(vec4(THIN_MASK_LO), vec4(THIN_MASK_HI), k);` : `  o0 = acc;
   o1 = occ;`}
 }
 `;

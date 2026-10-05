@@ -27,15 +27,19 @@ bool isCrisp(int id) { return id != E_EMPTY && SURFCH[id] < 0 && MEDIACH[id] < 0
 // ---- bricks (see brickFrag in passes.js) ----
 // a = 0: empty. a < 0: air only, flagged for the data views.
 // a >= 1: 1 + gas fraction + 2·media + 4·smooth surface nearby + 8·opaque
-// matter nearby (+ air flags / 65536).
+// matter nearby + 16·thin liquid feature + 32·more than one kind of liquid
+// (+ air flags / 65536).
 float brickOcc(ivec3 bc) { return texelFetch(tBrick, brickAtlas(bc), 0).a; }
 int brickBits(float occ) { return int((occ - 1.0) * 0.5); }
 float brickGas(float occ) { return occ > 0.5 ? clamp(occ - 1.0 - 2.0 * float(brickBits(occ)), 0.0, 1.0) : 0.0; }
-// realistic view: 0 = skip the brick, else 1 + bits (1 media, 2 surface, 4 opaque)
+// realistic view: 0 = skip the brick, else 1 + bits (1 media, 2 surface,
+// 4 opaque, 8 thin liquid, 16 mixed liquids)
 int brickInfo(ivec3 bc) { float a = brickOcc(bc); return a < 0.5 ? 0 : 1 + brickBits(a); }
 bool brickMedia(int f) { return f > 0 && ((f - 1) & 1) != 0; }
 bool brickSurf(int f) { return f > 0 && ((f - 1) & 2) != 0; }
 bool brickOpaque(int f) { return f > 0 && ((f - 1) & 4) != 0; }
+bool brickThin(int f) { return f > 0 && ((f - 1) & 8) != 0; }
+bool brickMixed(int f) { return f > 0 && ((f - 1) & 16) != 0; }
 
 vec3 safeDir(vec3 rd) {
   return vec3(abs(rd.x) < 1e-6 ? 1e-6 : rd.x, abs(rd.y) < 1e-6 ? 1e-6 : rd.y, abs(rd.z) < 1e-6 ? 1e-6 : rd.z);
@@ -122,7 +126,11 @@ vec4 fieldCubic(sampler2D t, vec3 p) {
 // ~0.54..0.70), so the cheap one decides.
 #define LIQ_CUBIC_LO 0.3
 #define LIQ_CUBIC_HI 0.85
+// Whether the brick being traced holds thin liquid (brickThin): set by the
+// marches on entering each brick, so bulk liquid never reads the mask.
+bool gThin = true;
 float liquidCubic(vec3 p, float tri) {
+  if (!gThin) return tri;
   float t = fieldTex(tFT, p).x;
   return t > 0.0 ? mix(tri, fieldCubic(tFS, p).x, t) : tri;
 }
@@ -178,7 +186,7 @@ float tClosest(ivec3 c, vec3 ro, vec3 rd, float ta, float tb) {
 #define NORMAL_STEP_CUBIC 0.25
 vec3 surfNormal(vec3 p, int ch, vec3 fallback) {
   const vec2 k = vec2(1.0, -1.0);
-  float h = ch == CH_LIQUID ? mix(NORMAL_STEP, NORMAL_STEP_CUBIC, fieldTex(tFT, p).x) : NORMAL_STEP;
+  float h = ch == CH_LIQUID && gThin ? mix(NORMAL_STEP, NORMAL_STEP_CUBIC, fieldTex(tFT, p).x) : NORMAL_STEP;
   vec3 gr = k.xyy * surfChannel(p + k.xyy * h, ch) + k.yyx * surfChannel(p + k.yyx * h, ch)
           + k.yxy * surfChannel(p + k.yxy * h, ch) + k.xxx * surfChannel(p + k.xxx * h, ch);
   float l = length(gr);

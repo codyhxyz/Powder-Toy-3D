@@ -106,7 +106,9 @@ export class Simulation {
         uShape: { value: 0 }, uTool: { value: 2 }, uRate: { value: 1 }, uReplace: { value: false },
       }),
       copy: rawMat(copyFrag(g), state()),
-      brick: rawMat(brickFrag(g), { tA: { value: null }, tB: { value: null }, tFS: { value: null }, tFM: { value: null } }),
+      brick: rawMat(brickFrag(g), {
+        tA: { value: null }, tB: { value: null }, tFS: { value: null }, tFM: { value: null }, tFT: { value: null },
+      }),
       fieldEma: rawMat(fieldEmaFrag(g), {
         tA: { value: null }, tP0: { value: null }, tP1: { value: null },
         uEmaS: { value: new THREE.Vector4() }, uEmaM: { value: new THREE.Vector4() },
@@ -225,6 +227,7 @@ export class Simulation {
     this.mats.brick.uniforms.tB.value = this.stateB;
     this.mats.brick.uniforms.tFS.value = this.fieldSurf;
     this.mats.brick.uniforms.tFM.value = this.fieldMedia;
+    this.mats.brick.uniforms.tFT.value = this.fieldThin;
     this.run(this.mats.brick, this.brick);
     const blur = this.mats.blur;
     let src = this.brick.texture;

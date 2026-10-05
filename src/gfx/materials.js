@@ -123,10 +123,13 @@ export const THIN_RADIUS = 0.5;     // cells
 // Peaks below this are never scaled (keeps the divide sane); a cell's first
 // frame under the slowest EMA is still well above it.
 export const THIN_MIN_PEAK = 0.01;
-// The thin mask (fields.js, read by the tracer to pick cubic sampling) rises
-// from 0 at no boost to 1 at this boost factor; barely boosted cells read
-// nearly the same either way, so the switch is gradual.
-export const THIN_MASK_FULL = 1.25;
+// The thin mask (fields.js; where the tracer reads cubic channels cubic)
+// rises from 0 to 1 between these boost factors. Trilinear only fails badly
+// on features thin in two or three axes: a lone drop is boosted ~13x and a
+// one-cell stream ~4.5x (sigma 1), while a one-cell film (~1.6x) reads within
+// ~0.05 cells of its cubic surface anyway, so shallow water stays cheap.
+export const THIN_MASK_LO = 1.8;
+export const THIN_MASK_HI = 3.0;
 
 // The local peak at or above which a feature needs no boost, for a blur with
 // 5-tap weights w. Along an axis the trilinear field falls from a lone cell's
@@ -168,7 +171,8 @@ export function materialsGLSL() {
     ...MEDIA.map((m, i) => `#define MD_${m.key} ${i}`),
     `#define HEAT_RANGE ${f(HEAT_RANGE)}`,
     `#define THIN_MIN_PEAK ${f(THIN_MIN_PEAK)}`,
-    `#define THIN_MASK_FULL ${f(THIN_MASK_FULL)}`,
+    `#define THIN_MASK_LO ${f(THIN_MASK_LO)}`,
+    `#define THIN_MASK_HI ${f(THIN_MASK_HI)}`,
     ints('SURFCH', 'ch'),
     ints('MEDIACH', 'media'),
     floats('ROUGH', 'rough'),
