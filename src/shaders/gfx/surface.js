@@ -569,6 +569,7 @@ vec3 shadeSurf(Surf s, vec3 rd) {
   vec3 ng = s.ng;
   float ao = s.ch >= 0 ? fieldAO(s.p, ng) : faceAO(s.cell, s.face, s.p);
   vec3 local = sampleLight(s.p + ng * 0.75) * uLightGain;
+  Probe gi = surfProbe(s.p, ng);
   // keep the bumped normal on the visible side
   vec3 n = s.n;
   float nvr = dot(n, v);
@@ -611,8 +612,10 @@ vec3 shadeSurf(Surf s, vec3 rd) {
     c += s.trans * SUN_COL * shT * (s.albedo * s.sssCol * 1.6) * (-ngl) * exp(-2.5 * th);
   }
 
-  // sky: specular (anisotropic lobes bend the lookup normal, rough lobes
-  // reflect toward the normal), horizon- and AO-occluded
+  // environment: specular (anisotropic lobes bend the lookup normal, rough
+  // lobes reflect toward the normal), horizon- and AO-occluded. Glossy lobes
+  // see the sky, dimmed by how much of it the probes say is visible; rough
+  // ones blur into the probes' light (sky + bounce, already occluded).
   vec3 nb = n;
   if (s.aniso > 0.0) {
     vec3 at = cross(s.tang, v);
@@ -621,11 +624,12 @@ vec3 shadeSurf(Surf s, vec3 rd) {
   vec3 r = reflect(rd, nb);
   r = normalize(mix(r, nb, s.rough * s.rough));
   float hor = clamp(1.0 + dot(r, ng), 0.0, 1.0);
-  vec3 envL = mix(skyColor(r), skyAmbient(r), smoothstep(0.25, 0.9, s.rough));
+  vec3 irr = giIrradiance(gi, n);
+  vec3 envL = mix(skyColor(r) * giSkyVis(gi, n), giIrradiance(gi, r), smoothstep(0.25, 0.9, s.rough));
   float specAO = clamp(pow(nv + aoT, exp2(-16.0 * s.rough - 1.0)) - 1.0 + aoT, 0.0, 1.0);
-  c += (envL * FssEss * hor * hor + skyAmbient(n) * Fms * Ems) * specAO;
-  // sky + glow volume: diffuse
-  c += kD * (skyAmbient(n) * aoT + local * (0.35 + 0.65 * aoT));
+  c += (envL * FssEss * hor * hor + irr * Fms * Ems) * specAO;
+  // indirect (sky + bounce) and glow volume: diffuse
+  c += kD * (irr * aoT + local * (0.35 + 0.65 * aoT));
   return c + s.emit;
 }
 
@@ -633,12 +637,13 @@ vec3 shadeFloor(vec3 hp, vec3 rd) {
   vec2 q = hp.xz / 8.0;
   vec2 gq = abs(fract(q - 0.5) - 0.5) / max(fwidth(q), vec2(1e-4));
   float line = 1.0 - min(min(gq.x, gq.y), 1.0);
-  vec3 alb = mix(vec3(0.075, 0.078, 0.085), vec3(0.14, 0.15, 0.17), line);
+  vec3 alb = mix(GROUND_ALB, vec3(0.14, 0.15, 0.17), line);
   vec3 n = vec3(0.0, 1.0, 0.0);
   float ndl = max(uSun.y, 0.0);
   vec3 sh = uShadows ? sunShadow(hp, n) : vec3(1.0);
   float ao = min(faceAO(ivec3(floor(hp.x), -1, floor(hp.z)), ivec3(0, 1, 0), hp), fieldAO(vec3(hp.x, 0.0, hp.z), n));
   vec3 local = sampleLight(vec3(hp.x, 0.5, hp.z)) * uLightGain;
-  return alb * (SUN_COL * ndl * sh + vec3(0.3, 0.35, 0.45) * ao + local * (0.35 + 0.65 * ao));
+  vec3 irr = giIrradiance(surfProbe(vec3(hp.x, 0.0, hp.z), n), n);
+  return alb * (SUN_COL * ndl * sh + irr * ao + local * (0.35 + 0.65 * ao));
 }
 `;

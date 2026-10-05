@@ -4,7 +4,9 @@ import { moveBlockFrag, moveGatherFrag } from './shaders/move.js';
 import { reactFrag } from './shaders/react.js';
 import { paintFrag, copyFrag, brickFrag, blurFrag } from './shaders/passes.js';
 import { fieldEmaFrag, fieldBlurFrag, fieldBoostFrag } from './shaders/fields.js';
+import { giSourceFrag, giGatherFrag } from './shaders/gi.js';
 import { CHANNELS, MEDIA, gauss5, bulkPeak } from './gfx/materials.js';
+import { gfxUniforms } from './gfx/uniforms.js';
 
 export function gridLayout(nx, ny, nz) {
   const tx = Math.ceil(Math.sqrt((ny * nz) / nx));
@@ -56,6 +58,20 @@ function rawMat(frag, uniforms) {
   });
 }
 
+// Uniforms of the GI passes (shaders/gi.js); the probe textures are rebound per frame.
+const giUniforms = () => ({
+  tA: { value: null }, tBrick: { value: null }, tShadow: { value: null }, uShadowRes: { value: 1 },
+  uShadows: { value: true }, uSun: { value: new THREE.Vector3(0, 1, 0) },
+  // sky values (computed per frame by updateGfxUniforms)
+  uSunExt: gfxUniforms.uSunExt, uSunCol: gfxUniforms.uSunCol, uSkyUp: gfxUniforms.uSkyUp, uGround: gfxUniforms.uGround,
+});
+const giProbeUniforms = () => Object.fromEntries([0, 1, 2, 3].map((i) => [`tGI${i}`, { value: null }]));
+
+// Share of each update's new GI probes blended into the probe volume (the rest
+// is history): smooths cells popping between bricks over a few frames. Each
+// probe is updated every other frame.
+const GI_BLEND = 0.4;
+
 const fieldBlurUniforms = () => ({
   t0: { value: null }, t1: { value: null }, t2: { value: null }, uAxis: { value: 0 },
   uW: { value: [...Array(5)].map(() => new THREE.Vector4()) },
@@ -86,6 +102,11 @@ export class Simulation {
     this.fieldCur = 0;
     this.fieldReset = true;
     this.smoothing = 1;
+    // GI (shaders/gi.js): per-brick light sources and blockers, and the probe
+    // volume (L1 spherical harmonics, filterable for trilinear lookups)
+    this.giSrc = makeFieldTarget(g.bwidth, g.bheight, 3, HALF, NEAR);
+    this.giProbes = makeFieldTarget(g.bwidth, g.bheight, 4, HALF, THREE.LinearFilter);
+    this.giReset = true;
 
     this.scene = new THREE.Scene();
     this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
@@ -118,7 +139,17 @@ export class Simulation {
         uBulk: { value: new THREE.Vector4() },
       })),
       blur: rawMat(blurFrag(g), { tSrc: { value: null }, uAxis: { value: 0 } }),
+      giSource: rawMat(giSourceFrag(g), { ...giUniforms(), ...giProbeUniforms() }),
+      giGather: rawMat(giGatherFrag(g), {
+        ...giUniforms(), tGIRad: { value: null }, tGICov: { value: null }, tGIDir: { value: null },
+        uParity: { value: -1 },
+      }),
     };
+    // the gather blends into the probe volume: new * GI_BLEND + old * (1 - GI_BLEND)
+    Object.assign(this.mats.giGather, {
+      blending: THREE.CustomBlending, blendEquation: THREE.AddEquation,
+      blendSrc: THREE.ConstantAlphaFactor, blendDst: THREE.OneMinusConstantAlphaFactor,
+    });
     this.clear();
   }
 
@@ -235,6 +266,33 @@ export class Simulation {
     this.lightTexture = src;
   }
 
+  get giTextures() { return this.giProbes.textures; }
+
+  // Rebuild the GI probe volume (realistic view; after the shadow map, which it
+  // reads for sunlight). sun: unit vector toward the sun.
+  updateGI(sun, shadowMap, shadowRes, shadows) {
+    const { giSource, giGather } = this.mats;
+    for (const m of [giSource, giGather]) {
+      const u = m.uniforms;
+      u.tA.value = this.stateA;
+      u.tBrick.value = this.brick.texture;
+      u.tShadow.value = shadowMap;
+      u.uShadowRes.value = shadowRes;
+      u.uShadows.value = shadows;
+      u.uSun.value.copy(sun);
+    }
+    this.giProbes.textures.forEach((t, i) => { giSource.uniforms[`tGI${i}`].value = t; });
+    this.run(giSource, this.giSrc);
+    const u = giGather.uniforms;
+    [u.tGIRad.value, u.tGICov.value, u.tGIDir.value] = this.giSrc.textures;
+    // after a reset trace every probe and replace; else half of them, blended in
+    this.giFrame = (this.giFrame ?? 0) + 1;
+    u.uParity.value = this.giReset ? -1 : this.giFrame & 1;
+    giGather.blendAlpha = this.giReset ? 1 : GI_BLEND;
+    this.giReset = false;
+    this.run(giGather, this.giProbes);
+  }
+
   // Upload CPU-built state (Float32Array RGBA per atlas texel).
   load(dataA, dataB) {
     const { width, height } = this.g;
@@ -246,6 +304,7 @@ export class Simulation {
     u.tB.value = texB;
     this.run(this.mats.copy, this.targets[this.cur]);
     this.fieldReset = true;
+    this.giReset = true;
     texA.dispose();
     texB.dispose();
   }
@@ -317,6 +376,8 @@ export class Simulation {
     this.fieldTmp.dispose();
     this.fieldsBlurred.dispose();
     this.fields.dispose();
+    this.giSrc.dispose();
+    this.giProbes.dispose();
     this.history?.forEach((t) => t.dispose());
     Object.values(this.mats).forEach((m) => m.dispose());
     this.quad.geometry.dispose();

@@ -15,6 +15,7 @@ import * as react from '../src/shaders/react.js';
 import { quadVert } from '../src/shaders/common.js';
 import * as probe from '../src/shaders/probe.js';
 import * as stamp from '../src/shaders/stamp.js';
+import * as gi from '../src/shaders/gi.js';
 
 // three.js prefixes: ShaderMaterial (GLSL1-style source upgraded to 300 es)
 // and RawShaderMaterial with glslVersion GLSL3.
@@ -63,7 +64,7 @@ for (const [label, dims] of Object.entries(grids)) {
   check(`fieldBlur-${label}`, raw + fields.fieldBlurFrag(g, false), 'frag');
   check(`fieldFinal-${label}`, raw + fields.fieldBlurFrag(g, true), 'frag');
   for (const stage of [0, 1, 2]) check(`fieldBoost${stage}-${label}`, raw + fields.fieldBoostFrag(g, stage), 'frag');
-  for (const [k, v] of Object.entries({ ...move, ...react, ...probe, ...stamp })) if (typeof v === 'function') check(`${k}-${label}`, raw + v(g), 'frag');
+  for (const [k, v] of Object.entries({ ...move, ...react, ...probe, ...stamp, ...gi })) if (typeof v === 'function') check(`${k}-${label}`, raw + v(g), 'frag');
 }
 check('volumeVert', shaderMatVert + render.volumeVert, 'vert');
 check('quadVert', raw + quadVert, 'vert');

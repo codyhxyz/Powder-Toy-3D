@@ -671,13 +671,14 @@ function frame() {
     visible: brushValid && pointerInside && !uiHover, center: brushCenter, painting,
     radius: settings.radius, shape: settings.shape, tool: settings.tool,
   });
-  updateGfxUniforms(sim);
+  updateGfxUniforms(sim, SUN);
   sim.updateBricks();
   if (settings.shadows && settings.view === 0) {
     shadowMat.uniforms.tA.value = sim.stateA;
     shadowMat.uniforms.tBrick.value = sim.brick.texture;
     sim.run(shadowMat, shadowTarget);
   }
+  if (settings.view === 0) sim.updateGI(SUN, shadowTarget.texture, shadowMat.uniforms.uShadowRes.value, settings.shadows);
 
   volume.updateMatrixWorld();
   const u = volume.material.uniforms;
