@@ -165,7 +165,8 @@ The host runs the only simulation. About 10 times a second it packs the state on
 keeping only what guests draw (element, an 8-bit temperature, smoke and fire density). It reads that back without stalling,
 XORs it against the last frame it sent and deflates it. A 128³ world is a 30–80 KB keyframe to join and about 2–3 Mbit/s while things move.
 The relay (`relay/worker.js`, one Cloudflare Durable Object per room) only forwards messages.
-To deploy it, run `wrangler deploy --config relay/wrangler.toml` and build the site with `VITE_RELAY_URL=wss://<relay host>`.
+To deploy it, run `wrangler deploy --config relay/wrangler.toml`. The production relay lives at `wss://tpt3d-relay.codyh.xyz` (set in `.env.production`).
+The site itself deploys with `npm run deploy` (Cloudflare Pages project `tpt3d`, served at https://tpt3d.codyh.xyz).
 Without that variable, production builds hide multiplayer.
 
 ## Known simplifications
