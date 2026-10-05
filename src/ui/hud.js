@@ -20,24 +20,29 @@ export function createHud() {
 
   document.body.append(stats, readout, pill, toasts, hint, legendBox);
 
+  const setText = (el, t) => { if (el.textContent !== t) el.textContent = t; };
+  const READOUT_DX = 16, READOUT_DY = 14;   // px: the hover readout sits below-right of the pointer
+  const PRESSURE_SHOWN = 0.05;              // the readout lists pressure from this much on
+
   let hintTimer = setTimeout(() => hint.classList.add('gone'), 12000);
 
   return {
+    // called every frame: only touch the DOM when a value changes (each write re-lays out the HUD)
     setStats({ fpsV, stepsV, cellsV, resV }) {
-      fps.textContent = fpsV.toFixed(0);
-      steps.textContent = stepsV.toFixed(0);
-      cells.textContent = cellsV;
-      res.textContent = resV;
+      setText(fps, fpsV.toFixed(0));
+      setText(steps, stepsV.toFixed(0));
+      setText(cells, cellsV);
+      setText(res, resV);
     },
     showReadout(x, y, info) {
       if (!info) { readout.style.display = 'none'; return; }
       readout.style.display = 'flex';
-      readout.style.transform = `translate(${x + 16}px, ${y + 14}px)`;
+      readout.style.transform = `translate(${x + READOUT_DX}px, ${y + READOUT_DY}px)`;
       readout.style.left = '0'; readout.style.top = '0';
       chip.style.background = info.color;
-      name.textContent = info.name;
-      temp.textContent = `${info.T.toFixed(1)} °C`;
-      pres.textContent = Math.abs(info.P) >= 0.05 ? `pressure ${info.P.toFixed(1)}` : '';
+      setText(name, info.name);
+      setText(temp, `${info.T.toFixed(1)} °C`);
+      setText(pres, Math.abs(info.P) >= PRESSURE_SHOWN ? `pressure ${info.P.toFixed(1)}` : '');
     },
     setPaused: (p) => pill.classList.toggle('show', p),
     toast(text) {
