@@ -101,6 +101,32 @@ export const TOOLS = [
     desc: 'Click a surface to pin a label. {t}, {p} and {e} show live temperature, pressure and element.' },
 ];
 
+// Constructions: whole structures placed with one click (src/constructions.js
+// builds and stamps them; they never reach the paint shader). Each one is
+// generated fresh from a seed, a size and a variant. With more than one
+// variant the UI also offers "shuffle", which picks a random variant per placement.
+export const BUILDS = [
+  { id: -100, key: 'HOUSE', abbr: 'HOUS', name: 'House', color: '#b9774b',
+    variants: [['cottage', 'Cottage'], ['cabin', 'Log cabin'], ['brick', 'Brick'], ['greenhouse', 'Greenhouse']],
+    desc: 'Built from real materials: wooden walls burn, windows are glass, and the chimney draws smoke up from the fireplace.' },
+  { id: -101, key: 'TREE', abbr: 'TREE', name: 'Tree', color: '#4f9a3c', shuffle: true,
+    variants: [['oak', 'Oak'], ['pine', 'Pine'], ['birch', 'Birch'], ['palm', 'Palm'], ['willow', 'Willow'], ['dead', 'Dead']],
+    desc: 'A wooden trunk and plant leaves, grown from a new seed every time. Pick a kind or shuffle between them.' },
+  { id: -102, key: 'CAMPFIRE', abbr: 'CAMP', name: 'Campfire', color: '#c75b30',
+    variants: [['lit', 'Lit'], ['unlit', 'Unlit']],
+    desc: 'A teepee of logs in a ring of stones. The lit one is already burning.' },
+  { id: -103, key: 'IGLOO', abbr: 'IGLO', name: 'Igloo', color: '#cfe6f5',
+    desc: 'A dome of ice at −20 °C with an entrance tunnel. Warm it and it melts.' },
+  { id: -104, key: 'BARREL', abbr: 'BRRL', name: 'Barrel', color: '#8c6239',
+    variants: [['drum', 'Oil drum'], ['keg', 'Powder keg']],
+    desc: 'A steel drum full of oil or a wooden keg full of gunpowder. Both go up when they get hot.' },
+  { id: -105, key: 'AQUARIUM', abbr: 'AQUA', name: 'Aquarium', color: '#4aa3c4',
+    desc: 'A glass tank of water on a bed of sand and pebbles. Glass shrugs off acid but melts at 1400 °C.' },
+  { id: -106, key: 'FOUNTAIN', abbr: 'FNTN', name: 'Fountain', color: '#93a6bd',
+    desc: 'A stone basin with a spout fed by an endless water clone. It will overflow eventually.' },
+];
+export const isBuild = (id) => id <= -100;
+
 // How the palette is laid out in the UI. Within each group, elements are
 // ordered so related materials sit together and the colours run smoothly.
 export const PALETTE = [
@@ -109,10 +135,12 @@ export const PALETTE = [
   { name: 'Gases', items: ['STEAM', 'SMOKE', 'FIRE'] },
   { name: 'Solids', items: ['WALL', 'METAL', 'GLASS', 'ICE', 'WOOD', 'PLANT', 'CLONE'] },
   { name: 'Tools', items: ['HEAT', 'COOL', 'ERASE', 'BLAST', 'SIGN'] },
+  { name: 'Constructions', items: ['HOUSE', 'TREE', 'CAMPFIRE', 'IGLOO', 'BARREL', 'AQUARIUM', 'FOUNTAIN'] },
 ];
 
-export const toolById = (id) => (id < 0 ? TOOLS.find((t) => t.id === id) : ELEMENTS[id]);
-export const itemByKey = (key) => (key in E ? ELEMENTS[E[key]] : TOOLS.find((t) => t.key === key));
+const NON_ELEMENTS = [...TOOLS, ...BUILDS];
+export const toolById = (id) => (id < 0 ? NON_ELEMENTS.find((t) => t.id === id) : ELEMENTS[id]);
+export const itemByKey = (key) => (key in E ? ELEMENTS[E[key]] : NON_ELEMENTS.find((t) => t.key === key));
 
 const srgbToLinear = (c) => (c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4));
 const hexToLinear = (hex) => {

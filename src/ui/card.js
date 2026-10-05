@@ -2,7 +2,7 @@ import { h } from './dom.js';
 import { tile, kindOf } from './dock.js';
 import { toolById } from '../elements.js';
 
-const KIND_LABEL = { powder: 'Powder', liquid: 'Liquid', gas: 'Gas', solid: 'Solid', tool: 'Tool' };
+const KIND_LABEL = { powder: 'Powder', liquid: 'Liquid', gas: 'Gas', solid: 'Solid', tool: 'Tool', build: 'Construction' };
 const deg = (t) => `${t} °C`;
 
 // Short, factual chips derived from the element table.

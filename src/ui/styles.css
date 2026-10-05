@@ -266,6 +266,12 @@ input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border-radius: 
 .tile[data-kind=tool]::before {
   background: repeating-linear-gradient(135deg, rgba(0,0,0,0.09) 0 3px, transparent 3px 7px);
 }
+.tile[data-kind=build]::before { /* blueprint grid */
+  background:
+    linear-gradient(rgba(255,255,255,0.16) 1px, transparent 1px) 0 0 / 8px 8px,
+    linear-gradient(90deg, rgba(255,255,255,0.16) 1px, transparent 1px) 0 0 / 8px 8px,
+    linear-gradient(180deg, transparent 55%, rgba(0,0,0,0.18));
+}
 .tile span { position: relative; text-shadow: 0 1px 0 rgba(255, 255, 255, 0.12); }
 .tile[data-dark] span { text-shadow: 0 1px 0 rgba(0, 0, 0, 0.35); }
 .tile:hover { transform: translateY(-2px); }
@@ -308,6 +314,9 @@ input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border-radius: 
 .dock .brush h4 { margin: 0; font-size: 11px; font-weight: 560; color: var(--muted); display: flex; justify-content: space-between; }
 .dock .brush h4 output { color: var(--text); font-variant-numeric: tabular-nums; }
 .dock .brush .row { display: flex; gap: 4px; }
+.dock .brush .build-only { display: none; margin: 2px 0 0; color: var(--faint); font-size: 10.5px; line-height: 1.35; }
+.dock .brush.build .paint-only { display: none; }
+.dock .brush.build .build-only { display: block; }
 .mini-btn {
   flex: 1; display: grid; place-items: center; height: 26px;
   border: 0; border-radius: 6px; background: var(--raise); cursor: pointer; color: var(--muted);
@@ -436,3 +445,17 @@ input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border-radius: 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* ------------------------------------------------------------------ legend for data views */
+.legend-box {
+  position: fixed; right: 14px; top: 88px; z-index: 5;
+  width: 230px; padding: 10px 10px 8px;
+  display: flex; flex-direction: column; gap: 10px;
+  opacity: 0; transform: translateY(-4px); pointer-events: none;
+  transition: opacity 160ms, transform 200ms var(--ease);
+}
+.legend-box.show { opacity: 1; transform: none; }
+.legend-box .legend-row { display: flex; flex-direction: column; gap: 5px; }
+.legend-box .legend-title { display: flex; justify-content: space-between; align-items: center; font-size: 12px; font-weight: 600; }
+.legend-box .legend { height: 8px; margin: 0; border-radius: 4px; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08); }
+.legend-box .legend-labels { padding: 0; color: var(--muted); }

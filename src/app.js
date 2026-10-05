@@ -3,7 +3,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import './ui/styles.css';
 import { Simulation } from './sim.js';
 import { volumeVert, volumeFrag, pickFrag, shadowFrag } from './shaders/render.js';
-import { ELEMENTS, E, toolById } from './elements.js';
+import { ELEMENTS, E, toolById, isBuild } from './elements.js';
 import { buildPreset } from './presets.js';
 import { quadVert } from './shaders/common.js';
 import { createBrushCursor } from './brush.js';
@@ -17,12 +17,13 @@ import { inkFor, luminance } from './ui/dom.js';
 import { logoMark } from './ui/logo.js';
 
 // Optional modules (built in parallel); the app works without them.
-const optional = import.meta.glob(['./views.js', './signs.js'], { eager: true });
+const optional = import.meta.glob(['./views.js', './signs.js', './constructions.js'], { eager: true });
 const VIEWS = optional['./views.js']?.VIEWS ?? [
   { id: 0, hotkey: '1', name: 'Realistic', desc: 'Sunlight, shadows and glowing heat.', legend: null },
   { id: 1, hotkey: '2', name: 'Heat', desc: 'Colour shows temperature.', legend: null },
 ];
 const SignsClass = optional['./signs.js']?.Signs;
+const BuildsClass = optional['./constructions.js']?.Constructions;
 
 const SIZES = { '64': [64, 64, 64], '96': [96, 96, 96], '128': [128, 128, 128], wide: [160, 96, 160] };
 const SIGN_TOOL = -5;
@@ -197,6 +198,7 @@ const signLayer = Object.assign(document.createElement('div'), { className: 'sig
 Object.assign(signLayer.style, { position: 'fixed', inset: '0', pointerEvents: 'none', zIndex: 4 });
 document.body.append(signLayer);
 let signs = null;
+let builds = null; // constructions (optional module)
 
 // ---------------------------------------------------------------- picking & brush
 const pointer = new THREE.Vector2();
@@ -258,7 +260,7 @@ const tmpV = new THREE.Vector3();
 function updateBrush() {
   const g = sim.g;
   brushValid = false;
-  if (settings.tool !== SIGN_TOOL) {
+  if (settings.tool !== SIGN_TOOL && !isBuild(settings.tool)) {
     if (painting) {
       plane.constant = -dragY;
       if (gridRay().intersectPlane(plane, tmpV)) { brushCenter.copy(tmpV); brushValid = true; }
@@ -279,6 +281,7 @@ function updateBrush() {
     shape: settings.shape,
     color: toolById(settings.tool).color,
   });
+  builds?.update({ hover, active: isBuild(settings.tool) && pointerInside && !uiHover });
 }
 
 // ---------------------------------------------------------------- UI
@@ -400,6 +403,7 @@ function setView(id) {
   if (!VIEWS.some((v) => v.id === id)) return;
   settings.view = id;
   toolbar.sync();
+  hud.setLegend(VIEWS.find((v) => v.id === id));
   save();
 }
 
@@ -477,6 +481,11 @@ canvasEl.addEventListener('pointerdown', (e) => {
   if (settings.tool === SIGN_TOOL) {
     if (signs && hover.valid) signs.add({ cell: hover.cell.clone(), normal: faceNormal(hover.face) });
     else if (!signs) hud.toast('Signs are still loading');
+    return;
+  }
+  if (isBuild(settings.tool)) {
+    if (!builds) hud.toast('Constructions are still loading');
+    else if (builds.ready) { sim.snapshot(); toolbar.setUndoEnabled(true); builds.place(); hud.dismissHint(); }
     return;
   }
   dragY = hover.valid ? hoverBrushCenter(tmpV).y : (isTool() ? 0.5 : settings.radius);
@@ -668,6 +677,11 @@ try {
       onChange: () => {},
     });
   }
+  if (BuildsClass) {
+    builds = new BuildsClass({
+      scene, camera, settings, getSim: () => sim, getVolume: () => volume, getScale: () => scale,
+    });
+  }
   build();
   rig.setSpeed(settings.camSpeed);
   selectTool(settings.tool);
@@ -675,7 +689,7 @@ try {
   setPaused(false);
   toolbar.setUndoEnabled(false);
   window.__app = {
-    get sim() { return sim; }, get volume() { return volume; }, get scale() { return scale; }, get signs() { return signs; },
+    get sim() { return sim; }, get volume() { return volume; }, get scale() { return scale; }, get signs() { return signs; }, get builds() { return builds; },
     SUN, scene, settings, camera, controls, loadPreset, selectTool, setView, hover, renderer, rig, renderThumb,
   };
   requestAnimationFrame(frame);

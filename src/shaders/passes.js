@@ -68,9 +68,15 @@ void main() {
 // Brick pass: one texel per 4×4×4 brick. a = "anything here" (lets the
 // raymarcher skip empty space) plus local gas density, rgb = average emitted light (lava, fire,
 // glowing-hot metal) which is then blurred into a coarse light volume.
-// Bricks holding only air get a negative a with flags for what the data views
-// draw in air (warm/cold air, pressure, motion); the realistic view, picking
-// and the shadow map skip them like empty bricks (they test a < 0.5).
+// a also carries flags for what the data views draw in air (1 warmer/colder
+// than ambient, 2 pressure, 4 moving):
+//   0                          empty
+//   1 + gas/64 + flags/65536   holds matter (gas = steam/smoke cells); the
+//                              flags sit below the 1/64 step, so the gas
+//                              fraction the realistic view reads moves < 1e-4
+//   -(1 + flags/8)             only air, but air a data view draws; the
+//                              realistic view, picking and the shadow map
+//                              skip it like an empty brick (they test a < 0.5)
 export const brickFrag = (g) => /* glsl */ `
 ${prelude(g)}
 uniform sampler2D tA;
@@ -94,26 +100,20 @@ void main() {
     if (id == E_FIRE) em += blackbody(a.y) * (0.6 + a.y / 1500.0) * 1.5;
     else if (id != E_EMPTY && KIND[id] != K_GAS) em += incandescence(a.y);
   }
-  if (occ == 0.0) {
-    // Air-only brick: does its air carry pressure or motion? Pressure and air
-    // velocity are smooth, so the brick's 2×2×2 core is a good enough sample
-    // (and keeps this pass within ~20% of its old cost).
-    float pm = 0.0, vm = 0.0;
-    for (int z = 1; z < 3; z++)
-    for (int y = 1; y < 3; y++)
-    for (int x = 1; x < 3; x++) {
-      vec4 b = texelFetch(tB, atlas(o + ivec3(x, y, z)), 0);
-      pm = max(pm, abs(b.w));
-      vm = max(vm, dot(b.xyz, b.xyz));
-    }
-    if (pm > 0.04) flags |= 2;
-    if (vm > 0.05 * 0.05) flags |= 4;
+  // Pressure and air velocity are smooth fields, so the brick's 2×2×2 core is
+  // a good enough sample (a full second pass over B would double this pass).
+  float pm = 0.0, vm = 0.0;
+  for (int z = 1; z < 3; z++)
+  for (int y = 1; y < 3; y++)
+  for (int x = 1; x < 3; x++) {
+    vec4 b = texelFetch(tB, atlas(o + ivec3(x, y, z)), 0);
+    pm = max(pm, abs(b.w));
+    vm = max(vm, dot(b.xyz, b.xyz));
   }
-  // a: 0 = empty brick; 1 + fraction of the brick that is steam/smoke when it
-  // holds matter; -(1 + flags / 8) when it holds only air the data views draw
-  // (flags: 1 warmer/colder than ambient, 2 pressure, 4 moving)
+  if (pm > 0.04) flags |= 2;
+  if (vm > 0.05 * 0.05) flags |= 4;
   float air = flags > 0 ? -1.0 - float(flags) / 8.0 : 0.0;
-  oC = vec4(em / 64.0, occ > 0.0 ? 1.0 + gas / 64.0 : air);
+  oC = vec4(em / 64.0, occ > 0.0 ? 1.0 + gas / 64.0 + float(flags) / 65536.0 : air);
 }
 `;
 

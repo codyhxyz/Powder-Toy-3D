@@ -1,9 +1,9 @@
 import { h, inkFor, luminance } from './dom.js';
 import { ICON } from './icons.js';
-import { PALETTE, itemByKey, toolById, K } from '../elements.js';
+import { PALETTE, itemByKey, toolById, isBuild, K } from '../elements.js';
 
 const KIND_NAME = { [K.POWDER]: 'powder', [K.LIQUID]: 'liquid', [K.GAS]: 'gas', [K.SOLID]: 'solid' };
-export const kindOf = (it) => (it.id < 0 ? 'tool' : KIND_NAME[it.kind]);
+export const kindOf = (it) => (isBuild(it.id) ? 'build' : it.id < 0 ? 'tool' : KIND_NAME[it.kind]);
 
 // A TPT-style element tile: the element's colour with its abbreviation.
 export function tile(it, cls = '') {
@@ -49,10 +49,13 @@ export function createDock({ settings, onSelect, onBrushChange, onHover }) {
   shapeCube.addEventListener('click', () => onBrushChange({ shape: 1 }));
   replace.addEventListener('click', () => onBrushChange({ replace: !settings.replace }));
 
+  // constructions only use the size; the rest of the panel explains how to place them
+  const sizeLabel = h('span', { text: 'Brush size' });
   const brush = h('div.brush', {},
-    h('h4', {}, 'Brush size', sizeOut), size,
-    h('h4', {}, 'Flow', flowOut), flow,
-    h('div.row', {}, shapeSphere, shapeCube, replace));
+    h('h4', {}, sizeLabel, sizeOut), size,
+    h('h4.paint-only', {}, 'Flow', flowOut), h('div.paint-only', {}, flow),
+    h('div.row.paint-only', {}, shapeSphere, shapeCube, replace),
+    h('p.build-only', { text: 'Click a surface to place it. It turns to face the camera.' }));
 
   const search = h('input.search', { type: 'search', placeholder: 'Find  /', 'aria-label': 'Find element', spellcheck: false });
   search.addEventListener('input', () => filter(search.value));
@@ -101,6 +104,9 @@ export function createDock({ settings, onSelect, onBrushChange, onHover }) {
     tabTile.replaceWith(t);
     tabTile = t;
     tabName.textContent = it.name;
+    const build = isBuild(settings.tool);
+    brush.classList.toggle('build', build);
+    sizeLabel.textContent = build ? 'Size' : 'Brush size';
     size.value = settings.radius; sizeOut.textContent = settings.radius; fill(size);
     flow.value = settings.rate; flowOut.textContent = `${Math.round(settings.rate * 100)}%`; fill(flow);
     shapeSphere.classList.toggle('on', settings.shape === 0);

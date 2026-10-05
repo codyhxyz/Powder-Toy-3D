@@ -15,7 +15,10 @@ export function createHud() {
   const toasts = h('div.toasts');
   const hint = h('div.hint.panel', { html: '<b>Drag</b> on the floor to pour. <b>Right-drag</b> to look around. Press <b>?</b> for shortcuts.' });
 
-  document.body.append(stats, readout, pill, toasts, hint);
+  // colour key for data views (heat, pressure, ...); hidden in the realistic view
+  const legendBox = h('div.legend-box.panel', { 'aria-live': 'polite' });
+
+  document.body.append(stats, readout, pill, toasts, hint, legendBox);
 
   let hintTimer = setTimeout(() => hint.classList.add('gone'), 12000);
 
@@ -43,6 +46,14 @@ export function createHud() {
       setTimeout(() => t.remove(), 2300);
     },
     dismissHint() { clearTimeout(hintTimer); hint.classList.add('gone'); },
+    setLegend(view) {
+      const bars = [view?.legend, view?.legend2].filter(Boolean);
+      legendBox.classList.toggle('show', bars.length > 0);
+      legendBox.replaceChildren(...bars.map((l, i) => h('div.legend-row', {},
+        h('div.legend-title', {}, h('span', { text: l.title ?? view.name }), i === 0 ? h('kbd', { text: view.hotkey }) : null),
+        h('div.legend', { style: { background: l.css } }),
+        h('div.legend-labels', {}, (l.labels ?? []).map(([txt]) => h('span', { text: txt }))))));
+    },
   };
 }
 

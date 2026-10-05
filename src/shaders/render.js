@@ -63,30 +63,76 @@ void sunBasis(out vec3 c, out float R, out vec3 u, out vec3 v) {
   v = cross(uSun, u);
 }
 
-vec3 sunShadow(vec3 p) {
+// 1 if the ray from ro toward the sun gets tLim voxels without entering an
+// opaque voxel, else 0 (exact DDA, same traversal as the view rays).
+float sunRayClear(vec3 ro, float tLim) {
+  vec3 rd = safeDir(uSun);
+  vec3 bh = boxHit(ro, rd);
+  float t = max(bh.x, 0.0);
+  if (bh.y <= t) return 1.0;
+  ivec3 istp = ivec3(sign(rd));
+  vec3 tDelta = abs(1.0 / rd);
+  ivec3 cell = clamp(ivec3(floor(ro + rd * (t + 1e-4))), ivec3(0), GRID - 1);
+  vec3 tMax = (vec3(cell) + step(0.0, rd) - ro) / rd;
+  float tEnter = t;
+  ivec3 lastB = ivec3(-1);
+  float occ = 0.0;
+  for (int i = 0; i < ${g.maxSteps}; i++) {
+    if (outside(cell) || tEnter > tLim) break;
+    ivec3 bc = cell / BS;
+    if (bc != lastB) { lastB = bc; occ = brickOcc(bc); }
+    if (occ < 0.5) { skipBrick(bc, ro, rd, istp, cell, tMax, tEnter); continue; }
+    int id = eid(cellA(cell));
+    if (id != E_EMPTY && RCLASS[id] == R_OPAQUE) return 0.0;
+    int ax = argmin3(tMax);
+    tEnter = tMax[ax];
+    cell[ax] += istp[ax];
+    tMax[ax] += tDelta[ax];
+  }
+  return 1.0;
+}
+
+// hp: a point on a voxel face, n: that face's normal.
+vec3 sunShadow(vec3 hp, vec3 n) {
   vec3 c, u, v; float R;
   sunBasis(c, R, u, v);
+  vec3 p = hp + n * 0.002;
   vec3 q = p - c;
   vec2 st = vec2(dot(q, u), dot(q, v)) / R * 0.5 + 0.5;
   float d = R - dot(q, uSun);
+  // Depth bias. A PCF tap one texel (T voxels) away sees the receiver's own face
+  // up to T*(|n.u|+|n.v|)/(n.s) closer, and at the foot of a sun-facing wall it
+  // sees that wall up to ~0.6 closer: hence >= 0.8. It must stay well below
+  // 1/uSun.y (1.23), the depth gap to the top of a 1-voxel step.
+  float T = 2.0 * R / float(uShadowRes);
+  float bias = max(0.8, T * (abs(dot(n, u)) + abs(dot(n, v))) / max(dot(n, uSun), 0.25) + 0.1);
   vec2 f = st * float(uShadowRes) - 0.5;
   ivec2 i0 = ivec2(floor(f));
   vec2 w = f - vec2(i0);
-  vec3 acc = vec3(0.0);
+  vec3 acc = vec3(0.0), tr = vec3(0.0);
+  float nLit = 0.0, dMin = 1e9;
   for (int k = 0; k < 4; k++) {
     ivec2 o = ivec2(k & 1, k >> 1);
     vec4 sm = texelFetch(tShadow, clamp(i0 + o, ivec2(0), ivec2(uShadowRes - 1)), 0);
-    vec3 lit = d < sm.x + 0.6 ? vec3(1.0) : vec3(0.0);
+    float lit = d < sm.x + bias ? 1.0 : 0.0;
+    vec3 att = vec3(1.0);
     int tid = int(sm.w / 1000.0);
     if (tid > 0 && d > sm.y) {
       float tau = sm.w - float(tid) * 1000.0;
       float frac = clamp((d - sm.y) / max(sm.z - sm.y, 1e-3), 0.0, 1.0);
       vec3 tint = SIGMA[tid] / max(dot(SIGMA[tid], vec3(1.0 / 3.0)), 1e-4);
-      lit *= exp(-tint * tau * frac);
+      att = exp(-tint * tau * frac);
     }
     float wk = (o.x == 1 ? w.x : 1.0 - w.x) * (o.y == 1 ? w.y : 1.0 - w.y);
-    acc += lit * wk;
+    acc += lit * att * wk;
+    tr += att * wk;
+    nLit += lit;
+    dMin = min(dMin, sm.x);
   }
+  // The taps disagree, so p is within a texel (~0.44 voxels at 128^3) of a shadow
+  // edge, where the map can only blur. Settle it with an exact ray, traced only
+  // as far as the occluders those taps saw.
+  if (nLit > 0.0 && nLit < 4.0) return tr * sunRayClear(p, d - dMin + 1.5);
   return acc;
 }
 
@@ -138,12 +184,18 @@ const xrayMu = () => `const float XRAY_MU[NE] = float[NE](${ELEMENTS.map((e) => 
 
 export const volumeFrag = (g) => {
   // DDA shared by the data views. `body` runs for every voxel the ray visits
-  // inside a brick worth marching, with cell, a (state A), id, n (entry face
-  // normal), hp (entry point), seg, tEnter, tExit, occ and prevId in scope; it
-  // may `break` (after setting trans/tHit). `air` = the air-brick flag bits
-  // this view draws (1 warm/cold air, 2 pressure, 4 motion). `floor` is an
-  // expression for the floor colour at hp.
-  const march = (name, air, body, floor) => /* glsl */ `
+  // inside a brick holding matter, with cell, a (state A), id, n (entry face
+  // normal), hp (entry point), seg, tEnter, tExit, occ, prevId and airOn (the
+  // brick's air has something this view draws) in scope; it may `break`
+  // (after setting trans/tHit). Bricks holding only air are integrated in one
+  // go by `hooks.airBrick` (chord tB0..tB1 through brick bc) instead of voxel
+  // by voxel, which is what keeps big clouds cheap. `air` = the brick flag
+  // bits this view draws in air (1 warm/cold air, 2 pressure, 4 motion).
+  // hooks.decl: declarations; hooks.onBrick: runs on entering each brick;
+  // hooks.flush: composites anything deferred that the ray has now passed.
+  const march = (name, air, body, floor, hooks = {}) => {
+    const { decl = '', onBrick = '', airBrick = '', flush = '' } = hooks;
+    return /* glsl */ `
 void ${name}(vec3 ro, vec3 rd, float t0, int ax, inout vec3 col, inout float trans, inout float tHit) {
   ivec3 istp = ivec3(sign(rd));
   vec3 tDelta = abs(1.0 / rd);
@@ -153,12 +205,31 @@ void ${name}(vec3 ro, vec3 rd, float t0, int ax, inout vec3 col, inout float tra
   int prevId = E_EMPTY;
   ivec3 lastB = ivec3(-1);
   float occ = 0.0;
-  bool live = false;
+  bool live = false, airOn = false;
+${decl}
   for (int i = 0; i < ${g.maxSteps}; i++) {
     if (outside(cell)) break;
     ivec3 bc = cell / BS;
-    if (bc != lastB) { lastB = bc; occ = brickOcc(bc); live = occ > 0.5 || (airFlags(occ) & ${air}) != 0; }
+    if (bc != lastB) {
+      lastB = bc;
+      occ = brickOcc(bc);
+      airOn = (brickFlags(occ) & ${air}) != 0;
+      live = occ > 0.5 || airOn;
+${onBrick}
+    }
     if (!live) { ax = skipBrick(bc, ro, rd, istp, cell, tMax, tEnter); prevId = E_EMPTY; continue; }
+    if (occ < -0.5) {
+      // only air: integrate the whole chord through the brick, then jump past it
+${flush}
+      float tB0 = tEnter;
+      ax = skipBrick(bc, ro, rd, istp, cell, tMax, tEnter);
+      float tB1 = tEnter;
+${airBrick}
+      prevId = E_EMPTY;
+      if (tHit < 0.0 && trans < 0.5) tHit = tB0;
+      if (trans < 0.01) break;
+      continue;
+    }
     float tExit = min(tMax.x, min(tMax.y, tMax.z));
     float seg = tExit - tEnter;
     vec4 a = cellA(cell);
@@ -166,6 +237,7 @@ void ${name}(vec3 ro, vec3 rd, float t0, int ax, inout vec3 col, inout float tra
     vec3 n = vec3(0.0);
     n[ax] = -float(istp[ax]);
     vec3 hp = ro + rd * tEnter;
+${flush}
 ${body}
     if (tHit < 0.0 && trans < 0.5) tHit = tEnter;
     if (trans < 0.01) break;
@@ -175,6 +247,7 @@ ${body}
     cell[ax] += istp[ax];
     tMax[ax] += tDelta[ax];
   }
+${flush}
   if (trans >= 0.01 && cell.y < 0 && rd.y < 0.0) {
     float tf = -ro.y / rd.y;
     vec3 hp = ro + rd * tf;
@@ -184,6 +257,7 @@ ${body}
   }
 }
 `;
+  };
 
   // An opaque surface ends the ray.
   const solidHit = (c) => `
@@ -291,7 +365,7 @@ vec3 shadeOpaque(ivec3 cell, int id, vec4 a, vec3 hp, vec3 n, vec3 rd) {
   }
   if (id == E_PLANT) alb *= 0.8 + 0.4 * fract(seed * 7.3);
   float ndl = max(dot(n, uSun), 0.0);
-  vec3 sh = (uShadows && ndl > 0.0) ? sunShadow(hp + n * 0.5) : vec3(1.0);
+  vec3 sh = (uShadows && ndl > 0.0) ? sunShadow(hp, n) : vec3(1.0);
   float ao = faceAO(cell, ivec3(n), hp);
   vec3 sky = mix(vec3(0.07, 0.065, 0.06), vec3(0.32, 0.38, 0.5), n.y * 0.5 + 0.5);
   vec3 local = sampleLight(hp + n * 0.75) * uLightGain;
@@ -311,7 +385,7 @@ vec3 shadeFloor(vec3 hp, vec3 rd) {
   vec3 alb = mix(vec3(0.075, 0.078, 0.085), vec3(0.14, 0.15, 0.17), line);
   vec3 n = vec3(0.0, 1.0, 0.0);
   float ndl = max(uSun.y, 0.0);
-  vec3 sh = uShadows ? sunShadow(hp + n * 0.5) : vec3(1.0);
+  vec3 sh = uShadows ? sunShadow(hp, n) : vec3(1.0);
   float ao = faceAO(ivec3(floor(hp.x), -1, floor(hp.z)), ivec3(0, 1, 0), hp);
   vec3 local = sampleLight(vec3(hp.x, 0.5, hp.z)) * uLightGain;
   return alb * (SUN_COL * ndl * sh + vec3(0.3, 0.35, 0.45) * ao + local * (0.35 + 0.65 * ao));
@@ -347,9 +421,12 @@ ${colormapGLSL('flowDir', COLORMAPS.flowDir)}
 ${colormapGLSL('flowSpeed', COLORMAPS.flowSpeed)}
 ${xrayMu()}
 
-// Bricks holding only air carry flags (see brickFrag) saying what the data
-// views would draw there: 1 = warmer/colder than ambient, 2 = pressure, 4 = moving.
-int airFlags(float occ) { return occ < -0.5 ? int((-occ - 1.0) * 8.0 + 0.5) : 0; }
+// Bricks carry flags (see brickFrag) saying what the data views would draw in
+// their air: 1 = warmer/colder than ambient, 2 = pressure, 4 = moving.
+int brickFlags(float occ) {
+  if (occ > 0.5) return int(fract((occ - 1.0) * 64.0) * 1024.0 + 0.5);
+  return occ < -0.5 ? int((-occ - 1.0) * 8.0 + 0.5) : 0;
+}
 
 float clay(ivec3 cell, vec3 hp, vec3 n) {
   float ndl = max(dot(n, uSun), 0.0);
@@ -369,6 +446,16 @@ vec3 dataFloor(vec3 hp, vec3 lo, vec3 hi) {
 vec3 neutral(int id) { return vec3(0.05 + 0.2 * sqrt(luma(COLOR[id]))); }
 
 // ---- heat ----
+// Air glows faintly where it is warmer or colder than the room.
+void heatAir(float T, float ds, inout vec3 col, inout float trans) {
+  float d = abs(T - AMBIENT);
+  if (d <= 3.0) return;
+  float s = clamp(log2(d * (1.0 / 3.0)) * 0.125, 0.0, 1.0);   // 3 °C -> 0, 770 °C -> 1
+  float e = 0.045 * s * s * ds;
+  col += trans * heatColor(T) * e;
+  trans *= exp(-0.5 * e);
+}
+
 ${march('marchHeat', 1, /* glsl */ `
     if (id != E_EMPTY) {
       float T = a.y;
@@ -389,15 +476,17 @@ ${march('marchHeat', 1, /* glsl */ `
       } else {${solidHit('heatColor(T) * mix(1.0, clay(cell, hp, n), 0.7)')}
       }
     } else {
-      // air glows faintly where it is warmer or colder than the room
-      float d = abs(a.y - AMBIENT);
-      if (d > 3.0) {
-        float s = clamp(log2(d * (1.0 / 3.0)) * 0.125, 0.0, 1.0);   // 3 °C -> 0, 770 °C -> 1
-        float e = 0.045 * s * s * seg;
-        col += trans * heatColor(a.y) * e;
-        trans *= exp(-0.5 * e);
-      }
-    }`, 'dataFloor(hp, heatColor(AMBIENT) * 0.3, heatColor(AMBIENT) * 0.6)')}
+      heatAir(a.y, seg, col, trans);
+    }`, 'dataFloor(hp, heatColor(AMBIENT) * 0.3, heatColor(AMBIENT) * 0.6)', {
+  airBrick: /* glsl */ `
+      int ns = clamp(int(ceil(tB1 - tB0)), 1, 7);
+      float ds = (tB1 - tB0) / float(ns);
+      for (int j = 0; j < 7; j++) {
+        if (j >= ns) break;
+        vec3 p = ro + rd * (tB0 + (float(j) + 0.5) * ds);
+        heatAir(cellA(clamp(ivec3(floor(p)), ivec3(0), GRID - 1)).y, ds, col, trans);
+      }`,
+})}
 
 // ---- pressure ----
 // Pressure is a smooth field, so the cloud samples it trilinearly at the
@@ -416,18 +505,18 @@ float pressureAt(vec3 p) {
   return s;
 }
 
+// The pressure field as a cloud, denser the stronger it is.
+void pressureCloud(float P, float ds, inout vec3 col, inout float trans) {
+  float s = abs(pressurePos(P) - 0.5) * 2.0;   // 0 ambient, .25 at |P|=0.1, .5 at 1, 1 at 100
+  if (s <= 0.15) return;
+  float al = 1.0 - exp(-0.3 * s * s * sqrt(s) * ds);
+  col += trans * al * pressureColor(P);
+  trans *= 1.0 - al;
+}
+
 ${march('marchPressure', 2, /* glsl */ `
     int k = KIND[id];
-    if (k != K_SOLID) {
-      // the pressure field as a cloud, denser the stronger it is
-      float P = pressureAt(ro + rd * (tEnter + 0.5 * seg));
-      float s = abs(pressurePos(P) - 0.5) * 2.0;   // 0 ambient, .25 at |P|=0.1, .5 at 1, 1 at 100
-      if (s > 0.15) {
-        float al = 1.0 - exp(-0.3 * s * s * sqrt(s) * seg);
-        col += trans * al * pressureColor(P);
-        trans *= 1.0 - al;
-      }
-    }
+    if (airOn && k != K_SOLID) pressureCloud(pressureAt(ro + rd * (tEnter + 0.5 * seg)), seg, col, trans);
     if (id != E_EMPTY) {
       if (k == K_GAS) {
         // smoke/steam/fire stay visible as faint grey wisps
@@ -450,7 +539,15 @@ ${march('marchPressure', 2, /* glsl */ `
         float sm = abs(pressurePos(Pm) - 0.5) * 2.0;
         vec3 c = mix(neutral(id), pressureColor(Pm), smoothstep(0.2, 0.6, sm));${solidHit('c * clay(cell, hp, n)')}
       }
-    }`, 'dataFloor(hp, vec3(0.012), vec3(0.03))')}
+    }`, 'dataFloor(hp, vec3(0.012), vec3(0.03))', {
+  airBrick: /* glsl */ `
+      int ns = clamp(int(ceil((tB1 - tB0) * 0.8)), 1, 6);
+      float ds = (tB1 - tB0) / float(ns);
+      for (int j = 0; j < 6; j++) {
+        if (j >= ns) break;
+        pressureCloud(pressureAt(ro + rd * (tB0 + (float(j) + 0.5) * ds)), ds, col, trans);
+      }`,
+})}
 
 // ---- flow ----
 // Can particle a displace b moving down (0), up (1) or sideways (2)? Mirrors
@@ -465,8 +562,12 @@ bool canDisplace(int a, int b, int dir) {
 // The part of a particle's velocity that actually moves it. Liquid under a
 // head keeps a random sideways velocity even in a still pool, and resting
 // grains keep one tick of gravity; components pointing into something the
-// particle can't displace (a wall, the same material, a denser grain) are dropped.
+// particle can't displace (a wall, the same material, a denser grain) are
+// dropped. A liquid's free surface also churns sideways at random as the
+// automaton levels it, so sideways motion only counts for liquid that isn't
+// resting on more of itself (a film spreading, a stream crossing ground).
 vec3 mobileVel(ivec3 c, int id, vec3 v) {
+  if (KIND[id] == K_LIQUID && c.y > 0 && eid(cellA(c - ivec3(0, 1, 0))) == id) v.xz = vec2(0.0);
   vec3 r = vec3(0.0);
   for (int k = 0; k < 3; k++) {
     if (abs(v[k]) < 0.01) continue;
@@ -477,24 +578,6 @@ vec3 mobileVel(ivec3 c, int id, vec3 v) {
   }
   return r;
 }
-// Does the motion agree with the same material around it? A liquid's surface
-// churns at random (that's how the automaton levels it), so a cell hopping
-// sideways in a still pool is noise, while a stream, a slide or a falling
-// clump moves together. ~1 = moving with its neighbours (or on its own),
-// ~0 = random churn.
-const ivec3 DIR6[6] = ivec3[6](ivec3(1, 0, 0), ivec3(-1, 0, 0), ivec3(0, 1, 0), ivec3(0, -1, 0), ivec3(0, 0, 1), ivec3(0, 0, -1));
-float coherence(ivec3 c, int id, vec3 v) {
-  vec3 d = v / max(length(v), 1e-6);
-  float num = 0.12, den = 0.12;
-  for (int k = 0; k < 6; k++) {
-    ivec3 q = c + DIR6[k];
-    if (outside(q) || eid(cellA(q)) != id) continue;
-    vec3 vn = texelFetch(tB, atlas(q), 0).xyz;
-    num += dot(d, vn);
-    den += length(vn);
-  }
-  return num / den;
-}
 // Colour for a velocity: hue from its direction (falling blue, sideways
 // green, rising amber), mixed in from 'still' by w = speed position.
 vec3 flowTint(vec3 still, vec3 v, float w) {
@@ -502,29 +585,40 @@ vec3 flowTint(vec3 still, vec3 v, float w) {
   return toLinear(mix(toSrgb(still), hue, w));
 }
 
+// Moving air is drawn as one stroke per brick (4³ cells): through a jittered
+// point near the brick's centre, along the air's velocity there, longer when
+// faster and brighter toward its head, so together they read as a 3D field
+// of arrows. Returns the stroke's coverage of this ray (0..1), the velocity
+// v sampled for the brick (zero where there is matter) and where along the
+// ray the stroke is (gt).
+float brickStroke(ivec3 bc, vec3 ro, vec3 rd, float ta, float tb, bool check, out vec3 v, out float gt) {
+  uint hs = pcg(uint(bc.x) | uint(bc.y) << 10 | uint(bc.z) << 20);
+  vec3 cc = vec3(bc * BS) + 2.0 + (vec3(uvec3(hs, hs >> 8, hs >> 16) & 255u) * (1.0 / 255.0) - 0.5);
+  ivec3 c = ivec3(floor(cc));
+  v = vec3(0.0);
+  gt = ta;
+  if (check && eid(cellA(c)) != E_EMPTY) return 0.0;
+  v = texelFetch(tB, atlas(c), 0).xyz;
+  float sp = length(v);
+  if (sp < 0.06) return 0.0;
+  float w = flowSpeedPos(sp);
+  float h = 0.5 + 0.9 * w;                       // half-length, cells
+  vec3 d = v / sp, w0 = ro - cc;
+  float b = dot(rd, d), dr = dot(rd, w0), dw = dot(d, w0);
+  float sl = clamp((dw - b * dr) / max(1.0 - b * b, 1e-4), -h, h);
+  gt = clamp(dot(cc + d * sl - ro, rd), ta, tb);
+  float dist = length(ro + rd * gt - cc - d * sl);
+  float r = max(0.09, gt * gPix * 0.8);
+  return smoothstep(r * 1.6, r * 0.4, dist) * min(1.0, 0.09 / r) * (0.2 + 0.8 * (sl / h * 0.5 + 0.5))
+       * smoothstep(0.06, 0.2, sp);
+}
+
 ${march('marchFlow', 4, /* glsl */ `
     if (id == E_EMPTY) {
-      vec3 v = texelFetch(tB, atlas(cell), 0).xyz;
-      float sp = length(v);
-      if (sp > 0.06) {
-        // moving air: a faint haze plus a short stroke through the cell
-        // along the motion, brighter at its head, so the air reads as streaks
-        float w = flowSpeedPos(sp);
-        vec3 d = v / sp;
-        uint hs = seed3(cell, 0u, 0x9eu);
-        vec3 jit = vec3(uvec3(hs, hs >> 8, hs >> 16) & 255u) * (1.0 / 255.0) - 0.5;
-        vec3 cc = vec3(cell) + 0.5 + jit * 0.3;
-        float h = 0.2 + 0.25 * w;
-        vec3 w0 = ro - cc;
-        float b = dot(rd, d), dr = dot(rd, w0), dw = dot(d, w0);
-        float sl = clamp((dw - b * dr) / max(1.0 - b * b, 1e-4), -h, h);
-        float tt = clamp(dot(cc + d * sl - ro, rd), tEnter, tExit);
-        float dist = length(ro + rd * tt - cc - d * sl);
-        float r = max(0.06, tt * gPix * 0.75);
-        float stroke = smoothstep(r * 1.6, r * 0.4, dist) * min(1.0, 0.06 / r) * (0.25 + 0.75 * (sl / h * 0.5 + 0.5));
-        float wa = w * smoothstep(0.06, 0.2, sp);
-        float al = wa * (0.006 * seg + 0.45 * stroke);
-        col += trans * al * flowTint(vec3(0.0), v, 1.0);
+      // moving air: faint haze from the brick's sampled velocity
+      if (hazeW > 0.0) {
+        float al = hazeW * 0.006 * seg;
+        col += trans * al * hazeCol;
         trans *= 1.0 - 0.6 * al;
       }
     } else if (KIND[id] == K_GAS) {
@@ -542,9 +636,41 @@ ${march('marchFlow', 4, /* glsl */ `
     } else {
       vec3 v = mobileVel(cell, id, texelFetch(tB, atlas(cell), 0).xyz);
       float w = flowSpeedPos(length(v));
-      if (w > 0.0) w *= smoothstep(0.15, 0.6, coherence(cell, id, v));
       vec3 still = mix(vec3(luma(COLOR[id])), COLOR[id], 0.35) * 0.35;${solidHit('flowTint(still, v, w) * clay(cell, hp, n)')}
-    }`, 'dataFloor(hp, vec3(0.01), vec3(0.028))')}
+    }`, 'dataFloor(hp, vec3(0.01), vec3(0.028))', {
+  decl: /* glsl */ `
+  float hazeW = 0.0, gT = 0.0, gAl = 0.0;
+  vec3 hazeCol = vec3(0.0);`,
+  onBrick: /* glsl */ `
+      hazeW = 0.0;
+      if (occ > 0.5 && airOn) {
+        // brick with matter: its stroke is composited once the ray gets
+        // past it, and dropped if a surface hides it first
+        vec3 bmin = vec3(bc * BS);
+        vec3 tb = (mix(bmin, bmin + float(BS), step(0.0, rd)) - ro) / rd;
+        vec3 v;
+        gAl = 0.8 * brickStroke(bc, ro, rd, tEnter, min(tb.x, min(tb.y, tb.z)), true, v, gT);
+        float sp = length(v);
+        hazeW = flowSpeedPos(sp) * smoothstep(0.06, 0.2, sp);
+        hazeCol = flowTint(vec3(0.0), v, 1.0);
+      }`,
+  flush: /* glsl */ `
+    if (gAl > 0.0 && tEnter >= gT) {
+      col += trans * gAl * hazeCol;
+      trans *= 1.0 - 0.6 * gAl;
+      gAl = 0.0;
+    }`,
+  airBrick: /* glsl */ `
+      vec3 v;
+      float gt;
+      float cov = brickStroke(bc, ro, rd, tB0, tB1, false, v, gt);
+      float sp = length(v);
+      if (sp > 0.06) {
+        float al = flowSpeedPos(sp) * smoothstep(0.06, 0.2, sp) * 0.006 * (tB1 - tB0) + 0.8 * cov;
+        col += trans * al * flowTint(vec3(0.0), v, 1.0);
+        trans *= 1.0 - 0.6 * al;
+      }`,
+})}
 
 // ---- X-ray ----
 // Element colour lifted toward a common lightness so dark materials still show.
@@ -555,20 +681,24 @@ vec3 xrayColor(int id) {
 }
 
 ${march('marchXray', 0, /* glsl */ `
+    // nearer things a little brighter, so depth reads without lighting
+    float cue = 1.0 / (1.0 + 0.004 * (tEnter - t0));
     if (id != prevId) {
-      // a boundary between two materials (or material and air) shows as a
-      // faint sheet, brighter at grazing angles, so shapes and the borders
-      // between materials read
+      // A boundary shows as a thin sheet. Borders between two materials (the
+      // structure inside piles and containers) are emphasised; outer surfaces
+      // stay faint, since a thin shell seen edge-on already outlines itself
+      // (and a grazing ray crosses a voxel wall's faces many times).
+      bool inner = id != E_EMPTY && prevId != E_EMPTY;
       int m = id != E_EMPTY ? id : prevId;
-      float rim = 1.0 - abs(dot(n, rd));
-      float sheet = 0.16 * (0.35 + 0.65 * rim * rim) * clamp(XRAY_MU[m] * 16.0, 0.15, 1.0);
-      col += trans * sheet * xrayColor(m);
+      float sheet = inner ? 0.2 * (0.5 + 0.5 * (1.0 - abs(dot(n, rd)))) : 0.05;
+      sheet *= clamp(XRAY_MU[m] * 16.0, 0.2, 1.0);
+      col += trans * sheet * xrayColor(m) * 1.6 * cue;
       trans *= 1.0 - 0.5 * sheet;
     }
     if (id != E_EMPTY) {
-      // emission > absorption, so overlapping structures add up like a radiograph
+      // emission a little above absorption, so overlaps add up like a radiograph
       float al = 1.0 - exp(-XRAY_MU[id] * seg);
-      col += trans * al * xrayColor(id) * 1.5;
+      col += trans * al * xrayColor(id) * 1.15 * cue;
       trans *= 1.0 - al;
     }`, 'dataFloor(hp, vec3(0.006), vec3(0.022))')}
 
@@ -583,7 +713,7 @@ void dataView(vec3 ro, vec3 rd, float t0, vec3 bh) {
   float alpha = 1.0 - trans;
   if (alpha < 0.002) discard;
   vec3 c = col / alpha;
-  if (CUR_VIEW == 4) c = 1.0 - exp(-1.4 * c);   // X-ray: soft clip, overlaps add up
+  if (CUR_VIEW == 4) c = 1.0 - exp(-1.25 * c);  // X-ray: soft clip, overlaps add up
   gl_FragColor = vec4(toSrgb(clamp(c, 0.0, 1.0)) * alpha, alpha);
   // depth: where the ray became mostly opaque, else where it leaves the box
   float td = tHit >= 0.0 ? tHit : bh.y;
@@ -650,7 +780,7 @@ void main() {
           bool fromAir = prevId == E_EMPTY || KIND[prevId] == K_GAS;
           float F = (f0 + (1.0 - f0) * pow(1.0 - cosi, 5.0)) * (fromAir ? 1.0 : 0.3);
           vec3 r = reflect(rd, sn);
-          mediumLight = uShadows ? sunShadow(hp + n * 0.5) : vec3(1.0);
+          mediumLight = uShadows ? sunShadow(hp, n) : vec3(1.0);
           vec3 refl = skyColor(r) + SUN_COL * mediumLight * pow(max(dot(r, uSun), 0.0), 400.0) * 6.0;
           col += trans * F * refl;
           trans *= 1.0 - F;

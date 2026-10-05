@@ -50,8 +50,21 @@ The dock groups elements like a periodic-table strip, each tile in the element's
 - **Gases:** WTRV (steam), SMKE, FIRE
 - **Solids:** WALL, METL, GLAS, ICE, WOOD, PLNT, CLNE
 - **Tools:** HEAT, COOL, ERAS, PRES (pressure), SIGN
+- **Constructions:** HOUS (cottage, log cabin, brick, greenhouse), TREE (oak, pine, birch, palm, willow, dead), CAMP, IGLO, BRRL (oil drum, powder keg), AQUA, FNTN
 
 All element properties live in one table (`src/elements.js`) that is baked into the shaders as GLSL constants.
+
+## Constructions
+
+Constructions are whole structures placed with one click (`src/constructions.js`). Unlike TPT's stamps they are generators:
+each one is built from a seed, a size (the brush size) and a variant, so every tree is different. With *Shuffle* selected a
+random variant is picked per placement, and *New seed* rolls a different one. A ghost of the exact model follows the cursor
+and turns its front (the door) toward the camera.
+
+They are made of ordinary elements and behave like them: wooden walls burn, the stone chimney draws smoke up from the fireplace,
+an igloo melts, a powder keg goes off. Placing one uploads it as a small 3D texture that a single GPU pass (`src/shaders/stamp.js`)
+writes into the grid. Solid bases grow a footing straight down to the first thing that can bear weight (up to 32 cells), so a house
+on a ledge gets a plinth and one in a lake stands on stilts.
 
 ## How the physics works
 
@@ -94,13 +107,34 @@ Density decides whether it can displace its neighbour, so sand sinks through wat
 `src/shaders/render.js` raymarches the voxel grid directly with an Amanatides–Woo DDA:
 - A 4×4×4 brick occupancy map skips empty space.
 - A per-frame voxel shadow map is traced from the sun. It records the opaque depth plus optical depth through liquids, glass and gas,
-  so water casts tinted shadows and smoke casts soft ones.
+  so water casts tinted shadows and smoke casts soft ones. Where the map's filter taps disagree (within a texel of a shadow edge),
+  an exact DDA ray toward the sun settles it. Edges stay crisp and match per-pixel ray-traced shadows to within 0.3%,
+  for a fraction of the cost.
 - Opaque faces get smooth per-corner AO.
 - Liquids and glass get Beer–Lambert absorption, a Fresnel reflection with a smoothed surface normal, and in-scattering.
 - Steam and smoke are participating media, rendered as soft blobs whose opacity scales with local gas density, so plumes read as clouds.
 - Anything above ~500 °C glows with blackbody incandescence (hot metal turns red, lava yellow-white).
   That glow is blurred into a coarse light volume that lights the surroundings.
 - The raymarcher writes depth, so three.js lines and the brush composite correctly.
+
+### Views
+
+Number keys switch between five views (the views menu shows a live thumbnail of each). Colormaps live in `src/views.js` and are baked
+into the shader, so the on-screen legend always matches.
+
+| Key | View | Shows |
+|---|---|---|
+| `1` | Realistic | sunlight, shadows, see-through water, glowing hot things |
+| `2` | Heat | temperature, from blue below freezing through grey at room temperature to white-hot; warm air glows |
+| `3` | Pressure | the air pressure field as a cloud, and where blasts hit surfaces |
+| `4` | Flow | what's moving and which way: falling, sliding, rising, plus moving air |
+| `5` | X-ray | everything see-through in its own colour, denser materials more solid |
+
+## Signs
+
+Pick the SIGN tool and click any surface to pin a label (Enter to save, Escape to cancel, click a sign to edit, × to delete).
+Signs can show live values from the cell they're attached to: `{t}` temperature, `{p}` pressure, `{e}` element.
+A small GPU probe pass reads those values and dims signs that are hidden behind voxels.
 
 ## Known simplifications
 
