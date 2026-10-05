@@ -40,7 +40,9 @@ function describe(err, code) {
   const m = /<anonymous>:(\d+):(\d+)/.exec(err?.stack ?? '');
   if (m) return `${msg} (line ${Number(m[1]) - HEADER_LINES}, column ${m[2]})`;
   const line = err instanceof SyntaxError && typeof code === 'string' ? syntaxLine(code, msg) : null;
-  return line ? `${msg} (line ${line})` : msg;
+  // a common mistake: wrapping the whole construction in `function () { ... }`
+  const hint = /function name/i.test(msg) ? ' Write the construction as plain statements (a function body), not as a function definition.' : '';
+  return `${line ? `${msg} (line ${line})` : msg}${hint}`;
 }
 
 self.onmessage = (e) => {

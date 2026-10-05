@@ -5,6 +5,7 @@ import { MAX_CELLS, MAX_FOOT } from '../constructions/runtime.js';
 // element table and the runtime limits, so it can't drift from what the sim
 // does, and it is byte-stable between runs so providers can cache it.
 
+export const MAX_NAME_CHARS = 40; // construction names, from models and players
 const WATER_DENSITY = ELEMENTS[E.WATER].dens;
 const DEFAULT_MAX_SPAN = 128; // the default grid is 128³
 const KIND = { [K.SOLID]: 'solid', [K.POWDER]: 'powder', [K.LIQUID]: 'liquid', [K.GAS]: 'gas' };

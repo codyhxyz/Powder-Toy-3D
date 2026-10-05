@@ -6,7 +6,7 @@
 //   npm run construct -- --builtin TREE:oak --png oak.png
 //   npm run construct -- --builtins          lint every built-in variant
 //   npm run construct -- --prompt            print the AI system prompt
-//   npm run construct -- --selftest          run the agent loop against a scripted provider
+//   npm run construct -- --selftest          run the agent loop against the AI SDK's mock model
 //
 // Construction code is the body of a function that uses the runtime API as
 // globals (see docs/constructions.md). Exit code 1 means lint found errors.
@@ -15,7 +15,6 @@ import fs from 'node:fs';
 import { lint, formatReport } from '../src/constructions/lint.js';
 import { buildSystemPrompt } from '../src/ai/prompt.js';
 import { runAgent } from '../src/ai/agent.js';
-import { scriptedProvider } from '../src/ai/providers.js';
 import { BUILDS } from '../src/elements.js';
 import { DEFAULT_SIZE, DEFAULT_SEED, DEFAULT_MAX_SPAN, BUILT_IN_KEYS, runCode, pngOf, builtinsSource, builtinCells } from './construct-lib.mjs';
 
@@ -29,30 +28,40 @@ const seed = Number(opt('seed', DEFAULT_SEED));
 const maxSpan = Number(opt('max-span', DEFAULT_MAX_SPAN));
 
 
-// The agent loop end to end, with no model: a scripted provider first writes a
-// tank whose one-cell round wall leaks diagonally, then fixes it, then finishes.
+// The agent loop end to end on the AI SDK's mock model, no network: it first
+// writes a tank whose one-cell round wall leaks diagonally, then fixes it, then
+// finishes. Also checks that the preview pictures reach the model.
 async function selftest() {
+  const { MockLanguageModelV4 } = await import('ai/test');
   const tank = (band) => `for (let y = 0; y < 6; y++) for (let z = -6; z <= 6; z++) for (let x = -6; x <= 6; x++) {
   const d = Math.hypot(x, z);
   if (d > 5.3) continue;
   put(x, y, z, y === 0 || d > 5.3 - ${band} ? 'GLASS' : 'WATER');
 }`;
-  const call = (id, name, input) => ({ type: 'tool_call', id, name, input });
-  const provider = scriptedProvider([
-    [{ type: 'text', text: 'A round glass tank.' }, call('a', 'construct_exec', { code: tank(0.8) })],
-    [call('b', 'construct_exec', { code: tank(1.6) })],
-    [call('c', 'finish', { name: 'Round tank', description: 'A sealed glass tank of water.' })],
-  ]);
+  const usage = { inputTokens: { total: 1, noCache: 1, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: 1, text: 1, reasoning: undefined } };
+  const turn = (...content) => ({ content, finishReason: { unified: 'tool-calls', raw: undefined }, usage, warnings: [] });
+  const call = (id, name, input) => ({ type: 'tool-call', toolCallId: id, toolName: name, input: JSON.stringify(input) });
+  const model = new MockLanguageModelV4({
+    doGenerate: [
+      turn({ type: 'text', text: 'A round glass tank.' }, call('a', 'construct_exec', { code: tank(0.8) })),
+      turn(call('b', 'construct_exec', { code: tank(1.6) })),
+      turn(call('c', 'finish', { name: 'Round tank', description: 'A sealed glass tank of water.' })),
+    ],
+  });
   const events = [];
   const result = await runAgent({
-    provider, system: buildSystemPrompt({ examples: builtinsSource() }), request: 'a round fish tank',
+    model, system: buildSystemPrompt({ examples: builtinsSource() }), request: 'a round fish tank',
     exec: async (code) => { const cells = runCode(code); return { cells, report: lint(cells, { maxSpan }) }; },
+    preview: async (cells) => [{ mediaType: 'image/png', data: pngOf(cells).toString('base64') }],
     onEvent: (e) => events.push(e.type === 'report' ? `report:${e.report.ok ? 'clean' : e.report.issues.map((i) => i.code).join('+')}` : e.type),
   });
+  // the second model call must carry the first attempt's report and picture
+  const toolParts = model.doGenerateCalls[1].prompt.filter((m) => m.role === 'tool').flatMap((m) => m.content);
+  const sawImage = JSON.stringify(toolParts).includes('image/png');
   const leakFirst = events.includes('report:leak'), clean = events.includes('report:clean');
   console.log(events.join(' → '));
-  console.log(`finished=${result.finished} name="${result.name}" attempt=${result.attempt} errors=${result.report.issues.filter((i) => i.severity === 'error').length}`);
-  const pass = leakFirst && clean && result.finished && result.report.ok;
+  console.log(`finished=${result.finished} name="${result.name}" attempt=${result.attempt} errors=${result.report.issues.filter((i) => i.severity === 'error').length} picture-sent=${sawImage} calls=${model.doGenerateCalls.length}`);
+  const pass = leakFirst && clean && sawImage && result.finished && result.report.ok && model.doGenerateCalls.length === 3;
   console.log(pass ? 'selftest passed' : 'selftest FAILED');
   return pass;
 }

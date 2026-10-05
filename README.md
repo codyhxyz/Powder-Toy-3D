@@ -80,8 +80,11 @@ Every construction is a small program written against one API (`src/construction
 - **AI tile:** describe a construction and *Generate* asks a model to write it. The model's code runs in a sandboxed worker
   (no network, 5 s limit) and is checked by a physics lint (`src/constructions/lint.js`: liquid that can leak through
   diagonal gaps, unsupported powder, clones with no source). The report and two pictures go back to the model until the build
-  is clean. Model providers are plug-ins (`src/ai/providers.js`); until one is registered, *Copy prompt* gives a prompt for
-  any chatbot and *Paste code* runs its reply. Your constructions are saved, and export and import as `.json`.
+  is clean. Models come through the Vercel AI SDK with your own key (`src/ai/providers.js`): OpenRouter (with *Sign in with
+  OpenRouter*), Anthropic, OpenAI, Google, or a local model through Ollama, LM Studio or any OpenAI-compatible server. Keys
+  stay in your browser. Without a key, *Copy prompt* gives a prompt for any chatbot and *Paste code* runs its reply.
+  Subscriptions (Claude, ChatGPT, Gemini) work through the MCP server below. Your constructions are saved, and export and
+  import as `.json`.
 - **Coding agents:** `npm run construct -- my-thing.js --png out.png` runs code headlessly and prints the lint report;
   `npm run construct -- --builtins` lints every built-in; `npm run mcp:construct` serves the same tools over MCP.
   See [docs/constructions.md](docs/constructions.md).
