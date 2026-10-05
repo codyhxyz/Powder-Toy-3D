@@ -8,7 +8,7 @@ uniform sampler2D tA;
 uniform sampler2D tB;    // velocity xyz (cells/step), air pressure
 uniform sampler2D tBrick;
 uniform sampler2D tLight;
-uniform sampler2D tFS;   // smooth-surface fields (liquid, molten, granular, organic); 0.5 = surface
+uniform sampler2D tFS;   // smooth-surface fields (liquid, molten, granular, organic); SURF_ISO = surface
 uniform sampler2D tFM;   // media fields (smoke, steam, fire, heat)
 uniform sampler2D tFT;   // thin-feature mask (x: liquid), see shaders/fields.js
 uniform int uView;
@@ -43,6 +43,10 @@ bool brickOpaque(int f) { return brickHas(f, BRICK_OPAQUE); }   // crisp or opaq
 bool brickThin(int f) { return brickHas(f, BRICK_THIN); }       // thin liquid: read cubic
 bool brickMixed(int f) { return brickHas(f, BRICK_MIXED); }     // more than one liquid
 
+// A ray entering the box starts its DDA in the cell this far (cells) past the
+// entry point, so the cell it starts in is the one inside.
+#define DDA_START_NUDGE 1e-4
+
 vec3 safeDir(vec3 rd) {
   return vec3(abs(rd.x) < 1e-6 ? 1e-6 : rd.x, abs(rd.y) < 1e-6 ? 1e-6 : rd.y, abs(rd.z) < 1e-6 ? 1e-6 : rd.z);
 }
@@ -70,6 +74,9 @@ int skipBrick(ivec3 bc, vec3 ro, vec3 rd, ivec3 istp, inout ivec3 cell, inout ve
 }
 
 // ---- continuous fields ----
+// A smooth surface is where its field crosses this level (shaders/fields.js
+// builds them so: inside > SURF_ISO > outside).
+#define SURF_ISO 0.5
 // The fields live in the same Y-slice atlas as the state. Hardware bilinear
 // filtering works inside a slice (clamped to the tile), and one lerp between
 // two slices completes the trilinear sample: 2 taps.
@@ -148,12 +155,17 @@ float surfChannel(vec3 p, int ch) {
   return ch == CH_LIQUID ? liquidCubic(p, v) : v;
 }
 
-// Root of φ_ch(t) = 0.5 bracketed by [ta, tb] (fa, fb = φ - 0.5 at the ends,
-// opposite signs). Clamped regula falsi: the field is smooth, so a few steps do.
+// Root of φ_ch(t) = SURF_ISO bracketed by [ta, tb] (fa, fb = φ - SURF_ISO at
+// the ends, opposite signs). Clamped regula falsi: the field is smooth, so a
+// few steps do. Each step's split is kept this far (share of the bracket)
+// from either end, so a lopsided bracket still shrinks from both sides.
+#define SURF_ROOT_STEPS 5
+#define SURF_ROOT_SPLIT_LO 0.15
+#define SURF_ROOT_SPLIT_HI 0.85
 float surfRoot(vec3 ro, vec3 rd, int ch, float ta, float tb, float fa, float fb) {
-  for (int k = 0; k < 5; k++) {
-    float tm = mix(ta, tb, clamp(fa / (fa - fb), 0.15, 0.85));
-    float fm = surfChannel(ro + rd * tm, ch) - 0.5;
+  for (int k = 0; k < SURF_ROOT_STEPS; k++) {
+    float tm = mix(ta, tb, clamp(fa / (fa - fb), SURF_ROOT_SPLIT_LO, SURF_ROOT_SPLIT_HI));
+    float fm = surfChannel(ro + rd * tm, ch) - SURF_ISO;
     if ((fm < 0.0) == (fa < 0.0)) { ta = tm; fa = fm; } else { tb = tm; fb = fm; }
   }
   return mix(ta, tb, clamp(fa / (fa - fb), 0.0, 1.0));
@@ -168,7 +180,7 @@ float surfRoot(vec3 ro, vec3 rd, int ch, float ta, float tb, float fa, float fb)
 // middle sample, pass tm = tb and phiM = phiB.
 float surfCross(vec3 ro, vec3 rd, int ch, bool into, float ta, float tm, float tb,
                 float phiA, float phiM, float phiB) {
-  float a = phiA - 0.5, m = phiM - 0.5, b = phiB - 0.5;
+  float a = phiA - SURF_ISO, m = phiM - SURF_ISO, b = phiB - SURF_ISO;
   if (into ? (a < 0.0 && m >= 0.0) : (a >= 0.0 && m < 0.0)) return surfRoot(ro, rd, ch, ta, tm, a, m);
   if (tm < tb && (into ? (m < 0.0 && b >= 0.0) : (m >= 0.0 && b < 0.0))) return surfRoot(ro, rd, ch, tm, tb, m, b);
   return NO_HIT;
