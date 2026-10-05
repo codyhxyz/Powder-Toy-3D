@@ -50,7 +50,7 @@ int liquidIdAt(vec3 p, int fallback) {
 // (the surface itself doesn't move), breaking up an otherwise perfect mirror
 // of the sky. Fades out before it would alias.
 #define RIPPLE_FREQ 0.3        // cycles per cell, first octave
-#define RIPPLE_SLOPE 0.05      // height-field slope per unit noise gradient
+#define RIPPLE_SLOPE 0.035     // height-field slope per unit noise gradient
 #define RIPPLE_DRIFT 0.6       // noise-space speed, per second
 #define RIPPLE_UP_LO 0.6       // n.y where ripples start ...
 #define RIPPLE_UP_HI 0.9       // ... and reach full strength
@@ -77,14 +77,26 @@ vec3 liquidRipple(vec3 p, vec3 n) {
 // ---- reflections of the scene ----
 // Where a liquid surface reflects a lot (grazing views: Fresnel climbs fast
 // past ~60°), the reflected ray is traced through the grid to the first
-// opaque thing (crisp voxels, opaque smooth surfaces, the floor) and that is
-// shaded like a primary hit; liquids, glass and media along it are skipped.
-// Elsewhere the sky stands in, which is mostly what such a surface shows.
-// Blended over a Fresnel range so the switch doesn't show.
-#define REFL_F_LO 0.03      // Fresnel reflectance where traced reflections start ...
-#define REFL_F_HI 0.08      // ... and take over
-#define REFL_MAX_STEPS 96   // DDA steps (cells or skipped bricks) before falling back to the sky
+// opaque thing (crisp voxels, opaque smooth surfaces, the floor); liquids,
+// glass and media along it are skipped. Elsewhere the sky stands in, which is
+// mostly what such a surface shows. Blended over a Fresnel range so the
+// switch doesn't show.
+#define REFL_F_LO 0.04      // Fresnel reflectance where traced reflections start ...
+#define REFL_F_HI 0.1       // ... and take over
+#define REFL_MAX_STEPS 48   // DDA steps (cells or skipped bricks) before falling back to the sky
 #define REFL_START 0.05     // start offset off the surface, cells
+#define REFL_PROBE 0.5      // how far inside a smooth surface to look for its element, cells
+#define REFL_NORMAL_STEP 0.5   // forward-difference step of a reflected smooth hit's normal, cells
+// What the reflection shows of a hit: the element's albedo under the sun (with
+// the shadow map) and the sky, plus its own glow when hot. Reflections are
+// dimmed by Fresnel and wobbled by ripples, so texture detail, AO and the
+// glow it receives wouldn't show.
+vec3 reflShade(ivec3 c, vec3 p, vec3 n) {
+  vec4 a = outside(c) ? vec4(0.0) : cellA(c);
+  int id = eid(a);
+  vec3 sun = SUN_COL * max(dot(n, uSun), 0.0) * (uShadows ? sunShadow(p + n * REFL_PROBE) : vec3(1.0));
+  return ALBEDO[id] * (sun + skyAmbient(n)) + incandescence(a.y);
+}
 vec3 reflectTrace(vec3 ro, vec3 rd, vec3 sunVis) {
   rd = safeDir(rd);
   ivec3 istp = ivec3(sign(rd));
@@ -101,7 +113,8 @@ vec3 reflectTrace(vec3 ro, vec3 rd, vec3 sunVis) {
     if (outside(cell)) break;
     ivec3 bc = cell / BS;
     if (bc != lastB) { lastB = bc; flags = brickInfo(bc); }
-    if (flags == 0) { ax = skipBrick(bc, ro, rd, istp, cell, tMax, tEnter); stale = true; continue; }
+    // only bricks with something opaque can stop it
+    if (!brickOpaque(flags)) { ax = skipBrick(bc, ro, rd, istp, cell, tMax, tEnter); stale = true; continue; }
     float tExit = min(tMax.x, min(tMax.y, tMax.z));
     vec4 a = cellA(cell);
     int id = eid(a);
@@ -110,7 +123,7 @@ vec3 reflectTrace(vec3 ro, vec3 rd, vec3 sunVis) {
         vec3 nh = vec3(0.0);
         nh[ax] = -float(istp[ax]);
         float th = tEnter;
-        if (crispHit(cell, id, ro, rd, tEnter, tExit, th, nh)) return shadeSurf(crispSurf(cell, id, a, ro + rd * th, nh), rd);
+        if (crispHit(cell, id, ro, rd, tEnter, tExit, th, nh)) return reflShade(cell, ro + rd * th, nh);
       }
       stale = true;
     } else if (brickSurf(flags)) {
@@ -124,7 +137,11 @@ vec3 reflectTrace(vec3 ro, vec3 rd, vec3 sunVis) {
       }
       if (ch > 0) {
         vec3 hp = ro + rd * tOp;
-        return shadeSurf(gatherSurf(hp, surfNormal(hp, ch, -rd), ch), rd);
+        // forward difference: the field is 0.5 at hp
+        const vec2 e = vec2(REFL_NORMAL_STEP, 0.0);
+        vec3 gr = vec3(surfField(hp + e.xyy)[ch], surfField(hp + e.yxy)[ch], surfField(hp + e.yyx)[ch]) - 0.5;
+        vec3 n = dot(gr, gr) > 1e-10 ? -normalize(gr) : -rd;
+        return reflShade(ivec3(floor(hp - n * REFL_PROBE)), hp, n);
       }
       phiA = phiB;
       stale = false;

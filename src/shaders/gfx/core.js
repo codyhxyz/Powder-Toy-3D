@@ -26,14 +26,16 @@ bool isCrisp(int id) { return id != E_EMPTY && SURFCH[id] < 0 && MEDIACH[id] < 0
 
 // ---- bricks (see brickFrag in passes.js) ----
 // a = 0: empty. a < 0: air only, flagged for the data views.
-// a >= 1: 1 + gas fraction + 2·media + 4·smooth surface nearby (+ air flags / 65536).
+// a >= 1: 1 + gas fraction + 2·media + 4·smooth surface nearby + 8·opaque
+// matter nearby (+ air flags / 65536).
 float brickOcc(ivec3 bc) { return texelFetch(tBrick, brickAtlas(bc), 0).a; }
 int brickBits(float occ) { return int((occ - 1.0) * 0.5); }
 float brickGas(float occ) { return occ > 0.5 ? clamp(occ - 1.0 - 2.0 * float(brickBits(occ)), 0.0, 1.0) : 0.0; }
-// realistic view: 0 = skip the brick, else 1 + bits (1 media, 2 surface)
+// realistic view: 0 = skip the brick, else 1 + bits (1 media, 2 surface, 4 opaque)
 int brickInfo(ivec3 bc) { float a = brickOcc(bc); return a < 0.5 ? 0 : 1 + brickBits(a); }
 bool brickMedia(int f) { return f > 0 && ((f - 1) & 1) != 0; }
 bool brickSurf(int f) { return f > 0 && ((f - 1) & 2) != 0; }
+bool brickOpaque(int f) { return f > 0 && ((f - 1) & 4) != 0; }
 
 vec3 safeDir(vec3 rd) {
   return vec3(abs(rd.x) < 1e-6 ? 1e-6 : rd.x, abs(rd.y) < 1e-6 ? 1e-6 : rd.y, abs(rd.z) < 1e-6 ? 1e-6 : rd.z);
@@ -127,18 +129,12 @@ float liquidCubic(vec3 p, float tri) {
 // The surface fields as the tracer sees them.
 vec4 surfSample(vec3 p) {
   vec4 s = surfField(p);
-#ifdef AB_TRI
-  return s;
-#endif
   if (s.x > LIQ_CUBIC_LO && s.x < LIQ_CUBIC_HI) s.x = liquidCubic(p, s.x);
   return s;
 }
 // One channel, at the surface (root finding, normals).
 float surfChannel(vec3 p, int ch) {
   float v = surfField(p)[ch];
-#ifdef AB_TRI
-  return v;
-#endif
   return ch == CH_LIQUID ? liquidCubic(p, v) : v;
 }
 
