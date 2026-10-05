@@ -155,19 +155,22 @@ A small GPU probe pass reads those values and dims signs that are hidden behind 
 
 Click the players button in the toolbar to host the current world. This copies an invite link.
 Guests see the host's world from their own camera, paint into it, and everyone sees everyone's brush with a name tag.
-Undo, scenes, grid size and pause stay with the host. If the host leaves, guests keep a copy of the world and play on alone.
+Undo, scenes, grid size and pause stay with the host. If the host switches to another tab, the world pauses and guests are told.
+If the host leaves, guests keep a copy of the world and play on alone.
 
 ```sh
 npm run relay      # local relay on ws://localhost:8787 (needs wrangler); then npm run dev
 ```
 
 The host runs the only simulation. About 10 times a second it packs the state on the GPU into 4 bytes per cell,
-keeping only what guests draw (element, an 8-bit temperature, smoke and fire density). It reads that back without stalling,
+keeping only what guests draw (element, an 8-bit temperature, smoke and fire density, what lava melted from). It reads that back without stalling,
 XORs it against the last frame it sent and deflates it. A 128³ world is a 30–80 KB keyframe to join and about 2–3 Mbit/s while things move.
-The relay (`relay/worker.js`, one Cloudflare Durable Object per room) only forwards messages.
+The relay (`relay/worker.js`, one Cloudflare Durable Object per room) only forwards messages. It accepts pages from the site,
+its Pages previews and local development (`SITE_HOSTS` and friends in `relay/worker.js`), and players can't forge its own messages.
 To deploy it, run `wrangler deploy --config relay/wrangler.toml`. The production relay lives at `wss://tpt3d-relay.codyh.xyz` (set in `.env.production`).
 The site itself deploys with `npm run deploy` (Cloudflare Pages project `tpt3d`, served at https://tpt3d.codyh.xyz).
-Without that variable, production builds hide multiplayer.
+Without `VITE_RELAY_URL`, production builds hide multiplayer.
+Guests don't receive velocity, pressure or air temperature, so their pressure and flow views look empty, the heat view shows no warm air and flames look a little dimmer. Signs aren't shared.
 
 ## Known simplifications
 

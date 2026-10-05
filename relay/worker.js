@@ -16,6 +16,25 @@ const ROOM_PATH = new RegExp(`^/room/([A-Za-z0-9_-]{1,${MAX_ROOM_CODE}})$`);
 const ROLES = new Set(['host', 'guest']);
 const HOST_NUMBER = 0; // guests are numbered from 1, reusing gaps
 
+// Message types only the relay sends; players can't forge them (say, a fake
+// "leave" with the host's id that would end everyone else's session).
+const RELAY_TYPES = new Set(['welcome', 'join', 'leave', 'refused']);
+
+// Pages that may open rooms. A script can send any Origin header, so this
+// stops other sites from reusing the relay, not a determined client.
+const SITE_HOSTS = new Set(['tpt3d.codyh.xyz']);
+const PAGES_HOST = 'tpt3d.pages.dev'; // Cloudflare Pages previews: <hash>.tpt3d.pages.dev
+const DEV_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+const PRIVATE_LAN = /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/; // `vite --host` on a home network
+
+function allowedOrigin(origin) {
+  let url;
+  try { url = new URL(origin); } catch { return false; }
+  const host = url.hostname;
+  if (url.protocol === 'https:') return SITE_HOSTS.has(host) || host === PAGES_HOST || host.endsWith(`.${PAGES_HOST}`);
+  return url.protocol === 'http:' && (DEV_HOSTS.has(host) || PRIVATE_LAN.test(host));
+}
+
 // Application close codes (4000–4999); the reason is shown to the player.
 const CLOSE = { BAD_REQUEST: 4000, NO_HOST: 4001, HOST_TAKEN: 4002, HOST_LEFT: 4003 };
 
@@ -24,6 +43,7 @@ export default {
     const room = new URL(request.url).pathname.match(ROOM_PATH)?.[1];
     if (!room) return new Response('Not found', { status: 404 });
     if (request.headers.get('Upgrade') !== 'websocket') return new Response('Expected a WebSocket', { status: 426 });
+    if (!allowedOrigin(request.headers.get('Origin'))) return new Response('Origin not allowed', { status: 403 });
     return env.ROOMS.get(env.ROOMS.idFromName(room)).fetch(request);
   },
 };
@@ -63,7 +83,7 @@ export class Room extends DurableObject {
     }
     let msg;
     try { msg = JSON.parse(data); } catch { return; }
-    if (!msg || typeof msg !== 'object') return;
+    if (!msg || typeof msg !== 'object' || RELAY_TYPES.has(msg.t)) return;
     msg.from = me.id;
     this.broadcast(JSON.stringify(msg), ws, msg.to === 'host' ? 'host' : null);
   }
