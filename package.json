@@ -6,6 +6,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
+    "relay": "wrangler dev --config relay/wrangler.toml",
     "deploy": "vite build && npx wrangler pages deploy dist --project-name tpt3d --branch main --commit-dirty=true"
   },
   "keywords": [],

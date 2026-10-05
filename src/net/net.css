@@ -1,0 +1,29 @@
+/* Multiplayer: toolbar button and other players' name tags. */
+
+.net-btn { position: relative; }
+.net-badge {
+  position: absolute; right: 1px; bottom: 1px;
+  min-width: 14px; height: 14px; padding: 0 3px;
+  border-radius: 7px;
+  background: var(--accent); color: var(--accent-ink);
+  font: 700 9px/14px var(--ui); text-align: center;
+}
+.net-badge:empty { display: none; }
+
+.net-cursors { position: fixed; inset: 0; pointer-events: none; z-index: 5; }
+.net-cursor {
+  position: absolute; left: 0; top: 0;
+  margin: 10px 0 0 12px; /* sit just below-right of the brush centre */
+  padding: 2px 7px 2px 6px;
+  border-radius: 999px;
+  background: var(--panel); border: 1px solid var(--peer);
+  color: var(--text); font: 600 11px/1.3 var(--ui);
+  white-space: nowrap;
+  display: flex; align-items: center; gap: 5px;
+}
+.net-cursor::before {
+  content: ''; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--peer);
+}
+.net-cursor.painting::before { box-shadow: 0 0 0 3px color-mix(in srgb, var(--peer) 35%, transparent); }
+.net-cursor[hidden] { display: none; }

@@ -1,0 +1,14 @@
+# Multiplayer relay (see worker.js).
+#   local:  wrangler dev --config relay/wrangler.toml       → ws://localhost:8787
+#   deploy: wrangler deploy --config relay/wrangler.toml    → set VITE_RELAY_URL=wss://<worker host> for the site build
+name = "powder-toy-relay"
+main = "worker.js"
+compatibility_date = "2025-09-01"
+
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "Room"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Room"]

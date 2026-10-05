@@ -17,6 +17,7 @@ import { inkFor, luminance } from './ui/dom.js';
 import { logoMark } from './ui/logo.js';
 import { gfx, gfxUniforms, updateGfxUniforms } from './gfx/uniforms.js';
 import { createPost } from './gfx/post.js';
+import { createMultiplayer } from './net/multiplayer.js';
 
 // Optional modules (built in parallel); the app works without them.
 const optional = import.meta.glob(['./views.js', './signs.js', './constructions.js'], { eager: true });
@@ -197,7 +198,17 @@ function build() {
   loadPreset(settings.preset, false);
 }
 
+// Multiplayer guests follow the host's grid size.
+function setGrid(dims) {
+  const size = Object.keys(SIZES).find((k) => SIZES[k].every((n, i) => n === dims[i]));
+  if (!size) return false;
+  settings.size = size;
+  build();
+  return true;
+}
+
 function loadPreset(name, undoable = true) {
+  if (undoable && mp.guard()) return;
   if (undoable) sim.snapshot();
   settings.preset = name;
   if (name === 'empty') sim.clear();
@@ -343,6 +354,7 @@ const actions = {
   renderThumb,
 };
 const toolbar = createToolbar({ views: VIEWS, settings, actions });
+const mp = createMultiplayer({ renderer, scene, camera, hud, getSim: () => sim, getVolume: () => volume, setGrid });
 
 const fmtSpeed = (v) => `${v}×`;
 const settingsPanel = createSettings({
@@ -359,7 +371,7 @@ const settingsPanel = createSettings({
     ] },
     { title: 'Grid size', rows: [
       { type: 'seg', key: 'size', options: [['64', '64³'], ['96', '96³'], ['128', '128³'], ['wide', '160×96']],
-        onChange: (v) => { settings.size = v; build(); save(); hud.toast(`Grid is now ${v === 'wide' ? '160 × 96 × 160' : `${v}³`}`); } },
+        onChange: (v) => { if (mp.guard()) return; settings.size = v; build(); save(); hud.toast(`Grid is now ${v === 'wide' ? '160 × 96 × 160' : `${v}³`}`); } },
     ] },
     { title: 'Simulation', rows: [
       { type: 'slider', key: 'steps', label: 'Speed (steps per frame)', min: 1, max: 12, step: 1, def: DEFAULTS.steps, fmt: fmtSpeed, onChange: save },
@@ -418,6 +430,7 @@ function setSettingsOpen(v) {
 }
 
 function setPaused(p) {
+  if (mp.guard()) return;
   settings.paused = p;
   hud.setPaused(p);
   toolbar.sync();
@@ -439,6 +452,7 @@ function setPixelRatio(r) {
 }
 
 function undo() {
+  if (mp.guard()) return;
   if (sim.undo()) hud.toast('Undone');
   else hud.toast('Nothing to undo');
   toolbar.setUndoEnabled(sim.canUndo);
@@ -510,13 +524,16 @@ canvasEl.addEventListener('pointerdown', (e) => {
     return;
   }
   if (isBuild(settings.tool)) {
+    if (mp.guard()) return;
     if (!builds) hud.toast('Constructions are still loading');
     else if (builds.ready) { sim.snapshot(); toolbar.setUndoEnabled(true); builds.place(); hud.dismissHint(); }
     return;
   }
   dragY = hover.valid ? hoverBrushCenter(tmpV).y : (isTool() ? 0.5 : settings.radius);
-  sim.snapshot();
-  toolbar.setUndoEnabled(true);
+  if (!mp.isGuest) {
+    sim.snapshot();
+    toolbar.setUndoEnabled(true);
+  }
   painting = true;
   hud.dismissHint();
   canvasEl.setPointerCapture(e.pointerId);
@@ -639,15 +656,21 @@ function frame() {
   updateBrush();
 
   if (painting && brushValid) {
-    sim.paint({
+    const stroke = {
       center: brushCenter, radius: settings.radius, shape: settings.shape,
       tool: settings.tool, rate: settings.rate, replace: settings.replace,
-    });
+    };
+    if (mp.isGuest) mp.paint(stroke); // the host paints it
+    else sim.paint(stroke);
   }
-  if (!settings.paused || stepOnce) {
+  if (!mp.isGuest && (!settings.paused || stepOnce)) {
     for (let i = 0; i < settings.steps; i++) sim.step();
     stepOnce = false;
   }
+  mp.update(dt, {
+    visible: brushValid && pointerInside && !uiHover, center: brushCenter, painting,
+    radius: settings.radius, shape: settings.shape, tool: settings.tool,
+  });
   updateGfxUniforms(sim);
   sim.updateBricks();
   if (settings.shadows && settings.view === 0) {
@@ -716,7 +739,7 @@ try {
   toolbar.setUndoEnabled(false);
   window.__app = {
     get sim() { return sim; }, get volume() { return volume; }, get scale() { return scale; }, get signs() { return signs; }, get builds() { return builds; },
-    SUN, scene, settings, camera, controls, loadPreset, selectTool, setView, hover, renderer, rig, renderThumb, gfx, post,
+    SUN, scene, settings, camera, controls, loadPreset, selectTool, setView, hover, renderer, rig, renderThumb, gfx, post, mp,
   };
   requestAnimationFrame(frame);
 } catch (err) {

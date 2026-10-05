@@ -151,6 +151,23 @@ Pick the SIGN tool and click any surface to pin a label (Enter to save, Escape t
 Signs can show live values from the cell they're attached to: `{t}` temperature, `{p}` pressure, `{e}` element.
 A small GPU probe pass reads those values and dims signs that are hidden behind voxels.
 
+## Multiplayer
+
+Click the players button in the toolbar to host the current world. This copies an invite link.
+Guests see the host's world from their own camera, paint into it, and everyone sees everyone's brush with a name tag.
+Undo, scenes, grid size and pause stay with the host. If the host leaves, guests keep a copy of the world and play on alone.
+
+```sh
+npm run relay      # local relay on ws://localhost:8787 (needs wrangler); then npm run dev
+```
+
+The host runs the only simulation. About 10 times a second it packs the state on the GPU into 4 bytes per cell,
+keeping only what guests draw (element, an 8-bit temperature, smoke and fire density). It reads that back without stalling,
+XORs it against the last frame it sent and deflates it. A 128³ world is a 30–80 KB keyframe to join and about 2–3 Mbit/s while things move.
+The relay (`relay/worker.js`, one Cloudflare Durable Object per room) only forwards messages.
+To deploy it, run `wrangler deploy --config relay/wrangler.toml` and build the site with `VITE_RELAY_URL=wss://<relay host>`.
+Without that variable, production builds hide multiplayer.
+
 ## Known simplifications
 
 - Ice and other solids are static (no rigid bodies), so ice doesn't float.
