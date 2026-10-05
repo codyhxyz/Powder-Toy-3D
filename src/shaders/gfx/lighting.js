@@ -276,8 +276,6 @@ float giSkyVis(Probe g, vec3 n) {
   float v = SH_Y0 * g.c0.a + SH_COS1 * SH_Y1 * (g.cx.a * n.x + g.cy.a * n.y + g.cz.a * n.z);
   return clamp(v / max(0.5 + 0.5 * n.y, SKYVIS_MIN), 0.0, 1.0);
 }
-// Mean indirect radiance at p over all directions (for media and liquid interiors).
-vec3 ambientAt(vec3 p) { return max(SH_Y0 * probeTex(tGI0, p).rgb, 0.0); }
 
 // ---- glow volume: blurred emission of lava, fire, hot metal ----
 vec3 sampleLight(vec3 gp) {

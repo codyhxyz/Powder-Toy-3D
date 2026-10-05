@@ -126,9 +126,15 @@ surfaces meet walls cleanly. The *Surface smoothing* setting scales every blur r
   sunlight forward (Henyey–Greenstein, plus multiple-scattering octaves), shade themselves, and are lit by the sky and
   the glow; flames are soot sheets in rising tongues that emit blackbody light, hotter in the core.
 
-A per-frame voxel shadow map is traced from the sun with the same surfaces. It records the opaque depth plus optical depth
-through liquids, glass and gas, so water casts tinted shadows and smoke casts soft ones. Where the map's filter taps disagree
-(within a texel of a shadow edge), an exact DDA ray toward the sun settles it. Anything above ~500 °C glows
+**Light** (`src/shaders/gfx/lighting.js`, `src/gfx/sky.js`, `src/shaders/gi.js`). The sky is a clear-sky atmosphere
+(single Rayleigh and haze scattering, integrated in closed form along the view ray) that also sets the sun's colour, warmer
+as it sinks. A per-frame voxel shadow map is traced from the sun with the same surfaces. It records the opaque depth plus
+optical depth through liquids, glass and gas, so water casts tinted shadows and smoke casts soft ones. Shadows soften with
+distance from their caster (PCSS: the sun is a disc); at a contact edge within a texel, an exact DDA ray toward the sun
+settles it. Indirect light comes from one probe per 4×4×4 brick: every frame, rays from the probes march the brick map and
+collect the sky, the ground and the light bounced off lit matter (fed back over frames, so bounces add up), stored as L1
+spherical harmonics with the sky's visibility. Surfaces take their ambient light and blurry reflections from the probes,
+plus near-field occlusion from the fields; polished ones still see the sky itself where it is open. Anything above ~500 °C glows
 (`src/gfx/incandescence.js`): the colour is Planck's law through the CIE colour matching functions, the brightness is the
 physical luminance compressed by a power law, so steel reads dull red at 600–700 °C, cherry to orange at 800–1000 °C and
 molten rock outshines daylight. Surfaces emit what they don't reflect (Kirchhoff), and the open skin of hot rock runs cooler

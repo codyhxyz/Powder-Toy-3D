@@ -890,6 +890,9 @@ float orenNayar(float nl, float nv, float lv, float sigma) {
   return max(nl, 0.0) * A * (1.0 + sigma * s / t);
 }
 
+// Reflections go from a sharp sky to the probes' blurred light over this roughness range.
+const float ENV_SHARP_ROUGH = 0.25;
+const float ENV_BLUR_ROUGH = 0.9;
 vec3 shadeSurf(Surf s, vec3 rd) {
   vec3 v = -rd;
   vec3 ng = s.ng;
@@ -951,7 +954,12 @@ vec3 shadeSurf(Surf s, vec3 rd) {
   // (fetched here, after the shadow loops, so the probe isn't held across them)
   Probe gi = surfProbe(s.p, ng);
   vec3 irr = giIrradiance(gi, n);
-  vec3 envL = giRadiance(gi, r, smoothstep(0.25, 0.9, s.rough));
+  // L1 probes are far too blurry for a polished surface: smooth lobes see the
+  // clear sky itself as far as the probes say it is open toward r, and the
+  // probes' light (bounce, nearby matter) for the rest.
+  float blur = smoothstep(ENV_SHARP_ROUGH, ENV_BLUR_ROUGH, s.rough);
+  vec3 envSharp = mix(giRadiance(gi, r, 0.0), skyColor(r), giSkyVis(gi, r));
+  vec3 envL = mix(envSharp, giRadiance(gi, r, blur), blur);
   float specAO = clamp(pow(nv + aoT, exp2(-16.0 * s.rough - 1.0)) - 1.0 + aoT, 0.0, 1.0);
   c += (envL * FssEss * hor * hor + irr * Fms * Ems) * specAO;
   // indirect (sky + bounce) and glow volume: diffuse
