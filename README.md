@@ -139,8 +139,9 @@ distance from their caster (PCSS: the sun is a disc); at a contact edge within a
 settles it. Indirect light comes from one probe per 4×4×4 brick: every frame, rays from the probes march the brick map and
 collect the sky, the ground and the light bounced off lit matter (fed back over frames, so bounces add up), stored as L1
 spherical harmonics with the sky's visibility. Surfaces take their ambient light and blurry reflections from the probes,
-plus near-field occlusion from the fields; polished ones still see the sky itself where it is open. Anything above ~500 °C glows
-(`src/gfx/incandescence.js`): the colour is Planck's law through the CIE colour matching functions, the brightness is the
+plus near-field occlusion from the fields; polished ones still see the sky itself where it is open.
+
+**Glow.** Anything above ~500 °C glows (`src/gfx/incandescence.js`): the colour is Planck's law through the CIE colour matching functions, the brightness is the
 physical luminance compressed by a power law, so steel reads dull red at 600–700 °C, cherry to orange at 800–1000 °C and
 molten rock outshines daylight. Surfaces emit what they don't reflect (Kirchhoff), and the open skin of hot rock runs cooler
 than its cracks; hot steel grows a patchy black scale. Exposed hot faces feed a coarse light volume that lights the
