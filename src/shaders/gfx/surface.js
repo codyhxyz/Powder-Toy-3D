@@ -140,6 +140,58 @@ float solidusOf(float ctype) {
   return MELT[ct] - 150.0;
 }
 
+// Thermal glow of an opaque surface whose bulk is at T (°C). Kirchhoff: a
+// surface emits what it doesn't reflect (emissivity = 1 - reflectance), so pale
+// rock glows less than black crust and gold hardly at all. The open skin
+// radiates its heat away and runs INCAND_SKIN_DROP below the bulk, while
+// crevices and pores (low cavity term) show the hot interior: heat reads as
+// glowing cracks rather than a tint over the whole surface.
+const vec3 LUMA_W = vec3(0.2126, 0.7152, 0.0722);
+// glow of material m with its visible surface at Ts (°C)
+vec3 glowAt(Mat m, float Ts) {
+  if (Ts <= INCAND_T0) return vec3(0.0);
+  vec3 refl = mix(m.f0 + (1.0 - m.f0) * m.alb, m.alb, m.metal);
+  return (1.0 - clamp(dot(refl, LUMA_W), 0.0, 1.0)) * incandescence(Ts);
+}
+vec3 hotEmit(Mat m, float T) { return glowAt(m, T - INCAND_SKIN_DROP * clamp(m.cav, 0.0, 1.0)); }
+
+// Hot steel's mill scale (E_METAL)
+const float OXIDE_T0 = 400.0;     // °C: scale starts to darken the steel…
+const float OXIDE_T1 = 650.0;     // …and covers it (wüstite forms above ~570 °C)
+const vec3 OXIDE_ALB = vec3(0.03, 0.027, 0.025);   // black, a touch of rust brown
+const float OXIDE_F0 = 0.05;      // porous, dull: little sky in it, even at grazing angles
+const float OXIDE_ROUGH = 0.8;
+const float SCALE_FREQ = 1.1;     // patches of thick scale, per cell
+const float SCALE_SPLIT = 0.18;   // thin → thick over this much of the thickness noise
+const float SCALE_COVER = 0.06;   // shifts the thickness noise: most of the steel is under thick scale
+const float SCALE_ALB_VAR = 0.6;  // thick scale is a little greyer
+const float SCALE_BUMP = 0.25;    // blistered relief
+const float SCALE_DROP = 150.0;   // °C thick scale runs below the steel
+
+// Lava (E_LAVA)
+const float LAVA_CHURN = 0.12;        // drift of the molten skin pattern, cells per second
+const float LAVA_SKIN_FREQ = 0.4;     // skin pattern frequency, per cell
+const float LAVA_SKIN_VAR = 0.6;      // how far the skin pattern shifts the crust line
+const float LAVA_SKIN_DT = 150.0;     // °C: skin temperature swing on the melt
+const float LAVA_MELT_RANGE = 450.0;  // °C above the solidus where it is fully molten
+const float LAVA_CRUST_X0 = 0.2;      // crust starts to break up (fraction of that range)…
+const float LAVA_CRUST_X1 = 0.8;      // …and is gone
+const float LAVA_PLATE_FREQ = 0.8;    // crust plates per cell
+const float LAVA_CRACK_OPEN = 1.0;    // crack half-width once the crust has broken up (no plates left)…
+const float LAVA_CRACK_SHUT = 0.04;   // …and once it has set (cellular-noise units)
+const float LAVA_RIM = 0.12;          // plate edge still glowing beside a crack
+const float LAVA_CRACK_AREA = 1.6;    // area share of cracks per unit half-width (far LOD)
+const float LAVA_CRUST_T = 450.0;     // °C: top of a crust right at the solidus…
+const float LAVA_CRUST_K = 0.8;       // …rising this much per °C of melt above it
+const vec3 LAVA_MELT_ALB = vec3(0.05, 0.035, 0.025);   // dark glassy melt
+const float LAVA_MELT_ROUGH = 0.25;
+const float LAVA_CRUST_ROUGH = 0.55;  // glassy, silvery basalt skin (pahoehoe)
+const float LAVA_CRUST_VAR = 0.5;     // plate-to-plate albedo spread (± half of it)
+const float LAVA_CRACK_CAV = 0.5;     // cavity term down in a crack
+const float LAVA_PLATE_BUMP = 0.2;    // relief of the plate edges
+const float LAVA_PLATE_EDGE = 0.35;   // width of the rounded plate edge
+const float LAVA_SKIN_BUMP = 0.1;     // ripples on the melt
+
 // The look of element id at world point p (grid units) on a surface with
 // normal n, temperature T (°C). fp = pixel footprint (grid units) for LOD.
 Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
@@ -148,9 +200,9 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
   m.rough = ROUGH[id]; m.metal = METAL[id];
   m.f0 = (IOR[id] - 1.0) / (IOR[id] + 1.0); m.f0 *= m.f0;
   m.sss = SSS[id]; m.glint = GLINT[id]; m.glintDens = 3.0; m.cav = 1.0; m.aniso = 0.0; m.trans = 0.0;
-  // anything hot glows (blackbody); lava does its own thing below
-  m.emit = incandescence(T);
-  if (uMatDetail < 0.5) return m;
+  m.emit = vec3(0.0);
+  // anything hot glows (hotEmit, once the texture is known); lava does its own thing
+  if (uMatDetail < 0.5) { m.emit = id == E_METAL ? glowAt(m, T) : hotEmit(m, T); return m; }
 
   if (id == E_SAND) {
     vec4 lo = mFbmD(p, 0.3, 2, fp);            // patches (sorting, damp/dry)
@@ -249,9 +301,24 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
     m.rough = ROUGH[id] + 0.12 * lo.x + 0.12 * br;
     m.alb *= 1.0 + 0.1 * lo.x + 0.08 * br;
     m.tang = t; m.aniso = 0.7;
-    // hot steel grows a dark oxide scale (explicitly a look, not simulated)
-    float ox = smoothstep(400.0, 900.0, T);
-    m.alb *= mix(1.0, 0.3, ox); m.rough = mix(m.rough, 0.75, ox); m.aniso *= 1.0 - ox;
+    // Hot steel grows black mill scale (magnetite): a rough dielectric, no
+    // longer a metal mirroring the sky. It is patchy; where it is thick it
+    // blisters off the steel and runs cooler, so the glow is mottled with dark
+    // patches (a look only: the oxide isn't simulated and fades as it cools).
+    float ox = smoothstep(OXIDE_T0, OXIDE_T1, T);
+    float flakeT = T;   // temperature of the visible surface
+    if (ox > 0.0) {
+      vec4 th = mFbmD(p, SCALE_FREQ, 3, fp);   // scale thickness, centred on 0
+      m.alb = mix(m.alb, OXIDE_ALB * (1.0 + SCALE_ALB_VAR * th.x), ox);
+      m.metal *= 1.0 - ox;
+      m.f0 = mix(m.f0, OXIDE_F0, ox);
+      m.rough = mix(m.rough, OXIDE_ROUGH, ox);
+      m.aniso *= 1.0 - ox;
+      m.g = mix(m.g, SCALE_BUMP * th.yzw, ox);
+      flakeT = T - ox * SCALE_DROP * smoothstep(-SCALE_SPLIT, SCALE_SPLIT, th.x + SCALE_COVER);
+    }
+    // steel conducts: no skin of its own, only the insulating flakes run cooler
+    m.emit = glowAt(m, flakeT);
   } else if (id == E_CLONE) {
     vec4 lo = mFbmD(p, 0.8, 2, fp);            // gently hammered gold
     m.g = 0.08 * lo.yzw;
@@ -284,27 +351,36 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
     m.cav = mix(1.0, 0.4 + 0.6 * sh, lwc) * (1.0 + 0.3 * gr.x);
     m.rough += 0.1 * gr.x;
   } else if (id == E_LAVA) {
-    // Molten above the solidus, a cooling crust near it. The crust radiates
-    // and drops far below the bulk temperature; its cracks show the melt.
+    // Molten well above the solidus; nearer it a crust skins over. The crust
+    // radiates its heat away far below the bulk temperature and breaks into
+    // plates: the cracks between them show the melt, brightest down the middle
+    // and dull red where they meet the cooler plate edges.
     float Ts = solidusOf(ctype);
-    vec4 sk = mFbmD(p + vec3(0.0, uTime * 0.12, 0.0), 0.4, 2, fp);   // churning skin
-    float x = (T - Ts) / 450.0 + 0.6 * sk.x;   // 0 = at the solidus, 1 = fully molten
-    float crust = 1.0 - smoothstep(0.2, 0.8, x);
+    vec4 sk = mFbmD(p + vec3(0.0, uTime * LAVA_CHURN, 0.0), LAVA_SKIN_FREQ, 2, fp);   // churning skin
+    float x = (T - Ts) / LAVA_MELT_RANGE + LAVA_SKIN_VAR * sk.x;   // 0 = at the solidus, 1 = fully molten
+    float crust = 1.0 - smoothstep(LAVA_CRUST_X0, LAVA_CRUST_X1, x);
     vec3 ge, r1;
-    const float fs = 0.8;
-    vec4 c = mCell(p * fs, ge, r1);            // crust plates
-    float lwc = lodFade(fs * 4.0, fp);
-    float w = mix(0.22, 0.04, crust);          // crack half-width: cracks close as it cools
-    float crk = mix(1.0 - smoothstep(0.5 * w, w, c.y), 1.6 * w, 1.0 - lwc);
-    float melt = max(1.0 - crust, crust * crk);   // visible fraction of exposed melt
-    float Tsurf = mix(T, min(T, 450.0 + 0.8 * (T - Ts)), crust);
-    m.emit = mix(incandescence(Tsurf), incandescence(T + 90.0 * sk.x), melt);
-    float solid = crust * (1.0 - crk);
-    m.alb = mix(vec3(0.05, 0.035, 0.025), ALBEDO[id] * (0.75 + 0.5 * c.z), solid);
-    m.rough = mix(0.25, 0.85, solid);
-    m.g = solid * lwc * 0.2 * dSmooth(0.0, 0.35, c.y) * ge * fs + (1.0 - crust) * 0.1 * sk.yzw;
-    m.cav = mix(1.0, 0.5 + 0.5 * smoothstep(0.0, 0.35, c.y), solid * lwc);
+    vec4 c = mCell(p * LAVA_PLATE_FREQ, ge, r1);   // crust plates
+    float lwc = lodFade(LAVA_PLATE_FREQ * 4.0, fp);
+    // crack half-width: hairlines once the crust has set, wide enough to
+    // swallow the plates once it has broken up
+    float w = mix(LAVA_CRACK_SHUT, LAVA_CRACK_OPEN, (1.0 - crust) * (1.0 - crust));
+    float crk = mix(1.0 - smoothstep(0.5 * w, w, c.y), min(LAVA_CRACK_AREA * w, 1.0), 1.0 - lwc);   // open melt
+    float rim = 1.0 - smoothstep(0.5 * w, w + LAVA_RIM, c.y);   // 1 in the melt .. 0 on the plate
+    float Tmelt = T + LAVA_SKIN_DT * sk.x;
+    // young crust is thin and still glows; old crust is cold on top
+    float Tcrust = mix(T, min(T, LAVA_CRUST_T + LAVA_CRUST_K * (T - Ts)), crust);
+    vec3 eNear = incandescence(mix(Tcrust, Tmelt, rim * rim));
+    vec3 eFar = mix(incandescence(Tcrust), incandescence(Tmelt), crk);
+    m.emit = mix(eFar, eNear, lwc);
+    float solid = 1.0 - crk;
+    m.alb = mix(LAVA_MELT_ALB, ALBEDO[id] * (1.0 + LAVA_CRUST_VAR * (c.z - 0.5)), solid);
+    m.rough = mix(LAVA_MELT_ROUGH, LAVA_CRUST_ROUGH, solid);
+    m.g = solid * lwc * LAVA_PLATE_BUMP * dSmooth(0.0, LAVA_PLATE_EDGE, c.y) * ge * LAVA_PLATE_FREQ
+        + (1.0 - solid) * LAVA_SKIN_BUMP * sk.yzw;
+    m.cav = mix(1.0, mix(LAVA_CRACK_CAV, 1.0, smoothstep(0.0, LAVA_PLATE_EDGE, c.y)), solid * lwc);
   }
+  if (id != E_LAVA && id != E_METAL) m.emit = hotEmit(m, T);
   return m;
 }
 

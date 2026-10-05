@@ -5,7 +5,7 @@ import * as THREE from 'three';
 //   const post = createPost(renderer);
 //   post.render(scene, camera);          // instead of renderer.render(scene, camera)
 //   post.reset();                        // after anything that invalidates history
-//   post.settings.taa / .bloom / .exposure (EV) / .sharpen / .look / .raw
+//   post.settings.taa / .bloom / .exposure (EV) / .sharpen / .look / .raw / .hotStart / .hotFull
 //
 // The scene is rendered as linear, premultiplied HDR radiance. The canvas stays
 // transparent: tone mapping is applied to the premultiplied colour ("over black"),
@@ -31,6 +31,10 @@ export const POST_DEFAULTS = {
   bloomThreshold: 1.6, // max-channel radiance where bloom starts…
   bloomKnee: 0.8, // …with a soft knee this wide
   bloomScatter: 0.7, // energy share passed from each mip to the next wider one
+  // Bright saturated colours (lava, flames, glowing metal) roll off per channel, like film,
+  // instead of fading to white: the blend starts at this exposed max-channel radiance…
+  hotStart: 1.0,
+  hotFull: 4.0, // …and is complete here
 };
 
 const MIPS = 6;
@@ -257,16 +261,40 @@ vec3 agxContrast(vec3 x) {
   return 15.5 * x4 * x2 - 40.14 * x4 * x + 31.96 * x4 - 6.868 * x2 * x + 0.4298 * x2 + 0.1191 * x - 0.00232;
 }
 
-// AgX (Blender / Filament / three.js) with an optional blend toward the "Punchy" look.
-vec3 agx(vec3 c) {
-  c = AGX_INSET * (SRGB_TO_REC2020 * c);
+// AgX log encoding, sigmoid and look, per channel (encoded display values out).
+vec3 agxCurve(vec3 c) {
   c = clamp((log2(max(c, 1e-10)) - AGX_MIN_EV) / (AGX_MAX_EV - AGX_MIN_EV), 0.0, 1.0);
   c = agxContrast(c);
   c = pow(max(c, 0.0), vec3(mix(1.0, 1.35, uLook)));
   float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
-  c = l + mix(1.0, 1.4, uLook) * (c - l);
+  return l + mix(1.0, 1.4, uLook) * (c - l);
+}
+
+// AgX (Blender / Filament / three.js) with an optional blend toward the "Punchy" look.
+vec3 agx(vec3 c) {
+  c = agxCurve(AGX_INSET * (SRGB_TO_REC2020 * c));
   c = pow(max(AGX_OUTSET * c, 0.0), vec3(2.2));
   return clamp(REC2020_TO_SRGB * c, 0.0, 1.0);
+}
+
+// AgX desaturates bright colours on their way to white, so molten lava and
+// flames come out pale peach. Film and camera sensors clip the dominant channel
+// first instead: bright orange runs through amber and gold to white, the look of
+// every photo of lava or fire (and of the eye's own Bezold–Brücke shift). So
+// bright, clearly saturated pixels blend toward the same curve applied to each
+// Rec.2020 channel alone (AgX's working space; in sRGB primaries the roll-off
+// turns lemon yellow). Greys and everything in the sunlit range stay plain AgX:
+// for a grey both curves agree exactly.
+uniform vec2 uHot;               // blend start, full (exposed max-channel radiance)
+const float HOT_SAT_POW = 2.0;   // weight ∝ saturation^this: only clearly coloured light
+vec3 tonemap(vec3 c) {
+  vec3 a = agx(c);
+  float mx = max(c.r, max(c.g, c.b));
+  float sat = 1.0 - min(c.r, min(c.g, c.b)) / max(mx, 1e-6);
+  float w = smoothstep(uHot.x, uHot.y, mx) * pow(sat, HOT_SAT_POW);
+  if (w <= 0.0) return a;
+  vec3 pc = pow(max(agxCurve(SRGB_TO_REC2020 * c), 0.0), vec3(2.2));
+  return mix(a, clamp(REC2020_TO_SRGB * pc, 0.0, 1.0), w);
 }
 
 vec3 srgbEncode(vec3 c) {
@@ -302,7 +330,7 @@ void main() {
     rad += uBloom * (b - bright(c.rgb));
   }
 
-  vec3 o = uRaw > 0.5 ? srgbEncode(clamp(rad, 0.0, 1.0)) : srgbEncode(agx(max(rad, 0.0) * uExposure));
+  vec3 o = uRaw > 0.5 ? srgbEncode(clamp(rad, 0.0, 1.0)) : srgbEncode(tonemap(max(rad, 0.0) * uExposure));
   // ±½ LSB dither against 8-bit banding; keep exact zeros exact
   float ign = fract(52.9829189 * fract(dot(vec2(p), vec2(0.06711056, 0.00583715))));
   o += (ign - 0.5) / 255.0 * step(1e-5, max(o.r, max(o.g, o.b)));
@@ -347,6 +375,7 @@ export function createPost(renderer) {
     tColor: { value: null }, tBloom: { value: null }, uBloomTexel: { value: new THREE.Vector2() },
     uSize: { value: new THREE.Vector2() }, uBloom: { value: 0 }, uExposure: { value: 1 },
     uSharpen: { value: 0 }, uLook: { value: 0 }, uRaw: { value: 0 }, uThresh: thresh,
+    uHot: { value: new THREE.Vector2() },
   });
 
   // full-screen triangle
@@ -500,6 +529,7 @@ export function createPost(renderer) {
       u.uSharpen.value = s.taa && !s.raw ? s.sharpen : 0;
       u.uLook.value = s.look;
       u.uRaw.value = s.raw ? 1 : 0;
+      u.uHot.value.set(s.hotStart, s.hotFull);
       pass(compMat, target);
       if (target) post.onPass?.('composite', target);
 
@@ -531,6 +561,7 @@ export function createPost(renderer) {
       u.uExposure.value = 2 ** s.exposure;
       u.uLook.value = s.look;
       u.uRaw.value = s.raw ? 1 : 0;
+      u.uHot.value.set(s.hotStart, s.hotFull);
       pass(compMat, target);
       renderer.setRenderTarget(prevTarget);
       renderer.setClearColor(savedClear, savedAlpha);

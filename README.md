@@ -125,12 +125,17 @@ surfaces meet walls cleanly. The *Surface smoothing* setting scales every blur r
 
 A per-frame voxel shadow map is traced from the sun with the same surfaces. It records the opaque depth plus optical depth
 through liquids, glass and gas, so water casts tinted shadows and smoke casts soft ones. Where the map's filter taps disagree
-(within a texel of a shadow edge), an exact DDA ray toward the sun settles it. Anything above ~500 °C glows with blackbody
-incandescence, blurred into a coarse light volume that lights the surroundings. The raymarcher writes depth, so three.js
-lines and the brush composite correctly.
+(within a texel of a shadow edge), an exact DDA ray toward the sun settles it. Anything above ~500 °C glows
+(`src/gfx/incandescence.js`): the colour is Planck's law through the CIE colour matching functions, the brightness is the
+physical luminance compressed by a power law, so steel reads dull red at 600–700 °C, cherry to orange at 800–1000 °C and
+molten rock outshines daylight. Surfaces emit what they don't reflect (Kirchhoff), and the open skin of hot rock runs cooler
+than its cracks; hot steel grows a patchy black scale. Exposed hot faces feed a coarse light volume that lights the
+surroundings. The raymarcher writes depth, so three.js lines and the brush composite correctly.
 
 **Post** (`src/gfx/post.js`): linear HDR → TAA (Halton jitter, reprojection, variance clipping) → energy-conserving bloom →
-AgX tone mapping. The data views skip the tone curve so their legend colours stay exact.
+AgX tone mapping. Bright saturated light (lava, flames) blends toward the same curve per channel, so it runs through
+amber and gold to white like film instead of fading to pale peach. The data views skip the tone curve so their legend
+colours stay exact.
 
 ### Views
 

@@ -1,4 +1,5 @@
 import { elementsGLSL } from '../elements.js';
+import { incandescenceGLSL } from '../gfx/incandescence.js';
 
 // Shared GLSL prelude. The 3D grid (NX × NY × NZ) is stored as a 2D atlas of
 // horizontal Y-slices, TX slices per atlas row. Every pass reads cells with
@@ -84,11 +85,7 @@ vec3 blackbody(float tC) {
   float b = t >= 66.0 ? 1.0 : (t <= 19.0 ? 0.0 : clamp(0.5432068 * log(t - 10.0) - 1.1962541, 0.0, 1.0));
   return vec3(r, g * g, b * b);
 }
-// Incandescent glow: invisible below the Draper point (~525°C), then ~T^4.
-vec3 incandescence(float tC) {
-  float k = (tC + 273.15) / 1800.0;
-  return blackbody(tC) * smoothstep(480.0, 800.0, tC) * (k * k * k * k * 2.5 + 0.08);
-}
+${incandescenceGLSL()}
 `;
 }
 

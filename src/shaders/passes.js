@@ -87,6 +87,23 @@ uniform sampler2D tB;
 uniform sampler2D tFS;
 uniform sampler2D tFM;
 out vec4 oC;
+
+// A hot opaque cell lights its surroundings only through its open faces: buried
+// lava or a conduit of hot rock casts no light. Per open face it counts as the
+// brick-deep column under a flat surface did when every hot cell counted.
+#define GLOW_FACE_GAIN float(BS)
+float openFaces(ivec3 c) {
+  float n = 0.0;
+  for (int k = 0; k < 6; k++) {
+    ivec3 q = c;
+    q[k >> 1] += (k & 1) == 0 ? -1 : 1;
+    if (q.y < 0) continue;                       // the floor
+    if (!inGrid(q)) { n += 1.0; continue; }      // open sky past the box
+    if (RCLASS[eid(texelFetch(tA, atlas(q), 0))] != R_OPAQUE) n += 1.0;
+  }
+  return n;
+}
+
 void main() {
   ivec3 bc = brickFromFrag(ivec2(gl_FragCoord.xy));
   if (bc.y >= BY) { oC = vec4(0.0); return; }
@@ -108,7 +125,11 @@ void main() {
     surf = max(surf, max(max(s.x, s.y), max(s.z, s.w)));
     media = max(media, max(m.x, max(m.y, m.z)));
     if (id == E_FIRE) em += blackbody(a.y) * (0.6 + a.y / 1500.0) * 1.5;
-    else if (id != E_EMPTY && KIND[id] != K_GAS) em += incandescence(a.y);
+    else if (id != E_EMPTY && KIND[id] != K_GAS && a.y > INCAND_T0) {
+      // the light of the visible skin (metals have none to speak of)
+      vec3 e = incandescence(a.y - (id == E_METAL ? 0.0 : INCAND_SKIN_DROP));
+      if (dot(e, e) > 0.0) em += e * (RCLASS[id] == R_OPAQUE ? openFaces(o + ivec3(x, y, z)) * GLOW_FACE_GAIN : 1.0);
+    }
   }
   // Pressure and air velocity are smooth fields, so the brick's 2×2×2 core is
   // a good enough sample (a full second pass over B would double this pass).
