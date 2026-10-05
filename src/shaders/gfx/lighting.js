@@ -1,16 +1,80 @@
-// Lighting: sun + shadow map, sky, the glow (emission) volume and ambient
-// occlusion. Shading code only talks to the scene's light through these.
+import { skyGLSL } from '../../gfx/sky.js';
+
+// Soft-shadow taps per pass (blocker search, then filter).
+const PCSS_TAPS = 8;
+const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
+// Points of an n-point Vogel (sunflower) disc of radius 1, as GLSL vec2s.
+const vogel = (n) => Array.from({ length: n }, (_, i) => {
+  const r = Math.sqrt((i + 0.5) / n), a = i * GOLDEN_ANGLE;
+  return `vec2(${(r * Math.cos(a)).toFixed(5)}, ${(r * Math.sin(a)).toFixed(5)})`;
+}).join(', ');
+
+// Lighting: sun + shadow map, sky, the GI probe volume, the glow (emission)
+// volume and ambient occlusion. Shading code only talks to the scene's light
+// through these.
 export const lightingGLSL = /* glsl */ `
-const vec3 SUN_COL = vec3(1.25, 1.15, 1.0);
+uniform vec3 uSun;
+const float PI_L = 3.14159265;
+
+// ---- sun and sky: a clear-sky atmosphere (gfx/sky.js) ----
+// Values that only depend on the sun are computed once per frame in JS.
+${skyGLSL()}
+uniform vec3 uSunExt;   // transmittance of the air along the sun's path
+uniform vec3 uSunCol;   // direct sunlight at the ground: warmer and dimmer as the sun gets lower
+uniform vec3 uSkyUp;    // open-sky irradiance on an upward surface
+uniform vec3 uGround;   // radiance of the sunlit, sky-lit ground around the box
+#define SUN_COL uSunCol
+const float HORIZON_BLEND = 0.02;  // sky -> ground blend half-width at the horizon (direction y)
+
+float airMass(float cz) {
+  cz = max(cz, 0.0);
+  return 1.0 / (cz + AIRMASS_HORIZON * exp(-AIRMASS_FALLOFF * cz));
+}
+
+// Clear-sky radiance toward d (d.y >= 0; lower directions see the horizon), without the sun's disc.
+vec3 skyRadiance(vec3 d) {
+  float mu = dot(d, uSun);
+  float mv = airMass(d.y), ms = airMass(uSun.y);
+  float pR = 3.0 / (16.0 * PI_L) * (1.0 + mu * mu);
+  float g2 = AEROSOL_G * AEROSOL_G;
+  float pM = (1.0 - g2) / (4.0 * PI_L * pow(1.0 + g2 - 2.0 * AEROSOL_G * mu, 1.5));
+  // the integral over height of e^(-tau ms x) e^(-tau mv (1 - x)) (x = relative air density)
+  float dm = mv - ms;
+  vec3 ev = exp(-TAU_AIR * mv);
+  vec3 path = abs(dm) < 1e-3 ? TAU_AIR * mv * ev : mv * (uSunExt - ev) / dm;
+  return SKY_MULTI * PI_L * SUN_TOA * (TAU_RAYLEIGH * pR + TAU_AEROSOL * pM) / TAU_AIR * path;
+}
+
+// Radiance of the environment toward d: sky above the horizon, ground below.
+vec3 skyColor(vec3 d) {
+  return mix(uGround, skyRadiance(d), smoothstep(-HORIZON_BLEND, HORIZON_BLEND, d.y));
+}
+// Rough open-environment irradiance / pi on a surface facing n (no occlusion):
+// the sky over the share of n's hemisphere it covers, the ground below. The GI
+// probes integrate the real thing; this is for code without them.
+vec3 skyAmbient(vec3 n) {
+  float up = 0.5 + 0.5 * n.y;
+  return up * uSkyUp + (1.0 - up) * uGround;
+}
 
 // ---- sun shadow map ----
 // An orthographic shadow map covering the box, traced once per frame from the
 // sun. Each texel stores (depth of first opaque surface, depth where
 // translucent material starts, depth where it ends, tint element id * 1000 +
 // optical depth accumulated through it). Points in between get a proportional share.
-uniform vec3 uSun;
 uniform sampler2D tShadow;
 uniform int uShadowRes;
+
+// Soft shadows (PCSS): the sun is a disc, so a shadow's edge blurs with the
+// distance from its caster. tan of the sun's apparent radius: the real sun is
+// 0.27 deg; 1.2 deg stands in for a slightly hazy sky, so penumbrae read at
+// the scale of the box while contact shadows stay crisp.
+const float SUN_TAN_RADIUS = 0.021;
+#define PCSS_TAPS ${PCSS_TAPS}                 // taps for the blocker search, and again for the filter
+const float PCSS_HARD_TEXELS = 1.0;  // penumbra radius (texels) below which the hard path settles the edge
+const float PCSS_NS_MIN = 0.2;       // n.sun floor for the receiver-plane slope (grazing receivers)
+const float PCSS_BIAS = 0.35;        // depth bias (voxels) on top of the receiver plane
+const float GOLDEN_ANGLE = ${GOLDEN_ANGLE.toFixed(8)};
 
 void sunBasis(out vec3 c, out float R, out vec3 u, out vec3 v) {
   c = vec3(GRID) * 0.5;
@@ -50,6 +114,9 @@ float sunRayClear(vec3 ro, float tLim) {
   return 1.0;
 }
 
+// The taps: a Vogel (sunflower) disc of radius 1, rotated per pixel and frame.
+const vec2 VOGEL[PCSS_TAPS] = vec2[PCSS_TAPS](${vogel(PCSS_TAPS)});
+
 // Sun visibility at a surface point hp with normal n.
 vec3 sunShadow(vec3 hp, vec3 n) {
   vec3 c, u, v; float R;
@@ -87,11 +154,45 @@ vec3 sunShadow(vec3 hp, vec3 n) {
     nLit += lit;
     dMin = min(dMin, sm.x);
   }
-  // The taps disagree, so p is within a texel (~0.44 voxels at 128^3) of a shadow
-  // edge, where the map can only blur. Settle it with an exact ray, traced only
-  // as far as the occluders those taps saw.
-  if (nLit > 0.0 && nLit < 4.0) return tr * sunRayClear(p, d - dMin + 1.5);
-  return acc;
+
+  // Clearly lit by the hard map: done. Penumbrae are only grown inward, into
+  // the hard shadow (below), so lit pixels (most of them) skip the search.
+  if (nLit == 4.0) return acc;
+
+  // PCSS. Taps are compared against the receiver's plane (its depth moves by
+  // slope per voxel along u, v), so wide kernels don't shadow sloped receivers.
+  float ns = max(dot(n, uSun), PCSS_NS_MIN);
+  vec2 slope = vec2(dot(n, u), dot(n, v)) / ns;
+  vec2 ft = st * float(uShadowRes);
+  ivec2 hi = ivec2(uShadowRes - 1);
+  float rot = 2.0 * PI_L * ign(gl_FragCoord.xy, float(uFrame));
+  mat2 R2 = mat2(cos(rot), sin(rot), -sin(rot), cos(rot));
+  // blocker search over the widest penumbra anything in front of p could cast
+  float rs = SUN_TAN_RADIUS * d;
+  float bSum = 0.0, bN = 0.0;
+  for (int i = 0; i < PCSS_TAPS; i++) {
+    vec2 o = R2 * VOGEL[i] * rs;
+    float sm = texelFetch(tShadow, clamp(ivec2(floor(ft + o / T)), ivec2(0), hi), 0).x;
+    if (sm + PCSS_BIAS < d + dot(o, slope)) { bSum += sm; bN += 1.0; }
+  }
+  float pen = bN > 0.0 ? SUN_TAN_RADIUS * (d - bSum / bN) : 0.0;
+  if (pen < PCSS_HARD_TEXELS * T) {
+    // Hard edge (contact, or no caster near). Where the taps disagree p is
+    // within a texel (~0.44 voxels at 128^3) of a shadow edge, where the map
+    // can only blur: settle it with an exact ray, traced only as far as the
+    // occluders those taps saw.
+    if (nLit > 0.0) return tr * sunRayClear(p, d - dMin + 1.5);
+    return acc;
+  }
+  // The filtered visibility is 1/2 on the hard edge and falls to 0 a penumbra
+  // inside it: doubled, it meets the lit side continuously.
+  float lit = 0.0;
+  for (int i = 0; i < PCSS_TAPS; i++) {
+    vec2 o = R2 * VOGEL[i] * pen;
+    float sm = texelFetch(tShadow, clamp(ivec2(floor(ft + o / T)), ivec2(0), hi), 0).x;
+    lit += sm + PCSS_BIAS >= d + dot(o, slope) ? 1.0 : 0.0;
+  }
+  return tr * min(2.0 * lit / float(PCSS_TAPS), 1.0);
 }
 
 // Sun visibility at a point inside a volume (media, liquid interiors).
@@ -122,15 +223,61 @@ vec3 sunShadow(vec3 p) {
   return acc;
 }
 
-// ---- sky ----
-vec3 skyColor(vec3 d) {
-  float y = d.y * 0.5 + 0.5;
-  return mix(vec3(0.05, 0.05, 0.06), vec3(0.42, 0.52, 0.68), smoothstep(0.2, 1.0, y));
+// ---- indirect light: the GI probe volume (shaders/gi.js) ----
+// One probe per brick centre holds the light arriving there from every
+// direction (sky, ground and one-or-more bounces off lit matter, occluded at
+// brick scale) as L1 spherical harmonics: rgb = radiance, a = sky visibility.
+uniform sampler2D tGI0;   // band 0
+uniform sampler2D tGI1;   // band 1, x
+uniform sampler2D tGI2;   // band 1, y
+uniform sampler2D tGI3;   // band 1, z
+const float SH_Y0 = 0.282095;      // Y00
+const float SH_Y1 = 0.488603;      // Y1m = SH_Y1 * (x, y, z)
+const float SH_COS1 = 2.0 / 3.0;   // band-1 clamped-cosine convolution / pi (band 0: 1)
+// Surfaces read the probes this many cells out along their normal: past the
+// brick their own matter shares, into the light in front of them. Detail
+// closer than that comes from the near-field AO below.
+const float GI_OFFSET = 3.0;
+const float SKYVIS_MIN = 0.05;     // floor of the open-sky share used to normalise sky visibility
+
+// Trilinear probe lookup at p (grid units): hardware bilinear inside a brick
+// slice of the atlas, one lerp between slices.
+vec4 probeTex(sampler2D t, vec3 p) {
+  vec3 q = clamp(p / float(BS), vec3(0.5), vec3(BX, BY, BZ) - 0.5);
+  float fy = q.y - 0.5;
+  int y0 = int(fy);
+  int y1 = min(y0 + 1, BY - 1);
+  vec2 inv = 1.0 / vec2(textureSize(t, 0));
+  vec2 o0 = vec2(float((y0 % BTX) * BX), float((y0 / BTX) * BZ));
+  vec2 o1 = vec2(float((y1 % BTX) * BX), float((y1 / BTX) * BZ));
+  return mix(texture(t, (o0 + q.xz) * inv), texture(t, (o1 + q.xz) * inv), fy - float(y0));
 }
-// irradiance-ish ambient from the sky for a surface facing n
-vec3 skyAmbient(vec3 n) {
-  return mix(vec3(0.07, 0.065, 0.06), vec3(0.32, 0.38, 0.5), n.y * 0.5 + 0.5);
+
+struct Probe { vec4 c0, cx, cy, cz; };
+Probe probeAt(vec3 p) {
+  return Probe(probeTex(tGI0, p), probeTex(tGI1, p), probeTex(tGI2, p), probeTex(tGI3, p));
 }
+// Probe for a surface at p with geometric normal n.
+Probe surfProbe(vec3 p, vec3 n) { return probeAt(p + n * GI_OFFSET); }
+
+// Indirect irradiance / pi on a surface facing n.
+vec3 giIrradiance(Probe g, vec3 n) {
+  return max(SH_Y0 * g.c0.rgb + SH_COS1 * SH_Y1 * (g.cx.rgb * n.x + g.cy.rgb * n.y + g.cz.rgb * n.z), 0.0);
+}
+// Indirect radiance arriving from direction d, as blurry as L1 allows; blur
+// in [0, 1] widens it further, to the irradiance lobe (rough reflections).
+vec3 giRadiance(Probe g, vec3 d, float blur) {
+  float k1 = SH_Y1 * mix(1.0, SH_COS1, blur);
+  return max(SH_Y0 * g.c0.rgb + k1 * (g.cx.rgb * d.x + g.cy.rgb * d.y + g.cz.rgb * d.z), 0.0);
+}
+// Share of the open sky a surface facing n sees (1 in the open, less under
+// overhangs, in pits and between tall things).
+float giSkyVis(Probe g, vec3 n) {
+  float v = SH_Y0 * g.c0.a + SH_COS1 * SH_Y1 * (g.cx.a * n.x + g.cy.a * n.y + g.cz.a * n.z);
+  return clamp(v / max(0.5 + 0.5 * n.y, SKYVIS_MIN), 0.0, 1.0);
+}
+// Mean indirect radiance at p over all directions (for media and liquid interiors).
+vec3 ambientAt(vec3 p) { return max(SH_Y0 * probeTex(tGI0, p).rgb, 0.0); }
 
 // ---- glow volume: blurred emission of lava, fire, hot metal ----
 vec3 sampleLight(vec3 gp) {
@@ -147,7 +294,7 @@ vec3 sampleLight(vec3 gp) {
   return s;
 }
 
-// ---- ambient occlusion ----
+// ---- ambient occlusion (near field; the probes cover the larger scale) ----
 bool occluder(ivec3 c) {
   if (c.y < 0) return true;
   if (outside(c)) return false;
