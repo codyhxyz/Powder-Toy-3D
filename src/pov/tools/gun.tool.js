@@ -114,6 +114,7 @@ export default {
     const model = buildModel();
     env.viewmodel.add(model.root);
     const ballistics = createBallistics({ renderer: env.renderer });
+    ballistics.prepare(env.getSim());
     let time = 0, nextFire = 0, flashUntil = -1, kickAt = -Infinity, kickScale = 1, nextDryToast = 0;
     let lastShot = null;
     // While the gun is put away the toolbelt stops calling update, but rounds

@@ -1,5 +1,6 @@
 import { prelude } from './common.js';
-import { lib } from './render.js';
+import { materialsGLSL } from '../gfx/materials.js';
+import { coreGLSL } from './gfx/core.js';
 
 // GPU passes for the gun's ballistic rounds (src/pov/ballistics.js).
 //
@@ -23,6 +24,10 @@ export const TRACE_MISS = -1;   // face of a segment that hit nothing
 
 const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
 
+// The grid walk of render.js's pickFrag, with its brick skipping (gfx/core.js),
+// without the shading the renderer's lib() also brings: a smaller program.
+const traceLib = (g) => `${prelude(g)}\n${materialsGLSL()}\n${coreGLSL(g)}`;
+
 // One fragment per (round, row) of a TRACE.ROUNDS × TRACE.ROWS target. Every
 // row marches the round's segment uFrom[i].xyz → uTo[i] the same way (the DDA
 // and brick skipping of render.js's pickFrag) and writes its share of the
@@ -35,7 +40,7 @@ const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
 // floor (y = 0 is the floor, below the grid) strikes it: the engine treats
 // what lies outside the box as WALL. Through the sides or the top it is clear.
 export const traceFrag = (g) => /* glsl */ `
-${lib(g)}
+${traceLib(g)}
 #define TRACE_ROUNDS ${TRACE.ROUNDS}
 #define TRACE_FACE_FLOOR ${TRACE_FACE_FLOOR}
 #define TRACE_MISS ${f(TRACE_MISS)}

@@ -54,7 +54,7 @@ export const ROUND_ENERGY = 0.5 * ELEMENTS[ROUND_SLUG].dens * ENGINE.V_MAX * ENG
 export const MAX_ROUNDS = TRACE.ROUNDS;                    // rounds the trace pass can follow at once
 
 const TRACE_INFLIGHT = 3;               // trace readbacks in flight at once
-const LATENCY_INIT = 0.05;              // s, readback latency assumed before the first one lands
+const LATENCY_INIT = 2;                 // frames a readback is assumed to take before the first one lands
 const LATENCY_EASE = 0.2;               // share of each new latency sample in the running estimate
 const LOOKAHEAD_FRAMES = 2;             // frames of flight traced beyond the latency
 const FRAME_INIT = 1 / 60;              // s, frame time assumed before one is measured
@@ -86,7 +86,9 @@ export function slugVelocity(d, out = new THREE.Vector3()) {
 export function createBallistics({ renderer }) {
   const rounds = [];                     // in flight, oldest first
   let nextId = 1;
-  let latency = LATENCY_INIT, frameTime = FRAME_INIT;
+  // readback latency in frames (what matters is how far a round flies before
+  // an answer lands), and the last frame's length
+  let latency = LATENCY_INIT, frameTime = FRAME_INIT, frameNo = 0;
   let mats = null, simId = -1;
 
   const slots = [...Array(TRACE_INFLIGHT)].map(() => ({
@@ -116,6 +118,32 @@ export function createBallistics({ renderer }) {
     simId = sim.id;
     // rounds of a replaced world are gone with it
     while (rounds.length) end(rounds[0]);
+    // compile in the background (KHR_parallel_shader_compile), then draw once
+    const built = mats;
+    const keep = sim.quad.material;
+    Promise.all([mats.trace, mats.handoff].map((m) => {
+      sim.quad.material = m;
+      return renderer.compileAsync(sim.scene, sim.camera);
+    })).then(() => { if (mats === built && sim.id === simId) warm(sim); }).catch(() => {});
+    sim.quad.material = keep;
+  }
+
+  // Draw both passes once, doing nothing, so the pipelines a first draw builds
+  // (on Metal) are ready before the first shot rather than stalling it: an
+  // idle trace into a trace target, and a handoff with an empty walk box into
+  // a one-texel target shaped like the state.
+  function warm(sim) {
+    const tu = mats.trace.uniforms;
+    tu.uFrom.value.forEach((v) => { v.w = 0; });
+    tu.tA.value = sim.stateA; tu.tB.value = sim.stateB;
+    tu.tBrick.value = sim.brick.texture; tu.tBrickDist.value = sim.brickDistTexture;
+    sim.run(mats.trace, slots[0].target);
+    const scratch = new THREE.WebGLRenderTarget(1, 1, { count: 2, type: THREE.FloatType, format: THREE.RGBAFormat, depthBuffer: false });
+    const hu = mats.handoff.uniforms;
+    hu.tA.value = sim.stateA; hu.tB.value = sim.stateB;
+    hu.uLo.value.setScalar(Infinity); hu.uHi.value.setScalar(-Infinity);
+    sim.run(mats.handoff, scratch);
+    scratch.dispose();
   }
 
   // position and velocity of round r at flight time t
@@ -139,8 +167,10 @@ export function createBallistics({ renderer }) {
       p0: origin.clone(), v0: dir.clone().normalize().multiplyScalar(ROUND_SPEED),
       g: new THREE.Vector3(0, -ROUND_GRAVITY * gravityScale, 0),
       t: 0,              // s of flight so far
+      tShown: 0,         // s of flight round:move has shown
       tTraced: 0,        // s of path the traces requested cover
-      pending: [],       // start times of traces in flight over this round's path
+      tClear: 0,         // s of path every trace has come back for: as far as it is shown flying
+      pending: [],       // traces in flight over its path, in path order
       hit: null,         // the earliest reported strike
       shown: origin.clone(),   // where round:move last left it
     };
@@ -158,7 +188,7 @@ export function createBallistics({ renderer }) {
     if (!slot) return;
     const u = mats.trace.uniforms;
     const jobs = [];
-    const want = latency + LOOKAHEAD_FRAMES * frameTime;
+    const want = (latency + LOOKAHEAD_FRAMES) * frameTime;
     for (let i = 0; i < TRACE.ROUNDS; i++) u.uFrom.value[i].w = 0;
     rounds.forEach((r, i) => {
       if (i >= TRACE.ROUNDS || r.hit) return;
@@ -168,8 +198,9 @@ export function createBallistics({ renderer }) {
       if (tTo <= r.tTraced) return;
       u.uFrom.value[i].set(from.x, from.y, from.z, 1);
       posAt(r, tTo, u.uTo.value[i]);
-      jobs.push({ r, slot: i, tFrom: r.tTraced, tTo });
-      r.pending.push(r.tTraced);
+      const job = { r, slot: i, tFrom: r.tTraced, tTo, done: false };
+      jobs.push(job);
+      r.pending.push(job);
       r.tTraced = tTo;
     });
     if (!jobs.length) return;
@@ -179,21 +210,29 @@ export function createBallistics({ renderer }) {
     u.tBrickDist.value = sim.brickDistTexture;
     sim.run(mats.trace, slot.target);
     slot.busy = true;
-    const t0 = performance.now(), mySim = simId;
+    const f0 = frameNo, mySim = simId;
     renderer.readRenderTargetPixelsAsync(slot.target, 0, 0, TRACE.ROUNDS, TRACE.ROWS, slot.buf).then(() => {
       slot.busy = false;
-      latency += ((performance.now() - t0) / 1000 - latency) * LATENCY_EASE;
+      latency += (frameNo - f0 - latency) * LATENCY_EASE;
       if (mySim !== simId) return;
       for (const j of jobs) land(j, slot.buf);
     }).catch(() => {
       slot.busy = false;
-      for (const j of jobs) j.r.pending.splice(j.r.pending.indexOf(j.tFrom), 1);
+      for (const j of jobs) settle(j);   // lost: its stretch counts as clear rather than stall the round
     });
   }
 
+  // a trace is back: the round's clear path grows over every answer in order
+  function settle(job) {
+    job.done = true;
+    const r = job.r;
+    while (r.pending[0]?.done) r.tClear = r.pending.shift().tTo;
+  }
+
   // a trace's answer for one round
-  function land({ r, slot, tFrom, tTo }, buf) {
-    r.pending.splice(r.pending.indexOf(tFrom), 1);
+  function land(job, buf) {
+    const { r, slot, tFrom, tTo } = job;
+    settle(job);
     if (!r.alive) return;
     const row = (k) => (k * TRACE.ROUNDS + slot) * TRACE_RGBA;
     const a = row(0), b = row(1), c = row(2);
@@ -214,7 +253,8 @@ export function createBallistics({ renderer }) {
   // The round strikes: announce it and hand it to the sim.
   function strike(sim, r) {
     const h = r.hit;
-    povEvents.emit('round:move', { id: r.id, from: r.shown.clone(), to: h.point.clone() });
+    // (an answer that came late finds the round already past the hit: nothing left to show)
+    if (h.t > r.tShown) povEvents.emit('round:move', { id: r.id, from: r.shown.clone(), to: h.point.clone() });
     const dir = velAt(r, h.t).normalize();
     const vel = slugVelocity(dir);
     const normal = new THREE.Vector3(...NORMALS[h.face]);
@@ -248,17 +288,22 @@ export function createBallistics({ renderer }) {
 
   return {
     fire,
+    prepare(sim) { if (sim) ensureMats(sim); },   // build the passes ahead of the first shot
     // ctx: { sim, dt, stepsPerFrame } (see docs/pov.md); stepsPerFrame 0 = paused
     update({ sim, dt, stepsPerFrame }) {
       ensureMats(sim);
+      frameNo++;
       if (!rounds.length || stepsPerFrame === 0 || !(dt > 0)) return;
       frameTime = dt;
       for (const r of [...rounds]) {
         r.t += dt;
-        if (r.hit && r.t >= r.hit.t && !r.pending.some((t0) => t0 < r.hit.t)) { strike(sim, r); continue; }
-        const at = posAt(r, r.hit ? Math.min(r.t, r.hit.t) : r.t);
+        // it strikes once it has flown that far and every stretch before the hit is back clear
+        if (r.hit && r.t >= r.hit.t && r.tClear >= r.hit.t) { strike(sim, r); continue; }
+        // shown only as far as the traces have cleared: a round never flies through what it hit
+        const tAt = Math.min(r.t, r.tClear, r.hit ? r.hit.t : Infinity);
+        const at = posAt(r, tAt);
         povEvents.emit('round:move', { id: r.id, from: r.shown.clone(), to: at.clone() });
-        r.shown.copy(at);
+        r.shown.copy(at); r.tShown = tAt;
         // out of the box, with every trace of its path back and clear
         if (!r.hit && !inBox(at, sim.g) && !r.pending.length
           && (r.tTraced >= r.t || !inBox(posAt(r, r.tTraced), sim.g))) end(r);
@@ -268,6 +313,7 @@ export function createBallistics({ renderer }) {
     get count() { return rounds.length; },
     get rounds() { return rounds; },
     get lastImpact() { return lastImpact; },   // for checks
+    get latency() { return latency; },         // frames a trace readback takes (running estimate)
     clear() { while (rounds.length) end(rounds[0]); },
     dispose() {
       while (rounds.length) end(rounds[0]);
