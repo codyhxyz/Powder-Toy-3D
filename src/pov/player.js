@@ -49,11 +49,11 @@ const MAX_DT = 0.1;                    // s: longer frames are simulated as this
 const WADE_SHARE = 0.15;               // submerged share of the body that counts as "in" liquid
 const SWIM_SHARE = 0.5;                // submerged share from which you swim rather than walk
 // Drag when fully submerged. Form drag is quadratic and scales with the
-// liquid's density over the body's (½·ρ·Cd·A/m ≈ 0.7 /m for a person feet
+// liquid's density over the body's (½·ρ·Cd·A/m ≈ 1 /m for a flailing person feet
 // first in water, where the two densities are about equal);
 // viscous drag is linear and scales with the liquid's own per-step damping
 // (elements.js drag: water 0.01, oil 0.03, lava 0.2), so lava is a trap.
-const FORM_DRAG = 0.7 * CELL_METERS;        // 1/cell, × DENS[liquid] / BODY_DENS
+const FORM_DRAG = 1.0 * CELL_METERS;        // 1/cell, × DENS[liquid] / BODY_DENS
 const VISCOUS_DRAG = 15;                    // 1/s per unit of the liquid's elements.js drag (water 0.15/s, lava 3/s)
 const SWIM_SPEED = 3;                  // cells/s, horizontal swimming
 const SWIM_ACCEL = 15;                 // cells/s²
@@ -555,7 +555,6 @@ export function createPlayer({ renderer, getSim }) {
     for (const k in listeners) delete listeners[k];
   }
 
-  p._dbg = () => ({ busy: slots.filter((s) => s.busy).length, valid: probe.valid, origin: probe.origin, covered: covered(), lat: +latency.toFixed(3) });
   return Object.assign(p, {
     spawn, update, dispose,
     applyImpulse(dv) { impulse.add(dv); },

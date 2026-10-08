@@ -227,6 +227,21 @@ const tests = {
         events: p.events.slice(0, 6) };
     });
   },
+  async fire() {
+    // standing next to a burning wooden block: how hard does the fire's own
+    // pressure push, and how hot does it get?
+    return page.evaluate(async () => {
+      const t = window.__pt;
+      t.scene(({ box }) => box(66, 0, 61, 72, 10, 67, t.E.WOOD, 400));
+      await t.settle(3);
+      const p = t.player();
+      p.spawn(new t.THREE.Vector3(63, 0, 64));
+      let maxSpeed = 0;
+      await t.run(p, 5, {}, (p) => { maxSpeed = Math.max(maxSpeed, p.vel.length()); });
+      const c = window.__app.sim.census();
+      return { state: t.state(p), maxSpeed: +maxSpeed.toFixed(1), drift: +(p.pos.x - 63).toFixed(2), fire: c[t.E.FIRE]?.n ?? 0 };
+    });
+  },
   async coupling() {
     return page.evaluate(async () => {
       const t = window.__pt, a = window.__app;
