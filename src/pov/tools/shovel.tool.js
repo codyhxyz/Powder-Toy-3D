@@ -14,6 +14,7 @@ import {
 
 const SHOVEL_CAPACITY = 30;          // cells one load holds
 const SCOOP_RADIUS = 1.8;            // cells: a scoop of powder comes from this close to the aim cell
+const SCOOP_SINK = 1;                // cells: the blade bites this far under the surface it hits
 const SCOOP_INTERVAL = 0.25;         // s between scoops while the button is held
 const DIG_POWER = 60;                // hardness units per second of digging (ROCK, 30: two cells a second)
 const BREAK_RADIUS = 1.5;            // cells: a break chips the aim cell, then its nearest like neighbours
@@ -75,6 +76,7 @@ export default {
       const g = ctx.sim.g;
       const center = aim.cell.clone().addScalar(0.5);
       if (el.kind === K.POWDER) {
+        center.addScaledVector(faceNormal(aim.face), -SCOOP_SINK);
         energy = 0;
         scoopWait -= ctx.dt;
         if (scoopWait > 0) return;

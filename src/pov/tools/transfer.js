@@ -23,7 +23,7 @@ import { BODY_WIDTH, BODY_HEIGHT } from '../constants.js';
 // grid (take) or in the grid and reserved in the load (put). Load tracks both,
 // so a load never over-fills and an item is never placed twice.
 
-const MAX_IN_FLIGHT = 4;                 // transfers awaiting readback at once (one probe target each)
+const MAX_IN_FLIGHT = 8;                 // transfers awaiting readback at once (one probe target each)
 const SLOT_COMPONENTS = 4;               // RGBA per slot texel
 const SLOT_ROWS = 2;                     // row 0: cells, row 1: items to place
 const ANY_ID = -1;                       // slot filter: any element of the allowed kinds

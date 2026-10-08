@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { ELEMENTS, K } from '../../elements.js';
 import { HAND_REACH } from '../constants.js';
 import {
-  persistentLoad, cellsNear, outsideBody, bodyExit, toStepVelocity, aimInReach, heldMesh, recolor,
+  persistentLoad, cellsNear, outsideBody, bodyExit, toStepVelocity, aimInReach, faceNormal, heldMesh, recolor,
 } from './transfer.js';
 
 // Bucket (slot 2). Left-click dips it into the liquid you aim at; hold to keep
@@ -12,6 +12,7 @@ import {
 
 const BUCKET_CAPACITY = 60;          // cells one bucket holds
 const SCOOP_RADIUS = 3.5;            // cells: a dip takes the liquid nearest the aim cell, this far at most
+const DIP_SINK = 1.5;                // cells: the bucket dips this far under the surface it hits
 const SCOOP_INTERVAL = 0.3;          // s between dips while the button is held
 const POUR_RATE = 30;                // cells/s in a stream
 const POUR_BACKLOG = 4;              // cells: a stream that couldn't land doesn't build up more than this
@@ -70,7 +71,7 @@ export default {
       const holds = load.cells.length ? load.mainId : -1;
       if (holds >= 0 && holds !== aim.id) { refuse(`The bucket holds ${ELEMENTS[holds].name.toLowerCase()}`); return; }
       if (load.free <= 0) { if (!load.busy && ctx.primaryPressed) refuse('The bucket is full'); return; }
-      const center = aim.cell.clone().addScalar(0.5);
+      const center = aim.cell.clone().addScalar(0.5).addScaledVector(faceNormal(aim.face), -DIP_SINK);
       const p = transfer.take(load, { cells: cellsNear(center, SCOOP_RADIUS, ctx.sim.g), kinds: [K.LIQUID], want: aim.id });
       if (p) scoopWait = SCOOP_INTERVAL;
     }
