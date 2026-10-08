@@ -82,7 +82,9 @@ int skipBrick(ivec3 bc, vec3 ro, vec3 rd, ivec3 istp, inout ivec3 cell, inout ve
 // which also visit flagged air).
 int skipEmpty(ivec3 bc, vec3 ro, vec3 rd, ivec3 istp, inout ivec3 cell, inout vec3 tMax, inout float tEnter) {
   int r = max(int(texelFetch(tBrickDist, brickAtlas(bc), 0).x * BRICK_DIST_SCALE + 0.5) - 1, 0);
-  vec3 bmin = vec3((bc - r) * BS), bmax = vec3((bc + r + 1) * BS);
+  // kept inside the box: a ray leaving it must leave through the face it
+  // really crosses (the floor below all, which the callers shade)
+  vec3 bmin = vec3(max(bc - r, ivec3(0)) * BS), bmax = vec3(min(bc + r + 1, ivec3(BX, BY, BZ)) * BS);
   vec3 tb = (mix(bmin, bmax, step(0.0, rd)) - ro) / rd;
   int ax = argmin3(tb);
   float tx = tb[ax];
