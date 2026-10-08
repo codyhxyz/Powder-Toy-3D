@@ -509,9 +509,10 @@ export class World {
         // combustion
         if (out === id && IGNITE[id] > 0) {
           if (id === E.GUNPOWDER) {
-            // a flame, or anything at least as hot as its ignition point touching it
-            const hotTouch = nT.some((t) => t >= IGNITE[id]);
-            if (T >= IGNITE[id] || ((nFire > 0 || hotTouch) && rnd() < PHYS.GUNPOWDER_FIRE)) { out = E.FIRE; reset = true; T = PHYS.GUNPOWDER_T; P += PHYS.GUNPOWDER_P; }
+            // at its ignition point, or touching something that hot (not a gas: a flame only might)
+            let hotTouch = false;
+            for (let q = 0; q < 4; q++) hotTouch ||= !isGasLike(nid[q]) && nT[q] >= IGNITE[id];
+            if (T >= IGNITE[id] || hotTouch || (nFire > 0 && rnd() < PHYS.GUNPOWDER_FIRE)) { out = E.FIRE; reset = true; T = PHYS.GUNPOWDER_T; P += PHYS.GUNPOWDER_P; }
           } else if (T >= IGNITE[id] && (nAir > 0 || nFire > 0)) {
             life -= BURNRATE[id];
             T = Math.max(T, Math.min(T + BURNHEAT[id] / C, FLAMET[id]));

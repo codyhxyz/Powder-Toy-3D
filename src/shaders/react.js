@@ -307,11 +307,12 @@ void main() {
   // combustion
   if (nidOut == id && IGNITE[id] > 0.0) {
     if (id == E_GUNPOWDER) {
-      // a flame, or anything at least as hot as its ignition point touching it
-      // (an ember, hot metal, a hot shot splinter) sets it off
+      // It goes off at its ignition point, or the moment it touches something
+      // that hot (an ember, hot metal, lava, a splinter heated by a shot); a
+      // flame's touch flickers, so a flame next to it only might.
       bool hotTouch = false;
-      for (int i = 0; i < 6; i++) hotTouch = hotTouch || na[i].y >= IGNITE[id];
-      if (T >= IGNITE[id] || ((nFire > 0 || hotTouch) && rnd(rs) < GUNPOWDER_FIRE)) {
+      for (int i = 0; i < 6; i++) hotTouch = hotTouch || (!isGasLike(nid[i]) && na[i].y >= IGNITE[id]);
+      if (T >= IGNITE[id] || hotTouch || (nFire > 0 && rnd(rs) < GUNPOWDER_FIRE)) {
         nidOut = E_FIRE; reset = true; T = GUNPOWDER_T; P += GUNPOWDER_P;
       }
     } else if (T >= IGNITE[id] && (nAir > 0 || nFire > 0)) {

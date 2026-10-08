@@ -82,27 +82,29 @@ export const PHYS = {
 
   // impacts and breaking (react.js, move.js). Hardness (elements.js hard) is in
   // the sim's kinetic-energy units, ½·dens·|v|² with v in cells/step.
-  // Kinetic energy that an impact dissipates becomes heat: ΔT = E·KE_TO_HEAT / cap
+  // Kinetic energy an impact dissipates becomes heat: ΔT = E·KE_TO_HEAT / cap
   // (cap·°C per unit of kinetic energy). Taken literally (a cell is ~30 cm and a
-  // step 1/240 s, so 1 cell/step ≈ 72 m/s, dens 10 = 1000 kg/m³, cap 1 = water)
-  // the factor would be ≈ 0.12, but a 30 cm cell can't resolve the hot spot at a
-  // contact patch, which is what actually lights powder: this stands in for it.
-  // It is set by two cases. A slug breaking a keg's wood (hard 17) leaves sawdust
-  // (cap 0.3) at +17·4/0.3 ≈ 227 °C: past gunpowder's 200 °C for a few steps, so
-  // the keg goes off, but under sawdust's own 250 °C, so a shot plank doesn't
-  // smoulder. Sand dropped 10 cells lands at ~0.38 cells/step (E ≈ 1.2) and warms
-  // a rock floor and itself by ≈ 5 °C; at terminal speed (~0.6) by ≈ 14 °C.
-  KE_TO_HEAT: 4,
+  // step 1/240 s, so 1 cell/step ≈ 72 m/s; dens 10 = 1000 kg/m³; cap 1 = water)
+  // the factor would be ≈ 0.12, but a 30 cm cell can't resolve the hot spot at
+  // a contact patch, which is what really lights powder, so this stands in for
+  // it. Two cases set it. A slug breaking a keg's wood (hard 20) leaves sawdust
+  // (cap 0.3) 20·3/0.3 = 200 °C hotter: past gunpowder's 200 °C ignition, so the
+  // keg goes off, but under sawdust's own 250 °C, so a shot plank doesn't
+  // smoulder. And sand dropped 10-50 cells onto rock warms the floor layer by
+  // ~10 °C (each grain lands once at ≤ 0.6 cells/step, E ≤ 2.9, and passes on
+  // the knocks of the grains landing on it), which conduction soon spreads.
+  KE_TO_HEAT: 3,
   // A solid breaks when the air pressure difference across it, along any axis,
   // exceeds hard·P_BREAK_PER_HARD (pressure per unit of hardness; a solid
-  // neighbour holds no air and counts as 0). A blast starts at GUNPOWDER_P (60)
-  // and loses ~15% per cell; a pile that goes off in a wave stacks up to P_MAX
-  // near its edge (~146 one cell out, ~124 two out). So wood (17 → 58) breaks
-  // touching any blast and within ~7 cells of a big one, glass (8 → 27) within
-  // ~5 cells of a small one, rock (30 → 102) only within ~3 cells of a big one,
-  // and metal (80 → 272) never: no pressure difference in the sim exceeds
+  // neighbour holds no air and counts as 0). One gunpowder cell's blast is
+  // GUNPOWDER_P (60) and loses ~15% per cell, but a pile lit by a flame goes off
+  // in a wave that stacks its blasts: ~140 at the edge of a 3³ pile, ~200 at a
+  // 5³ one, still ~100 four cells out. So glass (8 → 40) and ice and plants
+  // (6 → 30) smash a few cells from even one cell's blast, wood (20 → 100) a few
+  // cells from a lit pile, rock (30 → 150) chips only right next to a big one,
+  // and metal (60 → 300) never does: no pressure difference in the sim exceeds
   // P_MAX - P_MIN = 250.
-  P_BREAK_PER_HARD: 3.4,
+  P_BREAK_PER_HARD: 5,
 
   // tools (passes.js), applied once per frame
   TOOL_HEAT: 30,             // °C at the brush centre
