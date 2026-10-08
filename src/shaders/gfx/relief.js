@@ -168,10 +168,11 @@ bool reliefHit(vec3 ro, vec3 rd, int ch, inout float t) {
 #ifdef DETAIL_RELIEF_SHADOW
 // Sunlight reaching carved point p past the relief around it: a march toward
 // the sun until it leaves the shell, soft by how closely it clears the
-// relief (penumbra RELIEF_PENUMBRA cells per cell of distance: the sun's disc
-// widened to anti-alias). Depths are taken relative to p's own (the hit is
+// relief: the penumbra of the sun's disc (RELIEF_SUN_DISC radians across),
+// at least RELIEF_SHADOW_AA_PX pixels wide so it doesn't alias. Depths are taken relative to p's own (the hit is
 // only found to within a step), so a lit face doesn't shade itself.
-const float RELIEF_PENUMBRA = 0.08;
+const float RELIEF_SUN_DISC = 0.0093;     // the sun's angular diameter (0.53°)
+const float RELIEF_SHADOW_AA_PX = 1.0;
 const int RELIEF_SUN_STEPS_MIN = 3, RELIEF_SUN_STEPS_MAX = 8;
 const float RELIEF_SUN_PX_STEP = 4.0;   // pixels of path per sample (shadows need fewer than the hit)
 float reliefSunVis(vec3 p) {
@@ -186,7 +187,8 @@ float reliefSunVis(vec3 p) {
   for (int i = 1; i <= RELIEF_SUN_STEPS_MAX; i++) {
     if (i > n) break;
     float ts = dt * float(i);
-    vis = min(vis, clamp((d0 - reliefInside(p + uSun * ts)) / (RELIEF_PENUMBRA * ts), 0.0, 1.0));
+    float pen = max(RELIEF_SUN_DISC * ts, RELIEF_SHADOW_AA_PX * gRelFp);
+    vis = min(vis, clamp((d0 - reliefInside(p + uSun * ts)) / pen, 0.0, 1.0));
     if (vis <= 0.0) break;
   }
   return vis;
