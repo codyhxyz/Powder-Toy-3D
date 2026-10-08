@@ -75,12 +75,12 @@ const defs = [
 
   { key: 'WOOD', abbr: 'WOOD', name: 'Wood', kind: K.SOLID, render: R.OPAQUE, color: '#7a4a26', var: 0.12,
     cond: 0.008, cap: 0.3, ignite: 300, burnRate: 0.0018, burnHeat: 3, flameT: 900, life: 1,
-    hard: 20, breakInto: 'SAWDUST', desc: 'Burns slowly above 300 °C and leaves ash behind.' },
+    hard: 17, breakInto: 'SAWDUST', desc: 'Burns slowly above 300 °C and leaves ash behind.' },
   { key: 'PLANT', abbr: 'PLNT', name: 'Plant', kind: K.SOLID, render: R.OPAQUE, color: '#3da236', var: 0.25,
     cond: 0.008, cap: 0.5, ignite: 250, burnRate: 0.004, burnHeat: 2, flameT: 800, life: 1,
-    hard: 2, breakInto: 'SAWDUST', desc: 'Grows into neighbouring water. Burns easily.' },
+    hard: 6, breakInto: 'SAWDUST', desc: 'Grows into neighbouring water. Burns easily.' },
   { key: 'METAL', abbr: 'METL', name: 'Metal', kind: K.SOLID, render: R.OPAQUE, color: '#a9afba', var: 0.04,
-    cond: 0.1, cap: 0.85, melt: 1500, hard: 60, breakInto: 'SCRAP', desc: 'Conducts heat fast and glows when hot. Melts at 1500 °C.' },
+    cond: 0.1, cap: 0.85, melt: 1500, hard: 80, breakInto: 'SCRAP', desc: 'Conducts heat fast and glows when hot. Melts at 1500 °C.' },
   { key: 'GLASS', abbr: 'GLAS', name: 'Glass', kind: K.SOLID, render: R.GLASS, color: '#d2ecf2',
     cond: 0.015, cap: 0.5, melt: 1400, sigma: [0.05, 0.025, 0.03], hard: 8, breakInto: 'SHARDS', desc: 'Clear and acid-proof. Melts at 1400 °C.' },
   { key: 'ICE', abbr: 'ICE', name: 'Ice', kind: K.SOLID, render: R.GLASS, color: '#a9d8f2',
@@ -99,7 +99,7 @@ const defs = [
     dens: 4, cond: 0.006, cap: 0.3, drag: 0.1, slide: 0.45, ignite: 250, burnRate: 0.006, burnHeat: 3, flameT: 900,
     life: 1, spawn: 0.3, desc: 'Chips and splinters of wood or plant. Floats on water and burns faster than a log.' },
   { key: 'SCRAP', abbr: 'BRMT', name: 'Scrap metal', kind: K.POWDER, render: R.OPAQUE, color: '#8e939c', var: 0.1,
-    dens: 78, cond: 0.1, cap: 0.85, drag: 0.02, slide: 0.5, melt: 1500, spawn: 0.3,
+    dens: 78, cond: 0.1, cap: 0.85, drag: 0.01, slide: 0.5, melt: 1500, spawn: 0.3,
     desc: 'Heavy bits of metal: what metal breaks into, and the slugs the gun fires. Melts and recasts as solid metal.' },
 ];
 

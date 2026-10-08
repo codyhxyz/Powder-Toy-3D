@@ -22,6 +22,15 @@ import { quietGLSL } from './activity.js';
 // source cell lands there plus its new velocity (8 MRT attachments). A cheap
 // gather pass then rebuilds the state at cell resolution.
 //
+// Impacts on solids. A grain that slams into a solid (faster than COLLIDE_V,
+// the line between an impact and resting contact) stops, and the kinetic
+// energy it loses becomes heat (physics.js KE_TO_HEAT), shared between it and
+// the solid so both warm by the same amount. Liquids splash and flow on and
+// gases bounce, so their motion isn't counted. A grain whose impact would
+// break the solid isn't stopped at all: the react pass after this one breaks
+// the solid and charges the grain for it (react.js). The heat rides out of the
+// block pass packed into each slot's source index (see packSlot).
+//
 // The block update is generated in JS with every cell index baked in as a
 // literal, and the 8 cells live in plain named variables (a0..a7 etc). GPU
 // compilers don't reliably inline helpers that index arrays, and dynamic
@@ -31,12 +40,26 @@ import { quietGLSL } from './activity.js';
 // Cell i lives at local (x, y, z) = (i & 1, (i >> 1) & 1, (i >> 2) & 1).
 const CELLS = [0, 1, 2, 3, 4, 5, 6, 7];
 
+// Impact heat leaves the block pass in each slot's first channel next to the
+// source index: n + SLOTS·round(q·HEAT_QUANTA), q in kinetic-energy units.
+// A float holds integers exactly up to 2^24, so with this resolution q tops
+// out at 2^24 / 8 / 1024 ≈ 2048, far above anything a step can deposit.
+const SLOTS = 8;
+const HEAT_QUANTA = 1024;   // quanta per unit of kinetic energy (resolution ≈ 0.001)
+const HEAT_Q_MAX = Math.floor((2 ** 24 / SLOTS - 1) / HEAT_QUANTA);
+const heatGLSL = /* glsl */ `
+#define SLOTS ${SLOTS}
+#define HEAT_QUANTA ${HEAT_QUANTA}.0
+#define HEAT_Q_MAX ${HEAT_Q_MAX}.0
+`;
+
 const swap = (i, j) => `{
     vec4 ta = a${i}; a${i} = a${j}; a${j} = ta;
     vec3 tv = v${i}; v${i} = v${j}; v${j} = tv;
     int ti = k${i}; k${i} = k${j}; k${j} = ti;
     int tn = n${i}; n${i} = n${j}; n${j} = tn;
     float td = d${i}; d${i} = d${j}; d${j} = td;
+    float tq = q${i}; q${i} = q${j}; q${j} = tq;
     m${i} = true; m${j} = true;
   }`;
 // Collision between particles i and j along component c (i on the negative
@@ -57,6 +80,18 @@ const collide = (i, j, c) => `{
       }
     }`;
 
+// Particle i (velocity before vOld) was stopped by solid j: its lost kinetic
+// energy, if it was a real impact by a grain, becomes heat shared by capacity.
+const impactHeat = (i, j, vOld, speed) => `
+      if (KIND[k${i}] == K_POWDER && ${speed} > COLLIDE_V) {
+        float lost = max(0.5 * d${i} * (dot(${vOld}, ${vOld}) - dot(v${i}, v${i})), 0.0);
+        float share = CAP[k${i}] / (CAP[k${i}] + CAP[k${j}]);
+        q${i} += lost * share; q${j} += lost * (1.0 - share);
+      }`;
+// Would particle i, moving at vn along the axis toward solid j, break it?
+// Then leave it be: the react pass breaks j and charges i for it.
+const breaks = (i, j, vn) => `(BREAKINTO[k${j}] >= 0 && 0.5 * d${i} * ${vn} * ${vn} >= HARD[k${j}])`;
+
 const can = (i, j, dir) => `canMove(k${i}, k${j}, d${i}, d${j}, ${dir})`;
 const drag = (i, j) => `dragF(k${i}, k${j}, d${i}, d${j})`;
 
@@ -66,8 +101,14 @@ const vertical = (b, t) => `
     bool mt = movable(k${t}), mb = movable(k${b});
     bool down = v${t}.y < 0.0, up = v${b}.y > 0.0;
     if (!mt || !mb) {
-      if (mt && down) { v${t} = land(v${t}, k${t}); s${t} = true; }
-      if (mb && up) { v${b}.y = 0.0; s${b} = true; }
+      if (mt && down && !${breaks(t, b, `v${t}.y`)}) {
+        vec3 v0 = v${t};
+        v${t} = land(v${t}, k${t}); s${t} = true;${impactHeat(t, b, 'v0', '-v0.y')}
+      }
+      if (mb && up && !${breaks(b, t, `v${b}.y`)}) {
+        vec3 v0 = v${b};
+        v${b}.y = 0.0; s${b} = true;${impactHeat(b, t, 'v0', 'v0.y')}
+      }
     } else if (down || up) {
       bool okDown = down && ${can(t, b, 0)};
       bool okUp = up && ${can(b, t, 1)};
@@ -130,8 +171,8 @@ const horizontal = (i, j, c) => `
       } else if (movable(k${i}) && movable(k${j})) {
         ${collide(i, j, c)}
       } else {
-        if (w0) v${i}.${c} *= bounceR(k${i});
-        if (w1) v${j}.${c} *= bounceR(k${j});
+        if (w0 && !${breaks(i, j, 'h0')}) { vec3 v0 = v${i}; v${i}.${c} *= bounceR(k${i});${impactHeat(i, j, 'v0', 'h0')} }
+        if (w1 && !${breaks(j, i, 'h1')}) { vec3 v0 = v${j}; v${j}.${c} *= bounceR(k${j});${impactHeat(j, i, 'v0', '-h1')} }
       }
     }
   }`;
@@ -146,7 +187,7 @@ uniform int uParity;
 uniform uint uFrame;
 ${CELLS.map((i) => `layout(location = ${i}) out vec4 o${i};`).join('\n')}
 ${quietGLSL}
-
+${heatGLSL}
 uint rs;
 
 // Can a particle (id a, density da) move into the place of (b, db), travelling
@@ -201,6 +242,11 @@ float bounceR(int id) {
   return k == K_LIQUID ? BOUNCE_LIQUID : (k == K_POWDER ? 0.0 : BOUNCE_GAS);
 }
 
+// A slot's source index (0..7) and the impact heat its cell picked up, in one float.
+float packSlot(int n, float q) {
+  return float(n + SLOTS * int(clamp(q, 0.0, HEAT_Q_MAX) * HEAT_QUANTA + 0.5));
+}
+
 void main() {
   ivec3 bc = blockFromFrag(ivec2(gl_FragCoord.xy));
   ivec3 base = bc * 2 - ivec3(uParity);
@@ -214,7 +260,7 @@ void main() {
     return;
   }
 
-  ${CELLS.map((i) => `vec4 a${i}; vec3 v${i}; int k${i}; float d${i}; int n${i} = ${i}; bool m${i} = false, s${i} = false;`).join('\n  ')}
+  ${CELLS.map((i) => `vec4 a${i}; vec3 v${i}; int k${i}; float d${i}; int n${i} = ${i}; float q${i} = 0.0; bool m${i} = false, s${i} = false;`).join('\n  ')}
   ${CELLS.map((i) => `{
     ivec3 q = base + ivec3(${i & 1}, ${(i >> 1) & 1}, ${(i >> 2) & 1});
     if (inGrid(q)) { a${i} = texelFetch(tA, atlas(q), 0); v${i} = texelFetch(tB, atlas(q), 0).xyz; }
@@ -239,7 +285,7 @@ void main() {
     ${horizontalZ()}${horizontalX()}
   }
 
-  ${CELLS.map((i) => `o${i} = vec4(float(n${i}), v${i});`).join('\n  ')}
+  ${CELLS.map((i) => `o${i} = vec4(packSlot(n${i}, q${i}), v${i});`).join('\n  ')}
 }
 `;
 
@@ -251,7 +297,7 @@ ${CELLS.map((i) => `uniform sampler2D tM${i};`).join('\n')}
 uniform int uParity;
 layout(location = 0) out vec4 oA;
 layout(location = 1) out vec4 oB;
-
+${heatGLSL}
 void main() {
   ivec3 p = cellFromFrag(ivec2(gl_FragCoord.xy));
   if (p.y >= NY) { oA = vec4(0.0); oB = vec4(0.0); return; }
@@ -262,9 +308,12 @@ void main() {
   ivec2 bt = blockAtlas((base + off) / 2);
   vec4 m;
   ${CELLS.map((i) => `${i ? 'else ' : ''}if (me == ${i}) m = texelFetch(tM${i}, bt, 0);`).join('\n  ')}
-  int src = int(m.x + 0.5);
+  int code = int(m.x + 0.5);
+  int src = code % SLOTS;
   ivec3 q = base + ivec3(src & 1, (src >> 1) & 1, (src >> 2) & 1);
   oA = texelFetch(tA, atlas(q), 0);
+  float heat = float(code / SLOTS) / HEAT_QUANTA;   // impact energy this cell took (block pass)
+  if (heat > 0.0) oA.y = min(oA.y + heat * KE_TO_HEAT / CAP[eid(oA)], CELL_TEMP_MAX);
   oB = vec4(m.yzw, texelFetch(tB, atlas(p), 0).w);
 }
 `;
