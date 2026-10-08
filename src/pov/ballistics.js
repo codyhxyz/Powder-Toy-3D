@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { quadVert } from '../shaders/common.js';
-import { traceFrag, handoffFrag, TRACE, TRACE_MISS, TRACE_FACE_FLOOR } from '../shaders/povTrace.js';
+import { traceFrag, handoffFrag, TRACE, TRACE_MISS } from '../shaders/povTrace.js';
 import { ELEMENTS, E, K } from '../elements.js';
 import { PHYS as ENGINE } from '../physics.js';
 import { CELL_METERS } from './vitals.js';
@@ -60,7 +60,6 @@ const LOOKAHEAD_FRAMES = 2;             // frames of flight traced beyond the la
 const FRAME_INIT = 1 / 60;              // s, frame time assumed before one is measured
 const SEGMENT_SAG_MAX = 0.1;            // cells: a traced chord strays at most this far from the arc (g·T²/8)
 const TRACE_RGBA = 4;
-const OFF = -1;                         // texel slot of a round not traced this pass
 
 const KIND = ELEMENTS.map((e) => e.kind);
 const HARD = ELEMENTS.map((e) => e.hard);
