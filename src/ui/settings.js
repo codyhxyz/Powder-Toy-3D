@@ -4,6 +4,7 @@ import { ICON } from './icons.js';
 // Settings drawer built from a declarative spec.
 //   { type: 'seg', key, options: [[value, label]], onChange }
 //   { type: 'slider', key, label, min, max, step, def, fmt, onChange }
+//   { type: 'custom', el, sync }   an element the caller keeps up to date; sync runs with the others
 export function createSettings({ settings, sections, footer, onClose }) {
   const syncers = [];
 
@@ -34,6 +35,10 @@ export function createSettings({ settings, sections, footer, onClose }) {
       };
       syncers.push(sync);
       return field;
+    }
+    if (r.type === 'custom') {
+      if (r.sync) syncers.push(r.sync);
+      return r.el;
     }
     return null;
   };

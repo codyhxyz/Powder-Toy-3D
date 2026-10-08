@@ -13,8 +13,12 @@ import { execSandboxed } from './constructions/sandbox.js';
 import { buildSystemPrompt, buildChatPrompt, extractCode, MAX_NAME_CHARS } from './ai/prompt.js';
 import {
   PROVIDERS, loadSettings, saveSettings, current, isConfigured, createModel, listModels,
-  startOpenRouterSignIn, finishOpenRouterSignIn, freeAI,
+  startOpenRouterSignIn, finishOpenRouterSignIn,
 } from './ai/providers.js';
+import {
+  accountsEnabled, accountState, account, aiQuota, signIn, signOut, onAccountChange,
+  SIGN_IN_PROVIDERS, FREE_TIER_DAILY, PRIVACY_URL,
+} from './account.js';
 import './constructions.css';
 
 // Constructions: whole structures (houses, trees, ...) placed with one click.
@@ -53,10 +57,29 @@ const HOLD_PX = 6;                 // pointer travel that brings the ghost back 
 const DOCK_MARGIN_PX = 14;         // the dock's gap to the bottom of the window
 const BAR_GAP_PX = 8;              // gap between the dock and the construction bar
 const IMPORT_NAME_CHARS = 60;
+const DRAFT_STORE = 'powder-toy-3d:ai-draft'; // sessionStorage: the prompt being typed, across a sign-in
 
 const loadJSON = (key, fallback) => { try { return JSON.parse(localStorage.getItem(key) || 'null') ?? fallback; } catch { return fallback; } };
 const saveJSON = (key, value) => { try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* storage unavailable */ } };
 const newId = () => `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+
+// the prompt _signIn kept for when the page comes back, once
+function takeDraft() {
+  try {
+    const draft = sessionStorage.getItem(DRAFT_STORE) ?? '';
+    sessionStorage.removeItem(DRAFT_STORE);
+    return draft;
+  } catch { return ''; }
+}
+
+// a signed-in player's picture, or their initial when there's none (or it won't load)
+function avatar(user) {
+  const initial = h('span.avatar.initial', { text: (user.name.trim()[0] ?? '?').toUpperCase(), 'aria-hidden': 'true' });
+  if (!user.avatar) return initial;
+  const img = h('img.avatar', { src: user.avatar, alt: '', referrerpolicy: 'no-referrer' });
+  img.addEventListener('error', () => img.replaceWith(initial));
+  return img;
+}
 
 // ---------------------------------------------------------------- ghost
 
@@ -110,7 +133,7 @@ export class Constructions {
     this.mine = loadJSON(MINE_STORE, []).filter((m) => m && typeof m.code === 'string');
     this.results = new Map();   // _itemKey() → { cells, report } | { error }
     this.pendingKey = null;
-    this.draft = '';            // the prompt being typed
+    this.draft = takeDraft();   // the prompt being typed
     this.status = '';
     this.running = null;        // AbortController of a generation in progress
     this.ai = loadSettings();   // BYOK provider, key, base URL and model
@@ -120,6 +143,8 @@ export class Constructions {
     finishOpenRouterSignIn()
       .then((done) => { if (done) { this.ai = loadSettings(); this._setStatus('Signed in with OpenRouter.'); this.barFor = null; } })
       .catch((err) => this._setStatus(err.message));
+    // sign-in and quota changes redraw the account strip and the hint in place
+    this.offAccount = onAccountChange(() => this._syncAccount());
 
     // ghost: a depth-only pass, then a translucent colour pass that only keeps
     // the frontmost faces, so it reads as one solid object rather than a jumble
@@ -365,6 +390,9 @@ export class Constructions {
 
   get canGenerate() { return !!this.customModel || isConfigured(this.ai); }
 
+  // generating with our free relay proxy (and so counting against the day's quota)
+  get usesFree() { return !this.customModel && current(this.ai).provider.auth === 'free'; }
+
   async _generate() {
     const request = this.draft.trim();
     if (!this.canGenerate || !request || this.running) return;
@@ -599,12 +627,60 @@ export class Constructions {
 
   _genHint() {
     if (!this.canGenerate) return 'Set up a model below to generate';
-    return `⌘↵ to generate${this._freeLeft()}`;
+    const { user, quota } = accountState();
+    if (this.usesFree && quota?.remaining === 0) return user ? 'No generations left today' : 'Sign in below to keep generating';
+    return `⌘↵ to generate${user ? '' : this._freeLeft()}`; // signed in, the account strip shows what's left
   }
   // ' · 3 free left today' while the free provider is in use and the relay has said
   _freeLeft() {
-    const n = freeAI.remaining;
-    return !this.customModel && current(this.ai).provider.auth === 'free' && n !== null ? ` · ${n} free left today` : '';
+    const q = accountState().quota;
+    if (!this.usesFree || q?.remaining == null) return '';
+    return ` · ${q.remaining} ${q.tier === 'paid' ? '' : 'free '}left today`;
+  }
+
+  // Free provider only: sign in for more generations, or who's signed in and what's left today.
+  // Empty while the relay doesn't answer: there's nothing to sign in to.
+  _accountStrip() {
+    if (!this.usesFree || !accountsEnabled) return null;
+    const { user, signedIn, checking, offline, quota, error } = accountState();
+    if (!quota) aiQuota();             // each answer redraws the strip (_syncAccount)
+    if (signedIn && !user) account();
+    if (offline && !user) return h('div.account');
+    if (user) {
+      return h('div.account', {},
+        avatar(user),
+        h('span.account-name', { text: user.name, title: user.email || user.name }),
+        quota?.remaining != null && h('span.account-left', { text: `${quota.remaining} left today` }),
+        h('button.link', { type: 'button', text: 'Sign out', on: { click: () => signOut() } }));
+    }
+    if (signedIn && checking) return h('div.account', {}, h('span.account-pitch', { text: 'Signing in…' }));
+    // out of anonymous generations: signing in is the way on
+    const out = quota?.remaining === 0;
+    const pitch = error ?? (out ? `No free generations left today. Sign in for ${FREE_TIER_DAILY} a day.`
+      : `Sign in for ${FREE_TIER_DAILY} free generations a day`);
+    return h(`div.account${out ? '.urgent' : ''}`, {},
+      h(`span.account-pitch${error ? '.failed' : ''}`, { text: pitch }),
+      h('div.account-actions', {},
+        SIGN_IN_PROVIDERS.map((p) => h(`button.chip${out ? '.on' : ''}`, {
+          type: 'button', text: p.label, title: 'Leaves this page to sign in; the scene reloads after',
+          on: { click: () => this._signIn(p.id) },
+        })),
+        h('a.link', { href: PRIVACY_URL, target: '_blank', rel: 'noopener', text: 'Privacy' })));
+  }
+
+  // account or quota changed: redraw the strip and the hint in place (rebuilding the bar would take the prompt's focus)
+  _syncAccount() {
+    if (this.accountEl?.isConnected) {
+      const el = this._accountStrip();
+      if (el) { this.accountEl.replaceWith(el); this.accountEl = el; }
+    }
+    if (this.genHint?.isConnected && !this.running) this.genHint.textContent = this._genHint();
+  }
+
+  // Signing in leaves the page: keep the prompt being typed for when it comes back
+  _signIn(provider) {
+    try { sessionStorage.setItem(DRAFT_STORE, this.draft); } catch { /* storage unavailable */ }
+    signIn(provider);
   }
 
   // AI construction: a header with close, then either the prompt composer (new)
@@ -654,10 +730,12 @@ export class Constructions {
         cls: 'chip.primary', disabled: !this.canGenerate, title: 'Write it with the chosen model (⌘↵)',
       }, () => this._generate());
       this.genHint = h('span.gen-hint', { text: this.running ? 'Writing it…' : this._genHint() });
+      this.accountEl = this._accountStrip();
       body = [
         h('div.composer', {}, input,
           h('div.composer-foot', {}, this.genHint, this.running ? button('Cancel', {}, () => this.running?.abort()) : this.generateBtn)),
         this._modelRow(),
+        this.accountEl,
         h('div.links', {},
           button('Copy prompt for a chatbot', { cls: 'link', title: 'Paste it into any chatbot, then bring its code back with Paste code' }, () => this._copyPrompt()),
           button('Paste code', { cls: 'link', title: 'Run code from a chatbot or your own' }, () => this._openEditor()),
@@ -712,6 +790,7 @@ export class Constructions {
 
   dispose() {
     removeEventListener('pointermove', this._onMove);
+    this.offAccount();
     this.running?.abort();
     for (const m of this.meshes) m.dispose();
     this.group.removeFromParent();

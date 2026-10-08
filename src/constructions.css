@@ -112,3 +112,28 @@
 .build-bar .model .model-row .auth > * { flex: 1 1 0; min-width: 0; }
 .build-bar .model .model-row .auth .chip { justify-content: center; }
 .build-bar .model .model-row .model-fixed { align-self: center; padding: 0 2px; color: var(--muted); font: 560 12px var(--ui); }
+
+/* account strip (free provider): sign in for more generations, or who's signed in */
+.build-bar .account { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; padding: 0 2px; }
+.build-bar .account:empty { display: none; }
+.build-bar .account-pitch { flex: 1 1 200px; color: var(--muted); font-size: 12px; line-height: 1.3; }
+.build-bar .account-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+.build-bar .account-actions .link { margin-left: 8px; }
+.build-bar a.link { text-decoration: none; }
+.build-bar .account .avatar {
+  flex: 0 0 auto; display: grid; place-items: center; width: 22px; height: 22px;
+  border-radius: 50%; object-fit: cover; background: var(--raise-hi);
+  color: var(--text); font: 650 11px var(--ui);
+}
+.build-bar .account-name { min-width: 0; overflow: hidden; color: var(--text); font: 600 12px var(--ui); white-space: nowrap; text-overflow: ellipsis; }
+.build-bar .account-left { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.build-bar .account-left::before { content: '·'; margin-right: 8px; color: var(--faint); }
+.build-bar .account > .link { margin-left: auto; }
+/* out of anonymous generations: signing in is the way on */
+.build-bar .account.urgent {
+  padding: 8px 8px 8px 11px; border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.build-bar .account.urgent .account-pitch { flex-basis: 100%; color: var(--text); }
+.build-bar .account-pitch.failed { color: var(--text); }
