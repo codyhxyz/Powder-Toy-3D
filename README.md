@@ -19,7 +19,7 @@ Press `?` in the app for the full list.
 | Left-drag | paint with the selected element or tool (the brush stays at the height where you clicked) |
 | `[` `]` or Shift + scroll | brush size |
 | `B` / `X` | sphere or cube brush / paint over existing material |
-| `I` | pick the element under the cursor |
+| `I` | eyedropper: pick the element under the cursor (or click the Eyedropper in the dock, then click the scene) |
 | ⌘Z / Ctrl+Z | undo the last stroke, clear or scene change |
 | `/` | find an element |
 

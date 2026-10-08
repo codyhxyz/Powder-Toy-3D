@@ -19,7 +19,7 @@ export function tile(it, cls = '') {
 }
 
 // Bottom dock: brush controls, the element groups, search and collapse.
-export function createDock({ settings, onSelect, onBrushChange, onHover }) {
+export function createDock({ settings, onSelect, onBrushChange, onHover, onEyedropper }) {
   const tiles = [];
   const groups = PALETTE.map((g) => {
     const items = g.items.map(itemByKey);
@@ -57,7 +57,12 @@ export function createDock({ settings, onSelect, onBrushChange, onHover }) {
     h('div.row.paint-only', {}, shapeSphere, shapeCube, replace),
     h('p.build-only', { text: 'Click a surface to place it. It turns to face the camera.' }));
 
-  const search = h('input.search', { type: 'search', placeholder: 'Find  /', 'aria-label': 'Find element', spellcheck: false });
+  // Utilities: each one a full-width row that shows its hotkey.
+  const toolRow = (icon, label, key, title, on) => h('button.tool-btn', { type: 'button', title, on },
+    h('span.ico', { html: icon }), h('span', { text: label }), h('kbd', { text: key }));
+  const dropper = toolRow(ICON.eyedropper, 'Eyedropper', 'I', 'Eyedropper: click the scene to pick that element (I)',
+    { click: () => onEyedropper?.() });
+  const search = h('input.search', { type: 'search', placeholder: 'Find', 'aria-label': 'Find element', spellcheck: false });
   search.addEventListener('input', () => filter(search.value));
   search.addEventListener('blur', () => { if (!search.value) filter(''); });
   search.addEventListener('keydown', (e) => {
@@ -71,8 +76,9 @@ export function createDock({ settings, onSelect, onBrushChange, onHover }) {
     if (e.key === 'Escape') { search.value = ''; filter(''); search.blur(); }
     e.stopPropagation();
   });
-  const collapse = h('button.mini-btn', { type: 'button', title: 'Hide elements (T)', 'aria-label': 'Hide elements', html: ICON.chevDown, on: { click: () => setCollapsed(true) } });
-  const side = h('div.side', {}, search, h('p', {}, 'Press ', h('kbd', { text: 'I' }), ' over the scene to pick what\'s under the cursor.'), collapse);
+  const find = h('label.find', {}, search, h('kbd', { text: '/' }));
+  const collapse = toolRow(ICON.chevDown, 'Hide', 'T', 'Hide elements (T)', { click: () => setCollapsed(true) });
+  const side = h('div.side', {}, h('h4', { text: 'Utilities' }), dropper, find, collapse);
 
   const dock = h('div.dock.panel', { role: 'toolbar', 'aria-label': 'Elements' }, brush, h('div.groups', {}, groups), side);
 
@@ -113,10 +119,15 @@ export function createDock({ settings, onSelect, onBrushChange, onHover }) {
     shapeCube.classList.toggle('on', settings.shape === 1);
     replace.classList.toggle('on', settings.replace);
   }
+  function setEyedropper(on) {
+    dropper.classList.toggle('on', on);
+    dropper.setAttribute('aria-pressed', on);
+  }
   setCollapsed(!!settings.dockCollapsed);
   return {
     sync,
     setCollapsed,
+    setEyedropper,
     toggle: () => setCollapsed(!settings.dockCollapsed),
     focusSearch: () => { setCollapsed(false); search.focus(); search.select(); },
     get collapsed() { return !!settings.dockCollapsed; },
