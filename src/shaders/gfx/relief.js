@@ -55,8 +55,8 @@ const float RELIEF_SLOPE_MIN = 0.05;   // floor on |∇φ| (per cell) when conve
 const float RELIEF_FBM_TOP = 0.3;
 const float RELIEF_CRAG_TOP = 0.5;     // rock crags, in units of ROCK_CRAG_H (rockCrags: ~±0.9)
 float reliefTop(int id) {
-  if (id == E_SAND) return SAND_CLUMP_H * RELIEF_FBM_TOP;
-  if (id == E_SNOW) return SNOW_CLUMP_H * RELIEF_FBM_TOP;
+  if (id == E_SAND) return (SAND_SLUMP_H + SAND_CLUMP_H) * RELIEF_FBM_TOP;
+  if (id == E_SNOW) return (SNOW_DRIFT_H + SNOW_CLUMP_H) * RELIEF_FBM_TOP;
   if (id == E_GUNPOWDER) return POWDER_LUMP_H * RELIEF_FBM_TOP;
   if (id == E_ASH) return ASH_LUMP_H * RELIEF_FBM_TOP;
   if (id == E_ROCK) return ROCK_CRAG_H * RELIEF_CRAG_TOP;
