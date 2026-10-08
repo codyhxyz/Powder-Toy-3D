@@ -43,7 +43,12 @@ export function createSettings({ settings, sections, footer, onClose }) {
       const sw = h('button.switch', { type: 'button', role: 'switch', 'aria-label': r.label });
       sw.addEventListener('click', () => { settings[r.key] = !settings[r.key]; r.onChange?.(settings[r.key]); syncAll(); });
       syncers.push(() => sw.setAttribute('aria-checked', String(!!settings[r.key])));
-      return h('div.switch-row', {}, h('span', { text: r.label }), sw);
+      const label = r.badge
+        ? h('span', {}, h('span', { text: r.label }), h(`span.badge.${r.tier}`, { text: r.badge }))
+        : h('span', { text: r.label });
+      const el = h('div.switch-row', {}, label, sw);
+      if (r.desc) el.title = r.desc;
+      return el;
     }
     if (r.type === 'buttons') {
       return h('div.btn-row', {}, r.buttons.map(([label, fn, cls = '']) =>

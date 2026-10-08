@@ -16,6 +16,7 @@ import { createHud, createHelp } from './ui/hud.js';
 import { inkFor, luminance } from './ui/dom.js';
 import { logoMark } from './ui/logo.js';
 import { gfx, gfxUniforms, updateGfxUniforms } from './gfx/uniforms.js';
+import { DETAIL, settingKey, detailDefaults, detailDefines, detailRows } from './gfx/detail.js';
 import { createPost, TAA_WEIGHT_STABLE } from './gfx/post.js';
 import { createPacer, settleFrames, sceneKey } from './gfx/pacing.js';
 import { CHANNELS, MEDIA } from './gfx/materials.js';
@@ -42,10 +43,11 @@ const DEFAULTS = {
   view: 0, shadows: true, autoRes: true, res: Math.min(devicePixelRatio, 1.5), glow: 1.6,
   sunAz: 38, sunEl: 55, camSpeed: 1, dockCollapsed: false,
   smoothing: 1, taa: true, bloom: 0.3, exposure: 0.7,
+  ...detailDefaults(),
 };
 const PERSIST = ['size', 'preset', 'tool', 'radius', 'shape', 'rate', 'replace', 'steps', 'gravity', 'view', 'liveTiles',
   'shadows', 'autoRes', 'res', 'glow', 'sunAz', 'sunEl', 'camSpeed', 'dockCollapsed',
-  'smoothing', 'taa', 'bloom', 'exposure'];
+  'smoothing', 'taa', 'bloom', 'exposure', ...DETAIL.map(settingKey)];
 const STORE = 'powder-toy-3d:settings';
 
 const settings = { ...DEFAULTS };
@@ -195,6 +197,7 @@ function build() {
     depthTest: false,
     depthWrite: false,
   });
+  applyDetail();
   volume.material.uniforms.tShadow.value = shadowTarget.texture;
   volume.material.uniforms.uShadowRes.value = shadowRes;
 
@@ -418,6 +421,8 @@ const settingsPanel = createSettings({
       // last: only for comparing; the renderer relies on TAA to clean up its noise
       { type: 'switch', key: 'taa', label: 'Temporal anti-aliasing', onChange: () => { applyGfx(); post.reset(); save(); } },
     ] },
+    // each switch shows its measured cost; expensive ones start off (gfx/detail.js)
+    ...(DETAIL.length ? [{ title: 'Detail up close', rows: detailRows(() => { applyDetail(); save(); }) }] : []),
     { title: 'Camera', rows: [
       { type: 'slider', key: 'camSpeed', label: 'Move speed (WASD)', min: 0.25, max: 3, step: 0.05, def: DEFAULTS.camSpeed,
         fmt: (v) => `${v.toFixed(2)}×`, onChange: (v) => { rig.setSpeed(v); save(); } },
@@ -430,6 +435,15 @@ const settingsPanel = createSettings({
   footer: [['Reset all settings', resetSettings]],
 });
 
+// Close-up detail features compile in only when switched on (gfx/detail.js).
+let detailVersion = 0;
+function applyDetail() {
+  const defines = detailDefines(settings);
+  for (const m of [volume.material, shadowMat]) { m.defines = { ...defines }; m.needsUpdate = true; }
+  detailVersion++;   // the shadow map is a derived pass: redo it
+  post.reset();
+}
+
 function resetSettings() {
   const keep = { size: settings.size, preset: settings.preset, tool: settings.tool, paused: settings.paused, dockCollapsed: settings.dockCollapsed };
   Object.assign(settings, DEFAULTS, keep);
@@ -437,6 +451,7 @@ function resetSettings() {
   rig.setSpeed(settings.camSpeed);
   updateSun();
   applyGfx();
+  applyDetail();
   setPixelRatio(settings.autoRes ? Math.min(settings.res, 1) : settings.res);
   dock.sync();
   toolbar.sync();
@@ -728,7 +743,7 @@ function frame(now) {
   const worldChanged = sim.version !== lastVersion;
   lastVersion = sim.version;
   const runDerived = pacer.derived(
-    `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${settings.shadows}|${settings.view}|${gfx.smoothing}`);
+    `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${settings.shadows}|${settings.view}|${gfx.smoothing}|${detailVersion}`);
   const runView = pacer.view(
     `${camera.matrixWorld.elements}|${camera.projectionMatrix.elements}|${pixelRatio}|${innerWidth}x${innerHeight}`
     + `|${JSON.stringify(settings)}|${JSON.stringify(gfx)}|${JSON.stringify(post.settings)}|${sceneKey(scene)}`,
@@ -812,6 +827,8 @@ try {
   window.__app = {
     get sim() { return sim; }, get volume() { return volume; }, get scale() { return scale; }, get signs() { return signs; }, get builds() { return builds; },
     SUN, scene, settings, camera, controls, loadPreset, selectTool, setView, hover, renderer, rig, renderThumb, gfx, post, mp,
+    applyDetail,   // after changing settings.detail_* by hand
+    THREE,         // for tools (tools/detail-bench.mjs makes its own targets)
     requestRender: () => pacer.wake(),   // for changes the frame loop can't see (async results)
   };
   requestAnimationFrame(frame);
