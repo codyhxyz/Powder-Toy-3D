@@ -18,7 +18,7 @@ import { gfx, gfxUniforms, updateGfxUniforms } from './gfx/uniforms.js';
 import { createPost, UPSCALE } from './gfx/post.js';
 import { createPacer, settleFrames, sceneKey } from './gfx/pacing.js';
 import { CHANNELS, MEDIA } from './gfx/materials.js';
-import { dayPhase, keyLight } from './gfx/daylight.js';
+import { DAY, dayPhase, phaseSteps, keyLight } from './gfx/daylight.js';
 import { GI_BLEND } from './sim.js';
 import { createMultiplayer } from './net/multiplayer.js';
 import { createPov } from './pov/index.js';
@@ -108,9 +108,14 @@ scene.add(floorGrid);
 // day clock, in simulation steps. Tools pin it with __app.day.fixed = { az, el }.
 const SUN = new THREE.Vector3();
 const KEY_LIGHT = [1, 1, 1];
+// settings.time (hours) mirrors the clock for the drawer's slider; it isn't saved.
+const HOURS = 24;
+const TIME_STEP = 0.25;   // h: the slider's resolution, and how far the clock runs before the open drawer redraws it
 const day = { clock: 0, fixed: null };
 function updateSun() {
-  keyLight(dayPhase(day.clock), SUN, KEY_LIGHT, day.fixed);
+  const phase = dayPhase(day.clock);
+  keyLight(phase, SUN, KEY_LIGHT, day.fixed);
+  settings.time = Math.round(phase * HOURS / TIME_STEP) * TIME_STEP % HOURS;
 }
 updateSun();
 
@@ -426,6 +431,7 @@ const toolbar = createToolbar({ views: VIEWS, settings, actions });
 const mp = createMultiplayer({ renderer, scene, camera, hud, getSim: () => sim, getVolume: () => volume, setGrid });
 
 const fmtSpeed = (v) => `${v}×`;
+const fmtTime = (v) => `${Math.floor(v)}:${String(Math.round((v % 1) * 60)).padStart(2, '0')}`;
 const settingsPanel = createSettings({
   settings,
   onClose: () => setSettingsOpen(false),
@@ -442,6 +448,11 @@ const settingsPanel = createSettings({
         fmt: (v) => `${(v / DEFAULTS.gravity).toFixed(1)} g`, onChange: (v) => { sim.gravity = v; save(); } },
     ] },
     // a cost lever too: sim work grows with cells, ray marching with the grid's span
+    { title: 'Lighting', rows: [
+      // the day keeps running from wherever this puts it
+      { type: 'slider', key: 'time', label: 'Time of day', min: 0, max: HOURS - TIME_STEP, step: TIME_STEP, def: DAY.startPhase * HOURS,
+        fmt: fmtTime, onChange: (v) => { day.clock = phaseSteps(v / HOURS); updateSun(); } },
+    ] },
     { title: 'Grid size', rows: [
       { type: 'seg', key: 'size', options: [['64', '64³'], ['96', '96³'], ['128', '128³'], ['wide', '160×96']],
         onChange: (v) => { if (mp.guard()) return; settings.size = v; build(); save(); hud.toast(`Grid is now ${v === 'wide' ? '160 × 96 × 160' : `${v}³`}`); } },
@@ -609,6 +620,7 @@ function setRadius(r) {
 }
 
 let stepOnce = false;
+let timeShown = NaN;   // the time of day the drawer last showed
 let wantShot = false;
 
 addEventListener('keydown', (e) => {
@@ -800,6 +812,10 @@ function frame(now) {
     stepOnce = false;
   } else if (mp.isGuest) day.clock += settings.steps;   // guests don't step: keep the day going at their own rate
   updateSun();
+  if (settings.time !== timeShown) {
+    timeShown = settings.time;
+    if (settingsPanel.isOpen) settingsPanel.sync();
+  }
   mp.update(dt, {
     visible: brushValid && pointerInside && !uiHover, center: brushCenter, painting,
     radius: settings.radius, shape: settings.shape, tool: settings.tool,

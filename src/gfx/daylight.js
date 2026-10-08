@@ -6,7 +6,7 @@ import * as THREE from 'three';
 
 export const DAY = {
   cycleSteps: 72000,    // simulation steps per day and night: 5 min at 4 steps per frame and 60 fps
-  startPhase: 0.42,     // share of the day at load (0 midnight, 0.25 sunrise, 0.5 noon)
+  startPhase: 10 / 24,  // share of the day at load (0 midnight, 0.25 sunrise, 0.5 noon): 10 am
   latitude: 35,         // degrees; at the equinox the sun peaks at 90 - latitude
   noonAzimuth: 38,      // degrees: the direction the noon sun lies in, around the up axis
   keyElMin: 5,          // degrees: a light sits no lower, since grazing shadows smear across the whole box
@@ -25,8 +25,10 @@ const east = new THREE.Vector3(Math.sin(noonAz), 0, -Math.cos(noonAz));
 const sinKeyMin = Math.sin(deg(DAY.keyElMin));
 const sunDir = new THREE.Vector3();
 
-// Share of the day (0..1, 0.5 = noon) after `steps` simulation steps.
-export const dayPhase = (steps) => (((steps / DAY.cycleSteps + DAY.startPhase) % 1) + 1) % 1;
+const frac = (x) => ((x % 1) + 1) % 1;
+// Share of the day (0..1, 0.5 = noon) after `steps` simulation steps, and back.
+export const dayPhase = (steps) => frac(steps / DAY.cycleSteps + DAY.startPhase);
+export const phaseSteps = (phase) => frac(phase - DAY.startPhase) * DAY.cycleSteps;
 
 /**
  * Key light for day phase `phase`: writes its unit direction into `dir`
