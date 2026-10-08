@@ -4,8 +4,9 @@
 // of pebbles it holds. A cell is CELL_M across and a pebble ~PEBBLE_M
 // (gfx/surface.js), so a cell holds a sub-lattice of PEB_N³ pebble sites; most
 // sites hold a pebble, an ellipsoid of its own size, flattening and turn. A
-// pebble belongs to its cell and stays inside it, but the sub-lattice runs on
-// unbroken across cells, so a heap shows no seams at the cell faces. The heap
+// pebble belongs to its cell (its seed) and the sub-lattice runs on unbroken
+// across cells: a pebble near a face may straddle it into the gravel next
+// door, so a heap shows no seams at the cell faces. The heap
 // keeps the shape the smooth surface gives it (the cells' staircase would
 // otherwise show as terraces): pebbles outside that surface are left out, and
 // where it bulges into an empty cell (the inside corner of a step) that cell
@@ -21,8 +22,9 @@
 // gunpowder, ash; gravel when pebbles are off), which the smooth surface draws
 // as one round blob, is a 30 cm clump. Its grains are far below a pixel even
 // up close (sand ~0.3 mm, black powder ~1 mm), so it is drawn as a cohesive
-// clod: a lumpy union of a few lobes with the element's own texture, slumped
-// onto whatever it rests on.
+// clod: a few flat, overlapping lumps blended into one body (smooth minimum
+// of their distance fields), roughened by noise, with the element's own
+// texture, slumped onto whatever it rests on. Rays sphere-trace it.
 //
 // Honesty: where a cell's pebbles or lobes sit, how big they are, how they
 // are turned and what rock they are is a hash of the cell's seed and nothing
@@ -47,7 +49,8 @@ export const grainsGLSL = /* glsl */ `
 
 // gHitK: what was hit
 #define GK_VOID -1   // the dark depth between pebbles (the ray went too deep)
-#define GK_PEBBLE -2 // a pebble (gHitA = its site); >= 0: lobe of a clod (gHitA = its cell)
+#define GK_PEBBLE -2 // a pebble (gHitA = its site)
+#define GK_CLOD 0    // a clod (gHitA = its cell)
 
 // ---- pebbles (gravel cells) ----
 const int PEB_N = int(PEBBLE_F + 0.5);    // pebble sites per cell along a line
@@ -64,17 +67,31 @@ const float PEB_MID_MIN = 0.7, PEB_FLAT_MIN = 0.45, PEB_FLAT_MAX = 0.8;
 const float PEB_CLUMP_R = 0.45;           // a lone gravel cell: pebbles within this of its middle (cells)
 // An empty cell inside the smooth surface holds pebbles of the gravel cell
 // next to it, looked for in this order (below first: they slumped there).
+// A site of an empty cell whose middle's field is under this share of the
+// surface level can't hold a pebble (its jittered centre is inside the
+// surface only where the field is near it): skips the neighbour search.
+const float PEB_FILL_PRECHECK = 0.6;
 const ivec3 PEB_FILL_DIRS[6] = ivec3[6](ivec3(0, -1, 0), ivec3(1, 0, 0), ivec3(-1, 0, 0), ivec3(0, 0, 1), ivec3(0, 0, -1), ivec3(0, 1, 0));
 
 // ---- clods (lone powder cells) ----
-const int CLOD_LOBES = 5;                 // a core and its lumps
-const float CLOD_CORE_R = 0.3, CLOD_CORE_VAR = 0.06;    // core semi-axis, cells
-const float CLOD_LUMP_R = 0.14, CLOD_LUMP_VAR = 0.08;   // lump semi-axis, cells
-const float CLOD_LUMP_OFF = 0.2, CLOD_LUMP_OFF_VAR = 0.08;   // lump's distance from the middle, cells
+const int CLOD_LOBES = 4;                 // a core and its lumps
+const float CLOD_CORE_R = 0.27, CLOD_CORE_VAR = 0.05;   // core's longest semi-axis, cells
+const float CLOD_LUMP_R = 0.17, CLOD_LUMP_VAR = 0.06;   // lump's longest semi-axis, cells
+const float CLOD_LUMP_OFF = 0.1, CLOD_LUMP_OFF_VAR = 0.08;   // lump's distance from the middle, cells (they overlap the core)
 const float CLOD_REST_SQUASH = 0.6;       // a resting clod's lobes keep this share of their height over the floor
-// Per element: shortest/longest semi-axis of a lobe.
-const float CLOD_FLAT_SAND = 0.75, CLOD_FLAT_SNOW = 0.85, CLOD_FLAT_GUNPOWDER = 0.7;
-const float CLOD_FLAT_ASH = 0.5, CLOD_FLAT_STONE = 0.7;
+const float CLOD_BLEND = 0.12;            // smooth-minimum width blending the lobes into one body, cells
+// Roughness: noise displacement of the surface (frequency per cell, amplitude cells), two octaves.
+const float CLOD_BUMP_F = 4.5, CLOD_BUMP = 0.035;
+const float CLOD_GRIT_F = 12.0, CLOD_GRIT = 0.01;
+const float SMIN_BULGE = 0.25;            // the smooth minimum swells the union by at most this share of its width
+const float CLOD_MARGIN = CLOD_BUMP + CLOD_GRIT + SMIN_BULGE * CLOD_BLEND;   // the lobes keep this far inside the cell (cells)
+// Per element: shortest/longest semi-axis of a lobe (clods are flattish crumbs).
+const float CLOD_FLAT_SAND = 0.6, CLOD_FLAT_SNOW = 0.7, CLOD_FLAT_GUNPOWDER = 0.6;
+const float CLOD_FLAT_ASH = 0.4, CLOD_FLAT_STONE = 0.6;
+// Sphere tracing: steps, step shrink (the noise steepens the field past a true
+// distance), hit tolerance (share of a pixel), normal stencil (cells, at least).
+const int CLOD_STEPS = 48;
+const float CLOD_STEP_K = 0.6, CLOD_HIT_PX = 0.5, CLOD_NORMAL_H = 2e-3;
 
 // ---- hand-off by footprint ----
 // Geometry starts where a feature is *_PX_NONE pixels across and has taken
@@ -190,9 +207,11 @@ bool pebbleAt(ivec3 s, ivec3 cell, vec4 a, bool lone, int fill, out vec3 c, out 
   r = PEB_Q * (PEB_R_MIN + PEB_R_VAR * u01(h));
   float jx = u01(h); float jy = u01(h); float jz = u01(h);
   c = (vec3(s) + 0.5 + (2.0 * vec3(jx, jy, jz) - 1.0) * PEB_JITTER) * PEB_Q;
-  c = clamp(c, vec3(cell) + r, vec3(cell) + 1.0 - r);   // a cell's matter stays in the cell
+  // (Pebbles may straddle their cell's faces: the walk tests them from both
+  // sides; where they would poke into open air the smooth surface below has
+  // already left them out.)
   if (pr >= PEB_P) return false;
-  if (lone) return distance(c, vec3(cell) + 0.5) < PEB_CLUMP_R;
+  if (lone) return distance(c, vec3(cell) + 0.5) + r < PEB_CLUMP_R;   // a round clump inside its cell
   return surfField(c)[CH_GRANULAR] >= SURF_ISO;   // the heap's smooth shape
 }
 void pebbleShape(float r, inout uint h, out vec3 sa, out mat3 R) {
@@ -214,19 +233,22 @@ int pebbleFill(ivec3 cell, out vec4 a) {
   return 0;
 }
 
-// The first pebble of gravel cell 'cell' the ray hits in [t0, t1] (the ray's
-// stretch through the cell), NO_HIT if none; sHit = its site. Walks the dual
-// sub-lattice (whose corners are the sites) and tests the cell's sites at each
-// step's corners; steps counts the walk against PEB_MAX_STEPS.
-float pebblesHit(ivec3 cell, vec4 a, bool lone, int fill, vec3 ro, vec3 rd, float t0, float t1, inout int steps, out ivec3 sHit) {
+// The first pebble the ray hits in [t0, t1] (its stretch through cell 'cell',
+// gravel or an empty cell borrowing pebbles), NO_HIT if none; sHit = its
+// site. Walks the dual sub-lattice (whose corners are the sites) and tests the
+// sites at each step's corners: the cell's own and those of gravel next door
+// reaching in. steps counts the walk against PEB_MAX_STEPS; tStop = where it
+// ran out (a dual-lattice plane, half a site off every cell face).
+float pebblesHit(ivec3 cell, vec4 a, bool lone, int fill, vec3 ro, vec3 rd, float t0, float t1,
+                 inout int steps, out ivec3 sHit, out float tStop) {
   sHit = ivec3(-1);
+  tStop = t0;
   float N = float(PEB_N);
   vec3 o2 = ro * N - 0.5, d2 = rd * N;   // dual cell k spans sites k .. k + 1
   ivec3 dc = ivec3(floor(o2 + d2 * t0 + sign(d2) * DUAL_NUDGE));
   ivec3 istp = ivec3(sign(d2));
   vec3 tDelta = abs(1.0 / d2);
   vec3 tMax = (vec3(dc) + step(0.0, d2) - o2) / d2;
-  ivec3 sLo = cell * PEB_N, sHi = sLo + PEB_N - 1;
   float best = NO_HIT;
   for (int i = 0; i < PEB_MAX_STEPS; i++) {
     if (steps >= PEB_MAX_STEPS) break;
@@ -234,9 +256,24 @@ float pebblesHit(ivec3 cell, vec4 a, bool lone, int fill, vec3 ro, vec3 rd, floa
     float tb = min(min(tMax.x, tMax.y), tMax.z);
     for (int k = 0; k < 8; k++) {
       ivec3 s = dc + ivec3(k & 1, (k >> 1) & 1, k >> 2);
-      if (any(lessThan(s, sLo)) || any(greaterThan(s, sHi))) continue;   // other cells' pebbles stay in them
+      ivec3 own = ivec3(floor((vec3(s) + 0.5) * PEB_Q));
       vec3 c; float r; uint h;
-      if (!pebbleAt(s, cell, a, lone, fill, c, r, h)) continue;
+      if (own == cell) {
+        if (!pebbleAt(s, cell, a, lone, fill, c, r, h)) continue;
+      } else {
+        // a neighbour's pebble reaching in: gravel's own, or one an empty cell borrowed
+        if (outside(own)) continue;
+        vec4 an = cellA(own);
+        int idn = eid(an);
+        if (idn == E_STONE) {
+          if (!pebbleAt(s, own, an, false, 0, c, r, h)) continue;
+        } else if (idn == E_EMPTY) {
+          if (surfField((vec3(s) + 0.5) * PEB_Q)[CH_GRANULAR] < SURF_ISO * PEB_FILL_PRECHECK) continue;   // (cheap: clearly outside)
+          vec4 af;
+          int fl = pebbleFill(own, af);
+          if (fl == 0 || !pebbleAt(s, own, af, false, fl, c, r, h)) continue;
+        } else continue;
+      }
       if (!ballNear(ro, rd, c, r, t0, best)) continue;
       vec3 sa; mat3 R;
       pebbleShape(r, h, sa, R);
@@ -244,11 +281,12 @@ float pebblesHit(ivec3 cell, vec4 a, bool lone, int fill, vec3 ro, vec3 rd, floa
       if (t >= t0 && t < best) { best = t; sHit = s; }
     }
     if (best <= tb || tb >= t1) break;   // nothing nearer can come later
+    tStop = tb;
     int ax = argmin3(tMax);
     dc[ax] += istp[ax];
     tMax[ax] += tDelta[ax];
   }
-  return best <= t1 ? best : NO_HIT;
+  return best <= t1 + PEB_Q ? best : NO_HIT;   // (a pebble straddling the exit face counts)
 }
 
 // ---- clods ----
@@ -256,39 +294,67 @@ float clodFlat(int id) {
   return id == E_SAND ? CLOD_FLAT_SAND : (id == E_SNOW ? CLOD_FLAT_SNOW : (id == E_GUNPOWDER ? CLOD_FLAT_GUNPOWDER
        : (id == E_ASH ? CLOD_FLAT_ASH : CLOD_FLAT_STONE)));
 }
-// Lobe k of the clod in a lone cell: centre c (grid units), semi-axes sa, axes R.
-void clodLobe(ivec3 cell, int id, vec4 a, bool resting, int k, out vec3 c, out vec3 sa, out mat3 R) {
-  uint h = pcg(floatBitsToUint(fract(a.w)) ^ (uint(k + 1) * GRAIN_SALT));
-  float fl = clodFlat(id);
-  float r;
-  vec3 off = vec3(0.0);
-  if (k == 0) r = CLOD_CORE_R + CLOD_CORE_VAR * u01(h);
-  else {
-    r = CLOD_LUMP_R + CLOD_LUMP_VAR * u01(h);
-    float z = 2.0 * u01(h) - 1.0; float ph = TWO_PI_G * u01(h);
-    float dist = CLOD_LUMP_OFF + CLOD_LUMP_OFF_VAR * u01(h);
-    float rz = sqrt(max(1.0 - z * z, 0.0));
-    off = dist * vec3(rz * cos(ph), z, rz * sin(ph));
-  }
-  float u1 = u01(h);
-  sa = r * vec3(1.0, mix(fl, 1.0, u1), fl);
-  R = randomTurn(h);
-  vec3 lc = 0.5 + off;
-  if (resting) lc.y = r + (lc.y - r) * CLOD_REST_SQUASH;   // slumped onto what it rests on
-  c = vec3(cell) + clamp(lc, vec3(r), vec3(1.0 - r));
-}
-float clodHit(ivec3 cell, int id, vec4 a, vec3 ro, vec3 rd, float tMin, out int kHit) {
-  kHit = GK_VOID;
+// The clod of a lone cell: its lobes (centre, semi-axes, inverse turn) and a
+// texture-space offset for its roughness, all from the cell's seed.
+void clodBuild(ivec3 cell, int id, vec4 a, out vec3 C[CLOD_LOBES], out vec3 S[CLOD_LOBES], out mat3 RT[CLOD_LOBES], out vec3 off) {
   bool resting = grainResting(cell);
-  float best = NO_HIT;
+  float fl = clodFlat(id);
+  uint h0 = pcg(floatBitsToUint(fract(a.w)));
+  float ox = u01(h0); float oy = u01(h0); float oz = u01(h0);
+  off = vec3(ox, oy, oz) * GRAIN_TEX_SPREAD;
   for (int k = 0; k < CLOD_LOBES; k++) {
-    vec3 c, sa; mat3 R;
-    clodLobe(cell, id, a, resting, k, c, sa, R);
-    if (!ballNear(ro, rd, c, sa.x, tMin, best)) continue;
-    float t = ellHit(ro, rd, c, sa, R);
-    if (t >= tMin && t < best) { best = t; kHit = k; }
+    uint h = pcg(floatBitsToUint(fract(a.w)) ^ (uint(k + 1) * GRAIN_SALT));
+    float r;
+    vec3 o = vec3(0.0);
+    if (k == 0) r = CLOD_CORE_R + CLOD_CORE_VAR * u01(h);
+    else {
+      r = CLOD_LUMP_R + CLOD_LUMP_VAR * u01(h);
+      float z = 2.0 * u01(h) - 1.0; float ph = TWO_PI_G * u01(h);
+      float dist = CLOD_LUMP_OFF + CLOD_LUMP_OFF_VAR * u01(h);
+      float rz = sqrt(max(1.0 - z * z, 0.0));
+      o = dist * vec3(rz * cos(ph), z, rz * sin(ph));
+    }
+    float u1 = u01(h);
+    S[k] = r * vec3(1.0, mix(fl, 1.0, u1), fl);
+    RT[k] = transpose(randomTurn(h));
+    vec3 lc = 0.5 + o;
+    float m = r + CLOD_MARGIN;
+    if (resting) lc.y = m + (lc.y - m) * CLOD_REST_SQUASH;   // slumped onto what it rests on
+    C[k] = vec3(cell) + clamp(lc, vec3(m), vec3(1.0 - m));
   }
-  return best;
+}
+// ellipsoid distance bound (Quilez): q in the ellipsoid's frame, semi-axes s
+float sdEll(vec3 q, vec3 s) {
+  float k0 = length(q / s), k1 = length(q / (s * s));
+  return k0 * (k0 - 1.0) / max(k1, 1e-6);
+}
+float clodSDF(vec3 p, vec3 C[CLOD_LOBES], vec3 S[CLOD_LOBES], mat3 RT[CLOD_LOBES], vec3 off, ivec3 cell) {
+  float d = sdEll(RT[0] * (p - C[0]), S[0]);
+  for (int k = 1; k < CLOD_LOBES; k++) d = sminP(d, sdEll(RT[k] * (p - C[k]), S[k]), CLOD_BLEND);
+  vec3 q = M_ROT * (p - vec3(cell) + off);
+  return d + CLOD_BUMP * (2.0 * vnoise(q * CLOD_BUMP_F) - 1.0) + CLOD_GRIT * (2.0 * vnoise(q * CLOD_GRIT_F) - 1.0);
+}
+// First hit of the clod in a lone cell along [t0, t1], NO_HIT if none.
+float clodHit(ivec3 cell, int id, vec4 a, vec3 ro, vec3 rd, float t0, float t1) {
+  vec3 C[CLOD_LOBES], S[CLOD_LOBES]; mat3 RT[CLOD_LOBES]; vec3 off;
+  clodBuild(cell, id, a, C, S, RT, off);
+  float t = t0;
+  for (int i = 0; i < CLOD_STEPS; i++) {
+    if (t > t1) break;
+    vec3 p = ro + rd * t;
+    float d = clodSDF(p, C, S, RT, off, cell);
+    if (d < CLOD_HIT_PX * footprint(p)) return t;
+    t += max(d * CLOD_STEP_K, CLOD_HIT_PX * footprint(p));
+  }
+  return NO_HIT;
+}
+vec3 clodNormal(vec3 p, ivec3 cell, int id, vec4 a) {
+  vec3 C[CLOD_LOBES], S[CLOD_LOBES]; mat3 RT[CLOD_LOBES]; vec3 off;
+  clodBuild(cell, id, a, C, S, RT, off);
+  float hN = max(CLOD_NORMAL_H, footprint(p));
+  const vec2 e = vec2(1.0, -1.0);
+  return normalize(e.xyy * clodSDF(p + e.xyy * hN, C, S, RT, off, cell) + e.yyx * clodSDF(p + e.yyx * hN, C, S, RT, off, cell)
+                 + e.yxy * clodSDF(p + e.yxy * hN, C, S, RT, off, cell) + e.xxx * clodSDF(p + e.xxx * hN, C, S, RT, off, cell));
 }
 
 // ---- the march's state for this pixel (kept small: it stays live across the whole march) ----
@@ -359,15 +425,16 @@ void grainEvent(ivec3 cell, int id, vec4 a, vec3 ro, vec3 rd, float tEnter, floa
     if (wG > 0.0) {
       if (isPebbles(id)) {
         if (gPebSteps < PEB_MAX_STEPS) {
-          ivec3 s;
-          tG = pebblesHit(cell, a, loneCell(cell), 0, ro, rd, tEnter, tExit, gPebSteps, s);
+          ivec3 s; float tStop;
+          tG = pebblesHit(cell, a, loneCell(cell), 0, ro, rd, tEnter, tExit, gPebSteps, s, tStop);
           gPebInside = true;
           if (tG < NO_HIT) { kG = GK_PEBBLE; aG = s; }
-          else if (gPebSteps >= PEB_MAX_STEPS) tG = tEnter;   // lost in the dark between the pebbles
+          else if (gPebSteps >= PEB_MAX_STEPS) tG = clamp(tStop, tEnter, tExit);   // lost in the dark between the pebbles
         }
       } else if (gClodCells < CLOD_MAX_CELLS && loneCell(cell)) {
         gClodCells++;
-        tG = clodHit(cell, id, a, ro, rd, tEnter, kG);
+        tG = clodHit(cell, id, a, ro, rd, tEnter, tExit);
+        kG = GK_CLOD;
       }
     }
   }
@@ -393,9 +460,10 @@ void grainEvent(ivec3 cell, int id, vec4 a, vec3 ro, vec3 rd, float tEnter, floa
     int fill = pebbleFill(cell, an);
     gPebInside = fill > 0;
     if (fill > 0) {
-      ivec3 s;
-      float t = pebblesHit(cell, an, false, fill, ro, rd, tIn, tExit, gPebSteps, s);
+      ivec3 s; float tStop;
+      float t = pebblesHit(cell, an, false, fill, ro, rd, tIn, tExit, gPebSteps, s, tStop);
       if (t < tG) { tG = t; kG = GK_PEBBLE; aG = s; }
+      else if (t >= NO_HIT && gPebSteps >= PEB_MAX_STEPS) { tG = clamp(tStop, tIn, tExit); kG = GK_VOID; }
     }
   }
 #endif
@@ -522,12 +590,10 @@ Surf grainSurf(ivec3 aH, int k, vec3 p, vec3 rd) {
     m.emit = hotEmit(m, s.T);
     gGrainSun = 0.0;
   } else {
-    // a lobe of a clod: the element's own texture, from a spot of texture space of the clod's own
+    // a clod: the element's own texture, from a spot of texture space of the clod's own
     vec4 a = cellA(aH);
     int id = eid(a);
-    vec3 c, sa; mat3 R;
-    clodLobe(aH, id, a, grainResting(aH), k, c, sa, R);
-    vec3 n = ellNormal(p, c, sa, R);
+    vec3 n = clodNormal(p, aH, id, a);
     s.n = n; s.ng = n; s.id = id; s.cell = aH; s.seed = fract(a.w); s.T = a.y;
     uint hc = pcg(floatBitsToUint(s.seed));
     float ox = u01(hc); float oy = u01(hc); float oz = u01(hc);
