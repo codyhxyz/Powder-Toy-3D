@@ -147,6 +147,39 @@ ctx = {
 }
 ```
 
+## Gunplay v2 (2026-10-08): events and ownership
+
+Gunplay v2 follows the Gunplay Feel Lab's recommendations: ballistic rounds handed to the sim at impact,
+ZzFX sound through PositionalAudio, CC0 glTF viewmodels with spring recoil and sway, three.quarks VFX,
+camera kick, trauma shake and a hitmarker, plus an optional realistic body (Quaternius) next to the stickman.
+
+### Events (`src/pov/events.js`)
+
+`povEvents.emit(name, payload)` / `povEvents.on(name, fn)`. Positions are **grid cells** (Vector3) unless they
+say world. Emitters own their event names. Listeners never mutate payloads.
+
+| Event | Emitted by | Payload |
+|---|---|---|
+| `gun:fire` | gun | `{ origin, dir, muzzleWorld }`. The round left the muzzle (origin grid, dir unit; muzzleWorld is the viewmodel muzzle in world space, for the flash). |
+| `gun:dry` | gun | `{}`. The trigger clicked but nothing fired (muzzle blocked). |
+| `round:move` | gun | `{ id, from, to }`. A round in flight moved this frame (grid), for tracers. |
+| `round:end` | gun | `{ id }`. The round is gone (impact or out of the box). |
+| `impact` | gun, axe | `{ source: 'gun'\|'axe', point, normal, id, energy, broke }`. Something was struck. id is the element hit, energy is ½·DENS·v² in sim units, and broke is true/false when the striker knows, else null. |
+| `tool:action` | shovel, bucket, axe, physgun | `{ tool, action, id?, point?, amount? }`. tool is 'shovel'\|'bucket'\|'axe'\|'physgun'; action is 'dig'\|'dump'\|'scoop'\|'pour'\|'swing'\|'refuse'\|'grab'\|'fling'\|'release'. Physgun 'hold' state is read from the tool, not an event. |
+| `player:step` | shell (camera bob cycle) | `{ speed, inLiquid }`. A footfall. |
+
+The player's own events (`player.on('hurt'|'death'|'land'|'splash')`) stay as they are; listeners subscribe there too.
+
+### Ownership (v2)
+
+| Area | Owner | Files |
+|---|---|---|
+| Ballistic rounds, GPU segment trace, impact handoff | gun | `src/pov/tools/gun.tool.js` (all but `buildModel`), `src/pov/ballistics.js`, `src/shaders/povTrace.js` |
+| Viewmodels (Kenney CC0 glTF), viewmodel rig (spring recoil, sway), overlay render pass, tool emits | viewmodels | `public/models/tools/**`, `src/pov/models.js`, `src/pov/viewmodel.js`, the model-building code in every `*.tool.js` (and `buildModel` in gun.tool.js), `tool:action` emits in shovel/bucket/axe/physgun, the overlay hook in `src/app.js` |
+| Camera kick, trauma shake, hitmarker, crosshair bloom, three.quarks VFX (flash, sparks, dust, tracer), footsteps | feel | `src/pov/feel.js`, `src/pov/vfx.js`, `src/pov/camera.js`, `src/pov/hud.js`, `src/pov/pov.css`, `src/pov/index.js` |
+| Sound (ZzFX + PositionalAudio) for every POV event | audio | `src/pov/audio.js` (+ one wiring line in `src/pov/index.js`) |
+| Realistic body (Quaternius, AnimationMixer) behind a Stickman/Realistic setting | character | `public/models/character/**`, `src/pov/figureReal.js`, the settings row in `src/app.js`, a figure switch in `src/pov/index.js` |
+
 ## Verifying (headless GPU)
 
 - Use playwright's Chromium with `--use-angle=metal --enable-gpu --ignore-gpu-blocklist` against your own
