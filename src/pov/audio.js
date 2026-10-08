@@ -67,7 +67,8 @@ const ECHO_GAIN = 0.55;                 // the echo's gain
 const TOOL_HIT_GAIN = 0.45;             // a tool's material knock (shovel into wood) next to its own sound
 const LOAD_REF_CELLS = 16;              // cells moved in one tool action that play at gain 1
 const LOAD_GAIN_MIN = 0.4, LOAD_GAIN_MAX = 1.2;
-const POUR_TAIL_S = 0.2;                // s: the pour loop fades once no 'pour' came for this long
+const POUR_TAIL_S = 0.2;                // s: the pour loop fades once no 'pour' came for this long...
+const POUR_TAIL_FRAMES = 3;             // ...or for this many frames, on a slow machine
 const POUR_SIZZLE_GAP_S = 0.35;         // s between sizzles while pouring lava
 const HUM_GRACE_S = 0.25;               // s after a grab before the hum checks that the physgun really holds
 const STEP_LOUD_SPEED = 9;              // cells/s: a footfall at sprinting speed plays at gain 1
@@ -239,7 +240,7 @@ const S = {
   buffers: new Map(),            // preset → AudioBuffer[]
   positional: [], flat: [],      // voice pools: { audio, at: Vector3|null, name, t }
   loops: {},                     // name → { audio, on }
-  stolen: 0, played: 0, log: [],
+  stolen: 0, played: 0, seq: 0, log: [],   // log: recent plays, each with a running seq
   underwater: false, filterHz: OPEN_HZ, master: 0,
 };
 
@@ -248,11 +249,12 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
   let starting = false, gestured = false;
   let zz = null;
   let boundPlayer = null, unbindPlayer = [];
-  let pourUntil = -Infinity, lastSizzle = -Infinity, humSince = 0, lastHurt = -Infinity;
+  let lastPour = -Infinity, frameDt = 0, lastTick = 0, lastSizzle = -Infinity, humSince = 0, lastHurt = -Infinity;
   const lastStart = new Map();   // preset → { t, at }
   const vWorld = new THREE.Vector3(), vEar = new THREE.Vector3();
 
-  const now = () => S.ctx.currentTime;
+  const now = () => S.ctx.currentTime;              // the audio clock: for scheduling audio params
+  const clock = () => performance.now() / 1000;     // s, wall clock: for this module's own timers (the audio clock can stall or race)
   const toWorld = (g, out) => out.copy(g).multiplyScalar(getScale()).add(getVolume().position);
 
   // ---- start-up, on a user gesture in POV
@@ -339,11 +341,11 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
   // at: grid position (Vector3) for a sound in the world, or null for one of your own
   function play(name, { at = null, gain = 1, rate = 1, delay = 0 } = {}) {
     if (!S.started || !PRESETS[name]) return null;
-    const t = now();
+    const t = now(), wall = clock();
     const prev = lastStart.get(name);
-    if (prev && t - prev.t < SAME_SOUND_GAP_S
+    if (prev && wall - prev.t < SAME_SOUND_GAP_S
       && (at && prev.at ? at.distanceTo(prev.at) < SAME_SOUND_CELLS : !at && !prev.at)) return null;
-    lastStart.set(name, { t, at: at?.clone() ?? null });
+    lastStart.set(name, { t: wall, at: at?.clone() ?? null });
 
     const list = buffersFor(name);
     const v = grabVoice(at ? S.positional : S.flat);
@@ -369,7 +371,7 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
     audio.source.playbackRate.value = audio.playbackRate;
     v.name = name; v.at = at?.clone() ?? null; v.t = t;
     S.played++;
-    S.log.push({ name, at: at ? [at.x, at.y, at.z] : null, gain: +gain.toFixed(3), rate: +audio.playbackRate.toFixed(3), delay: +delay.toFixed(4), t: +t.toFixed(3) });
+    S.log.push({ seq: ++S.seq, name, at: at ? [at.x, at.y, at.z] : null, gain: +gain.toFixed(3), rate: +audio.playbackRate.toFixed(3), delay: +delay.toFixed(4), t: +t.toFixed(3) });
     if (S.log.length > LOG_SIZE) S.log.shift();
     return v;
   }
@@ -387,7 +389,7 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
       a.playbackRate = rate;
       a.play();
       a.gain.gain.setTargetAtTime(gain, t, LOOP_FADE_S);
-      S.log.push({ name, at: null, gain, rate, delay: 0, t: +t.toFixed(3), loop: true });
+      S.log.push({ seq: ++S.seq, name, at: null, gain, rate, delay: 0, t: +t.toFixed(3), loop: true });
       if (S.log.length > LOG_SIZE) S.log.shift();
     } else {
       a.gain.gain.setTargetAtTime(0, t, LOOP_FADE_S);
@@ -438,13 +440,13 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
         if (id === E.LAVA) play('sizzle', { at, gain: TOOL_HIT_GAIN });
         break;
       case 'bucket:pour': {
-        pourUntil = now() + POUR_TAIL_S;
+        lastPour = clock();
         loop('pourLoop', true, { rate });
-        if (id === E.LAVA && now() - lastSizzle > POUR_SIZZLE_GAP_S) { lastSizzle = now(); play('sizzle', { at, gain: TOOL_HIT_GAIN }); }
+        if (id === E.LAVA && clock() - lastSizzle > POUR_SIZZLE_GAP_S) { lastSizzle = clock(); play('sizzle', { at, gain: TOOL_HIT_GAIN }); }
         break;
       }
       case 'axe:swing': play('swoosh'); break;
-      case 'physgun:grab': play('physGrab'); loop('physHum', true); humSince = now(); break;
+      case 'physgun:grab': play('physGrab'); loop('physHum', true); humSince = clock(); break;
       case 'physgun:fling': play('physFling'); loop('physHum', false); break;
       case 'physgun:release': play('physRelease'); loop('physHum', false); break;
       default: break;
@@ -472,8 +474,8 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
         if (live()) play('splashBig', { gain: clamp(speed / SPLASH_LOUD_SPEED, SPLASH_GAIN_MIN, 1) });
       }),
       player.on('hurt', ({ amount, cause }) => {
-        if (!live() || now() - lastHurt < HURT_GAP_S) return;
-        lastHurt = now();
+        if (!live() || clock() - lastHurt < HURT_GAP_S) return;
+        lastHurt = clock();
         const name = HURT_BY_CAUSE.find(([re]) => re.test(cause ?? ''))?.[1] ?? 'hurtThud';
         play(name, { gain: clamp(amount / HURT_FULL, HURT_GAIN_MIN, 1) });
       }),
@@ -508,15 +510,17 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
   }
 
   function tick() {
-    const s = state();
+    const s = state(), t = clock();
+    frameDt = t - lastTick;
+    lastTick = t;
     bindPlayer(s.player);
     if (!S.started && s.active && (gestured || navigator.userActivation?.hasBeenActive)) start();
     if (S.started) {
       setMaster(s.active && !document.hidden);
       setUnderwater(!!(s.active && s.player?.headInLiquid));
       if (!s.active || s.player?.dead) stopLoops();
-      if (S.loops.pourLoop.on && now() > pourUntil) loop('pourLoop', false);
-      if (S.loops.physHum.on && now() - humSince > HUM_GRACE_S && !physgunHolds(s.toolbelt)) loop('physHum', false);
+      if (S.loops.pourLoop.on && clock() - lastPour > Math.max(POUR_TAIL_S, POUR_TAIL_FRAMES * frameDt)) loop('pourLoop', false);
+      if (S.loops.physHum.on && clock() - humSince > HUM_GRACE_S && !physgunHolds(s.toolbelt)) loop('physHum', false);
     }
     if (s.active && !document.hidden) requestAnimationFrame(tick);
     else setTimeout(tick, IDLE_POLL_MS);
@@ -556,6 +560,7 @@ export function stats() {
     voices: { positional: playing(S.positional), flat: playing(S.flat), maxPositional: POSITIONAL_VOICES, maxFlat: FLAT_VOICES },
     stolen: S.stolen,
     played: S.played,
+    seq: S.seq,
     loops: Object.fromEntries(Object.entries(S.loops).map(([k, l]) => [k, l.on])),
     underwater: S.underwater,
     filterHz: S.filterHz,
