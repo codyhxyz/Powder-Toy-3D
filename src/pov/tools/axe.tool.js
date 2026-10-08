@@ -27,7 +27,7 @@ const SWING_INTERVAL = 0.5;  // s between swings
 
 // viewmodel, in cells (camera space: +x right, +y up, −z forward); the
 // model's origin is the end of the handle, in the hand
-const AXE_POS = [0.62, -0.75, -1.45];
+const AXE_POS = [0.7, -0.95, -1.55];
 const REST_PITCH = 0.35;     // rad, held up and back
 const RAISE_PITCH = 0.9;     // rad, top of the wind-up
 const STRIKE_PITCH = -0.9;   // rad, blade down at impact

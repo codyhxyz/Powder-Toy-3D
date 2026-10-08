@@ -28,13 +28,13 @@ export const MODELS = {
     url: 'blaster-kit/blaster-q.glb', rotate: [0, 0, 0], fit: 'z', size: 1.3, anchor: [0.5, 0.5, 0.5],
   },
   axe: {      // handle up from the hand, blade forward
-    url: 'survival-kit/tool-axe.glb', rotate: [0, Math.PI / 2, 0], fit: 'y', size: 1.5, anchor: [0.5, 0, 0.5],
+    url: 'survival-kit/tool-axe.glb', rotate: [0, Math.PI / 2, 0], fit: 'y', size: 1.25, anchor: [0.5, 0, 0.5],
   },
-  shovel: {   // laid flat, blade forward: the handle runs back toward the eye
-    url: 'survival-kit/tool-shovel.glb', rotate: [-Math.PI / 2, 0, 0], fit: 'z', size: 2.6, anchor: [0.5, 0.5, 0.25],
+  shovel: {   // laid flat, blade forward, held at the end of the handle
+    url: 'survival-kit/tool-shovel.glb', rotate: [-Math.PI / 2, 0, 0], fit: 'z', size: 2.2, anchor: [0.5, 0.5, 1],
   },
   bucket: {   // upright, held by the bail
-    url: 'survival-kit/bucket.glb', rotate: [0, 0, 0], fit: 'y', size: 0.8, anchor: [0.5, 0.5, 0.5],
+    url: 'survival-kit/bucket.glb', rotate: [0, 0, 0], fit: 'y', size: 0.9, anchor: [0.5, 0.5, 0.5],
   },
 };
 

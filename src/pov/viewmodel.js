@@ -14,13 +14,13 @@ import { povEvents } from './events.js';
 //     back past rest and settles it;
 //   - sway: the hand trails the look (inertia), from the aim's angular velocity;
 //   - a slow breathing drift while idle, a walk bob in step with the camera's,
-//     and a lowered, tipped pose while swimming.
+//     and a raised pose while swimming (the tool held up, out of the stroke).
 // The selected tool calls rig.update(ctx) every frame.
 //
 //   const rig = viewmodelRig(env);        // one per env.viewmodel, shared by every tool
 //   const hand = rig.hand([x, y, z]);     // add the model to hand; hand.visible is the tool's to set
 //   rig.update(ctx); rig.kick(1);
-//   rig.state                              // { pos, rot } the rig's current offset (cells, rad), for checks
+//   rig.state                              // { pos, rot, spring } the rig's current offset (cells, rad), for checks
 //
 // The pass. The hands are drawn after the main post pass, in their own render
 // (renderViewmodels, one call in app.js's frame loop), so they never go
@@ -64,9 +64,9 @@ const BOB_Y = 0.05;                   // cells, down at each footstep
 const BOB_X = 0.04;                   // cells, side to side once per cycle
 const BOB_ROLL = 0.03;                // rad, roll with the side-to-side
 
-// swimming: the tool held low and tipped down, out of the stroke
-const SWIM_DROP = 0.35;               // cells down
-const SWIM_PITCH = -0.3;              // rad
+// swimming: the tool held up and tipped back, out of the stroke
+const SWIM_LIFT = 0.12;               // cells up
+const SWIM_PITCH = 0.25;              // rad
 const SWIM_RATE = 4;                  // 1/s: how fast the pose blends in and out
 
 // render on demand: the rig asks for frames until it has settled this close to rest
@@ -82,12 +82,11 @@ const LIGHT_SCALE = Math.PI;
 const approach = (rate, dt) => 1 - Math.exp(-rate * dt);
 const wrapAngle = (a) => Math.atan2(Math.sin(a), Math.cos(a));
 
-const rigs = new WeakMap();   // env.viewmodel → rig
-
+// The rig of env.viewmodel, made on first use. It is also env.viewmodel.userData.rig
+// (for checks: `__app.pov.viewmodel.userData.rig`).
 export function viewmodelRig(env) {
-  let rig = rigs.get(env.viewmodel);
-  if (!rig) { rig = createRig(env); rigs.set(env.viewmodel, rig); }
-  return rig;
+  env.viewmodel.userData.rig ??= createRig(env);
+  return env.viewmodel.userData.rig;
 }
 
 function createRig(env) {
@@ -155,7 +154,7 @@ function createRig(env) {
     // Turning left (yaw rate > 0), the hand lags: it drifts right and turns right of the aim.
     pos.set(
       sp.x + sway.x * SWAY_POS + bobX,
-      sp.y - sway.y * SWAY_POS + bobY + breath - swim * SWIM_DROP,
+      sp.y - sway.y * SWAY_POS + bobY + breath + swim * SWIM_LIFT,
       sp.z,
     );
     rot.set(

@@ -34,7 +34,7 @@ const RGBA = 4;
 
 // viewmodel, in cells (camera space: +x right, +y up, −z forward). The recoil
 // is the viewmodel rig's spring (viewmodel.js), thrown by gun:fire and gun:dry.
-const GUN_POS = [0.55, -0.42, -1.45];
+const GUN_POS = [0.5, -0.45, -1.5];
 const MUZZLE = [0, 0.1, -0.66];    // cells from the model's centre to the end of the bore
 const FLASH_TIME = 0.06;           // s the muzzle flash shows
 const FLASH_SIZE = 0.7;            // cells

@@ -32,8 +32,8 @@ const REFUSE_TOAST_INTERVAL = 1.5;   // s between repeated toasts
 // held item, in cells (camera space; the viewmodel rig scales it by the world's
 // cell size). The model (models.js 'bucket') is upright and centred; the
 // liquid's surface is a disc inside it, placed by shares of the model's size.
-const HELD_POS = [1.1, -1.0, -2.1];  // right, down, ahead of the eye
-const HELD_TILT = 0.2;               // radians, the rim tips toward the eye
+const HELD_POS = [0.8, -0.8, -1.8];  // right, down, ahead of the eye
+const HELD_TILT = 0.35;              // radians, the rim tips toward the eye
 const PAIL_FLOOR = 0.04;             // the pail's floor, as a share of the model's height from its bottom...
 const PAIL_RIM = 0.6;                // ...and its rim (the bail rises above it)
 const PAIL_BASE_R = 0.36;            // the pail's inner radius at the floor, as a share of the model's width...
@@ -61,7 +61,7 @@ export default {
     const surface = new THREE.Mesh(new THREE.CircleGeometry(1, SEGMENTS).rotateX(-Math.PI / 2), heldMaterial('#ffffff'));
     surface.visible = false;
     const pail = { floor: 0, rim: 0, baseR: 0, rimR: 0 };   // cells, from the model once it loads
-    let surfaceVersion = -1, pourHeard = false;
+    let surfaceVersion = -1, pourPress = 0, pourHeard = -1;   // presses of right-click, and the last one announced
     const mesh = attachModel(held, 'bucket', (obj, { size }) => {
       pail.floor = size.y * (PAIL_FLOOR - 0.5);
       pail.rim = size.y * (PAIL_RIM - 0.5);
@@ -109,9 +109,10 @@ export default {
       const p = transfer.put(load, { cells, max: n, vel: toStepVelocity(v, ctx) });
       if (p) {
         pour -= n;
-        p.then((landed) => {
-          if (!landed || pourHeard) return;
-          pourHeard = true;
+        const press = pourPress;
+        p.then((landed) => {   // may land after the button is up: announce each press once
+          if (!landed || pourHeard === press) return;
+          pourHeard = press;
           act('pour', { id, point: spout, amount: landed });
         });
       }
@@ -133,8 +134,9 @@ export default {
         }
         if (ctx.primary) scoop(ctx, aimInReach(ctx, HAND_REACH));
         else scoopWait = 0;
+        if (ctx.secondaryPressed) pourPress++;
         if (ctx.secondary) pourOut(ctx);
-        else { pour = 0; pourHeard = false; }
+        else pour = 0;
       },
       deselect() { hand.visible = false; pour = 0; },
       status: () => load.status(),

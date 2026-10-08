@@ -32,13 +32,12 @@ const REFUSE_TOAST_INTERVAL = 1.5;   // s between repeated "won't break" / "full
 
 // held item, in cells (camera space; the viewmodel rig scales it by the world's
 // cell size). The model (models.js 'shovel') lies blade forward, its origin at
-// the blade's back edge.
-const HELD_POS = [1.0, -0.95, -2.0]; // right, down, ahead of the eye
-const HELD_PITCH = -0.35, HELD_YAW = 0.25;   // radians: the blade tips down and in toward the crosshair
+// the end of the handle, in the hand.
+const HELD_POS = [0.85, -1.15, -0.75]; // right, down, ahead of the eye
+const HELD_PITCH = 0.12, HELD_YAW = 0.3;   // radians: the blade reaches up and in toward the crosshair
 const HEAP_R = 0.25;                 // cells: radius of a full load's heap on the blade
 const HEAP_MIN = 0.3;                // a nearly empty load still shows this share of it
-const HEAP_ALONG = 0.12;             // the heap's centre, as a share of the model's length behind its tip
-const HEAP_LIFT = 0.03;              // cells above the blade's middle plane
+const HEAP_ALONG = 0.18;             // the heap's centre, as a share of the model's length behind its tip (mid-blade)
 const HEAP_SEGMENTS = [10, 6];       // around, down the dome
 
 const ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 3.5l5.5 5.5M17.8 6.2L11 13"/>'
@@ -64,7 +63,8 @@ export default {
       new THREE.SphereGeometry(HEAP_R, ...HEAP_SEGMENTS, 0, Math.PI * 2, 0, Math.PI / 2), heldMaterial('#ffffff'));
     heap.visible = false;
     const mesh = attachModel(held, 'shovel', (obj, { size }) => {
-      heap.position.set(0, HEAP_LIFT, size.z * (HEAP_ALONG - MODELS.shovel.anchor[2]));
+      // on the blade's top face: the blade is the model's thickest part, so its top is the box's
+      heap.position.set(0, size.y * (1 - MODELS.shovel.anchor[1]), size.z * (HEAP_ALONG - MODELS.shovel.anchor[2]));
       held.add(heap);
     });
     let heapVersion = -1;
