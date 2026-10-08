@@ -225,8 +225,9 @@ void grainShape(int id, bool peb, float r, inout uint h, out vec3 s, out mat3 R)
 }
 
 // Nearest grain of the cell hit by the ray at t >= tMin (grain skip left
-// out), NO_HIT if none; g is filled for a hit.
-float grainsHit(ivec3 cell, int id, vec4 a, vec3 ro, vec3 rd, float tMin, int skip, inout GrainRec g) {
+// out), NO_HIT if none; kHit = its index.
+float grainsHit(ivec3 cell, int id, vec4 a, vec3 ro, vec3 rd, float tMin, int skip, out int kHit) {
+  kHit = -1;
   CellGrains G = cellGrains(cell, id, a);
   bool peb = G.peb;
   int n = G.n;
@@ -256,24 +257,44 @@ float grainsHit(ivec3 cell, int id, vec4 a, vec3 ro, vec3 rd, float tMin, int sk
     float t = (-eb - sqrt(eh)) / ea;
     if (t < tMin || t >= best) continue;
     best = t;
-    g.kind = GK_GRAIN; g.k = k; g.id = id; g.cell = cell; g.a = a;
-    g.p = ro + rd * t; g.n = normalize(R * ((o + t * d) / s)); g.c = c; g.R = R; g.h = h;
+    kHit = k;
   }
   return best;
+}
+
+// The full record of grain k (k < 0: the void) of a cell, hit at p by a ray along rd.
+GrainRec grainRec(ivec3 cell, int k, vec3 p, vec3 rd) {
+  GrainRec g;
+  g.a = cellA(cell); g.id = eid(g.a); g.cell = cell; g.k = k; g.p = p;
+  g.kind = k < 0 ? GK_VOID : GK_GRAIN;
+  g.n = -normalize(rd); g.c = p; g.R = mat3(1.0); g.h = 0u;
+  if (k >= 0) {
+    CellGrains G = cellGrains(cell, g.id, g.a);
+    vec3 c; float r; uint h; vec3 s; mat3 R;
+    grainAt(g.id, G, k, c, r, h);
+    grainShape(g.id, G.peb, r, h, s, R);
+    g.c = c + vec3(cell); g.R = R; g.h = h;
+    g.n = normalize(R * ((transpose(R) * (p - g.c)) / (s * s)));   // ellipsoid gradient
+  }
+  return g;
 }
 
 // ---- the march's state for this pixel ----
 int gGrainMode = GM_OPEN;
 int gGrainCells = 0;        // grain cells tested so far
 float gGrainDepth = 0.0;    // path through gravel cells since the last hit-free air (cells)
-GrainRec gHit;              // the grain of an EV_GRAIN event
-// The path not taken while crossfading in the hand-off band: it ended on its
-// surface with (col, trans) in front of it; gAltW = the grains' weight there
-// (< 0: none); gAltGeom: the stored path is the grains one.
+// (kept small: these stay live across the whole march)
+ivec3 gHitCell = ivec3(0);  // the grain of an EV_GRAIN event: its cell ...
+int gHitK = -1;             // ... and index (-1: the void)
+// The path not taken while crossfading in the hand-off band: it ended at gAltP
+// (a grain: gAltCell, gAltK; else the granular surface) with (col, trans) in
+// front of it; gAltW = the grains' weight there (< 0: none); gAltGeom: the
+// stored path is the grains one.
 float gAltW = -1.0;
 bool gAltGeom = false;
-vec3 gAltCol = vec3(0.0), gAltTrans = vec3(0.0), gAltRd = vec3(0.0), gAltP = vec3(0.0), gAltN = vec3(0.0);
-GrainRec gAltHit;
+vec3 gAltCol = vec3(0.0), gAltTrans = vec3(0.0), gAltRd = vec3(0.0), gAltP = vec3(0.0);
+ivec3 gAltCell = ivec3(0);
+int gAltK = -1;
 
 // The textured granular surface hit at hp: do grains replace it here? True if
 // every granular cell around hp holds grains (or there are none, e.g. the
@@ -297,13 +318,13 @@ bool grainSuppress(vec3 hp, out float w) {
 }
 
 // Per cell of the realistic march (render.js), once the segment's event
-// (ev at tEv, channel evCh, forced normal evN) is known: the grains of this
+// (ev at tEv, channel evCh) is known: the grains of this
 // cell may come first (ev becomes EV_GRAIN), and the granular surface may be
 // skipped where grains replace it. In the hand-off band the first of the two
 // to be reached is stored as the other path (gAlt*) and the ray goes on as
 // the other; grainResolve blends them.
 void grainEvent(ivec3 cell, int id, vec4 a, vec3 ro, vec3 rd, float tEnter, float tExit,
-                vec3 col, vec3 trans, inout int ev, int evCh, vec3 evN, inout float tEv,
+                vec3 col, vec3 trans, inout int ev, int evCh, inout float tEv,
                 inout bool anyHit, inout vec3 hitPos) {
   if (id == E_EMPTY) gGrainDepth = 0.0;
   if (gGrainMode == GM_TEX) return;
@@ -312,20 +333,21 @@ void grainEvent(ivec3 cell, int id, vec4 a, vec3 ro, vec3 rd, float tEnter, floa
   if (!cand && !isoCand) return;
   // 1. this cell's grains (gated by footprint before any per-cell work)
   float tG = NO_HIT, wG = 0.0;
-  GrainRec g;
+  int kG = -1;
+  ivec3 cG = cell;
   if (cand) {
     wG = grainW(id, footprint(ro + rd * tEnter));
     if (wG > 0.0 && grainCellOk(cell, id)) {
       gGrainCells++;
       // (pebbles reaching back into the cell the ray just left count: nothing there was hit)
-      tG = grainsHit(cell, id, a, ro, rd, isPebbles(id) ? max(tEnter - PEB_OVER * PEB_OVER_REACH, 0.0) : tEnter, -1, g);
+      tG = grainsHit(cell, id, a, ro, rd, isPebbles(id) ? max(tEnter - PEB_OVER * PEB_OVER_REACH, 0.0) : tEnter, -1, kG);
       if (tG < NO_HIT && isPebbles(id) && (tExit - tG) * length(rd) < PEB_OVER * PEB_OVER_REACH) {
         // the next gravel cell's pebbles reach into this one: one may be in front
         ivec3 nc = ivec3(floor(ro + rd * tExit + rd * (CELL_STEP_NUDGE / length(rd))));
         if (stoneAt(nc)) {
-          GrainRec g2;
-          float t2 = grainsHit(nc, E_STONE, cellA(nc), ro, rd, tEnter, -1, g2);
-          if (t2 < tG) { tG = t2; g = g2; }
+          int k2;
+          float t2 = grainsHit(nc, E_STONE, cellA(nc), ro, rd, tEnter, -1, k2);
+          if (t2 < tG) { tG = t2; kG = k2; cG = nc; }
         }
       }
       if (tG >= NO_HIT && isPebbles(id)) {
@@ -333,8 +355,7 @@ void grainEvent(ivec3 cell, int id, vec4 a, vec3 ro, vec3 rd, float tEnter, floa
         float seg = tExit - tEnter;
         if (gGrainDepth + seg > PEB_VOID_DEPTH || gGrainCells >= GRAIN_MAX_CELLS) {
           tG = min(tEnter + max(PEB_VOID_DEPTH - gGrainDepth, 0.0), tExit);
-          g.kind = GK_VOID; g.k = -1; g.id = id; g.cell = cell; g.a = a;
-          g.p = ro + rd * tG; g.n = -normalize(rd); g.c = g.p; g.R = mat3(1.0); g.h = 0u;
+          kG = -1; cG = cell;
         }
         gGrainDepth += seg;
       }
@@ -346,7 +367,7 @@ void grainEvent(ivec3 cell, int id, vec4 a, vec3 ro, vec3 rd, float tEnter, floa
     if (gGrainMode == GM_OPEN && wS < 1.0) {
       vec3 hp = ro + rd * tEv;
       gAltW = wS; gAltGeom = false; gAltCol = col; gAltTrans = trans; gAltRd = rd;
-      gAltP = hp; gAltN = dot(evN, evN) > 0.0 ? evN : surfNormal(hp, CH_GRANULAR, -rd);
+      gAltP = hp;
       if (!anyHit) { anyHit = true; hitPos = hp; }
     }
     gGrainMode = GM_GEOM;
@@ -355,12 +376,13 @@ void grainEvent(ivec3 cell, int id, vec4 a, vec3 ro, vec3 rd, float tEnter, floa
   // 3. a grain in front of whatever else this segment holds
   if (tG < tEv) {
     if (gGrainMode == GM_OPEN && wG < 1.0) {
-      gAltW = wG; gAltGeom = true; gAltCol = col; gAltTrans = trans; gAltRd = rd; gAltHit = g;
-      if (!anyHit) { anyHit = true; hitPos = g.p; }
+      gAltW = wG; gAltGeom = true; gAltCol = col; gAltTrans = trans; gAltRd = rd;
+      gAltP = ro + rd * tG; gAltCell = cG; gAltK = kG;
+      if (!anyHit) { anyHit = true; hitPos = gAltP; }
       gGrainMode = GM_TEX;
     } else {
       gGrainMode = GM_GEOM;
-      ev = EV_GRAIN; tEv = tG; gHit = g;
+      ev = EV_GRAIN; tEv = tG; gHitCell = cG; gHitK = kG;
     }
   }
 }
@@ -383,13 +405,13 @@ float grainSunVis(GrainRec g) {
   vec3 tDelta = abs(1.0 / rd);
   ivec3 cell = g.cell;
   vec3 tMax = (vec3(cell) + step(0.0, rd) - ro) / rd;
-  GrainRec tmp;
+  int kTmp;
   for (int i = 0; i <= GRAIN_SUN_CELLS; i++) {
     if (outside(cell)) break;
     vec4 a = i == 0 ? g.a : cellA(cell);
     int id = eid(a);
     if (grainElement(id) && (i == 0 || grainCellOk(cell, id))
-        && grainsHit(cell, id, a, ro, rd, 0.0, i == 0 ? g.k : -1, tmp) < NO_HIT) return 0.0;
+        && grainsHit(cell, id, a, ro, rd, 0.0, i == 0 ? g.k : -1, kTmp) < NO_HIT) return 0.0;
     int ax = argmin3(tMax);
     cell[ax] += istp[ax];
     tMax[ax] += tDelta[ax];
@@ -448,9 +470,9 @@ Surf grainSurf(GrainRec g) {
   return s;
 }
 
-// Radiance of the EV_GRAIN hit (render.js).
-vec3 grainShade(vec3 rd) {
-  vec3 c = shadeSurf(grainSurf(gHit), rd);
+// Radiance of the EV_GRAIN hit at hp (render.js).
+vec3 grainShade(vec3 hp, vec3 rd) {
+  vec3 c = shadeSurf(grainSurf(grainRec(gHitCell, gHitK, hp, rd)), rd);
   gGrainSun = 1.0;
   return c;
 }
@@ -459,8 +481,8 @@ vec3 grainShade(vec3 rd) {
 void grainResolve(inout vec3 col, inout vec3 trans) {
   if (gAltW < 0.0) return;
   Surf s;
-  if (gAltGeom) s = grainSurf(gAltHit);
-  else s = gatherSurf(gAltP, gAltN, CH_GRANULAR);
+  if (gAltGeom) s = grainSurf(grainRec(gAltCell, gAltK, gAltP, gAltRd));
+  else s = gatherSurf(gAltP, surfNormal(gAltP, CH_GRANULAR, -gAltRd), CH_GRANULAR);
   vec3 alt = gAltCol + gAltTrans * shadeSurf(s, gAltRd);
   gGrainSun = 1.0;
   float w = gAltGeom ? gAltW : 1.0 - gAltW;   // weight of the stored path

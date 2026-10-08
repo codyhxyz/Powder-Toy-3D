@@ -821,7 +821,7 @@ void main() {
         phiStale = true;
       }
 #ifdef GRAINS_ANY
-      grainEvent(cell, id, a, ro, rd, tEnter, tExit, col, trans, ev, evCh, evN, tEv, anyHit, hitPos);   // gfx/grains.js
+      grainEvent(cell, id, a, ro, rd, tEnter, tExit, col, trans, ev, evCh, tEv, anyHit, hitPos);   // gfx/grains.js
 #endif
 
       // ---- what lies along [tEnter, tEv] ----
@@ -850,7 +850,7 @@ void main() {
         vec3 hp = ro + rd * tEv;
         if (!anyHit) { anyHit = true; hitPos = hp; }
 #ifdef GRAINS_ANY
-        if (ev == EV_GRAIN) { col += trans * grainShade(rd); trans = vec3(0.0); break; }
+        if (ev == EV_GRAIN) { col += trans * grainShade(hp, rd); trans = vec3(0.0); break; }
 #endif
         if (ev == EV_OPAQUE) {
           vec3 n = dot(evN, evN) > 0.0 ? evN : surfNormal(hp, evCh, -rd);
