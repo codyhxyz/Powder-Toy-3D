@@ -602,8 +602,8 @@ addEventListener('keydown', (e) => {
   else if (k === '?') actions.toggleHelp();
   else if (k === 'p' || k === 'P') actions.screenshot();
   else if (k === 'Escape') {
-    const overlay = toolbar.isOpen || settingsPanel.isOpen || help.isOpen;
-    toolbar.close(); setSettingsOpen(false); help.setOpen(false);
+    const overlay = toolbar.isOpen || settingsPanel.isOpen || help.isOpen || mp.panelOpen;
+    toolbar.close(); setSettingsOpen(false); help.setOpen(false); mp.closePanel();
     if (!overlay) leaveBuild();
   }
   else if (/^[0-9]$/.test(k)) { const v = VIEWS.find((x) => x.hotkey === k); if (v) setView(v.id); }

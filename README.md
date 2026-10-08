@@ -216,7 +216,8 @@ A small GPU probe pass reads those values and dims signs that are hidden behind 
 Click the players button in the toolbar to host the current world. This copies an invite link.
 Guests see the host's world from their own camera, paint into it, and everyone sees everyone's brush with a name tag.
 Undo, scenes, grid size and pause stay with the host. If the host switches to another tab, the world pauses and guests are told.
-If the host leaves, guests keep a copy of the world and play on alone.
+Clicking the button again opens the session panel, which lists the players, copies the invite link, and has *Stop hosting*
+(or *Leave* for guests). If the host leaves, guests keep a copy of the world and play on alone.
 
 ```sh
 npm run relay      # local relay on ws://localhost:8787 (needs wrangler); then npm run dev
