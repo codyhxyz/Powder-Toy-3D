@@ -30,6 +30,7 @@ Press `?` in the app for the full list.
 | Scroll | zoom |
 | `W` `A` `S` `D`, `Q` `E` | move, turn left/right (hold Shift to go faster) |
 | `R` | reset the camera |
+| `F` | drop into the world as a person, or pop back out |
 
 | Everything else | |
 |---|---|
@@ -41,11 +42,42 @@ Press `?` in the app for the full list.
 
 Hovering shows the element, temperature and air pressure under the cursor. Settings are remembered between visits.
 
+## First person
+
+Press `F` to drop a body onto the surface under the cursor. The camera swoops down into its eyes and the world stays
+running around you. You're about 5½ cells tall (one cell is roughly 30 cm), so a lava flow is a river and a house is
+a building. `F` again swoops back out.
+
+The body is as mortal as a sand grain. You float or sink by density (hold Space to keep your head out of water),
+blasts throw you along the pressure gradient, and heat, lava, cold, acid, drowning, being buried and hard landings
+hurt. When you die, the camera pulls back and shows what killed you, then you respawn where you dropped in.
+
+| In first person | |
+|---|---|
+| Mouse | look (click to capture the mouse, Esc to release it) |
+| `W` `A` `S` `D`, Shift | walk, sprint |
+| Space / `C` | jump or swim up / swim down |
+| Left / right click | use the tool / its second action |
+| `1`–`5` or scroll | pick a tool |
+| `V` | first or third person |
+
+The tools are physical and finite. Infinite painting stays in the god view.
+
+1. **Shovel:** digs a load of powder, or breaks solids into their debris (slower the harder they are). Right-click
+   dumps the load where you aim.
+2. **Bucket:** scoops a load of liquid, and right-click pours it. A bucket of lava stays hot.
+3. **Axe:** a short, wide swing that chops wood and smashes glass, ice and plants.
+4. **Gun:** fires a metal slug, a real cell in the sim at full speed. It drops and slows in water like any other
+   grain and breaks whatever its energy beats. Shot in the air, its recoil throws you.
+5. **Physgun:** a force beam on loose matter. Hold to carry a floating ball of water or sand, right-click to fling it.
+
+Nothing a tool carries is made up: the cells it takes come back out exactly (same element, temperature and state).
+
 ## Elements
 
 The dock groups elements like a periodic-table strip, each tile in the element's colour with a TPT-style abbreviation:
 
-- **Powders:** SAND, STNE, GUNP, ASH, SNOW
+- **Powders:** SAND, STNE, GUNP, ASH, SNOW, BGLA (broken glass), SAWD (sawdust), BRMT (scrap metal)
 - **Liquids:** WATR, ACID, OIL, LAVA
 - **Gases:** WTRV (steam), SMKE, FIRE
 - **Solids:** WALL, METL, GLAS, ICE, WOOD, PLNT, CLNE
@@ -123,6 +155,13 @@ Density decides whether it can displace its neighbour, so sand sinks through wat
 - **Air pressure.** Pressure diffuses, and a shock front also propagates one cell per step with exponential falloff, blocked by solids.
   Its gradient accelerates matter (a = −∇P/ρ), so explosions throw things and walls shield them.
 - **Forces.** Gravity, buoyancy, drag and jitter.
+- **Hardness and breaking.** Solids have a hardness in the sim's kinetic-energy units (½·density·speed²). A grain, drop or
+  slug that runs into a solid carrying at least that much energy breaks it into debris: glass into shards, wood into
+  sawdust, metal into scrap, rock into stone, ice into snow. The projectile pays the hardness out of its energy, and the
+  debris flies off with its momentum, heated by the work of breaking it. Impacts that don't break anything stop the
+  grain and turn its energy into heat, which is how a slug can set off a powder keg. A blast breaks a solid when the
+  pressure difference across it exceeds a multiple of its hardness, so windows shatter well away from an explosion,
+  rock chips only right beside one, and metal never breaks.
 
 **3. Brush** (only while painting).
 

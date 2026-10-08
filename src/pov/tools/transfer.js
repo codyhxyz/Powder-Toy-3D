@@ -136,6 +136,11 @@ export function persistentLoad(key, capacity) {
   return loads.get(key);
 }
 export const allLoads = () => loads;
+// The world was replaced (undo, a scene load, a new grid): what the tools carry
+// came from the old one, so keeping it would duplicate those cells.
+export function emptyLoads() {
+  for (const load of loads.values()) { load.cells.length = 0; load.version++; }
+}
 
 // ---------------------------------------------------------------- the transfer engine
 

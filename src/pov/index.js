@@ -433,6 +433,8 @@ export function createPov(app) {
     enter,
     exit,
     update,
+    // the world was replaced (undo, a scene load): tools drop what they carry from the old one
+    worldReplaced: () => toolsModule?.emptyLoads?.(),
     aimRay,
     blocksKey,
     // tests: look around without pointer lock (radians)

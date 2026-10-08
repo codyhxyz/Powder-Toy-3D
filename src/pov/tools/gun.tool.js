@@ -15,7 +15,10 @@ import { gunFrag, toolPass, shadedBox, glowTexture, disposeTree } from '../../sh
 //
 // Recoil conserves momentum: Δv_body = m_slug·v_slug / m_body, masses on the
 // element table's density scale (DENS × cells), v in cells/s at the real step
-// rate.
+// rate. A one-cell slug is a 30 cm block of metal, so that kick is huge. Standing,
+// the ground takes it the way it takes any impact (solids are immovable in the
+// sim): friction the sideways part, the floor the downward part. Only an upward
+// kick (shooting at your feet) or a shot fired in the air or water moves you.
 
 const FIRE_INTERVAL = 0.35;        // s between shots
 const SPAWN_SEARCH = 16;           // cells walked along the ray looking for the muzzle cell
@@ -129,6 +132,7 @@ export default {
           reading = false;
           const id = Math.round(readBuf[0]);
           if (id === E.EMPTY || ELEMENTS[id]?.kind === K.GAS) {
+            if (player.onGround) dv.set(0, Math.max(dv.y, 0), 0);
             player.applyImpulse(dv);
             flashUntil = time + FLASH_TIME;
             kickAt = time; kickScale = 1;

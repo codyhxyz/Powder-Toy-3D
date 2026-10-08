@@ -1,5 +1,7 @@
 import { createHotbar, HOTBAR_SLOTS } from './hotbar.js';
-import { sharedTransfer } from './transfer.js';
+import { sharedTransfer, emptyLoads } from './transfer.js';
+
+export { emptyLoads };
 
 // The POV toolbelt: finds every ./*.tool.js, puts each in its hotbar slot, and
 // drives the selected one. See docs/pov.md, "The tool contract".

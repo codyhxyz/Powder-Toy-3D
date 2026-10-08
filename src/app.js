@@ -119,6 +119,7 @@ let pickPending = false;
 
 function build() {
   pov?.exit(true);   // the body lives in the old grid
+  pov?.worldReplaced();
   if (sim) {
     sim.dispose();
     scene.remove(volume, edges);
@@ -221,6 +222,7 @@ function loadPreset(name, undoable = true) {
   else buildPreset(name, sim);
   post.reset();
   signs?.clear();
+  pov?.worldReplaced();
   save();
   return true;
 }
@@ -499,7 +501,7 @@ function setPixelRatio(r) {
 
 function undo() {
   if (mp.guard()) return;
-  if (sim.undo()) hud.toast('Undone');
+  if (sim.undo()) { pov?.worldReplaced(); hud.toast('Undone'); }
   else hud.toast('Nothing to undo');
   toolbar.setUndoEnabled(sim.canUndo);
 }
