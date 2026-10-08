@@ -1,4 +1,5 @@
 import { ELEMENTS } from '../../elements.js';
+import { CELL_M } from '../../scale.js';
 
 // Close-up liquid detail (gfx/detail.js switches): what a liquid surface shows
 // once a pixel is a few millimetres across. Each part compiles in only with
@@ -15,15 +16,14 @@ import { ELEMENTS } from '../../elements.js';
 //                        (a pour, an impact) its surface roughens and aerates
 //                        into foam
 //
-// Units: the sim's cells are CELL_M metres, and a step lasts STEP_S seconds
-// (what makes its gravity real gravity), so velocities in cells/step convert
-// to m/s and the physical constants below to cells.
-
-const CELL_M = 0.08;                   // m per cell
+// Units: everything is sized in metres and converted with CELL_M
+// (src/scale.js). Speeds: the sim's time doesn't follow its length scale
+// (scale.js), so a speed in cells/step is read through what physically sets
+// it, the height fallen: v²/2g_sim cells, i.e. CELL_M times that in metres,
+// gives the real speed √(2 g h). That makes one cell/step MS_PER_CELL_STEP.
 const G_REAL = 9.81;                   // m/s²
 const SIM_GRAVITY = 0.025;             // cells/step² (sim.js GRAVITY_DEFAULT)
-const STEP_S = Math.sqrt((SIM_GRAVITY * CELL_M) / G_REAL);   // s per step (≈ 1/70)
-const MS_PER_CELL_STEP = CELL_M / STEP_S;                    // m/s per cell/step (≈ 5.6)
+const MS_PER_CELL_STEP = Math.sqrt((G_REAL * CELL_M) / SIM_GRAVITY);   // m/s per cell/step (≈ 11)
 
 // Liquid properties at room temperature: surface tension σ (N/m), density ρ
 // (kg/m³), contact angle θ on ordinary solids and glass (degrees; water on
@@ -34,28 +34,36 @@ const LIQ_PROPS = {
   OIL: { sigma: 0.032, rho: 900, theta: 10 },
   ACID: { sigma: 0.072, rho: 1050, theta: 20 },
 };
-// Capillary length lc = √(σ / ρg) (m): how far the meniscus reaches.
-// Meniscus height at the wall h0 = lc·√(2(1 − sin θ)) (m), the exact result
-// for a flat wall (Landau & Lifshitz §61).
+// Capillary length lc = √(σ / ρg) (m): how far the meniscus reaches (2.7 mm
+// for water). Meniscus height at the wall h0 = lc·√(2(1 − sin θ)) (m), the
+// exact result for a flat wall (Landau & Lifshitz §61).
 const capLen = (p) => Math.sqrt(p.sigma / (p.rho * G_REAL));
 const menH0 = (p) => capLen(p) * Math.sqrt(2 * (1 - Math.sin((p.theta * Math.PI) / 180)));
 
 // Dispersion of gravity-capillary waves, ω² = gk + σk³/ρ (water), for the
-// time scale of each ripple octave (k from cycles per cell).
-const omega = (cyclesPerCell) => {
-  const k = (2 * Math.PI * cyclesPerCell) / CELL_M;
+// time scale of each ripple octave.
+const omega = (lambdaM) => {
+  const k = (2 * Math.PI) / lambdaM;
   const w = LIQ_PROPS.WATER;
   return Math.sqrt(G_REAL * k + (w.sigma * k ** 3) / w.rho);
 };
-// Ripple octaves added below the wind ripples' two (gfx/liquid.js RIPPLE_*:
-// 0.3 and 0.63 cycles/cell). Wavelengths ≈ 6, 3 and 1.5 cm: the last one is
-// at the gravity-capillary crossover (1.7 cm), the shortest wind ripples.
+// Ripple octaves continuing the wind ripples (gfx/liquid.js RIPPLE_*: two
+// octaves, 0.3 and 0.3·2.1 cycles/cell) down to the gravity-capillary
+// crossover, λc = 2π·lc ≈ 1.7 cm for water: the shortest wind ripples (below
+// it waves are capillary, damped fast and not wind-sustained). Geometric
+// spacing, CAP_OCTAVES of them, the last at λc.
 const RIPPLE_BASE_FREQ = 0.3;          // cycles/cell, gfx/liquid.js RIPPLE_FREQ
+const RIPPLE_BASE_OCT2 = 2.1;          // gfx/liquid.js RIPPLE_OCT2
 const RIPPLE_BASE_DRIFT = 0.6;         // noise units/s, gfx/liquid.js RIPPLE_DRIFT
-const CAP_FREQS = [1.3, 2.64, 5.36];   // cycles/cell (λ = CELL_M / f)
+const CAP_OCTAVES = 5;
+const LAMBDA_TOP_M = CELL_M / (RIPPLE_BASE_FREQ * RIPPLE_BASE_OCT2);   // wind ripples' finest, m
+const LAMBDA_C_M = 2 * Math.PI * capLen(LIQ_PROPS.WATER);               // crossover, m
+const CAP_RATIO = (LAMBDA_TOP_M / LAMBDA_C_M) ** (1 / CAP_OCTAVES);
+const CAP_LAMBDAS = Array.from({ length: CAP_OCTAVES }, (_, i) => LAMBDA_TOP_M / CAP_RATIO ** (i + 1));   // m
+const CAP_FREQS = CAP_LAMBDAS.map((l) => CELL_M / l);   // cycles/cell
 // Each octave evolves faster than the base octave by the ratio of their wave
-// frequencies, so the model's existing (slow) clock is kept, scaled physically.
-const CAP_DRIFTS = CAP_FREQS.map((f) => (RIPPLE_BASE_DRIFT * omega(f)) / omega(RIPPLE_BASE_FREQ));
+// frequencies, so the model's existing clock is kept, scaled physically.
+const CAP_DRIFTS = CAP_LAMBDAS.map((l) => (RIPPLE_BASE_DRIFT * omega(l)) / omega(CELL_M / RIPPLE_BASE_FREQ));
 
 const g = (x) => (Number.isInteger(x) ? x.toFixed(1) : x.toPrecision(6));
 const perLiquid = (fn) => ELEMENTS.map((e) => g(LIQ_PROPS[e.key] ? fn(LIQ_PROPS[e.key]) : 0));
@@ -66,7 +74,6 @@ export const liquidDetailGLSL = /* glsl */ `
 #endif
 #ifdef LIQ_DETAIL
 #define MS_PER_CELL_STEP ${g(MS_PER_CELL_STEP)}   // m/s per cell/step
-#define CELL_M ${g(CELL_M)}                       // m per cell
 bool liqDetailOn(int id) { return SURFCH[id] == CH_LIQUID && id != E_ICE; }
 const float LIQ_SIGMA[NE] = float[NE](${perLiquid((p) => p.sigma).join(', ')});   // surface tension, N/m
 
@@ -76,21 +83,22 @@ vec3 tiltNormal(vec3 n, vec3 gr) { return normalize(n - (gr - n * dot(gr, n))); 
 #endif
 
 #ifdef DETAIL_LIQ_RIPPLES
-// Gravity-capillary ripples: three octaves past the wind ripples, on the same
+// Gravity-capillary ripples: CAP_OCTAVES octaves past the wind ripples, on the same
 // upward-facing surfaces (RIPPLE_UP_*), each its own value-noise height field
 // in (x, z, time). Equal slope per octave (the saturation range of wind-wave
 // spectra: slope variance flat per octave), the same slope as the wind
 // ripples'. Octaves fade in by the pixel footprint (lodFade), so far away
 // nothing changes.
-const float CAP_FREQ[3] = float[3](${CAP_FREQS.map(g).join(', ')});    // cycles/cell
-const float CAP_DRIFT[3] = float[3](${CAP_DRIFTS.map(g).join(', ')});  // noise units/s, by dispersion
+#define CAP_OCTAVES ${CAP_OCTAVES}
+const float CAP_FREQ[CAP_OCTAVES] = float[CAP_OCTAVES](${CAP_FREQS.map(g).join(', ')});    // cycles/cell (λ ${CAP_LAMBDAS.map((l) => (l * 100).toFixed(1)).join(', ')} cm)
+const float CAP_DRIFT[CAP_OCTAVES] = float[CAP_OCTAVES](${CAP_DRIFTS.map(g).join(', ')});  // noise units/s, by dispersion
 #define CAP_SHIFT 13.7   // lattice offset per octave (noise units), so octaves don't line up
 vec3 liquidCapillary(vec3 p, vec3 n) {
   float up = smoothstep(RIPPLE_UP_LO, RIPPLE_UP_HI, n.y);
   if (up <= 0.0) return n;
   float fp = footprint(p);
   vec3 gr = vec3(0.0);
-  for (int i = 0; i < 3; i++) {
+  for (int i = 0; i < CAP_OCTAVES; i++) {
     float w = lodFade(CAP_FREQ[i], fp);
     if (w <= 0.0) break;
     // d/d(noise xz) is the slope per unit noise gradient, as RIPPLE_SLOPE
@@ -146,7 +154,7 @@ vec3 liquidMeniscus(vec3 p, vec3 n, int id) {
 // solid jet at speed v gives v; a sparse spray, its volume fraction of v),
 // bilinear across the four columns around the point. Over a pool that is
 // what lands there; on a stream's side, the stream above.
-#define AGIT_REACH 4           // cells above the point
+#define AGIT_REACH 4           // cells above the point (1.2 m at CELL_M = 0.3)
 // Air entrainment by a plunging jet starts at ~1 m/s (Ervine et al. 1980;
 // Chanson 1997); a jet past ~4 m/s is white with it.
 #define FOAM_V_ONSET 1.0       // m/s
@@ -209,9 +217,10 @@ vec4 triNoiseD(vec3 p, vec3 n, float f, float t) {
 }
 
 // Agitated water is rough: breaking, churning surfaces carry slopes of
-// ~0.3 at a few cm (Cox & Munk's slope variance at gale force is ~0.05,
+// ~0.3 over ~15 cm (Cox & Munk's slope variance at gale force is ~0.05,
 // rms 0.22, and a plunge pool is rougher still).
-#define ROUGH_FREQ 1.7         // cycles/cell (≈ 5 cm bumps)
+#define ROUGH_LAMBDA_M 0.15    // m, size of the churned bumps
+#define ROUGH_FREQ (CELL_M / ROUGH_LAMBDA_M)   // cycles/cell
 #define ROUGH_SLOPE 0.3        // rms-ish slope at full agitation, per unit noise gradient
 #define ROUGH_RATE 3.0         // noise units/s: churn decorrelates in ~1/3 s
 // Foam: a bubble raft, patchy (two octaves of noise thresholded to the
@@ -220,8 +229,10 @@ vec4 triNoiseD(vec3 p, vec3 n, float f, float t) {
 // past the terminator, since light goes in and out of the bubble layer.
 #define FOAM_COVER_MAX 0.7     // covered fraction where a jet plunges at full agitation
 #define SPRAY_COVER_MAX 0.3    // ... and on falling liquid fully torn up (white streaks, still clear between)
-#define FOAM_FREQ 2.3          // cycles/cell (≈ 3.5 cm patches)
-#define FOAM_FREQ2 5.1         // second octave, cycles/cell (bubble clusters)
+#define FOAM_PATCH_M 0.12      // m, foam patches between open water
+#define FOAM_CLUSTER_M 0.04    // m, bubble clusters within them (second octave)
+#define FOAM_FREQ (CELL_M / FOAM_PATCH_M)      // cycles/cell
+#define FOAM_FREQ2 (CELL_M / FOAM_CLUSTER_M)   // cycles/cell
 #define FOAM_OCT2_W 0.4        // its weight (first: 1 − this)
 #define FOAM_RATE 1.5          // noise units/s
 #define FOAM_EDGE 0.08         // threshold softness (noise units)
