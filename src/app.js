@@ -21,6 +21,7 @@ import { createPacer, settleFrames, sceneKey } from './gfx/pacing.js';
 import { CHANNELS, MEDIA } from './gfx/materials.js';
 import { GI_BLEND } from './sim.js';
 import { createMultiplayer } from './net/multiplayer.js';
+import { createPov } from './pov/index.js';
 
 // Optional modules (built in parallel); the app works without them.
 const optional = import.meta.glob(['./views.js', './signs.js', './constructions.js'], { eager: true });
@@ -117,6 +118,7 @@ const pickBuf = new Float32Array(8);
 let pickPending = false;
 
 function build() {
+  pov?.exit(true);   // the body lives in the old grid
   if (sim) {
     sim.dispose();
     scene.remove(volume, edges);
@@ -229,6 +231,7 @@ Object.assign(signLayer.style, { position: 'fixed', inset: '0', pointerEvents: '
 document.body.append(signLayer);
 let signs = null;
 let builds = null; // constructions (optional module)
+let pov = null;    // first-person mode (src/pov)
 
 // ---------------------------------------------------------------- picking & brush
 const pointer = new THREE.Vector2();
@@ -247,9 +250,12 @@ function gridRay() {
   return raycaster.ray.clone().applyMatrix4(invVolume.copy(volume.matrixWorld).invert());
 }
 
+// In POV the pick follows the crosshair (the screen centre) instead of the pointer.
+const povRay = new THREE.Ray();
 function requestPick() {
-  if (pickPending || !pointerInside) return;
-  const ray = gridRay();
+  const fromPov = !!pov?.aimRay(povRay.origin, povRay.direction);
+  if (pickPending || (!pointerInside && !fromPov)) return;
+  const ray = fromPov ? povRay : gridRay();
   pickMat.uniforms.uRo.value.copy(ray.origin);
   pickMat.uniforms.uRd.value.copy(ray.direction);
   pickMat.uniforms.tA.value = sim.stateA;
@@ -268,6 +274,23 @@ function requestPick() {
       hover.P = pickBuf[6];
     }
   }).catch(() => { pickPending = false; });
+}
+
+// One-off pick along a grid-space ray (ro, rd), e.g. to find the ground: resolves to
+// { valid, cell, face, id, T, P } like `hover`.
+const rayTarget = new THREE.WebGLRenderTarget(2, 1, { type: THREE.FloatType, depthBuffer: false });
+function pickRay(ro, rd) {
+  pickMat.uniforms.uRo.value.copy(ro);
+  pickMat.uniforms.uRd.value.copy(rd);
+  pickMat.uniforms.tA.value = sim.stateA;
+  pickMat.uniforms.tB.value = sim.stateB;
+  pickMat.uniforms.tBrick.value = sim.brick.texture;
+  sim.run(pickMat, rayTarget);
+  const buf = new Float32Array(8);
+  return renderer.readRenderTargetPixelsAsync(rayTarget, 0, 0, 2, 1, buf).then(() => ({
+    valid: buf[3] >= 0, cell: new THREE.Vector3(buf[0], buf[1], buf[2]), face: buf[3],
+    id: Math.round(buf[4]), T: buf[5], P: buf[6],
+  }));
 }
 
 const isTool = () => settings.tool < 0;
@@ -290,6 +313,11 @@ const tmpV = new THREE.Vector3();
 function updateBrush() {
   const g = sim.g;
   brushValid = false;
+  if (pov?.active) {
+    brush.set({ visible: false });
+    builds?.update({ hover, active: false });
+    return;
+  }
   if (settings.tool !== SIGN_TOOL && !isBuild(settings.tool)) {
     if (painting) {
       plane.constant = -dragY;
@@ -487,7 +515,7 @@ const thumbTarget = new THREE.WebGLRenderTarget(320, 200, { depthBuffer: true })
 const thumbCam = new THREE.PerspectiveCamera();
 const thumbPixels = new Uint8Array(320 * 200 * 4);
 function renderThumb(viewId, canvas) {
-  thumbCam.copy(camera);
+  thumbCam.copy(camera, false);   // not its children (the POV viewmodel)
   thumbCam.aspect = 1.6;
   thumbCam.updateProjectionMatrix();
   const u = volume.material.uniforms;
@@ -532,6 +560,7 @@ canvasEl.addEventListener('pointermove', (e) => {
 canvasEl.addEventListener('pointerleave', () => { pointerInside = false; });
 canvasEl.addEventListener('pointerdown', (e) => {
   toolbar.close();
+  if (pov?.active) return;   // POV handles its own mouse buttons
   const wasEditing = !!signs?.editing;
   if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
   if (e.button !== 0 || e.altKey || wasEditing) return; // a click that just finishes editing a sign doesn't paint
@@ -561,7 +590,7 @@ canvasEl.addEventListener('contextmenu', (e) => e.preventDefault());
 
 // Shift + scroll changes the brush size instead of zooming.
 canvasEl.addEventListener('wheel', (e) => {
-  if (!e.shiftKey) return;
+  if (!e.shiftKey || pov?.active) return;
   e.preventDefault();
   e.stopImmediatePropagation();
   const d = e.deltaY || e.deltaX;
@@ -585,6 +614,8 @@ addEventListener('keydown', (e) => {
   if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); return; }
   if (mod) return;
   const k = e.key;
+  if (k === 'f' || k === 'F') { if (!e.repeat) { painting = false; pov?.toggle(); } return; }
+  if (pov?.blocksKey(e)) return;   // POV owns movement, Space and the digits while active
   if (e.code === 'Space') { e.preventDefault(); setPaused(!settings.paused); }
   else if (k === '.') stepOnce = true;
   else if (k === '[') setRadius(settings.radius - 1);
@@ -702,8 +733,11 @@ function frame(now) {
   // only frames that rendered measure how expensive rendering is
   if (renderedLast) autoResolution(dt, clock.getElapsed());
 
-  rig.update(dt);
-  controls.update();
+  if (pov?.active) pov.update(dt);
+  else {
+    rig.update(dt);
+    controls.update();
+  }
   updateBrush();
 
   if (painting && brushValid) {
@@ -762,9 +796,9 @@ function frame(now) {
 
     signs?.update();
     requestPick();
-  }
+  } else if (pov?.active) requestPick();   // the crosshair cell stays fresh for the tools
 
-  if (pointerInside && !uiHover && hover.valid && hover.id >= 0 && !painting) {
+  if (!pov?.active && pointerInside && !uiHover && hover.valid && hover.id >= 0 && !painting) {
     const el = ELEMENTS[hover.id];
     hud.showReadout(pointerClient[0], pointerClient[1], { name: el.name, color: el.color, T: hover.T, P: hover.P });
   } else {
@@ -802,8 +836,15 @@ try {
   setView(settings.view);
   setPaused(false);
   toolbar.setUndoEnabled(false);
+  pov = createPov({
+    renderer, scene, camera, controls, canvas: renderer.domElement, hud, settings, mp, isTyping,
+    getSim: () => sim, getVolume: () => volume, getScale: () => scale,
+    hover, pointerHover: () => pointerInside && !uiHover, pickRay,
+    requestRender: () => pacer.wake(),
+  });
   window.__app = {
     get sim() { return sim; }, get volume() { return volume; }, get scale() { return scale; }, get signs() { return signs; }, get builds() { return builds; },
+    get pov() { return pov; },
     SUN, scene, settings, camera, controls, loadPreset, selectTool, setView, hover, renderer, rig, renderThumb, gfx, post, mp,
     requestRender: () => pacer.wake(),   // for changes the frame loop can't see (async results)
   };
