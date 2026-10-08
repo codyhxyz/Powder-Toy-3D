@@ -625,7 +625,9 @@ addEventListener('resize', () => {
 
 // ---------------------------------------------------------------- loop
 const clock = new THREE.Timer();
-let frames = 0, fpsTime = 0, fps = 60;
+// The fps readout is the rate frames are drawn while drawing: a paused, still
+// scene draws nothing (render on demand) and reads as idle, not as a low rate.
+let frames = 0, fpsTime = 0, fps = 60, idleTime = 0;
 // Render on demand (gfx/pacing.js). The derived passes settle once the slowest
 // field EMA and the GI blend (each probe is traced every other frame) have
 // converged; the view once TAA's history has.
@@ -700,8 +702,6 @@ function frame(now) {
   if (!pacer.due(now)) return;
   clock.update(now);
   const dt = Math.min(clock.getDelta(), DT_MAX);
-  fpsTime += dt;
-  if (fpsTime > FPS_WINDOW) { if (frames > 0) fps = frames / fpsTime; frames = 0; fpsTime = 0; }
   // only frames that rendered measure how expensive rendering is
   if (renderedLast) autoResolution(dt, clock.getElapsed());
 
@@ -733,6 +733,10 @@ function frame(now) {
     `${camera.matrixWorld.elements}|${camera.projectionMatrix.elements}|${pixelRatio}|${innerWidth}x${innerHeight}`
     + `|${JSON.stringify(settings)}|${JSON.stringify(gfx)}|${JSON.stringify(post.settings)}|${sceneKey(scene)}`,
     runDerived || wantShot);
+  // a frame's dt measures the drawing rate only when the frame before it drew too
+  if (runView && renderedLast) { frames++; fpsTime += dt; }
+  if (fpsTime > FPS_WINDOW) { fps = frames / fpsTime; frames = 0; fpsTime = 0; }
+  idleTime = runView ? 0 : idleTime + dt;
   renderedLast = runView;
   if (runView) updateGfxUniforms(sim, SUN);   // (runDerived implies runView)
   if (runDerived) {
@@ -746,7 +750,6 @@ function frame(now) {
   }
 
   if (runView) {
-    frames++;
     volume.updateMatrixWorld();
     const u = volume.material.uniforms;
     u.tA.value = sim.stateA;
@@ -775,7 +778,7 @@ function frame(now) {
   }
   const g = sim.g;
   hud.setStats({
-    fpsV: fps,
+    fpsV: idleTime > FPS_WINDOW ? null : fps,   // null: idle
     stepsV: settings.paused || mp.isGuest ? 0 : settings.steps * fps, // guests don't simulate
     cellsV: `${(g.nx * g.ny * g.nz / 1e6).toFixed(1)}M`,
     resV: settings.autoRes ? `${Math.round(pixelRatio * 100)}% res` : '',
