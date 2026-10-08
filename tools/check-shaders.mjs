@@ -19,6 +19,7 @@ import * as stamp from '../src/shaders/stamp.js';
 import * as gi from '../src/shaders/gi.js';
 import * as povBody from '../src/shaders/povBody.js';
 import * as transfer from '../src/shaders/transfer.js';
+import * as povTools from '../src/shaders/povTools.js';
 
 // three.js prefixes: ShaderMaterial (GLSL1-style source upgraded to 300 es)
 // and RawShaderMaterial with glslVersion GLSL3.
@@ -71,6 +72,7 @@ for (const [label, dims] of Object.entries(grids)) {
   check(`fieldFinal-${label}`, raw + fields.fieldBlurFrag(g, true), 'frag');
   for (let stage = 0; stage < fields.BOOST_STAGES; stage++) check(`fieldBoost${stage}-${label}`, raw + fields.fieldBoostFrag(g, stage), 'frag');
   for (const [k, v] of Object.entries({ ...move, ...react, ...probe, ...stamp, ...gi, ...povBody, ...transfer })) if (typeof v === 'function') check(`${k}-${label}`, raw + v(g), 'frag');
+  for (const k of ['axeFrag', 'gunFrag', 'physgunComFrag', 'physgunFrag']) check(`${k}-${label}`, raw + povTools[k](g), 'frag');
 }
 check('volumeVert', shaderMatVert + render.volumeVert, 'vert');
 check('quadVert', raw + quadVert, 'vert');
