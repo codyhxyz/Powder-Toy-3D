@@ -12,6 +12,12 @@ uniform float uGlints;      // 1 = sun glints on grains
 
 const float PI_S = 3.14159265;
 
+// Close-up grains (gfx/grains.js, gfx/detail.js): compiled in only when switched on.
+#if defined(DETAIL_GRAINS) || defined(DETAIL_GRAIN_CLUSTERS)
+#define GRAINS_ANY
+float gGrainSun = 1.0;   // sun visibility past a grain's neighbours, set around its shadeSurf
+#endif
+
 struct Surf {
   vec3 p;       // hit point (grid units)
   vec3 n;       // shading normal (geometry + material bump)
@@ -367,6 +373,31 @@ vec4 reliefHeight(int id, vec3 p, vec3 n, float fp) {
   return vec4(0.0);
 }
 
+// Gravel (E_STONE): its pebbles' rock types and look, shared by the pebble
+// texture (matOf) and the pebbles drawn as geometry up close (gfx/grains.js),
+// so the hand-off between them keeps the same stones.
+// rock types (relative albedo; their mean is ~1)
+const vec3 PEB_GRANITE = vec3(1.0, 1.02, 1.05), PEB_BASALT = vec3(0.6, 0.6, 0.63);
+const vec3 PEB_SANDSTONE = vec3(1.22, 1.08, 0.92), PEB_QUARTZ = vec3(1.3), PEB_RUST = vec3(1.15, 0.92, 0.8);
+// cumulative shares of the rock types (the rest is rust)
+const float PEB_GRANITE_UPTO = 0.35, PEB_BASALT_UPTO = 0.6, PEB_SANDSTONE_UPTO = 0.8, PEB_QUARTZ_UPTO = 0.9;
+const float PEB_SHADE_MIN = 0.8, PEB_SHADE_RANGE = 0.4;   // pebble-to-pebble shade
+const float PEB_ROUGH_VAR = 0.3;               // pebble-to-pebble roughness spread
+const float PEB_POLISH = 0.15;                 // pebbles are smoother than the gravel's overall roughness
+const float PEBBLE_M = 0.05;                   // m: a typical pebble (gravel runs ~2-6 cm)
+const float PEBBLE_F = CELL_M / PEBBLE_M;      // pebbles per cell along a line
+// texture within a pebble: wavelength and relief (m), as frequency (per cell) and height (cells)
+const float PEB_MOTTLE_M = 0.017, PEB_MOTTLE_H_M = 0.0024;
+const float PEB_MOTTLE_F = CELL_M / PEB_MOTTLE_M, PEB_MOTTLE_H = PEB_MOTTLE_H_M / CELL_M;
+const float PEB_MOTTLE_ALB = 0.35;             // albedo swing per unit of the mottle
+const int PEB_MOTTLE_OCT = 2;                  // fBm octaves of the mottle
+const float PEB_VOID_ALB = 0.1, PEB_VOID_CAV = 0.15;   // the voids between pebbles: crevices in deep shade
+// rock type of a pebble from a uniform hash
+vec3 pebbleRock(float h) {
+  return h < PEB_GRANITE_UPTO ? PEB_GRANITE : (h < PEB_BASALT_UPTO ? PEB_BASALT
+       : (h < PEB_SANDSTONE_UPTO ? PEB_SANDSTONE : (h < PEB_QUARTZ_UPTO ? PEB_QUARTZ : PEB_RUST)));
+}
+
 // The look of element id at world point p (grid units) on a surface with
 // normal n, temperature T (°C). fp = pixel footprint (grid units) for LOD.
 Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
@@ -414,28 +445,20 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
     // would touch a neighbour, so outlines run from round to polygonal. It is
     // shaded as a dome steepening toward its outline; between pebbles are
     // dark voids with grit in them. Each has its own rock type, shade and polish.
-    const float PEBBLE_F = 1.7;                // pebbles per cell along a line (~5 cm)
+    // (pebble size: PEBBLE_M above, shared with gfx/grains.js)
     const float R_MIN = 0.42, R_VAR = 0.35;    // pebble radius range, lattice units
     const float GAP = 0.04;                    // gap where two pebbles meet, lattice units
     const float RIM = 0.05;                    // pebble edge softness, lattice units
     const float ROUND = 0.25;                  // rounds off the corners where the cell cuts a pebble
     const float RIM_CAV = 0.35;                // occlusion toward a pebble's outline (it curves away)
-    const float POLISH = 0.15;                 // pebbles are smoother than the gravel's overall roughness
     const float U_MAX = 0.95;                  // caps the dome's slope at the outline
-    const float VOID_ALB = 0.1, VOID_CAV = 0.15;    // the voids: crevices in deep shade, not a matrix
     const float MEAN = 0.82;                   // area-average shade of pebbles and voids (the far look)
-    const float MOTTLE_F = 5.0, GRIT_F = 11.0; // texture within a pebble; grit in the voids
-    const float MOTTLE_H = 0.03, GRIT_H = 0.01;
-    // rock types (relative albedo; their mean is ~1)
-    const vec3 GRANITE = vec3(1.0, 1.02, 1.05), BASALT = vec3(0.6, 0.6, 0.63);
-    const vec3 SANDSTONE = vec3(1.22, 1.08, 0.92), QUARTZ = vec3(1.3), RUST = vec3(1.15, 0.92, 0.8);
-    // cumulative shares of the rock types (the rest is rust)
-    const float GRANITE_UPTO = 0.35, BASALT_UPTO = 0.6, SANDSTONE_UPTO = 0.8, QUARTZ_UPTO = 0.9;
-    const float SHADE_MIN = 0.8, SHADE_RANGE = 0.4;   // pebble-to-pebble shade
-    const float ROUGH_VAR = 0.3;               // pebble-to-pebble roughness spread
-    const float MOTTLE_ALB = 0.35, GRIT_ALB = 0.8;    // albedo swing per unit of each noise
+    const float GRIT_M = 0.0073, GRIT_H_M = 0.0008;   // grit in the voids: wavelength, relief (m)
+    const float GRIT_F = CELL_M / GRIT_M, GRIT_H = GRIT_H_M / CELL_M;
+    const float GRIT_ALB = 0.8;                // albedo swing per unit of the grit
     const float PEBBLE_LOD = 2.0;              // outlines are sharp: fade them at this multiple of the pebble frequency
-    const int MOTTLE_OCT = 2, GRIT_OCT = 2;    // fBm octaves
+    const int GRIT_OCT = 2;                    // fBm octaves
+    // (rock types, shade, polish, mottle and voids: PEB_* above, shared with gfx/grains.js)
     vec3 ge, r1;
     vec4 c = mCell(p * PEBBLE_F, ge, r1);
     float lw = lodFade(PEBBLE_F * PEBBLE_LOD, fp);
@@ -445,15 +468,13 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
     float u = clamp(d / max(d + e, 1e-3), 0.0, U_MAX);    // 0 at the pebble's middle, 1 at its outline
     float sh = sqrt(1.0 - u * u);
     float pm = smoothstep(0.0, RIM, e);        // 1 on a pebble, 0 in a void
-    vec4 gr = mFbmD(p, MOTTLE_F, MOTTLE_OCT, fp);
+    vec4 gr = mFbmD(p, PEB_MOTTLE_F, PEB_MOTTLE_OCT, fp);
     vec4 gt = mFbmD(p, GRIT_F, GRIT_OCT, fp);
-    vec3 type = c.z < GRANITE_UPTO ? GRANITE : (c.z < BASALT_UPTO ? BASALT
-              : (c.z < SANDSTONE_UPTO ? SANDSTONE : (c.z < QUARTZ_UPTO ? QUARTZ : RUST)));
-    vec3 peb = type * (SHADE_MIN + SHADE_RANGE * c.w) * (1.0 + MOTTLE_ALB * gr.x);
-    m.alb *= mix(vec3(MEAN), mix(VOID_ALB * (1.0 + GRIT_ALB * gt.x) * vec3(1.0), peb, pm), lw);
-    m.g = lw * (pm * (u / sh) * rt / max(d, 1e-4) + (1.0 - pm) * GRIT_H * gt.yzw) + MOTTLE_H * gr.yzw;
-    m.cav = mix(MEAN, mix(VOID_CAV, mix(RIM_CAV, 1.0, sh), pm), lw);
-    m.rough += (ROUGH_VAR * (c.w - 0.5) - POLISH * pm) * lw;
+    vec3 peb = pebbleRock(c.z) * (PEB_SHADE_MIN + PEB_SHADE_RANGE * c.w) * (1.0 + PEB_MOTTLE_ALB * gr.x);
+    m.alb *= mix(vec3(MEAN), mix(PEB_VOID_ALB * (1.0 + GRIT_ALB * gt.x) * vec3(1.0), peb, pm), lw);
+    m.g = lw * (pm * (u / sh) * rt / max(d, 1e-4) + (1.0 - pm) * GRIT_H * gt.yzw) + PEB_MOTTLE_H * gr.yzw;
+    m.cav = mix(MEAN, mix(PEB_VOID_CAV, mix(RIM_CAV, 1.0, sh), pm), lw);
+    m.rough += (PEB_ROUGH_VAR * (c.w - 0.5) - PEB_POLISH * pm) * lw;
   } else if (id == E_SNOW) {
     // Old powder snow: soft drifts, clumps and (up close) a sugary crust of
     // crystals; the sparkle comes from the glints.
@@ -1126,6 +1147,9 @@ vec3 shadeSurf(Surf s, vec3 rd) {
   if (max(nl, ngl) + w > 0.0) sh = uShadows ? sunShadow(s.p, ng) : vec3(1.0);
 #if defined(DETAIL_RELIEF) && defined(DETAIL_RELIEF_SHADOW)
   if (s.ch >= 0 && max(sh.x, max(sh.y, sh.z)) > 0.0) sh *= reliefSunVis(s.p);   // the relief's own shade (gfx/relief.js)
+#endif
+#ifdef GRAINS_ANY
+  sh *= gGrainSun;   // a grain shaded by the grains next to it (gfx/grains.js)
 #endif
   float aoT = ao * s.cav;
 

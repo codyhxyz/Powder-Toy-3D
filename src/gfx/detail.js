@@ -13,6 +13,8 @@
 // A feature compiles in only when on: the shaders see `#define <define> 1`
 // (three.js material defines), so a switched-off feature costs nothing.
 
+import { CELL_M } from '../scale.js';
+
 export const BENCH_W = 1280, BENCH_H = 800;   // px, the benchmark viewport
 
 // Cost tiers, by extra GPU ms per frame (measured as above).
@@ -33,6 +35,10 @@ export const costTier = (ms) => (ms < COST_LOW_MS ? 'low' : ms < COST_MEDIUM_MS 
 // Relief (shaders/gfx/relief.js) starts once its tallest feature, rock crags
 // (ROCK_CRAG_H · RELIEF_CRAG_TOP ≈ 5.6 mm), spans RELIEF_PX_LO = 1 pixel.
 const RELIEF_FADE_M = 0.0056;   // m per pixel
+// Grains (shaders/gfx/grains.js) start where a pebble (PEBBLE_M = 5 cm) or a
+// clod's lump (2 · CLOD_LUMP_R = 0.34 cells ≈ 10 cm) spans 8 pixels (*_PX_NONE).
+const GRAINS_FADE_M = 0.05 / 8;           // m per pixel
+const CLODS_FADE_M = 0.34 * CELL_M / 8;   // m per pixel
 
 export const DETAIL = [
   // relief: extra ms, worst camera: lab ~6-12 (eyeSandClose), volcano ~6 (eyeFlank). Measured on
@@ -42,6 +48,12 @@ export const DETAIL = [
   // reliefShadow: relief + shadow vs off (bench --all): lab ~5, volcano ~20-26 ms; same caveat.
   { key: 'reliefShadow', define: 'DETAIL_RELIEF_SHADOW', label: 'Relief self-shadowing', cost: 'high', fadeM: RELIEF_FADE_M,
     desc: 'The close-up relief casts sunlight shadows on itself (needs Surface relief up close)' },
+  { key: 'grains', define: 'DETAIL_GRAINS', label: 'Pebbles and grains up close', fadeM: GRAINS_FADE_M,
+    desc: 'Up close, gravel is a pile of real pebbles (~5 cm): outlines, gaps and contact shadows instead of a texture',
+    cost: 'high' },   // worst +30 ms (volcano eyeSummit, 11 rounds; god view +4.6 ms: shader size)
+  { key: 'grainClusters', define: 'DETAIL_GRAIN_CLUSTERS', label: 'Loose clumps up close', fadeM: CLODS_FADE_M,
+    desc: 'Up close, a lone cell of sand, snow, powder or ash is a lumpy 30 cm clod instead of a round blob',
+    cost: 'high' },   // worst +15.5 ms (volcano eyeFlank; god view +7 ms: shader size, see gfx/grains.js)
 ];
 
 export const settingKey = (f) => `detail_${f.key}`;
