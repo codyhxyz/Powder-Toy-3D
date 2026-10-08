@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js';
 import { BODY_HEIGHT } from './constants.js';
 import {
   createFigure, createContactShadow, figureFrag, figureSkinnedVert, FIGURE_ALBEDO, FIGURE_HEAT_GLOW,
@@ -51,13 +52,12 @@ function createRealFigure(gltf) {
     uEmit: { value: new THREE.Vector3() },
     uWorldToGrid: { value: new THREE.Matrix4() },
   };
-  const model = gltf.scene;
+  const model = cloneSkinned(gltf.scene);   // the download is shared; each body poses its own rig
   const meshes = [];
   model.traverse((o) => {
     if (!o.isSkinnedMesh) return;
     o.frustumCulled = false;             // bounds are the bind pose; a fall or a swim leaves them
     o.userData.albedo = ALBEDO_BY_MATERIAL[o.material.name] ?? FIGURE_ALBEDO;
-    o.material.dispose();
     meshes.push(o);
   });
   if (!meshes.length) throw new Error('the character model has no skinned mesh');
@@ -184,6 +184,9 @@ function createRealFigure(gltf) {
     },
     setVisible(v) { root.visible = v; },
     get material() { return mats[0]; },
+    // tests: the posed rig and each clip's blend weight
+    model,
+    get weights() { return Object.fromEntries(Object.entries(actions).map(([k, a]) => [k, a.getEffectiveWeight()])); },
     dispose() {
       mixer.stopAllAction();
       for (const m of mats) m.dispose();
@@ -245,6 +248,7 @@ export function createBody({ choice }) {
     // which body is showing: 'stick' or 'real' (tests)
     get showing() { return active() === real ? 'real' : 'stick'; },
     get loaded() { return !!real; },
+    get real() { return real; },
     dispose() {
       stick.dispose();
       real?.dispose();
