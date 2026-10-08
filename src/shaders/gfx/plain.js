@@ -119,7 +119,7 @@ vec3 plainOpaque(ivec3 cell, int id, vec4 a, vec3 hp, vec3 n, vec3 rd) {
 
 vec3 plainFloor(vec3 hp) {
   vec2 q = hp.xz / PLAIN_FLOOR_GRID;
-  vec2 gq = abs(fract(q - 0.5) - 0.5) / max(fwidth(q), vec2(1e-4));
+  vec2 gq = abs(fract(q - 0.5) - 0.5) / max(fwidth(q) * uPixScale, vec2(1e-4));
   float line = 1.0 - min(min(gq.x, gq.y), 1.0);
   vec3 alb = mix(PLAIN_FLOOR_LO, PLAIN_FLOOR_HI, line);
   vec3 n = vec3(0.0, 1.0, 0.0);

@@ -50,7 +50,7 @@ vec3 gEye = vec3(0.0);
 float gPixAng = PIX_ANG_INIT;
 void surfView(vec3 eye, vec3 rd) {
   gEye = eye;
-  gPixAng = clamp(max(length(dFdx(rd)), length(dFdy(rd))), PIX_ANG_MIN, PIX_ANG_MAX);
+  gPixAng = clamp(max(length(dFdx(rd)), length(dFdy(rd))) * uPixScale, PIX_ANG_MIN, PIX_ANG_MAX);
 }
 // size of a pixel at p, in grid units
 float footprint(vec3 p) { return distance(p, gEye) * gPixAng; }
@@ -1223,7 +1223,7 @@ const vec3 FLOOR_LINE_ALB = vec3(0.075, 0.078, 0.085);   // the grid's seams, da
 const float FLOOR_LINE_CELLS = 8.0;   // cells between the floor's grid lines
 vec3 shadeFloor(vec3 hp, vec3 rd) {
   vec2 q = hp.xz / FLOOR_LINE_CELLS;
-  vec2 gq = abs(fract(q - 0.5) - 0.5) / max(fwidth(q), vec2(1e-4));
+  vec2 gq = abs(fract(q - 0.5) - 0.5) / max(fwidth(q) * uPixScale, vec2(1e-4));
   float line = 1.0 - min(min(gq.x, gq.y), 1.0);
   vec3 alb = mix(GROUND_ALB, FLOOR_LINE_ALB, line);
   vec3 n = vec3(0.0, 1.0, 0.0);

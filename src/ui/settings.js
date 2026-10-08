@@ -4,8 +4,9 @@ import { ICON } from './icons.js';
 // Settings drawer built from a declarative spec.
 //   { type: 'seg', key, options: [[value, label]], onChange }
 //   { type: 'slider', key, label, min, max, step, def, fmt, onChange }
-//   { type: 'switch', key, label, def, onChange }
-//   { type: 'buttons', buttons: [[label, fn, cls?]] }
+//   { type: 'switch', key, label, desc?, badge?, tier?, onChange }   (badge: a cost label, styled by tier)
+//   { type: 'more', label, rows }   rows tucked under a collapsed disclosure
+// A seg row may take value() instead of reading settings[key] (a derived setting).
 export function createSettings({ settings, sections, footer, onClose }) {
   const syncers = [];
 
@@ -16,7 +17,7 @@ export function createSettings({ settings, sections, footer, onClose }) {
         b.dataset.value = value;
         return b;
       });
-      syncers.push(() => btns.forEach((b) => b.classList.toggle('on', String(settings[r.key]) === b.dataset.value)));
+      syncers.push(() => btns.forEach((b) => b.classList.toggle('on', String(r.value ? r.value() : settings[r.key]) === b.dataset.value)));
       return h('div.seg', { role: 'radiogroup' }, btns);
     }
     if (r.type === 'slider') {
@@ -33,8 +34,6 @@ export function createSettings({ settings, sections, footer, onClose }) {
         out.textContent = r.fmt ? r.fmt(v) : v;
         input.style.setProperty('--fill', `${((v - r.min) / (r.max - r.min)) * 100}%`);
         field.classList.toggle('changed', Math.abs(v - r.def) > 1e-9);
-        input.disabled = r.disabled?.() ?? false;
-        field.style.opacity = input.disabled ? 0.5 : 1;
       };
       syncers.push(sync);
       return field;
@@ -50,9 +49,8 @@ export function createSettings({ settings, sections, footer, onClose }) {
       if (r.desc) el.title = r.desc;
       return el;
     }
-    if (r.type === 'buttons') {
-      return h('div.btn-row', {}, r.buttons.map(([label, fn, cls = '']) =>
-        h(`button.btn.grow${cls}`, { type: 'button', text: label, on: { click: () => { fn(); syncAll(); } } })));
+    if (r.type === 'more') {
+      return h('details.more', {}, h('summary', { text: r.label }), r.rows.map(row));
     }
     return null;
   };

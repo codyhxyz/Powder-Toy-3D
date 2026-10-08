@@ -1,6 +1,8 @@
 # Powder Toy 3D
 
-![Powder Toy 3D: a volcano erupts on a voxel island, lava runs down the slopes and sets the trees on fire](docs/hero.jpg)
+**Play it in your browser: [tpt3d.codyh.xyz](https://tpt3d.codyh.xyz)**
+
+[![Powder Toy 3D: trees burn on a volcano island while smoke rises from the summit](docs/hero.jpg)](https://tpt3d.codyh.xyz)
 
 A GPU-native, 3D falling-sand sandbox in the spirit of The Powder Toy, built on three.js (WebGL2).
 Every cell of a 128³ grid (2.1M cells, up to 160×96×160) is simulated and raymarched on the GPU, at ~240 sim steps/s.
@@ -19,7 +21,7 @@ Press `?` in the app for the full list.
 | Left-drag | paint with the selected element or tool (the brush stays at the height where you clicked) |
 | `[` `]` or Shift + scroll | brush size |
 | `B` / `X` | sphere or cube brush / paint over existing material |
-| `I` | pick the element under the cursor |
+| `I` | eyedropper: pick the element under the cursor (or click the Eyedropper in the dock, then click the scene) |
 | ⌘Z / Ctrl+Z | undo the last stroke, clear or scene change |
 | `/` | find an element |
 
@@ -30,6 +32,7 @@ Press `?` in the app for the full list.
 | Scroll | zoom |
 | `W` `A` `S` `D`, `Q` `E` | move, turn left/right (hold Shift to go faster) |
 | `R` | reset the camera |
+| `F` | drop into the world as a person, or pop back out |
 
 | Everything else | |
 |---|---|
@@ -41,11 +44,42 @@ Press `?` in the app for the full list.
 
 Hovering shows the element, temperature and air pressure under the cursor. Settings are remembered between visits.
 
+## First person
+
+Press `F` to drop a body onto the surface under the cursor. The camera swoops down into its eyes and the world stays
+running around you. You're about 5½ cells tall (one cell is roughly 30 cm), so a lava flow is a river and a house is
+a building. `F` again swoops back out.
+
+The body is as mortal as a sand grain. You float or sink by density (hold Space to keep your head out of water),
+blasts throw you along the pressure gradient, and heat, lava, cold, acid, drowning, being buried and hard landings
+hurt. When you die, the camera pulls back and shows what killed you, then you respawn where you dropped in.
+
+| In first person | |
+|---|---|
+| Mouse | look (click to capture the mouse, Esc to release it) |
+| `W` `A` `S` `D`, Shift | walk, sprint |
+| Space / `C` | jump or swim up / swim down |
+| Left / right click | use the tool / its second action |
+| `1`–`5` or scroll | pick a tool |
+| `V` | first or third person |
+
+The tools are physical and finite. Infinite painting stays in the god view.
+
+1. **Shovel:** digs a load of powder, or breaks solids into their debris (slower the harder they are). Right-click
+   dumps the load where you aim.
+2. **Bucket:** scoops a load of liquid, and right-click pours it. A bucket of lava stays hot.
+3. **Axe:** a short, wide swing that chops wood and smashes glass, ice and plants.
+4. **Gun:** fires a metal slug, a real cell in the sim at full speed. It drops and slows in water like any other
+   grain and breaks whatever its energy beats. Shot in the air, its recoil throws you.
+5. **Physgun:** a force beam on loose matter. Hold to carry a floating ball of water or sand, right-click to fling it.
+
+Nothing a tool carries is made up: the cells it takes come back out exactly (same element, temperature and state).
+
 ## Elements
 
 The dock groups elements like a periodic-table strip, each tile in the element's colour with a TPT-style abbreviation:
 
-- **Powders:** SAND, STNE, GUNP, ASH, SNOW
+- **Powders:** SAND, STNE, GUNP, ASH, SNOW, BGLA (broken glass), SAWD (sawdust), BRMT (scrap metal)
 - **Liquids:** WATR, ACID, OIL, LAVA
 - **Gases:** WTRV (steam), SMKE, FIRE
 - **Solids:** WALL, METL, GLAS, ICE, WOOD, PLNT, CLNE
@@ -123,6 +157,13 @@ Density decides whether it can displace its neighbour, so sand sinks through wat
 - **Air pressure.** Pressure diffuses, and a shock front also propagates one cell per step with exponential falloff, blocked by solids.
   Its gradient accelerates matter (a = −∇P/ρ), so explosions throw things and walls shield them.
 - **Forces.** Gravity, buoyancy, drag and jitter.
+- **Hardness and breaking.** Solids have a hardness in the sim's kinetic-energy units (½·density·speed²). A grain, drop or
+  slug that runs into a solid carrying at least that much energy breaks it into debris: glass into shards, wood into
+  sawdust, metal into scrap, rock into stone, ice into snow. The projectile pays the hardness out of its energy, and the
+  debris flies off with its momentum, heated by the work of breaking it. Impacts that don't break anything stop the
+  grain and turn its energy into heat, which is how a slug can set off a powder keg. A blast breaks a solid when the
+  pressure difference across it exceeds a multiple of its hardness, so windows shatter well away from an explosion,
+  rock chips only right beside one, and metal never breaks.
 
 **3. Brush** (only while painting).
 
@@ -143,7 +184,7 @@ smoothed over time (so cells swapping every step don't shimmer), blurred with a 
 blurred weight of non-crisp cells, so walls and the floor count neither way: a one-cell water film keeps its height and
 surfaces meet walls cleanly. Features the blur would dissolve (a lone drop or grain, a falling stream, a one-cell trunk)
 are scaled back up next to current matter so their surface sits half a cell from the cell centre; ghosts of cells that
-moved on still fade. The *Surface smoothing* setting scales every blur radius (0 = off).
+moved on still fade. `gfx.smoothing` (src/gfx/uniforms.js) scales every blur radius (0 = off).
 
 **Tracer** (`src/shaders/render.js` + `src/shaders/gfx/*`). An Amanatides–Woo DDA walks the grid, skipping empty 4×4×4 bricks
 (the brick map is built from the blurred fields, so it's dilated for free). In each cell it root-finds where a field crosses
@@ -163,7 +204,9 @@ moved on still fade. The *Surface smoothing* setting scales every blur radius (0
 
 **Light** (`src/shaders/gfx/lighting.js`, `src/gfx/sky.js`, `src/shaders/gi.js`). The sky is a clear-sky atmosphere
 (single Rayleigh and haze scattering, integrated in closed form along the view ray) that also sets the sun's colour, warmer
-as it sinks. A per-frame voxel shadow map is traced from the sun with the same surfaces. It records the opaque depth plus
+as it sinks. Day turns to night as the simulation runs (`src/gfx/daylight.js`: one day is 72,000 steps, about five
+minutes at the default speed, and it holds still while paused); after sunset a full moon lights the scene through the same
+sky, dimmed and shifted blue the way a night-adapted eye sees it. A per-frame voxel shadow map is traced from the sun with the same surfaces. It records the opaque depth plus
 optical depth through liquids, glass and gas, so water casts tinted shadows and smoke casts soft ones. Shadows soften with
 distance from their caster (PCSS: the sun is a disc); at a contact edge within a texel, an exact DDA ray toward the sun
 settles it. Indirect light comes from one probe per 4×4×4 brick: every frame, rays from the probes march the brick map and

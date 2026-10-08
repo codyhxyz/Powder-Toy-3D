@@ -58,7 +58,7 @@ const p = await b.newPage({ viewport: { width: BENCH_W, height: BENCH_H } });
 await p.addInitScript(() => {
   let s = 12345;   // mulberry32: same scene every run
   Math.random = () => { s |= 0; s = (s + 0x6d2b79f5) | 0; let t = Math.imul(s ^ (s >>> 15), 1 | s); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
-  localStorage.setItem('powder-toy-3d:settings', JSON.stringify({ autoRes: false, res: 1, paused: true }));
+  localStorage.setItem('powder-toy-3d:settings', JSON.stringify({ paused: true }));
   addEventListener('DOMContentLoaded', () => {
     const st = document.createElement('style');
     st.textContent = 'body > *:not(canvas):not(:has(canvas)), .dock, .card, .topbar, .hud { visibility: hidden !important; }';
@@ -73,6 +73,7 @@ await p.waitForTimeout(2500);
 await p.evaluate(async ([steps, keys, preset]) => {
   const a = window.__app;
   a.settings.paused = true;
+  a.autoRes.enabled = false;   // a fixed resolution: auto resolution would change it mid-run
   a.post.settings.taa = false;
   for (const k of keys) a.settings[k] = false;
   a.applyDetail();

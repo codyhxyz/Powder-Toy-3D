@@ -14,15 +14,16 @@ import { createCard } from './ui/card.js';
 import { createSettings } from './ui/settings.js';
 import { createHud, createHelp } from './ui/hud.js';
 import { inkFor, luminance } from './ui/dom.js';
-import { logoMark } from './ui/logo.js';
 import { gfx, gfxUniforms, updateGfxUniforms } from './gfx/uniforms.js';
 import { DETAIL, settingKey, detailDefaults, detailDefines, detailRows } from './gfx/detail.js';
 import { createDetailGate } from './gfx/detailGate.js';
-import { createPost, TAA_WEIGHT_STABLE } from './gfx/post.js';
+import { createPost, UPSCALE } from './gfx/post.js';
 import { createPacer, settleFrames, sceneKey } from './gfx/pacing.js';
 import { CHANNELS, MEDIA } from './gfx/materials.js';
+import { dayPhase, keyLight } from './gfx/daylight.js';
 import { GI_BLEND } from './sim.js';
 import { createMultiplayer } from './net/multiplayer.js';
+import { createPov } from './pov/index.js';
 
 // Optional modules (built in parallel); the app works without them.
 const optional = import.meta.glob(['./views.js', './signs.js', './constructions.js'], { eager: true });
@@ -40,19 +41,24 @@ const SIGN_TOOL = -5;
 const DEFAULTS = {
   size: '128', preset: 'lab',
   tool: E.SAND, radius: 5, shape: 0, rate: 1, replace: false,
-  steps: 4, gravity: 0.025, paused: false, liveTiles: true,
-  view: 0, shadows: true, autoRes: true, res: Math.min(devicePixelRatio, 1.5), glow: 1.6,
-  sunAz: 38, sunEl: 55, camSpeed: 1, dockCollapsed: false,
-  smoothing: 1, taa: true, bloom: 0.3, exposure: 0.7,
+  steps: 4, gravity: 0.025, paused: false,
+  view: 0, camSpeed: 1, upscale: 'native', dockCollapsed: false,
   ...detailDefaults(),
 };
-const PERSIST = ['size', 'preset', 'tool', 'radius', 'shape', 'rate', 'replace', 'steps', 'gravity', 'view', 'liveTiles',
-  'shadows', 'autoRes', 'res', 'glow', 'sunAz', 'sunEl', 'camSpeed', 'dockCollapsed',
-  'smoothing', 'taa', 'bloom', 'exposure', ...DETAIL.map(settingKey)];
+const PERSIST = ['size', 'preset', 'tool', 'radius', 'shape', 'rate', 'replace', 'steps', 'gravity', 'view',
+  'camSpeed', 'upscale', 'dockCollapsed', ...DETAIL.map(settingKey)];
 const STORE = 'powder-toy-3d:settings';
+// Fixed look: glow is heat-driven light (×uLightGain); smoothing, TAA, bloom and
+// exposure keep their defaults in gfx/uniforms.js and gfx/post.js.
+const GLOW_GAIN = 1.6;
+const RES_MAX = Math.min(devicePixelRatio, 1.5);   // auto resolution's ceiling (pixel ratio)
 
 const settings = { ...DEFAULTS };
-try { Object.assign(settings, JSON.parse(localStorage.getItem(STORE) || '{}')); } catch { /* storage unavailable */ }
+try {
+  // only keys still in use: values of removed settings must not linger
+  const saved = JSON.parse(localStorage.getItem(STORE) || '{}');
+  for (const k of PERSIST) if (k in saved) settings[k] = saved[k];
+} catch { /* storage unavailable */ }
 const params = new URLSearchParams(location.search);
 if (params.get('size') in SIZES) settings.size = params.get('size');
 if (params.get('preset')) settings.preset = params.get('preset');
@@ -75,18 +81,13 @@ function save() {
 // both would only cost memory and bandwidth (~165 MB at 2880×1800).
 const renderer = new THREE.WebGLRenderer({ antialias: false, depth: false, alpha: true, powerPreference: 'high-performance' });
 renderer.setClearColor(0x000000, 0);
-let pixelRatio = settings.autoRes ? Math.min(settings.res, 1) : settings.res;
+let pixelRatio = Math.min(RES_MAX, 1);
 renderer.setPixelRatio(pixelRatio);
 renderer.setSize(innerWidth, innerHeight);
 renderer.autoClear = false;
 document.getElementById('app').appendChild(renderer.domElement);
 // HDR post: TAA, bloom, AgX tone mapping (src/gfx/post.js)
-const post = createPost(renderer);
-function applyGfx() {
-  gfx.smoothing = settings.smoothing;
-  Object.assign(post.settings, { taa: settings.taa, bloom: settings.bloom, exposure: settings.exposure });
-}
-applyGfx();
+const post = createPost(renderer, { pixScale: gfxUniforms.uPixScale });
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.05, 200);
@@ -98,12 +99,21 @@ controls.zoomToCursor = true;
 
 const floorGrid = new THREE.GridHelper(80, 80, 0x2b3240, 0x1b2029);
 floorGrid.position.y = -0.002;
+// GL lines are one rendered pixel wide: under TAAU that is 1/scale output pixels,
+// so the grid and the box outline fade by the render scale to keep their weight.
+// Transparent for that, but still drawn before the other transparent objects.
+floorGrid.material.transparent = true;
+floorGrid.renderOrder = -1;
+const EDGE_OPACITY = 0.55;
 scene.add(floorGrid);
 
+// The key light (gfx/daylight.js): its direction and colour scale follow the
+// day clock, in simulation steps. Tools pin it with __app.day.fixed = { az, el }.
 const SUN = new THREE.Vector3();
+const KEY_LIGHT = [1, 1, 1];
+const day = { clock: 0, fixed: null };
 function updateSun() {
-  const az = THREE.MathUtils.degToRad(settings.sunAz), el = THREE.MathUtils.degToRad(settings.sunEl);
-  SUN.set(Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az)).normalize();
+  keyLight(dayPhase(day.clock), SUN, KEY_LIGHT, day.fixed);
 }
 updateSun();
 
@@ -123,6 +133,8 @@ const pickBuf = new Float32Array(8);
 let pickPending = false;
 
 function build() {
+  pov?.exit(true);   // the body lives in the old grid
+  pov?.worldReplaced();
   if (sim) {
     sim.dispose();
     scene.remove(volume, edges);
@@ -147,7 +159,7 @@ function build() {
       tA: { value: null }, tB: { value: null }, tBrick: { value: null }, tLight: { value: null },
       uCam: { value: new THREE.Vector3() },
       uSun: { value: SUN }, tShadow: { value: null }, uShadowRes: { value: 0 },
-      uView: { value: 0 }, uShadows: { value: true }, uTime: { value: 0 }, uLightGain: { value: settings.glow },
+      uView: { value: 0 }, uShadows: { value: true }, uTime: { value: 0 }, uLightGain: { value: GLOW_GAIN },
       ...gfxUniforms,
     },
     side: THREE.BackSide,
@@ -164,7 +176,7 @@ function build() {
   volume.updateMatrixWorld();
 
   edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo),
-    new THREE.LineBasicMaterial({ color: 0x56607a, transparent: true, opacity: 0.55 }));
+    new THREE.LineBasicMaterial({ color: 0x56607a, transparent: true, opacity: EDGE_OPACITY }));
   edges.scale.copy(volume.scale);
   edges.position.copy(volume.position);
   scene.add(edges);
@@ -226,6 +238,7 @@ function loadPreset(name, undoable = true) {
   else buildPreset(name, sim);
   post.reset();
   signs?.clear();
+  pov?.worldReplaced();
   save();
   return true;
 }
@@ -236,6 +249,7 @@ Object.assign(signLayer.style, { position: 'fixed', inset: '0', pointerEvents: '
 document.body.append(signLayer);
 let signs = null;
 let builds = null; // constructions (optional module)
+let pov = null;    // first-person mode (src/pov)
 
 // ---------------------------------------------------------------- picking & brush
 const pointer = new THREE.Vector2();
@@ -254,9 +268,12 @@ function gridRay() {
   return raycaster.ray.clone().applyMatrix4(invVolume.copy(volume.matrixWorld).invert());
 }
 
+// In POV the pick follows the crosshair (the screen centre) instead of the pointer.
+const povRay = new THREE.Ray();
 function requestPick() {
-  if (pickPending || !pointerInside) return;
-  const ray = gridRay();
+  const fromPov = !!pov?.aimRay(povRay.origin, povRay.direction);
+  if (pickPending || (!pointerInside && !fromPov)) return;
+  const ray = fromPov ? povRay : gridRay();
   pickMat.uniforms.uRo.value.copy(ray.origin);
   pickMat.uniforms.uRd.value.copy(ray.direction);
   pickMat.uniforms.tA.value = sim.stateA;
@@ -275,6 +292,23 @@ function requestPick() {
       hover.P = pickBuf[6];
     }
   }).catch(() => { pickPending = false; });
+}
+
+// One-off pick along a grid-space ray (ro, rd), e.g. to find the ground: resolves to
+// { valid, cell, face, id, T, P } like `hover`.
+const rayTarget = new THREE.WebGLRenderTarget(2, 1, { type: THREE.FloatType, depthBuffer: false });
+function pickRay(ro, rd) {
+  pickMat.uniforms.uRo.value.copy(ro);
+  pickMat.uniforms.uRd.value.copy(rd);
+  pickMat.uniforms.tA.value = sim.stateA;
+  pickMat.uniforms.tB.value = sim.stateB;
+  pickMat.uniforms.tBrick.value = sim.brick.texture;
+  sim.run(pickMat, rayTarget);
+  const buf = new Float32Array(8);
+  return renderer.readRenderTargetPixelsAsync(rayTarget, 0, 0, 2, 1, buf).then(() => ({
+    valid: buf[3] >= 0, cell: new THREE.Vector3(buf[0], buf[1], buf[2]), face: buf[3],
+    id: Math.round(buf[4]), T: buf[5], P: buf[6],
+  }));
 }
 
 const isTool = () => settings.tool < 0;
@@ -297,6 +331,11 @@ const tmpV = new THREE.Vector3();
 function updateBrush() {
   const g = sim.g;
   brushValid = false;
+  if (pov?.active) {
+    brush.set({ visible: false });
+    builds?.update({ hover, active: false });
+    return;
+  }
   if (settings.tool !== SIGN_TOOL && !isBuild(settings.tool)) {
     if (painting) {
       plane.constant = -dragY;
@@ -312,17 +351,18 @@ function updateBrush() {
     brushCenter.z = THREE.MathUtils.clamp(brushCenter.z, 0, g.nz);
   }
   brush.set({
-    visible: brushValid && pointerInside && !uiHover,
+    visible: brushValid && pointerInside && !uiHover && !eyedropper,
     position: tmpV.copy(brushCenter).multiplyScalar(scale).add(volume.position),
     radius: settings.radius * scale,
     shape: settings.shape,
     color: toolById(settings.tool).color,
   });
-  builds?.update({ hover, active: isBuild(settings.tool) && pointerInside && !uiHover });
+  builds?.update({ hover, active: isBuild(settings.tool) && pointerInside && !uiHover && !eyedropper });
 }
 
 // ---------------------------------------------------------------- UI
 let uiHover = false;
+let eyedropper = false; // armed by the dock's Eyedropper or by I away from any element
 createBrand();
 const card = createCard();
 const hud = createHud();
@@ -340,6 +380,7 @@ function accentFor(hex) {
 // the last element or tool picked, for leaving a construction's options
 let lastPaintTool = E.SAND;
 function selectTool(id) {
+  setEyedropper(false);
   if (!isBuild(id)) lastPaintTool = id;
   settings.tool = id;
   const it = toolById(id);
@@ -359,7 +400,21 @@ const dock = createDock({
   onSelect: selectTool,
   onBrushChange: (patch) => { Object.assign(settings, patch); dock.sync(); save(); },
   onHover: (id) => card.show(id ?? settings.tool),
+  onEyedropper: () => setEyedropper(!eyedropper),
 });
+
+// Eyedropper: the next click on the scene selects whatever element it lands on.
+function setEyedropper(on) {
+  eyedropper = on;
+  document.body.classList.toggle('eyedropper', on);
+  dock.setEyedropper(on);
+}
+function pickHovered() {
+  if (!(hover.valid && hover.id > 0)) return false;
+  selectTool(hover.id);
+  hud.toast(`Picked ${ELEMENTS[hover.id].name}`);
+  return true;
+}
 
 const actions = {
   togglePause: () => setPaused(!settings.paused),
@@ -381,12 +436,9 @@ const settingsPanel = createSettings({
   // Sections and their rows run from most to least reached-for; keep that order when adding settings.
   sections: [
     { title: 'Scene', rows: [
+      // clicking the current scene reloads it; Empty clears
       { type: 'seg', key: 'preset', options: [['empty', 'Empty'], ['lab', 'Lab'], ['volcano', 'Volcano']],
         onChange: (v) => { if (loadPreset(v)) hud.toast(`Loaded ${v === 'empty' ? 'an empty box' : `the ${v}`}`); } },
-      { type: 'buttons', buttons: [
-        ['Reload scene', () => { if (loadPreset(settings.preset)) hud.toast('Scene reloaded'); }],
-        ['Clear everything', () => { if (loadPreset('empty')) hud.toast('Cleared'); }, '.danger'],
-      ] },
     ] },
     { title: 'Simulation', rows: [
       { type: 'slider', key: 'steps', label: 'Speed (steps per frame)', min: 1, max: 12, step: 1, def: DEFAULTS.steps, fmt: fmtSpeed, onChange: save },
@@ -398,39 +450,17 @@ const settingsPanel = createSettings({
       { type: 'seg', key: 'size', options: [['64', '64³'], ['96', '96³'], ['128', '128³'], ['wide', '160×96']],
         onChange: (v) => { if (mp.guard()) return; settings.size = v; build(); save(); hud.toast(`Grid is now ${v === 'wide' ? '160 × 96 × 160' : `${v}³`}`); } },
     ] },
-    // Resolution is the performance knob: ray-marching cost is linear in pixels.
-    { title: 'Performance', rows: [
-      { type: 'switch', key: 'autoRes', label: 'Adjust resolution to keep 60 fps', onChange: save },
-      { type: 'slider', key: 'res', label: 'Resolution', min: 0.5, max: 2, step: 0.05, def: DEFAULTS.res,
-        fmt: (v) => `${Math.round(v * 100)}%`, disabled: () => settings.autoRes,
-        onChange: (v) => { setPixelRatio(v); save(); } },
-    ] },
-    { title: 'Look', rows: [
-      { type: 'slider', key: 'sunEl', label: 'Sun height', min: 12, max: 85, step: 1, def: DEFAULTS.sunEl,
-        fmt: (v) => `${v}°`, onChange: () => { updateSun(); save(); } },
-      { type: 'slider', key: 'sunAz', label: 'Sun direction', min: 0, max: 360, step: 1, def: DEFAULTS.sunAz,
-        fmt: (v) => `${v}°`, onChange: () => { updateSun(); save(); } },
-      { type: 'slider', key: 'smoothing', label: 'Surface smoothing', min: 0, max: 2, step: 0.05, def: DEFAULTS.smoothing,
-        fmt: (v) => (v === 0 ? 'Off' : `${v.toFixed(2)}×`), onChange: () => { applyGfx(); save(); } },
-      { type: 'switch', key: 'shadows', label: 'Sun shadows', onChange: save },
-      { type: 'slider', key: 'exposure', label: 'Exposure', min: -3, max: 3, step: 0.1, def: DEFAULTS.exposure,
-        fmt: (v) => `${v > 0 ? '+' : ''}${v.toFixed(1)} EV`, onChange: () => { applyGfx(); save(); } },
-      { type: 'slider', key: 'glow', label: 'Glow from hot things', min: 0, max: 3, step: 0.1, def: DEFAULTS.glow,
-        fmt: (v) => v.toFixed(1), onChange: save },
-      { type: 'slider', key: 'bloom', label: 'Bloom', min: 0, max: 1, step: 0.05, def: DEFAULTS.bloom,
-        fmt: (v) => v.toFixed(2), onChange: () => { applyGfx(); save(); } },
-      // last: only for comparing; the renderer relies on TAA to clean up its noise
-      { type: 'switch', key: 'taa', label: 'Temporal anti-aliasing', onChange: () => { applyGfx(); post.reset(); save(); } },
+    // the scene renders at a share of the screen's pixels and TAA rebuilds full detail over frames
+    { title: 'Upscaling', rows: [
+      { type: 'seg', key: 'upscale', options: [['native', 'Off'], ['quality', 'Quality'], ['balanced', 'Balanced'], ['performance', 'Fast']],
+        onChange: (v) => { settings.upscale = v; save(); } },
     ] },
     // each switch shows its measured cost; expensive ones start off (gfx/detail.js)
-    ...(DETAIL.length ? [{ title: 'Detail up close', rows: detailRows(() => { applyDetail(); save(); }) }] : []),
+    // Balanced = each feature's cost-tier default; Customize has a switch per feature with its cost (gfx/detail.js)
+    ...(DETAIL.length ? [{ title: 'Detail up close', rows: detailRows(settings, () => { applyDetail(); save(); }) }] : []),
     { title: 'Camera', rows: [
       { type: 'slider', key: 'camSpeed', label: 'Move speed (WASD)', min: 0.25, max: 3, step: 0.05, def: DEFAULTS.camSpeed,
         fmt: (v) => `${v.toFixed(2)}×`, onChange: (v) => { rig.setSpeed(v); save(); } },
-      { type: 'buttons', buttons: [['Reset camera', () => rig.reset()]] },
-    ] },
-    { title: 'Element picker', rows: [
-      { type: 'switch', key: 'liveTiles', label: 'Animate element tiles on hover', onChange: save },
     ] },
   ],
   footer: [['Reset all settings', resetSettings]],
@@ -454,10 +484,7 @@ function resetSettings() {
   Object.assign(settings, DEFAULTS, keep);
   sim.gravity = settings.gravity;
   rig.setSpeed(settings.camSpeed);
-  updateSun();
-  applyGfx();
   applyDetail();
-  setPixelRatio(settings.autoRes ? Math.min(settings.res, 1) : settings.res);
   dock.sync();
   toolbar.sync();
   save();
@@ -494,7 +521,7 @@ function setPixelRatio(r) {
 
 function undo() {
   if (mp.guard()) return;
-  if (sim.undo()) hud.toast('Undone');
+  if (sim.undo()) { pov?.worldReplaced(); hud.toast('Undone'); }
   else hud.toast('Nothing to undo');
   toolbar.setUndoEnabled(sim.canUndo);
 }
@@ -510,7 +537,7 @@ const thumbTarget = new THREE.WebGLRenderTarget(320, 200, { depthBuffer: true })
 const thumbCam = new THREE.PerspectiveCamera();
 const thumbPixels = new Uint8Array(320 * 200 * 4);
 function renderThumb(viewId, canvas) {
-  thumbCam.copy(camera);
+  thumbCam.copy(camera, false);   // not its children (the POV viewmodel)
   thumbCam.aspect = 1.6;
   thumbCam.updateProjectionMatrix();
   const u = volume.material.uniforms;
@@ -555,10 +582,15 @@ canvasEl.addEventListener('pointermove', (e) => {
 canvasEl.addEventListener('pointerleave', () => { pointerInside = false; });
 canvasEl.addEventListener('pointerdown', (e) => {
   toolbar.close();
+  if (pov?.active) return;   // POV handles its own mouse buttons
   const wasEditing = !!signs?.editing;
   if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
   if (e.button !== 0 || e.altKey || wasEditing) return; // a click that just finishes editing a sign doesn't paint
   pointer.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+  if (eyedropper) {
+    if (!pickHovered()) hud.toast('Nothing to pick there');
+    return;
+  }
   if (settings.tool === SIGN_TOOL) {
     if (signs && hover.valid) signs.add({ cell: hover.cell.clone(), normal: faceNormal(hover.face) });
     else if (!signs) hud.toast('Signs are still loading');
@@ -584,7 +616,7 @@ canvasEl.addEventListener('contextmenu', (e) => e.preventDefault());
 
 // Shift + scroll changes the brush size instead of zooming.
 canvasEl.addEventListener('wheel', (e) => {
-  if (!e.shiftKey) return;
+  if (!e.shiftKey || pov?.active) return;
   e.preventDefault();
   e.stopImmediatePropagation();
   const d = e.deltaY || e.deltaX;
@@ -608,13 +640,15 @@ addEventListener('keydown', (e) => {
   if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); return; }
   if (mod) return;
   const k = e.key;
+  if (k === 'f' || k === 'F') { if (!e.repeat) { painting = false; pov?.toggle(); } return; }
+  if (pov?.blocksKey(e)) return;   // POV owns movement, Space and the digits while active
   if (e.code === 'Space') { e.preventDefault(); setPaused(!settings.paused); }
   else if (k === '.') stepOnce = true;
   else if (k === '[') setRadius(settings.radius - 1);
   else if (k === ']') setRadius(settings.radius + 1);
   else if (k === 'b' || k === 'B') { settings.shape ^= 1; dock.sync(); save(); }
   else if (k === 'x' || k === 'X') { settings.replace = !settings.replace; dock.sync(); save(); hud.toast(settings.replace ? 'Replace mode on' : 'Replace mode off'); }
-  else if (k === 'i' || k === 'I') { if (hover.valid && hover.id > 0) { selectTool(hover.id); hud.toast(`Picked ${ELEMENTS[hover.id].name}`); } }
+  else if (k === 'i' || k === 'I') { if (!(pointerInside && !uiHover && pickHovered())) setEyedropper(!eyedropper); }
   else if (k === 'r' || k === 'R') actions.resetCamera();
   else if (k === 't' || k === 'T') dock.toggle();
   else if (k === '/') { e.preventDefault(); dock.focusSearch(); }
@@ -622,8 +656,8 @@ addEventListener('keydown', (e) => {
   else if (k === '?') actions.toggleHelp();
   else if (k === 'p' || k === 'P') actions.screenshot();
   else if (k === 'Escape') {
-    const overlay = toolbar.isOpen || settingsPanel.isOpen || help.isOpen || mp.panelOpen;
-    toolbar.close(); setSettingsOpen(false); help.setOpen(false); mp.closePanel();
+    const overlay = eyedropper || toolbar.isOpen || settingsPanel.isOpen || help.isOpen || mp.panelOpen;
+    setEyedropper(false); toolbar.close(); setSettingsOpen(false); help.setOpen(false); mp.closePanel();
     if (!overlay) leaveBuild();
   }
   else if (/^[0-9]$/.test(k)) { const v = VIEWS.find((x) => x.hotkey === k); if (v) setView(v.id); }
@@ -650,11 +684,11 @@ const clock = new THREE.Timer();
 let frames = 0, fpsTime = 0, fps = 60, idleTime = 0;
 // Render on demand (gfx/pacing.js). The derived passes settle once the slowest
 // field EMA and the GI blend (each probe is traced every other frame) have
-// converged; the view once TAA's history has.
+// converged; the view once TAA's history has (upscaled, it accumulates for longer).
 const GI_PROBE_EVERY = 2;
 const pacer = createPacer({
   derivedSettle: Math.max(...[...CHANNELS, ...MEDIA].map((c) => settleFrames(c.ema)), settleFrames(GI_BLEND, GI_PROBE_EVERY)),
-  viewSettle: settleFrames(TAA_WEIGHT_STABLE),
+  viewSettle: () => settleFrames(post.settleWeight),
 });
 // input of any kind may change what the view shows
 for (const type of ['pointermove', 'pointerdown', 'pointerup', 'wheel', 'keydown', 'keyup', 'input', 'change', 'resize']) {
@@ -681,14 +715,14 @@ const AUTO_RES_DOWN = 0.85;
 const AUTO_RES_UP = 1.08;
 const AUTO_RES_MIN_GAIN = 0.93;   // frame time must fall below this × the old one
 const AUTO_RES_HOLD = 15;         // s
-const autoRes = { lastDt: 0, tried: 0, holdUntil: 0 };
+const autoRes = { enabled: true, lastDt: 0, tried: 0, holdUntil: 0 };   // tools turn it off for stable timings
 function autoResolution(dt, now) {
-  if (!settings.autoRes) return;
+  if (!autoRes.enabled) return;
   resTime += dt; resFrames++; resDt += dt;
   if (resTime < AUTO_RES_WINDOW) return;
   const avg = resDt / resFrames;
   resTime = resFrames = resDt = 0;
-  const max = settings.res, min = AUTO_RES_MIN;
+  const max = RES_MAX, min = AUTO_RES_MIN;
   if (autoRes.tried) {
     // judge the previous decrease
     if (avg > autoRes.lastDt * AUTO_RES_MIN_GAIN) { setPixelRatio(autoRes.tried); autoRes.holdUntil = now + AUTO_RES_HOLD; }
@@ -704,8 +738,49 @@ function autoResolution(dt, now) {
   }
 }
 
+// Screenshots: the canvas is transparent where the page's sky shows through
+// (body's background in ui/styles.css), so the shot paints that sky first, then
+// the scene, then a small credit so shared images lead back to the app.
+const SHOT_SKY = [[0, '#232b3a'], [0.55, '#161b25'], [1, '#0e1117']];   // the sky's linear gradient, top to bottom
+const SHOT_GLOW = { color: 'rgba(255, 196, 120, 0.06)', x: 0.5, y: 1.08, rx: 1.2, ry: 0.7, end: 0.6 };   // its warm radial glow
+const SHOT_CREDIT = 'tpt3d.codyh.xyz';
+const SHOT_CREDIT_SIZE = 0.022;   // credit text height, as a share of the image height
+const SHOT_CREDIT_MIN_PX = 12;
+const SHOT_CREDIT_ALPHA = 0.75;
+const SHOT_MARK_SCALE = 1.5;      // logo mark size relative to the text
+const shotMark = Object.assign(new Image(), { src: '/favicon.svg' });
+
 function saveScreenshot() {
-  renderer.domElement.toBlob((blob) => {
+  const src = renderer.domElement, w = src.width, h = src.height;
+  const shot = Object.assign(document.createElement('canvas'), { width: w, height: h });
+  const ctx = shot.getContext('2d');
+  const sky = ctx.createLinearGradient(0, 0, 0, h);
+  for (const [t, c] of SHOT_SKY) sky.addColorStop(t, c);
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, w, h);
+  ctx.save();
+  ctx.translate(SHOT_GLOW.x * w, SHOT_GLOW.y * h);
+  ctx.scale(SHOT_GLOW.rx * w, SHOT_GLOW.ry * h);
+  const glow = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
+  glow.addColorStop(0, SHOT_GLOW.color);
+  glow.addColorStop(SHOT_GLOW.end, 'transparent');
+  ctx.fillStyle = glow;
+  ctx.fillRect(-SHOT_GLOW.x / SHOT_GLOW.rx, -SHOT_GLOW.y / SHOT_GLOW.ry, 1 / SHOT_GLOW.rx, 1 / SHOT_GLOW.ry);
+  ctx.restore();
+  ctx.drawImage(src, 0, 0);   // same task as the render, so the drawing buffer is still intact
+
+  const px = Math.max(SHOT_CREDIT_MIN_PX, Math.round(h * SHOT_CREDIT_SIZE)), mark = px * SHOT_MARK_SCALE;
+  ctx.font = `600 ${px}px Archivo, sans-serif`;
+  ctx.textBaseline = 'middle';
+  ctx.globalAlpha = SHOT_CREDIT_ALPHA;
+  ctx.shadowColor = 'rgba(0, 0, 0, 0.6)';
+  ctx.shadowBlur = px / 2;
+  ctx.fillStyle = '#e7eaf0';
+  const tw = ctx.measureText(SHOT_CREDIT).width, y = h - px - mark / 2;
+  ctx.fillText(SHOT_CREDIT, w - px - tw, y);
+  if (shotMark.complete && shotMark.naturalWidth) ctx.drawImage(shotMark, w - px - tw - px / 2 - mark, y - mark / 2, mark, mark);
+
+  shot.toBlob((blob) => {
     if (!blob) return;
     const a = Object.assign(document.createElement('a'), {
       href: URL.createObjectURL(blob),
@@ -725,8 +800,11 @@ function frame(now) {
   // only frames that rendered measure how expensive rendering is
   if (renderedLast) autoResolution(dt, clock.getElapsed());
 
-  rig.update(dt);
-  controls.update();
+  if (pov?.active) pov.update(dt);
+  else {
+    rig.update(dt);
+    controls.update();
+  }
   updateBrush();
 
   if (painting && brushValid) {
@@ -739,8 +817,10 @@ function frame(now) {
   }
   if (!mp.isGuest && (!settings.paused || stepOnce)) {
     for (let i = 0; i < settings.steps; i++) sim.step();
+    day.clock += settings.steps;
     stepOnce = false;
-  }
+  } else if (mp.isGuest) day.clock += settings.steps;   // guests don't step: keep the day going at their own rate
+  updateSun();
   mp.update(dt, {
     visible: brushValid && pointerInside && !uiHover, center: brushCenter, painting,
     radius: settings.radius, shape: settings.shape, tool: settings.tool,
@@ -748,7 +828,7 @@ function frame(now) {
   const worldChanged = sim.version !== lastVersion;
   lastVersion = sim.version;
   const runDerived = pacer.derived(
-    `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${settings.shadows}|${settings.view}|${gfx.smoothing}|${detailVersion}`);
+    `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${KEY_LIGHT}|${settings.view}|${gfx.smoothing}|${detailVersion}`);
   const runView = pacer.view(
     `${camera.matrixWorld.elements}|${camera.projectionMatrix.elements}|${pixelRatio}|${innerWidth}x${innerHeight}`
     + `|${JSON.stringify(settings)}|${JSON.stringify(gfx)}|${JSON.stringify(post.settings)}|${sceneKey(scene)}`,
@@ -758,15 +838,15 @@ function frame(now) {
   if (fpsTime > FPS_WINDOW) { fps = frames / fpsTime; frames = 0; fpsTime = 0; }
   idleTime = runView ? 0 : idleTime + dt;
   renderedLast = runView;
-  if (runView) updateGfxUniforms(sim, SUN);   // (runDerived implies runView)
+  if (runView) updateGfxUniforms(sim, SUN, KEY_LIGHT);   // (runDerived implies runView)
   if (runDerived) {
     sim.updateBricks();
-    if (settings.shadows && VIEWS.find((v) => v.id === settings.view)?.shadows) {
+    if (VIEWS.find((v) => v.id === settings.view)?.shadows) {
       shadowMat.uniforms.tA.value = sim.stateA;
       shadowMat.uniforms.tBrick.value = sim.brick.texture;
       sim.run(shadowMat, shadowTarget);
     }
-    if (settings.view === 0) sim.updateGI(SUN, shadowTarget.texture, shadowMat.uniforms.uShadowRes.value, settings.shadows);
+    if (settings.view === 0) sim.updateGI(SUN, shadowTarget.texture, shadowMat.uniforms.uShadowRes.value, true);
   }
 
   if (runView) {
@@ -779,19 +859,20 @@ function frame(now) {
     u.uCam.value.copy(camera.position).applyMatrix4(invVol.copy(volume.matrixWorld).invert());
     detailGate.update(camera, u.uCam.value, [sim.g.nx, sim.g.ny, sim.g.nz], scene);
     u.uView.value = settings.view;
-    u.uShadows.value = settings.shadows;
-    u.uLightGain.value = settings.glow;
     if (worldChanged) u.uTime.value += dt;   // animated looks (lava, ripples) hold still while the world does
 
     post.settings.raw = settings.view !== 0;
+    post.settings.upscale = UPSCALE[settings.upscale] ?? UPSCALE.native;
+    floorGrid.material.opacity = post.renderScale;
+    edges.material.opacity = EDGE_OPACITY * post.renderScale;
     post.render(scene, camera);
     if (wantShot) { wantShot = false; saveScreenshot(); }
 
     signs?.update();
     requestPick();
-  }
+  } else if (pov?.active) requestPick();   // the crosshair cell stays fresh for the tools
 
-  if (pointerInside && !uiHover && hover.valid && hover.id >= 0 && !painting) {
+  if (!pov?.active && pointerInside && !uiHover && hover.valid && hover.id >= 0 && !painting) {
     const el = ELEMENTS[hover.id];
     hud.showReadout(pointerClient[0], pointerClient[1], { name: el.name, color: el.color, T: hover.T, P: hover.P });
   } else {
@@ -802,15 +883,13 @@ function frame(now) {
     fpsV: idleTime > FPS_WINDOW ? null : fps,   // null: idle
     stepsV: settings.paused || mp.isGuest ? 0 : settings.steps * fps, // guests don't simulate
     cellsV: `${(g.nx * g.ny * g.nz / 1e6).toFixed(1)}M`,
-    resV: settings.autoRes ? `${Math.round(pixelRatio * 100)}% res` : '',
+    resV: autoRes.enabled ? `${Math.round(pixelRatio * 100)}% res` : '',
   });
 }
 
 // ---------------------------------------------------------------- boot
 try {
   if (!renderer.capabilities.isWebGL2) throw new Error('This needs WebGL2, which your browser does not provide.');
-  const favicon = document.querySelector('link[rel=icon]');
-  if (favicon) favicon.href = `data:image/svg+xml,${encodeURIComponent(logoMark(64).replace('class="mark"', 'xmlns="http://www.w3.org/2000/svg"'))}`;
   if (SignsClass) {
     signs = new SignsClass({
       renderer, camera, container: signLayer,
@@ -830,9 +909,16 @@ try {
   setView(settings.view);
   setPaused(false);
   toolbar.setUndoEnabled(false);
+  pov = createPov({
+    renderer, scene, camera, controls, canvas: renderer.domElement, hud, settings, mp, isTyping,
+    getSim: () => sim, getVolume: () => volume, getScale: () => scale,
+    hover, pointerHover: () => pointerInside && !uiHover, pickRay,
+    requestRender: () => pacer.wake(),
+  });
   window.__app = {
     get sim() { return sim; }, get volume() { return volume; }, get scale() { return scale; }, get signs() { return signs; }, get builds() { return builds; },
-    SUN, scene, settings, camera, controls, loadPreset, selectTool, setView, hover, renderer, rig, renderThumb, gfx, post, mp,
+    get pov() { return pov; },
+    SUN, day, scene, settings, camera, controls, loadPreset, selectTool, setView, hover, renderer, rig, renderThumb, gfx, post, mp, autoRes,
     applyDetail,   // after changing settings.detail_* by hand
     detailGate,    // .level / .shown: which close-up features the view has compiled in
     THREE,         // for tools (tools/detail-bench.mjs makes its own targets)

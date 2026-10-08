@@ -80,6 +80,32 @@ export const PHYS = {
   ASH_SHARE: 0.5,            // share of burnt-out cells that leave ash
   BURNT_MIN_T: 600,          // °C, a burnt-out cell is at least this hot
 
+  // impacts and breaking (react.js, move.js). Hardness (elements.js hard) is in
+  // the sim's kinetic-energy units, ½·dens·|v|² with v in cells/step.
+  // Kinetic energy an impact dissipates becomes heat: ΔT = E·KE_TO_HEAT / cap
+  // (cap·°C per unit of kinetic energy). Taken literally (a cell is ~30 cm and a
+  // step 1/240 s, so 1 cell/step ≈ 72 m/s; dens 10 = 1000 kg/m³; cap 1 = water)
+  // the factor would be ≈ 0.12, but a 30 cm cell can't resolve the hot spot at
+  // a contact patch, which is what really lights powder, so this stands in for
+  // it. Two cases set it. A slug breaking a keg's wood (hard 20) leaves sawdust
+  // (cap 0.3) 20·3/0.3 = 200 °C hotter: past gunpowder's 200 °C ignition, so the
+  // keg goes off, but under sawdust's own 250 °C, so a shot plank doesn't
+  // smoulder. And sand dropped 10-50 cells onto rock warms the floor layer by
+  // ~10 °C (each grain lands once at ≤ 0.6 cells/step, E ≤ 2.9, and passes on
+  // the knocks of the grains landing on it), which conduction soon spreads.
+  KE_TO_HEAT: 3,
+  // A solid breaks when the air pressure difference across it, along any axis,
+  // exceeds hard·P_BREAK_PER_HARD (pressure per unit of hardness; a solid
+  // neighbour holds no air and counts as 0). One gunpowder cell's blast is
+  // GUNPOWDER_P (60) and loses ~15% per cell, but a pile lit by a flame goes off
+  // in a wave that stacks its blasts: ~140 at the edge of a 3³ pile, ~200 at a
+  // 5³ one, still ~100 four cells out. So glass (8 → 40) and ice and plants
+  // (6 → 30) smash a few cells from even one cell's blast, wood (20 → 100) a few
+  // cells from a lit pile, rock (30 → 150) chips only right next to a big one,
+  // and metal (60 → 300) never does: no pressure difference in the sim exceeds
+  // P_MAX - P_MIN = 250.
+  P_BREAK_PER_HARD: 5,
+
   // tools (passes.js), applied once per frame
   TOOL_HEAT: 30,             // °C at the brush centre
   TOOL_PRESSURE: 6,

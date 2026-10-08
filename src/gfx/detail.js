@@ -68,8 +68,25 @@ export const detailDefines = (settings) =>
 // every feature on (tools/check-shaders.mjs compiles this variant too)
 export const allDetailDefines = () => Object.fromEntries(DETAIL.map((f) => [f.define, 1]));
 
-// Settings rows (ui/settings.js switch rows), one per feature, cheapest first.
+// Levels for the one visible control: none, the cost-tier defaults, every feature.
+export const DETAIL_LEVELS = { off: () => false, balanced: (f) => COST[f.cost].on, full: () => true };
+const LEVEL_LABELS = [['off', 'Off'], ['balanced', 'Balanced'], ['full', 'Full']];
+// the level the switches match, or 'custom'
+export function detailLevelOf(settings) {
+  for (const [k, on] of Object.entries(DETAIL_LEVELS)) if (DETAIL.every((f) => !!settings[settingKey(f)] === on(f))) return k;
+  return 'custom';
+}
+export function setDetailLevel(settings, level) {
+  for (const f of DETAIL) settings[settingKey(f)] = DETAIL_LEVELS[level](f);
+}
+
+// Settings rows (ui/settings.js): the level, then under "Customize" one switch
+// per feature, cheapest first, each labelled with its cost tier.
 const TIER_ORDER = ['low', 'medium', 'high'];
-export const detailRows = (onChange) => [...DETAIL]
-  .sort((a, b) => TIER_ORDER.indexOf(a.cost) - TIER_ORDER.indexOf(b.cost))
-  .map((f) => ({ type: 'switch', key: settingKey(f), label: f.label, desc: f.desc, badge: COST[f.cost].label, tier: f.cost, onChange }));
+export const detailRows = (settings, onChange) => [
+  { type: 'seg', key: 'detailLevel', value: () => detailLevelOf(settings), options: LEVEL_LABELS,
+    onChange: (v) => { setDetailLevel(settings, v); onChange(); } },
+  { type: 'more', label: 'Customize', rows: [...DETAIL]
+    .sort((a, b) => TIER_ORDER.indexOf(a.cost) - TIER_ORDER.indexOf(b.cost))
+    .map((f) => ({ type: 'switch', key: settingKey(f), label: f.label, desc: f.desc, badge: COST[f.cost].label, tier: f.cost, onChange })) },
+];

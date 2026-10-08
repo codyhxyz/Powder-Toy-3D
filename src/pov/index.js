@@ -1,0 +1,443 @@
+import * as THREE from 'three';
+import { ELEMENTS } from '../elements.js';
+import { BODY_HEIGHT, BODY_WIDTH, EYE_HEIGHT, HAND_REACH } from './constants.js';
+import { createPovCamera, ENTRY_PITCH, FIGURE_HIDE_DIST, RESPAWN_SWOOP_S, SWOOP_S } from './camera.js';
+import { createFigure } from './figure.js';
+import { createPovHud } from './hud.js';
+import './pov.css';
+
+// First-person (POV) mode: drop into the world with F, walk around in it,
+// pop back out with F. This module is the shell: input, the camera, the
+// figure, the HUD and the per-frame wiring between the body (player.js) and
+// the toolbelt (tools/index.js). Both are optional at build time: without the
+// body, F explains; without the toolbelt you just walk.
+
+const playerModule = import.meta.glob('./player.js', { eager: true })['./player.js'];
+const toolsModule = import.meta.glob('./tools/index.js', { eager: true })['./tools/index.js'];
+
+const PREWARM_DELAY_MS = 2000;          // ms after start-up before the figure's shader compiles in the background
+const RESPAWN_DELAY = 3.5;              // s from death to respawning at the drop point
+const POV_NEAR = 0.08;                  // cells: near plane in POV (a held item sits close to the eye)
+// Wheel → notches: the first event of a gesture is one notch at once (mice
+// report anything from a few px to 120 per click), then every WHEEL_NOTCH_PX
+// more in the same direction (fast spins, trackpad swipes) is another.
+const WHEEL_NOTCH_PX = 100;             // px of wheel delta per further notch (a Windows/Linux wheel click)
+const WHEEL_GESTURE_GAP_MS = 180;       // ms without wheel events that ends a gesture
+const WHEEL_LINE_PX = 40;               // px per line, for wheels that report lines
+const WHEEL_PAGE_PX = 800;              // px per page
+
+const MOVE_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ShiftLeft', 'ShiftRight', 'KeyC']);
+// god-mode keys that stay live in POV: help, settings, screenshot, closing menus
+const PASS_KEYS = new Set(['Escape', '?', ',', 'p', 'P']);
+
+// app = { renderer, scene, camera, controls, canvas, hud, settings, mp, isTyping,
+//         getSim, getVolume, getScale, hover, pointerHover (() => bool), pickRay (ro, rd → Promise<hit>),
+//         requestRender }
+export function createPov(app) {
+  const { renderer, scene, camera, controls, canvas, hud } = app;
+  const createPlayer = playerModule?.createPlayer;
+  const createToolbelt = toolsModule?.createToolbelt;
+
+  const povCam = createPovCamera();
+  const povHud = createPovHud();
+  let figure = null, player = null, toolbelt = null;
+  const viewmodel = new THREE.Group();
+  viewmodel.name = 'pov-viewmodel';
+  camera.add(viewmodel);
+  viewmodel.visible = false;
+
+  let mode = 'off';                      // off | entering | on | exiting
+  let starting = false;                  // waiting for the drop point
+  let locked = false;
+  let deadSeen = false, deadTime = 0;
+  let firstEntry = true;
+  const dropPoint = new THREE.Vector3();
+  const saved = { pos: new THREE.Vector3(), quat: new THREE.Quaternion(), target: new THREE.Vector3(), fov: 40, near: 0.05 };
+
+  // input
+  const keys = new Set();
+  const buttons = { primary: false, secondary: false, primaryPressed: false, secondaryPressed: false };
+  let wheelAcc = 0, wheelNotches = 0, wheelLast = -Infinity, wheelDir = 0;
+  const test = { assumeLocked: false };   // headless tests can't lock the pointer
+
+  const active = () => mode !== 'off';
+  const live = () => mode === 'on' && !player?.dead;
+  const isLocked = () => locked || test.assumeLocked;
+
+  // ---- grid ↔ world
+  const toWorld = (g, out) => out.copy(g).multiplyScalar(app.getScale()).add(app.getVolume().position);
+  const worldToGrid = new THREE.Matrix4();
+  const box = { min: new THREE.Vector3(), max: new THREE.Vector3(), margin: 0 };
+
+  // ---- pointer lock
+  function requestLock() {
+    if (document.pointerLockElement === canvas) return;
+    try { canvas.requestPointerLock()?.catch?.(() => {}); } catch { /* not allowed here */ }
+  }
+  document.addEventListener('pointerlockchange', () => {
+    locked = document.pointerLockElement === canvas;
+    document.body.classList.toggle('pov-locked', locked);
+    if (!locked) releaseInput();
+    app.requestRender();
+  });
+  function releaseInput() {
+    keys.clear();
+    buttons.primary = buttons.secondary = false;
+  }
+
+  addEventListener('keydown', (e) => {
+    if (!active() || app.isTyping() || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (MOVE_KEYS.has(e.code)) { keys.add(e.code); if (e.code === 'Space') e.preventDefault(); }
+    if (e.code === 'KeyV' && !e.repeat && mode !== 'exiting') povCam.third = !povCam.third;
+    // settings and help need the mouse
+    if ((e.key === ',' || e.key === '?') && document.pointerLockElement === canvas) document.exitPointerLock();
+  });
+  addEventListener('keyup', (e) => keys.delete(e.code));
+  addEventListener('blur', releaseInput);
+
+  canvas.addEventListener('mousedown', (e) => {
+    if (!active()) return;
+    if (!isLocked()) { if (mode !== 'exiting') requestLock(); return; }   // the click that locks doesn't fire
+    if (e.button === 0) { buttons.primary = true; buttons.primaryPressed = true; }
+    if (e.button === 2) { buttons.secondary = true; buttons.secondaryPressed = true; }
+  });
+  addEventListener('mouseup', (e) => {
+    if (e.button === 0) buttons.primary = false;
+    if (e.button === 2) buttons.secondary = false;
+  });
+  document.addEventListener('mousemove', (e) => {
+    if (!active() || !locked || mode === 'exiting') return;
+    povCam.turn(e.movementX, e.movementY);
+  });
+  canvas.addEventListener('wheel', (e) => {
+    if (!active()) return;
+    e.preventDefault();
+    if (!isLocked()) return;
+    const px = e.deltaY * (e.deltaMode === 1 ? WHEEL_LINE_PX : e.deltaMode === 2 ? WHEEL_PAGE_PX : 1);
+    if (!px) return;
+    const now = performance.now(), dirn = Math.sign(px);
+    if (now - wheelLast > WHEEL_GESTURE_GAP_MS || dirn !== wheelDir) {
+      wheelNotches += dirn;   // a new gesture (or a change of direction): one notch now
+      wheelAcc = 0;
+    } else {
+      wheelAcc += px;
+      const n = Math.trunc(wheelAcc / WHEEL_NOTCH_PX);
+      wheelNotches += n;
+      wheelAcc -= n * WHEEL_NOTCH_PX;
+    }
+    wheelLast = now;
+    wheelDir = dirn;
+  }, { passive: false });
+
+  // ---- lazily built parts
+  function ensureFigure() {
+    if (!figure) {
+      figure = createFigure();
+      scene.add(figure.root);
+    }
+    figure.bind(app.getVolume(), app.getSim().g);
+    return figure.compile(renderer, camera, scene);
+  }
+  // compile the figure's shader once the page has settled, not on the first F
+  if (createPlayer) {
+    const idle = globalThis.requestIdleCallback ?? ((fn) => setTimeout(fn, PREWARM_DELAY_MS));
+    setTimeout(() => idle(() => { if (app.getSim()) ensureFigure(); }), PREWARM_DELAY_MS);
+  }
+  function ensureParts() {
+    if (!player) {
+      player = createPlayer({ renderer, getSim: app.getSim });
+      player.on('land', ({ speed }) => povCam.land(speed));
+    }
+    if (!camera.parent) scene.add(camera);   // its children (the viewmodel) render with the scene
+    if (!toolbelt && createToolbelt) {
+      try {
+        toolbelt = createToolbelt({
+          renderer, scene,
+          getSim: app.getSim, getVolume: app.getVolume, getScale: app.getScale,
+          hud, viewmodel,
+          isActive: () => live(),
+        });
+      } catch (err) { console.error('POV toolbelt failed to start', err); }
+    }
+  }
+
+  // Where to drop in: on top of the hovered surface, else on whatever is in
+  // the middle of the box.
+  const hitToFeet = (hit, g, out) => {
+    const c = hit.cell, axis = Math.floor(hit.face / 2), sign = hit.face % 2 === 0 ? 1 : -1;
+    out.set(c.x + 0.5, c.y, c.z + 0.5);
+    if (axis === 1) out.y = sign > 0 ? c.y + 1 : c.y - BODY_HEIGHT;   // on top / under an overhang
+    else out.setComponent(axis, out.getComponent(axis) + sign);        // beside a wall: drop down along it
+    const hw = BODY_WIDTH / 2;
+    out.x = THREE.MathUtils.clamp(out.x, hw, g.nx - hw);
+    out.z = THREE.MathUtils.clamp(out.z, hw, g.nz - hw);
+    out.y = THREE.MathUtils.clamp(out.y, 0, g.ny - BODY_HEIGHT);
+    return out;
+  };
+  async function findDropPoint(out) {
+    const g = app.getSim().g;
+    const hv = app.hover;
+    if (app.pointerHover() && hv.valid) return hitToFeet(hv, g, out);
+    const hit = await app.pickRay(new THREE.Vector3(g.nx / 2, g.ny + 1, g.nz / 2), new THREE.Vector3(0, -1, 0));
+    if (hit?.valid) return hitToFeet(hit, g, out);
+    return out.set(g.nx / 2, 0, g.nz / 2);
+  }
+
+  const camPose = () => ({ pos: camera.position.clone(), quat: camera.quaternion.clone(), fov: camera.fov });
+
+  async function enter() {
+    if (mode === 'on' || mode === 'entering' || starting) return;
+    if (app.mp.isGuest) { hud.toast("POV isn't available as a guest yet"); return; }
+    if (mode === 'exiting') {   // changed our mind halfway out: fly back in
+      mode = 'entering';
+      povCam.startSwoop('in', camPose());
+      requestLock();
+      return;
+    }
+    if (!createPlayer) { hud.toast('First-person mode is still being built'); return; }
+    requestLock();   // while the key press still counts as a user gesture
+    starting = true;
+    try {
+      await Promise.all([findDropPoint(dropPoint), ensureFigure()]);
+      ensureParts();
+    } catch (err) {
+      console.error('POV failed to start', err);
+      hud.toast("Couldn't drop in here");
+      starting = false;
+      if (document.pointerLockElement === canvas) document.exitPointerLock();
+      return;
+    }
+    starting = false;
+    // remember the god view exactly
+    saved.pos.copy(camera.position);
+    saved.quat.copy(camera.quaternion);
+    saved.target.copy(controls.target);
+    saved.fov = camera.fov;
+    saved.near = camera.near;
+    controls.enabled = false;
+    // stop any orbit damping still in flight, so popping out lands exactly here
+    controls._sphericalDelta?.set(0, 0, 0);
+    controls._panOffset?.set(0, 0, 0);
+
+    // face where the god camera was looking
+    const fwd = camera.getWorldDirection(new THREE.Vector3());
+    povCam.setLook(Math.atan2(-fwd.x, -fwd.z), ENTRY_PITCH);
+    povCam.reset();
+    player.spawn(dropPoint.clone());
+    deadSeen = false;
+    povCam.startSwoop('in', camPose(), { duration: SWOOP_S });
+    camera.near = POV_NEAR * app.getScale();
+    camera.updateProjectionMatrix();
+    mode = 'entering';
+    document.body.classList.add('pov-on');
+    hud.dismissHint();
+    povHud.show(true);
+    if (firstEntry) { povHud.showHint(); firstEntry = false; }
+    app.requestRender();
+  }
+
+  function exit(instant = false) {
+    if (!active()) return;
+    toolbelt?.setVisible(false);
+    viewmodel.visible = false;
+    if (document.pointerLockElement === canvas) document.exitPointerLock();
+    releaseInput();
+    if (instant) { finishExit(); return; }
+    mode = 'exiting';
+    povCam.startSwoop('out', camPose(), { to: { pos: saved.pos, quat: saved.quat, fov: saved.fov } });
+    povHud.show(false);
+  }
+
+  function finishExit() {
+    mode = 'off';
+    camera.position.copy(saved.pos);
+    camera.quaternion.copy(saved.quat);
+    camera.fov = saved.fov;
+    camera.near = saved.near;
+    camera.updateProjectionMatrix();
+    controls.target.copy(saved.target);
+    controls.enabled = true;
+    controls.update();
+    figure?.setVisible(false);
+    viewmodel.visible = false;
+    povHud.show(false);
+    document.body.classList.remove('pov-on');
+    app.requestRender();
+  }
+
+  // ---- per frame
+  const ctx = {
+    sim: null, dt: 0, stepsPerFrame: 0,
+    eye: new THREE.Vector3(), dir: new THREE.Vector3(),
+    primary: false, secondary: false, primaryPressed: false, secondaryPressed: false, wheel: 0,
+    aim: { valid: false, cell: new THREE.Vector3(), face: 0, id: -1, T: 0, P: 0, dist: Infinity },
+    player: { pos: null, vel: null, onGround: false, inLiquid: false, applyImpulse: (dv) => player?.applyImpulse(dv) },
+  };
+  const input = { move: { x: 0, z: 0 }, jump: false, sprint: false, down: false };
+  const vEye = new THREE.Vector3(), vFeet = new THREE.Vector3(), vA = new THREE.Vector3(), vB = new THREE.Vector3();
+  const closest = new THREE.Vector3();
+  let speedH = 0;
+
+  function readInput() {
+    input.move.x = input.move.z = 0;
+    input.jump = input.sprint = input.down = false;
+    if (mode !== 'on' || player.dead || app.isTyping()) return;
+    const f = (keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 1 : 0);
+    const r = (keys.has('KeyD') ? 1 : 0) - (keys.has('KeyA') ? 1 : 0);
+    if (f || r) {
+      const fw = povCam.forwardH(vA), rt = povCam.rightH(vB);
+      let x = fw.x * f + rt.x * r, z = fw.z * f + rt.z * r;
+      const len = Math.hypot(x, z);
+      if (len > 1) { x /= len; z /= len; }
+      input.move.x = x; input.move.z = z;
+    }
+    input.jump = keys.has('Space');
+    input.sprint = keys.has('ShiftLeft') || keys.has('ShiftRight');
+    input.down = keys.has('KeyC');
+  }
+
+  function update(dt) {
+    if (!active()) return;
+    const sim = app.getSim(), vol = app.getVolume(), scale = app.getScale();
+    const g = sim.g;
+    vol.updateMatrixWorld();
+    worldToGrid.copy(vol.matrixWorld).invert();
+    box.min.copy(vol.position);
+    box.max.set(g.nx, g.ny, g.nz).multiplyScalar(scale).add(vol.position);
+    box.margin = 0.5 * scale;
+
+    // the body
+    readInput();
+    player.update(dt, input);
+    if (player.dead && !deadSeen) {
+      deadSeen = true; deadTime = 0;
+      toolbelt?.setVisible(false);
+      releaseInput();
+    }
+    if (deadSeen) {
+      deadTime += dt;
+      if (deadTime >= RESPAWN_DELAY && mode === 'on') {
+        player.spawn(dropPoint.clone());
+        deadSeen = false;
+        povCam.reset();
+        povCam.startSwoop('in', camPose(), { duration: RESPAWN_SWOOP_S });
+        mode = 'entering';
+      }
+    }
+    speedH = Math.hypot(player.vel.x, player.vel.z);
+
+    // the camera
+    toWorld(vEye.copy(player.pos).setY(player.pos.y + EYE_HEIGHT), vEye);
+    toWorld(player.pos, vFeet);
+    const pose = povCam.update({
+      dt, eye: vEye, feet: vFeet, scale, speedH,
+      onGround: player.onGround, inLiquid: player.inLiquid, sprinting: input.sprint,
+      dead: deadSeen, deadTime, box,
+    });
+    camera.position.copy(pose.pos);
+    camera.quaternion.copy(pose.quat);
+    if (Math.abs(camera.fov - pose.fov) > 1e-4) { camera.fov = pose.fov; camera.updateProjectionMatrix(); }
+    camera.updateMatrixWorld();
+    if (pose.done === 'in') {
+      mode = 'on';
+      toolbelt?.setVisible(true);
+    } else if (pose.done === 'out') {
+      finishExit();
+      return;
+    }
+
+    // the figure: shown once the camera is out of the head
+    figure.setVisible(pose.eyeDist > FIGURE_HIDE_DIST);
+    figure.update(dt, {
+      feet: vFeet, scale, yaw: povCam.look.yaw, worldToGrid,
+      speedH, velY: player.vel.y, onGround: player.onGround, inLiquid: player.inLiquid,
+      dead: deadSeen, deadTime, heat: player.feel?.heat ?? 0,
+    });
+    viewmodel.visible = mode === 'on' && !deadSeen && pose.eyeDist <= FIGURE_HIDE_DIST;
+
+    // the toolbelt
+    const aim = ctx.aim, hv = app.hover;
+    ctx.eye.copy(player.pos).setY(player.pos.y + EYE_HEIGHT);
+    povCam.dir(ctx.dir);
+    aim.valid = hv.valid;
+    if (hv.valid) {
+      aim.cell.copy(hv.cell); aim.face = hv.face; aim.id = hv.id; aim.T = hv.T; aim.P = hv.P;
+      // distance from the eye to the nearest point of the cell
+      closest.set(
+        THREE.MathUtils.clamp(ctx.eye.x, hv.cell.x, hv.cell.x + 1),
+        THREE.MathUtils.clamp(ctx.eye.y, hv.cell.y, hv.cell.y + 1),
+        THREE.MathUtils.clamp(ctx.eye.z, hv.cell.z, hv.cell.z + 1));
+      aim.dist = closest.distanceTo(ctx.eye);
+    } else aim.dist = Infinity;
+    if (live() && toolbelt) {
+      ctx.sim = sim;
+      ctx.dt = dt;
+      ctx.stepsPerFrame = app.settings.paused ? 0 : app.settings.steps;
+      const use = isLocked();
+      ctx.primary = use && buttons.primary;
+      ctx.secondary = use && buttons.secondary;
+      ctx.primaryPressed = use && buttons.primaryPressed;
+      ctx.secondaryPressed = use && buttons.secondaryPressed;
+      ctx.wheel = wheelNotches;
+      ctx.player.pos = player.pos;
+      ctx.player.vel = player.vel;
+      ctx.player.onGround = player.onGround;
+      ctx.player.inLiquid = player.inLiquid;
+      try { toolbelt.update(ctx); } catch (err) { console.error('POV toolbelt update failed', err); }
+    }
+    buttons.primaryPressed = buttons.secondaryPressed = false;
+    wheelNotches = 0;
+
+    // the HUD
+    const liq = player.headInLiquid ? ELEMENTS[player.liquidId] : null;
+    povHud.update({
+      dt, health: player.health, breath: player.breath, feel: player.feel,
+      headInLiquid: player.headInLiquid && mode === 'on',
+      liquidColor: liq?.color ?? null,
+      dead: deadSeen, cause: player.cause, respawnIn: RESPAWN_DELAY - deadTime,
+      locked: isLocked(), swooping: mode !== 'on',
+      aimValid: aim.valid, aimInReach: aim.valid && aim.dist <= HAND_REACH, third: povCam.third,
+    });
+  }
+
+  // The pick ray in grid space (for app's requestPick): the screen centre.
+  // In third person it starts level with the eye, so nothing between the
+  // camera and the body gets picked.
+  function aimRay(ro, rd) {
+    if (!active() || !player) return false;
+    const scale = app.getScale();
+    ro.copy(camera.position).sub(app.getVolume().position).divideScalar(scale);
+    camera.getWorldDirection(rd);
+    const eye = vA.copy(player.pos).setY(player.pos.y + EYE_HEIGHT);
+    const skip = Math.max(0, vB.subVectors(eye, ro).dot(rd));
+    ro.addScaledVector(rd, skip);
+    return true;
+  }
+
+  // god-mode keys POV takes over (app.js skips them while active)
+  const blocksKey = (e) => active() && !PASS_KEYS.has(e.key) && !(e.metaKey || e.ctrlKey);
+
+  return {
+    get active() { return active(); },
+    get mode() { return mode; },
+    get locked() { return isLocked(); },
+    get player() { return player; },
+    get toolbelt() { return toolbelt; },
+    get figure() { return figure; },
+    get ctx() { return ctx; },
+    camera: povCam,
+    viewmodel,
+    test,
+    dropPoint,
+    toggle() { if (mode === 'on' || mode === 'entering') exit(); else enter(); },
+    enter,
+    exit,
+    update,
+    // the world was replaced (undo, a scene load): tools drop what they carry from the old one
+    worldReplaced: () => toolsModule?.emptyLoads?.(),
+    aimRay,
+    blocksKey,
+    // tests: look around without pointer lock (radians)
+    setLook: (yaw, pitch) => povCam.setLook(yaw, pitch),
+  };
+}

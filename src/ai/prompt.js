@@ -22,6 +22,7 @@ function elementTable() {
   return ['| Element | Kind | Numbers | Behaviour |', '| --- | --- | --- | --- |', ...rows].join('\n');
 }
 
+// relay/ai.js (the free AI proxy) recognises construction requests by this first sentence.
 const API = `Your code is the body of a JavaScript function (strict mode). These names are in scope:
 
 - \`put(x, y, z, el, opts)\`: set one cell.

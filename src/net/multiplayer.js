@@ -342,7 +342,8 @@ export function createMultiplayer({ renderer, scene, camera, hud, getSim, getVol
         worldDirty = false;
       }
 
-      if (role !== 'solo' && now - lastPresence >= PRESENCE_INTERVAL_MS) {
+      // Alone in the room: nobody to show the cursor to, so don't wake the relay (a join resends it).
+      if (role !== 'solo' && peers.size && now - lastPresence >= PRESENCE_INTERVAL_MS) {
         const q = (v) => Math.round(v * CURSOR_STEPS_PER_CELL) / CURSOR_STEPS_PER_CELL;
         const json = JSON.stringify(cursor.visible
           ? { t: 'cursor', c: cursor.center.toArray().map(q), r: cursor.radius, shape: cursor.shape, tool: cursor.tool, painting: cursor.painting }

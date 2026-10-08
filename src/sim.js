@@ -73,6 +73,7 @@ const giUniforms = () => ({
   uShadows: { value: true }, uSun: { value: new THREE.Vector3(0, 1, 0) },
   // sky values (computed per frame by updateGfxUniforms)
   uSunExt: gfxUniforms.uSunExt, uSunCol: gfxUniforms.uSunCol, uSkyUp: gfxUniforms.uSkyUp, uGround: gfxUniforms.uGround,
+  uKeyLight: gfxUniforms.uKeyLight,
 });
 const giProbeUniforms = () => Object.fromEntries([0, 1, 2, 3].map((i) => [`tGI${i}`, { value: null }]));
 

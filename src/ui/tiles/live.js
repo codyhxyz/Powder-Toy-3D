@@ -59,7 +59,7 @@ class LiveTile {
     this.pointer.y = ((e.clientY - r.top) / r.height) * TILE;
   }
   enter() {
-    if (reducedMotion.matches || !settings.liveTiles) return; // settings: Element picker
+    if (reducedMotion.matches) return;
     const p = this.pointer;
     p.px = p.x; p.py = p.y; p.speed = 0;
     this.inside = true;

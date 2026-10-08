@@ -1,5 +1,10 @@
 import { prelude } from './common.js';
 import { quietGLSL } from './activity.js';
+import { ELEMENTS } from '../elements.js';
+
+// The softest breakable solid: a cell carrying less kinetic energy than this
+// can't break anything, which lets almost every cell skip the impact check.
+const HARD_MIN = Math.min(...ELEMENTS.filter((e) => e.breakInto).map((e) => e.hard));
 
 // React pass: everything that only changes a cell in place, using its six
 // face neighbours.
@@ -19,6 +24,17 @@ import { quietGLSL } from './activity.js';
 //     gets there in L steps. Walls block it. The gradient accelerates matter
 //     (a = -∇P / ρ), so explosions throw things outward.
 //   - Forces: gravity, buoyancy (hot air rises), drag, brownian jitter.
+//   - Breaking. A breakable solid (elements.js hard/breakInto) turns into its
+//     debris when a neighbour runs into it carrying at least `hard` kinetic
+//     energy along that axis (½·ρ·vn², vn its velocity toward the solid), or
+//     when the air pressure difference across it exceeds hard·P_BREAK_PER_HARD.
+//     The solid and the projectile evaluate the same predicate on the same
+//     input (this pass's input state), so both sides agree without a race:
+//     the projectile pays `hard` out of its kinetic energy and then hits the
+//     loose debris (the move pass's collision rule), and the debris takes that
+//     momentum and the fracture work as heat. The move pass that runs before
+//     this one leaves a projectile that can break what it's touching unbounced
+//     (move.js), so it reaches this check with its velocity intact.
 export const reactFrag = (g) => /* glsl */ `
 ${prelude(g)}
 uniform sampler2D tA;
@@ -33,6 +49,27 @@ const ivec3 DIRS[6] = ivec3[6](ivec3(1,0,0), ivec3(-1,0,0), ivec3(0,1,0), ivec3(
 
 // Latent heat bookkeeping. acc is energy banked toward a transition at Tp.
 // rising: transition happens when heated past Tp (melting, boiling).
+#define HARD_MIN ${HARD_MIN.toFixed(1)}   // the softest breakable solid's hardness
+
+// Kinetic energy a cell (id, T, v) carries along the unit axis n: ½·ρ·vn², or
+// 0 when it is moving away or can't move.
+float impactKE(int id, float T, vec3 v, vec3 n) {
+  float vn = dot(v, n);
+  return movable(id) && vn > 0.0 ? 0.5 * densityOf(id, T) * vn * vn : 0.0;
+}
+
+// A projectile (density m, speed u along the axis) breaks a solid of hardness
+// H into debris of density M. The fracture takes H of its kinetic energy, then
+// it hits the loose debris head on with the move pass's collision rule
+// (move.js collide). Returns the projectile's speed along the axis and the
+// debris's, both afterwards.
+vec2 shatter(float m, float u, float H, float M) {
+  float u1 = sqrt(max(u * u - 2.0 * H / m, 0.0));
+  if (u1 <= COLLIDE_V) return vec2(u1, 0.0);   // slow contact: the debris just supports it
+  float inv = 1.0 / (m + M), vc = m * u1 * inv;
+  return vec2(vc - RESTITUTION * M * inv * u1, min(vc + RESTITUTION * m * inv * u1, V_MAX));
+}
+
 bool latent(inout float T, inout float acc, float Tp, float C, float L, bool rising) {
   if (rising) {
     if (T > Tp) { acc += (T - Tp) * C; T = Tp; }
@@ -72,6 +109,45 @@ void main() {
       nb[i] = vec4(0.0, 0.0, 0.0, P0);
     }
     nid[i] = eid(na[i]);
+  }
+
+  // ---- breaking (impacts and blasts), from this pass's input state ----
+  // As a projectile: every breakable neighbour I hit hard enough breaks, and
+  // each costs me its hardness, then a collision with its debris.
+  vec3 dvBreak = vec3(0.0);
+  if (movable(id) && 0.5 * densityOf(id, a.y) * dot(b.xyz, b.xyz) >= HARD_MIN) {
+    float m = densityOf(id, a.y);
+    for (int i = 0; i < 6; i++) {
+      int s = nid[i];
+      if (BREAKINTO[s] < 0) continue;
+      vec3 n = vec3(DIRS[i]);
+      if (impactKE(id, a.y, b.xyz, n) < HARD[s]) continue;
+      float u = dot(b.xyz, n);
+      dvBreak -= n * (u - shatter(m, u, HARD[s], densityOf(BREAKINTO[s], a.y)).x);
+    }
+  }
+  // As a breakable solid: the same test from my side. Every neighbour that
+  // hits me hard enough pays my hardness, so the fracture work I get as heat is
+  // one hardness per hit, and the debris takes each hit's momentum.
+  bool broke = false;
+  float fractureE = 0.0;   // kinetic energy dissipated breaking me
+  vec3 vDebris = vec3(0.0);
+  if (BREAKINTO[id] >= 0) {
+    float M = densityOf(BREAKINTO[id], a.y);
+    for (int i = 0; i < 6; i++) {
+      vec3 n = -vec3(DIRS[i]);   // from the neighbour toward me
+      if (impactKE(nid[i], na[i].y, nb[i].xyz, n) < HARD[id]) continue;
+      float u = dot(nb[i].xyz, n);
+      vDebris += n * shatter(densityOf(nid[i], na[i].y), u, HARD[id], M).y;
+      fractureE += HARD[id];
+      broke = true;
+    }
+    // a blast: the pressure difference across me along any axis (solid
+    // neighbours hold no air: 0)
+    float pa[6];
+    for (int i = 0; i < 6; i++) pa[i] = KIND[nid[i]] != K_SOLID ? nb[i].w : 0.0;
+    float dP = max(abs(pa[0] - pa[1]), max(abs(pa[2] - pa[3]), abs(pa[4] - pa[5])));
+    if (dP > HARD[id] * P_BREAK_PER_HARD) broke = true;
   }
 
   // ---- heat conduction (energy conserving) ----
@@ -145,6 +221,7 @@ void main() {
       }
     }
     if (JITTER[id] > 0.0) v += (vec3(rnd(rs), rnd(rs), rnd(rs)) - 0.5) * JITTER[id];
+    v += dvBreak;
     v = clamp(v, -V_MAX, V_MAX);
   } else {
     v = vec3(0.0);
@@ -167,7 +244,14 @@ void main() {
     if (IGNITE[j] > 0.0 && j != E_GUNPOWDER && na[i].y >= IGNITE[j]) { nBurning++; flame = max(flame, FLAMET[j]); }
   }
 
-  if (id == E_WATER) {
+  if (broke) {
+    // debris keeps my temperature, life (fuel, banked latent heat) and ctype,
+    // takes the fracture work as heat and flies off with the hits' momentum;
+    // it reacts as itself from the next step
+    nidOut = BREAKINTO[id];
+    T += fractureE * KE_TO_HEAT / CAP[nidOut];
+    v = clamp(vDebris, -V_MAX, V_MAX);
+  } else if (id == E_WATER) {
     // signed accumulator: + toward boiling, - toward freezing
     float up = max(life, 0.0), dn = max(-life, 0.0);
     bool boil = latent(T, up, 100.0, C, L_BOIL, true);
@@ -194,7 +278,8 @@ void main() {
     int victims = 0;
     for (int i = 0; i < 6; i++) {
       int j = nid[i];
-      if (j != E_EMPTY && j != E_ACID && j != E_WALL && j != E_GLASS && j != E_WATER && KIND[j] != K_GAS) victims++;
+      if (j != E_EMPTY && j != E_ACID && j != E_WALL && j != E_GLASS && j != E_SHARDS && j != E_WATER
+          && KIND[j] != K_GAS) victims++;
     }
     life -= ACID_USE * float(victims);
     if (life <= 0.0) { nidOut = rnd(rs) < ACID_TO_SMOKE ? E_SMOKE : E_EMPTY; reset = true; }
@@ -222,7 +307,12 @@ void main() {
   // combustion
   if (nidOut == id && IGNITE[id] > 0.0) {
     if (id == E_GUNPOWDER) {
-      if (T >= IGNITE[id] || (nFire > 0 && rnd(rs) < GUNPOWDER_FIRE)) {
+      // It goes off at its ignition point, or the moment it touches something
+      // that hot (an ember, hot metal, lava, a splinter heated by a shot); a
+      // flame's touch flickers, so a flame next to it only might.
+      bool hotTouch = false;
+      for (int i = 0; i < 6; i++) hotTouch = hotTouch || (!isGasLike(nid[i]) && na[i].y >= IGNITE[id]);
+      if (T >= IGNITE[id] || hotTouch || (nFire > 0 && rnd(rs) < GUNPOWDER_FIRE)) {
         nidOut = E_FIRE; reset = true; T = GUNPOWDER_T; P += GUNPOWDER_P;
       }
     } else if (T >= IGNITE[id] && (nAir > 0 || nFire > 0)) {
@@ -239,7 +329,7 @@ void main() {
 
   // acid eats its neighbours
   if (nidOut == id && nAcid > 0 && id != E_EMPTY && id != E_ACID && id != E_WALL && id != E_GLASS
-      && id != E_WATER && KIND[id] != K_GAS) {
+      && id != E_SHARDS && id != E_WATER && KIND[id] != K_GAS) {
     if (rnd(rs) < ACID_USE * float(nAcid)) { nidOut = rnd(rs) < ACID_TO_SMOKE ? E_SMOKE : E_EMPTY; reset = true; }
   }
 
