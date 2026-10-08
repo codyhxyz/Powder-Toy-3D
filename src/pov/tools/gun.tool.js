@@ -1,7 +1,6 @@
 import * as THREE from 'three';
 import { ELEMENTS } from '../../elements.js';
 import { BODY_WIDTH, BODY_HEIGHT, BODY_DENS } from '../constants.js';
-import { glowTexture } from '../../shaders/povTools.js';
 import { createBallistics, ROUND_SPEED, ROUND_SLUG, MAX_ROUNDS } from '../ballistics.js';
 import { povEvents } from '../events.js';
 import { attachModel } from '../models.js';
@@ -42,35 +41,26 @@ const MS_PER_S = 1000;
 // is the viewmodel rig's spring (viewmodel.js), thrown by gun:fire and gun:dry.
 const GUN_POS = [0.5, -0.45, -1.5];
 const MUZZLE = [0, 0.1, -0.66];    // cells from the model's centre to the end of the bore
-const FLASH_TIME = 0.06;           // s the muzzle flash shows
-const FLASH_SIZE = 0.7;            // cells
-const FLASH_COLOR = 0xffc870;
-const FLASH_SPIN = 22;            // rad/s the flash sprite turns, so no two flashes look alike
 const DRY_TOAST_INTERVAL = 1.5;    // s between "blocked" toasts
 
 const ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round">
 <path d="M3 8h15l1-2h2v5h-6l-1 2h-3l-1 5H5l1-5H3z"/></svg>`;
 
 // The held gun: the Kenney model (models.js, async) on a hand of the
-// viewmodel rig, a muzzle point at the end of its bore and the flash there.
+// viewmodel rig and a muzzle point at the end of its bore. The flash is vfx.js's,
+// drawn at gun:fire's muzzleWorld.
 function buildModel(env) {
   const rig = viewmodelRig(env);
   const hand = rig.hand(GUN_POS);
   const muzzle = new THREE.Object3D();
   muzzle.position.set(...MUZZLE);
-  const flash = new THREE.Sprite(new THREE.SpriteMaterial({
-    map: glowTexture(), color: FLASH_COLOR, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
-  }));
-  flash.scale.setScalar(FLASH_SIZE);
-  flash.visible = false;
-  muzzle.add(flash);
   hand.add(muzzle);
   const mesh = attachModel(hand, 'gun');
   return {
-    rig, hand, muzzle, flash,
+    rig, hand, muzzle,
     // the muzzle in world space (for gun:fire's muzzleWorld); valid before the mesh arrives
     muzzleWorld: (out = new THREE.Vector3()) => { muzzle.updateWorldMatrix(true, false); return muzzle.getWorldPosition(out); },
-    dispose() { mesh.dispose(); flash.material.map.dispose(); flash.material.dispose(); hand.removeFromParent(); },
+    dispose() { mesh.dispose(); hand.removeFromParent(); },
   };
 }
 
@@ -111,7 +101,7 @@ export default {
     const model = buildModel(env);
     const ballistics = createBallistics({ renderer: env.renderer });
     ballistics.prepare(env.getSim());
-    let time = 0, nextFire = 0, flashUntil = -1, nextDryToast = 0;
+    let time = 0, nextFire = 0, nextDryToast = 0;
     let lastShot = null;
     // While the gun is put away the toolbelt stops calling update, but rounds
     // already in the air keep flying: this drives them until they land, at the
@@ -123,7 +113,7 @@ export default {
       if (time >= nextDryToast) { env.hud?.toast?.('Click. The muzzle is blocked.'); nextDryToast = time + DRY_TOAST_INTERVAL; }
     };
 
-    // the muzzle in world space: the viewmodel's muzzle (or flash) if it has one, else the eye
+    // the muzzle in world space: the viewmodel's muzzle while it's shown, else the eye
     function muzzleWorld(eye) {
       if (model.hand.visible) return model.muzzleWorld();
       const vol = env.getVolume();
@@ -144,7 +134,6 @@ export default {
       const dv = dir.clone().multiplyScalar(-ROUND_MASS * ROUND_SPEED / BODY_MASS);
       if (ctx.player.onGround) dv.set(0, Math.max(dv.y, 0), 0);
       ctx.player.applyImpulse(dv);
-      flashUntil = time + FLASH_TIME;
       lastShot = { id, origin: origin.clone(), dir: dir.clone(), cell: m.cell.clone(), dv: dv.clone() };
       povEvents.emit('gun:fire', { origin: origin.clone(), dir: dir.clone(), muzzleWorld: muzzleWorld(ctx.eye) });
     }
@@ -170,12 +159,9 @@ export default {
           fire(ctx);
         }
         ballistics.update(ctx);
-        // the flash (the rig's spring does the kick, thrown by gun:fire)
-        model.flash.visible = time < flashUntil;
-        model.flash.material.rotation = time * FLASH_SPIN;
       },
       deselect() {
-        model.hand.visible = false; model.flash.visible = false;
+        model.hand.visible = false;
         selected = false;
         if (ballistics.count && !raf) { rafAt = 0; raf = requestAnimationFrame(drive); }
       },

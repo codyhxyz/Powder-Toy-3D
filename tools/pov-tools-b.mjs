@@ -8,7 +8,7 @@ import { chromium } from 'playwright';
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
 const port = opt('port', '5195');
-const only = opt('only', 'gun,axe,phys').split(',');
+const only = opt('only', 'axe,phys').split(',');   // the gun's check is tools/gp-gun.mjs (ballistic rounds)
 const shot = opt('shot');
 
 const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
