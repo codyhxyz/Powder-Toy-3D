@@ -4,12 +4,16 @@ import { BODY_HEIGHT, BODY_WIDTH, EYE_HEIGHT, HAND_REACH } from './constants.js'
 import { createPovCamera, ENTRY_PITCH, FIGURE_HIDE_DIST, RESPAWN_SWOOP_S, SWOOP_S } from './camera.js';
 import { createFigure } from './figure.js';
 import { createPovHud } from './hud.js';
+import { createFeel } from './feel.js';
+import { createVfx } from './vfx.js';
+import { povEvents } from './events.js';
 import './pov.css';
 
 // First-person (POV) mode: drop into the world with F, walk around in it,
 // pop back out with F. This module is the shell: input, the camera, the
 // figure, the HUD and the per-frame wiring between the body (player.js) and
-// the toolbelt (tools/index.js). Both are optional at build time: without the
+// the toolbelt (tools/index.js), plus the gunplay feedback that listens to
+// povEvents: feel (kick, shake, hitmarker), effects and sound. Both are optional at build time: without the
 // body, F explains; without the toolbelt you just walk.
 
 const playerModule = import.meta.glob('./player.js', { eager: true })['./player.js'];
@@ -40,6 +44,10 @@ export function createPov(app) {
 
   const povCam = createPovCamera();
   const povHud = createPovHud();
+  // feedback: everything here hears povEvents (events.js) and the body's events
+  const feel = createFeel({ hud: povHud });
+  let vfx = null;                        // three.quarks effects, built on the first drop-in
+  // (sound, audio.js, wires in here)
   let figure = null, player = null, toolbelt = null;
   const viewmodel = new THREE.Group();
   viewmodel.name = 'pov-viewmodel';
@@ -147,6 +155,13 @@ export function createPov(app) {
     if (!player) {
       player = createPlayer({ renderer, getSim: app.getSim });
       player.on('land', ({ speed }) => povCam.land(speed));
+      player.on('splash', ({ speed }) => vfx?.splash(player.pos, speed, player.liquidId));
+      feel.bindPlayer(player);
+    }
+    if (!vfx) {
+      try {
+        vfx = createVfx({ scene, camera, getVolume: app.getVolume, getScale: app.getScale, isActive: () => mode === 'on' || mode === 'entering' });
+      } catch (err) { console.error('POV effects failed to start', err); }
     }
     if (!camera.parent) scene.add(camera);   // its children (the viewmodel) render with the scene
     if (!toolbelt && createToolbelt) {
@@ -223,6 +238,7 @@ export function createPov(app) {
     const fwd = camera.getWorldDirection(new THREE.Vector3());
     povCam.setLook(Math.atan2(-fwd.x, -fwd.z), ENTRY_PITCH);
     povCam.reset();
+    feel.reset();
     player.spawn(dropPoint.clone());
     deadSeen = false;
     povCam.startSwoop('in', camPose(), { duration: SWOOP_S });
@@ -261,6 +277,8 @@ export function createPov(app) {
     figure?.setVisible(false);
     viewmodel.visible = false;
     povHud.show(false);
+    feel.reset();
+    vfx?.clear();
     document.body.classList.remove('pov-on');
     app.requestRender();
   }
@@ -320,20 +338,24 @@ export function createPov(app) {
         player.spawn(dropPoint.clone());
         deadSeen = false;
         povCam.reset();
+        feel.reset();
         povCam.startSwoop('in', camPose(), { duration: RESPAWN_SWOOP_S });
         mode = 'entering';
       }
     }
     speedH = Math.hypot(player.vel.x, player.vel.z);
 
-    // the camera
-    toWorld(vEye.copy(player.pos).setY(player.pos.y + EYE_HEIGHT), vEye);
+    // the camera, with the kick and shake on top of the look
+    vA.copy(player.pos).setY(player.pos.y + EYE_HEIGHT);
+    const shake = feel.update({ dt, live: mode === 'on' && !deadSeen, eye: vA });
+    toWorld(vEye.copy(vA), vEye);
     toWorld(player.pos, vFeet);
     const pose = povCam.update({
       dt, eye: vEye, feet: vFeet, scale, speedH,
       onGround: player.onGround, inLiquid: player.inLiquid, sprinting: input.sprint,
-      dead: deadSeen, deadTime, box,
+      dead: deadSeen, deadTime, box, shake,
     });
+    if (pose.footfall && mode === 'on' && !deadSeen) povEvents.emit('player:step', { speed: speedH, inLiquid: player.inLiquid });
     camera.position.copy(pose.pos);
     camera.quaternion.copy(pose.quat);
     if (Math.abs(camera.fov - pose.fov) > 1e-4) { camera.fov = pose.fov; camera.updateProjectionMatrix(); }
@@ -388,6 +410,9 @@ export function createPov(app) {
     buttons.primaryPressed = buttons.secondaryPressed = false;
     wheelNotches = 0;
 
+    // effects: keep drawing while any are in flight (rendering is on demand)
+    if (vfx?.update(dt)) app.requestRender();
+
     // the HUD
     const liq = player.headInLiquid ? ELEMENTS[player.liquidId] : null;
     povHud.update({
@@ -407,7 +432,9 @@ export function createPov(app) {
     if (!active() || !player) return false;
     const scale = app.getScale();
     ro.copy(camera.position).sub(app.getVolume().position).divideScalar(scale);
-    camera.getWorldDirection(rd);
+    // the aim, not the shaken view: kick and shake are only felt
+    if (mode === 'on' && !deadSeen) povCam.dir(rd);
+    else camera.getWorldDirection(rd);
     const eye = vA.copy(player.pos).setY(player.pos.y + EYE_HEIGHT);
     const skip = Math.max(0, vB.subVectors(eye, ro).dot(rd));
     ro.addScaledVector(rd, skip);
@@ -424,6 +451,8 @@ export function createPov(app) {
     get player() { return player; },
     get toolbelt() { return toolbelt; },
     get figure() { return figure; },
+    get vfx() { return vfx; },
+    feel,
     get ctx() { return ctx; },
     camera: povCam,
     viewmodel,
