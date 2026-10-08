@@ -2,7 +2,10 @@ import * as THREE from 'three';
 import { ELEMENTS, E, K } from '../../elements.js';
 import { PHYS as ENGINE } from '../../physics.js';
 import { BODY_WIDTH, BODY_HEIGHT, BODY_DENS } from '../constants.js';
-import { gunFrag, toolPass, shadedBox, glowTexture, disposeTree } from '../../shaders/povTools.js';
+import { gunFrag, toolPass, glowTexture } from '../../shaders/povTools.js';
+import { povEvents } from '../events.js';
+import { attachModel } from '../models.js';
+import { viewmodelRig } from '../viewmodel.js';
 
 // Gun: fires one SCRAP slug, a real cell, from just in front of the eye at
 // V_MAX along the aim. From then on it is the engine's: gravity drops it, a
@@ -29,45 +32,40 @@ const BODY_MASS = BODY_DENS * BODY_WIDTH * BODY_WIDTH * BODY_HEIGHT;
 const READ_TEXELS = 1;             // the muzzle cell's state A
 const RGBA = 4;
 
-// viewmodel, in cells (camera space: +x right, +y up, −z forward)
-const GUN_POS = [0.55, -0.38, -1.45];
-const MUZZLE_Z = -0.62;            // cells ahead of the gun's origin
+// viewmodel, in cells (camera space: +x right, +y up, −z forward). The recoil
+// is the viewmodel rig's spring (viewmodel.js), thrown by gun:fire and gun:dry.
+const GUN_POS = [0.55, -0.42, -1.45];
+const MUZZLE = [0, 0.1, -0.66];    // cells from the model's centre to the end of the bore
 const FLASH_TIME = 0.06;           // s the muzzle flash shows
 const FLASH_SIZE = 0.7;            // cells
 const FLASH_COLOR = 0xffc870;
 const FLASH_SPIN = 22;            // rad/s the flash sprite turns, so no two flashes look alike
-const KICK_TIME = 0.16;            // s the gun takes to settle after a shot
-const KICK_BACK = 0.25;            // cells it jumps back
-const KICK_PITCH = 0.35;           // rad it tips up
-const DRY_KICK = 0.25;             // share of the kick a dry click shows
 const DRY_TOAST_INTERVAL = 1.5;    // s between "blocked" toasts
 
 const ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round">
 <path d="M3 8h15l1-2h2v5h-6l-1 2h-3l-1 5H5l1-5H3z"/></svg>`;
 
-function buildModel() {
-  const root = new THREE.Group();
-  const gun = new THREE.Group();
-  root.add(gun);
-  const barrel = shadedBox(0.2, 0.24, 1.1, 0x4a4f58);
-  barrel.position.set(0, 0, -0.1);
-  const slide = shadedBox(0.24, 0.12, 0.8, 0x2f3238);
-  slide.position.set(0, 0.17, -0.05);
-  const grip = shadedBox(0.18, 0.45, 0.24, 0x5b3d26);
-  grip.position.set(0, -0.3, 0.28);
-  grip.rotation.x = -0.25;
-  const sight = shadedBox(0.05, 0.06, 0.06, 0xd8dde4);
-  sight.position.set(0, 0.26, -0.4);
-  gun.add(barrel, slide, grip, sight);
+// The held gun: the Kenney model (models.js, async) on a hand of the
+// viewmodel rig, a muzzle point at the end of its bore and the flash there.
+function buildModel(env) {
+  const rig = viewmodelRig(env);
+  const hand = rig.hand(GUN_POS);
+  const muzzle = new THREE.Object3D();
+  muzzle.position.set(...MUZZLE);
   const flash = new THREE.Sprite(new THREE.SpriteMaterial({
     map: glowTexture(), color: FLASH_COLOR, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
   }));
   flash.scale.setScalar(FLASH_SIZE);
-  flash.position.set(0, 0.02, MUZZLE_Z);
   flash.visible = false;
-  gun.add(flash);
-  root.visible = false;
-  return { root, gun, flash };
+  muzzle.add(flash);
+  hand.add(muzzle);
+  const mesh = attachModel(hand, 'gun');
+  return {
+    rig, hand, muzzle, flash,
+    // the muzzle in world space (for gun:fire's muzzleWorld); valid before the mesh arrives
+    muzzleWorld: (out = new THREE.Vector3()) => { muzzle.updateWorldMatrix(true, false); return muzzle.getWorldPosition(out); },
+    dispose() { mesh.dispose(); flash.material.map.dispose(); flash.material.dispose(); hand.removeFromParent(); },
+  };
 }
 
 // First cell along eye + t·dir that doesn't overlap the body box (feet at
@@ -101,16 +99,15 @@ export default {
   key: 'GUN', name: 'Gun', slot: 4, icon: ICON,
   desc: 'Fires a metal slug that flies, drops and smashes what it hits. Kicks back hard.',
   create(env) {
-    const model = buildModel();
-    env.viewmodel.add(model.root);
+    const model = buildModel(env);
     const pass = toolPass(gunFrag, () => ({ uCell: { value: new THREE.Vector3() }, uVel: { value: new THREE.Vector3() } }));
-    let time = 0, nextFire = 0, flashUntil = -1, kickAt = -Infinity, kickScale = 1, nextDryToast = 0;
+    let time = 0, nextFire = 0, flashUntil = -1, nextDryToast = 0;
     const readBuf = new Float32Array(READ_TEXELS * RGBA);
     let reading = false;
     let lastShot = null;
 
     const dry = () => {
-      kickAt = time; kickScale = DRY_KICK;
+      povEvents.emit('gun:dry', {});
       if (time >= nextDryToast) { env.hud?.toast?.('Click. The muzzle is blocked.'); nextDryToast = time + DRY_TOAST_INTERVAL; }
     };
 
@@ -135,7 +132,7 @@ export default {
             if (player.onGround) dv.set(0, Math.max(dv.y, 0), 0);
             player.applyImpulse(dv);
             flashUntil = time + FLASH_TIME;
-            kickAt = time; kickScale = 1;
+            povEvents.emit('gun:fire', { origin: cell.clone().addScalar(0.5), dir: vel.clone().normalize(), muzzleWorld: model.muzzleWorld() });
             lastShot = { cell: cell.clone(), vel: vel.clone(), dv: dv.clone() };
           } else dry();
         })
@@ -149,23 +146,21 @@ export default {
     return {
       update(ctx) {
         time += ctx.dt;
-        model.root.visible = true;
-        model.root.scale.setScalar(env.getScale());
+        model.hand.visible = true;
+        model.rig.update(ctx);
         if (ctx.primaryPressed && time >= nextFire) {
           nextFire = time + FIRE_INTERVAL;
           fire(ctx);
         }
-        // viewmodel: rest pose, kick after a shot, flash
-        const k = Math.max(0, 1 - (time - kickAt) / KICK_TIME) * kickScale;
-        model.gun.position.set(GUN_POS[0], GUN_POS[1], GUN_POS[2] + k * KICK_BACK);
-        model.gun.rotation.x = k * KICK_PITCH;
         model.flash.visible = time < flashUntil;
         model.flash.material.rotation = time * FLASH_SPIN;
       },
-      deselect() { model.root.visible = false; model.flash.visible = false; },
+      deselect() { model.hand.visible = false; model.flash.visible = false; },
       status: () => null,
       get lastShot() { return lastShot; },   // for checks: the muzzle cell, slug velocity and recoil of the last shot
-      dispose() { pass.dispose(); disposeTree(model.root); },
+      get muzzle() { return model.muzzle; }, // the viewmodel's muzzle point (Object3D)
+      muzzleWorld: model.muzzleWorld,        // (out?) → its world position now
+      dispose() { pass.dispose(); model.dispose(); },
     };
   },
 };

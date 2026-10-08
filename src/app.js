@@ -21,6 +21,7 @@ import { CHANNELS, MEDIA } from './gfx/materials.js';
 import { GI_BLEND } from './sim.js';
 import { createMultiplayer } from './net/multiplayer.js';
 import { createPov } from './pov/index.js';
+import { renderViewmodels } from './pov/viewmodel.js';
 
 // Optional modules (built in parallel); the app works without them.
 const optional = import.meta.glob(['./views.js', './signs.js', './constructions.js'], { eager: true });
@@ -845,6 +846,9 @@ function frame(now) {
     floorGrid.material.opacity = post.renderScale;
     edges.material.opacity = EDGE_OPACITY * post.renderScale;
     post.render(scene, camera);
+    // POV: the held tool, drawn over the finished frame in its own pass (no TAA, its
+    // own depth, so it never clips into walls); before the screenshot reads the canvas
+    renderViewmodels(renderer, scene, camera, post);
     if (wantShot) { wantShot = false; saveScreenshot(); }
 
     signs?.update();
