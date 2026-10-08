@@ -169,15 +169,15 @@ bool reliefHit(vec3 ro, vec3 rd, int ch, inout float t) {
 
 #ifdef DETAIL_RELIEF_SHADOW
 // Sunlight reaching carved point p past the relief around it: a march toward
-// the sun until it leaves the shell, soft by how closely it clears the
-// relief: the penumbra of the sun's disc (RELIEF_SUN_DISC radians across),
-// at least RELIEF_SHADOW_AA_PX pixels wide so it doesn't alias. The envelope
+// the sun until it leaves the shell. Each sample sees the relief under it at
+// an elevation angle (clearance / distance); the share of the sun's disc
+// (RELIEF_SUN_DISC radians across) above the highest such horizon is the
+// light that gets through: a true penumbra. The envelope
 // is taken as its tangent plane at p: its own shape at the cell scale (and
 // the trilinear field's creases) is the shadow map's business; here only the
 // relief can block the sun. (Relative to p's own carving, too: the hit is
 // only found to within a step, and a lit face mustn't shade itself.)
 const float RELIEF_SUN_DISC = 0.0093;     // the sun's angular diameter (0.53°)
-const float RELIEF_SHADOW_AA_PX = 1.0;
 const int RELIEF_SUN_STEPS_MIN = 3, RELIEF_SUN_STEPS_MAX = 8;
 const float RELIEF_SUN_PX_STEP = 4.0;   // pixels of path per sample (shadows need fewer than the hit)
 float reliefSunVis(vec3 p) {
@@ -192,10 +192,9 @@ float reliefSunVis(vec3 p) {
   for (int i = 1; i <= RELIEF_SUN_STEPS_MAX; i++) {
     if (i > n) break;
     float ts = dt * float(i);
-    float pen = max(RELIEF_SUN_DISC * ts, RELIEF_SHADOW_AA_PX * gRelFp);
     // height of the sun ray above the carved surface under it
     float clear = ts * cl + reliefCarve(p + uSun * ts) - c0;
-    vis = min(vis, clamp(clear / pen, 0.0, 1.0));
+    vis = min(vis, clamp(0.5 + clear / (ts * RELIEF_SUN_DISC), 0.0, 1.0));
     if (vis <= 0.0) break;
   }
   return vis;
