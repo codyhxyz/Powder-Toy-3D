@@ -88,8 +88,10 @@ const ICON_SPARK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5
 
 export class Constructions {
   // onClose: the player dismissed the construction options (× or Esc)
-  constructor({ scene, camera, settings, getSim, getVolume, getScale, onClose }) {
+  // requestRender: redraw for a change the view can't see (the ghost's instances)
+  constructor({ scene, camera, settings, getSim, getVolume, getScale, onClose, requestRender }) {
     this.onClose = onClose;
+    this.requestRender = requestRender;
     this.camera = camera;
     this.settings = settings;
     this.getSim = getSim;
@@ -697,6 +699,7 @@ export class Constructions {
     depth.instanceColor.needsUpdate = true;
     this.outline.scale.set(s.w, s.h, s.d);
     this.outline.position.set(s.w / 2, s.h / 2, s.d / 2);
+    this.requestRender?.(); // the view key misses instance swaps, e.g. when a generation finishes
   }
 
   dispose() {

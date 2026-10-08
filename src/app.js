@@ -790,6 +790,7 @@ try {
   if (BuildsClass) {
     builds = new BuildsClass({
       scene, camera, settings, getSim: () => sim, getVolume: () => volume, getScale: () => scale, onClose: leaveBuild,
+      requestRender: () => pacer.wake(),
     });
   }
   build();
