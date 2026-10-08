@@ -1,4 +1,5 @@
 import { prelude } from './common.js';
+import { AIR_FLAGS } from './passes.js';
 import { ELEMENTS } from '../elements.js';
 import { COLORMAPS, VIEWS, xrayDensity } from '../views.js';
 import { materialsGLSL } from '../gfx/materials.js';
@@ -303,7 +304,7 @@ void heatAir(float T, float ds, inout vec3 col, inout float trans) {
 #define HEAT_FLOOR_HI 0.6     // ... and this on the grid lines
 #define HEAT_AIR_SAMPLES 7    // most samples along an air-only brick (one per cell)
 
-${march('marchHeat', 1, /* glsl */ `
+${march('marchHeat', AIR_FLAGS.HOT, /* glsl */ `
     if (id != E_EMPTY) {
       float T = a.y;
       if (KIND[id] == K_GAS) {
@@ -375,7 +376,7 @@ void pressureCloud(float P, float ds, inout vec3 col, inout float trans) {
 #define PRESSURE_AIR_RATE 0.8      // cloud samples per cell along an air-only brick ...
 #define PRESSURE_AIR_SAMPLES 6     // ... and at most this many
 
-${march('marchPressure', 2, /* glsl */ `
+${march('marchPressure', AIR_FLAGS.PRESSURE, /* glsl */ `
     int k = KIND[id];
     if (airOn && k != K_SOLID) pressureCloud(pressureAt(ro + rd * (tEnter + 0.5 * seg)), seg, col, trans);
     if (id != E_EMPTY) {
@@ -497,7 +498,7 @@ float brickStroke(ivec3 bc, vec3 ro, vec3 rd, float ta, float tb, bool check, ou
 #define FLOW_FLOOR_LO vec3(0.01)
 #define FLOW_FLOOR_HI vec3(0.028)
 
-${march('marchFlow', 4, /* glsl */ `
+${march('marchFlow', AIR_FLAGS.FLOW, /* glsl */ `
     if (id == E_EMPTY) {
       // moving air: faint haze from the brick's sampled velocity
       if (hazeW > 0.0) {

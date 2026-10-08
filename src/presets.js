@@ -1,4 +1,5 @@
 import { E, ELEMENTS } from './elements.js';
+import { SEED_MAX } from './shaders/common.js';
 
 // CPU-side scene builders. They produce the atlas-layout state arrays that
 // Simulation.load() uploads.
@@ -14,7 +15,7 @@ export function buildPreset(name, sim) {
     A[i] = id;
     A[i + 1] = extra.temp ?? e.temp;
     A[i + 2] = e.life;
-    A[i + 3] = (extra.ctype ?? 0) + Math.random() * 0.999;
+    A[i + 3] = (extra.ctype ?? 0) + Math.random() * SEED_MAX;
   };
   const box = (x0, y0, z0, x1, y1, z1, id, extra) => {
     for (let y = y0; y < y1; y++)

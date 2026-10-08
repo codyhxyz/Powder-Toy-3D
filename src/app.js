@@ -619,32 +619,46 @@ for (const type of ['pointermove', 'pointerdown', 'pointerup', 'wheel', 'keydown
   addEventListener(type, () => pacer.wake(), { capture: true, passive: true });
 }
 let lastVersion = -1, renderedLast = false;
+const DT_MAX = 0.1;      // s: longer gaps (a hidden tab) count as this, so animations don't jump
+const FPS_WINDOW = 0.5;  // s over which the fps readout averages
 let resTime = 0, resFrames = 0, resDt = 0;
 const invVol = new THREE.Matrix4();
 
 // Lower the render resolution when frames run long, but only if it actually
 // helps: when the simulation (not drawing) is the bottleneck, a lower
 // resolution just blurs the picture, so we undo the drop and stop trying.
+// Auto resolution: every AUTO_RES_WINDOW seconds, drop the pixel ratio by
+// AUTO_RES_DOWN when frames run slower than AUTO_RES_SLOW_FPS, raise it by
+// AUTO_RES_UP when faster than AUTO_RES_FAST_FPS. A drop that didn't speed
+// frames up by AUTO_RES_MIN_GAIN is undone and not retried for AUTO_RES_HOLD seconds.
+const AUTO_RES_WINDOW = 1.2;      // s
+const AUTO_RES_MIN = 0.6;         // lowest pixel ratio it goes to
+const AUTO_RES_SLOW_FPS = 50;
+const AUTO_RES_FAST_FPS = 57;
+const AUTO_RES_DOWN = 0.85;
+const AUTO_RES_UP = 1.08;
+const AUTO_RES_MIN_GAIN = 0.93;   // frame time must fall below this × the old one
+const AUTO_RES_HOLD = 15;         // s
 const autoRes = { lastDt: 0, tried: 0, holdUntil: 0 };
 function autoResolution(dt, now) {
   if (!settings.autoRes) return;
   resTime += dt; resFrames++; resDt += dt;
-  if (resTime < 1.2) return;
+  if (resTime < AUTO_RES_WINDOW) return;
   const avg = resDt / resFrames;
   resTime = resFrames = resDt = 0;
-  const max = settings.res, min = 0.6;
+  const max = settings.res, min = AUTO_RES_MIN;
   if (autoRes.tried) {
     // judge the previous decrease
-    if (avg > autoRes.lastDt * 0.93) { setPixelRatio(autoRes.tried); autoRes.holdUntil = now + 15; }
+    if (avg > autoRes.lastDt * AUTO_RES_MIN_GAIN) { setPixelRatio(autoRes.tried); autoRes.holdUntil = now + AUTO_RES_HOLD; }
     autoRes.tried = 0;
     return;
   }
-  if (avg > 1 / 50 && pixelRatio > min && now > autoRes.holdUntil) {
+  if (avg > 1 / AUTO_RES_SLOW_FPS && pixelRatio > min && now > autoRes.holdUntil) {
     autoRes.tried = pixelRatio;
     autoRes.lastDt = avg;
-    setPixelRatio(Math.max(min, pixelRatio * 0.85));
-  } else if (avg < 1 / 57 && pixelRatio < max) {
-    setPixelRatio(Math.min(max, pixelRatio * 1.08));
+    setPixelRatio(Math.max(min, pixelRatio * AUTO_RES_DOWN));
+  } else if (avg < 1 / AUTO_RES_FAST_FPS && pixelRatio < max) {
+    setPixelRatio(Math.min(max, pixelRatio * AUTO_RES_UP));
   }
 }
 
@@ -665,9 +679,9 @@ function frame(now) {
   requestAnimationFrame(frame);
   if (!pacer.due(now)) return;
   clock.update(now);
-  const dt = Math.min(clock.getDelta(), 0.1);
+  const dt = Math.min(clock.getDelta(), DT_MAX);
   fpsTime += dt;
-  if (fpsTime > 0.5) { if (frames > 0) fps = frames / fpsTime; frames = 0; fpsTime = 0; }
+  if (fpsTime > FPS_WINDOW) { if (frames > 0) fps = frames / fpsTime; frames = 0; fpsTime = 0; }
   // only frames that rendered measure how expensive rendering is
   if (renderedLast) autoResolution(dt, clock.getElapsed());
 

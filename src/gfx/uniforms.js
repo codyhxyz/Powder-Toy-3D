@@ -8,6 +8,10 @@ import { skyState } from './sky.js';
 // The media detail clock (simulation steps) wraps here, seamlessly for the
 // drift speeds allowed in gfx/materials.js (MEDIA rise).
 const SIM_CLOCK_WRAP = 1 << 20;
+// the frame counter wraps here, before float32 loses whole frames
+const FRAME_WRAP = 1 << 20;
+// cells: rounder than this and a crisp voxel's bevels would meet
+const BEVEL_MAX = 0.45;
 
 export const gfx = {
   smoothing: 1,          // multiplier on every smooth channel's blur radius
@@ -58,9 +62,9 @@ export function updateGfxUniforms(sim, sun) {
   gfxUniforms.tFT.value = sim.fieldThin;
   gfxUniforms.tBrickDist.value = sim.brickDistTexture;
   sim.giTextures.forEach((t, i) => { gfxUniforms[`tGI${i}`].value = t; });
-  gfxUniforms.uFrame.value = (gfxUniforms.uFrame.value + 1) % 1048576;
+  gfxUniforms.uFrame.value = (gfxUniforms.uFrame.value + 1) % FRAME_WRAP;
   gfxUniforms.uSimClock.value = sim.frame % SIM_CLOCK_WRAP;
   gfxUniforms.uMatDetail.value = gfx.materials;
-  gfxUniforms.uBevel.value = Math.min(Math.max(gfx.bevel, 0), 0.45);
+  gfxUniforms.uBevel.value = Math.min(Math.max(gfx.bevel, 0), BEVEL_MAX);
   gfxUniforms.uGlints.value = gfx.glints;
 }

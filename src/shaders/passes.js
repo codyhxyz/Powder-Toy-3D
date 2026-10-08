@@ -6,8 +6,11 @@ import { materialsGLSL } from '../gfx/materials.js';
 // and the data views' brickFlags (render.js). float32 holds the sum exactly
 // while it stays under 2^8, which leaves room for one more bit.
 const BRICK_BITS = { MEDIA: 1, SURF: 2, OPAQUE: 4, THIN: 8, MIXED: 16 };
+// Air flags (bits): air worth showing in the heat, pressure and flow views.
+export const AIR_FLAGS = { HOT: 1, PRESSURE: 2, FLOW: 4 };
 export const brickGLSL = [
   ...Object.entries(BRICK_BITS).map(([k, v]) => `#define BRICK_${k} ${v}`),
+  ...Object.entries(AIR_FLAGS).map(([k, v]) => `#define AIR_${k} ${v}`),
   '#define BRICK_GAS_DIV 64.0       // gas fraction = steam/smoke cells / cells per brick',
   '#define BRICK_FLAG_DIV 65536.0   // air flags (1..7) sit below the gas fraction\'s steps',
   '#define BRICK_AIR_DIV 8.0        // air-only bricks: a = -(1 + flags/BRICK_AIR_DIV)',
@@ -22,6 +25,11 @@ uniform uint uFrame;
 uniform vec3 uCenter;
 uniform float uRadius;
 uniform int uShape;     // 0 sphere, 1 cube
+#define PAINT_RNG_SALT 0xb7u      // salt that gives the brush its own random stream (seed3)
+#define BRUSH_CORE 0.6            // tools act fully inside this share of the radius, fading to the edge
+#define BRUSH_EDGE_EPS 0.001      // keeps smoothstep's edges apart at radius 0
+#define HEAT_TOOL_RATE 30.0       // °C per step the heat / cool tools add at the brush centre
+#define BLAST_TOOL_RATE 6.0       // pressure per step the pressure tool adds at the brush centre
 uniform int uTool;      // element id, or negative tool id
 uniform float uRate;    // spawn density multiplier
 uniform bool uReplace;
@@ -38,9 +46,9 @@ void main() {
   vec3 d = vec3(p) + 0.5 - uCenter;
   float r = uShape == 0 ? length(d) : max(abs(d.x), max(abs(d.y), abs(d.z)));
   if (r > uRadius) return;
-  float falloff = 1.0 - smoothstep(uRadius * 0.6, uRadius + 0.001, r);
+  float falloff = 1.0 - smoothstep(uRadius * BRUSH_CORE, uRadius + BRUSH_EDGE_EPS, r);
 
-  uint rs = seed3(p, uFrame, 0xb7u);
+  uint rs = seed3(p, uFrame, PAINT_RNG_SALT);
   int id = eid(a);
 
   if (uTool >= 0) {
@@ -49,18 +57,18 @@ void main() {
     if (rnd(rs) > SPAWNDENS[uTool] * uRate) return;
     float T = SPAWNT[uTool];
     float ctype = uTool == E_LAVA ? float(E_STONE) : 0.0;
-    oA = vec4(float(uTool), T, SPAWNLIFE[uTool], ctype + rnd(rs) * 0.999);
-    float vy = KIND[uTool] == K_POWDER || KIND[uTool] == K_LIQUID ? -0.3 : 0.0;
+    oA = vec4(float(uTool), T, SPAWNLIFE[uTool], ctype + rnd(rs) * SEED_MAX);
+    float vy = KIND[uTool] == K_POWDER || KIND[uTool] == K_LIQUID ? -SPAWN_FALL_SPEED : 0.0;
     oB = vec4(0.0, vy, 0.0, b.w);
   } else if (uTool == T_ERASE) {
-    oA = vec4(float(E_EMPTY), AMBIENT, 0.0, rnd(rs) * 0.999);
+    oA = vec4(float(E_EMPTY), AMBIENT, 0.0, rnd(rs) * SEED_MAX);
     oB = vec4(0.0, 0.0, 0.0, b.w);
   } else if (uTool == T_HEAT) {
-    oA.y = min(a.y + 30.0 * falloff, 6000.0);
+    oA.y = min(a.y + HEAT_TOOL_RATE * falloff, TEMP_MAX);
   } else if (uTool == T_COOL) {
-    oA.y = max(a.y - 30.0 * falloff, -273.15);
+    oA.y = max(a.y - HEAT_TOOL_RATE * falloff, -C_TO_K);
   } else if (uTool == T_BLAST) {
-    oB.w = b.w + 6.0 * falloff;
+    oB.w = b.w + BLAST_TOOL_RATE * falloff;
   }
 }
 `;
@@ -106,6 +114,15 @@ uniform sampler2D tFS;
 uniform sampler2D tFM;
 uniform sampler2D tFT;   // thin-feature mask (x: liquid)
 out vec4 oC;
+// Air worth flagging for the data views: off ambient by more than AIR_FLAG_T °C,
+// pressure beyond AIR_FLAG_P, or moving faster than AIR_FLAG_V cells/step.
+#define AIR_FLAG_T 3.0
+#define AIR_FLAG_P 0.04
+#define AIR_FLAG_V 0.05
+// a fire cell's glow: blackbody colour × (BASE + T / T_SCALE) × GAIN
+#define FIRE_GLOW_BASE 0.6
+#define FIRE_GLOW_T 1500.0
+#define FIRE_GLOW_GAIN 1.5
 
 // A hot opaque cell lights its surroundings only through its open faces: buried
 // lava or a conduit of hot rock casts no light. Per open face it counts as the
@@ -141,7 +158,7 @@ void main() {
     vec4 m = texelFetch(tFM, t, 0);
     int id = eid(a);
     if (id != E_EMPTY) occ = 1.0;
-    else if (abs(a.y - AMBIENT) > 3.0) flags |= 1;
+    else if (abs(a.y - AMBIENT) > AIR_FLAG_T) flags |= AIR_HOT;
     if (id == E_STEAM || id == E_SMOKE) gas += 1.0;
     surf = max(surf, max(max(s.x, s.y), max(s.z, s.w)));
     // something opaque (not liquid, glass or gas) here or in an opaque surface field
@@ -153,7 +170,7 @@ void main() {
       else if (id != liq0) mixed = true;
     }
     media = max(media, max(m.x, max(m.y, m.z)));
-    if (id == E_FIRE) em += blackbody(a.y) * (0.6 + a.y / 1500.0) * 1.5;
+    if (id == E_FIRE) em += blackbody(a.y) * (FIRE_GLOW_BASE + a.y / FIRE_GLOW_T) * FIRE_GLOW_GAIN;
     else if (id != E_EMPTY && KIND[id] != K_GAS && a.y > INCAND_T0) {
       // the light of the visible skin (metals have none to speak of)
       vec3 e = incandescence(a.y - (id == E_METAL ? 0.0 : INCAND_SKIN_DROP));
@@ -170,21 +187,24 @@ void main() {
     pm = max(pm, abs(b.w));
     vm = max(vm, dot(b.xyz, b.xyz));
   }
-  if (pm > 0.04) flags |= 2;
-  if (vm > 0.05 * 0.05) flags |= 4;
+  if (pm > AIR_FLAG_P) flags |= AIR_PRESSURE;
+  if (vm > AIR_FLAG_V * AIR_FLAG_V) flags |= AIR_FLOW;
   const float FIELD_HERE = 0.03;   // a surface field this strong may hold a surface nearby
   bool hasSurf = surf > FIELD_HERE, hasMedia = media > MEDIA_FLOOR, hasOpaque = opaque > FIELD_HERE;
   int bits = (hasMedia ? BRICK_MEDIA : 0) | (hasSurf ? BRICK_SURF : 0) | (hasOpaque ? BRICK_OPAQUE : 0)
            | (thin > 0.0 ? BRICK_THIN : 0) | (mixed ? BRICK_MIXED : 0);
   float air = flags > 0 ? -1.0 - float(flags) / BRICK_AIR_DIV : 0.0;
   float matter = 1.0 + gas / BRICK_GAS_DIV + 2.0 * float(bits) + float(flags) / BRICK_FLAG_DIV;
-  oC = vec4(em / 64.0, (occ > 0.0 || hasSurf || hasMedia) ? matter : air);
+  oC = vec4(em / float(BS * BS * BS), (occ > 0.0 || hasSurf || hasMedia) ? matter : air);
 }
 `;
 
 // Separable 5-tap blur over the brick grid (axis 0/1/2).
 export const blurFrag = (g) => /* glsl */ `
 ${prelude(g)}
+// tent-ish 5-tap weights (sum 1), and a gain that makes up for light spread past the box
+#define LIGHT_BLUR_W 0.10, 0.22, 0.36, 0.22, 0.10
+#define LIGHT_BLUR_GAIN 1.15
 uniform sampler2D tSrc;
 uniform int uAxis;
 out vec4 oC;
@@ -193,14 +213,14 @@ void main() {
   if (bc.y >= BY) { oC = vec4(0.0); return; }
   ivec3 dir = uAxis == 0 ? ivec3(1, 0, 0) : (uAxis == 1 ? ivec3(0, 1, 0) : ivec3(0, 0, 1));
   ivec3 hi = ivec3(BX, BY, BZ) - 1;
-  const float W[5] = float[5](0.10, 0.22, 0.36, 0.22, 0.10);
+  const float W[5] = float[5](LIGHT_BLUR_W);
   vec3 s = vec3(0.0);
   for (int i = 0; i < 5; i++) {
     ivec3 q = bc + dir * (i - 2);
     if (any(lessThan(q, ivec3(0))) || any(greaterThan(q, hi))) continue;
     s += texelFetch(tSrc, brickAtlas(q), 0).rgb * W[i];
   }
-  oC = vec4(s * 1.15, 1.0);
+  oC = vec4(s * LIGHT_BLUR_GAIN, 1.0);
 }
 `;
 

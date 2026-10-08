@@ -10,6 +10,9 @@ import { incandescenceGLSL, KELVIN } from '../gfx/incandescence.js';
 // Edge of a brick, in cells: the unit of empty-space skipping, the light and
 // GI volumes, and the simulation's activity map.
 export const BRICK = 4;
+// A cell's random seed is the fraction of state A's w, kept below 1 so it
+// never carries into the integer ctype.
+export const SEED_MAX = 0.999;
 
 export function prelude(g) {
   return /* glsl */ `
@@ -35,6 +38,9 @@ precision highp sampler2D;
 #define LAVA_FREEZE_DROP 150.0
 #define TAU 6.2831853   // a full turn, radians
 #define V_MAX 1.0       // cells/step: the automaton moves a cell at most one cell per step
+#define TEMP_MAX 6000.0 // °C: hottest a cell can get (coldest is absolute zero, -C_TO_K)
+#define SPAWN_FALL_SPEED 0.3   // cells/step: new powder or liquid (brush, clone) starts out falling
+#define SEED_MAX ${SEED_MAX}   // a cell's random seed (the fraction in state A's w) stays below this
 
 ${elementsGLSL()}
 

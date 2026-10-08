@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { quadVert, BRICK } from './shaders/common.js';
+import { quadVert, BRICK, SEED_MAX } from './shaders/common.js';
 import { inertFrag, quietFrag, activityPeriod } from './shaders/activity.js';
 import { moveBlockFrag, moveGatherFrag } from './shaders/move.js';
 import { reactFrag } from './shaders/react.js';
@@ -8,6 +8,11 @@ import { fieldEmaFrag, fieldBlurFrag, fieldBoostFrag, BOOST_STAGES } from './sha
 import { giSourceFrag, giGatherFrag } from './shaders/gi.js';
 import { CHANNELS, MEDIA, gauss5, bulkPeak, bulkPeakCubic, CUBIC_LATTICE } from './gfx/materials.js';
 import { gfxUniforms } from './gfx/uniforms.js';
+
+// cells/step² downward (the app's gravity setting overrides it)
+const GRAVITY_DEFAULT = 0.025;
+// blur passes over the glow volume: x, y, z, twice
+const LIGHT_BLUR_PASSES = 6;
 
 // Steps an activity map stays valid (shaders/activity.js).
 const ACTIVITY_PERIOD = activityPeriod(BRICK);
@@ -91,7 +96,7 @@ export class Simulation {
     this.g = gridLayout(nx, ny, nz);
     const g = this.g;
     this.frame = 0;
-    this.gravity = 0.025;
+    this.gravity = GRAVITY_DEFAULT;
     // bumped by every write to the state (steps, painting, loads, undo, network
     // updates), so callers can tell when the world changed
     this.version = 0;
@@ -316,7 +321,7 @@ export class Simulation {
     this.run(dz, this.brickDist[0]);
     const blur = this.mats.blur;
     let src = this.brick.texture;
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < LIGHT_BLUR_PASSES; i++) {
       blur.uniforms.tSrc.value = src;
       blur.uniforms.uAxis.value = i % 3;
       const dst = this.light[i & 1];
@@ -405,7 +410,7 @@ export class Simulation {
     const b = new Float32Array(width * height * 4);
     for (let i = 0; i < width * height; i++) {
       a[i * 4 + 1] = 20;
-      a[i * 4 + 3] = Math.random() * 0.999;
+      a[i * 4 + 3] = Math.random() * SEED_MAX;
     }
     return [a, b];
   }

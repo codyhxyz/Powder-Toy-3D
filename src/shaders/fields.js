@@ -74,6 +74,8 @@ uniform sampler2D t1;
 uniform sampler2D t2;
 uniform int uAxis;
 uniform vec4 uW[5];   // per-tap weights, one per surface channel (media use .x)
+// below this blurred non-crisp weight (deep inside crisp solids) there is nothing to normalise by
+#define NORM_FLOOR 0.02
 layout(location = 0) out vec4 o0;
 layout(location = 1) out vec4 o1;
 ${final ? '' : 'layout(location = 2) out vec4 o2;'}
@@ -93,9 +95,9 @@ void main() {
   }
 ${final ? `
   // normalise; deep inside crisp solids there is nothing to normalise by
-  vec4 ok = step(vec4(0.02), d);
-  o0 = ok * s / max(d, vec4(0.02));
-  o1 = ok.x * m / max(d.x, 0.02);
+  vec4 ok = step(vec4(NORM_FLOOR), d);
+  o0 = ok * s / max(d, vec4(NORM_FLOOR));
+  o1 = ok.x * m / max(d.x, NORM_FLOOR);
 ` : `
   o0 = s; o1 = m; o2 = d;
 `}

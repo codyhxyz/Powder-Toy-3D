@@ -39,7 +39,6 @@ ${quietGLSL}
 #define WATER_MELT_T 0.0          // °C: ice ⇄ water
 #define WATER_BOIL_T 100.0        // °C: water ⇄ steam
 #define AIR_AMBIENT_PULL 0.002    // fraction of its gap to AMBIENT that air closes per step
-#define TEMP_MAX 6000.0           // °C: hottest a cell can get (coldest is absolute zero)
 
 // ---- pressure ----
 #define PRESSURE_DIFFUSION 0.12   // fraction of the neighbour Laplacian taken per step
@@ -80,7 +79,6 @@ ${quietGLSL}
 #define FLAME_T_MIN 0.85          // a new flame starts at (MIN + JITTER × rnd) × its source's flame temperature
 #define FLAME_T_JITTER 0.15
 #define CLONE_CHANCE 0.06         // a clone emits into adjacent air
-#define CLONE_DROP_SPEED 0.3      // cells/step: a non-gas leaves the clone falling
 #define GUNPOWDER_FIRE_CHANCE 0.7 // gunpowder ignites next to a flame (else at its ignition temperature)
 #define GUNPOWDER_BLAST_T 2200.0  // °C: the flame a grain explodes into
 #define GUNPOWDER_BLAST_P 60.0    // pressure the blast releases
@@ -264,7 +262,7 @@ void main() {
     } else if (cloneOf > 0 && rnd(rs) < CLONE_CHANCE) {
       nidOut = cloneOf; reset = true; T = SPAWNT[cloneOf];
       ctype = cloneOf == E_LAVA ? float(E_STONE) : 0.0;
-      v = vec3(0.0, KIND[cloneOf] == K_GAS ? 0.0 : -CLONE_DROP_SPEED, 0.0);
+      v = vec3(0.0, KIND[cloneOf] == K_GAS ? 0.0 : -SPAWN_FALL_SPEED, 0.0);
     }
   } else if (id == E_CLONE && ctype < 1.0) {
     for (int i = 0; i < 6; i++) {
