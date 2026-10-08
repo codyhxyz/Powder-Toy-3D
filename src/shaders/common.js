@@ -1,6 +1,7 @@
 import { elementsGLSL } from '../elements.js';
 import { incandescenceGLSL } from '../gfx/incandescence.js';
 import { physicsGLSL } from '../physics.js';
+import { CELL_M } from '../scale.js';
 
 // Shared GLSL prelude. The 3D grid (NX × NY × NZ) is stored as a 2D atlas of
 // horizontal Y-slices, TX slices per atlas row. Every pass reads cells with
@@ -25,6 +26,7 @@ precision highp sampler2D;
 #define NY ${g.ny}
 #define NZ ${g.nz}
 #define TX ${g.tx}
+#define CELL_M ${CELL_M.toFixed(4)}   // metres per cell (src/scale.js)
 #define BS ${BRICK}
 #define BX ${g.nx / BRICK}
 #define BY ${g.ny / BRICK}
