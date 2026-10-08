@@ -26,7 +26,10 @@
 // advection (Neyret 2003): two copies of the noise, half a cycle apart, are
 // each carried along the flow for FLOW_PERIOD steps and then restarted at a
 // new place; each fades out before its restart. Their blend is rescaled to
-// keep the noise's contrast (and so its mean 0.5 and spread).
+// keep the noise's contrast (and so its mean 0.5 and spread). Only the base
+// noise rides the flow, and always at the local velocity: blending toward any
+// other velocity over space (by distance or transmittance), or advecting the
+// fine octaves, shears the noise into rings and streaks.
 import { MEDIA_NOISE_CELLS } from '../../gfx/materials.js';
 import { NOISE_FINEST_PERIOD } from '../../gfx/mediaNoise.js';
 import { CELL_M } from '../../scale.js';
@@ -118,14 +121,12 @@ vec4 flowNoise(vec3 p, float scale, vec3 off, float stretch) {
 #endif
 
 // The detail noise at p, read 'scale' times finer and offset by 'off' tiles,
-// drifting up at 'rise' cells/step (or riding the flow) and stretched along y.
+// drifting up at 'rise' cells/step and stretched along y. Only the base noise
+// rides the flow (gasNoise): the fine octaves are many times smaller, so the
+// same velocity differences over a cycle would shear them into streaks.
 vec4 detailNoise(vec3 p, float scale, vec3 off, float rise, float stretch) {
-#ifdef DETAIL_MEDIA_FLOW
-  return flowNoise(p, scale, off, stretch);
-#else
   p.y = (p.y - mod(uSimClock * rise, MEDIA_NOISE_CELLS * stretch)) / stretch;
   return texture(tMediaNoise, p * (scale / MEDIA_NOISE_CELLS) + off);
-#endif
 }
 
 // ---- fine octaves ----

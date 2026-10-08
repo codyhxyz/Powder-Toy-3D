@@ -38,7 +38,8 @@ export const DETAIL = [
   //   mediaStep  bench worst 4.8 ms (volcano eyeFlank, noise: other runs 0.0, 0.7);
   //              plumes +0.2-6 ms (one 17.6 outlier): medium
   //   mediaFlow  bench worst 7.1 ms (lab eyeTank; other runs 0.7, 1.7); plumes
-  //              +7-15 ms: high
+  //              +7-15 ms, measured with the transmittance gate it no longer
+  //              has (the gate drew rings), so somewhat more now: high
   { key: 'mediaFine', define: 'DETAIL_MEDIA_FINE', label: 'Smoke filaments',
     desc: 'Fine wisps and filaments (20 cm and 5 cm) in smoke, steam and flames when you are close to them', cost: 'high' },
   { key: 'mediaStep', define: 'DETAIL_MEDIA_STEP', label: 'Fine smoke sampling',
