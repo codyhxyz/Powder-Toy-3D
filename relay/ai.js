@@ -1,7 +1,8 @@
 import { DurableObject } from 'cloudflare:workers';
 
-// Free AI for constructions: a small OpenAI proxy that holds the key (the
-// OPENAI_API_KEY secret), so players can generate with no setup.
+// Free AI for constructions: a small OpenAI proxy that holds the keys (Worker
+// secrets), so players can generate with no setup. Each tier has its own OpenAI
+// key (KEY_FOR), so OpenAI's dashboard shows each tier's usage and spend apart.
 //   POST /ai/v1/responses   the OpenAI Responses API, as the AI SDK's openai provider sends it
 // Guards, so it can't become a free general-purpose model or an open tab:
 //   - the model is pinned, output tokens and request size are capped (responses stay
@@ -25,6 +26,10 @@ export const AI = {
   PROMPT_MARKER: 'Your code is the body of a JavaScript function',
   GEN_ID: /^[A-Za-z0-9_-]{8,64}$/,
 };
+
+// tier → the Worker secret holding its OpenAI key (1Password: "oai tpt3d-anon-free",
+// "oai tpt3d-logged-in-free", "oai tpt3d paid")
+export const KEY_FOR = { anon: 'OPENAI_KEY_ANON', free: 'OPENAI_KEY_FREE', paid: 'OPENAI_KEY_PAID' };
 
 const MILLION = 1e6;
 const HASH_CHARS = 32;
@@ -66,7 +71,9 @@ export async function handleAI(request, env, ctx, allowedOrigin) {
   const cors = corsHeaders(origin, request);
   if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
   if (request.method !== 'POST' || new URL(request.url).pathname !== AI.PATH) return fail(404, 'Not found', cors);
-  if (!env.OPENAI_API_KEY) return fail(503, 'Free AI isn\'t set up on this server yet. Use your own key below.', cors);
+  const tier = 'anon'; // accounts come next: signed-in players get 'free' or 'paid'
+  const apiKey = env[KEY_FOR[tier]];
+  if (!apiKey) return fail(503, 'Free AI isn\'t set up on this server yet. Use your own key below.', cors);
 
   const gen = request.headers.get('x-gen-id') ?? '';
   if (!AI.GEN_ID.test(gen)) return fail(400, 'Missing generation id', cors);
@@ -86,9 +93,10 @@ export async function handleAI(request, env, ctx, allowedOrigin) {
 
   body.model = AI.MODEL;
   body.max_output_tokens = Math.min(body.max_output_tokens ?? AI.MAX_OUTPUT_TOKENS, AI.MAX_OUTPUT_TOKENS);
+  body.safety_identifier = ipHash; // lets OpenAI attribute abuse to one player without knowing who
   const res = await fetch(AI.UPSTREAM, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
   const out = await res.text();
