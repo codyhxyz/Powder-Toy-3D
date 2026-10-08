@@ -18,6 +18,11 @@ uniform bool uShadows;
 uniform float uTime;
 uniform float uLightGain;
 uniform int uFrame;
+// An output pixel's size in rendered pixels: 1 at native resolution, below 1 when
+// TAAU renders under the canvas size (gfx/post.js). Pixel-sized filtering (material
+// LOD, line widths) works in output pixels, so the upscaler gets the detail it can
+// resolve over the jitter cycle (DLSS/FSR's negative mip bias).
+uniform float uPixScale;
 
 const ivec3 GRID = ivec3(NX, NY, NZ);
 #define MAX_STEPS ${g.maxSteps}

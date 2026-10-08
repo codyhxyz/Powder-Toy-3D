@@ -28,7 +28,9 @@ const SETTLE_TOLERANCE = 1 / 255;
 // w, applied every `every` frames) is within SETTLE_TOLERANCE of it.
 export const settleFrames = (w, every = 1) => every * Math.ceil(Math.log(SETTLE_TOLERANCE) / Math.log(1 - w));
 
+// viewSettle: a frame count, or a function returning one (it may change at run time).
 export function createPacer({ derivedSettle, viewSettle }) {
+  const viewFrames = typeof viewSettle === 'function' ? viewSettle : () => viewSettle;
   let last = -Infinity;
   let derivedKey = null, viewKey = null;
   let derivedLeft = 0, viewLeft = 0;
@@ -48,13 +50,13 @@ export function createPacer({ derivedSettle, viewSettle }) {
     },
     // Render the view this frame? force: something it reads changed this frame.
     view(key, force) {
-      if (key !== viewKey || force) { viewKey = key; viewLeft = viewSettle; }
+      if (key !== viewKey || force) { viewKey = key; viewLeft = viewFrames(); }
       if (viewLeft <= 0) return false;
       viewLeft--;
       return true;
     },
     // Input or an outside change: render until settled again.
-    wake() { viewLeft = viewSettle; },
+    wake() { viewLeft = viewFrames(); },
   };
 }
 

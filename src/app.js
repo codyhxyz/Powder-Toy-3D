@@ -16,7 +16,7 @@ import { createHud, createHelp } from './ui/hud.js';
 import { inkFor, luminance } from './ui/dom.js';
 import { logoMark } from './ui/logo.js';
 import { gfx, gfxUniforms, updateGfxUniforms } from './gfx/uniforms.js';
-import { createPost, TAA_WEIGHT_STABLE } from './gfx/post.js';
+import { createPost, UPSCALE } from './gfx/post.js';
 import { createPacer, settleFrames, sceneKey } from './gfx/pacing.js';
 import { CHANNELS, MEDIA } from './gfx/materials.js';
 import { GI_BLEND } from './sim.js';
@@ -39,10 +39,10 @@ const DEFAULTS = {
   size: '128', preset: 'lab',
   tool: E.SAND, radius: 5, shape: 0, rate: 1, replace: false,
   steps: 4, gravity: 0.025, paused: false,
-  view: 0, sunAz: 38, sunEl: 55, camSpeed: 1, dockCollapsed: false,
+  view: 0, sunAz: 38, sunEl: 55, camSpeed: 1, upscale: 'native', dockCollapsed: false,
 };
 const PERSIST = ['size', 'preset', 'tool', 'radius', 'shape', 'rate', 'replace', 'steps', 'gravity', 'view',
-  'sunAz', 'sunEl', 'camSpeed', 'dockCollapsed'];
+  'sunAz', 'sunEl', 'camSpeed', 'upscale', 'dockCollapsed'];
 const STORE = 'powder-toy-3d:settings';
 // Fixed look: glow is heat-driven light (×uLightGain); smoothing, TAA, bloom and
 // exposure keep their defaults in gfx/uniforms.js and gfx/post.js.
@@ -83,7 +83,7 @@ renderer.setSize(innerWidth, innerHeight);
 renderer.autoClear = false;
 document.getElementById('app').appendChild(renderer.domElement);
 // HDR post: TAA, bloom, AgX tone mapping (src/gfx/post.js)
-const post = createPost(renderer);
+const post = createPost(renderer, { pixScale: gfxUniforms.uPixScale });
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.05, 200);
@@ -95,6 +95,12 @@ controls.zoomToCursor = true;
 
 const floorGrid = new THREE.GridHelper(80, 80, 0x2b3240, 0x1b2029);
 floorGrid.position.y = -0.002;
+// GL lines are one rendered pixel wide: under TAAU that is 1/scale output pixels,
+// so the grid and the box outline fade by the render scale to keep their weight.
+// Transparent for that, but still drawn before the other transparent objects.
+floorGrid.material.transparent = true;
+floorGrid.renderOrder = -1;
+const EDGE_OPACITY = 0.55;
 scene.add(floorGrid);
 
 const SUN = new THREE.Vector3();
@@ -161,7 +167,7 @@ function build() {
   volume.updateMatrixWorld();
 
   edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo),
-    new THREE.LineBasicMaterial({ color: 0x56607a, transparent: true, opacity: 0.55 }));
+    new THREE.LineBasicMaterial({ color: 0x56607a, transparent: true, opacity: EDGE_OPACITY }));
   edges.scale.copy(volume.scale);
   edges.position.copy(volume.position);
   scene.add(edges);
@@ -397,6 +403,11 @@ const settingsPanel = createSettings({
       { type: 'slider', key: 'sunAz', label: 'Sun direction', min: 0, max: 360, step: 1, def: DEFAULTS.sunAz,
         fmt: (v) => `${v}°`, onChange: () => { updateSun(); save(); } },
     ] },
+    // the scene renders at a share of the screen's pixels and TAA rebuilds full detail over frames
+    { title: 'Upscaling', rows: [
+      { type: 'seg', key: 'upscale', options: [['native', 'Off'], ['quality', 'Quality'], ['balanced', 'Balanced'], ['performance', 'Fast']],
+        onChange: (v) => { settings.upscale = v; save(); } },
+    ] },
     { title: 'Camera', rows: [
       { type: 'slider', key: 'camSpeed', label: 'Move speed (WASD)', min: 0.25, max: 3, step: 0.05, def: DEFAULTS.camSpeed,
         fmt: (v) => `${v.toFixed(2)}×`, onChange: (v) => { rig.setSpeed(v); save(); } },
@@ -603,11 +614,11 @@ const clock = new THREE.Timer();
 let frames = 0, fpsTime = 0, fps = 60, idleTime = 0;
 // Render on demand (gfx/pacing.js). The derived passes settle once the slowest
 // field EMA and the GI blend (each probe is traced every other frame) have
-// converged; the view once TAA's history has.
+// converged; the view once TAA's history has (upscaled, it accumulates for longer).
 const GI_PROBE_EVERY = 2;
 const pacer = createPacer({
   derivedSettle: Math.max(...[...CHANNELS, ...MEDIA].map((c) => settleFrames(c.ema)), settleFrames(GI_BLEND, GI_PROBE_EVERY)),
-  viewSettle: settleFrames(TAA_WEIGHT_STABLE),
+  viewSettle: () => settleFrames(post.settleWeight),
 });
 // input of any kind may change what the view shows
 for (const type of ['pointermove', 'pointerdown', 'pointerup', 'wheel', 'keydown', 'keyup', 'input', 'change', 'resize']) {
@@ -734,6 +745,9 @@ function frame(now) {
     if (worldChanged) u.uTime.value += dt;   // animated looks (lava, ripples) hold still while the world does
 
     post.settings.raw = settings.view !== 0;
+    post.settings.upscale = UPSCALE[settings.upscale] ?? UPSCALE.native;
+    floorGrid.material.opacity = post.renderScale;
+    edges.material.opacity = EDGE_OPACITY * post.renderScale;
     post.render(scene, camera);
     if (wantShot) { wantShot = false; saveScreenshot(); }
 
