@@ -88,8 +88,9 @@ float reliefInside(vec3 p, float phi) {
 float reliefInside(vec3 p) { return reliefInside(p, surfChannel(p, gRelCh)); }
 
 // The ray (ro, rd) enters smooth channel ch's surface at t. Moves t onto the
-// carved surface and returns true, or returns false if the ray passes
-// through the shell without meeting it.
+// carved surface and returns true, or, if the ray passes through the shell
+// without meeting it, moves t to where it leaves and returns false (the
+// caller restarts its march there: the ray may come back in at once).
 bool reliefHit(vec3 ro, vec3 rd, int ch, inout float t) {
   gRelOn = false;
   vec3 p0 = ro + rd * t;
@@ -124,15 +125,20 @@ bool reliefHit(vec3 ro, vec3 rd, int ch, inout float t) {
   float gl = length(gr);
   if (gl < 1e-5) return true;
   // the tetrahedron's four taps sum to 4 h ∇φ
-  gRelId = id1; gRelCh = ch; gRelW = w; gRelTop = top; gRelFp = fp;
+  gRelId = id1; gRelCh = ch; gRelW = w; gRelTop = top;
   gRelN = -gr / gl;
   gRelSlope = max(gl / (4.0 * NORMAL_STEP), RELIEF_SLOPE_MIN);
-  float L = min(w * top * RELIEF_SPAN / max(-dot(rd, gRelN), RELIEF_COS_MIN), RELIEF_PATH_MAX);
-  float step = max(fp * RELIEF_PX_STEP, RELIEF_STEP_PER_FEATURE * reliefFeature(id1));
+  float cosV = max(-dot(rd, gRelN), RELIEF_COS_MIN);
+  // A pixel's footprint on the surface stretches by 1 / cos along the ray: the
+  // relief is filtered (its octaves faded) by that, so at grazing angles only
+  // what spans pixels there is left, not a speckle of sub-pixel peaks.
+  gRelFp = fp / cosV;
+  float L = min(w * top * RELIEF_SPAN / cosV, RELIEF_PATH_MAX);
+  float step = max(gRelFp * RELIEF_PX_STEP, RELIEF_STEP_PER_FEATURE * reliefFeature(id1));
   int n = clamp(int(ceil(L / step)), RELIEF_STEPS_MIN, RELIEF_STEPS_MAX);
   float dt = L / float(n);
   float ta = 0.0, tb = L;
-  bool hit = false;
+  bool hit = false, wasIn = false;
   float phi = SURF_ISO;
   // the whole path: a grazing ray may leave the envelope and come back in
   for (int i = 1; i <= RELIEF_STEPS_MAX; i++) {
@@ -140,11 +146,13 @@ bool reliefHit(vec3 ro, vec3 rd, int ch, inout float t) {
     float ts = dt * float(i);
     vec3 p = p0 + rd * ts;
     phi = surfChannel(p, ch);
+    // in the envelope and out again: it went through a groove. (Never in:
+    // the tracer's root fell short of the envelope, by less than this path.)
+    if (phi < SURF_ISO && wasIn) { t += ts; return false; }
+    wasIn = wasIn || phi >= SURF_ISO;
     if (reliefInside(p, phi) >= 0.0) { tb = ts; hit = true; break; }
     ta = ts;
   }
-  // out of the envelope at the end: it went through a groove
-  if (!hit && phi < SURF_ISO) return false;
   // else deeper than any crevice (or the path cut): solid by then
   if (hit) {
     for (int i = 0; i < RELIEF_BISECT; i++) {
@@ -161,7 +169,8 @@ bool reliefHit(vec3 ro, vec3 rd, int ch, inout float t) {
 // Sunlight reaching carved point p past the relief around it: a march toward
 // the sun until it leaves the shell, soft by how closely it clears the
 // relief (penumbra RELIEF_PENUMBRA cells per cell of distance: the sun's disc
-// widened to anti-alias).
+// widened to anti-alias). Depths are taken relative to p's own (the hit is
+// only found to within a step), so a lit face doesn't shade itself.
 const float RELIEF_PENUMBRA = 0.08;
 const int RELIEF_SUN_STEPS_MIN = 3, RELIEF_SUN_STEPS_MAX = 8;
 const float RELIEF_SUN_PX_STEP = 4.0;   // pixels of path per sample (shadows need fewer than the hit)
@@ -173,11 +182,11 @@ float reliefSunVis(vec3 p) {
   float step = max(gRelFp * RELIEF_SUN_PX_STEP, RELIEF_STEP_PER_FEATURE * reliefFeature(gRelId));
   int n = clamp(int(ceil(L / step)), RELIEF_SUN_STEPS_MIN, RELIEF_SUN_STEPS_MAX);
   float dt = L / float(n);
-  float vis = 1.0;
+  float vis = 1.0, d0 = reliefInside(p);
   for (int i = 1; i <= RELIEF_SUN_STEPS_MAX; i++) {
     if (i > n) break;
     float ts = dt * float(i);
-    vis = min(vis, clamp(-reliefInside(p + uSun * ts) / (RELIEF_PENUMBRA * ts), 0.0, 1.0));
+    vis = min(vis, clamp((d0 - reliefInside(p + uSun * ts)) / (RELIEF_PENUMBRA * ts), 0.0, 1.0));
     if (vis <= 0.0) break;
   }
   return vis;
