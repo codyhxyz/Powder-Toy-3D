@@ -285,7 +285,9 @@ int gGrainCells = 0;        // grain cells tested so far
 float gGrainDepth = 0.0;    // path through gravel cells since the last hit-free air (cells)
 // (kept small: these stay live across the whole march)
 ivec3 gHitCell = ivec3(0);  // the grain of an EV_GRAIN event: its cell ...
-int gHitK = -1;             // ... and index (-1: the void)
+int gHitK = -1;             // ... index (-1: the void) ...
+const float GRAIN_NO_P = -1.0;   // (gHitP.x at or below this: no grain hit)
+vec3 gHitP = vec3(GRAIN_NO_P - 1.0);   // ... and where it was hit (shaded after the march)
 // The path not taken while crossfading in the hand-off band: it ended at gAltP
 // (a grain: gAltCell, gAltK; else the granular surface) with (col, trans) in
 // front of it; gAltW = the grains' weight there (< 0: none); gAltGeom: the

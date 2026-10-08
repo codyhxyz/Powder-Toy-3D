@@ -850,7 +850,7 @@ void main() {
         vec3 hp = ro + rd * tEv;
         if (!anyHit) { anyHit = true; hitPos = hp; }
 #ifdef GRAINS_ANY
-        if (ev == EV_GRAIN) { col += trans * grainShade(hp, rd); trans = vec3(0.0); break; }
+        if (ev == EV_GRAIN) { gHitP = hp; break; }   // shaded below, out of the loop
 #endif
         if (ev == EV_OPAQUE) {
           vec3 n = dot(evN, evN) > 0.0 ? evN : surfNormal(hp, evCh, -rd);
@@ -897,6 +897,9 @@ void main() {
     tMax[ax] += tDelta[ax];
   }
 
+#ifdef GRAINS_ANY
+  if (gHitP.x > GRAIN_NO_P) { col += trans * grainShade(gHitP, rd); trans = vec3(0.0); }
+#endif
   // floor of the box
   if (max(trans.x, max(trans.y, trans.z)) >= RAY_MIN_TRANS && cell.y < 0 && rd.y < 0.0) {
     float tf = -ro.y / rd.y;
