@@ -1,5 +1,6 @@
 import { DurableObject } from 'cloudflare:workers';
 import { handleAI } from './ai.js';
+import { handleAuth } from './auth.js';
 
 export { AiQuota } from './ai.js';
 
@@ -45,6 +46,7 @@ const CLOSE = { BAD_REQUEST: 4000, NO_HOST: 4001, HOST_TAKEN: 4002, HOST_LEFT: 4
 export default {
   async fetch(request, env, ctx) {
     if (new URL(request.url).pathname.startsWith('/ai/')) return handleAI(request, env, ctx, allowedOrigin);
+    if (new URL(request.url).pathname.startsWith('/auth/')) return handleAuth(request, env, ctx, allowedOrigin); // accounts (auth.js)
     const room = new URL(request.url).pathname.match(ROOM_PATH)?.[1];
     if (!room) return new Response('Not found', { status: 404 });
     if (request.headers.get('Upgrade') !== 'websocket') return new Response('Expected a WebSocket', { status: 426 });
