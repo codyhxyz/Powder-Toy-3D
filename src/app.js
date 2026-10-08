@@ -67,7 +67,10 @@ function save() {
 }
 
 // ---------------------------------------------------------------- renderer / scene
-const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
+// The canvas only ever receives post's full-screen composite (no depth test; TAA
+// does the antialiasing upstream), so it gets neither MSAA nor a depth buffer:
+// both would only cost memory and bandwidth (~165 MB at 2880×1800).
+const renderer = new THREE.WebGLRenderer({ antialias: false, depth: false, alpha: true, powerPreference: 'high-performance' });
 renderer.setClearColor(0x000000, 0);
 let pixelRatio = settings.autoRes ? Math.min(settings.res, 1) : settings.res;
 renderer.setPixelRatio(pixelRatio);
