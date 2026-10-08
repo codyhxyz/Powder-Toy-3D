@@ -9,6 +9,16 @@ compatibility_date = "2025-09-01"
 name = "ROOMS"
 class_name = "Room"
 
+[[durable_objects.bindings]]
+name = "AI_QUOTA"
+class_name = "AiQuota"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Room"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["AiQuota"]
+
+# Free construction AI (ai.js): wrangler secret put OPENAI_API_KEY (and AI_SALT, any random string)
