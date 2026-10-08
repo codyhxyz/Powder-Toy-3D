@@ -4,6 +4,7 @@ import { BODY_HEIGHT, BODY_WIDTH, EYE_HEIGHT, HAND_REACH } from './constants.js'
 import { createPovCamera, ENTRY_PITCH, FIGURE_HIDE_DIST, RESPAWN_SWOOP_S, SWOOP_S } from './camera.js';
 import { createFigure } from './figure.js';
 import { createPovHud } from './hud.js';
+import { createPovAudio } from './audio.js';
 import './pov.css';
 
 // First-person (POV) mode: drop into the world with F, walk around in it,
@@ -63,6 +64,7 @@ export function createPov(app) {
   const active = () => mode !== 'off';
   const live = () => mode === 'on' && !player?.dead;
   const isLocked = () => locked || test.assumeLocked;
+  createPovAudio({ camera, getVolume: app.getVolume, getScale: app.getScale, state: () => ({ active: active(), player, toolbelt }) });
 
   // ---- grid ↔ world
   const toWorld = (g, out) => out.copy(g).multiplyScalar(app.getScale()).add(app.getVolume().position);
