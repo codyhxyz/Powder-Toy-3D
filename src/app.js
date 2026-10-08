@@ -343,17 +343,18 @@ function updateBrush() {
     brushCenter.z = THREE.MathUtils.clamp(brushCenter.z, 0, g.nz);
   }
   brush.set({
-    visible: brushValid && pointerInside && !uiHover,
+    visible: brushValid && pointerInside && !uiHover && !eyedropper,
     position: tmpV.copy(brushCenter).multiplyScalar(scale).add(volume.position),
     radius: settings.radius * scale,
     shape: settings.shape,
     color: toolById(settings.tool).color,
   });
-  builds?.update({ hover, active: isBuild(settings.tool) && pointerInside && !uiHover });
+  builds?.update({ hover, active: isBuild(settings.tool) && pointerInside && !uiHover && !eyedropper });
 }
 
 // ---------------------------------------------------------------- UI
 let uiHover = false;
+let eyedropper = false; // armed by the dock's Eyedropper or by I away from any element
 createBrand();
 const card = createCard();
 const hud = createHud();
@@ -371,6 +372,7 @@ function accentFor(hex) {
 // the last element or tool picked, for leaving a construction's options
 let lastPaintTool = E.SAND;
 function selectTool(id) {
+  setEyedropper(false);
   if (!isBuild(id)) lastPaintTool = id;
   settings.tool = id;
   const it = toolById(id);
@@ -390,7 +392,21 @@ const dock = createDock({
   onSelect: selectTool,
   onBrushChange: (patch) => { Object.assign(settings, patch); dock.sync(); save(); },
   onHover: (id) => card.show(id ?? settings.tool),
+  onEyedropper: () => setEyedropper(!eyedropper),
 });
+
+// Eyedropper: the next click on the scene selects whatever element it lands on.
+function setEyedropper(on) {
+  eyedropper = on;
+  document.body.classList.toggle('eyedropper', on);
+  dock.setEyedropper(on);
+}
+function pickHovered() {
+  if (!(hover.valid && hover.id > 0)) return false;
+  selectTool(hover.id);
+  hud.toast(`Picked ${ELEMENTS[hover.id].name}`);
+  return true;
+}
 
 const actions = {
   togglePause: () => setPaused(!settings.paused),
@@ -553,6 +569,10 @@ canvasEl.addEventListener('pointerdown', (e) => {
   if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
   if (e.button !== 0 || e.altKey || wasEditing) return; // a click that just finishes editing a sign doesn't paint
   pointer.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+  if (eyedropper) {
+    if (!pickHovered()) hud.toast('Nothing to pick there');
+    return;
+  }
   if (settings.tool === SIGN_TOOL) {
     if (signs && hover.valid) signs.add({ cell: hover.cell.clone(), normal: faceNormal(hover.face) });
     else if (!signs) hud.toast('Signs are still loading');
@@ -610,7 +630,7 @@ addEventListener('keydown', (e) => {
   else if (k === ']') setRadius(settings.radius + 1);
   else if (k === 'b' || k === 'B') { settings.shape ^= 1; dock.sync(); save(); }
   else if (k === 'x' || k === 'X') { settings.replace = !settings.replace; dock.sync(); save(); hud.toast(settings.replace ? 'Replace mode on' : 'Replace mode off'); }
-  else if (k === 'i' || k === 'I') { if (hover.valid && hover.id > 0) { selectTool(hover.id); hud.toast(`Picked ${ELEMENTS[hover.id].name}`); } }
+  else if (k === 'i' || k === 'I') { if (!(pointerInside && !uiHover && pickHovered())) setEyedropper(!eyedropper); }
   else if (k === 'r' || k === 'R') actions.resetCamera();
   else if (k === 't' || k === 'T') dock.toggle();
   else if (k === '/') { e.preventDefault(); dock.focusSearch(); }
@@ -618,8 +638,8 @@ addEventListener('keydown', (e) => {
   else if (k === '?') actions.toggleHelp();
   else if (k === 'p' || k === 'P') actions.screenshot();
   else if (k === 'Escape') {
-    const overlay = toolbar.isOpen || settingsPanel.isOpen || help.isOpen || mp.panelOpen;
-    toolbar.close(); setSettingsOpen(false); help.setOpen(false); mp.closePanel();
+    const overlay = eyedropper || toolbar.isOpen || settingsPanel.isOpen || help.isOpen || mp.panelOpen;
+    setEyedropper(false); toolbar.close(); setSettingsOpen(false); help.setOpen(false); mp.closePanel();
     if (!overlay) leaveBuild();
   }
   else if (/^[0-9]$/.test(k)) { const v = VIEWS.find((x) => x.hotkey === k); if (v) setView(v.id); }
