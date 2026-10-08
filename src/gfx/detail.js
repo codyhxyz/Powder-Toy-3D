@@ -29,6 +29,13 @@ export const costTier = (ms) => (ms < COST_LOW_MS ? 'low' : ms < COST_MEDIUM_MS 
 // setting's name; desc: tooltip; cost: tier from tools/detail-bench.mjs
 // (put the measured ms in a comment next to it).
 export const DETAIL = [
+  // smoke, steam and fire up close (shaders/gfx/mediaDetail.js)
+  { key: 'mediaFine', define: 'DETAIL_MEDIA_FINE', label: 'Smoke filaments',
+    desc: 'Finer wisps and filaments in smoke, steam and flames when you are close to them', cost: 'medium' },
+  { key: 'mediaStep', define: 'DETAIL_MEDIA_STEP', label: 'Fine smoke sampling',
+    desc: 'Samples smoke, steam and fire more finely near the camera: crisper wisps, less grain', cost: 'medium' },
+  { key: 'mediaFlow', define: 'DETAIL_MEDIA_FLOW', label: 'Smoke follows the flow',
+    desc: 'Wisps of smoke, steam and fire ride the simulated air flow instead of a steady rise', cost: 'high' },
 ];
 
 export const settingKey = (f) => `detail_${f.key}`;
