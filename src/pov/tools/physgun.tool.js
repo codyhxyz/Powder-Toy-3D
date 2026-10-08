@@ -26,6 +26,7 @@ const BEAM_OPACITY = 0.8;
 const BEAM_COLOR = 0x7fd8ff;
 const RIM_STRENGTH = 0.35;        // the faint ball showing the beam's reach: glow at its silhouette...
 const RIM_POWER = 3;              // ...falling off this steeply toward its middle
+const RIM_CLEAR = 2;              // cells: the ball fades out as the eye comes within this of its surface, so it never wraps the view
 const TIP_SIZE = 0.35;            // cells, the glow at the tip
 const TIP_IDLE = 0.35;            // tip glow opacity while not holding
 const RECOIL_TIME = 0.2;          // s the gun jolts after a fling
@@ -38,7 +39,7 @@ const ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-
 // the reach that never veils what's inside it.
 function rimMaterial() {
   return new THREE.ShaderMaterial({
-    uniforms: { uColor: { value: new THREE.Color(BEAM_COLOR) } },
+    uniforms: { uColor: { value: new THREE.Color(BEAM_COLOR) }, uFade: { value: 1 } },
     vertexShader: /* glsl */ `
       varying vec3 vN;
       varying vec3 vV;
@@ -50,11 +51,12 @@ function rimMaterial() {
       }`,
     fragmentShader: /* glsl */ `
       uniform vec3 uColor;
+      uniform float uFade;
       varying vec3 vN;
       varying vec3 vV;
       void main() {
         float rim = pow(1.0 - abs(dot(normalize(vN), normalize(vV))), ${RIM_POWER.toFixed(1)});
-        gl_FragColor = vec4(uColor * rim * ${RIM_STRENGTH}, 1.0);
+        gl_FragColor = vec4(uColor * rim * ${RIM_STRENGTH} * uFade, 1.0);
       }`,
     blending: THREE.AdditiveBlending, transparent: true, depthWrite: false, side: THREE.DoubleSide,
   });
@@ -184,7 +186,11 @@ export default {
         model.gun.position.set(GUN_POS[0], GUN_POS[1], GUN_POS[2] + k * RECOIL_BACK);
         model.tip.material.opacity = holding ? 1 : TIP_IDLE;
         model.beam.visible = model.sphere.visible = holding;
-        if (holding) drawBeam();
+        if (holding) {
+          drawBeam();
+          const clear = ctx.eye.distanceTo(hold) - PHYS.RADIUS;
+          model.sphere.material.uniforms.uFade.value = THREE.MathUtils.clamp(clear / RIM_CLEAR, 0, 1);
+        }
       },
       deselect() {
         release();
