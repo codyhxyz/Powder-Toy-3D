@@ -80,11 +80,13 @@ int gRelId, gRelCh;
 float gRelW, gRelTop, gRelSlope, gRelFp;
 vec3 gRelN;
 
-// How far p, where the field is phi, is inside the carved surface (cells; >= 0: solid).
-float reliefInside(vec3 p, float phi) {
+// How deep the relief is carved below the envelope at p (cells)
+float reliefCarve(vec3 p) {
   float h = reliefHeight(gRelId, p, gRelN, gRelFp).x;
-  return (phi - SURF_ISO) / gRelSlope - gRelW * clamp(gRelTop - h, 0.0, RELIEF_SPAN * gRelTop);
+  return gRelW * clamp(gRelTop - h, 0.0, RELIEF_SPAN * gRelTop);
 }
+// How far p, where the field is phi, is inside the carved surface (cells; >= 0: solid).
+float reliefInside(vec3 p, float phi) { return (phi - SURF_ISO) / gRelSlope - reliefCarve(p); }
 float reliefInside(vec3 p) { return reliefInside(p, surfChannel(p, gRelCh)); }
 
 // The ray (ro, rd) enters smooth channel ch's surface at t. Moves t onto the
@@ -169,8 +171,11 @@ bool reliefHit(vec3 ro, vec3 rd, int ch, inout float t) {
 // Sunlight reaching carved point p past the relief around it: a march toward
 // the sun until it leaves the shell, soft by how closely it clears the
 // relief: the penumbra of the sun's disc (RELIEF_SUN_DISC radians across),
-// at least RELIEF_SHADOW_AA_PX pixels wide so it doesn't alias. Depths are taken relative to p's own (the hit is
-// only found to within a step), so a lit face doesn't shade itself.
+// at least RELIEF_SHADOW_AA_PX pixels wide so it doesn't alias. The envelope
+// is taken as its tangent plane at p: its own shape at the cell scale (and
+// the trilinear field's creases) is the shadow map's business; here only the
+// relief can block the sun. (Relative to p's own carving, too: the hit is
+// only found to within a step, and a lit face mustn't shade itself.)
 const float RELIEF_SUN_DISC = 0.0093;     // the sun's angular diameter (0.53°)
 const float RELIEF_SHADOW_AA_PX = 1.0;
 const int RELIEF_SUN_STEPS_MIN = 3, RELIEF_SUN_STEPS_MAX = 8;
@@ -183,12 +188,14 @@ float reliefSunVis(vec3 p) {
   float step = max(gRelFp * RELIEF_SUN_PX_STEP, RELIEF_STEP_PER_FEATURE * reliefFeature(gRelId));
   int n = clamp(int(ceil(L / step)), RELIEF_SUN_STEPS_MIN, RELIEF_SUN_STEPS_MAX);
   float dt = L / float(n);
-  float vis = 1.0, d0 = reliefInside(p);
+  float vis = 1.0, c0 = reliefCarve(p);
   for (int i = 1; i <= RELIEF_SUN_STEPS_MAX; i++) {
     if (i > n) break;
     float ts = dt * float(i);
     float pen = max(RELIEF_SUN_DISC * ts, RELIEF_SHADOW_AA_PX * gRelFp);
-    vis = min(vis, clamp((d0 - reliefInside(p + uSun * ts)) / pen, 0.0, 1.0));
+    // height of the sun ray above the carved surface under it
+    float clear = ts * cl + reliefCarve(p + uSun * ts) - c0;
+    vis = min(vis, clamp(clear / pen, 0.0, 1.0));
     if (vis <= 0.0) break;
   }
   return vis;
