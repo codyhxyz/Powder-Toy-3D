@@ -271,7 +271,11 @@ const float PEB_GRANITE_UPTO = 0.35, PEB_BASALT_UPTO = 0.6, PEB_SANDSTONE_UPTO =
 const float PEB_SHADE_MIN = 0.8, PEB_SHADE_RANGE = 0.4;   // pebble-to-pebble shade
 const float PEB_ROUGH_VAR = 0.3;               // pebble-to-pebble roughness spread
 const float PEB_POLISH = 0.15;                 // pebbles are smoother than the gravel's overall roughness
-const float PEB_MOTTLE_F = 5.0, PEB_MOTTLE_H = 0.03;   // texture within a pebble: frequency (per cell), relief (cells)
+const float PEBBLE_M = 0.05;                   // m: a typical pebble (gravel runs ~2-6 cm)
+const float PEBBLE_F = CELL_M / PEBBLE_M;      // pebbles per cell along a line
+// texture within a pebble: wavelength and relief (m), as frequency (per cell) and height (cells)
+const float PEB_MOTTLE_M = 0.017, PEB_MOTTLE_H_M = 0.0024;
+const float PEB_MOTTLE_F = CELL_M / PEB_MOTTLE_M, PEB_MOTTLE_H = PEB_MOTTLE_H_M / CELL_M;
 const float PEB_MOTTLE_ALB = 0.35;             // albedo swing per unit of the mottle
 const int PEB_MOTTLE_OCT = 2;                  // fBm octaves of the mottle
 const float PEB_VOID_ALB = 0.1, PEB_VOID_CAV = 0.15;   // the voids between pebbles: crevices in deep shade
@@ -325,7 +329,7 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
     // would touch a neighbour, so outlines run from round to polygonal. It is
     // shaded as a dome steepening toward its outline; between pebbles are
     // dark voids with grit in them. Each has its own rock type, shade and polish.
-    const float PEBBLE_F = 1.7;                // pebbles per cell along a line (~5 cm)
+    // (pebble size: PEBBLE_M above, shared with gfx/grains.js)
     const float R_MIN = 0.42, R_VAR = 0.35;    // pebble radius range, lattice units
     const float GAP = 0.04;                    // gap where two pebbles meet, lattice units
     const float RIM = 0.05;                    // pebble edge softness, lattice units
@@ -333,7 +337,8 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
     const float RIM_CAV = 0.35;                // occlusion toward a pebble's outline (it curves away)
     const float U_MAX = 0.95;                  // caps the dome's slope at the outline
     const float MEAN = 0.82;                   // area-average shade of pebbles and voids (the far look)
-    const float GRIT_F = 11.0, GRIT_H = 0.01;  // grit in the voids
+    const float GRIT_M = 0.0073, GRIT_H_M = 0.0008;   // grit in the voids: wavelength, relief (m)
+    const float GRIT_F = CELL_M / GRIT_M, GRIT_H = GRIT_H_M / CELL_M;
     const float GRIT_ALB = 0.8;                // albedo swing per unit of the grit
     const float PEBBLE_LOD = 2.0;              // outlines are sharp: fade them at this multiple of the pebble frequency
     const int GRIT_OCT = 2;                    // fBm octaves
