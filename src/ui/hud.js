@@ -72,7 +72,7 @@ export function createHelp(onClose) {
         row('Brush size', 'Shift', 'Scroll'),
         row('Sphere or cube brush', 'B'),
         row('Paint over existing material', 'X'),
-        row('Pick element under cursor', 'I'),
+        row('Eyedropper: pick element under cursor', 'I'),
         row('Undo last change', '⌘', 'Z'),
         row('Find an element', '/'),
         h('h3', { text: 'Camera' }),
