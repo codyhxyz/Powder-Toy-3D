@@ -38,6 +38,7 @@ for (let i = 0; i < 8; i++) {
   samples.push(await ev(() => { const a = window.__app; return { mode: a.pov.mode, pos: a.camera.position.toArray().map((v) => +v.toFixed(3)), fov: +a.camera.fov.toFixed(1), fig: a.pov.figure?.root.visible }; }));
 }
 console.log('swoop in:', samples.map((s) => `${s.mode} fov ${s.fov} fig ${s.fig} [${s.pos}]`).join('\n          '));
+await p.waitForFunction(() => window.__app.pov.mode === 'on', null, { timeout: 10000 }).catch(() => {});
 await p.waitForTimeout(300);
 const inPov = await ev(() => {
   const a = window.__app, pl = a.pov.player, s = a.scale, v = a.volume.position;
@@ -57,7 +58,7 @@ await p.keyboard.press('Space');
 await p.keyboard.press('2');
 await p.keyboard.press('r');
 await p.keyboard.down('w');
-await p.waitForTimeout(600);
+await p.waitForFunction((f) => Math.hypot(window.__app.pov.player.pos.x - f[0], window.__app.pov.player.pos.z - f[2]) > 1.5, inPov.feet, { timeout: 8000 }).catch(() => {});
 await p.keyboard.up('w');
 const sup = await ev(() => { const a = window.__app; return { paused: a.settings.paused, view: a.settings.view, target: a.controls.target.toArray(), feet: a.pov.player.pos.toArray() }; });
 check('Space does not pause', sup.paused === before.paused);
@@ -66,9 +67,10 @@ check('rig/orbit target untouched', sup.target.every((v, i) => Math.abs(v - tBef
 const walked = Math.hypot(sup.feet[0] - inPov.feet[0], sup.feet[2] - inPov.feet[2]);
 check('W walks the body', walked > 1, walked.toFixed(2) + ' cells');
 
-// aim: look down at the ground in front, the crosshair cell should be on the ray
-await ev(() => window.__app.pov.setLook(window.__app.pov.camera.look.yaw, -0.6));
-await frames(12);
+// aim: from open floor in the middle of the lab, look down at the ground in
+// front; the crosshair cell should be on the ray
+await ev(() => { const a = window.__app; a.pov.player.spawn(a.pov.player.pos.clone().set(64.5, 0, 64.5)); a.pov.setLook(a.pov.camera.look.yaw, -0.6); });
+await frames(20);
 const aim = await ev(() => {
   const a = window.__app, c = a.pov.ctx, h = a.hover;
   const eye = a.pov.player.pos.clone().setY(a.pov.player.pos.y + 5);
@@ -116,7 +118,7 @@ check('breath bar shows below full', hud2.breath);
 check('underwater tint on', hud2.water === '1', JSON.stringify(hud2));
 await shot('pov-underwater');
 await ev(() => { const pl = window.__app.pov.player; pl.breath = 1; pl.headInLiquid = false; pl.liquidId = -1; pl.feel.cold = 0; pl.feel.heat = 0.8; pl._hurt(0.3); });
-await frames(4);
+await frames(2);   // (the flash decays: read it right away)
 const hud3 = await ev(() => ({ heat: document.querySelector('.pov-heat').style.opacity, hurt: document.querySelector('.pov-hurt').style.opacity }));
 check('heat glow + hurt flash', +hud3.heat > 0.5 && +hud3.hurt > 0.05, JSON.stringify(hud3));
 await ev(() => { window.__app.pov.player.feel.heat = 0; });
@@ -147,7 +149,8 @@ for (let i = 0; i < 6; i++) {
   outS.push(await ev(() => { const a = window.__app; return { mode: a.pov.mode, fov: +a.camera.fov.toFixed(1), pos: a.camera.position.toArray().map((v) => +v.toFixed(3)) }; }));
 }
 console.log('swoop out:', outS.map((s) => `${s.mode} fov ${s.fov} [${s.pos}]`).join('\n           '));
-await p.waitForTimeout(300);
+await p.waitForFunction(() => window.__app.pov.mode === 'off', null, { timeout: 10000 }).catch(() => {});
+await frames(3);
 const after = await ev(() => { const a = window.__app; return { mode: a.pov.mode, pos: a.camera.position.toArray(), fov: a.camera.fov, target: a.controls.target.toArray(), controls: a.controls.enabled, body: document.body.className }; });
 const posErr = Math.hypot(...after.pos.map((v, i) => v - before.pos[i]));
 check('back in god view', after.mode === 'off' && after.controls && !after.body.includes('pov-on'), JSON.stringify(after));

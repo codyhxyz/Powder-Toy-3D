@@ -18,7 +18,11 @@ const toolsModule = import.meta.glob('./tools/index.js', { eager: true })['./too
 const PREWARM_DELAY_MS = 2000;          // ms after start-up before the figure's shader compiles in the background
 const RESPAWN_DELAY = 3.5;              // s from death to respawning at the drop point
 const POV_NEAR = 0.08;                  // cells: near plane in POV (a held item sits close to the eye)
-const WHEEL_NOTCH_PX = 50;              // px of wheel delta per notch (a mouse wheel click is ~100, trackpads add up)
+// Wheel → notches: the first event of a gesture is one notch at once (mice
+// report anything from a few px to 120 per click), then every WHEEL_NOTCH_PX
+// more in the same direction (fast spins, trackpad swipes) is another.
+const WHEEL_NOTCH_PX = 100;             // px of wheel delta per further notch (a Windows/Linux wheel click)
+const WHEEL_GESTURE_GAP_MS = 180;       // ms without wheel events that ends a gesture
 const WHEEL_LINE_PX = 40;               // px per line, for wheels that report lines
 const WHEEL_PAGE_PX = 800;              // px per page
 
@@ -53,7 +57,7 @@ export function createPov(app) {
   // input
   const keys = new Set();
   const buttons = { primary: false, secondary: false, primaryPressed: false, secondaryPressed: false };
-  let wheelAcc = 0, wheelNotches = 0;
+  let wheelAcc = 0, wheelNotches = 0, wheelLast = -Infinity, wheelDir = 0;
   const test = { assumeLocked: false };   // headless tests can't lock the pointer
 
   const active = () => mode !== 'off';
@@ -110,11 +114,19 @@ export function createPov(app) {
     e.preventDefault();
     if (!isLocked()) return;
     const px = e.deltaY * (e.deltaMode === 1 ? WHEEL_LINE_PX : e.deltaMode === 2 ? WHEEL_PAGE_PX : 1);
-    if (Math.sign(px) !== Math.sign(wheelAcc)) wheelAcc = 0;   // a change of direction starts over
-    wheelAcc += px;
-    const n = Math.trunc(wheelAcc / WHEEL_NOTCH_PX);
-    wheelNotches += n;
-    wheelAcc -= n * WHEEL_NOTCH_PX;
+    if (!px) return;
+    const now = performance.now(), dirn = Math.sign(px);
+    if (now - wheelLast > WHEEL_GESTURE_GAP_MS || dirn !== wheelDir) {
+      wheelNotches += dirn;   // a new gesture (or a change of direction): one notch now
+      wheelAcc = 0;
+    } else {
+      wheelAcc += px;
+      const n = Math.trunc(wheelAcc / WHEEL_NOTCH_PX);
+      wheelNotches += n;
+      wheelAcc -= n * WHEEL_NOTCH_PX;
+    }
+    wheelLast = now;
+    wheelDir = dirn;
   }, { passive: false });
 
   // ---- lazily built parts
