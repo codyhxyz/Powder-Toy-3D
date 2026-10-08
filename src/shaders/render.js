@@ -841,6 +841,17 @@ void main() {
       }
 
       // ---- the event ----
+#ifdef DETAIL_RELIEF
+      // up close the hit moves onto the carved relief (gfx/relief.js), or the
+      // ray passes through a groove: its march restarts where it leaves
+      if (ev == EV_OPAQUE && dot(evN, evN) == 0.0 && !reliefHit(ro, rd, evCh, tEv)) {
+        ro += rd * tEv; mNext -= tEv;
+        cell = ivec3(floor(ro)); tMax = (vec3(cell) + step(0.0, rd) - ro) / rd;
+        tEnter = 0.0; lastB = ivec3(-1); ax = argmin3(tMax);
+        phiA = surfSample(ro); phiStale = false;
+        continue;
+      }
+#endif
       if (ev != EV_NONE) {
         vec3 hp = ro + rd * tEv;
         if (!anyHit) { anyHit = true; hitPos = hp; }

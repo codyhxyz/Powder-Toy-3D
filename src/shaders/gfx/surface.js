@@ -1,3 +1,5 @@
+import { reliefGLSL } from './relief.js';
+
 // Opaque surfaces: per-element solid textures (world-space, so nothing
 // reveals the grid), bevelled crisp voxels, and energy-conserving PBR shading.
 //
@@ -225,15 +227,17 @@ const float SCALE_BUMP = 0.25;    // blistered relief
 const float SCALE_DROP = 150.0;   // °C thick scale runs below the steel
 
 // Lava (E_LAVA)
-const float LAVA_CHURN = 0.12;        // drift of the molten skin pattern, cells per second
-const float LAVA_SKIN_FREQ = 0.4;     // skin pattern frequency, per cell
+const float LAVA_CHURN = 0.0096 / CELL_M;   // drift of the molten skin pattern: m/s, as cells per second
+const float LAVA_SKIN_M = 0.2;        // m, skin pattern wavelength
+const float LAVA_SKIN_FREQ = CELL_M / LAVA_SKIN_M;   // per cell
 const int LAVA_SKIN_OCT = 2;          // fBm octaves of the skin pattern
 const float LAVA_SKIN_VAR = 0.6;      // how far the skin pattern shifts the crust line
 const float LAVA_SKIN_DT = 150.0;     // °C: skin temperature swing on the melt
 const float LAVA_MELT_RANGE = 450.0;  // °C above the solidus where it is fully molten
 const float LAVA_CRUST_X0 = 0.2;      // crust starts to break up (fraction of that range)…
 const float LAVA_CRUST_X1 = 0.8;      // …and is gone
-const float LAVA_PLATE_FREQ = 0.8;    // crust plates per cell
+const float LAVA_PLATE_M = 0.1;       // m, crust plate size
+const float LAVA_PLATE_FREQ = CELL_M / LAVA_PLATE_M;   // crust plates per cell
 const float LAVA_CRACK_LOD = 4.0;     // cracks are narrow: fade them at this multiple of the plate frequency
 const float LAVA_CRACK_CORE = 0.5;    // fraction of the crack half-width that is fully open melt
 const float LAVA_CRACK_OPEN = 1.0;    // crack half-width once the crust has broken up (no plates left)…
@@ -247,12 +251,121 @@ const float LAVA_MELT_ROUGH = 0.25;
 const float LAVA_CRUST_ROUGH = 0.55;  // glassy, silvery basalt skin (pahoehoe)
 const float LAVA_CRUST_VAR = 0.5;     // plate-to-plate albedo spread (± half of it)
 const float LAVA_CRACK_CAV = 0.5;     // cavity term down in a crack
-const float LAVA_PLATE_BUMP = 0.2;    // relief of the plate edges
+const float LAVA_PLATE_BUMP = 0.016 / CELL_M;   // relief of the plate edges: 1.6 cm, in cells
 const float LAVA_PLATE_EDGE = 0.35;   // width of the rounded plate edge
-const float LAVA_SKIN_BUMP = 0.1;     // ripples on the melt
+const float LAVA_SKIN_BUMP = 0.008 / CELL_M;    // ripples on the melt: 8 mm, in cells
 
 // Turns a lattice 30° about y, so bark plates and rain streaks don't line up with the grid.
 const mat3 TURN_Y30 = mat3(0.866, 0.0, 0.5, 0.0, 1.0, 0.0, -0.5, 0.0, 0.866);
+
+// ---- relief: the heights that are geometry up close ----
+// The mid-scale relief of the smooth solids (clumps, crags, bark plates) is a
+// height field over the surface, in cells, centred on 0: matOf bumps the
+// normal by its gradient, and close up (gfx/relief.js, DETAIL_RELIEF) the
+// tracer carves the surface itself by it. Both read it from here, so the
+// geometry and the shading are one relief.
+// Sand: clumps and dimples.
+// Sizes are in metres (m), converted to cells through CELL_M (src/scale.js):
+// a wavelength X_M becomes X_F = CELL_M / X_M per cell, a height X_H = m / CELL_M cells.
+const float SAND_CLUMP_M = 0.025;             // m, clump wavelength
+const float SAND_CLUMP_F = CELL_M / SAND_CLUMP_M;   // per cell
+const float SAND_CLUMP_H = 0.0064 / CELL_M;   // 6.4 mm per unit of noise, in cells
+const int SAND_CLUMP_OCT = 3;     // fBm octaves
+vec4 sandClumps(vec3 p, float fp) { return mFbmD(p, SAND_CLUMP_F, SAND_CLUMP_OCT, fp); }
+// Snow: clumps.
+const float SNOW_CLUMP_M = 0.031;             // m, wavelength
+const float SNOW_CLUMP_F = CELL_M / SNOW_CLUMP_M, SNOW_CLUMP_H = 0.0048 / CELL_M;
+const int SNOW_CLUMP_OCT = 2;
+vec4 snowClumps(vec3 p, float fp) { return mFbmD(p, SNOW_CLUMP_F, SNOW_CLUMP_OCT, fp); }
+// Gunpowder: lumps of granules.
+const float POWDER_LUMP_M = 0.13;             // m, wavelength
+const float POWDER_LUMP_F = CELL_M / POWDER_LUMP_M, POWDER_LUMP_H = 0.0064 / CELL_M;
+const int POWDER_LUMP_OCT = 2;
+vec4 powderLumps(vec3 p, float fp) { return mFbmD(p, POWDER_LUMP_F, POWDER_LUMP_OCT, fp); }
+// Ash: soft lumps.
+const float ASH_LUMP_M = 0.18;                // m, wavelength
+const float ASH_LUMP_F = CELL_M / ASH_LUMP_M, ASH_LUMP_H = 0.012 / CELL_M;
+const int ASH_LUMP_OCT = 3;
+vec4 ashLumps(vec3 p, float fp) { return mFbmD(p, ASH_LUMP_F, ASH_LUMP_OCT, fp); }
+// Rock: big lumps (bump only: they are the size of the smooth surface's own
+// shape), which warp the crags: octaves of crease noise.
+const float ROCK_LUMP_M = 0.5;                // m, wavelength
+const float ROCK_LUMP_F = CELL_M / ROCK_LUMP_M, ROCK_LUMP_H = 0.072 / CELL_M;
+const int ROCK_LUMP_OCT = 3;
+vec4 rockLumps(vec3 p, float fp) { return mFbmD(p, ROCK_LUMP_F, ROCK_LUMP_OCT, fp); }
+const float ROCK_CRAG_M = 0.145;              // m, wavelength of the first crag octave
+const float ROCK_CRAG_F = CELL_M / ROCK_CRAG_M, ROCK_CRAG_H = 0.0112 / CELL_M;   // its frequency (per cell), relief (1.1 cm, in cells)
+const float ROCK_CRAG_LAC = 2.13, ROCK_CRAG_GAIN = 0.55;   // per octave: frequency x, relief x
+// The first octave is creases (h = 1 - (1 - c)^2: flat knobs, V valleys),
+// the finer ones sharp ridges (h = (1 - c)^2): broken, angular edges
+// instead of the soft knobs that read as clay.
+const float ROCK_CREASE_MEAN = 0.6, ROCK_RIDGE_MEAN = 0.4;   // mean heights of the two profiles
+const float ROCK_WARP = 0.0192 / (CELL_M * CELL_M);   // crag warp per unit of the lumps' slope (m² per unit slope per m, as cells)
+const int ROCK_CRAG_OCT = 3;                 // octaves of crease noise
+const float ROCK_CRAG_LOD = 2.0;             // creases are sharp: fade them at this multiple of their frequency
+const float ROCK_CRAG_SALT = 3.1, ROCK_CRAG_SALT_STEP = 5.3;   // noise offset of the first crag octave, added per octave
+// (crag height, its gradient) in units of ROCK_CRAG_H, given the lumps lo;
+// ws = the octaves' total weight (height / ws is roughly ±0.5)
+vec4 rockCrags(vec3 p, vec4 lo, float fp, out float ws) {
+  vec3 pw = p + ROCK_WARP * lo.yzw;
+  float hc = 0.0;
+  ws = 0.0;
+  vec3 gc = vec3(0.0);
+  mat3 J = M_ROT * ROCK_CRAG_F;
+  float f = ROCK_CRAG_F, a = 1.0;
+  for (int i = 0; i < ROCK_CRAG_OCT; i++) {
+    float lw = lodFade(ROCK_CRAG_LOD * f, fp);
+    vec4 c = mCreaseJ(pw, J, vec3(ROCK_CRAG_SALT + ROCK_CRAG_SALT_STEP * float(i)));
+    float r2 = (1.0 - c.x) * (1.0 - c.x);
+    vec3 dr2 = -2.0 * (1.0 - c.x) * c.yzw;
+    hc += a * lw * (i == 0 ? 1.0 - r2 - ROCK_CREASE_MEAN : r2 - ROCK_RIDGE_MEAN);
+    gc += a * lw * (i == 0 ? -dr2 : dr2);
+    ws += a;
+    J = M_ROT * J * ROCK_CRAG_LAC; f *= ROCK_CRAG_LAC; a *= ROCK_CRAG_GAIN;
+  }
+  return vec4(hc, gc);
+}
+// Wood bark: long corky plates (cellular cells stretched along y, turned about
+// it), split by V furrows, each plate slightly domed. Returns (height,
+// gradient); mv = the furrows' meander noise, c = the plate cell (mCell).
+const float WOOD_PLATE_W_M = 0.04, WOOD_PLATE_L_M = 0.24;   // m: plates ~4 cm wide, ~25 cm long
+const float WOOD_PLATE_FH = CELL_M / WOOD_PLATE_W_M, WOOD_PLATE_FV = CELL_M / WOOD_PLATE_L_M;   // plates per cell: across, along
+const float WOOD_MEANDER_M = 0.27;           // m, furrow meander wavelength
+const float WOOD_MEANDER_F = CELL_M / WOOD_MEANDER_M, WOOD_MEANDER = 0.024 / CELL_M;   // its frequency, amplitude (2.4 cm, in cells)
+const float WOOD_WAVE_M = 0.06;              // m, wavelength of the furrow edges' wander
+const float WOOD_WAVE_F = CELL_M / WOOD_WAVE_M, WOOD_WAVE = 0.00051 / (CELL_M * CELL_M);   // its frequency, cells per unit slope
+const float WOOD_FUR_W = 0.3;                            // furrow half-width, lattice units
+const float WOOD_FUR_DEPTH = 0.004 / CELL_M, WOOD_PLATE_DOME = 0.004 / CELL_M;   // 4 mm each, in cells
+const float WOOD_FURROW_LOD = 3.0;           // narrow furrows alias sooner: fade at this multiple of WOOD_PLATE_FH
+const int WOOD_MEANDER_OCT = 2, WOOD_WAVE_OCT = 1;       // fBm octaves
+const vec2 WOOD_TOP_EDGE = vec2(0.6, 0.9);   // |n.y| range over which a face turns into end grain
+vec4 woodPlates(vec3 p, float fp, out vec4 mv, out vec4 c) {
+  mat3 J = TURN_Y30 * mat3(WOOD_PLATE_FH, 0.0, 0.0, 0.0, WOOD_PLATE_FV, 0.0, 0.0, 0.0, WOOD_PLATE_FH);
+  mv = mFbmD(p, WOOD_MEANDER_F, WOOD_MEANDER_OCT, fp);
+  vec4 wv = mFbmD(p, WOOD_WAVE_F, WOOD_WAVE_OCT, fp);
+  vec3 pw = p + WOOD_MEANDER * mv.x * vec3(1.0, 0.0, 1.0) + WOOD_WAVE * wv.yzw;
+  vec3 ge, r1;
+  c = mCell(J * pw, ge, r1);
+  float lwF = lodFade(WOOD_PLATE_FH * WOOD_FURROW_LOD, fp);
+  // furrow: up from its floor to the plate; dome: down from the plate's seed
+  float h = WOOD_FUR_DEPTH * smoothstep(0.0, WOOD_FUR_W, c.y) - 0.5 * WOOD_PLATE_DOME * dot(r1, r1);
+  return vec4(lwF * h, lwF * transpose(J) * (WOOD_FUR_DEPTH * dSmooth(0.0, WOOD_FUR_W, c.y) * ge + WOOD_PLATE_DOME * r1));
+}
+// share of sawn end grain (no bark) on a face with normal n
+float woodEndGrain(vec3 n) { return smoothstep(WOOD_TOP_EDGE.x, WOOD_TOP_EDGE.y, abs(n.y)); }
+
+// The relief of element id at p (height in cells, gradient): the part of its
+// bump that is real geometry up close. n: the surface normal (wood's end
+// grain is flat). Elements without one return 0.
+vec4 reliefHeight(int id, vec3 p, vec3 n, float fp) {
+  if (id == E_SAND) return SAND_CLUMP_H * sandClumps(p, fp);
+  if (id == E_SNOW) return SNOW_CLUMP_H * snowClumps(p, fp);
+  if (id == E_GUNPOWDER) return POWDER_LUMP_H * powderLumps(p, fp);
+  if (id == E_ASH) return ASH_LUMP_H * ashLumps(p, fp);
+  if (id == E_ROCK) { float ws; return ROCK_CRAG_H * rockCrags(p, rockLumps(p, fp), fp, ws); }
+  if (id == E_WOOD) { vec4 mv, c; return woodPlates(p, fp, mv, c) * (1.0 - woodEndGrain(n)); }
+  return vec4(0.0);
+}
 
 // The look of element id at world point p (grid units) on a surface with
 // normal n, temperature T (°C). fp = pixel footprint (grid units) for LOD.
@@ -266,30 +379,33 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
   // anything hot glows (hotEmit, once the texture is known); lava does its own thing
   if (uMatDetail < 0.5) { m.emit = id == E_METAL ? glowAt(m, T) : hotEmit(m, T); return m; }
 
-  // Scale: a cell is ~8 cm. Frequencies below are cycles (or lattice cells)
-  // per cell; the *_H / *_DEPTH bump amplitudes are heights in cells.
+  // Scale: a cell is CELL_M (src/scale.js). Frequencies below are cycles (or
+  // lattice cells) per cell; the *_H / *_DEPTH bump amplitudes are heights in
+  // cells. The natural materials give their sizes in metres (*_M) and convert.
   if (id == E_SAND) {
     // Dry sand. Its grains (~0.3 mm) are far below a pixel, so it reads as a
     // matte surface with soft mottling (sorting, damp patches), shallow
     // dimples, a faint grain-scale mottle and, up close, scattered dark
     // mineral grains. The sparkle of the quartz faces comes from the glints.
-    const float PATCH_F = 0.3, CLUMP_F = 3.2, GRAIN_F = 12.0;
-    const float PATCH_H = 0.35, CLUMP_H = 0.08, GRAIN_H = 0.006;
+    const float PATCH_M = 0.27, GRAIN_M = 0.0067;   // m, wavelengths
+    const float PATCH_F = CELL_M / PATCH_M, GRAIN_F = CELL_M / GRAIN_M;
+    const float PATCH_H = 0.028 / CELL_M, GRAIN_H = 0.00048 / CELL_M;   // 2.8 cm, 0.5 mm, in cells
     const vec3 HUE = vec3(0.07, 0.0, -0.1);    // patches drift yellow-red .. grey
-    const float DARK_F = 18.0;                 // lattice of coarse dark grains (~4 mm apart)
+    const float DARK_M = 0.0044;               // m: coarse dark grains ~4 mm apart
+    const float DARK_F = CELL_M / DARK_M;      // their lattice, per cell
     const float DARK_P = 0.4, DARK_R = 0.25;   // how many, how big (lattice units)
     const float DARK_ALB = 0.45;               // their albedo relative to the sand
-    const float DARK_WARP = 0.005;             // bends the grains out of round (cells per unit slope)
-    const int PATCH_OCT = 2, CLUMP_OCT = 3, GRAIN_OCT = 2;              // fBm octaves
+    const float DARK_WARP = 0.000032 / (CELL_M * CELL_M);   // bends the grains out of round (cells per unit slope)
+    const int PATCH_OCT = 2, GRAIN_OCT = 2;                            // fBm octaves
     const float PATCH_ALB = 0.25, CLUMP_ALB = 0.18, GRAIN_ALB = 0.3;   // albedo swing per unit of each noise
     const float CLUMP_CAV = 0.4;               // cavity swing of the clumps
     vec4 lo = mFbmD(p, PATCH_F, PATCH_OCT, fp);
-    vec4 gr = mFbmD(p, CLUMP_F, CLUMP_OCT, fp);
+    vec4 gr = sandClumps(p, fp);
     vec4 fg = mFbmD(p, GRAIN_F, GRAIN_OCT, fp);
     float dh;
     vec4 dk = mDots(p + DARK_WARP * fg.yzw, DARK_F, DARK_P, DARK_R, fp, dh);
     m.alb *= (1.0 + PATCH_ALB * lo.x + CLUMP_ALB * gr.x + GRAIN_ALB * fg.x) * (1.0 + HUE * lo.x) * mix(1.0, DARK_ALB, dk.x);
-    m.g = PATCH_H * lo.yzw + CLUMP_H * gr.yzw + GRAIN_H * fg.yzw;
+    m.g = PATCH_H * lo.yzw + SAND_CLUMP_H * gr.yzw + GRAIN_H * fg.yzw;
     m.cav = 1.0 + CLUMP_CAV * gr.x;
   } else if (id == E_STONE) {
     // Gravel: rounded pebbles of mixed rock. Each pebble is a disc of its own
@@ -341,50 +457,54 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
   } else if (id == E_SNOW) {
     // Old powder snow: soft drifts, clumps and (up close) a sugary crust of
     // crystals; the sparkle comes from the glints.
-    const float DRIFT_F = 0.22, CLUMP_F = 2.6, CRYSTAL_F = 10.0;
-    const float DRIFT_H = 0.6, CLUMP_H = 0.06, CRYSTAL_H = 0.008;
-    const int DRIFT_OCT = 2, CLUMP_OCT = 2, CRYSTAL_OCT = 2;   // fBm octaves
+    const float DRIFT_M = 0.36, CRYSTAL_M = 0.008;   // m, wavelengths
+    const float DRIFT_F = CELL_M / DRIFT_M, CRYSTAL_F = CELL_M / CRYSTAL_M;
+    const float DRIFT_H = 0.048 / CELL_M, CRYSTAL_H = 0.00064 / CELL_M;   // 4.8 cm, 0.6 mm, in cells
+    const int DRIFT_OCT = 2, CRYSTAL_OCT = 2;                  // fBm octaves
     const float DRIFT_ALB = 0.03, CLUMP_ALB = 0.04;           // albedo swing per unit of each noise
     const vec3 DEEP_TINT = vec3(0.8, 0.94, 1.12);  // deep-scattered light: ice absorbs red
     const float GLINT_DENS = 1.4;              // ice crystals: more facets than sand
     vec4 lo = mFbmD(p, DRIFT_F, DRIFT_OCT, fp);
-    vec4 gr = mFbmD(p, CLUMP_F, CLUMP_OCT, fp);
+    vec4 gr = snowClumps(p, fp);
     vec4 cr = mFbmD(p, CRYSTAL_F, CRYSTAL_OCT, fp);
     m.alb *= 1.0 + DRIFT_ALB * lo.x + CLUMP_ALB * gr.x;
-    m.g = DRIFT_H * lo.yzw + CLUMP_H * gr.yzw + CRYSTAL_H * cr.yzw;
+    m.g = DRIFT_H * lo.yzw + SNOW_CLUMP_H * gr.yzw + CRYSTAL_H * cr.yzw;
     m.sssCol = DEEP_TINT;
     m.glintDens = GLINT_DENS;
   } else if (id == E_GUNPOWDER) {
     // Black powder: graphite-glazed granules (~1 mm) with a soft silvery
     // sheen, a granular mottle in colour and gloss, and many tiny glints.
-    const float LUMP_F = 0.6, GRAIN_F = 9.0;
-    const float LUMP_H = 0.08, GRAIN_H = 0.004;
-    const int LUMP_OCT = 2, GRAIN_OCT = 3;     // fBm octaves
+    const float GRAIN_M = 0.0089;              // m, granule mottle wavelength
+    const float GRAIN_F = CELL_M / GRAIN_M;
+    const float GRAIN_H = 0.00032 / CELL_M;    // 0.3 mm, in cells
+    const int GRAIN_OCT = 3;                   // fBm octaves
     const float LUMP_ALB = 0.2, GRAIN_ALB = 0.7;   // albedo swing per unit of each noise
     const float GRAIN_ROUGH = 0.1, GRAIN_CAV = 0.6;   // gloss and cavity swing of the granules
     const float GLINT_DENS = 1.3;              // relative glint density (fine granules)
-    vec4 lo = mFbmD(p, LUMP_F, LUMP_OCT, fp);
+    vec4 lo = powderLumps(p, fp);
     vec4 gr = mFbmD(p, GRAIN_F, GRAIN_OCT, fp);
     m.alb *= (1.0 + LUMP_ALB * lo.x) * (1.0 + GRAIN_ALB * gr.x);
-    m.g = LUMP_H * lo.yzw + GRAIN_H * gr.yzw;
+    m.g = POWDER_LUMP_H * lo.yzw + GRAIN_H * gr.yzw;
     m.rough += GRAIN_ROUGH * gr.x;
     m.cav = 1.0 + GRAIN_CAV * gr.x;
     m.glintDens = GLINT_DENS;
   } else if (id == E_ASH) {
     // Wood ash: pale, very fine and soft, with flecks of charcoal.
-    const float LUMP_F = 0.45, FINE_F = 9.0;
-    const float LUMP_H = 0.15, FINE_H = 0.006;
-    const float FLECK_F = 6.0, FLECK_P = 0.6, FLECK_R = 0.3;   // flecks up to ~8 mm
-    const float FLECK_WARP = 0.025;            // bends flecks out of round (cells per unit slope)
+    const float FINE_M = 0.0089;               // m, wavelength
+    const float FINE_F = CELL_M / FINE_M;
+    const float FINE_H = 0.00048 / CELL_M;     // 0.5 mm, in cells
+    const float FLECK_M = 0.013;               // m between fleck sites
+    const float FLECK_F = CELL_M / FLECK_M, FLECK_P = 0.6, FLECK_R = 0.3;   // flecks up to ~8 mm
+    const float FLECK_WARP = 0.00016 / (CELL_M * CELL_M);   // bends flecks out of round (cells per unit slope)
     const float FLECK_SETTLE = 1.5;            // how strongly flecks gather in the hollows
     const vec3 CHARCOAL = vec3(0.025, 0.024, 0.023);
     const float CHARCOAL_ROUGH = 0.6;
     const float FLECK_SHARE = 0.5;             // share of fleck sites filled where the lumps are at their mean height
     const float FLECK_BLACK_MIN = 0.4, FLECK_BLACK_RANGE = 0.6;   // fleck-to-fleck blackness
-    const int LUMP_OCT = 3, FINE_OCT = 2;      // fBm octaves
+    const int FINE_OCT = 2;                    // fBm octaves
     const float LUMP_ALB = 0.2, FINE_ALB = 0.2;   // albedo swing per unit of each noise
     const float LUMP_CAV = 0.4;                // cavity swing of the lumps
-    vec4 lo = mFbmD(p, LUMP_F, LUMP_OCT, fp);
+    vec4 lo = ashLumps(p, fp);
     vec4 gr = mFbmD(p, FINE_F, FINE_OCT, fp);
     float fh;
     // flecks gather where the lumps are low (they settle) and vary in blackness
@@ -392,7 +512,7 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
     m.alb *= 1.0 + LUMP_ALB * lo.x + FINE_ALB * gr.x;
     m.alb = mix(m.alb, CHARCOAL, fl.x * mix(1.0, FLECK_BLACK_MIN + FLECK_BLACK_RANGE * fh, lodFade(FLECK_F, fp)));
     m.rough = mix(m.rough, CHARCOAL_ROUGH, fl.x);
-    m.g = LUMP_H * lo.yzw + FINE_H * gr.yzw;
+    m.g = ASH_LUMP_H * lo.yzw + FINE_H * gr.yzw;
     m.cav = 1.0 + LUMP_CAV * lo.x;
   } else if (id == E_WOOD) {
     // Bark: long corky plates split by deep V furrows. The plates are
@@ -401,51 +521,43 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
     // instead of closing into loops. Each plate is slightly domed, has its
     // own shade and greyness, and flaky layers across it; the furrows are
     // in shade and show the darker, redder inner bark.
-    const float PLATE_FH = 2.0, PLATE_FV = 0.33;   // plates per cell: across (~4 cm wide), along (~25 cm)
-    const float MEANDER_F = 0.3, MEANDER = 0.3;    // furrow meander: frequency, amplitude (cells)
-    const float WAVE_F = 1.3, WAVE = 0.08;         // furrow edges wander: frequency, cells per unit slope
-    const float FUR_W = 0.3;                       // furrow half-width, lattice units
-    const float FUR_DEPTH = 0.05, PLATE_DOME = 0.05;
-    const float FLAKE_FH = 3.0, FLAKE_FV = 9.0, FLAKE_H = 0.004;   // flaky layers across a plate
-    const float FIB_FH = 14.0, FIB_FV = 1.6, FIB_H = 0.003;         // fibres
+    // (plates and furrows: woodPlates)
+    const float FLAKE_W_M = 0.027, FLAKE_L_M = 0.0089;   // m: flaky layers across a plate (across, along)
+    const float FLAKE_FH = CELL_M / FLAKE_W_M, FLAKE_FV = CELL_M / FLAKE_L_M, FLAKE_H = 0.00032 / CELL_M;
+    const float FIB_W_M = 0.0057, FIB_L_M = 0.05;        // m: fibres (across, along)
+    const float FIB_FH = CELL_M / FIB_W_M, FIB_FV = CELL_M / FIB_L_M, FIB_H = 0.00024 / CELL_M;
     const float RIDGE_MEAN = 0.7;                  // area fraction of plate (the far-away mix)
     const vec3 FURROW = vec3(0.25, 0.2, 0.18);     // inner bark in shade, relative to the base colour
     const vec3 GREY = vec3(1.05, 1.1, 1.22);       // weathered outer bark
     const float PLATE_SHADE_MIN = 0.7, PLATE_SHADE_RANGE = 0.6;   // plate-to-plate shade
     const float MEANDER_ALB = 0.4, FLAKE_ALB = 0.3, FIB_ALB = 0.25;   // albedo swing per unit of each noise
     const float FURROW_CAV = 0.3;                  // cavity term down in a furrow
-    const float FURROW_LOD = 3.0;                  // narrow furrows alias sooner: fade at this multiple of PLATE_FH
-    const int MEANDER_OCT = 2, WAVE_OCT = 1;       // fBm octaves
     const vec3 FLAKE_SALT = vec3(13.1), FIB_SALT = vec3(5.7);   // noise offsets (decorrelate the layers)
-    const vec2 TOP_EDGE = vec2(0.6, 0.9);          // |n.y| range over which a face turns into end grain
-    mat3 J = TURN_Y30 * mat3(PLATE_FH, 0.0, 0.0, 0.0, PLATE_FV, 0.0, 0.0, 0.0, PLATE_FH);
-    vec4 mv = mFbmD(p, MEANDER_F, MEANDER_OCT, fp);
-    vec4 wv = mFbmD(p, WAVE_F, WAVE_OCT, fp);
-    vec3 pw = p + MEANDER * mv.x * vec3(1.0, 0.0, 1.0) + WAVE * wv.yzw;
-    vec3 ge, r1;
-    vec4 c = mCell(J * pw, ge, r1);
+    vec4 mv, c;
+    vec4 pl = woodPlates(p, fp, mv, c);
     vec4 fl = mNoiseJ(p, TURN_Y30 * mat3(FLAKE_FH, 0.0, 0.0, 0.0, FLAKE_FV, 0.0, 0.0, 0.0, FLAKE_FH), FLAKE_SALT);
     vec4 fb = mNoiseJ(p, TURN_Y30 * mat3(FIB_FH, 0.0, 0.0, 0.0, FIB_FV, 0.0, 0.0, 0.0, FIB_FH), FIB_SALT);
     // narrow furrows alias sooner than the plate frequency says
-    float lwF = lodFade(PLATE_FH * FURROW_LOD, fp), lwL = lodFade(FLAKE_FV, fp), lwB = lodFade(FIB_FH, fp);
-    float ridge = smoothstep(0.0, FUR_W, c.y);     // 0 in a furrow, 1 on a plate
+    float lwF = lodFade(WOOD_PLATE_FH * WOOD_FURROW_LOD, fp), lwL = lodFade(FLAKE_FV, fp), lwB = lodFade(FIB_FH, fp);
+    float ridge = smoothstep(0.0, WOOD_FUR_W, c.y);   // 0 in a furrow, 1 on a plate
     float rl = mix(RIDGE_MEAN, ridge, lwF);
     vec3 plate = mix(vec3(1.0), (PLATE_SHADE_MIN + PLATE_SHADE_RANGE * c.z) * mix(vec3(1.0), GREY, c.w), lwF);
     m.alb *= mix(FURROW, plate, rl) * (1.0 + MEANDER_ALB * mv.x) * (1.0 + FLAKE_ALB * lwL * (fl.x - 0.5))
            * (1.0 + FIB_ALB * lwB * (fb.x - 0.5));
-    m.g = lwF * transpose(J) * (FUR_DEPTH * dSmooth(0.0, FUR_W, c.y) * ge + PLATE_DOME * r1)
-        + lwL * FLAKE_H * ridge * fl.yzw + lwB * FIB_H * fb.yzw;
+    m.g = pl.yzw + lwL * FLAKE_H * ridge * fl.yzw + lwB * FIB_H * fb.yzw;
     m.cav = mix(FURROW_CAV, 1.0, rl);
     // Sawn end grain on top faces: growth rings around the pith of each log
     // (piths on a coarse jittered lattice), wobbling with the grain, latewood
     // bands darker, heartwood darker than sapwood.
-    float top = smoothstep(TOP_EDGE.x, TOP_EDGE.y, abs(n.y));
+    float top = woodEndGrain(n);
     if (top > 0.0) {
-      const float LOG_SIZE = 16.0;             // cells between piths
-      const float RING_F = 6.0;                // growth rings per cell (~1.3 cm apart)
-      const float RING_WOBBLE = 0.6, RING_WOBBLE_F = 0.8;   // irregularity: amplitude (rings), frequency
+      const float LOG_SIZE = 1.28 / CELL_M;    // cells between piths (1.28 m)
+      const float RING_M = 0.013;              // m, growth ring spacing
+      const float RING_F = CELL_M / RING_M;    // growth rings per cell
+      const float RING_WOBBLE_M = 0.1;         // m, wavelength of the rings' irregularity
+      const float RING_WOBBLE = 0.6, RING_WOBBLE_F = CELL_M / RING_WOBBLE_M;   // its amplitude (rings), frequency
       const float PITH_JITTER = 0.6;           // spread of a pith within its lattice cell
-      const float HEART_R = 3.0;               // heartwood radius, cells
+      const float HEART_R = 0.24 / CELL_M;     // heartwood radius (24 cm), in cells
       const vec3 SAPWOOD = vec3(0.42, 0.28, 0.16), HEARTWOOD = vec3(0.3, 0.17, 0.09);
       const float LATEWOOD = 0.6;              // albedo of the latewood bands
       const vec2 LATE_EDGE = vec2(0.55, 0.95); // ring phase over which a latewood band fades in
@@ -476,10 +588,11 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
     // (measured within the surface) along a random axis, with its own tilt,
     // size, hue and gloss and a paler midrib, cut by its cell where it meets
     // a neighbour. Between leaves the eye sees into the shaded depth of the clump.
-    const float LEAF_F = 2.3;                  // leaves per cell along a line (~3.5 cm)
+    const float LEAF_M = 0.035;                // m, leaf spacing
+    const float LEAF_F = CELL_M / LEAF_M;      // leaves per cell along a line
     const float LEAF_R = 0.5, LEAF_RV = 0.3;   // leaf half-length range, lattice units
     const float LEAF_ASPECT = 0.55;            // half-width / half-length
-    const float LEAF_TILT = 1.3, LEAF_CURL = 0.3;   // facing jitter; cupping toward the rim
+    const float LEAF_TILT = 1.3, LEAF_CURL = 0.024 / CELL_M;   // facing jitter; cupping toward the rim (m per lattice², in cells)
     const float GAP = 0.04, RIM = 0.05;        // lattice units
     const float DEPTH_ALB = 0.35, DEPTH_CAV = 0.2;  // the clump's shaded interior
     const float MEAN = 0.88;                   // area-average shade of leaves and depth (the far look)
@@ -597,48 +710,33 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
     // in its hollows; rusty oxidised and pale weathered patches, faint
     // flow banding and, up close, clusters of gas vesicles. No cell
     // lattice: that read as paving.
-    const float LUMP_F = 0.16, LUMP_H = 0.9;
-    const float CRAG_F = 0.55, CRAG_H = 0.14;  // first crag octave: frequency, relief (cells)
-    const float CRAG_LAC = 2.13, CRAG_GAIN = 0.55;   // per octave: frequency x, relief x
-    // The first octave is creases (h = 1 - (1 - c)^2: flat knobs, V valleys),
-    // the finer ones sharp ridges (h = (1 - c)^2): broken, angular edges
-    // instead of the soft knobs that read as clay.
-    const float CREASE_MEAN = 0.6, RIDGE_MEAN = 0.4;   // mean heights of the two profiles
-    const float GRAIN_F = 4.5, GRAIN_H = 0.045;    // gritty surface (3 octaves, to ~2 mm)
-    const float WARP = 3.0;                    // crag warp per unit of the lumps' slope (cells)
-    const float TINT_F = 0.09;                 // oxidised / weathered patches
+    // (lumps and crags: rockLumps, rockCrags)
+    const float GRAIN_M = 0.018;               // m, gritty surface (3 octaves, to ~4 mm)
+    const float GRAIN_F = CELL_M / GRAIN_M, GRAIN_H = 0.0036 / CELL_M;
+    const float TINT_M = 0.89;                 // m, oxidised / weathered patches
+    const float TINT_F = CELL_M / TINT_M;
     const vec3 RUST = vec3(1.18, 0.98, 0.86), PALE = vec3(1.3, 1.3, 1.28);
     const vec2 RUST_EDGE = vec2(0.6, 0.8), PALE_EDGE = vec2(0.35, 0.15);   // tint-noise ranges of the patches
     const vec2 SKY_EDGE = vec2(0.2, 0.8);      // n.y range over which a face counts as sky-facing
-    const float BAND_FH = 0.05, BAND_FV = 0.4; // lava-flow banding
+    const float BAND_W_M = 1.6, BAND_H_M = 0.2;   // m: lava-flow banding (across, up)
+    const float BAND_FH = CELL_M / BAND_W_M, BAND_FV = CELL_M / BAND_H_M;
     const vec3 BAND_LO = vec3(0.94, 0.96, 1.0), BAND_HI = vec3(1.06, 1.0, 0.94);
-    const float VES_F = 7.0, VES_P = 0.55, VES_R = 0.32, VES_DEPTH = 0.003, VES_ALB = 0.35;
-    const float VES_CLUSTER_F = 0.3;           // vesicles come in patches
+    const float VES_M = 0.0114;                // m between vesicle sites
+    const float VES_F = CELL_M / VES_M, VES_P = 0.55, VES_R = 0.32, VES_DEPTH = 0.00024 / CELL_M, VES_ALB = 0.35;
+    const float VES_CLUSTER_M = 0.27;          // m: vesicles come in patches
+    const float VES_CLUSTER_F = CELL_M / VES_CLUSTER_M;
     const vec2 VES_CLUSTER_EDGE = vec2(0.45, 0.7);
-    const float VES_WARP = 0.02;               // bends vesicles out of round (cells per unit slope)
-    const int LUMP_OCT = 3, CRAG_OCT = 3, GRAIN_OCT = 3;   // octaves (fBm; crease noise)
-    const float CRAG_LOD = 2.0;                // creases are sharp: fade them at this multiple of their frequency
-    const float CRAG_SALT = 3.1, CRAG_SALT_STEP = 5.3;   // noise offset of the first crag octave, added per octave
+    const float VES_WARP = 0.000128 / (CELL_M * CELL_M);   // bends vesicles out of round (cells per unit slope)
+    const int GRAIN_OCT = 3;                   // fBm octaves
     const float TINT_SALT = 1.7, VES_CLUSTER_SALT = 6.1;  // noise offsets
     const float LUMP_ALB = 0.35, GRAIN_ALB = 0.6, CRAG_ALB = 0.6;   // albedo swing per unit of each
     const float HOLLOW_CAV = 0.8, VES_CAV = 0.6, GRAIN_CAV = 0.6;   // cavity: hollows of the relief, vesicles, grit
     const float GRAIN_ROUGH = 0.1;             // roughness swing with the grit
-    vec4 lo = mFbmD(p, LUMP_F, LUMP_OCT, fp);
-    vec3 pw = p + WARP * lo.yzw;
-    float hc = 0.0, ws = 0.0;                  // relief (relative to its mean), weight
-    vec3 gc = vec3(0.0);
-    mat3 J = M_ROT * CRAG_F;
-    float f = CRAG_F, a = 1.0;
-    for (int i = 0; i < CRAG_OCT; i++) {
-      float lw = lodFade(CRAG_LOD * f, fp);
-      vec4 c = mCreaseJ(pw, J, vec3(CRAG_SALT + CRAG_SALT_STEP * float(i)));
-      float r2 = (1.0 - c.x) * (1.0 - c.x);
-      vec3 dr2 = -2.0 * (1.0 - c.x) * c.yzw;
-      hc += a * lw * (i == 0 ? 1.0 - r2 - CREASE_MEAN : r2 - RIDGE_MEAN);
-      gc += a * lw * (i == 0 ? -dr2 : dr2);
-      ws += a;
-      J = M_ROT * J * CRAG_LAC; f *= CRAG_LAC; a *= CRAG_GAIN;
-    }
+    vec4 lo = rockLumps(p, fp);
+    float ws;
+    vec4 cg = rockCrags(p, lo, fp, ws);
+    float hc = cg.x;
+    vec3 gc = cg.yzw;
     hc /= ws;                                  // relief about its mean, roughly ±0.5
     vec4 gr = mFbmD(p, GRAIN_F, GRAIN_OCT, fp);
     float tn = vnoise(M_ROT * p * TINT_F + TINT_SALT);
@@ -651,7 +749,7 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
     m.alb *= (1.0 + LUMP_ALB * lo.x + GRAIN_ALB * gr.x) * (1.0 + CRAG_ALB * hc)
            * mix(vec3(1.0), RUST, rust) * mix(vec3(1.0), PALE, pale) * mix(BAND_LO, BAND_HI, band)
            * mix(1.0, VES_ALB, ves.x);
-    m.g = LUMP_H * lo.yzw + CRAG_H * gc + GRAIN_H * gr.yzw - VES_DEPTH * ves.yzw;
+    m.g = ROCK_LUMP_H * lo.yzw + ROCK_CRAG_H * gc + GRAIN_H * gr.yzw - VES_DEPTH * ves.yzw;
     m.cav = (1.0 + HOLLOW_CAV * min(hc, 0.0)) * (1.0 - VES_CAV * ves.x) * (1.0 + GRAIN_CAV * gr.x);
     m.rough += GRAIN_ROUGH * gr.x;
   } else if (id == E_LAVA) {
@@ -776,6 +874,7 @@ Surf gatherSurf(vec3 hp, vec3 n, int ch) {
   return s;
 }
 
+${reliefGLSL}
 // ---- crisp voxels: bevelled boxes ----
 // A crisp neighbour that a voxel's face is flush with (the floor counts; glass doesn't).
 bool flushNb(ivec3 c) {
@@ -1025,6 +1124,9 @@ vec3 shadeSurf(Surf s, vec3 rd) {
   float w = s.sss;
   vec3 sh = vec3(0.0);
   if (max(nl, ngl) + w > 0.0) sh = uShadows ? sunShadow(s.p, ng) : vec3(1.0);
+#if defined(DETAIL_RELIEF) && defined(DETAIL_RELIEF_SHADOW)
+  if (s.ch >= 0 && max(sh.x, max(sh.y, sh.z)) > 0.0) sh *= reliefSunVis(s.p);   // the relief's own shade (gfx/relief.js)
+#endif
   float aoT = ao * s.cav;
 
   // specular layer (F0) and the energy it takes from the diffuse one
