@@ -1,6 +1,6 @@
 // Graphics settings and the uniforms shared by the render shaders (volume and
 // shadow pass). Entry points spread `gfxUniforms` into their materials and
-// call `updateGfxUniforms(sim, sun)` once per frame before rendering, so new
+// call `updateGfxUniforms(sim, sun, light)` once per frame before rendering, so new
 // graphics features only need to touch this file, not the app wiring.
 import { mediaNoiseUniform } from './mediaNoise.js';
 import { skyState } from './sky.js';
@@ -38,19 +38,21 @@ export const gfxUniforms = {
   uSunCol: { value: [1, 1, 1] },
   uSkyUp: { value: [0, 0, 0] },
   uGround: { value: [0, 0, 0] },
+  uKeyLight: { value: [1, 1, 1] }, // the key light's colour scale (gfx/daylight.js)
   uMatDetail: { value: 1 },
   uBevel: { value: 0.12 },
   uGlints: { value: 0.4 },
 };
 
 const sky = { sunExt: null, sunCol: null, skyUp: null, ground: null };
-const skySun = { x: NaN, y: NaN, z: NaN };
+const skySun = { x: NaN, y: NaN, z: NaN, light: '' };
 
-// sun: unit vector toward the sun.
-export function updateGfxUniforms(sim, sun) {
-  if (sun.x !== skySun.x || sun.y !== skySun.y || sun.z !== skySun.z) {
-    Object.assign(skySun, { x: sun.x, y: sun.y, z: sun.z });
-    skyState(sun, sky);
+// sun: unit vector toward the key light (sun or moon); light: its colour scale.
+export function updateGfxUniforms(sim, sun, light) {
+  if (sun.x !== skySun.x || sun.y !== skySun.y || sun.z !== skySun.z || String(light) !== skySun.light) {
+    Object.assign(skySun, { x: sun.x, y: sun.y, z: sun.z, light: String(light) });
+    skyState(sun, light, sky);
+    gfxUniforms.uKeyLight.value = [...light];
     gfxUniforms.uSunExt.value = sky.sunExt;
     gfxUniforms.uSunCol.value = sky.sunCol;
     gfxUniforms.uSkyUp.value = sky.skyUp;

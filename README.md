@@ -204,7 +204,9 @@ moved on still fade. `gfx.smoothing` (src/gfx/uniforms.js) scales every blur rad
 
 **Light** (`src/shaders/gfx/lighting.js`, `src/gfx/sky.js`, `src/shaders/gi.js`). The sky is a clear-sky atmosphere
 (single Rayleigh and haze scattering, integrated in closed form along the view ray) that also sets the sun's colour, warmer
-as it sinks. A per-frame voxel shadow map is traced from the sun with the same surfaces. It records the opaque depth plus
+as it sinks. Day turns to night as the simulation runs (`src/gfx/daylight.js`: one day is 72,000 steps, about five
+minutes at the default speed, and it holds still while paused); after sunset a full moon lights the scene through the same
+sky, dimmed and shifted blue the way a night-adapted eye sees it. A per-frame voxel shadow map is traced from the sun with the same surfaces. It records the opaque depth plus
 optical depth through liquids, glass and gas, so water casts tinted shadows and smoke casts soft ones. Shadows soften with
 distance from their caster (PCSS: the sun is a disc); at a contact edge within a texel, an exact DDA ray toward the sun
 settles it. Indirect light comes from one probe per 4×4×4 brick: every frame, rays from the probes march the brick map and
