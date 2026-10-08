@@ -224,12 +224,13 @@ const float OXIDE_T1 = 650.0;     // …and covers it (wüstite forms above ~570
 const vec3 OXIDE_ALB = vec3(0.03, 0.027, 0.025);   // black, a touch of rust brown
 const float OXIDE_F0 = 0.05;      // porous, dull: little sky in it, even at grazing angles
 const float OXIDE_ROUGH = 0.8;
-const float SCALE_FREQ = 1.1;     // patches of thick scale, per cell
+const float SCALE_M = 0.073;      // m, patches of thick scale
+const float SCALE_FREQ = CELL_M / SCALE_M;   // per cell
 const int SCALE_OCT = 3;          // fBm octaves of the scale thickness
 const float SCALE_SPLIT = 0.18;   // thin → thick over this much of the thickness noise
 const float SCALE_COVER = 0.06;   // shifts the thickness noise: most of the steel is under thick scale
 const float SCALE_ALB_VAR = 0.6;  // thick scale is a little greyer
-const float SCALE_BUMP = 0.25;    // blistered relief
+const float SCALE_BUMP = 0.02 / CELL_M;   // blistered relief: 2 cm, in cells
 const float SCALE_DROP = 150.0;   // °C thick scale runs below the steel
 
 // Lava (E_LAVA)
@@ -651,9 +652,11 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
     // Brushing marks are far below a pixel: what shows is the stretched
     // highlight and faint streaks where the brushing pressure varied, plus
     // smudges where the polish is uneven.
-    const float STREAK_F = 12.0, GROOVE_F = 40.0;   // streaks across the brushing, per cell
+    const float STREAK_M = 0.0067, GROOVE_M = 0.002;   // m, spacing of streaks and grooves across the brushing
+    const float STREAK_F = CELL_M / STREAK_M, GROOVE_F = CELL_M / GROOVE_M;   // per cell
     const float STREAK_LEN = 0.1;              // streak length, as a fraction of their spacing
-    const float SMUDGE_F = 0.35;
+    const float SMUDGE_M = 0.23;               // m, smudge wavelength
+    const float SMUDGE_F = CELL_M / SMUDGE_M;
     const int SMUDGE_OCT = 2;                  // fBm octaves
     const float STREAK_SLICE = 0.5, GROOVE_SLICE = 7.5;   // noise z slices (decorrelate the two)
     const float GROOVE_W = 0.6;                // grooves' weight relative to the streaks
@@ -690,8 +693,9 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
   } else if (id == E_CLONE) {
     // Polished gold: a faint waviness left by the polishing and a fine haze
     // in the gloss. No blotches: gold doesn't tarnish.
-    const float WAVE_F = 0.5, HAZE_F = 6.0;
-    const float WAVE_H = 0.015;
+    const float WAVE_M = 0.16, HAZE_M = 0.013;   // m, wavelengths of the waviness and the haze
+    const float WAVE_F = CELL_M / WAVE_M, HAZE_F = CELL_M / HAZE_M;   // per cell
+    const float WAVE_H = 0.0012 / CELL_M;      // 1.2 mm, in cells
     const int WAVE_OCT = 2, HAZE_OCT = 2;      // fBm octaves
     const float WAVE_ROUGH = 0.05, HAZE_ROUGH = 0.03;   // roughness swing per unit of each noise
     vec4 lo = mFbmD(p, WAVE_F, WAVE_OCT, fp);
@@ -702,11 +706,14 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
     // Cast concrete: cloudy mottling from the pour, fine sand-and-cement
     // grit, scattered round air-bubble pits ("bug holes", up to ~1 cm) and
     // faint rain streaks down vertical faces.
-    const float MOTTLE_F = 0.18, GRIT_F = 5.0;
-    const float MOTTLE_H = 0.06, GRIT_H = 0.012;
-    const float PIT_F = 2.2, PIT_P = 0.3, PIT_R = 0.22, PIT_DEPTH = 0.004;
+    const float MOTTLE_M = 0.44, GRIT_M = 0.016;   // m, wavelengths
+    const float MOTTLE_F = CELL_M / MOTTLE_M, GRIT_F = CELL_M / GRIT_M;   // per cell
+    const float MOTTLE_H = 0.0048 / CELL_M, GRIT_H = 0.001 / CELL_M;   // 4.8 mm, 1 mm, in cells
+    const float PIT_M = 0.036;                 // m, spacing of the pit lattice
+    const float PIT_F = CELL_M / PIT_M, PIT_P = 0.3, PIT_R = 0.22, PIT_DEPTH = 0.0003 / CELL_M;   // pits 0.3 mm deep
     const float PIT_ALB = 0.45;                // a pit's shadowed floor
-    const float STREAK_FH = 2.5, STREAK_FV = 0.12, STREAK_DARK = 0.12;
+    const float STREAK_W_M = 0.032, STREAK_L_M = 0.67;   // m, streak spacing across and length down
+    const float STREAK_FH = CELL_M / STREAK_W_M, STREAK_FV = CELL_M / STREAK_L_M, STREAK_DARK = 0.12;
     const vec2 STREAK_EDGE = vec2(0.45, 0.85);    // noise range over which a streak fades in
     const float STREAK_SALT = 2.3;             // noise offset of the streaks
     const int MOTTLE_OCT = 3, GRIT_OCT = 3;    // fBm octaves
