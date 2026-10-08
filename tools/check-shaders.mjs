@@ -17,6 +17,7 @@ import { quadVert } from '../src/shaders/common.js';
 import * as probe from '../src/shaders/probe.js';
 import * as stamp from '../src/shaders/stamp.js';
 import * as gi from '../src/shaders/gi.js';
+import { figureFrag } from '../src/pov/figure.js';
 
 // three.js prefixes: ShaderMaterial (GLSL1-style source upgraded to 300 es)
 // and RawShaderMaterial with glslVersion GLSL3.
@@ -60,6 +61,7 @@ for (const [label, dims] of Object.entries(grids)) {
   check(`volume-${label}`, shaderMatFrag + opt(render.volumeFrag), 'frag');
   check(`pick-${label}`, raw + opt(render.pickFrag), 'frag');
   check(`shadow-${label}`, raw + opt(render.shadowFrag), 'frag');
+  check(`povFigure-${label}`, shaderMatFrag + figureFrag(g), 'frag');
   for (const [k, v] of Object.entries(passes)) if (typeof v === 'function') check(`${k}-${label}`, raw + v(g), 'frag');
   for (const axis of [0, 1, 2]) check(`brickDist${axis}-${label}`, raw + passes.brickDistFrag(g, axis), 'frag');
   check(`inert-${label}`, raw + activity.inertFrag(g), 'frag');
