@@ -371,6 +371,7 @@ const fmtSpeed = (v) => `${v}×`;
 const settingsPanel = createSettings({
   settings,
   onClose: () => setSettingsOpen(false),
+  // Sections and their rows run from most to least reached-for; keep that order when adding settings.
   sections: [
     { title: 'Scene', rows: [
       { type: 'seg', key: 'preset', options: [['empty', 'Empty'], ['lab', 'Lab'], ['volcano', 'Volcano']],
@@ -380,44 +381,47 @@ const settingsPanel = createSettings({
         ['Clear everything', () => { if (loadPreset('empty')) hud.toast('Cleared'); }, '.danger'],
       ] },
     ] },
-    { title: 'Grid size', rows: [
-      { type: 'seg', key: 'size', options: [['64', '64³'], ['96', '96³'], ['128', '128³'], ['wide', '160×96']],
-        onChange: (v) => { if (mp.guard()) return; settings.size = v; build(); save(); hud.toast(`Grid is now ${v === 'wide' ? '160 × 96 × 160' : `${v}³`}`); } },
-    ] },
     { title: 'Simulation', rows: [
       { type: 'slider', key: 'steps', label: 'Speed (steps per frame)', min: 1, max: 12, step: 1, def: DEFAULTS.steps, fmt: fmtSpeed, onChange: save },
       { type: 'slider', key: 'gravity', label: 'Gravity', min: 0, max: 0.06, step: 0.005, def: DEFAULTS.gravity,
         fmt: (v) => `${(v / DEFAULTS.gravity).toFixed(1)} g`, onChange: (v) => { sim.gravity = v; save(); } },
     ] },
-    { title: 'Rendering', rows: [
+    // a cost lever too: sim work grows with cells, ray marching with the grid's span
+    { title: 'Grid size', rows: [
+      { type: 'seg', key: 'size', options: [['64', '64³'], ['96', '96³'], ['128', '128³'], ['wide', '160×96']],
+        onChange: (v) => { if (mp.guard()) return; settings.size = v; build(); save(); hud.toast(`Grid is now ${v === 'wide' ? '160 × 96 × 160' : `${v}³`}`); } },
+    ] },
+    // Resolution is the performance knob: ray-marching cost is linear in pixels.
+    { title: 'Performance', rows: [
       { type: 'switch', key: 'autoRes', label: 'Adjust resolution to keep 60 fps', onChange: save },
       { type: 'slider', key: 'res', label: 'Resolution', min: 0.5, max: 2, step: 0.05, def: DEFAULTS.res,
         fmt: (v) => `${Math.round(v * 100)}%`, disabled: () => settings.autoRes,
         onChange: (v) => { setPixelRatio(v); save(); } },
-      { type: 'switch', key: 'shadows', label: 'Sun shadows', onChange: save },
-      { type: 'slider', key: 'glow', label: 'Glow from hot things', min: 0, max: 3, step: 0.1, def: DEFAULTS.glow,
-        fmt: (v) => v.toFixed(1), onChange: save },
-      { type: 'slider', key: 'sunAz', label: 'Sun direction', min: 0, max: 360, step: 1, def: DEFAULTS.sunAz,
-        fmt: (v) => `${v}°`, onChange: () => { updateSun(); save(); } },
+    ] },
+    { title: 'Look', rows: [
       { type: 'slider', key: 'sunEl', label: 'Sun height', min: 12, max: 85, step: 1, def: DEFAULTS.sunEl,
         fmt: (v) => `${v}°`, onChange: () => { updateSun(); save(); } },
-    ] },
-    { title: 'Graphics', rows: [
+      { type: 'slider', key: 'sunAz', label: 'Sun direction', min: 0, max: 360, step: 1, def: DEFAULTS.sunAz,
+        fmt: (v) => `${v}°`, onChange: () => { updateSun(); save(); } },
       { type: 'slider', key: 'smoothing', label: 'Surface smoothing', min: 0, max: 2, step: 0.05, def: DEFAULTS.smoothing,
         fmt: (v) => (v === 0 ? 'Off' : `${v.toFixed(2)}×`), onChange: () => { applyGfx(); save(); } },
-      { type: 'switch', key: 'taa', label: 'Temporal anti-aliasing', onChange: () => { applyGfx(); post.reset(); save(); } },
-      { type: 'slider', key: 'bloom', label: 'Bloom', min: 0, max: 1, step: 0.05, def: DEFAULTS.bloom,
-        fmt: (v) => v.toFixed(2), onChange: () => { applyGfx(); save(); } },
+      { type: 'switch', key: 'shadows', label: 'Sun shadows', onChange: save },
       { type: 'slider', key: 'exposure', label: 'Exposure', min: -3, max: 3, step: 0.1, def: DEFAULTS.exposure,
         fmt: (v) => `${v > 0 ? '+' : ''}${v.toFixed(1)} EV`, onChange: () => { applyGfx(); save(); } },
-    ] },
-    { title: 'Element picker', rows: [
-      { type: 'switch', key: 'liveTiles', label: 'Animate element tiles on hover', onChange: save },
+      { type: 'slider', key: 'glow', label: 'Glow from hot things', min: 0, max: 3, step: 0.1, def: DEFAULTS.glow,
+        fmt: (v) => v.toFixed(1), onChange: save },
+      { type: 'slider', key: 'bloom', label: 'Bloom', min: 0, max: 1, step: 0.05, def: DEFAULTS.bloom,
+        fmt: (v) => v.toFixed(2), onChange: () => { applyGfx(); save(); } },
+      // last: only for comparing; the renderer relies on TAA to clean up its noise
+      { type: 'switch', key: 'taa', label: 'Temporal anti-aliasing', onChange: () => { applyGfx(); post.reset(); save(); } },
     ] },
     { title: 'Camera', rows: [
       { type: 'slider', key: 'camSpeed', label: 'Move speed (WASD)', min: 0.25, max: 3, step: 0.05, def: DEFAULTS.camSpeed,
         fmt: (v) => `${v.toFixed(2)}×`, onChange: (v) => { rig.setSpeed(v); save(); } },
       { type: 'buttons', buttons: [['Reset camera', () => rig.reset()]] },
+    ] },
+    { title: 'Element picker', rows: [
+      { type: 'switch', key: 'liveTiles', label: 'Animate element tiles on hover', onChange: save },
     ] },
   ],
   footer: [['Reset all settings', resetSettings]],
