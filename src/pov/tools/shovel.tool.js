@@ -2,15 +2,20 @@ import * as THREE from 'three';
 import { ELEMENTS, K } from '../../elements.js';
 import { HAND_REACH } from '../constants.js';
 import {
-  persistentLoad, cellsNear, outsideBody, bodyExit, toStepVelocity, aimInReach, faceNormal, ballRadius,
-  heldMesh, recolor,
+  persistentLoad, cellsNear, outsideBody, bodyExit, toStepVelocity, aimInReach, faceNormal, ballRadius, recolor,
 } from './transfer.js';
+import { povEvents } from '../events.js';
+import { attachModel, MODELS } from '../models.js';
+import { viewmodelRig, heldMaterial } from '../viewmodel.js';
 
 // Shovel (slot 1). Hold left-click on a powder to scoop it up, a small blob at a
 // time; on a breakable solid, the dig energy builds up until it beats the
 // cell's hardness and the cell comes up as its debris (ROCK → STONE, WOOD →
 // SAWDUST). WALL and CLONE don't break, and liquids run off the blade.
 // Right-click throws the whole load where you aim, or in front of you.
+//
+// Events: tool:action 'dig' (cells came up), 'dump' (cells landed) and 'refuse'
+// (won't break, or full), with the element, the point and the cell count.
 
 const SHOVEL_CAPACITY = 30;          // cells one load holds
 const SCOOP_RADIUS = 1.8;            // cells: a scoop of powder comes from this close to the aim cell
@@ -25,14 +30,15 @@ const DUMP_SLACK = 2.5;              // candidate cells per cell dumped (some ar
 const BODY_CLEARANCE = 0.3;          // cells kept clear around the body when dumping
 const REFUSE_TOAST_INTERVAL = 1.5;   // s between repeated "won't break" / "full" toasts
 
-// held item, in cells (the viewmodel is scaled by the world's cell size)
-const HELD_POS = [1.0, -0.95, -2.0]; // right, down, ahead of the eye
-const HANDLE_LEN = 2.4, HANDLE_R = 0.05;
-const BLADE_W = 0.55, BLADE_H = 0.65, BLADE_T = 0.05;
-const HELD_PITCH = -0.35, HELD_YAW = 0.25;   // radians: the blade tips down and in toward the crosshair
+// held item, in cells (camera space; the viewmodel rig scales it by the world's
+// cell size). The model (models.js 'shovel') lies blade forward, its origin at
+// the end of the handle, in the hand.
+const HELD_POS = [0.85, -1.15, -0.75]; // right, down, ahead of the eye
+const HELD_PITCH = 0.12, HELD_YAW = 0.3;   // radians: the blade reaches up and in toward the crosshair
 const HEAP_R = 0.25;                 // cells: radius of a full load's heap on the blade
 const HEAP_MIN = 0.3;                // a nearly empty load still shows this share of it
-const HANDLE_COLOR = '#8a5a32', BLADE_COLOR = '#9aa1ab';
+const HEAP_ALONG = 0.18;             // the heap's centre, as a share of the model's length behind its tip (mid-blade)
+const HEAP_SEGMENTS = [10, 6];       // around, down the dome
 
 const ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 3.5l5.5 5.5M17.8 6.2L11 13"/>'
   + '<path d="M10.5 10.5l3 3-3.5 3.5c-1.6 1.6-4.4 2.5-6.5 3 .5-2.1 1.4-4.9 3-6.5z"/></svg>';
@@ -47,27 +53,29 @@ export default {
     let energy = 0, energyKey = '';
     let lastRefuse = -Infinity, clock = 0;
 
-    // held item: a handle and a blade, with the load heaped on the blade
+    // held item: the shovel on a hand of the viewmodel rig, the load heaped on its blade
+    const rig = viewmodelRig(env);
+    const hand = rig.hand(HELD_POS);
     const held = new THREE.Group();
-    const handle = heldMesh(new THREE.CylinderGeometry(HANDLE_R, HANDLE_R, HANDLE_LEN, 8), HANDLE_COLOR);
-    const blade = heldMesh(new THREE.BoxGeometry(BLADE_W, BLADE_T, BLADE_H), BLADE_COLOR);
-    const heap = heldMesh(new THREE.SphereGeometry(HEAP_R, 10, 6, 0, Math.PI * 2, 0, Math.PI / 2), '#ffffff');
-    handle.rotation.x = Math.PI / 2;
-    handle.position.z = HANDLE_LEN / 2;
-    blade.position.z = -BLADE_H / 2;
-    heap.position.set(0, BLADE_T / 2, -BLADE_H / 2);
-    held.add(handle, blade, heap);
-    held.position.set(...HELD_POS);
     held.rotation.set(HELD_PITCH, HELD_YAW, 0);
-    held.visible = false;
-    env.viewmodel?.add(held);
+    hand.add(held);
+    const heap = new THREE.Mesh(
+      new THREE.SphereGeometry(HEAP_R, ...HEAP_SEGMENTS, 0, Math.PI * 2, 0, Math.PI / 2), heldMaterial('#ffffff'));
+    heap.visible = false;
+    const mesh = attachModel(held, 'shovel', (obj, { size }) => {
+      // on the blade's top face: the blade is the model's thickest part, so its top is the box's
+      heap.position.set(0, size.y * (1 - MODELS.shovel.anchor[1]), size.z * (HEAP_ALONG - MODELS.shovel.anchor[2]));
+      held.add(heap);
+    });
     let heapVersion = -1;
+    const act = (action, extra) => povEvents.emit('tool:action', { tool: 'shovel', action, ...extra });
 
-    function refuse(text) {
+    function refuse(text, id) {
       if (clock - lastRefuse < REFUSE_TOAST_INTERVAL) return;
       lastRefuse = clock;
       env.feedback?.toast(text);
       env.feedback?.shake();
+      act('refuse', { id });
     }
 
     function dig(ctx, aim) {
@@ -80,20 +88,28 @@ export default {
         energy = 0;
         scoopWait -= ctx.dt;
         if (scoopWait > 0) return;
-        if (load.free <= 0) { if (!load.busy) refuse('The shovel is full: right-click to throw the load'); return; }
+        if (load.free <= 0) { if (!load.busy) refuse('The shovel is full: right-click to throw the load', aim.id); return; }
         const p = transfer.take(load, { cells: cellsNear(center, SCOOP_RADIUS, g), kinds: [K.POWDER] });
-        if (p) scoopWait = SCOOP_INTERVAL;
+        if (p) {
+          scoopWait = SCOOP_INTERVAL;
+          const point = center.clone();
+          p.then((got) => { if (got.length) act('dig', { id: aim.id, point, amount: got.length }); });
+        }
       } else if (el.kind === K.SOLID) {
-        if (!el.breakInto) { energy = 0; refuse(`${el.name} won't break`); return; }
+        if (!el.breakInto) { energy = 0; refuse(`${el.name} won't break`, aim.id); return; }
         const key = `${aim.id}`;
         if (key !== energyKey) { energy = 0; energyKey = key; }
         energy = Math.min(energy + DIG_POWER * ctx.dt, el.hard * BREAK_MAX);
         const n = Math.min(Math.floor(energy / el.hard), load.free);
-        if (n < 1) { if (load.free <= 0 && !load.busy) refuse('The shovel is full: right-click to throw the load'); return; }
+        if (n < 1) { if (load.free <= 0 && !load.busy) refuse('The shovel is full: right-click to throw the load', aim.id); return; }
         const p = transfer.take(load, {
           cells: cellsNear(center, BREAK_RADIUS, g), kinds: [K.SOLID], want: aim.id, breakDebris: true, limit: n,
         });
-        if (p) energy -= n * el.hard;
+        if (p) {
+          energy -= n * el.hard;
+          const point = center.clone();
+          p.then((got) => { if (got.length) act('dig', { id: aim.id, point, amount: got.length }); });
+        }
       } else {
         energy = 0;   // liquids run off the blade
       }
@@ -119,15 +135,17 @@ export default {
       const cells = cellsNear(center, ballRadius(n * DUMP_SLACK), ctx.sim.g, keep);
       const v = ctx.dir.clone().multiplyScalar(THROW_SPEED);
       if (ctx.player?.vel) v.add(ctx.player.vel);
-      transfer.put(load, { cells, vel: toStepVelocity(v, ctx) });
+      const id = load.mainId;
+      transfer.put(load, { cells, vel: toStepVelocity(v, ctx) })
+        ?.then((landed) => { if (landed) act('dump', { id, point: center, amount: landed }); });
     }
 
     return {
       load,
       update(ctx) {
         clock += ctx.dt;
-        held.visible = true;
-        held.scale.setScalar(env.getScale?.() ?? 1);
+        hand.visible = true;
+        rig.update(ctx);
         if (load.version !== heapVersion) {
           heapVersion = load.version;
           heap.visible = load.cells.length > 0;
@@ -139,11 +157,13 @@ export default {
         else { energy = 0; scoopWait = 0; }
         if (ctx.secondaryPressed) dump(ctx, aim);
       },
-      deselect() { held.visible = false; energy = 0; },
+      deselect() { hand.visible = false; energy = 0; },
       status: () => load.status(),
       dispose() {
-        held.removeFromParent();
-        held.traverse((o) => { o.geometry?.dispose(); o.material?.dispose(); });
+        mesh.dispose();
+        hand.removeFromParent();
+        heap.geometry.dispose();
+        heap.material.dispose();
       },
     };
   },
