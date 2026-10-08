@@ -178,7 +178,7 @@ colours stay exact.
 
 ### Views
 
-Number keys switch between five views (the views menu shows a live thumbnail of each). Colormaps live in `src/views.js` and are baked
+Number keys switch between six views (the views menu shows a live thumbnail of each). Colormaps live in `src/views.js` and are baked
 into the shader, so the on-screen legend always matches.
 
 | Key | View | Shows |
@@ -188,6 +188,7 @@ into the shader, so the on-screen legend always matches.
 | `3` | Pressure | the air pressure field as a cloud, and where blasts hit surfaces |
 | `4` | Flow | what's moving and which way: falling, sliding, rising, plus moving air |
 | `5` | X-ray | everything see-through in its own colour, denser materials more solid |
+| `0` | Plain | the original look from before the smooth renderer: flat-coloured blocks, sunlight, shadows and glow |
 
 ## Signs
 

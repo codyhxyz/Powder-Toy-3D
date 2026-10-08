@@ -1,6 +1,6 @@
 import { prelude } from './common.js';
 import { ELEMENTS } from '../elements.js';
-import { COLORMAPS, xrayDensity } from '../views.js';
+import { COLORMAPS, xrayDensity, VIEWS } from '../views.js';
 import { materialsGLSL } from '../gfx/materials.js';
 import { coreGLSL } from './gfx/core.js';
 import { noiseGLSL } from './gfx/noise.js';
@@ -8,6 +8,9 @@ import { lightingGLSL } from './gfx/lighting.js';
 import { surfaceGLSL } from './gfx/surface.js';
 import { liquidGLSL } from './gfx/liquid.js';
 import { mediaGLSL } from './gfx/media.js';
+import { plainGLSL } from './gfx/plain.js';
+
+const PLAIN_VIEW = VIEWS.find((v) => v.key === 'plain').id;
 
 // Hybrid raymarcher. Rays walk the voxel grid with an Amanatides–Woo DDA
 // (4×4×4 bricks skip empty space). What they hit depends on the element's look
@@ -487,6 +490,8 @@ ${march('marchXray', 0, /* glsl */ `
       trans *= 1.0 - al;
     }`, 'dataFloor(hp, vec3(0.006), vec3(0.022))')}
 
+${plainGLSL(g)}
+
 void dataView(vec3 ro, vec3 rd, float t0, vec3 bh) {
   vec3 col = vec3(0.0);
   float trans = 1.0, tHit = -1.0;
@@ -538,6 +543,7 @@ void main() {
   vec3 bh = boxHit(ro, rd);
   float t0 = max(bh.x, 0.0);
   if (bh.y <= t0) discard;
+  if (CUR_VIEW == ${PLAIN_VIEW}) { plainView(ro, rd, t0, bh); return; }
   if (CUR_VIEW != 0) { dataView(ro, rd, t0, bh); return; }
   float jit = ign(gl_FragCoord.xy, float(uFrame));
   float mNext = jit * MEDIA_STEP;   // next media sample along the ray (gfx/media.js)

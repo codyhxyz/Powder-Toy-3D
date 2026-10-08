@@ -106,13 +106,14 @@ xrayLegend.css = legendCSS(xrayLegend);
 
 // ---------- the views ----------
 // `legend` is null or { title, stops: [[pos 0..1, '#hex'], ...], labels: [[text, pos], ...], css }.
+// `shadows`: the view reads the sun shadow map, so the app renders it.
 // Labels are always evenly spaced (so a flex row with space-between lines up
 // with the bar). Flow also has `legend2`: brightness = speed.
 export const VIEWS = [
   {
     id: 0, key: 'realistic', hotkey: '1', name: 'Realistic',
     desc: 'Lit and shaded the way it would look, with shadows, see-through water and glowing hot things.',
-    legend: null,
+    legend: null, shadows: true,
   },
   {
     id: 1, key: 'heat', hotkey: '2', name: 'Heat',
@@ -136,5 +137,10 @@ export const VIEWS = [
     id: 4, key: 'xray', hotkey: '5', name: 'X-ray',
     desc: 'Everything turns see-through in its own color, denser materials more solid, so you can look inside piles and containers.',
     legend: xrayLegend,
+  },
+  {
+    id: 5, key: 'plain', hotkey: '0', name: 'Plain',
+    desc: 'The original look from before the smooth renderer: flat-coloured blocks with sunlight, shadows and glow.',
+    legend: null, shadows: true,
   },
 ];
