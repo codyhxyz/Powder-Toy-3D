@@ -108,7 +108,10 @@ env = {
   viewmodel,           // THREE.Group attached to the POV camera; tools may add meshes (held item)
   isActive: () => bool // true while in POV (gate your own key/wheel listeners on it)
 }
-toolbelt = createToolbelt(env) → { update(ctx), select(index), dispose() }
+toolbelt = createToolbelt(env) → { update(ctx), select(index), setVisible(bool), dispose() }
+// The shell calls setVisible(true/false) on entering/leaving POV, and update(ctx) every POV frame.
+// The toolbelt listens for keys 1–9 itself (only while env.isActive()). The wheel comes in ctx.wheel:
+// it switches slots unless the selected tool's wantsWheel?.() returns true, then it goes to the tool.
 ```
 
 The toolbelt finds tools with `import.meta.glob('./*.tool.js', { eager: true })`. Each tool file
@@ -122,6 +125,7 @@ export default {
     update(ctx),          // every frame while selected
     deselect?(),          // when switching away (drop what the physgun holds, etc.)
     status?(),            // short text for the hotbar slot, e.g. 'SAND ×37' (or null)
+    wantsWheel?(),        // true while the tool uses the wheel (physgun distance)
     dispose?(),
   }
 }
@@ -137,7 +141,7 @@ ctx = {
   dir: THREE.Vector3,             // unit aim direction (grid space = world axes)
   primary, secondary,             // mouse buttons held
   primaryPressed, secondaryPressed, // went down this frame
-  wheel,                          // wheel delta this frame when the physgun is holding (else 0)
+  wheel,                          // wheel notches this frame (+1 = scrolled down/away), 0 if none
   aim: { valid, cell: Vector3, face, id, T, P, dist },   // the cell under the crosshair (pick pass)
   player: { pos, vel, onGround, inLiquid, applyImpulse(dv /* cells/s */) },
 }
