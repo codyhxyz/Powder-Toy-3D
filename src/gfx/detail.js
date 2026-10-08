@@ -29,13 +29,22 @@ export const costTier = (ms) => (ms < COST_LOW_MS ? 'low' : ms < COST_MEDIUM_MS 
 // setting's name; desc: tooltip; cost: tier from tools/detail-bench.mjs
 // (put the measured ms in a comment next to it).
 export const DETAIL = [
-  // smoke, steam and fire up close (shaders/gfx/mediaDetail.js)
+  // Smoke, steam and fire up close (shaders/gfx/mediaDetail.js). Measured on a
+  // shared, heavily contended GPU (bench base 27-86 ms instead of ~13, noise
+  // +-6 ms per camera), so tiers come from a smoke-filled close-up scene too
+  // (eye inside / beside plumes, 9 A/B rounds), where these features matter:
+  //   mediaFine  bench worst 3.3 ms (lab eyeSandClose, ~noise); plumes +14-25 ms
+  //              on a ~90 ms contended frame (~20%): high
+  //   mediaStep  bench worst 4.8 ms (volcano eyeFlank, noise: other runs 0.0, 0.7);
+  //              plumes +0.2-6 ms (one 17.6 outlier): medium
+  //   mediaFlow  bench worst 7.1 ms (lab eyeTank; other runs 0.7, 1.7); plumes
+  //              +7-15 ms: high
   { key: 'mediaFine', define: 'DETAIL_MEDIA_FINE', label: 'Smoke filaments',
-    desc: 'Finer wisps and filaments in smoke, steam and flames when you are close to them', cost: 'medium' },
+    desc: 'Fine wisps and filaments (20 cm and 5 cm) in smoke, steam and flames when you are close to them', cost: 'high' },
   { key: 'mediaStep', define: 'DETAIL_MEDIA_STEP', label: 'Fine smoke sampling',
     desc: 'Samples smoke, steam and fire more finely near the camera: crisper wisps, less grain', cost: 'medium' },
   { key: 'mediaFlow', define: 'DETAIL_MEDIA_FLOW', label: 'Smoke follows the flow',
-    desc: 'Wisps of smoke, steam and fire ride the simulated air flow instead of a steady rise', cost: 'high' },
+    desc: 'Wisps of smoke, steam and fire ride the simulated flow instead of a steady rise', cost: 'high' },
 ];
 
 export const settingKey = (f) => `detail_${f.key}`;
