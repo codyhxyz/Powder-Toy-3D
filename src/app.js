@@ -330,7 +330,10 @@ function accentFor(hex) {
   return `#${mix((n >> 16) & 255)}${mix((n >> 8) & 255)}${mix(n & 255)}`;
 }
 
+// the last element or tool picked, for leaving a construction's options
+let lastPaintTool = E.SAND;
 function selectTool(id) {
+  if (!isBuild(id)) lastPaintTool = id;
   settings.tool = id;
   const it = toolById(id);
   const accent = accentFor(it.color);
@@ -340,6 +343,9 @@ function selectTool(id) {
   dock.sync();
   save();
 }
+
+// Closing a construction's options goes back to the last element or tool.
+function leaveBuild() { if (isBuild(settings.tool)) selectTool(lastPaintTool); }
 
 const dock = createDock({
   settings,
@@ -588,7 +594,11 @@ addEventListener('keydown', (e) => {
   else if (k === ',') actions.toggleSettings();
   else if (k === '?') actions.toggleHelp();
   else if (k === 'p' || k === 'P') actions.screenshot();
-  else if (k === 'Escape') { toolbar.close(); setSettingsOpen(false); help.setOpen(false); }
+  else if (k === 'Escape') {
+    const overlay = toolbar.isOpen || settingsPanel.isOpen || help.isOpen;
+    toolbar.close(); setSettingsOpen(false); help.setOpen(false);
+    if (!overlay) leaveBuild();
+  }
   else if (/^[0-9]$/.test(k)) { const v = VIEWS.find((x) => x.hotkey === k); if (v) setView(v.id); }
 });
 addEventListener('keyup', (e) => {
@@ -779,7 +789,7 @@ try {
   }
   if (BuildsClass) {
     builds = new BuildsClass({
-      scene, camera, settings, getSim: () => sim, getVolume: () => volume, getScale: () => scale,
+      scene, camera, settings, getSim: () => sim, getVolume: () => volume, getScale: () => scale, onClose: leaveBuild,
     });
   }
   build();

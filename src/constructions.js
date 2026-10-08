@@ -3,6 +3,7 @@ import { quadVert } from './shaders/common.js';
 import { stampFrag } from './shaders/stamp.js';
 import { ELEMENTS, BUILDS, isBuild } from './elements.js';
 import { h } from './ui/dom.js';
+import { ICON } from './ui/icons.js';
 import { runGenerator, bake, newSeed, makeRng, MAX_FOOT } from './constructions/runtime.js';
 import { BUILTINS } from './constructions/builtins.js';
 import builtinsSource from './constructions/builtins.js?raw';
@@ -81,11 +82,14 @@ void main() {
 const ICON_SHUFFLE = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h3.5c3 0 4 10 7 10H20M4 17h3.5c1.3 0 2.2-1.8 3-4M20 7h-5.5c-1.3 0-2.2 1.8-3 4"/><path d="M17 4l3 3-3 3M17 14l3 3-3 3"/></svg>';
 const ICON_DICE = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3.5"/><circle cx="9" cy="9" r="1.1"/><circle cx="15" cy="15" r="1.1"/><circle cx="15" cy="9" r="1.1"/><circle cx="9" cy="15" r="1.1"/></svg>';
 const ICON_PLUS = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 6v12M6 12h12"/></svg>';
+const ICON_SPARK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5l1.9 5.1 5.1 1.9-5.1 1.9-1.9 5.1-1.9-5.1-5.1-1.9 5.1-1.9z"/><path d="M18.5 15.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z"/></svg>';
 
 // ---------------------------------------------------------------- module
 
 export class Constructions {
-  constructor({ scene, camera, settings, getSim, getVolume, getScale }) {
+  // onClose: the player dismissed the construction options (× or Esc)
+  constructor({ scene, camera, settings, getSim, getVolume, getScale, onClose }) {
+    this.onClose = onClose;
     this.camera = camera;
     this.settings = settings;
     this.getSim = getSim;
@@ -145,6 +149,12 @@ export class Constructions {
     addEventListener('pointermove', this._onMove);
 
     this.bar = h('div.build-bar.panel', { role: 'toolbar', 'aria-label': 'Construction options' });
+    // Esc closes it, even from its text fields (they keep other keys to themselves)
+    this.bar.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape') return;
+      e.stopPropagation();
+      this.onClose?.();
+    }, true);
     document.body.append(this.bar);
     this._tmp = new THREE.Vector3();
   }
@@ -404,7 +414,7 @@ export class Constructions {
     this.ai.providers[id] = { ...this.ai.providers[id], ...patch };
     saveSettings(this.ai);
     if (this.generateBtn) this.generateBtn.disabled = !this.canGenerate;
-    if (this.generateBtn) this.generateBtn.classList.toggle('on', this.canGenerate);
+    if (this.genHint) this.genHint.textContent = this._genHint();
     if (relist) this.modelsFor = null;
   }
 
@@ -461,7 +471,8 @@ export class Constructions {
     model.setAttribute('list', listId);
     this._refreshModels();
     return h('div.model', {},
-      h('div.row.model-row', {}, select, ...auth, model, this.modelList),
+      h('div.model-row', {}, h('span.field-label', { text: 'Model' }), select, model,
+        auth.length > 0 && h('div.auth', {}, ...auth), this.modelList),
       h('p.note', { text: p.note }));
   }
 
@@ -584,33 +595,45 @@ export class Constructions {
     ].filter(Boolean));
   }
 
+  _genHint() { return this.canGenerate ? '⌘↵ to generate' : 'Set up a model below to generate'; }
+
+  // AI construction: a header with close, then either the prompt composer (new)
+  // or the selected saved construction's actions, and the saved list
   _promptBar() {
     const item = this.activeItem();
     const current = item ? item.id : NEW;
-    const button = (label, opts, fn) => h(`button.chip${opts.on ? '.on' : ''}`, {
+    const button = (label, opts, fn) => h(`button.${opts.cls ?? 'chip'}${opts.on ? '.on' : ''}`, {
       type: 'button', title: opts.title, disabled: !!opts.disabled, html: `${opts.icon ?? ''}<span>${label}</span>`, on: { click: fn },
     });
-    const chips = h('div.chips', {},
-      this.mine.map((m) => h(`button.chip${current === m.id ? '.on' : ''}`, {
-        type: 'button', title: m.prompt || m.name, 'aria-pressed': String(current === m.id), text: m.name,
-        on: { click: () => this._select(m.id) },
-      })),
-      h(`button.chip${current === NEW ? '.on' : ''}`, { type: 'button', html: `${ICON_PLUS}<span>New</span>`, on: { click: () => this._select(NEW) } }));
+    const head = h('div.bar-head', {},
+      h('span.bar-title', {}, h('span.spark', { html: ICON_SPARK }), h('span', { text: 'AI construction' })),
+      h('button.bar-close', { type: 'button', title: 'Close (Esc)', 'aria-label': 'Close', html: ICON.close, on: { click: () => this.onClose?.() } }));
+    const saved = (this.mine.length > 0) && h('div.saved', {},
+      h('span.field-label', { text: 'Saved' }),
+      h('div.chips', {},
+        this.mine.map((m) => h(`button.chip${current === m.id ? '.on' : ''}`, {
+          type: 'button', title: m.prompt || m.name, 'aria-pressed': String(current === m.id), text: m.name,
+          on: { click: () => this._select(m.id) },
+        })),
+        h(`button.chip${current === NEW ? '.on' : ''}`, { type: 'button', html: `${ICON_PLUS}<span>New</span>`, on: { click: () => this._select(NEW) } })));
 
-    let actions;
+    let body;
     if (item) {
-      actions = h('div.row', {},
-        button('New seed', { icon: ICON_DICE, title: 'Run it again with a different seed' }, () => this.reroll()),
-        button('Edit code', {}, () => this._openEditor(item)),
-        button('Export', { title: 'Save as a .json file to share' }, () => this._export(item)),
-        button('Delete', {}, () => {
-          if (!confirm(`Delete "${item.name}"?`)) return;
-          this.mine = this.mine.filter((m) => m !== item);
-          this._saveMine();
-          this._select(NEW);
-        }));
+      body = [
+        item.prompt && h('p.item-prompt', { text: item.prompt }),
+        h('div.row', {},
+          button('New seed', { icon: ICON_DICE, title: 'Run it again with a different seed' }, () => this.reroll()),
+          button('Edit code', {}, () => this._openEditor(item)),
+          button('Export', { title: 'Save as a .json file to share' }, () => this._export(item)),
+          button('Delete', { cls: 'chip.danger' }, () => {
+            if (!confirm(`Delete "${item.name}"?`)) return;
+            this.mine = this.mine.filter((m) => m !== item);
+            this._saveMine();
+            this._select(NEW);
+          })),
+      ];
     } else {
-      const input = h('textarea.prompt-input', { rows: 2, spellcheck: true, placeholder: 'Describe a construction: a lighthouse on a rocky island, a log bridge, a pagoda…' });
+      const input = h('textarea.prompt-input', { rows: 3, spellcheck: true, placeholder: 'Describe a construction: a lighthouse on a rocky island, a log bridge, a pagoda…' });
       input.value = this.draft;
       input.addEventListener('input', () => { this.draft = input.value; });
       input.addEventListener('keydown', (e) => {
@@ -618,18 +641,21 @@ export class Constructions {
         e.stopPropagation();
       });
       this.generateBtn = this.running ? null : button('Generate', {
-        on: this.canGenerate, disabled: !this.canGenerate,
-        title: 'Write it with the chosen model (⌘↵). Choose a provider and model above.',
+        cls: 'chip.primary', disabled: !this.canGenerate, title: 'Write it with the chosen model (⌘↵)',
       }, () => this._generate());
-      actions = h('div.row', {},
-        input,
-        this.running ? button('Cancel', {}, () => this.running?.abort()) : this.generateBtn,
-        button('Copy prompt', { title: 'Copy a prompt for any chatbot' }, () => this._copyPrompt()),
-        button('Paste code', { title: 'Run code from a chatbot or your own' }, () => this._openEditor()),
-        button('Import', { title: 'Add a construction from a .json file' }, () => this._import()));
+      this.genHint = h('span.gen-hint', { text: this.running ? 'Writing it…' : this._genHint() });
+      body = [
+        h('div.composer', {}, input,
+          h('div.composer-foot', {}, this.genHint, this.running ? button('Cancel', {}, () => this.running?.abort()) : this.generateBtn)),
+        this._modelRow(),
+        h('div.links', {},
+          button('Copy prompt for a chatbot', { cls: 'link', title: 'Paste it into any chatbot, then bring its code back with Paste code' }, () => this._copyPrompt()),
+          button('Paste code', { cls: 'link', title: 'Run code from a chatbot or your own' }, () => this._openEditor()),
+          button('Import file', { cls: 'link', title: 'Add a construction from a .json file' }, () => this._import())),
+      ];
     }
     this.statusEl = h('p.status', { 'aria-live': 'polite', text: this.status });
-    this.bar.replaceChildren(...[chips, !item && this._modelRow(), actions, this.statusEl].filter(Boolean));
+    this.bar.replaceChildren(...[head, ...body, this.statusEl, saved].filter(Boolean));
   }
 
   // ---------------------------------------------------------------- ghost
