@@ -120,6 +120,7 @@ export function createPovHud() {
       // death screen
       set(death, '.show', !!s.dead);
       if (s.dead) {
+        set(hint, '.show', false);
         set(deathCause, 'text', s.cause || '');
         set(deathCount, 'text', `${Math.max(1, Math.ceil(s.respawnIn))} s`);
       }

@@ -125,7 +125,7 @@ export function createFigure() {
   };
   // the material is compiled per grid (its GLSL bakes the grid size in)
   let mat = new THREE.MeshBasicMaterial();
-  let boundTo = null;
+  let boundTo = null, compiled = null;
 
   const root = new THREE.Group();      // at the feet, turned to face the look direction
   root.visible = false;
@@ -192,6 +192,13 @@ export function createFigure() {
       for (const m of meshes) m.material = mat;
     },
     get material() { return mat; },
+    // Compile the shader without blocking (KHR_parallel_shader_compile), so
+    // the first drop-in doesn't stall on it.
+    compile(renderer, camera, scene) {
+      if (compiled === mat) return Promise.resolve();
+      compiled = mat;
+      return renderer.compileAsync(root, camera, scene).catch(() => {});
+    },
     // s = { feet (world), scale, yaw, worldToGrid (Matrix4), speedH (cells/s), velY (cells/s),
     //       onGround, inLiquid, dead, deadTime (s), heat (0..1) }
     update(dt, s) {

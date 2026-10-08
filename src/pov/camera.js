@@ -57,9 +57,7 @@ export const RESPAWN_SWOOP_S = 0.75;    // s, from the death camera back into th
 const SWOOP_BACK = 0.32;                // share of the flight distance the control point sits behind the eye
 const SWOOP_LIFT = 0.1;                 // share of it above the eye
 const SWOOP_BACK_MAX = 30;              // cells: caps both on long flights
-const SWOOP_FACE_END = 0.4;             // share of a drop-in over which the view turns toward the body
-const SWOOP_FACE_DIST = 6;              // cells from the eye where popping out has turned toward the body
-const SWOOP_ALIGN_START = 0.55;         // share of the flight from which the view turns to its final orientation
+const SWOOP_EDGE = 0.12;                // share of the flight at each end blended onto the exact start / end orientation
 const CHEST_Y = BODY_HEIGHT * 0.62;     // cells above the feet: where the swoop looks at the body
 
 // The figure shows once the camera is this far from the eye (closer, it
@@ -67,6 +65,13 @@ const CHEST_Y = BODY_HEIGHT * 0.62;     // cells above the feet: where the swoop
 export const FIGURE_HIDE_DIST = 2.2;    // cells
 
 const smooth01 = (x) => { const t = Math.min(Math.max(x, 0), 1); return t * t * (3 - 2 * t); };
+const wrapPi = (a) => a - 2 * Math.PI * Math.round(a / (2 * Math.PI));
+// yaw and pitch of a direction (three.js cameras look down -z)
+function yawPitch(d, out) {
+  out.yaw = Math.atan2(-d.x, -d.z);
+  out.pitch = Math.atan2(d.y, Math.hypot(d.x, d.z));
+  return out;
+}
 const smoother01 = (x) => { const t = Math.min(Math.max(x, 0), 1); return t * t * t * (t * (6 * t - 15) + 10); };
 const approach = (rate, dt) => 1 - Math.exp(-rate * dt);
 
@@ -75,7 +80,9 @@ export function createPovCamera() {
   const euler = new THREE.Euler(0, 0, 0, 'YXZ');
   const m4 = new THREE.Matrix4();
   const v1 = new THREE.Vector3(), v2 = new THREE.Vector3(), v3 = new THREE.Vector3();
-  const qa = new THREE.Quaternion(), qb = new THREE.Quaternion(), qc = new THREE.Quaternion();
+  const v4 = new THREE.Vector3(), v5 = new THREE.Vector3(), v6 = new THREE.Vector3();
+  const qa = new THREE.Quaternion();
+  const ang0 = { yaw: 0, pitch: 0 }, ang1 = { yaw: 0, pitch: 0 }, angC = { yaw: 0, pitch: 0 };
 
   const look = { yaw: 0, pitch: 0 };
   let third = false;
@@ -160,8 +167,10 @@ export function createPovCamera() {
       const walking = HEAD_BOB && s.onGround && !s.inLiquid && !s.dead;
       bobAmp += ((walking ? Math.min(s.speedH / BOB_FULL_SPEED, 1) : 0) - bobAmp) * approach(BOB_RATE, dt);
       if (walking) bobPhase += (s.speedH / BOB_STRIDE) * 2 * Math.PI * dt;
-      dipVel += (-DIP_STIFFNESS * dip - 2 * Math.sqrt(DIP_STIFFNESS) * dipVel) * dt;
-      dip += dipVel * dt;
+      // exact step of the critically damped spring (stable at any frame time)
+      const w0 = Math.sqrt(DIP_STIFFNESS), decay = Math.exp(-w0 * dt), c = dipVel + w0 * dip;
+      dip = (dip + c * dt) * decay;
+      dipVel = (dipVel - w0 * c * dt) * decay;
       const bobY = -BOB_AMP_Y * bobAmp * 0.5 * (1 - Math.cos(2 * bobPhase));
       const bobX = BOB_AMP_X * bobAmp * Math.sin(bobPhase);
 
@@ -215,13 +224,23 @@ export function createPovCamera() {
         const ctrl = v2.copy(eyeEnd).addScaledVector(forwardH(v3), -span * SWOOP_BACK).addScaledVector(UP, span * SWOOP_LIFT);
         const k = smoother01(t), j = 1 - k;
         pose.pos.copy(swoop.p0).multiplyScalar(j * j).addScaledVector(ctrl, 2 * j * k).addScaledVector(endPos, k * k);
-        // orientation: turn toward the body, then into the final view
+        // Orientation: yaw and pitch follow a Bézier too, whose middle is the
+        // view from the curve's control point toward the body's chest. So the
+        // camera turns to watch the body as it flies past, and arrives facing
+        // the right way, without roll and without the spin a look-at gets when
+        // its target passes close by.
         const chest = v3.copy(s.feet).addScaledVector(UP, CHEST_Y * scale);
-        const face = into ? smooth01(t / SWOOP_FACE_END)
-          : smooth01(pose.pos.distanceTo(swoop.p0) / (SWOOP_FACE_DIST * scale));
-        if (pose.pos.distanceToSquared(chest) > 1e-8) lookAtQuat(pose.pos, chest, qb); else qb.copy(swoop.q0);
-        qc.copy(swoop.q0).slerp(qb, face);
-        pose.quat.copy(qc).slerp(endQuat, smooth01((t - SWOOP_ALIGN_START) / (1 - SWOOP_ALIGN_START)));
+        const a0 = yawPitch(v4.set(0, 0, -1).applyQuaternion(swoop.q0), ang0);
+        const a1 = yawPitch(v5.set(0, 0, -1).applyQuaternion(endQuat), ang1);
+        const ac = yawPitch(v6.subVectors(chest, ctrl), angC);
+        ac.yaw = a0.yaw + wrapPi(ac.yaw - a0.yaw);
+        a1.yaw = ac.yaw + wrapPi(a1.yaw - ac.yaw);
+        const u = smooth01(t), ju = 1 - u;
+        const yaw = ju * ju * a0.yaw + 2 * ju * u * ac.yaw + u * u * a1.yaw;
+        const pitch = ju * ju * a0.pitch + 2 * ju * u * ac.pitch + u * u * a1.pitch;
+        pose.quat.setFromEuler(euler.set(pitch, yaw, 0));
+        // the ends exactly: the start pose, and the final view (with its roll, if any)
+        pose.quat.slerp(swoop.q0, 1 - smooth01(t / SWOOP_EDGE)).slerp(endQuat, smooth01((t - 1 + SWOOP_EDGE) / SWOOP_EDGE));
         pose.fov = swoop.fov0 + (endFov - swoop.fov0) * smooth01(t);
         if (t >= 1) {
           pose.done = swoop.kind;

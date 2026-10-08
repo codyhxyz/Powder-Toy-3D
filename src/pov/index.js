@@ -15,6 +15,7 @@ import './pov.css';
 const playerModule = import.meta.glob('./player.js', { eager: true })['./player.js'];
 const toolsModule = import.meta.glob('./tools/index.js', { eager: true })['./tools/index.js'];
 
+const PREWARM_DELAY_MS = 2000;          // ms after start-up before the figure's shader compiles in the background
 const RESPAWN_DELAY = 3.5;              // s from death to respawning at the drop point
 const POV_NEAR = 0.08;                  // cells: near plane in POV (a held item sits close to the eye)
 const WHEEL_NOTCH_PX = 50;              // px of wheel delta per notch (a mouse wheel click is ~100, trackpads add up)
@@ -84,6 +85,8 @@ export function createPov(app) {
     if (!active() || app.isTyping() || e.metaKey || e.ctrlKey || e.altKey) return;
     if (MOVE_KEYS.has(e.code)) { keys.add(e.code); if (e.code === 'Space') e.preventDefault(); }
     if (e.code === 'KeyV' && !e.repeat && mode !== 'exiting') povCam.third = !povCam.third;
+    // settings and help need the mouse
+    if ((e.key === ',' || e.key === '?') && document.pointerLockElement === canvas) document.exitPointerLock();
   });
   addEventListener('keyup', (e) => keys.delete(e.code));
   addEventListener('blur', releaseInput);
@@ -115,16 +118,24 @@ export function createPov(app) {
   }, { passive: false });
 
   // ---- lazily built parts
-  function ensureParts() {
-    if (!player) {
-      player = createPlayer({ renderer, getSim: app.getSim });
-      player.on('land', ({ speed }) => povCam.land(speed));
-    }
+  function ensureFigure() {
     if (!figure) {
       figure = createFigure();
       scene.add(figure.root);
     }
     figure.bind(app.getVolume(), app.getSim().g);
+    return figure.compile(renderer, camera, scene);
+  }
+  // compile the figure's shader once the page has settled, not on the first F
+  if (createPlayer) {
+    const idle = globalThis.requestIdleCallback ?? ((fn) => setTimeout(fn, PREWARM_DELAY_MS));
+    setTimeout(() => idle(() => { if (app.getSim()) ensureFigure(); }), PREWARM_DELAY_MS);
+  }
+  function ensureParts() {
+    if (!player) {
+      player = createPlayer({ renderer, getSim: app.getSim });
+      player.on('land', ({ speed }) => povCam.land(speed));
+    }
     if (!camera.parent) scene.add(camera);   // its children (the viewmodel) render with the scene
     if (!toolbelt && createToolbelt) {
       try {
@@ -175,7 +186,7 @@ export function createPov(app) {
     requestLock();   // while the key press still counts as a user gesture
     starting = true;
     try {
-      await findDropPoint(dropPoint);
+      await Promise.all([findDropPoint(dropPoint), ensureFigure()]);
       ensureParts();
     } catch (err) {
       console.error('POV failed to start', err);

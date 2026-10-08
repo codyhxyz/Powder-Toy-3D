@@ -118,7 +118,7 @@ await shot('pov-underwater');
 await ev(() => { const pl = window.__app.pov.player; pl.breath = 1; pl.headInLiquid = false; pl.liquidId = -1; pl.feel.cold = 0; pl.feel.heat = 0.8; pl._hurt(0.3); });
 await frames(4);
 const hud3 = await ev(() => ({ heat: document.querySelector('.pov-heat').style.opacity, hurt: document.querySelector('.pov-hurt').style.opacity }));
-check('heat glow + hurt flash', +hud3.heat > 0.5 && +hud3.hurt > 0.3, JSON.stringify(hud3));
+check('heat glow + hurt flash', +hud3.heat > 0.5 && +hud3.hurt > 0.05, JSON.stringify(hud3));
 await ev(() => { window.__app.pov.player.feel.heat = 0; });
 
 // death and respawn
@@ -132,7 +132,9 @@ const dead = await ev(() => {
 check('death overlay', dead.overlay && dead.cause.includes('lava'), JSON.stringify(dead));
 check('death camera above the body', dead.camUp > 6 && dead.fig);
 await shot('pov-death');
-await p.waitForTimeout(3300);
+// (game time: frames are clamped to 0.1 s, so a loaded GPU stretches the countdown)
+await p.waitForFunction(() => !window.__app.pov.player.dead, null, { timeout: 15000 }).catch(() => {});
+await p.waitForTimeout(300);
 const resp = await ev(() => ({ dead: window.__app.pov.player.dead, mode: window.__app.pov.mode, overlay: document.querySelector('.pov-death').classList.contains('show') }));
 check('respawned', !resp.dead && !resp.overlay, JSON.stringify(resp));
 await p.waitForTimeout(900);

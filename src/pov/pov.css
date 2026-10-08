@@ -122,10 +122,10 @@ body.pov-locked canvas { cursor: none; }
 }
 .pov-death.show { opacity: 1; }
 .pov-died {
-  font: 400 14px/1 var(--pixel);
+  font: 400 16px/1 var(--pixel);
   letter-spacing: 0.3em; text-transform: uppercase;
-  color: #ff6b7d;
-  text-shadow: 0 0 18px rgba(255, 60, 80, 0.5);
+  color: #ff8794;
+  text-shadow: 0 0 14px rgba(255, 60, 80, 0.65), 0 2px 8px rgba(0, 0, 0, 0.6);
 }
 .pov-cause {
   font-size: 30px; font-weight: 760; font-variation-settings: 'wdth' 112;
