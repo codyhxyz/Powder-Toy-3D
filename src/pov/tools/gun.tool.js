@@ -113,8 +113,9 @@ export default {
 
     function fire(ctx) {
       const sim = ctx.sim ?? env.getSim();
+      if (reading) return;   // the last shot's readback is still out (far shorter than FIRE_INTERVAL)
       const cell = muzzleCell(ctx.eye, ctx.dir, ctx.player.pos, sim.g);
-      if (!cell || reading) { dry(); return; }
+      if (!cell) { dry(); return; }
       const vel = ctx.dir.clone().normalize().multiplyScalar(ENGINE.V_MAX);
       // momentum: slug speed in cells/s at the real step rate
       const stepsPerSecond = ctx.dt > 0 ? ctx.stepsPerFrame / ctx.dt : 0;
