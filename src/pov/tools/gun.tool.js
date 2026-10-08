@@ -1,33 +1,40 @@
 import * as THREE from 'three';
-import { ELEMENTS, E, K } from '../../elements.js';
-import { PHYS as ENGINE } from '../../physics.js';
+import { ELEMENTS } from '../../elements.js';
 import { BODY_WIDTH, BODY_HEIGHT, BODY_DENS } from '../constants.js';
-import { gunFrag, toolPass, shadedBox, glowTexture, disposeTree } from '../../shaders/povTools.js';
+import { shadedBox, glowTexture, disposeTree } from '../../shaders/povTools.js';
+import { createBallistics, ROUND_SPEED, ROUND_SLUG, MAX_ROUNDS } from '../ballistics.js';
+import { povEvents } from '../events.js';
 
-// Gun: fires one SCRAP slug, a real cell, from just in front of the eye at
-// V_MAX along the aim. From then on it is the engine's: gravity drops it, a
-// pool slows it, and what it hits is decided by the impact rules.
+// Gun: fires a round that flies with real ballistics (360 m/s, 1 g) outside
+// the sim and becomes a SCRAP slug, a sim cell, where it strikes (ballistics.js).
+// From then on it is the engine's: what it hits is decided by the impact
+// rules, a pool slows it, and it settles as scrap.
 //
-// The muzzle cell is the first cell along the aim ray outside the body box.
-// The pass only writes the slug there if that cell holds air or a gas; a
-// one-texel readback of the cell (taken before the pass, so it sees what the
-// pass saw) tells the tool whether it fired, for the recoil and the flash.
+// The round leaves the muzzle: the first cell along the aim ray outside the
+// body box. The trigger only clicks (gun:dry) when that cell, or one between
+// the eye and it, is matter: the pick under the crosshair is that close.
 //
-// Recoil conserves momentum: Δv_body = m_slug·v_slug / m_body, masses on the
-// element table's density scale (DENS × cells), v in cells/s at the real step
-// rate. A one-cell slug is a 30 cm block of metal, so that kick is huge. Standing,
-// the ground takes it the way it takes any impact (solids are immovable in the
-// sim): friction the sideways part, the floor the downward part. Only an upward
-// kick (shooting at your feet) or a shot fired in the air or water moves you.
+// Recoil conserves momentum: Δv_body = m_round·v_round / m_body, masses on the
+// element table's density scale (DENS × cells), v the round's muzzle speed in
+// cells/s. A one-cell round is a 30 cm block of metal at 360 m/s, so that kick
+// is enormous; the player's speed cap (player.js MAX_SPEED) clamps what it
+// does to the body. Standing, the ground takes it the way it takes any impact
+// (solids are immovable in the sim): friction the sideways part, the floor the
+// downward part. Only an upward kick (shooting at your feet: a rocket jump) or
+// a shot fired in the air or water moves you.
+//
+// Events (docs/pov.md): gun:fire, gun:dry here; round:move, round:end and
+// impact from ballistics.js.
 
 const FIRE_INTERVAL = 0.35;        // s between shots
 const SPAWN_SEARCH = 16;           // cells walked along the ray looking for the muzzle cell
-const SLUG = E.SCRAP;
-const SLUG_CELLS = 1;              // a slug is one cell
-const SLUG_MASS = ELEMENTS[SLUG].dens * SLUG_CELLS;
+const MUZZLE_NUDGE = 1e-3;         // cells past the muzzle cell's entry face the round starts
+const ROUNDS_IN_FLIGHT_MAX = MAX_ROUNDS;   // rounds the gun keeps in the air at once (the trace pass's width)
+const ROUND_CELLS = 1;             // a round is one cell of slug
+const ROUND_MASS = ELEMENTS[ROUND_SLUG].dens * ROUND_CELLS;
 const BODY_MASS = BODY_DENS * BODY_WIDTH * BODY_WIDTH * BODY_HEIGHT;
-const READ_TEXELS = 1;             // the muzzle cell's state A
-const RGBA = 4;
+const SIM_GRAVITY_REF = 0.025;     // cells/step², the sim's default gravity (sim.js GRAVITY_DEFAULT): rounds fall at 1 g there
+const MS_PER_S = 1000;
 
 // viewmodel, in cells (camera space: +x right, +y up, −z forward)
 const GUN_POS = [0.55, -0.38, -1.45];
@@ -71,8 +78,10 @@ function buildModel() {
 }
 
 // First cell along eye + t·dir that doesn't overlap the body box (feet at
-// pos, BODY_WIDTH square, BODY_HEIGHT tall), by grid DDA. null if none within
-// SPAWN_SEARCH cells or it is outside the grid.
+// pos, BODY_WIDTH square, BODY_HEIGHT tall), by grid DDA: { cell, t, path },
+// t the ray distance at which it enters that cell and path every cell from
+// the eye's to it. null if none within SPAWN_SEARCH cells or it is outside
+// the grid.
 export function muzzleCell(eye, dir, pos, g) {
   const half = BODY_WIDTH / 2;
   const lo = [pos.x - half, pos.y, pos.z - half], hi = [pos.x + half, pos.y + BODY_HEIGHT, pos.z + half];
@@ -82,79 +91,91 @@ export function muzzleCell(eye, dir, pos, g) {
   const tDelta = d.map((v) => (v === 0 ? Infinity : Math.abs(1 / v)));
   const tMax = d.map((v, k) => (v === 0 ? Infinity : ((v > 0 ? c[k] + 1 : c[k]) - o[k]) / v));
   const overlaps = () => c.every((v, k) => v < hi[k] && v + 1 > lo[k]);
+  const path = [];
+  let t = 0;
   for (let i = 0; i < SPAWN_SEARCH; i++) {
+    path.push(new THREE.Vector3(...c));
     if (!overlaps()) {
       const inGrid = c[0] >= 0 && c[1] >= 0 && c[2] >= 0 && c[0] < g.nx && c[1] < g.ny && c[2] < g.nz;
-      return inGrid ? new THREE.Vector3(...c) : null;
+      return inGrid ? { cell: new THREE.Vector3(...c), t, path } : null;
     }
     const k = tMax[0] < tMax[1] ? (tMax[0] < tMax[2] ? 0 : 2) : (tMax[1] < tMax[2] ? 1 : 2);
+    t = tMax[k];
     c[k] += step[k];
     tMax[k] += tDelta[k];
   }
   return null;
 }
 
-// Atlas texel of a cell (shaders/common.js atlas()).
-const atlasOf = (c, g) => [(c.y % g.tx) * g.nx + c.x, Math.floor(c.y / g.tx) * g.nz + c.z];
-
 export default {
   key: 'GUN', name: 'Gun', slot: 4, icon: ICON,
-  desc: 'Fires a metal slug that flies, drops and smashes what it hits. Kicks back hard.',
+  desc: 'Fires a metal round that flies fast, drops a little and smashes what it hits. Kicks back hard.',
   create(env) {
     const model = buildModel();
     env.viewmodel.add(model.root);
-    const pass = toolPass(gunFrag, () => ({ uCell: { value: new THREE.Vector3() }, uVel: { value: new THREE.Vector3() } }));
+    const ballistics = createBallistics({ renderer: env.renderer });
     let time = 0, nextFire = 0, flashUntil = -1, kickAt = -Infinity, kickScale = 1, nextDryToast = 0;
-    const readBuf = new Float32Array(READ_TEXELS * RGBA);
-    let reading = false;
     let lastShot = null;
+    // While the gun is put away the toolbelt stops calling update, but rounds
+    // already in the air keep flying: this drives them until they land, at the
+    // last frame's step rate (a round lives a fraction of a second).
+    let selected = false, lastSteps = 0, raf = 0, rafAt = 0;
 
     const dry = () => {
       kickAt = time; kickScale = DRY_KICK;
+      povEvents.emit('gun:dry', {});
       if (time >= nextDryToast) { env.hud?.toast?.('Click. The muzzle is blocked.'); nextDryToast = time + DRY_TOAST_INTERVAL; }
     };
 
+    // the muzzle in world space: the viewmodel's muzzle (or flash) if it has one, else the eye
+    function muzzleWorld(eye) {
+      const m = model.muzzle ?? model.flash;
+      if (m && model.root.visible) { m.updateWorldMatrix(true, false); return m.getWorldPosition(new THREE.Vector3()); }
+      const vol = env.getVolume();
+      return eye.clone().multiplyScalar(env.getScale()).add(vol.position);
+    }
+
     function fire(ctx) {
       const sim = ctx.sim ?? env.getSim();
-      if (reading) return;   // the last shot's readback is still out (far shorter than FIRE_INTERVAL)
-      const cell = muzzleCell(ctx.eye, ctx.dir, ctx.player.pos, sim.g);
-      if (!cell) { dry(); return; }
-      const vel = ctx.dir.clone().normalize().multiplyScalar(ENGINE.V_MAX);
-      // momentum: slug speed in cells/s at the real step rate
-      const stepsPerSecond = ctx.dt > 0 ? ctx.stepsPerFrame / ctx.dt : 0;
-      const dv = vel.clone().multiplyScalar(-SLUG_MASS * stepsPerSecond / BODY_MASS);
-      const player = ctx.player;
-      // what the pass will see in the muzzle cell
-      const [tx, ty] = atlasOf(cell, sim.g);
-      reading = true;
-      env.renderer.readRenderTargetPixelsAsync(sim.targets[sim.cur], tx, ty, 1, 1, readBuf, undefined, 0)
-        .then(() => {
-          reading = false;
-          const id = Math.round(readBuf[0]);
-          if (id === E.EMPTY || ELEMENTS[id]?.kind === K.GAS) {
-            if (player.onGround) dv.set(0, Math.max(dv.y, 0), 0);
-            player.applyImpulse(dv);
-            flashUntil = time + FLASH_TIME;
-            kickAt = time; kickScale = 1;
-            lastShot = { cell: cell.clone(), vel: vel.clone(), dv: dv.clone() };
-          } else dry();
-        })
-        .catch(() => { reading = false; });
-      const mat = pass(sim);
-      mat.uniforms.uCell.value.copy(cell);
-      mat.uniforms.uVel.value.copy(vel);
-      sim.pass(mat);
+      const dir = ctx.dir.clone().normalize();
+      const m = muzzleCell(ctx.eye, dir, ctx.player.pos, sim.g);
+      // the pick under the crosshair is on the way to the muzzle: matter there
+      const aim = ctx.aim;
+      if (!m || (aim?.valid && aim.cell && m.path.some((c) => c.equals(aim.cell)))) { dry(); return; }
+      if (ballistics.count >= ROUNDS_IN_FLIGHT_MAX) return;
+      const origin = ctx.eye.clone().addScaledVector(dir, m.t + MUZZLE_NUDGE);
+      const id = ballistics.fire(origin, dir, sim.gravity / SIM_GRAVITY_REF);
+      // momentum: the round's at its muzzle speed (cells/s)
+      const dv = dir.clone().multiplyScalar(-ROUND_MASS * ROUND_SPEED / BODY_MASS);
+      if (ctx.player.onGround) dv.set(0, Math.max(dv.y, 0), 0);
+      ctx.player.applyImpulse(dv);
+      flashUntil = time + FLASH_TIME;
+      kickAt = time; kickScale = 1;
+      lastShot = { id, origin: origin.clone(), dir: dir.clone(), cell: m.cell.clone(), dv: dv.clone() };
+      povEvents.emit('gun:fire', { origin: origin.clone(), dir: dir.clone(), muzzleWorld: muzzleWorld(ctx.eye) });
+    }
+
+    function drive(now) {
+      raf = 0;
+      if (selected || !ballistics.count) return;
+      const dt = rafAt ? (now - rafAt) / MS_PER_S : 0;
+      rafAt = now;
+      ballistics.update({ sim: env.getSim(), dt, stepsPerFrame: lastSteps });
+      raf = requestAnimationFrame(drive);
     }
 
     return {
       update(ctx) {
+        selected = true;
         time += ctx.dt;
+        lastSteps = ctx.stepsPerFrame;
         model.root.visible = true;
         model.root.scale.setScalar(env.getScale());
         if (ctx.primaryPressed && time >= nextFire) {
           nextFire = time + FIRE_INTERVAL;
           fire(ctx);
         }
+        ballistics.update(ctx);
         // viewmodel: rest pose, kick after a shot, flash
         const k = Math.max(0, 1 - (time - kickAt) / KICK_TIME) * kickScale;
         model.gun.position.set(GUN_POS[0], GUN_POS[1], GUN_POS[2] + k * KICK_BACK);
@@ -162,10 +183,20 @@ export default {
         model.flash.visible = time < flashUntil;
         model.flash.material.rotation = time * FLASH_SPIN;
       },
-      deselect() { model.root.visible = false; model.flash.visible = false; },
+      deselect() {
+        model.root.visible = false; model.flash.visible = false;
+        selected = false;
+        if (ballistics.count && !raf) { rafAt = 0; raf = requestAnimationFrame(drive); }
+      },
       status: () => null,
-      get lastShot() { return lastShot; },   // for checks: the muzzle cell, slug velocity and recoil of the last shot
-      dispose() { pass.dispose(); disposeTree(model.root); },
+      // for checks: the last shot ({ id, origin, dir, cell (muzzle), dv (recoil) }) and the rounds
+      get lastShot() { return lastShot; },
+      get ballistics() { return ballistics; },
+      dispose() {
+        if (raf) cancelAnimationFrame(raf);
+        ballistics.dispose();
+        disposeTree(model.root);
+      },
     };
   },
 };
