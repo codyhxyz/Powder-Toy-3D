@@ -29,6 +29,12 @@ export const costTier = (ms) => (ms < COST_LOW_MS ? 'low' : ms < COST_MEDIUM_MS 
 // setting's name; desc: tooltip; cost: tier from tools/detail-bench.mjs
 // (put the measured ms in a comment next to it).
 export const DETAIL = [
+  { key: 'liquidRipples', define: 'DETAIL_LIQ_RIPPLES', label: 'Liquid ripples',
+    desc: 'Centimetre capillary ripples on open liquid, fading in as you get close.', cost: 'low' },
+  { key: 'liquidMeniscus', define: 'DETAIL_LIQ_MENISCUS', label: 'Liquid meniscus',
+    desc: 'Liquid climbing walls and glass over its last few millimetres.', cost: 'low' },
+  { key: 'liquidFoam', define: 'DETAIL_LIQ_FOAM', label: 'Whitewater',
+    desc: 'Falling and splashing liquid roughens and foams where it moves fast.', cost: 'low' },
 ];
 
 export const settingKey = (f) => `detail_${f.key}`;
