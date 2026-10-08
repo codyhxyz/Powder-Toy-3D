@@ -143,7 +143,7 @@ smoothed over time (so cells swapping every step don't shimmer), blurred with a 
 blurred weight of non-crisp cells, so walls and the floor count neither way: a one-cell water film keeps its height and
 surfaces meet walls cleanly. Features the blur would dissolve (a lone drop or grain, a falling stream, a one-cell trunk)
 are scaled back up next to current matter so their surface sits half a cell from the cell centre; ghosts of cells that
-moved on still fade. The *Surface smoothing* setting scales every blur radius (0 = off).
+moved on still fade. `gfx.smoothing` (src/gfx/uniforms.js) scales every blur radius (0 = off).
 
 **Tracer** (`src/shaders/render.js` + `src/shaders/gfx/*`). An Amanatides–Woo DDA walks the grid, skipping empty 4×4×4 bricks
 (the brick map is built from the blurred fields, so it's dilated for free). In each cell it root-finds where a field crosses

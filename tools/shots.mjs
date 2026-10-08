@@ -40,7 +40,7 @@ await p.goto(`http://localhost:${port}/?preset=lab`);
 await p.waitForTimeout(2500);
 await ev(() => {
   const a = window.__app;
-  a.settings.autoRes = false;
+  a.autoRes.enabled = false;
   document.querySelectorAll('.toast').forEach((t) => t.remove());
 });
 const info = {};

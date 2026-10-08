@@ -207,11 +207,6 @@ input[type=range]::-moz-range-track { height: 4px; border-radius: 2px; backgroun
 input[type=range]::-moz-range-progress { height: 4px; border-radius: 2px; background: var(--accent); }
 input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border-radius: 50%; background: #f3f5f8; border: 0; }
 
-.switch-row { display: flex; justify-content: space-between; align-items: center; margin: 8px 0; color: var(--muted); font-size: 12px; }
-.switch { position: relative; width: 32px; height: 18px; border-radius: 9px; border: 0; padding: 0; cursor: pointer; background: rgba(255, 255, 255, 0.14); transition: background 150ms; }
-.switch::after { content: ''; position: absolute; left: 2px; top: 2px; width: 14px; height: 14px; border-radius: 50%; background: #f3f5f8; transition: transform 160ms var(--ease); }
-.switch[aria-checked=true] { background: var(--accent); }
-.switch[aria-checked=true]::after { transform: translateX(14px); }
 
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
