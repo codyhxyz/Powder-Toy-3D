@@ -65,11 +65,35 @@
 | Area | Owner | Files |
 |---|---|---|
 | Hardness physics: impact and blast breaking, KE→heat, debris behaviour, acid-proof shards, CPU tile port | engine | `src/elements.js` (values only), `src/physics.js`, `src/shaders/react.js`, `src/shaders/move.js`, `src/ui/tiles/*` |
-| Body, camera, drop-in, vitals, HUD, app integration | body | `src/pov/index.js`, `src/pov/player.js`, `src/pov/hud.js`, `src/pov/pov.css`, `src/shaders/povProbe.js`, `src/app.js`, `src/camera.js`, `src/ui/hud.js` (help list) |
+| Body physics: probe readback, collisions, swimming, pressure push, vitals and damage, body→sim coupling pass | player | `src/pov/player.js`, `src/pov/vitals.js`, `src/shaders/povBody.js` |
+| Camera, drop-in swoop, pointer lock, first/third person, body mesh, HUD, input, app integration | shell | `src/pov/index.js`, `src/pov/camera.js`, `src/pov/figure.js`, `src/pov/hud.js`, `src/pov/pov.css`, `src/app.js`, `src/camera.js`, `src/ui/hud.js` (help list) |
 | Hotbar, tool registry, shovel, bucket, exact cell transfer | tools-a | `src/pov/tools/index.js`, `src/pov/tools/hotbar.js`, `src/pov/tools/transfer.js`, `src/shaders/transfer.js`, `src/pov/tools/shovel.tool.js`, `src/pov/tools/bucket.tool.js`, `src/pov/tools/hotbar.css` |
 | Axe, gun, physgun | tools-b | `src/pov/tools/axe.tool.js`, `src/pov/tools/gun.tool.js`, `src/pov/tools/physgun.tool.js`, `src/shaders/povTools.js` |
 
 Shared, read-only for everyone: `src/pov/constants.js`, this doc.
+
+### The player contract (player → shell)
+
+```js
+// src/pov/player.js
+createPlayer({ renderer, getSim }) → player
+player.spawn(feet /* Vector3, grid */)   // stand the body here, full health and breath
+player.update(dt, input)                  // every POV frame; input = {
+                                          //   move: { x, z },  // grid-space wish direction, length ≤ 1 (shell applies yaw)
+                                          //   jump, sprint, down }  // down = swim down
+                                          // Runs the probe readback, collisions, buoyancy, pressure push,
+                                          // vitals and the body→sim coupling pass.
+player.pos, player.vel                    // feet position (grid), velocity (cells/s)
+player.onGround, player.inLiquid, player.headInLiquid, player.liquidId
+player.health, player.breath              // 0..1
+player.feel = { heat, cold, acid, hurt }  // 0..1 intensities for screen effects (hurt decays after a hit)
+player.dead, player.cause                 // cause: 'Killed by lava, 1,140 °C'
+player.applyImpulse(dv /* cells/s */)
+player.on(name, fn)                       // 'hurt' {amount, cause}, 'death' {cause}, 'land' {speed}, 'splash' {speed}
+player.dispose()
+```
+
+The shell owns respawning (it calls `spawn` again after the death screen).
 
 ### The tool contract
 
