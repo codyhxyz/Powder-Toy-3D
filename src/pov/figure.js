@@ -315,3 +315,43 @@ export function createFigure() {
     },
   };
 }
+
+// ---- for other bodies (figureReal.js): the same light on any mesh ----
+
+// The stickman's albedo and heat glow, so another body matches it.
+export { ALBEDO as FIGURE_ALBEDO, HEAT_GLOW as FIGURE_HEAT_GLOW };
+
+// figureVert for a SkinnedMesh: three's skinning chunks pose the vertex and
+// its normal, then it goes to grid space like the stickman's. Pair it with
+// figureFrag(g) and the volume's uniforms (plus uAlbedo, uEmit, uWorldToGrid).
+export const figureSkinnedVert = /* glsl */ `
+#include <skinning_pars_vertex>
+uniform mat4 uWorldToGrid;
+out vec3 vGrid;
+out vec3 vN;
+void main() {
+  #include <beginnormal_vertex>
+  #include <skinbase_vertex>
+  #include <skinnormal_vertex>
+  #include <begin_vertex>
+  #include <skinning_vertex>
+  vec4 w = modelMatrix * vec4(transformed, 1.0);
+  vGrid = (uWorldToGrid * w).xyz;
+  vN = mat3(modelMatrix) * objectNormal;   // uniform scale only
+  gl_Position = projectionMatrix * viewMatrix * w;
+}`;
+
+// The soft contact shadow the stickman stands on, for another body: a child
+// of the body's root (at the feet), drawn after the volume.
+export function createContactShadow() {
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(2 * CONTACT_R, 2 * CONTACT_R).rotateX(-Math.PI / 2),
+    new THREE.ShaderMaterial({
+      vertexShader: contactVert, fragmentShader: contactFrag,
+      uniforms: { uDark: { value: CONTACT_DARK } },
+      transparent: true, depthWrite: false,
+      blending: THREE.MultiplyBlending, premultipliedAlpha: true,
+    }));
+  mesh.position.y = CONTACT_LIFT;
+  mesh.renderOrder = 1;                  // after the volume (transparent, order 0)
+  return mesh;
+}

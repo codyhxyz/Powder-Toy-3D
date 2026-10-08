@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { ELEMENTS } from '../elements.js';
 import { BODY_HEIGHT, BODY_WIDTH, EYE_HEIGHT, HAND_REACH } from './constants.js';
 import { createPovCamera, ENTRY_PITCH, FIGURE_HIDE_DIST, RESPAWN_SWOOP_S, SWOOP_S } from './camera.js';
-import { createFigure } from './figure.js';
+import { createBody } from './figureReal.js';
 import { createPovHud } from './hud.js';
 import './pov.css';
 
@@ -132,7 +132,7 @@ export function createPov(app) {
   // ---- lazily built parts
   function ensureFigure() {
     if (!figure) {
-      figure = createFigure();
+      figure = createBody({ choice: () => app.settings.figure });   // stickman or realistic, live
       scene.add(figure.root);
     }
     figure.bind(app.getVolume(), app.getSim().g);
@@ -350,7 +350,7 @@ export function createPov(app) {
     figure.setVisible(pose.eyeDist > FIGURE_HIDE_DIST);
     figure.update(dt, {
       feet: vFeet, scale, yaw: povCam.look.yaw, worldToGrid,
-      speedH, velY: player.vel.y, onGround: player.onGround, inLiquid: player.inLiquid,
+      speedH, velY: player.vel.y, onGround: player.onGround, inLiquid: player.inLiquid, headInLiquid: player.headInLiquid,
       dead: deadSeen, deadTime, heat: player.feel?.heat ?? 0,
     });
     viewmodel.visible = mode === 'on' && !deadSeen && pose.eyeDist <= FIGURE_HIDE_DIST;
