@@ -121,7 +121,7 @@ vec3 gasDensity(vec3 p, float warp, out vec4 m, out vec4 nf) {
   nf = vec4(NOISE_MEAN);
   if (max(m.x, max(m.y, m.z)) <= MEDIA_FLOOR) return vec3(0.0);
 #ifdef DETAIL_MEDIA_FLOW
-  gFlowV = flowVel(p);
+  gFlowV = gMediaVis > DETAIL_VIS_LO ? flowVel(p) : vec3(0.0, MD_RISE.y, 0.0);
 #endif
   vec4 n = gasNoise(p, MD_RISE.y, 1.0);
   if (warp > 0.0) {
@@ -193,6 +193,9 @@ float mediaSegment(vec3 ro, vec3 rd, float ta, float tb, inout float next, inout
   float tr = 1.0;
   for (int k = 0; k < MEDIA_SEG_SAMPLES; k++) {
     if (next >= tb) break;
+#ifdef MEDIA_DETAIL_ON
+    gMediaVis = max(trans.r, max(trans.g, trans.b));
+#endif
     vec3 p = ro + rd * next;
     float dt = MEDIA_STEP_AT(next);   // this sample stands for [next, next + dt)
     next += dt;

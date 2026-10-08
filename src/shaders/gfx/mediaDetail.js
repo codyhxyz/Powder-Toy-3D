@@ -34,13 +34,26 @@ const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
 export const mediaDetailGLSL = /* glsl */ `
 #define NOISE_FINEST_CELLS ${f(MEDIA_NOISE_CELLS / NOISE_FINEST_PERIOD)}   // cells across the base noise's finest lattice cell
 
+// Detail behind gas that is already mostly opaque barely shows (it is seen
+// through the transmittance in front of it), so every feature fades out, or
+// switches off, as the ray's visibility drops: dense plumes cost little more.
+#if defined(DETAIL_MEDIA_FINE) || defined(DETAIL_MEDIA_STEP) || defined(DETAIL_MEDIA_FLOW)
+#define MEDIA_DETAIL_ON 1
+#define DETAIL_VIS_LO 0.05      // ray transmittance below which detail is off...
+#define DETAIL_VIS_HI 0.2       // ...and above which it is fully on
+float gMediaVis = 1.0;          // the ray's transmittance at the current media sample (set by mediaSegment)
+#endif
+
 // ---- march step ----
 #ifdef DETAIL_MEDIA_STEP
 #define MEDIA_STEP_PER_DIST 0.125   // step (cells) per cell of distance from the eye: 8 samples per e-fold of distance
 #define MEDIA_STEP_MIN 0.125        // finest step (cells), right at the eye
 // lattice samples in one cell segment, <= sqrt(3) / MEDIA_STEP_MIN rounded up
 #define MEDIA_SEG_SAMPLES 14
-float mediaStepAt(float t) { return clamp(t * MEDIA_STEP_PER_DIST, MEDIA_STEP_MIN, MEDIA_STEP); }
+float mediaStepAt(float t) {
+  float fine = clamp(t * MEDIA_STEP_PER_DIST, MEDIA_STEP_MIN, MEDIA_STEP);
+  return gMediaVis > DETAIL_VIS_LO ? fine : MEDIA_STEP;
+}
 #define MEDIA_STEP_AT(t) mediaStepAt(t)
 #else
 #define MEDIA_SEG_SAMPLES MEDIA_MAX_PER_SEG
@@ -112,17 +125,17 @@ const vec3 FINE_OFF_1 = vec3(0.4142, 0.7321, 0.2361);
 const vec3 FINE_OFF_2 = vec3(0.6180, 0.1547, 0.8284);
 #define FIL_EXP 3.0          // filament sharpness: gas gathers on the noise's ridges as r^FIL_EXP
 #define FINE_EDGE 0.9        // filament strength in thin gas (0-1; 1 empties the gaps)...
-#define FINE_CORE 0.25       // ...and in dense gas, which keeps its body
+#define FINE_CORE 0.35       // ...and in dense gas, which keeps its body
 #define FINE_AMT_2 0.7       // octave 2's strength relative to octave 1
 #define FINE_WARP 0.6        // cells: octave 1 curls octave 2's lookup this far
-#define FLAME_FINE 0.12      // fire-density units: fine wrinkles of the flame edge
+#define FLAME_FINE 0.2       // fire-density units: fine wrinkles of the flame edge
 #define FLAME_FINE_2 0.5     // octave 2's share of them
 
 // weight of each octave at p: fades in as the pixel footprint resolves it
 vec2 fineWeights(vec3 p) {
   float fp = footprint(p);
   const float F1 = FINE_SCALE_1 / NOISE_FINEST_CELLS, F2 = FINE_SCALE_2 / NOISE_FINEST_CELLS;   // cycles per cell
-  return vec2(lodFade(F1, fp), lodFade(F2, fp));
+  return vec2(lodFade(F1, fp), lodFade(F2, fp)) * smoothstep(DETAIL_VIS_LO, DETAIL_VIS_HI, gMediaVis);
 }
 // mean-1 redistribution of uniform noise n onto its ridges
 float filament(float n) { return (FIL_EXP + 1.0) * pow(1.0 - abs(2.0 * n - 1.0), FIL_EXP); }
