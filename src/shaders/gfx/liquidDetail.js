@@ -68,6 +68,7 @@ export const liquidDetailGLSL = /* glsl */ `
 #define MS_PER_CELL_STEP ${g(MS_PER_CELL_STEP)}   // m/s per cell/step
 #define CELL_M ${g(CELL_M)}                       // m per cell
 bool liqDetailOn(int id) { return SURFCH[id] == CH_LIQUID && id != E_ICE; }
+const float LIQ_SIGMA[NE] = float[NE](${perLiquid((p) => p.sigma).join(', ')});   // surface tension, N/m
 
 // Tilt outward normal n by a height field's world gradient gr (slope units):
 // only its part along the surface counts.
@@ -140,33 +141,56 @@ vec3 liquidMeniscus(vec3 p, vec3 n, int id) {
 // (move.js land), so its speed is real. Liquid resting on liquid carries the
 // automaton's flow impulses instead (pool cells hold ±1 sideways at rest), so
 // it doesn't count, nor do curl or divergence of those.
-// Sampled trilinearly just outside the surface (AGIT_LIFT along n): over a
-// pool that is the layer a stream lands through; on a stream, the stream.
-#define AGIT_LIFT 1.0          // cells along the normal
+// Measured as the flux of it coming down onto the surface point: the mean,
+// over the AGIT_REACH cells above it, of unsupported liquid's speed (a
+// solid jet at speed v gives v; a sparse spray, its volume fraction of v),
+// bilinear across the four columns around the point. Over a pool that is
+// what lands there; on a stream's side, the stream above.
+#define AGIT_REACH 4           // cells above the point
 // Air entrainment by a plunging jet starts at ~1 m/s (Ervine et al. 1980;
 // Chanson 1997); a jet past ~4 m/s is white with it.
 #define FOAM_V_ONSET 1.0       // m/s
 #define FOAM_V_FULL 4.0        // m/s
-float fallSpeed(ivec3 c) {
-  if (outside(c) || c.y == 0) return 0.0;
-  int id = eid(cellA(c));
-  if (!liqDetailOn(id)) return 0.0;
-  int below = eid(cellA(c - ivec3(0, 1, 0)));
-  if (below != E_EMPTY && KIND[below] != K_GAS) return 0.0;
-  return length(cellB(c).xyz);
+bool supports(int id) { return id != E_EMPTY && KIND[id] != K_GAS; }
+float columnFlux(ivec3 c) {   // c = lowest cell; cells/step
+  if (c.x < 0 || c.z < 0 || c.x >= NX || c.z >= NZ) return 0.0;
+  int below = c.y > 0 ? eid(cellA(c - ivec3(0, 1, 0))) : E_WALL;
+  float s = 0.0;
+  for (int k = 0; k < AGIT_REACH; k++) {
+    if (c.y >= NY) break;
+    int id = eid(cellA(c));
+    if (liqDetailOn(id) && !supports(below)) s += length(cellB(c).xyz);
+    below = id;
+    c.y++;
+  }
+  return s / float(AGIT_REACH);
 }
 float agitation(vec3 p) {   // 0..1
-  vec3 q = p - 0.5;
-  ivec3 i = ivec3(floor(q));
-  vec3 f = q - vec3(i);
-  float s = 0.0;
-  for (int k = 0; k < 8; k++) {
-    ivec3 o = ivec3(k & 1, (k >> 1) & 1, k >> 2);
-    vec3 w3 = mix(1.0 - f, f, vec3(o));
-    float w = w3.x * w3.y * w3.z;
-    if (w > 0.0) s += w * fallSpeed(i + o);
-  }
+  ivec3 c = ivec3(floor(p));
+  // skip when the bricks above hold no matter at all
+  ivec3 b0 = c / BS, b1 = (c + ivec3(0, AGIT_REACH - 1, 0)) / BS;
+  if (brickInfo(clamp(b0, ivec3(0), ivec3(BX, BY, BZ) - 1)) == 0 && brickInfo(clamp(b1, ivec3(0), ivec3(BX, BY, BZ) - 1)) == 0) return 0.0;
+  vec2 q = p.xz - 0.5;
+  ivec2 i = ivec2(floor(q));
+  vec2 f = q - vec2(i);
+  float s = mix(mix(columnFlux(ivec3(i.x, c.y, i.y)), columnFlux(ivec3(i.x + 1, c.y, i.y)), f.x),
+                mix(columnFlux(ivec3(i.x, c.y, i.y + 1)), columnFlux(ivec3(i.x + 1, c.y, i.y + 1)), f.x), f.y);
   return smoothstep(FOAM_V_ONSET, FOAM_V_FULL, s * MS_PER_CELL_STEP);
+}
+// Falling liquid itself tears up and aerates once air drag beats surface
+// tension: Weber number We = ρ_air v² D / σ, with D a cell (the size of the
+// sim's smallest blob of liquid). Bag breakup starts at We ≈ 12, and past
+// ≈ 50 (multimode, then sheet-thinning breakup) the blob is ragged and white
+// (Pilch & Erdman 1987).
+#define WE_ONSET 12.0
+#define WE_FULL 50.0
+#define AIR_RHO 1.2            // kg/m³
+#define BREAKUP_PROBE 0.5      // cells into the liquid (against n) where its cell is read
+float breakup(vec3 p, vec3 n, int id) {   // 0..1
+  ivec3 c = ivec3(floor(p - n * BREAKUP_PROBE));
+  if (outside(c) || c.y == 0 || eid(cellA(c)) != id || supports(eid(cellA(c - ivec3(0, 1, 0))))) return 0.0;
+  float v = length(cellB(c).xyz) * MS_PER_CELL_STEP;
+  return smoothstep(WE_ONSET, WE_FULL, AIR_RHO * v * v * CELL_M / LIQ_SIGMA[id]);
 }
 
 // Noise in the plane the surface faces most (x, y or z), evolving in time:
@@ -194,7 +218,8 @@ vec4 triNoiseD(vec3 p, vec3 n, float f, float t) {
 // covered fraction), white by multiple scattering: fresh foam reflects ~55%
 // of light (Whitlock et al. 1982), scattered nearly diffusely and wrapping
 // past the terminator, since light goes in and out of the bubble layer.
-#define FOAM_COVER_MAX 0.9     // covered fraction at full agitation
+#define FOAM_COVER_MAX 0.7     // covered fraction where a jet plunges at full agitation
+#define SPRAY_COVER_MAX 0.3    // ... and on falling liquid fully torn up (white streaks, still clear between)
 #define FOAM_FREQ 2.3          // cycles/cell (≈ 3.5 cm patches)
 #define FOAM_FREQ2 5.1         // second octave, cycles/cell (bubble clusters)
 #define FOAM_OCT2_W 0.4        // its weight (first: 1 − this)
@@ -204,14 +229,15 @@ vec4 triNoiseD(vec3 p, vec3 n, float f, float t) {
 #define FOAM_WRAP 0.5          // diffuse wrap (0 = Lambert)
 #define FOAM_SHIFT 29.3        // lattice offset of the foam noise from the roughness noise
 void liquidFoam(vec3 p, inout vec3 n, int id, inout vec3 col, inout vec3 trans) {
-  float ag = agitation(p + n * AGIT_LIFT);
+  float agI = agitation(p), agB = breakup(p, n, id);
+  float ag = max(agI, agB);
   if (ag <= 0.0) return;
   float fp = footprint(p);
   float t = uTime;
   vec4 r = triNoiseD(p, n, ROUGH_FREQ, t * ROUGH_RATE);
   n = tiltNormal(n, r.yzw * (ROUGH_SLOPE * ag * lodFade(ROUGH_FREQ, fp) / ROUGH_FREQ));
   // covered fraction: the pattern where pixels resolve it, its mean beyond
-  float cover = FOAM_COVER_MAX * ag;
+  float cover = max(FOAM_COVER_MAX * agI, SPRAY_COVER_MAX * agB);
   float pw = lodFade(FOAM_FREQ, fp);
   float c = cover;
   if (pw > 0.0) {
