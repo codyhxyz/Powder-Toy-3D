@@ -161,6 +161,8 @@ export function createPov(app) {
     if (!vfx) {
       try {
         vfx = createVfx({ scene, camera, getVolume: app.getVolume, getScale: app.getScale, isActive: () => mode === 'on' || mode === 'entering' });
+        // compile the particle shaders now, during the swoop, not on the first shot
+        renderer.compileAsync(vfx.batch, camera, scene).catch(() => {});
       } catch (err) { console.error('POV effects failed to start', err); }
     }
     if (!camera.parent) scene.add(camera);   // its children (the viewmodel) render with the scene

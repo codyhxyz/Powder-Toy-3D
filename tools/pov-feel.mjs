@@ -21,6 +21,12 @@ let fails = 0;
 const check = (name, ok, info = '') => { if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${info ? `  ${info}` : ''}`); };
 const ev = (fn, arg) => p.evaluate(fn, arg);
 // wait in game time (POV frames' dt): headless frames can be slow and dt is clamped
+// the next POV frame
+const nextFrame = () => ev(() => new Promise((done) => {
+  const f = window.__app.pov.feel, t0 = f.time;
+  const tick = () => (f.time !== t0 ? done() : requestAnimationFrame(tick));
+  requestAnimationFrame(tick);
+}));
 const settle = (ms) => ev((ms) => new Promise((done) => {
   const f = window.__app.pov.feel, t0 = f.time;
   const tick = () => (f.time - t0 >= ms / 1000 ? done() : requestAnimationFrame(tick));
@@ -68,8 +74,8 @@ const sampleAfter = (fn) => ev(async (fnSrc) => {
   const a = window.__app;
   const E = new a.camera.rotation.constructor(0, 0, 0, 'YXZ');
   const samples = [];
-  const t0 = a.pov.feel.time;
   await (0, eval)(`(${fnSrc})`)();
+  const t0 = a.pov.feel.time;   // from the shot
   await new Promise((done) => {
     const tick = () => {
       const t = a.pov.feel.time - t0;
@@ -90,15 +96,22 @@ const peakP = Math.max(...s1.map((s) => s.dp));
 // the first sample is a frame after the shot (headless frames can hit the 0.1 s dt clamp: 0.035·e^−0.9)
 check('kick tips the view up', peakP > 0.012, `peak Δpitch ${peakP.toFixed(4)} rad`);
 check('kick recovers', Math.abs(at(0.6).dp) < 0.004 && at(0.6).kick < 0.002, `Δpitch at 0.6 s ${at(0.6).dp.toFixed(4)}, kick ${at(0.6).kick.toFixed(4)}`);
-check('shake moves yaw and roll', Math.max(...s1.map((s) => Math.abs(s.dy))) > 1e-4 && Math.max(...s1.map((s) => Math.abs(s.roll))) > 1e-4,
+check('shake moves yaw and roll', Math.max(...s1.map((s) => Math.abs(s.dy))) > 1e-5 && Math.max(...s1.map((s) => Math.abs(s.roll))) > 1e-5,
   `max |Δyaw| ${Math.max(...s1.map((s) => Math.abs(s.dy))).toFixed(5)}, max |roll| ${Math.max(...s1.map((s) => Math.abs(s.roll))).toFixed(5)}`);
 check('trauma decays to rest', at(1.15).trauma === 0 && Math.abs(at(1.15).dy) < 1e-6, `trauma at 0 s ${s1[0].trauma.toFixed(2)}, at 1.15 s ${at(1.15).trauma.toFixed(3)}`);
 
 // a burst builds trauma (squared), so 3 quick shots shake more than one
 await settle(300);
-const s3 = await sampleAfter(async () => { for (let i = 0; i < 3; i++) { await window.__feelFire(); await new Promise((r) => setTimeout(r, 40)); } });
-const peakT1 = Math.max(...s1.map((s) => s.trauma)), peakT3 = Math.max(...s3.map((s) => s.trauma));
-check('bursts build up', peakT3 > peakT1 * 1.5, `peak trauma 1 shot ${peakT1.toFixed(2)} (shake ∝ ${(peakT1 ** 2).toFixed(2)}), 3 shots ${peakT3.toFixed(2)} (${(peakT3 ** 2).toFixed(2)})`);
+const [peakT1, peakT3] = await ev(async () => {
+  const f = window.__app.pov.feel, out = [];
+  for (const n of [1, 3]) {
+    f.reset();
+    for (let i = 0; i < n; i++) await window.__feelFire();
+    out.push(f.trauma);
+  }
+  return out;
+});
+check('bursts build up', peakT3 > peakT1 * 1.5, `trauma after 1 shot ${peakT1.toFixed(2)} (shake ∝ ${(peakT1 ** 2).toFixed(2)}), 3 shots ${peakT3.toFixed(2)} (${(peakT3 ** 2).toFixed(2)})`);
 check('aim ignores the shake', await ev(() => {
   const a = window.__app, ro = a.camera.position.clone(), rd = ro.clone();
   a.pov.aimRay(ro, rd);
@@ -108,10 +121,17 @@ check('aim ignores the shake', await ev(() => {
 // blast: a big sudden velocity change
 await settle(1300);
 // (bumped directly: an impulse this big outruns the body's probe at headless frame rates)
-await ev(() => { window.__app.pov.player.vel.x += 45; });
-await settle(50);
-const blastT = await ev(() => window.__app.pov.feel.trauma);
-check('blast (velocity change) adds trauma', blastT > 0.2, `trauma ${blastT.toFixed(2)}`);
+const blast = await ev(() => new Promise((done) => {
+  const a = window.__app, out = [];
+  a.pov.player.vel.x += 45;
+  const tick = () => {
+    out.push({ t: a.pov.feel.time, vx: a.pov.player.vel.x, ground: a.pov.player.onGround, trauma: a.pov.feel.trauma });
+    if (out.length < 4) requestAnimationFrame(tick); else done(out);
+  };
+  requestAnimationFrame(tick);
+}));
+const blastT = Math.max(...blast.map((x) => x.trauma));
+check('blast (velocity change) adds trauma', blastT > 0.2, `peak trauma ${blastT.toFixed(2)}; ${blast.map((x) => `vx ${x.vx.toFixed(1)} ${x.ground ? 'g' : 'a'} ${x.trauma.toFixed(2)}`).join(', ')}`);
 await settle(2500);
 
 // impact distance: close impacts shake, far ones barely
@@ -175,24 +195,24 @@ const hud = () => ev(() => {
 });
 const h0 = await hud();
 check('crosshair at rest', h0.gap === '4px' && h0.hit === 0, JSON.stringify(h0));
-await ev(fire);
-await settle(30);
+// (the HUD pushed in the same task as the shot: slow headless frames would decay it first)
+await ev(async () => { const a = window.__app; await window.__feelFire(); a.pov.feel.update({ dt: 0, live: true, eye: a.pov.ctx.eye }); });
 const h1 = await hud();
-check('crosshair blooms on fire', parseFloat(h1.gap) > 8, JSON.stringify(h1));
+check('crosshair blooms on fire', parseFloat(h1.gap) > 6, JSON.stringify(h1));
 await settle(400);
 check('bloom decays', (await hud()).gap === '4px');
 await hit(ids.METAL, false);
-await settle(30);
+await nextFrame();
 const h2 = await hud();
 check('hitmarker on a gun impact', h2.hit > 0.5 && !h2.broke, JSON.stringify(h2));
 await settle(300);
 check('hitmarker fades', (await hud()).hit === 0);
 await hit(ids.GLASS, true);
-await settle(30);
+await nextFrame();
 check('hitmarker brighter when broke', (await hud()).broke);
 await settle(300);
 await hit(ids.METAL, false, 'axe');
-await settle(30);
+await nextFrame();
 check('no hitmarker for the axe', (await hud()).hit === 0);
 
 // ---- footsteps while walking

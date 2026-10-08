@@ -29,9 +29,9 @@ const TRACER_MAX = 48;
 
 // ---- muzzle flash
 const FLASH_LIFE = 0.055;               // s
-const FLASH_SIZE = 1.1;                 // cells across, the main bloom
-const FLASH_CORE_SIZE = 0.6;            // cells across, the hot core
-const FLASH_FORWARD = 0.35;             // cells ahead of the muzzle the main bloom sits
+const FLASH_SIZE = 0.55;                // cells across, the main bloom
+const FLASH_CORE_SIZE = 0.3;             // cells across, the hot core
+const FLASH_FORWARD = 0.2;              // cells ahead of the muzzle the main bloom sits
 const FLASH_COLOR = [7, 3.9, 1.5];      // HDR, the main bloom
 const FLASH_CORE_COLOR = [12, 9, 6];    // HDR, the core
 const FLASH_EMBERS = 5;                 // sparks thrown out of the muzzle
@@ -208,6 +208,10 @@ export function createVfx(env) {
   light.name = 'pov-muzzle-light';
   scene.add(light);   // always in the scene (at 0 when off): adding and removing lights recompiles lit materials
   let lightT = 0;
+  // New particles are born between renders but aged by the next frame's dt
+  // before they are first drawn; they start that much younger than zero, so
+  // even a flash shorter than a slow frame is seen once at full strength.
+  let lastDt = 0;
 
   // ---- spawning
   const burstState = {
@@ -235,7 +239,7 @@ export function createVfx(env) {
     p.startColor.set(rgb[0], rgb[1], rgb[2], alpha);
     p.color.copy(p.startColor);
     p.life = life;
-    p.age = 0;
+    p.age = -lastDt;
     p.rotation = Math.random() * TAU;
     p.gravity = gravity;
     p.drag = drag;
@@ -388,10 +392,14 @@ export function createVfx(env) {
     // every POV frame; true while anything is still showing (keep rendering)
     update(dt) {
       batch.update(dt);
-      lightT = Math.max(0, lightT - dt);
+      lastDt = dt;
+      // the light shows at its current strength this frame, then fades (at
+      // least one frame lit, however slow)
       const s = env.getScale();
       light.intensity = lightT > 0 ? FLASH_LIGHT_GAIN * s * s * (lightT / FLASH_LIGHT_TIME) : 0;
-      return lightT > 0 || count() > 0;
+      const lit = lightT > 0;
+      lightT = Math.max(0, lightT - dt);
+      return lit || count() > 0;
     },
     // particle counts per effect (checks)
     counts() {
