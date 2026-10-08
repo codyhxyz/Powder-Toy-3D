@@ -7,17 +7,17 @@ import { prelude } from './common.js';
 //    (element id, temperature °C, air pressure, life). Cells outside the grid
 //    read as PROBE_OUTSIDE.
 // 2. Coupling: a full-grid pass that gives loose matter inside the body's box
-//    the body's velocity plus an outward push, so wading leaves a wake, a body
+//    the body's velocity plus a push outward and ahead, so wading leaves a wake, a body
 //    landing in water throws it up and out, and grains that fall into the body
 //    are shoved out of it. It only rewrites velocities: no cell is created,
 //    removed or changed, solids are left alone, and air stays still.
 
 // Size of the probed box, in cells. The body is BODY_WIDTH (1.6) wide, so its
-// footprint touches at most 3 cells per axis; 2 more on each side cover the
-// cells it can touch, collide with or step onto before the next readback lands.
-// Height: 1 ground cell + up to 7 body cells + 1 head-clearance cell for a step
-// up, plus margin. 6 × 12 × 6 = 432 texels.
-export const PROBE = { X: 6, Y: 12, Z: 6 };
+// footprint touches at most 3 cells per axis, and up to 7 cells in height.
+// Around it the box needs the cells the body touches, collides with, steps onto
+// (1 up, 1 down) and travels into before the next readback lands: 8 × 12 × 8 =
+// 768 texels.
+export const PROBE = { X: 8, Y: 12, Z: 8 };
 // Element id a probe texel reports for a cell outside the grid (the box walls).
 export const PROBE_OUTSIDE = -1;
 
@@ -57,6 +57,7 @@ uniform vec3 uVel;          // body velocity, cells/step
 uniform float uPushFluid;   // outward push on liquids and gases, cells/step
 uniform float uPushPowder;  // outward push on grains, cells/step
 uniform float uLift;        // upward share of the push (a body moving down throws liquid up)
+uniform vec2 uAhead;        // forward share of the push, along the body's horizontal heading (xz)
 layout(location = 0) out vec4 oA;
 layout(location = 1) out vec4 oB;
 
@@ -81,7 +82,7 @@ void main() {
     out2 = vec2(cos(ang), sin(ang));
   }
   float push = KIND[id] == K_POWDER ? uPushPowder : uPushFluid;
-  vec3 v = uVel + normalize(vec3(out2, uLift)) * push;
+  vec3 v = uVel + normalize(vec3(out2 + uAhead, uLift)) * push;
   oB.xyz = clamp(v, -V_MAX, V_MAX);
 }
 `;

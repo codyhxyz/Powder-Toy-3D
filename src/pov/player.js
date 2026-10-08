@@ -48,7 +48,13 @@ const MAX_DT = 0.1;                    // s: longer frames are simulated as this
 // ---- liquids ----
 const WADE_SHARE = 0.15;               // submerged share of the body that counts as "in" liquid
 const SWIM_SHARE = 0.5;                // submerged share from which you swim rather than walk
-const LIQUID_DRAG = 4;                 // 1/s damping when fully submerged, × (1 − move.js dragF)
+// Drag when fully submerged. Form drag is quadratic and scales with the
+// liquid's density over the body's (½·ρ·Cd·A/m ≈ 0.7 /m for a person feet
+// first in water, where the two densities are about equal);
+// viscous drag is linear and scales with the liquid's own per-step damping
+// (elements.js drag: water 0.01, oil 0.03, lava 0.2), so lava is a trap.
+const FORM_DRAG = 0.7 * CELL_METERS;        // 1/cell, × DENS[liquid] / BODY_DENS
+const VISCOUS_DRAG = 15;                    // 1/s per unit of the liquid's elements.js drag (water 0.15/s, lava 3/s)
 const SWIM_SPEED = 3;                  // cells/s, horizontal swimming
 const SWIM_ACCEL = 15;                 // cells/s²
 const SWIM_UP = 0.35;                  // × GRAVITY, thrust of swimming up (jump)...
@@ -61,12 +67,14 @@ const RHO_BODY = Math.max(BODY_DENS * PHYS.RHO_SCALE, PHYS.RHO_MIN);   // the si
 const PRESSURE_MAX_SPEED = 60;         // cells/s (18 m/s): a blast throws you this fast at most
 
 // ---- body → sim coupling (shaders/povBody.js) ----
-const DISPLACE_PUSH_FLUID = 0.5;       // cells/step outward on liquids and gases in the body, at full speed...
+const DISPLACE_PUSH_FLUID = 0.8;       // cells/step outward on liquids and gases in the body, at full speed (a pool churns at ~FLOW)...
 const DISPLACE_FULL_SPEED = 6;         // ...reached at this body speed (cells/s); a body standing still is porous to liquid
 const DISPLACE_PUSH_POWDER = 0.3;      // cells/step outward on grains in the body, always (a leg and a grain can't share a cell)
 const DISPLACE_LIFT = 1;               // upward share of the push per unit of downward heading (a body landing in water throws it up)
+const DISPLACE_AHEAD = 1;              // forward share of the push per unit of horizontal heading (a wading body shoves water ahead)
 
 // ---- probe ----
+const PROBE_INFLIGHT = 3;               // readbacks in flight at once
 const LATENCY_INIT = 0.05;             // s, readback latency assumed before the first one lands
 const LATENCY_EASE = 0.2;              // share of each new latency sample in the running estimate
 const DT_EASE = 0.1;                   // share of each frame in the smoothed frame time (step rate)
@@ -78,15 +86,10 @@ const LAND_EVENT_SPEED = 3;            // cells/s: softer touchdowns aren't repo
 
 const KIND = ELEMENTS.map((e) => e.kind);
 const DENS = ELEMENTS.map((e) => e.dens);
+const DRAG = ELEMENTS.map((e) => e.drag);
 const fallSpeed = (m) => Math.sqrt(2 * GRAVITY * m / CELL_METERS);   // cells/s after falling m metres
 const SAFE_IMPACT = fallSpeed(SAFE_FALL_M);
 const LETHAL_IMPACT = fallSpeed(LETHAL_FALL_M);
-
-// move.js dragF: moving through a liquid is slower the closer the densities are.
-function dragF(dBody, dLiquid) {
-  return PHYS.DRAG_LIQUID_MIN + PHYS.DRAG_LIQUID_SPAN
-    * Math.min(1, Math.max(0, PHYS.DRAG_LIQUID_DENS * Math.abs(dBody - dLiquid) / Math.max(dBody, dLiquid)));
-}
 
 const solidId = (id) => id === PROBE_OUTSIDE || id === UNKNOWN || (id >= 0 && KIND[id] === K.SOLID);
 const blocks = (id) => solidId(id) || (id >= 0 && KIND[id] === K.POWDER);
@@ -105,14 +108,18 @@ export function createPlayer({ renderer, getSim }) {
   const vitals = createVitals(emit);
 
   const PN = PROBE.X * PROBE.Y * PROBE.Z;
-  const target = new THREE.WebGLRenderTarget(PROBE.X, PROBE.Y * PROBE.Z, {
-    type: THREE.FloatType, format: THREE.RGBAFormat, depthBuffer: false, stencilBuffer: false,
-    minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, generateMipmaps: false,
-  });
-  // the probe being read into, and the last one that landed
-  let readBuf = new Float32Array(PN * 4);
-  let probe = { buf: new Float32Array(PN * 4), origin: [0, 0, 0], valid: false };
-  let pending = false, generation = 0;
+  // Readbacks in flight, one requested per frame, so a fresh probe lands every
+  // frame even when each one takes several frames to come back.
+  const slots = [...Array(PROBE_INFLIGHT)].map(() => ({
+    target: new THREE.WebGLRenderTarget(PROBE.X, PROBE.Y * PROBE.Z, {
+      type: THREE.FloatType, format: THREE.RGBAFormat, depthBuffer: false, stencilBuffer: false,
+      minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, generateMipmaps: false,
+    }),
+    buf: new Float32Array(PN * 4), busy: false,
+  }));
+  // the last probe that landed (seq orders them: readbacks may resolve out of order)
+  let probe = { buf: new Float32Array(PN * 4), origin: [0, 0, 0], valid: false, seq: -1 };
+  let generation = 0, seq = 0;
   let latency = LATENCY_INIT;
 
   let mats = null, matKey = '';
@@ -148,34 +155,43 @@ export function createPlayer({ renderer, getSim }) {
       couple: rawMat(povCouplingFrag(g), {
         tA: { value: null }, tB: { value: null }, uFrame: { value: 0 },
         uMin: { value: new THREE.Vector3() }, uMax: { value: new THREE.Vector3() }, uVel: { value: new THREE.Vector3() },
-        uPushFluid: { value: 0 }, uPushPowder: { value: 0 }, uLift: { value: 0 },
+        uPushFluid: { value: 0 }, uPushPowder: { value: 0 }, uLift: { value: 0 }, uAhead: { value: new THREE.Vector2() },
       }),
     };
     matKey = key;
   }
 
   function requestProbe(sim) {
-    if (pending) return;
-    // centre the box where the body will be when the result lands
-    const cx = p.pos.x + p.vel.x * latency, cy = p.pos.y + p.vel.y * latency, cz = p.pos.z + p.vel.z * latency;
-    const origin = [Math.round(cx) - PROBE.X / 2, Math.floor(cy) - 2, Math.round(cz) - PROBE.Z / 2];
+    const slot = slots.find((s) => !s.busy);
+    if (!slot) return;
+    // centre the box where the body will be when the result lands, but keep
+    // the body as it is now (and a cell around it) inside, so a fast body
+    // never outruns its probe for good
+    const lead = [p.vel.x * latency, p.vel.y * latency, p.vel.z * latency];
+    bounds();
+    const origin = [0, 1, 2].map((a) => {
+      const size = PROBE_SIZE[a];
+      const want = Math.round((lo[a] + hi[a]) / 2 + lead[a] - size / 2);
+      return Math.min(Math.max(want, c1(hi[a]) + 2 - size), c0(lo[a]) - 1);
+    });
     const u = mats.probe.uniforms;
     u.tA.value = sim.stateA;
     u.tB.value = sim.stateB;
     u.uOrigin.value.set(...origin);
-    sim.run(mats.probe, target);
-    pending = true;
-    const gen = generation, t0 = performance.now();
-    renderer.readRenderTargetPixelsAsync(target, 0, 0, PROBE.X, PROBE.Y * PROBE.Z, readBuf).then(() => {
-      pending = false;
-      if (gen !== generation) return;
+    sim.run(mats.probe, slot.target);
+    slot.busy = true;
+    const gen = generation, mySeq = seq++, t0 = performance.now();
+    renderer.readRenderTargetPixelsAsync(slot.target, 0, 0, PROBE.X, PROBE.Y * PROBE.Z, slot.buf).then(() => {
+      slot.busy = false;
+      if (gen !== generation || mySeq < probe.seq) return;
       latency += ((performance.now() - t0) / 1000 - latency) * LATENCY_EASE;
       const old = probe.buf;
-      probe = { buf: readBuf, origin, valid: true };
-      readBuf = old;
-    }).catch(() => { pending = false; });
+      probe = { buf: slot.buf, origin, valid: true, seq: mySeq };
+      slot.buf = old;
+    }).catch(() => { slot.busy = false; });
   }
 
+  const PROBE_SIZE = [PROBE.X, PROBE.Y, PROBE.Z];
   let g = null;   // grid layout of the current sim
   function local(x, y, z) {
     const o = probe.origin;
@@ -280,13 +296,13 @@ export function createPlayer({ renderer, getSim }) {
 
   // ---------------------------------------------------------------- environment
   const liqCount = new Float32Array(ELEMENTS.length);
-  const env2 = { sub: 0, buoy: 0, densL: 0, gx: 0, gy: 0, gz: 0, pMean: 0, loose: false };
+  const env2 = { sub: 0, buoy: 0, densL: 0, dragL: 0, gx: 0, gy: 0, gz: 0, pMean: 0, loose: false };
   function sense() {
     bounds();
     const bx0 = c0(lo[0]), bx1 = c1(hi[0]), bz0 = c0(lo[2]), bz1 = c1(hi[2]);
     const by0 = c0(lo[1]), by1 = c1(hi[1]);
     liqCount.fill(0);
-    let sub = 0, buoy = 0, densSum = 0, liqN = 0;
+    let sub = 0, buoy = 0, densSum = 0, dragSum = 0, liqN = 0;
     // liquid per layer, over the footprint and a ring around it: the coupling
     // pass pushes liquid out of the body itself, into the ring
     for (let y = by0; y <= by1; y++) {
@@ -298,7 +314,7 @@ export function createPlayer({ renderer, getSim }) {
           const id = idAt(x, y, z);
           if (solidId(id)) continue;
           open++;
-          if (isLiquid(id)) { liq++; dens += DENS[id]; liqCount[id]++; }
+          if (isLiquid(id)) { liq++; dens += DENS[id]; dragSum += DRAG[id]; liqCount[id]++; }
         }
       if (!open) continue;
       sub += h * liq / open;
@@ -308,6 +324,7 @@ export function createPlayer({ renderer, getSim }) {
     env2.sub = sub / H;
     env2.buoy = buoy / (H * BODY_DENS);
     env2.densL = liqN ? densSum / liqN : 0;
+    env2.dragL = liqN ? dragSum / liqN : 0;
     let best = -1;
     for (let i = 0; i < liqCount.length; i++) if (liqCount[i] > 0 && (best < 0 || liqCount[i] > liqCount[best])) best = i;
     p.liquidId = best;
@@ -380,6 +397,7 @@ export function createPlayer({ renderer, getSim }) {
     u.uPushFluid.value = DISPLACE_PUSH_FLUID * Math.min(1, speed / DISPLACE_FULL_SPEED);
     u.uPushPowder.value = DISPLACE_PUSH_POWDER;
     u.uLift.value = speed > EPS ? DISPLACE_LIFT * Math.max(0, -p.vel.y) / speed : 0;
+    u.uAhead.value.set(p.vel.x, p.vel.z).multiplyScalar(speed > EPS ? DISPLACE_AHEAD / speed : 0);
     u.uFrame.value = sim.frame;
     sim.pass(mats.couple);
   }
@@ -417,6 +435,8 @@ export function createPlayer({ renderer, getSim }) {
     if (p.inLiquid && !wasIn) emit('splash', { speed: p.vel.length() });
 
     const v = p.vel;
+    const v0 = v.clone();   // an axis that runs into unprobed cells keeps this (its time didn't pass)
+    const stalled = [false, false, false];
     const grav = GRAVITY * sim.gravity / SIM_GRAVITY_REF;
     const swimming = sub >= SWIM_SHARE;
 
@@ -424,7 +444,7 @@ export function createPlayer({ renderer, getSim }) {
     wish.set(alive ? input.move?.x ?? 0 : 0, alive ? input.move?.z ?? 0 : 0);
     if (wish.length() > 1) wish.normalize();
     const vh = new THREE.Vector2(v.x, v.z);
-    if (p.onGround && !swimming) {
+    if (p.onGround) {   // walking, also on the bottom of a pool
       const target = wish.clone().multiplyScalar(alive && input.sprint ? SPRINT_SPEED : WALK_SPEED);
       const diff = target.sub(vh);
       const max = GROUND_ACCEL * dt;
@@ -446,8 +466,11 @@ export function createPlayer({ renderer, getSim }) {
 
     // gravity and buoyancy (Archimedes over the submerged share)
     v.y += (env2.buoy - 1) * grav * dt;
-    // drag in liquid: move.js dragF, scaled by how much of the body is in it
-    if (sub > 0 && env2.densL > 0) v.multiplyScalar(Math.exp(-LIQUID_DRAG * (1 - dragF(BODY_DENS, env2.densL)) * sub * dt));
+    // drag in liquid, scaled by how much of the body is in it
+    if (sub > 0 && env2.densL > 0) {
+      const k = (VISCOUS_DRAG * env2.dragL + FORM_DRAG * env2.densL / BODY_DENS * v.length()) * sub;
+      v.multiplyScalar(Math.exp(-k * dt));
+    }
 
     // pressure: a = −∇P·P_ACCEL/ρ per step², for each step the sim took
     if (steps > 0) {
@@ -472,7 +495,8 @@ export function createPlayer({ renderer, getSim }) {
       const vy = v.y;
       const ry = sweep(1, vy * h);
       p.pos.y += ry.d;
-      if (ry.id !== null && ry.id !== UNKNOWN) {
+      if (ry.id === UNKNOWN) stalled[1] = true;
+      else if (ry.id !== null) {
         if (vy < 0) { p.onGround = true; landSpeed = Math.max(landSpeed, -vy); landId = ry.id; }
         else { slam = Math.max(slam, vy); slamId = ry.id; }
         v.y = 0;
@@ -483,7 +507,7 @@ export function createPlayer({ renderer, getSim }) {
         if (!d) continue;
         const r = sweep(axis, d);
         if (r.id === null) { p.pos[c] += d; continue; }
-        if (r.id === UNKNOWN) { p.pos[c] += r.d; continue; }
+        if (r.id === UNKNOWN) { p.pos[c] += r.d; stalled[axis] = true; continue; }
         const id = r.id, moved = r.d;
         p.pos[c] += moved;
         if ((p.onGround || wasGround || p.inLiquid) && tryStep(axis, d - moved)) continue;
@@ -491,6 +515,7 @@ export function createPlayer({ renderer, getSim }) {
         v[c] = 0;
       }
     }
+    stalled.forEach((st, a) => { if (st) v[comp[a]] = v0[comp[a]]; });
     // follow the ground down small ledges
     if (!p.onGround && wasGround && !jumped && !swimming) {
       const r = sweep(1, -STEP_DOWN);
@@ -517,18 +542,20 @@ export function createPlayer({ renderer, getSim }) {
     impulse.set(0, 0, 0);
     p.onGround = false; p.inLiquid = false; p.headInLiquid = false; p.liquidId = -1; p.submerged = 0;
     apexY = feet.y;
+    generation++; probe.valid = false;   // wait for cells around the new spot
     vitals.reset();
   }
 
   function dispose() {
     generation++;
-    target.dispose();
+    slots.forEach((s) => s.target.dispose());
     mats?.probe.dispose();
     mats?.couple.dispose();
     mats = null; matKey = '';
     for (const k in listeners) delete listeners[k];
   }
 
+  p._dbg = () => ({ busy: slots.filter((s) => s.busy).length, valid: probe.valid, origin: probe.origin, covered: covered(), lat: +latency.toFixed(3) });
   return Object.assign(p, {
     spawn, update, dispose,
     applyImpulse(dv) { impulse.add(dv); },
