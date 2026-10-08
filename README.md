@@ -1,6 +1,8 @@
 # Powder Toy 3D
 
-![Powder Toy 3D: a volcano erupts on a voxel island, lava runs down the slopes and sets the trees on fire](docs/hero.jpg)
+**Play it in your browser: [tpt3d.codyh.xyz](https://tpt3d.codyh.xyz)**
+
+[![Powder Toy 3D: trees burn on a volcano island while smoke rises from the summit](docs/hero.jpg)](https://tpt3d.codyh.xyz)
 
 A GPU-native, 3D falling-sand sandbox in the spirit of The Powder Toy, built on three.js (WebGL2).
 Every cell of a 128³ grid (2.1M cells, up to 160×96×160) is simulated and raymarched on the GPU, at ~240 sim steps/s.

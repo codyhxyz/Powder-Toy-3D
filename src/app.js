@@ -14,7 +14,6 @@ import { createCard } from './ui/card.js';
 import { createSettings } from './ui/settings.js';
 import { createHud, createHelp } from './ui/hud.js';
 import { inkFor, luminance } from './ui/dom.js';
-import { logoMark } from './ui/logo.js';
 import { gfx, gfxUniforms, updateGfxUniforms } from './gfx/uniforms.js';
 import { createPost, UPSCALE } from './gfx/post.js';
 import { createPacer, settleFrames, sceneKey } from './gfx/pacing.js';
@@ -701,8 +700,49 @@ function autoResolution(dt, now) {
   }
 }
 
+// Screenshots: the canvas is transparent where the page's sky shows through
+// (body's background in ui/styles.css), so the shot paints that sky first, then
+// the scene, then a small credit so shared images lead back to the app.
+const SHOT_SKY = [[0, '#232b3a'], [0.55, '#161b25'], [1, '#0e1117']];   // the sky's linear gradient, top to bottom
+const SHOT_GLOW = { color: 'rgba(255, 196, 120, 0.06)', x: 0.5, y: 1.08, rx: 1.2, ry: 0.7, end: 0.6 };   // its warm radial glow
+const SHOT_CREDIT = 'tpt3d.codyh.xyz';
+const SHOT_CREDIT_SIZE = 0.022;   // credit text height, as a share of the image height
+const SHOT_CREDIT_MIN_PX = 12;
+const SHOT_CREDIT_ALPHA = 0.75;
+const SHOT_MARK_SCALE = 1.5;      // logo mark size relative to the text
+const shotMark = Object.assign(new Image(), { src: '/favicon.svg' });
+
 function saveScreenshot() {
-  renderer.domElement.toBlob((blob) => {
+  const src = renderer.domElement, w = src.width, h = src.height;
+  const shot = Object.assign(document.createElement('canvas'), { width: w, height: h });
+  const ctx = shot.getContext('2d');
+  const sky = ctx.createLinearGradient(0, 0, 0, h);
+  for (const [t, c] of SHOT_SKY) sky.addColorStop(t, c);
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, w, h);
+  ctx.save();
+  ctx.translate(SHOT_GLOW.x * w, SHOT_GLOW.y * h);
+  ctx.scale(SHOT_GLOW.rx * w, SHOT_GLOW.ry * h);
+  const glow = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
+  glow.addColorStop(0, SHOT_GLOW.color);
+  glow.addColorStop(SHOT_GLOW.end, 'transparent');
+  ctx.fillStyle = glow;
+  ctx.fillRect(-SHOT_GLOW.x / SHOT_GLOW.rx, -SHOT_GLOW.y / SHOT_GLOW.ry, 1 / SHOT_GLOW.rx, 1 / SHOT_GLOW.ry);
+  ctx.restore();
+  ctx.drawImage(src, 0, 0);   // same task as the render, so the drawing buffer is still intact
+
+  const px = Math.max(SHOT_CREDIT_MIN_PX, Math.round(h * SHOT_CREDIT_SIZE)), mark = px * SHOT_MARK_SCALE;
+  ctx.font = `600 ${px}px Archivo, sans-serif`;
+  ctx.textBaseline = 'middle';
+  ctx.globalAlpha = SHOT_CREDIT_ALPHA;
+  ctx.shadowColor = 'rgba(0, 0, 0, 0.6)';
+  ctx.shadowBlur = px / 2;
+  ctx.fillStyle = '#e7eaf0';
+  const tw = ctx.measureText(SHOT_CREDIT).width, y = h - px - mark / 2;
+  ctx.fillText(SHOT_CREDIT, w - px - tw, y);
+  if (shotMark.complete && shotMark.naturalWidth) ctx.drawImage(shotMark, w - px - tw - px / 2 - mark, y - mark / 2, mark, mark);
+
+  shot.toBlob((blob) => {
     if (!blob) return;
     const a = Object.assign(document.createElement('a'), {
       href: URL.createObjectURL(blob),
@@ -809,8 +849,6 @@ function frame(now) {
 // ---------------------------------------------------------------- boot
 try {
   if (!renderer.capabilities.isWebGL2) throw new Error('This needs WebGL2, which your browser does not provide.');
-  const favicon = document.querySelector('link[rel=icon]');
-  if (favicon) favicon.href = `data:image/svg+xml,${encodeURIComponent(logoMark(64).replace('class="mark"', 'xmlns="http://www.w3.org/2000/svg"'))}`;
   if (SignsClass) {
     signs = new SignsClass({
       renderer, camera, container: signLayer,
