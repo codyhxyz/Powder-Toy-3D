@@ -21,7 +21,8 @@ import * as povBody from '../src/shaders/povBody.js';
 import * as transfer from '../src/shaders/transfer.js';
 import * as povTools from '../src/shaders/povTools.js';
 import * as povTrace from '../src/shaders/povTrace.js';
-import { figureFrag } from '../src/pov/figure.js';
+import { figureFrag, figureSkinnedVert } from '../src/pov/figure.js';
+import { ShaderChunk } from 'three';
 
 // three.js prefixes: ShaderMaterial (GLSL1-style source upgraded to 300 es)
 // and RawShaderMaterial with glslVersion GLSL3.
@@ -80,5 +81,8 @@ for (const [label, dims] of Object.entries(grids)) {
 }
 check('volumeVert', shaderMatVert + render.volumeVert, 'vert');
 check('quadVert', raw + quadVert, 'vert');
+// the realistic body's skinned vertex shader, as three builds it for a SkinnedMesh
+const includes = (src) => src.replace(/^[ \t]*#include +<(\w+)>/gm, (_, k) => includes(ShaderChunk[k]));
+check('figureSkinnedVert', `${shaderMatVert}#define USE_SKINNING\nin vec3 normal;\nin vec4 skinIndex;\nin vec4 skinWeight;\n${includes(figureSkinnedVert)}`, 'vert');
 console.log(failures ? `${failures} shader(s) failed` : 'all shaders OK');
 process.exit(failures ? 1 : 0);

@@ -40,9 +40,10 @@ const DEFAULTS = {
   tool: E.SAND, radius: 5, shape: 0, rate: 1, replace: false,
   steps: 4, gravity: 0.025, paused: false,
   view: 0, sunAz: 38, sunEl: 55, camSpeed: 1, upscale: 'native', dockCollapsed: false,
+  figure: 'real',
 };
 const PERSIST = ['size', 'preset', 'tool', 'radius', 'shape', 'rate', 'replace', 'steps', 'gravity', 'view',
-  'sunAz', 'sunEl', 'camSpeed', 'upscale', 'dockCollapsed'];
+  'sunAz', 'sunEl', 'camSpeed', 'upscale', 'dockCollapsed', 'figure'];
 const STORE = 'powder-toy-3d:settings';
 // Fixed look: glow is heat-driven light (×uLightGain); smoothing, TAA, bloom and
 // exposure keep their defaults in gfx/uniforms.js and gfx/post.js.
@@ -61,6 +62,7 @@ if (params.get('preset')) settings.preset = params.get('preset');
 if (!(settings.size in SIZES)) settings.size = DEFAULTS.size;
 if (!toolById(settings.tool)) settings.tool = DEFAULTS.tool;
 if (!VIEWS.some((v) => v.id === settings.view)) settings.view = 0;
+if (!['stick', 'real'].includes(settings.figure)) settings.figure = DEFAULTS.figure;
 settings.paused = false;
 
 let saveTimer = 0;
@@ -456,6 +458,13 @@ const settingsPanel = createSettings({
     { title: 'Camera', rows: [
       { type: 'slider', key: 'camSpeed', label: 'Move speed (WASD)', min: 0.25, max: 3, step: 0.05, def: DEFAULTS.camSpeed,
         fmt: (v) => `${v.toFixed(2)}×`, onChange: (v) => { rig.setSpeed(v); save(); } },
+    ] },
+    // The body you see in third person and when you die. The first graphics-level
+    // option: Stickman is the low setting, Realistic (a skinned, animated
+    // mannequin) the high one. It switches live, in POV too.
+    { title: 'First person', rows: [
+      { type: 'seg', key: 'figure', options: [['stick', 'Stickman'], ['real', 'Realistic']],
+        onChange: (v) => { settings.figure = v; save(); pacer.wake(); } },
     ] },
   ],
   footer: [['Reset all settings', resetSettings]],
