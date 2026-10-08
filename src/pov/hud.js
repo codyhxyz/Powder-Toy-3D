@@ -1,6 +1,6 @@
 import { h } from '../ui/dom.js';
 
-// The POV HUD: crosshair, health and breath, screen effects for what the body
+// The POV HUD: crosshair (with its bloom) and hitmarker, health and breath, screen effects for what the body
 // feels, the pointer-lock prompt, the death screen and the entry hint. Styles
 // in pov.css. update() runs every frame and only touches the DOM when a
 // (rounded) value changes.
@@ -12,6 +12,9 @@ const TRAIL_HOLD = 0.35;                // s the trail waits after a hit before 
 const FX_STEPS = 100;                   // effect opacities are rounded to 1/this (fewer style writes)
 const HINT_S = 7;                       // s the entry hint stays up
 const HURT_FLASH_GAIN = 0.85;           // opacity of the red flash at feel.hurt = 1
+const CROSS_GAP_PX = 4;                 // px from the centre to the crosshair ticks at rest
+const BLOOM_GAP_PX = 9;                 // px more at full bloom (just after a shot)
+const GAP_STEPS = 2;                    // the gap is rounded to 1/this px (fewer style writes)
 
 const round = (x) => Math.round(x * FX_STEPS) / FX_STEPS;
 const key = (k) => h('kbd', { text: k });
@@ -25,6 +28,7 @@ export function createPovHud() {
     hurt: h('div.pov-fx.pov-hurt'),
   };
   const cross = h('div.pov-cross', {}, h('i'), h('i'), h('i'), h('i'), h('b'));
+  const hitmark = h('div.pov-hitmark');
 
   const healthFill = h('div.pov-fill'), healthTrail = h('div.pov-trail');
   const breathFill = h('div.pov-fill');
@@ -54,7 +58,7 @@ export function createPovHud() {
     h('span', {}, key('F'), ' leave'));
 
   const root = h('div.pov-hud', { 'aria-hidden': 'true' },
-    fx.water, fx.heat, fx.frost, fx.acid, fx.hurt, cross, vitals, lock, death, hint);
+    fx.water, fx.heat, fx.frost, fx.acid, fx.hurt, cross, hitmark, vitals, lock, death, hint);
   document.body.append(root);
 
   // DOM writes only on change
@@ -124,6 +128,14 @@ export function createPovHud() {
         set(deathCause, 'text', s.cause || '');
         set(deathCount, 'text', `${Math.max(1, Math.ceil(s.respawnIn))} s`);
       }
+    },
+    // Shot feedback (feel.js), every POV frame: bloom 0..1 spreads the
+    // crosshair, hit 0..1 is the hitmarker's opacity, broke brightens it.
+    feedback({ bloom = 0, hit = 0, broke = false }) {
+      const gap = Math.round((CROSS_GAP_PX + bloom * BLOOM_GAP_PX) * GAP_STEPS) / GAP_STEPS;
+      set(cross, '--gap', `${gap}px`);
+      set(hitmark, 'opacity', String(round(hit)));
+      set(hitmark, '.broke', !!broke);
     },
     dispose() { root.remove(); },
   };

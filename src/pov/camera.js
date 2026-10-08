@@ -3,7 +3,8 @@ import { BODY_HEIGHT } from './constants.js';
 
 // The POV camera: mouse look, the eye with its head bob and landing dip, the
 // over-the-shoulder third person, the death camera, and the swoop between the
-// god view and the eyes. Everything here is in grid cells (one cell ≈ 30 cm)
+// god view and the eyes. Feel offsets (camera kick, trauma shake: feel.js)
+// ride on top of the look. Everything here is in grid cells (one cell ≈ 30 cm)
 // and seconds unless noted; poses come out in world space.
 
 const DEG = THREE.MathUtils.degToRad;
@@ -26,6 +27,9 @@ const BOB_AMP_Y = 0.13;                 // cells, down at each footstep
 const BOB_AMP_X = 0.06;                 // cells, side to side once per cycle
 const BOB_FULL_SPEED = 6;               // cells/s of ground speed at which the bob reaches full size
 const BOB_RATE = 8;                     // 1/s: how fast the bob's size follows the speed
+// Footfalls: one at the bottom of each bob (twice per stride), counted on the
+// ground whether or not the bob shows (wading, HEAD_BOB off).
+const STEP_MIN_SPEED = 1;               // cells/s of ground speed below which footfalls aren't reported
 
 // Landing dip: a critically damped spring on the eye height, kicked downward.
 const DIP_STIFFNESS = 140;              // 1/s²
@@ -88,6 +92,7 @@ export function createPovCamera() {
   let third = false;
   let tp = 0;                               // 0 first person … 1 third person
   let bobPhase = 0, bobAmp = 0;
+  let stepIndex = 0;                        // footfalls so far in the stride (bob low points crossed)
   let dip = 0, dipVel = 0;                  // cells, cells/s
   let fov = POV_FOV;
   let death = 0, deathAngle = 0;            // death camera blend 0..1, its orbit angle
@@ -99,6 +104,9 @@ export function createPovCamera() {
   const dir = (out) => out.set(0, 0, -1).applyEuler(euler.set(look.pitch, look.yaw, 0));
   const forwardH = (out) => out.set(-Math.sin(look.yaw), 0, -Math.cos(look.yaw));
   const rightH = (out) => out.set(Math.cos(look.yaw), 0, -Math.sin(look.yaw));
+
+  // footfalls happen where the bob is lowest: cos(2·phase) = −1
+  const footfallIndex = (phase) => Math.floor(phase / Math.PI - 0.5);
 
   const lookAtQuat = (from, to, out) => out.setFromRotationMatrix(m4.lookAt(from, to, UP));
 
@@ -138,6 +146,7 @@ export function createPovCamera() {
     // a fresh body: no bob, no dip, the FOV at rest, third person as it was
     reset() {
       bobPhase = bobAmp = dip = dipVel = 0;
+      stepIndex = footfallIndex(0);
       fov = POV_FOV;
       death = 0;
       tp = third ? 1 : 0;
@@ -157,16 +166,26 @@ export function createPovCamera() {
     },
     // Call once per frame. s = {
     //   dt, eye (world, the unbobbed eye), feet (world), scale (world units per cell),
-    //   speedH (cells/s), onGround, inLiquid, sprinting, dead, deadTime (s), box {min, max, margin} (world)
-    // }. Returns the pose; pose.done is set on the frame a swoop finishes.
+    //   speedH (cells/s), onGround, inLiquid, sprinting, dead, deadTime (s), box {min, max, margin} (world),
+    //   shake {pitch, yaw, roll} (rad, optional: feel.js offsets added to the look)
+    // }. Returns the pose; pose.done is set on the frame a swoop finishes, and
+    // pose.footfall on a frame a foot comes down.
     update(s) {
       const { dt, scale } = s;
       pose.done = null;
+      pose.footfall = false;
 
-      // head bob and landing dip, in cells
-      const walking = HEAD_BOB && s.onGround && !s.inLiquid && !s.dead;
+      // head bob and landing dip, in cells. The stride runs on any ground
+      // (footfalls); the bob only shows walking on dry ground.
+      const striding = s.onGround && !s.dead;
+      const walking = HEAD_BOB && striding && !s.inLiquid;
       bobAmp += ((walking ? Math.min(s.speedH / BOB_FULL_SPEED, 1) : 0) - bobAmp) * approach(BOB_RATE, dt);
-      if (walking) bobPhase += (s.speedH / BOB_STRIDE) * 2 * Math.PI * dt;
+      if (striding) bobPhase += (s.speedH / BOB_STRIDE) * 2 * Math.PI * dt;
+      const step = footfallIndex(bobPhase);
+      if (step !== stepIndex) {
+        pose.footfall = striding && s.speedH > STEP_MIN_SPEED;
+        stepIndex = step;
+      }
       // exact step of the critically damped spring (stable at any frame time)
       const w0 = Math.sqrt(DIP_STIFFNESS), decay = Math.exp(-w0 * dt), c = dipVel + w0 * dip;
       dip = (dip + c * dt) * decay;
@@ -186,7 +205,10 @@ export function createPovCamera() {
         .addScaledVector(rightH(v3), TP_SHOULDER * scale * tpK)
         .addScaledVector(UP, TP_UP * scale * tpK);
       clampSegment(eye, live.pos, s.box);
-      live.quat.setFromEuler(euler.set(look.pitch, look.yaw, 0));
+      const sh = s.shake;
+      live.quat.setFromEuler(sh
+        ? euler.set(look.pitch + sh.pitch, look.yaw + sh.yaw, sh.roll)
+        : euler.set(look.pitch, look.yaw, 0));
 
       // death: up, back and circling the body, looking at it
       death += ((s.dead ? 1 : 0) - death) * approach(DEATH_CAM_RATE, dt);

@@ -152,3 +152,29 @@ body.pov-locked canvas { cursor: none; }
 .pov-hint.show { opacity: 1; transform: translate(-50%, 0); }
 .pov-hint span { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
 .pov-hint kbd { color: var(--text); }
+
+/* ---- hitmarker: four short diagonal ticks around the centre (feel.js drives opacity) */
+.pov-hitmark {
+  --hm-size: 22px; --hm-w: 2px; --hm-cut: 36%;
+  position: absolute; left: 50%; top: 50%;
+  width: var(--hm-size); height: var(--hm-size);
+  margin: calc(var(--hm-size) / -2) 0 0 calc(var(--hm-size) / -2);
+  opacity: 0;
+}
+.pov-hitmark::before, .pov-hitmark::after {
+  content: ''; position: absolute;
+  left: calc(50% - var(--hm-w) / 2); top: -1px;
+  width: var(--hm-w); height: calc(100% + 2px);
+  background: rgba(255, 255, 255, 0.85);
+  box-shadow: 0 0 3px rgba(0, 0, 0, 0.8);
+  /* only the outer ends: the middle is cut away, so the crosshair shows through */
+  clip-path: polygon(0 0, 100% 0, 100% var(--hm-cut), 0 var(--hm-cut), 0 calc(100% - var(--hm-cut)), 100% calc(100% - var(--hm-cut)), 100% 100%, 0 100%);
+  transform: rotate(45deg);
+}
+.pov-hitmark::after { transform: rotate(-45deg); }
+/* the strike broke what it hit: brighter, a touch bigger, glowing */
+.pov-hitmark.broke { --hm-size: 26px; --hm-w: 2.5px; }
+.pov-hitmark.broke::before, .pov-hitmark.broke::after {
+  background: #fff;
+  box-shadow: 0 0 3px rgba(0, 0, 0, 0.8), 0 0 7px rgba(255, 255, 255, 0.9);
+}
