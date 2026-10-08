@@ -10,6 +10,7 @@ import { surfaceGLSL } from './gfx/surface.js';
 import { liquidGLSL } from './gfx/liquid.js';
 import { mediaGLSL } from './gfx/media.js';
 import { plainGLSL } from './gfx/plain.js';
+import { grainsGLSL } from './gfx/grains.js';
 
 
 // Hybrid raymarcher. Rays walk the voxel grid with an Amanatides–Woo DDA
@@ -648,6 +649,7 @@ void dataView(vec3 ro, vec3 rd, float t0, vec3 bh) {
 // Glass reflects less from inside liquid than from air (the index contrast is
 // smaller); share of its Fresnel reflectance kept there.
 #define GLASS_IN_LIQUID_F 0.3
+${grainsGLSL}
 
 void main() {
   vec3 ro = uCam;
@@ -818,6 +820,9 @@ void main() {
       } else {
         phiStale = true;
       }
+#ifdef GRAINS_ANY
+      grainEvent(cell, id, a, ro, rd, tEnter, tExit, col, trans, ev, evCh, evN, tEv, anyHit, hitPos);   // gfx/grains.js
+#endif
 
       // ---- what lies along [tEnter, tEv] ----
       if (liq != E_EMPTY) {
@@ -844,6 +849,9 @@ void main() {
       if (ev != EV_NONE) {
         vec3 hp = ro + rd * tEv;
         if (!anyHit) { anyHit = true; hitPos = hp; }
+#ifdef GRAINS_ANY
+        if (ev == EV_GRAIN) { col += trans * grainShade(rd); trans = vec3(0.0); break; }
+#endif
         if (ev == EV_OPAQUE) {
           vec3 n = dot(evN, evN) > 0.0 ? evN : surfNormal(hp, evCh, -rd);
           col += trans * shadeSurf(gatherSurf(hp, n, evCh), rd);
@@ -898,6 +906,9 @@ void main() {
     trans = vec3(0.0);
   }
 
+#ifdef GRAINS_ANY
+  grainResolve(col, trans);   // hand-off band: blend in the path not taken
+#endif
   // only thin gas: keep it (and its glow), at its depth
   if (!anyHit && (mOp > MEDIA_KEEP_ALPHA || dot(col, vec3(1.0)) > MEDIA_KEEP_RADIANCE)) anyHit = true;
   if (!anyHit) discard;

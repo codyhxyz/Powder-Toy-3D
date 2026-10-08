@@ -29,6 +29,12 @@ export const costTier = (ms) => (ms < COST_LOW_MS ? 'low' : ms < COST_MEDIUM_MS 
 // setting's name; desc: tooltip; cost: tier from tools/detail-bench.mjs
 // (put the measured ms in a comment next to it).
 export const DETAIL = [
+  { key: 'grains', define: 'DETAIL_GRAINS', label: 'Pebbles and grains up close',
+    desc: 'Up close, gravel is a pile of real pebbles: outlines, gaps and contact shadows instead of a texture',
+    cost: 'high' },   // TODO measure
+  { key: 'grainClusters', define: 'DETAIL_GRAIN_CLUSTERS', label: 'Loose grains up close',
+    desc: 'Up close, a lone falling grain of sand, snow, powder or ash is a little cluster of grains instead of a blob',
+    cost: 'medium' },   // TODO measure
 ];
 
 export const settingKey = (f) => `detail_${f.key}`;
