@@ -33,6 +33,8 @@ precision highp sampler2D;
 #define AMBIENT 20.0
 // lava freezes back into what it melted from this far below that element's melting point (°C)
 #define LAVA_FREEZE_DROP 150.0
+#define TAU 6.2831853   // a full turn, radians
+#define V_MAX 1.0       // cells/step: the automaton moves a cell at most one cell per step
 
 ${elementsGLSL()}
 
@@ -63,20 +65,29 @@ bool inGrid(ivec3 p) {
 }
 int eid(vec4 a) { return int(floor(a.x + 0.5)); }
 
+// PCG hash (Jarzynski & Olano 2020, "Hash Functions for GPU Rendering"); the
+// numbers are the published constants.
 uint pcg(uint v) {
   uint s = v * 747796405u + 2891336453u;
   uint w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u;
   return (w >> 22u) ^ w;
 }
+#define LCG_MUL 1664525u   // Numerical Recipes' LCG multiplier: spreads frame numbers apart
 uint seed3(ivec3 p, uint frame, uint salt) {
-  return pcg(uint(p.x) + pcg(uint(p.y) + pcg(uint(p.z) + pcg(frame * 1664525u + salt))));
+  return pcg(uint(p.x) + pcg(uint(p.y) + pcg(uint(p.z) + pcg(frame * LCG_MUL + salt))));
 }
+#define UINT_TO_UNIT (1.0 / 4294967296.0)   // 2^-32: a 32-bit hash to [0, 1)
 float rnd(inout uint s) {
   s = pcg(s);
-  return float(s) * (1.0 / 4294967296.0);
+  return float(s) * UINT_TO_UNIT;
 }
 
-float airDensity(float T) { return 1.0 - clamp((T - AMBIENT) / 2000.0, -0.2, 0.45); }
+// Air gets lighter as it warms: density 1 at AMBIENT, changing by 1 per
+// AIR_DENSITY_T °C, at most AIR_DENSER_MAX denser (cold) or AIR_LIGHTER_MAX lighter (hot).
+#define AIR_DENSITY_T 2000.0
+#define AIR_DENSER_MAX 0.2
+#define AIR_LIGHTER_MAX 0.45
+float airDensity(float T) { return 1.0 - clamp((T - AMBIENT) / AIR_DENSITY_T, -AIR_DENSER_MAX, AIR_LIGHTER_MAX); }
 float densityOf(int id, float T) { return id == E_EMPTY ? airDensity(T) : DENS[id]; }
 bool isGasLike(int id) { return KIND[id] == K_GAS || id == E_EMPTY; }
 bool isFluid(int id) { return KIND[id] == K_LIQUID || isGasLike(id); }
