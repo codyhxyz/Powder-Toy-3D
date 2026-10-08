@@ -30,11 +30,11 @@ export const costTier = (ms) => (ms < COST_LOW_MS ? 'low' : ms < COST_MEDIUM_MS 
 // (put the measured ms in a comment next to it).
 export const DETAIL = [
   { key: 'grains', define: 'DETAIL_GRAINS', label: 'Pebbles and grains up close',
-    desc: 'Up close, gravel is a pile of real pebbles: outlines, gaps and contact shadows instead of a texture',
-    cost: 'high' },   // TODO measure
-  { key: 'grainClusters', define: 'DETAIL_GRAIN_CLUSTERS', label: 'Loose grains up close',
-    desc: 'Up close, a lone falling grain of sand, snow, powder or ash is a little cluster of grains instead of a blob',
-    cost: 'medium' },   // TODO measure
+    desc: 'Up close, gravel is a pile of real pebbles (~5 cm): outlines, gaps and contact shadows instead of a texture',
+    cost: 'high' },   // worst +30 ms (volcano eyeSummit, 11 rounds; god view +4.6 ms: shader size)
+  { key: 'grainClusters', define: 'DETAIL_GRAIN_CLUSTERS', label: 'Loose clumps up close',
+    desc: 'Up close, a lone cell of sand, snow, powder or ash is a lumpy 30 cm clod instead of a round blob',
+    cost: 'high' },   // worst +15.5 ms (volcano eyeFlank; god view +7 ms: shader size, see gfx/grains.js)
 ];
 
 export const settingKey = (f) => `detail_${f.key}`;
