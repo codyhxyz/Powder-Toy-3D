@@ -158,11 +158,12 @@ const scenes = {
   async slugs() {
     return p.evaluate(() => {
       const t = window.__t, out = {};
-      const shoot = (target, thick, gap, steps = 40) => {
+      const shoot = (target, thick, gap, steps = 40, v = { vx: 1 }, extra) => {
         const x0 = 40;
         t.fresh();
         t.box(x0, x0 + thick - 1, 28, 52, 22, 42, target);
-        t.set(x0 - 1 - gap, 40, 32, 'SCRAP', { vx: 1 });
+        extra?.();
+        t.set(x0 - 1 - gap, 40, 32, 'SCRAP', v);
         t.load(); t.read();
         const before = t.counts(), debris = t.ELEMENTS[t.E[target]].breakInto;
         // the slug is the SCRAP cell with the largest x-speed until it hits, then the one furthest along
@@ -191,6 +192,11 @@ const scenes = {
       out['ROCK block, 6 thick, gap 12'] = shoot('ROCK', 6, 12);
       out['WOOD plank, 2 thick, gap 5'] = shoot('WOOD', 2, 5);
       out['WALL, gap 5'] = shoot('WALL', 2, 5);
+      // the pane starts out in quiet bricks (shaders/activity.js) and has to wake up in time
+      out['GLASS pane, gap 20'] = shoot('GLASS', 1, 20);
+      // diagonal in xz, and diagonal down into a corner of glass (pane + floor)
+      out['GLASS pane, diagonal xz'] = shoot('GLASS', 1, 5, 40, { vx: 0.8, vz: 0.6 });
+      out['GLASS corner, diagonal down'] = shoot('GLASS', 1, 3, 40, { vx: 0.75, vy: -0.75 }, () => t.box(20, 39, 35, 35, 22, 42, 'GLASS'));
       return out;
     });
   },

@@ -1,3 +1,6 @@
+// CPU check of the dock tiles' engine port (src/ui/tiles/engine.js): a slug into
+// each material and a lit gunpowder pile next to glass and metal, on a 2D slice.
+// usage: node tools/pov-engine-tiles.mjs
 import { World } from '../src/ui/tiles/engine.js';
 import { E } from '../src/elements.js';
 const run = (target, thick = 1, gap = 4) => {
