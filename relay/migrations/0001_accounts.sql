@@ -9,7 +9,7 @@ CREATE TABLE users (
   email TEXT,
   name TEXT,
   avatar TEXT,
-  plan TEXT NOT NULL DEFAULT 'free',   -- 'free' | 'paid'
+  plan TEXT NOT NULL DEFAULT 'free',   -- 'free' | 'pro' (ai.js tier 'paid')
   created_at INTEGER NOT NULL,
   UNIQUE (provider, provider_id)
 );

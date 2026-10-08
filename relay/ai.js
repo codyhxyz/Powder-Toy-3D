@@ -34,6 +34,7 @@ export const AI = {
   // a sentence from the construction system prompt (src/ai/prompt.js, API)
   PROMPT_MARKER: 'Your code is the body of a JavaScript function',
   GEN_ID: /^[A-Za-z0-9_-]{8,64}$/,
+  LOGGED_ERROR_CHARS: 300,        // how much of an upstream error to keep in the Worker log
 };
 
 // tier → the Worker secret holding its OpenAI key (1Password: "oai tpt3d-anon-free",
@@ -54,6 +55,8 @@ const OUT_OF_BUDGET = 'Free AI has run out for today. Add your own key below, or
 const OUT_OF_STEPS = 'This generation used all its steps.';
 const NOT_SET_UP = 'Free AI isn\'t set up on this server yet. Use your own key below.';
 const NO_ACCOUNTS = 'Couldn\'t check your account. Try again in a moment.';
+const UPSTREAM_FAILED = 'The AI service had a problem. Try again in a moment.';
+const UPSTREAM_STATUS = 502; // Bad Gateway: the proxy is fine, the model service isn't
 
 const MILLION = 1e6;
 const HASH_CHARS = 32;
@@ -119,8 +122,9 @@ export async function handleAI(request, env, ctx, allowedOrigin) {
   const quota = env.AI_QUOTA.get(env.AI_QUOTA.idFromName('global'));
   if (isQuota) {
     const limit = GENERATIONS[caller.tier];
-    const used = await quota.peek(caller.who);
-    return json(200, { tier: caller.tier, limit, used, remaining: Math.max(0, limit - used) }, { ...headers, 'Cache-Control': 'no-store' });
+    const { used, budgetOut } = await quota.peek(caller.tier, caller.who);
+    const remaining = budgetOut ? 0 : Math.max(0, limit - used);
+    return json(200, { tier: caller.tier, limit, used, remaining }, { ...headers, 'Cache-Control': 'no-store' });
   }
   return generate(request, ctx, caller, env[KEY_FOR[caller.tier]], quota, headers);
 }
@@ -149,6 +153,10 @@ async function generate(request, ctx, caller, apiKey, quota, headers) {
   });
   const out = await res.text();
   let remaining = verdict.remaining;
+  if (!res.ok) {
+    // OpenAI's error text can quote part of our key: log it here, show players a fixed message
+    console.warn(`ai: upstream ${res.status} for ${caller.tier}: ${out.slice(0, AI.LOGGED_ERROR_CHARS)}`);
+  }
   if (res.ok) {
     let usage = null;
     try { usage = JSON.parse(out).usage; } catch { /* leave it unbilled */ }
@@ -158,6 +166,7 @@ async function generate(request, ctx, caller, apiKey, quota, headers) {
     ctx.waitUntil(quota.refund(caller.who, gen));
     remaining += 1;
   }
+  if (!res.ok) return fail(UPSTREAM_STATUS, UPSTREAM_FAILED, { ...headers, 'x-ai-remaining': String(remaining) });
   return new Response(out, {
     status: res.status,
     headers: { 'Content-Type': 'application/json', ...headers, 'x-ai-remaining': String(remaining) },
@@ -197,9 +206,10 @@ export class AiQuota extends DurableObject {
   }
 
   // Read-only, for GET /ai/quota: a count from an earlier day is no count at all.
-  async peek(who) {
-    if ((await this.ctx.storage.get('day')) !== today()) return 0;
-    return this.count(who);
+  async peek(tier, who) {
+    if ((await this.ctx.storage.get('day')) !== today()) return { used: 0, budgetOut: false };
+    const [used, spent] = await Promise.all([this.count(who), this.count(`usd:${tier}`)]);
+    return { used, budgetOut: spent >= AI.DAILY_BUDGET_USD[tier] };
   }
 
   async refund(who, gen) {
