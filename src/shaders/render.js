@@ -841,6 +841,10 @@ void main() {
       }
 
       // ---- the event ----
+#ifdef DETAIL_RELIEF
+      // up close the hit moves onto the carved relief, or passes through a groove (gfx/relief.js)
+      if (ev == EV_OPAQUE && dot(evN, evN) == 0.0 && !reliefHit(ro, rd, evCh, tEv)) ev = EV_NONE;
+#endif
       if (ev != EV_NONE) {
         vec3 hp = ro + rd * tEv;
         if (!anyHit) { anyHit = true; hitPos = hp; }

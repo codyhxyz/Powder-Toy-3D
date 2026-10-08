@@ -29,6 +29,10 @@ export const costTier = (ms) => (ms < COST_LOW_MS ? 'low' : ms < COST_MEDIUM_MS 
 // setting's name; desc: tooltip; cost: tier from tools/detail-bench.mjs
 // (put the measured ms in a comment next to it).
 export const DETAIL = [
+  { key: 'relief', define: 'DETAIL_RELIEF', label: 'Surface relief up close', cost: 'medium',
+    desc: 'Sand, snow, ash, gunpowder, rock and wood get real relief when you are close: crags, clumps and bark furrows with true outlines and parallax' },
+  { key: 'reliefShadow', define: 'DETAIL_RELIEF_SHADOW', label: 'Relief self-shadowing', cost: 'medium',
+    desc: 'The close-up relief casts sunlight shadows on itself (needs Surface relief up close)' },
 ];
 
 export const settingKey = (f) => `detail_${f.key}`;
