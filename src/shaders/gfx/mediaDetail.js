@@ -2,10 +2,11 @@
 // into shaders/gfx/media.js; every part compiles in only when its switch is on.
 //
 // DETAIL_MEDIA_FINE: finer octaves of the detail noise. The base noise's finest
-// structure is NOISE_FINEST_CELLS cells across, so a plume seen from a step
-// away is a soft blob. Two further octaves read the same tileable noise scaled
+// structure is NOISE_FINEST_CELLS cells (1.2 m) across, so a plume seen from a
+// step away is a soft blob. Two further octaves read the same tileable noise scaled
 // down (a whole number of times, so the clock wrap stays seamless), each faded
-// in by the pixel footprint before it would alias. Real smoke up close is
+// in by the pixel footprint before it would alias. They are sized in metres
+// (FILAMENT_*_M: 20 cm and 5 cm, what resolves inside a plume 1-3 m across). Real smoke up close is
 // sheets and filaments (turbulence stretches it), so each octave redistributes
 // the gas onto the ridges of the noise: with n uniform on [0, 1] (the noise is
 // equalised), r = 1 - |2n - 1| is uniform too, and (k + 1) r^k has mean 1.
@@ -28,8 +29,18 @@
 // keep the noise's contrast (and so its mean 0.5 and spread).
 import { MEDIA_NOISE_CELLS } from '../../gfx/materials.js';
 import { NOISE_FINEST_PERIOD } from '../../gfx/mediaNoise.js';
+import { CELL_M } from '../../scale.js';
 
 const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
+// Fine filament sizes (m): what resolves when the eye is inside a plume 1-3 m
+// across. Turned into whole-number scales of the noise tile.
+const FILAMENT_1_M = 0.2, FILAMENT_2_M = 0.05;
+const NOISE_FINEST_M = (MEDIA_NOISE_CELLS / NOISE_FINEST_PERIOD) * CELL_M;   // m, the base noise's finest structure
+const FINE_SCALE_1 = Math.max(1, Math.round(NOISE_FINEST_M / FILAMENT_1_M));
+const FINE_SCALE_2 = Math.max(1, Math.round(NOISE_FINEST_M / FILAMENT_2_M));
+// Finest march step (m): finer than the octave-2 filaments.
+const MEDIA_STEP_MIN_M = 0.04;
+const STEP_MIN_CELLS = MEDIA_STEP_MIN_M / CELL_M;
 
 export const mediaDetailGLSL = /* glsl */ `
 #define NOISE_FINEST_CELLS ${f(MEDIA_NOISE_CELLS / NOISE_FINEST_PERIOD)}   // cells across the base noise's finest lattice cell
@@ -47,9 +58,9 @@ float gMediaVis = 1.0;          // the ray's transmittance at the current media 
 // ---- march step ----
 #ifdef DETAIL_MEDIA_STEP
 #define MEDIA_STEP_PER_DIST 0.125   // step (cells) per cell of distance from the eye: 8 samples per e-fold of distance
-#define MEDIA_STEP_MIN 0.125        // finest step (cells), right at the eye
-// lattice samples in one cell segment, <= sqrt(3) / MEDIA_STEP_MIN rounded up
-#define MEDIA_SEG_SAMPLES 14
+#define MEDIA_STEP_MIN ${f(STEP_MIN_CELLS)}   // finest step (cells), right at the eye: MEDIA_STEP_MIN_M
+// lattice samples in one cell segment: sqrt(3) / MEDIA_STEP_MIN rounded up
+#define MEDIA_SEG_SAMPLES ${Math.ceil(Math.sqrt(3) / STEP_MIN_CELLS)}
 float mediaStepAt(float t) {
   float fine = clamp(t * MEDIA_STEP_PER_DIST, MEDIA_STEP_MIN, MEDIA_STEP);
   return gMediaVis > DETAIL_VIS_LO ? fine : MEDIA_STEP;
@@ -115,11 +126,11 @@ vec4 detailNoise(vec3 p, float scale, vec3 off, float rise, float stretch) {
 
 // ---- fine octaves ----
 #ifdef DETAIL_MEDIA_FINE
-// Each octave reads the noise tile this many times smaller (whole numbers:
-// the clock wrap stays seamless): its finest structure is
-// NOISE_FINEST_CELLS / FINE_SCALE_* cells across.
-#define FINE_SCALE_1 4.0
-#define FINE_SCALE_2 16.0
+// Each octave reads the noise tile FINE_SCALE_* times smaller (whole numbers,
+// so the clock wrap stays seamless): its finest filaments are about
+// FILAMENT_*_M across (sized in metres, see src/scale.js).
+#define FINE_SCALE_1 ${f(FINE_SCALE_1)}
+#define FINE_SCALE_2 ${f(FINE_SCALE_2)}
 // tile offsets of the octaves (fractions of a tile): uncorrelated with the base
 const vec3 FINE_OFF_1 = vec3(0.4142, 0.7321, 0.2361);
 const vec3 FINE_OFF_2 = vec3(0.6180, 0.1547, 0.8284);
@@ -127,11 +138,12 @@ const vec3 FINE_OFF_2 = vec3(0.6180, 0.1547, 0.8284);
 #define FINE_EDGE 0.9        // filament strength in thin gas (0-1; 1 empties the gaps)...
 #define FINE_CORE 0.35       // ...and in dense gas, which keeps its body
 #define FINE_AMT_2 0.7       // octave 2's strength relative to octave 1
-#define FINE_WARP 0.6        // cells: octave 1 curls octave 2's lookup this far
+#define FINE_WARP_M 0.15     // m: octave 1 curls octave 2's lookup this far
 #define FLAME_FINE 0.2       // fire-density units: fine wrinkles of the flame edge
 #define FLAME_FINE_2 0.5     // octave 2's share of them
 
 // weight of each octave at p: fades in as the pixel footprint resolves it
+// (and out behind mostly opaque gas)
 vec2 fineWeights(vec3 p) {
   float fp = footprint(p);
   const float F1 = FINE_SCALE_1 / NOISE_FINEST_CELLS, F2 = FINE_SCALE_2 / NOISE_FINEST_CELLS;   // cycles per cell
@@ -140,24 +152,27 @@ vec2 fineWeights(vec3 p) {
 // mean-1 redistribution of uniform noise n onto its ridges
 float filament(float n) { return (FIL_EXP + 1.0) * pow(1.0 - abs(2.0 * n - 1.0), FIL_EXP); }
 
-// Smoke and steam densities d with the fine octaves (weights fw) at p.
-vec2 gasFine(vec3 p, vec2 d, vec2 fw) {
-  vec2 amt = mix(vec2(FINE_EDGE), vec2(FINE_CORE), smoothstep(vec2(0.0), vec2(BILLOW_CORE_D), d));
-  vec4 n1 = detailNoise(p, FINE_SCALE_1, FINE_OFF_1, MD_RISE.y, 1.0);
-  float k = 1.0 + fw.x * (filament(n1.g) - 1.0);
+// The fine octaves at p (weights fw; an octave weighted 0 isn't read and
+// stays at the noise mean). Smoke, steam and flames share the reads.
+void fineNoise(vec3 p, vec2 fw, out vec4 n1, out vec4 n2) {
+  n1 = detailNoise(p, FINE_SCALE_1, FINE_OFF_1, MD_RISE.y, 1.0);
+  n2 = vec4(NOISE_MEAN);
   if (fw.y > 0.0) {
-    vec3 q = p + (FINE_WARP * fw.x) * (2.0 * n1.gba - 1.0);
-    vec4 n2 = detailNoise(q, FINE_SCALE_2, FINE_OFF_2, MD_RISE.y, 1.0);
-    k *= 1.0 + (FINE_AMT_2 * fw.y) * (filament(n2.g) - 1.0);
+    vec3 q = p + (FINE_WARP_M / CELL_M * fw.x) * (2.0 * n1.gba - 1.0);
+    n2 = detailNoise(q, FINE_SCALE_2, FINE_OFF_2, MD_RISE.y, 1.0);
   }
+}
+
+// Smoke and steam densities d with the fine octaves n1, n2 (weights fw).
+vec2 gasFine(vec2 d, vec2 fw, vec4 n1, vec4 n2) {
+  vec2 amt = mix(vec2(FINE_EDGE), vec2(FINE_CORE), smoothstep(vec2(0.0), vec2(BILLOW_CORE_D), d));
+  float k = (1.0 + fw.x * (filament(n1.g) - 1.0)) * (1.0 + (FINE_AMT_2 * fw.y) * (filament(n2.g) - 1.0));
   return d * (1.0 + amt * (k - 1.0));
 }
 
-// Fine wrinkles of the flame edge at p (fire density units, mean 0).
-float flameFine(vec3 p, vec2 fw) {
-  float v = fw.x * (detailNoise(p, FINE_SCALE_1, FINE_OFF_1, MD_RISE.z, FLAME_STRETCH).b - NOISE_MEAN);
-  if (fw.y > 0.0) v += FLAME_FINE_2 * fw.y * (detailNoise(p, FINE_SCALE_2, FINE_OFF_2, MD_RISE.z, FLAME_STRETCH).b - NOISE_MEAN);
-  return FLAME_FINE * v;
+// Fine wrinkles of the flame edge (fire density units, mean 0).
+float flameFine(vec2 fw, vec4 n1, vec4 n2) {
+  return FLAME_FINE * (fw.x * (n1.b - NOISE_MEAN) + FLAME_FINE_2 * fw.y * (n2.b - NOISE_MEAN));
 }
 #endif
 `;

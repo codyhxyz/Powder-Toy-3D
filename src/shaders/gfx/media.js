@@ -132,13 +132,17 @@ vec3 gasDensity(vec3 p, float warp, out vec4 m, out vec4 nf) {
   d.xy = gasDetail(d.xy, n);
 #ifdef DETAIL_MEDIA_FINE
   vec2 fw = fineWeights(p);
-  if (fw.x > 0.0 && d.x + d.y > 0.0) d.xy = gasFine(p, d.xy, fw);
+  vec4 f1, f2;
+  if (fw.x > 0.0) {
+    fineNoise(p, fw, f1, f2);
+    d.xy = gasFine(d.xy, fw, f1, f2);
+  }
 #endif
   if (d.z > 0.0) {
     nf = gasNoise(p, MD_RISE.z, FLAME_STRETCH);
     float v = d.z + FLAME_DETAIL * (nf.b - NOISE_MEAN);
 #ifdef DETAIL_MEDIA_FINE
-    if (fw.x > 0.0) v += flameFine(p, fw);
+    if (fw.x > 0.0) v += flameFine(fw, f1, f2);
 #endif
     d.z = smoothstep(FLAME_LEVEL - FLAME_SOFT, FLAME_LEVEL + FLAME_SOFT, v);
   }
