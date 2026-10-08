@@ -30,13 +30,17 @@ export const costTier = (ms) => (ms < COST_LOW_MS ? 'low' : ms < COST_MEDIUM_MS 
 // (put the measured ms in a comment next to it); fadeM: pixel footprint
 // (metres per pixel) above which the feature draws nothing, so the view
 // shader leaves it out (gfx/detailGate.js). Infinity = always in.
+// Relief (shaders/gfx/relief.js) starts once its tallest feature, rock crags
+// (ROCK_CRAG_H · RELIEF_CRAG_TOP ≈ 5.6 mm), spans RELIEF_PX_LO = 1 pixel.
+const RELIEF_FADE_M = 0.0056;   // m per pixel
+
 export const DETAIL = [
   // relief: extra ms, worst camera: lab ~6-12 (eyeSandClose), volcano ~6 (eyeFlank). Measured on
   // a shared GPU (identical shaders varied by up to ±8 ms), so high until re-measured quiet.
-  { key: 'relief', define: 'DETAIL_RELIEF', label: 'Surface relief up close', cost: 'high',
+  { key: 'relief', define: 'DETAIL_RELIEF', label: 'Surface relief up close', cost: 'high', fadeM: RELIEF_FADE_M,
     desc: 'Sand, snow, ash, gunpowder, rock and wood get real relief when you are close: crags, clumps and bark furrows with true outlines and parallax' },
   // reliefShadow: relief + shadow vs off (bench --all): lab ~5, volcano ~20-26 ms; same caveat.
-  { key: 'reliefShadow', define: 'DETAIL_RELIEF_SHADOW', label: 'Relief self-shadowing', cost: 'high',
+  { key: 'reliefShadow', define: 'DETAIL_RELIEF_SHADOW', label: 'Relief self-shadowing', cost: 'high', fadeM: RELIEF_FADE_M,
     desc: 'The close-up relief casts sunlight shadows on itself (needs Surface relief up close)' },
 ];
 

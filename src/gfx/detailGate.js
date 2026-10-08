@@ -13,9 +13,12 @@
 // programs at (features + 1). Each variant is compiled in the background
 // (KHR_parallel_shader_compile through compileAsync) into a holder material
 // that shares the view material's shaders and uniforms, which keeps the
-// program alive in three's cache; switching to it is then free. Until a
-// variant is ready the view keeps the one it has: detail shows up a moment
-// late instead of the frame stalling on a compile.
+// program alive in three's cache, then drawn once into a 1-pixel target of
+// the view target's formats at idle time: ANGLE's Metal backend builds the
+// pipeline on a program's first draw (~0.5 s for the raymarcher), and that
+// must not land on the frame the camera walks up to something. Switching to
+// a ready variant is then free. Until a variant is ready the view keeps the
+// one it has: detail shows up a moment late instead of the frame stalling.
 import * as THREE from 'three';
 import { DETAIL, settingKey } from './detail.js';
 import { CELL_M } from '../scale.js';
@@ -36,7 +39,13 @@ export function createDetailGate(renderer, onReady) {
   let shown = '';                        // define key the view material has
   const holders = new Map();             // define key → { mat, ready }
   let timer = 0;
-  const dummy = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: false });
+  // post.js's sceneRT formats: RGBA half float colour, float depth texture
+  const dummy = new THREE.WebGLRenderTarget(1, 1, {
+    type: THREE.HalfFloatType, format: THREE.RGBAFormat, depthBuffer: true,
+    depthTexture: new THREE.DepthTexture(1, 1, THREE.FloatType),
+  });
+  const warmScene = new THREE.Scene();
+  const idle = (fn) => (globalThis.requestIdleCallback ?? ((f) => setTimeout(f)))(fn);
 
   const definesOf = (k) => Object.fromEntries(chain.slice(0, k).map((f) => [f.define, 1]));
   const keyOf = (d) => Object.keys(d).sort().join(',');
@@ -57,20 +66,31 @@ export function createDetailGate(renderer, onReady) {
     // the program's parameters (output colour space) match and it is reused.
     const o = new THREE.Mesh(mesh.geometry, h.mat);
     o.frustumCulled = false;
+    o.matrixWorld.copy(mesh.matrixWorld);
+    o.matrixAutoUpdate = false;
     const prev = renderer.getRenderTarget();
     renderer.setRenderTarget(dummy);
     const done = renderer.compileAsync(o, camera, scene);
     renderer.setRenderTarget(prev);
-    done.then(() => { h.ready = true; onReady(); }, (err) => console.error('detail variant failed to compile', err));
+    done.then(() => idle(() => {
+      if (!holders.has(key)) return;   // disposed meanwhile
+      const before = renderer.getRenderTarget();
+      warmScene.add(o);
+      renderer.setRenderTarget(dummy);
+      renderer.render(warmScene, camera);
+      renderer.setRenderTarget(before);
+      warmScene.remove(o);
+      h.ready = true;
+      onReady();
+    }), (err) => console.error('detail variant failed to compile', err));
     return h;
   }
 
   function prewarm(camera, scene) {
     clearTimeout(timer);
-    timer = setTimeout(() => {
-      const idle = globalThis.requestIdleCallback ?? ((fn) => fn());
-      idle(() => { if (mat) for (let k = 1; k <= chain.length; k++) holder(k, camera, scene); });
-    }, PREWARM_DELAY_MS);
+    timer = setTimeout(() => idle(() => {
+      if (mat) for (let k = 1; k <= chain.length; k++) holder(k, camera, scene);
+    }), PREWARM_DELAY_MS);
   }
 
   function disposeHolders() {
@@ -127,6 +147,6 @@ export function createDetailGate(renderer, onReady) {
     get level() { return level; },
     get pending() { let n = 0; holders.forEach((h) => { if (!h.ready) n++; }); return n; },   // variants still compiling
     get shown() { return shown; },
-    dispose() { clearTimeout(timer); disposeHolders(); dummy.dispose(); mat = mesh = null; },
+    dispose() { clearTimeout(timer); disposeHolders(); dummy.depthTexture.dispose(); dummy.dispose(); mat = mesh = null; },
   };
 }
