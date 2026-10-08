@@ -28,6 +28,8 @@
 // Flames are soot: sheets with a sharp edge that rise in tongues, absorbing and
 // emitting blackbody light (Kirchhoff) at the temperature of the burning gas,
 // hotter in the core, with a flicker.
+import { mediaDetailGLSL } from './mediaDetail.js';
+
 export const mediaGLSL = /* glsl */ `
 uniform highp sampler3D tMediaNoise;   // r billows, g wisps, b flame tongues, a flicker (gba: warp)
 uniform float uSimClock;               // simulation steps (wrapped)
@@ -89,8 +91,13 @@ vec3 gasBase(vec4 m) { return max(m.xyz - MEDIA_FLOOR, 0.0) * (1.0 / (1.0 - MEDI
 // gets through, so diffuse light sees sigma_t (1 - albedo g).
 const vec3 MD_TRANSPORT = MD_EXT * (1.0 - MD_ALBEDO * MD_G);
 
+${mediaDetailGLSL}
+
 // Detail noise at p, drifting up at 'rise' cells/step and stretched along y.
 vec4 gasNoise(vec3 p, float rise, float stretch) {
+#ifdef DETAIL_MEDIA_FLOW
+  return flowNoise(p, 1.0, vec3(0.0), stretch);   // riding the flow instead
+#endif
   p.y = (p.y - mod(uSimClock * rise, MEDIA_NOISE_CELLS * stretch)) / stretch;
   return texture(tMediaNoise, p * (1.0 / MEDIA_NOISE_CELLS));
 }
@@ -113,6 +120,11 @@ vec3 gasDensity(vec3 p, float warp, out vec4 m, out vec4 nf) {
   m = mediaField(p);
   nf = vec4(NOISE_MEAN);
   if (max(m.x, max(m.y, m.z)) <= MEDIA_FLOOR) return vec3(0.0);
+#ifdef DETAIL_MEDIA_FLOW
+  float fv = detailVis();   // behind opaque gas, back to the steady rise (no reads)
+  gFlowV = vec3(0.0, MD_RISE.y, 0.0);
+  if (fv > 0.0) gFlowV = mix(gFlowV, flowVel(p), fv);
+#endif
   vec4 n = gasNoise(p, MD_RISE.y, 1.0);
   if (warp > 0.0) {
     p += warp * (2.0 * n.gba - 1.0);
@@ -120,9 +132,20 @@ vec3 gasDensity(vec3 p, float warp, out vec4 m, out vec4 nf) {
   }
   vec3 d = gasBase(m);
   d.xy = gasDetail(d.xy, n);
+#ifdef DETAIL_MEDIA_FINE
+  vec2 fw = fineWeights(p);
+  vec4 f1, f2;
+  if (fw.x > 0.0) {
+    fineNoise(p, fw, f1, f2);
+    d.xy = gasFine(d.xy, fw, f1, f2);
+  }
+#endif
   if (d.z > 0.0) {
     nf = gasNoise(p, MD_RISE.z, FLAME_STRETCH);
     float v = d.z + FLAME_DETAIL * (nf.b - NOISE_MEAN);
+#ifdef DETAIL_MEDIA_FINE
+    if (fw.x > 0.0) v += flameFine(fw, f1, f2);
+#endif
     d.z = smoothstep(FLAME_LEVEL - FLAME_SOFT, FLAME_LEVEL + FLAME_SOFT, v);
   }
   return d;
@@ -166,17 +189,22 @@ vec3 hazeBend(vec3 ro, vec3 rd, float t0, float t1) {
 // lattice sample along the ray (start it at jitter * MEDIA_STEP); it carries
 // over between segments. Returns the opacity added, for depth decisions.
 float mediaSegment(vec3 ro, vec3 rd, float ta, float tb, inout float next, inout vec3 col, inout vec3 trans) {
-  if (next < ta || next >= ta + MEDIA_STEP) next = ta + mod(next - ta, MEDIA_STEP);
+  float st = MEDIA_STEP_AT(ta);
+  if (next < ta || next >= ta + st) next = ta + mod(next - ta, st);
   if (next >= tb) return 0.0;
   // Nothing here outlives the call: state kept across the tracer's loop costs
   // registers, and so occupancy, for the whole shader.
   float mu = dot(rd, uSun);
   vec3 amb = vec3(-1.0);   // per segment, on its first lit sample
   float tr = 1.0;
-  for (int k = 0; k < MEDIA_MAX_PER_SEG; k++) {
+  for (int k = 0; k < MEDIA_SEG_SAMPLES; k++) {
     if (next >= tb) break;
+#ifdef MEDIA_DETAIL_ON
+    gMediaVis = max(trans.r, max(trans.g, trans.b));
+#endif
     vec3 p = ro + rd * next;
-    next += MEDIA_STEP;
+    float dt = MEDIA_STEP_AT(next);   // this sample stands for [next, next + dt)
+    next += dt;
     vec4 m, nf;
     vec3 sig = MD_EXT * gasDensity(p, GAS_WARP, m, nf);
     float sigT = sig.x + sig.y + sig.z;
@@ -208,7 +236,7 @@ float mediaSegment(vec3 ro, vec3 rd, float ta, float tb, inout float next, inout
       S += sig.z * FLAME_RADIANCE * blackbody(T) * pow((T + C_TO_K) / FLAME_REF_K, FLAME_T_EXP);
     }
     // energy-conserving integration over the step (Hillaire 2015)
-    float att = exp(-sigT * MEDIA_STEP);
+    float att = exp(-sigT * dt);
     col += trans * S * ((1.0 - att) / sigT);
     trans *= att;
     tr *= att;

@@ -39,6 +39,11 @@ const RELIEF_FADE_M = 0.0056;   // m per pixel
 // clod's lump (2 · CLOD_LUMP_R = 0.34 cells ≈ 10 cm) spans 8 pixels (*_PX_NONE).
 const GRAINS_FADE_M = 0.05 / 8;           // m per pixel
 const CLODS_FADE_M = 0.34 * CELL_M / 8;   // m per pixel
+// Smoke filaments start once their coarser octave (FILAMENT_1_M = 20 cm)
+// passes the material LOD's fade-out (lodFade: DETAIL_FADE_HI = 0.4 cycles per
+// pixel). The finer media sampling and flow-following apply at any distance
+// (no fadeM: always in).
+const MEDIA_FINE_FADE_M = 0.4 * 0.2;   // m per pixel
 
 export const DETAIL = [
   // relief: extra ms, worst camera: lab ~6-12 (eyeSandClose), volcano ~6 (eyeFlank). Measured on
@@ -54,6 +59,22 @@ export const DETAIL = [
   { key: 'grainClusters', define: 'DETAIL_GRAIN_CLUSTERS', label: 'Loose clumps up close', fadeM: CLODS_FADE_M,
     desc: 'Up close, a lone cell of sand, snow, powder or ash is a lumpy 30 cm clod instead of a round blob',
     cost: 'high' },   // worst +15.5 ms (volcano eyeFlank; god view +7 ms: shader size, see gfx/grains.js)
+  // Smoke, steam and fire up close (shaders/gfx/mediaDetail.js). Measured on a
+  // shared, heavily contended GPU (bench base 27-86 ms instead of ~13, noise
+  // +-6 ms per camera), so tiers come from a smoke-filled close-up scene too
+  // (eye inside / beside plumes, 9 A/B rounds), where these features matter:
+  //   mediaFine  bench worst 3.3 ms (lab eyeSandClose, ~noise); plumes +14-25 ms
+  //              on a ~90 ms contended frame (~20%): high
+  //   mediaStep  bench worst 4.8 ms (volcano eyeFlank, noise: other runs 0.0, 0.7);
+  //              plumes +0.2-6 ms (one 17.6 outlier): medium
+  //   mediaFlow  bench worst 7.1 ms (lab eyeTank; other runs 0.7, 1.7); plumes
+  //              +7-15 ms: high
+  { key: 'mediaFine', define: 'DETAIL_MEDIA_FINE', label: 'Smoke filaments', fadeM: MEDIA_FINE_FADE_M,
+    desc: 'Fine wisps and filaments (20 cm and 5 cm) in smoke, steam and flames when you are close to them', cost: 'high' },
+  { key: 'mediaStep', define: 'DETAIL_MEDIA_STEP', label: 'Fine smoke sampling',
+    desc: 'Samples smoke, steam and fire more finely near the camera: crisper wisps, less grain', cost: 'medium' },
+  { key: 'mediaFlow', define: 'DETAIL_MEDIA_FLOW', label: 'Smoke follows the flow',
+    desc: 'Wisps of smoke, steam and fire ride the simulated flow instead of a steady rise', cost: 'high' },
 ];
 
 export const settingKey = (f) => `detail_${f.key}`;
