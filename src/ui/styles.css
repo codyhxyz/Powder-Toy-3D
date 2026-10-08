@@ -247,21 +247,12 @@ input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border-radius: 
 .tile::before { /* state texture */
   content: ''; position: absolute; inset: 0; pointer-events: none; opacity: 0.55;
 }
-.tile[data-kind=powder]::before {
-  background-image:
-    radial-gradient(circle at 20% 30%, rgba(0,0,0,0.22) 0 1px, transparent 1.6px),
-    radial-gradient(circle at 70% 60%, rgba(255,255,255,0.25) 0 1px, transparent 1.6px),
-    radial-gradient(circle at 45% 80%, rgba(0,0,0,0.18) 0 1px, transparent 1.6px);
-  background-size: 9px 9px, 11px 11px, 7px 7px;
-}
-.tile[data-kind=liquid]::before {
-  background: linear-gradient(180deg, rgba(255,255,255,0.32) 0 2px, rgba(255,255,255,0.08) 2px 30%, transparent 30% 72%, rgba(0,0,0,0.16) 100%);
-}
-.tile[data-kind=gas]::before {
-  background: radial-gradient(70% 60% at 35% 30%, rgba(255,255,255,0.35), transparent 70%), radial-gradient(60% 50% at 75% 80%, rgba(255,255,255,0.18), transparent 70%);
-}
-.tile[data-kind=solid]::before {
-  background: linear-gradient(135deg, rgba(255,255,255,0.18), transparent 45%, rgba(0,0,0,0.14));
+/* element tiles draw their own scene (ui/tiles/render.js) */
+.tile[data-live] { box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4); }
+.tile[data-live] canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.tile[data-live]::after { /* bevel over the scene */
+  content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28), inset 0 -2px 0 rgba(0, 0, 0, 0.22);
 }
 .tile[data-kind=tool]::before {
   background: repeating-linear-gradient(135deg, rgba(0,0,0,0.09) 0 3px, transparent 3px 7px);

@@ -1,12 +1,17 @@
 import { h, inkFor, luminance } from './dom.js';
 import { ICON } from './icons.js';
 import { PALETTE, itemByKey, toolById, isBuild, K } from '../elements.js';
+import { mountTile, setTileSettings } from './tiles/live.js';
 
 const KIND_NAME = { [K.POWDER]: 'powder', [K.LIQUID]: 'liquid', [K.GAS]: 'gas', [K.SOLID]: 'solid' };
 export const kindOf = (it) => (isBuild(it.id) ? 'build' : it.id < 0 ? 'tool' : KIND_NAME[it.kind]);
 
-// A TPT-style element tile: the element's colour with its abbreviation.
-export function tile(it, cls = '') {
+const TILE_PX = 44;     // .tile in styles.css
+const BIG_TILE_PX = 56; // .tile.big
+
+// A TPT-style element tile: the element's colour with its abbreviation. Element
+// tiles draw a small scene of the element (tiles/); live ones run it on hover.
+export function tile(it, cls = '', { live = false } = {}) {
   const t = h(`button.tile${cls}`, {
     type: 'button',
     'data-id': it.id,
@@ -15,16 +20,18 @@ export function tile(it, cls = '') {
     style: { '--c': it.color, '--ink': inkFor(it.color) },
   }, h('span', { text: it.abbr }));
   if (luminance(it.color) <= 0.28) t.dataset.dark = '';
+  if (it.id >= 0) mountTile(t, it, { px: cls.includes('big') ? BIG_TILE_PX : TILE_PX, live });
   return t;
 }
 
 // Bottom dock: brush controls, the element groups, search and collapse.
 export function createDock({ settings, onSelect, onBrushChange, onHover }) {
+  setTileSettings(settings); // tiles run with the game's gravity, speed and flow
   const tiles = [];
   const groups = PALETTE.map((g) => {
     const items = g.items.map(itemByKey);
     const els = items.map((it) => {
-      const t = tile(it);
+      const t = tile(it, '', { live: true });
       t.addEventListener('click', () => onSelect(it.id));
       t.addEventListener('pointerenter', () => onHover?.(it.id));
       t.addEventListener('pointerleave', () => onHover?.(null));

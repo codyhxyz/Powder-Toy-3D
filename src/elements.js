@@ -3,6 +3,7 @@
 //
 // Units
 //   dens   relative density (air = 1, water = 10). Only ordering + ratios matter.
+//          Gases give it at their spawn temperature and thin with heat like air.
 //   cond   thermal conductance per face (pairwise flux uses min(cond_a, cond_b))
 //   cap    volumetric heat capacity (water = 1). Stability needs 6*cond/cap < 1.
 //   temp   spawn temperature, °C
@@ -165,7 +166,7 @@ const vec3Arr = (name, fn) =>
   `const vec3 ${name}[NE] = vec3[NE](${ELEMENTS.map((e) => `vec3(${fn(e).map(f).join(', ')})`).join(', ')});`;
 
 // Melting product: sand turns into glass when it re-solidifies.
-const meltInto = (e) => (e.key === 'SAND' ? E.GLASS : e.id);
+export const meltInto = (e) => (e.key === 'SAND' ? E.GLASS : e.id);
 
 export function elementsGLSL() {
   return [

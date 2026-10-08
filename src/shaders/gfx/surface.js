@@ -188,11 +188,11 @@ Mat mixMat(Mat a, Mat b, float k) {
   return a;
 }
 
-// Lava freezes back into its ctype at MELT - LAVA_FREEZE_DROP (shaders/common.js).
+// Lava freezes back into its ctype at MELT - LAVA_FREEZE_BELOW (src/physics.js).
 float solidusOf(float ctype) {
   int ct = int(ctype);
   if (ct <= 0 || ct >= NE || MELT[ct] <= 0.0) ct = E_STONE;
-  return MELT[ct] - LAVA_FREEZE_DROP;
+  return MELT[ct] - LAVA_FREEZE_BELOW;
 }
 
 // Thermal glow of an opaque surface whose bulk is at T (°C). Kirchhoff: a

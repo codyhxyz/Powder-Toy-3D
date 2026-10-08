@@ -251,7 +251,10 @@ export function execConstruction(code, { size = 5, seed = 1 } = {}, run = runWit
   if (typeof code !== 'string' || !code.trim()) throw new Error('No code to run');
   const model = new Model(makeRng(seed));
   run(code, createApi(model, { size }));
-  if (!model.cells.size) throw new Error('The code ran but placed no cells');
+  if (!model.cells.size) {
+    // the usual cause: the code only defines a function and never calls it
+    throw new Error('The code ran but placed no cells. Construction code runs top to bottom as a function body: call put, box, ball, disc or rod directly, and if you define helper functions, call them.');
+  }
   return model.toCells();
 }
 

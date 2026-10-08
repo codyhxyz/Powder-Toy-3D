@@ -38,12 +38,12 @@ const SIGN_TOOL = -5;
 const DEFAULTS = {
   size: '128', preset: 'lab',
   tool: E.SAND, radius: 5, shape: 0, rate: 1, replace: false,
-  steps: 4, gravity: 0.025, paused: false,
+  steps: 4, gravity: 0.025, paused: false, liveTiles: true,
   view: 0, shadows: true, autoRes: true, res: Math.min(devicePixelRatio, 1.5), glow: 1.6,
   sunAz: 38, sunEl: 55, camSpeed: 1, dockCollapsed: false,
   smoothing: 1, taa: true, bloom: 0.3, exposure: 0.7,
 };
-const PERSIST = ['size', 'preset', 'tool', 'radius', 'shape', 'rate', 'replace', 'steps', 'gravity', 'view',
+const PERSIST = ['size', 'preset', 'tool', 'radius', 'shape', 'rate', 'replace', 'steps', 'gravity', 'view', 'liveTiles',
   'shadows', 'autoRes', 'res', 'glow', 'sunAz', 'sunEl', 'camSpeed', 'dockCollapsed',
   'smoothing', 'taa', 'bloom', 'exposure'];
 const STORE = 'powder-toy-3d:settings';
@@ -405,6 +405,9 @@ const settingsPanel = createSettings({
       { type: 'slider', key: 'exposure', label: 'Exposure', min: -3, max: 3, step: 0.1, def: DEFAULTS.exposure,
         fmt: (v) => `${v > 0 ? '+' : ''}${v.toFixed(1)} EV`, onChange: () => { applyGfx(); save(); } },
     ] },
+    { title: 'Element picker', rows: [
+      { type: 'switch', key: 'liveTiles', label: 'Animate element tiles on hover', onChange: save },
+    ] },
     { title: 'Camera', rows: [
       { type: 'slider', key: 'camSpeed', label: 'Move speed (WASD)', min: 0.25, max: 3, step: 0.05, def: DEFAULTS.camSpeed,
         fmt: (v) => `${v.toFixed(2)}×`, onChange: (v) => { rig.setSpeed(v); save(); } },
@@ -586,7 +589,7 @@ addEventListener('keydown', (e) => {
   else if (k === '?') actions.toggleHelp();
   else if (k === 'p' || k === 'P') actions.screenshot();
   else if (k === 'Escape') { toolbar.close(); setSettingsOpen(false); help.setOpen(false); }
-  else if (/^[1-9]$/.test(k)) { const v = VIEWS.find((x) => x.hotkey === k); if (v) setView(v.id); }
+  else if (/^[0-9]$/.test(k)) { const v = VIEWS.find((x) => x.hotkey === k); if (v) setView(v.id); }
 });
 addEventListener('keyup', (e) => {
   if (e.key === 'Alt') controls.mouseButtons.LEFT = null;
@@ -717,7 +720,7 @@ function frame(now) {
   if (runView) updateGfxUniforms(sim, SUN);   // (runDerived implies runView)
   if (runDerived) {
     sim.updateBricks();
-    if (settings.shadows && settings.view === 0) {
+    if (settings.shadows && VIEWS.find((v) => v.id === settings.view)?.shadows) {
       shadowMat.uniforms.tA.value = sim.stateA;
       shadowMat.uniforms.tBrick.value = sim.brick.texture;
       sim.run(shadowMat, shadowTarget);

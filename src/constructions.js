@@ -9,9 +9,11 @@ import builtinsSource from './constructions/builtins.js?raw';
 import { renderIso, hexBytes, cellNoise, PREVIEW_VIEWS } from './constructions/preview.js';
 import { summarizeReport } from './constructions/lint.js';
 import { execSandboxed } from './constructions/sandbox.js';
-import { buildSystemPrompt, buildChatPrompt, extractCode } from './ai/prompt.js';
-import { runAgent, MAX_NAME_CHARS } from './ai/agent.js';
-import { getProvider, registerProvider, onProvidersChange } from './ai/providers.js';
+import { buildSystemPrompt, buildChatPrompt, extractCode, MAX_NAME_CHARS } from './ai/prompt.js';
+import {
+  PROVIDERS, loadSettings, saveSettings, current, isConfigured, createModel, listModels,
+  startOpenRouterSignIn, finishOpenRouterSignIn,
+} from './ai/providers.js';
 import './constructions.css';
 
 // Constructions: whole structures (houses, trees, ...) placed with one click.
@@ -22,10 +24,11 @@ import './constructions.css';
 // ordinary elements and behave like them: a cottage's wooden walls burn while
 // its stone chimney carries the fireplace smoke away, an igloo melts.
 //
-// The PROMPT construction runs code written by a model (through a provider
-// plug-in, see ai/providers.js), pasted from any chatbot, or imported from a
-// file. That code only ever runs in a sandboxed worker and is linted for
-// physics problems before it can be placed.
+// The PROMPT construction runs code written by a model (any provider the
+// player brings a key for, via the Vercel AI SDK: see ai/providers.js), pasted
+// from any chatbot, or imported from a file. That code only ever runs in a
+// sandboxed worker and is linted for physics problems before it can be placed.
+// The AI SDK and provider packages load only when a generation starts.
 //
 // A ghost of the exact model follows the cursor and turns its front (+z) to
 // face the camera. Clicking uploads the model as a small 3D texture and one GPU
@@ -104,8 +107,13 @@ export class Constructions {
     this.draft = '';            // the prompt being typed
     this.status = '';
     this.running = null;        // AbortController of a generation in progress
-    this.registerProvider = registerProvider; // for wiring a provider from the console
-    onProvidersChange(() => { this.barFor = null; });
+    this.ai = loadSettings();   // BYOK provider, key, base URL and model
+    this.models = [];           // model ids the current provider lists
+    this.modelsFor = null;      // which provider/credentials `models` was listed for
+    this.customModel = null;    // an AI SDK model set from code, overriding the settings
+    finishOpenRouterSignIn()
+      .then((done) => { if (done) { this.ai = loadSettings(); this._setStatus('Signed in with OpenRouter.'); this.barFor = null; } })
+      .catch((err) => this._setStatus(err.message));
 
     // ghost: a depth-only pass, then a translucent colour pass that only keeps
     // the frontmost faces, so it reads as one solid object rather than a jumble
@@ -330,17 +338,33 @@ export class Constructions {
     if (item) this._runItem(item, this._itemKey(item));
   }
 
+  // For experiments: generate with any AI SDK language model instead of the
+  // settings, e.g. __app.builds.setModel(model). Pass null to go back.
+  setModel(model) {
+    this.customModel = model;
+    this.barFor = null;
+  }
+
+  get modelLabel() {
+    if (this.customModel) return this.customModel.modelId ?? 'custom model';
+    const c = current(this.ai);
+    return `${c.provider.label} · ${c.model}`;
+  }
+
+  get canGenerate() { return !!this.customModel || isConfigured(this.ai); }
+
   async _generate() {
-    const provider = getProvider(this.choice.provider);
     const request = this.draft.trim();
-    if (!provider || !request || this.running) return;
+    if (!this.canGenerate || !request || this.running) return;
     this.running = new AbortController();
     this.barFor = null;
     const size = this.settings.radius;
+    const label = this.modelLabel;
     try {
-      this._setStatus(`Asking ${provider.name}…`);
+      this._setStatus(`Asking ${label}…`);
+      const [{ runAgent }, model] = await Promise.all([import('./ai/agent.js'), this.customModel ?? createModel(this.ai)]);
       const result = await runAgent({
-        provider,
+        model,
         system: buildSystemPrompt({ examples: builtinsSource }),
         request,
         signal: this.running.signal,
@@ -362,15 +386,83 @@ export class Constructions {
       this.seed = AGENT_SEED;
       const item = { id: newId() };
       this._remember(this._itemKey(item, AGENT_SEED, size), { cells: result.cells, report: result.report });
-      this._addItem({ id: item.id, name: result.name, prompt: request, code: result.code, model: provider.name, description: result.description });
+      this._addItem({ id: item.id, name: result.name, prompt: request, code: result.code, model: label, description: result.description });
       const tokens = result.usage.inputTokens + result.usage.outputTokens;
       this._setStatus(`${result.finished ? 'Done' : 'Stopped at the step limit'}: ${summarizeReport(result.report)}${tokens ? ` · ${tokens.toLocaleString()} tokens` : ''}`);
     } catch (err) {
-      this._setStatus(err.name === 'AbortError' ? 'Cancelled.' : `Generation failed: ${err.message}`);
+      this._setStatus(this.running?.signal.aborted ? 'Cancelled.' : `Generation failed: ${err.message}`);
     } finally {
       this.running = null;
       this.barFor = null;
     }
+  }
+
+  // ---------------------------------------------------------------- model settings
+
+  _updateAI(patch, { relist = false } = {}) {
+    const id = this.ai.provider;
+    this.ai.providers[id] = { ...this.ai.providers[id], ...patch };
+    saveSettings(this.ai);
+    if (this.generateBtn) this.generateBtn.disabled = !this.canGenerate;
+    if (this.generateBtn) this.generateBtn.classList.toggle('on', this.canGenerate);
+    if (relist) this.modelsFor = null;
+  }
+
+  // List the provider's models once per provider and credentials.
+  _refreshModels() {
+    const c = current(this.ai);
+    const key = `${c.provider.id}|${c.apiKey ? 1 : 0}|${c.baseURL}`;
+    if (key === this.modelsFor) return;
+    this.modelsFor = key;
+    this.models = [];
+    listModels(this.ai).then((ids) => {
+      if (this.modelsFor !== key) return;
+      this.models = ids;
+      if (this.modelList) this.modelList.replaceChildren(...ids.map((id) => h('option', { value: id })));
+    });
+  }
+
+  // provider · credentials · model, and a one-line note
+  _modelRow() {
+    if (this.customModel) {
+      return h('div.row.model-row', {},
+        h('span.model-label', { text: `Model: ${this.modelLabel} (set from code)` }),
+        h('button.chip', { type: 'button', text: 'Use settings', on: { click: () => this.setModel(null) } }));
+    }
+    const c = current(this.ai);
+    const p = c.provider;
+    const select = h('select.provider', { 'aria-label': 'Model provider' },
+      PROVIDERS.map((x) => h('option', { value: x.id, text: x.label, selected: x.id === p.id })));
+    select.addEventListener('change', () => { this.ai.provider = select.value; saveSettings(this.ai); this.modelsFor = null; this.barFor = null; });
+    // A key is saved when the field is committed (Enter or leaving it): saving it
+    // swaps the field for Forget key, which mustn't happen mid-typing.
+    const field = (cls, type, placeholder, value, key, { relist = false, onCommit = false } = {}) => {
+      const el = h(`input.${cls}`, { type, placeholder, value, spellcheck: 'false', autocomplete: 'off' });
+      if (!onCommit) el.addEventListener('input', () => this._updateAI({ [key]: el.value.trim() }));
+      el.addEventListener('change', () => {
+        this._updateAI(onCommit ? { [key]: el.value.trim() } : {}, { relist });
+        if (relist) this._refreshModels();
+        if (onCommit) this.barFor = null;
+      });
+      el.addEventListener('keydown', (e) => e.stopPropagation());
+      return el;
+    };
+    const forget = h('button.chip', { type: 'button', text: 'Forget key', title: 'Remove the key from this browser', on: { click: () => { this._updateAI({ apiKey: '' }, { relist: true }); this.barFor = null; } } });
+    const auth = [];
+    if (p.auth === 'oauth' && !c.apiKey) {
+      auth.push(h('button.chip.on', { type: 'button', text: 'Sign in with OpenRouter', title: 'Leaves this page to approve on openrouter.ai; the scene reloads after', on: { click: () => startOpenRouterSignIn() } }));
+    }
+    if (p.auth === 'none' || p.auth === 'optional') auth.push(field('base-url', 'url', 'Server URL', c.baseURL, 'baseURL', { relist: true }));
+    const keyHint = { optional: 'Key (optional)', oauth: 'or paste a key' }[p.auth] ?? 'API key';
+    if (p.auth !== 'none') auth.push(c.apiKey ? forget : field('api-key', 'password', keyHint, '', 'apiKey', { relist: true, onCommit: true }));
+    const listId = 'build-model-list';
+    this.modelList = h(`datalist#${listId}`, {}, this.models.map((id) => h('option', { value: id })));
+    const model = field('model', 'text', 'Model id', c.model, 'model');
+    model.setAttribute('list', listId);
+    this._refreshModels();
+    return h('div.model', {},
+      h('div.row.model-row', {}, select, ...auth, model, this.modelList),
+      h('p.note', { text: p.note }));
   }
 
   async _copyPrompt() {
@@ -470,7 +562,7 @@ export class Constructions {
   _barKey(build) {
     if (!build) return null;
     if (build.key !== PROMPT) return `${build.key}|${this.choice[build.key] ?? ''}`;
-    return `${PROMPT}|${this.choice[PROMPT] ?? ''}|${this.mine.length}|${!!this.running}|${!!getProvider(this.choice.provider)}`;
+    return `${PROMPT}|${this.choice[PROMPT] ?? ''}|${this.mine.length}|${!!this.running}|${this.ai.provider}|${!!current(this.ai).apiKey}|${!!this.customModel}`;
   }
 
   // built-ins: variant chips (with shuffle) and a reroll
@@ -495,7 +587,6 @@ export class Constructions {
   _promptBar() {
     const item = this.activeItem();
     const current = item ? item.id : NEW;
-    const provider = getProvider(this.choice.provider);
     const button = (label, opts, fn) => h(`button.chip${opts.on ? '.on' : ''}`, {
       type: 'button', title: opts.title, disabled: !!opts.disabled, html: `${opts.icon ?? ''}<span>${label}</span>`, on: { click: fn },
     });
@@ -526,20 +617,19 @@ export class Constructions {
         if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); this._generate(); }
         e.stopPropagation();
       });
+      this.generateBtn = this.running ? null : button('Generate', {
+        on: this.canGenerate, disabled: !this.canGenerate,
+        title: 'Write it with the chosen model (⌘↵). Choose a provider and model above.',
+      }, () => this._generate());
       actions = h('div.row', {},
         input,
-        this.running
-          ? button('Cancel', {}, () => this.running?.abort())
-          : button('Generate', {
-            on: !!provider, disabled: !provider,
-            title: provider ? `Write it with ${provider.name} (⌘↵)` : 'No model connected yet. Providers are plug-ins: see src/ai/providers.js',
-          }, () => this._generate()),
+        this.running ? button('Cancel', {}, () => this.running?.abort()) : this.generateBtn,
         button('Copy prompt', { title: 'Copy a prompt for any chatbot' }, () => this._copyPrompt()),
         button('Paste code', { title: 'Run code from a chatbot or your own' }, () => this._openEditor()),
         button('Import', { title: 'Add a construction from a .json file' }, () => this._import()));
     }
     this.statusEl = h('p.status', { 'aria-live': 'polite', text: this.status });
-    this.bar.replaceChildren(chips, actions, this.statusEl);
+    this.bar.replaceChildren(...[chips, !item && this._modelRow(), actions, this.statusEl].filter(Boolean));
   }
 
   // ---------------------------------------------------------------- ghost

@@ -59,14 +59,34 @@ and *New seed* work.
    `variants`) and list its key in the Constructions group of `PALETTE`.
 3. `npm run construct -- --builtins` must print `ok` for every variant.
 
-## Model providers
+## Model providers (bring your own key)
 
-Prompt-to-construction in the app is provider-neutral. A provider is `{ id, name, generate }` registered with
-`registerProvider` from `src/ai/providers.js`. `generate({ system, messages, tools, signal })` does one model turn on
-provider-neutral messages and returns `{ content, usage }`; the file documents the exact shapes. The agent loop
-(`src/ai/agent.js`) does the rest: it runs `construct_exec` calls in the sandbox, sends back the lint report and two
-preview images, and stops at `finish` or after 6 turns. `npm run construct -- --selftest` runs that loop against a
-scripted provider.
+The app talks to models through the [Vercel AI SDK](https://ai-sdk.dev) with the player's own key, straight from the
+browser; there is no server of ours in between. Providers are listed in `src/ai/providers.js`, and each one lazy-loads its
+official AI SDK package:
 
-For quick experiments, a provider can be registered from the browser console with
-`__app.builds.registerProvider({ id, name, generate })`.
+| Provider | Package | Credentials |
+| --- | --- | --- |
+| OpenRouter (hundreds of models, one account) | `@openrouter/ai-sdk-provider` | *Sign in with OpenRouter* (OAuth PKCE, no key to copy) or a pasted key |
+| Anthropic | `@ai-sdk/anthropic` | API key (sent with the `anthropic-dangerous-direct-browser-access` header) |
+| OpenAI | `@ai-sdk/openai` | API key |
+| Google | `@ai-sdk/google` | API key |
+| Ollama (local) | `ai-sdk-ollama` | none; server URL, default `http://localhost:11434` |
+| LM Studio, llama.cpp, vLLM, any OpenAI-compatible server | `@ai-sdk/openai-compatible` | optional key; server URL |
+
+Keys stay in the browser's localStorage (`powder-toy-3d:ai`) and go only to their provider: never into construction
+exports, URLs or the multiplayer stream. Players should use keys with a spending limit.
+
+Local servers must allow the page's origin. Ollama allows `localhost` pages by default; for the deployed site start it with
+`OLLAMA_ORIGINS=https://<site>`. LM Studio has a CORS switch in its server settings. Small local models (8B) often write
+code that doesn't run; the loop sends them the error each time, but expect a larger model to do much better.
+
+**Subscriptions.** Claude Pro/Max, ChatGPT Plus/Pro and Gemini subscriptions can't be used by a third-party web app. Use them
+through the MCP server instead: `claude mcp add powder-constructions -- node scripts/mcp-construct.mjs` (Claude Code; Claude
+Desktop, Codex and Cursor take the same command in their MCP settings). The agent builds with `construct_exec`; bring the code
+into the app with *Paste code*.
+
+The agent loop (`src/ai/agent.js`) is the AI SDK's tool loop (`generateText` with `construct_exec` and `finish` tools): it
+runs each `construct_exec` in the sandbox, sends back the lint report and two preview images, and stops at `finish` or after
+6 steps. `npm run construct -- --selftest` runs it against the AI SDK's mock model. To try any other AI SDK model from the
+browser console: `__app.builds.setModel(model)`.

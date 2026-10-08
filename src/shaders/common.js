@@ -1,5 +1,6 @@
 import { elementsGLSL } from '../elements.js';
-import { incandescenceGLSL, KELVIN } from '../gfx/incandescence.js';
+import { incandescenceGLSL } from '../gfx/incandescence.js';
+import { physicsGLSL } from '../physics.js';
 
 // Shared GLSL prelude. The 3D grid (NX × NY × NZ) is stored as a 2D atlas of
 // horizontal Y-slices, TX slices per atlas row. Every pass reads cells with
@@ -33,13 +34,7 @@ precision highp sampler2D;
 #define MY ${g.my}
 #define MZ ${g.mz}
 #define MTX ${g.mtx}
-#define AMBIENT 20.0
-// lava freezes back into what it melted from this far below that element's melting point (°C)
-#define LAVA_FREEZE_DROP 150.0
-#define TAU 6.2831853   // a full turn, radians
-#define V_MAX 1.0       // cells/step: the automaton moves a cell at most one cell per step
-#define TEMP_MAX 6000.0 // °C: hottest a cell can get (coldest is absolute zero, -C_TO_K)
-#define SPAWN_FALL_SPEED 0.3   // cells/step: new powder or liquid (brush, clone) starts out falling
+${physicsGLSL()}
 #define SEED_MAX ${SEED_MAX}   // a cell's random seed (the fraction in state A's w) stays below this
 
 ${elementsGLSL()}
@@ -88,13 +83,13 @@ float rnd(inout uint s) {
   return float(s) * UINT_TO_UNIT;
 }
 
-// Air gets lighter as it warms: density 1 at AMBIENT, changing by 1 per
-// AIR_DENSITY_T °C, at most AIR_DENSER_MAX denser (cold) or AIR_LIGHTER_MAX lighter (hot).
-#define AIR_DENSITY_T 2000.0
-#define AIR_DENSER_MAX 0.2
-#define AIR_LIGHTER_MAX 0.45
-float airDensity(float T) { return 1.0 - clamp((T - AMBIENT) / AIR_DENSITY_T, -AIR_DENSER_MAX, AIR_LIGHTER_MAX); }
-float densityOf(int id, float T) { return id == E_EMPTY ? airDensity(T) : DENS[id]; }
+float airDensity(float T) { return 1.0 - clamp((T - AMBIENT) / AIR_DENS_SPAN, AIR_DENS_LO, AIR_DENS_HI); }
+// Gases thin with heat the way air does (ideal gas): a gas's DENS is its density
+// at its spawn temperature, so hot smoke rises through the hot air around a fire.
+float densityOf(int id, float T) {
+  if (id == E_EMPTY) return airDensity(T);
+  return KIND[id] == K_GAS ? DENS[id] * airDensity(T) / airDensity(SPAWNT[id]) : DENS[id];
+}
 bool isGasLike(int id) { return KIND[id] == K_GAS || id == E_EMPTY; }
 bool isFluid(int id) { return KIND[id] == K_LIQUID || isGasLike(id); }
 bool movable(int id) { return KIND[id] != K_SOLID; }
@@ -102,7 +97,7 @@ bool movable(int id) { return KIND[id] != K_SOLID; }
 // Rough blackbody colour (normalised) for a temperature in °C: Tanner Helland's
 // fit (2012), in hundreds of kelvin with its knee at 6600 K; the numbers are the
 // fit's coefficients.
-#define C_TO_K ${KELVIN}
+#define C_TO_K KELVIN   // (physics.js)
 vec3 blackbody(float tC) {
   float t = (tC + C_TO_K) / 100.0;
   float r = t <= 66.0 ? 1.0 : clamp(1.292936 * pow(t - 60.0, -0.1332047), 0.0, 1.0);

@@ -53,6 +53,14 @@ The dock groups elements like a periodic-table strip, each tile in the element's
 - **Constructions:** HOUS (cottage, log cabin, brick, greenhouse), TREE (oak, pine, birch, palm, willow, dead), CAMP, IGLO, BRRL (oil drum, powder keg), AQUA, FNTN, AI (your own, written by a model or pasted)
 
 All element properties live in one table (`src/elements.js`) that is baked into the shaders as GLSL constants.
+The rules around them (latent heats, pressure diffusion, collision restitution, tool strengths...) live in `src/physics.js`,
+which reaches the shaders as `#define`s.
+
+Each element tile is a tiny live scene. Hover it and a CPU port of the same engine (`src/ui/tiles/`) runs a small box of that element,
+with the same table, the same constants from `src/physics.js`, and the game's gravity, speed and flow settings.
+The cursor uses the game's own tools: Pressure on powders and liquids, the element's own brush on gases, and Heat on solids.
+A new element with only a table row needs nothing else. One that gets its own special case in the GPU passes needs the same case
+in `src/ui/tiles/engine.js`; `node scripts/check-tile-engine.mjs` lists any that are missing.
 
 ## Constructions
 
@@ -72,8 +80,11 @@ Every construction is a small program written against one API (`src/construction
 - **AI tile:** describe a construction and *Generate* asks a model to write it. The model's code runs in a sandboxed worker
   (no network, 5 s limit) and is checked by a physics lint (`src/constructions/lint.js`: liquid that can leak through
   diagonal gaps, unsupported powder, clones with no source). The report and two pictures go back to the model until the build
-  is clean. Model providers are plug-ins (`src/ai/providers.js`); until one is registered, *Copy prompt* gives a prompt for
-  any chatbot and *Paste code* runs its reply. Your constructions are saved, and export and import as `.json`.
+  is clean. Models come through the Vercel AI SDK with your own key (`src/ai/providers.js`): OpenRouter (with *Sign in with
+  OpenRouter*), Anthropic, OpenAI, Google, or a local model through Ollama, LM Studio or any OpenAI-compatible server. Keys
+  stay in your browser. Without a key, *Copy prompt* gives a prompt for any chatbot and *Paste code* runs its reply.
+  Subscriptions (Claude, ChatGPT, Gemini) work through the MCP server below. Your constructions are saved, and export and
+  import as `.json`.
 - **Coding agents:** `npm run construct -- my-thing.js --png out.png` runs code headlessly and prints the lint report;
   `npm run construct -- --builtins` lints every built-in; `npm run mcp:construct` serves the same tools over MCP.
   See [docs/constructions.md](docs/constructions.md).
@@ -103,7 +114,8 @@ Density decides whether it can displace its neighbour, so sand sinks through wat
 - **Latent heat.** Water, ice, snow and steam pin their temperature at 0 °C or 100 °C while banking energy until a full latent heat
   (80 for fusion, 540 for vaporisation, in water-heat-capacity units) has been absorbed or released.
   That's why ice keeps water at 0 °C, why boiling takes a while, and why lava hitting the sea makes a burst of steam and a rock crust.
-- **Convection.** Air density depends on temperature, so hot air rises and carries heat.
+- **Convection.** Air and gases thin with temperature the way an ideal gas does, so hot air rises and carries heat,
+  and smoke from a fire rises with it.
 - **Combustion.** Flammables above their ignition temperature that touch air burn their fuel, release heat and spawn flames into
   neighbouring air. Fire spreads purely through temperature. Gunpowder detonates.
 - **Phase changes.** Melting turns material into lava that remembers its origin: stone becomes stone again, sand becomes glass, metal becomes metal.
@@ -181,7 +193,7 @@ colours stay exact.
 
 ### Views
 
-Number keys switch between five views (the views menu shows a live thumbnail of each). Colormaps live in `src/views.js` and are baked
+Number keys switch between six views (the views menu shows a live thumbnail of each). Colormaps live in `src/views.js` and are baked
 into the shader, so the on-screen legend always matches.
 
 | Key | View | Shows |
@@ -191,6 +203,7 @@ into the shader, so the on-screen legend always matches.
 | `3` | Pressure | the air pressure field as a cloud, and where blasts hit surfaces |
 | `4` | Flow | what's moving and which way: falling, sliding, rising, plus moving air |
 | `5` | X-ray | everything see-through in its own colour, denser materials more solid |
+| `0` | Plain | the original look from before the smooth renderer: flat-coloured blocks, sunlight, shadows and glow |
 
 ## Signs
 

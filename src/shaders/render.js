@@ -9,6 +9,8 @@ import { lightingGLSL } from './gfx/lighting.js';
 import { surfaceGLSL } from './gfx/surface.js';
 import { liquidGLSL } from './gfx/liquid.js';
 import { mediaGLSL } from './gfx/media.js';
+import { plainGLSL } from './gfx/plain.js';
+
 
 // Hybrid raymarcher. Rays walk the voxel grid with an Amanatides–Woo DDA
 // (4×4×4 bricks skip empty space). What they hit depends on the element's look
@@ -602,6 +604,8 @@ ${march('marchXray', 0, /* glsl */ `
     }`, 'dataFloor(hp, XRAY_FLOOR_LO, XRAY_FLOOR_HI)')}
 
 #define DATA_MIN_ALPHA 0.002   // pixels covered less than this are left empty
+${plainGLSL(g)}
+
 void dataView(vec3 ro, vec3 rd, float t0, vec3 bh) {
   vec3 col = vec3(0.0);
   float trans = 1.0, tHit = -1.0;
@@ -653,6 +657,7 @@ void main() {
   vec3 bh = boxHit(ro, rd);
   float t0 = max(bh.x, 0.0);
   if (bh.y <= t0) discard;
+  if (CUR_VIEW == VIEW_PLAIN) { plainView(ro, rd, t0, bh); return; }
   if (CUR_VIEW != VIEW_REALISTIC) { dataView(ro, rd, t0, bh); return; }
   float jit = ign(gl_FragCoord.xy, float(uFrame));
   float mNext = jit * MEDIA_STEP;   // next media sample along the ray (gfx/media.js)

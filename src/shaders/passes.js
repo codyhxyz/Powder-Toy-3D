@@ -26,10 +26,7 @@ uniform vec3 uCenter;
 uniform float uRadius;
 uniform int uShape;     // 0 sphere, 1 cube
 #define PAINT_RNG_SALT 0xb7u      // salt that gives the brush its own random stream (seed3)
-#define BRUSH_CORE 0.6            // tools act fully inside this share of the radius, fading to the edge
 #define BRUSH_EDGE_EPS 0.001      // keeps smoothstep's edges apart at radius 0
-#define HEAT_TOOL_RATE 30.0       // °C per step the heat / cool tools add at the brush centre
-#define BLAST_TOOL_RATE 6.0       // pressure per step the pressure tool adds at the brush centre
 uniform int uTool;      // element id, or negative tool id
 uniform float uRate;    // spawn density multiplier
 uniform bool uReplace;
@@ -46,7 +43,7 @@ void main() {
   vec3 d = vec3(p) + 0.5 - uCenter;
   float r = uShape == 0 ? length(d) : max(abs(d.x), max(abs(d.y), abs(d.z)));
   if (r > uRadius) return;
-  float falloff = 1.0 - smoothstep(uRadius * BRUSH_CORE, uRadius + BRUSH_EDGE_EPS, r);
+  float falloff = 1.0 - smoothstep(uRadius * TOOL_FALLOFF, uRadius + BRUSH_EDGE_EPS, r);
 
   uint rs = seed3(p, uFrame, PAINT_RNG_SALT);
   int id = eid(a);
@@ -58,17 +55,17 @@ void main() {
     float T = SPAWNT[uTool];
     float ctype = uTool == E_LAVA ? float(E_STONE) : 0.0;
     oA = vec4(float(uTool), T, SPAWNLIFE[uTool], ctype + rnd(rs) * SEED_MAX);
-    float vy = KIND[uTool] == K_POWDER || KIND[uTool] == K_LIQUID ? -SPAWN_FALL_SPEED : 0.0;
+    float vy = KIND[uTool] == K_POWDER || KIND[uTool] == K_LIQUID ? SPAWN_DROP_V : 0.0;
     oB = vec4(0.0, vy, 0.0, b.w);
   } else if (uTool == T_ERASE) {
     oA = vec4(float(E_EMPTY), AMBIENT, 0.0, rnd(rs) * SEED_MAX);
     oB = vec4(0.0, 0.0, 0.0, b.w);
   } else if (uTool == T_HEAT) {
-    oA.y = min(a.y + HEAT_TOOL_RATE * falloff, TEMP_MAX);
+    oA.y = min(a.y + TOOL_HEAT * falloff, CELL_TEMP_MAX);
   } else if (uTool == T_COOL) {
-    oA.y = max(a.y - HEAT_TOOL_RATE * falloff, -C_TO_K);
+    oA.y = max(a.y - TOOL_HEAT * falloff, CELL_TEMP_MIN);
   } else if (uTool == T_BLAST) {
-    oB.w = b.w + BLAST_TOOL_RATE * falloff;
+    oB.w = b.w + TOOL_PRESSURE * falloff;
   }
 }
 `;
