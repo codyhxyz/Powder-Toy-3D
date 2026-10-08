@@ -27,7 +27,9 @@ export const costTier = (ms) => (ms < COST_LOW_MS ? 'low' : ms < COST_MEDIUM_MS 
 
 // The features. key: settings key suffix; define: GLSL macro; label: the
 // setting's name; desc: tooltip; cost: tier from tools/detail-bench.mjs
-// (put the measured ms in a comment next to it).
+// (put the measured ms in a comment next to it); fadeM: pixel footprint
+// (metres per pixel) above which the feature draws nothing, so the view
+// shader leaves it out (gfx/detailGate.js). Infinity = always in.
 export const DETAIL = [
 ];
 

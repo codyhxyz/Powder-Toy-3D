@@ -27,6 +27,7 @@ const SIM_STEPS = 900;     // the lab sand has landed and piled
 const ROUNDS = 7;          // A/B rounds per feature and camera (median taken)
 const FRAMES = 20;         // renders per timing sample
 const WARM_FRAMES = 4;     // renders after a switch before timing (program compile, caches)
+const GATE_WAIT_FRAMES = 60;  // × WARM_FRAMES, at most, for background shader compiles
 const SETTLE_FRAMES = 30;  // frame-loop frames after moving the camera (uniforms, TAA)
 // Cameras (128³ layout, grid cells). null = the home (god) view. Eye
 // cameras stand a POV-height body on whatever is under `feet` = [x, z]
@@ -106,15 +107,25 @@ async function setCam(cam) {
     a.controls.update();
   }, [cam, EYE_H, LOOK_DROP, GAS_IDS]);
   await frames(SETTLE_FRAMES);
+  await settleGate();
 }
 
-// switch features on/off (keys → bool), let the frame loop pick it up
+// switch features on/off (keys → bool), let the frame loop pick it up and
+// wait for the distance gate (gfx/detailGate.js) to finish compiling the
+// variant this camera wants
 async function setDetail(state) {
   await p.evaluate((state) => {
     const a = window.__app;
     Object.assign(a.settings, state);
     a.applyDetail();
   }, state);
+  await settleGate();
+}
+async function settleGate() {
+  for (let i = 0; i < GATE_WAIT_FRAMES; i++) {
+    await frames(WARM_FRAMES);
+    if (await p.evaluate(() => window.__app.detailGate.pending === 0)) break;
+  }
   await frames(WARM_FRAMES);
 }
 

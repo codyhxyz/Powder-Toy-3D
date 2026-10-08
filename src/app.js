@@ -17,6 +17,7 @@ import { inkFor, luminance } from './ui/dom.js';
 import { logoMark } from './ui/logo.js';
 import { gfx, gfxUniforms, updateGfxUniforms } from './gfx/uniforms.js';
 import { DETAIL, settingKey, detailDefaults, detailDefines, detailRows } from './gfx/detail.js';
+import { createDetailGate } from './gfx/detailGate.js';
 import { createPost, TAA_WEIGHT_STABLE } from './gfx/post.js';
 import { createPacer, settleFrames, sceneKey } from './gfx/pacing.js';
 import { CHANNELS, MEDIA } from './gfx/materials.js';
@@ -435,11 +436,15 @@ const settingsPanel = createSettings({
   footer: [['Reset all settings', resetSettings]],
 });
 
-// Close-up detail features compile in only when switched on (gfx/detail.js).
+// Close-up detail features compile in only when switched on (gfx/detail.js),
+// and into the view only while the camera is near enough for them to show
+// (gfx/detailGate.js). The shadow map sees every switched-on feature.
 let detailVersion = 0;
+const detailGate = createDetailGate(renderer, () => pacer.wake());
 function applyDetail() {
-  const defines = detailDefines(settings);
-  for (const m of [volume.material, shadowMat]) { m.defines = { ...defines }; m.needsUpdate = true; }
+  shadowMat.defines = detailDefines(settings);
+  shadowMat.needsUpdate = true;
+  detailGate.configure(volume, settings, camera, scene);
   detailVersion++;   // the shadow map is a derived pass: redo it
   post.reset();
 }
@@ -772,6 +777,7 @@ function frame(now) {
     u.tBrick.value = sim.brick.texture;
     u.tLight.value = sim.lightTexture;
     u.uCam.value.copy(camera.position).applyMatrix4(invVol.copy(volume.matrixWorld).invert());
+    detailGate.update(camera, u.uCam.value, [sim.g.nx, sim.g.ny, sim.g.nz], scene);
     u.uView.value = settings.view;
     u.uShadows.value = settings.shadows;
     u.uLightGain.value = settings.glow;
@@ -828,6 +834,7 @@ try {
     get sim() { return sim; }, get volume() { return volume; }, get scale() { return scale; }, get signs() { return signs; }, get builds() { return builds; },
     SUN, scene, settings, camera, controls, loadPreset, selectTool, setView, hover, renderer, rig, renderThumb, gfx, post, mp,
     applyDetail,   // after changing settings.detail_* by hand
+    detailGate,    // .level / .shown: which close-up features the view has compiled in
     THREE,         // for tools (tools/detail-bench.mjs makes its own targets)
     requestRender: () => pacer.wake(),   // for changes the frame loop can't see (async results)
   };
