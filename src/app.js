@@ -21,6 +21,8 @@ import { createPacer, settleFrames, sceneKey } from './gfx/pacing.js';
 import { CHANNELS, MEDIA } from './gfx/materials.js';
 import { GI_BLEND } from './sim.js';
 import { createMultiplayer } from './net/multiplayer.js';
+import { finishSignIn, account, accountsEnabled } from './account.js';
+import { accountSection } from './ui/account-section.js';
 
 // Optional modules (built in parallel); the app works without them.
 const optional = import.meta.glob(['./views.js', './signs.js', './constructions.js'], { eager: true });
@@ -412,9 +414,15 @@ const settingsPanel = createSettings({
       { type: 'slider', key: 'camSpeed', label: 'Move speed (WASD)', min: 0.25, max: 3, step: 0.05, def: DEFAULTS.camSpeed,
         fmt: (v) => `${v.toFixed(2)}×`, onChange: (v) => { rig.setSpeed(v); save(); } },
     ] },
+    ...(accountsEnabled ? [accountSection({ toast: (text) => hud.toast(text) })] : []),
   ],
   footer: [['Reset all settings', resetSettings]],
 });
+
+// Accounts: take the session the relay just sent back (#tpt3d_session=…) and say how it went
+const signInResult = finishSignIn();
+if (signInResult.error) hud.toast(signInResult.error);
+account().then((user) => { if (signInResult.signedIn && user) hud.toast(`Signed in as ${user.name}`); });
 
 function resetSettings() {
   const keep = { size: settings.size, preset: settings.preset, tool: settings.tool, paused: settings.paused, dockCollapsed: settings.dockCollapsed };

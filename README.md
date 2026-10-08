@@ -85,6 +85,13 @@ Every construction is a small program written against one API (`src/construction
   stay in your browser. Without a key, *Copy prompt* gives a prompt for any chatbot and *Paste code* runs its reply.
   Subscriptions (Claude, ChatGPT, Gemini) work through the MCP server below. Your constructions are saved, and export and
   import as `.json`.
+- **Accounts:** the default model, *Powder Toy AI (free)*, goes through the relay's OpenAI proxy (`relay/ai.js`): one
+  generation a day without an account, 10 a day signed in with Google or GitHub, 100 on the paid plan. The relay runs the
+  sign-in (`relay/auth.js`) and sends the page back with a session token in the URL fragment; `src/account.js` keeps it in
+  localStorage (no cookies) and sends it as `Authorization: Bearer` to `/auth/*` and the AI proxy. A random nonce in the
+  return URL and in sessionStorage means a token only counts in the tab that asked for it. *Settings → Account* signs
+  out or deletes the account, and [public/privacy.html](public/privacy.html) says what's stored. Against a local relay
+  (`npm run relay`) there's also *Dev sign-in*, which skips OAuth; it needs `AUTH_DEV=1` in `relay/.dev.vars`.
 - **Coding agents:** `npm run construct -- my-thing.js --png out.png` runs code headlessly and prints the lint report;
   `npm run construct -- --builtins` lints every built-in; `npm run mcp:construct` serves the same tools over MCP.
   See [docs/constructions.md](docs/constructions.md).
