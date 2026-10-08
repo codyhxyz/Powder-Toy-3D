@@ -53,6 +53,10 @@ export const mediaDetailGLSL = /* glsl */ `
 #define DETAIL_VIS_LO 0.05      // ray transmittance below which detail is off...
 #define DETAIL_VIS_HI 0.2       // ...and above which it is fully on
 float gMediaVis = 1.0;          // the ray's transmittance at the current media sample (set by mediaSegment)
+// how much detail the current sample gets. Smooth: a hard switch would draw
+// the iso-transmittance shell around the eye, and HDR flames behind it show
+// even a few percent
+float detailVis() { return smoothstep(DETAIL_VIS_LO, DETAIL_VIS_HI, gMediaVis); }
 #endif
 
 // ---- march step ----
@@ -62,8 +66,7 @@ float gMediaVis = 1.0;          // the ray's transmittance at the current media 
 // lattice samples in one cell segment: sqrt(3) / MEDIA_STEP_MIN rounded up
 #define MEDIA_SEG_SAMPLES ${Math.ceil(Math.sqrt(3) / STEP_MIN_CELLS)}
 float mediaStepAt(float t) {
-  float fine = clamp(t * MEDIA_STEP_PER_DIST, MEDIA_STEP_MIN, MEDIA_STEP);
-  return gMediaVis > DETAIL_VIS_LO ? fine : MEDIA_STEP;
+  return mix(MEDIA_STEP, clamp(t * MEDIA_STEP_PER_DIST, MEDIA_STEP_MIN, MEDIA_STEP), detailVis());
 }
 #define MEDIA_STEP_AT(t) mediaStepAt(t)
 #else
@@ -73,7 +76,8 @@ float mediaStepAt(float t) {
 
 // ---- advection by the flow ----
 #ifdef DETAIL_MEDIA_FLOW
-#define FLOW_PERIOD 32.0     // sim steps each noise copy rides the flow before restarting (divides the clock wrap)
+#define FLOW_PERIOD 16.0     // sim steps each noise copy rides the flow before restarting (divides the clock wrap);
+                             // short, so per-particle velocity jitter shears the noise less
 #define FLOW_MAX 1.0         // cells/step: the sim moves a particle at most one cell a step
 #define FLOW_PHASES 2        // noise copies, evenly staggered over the cycle
 // tile offset per cycle, so a restarted copy shows new detail (fractions of a tile, mutually irrational-ish)
@@ -147,7 +151,7 @@ const vec3 FINE_OFF_2 = vec3(0.6180, 0.1547, 0.8284);
 vec2 fineWeights(vec3 p) {
   float fp = footprint(p);
   const float F1 = FINE_SCALE_1 / NOISE_FINEST_CELLS, F2 = FINE_SCALE_2 / NOISE_FINEST_CELLS;   // cycles per cell
-  return vec2(lodFade(F1, fp), lodFade(F2, fp)) * smoothstep(DETAIL_VIS_LO, DETAIL_VIS_HI, gMediaVis);
+  return vec2(lodFade(F1, fp), lodFade(F2, fp)) * detailVis();
 }
 // mean-1 redistribution of uniform noise n onto its ridges
 float filament(float n) { return (FIL_EXP + 1.0) * pow(1.0 - abs(2.0 * n - 1.0), FIL_EXP); }

@@ -121,7 +121,9 @@ vec3 gasDensity(vec3 p, float warp, out vec4 m, out vec4 nf) {
   nf = vec4(NOISE_MEAN);
   if (max(m.x, max(m.y, m.z)) <= MEDIA_FLOOR) return vec3(0.0);
 #ifdef DETAIL_MEDIA_FLOW
-  gFlowV = gMediaVis > DETAIL_VIS_LO ? flowVel(p) : vec3(0.0, MD_RISE.y, 0.0);
+  float fv = detailVis();   // behind opaque gas, back to the steady rise (no reads)
+  gFlowV = vec3(0.0, MD_RISE.y, 0.0);
+  if (fv > 0.0) gFlowV = mix(gFlowV, flowVel(p), fv);
 #endif
   vec4 n = gasNoise(p, MD_RISE.y, 1.0);
   if (warp > 0.0) {
