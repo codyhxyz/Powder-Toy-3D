@@ -7,7 +7,6 @@
     "build": "vite build",
     "preview": "vite preview",
     "relay": "wrangler dev --config relay/wrangler.toml",
-    "deploy": "vite build && npx wrangler pages deploy dist --project-name tpt3d --branch main --commit-dirty=true",
     "construct": "node scripts/construct.mjs",
     "mcp:construct": "node scripts/mcp-construct.mjs"
   },
