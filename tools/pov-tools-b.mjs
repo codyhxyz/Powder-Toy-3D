@@ -207,25 +207,32 @@ if (only.includes('phys')) {
         aim: { valid: true, cell: new THREE.Vector3(45, 5, 65), face: 2, id, dist: surface.distanceTo(eye) }, player, ...over });
       tool.update(ctx({ primaryPressed: true }));
       T.steps(4);
-      // raise the aim over 1 s to a point 12 cells up, then hold 3 s
+      // gather for 0.5 s, raise the aim over 2 s to a point 12 cells up, then hold 3 s
       const target = new THREE.Vector3(45, 18, 65);
-      const frames = 60, holdFrames = 180;
-      for (let f = 1; f <= frames + holdFrames; f++) {
-        const k = Math.min(f / frames, 1);
+      const gather = 30, frames = 120, holdFrames = 180;
+      for (let f = 1; f <= gather + frames + holdFrames; f++) {
+        const k = THREE.MathUtils.clamp((f - gather) / frames, 0, 1);
         dir = surface.clone().lerp(target, k).sub(eye).normalize();
         tool.update(ctx({}));
         T.steps(4);
+        if (f % 60 === 0) {
+          const cs = T.read().cells(id);
+          const h = tool.hold;
+          const near = cs.filter((c) => new THREE.Vector3(c.x + 0.5, c.y + 0.5, c.z + 0.5).distanceTo(h) < 5.5).length;
+          (out.trace ??= []).push(`${mat} f${f} com ${tool.readCom().map((v) => v.toFixed(2))} hold.y ${h.y.toFixed(1)} near ${near} above6 ${cs.filter((c) => c.y > 6).length}`);
+        }
       }
       const hold = tool.hold;
       const cells = T.read().cells(id);
       const lifted = cells.filter((c) => c.y > 8);
       const cen = lifted.reduce((s, c) => s.add(new THREE.Vector3(c.x + 0.5, c.y + 0.5, c.z + 0.5)), new THREE.Vector3()).divideScalar(lifted.length || 1);
       const status = tool.status();
-      // fling along the aim
+      // fling along the aim: the held cells' velocity right after, and where they are 12 steps on
       tool.update(ctx({ secondaryPressed: true, secondary: true }));
-      const flungAt = cen.clone();
+      const flungCells = T.read().cells(id).filter((c) => c.y > 8);
+      const vFling = flungCells.reduce((s, c) => s.add(new THREE.Vector3(...c.v)), new THREE.Vector3()).divideScalar(flungCells.length || 1);
       T.steps(12);
-      const after = T.read().cells(id).filter((c) => c.y > 4 && c.x > 46);
+      const after = T.read().cells(id).filter((c) => c.y > 4 && !(c.x >= 40 && c.x < 50 && c.z >= 60 && c.z < 70 && c.y < 8));
       const cen2 = after.reduce((s, c) => s.add(new THREE.Vector3(c.x + 0.5, c.y + 0.5, c.z + 0.5)), new THREE.Vector3()).divideScalar(after.length || 1);
       T.steps(200);
       const n1 = T.count()[id];
@@ -233,7 +240,7 @@ if (only.includes('phys')) {
         hold: hold?.toArray().map((v) => +v.toFixed(1)), status,
         lifted: lifted.length, centroid: cen.toArray().map((v) => +v.toFixed(1)),
         meanDistFromHold: +(lifted.reduce((s, c) => s + new THREE.Vector3(c.x + 0.5, c.y + 0.5, c.z + 0.5).distanceTo(hold), 0) / (lifted.length || 1)).toFixed(2),
-        flungAhead: after.length, flungCentroid: cen2.toArray().map((v) => +v.toFixed(1)), flungFrom: flungAt.toArray().map((v) => +v.toFixed(1)),
+        flingV: vFling.toArray().map((v) => +v.toFixed(2)), flungCentroid12: cen2.toArray().map((v) => +v.toFixed(1)),
         dirAtFling: dir.toArray().map((v) => +v.toFixed(2)),
         census: [n0, n1], stillHolding: tool.hold !== null,
       };
@@ -243,8 +250,90 @@ if (only.includes('phys')) {
   });
 }
 
+if (only.includes('float')) {
+  // hold a ball that starts floating at the hold point: how well does it stay?
+  results.float = await p.evaluate(async () => {
+    const a = window.__app;
+    const THREE = await import('/node_modules/three/build/three.module.js');
+    const { E } = await import('/src/elements.js');
+    const phys = (await import('/src/pov/tools/physgun.tool.js')).default;
+    const env = await T.env(THREE);
+    const out = {};
+    for (const mat of ['SAND', 'WATER']) {
+      const tool = phys.create(env);
+      const id = E[mat];
+      const c = new THREE.Vector3(64, 30, 64);
+      T.world((set) => {
+        for (let x = 60; x < 69; x++) for (let y = 26; y < 35; y++) for (let z = 60; z < 69; z++)
+          if (new THREE.Vector3(x + 0.5, y + 0.5, z + 0.5).distanceTo(c) < 2.6) set(x, y, z, id);
+      });
+      const n0 = T.count()[id];
+      const eye = new THREE.Vector3(64, 30, 50);
+      const dir = new THREE.Vector3(0, 0, 1);
+      const player = { pos: new THREE.Vector3(64, 25, 50), vel: new THREE.Vector3(), applyImpulse() {} };
+      const ctx = (over) => ({ sim: a.sim, dt: 1 / 60, stepsPerFrame: 4, eye, dir, primary: true, secondary: false,
+        primaryPressed: false, secondaryPressed: false, wheel: 0,
+        aim: { valid: true, cell: new THREE.Vector3(64, 30, 62), face: 5, id, dist: 14 + 2 }, player, ...over });
+      tool.update(ctx({ primaryPressed: true }));
+      T.steps(4);
+      const trace = [];
+      for (let f = 1; f <= 180; f++) {
+        tool.update(ctx({}));
+        T.steps(4);
+        if (f % 30 === 0) {
+          const cs = T.read().cells(id);
+          const near = cs.filter((q) => new THREE.Vector3(q.x + 0.5, q.y + 0.5, q.z + 0.5).distanceTo(c) < 5.5).length;
+          trace.push(`f${f} near ${near} com ${tool.readCom().map((v) => v.toFixed(1))}`);
+        }
+      }
+      const lost = T.read().cells(id).filter((q) => new THREE.Vector3(q.x + 0.5, q.y + 0.5, q.z + 0.5).distanceTo(c) >= 5.5);
+      const lostY = {};
+      lost.forEach((q) => { const k = q.y - 30; lostY[k] = (lostY[k] ?? 0) + 1; });
+      out[mat] = { n0, trace, lostByDy: lostY };
+      tool.deselect(); tool.dispose();
+    }
+    return out;
+  });
+}
+
 if (shot) {
-  // one view of the held physgun ball and the viewmodel, downscaled by the caller
+  // one view through the eye: the physgun holding a ball of sand over a pile, app running live
+  await p.evaluate(async () => {
+    const a = window.__app;
+    const THREE = await import('/node_modules/three/build/three.module.js');
+    const { E } = await import('/src/elements.js');
+    const phys = (await import('/src/pov/tools/physgun.tool.js')).default;
+    const env = await T.env(THREE);
+    const tool = phys.create(env);
+    T.world((set, g) => {
+      for (let x = 0; x < g.nx; x++) for (let z = 0; z < g.nz; z++) set(x, 0, z, E.ROCK);
+      for (let x = 40; x < 52; x++) for (let z = 58; z < 72; z++) for (let y = 1; y < 6; y++) set(x, y, z, E.SAND);
+    });
+    const eye = new THREE.Vector3(30.5, 9, 65);
+    const look = new THREE.Vector3(46, 5.5, 65);
+    const toWorld = (v) => v.clone().multiplyScalar(a.scale).add(a.volume.position);
+    a.camera.position.copy(toWorld(eye));
+    a.controls.target.copy(toWorld(look));
+    a.controls.update();
+    a.settings.paused = false;
+    const player = { pos: new THREE.Vector3(30.5, 4, 65), vel: new THREE.Vector3(), applyImpulse() {} };
+    let f = 0;
+    await new Promise((done) => {
+      const tick = () => {
+        f++;
+        const target = f < 40 ? look : look.clone().lerp(new THREE.Vector3(46, 13, 65), Math.min((f - 40) / 60, 1));
+        a.controls.target.copy(toWorld(target)); a.controls.update();
+        const dir = target.clone().sub(eye).normalize();
+        tool.update({ sim: a.sim, dt: 1 / 60, stepsPerFrame: a.settings.steps, eye, dir, primary: true, secondary: false,
+          primaryPressed: f === 1, secondaryPressed: false, wheel: 0,
+          aim: { valid: true, cell: new THREE.Vector3(45, 5, 65), face: 2, id: E.SAND, dist: look.distanceTo(eye) }, player });
+        if (f < 150) requestAnimationFrame(tick); else done();
+      };
+      requestAnimationFrame(tick);
+    });
+    a.requestRender();
+  });
+  await p.waitForTimeout(400);
   await p.screenshot({ path: shot });
 }
 console.log(JSON.stringify(results, null, 1));

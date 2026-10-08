@@ -17,7 +17,7 @@ const IMPACT_TIME = 0.12;    // s into the swing that the blade lands
 const SWING_INTERVAL = 0.5;  // s between swings
 
 // viewmodel, in cells (camera space: +x right, +y up, −z forward)
-const AXE_POS = [0.6, -0.55, -1.2];
+const AXE_POS = [0.62, -0.75, -1.45];
 const REST_PITCH = 0.35;     // rad, held up and back
 const RAISE_PITCH = 0.9;     // rad, top of the wind-up
 const STRIKE_PITCH = -0.9;   // rad, blade down at impact

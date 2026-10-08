@@ -32,25 +32,46 @@ export const AXE = {
 // Gun: one SCRAP slug per shot, launched at V_MAX along the aim (see
 // gun.tool.js). The pass only writes it if its cell holds air or a gas.
 
-// Physgun: a damped spring on loose matter around a hold point.
-//   v ← mix(v, v_spring, grip) + g·GRAV·steps
-// v_spring = (hold − cell)·SPRING (capped at PULL_MAX) is the velocity that
-// closes the gap; grip = 1 − (1 − GRIP)^steps relaxes the current velocity
-// toward it at GRIP per sim step, which is the damping. The gravity term pays
-// back what the react pass takes away over the frame's steps, so a held ball
-// neither sinks nor (for gases) rises. Everything fades with distance:
-// full strength inside CORE·RADIUS, nothing at RADIUS.
+// Physgun: a spring on the centre of mass of the loose matter near a hold
+// point (powders, liquids, gases within RADIUS of it, fading toward RADIUS).
+//
+// physgunComFrag sums that matter (mass = DENS, times the falloff) into one
+// texel: its centre of mass and how many cells it is. physgunFrag then moves
+// it as one ball:
+//   v_ball = carry + (hold − com)·SPRING
+// carry is the hold point's own velocity, so the ball keeps up as you turn.
+// Every cell of the ball (within the radius a sphere of that many cells,
+// PACKING full, would have, plus CORE_PAD) gets exactly v_ball. Moving them in
+// lockstep matters: the move pass treats a cell pushing slowly into the one
+// above it as resting on it and stops it, so a per-cell spring that squeezes
+// the ball would let its underside sag out of it every step. Cells outside
+// the ball are pulled toward its centre at PULL per cell of distance (up to
+// PULL_MAX) and settle onto it; their velocity relaxes toward that at GRIP per
+// step (the damping), weighted by the falloff. The field bears the full weight
+// of everything within RADIUS, so what it reaches floats while it's drawn in.
+//
+// Gravity: the pass runs once per frame, before the frame's N steps, and
+// each step's react takes g·GRAV from the velocity after its move. The moves
+// see on average (N − 1)/2 steps of it, so a held cell is launched at
+//   v = v_mean + g·GRAV·(N − 1)/2
+// and its velocity left at the frame's end is read back as the mean it had,
+// v_end + g·GRAV·(N + 1)/2. In all, N steps of gravity per frame are paid back.
 export const PHYS = {
-  RADIUS: 3.5,       // cells, reach of the beam around the hold point
-  CORE: 0.5,         // share of RADIUS held at full strength
-  SPRING: 0.15,      // 1/step: velocity toward the hold point per cell of distance
-  PULL_MAX: 0.6,     // cells/step, fastest the spring drags matter in
-  GRIP: 0.35,        // per step: share of the gap to the spring velocity closed (damping)
+  RADIUS: 5.5,       // cells, reach of the beam around the hold point
+  CORE: 0.7,         // share of RADIUS the falloff holds at full strength (a ball of ~130 cells)
+  PACKING: 0.6,      // share of a held ball's volume that is matter (moving cells leave gaps)
+  CORE_PAD: 0.5,     // cells added to the ball's radius: what moves in lockstep
+  SPRING: 0.25,      // 1/step: ball velocity per cell its centre is off the hold point
+  PULL: 0.3,         // 1/step: speed toward the ball per cell a stray cell is outside it
+  PULL_MAX: 0.6,     // cells/step, fastest strays are drawn in
+  GRIP: 0.35,        // per step: share of a stray's velocity gap closed (damping)
   FLING: 0.9,        // cells/step: speed a right-click throws the held matter at
-  HOLD_MIN: 3.5 + BODY_WIDTH,   // cells from the eye: the ball stays clear of the body
   HOLD_MAX: 32,      // cells from the eye
+  GRAB_STANDOFF: 2,  // cells: the hold point starts this far in front of the aimed surface, so the ball forms in the open
   WHEEL_STEP: 1,     // cells of hold distance per wheel notch
 };
+// cells from the eye: the nearest hold point keeps the beam's reach clear of the body
+PHYS.HOLD_MIN = PHYS.RADIUS + BODY_WIDTH;
 export const PHYS_MODE = { HOLD: 0, FLING: 1 };
 
 const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
@@ -121,17 +142,59 @@ void main() {
 }
 `;
 
-// Hold loose matter (powders, liquids, gases; never solids or air) around
-// uHold, or fling it along uFling.
-export const physgunFrag = (g) => /* glsl */ `
-${head(g)}
+const physGLSL = /* glsl */ `
 ${defines('PHYS', PHYS)}
 ${Object.entries(PHYS_MODE).map(([k, v]) => `#define PHYS_MODE_${k} ${v}`).join('\n')}
-uniform vec3 uHold;     // grid cells
-uniform float uSteps;   // sim steps per frame
-uniform float uGravity; // cells/step² (sim.gravity)
+#define PHYS_SPAN int(ceil(PHYS_RADIUS))
+#define FOUR_THIRDS_PI 4.18879
+// what the beam can hold: loose matter, never solids or plain air
+bool physHeld(int id) { int k = KIND[id]; return k == K_POWDER || k == K_LIQUID || k == K_GAS; }
+float physFalloff(float r) { return 1.0 - smoothstep(PHYS_RADIUS * PHYS_CORE, PHYS_RADIUS, r); }
+`;
+
+// One texel: the held matter's centre of mass (xyz, grid cells) and its size
+// in cells (w), falloff-weighted. Loops over the cube around the hold point.
+export const physgunComFrag = (g) => /* glsl */ `
+${prelude(g)}
+${physGLSL}
+uniform sampler2D tA;
+uniform vec3 uHold;
+out vec4 oC;
+
+void main() {
+  ivec3 c = ivec3(floor(uHold));
+  vec3 sum = vec3(0.0);
+  float mass = 0.0, cells = 0.0;
+  for (int z = -PHYS_SPAN; z <= PHYS_SPAN; z++)
+  for (int y = -PHYS_SPAN; y <= PHYS_SPAN; y++)
+  for (int x = -PHYS_SPAN; x <= PHYS_SPAN; x++) {
+    ivec3 q = c + ivec3(x, y, z);
+    if (!inGrid(q)) continue;
+    vec3 at = vec3(q) + 0.5;
+    float r = length(at - uHold);
+    if (r >= PHYS_RADIUS) continue;
+    int id = eid(texelFetch(tA, atlas(q), 0));
+    if (!physHeld(id)) continue;
+    float w = physFalloff(r);
+    sum += at * DENS[id] * w;
+    mass += DENS[id] * w;
+    cells += w;
+  }
+  oC = vec4(mass > 0.0 ? sum / mass : uHold, cells);
+}
+`;
+
+// Hold the matter around uHold as a ball (see PHYS), or fling it along uFling.
+export const physgunFrag = (g) => /* glsl */ `
+${head(g)}
+${physGLSL}
+uniform sampler2D tCom;   // physgunComFrag's texel
+uniform vec3 uHold;       // grid cells
+uniform vec3 uCarry;      // cells/step, the hold point's own velocity
+uniform float uSteps;     // sim steps per frame
+uniform float uGravity;   // cells/step² (sim.gravity)
 uniform int uMode;
-uniform vec3 uFling;    // cells/step
+uniform vec3 uFling;      // cells/step
 
 void main() {
   ivec2 t = ivec2(gl_FragCoord.xy);
@@ -140,20 +203,26 @@ void main() {
   oA = a; oB = b;
   ivec3 p = cellFromFrag(t);
   if (p.y >= NY) return;
-  vec3 d = uHold - (vec3(p) + 0.5);
-  float r = length(d);
+  vec3 at = vec3(p) + 0.5;
+  float r = length(at - uHold);
   if (r >= PHYS_RADIUS) return;
   int id = eid(a);
-  int k = KIND[id];
-  if (k != K_POWDER && k != K_LIQUID && k != K_GAS) return;
+  if (!physHeld(id)) return;
   if (uMode == PHYS_MODE_FLING) { oB.xyz = clamp(uFling, -V_MAX, V_MAX); return; }
-  float w = 1.0 - smoothstep(PHYS_RADIUS * PHYS_CORE, PHYS_RADIUS, r);
-  vec3 vs = d * PHYS_SPRING;
-  float s = length(vs);
-  if (s > PHYS_PULL_MAX) vs *= PHYS_PULL_MAX / s;
-  float grip = w * (1.0 - pow(1.0 - PHYS_GRIP, uSteps));
-  vec3 v = mix(b.xyz, vs, grip);
-  v.y += uGravity * GRAV[id] * uSteps * w;
+
+  vec4 com = texelFetch(tCom, ivec2(0), 0);
+  vec3 vBall = uCarry + (uHold - com.xyz) * PHYS_SPRING;
+  float rBall = pow(com.w / (PHYS_PACKING * FOUR_THIRDS_PI), 1.0 / 3.0) + PHYS_CORE_PAD;
+  vec3 toCom = com.xyz - at;
+  float rc = length(toCom);
+  bool inBall = rc < rBall;
+  float w = inBall ? 1.0 : physFalloff(r);
+  float g = uGravity * GRAV[id];   // the field carries the weight of all it reaches
+  vec3 target = vBall;
+  if (!inBall) target += toCom / max(rc, 1.0) * min((rc - rBall) * PHYS_PULL, PHYS_PULL_MAX);
+  float grip = inBall ? 1.0 : w * (1.0 - pow(1.0 - PHYS_GRIP, uSteps));
+  vec3 vMean = b.xyz + vec3(0.0, g * (uSteps + 1.0) * 0.5, 0.0);   // what it moved at last frame
+  vec3 v = mix(vMean, target, grip) + vec3(0.0, g * (uSteps - 1.0) * 0.5, 0.0);
   oB.xyz = clamp(v, -V_MAX, V_MAX);
 }
 `;

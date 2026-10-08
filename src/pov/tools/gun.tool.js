@@ -27,7 +27,7 @@ const READ_TEXELS = 1;             // the muzzle cell's state A
 const RGBA = 4;
 
 // viewmodel, in cells (camera space: +x right, +y up, −z forward)
-const GUN_POS = [0.55, -0.45, -1.3];
+const GUN_POS = [0.55, -0.38, -1.45];
 const MUZZLE_Z = -0.62;            // cells ahead of the gun's origin
 const FLASH_TIME = 0.06;           // s the muzzle flash shows
 const FLASH_SIZE = 0.7;            // cells
