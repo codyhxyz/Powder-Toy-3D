@@ -46,11 +46,11 @@ const swap = (i, j) => `{
 // support: the approaching velocity is cancelled.
 const collide = (i, j, c) => `{
       float rel = v${i}.${c} - v${j}.${c};
-      if (rel > 0.15) {
+      if (rel > IMPACT_SPEED) {
         float mi = d${i}, mj = d${j}, inv = 1.0 / (mi + mj);
         float vc = (mi * v${i}.${c} + mj * v${j}.${c}) * inv;
-        v${i}.${c} = vc - 0.3 * mj * inv * rel;
-        v${j}.${c} = vc + 0.3 * mi * inv * rel;
+        v${i}.${c} = vc - RESTITUTION * mj * inv * rel;
+        v${j}.${c} = vc + RESTITUTION * mi * inv * rel;
       } else if (rel > 0.0) {
         if (v${i}.${c} > 0.0) v${i}.${c} = 0.0;
         if (v${j}.${c} < 0.0) v${j}.${c} = 0.0;
@@ -93,7 +93,7 @@ const diagonal = (i) => {
   const yo = top ? 0 : 2, po = top ? 2 : 0;
   const cols = [(1 - xi) + 4 * zi, xi + 4 * (1 - zi), (1 - xi) + 4 * (1 - zi)];
   const sx = (1 - 2 * xi).toFixed(1), sz = (1 - 2 * zi).toFixed(1);
-  const dirs = [`v${i}.x * ${sx}`, `v${i}.z * ${sz}`, `(v${i}.x * ${sx} + v${i}.z * ${sz}) * 0.7071`];
+  const dirs = [`v${i}.x * ${sx}`, `v${i}.z * ${sz}`, `(v${i}.x * ${sx} + v${i}.z * ${sz}) * INV_SQRT2`];
   const ok = (c) => {
     const target = c + yo, path = c + po;
     const passable = top ? `isFluid(k${path}) && d${path} < d${i}` : `isFluid(k${path})`;
@@ -104,10 +104,10 @@ const diagonal = (i) => {
   if (s${i} && !m${i}) {
     int kd = KIND[k${i}];
     if (${kindOk} && (kd != K_POWDER || rnd(rs) <= SLIDE[k${i}])) {
-      float sA = ${ok(cols[0])} ? ${dirs[0]} + rnd(rs) * 0.6 : -9.0;
-      float sB = ${ok(cols[1])} ? ${dirs[1]} + rnd(rs) * 0.6 : -9.0;
-      float sC = ${ok(cols[2])} ? ${dirs[2]} + rnd(rs) * 0.6 : -9.0;
-      if (max(sA, max(sB, sC)) > -8.0) {
+      float sA = ${ok(cols[0])} ? ${dirs[0]} + rnd(rs) * TOPPLE_NOISE : TOPPLE_BLOCKED;
+      float sB = ${ok(cols[1])} ? ${dirs[1]} + rnd(rs) * TOPPLE_NOISE : TOPPLE_BLOCKED;
+      float sC = ${ok(cols[2])} ? ${dirs[2]} + rnd(rs) * TOPPLE_NOISE : TOPPLE_BLOCKED;
+      if (max(sA, max(sB, sC)) > TOPPLE_ANY) {
         if (sA >= sB && sA >= sC) ${swap(i, cols[0] + yo)}
         else if (sB >= sC) ${swap(i, cols[1] + yo)}
         else ${swap(i, cols[2] + yo)}
@@ -147,6 +147,24 @@ uniform uint uFrame;
 ${CELLS.map((i) => `layout(location = ${i}) out vec4 o${i};`).join('\n')}
 ${quietGLSL}
 
+#define MOVE_RNG_SALT 0x51u        // salt that gives this pass its own random stream (seed3)
+#define IMPACT_SPEED 0.15          // cells/step: closing faster than this is an impact, slower is resting contact
+#define RESTITUTION 0.3            // share of the closing speed an impact gives back
+#define GAS_DENSITY_SLACK 0.02     // gases this close in density mix freely up and down
+#define LIQUID_DRAG_MIN 0.25       // move chance through a liquid of equal density...
+#define LIQUID_DRAG_SPAN (1.0 - LIQUID_DRAG_MIN)   // ...rising to 1 with the density contrast
+#define DRAG_CONTRAST_GAIN 2.0     // relative density contrast at which a liquid no longer slows a move: 1/this
+#define SPLASH_REAIM_SQ 0.25       // a landing splash slower than sqrt(this) × FLOW picks a new direction
+#define SPLASH_GAIN 0.3            // share of the fall speed a liquid splashes sideways
+#define GRAIN_LAND_KEEP 0.3        // share of a landing grain's horizontal velocity it keeps...
+#define GRAIN_SCATTER 0.12         // ...plus this × its fall speed in a random direction
+#define BOUNCE_LIQUID (-0.7)       // velocity factor of a liquid bouncing off something it can't enter
+#define BOUNCE_OTHER (-0.5)        // the same for gases
+#define INV_SQRT2 0.7071           // a diagonal topple scores the two axes' velocities averaged along it
+#define TOPPLE_NOISE 0.6           // random share in a topple direction's score
+#define TOPPLE_BLOCKED (-9.0)      // score of a topple direction that's blocked...
+#define TOPPLE_ANY (-8.0)          // ...so a best score above this means some direction is open
+
 uint rs;
 
 // Can a particle (id a, density da) move into the place of (b, db), travelling
@@ -155,8 +173,8 @@ bool canMove(int a, int b, float da, float db, int dir) {
   if (!movable(a) || !movable(b)) return false;
   if (a == b && a != E_EMPTY) return false;
   if (isGasLike(a) && isGasLike(b)) {
-    if (dir == 0) return da > db - 0.02;
-    if (dir == 1) return da < db + 0.02;
+    if (dir == 0) return da > db - GAS_DENSITY_SLACK;
+    if (dir == 1) return da < db + GAS_DENSITY_SLACK;
     return true;
   }
   if (!isFluid(a) && !isFluid(b)) return false; // grains don't sink into grains
@@ -169,7 +187,7 @@ bool canMove(int a, int b, float da, float db, int dir) {
 float dragF(int a, int b, float da, float db) {
   bool la = KIND[a] == K_LIQUID, lb = KIND[b] == K_LIQUID;
   if ((la && !isGasLike(b)) || (lb && !isGasLike(a)))
-    return 0.25 + 0.75 * clamp(2.0 * abs(da - db) / max(da, db), 0.0, 1.0);
+    return LIQUID_DRAG_MIN + LIQUID_DRAG_SPAN * clamp(DRAG_CONTRAST_GAIN * abs(da - db) / max(da, db), 0.0, 1.0);
   return 1.0;
 }
 
@@ -177,28 +195,28 @@ float dragF(int a, int b, float da, float db) {
 vec3 land(vec3 v, int id) {
   float vy = v.y;
   v.y = 0.0;
-  if (KIND[id] == K_LIQUID && vy < -0.15) {
+  if (KIND[id] == K_LIQUID && vy < -IMPACT_SPEED) {
     // A real impact: liquids convert vertical momentum into a sideways splash.
     // (Resting liquid gets its flow from the react pass instead.)
     vec2 h = v.xz;
     float f = FLOW[id];
-    if (dot(h, h) < f * f * 0.25) {
-      float ang = rnd(rs) * 6.2831853;
+    if (dot(h, h) < f * f * SPLASH_REAIM_SQ) {
+      float ang = rnd(rs) * TAU;
       h = vec2(cos(ang), sin(ang)) * f;
     }
-    h += normalize(h) * (-vy) * 0.3;
-    v.xz = clamp(h, -1.0, 1.0);
+    h += normalize(h) * (-vy) * SPLASH_GAIN;
+    v.xz = clamp(h, -V_MAX, V_MAX);
   } else if (KIND[id] == K_POWDER) {
     // Grains scatter a little when they land hard, then friction takes over.
-    float ang = rnd(rs) * 6.2831853;
-    v.xz = v.xz * 0.3 + vec2(cos(ang), sin(ang)) * (-vy) * 0.12;
+    float ang = rnd(rs) * TAU;
+    v.xz = v.xz * GRAIN_LAND_KEEP + vec2(cos(ang), sin(ang)) * (-vy) * GRAIN_SCATTER;
   }
   return v;
 }
 
 float bounceR(int id) {
   int k = KIND[id];
-  return k == K_LIQUID ? -0.7 : (k == K_POWDER ? 0.0 : -0.5);
+  return k == K_LIQUID ? BOUNCE_LIQUID : (k == K_POWDER ? 0.0 : BOUNCE_OTHER);   // grains don't bounce
 }
 
 void main() {
@@ -221,7 +239,7 @@ void main() {
     else { a${i} = vec4(float(E_WALL), AMBIENT, 0.0, 0.0); v${i} = vec3(0.0); }
     k${i} = eid(a${i}); d${i} = densityOf(k${i}, a${i}.y);
   }`).join('\n  ')}
-  rs = seed3(base, uFrame, 0x51u);
+  rs = seed3(base, uFrame, MOVE_RNG_SALT);
 
   // Columns are independent in the vertical phase, so a fixed order is fair.
   ${vertical(0, 2)}${vertical(1, 3)}${vertical(4, 6)}${vertical(5, 7)}
