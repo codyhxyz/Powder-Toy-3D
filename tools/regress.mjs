@@ -15,7 +15,7 @@ const p = await b.newPage({ viewport: { width: 1280, height: 800 } });
 await p.addInitScript(() => {
   let s = 12345;   // mulberry32: same scene every run
   Math.random = () => { s |= 0; s = (s + 0x6d2b79f5) | 0; let t = Math.imul(s ^ (s >>> 15), 1 | s); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
-  localStorage.setItem('powder-toy-3d:settings', JSON.stringify({ autoRes: false, res: 1, paused: true }));
+  localStorage.setItem('powder-toy-3d:settings', JSON.stringify({ paused: true }));
   // the UI (hint toast, sliders) animates on wall-clock timers: hide it
   addEventListener('DOMContentLoaded', () => {
     const st = document.createElement('style');
@@ -41,6 +41,7 @@ for (const [preset, v] of Object.entries(views)) {
   await p.evaluate(async ([preset, steps]) => {
     const a = window.__app;
     a.settings.paused = true;
+    a.autoRes.enabled = false;
     a.post.settings.taa = false;   // TAA's jitter index isn't resettable: compare un-jittered frames
     a.loadPreset(preset, false);
     a.sim.frame = 0;               // the sim's random streams are seeded by its step counter

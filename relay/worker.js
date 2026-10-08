@@ -1,7 +1,11 @@
 import { DurableObject } from 'cloudflare:workers';
+import { handleAI } from './ai.js';
+
+export { AiQuota } from './ai.js';
 
 // Multiplayer relay: one Durable Object per room, a dumb message hub.
 //   wss://<relay>/room/<code>?role=host|guest
+// The same Worker also serves the free construction AI (ai.js) under /ai/.
 // Relay → player: welcome { id, n, role, peers }, join { id, n, role },
 // leave { id }, refused { reason } (then the socket closes).
 // The host's binary messages (world frames) go to every guest. JSON messages
@@ -39,7 +43,8 @@ function allowedOrigin(origin) {
 const CLOSE = { BAD_REQUEST: 4000, NO_HOST: 4001, HOST_TAKEN: 4002, HOST_LEFT: 4003 };
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
+    if (new URL(request.url).pathname.startsWith('/ai/')) return handleAI(request, env, ctx, allowedOrigin);
     const room = new URL(request.url).pathname.match(ROOM_PATH)?.[1];
     if (!room) return new Response('Not found', { status: 404 });
     if (request.headers.get('Upgrade') !== 'websocket') return new Response('Expected a WebSocket', { status: 426 });

@@ -5,7 +5,7 @@ import * as THREE from 'three';
 //   const post = createPost(renderer);
 //   post.render(scene, camera);          // instead of renderer.render(scene, camera)
 //   post.reset();                        // after anything that invalidates history
-//   post.settings.taa / .bloom / .exposure (EV) / .sharpen / .look / .raw / .hotStart / .hotFull
+//   post.settings.taa / .upscale / .bloom / .exposure (EV) / .sharpen / .look / .raw / .hotStart / .hotFull
 //
 // The scene is rendered as linear, premultiplied HDR radiance. The canvas stays
 // transparent: tone mapping is applied to the premultiplied colour ("over black"),
@@ -15,12 +15,20 @@ import * as THREE from 'three';
 // TAA (Karis 2014): Halton(2,3) projection jitter, reprojection from depth with the
 // previous unjittered view-projection, Blackman-Harris reconstruction of the current
 // frame, Catmull-Rom history, YCoCg variance clipping, luminance-weighted blend.
+// TAAU (Karis 2014, UE4's temporal upsample): with upscale < 1 the scene renders at
+// that share of the canvas size per axis, jittered within its own (larger) pixels,
+// and the TAA pass resolves straight to canvas size. Each output pixel takes the
+// current frame from the 3×3 input pixels around its nearest jittered sample: a
+// filter one output pixel wide where that sample lies close (sharp), one input pixel
+// wide otherwise (no blocks), and that frame's blend weight scales with how close
+// the sample came. Over the jitter cycle the samples cover every output pixel.
 // Bloom (Jimenez 2014): per-pixel soft-knee bright pass at half resolution, 13-tap
 // downsample to 1/64, 9-tap tent upsample. It is energy-conserving: the halo only
 // redistributes the above-threshold light (out = c + k·(blur(bright) − bright(c))).
 
 export const POST_DEFAULTS = {
   taa: true,
+  upscale: 1, // render scale per axis under TAA (1 = native; see UPSCALE)
   bloom: 0.3, // fraction of above-threshold light scattered into the halo (0..1)
   // EV stops. +0.7 with look 0.5 reproduces the mean brightness and saturation of the
   // old in-shader ACES (measured on the lab and volcano presets).
@@ -43,6 +51,16 @@ const JITTER_PERIOD = 16;
 // and where it doesn't (changing); the shader blends between them per pixel.
 export const TAA_WEIGHT_STABLE = 0.07;
 const TAA_WEIGHT_CHANGING = 0.16;
+// Upscaling presets: render scale per axis, AMD FSR 2's quality modes.
+export const UPSCALE = { native: 1, quality: 1 / 1.5, balanced: 1 / 1.7, performance: 1 / 2 };
+// TAAU's stable blend weight, as an average: each frame's is this × the closeness of
+// its nearest sample over that closeness's mean, so a sample landing on the pixel
+// centre counts most. Lower than TAA's: one frame covers less of the output grid.
+export const TAAU_WEIGHT_STABLE = 0.05;
+// Gaussian fit of the Blackman-Harris reconstruction filter: w = exp(-k d²), d in pixels.
+const BLACKMAN_HARRIS_K = 2.29;
+// Grid (per axis) over which the mean closeness of the nearest sample is integrated.
+const CONF_GRID = 64;
 // History is dropped when the camera jumps: moves farther than this share of its
 // distance from the origin (at least 1 world unit) in one frame…
 const JUMP_MOVE_FRAC = 0.25;
@@ -99,7 +117,7 @@ vec3 tent9(sampler2D t, vec2 uv, vec2 texel) {
 }
 `;
 
-const TAA_FRAG = /* glsl */ `
+const TAA_LIB = /* glsl */ `
 ${COMMON}
 uniform sampler2D tColor;
 uniform sampler2D tDepth;
@@ -109,7 +127,7 @@ uniform vec2 uJitter;      // where this frame sampled, in pixels from the pixel
 uniform vec2 uSize;
 uniform bool uHistoryValid;
 uniform vec2 uWeight;      // current-frame weight (stable, changing)
-const float BLACKMAN_HARRIS_K = 2.29;  // Gaussian fit of the Blackman-Harris reconstruction filter: w = exp(-k d²), d in pixels
+const float BLACKMAN_HARRIS_K = ${BLACKMAN_HARRIS_K};
 const float FLICKER_LUMA_FLOOR = 0.2;  // anti-flicker: differences are relative to max(luma, this) (tone-mapped luma)
 
 vec3 rgb2ycocg(vec3 c) { return vec3(dot(c, vec3(0.25, 0.5, 0.25)), dot(c, vec3(0.5, 0.0, -0.5)), dot(c, vec3(-0.25, 0.5, -0.25))); }
@@ -151,7 +169,10 @@ vec4 clipBox(vec4 bmin, vec4 bmax, vec4 p, vec4 q) {
   }
   return p + r * s;
 }
+`;
 
+const TAA_FRAG = /* glsl */ `
+${TAA_LIB}
 void main() {
   ivec2 p = ivec2(gl_FragCoord.xy);
   ivec2 hi = ivec2(uSize) - 1;
@@ -198,6 +219,77 @@ void main() {
   oColor = sanitize(fromSpace(res));
 }
 `;
+
+// TAAU: tColor/tDepth are uInSize, the output (and history) uSize.
+const TAAU_FRAG = /* glsl */ `
+${TAA_LIB}
+uniform vec2 uInSize;
+uniform float uMeanConf;   // mean over the jitter cycle of conf (below)
+void main() {
+  vec2 scale = uInSize / uSize;            // input pixels per output pixel
+  vec2 pIn = gl_FragCoord.xy * scale;      // this pixel's centre, in input pixels
+  ivec2 hi = ivec2(uInSize) - 1;
+  // input texel m sampled the scene at m + 0.5 - uJitter: the nearest one is
+  ivec2 c = ivec2(floor(pIn + uJitter));
+
+  vec4 m1 = vec4(0.0), m2 = vec4(0.0), mn = vec4(1e9), mx = vec4(-1e9);
+  vec4 accIn = vec4(0.0), accOut = vec4(0.0);
+  float wIn = 0.0, wOut = 0.0, conf = 0.0;
+  for (int i = 0; i < 9; i++) {
+    ivec2 o = ivec2(i % 3 - 1, i / 3 - 1);
+    vec4 t = toSpace(sanitize(texelFetch(tColor, clamp(c + o, ivec2(0), hi), 0)));
+    vec2 dIn = vec2(c + o) + 0.5 - uJitter - pIn;   // sample → pixel centre, input pixels
+    vec2 dOut = dIn / scale;                         // …in output pixels
+    float wi = exp(-BLACKMAN_HARRIS_K * dot(dIn, dIn));
+    float wo = exp(-BLACKMAN_HARRIS_K * dot(dOut, dOut));
+    accIn += t * wi; wIn += wi;
+    accOut += t * wo; wOut += wo;
+    conf = max(conf, wo);
+    m1 += t; m2 += t * t;
+    mn = min(mn, t); mx = max(mx, t);
+  }
+  if (mx.w <= 0.0) { oColor = vec4(0.0); return; }
+  vec4 curSoft = accIn / wIn;
+  vec4 cur = mix(curSoft, accOut / max(wOut, 1e-6), conf);
+
+  float z = texelFetch(tDepth, clamp(c, ivec2(0), hi), 0).r;
+  ivec2 zo = ivec2(0);
+  for (int i = 0; i < 4; i++) {
+    ivec2 o = i == 0 ? ivec2(1, 0) : i == 1 ? ivec2(-1, 0) : i == 2 ? ivec2(0, 1) : ivec2(0, -1);
+    float zz = texelFetch(tDepth, clamp(c + o, ivec2(0), hi), 0).r;
+    if (zz < z) { z = zz; zo = o; }
+  }
+  vec2 uvq = (pIn + vec2(zo)) / uInSize;
+  vec4 pc = uReproj * vec4(uvq * 2.0 - 1.0, z * 2.0 - 1.0, 1.0);
+  vec2 prevUV = pc.xy / pc.w * 0.5 + 0.5 - vec2(zo) / uInSize;
+
+  vec4 res = curSoft;
+  if (uHistoryValid && pc.w > 0.0 && all(greaterThanEqual(prevUV, vec2(0.0))) && all(lessThanEqual(prevUV, vec2(1.0)))) {
+    vec4 h = toSpace(sanitize(historyCR(prevUV)));
+    vec4 mean = m1 / 9.0;
+    vec4 sd = sqrt(max(m2 / 9.0 - mean * mean, 0.0));
+    vec4 bmin = max(mn, mean - sd), bmax = min(mx, mean + sd);
+    h = clipBox(bmin, bmax, clamp(cur, bmin, bmax), h);
+    float diff = abs(cur.x - h.x) / max(max(cur.x, h.x), FLICKER_LUMA_FLOOR);
+    float k = 1.0 - diff;
+    res = mix(h, cur, mix(uWeight.y, min(uWeight.x * conf / uMeanConf, 1.0), k * k));
+  }
+  oColor = sanitize(fromSpace(res));
+}
+`;
+
+// Mean, over where the nearest jittered sample can land (uniformly in one input
+// pixel), of TAAU's closeness weight exp(-k·d²), d in output pixels.
+function meanConfidence(scale) {
+  let sum = 0;
+  for (let i = 0; i < CONF_GRID; i++) {
+    for (let j = 0; j < CONF_GRID; j++) {
+      const x = ((i + 0.5) / CONF_GRID - 0.5) / scale, y = ((j + 0.5) / CONF_GRID - 0.5) / scale;
+      sum += Math.exp(-BLACKMAN_HARRIS_K * (x * x + y * y));
+    }
+  }
+  return sum / (CONF_GRID * CONF_GRID);
+}
 
 const PREFILTER_FRAG = /* glsl */ `
 ${COMMON}
@@ -379,9 +471,11 @@ function halton(i, b) {
 
 /**
  * @param {THREE.WebGLRenderer} renderer
+ * @param {{ pixScale?: { value: number } }} [opts] pixScale: uniform set to an output
+ *   pixel's size in rendered pixels before each scene render (the shaders' LOD bias)
  * @returns post-processing pipeline; see the file header.
  */
-export function createPost(renderer) {
+export function createPost(renderer, { pixScale } = {}) {
   const hdr = (w, h, filter, extra = {}) => new THREE.WebGLRenderTarget(w, h, {
     type: THREE.HalfFloatType, format: THREE.RGBAFormat, minFilter: filter, magFilter: filter,
     depthBuffer: false, stencilBuffer: false, generateMipmaps: false, ...extra,
@@ -397,6 +491,11 @@ export function createPost(renderer) {
     uReproj: { value: new THREE.Matrix4() }, uJitter: { value: new THREE.Vector2() },
     uSize: { value: new THREE.Vector2() }, uHistoryValid: { value: false },
     uWeight: { value: new THREE.Vector2(TAA_WEIGHT_STABLE, TAA_WEIGHT_CHANGING) }, uThresh: thresh,
+  });
+  const taauMat = mat(TAAU_FRAG, {
+    ...taaMat.uniforms,
+    uWeight: { value: new THREE.Vector2(TAAU_WEIGHT_STABLE, TAA_WEIGHT_CHANGING) },
+    uInSize: { value: new THREE.Vector2() }, uMeanConf: { value: 1 },
   });
   const prefilterMat = mat(PREFILTER_FRAG, { tSrc: { value: null }, uThresh: thresh });
   const downMat = mat(DOWN_FRAG, { tSrc: { value: null }, uTexel: { value: new THREE.Vector2() }, uDst: { value: new THREE.Vector2() }, uThresh: thresh });
@@ -420,7 +519,9 @@ export function createPost(renderer) {
   quadScene.add(quad);
   const quadCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 
-  const size = new THREE.Vector2(0, 0);
+  const size = new THREE.Vector2(0, 0);     // output (canvas or target)
+  const inSize = new THREE.Vector2(0, 0);   // the scene's render size: size × render scale
+  let confScale = 0;                        // render scale uMeanConf was computed for
   let sceneRT = null, history = [], down = [], up = [], cur = 0;
   let still = null;
   let historyValid = false, frame = 0, lastTaa = null;
@@ -436,21 +537,33 @@ export function createPost(renderer) {
     /** Optional profiling hook: called as onPass(name, renderTarget) after each pass. */
     onPass: null,
     get size() { return size.clone(); },
+    /** Current-frame weight TAA settles with (for how long the view needs to converge). */
+    get settleWeight() { return upscaling() ? TAAU_WEIGHT_STABLE : TAA_WEIGHT_STABLE; },
+    /** Render scale per axis the next render uses (upscaling is TAA's job). */
+    get renderScale() {
+      const s = { ...POST_DEFAULTS, ...post.settings };
+      return s.taa ? s.upscale : 1;
+    },
     get targets() { return { scene: sceneRT, history: history[cur], bloom: up[0] ?? down[0], down, up }; },
 
-    /** Size in drawing-buffer pixels; defaults to the renderer's current drawing buffer. */
-    setSize(w, h) {
+    /**
+     * Output size in drawing-buffer pixels (defaults to the renderer's current drawing
+     * buffer); the scene renders at `scale` of it per axis.
+     */
+    setSize(w, h, scale = 1) {
       if (w === undefined) ({ x: w, y: h } = renderer.getDrawingBufferSize(tmpSize));
       w = Math.max(1, Math.floor(w)); h = Math.max(1, Math.floor(h));
-      if (w === size.x && h === size.y && sceneRT) return;
+      const iw = Math.max(1, Math.round(w * scale)), ih = Math.max(1, Math.round(h * scale));
+      if (w === size.x && h === size.y && iw === inSize.x && ih === inSize.y && sceneRT) return;
       size.set(w, h);
+      inSize.set(iw, ih);
       if (!sceneRT) {
-        sceneRT = hdr(w, h, THREE.NearestFilter, {
-          depthBuffer: true, depthTexture: new THREE.DepthTexture(w, h, THREE.FloatType),
+        sceneRT = hdr(iw, ih, THREE.NearestFilter, {
+          depthBuffer: true, depthTexture: new THREE.DepthTexture(iw, ih, THREE.FloatType),
         });
         history = [hdr(w, h, THREE.LinearFilter), hdr(w, h, THREE.LinearFilter)];
       } else {
-        sceneRT.setSize(w, h);
+        sceneRT.setSize(iw, ih);
         history.forEach((t) => t.setSize(w, h));
       }
       for (let i = 0; i < MIPS; i++) {
@@ -470,7 +583,8 @@ export function createPost(renderer) {
      */
     render(scene, camera, target = null) {
       const s = { ...POST_DEFAULTS, ...post.settings };
-      if (target) post.setSize(target.width, target.height); else post.setSize();
+      const scale = post.renderScale;
+      if (target) post.setSize(target.width, target.height, scale); else post.setSize(undefined, undefined, scale);
       const prevTarget = renderer.getRenderTarget();
       renderer.getClearColor(savedClear);
       const savedAlpha = renderer.getClearAlpha();
@@ -484,17 +598,20 @@ export function createPost(renderer) {
       prevPos.setFromMatrixPosition(camera.matrixWorld);
       prevQuat.setFromRotationMatrix(camera.matrixWorld);
 
-      // 1. scene → HDR target, with sub-pixel jitter when TAA is on
-      const jx = s.taa ? halton((frame % JITTER_PERIOD) + 1, 2) - 0.5 : 0;
-      const jy = s.taa ? halton((frame % JITTER_PERIOD) + 1, 3) - 0.5 : 0;
+      // 1. scene → HDR target, with sub-pixel jitter when TAA is on. Upscaled, one
+      // input pixel spans 1/scale² output pixels: the cycle is that much longer.
+      const period = upscaling() ? JITTER_PERIOD * Math.ceil(1 / (scale * scale)) : JITTER_PERIOD;
+      const jx = s.taa ? halton((frame % period) + 1, 2) - 0.5 : 0;
+      const jy = s.taa ? halton((frame % period) + 1, 3) - 0.5 : 0;
       savedProj.copy(camera.projectionMatrix);
       savedProjInv.copy(camera.projectionMatrixInverse);
       if (s.taa) {
         const e = camera.projectionMatrix.elements;
-        const ox = (2 * jx) / size.x, oy = (2 * jy) / size.y;
+        const ox = (2 * jx) / inSize.x, oy = (2 * jy) / inSize.y;
         for (let c = 0; c < 4; c++) { e[c * 4] += ox * e[c * 4 + 3]; e[c * 4 + 1] += oy * e[c * 4 + 3]; }
         camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
       }
+      if (pixScale) pixScale.value = inSize.x / size.x;
       try {
         renderer.setRenderTarget(sceneRT);
         renderer.clear();
@@ -508,7 +625,13 @@ export function createPost(renderer) {
       // 2. TAA resolve
       let color = sceneRT.texture;
       if (s.taa) {
-        const u = taaMat.uniforms;
+        const up = upscaling();
+        const m = up ? taauMat : taaMat;
+        const u = m.uniforms;
+        if (up) {
+          if (confScale !== scale) { u.uMeanConf.value = meanConfidence(scale); confScale = scale; }
+          u.uInSize.value.copy(inSize);
+        }
         u.tColor.value = sceneRT.texture;
         u.tDepth.value = sceneRT.depthTexture;
         u.tHistory.value = history[cur].texture;
@@ -517,7 +640,7 @@ export function createPost(renderer) {
         u.uSize.value.copy(size);
         u.uHistoryValid.value = historyValid;
         cur = 1 - cur;
-        pass(taaMat, history[cur]);
+        pass(m, history[cur]);
         post.onPass?.('taa', history[cur]);
         color = history[cur].texture;
         historyValid = true;
@@ -584,6 +707,7 @@ export function createPost(renderer) {
       renderer.setClearColor(0x000000, 0);
       renderer.setRenderTarget(still);
       renderer.clear();
+      if (pixScale) pixScale.value = 1;
       renderer.render(scene, camera);
       const s = { ...POST_DEFAULTS, ...post.settings };
       const u = compMat.uniforms;
@@ -603,10 +727,13 @@ export function createPost(renderer) {
     dispose() {
       [sceneRT, still, ...history, ...down, ...up].forEach((t) => t?.dispose());
       sceneRT?.depthTexture?.dispose();
-      [taaMat, prefilterMat, downMat, upMat, compMat].forEach((m) => m.dispose());
+      [taaMat, taauMat, prefilterMat, downMat, upMat, compMat].forEach((m) => m.dispose());
       tri.dispose();
     },
   };
+
+  // Is the scene rendering below output size (TAAU)?
+  function upscaling() { return inSize.x !== size.x || inSize.y !== size.y; }
 
   function pass(material, target) {
     quad.material = material;

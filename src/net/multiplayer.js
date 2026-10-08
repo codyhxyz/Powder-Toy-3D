@@ -1,6 +1,7 @@
 import { ELEMENTS, TOOLS } from '../elements.js';
 import { createPacker, createUnpacker, encodeFrame, decodeFrame, xorInto, FRAME_KEY, FRAME_DELTA } from './codec.js';
 import { createRemoteCursors } from './cursors.js';
+import { h } from '../ui/dom.js';
 import './net.css';
 
 // Multiplayer: one player hosts and runs the simulation; guests see the
@@ -32,6 +33,9 @@ const PAINTABLE = new Set([...ELEMENTS.map((e) => e.id), ...TOOLS.filter((t) => 
 const GUEST_BLOCKED = 'Only the host can do that';
 const HOST_AWAY = 'The host switched to another tab, so the world is paused until they come back';
 const HOST_BACK = 'The host is back';
+const STOPPED_HOSTING = 'Stopped hosting';
+const LEFT_WORLD = 'You left the host\'s world';
+const CLOSE_NORMAL = 1000; // WebSocket close code for a deliberate disconnect
 
 const ICON_PLAYERS = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18 14.5a6.5 6.5 0 0 1 3.5 5.5"/></svg>';
 
@@ -50,6 +54,7 @@ const sameDims = (g, dims) => g.nx === dims[0] && g.ny === dims[1] && g.nz === d
 export function createMultiplayer({ renderer, scene, camera, hud, getSim, getVolume, setGrid }) {
   let role = 'solo';
   let socket = null, room = null, me = null;
+  let joiningAs = null; // the role we asked the relay for, until it welcomes us
   const peers = new Map();
   const cursors = createRemoteCursors({ scene, camera, getVolume });
 
@@ -69,6 +74,7 @@ export function createMultiplayer({ renderer, scene, camera, hud, getSim, getVol
   // ---- connection ----
   function connect(asRole, code) {
     room = code;
+    joiningAs = asRole;
     const ws = new WebSocket(`${RELAY_URL}/room/${encodeURIComponent(code)}?role=${asRole}`);
     ws.binaryType = 'arraybuffer';
     ws.onmessage = (e) => (typeof e.data === 'string' ? onMessage(JSON.parse(e.data), asRole) : onFrame(e.data));
@@ -81,13 +87,23 @@ export function createMultiplayer({ renderer, scene, camera, hud, getSim, getVol
 
   function end(reason) {
     const wasGuest = role === 'guest';
-    socket = null; role = 'solo'; me = null; room = null; sent = null; world = null;
+    socket = null; role = 'solo'; me = null; room = null; sent = null; world = null; joiningAs = null;
     peers.clear();
     cursors.clear();
     strokes.length = 0;
     if (new URLSearchParams(location.search).has(JOIN_PARAM)) history.replaceState(null, '', location.pathname);
     hud.toast(wasGuest ? `${reason}. You can keep playing with this world on your own.` : reason);
+    closePanel();
     syncButton();
+  }
+
+  // Stop hosting (which ends the room for every guest) or leave the host's world.
+  function stop() {
+    const asRole = role === 'solo' ? joiningAs : role;
+    const ws = socket;
+    socket = null;
+    ws?.close(CLOSE_NORMAL);
+    end(asRole === 'guest' ? LEFT_WORLD : STOPPED_HOSTING);
   }
 
   const send = (msg) => socket?.readyState === WebSocket.OPEN && socket.send(JSON.stringify(msg));
@@ -211,13 +227,32 @@ export function createMultiplayer({ renderer, scene, camera, hud, getSim, getVol
   button.addEventListener('click', onButton);
   if (RELAY_URL) document.querySelector('.toolbar')?.append(button);
 
+  // Session panel: who's here, the invite link, and the way out.
+  const panelTitle = h('h2');
+  const panelCount = h('p');
+  const peerList = h('ul.net-peers');
+  const copyBtn = h('button.btn.grow', { type: 'button', text: 'Copy invite link', on: { click: () => room && copyInvite(room, 'Invite link copied') } });
+  const stopBtn = h('button.btn.grow.danger', { type: 'button', on: { click: stop } });
+  const panel = h('div.popover.net-panel.panel', { role: 'dialog', 'aria-label': 'Play together' },
+    h('header', {}, panelTitle, panelCount), peerList, h('div.btn-row', {}, copyBtn, stopBtn));
+  if (RELAY_URL) document.body.append(panel);
+
+  let panelOpen = false;
+  function openPanel() { panelOpen = true; panel.classList.add('open'); button.setAttribute('aria-expanded', 'true'); }
+  function closePanel() { panelOpen = false; panel.classList.remove('open'); button.setAttribute('aria-expanded', 'false'); }
+  addEventListener('pointerdown', (e) => { if (panelOpen && !panel.contains(e.target) && !button.contains(e.target)) closePanel(); });
+
   async function onButton() {
     if (role === 'solo' && !socket) {
       const code = crypto.randomUUID().replaceAll('-', '').slice(0, ROOM_CODE_LENGTH);
       connect('host', code);
+      syncButton();
+      openPanel();
       await copyInvite(code, 'Hosting. Invite link copied — send it to a friend');
-    } else if (room) {
-      await copyInvite(room, 'Invite link copied');
+    } else if (panelOpen) {
+      closePanel();
+    } else {
+      openPanel();
     }
   }
 
@@ -234,10 +269,22 @@ export function createMultiplayer({ renderer, scene, camera, hud, getSim, getVol
     const guests = [...peers.values()].filter((p) => p.role === 'guest').length + (role === 'guest' ? 1 : 0);
     button.classList.toggle('on', role !== 'solo');
     badge.textContent = role === 'solo' ? '' : String(guests + 1);
-    button.title = role === 'solo' ? 'Play together: host this world and copy an invite link'
-      : role === 'host' ? `Hosting · ${guests} ${guests === 1 ? 'guest' : 'guests'} · click to copy the invite link`
-        : 'Playing in the host\'s world · click to copy the invite link';
+    button.title = role === 'solo' ? (socket ? 'Connecting to the multiplayer server' : 'Play together: host this world and copy an invite link')
+      : role === 'host' ? `Hosting · ${guests} ${guests === 1 ? 'guest' : 'guests'} · click for the invite link or to stop hosting`
+        : 'Playing in the host\'s world · click for the invite link or to leave';
     button.setAttribute('aria-label', button.title);
+    button.setAttribute('aria-haspopup', 'dialog');
+
+    const hosting = (role === 'solo' ? joiningAs : role) !== 'guest';
+    panelTitle.textContent = role === 'solo' ? 'Connecting…' : hosting ? 'Hosting this world' : 'In the host\'s world';
+    panelCount.textContent = role === 'solo' ? '' : `${guests + 1} ${guests ? 'players' : 'player'}`;
+    stopBtn.textContent = hosting ? 'Stop hosting' : 'Leave';
+    stopBtn.title = hosting ? 'Disconnect every guest and play on your own' : 'Keep this world and play on your own';
+    copyBtn.disabled = !room;
+    const everyone = me ? [{ ...me, you: true }, ...peers.values()] : [];
+    everyone.sort((a, b) => (a.role === 'host' ? -1 : b.role === 'host' ? 1 : a.n - b.n));
+    peerList.replaceChildren(...everyone.map((p) => h('li', { style: { '--peer': peerColor(p) } },
+      h('span.dot'), h('span', { text: peerName(p) }), p.you ? h('span.you', { text: 'you' }) : null)));
   }
   syncButton();
 
@@ -250,6 +297,8 @@ export function createMultiplayer({ renderer, scene, camera, hud, getSim, getVol
   return {
     get role() { return role; },
     get isGuest() { return role === 'guest'; },
+    get panelOpen() { return panelOpen; },
+    closePanel,
 
     // Guests: shows a toast and returns true for host-only actions.
     guard() {
@@ -293,7 +342,8 @@ export function createMultiplayer({ renderer, scene, camera, hud, getSim, getVol
         worldDirty = false;
       }
 
-      if (role !== 'solo' && now - lastPresence >= PRESENCE_INTERVAL_MS) {
+      // Alone in the room: nobody to show the cursor to, so don't wake the relay (a join resends it).
+      if (role !== 'solo' && peers.size && now - lastPresence >= PRESENCE_INTERVAL_MS) {
         const q = (v) => Math.round(v * CURSOR_STEPS_PER_CELL) / CURSOR_STEPS_PER_CELL;
         const json = JSON.stringify(cursor.visible
           ? { t: 'cursor', c: cursor.center.toArray().map(q), r: cursor.radius, shape: cursor.shape, tool: cursor.tool, painting: cursor.painting }

@@ -111,3 +111,4 @@
 .build-bar .model .model-row .auth { grid-column: 2 / -1; display: flex; gap: 6px; }
 .build-bar .model .model-row .auth > * { flex: 1 1 0; min-width: 0; }
 .build-bar .model .model-row .auth .chip { justify-content: center; }
+.build-bar .model .model-row .model-fixed { align-self: center; padding: 0 2px; color: var(--muted); font: 560 12px var(--ui); }

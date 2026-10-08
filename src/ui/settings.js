@@ -4,8 +4,6 @@ import { ICON } from './icons.js';
 // Settings drawer built from a declarative spec.
 //   { type: 'seg', key, options: [[value, label]], onChange }
 //   { type: 'slider', key, label, min, max, step, def, fmt, onChange }
-//   { type: 'switch', key, label, def, onChange }
-//   { type: 'buttons', buttons: [[label, fn, cls?]] }
 export function createSettings({ settings, sections, footer, onClose }) {
   const syncers = [];
 
@@ -33,21 +31,9 @@ export function createSettings({ settings, sections, footer, onClose }) {
         out.textContent = r.fmt ? r.fmt(v) : v;
         input.style.setProperty('--fill', `${((v - r.min) / (r.max - r.min)) * 100}%`);
         field.classList.toggle('changed', Math.abs(v - r.def) > 1e-9);
-        input.disabled = r.disabled?.() ?? false;
-        field.style.opacity = input.disabled ? 0.5 : 1;
       };
       syncers.push(sync);
       return field;
-    }
-    if (r.type === 'switch') {
-      const sw = h('button.switch', { type: 'button', role: 'switch', 'aria-label': r.label });
-      sw.addEventListener('click', () => { settings[r.key] = !settings[r.key]; r.onChange?.(settings[r.key]); syncAll(); });
-      syncers.push(() => sw.setAttribute('aria-checked', String(!!settings[r.key])));
-      return h('div.switch-row', {}, h('span', { text: r.label }), sw);
-    }
-    if (r.type === 'buttons') {
-      return h('div.btn-row', {}, r.buttons.map(([label, fn, cls = '']) =>
-        h(`button.btn.grow${cls}`, { type: 'button', text: label, on: { click: () => { fn(); syncAll(); } } })));
     }
     return null;
   };

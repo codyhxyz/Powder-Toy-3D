@@ -27,6 +27,7 @@ export const gfxUniforms = {
   tFT: { value: null },
   tBrickDist: { value: null }, // empty-space distance per brick (shaders/passes.js)       // thin-feature mask (cubic liquid)
   uFrame: { value: 0 },       // frame counter (for temporal jitter)
+  uPixScale: { value: 1 },    // output pixel in rendered pixels (set by gfx/post.js per render)
   uSimClock: { value: 0 },    // simulation steps (wrapped): media detail drifts with it, frozen when paused
   tMediaNoise: mediaNoiseUniform(),   // tileable detail noise for smoke, steam and fire
   tGI0: { value: null },      // GI probe volume (shaders/gi.js): L1 SH bands 0, 1x, 1y, 1z

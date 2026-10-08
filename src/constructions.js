@@ -13,7 +13,7 @@ import { execSandboxed } from './constructions/sandbox.js';
 import { buildSystemPrompt, buildChatPrompt, extractCode, MAX_NAME_CHARS } from './ai/prompt.js';
 import {
   PROVIDERS, loadSettings, saveSettings, current, isConfigured, createModel, listModels,
-  startOpenRouterSignIn, finishOpenRouterSignIn,
+  startOpenRouterSignIn, finishOpenRouterSignIn, freeAI,
 } from './ai/providers.js';
 import './constructions.css';
 
@@ -88,8 +88,10 @@ const ICON_SPARK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5
 
 export class Constructions {
   // onClose: the player dismissed the construction options (× or Esc)
-  constructor({ scene, camera, settings, getSim, getVolume, getScale, onClose }) {
+  // requestRender: redraw for a change the view can't see (the ghost's instances)
+  constructor({ scene, camera, settings, getSim, getVolume, getScale, onClose, requestRender }) {
     this.onClose = onClose;
+    this.requestRender = requestRender;
     this.camera = camera;
     this.settings = settings;
     this.getSim = getSim;
@@ -398,7 +400,7 @@ export class Constructions {
       this._remember(this._itemKey(item, AGENT_SEED, size), { cells: result.cells, report: result.report });
       this._addItem({ id: item.id, name: result.name, prompt: request, code: result.code, model: label, description: result.description });
       const tokens = result.usage.inputTokens + result.usage.outputTokens;
-      this._setStatus(`${result.finished ? 'Done' : 'Stopped at the step limit'}: ${summarizeReport(result.report)}${tokens ? ` · ${tokens.toLocaleString()} tokens` : ''}`);
+      this._setStatus(`${result.finished ? 'Done' : 'Stopped at the step limit'}: ${summarizeReport(result.report)}${tokens ? ` · ${tokens.toLocaleString()} tokens` : ''}${this._freeLeft()}`);
     } catch (err) {
       this._setStatus(this.running?.signal.aborted ? 'Cancelled.' : `Generation failed: ${err.message}`);
     } finally {
@@ -464,11 +466,11 @@ export class Constructions {
     }
     if (p.auth === 'none' || p.auth === 'optional') auth.push(field('base-url', 'url', 'Server URL', c.baseURL, 'baseURL', { relist: true }));
     const keyHint = { optional: 'Key (optional)', oauth: 'or paste a key' }[p.auth] ?? 'API key';
-    if (p.auth !== 'none') auth.push(c.apiKey ? forget : field('api-key', 'password', keyHint, '', 'apiKey', { relist: true, onCommit: true }));
+    if (p.auth !== 'none' && p.auth !== 'free') auth.push(c.apiKey ? forget : field('api-key', 'password', keyHint, '', 'apiKey', { relist: true, onCommit: true }));
     const listId = 'build-model-list';
     this.modelList = h(`datalist#${listId}`, {}, this.models.map((id) => h('option', { value: id })));
-    const model = field('model', 'text', 'Model id', c.model, 'model');
-    model.setAttribute('list', listId);
+    const model = p.fixedModel ? h('span.model-fixed', { text: p.fixedModel }) : field('model', 'text', 'Model id', c.model, 'model');
+    if (!p.fixedModel) model.setAttribute('list', listId);
     this._refreshModels();
     return h('div.model', {},
       h('div.model-row', {}, h('span.field-label', { text: 'Model' }), select, model,
@@ -595,7 +597,15 @@ export class Constructions {
     ].filter(Boolean));
   }
 
-  _genHint() { return this.canGenerate ? '⌘↵ to generate' : 'Set up a model below to generate'; }
+  _genHint() {
+    if (!this.canGenerate) return 'Set up a model below to generate';
+    return `⌘↵ to generate${this._freeLeft()}`;
+  }
+  // ' · 3 free left today' while the free provider is in use and the relay has said
+  _freeLeft() {
+    const n = freeAI.remaining;
+    return !this.customModel && current(this.ai).provider.auth === 'free' && n !== null ? ` · ${n} free left today` : '';
+  }
 
   // AI construction: a header with close, then either the prompt composer (new)
   // or the selected saved construction's actions, and the saved list
@@ -697,6 +707,7 @@ export class Constructions {
     depth.instanceColor.needsUpdate = true;
     this.outline.scale.set(s.w, s.h, s.d);
     this.outline.position.set(s.w / 2, s.h / 2, s.d / 2);
+    this.requestRender?.(); // the view key misses instance swaps, e.g. when a generation finishes
   }
 
   dispose() {

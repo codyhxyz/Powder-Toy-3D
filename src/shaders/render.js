@@ -265,7 +265,7 @@ float clay(ivec3 cell, vec3 hp, vec3 n) {
 #define DATA_FLOOR_AO_MIN 0.5   // floor brightness where fully occluded
 vec3 dataFloor(vec3 hp, vec3 lo, vec3 hi) {
   vec2 q = hp.xz / DATA_FLOOR_GRID;
-  vec2 gq = abs(fract(q - 0.5) - 0.5) / max(fwidth(q), vec2(1e-4));
+  vec2 gq = abs(fract(q - 0.5) - 0.5) / max(fwidth(q) * uPixScale, vec2(1e-4));
   float line = 1.0 - min(min(gq.x, gq.y), 1.0);
   float ao = faceAO(ivec3(floor(hp.x), -1, floor(hp.z)), ivec3(0, 1, 0), hp);
   return mix(lo, hi, line) * (DATA_FLOOR_AO_MIN + (1.0 - DATA_FLOOR_AO_MIN) * ao);
@@ -652,7 +652,7 @@ void dataView(vec3 ro, vec3 rd, float t0, vec3 bh) {
 void main() {
   vec3 ro = uCam;
   vec3 rd = safeDir(normalize(vGrid - uCam));
-  if (CUR_VIEW == VIEW_FLOW) gPix = length(fwidth(rd));
+  if (CUR_VIEW == VIEW_FLOW) gPix = length(fwidth(rd)) * uPixScale;
   surfView(uCam, rd);   // pixel footprint for material LOD (needs uniform control flow)
   vec3 bh = boxHit(ro, rd);
   float t0 = max(bh.x, 0.0);

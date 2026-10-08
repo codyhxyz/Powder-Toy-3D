@@ -4,7 +4,8 @@
 //
 // Keys live only in this browser's localStorage (STORE). They go straight to
 // the chosen provider and nowhere else: not in construction exports, URLs or the
-// multiplayer stream. Subscriptions (Claude, ChatGPT, Gemini) can't be used by a
+// multiplayer stream. The free provider needs no key: it goes through our
+// relay's OpenAI proxy (relay/ai.js), which limits it to a few generations a day. Subscriptions (Claude, ChatGPT, Gemini) can't be used by a
 // third-party web app; use them through the MCP server instead
 // (docs/constructions.md).
 
@@ -22,8 +23,34 @@ const OLLAMA_CONTEXT_TOKENS = 16384;
 
 const browserKeyNote = 'Your key stays in this browser and goes only to the provider. Use one with a spending limit.';
 
-// auth: 'oauth' (sign in, or paste a key), 'key', 'none' (local), 'optional' (local, key if the server wants one)
+// The free provider is the relay's proxy, on the same host as the multiplayer relay.
+const DEV_RELAY_PORT = 8787; // `wrangler dev` default, as in net/multiplayer.js
+const RELAY_URL = import.meta.env.VITE_RELAY_URL || (import.meta.env.DEV ? `ws://${location.hostname}:${DEV_RELAY_PORT}` : null);
+const FREE_AI_URL = RELAY_URL ? `${RELAY_URL.replace(/^ws/, 'http')}/ai/v1` : '';
+const FREE_MODEL = 'gpt-6-luna'; // the relay pins the model; this is only what the AI SDK reports
+export const freeAI = { remaining: null }; // free generations left today, from the relay's last answer
+
+// auth: 'free' (our proxy), 'oauth' (sign in, or paste a key), 'key', 'none' (local), 'optional' (local, key if the server wants one)
 export const PROVIDERS = [
+  {
+    id: 'free', label: 'Powder Toy AI (free)', auth: 'free', baseURL: FREE_AI_URL, defaultModel: FREE_MODEL, fixedModel: 'GPT-6 Luna',
+    note: 'Free for a few generations a day. Your prompt goes through our server to OpenAI. For more, pick a provider and use your own key.',
+    create: async ({ baseURL }) => {
+      const gen = crypto.randomUUID(); // one per Generate press: the relay counts generations by it
+      const p = (await import('@ai-sdk/openai')).createOpenAI({
+        baseURL, apiKey: 'free',
+        fetch: async (url, init) => {
+          const headers = new Headers(init?.headers);
+          headers.set('x-gen-id', gen);
+          const res = await fetch(url, { ...init, headers });
+          const left = res.headers.get('x-ai-remaining');
+          if (left !== null) freeAI.remaining = Number(left);
+          return res;
+        },
+      });
+      return (id) => p.responses(id);
+    },
+  },
   {
     id: 'openrouter', label: 'OpenRouter', auth: 'oauth', note: browserKeyNote,
     create: async ({ apiKey }) => (await import('@openrouter/ai-sdk-provider'))
@@ -98,6 +125,7 @@ export function current(s) {
 // Ready to generate: a model is chosen and the credentials the provider needs are there.
 export function isConfigured(s) {
   const c = current(s);
+  if (c.provider.auth === 'free') return !!c.baseURL;
   if (!c.model) return false;
   return c.provider.auth === 'none' || c.provider.auth === 'optional' ? !!c.baseURL : !!c.apiKey;
 }

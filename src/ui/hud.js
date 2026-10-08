@@ -4,7 +4,8 @@ import { ICON } from './icons.js';
 export function createHud() {
   // stats (bottom right)
   const fps = h('b'), cells = h('b'), steps = h('b'), res = h('b');
-  const stats = h('div.stats', {}, h('span', {}, fps, ' fps'), h('span', {}, steps, ' steps/s'), h('span', {}, cells, ' cells'), h('span', {}, res));
+  const fpsUnit = document.createTextNode(' fps');
+  const stats = h('div.stats', {}, h('span', {}, fps, fpsUnit), h('span', {}, steps, ' steps/s'), h('span', {}, cells, ' cells'), h('span', {}, res));
 
   // hover readout (follows the cursor)
   const chip = h('i'), name = h('b'), temp = h('span'), pres = h('span');
@@ -29,7 +30,9 @@ export function createHud() {
   return {
     // called every frame: only touch the DOM when a value changes (each write re-lays out the HUD)
     setStats({ fpsV, stepsV, cellsV, resV }) {
-      setText(fps, fpsV.toFixed(0));
+      // null fps: nothing is being drawn (a paused, still scene)
+      setText(fps, fpsV == null ? 'idle' : fpsV.toFixed(0));
+      setText(fpsUnit, fpsV == null ? '' : ' fps');
       setText(steps, stepsV.toFixed(0));
       setText(cells, cellsV);
       setText(res, resV);

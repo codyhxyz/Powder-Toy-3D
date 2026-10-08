@@ -16,7 +16,7 @@ import { createHud, createHelp } from './ui/hud.js';
 import { inkFor, luminance } from './ui/dom.js';
 import { logoMark } from './ui/logo.js';
 import { gfx, gfxUniforms, updateGfxUniforms } from './gfx/uniforms.js';
-import { createPost, TAA_WEIGHT_STABLE } from './gfx/post.js';
+import { createPost, UPSCALE } from './gfx/post.js';
 import { createPacer, settleFrames, sceneKey } from './gfx/pacing.js';
 import { CHANNELS, MEDIA } from './gfx/materials.js';
 import { GI_BLEND } from './sim.js';
@@ -39,18 +39,23 @@ const SIGN_TOOL = -5;
 const DEFAULTS = {
   size: '128', preset: 'lab',
   tool: E.SAND, radius: 5, shape: 0, rate: 1, replace: false,
-  steps: 4, gravity: 0.025, paused: false, liveTiles: true,
-  view: 0, shadows: true, autoRes: true, res: Math.min(devicePixelRatio, 1.5), glow: 1.6,
-  sunAz: 38, sunEl: 55, camSpeed: 1, dockCollapsed: false,
-  smoothing: 1, taa: true, bloom: 0.3, exposure: 0.7,
+  steps: 4, gravity: 0.025, paused: false,
+  view: 0, sunAz: 38, sunEl: 55, camSpeed: 1, upscale: 'native', dockCollapsed: false,
 };
-const PERSIST = ['size', 'preset', 'tool', 'radius', 'shape', 'rate', 'replace', 'steps', 'gravity', 'view', 'liveTiles',
-  'shadows', 'autoRes', 'res', 'glow', 'sunAz', 'sunEl', 'camSpeed', 'dockCollapsed',
-  'smoothing', 'taa', 'bloom', 'exposure'];
+const PERSIST = ['size', 'preset', 'tool', 'radius', 'shape', 'rate', 'replace', 'steps', 'gravity', 'view',
+  'sunAz', 'sunEl', 'camSpeed', 'upscale', 'dockCollapsed'];
 const STORE = 'powder-toy-3d:settings';
+// Fixed look: glow is heat-driven light (×uLightGain); smoothing, TAA, bloom and
+// exposure keep their defaults in gfx/uniforms.js and gfx/post.js.
+const GLOW_GAIN = 1.6;
+const RES_MAX = Math.min(devicePixelRatio, 1.5);   // auto resolution's ceiling (pixel ratio)
 
 const settings = { ...DEFAULTS };
-try { Object.assign(settings, JSON.parse(localStorage.getItem(STORE) || '{}')); } catch { /* storage unavailable */ }
+try {
+  // only keys still in use: values of removed settings must not linger
+  const saved = JSON.parse(localStorage.getItem(STORE) || '{}');
+  for (const k of PERSIST) if (k in saved) settings[k] = saved[k];
+} catch { /* storage unavailable */ }
 const params = new URLSearchParams(location.search);
 if (params.get('size') in SIZES) settings.size = params.get('size');
 if (params.get('preset')) settings.preset = params.get('preset');
@@ -68,20 +73,18 @@ function save() {
 }
 
 // ---------------------------------------------------------------- renderer / scene
-const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
+// The canvas only ever receives post's full-screen composite (no depth test; TAA
+// does the antialiasing upstream), so it gets neither MSAA nor a depth buffer:
+// both would only cost memory and bandwidth (~165 MB at 2880×1800).
+const renderer = new THREE.WebGLRenderer({ antialias: false, depth: false, alpha: true, powerPreference: 'high-performance' });
 renderer.setClearColor(0x000000, 0);
-let pixelRatio = settings.autoRes ? Math.min(settings.res, 1) : settings.res;
+let pixelRatio = Math.min(RES_MAX, 1);
 renderer.setPixelRatio(pixelRatio);
 renderer.setSize(innerWidth, innerHeight);
 renderer.autoClear = false;
 document.getElementById('app').appendChild(renderer.domElement);
 // HDR post: TAA, bloom, AgX tone mapping (src/gfx/post.js)
-const post = createPost(renderer);
-function applyGfx() {
-  gfx.smoothing = settings.smoothing;
-  Object.assign(post.settings, { taa: settings.taa, bloom: settings.bloom, exposure: settings.exposure });
-}
-applyGfx();
+const post = createPost(renderer, { pixScale: gfxUniforms.uPixScale });
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.05, 200);
@@ -93,6 +96,12 @@ controls.zoomToCursor = true;
 
 const floorGrid = new THREE.GridHelper(80, 80, 0x2b3240, 0x1b2029);
 floorGrid.position.y = -0.002;
+// GL lines are one rendered pixel wide: under TAAU that is 1/scale output pixels,
+// so the grid and the box outline fade by the render scale to keep their weight.
+// Transparent for that, but still drawn before the other transparent objects.
+floorGrid.material.transparent = true;
+floorGrid.renderOrder = -1;
+const EDGE_OPACITY = 0.55;
 scene.add(floorGrid);
 
 const SUN = new THREE.Vector3();
@@ -144,7 +153,7 @@ function build() {
       tA: { value: null }, tB: { value: null }, tBrick: { value: null }, tLight: { value: null },
       uCam: { value: new THREE.Vector3() },
       uSun: { value: SUN }, tShadow: { value: null }, uShadowRes: { value: 0 },
-      uView: { value: 0 }, uShadows: { value: true }, uTime: { value: 0 }, uLightGain: { value: settings.glow },
+      uView: { value: 0 }, uShadows: { value: true }, uTime: { value: 0 }, uLightGain: { value: GLOW_GAIN },
       ...gfxUniforms,
     },
     side: THREE.BackSide,
@@ -161,7 +170,7 @@ function build() {
   volume.updateMatrixWorld();
 
   edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo),
-    new THREE.LineBasicMaterial({ color: 0x56607a, transparent: true, opacity: 0.55 }));
+    new THREE.LineBasicMaterial({ color: 0x56607a, transparent: true, opacity: EDGE_OPACITY }));
   edges.scale.copy(volume.scale);
   edges.position.copy(volume.position);
   scene.add(edges);
@@ -404,12 +413,9 @@ const settingsPanel = createSettings({
   // Sections and their rows run from most to least reached-for; keep that order when adding settings.
   sections: [
     { title: 'Scene', rows: [
+      // clicking the current scene reloads it; Empty clears
       { type: 'seg', key: 'preset', options: [['empty', 'Empty'], ['lab', 'Lab'], ['volcano', 'Volcano']],
         onChange: (v) => { if (loadPreset(v)) hud.toast(`Loaded ${v === 'empty' ? 'an empty box' : `the ${v}`}`); } },
-      { type: 'buttons', buttons: [
-        ['Reload scene', () => { if (loadPreset(settings.preset)) hud.toast('Scene reloaded'); }],
-        ['Clear everything', () => { if (loadPreset('empty')) hud.toast('Cleared'); }, '.danger'],
-      ] },
     ] },
     { title: 'Simulation', rows: [
       { type: 'slider', key: 'steps', label: 'Speed (steps per frame)', min: 1, max: 12, step: 1, def: DEFAULTS.steps, fmt: fmtSpeed, onChange: save },
@@ -421,37 +427,20 @@ const settingsPanel = createSettings({
       { type: 'seg', key: 'size', options: [['64', '64³'], ['96', '96³'], ['128', '128³'], ['wide', '160×96']],
         onChange: (v) => { if (mp.guard()) return; settings.size = v; build(); save(); hud.toast(`Grid is now ${v === 'wide' ? '160 × 96 × 160' : `${v}³`}`); } },
     ] },
-    // Resolution is the performance knob: ray-marching cost is linear in pixels.
-    { title: 'Performance', rows: [
-      { type: 'switch', key: 'autoRes', label: 'Adjust resolution to keep 60 fps', onChange: save },
-      { type: 'slider', key: 'res', label: 'Resolution', min: 0.5, max: 2, step: 0.05, def: DEFAULTS.res,
-        fmt: (v) => `${Math.round(v * 100)}%`, disabled: () => settings.autoRes,
-        onChange: (v) => { setPixelRatio(v); save(); } },
-    ] },
-    { title: 'Look', rows: [
+    { title: 'Lighting', rows: [
       { type: 'slider', key: 'sunEl', label: 'Sun height', min: 12, max: 85, step: 1, def: DEFAULTS.sunEl,
         fmt: (v) => `${v}°`, onChange: () => { updateSun(); save(); } },
       { type: 'slider', key: 'sunAz', label: 'Sun direction', min: 0, max: 360, step: 1, def: DEFAULTS.sunAz,
         fmt: (v) => `${v}°`, onChange: () => { updateSun(); save(); } },
-      { type: 'slider', key: 'smoothing', label: 'Surface smoothing', min: 0, max: 2, step: 0.05, def: DEFAULTS.smoothing,
-        fmt: (v) => (v === 0 ? 'Off' : `${v.toFixed(2)}×`), onChange: () => { applyGfx(); save(); } },
-      { type: 'switch', key: 'shadows', label: 'Sun shadows', onChange: save },
-      { type: 'slider', key: 'exposure', label: 'Exposure', min: -3, max: 3, step: 0.1, def: DEFAULTS.exposure,
-        fmt: (v) => `${v > 0 ? '+' : ''}${v.toFixed(1)} EV`, onChange: () => { applyGfx(); save(); } },
-      { type: 'slider', key: 'glow', label: 'Glow from hot things', min: 0, max: 3, step: 0.1, def: DEFAULTS.glow,
-        fmt: (v) => v.toFixed(1), onChange: save },
-      { type: 'slider', key: 'bloom', label: 'Bloom', min: 0, max: 1, step: 0.05, def: DEFAULTS.bloom,
-        fmt: (v) => v.toFixed(2), onChange: () => { applyGfx(); save(); } },
-      // last: only for comparing; the renderer relies on TAA to clean up its noise
-      { type: 'switch', key: 'taa', label: 'Temporal anti-aliasing', onChange: () => { applyGfx(); post.reset(); save(); } },
+    ] },
+    // the scene renders at a share of the screen's pixels and TAA rebuilds full detail over frames
+    { title: 'Upscaling', rows: [
+      { type: 'seg', key: 'upscale', options: [['native', 'Off'], ['quality', 'Quality'], ['balanced', 'Balanced'], ['performance', 'Fast']],
+        onChange: (v) => { settings.upscale = v; save(); } },
     ] },
     { title: 'Camera', rows: [
       { type: 'slider', key: 'camSpeed', label: 'Move speed (WASD)', min: 0.25, max: 3, step: 0.05, def: DEFAULTS.camSpeed,
         fmt: (v) => `${v.toFixed(2)}×`, onChange: (v) => { rig.setSpeed(v); save(); } },
-      { type: 'buttons', buttons: [['Reset camera', () => rig.reset()]] },
-    ] },
-    { title: 'Element picker', rows: [
-      { type: 'switch', key: 'liveTiles', label: 'Animate element tiles on hover', onChange: save },
     ] },
   ],
   footer: [['Reset all settings', resetSettings]],
@@ -463,8 +452,6 @@ function resetSettings() {
   sim.gravity = settings.gravity;
   rig.setSpeed(settings.camSpeed);
   updateSun();
-  applyGfx();
-  setPixelRatio(settings.autoRes ? Math.min(settings.res, 1) : settings.res);
   dock.sync();
   toolbar.sync();
   save();
@@ -632,8 +619,8 @@ addEventListener('keydown', (e) => {
   else if (k === '?') actions.toggleHelp();
   else if (k === 'p' || k === 'P') actions.screenshot();
   else if (k === 'Escape') {
-    const overlay = toolbar.isOpen || settingsPanel.isOpen || help.isOpen;
-    toolbar.close(); setSettingsOpen(false); help.setOpen(false);
+    const overlay = toolbar.isOpen || settingsPanel.isOpen || help.isOpen || mp.panelOpen;
+    toolbar.close(); setSettingsOpen(false); help.setOpen(false); mp.closePanel();
     if (!overlay) leaveBuild();
   }
   else if (/^[0-9]$/.test(k)) { const v = VIEWS.find((x) => x.hotkey === k); if (v) setView(v.id); }
@@ -655,14 +642,16 @@ addEventListener('resize', () => {
 
 // ---------------------------------------------------------------- loop
 const clock = new THREE.Timer();
-let frames = 0, fpsTime = 0, fps = 60;
+// The fps readout is the rate frames are drawn while drawing: a paused, still
+// scene draws nothing (render on demand) and reads as idle, not as a low rate.
+let frames = 0, fpsTime = 0, fps = 60, idleTime = 0;
 // Render on demand (gfx/pacing.js). The derived passes settle once the slowest
 // field EMA and the GI blend (each probe is traced every other frame) have
-// converged; the view once TAA's history has.
+// converged; the view once TAA's history has (upscaled, it accumulates for longer).
 const GI_PROBE_EVERY = 2;
 const pacer = createPacer({
   derivedSettle: Math.max(...[...CHANNELS, ...MEDIA].map((c) => settleFrames(c.ema)), settleFrames(GI_BLEND, GI_PROBE_EVERY)),
-  viewSettle: settleFrames(TAA_WEIGHT_STABLE),
+  viewSettle: () => settleFrames(post.settleWeight),
 });
 // input of any kind may change what the view shows
 for (const type of ['pointermove', 'pointerdown', 'pointerup', 'wheel', 'keydown', 'keyup', 'input', 'change', 'resize']) {
@@ -689,14 +678,14 @@ const AUTO_RES_DOWN = 0.85;
 const AUTO_RES_UP = 1.08;
 const AUTO_RES_MIN_GAIN = 0.93;   // frame time must fall below this × the old one
 const AUTO_RES_HOLD = 15;         // s
-const autoRes = { lastDt: 0, tried: 0, holdUntil: 0 };
+const autoRes = { enabled: true, lastDt: 0, tried: 0, holdUntil: 0 };   // tools turn it off for stable timings
 function autoResolution(dt, now) {
-  if (!settings.autoRes) return;
+  if (!autoRes.enabled) return;
   resTime += dt; resFrames++; resDt += dt;
   if (resTime < AUTO_RES_WINDOW) return;
   const avg = resDt / resFrames;
   resTime = resFrames = resDt = 0;
-  const max = settings.res, min = AUTO_RES_MIN;
+  const max = RES_MAX, min = AUTO_RES_MIN;
   if (autoRes.tried) {
     // judge the previous decrease
     if (avg > autoRes.lastDt * AUTO_RES_MIN_GAIN) { setPixelRatio(autoRes.tried); autoRes.holdUntil = now + AUTO_RES_HOLD; }
@@ -730,8 +719,6 @@ function frame(now) {
   if (!pacer.due(now)) return;
   clock.update(now);
   const dt = Math.min(clock.getDelta(), DT_MAX);
-  fpsTime += dt;
-  if (fpsTime > FPS_WINDOW) { if (frames > 0) fps = frames / fpsTime; frames = 0; fpsTime = 0; }
   // only frames that rendered measure how expensive rendering is
   if (renderedLast) autoResolution(dt, clock.getElapsed());
 
@@ -761,25 +748,28 @@ function frame(now) {
   const worldChanged = sim.version !== lastVersion;
   lastVersion = sim.version;
   const runDerived = pacer.derived(
-    `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${settings.shadows}|${settings.view}|${gfx.smoothing}`);
+    `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${settings.view}|${gfx.smoothing}`);
   const runView = pacer.view(
     `${camera.matrixWorld.elements}|${camera.projectionMatrix.elements}|${pixelRatio}|${innerWidth}x${innerHeight}`
     + `|${JSON.stringify(settings)}|${JSON.stringify(gfx)}|${JSON.stringify(post.settings)}|${sceneKey(scene)}`,
     runDerived || wantShot);
+  // a frame's dt measures the drawing rate only when the frame before it drew too
+  if (runView && renderedLast) { frames++; fpsTime += dt; }
+  if (fpsTime > FPS_WINDOW) { fps = frames / fpsTime; frames = 0; fpsTime = 0; }
+  idleTime = runView ? 0 : idleTime + dt;
   renderedLast = runView;
   if (runView) updateGfxUniforms(sim, SUN);   // (runDerived implies runView)
   if (runDerived) {
     sim.updateBricks();
-    if (settings.shadows && VIEWS.find((v) => v.id === settings.view)?.shadows) {
+    if (VIEWS.find((v) => v.id === settings.view)?.shadows) {
       shadowMat.uniforms.tA.value = sim.stateA;
       shadowMat.uniforms.tBrick.value = sim.brick.texture;
       sim.run(shadowMat, shadowTarget);
     }
-    if (settings.view === 0) sim.updateGI(SUN, shadowTarget.texture, shadowMat.uniforms.uShadowRes.value, settings.shadows);
+    if (settings.view === 0) sim.updateGI(SUN, shadowTarget.texture, shadowMat.uniforms.uShadowRes.value, true);
   }
 
   if (runView) {
-    frames++;
     volume.updateMatrixWorld();
     const u = volume.material.uniforms;
     u.tA.value = sim.stateA;
@@ -788,11 +778,12 @@ function frame(now) {
     u.tLight.value = sim.lightTexture;
     u.uCam.value.copy(camera.position).applyMatrix4(invVol.copy(volume.matrixWorld).invert());
     u.uView.value = settings.view;
-    u.uShadows.value = settings.shadows;
-    u.uLightGain.value = settings.glow;
     if (worldChanged) u.uTime.value += dt;   // animated looks (lava, ripples) hold still while the world does
 
     post.settings.raw = settings.view !== 0;
+    post.settings.upscale = UPSCALE[settings.upscale] ?? UPSCALE.native;
+    floorGrid.material.opacity = post.renderScale;
+    edges.material.opacity = EDGE_OPACITY * post.renderScale;
     post.render(scene, camera);
     if (wantShot) { wantShot = false; saveScreenshot(); }
 
@@ -808,10 +799,10 @@ function frame(now) {
   }
   const g = sim.g;
   hud.setStats({
-    fpsV: fps,
+    fpsV: idleTime > FPS_WINDOW ? null : fps,   // null: idle
     stepsV: settings.paused || mp.isGuest ? 0 : settings.steps * fps, // guests don't simulate
     cellsV: `${(g.nx * g.ny * g.nz / 1e6).toFixed(1)}M`,
-    resV: settings.autoRes ? `${Math.round(pixelRatio * 100)}% res` : '',
+    resV: autoRes.enabled ? `${Math.round(pixelRatio * 100)}% res` : '',
   });
 }
 
@@ -830,6 +821,7 @@ try {
   if (BuildsClass) {
     builds = new BuildsClass({
       scene, camera, settings, getSim: () => sim, getVolume: () => volume, getScale: () => scale, onClose: leaveBuild,
+      requestRender: () => pacer.wake(),
     });
   }
   build();
@@ -847,7 +839,7 @@ try {
   window.__app = {
     get sim() { return sim; }, get volume() { return volume; }, get scale() { return scale; }, get signs() { return signs; }, get builds() { return builds; },
     get pov() { return pov; },
-    SUN, scene, settings, camera, controls, loadPreset, selectTool, setView, hover, renderer, rig, renderThumb, gfx, post, mp,
+    SUN, scene, settings, camera, controls, loadPreset, selectTool, setView, hover, renderer, rig, renderThumb, gfx, post, mp, autoRes,
     requestRender: () => pacer.wake(),   // for changes the frame loop can't see (async results)
   };
   requestAnimationFrame(frame);

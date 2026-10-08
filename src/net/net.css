@@ -30,3 +30,15 @@
 }
 .net-cursor.painting::before { box-shadow: 0 0 0 1.5px var(--peer-ink), 0 0 0 4px color-mix(in srgb, var(--peer-ink) 30%, transparent); }
 .net-cursor[hidden] { display: none; }
+
+/* Session panel under the toolbar button: players, invite link, stop/leave. */
+.net-panel { right: 14px; top: 58px; width: 260px; padding: 12px; }
+.net-panel header { display: flex; justify-content: space-between; align-items: baseline; padding: 0 2px 8px; }
+.net-panel header h2 { margin: 0; font-size: 14px; font-weight: 650; }
+.net-panel header p { margin: 0; color: var(--muted); font-size: 12px; }
+.net-peers { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.net-peers:empty { display: none; }
+.net-peers li { display: flex; align-items: center; gap: 8px; padding: 5px 4px; border-radius: var(--r-ctl); font-weight: 560; }
+.net-peers .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--peer); }
+.net-peers .you { margin-left: auto; color: var(--faint); font-size: 11px; }
+.net-panel .btn:disabled { opacity: 0.4; cursor: default; }

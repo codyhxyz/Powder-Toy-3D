@@ -9,6 +9,24 @@ compatibility_date = "2025-09-01"
 name = "ROOMS"
 class_name = "Room"
 
+[[durable_objects.bindings]]
+name = "AI_QUOTA"
+class_name = "AiQuota"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Room"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["AiQuota"]
+
+# Free construction AI (ai.js). Secrets: OPENAI_KEY_ANON, OPENAI_KEY_FREE, OPENAI_KEY_PAID (one OpenAI key per tier) and AI_SALT (any random string)
+
+# Accounts (auth.js): users, sessions, sign-in states. Schema in migrations/.
+#   wrangler d1 migrations apply tpt3d-accounts --config relay/wrangler.toml [--local|--remote]
+[[d1_databases]]
+binding = "DB"
+database_name = "tpt3d-accounts"
+database_id = "2bdc0e54-d6c4-4c03-bb03-c4d9a0e4e57c"
+migrations_dir = "migrations"
