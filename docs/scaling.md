@@ -93,12 +93,13 @@ fetch outside common.js, so code merged from main can't bypass the accessors.
 ### D7. Packed state
 Cost follows bytes per cell (see Measured), so the target is one RGBA32UI texture per copy, 16 bytes per cell
 instead of 32:
-- x: id 6 | ctype 6 | flags 4 | seed 16
-  - Flag bit 0 = inert, written by react; the other flag bits are reserved.
-  - The seed field may become a grain's rest position; keep it 16 bits.
+- x: id 6 | ctype 6 | inert 1 | seed 19
+  - inert is written by react.
+  - Another session (`../tpt-rest-pos`, not yet on main) turns the seed into a grain's rest position: three
+    6-bit axes plus a free-fall flag, scrambled, in 19 bits (`src/shaders/rest.js`). The seed field holds all 19.
 - y: temperature as f32 bits. Conduction fluxes are tiny and must not round away.
 - z: life f16 | pressure f16
-- w: velocity, 3 × 10-bit signed fixed point over [−V_MAX, V_MAX], with 2 bits spare.
+- w: velocity, 3 × 10-bit signed fixed point over [−V_MAX, V_MAX], with 2 spare flag bits.
   - Stochastic rounding, using the cell's hash random stream, keeps the expected value exact, so gravity, drag
     and friction integrate without bias.
   - Exact zero stays exact zero, which rest states need.
