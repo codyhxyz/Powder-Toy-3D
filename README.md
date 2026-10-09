@@ -250,6 +250,12 @@ AgX tone mapping. Bright saturated light (lava, flames) blends toward the same c
 amber and gold to white like film instead of fading to pale peach. The data views skip the tone curve so their legend
 colours stay exact.
 
+**Profiler** (Settings → Developer; `src/gfx/profiler.js`, `src/ui/profiler.js`). An overlay with a GPU waterfall of one
+frame per second, CPU time per phase, fps, steps/s, the share of bricks the simulation steps, a GPU memory estimate, and
+Copy for a plain-text report. GPU timer queries misread on Apple GPUs, so in the sampled frame the CPU waits for the GPU
+after every pass (a one-texel read of the target it wrote) and subtracts the calibrated cost of that wait. Other frames
+run unsynced, and a still scene stays idle. When the profiler is off, it costs nothing.
+
 ### Views
 
 Number keys switch between six views (the views menu shows a live thumbnail of each). Colormaps live in `src/views.js` and are baked

@@ -1,0 +1,91 @@
+/* Profiler overlay (ui/profiler.js). No backdrop blur, unlike .panel: it would
+   re-blur the canvas under it every frame, on the GPU being measured. */
+.prof {
+  /* phase colours */
+  --prof-paint: #e5a15b;
+  --prof-sim: #dcbc74;
+  --prof-derived: #7fb4e0;
+  --prof-shadow: #9aa4b8;
+  --prof-gi: #b294e8;
+  --prof-view: #6cc7a2;
+  --prof-post: #e48fae;
+  --prof-other: #6b7385;
+  --prof-over: var(--danger);              /* sampled frames over the frame budget */
+  --prof-tick: rgba(231, 234, 240, 0.35);  /* the budget mark */
+  /* columns: phase name, cpu ms, gpu ms, then the timeline */
+  --prof-name: 54px;
+  --prof-num: 38px;
+  --prof-gap: 6px;
+  --prof-bottom: 168px;      /* above the dock, like the hint */
+  --prof-top-clear: 220px;   /* never taller than the space under the element card */
+  --budget: 100%;
+  --spark-budget: 100%;
+
+  position: fixed; left: 14px; bottom: var(--prof-bottom); z-index: 7;
+  display: none;
+  width: 330px;
+  max-height: calc(100vh - var(--prof-bottom) - var(--prof-top-clear));
+  overflow-y: auto;
+  scrollbar-width: none;
+  padding: 8px 10px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-ctl);
+  background: rgba(14, 17, 24, 0.9);
+  box-shadow: var(--shadow);
+  color: var(--muted);
+  font: 400 10.5px/1.55 ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;   /* input passes through to the canvas, except on the buttons */
+}
+.prof.show { display: block; }
+.prof button { pointer-events: auto; font: inherit; color: inherit; }
+.prof header { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
+.prof header b { color: var(--text); font-weight: 650; }
+.prof .status { flex: 1; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.prof .copy {
+  border: 1px solid var(--line); border-radius: 5px; padding: 1px 8px;
+  background: var(--raise); color: var(--text); cursor: pointer;
+}
+.prof .copy:hover { background: var(--raise-hi); border-color: var(--line-hi); }
+.prof .line { color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.prof .row {
+  display: grid; grid-template-columns: var(--prof-name) var(--prof-num) var(--prof-num) 1fr;
+  align-items: center; gap: 0 var(--prof-gap);
+  width: 100%; padding: 0; border: 0; border-radius: 3px; background: none; text-align: left;
+}
+.prof button.row { cursor: pointer; }
+.prof button.row:hover { background: var(--raise); }
+.prof .row .name { white-space: nowrap; }
+.prof button.row .name::before {
+  content: ''; display: inline-block; width: 6px; height: 6px; margin-right: 5px;
+  border-radius: 1px; background: var(--c);
+}
+.prof button.row.open .name { color: var(--text); }
+.prof .head { margin-top: 5px; color: var(--faint); }
+.prof .total { margin-top: 2px; padding-top: 2px; border-top: 1px solid var(--line); border-radius: 0; color: var(--text); }
+.prof .num { text-align: right; }
+.prof .track {
+  position: relative; height: 9px; border-radius: 2px;
+  background:
+    linear-gradient(to right, transparent calc(var(--budget) - 1px), var(--prof-tick) calc(var(--budget) - 1px),
+      var(--prof-tick) var(--budget), transparent var(--budget)),
+    rgba(255, 255, 255, 0.04);
+}
+.prof .track i { position: absolute; top: 1px; bottom: 1px; min-width: 1px; border-radius: 1px; background: var(--c); }
+.prof .total .track i { left: 0; background: var(--muted); }
+/* an open phase's passes: name ×runs, gpu ms, and each run on the same timeline */
+.prof .detail { display: none; padding-bottom: 2px; color: var(--faint); }
+.prof .detail.open { display: block; }
+.prof .sub { grid-template-columns: calc(var(--prof-name) + var(--prof-gap) + var(--prof-num)) var(--prof-num) 1fr; }
+.prof .sub .name { padding-left: 11px; overflow: hidden; text-overflow: ellipsis; }
+.prof .sub .track { height: 7px; }
+.prof .sub .track i { opacity: 0.75; }
+
+.prof .spark { position: relative; display: flex; align-items: flex-end; gap: 1px; height: 20px; margin-top: 6px; }
+.prof .spark i { flex: 1; min-height: 1px; border-radius: 1px 1px 0 0; background: var(--faint); }
+.prof .spark i.over { background: var(--prof-over); }
+.prof .spark::after {
+  content: ''; position: absolute; left: 0; right: 0; bottom: var(--spark-budget); height: 1px; background: var(--prof-tick);
+}
+.prof.idle .row, .prof.idle .spark { opacity: 0.45; }

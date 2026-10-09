@@ -534,9 +534,11 @@ export function createPost(renderer, { pixScale } = {}) {
 
   const post = {
     settings: { ...POST_DEFAULTS },
-    /** Optional profiling hook: called as onPass(name, renderTarget) after each pass. */
+    /** Optional profiling hook: called as onPass(name, renderTarget) after each pass (null: the canvas). */
     onPass: null,
     get size() { return size.clone(); },
+    /** Every render target the pipeline holds (for memory estimates). */
+    get allTargets() { return [sceneRT, still, ...history, ...down, ...up].filter(Boolean); },
     /** Current-frame weight TAA settles with (for how long the view needs to converge). */
     get settleWeight() { return upscaling() ? TAAU_WEIGHT_STABLE : TAA_WEIGHT_STABLE; },
     /** Render scale per axis the next render uses (upscaling is TAA's job). */
@@ -687,7 +689,7 @@ export function createPost(renderer, { pixScale } = {}) {
       u.uRaw.value = s.raw ? 1 : 0;
       u.uHot.value.set(s.hotStart, s.hotFull);
       pass(compMat, target);
-      if (target) post.onPass?.('composite', target);
+      post.onPass?.('composite', target);
 
       renderer.setRenderTarget(prevTarget);
       renderer.setClearColor(savedClear, savedAlpha);

@@ -21,6 +21,8 @@ import { CHANNELS, MEDIA } from './gfx/materials.js';
 import { DAY, dayPhase, phaseSteps, keyLight } from './gfx/daylight.js';
 import { GI_BLEND } from './sim.js';
 import { createMultiplayer } from './net/multiplayer.js';
+import { createProfiler } from './gfx/profiler.js';
+import { createProfilerPanel } from './ui/profiler.js';
 import { createPov } from './pov/index.js';
 import { renderViewmodels } from './pov/viewmodel.js';
 import { POV_FOV, POV_FOV_RANGE, SENSITIVITY_RANGE } from './pov/camera.js';
@@ -45,10 +47,10 @@ const DEFAULTS = {
   tool: E.SAND, radius: 5, shape: 0, rate: 1, replace: false,
   steps: 4, gravity: 0.025, paused: false,
   view: 0, camSpeed: 1, upscale: 'native', dockCollapsed: false,
-  figure: 'real', povFov: POV_FOV, sensitivity: 1, viewBobbing: true, sprintMode: 'hold',
+  figure: 'real', povFov: POV_FOV, sensitivity: 1, viewBobbing: true, sprintMode: 'hold', profiler: false,
 };
 const PERSIST = ['size', 'preset', 'tool', 'radius', 'shape', 'rate', 'replace', 'steps', 'gravity', 'view',
-  'camSpeed', 'upscale', 'dockCollapsed', 'figure', 'povFov', 'sensitivity', 'viewBobbing', 'sprintMode'];
+  'camSpeed', 'upscale', 'dockCollapsed', 'figure', 'povFov', 'sensitivity', 'viewBobbing', 'sprintMode', 'profiler'];
 const STORE = 'powder-toy-3d:settings';
 // Fixed look: glow is heat-driven light (×uLightGain); smoothing, TAA, bloom and
 // exposure keep their defaults in gfx/uniforms.js and gfx/post.js.
@@ -156,6 +158,7 @@ function build() {
   const [nx, ny, nz] = SIZES[settings.size];
   sim = new Simulation(renderer, nx, ny, nz);
   sim.gravity = settings.gravity;
+  sim.onPass = prof.on ? simPass : null;
   scale = 10 / Math.max(nx, nz);
 
   const geo = new THREE.BoxGeometry(nx, ny, nz);
@@ -190,6 +193,7 @@ function build() {
   scene.add(edges);
 
   pickMat = new THREE.RawShaderMaterial({
+    name: 'pick',
     glslVersion: THREE.GLSL3,
     vertexShader: quadVert,
     fragmentShader: pickFrag(sim.g),
@@ -207,6 +211,7 @@ function build() {
     type: THREE.FloatType, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, depthBuffer: false,
   });
   shadowMat = new THREE.RawShaderMaterial({
+    name: 'shadow',
     glslVersion: THREE.GLSL3,
     vertexShader: quadVert,
     fragmentShader: shadowFrag(sim.g),
@@ -489,6 +494,11 @@ const settingsPanel = createSettings({
         onChange: (v) => { settings.sprintMode = v; save(); } },
     ] },
     ...(accountsEnabled ? [accountSection({ toast: (text) => hud.toast(text) })] : []),
+    // for working on the app itself (the frame loop applies it)
+    { title: 'Developer', rows: [
+      { type: 'seg', key: 'profiler', options: [[false, 'Profiler off'], [true, 'Profiler on']],
+        onChange: (v) => { settings.profiler = v; save(); } },
+    ] },
   ],
   footer: [['Reset all settings', resetSettings]],
 });
@@ -696,6 +706,27 @@ addEventListener('resize', () => {
   renderer.setSize(innerWidth, innerHeight);
 });
 
+// ---------------------------------------------------------------- profiler (Settings → Developer)
+// gfx/profiler.js measures and ui/profiler.js shows. Off, the pass hooks are unset.
+const profPanel = createProfilerPanel();
+const prof = createProfiler(renderer, {
+  describe: () => ({
+    sim, renderScale: post.renderScale,
+    targets: [sim, post.allTargets, shadowTarget, pickTarget, rayTarget, thumbTarget],
+  }),
+  onSample: profPanel.update,
+});
+const simPass = (name, target) => prof.pass(name, target);
+// post's passes after the scene (the view's raymarch) are a phase of their own
+const postPass = (name, target) => { prof.pass(name, target); if (name === 'scene') prof.phase('post'); };
+function applyProfiler() {
+  const on = settings.profiler;
+  prof.enable(on);
+  profPanel.show(on);
+  sim.onPass = on ? simPass : null;
+  post.onPass = on ? postPass : null;
+}
+
 // ---------------------------------------------------------------- loop
 const clock = new THREE.Timer();
 // The fps readout is the rate frames are drawn while drawing: a paused, still
@@ -814,6 +845,8 @@ function saveScreenshot() {
 function frame(now) {
   requestAnimationFrame(frame);
   if (!pacer.due(now)) return;
+  if (prof.on !== settings.profiler) applyProfiler();
+  prof.beginFrame(now);
   clock.update(now);
   const dt = Math.min(clock.getDelta(), DT_MAX);
   // only frames that rendered measure how expensive rendering is
@@ -826,6 +859,7 @@ function frame(now) {
   }
   updateBrush();
 
+  prof.phase('paint');
   if (painting && brushValid) {
     const stroke = {
       center: brushCenter, radius: settings.radius, shape: settings.shape,
@@ -834,7 +868,9 @@ function frame(now) {
     if (mp.isGuest) mp.paint(stroke); // the host paints it
     else sim.paint(stroke);
   }
-  if (!mp.isGuest && (!settings.paused || stepOnce)) {
+  prof.phase('sim');
+  const stepping = !mp.isGuest && (!settings.paused || stepOnce);
+  if (stepping) {
     for (let i = 0; i < settings.steps; i++) sim.step();
     day.clock += settings.steps;
     stepOnce = false;
@@ -844,6 +880,7 @@ function frame(now) {
     timeShown = settings.time;
     if (settingsPanel.isOpen) settingsPanel.sync();
   }
+  prof.phase('other');
   mp.update(dt, {
     visible: brushValid && pointerInside && !uiHover, center: brushCenter, painting,
     radius: settings.radius, shape: settings.shape, tool: settings.tool,
@@ -863,16 +900,22 @@ function frame(now) {
   renderedLast = runView;
   if (runView) updateGfxUniforms(sim, SUN, KEY_LIGHT);   // (runDerived implies runView)
   if (runDerived) {
+    prof.phase('derived');
     sim.updateBricks();
     if (VIEWS.find((v) => v.id === settings.view)?.shadows) {
+      prof.phase('shadow');
       shadowMat.uniforms.tA.value = sim.stateA;
       shadowMat.uniforms.tBrick.value = sim.brick.texture;
       sim.run(shadowMat, shadowTarget);
     }
-    if (settings.view === 0) sim.updateGI(SUN, shadowTarget.texture, shadowMat.uniforms.uShadowRes.value, true);
+    if (settings.view === 0) {
+      prof.phase('gi');
+      sim.updateGI(SUN, shadowTarget.texture, shadowMat.uniforms.uShadowRes.value, true);
+    }
   }
 
   if (runView) {
+    prof.phase('view');
     volume.updateMatrixWorld();
     const u = volume.material.uniforms;
     u.tA.value = sim.stateA;
@@ -887,7 +930,8 @@ function frame(now) {
     post.settings.upscale = UPSCALE[settings.upscale] ?? UPSCALE.native;
     floorGrid.material.opacity = post.renderScale;
     edges.material.opacity = EDGE_OPACITY * post.renderScale;
-    post.render(scene, camera);
+    post.render(scene, camera);   // its passes after the scene count as 'post' (postPass)
+    prof.phase('other');
     // POV: the held tool, drawn over the finished frame in its own pass (no TAA, its
     // own depth, so it never clips into walls); before the screenshot reads the canvas
     renderViewmodels(renderer, scene, camera, post);
@@ -910,6 +954,7 @@ function frame(now) {
     cellsV: `${(g.nx * g.ny * g.nz / 1e6).toFixed(1)}M`,
     resV: autoRes.enabled ? `${Math.round(pixelRatio * 100)}% res` : '',
   });
+  prof.endFrame(stepping ? settings.steps : 0);
 }
 
 // ---------------------------------------------------------------- boot
@@ -943,7 +988,7 @@ try {
   window.__app = {
     get sim() { return sim; }, get volume() { return volume; }, get scale() { return scale; }, get signs() { return signs; }, get builds() { return builds; },
     get pov() { return pov; },
-    SUN, day, scene, settings, camera, controls, loadPreset, selectTool, setView, hover, renderer, rig, renderThumb, gfx, post, mp, autoRes,
+    SUN, day, scene, settings, camera, controls, loadPreset, selectTool, setView, hover, renderer, rig, renderThumb, gfx, post, mp, autoRes, prof,
     requestRender: () => pacer.wake(),   // for changes the frame loop can't see (async results)
   };
   requestAnimationFrame(frame);

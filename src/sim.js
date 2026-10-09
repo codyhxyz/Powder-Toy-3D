@@ -183,6 +183,13 @@ export class Simulation {
       blending: THREE.CustomBlending, blendEquation: THREE.AddEquation,
       blendSrc: THREE.ConstantAlphaFactor, blendDst: THREE.OneMinusConstantAlphaFactor,
     });
+    // pass names (the profiler's labels): the key, plus the stage for staged passes (fieldBoost0…)
+    for (const [key, m] of Object.entries(this.mats)) {
+      if (Array.isArray(m)) m.forEach((stage, i) => { stage.name = `${key}${i}`; });
+      else m.name = key;
+    }
+    // profiling hook (gfx/profiler.js): onPass(name, target) after every pass
+    this.onPass = null;
     this.clear();
   }
 
@@ -193,6 +200,7 @@ export class Simulation {
     this.quad.material = mat;
     this.renderer.setRenderTarget(target);
     this.renderer.render(this.scene, this.camera);
+    this.onPass?.(mat.name, target);
     if (target === this.targets[0] || target === this.targets[1]) {
       this.version++;
       if (!this.stepping) this.actDirty = true;
@@ -449,7 +457,7 @@ export class Simulation {
     this.giSrc.dispose();
     this.giProbes.dispose();
     this.history?.forEach((t) => t.dispose());
-    Object.values(this.mats).forEach((m) => m.dispose());
+    Object.values(this.mats).flat().forEach((m) => m.dispose());   // (fieldBoost, brickDist are arrays)
     this.quad.geometry.dispose();
   }
 }
