@@ -23,6 +23,7 @@ uniform vec3 uSunExt;   // transmittance of the air along the sun's path
 uniform vec3 uSunCol;   // direct sunlight at the ground: warmer and dimmer as the sun gets lower
 uniform vec3 uSkyUp;    // open-sky irradiance on an upward surface
 uniform vec3 uGround;   // radiance of the sunlit, sky-lit ground around the box
+uniform vec3 uKeyLight; // sunlight's colour scale: 1 by day, dim blue under the moon (gfx/daylight.js)
 #define SUN_COL uSunCol
 const float HORIZON_BLEND = 0.02;  // sky -> ground blend half-width at the horizon (direction y)
 
@@ -42,7 +43,7 @@ vec3 skyRadiance(vec3 d) {
   float dm = mv - ms;
   vec3 ev = exp(-TAU_AIR * mv);
   vec3 path = abs(dm) < AIRMASS_EQ_EPS ? TAU_AIR * mv * ev : mv * (uSunExt - ev) / dm;
-  return SKY_MULTI * PI_L * SUN_TOA * (TAU_RAYLEIGH * pR + TAU_AEROSOL * pM) / TAU_AIR * path;
+  return uKeyLight * SKY_MULTI * PI_L * SUN_TOA * (TAU_RAYLEIGH * pR + TAU_AEROSOL * pM) / TAU_AIR * path;
 }
 
 // Radiance of the environment toward d: sky above the horizon, ground below.

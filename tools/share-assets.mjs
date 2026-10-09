@@ -53,23 +53,23 @@ const errs = [];
 async function capture({ w, h, dpr = 1, ui, cam }) {
   const p = await browser.newPage({ viewport: { width: w, height: h }, deviceScaleFactor: dpr });
   p.on('pageerror', (e) => errs.push(String(e).slice(0, 500)));
-  await p.addInitScript(([sun, ui]) => {
+  await p.addInitScript((ui) => {
     let s = 12345;   // mulberry32: same scene every run
     Math.random = () => { s |= 0; s = (s + 0x6d2b79f5) | 0; let t = Math.imul(s ^ (s >>> 15), 1 | s); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
-    localStorage.setItem('powder-toy-3d:settings', JSON.stringify({ sunAz: sun[0], sunEl: sun[1] }));
     addEventListener('DOMContentLoaded', () => {
       const st = document.createElement('style');
       st.textContent = ui ? '.toast, .stats, .pill, .hint { display: none !important; }'   // headless fps and transient hints
         : 'body * { visibility: hidden !important; } #app > canvas { visibility: visible !important; }';
       document.head.appendChild(st);
     });
-  }, [SCENE.sun, ui]);
+  }, ui);
   await p.goto(`http://localhost:${port}/?preset=${SCENE.preset}`);
   await p.waitForFunction(() => window.__app?.sim);
   await p.evaluate(async ([scene, fires, dpr]) => {
     const a = window.__app;
     a.settings.paused = true;
     a.autoRes.enabled = false;
+    a.day.fixed = { az: scene.sun[0], el: scene.sun[1] };
     a.renderer.setPixelRatio(dpr);
     a.renderer.setSize(innerWidth, innerHeight);
     dispatchEvent(new Event('resize'));

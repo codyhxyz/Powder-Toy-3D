@@ -18,6 +18,7 @@ import { gfx, gfxUniforms, updateGfxUniforms } from './gfx/uniforms.js';
 import { createPost, UPSCALE } from './gfx/post.js';
 import { createPacer, settleFrames, sceneKey } from './gfx/pacing.js';
 import { CHANNELS, MEDIA } from './gfx/materials.js';
+import { DAY, dayPhase, phaseSteps, keyLight } from './gfx/daylight.js';
 import { GI_BLEND } from './sim.js';
 import { createMultiplayer } from './net/multiplayer.js';
 import { createPov } from './pov/index.js';
@@ -40,11 +41,11 @@ const DEFAULTS = {
   size: '128', preset: 'lab',
   tool: E.SAND, radius: 5, shape: 0, rate: 1, replace: false,
   steps: 4, gravity: 0.025, paused: false,
-  view: 0, sunAz: 38, sunEl: 55, camSpeed: 1, upscale: 'native', dockCollapsed: false,
+  view: 0, camSpeed: 1, upscale: 'native', dockCollapsed: false,
   figure: 'real',
 };
 const PERSIST = ['size', 'preset', 'tool', 'radius', 'shape', 'rate', 'replace', 'steps', 'gravity', 'view',
-  'sunAz', 'sunEl', 'camSpeed', 'upscale', 'dockCollapsed', 'figure'];
+  'camSpeed', 'upscale', 'dockCollapsed', 'figure'];
 const STORE = 'powder-toy-3d:settings';
 // Fixed look: glow is heat-driven light (×uLightGain); smoothing, TAA, bloom and
 // exposure keep their defaults in gfx/uniforms.js and gfx/post.js.
@@ -106,10 +107,18 @@ floorGrid.renderOrder = -1;
 const EDGE_OPACITY = 0.55;
 scene.add(floorGrid);
 
+// The key light (gfx/daylight.js): its direction and colour scale follow the
+// day clock, in simulation steps. Tools pin it with __app.day.fixed = { az, el }.
 const SUN = new THREE.Vector3();
+const KEY_LIGHT = [1, 1, 1];
+// settings.time (hours) mirrors the clock for the drawer's slider; it isn't saved.
+const HOURS = 24;
+const TIME_STEP = 0.25;   // h: the slider's resolution, and how far the clock runs before the open drawer redraws it
+const day = { clock: 0, fixed: null };
 function updateSun() {
-  const az = THREE.MathUtils.degToRad(settings.sunAz), el = THREE.MathUtils.degToRad(settings.sunEl);
-  SUN.set(Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az)).normalize();
+  const phase = dayPhase(day.clock);
+  keyLight(phase, SUN, KEY_LIGHT, day.fixed);
+  settings.time = Math.round(phase * HOURS / TIME_STEP) * TIME_STEP % HOURS;
 }
 updateSun();
 
@@ -425,6 +434,7 @@ const toolbar = createToolbar({ views: VIEWS, settings, actions });
 const mp = createMultiplayer({ renderer, scene, camera, hud, getSim: () => sim, getVolume: () => volume, setGrid });
 
 const fmtSpeed = (v) => `${v}×`;
+const fmtTime = (v) => `${Math.floor(v)}:${String(Math.round((v % 1) * 60)).padStart(2, '0')}`;
 const settingsPanel = createSettings({
   settings,
   onClose: () => setSettingsOpen(false),
@@ -441,15 +451,14 @@ const settingsPanel = createSettings({
         fmt: (v) => `${(v / DEFAULTS.gravity).toFixed(1)} g`, onChange: (v) => { sim.gravity = v; save(); } },
     ] },
     // a cost lever too: sim work grows with cells, ray marching with the grid's span
+    { title: 'Lighting', rows: [
+      // the day keeps running from wherever this puts it
+      { type: 'slider', key: 'time', label: 'Time of day', min: 0, max: HOURS - TIME_STEP, step: TIME_STEP, def: DAY.startPhase * HOURS,
+        fmt: fmtTime, onChange: (v) => { day.clock = phaseSteps(v / HOURS); updateSun(); } },
+    ] },
     { title: 'Grid size', rows: [
       { type: 'seg', key: 'size', options: [['64', '64³'], ['96', '96³'], ['128', '128³'], ['wide', '160×96']],
         onChange: (v) => { if (mp.guard()) return; settings.size = v; build(); save(); hud.toast(`Grid is now ${v === 'wide' ? '160 × 96 × 160' : `${v}³`}`); } },
-    ] },
-    { title: 'Lighting', rows: [
-      { type: 'slider', key: 'sunEl', label: 'Sun height', min: 12, max: 85, step: 1, def: DEFAULTS.sunEl,
-        fmt: (v) => `${v}°`, onChange: () => { updateSun(); save(); } },
-      { type: 'slider', key: 'sunAz', label: 'Sun direction', min: 0, max: 360, step: 1, def: DEFAULTS.sunAz,
-        fmt: (v) => `${v}°`, onChange: () => { updateSun(); save(); } },
     ] },
     // the scene renders at a share of the screen's pixels and TAA rebuilds full detail over frames
     { title: 'Upscaling', rows: [
@@ -476,7 +485,6 @@ function resetSettings() {
   Object.assign(settings, DEFAULTS, keep);
   sim.gravity = settings.gravity;
   rig.setSpeed(settings.camSpeed);
-  updateSun();
   dock.sync();
   toolbar.sync();
   save();
@@ -622,6 +630,7 @@ function setRadius(r) {
 }
 
 let stepOnce = false;
+let timeShown = NaN;   // the time of day the drawer last showed
 let wantShot = false;
 
 addEventListener('keydown', (e) => {
@@ -809,7 +818,13 @@ function frame(now) {
   }
   if (!mp.isGuest && (!settings.paused || stepOnce)) {
     for (let i = 0; i < settings.steps; i++) sim.step();
+    day.clock += settings.steps;
     stepOnce = false;
+  } else if (mp.isGuest) day.clock += settings.steps;   // guests don't step: keep the day going at their own rate
+  updateSun();
+  if (settings.time !== timeShown) {
+    timeShown = settings.time;
+    if (settingsPanel.isOpen) settingsPanel.sync();
   }
   mp.update(dt, {
     visible: brushValid && pointerInside && !uiHover, center: brushCenter, painting,
@@ -818,7 +833,7 @@ function frame(now) {
   const worldChanged = sim.version !== lastVersion;
   lastVersion = sim.version;
   const runDerived = pacer.derived(
-    `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${settings.view}|${gfx.smoothing}`);
+    `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${KEY_LIGHT}|${settings.view}|${gfx.smoothing}`);
   const runView = pacer.view(
     `${camera.matrixWorld.elements}|${camera.projectionMatrix.elements}|${pixelRatio}|${innerWidth}x${innerHeight}`
     + `|${JSON.stringify(settings)}|${JSON.stringify(gfx)}|${JSON.stringify(post.settings)}|${sceneKey(scene)}`,
@@ -828,7 +843,7 @@ function frame(now) {
   if (fpsTime > FPS_WINDOW) { fps = frames / fpsTime; frames = 0; fpsTime = 0; }
   idleTime = runView ? 0 : idleTime + dt;
   renderedLast = runView;
-  if (runView) updateGfxUniforms(sim, SUN);   // (runDerived implies runView)
+  if (runView) updateGfxUniforms(sim, SUN, KEY_LIGHT);   // (runDerived implies runView)
   if (runDerived) {
     sim.updateBricks();
     if (VIEWS.find((v) => v.id === settings.view)?.shadows) {
@@ -910,7 +925,7 @@ try {
   window.__app = {
     get sim() { return sim; }, get volume() { return volume; }, get scale() { return scale; }, get signs() { return signs; }, get builds() { return builds; },
     get pov() { return pov; },
-    SUN, scene, settings, camera, controls, loadPreset, selectTool, setView, hover, renderer, rig, renderThumb, gfx, post, mp, autoRes,
+    SUN, day, scene, settings, camera, controls, loadPreset, selectTool, setView, hover, renderer, rig, renderThumb, gfx, post, mp, autoRes,
     requestRender: () => pacer.wake(),   // for changes the frame loop can't see (async results)
   };
   requestAnimationFrame(frame);

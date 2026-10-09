@@ -265,10 +265,13 @@ export function renderViewmodels(renderer, scene, camera, post) {
   cam.far = VM_FAR * scale;
   cam.updateProjectionMatrix();
 
-  // lit like the world: the sun's direction and colour, sky above and ground below
+  // lit like the world: the key light's direction and colour, sky above and ground below
   const SUN = globalThis.__app?.SUN;
   if (SUN) sun.position.copy(SUN);
-  sun.color.setRGB(...gfxUniforms.uSunCol.value);
+  // the key light: the sun by day, the dim blue moon by night (gfx/daylight.js)
+  const [kr, kg, kb] = gfxUniforms.uKeyLight?.value ?? [1, 1, 1];
+  const [sr, sg, sb] = gfxUniforms.uSunCol.value;
+  sun.color.setRGB(sr * kr, sg * kg, sb * kb);
   sky.color.setRGB(...gfxUniforms.uSkyUp.value);
   sky.groundColor.setRGB(...gfxUniforms.uGround.value);
 

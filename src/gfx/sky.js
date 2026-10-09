@@ -48,17 +48,18 @@ function skyRadiance(d, sun, sunExt) {
 }
 
 /**
- * Per-frame sky values for sun direction `sun` (unit THREE.Vector3), written into
- * `out` = { sunExt, sunCol, skyUp, ground } (arrays of 3):
+ * Per-frame sky values for sun direction `sun` (unit THREE.Vector3), with its
+ * light scaled per colour by `light` (the moon is a dim, blue sun: gfx/daylight.js),
+ * written into `out` = { sunExt, sunCol, skyUp, ground } (arrays of 3):
  *   sunExt  transmittance of the air along the sun's path
  *   sunCol  direct sunlight at the ground
  *   skyUp   open-sky irradiance on an upward surface
  *   ground  radiance of the sunlit, sky-lit ground
  */
-export function skyState(sun, out) {
+export function skyState(sun, light, out) {
   const ms = airMass(sun.y);
   out.sunExt = tauAir.map((t) => Math.exp(-t * ms));
-  out.sunCol = out.sunExt.map((e) => SKY.sunTOA * e);
+  out.sunCol = out.sunExt.map((e, k) => SKY.sunTOA * e * light[k]);
   const up = [0, 0, 0];
   for (let i = 0; i < IRR_RINGS; i++) {
     // midpoint rule in cos(zenith); weight cos * dOmega / pi
@@ -67,7 +68,7 @@ export function skyState(sun, out) {
     for (let j = 0; j < IRR_STEPS; j++) {
       const a = ((j + 0.5) / IRR_STEPS) * 2 * Math.PI;
       const L = skyRadiance([sz * Math.cos(a), cz, sz * Math.sin(a)], sun, out.sunExt);
-      for (let k = 0; k < 3; k++) up[k] += L[k] * w;
+      for (let k = 0; k < 3; k++) up[k] += L[k] * light[k] * w;
     }
   }
   out.skyUp = up;
