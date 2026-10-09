@@ -477,7 +477,10 @@ export class Simulation {
   // step()), changes only cells in [lo, hi] (inclusive; [x, y, z] arrays), so
   // the derived passes rebuild only the bricks there, and only the supertiles
   // there are woken for the next activity map's steps (noteWrite). Without it
-  // such a write rebuilds every brick and wakes every supertile.
+  // such a write rebuilds every brick and wakes every supertile. The pass must
+  // copy every cell outside the box through unchanged, flags and all (as
+  // shaders/common.js copyThroughMain does): sleeping supertiles count on both
+  // state copies holding the same there.
   touch(lo, hi) {
     this.touchNext = { lo, hi };
   }
