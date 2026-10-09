@@ -229,9 +229,10 @@ The world is much larger than what lives on the GPU. Its size is `WORLD` cells, 
     region of it is one draw, and two bilinear taps make a trilinear sample. Per brick: the opaque and the liquid
     share of the 8-cell cube centred on it, its dominant opaque element (open cells count 8×) with its liquid's kind
     and an "open" bit, and glow. A cube twice the brick makes the field linear in the ground's height between two
-    centres, so its 0.5 level sits on the terrain (a brick's own share put it up to ⅓ cell off: terraces). Matter
-    under half a cube with nothing at the surface level below it (trunks, walls up to 3 cells, roofs, streams)
-    reads as full, so it shows as a blob, rod or slab instead of vanishing.
+    centres, so its 0.5 level sits on the terrain (a brick's own share put it up to ⅓ cell off: terraces). The view
+    samples a second, filtered target, the field: there matter under half a cube with no neighbouring brick at the
+    surface level (trunks, walls up to 3 cells, roofs, streams) reads as full, so it shows as a blob, rod or slab
+    instead of vanishing, while crowns, cliffs and the ground keep their shares (and their shapes).
   - Occupancy: L1 (16³ cells) set where some brick in it or next to it reaches 0.5, L2 (64³) where an L1 is.
   - Built at load from the generator at world scale: genColumn and genLayers per world column, then every brick
     from the layers of the columns its cube spans. The trees are in it too: a GPU twin of `treeCandidate` per brick
@@ -247,7 +248,8 @@ The world is much larger than what lives on the GPU. Its size is `WORLD` cells, 
     Rays skip the window's box (the volume draws it), cross unset L2/L1 nodes whole and walk set ones brick by
     brick, root-finding the trilinear field. Shading: `matOf` at the pixel's footprint (its texture fades to its far
     look like the window's), sun through a shadow height field (per brick column: the max over the columns toward
-    the sun of their top less the sun ray's drop), sky ambient with a two-tap field AO, glow; liquids with Fresnel
+    the sun of their ground's top, seen from below, less the sun ray's drop; crowns don't cast: as pillars they
+    shaded whole forests and beaches), sky ambient with a two-tap field AO, glow; liquids with Fresnel
     to the sky and the sun's glint and a Beer–Lambert body down to the bed; aerial perspective from the sky model
     (12 km visibility, the sky's spectral shape). Depth is written, so the volume and scene objects composite.
   - The window takes three things from it (world mode only, `FarField.attach`): its sun shadow map the far field's

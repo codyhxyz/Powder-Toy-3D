@@ -14,10 +14,9 @@ import { scaleFor } from '../constructions/runtime.js';
 // horizontal brick slices (farTexel, like the render fields' Y-slices), so a
 // region of it is rewritten in one draw and its channels filter bilinearly
 // inside a slice (farSample finishes the trilinear lerp between two slices):
-//   r  opaque value: the share of the cube of FAR.CUBE cells centred on the
-//      brick that stops light (solids, powders, lava, glass), boosted for
-//      thin matter (farValue)
-//   g  liquid value: the same for transparent liquids (water, oil, acid)
+//   r  opaque share: the share of the cube of FAR.CUBE cells centred on the
+//      brick that stops light (solids, powders, lava, glass)
+//   g  liquid share: the same for transparent liquids (water, oil, acid)
 //   b  ids (texelFetch only), of the brick's own cells: its dominant opaque
 //      element, a cell open above counting FAR.SURFACE_W times (a brick reads
 //      as its surface: grass on rock reads as grass), plus FAR.LIQ_STRIDE × its
@@ -33,14 +32,15 @@ import { scaleFor } from '../constructions/runtime.js';
 // filter one brick wide, the brick's own share, puts it up to a third of a
 // cell off, with a period of a brick: terraces.)
 //
-// Thin matter. Matter filling under half the cube with nothing at the surface
-// level under it (a trunk, a wall up to three cells thick, a roof, a falling
-// stream) would never reach FAR.ISO and vanish, so it reads as FAR.THIN_V: an
-// isolated brick then draws as a blob ~1.6 cells across, a line of them as a
-// rod ~2.3 cells thick, a sheet as a slab one brick thick. Over the ground (the
-// brick below at least FAR.SUPPORT) a brick keeps its share: that is what puts
-// the ground's surface where it is. Scattered matter under FAR.THIN_MIN keeps
-// its share too (a few loose grains draw nothing).
+// The field. Thin matter, filling under half its cube with no brick next to
+// it at the surface level (a trunk, a wall up to three cells thick, a roof, a
+// falling stream), would never reach FAR.ISO and vanish, so it reads as
+// FAR.THIN_V (farBoostFrag, into a second, filtered target the view samples):
+// an isolated brick then draws as a blob ~1.6 cells across, a line of them as
+// a rod ~2.3 cells thick, a sheet as a slab one brick thick. Next to a brick at
+// the surface level a brick keeps its share: that is what puts the ground's
+// surface, a crown's or a cliff's, where it is. Scattered matter under
+// FAR.THIN_MIN keeps its share too (a few loose grains draw nothing).
 //
 // Occupancy. Two coarser levels say where the surface can be at all: an L1
 // node (4³ bricks, 16³ cells) is set when some brick in it or next to it
@@ -57,8 +57,7 @@ import { scaleFor } from '../constructions/runtime.js';
 export const FAR = {
   ISO: 0.5,            // the field's surface level
   CUBE: 8,             // cells: the edge of the cube centred on a brick whose share it holds (twice the brick)
-  SUPPORT: 0.45,       // a brick whose brick below holds at least this keeps its share (the ground's top, a slope)...
-  THIN_MIN: 1 / 16,    // ...else matter filling at least this share of its cube reads as THIN_V...
+  THIN_MIN: 1 / 16,    // matter filling at least this share of its cube, with no brick next to it at ISO, reads as THIN_V...
   THIN_V: 1.0,         // ...so it stands as a blob, rod or slab instead of vanishing
   SURFACE_W: 8,        // a cell open above counts this many times toward the dominant element
   LIQ_STRIDE: 32,      // the id channel: opaque id + LIQ_STRIDE × liquid kind (element ids stay below it)...
@@ -133,7 +132,6 @@ export const farLayoutGLSL = (L) => /* glsl */ `
 #define FAR_ISO ${glf(FAR.ISO)}
 #define FAR_CUBE ${FAR.CUBE}
 #define FAR_CUBE_LO ${(FAR.CUBE - BRICK) / 2}          // cells the cube reaches past the brick on each side
-#define FAR_SUPPORT ${glf(FAR.SUPPORT)}
 #define FAR_THIN_MIN ${glf(FAR.THIN_MIN)}
 #define FAR_THIN_V ${glf(FAR.THIN_V)}
 #define FAR_SURFACE_W ${glf(FAR.SURFACE_W)}
@@ -187,13 +185,12 @@ struct FarCount {
   float wl[FAR_KINDS];   // its liquid cells by kind
   float open, heat;      // its open opaque cells, and their degrees above the glow's start
   float s, l;            // opaque and liquid cells of its cube
-  float sb, lb;          // ...of the cube of the brick below
 };
 FarCount farCountInit() {
   FarCount c;
   for (int i = 0; i < NE; i++) c.w[i] = 0.0;
   for (int i = 0; i < FAR_KINDS; i++) c.wl[i] = 0.0;
-  c.open = c.heat = c.s = c.l = c.sb = c.lb = 0.0;
+  c.open = c.heat = c.s = c.l = 0.0;
   return c;
 }
 // one of the brick's own cells: id at temperature T, with id 'above' over it
@@ -206,10 +203,6 @@ void farCell(inout FarCount c, int id, int above, float T) {
     c.wl[farLiquidKind(id)] += 1.0;
   }
 }
-// A brick's value from its cube's share f and the brick below's (see the top of shaders/far.js).
-float farValue(float f, float below) {
-  return f >= FAR_ISO || below >= FAR_SUPPORT || f < FAR_THIN_MIN ? f : FAR_THIN_V;
-}
 vec4 farPack(FarCount c) {
   float n = float(FAR_CUBE * FAR_CUBE * FAR_CUBE);
   int best = E_EMPTY;
@@ -218,8 +211,7 @@ vec4 farPack(FarCount c) {
   for (int i = 1; i < FAR_KINDS; i++) if (c.wl[i] > c.wl[lk]) lk = i;
   float glow = c.open > 0.0 ? c.heat / c.open / FAR_GLOW_SPAN : 0.0;
   int open = c.open > 0.0 ? FAR_OPEN : 0;
-  return vec4(farValue(c.s / n, c.sb / n), farValue(c.l / n, (c.lb + c.sb) / n),
-              float(best + FAR_LIQ_STRIDE * lk + open) / FAR_ID_SCALE, clamp(glow, 0.0, 1.0));
+  return vec4(c.s / n, c.l / n, float(best + FAR_LIQ_STRIDE * lk + open) / FAR_ID_SCALE, clamp(glow, 0.0, 1.0));
 }
 `;
 
@@ -358,7 +350,7 @@ vec2 treeUnturn(vec2 v, int q) {
 // grid's opaque share; a wide shape's share ramps over the cube across its
 // surface, a trunk's is its cells in the cube), and of the brick there (its
 // element's vote: leaves (PLANT) 0 or 1, its trunk's cells (WOOD)).
-export const TREE_OWN_REACH = 2;   // cells: a brick whose centre is this close inside a crown's surface holds leaves
+export const TREE_OWN_REACH = 3.5;   // cells: a brick whose centre is this close to a crown (or inside it) holds leaves (half its diagonal)
 const treeShapeGLSL = /* glsl */ `
 #define TREE_OWN_REACH ${glf(TREE_OWN_REACH)}
 float treeRamp(float d) { return clamp(0.5 - d / float(FAR_CUBE), 0.0, 1.0); }
@@ -568,14 +560,12 @@ void main() {
   FarCount c = farCountInit();
   ivec3 o = b * BS;
   int sea = int(ceil(uGenSea));   // genId: water in y < uGenSea
-  int y0 = o.y - FAR_CUBE_LO, yb = y0 - BS;   // the cube's bottom, and the brick below's
+  int y0 = o.y - FAR_CUBE_LO;     // the cube's bottom
   for (int dz = -FAR_CUBE_LO; dz < BS + FAR_CUBE_LO; dz++)
   for (int dx = -FAR_CUBE_LO; dx < BS + FAR_CUBE_LO; dx++) {
     GenLayers L = worldLayers(o.xz + ivec2(dx, dz));
     c.s += groundIn(L, y0);
-    c.sb += groundIn(L, yb);
     c.l += seaIn(L, y0, sea);
-    c.lb += seaIn(L, yb, sea);
     if (dx < 0 || dz < 0 || dx >= BS || dz >= BS) continue;
     int above = genId(L, o.y + BS);   // (genId: rock below the world, air above it)
     for (int y = BS - 1; y >= 0; y--) {
@@ -584,11 +574,11 @@ void main() {
       above = id;
     }
   }
-  // the trees in reach, where the cubes meet their band: the union of their shares with the ground's
+  // the trees in reach, where the cube meets their band: the union of their shares with the ground's
   vec2 band = texelFetch(tTreeBand, b.xz, 0).xy;
-  if (float(yb) < band.y && float(y0 + FAR_CUBE) > band.x) {
+  if (float(y0) < band.y && float(y0 + FAR_CUBE) > band.x) {
     vec3 pc = vec3(o) + 0.5 * float(BS);   // the brick's (and its cube's) centre
-    float ts = 0.0, tsb = 0.0, leaves = 0.0, trunk = 0.0;
+    float ts = 0.0, leaves = 0.0, trunk = 0.0;
     for (int dz = -TREE_REACH_B; dz <= TREE_REACH_B; dz++)
     for (int dx = -TREE_REACH_B; dx <= TREE_REACH_B; dx++) {
       ivec2 nb = b.xz + ivec2(dx, dz);
@@ -596,18 +586,15 @@ void main() {
       vec4 t = texelFetch(tTrees, nb, 0);
       if (t.x == 0.0) continue;
       Tree tr = treeOf(t, nb);
-      // too far from its trunk, above its top or under its base for either cube
+      // too far from its trunk, above its top or under its base for the cube
       if (length(pc.xz - tr.base.xz) > TS_REACH[tr.variant] * tr.H + FAR_TREE_PAD
-          || float(yb) > tr.base.y + TS_TOP * tr.H || float(y0 + FAR_CUBE) < tr.base.y) continue;
+          || float(y0) > tr.base.y + TS_TOP * tr.H || float(y0 + FAR_CUBE) < tr.base.y) continue;
       vec3 f = treeFill(tr, pc);
       ts = max(ts, f.x);
-      tsb = max(tsb, treeFill(tr, pc - vec3(0.0, BS, 0.0)).x);
       leaves = max(leaves, f.y);
       trunk += f.z;
     }
-    float n = float(FAR_CUBE * FAR_CUBE * FAR_CUBE);
-    c.s = max(c.s, ts * n);
-    c.sb = max(c.sb, tsb * n);
+    c.s = max(c.s, ts * float(FAR_CUBE * FAR_CUBE * FAR_CUBE));
     // their cells vote as open ones (FAR.SURFACE_W): a crown's outweigh the ground's, a thin trunk's don't
     if (leaves > 0.0) { c.w[E_PLANT] += FAR_TREE_W; c.open += 1.0; }
     else if (trunk > 0.0) { c.w[E_WOOD] += trunk * FAR_SURFACE_W; c.open += 1.0; }
@@ -634,20 +621,50 @@ void main() {
     ivec2 col = clamp(o.xz + ivec2(dx, dz), ivec2(0), ivec2(NX, NZ) - 1);
     bool own = dx >= 0 && dz >= 0 && dx < BS && dz < BS;
     int above = E_EMPTY;
-    // top down through the cube [-lo, BS + lo) and the brick below's [-lo - BS, lo)
-    for (int dy = BS + FAR_CUBE_LO - 1; dy >= -FAR_CUBE_LO - BS; dy--) {
+    // top down through the cube [-lo, BS + lo)
+    for (int dy = BS + FAR_CUBE_LO - 1; dy >= -FAR_CUBE_LO; dy--) {
       int y = o.y + dy;
       vec4 a = y >= NY ? vec4(float(E_EMPTY), AMBIENT, 0.0, 0.0)
              : (y < 0 ? vec4(float(E_ROCK), AMBIENT, 0.0, 0.0) : fetchA(ivec3(col.x, y, col.y)));
       int id = eid(a);
-      float op = farOpaque(id) ? 1.0 : 0.0, lq = farLiquid(id) ? 1.0 : 0.0;
-      if (dy >= -FAR_CUBE_LO) { c.s += op; c.l += lq; }
-      if (dy < FAR_CUBE_LO) { c.sb += op; c.lb += lq; }
+      if (farOpaque(id)) c.s += 1.0;
+      else if (farLiquid(id)) c.l += 1.0;
       if (own && dy >= 0 && dy < BS) farCell(c, id, above, a.y);
       above = id;
     }
   }
   oC = farPack(c);
+}
+`;
+
+// The field the view draws, per brick of the region being drawn, from the
+// grid's raw shares: a brick keeps its share where it or one of its 26
+// neighbours reaches FAR.ISO (opaque; for the liquid, opaque + liquid), or
+// where it holds less than FAR.THIN_MIN; else it is thin matter: FAR.THIN_V.
+// Below the world counts as reaching it.
+export const farBoostFrag = (L) => /* glsl */ `
+precision highp float;
+precision highp int;
+precision highp sampler2D;
+${farLayoutGLSL(L)}
+uniform sampler2D tFar;
+out vec4 oC;
+void main() {
+  ivec3 b = farBrickFromFrag(ivec2(gl_FragCoord.xy));
+  vec2 raw = texelFetch(tFar, farTexel(b), 0).rg;
+  float ns = raw.r, nm = raw.r + raw.g;   // the most opaque, and most matter, here and next to it
+  if (b.y == 0) ns = nm = 1.0;
+  for (int dz = -1; dz <= 1; dz++)
+  for (int dy = -1; dy <= 1; dy++)
+  for (int dx = -1; dx <= 1; dx++) {
+    ivec3 q = b + ivec3(dx, dy, dz);
+    if (any(lessThan(q, ivec3(0))) || any(greaterThanEqual(q, WB))) continue;
+    vec2 v = texelFetch(tFar, farTexel(q), 0).rg;
+    ns = max(ns, v.r);
+    nm = max(nm, v.r + v.g);
+  }
+  oC = vec4(ns >= FAR_ISO || raw.r < FAR_THIN_MIN ? raw.r : FAR_THIN_V,
+            nm >= FAR_ISO || raw.g < FAR_THIN_MIN ? raw.g : FAR_THIN_V, 0.0, 1.0);
 }
 `;
 
@@ -694,10 +711,12 @@ void main() {
 }
 `;
 
-// Brick-column tops: the height (cells) of the top of each column's opaque
-// matter, where the opaque field falls through FAR.ISO above its highest
-// brick at or over it, between that brick's centre and the one above (exact
-// for the ground: the field is 0.5 + (h - y) / 8 there); 0 for none.
+// Brick-column tops: the height (cells) of each column's ground, seen from
+// below: where the opaque field first falls through FAR.ISO going up from the
+// bottom, between the centres of the last brick at or over it and the next
+// (exact for the ground: the field is 0.5 + (h - y) / 8 there). What floats
+// above that (a crown, a roof) isn't a column: it would shade the ground under
+// it from every side, as a pillar.
 export const farTopFrag = (L) => /* glsl */ `
 precision highp float;
 precision highp int;
@@ -708,15 +727,17 @@ out vec4 oC;
 #define FAR_TOP_EPS 1e-3   // value steps below this count as none
 void main() {
   ivec2 c = ivec2(gl_FragCoord.xy);
-  float h = 0.0, above = 0.0;
-  for (int y = WBY - 1; y >= 0; y--) {
-    float v = texelFetch(tFar, farTexel(ivec3(c.x, y, c.y)), 0).r;
-    if (v >= FAR_ISO) {
-      h = (float(y) + 0.5 + (v - FAR_ISO) / max(v - above, FAR_TOP_EPS)) * float(FAR_BRICK);
-      break;
+  float below = texelFetch(tFar, farTexel(ivec3(c.x, 0, c.y)), 0).r;
+  float h = below >= FAR_ISO ? float(WBY * FAR_BRICK) : 0.0;
+  if (below >= FAR_ISO)
+    for (int y = 1; y < WBY; y++) {
+      float v = texelFetch(tFar, farTexel(ivec3(c.x, y, c.y)), 0).r;
+      if (v < FAR_ISO) {
+        h = (float(y) - 0.5 + (below - FAR_ISO) / max(below - v, FAR_TOP_EPS)) * float(FAR_BRICK);
+        break;
+      }
+      below = v;
     }
-    above = v;
-  }
   oC = vec4(h, 0.0, 0.0, 1.0);
 }
 `;
@@ -773,14 +794,14 @@ void main() {
 export const FAR_SHADOW_SOFT = 1.5;    // cells: half the width of a far shadow's edge
 export const FAR_SHADOW_BIAS = 1.0;    // cells a point is lifted before its shadow-height test (column tops are coarse)
 const farSampleGLSL = /* glsl */ `
-uniform sampler2D tFar;
+uniform sampler2D tFar;        // ids and glow (texelFetch)
+uniform sampler2D tFarField;   // the field: opaque, liquid (filtered)
 uniform sampler2D tFar1;
 uniform sampler2D tFar2;
 uniform sampler2D tFarShadow;
 #define FAR_SHADOW_SOFT ${glf(FAR_SHADOW_SOFT)}
 #define FAR_SHADOW_BIAS ${glf(FAR_SHADOW_BIAS)}
-// The far grid's filtered channels at world point p (cells): r, g and a
-// trilinear (b is meaningless filtered: farIds).
+// The far field at world point p (cells), trilinear: r opaque, g liquid.
 vec4 farSample(vec3 p) {
   vec3 q = clamp(p * (1.0 / float(BS)), vec3(0.5), vec3(WB) - 0.5);   // bricks, held to the edge bricks' centres
   float fy = q.y - 0.5;
@@ -789,7 +810,7 @@ vec4 farSample(vec3 p) {
   vec2 inv = 1.0 / vec2(FAR_W, FAR_H);
   vec2 o0 = vec2(float((y0 % FAR_COLS) * WBX), float((y0 / FAR_COLS) * WBZ));
   vec2 o1 = vec2(float((y1 % FAR_COLS) * WBX), float((y1 / FAR_COLS) * WBZ));
-  return mix(texture(tFar, (o0 + q.xz) * inv), texture(tFar, (o1 + q.xz) * inv), fy - float(y0));
+  return mix(texture(tFarField, (o0 + q.xz) * inv), texture(tFarField, (o1 + q.xz) * inv), fy - float(y0));
 }
 // everything a ray stops at or enters (opaque + liquid)
 float farMatter(vec3 p) { vec4 v = farSample(p); return v.r + v.g; }

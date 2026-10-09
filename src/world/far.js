@@ -3,8 +3,8 @@ import { BRICK } from '../shaders/common.js';
 import { columnFrag, COLUMN_MARGIN } from '../shaders/generate.js';
 import {
   farLayout, farRegionVert, farLayersFrag, farTreeCandFrag, farTreeThinFrag, farTreeBandFrag, farGenFrag,
-  farWinFrag, farMip1Frag, farMip2Frag, farTopFrag, farShadowFrag, farCastersGLSL, farHazeGLSL, farGIGLSL,
-  farVert, farFrag,
+  farWinFrag, farBoostFrag, farMip1Frag, farMip2Frag, farTopFrag, farShadowFrag, farCastersGLSL, farHazeGLSL,
+  farGIGLSL, farVert, farFrag,
 } from '../shaders/far.js';
 import { shadowFrag, volumeFrag } from '../shaders/render.js';
 import { giGatherFrag } from '../shaders/gi.js';
@@ -74,7 +74,10 @@ export class FarField {
     this.sim = win.sim;
     const g = this.sim.g, L = this.L = farLayout(win.size);
     const U8 = THREE.UnsignedByteType, HALF = THREE.HalfFloatType, NEAR = THREE.NearestFilter, LIN = THREE.LinearFilter;
-    this.grid = makeFieldTarget(L.bricks.width, L.bricks.height, 1, U8, LIN);
+    this.grid = makeFieldTarget(L.bricks.width, L.bricks.height, 1, U8, NEAR);   // raw shares, ids, glow
+    this.field = new THREE.WebGLRenderTarget(L.bricks.width, L.bricks.height, {   // what the view draws (farBoostFrag)
+      type: U8, format: THREE.RGFormat, minFilter: LIN, magFilter: LIN, depthBuffer: false, generateMipmaps: false,
+    });
     this.l1 = makeFieldTarget(L.l1.width, L.l1.height, 1, U8, NEAR);
     this.l2 = makeFieldTarget(L.l2.width, L.l2.height, 1, U8, NEAR);
     this.top = makeFieldTarget(L.bricks.n[0], L.bricks.n[2], 1, HALF, LIN);
@@ -109,9 +112,10 @@ export class FarField {
         ...genUniforms(), tLayers: { value: null }, tTrees: { value: null }, tTreeBand: { value: null },
       }),
       farWin: region(farWinFrag(g, L), { tA: { value: null }, uOrigin: this.sim.originUniform }),
-      farMip1: rawMat(farMip1Frag(L), { tFar: { value: this.grid.texture } }),
+      farBoost: region(farBoostFrag(L), { tFar: { value: this.grid.texture } }),
+      farMip1: rawMat(farMip1Frag(L), { tFar: { value: this.field.texture } }),
       farMip2: rawMat(farMip2Frag(L), { tFar1: { value: this.l1.texture } }),
-      farTop: rawMat(farTopFrag(L), { tFar: { value: this.grid.texture } }),
+      farTop: rawMat(farTopFrag(L), { tFar: { value: this.field.texture } }),
       farShadow: rawMat(farShadowFrag(L), {
         tTop: { value: this.top.texture }, uSun: { value: new THREE.Vector3() }, uWinCols: { value: new THREE.Vector4() },
       }),
@@ -128,8 +132,8 @@ export class FarField {
       fragmentShader: farFrag(g, L),
       uniforms: {
         ...gfxUniforms,
-        tFar: { value: this.grid.texture }, tFar1: { value: this.l1.texture }, tFar2: { value: this.l2.texture },
-        tFarShadow: { value: this.shadow.texture },
+        tFar: { value: this.grid.texture }, tFarField: { value: this.field.texture },
+        tFar1: { value: this.l1.texture }, tFar2: { value: this.l2.texture }, tFarShadow: { value: this.shadow.texture },
         uWorldToScene: { value: this.worldToScene }, uSceneToWorld: { value: this.sceneToWorld },
         uWinLo: { value: new THREE.Vector3() },
         uSea: { value: P.sea }, uFloor: { value: P.floor },
@@ -168,14 +172,22 @@ export class FarField {
       .finally(() => { target.depthTexture.dispose(); target.dispose(); });
   }
 
-  // Draw material mat into the far grid over world bricks [lo, lo + size) along x and z (every slice).
-  drawRegion(mat, lo, size) {
+  // Draw material mat into the far grid (or target) over world bricks [lo, lo + size) along x and z (every slice).
+  drawRegion(mat, lo, size, target = this.grid) {
     mat.uniforms.uFarLo.value.set(lo[0], 0, lo[1]);
     mat.uniforms.uFarSize.value.set(size[0], this.L.bricks.n[1], size[1]);
     this.regionMesh.material = mat;
-    this.renderer.setRenderTarget(this.grid);
+    this.renderer.setRenderTarget(target);
     this.renderer.render(this.regionScene, this.regionCamera);
-    this.sim.onPass?.(mat.name, this.grid);
+    this.sim.onPass?.(mat.name, target);
+  }
+
+  // The field over world bricks [lo, lo + size) and the brick around them (their neighbours changed).
+  boost(lo, size) {
+    const [bx, , bz] = this.L.bricks.n;
+    const a = [Math.max(lo[0] - 1, 0), Math.max(lo[1] - 1, 0)];
+    const b = [Math.min(lo[0] + size[0] + 1, bx), Math.min(lo[1] + size[1] + 1, bz)];
+    this.drawRegion(this.mats.farBoost, a, [b[0] - a[0], b[1] - a[1]], this.field);
   }
 
   // The whole far grid from the generator, then the window's own region from
@@ -202,6 +214,7 @@ export class FarField {
     u.tTrees.value = trees.texture;
     u.tTreeBand.value = band.texture;
     this.drawRegion(farGen, [0, 0], [bx, bz]);
+    this.boost([0, 0], [bx, bz]);
     for (const t of [columns, layers, trees, band]) t.dispose();
     this.built = true;
     this.summarizeWindow();
@@ -240,8 +253,10 @@ export class FarField {
   summarize(lo, bricks, derive = true) {
     if (!this.built) return;
     const o = this.sim.origin, m = this.mats.farWin;
+    const at = [(o.x + lo[0]) / BRICK, (o.z + lo[2]) / BRICK], size = [bricks[0], bricks[2]];
     m.uniforms.tA.value = this.sim.stateA;
-    this.drawRegion(m, [(o.x + lo[0]) / BRICK, (o.z + lo[2]) / BRICK], [bricks[0], bricks[2]]);
+    this.drawRegion(m, at, size);
+    this.boost(at, size);
     if (derive) this.dirty = true;
   }
 
@@ -337,7 +352,7 @@ export class FarField {
     this.mesh.geometry.dispose();
     this.mesh.material.dispose();
     this.regionMesh.geometry.dispose();
-    for (const t of [this.grid, this.l1, this.l2, this.top, this.shadow]) t.dispose();
+    for (const t of [this.grid, this.field, this.l1, this.l2, this.top, this.shadow]) t.dispose();
     Object.values(this.mats).forEach((m) => m.dispose());
   }
 }

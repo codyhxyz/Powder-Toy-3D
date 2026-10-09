@@ -103,7 +103,7 @@ for (const [label, dims] of Object.entries(grids)) {
   check('farRegionVert', raw + far.farRegionVert(L), 'vert');
   for (const k of ['farLayersFrag']) check(k, raw + far[k](g), 'frag');
   for (const k of ['farTreeCandFrag', 'farTreeThinFrag', 'farTreeBandFrag', 'farGenFrag', 'farWinFrag']) check(k, raw + far[k](g, L), 'frag');
-  for (const k of ['farMip1Frag', 'farMip2Frag', 'farTopFrag', 'farShadowFrag']) check(k, raw + far[k](L), 'frag');
+  for (const k of ['farBoostFrag', 'farMip1Frag', 'farMip2Frag', 'farTopFrag', 'farShadowFrag']) check(k, raw + far[k](L), 'frag');
 }
 check('volumeVert', shaderMatVert + render.volumeVert, 'vert');
 check('quadVert', raw + quadVert, 'vert');
