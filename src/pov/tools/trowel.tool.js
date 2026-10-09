@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { ELEMENTS } from '../../elements.js';
-import { CELL_M } from '../../scale.js';
+import { HAND_REACH } from '../constants.js';
 import { pack, packContents, aimInReach, faceNormal, outsideBody } from './transfer.js';
 import { povEvents } from '../events.js';
 import { attachModel } from '../models.js';
@@ -13,7 +13,7 @@ import { trigger, swing } from './action.js';
 //
 // Blocks are Minecraft's: a 1 m cube (BLOCK cells a side) on a fixed lattice,
 // so a block set on top of another lines up with it, placed at Minecraft's
-// right-click rate (4 ticks) and reach (4.5 m), and never inside your own body. They are the
+// right-click rate (4 ticks), and never inside your own body. They are the
 // pack's own cells, put back exactly (element, temperature, life), and from
 // then on they're the engine's: a sand block slumps into a heap, a sawdust one
 // burns. Cells of the block that aren't empty stay as they are and the cells
@@ -23,7 +23,6 @@ import { trigger, swing } from './action.js';
 // or the block would be inside you), with the element, the point and the count.
 
 const BLOCK = 3;             // cells a side (0.9 m at 30 cm cells: Minecraft's 1 m block)
-const BUILD_REACH = 4.5 / CELL_M;   // cells from the eye (Minecraft's 4.5 m: HAND_REACH barely gets past your feet)
 const REFIRE = 0.2;          // s between blocks while held (Minecraft's 4-tick place delay)
 const DAB_TIME = 0.05;       // s for the dab forward
 const DAB_PITCH = 0.35;      // rad the blade dips setting a block
@@ -74,7 +73,7 @@ export default {
     }
 
     function place(ctx) {
-      const aim = aimInReach(ctx, BUILD_REACH);
+      const aim = aimInReach(ctx, HAND_REACH);
       if (!aim) return false;
       const mat = material();
       if (!mat) { env.feedback?.refuse('Your pack is empty: dig with the shovel first'); return false; }
