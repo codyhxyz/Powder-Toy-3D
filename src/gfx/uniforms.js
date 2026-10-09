@@ -29,6 +29,7 @@ export const gfxUniforms = {
   uFrame: { value: 0 },       // frame counter (for temporal jitter)
   uPixScale: { value: 1 },    // output pixel in rendered pixels (set by gfx/post.js per render)
   uSimClock: { value: 0 },    // simulation steps (wrapped): media detail drifts with it, frozen when paused
+  tFlowV: { value: null },    // flow field: how fast matter moves through each cell (Simulation.flowTexture)
   tMediaNoise: mediaNoiseUniform(),   // tileable detail noise for smoke, steam and fire
   tGI0: { value: null },      // GI probe volume (shaders/gi.js): L1 SH bands 0, 1x, 1y, 1z
   tGI1: { value: null },
@@ -61,6 +62,7 @@ export function updateGfxUniforms(sim, sun, light) {
   sim.smoothing = gfx.smoothing;
   gfxUniforms.tB.value = sim.stateB;
   gfxUniforms.tFS.value = sim.fieldSurf;
+  gfxUniforms.tFlowV.value = sim.flowTexture;
   gfxUniforms.tFM.value = sim.fieldMedia;
   gfxUniforms.tFT.value = sim.fieldThin;
   gfxUniforms.tBrickDist.value = sim.brickDistTexture;

@@ -18,6 +18,8 @@ uniform bool uShadows;
 uniform float uTime;
 uniform float uLightGain;
 uniform int uFrame;
+uniform float uSimClock;   // simulation steps (wrapped); frozen when paused
+uniform sampler2D tFlowV;  // how fast matter has been moving through each cell (cells/step), see moveFlowFrag in shaders/move.js
 // An output pixel's size in rendered pixels: 1 at native resolution, below 1 when
 // TAAU renders under the canvas size (gfx/post.js). Pixel-sized filtering (material
 // LOD, line widths) works in output pixels, so the upscaler gets the detail it can
@@ -29,6 +31,7 @@ const ivec3 GRID = ivec3(NX, NY, NZ);
 
 vec4 cellA(ivec3 c) { return texelFetch(tA, atlas(c), 0); }
 vec4 cellB(ivec3 c) { return texelFetch(tB, atlas(c), 0); }
+vec3 cellFlow(ivec3 c) { return texelFetch(tFlowV, atlas(c), 0).xyz; }
 bool outside(ivec3 c) { return any(lessThan(c, ivec3(0))) || any(greaterThanEqual(c, GRID)); }
 
 // Crisp elements are drawn as voxels; everything else is a field.

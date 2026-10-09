@@ -211,7 +211,10 @@ moved on still fade. `gfx.smoothing` (src/gfx/uniforms.js) scales every blur rad
   with depth: water is clear when shallow and blue-green when deep, oil amber, acid a milky green, ice cloudy. Thin
   liquid (drops, streams) is read as a cubic B-spline instead of trilinearly, so drops are round lenses, not faceted gems;
 - powders, lava and organics are opaque smooth surfaces with world-space textures and bump detail (`gfx/surface.js`), the
-  material blended between neighbouring cells; lava grows a cooling crust with glowing cracks;
+  material blended between neighbouring cells; lava grows a cooling crust with glowing cracks. Sliding sand carries its
+  texture with it, using Portal 2's flow-map technique: the texture is pushed along a flow field of how fast grains have
+  actually been moving (`moveFlowFrag` in `shaders/move.js`), in two crossfaded layers that reset in turn so it never
+  stretches. Still piles have no flow, so their texture stays put;
 - crisp voxels get rounded edges where they're exposed;
 - smoke, steam and fire are density volumes (`gfx/media.js`), sampled on a jittered lattice along the ray with sub-cell
   noise that curls and frays them and rises with the gas, so a lone cell is a faint wisp, not a sprite. They scatter

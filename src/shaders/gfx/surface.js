@@ -3,6 +3,7 @@
 //
 // Pipeline for a hit: gatherSurf (smooth surfaces) or crispSurf (voxels and
 // grains) builds a Surf from the material function matOf(); shadeSurf lights it.
+// Moving grains carry their texture along with them (flowing grains, below).
 export const surfaceGLSL = /* glsl */ `
 uniform float uMatDetail;   // 1 = textured materials, 0 = flat albedo (A/B and fallback)
 uniform float uBevel;       // crisp-voxel edge radius in cells (0 = sharp cubes)
@@ -12,6 +13,9 @@ const float PI_S = 3.14159265;
 
 struct Surf {
   vec3 p;       // hit point (grid units)
+  vec3 tp;      // where the texture is read: p, or for flowing grains p pushed back along the flow
+  vec3 tp1;     // flowing grains: the second texture layer's point (see flowing grains)
+  float flowW;  // weight of that second layer (0 = one layer, at tp)
   vec3 n;       // shading normal (geometry + material bump)
   vec3 ng;      // geometric normal (field gradient / voxel face / bevel)
   int id;       // dominant element
@@ -717,15 +721,46 @@ const vec2 MAT_BORDER_EDGE = vec2(0.25, 0.75);   // share of the second element 
 const float MAT_BORDER_F = 1.7;      // frequency of the noise breaking up that border, per cell
 const float MAT_BORDER_SALT = 2.9;   // its noise offset
 const float MAT_BORDER_AMP = 0.6;    // how far it shifts the share
+// The material of a two-element mix at texture point p (r: share of id2).
+Mat gatherMat(int id1, int id2, float ct1, float ct2, float r, vec3 p, vec3 n, float T, float fp) {
+  Mat m = matOf(id1, p, n, T, ct1, fp);
+  if (id2 >= 0) {
+    float k = smoothstep(MAT_BORDER_EDGE.x, MAT_BORDER_EDGE.y,
+                         r + (vnoise(M_ROT * p * MAT_BORDER_F + MAT_BORDER_SALT) - 0.5) * MAT_BORDER_AMP);
+    if (k > 0.0) m = mixMat(m, matOf(id2, p, n, T, ct2, fp), k);
+  }
+  return m;
+}
+
+// ---- flowing grains ----
+// Moving sand carries its texture along: the flow-map technique of Valve's
+// Portal 2 (Vlachos, "Water Flow in Portal 2", SIGGRAPH 2010; Valve's GDC
+// 2011 talk on Portal 2's non-standard textures). The texture is read at a point
+// pushed back along the grains' velocity by the time since its layer last
+// reset. The velocity is the sim's flow field (moveFlowFrag in shaders/move.js),
+// standing in for Portal 2's authored flow map. A layer pushed for long would
+// stretch where the flow is uneven, so two layers run half a cycle apart and
+// are crossfaded, each reset while unseen. The cycle phase is offset by noise
+// so the resets don't pulse in unison.
+// Pushing is centred on each layer's midpoint, so a layer strays at most half
+// a cycle's travel. Grains at rest have no flow, so their texture stays put.
+const float FLOW_PERIOD = 32.0;      // sim steps per cycle of a texture layer
+const float FLOW_PHASE_F = 0.37;     // frequency of the noise offsetting the phase, per cell
+const float FLOW_MIN_TRAVEL = 0.01;  // cells a layer must travel in a cycle to count as moving
+// phase of the first layer at p, in [0, 1); the second is half a cycle on
+float flowPhase(vec3 p) { return fract(uSimClock / FLOW_PERIOD + vnoise(M_ROT * p * FLOW_PHASE_F)); }
+
 Surf gatherSurf(vec3 hp, vec3 n, int ch) {
   Surf s;
-  s.p = hp; s.n = n; s.ng = n; s.ch = ch; s.id = E_EMPTY; s.cell = ivec3(floor(hp - n * 0.5)); s.seed = 0.0;
+  s.p = hp; s.tp = hp; s.tp1 = hp; s.flowW = 0.0; s.n = n; s.ng = n; s.ch = ch; s.id = E_EMPTY; s.cell = ivec3(floor(hp - n * 0.5)); s.seed = 0.0;
   s.face = ivec3(0, 1, 0);
   vec3 q = hp - n * GATHER_DEPTH - 0.5;
   ivec3 c0 = ivec3(floor(q));
   vec3 f = q - vec3(c0);
   int id1 = -1, id2 = -1;
   float w1 = 0.0, w2 = 0.0, T = 0.0, wsum = 0.0, wbest = -1.0, ct1 = 0.0, ct2 = 0.0;
+  bool flow = ch == CH_GRANULAR;   // grains' texture moves with them (flowing grains)
+  vec3 vel = vec3(0.0);
   for (int i = 0; i < 8; i++) {
     ivec3 o = ivec3(i & 1, (i >> 1) & 1, (i >> 2) & 1);
     ivec3 c = c0 + o;
@@ -737,6 +772,7 @@ Surf gatherSurf(vec3 hp, vec3 n, int ch) {
     float w = wv.x * wv.y * wv.z + GATHER_W_MIN;
     T += w * a.y;
     wsum += w;
+    if (flow) vel += w * cellFlow(c);
     if (id1 < 0 || id == id1) {
       id1 = id; w1 += w;
       if (w > wbest) { wbest = w; s.cell = c; s.seed = fract(a.w); ct1 = floor(a.w); }
@@ -755,6 +791,7 @@ Surf gatherSurf(vec3 hp, vec3 n, int ch) {
       int id = eid(a);
       if (SURFCH[id] != ch) continue;
       id1 = id; w1 = 1.0; T = a.y; wsum = 1.0; s.cell = c; s.seed = fract(a.w); ct1 = floor(a.w);
+      if (flow) vel = cellFlow(c);
     }
   }
   if (wsum == 0.0) {
@@ -765,13 +802,16 @@ Surf gatherSurf(vec3 hp, vec3 n, int ch) {
   s.id = id1;
   s.T = T / wsum;
   float fp = footprint(hp);
-  Mat m = matOf(id1, hp, n, s.T, ct1, fp);
-  if (id2 >= 0) {
-    float r = w2 / (w1 + w2);
-    float k = smoothstep(MAT_BORDER_EDGE.x, MAT_BORDER_EDGE.y,
-                         r + (vnoise(M_ROT * hp * MAT_BORDER_F + MAT_BORDER_SALT) - 0.5) * MAT_BORDER_AMP);
-    if (k > 0.0) m = mixMat(m, matOf(id2, hp, n, s.T, ct2, fp), k);
+  float r = id2 >= 0 ? w2 / (w1 + w2) : 0.0;
+  vec3 travel = vel / wsum * FLOW_PERIOD;   // cells a layer moves in a cycle
+  if (flow && length(travel) > FLOW_MIN_TRAVEL) {
+    float ph = flowPhase(hp), ph1 = fract(ph + 0.5);
+    s.tp = hp - travel * (ph - 0.5);
+    s.tp1 = hp - travel * (ph1 - 0.5);
+    s.flowW = abs(2.0 * ph - 1.0);   // 0 while the second layer resets, 1 while the first does
   }
+  Mat m = gatherMat(id1, id2, ct1, ct2, r, s.tp, n, s.T, fp);
+  if (s.flowW > 0.0) m = mixMat(m, gatherMat(id1, id2, ct1, ct2, r, s.tp1, n, s.T, fp), s.flowW);
   applyMat(s, m);
   return s;
 }
@@ -857,7 +897,7 @@ bool crispHit(ivec3 cell, int id, vec3 ro, vec3 rd, float tEnter, float tExit, i
 // Surface record for a crisp voxel, or (with ch set by the caller) a grain.
 Surf crispSurf(ivec3 cell, int id, vec4 a, vec3 hp, vec3 n) {
   Surf s;
-  s.p = hp; s.n = n; s.ng = n; s.ch = -1; s.id = id; s.cell = cell; s.seed = fract(a.w); s.T = a.y;
+  s.p = hp; s.tp = hp; s.tp1 = hp; s.flowW = 0.0; s.n = n; s.ng = n; s.ch = -1; s.id = id; s.cell = cell; s.seed = fract(a.w); s.T = a.y;
   vec3 an = abs(n);
   s.face = an.x >= an.y && an.x >= an.z ? ivec3(int(sign(n.x)), 0, 0)
          : (an.y >= an.z ? ivec3(0, int(sign(n.y)), 0) : ivec3(0, 0, int(sign(n.z))));
@@ -1046,7 +1086,12 @@ vec3 shadeSurf(Surf s, vec3 rd) {
   // sun: specular, with multiple-scattering energy compensation
   vec3 spec = ggxSpecA(n, v, l, s.rough, F0, s.tang, s.aniso) * (1.0 + F0 * (1.0 / max(Ess, 1e-3) - 1.0));
   float g = s.glint * uGlints;   // (glintSpec sizes its facets to the pixel, so no distance fade)
-  if (g > 0.0) spec = mix(spec, glintSpec(s.p, n, v, l, s.rough, F0, s.glintDens), g);
+  if (g > 0.0) {
+    // glints are part of the texture, so flowing grains carry them too
+    vec3 gs = glintSpec(s.tp, n, v, l, s.rough, F0, s.glintDens);
+    if (s.flowW > 0.0) gs = mix(gs, glintSpec(s.tp1, n, v, l, s.rough, F0, s.glintDens), s.flowW);
+    spec = mix(spec, gs, g);
+  }
   // (SUN_COL is irradiance / pi in this renderer's units, hence the pi on the BRDF term)
   vec3 c = SUN_COL * sh * (dSun * (SUN_CAV_MIN + SUN_CAV_GAIN * s.cav) + PI_S * spec);
 
