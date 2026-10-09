@@ -237,7 +237,7 @@ The world is much larger than what lives on the GPU. Its size is `WORLD` cells, 
     view is sea, beach, trees and the hills behind; the middle of the island is bare rock. The god view's home is
     framed over the window's centre, the orbit target on the ground (`homeOver`); R frames it again over where the
     camera looks instead of flying back. WASD tops out at WORLD_CAM_SPEED_MAX so the window keeps up. The floor
-    grid spans the world's footprint.
+    grid spans the world's footprint, and the window's outline shows in the god view (where it paints), not in POV.
   - Picks remember the origin they were asked at and land in the grid as it is (`pickedNow`); a picked cell that
     has left the window doesn't count. So the brush, the construction ghost and placement, the eyedropper, signs
     and the POV crosshair act only inside the window: drag-painting past its edge shows no brush and paints
