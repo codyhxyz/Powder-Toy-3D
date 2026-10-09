@@ -15,6 +15,10 @@ const vogel = (n) => Array.from({ length: n }, (_, i) => {
 export const lightingGLSL = /* glsl */ `
 uniform vec3 uSun;
 const float PI_L = 3.14159265;
+// Lighting upgrades, each switchable at run time (Settings → Lighting):
+uniform bool uNearGI;      // traced voxel AO and nearby bounce light
+uniform bool uGlowLights;  // lava and fire as shadowed lights
+uniform bool uCaustics;    // sun caustics through liquid
 
 // ---- sun and sky: a clear-sky atmosphere (gfx/sky.js) ----
 // Values that only depend on the sun are computed once per frame in JS.
@@ -93,6 +97,57 @@ const float PCSS_NS_MIN = 0.2;       // n.sun floor for the receiver-plane slope
 const float PCSS_BIAS = 0.35;        // depth bias (voxels) on top of the receiver plane
 const float GOLDEN_ANGLE = ${GOLDEN_ANGLE.toFixed(8)};
 
+// ---- caustics: sunlight focused by the ripples on open liquid ----
+// The ripple height field (gfx/liquid.js tilts liquid normals with it): a
+// slowly drifting two-octave value noise, in noise space q = xz * RIPPLE_FREQ.
+#define RIPPLE_FREQ 0.3        // cycles per cell, first octave
+#define RIPPLE_DRIFT 0.6       // noise-space speed, per second
+#define RIPPLE_OCT2 2.1        // second octave: frequency multiple ...
+#define RIPPLE_OCT2_AMP 0.5    // ... height multiple ...
+#define RIPPLE_OCT2_DRIFT 1.3  // ... drift multiple ...
+#define RIPPLE_OCT2_SHIFT 7.3  // ... and offset, so it doesn't line up with the first
+float rippleH(vec2 q, float t) {
+  return vnoise(vec3(q, t)) + RIPPLE_OCT2_AMP * vnoise(vec3(q * RIPPLE_OCT2 + RIPPLE_OCT2_SHIFT, t * RIPPLE_OCT2_DRIFT));
+}
+// Refraction bends a beam entering at a surface slope g by about
+// CAUSTIC_BEND * g (1 - 1/n for water), so at depth D it lands displaced by
+// D * CAUSTIC_BEND * grad h. The light of a patch of surface then covers
+// det(I + D * CAUSTIC_BEND * Hessian(h)) ~ 1 + D * CAUSTIC_BEND * lap(h) of
+// the bed: crests focus it, troughs spread it. The sun's disc blurs the
+// pattern with depth (the penumbra of a beam is D * SUN_TAN_RADIUS), which
+// fades its contrast like a Gaussian of the ripples' wavelength.
+// The rendered ripples are kept gentle (RIPPLE_SLOPE) so the mirror stays
+// readable; light sees the slopes of real wind ripples, a few degrees steeper.
+#define CAUSTIC_BEND 0.25       // 1 - 1/1.33
+#define CAUSTIC_SLOPE 0.18      // ripple slope per unit noise gradient, for the light
+#define CAUSTIC_EPS 0.35        // finite-difference step of the Laplacian, noise space (wide enough to
+                                // smooth over the value noise's lattice, whose curvature jumps there)
+#define CAUSTIC_BED_GAP 2.0     // cells: the liquid must reach this close to a point (along the sun) to
+                                // focus light on it; a drop or puddle higher up just tints its shadow
+#define CAUSTIC_FILL 0.7        // share of the path below the liquid's top that must be liquid: a pool
+                                // (water soaked into sand or gravel has no open surface to focus with)
+#define CAUSTIC_MAX 4.0         // brightest focus (beams cross past it)
+#define CAUSTIC_MIN 0.3         // darkest spread
+// Whether a shadow-map texel sm, seen from depth d, has the receiver under a body of liquid tid.
+bool underPool(vec4 sm, float d, int tid) {
+  if (RCLASS[tid] != R_LIQUID || d <= sm.y || d >= sm.z + CAUSTIC_BED_GAP) return false;
+  float lenL = (sm.w - float(tid) * SHADOW_TINT_ID_SCALE) / max(dot(SIGMA[tid], vec3(1.0 / 3.0)), 1e-4);
+  return lenL >= CAUSTIC_FILL * (min(d, sm.z) - sm.y);
+}
+float causticGain(vec3 p, float D) {
+  vec3 s = p + uSun * D;   // where the light entered the liquid
+  vec2 q = worldPos(s).xz * RIPPLE_FREQ;   // the ripples are anchored in the world (gfx/liquid.js)
+  float t = uTime * RIPPLE_DRIFT;
+  float h0 = rippleH(q, t);
+  float lapQ = (rippleH(q + vec2(CAUSTIC_EPS, 0.0), t) + rippleH(q - vec2(CAUSTIC_EPS, 0.0), t)
+              + rippleH(q + vec2(0.0, CAUSTIC_EPS), t) + rippleH(q - vec2(0.0, CAUSTIC_EPS), t) - 4.0 * h0)
+              / (CAUSTIC_EPS * CAUSTIC_EPS);
+  float lap = CAUSTIC_SLOPE * RIPPLE_FREQ * lapQ;   // per cell
+  float I = clamp(1.0 / max(1.0 + D * CAUSTIC_BEND * lap, 1e-3), CAUSTIC_MIN, CAUSTIC_MAX);
+  float blur = D * SUN_TAN_RADIUS * RIPPLE_FREQ * 2.0 * PI_L;
+  return mix(1.0, I, exp(-0.5 * blur * blur));
+}
+
 void sunBasis(out vec3 c, out float R, out vec3 u, out vec3 v) {
   c = vec3(GRID) * 0.5;
   R = 0.5 * length(vec3(GRID)) + SHADOW_PAD;
@@ -162,6 +217,7 @@ vec3 sunShadow(vec3 hp, vec3 n) {
   vec2 w = f - vec2(i0);
   vec3 acc = vec3(0.0), tr = vec3(0.0);
   float nLit = 0.0, dMin = 1e9;
+  float cD = 0.0, cW = 0.0;   // depth under liquid (along the sun), weight of the taps that see it
   for (int k = 0; k < 4; k++) {
     ivec2 o = ivec2(k & 1, k >> 1);
     vec4 sm = texelFetch(tShadow, clamp(i0 + o, ivec2(0), ivec2(uShadowRes - 1)), 0);
@@ -175,10 +231,16 @@ vec3 sunShadow(vec3 hp, vec3 n) {
       att = exp(-tint * tau * frac);
     }
     float wk = (o.x == 1 ? w.x : 1.0 - w.x) * (o.y == 1 ? w.y : 1.0 - w.y);
+    if (tid > 0 && underPool(sm, d, tid)) { cD += (d - sm.y) * wk; cW += wk; }
     acc += lit * att * wk;
     tr += att * wk;
     nLit += lit;
     dMin = min(dMin, sm.x);
+  }
+  if (uCaustics && cW > 0.0) {
+    float cg = mix(1.0, causticGain(p, cD / cW), cW);
+    acc *= cg;
+    tr *= cg;
   }
 
   // Clearly lit by the hard map: done. Penumbrae are only grown inward, into
@@ -221,6 +283,9 @@ vec3 sunShadow(vec3 hp, vec3 n) {
   return tr * min(2.0 * lit / float(PCSS_TAPS), 1.0);
 }
 
+// Bilinear weight of tap o (0/1 each way) at fraction w.
+float wk0(ivec2 o, vec2 w) { return (o.x == 1 ? w.x : 1.0 - w.x) * (o.y == 1 ? w.y : 1.0 - w.y); }
+
 // Sun visibility at a point inside a volume (media, liquid interiors).
 vec3 sunShadow(vec3 p) {
   vec3 c, u, v; float R;
@@ -232,6 +297,7 @@ vec3 sunShadow(vec3 p) {
   ivec2 i0 = ivec2(floor(f));
   vec2 w = f - vec2(i0);
   vec3 acc = vec3(0.0);
+  float cD = 0.0, cW = 0.0;
   for (int k = 0; k < 4; k++) {
     ivec2 o = ivec2(k & 1, k >> 1);
     vec4 sm = texelFetch(tShadow, clamp(i0 + o, ivec2(0), ivec2(uShadowRes - 1)), 0);
@@ -242,10 +308,11 @@ vec3 sunShadow(vec3 p) {
       float frac = clamp((d - sm.y) / max(sm.z - sm.y, 1e-3), 0.0, 1.0);
       vec3 tint = SIGMA[tid] / max(dot(SIGMA[tid], vec3(1.0 / 3.0)), 1e-4);
       lit *= exp(-tint * tau * frac);
+      if (underPool(sm, d, tid)) { cD += (d - sm.y) * wk0(o, w); cW += wk0(o, w); }
     }
-    float wk = (o.x == 1 ? w.x : 1.0 - w.x) * (o.y == 1 ? w.y : 1.0 - w.y);
-    acc += lit * wk;
+    acc += lit * wk0(o, w);
   }
+  if (uCaustics && cW > 0.0) acc *= mix(1.0, causticGain(p, cD / cW), cW);
   return acc;
 }
 
@@ -366,5 +433,148 @@ float fieldAO(vec3 p, vec3 n) {
   float occ = FIELD_AO_W1 * solidity(p + n * FIELD_AO_D1) + FIELD_AO_W2 * solidity(p + n * FIELD_AO_D2)
             + FIELD_AO_W3 * solidity(p + n * FIELD_AO_D3);
   return clamp(1.0 - occ, FIELD_AO_MIN, 1.0);
+}
+
+// ---- traced near field: short rays through the voxel grid ----
+// First matter a ray from ro along rd enters within tLim cells: returns its
+// distance (or -1) and the cell and entry-face normal. opaqueOnly: only matter
+// that blocks light outright counts (shadow rays); otherwise anything but gas
+// does (AO). Smooth surfaces sit inside their own cells, so non-crisp cells
+// count only from selfSkip cells out; the floor counts as matter.
+const int NEAR_MAX_STEPS = 48;   // cells (or empty-region jumps) a traced ray may visit
+float traceNear(vec3 ro, vec3 rd, float tLim, bool opaqueOnly, float selfSkip, out ivec3 hc, out vec3 hn) {
+  rd = safeDir(rd);
+  ivec3 istp = ivec3(sign(rd));
+  vec3 tDelta = abs(1.0 / rd);
+  ivec3 cell = ivec3(floor(ro));
+  hc = cell; hn = vec3(0.0);
+  if (cell.y < 0 || outside(cell)) return -1.0;
+  vec3 tMax = (vec3(cell) + step(0.0, rd) - ro) / rd;
+  float tEnter = 0.0;
+  int ax = 1;
+  ivec3 lastB = ivec3(-1);
+  float occ = 0.0;
+  for (int i = 0; i < NEAR_MAX_STEPS; i++) {
+    if (tEnter > tLim) break;
+    if (cell.y < 0) { hc = cell; hn = vec3(0.0, 1.0, 0.0); return tEnter; }
+    if (outside(cell)) break;
+    ivec3 bc = cell / BS;
+    if (bc != lastB) { lastB = bc; occ = brickOcc(bc); }
+    if (occ < 0.5) { ax = skipEmpty(bc, ro, rd, istp, cell, tMax, tEnter); continue; }
+    int id = eid(fetchA(cell));
+    if (id != E_EMPTY && KIND[id] != K_GAS && (!opaqueOnly || RCLASS[id] == R_OPAQUE)
+        && (isCrisp(id) || tEnter > selfSkip)) {
+      hc = cell;
+      hn = vec3(0.0); hn[ax] = -float(istp[ax]);
+      return tEnter;
+    }
+    ax = argmin3(tMax);
+    tEnter = tMax[ax];
+    cell[ax] += istp[ax];
+    tMax[ax] += tDelta[ax];
+  }
+  return -1.0;
+}
+
+// Random numbers for this pixel and frame: k-th of a decorrelated set.
+#define NEAR_RAND_STREAMS 8       // random streams per frame (near-field rays, glow candidates)
+vec2 pixRand(int k) {
+  return hash33(vec3(gl_FragCoord.xy, float(uFrame) * float(NEAR_RAND_STREAMS) + float(k))).xy;
+}
+
+// Voxel AO and nearby bounce light (Teardown style). NEAR_RAYS cosine-
+// distributed rays per pixel and frame (TAA averages them) walk the grid up to
+// NEAR_RANGE cells. A ray that hits matter sees that matter's own light: its
+// albedo times the sun (shadow-mapped), the probes' light and the glow there.
+// A ray that escapes sees what the probes say (irr). Probes already hold
+// occlusion at brick scale, so a hit's weight fades with its distance, handing
+// far hits back to them. Returns the indirect irradiance / pi to use instead
+// of irr * AO, and writes the visibility for specular occlusion and glow.
+#define NEAR_RAYS 2
+const float NEAR_RANGE = 6.0;     // cells a ray reaches
+const float NEAR_START = 0.55;    // cells off the surface (along its normal) a ray starts
+const float NEAR_SELF_SKIP = 1.0; // smooth-surface cells ignored this close to the start
+const float NEAR_HIT_LIFT = 0.5;  // cells off a hit's face where its light is looked up
+const float NEAR_VIS_MIN = 0.15;  // light left in the deepest crevice
+vec3 nearField(vec3 p, vec3 ng, vec3 n, vec3 irr, out float vis) {
+  vec3 t1 = normalize(cross(abs(n.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0), n));
+  vec3 t2 = cross(n, t1);
+  vec3 ro = p + ng * NEAR_START;
+  vec3 sum = vec3(0.0);
+  vis = 0.0;
+  for (int i = 0; i < NEAR_RAYS; i++) {
+    vec2 u = pixRand(i);
+    float r = sqrt(u.x), a = 2.0 * PI_L * u.y;
+    vec3 d = t1 * (r * cos(a)) + t2 * (r * sin(a)) + n * sqrt(max(1.0 - u.x, 0.0));
+    if (dot(d, ng) < 0.0) d = reflect(d, ng);   // keep it above the geometric surface
+    ivec3 hc; vec3 hn;
+    float t = traceNear(ro, d, NEAR_RANGE, false, NEAR_SELF_SKIP, hc, hn);
+    if (t < 0.0) { sum += irr; vis += 1.0; continue; }
+    float w = 1.0 - t / NEAR_RANGE;
+    vec3 hp = ro + d * t + hn * NEAR_HIT_LIFT;
+    vec3 alb = hc.y < 0 ? GROUND_ALB : ALBEDO[eid(fetchA(hc))];
+    float ndl = max(dot(hn, uSun), 0.0);
+    vec3 sun = ndl > 0.0 ? SUN_COL * ndl * (uShadows ? sunShadow(hp) : vec3(1.0)) : vec3(0.0);
+    vec3 Lhit = alb * (sun + giIrradiance(probeAt(hp + hn * GI_OFFSET), hn) + sampleLight(hp) * uLightGain);
+    sum += mix(irr, Lhit, w);
+    vis += 1.0 - w;
+  }
+  vis = max(vis / float(NEAR_RAYS), NEAR_VIS_MIN);
+  return sum / float(NEAR_RAYS);
+}
+
+// ---- lava and fire as lights ----
+// The glow volume carries emitted light blurred over bricks: no direction and
+// no shadows. Here each pixel picks one emitting brick near it by resampled
+// importance sampling (GLOW_CANDIDATES random bricks within GLOW_REACH bricks,
+// weighted by emitted power / distance^2) and traces a shadow ray to a random
+// point in it. The glow volume's light is then scaled by what that ray says:
+// 0 in its shadow, 2 n.l facing it (1 on average over a hemisphere of
+// emitters). With no emitter among the candidates the glow is left as it is.
+#define GLOW_CANDIDATES 6
+const int GLOW_REACH = 3;            // bricks each way the candidates are drawn from
+const float GLOW_MIN_D2 = 4.0;       // cells^2: floor of the 1/d^2 weight
+const float GLOW_EMIT_MIN = 1e-4;    // a brick's emitted power (luminance) below this is dark
+const float GLOW_START = 0.55;       // cells off the surface a shadow ray starts
+const float GLOW_SELF_SKIP = 1.0;    // smooth-surface cells ignored this close to its start
+const float GLOW_ENTRY_PAD = 0.05;   // cells short of the emitter's brick the ray stops
+const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
+// Worth tracing only where the glow is at least this share of the light already there.
+const float GLOW_REL_MIN = 0.05;
+bool glowWorthIt(vec3 local, vec3 irr) { return uGlowLights && dot(local, LUMA) > GLOW_REL_MIN * dot(irr, LUMA); }
+float glowLightScale(vec3 p, vec3 ng, vec3 n) {
+  ivec3 pb = ivec3(floor(p)) / BS;
+  ivec3 lo = max(pb - GLOW_REACH, ivec3(0)), hi = min(pb + GLOW_REACH, ivec3(BX, BY, BZ) - 1);
+  vec3 span = vec3(hi - lo + 1);
+  float wSum = 0.0;
+  ivec3 pick = ivec3(-1);
+  for (int i = 0; i < GLOW_CANDIDATES; i++) {
+    vec3 u = hash33(vec3(gl_FragCoord.xy, float(uFrame) * float(NEAR_RAND_STREAMS) + float(NEAR_RAYS + i)));
+    ivec3 bc = min(lo + ivec3(u * span), hi);
+    float e = dot(texelFetch(tBrick, brickAtlas(bc), 0).rgb, LUMA);
+    if (e < GLOW_EMIT_MIN) continue;
+    vec3 dv = (vec3(bc) + 0.5) * float(BS) - p;
+    float wt = e / max(dot(dv, dv), GLOW_MIN_D2);
+    wSum += wt;
+    if (hash13(vec3(u.zx * 97.0, float(i))) * wSum < wt) pick = bc;
+  }
+  if (pick.x < 0) return 1.0;
+  if (pick == pb) return 1.0;   // inside the emitter's own brick: no direction to speak of
+  vec3 bmin = vec3(pick * BS);
+  vec3 target = bmin + hash33(vec3(gl_FragCoord.yx, float(uFrame) + 0.5)) * float(BS);
+  vec3 ro = p + ng * GLOW_START;
+  vec3 dv = target - ro;
+  float dist = length(dv);
+  vec3 d = dv / dist;
+  float nl = dot(n, d);
+  if (nl <= 0.0) return 0.0;
+  // distance to where the ray enters the emitter's brick
+  vec3 sd = safeDir(d);
+  vec3 ta = (bmin - ro) / sd, tb = (bmin + float(BS) - ro) / sd;
+  vec3 tn = min(ta, tb);
+  float tIn = max(max(tn.x, tn.y), max(tn.z, 0.0));
+  ivec3 hc; vec3 hn;
+  float t = traceNear(ro, d, max(tIn - GLOW_ENTRY_PAD, 0.0), true, GLOW_SELF_SKIP, hc, hn);
+  return t < 0.0 ? 2.0 * nl : 0.0;
 }
 `;

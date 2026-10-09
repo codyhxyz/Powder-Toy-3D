@@ -104,3 +104,18 @@ void main() {
   o3 = texelFetch(tGI3, s, 0);
 }
 `;
+
+// The flow field (shaders/move.js moveFlowFrag, Simulation.flowV) follows the
+// cells like the state: it is laid out like the state (atlas()), so texel
+// p takes the flow of cell p + uShift; cells shifted in from outside are still.
+export const flowShiftFrag = (g) => /* glsl */ `
+${prelude(g)}
+uniform sampler2D tFlowSrc;
+uniform ivec3 uShift;   // grid cells the window moved
+out vec4 oV;
+void main() {
+  ivec3 p = cellFromFrag(ivec2(gl_FragCoord.xy));
+  ivec3 q = p + uShift;
+  oV = inGrid(p) && inGrid(q) ? texelFetch(tFlowSrc, atlas(q), 0) : vec4(0.0);
+}
+`;

@@ -5,6 +5,7 @@ import {
   persistentLoad, cellsNear, outsideBody, bodyExit, toStepVelocity, aimInReach, faceNormal, ballRadius, recolor,
 } from './transfer.js';
 import { povEvents } from '../events.js';
+import { trigger } from './action.js';
 import { attachModel, MODELS } from '../models.js';
 import { viewmodelRig, heldMaterial } from '../viewmodel.js';
 
@@ -28,7 +29,6 @@ const THROW_SPEED = 8;               // cells/s along the aim, on top of the bod
 const DUMP_REACH = 2.5;              // cells from the eye where a load lands when nothing is aimed at
 const DUMP_SLACK = 2.5;              // candidate cells per cell dumped (some are full or behind the surface)
 const BODY_CLEARANCE = 0.3;          // cells kept clear around the body when dumping
-const REFUSE_TOAST_INTERVAL = 1.5;   // s between repeated "won't break" / "full" toasts
 
 // held item, in cells (camera space; the viewmodel rig scales it by the world's
 // cell size). The model (models.js 'shovel') lies blade forward, its origin at
@@ -38,7 +38,7 @@ const HELD_PITCH = 0.12, HELD_YAW = 0.3;   // radians: the blade reaches up and 
 const HEAP_R = 0.25;                 // cells: radius of a full load's heap on the blade
 const HEAP_MIN = 0.3;                // a nearly empty load still shows this share of it
 const HEAP_ALONG = 0.18;             // the heap's centre, as a share of the model's length behind its tip (mid-blade)
-const HEAP_SEGMENTS = [10, 6];       // around, down the dome
+const HEAP_SEGMENTS = [6, 3];        // around, down the dome (low-poly, like the models)
 
 const ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 3.5l5.5 5.5M17.8 6.2L11 13"/>'
   + '<path d="M10.5 10.5l3 3-3.5 3.5c-1.6 1.6-4.4 2.5-6.5 3 .5-2.1 1.4-4.9 3-6.5z"/></svg>';
@@ -49,9 +49,8 @@ export default {
   create(env) {
     const load = persistentLoad('SHOVEL', SHOVEL_CAPACITY);
     const transfer = env.transfer;
-    let scoopWait = 0;
+    const scoop = trigger(SCOOP_INTERVAL);   // powder scoops, hold to repeat
     let energy = 0, energyKey = '';
-    let lastRefuse = -Infinity, clock = 0;
 
     // held item: the shovel on a hand of the viewmodel rig, the load heaped on its blade
     const rig = viewmodelRig(env);
@@ -70,15 +69,9 @@ export default {
     let heapVersion = -1;
     const act = (action, extra) => povEvents.emit('tool:action', { tool: 'shovel', action, ...extra });
 
-    function refuse(text, id) {
-      if (clock - lastRefuse < REFUSE_TOAST_INTERVAL) return;
-      lastRefuse = clock;
-      env.feedback?.toast(text);
-      env.feedback?.shake();
-      act('refuse', { id });
-    }
+    const refuse = (text, id) => env.feedback?.refuse(text, { id });
 
-    function dig(ctx, aim) {
+    function dig(ctx, aim, go) {
       if (!aim || aim.id < 0) { energy = 0; return; }   // nothing, or the floor
       const el = ELEMENTS[aim.id];
       const g = ctx.sim.g;
@@ -86,12 +79,11 @@ export default {
       if (el.kind === K.POWDER) {
         center.addScaledVector(faceNormal(aim.face), -SCOOP_SINK);
         energy = 0;
-        scoopWait -= ctx.dt;
-        if (scoopWait > 0) return;
+        if (!go) return;
         if (load.free <= 0) { if (!load.busy) refuse('The shovel is full: right-click to throw the load', aim.id); return; }
         const p = transfer.take(load, { cells: cellsNear(center, SCOOP_RADIUS, g), kinds: [K.POWDER] });
         if (p) {
-          scoopWait = SCOOP_INTERVAL;
+          scoop.fire();
           const point = center.clone();
           p.then((got) => { if (got.length) act('dig', { id: aim.id, point, amount: got.length }); });
         }
@@ -143,7 +135,6 @@ export default {
     return {
       load,
       update(ctx) {
-        clock += ctx.dt;
         hand.visible = true;
         rig.update(ctx);
         if (load.version !== heapVersion) {
@@ -153,8 +144,9 @@ export default {
           heap.scale.setScalar(Math.max(HEAP_MIN, load.cells.length / SHOVEL_CAPACITY));
         }
         const aim = aimInReach(ctx, HAND_REACH);
-        if (ctx.primary) dig(ctx, aim);
-        else { energy = 0; scoopWait = 0; }
+        const go = scoop.ready(ctx);
+        if (ctx.primary) dig(ctx, aim, go);
+        else energy = 0;
         if (ctx.secondaryPressed) dump(ctx, aim);
       },
       deselect() { hand.visible = false; energy = 0; },

@@ -216,8 +216,9 @@ export function loadIsland(sim, { seed } = {}) {
   const gen = generatorFor(sim);
   gen.fill(P);
   gen.plantTrees(P);
-  // a new scene: the render fields and GI start over instead of blending in
+  // a new scene: the render fields and GI start over instead of blending in, and nothing is moving
   sim.fieldReset = true;
   sim.giReset = true;
+  sim.stillFlow();
   return P;
 }

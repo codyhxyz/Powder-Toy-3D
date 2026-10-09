@@ -17,6 +17,8 @@ import { createSettings } from './ui/settings.js';
 import { createHud, createHelp } from './ui/hud.js';
 import { inkFor, luminance } from './ui/dom.js';
 import { gfx, gfxUniforms, updateGfxUniforms } from './gfx/uniforms.js';
+import { DETAIL, settingKey, detailDefaults, detailDefines, detailRows } from './gfx/detail.js';
+import { createDetailGate } from './gfx/detailGate.js';
 import { createPost, UPSCALE } from './gfx/post.js';
 import { createPacer, settleFrames, sceneKey } from './gfx/pacing.js';
 import { CHANNELS, MEDIA } from './gfx/materials.js';
@@ -52,11 +54,15 @@ const DEFAULTS = {
   size: '128', preset: 'lab',
   tool: E.SAND, radius: 5, shape: 0, rate: 1, replace: false,
   steps: 4, gravity: 0.025, paused: false,
-  view: 0, camSpeed: 1, upscale: 'native', dockCollapsed: false,
-  figure: 'real', povFov: POV_FOV, sensitivity: 1, viewBobbing: true, sprintMode: 'hold', profiler: false,
+  view: 0, camSpeed: 1, upscale: 'quality', dockCollapsed: false,
+  figure: 'real', povFov: POV_FOV, sensitivity: 1, viewBobbing: true, sprintMode: 'hold',
+  nearGI: true, glowLights: true, caustics: true,
+  ...detailDefaults(),
+  profiler: false,
 };
 const PERSIST = ['size', 'preset', 'tool', 'radius', 'shape', 'rate', 'replace', 'steps', 'gravity', 'view',
-  'camSpeed', 'upscale', 'dockCollapsed', 'figure', 'povFov', 'sensitivity', 'viewBobbing', 'sprintMode', 'profiler'];
+  'camSpeed', 'upscale', 'dockCollapsed', 'figure', 'povFov', 'sensitivity', 'viewBobbing', 'sprintMode',
+  'nearGI', 'glowLights', 'caustics', ...DETAIL.map(settingKey), 'profiler'];
 const STORE = 'powder-toy-3d:settings';
 // Fixed look: glow is heat-driven light (×uLightGain); smoothing, TAA, bloom and
 // exposure keep their defaults in gfx/uniforms.js and gfx/post.js.
@@ -242,6 +248,7 @@ function build() {
     depthTest: false,
     depthWrite: false,
   });
+  applyDetail();
   volume.material.uniforms.tShadow.value = shadowTarget.texture;
   volume.material.uniforms.uShadowRes.value = shadowRes;
 
@@ -484,6 +491,7 @@ const actions = {
   undo,
   resetCamera: () => { rig.reset(); hud.toast('Camera reset'); },
   screenshot: () => { wantShot = true; },
+  firstPerson: () => { painting = false; pov?.toggle(); },
   toggleSettings: () => setSettingsOpen(!settingsPanel.isOpen),
   toggleHelp: () => help.setOpen(!help.isOpen),
   setView,
@@ -511,9 +519,13 @@ const settingsPanel = createSettings({
     ] },
     // a cost lever too: sim work grows with cells, ray marching with the grid's span
     { title: 'Lighting', rows: [
-      // the day keeps running from wherever this puts it
+      // the day is held at this hour (DAY.running)
       { type: 'slider', key: 'time', label: 'Time of day', min: 0, max: HOURS - TIME_STEP, step: TIME_STEP, def: DAY.startPhase * HOURS,
         fmt: fmtTime, onChange: (v) => { day.clock = phaseSteps(v / HOURS); updateSun(); } },
+      // each costs GPU time; turning one off restores the softer probe-only light
+      ...[['nearGI', 'Contact Shadows'], ['glowLights', 'Lava Lights'], ['caustics', 'Caustics']]
+        .map(([key, label]) => ({ type: 'seg', key, options: [[true, `${label}: On`], [false, 'Off']],
+          onChange: (v) => { settings[key] = v; save(); } })),
     ] },
     { title: 'Grid size', rows: [
       { type: 'seg', key: 'size', options: [['64', '64³'], ['96', '96³'], ['128', '128³'], ['wide', '160×96']],
@@ -524,6 +536,9 @@ const settingsPanel = createSettings({
       { type: 'seg', key: 'upscale', options: [['native', 'Off'], ['quality', 'Quality'], ['balanced', 'Balanced'], ['performance', 'Fast']],
         onChange: (v) => { settings.upscale = v; save(); } },
     ] },
+    // each switch shows its measured cost; expensive ones start off (gfx/detail.js)
+    // Balanced = each feature's cost-tier default; Customize has a switch per feature with its cost (gfx/detail.js)
+    ...(DETAIL.length ? [{ title: 'Detail up close', rows: detailRows(settings, () => { applyDetail(); save(); }) }] : []),
     { title: 'Camera', rows: [
       { type: 'slider', key: 'camSpeed', label: 'Move speed (WASD)', min: 0.25, max: 3, step: 0.05, def: DEFAULTS.camSpeed,
         fmt: (v) => `${v.toFixed(2)}×`, onChange: (v) => { rig.setSpeed(v); save(); } },
@@ -554,6 +569,19 @@ const settingsPanel = createSettings({
   footer: [['Reset all settings', resetSettings]],
 });
 
+// Close-up detail features compile in only when switched on (gfx/detail.js),
+// and into the view only while the camera is near enough for them to show
+// (gfx/detailGate.js). The shadow map sees every switched-on feature.
+let detailVersion = 0;
+const detailGate = createDetailGate(renderer, () => pacer.wake(), () => hud.toast('Preparing close-up detail… the first time after an update this can take half a minute'));
+function applyDetail() {
+  shadowMat.defines = detailDefines(settings);
+  shadowMat.needsUpdate = true;
+  detailGate.configure(volume, settings, camera, scene);
+  detailVersion++;   // the shadow map is a derived pass: redo it
+  post.reset();
+}
+
 // Accounts: take the session the relay just sent back (#tpt3d_session=…) and say how it went
 const signInResult = finishSignIn();
 if (signInResult.error) hud.toast(signInResult.error);
@@ -564,6 +592,7 @@ function resetSettings() {
   Object.assign(settings, DEFAULTS, keep);
   sim.gravity = settings.gravity;
   rig.setSpeed(settings.camSpeed);
+  applyDetail();
   dock.sync();
   toolbar.sync();
   save();
@@ -720,7 +749,7 @@ addEventListener('keydown', (e) => {
   if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); return; }
   if (mod) return;
   const k = e.key;
-  if (k === 'f' || k === 'F') { if (!e.repeat) { painting = false; pov?.toggle(); } return; }
+  if (k === 'f' || k === 'F') { if (!e.repeat) actions.firstPerson(); return; }
   if (pov?.blocksKey(e)) return;   // POV owns movement, Space and the digits while active
   if (e.code === 'Space') { e.preventDefault(); setPaused(!settings.paused); }
   else if (k === '.') stepOnce = true;
@@ -924,9 +953,9 @@ function frame(now) {
   const stepping = !mp.isGuest && (!settings.paused || stepOnce);
   if (stepping) {
     for (let i = 0; i < settings.steps; i++) sim.step();
-    day.clock += settings.steps;
+    if (DAY.running) day.clock += settings.steps;
     stepOnce = false;
-  } else if (mp.isGuest) day.clock += settings.steps;   // guests don't step: keep the day going at their own rate
+  } else if (mp.isGuest && DAY.running) day.clock += settings.steps;   // guests don't step: keep the day going at their own rate
   updateSun();
   if (settings.time !== timeShown) {
     timeShown = settings.time;
@@ -940,7 +969,7 @@ function frame(now) {
   const worldChanged = sim.version !== lastVersion;
   lastVersion = sim.version;
   const runDerived = pacer.derived(
-    `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${KEY_LIGHT}|${settings.view}|${gfx.smoothing}`);
+    `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${KEY_LIGHT}|${settings.view}|${gfx.smoothing}|${detailVersion}`);
   const runView = pacer.view(
     `${camera.matrixWorld.elements}|${camera.projectionMatrix.elements}|${pixelRatio}|${innerWidth}x${innerHeight}`
     + `|${JSON.stringify(settings)}|${JSON.stringify(gfx)}|${JSON.stringify(post.settings)}|${sceneKey(scene)}`,
@@ -975,11 +1004,15 @@ function frame(now) {
     u.tBrick.value = sim.brick.texture;
     u.tLight.value = sim.lightTexture;
     u.uCam.value.copy(camera.position).applyMatrix4(invVol.copy(volume.matrixWorld).invert());
+    detailGate.update(camera, u.uCam.value, [sim.g.nx, sim.g.ny, sim.g.nz], scene);
     u.uView.value = settings.view;
     if (worldChanged) u.uTime.value += dt;   // animated looks (lava, ripples) hold still while the world does
 
     post.settings.raw = settings.view !== 0;
     post.settings.upscale = UPSCALE[settings.upscale] ?? UPSCALE.native;
+    gfxUniforms.uNearGI.value = settings.nearGI;
+    gfxUniforms.uGlowLights.value = settings.glowLights;
+    gfxUniforms.uCaustics.value = settings.caustics;
     floorGrid.material.opacity = post.renderScale;
     edges.material.opacity = EDGE_OPACITY * post.renderScale;
     post.render(scene, camera);   // its passes after the scene count as 'post' (postPass)
@@ -1045,6 +1078,9 @@ try {
     worldLoad(origin) { win.load(origin); placeVolume(); post.reset(); pov?.worldReplaced(); },
     get worldFocus() { return worldFocus; }, set worldFocus(v) { worldFocus = v; },
     SUN, day, scene, settings, camera, controls, loadPreset, selectTool, setView, hover, renderer, rig, renderThumb, gfx, post, mp, autoRes, prof,
+    applyDetail,   // after changing settings.detail_* by hand
+    detailGate,    // .level / .shown: which close-up features the view has compiled in
+    THREE,         // for tools (tools/detail-bench.mjs makes its own targets)
     requestRender: () => pacer.wake(),   // for changes the frame loop can't see (async results)
   };
   requestAnimationFrame(frame);

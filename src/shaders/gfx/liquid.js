@@ -59,21 +59,14 @@ int liquidIdAt(vec3 p, int fallback) {
 // height field tilts the normal of upward-facing surfaces by a few degrees
 // (the surface itself doesn't move), breaking up an otherwise perfect mirror
 // of the sky. Fades out before it would alias.
-#define RIPPLE_FREQ 0.3        // cycles per cell, first octave
+// (The height field itself, rippleH, lives in gfx/lighting.js: the sun's
+// caustics are focused by the same ripples.)
 #define RIPPLE_SLOPE 0.035     // height-field slope per unit noise gradient
-#define RIPPLE_DRIFT 0.6       // noise-space speed, per second
 #define RIPPLE_UP_LO 0.6       // n.y where ripples start ...
 #define RIPPLE_UP_HI 0.9       // ... and reach full strength
 #define RIPPLE_EPS 0.1         // finite-difference step, noise space
-#define RIPPLE_OCT2 2.1        // second octave: frequency multiple ...
-#define RIPPLE_OCT2_AMP 0.5    // ... height multiple ...
-#define RIPPLE_OCT2_DRIFT 1.3  // ... drift multiple ...
-#define RIPPLE_OCT2_SHIFT 7.3  // ... and offset, so it doesn't line up with the first
 #define RIPPLE_LOD_LO 0.25     // finer octave's cycles per pixel where ripples start to fade ...
 #define RIPPLE_LOD_HI 0.6      // ... and where they're gone
-float rippleH(vec2 q, float t) {
-  return vnoise(vec3(q, t)) + RIPPLE_OCT2_AMP * vnoise(vec3(q * RIPPLE_OCT2 + RIPPLE_OCT2_SHIFT, t * RIPPLE_OCT2_DRIFT));
-}
 vec3 liquidRipple(vec3 p, vec3 n) {
   float k = smoothstep(RIPPLE_UP_LO, RIPPLE_UP_HI, n.y)
           * (1.0 - smoothstep(RIPPLE_LOD_LO, RIPPLE_LOD_HI, footprint(p) * RIPPLE_FREQ * RIPPLE_OCT2));

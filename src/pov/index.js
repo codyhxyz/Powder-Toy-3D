@@ -21,7 +21,8 @@ const playerModule = import.meta.glob('./player.js', { eager: true })['./player.
 const toolsModule = import.meta.glob('./tools/index.js', { eager: true })['./tools/index.js'];
 
 const PREWARM_DELAY_MS = 2000;          // ms after start-up before the figure's shader compiles in the background
-const RESPAWN_DELAY = 3.5;              // s from death to respawning at the drop point
+const RESPAWN_DELAY = 3.5;              // s from death to respawning at the drop point on its own
+const RESPAWN_MIN = 1;                  // s after death before a click or Space respawns early (Minecraft-style: no forced wait)
 const POV_NEAR = 0.08;                  // cells: near plane in POV (a held item sits close to the eye)
 // Wheel → notches: the first event of a gesture is one notch at once (mice
 // report anything from a few px to 120 per click), then every WHEEL_NOTCH_PX
@@ -351,7 +352,9 @@ export function createPov(app) {
     }
     if (deadSeen) {
       deadTime += dt;
-      if (deadTime >= RESPAWN_DELAY && mode === 'on') {
+      const asked = deadTime >= RESPAWN_MIN && (buttons.primaryPressed || keys.has('Space'));
+      if ((deadTime >= RESPAWN_DELAY || asked) && mode === 'on') {
+        keys.delete('Space');   // the key that respawned doesn't also jump
         player.spawn(dropPoint.clone());
         deadSeen = false;
         povCam.reset();
