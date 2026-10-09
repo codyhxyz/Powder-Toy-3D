@@ -10,7 +10,8 @@
 // requestAnimationFrame callbacks queue up and run only when the bench pumps a
 // frame (to set up the view), never while something is being timed.
 //
-// Metrics: wall clock over a chunk, with a GPU sync before and after it.
+// Metrics: wall clock over a chunk (about CHUNK_MS of the faster build's work), with a GPU
+// sync before and after it.
 //   derived     ms per sim.updateBricks()
 //   view        ms per post.render(scene, camera), from the home view
 //   step        ms per sim.step()
@@ -61,14 +62,22 @@ const ROUNDS = 5;                 // default --rounds
 const SETTLE_STEPS = 200;         // default --settle: steps from load to the measured state
 const SCENARIOS = 'lab:128,volcano:128,empty:128';   // default --scenarios
 // Timed work per round and build, in run order (derived and view leave the state as it is):
-// warmup iterations (GPU clocks up, shaders compiled), then `chunks` chunks of `iters`
-// iterations, each about 30–50 ms on an idle M5.
+// warmup iterations (GPU clocks up, shaders compiled; each also timed on its own, to size the
+// chunks), then `chunks` chunks per build.
 const METRICS = {
-  derived: { warmup: 4, iters: 10, chunks: 8 },
-  view: { warmup: 4, iters: 4, chunks: 8 },
-  step: { warmup: 8, iters: 16, chunks: 8 },
-  stepNoSkip: { warmup: 8, iters: 12, chunks: 8 },
+  derived: { warmup: 4, chunks: 8 },
+  view: { warmup: 4, chunks: 8 },
+  step: { warmup: 8, chunks: 8 },
+  stepNoSkip: { warmup: 8, chunks: 8 },
 };
+// A chunk is as many iterations as take the faster build about this long, judged by its fastest
+// warmup iteration in the first round (the least slowed by contention), then fixed and the same
+// for both builds, so their worlds advance in step. Long enough that a sync's own cost
+// (~0.05–0.1 ms) stays well under 1% and a burst of contention is a small part of it, short
+// enough that both builds see the same contention.
+const CHUNK_MS = 40;
+const MIN_ITERS = 4;              // per chunk, whatever the warmup said
+const MAX_ITERS = 500;
 // src/sim.js exports tried for cell → texel index (in texels, into readState()'s arrays), called
 // as f(g, x, y, z); without one the census uses the y-slice atlas of src/presets.js idx.
 const CELL_TEXEL_EXPORTS = ['cellTexel', 'cellToTexel', 'texelIndex', 'cellIndex'];
@@ -78,9 +87,9 @@ const WAIT_IDLE_MAX_MS = 30000;   // …for at most this long
 const WAIT_IDLE_POLL_MS = 500;
 const BUSY_UTIL = 25;             // % utilization above which the report warns that timings were contended
 // Median share of a checked chunk still running after its sync above which the report warns. A
-// sync that works leaves only the readback's own cost (0.3–1.3% measured, under contention); one
-// that doesn't wait leaves the whole chunk's GPU time (over 100%).
-const RESIDUAL_WARN = 0.05;
+// sync that works leaves only readback jitter (medians 0.3–1.3% measured under contention, single
+// chunks up to ~9%); one that doesn't wait leaves the whole chunk's GPU time (over 100%).
+const RESIDUAL_WARN = 0.25;
 
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
@@ -288,14 +297,25 @@ function pageSetup({ bootFrames, cellTexelExports, quietMin }) {
       },
     },
   };
-  // false when this build can't run the metric
+  // Each run is flushed, so the GPU starts on it while the next is issued: a chunk takes the
+  // larger of CPU and GPU time, not their sum.
+  const runFlushed = (run, n) => { for (let i = 0; i < n; i++) { run(); gl.flush(); } };
+  // Setup and warmup: null when this build can't run the metric, else the fastest warmup run in
+  // ms (each timed with its own sync, after the first, which compiles and allocates).
   b.prepare = (name, warmup) => {
     const m = b.metrics[name];
-    if (m.supported && !m.supported()) return false;
+    if (m.supported && !m.supported()) return null;
     m.setup?.();
-    for (let i = 0; i < warmup; i++) m.run();
+    m.run();
     b.sync();
-    return true;
+    let fastest = Infinity;
+    for (let i = 1; i < warmup; i++) {
+      const t0 = performance.now();
+      m.run();
+      b.sync();
+      fastest = Math.min(fastest, performance.now() - t0);
+    }
+    return fastest;
   };
   // ms for `iters` runs; with check, also the residual: ms the GPU was still busy after the sync
   b.chunk = (name, iters, check) => {
@@ -303,7 +323,7 @@ function pageSetup({ bootFrames, cellTexelExports, quietMin }) {
     b.sync();
     b.drawn.clear();
     const t0 = performance.now();
-    for (let i = 0; i < iters; i++) run();
+    runFlushed(run, iters);
     b.sync();
     const ms = performance.now() - t0;
     if (!check) return { ms };
@@ -469,7 +489,7 @@ try {
       continue;
     }
     const res = (report.results[sc.name] = {});
-    for (const m of plan) res[m] = { A: [], B: [], ratio: [], residual: { A: [], B: [] }, chunks: { A: [], B: [] } };
+    for (const m of plan) res[m] = { iters: null, A: [], B: [], ratio: [], residual: { A: [], B: [] }, chunks: { A: [], B: [] } };
     for (let i = 0; i < rounds; i++) {
       if (flag('wait-idle')) {
         const t0 = Date.now();
@@ -480,9 +500,14 @@ try {
       const order = i % 2 ? [...builds].reverse() : builds;
       for (const b of order) await b.page.evaluate(pageSettle, { preset: sc.preset, settle });
       for (const m of plan) {
-        const { warmup, iters, chunks } = METRICS[m];
-        const runs = [];
-        for (const b of order) if (await call(b, 'prepare', m, warmup)) runs.push(b);
+        const { warmup, chunks } = METRICS[m];
+        const runs = [], per = [];
+        for (const b of order) {
+          const ms = await call(b, 'prepare', m, warmup);
+          if (ms !== null) { runs.push(b); per.push(ms); }
+        }
+        if (!runs.length) continue;
+        const iters = (res[m].iters ??= Math.min(MAX_ITERS, Math.max(MIN_ITERS, Math.ceil(CHUNK_MS / Math.min(...per)))));
         const times = Object.fromEntries(runs.map((b) => [b.name, []]));
         // chunks alternate A B, B A, ...; the last one of each build checks the sync
         for (let k = 0; k < chunks; k++) {
@@ -525,15 +550,15 @@ for (const b of builds) {
 }
 const util = report.gpuUtil, roundUtil = util.rounds.filter((u) => u !== null);
 const utilMedian = roundUtil.length ? median(roundUtil) : null;
-if ([util.before, util.after, utilMedian].some((u) => u > BUSY_UTIL))
-  warn(`the GPU was busy (utilization ${util.before}% before, ${utilMedian ?? '?'}% median at round starts, ${util.after}% after):`
-    + ' absolute times are inflated and noisy; the interleaved B/A ratios hold up better');
+const utilText = `${util.before ?? '?'}% before, ${utilMedian === null ? '' : `${utilMedian}% median at round starts, `}${util.after ?? '?'}% after`;
+if (!census && [util.before, util.after, utilMedian].some((u) => u > BUSY_UTIL))
+  warn(`the GPU was busy (utilization ${utilText}): absolute times are inflated and noisy; the interleaved B/A ratios hold up better`);
 
 const lines = [];
 const name = (b) => `${b.dir}${report.builds[b.name].git ? ` @ ${report.builds[b.name].git}` : ''}`;
 lines.push(`## bench: A = ${name(builds[0])}, B = ${name(builds[1])}`, '');
 lines.push(`${builds[0].gpu}. ${census ? 'Census' : `${rounds} rounds of interleaved chunks`}, ${settle} settle steps.`
-  + ` GPU utilization: ${util.before ?? '?'}% before, ${utilMedian ?? '?'}% median at round starts, ${util.after ?? '?'}% after.`, '');
+  + ` GPU utilization: ${utilText}.`, '');
 
 if (!census) {
   lines.push('| scenario | metric | A ms | B ms | B/A |', '|---|---|---|---|---|');
