@@ -19,7 +19,8 @@ import { RELAY_HTTP, LOCAL_RELAY } from './net/relay-url.js';
 //   GET  /auth/start/:provider?return=<url>   full-page sign-in
 //   GET  /auth/me       → { user: { id, name, email, avatar, plan } } or 401
 //   POST /auth/logout   POST /auth/delete    (both 204)
-//   GET  /ai/quota      → { tier: 'anon'|'free'|'paid', limit, used, remaining }
+//   GET  /ai/quota      → { tier: 'anon'|'free'|'paid', limit, used, remaining, providers, freeLimit }
+//                         providers: the sign-ins this relay has set up; freeLimit: generations a day signed in
 
 const TOKEN_STORE = 'powder-toy-3d:session';
 const NONCE_STORE = 'powder-toy-3d:signin-nonce'; // sessionStorage: the sign-in this tab started
@@ -35,10 +36,8 @@ const NOT_THIS_TAB = 'Sign-in didn\'t start in this tab. Try again.';
 // The deployed relay only returns sign-ins to https pages; a local one (AUTH_DEV=1) also to http dev pages.
 export const accountsEnabled = !!RELAY_HTTP && (location.protocol === 'https:' || LOCAL_RELAY);
 export const PRIVACY_URL = '/privacy.html';
-export const FREE_TIER_DAILY = 10;        // generations a day once signed in (the relay's 'free' tier)
-
-// What the sign-in buttons offer. The dev provider signs in a fake player, only on a local relay.
-export const SIGN_IN_PROVIDERS = [
+// Sign-in buttons, in order. Only the ones the relay says are set up show (signInOptions).
+const SIGN_IN_PROVIDERS = [
   { id: 'google', label: 'Continue with Google' },
   { id: 'github', label: 'Continue with GitHub' },
   ...(LOCAL_RELAY ? [{ id: 'dev', label: 'Dev sign-in' }] : []),
@@ -241,10 +240,22 @@ export function aiQuota({ refresh = false } = {}) {
     if (res.status === 401 && session) { setToken(null); return null; }
     if (!res.ok) throw new Error(`/ai/quota ${res.status}`);
     const q = await res.json();
-    quota = { tier: q.tier, limit: num(q.limit), used: num(q.used), remaining: num(q.remaining) };
+    quota = {
+      tier: q.tier, limit: num(q.limit), used: num(q.used), remaining: num(q.remaining),
+      providers: Array.isArray(q.providers) ? q.providers : [], freeLimit: num(q.freeLimit),
+    };
     return quota;
   });
 }
+
+// The sign-in buttons to show: the providers the relay has set up (none until it has said).
+export function signInOptions() {
+  const ready = new Set(quota?.providers ?? []);
+  return SIGN_IN_PROVIDERS.filter((p) => ready.has(p.id));
+}
+
+// Generations a day once signed in, as the relay last said (null until it has).
+export const freeDaily = () => quota?.freeLimit ?? null;
 
 const num = (v) => (v === null || v === undefined || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
 

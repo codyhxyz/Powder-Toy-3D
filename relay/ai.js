@@ -1,11 +1,12 @@
 import { DurableObject } from 'cloudflare:workers';
-import { getUser } from './auth.js';
+import { getUser, signInProviders } from './auth.js';
 
 // Free AI for constructions: a small OpenAI proxy that holds the keys (Worker
 // secrets), so players can generate with no setup. Each tier has its own OpenAI
 // key (KEY_FOR), so OpenAI's dashboard shows each tier's usage and spend apart.
 //   POST /ai/v1/responses   the OpenAI Responses API, as the AI SDK's openai provider sends it
-//   GET  /ai/quota          { tier, limit, used, remaining } for the caller; counts nothing
+//   GET  /ai/quota          { tier, limit, used, remaining, providers, freeLimit } for the caller; counts nothing
+//                           (providers: sign-ins set up on this server; freeLimit: a signed-in day)
 // Tiers, from the session token the site sends (Authorization: Bearer, auth.js):
 //   anon   not signed in: ANON_GENERATIONS a day per IP
 //   free   signed in: FREE_GENERATIONS a day per account
@@ -124,7 +125,9 @@ export async function handleAI(request, env, ctx, allowedOrigin) {
     const limit = GENERATIONS[caller.tier];
     const { used, budgetOut } = await quota.peek(caller.tier, caller.who);
     const remaining = budgetOut ? 0 : Math.max(0, limit - used);
-    return json(200, { tier: caller.tier, limit, used, remaining }, { ...headers, 'Cache-Control': 'no-store' });
+    // the panel's sign-in pitch: which providers work here, and what signing in is worth
+    const pitch = { providers: signInProviders(env), freeLimit: GENERATIONS.free };
+    return json(200, { tier: caller.tier, limit, used, remaining, ...pitch }, { ...headers, 'Cache-Control': 'no-store' });
   }
   return generate(request, ctx, caller, env[KEY_FOR[caller.tier]], quota, headers);
 }

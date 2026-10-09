@@ -1,7 +1,7 @@
 import { h } from './dom.js';
 import {
   accountState, account, aiQuota, signIn, signOut, deleteAccount, onAccountChange,
-  SIGN_IN_PROVIDERS, FREE_TIER_DAILY, PRIVACY_URL,
+  signInOptions, freeDaily, PRIVACY_URL,
 } from '../account.js';
 
 // Settings → Account: the sign-in buttons, or who's signed in with Sign out and
@@ -21,7 +21,7 @@ export function accountSection({ toast }) {
   }
 
   function render() {
-    const { user, signedIn, checking, offline, error } = accountState();
+    const { user, signedIn, checking, offline, quota, error } = accountState();
     if (user) {
       el.replaceChildren(
         h('p.account-who', {}, 'Signed in as ', h('b', { text: user.name }), user.email ? ` (${user.email})` : ''),
@@ -33,10 +33,16 @@ export function accountSection({ toast }) {
       el.replaceChildren(h('p.account-who', { text: 'Signing in…' }));
     } else if (offline) {
       el.replaceChildren(h('p.account-who', { text: 'Sign-in is unavailable right now.' }));
+    } else if (!quota) {
+      // which sign-ins the relay offers comes with the quota: ask, and redraw when it answers
+      aiQuota();
+      el.replaceChildren(h(`p.account-who${error ? '.failed' : ''}`, { text: error ?? 'Checking sign-in…' }));
+    } else if (!signInOptions().length) {
+      el.replaceChildren(h(`p.account-who${error ? '.failed' : ''}`, { text: error ?? 'Sign-in isn\'t available yet.' }), privacy());
     } else {
       el.replaceChildren(
-        h(`p.account-who${error ? '.failed' : ''}`, { text: error ?? `Sign in for ${FREE_TIER_DAILY} free AI generations a day.` }),
-        h('div.btn-col', {}, SIGN_IN_PROVIDERS.map((p) => h('button.btn', {
+        h(`p.account-who${error ? '.failed' : ''}`, { text: error ?? `Sign in for ${freeDaily()} free AI generations a day.` }),
+        h('div.btn-col', {}, signInOptions().map((p) => h('button.btn', {
           type: 'button', text: p.label, title: 'Leaves this page to sign in; the scene reloads after',
           on: { click: () => signIn(p.id) },
         }))),

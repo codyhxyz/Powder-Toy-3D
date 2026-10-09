@@ -179,6 +179,9 @@ function returnPage(raw, env, allowedOrigin) {
   return page.href;
 }
 
+// Providers a player can sign in with on this server: their secrets are set (dev: AUTH_DEV=1).
+export const signInProviders = (env) => Object.keys(PROVIDERS).filter((name) => credentials(PROVIDERS[name], env));
+
 function credentials(provider, env) {
   if (provider.dev) return devMode(env) ? {} : null;
   const id = env[provider.clientId];

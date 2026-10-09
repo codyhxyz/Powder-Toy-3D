@@ -17,7 +17,7 @@ import {
 } from './ai/providers.js';
 import {
   accountsEnabled, accountState, account, aiQuota, signIn, signOut, onAccountChange,
-  SIGN_IN_PROVIDERS, FREE_TIER_DAILY, PRIVACY_URL,
+  signInOptions, freeDaily, PRIVACY_URL,
 } from './account.js';
 import './constructions.css';
 
@@ -654,14 +654,17 @@ export class Constructions {
         h('button.link', { type: 'button', text: 'Sign out', on: { click: () => signOut() } }));
     }
     if (signedIn && checking) return h('div.account', {}, h('span.account-pitch', { text: 'Signing in…' }));
+    // nothing to offer until the relay says which sign-ins it has set up
+    const options = signInOptions();
+    if (!options.length) return error ? h('div.account', {}, h('span.account-pitch.failed', { text: error })) : h('div.account');
     // out of anonymous generations: signing in is the way on
     const out = quota?.remaining === 0;
-    const pitch = error ?? (out ? `No free generations left today. Sign in for ${FREE_TIER_DAILY} a day.`
-      : `Sign in for ${FREE_TIER_DAILY} free generations a day`);
+    const pitch = error ?? (out ? `No free generations left today. Sign in for ${freeDaily()} a day.`
+      : `Sign in for ${freeDaily()} free generations a day`);
     return h(`div.account${out ? '.urgent' : ''}`, {},
       h(`span.account-pitch${error ? '.failed' : ''}`, { text: pitch }),
       h('div.account-actions', {},
-        SIGN_IN_PROVIDERS.map((p) => h(`button.chip${out ? '.on' : ''}`, {
+        options.map((p) => h(`button.chip${out ? '.on' : ''}`, {
           type: 'button', text: p.label, title: 'Leaves this page to sign in; the scene reloads after',
           on: { click: () => this._signIn(p.id) },
         })),
