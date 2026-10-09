@@ -1,4 +1,4 @@
-import { prelude } from './common.js';
+import { prelude, stateOutGLSL } from './common.js';
 import { quietGLSL } from './activity.js';
 
 // Movement pass: Margolus block cellular automaton.
@@ -19,9 +19,12 @@ import { quietGLSL } from './activity.js';
 //
 // To avoid solving every block 8 times (once per cell), the block pass runs
 // at block resolution and writes, for each of the 8 destination slots, which
-// source cell lands there plus its new velocity (8 MRT attachments). The
-// react pass after it reads each cell's post-move state through those slots
-// (slotGLSL postMove), so the moved state is never written out on its own.
+// source cell lands there plus its new velocity (8 MRT attachments). A cheap
+// gather pass then rebuilds the state at cell resolution, each cell reading
+// its slot (slotGLSL postMove). (Folding the gather into the react pass, which
+// would read the moved state of the cell and its 6 neighbours through the
+// slots, was measured slower: 7 slot lookups of 3 fetches each per cell cost
+// more than writing the moved state once and reading it back.)
 //
 // Impacts on solids. A grain that slams into a solid (faster than COLLIDE_V,
 // the line between an impact and resting contact) stops, and the kinetic
@@ -284,7 +287,7 @@ void main() {
 }
 `;
 
-// The block pass's results, read per cell (the react pass, the flow pass):
+// The block pass's results, read per cell (the gather pass, the flow pass):
 // uniforms tSlots and uParity, and
 //   slotOf(c, q)     cell c's slot texel (its packed source and new velocity),
 //                    and q, the cell its content comes from
@@ -321,6 +324,29 @@ void postMove(ivec3 c, out vec4 a, out vec4 b) {
   float heat = float(int(m.x + 0.5) / SLOTS) / HEAT_QUANTA;   // impact energy this cell took
   if (heat > 0.0) a.y = min(a.y + heat * KE_TO_HEAT / CAP[eid(a)], CELL_TEMP_MAX);
   b = vec4(m.yzw, fetchB(c).w);
+}
+`;
+
+// Gather: every cell's state after the move. A block whose base is in a quiet
+// brick stayed put, so its cells copy themselves (as their slots would say).
+export const moveGatherFrag = (g) => /* glsl */ `
+${prelude(g)}
+${quietGLSL}
+${slotGLSL}
+uniform bool uFresh;   // the first step since the activity map was built: dirty marks start over
+${stateOutGLSL}
+void main() {
+  ivec3 p = cellFromFrag(ivec2(gl_FragCoord.xy));
+  if (!inGrid(p)) { writeState(vec4(0.0), vec4(0.0), 0u); return; }   // a texel holding no cell
+  vec4 a, b;
+  if (quietCell(blockBase(p))) { a = fetchA(p); b = fetchB(p); }
+  else postMove(p, a, b);
+  // activity flags: the react pass after this one re-tests the cell; mark it
+  // dirty if the move changed what its neighbours' tests read (shaders/common.js FLAG)
+  uint f = fetchF(p);
+  if (uFresh) f &= ~FLAG_DIRTY;
+  if (nearChange(fetchA(p), a)) f |= FLAG_DIRTY;
+  writeState(a, b, f);
 }
 `;
 

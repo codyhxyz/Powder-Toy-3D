@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { quadVert, BRICK, SEED_MAX, TILE, SUPER, SUPER_TEX, SUPER_CELLS, BLOCK_TILE, stateUniforms } from './shaders/common.js';
 import { inertFrag, inertRowsFrag, inertJoinFrag, quietFrag, activityPeriod } from './shaders/activity.js';
-import { moveBlockFrag, moveFlowFrag, SLOTS } from './shaders/move.js';
+import { moveBlockFrag, moveFlowFrag, moveGatherFrag, SLOTS } from './shaders/move.js';
 import { reactFrag } from './shaders/react.js';
 import { paintFrag, copyFrag, brickFrag, blurFrag, brickDistFrag } from './shaders/passes.js';
 import { fieldEmaFrag, fieldBlurFrag, fieldBoostFrag, BOOST_STAGES } from './shaders/fields.js';
@@ -237,10 +237,8 @@ export class Simulation {
       moveBlock: rawMat(moveBlockFrag(g), {
         ...state(), uParity: { value: 0 }, uFrame: { value: 0 }, uGravity: { value: this.gravity }, tQuiet: { value: null },
       }),
-      react: rawMat(reactFrag(g), {
-        ...state(), ...slots(), uFrame: { value: 0 }, uGravity: { value: this.gravity }, tQuiet: { value: null },
-        uFresh: { value: false },
-      }),
+      moveGather: rawMat(moveGatherFrag(g), { ...state(), ...slots(), tQuiet: { value: null }, uFresh: { value: false } }),
+      react: rawMat(reactFrag(g), { ...state(), uFrame: { value: 0 }, uGravity: { value: this.gravity }, tQuiet: { value: null } }),
       inert: rawMat(inertFrag(g), { tF: { value: null } }),
       inertRows: rawMat(inertRowsFrag(g), { tA: { value: null }, tF: { value: null }, tClass: { value: null } }),
       inertJoin: rawMat(inertJoinFrag(g), { tClass: { value: null }, tRows: { value: null } }),
@@ -400,29 +398,27 @@ export class Simulation {
     if (this.actDirty || this.actAge >= ACTIVITY_PERIOD) this.updateActivity();
     this.actAge++;
     this.stepping = true;
-    const { moveBlock, moveFlow, react } = this.mats;
+    const { moveBlock, moveFlow, moveGather, react } = this.mats;
     const parity = this.frame & 1;
-    // movement: solve each 2×2×2 block once (moveBlock); the passes after it
-    // read every cell's result through the block results
-    moveBlock.uniforms.tQuiet.value = this.actQuiet.texture;
+    // movement: solve each 2×2×2 block once (moveBlock), then every cell
+    // gathers its result (moveGather) and the flow field takes its move
+    for (const m of [moveBlock, moveGather, moveFlow, react]) m.uniforms.tQuiet.value = this.actQuiet.texture;
     moveBlock.uniforms.uParity.value = parity;
     moveBlock.uniforms.uFrame.value = this.frame;
     moveBlock.uniforms.uGravity.value = this.gravity;
     moveBlock.uniforms.tA.value = this.stateA;
     moveBlock.uniforms.tB.value = this.stateB;
     this.run(moveBlock, this.blocks);
-    for (const m of [moveFlow, react]) {
+    for (const m of [moveGather, moveFlow]) {
       m.uniforms.uParity.value = parity;
-      m.uniforms.tQuiet.value = this.actQuiet.texture;
       m.uniforms.tSlots.value = this.slots.texture;
     }
-    // the flow field for the renderer
+    moveGather.uniforms.uFresh.value = this.actFresh;
+    this.actFresh = false;
+    this.pass(moveGather);
     this.run(moveFlow, this.flowV);
-    // react: the moved state, and everything that changes a cell in place
     react.uniforms.uFrame.value = this.frame;
     react.uniforms.uGravity.value = this.gravity;
-    react.uniforms.uFresh.value = this.actFresh;
-    this.actFresh = false;
     this.pass(react);
     this.stepping = false;
   }

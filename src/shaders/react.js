@@ -1,6 +1,5 @@
 import { prelude, stateOutGLSL } from './common.js';
 import { quietGLSL, inertNearGLSL } from './activity.js';
-import { slotGLSL } from './move.js';
 import { ELEMENTS } from '../elements.js';
 
 // The softest breakable solid: a cell carrying less kinetic energy than this
@@ -8,9 +7,7 @@ import { ELEMENTS } from '../elements.js';
 const HARD_MIN = Math.min(...ELEMENTS.filter((e) => e.breakInto).map((e) => e.hard));
 
 // React pass: everything that only changes a cell in place, using its six
-// face neighbours. It runs right after the move's block pass and reads the
-// cell and its neighbours as the move left them, through the block results
-// (move.js postMove): the moved state is never written out on its own.
+// face neighbours.
 //   - Heat conduction. Flux between two cells uses min(cond_a, cond_b), so it
 //     is symmetric and total energy (Σ cap·T) is conserved; dividing by the
 //     cell's own heat capacity gives the temperature change. Each face's flux
@@ -53,8 +50,6 @@ uniform float uGravity;
 ${stateOutGLSL}
 ${quietGLSL}
 ${inertNearGLSL}
-${slotGLSL}
-uniform bool uFresh;   // the first step since the activity map was built: dirty marks start over
 
 const ivec3 DIRS[6] = ivec3[6](ivec3(1,0,0), ivec3(-1,0,0), ivec3(0,1,0), ivec3(0,-1,0), ivec3(0,0,1), ivec3(0,0,-1));
 
@@ -107,18 +102,13 @@ void main() {
   ivec3 p = cellFromFrag(ivec2(gl_FragCoord.xy));
   if (!inGrid(p)) { writeState(vec4(0.0), vec4(0.0), 0u); return; }   // a texel holding no cell
 
-  // this cell after the move (a quiet cell in a block that stayed put is as
-  // it was); it is dirty if the move changed what its neighbours' tests read
-  // (shaders/common.js nearChange), or if it was already
-  bool quiet = quietCell(p);
-  vec4 a, b;
-  if (quiet && quietCell(blockBase(p))) { a = fetchA(p); b = fetchB(p); }
-  else postMove(p, a, b);
-  uint dirty = (uFresh ? 0u : fetchF(p) & FLAG_DIRTY) | (nearChange(fetchA(p), a) ? FLAG_DIRTY : 0u);
+  vec4 a = fetchA(p);
+  vec4 b = fetchB(p);
+  uint dirty = fetchF(p) & FLAG_DIRTY;   // the move pass's mark (shaders/common.js nearChange)
   // quiet brick (shaders/activity.js): nothing here can change, keep it as is.
   // Its cells were inert when the activity map was built, so their neighbour
   // tests passed then, and still do unless something around them is dirty.
-  if (quiet) { writeState(a, b, ownFlags(a, b) | FLAG_NEAR | dirty); return; }
+  if (quietCell(p)) { writeState(a, b, ownFlags(a, b) | FLAG_NEAR | dirty); return; }
   int id = eid(a);
   float T = a.y, life = a.z;
   float ctype = floor(a.w), seed = fract(a.w);
@@ -132,7 +122,8 @@ void main() {
   for (int i = 0; i < 6; i++) {
     ivec3 q = p + DIRS[i];
     if (inGrid(q)) {
-      postMove(q, na[i], nb[i]);
+      na[i] = fetchA(q);
+      nb[i] = fetchB(q);
     } else {
       na[i] = vec4(float(E_WALL), T, 0.0, 0.0); // insulating, pressure-reflecting box
       nb[i] = vec4(0.0, 0.0, 0.0, P0);
