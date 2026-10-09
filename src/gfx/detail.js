@@ -30,11 +30,11 @@ export const costTier = (ms) => (ms < COST_LOW_MS ? 'low' : ms < COST_MEDIUM_MS 
 // (put the measured ms in a comment next to it).
 export const DETAIL = [
   { key: 'liquidRipples', define: 'DETAIL_LIQ_RIPPLES', label: 'Liquid ripples',
-    desc: 'Centimetre capillary ripples on open liquid, fading in as you get close.', cost: 'low' },
+    desc: 'Centimetre capillary ripples on open liquid, fading in as you get close.', cost: 'low' },   // ~0 ms (−0.3 eyeTank, 25 rounds; within noise)
   { key: 'liquidMeniscus', define: 'DETAIL_LIQ_MENISCUS', label: 'Liquid meniscus',
-    desc: 'Liquid climbing walls and glass over its last few millimetres.', cost: 'low' },
+    desc: 'Liquid climbing walls and glass over its last few millimetres.', cost: 'low' },   // ~0 ms (−1.7 eyeTank, 25 rounds; within noise)
   { key: 'liquidFoam', define: 'DETAIL_LIQ_FOAM', label: 'Whitewater',
-    desc: 'Falling and splashing liquid roughens and foams where it moves fast.', cost: 'low' },
+    desc: 'Falling and splashing liquid roughens and foams where it moves fast.', cost: 'medium' },   // 1.4 ms eyeTank (25 rounds), 1.2–2.4 in 7-round runs; GPU shared with other benches
 ];
 
 export const settingKey = (f) => `detail_${f.key}`;
