@@ -304,10 +304,12 @@ export const SUPER_SETTLE_STEPS = 2;
 const superMapGLSL = Object.entries(SUPER_MAP).map(([k, v]) => `#define SUPER_${k} ${v}`).join('\n');
 
 // Share of a step pass's supertiles above which it draws one full-screen quad
-// instead of a quad per supertile (instancing every region costs more than one
-// full-screen quad: gfx/regions.js). Provisional until measured (tools/bench.mjs).
-// It reaches the vertex shaders as a uniform (uFullShare), so a tool can move it.
-export const STEP_FULL_SHARE = 0.75;
+// instead of a quad per supertile (gfx/regions.js). Measured on an M5 (ANGLE
+// Metal, 128³, steps alternating between the two at the same states): a quad
+// per drawn supertile costs 0.75 of one full-screen quad with 32% drawn, 0.86
+// at 49%, 0.91 at 73%, 0.98 at 87%, 1.02 at 97% and 1.06 at 100%. It reaches
+// the vertex shaders as a uniform (uFullShare), so a tool can move it.
+export const STEP_FULL_SHARE = 0.9;
 const superCount = (g) => g.stx * g.sty * g.stz;
 
 // The supertile map (target: one texel per supertile slot, STW × the atlas's
