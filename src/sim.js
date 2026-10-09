@@ -97,6 +97,7 @@ export class Simulation {
     this.g = gridLayout(nx, ny, nz);
     const g = this.g;
     this.frame = 0;
+    this.paints = 0;   // brush strokes applied (the paint pass's random stream)
     this.gravity = GRAVITY_DEFAULT;
     // bumped by every write to the state (steps, painting, loads, undo, network
     // updates), so callers can tell when the world changed
@@ -244,8 +245,13 @@ export class Simulation {
 
   paint({ center, radius, shape, tool, rate, replace }) {
     const u = this.mats.paint.uniforms;
-    this.frame++;
-    u.uFrame.value = this.frame;
+    // Its own random stream: this.frame counts steps only. The move pass
+    // alternates its block partition by the step count's parity, so a paint
+    // bumping it would lock the partition when one step runs per paint (Speed
+    // 1 while painting: poured matter could never leave its 2×2×2 block); the
+    // POV body and the media drift clock also read it as steps taken.
+    this.paints++;
+    u.uFrame.value = this.paints;
     u.uCenter.value.copy(center);
     u.uRadius.value = radius;
     u.uShape.value = shape;
