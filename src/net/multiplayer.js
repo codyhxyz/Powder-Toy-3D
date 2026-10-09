@@ -1,12 +1,16 @@
 import { ELEMENTS, TOOLS } from '../elements.js';
 import { createPacker, createUnpacker, encodeFrame, decodeFrame, xorInto, FRAME_KEY, FRAME_DELTA } from './codec.js';
 import { createRemoteCursors } from './cursors.js';
+import { createChat, MAX_CHAT_CHARS } from './chat.js';
+import { sessionToken } from '../account.js';
 import { h } from '../ui/dom.js';
 import './net.css';
 
 // Multiplayer: one player hosts and runs the simulation; guests see the
 // host's world (streamed, ~100 ms behind) from their own camera, send paint
-// strokes to the host, and everyone sees everyone's brush.
+// strokes to the host, and everyone sees everyone's brush. Anyone can play,
+// signed in or not: signed-in players show by their first name (the relay
+// looks it up from their session), others as Host / Guest <n>. T opens chat.
 //
 // Roles: 'solo' (no session), 'host', 'guest'. All traffic goes through the
 // relay (relay/worker.js): JSON text for presence, paint and control, binary
@@ -18,6 +22,7 @@ const DEV_RELAY_PORT = 8787; // `wrangler dev` default
 const RELAY_URL = import.meta.env.VITE_RELAY_URL || (import.meta.env.DEV ? `ws://${location.hostname}:${DEV_RELAY_PORT}` : null);
 const JOIN_PARAM = 'join';
 const ROOM_CODE_LENGTH = 8;
+const WS_PROTOCOL = 'tpt3d'; // relay/worker.js: ['tpt3d', <session token>] signs the player in
 
 const STREAM_INTERVAL_MS = 100;       // world frames to guests (10 per second)
 const PRESENCE_INTERVAL_MS = 50;      // cursor updates (20 per second)
@@ -39,7 +44,7 @@ const CLOSE_NORMAL = 1000; // WebSocket close code for a deliberate disconnect
 
 const ICON_PLAYERS = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18 14.5a6.5 6.5 0 0 1 3.5 5.5"/></svg>';
 
-const peerName = (p) => (p.role === 'host' ? 'Host' : `Guest ${p.n}`);
+const peerName = (p) => p.name ?? (p.role === 'host' ? 'Host' : `Guest ${p.n}`);
 const peerColor = (p) => PEER_COLORS[p.n % PEER_COLORS.length];
 const inviteURL = (room) => {
   const u = new URL(location.href);
@@ -71,11 +76,18 @@ export function createMultiplayer({ renderer, scene, camera, hud, getSim, getVol
 
   let lastPresence = 0, lastPresenceJSON = '';
 
+  const chat = createChat({
+    onSend(text) {
+      if (send({ t: 'chat', text }) && me) chat.say(peerName(me), peerColor(me), text); // the relay doesn't echo to the sender
+    },
+  });
+
   // ---- connection ----
   function connect(asRole, code) {
     room = code;
     joiningAs = asRole;
-    const ws = new WebSocket(`${RELAY_URL}/room/${encodeURIComponent(code)}?role=${asRole}`);
+    const token = sessionToken();
+    const ws = new WebSocket(`${RELAY_URL}/room/${encodeURIComponent(code)}?role=${asRole}`, token ? [WS_PROTOCOL, token] : []);
     ws.binaryType = 'arraybuffer';
     ws.onmessage = (e) => (typeof e.data === 'string' ? onMessage(JSON.parse(e.data), asRole) : onFrame(e.data));
     ws.onclose = (e) => {
@@ -90,6 +102,7 @@ export function createMultiplayer({ renderer, scene, camera, hud, getSim, getVol
     socket = null; role = 'solo'; me = null; room = null; sent = null; world = null; joiningAs = null;
     peers.clear();
     cursors.clear();
+    chat.clear();
     strokes.length = 0;
     if (new URLSearchParams(location.search).has(JOIN_PARAM)) history.replaceState(null, '', location.pathname);
     hud.toast(wasGuest ? `${reason}. You can keep playing with this world on your own.` : reason);
@@ -106,7 +119,11 @@ export function createMultiplayer({ renderer, scene, camera, hud, getSim, getVol
     end(asRole === 'guest' ? LEFT_WORLD : STOPPED_HOSTING);
   }
 
-  const send = (msg) => socket?.readyState === WebSocket.OPEN && socket.send(JSON.stringify(msg));
+  const send = (msg) => {
+    if (socket?.readyState !== WebSocket.OPEN) return false;
+    socket.send(JSON.stringify(msg));
+    return true;
+  };
 
   // Relay messages: welcome { id, n, role, peers }, join { id, n, role }, leave { id }, refused { reason };
   // everything else is another player's message with `from` set to their id.
@@ -122,13 +139,13 @@ export function createMultiplayer({ renderer, scene, camera, hud, getSim, getVol
       }
       case 'welcome':
         role = asRole;
-        me = { id: m.id, n: m.n, role: m.role };
+        me = { id: m.id, n: m.n, role: m.role, name: m.name ?? null };
         for (const p of m.peers) peers.set(p.id, p);
         if (role === 'guest') hud.toast(`Joined the host's world as ${peerName(me)}`);
         break;
       case 'join':
         peers.set(m.id, m);
-        hud.toast(`${peerName(m)} joined`);
+        chat.notice(`${peerName(m)} joined`);
         if (role === 'host') wantKey = true;
         lastPresenceJSON = ''; // so the newcomer gets our cursor without waiting for us to move
         break;
@@ -141,7 +158,7 @@ export function createMultiplayer({ renderer, scene, camera, hud, getSim, getVol
           end('The host left');
           return;
         }
-        if (p) hud.toast(`${peerName(p)} left`);
+        if (p) chat.notice(`${peerName(p)} left`);
         peers.delete(m.id);
         cursors.remove(m.id);
         break;
@@ -151,6 +168,9 @@ export function createMultiplayer({ renderer, scene, camera, hud, getSim, getVol
         break;
       case 'paint':
         if (role === 'host' && validStroke(m)) strokes.push(m);
+        break;
+      case 'chat':
+        if (from && typeof m.text === 'string') chat.say(peerName(from), peerColor(from), m.text.slice(0, MAX_CHAT_CHARS));
         break;
       case 'key':
         if (role === 'host') wantKey = true;
@@ -284,7 +304,8 @@ export function createMultiplayer({ renderer, scene, camera, hud, getSim, getVol
     const everyone = me ? [{ ...me, you: true }, ...peers.values()] : [];
     everyone.sort((a, b) => (a.role === 'host' ? -1 : b.role === 'host' ? 1 : a.n - b.n));
     peerList.replaceChildren(...everyone.map((p) => h('li', { style: { '--peer': peerColor(p) } },
-      h('span.dot'), h('span', { text: peerName(p) }), p.you ? h('span.you', { text: 'you' }) : null)));
+      h('span.dot'), h('span', { text: peerName(p) }), p.name && p.role === 'host' ? h('span.host', { text: 'host' }) : null,
+      p.you ? h('span.you', { text: 'you' }) : null)));
   }
   syncButton();
 
@@ -298,6 +319,9 @@ export function createMultiplayer({ renderer, scene, camera, hud, getSim, getVol
     get role() { return role; },
     get isGuest() { return role === 'guest'; },
     get panelOpen() { return panelOpen; },
+    // Chat is for sessions; solo, T keeps toggling the element dock.
+    get chatAvailable() { return role !== 'solo'; },
+    openChat: () => chat.open(),
     closePanel,
 
     // Guests: shows a toast and returns true for host-only actions.

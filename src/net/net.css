@@ -40,5 +40,37 @@
 .net-peers:empty { display: none; }
 .net-peers li { display: flex; align-items: center; gap: 8px; padding: 5px 4px; border-radius: var(--r-ctl); font-weight: 560; }
 .net-peers .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--peer); }
+.net-peers .host { color: var(--muted); font-size: 11px; }
 .net-peers .you { margin-left: auto; color: var(--faint); font-size: 11px; }
 .net-panel .btn:disabled { opacity: 0.4; cursor: default; }
+
+/* Chat (net/chat.js): bottom left, above the element dock. Lines fade after a
+   while; opening the chat (T) shows the whole history. */
+.chat {
+  position: fixed; left: 14px; bottom: 178px; z-index: 11;
+  width: min(440px, calc(100vw - 28px));
+  display: flex; flex-direction: column; gap: 6px;
+  pointer-events: none;
+}
+.chat-log {
+  display: flex; flex-direction: column; gap: 2px;
+  max-height: 40vh; overflow-y: auto; scrollbar-width: thin;
+}
+.chat-line {
+  margin: 0; padding: 3px 8px; width: fit-content; max-width: 100%;
+  border-radius: 6px; background: rgba(10, 13, 20, 0.62);
+  color: #f2f4f8; font: 500 13px/1.35 var(--ui);
+  overflow-wrap: anywhere;
+  transition: opacity var(--fade-ms) ease-in;
+}
+.chat-name { font-weight: 700; }
+.chat:not(.open) .chat-line.faded { opacity: 0; }
+.chat.open { pointer-events: auto; }
+.chat-input {
+  display: none;
+  padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px;
+  background: rgba(10, 13, 20, 0.82); color: #f2f4f8; font: 500 13px var(--ui);
+  outline: none;
+}
+.chat.open .chat-input { display: block; }
+.chat.open .chat-line { transition: none; }
