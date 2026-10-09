@@ -1,3 +1,5 @@
+import { BRICK } from '../shaders/common.js';
+
 // Procedural world generator (docs/scaling.md D11, "Generator"): the CPU half.
 //
 // The terrain is a pure function of world position and a world seed, so any
@@ -22,6 +24,10 @@
 //   - They lie at least two cells deep, so the grains resting on rock (the
 //     only ones the move pass's landing scatter nudges sideways) are walled in
 //     by the neighbouring ground.
+//   - Still water keeps being kicked into random flow (the engine's, until
+//     docs/scaling.md D2), and it knocks grains in the water sideways, away
+//     from it. So no sand in the water where lower columns face each other
+//     within two columns along an axis (genLayers says why two).
 //   - Plants grow into water they touch (react.js), so ground cover starts
 //     above sea level.
 //   - The sea fills every column below sea level up to it, so it is flat and
@@ -33,7 +39,7 @@
 // ---------------------------------------------------------------- constants
 // Shared by the GLSL generator (as #defines, see genGLSL) and the JS twin
 // below: keep the two algorithms in step. Noise frequencies are per feature
-// length (the world's FEATURE_CELLS, see worldParams).
+// length (worldParams' feature, in cells).
 export const GEN = {
   // gradient noise and fBm
   NOISE_NORM: 1.4142,        // 2D gradient noise peaks near ±1/√2: this scales it to about ±1
@@ -43,7 +49,7 @@ export const GEN = {
   GAIN: 0.5,                 // amplitude step per octave
 
   // domain warp: the hills are looked up at a point displaced by two fBm fields
-  WARP_FREQ: 0.6,
+  WARP_FREQ: 0.6,            // warp noise
   WARP_AMP: 0.55,            // displacement, feature lengths
 
   // island mask: 1 - r², r = distance from the centre in island radii, plus coast noise
@@ -98,7 +104,7 @@ export const GEN_INT = {
   PATCH_OCT: 3,
   CLIFF_OCT: 2,
   SAND_DEPTH: 3,             // sand layer, cells (at least 2: see Stability)
-  SNOW_DEPTH: 2,             // snow layer, cells (at least 2: see Stability)
+  SNOW_DEPTH: 3,             // snow layer, cells (at least 2: see Stability)
   POWDER_STEP_MAX: 1,        // a powder column may stand this many cells above each neighbour
 };
 
@@ -107,8 +113,9 @@ export const GEN_INT = {
 export const GEN_SALT = {
   WARP_X: 0x10, WARP_Z: 0x20, COAST: 0x30, HILLS: 0x40, RIDGE: 0x50,
   DETAIL: 0x60, PATCH: 0x70, BAND: 0x80, CLIFF: 0xa0,
-  SHAPE: 0xb0,               // the island's long axis (worldParams)
   CELL: 0x90,                // per-cell colour seeds
+  SHAPE: 0xb0,               // the island's long axis (worldParams)
+  TREE: 0xc0,                // tree candidates (treesIn)
 };
 
 const glslFloat = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
@@ -119,11 +126,12 @@ export const genGLSL = () => [
 ].join('\n');
 
 // ---------------------------------------------------------------- world parameters
-// A world: its seed and size, and its levels and shape in cells. Heights are
-// shares of the world's height, so the same island fits every grid size.
+// A world: its seed and size, and its levels and shape in cells. Sea level is
+// a share of the world's height and the relief a share of the island's radius
+// (slopes stay walkable), so the same island fits every grid size.
 export const WORLD_SEED = 20261008;   // the default world
 const SEA_SHARE = 0.14;               // sea level, share of the world's height
-const RELIEF_PER_RADIUS = 0.6;       // the highest ground above sea level, cells per cell of island radius
+const RELIEF_PER_RADIUS = 0.6;        // the highest ground above sea level, cells per cell of island radius
 const PEAK_SHARE_MAX = 0.62;          // ...but no higher than this share of the world's height
 const FLOOR_CELLS = 2;                // rock under even the deepest sea, cells
 const ISLAND_SHARE = 0.76;            // island diameter (if it were round), share of the world's shorter side
@@ -168,7 +176,8 @@ export function pcg(v) {
 const stream = (seed, salt) => pcg((seed + salt) >>> 0);
 const latticeHash = (ix, iz, s) => pcg(((ix >>> 0) + pcg(((iz >>> 0) + s) >>> 0)) >>> 0);
 
-// Gradient noise with its derivatives: [value, d/dx, d/dz], value about ±1.
+// Gradient noise with its derivatives: [value, d/dx, d/dz], value about ±1
+// (genNoised: Perlin's quintic fade, its published coefficients).
 function noised(x, z, s) {
   const ix = Math.floor(x), iz = Math.floor(z);
   const fx = x - ix, fz = z - iz;
@@ -281,12 +290,15 @@ export function layersAt(x, z, P) {
   const meadow = fbm(qx * GEN.PLANT_PATCH_FREQ, qz * GEN.PLANT_PATCH_FREQ, stream(P.seed, GEN_SALT.PATCH), I.PATCH_OCT);
   const G = h.map((v) => Math.floor(v + 0.5)), ground = G[4];
   const stable = Math.max(...G.map((n) => ground - n)) <= I.POWDER_STEP_MAX;
-  // a grain in the water with water on both sides along an axis gets knocked off by the flow
-  const ridge = ground <= P.sea && ((G[3] < ground && G[5] < ground) || (G[1] < ground && G[7] < ground));
+  // the sea's flow knocks grains in the water off where lower columns face each other within two (genLayers)
+  const low = (dx, dz) => Math.floor(heightAt(x + dx, z + dz, P) + 0.5) < ground;
+  const lxm = G[3] < ground, lxp = G[5] < ground, lzm = G[1] < ground, lzp = G[7] < ground;
+  const knocked = ground <= P.sea
+    && ((lxm && (lxp || low(2, 0))) || (lxp && low(-2, 0)) || (lzm && (lzp || low(0, 2))) || (lzp && low(0, -2)));
   const slope = 0.5 * Math.hypot(h[5] - h[3], h[7] - h[1]);
   const sea = P.sea, frost = frostLine(P);
   const beach = ground >= sea - GEN.BEACH_BELOW && ground <= sea + GEN.BEACH_ABOVE + GEN.BEACH_JITTER * band
-    && slope < GEN.BEACH_SLOPE_MAX && !ridge;
+    && slope < GEN.BEACH_SLOPE_MAX && !knocked;
   const snowy = ground >= frost + GEN.SNOW_JITTER * (1 + band) && slope < GEN.SNOW_SLOPE_MAX;
   const L = { ground, sand: 0, snow: 0, plant: false, slope };
   if (stable && beach) L.sand = I.SAND_DEPTH;
@@ -303,7 +315,7 @@ export const plantLine = (P, band) => frostLine(P) - GEN.PLANT_SNOW_GAP - GEN.PL
 
 // ---------------------------------------------------------------- trees
 // Trees are the TREE constructions (constructions/builtins.js), stamped by
-// world/island.js. Each brick column (BRICK × BRICK cells) may hold one
+// world/gpu.js. Each brick column (BRICK × BRICK cells) may hold one
 // candidate, hashed from its brick coordinates and the world seed: whether
 // it has one, where in the column, which kind, how big, which way it faces
 // and its construction seed. A candidate on unsuitable ground is dropped, and
@@ -311,7 +323,6 @@ export const plantLine = (P, band) => frostLine(P) - GEN.PLANT_SNOW_GAP - GEN.PL
 // thinning), so placement depends only on nearby brick columns: any region
 // places the same trees as any other.
 export const TREE = {
-  BRICK: 4,                  // cells per brick column side (shaders/common.js BRICK)
   CHANCE: 0.5,               // chance a brick column has a candidate
   SPACING: 8,                // cells: no two trees stand closer
   ABOVE_SEA: 2,              // trunks stand at least this many cells above sea level
@@ -323,17 +334,16 @@ export const TREE = {
   SNOW_GAP: 5,               // cells: trees stand at least this far below the lowest snow, so their crowns don't reach it
   REACH: 16,                 // cells: the widest crown's reach from its trunk (a region stamps trees this far outside it)
 };
-const TREE_SALT = 0xc0;
 // Kinds by zone: cumulative weights for the mid slopes (the rest is dead trees).
 const MID_TREES = [['oak', 0.5], ['birch', 0.75], ['pine', 0.95]];
 const HIGH_TREES = [['pine', 0.85], ['birch', 0.97]];   // the rest dead
 const UNIT16 = 0x10000;                                  // 16-bit hash field to [0, 1)
 
 function treeCandidate(bx, bz, P) {
-  const h = latticeHash(bx, bz, stream(P.seed, TREE_SALT));
+  const h = latticeHash(bx, bz, stream(P.seed, GEN_SALT.TREE));
   if ((h & 0xffff) / UNIT16 >= TREE.CHANCE) return null;
   const h2 = pcg(h), h3 = pcg(h2);
-  const x = bx * TREE.BRICK + (h2 & (TREE.BRICK - 1)), z = bz * TREE.BRICK + ((h2 >>> 2) & (TREE.BRICK - 1));
+  const x = bx * BRICK + (h2 & (BRICK - 1)), z = bz * BRICK + ((h2 >>> 2) & (BRICK - 1));
   const L = layersAt(x, z, P);
   const above = L.ground - P.sea;
   if (above < TREE.ABOVE_SEA || L.slope >= TREE.SLOPE_MAX || !(L.plant || L.sand)) return null;
@@ -354,7 +364,7 @@ function treeCandidate(bx, bz, P) {
 
 // The trees whose trunks stand in world columns [x0, x1) × [z0, z1).
 export function treesIn(x0, z0, x1, z1, P) {
-  const B = TREE.BRICK, R = Math.ceil(TREE.SPACING / B);
+  const B = BRICK, R = Math.ceil(TREE.SPACING / B);
   const bx0 = Math.floor(x0 / B), bz0 = Math.floor(z0 / B), bx1 = Math.ceil(x1 / B), bz1 = Math.ceil(z1 / B);
   const cache = new Map();
   const candidate = (bx, bz) => {

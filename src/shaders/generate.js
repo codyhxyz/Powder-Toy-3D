@@ -7,17 +7,20 @@ import { genGLSL } from '../world/generator.js';
 //
 // Everything here is a pure function of world position and the world's
 // uniforms, so any region (a window slab) generates seamlessly next to any
-// other. It splits in two because the expensive part depends on x and z only:
+// other. It comes in three steps because the expensive part depends on x and
+// z only:
 //   - genColumn(world column): the terrain height (fBm gradient noise, domain
 //     warped, under a noisy island mask) and two band noises. The column pass
-//     evaluates it once per column of a region plus a one-column margin.
-//   - genLayers(the column's and its 8 neighbours' heights): which layers the
-//     column holds (sand, snow, plant cover). The margin makes it the same
-//     wherever the region's edge falls.
+//     evaluates it once per column of a region plus a COLUMN_MARGIN margin.
+//   - genLayers(the heights of the column, its 8 neighbours and the columns
+//     two away along each axis): which layers the column holds (sand, snow,
+//     plant cover). The margin makes it the same wherever a region's edge falls.
 //   - genCell(layers, world cell): the cell's state in today's layout,
 //     A = (id, °C, life, ctype + seed), B = (velocity, pressure).
-// generate(world cell) chains the three for a single cell, without the
-// column pass (nine height evaluations: fine for a few cells, not a grid).
+// generate(world cell) chains the three for a single cell, without the column
+// pass (13 height evaluations: fine for a few cells, not a grid). It matches
+// the fill pass in id, life and seed, and in temperature to float rounding
+// (two programs may fold the frost ramp differently, ~1e-5 °C).
 
 // Uniforms, noise, height, layers and cells: included by every pass below.
 export const generatorGLSL = /* glsl */ `
@@ -37,8 +40,10 @@ uniform float uGenFeature;   // cells per feature length: the unit of every nois
 // a noise field's random stream: the world seed and the field's salt
 uint genStream(uint salt) { return pcg(uGenSeed + salt); }
 
-// Gradient noise (quintic fade) with its analytic derivatives: (value, d/dx, d/dz),
-// value about ±1. Gradients are unit vectors at a hashed angle per lattice point.
+// Gradient noise with its analytic derivatives: (value, d/dx, d/dz), value
+// about ±1. Gradients are unit vectors at a hashed angle per lattice point; the
+// fade is Perlin's quintic 6t⁵ - 15t⁴ + 10t³ (its published coefficients, and
+// its derivative's: 30t²(t - 1)²).
 vec2 genGrad(ivec2 c, uint s) {
   float a = float(pcg(uint(c.x) + pcg(uint(c.y) + s))) * UINT_TO_UNIT * GEN_TAU;
   return vec2(cos(a), sin(a));
@@ -142,8 +147,9 @@ float genFrostLine() { return uGenSea + GEN_SNOW_LINE * uGenRelief - GEN_SNOW_JI
 struct GenLayers { int ground; int sand; int snow; bool plant; };
 
 // h[i]: heights of the columns (x + i % 3 - 1, z + i / 3 - 1), so h[4] is the
-// column itself; band, meadow: its band and meadow patch noise (genColumn y, z).
-GenLayers genLayers(float h[9], float band, float meadow) {
+// column itself; far: heights two columns away, at x - 2, x + 2, z - 2, z + 2;
+// band, meadow: its band and meadow patch noise (genColumn y, z).
+GenLayers genLayers(float h[9], vec4 far, float band, float meadow) {
   int G[9];
   for (int i = 0; i < 9; i++) G[i] = int(floor(h[i] + 0.5));
   GenLayers L;
@@ -153,13 +159,20 @@ GenLayers genLayers(float h[9], float band, float meadow) {
   int drop = 0;
   for (int i = 0; i < 9; i++) drop = max(drop, L.ground - G[i]);
   bool stable = drop <= GEN_POWDER_STEP_MAX;
-  // a grain in the water with water on both sides along an axis gets knocked off by the flow
-  bool ridge = float(L.ground) <= uGenSea
-            && ((G[3] < L.ground && G[5] < L.ground) || (G[1] < L.ground && G[7] < L.ground));
+  // The sea's flow knocks a grain in the water from the side, away from the
+  // water beside it (move.js collisions are along an axis). It moves if there
+  // is water beyond it, or shoves the grain next to it (only that one: the
+  // shove dies there) into water beyond that. So no sand in the water where a
+  // lower column on one side faces one on the other within two columns.
+  ivec4 F = ivec4(floor(far + 0.5));
+  bvec4 lowFar = lessThan(F, ivec4(L.ground));
+  bool lxm = G[3] < L.ground, lxp = G[5] < L.ground, lzm = G[1] < L.ground, lzp = G[7] < L.ground;
+  bool knocked = float(L.ground) <= uGenSea
+              && ((lxm && (lxp || lowFar.y)) || (lxp && lowFar.x) || (lzm && (lzp || lowFar.w)) || (lzp && lowFar.z));
   float slope = 0.5 * length(vec2(h[5] - h[3], h[7] - h[1]));   // cells per cell
   float g = float(L.ground), sea = uGenSea;
   bool beach = g >= sea - GEN_BEACH_BELOW && g <= sea + GEN_BEACH_ABOVE + GEN_BEACH_JITTER * band
-            && slope < GEN_BEACH_SLOPE_MAX && !ridge;
+            && slope < GEN_BEACH_SLOPE_MAX && !knocked;
   bool snow = g >= genFrostLine() + GEN_SNOW_JITTER * (1.0 + band) && slope < GEN_SNOW_SLOPE_MAX;
   if (stable && beach) L.sand = GEN_SAND_DEPTH;
   else if (stable && snow) L.snow = GEN_SNOW_DEPTH;
@@ -201,15 +214,21 @@ void genCell(GenLayers L, ivec3 w, out vec4 A, out vec4 B) {
 void generate(ivec3 w, out vec4 A, out vec4 B) {
   float h[9];
   for (int i = 0; i < 9; i++) h[i] = genHeight(vec2(w.x + i % 3 - 1, w.z + i / 3 - 1));
+  vec4 far = vec4(genHeight(vec2(w.x - 2, w.z)), genHeight(vec2(w.x + 2, w.z)),
+                  genHeight(vec2(w.x, w.z - 2)), genHeight(vec2(w.x, w.z + 2)));
   vec4 c = genColumn(w.xz);
-  genCell(genLayers(h, c.y, c.z), w, A, B);
+  genCell(genLayers(h, far, c.y, c.z), w, A, B);
 }
 `;
 
+// Columns around a column that genLayers reads, on each side.
+export const COLUMN_MARGIN = 2;
+
 // Column pass: genColumn for one region of world columns, one texel each
 // (RGBA32F): texel (i, j) is world column uColOrigin + (i, j). The fill and
-// summary passes read a grid's columns plus a one-column margin, so their
-// target is (NX + 2) × (NZ + 2) with uColOrigin = the grid's origin - 1.
+// summary passes read a grid's columns plus COLUMN_MARGIN on every side, so
+// their target is (NX + 2·margin) × (NZ + 2·margin), with uColOrigin = the
+// grid's origin less the margin.
 export const columnFrag = (g) => /* glsl */ `
 ${prelude(g)}
 ${generatorGLSL}
@@ -221,14 +240,18 @@ void main() {
 `;
 
 // Reads the layers of grid column c (window-local x, z) from the column
-// texture (tCol: the grid's columns plus a one-column margin).
+// texture (tCol: the grid's columns plus the margin).
 const layersGLSL = /* glsl */ `
 uniform sampler2D tCol;
+#define COLUMN_MARGIN ${COLUMN_MARGIN}
+float colHeight(ivec2 c) { return texelFetch(tCol, c + COLUMN_MARGIN, 0).x; }
 GenLayers columnLayers(ivec2 c) {
   float h[9];
-  for (int i = 0; i < 9; i++) h[i] = texelFetch(tCol, c + ivec2(i % 3, i / 3), 0).x;
-  vec4 col = texelFetch(tCol, c + 1, 0);
-  return genLayers(h, col.y, col.z);
+  for (int i = 0; i < 9; i++) h[i] = colHeight(c + ivec2(i % 3 - 1, i / 3 - 1));
+  vec4 far = vec4(colHeight(c - ivec2(2, 0)), colHeight(c + ivec2(2, 0)),
+                  colHeight(c - ivec2(0, 2)), colHeight(c + ivec2(0, 2)));
+  vec4 col = texelFetch(tCol, c + COLUMN_MARGIN, 0);
+  return genLayers(h, far, col.y, col.z);
 }
 `;
 

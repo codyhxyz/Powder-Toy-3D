@@ -1,7 +1,8 @@
 // Headless check of the world generator (src/world, src/shaders/generate.js):
 //   - the Island scene loads without console errors;
 //   - fill time: the column + fill passes on the grid, wall clock with a forced
-//     sync (a 1-texel readback of the written target), median of FILL_RUNS;
+//     sync (a 1-texel readback of the written target), median and minimum of
+//     FILL_RUNS (other sessions share the GPU: the minimum is the uncontended cost);
 //   - stability: the element at every cell after --steps steps vs right after
 //     loading (cells whose element changed, by from → to);
 //   - the JS twin (heightAt) against the GPU's column heights;
@@ -22,7 +23,7 @@ const seed = opt('seed', null);
 const steps = +opt('steps', 600);
 const shots = out && !args.includes('--no-shots');
 const verbose = args.includes('--verbose');
-const FILL_RUNS = 9;
+const FILL_RUNS = 15;
 const TAA_FRAMES = 40;     // frames for TAA to converge on a still view
 const EYE_CELLS = 5.5;     // eye height above the ground, cells (the POV body's eye)
 if (out) mkdirSync(out, { recursive: true });
@@ -48,7 +49,7 @@ const res = await p.evaluate(async ([steps, FILL_RUNS, seed, verbose]) => {
   const a = window.__app;
   a.settings.paused = true;
   a.autoRes.enabled = false;
-  const { generatorFor, loadIsland } = await import('/src/world/island.js');
+  const { generatorFor, loadIsland } = await import('/src/world/gpu.js');
   const { worldParams, treesIn, heightAt } = await import('/src/world/generator.js');
   const { ELEMENTS } = await import('/src/elements.js');
   const sim = a.sim, g = sim.g, r = a.renderer;
@@ -57,6 +58,7 @@ const res = await p.evaluate(async ([steps, FILL_RUNS, seed, verbose]) => {
   const px = new Float32Array(4);
   const sync = () => r.readRenderTargetPixels(sim.targets[sim.cur], 0, 0, 1, 1, px, undefined, 0);
   const median = (v) => v.sort((x, y) => x - y)[v.length >> 1];
+  const stat = (v) => `${median(v).toFixed(2)} (min ${Math.min(...v).toFixed(2)})`;
   const time = (fn) => { const t0 = performance.now(); fn(); sync(); return performance.now() - t0; };
 
   // timing (the first run compiles the shaders)
@@ -125,12 +127,13 @@ const res = await p.evaluate(async ([steps, FILL_RUNS, seed, verbose]) => {
   // JS twin vs GPU: the column heights (columnFrag) against heightAt
   gen.columnsKey = '';
   gen.updateColumns(P, [0, 0, 0]);
-  const cw = g.nx + 2, ch = g.nz + 2, cols = new Float32Array(cw * ch * 4);
+  const { COLUMN_MARGIN: M } = await import('/src/shaders/generate.js');
+  const cw = g.nx + 2 * M, ch = g.nz + 2 * M, cols = new Float32Array(cw * ch * 4);
   r.readRenderTargetPixels(gen.columns, 0, 0, cw, ch, cols);
   let twinMax = 0, twinGround = 0;
   for (let j = 0; j < ch; j++)
     for (let i = 0; i < cw; i++) {
-      const gpu = cols[(j * cw + i) * 4], cpu = heightAt(i - 1, j - 1, P);
+      const gpu = cols[(j * cw + i) * 4], cpu = heightAt(i - M, j - M, P);
       twinMax = Math.max(twinMax, Math.abs(gpu - cpu));
       if (Math.floor(gpu + 0.5) !== Math.floor(cpu + 0.5)) twinGround++;
     }
@@ -154,6 +157,35 @@ const res = await p.evaluate(async ([steps, FILL_RUNS, seed, verbose]) => {
         const i = at(x, y, z), k = at(x + SHIFT, y, z + SHIFT);
         for (let c = 0; c < 4; c++) if (shifted[i + c] !== base[k + c]) { seamDiff++; break; }
       }
+  // the pure single-cell path (generate(), no column pass) against the fill, on a few slices
+  const { rawMat, makeFieldTarget } = await import('/src/sim.js');
+  const { prelude } = await import('/src/shaders/common.js');
+  const { generatorGLSL } = await import('/src/shaders/generate.js');
+  const fu = gen.mats.fill.uniforms;
+  const probe = rawMat(`${prelude(g)}\n${generatorGLSL}\nuniform int uY;\nout vec4 oC;\n`
+    + 'void main() { ivec2 f = ivec2(gl_FragCoord.xy); vec4 A, B; generate(ivec3(f.x, uY, f.y), A, B); oC = A; }',
+    { ...Object.fromEntries(Object.keys(fu).filter((k) => k.startsWith('uGen')).map((k) => [k, fu[k]])), uY: { value: 0 } });
+  const colTex = gen.columns.texture;   // a float, nearest-filtered target: the probe's matches it
+  const probeT = makeFieldTarget(g.nx, g.nz, 1, colTex.type, colTex.minFilter);
+  const slice = new Float32Array(g.nx * g.nz * 4);
+  let pureDiff = 0, pureCells = 0;
+  const PURE_T_TOL = 1e-3;   // °C
+  for (const y of [P.sea - 3, P.sea, P.sea + 6, P.sea + 14, Math.round(P.sea + P.relief * 0.75)]) {
+    probe.uniforms.uY.value = y;
+    sim.run(probe, probeT);
+    r.readRenderTargetPixels(probeT, 0, 0, g.nx, g.nz, slice);
+    for (let z = 0; z < g.nz; z++)
+      for (let x = 0; x < g.nx; x++) {
+        const i = (z * g.nx + x) * 4, k = at(x, y, z);
+        pureCells++;
+        // id, life and seed exactly; temperature to float rounding (two programs fold the frost differently)
+        const off = slice[i] !== base[k] || slice[i + 2] !== base[k + 2] || slice[i + 3] !== base[k + 3]
+          || Math.abs(slice[i + 1] - base[k + 1]) > PURE_T_TOL;
+        if (off && verbose && pureDiff < 8) list.push(`pure ${[...slice.slice(i, i + 4)]} fill ${[...base.slice(k, k + 4)]} at (${x}, ${y}, ${z})`);
+        if (off) pureDiff++;
+      }
+  }
+  probe.dispose(); probeT.dispose();
   // a slab fill: x < SHIFT from the shifted world, the rest kept
   gen.fill(P, [0, 0, 0]);
   gen.fill(P, [SHIFT, 0, SHIFT], [0, 0, 0], [SHIFT, g.ny, g.nz]);
@@ -199,13 +231,14 @@ const res = await p.evaluate(async ([steps, FILL_RUNS, seed, verbose]) => {
       }
   return {
     world: { seed: P.seed, sea: P.sea, relief: +P.relief.toFixed(1), radius: P.radius },
-    timingMs: { loadFill: +median(fill).toFixed(2), columnPass: +median(column).toFixed(2), fillPass: +median(fillOnly).toFixed(2),
-      trees: +median(trees).toFixed(2), treeCount: treeList.length, step: +stepMs.toFixed(2) },
+    timingMs: { columnAndFill: stat(fill), columnPass: stat(column), fillPass: stat(fillOnly),
+      trees: stat(trees), treeCount: treeList.length, step: +stepMs.toFixed(2) },
     trees: treeList.map((t) => t.variant).join(' '),
     census, matter,
     stability: { steps, changed, shareOfMatter: +(changed / matter).toExponential(2), changes, snowMaxT: +snowMaxT.toFixed(2), list, melting },
     twin: { maxHeightDiff: +twinMax.toExponential(2), groundDiffColumns: twinGround, columns: cw * ch },
     seams: { shift: SHIFT, cellsDiffering: seamDiff, slabFillCellsDiffering: slabDiff },
+    pureGenerate: { cells: pureCells, differingFromFill: pureDiff },
     summary: { bricksWithMatter: bricks, meanSolid: +(solidSum / Math.max(bricks, 1)).toFixed(3), dominant, bricksDisagreeingWithCpu: summaryDiff },
   };
 }, [steps, FILL_RUNS, seed, verbose]);

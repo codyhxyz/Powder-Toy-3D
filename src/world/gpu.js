@@ -1,16 +1,17 @@
 import * as THREE from 'three';
 import { rawMat, makeFieldTarget } from '../sim.js';
-import { columnFrag, fillFrag, summaryFrag } from '../shaders/generate.js';
+import { columnFrag, fillFrag, summaryFrag, COLUMN_MARGIN } from '../shaders/generate.js';
 import { stampFrag } from '../shaders/stamp.js';
 import { runGenerator, bake, MAX_FOOT } from '../constructions/runtime.js';
 import { BUILTINS } from '../constructions/builtins.js';
 import { worldParams, treesIn, TREE } from './generator.js';
 
-// The world generator on the GPU, for one simulation grid: a window of the
-// world (world/generator.js) at a world-cell origin. Today's grid sizes are a
-// world the size of the grid at origin 0 (the Island scene); the massive
-// world's window (docs/scaling.md D11) fills the slabs a shift uncovers with
-// fill(..., min, max) and builds its far field from summarize().
+// The world generator on the GPU (shaders/generate.js), for one simulation
+// grid: a window of the world (world/generator.js) at a world-cell origin.
+// Today's grid sizes are a world the size of the grid at origin 0 (the Island
+// scene, loadIsland below); the massive world's window (docs/scaling.md D11)
+// fills the slabs a shift uncovers with fill(..., min, max) and builds its far
+// field from summarize().
 
 // The generator's uniforms (shaders/generate.js), set from a world's parameters.
 const genUniforms = () => ({
@@ -35,8 +36,8 @@ export class WorldGenerator {
     this.sim = sim;
     const g = sim.g;
     const F32 = THREE.FloatType, U8 = THREE.UnsignedByteType, NEAR = THREE.NearestFilter;
-    // genColumn for the grid's columns plus a one-column margin (columnFrag)
-    this.columns = makeFieldTarget(g.nx + 2, g.nz + 2, 1, F32, NEAR);
+    // genColumn for the grid's columns plus a margin (columnFrag)
+    this.columns = makeFieldTarget(g.nx + 2 * COLUMN_MARGIN, g.nz + 2 * COLUMN_MARGIN, 1, F32, NEAR);
     this.columnsKey = '';
     // the grid's far-field brick summary (summaryFrag)
     this.summary = makeFieldTarget(g.bwidth, g.bheight, 1, U8, NEAR);
@@ -62,7 +63,7 @@ export class WorldGenerator {
     if (key === this.columnsKey) return;
     const { column, fill, summary } = this.mats;
     for (const m of [column, fill, summary]) setWorld(m.uniforms, P);
-    column.uniforms.uColOrigin.value.set(origin[0] - 1, origin[2] - 1);
+    column.uniforms.uColOrigin.value.set(origin[0] - COLUMN_MARGIN, origin[2] - COLUMN_MARGIN);
     this.sim.run(column, this.columns);
     this.columnsKey = key;
   }
