@@ -6,6 +6,7 @@ import { reactFrag } from './shaders/react.js';
 import { paintFrag, copyFrag, brickFrag, blurFrag, brickDistFrag } from './shaders/passes.js';
 import { fieldEmaFrag, fieldBlurFrag, fieldBoostFrag, BOOST_STAGES } from './shaders/fields.js';
 import { giSourceFrag, giGatherFrag } from './shaders/gi.js';
+import { shiftFrag, giShiftFrag } from './shaders/window.js';
 import { CHANNELS, MEDIA, gauss5, bulkPeak, bulkPeakCubic, CUBIC_LATTICE } from './gfx/materials.js';
 import { gfxUniforms } from './gfx/uniforms.js';
 
@@ -189,6 +190,16 @@ export class Simulation {
     this.stepping = false;
     this.skipQuiet = true;   // false: step every brick (A/B testing)
 
+    // The grid is a window of the world (docs/scaling.md D11): origin is the
+    // world cell of grid cell (0, 0, 0), the prelude's uOrigin in every pass
+    // (run). A grid that is its whole world stays at 0; shift() moves it.
+    this.origin = new THREE.Vector3();
+    this.originUniform = { value: this.origin };
+    // grid cells the window moved since the render fields last updated (their history follows)
+    this.fieldShift = new THREE.Vector3();
+    // false: a shift starts the render fields and GI over instead of moving their history (A/B)
+    this.shiftKeepsHistory = true;
+
     this.scene = new THREE.Scene();
     this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
     this.quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2));
@@ -217,7 +228,7 @@ export class Simulation {
       }),
       fieldEma: rawMat(fieldEmaFrag(g), {
         tA: { value: null }, tP0: { value: null }, tP1: { value: null },
-        uEmaS: { value: new THREE.Vector4() }, uEmaM: { value: new THREE.Vector4() },
+        uEmaS: { value: new THREE.Vector4() }, uEmaM: { value: new THREE.Vector4() }, uShift: { value: new THREE.Vector3() },
       }),
       fieldBlur: rawMat(fieldBlurFrag(g, false), fieldBlurUniforms()),
       fieldFinal: rawMat(fieldBlurFrag(g, true), fieldBlurUniforms()),
@@ -287,6 +298,8 @@ export class Simulation {
   }
 
   run(mat, target) {
+    // every pass sees the window's origin (shaders/common.js uOrigin), unless it brings its own
+    mat.uniforms.uOrigin ??= this.originUniform;
     this.quad.material = mat;
     this.renderer.setRenderTarget(target);
     this.renderer.render(this.scene, this.camera);
@@ -370,6 +383,8 @@ export class Simulation {
     u.tP1.value = prev.textures[1];
     u.uEmaS.value.set(...CHANNELS.map((c) => (reset ? 1 : c.ema)));
     u.uEmaM.value.set(...MEDIA.map((m) => (reset ? 1 : m.ema)));
+    u.uShift.value.copy(this.fieldShift);
+    this.fieldShift.set(0, 0, 0);
     this.run(fieldEma, next);
     this.fieldCur = 1 - this.fieldCur;
     // per-channel kernels, tap-major
@@ -458,6 +473,56 @@ export class Simulation {
     giGather.blendAlpha = this.giReset ? 1 : GI_BLEND;
     this.giReset = false;
     this.run(giGather, this.giProbes);
+  }
+
+  // Move the window over the world (docs/scaling.md D11) by (dx, 0, dz) world
+  // cells, whole supertiles: cell p takes the state of p + (dx, 0, dz), so the
+  // content moves the other way and stays put in the world. Cells shifted in
+  // from outside are still air until the caller fills them (world/window.js:
+  // the generator, then stored edits). One pass: the other state copy is left
+  // stale until syncCopies(), so the caller fills first and syncs once. The
+  // render fields' history and the GI probes move with the cells, the brick
+  // maps rebuild with the next updateBricks and the activity map is redone
+  // (run). Undo snapshots hold the old window: they are dropped.
+  shift(dx, dz) {
+    if (dx % SUPER_CELLS.x || dz % SUPER_CELLS.z) {
+      throw new Error(`shift ${dx}, ${dz}: must be whole supertiles (${SUPER_CELLS.x} × ${SUPER_CELLS.z} cells)`);
+    }
+    // (made on the first shift: only a window of a larger world moves)
+    const g = this.g;
+    this.mats.shift ??= Object.assign(rawMat(shiftFrag(g), { tA: { value: null }, tB: { value: null }, uShift: { value: new THREE.Vector3() } }), { name: 'shift' });
+    this.mats.giShift ??= Object.assign(rawMat(giShiftFrag(g), { ...giProbeUniforms(), uShift: { value: new THREE.Vector3() } }), { name: 'giShift' });
+    const m = this.mats.shift;
+    m.uniforms.uShift.value.set(dx, 0, dz);
+    this.pass(m);
+    this.origin.x += dx;
+    this.origin.z += dz;
+    if (!this.shiftKeepsHistory) {
+      this.fieldReset = this.giReset = true;
+    } else {
+      this.fieldShift.x += dx;
+      this.fieldShift.z += dz;
+      if (!this.giReset) {
+        const gs = this.mats.giShift;
+        this.giProbesTmp ??= makeFieldTarget(g.bwidth, g.bheight, 4, THREE.HalfFloatType, THREE.LinearFilter);
+        gs.uniforms.uShift.value.set(dx / BRICK, 0, dz / BRICK);
+        this.giProbes.textures.forEach((t, i) => { gs.uniforms[`tGI${i}`].value = t; });
+        this.run(gs, this.giProbesTmp);
+        [this.giProbes, this.giProbesTmp] = [this.giProbesTmp, this.giProbes];
+      }
+    }
+    this.history?.forEach((t) => t.dispose());
+    this.history = [];
+  }
+
+  // Copy the current state into the other copy, so both hold it (after passes
+  // that leave it stale: a shift and its fill). Where nothing steps, the two
+  // copies must agree (docs/scaling.md D8).
+  syncCopies() {
+    const u = this.mats.copy.uniforms;
+    u.tA.value = this.stateA;
+    u.tB.value = this.stateB;
+    this.run(this.mats.copy, this.targets[1 - this.cur]);
   }
 
   // Upload CPU-built state (Float32Array RGBA per atlas texel).
@@ -557,6 +622,7 @@ export class Simulation {
     this.actQuiet.dispose();
     this.giSrc.dispose();
     this.giProbes.dispose();
+    this.giProbesTmp?.dispose();
     this.history?.forEach((t) => t.dispose());
     Object.values(this.mats).flat().forEach((m) => m.dispose());   // (fieldBoost, brickDist are arrays)
     this.quad.geometry.dispose();

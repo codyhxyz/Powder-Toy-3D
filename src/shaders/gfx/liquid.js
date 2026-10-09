@@ -78,7 +78,7 @@ vec3 liquidRipple(vec3 p, vec3 n) {
   float k = smoothstep(RIPPLE_UP_LO, RIPPLE_UP_HI, n.y)
           * (1.0 - smoothstep(RIPPLE_LOD_LO, RIPPLE_LOD_HI, footprint(p) * RIPPLE_FREQ * RIPPLE_OCT2));
   if (k <= 0.0) return n;
-  vec2 q = p.xz * RIPPLE_FREQ;
+  vec2 q = worldPos(p).xz * RIPPLE_FREQ;   // anchored in the world
   float t = uTime * RIPPLE_DRIFT;
   float h = rippleH(q, t);
   vec2 g = vec2(rippleH(q + vec2(RIPPLE_EPS, 0.0), t) - h, rippleH(q + vec2(0.0, RIPPLE_EPS), t) - h) / RIPPLE_EPS;

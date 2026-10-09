@@ -174,6 +174,7 @@ function build() {
       uCam: { value: new THREE.Vector3() },
       uSun: { value: SUN }, tShadow: { value: null }, uShadowRes: { value: 0 },
       uView: { value: 0 }, uShadows: { value: true }, uTime: { value: 0 }, uLightGain: { value: GLOW_GAIN },
+      uOrigin: sim.originUniform,   // the window's place in the world (the sim passes get it from sim.run)
       ...gfxUniforms,
     },
     side: THREE.BackSide,

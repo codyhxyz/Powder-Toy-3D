@@ -111,6 +111,12 @@ bool inGrid(ivec3 p) {
   return all(greaterThanEqual(p, ivec3(0))) && all(lessThan(p, ivec3(NX, NY, NZ)));
 }
 
+// The grid is a window of the world (docs/scaling.md D11): uOrigin is the world
+// cell of grid cell (0, 0, 0). Every pass works in grid cells; whatever must
+// not depend on where the window is (random streams, the look) adds uOrigin.
+// A grid that is its whole world sits at 0. Simulation.run sets it on every pass.
+uniform ivec3 uOrigin;
+
 // ---- the state (see the top of shaders/common.js) ----
 uniform sampler2D tA;
 uniform sampler2D tB;
@@ -126,9 +132,12 @@ uint pcg(uint v) {
   return (w >> 22u) ^ w;
 }
 #define LCG_MUL 1664525u   // Numerical Recipes' LCG multiplier: spreads frame numbers apart
-uint seed3(ivec3 p, uint frame, uint salt) {
-  return pcg(uint(p.x) + pcg(uint(p.y) + pcg(uint(p.z) + pcg(frame * LCG_MUL + salt))));
+// A random stream for world cell w (seed3 for a grid cell).
+uint seedWorld(ivec3 w, uint frame, uint salt) {
+  return pcg(uint(w.x) + pcg(uint(w.y) + pcg(uint(w.z) + pcg(frame * LCG_MUL + salt))));
 }
+// ...for grid cell p: hashed at its world cell, so results don't depend on where the window is
+uint seed3(ivec3 p, uint frame, uint salt) { return seedWorld(p + uOrigin, frame, salt); }
 #define UINT_TO_UNIT (1.0 / 4294967296.0)   // 2^-32: a 32-bit hash to [0, 1)
 float rnd(inout uint s) {
   s = pcg(s);

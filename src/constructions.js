@@ -273,7 +273,7 @@ export class Constructions {
         fragmentShader: stampFrag(g),
         uniforms: {
           tA: { value: null }, tB: { value: null }, tStamp: { value: null },
-          uOrigin: { value: new THREE.Vector3() }, uSize: { value: new THREE.Vector3() },
+          uAt: { value: new THREE.Vector3() }, uSize: { value: new THREE.Vector3() },
           uFoot: { value: 0 }, uSeed: { value: 0 },
         },
         depthTest: false,
@@ -290,7 +290,7 @@ export class Constructions {
     tex.needsUpdate = true;
     const u = this.mat.uniforms;
     u.tStamp.value = tex;
-    u.uOrigin.value.copy(this.origin);
+    u.uAt.value.copy(this.origin);
     u.uSize.value.set(s.w, s.h, s.d);
     u.uFoot.value = Math.min(s.foot, MAX_FOOT);
     u.uSeed.value = newSeed();

@@ -765,12 +765,13 @@ Surf gatherSurf(vec3 hp, vec3 n, int ch) {
   s.id = id1;
   s.T = T / wsum;
   float fp = footprint(hp);
-  Mat m = matOf(id1, hp, n, s.T, ct1, fp);
+  vec3 wp = worldPos(hp);   // the texture is anchored in the world
+  Mat m = matOf(id1, wp, n, s.T, ct1, fp);
   if (id2 >= 0) {
     float r = w2 / (w1 + w2);
     float k = smoothstep(MAT_BORDER_EDGE.x, MAT_BORDER_EDGE.y,
-                         r + (vnoise(M_ROT * hp * MAT_BORDER_F + MAT_BORDER_SALT) - 0.5) * MAT_BORDER_AMP);
-    if (k > 0.0) m = mixMat(m, matOf(id2, hp, n, s.T, ct2, fp), k);
+                         r + (vnoise(M_ROT * wp * MAT_BORDER_F + MAT_BORDER_SALT) - 0.5) * MAT_BORDER_AMP);
+    if (k > 0.0) m = mixMat(m, matOf(id2, wp, n, s.T, ct2, fp), k);
   }
   applyMat(s, m);
   return s;
@@ -861,9 +862,10 @@ Surf crispSurf(ivec3 cell, int id, vec4 a, vec3 hp, vec3 n) {
   vec3 an = abs(n);
   s.face = an.x >= an.y && an.x >= an.z ? ivec3(int(sign(n.x)), 0, 0)
          : (an.y >= an.z ? ivec3(0, int(sign(n.y)), 0) : ivec3(0, 0, int(sign(n.z))));
-  // an isolated grain carries its texture with it (its seed moves with the grain)
+  // an isolated grain carries its texture with it (its seed moves with the grain);
+  // a voxel's is anchored in the world
   const float GRAIN_TEX_SPREAD = 61.0;   // cells of texture space the seed spreads grains over
-  vec3 tp = SURFCH[id] >= 0 ? hp - vec3(cell) + s.seed * GRAIN_TEX_SPREAD : hp;
+  vec3 tp = SURFCH[id] >= 0 ? hp - vec3(cell) + s.seed * GRAIN_TEX_SPREAD : worldPos(hp);
   applyMat(s, matOf(id, tp, n, a.y, floor(a.w), footprint(hp)));
   return s;
 }
@@ -973,7 +975,7 @@ vec3 glintSpec(vec3 p, vec3 n, vec3 v, vec3 l, float rough, vec3 F0, float dens)
   vec3 h = normalize(v + l);
   vec3 t1 = normalize(cross(n, abs(n.y) < GLINT_FRAME_UP_MAX ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)));
   vec3 t2 = cross(n, t1);
-  vec3 q = M_ROT * p;
+  vec3 q = M_ROT * worldPos(p);   // the lattice is anchored in the world (footprint() takes the grid point)
   float k = (1.0 - t) * glintFacet(q * exp2(L0), n, t1, t2, h, a * a, L0 * GLINT_LEVEL_SALT)
           + t * glintFacet(q * exp2(L0 + 1.0), n, t1, t2, h, a * a, (L0 + 1.0) * GLINT_LEVEL_SALT);
   if (k <= 0.0) return vec3(0.0);
@@ -1089,7 +1091,7 @@ vec3 shadeSurf(Surf s, vec3 rd) {
 const vec3 FLOOR_LINE_ALB = vec3(0.075, 0.078, 0.085);   // the grid's seams, darker than the floor
 const float FLOOR_LINE_CELLS = 8.0;   // cells between the floor's grid lines
 vec3 shadeFloor(vec3 hp, vec3 rd) {
-  vec2 q = hp.xz / FLOOR_LINE_CELLS;
+  vec2 q = worldPos(hp).xz / FLOOR_LINE_CELLS;
   vec2 gq = abs(fract(q - 0.5) - 0.5) / max(fwidth(q) * uPixScale, vec2(1e-4));
   float line = 1.0 - min(min(gq.x, gq.y), 1.0);
   vec3 alb = mix(GROUND_ALB, FLOOR_LINE_ALB, line);

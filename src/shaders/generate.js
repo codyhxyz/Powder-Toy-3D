@@ -205,7 +205,7 @@ int genId(GenLayers L, int y) {
 void genCell(GenLayers L, ivec3 w, out vec4 A, out vec4 B) {
   int id = genId(L, w.y);
   float T = id == E_ROCK ? mix(SPAWNT[E_ROCK], SPAWNT[E_SNOW], genFrost(w.y)) : SPAWNT[id];
-  float seed = float(seed3(w, uGenSeed, GEN_SALT_CELL)) * UINT_TO_UNIT * SEED_MAX;
+  float seed = float(seedWorld(w, uGenSeed, GEN_SALT_CELL)) * UINT_TO_UNIT * SEED_MAX;
   A = vec4(float(id), T, SPAWNLIFE[id], seed);
   B = vec4(0.0);
 }
@@ -257,13 +257,12 @@ GenLayers columnLayers(ivec2 c) {
 
 // Fill pass: writes the generated state of every cell of the grid inside
 // [uFillMin, uFillMax) (window-local cells) and keeps the rest, so it can
-// fill the slab a window shift uncovers as well as the whole grid. uOrigin is
-// the world cell of the grid's cell (0, 0, 0).
+// fill the slab a window shift uncovers as well as the whole grid. uOrigin
+// (the prelude's) is the world cell of the grid's cell (0, 0, 0).
 export const fillFrag = (g) => /* glsl */ `
 ${prelude(g)}
 ${generatorGLSL}
 ${layersGLSL}
-uniform ivec3 uOrigin;
 uniform ivec3 uFillMin;
 uniform ivec3 uFillMax;
 ${stateOutGLSL}
@@ -292,7 +291,6 @@ export const summaryFrag = (g) => /* glsl */ `
 ${prelude(g)}
 ${generatorGLSL}
 ${layersGLSL}
-uniform ivec3 uOrigin;
 out vec4 oC;
 #define SUMMARY_SURFACE_W ${SUMMARY_SURFACE_W.toFixed(1)}
 #define ID_SCALE 255.0   // an element id in an 8-bit channel

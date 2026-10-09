@@ -25,13 +25,13 @@ export const povProbeFrag = (g) => /* glsl */ `
 ${prelude(g)}
 #define PROBE_Z ${PROBE.Z}
 #define PROBE_OUTSIDE ${PROBE_OUTSIDE.toFixed(1)}
-uniform ivec3 uOrigin;   // grid cell of the box's low corner
+uniform ivec3 uBoxLo;   // grid cell of the box's low corner
 out vec4 oC;
 
 // texel (x, y·PROBE_Z + z) holds box cell (x, y, z)
 void main() {
   ivec2 f = ivec2(gl_FragCoord.xy);
-  ivec3 q = uOrigin + ivec3(f.x, f.y / PROBE_Z, f.y % PROBE_Z);
+  ivec3 q = uBoxLo + ivec3(f.x, f.y / PROBE_Z, f.y % PROBE_Z);
   if (!inGrid(q)) { oC = vec4(PROBE_OUTSIDE, AMBIENT, 0.0, 0.0); return; }
   vec4 a = fetchA(q);
   oC = vec4(float(eid(a)), a.y, fetchB(q).w, a.z);

@@ -52,7 +52,7 @@ export class WorldGenerator {
       // constructions.js places its stamps with the same pass
       stamp: rawMat(stampFrag(g), {
         tA: { value: null }, tB: { value: null }, tStamp: { value: null },
-        uOrigin: v3(), uSize: v3(), uFoot: { value: 0 }, uSeed: { value: 0 },
+        uAt: v3(), uSize: v3(), uFoot: { value: 0 }, uSeed: { value: 0 },
       }),
     };
   }
@@ -119,7 +119,7 @@ export class WorldGenerator {
     tex.needsUpdate = true;
     const u = this.mats.stamp.uniforms;
     u.tStamp.value = tex;
-    u.uOrigin.value.set(...at);
+    u.uAt.value.set(...at);
     u.uSize.value.set(s.w, s.h, s.d);
     u.uFoot.value = Math.min(s.foot, MAX_FOOT);
     u.uSeed.value = seed;

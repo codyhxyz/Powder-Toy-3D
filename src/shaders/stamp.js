@@ -15,7 +15,7 @@ export const stampFrag = (g) => /* glsl */ `
 ${prelude(g)}
 precision highp sampler3D;
 uniform sampler3D tStamp;
-uniform ivec3 uOrigin;
+uniform ivec3 uAt;     // grid cell of the stamp's low corner
 uniform ivec3 uSize;
 uniform int uFoot;
 uniform uint uSeed;
@@ -27,7 +27,7 @@ bool bearsWeight(ivec3 c) {
 }
 
 void stamp(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
-  ivec3 q = p - uOrigin;
+  ivec3 q = p - uAt;
   if (q.x < 0 || q.z < 0 || q.x >= uSize.x || q.z >= uSize.z || q.y >= uSize.y || q.y < -uFoot) return;
 
   vec4 s;
@@ -38,14 +38,14 @@ void stamp(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
     if (s.w < 0.5) return;
     // nothing that bears weight between this cell and the base...
     for (int i = 1; i <= ${MAX_FOOT}; i++) {
-      int y = uOrigin.y - i;
+      int y = uAt.y - i;
       if (y < p.y) break;
       if (bearsWeight(ivec3(p.x, y, p.z))) return;
     }
     // ...and ground somewhere below it, within reach
     bool ground = false;
     for (int i = 1; i <= ${MAX_FOOT}; i++) {
-      int y = uOrigin.y - i;
+      int y = uAt.y - i;
       if (i > uFoot) break;
       if (y < 0 || bearsWeight(ivec3(p.x, y, p.z))) { ground = true; break; }
     }

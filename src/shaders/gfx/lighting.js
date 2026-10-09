@@ -98,6 +98,15 @@ void sunBasis(out vec3 c, out float R, out vec3 u, out vec3 v) {
   R = 0.5 * length(vec3(GRID)) + SHADOW_PAD;
   u = normalize(cross(vec3(0.0, 1.0, 0.0), uSun));
   v = cross(uSun, u);
+  // The map's texel lattice stays put in the world as the window moves
+  // (docs/scaling.md D11): the centre takes the window's offset rounded to
+  // whole texels across the sun (along it, depths only shift). Within half a
+  // texel, which SHADOW_PAD covers.
+  vec3 o = vec3(uOrigin);
+  float T = 2.0 * R / float(max(uShadowRes, 1));   // texel size (a pass without a map: anything finite)
+  vec2 ot = vec2(dot(o, u), dot(o, v)) / T;
+  vec2 snap = (round(ot) - ot) * T;
+  c += snap.x * u + snap.y * v;
 }
 
 // 1 if the ray from ro toward the sun gets tLim voxels without entering an

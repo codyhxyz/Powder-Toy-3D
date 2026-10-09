@@ -151,7 +151,7 @@ export function createPlayer({ renderer, getSim }) {
     mats?.probe.dispose();
     mats?.couple.dispose();
     mats = {
-      probe: rawMat(povProbeFrag(g), { tA: { value: null }, tB: { value: null }, uOrigin: { value: new THREE.Vector3() } }),
+      probe: rawMat(povProbeFrag(g), { tA: { value: null }, tB: { value: null }, uBoxLo: { value: new THREE.Vector3() } }),
       couple: rawMat(povCouplingFrag(g), {
         tA: { value: null }, tB: { value: null }, uFrame: { value: 0 },
         uMin: { value: new THREE.Vector3() }, uMax: { value: new THREE.Vector3() }, uVel: { value: new THREE.Vector3() },
@@ -177,7 +177,7 @@ export function createPlayer({ renderer, getSim }) {
     const u = mats.probe.uniforms;
     u.tA.value = sim.stateA;
     u.tB.value = sim.stateB;
-    u.uOrigin.value.set(...origin);
+    u.uBoxLo.value.set(...origin);
     sim.run(mats.probe, slot.target);
     slot.busy = true;
     const gen = generation, mySeq = seq++, t0 = performance.now();

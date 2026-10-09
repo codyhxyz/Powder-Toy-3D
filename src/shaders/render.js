@@ -264,7 +264,7 @@ float clay(ivec3 cell, vec3 hp, vec3 n) {
 #define DATA_FLOOR_GRID 8.0     // grid line spacing, cells
 #define DATA_FLOOR_AO_MIN 0.5   // floor brightness where fully occluded
 vec3 dataFloor(vec3 hp, vec3 lo, vec3 hi) {
-  vec2 q = hp.xz / DATA_FLOOR_GRID;
+  vec2 q = worldPos(hp).xz / DATA_FLOOR_GRID;
   vec2 gq = abs(fract(q - 0.5) - 0.5) / max(fwidth(q) * uPixScale, vec2(1e-4));
   float line = 1.0 - min(min(gq.x, gq.y), 1.0);
   float ao = faceAO(ivec3(floor(hp.x), -1, floor(hp.z)), ivec3(0, 1, 0), hp);
@@ -467,7 +467,8 @@ vec3 flowTint(vec3 still, vec3 v, float w) {
 #define FLOW_STROKE_TAIL 0.2       // brightness at the tail ...
 #define FLOW_STROKE_HEAD_GAIN 0.8  // ... plus this at the head
 float brickStroke(ivec3 bc, vec3 ro, vec3 rd, float ta, float tb, bool check, out vec3 v, out float gt) {
-  uint hs = pcg(uint(bc.x) | uint(bc.y) << 10 | uint(bc.z) << 20);
+  ivec3 wb = bc + uOrigin / BS;   // the jitter is the world brick's
+  uint hs = pcg(uint(wb.x) | uint(wb.y) << 10 | uint(wb.z) << 20);
   vec3 cc = vec3(bc * BS) + 0.5 * float(BS) + (vec3(uvec3(hs, hs >> 8, hs >> 16) & 255u) * (1.0 / 255.0) - 0.5);
   ivec3 c = ivec3(floor(cc));
   v = vec3(0.0);

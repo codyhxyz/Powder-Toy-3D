@@ -91,6 +91,7 @@ const vec3 MD_TRANSPORT = MD_EXT * (1.0 - MD_ALBEDO * MD_G);
 
 // Detail noise at p, drifting up at 'rise' cells/step and stretched along y.
 vec4 gasNoise(vec3 p, float rise, float stretch) {
+  p = worldPos(p);   // anchored in the world
   p.y = (p.y - mod(uSimClock * rise, MEDIA_NOISE_CELLS * stretch)) / stretch;
   return texture(tMediaNoise, p * (1.0 / MEDIA_NOISE_CELLS));
 }

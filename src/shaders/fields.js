@@ -40,6 +40,9 @@ uniform sampler2D tP0;
 uniform sampler2D tP1;
 uniform vec4 uEmaS;
 uniform vec4 uEmaM;
+// grid cells the window moved since the last update (docs/scaling.md D11): a
+// cell's history is at p + uShift; cells shifted in from outside start over
+uniform ivec3 uShift;
 layout(location = 0) out vec4 o0;
 layout(location = 1) out vec4 o1;
 layout(location = 2) out vec4 o2;
@@ -60,8 +63,11 @@ void main() {
     // flame temperature, weighted by density (see MEDIA in gfx/materials.js)
     m.w = m.z * clamp((a.y - AMBIENT) / HEAT_RANGE, 0.0, 1.0);
   }
-  o0 = mix(texelFetch(tP0, f, 0), s, uEmaS);
-  o1 = mix(texelFetch(tP1, f, 0), m, uEmaM);
+  ivec3 q = p + uShift;
+  ivec2 h = fieldAtlas(q);
+  bool hist = inGrid(q);
+  o0 = hist ? mix(texelFetch(tP0, h, 0), s, uEmaS) : s;
+  o1 = hist ? mix(texelFetch(tP1, h, 0), m, uEmaM) : m;
   o2 = vec4(crisp ? 0.0 : 1.0);
 }
 `;
