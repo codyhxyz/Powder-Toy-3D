@@ -269,11 +269,13 @@ ${stateOutGLSL}
 
 void main() {
   ivec3 p = cellFromFrag(ivec2(gl_FragCoord.xy));
+  vec4 a = fetchA(p), b = fetchB(p);
+  uint f = fetchF(p);
   // padding texels (no cell) and cells outside the fill region copy through
-  if (!inGrid(p) || any(lessThan(p, uFillMin)) || any(greaterThanEqual(p, uFillMax))) { writeState(fetchA(p), fetchB(p)); return; }
+  if (!inGrid(p) || any(lessThan(p, uFillMin)) || any(greaterThanEqual(p, uFillMax))) { writeState(a, b, f); return; }
   vec4 A, B;
   genCell(columnLayers(p.xz), uOrigin + p, A, B);
-  writeState(A, B);
+  writeState(A, B, writtenFlags(f, a, b, A, B));
 }
 `;
 

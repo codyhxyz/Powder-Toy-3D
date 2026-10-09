@@ -80,6 +80,9 @@ for (const [label, dims] of Object.entries(grids)) {
   for (const [k, v] of Object.entries(passes)) if (typeof v === 'function') check(`${k}-${label}`, raw + v(g), 'frag');
   for (const axis of [0, 1, 2]) check(`brickDist${axis}-${label}`, raw + passes.brickDistFrag(g, axis), 'frag');
   check(`inert-${label}`, raw + activity.inertFrag(g), 'frag');
+  check(`inertRows-${label}`, raw + activity.inertRowsFrag(g), 'frag');
+  check(`inertJoin-${label}`, raw + activity.inertJoinFrag(g), 'frag');
+  check(`inertRef-${label}`, raw + activity.inertRefFrag(g), 'frag');
   check(`quiet-${label}`, raw + activity.quietFrag(g), 'frag');
   check(`fieldEma-${label}`, raw + fields.fieldEmaFrag(g), 'frag');
   check(`fieldBlur-${label}`, raw + fields.fieldBlurFrag(g, false), 'frag');

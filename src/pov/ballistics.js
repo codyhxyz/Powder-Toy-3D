@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { quadVert } from '../shaders/common.js';
+import { quadVert, stateUniforms } from '../shaders/common.js';
 import { traceFrag, handoffFrag, TRACE, TRACE_MISS } from '../shaders/povTrace.js';
 import { ELEMENTS, E, K } from '../elements.js';
 import { PHYS as ENGINE } from '../physics.js';
@@ -109,7 +109,7 @@ export function createBallistics({ renderer }) {
         uFrom: { value: from }, uTo: { value: to },
       }),
       handoff: rawMat(handoffFrag(sim.g), {
-        tA: { value: null }, tB: { value: null },
+        ...stateUniforms(),
         uEntry: { value: new THREE.Vector3() }, uDir: { value: new THREE.Vector3() }, uVel: { value: new THREE.Vector3() },
         uReach: { value: 0 }, uLo: { value: new THREE.Vector3() }, uHi: { value: new THREE.Vector3() },
       }),
@@ -137,9 +137,9 @@ export function createBallistics({ renderer }) {
     tu.tA.value = sim.stateA; tu.tB.value = sim.stateB;
     tu.tBrick.value = sim.brick.texture; tu.tBrickDist.value = sim.brickDistTexture;
     sim.run(mats.trace, slots[0].target);
-    const scratch = new THREE.WebGLRenderTarget(1, 1, { count: 2, type: THREE.FloatType, format: THREE.RGBAFormat, depthBuffer: false });
+    const scratch = sim.makeStateTarget(1, 1);
     const hu = mats.handoff.uniforms;
-    hu.tA.value = sim.stateA; hu.tB.value = sim.stateB;
+    hu.tA.value = sim.stateA; hu.tB.value = sim.stateB; hu.tF.value = sim.stateF;
     hu.uLo.value.setScalar(Infinity); hu.uHi.value.setScalar(-Infinity);
     sim.run(mats.handoff, scratch);
     scratch.dispose();

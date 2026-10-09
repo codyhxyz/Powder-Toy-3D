@@ -33,8 +33,11 @@ ${stateOutGLSL}
 void main() {
   ivec3 p = cellFromFrag(ivec2(gl_FragCoord.xy));
   ivec3 q = inGrid(p) ? p + uShift : p;
-  if (!inGrid(p) || inGrid(q)) { writeState(fetchA(q), fetchB(q)); return; }
-  writeState(vec4(float(E_EMPTY), AMBIENT, 0.0, 0.0), vec4(0.0));
+  // a moved cell keeps its state but not its neighbours, so its flags start
+  // over (FLAG_DIRTY: the next activity map redoes its neighbour tests)
+  vec4 a = fetchA(q), b = fetchB(q);
+  if (inGrid(p) && !inGrid(q)) { a = vec4(float(E_EMPTY), AMBIENT, 0.0, 0.0); b = vec4(0.0); }
+  writeState(a, b, freshFlags(a, b));
 }
 `;
 

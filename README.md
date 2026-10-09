@@ -183,11 +183,15 @@ Density decides whether it can displace its neighbour, so sand sinks through wat
 
 **3. Brush** (only while painting).
 
-**Quiet bricks** (`src/shaders/activity.js`). Most of the box is still air or resting solid, and stepping it only
-reshuffles the air's jitter. Every couple of steps a pass marks 4×4×4 bricks whose cells are all air at ambient with no
-wind or pressure (or a solid at ambient that spawns nothing); a brick whose 26 neighbours are inert too is skipped by the
-move and react passes. A change travels at most two cells per step, so nothing can reach a skipped brick before the
-next map. Typical scenes skip about half the box, which makes a step 1.6–1.7× cheaper.
+**Quiet bricks** (`src/shaders/activity.js`). Most of the box is still air or resting matter, and stepping it only
+reshuffles the air's jitter. A cell is inert when stepping it could change nothing beyond the rest tolerances: air near
+ambient with no wind or pressure, or matter at rest with nowhere to fall, flow or topple, nothing that reacts, and no
+neighbour off its temperature by more than the tolerance. Every pass that writes the state leaves a byte of activity
+flags beside each cell (its own rest test, its neighbour test as the react pass saw it, and whether it changed in a way
+its neighbours' tests read), so every couple of steps the activity map decides most 4×4×4 bricks from those 64 bytes
+and re-tests from the state only where something nearby changed. A brick whose 26 neighbours are inert too is skipped
+by the move and react passes. A change travels at most two cells per step, so nothing can reach a skipped brick before
+the next map.
 
 ## Rendering
 

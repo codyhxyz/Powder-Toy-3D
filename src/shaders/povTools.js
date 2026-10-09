@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { prelude, quadVert, stateOutGLSL, copyThroughMain } from './common.js';
+import { prelude, quadVert, stateOutGLSL, copyThroughMain, stateUniforms } from './common.js';
 import { BODY_WIDTH } from '../pov/constants.js';
 
 // GPU passes for the POV axe, gun and physgun (src/pov/tools/*.tool.js).
@@ -199,7 +199,7 @@ function passMaterial(frag, g, uniforms) {
     glslVersion: THREE.GLSL3,
     vertexShader: quadVert,
     fragmentShader: frag(g),
-    uniforms: { tA: { value: null }, tB: { value: null }, ...uniforms },
+    uniforms: { ...stateUniforms(), ...uniforms },
     depthTest: false,
     depthWrite: false,
   });

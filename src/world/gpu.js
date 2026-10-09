@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { rawMat, makeFieldTarget } from '../sim.js';
+import { stateUniforms } from '../shaders/common.js';
 import { columnFrag, fillFrag, summaryFrag, diffFrag, COLUMN_MARGIN } from '../shaders/generate.js';
 import { stampFrag, stampManyFrag, MAX_STAMPS } from '../shaders/stamp.js';
 import { runGenerator, bake, MAX_FOOT } from '../constructions/runtime.js';
@@ -45,13 +46,13 @@ export class WorldGenerator {
     this.mats = {
       column: rawMat(columnFrag(g), { ...genUniforms(), uColOrigin: { value: new THREE.Vector2() } }),
       fill: rawMat(fillFrag(g), {
-        ...genUniforms(), tA: { value: null }, tB: { value: null }, tCol: { value: null },
+        ...genUniforms(), ...stateUniforms(), tCol: { value: null },
         uOrigin: v3(), uFillMin: v3(), uFillMax: v3(),
       }),
       summary: rawMat(summaryFrag(g), { ...genUniforms(), tCol: { value: null }, uOrigin: v3() }),
       // constructions.js places its stamps with the same pass
       stamp: rawMat(stampFrag(g), {
-        tA: { value: null }, tB: { value: null }, tStamp: { value: null },
+        ...stateUniforms(), tStamp: { value: null },
         uAt: v3(), uSize: v3(), uFoot: { value: 0 }, uSeed: { value: 0 },
       }),
     };
@@ -87,7 +88,7 @@ export class WorldGenerator {
   stampMany(list, colMask) {
     const g = this.sim.g;
     this.mats.stampMany ??= Object.assign(rawMat(stampManyFrag(g), {
-      tA: { value: null }, tB: { value: null }, tStamps: { value: null }, tColMask: { value: null },
+      ...stateUniforms(), tStamps: { value: null }, tColMask: { value: null },
       uStampCount: { value: 0 },
       uStampAt: { value: new Int32Array(3 * MAX_STAMPS) }, uStampBox: { value: new Int32Array(4 * MAX_STAMPS) },
       uStampFoot: { value: new Int32Array(MAX_STAMPS) }, uStampSeed: { value: new Uint32Array(MAX_STAMPS) },

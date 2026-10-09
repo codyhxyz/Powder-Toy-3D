@@ -42,7 +42,7 @@ const MS_PER_S = 1000;
 // Frame phases in display order; a pass belongs to the phase marked last (app.js frame()).
 export const PHASES = [
   { id: 'paint', label: 'Paint' },       // the brush
-  { id: 'sim', label: 'Sim' },           // the steps: activity scan (inert, quiet), moveBlock, moveGather, react
+  { id: 'sim', label: 'Sim' },           // the steps: activity map (inert, inertRows, inertJoin, quiet), moveBlock, moveFlow, moveGather, react
   { id: 'derived', label: 'Derived' },   // render fields, bricks, empty-space distance, glow volume
   { id: 'shadow', label: 'Shadow' },     // the sun's shadow map
   { id: 'gi', label: 'GI' },             // GI probes
@@ -55,7 +55,7 @@ const OTHER = PHASE_INDEX.other;
 
 // GPU memory estimate: bytes per channel by texture type, channels by format.
 const TYPE_BYTES = { [THREE.FloatType]: 4, [THREE.HalfFloatType]: 2, [THREE.UnsignedByteType]: 1 };
-const FORMAT_CHANNELS = { [THREE.RGBAFormat]: 4, [THREE.RGFormat]: 2, [THREE.RedFormat]: 1 };
+const FORMAT_CHANNELS = { [THREE.RGBAFormat]: 4, [THREE.RGFormat]: 2, [THREE.RedFormat]: 1, [THREE.RedIntegerFormat]: 1 };
 const RGBA = 4;
 const DEPTH_BYTES = 4;    // per pixel of a depth buffer: 24-bit depth padded to 32, or a float depth texture
 const CANVAS_BYTES = 4;   // per drawing-buffer pixel: RGBA8, no depth, no MSAA (see app.js)

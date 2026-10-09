@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { BRICK } from '../shaders/common.js';
+import { BRICK, stateUniforms } from '../shaders/common.js';
 import { stageFrag, editFrag, gatherFrag, STAGE_W, BRICK_CELLS, SLOT_W } from '../shaders/window.js';
 import { DIFF_W } from '../shaders/generate.js';
 import { rawMat, makeFieldTarget, brickTexel } from '../sim.js';
@@ -86,7 +86,7 @@ export class WorldWindow {
     this.mats = {
       stage: rawMat(stageFrag(g), { tA: { value: null }, tB: { value: null }, uLo: v3(), uBricks: v3() }),
       edit: rawMat(editFrag(g), {
-        tA: { value: null }, tB: { value: null },
+        ...stateUniforms(),
         tEditIdx: { value: this.editIdxTex }, tEditA: { value: null }, tEditB: { value: null },
       }),
       gather: rawMat(gatherFrag(), {

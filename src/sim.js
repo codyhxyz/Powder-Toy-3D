@@ -1,7 +1,7 @@
 import * as THREE from 'three';
-import { quadVert, BRICK, SEED_MAX, TILE, SUPER, SUPER_TEX, SUPER_CELLS } from './shaders/common.js';
-import { inertFrag, quietFrag, activityPeriod } from './shaders/activity.js';
-import { moveBlockFrag, moveGatherFrag, moveFlowFrag } from './shaders/move.js';
+import { quadVert, BRICK, SEED_MAX, TILE, SUPER, SUPER_TEX, SUPER_CELLS, BLOCK_TILE, stateUniforms } from './shaders/common.js';
+import { inertFrag, inertRowsFrag, inertJoinFrag, quietFrag, activityPeriod } from './shaders/activity.js';
+import { moveBlockFrag, moveFlowFrag, moveGatherFrag, SLOTS } from './shaders/move.js';
 import { reactFrag } from './shaders/react.js';
 import {
   paintFrag, copyFrag, brickFrag, blurFrag, brickDistFrag,
@@ -58,16 +58,18 @@ export function gridLayout(nx, ny, nz) {
   const bx = nx / BRICK, by = ny / BRICK, bz = nz / BRICK;
   const btx = Math.ceil(Math.sqrt((by * bz) / bx));
   const bty = Math.ceil(by / btx);
-  // Margolus blocks: 2×2×2, partition offset by 0 or 1, so N/2+1 per axis.
-  const mx = nx / 2 + 1, my = ny / 2 + 1, mz = nz / 2 + 1;
-  const mtx = Math.ceil(Math.sqrt((my * mz) / mx));
-  const mty = Math.ceil(my / mtx);
+  // Margolus blocks (2×2×2, partition offset 0 or 1): the block atlas
+  // (shaders/common.js BLOCK_TILE), the state's supertile grid at one tile per
+  // brick, then rows for the low-margin blocks of offset 1 (N/2 + 1 per axis
+  // then, N/2 at offset 0).
+  const mwidth = stw * SUPER.x * BLOCK_TILE.x, mmainh = sth * SUPER.z * SUPER.y * BLOCK_TILE.y;
+  const margin = (nx / 2 + 1) * (ny / 2 + 1) * (nz / 2 + 1) - (nx / 2) * (ny / 2) * (nz / 2);
   return {
-    nx, ny, nz, stx, sty, stz, stw, ftx, btx, bty, mx, my, mz, mtx,
+    nx, ny, nz, stx, sty, stz, stw, ftx, btx, bty,
     width: stw * SUPER_TEX, height: sth * SUPER_TEX,
     fwidth: ftx * nx, fheight: fty * nz,
     bwidth: btx * bx, bheight: bty * bz,
-    mwidth: mtx * mx, mheight: mty * mz,
+    mwidth, mmainh, mheight: mmainh + Math.ceil(margin / mwidth),
     maxSteps: nx + ny + nz + 8,
   };
 }
@@ -120,6 +122,16 @@ function makeTarget(w, h, count = 2) {
     stencilBuffer: false,
     generateMipmaps: false,
   });
+}
+
+// A copy of the state: A and B (RGBA32F), and the activity flags (R8UI, one
+// byte per cell: shaders/common.js FLAG).
+const STATE_FLAGS = 2;   // attachment index of the flags
+function makeStateTarget(w, h) {
+  const t = makeTarget(w, h, STATE_FLAGS + 1);
+  t.textures[STATE_FLAGS].format = THREE.RedIntegerFormat;
+  t.textures[STATE_FLAGS].type = THREE.UnsignedByteType;
+  return t;
 }
 
 export function makeFieldTarget(w, h, count, type, filter) {
@@ -181,9 +193,18 @@ export class Simulation {
     // updates), so callers can tell when the world changed
     this.version = 0;
 
-    this.targets = [makeTarget(g.width, g.height), makeTarget(g.width, g.height)];
+    this.targets = [makeStateTarget(g.width, g.height), makeStateTarget(g.width, g.height)];
     this.cur = 0;
-    this.blocks = makeTarget(g.mwidth, g.mheight, 8);
+    // The block pass's results: slot i of every block in layer i of one array
+    // texture (shaders/move.js slotGLSL). three.js gives a multi-target its own
+    // textures, so the block pass draws into this.blocks, whose colour
+    // attachments are pointed at the slot layers (attachSlots).
+    this.slots = new THREE.WebGLArrayRenderTarget(g.mwidth, g.mheight, SLOTS, {
+      type: THREE.FloatType, format: THREE.RGBAFormat, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter,
+      depthBuffer: false, stencilBuffer: false, generateMipmaps: false,
+    });
+    this.blocks = makeTarget(g.mwidth, g.mheight, SLOTS);
+    this.attachSlots();
     this.brick = makeTarget(g.bwidth, g.bheight, 1);
     this.light = [makeTarget(g.bwidth, g.bheight, 1), makeTarget(g.bwidth, g.bheight, 1)];
     // render fields (see shaders/fields.js): the EMA (kept from frame to frame)
@@ -211,10 +232,15 @@ export class Simulation {
     // write that isn't a step (painting, loads), which may wake a brick.
     // empty-space distance per brick (shaders/passes.js brickDistFrag), and its scratch
     this.brickDist = [makeFieldTarget(g.bwidth, g.bheight, 1, U8, NEAR), makeFieldTarget(g.bwidth, g.bheight, 1, U8, NEAR)];
+    // (built in passes: per-brick decisions from the activity flags, the
+    // re-tests of the bricks they leave open, row by row, then the join)
+    this.actClass = makeFieldTarget(g.bwidth, g.bheight, 1, U8, NEAR);
+    this.actRows = makeFieldTarget(g.bwidth * BRICK, g.bheight * BRICK, 1, U8, NEAR);
     this.actInert = makeFieldTarget(g.bwidth, g.bheight, 1, U8, NEAR);
     this.actQuiet = makeFieldTarget(g.bwidth, g.bheight, 1, U8, NEAR);
     this.actAge = ACTIVITY_PERIOD;
     this.actDirty = true;
+    this.actFresh = false;   // the next step is the first since a map was built (its dirty marks start over)
     this.stepping = false;
     this.skipQuiet = true;   // false: step every brick (A/B testing)
     // Incremental derived passes (docs/scaling.md D9, shaders/passes.js
@@ -257,7 +283,9 @@ export class Simulation {
     this.quad.frustumCulled = false;
     this.scene.add(this.quad);
 
-    const state = () => ({ tA: { value: null }, tB: { value: null } });
+    const state = stateUniforms;
+    // the block pass's results, as passes that read them per cell take them (shaders/move.js slotGLSL)
+    const slots = () => ({ uParity: { value: 0 }, tSlots: { value: null } });
     // field passes draw over the regions of their dirty set (gfx/regions.js)
     const regionU = { tRegion: { value: this.regionMap.texture }, tShare: { value: this.regionShare.texture } };
     const fieldMat = (frag, uniforms, set) => regionMaterial(this.fieldQuads, frag, fieldRegionsGLSL(g, set), { ...uniforms, ...regionU });
@@ -265,21 +293,18 @@ export class Simulation {
       moveBlock: rawMat(moveBlockFrag(g), {
         ...state(), uParity: { value: 0 }, uFrame: { value: 0 }, uGravity: { value: this.gravity }, tQuiet: { value: null },
       }),
-      moveGather: rawMat(moveGatherFrag(g), {
-        ...state(), uParity: { value: 0 },
-        ...Object.fromEntries([...Array(8).keys()].map((i) => [`tM${i}`, { value: null }])),
-      }),
+      moveGather: rawMat(moveGatherFrag(g), { ...state(), ...slots(), tQuiet: { value: null }, uFresh: { value: false } }),
       react: rawMat(reactFrag(g), { ...state(), uFrame: { value: 0 }, uGravity: { value: this.gravity }, tQuiet: { value: null } }),
-      inert: rawMat(inertFrag(g), state()),
+      inert: rawMat(inertFrag(g), { tF: { value: null } }),
+      inertRows: rawMat(inertRowsFrag(g), { tA: { value: null }, tF: { value: null }, tClass: { value: null } }),
+      inertJoin: rawMat(inertJoinFrag(g), { tClass: { value: null }, tRows: { value: null } }),
       quiet: rawMat(quietFrag(g), { tInert: { value: null }, uEnabled: { value: true } }),
       paint: rawMat(paintFrag(g), {
         ...state(), uFrame: { value: 0 }, uCenter: { value: new THREE.Vector3() }, uRadius: { value: 4 },
         uShape: { value: 0 }, uTool: { value: 2 }, uRate: { value: 1 }, uReplace: { value: false },
       }),
       copy: rawMat(copyFrag(g), state()),
-      moveFlow: rawMat(moveFlowFrag(g), {
-        uParity: { value: 0 }, tQuiet: { value: null }, ...Object.fromEntries([...Array(8).keys()].map((i) => [`tM${i}`, { value: null }])),
-      }),
+      moveFlow: rawMat(moveFlowFrag(g), { ...slots(), tQuiet: { value: null } }),
       brick: rawMat(brickFrag(g), {
         tA: { value: null }, tB: { value: null }, tFS: { value: null }, tFM: { value: null }, tFT: { value: null },
         tDirty: { value: this.dirty.texture },
@@ -334,8 +359,31 @@ export class Simulation {
     this.clear();
   }
 
+  // Point the block pass's colour attachments (this.blocks) at the layers of
+  // this.slots, and shrink the block target's own textures, which nothing
+  // draws into or reads.
+  attachSlots() {
+    const r = this.renderer, gl = r.getContext(), keep = r.getRenderTarget();
+    r.initRenderTarget(this.slots);
+    r.initRenderTarget(this.blocks);
+    const layers = r.properties.get(this.slots.texture).__webglTexture;
+    r.state.bindFramebuffer(gl.FRAMEBUFFER, r.properties.get(this.blocks).__webglFramebuffer);
+    for (let i = 0; i < SLOTS; i++) gl.framebufferTextureLayer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + i, layers, 0, i);
+    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) throw new Error('block pass: slot layers not attachable');
+    for (const t of this.blocks.textures) {
+      r.state.bindTexture(gl.TEXTURE_2D, r.properties.get(t).__webglTexture);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, 1, 1, 0, gl.RGBA, gl.FLOAT, null);
+    }
+    r.state.unbindTexture();
+    r.setRenderTarget(keep);
+  }
+
   get stateA() { return this.targets[this.cur].textures[0]; }
   get stateB() { return this.targets[this.cur].textures[1]; }
+  get stateF() { return this.targets[this.cur].textures[STATE_FLAGS]; }
+  // A target shaped like the state (its attachments and formats), for code
+  // that draws a state pass somewhere else (e.g. once, to build its pipeline).
+  makeStateTarget(w, h) { return makeStateTarget(w, h); }
 
   // Index of cell (x, y, z)'s texel in the state arrays, and back (cellTexel, texelCell).
   cellTexel(x, y, z) { return cellTexel(this.g, x, y, z); }
@@ -421,27 +469,37 @@ export class Simulation {
     this.actNoted = true;
   }
 
-  // Rebuild the activity map from the current state (shaders/activity.js).
+  // Rebuild the activity map from the current state's activity flags (shaders/activity.js).
   updateActivity() {
     // the outgoing map, if steps used it since the last updateBricks noted it
     if (this.actCarry !== null && this.actAge > this.actCarry) this.noteAwake();
     this.actCarry = null;
-    const { inert, quiet } = this.mats;
-    inert.uniforms.tA.value = this.stateA;
-    inert.uniforms.tB.value = this.stateB;
-    this.run(inert, this.actInert);
+    const { inert, inertRows, inertJoin, quiet } = this.mats;
+    inert.uniforms.tF.value = this.stateF;
+    this.run(inert, this.actClass);
+    inertRows.uniforms.tA.value = this.stateA;
+    inertRows.uniforms.tF.value = this.stateF;
+    inertRows.uniforms.tClass.value = this.actClass.texture;
+    this.run(inertRows, this.actRows);
+    inertJoin.uniforms.tClass.value = this.actClass.texture;
+    inertJoin.uniforms.tRows.value = this.actRows.texture;
+    this.run(inertJoin, this.actInert);
     quiet.uniforms.tInert.value = this.actInert.texture;
     quiet.uniforms.uEnabled.value = this.skipQuiet;
     this.run(quiet, this.actQuiet);
     this.actAge = 0;
     this.actDirty = false;
+    this.actFresh = true;
     this.noteAwake();   // the step about to run uses it
   }
 
-  // Ping-pong pass over the state.
+  // Ping-pong pass over the state. The pass writes every cell, flags and all
+  // (shaders/common.js stateOutGLSL), so it needs stateUniforms().
   pass(mat) {
+    if (!mat.uniforms.tF) throw new Error(`pass ${mat.name || '(unnamed)'}: a state writer needs stateUniforms() (tF)`);
     mat.uniforms.tA.value = this.stateA;
     mat.uniforms.tB.value = this.stateB;
+    mat.uniforms.tF.value = this.stateF;
     this.run(mat, this.targets[1 - this.cur]);
     this.cur = 1 - this.cur;
   }
@@ -451,22 +509,24 @@ export class Simulation {
     if (this.actDirty || this.actAge >= ACTIVITY_PERIOD) this.updateActivity();
     this.actAge++;
     this.stepping = true;
-    const { moveBlock, moveGather, react } = this.mats;
-    moveBlock.uniforms.tQuiet.value = react.uniforms.tQuiet.value = this.actQuiet.texture;
-    // movement: solve each 2×2×2 block once, then every cell gathers its result
-    moveBlock.uniforms.uParity.value = this.frame & 1;
+    const { moveBlock, moveFlow, moveGather, react } = this.mats;
+    const parity = this.frame & 1;
+    // movement: solve each 2×2×2 block once (moveBlock), then every cell
+    // gathers its result (moveGather) and the flow field takes its move
+    for (const m of [moveBlock, moveGather, moveFlow, react]) m.uniforms.tQuiet.value = this.actQuiet.texture;
+    moveBlock.uniforms.uParity.value = parity;
     moveBlock.uniforms.uFrame.value = this.frame;
     moveBlock.uniforms.uGravity.value = this.gravity;
     moveBlock.uniforms.tA.value = this.stateA;
     moveBlock.uniforms.tB.value = this.stateB;
     this.run(moveBlock, this.blocks);
-    moveGather.uniforms.uParity.value = this.frame & 1;
-    for (let i = 0; i < 8; i++) moveGather.uniforms[`tM${i}`].value = this.blocks.textures[i];
+    for (const m of [moveGather, moveFlow]) {
+      m.uniforms.uParity.value = parity;
+      m.uniforms.tSlots.value = this.slots.texture;
+    }
+    moveGather.uniforms.uFresh.value = this.actFresh;
+    this.actFresh = false;
     this.pass(moveGather);
-    const { moveFlow } = this.mats;
-    moveFlow.uniforms.uParity.value = this.frame & 1;
-    moveFlow.uniforms.tQuiet.value = this.actQuiet.texture;
-    for (let i = 0; i < 8; i++) moveFlow.uniforms[`tM${i}`].value = this.blocks.textures[i];
     this.run(moveFlow, this.flowV);
     react.uniforms.uFrame.value = this.frame;
     react.uniforms.uGravity.value = this.gravity;
@@ -657,7 +717,7 @@ export class Simulation {
     }
     // (made on the first shift: only a window of a larger world moves)
     const g = this.g;
-    this.mats.shift ??= Object.assign(rawMat(shiftFrag(g), { tA: { value: null }, tB: { value: null }, uShift: { value: new THREE.Vector3() } }), { name: 'shift' });
+    this.mats.shift ??= Object.assign(rawMat(shiftFrag(g), { ...stateUniforms(), uShift: { value: new THREE.Vector3() } }), { name: 'shift' });
     this.mats.giShift ??= Object.assign(rawMat(giShiftFrag(g), { ...giProbeUniforms(), uShift: { value: new THREE.Vector3() } }), { name: 'giShift' });
     this.mats.flowShift ??= Object.assign(rawMat(flowShiftFrag(g), { tFlowSrc: { value: null }, uShift: { value: new THREE.Vector3() } }), { name: 'flowShift' });
     const m = this.mats.shift;
@@ -802,6 +862,7 @@ export class Simulation {
     this.targets.forEach((t) => t.dispose());
     this.brick.dispose();
     this.blocks.dispose();
+    this.slots.dispose();
     this.light.forEach((t) => t.dispose());
     this.fieldEma.dispose();
     this.fieldTmp.forEach((t) => t.dispose());
@@ -810,6 +871,8 @@ export class Simulation {
     this.flowV.dispose();
     this.flowVTmp?.dispose();
     this.brickDist.forEach((t) => t.dispose());
+    this.actClass.dispose();
+    this.actRows.dispose();
     this.actInert.dispose();
     this.actQuiet.dispose();
     this.actChanged.dispose();

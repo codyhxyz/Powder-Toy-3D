@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { quadVert } from '../../shaders/common.js';
+import { quadVert, stateUniforms } from '../../shaders/common.js';
 import {
   transferProbeFrag, transferApplyFrag, TRANSFER_SLOTS, TRANSFER_TAKE, TRANSFER_PUT,
 } from '../../shaders/transfer.js';
@@ -167,7 +167,7 @@ export function createTransfer({ renderer, getSim }) {
   let inFlight = 0;
 
   const uniforms = () => ({
-    tA: { value: null }, tB: { value: null }, tSlots: { value: slotTex },
+    ...stateUniforms(), tSlots: { value: slotTex },
     uCount: { value: 0 }, uLimit: { value: 0 }, uMode: { value: 0 }, uKinds: { value: 0 }, uBreak: { value: false },
   });
   function materials(sim) {
