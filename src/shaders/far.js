@@ -42,6 +42,18 @@ import { scaleFor } from '../constructions/runtime.js';
 // the ground's surface where it is. Scattered matter under FAR.THIN_MIN keeps
 // its share too (a few loose grains draw nothing).
 //
+// Occupancy. Two coarser levels say where the surface can be at all: an L1
+// node (4³ bricks, 16³ cells) is set when some brick in it or next to it
+// reaches FAR.ISO (opaque + liquid), an L2 node (4³ L1 nodes, 64³ cells) when
+// one of its L1 nodes is. The trilinear field can only reach FAR.ISO between
+// brick centres one of which does, so a ray skips every unset node whole.
+//
+// Shadows: per brick column, the top of its opaque matter (farTopFrag), and
+// from those the height below which the sun is blocked (farShadowFrag): a
+// shadow height field, the max over the columns toward the sun of their top
+// less the sun ray's drop on the way. Along a sun ray the height above it
+// can only fall, so a point is lit or not by one lookup, and the window's own
+// shadow map finds where its texel rays first go under it by bisection.
 export const FAR = {
   ISO: 0.5,            // the field's surface level
   CUBE: 8,             // cells: the edge of the cube centred on a brick whose share it holds (twice the brick)
@@ -54,8 +66,13 @@ export const FAR = {
   ID_SCALE: 255,       // an id channel value in an 8-bit channel
   GLOW_SPAN: 2000,     // °C the glow channel spans above the incandescence table's first knot
 };
-// Liquid kinds of the id channel (index → element key).
+// Liquid kinds of the id channel (index → element key; the first is the default).
 export const FAR_LIQUIDS = ['WATER', 'OIL', 'ACID'];
+const liquidKindGLSL = () => /* glsl */ `
+#define FAR_KINDS ${FAR_LIQUIDS.length}
+int farLiquidKind(int id) { ${FAR_LIQUIDS.slice(1).map((k, i) => `if (id == E_${k}) return ${i + 1};`).join(' ')} return 0; }
+int farLiquidId(int kind) { ${FAR_LIQUIDS.slice(1).map((k, i) => `if (kind == ${i + 1}) return E_${k};`).join(' ')} return E_${FAR_LIQUIDS[0]}; }
+`;
 
 // Children per node edge at each occupancy level: an L1 node is 4³ bricks, an L2 node 4³ L1 nodes.
 export const FAR_NODE = 4;
@@ -164,8 +181,7 @@ const countGLSL = /* glsl */ `
 // what stops light in the far field, and what is a transparent liquid
 bool farOpaque(int id) { return id != E_EMPTY && KIND[id] != K_GAS && RCLASS[id] != R_LIQUID; }
 bool farLiquid(int id) { return RCLASS[id] == R_LIQUID; }
-int farLiquidKind(int id) { return id == E_OIL ? 1 : (id == E_ACID ? 2 : 0); }
-#define FAR_KINDS 3
+${liquidKindGLSL()}
 struct FarCount {
   float w[NE];           // dominant-element weights (the brick's opaque cells)
   float wl[FAR_KINDS];   // its liquid cells by kind
@@ -896,6 +912,7 @@ ${liquidGLSL}
 ${farLayoutGLSL(L)}
 ${farSampleGLSL}
 ${farHazeGLSL}
+${liquidKindGLSL()}
 uniform mat4 projectionMatrix;
 uniform mat4 uWorldToScene;   // world cells → scene units
 uniform mat4 uSceneToWorld;
@@ -1084,7 +1101,7 @@ vec3 farShadeBed(int id, vec3 p, vec3 n, float depth, int lid, float sunVis) {
 // glint off it (Fresnel), and through it the liquid's body down to the bed:
 // the opaque field along the refracted ray (bedY < 0), else the plane y = bedY.
 vec3 farLiquid(vec3 p, vec3 rd, int lk, float sunVis, float bedY) {
-  int lid = lk == 1 ? E_OIL : (lk == 2 ? E_ACID : E_WATER);
+  int lid = farLiquidId(lk);
   vec3 n = liquidRipple(p, vec3(0.0, 1.0, 0.0));
   float F = fresnelSchlick(max(dot(-rd, n), 0.0), IOR[lid]);
   vec3 refl = envReflect(p, reflect(rd, n), vec3(sunVis));
