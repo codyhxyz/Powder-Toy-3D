@@ -46,7 +46,7 @@ float sightLine(vec3 ro, vec3 target) {
     if (occ < 0.5) { skipBrick(bc, ro, rd, istp, cell, tMax, tEnter); continue; }
     int ax = argmin3(tMax);
     float seg = min(tMax[ax], t1) - tEnter;
-    int id = eid(cellA(cell));
+    int id = eid(fetchA(cell));
     if (id != E_EMPTY) {
       int rc = RCLASS[id];
       // ignore rays that only graze a voxel edge
@@ -67,7 +67,7 @@ void main() {
   ivec3 c = ivec3(floor(texelFetch(tSigns, ivec2(i, 1), 0).xyz + 0.5));
   float tr = sightLine(uCam, anchor);
   if (outside(c)) { oC = vec4(tr, -1.0, AMBIENT, 0.0); return; }
-  vec4 a = cellA(c);
-  oC = vec4(tr, float(eid(a)), a.y, texelFetch(tB, atlas(c), 0).w);
+  vec4 a = fetchA(c);
+  oC = vec4(tr, float(eid(a)), a.y, fetchB(c).w);
 }
 `;

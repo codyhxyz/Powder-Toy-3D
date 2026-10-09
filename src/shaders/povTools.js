@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { prelude, quadVert } from './common.js';
+import { prelude, quadVert, stateOutGLSL, copyThroughMain } from './common.js';
 import { BODY_WIDTH } from '../pov/constants.js';
 
 // GPU passes for the POV axe, gun and physgun (src/pov/tools/*.tool.js).
@@ -80,10 +80,7 @@ const defines = (prefix, obj) =>
 
 const head = (g) => /* glsl */ `
 ${prelude(g)}
-uniform sampler2D tA;
-uniform sampler2D tB;
-layout(location = 0) out vec4 oA;
-layout(location = 1) out vec4 oB;
+${stateOutGLSL}
 `;
 
 // Break breakable solids in the axe's patch into their debris, 1:1 (same
@@ -96,13 +93,7 @@ ${defines('AXE', AXE)}
 uniform vec3 uCenter;   // grid cells: the centre of the struck cell
 uniform vec3 uDir;      // unit swing direction
 
-void main() {
-  ivec2 t = ivec2(gl_FragCoord.xy);
-  vec4 a = texelFetch(tA, t, 0);
-  vec4 b = texelFetch(tB, t, 0);
-  oA = a; oB = b;
-  ivec3 p = cellFromFrag(t);
-  if (p.y >= NY) return;
+void axe(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
   vec3 d = vec3(p) + 0.5 - uCenter;
   if (dot(d, d) >= AXE_REACH * AXE_REACH) return;
   float along = dot(d, uDir);
@@ -121,7 +112,7 @@ void main() {
     oB.xyz = clamp(b.xyz + uDir * AXE_SHOVE * (1.0 - r2), -V_MAX, V_MAX);
   }
 }
-`;
+${copyThroughMain('axe')}`;
 
 const physGLSL = /* glsl */ `
 ${defines('PHYS', PHYS)}
@@ -138,7 +129,6 @@ float physFalloff(float r) { return 1.0 - smoothstep(PHYS_RADIUS * PHYS_CORE, PH
 export const physgunComFrag = (g) => /* glsl */ `
 ${prelude(g)}
 ${physGLSL}
-uniform sampler2D tA;
 uniform vec3 uHold;
 out vec4 oC;
 
@@ -154,7 +144,7 @@ void main() {
     vec3 at = vec3(q) + 0.5;
     float r = length(at - uHold);
     if (r >= PHYS_RADIUS) continue;
-    int id = eid(texelFetch(tA, atlas(q), 0));
+    int id = eid(fetchA(q));
     if (!physHeld(id)) continue;
     float w = physFalloff(r);
     sum += at * DENS[id] * w;
@@ -177,13 +167,7 @@ uniform float uGravity;   // cells/step² (sim.gravity)
 uniform int uMode;
 uniform vec3 uFling;      // cells/step
 
-void main() {
-  ivec2 t = ivec2(gl_FragCoord.xy);
-  vec4 a = texelFetch(tA, t, 0);
-  vec4 b = texelFetch(tB, t, 0);
-  oA = a; oB = b;
-  ivec3 p = cellFromFrag(t);
-  if (p.y >= NY) return;
+void physgun(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
   vec3 at = vec3(p) + 0.5;
   float r = length(at - uHold);
   if (r >= PHYS_RADIUS) return;
@@ -206,7 +190,7 @@ void main() {
   vec3 v = mix(vMean, target, grip) + vec3(0.0, g * (uSteps - 1.0) * 0.5, 0.0);
   oB.xyz = clamp(v, -V_MAX, V_MAX);
 }
-`;
+${copyThroughMain('physgun')}`;
 
 // A pass material for the current simulation. Grids can be rebuilt (a size
 // change makes a new sim), so callers keep one per sim: see toolPass.

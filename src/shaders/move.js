@@ -1,4 +1,4 @@
-import { prelude } from './common.js';
+import { prelude, stateOutGLSL } from './common.js';
 import { quietGLSL } from './activity.js';
 
 // Movement pass: Margolus block cellular automaton.
@@ -186,8 +186,6 @@ const horizontalZ = () => [[0, 4], [1, 5], [2, 6], [3, 7]].map(([i, j]) => horiz
 
 export const moveBlockFrag = (g) => /* glsl */ `
 ${prelude(g)}
-uniform sampler2D tA;
-uniform sampler2D tB;
 uniform int uParity;
 uniform uint uFrame;
 uniform float uGravity;
@@ -245,7 +243,7 @@ void main() {
   if (quietCell(base)) {
     ${CELLS.map((i) => `{
     ivec3 q = base + ivec3(${i & 1}, ${(i >> 1) & 1}, ${(i >> 2) & 1});
-    o${i} = vec4(float(${i}), inGrid(q) ? texelFetch(tB, atlas(q), 0).xyz : vec3(0.0));
+    o${i} = vec4(float(${i}), inGrid(q) ? fetchB(q).xyz : vec3(0.0));
     }`).join('\n    ')}
     return;
   }
@@ -253,7 +251,7 @@ void main() {
   ${CELLS.map((i) => `vec4 a${i}; vec3 v${i}; int k${i}; float d${i}; int n${i} = ${i}; float q${i} = 0.0; bool m${i} = false, s${i} = false;`).join('\n  ')}
   ${CELLS.map((i) => `{
     ivec3 q = base + ivec3(${i & 1}, ${(i >> 1) & 1}, ${(i >> 2) & 1});
-    if (inGrid(q)) { a${i} = texelFetch(tA, atlas(q), 0); v${i} = texelFetch(tB, atlas(q), 0).xyz; }
+    if (inGrid(q)) { a${i} = fetchA(q); v${i} = fetchB(q).xyz; }
     else { a${i} = vec4(float(E_WALL), AMBIENT, 0.0, 0.0); v${i} = vec3(0.0); }
     k${i} = eid(a${i}); d${i} = densityOf(k${i}, a${i}.y);
   }`).join('\n  ')}
@@ -281,16 +279,13 @@ void main() {
 
 export const moveGatherFrag = (g) => /* glsl */ `
 ${prelude(g)}
-uniform sampler2D tA;
-uniform sampler2D tB;
 ${CELLS.map((i) => `uniform sampler2D tM${i};`).join('\n')}
 uniform int uParity;
-layout(location = 0) out vec4 oA;
-layout(location = 1) out vec4 oB;
+${stateOutGLSL}
 ${heatGLSL}
 void main() {
   ivec3 p = cellFromFrag(ivec2(gl_FragCoord.xy));
-  if (p.y >= NY) { oA = vec4(0.0); oB = vec4(0.0); return; }
+  if (!inGrid(p)) { writeState(vec4(0.0), vec4(0.0)); return; }   // a texel holding no cell
   ivec3 off = ivec3(uParity);
   ivec3 base = ((p + off) / 2) * 2 - off;
   ivec3 lp = p - base;
@@ -301,9 +296,9 @@ void main() {
   int code = int(m.x + 0.5);
   int src = code % SLOTS;
   ivec3 q = base + ivec3(src & 1, (src >> 1) & 1, (src >> 2) & 1);
-  oA = texelFetch(tA, atlas(q), 0);
+  vec4 a = fetchA(q);
   float heat = float(code / SLOTS) / HEAT_QUANTA;   // impact energy this cell took (block pass)
-  if (heat > 0.0) oA.y = min(oA.y + heat * KE_TO_HEAT / CAP[eid(oA)], CELL_TEMP_MAX);
-  oB = vec4(m.yzw, texelFetch(tB, atlas(p), 0).w);
+  if (heat > 0.0) a.y = min(a.y + heat * KE_TO_HEAT / CAP[eid(a)], CELL_TEMP_MAX);
+  writeState(a, vec4(m.yzw, fetchB(p).w));
 }
 `;

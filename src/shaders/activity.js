@@ -82,7 +82,7 @@ bool inertNear(ivec3 c, vec4 a) {
   for (int i = 0; i < 6; i++) {
     ivec3 q = c + FACES[i];
     if (!inGrid(q)) continue;
-    vec4 n = texelFetch(tA, atlas(q), 0);
+    vec4 n = fetchA(q);
     int j = eid(n);
     // thermally quiet; a face touching air carries heat at air's conductance, so it takes air's tolerance
     if (j == E_EMPTY ? abs(T - AMBIENT) > AIR_REST_T : abs(T - n.y) > MATTER_REST_T) return false;
@@ -100,7 +100,7 @@ bool inertNear(ivec3 c, vec4 a) {
   for (int x = -1; x <= 1; x++) {
     ivec3 q = c + ivec3(x, -1, z);
     if ((x == 0 && z == 0) || !inGrid(q)) continue;
-    vec4 n = texelFetch(tA, atlas(q), 0);
+    vec4 n = fetchA(q);
     int j = eid(n);
     if (canMove(id, j, d, densityOf(j, n.y), 0)) return false;
   }
@@ -111,8 +111,6 @@ bool inertNear(ivec3 c, vec4 a) {
 // Brick resolution: 1 if every cell of the brick is inert.
 export const inertFrag = (g) => /* glsl */ `
 ${prelude(g)}
-uniform sampler2D tA;
-uniform sampler2D tB;
 ${INERT}
 out vec4 oC;
 void main() {
@@ -128,9 +126,9 @@ void main() {
   for (int z = 0; z < BS; z++)
   for (int y = 0; y < BS; y++)
   for (int x = 0; x < BS; x++) {
-    ivec2 t = atlas(o + ivec3(x, y, z));
-    vec4 a = texelFetch(tA, t, 0);
-    if (!inertSelf(a, texelFetch(tB, t, 0))) return;
+    ivec3 c0 = o + ivec3(x, y, z);
+    vec4 a = fetchA(c0);
+    if (!inertSelf(a, fetchB(c0))) return;
     int i = x + BS * (y + BS * z);
     if (eid(a) != E_EMPTY) matter[i >> 5] |= 1u << (i & 31);
   }
@@ -140,7 +138,7 @@ void main() {
     int i = x + BS * (y + BS * z);
     if ((matter[i >> 5] & (1u << (i & 31))) == 0u) continue;
     ivec3 c = o + ivec3(x, y, z);
-    if (!inertNear(c, texelFetch(tA, atlas(c), 0))) return;
+    if (!inertNear(c, fetchA(c))) return;
   }
   oC = vec4(1.0);
 }

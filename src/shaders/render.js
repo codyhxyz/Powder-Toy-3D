@@ -138,7 +138,7 @@ ${airBrick}
     }
     float tExit = min(tMax.x, min(tMax.y, tMax.z));
     float seg = tExit - tEnter;
-    vec4 a = cellA(cell);
+    vec4 a = fetchA(cell);
     int id = eid(a);
     vec3 n = vec3(0.0);
     n[ax] = -float(istp[ax]);
@@ -334,7 +334,7 @@ ${march('marchHeat', AIR_FLAGS.HOT, /* glsl */ `
       for (int j = 0; j < HEAT_AIR_SAMPLES; j++) {
         if (j >= ns) break;
         vec3 p = ro + rd * (tB0 + (float(j) + 0.5) * ds);
-        heatAir(cellA(clamp(ivec3(floor(p)), ivec3(0), GRID - 1)).y, ds, col, trans);
+        heatAir(fetchA(clamp(ivec3(floor(p)), ivec3(0), GRID - 1)).y, ds, col, trans);
       }`,
 })}
 
@@ -350,7 +350,7 @@ float pressureAt(vec3 p) {
   for (int k = 0; k < 8; k++) {
     ivec3 o = ivec3(k & 1, (k >> 1) & 1, (k >> 2) & 1);
     vec3 w = mix(1.0 - f, f, vec3(o));
-    s += texelFetch(tB, atlas(clamp(i0 + o, ivec3(0), GRID - 1)), 0).w * w.x * w.y * w.z;
+    s += fetchB(clamp(i0 + o, ivec3(0), GRID - 1)).w * w.x * w.y * w.z;
   }
   return s;
 }
@@ -397,8 +397,8 @@ ${march('marchPressure', AIR_FLAGS.PRESSURE, /* glsl */ `
         // pressure-sensitive paint: the face takes the colour of the
         // pressure pushing on it from the cell in front
         ivec3 f = cell + ivec3(n);
-        float Pf = outside(f) ? 0.0 : texelFetch(tB, atlas(f), 0).w;
-        float Pc = k == K_SOLID ? 0.0 : texelFetch(tB, atlas(cell), 0).w;
+        float Pf = outside(f) ? 0.0 : fetchB(f).w;
+        float Pc = k == K_SOLID ? 0.0 : fetchB(cell).w;
         float Pm = abs(Pf) > abs(Pc) ? Pf : Pc;
         float sm = abs(pressurePos(Pm) - 0.5) * 2.0;
         vec3 c = mix(neutral(id), pressureColor(Pm), smoothstep(PRESSURE_PAINT_LO, PRESSURE_PAINT_HI, sm));${solidHit('c * clay(cell, hp, n)')}
@@ -432,13 +432,13 @@ bool canDisplace(int a, int b, int dir) {
 // crossing ground).
 #define FLOW_MIN_VEL 0.01   // velocity components below this (cells/step) don't move it
 vec3 mobileVel(ivec3 c, int id, vec3 v) {
-  if (KIND[id] == K_LIQUID && c.y > 0 && eid(cellA(c - ivec3(0, 1, 0))) == id) v.xz = vec2(0.0);
+  if (KIND[id] == K_LIQUID && c.y > 0 && eid(fetchA(c - ivec3(0, 1, 0))) == id) v.xz = vec2(0.0);
   vec3 r = vec3(0.0);
   for (int k = 0; k < 3; k++) {
     if (abs(v[k]) < FLOW_MIN_VEL) continue;
     ivec3 q = c;
     q[k] += v[k] > 0.0 ? 1 : -1;
-    int nb = outside(q) ? E_WALL : eid(cellA(q));
+    int nb = outside(q) ? E_WALL : eid(fetchA(q));
     if (canDisplace(id, nb, k != 1 ? 2 : (v.y < 0.0 ? 0 : 1))) r[k] = v[k];
   }
   return r;
@@ -472,8 +472,8 @@ float brickStroke(ivec3 bc, vec3 ro, vec3 rd, float ta, float tb, bool check, ou
   ivec3 c = ivec3(floor(cc));
   v = vec3(0.0);
   gt = ta;
-  if (check && eid(cellA(c)) != E_EMPTY) return 0.0;
-  v = texelFetch(tB, atlas(c), 0).xyz;
+  if (check && eid(fetchA(c)) != E_EMPTY) return 0.0;
+  v = fetchB(c).xyz;
   float sp = length(v);
   if (sp < FLOW_MIN_SPEED) return 0.0;
   float w = flowSpeedPos(sp);
@@ -509,7 +509,7 @@ ${march('marchFlow', AIR_FLAGS.FLOW, /* glsl */ `
         trans *= 1.0 - FLOW_ABSORB * al;
       }
     } else if (KIND[id] == K_GAS) {
-      vec3 v = texelFetch(tB, atlas(cell), 0).xyz;
+      vec3 v = fetchB(cell).xyz;
       float local = brickGas(occ);
       float dens = softBlob(cell, ro, rd, tEnter, tExit) * (GAS_VIEW_DENS + GAS_VIEW_DENS_LOCAL * local)
                  * (id == E_SMOKE ? clamp(a.z, 0.0, 1.0) : 1.0);
@@ -521,7 +521,7 @@ ${march('marchFlow', AIR_FLAGS.FLOW, /* glsl */ `
       col += trans * al * FLOW_GLASS_GREY;
       trans *= 1.0 - al;
     } else {
-      vec3 v = mobileVel(cell, id, texelFetch(tB, atlas(cell), 0).xyz);
+      vec3 v = mobileVel(cell, id, fetchB(cell).xyz);
       float w = flowSpeedPos(length(v));
       vec3 still = mix(vec3(luma(COLOR[id])), COLOR[id], FLOW_STILL_SAT) * FLOW_STILL_GAIN;${solidHit('flowTint(still, v, w) * clay(cell, hp, n)')}
     }`, 'dataFloor(hp, FLOW_FLOOR_LO, FLOW_FLOOR_HI)', {
@@ -729,7 +729,7 @@ void main() {
       continue;
     }
     float tExit = min(tMax.x, min(tMax.y, tMax.z));
-    vec4 a = cellA(cell);
+    vec4 a = fetchA(cell);
     int id = eid(a);
 
     if (isCrisp(id)) {
@@ -825,7 +825,7 @@ void main() {
         int lj = id;
         if (brickMixed(flags)) {
           ivec3 cj = clamp(ivec3(floor(pm + liqDither)), ivec3(0), GRID - 1);
-          if (cj != cell) lj = eid(cellA(cj));
+          if (cj != cell) lj = eid(fetchA(cj));
         }
         if (SURFCH[lj] == CH_LIQUID) liq = lj;
         else if (SURFCH[id] == CH_LIQUID) liq = id;
@@ -944,12 +944,12 @@ void main() {
     ivec3 bc = cell / BS;
     if (bc != lastB) { lastB = bc; flags = brickInfo(bc); }
     if (flags == 0) { ax = skipEmpty(bc, ro, rd, istp, cell, tMax, tEnter); continue; }
-    vec4 a = cellA(cell);
+    vec4 a = fetchA(cell);
     int id = eid(a);
     if (id != E_EMPTY && KIND[id] != K_GAS) {
       int face = ax * 2 + (istp[ax] > 0 ? 1 : 0); // normal = -step
       if (gl_FragCoord.x < 1.0) oC = vec4(vec3(cell), float(face));
-      else oC = vec4(float(id), a.y, texelFetch(tB, atlas(cell), 0).w, a.z);
+      else oC = vec4(float(id), a.y, fetchB(cell).w, a.z);
       return;
     }
     ax = argmin3(tMax);
@@ -1011,7 +1011,7 @@ void main() {
     if (flags == 0) { skipEmpty(bc, ro, rd, istp, cell, tMax, tEnter); phiStale = true; continue; }
     int ax = argmin3(tMax);
     float tExit = tMax[ax];
-    int id = eid(cellA(cell));
+    int id = eid(fetchA(cell));
     if (isCrisp(id)) {
       if (RCLASS[id] != R_GLASS) { oC.x = tEnter; hit = true; break; }
       if (tid == 0 || RCLASS[tid] == R_GAS) { if (tid == 0) oC.y = tEnter; tid = id; }

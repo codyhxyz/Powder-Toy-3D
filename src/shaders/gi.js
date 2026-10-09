@@ -52,7 +52,7 @@ const float GI_SUN_LIFT = ${glf(GI_SUN_LIFT)};
 bool giOpaque(ivec3 c) {
   if (c.y < 0) return true;
   if (outside(c)) return false;
-  return RCLASS[eid(cellA(c))] == R_OPAQUE;
+  return RCLASS[eid(fetchA(c))] == R_OPAQUE;
 }
 
 // Set bits in a 16-bit mask (no bitCount in GLSL ES 3.00).
@@ -78,7 +78,7 @@ void main() {
   float tau = 0.0;
   for (int i = 0; i < BRICK_CELLS; i++) {
     ivec3 l = ivec3(i % BS, (i / BS) % BS, i / FACE_CELLS);
-    vec4 a = cellA(o + l);
+    vec4 a = fetchA(o + l);
     int id = eid(a);
     if (id == E_EMPTY) continue;
     if (RCLASS[id] != R_OPAQUE) {
@@ -114,7 +114,7 @@ void main() {
       bool inBrick = all(greaterThanEqual(ln, ivec3(0))) && all(lessThan(ln, ivec3(BS)));
       if (inBrick ? maskHas(m, cellBit(ln)) : giOpaque(c + fn)) continue;
       if (alb.x < 0.0) {
-        int id = eid(cellA(c));
+        int id = eid(fetchA(c));
         alb = ALBEDO[id] * (1.0 - METAL[id] * (1.0 - GI_METAL_DIFFUSE));
       }
       vec3 nrm = vec3(fn);

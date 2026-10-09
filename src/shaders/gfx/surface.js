@@ -730,7 +730,7 @@ Surf gatherSurf(vec3 hp, vec3 n, int ch) {
     ivec3 o = ivec3(i & 1, (i >> 1) & 1, (i >> 2) & 1);
     ivec3 c = c0 + o;
     if (outside(c)) continue;
-    vec4 a = cellA(c);
+    vec4 a = fetchA(c);
     int id = eid(a);
     if (SURFCH[id] != ch) continue;
     vec3 wv = mix(1.0 - f, f, vec3(o));
@@ -751,7 +751,7 @@ Surf gatherSurf(vec3 hp, vec3 n, int ch) {
     for (int i = 0; i < 27 && wsum == 0.0; i++) {
       ivec3 c = cc + ivec3(i % 3, (i / 3) % 3, i / 9) - 1;
       if (outside(c)) continue;
-      vec4 a = cellA(c);
+      vec4 a = fetchA(c);
       int id = eid(a);
       if (SURFCH[id] != ch) continue;
       id1 = id; w1 = 1.0; T = a.y; wsum = 1.0; s.cell = c; s.seed = fract(a.w); ct1 = floor(a.w);
@@ -781,7 +781,7 @@ Surf gatherSurf(vec3 hp, vec3 n, int ch) {
 bool flushNb(ivec3 c) {
   if (c.y < 0) return true;
   if (outside(c)) return false;
-  int id = eid(cellA(c));
+  int id = eid(fetchA(c));
   return isCrisp(id) && RCLASS[id] != R_GLASS;
 }
 

@@ -1,4 +1,4 @@
-import { prelude } from './common.js';
+import { prelude, stateOutGLSL, copyThroughMain } from './common.js';
 
 // GPU side of the first-person body (src/pov/player.js).
 //
@@ -25,8 +25,6 @@ export const povProbeFrag = (g) => /* glsl */ `
 ${prelude(g)}
 #define PROBE_Z ${PROBE.Z}
 #define PROBE_OUTSIDE ${PROBE_OUTSIDE.toFixed(1)}
-uniform sampler2D tA;
-uniform sampler2D tB;
 uniform ivec3 uOrigin;   // grid cell of the box's low corner
 out vec4 oC;
 
@@ -35,8 +33,8 @@ void main() {
   ivec2 f = ivec2(gl_FragCoord.xy);
   ivec3 q = uOrigin + ivec3(f.x, f.y / PROBE_Z, f.y % PROBE_Z);
   if (!inGrid(q)) { oC = vec4(PROBE_OUTSIDE, AMBIENT, 0.0, 0.0); return; }
-  vec4 a = texelFetch(tA, atlas(q), 0);
-  oC = vec4(float(eid(a)), a.y, texelFetch(tB, atlas(q), 0).w, a.z);
+  vec4 a = fetchA(q);
+  oC = vec4(float(eid(a)), a.y, fetchB(q).w, a.z);
 }
 `;
 
@@ -48,8 +46,6 @@ export const povCouplingFrag = (g) => /* glsl */ `
 ${prelude(g)}
 #define POV_RNG_SALT 0x9du   // the coupling's own random stream (seed3)
 #define AXIS_EPS ${AXIS_EPS}
-uniform sampler2D tA;
-uniform sampler2D tB;
 uniform uint uFrame;
 uniform vec3 uMin;          // body box, grid cells
 uniform vec3 uMax;
@@ -58,16 +54,9 @@ uniform float uPushFluid;   // outward push on liquids and gases, cells/step
 uniform float uPushPowder;  // outward push on grains, cells/step
 uniform float uLift;        // upward share of the push (a body moving down throws liquid up)
 uniform vec2 uAhead;        // forward share of the push, along the body's horizontal heading (xz)
-layout(location = 0) out vec4 oA;
-layout(location = 1) out vec4 oB;
+${stateOutGLSL}
 
-void main() {
-  ivec2 f = ivec2(gl_FragCoord.xy);
-  vec4 a = texelFetch(tA, f, 0);
-  vec4 b = texelFetch(tB, f, 0);
-  oA = a; oB = b;
-  ivec3 p = cellFromFrag(f);
-  if (p.y >= NY) return;
+void couple(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
   vec3 c = vec3(p) + 0.5;
   if (any(lessThan(c, uMin)) || any(greaterThan(c, uMax))) return;
   int id = eid(a);
@@ -85,4 +74,4 @@ void main() {
   vec3 v = uVel + normalize(vec3(out2 + uAhead, uLift)) * push;
   oB.xyz = clamp(v, -V_MAX, V_MAX);
 }
-`;
+${copyThroughMain('couple')}`;

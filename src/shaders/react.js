@@ -1,4 +1,4 @@
-import { prelude } from './common.js';
+import { prelude, stateOutGLSL } from './common.js';
 import { quietGLSL } from './activity.js';
 import { ELEMENTS } from '../elements.js';
 
@@ -43,12 +43,9 @@ const HARD_MIN = Math.min(...ELEMENTS.filter((e) => e.breakInto).map((e) => e.ha
 //     (move.js), so it reaches this check with its velocity intact.
 export const reactFrag = (g) => /* glsl */ `
 ${prelude(g)}
-uniform sampler2D tA;
-uniform sampler2D tB;
 uniform uint uFrame;
 uniform float uGravity;
-layout(location = 0) out vec4 oA;
-layout(location = 1) out vec4 oB;
+${stateOutGLSL}
 ${quietGLSL}
 
 const ivec3 DIRS[6] = ivec3[6](ivec3(1,0,0), ivec3(-1,0,0), ivec3(0,1,0), ivec3(0,-1,0), ivec3(0,0,1), ivec3(0,0,-1));
@@ -100,12 +97,12 @@ bool latent(inout float T, inout float acc, float Tp, float C, float L, bool ris
 
 void main() {
   ivec3 p = cellFromFrag(ivec2(gl_FragCoord.xy));
-  if (p.y >= NY) { oA = vec4(0.0); oB = vec4(0.0); return; }
+  if (!inGrid(p)) { writeState(vec4(0.0), vec4(0.0)); return; }   // a texel holding no cell
 
-  vec4 a = texelFetch(tA, atlas(p), 0);
-  vec4 b = texelFetch(tB, atlas(p), 0);
+  vec4 a = fetchA(p);
+  vec4 b = fetchB(p);
   // quiet brick (shaders/activity.js): nothing here can change, keep it as is
-  if (quietCell(p)) { oA = a; oB = b; return; }
+  if (quietCell(p)) { writeState(a, b); return; }
   int id = eid(a);
   float T = a.y, life = a.z;
   float ctype = floor(a.w), seed = fract(a.w);
@@ -119,8 +116,8 @@ void main() {
   for (int i = 0; i < 6; i++) {
     ivec3 q = p + DIRS[i];
     if (inGrid(q)) {
-      na[i] = texelFetch(tA, atlas(q), 0);
-      nb[i] = texelFetch(tB, atlas(q), 0);
+      na[i] = fetchA(q);
+      nb[i] = fetchB(q);
     } else {
       na[i] = vec4(float(E_WALL), T, 0.0, 0.0); // insulating, pressure-reflecting box
       nb[i] = vec4(0.0, 0.0, 0.0, P0);
@@ -374,7 +371,6 @@ void main() {
   }
 
   T = clamp(T, CELL_TEMP_MIN, CELL_TEMP_MAX);
-  oA = vec4(float(nidOut), T, life, ctype + seed);
-  oB = vec4(v, clamp(P, P_MIN, P_MAX));
+  writeState(vec4(float(nidOut), T, life, ctype + seed), vec4(v, clamp(P, P_MIN, P_MAX)));
 }
 `;

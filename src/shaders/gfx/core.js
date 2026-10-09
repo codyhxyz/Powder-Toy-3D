@@ -1,11 +1,10 @@
 import { brickGLSL, BRICK_DIST_SCALE } from '../passes.js';
 
-// Shared render core: state/brick/field access, the DDA helpers and the
-// smooth-surface machinery (sampling, root finding, normals).
+// Shared render core: brick/field access, the DDA helpers and the
+// smooth-surface machinery (sampling, root finding, normals). The state is
+// read with the prelude's fetchA/fetchB (shaders/common.js).
 export const coreGLSL = (g) => /* glsl */ `
 ${brickGLSL}
-uniform sampler2D tA;
-uniform sampler2D tB;    // velocity xyz (cells/step), air pressure
 uniform sampler2D tBrick;
 uniform sampler2D tBrickDist;   // empty-space distance per brick (shaders/passes.js)
 #define BRICK_DIST_SCALE ${BRICK_DIST_SCALE.toFixed(1)}
@@ -27,8 +26,6 @@ uniform float uPixScale;
 const ivec3 GRID = ivec3(NX, NY, NZ);
 #define MAX_STEPS ${g.maxSteps}
 
-vec4 cellA(ivec3 c) { return texelFetch(tA, atlas(c), 0); }
-vec4 cellB(ivec3 c) { return texelFetch(tB, atlas(c), 0); }
 bool outside(ivec3 c) { return any(lessThan(c, ivec3(0))) || any(greaterThanEqual(c, GRID)); }
 
 // Crisp elements are drawn as voxels; everything else is a field.
@@ -104,17 +101,17 @@ int skipEmpty(ivec3 bc, vec3 ro, vec3 rd, ivec3 istp, inout ivec3 cell, inout ve
 // A smooth surface is where its field crosses this level (shaders/fields.js
 // builds them so: inside > SURF_ISO > outside).
 #define SURF_ISO 0.5
-// The fields live in the same Y-slice atlas as the state. Hardware bilinear
-// filtering works inside a slice (clamped to the tile), and one lerp between
-// two slices completes the trilinear sample: 2 taps.
+// The fields live in a Y-slice atlas (shaders/common.js fieldAtlas). Hardware
+// bilinear filtering works inside a slice (clamped to the tile), and one lerp
+// between two slices completes the trilinear sample: 2 taps.
 vec4 fieldTex(sampler2D t, vec3 p) {
   vec3 q = clamp(p, vec3(0.5), vec3(GRID) - 0.5);
   float fy = q.y - 0.5;
   int y0 = int(fy);
   int y1 = min(y0 + 1, NY - 1);
   vec2 inv = 1.0 / vec2(textureSize(t, 0));
-  vec2 o0 = vec2(float((y0 % TX) * NX), float((y0 / TX) * NZ));
-  vec2 o1 = vec2(float((y1 % TX) * NX), float((y1 / TX) * NZ));
+  vec2 o0 = vec2(float((y0 % FTX) * NX), float((y0 / FTX) * NZ));
+  vec2 o1 = vec2(float((y1 % FTX) * NX), float((y1 / FTX) * NZ));
   return mix(texture(t, (o0 + q.xz) * inv), texture(t, (o1 + q.xz) * inv), fy - float(y0));
 }
 vec4 surfField(vec3 p) { return fieldTex(tFS, p); }
@@ -146,7 +143,7 @@ vec4 fieldCubic(sampler2D t, vec3 p) {
   vec4 s = vec4(0.0);
   for (int k = 0; k < 4; k++) {
     int y = clamp(int(i.y) - 1 + k, 0, NY - 1);
-    vec2 o = vec2(float((y % TX) * NX), float((y / TX) * NZ));
+    vec2 o = vec2(float((y % FTX) * NX), float((y / FTX) * NZ));
     s += wy[k] * (g0.y * (g0.x * texture(t, (o + vec2(a.x, a.y)) * inv) + g1.x * texture(t, (o + vec2(b.x, a.y)) * inv))
                 + g1.y * (g0.x * texture(t, (o + vec2(a.x, b.y)) * inv) + g1.x * texture(t, (o + vec2(b.x, b.y)) * inv)));
   }

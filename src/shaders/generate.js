@@ -1,4 +1,4 @@
-import { prelude } from './common.js';
+import { prelude, stateOutGLSL } from './common.js';
 import { genGLSL } from '../world/generator.js';
 
 // Procedural world generator (docs/scaling.md D11, "Generator"): the GPU half.
@@ -263,24 +263,15 @@ export const fillFrag = (g) => /* glsl */ `
 ${prelude(g)}
 ${generatorGLSL}
 ${layersGLSL}
-uniform sampler2D tA;
-uniform sampler2D tB;
 uniform ivec3 uOrigin;
 uniform ivec3 uFillMin;
 uniform ivec3 uFillMax;
-layout(location = 0) out vec4 oA;
-layout(location = 1) out vec4 oB;
-
-// State I/O in one place, for the switch to the fetchA / fetchB accessors and
-// their writers (docs/scaling.md D5).
-vec4 readA(ivec3 p) { return texelFetch(tA, atlas(p), 0); }
-vec4 readB(ivec3 p) { return texelFetch(tB, atlas(p), 0); }
-void writeState(vec4 A, vec4 B) { oA = A; oB = B; }
+${stateOutGLSL}
 
 void main() {
   ivec3 p = cellFromFrag(ivec2(gl_FragCoord.xy));
-  if (p.y >= NY) { writeState(vec4(0.0), vec4(0.0)); return; }
-  if (any(lessThan(p, uFillMin)) || any(greaterThanEqual(p, uFillMax))) { writeState(readA(p), readB(p)); return; }
+  // padding texels (no cell) and cells outside the fill region copy through
+  if (!inGrid(p) || any(lessThan(p, uFillMin)) || any(greaterThanEqual(p, uFillMax))) { writeState(fetchA(p), fetchB(p)); return; }
   vec4 A, B;
   genCell(columnLayers(p.xz), uOrigin + p, A, B);
   writeState(A, B);

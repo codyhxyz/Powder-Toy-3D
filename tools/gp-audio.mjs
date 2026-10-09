@@ -41,7 +41,7 @@ await ev(async () => {
   const LAVA_T = 1400;   // °C
   const [A, B] = sim.blankState();
   const set = (x, y, z, id) => {
-    const i = ((Math.floor(y / g.tx) * g.nz + z) * g.width + (y % g.tx) * g.nx + x) * 4;
+    const i = sim.cellTexel(x, y, z) * 4;
     A[i] = id; A[i + 1] = id === E.LAVA ? LAVA_T : 20;
   };
   for (let x = 0; x < g.nx; x++) for (let z = 0; z < g.nz; z++) {

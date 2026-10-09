@@ -56,7 +56,7 @@ const r = await p.evaluate(async ({ PAIRS, SETTLE_MS, WINDOW_MS, SYNC_REPS }) =>
     const sim = a.sim, gpu = (id) => s.phases.find((ph) => ph.id === id).gpu;
     const sync = med([...Array(SYNC_REPS)].map(() => time(syncCal)));
     pairs.push({
-      sim: [gpu('sim'), time(() => { for (let i = 0; i < s.steps; i++) sim.step(); R.readRenderTargetPixels(sim.targets[sim.cur], 0, 0, 1, 1, f32); }) - sync],
+      sim: [gpu('sim'), time(() => { for (let i = 0; i < s.steps; i++) sim.step(); sim.gpuSync(); }) - sync],
       derived: [gpu('derived'), time(() => { sim.updateBricks(); R.readRenderTargetPixels(sim.light[1], 0, 0, 1, 1, f32); }) - sync],
       viewPost: [gpu('view') + gpu('post'), time(() => { a.post.render(a.scene, a.camera); syncCal(); }) - sync],
       sync: [s.overhead, sync], wall: s.wall, passes: s.passes.length,

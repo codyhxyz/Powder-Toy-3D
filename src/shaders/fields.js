@@ -36,7 +36,6 @@ import { materialsGLSL } from '../gfx/materials.js';
 export const fieldEmaFrag = (g) => /* glsl */ `
 ${prelude(g)}
 ${materialsGLSL()}
-uniform sampler2D tA;
 uniform sampler2D tP0;
 uniform sampler2D tP1;
 uniform vec4 uEmaS;
@@ -46,9 +45,9 @@ layout(location = 1) out vec4 o1;
 layout(location = 2) out vec4 o2;
 void main() {
   ivec2 f = ivec2(gl_FragCoord.xy);
-  ivec3 p = cellFromFrag(f);
-  if (p.y >= NY) { o0 = o1 = o2 = vec4(0.0); return; }
-  vec4 a = texelFetch(tA, f, 0);
+  ivec3 p = fieldCellFromFrag(f);
+  if (!inGrid(p)) { o0 = o1 = o2 = vec4(0.0); return; }
+  vec4 a = fetchA(p);
   int id = eid(a);
   vec4 s = vec4(0.0), m = vec4(0.0);
   int ch = SURFCH[id], md = MEDIACH[id];
@@ -80,14 +79,14 @@ layout(location = 0) out vec4 o0;
 layout(location = 1) out vec4 o1;
 ${final ? '' : 'layout(location = 2) out vec4 o2;'}
 void main() {
-  ivec3 p = cellFromFrag(ivec2(gl_FragCoord.xy));
-  if (p.y >= NY) { o0 = o1 = vec4(0.0); ${final ? '' : 'o2 = vec4(0.0);'} return; }
+  ivec3 p = fieldCellFromFrag(ivec2(gl_FragCoord.xy));
+  if (!inGrid(p)) { o0 = o1 = vec4(0.0); ${final ? '' : 'o2 = vec4(0.0);'} return; }
   ivec3 dir = uAxis == 0 ? ivec3(1, 0, 0) : (uAxis == 1 ? ivec3(0, 1, 0) : ivec3(0, 0, 1));
   vec4 s = vec4(0.0), m = vec4(0.0), d = vec4(0.0);
   for (int i = 0; i < 5; i++) {
     ivec3 q = p + dir * (i - 2);
     if (!inGrid(q)) continue;   // outside the box = crisp
-    ivec2 t = atlas(q);
+    ivec2 t = fieldAtlas(q);
     vec4 w = uW[i];
     s += w * texelFetch(t0, t, 0);
     m += w.x * texelFetch(t1, t, 0);
@@ -115,7 +114,7 @@ export const fieldBoostFrag = (g, stage) => /* glsl */ `
 ${prelude(g)}
 ${materialsGLSL()}
 uniform sampler2D t0;   // stage 0: φ, else the previous stage's field
-uniform sampler2D t1;   // stage 0: state A, else the occupancy so far
+${stage > 0 ? 'uniform sampler2D t1;   // the occupancy so far (stage 0 reads the state instead)' : ''}
 ${stage < 3 ? 'uniform vec4 uS;      // per-channel centre weight of the lattice smoothing (1 = none)' : ''}
 ${stage === LAST ? `uniform sampler2D tPhi;
 uniform sampler2D tMed;
@@ -125,19 +124,19 @@ layout(location = 1) out vec4 o1;
 layout(location = 2) out vec4 o2;   // ${stage < LAST ? 'the scratch targets have three attachments: unused' : 'thin mask'}
 void main() {
   ivec2 f = ivec2(gl_FragCoord.xy);
-  ivec3 p = cellFromFrag(f);
+  ivec3 p = fieldCellFromFrag(f);
   o2 = vec4(0.0);
-  if (p.y >= NY) { o0 = o1 = vec4(0.0); return; }
+  if (!inGrid(p)) { o0 = o1 = vec4(0.0); return; }
   const ivec3 dir = ivec3(${['1, 0, 0', '0, 1, 0', '0, 0, 1'][stage % 3]});
   vec4 acc = vec4(0.0), occ = vec4(0.0);
   for (int i = -1; i <= 1; i++) {
 ${stage < 3 ? `    // clamped to the edge, like the tracer's cubic sample
     ivec3 q = clamp(p + dir * i, ivec3(0), ivec3(NX, NY, NZ) - 1);
-    ivec2 t = atlas(q);
+    ivec2 t = fieldAtlas(q);
     acc += (i == 0 ? uS : 0.5 * (1.0 - uS)) * texelFetch(t0, t, 0);
-${stage === 0 ? `    int ch = SURFCH[eid(texelFetch(t1, t, 0))];
+${stage === 0 ? `    int ch = SURFCH[eid(fetchA(q))];
     if (ch >= 0) occ[ch] = 1.0;` : '    occ = max(occ, texelFetch(t1, t, 0));'}` : `    ivec3 q = p + dir * i;
-    if (inGrid(q)) acc = max(acc, texelFetch(t0, atlas(q), 0));`}
+    if (inGrid(q)) acc = max(acc, texelFetch(t0, fieldAtlas(q), 0));`}
   }
 ${stage >= 3 ? '  occ = texelFetch(t1, f, 0);' : ''}
 ${stage === LAST ? `  vec4 k = max(vec4(1.0), uBulk / max(acc, vec4(THIN_MIN_PEAK)));

@@ -78,7 +78,7 @@ const results = only.includes('e2e') ? { e2e: await e2e() } : await p.evaluate(a
     const sim = a.sim, g = sim.g;
     const [A, Bs] = sim.blankState();
     const set = (x, y, z, id) => {
-      const i = ((Math.floor(y / g.tx) * g.nz + z) * g.width + (y % g.tx) * g.nx + x) * 4;
+      const i = sim.cellTexel(x, y, z) * 4;
       A[i] = id; A[i + 1] = ELEMENTS[id].temp; A[i + 2] = ELEMENTS[id].life;
     };
     if (floor) for (let x = 0; x < g.nx; x++) for (let z = 0; z < g.nz; z++) set(x, 0, z, E.WALL);
@@ -192,13 +192,12 @@ const results = only.includes('e2e') ? { e2e: await e2e() } : await p.evaluate(a
       const c = tool.ballistics.lastImpact;
       if (f === 0) out.pool.handoff = c && { prev: r3(c.prev), cell: r3(c.cell), vel: r3(c.vel) };
       // where the slug is: read the SCRAP cells
-      const sim = a.sim, g = sim.g, n = g.width * g.height * 4;
-      const A = new Float32Array(n), Bv = new Float32Array(n);
-      a.renderer.readRenderTargetPixels(sim.targets[sim.cur], 0, 0, g.width, g.height, A, undefined, 0);
-      a.renderer.readRenderTargetPixels(sim.targets[sim.cur], 0, 0, g.width, g.height, Bv, undefined, 1);
-      for (let i = 0; i < n; i += 4) if (Math.round(A[i]) === E.SCRAP) {
-        const ax = (i / 4) % g.width, ay = Math.floor(i / 4 / g.width);
-        const x = ax % g.nx, y = Math.floor(ay / g.nz) * g.tx + Math.floor(ax / g.nx), z = ay % g.nz;
+      const sim = a.sim;
+      const [A, Bv] = sim.readState();
+      for (let i = 0; i < A.length; i += 4) if (Math.round(A[i]) === E.SCRAP) {
+        const c = sim.texelCell(i / 4);
+        if (!c) continue;   // a padding texel
+        const [x, y, z] = c;
         track.push({ step: f * 4, x, y, z, v: [Bv[i], Bv[i + 1], Bv[i + 2]].map((q) => +q.toFixed(2)) });
       }
       for (let i = 0; i < 4; i++) a.sim.step();

@@ -55,8 +55,7 @@ const res = await p.evaluate(async ([steps, FILL_RUNS, seed, verbose]) => {
   const sim = a.sim, g = sim.g, r = a.renderer;
   const P = worldParams({ size: [g.nx, g.ny, g.nz], seed: seed == null ? undefined : +seed });
   const gen = generatorFor(sim);
-  const px = new Float32Array(4);
-  const sync = () => r.readRenderTargetPixels(sim.targets[sim.cur], 0, 0, 1, 1, px, undefined, 0);
+  const sync = () => sim.gpuSync();
   const median = (v) => v.sort((x, y) => x - y)[v.length >> 1];
   const stat = (v) => `${median(v).toFixed(2)} (min ${Math.min(...v).toFixed(2)})`;
   const time = (fn) => { const t0 = performance.now(); fn(); sync(); return performance.now() - t0; };
@@ -76,14 +75,13 @@ const res = await p.evaluate(async ([steps, FILL_RUNS, seed, verbose]) => {
   // stability
   loadIsland(sim, { seed: P.seed });
   const read = () => {
-    const { width, height, nx, ny, nz, tx } = g;
-    const buf = new Float32Array(width * height * 4);
-    r.readRenderTargetPixels(sim.targets[sim.cur], 0, 0, width, height, buf, undefined, 0);
+    const { nx, ny, nz } = g;
+    const [buf] = sim.readState();
     const ids = new Uint8Array(nx * ny * nz), T = new Float32Array(nx * ny * nz);
     for (let y = 0; y < ny; y++)
       for (let z = 0; z < nz; z++)
         for (let x = 0; x < nx; x++) {
-          const i = ((Math.floor(y / tx) * nz + z) * width + (y % tx) * nx + x) * 4, j = (y * nz + z) * nx + x;
+          const i = sim.cellTexel(x, y, z) * 4, j = (y * nz + z) * nx + x;
           ids[j] = Math.round(buf[i]); T[j] = buf[i + 1];
         }
     return { ids, T };
@@ -140,12 +138,8 @@ const res = await p.evaluate(async ([steps, FILL_RUNS, seed, verbose]) => {
 
   // seams: generate at origin 0, then at a shifted origin, and compare where they overlap
   const SHIFT = 16;   // cells (D11's window step)
-  const readRaw = () => {
-    const buf = new Float32Array(g.width * g.height * 4);
-    r.readRenderTargetPixels(sim.targets[sim.cur], 0, 0, g.width, g.height, buf, undefined, 0);
-    return buf;
-  };
-  const at = (x, y, z) => ((Math.floor(y / g.tx) * g.nz + z) * g.width + (y % g.tx) * g.nx + x) * 4;
+  const readRaw = () => sim.readState()[0];
+  const at = (x, y, z) => sim.cellTexel(x, y, z) * 4;
   gen.fill(P, [0, 0, 0]);
   const base = readRaw();
   gen.fill(P, [SHIFT, 0, SHIFT]);

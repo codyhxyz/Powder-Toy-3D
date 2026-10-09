@@ -53,9 +53,14 @@ for (const [preset, v] of Object.entries(views)) {
     a.settings.paused = true;
     a.autoRes.enabled = false;
     a.post.settings.taa = false;   // TAA's jitter index isn't resettable: compare un-jittered frames
+    // The app boots running, so the day clock (the sun) has advanced by however
+    // many frames the page managed before this: put it back to the start of the day.
+    a.day.clock = 0;
     a.loadPreset(preset, false);
     a.sim.frame = 0;               // the sim's random streams are seeded by its step counter
     for (let i = 0; i < steps; i++) a.sim.step();
+    // let the frame loop see the world change now, not after the cameras reset uTime
+    for (let i = 0; i < 2; i++) await new Promise((r) => requestAnimationFrame(r));
   }, [preset, v.steps]);
   for (const [name, [pos, tgt]] of Object.entries(v.cams)) {
     await p.evaluate(async ([pos, tgt]) => {
