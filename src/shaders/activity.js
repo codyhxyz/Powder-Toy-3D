@@ -39,6 +39,7 @@ const INERT = /* glsl */ `
 // |j| ≤ jitter / 2, whose bound is this. Calmer than that is no wind (cells/step).
 const float AIR_JITTER_V = 0.5 * JITTER[E_EMPTY] / DRAG[E_EMPTY];
 const ivec3 FACES[6] = ivec3[6](ivec3(1,0,0), ivec3(-1,0,0), ivec3(0,1,0), ivec3(0,-1,0), ivec3(0,0,1), ivec3(0,0,-1));
+#define MASK_WORDS ((BS * BS * BS + 31) / 32)   // uints for one bit per cell of a brick
 
 // What acid eats (react.js): all but air, acid, walls, glass, water and gases.
 bool acidEats(int j) {
@@ -89,14 +90,16 @@ bool inertNear(ivec3 c, vec4 a) {
     if ((id == E_WATER && j == E_PLANT) || (id == E_PLANT && j == E_WATER)) return false;
     if (id == E_CLONE && (j == E_EMPTY || (a.w < 1.0 && j != E_WALL && j != E_CLONE))) return false;
     if (id == E_GUNPOWDER && !isGasLike(j) && n.y >= IGNITE[id]) return false;   // a hot touch sets it off
-    if (k == K_LIQUID && FACES[i].y == 0 && canMove(id, j, d, densityOf(j, n.y), 2)) return false;
+    // a powder or liquid: nowhere to fall, nor for a liquid to flow sideways
+    bool way = FACES[i].y < 0 || (k == K_LIQUID && FACES[i].y == 0);
+    if (k != K_SOLID && way && canMove(id, j, d, densityOf(j, n.y), FACES[i].y < 0 ? 0 : 2)) return false;
   }
   if (k == K_SOLID) return true;
-  // a powder or liquid: nothing below it, or in the lower ring, it could fall or topple into
+  // ... nor to topple into, in the rest of the lower ring
   for (int z = -1; z <= 1; z++)
   for (int x = -1; x <= 1; x++) {
     ivec3 q = c + ivec3(x, -1, z);
-    if (!inGrid(q)) continue;
+    if ((x == 0 && z == 0) || !inGrid(q)) continue;
     vec4 n = texelFetch(tA, atlas(q), 0);
     int j = eid(n);
     if (canMove(id, j, d, densityOf(j, n.y), 0)) return false;
@@ -117,16 +120,25 @@ void main() {
   oC = vec4(0.0);
   if (bc.y >= BY) return;
   ivec3 o = bc * BS;
-  // every cell's own state first: it is cheap and rules out most awake bricks
+  // every cell's own state first: it is cheap and rules out most awake
+  // bricks. It also notes which cells hold matter, the only ones whose
+  // neighbours matter (bit x + BS·(y + BS·z) of the mask).
+  uint matter[MASK_WORDS];
+  for (int w = 0; w < MASK_WORDS; w++) matter[w] = 0u;
   for (int z = 0; z < BS; z++)
   for (int y = 0; y < BS; y++)
   for (int x = 0; x < BS; x++) {
     ivec2 t = atlas(o + ivec3(x, y, z));
-    if (!inertSelf(texelFetch(tA, t, 0), texelFetch(tB, t, 0))) return;
+    vec4 a = texelFetch(tA, t, 0);
+    if (!inertSelf(a, texelFetch(tB, t, 0))) return;
+    int i = x + BS * (y + BS * z);
+    if (eid(a) != E_EMPTY) matter[i >> 5] |= 1u << (i & 31);
   }
   for (int z = 0; z < BS; z++)
   for (int y = 0; y < BS; y++)
   for (int x = 0; x < BS; x++) {
+    int i = x + BS * (y + BS * z);
+    if ((matter[i >> 5] & (1u << (i & 31))) == 0u) continue;
     ivec3 c = o + ivec3(x, y, z);
     if (!inertNear(c, texelFetch(tA, atlas(c), 0))) return;
   }
