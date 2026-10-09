@@ -1226,9 +1226,12 @@ vec3 farShadeBed(int id, vec3 p, vec3 n, float depth, int lid, float sunVis) {
 // the opaque field along the refracted ray (bedY < 0), else the plane y = bedY.
 vec3 farLiquid(vec3 p, vec3 rd, int lk, float sunVis, float bedY) {
   int lid = farLiquidId(lk);
+  // the ripples, as the window's water has them (liquid.js), so its sea carries on past the window
   vec3 n = liquidRipple(p, vec3(0.0, 1.0, 0.0));
   float F = fresnelSchlick(max(dot(-rd, n), 0.0), IOR[lid]);
-  vec3 refl = envReflect(p, reflect(rd, n), vec3(sunVis));
+  vec3 r = reflect(rd, n);
+  r.y = abs(r.y);   // a ripple tilted past a grazing view shows the sky above, not the ground (dark specks)
+  vec3 refl = envReflect(p, r, vec3(sunVis));
   vec3 rt = refract(rd, n, 1.0 / IOR[lid]);
   if (dot(rt, rt) < 1e-6) rt = vec3(0.0, -1.0, 0.0);
   float s = -1.0;
