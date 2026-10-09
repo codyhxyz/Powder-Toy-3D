@@ -15,9 +15,14 @@ import { prelude } from './common.js';
 // Size of the probed box, in cells. The body is BODY_WIDTH (1.6) wide, so its
 // footprint touches at most 3 cells per axis, and up to 7 cells in height.
 // Around it the box needs the cells the body touches, collides with, steps onto
-// (1 up, 1 down) and travels into before the next readback lands: 8 × 12 × 8 =
-// 768 texels.
-export const PROBE = { X: 8, Y: 12, Z: 8 };
+// (1 up, 1 down) and travels into before the next readback lands. player.js
+// leads the box by velocity × latency, but the body must stay inside it until the
+// readback lands, so the box must be larger than the body by the distance
+// travelled in one latency. Noita's run (28 cells/s) and flight (47 cells/s) at
+// ~10 fps with a few frames' latency is about 10 cells, so 16 × 32 × 16 = 8192
+// texels (128 KB a readback). A box too small for the speed skips updates and
+// freezes the body.
+export const PROBE = { X: 16, Y: 32, Z: 16 };
 // Element id a probe texel reports for a cell outside the grid (the box walls).
 export const PROBE_OUTSIDE = -1;
 
