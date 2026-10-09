@@ -40,8 +40,8 @@ export const costTier = (ms) => (ms < COST_LOW_MS ? 'low' : ms < COST_MEDIUM_MS 
 // (metres per pixel) above which the feature draws nothing, so the view
 // shader leaves it out (gfx/detailGate.js). Infinity = always in.
 // Relief (shaders/gfx/relief.js) starts once its tallest feature, rock crags
-// (top ≈ 17.5 mm), spans RELIEF_PX_LO = 1 pixel.
-const RELIEF_FADE_M = 0.0175;   // m per pixel
+// (top = ROCK_CRAG_H · RELIEF_CRAG_TOP = 7 cm · 0.5), spans RELIEF_PX_LO = 1 pixel.
+const RELIEF_FADE_M = 0.035;   // m per pixel
 // Grains (shaders/gfx/grains.js) start where a pebble (PEBBLE_M = 5 cm) or a
 // clod's lump (2 · CLOD_LUMP_R = 0.34 cells ≈ 10 cm) spans 8 pixels (*_PX_NONE).
 const GRAINS_FADE_M = 0.05 / 8;           // m per pixel
@@ -68,7 +68,7 @@ const MENISCUS_FADE_M = MENISCUS_PX * 0.0027;   // m per pixel
 export const DETAIL = [
   // high: lab eyeWood (a wall of bark face-on) 9 → 48 ms; eyeSand +4, volcano eyeFlank +10
   { key: 'relief', define: 'DETAIL_RELIEF', label: 'Surface relief up close', cost: 'high', fadeM: RELIEF_FADE_M,
-    desc: 'Sand, snow, ash, gunpowder, rock and wood get real relief when you are close: crags, clumps and bark furrows with true outlines and parallax' },
+    desc: 'Sand, snow, ash, gunpowder, rock and wood get real relief when you are close: crags, clumps and bark furrows with true outlines, parallax and their own shadows' },
   // high: volcano eyeSummit +17, eyeFlank +12 ms
   { key: 'grains', define: 'DETAIL_GRAINS', label: 'Pebbles and grains up close', cost: 'high', fadeM: GRAINS_FADE_M,
     desc: 'Up close, rubble is a pile of real broken-rock chips (~5 cm): faces, edges, gaps and contact shadows instead of a texture' },
