@@ -19,19 +19,20 @@ import { BODY_HEIGHT, BODY_WIDTH } from './constants.js';
 // they are. Each frame the vehicle's steered velocity becomes the body's wished
 // move (direction and share of top speed), the same input the player's keys
 // give, and the body does the moving. When the body is blocked it jumps; in
-// liquid it swims up to keep its head out, and jets out when a wall stops it.
+// liquid it dives after a player below it, swims up to breathe, and jets out
+// when a wall stops it.
 //
 // The player's axe and gun hit it through targets.js.
 
 // senses
 const SIGHT = 48;                 // cells: notices a player this close...
 const LOSE = 72;                  // ...and gives up past this
-const ATTACK_REACH = 3.6;         // cells between body centres from which the axe lands (arm + axe)
+const ATTACK_REACH = 4.5;         // cells between body centres from which the axe lands: half a body (0.8) + arm and axe (2.5) + half a body
 const ATTACK_HEIGHT = BODY_HEIGHT; // cells: the player's feet within this of its own
 
 // steering (Yuka units: cells, s)
 const MAX_SPEED = 24;             // cells/s it steers at: a little under the player's sprint (28.5), so the jet and a sprint escape
-const MAX_FORCE = 120;            // cells/s²: how hard it can turn
+const MAX_FORCE = 240;            // cells/s²: how hard it can turn (reverses from full speed in 0.2 s)
 const PREDICTION = 0.6;           // pursuit's look-ahead, as Yuka's predictionFactor
 const WANDER = [4, 8, 30];        // Yuka WanderBehavior radius, distance, jitter
 const WANDER_SHARE = 0.35;        // of top speed: a stroll
@@ -49,7 +50,8 @@ const KNOCK_UP = 0.4;             // upward share of the knockback
 const STUCK_SPEED = 0.25;         // share of the wished speed below which it counts as blocked...
 const STUCK_S = 0.2;              // ...for this long, then it jumps
 const JUMP_COOLDOWN_S = 0.5;
-const CLIMB_FROM = 3;             // cells: a player this much higher makes it jump when near
+const CLIMB_FROM = 3;             // cells: a player this much higher makes it jump when near (and this much lower, dive)
+const SURFACE_BREATH = 0.35;      // breath left (0..1) at which it gives up diving and swims up
 
 // being hit
 const FLINCH_S = 0.3;             // s it can't swing after taking a blow
@@ -201,6 +203,7 @@ export function createAxeman({ renderer, getSim }) {
     compile(r, camera, scene) { return figure.compile(r, camera, scene); },
     get body() { return body; },
     get state() { return brain.stateName; },   // 'wander', 'chase' or 'attack' (checks)
+    get debug() { return { stuckT, jump: input.jump, move: Math.hypot(input.move.x, input.move.z), sub: body.submerged, ground: body.onGround, fuel: body.jetFuel }; },   // (checks)
     update(dt, w) {
       world = w;
       const sim = getSim();
@@ -231,9 +234,13 @@ export function createAxeman({ renderer, getSim }) {
       const want = share * MAX_SPEED, got = Math.hypot(body.vel.x, body.vel.z);
       stuckT = want > 0 && got < want * STUCK_SPEED ? stuckT + dt : 0;
       const climb = brain.fsm.in('chase') && npc.preyDy() > CLIMB_FROM && npc.preyDist() < SIGHT / 4;
+      input.down = false;
       if (body.inLiquid) {
-        // swim up to breathe; stopped by a wall (a tank's side), hold it: the jet lifts it out
-        input.jump = alive && (body.headInLiquid || stuckT > STUCK_S);
+        // after a player below it dives, until its breath runs low; else swims up to
+        // breathe, and stopped by a wall (a tank's side) holds jump: the jet lifts it out
+        const dive = alive && brain.fsm.in('chase') && npc.preyDy() < -CLIMB_FROM && body.breath > SURFACE_BREATH;
+        input.down = dive;
+        input.jump = alive && !dive && (body.headInLiquid || stuckT > STUCK_S);
       } else {
         input.jump = alive && body.onGround && jumpWait === 0 && (stuckT > STUCK_S || climb);
         if (input.jump) { jumpWait = JUMP_COOLDOWN_S; stuckT = 0; }
