@@ -66,7 +66,11 @@ export function createPov(app) {
       min.set(player.pos.x - BODY_WIDTH / 2, player.pos.y, player.pos.z - BODY_WIDTH / 2);
       max.set(player.pos.x + BODY_WIDTH / 2, player.pos.y + BODY_HEIGHT, player.pos.z + BODY_WIDTH / 2);
     },
-    hurt(amount, cause, d) { player.hurt(amount * PLAYER_DAMAGE_TAKEN, cause); player.applyImpulse(d.clone().setY(Math.max(d.y, 0) + PLAYER_KNOCK_UP).normalize().multiplyScalar(PLAYER_KNOCKBACK)); },
+    hurt(amount, cause, d) {
+      povEvents.emit('player:hit', { amount });   // inside the attacker's povEvents.as(): carries its id
+      player.hurt(amount * PLAYER_DAMAGE_TAKEN, cause);
+      player.applyImpulse(d.clone().setY(Math.max(d.y, 0) + PLAYER_KNOCK_UP).normalize().multiplyScalar(PLAYER_KNOCKBACK));
+    },
   });
   const viewmodel = new THREE.Group();
   viewmodel.name = 'pov-viewmodel';

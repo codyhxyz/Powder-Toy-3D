@@ -265,6 +265,19 @@ each NPC); a weapon never hits its own wielder. The player takes half damage fro
 Checks: `__app.pov.npc.debug` (goal, weapon, tool, sees, pack, last refusal), `__app.pov.npc.agent`,
 `__app.pov.events`.
 
+**Fair and fun (2026-10-09).** The standard shooter-AI rules, in `ai/brain.js`: a 0.7 s reaction before it
+attacks something it just saw (Halo and Doom AI); its first shot after spotting you is a deliberate near miss
+and its gun's spread narrows from 0.16 to 0.05 rad over 4 s in sight (Naughty Dog's accuracy ramp); every
+dangerous action has a tell (axe raised 0.6 s, arm up 0.6 s before a bomb, the torch aimed 0.4 s before it
+lights, then 1 s bursts with rests); a hit staggers it out of a wind-up; after it hurts you it takes a 0.9 s
+breather. It takes 60% damage (four gunshots or five axe blows); you take 50% from its weapons. Bomb blasts
+and burns are the sim's physics and aren't scaled, so it uses those sparingly.
+
+Playtest: `node tools/npc-playtest.mjs [--url …] [--styles afk,gunner,brawler,runner] [--matches 3]` (AC power).
+Scripted players fight it with real input; it reports wins, time to kill both ways, damage by cause and the
+worst second. Targets: an AFK player lasts 20–60 s; a fighting player wins most duels but loses some health;
+no second takes more than half your health; a runner gets away.
+
 ## Verifying (headless GPU)
 
 - Use playwright's Chromium with `--use-angle=metal --enable-gpu --ignore-gpu-blocklist` against your own

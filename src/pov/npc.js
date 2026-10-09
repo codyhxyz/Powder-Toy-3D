@@ -39,6 +39,7 @@ const SURFACE_BREATH = 0.35;      // breath left (0..1) at which it gives up div
 
 // being hit
 const HIT_KNOCKBACK = 14;         // cells/s a blow throws it
+const DAMAGE_TAKEN = 0.6;         // share of a weapon's damage it takes: four gunshots or five axe blows (two shots felt flimsy)
 const KNOCK_UP = 0.4;             // upward share of a knockback
 
 // life
@@ -119,6 +120,8 @@ export function createNpc({ env, ai }) {
     primary: false, secondary: false, primaryPressed: false, secondaryPressed: false, player: body, viewBobbing: false,
   };
   const actor = { id, at: eye };
+  // it hurt the player: a breather before its next attack
+  const offLanded = povEvents.on('player:hit', (e) => { if (e.by === id) agent.landed(); });
   const hit = {};
 
   const removeTarget = addTarget({
@@ -129,20 +132,25 @@ export function createNpc({ env, ai }) {
       max.set(body.pos.x + HW, body.pos.y + BODY_HEIGHT, body.pos.z + HW);
     },
     hurt(amount, cause, d) {
-      body.hurt(amount, cause);
+      body.hurt(amount * DAMAGE_TAKEN, cause);
+      agent.stagger();   // a hit stops its wind-up
       body.applyImpulse(tmp.set(d.x, Math.max(d.y, 0) + KNOCK_UP, d.z).normalize().multiplyScalar(HIT_KNOCKBACK));
       agent.alert();   // it knows where you are now
     },
   });
 
-  // drop in at SPAWN_DIST from the player, on a random bearing, inside the box
-  function spawn(sim) {
+  // drop in at SPAWN_DIST from the player, on a random bearing, inside the box (or at `at`)
+  function spawn(sim, at = null) {
     const g = sim.g, p = world.player.pos;
     const a = Math.random() * 2 * Math.PI;
     const x = THREE.MathUtils.clamp(p.x + Math.cos(a) * SPAWN_DIST, EDGE, g.nx - EDGE);
     const z = THREE.MathUtils.clamp(p.z + Math.sin(a) * SPAWN_DIST, EDGE, g.nz - EDGE);
     const y = Math.min(p.y + SPAWN_DROP, g.ny - BODY_HEIGHT - 1);
-    body.spawn(new THREE.Vector3(x, y, z));
+    body.spawn(at ? new THREE.Vector3(at.x, at.y, at.z) : new THREE.Vector3(x, y, z));
+    agent.record.timeLastSensed = -Infinity;
+    agent.record.visible = false;
+    agent.cool = {};
+    agent.useState = null;
     agent.velocity.set(0, 0, 0);
     agent.brain.clearSubgoals();
     agent.brain.status = 'inactive';
@@ -249,6 +257,8 @@ export function createNpc({ env, ai }) {
     },
     setVisible(v) { figure.setVisible(v && spawned); },
     reset() { spawned = false; kit.putAway(); figure.setVisible(false); },
-    dispose() { removeTarget(); kit.dispose(); figure.dispose(); body.dispose(); },
+    // a fresh NPC at `at` (grid cells): health, memory and cooldowns reset (playtests)
+    placeAt(at) { const sim = env.getSim(); if (sim && world) spawn(sim, at); },
+    dispose() { offLanded(); removeTarget(); kit.dispose(); figure.dispose(); body.dispose(); },
   };
 }

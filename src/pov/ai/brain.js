@@ -36,10 +36,26 @@ const SIGHT = 80;                    // cells: farther than this it doesn't see 
 const TOUCH = 4;                     // cells: this close it senses the target even through debris (hears, touches)
 const CHEST = 3;                     // cells above the feet it aims at
 const TOOL_EYE = EYE_HEIGHT;
-const AIM_ERROR = 0.06;              // rad, its hand's spread with the gun (σ): about one hit in three at 30 cells
-const AIM_ERROR_MOVING = 0.002;      // rad more per cell/s the target moves
+// Fairness, the standard shooter-AI rules: it reacts after a perception delay
+// (Halo and Doom AI), its first shot after spotting you misses on purpose and
+// its aim tightens the longer it has you in sight (Naughty Dog's accuracy ramp
+// in Uncharted and The Last of Us), every dangerous action has a wind-up you can
+// see (the tell), a hit staggers it out of a wind-up, and after it lands a hit
+// it takes a breather before the next attack.
+const REACTION_S = 0.7;              // s it has to see the target before it attacks
+const AIM_ERROR_START = 0.16;        // rad, its gun's spread (σ) when it first has you in sight...
+const AIM_ERROR = 0.05;              // ...narrowing to this...
+const AIM_RAMP_S = 4;                // ...over this long in sight
+const AIM_ERROR_MOVING = 0.003;      // rad more per cell/s the target moves
+const WARNING_MISS = 2.5;            // body widths aside its first shot lands (a near miss you see and hear)
+const STAGGER_S = 0.35;              // s a hit stops it (and loses its wind-up)
+const BREATHER_S = 0.9;              // s after it hurts the target before it attacks again
+const THROW_WINDUP = 0.6;            // s the arm is up before a bomb leaves (the tell)
+const TORCH_IGNITE_S = 0.4;          // s the torch is aimed before the flame lights
+const TORCH_BURST_S = 1;             // s the flame burns at most...
+const TORCH_REST_S = 1.6;            // ...then it rests
 const GUN_INTERVAL = 1.1;            // s between its shots
-const AXE_WINDUP = 0.45;             // s it faces the target, axe up, before a blow (the tell)
+const AXE_WINDUP = 0.6;              // s it faces the target, axe up, before a blow (the tell)
 const AXE_COOLDOWN = 0.5;            // s after a blow
 const AXE_RANGE = Math.min(HAND_REACH, 6);   // cells: it swings from closer than the hand's reach
 const TORCH_RANGE = 1.5 + TORCH.LENGTH;      // cells: nozzle reach + flame
@@ -175,6 +191,16 @@ export class Agent extends Vehicle {
     }
     rec.visible = visible;
   }
+
+  // a hit: stagger out of whatever it was winding up
+  stagger() {
+    this.cooldown('ATTACK', STAGGER_S);
+    this.useState = null;
+  }
+  // it hurt the target: a breather before the next attack
+  landed() { this.cooldown('ATTACK', BREATHER_S); }
+  // s it has had the target in sight, this time
+  get inSight() { return this.sees ? this.now - this.record.timeBecameVisible : 0; }
 
   // it was hurt by the target, or heard it: it knows where the target is now
   alert() {
@@ -338,6 +364,12 @@ class AttackGoal extends CompositeGoal {
     const w = chooseWeapon(a);
     if (!w) {   // nothing usable from here: get closer
       approach(a);
+      return;
+    }
+    // not yet: still reacting to the sight of it, staggered, or catching its breath; face it and hold
+    if ((a.sees && a.inSight < REACTION_S) || !a.ready('ATTACK')) {
+      a.lookAt(a.chest());
+      a.hold(w);
       return;
     }
     USE[w](a);
@@ -523,21 +555,43 @@ const USE = {
   GUN(a) {
     a.hold('GUN');
     const t = a.target;
-    const err = AIM_ERROR + AIM_ERROR_MOVING * Math.hypot(t.vel.x, t.vel.z);
-    aimWith(a, a.chest(), err);
+    const ramp = Math.min(a.inSight / AIM_RAMP_S, 1);
+    const err = AIM_ERROR_START + (AIM_ERROR - AIM_ERROR_START) * ramp + AIM_ERROR_MOVING * Math.hypot(t.vel.x, t.vel.z);
+    const c = a.chest();
+    if (a.warnedAt !== a.record.timeBecameVisible) {
+      // the first shot since it spotted you: a near miss to one side
+      const e = a.eye(), dx = c.x - e.x, dz = c.z - e.z, d = Math.hypot(dx, dz) || 1, side = Math.random() < 0.5 ? -1 : 1;
+      a.lookAt({ x: c.x - (dz / d) * side * WARNING_MISS * 1.6, y: c.y, z: c.z + (dx / d) * side * WARNING_MISS * 1.6 });
+      if (a.ready('GUN')) { a.intent.primaryPressed = true; a.cooldown('GUN', GUN_INTERVAL); a.warnedAt = a.record.timeBecameVisible; }
+      return;
+    }
+    aimWith(a, c, err);
     if (a.dist3 > 60) a.chase(0.6);
     if (a.ready('GUN')) { a.intent.primaryPressed = true; a.cooldown('GUN', GUN_INTERVAL); }
   },
   BOMB(a) {
+    const s = a.useState ??= {};
+    if (s.tool !== 'BOMB') { s.tool = 'BOMB'; s.t = 0; }
+    s.t += a.dt;
+    a.hold('BOMB');
+    a.lookAt(a.chest());
+    a.intent.chop = Math.min(s.t / THROW_WINDUP, 1) * 0.7;   // the arm goes up: the tell
+    if (s.t < THROW_WINDUP) return;
     const t = a.target.pos, d = a.dist;
     const at = { x: t.x + gauss() * BOMB_ERROR * d, y: t.y, z: t.z + gauss() * BOMB_ERROR * d };
     if (throwBombAt(a, at, false)) a.cooldown('BOMB', BOMB_COOLDOWN);
+    s.tool = null;
   },
   BLOWTORCH(a) {
+    const s = a.useState ??= {};
+    if (s.tool !== 'BLOWTORCH') { s.tool = 'BLOWTORCH'; s.t = 0; }
     a.hold('BLOWTORCH');
     a.lookAt(a.chest());
-    if (a.dist3 > TORCH_RANGE - 0.5) a.chase();
-    a.intent.primary = a.dist3 < TORCH_RANGE + 1;
+    if (a.dist3 > TORCH_RANGE - 0.5) { a.chase(); s.t = 0; return; }
+    s.t += a.dt;
+    // aimed a moment (the tell), a burst, then a rest
+    a.intent.primary = s.t > TORCH_IGNITE_S;
+    if (s.t > TORCH_IGNITE_S + TORCH_BURST_S) { a.cooldown('ATTACK', TORCH_REST_S); s.tool = null; }
   },
   PHYSGUN(a) {
     const s = a.useState ??= {};
