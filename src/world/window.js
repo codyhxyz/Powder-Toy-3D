@@ -57,6 +57,7 @@ export class WorldWindow {
     this.planted = new Uint8Array(this.wb[0] * this.wb[2]);       // brick columns whose trees are in
     this.baked = new Map();
     this.pending = null;                                          // the leaving slab's readback
+    this.epoch = 0;                                               // bumped by load and dispose: older readbacks are dropped
     this.last = null;                                             // what the last move cost (tools)
 
     // the largest slab a move exchanges, and the targets it goes through
@@ -94,6 +95,7 @@ export class WorldWindow {
   // (Re)load the world from the generator with the window at `origin`: no edits, nothing planted.
   load(origin = this.centre()) {
     const sim = this.sim, g = sim.g;
+    this.epoch++;   // a slab of the old world still being read back is dropped
     this.store.clear();
     this.planted.fill(0);
     sim.origin.set(origin[0], 0, origin[2]);
@@ -161,7 +163,7 @@ export class WorldWindow {
   readBack(base, bricks) {
     const n = bricks[0] * bricks[1] * bricks[2];
     const rows = Math.ceil(n * BRICK_CELLS / STAGE_W), drows = Math.ceil(n / DIFF_W);
-    const r = this.renderer, t0 = performance.now(), last = () => this.last;
+    const r = this.renderer, t0 = performance.now(), last = () => this.last, epoch = this.epoch;
     const a = this.bufA.subarray(0, STAGE_W * rows * 4), b = this.bufB.subarray(0, STAGE_W * rows * 4);
     const f = this.bufF.subarray(0, DIFF_W * drows * 4);
     this.pending = Promise.all([
@@ -169,6 +171,7 @@ export class WorldWindow {
       r.readRenderTargetPixelsAsync(this.stage, 0, 0, STAGE_W, rows, b, undefined, 1),
       r.readRenderTargetPixelsAsync(this.diffTarget, 0, 0, DIFF_W, drows, f),
     ]).then(() => {
+      if (epoch !== this.epoch) return;
       const t1 = performance.now();
       let kept = 0;
       for (let i = 0; i < n; i++) {
@@ -264,6 +267,7 @@ export class WorldWindow {
   }
 
   dispose() {
+    this.epoch++;
     this.gen.dispose();
     this.stage.dispose();
     this.diffTarget.dispose();

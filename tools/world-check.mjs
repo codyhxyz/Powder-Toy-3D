@@ -15,22 +15,31 @@
 //   5. cost: per move (CPU, GPU-synced, readback latency, storing), frame times
 //      during a continuous walk with the sim running, interleaved with walks
 //      that don't move the window; the store after the long walk.
-// usage: node tools/world-check.mjs [outDir] [--port 5411] [--skip 4,5]
+// usage: node tools/world-check.mjs [outDir] [--port 5411] [--skip 4,5] [--detail on|off|default]
+//   --detail: close-up detail features (gfx/detail.js) all on (the default:
+//   they add most of the texture a move could make jump), all off, or as
+//   their cost tiers set them.
 import { chromium } from 'playwright';
 import { mkdirSync } from 'fs';
 import { execFileSync } from 'child_process';
+import { DETAIL, settingKey, detailDefaults } from '../src/gfx/detail.js';
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
 const out = args[0] && !args[0].startsWith('--') ? args[0] : null;
 const port = opt('port', '5411');
 const skip = new Set(String(opt('skip', '')).split(',').filter(Boolean).map(Number));
+const detailMode = opt('detail', 'on');
+const detail = detailMode === 'default' ? detailDefaults()
+  : Object.fromEntries(DETAIL.map((f) => [settingKey(f), detailMode === 'on']));
 if (out) mkdirSync(out, { recursive: true });
 
-// the walk: the window starts on the west coast (meadow, trees, sea) and goes
-// round a loop (world cells, the window's origin), out to more than 3 window
-// widths from the edits and back
-const START = [128, 384];
-const LOOP = [[576, 384], [576, 640], [128, 640], [128, 384]];
+// the walk: the window starts in the hills (bare rock round its centre, so
+// the edits land on ground, not in a canopy) and goes round a loop (world
+// cells, the window's origin), out to more than 3 window widths from the
+// edits and back. The stills look at the west coast (sea, beach, meadow, trees).
+const START = [448, 192];
+const LOOP = [[896, 192], [896, 448], [448, 448], [448, 192]];
+const COAST = [128, 384];
 const SETTLE_STEPS = 240;     // sim steps the edits get to land and settle before the walk
 const FRAME_LIMIT = 4000;     // frames a walk may take before the check gives up
 const COST_MOVES = 12;        // moves timed one by one
@@ -41,8 +50,8 @@ const SETTLE_FRAMES = 90;     // frames for the derived passes and GI to converg
 
 const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
 const p = await b.newPage({ viewport: { width: 1280, height: 800 } });
-await p.addInitScript(() => {
-  localStorage.setItem('powder-toy-3d:settings', JSON.stringify({ paused: true }));
+await p.addInitScript((detail) => {
+  localStorage.setItem('powder-toy-3d:settings', JSON.stringify({ paused: true, ...detail }));
   addEventListener('DOMContentLoaded', () => {
     const st = document.createElement('style');
     st.textContent = 'body *{visibility:hidden !important} #app > canvas{visibility:visible !important}';
@@ -55,7 +64,7 @@ await p.addInitScript(() => {
   window.__hold = () => { held ??= []; };
   window.__release = () => { const h = held ?? []; held = null; h.forEach((cb) => window.requestAnimationFrame(cb)); };
   window.__rawFrame = () => new Promise((r) => raf(() => r()));
-});
+}, detail);
 const errs = [];
 p.on('console', (m) => { if (m.type() === 'error' && !/ERR_CONNECTION_REFUSED/.test(m.text())) errs.push(m.text().slice(0, 600)); });
 p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 600)));
@@ -123,29 +132,29 @@ const res = {};
 const evalPage = (fn, arg) => p.evaluate(fn, arg);
 
 // ------------------------------------------------------------- 1. diff
-if (!skip.has(1)) res.diff = await evalPage(async ([START]) => {
+if (!skip.has(1)) res.diff = await evalPage(async ([O]) => {
   const a = window.__app, H = window.__wc, w = a.win, sim = a.sim, g = sim.g;
   const { STORE_MATTER_T } = await import('/src/shaders/generate.js');
-  a.worldLoad([START[0], 0, START[1]]);
+  a.worldLoad([O[0], 0, O[1]]);
   const withTrees = H.bricks();
   // the generator alone (no trees) over the same window
-  w.gen.fill(w.P, [START[0], 0, START[1]]);
+  w.gen.fill(w.P, [O[0], 0, O[1]]);
   const bare = H.bricks();
   const treeBricks = new Set([...withTrees].filter(([k, v]) => H.compare(v, bare.get(k), 0, 0) !== 'same').map(([k]) => k));
   // the diff pass over the window with its trees, slab by slab, read back now
-  a.worldLoad([START[0], 0, START[1]]);
+  a.worldLoad([O[0], 0, O[1]]);
   const flagged = new Set(), r = a.renderer;
   for (let x0 = 0; x0 < g.nx; x0 += 16) {
     const bricks = [4, g.ny / 4, g.nz / 4], n = bricks[0] * bricks[1] * bricks[2];
     w.gen.diff(w.P, [x0, 0, 0], bricks, w.diffTarget);
     const f = new Uint8Array(w.diffTarget.width * w.diffTarget.height * 4);
     r.readRenderTargetPixels(w.diffTarget, 0, 0, w.diffTarget.width, w.diffTarget.height, f);
-    for (let i = 0; i < n; i++) if (f[i * 4]) flagged.add(`${START[0] / 4 + x0 / 4 + (i % 4)},${Math.floor(i / 4) % bricks[1]},${START[1] / 4 + Math.floor(i / (4 * bricks[1]))}`);
+    for (let i = 0; i < n; i++) if (f[i * 4]) flagged.add(`${O[0] / 4 + x0 / 4 + (i % 4)},${Math.floor(i / 4) % bricks[1]},${O[1] / 4 + Math.floor(i / (4 * bricks[1]))}`);
   }
   const missed = [...treeBricks].filter((k) => !flagged.has(k)).length;
   const extra = [...flagged].filter((k) => !treeBricks.has(k)).length;
   return { treeBricks: treeBricks.size, flagged: flagged.size, missed, extra, ok: missed === 0 && extra === 0, matterTolerance: STORE_MATTER_T };
-}, [START]);
+}, [COAST]);
 
 // ------------------------------------------------------------- 2. round trip, 3. seams
 if (!skip.has(2)) {
@@ -231,10 +240,14 @@ if (!skip.has(2)) {
     // compare every brick of the window with its state before the walk
     const tally = { same: 0, equivalent: 0, different: 0, missing: 0 };
     const differentKeys = [];
+    // a brick that came back changed (only in what the store ignores) was
+    // regenerated: it must be the freshly loaded world's, bit for bit
+    let regenerated = 0, regeneratedAsFresh = 0;
     for (const [k, v] of before) {
       if (!after.has(k)) { tally.missing++; continue; }
       const r = H.compare(v, after.get(k), PHYS.AIR_REST_T, STORE_MATTER_T);
       tally[r]++;
+      if (r === 'equivalent') { regenerated++; if (H.compare(fresh.get(k), after.get(k), 0, 0) === 'same') regeneratedAsFresh++; }
       if (r === 'different' && differentKeys.length < 10) differentKeys.push(k);
     }
     if (tally.missing) return { error: 'the walk did not come back', origin: [sim.origin.x, sim.origin.z], legs, seams: far };
@@ -245,29 +258,34 @@ if (!skip.has(2)) {
       spot: [sim.origin.x + c[0], sim.origin.z + c[1]],
       editedBricks: edited.length, editedBricksExact: editedExact,
       cells: { sand: [count(before, E.SAND), count(after, E.SAND)], water: [count(before, E.WATER), count(after, E.WATER)], wall: [count(before, E.WALL), count(after, E.WALL)] },
-      bricks: tally, differentKeys, legs, storeMax, storeAfter: w.stats(), seams: far,
-      ok: editedExact === edited.length && tally.different === 0 && far && far.cellsDifferingA === 0 && far.cellsDifferingB === 0,
+      bricks: tally, regenerated, regeneratedAsFresh, differentKeys, legs, storeMax, storeAfter: w.stats(), seams: far,
+      ok: editedExact === edited.length && tally.different === 0 && regeneratedAsFresh === regenerated
+        && far && far.cellsDifferingA === 0 && far.cellsDifferingB === 0,
     };
   }, [START, LOOP, SETTLE_STEPS, FRAME_LIMIT]);
 }
 
 // stills: park the frame loop, optionally aim the focus one move east, then
-// let exactly one frame run (at jitter index K) and capture what it drew
-async function still(path, K, move = false) {
-  await p.evaluate(async ([K, move]) => {
+// let exactly one frame run (at jitter index K) and capture what it drew. pin:
+// the passes keep seeing the origin from before the move (the control: a
+// renderer that isn't anchored in the world), until unpin().
+async function still(path, K, move = false, pin = false) {
+  await p.evaluate(async ([K, move, pin]) => {
     const a = window.__app, sim = a.sim, g = sim.g;
     window.__hold();
     for (let i = 0; i < 2; i++) await window.__rawFrame();
+    if (pin) sim.originUniform.value = sim.origin.clone();
     if (move) a.worldFocus = [sim.origin.x + g.nx / 2 + 16 + 5, sim.origin.z + g.nz / 2];
     a.requestRender();
     a.volume.material.uniforms.uFrame.value = K - 1;
     window.__release();
     window.__hold();
     for (let i = 0; i < 2; i++) await window.__rawFrame();
-  }, [K, move]);
+  }, [K, move, pin]);
   await p.screenshot({ path });
   await p.evaluate(() => window.__release());
 }
+const unpin = () => p.evaluate(() => { const sim = window.__app.sim; sim.originUniform.value = sim.origin; });
 const ae = (x, y) => {
   try { return +execFileSync('compare', ['-metric', 'AE', '-fuzz', '1%', x, y, 'null:'], { stdio: 'pipe' }).toString().split(' ')[0]; }
   catch (e) { return +String(e.stderr).split(' ')[0]; }
@@ -279,12 +297,12 @@ const rmse = (x, y) => {
 
 // ------------------------------------------------------------- 3b. a still across the slabs
 if (out && !skip.has(3)) {
-  await p.evaluate(async ([START, SETTLE_FRAMES]) => {
+  await p.evaluate(async ([O, SETTLE_FRAMES]) => {
     const a = window.__app, H = window.__wc;
     a.post.settings.taa = true;
-    a.worldLoad([START[0], 0, START[1]]);
+    a.worldLoad([O[0], 0, O[1]]);
     // walk a few slabs east so the view crosses slabs filled one at a time
-    await H.walk([START[0] + 64, START[1] + 32], 600);
+    await H.walk([O[0] + 64, O[1] + 32], 600);
     a.worldFocus = null;
     const g = a.sim.g, s = a.scale, v = a.volume.position;
     a.camera.position.set(v.x + 0.15 * g.nx * s, v.y + 0.6 * g.ny * s, v.z + 1.05 * g.nz * s);
@@ -293,20 +311,22 @@ if (out && !skip.has(3)) {
     a.worldFocus = [a.sim.origin.x + g.nx / 2, a.sim.origin.z + g.nz / 2];   // stay put
     a.post.reset();
     await H.frames(SETTLE_FRAMES);
-  }, [START, SETTLE_FRAMES]);
+  }, [COAST, SETTLE_FRAMES]);
   await still(`${out}/seams.png`, JUMP_FRAME);
 }
 
 // ------------------------------------------------------------- 4. no texture jump, and the pop
 if (!skip.has(4) && out) {
   res.jump = {};
-  for (const keep of [true, false]) {
-    const tag = keep ? 'moved' : 'reset';
-    await p.evaluate(async ([START, keep, SETTLE_FRAMES]) => {
+  // moved: the render history moves with the cells; reset: it starts over
+  // (the pop); unanchored: moved, but drawn with the origin from before the move
+  for (const tag of ['moved', 'reset', 'unanchored']) {
+    const keep = tag !== 'reset', pin = tag === 'unanchored';
+    await p.evaluate(async ([O, keep, SETTLE_FRAMES]) => {
       const a = window.__app, H = window.__wc, sim = a.sim, g = sim.g;
       a.post.settings.taa = false;   // compare frames, not their history
       sim.shiftKeepsHistory = keep;
-      a.worldLoad([START[0], 0, START[1]]);
+      a.worldLoad([O[0], 0, O[1]]);
       a.worldFocus = [sim.origin.x + g.nx / 2, sim.origin.z + g.nz / 2];
       // close over the middle of the window, the box's sides out of view
       const s = a.scale, v = a.volume.position;
@@ -316,15 +336,16 @@ if (!skip.has(4) && out) {
       a.controls.target.set(v.x + (gx + 6) * s, gy * s, v.z + (gz + 6) * s);
       a.controls.update();
       await H.frames(SETTLE_FRAMES);
-    }, [START, keep, SETTLE_FRAMES]);
+    }, [COAST, keep, SETTLE_FRAMES]);
     await still(`${out}/jump-${tag}-before.png`, JUMP_FRAME);
     // one move east, made and drawn in the same frame: the camera stays where it is in the world
     const o0 = await p.evaluate(() => window.__app.sim.origin.x);
-    await still(`${out}/jump-${tag}-after1.png`, JUMP_FRAME, true);
+    await still(`${out}/jump-${tag}-after1.png`, JUMP_FRAME, true, pin);
     const o1 = await p.evaluate(() => window.__app.sim.origin.x);
     if (o1 !== o0 + 16) throw new Error(`jump: the window didn't move once (${o0} → ${o1})`);
     await p.evaluate(async (n) => { await window.__app.win.pending; await window.__wc.frames(n); }, SETTLE_FRAMES);
     await still(`${out}/jump-${tag}-settled.png`, JUMP_FRAME);
+    await unpin();
     res.jump[tag] = {
       firstFrame: { pixels: ae(`${out}/jump-${tag}-before.png`, `${out}/jump-${tag}-after1.png`), rmse: rmse(`${out}/jump-${tag}-before.png`, `${out}/jump-${tag}-after1.png`) },
       settled: { pixels: ae(`${out}/jump-${tag}-before.png`, `${out}/jump-${tag}-settled.png`), rmse: rmse(`${out}/jump-${tag}-before.png`, `${out}/jump-${tag}-settled.png`) },
@@ -335,13 +356,13 @@ if (!skip.has(4) && out) {
 
 // ------------------------------------------------------------- 5. cost
 if (!skip.has(5)) {
-  res.cost = await evalPage(async ([START, COST_MOVES, WALK_FRAMES, WALK_SPEED]) => {
+  res.cost = await evalPage(async ([O, COST_MOVES, WALK_FRAMES, WALK_SPEED]) => {
     const a = window.__app, H = window.__wc, sim = a.sim, g = sim.g, w = a.win;
     const median = (v) => [...v].sort((x, y) => x - y)[v.length >> 1];
     const pct = (v, q) => [...v].sort((x, y) => x - y)[Math.min(v.length - 1, Math.floor(q * v.length))];
     const sum = (v) => ({ median: +median(v).toFixed(2), p95: +pct(v, 0.95).toFixed(2), max: +Math.max(...v).toFixed(2) });
     a.settings.paused = true;
-    a.worldLoad([START[0], 0, START[1]]);
+    a.worldLoad([O[0], 0, O[1]]);
     a.worldFocus = [sim.origin.x + g.nx / 2, sim.origin.z + g.nz / 2];
     await H.frames(5);
     // one move at a time: CPU (no sync), CPU + GPU (synced), the readback's latency and storing
@@ -382,7 +403,7 @@ if (!skip.has(5)) {
     for (let r = 0; r < 2; r++) { walks.push({ moving: true, ...(await walk(true)) }); walks.push({ moving: false, ...(await walk(false)) }); }
     a.settings.paused = true;
     return { perMove, walks, steps: a.settings.steps };
-  }, [START, COST_MOVES, WALK_FRAMES, WALK_SPEED]);
+  }, [COAST, COST_MOVES, WALK_FRAMES, WALK_SPEED]);
 }
 
 console.log(JSON.stringify(res, null, 1));
