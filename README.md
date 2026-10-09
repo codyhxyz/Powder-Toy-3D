@@ -80,7 +80,7 @@ Nothing a tool carries is made up: the cells it takes come back out exactly (sam
 Everything you do makes a sound (synthesised with [ZzFX](https://github.com/KilledByAPixel/ZzFX) and placed in 3D):
 impacts sound like the material they hit, pitched by its hardness, and the world goes muffled under water. Shots
 kick the camera, nearby blasts and hard landings shake it, and [three.quarks](https://github.com/Alchemist0823/three.quarks)
-draws the muzzle flash, sparks, dust and tracers. The held tools are [Kenney](https://kenney.nl)'s CC0 models, and
+draws the muzzle flash, sparks, dust and tracers. The held tools are low-poly and flat-shaded in the RuneScape style, and
 **Settings → First person** picks the body: the stickman, or a realistic one animated with
 [Quaternius](https://quaternius.com)'s CC0 animation library.
 

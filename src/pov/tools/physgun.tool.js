@@ -24,7 +24,7 @@ import { viewmodelRig, KICK } from '../viewmodel.js';
 
 // viewmodel, in cells (camera space: +x right, +y up, −z forward)
 const GUN_POS = [0.6, -0.42, -1.45];
-const TIP = [0, 0.05, -0.72];     // cells from the model's centre: where the beam leaves
+const TIP = [0, 0.1, -0.65];      // cells from the model's centre: where the beam leaves
 const BEAM_TIP_RADIUS = 0.02;     // cells, where the beam leaves the gun...
 const BEAM_END_RADIUS = 0.15;     // ...and at the hold point (perspective evens it out)
 const BEAM_PULSE = 9;             // rad/s the beam's brightness throbs at
@@ -67,7 +67,7 @@ function rimMaterial() {
   });
 }
 
-// The held gun (the Kenney model, async, on a hand of the viewmodel rig) with
+// The held gun (the model, models.js, on a hand of the viewmodel rig) with
 // the tip glow, and the beam and reach ball in the world.
 function buildModel(env) {
   const rig = viewmodelRig(env);

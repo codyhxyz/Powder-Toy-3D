@@ -39,13 +39,13 @@ const MS_PER_S = 1000;
 // viewmodel, in cells (camera space: +x right, +y up, −z forward). The recoil
 // is the viewmodel rig's spring (viewmodel.js), thrown by gun:fire and gun:dry.
 const GUN_POS = [0.5, -0.45, -1.5];
-const MUZZLE = [0, 0.1, -0.66];    // cells from the model's centre to the end of the bore
+const MUZZLE = [0, 0.094, -0.625];    // cells from the model's centre to the end of the bore
 const DRY_TOAST_INTERVAL = 1.5;    // s between "blocked" toasts
 
 const ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round">
 <path d="M3 8h15l1-2h2v5h-6l-1 2h-3l-1 5H5l1-5H3z"/></svg>`;
 
-// The held gun: the Kenney model (models.js, async) on a hand of the
+// The held gun: the model (models.js) on a hand of the
 // viewmodel rig and a muzzle point at the end of its bore. The flash is vfx.js's,
 // drawn at gun:fire's muzzleWorld.
 function buildModel(env) {
