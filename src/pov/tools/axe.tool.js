@@ -7,6 +7,7 @@ import { attachModel } from '../models.js';
 import { viewmodelRig, HIT } from '../viewmodel.js';
 import { trigger, swing } from './action.js';
 import { faceNormal } from './transfer.js';
+import { rayTarget } from '../targets.js';
 
 // Axe: a short-range swing that breaks breakable solids in a wide, shallow
 // patch around the struck cell into their debris (shaders/povTools.js axeFrag
@@ -26,6 +27,8 @@ import { faceNormal } from './transfer.js';
 // 'refuse' if the struck cell is a solid the blow can't break.
 
 const REFIRE = 0.4;          // s between swings (HL2 CROWBAR_REFIRE)
+const BODY_DAMAGE = 0.34;    // health a blow takes from a body (an NPC): three blows kill
+const BODY_ENERGY = 40;      // the impact's energy for the shake and hitmarker
 const STRIKE_TIME = 0.06;    // s for the blade to come down (the blow itself lands at once)
 const SETTLE_TIME = REFIRE;  // s from the swing to back at rest, ready for the next
 
@@ -63,6 +66,14 @@ export default {
 
     function strike(ctx) {
       const aim = ctx.aim;
+      // a body (an NPC) in reach and nearer than the struck cell takes the blow
+      const body = rayTarget(ctx.eye, ctx.dir.clone().normalize(), Math.min(HAND_REACH, aim?.valid ? aim.dist : Infinity));
+      if (body) {
+        body.target.hurt(BODY_DAMAGE, 'Axed', ctx.dir.clone().normalize());
+        povEvents.emit('impact', { source: 'axe', point: body.point, normal: ctx.dir.clone().negate(), id: -1, energy: BODY_ENERGY, broke: null, body: true });
+        model.rig.hit(HIT.AXE);
+        return true;
+      }
       if (!aim?.valid || aim.dist > HAND_REACH || aim.cell.y < 0) return false;   // air, or the floor
       const sim = ctx.sim ?? env.getSim();
       const mat = pass(sim);

@@ -5,6 +5,7 @@ import { ELEMENTS, E, K } from '../elements.js';
 import { PHYS as ENGINE } from '../physics.js';
 import { CELL_METERS } from './vitals.js';
 import { povEvents } from './events.js';
+import { segmentTarget } from './targets.js';
 
 // Ballistic rounds: the gun's shots fly outside the sim, with real ballistics,
 // and become sim matter only where they strike.
@@ -52,6 +53,8 @@ const G_EARTH = 9.8;                    // m/s²
 const MUZZLE_SPEED_MS = 360;            // m/s, a subsonic pistol round
 const SIM_GRAVITY_REF = 0.025;          // cells/step², the sim's default gravity (sim.js GRAVITY_DEFAULT)
 export const ROUND_SPEED = MUZZLE_SPEED_MS / CELL_METERS;   // cells/s (1200)
+const BODY_ROUND_DAMAGE = 0.5;          // health a round takes from a body (an NPC): two kill
+const BODY_ROUND_ENERGY = 39;           // the impact's energy for the shake and hitmarker
 export const ROUND_GRAVITY = G_EARTH / CELL_METERS;        // cells/s² (≈ 33) at the default sim gravity; the setting scales it
 export const ROUND_SLUG = E.SCRAP;                         // what a round becomes at impact
 // ½·DENS·V_MAX²: the most kinetic energy the slug carries along one axis in the sim
@@ -314,6 +317,16 @@ export function createBallistics({ renderer }) {
         // shown only as far as the traces have cleared: a round never flies through what it hit
         const tAt = Math.min(r.t, r.tClear, r.hit ? r.hit.t : Infinity);
         const at = posAt(r, tAt);
+        // a body (an NPC) on this frame's stretch of the path takes the round, if the cells haven't
+        const body = r.onStrike ? null : segmentTarget(r.shown, at);
+        if (body) {
+          povEvents.emit('round:move', { id: r.id, kind: r.kind, from: r.shown.clone(), to: body.point.clone() });
+          const dir = velAt(r, tAt).normalize();
+          body.target.hurt(BODY_ROUND_DAMAGE, 'Shot', dir);
+          povEvents.emit('impact', { source: 'gun', point: body.point, normal: dir.clone().negate(), id: -1, energy: BODY_ROUND_ENERGY, broke: null, body: true });
+          end(r);
+          continue;
+        }
         povEvents.emit('round:move', { id: r.id, kind: r.kind, from: r.shown.clone(), to: at.clone() });
         r.shown.copy(at); r.tShown = tAt;
         // out of the box, with every trace of its path back and clear

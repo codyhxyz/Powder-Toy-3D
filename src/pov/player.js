@@ -596,6 +596,7 @@ export function createPlayer({ renderer, getSim }) {
   return Object.assign(p, {
     spawn, update, dispose,
     applyImpulse(dv) { impulse.add(dv); },
+    hurt(amount, cause) { vitals.hurt(amount, cause, true); },   // a blow from outside the sim (an NPC's axe)
     on(name, fn) {
       (listeners[name] ??= []).push(fn);
       return () => { listeners[name] = listeners[name].filter((f) => f !== fn); };

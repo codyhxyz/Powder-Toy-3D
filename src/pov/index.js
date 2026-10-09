@@ -18,6 +18,8 @@ import './pov.css';
 
 const playerModule = import.meta.glob('./player.js', { eager: true })['./player.js'];
 const toolsModule = import.meta.glob('./tools/index.js', { eager: true })['./tools/index.js'];
+// The NPCs (npc.js, with Yuka) load on first use, in the worlds that have them.
+const NPC_PRESETS = new Set(['lab']);
 
 const PREWARM_DELAY_MS = 2000;          // ms after start-up before the figure's shader compiles in the background
 const RESPAWN_DELAY = 3.5;              // s from death to respawning at the drop point on its own
@@ -51,6 +53,7 @@ export function createPov(app) {
   const feel = createFeel({ hud: povHud });
   let vfx = null;                        // three.quarks effects, built on the first drop-in
   let figure = null, player = null, toolbelt = null;
+  let npc = null, npcLoading = false;   // the axeman (npc.js), loaded on first use
   const viewmodel = new THREE.Group();
   viewmodel.name = 'pov-viewmodel';
   camera.add(viewmodel);
@@ -288,6 +291,7 @@ export function createPov(app) {
     controls.enabled = true;
     controls.update();
     figure?.setVisible(false);
+    npc?.reset();
     viewmodel.visible = false;
     povHud.show(false);
     feel.reset();
@@ -363,6 +367,24 @@ export function createPov(app) {
       }
     }
     speedH = Math.hypot(player.vel.x, player.vel.z);
+
+    // the NPCs: an axeman hunts you in the lab
+    const npcsWanted = NPC_PRESETS.has(app.settings.preset) && (mode === 'on' || mode === 'entering');
+    if (npcsWanted && !npc && !npcLoading) {
+      npcLoading = true;
+      import('./npc.js').then(({ createAxeman }) => {
+        npc = createAxeman({ renderer, getSim: app.getSim });
+        scene.add(npc.root);
+        npc.bind(app.getVolume(), app.getSim().g);
+        npc.compile(renderer, camera, scene);
+      }).catch((err) => console.error('NPCs failed to load', err));
+    }
+    if (npc) {
+      if (npcsWanted) {
+        npc.bind(app.getVolume(), g);
+        npc.update(dt, { player, toWorld, worldToGrid, scale });
+      } else npc.reset();
+    }
 
     // the camera, with the kick and shake on top of the look
     vA.copy(player.pos).setY(player.pos.y + EYE_HEIGHT);
@@ -472,6 +494,7 @@ export function createPov(app) {
     // what the held tool shows next to the crosshair ({ name, color, T?, P?, note? } for ui/hud.js showReadout), or null
     get readout() { return live() && mode === 'on' && toolbelt ? toolbelt.readout : null; },
     get figure() { return figure; },
+    get npc() { return npc; },   // the axeman, once loaded (checks)
     get vfx() { return vfx; },
     feel,
     get ctx() { return ctx; },
