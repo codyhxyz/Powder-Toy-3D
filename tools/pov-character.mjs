@@ -42,7 +42,7 @@ const weights = () => ev(() => {
 const top = (w) => Object.entries(w).sort((a, b) => b[1] - a[1])[0]?.[0];
 const setFigure = (v) => ev((v) => document.querySelector(`.drawer button[data-value="${v}"]`).click(), v);
 
-check('defaults to cute', (await ev(() => window.__app.settings.body)) === 'cute');
+check('defaults to realistic', (await ev(() => window.__app.settings.body)) === 'real');
 await ev(() => { window.__app.settings.body = 'real'; });
 
 // ---- drop in, third person

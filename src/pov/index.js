@@ -152,7 +152,7 @@ export function createPov(app) {
   // ---- lazily built parts
   function ensureFigure() {
     if (!figure) {
-      figure = createBody({ choice: () => app.settings.body });   // cute, stickman or realistic, live
+      figure = createBody({ choice: () => app.settings.body });   // realistic or stickman, live
       scene.add(figure.root);
     }
     figure.bind(app.getVolume(), app.getSim().g);

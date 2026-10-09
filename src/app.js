@@ -47,7 +47,7 @@ const DEFAULTS = {
   tool: E.SAND, radius: 5, shape: 0, rate: 1, replace: false,
   steps: 4, gravity: 0.025, paused: false,
   view: 0, camSpeed: 1, upscale: 'quality', dockCollapsed: false,
-  body: 'cute', povFov: POV_FOV, sensitivity: 1, viewBobbing: true, sprintMode: 'hold',
+  body: 'real', povFov: POV_FOV, sensitivity: 1, viewBobbing: true, sprintMode: 'hold',
   nearGI: true, glowLights: true, caustics: true,
   ...detailDefaults(),
 };
@@ -72,7 +72,7 @@ if (params.get('preset')) settings.preset = params.get('preset');
 if (!(settings.size in SIZES)) settings.size = DEFAULTS.size;
 if (!toolById(settings.tool)) settings.tool = DEFAULTS.tool;
 if (!VIEWS.some((v) => v.id === settings.view)) settings.view = 0;
-if (!['cute', 'stick', 'real'].includes(settings.body)) settings.body = DEFAULTS.body;
+if (!['stick', 'real'].includes(settings.body)) settings.body = DEFAULTS.body;
 settings.paused = false;
 
 let saveTimer = 0;
@@ -486,12 +486,12 @@ const settingsPanel = createSettings({
       { type: 'slider', key: 'camSpeed', label: 'Move speed (WASD)', min: 0.25, max: 3, step: 0.05, def: DEFAULTS.camSpeed,
         fmt: (v) => `${v.toFixed(2)}×`, onChange: (v) => { rig.setSpeed(v); save(); } },
     ] },
-    // The body you see in third person and when you die: Cute (a chibi wizard
-    // with a jetpack, the default), Stickman (the TPT homage) or Realistic (a
-    // skinned, animated mannequin). It switches live, in POV too. The setting
-    // was 'figure' (stick | real) before Cute; the new key starts everyone on Cute.
+    // The body you see in third person and when you die: Realistic (a skinned,
+    // animated mannequin in a wizard's hat and robe, the default) or Stickman
+    // (the TPT homage). It switches live, in POV too. A saved 'cute' (removed)
+    // falls back to the default.
     { title: 'First person', rows: [
-      { type: 'seg', key: 'body', options: [['cute', 'Cute'], ['stick', 'Stickman'], ['real', 'Realistic']],
+      { type: 'seg', key: 'body', options: [['real', 'Realistic'], ['stick', 'Stickman']],
         onChange: (v) => { settings.body = v; save(); pacer.wake(); } },
       // named as Minecraft names them
       { type: 'slider', key: 'sensitivity', label: 'Mouse Sensitivity', min: SENSITIVITY_RANGE[0], max: SENSITIVITY_RANGE[1], step: 0.05,

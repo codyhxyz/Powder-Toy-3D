@@ -17,9 +17,10 @@
   the tank holds 3 s of thrust and refills only with your feet on the ground (1.2 s from empty). The fuel bar
   shows under health while it isn't full. Swimming strokes take over in deep liquid. The exhaust is cosmetic
   (vfx.js `jet`), with a roar loop (audio.js `jetLoop`).
-- **The body** (setting "Body": Cute | Stickman | Realistic, key `body`): Cute is the default, a chibi wizard
-  in a pointed hood (a nod to Noita's Mina) with a two-tank jetpack whose nozzles flame while it fires
-  (figure.js `buildCute`, nozzle spot `JET_NOZZLES`). Cute and Stickman share one rig and animation.
+- **The body** (setting "Body": Realistic | Stickman, key `body`): Realistic is the default, the skinned
+  mannequin dressed as a wizard, a pointed hat and a robe skinned to its skeleton (garb.js: the robe's
+  weights are transferred from the nearest body vertices and eased toward the pelvis below the hips).
+  Stickman stands in while it loads. The jet exhaust leaves from the small of the back (`JET_NOZZLES`).
 - **Physical, finite tools on a Minecraft-style hotbar** (keys `1`–`9` and the scroll wheel in POV). God powers
   (infinite painting) stay in god view, one `F` away.
   1. **Shovel**: digs powder, or breaks solids into their debris (slower the harder they are; WALL
