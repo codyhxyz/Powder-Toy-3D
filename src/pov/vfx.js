@@ -397,7 +397,7 @@ export function createVfx(env) {
   const offs = [
     povEvents.on('gun:fire', (e) => {
       if (!live()) return;
-      const at = e.muzzleWorld ? vA.copy(e.muzzleWorld) : toWorld(e.origin, vA);
+      const at = e.muzzleWorld && !e.by ? vA.copy(e.muzzleWorld) : toWorld(e.origin, vA);   // an NPC's viewmodel isn't drawn: flash at the muzzle cell
       muzzleFlash(at, vB.copy(e.dir).normalize());
     }),
     povEvents.on('impact', (e) => {

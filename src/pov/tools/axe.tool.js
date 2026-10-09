@@ -7,7 +7,7 @@ import { attachModel } from '../models.js';
 import { viewmodelRig, HIT } from '../viewmodel.js';
 import { trigger, swing } from './action.js';
 import { faceNormal } from './transfer.js';
-import { rayTarget } from '../targets.js';
+import { rayTarget, PLAYER } from '../targets.js';
 
 // Axe: a short-range swing that breaks breakable solids in a wide, shallow
 // patch around the struck cell into their debris (shaders/povTools.js axeFrag
@@ -67,7 +67,7 @@ export default {
     function strike(ctx) {
       const aim = ctx.aim;
       // a body (an NPC) in reach and nearer than the struck cell takes the blow
-      const body = rayTarget(ctx.eye, ctx.dir.clone().normalize(), Math.min(HAND_REACH, aim?.valid ? aim.dist : Infinity));
+      const body = rayTarget(ctx.eye, ctx.dir.clone().normalize(), Math.min(HAND_REACH, aim?.valid ? aim.dist : Infinity), povEvents.actor?.id ?? PLAYER);
       if (body) {
         body.target.hurt(BODY_DAMAGE, 'Axed', ctx.dir.clone().normalize());
         povEvents.emit('impact', { source: 'axe', point: body.point, normal: ctx.dir.clone().negate(), id: -1, energy: BODY_ENERGY, broke: null, body: true });

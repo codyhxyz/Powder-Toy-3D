@@ -5,7 +5,7 @@ import { ELEMENTS, E, K } from '../elements.js';
 import { PHYS as ENGINE } from '../physics.js';
 import { CELL_METERS } from './vitals.js';
 import { povEvents } from './events.js';
-import { segmentTarget } from './targets.js';
+import { segmentTarget, PLAYER } from './targets.js';
 
 // Ballistic rounds: the gun's shots fly outside the sim, with real ballistics,
 // and become sim matter only where they strike.
@@ -178,6 +178,7 @@ export function createBallistics({ renderer }) {
     if (carry) v0.add(carry);
     const r = {
       id: nextId++, alive: true, kind, onStrike,
+      actor: povEvents.actor,   // who fired it (null: the player): its events carry that, and it never hits them
       p0: origin.clone(), v0,
       g: new THREE.Vector3(0, -ROUND_GRAVITY * gravityScale, 0),
       t: 0,              // s of flight so far
@@ -299,6 +300,32 @@ export function createBallistics({ renderer }) {
     sim.pass(mats.handoff);
   }
 
+  // one round's frame: strike, or fly on (and hit a body on the way)
+  function fly(sim, r) {
+    r.t += frameTime;
+    const striking = r.hit && r.t >= r.hit.t && r.tClear >= r.hit.t;
+    // shown only as far as the traces have cleared: a round never flies through what it hit
+    const tAt = striking ? r.hit.t : Math.min(r.t, r.tClear, r.hit ? r.hit.t : Infinity);
+    const at = striking ? r.hit.point : posAt(r, tAt);
+    // a body (the player, an NPC) on this frame's stretch of the path takes the round before the cells do
+    const body = r.onStrike ? null : segmentTarget(r.shown, at, r.actor?.id ?? PLAYER);
+    // it strikes once it has flown that far and every stretch before the hit is back clear
+    if (striking && !body) { strike(sim, r); return; }
+    if (body) {
+      povEvents.emit('round:move', { id: r.id, kind: r.kind, from: r.shown.clone(), to: body.point.clone() });
+      const dir = velAt(r, tAt).normalize();
+      body.target.hurt(BODY_ROUND_DAMAGE, 'Shot', dir);
+      povEvents.emit('impact', { source: 'gun', point: body.point, normal: dir.clone().negate(), id: -1, energy: BODY_ROUND_ENERGY, broke: null, body: true });
+      end(r);
+      return;
+    }
+    povEvents.emit('round:move', { id: r.id, kind: r.kind, from: r.shown.clone(), to: at.clone() });
+    r.shown.copy(at); r.tShown = tAt;
+    // out of the box, with every trace of its path back and clear
+    if (!r.hit && !inBox(at, sim.g) && !r.pending.length
+      && (r.tTraced >= r.t || !inBox(posAt(r, r.tTraced), sim.g))) end(r);
+  }
+
   let lastImpact = null;
 
   return {
@@ -310,29 +337,8 @@ export function createBallistics({ renderer }) {
       frameNo++;
       if (!rounds.length || stepsPerFrame === 0 || !(dt > 0)) return;
       frameTime = dt;
-      for (const r of [...rounds]) {
-        r.t += dt;
-        // it strikes once it has flown that far and every stretch before the hit is back clear
-        if (r.hit && r.t >= r.hit.t && r.tClear >= r.hit.t) { strike(sim, r); continue; }
-        // shown only as far as the traces have cleared: a round never flies through what it hit
-        const tAt = Math.min(r.t, r.tClear, r.hit ? r.hit.t : Infinity);
-        const at = posAt(r, tAt);
-        // a body (an NPC) on this frame's stretch of the path takes the round, if the cells haven't
-        const body = r.onStrike ? null : segmentTarget(r.shown, at);
-        if (body) {
-          povEvents.emit('round:move', { id: r.id, kind: r.kind, from: r.shown.clone(), to: body.point.clone() });
-          const dir = velAt(r, tAt).normalize();
-          body.target.hurt(BODY_ROUND_DAMAGE, 'Shot', dir);
-          povEvents.emit('impact', { source: 'gun', point: body.point, normal: dir.clone().negate(), id: -1, energy: BODY_ROUND_ENERGY, broke: null, body: true });
-          end(r);
-          continue;
-        }
-        povEvents.emit('round:move', { id: r.id, kind: r.kind, from: r.shown.clone(), to: at.clone() });
-        r.shown.copy(at); r.tShown = tAt;
-        // out of the box, with every trace of its path back and clear
-        if (!r.hit && !inBox(at, sim.g) && !r.pending.length
-          && (r.tTraced >= r.t || !inBox(posAt(r, r.tTraced), sim.g))) end(r);
-      }
+      // each round's events are its shooter's (an NPC's carry by, events.js)
+      for (const r of [...rounds]) povEvents.as(r.actor, () => fly(sim, r));
       if (rounds.length) requestTrace(sim);
     },
     get count() { return rounds.length; },

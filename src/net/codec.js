@@ -91,6 +91,13 @@ void main() {
 }
 `;
 
+// decodeTemp, on the CPU: a packed temperature code (byte G) back to °C (the NPCs' world model reads it)
+export function decodeTempCode(code) {
+  return code <= TEMP_LINEAR_CODES
+    ? TEMP.MIN + code * TEMP.LINEAR_STEP
+    : TEMP.LOG_START * (TEMP.MAX / TEMP.LOG_START) ** ((code - TEMP_LINEAR_CODES) / TEMP_LOG_CODES);
+}
+
 const passMaterial = (fragmentShader, uniforms) => new THREE.RawShaderMaterial({
   glslVersion: THREE.GLSL3, vertexShader: quadVert, fragmentShader, uniforms, depthTest: false, depthWrite: false,
 });

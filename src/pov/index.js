@@ -8,6 +8,7 @@ import { createFeel } from './feel.js';
 import { createVfx } from './vfx.js';
 import { povEvents } from './events.js';
 import './pov.css';
+import { addTarget, PLAYER } from './targets.js';
 
 // First-person (POV) mode: drop into the world with F, walk around in it,
 // pop back out with F. This module is the shell: input, the camera, the
@@ -18,8 +19,11 @@ import './pov.css';
 
 const playerModule = import.meta.glob('./player.js', { eager: true })['./player.js'];
 const toolsModule = import.meta.glob('./tools/index.js', { eager: true })['./tools/index.js'];
-// The NPCs (npc.js, with Yuka) load on first use, in the worlds that have them.
+// The NPCs (npc.js: Yuka, the world model, the tools headless) load on first use, in the worlds that have them.
 const NPC_PRESETS = new Set(['lab']);
+const PLAYER_KNOCKBACK = 18;   // cells/s a blow from an NPC throws the player
+const PLAYER_KNOCK_UP = 0.4;   // its upward share
+const PLAYER_DAMAGE_TAKEN = 0.5;   // share of a weapon's damage the player takes from NPCs (the hero is tougher)
 
 const PREWARM_DELAY_MS = 2000;          // ms after start-up before the figure's shader compiles in the background
 const RESPAWN_DELAY = 3.5;              // s from death to respawning at the drop point on its own
@@ -53,7 +57,17 @@ export function createPov(app) {
   const feel = createFeel({ hud: povHud });
   let vfx = null;                        // three.quarks effects, built on the first drop-in
   let figure = null, player = null, toolbelt = null;
-  let npc = null, npcLoading = false;   // the axeman (npc.js), loaded on first use
+  let npc = null, npcAi = null, npcLoading = false;   // the NPC (npc.js) and what NPCs share, loaded on first use
+  // the player as something weapons hit (an NPC's axe and gun; the player's own never hit it)
+  addTarget({
+    id: PLAYER,
+    get alive() { return !!player && !player.dead && mode === 'on'; },
+    box(min, max) {
+      min.set(player.pos.x - BODY_WIDTH / 2, player.pos.y, player.pos.z - BODY_WIDTH / 2);
+      max.set(player.pos.x + BODY_WIDTH / 2, player.pos.y + BODY_HEIGHT, player.pos.z + BODY_WIDTH / 2);
+    },
+    hurt(amount, cause, d) { player.hurt(amount * PLAYER_DAMAGE_TAKEN, cause); player.applyImpulse(d.clone().setY(Math.max(d.y, 0) + PLAYER_KNOCK_UP).normalize().multiplyScalar(PLAYER_KNOCKBACK)); },
+  });
   const viewmodel = new THREE.Group();
   viewmodel.name = 'pov-viewmodel';
   camera.add(viewmodel);
@@ -368,12 +382,16 @@ export function createPov(app) {
     }
     speedH = Math.hypot(player.vel.x, player.vel.z);
 
-    // the NPCs: an axeman hunts you in the lab
-    const npcsWanted = NPC_PRESETS.has(app.settings.preset) && (mode === 'on' || mode === 'entering');
+    // the NPCs: one hunts you in the lab, with every tool you have
+    const npcsWanted = NPC_PRESETS.has(app.settings.preset) && (mode === 'on' || mode === 'entering') && !!toolbelt;
     if (npcsWanted && !npc && !npcLoading) {
       npcLoading = true;
-      import('./npc.js').then(({ createAxeman }) => {
-        npc = createAxeman({ renderer, getSim: app.getSim });
+      import('./npc.js').then(({ createAi, createNpc }) => {
+        npcAi = createAi({ renderer, getSim: app.getSim });
+        npc = createNpc({
+          env: { renderer, scene, getSim: app.getSim, getVolume: app.getVolume, getScale: app.getScale, ballistics: toolbelt.ballistics },
+          ai: npcAi,
+        });
         scene.add(npc.root);
         npc.bind(app.getVolume(), app.getSim().g);
         npc.compile(renderer, camera, scene);
@@ -381,8 +399,9 @@ export function createPov(app) {
     }
     if (npc) {
       if (npcsWanted) {
+        npcAi.world.update(dt);
         npc.bind(app.getVolume(), g);
-        npc.update(dt, { player, toWorld, worldToGrid, scale });
+        npc.update(dt, { player, holding: toolbelt?.selectedKey ?? null, toWorld, worldToGrid, scale, stepsPerFrame: app.settings.paused ? 0 : app.settings.steps });
       } else npc.reset();
     }
 
@@ -494,7 +513,8 @@ export function createPov(app) {
     // what the held tool shows next to the crosshair ({ name, color, T?, P?, note? } for ui/hud.js showReadout), or null
     get readout() { return live() && mode === 'on' && toolbelt ? toolbelt.readout : null; },
     get figure() { return figure; },
-    get npc() { return npc; },   // the axeman, once loaded (checks)
+    get npc() { return npc; },   // the NPC, once loaded (checks)
+    events: povEvents,           // the POV event bus (checks)
     get vfx() { return vfx; },
     feel,
     get ctx() { return ctx; },

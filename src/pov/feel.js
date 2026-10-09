@@ -92,8 +92,8 @@ export function createFeel({ hud }) {
   const addTrauma = (x) => { if (x > 0) trauma = Math.min(1, trauma + x); };
 
   const offs = [
-    povEvents.on('gun:fire', () => {
-      if (!live) return;
+    povEvents.on('gun:fire', ({ by }) => {
+      if (!live || by) return;   // an NPC's shot isn't the player's recoil
       addTrauma(TRAUMA_SHOT);
       bloom = Math.min(1, bloom + BLOOM_PER_SHOT);
     }),
@@ -104,7 +104,7 @@ export function createFeel({ hud }) {
         const near = 1 - smooth01((d - IMPACT_NEAR) / (IMPACT_FAR - IMPACT_NEAR));
         addTrauma(TRAUMA_IMPACT * clamp01((e.energy ?? 0) / IMPACT_ENERGY_FULL) * near);
       }
-      if (e.source === 'gun') { hitT = HIT_TIME; hitBroke = e.broke === true; }
+      if (e.source === 'gun' && !e.by) { hitT = HIT_TIME; hitBroke = e.broke === true; }   // the hitmarker is the player's shots only
     }),
     povEvents.on('blast', ({ point }) => {
       if (!live || !point) return;

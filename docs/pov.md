@@ -208,7 +208,7 @@ say world. Emitters own their event names. Listeners never mutate payloads.
 | `gun:dry` | gun | `{}`. The trigger clicked but nothing fired (muzzle blocked). |
 | `round:move` | gun, bomb | `{ id, kind, from, to }` (kind 'round' or 'bomb'). A round in flight moved this frame (grid), for tracers. |
 | `round:end` | gun, bomb | `{ id, kind }`. The round is gone (impact or out of the box). |
-| `impact` | gun, axe | `{ source: 'gun'\|'axe', point, normal, id, energy, broke }`. Something was struck. id is the element hit, energy is ½·DENS·v² in sim units, and broke is true/false when the striker knows, else null. |
+| `impact` | gun, axe | `{ source: 'gun'\|'axe', point, normal, id, energy, broke, body? }` (body: a target, not a cell, was hit; id −1). Something was struck. id is the element hit, energy is ½·DENS·v² in sim units, and broke is true/false when the striker knows, else null. |
 | `tool:action` | shovel, bucket, axe, physgun, trowel, blowtorch, bomb | `{ tool, action, id?, point?, amount? }`. tool is 'shovel'\|'bucket'\|'axe'\|'physgun'\|'trowel'\|'blowtorch'\|'bomb'; action is 'dig'\|'place'\|'on'\|'off'\|'throw'\|'dump'\|'scoop'\|'pour'\|'swing'\|'refuse'\|'grab'\|'fling'\|'release'. Physgun 'hold' state is read from the tool, not an event. |
 | `player:step` | shell (camera bob cycle) | `{ speed, inLiquid }`. A footfall. |
 | `player:jet` | player | `{ on }`. The jetpack lit or went out. |
@@ -224,6 +224,46 @@ The player's own events (`player.on('hurt'|'death'|'land'|'splash')`) stay as th
 | Camera kick, trauma shake, hitmarker, crosshair bloom, three.quarks VFX (flash, sparks, dust, tracer), footsteps | feel | `src/pov/feel.js`, `src/pov/vfx.js`, `src/pov/camera.js`, `src/pov/hud.js`, `src/pov/pov.css`, `src/pov/index.js` |
 | Sound (ZzFX + PositionalAudio) for every POV event | audio | `src/pov/audio.js` (+ one wiring line in `src/pov/index.js`) |
 | Realistic body (Quaternius, AnimationMixer) behind a Stickman/Realistic setting | character | `public/models/character/**`, `src/pov/figureReal.js`, the settings row in `src/app.js`, a figure switch in `src/pov/index.js` |
+
+## NPCs (2026-10-09): enemies that use every tool
+
+One NPC hunts the player in the lab preset while in POV (`src/pov/npc.js`, loaded on first use). It has the
+player's body, the player's tools and a mind built from textbook game AI, each a solved problem:
+
+| Sub-problem | How | Where |
+|---|---|---|
+| Body | a second `createPlayer({ quiet: true })`: same movement, swimming, burning, drowning | `npc.js` |
+| Hands | `createKit(env)`: every tool, headless, its own pack and bucket (`env.owner`), the shared projectiles | `tools/index.js` |
+| What's in the world | the multiplayer packer reads the cells back to the CPU every 0.5 s (id + temperature) | `ai/world.js` |
+| Seeing and aiming | Amanatides & Woo voxel traversal (1987) over that copy; the tools' `ctx.aim` comes from it | `ai/world.js` |
+| Getting there | a height map on a 2-cell grid as a Yuka `Graph`, searched with Yuka's `AStar` | `ai/nav.js` |
+| What to do | Buckland's goal-driven agent (Yuka `Think` + `GoalEvaluator`s, composite `Goal`s) | `ai/brain.js` |
+| Which weapon | Buckland/Raven fuzzy weapon selection (Yuka `FuzzyModule` over distance), gated by sight and ammo | `ai/brain.js` |
+| Where it saw you | Yuka `MemorySystem` (12 s), plus touch within 4 cells | `ai/brain.js` |
+| Steering | Yuka pursuit, seek and wander; the vehicle keeps its own velocity, only its position follows the body | `ai/brain.js` |
+
+Strategies (evaluators → goals): **Attack** (fuzzy weapon: axe and blowtorch close, gun at any range, bomb at
+mid range with the low-arc launch-angle formula, physgun flinging nearby loose matter, a bucket of lava poured
+from close), **Hunt** (A* to where it last saw you), **Breach** (no path and a wall between: shovel through
+powder, axe through wood/glass/plants/ice, bomb rock), **Climb** (you're up out of reach: dig material, walk
+to your column, pillar up by jumping and setting a trowel block under its feet), **Cover** (hurt and under
+fire: two trowel blocks between you), **Extinguish** (on fire: run to water), **Gather** (idle: dig sand for
+building), **Wander**. A strategy that fails is put on a 4 s cooldown. Reflexes in `npc.js`: jump when blocked,
+swim up to breathe, dive after a player below, jet out of water at a wall. The scanner is the one tool it never
+uses: it only reads out a cell, and the world model already knows.
+
+Yuka gotcha: a `CompositeGoal` runs its subgoals in the order they were **added** (Yuka's `addSubgoal`
+unshifts and `currentSubgoal()` takes the last), the reverse of Buckland's C++.
+
+**Who did it.** Tools emit on the global bus, so an NPC's tools run inside `povEvents.as({ id, at }, fn)`:
+every emit then carries `by` (the NPC's id) and `from` (its eye), and `punch` (the player's view kick) is
+dropped. Rounds remember who fired them (`ballistics.js` `r.actor`) and emit as them. Listeners that are the
+player's own (hitmarker, gun kick, the torch/pour/physgun loops) skip `by` events; sounds play at `point`
+or `from`. `targets.js` holds everything weapons can hit that isn't cells (the player, id `'player'`, and
+each NPC); a weapon never hits its own wielder. The player takes half damage from NPC weapons.
+
+Checks: `__app.pov.npc.debug` (goal, weapon, tool, sees, pack, last refusal), `__app.pov.npc.agent`,
+`__app.pov.events`.
 
 ## Verifying (headless GPU)
 

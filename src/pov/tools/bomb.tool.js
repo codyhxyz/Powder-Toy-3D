@@ -26,7 +26,7 @@ import { Load, cellsNear, ballRadius, muzzleCell } from './transfer.js';
 // Events: tool:action 'throw'; blast { point } when the charge is set (sound,
 // shake); round:move / round:end with kind 'bomb' while it flies.
 
-const THROW_SPEED = 18 / CELL_M;        // cells/s: a good overhand throw (18 m/s)
+export const THROW_SPEED = 18 / CELL_M; // cells/s: a good overhand throw (18 m/s)
 const REFIRE = 0.8;                     // s between throws while held
 const CHARGE = 125;                     // cells of gunpowder (a 5³ charge)
 const CHARGE_SLACK = 2.5;               // candidate cells per charge cell (some are full)
@@ -54,14 +54,15 @@ export default {
     let lastBlast = null;
 
     // bombs in flight, drawn where the shared projectiles say they are (also while the bomb isn't held)
-    const flying = new Map();   // round id → model
+    const flying = new Map();   // round id → model, for the bombs this one threw
+    const mine = new Set();     // ids of the bombs this one threw (another toolbelt's are its own to draw)
     const world = new THREE.Group();
     world.name = 'pov-bombs';
     env.scene.add(world);
     const toWorld = (g, out) => out.copy(g).multiplyScalar(env.getScale()).add(env.getVolume().position);
     const offs = [
       povEvents.on('round:move', ({ id, kind, to }) => {
-        if (kind !== KIND) return;
+        if (kind !== KIND || !mine.has(id)) return;
         let m = flying.get(id);
         if (!m) { m = attachModel(world, 'bomb', null, { arm: false }); flying.set(id, m); }
         m.obj.scale.setScalar(env.getScale());
@@ -70,7 +71,8 @@ export default {
         globalThis.__app?.requestRender?.();
       }),
       povEvents.on('round:end', ({ id, kind }) => {
-        if (kind !== KIND) return;
+        if (kind !== KIND || !mine.has(id)) return;
+        mine.delete(id);
         flying.get(id)?.dispose();
         flying.delete(id);
       }),
@@ -106,6 +108,7 @@ export default {
         speed: THROW_SPEED, carry: ctx.player.vel, kind: KIND, onStrike: detonate,
       });
       if (!id) return false;
+      mine.add(id);
       rig.hit(HIT.THROW);
       povEvents.emit('tool:action', { tool: 'bomb', action: 'throw' });
       return true;

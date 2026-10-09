@@ -1,61 +1,45 @@
 import * as THREE from 'three';
-import { Vehicle, MovingEntity, EntityManager, StateMachine, State, PursuitBehavior, WanderBehavior } from 'yuka';
 import { createPlayer } from './player.js';
-import { createFigure, part } from './figure.js';
+import { createFigure } from './figure.js';
 import { buildCrasher, CRASHER_COLORS } from './figureCrasher.js';
+import { attachModel } from './models.js';
 import { addTarget } from './targets.js';
-import { BODY_HEIGHT, BODY_WIDTH } from './constants.js';
+import { povEvents } from './events.js';
+import { createKit } from './tools/index.js';
+import { pack, persistentLoad, ownedKey } from './tools/transfer.js';
+import { Agent } from './ai/brain.js';
+import { createWorldModel } from './ai/world.js';
+import { createNav } from './ai/nav.js';
+import { BODY_HEIGHT, BODY_WIDTH, EYE_HEIGHT } from './constants.js';
 
-// The axeman: an NPC that hunts the player with an axe (the lab world, in POV).
+// An NPC that hunts the player with every tool the player has (the lab world,
+// in POV). Three parts, each a solved problem done by the book:
 //
-// Its body is the player's own (player.js: a second instance, with its own
-// probe), so it runs, jumps, swims, burns, drowns and is blown up by the same
-// rules. Its look is the Castle Crashers wizard in red with an axe in the right
-// mitten (figureCrasher.js, figure.js's chop pose).
+// - Body: the player's own (player.js, a second, quiet instance with its own
+//   probe), so it runs, jumps, swims, burns, drowns and is blown up by the same
+//   rules.
+// - Hands: the player's own tools (tools/index.js createKit), run headless with
+//   its own pack and bucket, inside povEvents.as(), so what they emit is its own.
+// - Mind: ai/brain.js, Buckland's goal-driven agent and fuzzy weapon choice
+//   on Yuka, over a CPU copy of the cells (ai/world.js) and an A* height map
+//   (ai/nav.js). Each frame the brain fills an intent (move, jump, where to
+//   look, which tool and its buttons); this turns it into the body's input and
+//   the tool's ctx. Reflexes stay here: jump when blocked, swim up to breathe,
+//   dive after a player below, jet out of water at a wall.
 //
-// Its brain is Yuka (github.com/Mugen87/yuka): a StateMachine (wander → chase →
-// attack) and steering behaviours on a Vehicle that mirrors the body on the
-// ground plane. Pursuit steers toward where the player is heading, not where
-// they are. Each frame the vehicle's steered velocity becomes the body's wished
-// move (direction and share of top speed), the same input the player's keys
-// give, and the body does the moving. When the body is blocked it jumps; in
-// liquid it dives after a player below it, swims up to breathe, and jets out
-// when a wall stops it.
-//
-// The player's axe and gun hit it through targets.js.
+// It looks like the Castle Crashers wizard in red, the tool in use in its right
+// mitten; the player's axe and gun hit it through targets.js.
 
-// senses
-const SIGHT = 48;                 // cells: notices a player this close...
-const LOSE = 72;                  // ...and gives up past this
-const ATTACK_REACH = 4.5;         // cells between body centres from which the axe lands: half a body (0.8) + arm and axe (2.5) + half a body
-const ATTACK_HEIGHT = BODY_HEIGHT; // cells: the player's feet within this of its own
-
-// steering (Yuka units: cells, s)
-const MAX_SPEED = 24;             // cells/s it steers at: a little under the player's sprint (28.5), so the jet and a sprint escape
-const MAX_FORCE = 240;            // cells/s²: how hard it can turn (reverses from full speed in 0.2 s)
-const PREDICTION = 0.6;           // pursuit's look-ahead, as Yuka's predictionFactor
-const WANDER = [4, 8, 30];        // Yuka WanderBehavior radius, distance, jitter
-const WANDER_SHARE = 0.35;        // of top speed: a stroll
-const SPRINT_FROM = 0.7;          // wished share of top speed above which it sprints (the body's run)
-
-// the swing
-const SWING_S = 0.75;             // s for one chop: the wind-up is the tell (figure.js CHOP_WINDUP)
-const STRIKE_AT = 0.7;            // share of the swing when the blow lands
-const COOLDOWN_S = 0.5;           // s after a chop before the next
-const DAMAGE = 0.2;               // health per blow: five kill
-const KNOCKBACK = 18;             // cells/s the blow throws the player away (and a little up)
-const KNOCK_UP = 0.4;             // upward share of the knockback
-
-// stuck → jump
+// reflexes
 const STUCK_SPEED = 0.25;         // share of the wished speed below which it counts as blocked...
 const STUCK_S = 0.2;              // ...for this long, then it jumps
 const JUMP_COOLDOWN_S = 0.5;
-const CLIMB_FROM = 3;             // cells: a player this much higher makes it jump when near (and this much lower, dive)
+const DIVE_FROM = 3;              // cells: a player this much lower makes it dive in liquid
 const SURFACE_BREATH = 0.35;      // breath left (0..1) at which it gives up diving and swims up
 
 // being hit
-const FLINCH_S = 0.3;             // s it can't swing after taking a blow
 const HIT_KNOCKBACK = 14;         // cells/s a blow throws it
+const KNOCK_UP = 0.4;             // upward share of a knockback
 
 // life
 const RESPAWN_S = 8;              // s dead before another comes
@@ -69,117 +53,85 @@ const PALETTE = {
   robe: [0.32, 0.02, 0.02], hood: [0.22, 0.015, 0.015], trim: [0.25, 0.25, 0.27], belt: [0.06, 0.05, 0.05],
 };
 const EYE_GLOW = [4, 0.35, 0.15]; // HDR: red eyes
-const AXE_HANDLE = [0.08, 1.7];   // cells: radius, length (forward from the mitten)
-const AXE_HEAD = [0.08, 0.7, 0.5]; // cells: blade thickness, height, depth
-const AXE_COLORS = { handle: [0.3, 0.15, 0.06], blade: [0.5, 0.52, 0.56] };
+const HELD_SCALE = 1.8;           // the viewmodels (cells, sized for the camera) grown to read in its big mitten
+const CHOP_S = 0.25;              // s the chop's follow-through shows after a blow
+// the tool's model for each tool key (models.js)
+const MODEL_OF = { SHOVEL: 'shovel', BUCKET: 'bucket', AXE: 'axe', GUN: 'gun', PHYSGUN: 'physgun', TROWEL: 'trowel', SCANNER: 'scanner', BLOWTORCH: 'torch', BOMB: 'bomb' };
 
 const HW = BODY_WIDTH / 2;
+const AIM_REACH = 256;            // cells the tools' pick looks along
+let nextId = 1;
 
-function buildAxeman() {
-  const rig = buildCrasher({ palette: PALETTE, eyeGlow: EYE_GLOW });
-  // the axe: handle out forward from the right mitten, the head at its end, edge down
-  const grip = new THREE.Group();
-  grip.position.y = rig.handY;
-  rig.elR.add(grip);
-  const [hr, hl] = AXE_HANDLE, [bt, bh, bd] = AXE_HEAD;
-  part(grip, new THREE.CylinderGeometry(hr, hr, hl, 8).rotateX(Math.PI / 2).translate(0, 0, -hl / 2 + 0.2), AXE_COLORS.handle);
-  part(grip, new THREE.BoxGeometry(bt, bh, bd).translate(0, -bh / 2 + 0.12, -hl + 0.2 + bd / 2 - 0.1), AXE_COLORS.blade);
-  return rig;
-}
-
-// Yuka's brain: states over a Vehicle on the ground plane (y = 0).
-class Wander extends State {
-  enter(b) { b.stateName = 'wander'; b.pursuit.active = false; b.wander.active = true; b.share = WANDER_SHARE; }
-  execute(b) { if (b.sees()) b.fsm.changeTo('chase'); }
-}
-class Chase extends State {
-  enter(b) { b.stateName = 'chase'; b.wander.active = false; b.pursuit.active = true; b.share = 1; }
-  execute(b) {
-    if (!b.sees(LOSE)) b.fsm.changeTo('wander');
-    else if (b.inReach()) b.fsm.changeTo('attack');
-  }
-}
-class Attack extends State {
-  enter(b) { b.stateName = 'attack'; b.pursuit.active = false; b.wander.active = false; b.share = 0; b.swingT = 0; b.struck = false; }
-  execute(b) {
-    b.swingT += b.dt;
-    if (!b.struck && b.swingT >= SWING_S * STRIKE_AT) {
-      b.struck = true;
-      if (b.inReach(1.25)) b.npc.blow();
+// The figure, with every tool's model in its right mitten (hidden but the held
+// one). The models' meshes take the figure's lighting: each gets its colour as
+// an albedo, and createFigure lights it like the body.
+function buildWizard(held) {
+  return () => {
+    const rig = buildCrasher({ palette: PALETTE, eyeGlow: EYE_GLOW });
+    const grip = new THREE.Group();
+    grip.position.y = rig.handY;
+    grip.scale.setScalar(HELD_SCALE);
+    rig.elR.add(grip);
+    for (const [key, model] of Object.entries(MODEL_OF)) {
+      const m = attachModel(grip, model, null, { arm: false });
+      m.obj.traverse((o) => {
+        if (!o.isMesh || !o.material?.color) return;
+        const c = o.material.color;
+        o.userData.albedo = [c.r, c.g, c.b];
+      });
+      m.obj.visible = false;
+      held[key] = m.obj;
     }
-    if (b.swingT >= SWING_S + COOLDOWN_S) b.fsm.changeTo(b.inReach() && b.sees() ? 'attack' : 'chase');
-  }
-  exit(b) { b.swingT = -1; }
-}
-
-class Brain extends Vehicle {
-  constructor(npc) {
-    super();
-    this.npc = npc;
-    this.maxSpeed = MAX_SPEED;
-    this.maxForce = MAX_FORCE;
-    this.updateOrientation = false;
-    this.prey = new MovingEntity();              // the player, mirrored on the ground plane
-    this.pursuit = new PursuitBehavior(this.prey, PREDICTION);
-    this.wander = new WanderBehavior(...WANDER);
-    this.steering.add(this.pursuit);
-    this.steering.add(this.wander);
-    this.share = 0;                              // wished share of top speed, set by the state
-    this.swingT = -1;                            // s into the current chop, -1 when not swinging
-    this.struck = false;
-    this.dt = 0;
-    this.fsm = new StateMachine(this);
-    this.fsm.add('wander', new Wander());
-    this.fsm.add('chase', new Chase());
-    this.fsm.add('attack', new Attack());
-    this.fsm.changeTo('wander');
-  }
-  sees(range = SIGHT) { return this.npc.preyAlive() && this.npc.preyDist() < range; }
-  inReach(k = 1) { return this.npc.preyAlive() && this.npc.preyDist() < ATTACK_REACH * k && Math.abs(this.npc.preyDy()) < ATTACK_HEIGHT; }
-  update(delta) {
-    this.dt = delta;
-    if (this.npc.flinch <= 0 || this.fsm.in('attack')) this.fsm.update();
-    return super.update(delta);
-  }
-}
-
-// One axeman. world (each frame): { player, toWorld(grid, out), worldToGrid, scale }
-export function createAxeman({ renderer, getSim }) {
-  const body = createPlayer({ renderer, getSim, quiet: true });
-  const figure = createFigure(buildAxeman);
-  const npc = { flinch: 0 };
-  const brain = new Brain(npc);
-  const manager = new EntityManager();
-  manager.add(brain);
-  manager.add(brain.prey);
-
-  let world = null, deadTime = 0, stuckT = 0, jumpWait = 0, spawned = false, yaw = 0;
-  const input = { move: { x: 0, z: 0 }, jump: false, sprint: false, down: false };
-  const vFeet = new THREE.Vector3(), tmp = new THREE.Vector3();
-
-  npc.preyAlive = () => !!world && !world.player.dead;
-  npc.preyDist = () => Math.hypot(world.player.pos.x - body.pos.x, world.player.pos.z - body.pos.z);
-  npc.preyDy = () => world.player.pos.y - body.pos.y;
-  // the blow lands: hurt the player and throw them away from the axe
-  npc.blow = () => {
-    const p = world.player;
-    tmp.set(p.pos.x - body.pos.x, 0, p.pos.z - body.pos.z).normalize();
-    tmp.y = KNOCK_UP;
-    p.hurt(DAMAGE, 'Axed by the red wizard');
-    p.applyImpulse(tmp.normalize().multiplyScalar(KNOCKBACK));
+    return rig;
   };
+}
+
+// What every NPC shares: the world model and the walkable map. Call world.update(dt) once a frame.
+export function createAi({ renderer, getSim }) {
+  const world = createWorldModel({ renderer, getSim });
+  return { world, nav: createNav(world) };
+}
+
+// One NPC. ai: { world, nav } shared by all of them. env: the toolbelt's env
+// (renderer, scene, getSim, getVolume, getScale) plus ballistics (the player's).
+export function createNpc({ env, ai }) {
+  const id = `npc${nextId++}`;
+  const body = createPlayer({ renderer: env.renderer, getSim: env.getSim, quiet: true });
+  const held = {};
+  const figure = createFigure(buildWizard(held));
+  const viewmodel = new THREE.Group();   // its tools' hands hang here; never drawn (the figure holds the models)
+  const kit = createKit({ ...env, viewmodel, owner: id });
+  let world = null;   // the frame's: { player, holding, toWorld, worldToGrid, scale, stepsPerFrame }
+  const agent = new Agent({
+    body, world: ai.world, nav: ai.nav, kit, getSim: env.getSim,
+    packCells: () => pack(id).cells.length,
+    bucket: () => { const l = persistentLoad(ownedKey('BUCKET', id), Infinity); return { id: l.cells[0]?.[0] ?? -1, n: l.cells.length }; },
+    target: () => ({ pos: world.player.pos, vel: world.player.vel, alive: !world.player.dead, holding: world.holding }),
+  });
+
+  let deadTime = 0, stuckT = 0, jumpWait = 0, spawned = false, yaw = 0, chopT = 0;
+  const input = { move: { x: 0, z: 0 }, jump: false, sprint: false, down: false };
+  const eye = new THREE.Vector3(), dir = new THREE.Vector3(0, 0, -1), look = new THREE.Vector3();
+  const vFeet = new THREE.Vector3(), tmp = new THREE.Vector3(), worldEye = new THREE.Vector3();
+  const aim = { valid: false, cell: new THREE.Vector3(), face: 0, id: -1, T: 20, P: 0, dist: Infinity };
+  const ctx = {
+    sim: null, dt: 0, stepsPerFrame: 0, eye, dir, aim, wheel: 0,
+    primary: false, secondary: false, primaryPressed: false, secondaryPressed: false, player: body, viewBobbing: false,
+  };
+  const actor = { id, at: eye };
+  const hit = {};
 
   const removeTarget = addTarget({
+    id,
     get alive() { return spawned && !body.dead; },
     box(min, max) {
       min.set(body.pos.x - HW, body.pos.y, body.pos.z - HW);
       max.set(body.pos.x + HW, body.pos.y + BODY_HEIGHT, body.pos.z + HW);
     },
-    hurt(amount, cause, dir) {
+    hurt(amount, cause, d) {
       body.hurt(amount, cause);
-      body.applyImpulse(tmp.set(dir.x, Math.max(dir.y, 0) + KNOCK_UP, dir.z).normalize().multiplyScalar(HIT_KNOCKBACK));
-      npc.flinch = FLINCH_S;
-      if (!brain.fsm.in('attack') && !body.dead) brain.fsm.changeTo('chase');   // hit from anywhere: it comes for you
+      body.applyImpulse(tmp.set(d.x, Math.max(d.y, 0) + KNOCK_UP, d.z).normalize().multiplyScalar(HIT_KNOCKBACK));
+      agent.alert();   // it knows where you are now
     },
   });
 
@@ -191,77 +143,112 @@ export function createAxeman({ renderer, getSim }) {
     const z = THREE.MathUtils.clamp(p.z + Math.sin(a) * SPAWN_DIST, EDGE, g.nz - EDGE);
     const y = Math.min(p.y + SPAWN_DROP, g.ny - BODY_HEIGHT - 1);
     body.spawn(new THREE.Vector3(x, y, z));
-    brain.velocity.set(0, 0, 0);
-    brain.fsm.changeTo('wander');
-    deadTime = 0; stuckT = 0; npc.flinch = 0;
+    agent.velocity.set(0, 0, 0);
+    agent.brain.clearSubgoals();
+    agent.brain.status = 'inactive';
+    deadTime = 0; stuckT = 0;
     spawned = true;
   }
 
+  // the tools' aim: the cell its look ray strikes (the world model's pick)
+  function pick() {
+    const r = ai.world.raycast(eye, dir, AIM_REACH, undefined, hit);
+    aim.valid = r.valid;
+    if (r.valid) {
+      aim.cell.set(r.cell.x, r.cell.y, r.cell.z);
+      aim.face = r.face; aim.id = r.id; aim.dist = r.dist;
+      aim.T = ai.world.T(r.cell.x, r.cell.y, r.cell.z);
+    } else aim.dist = Infinity;
+  }
+
   return {
+    id,
     root: figure.root,
     bind(volume, g) { figure.bind(volume, g); },
     compile(r, camera, scene) { return figure.compile(r, camera, scene); },
     get body() { return body; },
-    get state() { return brain.stateName; },   // 'wander', 'chase' or 'attack' (checks)
-    get debug() { return { stuckT, jump: input.jump, move: Math.hypot(input.move.x, input.move.z), sub: body.submerged, ground: body.onGround, fuel: body.jetFuel }; },   // (checks)
+    get agent() { return agent; },
+    get kit() { return kit; },
+    // what it's doing (checks): its goal, weapon, tool, pack
+    get debug() {
+      return { goal: agent.lastGoal, weapon: agent.weapon, tool: agent.intent.tool, sees: agent.sees, knows: agent.knows, pack: pack(id).cells.length, refusal: kit.lastRefusal?.text ?? null };
+    },
     update(dt, w) {
       world = w;
-      const sim = getSim();
+      const sim = env.getSim();
       if (!sim || dt <= 0) return;
       if (!spawned) spawn(sim);
       if (body.dead) {
         deadTime += dt;
+        kit.putAway();
         if (deadTime >= RESPAWN_S) spawn(sim);
       }
-      npc.flinch = Math.max(0, npc.flinch - dt);
+      const alive = !body.dead;
 
-      // the brain, on the ground plane. Yuka keeps its own velocity (its turning
-      // is limited by maxForce); only the position follows the body.
-      brain.position.set(body.pos.x, 0, body.pos.z);
-      brain.prey.position.set(w.player.pos.x, 0, w.player.pos.z);
-      brain.prey.velocity.set(w.player.vel.x, 0, w.player.vel.z);
-      if (!body.dead) manager.update(dt);
+      // think: the brain on the ground plane (Yuka keeps its own velocity; only the position follows the body)
+      agent.position.set(body.pos.x, 0, body.pos.z);
+      if (alive && ai.world.ready) { agent.think(dt); agent.update(dt); } else agent.clearIntent();
+      const it = agent.intent;
 
       // the body: the steered velocity is the wished move
-      const alive = !body.dead;
-      const sp = Math.hypot(brain.velocity.x, brain.velocity.z);
-      const share = alive && sp > 1e-3 ? Math.min(1, brain.share) : 0;
-      input.move.x = share ? (brain.velocity.x / sp) * share : 0;
-      input.move.z = share ? (brain.velocity.z / sp) * share : 0;
-      input.sprint = share > SPRINT_FROM;
-      // blocked (or the player is up on something close): jump
+      const sp = Math.hypot(agent.velocity.x, agent.velocity.z);
+      const share = alive && sp > 1e-3 ? Math.min(1, it.share) : 0;
+      input.move.x = share ? (agent.velocity.x / sp) * share : 0;
+      input.move.z = share ? (agent.velocity.z / sp) * share : 0;
+      input.sprint = it.sprint;
       jumpWait = Math.max(0, jumpWait - dt);
-      const want = share * MAX_SPEED, got = Math.hypot(body.vel.x, body.vel.z);
+      const want = share * agent.maxSpeed, got = Math.hypot(body.vel.x, body.vel.z);
       stuckT = want > 0 && got < want * STUCK_SPEED ? stuckT + dt : 0;
-      const climb = brain.fsm.in('chase') && npc.preyDy() > CLIMB_FROM && npc.preyDist() < SIGHT / 4;
       input.down = false;
       if (body.inLiquid) {
-        // after a player below it dives, until its breath runs low; else swims up to
-        // breathe, and stopped by a wall (a tank's side) holds jump: the jet lifts it out
-        const dive = alive && brain.fsm.in('chase') && npc.preyDy() < -CLIMB_FROM && body.breath > SURFACE_BREATH;
+        // reflexes in liquid: dive after a player below while breath lasts; else swim up
+        // to breathe, and stopped by a wall (a tank's side) hold jump: the jet lifts it out
+        const dive = alive && agent.knows && w.player.pos.y - body.pos.y < -DIVE_FROM && body.breath > SURFACE_BREATH;
         input.down = dive;
-        input.jump = alive && !dive && (body.headInLiquid || stuckT > STUCK_S);
+        input.jump = alive && !dive && (body.headInLiquid || stuckT > STUCK_S || it.jump);
       } else {
-        input.jump = alive && body.onGround && jumpWait === 0 && (stuckT > STUCK_S || climb);
+        input.jump = alive && body.onGround && jumpWait === 0 && (stuckT > STUCK_S || it.jump);
         if (input.jump) { jumpWait = JUMP_COOLDOWN_S; stuckT = 0; }
       }
       body.update(dt, input);
 
-      // the figure: faces where it's going, or the player while it swings
-      const swinging = brain.swingT >= 0 && alive;
-      if (swinging || brain.fsm.in('chase')) yaw = Math.atan2(-(w.player.pos.x - body.pos.x), -(w.player.pos.z - body.pos.z));
-      else if (got > 1) yaw = Math.atan2(-body.vel.x, -body.vel.z);
+      // its eye and aim: toward what the brain looks at, else where it's going
+      eye.copy(body.pos).setY(body.pos.y + EYE_HEIGHT);
+      if (it.look) dir.set(it.look.x - eye.x, it.look.y - eye.y, it.look.z - eye.z);
+      else if (got > 1) dir.set(body.vel.x, 0, body.vel.z);
+      if (dir.lengthSq() < 1e-9) dir.set(0, 0, -1);
+      dir.normalize();
+      yaw = Math.atan2(-dir.x, -dir.z);
+
+      // the hands: the tool the brain wants, with its buttons, as this NPC
+      if (alive && it.tool) {
+        pick();
+        ctx.sim = sim; ctx.dt = dt; ctx.stepsPerFrame = w.stepsPerFrame;
+        ctx.primary = it.primary; ctx.secondary = it.secondary;
+        ctx.primaryPressed = it.primaryPressed; ctx.secondaryPressed = it.secondaryPressed;
+        // its tools' hands at its eye, turned along its aim (the physgun's beam leaves from there)
+        w.toWorld(eye, worldEye);
+        viewmodel.position.copy(worldEye);
+        viewmodel.quaternion.setFromUnitVectors(look.set(0, 0, -1), dir);
+        viewmodel.updateMatrixWorld(true);
+        povEvents.as(actor, () => kit.use(it.tool, ctx));
+        if (it.tool === 'AXE' && it.primaryPressed) chopT = CHOP_S;
+      } else if (kit.held) kit.putAway();
+
+      // the figure
+      chopT = Math.max(0, chopT - dt);
+      for (const [k, obj] of Object.entries(held)) obj.visible = alive && k === it.tool;
       w.toWorld(body.pos, vFeet);
       figure.setVisible(spawned);
       figure.update(dt, {
         feet: vFeet, scale: w.scale, yaw, worldToGrid: w.worldToGrid,
         speedH: got, velY: body.vel.y, onGround: body.onGround, inLiquid: body.inLiquid, headInLiquid: body.headInLiquid,
         dead: body.dead, deadTime, heat: body.feel?.heat ?? 0, jetting: body.jetting,
-        chop: swinging ? Math.min(brain.swingT / SWING_S, 1) : null,
+        chop: chopT > 0 ? 1 : it.chop,
       });
     },
     setVisible(v) { figure.setVisible(v && spawned); },
-    reset() { spawned = false; figure.setVisible(false); },
-    dispose() { removeTarget(); figure.dispose(); body.dispose(); },
+    reset() { spawned = false; kit.putAway(); figure.setVisible(false); },
+    dispose() { removeTarget(); kit.dispose(); figure.dispose(); body.dispose(); },
   };
 }

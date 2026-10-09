@@ -410,13 +410,14 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
   // ---- events
   const live = () => S.started && state().active;
 
-  povEvents.on('gun:fire', () => {
+  povEvents.on('gun:fire', ({ by, origin }) => {
     if (!live()) return;
+    if (by) { play('shot', { at: origin ?? null }); play('shotEcho', { at: origin ?? null, gain: ECHO_GAIN, delay: ECHO_DELAY_S }); return; }   // an NPC's: where it is
     play('shot');
     play('shotThump');
     play('shotEcho', { gain: ECHO_GAIN, delay: ECHO_DELAY_S });
   });
-  povEvents.on('gun:dry', () => { if (live()) play('dryClick'); });
+  povEvents.on('gun:dry', ({ by }) => { if (live() && !by) play('dryClick'); });
   // a bomb's charge went off: the boom where it is, and its echo off the far walls
   povEvents.on('blast', ({ point }) => {
     if (!live()) return;
@@ -436,9 +437,14 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
     if (broke === false && family === 'ping' && source !== 'axe') play('ricochet', { at, gain: gain * RICOCHET_GAIN });
   });
 
-  povEvents.on('tool:action', ({ tool, action, id, point, amount }) => {
+  // an NPC's tool sounds that are held loops for the player: a one-shot each where it is
+  const NPC_ONE_SHOT = { 'bucket:pour': 'shovelPatter', 'blowtorch:on': 'swoosh', 'physgun:grab': 'physGrab', 'physgun:fling': 'physFling', 'physgun:release': 'physRelease' };
+  povEvents.on('tool:action', ({ tool, action, id, point, amount, by, from }) => {
     if (!live()) return;
-    const at = point ?? null, family = id != null && id >= 0 ? familyOf(id) : null;
+    const at = point ?? (by ? from : null), family = id != null && id >= 0 ? familyOf(id) : null;
+    // an NPC's tools: one-shots where it is (the held loops below are the player's own)
+    if (by && `${tool}:${action}` in NPC_ONE_SHOT) { play(NPC_ONE_SHOT[`${tool}:${action}`], { at }); return; }
+    if (by && action === 'off') return;
     const rate = family ? materialRate(id, family) : 1, gain = loadGain(amount);
     if (action === 'refuse') { play('refuse', { at }); return; }
     switch (`${tool}:${action}`) {
@@ -466,8 +472,8 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
         if (id === E.LAVA && clock() - lastSizzle > POUR_SIZZLE_GAP_S) { lastSizzle = clock(); play('sizzle', { at, gain: TOOL_HIT_GAIN }); }
         break;
       }
-      case 'axe:swing': play('swoosh'); break;
-      case 'bomb:throw': play('swoosh'); break;
+      case 'axe:swing': play('swoosh', { at }); break;
+      case 'bomb:throw': play('swoosh', { at }); break;
       case 'blowtorch:on': loop('torchLoop', true); break;
       case 'blowtorch:off': loop('torchLoop', false); break;
       case 'physgun:grab': play('physGrab'); loop('physHum', true); humSince = clock(); break;
