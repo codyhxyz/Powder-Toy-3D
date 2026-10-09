@@ -244,8 +244,7 @@ As implemented (`sim.updateDirty`, `shaders/passes.js` dirtyFrag, `gfx/regions.j
   second copy, and the targets and memory stay as they were (a ping-pong plus a third scratch target would save
   the copy, about 0.1 ms per frame at full share, for 26 MB at 128³). Above `FIELD_FULL_SHARE` of regions flagged,
   a pass draws one full-screen quad instead; the share is computed on the GPU and read by the vertex shader, so
-  nothing is read back. The region size (8 bricks) and the share (0.75) are provisional: picking them by
-  measurement (`tools/derived-bench.mjs` over builds with other values) is still owed.
+  nothing is read back. Both were picked by measurement (below): 8-brick regions, `FIELD_FULL_SHARE` 0.95.
 - **Brick map** rebuilds FIELDS bricks only (the rest discard). The empty-space distance and the glow volume are
   cheap brick-resolution passes and stay full.
 - **Shadow and GI** stay full every derived frame.
@@ -253,17 +252,20 @@ As implemented (`sim.updateDirty`, `shaders/passes.js` dirtyFrag, `gfx/regions.j
     is off by default) an exact incremental map would re-trace every ray through a brick whose state, fields or
     empty-space distance changed. The distance matters because `skipEmpty`'s jumps set `tEnter` where a cell step
     would accumulate `tMax`, so the stored depths change in their last bits; a brick filling or emptying changes the
-    distance of every brick within `BRICK_DIST_MAX` (8) of it. How much of the map that leaves untouched in running
-    scenes is still to be measured; not done.
+    distance of every brick within `BRICK_DIST_MAX` (8) of it. Measured while running, that is 40–64% of the bricks
+    (lab 50%, island 40%, volcano 64%), whose rays cover 36–49% of the map's tiles: 58–79% of the tiles the box
+    projects to. Too little left untouched to pay for the bookkeeping, so it isn't done.
   - GI blends its probes every frame, each traced every other frame, and its sources read the previous probes for
     bounce light, so its values keep moving everywhere the blend hasn't settled in half floats, and a change
     reaches every probe whose rays (up to about 18 bricks) cross it. Nothing local stays fixed to skip.
-- **Proofs:** `tools/regress.mjs` against `scale`, settled and `--motion`, with detail off and on: all 26 views
-  AE 0. `tools/derived-check.mjs` (every derived target bit for bit against `sim.incremental = false`, over steps,
-  painting, the heat tool, undo, a pause and 1, 3 or 4 steps per frame): identical at 128³, 96³, 64³ and wide.
-  Both ran before the last two changes (no clearing pass for the changed map; a touch box covers the next pass
-  only), which are still to be re-run. Timings (`tools/derived-bench.mjs`): owed; the GPU was saturated by other
-  runs, then live tests paused for battery.
+- **Proofs:**
+  - `tools/regress.mjs`, settled, `--motion` and `--motion --detail on`: AE 0 on all 21 views, both for the D9 branch
+    against the `scale` it came from and for `scale` after the merge (with the D7 flags and the D11 window) against
+    the same tree with `sim.incremental = false`.
+  - `tools/derived-check.mjs` (every derived target bit for bit against `sim.incremental = false`, over steps,
+    painting, the heat tool, undo, a pause and 1, 3 or 4 steps per frame): identical at 128³, 96³, 64³ and wide, on
+    the branch and on the merged `scale`. The same holds over world-window moves, whether the EMA keeps its history
+    across a move or starts over (6 moves, 360 comparisons).
 
 ### D10. Undo (deferred)
 Copying only the bricks a stroke touches isn't a correct undo: matter flows out of those bricks afterwards.
@@ -464,6 +466,27 @@ The world is much larger than what lives on the GPU. Its size is `WORLD` cells, 
   - **Cost follows bytes:** RGBA32UI (16 B) is roughly half of 2×RGBA32F (32 B).
   - **`invalidateFramebuffer` before a full-screen pass is 13–33% slower,** not faster, on ANGLE Metal. D4 is
     measured in the app and dropped unless it shows a gain.
+
+- **D9, incremental derived passes** (`tools/derived-bench.mjs`: `updateBricks` per frame while the sim runs 4
+  steps a frame, interleaved A/B, rounds dropped when the GPU was shared; median and IQR in ms):
+
+  | scene | before | D9 | D9, full rebuild | D9 / before (paired) | regions E/D/W |
+  |---|---|---|---|---|---|
+  | lab | 4.65 (4.18–4.88) | 3.82 (3.62–4.11) | 4.59 | 0.84 | 63/68/72% |
+  | island | 4.16 (3.89–4.30) | 3.00 (2.89–3.11) | 4.38 | 0.73 | 43/48/54% |
+  | volcano | 4.23 (3.90–4.43) | 4.14 (3.85–4.36) | 4.11 | 0.97 | 72/86/92% |
+
+  - Per pass (p10 over 120 frames, 0.1 ms timer steps), the brick pass is the biggest: 2.0–2.3 ms, falling to 1.6–2.0.
+    It rebuilds a third to half of the bricks, but the bricks it skips are mostly cheap air, and SIMD groups that mix
+    dirty and clean bricks still run the full loop. The field passes fall from about 2.4 ms to 1.5–1.9 in lab and
+    island. The bookkeeping (age, dirty, regions, share, EMA copy) costs about 0.3 ms, so a full rebuild through it
+    costs about what the old passes did.
+  - Region size: 4- and 8-brick regions measured the same within noise, 16 a little more; 2 lost (32k instances a
+    pass, and a slow share pass). Regions still beat the full-screen quad at the highest share measured (92% WORK:
+    field passes 2.0 ms against 2.3).
+  - Shadow and GI (unchanged): 2.6–4.3 ms more per frame.
+  - What would cut more: a dirty test on what the renderer reads rather than on activity (non-quiet bricks include
+    resting matter and the quiet halo, and the 13-frame tail follows every one of them), and a cheaper brick pass.
 
 ## Workstreams
 Branch names are `scale-<name>`. Each lives in its own worktree `../tpt-scale-<name>`, branched from `scale`.

@@ -196,9 +196,15 @@ export const FIELD_SCRATCH_REACH = BLUR_REACH + BOOST_REACH;
 // bricks square in x and z, in one Y-slice; instance i is region
 // (i % rx, (i / rx) % rz) of slice i / (rx · rz). Its flag is the region map's
 // texel (rx + RX · rz, brick layer) (shaders/passes.js fieldRegionMapFrag).
+// Measured (M5, 128³, per-pass p10 while running): 4- and 8-brick regions
+// cost the same within noise and 16 a little more; 2 lost (32k instances a
+// pass, and a slow share pass). 8 matches the hardware tile and draws a
+// quarter of 4's instances.
 export const FIELD_REGION_BRICKS = 8;   // 32 cells: one hardware tile of a slice
 // Share of regions flagged above which one full-screen quad is drawn instead.
-export const FIELD_FULL_SHARE = 0.75;
+// Regions still beat it at the highest share measured (92%, volcano: 2.0 ms
+// for the field passes against 2.3), and cost about as much at 100%.
+export const FIELD_FULL_SHARE = 0.95;
 const glslFloat = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
 export function fieldRegions(g) {
   const side = FIELD_REGION_BRICKS;
