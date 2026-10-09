@@ -5,7 +5,7 @@ import { moveBlockFrag, moveGatherFrag, moveFlowFrag } from './shaders/move.js';
 import { reactFrag } from './shaders/react.js';
 import {
   paintFrag, copyFrag, brickFrag, blurFrag, brickDistFrag,
-  awakeFrag, fillFrag, ageFrag, dirtyFrag, fieldRegionMapFrag, regionShareFrag,
+  awakeFrag, ageFrag, dirtyFrag, fieldRegionMapFrag, regionShareFrag,
 } from './shaders/passes.js';
 import {
   fieldEmaFrag, fieldCopyFrag, fieldBlurFrag, fieldBoostFrag, fieldRegions, fieldRegionsGLSL, BOOST_STAGES, BLUR_TAPS, DIRTY,
@@ -211,8 +211,9 @@ export class Simulation {
     this.skipQuiet = true;   // false: step every brick (A/B testing)
     // Incremental derived passes (docs/scaling.md D9, shaders/passes.js
     // dirtyFrag): the bricks the state may have changed in since the last
-    // updateBricks (every quiet map a step used, as 1 - quiet, blended with
-    // MAX; writes that aren't steps add changedAll or a touched box), each
+    // updateBricks (every quiet map a step used, as 1 - quiet: the first
+    // overwrites, the rest blend with MAX; writes that aren't steps add
+    // changedAll or a touched box), each
     // brick's age in frames since it last changed (ping-pong), the dirty sets
     // derived from that, and per region of the field atlas, with their shares.
     const fr = fieldRegions(g);
@@ -228,6 +229,7 @@ export class Simulation {
     this.touchHi = [TOUCH_NONE_HI, TOUCH_NONE_HI, TOUCH_NONE_HI];
     this.touchNext = null;   // the box the next write that isn't a step declared (touch())
     this.actCarry = null;    // actAge at the last updateBricks while that quiet map is current
+    this.actNoted = false;   // actChanged holds a quiet map noted since the last updateBricks
     this.lastSmoothing = null;
     this.incremental = true;   // false: rebuild every brick every frame (A/B testing)
 
@@ -277,9 +279,8 @@ export class Simulation {
         uBulk: { value: new THREE.Vector4() }, tDirty: { value: this.dirty.texture },
       }, stage === BOOST_STAGES - 1 ? DIRTY.FIELDS : DIRTY.WORK)),
       awake: rawMat(awakeFrag(), { tQuiet: { value: this.actQuiet.texture } }),
-      fill: rawMat(fillFrag(), { uValue: { value: new THREE.Vector4() } }),
       age: rawMat(ageFrag(g), {
-        tAge: { value: null }, tChanged: { value: this.actChanged.texture }, uAll: { value: true },
+        tAge: { value: null }, tChanged: { value: this.actChanged.texture }, uSteps: { value: false }, uAll: { value: true },
         uTouchLo: { value: new THREE.Vector3() }, uTouchHi: { value: new THREE.Vector3() },
       }),
       dirty: rawMat(dirtyFrag(g), { tAge: { value: null } }),
@@ -303,8 +304,8 @@ export class Simulation {
       blending: THREE.CustomBlending, blendEquation: THREE.AddEquation,
       blendSrc: THREE.ConstantAlphaFactor, blendDst: THREE.OneMinusConstantAlphaFactor,
     });
-    // awake bricks accumulate into the changed map: max(old, new)
-    Object.assign(this.mats.awake, { blending: THREE.CustomBlending, blendEquation: THREE.MaxEquation });
+    // awake bricks accumulate into the changed map: max(old, new) (noteAwake)
+    this.mats.awake.blendEquation = THREE.MaxEquation;
     // pass names (the profiler's labels): the key, plus the stage for staged passes (fieldBoost0…)
     for (const [key, m] of Object.entries(this.mats)) {
       if (Array.isArray(m)) m.forEach((stage, i) => { stage.name = `${key}${i}`; });
@@ -391,9 +392,12 @@ export class Simulation {
     }
   }
 
-  // The bricks the current quiet map doesn't skip may change: note them in the changed map.
+  // The bricks the current quiet map doesn't skip may change: note them in the
+  // changed map, over what it holds unless it was consumed since.
   noteAwake() {
+    this.mats.awake.blending = this.actNoted ? THREE.CustomBlending : THREE.NoBlending;
     this.run(this.mats.awake, this.actChanged);
+    this.actNoted = true;
   }
 
   // Rebuild the activity map from the current state (shaders/activity.js).
@@ -535,20 +539,20 @@ export class Simulation {
     // a new kernel or a reset changes the fields everywhere
     if (this.smoothing !== this.lastSmoothing || this.fieldReset) this.changedAll = true;
     this.lastSmoothing = this.smoothing;
-    const { age, fill, dirty, regionMap, regionShare } = this.mats;
+    const { age, dirty, regionMap, regionShare } = this.mats;
     const prev = this.brickAge[this.ageCur], next = this.brickAge[1 - this.ageCur];
     this.ageCur = 1 - this.ageCur;
     const u = age.uniforms;
     u.tAge.value = prev.texture;
+    u.uSteps.value = this.actNoted;
     u.uAll.value = this.changedAll || !this.incremental;
     u.uTouchLo.value.fromArray(this.touchLo);
     u.uTouchHi.value.fromArray(this.touchHi);
     this.run(age, next);
     this.changedAll = false;
+    this.actNoted = false;
     this.touchLo.fill(TOUCH_NONE_LO);
     this.touchHi.fill(TOUCH_NONE_HI);
-    fill.uniforms.uValue.value.setScalar(0);
-    this.run(fill, this.actChanged);
     dirty.uniforms.tAge.value = next.texture;
     this.run(dirty, this.dirty);
     this.run(regionMap, this.regionMap);

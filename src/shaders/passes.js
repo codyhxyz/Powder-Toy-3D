@@ -250,7 +250,7 @@ void main() {
 // (sim.js updateBricks), at brick resolution:
 //   changed  bricks the state may have changed in since the last update: the
 //            ones every activity map a step used didn't skip (awakeFrag), and
-//            those a write that isn't a step touched
+//            those a write that isn't a step touched (uniforms of ageFrag)
 //   ageFrag  frames since each brick last changed
 //   dirtyFrag  from the ages, three sets (shaders/fields.js DIRTY), one channel each (1 = in):
 //     EMA     the field EMA may still change: changed within the last
@@ -266,8 +266,9 @@ export const AGE_MAX = 255;   // frames an age counts up to; stored as age / AGE
 export const FIELDS_DILATE = Math.ceil(FIELD_REACH / BRICK);
 export const WORK_DILATE = Math.ceil((FIELD_REACH + FIELD_SCRATCH_REACH) / BRICK);
 
-// 1 where the quiet map (shaders/activity.js) doesn't skip the brick; blended
-// with MAX into the changed map, so it accumulates over the steps.
+// 1 where the quiet map (shaders/activity.js) doesn't skip the brick. The
+// first map after an update overwrites the changed map, the rest blend into it
+// with MAX, so it accumulates over the steps without a pass to clear it.
 export const awakeFrag = () => /* glsl */ `
 precision highp float;
 precision highp sampler2D;
@@ -276,18 +277,11 @@ out vec4 oC;
 void main() { oC = vec4(texelFetch(tQuiet, ivec2(gl_FragCoord.xy), 0).x > 0.5 ? 0.0 : 1.0); }
 `;
 
-// The same value everywhere (clears the changed map).
-export const fillFrag = () => /* glsl */ `
-precision highp float;
-uniform vec4 uValue;
-out vec4 oC;
-void main() { oC = uValue; }
-`;
-
 export const ageFrag = (g) => /* glsl */ `
 ${prelude(g)}
 uniform sampler2D tAge;       // last frame's ages
 uniform sampler2D tChanged;   // bricks the steps may have changed in since (> 0.5)
+uniform bool uSteps;          // steps used an activity map since: tChanged holds their bricks
 uniform bool uAll;            // every brick changed
 uniform ivec3 uTouchLo;       // bricks a write that isn't a step touched (inclusive; none if lo > hi)
 uniform ivec3 uTouchHi;
@@ -296,7 +290,7 @@ out vec4 oC;
 void main() {
   ivec2 f = ivec2(gl_FragCoord.xy);
   ivec3 bc = brickFromFrag(f);
-  bool changed = uAll || texelFetch(tChanged, f, 0).x > 0.5
+  bool changed = uAll || (uSteps && texelFetch(tChanged, f, 0).x > 0.5)
               || (all(greaterThanEqual(bc, uTouchLo)) && all(lessThanEqual(bc, uTouchHi)));
   float age = floor(texelFetch(tAge, f, 0).x * AGE_MAX + 0.5);
   oC = vec4(changed ? 0.0 : min(age + 1.0, AGE_MAX) / AGE_MAX);

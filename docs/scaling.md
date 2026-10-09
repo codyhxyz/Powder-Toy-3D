@@ -144,8 +144,9 @@ each kernel's reach. Shadow and GI keep their own cadence. Converged regions cos
 
 As implemented (`sim.updateDirty`, `shaders/passes.js` dirtyFrag, `gfx/regions.js`):
 - **What changed.** A brick may have changed since the last `updateBricks` if a step's quiet map didn't skip
-  it: every map a step used is noted (`noteAwake`, 1 − quiet blended with MAX into `actChanged`), including a
-  map still current at the last update that later steps reuse. A write that isn't a step changes every brick,
+  it: every map a step used is noted (`noteAwake`: 1 − quiet into `actChanged`, the first map after an update
+  overwriting it and later ones blending with MAX, so nothing has to clear it), including a map still current at
+  the last update that later steps reuse. A write that isn't a step changes every brick,
   unless it declared its box first with `sim.touch(lo, hi)`; the brush does. Loads, undo, network frames, stamps
   and first-person tools rebuild everything for a settle period.
   - **Contract for D8:** whatever builds the quiet map calls `noteAwake()` after building it (and the carry check
