@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { quadVert, BRICK, SEED_MAX, TILE, SUPER, SUPER_TEX, SUPER_CELLS, BLOCK_TILE, stateUniforms } from './shaders/common.js';
 import {
-  inertFrag, inertRowsFrag, inertJoinFrag, quietFrag, activityPeriod, superMapFrag, superShareFrag, stepRegionsGLSL, SUPER_MAP,
+  inertFrag, inertRowsFrag, inertJoinFrag, quietFrag, activityPeriod, superMapFrag, superShareFrag, stepRegionsGLSL,
+  SUPER_MAP, SUPER_SETTLE_STEPS,
 } from './shaders/activity.js';
 import { moveBlockFrag, moveFlowFrag, moveGatherFrag, SLOTS } from './shaders/move.js';
 import { reactFrag } from './shaders/react.js';
@@ -246,7 +247,7 @@ export class Simulation {
     this.actAge = ACTIVITY_PERIOD;
     this.actDirty = true;
     this.actFresh = false;   // the next step is the first since a map was built (its dirty marks start over)
-    this.actStepped = false; // a step has used the current map
+    this.actSteps = 0;       // steps that used the current map
     this.stepping = false;
     this.skipQuiet = true;   // false: step every brick (A/B testing)
     // Sleeping supertiles (docs/scaling.md D8, shaders/activity.js SUPER_MAP):
@@ -264,6 +265,7 @@ export class Simulation {
     this.forceAll = true;
     this.forceLo = [TOUCH_NONE_LO, TOUCH_NONE_LO, TOUCH_NONE_LO];
     this.forceHi = [TOUCH_NONE_HI, TOUCH_NONE_HI, TOUCH_NONE_HI];
+    this.wroteSinceStep = false;   // a write that isn't a step came after the last step
     // Incremental derived passes (docs/scaling.md D9, shaders/passes.js
     // dirtyFrag): the bricks the state may have changed in since the last
     // updateBricks (every quiet map a step used, as 1 - quiet: the first
@@ -325,7 +327,7 @@ export class Simulation {
       inertJoin: rawMat(inertJoinFrag(g), { tClass: { value: null }, tRows: { value: null } }),
       quiet: rawMat(quietFrag(g), { tInert: { value: null }, uEnabled: { value: true } }),
       superMap: rawMat(superMapFrag(g), {
-        tQuiet: { value: this.actQuiet.texture }, tPrev: { value: null }, uPrevStepped: { value: false },
+        tQuiet: { value: this.actQuiet.texture }, tPrev: { value: null }, uPrevSettled: { value: false },
         uForceAll: { value: true }, uForceLo: { value: new THREE.Vector3() }, uForceHi: { value: new THREE.Vector3() },
       }),
       superShare: rawMat(superShareFrag(g), { tSuper: { value: null } }),
@@ -492,6 +494,7 @@ export class Simulation {
   // left the two state copies different there, or flags the steps settle
   // (shaders/activity.js SUPER_MAP).
   noteWrite(t) {
+    this.wroteSinceStep = true;
     if (!t) {
       this.changedAll = true;
       this.forceAll = true;
@@ -539,7 +542,7 @@ export class Simulation {
     // writes since (shaders/activity.js SUPER_MAP), and their shares
     const { superMap, superShare } = this.mats, u = superMap.uniforms;
     u.tPrev.value = this.superMap[this.superCur].texture;
-    u.uPrevStepped.value = this.actStepped;
+    u.uPrevSettled.value = this.actSteps >= SUPER_SETTLE_STEPS || (this.actSteps > 0 && this.wroteSinceStep);
     u.uForceAll.value = this.forceAll;
     u.uForceLo.value.fromArray(this.forceLo);
     u.uForceHi.value.fromArray(this.forceHi);
@@ -550,7 +553,7 @@ export class Simulation {
     this.forceAll = false;
     this.forceLo.fill(TOUCH_NONE_LO);
     this.forceHi.fill(TOUCH_NONE_HI);
-    this.actStepped = false;
+    this.actSteps = 0;
   }
 
   // Ping-pong pass over the state. The pass writes every cell, flags and all
@@ -569,7 +572,8 @@ export class Simulation {
     this.frame++;
     if (this.actDirty || this.actAge >= ACTIVITY_PERIOD) this.updateActivity();
     this.actAge++;
-    this.actStepped = true;
+    this.actSteps++;
+    this.wroteSinceStep = false;
     this.stepping = true;
     const { moveBlock, moveFlow, moveGather, react } = this.mats;
     const parity = this.frame & 1;

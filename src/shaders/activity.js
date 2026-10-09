@@ -286,15 +286,18 @@ bool quietCell(ivec3 c) {
 // flags settled: its own, NEAR, and DIRTY as the gather left it, which the
 // map's first step clears. So once a map's steps have drawn a supertile that
 // sleeps under it, the current state copy holds its cells with settled flags
-// and the other copy the same cells; after the map's second step
-// (ACTIVITY_PERIOD) the same flags too. A write that isn't a step can end a
-// map after one step, but it either copies the current state into both copies
-// there (sim.pass copies through every cell outside the box it declared) or
-// marks the supertile written (Simulation.noteWrite). If the supertile still
-// sleeps under the next map, that map's steps would write exactly what both
-// copies hold: they skip it. A map no step used (a tool building one by hand)
-// passes its DRAWN on instead (uPrevStepped).
+// and the other copy the same cells; after a second step the same flags too.
+// A write that isn't a step can end a map after one step, but it either copies
+// the current state into both copies there (sim.pass copies through every cell
+// outside the box it declared) or marks the supertile written
+// (Simulation.noteWrite). If the supertile still sleeps under the next map,
+// that map's steps would write exactly what both copies hold: they skip it. A
+// map whose steps didn't settle what slept under it (none, or one with no
+// write after it: a tool building maps by hand) passes its DRAWN on instead
+// (uPrevSettled).
 export const SUPER_MAP = { AWAKE: 0, STEPS: 1, DRAWN: 2 };
+// Steps under one map that settle both copies of a supertile sleeping under it (above).
+export const SUPER_SETTLE_STEPS = 2;
 const superMapGLSL = Object.entries(SUPER_MAP).map(([k, v]) => `#define SUPER_${k} ${v}`).join('\n');
 
 // Share of a step pass's supertiles above which it draws one full-screen quad
@@ -312,7 +315,7 @@ ${prelude(g)}
 ${superMapGLSL}
 uniform sampler2D tQuiet;
 uniform sampler2D tPrev;
-uniform bool uPrevStepped;   // steps used the last map (else none drew what it slept through: its DRAWN carries over)
+uniform bool uPrevSettled;   // the last map's steps settled what slept under it (else its DRAWN carries over)
 uniform bool uForceAll;      // every supertile was written since the last map by something other than a step
 uniform ivec3 uForceLo;      // ...or the ones in this box (supertiles, inclusive; none if lo > hi)
 uniform ivec3 uForceHi;
@@ -336,7 +339,7 @@ void main() {
   }
   bool forced = uForceAll || (all(greaterThanEqual(s, uForceLo)) && all(lessThanEqual(s, uForceHi)));
   vec4 prev = texelFetch(tPrev, f, 0);
-  bool drawn = awake || forced || (uPrevStepped ? prev[SUPER_AWAKE] : prev[SUPER_DRAWN]) > 0.5;
+  bool drawn = awake || forced || (uPrevSettled ? prev[SUPER_AWAKE] : prev[SUPER_DRAWN]) > 0.5;
   oC[SUPER_AWAKE] = awake ? 1.0 : 0.0;
   oC[SUPER_STEPS] = steps ? 1.0 : 0.0;
   oC[SUPER_DRAWN] = drawn ? 1.0 : 0.0;

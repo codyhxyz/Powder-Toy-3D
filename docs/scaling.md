@@ -158,7 +158,10 @@ Sleeping supertiles as implemented (`shaders/activity.js` superMapFrag, SUPER_MA
   map's second step, the same flags in both. A write that isn't a step can end a map after one step, but it copies
   the current state into both copies outside the box it declared (every `sim.pass` copies through) or wakes the
   supertile. So when the next map leaves it asleep too, its steps would write what both copies already hold.
-  A map no step used (a tool building one by hand) passes its DRAWN on instead.
+  A map whose steps didn't settle what slept under it (none, or one with no write after it: tools build maps by
+  hand) passes its DRAWN on instead. A CPU model of these passes (1-D, random maps and writes, drawn against
+  skipped) agrees in both copies, flags included, and fails without the low halo, the last map, the written boxes
+  or the carry.
 - **Writes that aren't steps.** Each goes through `Simulation.run` into a state target, which notes it
   (`noteWrite`, as D9 does): the box declared with `touch()`, or everything, is drawn by the next map's steps.
   - The brush copies through and declares its box. So do the first-person body's coupling and the physgun now
