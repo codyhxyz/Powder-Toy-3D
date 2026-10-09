@@ -159,7 +159,9 @@ export class FarField {
     this.renderer.setRenderTarget(target);
     const done = this.renderer.compileAsync(this.mesh, new THREE.PerspectiveCamera(), new THREE.Scene());
     this.renderer.setRenderTarget(prev);
-    done.then(() => { this.ready = true; }, (err) => console.error('far field: the view failed to compile', err))
+    // (showing it changes the scene's key: a settled view draws again, app.js gfx/pacing.js)
+    done.then(() => { this.ready = true; this.mesh.visible = this.built; },
+      (err) => console.error('far field: the view failed to compile', err))
       .finally(() => { target.depthTexture.dispose(); target.dispose(); });
   }
 
