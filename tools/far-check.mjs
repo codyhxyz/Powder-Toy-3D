@@ -30,7 +30,7 @@ const COST_ROUNDS = 40;            // interleaved timing rounds (each draws with
 const EYE_DIR = [0.82, 0.57];      // the eye view's spot: out from the island's centre this way (x, z)...
 const EYE_BELOW_FROST = 3;         // ...to where the ground is this many cells under the lowest snow (bare rock: an open view)
 const EYE_CLEAR = 24;              // cells around the spot with no tree trunk (on the rock)...
-const EYE_BEACH_CLEAR = 10;        // ...and on the beach (palms grow there)
+const EYE_BEACH_CLEAR = 20;        // ...and on the beach (palms grow there; crowns reach 16)
 const TREE_REGION = [320, 320, 704, 704];   // world cells [x0, z0, x1, z1) where the tree placements are compared
 
 const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
@@ -85,16 +85,19 @@ await p.evaluate(([SUN]) => {
   };
 }, [SUN]);
 
-// a still: park the loop, let exactly one frame run, capture it
+// a still: park the loop, let exactly one frame run (at jitter and dither
+// frame STILL_FRAME, the same for every still), capture it
+const STILL_FRAME = 1000;
 async function still(path) {
-  await p.evaluate(async () => {
+  await p.evaluate(async (K) => {
     window.__hold();
     for (let i = 0; i < 2; i++) await window.__rawFrame();
     window.__app.requestRender();
+    window.__app.volume.material.uniforms.uFrame.value = K - 1;   // (gfxUniforms' frame counter: the far view's too)
     window.__release();
     window.__hold();
     for (let i = 0; i < 2; i++) await window.__rawFrame();
-  });
+  }, STILL_FRAME);
   await p.screenshot({ path });
   await p.evaluate(() => window.__release());
 }
