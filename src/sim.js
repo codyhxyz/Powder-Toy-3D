@@ -361,27 +361,27 @@ export class Simulation {
     this.renderer.setRenderTarget(target);
     this.renderer.render(quads ? quads.scene : this.scene, this.camera);
     this.onPass?.(mat.name, target);
+    const touched = this.touchNext;   // (for this pass only)
+    this.touchNext = null;
     if (target === this.targets[0] || target === this.targets[1]) {
       this.version++;
       if (!this.stepping) {
         this.actDirty = true;
-        this.noteWrite();
+        this.noteWrite(touched);
       }
     }
   }
 
-  // The next write to the state that isn't a step (a pass run outside step())
-  // changes only cells in [lo, hi] (inclusive; [x, y, z] arrays), so the
-  // derived passes rebuild only the bricks there. Without it such a write
+  // The next pass, a write to the state that isn't a step (run outside
+  // step()), changes only cells in [lo, hi] (inclusive; [x, y, z] arrays), so
+  // the derived passes rebuild only the bricks there. Without it such a write
   // rebuilds every brick.
   touch(lo, hi) {
     this.touchNext = { lo, hi };
   }
 
-  // A write that isn't a step: its box, or every brick, changed.
-  noteWrite() {
-    const t = this.touchNext;
-    this.touchNext = null;
+  // A write that isn't a step: the box it declared changed, or every brick.
+  noteWrite(t) {
     if (!t) {
       this.changedAll = true;
       return;
