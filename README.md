@@ -69,11 +69,20 @@ The tools are physical and finite. Infinite painting stays in the god view.
    dumps the load where you aim.
 2. **Bucket:** scoops a load of liquid, and right-click pours it. A bucket of lava stays hot.
 3. **Axe:** a short, wide swing that chops wood and smashes glass, ice and plants.
-4. **Gun:** fires a metal slug, a real cell in the sim at full speed. It drops and slows in water like any other
-   grain and breaks whatever its energy beats. Shot in the air, its recoil throws you.
+4. **Gun:** fires a metal round at 360 m/s under real gravity, so it crosses the whole box with a few cm of drop.
+   The round flies outside the sim (a GPU trace checks its path each frame) and becomes a real slug cell where it
+   hits, so the engine decides what breaks: glass shatters, metal holds, a keg goes off. Shot in the air, its recoil
+   throws you.
 5. **Physgun:** a force beam on loose matter. Hold to carry a floating ball of water or sand, right-click to fling it.
 
 Nothing a tool carries is made up: the cells it takes come back out exactly (same element, temperature and state).
+
+Everything you do makes a sound (synthesised with [ZzFX](https://github.com/KilledByAPixel/ZzFX) and placed in 3D):
+impacts sound like the material they hit, pitched by its hardness, and the world goes muffled under water. Shots
+kick the camera, nearby blasts and hard landings shake it, and [three.quarks](https://github.com/Alchemist0823/three.quarks)
+draws the muzzle flash, sparks, dust and tracers. The held tools are [Kenney](https://kenney.nl)'s CC0 models, and
+**Settings → First person** picks the body: the stickman, or a realistic one animated with
+[Quaternius](https://quaternius.com)'s CC0 animation library.
 
 ## Elements
 
