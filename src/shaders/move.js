@@ -249,11 +249,14 @@ void main() {
   }
   ivec3 base = 2 * j + ivec3(uParity);
   // A block whose base cell is in a quiet brick (shaders/activity.js) lies
-  // within that brick's inert halo: it stays put, velocities and all. Nothing
-  // reads its slots (the passes that read them test the block's base first,
-  // slotGLSL), so it writes none: the sleeping supertiles (activity.js
-  // SUPER_MAP) aren't drawn at all.
-  if (quietCell(base)) discard;
+  // within that brick's inert halo: it stays put, velocities and all.
+  if (quietCell(base)) {
+    ${CELLS.map((i) => `{
+    ivec3 q = base + ivec3(${i & 1}, ${(i >> 1) & 1}, ${(i >> 2) & 1});
+    o${i} = vec4(float(${i}), inGrid(q) ? fetchB(q).xyz : vec3(0.0));
+    }`).join('\n    ')}
+    return;
+  }
 
   ${CELLS.map((i) => `vec4 a${i}; vec3 v${i}; int k${i}; float d${i}; int n${i} = ${i}; float q${i} = 0.0; bool m${i} = false, s${i} = false;`).join('\n  ')}
   ${CELLS.map((i) => `{
@@ -286,9 +289,6 @@ void main() {
 
 // The block pass's results, read per cell (the gather pass, the flow pass):
 // uniforms tSlots and uParity, and
-//   blockBase(c)     the base cell of cell c's block: a block based in a quiet
-//                    brick (quietCell) stayed put and has no slots written, so
-//                    a reader tests this before reading c's slot
 //   slotOf(c, q)     cell c's slot texel (its packed source and new velocity),
 //                    and q, the cell its content comes from
 //   postMove(c, a, b)  cell c's state after the move
@@ -296,6 +296,11 @@ void main() {
 // every block (Simulation.slots), so a cell's slot is one fetch whatever its
 // place in its block: picking among 8 textures per cell costs a fetch from
 // each, since the cells of a SIMD group sit at all 8 places.
+// The block pass draws only the supertiles whose slots a step reads (sleeping
+// supertiles, shaders/activity.js SUPER_MAP BLOCKS): those of blocks based in
+// a brick that isn't quiet (the gather and the flow pass), and those of quiet
+// blocks reaching into one (the flow pass reads their identity slots). The
+// rest hold an older step's slots, which nothing reads.
 export const slotGLSL = /* glsl */ `
 uniform highp sampler2DArray tSlots;
 uniform int uParity;
@@ -314,8 +319,9 @@ vec4 slotOf(ivec3 c, out ivec3 q) {
 }
 // Cell c's state after this step's move: its source cell's state A, warmed by
 // the impact energy the slot carries (packSlot), and the slot's new velocity
-// with the pressure of c itself (pressure stays with the position). Only for
-// a cell whose block's base isn't in a quiet brick.
+// with the pressure of c itself (pressure stays with the position). (A block
+// whose base is in a quiet brick stayed put: its slots give each cell its own
+// state, as fetchA and fetchB would.)
 void postMove(ivec3 c, out vec4 a, out vec4 b) {
   ivec3 q;
   vec4 m = slotOf(c, q);
@@ -327,7 +333,7 @@ void postMove(ivec3 c, out vec4 a, out vec4 b) {
 `;
 
 // Gather: every cell's state after the move. A block whose base is in a quiet
-// brick stayed put, so its cells copy themselves (it has no slots to read).
+// brick stayed put, so its cells copy themselves (as their slots would say).
 export const moveGatherFrag = (g) => /* glsl */ `
 ${prelude(g)}
 ${quietGLSL}
@@ -355,8 +361,7 @@ void main() {
 // FLOW_BLEND). This is motion that happened, not velocity: grains pressed
 // against a pile want to fall but go nowhere, so a resting pile reads 0.
 // Quiet bricks (shaders/activity.js) hold only still air and solids, which
-// the renderer doesn't read flow for, so they keep what they have. A cell
-// whose block is based in a quiet brick didn't move.
+// the renderer doesn't read flow for, so they keep what they have.
 export const moveFlowFrag = (g) => /* glsl */ `
 ${prelude(g)}
 out vec4 oV;
@@ -365,7 +370,6 @@ ${slotGLSL}
 void main() {
   ivec3 p = cellFromFrag(ivec2(gl_FragCoord.xy));
   if (!inGrid(p) || quietCell(p)) discard;
-  if (quietCell(blockBase(p))) { oV = vec4(0.0); return; }
   ivec3 q;
   slotOf(p, q);
   oV = vec4(vec3(p - q), 0.0);

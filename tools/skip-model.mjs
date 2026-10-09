@@ -6,7 +6,9 @@
 // the supertile map's rule (Simulation.updateActivity, noteWrite). The maps are random
 // and drift: the rule must hold whatever they are, since a map is the same function of
 // the same current state in both runs. Both state copies must agree after every
-// operation, values and flags. Writes: brushes with and without a declared box, a
+// operation, values and flags, and so must the flow field (the flow pass reads the
+// identity slots of quiet blocks reaching into a brick that isn't quiet; a read of a
+// slot the block pass didn't write this step fails). Writes: brushes with and without a declared box, a
 // write of only what no neighbour test reads, load/undo/unpack (the current copy
 // alone), syncCopies, a shift, maps built by hand, a tool asking for a new map.
 // A cell is v (what neighbour tests read: element, temperature), l (what they don't:
@@ -28,6 +30,7 @@ const ODDS = {
   REACT_V: 4, REACT_L: 3,     // react changes a cell's v, its l
   NEAR: 2,                    // its neighbour test fails
 };
+const FLOW_BLEND = 0.05;      // the flow field's blend (sim.js)
 const SHIFT = 8;              // cells a shift moves the state
 const BOX_MAX = 10;           // cells a brush's box spans, at most
 const WRITE_SHARE = 0.6;      // share of a box's cells a brush changes
@@ -56,8 +59,9 @@ function makeSim(skip) {
     C[0].push({ ...c, f: fresh(c) });
     C[1].push({ v: 0, l: 0, f: 0 });
   }
+  const flow = new Array(N).fill(0);
   return {
-    skip, C, cur: 0, frame: 0, fresh: false, nsteps: 0, wrote: false,
+    skip, C, flow, cur: 0, frame: 0, fresh: false, nsteps: 0, wrote: false,
     prevAwake: new Array(NS).fill(false), prevDrawn: new Array(NS).fill(false),
     forceAll: true, forceLo: 1e9, forceHi: -1,
     quiet: new Array(NB).fill(false), awake: null, steps: null, drawn: null,
@@ -76,20 +80,23 @@ function buildMap(s, quiet) {
   s.quiet = quiet.slice();
   // the last map's steps settled what slept under it: two of them, or one and then a write
   const settled = s.nsteps >= SETTLE_STEPS || (s.nsteps >= 1 && s.wrote);
-  const awake = [], steps = [], drawn = [];
+  const awake = [], steps = [], drawn = [], blocks = [];
   for (let i = 0; i < NS; i++) {
-    let a = false, st = false;
-    for (let b = i * SUPER - 1; b < (i + 1) * SUPER; b++) {
-      if (b < 0 || quiet[b]) continue;
-      a = true;
-      if (b >= i * SUPER) st = true;
+    let a = false, st = false, bl = false;
+    // its bricks, the one below it (its blocks reach in) and the one above it (its blocks reach there)
+    for (let b = i * SUPER - 1; b <= (i + 1) * SUPER; b++) {
+      if (b < 0 || b >= NB || quiet[b]) continue;
+      const below = b < i * SUPER, above = b >= (i + 1) * SUPER;
+      if (!above) a = true;
+      if (!below) bl = true;
+      if (!below && !above) st = true;
     }
     const forced = s.forceAll || (i >= s.forceLo && i <= s.forceHi);
-    awake.push(a); steps.push(st);
+    awake.push(a); steps.push(st); blocks.push(bl);
     drawn.push(a || forced || (settled ? s.prevAwake[i] : s.prevDrawn[i]));
   }
   s.prevAwake = awake; s.prevDrawn = drawn;
-  s.awake = awake; s.steps = steps; s.drawn = drawn;
+  s.awake = awake; s.steps = steps; s.drawn = drawn; s.blocks = blocks;
   s.forceAll = false; s.forceLo = 1e9; s.forceHi = -1;
   s.fresh = true; s.nsteps = 0;
 }
@@ -99,23 +106,26 @@ function step(s) {
   s.nsteps++;
   s.wrote = false;
   const par = s.frame & 1, q = s.quiet, all = !s.skip;
-  // block pass: a block based in a brick that isn't quiet is solved (a swap or a
-  // nudge, from a hash of the block and frame), where its supertile has STEPS
+  // block pass, where its supertile has BLOCKS (the low margin's row: offset 1, any BLOCKS):
+  // a block based in a brick that isn't quiet is solved (a swap or a nudge, from a hash of
+  // the block and frame); one based in a quiet brick gets its identity slots
   const solved = new Map();
   const C0 = s.C[s.cur];
+  const anyBlocks = all || s.blocks.some((x) => x);
   for (let j = -1; j <= N / 2; j++) {
     const base = 2 * j + par;
     if (base < -1 || base >= N || (par === 0 && base < 0)) continue;
     const hb = brick(base);
-    if (q[hb]) continue;
-    if (!all && base >= 0 && !s.steps[sup(hb)]) continue;
+    if (!all && (base >= 0 ? !s.blocks[sup(hb)] : !anyBlocks)) continue;
     const cells = [base, base + 1].filter((p) => p >= 0 && p < N);
     const h = hash(base, s.frame);
     let out = cells.map((p) => ({ v: C0[p].v, l: C0[p].l }));
+    if (q[hb]) { solved.set(base, { cells, out, src: cells.slice() }); continue; }
     if (out.length === 2 && h % ODDS.BLOCK === 0) out = [out[1], out[0]];
     else if (h % ODDS.BLOCK === 1) out[0] = { v: out[0].v, l: (out[0].l + 1) % LIVES };   // velocity only
     else if (h % ODDS.BLOCK === 2 && h % ODDS.HEAT === 0) out[0] = { v: (out[0].v + 1) % VALUES, l: out[0].l };   // impact heat
-    solved.set(base, { cells, out });
+    const swapped = out.length === 2 && h % ODDS.BLOCK === 0;
+    solved.set(base, { cells, out, src: swapped ? [cells[1], cells[0]] : cells.slice() });
   }
   // gather (current copy -> other)
   const C1 = s.C[1 - s.cur];
@@ -137,6 +147,15 @@ function step(s) {
   }
   s.cur = 1 - s.cur;
   s.fresh = false;
+  // flow pass, where its supertile has STEPS: a cell in a brick that isn't quiet takes how
+  // far its content moved (its slot's source), blended into the field
+  for (let p = 0; p < N; p++) {
+    if (!all && !s.steps[sup(brick(p))]) continue;
+    if (q[brick(p)]) continue;
+    const b = solved.get(blockBase(p));
+    if (!b) throw new Error(`flow read a slot not written this step (base ${blockBase(p)}, frame ${s.frame})`);
+    s.flow[p] = Math.fround(FLOW_BLEND * (p - b.src[b.cells.indexOf(p)]) + (1 - FLOW_BLEND) * s.flow[p]);
+  }
   // react (other -> current)
   const I = s.C[s.cur], O = s.C[1 - s.cur];
   for (let p = 0; p < N; p++) {
@@ -216,6 +235,12 @@ for (let run = 0; run < RUNS; run++) {
     else if (op !== 'mapByHand') dirty = true;
     ops++;
     const [A, B] = sims;
+    for (let p = 0; p < N; p++) {
+      if (A.flow[p] !== B.flow[p]) {
+        console.log(`run ${run} op ${t} (${op}): flow at cell ${p}: ${A.flow[p]} drawn, ${B.flow[p]} skipped`);
+        process.exit(1);
+      }
+    }
     for (const k of [0, 1]) {
       const ca = A.C[k ? 1 - A.cur : A.cur], cb = B.C[k ? 1 - B.cur : B.cur];
       for (let p = 0; p < N; p++) {

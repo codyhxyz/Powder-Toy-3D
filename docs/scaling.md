@@ -147,9 +147,14 @@ Sleeping supertiles as implemented (`shaders/activity.js` superMapFrag, SUPER_MA
     base brick, so a quiet brick's low faces can trade cells with an awake neighbour's. Within an inert halo
     only air moves, jittering, but a quiet brick's state is then not quite unchanged by its map's steps, as D9's
     contract asks. Noted, not changed: skipping stays bit-exact with the base.)
-  - STEPS: one of its own bricks is not quiet. The block pass and the flow pass draw these. A block based in a
-    quiet brick now writes no slots, and the flow pass, like the gather, reads a cell's slot only when its block's
-    base brick isn't quiet (a block that stayed put means a flow of 0).
+  - STEPS: one of its own bricks is not quiet. The flow pass draws these (it writes only cells of such bricks).
+  - BLOCKS: one of its own bricks is not quiet, or one just above it. The block pass draws these: it solves the
+    blocks based in bricks that aren't quiet (the gather reads them) and gives a block based in a quiet brick its
+    identity slots, which the flow pass reads for that block's cells in a brick that isn't quiet. (Skipping those
+    identity slots too and testing the base in the flow pass instead is exact in value, but not bit for bit: the
+    flow pass's blend into the half-float field is folded into its shader by Apple's compiler, and any change to
+    that shader's code moved some blended values by one unit in the last place. The flow and block shaders are the
+    base's, unchanged.)
   - DRAWN: AWAKE under this map or the last one, or written since the last map by something that isn't a step.
     The gather and react draw these.
 - **Why the last map too.** Under a map that leaves a supertile asleep, the gather copies its cells and react
@@ -159,9 +164,9 @@ Sleeping supertiles as implemented (`shaders/activity.js` superMapFrag, SUPER_MA
   the current state into both copies outside the box it declared (every `sim.pass` copies through) or wakes the
   supertile. So when the next map leaves it asleep too, its steps would write what both copies already hold.
   A map whose steps didn't settle what slept under it (none, or one with no write after it: tools build maps by
-  hand) passes its DRAWN on instead. A CPU model of these passes (1-D, random maps and writes, drawn against
-  skipped) agrees in both copies, flags included, and fails without the low halo, the last map, the written boxes
-  or the carry.
+  hand) passes its DRAWN on instead. A CPU model of these passes (`tools/skip-model.mjs`: 1-D, random maps and
+  writes, drawn against skipped) agrees in both copies, flags included, and in the flow field, and fails without
+  the low halo, the high halo for the block pass, the last map, the written boxes or the carry.
 - **Writes that aren't steps.** Each goes through `Simulation.run` into a state target, which notes it
   (`noteWrite`, as D9 does): the box declared with `touch()`, or everything, is drawn by the next map's steps.
   - The brush copies through and declares its box. So do the first-person body's coupling and the physgun now
@@ -174,7 +179,8 @@ Sleeping supertiles as implemented (`shaders/activity.js` superMapFrag, SUPER_MA
 - **Regions.** One `RegionQuads` instance per supertile, culled in the vertex shader (`stepRegionsGLSL`): its
   SUPER_TEX square of the state atlas (and the flow field, which shares it), or its 16×8 texels of home blocks in
   the block atlas, plus the block atlas's low-margin rows at partition offset 1. Above STEP_FULL_SHARE of a pass's
-  channel, one full-screen quad. `sim.skipSleeping = false` draws full-screen always (A/B).
+  channel (a uniform, `sim.superU.uFullShare`), one full-screen quad. `sim.skipSleeping = false` draws
+  full-screen always (A/B).
 - **Proofs and timings:** owed (battery; see the session report).
 
 ### D9. Derived passes are incremental where they can be

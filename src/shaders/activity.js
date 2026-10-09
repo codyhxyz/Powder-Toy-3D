@@ -273,10 +273,13 @@ bool quietCell(ivec3 c) {
 //          just below it along x, y or z (with the partition offset at 1 a
 //          Margolus block belongs to the brick holding its base cell, and
 //          reaches one cell past it along each axis: shaders/move.js)
-//   STEPS  a brick in it is not quiet. The block pass solves only blocks based
-//          in such bricks, and the flow pass writes only their cells (nothing
-//          reads a block based in a quiet brick: its cells stayed put), so
-//          those two draw these supertiles
+//   STEPS  a brick in it is not quiet: the flow pass writes only such bricks'
+//          cells, so it draws these supertiles
+//   BLOCKS a brick in it is not quiet, or one just above it along x, y or z:
+//          the block pass draws these. It solves the blocks based in bricks
+//          that aren't quiet (the gather reads them), and gives a block based
+//          in a quiet brick its identity slots, which the flow pass reads for
+//          that block's cells in a brick that isn't quiet (shaders/move.js)
 //   DRAWN  the gather and react passes draw it: AWAKE under this map or the
 //          last one, or written since the last map by something other than a
 //          step (Simulation.noteWrite)
@@ -295,7 +298,7 @@ bool quietCell(ivec3 c) {
 // map whose steps didn't settle what slept under it (none, or one with no
 // write after it: a tool building maps by hand) passes its DRAWN on instead
 // (uPrevSettled).
-export const SUPER_MAP = { AWAKE: 0, STEPS: 1, DRAWN: 2 };
+export const SUPER_MAP = { AWAKE: 0, STEPS: 1, DRAWN: 2, BLOCKS: 3 };
 // Steps under one map that settle both copies of a supertile sleeping under it (above).
 export const SUPER_SETTLE_STEPS = 2;
 const superMapGLSL = Object.entries(SUPER_MAP).map(([k, v]) => `#define SUPER_${k} ${v}`).join('\n');
@@ -326,16 +329,20 @@ void main() {
   oC = vec4(0.0);
   if (i >= STX * STY * STZ) return;   // a slot past the last supertile
   ivec3 s = ivec3(i % STX, i / (STX * STZ), (i / STX) % STZ), b0 = s * SUPER_B;
-  bool awake = false, steps = false;
-  // its bricks, and the ones below it whose blocks reach into it (the grid's
-  // low margin has none: blocks there belong to brick 0)
-  for (int z = -1; z < SBZ; z++)
-  for (int y = -1; y < SBY; y++)
-  for (int x = -1; x < SBX; x++) {
-    ivec3 b = b0 + ivec3(x, y, z);
-    if (any(lessThan(b, ivec3(0))) || texelFetch(tQuiet, brickAtlas(b), 0).x > 0.5) continue;
-    awake = true;
-    steps = steps || all(greaterThanEqual(ivec3(x, y, z), ivec3(0)));
+  bool awake = false, steps = false, blocks = false;
+  // its bricks; the ones just below it, whose blocks reach into it (the grid's
+  // low margin has none: blocks there belong to brick 0); and the ones just
+  // above it, which its blocks reach into
+  for (int z = -1; z <= SBZ; z++)
+  for (int y = -1; y <= SBY; y++)
+  for (int x = -1; x <= SBX; x++) {
+    ivec3 l = ivec3(x, y, z), b = b0 + l;
+    if (any(lessThan(b, ivec3(0))) || any(greaterThanEqual(b, ivec3(BX, BY, BZ)))) continue;
+    if (texelFetch(tQuiet, brickAtlas(b), 0).x > 0.5) continue;
+    bool below = any(lessThan(l, ivec3(0))), above = any(greaterThanEqual(l, SUPER_B));
+    awake = awake || !above;
+    blocks = blocks || !below;
+    steps = steps || (!below && !above);
   }
   bool forced = uForceAll || (all(greaterThanEqual(s, uForceLo)) && all(lessThanEqual(s, uForceHi)));
   vec4 prev = texelFetch(tPrev, f, 0);
@@ -343,6 +350,7 @@ void main() {
   oC[SUPER_AWAKE] = awake ? 1.0 : 0.0;
   oC[SUPER_STEPS] = steps ? 1.0 : 0.0;
   oC[SUPER_DRAWN] = drawn ? 1.0 : 0.0;
+  oC[SUPER_BLOCKS] = blocks ? 1.0 : 0.0;
 }
 `;
 
