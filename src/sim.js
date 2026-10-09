@@ -49,14 +49,14 @@ function makeTarget(w, h, count = 2) {
   });
 }
 
-function makeFieldTarget(w, h, count, type, filter) {
+export function makeFieldTarget(w, h, count, type, filter) {
   return new THREE.WebGLRenderTarget(w, h, {
     count, type, format: THREE.RGBAFormat, minFilter: filter, magFilter: filter,
     depthBuffer: false, stencilBuffer: false, generateMipmaps: false,
   });
 }
 
-function rawMat(frag, uniforms) {
+export function rawMat(frag, uniforms) {
   return new THREE.RawShaderMaterial({
     glslVersion: THREE.GLSL3,
     vertexShader: quadVert,
