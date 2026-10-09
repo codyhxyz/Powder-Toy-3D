@@ -24,15 +24,14 @@ const LOOK_MAX_PX = 250;                // px: bigger single jumps (a browser hi
 const PITCH_LIMIT = DEG(88);            // up and down from level
 export const ENTRY_PITCH = DEG(-8);     // dropping in, the view starts a little below the horizon
 
-// Head bob, while walking on the ground. Set HEAD_BOB to false to turn it off.
-export const HEAD_BOB = true;
+// Head bob, while walking on the ground (the View Bobbing setting turns it off).
 const BOB_STRIDE = 9;                   // cells walked per bob cycle (two footsteps)
 const BOB_AMP_Y = 0.13;                 // cells, down at each footstep
 const BOB_AMP_X = 0.06;                 // cells, side to side once per cycle
 const BOB_FULL_SPEED = 6;               // cells/s of ground speed at which the bob reaches full size
 const BOB_RATE = 8;                     // 1/s: how fast the bob's size follows the speed
 // Footfalls: one at the bottom of each bob (twice per stride), counted on the
-// ground whether or not the bob shows (wading, HEAD_BOB off).
+// ground whether or not the bob shows (wading, View Bobbing off).
 const STEP_MIN_SPEED = 1;               // cells/s of ground speed below which footfalls aren't reported
 
 // Landing dip: a critically damped spring on the eye height, kicked downward.
@@ -83,8 +82,9 @@ function yawPitch(d, out) {
 const smoother01 = (x) => { const t = Math.min(Math.max(x, 0), 1); return t * t * t * (t * (6 * t - 15) + 10); };
 const approach = (rate, dt) => 1 - Math.exp(-rate * dt);
 
-// opts.fov(): the FOV setting (degrees); opts.sensitivity(): the Mouse Sensitivity multiplier
-export function createPovCamera({ fov: fovSetting = () => POV_FOV, sensitivity = () => 1 } = {}) {
+// opts.fov(): the FOV setting (degrees); opts.sensitivity(): the Mouse Sensitivity multiplier;
+// opts.bobbing(): the View Bobbing setting
+export function createPovCamera({ fov: fovSetting = () => POV_FOV, sensitivity = () => 1, bobbing = () => true } = {}) {
   const UP = new THREE.Vector3(0, 1, 0);
   const euler = new THREE.Euler(0, 0, 0, 'YXZ');
   const m4 = new THREE.Matrix4();
@@ -184,7 +184,7 @@ export function createPovCamera({ fov: fovSetting = () => POV_FOV, sensitivity =
       // head bob and landing dip, in cells. The stride runs on any ground
       // (footfalls); the bob only shows walking on dry ground.
       const striding = s.onGround && !s.dead;
-      const walking = HEAD_BOB && striding && !s.inLiquid;
+      const walking = bobbing() && striding && !s.inLiquid;
       bobAmp += ((walking ? Math.min(s.speedH / BOB_FULL_SPEED, 1) : 0) - bobAmp) * approach(BOB_RATE, dt);
       if (striding) bobPhase += (s.speedH / BOB_STRIDE) * 2 * Math.PI * dt;
       const step = footfallIndex(bobPhase);

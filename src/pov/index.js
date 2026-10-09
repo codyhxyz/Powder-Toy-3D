@@ -43,7 +43,9 @@ export function createPov(app) {
   const createPlayer = playerModule?.createPlayer;
   const createToolbelt = toolsModule?.createToolbelt;
 
-  const povCam = createPovCamera({ fov: () => app.settings.povFov, sensitivity: () => app.settings.sensitivity });
+  const povCam = createPovCamera({
+    fov: () => app.settings.povFov, sensitivity: () => app.settings.sensitivity, bobbing: () => app.settings.viewBobbing,
+  });
   const povHud = createPovHud();
   // feedback: everything here hears povEvents (events.js) and the body's events
   const feel = createFeel({ hud: povHud });
@@ -94,10 +96,18 @@ export function createPov(app) {
     buttons.primary = buttons.secondary = false;
   }
 
+  // F1: the HUD and the hand hidden (death and the mouse prompt still show)
+  let hudHidden = false;
+  const setHudHidden = (v) => { hudHidden = v; document.body.classList.toggle('pov-nohud', v); app.requestRender(); };
+
   addEventListener('keydown', (e) => {
     if (!active() || app.isTyping() || e.metaKey || e.ctrlKey || e.altKey) return;
     if (MOVE_KEYS.has(e.code)) { keys.add(e.code); if (e.code === 'Space') e.preventDefault(); }
     if (e.code === 'KeyV' && !e.repeat && mode !== 'exiting') povCam.third = !povCam.third;
+    // Sprint: Toggle (the setting): Shift flips sprinting on and off instead of being held
+    if ((e.code === 'ShiftLeft' || e.code === 'ShiftRight') && !e.repeat && app.settings.sprintMode === 'toggle') sprintOn = !sprintOn;
+    // F1, as in Minecraft: hide the HUD and the hand, for a clean view or a screenshot
+    if (e.code === 'F1') { e.preventDefault(); if (!e.repeat) setHudHidden(!hudHidden); }
     // settings and help need the mouse
     if ((e.key === ',' || e.key === '?') && document.pointerLockElement === canvas) document.exitPointerLock();
   });
@@ -283,6 +293,8 @@ export function createPov(app) {
     feel.reset();
     vfx?.clear();
     document.body.classList.remove('pov-on');
+    setHudHidden(false);
+    sprintOn = false;
     app.requestRender();
   }
 
@@ -291,10 +303,12 @@ export function createPov(app) {
     sim: null, dt: 0, stepsPerFrame: 0,
     eye: new THREE.Vector3(), dir: new THREE.Vector3(),
     primary: false, secondary: false, primaryPressed: false, secondaryPressed: false, wheel: 0,
+    viewBobbing: true,              // the View Bobbing setting (the viewmodel rig's hand bob reads it)
     aim: { valid: false, cell: new THREE.Vector3(), face: 0, id: -1, T: 0, P: 0, dist: Infinity },
     player: { pos: null, vel: null, onGround: false, inLiquid: false, applyImpulse: (dv) => player?.applyImpulse(dv) },
   };
   const input = { move: { x: 0, z: 0 }, jump: false, sprint: false, down: false };
+  let sprintOn = false;     // Sprint: Toggle's state
   const vEye = new THREE.Vector3(), vFeet = new THREE.Vector3(), vA = new THREE.Vector3(), vB = new THREE.Vector3();
   const closest = new THREE.Vector3();
   let speedH = 0;
@@ -313,7 +327,7 @@ export function createPov(app) {
       input.move.x = x; input.move.z = z;
     }
     input.jump = keys.has('Space');
-    input.sprint = keys.has('ShiftLeft') || keys.has('ShiftRight');
+    input.sprint = app.settings.sprintMode === 'toggle' ? sprintOn : keys.has('ShiftLeft') || keys.has('ShiftRight');
     input.down = keys.has('KeyC');
   }
 
@@ -378,7 +392,7 @@ export function createPov(app) {
       speedH, velY: player.vel.y, onGround: player.onGround, inLiquid: player.inLiquid, headInLiquid: player.headInLiquid,
       dead: deadSeen, deadTime, heat: player.feel?.heat ?? 0,
     });
-    viewmodel.visible = mode === 'on' && !deadSeen && pose.eyeDist <= FIGURE_HIDE_DIST;
+    viewmodel.visible = mode === 'on' && !deadSeen && pose.eyeDist <= FIGURE_HIDE_DIST && !hudHidden;
 
     // the toolbelt
     const aim = ctx.aim, hv = app.hover;
@@ -404,6 +418,7 @@ export function createPov(app) {
       ctx.primaryPressed = use && buttons.primaryPressed;
       ctx.secondaryPressed = use && buttons.secondaryPressed;
       ctx.wheel = wheelNotches;
+      ctx.viewBobbing = app.settings.viewBobbing;
       ctx.player.pos = player.pos;
       ctx.player.vel = player.vel;
       ctx.player.onGround = player.onGround;
