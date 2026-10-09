@@ -119,3 +119,32 @@ void main() {
   oV = inGrid(p) && inGrid(q) ? texelFetch(tFlowSrc, atlas(q), 0) : vec4(0.0);
 }
 `;
+
+// Gather: the bricks of a staged slab that differ from the generator, packed
+// for the readback (world/window.js reads the flags first, then only these):
+// slot s of the target takes staged brick tSlots[s] (one texel per slot,
+// SLOT_W per row). Reads the staging textures, not the state.
+export const SLOT_W = 64;   // slots per row of the slot list
+export const gatherFrag = () => /* glsl */ `
+precision highp float;
+precision highp int;
+precision highp sampler2D;
+#define BRICK_CELLS ${BRICK_CELLS}
+#define STAGE_W ${STAGE_W}
+#define SLOT_W ${SLOT_W}
+uniform sampler2D tStageA;
+uniform sampler2D tStageB;
+uniform sampler2D tSlots;
+layout(location = 0) out vec4 oSA;
+layout(location = 1) out vec4 oSB;
+void main() {
+  ivec2 f = ivec2(gl_FragCoord.xy);
+  int t = f.x + STAGE_W * f.y;
+  int s = t / BRICK_CELLS;
+  int i = int(texelFetch(tSlots, ivec2(s % SLOT_W, s / SLOT_W), 0).r + 0.5);
+  int src = i * BRICK_CELLS + (t - s * BRICK_CELLS);
+  ivec2 st = ivec2(src % STAGE_W, src / STAGE_W);
+  oSA = texelFetch(tStageA, st, 0);
+  oSB = texelFetch(tStageB, st, 0);
+}
+`;

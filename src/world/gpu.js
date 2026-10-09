@@ -55,6 +55,7 @@ export class WorldGenerator {
         uAt: v3(), uSize: v3(), uFoot: { value: 0 }, uSeed: { value: 0 },
       }),
     };
+    for (const [k, m] of Object.entries(this.mats)) m.name = k;   // the profiler's labels
     // the world window's passes (docs/scaling.md D11) are made on first use
     this.v3 = v3;
   }

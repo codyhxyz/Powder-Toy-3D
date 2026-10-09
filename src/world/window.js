@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { BRICK } from '../shaders/common.js';
-import { stageFrag, editFrag, STAGE_W, BRICK_CELLS } from '../shaders/window.js';
+import { stageFrag, editFrag, gatherFrag, STAGE_W, BRICK_CELLS, SLOT_W } from '../shaders/window.js';
 import { DIFF_W } from '../shaders/generate.js';
 import { rawMat, makeFieldTarget, brickTexel } from '../sim.js';
 import { WorldGenerator } from './gpu.js';
@@ -22,8 +22,9 @@ import { BrickStore, encodeBrick, decodeBrick, BRICK_FLOATS } from './store.js';
 // A move:
 //   1. the slab about to leave is copied out (shaders/window.js stageFrag) and
 //      compared with the generator brick by brick (shaders/generate.js
-//      diffFrag); both are read back asynchronously, and the bricks that
-//      differ go into the store (world/store.js) while the rest leave it;
+//      diffFrag). The flags are read back asynchronously: the bricks that
+//      match leave the store, and only the ones that differ are packed
+//      (gatherFrag) and read back in turn, into the store (world/store.js);
 //   2. Simulation.shift moves the state, the render fields' history and GI;
 //   3. the generator fills the slab the move uncovers, then that slab's
 //      stored bricks are written back (editFrag);
@@ -59,12 +60,16 @@ export class WorldWindow {
     this.pending = null;                                          // the leaving slab's readback
     this.epoch = 0;                                               // bumped by load and dispose: older readbacks are dropped
     this.last = null;                                             // what the last move cost (tools)
+    this.plantCost = null;                                        // the move's tree placing and baking, ms (tools)
 
     // the largest slab a move exchanges, and the targets it goes through
     const step = WIN_STEP / BRICK, BX = g.nx / BRICK, BY = g.ny / BRICK, BZ = g.nz / BRICK;
     const maxBricks = Math.max(step * BY * BZ, BX * BY * step);
     const rows = Math.ceil(maxBricks * BRICK_CELLS / STAGE_W);
     this.stage = makeFieldTarget(STAGE_W, rows, 2, THREE.FloatType, THREE.NearestFilter);
+    this.packed = makeFieldTarget(STAGE_W, rows, 2, THREE.FloatType, THREE.NearestFilter);   // the differing bricks
+    this.slots = new Float32Array(SLOT_W * Math.ceil(maxBricks / SLOT_W));                 // ...which staged brick each is
+    this.slotsTex = dataTexture(this.slots, SLOT_W, Math.ceil(maxBricks / SLOT_W), THREE.RedFormat, THREE.FloatType);
     this.diffTarget = makeFieldTarget(DIFF_W, Math.ceil(maxBricks / DIFF_W), 1, THREE.UnsignedByteType, THREE.NearestFilter);
     this.bufA = new Float32Array(STAGE_W * rows * 4);
     this.bufB = new Float32Array(STAGE_W * rows * 4);
@@ -81,6 +86,9 @@ export class WorldWindow {
       edit: rawMat(editFrag(g), {
         tA: { value: null }, tB: { value: null },
         tEditIdx: { value: this.editIdxTex }, tEditA: { value: null }, tEditB: { value: null },
+      }),
+      gather: rawMat(gatherFrag(), {
+        tStageA: { value: this.stage.textures[0] }, tStageB: { value: this.stage.textures[1] }, tSlots: { value: this.slotsTex },
       }),
     };
     for (const [k, m] of Object.entries(this.mats)) m.name = k;
@@ -152,36 +160,45 @@ export class WorldWindow {
     this.gen.fill(this.P, [o.x, o.y, o.z], enterLo, enterHi);
     const restored = this.restore(enterLo, bricks);
     // 4.
+    this.plantCost = { placeMs: 0, bakeMs: 0 };
     const trees = this.plant(enterLo, enterHi);
     // 5.
     sim.syncCopies();
-    this.last = { dx, dz, ms: performance.now() - t0, restored, trees, readbackMs: null, kept: null };
+    this.last = { dx, dz, ms: performance.now() - t0, restored, trees, ...this.plantCost, readbackMs: null, kept: null };
   }
 
-  // Read the staged slab and its diff flags back, then keep the bricks that
-  // differ: base is slab brick 0's world brick.
+  // Read the leaving slab's diff flags back; the bricks that match the
+  // generator leave the store, and the ones that differ are packed from the
+  // staged slab, read back and kept. base is slab brick 0's world brick.
   readBack(base, bricks) {
-    const n = bricks[0] * bricks[1] * bricks[2];
-    const rows = Math.ceil(n * BRICK_CELLS / STAGE_W), drows = Math.ceil(n / DIFF_W);
-    const r = this.renderer, t0 = performance.now(), last = () => this.last, epoch = this.epoch;
-    const a = this.bufA.subarray(0, STAGE_W * rows * 4), b = this.bufB.subarray(0, STAGE_W * rows * 4);
+    const n = bricks[0] * bricks[1] * bricks[2], drows = Math.ceil(n / DIFF_W);
+    const r = this.renderer, sim = this.sim, t0 = performance.now(), last = () => this.last, epoch = this.epoch;
     const f = this.bufF.subarray(0, DIFF_W * drows * 4);
-    this.pending = Promise.all([
-      r.readRenderTargetPixelsAsync(this.stage, 0, 0, STAGE_W, rows, a, undefined, 0),
-      r.readRenderTargetPixelsAsync(this.stage, 0, 0, STAGE_W, rows, b, undefined, 1),
-      r.readRenderTargetPixelsAsync(this.diffTarget, 0, 0, DIFF_W, drows, f),
-    ]).then(() => {
-      if (epoch !== this.epoch) return;
-      const t1 = performance.now();
-      let kept = 0;
+    let keys = [], t1 = 0;
+    this.pending = r.readRenderTargetPixelsAsync(this.diffTarget, 0, 0, DIFF_W, drows, f).then(() => {
+      if (epoch !== this.epoch) return null;
+      t1 = performance.now();
+      this.slots.fill(0);
       for (let i = 0; i < n; i++) {
         const bx = i % bricks[0], by = Math.floor(i / bricks[0]) % bricks[1], bz = Math.floor(i / (bricks[0] * bricks[1]));
         const key = this.store.key(base[0] + bx, base[1] + by, base[2] + bz);
-        if (f[i * 4]) { this.store.put(key, encodeBrick(a, i * BRICK_FLOATS, b, i * BRICK_FLOATS)); kept++; }
-        else this.store.drop(key);
+        if (f[i * 4]) { this.slots[keys.length] = i; keys.push(key); } else this.store.drop(key);
       }
+      if (!keys.length) return null;
+      this.slotsTex.needsUpdate = true;
+      sim.run(this.mats.gather, this.packed);
+      const rows = Math.ceil(keys.length * BRICK_CELLS / STAGE_W);
+      const a = this.bufA.subarray(0, STAGE_W * rows * 4), b = this.bufB.subarray(0, STAGE_W * rows * 4);
+      return Promise.all([
+        r.readRenderTargetPixelsAsync(this.packed, 0, 0, STAGE_W, rows, a, undefined, 0),
+        r.readRenderTargetPixelsAsync(this.packed, 0, 0, STAGE_W, rows, b, undefined, 1),
+      ]).then(() => [a, b]);
+    }).then((got) => {
+      if (epoch !== this.epoch) return;
+      const t2 = performance.now();
+      if (got) keys.forEach((key, s) => this.store.put(key, encodeBrick(got[0], s * BRICK_FLOATS, got[1], s * BRICK_FLOATS)));
       const L = last();
-      if (L) Object.assign(L, { readbackMs: t1 - t0, keepMs: performance.now() - t1, kept });
+      if (L) Object.assign(L, { flagsMs: t1 - t0, readbackMs: t2 - t0, keepMs: performance.now() - t2, kept: keys.length, landedAt: performance.now() });
     }).catch((err) => {
       console.error('world window: a leaving slab could not be read back; its edits are lost', err);
     }).finally(() => { this.pending = null; });
@@ -238,7 +255,9 @@ export class WorldWindow {
       }
     if (!fresh) return 0;
     const R = TREE.REACH, list = [];
-    for (const t of treesIn(x0 - R, z0 - R, x1 + R, z1 + R, this.P)) {
+    const t0 = performance.now(), trees = treesIn(x0 - R, z0 - R, x1 + R, z1 + R, this.P), t1 = performance.now();
+    if (this.plantCost) this.plantCost.placeMs += t1 - t0;
+    for (const t of trees) {
       const s = this.bakeTree(t);
       if (!s) continue;
       // the construction's base point on the ground at the trunk (WorldGenerator.plantTrees)
@@ -246,6 +265,7 @@ export class WorldWindow {
       if (at[0] + s.w <= x0 - o.x || at[0] >= x1 - o.x || at[2] + s.d <= z0 - o.z || at[2] >= z1 - o.z) continue;
       list.push({ s, at, seed: t.seed });
     }
+    if (this.plantCost) this.plantCost.bakeMs += performance.now() - t1;
     if (!list.length) return 0;
     this.colMaskTex.needsUpdate = true;
     this.gen.stampMany(list, this.colMaskTex);
@@ -270,6 +290,8 @@ export class WorldWindow {
     this.epoch++;
     this.gen.dispose();
     this.stage.dispose();
+    this.packed.dispose();
+    this.slotsTex.dispose();
     this.diffTarget.dispose();
     this.editIdxTex.dispose();
     this.colMaskTex.dispose();

@@ -42,7 +42,7 @@ const LOOP = [[896, 192], [896, 448], [448, 448], [448, 192]];
 const COAST = [128, 384];
 const SETTLE_STEPS = 240;     // sim steps the edits get to land and settle before the walk
 const FRAME_LIMIT = 4000;     // frames a walk may take before the check gives up
-const COST_MOVES = 12;        // moves timed one by one
+const COST_MOVES = 16;        // moves timed one by one (half of them pass by pass)
 const WALK_FRAMES = 360;      // frames of each continuous walk
 const WALK_SPEED = 1.5;       // cells per frame the focus moves on the continuous walk (90 cells/s at 60 fps)
 const JUMP_FRAME = 1000;      // the jitter frame index the jump stills are drawn at (same before and after)
@@ -68,7 +68,12 @@ await p.addInitScript((detail) => {
 const errs = [];
 p.on('console', (m) => { if (m.type() === 'error' && !/ERR_CONNECTION_REFUSED/.test(m.text())) errs.push(m.text().slice(0, 600)); });
 p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 600)));
+p.on('crash', () => errs.push('PAGE CRASHED'));
+let booted = false;
+p.on('framenavigated', (f) => { if (booted && f === p.mainFrame()) errs.push(`NAVIGATED to ${f.url()}`); });
+process.on('exit', () => { if (errs.length) console.log(errs.join('\n')); });
 await p.goto(`http://localhost:${port}/?size=world`);
+booted = true;
 await p.waitForFunction(() => window.__app?.win, null, { timeout: 30000 });
 await p.waitForTimeout(1500);
 
@@ -296,19 +301,18 @@ const rmse = (x, y) => {
 };
 
 // ------------------------------------------------------------- 3b. a still across the slabs
+// An elevated view of a coastal window whose far quarter came in a slab at a
+// time (4 moves south), the box's edges marking the window.
 if (out && !skip.has(3)) {
   await p.evaluate(async ([O, SETTLE_FRAMES]) => {
-    const a = window.__app, H = window.__wc;
+    const a = window.__app, H = window.__wc, g = a.sim.g;
     a.post.settings.taa = true;
-    a.worldLoad([O[0], 0, O[1]]);
-    // walk a few slabs east so the view crosses slabs filled one at a time
-    await H.walk([O[0] + 64, O[1] + 32], 600);
-    a.worldFocus = null;
-    const g = a.sim.g, s = a.scale, v = a.volume.position;
-    a.camera.position.set(v.x + 0.15 * g.nx * s, v.y + 0.6 * g.ny * s, v.z + 1.05 * g.nz * s);
-    a.controls.target.set(v.x + 0.55 * g.nx * s, v.y + 0.15 * g.ny * s, v.z + 0.45 * g.nz * s);
+    a.worldLoad([O[0] - g.nx / 2, 0, O[1] - g.nz / 2]);
+    await H.walk([O[0] - g.nx / 2, O[1]], 600);
+    const s = a.scale, v = a.volume.position;
+    a.camera.position.set(v.x + 0.5 * g.nx * s, v.y + 1.05 * g.ny * s, v.z - 0.05 * g.nz * s);
+    a.controls.target.set(v.x + 0.5 * g.nx * s, v.y + 0.12 * g.ny * s, v.z + 0.7 * g.nz * s);
     a.controls.update();
-    a.worldFocus = [a.sim.origin.x + g.nx / 2, a.sim.origin.z + g.nz / 2];   // stay put
     a.post.reset();
     await H.frames(SETTLE_FRAMES);
   }, [COAST, SETTLE_FRAMES]);
@@ -365,42 +369,100 @@ if (!skip.has(5)) {
     a.worldLoad([O[0], 0, O[1]]);
     a.worldFocus = [sim.origin.x + g.nx / 2, sim.origin.z + g.nz / 2];
     await H.frames(5);
-    // one move at a time: CPU (no sync), CPU + GPU (synced), the readback's latency and storing
-    const cpu = [], synced = [], readback = [], keep = [], kept = [];
+    // one move at a time: CPU (no sync), CPU + GPU (synced), the readback's
+    // latency and storing. Every other move instead times each pass on the GPU
+    // the way gfx/profiler.js does: after the pass, wait for its target with a
+    // 1-texel read, less a calibrated sync.
+    const types = { f32: sim.targets[0].texture.type, f16: sim.flowV.texture.type };
+    const bufs = { f32: new Float32Array(4), f16: new Uint16Array(4), u8: new Uint8Array(4) };
+    const readBuf = (t) => (t.texture.type === types.f32 ? bufs.f32 : t.texture.type === types.f16 ? bufs.f16 : bufs.u8);
+    const cal = new sim.targets[0].constructor(1, 1);
+    const r = a.renderer;
+    const syncCal = () => { r.setRenderTarget(cal); r.clear(); r.readRenderTargetPixels(cal, 0, 0, 1, 1, bufs.f32); r.setRenderTarget(null); };
+    const cpu = [], synced = [], readback = [], keep = [], kept = [], flags = [], passMs = {};
     for (let i = 0; i < COST_MOVES; i++) {
       const d = i % 4 < 2 ? 16 : -16;   // out and back, so trees and edits come and go
+      const hooked = i % 2 === 1, hookWas = sim.onPass;
       sim.gpuSync();
+      let overhead = 0;
+      if (hooked) {
+        syncCal();
+        const c = [];
+        for (let k = 0; k < 5; k++) { const t = performance.now(); syncCal(); c.push(performance.now() - t); }
+        overhead = median(c);
+        sim.onPass = (name, target) => {
+          const t = performance.now();
+          r.readRenderTargetPixels(target, 0, 0, 1, 1, readBuf(target));
+          (passMs[name] ??= []).push(Math.max(0, performance.now() - t - overhead));
+        };
+      }
       const t0 = performance.now();
       w.shift(d, 0);
       const t1 = performance.now();
       sim.gpuSync();
       const t2 = performance.now();
+      sim.onPass = hookWas;
       await w.pending;
-      cpu.push(t1 - t0); synced.push(t2 - t0); readback.push(w.last.readbackMs); keep.push(w.last.keepMs); kept.push(w.last.kept);
+      if (!hooked) { cpu.push(t1 - t0); synced.push(t2 - t0); }
+      readback.push(w.last.readbackMs); keep.push(w.last.keepMs); kept.push(w.last.kept); flags.push(w.last.flagsMs);
       await H.frames(2);
     }
-    const perMove = { cpu: sum(cpu), cpuAndGpu: sum(synced), readbackLatency: sum(readback), storing: sum(keep), keptPerMove: sum(kept) };
-    // frame times, the sim running: a walk that moves the window, then one
-    // that doesn't (the focus circles the centre), alternating
+    cal.dispose();
+    // what reading the whole staged slab back costs the main thread: the same
+    // copy the async readback makes once its fence passes (GPU idle first)
+    const copy = [];
+    for (let k = 0; k < 3; k++) {
+      sim.gpuSync();
+      const t = performance.now();
+      r.readRenderTargetPixels(w.stage, 0, 0, w.stage.width, w.stage.height, w.bufA, undefined, 0);
+      r.readRenderTargetPixels(w.stage, 0, 0, w.stage.width, w.stage.height, w.bufB, undefined, 1);
+      copy.push(performance.now() - t);
+    }
+    const slabCopyMs = { median: +median(copy).toFixed(2), bytes: w.bufA.byteLength + w.bufB.byteLength };
+    // ...and what reading back only the differing bricks costs (the readback's second phase)
+    const K = median(kept), rowsK = Math.ceil(K * 64 / w.packed.width), copyK = [];
+    for (let k = 0; k < 3; k++) {
+      sim.gpuSync();
+      const t = performance.now();
+      r.readRenderTargetPixels(w.packed, 0, 0, w.packed.width, rowsK, w.bufA, undefined, 0);
+      r.readRenderTargetPixels(w.packed, 0, 0, w.packed.width, rowsK, w.bufB, undefined, 1);
+      copyK.push(performance.now() - t);
+    }
+    const packedCopyMs = { median: +median(copyK).toFixed(2), bricks: K, bytes: 2 * rowsK * w.packed.width * 16 };
+    const gpuPerPass = Object.fromEntries(Object.entries(passMs).map(([k, v]) => [k, { median: +median(v).toFixed(2), runs: v.length }]));
+    const perMove = { cpu: sum(cpu), cpuAndGpu: sum(synced), flagsLatency: sum(flags), readbackLatency: sum(readback), storing: sum(keep), keptPerMove: sum(kept), gpuPerPass, slabCopyMs, packedCopyMs };
+    // frame times, the sim running: the camera and its orbit target travel
+    // together (the focus), out and back so the window moves, alternating
+    // with a walk that circles the centre without moving it. Frames are
+    // sorted by what happened in them: a move, a leaving slab landing in the
+    // store, or neither.
     a.settings.paused = false;
+    a.worldFocus = null;
     const walk = async (moving) => {
-      const times = [], moveFrames = [];
-      let fx = sim.origin.x + g.nx / 2, fz = sim.origin.z + g.nz / 2, last = performance.now(), n0 = w.last;
-      const cx = fx, cz = fz;
+      const s = a.scale, cam0 = a.camera.position.clone(), tgt0 = a.controls.target.clone();
+      const all = [], move = [], land = [], other = [], bake = [];
+      let last = performance.now(), prev = w.last, fx = 0, fz = 0;
       for (let i = 0; i < WALK_FRAMES; i++) {
         if (moving) fx += WALK_SPEED * (i < WALK_FRAMES / 2 ? 1 : -1);
-        else { fx = cx + 8 * Math.cos(i / 20); fz = cz + 8 * Math.sin(i / 20); }
-        a.worldFocus = [fx, fz];
+        else { fx = 8 * Math.cos(i / 20); fz = 8 * Math.sin(i / 20); }
+        a.camera.position.set(cam0.x + fx * s, cam0.y, cam0.z + fz * s);
+        a.controls.target.set(tgt0.x + fx * s, tgt0.y, tgt0.z + fz * s);
         await H.frames(1);
-        const t = performance.now();
-        times.push(t - last);
-        if (w.last !== n0) { moveFrames.push(t - last); n0 = w.last; }
+        const t = performance.now(), dt = t - last, L = w.last;
+        all.push(dt);
+        if (L !== prev) { move.push(dt); bake.push(L.bakeMs + L.placeMs); }
+        else if (L?.landedAt > last && L.landedAt <= t) land.push(dt);
+        else other.push(dt);
+        prev = L;
         last = t;
       }
-      return { frames: sum(times), moveFrames: moveFrames.length ? sum(moveFrames) : null, moves: moveFrames.length };
+      a.camera.position.copy(cam0); a.controls.target.copy(tgt0);
+      const opt = (v) => (v.length ? sum(v) : null);
+      return { moving, frames: sum(all), moveFrames: opt(move), landingFrames: opt(land), otherFrames: opt(other),
+        moves: move.length, treeCpuPerMove: opt(bake) };
     };
     const walks = [];
-    for (let r = 0; r < 2; r++) { walks.push({ moving: true, ...(await walk(true)) }); walks.push({ moving: false, ...(await walk(false)) }); }
+    for (let r = 0; r < 2; r++) { walks.push(await walk(true)); walks.push(await walk(false)); }
     a.settings.paused = true;
     return { perMove, walks, steps: a.settings.steps };
   }, [COAST, COST_MOVES, WALK_FRAMES, WALK_SPEED]);
@@ -408,4 +470,5 @@ if (!skip.has(5)) {
 
 console.log(JSON.stringify(res, null, 1));
 console.log(errs.length ? errs.join('\n') : 'no console errors');
+errs.length = 0;
 await b.close();
