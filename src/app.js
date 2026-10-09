@@ -6,7 +6,7 @@ import { volumeVert, volumeFrag, pickFrag, shadowFrag } from './shaders/render.j
 import { ELEMENTS, E, toolById, isBuild } from './elements.js';
 import { buildPreset } from './presets.js';
 import { loadIsland, releaseGenerator } from './world/gpu.js';
-import { WorldWindow } from './world/window.js';
+import { WorldWindow, WIN_STEP } from './world/window.js';
 import { heightAt } from './world/generator.js';
 import { quadVert } from './shaders/common.js';
 import { createBrushCursor } from './brush.js';
@@ -55,6 +55,9 @@ const WORLDS = { world: { win: [128, 128, 128], size: [1024, 128, 1024], snow: f
 // about as much of the view as a box does
 const WORLD_VIEW_DIR = [11, 9.5, 13];
 const WORLD_VIEW_DIST = 21;
+// A world starts with the window on the island's shore, seen from the sea
+// (worldStart): its centre this share of its width inland from the waterline
+const WORLD_START_INLAND = 0.25;
 // WASD in a world: no faster than the window can follow the orbit target
 // (one WIN_STEP move every few frames), in scene units per second
 const WORLD_CAM_SPEED_MAX = 9;
@@ -198,7 +201,7 @@ function build() {
   scale = 10 / Math.max(nx, nz);
   if (worldMode) {
     win = new WorldWindow(renderer, sim, { size: worldMode.size, seed: worldSeed, snow: worldMode.snow });
-    sim.origin.fromArray(win.centre());
+    sim.origin.fromArray(worldStart());
   }
   // the grid starts centred on the scene's origin
   anchor.set(sim.origin.x + nx / 2, sim.origin.z + nz / 2);
@@ -277,6 +280,25 @@ function build() {
   loadPreset(settings.preset, false);
 }
 
+// World: the window's first origin (world cells). The island's middle is bare
+// rock, so it starts where the most is going on: on the shore the god view
+// looks from, the sea in front, then beach, meadows and trees, and the hills
+// behind. Found by walking from the island's centre toward the camera to the
+// waterline, a WIN_STEP at a time.
+function worldStart() {
+  const P = win.P, g = sim.g, n = [g.nx, g.nz];
+  const d = new THREE.Vector2(WORLD_VIEW_DIR[0], WORLD_VIEW_DIR[2]).normalize();
+  const at = (r) => [P.center[0] + d.x * r, P.center[1] + d.y * r];
+  let r = 0;
+  while (r < Math.max(P.size[0], P.size[2]) / 2 && heightAt(...at(r), P) >= P.sea) r += WIN_STEP;
+  const c = at(r - WORLD_START_INLAND * Math.max(...n));
+  const origin = [0, 1].map((k) => {
+    const o = Math.round((c[k] - n[k] / 2) / WIN_STEP) * WIN_STEP;
+    return THREE.MathUtils.clamp(o, 0, P.size[2 * k] - n[k]);
+  });
+  return [origin[0], 0, origin[1]];
+}
+
 // World: the god view's home over world column (x, z), the orbit target on
 // the ground there (on the sea where the sea floor is lower).
 function homeOver(x, z) {
@@ -350,7 +372,7 @@ function loadPreset(name, undoable = true) {
   settings.preset = name;
   if (win) {
     // a world has one scene, its own: loading starts it over (and can't be undone)
-    win.load(win.centre());
+    win.load(worldStart());
     placeVolume();
     toolbar.setUndoEnabled(false);
   } else if (name === 'empty') sim.clear();
