@@ -12,6 +12,14 @@ export const PHYS = {
   L_BOIL: 540,               // latent heat of boiling/condensing, cap·°C
   CELL_TEMP_MIN: -273.15,
   CELL_TEMP_MAX: 6000,
+  // Each face moves at most this share of the energy that would bring the
+  // smaller-capacity cell of the pair to the other's temperature, per step:
+  // |flux| ≤ |ΔT|·min(Ca, Cb)·COND_FLUX_SHARE. With one share per face (1/6),
+  // a cell's new temperature is a weighted mean of its own and its
+  // neighbours', so conduction can't overshoot whatever cond/cap an element
+  // has. This is elements.js's stability rule (6·cond/cap < 1) enforced per
+  // face, so no current pair reaches it.
+  COND_FLUX_SHARE: 1 / 6,
 
   // air (common.js, react.js)
   AIR_DENS_SPAN: 2000,       // °C over which air thins...
@@ -38,6 +46,33 @@ export const PHYS = {
   FILM_COHESION: 0.3,        // ...and is pulled toward neighbouring liquid by this share of FLOW
   DROPLET_WANDER: 0.1,       // chance per step an isolated droplet picks a new direction
   DROPLET_SPEED: 0.5,        // share of FLOW it wanders at
+
+  // rest states (react.js, move.js, activity.js). Resting matter is a true
+  // fixed point of the step, so the activity map can skip it without
+  // changing the physics; these say how still "resting" is.
+  // cells/step: a held cell's velocity components below this snap to 0 (drag
+  // decays them but never to 0). It has to beat the most a cell can pick up
+  // per step from pressure that counts as none: P_ACCEL·REST_P/RHO_MIN = 2.4e-4.
+  REST_V: 0.001,
+  REST_P: 0.001,             // pressure this small counts as none (it decays geometrically, never quite to 0)
+  REST_V_SLOP: 0.0001,       // cells/step, float slop on air's jitter-speed bound (activity.js)
+  // °C: air within this of ambient can sleep, and so can matter touching air.
+  AIR_REST_T: 1,
+  // °C: other matter can sleep within this of each face neighbour. Chosen so
+  // a matter face at the tolerance carries no more heat per step than an air
+  // face at its tolerance: metal, the best conductor, 0.1·0.01 = 0.001, the
+  // same as air's 0.0005 across 2·AIR_REST_T.
+  //
+  // Energy bound. A sleeping region changes nothing inside, so the only heat
+  // skipping fails to book crosses its boundary, one-sided: the awake side
+  // conducts with a frozen cell that doesn't book its half. Both sides are
+  // inert (a quiet brick's 26 neighbours are), so each boundary face carries
+  // at most 0.001 cap·°C per step by the two tolerances above. That transfer
+  // pulls the awake cell toward the frozen one, so a face books at most
+  // cap·tolerance before they agree; if anything drives the awake cell past
+  // its tolerance instead, it stops being inert and the region wakes at the
+  // next activity map (activity.js ACTIVITY_PERIOD).
+  MATTER_REST_T: 0.01,
 
   // movement (move.js)
   GAS_DENS_TOL: 0.02,        // gases only stratify past this density difference

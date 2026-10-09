@@ -143,7 +143,9 @@ export class Simulation {
 
     const state = () => ({ tA: { value: null }, tB: { value: null } });
     this.mats = {
-      moveBlock: rawMat(moveBlockFrag(g), { ...state(), uParity: { value: 0 }, uFrame: { value: 0 }, tQuiet: { value: null } }),
+      moveBlock: rawMat(moveBlockFrag(g), {
+        ...state(), uParity: { value: 0 }, uFrame: { value: 0 }, uGravity: { value: this.gravity }, tQuiet: { value: null },
+      }),
       moveGather: rawMat(moveGatherFrag(g), {
         ...state(), uParity: { value: 0 },
         ...Object.fromEntries([...Array(8).keys()].map((i) => [`tM${i}`, { value: null }])),
@@ -230,6 +232,7 @@ export class Simulation {
     // movement: solve each 2×2×2 block once, then every cell gathers its result
     moveBlock.uniforms.uParity.value = this.frame & 1;
     moveBlock.uniforms.uFrame.value = this.frame;
+    moveBlock.uniforms.uGravity.value = this.gravity;
     moveBlock.uniforms.tA.value = this.stateA;
     moveBlock.uniforms.tB.value = this.stateB;
     this.run(moveBlock, this.blocks);
