@@ -151,7 +151,7 @@ export function createPov(app) {
   // ---- lazily built parts
   function ensureFigure() {
     if (!figure) {
-      figure = createBody({ choice: () => app.settings.body });   // realistic or stickman, live
+      figure = createBody({ choice: () => app.settings.character });   // realistic or stickman, live
       scene.add(figure.root);
     }
     figure.bind(app.getVolume(), app.getSim().g);
@@ -394,7 +394,7 @@ export function createPov(app) {
       speedH, velY: player.vel.y, onGround: player.onGround, inLiquid: player.inLiquid, headInLiquid: player.headInLiquid,
       dead: deadSeen, deadTime, heat: player.feel?.heat ?? 0, jetting: player.jetting,
     });
-    if (player.jetting && mode === 'on') vfx?.jet(player.pos, povCam.look.yaw, dt);
+    if (player.jetting && mode === 'on') vfx?.jet(player.pos, povCam.look.yaw, dt, figure.nozzles);
     viewmodel.visible = mode === 'on' && !deadSeen && pose.eyeDist <= FIGURE_HIDE_DIST && !hudHidden;
 
     // the toolbelt

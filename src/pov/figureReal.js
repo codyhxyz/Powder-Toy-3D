@@ -4,8 +4,9 @@ import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js';
 import { BODY_HEIGHT } from './constants.js';
 import { buildGarb, GARB_COLORS } from './garb.js';
 import {
-  createFigure, createContactShadow, figureFrag, figureSkinnedVert, FIGURE_ALBEDO, FIGURE_HEAT_GLOW,
+  createFigure, createContactShadow, JET_NOZZLES, figureFrag, figureSkinnedVert, FIGURE_ALBEDO, FIGURE_HEAT_GLOW,
 } from './figure.js';
+import { createCrasher } from './figureCrasher.js';
 
 // The realistic body: Quaternius's mannequin (Universal Animation Library,
 // CC0), skinned and played by an AnimationMixer, dressed as a wizard (a
@@ -215,17 +216,18 @@ function createRealFigure(gltf) {
   };
 }
 
-// The body the shell shows: the wizard mannequin or the stickman, by
-// choice(), with the stickman standing in until the mannequin is loaded and
-// compiled.
+// The body the shell shows, by choice(): 'wizard' (the Castle Crashers-style
+// one, figureCrasher.js), 'real' (the wizard mannequin) or 'stick', with the
+// stickman standing in until the mannequin is loaded and compiled.
 export function createBody({ choice }) {
   const stick = createFigure();
+  const wizard = createCrasher();
+  const light = [stick, wizard];   // the procedural bodies: cheap, always built
   let real = null, failed = false, loading = false;
   let bound = null, compileArgs = null;
   const root = new THREE.Group();
   root.visible = false;
-  root.add(stick.root);
-  stick.setVisible(true);   // the parts show or hide by choice; root is the body's visibility
+  for (const f of light) { root.add(f.root); f.setVisible(true); }   // the parts show or hide by choice; root is the body's visibility
 
   const wantsReal = () => choice() === 'real' && !failed;
   function load() {
@@ -242,35 +244,37 @@ export function createBody({ choice }) {
       .catch((err) => { failed = true; console.error('Realistic body failed to load; using the stickman', err); })
       .finally(() => { loading = false; });
   }
-  const active = () => (wantsReal() ? real ?? stick : stick);
+  const active = () => (wantsReal() ? real ?? stick : choice() === 'stick' ? stick : wizard);
 
   return {
     root,
     bind(volume, g) {
       bound = [volume, g];
-      stick.bind(volume, g);
+      for (const f of light) f.bind(volume, g);
       real?.bind(volume, g);
       if (wantsReal()) load();
     },
     get material() { return active().material; },
     compile(renderer, camera, scene) {
       compileArgs = [renderer, camera, scene];
-      return Promise.all([stick.compile(renderer, camera, scene), real?.compile(renderer, camera, scene)]);
+      return Promise.all([...light.map((f) => f.compile(renderer, camera, scene)), real?.compile(renderer, camera, scene)]);
     },
     update(dt, s) {
       if (wantsReal()) load();
       const fig = active();
-      stick.setVisible(fig === stick);
+      for (const f of light) f.setVisible(fig === f);
       real?.setVisible(fig === real);
       fig.update(dt, s);
     },
     setVisible(v) { root.visible = v; },
-    // which body is showing: 'stick' or 'real' (tests)
-    get showing() { return active() === real ? 'real' : 'stick'; },
+    // which body is showing: 'wizard', 'stick' or 'real' (tests)
+    get showing() { const f = active(); return f === real ? 'real' : f === stick ? 'stick' : 'wizard'; },
+    // where the showing body's jetpack exhaust leaves (vfx.js)
+    get nozzles() { return active().nozzles ?? JET_NOZZLES; },
     get loaded() { return !!real; },
     get real() { return real; },
     dispose() {
-      stick.dispose();
+      for (const f of light) f.dispose();
       real?.dispose();
     },
   };

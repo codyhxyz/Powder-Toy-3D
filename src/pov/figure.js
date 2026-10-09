@@ -3,10 +3,12 @@ import { lib } from '../shaders/render.js';
 import { BODY_HEIGHT, BODY_WIDTH } from './constants.js';
 
 // The body you see in third person and when you die, built from three.js
-// primitives in grid cells and scaled into the world, in one of two looks on
-// the same rig and animation: a stick figure, a nod to The Powder Toy's STKM
-// (square head, stick limbs). It is also the stand-in while the realistic
-// body (figureReal.js) loads.
+// primitives in grid cells and scaled into the world. createFigure(build)
+// takes the look: buildStick here, a stick figure, a nod to The Powder Toy's
+// STKM (square head, stick limbs), and the stand-in while the realistic body
+// (figureReal.js) loads; or another look on the same rig and animation
+// (figureCrasher.js). A look can ask for outlines (an inverted hull), two-tone
+// cel shading, unlit glowing parts and jetpack flames.
 //
 // It is lit by the same light as the volume: the same lighting GLSL
 // (shaders/gfx/lighting.js) with the volume's own uniforms, so the sun and its
@@ -35,6 +37,8 @@ const ALBEDO = [0.72, 0.7, 0.66];
 // Where the jetpack's exhaust leaves (vfx.js): cells behind the feet, up from
 // them and to each side. The small of the realistic body's back.
 export const JET_NOZZLES = { back: 0.6, up: 3.2, side: 0.3 };
+const FLAME_FLICKER = 0.35;               // ± share of a jet flame's length, frame to frame
+const TOON_EDGE = 0.08;                  // n·l over which a cel-shaded look goes from shade to lit
 const HEAT_GLOW = [2.4, 0.9, 0.25];      // radiance added at full heat (feel.heat = 1): a burning body glows
 const SHADOW_LIFT = 0.6;                 // cells: shadow lookups move this far toward the sun (off the body's own cells)
 const GI_LIFT = 1.5;                     // cells: GI probes are read this far out along the normal
@@ -86,6 +90,7 @@ export const figureFrag = (g) => /* glsl */ `
 ${lib(g)}
 #define FIG_SHADOW_LIFT ${SHADOW_LIFT.toFixed(3)}
 #define FIG_GI_LIFT ${GI_LIFT.toFixed(3)}
+#define FIG_TOON_EDGE ${TOON_EDGE.toFixed(3)}
 uniform vec3 uAlbedo;
 uniform vec3 uEmit;
 in vec3 vGrid;
@@ -97,8 +102,20 @@ void main() {
   vec3 irr = giIrradiance(probeAt(vGrid + n * FIG_GI_LIFT), n);
   vec3 local = sampleLight(vGrid) * uLightGain;
   // linear HDR radiance, like the volume (post tone-maps both)
-  gl_FragColor = vec4(uAlbedo * (SUN_COL * max(dot(n, uSun), 0.0) * sh + irr + local) + uEmit, 1.0);
+  float ndl = max(dot(n, uSun), 0.0);
+#ifdef FIG_TOON
+  ndl = smoothstep(0.0, FIG_TOON_EDGE, ndl);   // cel shading: lit or not, with a thin soft edge
+#endif
+  gl_FragColor = vec4(uAlbedo * (SUN_COL * ndl * sh + irr + local) + uEmit, 1.0);
 }`;
+
+// Outlines: the mesh again, pushed out along its normals and drawn back faces
+// only, in black (the inverted-hull outline of cel-shaded games).
+const outlineVert = /* glsl */ `
+uniform float uWidth;
+void main() { gl_Position = projectionMatrix * modelViewMatrix * vec4(position + normal * uWidth, 1.0); }`;
+const outlineFrag = /* glsl */ `
+void main() { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }`;
 
 const contactFrag = /* glsl */ `
 varying vec2 vUv;
@@ -112,18 +129,24 @@ const contactVert = /* glsl */ `
 varying vec2 vUv;
 void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`;
 
-// A mesh in `parent` with its albedo (linear rgb) on it; bind() gives it the material.
+// ---- building a look (also for figureCrasher.js)
+
+// A mesh in `parent` with its albedo (linear rgb) on it; bind() gives it the
+// material. opts.glow: unlit, this HDR colour instead. opts.outline: false
+// leaves it out of the look's outline.
 const UNBOUND = new THREE.MeshBasicMaterial();   // until bind() builds the lit materials
-function part(parent, geo, albedo) {
+export function part(parent, geo, albedo, { glow = null, outline = true } = {}) {
   const m = new THREE.Mesh(geo, UNBOUND);
   m.userData.albedo = albedo;
+  m.userData.glow = glow;
+  m.userData.outline = outline;
   parent.add(m);
   return m;
 }
-const capsuleDown = (r, len) => new THREE.CapsuleGeometry(r, len, CAP_SEGMENTS, RADIAL_SEGMENTS).translate(0, -len / 2, 0);
+export const capsuleDown = (r, len) => new THREE.CapsuleGeometry(r, len, CAP_SEGMENTS, RADIAL_SEGMENTS).translate(0, -len / 2, 0);
 
 // A stick from a joint downward (length len), as a child of `parent`. Returns the joint.
-function limb(parent, albedo, x, y, len, r) {
+export function limb(parent, albedo, x, y, len, r) {
   const joint = new THREE.Group();
   joint.position.set(x, y, 0);
   part(joint, capsuleDown(r, len), albedo);
@@ -131,9 +154,12 @@ function limb(parent, albedo, x, y, len, r) {
   return joint;
 }
 
-// The rig: body (at the hips) > torso > neck, the
-// shoulders, elbows, hips and knees, all joints rotating about x.
-function buildStick() {
+// A look's build() returns the rig: body (at the hips) > torso > neck, the
+// shoulders, elbows, hips and knees, all joints rotating about x, plus
+//   hipY (cells), lieLift (cells the body lifts lying dead on its back),
+//   and optionally outline (cells wide), toon (cel shading), flames (meshes
+//   shown, flickering, while the jetpack fires) and nozzles (JET_NOZZLES' shape).
+export function buildStick() {
   const body = new THREE.Group(), torso = new THREE.Group(), neck = new THREE.Group();
   body.add(torso);
   part(torso, new THREE.CapsuleGeometry(TORSO_R, TORSO, CAP_SEGMENTS, RADIAL_SEGMENTS).translate(0, TORSO / 2, 0), ALBEDO);
@@ -154,7 +180,7 @@ function buildStick() {
   };
 }
 
-export function createFigure() {
+export function createFigure(build = buildStick) {
   const uniforms = {
     uEmit: { value: new THREE.Vector3() },
     uWorldToGrid: { value: new THREE.Matrix4() },
@@ -165,13 +191,27 @@ export function createFigure() {
 
   const root = new THREE.Group();      // at the feet, turned to face the look direction
   root.visible = false;
-  const rig = buildStick();
+  const rig = build();
   const { body, torso, neck, shL, shR, elL, elR, hipL, hipR, knL, knR } = rig;
+  const flames = rig.flames ?? [];
   const HIP = rig.hipY;
   body.position.y = HIP;
   root.add(body);
   const meshes = [];
   body.traverse((o) => { if (o.isMesh && o.userData.albedo) meshes.push(o); });
+  const glowMats = [];
+  for (const m of meshes) {
+    if (!m.userData.glow) continue;
+    const mat = new THREE.MeshBasicMaterial();
+    mat.color.setRGB(...m.userData.glow);
+    m.material = mat;
+    glowMats.push(mat);
+  }
+  const outlineMat = rig.outline ? new THREE.ShaderMaterial({
+    vertexShader: outlineVert, fragmentShader: outlineFrag, side: THREE.BackSide,
+    uniforms: { uWidth: { value: rig.outline } },
+  }) : null;
+  if (outlineMat) for (const m of meshes) if (m.userData.outline) m.add(new THREE.Mesh(m.geometry, outlineMat));
 
   const contact = new THREE.Mesh(new THREE.PlaneGeometry(2 * CONTACT_R, 2 * CONTACT_R).rotateX(-Math.PI / 2),
     new THREE.ShaderMaterial({
@@ -203,10 +243,12 @@ export function createFigure() {
       const byColor = new Map();
       const frag = figureFrag(g);
       for (const mesh of meshes) {
+        if (mesh.userData.glow) continue;
         const key = mesh.userData.albedo.join();
         if (!byColor.has(key)) {
           byColor.set(key, new THREE.ShaderMaterial({
             vertexShader: figureVert, fragmentShader: frag, side: THREE.DoubleSide,
+            defines: rig.toon ? { FIG_TOON: '' } : {},
             uniforms: { ...volume.material.uniforms, ...uniforms, uAlbedo: { value: new THREE.Vector3(...mesh.userData.albedo) } },
           }));
         }
@@ -343,10 +385,19 @@ export function createFigure() {
         body.rotation.x = pitch * (1 - t);
       }
       contact.visible = s.onGround && !s.dead;
+      for (const f of flames) {
+        f.visible = !!s.jetting && !s.dead;
+        f.scale.set(1, 1 + (Math.random() * 2 - 1) * FLAME_FLICKER, 1);
+      }
     },
     setVisible(v) { root.visible = v; },
+    // where this body's jetpack exhaust leaves (vfx.js), JET_NOZZLES' shape
+    nozzles: rig.nozzles ?? JET_NOZZLES,
     dispose() {
       for (const m of mats) m.dispose();
+      for (const m of glowMats) m.dispose();
+      outlineMat?.dispose();
+      new Set(flames.map((f) => f.material)).forEach((m) => m.dispose());
       contact.material.dispose();
       root.traverse((o) => o.geometry?.dispose());
     },

@@ -369,7 +369,7 @@ export function createVfx(env) {
   // jetpack exhaust for dt seconds, out of the nozzles of a body at feet (grid) facing yaw
   let jetAcc = 0, smokeAcc = 0;
   const vN = new THREE.Vector3();
-  function jet(feet, yaw, dt) {
+  function jet(feet, yaw, dt, N = JET_NOZZLES) {
     const s = env.getScale();
     jetAcc += JET_RATE * dt;
     smokeAcc += JET_SMOKE_RATE * dt;
@@ -377,8 +377,7 @@ export function createVfx(env) {
     jetAcc -= nFlame; smokeAcc -= nSmoke;
     const bx = Math.sin(yaw), bz = Math.cos(yaw);   // behind the body (forward is −z at yaw 0)
     for (const side of [-1, 1]) {
-      vN.set(feet.x + bx * JET_NOZZLES.back + bz * JET_NOZZLES.side * side, feet.y + JET_NOZZLES.up,
-        feet.z + bz * JET_NOZZLES.back - bx * JET_NOZZLES.side * side);
+      vN.set(feet.x + bx * N.back + bz * N.side * side, feet.y + N.up, feet.z + bz * N.back - bx * N.side * side);
       const at = toWorld(vN, vP);
       burst(fx.jet, nFlame, (p) => {
         vV.randomDirection().multiplyScalar(JET_SPREAD); vV.y -= 1;
@@ -439,8 +438,8 @@ export function createVfx(env) {
       const n = Math.min(MIST_SPLASH_MAX, speed * MIST_SPLASH_PER_SPEED);
       mist(toWorld(feet, vA), n, vB.set(0, 1, 0), liquidId ?? E.WATER, MIST_SPLASH_RING);
     },
-    // the jetpack firing this frame: feet (grid), yaw (rad), dt (s)
-    jet(feet, yaw, dt) { if (live()) jet(feet, yaw, dt); },
+    // the jetpack firing this frame: feet (grid), yaw (rad), dt (s), nozzles (the body's, JET_NOZZLES' shape)
+    jet(feet, yaw, dt, nozzles) { if (live()) jet(feet, yaw, dt, nozzles); },
     // every POV frame; true while anything is still showing (keep rendering)
     update(dt) {
       batch.update(dt);

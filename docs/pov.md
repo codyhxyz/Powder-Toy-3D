@@ -17,7 +17,12 @@
   the tank holds 3 s of thrust and recharges as Noita's does (its player.xml values): full in 0.5 s on the ground, and in the air at 0.4 s per s once the jet has been off for 0.63 s; every tap burns at least 8 frames. The fuel bar
   shows under health while it isn't full. Swimming strokes take over in deep liquid. The exhaust is cosmetic
   (vfx.js `jet`), with a roar loop (audio.js `jetLoop`).
-- **The body** (setting "Body": Realistic | Stickman, key `body`): Realistic is the default, the skinned
+- **The body** (setting: Wizard | Realistic | Stickman, key `character`): Wizard is the default, drawn the
+  way Castle Crashers draws its people (figureCrasher.js): a huge round head lost in a floppy pointed hood,
+  the face a black shadow with two glowing eyes (the game's Evil Wizard), a stubby robed body with mittens,
+  a brass jetpack that flames while it fires, inverted-hull outlines and two-tone cel shading. It is the
+  stickman's rig and animation with another look (`createFigure(build)`; a look can ask for `outline`,
+  `toon`, glowing parts, `flames` and its own `nozzles` for the exhaust). Realistic is the skinned
   mannequin dressed as a wizard, a pointed hat and a robe skinned to its skeleton (garb.js: the robe's
   weights are transferred from the nearest body vertices and eased toward the pelvis below the hips).
   Stickman stands in while it loads. The jet exhaust leaves from the small of the back (`JET_NOZZLES`).
