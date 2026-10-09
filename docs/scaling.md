@@ -123,16 +123,55 @@ each kernel's reach. Shadow and GI keep their own cadence. Converged regions cos
 Snapshots copy only the bricks a stroke or scene change touches, not three full copies of the state.
 
 ### D11. Massive world
-- **Window.** A GPU-resident window, addressed toroidally (world cell mod window size) in `atlas()`. Moving the
-  window uploads the slab that enters and reads back the slab that leaves.
-- **Generation.** A procedural generator, deterministic per brick, produces untouched terrain; it runs as a GPU
-  pass when a slab enters.
-- **Edits.** Bricks that differ from the generator are kept, compressed, in a CPU store.
-- **Boundary.** Cells outside the window are a frozen boundary.
-- **Far field.** A coarse world-scale grid (per-brick material and occupancy) that rays continue through past the
-  window, with simple shading.
-- **Empty space.** Skipped hierarchically; today's distance map stops at 8 bricks.
-- **Multiplayer.** Guests share the host's window.
+The world is much larger than what lives on the GPU. Its size is `WORLD` cells, for example 1024×256×1024.
+
+- **Window.** The simulation and the detailed renderer cover a window of `WIN` cells (for example 192×128×192)
+  at a world-cell origin `uOrigin`. `uOrigin` is a multiple of `WIN_STEP` cells (16) on x and z, and y is fixed at 0.
+  - Every pass works in window-local cells, exactly as today.
+  - Anything that needs world position adds `uOrigin`. That includes the random seed (`seed3`, so results don't
+    depend on where the window is), rendering and picking.
+  - Today's grid sizes are a world equal to its window at origin 0. The world-coordinate plumbing must be
+    pixel-identical for them.
+- **Moving the window: shift by copy, not wrap-around.** When the focus (POV player, or the god view's orbit
+  target) is more than `WIN_STEP` from the window centre, the window moves by `WIN_STEP` along x or z.
+  - A copy pass shifts both state copies by the move, and the field EMA and GI probes too. Brick maps are rebuilt.
+  - Cells uncovered by the shift are filled by the generator pass, then by stored edits.
+  - The copy costs one state read and write per move (about 1 ms), and moves are seconds apart.
+  - Wrap-around addressing would break the hardware filtering of fields and probes at the seam, so we don't use it.
+- **Leaving slabs.**
+  - Before a shift, a GPU pass compares each brick of the slab about to leave with the generator's output. Air
+    counts as unchanged if it is still air within AIR_REST_T; matter needs the same id and ctype, and temperature
+    within a tolerance. Velocity and air seeds are ignored.
+  - It flags the bricks that differ. The slab and the flags are read back asynchronously (PBO + fence).
+  - The flagged bricks go, compressed, into a CPU store keyed by world brick. That is all the world's edits.
+- **Generator.** Deterministic from a world seed, evaluated per cell in a GPU pass:
+  - a heightfield from fBm noise with domain warping;
+  - rock under soil;
+  - sand at sea level, water below it;
+  - snow on peaks;
+  - plants on gentle slopes.
+
+  Trees and other structures are stamped by the CPU from the existing constructions, placed deterministically
+  per brick column, when their slab loads.
+- **Boundary.** Cells outside the window are a frozen boundary for the sim. They can't move, nothing moves into
+  them, and they conduct no heat.
+- **Far field.** A world-sized brick grid (a WebGL2 3D texture, one RGBA8 texel per world brick) holds what the
+  window doesn't:
+  - dominant material, solid fraction and glow;
+  - occupancy mips (16³ and 64³ cells) for skipping empty space.
+
+  Rays that leave the window, or start outside it, continue through it with simple shading: material colour, sun
+  with a coarse shadow, sky ambient and aerial fog. It is built from the generator, and updated from leaving
+  slabs' flags and data.
+- **Undo and multiplayer.**
+  - Undo stores bricks keyed by world brick (D10), so it survives window moves.
+  - Multiplayer guests share the host's window.
+- **Phases.**
+  - W1: world-coordinate plumbing, pixel-identical for today's sizes.
+  - W2: shift, fill and store, with edits persisting when you walk away and come back.
+  - W3: the generator's look.
+  - W4: the far field.
+  - W5: UI (a "World" size), camera and POV focus, painting only inside the window, signs, multiplayer limits.
 
 ## Measured (M5, headless Chrome, ANGLE Metal, 128³)
 - Lab step: 2.6 ms with 42% of bricks skipped, 3.75 ms with none skipped. An empty box still costs 2.1–2.8 ms.
