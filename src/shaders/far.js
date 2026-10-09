@@ -73,11 +73,10 @@ function sliceCols(n, w, h) {
 // occupancy levels and the brick-column maps.
 export function farLayout(size) {
   const [wx, wy, wz] = size;
-  if ([wx, wy, wz].some((n) => n % (BRICK * FAR_NODE * FAR_NODE))) {
-    throw new Error(`far field: world ${size} must be whole ${BRICK * FAR_NODE * FAR_NODE}-cell L2 nodes`);
-  }
+  if ([wx, wy, wz].some((n) => n % BRICK)) throw new Error(`far field: world ${size} must be whole ${BRICK}-cell bricks`);
+  // (occupancy nodes round up: the last ones along an axis may stick out of the world)
   const level = (div) => {
-    const n = [wx / div, wy / div, wz / div];
+    const n = [wx, wy, wz].map((v) => Math.ceil(v / div));
     const cols = sliceCols(n[1], n[0], n[2]);
     return { n, cols, width: cols * n[0], height: Math.ceil(n[1] / cols) * n[2] };
   };
@@ -675,7 +674,7 @@ void main() {
   for (int y = 0; y < FAR_NODE; y++)
   for (int x = 0; x < FAR_NODE; x++) {
     ivec3 m = n * FAR_NODE + ivec3(x, y, z);
-    if (m.y < F1Y && texelFetch(tFar1, far1Texel(m), 0).r > 0.5) { oC = vec4(1.0); return; }
+    if (all(lessThan(m, ivec3(F1X, F1Y, F1Z))) && texelFetch(tFar1, far1Texel(m), 0).r > 0.5) { oC = vec4(1.0); return; }
   }
 }
 `;
