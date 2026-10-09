@@ -7,7 +7,6 @@
     "build": "vite build",
     "preview": "vite preview",
     "relay": "wrangler dev --config relay/wrangler.toml",
-    "deploy": "vite build && npx wrangler pages deploy dist --project-name tpt3d --branch main --commit-dirty=true",
     "construct": "node scripts/construct.mjs",
     "mcp:construct": "node scripts/mcp-construct.mjs"
   },
@@ -24,7 +23,9 @@
     "ai": "^7.0.128",
     "ai-sdk-ollama": "^4.4.0",
     "three": "^0.186.1",
-    "zod": "^4.6.5"
+    "three.quarks": "^0.17.1",
+    "zod": "^4.6.5",
+    "zzfx": "^1.4.0"
   },
   "devDependencies": {
     "playwright": "^1.63.0",

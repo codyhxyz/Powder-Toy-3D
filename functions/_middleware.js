@@ -1,7 +1,7 @@
 // Cloudflare Pages middleware: every alias domain permanently redirects to the
 // canonical host, keeping the path and query (e.g. ?preset=volcano).
 const CANONICAL = 'tpt3d.codyh.xyz';
-const ALIASES = new Set(['tpt.codyh.xyz', 'thepowdertoy.codyh.xyz', 'thepowdertoy3d.codyh.xyz']);
+const ALIASES = new Set(['tpt.codyh.xyz', '3dtpt.codyh.xyz', 'thepowdertoy.codyh.xyz', 'thepowdertoy3d.codyh.xyz']);
 
 // Multiplayer invite links (?join=CODE, JOIN_PARAM in src/net/multiplayer.js)
 // unfurl as an invitation in chats instead of the generic card.

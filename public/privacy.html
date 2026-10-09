@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Privacy and terms · Powder Toy 3D</title>
+  <meta name="description" content="What Powder Toy 3D stores when you sign in, where your prompts go, and how to delete your account." />
+  <meta name="theme-color" content="#161b25" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --sky-top: #232b3a;
+      --sky-low: #0e1117;
+      --line: rgba(160, 180, 215, 0.14);
+      --text: #e7eaf0;
+      --muted: #8d95a5;
+      --faint: #5d6575;
+      --accent: #dcbc74;
+      --ui: 'Archivo', system-ui, -apple-system, 'Segoe UI', sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html { background: var(--sky-low); }
+    body {
+      margin: 0; min-height: 100vh;
+      background: linear-gradient(180deg, var(--sky-top) 0%, #161b25 55%, var(--sky-low) 100%) fixed;
+      color: var(--text);
+      font: 400 15px/1.6 var(--ui);
+      -webkit-font-smoothing: antialiased;
+    }
+    main { max-width: 640px; margin: 0 auto; padding: 40px 16px 64px; }
+    .back { color: var(--muted); font-size: 13px; text-decoration: none; }
+    .back:hover { color: var(--text); }
+    h1 { margin: 18px 0 4px; font-size: 26px; font-weight: 720; font-variation-settings: 'wdth' 115; letter-spacing: -0.01em; }
+    .updated { margin: 0 0 28px; color: var(--faint); font-size: 13px; }
+    h2 { margin: 30px 0 6px; padding-top: 22px; border-top: 1px solid var(--line); font-size: 16px; font-weight: 660; }
+    p, li { color: #c9ced8; }
+    p { margin: 0 0 10px; }
+    ul { margin: 0 0 10px; padding-left: 20px; }
+    li { margin: 3px 0; }
+    a { color: var(--accent); text-underline-offset: 3px; overflow-wrap: anywhere; }
+    strong { color: var(--text); font-weight: 600; }
+  </style>
+</head>
+<body>
+  <main>
+    <a class="back" href="/">← Back to Powder Toy 3D</a>
+    <h1>Privacy and terms</h1>
+    <p class="updated">Updated October 2026</p>
+
+    <p>Powder Toy 3D runs in your browser, and you can play without an account. Your scenes, settings and saved constructions are kept in this browser's storage, not on our server.</p>
+
+    <h2>Signing in</h2>
+    <p>Signing in with Google or GitHub gives you more free AI generations a day. When you sign in, we store:</p>
+    <ul>
+      <li>which service you signed in with, and your account id there</li>
+      <li>your email address, name and profile picture address</li>
+      <li>how many AI generations you used each day</li>
+    </ul>
+    <p>Your browser keeps a sign-in token so you stay signed in. We don't use cookies. You need to be 13 or older to sign in.</p>
+
+    <h2>The free AI</h2>
+    <p>When you generate with Powder Toy AI, your prompt and pictures of the construction go through our server to OpenAI, which writes the code. Our server doesn't keep your prompts. OpenAI stores each request and its answer for up to 30 days, so a construction can be built over several steps, and handles them under <a href="https://openai.com/policies/">its own policies</a>. We also send OpenAI an anonymous ID, so it can spot abuse without knowing who you are.</p>
+    <p>To count free generations for players who aren't signed in, we keep a salted hash of your IP address for one day. We never store the address itself.</p>
+
+    <h2>Your own keys</h2>
+    <p>If you bring a key for another AI provider, it stays in your browser and goes only to that provider. It's never sent to us, put in links or shared with other players.</p>
+
+    <h2>Multiplayer</h2>
+    <p>Shared worlds pass through our relay while you play. We don't save them.</p>
+
+    <h2>Deleting your account</h2>
+    <p>Open <strong>Settings → Account → Delete account</strong>. That removes your account and its sign-in details from our server right away. Signing out only ends the session in this browser.</p>
+
+    <h2>Terms</h2>
+    <p>Powder Toy 3D is free and comes as is, without guarantees. The free AI has daily limits and may change or stop. Don't use it to make anything illegal or to get around its limits. We may block accounts that do.</p>
+
+    <h2>Contact</h2>
+    <p>Questions, or something to fix? Open an issue on <a href="https://github.com/codyhxyz/Powder-Toy-3D/issues">GitHub</a>.</p>
+  </main>
+</body>
+</html>

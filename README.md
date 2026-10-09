@@ -69,11 +69,20 @@ The tools are physical and finite. Infinite painting stays in the god view.
    dumps the load where you aim.
 2. **Bucket:** scoops a load of liquid, and right-click pours it. A bucket of lava stays hot.
 3. **Axe:** a short, wide swing that chops wood and smashes glass, ice and plants.
-4. **Gun:** fires a metal slug, a real cell in the sim at full speed. It drops and slows in water like any other
-   grain and breaks whatever its energy beats. Shot in the air, its recoil throws you.
+4. **Gun:** fires a metal round at 360 m/s under real gravity, so it crosses the whole box with a few cm of drop.
+   The round flies outside the sim (a GPU trace checks its path each frame) and becomes a real slug cell where it
+   hits, so the engine decides what breaks: glass shatters, metal holds, a keg goes off. Shot in the air, its recoil
+   throws you.
 5. **Physgun:** a force beam on loose matter. Hold to carry a floating ball of water or sand, right-click to fling it.
 
 Nothing a tool carries is made up: the cells it takes come back out exactly (same element, temperature and state).
+
+Everything you do makes a sound (synthesised with [ZzFX](https://github.com/KilledByAPixel/ZzFX) and placed in 3D):
+impacts sound like the material they hit, pitched by its hardness, and the world goes muffled under water. Shots
+kick the camera, nearby blasts and hard landings shake it, and [three.quarks](https://github.com/Alchemist0823/three.quarks)
+draws the muzzle flash, sparks, dust and tracers. The held tools are [Kenney](https://kenney.nl)'s CC0 models, and
+**Settings → First person** picks the body: the stickman, or a realistic one animated with
+[Quaternius](https://quaternius.com)'s CC0 animation library.
 
 ## Elements
 
@@ -119,6 +128,13 @@ Every construction is a small program written against one API (`src/construction
   stay in your browser. Without a key, *Copy prompt* gives a prompt for any chatbot and *Paste code* runs its reply.
   Subscriptions (Claude, ChatGPT, Gemini) work through the MCP server below. Your constructions are saved, and export and
   import as `.json`.
+- **Accounts:** the default model, *Powder Toy AI (free)*, goes through the relay's OpenAI proxy (`relay/ai.js`): one
+  generation a day without an account, 10 a day signed in with Google or GitHub, 100 on the paid plan. The relay runs the
+  sign-in (`relay/auth.js`) and sends the page back with a session token in the URL fragment; `src/account.js` keeps it in
+  localStorage (no cookies) and sends it as `Authorization: Bearer` to `/auth/*` and the AI proxy. A random nonce in the
+  return URL and in sessionStorage means a token only counts in the tab that asked for it. *Settings → Account* signs
+  out or deletes the account, and [public/privacy.html](public/privacy.html) says what's stored. Against a local relay
+  (`npm run relay`) there's also *Dev sign-in*, which skips OAuth; it needs `AUTH_DEV=1` in `relay/.dev.vars`.
 - **Coding agents:** `npm run construct -- my-thing.js --png out.png` runs code headlessly and prints the lint report;
   `npm run construct -- --builtins` lints every built-in; `npm run mcp:construct` serves the same tools over MCP.
   See [docs/constructions.md](docs/constructions.md).
@@ -195,7 +211,10 @@ moved on still fade. `gfx.smoothing` (src/gfx/uniforms.js) scales every blur rad
   with depth: water is clear when shallow and blue-green when deep, oil amber, acid a milky green, ice cloudy. Thin
   liquid (drops, streams) is read as a cubic B-spline instead of trilinearly, so drops are round lenses, not faceted gems;
 - powders, lava and organics are opaque smooth surfaces with world-space textures and bump detail (`gfx/surface.js`), the
-  material blended between neighbouring cells; lava grows a cooling crust with glowing cracks;
+  material blended between neighbouring cells; lava grows a cooling crust with glowing cracks. Sliding sand carries its
+  texture with it, using Portal 2's flow-map technique: the texture is pushed along a flow field of how fast grains have
+  actually been moving (`moveFlowFrag` in `shaders/move.js`), in two crossfaded layers that reset in turn so it never
+  stretches. Still piles have no flow, so their texture stays put;
 - crisp voxels get rounded edges where they're exposed;
 - smoke, steam and fire are density volumes (`gfx/media.js`), sampled on a jittered lattice along the ray with sub-cell
   noise that curls and frays them and rises with the gas, so a lone cell is a faint wisp, not a sprite. They scatter
@@ -205,7 +224,7 @@ moved on still fade. `gfx.smoothing` (src/gfx/uniforms.js) scales every blur rad
 **Light** (`src/shaders/gfx/lighting.js`, `src/gfx/sky.js`, `src/shaders/gi.js`). The sky is a clear-sky atmosphere
 (single Rayleigh and haze scattering, integrated in closed form along the view ray) that also sets the sun's colour, warmer
 as it sinks. Day turns to night as the simulation runs (`src/gfx/daylight.js`: one day is 72,000 steps, about five
-minutes at the default speed, and it holds still while paused); after sunset a full moon lights the scene through the same
+minutes at the default speed, and it holds still while paused; Settings → Lighting sets the time); after sunset a full moon lights the scene through the same
 sky, dimmed and shifted blue the way a night-adapted eye sees it. A per-frame voxel shadow map is traced from the sun with the same surfaces. It records the opaque depth plus
 optical depth through liquids, glass and gas, so water casts tinted shadows and smoke casts soft ones. Shadows soften with
 distance from their caster (PCSS: the sun is a disc); at a contact edge within a texel, an exact DDA ray toward the sun
@@ -213,6 +232,12 @@ settles it. Indirect light comes from one probe per 4×4×4 brick: every frame, 
 collect the sky, the ground and the light bounced off lit matter (fed back over frames, so bounces add up), stored as L1
 spherical harmonics with the sky's visibility. Surfaces take their ambient light and blurry reflections from the probes,
 plus near-field occlusion from the fields; polished ones still see the sky itself where it is open.
+Three upgrades sit on top, each switchable in Settings → Lighting (all on by default). Contact shadows and bounce: two
+short rays per pixel walk the voxel grid; a ray that hits matter within six cells sees that matter's own sunlit, probe-lit
+colour, and one that escapes falls back to the probes. Caustics: where the shadow map says a point lies under a pool,
+the ripple height field's curvature focuses the sunlight reaching it (crests brighten, troughs spread), blurred with
+depth by the sun's disc. Lava and fire as lights: each pixel picks one nearby emitting brick, weighted by its power over
+distance², and traces a shadow ray to it, so the glow gets a direction and casts shadows.
 
 **Glow.** Anything above ~500 °C glows (`src/gfx/incandescence.js`): the colour is Planck's law through the CIE colour matching functions, the brightness is the
 physical luminance compressed by a power law, so steel reads dull red at 600–700 °C, cherry to orange at 800–1000 °C and
@@ -272,7 +297,7 @@ XORs it against the last frame it sent and deflates it. A 128³ world is a 30–
 The relay (`relay/worker.js`, one Cloudflare Durable Object per room) only forwards messages. It accepts pages from the site,
 its Pages previews and local development (`SITE_HOSTS` and friends in `relay/worker.js`), and players can't forge its own messages.
 To deploy it, run `wrangler deploy --config relay/wrangler.toml`. The production relay lives at `wss://tpt3d-relay.codyh.xyz` (set in `.env.production`).
-The site itself deploys with `npm run deploy` (Cloudflare Pages project `tpt3d`, served at https://tpt3d.codyh.xyz).
+The site deploys itself: every push to `main` on GitHub builds it and ships it to the Cloudflare Pages project `tpt3d` (served at https://tpt3d.codyh.xyz; see `.github/workflows/deploy.yml`).
 Without `VITE_RELAY_URL`, production builds hide multiplayer.
 Guests don't receive velocity, pressure or air temperature, so their pressure and flow views look empty, the heat view shows no warm air and flames look a little dimmer. Signs aren't shared.
 

@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { quadVert, BRICK, SEED_MAX } from './shaders/common.js';
 import { inertFrag, quietFrag, activityPeriod } from './shaders/activity.js';
-import { moveBlockFrag, moveGatherFrag } from './shaders/move.js';
+import { moveBlockFrag, moveGatherFrag, moveFlowFrag } from './shaders/move.js';
 import { reactFrag } from './shaders/react.js';
 import { paintFrag, copyFrag, brickFrag, blurFrag, brickDistFrag } from './shaders/passes.js';
 import { fieldEmaFrag, fieldBlurFrag, fieldBoostFrag, BOOST_STAGES } from './shaders/fields.js';
@@ -77,6 +77,11 @@ const giUniforms = () => ({
 });
 const giProbeUniforms = () => Object.fromEntries([0, 1, 2, 3].map((i) => [`tGI${i}`, { value: null }]));
 
+// Share of each step's displacements blended into the flow field (the rest is
+// history): grains move a cell on some steps and not others, so the field
+// averages their speed over about 1 / FLOW_BLEND steps.
+const FLOW_BLEND = 0.05;
+
 // Share of each update's new GI probes blended into the probe volume (the rest
 // is history): smooths cells popping between bricks over a few frames. Each
 // probe is updated every other frame.
@@ -116,6 +121,8 @@ export class Simulation {
     this.fieldTmp = makeFieldTarget(g.width, g.height, 3, U8, NEAR);
     this.fieldsBlurred = makeFieldTarget(g.width, g.height, 2, HALF, NEAR);
     this.fields = makeFieldTarget(g.width, g.height, 3, HALF, THREE.LinearFilter);
+    // how fast matter has been moving through each cell (shaders/move.js moveFlowFrag)
+    this.flowV = makeFieldTarget(g.width, g.height, 1, HALF, NEAR);
     this.fieldCur = 0;
     this.fieldReset = true;
     this.smoothing = 1;
@@ -157,6 +164,9 @@ export class Simulation {
         uShape: { value: 0 }, uTool: { value: 2 }, uRate: { value: 1 }, uReplace: { value: false },
       }),
       copy: rawMat(copyFrag(g), state()),
+      moveFlow: rawMat(moveFlowFrag(g), {
+        uParity: { value: 0 }, tQuiet: { value: null }, ...Object.fromEntries([...Array(8).keys()].map((i) => [`tM${i}`, { value: null }])),
+      }),
       brick: rawMat(brickFrag(g), {
         tA: { value: null }, tB: { value: null }, tFS: { value: null }, tFM: { value: null }, tFT: { value: null },
       }),
@@ -179,6 +189,11 @@ export class Simulation {
         uParity: { value: -1 },
       }),
     };
+    // the flow pass blends into the flow field: new * FLOW_BLEND + old * (1 - FLOW_BLEND)
+    Object.assign(this.mats.moveFlow, {
+      blending: THREE.CustomBlending, blendEquation: THREE.AddEquation,
+      blendSrc: THREE.ConstantAlphaFactor, blendDst: THREE.OneMinusConstantAlphaFactor, blendAlpha: FLOW_BLEND,
+    });
     // the gather blends into the probe volume: new * GI_BLEND + old * (1 - GI_BLEND)
     Object.assign(this.mats.giGather, {
       blending: THREE.CustomBlending, blendEquation: THREE.AddEquation,
@@ -237,6 +252,11 @@ export class Simulation {
     moveGather.uniforms.uParity.value = this.frame & 1;
     for (let i = 0; i < 8; i++) moveGather.uniforms[`tM${i}`].value = this.blocks.textures[i];
     this.pass(moveGather);
+    const { moveFlow } = this.mats;
+    moveFlow.uniforms.uParity.value = this.frame & 1;
+    moveFlow.uniforms.tQuiet.value = this.actQuiet.texture;
+    for (let i = 0; i < 8; i++) moveFlow.uniforms[`tM${i}`].value = this.blocks.textures[i];
+    this.run(moveFlow, this.flowV);
     react.uniforms.uFrame.value = this.frame;
     react.uniforms.uGravity.value = this.gravity;
     this.pass(react);
@@ -261,6 +281,7 @@ export class Simulation {
     this.pass(this.mats.paint);
   }
 
+  get flowTexture() { return this.flowV.texture; }
   get fieldSurf() { return this.fields.textures[0]; }
   get fieldMedia() { return this.fields.textures[1]; }
   get fieldThin() { return this.fields.textures[2]; }
@@ -378,6 +399,7 @@ export class Simulation {
     this.run(this.mats.copy, this.targets[this.cur]);
     this.fieldReset = true;
     this.giReset = true;
+    this.stillFlow();
     texA.dispose();
     texB.dispose();
   }
@@ -407,8 +429,16 @@ export class Simulation {
     u.tA.value = t.textures[0];
     u.tB.value = t.textures[1];
     this.run(this.mats.copy, this.targets[this.cur]);
+    this.stillFlow();
     t.dispose();
     return true;
+  }
+
+  // The state was replaced: nothing is moving until the next step says so.
+  stillFlow() {
+    this.renderer.setRenderTarget(this.flowV);
+    this.renderer.setClearColor(0x000000, 0);
+    this.renderer.clear(true, false, false);
   }
 
   blankState() {
@@ -449,6 +479,7 @@ export class Simulation {
     this.fieldTmp.dispose();
     this.fieldsBlurred.dispose();
     this.fields.dispose();
+    this.flowV.dispose();
     this.brickDist.forEach((t) => t.dispose());
     this.actInert.dispose();
     this.actQuiet.dispose();

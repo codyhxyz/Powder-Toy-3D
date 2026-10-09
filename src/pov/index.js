@@ -2,14 +2,19 @@ import * as THREE from 'three';
 import { ELEMENTS } from '../elements.js';
 import { BODY_HEIGHT, BODY_WIDTH, EYE_HEIGHT, HAND_REACH } from './constants.js';
 import { createPovCamera, ENTRY_PITCH, FIGURE_HIDE_DIST, RESPAWN_SWOOP_S, SWOOP_S } from './camera.js';
-import { createFigure } from './figure.js';
+import { createBody } from './figureReal.js';
 import { createPovHud } from './hud.js';
+import { createPovAudio } from './audio.js';
+import { createFeel } from './feel.js';
+import { createVfx } from './vfx.js';
+import { povEvents } from './events.js';
 import './pov.css';
 
 // First-person (POV) mode: drop into the world with F, walk around in it,
 // pop back out with F. This module is the shell: input, the camera, the
 // figure, the HUD and the per-frame wiring between the body (player.js) and
-// the toolbelt (tools/index.js). Both are optional at build time: without the
+// the toolbelt (tools/index.js), plus the gunplay feedback that listens to
+// povEvents: feel (kick, shake, hitmarker), effects and sound. Both are optional at build time: without the
 // body, F explains; without the toolbelt you just walk.
 
 const playerModule = import.meta.glob('./player.js', { eager: true })['./player.js'];
@@ -38,8 +43,13 @@ export function createPov(app) {
   const createPlayer = playerModule?.createPlayer;
   const createToolbelt = toolsModule?.createToolbelt;
 
-  const povCam = createPovCamera();
+  const povCam = createPovCamera({
+    fov: () => app.settings.povFov, sensitivity: () => app.settings.sensitivity, bobbing: () => app.settings.viewBobbing,
+  });
   const povHud = createPovHud();
+  // feedback: everything here hears povEvents (events.js) and the body's events
+  const feel = createFeel({ hud: povHud });
+  let vfx = null;                        // three.quarks effects, built on the first drop-in
   let figure = null, player = null, toolbelt = null;
   const viewmodel = new THREE.Group();
   viewmodel.name = 'pov-viewmodel';
@@ -63,6 +73,7 @@ export function createPov(app) {
   const active = () => mode !== 'off';
   const live = () => mode === 'on' && !player?.dead;
   const isLocked = () => locked || test.assumeLocked;
+  createPovAudio({ camera, getVolume: app.getVolume, getScale: app.getScale, state: () => ({ active: active(), player, toolbelt }) });
 
   // ---- grid ↔ world
   const toWorld = (g, out) => out.copy(g).multiplyScalar(app.getScale()).add(app.getVolume().position);
@@ -85,10 +96,18 @@ export function createPov(app) {
     buttons.primary = buttons.secondary = false;
   }
 
+  // F1: the HUD and the hand hidden (death and the mouse prompt still show)
+  let hudHidden = false;
+  const setHudHidden = (v) => { hudHidden = v; document.body.classList.toggle('pov-nohud', v); app.requestRender(); };
+
   addEventListener('keydown', (e) => {
     if (!active() || app.isTyping() || e.metaKey || e.ctrlKey || e.altKey) return;
     if (MOVE_KEYS.has(e.code)) { keys.add(e.code); if (e.code === 'Space') e.preventDefault(); }
     if (e.code === 'KeyV' && !e.repeat && mode !== 'exiting') povCam.third = !povCam.third;
+    // Sprint: Toggle (the setting): Shift flips sprinting on and off instead of being held
+    if ((e.code === 'ShiftLeft' || e.code === 'ShiftRight') && !e.repeat && app.settings.sprintMode === 'toggle') sprintOn = !sprintOn;
+    // F1, as in Minecraft: hide the HUD and the hand, for a clean view or a screenshot
+    if (e.code === 'F1') { e.preventDefault(); if (!e.repeat) setHudHidden(!hudHidden); }
     // settings and help need the mouse
     if ((e.key === ',' || e.key === '?') && document.pointerLockElement === canvas) document.exitPointerLock();
   });
@@ -132,7 +151,7 @@ export function createPov(app) {
   // ---- lazily built parts
   function ensureFigure() {
     if (!figure) {
-      figure = createFigure();
+      figure = createBody({ choice: () => app.settings.figure });   // stickman or realistic, live
       scene.add(figure.root);
     }
     figure.bind(app.getVolume(), app.getSim().g);
@@ -147,6 +166,15 @@ export function createPov(app) {
     if (!player) {
       player = createPlayer({ renderer, getSim: app.getSim });
       player.on('land', ({ speed }) => povCam.land(speed));
+      player.on('splash', ({ speed }) => vfx?.splash(player.pos, speed, player.liquidId));
+      feel.bindPlayer(player);
+    }
+    if (!vfx) {
+      try {
+        vfx = createVfx({ scene, camera, getVolume: app.getVolume, getScale: app.getScale, isActive: () => mode === 'on' || mode === 'entering' });
+        // compile the particle shaders now, during the swoop, not on the first shot
+        renderer.compileAsync(vfx.batch, camera, scene).catch(() => {});
+      } catch (err) { console.error('POV effects failed to start', err); }
     }
     if (!camera.parent) scene.add(camera);   // its children (the viewmodel) render with the scene
     if (!toolbelt && createToolbelt) {
@@ -223,6 +251,7 @@ export function createPov(app) {
     const fwd = camera.getWorldDirection(new THREE.Vector3());
     povCam.setLook(Math.atan2(-fwd.x, -fwd.z), ENTRY_PITCH);
     povCam.reset();
+    feel.reset();
     player.spawn(dropPoint.clone());
     deadSeen = false;
     povCam.startSwoop('in', camPose(), { duration: SWOOP_S });
@@ -261,7 +290,11 @@ export function createPov(app) {
     figure?.setVisible(false);
     viewmodel.visible = false;
     povHud.show(false);
+    feel.reset();
+    vfx?.clear();
     document.body.classList.remove('pov-on');
+    setHudHidden(false);
+    sprintOn = false;
     app.requestRender();
   }
 
@@ -270,10 +303,12 @@ export function createPov(app) {
     sim: null, dt: 0, stepsPerFrame: 0,
     eye: new THREE.Vector3(), dir: new THREE.Vector3(),
     primary: false, secondary: false, primaryPressed: false, secondaryPressed: false, wheel: 0,
+    viewBobbing: true,              // the View Bobbing setting (the viewmodel rig's hand bob reads it)
     aim: { valid: false, cell: new THREE.Vector3(), face: 0, id: -1, T: 0, P: 0, dist: Infinity },
     player: { pos: null, vel: null, onGround: false, inLiquid: false, applyImpulse: (dv) => player?.applyImpulse(dv) },
   };
   const input = { move: { x: 0, z: 0 }, jump: false, sprint: false, down: false };
+  let sprintOn = false;     // Sprint: Toggle's state
   const vEye = new THREE.Vector3(), vFeet = new THREE.Vector3(), vA = new THREE.Vector3(), vB = new THREE.Vector3();
   const closest = new THREE.Vector3();
   let speedH = 0;
@@ -292,7 +327,7 @@ export function createPov(app) {
       input.move.x = x; input.move.z = z;
     }
     input.jump = keys.has('Space');
-    input.sprint = keys.has('ShiftLeft') || keys.has('ShiftRight');
+    input.sprint = app.settings.sprintMode === 'toggle' ? sprintOn : keys.has('ShiftLeft') || keys.has('ShiftRight');
     input.down = keys.has('KeyC');
   }
 
@@ -320,20 +355,24 @@ export function createPov(app) {
         player.spawn(dropPoint.clone());
         deadSeen = false;
         povCam.reset();
+        feel.reset();
         povCam.startSwoop('in', camPose(), { duration: RESPAWN_SWOOP_S });
         mode = 'entering';
       }
     }
     speedH = Math.hypot(player.vel.x, player.vel.z);
 
-    // the camera
-    toWorld(vEye.copy(player.pos).setY(player.pos.y + EYE_HEIGHT), vEye);
+    // the camera, with the kick and shake on top of the look
+    vA.copy(player.pos).setY(player.pos.y + EYE_HEIGHT);
+    const shake = feel.update({ dt, live: mode === 'on' && !deadSeen, eye: vA });
+    toWorld(vEye.copy(vA), vEye);
     toWorld(player.pos, vFeet);
     const pose = povCam.update({
       dt, eye: vEye, feet: vFeet, scale, speedH,
       onGround: player.onGround, inLiquid: player.inLiquid, sprinting: input.sprint,
-      dead: deadSeen, deadTime, box,
+      dead: deadSeen, deadTime, box, shake,
     });
+    if (pose.footfall && mode === 'on' && !deadSeen) povEvents.emit('player:step', { speed: speedH, inLiquid: player.inLiquid });
     camera.position.copy(pose.pos);
     camera.quaternion.copy(pose.quat);
     if (Math.abs(camera.fov - pose.fov) > 1e-4) { camera.fov = pose.fov; camera.updateProjectionMatrix(); }
@@ -350,10 +389,10 @@ export function createPov(app) {
     figure.setVisible(pose.eyeDist > FIGURE_HIDE_DIST);
     figure.update(dt, {
       feet: vFeet, scale, yaw: povCam.look.yaw, worldToGrid,
-      speedH, velY: player.vel.y, onGround: player.onGround, inLiquid: player.inLiquid,
+      speedH, velY: player.vel.y, onGround: player.onGround, inLiquid: player.inLiquid, headInLiquid: player.headInLiquid,
       dead: deadSeen, deadTime, heat: player.feel?.heat ?? 0,
     });
-    viewmodel.visible = mode === 'on' && !deadSeen && pose.eyeDist <= FIGURE_HIDE_DIST;
+    viewmodel.visible = mode === 'on' && !deadSeen && pose.eyeDist <= FIGURE_HIDE_DIST && !hudHidden;
 
     // the toolbelt
     const aim = ctx.aim, hv = app.hover;
@@ -379,6 +418,7 @@ export function createPov(app) {
       ctx.primaryPressed = use && buttons.primaryPressed;
       ctx.secondaryPressed = use && buttons.secondaryPressed;
       ctx.wheel = wheelNotches;
+      ctx.viewBobbing = app.settings.viewBobbing;
       ctx.player.pos = player.pos;
       ctx.player.vel = player.vel;
       ctx.player.onGround = player.onGround;
@@ -387,6 +427,9 @@ export function createPov(app) {
     }
     buttons.primaryPressed = buttons.secondaryPressed = false;
     wheelNotches = 0;
+
+    // effects: keep drawing while any are in flight (rendering is on demand)
+    if (vfx?.update(dt)) app.requestRender();
 
     // the HUD
     const liq = player.headInLiquid ? ELEMENTS[player.liquidId] : null;
@@ -407,7 +450,9 @@ export function createPov(app) {
     if (!active() || !player) return false;
     const scale = app.getScale();
     ro.copy(camera.position).sub(app.getVolume().position).divideScalar(scale);
-    camera.getWorldDirection(rd);
+    // the aim, not the shaken view: kick and shake are only felt
+    if (mode === 'on' && !deadSeen) povCam.dir(rd);
+    else camera.getWorldDirection(rd);
     const eye = vA.copy(player.pos).setY(player.pos.y + EYE_HEIGHT);
     const skip = Math.max(0, vB.subVectors(eye, ro).dot(rd));
     ro.addScaledVector(rd, skip);
@@ -424,6 +469,8 @@ export function createPov(app) {
     get player() { return player; },
     get toolbelt() { return toolbelt; },
     get figure() { return figure; },
+    get vfx() { return vfx; },
+    feel,
     get ctx() { return ctx; },
     camera: povCam,
     viewmodel,

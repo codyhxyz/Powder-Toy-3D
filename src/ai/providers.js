@@ -1,3 +1,6 @@
+import { RELAY_HTTP } from '../net/relay-url.js';
+import { authHeaders, noteAIReply } from '../account.js';
+
 // Bring-your-own-key model providers, all through the Vercel AI SDK. Each entry
 // lazy-loads its official provider package, so none of it is in the main bundle
 // until the player connects a model.
@@ -5,9 +8,10 @@
 // Keys live only in this browser's localStorage (STORE). They go straight to
 // the chosen provider and nowhere else: not in construction exports, URLs or the
 // multiplayer stream. The free provider needs no key: it goes through our
-// relay's OpenAI proxy (relay/ai.js), which limits it to a few generations a day. Subscriptions (Claude, ChatGPT, Gemini) can't be used by a
-// third-party web app; use them through the MCP server instead
-// (docs/constructions.md).
+// relay's OpenAI proxy (relay/ai.js), which allows a few generations a day, more
+// for signed-in players (account.js). Subscriptions (Claude, ChatGPT, Gemini)
+// can't be used by a third-party web app; use them through the MCP server
+// instead (docs/constructions.md).
 
 const STORE = 'powder-toy-3d:ai';
 const PKCE_STORE = 'powder-toy-3d:openrouter-pkce';
@@ -24,27 +28,27 @@ const OLLAMA_CONTEXT_TOKENS = 16384;
 const browserKeyNote = 'Your key stays in this browser and goes only to the provider. Use one with a spending limit.';
 
 // The free provider is the relay's proxy, on the same host as the multiplayer relay.
-const DEV_RELAY_PORT = 8787; // `wrangler dev` default, as in net/multiplayer.js
-const RELAY_URL = import.meta.env.VITE_RELAY_URL || (import.meta.env.DEV ? `ws://${location.hostname}:${DEV_RELAY_PORT}` : null);
-const FREE_AI_URL = RELAY_URL ? `${RELAY_URL.replace(/^ws/, 'http')}/ai/v1` : '';
+const FREE_AI_URL = RELAY_HTTP ? `${RELAY_HTTP}/ai/v1` : '';
 const FREE_MODEL = 'gpt-6-luna'; // the relay pins the model; this is only what the AI SDK reports
-export const freeAI = { remaining: null }; // free generations left today, from the relay's last answer
 
 // auth: 'free' (our proxy), 'oauth' (sign in, or paste a key), 'key', 'none' (local), 'optional' (local, key if the server wants one)
 export const PROVIDERS = [
   {
     id: 'free', label: 'Powder Toy AI (free)', auth: 'free', baseURL: FREE_AI_URL, defaultModel: FREE_MODEL, fixedModel: 'GPT-6 Luna',
-    note: 'Free for a few generations a day. Your prompt goes through our server to OpenAI. For more, pick a provider and use your own key.',
+    note: 'Your prompt goes through our server to OpenAI. For more generations, pick a provider and use your own key.',
     create: async ({ baseURL }) => {
       const gen = crypto.randomUUID(); // one per Generate press: the relay counts generations by it
       const p = (await import('@ai-sdk/openai')).createOpenAI({
-        baseURL, apiKey: 'free',
+        baseURL, apiKey: 'free', // the SDK wants a key; its Authorization header is replaced below
         fetch: async (url, init) => {
           const headers = new Headers(init?.headers);
-          headers.set('x-gen-id', gen);
+          headers.delete('authorization');
+          for (const [k, v] of Object.entries({ ...authHeaders(), 'x-gen-id': gen })) headers.set(k, v);
           const res = await fetch(url, { ...init, headers });
-          const left = res.headers.get('x-ai-remaining');
-          if (left !== null) freeAI.remaining = Number(left);
+          noteAIReply(res.status, res.headers);
+          // The relay's 429 (no generations left) and 401 (session ended) are final:
+          // throw its message rather than let the AI SDK retry them.
+          if (res.status === 429 || res.status === 401) throw new Error(await errorMessage(res));
           return res;
         },
       });
@@ -95,6 +99,13 @@ export const PROVIDERS = [
 
 const trim = (url) => String(url ?? '').replace(/\/+$/, '');
 const byId = (id) => PROVIDERS.find((p) => p.id === id) ?? PROVIDERS[0];
+
+// The { error: { message } } a relay or OpenAI error carries, or its status.
+async function errorMessage(res) {
+  let message = '';
+  try { message = (await res.json())?.error?.message ?? ''; } catch { /* not JSON */ }
+  return message || `The server answered ${res.status}.`;
+}
 
 async function getJSON(url, headers = {}) {
   const res = await fetch(url, { headers, signal: AbortSignal.timeout(MODEL_LIST_TIMEOUT_MS) });

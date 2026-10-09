@@ -21,7 +21,9 @@ import * as gi from '../src/shaders/gi.js';
 import * as povBody from '../src/shaders/povBody.js';
 import * as transfer from '../src/shaders/transfer.js';
 import * as povTools from '../src/shaders/povTools.js';
-import { figureFrag } from '../src/pov/figure.js';
+import * as povTrace from '../src/shaders/povTrace.js';
+import { figureFrag, figureSkinnedVert } from '../src/pov/figure.js';
+import { ShaderChunk } from 'three';
 
 // three.js prefixes: ShaderMaterial (GLSL1-style source upgraded to 300 es)
 // and RawShaderMaterial with glslVersion GLSL3.
@@ -81,9 +83,13 @@ for (const [label, dims] of Object.entries(grids)) {
   check(`fieldFinal-${label}`, raw + fields.fieldBlurFrag(g, true), 'frag');
   for (let stage = 0; stage < fields.BOOST_STAGES; stage++) check(`fieldBoost${stage}-${label}`, raw + fields.fieldBoostFrag(g, stage), 'frag');
   for (const [k, v] of Object.entries({ ...move, ...react, ...probe, ...stamp, ...gi, ...povBody, ...transfer })) if (typeof v === 'function') check(`${k}-${label}`, raw + v(g), 'frag');
-  for (const k of ['axeFrag', 'gunFrag', 'physgunComFrag', 'physgunFrag']) check(`${k}-${label}`, raw + povTools[k](g), 'frag');
+  for (const k of ['axeFrag', 'physgunComFrag', 'physgunFrag']) check(`${k}-${label}`, raw + povTools[k](g), 'frag');
+  for (const k of ['traceFrag', 'handoffFrag']) check(`${k}-${label}`, raw + povTrace[k](g), 'frag');
 }
 check('volumeVert', shaderMatVert + render.volumeVert, 'vert');
 check('quadVert', raw + quadVert, 'vert');
+// the realistic body's skinned vertex shader, as three builds it for a SkinnedMesh
+const includes = (src) => src.replace(/^[ \t]*#include +<(\w+)>/gm, (_, k) => includes(ShaderChunk[k]));
+check('figureSkinnedVert', `${shaderMatVert}#define USE_SKINNING\nin vec3 normal;\nin vec4 skinIndex;\nin vec4 skinWeight;\n${includes(figureSkinnedVert)}`, 'vert');
 console.log(failures ? `${failures} shader(s) failed` : 'all shaders OK');
 process.exit(failures ? 1 : 0);

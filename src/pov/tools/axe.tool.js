@@ -1,6 +1,11 @@
 import * as THREE from 'three';
+import { ELEMENTS, K } from '../../elements.js';
 import { HAND_REACH } from '../constants.js';
-import { axeFrag, toolPass, shadedBox, disposeTree } from '../../shaders/povTools.js';
+import { axeFrag, toolPass, AXE } from '../../shaders/povTools.js';
+import { povEvents } from '../events.js';
+import { attachModel } from '../models.js';
+import { viewmodelRig, KICK } from '../viewmodel.js';
+import { faceNormal } from './transfer.js';
 
 // Axe: a short-range swing that breaks breakable solids in a wide, shallow
 // patch around the struck cell into their debris (shaders/povTools.js axeFrag
@@ -11,13 +16,18 @@ import { axeFrag, toolPass, shadedBox, disposeTree } from '../../shaders/povTool
 //
 // A click starts the swing; the blade lands IMPACT_TIME later and strikes
 // whatever is under the crosshair then, if it's within reach.
+//
+// Events: tool:action 'swing' on every click; when the blade lands on
+// something, impact (source 'axe') and the rig's kick, plus tool:action
+// 'refuse' if the struck cell is a solid the blow can't break.
 
 const SWING_TIME = 0.42;     // s for a whole swing, wind-up to recovery
 const IMPACT_TIME = 0.12;    // s into the swing that the blade lands
 const SWING_INTERVAL = 0.5;  // s between swings
 
-// viewmodel, in cells (camera space: +x right, +y up, −z forward)
-const AXE_POS = [0.62, -0.75, -1.45];
+// viewmodel, in cells (camera space: +x right, +y up, −z forward); the
+// model's origin is the end of the handle, in the hand
+const AXE_POS = [0.7, -0.95, -1.55];
 const REST_PITCH = 0.35;     // rad, held up and back
 const RAISE_PITCH = 0.9;     // rad, top of the wind-up
 const STRIKE_PITCH = -0.9;   // rad, blade down at impact
@@ -26,19 +36,15 @@ const REST_ROLL = -0.25;     // rad, tilted in toward the crosshair
 const ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round">
 <path d="M14 3l7 7-3 3-2-2-9 9-2-2 9-9-2-2z"/><path d="M14 3c-3 0-5 2-5 5l3 1"/></svg>`;
 
-function buildModel() {
-  const root = new THREE.Group();
-  const pivot = new THREE.Group();   // the hand: the axe turns about it
-  root.add(pivot);
-  const handle = shadedBox(0.1, 1.3, 0.1, 0x8a5a33);
-  handle.position.y = 0.45;
-  const head = shadedBox(0.08, 0.32, 0.5, 0x9aa1ab);
-  head.position.set(0, 1.0, -0.12);
-  const edge = shadedBox(0.06, 0.4, 0.08, 0xdfe5ec);
-  edge.position.set(0, 1.0, -0.4);
-  pivot.add(handle, head, edge);
-  root.visible = false;
-  return { root, pivot };
+// The held axe: the Kenney model (models.js, async) on a hand of the
+// viewmodel rig, turned about the hand by the swing.
+function buildModel(env) {
+  const rig = viewmodelRig(env);
+  const hand = rig.hand(AXE_POS);
+  const pivot = new THREE.Group();   // the axe turns about the hand
+  hand.add(pivot);
+  const mesh = attachModel(pivot, 'axe');
+  return { rig, hand, pivot, dispose() { mesh.dispose(); hand.removeFromParent(); } };
 }
 
 // Swing pose: rest → raise (wind-up) → strike at IMPACT_TIME → back to rest.
@@ -54,8 +60,7 @@ export default {
   key: 'AXE', name: 'Axe', slot: 3, icon: ICON,
   desc: 'Chops wood, smashes glass and ice, clears plants. Too weak for rock or metal.',
   create(env) {
-    const model = buildModel();
-    env.viewmodel.add(model.root);
+    const model = buildModel(env);
     const pass = toolPass(axeFrag, () => ({ uCenter: { value: new THREE.Vector3() }, uDir: { value: new THREE.Vector3() } }));
     let time = 0, swingAt = -Infinity, nextSwing = 0, struck = true;
     let lastHit = null;
@@ -69,24 +74,32 @@ export default {
       mat.uniforms.uDir.value.copy(ctx.dir).normalize();
       sim.pass(mat);
       lastHit = { cell: aim.cell.clone(), id: aim.id };
+      // the struck cell breaks if the blow's full energy (it lands at the patch centre) beats its hardness
+      const el = ELEMENTS[aim.id];
+      const solid = el?.kind === K.SOLID;
+      const broke = solid ? Boolean(el.breakInto) && AXE.ENERGY >= el.hard : null;
+      const point = aim.cell.clone().addScalar(0.5);
+      povEvents.emit('impact', { source: 'axe', point, normal: faceNormal(aim.face), id: aim.id, energy: AXE.ENERGY, broke });
+      model.rig.kick(KICK.AXE);
+      if (broke === false) povEvents.emit('tool:action', { tool: 'axe', action: 'refuse', id: aim.id, point });
     }
 
     return {
       update(ctx) {
         time += ctx.dt;
-        model.root.visible = true;
-        model.root.scale.setScalar(env.getScale());
+        model.hand.visible = true;
+        model.rig.update(ctx);
         if (ctx.primaryPressed && time >= nextSwing) {
           swingAt = time; nextSwing = time + SWING_INTERVAL; struck = false;
+          povEvents.emit('tool:action', { tool: 'axe', action: 'swing' });
         }
         if (!struck && time - swingAt >= IMPACT_TIME) { struck = true; strike(ctx); }
-        model.pivot.position.set(...AXE_POS);
         model.pivot.rotation.set(swingPitch(time - swingAt), 0, REST_ROLL);
       },
-      deselect() { model.root.visible = false; struck = true; },
+      deselect() { model.hand.visible = false; struck = true; },
       status: () => null,
       get lastHit() { return lastHit; },   // for checks: the cell the last swing struck
-      dispose() { pass.dispose(); disposeTree(model.root); },
+      dispose() { pass.dispose(); model.dispose(); },
     };
   },
 };

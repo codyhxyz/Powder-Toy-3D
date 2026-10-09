@@ -1,6 +1,9 @@
 import * as THREE from 'three';
 import { PHYS as ENGINE } from '../../physics.js';
-import { physgunFrag, physgunComFrag, toolPass, PHYS, PHYS_MODE, shadedBox, glowTexture, disposeTree } from '../../shaders/povTools.js';
+import { physgunFrag, physgunComFrag, toolPass, PHYS, PHYS_MODE, glowTexture, disposeTree } from '../../shaders/povTools.js';
+import { povEvents } from '../events.js';
+import { attachModel } from '../models.js';
+import { viewmodelRig, KICK } from '../viewmodel.js';
 
 // Physgun: a force beam on loose matter (powders, liquids, gases). Press and
 // hold left-click to grab what's around the aim point: every frame one pass
@@ -14,10 +17,14 @@ import { physgunFrag, physgunComFrag, toolPass, PHYS, PHYS_MODE, shadedBox, glow
 //
 // The beam's reaction force on the player is left out (the body doesn't feel
 // the weight it carries).
+//
+// The gun is a viewmodel (drawn over the frame, viewmodel.js); the beam and
+// the reach ball live in the world, so walls hide them like anything else.
+// Events: tool:action 'grab', 'fling' and 'release'.
 
 // viewmodel, in cells (camera space: +x right, +y up, −z forward)
-const GUN_POS = [0.6, -0.38, -1.45];
-const TIP_Z = -0.75;              // cells ahead of the gun's origin: where the beam leaves
+const GUN_POS = [0.6, -0.42, -1.45];
+const TIP = [0, 0.05, -0.72];     // cells from the model's centre: where the beam leaves
 const BEAM_TIP_RADIUS = 0.02;     // cells, where the beam leaves the gun...
 const BEAM_END_RADIUS = 0.15;     // ...and at the hold point (perspective evens it out)
 const BEAM_PULSE = 9;             // rad/s the beam's brightness throbs at
@@ -29,8 +36,6 @@ const RIM_POWER = 3;              // ...falling off this steeply toward its midd
 const RIM_CLEAR = 2;              // cells: the ball fades out as the eye comes within this of its surface, so it never wraps the view
 const TIP_SIZE = 0.35;            // cells, the glow at the tip
 const TIP_IDLE = 0.35;            // tip glow opacity while not holding
-const RECOIL_TIME = 0.2;          // s the gun jolts after a fling
-const RECOIL_BACK = 0.3;          // cells
 
 const ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
 <path d="M3 15h8l2-3h3"/><circle cx="19" cy="9" r="3"/><path d="M5 15v4h4"/></svg>`;
@@ -62,27 +67,20 @@ function rimMaterial() {
   });
 }
 
-function buildModel() {
-  const root = new THREE.Group();
-  const gun = new THREE.Group();
-  root.add(gun);
-  const body = shadedBox(0.3, 0.3, 1.0, 0x30343c);
-  const core = shadedBox(0.34, 0.12, 0.5, BEAM_COLOR);
-  core.position.set(0, 0.06, -0.05);
-  const prongL = shadedBox(0.06, 0.06, 0.3, 0xc8ced8);
-  prongL.position.set(-0.1, 0, -0.6);
-  const prongR = prongL.clone();
-  prongR.position.x = 0.1;
-  const grip = shadedBox(0.18, 0.42, 0.22, 0x22252b);
-  grip.position.set(0, -0.3, 0.3);
-  gun.add(body, core, prongL, prongR, grip);
+// The held gun (the Kenney model, async, on a hand of the viewmodel rig) with
+// the tip glow, and the beam and reach ball in the world.
+function buildModel(env) {
+  const rig = viewmodelRig(env);
+  const hand = rig.hand(GUN_POS);
   const tip = new THREE.Sprite(new THREE.SpriteMaterial({
     map: glowTexture(), color: BEAM_COLOR, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
   }));
   tip.scale.setScalar(TIP_SIZE);
-  tip.position.z = TIP_Z;
-  gun.add(tip);
-  // beam and reach ball live in the same (cell-scaled, camera-attached) space
+  tip.position.set(...TIP);
+  hand.add(tip);
+  const mesh = attachModel(hand, 'physgun');
+  // the beam and reach ball: world space, sized in cells by the world's scale
+  const root = new THREE.Group();
   const beam = new THREE.Mesh(
     new THREE.CylinderGeometry(BEAM_END_RADIUS, BEAM_TIP_RADIUS, 1, 8, 1, true),
     new THREE.MeshBasicMaterial({ color: BEAM_COLOR, transparent: true, opacity: BEAM_OPACITY,
@@ -95,8 +93,11 @@ function buildModel() {
   beam.frustumCulled = sphere.frustumCulled = false;
   beam.visible = sphere.visible = false;
   root.add(beam, sphere);
-  root.visible = false;
-  return { root, gun, tip, beam, sphere };
+  env.scene.add(root);
+  return {
+    rig, hand, tip, root, beam, sphere,
+    dispose() { mesh.dispose(); disposeTree(hand); disposeTree(root); },
+  };
 }
 
 const Y_AXIS = new THREE.Vector3(0, 1, 0);
@@ -105,8 +106,7 @@ export default {
   key: 'PHYSGUN', name: 'Physgun', slot: 5, icon: ICON,
   desc: 'Hold to lift loose powder, liquid or gas; wheel for distance, right-click to fling.',
   create(env) {
-    const model = buildModel();
-    env.viewmodel.add(model.root);
+    const model = buildModel(env);
     const pass = toolPass(physgunFrag, () => ({
       tCom: { value: null }, uHold: { value: new THREE.Vector3() }, uCarry: { value: new THREE.Vector3() },
       uSteps: { value: 0 }, uGravity: { value: 0 }, uMode: { value: PHYS_MODE.HOLD }, uFling: { value: new THREE.Vector3() },
@@ -116,7 +116,7 @@ export default {
       type: THREE.FloatType, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, depthBuffer: false,
     });
     const prevHold = new THREE.Vector3(), carry = new THREE.Vector3();
-    let time = 0, holding = false, dist = PHYS.HOLD_MIN, flungAt = -Infinity;
+    let time = 0, holding = false, dist = PHYS.HOLD_MIN;
     const hold = new THREE.Vector3();
     const tmpA = new THREE.Vector3(), tmpB = new THREE.Vector3();
 
@@ -140,32 +140,38 @@ export default {
       sim.pass(mat);
     }
 
-    const release = () => { holding = false; };
+    const release = () => {
+      if (holding) povEvents.emit('tool:action', { tool: 'physgun', action: 'release', point: hold.clone() });
+      holding = false;
+    };
 
-    // Beam from the tip to the hold point and the reach ball, in the model's space.
+    // Beam from the tip to the hold point and the reach ball, in world space.
     function drawBeam() {
-      const vol = env.getVolume();
-      model.root.updateWorldMatrix(true, true);
-      const end = model.root.worldToLocal(vol.localToWorld(tmpA.copy(hold)));
+      const vol = env.getVolume(), scale = env.getScale();
+      vol.updateMatrixWorld();
+      const end = vol.localToWorld(tmpA.copy(hold));
+      model.tip.updateWorldMatrix(true, false);
       const start = model.tip.getWorldPosition(tmpB);
-      model.root.worldToLocal(start);
       const span = end.clone().sub(start);
       const len = span.length();
       model.beam.position.copy(start).addScaledVector(span, 0.5);
       model.beam.quaternion.setFromUnitVectors(Y_AXIS, span.divideScalar(len || 1));
-      model.beam.scale.set(1, len, 1);
+      model.beam.scale.set(scale, len, scale);   // radii in cells, length in world units
       model.beam.material.opacity = BEAM_OPACITY * (1 - BEAM_PULSE_DEPTH * (0.5 + 0.5 * Math.sin(time * BEAM_PULSE)));
       model.sphere.position.copy(end);
+      model.sphere.scale.setScalar(scale);
     }
 
     return {
       update(ctx) {
         time += ctx.dt;
-        model.root.visible = true;
-        model.root.scale.setScalar(env.getScale());
+        model.hand.visible = true;
+        model.rig.update(ctx);
         if (ctx.primaryPressed && !holding) {
           holding = true;
           dist = THREE.MathUtils.clamp(ctx.aim?.valid ? ctx.aim.dist - PHYS.GRAB_STANDOFF : PHYS.HOLD_MAX, PHYS.HOLD_MIN, PHYS.HOLD_MAX);
+          const point = hold.copy(ctx.eye).addScaledVector(ctx.dir, dist).clone();
+          povEvents.emit('tool:action', { tool: 'physgun', action: 'grab', point, id: ctx.aim?.valid ? ctx.aim.id : undefined });
         }
         if (holding && !ctx.primary) release();
         if (holding && ctx.wheel) {
@@ -178,14 +184,14 @@ export default {
           if (ctx.primaryPressed) prevHold.copy(hold);
           if (ctx.secondaryPressed) {
             run(ctx, PHYS_MODE.FLING);
-            flungAt = time;
-            release();
+            model.rig.kick(KICK.FLING);
+            povEvents.emit('tool:action', { tool: 'physgun', action: 'fling', point: hold.clone() });
+            holding = false;
           } else if (ctx.stepsPerFrame > 0) run(ctx, PHYS_MODE.HOLD);
         }
-        const k = Math.max(0, 1 - (time - flungAt) / RECOIL_TIME);
-        model.gun.position.set(GUN_POS[0], GUN_POS[1], GUN_POS[2] + k * RECOIL_BACK);
         model.tip.material.opacity = holding ? 1 : TIP_IDLE;
-        model.beam.visible = model.sphere.visible = holding;
+        // the beam shows with the gun (not in third person, where the viewmodel is hidden)
+        model.beam.visible = model.sphere.visible = holding && env.viewmodel.visible;
         if (holding) {
           drawBeam();
           const clear = ctx.eye.distanceTo(hold) - PHYS.RADIUS;
@@ -194,7 +200,8 @@ export default {
       },
       deselect() {
         release();
-        model.root.visible = false;
+        model.hand.visible = false;
+        model.beam.visible = model.sphere.visible = false;
       },
       status: () => (holding ? `${Math.round(dist)} cells` : null),
       wantsWheel: () => holding,
@@ -204,7 +211,7 @@ export default {
         env.renderer.readRenderTargetPixels(comTarget, 0, 0, 1, 1, buf);
         return [...buf];
       },
-      dispose() { pass.dispose(); comPass.dispose(); comTarget.dispose(); disposeTree(model.root); },
+      dispose() { pass.dispose(); comPass.dispose(); comTarget.dispose(); model.dispose(); },
     };
   },
 };

@@ -7,6 +7,7 @@ import { ICON } from './icons.js';
 //   { type: 'switch', key, label, desc?, badge?, tier?, onChange }   (badge: a cost label, styled by tier)
 //   { type: 'more', label, rows }   rows tucked under a collapsed disclosure
 // A seg row may take value() instead of reading settings[key] (a derived setting).
+//   { type: 'custom', el, sync }   an element the caller keeps up to date; sync runs with the others
 export function createSettings({ settings, sections, footer, onClose }) {
   const syncers = [];
 
@@ -51,6 +52,10 @@ export function createSettings({ settings, sections, footer, onClose }) {
     }
     if (r.type === 'more') {
       return h('details.more', {}, h('summary', { text: r.label }), r.rows.map(row));
+    }
+    if (r.type === 'custom') {
+      if (r.sync) syncers.push(r.sync);
+      return r.el;
     }
     return null;
   };

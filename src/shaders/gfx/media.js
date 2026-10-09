@@ -32,7 +32,6 @@ import { mediaDetailGLSL } from './mediaDetail.js';
 
 export const mediaGLSL = /* glsl */ `
 uniform highp sampler3D tMediaNoise;   // r billows, g wisps, b flame tongues, a flicker (gba: warp)
-uniform float uSimClock;               // simulation steps (wrapped)
 
 #define MEDIA_STEP 1.0          // march step (cells): the finest detail is ~4 cells, TAA averages the jitter
 #define MEDIA_MAX_PER_SEG 2     // lattice samples in one cell segment (<= sqrt(3) / MEDIA_STEP, rounded up)

@@ -123,25 +123,6 @@ void main() {
 }
 `;
 
-// Put a SCRAP slug in one cell, if that cell holds air or a gas.
-export const gunFrag = (g) => /* glsl */ `
-${head(g)}
-uniform ivec3 uCell;    // the muzzle cell
-uniform vec3 uVel;      // cells/step
-
-void main() {
-  ivec2 t = ivec2(gl_FragCoord.xy);
-  vec4 a = texelFetch(tA, t, 0);
-  vec4 b = texelFetch(tB, t, 0);
-  oA = a; oB = b;
-  if (cellFromFrag(t) != uCell) return;
-  int id = eid(a);
-  if (id != E_EMPTY && KIND[id] != K_GAS) return;
-  oA = vec4(float(E_SCRAP), AMBIENT, SPAWNLIFE[E_SCRAP], fract(a.w));
-  oB = vec4(uVel, b.w);
-}
-`;
-
 const physGLSL = /* glsl */ `
 ${defines('PHYS', PHYS)}
 ${Object.entries(PHYS_MODE).map(([k, v]) => `#define PHYS_MODE_${k} ${v}`).join('\n')}

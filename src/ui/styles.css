@@ -234,6 +234,15 @@ input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border-radius: 
 .btn.danger:hover { color: #fff; background: color-mix(in srgb, var(--danger) 60%, transparent); border-color: transparent; }
 .btn-row { display: flex; gap: 6px; margin-top: 8px; }
 
+/* settings → account */
+.account-who { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+.account-who b { color: var(--text); font-weight: 600; }
+.account-who.failed { color: var(--text); }
+.account-settings .btn-row { margin-top: 10px; }
+.account-settings .btn-col { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.account-privacy { display: inline-block; margin-top: 10px; color: var(--faint); font-size: 11.5px; text-decoration: none; }
+.account-privacy:hover { color: var(--text); text-decoration: underline; text-underline-offset: 3px; }
+
 /* ------------------------------------------------------------------ element tiles */
 .tile {
   --c: #888;

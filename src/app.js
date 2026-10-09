@@ -20,10 +20,14 @@ import { createDetailGate } from './gfx/detailGate.js';
 import { createPost, UPSCALE } from './gfx/post.js';
 import { createPacer, settleFrames, sceneKey } from './gfx/pacing.js';
 import { CHANNELS, MEDIA } from './gfx/materials.js';
-import { dayPhase, keyLight } from './gfx/daylight.js';
+import { DAY, dayPhase, phaseSteps, keyLight } from './gfx/daylight.js';
 import { GI_BLEND } from './sim.js';
 import { createMultiplayer } from './net/multiplayer.js';
 import { createPov } from './pov/index.js';
+import { renderViewmodels } from './pov/viewmodel.js';
+import { POV_FOV, POV_FOV_RANGE, SENSITIVITY_RANGE } from './pov/camera.js';
+import { finishSignIn, account, accountsEnabled } from './account.js';
+import { accountSection } from './ui/account-section.js';
 
 // Optional modules (built in parallel); the app works without them.
 const optional = import.meta.glob(['./views.js', './signs.js', './constructions.js'], { eager: true });
@@ -42,11 +46,14 @@ const DEFAULTS = {
   size: '128', preset: 'lab',
   tool: E.SAND, radius: 5, shape: 0, rate: 1, replace: false,
   steps: 4, gravity: 0.025, paused: false,
-  view: 0, camSpeed: 1, upscale: 'native', dockCollapsed: false,
+  view: 0, camSpeed: 1, upscale: 'quality', dockCollapsed: false,
+  figure: 'real', povFov: POV_FOV, sensitivity: 1, viewBobbing: true, sprintMode: 'hold',
+  nearGI: true, glowLights: true, caustics: true,
   ...detailDefaults(),
 };
 const PERSIST = ['size', 'preset', 'tool', 'radius', 'shape', 'rate', 'replace', 'steps', 'gravity', 'view',
-  'camSpeed', 'upscale', 'dockCollapsed', ...DETAIL.map(settingKey)];
+  'camSpeed', 'upscale', 'dockCollapsed', 'figure', 'povFov', 'sensitivity', 'viewBobbing', 'sprintMode',
+  'nearGI', 'glowLights', 'caustics', ...DETAIL.map(settingKey)];
 const STORE = 'powder-toy-3d:settings';
 // Fixed look: glow is heat-driven light (×uLightGain); smoothing, TAA, bloom and
 // exposure keep their defaults in gfx/uniforms.js and gfx/post.js.
@@ -65,6 +72,7 @@ if (params.get('preset')) settings.preset = params.get('preset');
 if (!(settings.size in SIZES)) settings.size = DEFAULTS.size;
 if (!toolById(settings.tool)) settings.tool = DEFAULTS.tool;
 if (!VIEWS.some((v) => v.id === settings.view)) settings.view = 0;
+if (!['stick', 'real'].includes(settings.figure)) settings.figure = DEFAULTS.figure;
 settings.paused = false;
 
 let saveTimer = 0;
@@ -111,9 +119,14 @@ scene.add(floorGrid);
 // day clock, in simulation steps. Tools pin it with __app.day.fixed = { az, el }.
 const SUN = new THREE.Vector3();
 const KEY_LIGHT = [1, 1, 1];
+// settings.time (hours) mirrors the clock for the drawer's slider; it isn't saved.
+const HOURS = 24;
+const TIME_STEP = 0.25;   // h: the slider's resolution, and how far the clock runs before the open drawer redraws it
 const day = { clock: 0, fixed: null };
 function updateSun() {
-  keyLight(dayPhase(day.clock), SUN, KEY_LIGHT, day.fixed);
+  const phase = dayPhase(day.clock);
+  keyLight(phase, SUN, KEY_LIGHT, day.fixed);
+  settings.time = Math.round(phase * HOURS / TIME_STEP) * TIME_STEP % HOURS;
 }
 updateSun();
 
@@ -430,6 +443,7 @@ const toolbar = createToolbar({ views: VIEWS, settings, actions });
 const mp = createMultiplayer({ renderer, scene, camera, hud, getSim: () => sim, getVolume: () => volume, setGrid });
 
 const fmtSpeed = (v) => `${v}×`;
+const fmtTime = (v) => `${Math.floor(v)}:${String(Math.round((v % 1) * 60)).padStart(2, '0')}`;
 const settingsPanel = createSettings({
   settings,
   onClose: () => setSettingsOpen(false),
@@ -446,6 +460,15 @@ const settingsPanel = createSettings({
         fmt: (v) => `${(v / DEFAULTS.gravity).toFixed(1)} g`, onChange: (v) => { sim.gravity = v; save(); } },
     ] },
     // a cost lever too: sim work grows with cells, ray marching with the grid's span
+    { title: 'Lighting', rows: [
+      // the day keeps running from wherever this puts it
+      { type: 'slider', key: 'time', label: 'Time of day', min: 0, max: HOURS - TIME_STEP, step: TIME_STEP, def: DAY.startPhase * HOURS,
+        fmt: fmtTime, onChange: (v) => { day.clock = phaseSteps(v / HOURS); updateSun(); } },
+      // each costs GPU time; turning one off restores the softer probe-only light
+      ...[['nearGI', 'Contact Shadows'], ['glowLights', 'Lava Lights'], ['caustics', 'Caustics']]
+        .map(([key, label]) => ({ type: 'seg', key, options: [[true, `${label}: On`], [false, 'Off']],
+          onChange: (v) => { settings[key] = v; save(); } })),
+    ] },
     { title: 'Grid size', rows: [
       { type: 'seg', key: 'size', options: [['64', '64³'], ['96', '96³'], ['128', '128³'], ['wide', '160×96']],
         onChange: (v) => { if (mp.guard()) return; settings.size = v; build(); save(); hud.toast(`Grid is now ${v === 'wide' ? '160 × 96 × 160' : `${v}³`}`); } },
@@ -462,6 +485,23 @@ const settingsPanel = createSettings({
       { type: 'slider', key: 'camSpeed', label: 'Move speed (WASD)', min: 0.25, max: 3, step: 0.05, def: DEFAULTS.camSpeed,
         fmt: (v) => `${v.toFixed(2)}×`, onChange: (v) => { rig.setSpeed(v); save(); } },
     ] },
+    // The body you see in third person and when you die. The first graphics-level
+    // option: Stickman is the low setting, Realistic (a skinned, animated
+    // mannequin) the high one. It switches live, in POV too.
+    { title: 'First person', rows: [
+      { type: 'seg', key: 'figure', options: [['stick', 'Stickman'], ['real', 'Realistic']],
+        onChange: (v) => { settings.figure = v; save(); pacer.wake(); } },
+      // named as Minecraft names them
+      { type: 'slider', key: 'sensitivity', label: 'Mouse Sensitivity', min: SENSITIVITY_RANGE[0], max: SENSITIVITY_RANGE[1], step: 0.05,
+        def: DEFAULTS.sensitivity, fmt: (v) => `${Math.round(v * 100)}%`, onChange: save },
+      { type: 'slider', key: 'povFov', label: 'FOV', min: POV_FOV_RANGE[0], max: POV_FOV_RANGE[1], step: 1,
+        def: DEFAULTS.povFov, fmt: (v) => `${v}`, onChange: save },
+      { type: 'seg', key: 'viewBobbing', options: [[true, 'View Bobbing: On'], [false, 'Off']],
+        onChange: (v) => { settings.viewBobbing = v; save(); } },
+      { type: 'seg', key: 'sprintMode', options: [['hold', 'Sprint: Hold'], ['toggle', 'Toggle']],
+        onChange: (v) => { settings.sprintMode = v; save(); } },
+    ] },
+    ...(accountsEnabled ? [accountSection({ toast: (text) => hud.toast(text) })] : []),
   ],
   footer: [['Reset all settings', resetSettings]],
 });
@@ -478,6 +518,11 @@ function applyDetail() {
   detailVersion++;   // the shadow map is a derived pass: redo it
   post.reset();
 }
+
+// Accounts: take the session the relay just sent back (#tpt3d_session=…) and say how it went
+const signInResult = finishSignIn();
+if (signInResult.error) hud.toast(signInResult.error);
+account().then((user) => { if (signInResult.signedIn && user) hud.toast(`Signed in as ${user.name}`); });
 
 function resetSettings() {
   const keep = { size: settings.size, preset: settings.preset, tool: settings.tool, paused: settings.paused, dockCollapsed: settings.dockCollapsed };
@@ -630,6 +675,7 @@ function setRadius(r) {
 }
 
 let stepOnce = false;
+let timeShown = NaN;   // the time of day the drawer last showed
 let wantShot = false;
 
 addEventListener('keydown', (e) => {
@@ -821,6 +867,10 @@ function frame(now) {
     stepOnce = false;
   } else if (mp.isGuest) day.clock += settings.steps;   // guests don't step: keep the day going at their own rate
   updateSun();
+  if (settings.time !== timeShown) {
+    timeShown = settings.time;
+    if (settingsPanel.isOpen) settingsPanel.sync();
+  }
   mp.update(dt, {
     visible: brushValid && pointerInside && !uiHover, center: brushCenter, painting,
     radius: settings.radius, shape: settings.shape, tool: settings.tool,
@@ -863,9 +913,15 @@ function frame(now) {
 
     post.settings.raw = settings.view !== 0;
     post.settings.upscale = UPSCALE[settings.upscale] ?? UPSCALE.native;
+    gfxUniforms.uNearGI.value = settings.nearGI;
+    gfxUniforms.uGlowLights.value = settings.glowLights;
+    gfxUniforms.uCaustics.value = settings.caustics;
     floorGrid.material.opacity = post.renderScale;
     edges.material.opacity = EDGE_OPACITY * post.renderScale;
     post.render(scene, camera);
+    // POV: the held tool, drawn over the finished frame in its own pass (no TAA, its
+    // own depth, so it never clips into walls); before the screenshot reads the canvas
+    renderViewmodels(renderer, scene, camera, post);
     if (wantShot) { wantShot = false; saveScreenshot(); }
 
     signs?.update();
