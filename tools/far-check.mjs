@@ -26,7 +26,7 @@ if (out) mkdirSync(out, { recursive: true });
 
 const SUN = { az: 215, el: 38 };   // a fixed sun for every still
 const SETTLE_FRAMES = 90;          // frames for the derived passes, GI and TAA to converge
-const COST_ROUNDS = 40;            // interleaved timing rounds (each draws with and without)
+const COST_ROUNDS = 60;            // interleaved timing rounds (each draws with and without)
 const EYE_DIR = [0.82, 0.57];      // the eye views' beach: out from the island's centre this way (x, z)...
 const EYE_INLAND = 4;              // ...this many cells in from the waterline, on sand...
 const EYE_CLEAR = 12;              // ...with no trunk this close (else on round the coast by EYE_TURN_STEP radians)

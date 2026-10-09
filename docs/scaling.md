@@ -260,7 +260,17 @@ The world is much larger than what lives on the GPU. Its size is `WORLD` cells, 
     sky and a concrete floor); and its volume the same aerial perspective (`volumeFrag`'s haze), so the window
     doesn't stand out crisper than the land around it.
   - The view's program compiles in the background (`compileAsync`); the far field shows once it's ready.
-  - Today's sizes build none of it and compile byte-identical shader sources.
+  - Today's sizes build none of it and compile byte-identical shader sources (volume, shadow, pick, GI, generator;
+    checked on the CPU). `regress.mjs` against `scale` isn't deterministic run to run on a busy GPU (its hidden
+    dock tiles draw from the seeded `Math.random` as wall-clock frames go by, and `sim.giFrame`'s parity depends
+    on frames since boot); reseeding and zeroing those before each preset load, this branch differs from `scale`
+    by less than `scale` differs from itself (summit 1 vs 5 px, volcano 10 vs 14).
+  - Measured (M5, headless, other sessions holding the GPU at 70–99%, so these are high): the far pass, interleaved
+    with and without it, 1.5–3 ms in the god view and 2.2–4.9 ms in a low view at the default render scale
+    (853×533 for a 1280×800 canvas), 4–9 ms at 1280×800 native; about a third is the march, the rest shading
+    (`matOf`, the short sun ray). The build at world load 40–75 ms GPU-synced; a move's leaving slab ~1.4 ms; a
+    sweep frame the same; shadow heights 0.1–0.2 ms. A move changes 6 of the far field's pixels (window masked
+    out, frame fixed). The GPU's tree placement agrees with `treesIn` (350 of 350 trees over a region).
   - Not yet: no blend band at the window's sides; no gases (smoke, steam, fire) in the far field; the far field's own
     ambient sees only a two-tap AO, not distant hills; it isn't drawn in the data views; guests don't get the host's
     edits outside the window (W5).

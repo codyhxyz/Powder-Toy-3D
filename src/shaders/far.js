@@ -957,7 +957,7 @@ export const FAR_VIEW = {
   ID_JITTER_F: 0.21,       // that noise's frequency, per cell
   ID_DITHER: 2.0,          // ...plus up to half this per pixel and frame, which TAA blends into a soft border (LIQ_ID_DITHER)
   ID_DEEPER: 3.0,          // ...or this far inside, if that brick holds no open cells
-  SUN_RAY: [2.0, 4.5, 8.0, 12.5, 18.0],   // cells toward the sun of the short shadow ray's samples (crowns shading
+  SUN_RAY: [2.5, 7.0, 15.0], // cells toward the sun of the short shadow ray's samples (crowns shading
                            // each other and the ground under them: the height field leaves crowns out)
   SUN_RAY_LIFT: 1.0,       // cells off the surface along its normal the short ray starts
   SUN_RAY_EDGE: [0.35, 0.65],   // field values over which a sample goes from clear to blocking
