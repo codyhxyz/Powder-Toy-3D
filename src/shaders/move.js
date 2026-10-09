@@ -103,12 +103,12 @@ const vertical = (b, t) => `
   {
     bool mt = movable(k${t}), mb = movable(k${b});
     bool down = v${t}.y < 0.0, up = v${b}.y > 0.0;
-    bool rest = v${t}.y == 0.0 && GRAV[k${t}] * uGravity > 0.0;
+    bool held = v${t}.y == 0.0 && GRAV[k${t}] * uGravity > 0.0;
     if (!mt || !mb) {
       if (mt && down && !${breaks(t, b, `v${t}.y`)}) {
         vec3 v0 = v${t};
         v${t} = land(v${t}, k${t}); s${t} = true;${impactHeat(t, b, 'v0', '-v0.y')}
-      } else if (mt && rest) s${t} = true;
+      } else if (mt && held) s${t} = true;
       if (mb && up && !${breaks(b, t, `v${b}.y`)}) {
         vec3 v0 = v${b};
         v${b}.y = 0.0; s${b} = true;${impactHeat(b, t, 'v0', 'v0.y')}
@@ -124,10 +124,10 @@ const vertical = (b, t) => `
         float vt = v${t}.y;
         ${collide(b, t, 'y')}
         if (down) { if (KIND[k${t}] == K_LIQUID) v${t} = land(vec3(v${t}.x, vt, v${t}.z), k${t}) + vec3(0.0, v${t}.y, 0.0); s${t} = true; }
-        else if (rest) s${t} = true;
+        else if (held) s${t} = true;
         if (up) s${b} = true;
       }
-    } else if (rest && !${can(t, b, 0)}) s${t} = true;
+    } else if (held && !${can(t, b, 0)}) s${t} = true;
   }`;
 
 // 2. diagonal topple: a blocked top cell falls diagonally (powders/liquids),

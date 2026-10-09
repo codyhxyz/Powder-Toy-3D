@@ -276,13 +276,13 @@ export class World {
     const mt = movable(k[t]), mb = movable(k[b]);
     const down = vy[t] < 0, up = vy[b] > 0;
     // held at rest by the normal force, it still presses on what's below, so it may topple (move.js)
-    const rest = vy[t] === 0 && GRAV[k[t]] * this.gravity > 0;
+    const held = vy[t] === 0 && GRAV[k[t]] * this.gravity > 0;
     if (!mt || !mb) {
       if (mt && down && !this.breaks(t, b, vy[t])) {
         const v0x = this.bvx[t], v0y = vy[t];
         this.land(t, vy[t]); s[t] = 1;
         this.impactHeat(t, b, v0x, v0y, -v0y);
-      } else if (mt && rest) s[t] = 1;
+      } else if (mt && held) s[t] = 1;
       if (mb && up && !this.breaks(b, t, vy[b])) {
         const v0x = this.bvx[b], v0y = vy[b];
         vy[b] = 0; s[b] = 1;
@@ -300,10 +300,10 @@ export class World {
         if (down) {
           if (KIND[k[t]] === K.LIQUID) { const after = vy[t]; this.land(t, vt); vy[t] += after; }
           s[t] = 1;
-        } else if (rest) s[t] = 1;
+        } else if (held) s[t] = 1;
         if (up) s[b] = 1;
       }
-    } else if (rest && !canMove(k[t], k[b], d[t], d[b], 0)) s[t] = 1;
+    } else if (held && !canMove(k[t], k[b], d[t], d[b], 0)) s[t] = 1;
   }
   // 2. a blocked top cell topples diagonally (powders, liquids); a blocked bottom gas cell rises diagonally
   diagonal(i) {
