@@ -251,7 +251,7 @@ function build() {
     depthTest: false,
     depthWrite: false,
   });
-  win?.far.castInto(shadowMat);   // world mode: mountains outside the window shade it
+  win?.far.attach(volume.material, shadowMat);   // world mode: the far field's haze and shadows on the window
   applyDetail();
   volume.material.uniforms.tShadow.value = shadowTarget.texture;
   volume.material.uniforms.uShadowRes.value = shadowRes;

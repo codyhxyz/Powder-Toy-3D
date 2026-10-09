@@ -3,9 +3,9 @@ import { BRICK } from '../shaders/common.js';
 import { columnFrag, COLUMN_MARGIN } from '../shaders/generate.js';
 import {
   farLayout, farRegionVert, farLayersFrag, farTreeCandFrag, farTreeThinFrag, farTreeBandFrag, farGenFrag,
-  farWinFrag, farMip1Frag, farMip2Frag, farTopFrag, farShadowFrag, farCastersGLSL, farVert, farFrag,
+  farWinFrag, farMip1Frag, farMip2Frag, farTopFrag, farShadowFrag, farCastersGLSL, farHazeGLSL, farVert, farFrag,
 } from '../shaders/far.js';
-import { shadowFrag } from '../shaders/render.js';
+import { shadowFrag, volumeFrag } from '../shaders/render.js';
 import { rawMat, makeFieldTarget } from '../sim.js';
 import { genUniforms, setWorld } from './gpu.js';
 import { gfxUniforms } from '../gfx/uniforms.js';
@@ -31,8 +31,10 @@ import { gfxUniforms } from '../gfx/uniforms.js';
 //     view marches it; after a sweep, at its end), and the shadow heights
 //     again when the sun or the window moves.
 //
-// The window's shadow map takes the far field's shadows too (castInto): a
-// mountain outside the window shades the window, and its GI.
+// The window takes two things from the far field (attach): its shadow map
+// the far field's shadows (a mountain outside shades the window, and its GI),
+// and its volume the same aerial perspective, so the window doesn't stand out
+// crisper than the land around it at the same distance.
 //
 // The view is one full-screen pass drawn before everything else in the scene
 // (FarField.mesh): sky, the open sea beyond the world and the far grid, with
@@ -271,13 +273,17 @@ export class FarField {
     if (what) this.last = { ...this.last, refreshMs: performance.now() - t0 };
   }
 
-  // The window's sun shadow map, shaded from outside the window too: the
-  // shadow heights of the columns outside it (render.js shadowFrag's
-  // casters). mat: the app's shadow material.
-  castInto(mat) {
-    mat.fragmentShader = shadowFrag(this.sim.g, farCastersGLSL(this.L));
-    mat.uniforms.tFarShadow = { value: this.shadow.texture };
-    mat.needsUpdate = true;
+  // The window's volume and sun shadow map (the app's materials; before the
+  // detail gate copies the volume's): the volume with the far field's aerial
+  // perspective (render.js volumeFrag's haze), the shadow map shaded from
+  // outside the window too, by the shadow heights of the columns outside it
+  // (shadowFrag's casters).
+  attach(volumeMat, shadowMat) {
+    volumeMat.fragmentShader = volumeFrag(this.sim.g, farHazeGLSL);
+    volumeMat.needsUpdate = true;
+    shadowMat.fragmentShader = shadowFrag(this.sim.g, farCastersGLSL(this.L));
+    shadowMat.uniforms.tFarShadow = { value: this.shadow.texture };
+    shadowMat.needsUpdate = true;
   }
 
   // Before the scene renders: the view's transforms for this frame (the

@@ -90,7 +90,10 @@ const viewIdsGLSL = () => VIEWS.map((v) => `#define VIEW_${v.key.toUpperCase()} 
 // restarts the ray, so its path can be longer than one crossing of the box.
 const BEND_EXTRA_STEPS = 128;
 
-export const volumeFrag = (g) => {
+// haze: GLSL defining farHazePremul(col, alpha, eye, p), the air between the
+// eye and the hit (a massive world: shaders/far.js, the same as its far
+// field's, so the window and what lies past it fade alike); none otherwise.
+export const volumeFrag = (g, haze = '') => {
   // DDA shared by the data views. `body` runs for every voxel the ray visits
   // inside a brick holding matter, with cell, a (state A), id, n (entry face
   // normal), hp (entry point), seg, tEnter, tExit, occ, prevId and airOn (the
@@ -179,7 +182,7 @@ ${lib(g)}
 ${surfaceGLSL}
 ${liquidGLSL}
 ${liquidDetailGLSL}
-${mediaGLSL}
+${mediaGLSL}${haze}
 uniform vec3 uCam;
 uniform mat4 projectionMatrix;
 uniform mat4 modelMatrix;
@@ -934,7 +937,8 @@ void main() {
   if (!anyHit) discard;
   float alpha = 1.0 - dot(trans, vec3(1.0 / 3.0));
   // linear HDR radiance, premultiplied; tone mapping happens in post (src/gfx/post.js)
-  gl_FragColor = vec4(col * (alpha > 0.0 ? 1.0 : 0.0), alpha);
+  gl_FragColor = vec4(col * (alpha > 0.0 ? 1.0 : 0.0), alpha);${haze && `
+  gl_FragColor.rgb = farHazePremul(gl_FragColor.rgb, alpha, uCam, hitPos);`}
 
   vec4 clip = projectionMatrix * viewMatrix * modelMatrix * vec4(hitPos, 1.0);
   gl_FragDepth = clamp(clip.z / clip.w * 0.5 + 0.5, 0.0, 1.0);

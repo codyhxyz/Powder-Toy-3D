@@ -863,12 +863,38 @@ export const FAR_VIEW = {
   OCEAN_ROCK: 'ROCK',      // the open sea's bed beyond the world (the generator's floor)
 };
 
+// Aerial perspective, for the far field and (world mode) the window's volume:
+// over d cells along rd, the air's extinction (the sky's spectral shape, scaled
+// to the haze's visibility) and its in-scatter, the sky's own radiance toward
+// rd, held at the horizon for rays going down, so distance fades into the sky.
+export const farHazeGLSL = /* glsl */ `
+#define FAR_HAZE ${FAR_VIEW.HAZE.toExponential(4)}
+const vec3 FAR_HAZE_RGB = FAR_HAZE * TAU_AIR / TAU_AIR.g;
+vec3 farAir(vec3 rd) {
+  vec3 h = vec3(rd.x, 0.0, rd.z);
+  h = dot(h, h) > 1e-8 ? normalize(h) : vec3(1.0, 0.0, 0.0);
+  return skyRadiance(rd.y > 0.0 ? rd : h);
+}
+vec3 farHaze(vec3 col, vec3 rd, float d) {
+  vec3 T = exp(-FAR_HAZE_RGB * d);
+  return col * T + farAir(rd) * (1.0 - T);
+}
+// premultiplied colour (the volume's): the share alpha it covers takes the air's light
+vec3 farHazePremul(vec3 col, float alpha, vec3 eye, vec3 p) {
+  vec3 v = p - eye;
+  float d = length(v);
+  vec3 T = exp(-FAR_HAZE_RGB * d);
+  return col * T + alpha * farAir(v / max(d, 1e-6)) * (1.0 - T);
+}
+`;
+
 export const farFrag = (g, L) => /* glsl */ `
 ${lib(g)}
 ${surfaceGLSL}
 ${liquidGLSL}
 ${farLayoutGLSL(L)}
 ${farSampleGLSL}
+${farHazeGLSL}
 uniform mat4 projectionMatrix;
 uniform mat4 uWorldToScene;   // world cells → scene units
 uniform mat4 uSceneToWorld;
@@ -894,7 +920,6 @@ in vec4 vFar;
 #define FAR_WATER_STEPS ${FAR_VIEW.WATER_STEPS}
 #define FAR_SUN_DISC ${glf(FAR_VIEW.SUN_DISC)}
 #define FAR_SUN_DISC_EDGE ${glf(FAR_VIEW.SUN_DISC_EDGE)}
-#define FAR_HAZE ${FAR_VIEW.HAZE.toExponential(4)}
 #define FAR_OCEAN_BED E_${FAR_VIEW.OCEAN_ROCK}
 #define FAR_ROOT_SPLIT_LO 0.15   // regula falsi splits kept off the bracket's ends (as SURF_ROOT_SPLIT_*)
 #define FAR_ROOT_SPLIT_HI 0.85
@@ -1092,14 +1117,6 @@ vec3 farSky(vec3 rd) {
   float mu = dot(rd, uSun);
   float disc = smoothstep(cos(r * (1.0 + FAR_SUN_DISC_EDGE)), cos(r * (1.0 - FAR_SUN_DISC_EDGE)), mu);
   return c + disc * SUN_COL * FAR_SUN_DISC;
-}
-// Aerial perspective over d cells along rd: the air's extinction (the sky's
-// spectral shape, scaled to the haze's visibility) and its in-scatter, the
-// sky's own radiance near the horizon toward rd, so distance fades into the sky.
-const vec3 FAR_HAZE_RGB = FAR_HAZE * TAU_AIR / TAU_AIR.g;
-vec3 farHaze(vec3 col, vec3 rd, float d) {
-  vec3 T = exp(-FAR_HAZE_RGB * d);
-  return col * T + skyRadiance(normalize(vec3(rd.x, max(rd.y, 0.0), rd.z))) * (1.0 - T);
 }
 
 float farDepth(vec3 p) {
