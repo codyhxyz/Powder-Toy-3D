@@ -109,11 +109,14 @@ settling), not pixel-wise.
   react pass that reads each cell's post-move state through the block results for itself and its 6 neighbours.
   Slot result = RG32UI: source 3 bits + impact heat 13 bits + vx f16, then vy f16 + vz f16.
 - **Activity comes from react's inert bit.** A brick reduction reads 4 bytes per cell, not 32.
-- **Sleeping bricks are not touched.** How depends on the benchmark in "Measured" below: instanced brick quads
-  if untouched hardware tiles cost nothing, otherwise chunk pages.
-  - A brick that has been quiet for two activity maps in a row is identical in both state copies, so no pass
+- **Sleeping supertiles are not touched.** The sim passes draw one instanced quad per supertile (32×32 texels,
+  4×2×2 bricks), culled in the vertex shader by a supertile activity map. Inside a drawn supertile, quiet bricks
+  take today's early-out and copy themselves.
+  - The block pass does the same over its own atlas.
+  - When most supertiles are awake, one full-screen quad is cheaper: switch above a named share (measure it).
+  - A supertile with no active brick for two activity maps in a row is identical in both state copies, so no pass
     needs to write it.
-  - Every pass that writes only active bricks must keep that two-map rule.
+  - Every pass that writes only some supertiles must keep that two-map rule.
 
 ### D9. Derived passes are incremental where they can be
 Fields, bricks and light are rebuilt only for bricks that changed within their settle window (EMA), dilated by
@@ -176,7 +179,19 @@ The world is much larger than what lives on the GPU. Its size is `WORLD` cells, 
 ## Measured (M5, headless Chrome, ANGLE Metal, 128³)
 - Lab step: 2.6 ms with 42% of bricks skipped, 3.75 ms with none skipped. An empty box still costs 2.1–2.8 ms.
 - Derived passes: about 3.4 ms per frame.
-- Partial-target draw cost (D8): *pending, filled in by the lead.*
+- **Partial-target draws** (raw WebGL2 micro-benchmark, a 2048×1024 target, react-like shader, two runs under
+  GPU contention, so treat absolute numbers loosely):
+  - **Cost follows touched 32×32 regions.**
+    - One 8×8 tile: 0.04 ms.
+    - The full target: 0.53 ms.
+    - 3% of tiles, clustered: 0.30–0.42 ms.
+    - 3% of tiles, scattered: 0.55–0.80 ms.
+    - So untouched hardware tiles are skipped, and clustering matters.
+  - **Instancing every tile** costs 1.3–3.4× a single full-screen quad, so draw per supertile and fall back to
+    full screen.
+  - **Cost follows bytes:** RGBA32UI (16 B) is roughly half of 2×RGBA32F (32 B).
+  - **`invalidateFramebuffer` before a full-screen pass is 13–33% slower,** not faster, on ANGLE Metal. D4 is
+    measured in the app and dropped unless it shows a gain.
 
 ## Workstreams
 Branch names are `scale-<name>`. Each lives in its own worktree `../tpt-scale-<name>`, branched from `scale`.
