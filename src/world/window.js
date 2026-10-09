@@ -112,6 +112,7 @@ export class WorldWindow {
     this.gen.fill(this.P, [origin[0], 0, origin[2]]);
     this.plant([0, 0, 0], [g.nx, g.ny, g.nz]);
     sim.syncCopies();
+    sim.dropHistory();   // undo would bring back a window of the old world
     // a new scene: the render fields and GI start over instead of blending in, and nothing is moving
     sim.fieldReset = sim.giReset = true;
     sim.stillFlow();

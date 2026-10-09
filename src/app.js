@@ -300,9 +300,10 @@ function loadPreset(name, undoable = true) {
   if (undoable) sim.snapshot();
   settings.preset = name;
   if (win) {
-    // a world has one scene, its own: loading starts it over
+    // a world has one scene, its own: loading starts it over (and can't be undone)
     win.load(win.centre());
     placeVolume();
+    toolbar.setUndoEnabled(false);
   } else if (name === 'empty') sim.clear();
   else if (name === 'island') loadIsland(sim, { seed: worldSeed });
   else buildPreset(name, sim);

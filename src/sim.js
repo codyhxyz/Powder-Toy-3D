@@ -555,6 +555,11 @@ export class Simulation {
         [this.giProbes, this.giProbesTmp] = [this.giProbesTmp, this.giProbes];
       }
     }
+    this.dropHistory();
+  }
+
+  // Forget the undo snapshots (they hold a window that has moved or been replaced).
+  dropHistory() {
     this.history?.forEach((t) => t.dispose());
     this.history = [];
   }
