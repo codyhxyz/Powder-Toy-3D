@@ -362,11 +362,12 @@ function treeCandidate(bx, bz, P) {
   };
 }
 
-// The trees whose trunks stand in world columns [x0, x1) × [z0, z1).
-export function treesIn(x0, z0, x1, z1, P) {
+// The trees whose trunks stand in world columns [x0, x1) × [z0, z1). cache
+// keeps the brick columns' candidates of world P between calls (a caller
+// asking for neighbouring regions again and again: world/window.js).
+export function treesIn(x0, z0, x1, z1, P, cache = new Map()) {
   const B = BRICK, R = Math.ceil(TREE.SPACING / B);
   const bx0 = Math.floor(x0 / B), bz0 = Math.floor(z0 / B), bx1 = Math.ceil(x1 / B), bz1 = Math.ceil(z1 / B);
-  const cache = new Map();
   const candidate = (bx, bz) => {
     const k = `${bx},${bz}`;
     if (!cache.has(k)) cache.set(k, treeCandidate(bx, bz, P));

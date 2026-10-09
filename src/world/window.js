@@ -39,6 +39,7 @@ import { BrickStore, encodeBrick, decodeBrick, BRICK_FLOATS } from './store.js';
 export const WIN_STEP = 16;          // cells: how far the window moves at a time (whole supertiles along x and z)
 export const WIN_HYSTERESIS = 4;     // cells past WIN_STEP from the centre the focus goes before a move
 const BAKED_KEEP = 256;              // baked trees kept: a tree straddling slabs is stamped once per slab
+const CANDIDATES_KEEP = 1 << 16;     // tree candidates kept (one per brick column; a move asks for its neighbours again)
 const MASK_SET = 255;                // a set byte of the column mask (the shader reads it as 1)
 
 export class WorldWindow {
@@ -57,6 +58,7 @@ export class WorldWindow {
     this.store = new BrickStore(this.wb);
     this.planted = new Uint8Array(this.wb[0] * this.wb[2]);       // brick columns whose trees are in
     this.baked = new Map();
+    this.candidates = new Map();                                  // tree candidates by brick column (treesIn)
     this.pending = null;                                          // the leaving slab's readback
     this.epoch = 0;                                               // bumped by load and dispose: older readbacks are dropped
     this.last = null;                                             // what the last move cost (tools)
@@ -255,7 +257,8 @@ export class WorldWindow {
       }
     if (!fresh) return 0;
     const R = TREE.REACH, list = [];
-    const t0 = performance.now(), trees = treesIn(x0 - R, z0 - R, x1 + R, z1 + R, this.P), t1 = performance.now();
+    if (this.candidates.size > CANDIDATES_KEEP) this.candidates.clear();
+    const t0 = performance.now(), trees = treesIn(x0 - R, z0 - R, x1 + R, z1 + R, this.P, this.candidates), t1 = performance.now();
     if (this.plantCost) this.plantCost.placeMs += t1 - t0;
     for (const t of trees) {
       const s = this.bakeTree(t);
