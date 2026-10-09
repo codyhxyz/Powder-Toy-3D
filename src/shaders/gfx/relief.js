@@ -154,11 +154,12 @@ bool reliefHit(vec3 ro, vec3 rd, int ch, inout float t) {
     if (reliefInside(p, phi) >= 0.0) { tb = ts; hit = true; break; }
     ta = ts;
   }
-  // Never in the envelope: the tracer's crossing was a grazing touch (or its
-  // root fell short of the surface) that this path doesn't confirm. Keep the
-  // tracer's hit, as without relief: moving it along a path through air put
-  // a bright fringe on silhouettes.
-  if (!hit && !wasIn) return true;
+  // Never in the envelope: the tracer's crossing was a grazing touch at a
+  // silhouette, or its root fell short of the surface. Either way the ray is
+  // outside here: go on from the end of the path, where the march finds the
+  // surface again if it is ahead. (Keeping the hit drew the uncarved
+  // silhouette as a fringe of envelope above the carved one.)
+  if (!hit && !wasIn) { t += L; return false; }
   // else deeper than any crevice (or the path cut): solid by then
   if (hit) {
     for (int i = 0; i < RELIEF_BISECT; i++) {
