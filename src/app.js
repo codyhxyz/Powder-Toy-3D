@@ -251,6 +251,7 @@ function build() {
     depthTest: false,
     depthWrite: false,
   });
+  win?.far.castInto(shadowMat);   // world mode: mountains outside the window shade it
   applyDetail();
   volume.material.uniforms.tShadow.value = shadowTarget.texture;
   volume.material.uniforms.uShadowRes.value = shadowRes;

@@ -462,6 +462,33 @@ float farSunVis(vec3 p, int ch) {
 }
 `;
 
+// Far casters in the window's sun shadow map (render.js shadowFrag): where
+// along a texel's ray (grid cells, [t0, t1]: its stretch through the box) it
+// first goes under the shadow height of the columns outside the window. Along
+// a sun ray the height above it can only fall (see the top), so one read at
+// the ray's end says whether it ever does, and bisection finds where.
+export const FAR_CASTER_STEPS = 10;   // bisection steps (a box diagonal of ~220 cells to ~0.2 cells)
+export const farCastersGLSL = (L) => /* glsl */ `
+${farLayoutGLSL(L)}
+uniform sampler2D tFarShadow;
+#define FAR_CASTER_STEPS ${FAR_CASTER_STEPS}
+#define FAR_SHADOW_BIAS ${glf(FAR_SHADOW_BIAS)}
+bool farUnder(vec3 p) {
+  vec3 w = p + vec3(uOrigin);
+  return w.y + FAR_SHADOW_BIAS < texture(tFarShadow, w.xz / vec2(WORLD.xz)).y;
+}
+float farCasterDepth(vec3 ro, vec3 rd, float t0, float t1) {
+  if (!farUnder(ro + rd * t1)) return NO_HIT;
+  if (farUnder(ro + rd * t0)) return t0;
+  float a = t0, b = t1;
+  for (int i = 0; i < FAR_CASTER_STEPS; i++) {
+    float m = 0.5 * (a + b);
+    if (farUnder(ro + rd * m)) b = m; else a = m;
+  }
+  return b;
+}
+`;
+
 // The full-screen pass: a triangle covering the screen, each pixel's ray as
 // the homogeneous world point it meets on the far plane.
 export const farVert = /* glsl */ `

@@ -94,6 +94,7 @@ for (const [label, dims] of Object.entries(grids)) {
 {
   const g = gridLayout(128, 128, 128), L = far.farLayout([1024, 128, 1024]);
   check('farView', shaderMatFrag + far.farFrag(g, L), 'frag');
+  check('shadow-farCasters', raw + render.shadowFrag(g, far.farCastersGLSL(L)), 'frag');
   check('farViewVert', shaderMatVert + far.farVert, 'vert');
   check('farRegionVert', raw + far.farRegionVert(L), 'vert');
   for (const k of ['farLayersFrag']) check(k, raw + far[k](g), 'frag');

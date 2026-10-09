@@ -1001,9 +1001,12 @@ void main() {
 // Shadow map pass: one ray per texel, marching from the sun toward the box.
 // Opaque = crisp voxels and the smooth opaque surfaces (same root finding as
 // the camera rays, so shadows line up with what is drawn). Liquids, glass and
-// media add optical depth.
-export const shadowFrag = (g) => /* glsl */ `
-${lib(g)}
+// media add optical depth. casters: GLSL defining farCasterDepth(ro, rd, t0,
+// t1), the depth along the texel's ray where the world outside the window
+// starts to shade it (a massive world's far field: shaders/far.js); none for
+// a grid that is its whole world.
+export const shadowFrag = (g, casters = '') => /* glsl */ `
+${lib(g)}${casters}
 // Texel encoding, decoded by sunShadow (gfx/lighting.js, which defines
 // SHADOW_TINT_ID_SCALE): w = tint element id * SHADOW_TINT_ID_SCALE + optical
 // depth (capped below it).
@@ -1090,7 +1093,8 @@ void main() {
     cell[ax] += istp[ax];
     tMax[ax] += tDelta[ax];
   }
-  if (!hit && rd.y < 0.0) oC.x = ro.y / -rd.y; // floor
+  if (!hit && rd.y < 0.0) oC.x = ro.y / -rd.y; // floor${casters && `
+  oC.x = min(oC.x, farCasterDepth(ro, rd, t, bh.y));   // shaded from outside the window`}
   oC.w = float(tid) * SHADOW_TINT_ID_SCALE + min(tau, SHADOW_TAU_MAX);
 }
 `;

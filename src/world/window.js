@@ -37,8 +37,8 @@ import { BrickStore, encodeBrick, decodeBrick, BRICK_FLOATS } from './store.js';
 // holds everything a move can bring back.
 //
 // The far field (world/far.js), when the app gives the window one (far), is
-// built on load, summarizes the slab about to leave in step 1 and the whole
-// window after a move, and refreshes the window's region while it changes.
+// built on load, summarizes the slab about to leave in step 1, and sweeps over
+// the window's region while it changes (update).
 
 export const WIN_STEP = 16;          // cells: how far the window moves at a time (whole supertiles along x and z)
 export const WIN_HYSTERESIS = 4;     // cells past WIN_STEP from the centre the focus goes before a move
@@ -175,7 +175,6 @@ export class WorldWindow {
     const trees = this.plant(enterLo, enterHi);
     // 5.
     sim.syncCopies();
-    this.far?.summarizeWindow();
     this.last = { dx, dz, ms: performance.now() - t0, restored, trees, ...this.plantCost, readbackMs: null, kept: null };
   }
 

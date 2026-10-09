@@ -3,8 +3,9 @@ import { BRICK } from '../shaders/common.js';
 import { columnFrag, COLUMN_MARGIN } from '../shaders/generate.js';
 import {
   farLayout, farRegionVert, farLayersFrag, farGenFrag, farWinFrag, farMip1Frag, farMip2Frag,
-  farTopFrag, farShadowFrag, farVert, farFrag,
+  farTopFrag, farShadowFrag, farCastersGLSL, farVert, farFrag,
 } from '../shaders/far.js';
+import { shadowFrag } from '../shaders/render.js';
 import { rawMat, makeFieldTarget } from '../sim.js';
 import { genUniforms, setWorld } from './gpu.js';
 import { gfxUniforms } from '../gfx/uniforms.js';
@@ -20,20 +21,25 @@ import { gfxUniforms } from '../gfx/uniforms.js';
 // Kept up to date from the window, whose state wins wherever it has been:
 //   - a move summarizes the slab about to leave (world/window.js, before the
 //     shift), so what was built, burnt or dug there stays in the far view;
-//   - after a move, and every REFRESH_FRAMES frames while the simulation
-//     changes, the whole window is summarized too: the far grid's copy of it
-//     casts the far field's shadows (and the field next to the window's sides
-//     blends into it);
-//   - after any of these the occupancy levels, the brick-column tops and the
-//     shadow heights are rebuilt (refresh), and the shadow heights again when
-//     the sun moves.
+//   - while the simulation changes the window, it is summarized too, a slab of
+//     SWEEP_CELLS a frame, a sweep at most every SWEEP_FRAMES frames: the far
+//     grid's copy of it casts the far field's shadows (and the field next to
+//     the window's sides blends into it);
+//   - after these the occupancy levels, the brick-column tops and the shadow
+//     heights are rebuilt (refresh: after a leaving slab, at once, since the
+//     view marches it; after a sweep, at its end), and the shadow heights
+//     again when the sun or the window moves.
+//
+// The window's shadow map takes the far field's shadows too (castInto): a
+// mountain outside the window shades the window, and its GI.
 //
 // The view is one full-screen pass drawn before everything else in the scene
 // (FarField.mesh): sky, the open sea beyond the world and the far grid, with
 // depth, so the window's volume and the scene's objects composite over it.
 // It marches the far grid past the window's box, which the volume draws.
 
-const REFRESH_FRAMES = 30;       // frames between summaries of the window's own region while the sim changes it
+const SWEEP_FRAMES = 30;         // frames between sweeps over the window's own region while the sim changes it...
+const SWEEP_CELLS = 16;          // ...summarizing this many cells of it along x per frame
 const VIEW_ORDER = -10;          // renderOrder of the view: first of the scene's opaque objects
 
 // A full-screen triangle (clip space): the view's geometry.
@@ -71,8 +77,9 @@ export class FarField {
     this.built = false;
     this.dirty = false;          // the far grid changed since the levels, tops and shadows were built
     this.shadowKey = '';         // the sun and window the shadow heights were built for
-    this.age = 0;                // frames since the window's region was last summarized
+    this.age = 0;                // frames since the last sweep over the window's region began
     this.version = -1;           // the simulation's version then
+    this.sweep = -1;             // the next slab of the sweep under way (-1: none)
     this.last = null;            // what the last build or refresh cost (tools)
 
     // region draws into the far grid (farRegionVert): their own scene
@@ -164,27 +171,39 @@ export class FarField {
 
   // Summarize the window's bricks [lo, lo + bricks) (grid cells lo, brick
   // aligned; bricks along x, y, z) into the far grid, at the window's origin:
-  // the slab about to leave on a move (before the shift), or all of it.
-  summarize(lo, bricks) {
+  // the slab about to leave on a move (before the shift), a slab of a sweep,
+  // or all of it. derive: rebuild what derives from the grid before the next view.
+  summarize(lo, bricks, derive = true) {
     if (!this.built) return;
     const o = this.sim.origin, m = this.mats.farWin;
     m.uniforms.tA.value = this.sim.stateA;
     this.drawRegion(m, [(o.x + lo[0]) / BRICK, (o.z + lo[2]) / BRICK], [bricks[0], bricks[2]]);
-    this.dirty = true;
+    if (derive) this.dirty = true;
   }
 
   summarizeWindow() {
     const g = this.sim.g;
     this.summarize([0, 0, 0], [g.nx / BRICK, g.ny / BRICK, g.nz / BRICK]);
+    this.sweep = -1;
     this.age = 0;
     this.version = this.sim.version;
   }
 
-  // Every frame (world/window.js update): summarize the window's region now
-  // and then while the simulation changes it.
+  // Every frame (world/window.js update): sweep over the window's region,
+  // a slab a frame, while the simulation changes it.
   tick() {
-    if (!this.built || this.sim.version === this.version || ++this.age < REFRESH_FRAMES) return;
-    this.summarizeWindow();
+    if (!this.built) return;
+    const g = this.sim.g;
+    this.age++;
+    if (this.sweep < 0) {
+      if (this.sim.version === this.version || this.age < SWEEP_FRAMES) return;
+      this.sweep = 0;
+      this.age = 0;
+      this.version = this.sim.version;
+    }
+    const x = this.sweep * SWEEP_CELLS, last = x + SWEEP_CELLS >= g.nx;
+    this.summarize([x, 0, 0], [SWEEP_CELLS / BRICK, g.ny / BRICK, g.nz / BRICK], last);
+    this.sweep = last ? -1 : this.sweep + 1;
   }
 
   // Rebuild what derives from the far grid (after it changed) and the shadow
@@ -212,6 +231,15 @@ export class FarField {
       what++;
     }
     if (what) this.last = { ...this.last, refreshMs: performance.now() - t0 };
+  }
+
+  // The window's sun shadow map, shaded from outside the window too: the
+  // shadow heights of the columns outside it (render.js shadowFrag's
+  // casters). mat: the app's shadow material.
+  castInto(mat) {
+    mat.fragmentShader = shadowFrag(this.sim.g, farCastersGLSL(this.L));
+    mat.uniforms.tFarShadow = { value: this.shadow.texture };
+    mat.needsUpdate = true;
   }
 
   // Before the scene renders: the view's transforms for this frame (the
