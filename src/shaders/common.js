@@ -30,6 +30,16 @@ export const TILE = 2 * BRICK;                    // texels per brick tile edge
 export const SUPER = { x: 4, y: 2, z: 2 };       // bricks per supertile along x, y, z
 export const SUPER_TEX = SUPER.x * TILE;          // texels per supertile edge (= SUPER.z · SUPER.y · TILE)
 export const SUPER_CELLS = { x: SUPER.x * BRICK, y: SUPER.y * BRICK, z: SUPER.z * BRICK };   // 16×8×8 cells
+// Block atlas (the move's block results, shaders/move.js): a step's block j
+// (its block coordinate less the partition offset, so its base cell is
+// 2j + parity) belongs to its home brick, the one holding its base cell
+// (j >> 1). A brick's 2×2×2 home blocks fill a BLOCK_TILE texel tile (block
+// k = j & 1 at (k.x + 2·k.y, k.z)), and the tiles sit as the state's brick
+// tiles do, supertile by supertile (blockAtlas()), so the block pass and the
+// passes reading its results walk memory in the state's order. At parity 1 the
+// blocks of the grid's low margin (base cell -1 on some axis) have no home
+// brick: they follow in rows below, slab x = -1, then y = -1, then z = -1.
+export const BLOCK_TILE = { x: 4, y: 2 };   // texels: a brick's 8 home blocks
 // A cell's random seed is the fraction of state A's w, kept below 1 so it
 // never carries into the integer ctype.
 export const SEED_MAX = 0.999;
@@ -82,10 +92,10 @@ precision highp sampler2D;
 #define BY ${g.ny / BRICK}
 #define BZ ${g.nz / BRICK}
 #define BTX ${g.btx}
-#define MX ${g.mx}
-#define MY ${g.my}
-#define MZ ${g.mz}
-#define MTX ${g.mtx}
+#define BLK_TW ${BLOCK_TILE.x}       // block atlas: texels per brick tile, across and down
+#define BLK_TH ${BLOCK_TILE.y}
+#define BLK_W ${g.mwidth}       // block atlas width, and the height of its home-brick region
+#define BLK_MAIN_H ${g.mmainh}
 ${physicsGLSL()}
 #define SEED_MAX ${SEED_MAX}   // a cell's random seed (the fraction in state A's w) stays below this
 ${Object.entries(FLAG).map(([k, v]) => `#define FLAG_${k} ${v}u`).join('\n')}
@@ -129,12 +139,42 @@ ivec3 brickFromFrag(ivec2 f) {
   int tx = f.x / BX, ty = f.y / BZ;
   return ivec3(f.x - tx * BX, ty * BTX + tx, f.y - ty * BZ);
 }
-ivec2 blockAtlas(ivec3 b) {
-  return ivec2((b.y % MTX) * MX + b.x, (b.y / MTX) * MZ + b.z);
+// Block atlas (see BLOCK_TILE in shaders/common.js): the texel of block j,
+// and back (valid is false for a texel holding no block).
+const ivec2 BLK_SUPER = ivec2(SBX * BLK_TW, SBZ * SBY * BLK_TH);   // texels per supertile of home blocks
+const ivec3 BLK_HALF = ivec3(NX, NY, NZ) / 2;                     // home blocks per axis
+ivec2 blockAtlas(ivec3 j) {
+  if (all(greaterThanEqual(j, ivec3(0)))) {
+    ivec3 b = j >> 1, k = j & 1;                // home brick, and the block's place in it
+    ivec3 s = b / SUPER_B, kb = b - s * SUPER_B;  // supertile, and the brick in it
+    int i = s.x + STX * (s.z + STZ * s.y);
+    return ivec2(i % STW, i / STW) * BLK_SUPER + ivec2(kb.x, kb.z + SBZ * kb.y) * ivec2(BLK_TW, BLK_TH)
+         + ivec2(k.x + 2 * k.y, k.z);
+  }
+  ivec3 h = BLK_HALF;
+  int m = j.x < 0 ? (j.y + 1) + (h.y + 1) * (j.z + 1)
+        : j.y < 0 ? (h.y + 1) * (h.z + 1) + j.x + h.x * (j.z + 1)
+        : (h.y + 1) * (h.z + 1) + h.x * (h.z + 1) + j.x + h.x * j.y;
+  return ivec2(m % BLK_W, BLK_MAIN_H + m / BLK_W);
 }
-ivec3 blockFromFrag(ivec2 f) {
-  int tx = f.x / MX, ty = f.y / MZ;
-  return ivec3(f.x - tx * MX, ty * MTX + tx, f.y - ty * MZ);
+ivec3 blockFromFrag(ivec2 f, out bool valid) {
+  valid = true;
+  if (f.y < BLK_MAIN_H) {
+    ivec2 st = f / BLK_SUPER, t = f - st * BLK_SUPER;   // supertile slot, and the texel in it
+    int i = st.x + STW * st.y;
+    valid = i < STX * STY * STZ;                        // (past the last supertile: none)
+    ivec3 s = ivec3(i % STX, i / (STX * STZ), (i / STX) % STZ);
+    ivec2 kt = t / ivec2(BLK_TW, BLK_TH), lt = t - kt * ivec2(BLK_TW, BLK_TH);
+    return (s * SUPER_B + ivec3(kt.x, kt.y / SBZ, kt.y % SBZ)) * 2 + ivec3(lt.x & 1, lt.x >> 1, lt.y);
+  }
+  ivec3 h = BLK_HALF;
+  int m = (f.y - BLK_MAIN_H) * BLK_W + f.x, sx = (h.y + 1) * (h.z + 1), sy = h.x * (h.z + 1);
+  if (m < sx) return ivec3(-1, m % (h.y + 1) - 1, m / (h.y + 1) - 1);
+  m -= sx;
+  if (m < sy) return ivec3(m % h.x, -1, m / h.x - 1);
+  m -= sy;
+  valid = m < h.x * h.y;
+  return ivec3(m % h.x, m / h.x, -1);
 }
 bool inGrid(ivec3 p) {
   return all(greaterThanEqual(p, ivec3(0))) && all(lessThan(p, ivec3(NX, NY, NZ)));

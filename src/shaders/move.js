@@ -237,8 +237,14 @@ float packSlot(int n, float q) {
 }
 
 void main() {
-  ivec3 bc = blockFromFrag(ivec2(gl_FragCoord.xy));
-  ivec3 base = bc * 2 - ivec3(uParity);
+  bool valid;
+  ivec3 j = blockFromFrag(ivec2(gl_FragCoord.xy), valid);
+  // a texel holding no block (the low margin's blocks exist at offset 1 only)
+  if (!valid || (uParity == 0 && any(lessThan(j, ivec3(0))))) {
+    ${CELLS.map((i) => `o${i} = vec4(0.0);`).join(' ')}
+    return;
+  }
+  ivec3 base = 2 * j + ivec3(uParity);
   // A block whose base cell is in a quiet brick (shaders/activity.js) lies
   // within that brick's inert halo: it stays put, velocities and all.
   if (quietCell(base)) {
@@ -282,7 +288,7 @@ void main() {
 // uniforms tSlots and uParity, and
 //   slotOf(c, q)     cell c's slot texel (its packed source and new velocity),
 //                    and q, the cell its content comes from
-//   postMove(c, a, b)  cell c's state after the move. Needs quietGLSL.
+//   postMove(c, a, b)  cell c's state after the move
 // The slots are the layers of one array texture, layer i holding slot i of
 // every block (Simulation.slots), so a cell's slot is one fetch whatever its
 // place in its block: picking among 8 textures per cell costs a fetch from
@@ -298,18 +304,17 @@ vec4 slotOf(ivec3 c, out ivec3 q) {
   ivec3 base = blockBase(c);
   ivec3 lp = c - base;
   int me = lp.x + 2 * lp.y + 4 * lp.z;
-  vec4 m = texelFetch(tSlots, ivec3(blockAtlas((base + off) / 2), me), 0);
+  vec4 m = texelFetch(tSlots, ivec3(blockAtlas((base + off) / 2 - off), me), 0);
   int src = int(m.x + 0.5) % SLOTS;
   q = base + ivec3(src & 1, (src >> 1) & 1, (src >> 2) & 1);
   return m;
 }
 // Cell c's state after this step's move: its source cell's state A, warmed by
 // the impact energy the slot carries (packSlot), and the slot's new velocity
-// with the pressure of c itself (pressure stays with the position). A block
-// whose base is in a quiet brick stayed put (the block pass), so it reads
-// its own state.
+// with the pressure of c itself (pressure stays with the position). (A block
+// whose base is in a quiet brick stayed put: its slots give each cell its own
+// state, as fetchA and fetchB would.)
 void postMove(ivec3 c, out vec4 a, out vec4 b) {
-  if (quietCell(blockBase(c))) { a = fetchA(c); b = fetchB(c); return; }
   ivec3 q;
   vec4 m = slotOf(c, q);
   a = fetchA(q);

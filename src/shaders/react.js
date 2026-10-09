@@ -107,15 +107,18 @@ void main() {
   ivec3 p = cellFromFrag(ivec2(gl_FragCoord.xy));
   if (!inGrid(p)) { writeState(vec4(0.0), vec4(0.0), 0u); return; }   // a texel holding no cell
 
-  // this cell after the move; it is dirty if the move changed what its
-  // neighbours' tests read (shaders/common.js nearChange), or if it was already
+  // this cell after the move (a quiet cell in a block that stayed put is as
+  // it was); it is dirty if the move changed what its neighbours' tests read
+  // (shaders/common.js nearChange), or if it was already
+  bool quiet = quietCell(p);
   vec4 a, b;
-  postMove(p, a, b);
+  if (quiet && quietCell(blockBase(p))) { a = fetchA(p); b = fetchB(p); }
+  else postMove(p, a, b);
   uint dirty = (uFresh ? 0u : fetchF(p) & FLAG_DIRTY) | (nearChange(fetchA(p), a) ? FLAG_DIRTY : 0u);
   // quiet brick (shaders/activity.js): nothing here can change, keep it as is.
   // Its cells were inert when the activity map was built, so their neighbour
   // tests passed then, and still do unless something around them is dirty.
-  if (quietCell(p)) { writeState(a, b, ownFlags(a, b) | FLAG_NEAR | dirty); return; }
+  if (quiet) { writeState(a, b, ownFlags(a, b) | FLAG_NEAR | dirty); return; }
   int id = eid(a);
   float T = a.y, life = a.z;
   float ctype = floor(a.w), seed = fract(a.w);

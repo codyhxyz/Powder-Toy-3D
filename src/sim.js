@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { quadVert, BRICK, SEED_MAX, TILE, SUPER, SUPER_TEX, SUPER_CELLS, stateUniforms } from './shaders/common.js';
+import { quadVert, BRICK, SEED_MAX, TILE, SUPER, SUPER_TEX, SUPER_CELLS, BLOCK_TILE, stateUniforms } from './shaders/common.js';
 import { inertFrag, inertRowsFrag, inertJoinFrag, quietFrag, activityPeriod } from './shaders/activity.js';
 import { moveBlockFrag, moveFlowFrag, SLOTS } from './shaders/move.js';
 import { reactFrag } from './shaders/react.js';
@@ -45,16 +45,18 @@ export function gridLayout(nx, ny, nz) {
   const bx = nx / BRICK, by = ny / BRICK, bz = nz / BRICK;
   const btx = Math.ceil(Math.sqrt((by * bz) / bx));
   const bty = Math.ceil(by / btx);
-  // Margolus blocks: 2×2×2, partition offset by 0 or 1, so N/2+1 per axis.
-  const mx = nx / 2 + 1, my = ny / 2 + 1, mz = nz / 2 + 1;
-  const mtx = Math.ceil(Math.sqrt((my * mz) / mx));
-  const mty = Math.ceil(my / mtx);
+  // Margolus blocks (2×2×2, partition offset 0 or 1): the block atlas
+  // (shaders/common.js BLOCK_TILE), the state's supertile grid at one tile per
+  // brick, then rows for the low-margin blocks of offset 1 (N/2 + 1 per axis
+  // then, N/2 at offset 0).
+  const mwidth = stw * SUPER.x * BLOCK_TILE.x, mmainh = sth * SUPER.z * SUPER.y * BLOCK_TILE.y;
+  const margin = (nx / 2 + 1) * (ny / 2 + 1) * (nz / 2 + 1) - (nx / 2) * (ny / 2) * (nz / 2);
   return {
-    nx, ny, nz, stx, sty, stz, stw, ftx, btx, bty, mx, my, mz, mtx,
+    nx, ny, nz, stx, sty, stz, stw, ftx, btx, bty,
     width: stw * SUPER_TEX, height: sth * SUPER_TEX,
     fwidth: ftx * nx, fheight: fty * nz,
     bwidth: btx * bx, bheight: bty * bz,
-    mwidth: mtx * mx, mheight: mty * mz,
+    mwidth, mmainh, mheight: mmainh + Math.ceil(margin / mwidth),
     maxSteps: nx + ny + nz + 8,
   };
 }
