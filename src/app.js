@@ -5,6 +5,7 @@ import { Simulation } from './sim.js';
 import { volumeVert, volumeFrag, pickFrag, shadowFrag } from './shaders/render.js';
 import { ELEMENTS, E, toolById, isBuild } from './elements.js';
 import { buildPreset } from './presets.js';
+import { loadIsland } from './world/island.js';
 import { quadVert } from './shaders/common.js';
 import { createBrushCursor } from './brush.js';
 import { createCameraRig } from './camera.js';
@@ -63,6 +64,8 @@ try {
 const params = new URLSearchParams(location.search);
 if (params.get('size') in SIZES) settings.size = params.get('size');
 if (params.get('preset')) settings.preset = params.get('preset');
+// the Island scene's world seed (world/generator.js); its default world without one
+const worldSeed = params.has('seed') ? Number(params.get('seed')) >>> 0 : undefined;
 if (!(settings.size in SIZES)) settings.size = DEFAULTS.size;
 if (!toolById(settings.tool)) settings.tool = DEFAULTS.tool;
 if (!VIEWS.some((v) => v.id === settings.view)) settings.view = 0;
@@ -241,6 +244,7 @@ function loadPreset(name, undoable = true) {
   if (undoable) sim.snapshot();
   settings.preset = name;
   if (name === 'empty') sim.clear();
+  else if (name === 'island') loadIsland(sim, { seed: worldSeed });
   else buildPreset(name, sim);
   post.reset();
   signs?.clear();
@@ -444,7 +448,7 @@ const settingsPanel = createSettings({
   sections: [
     { title: 'Scene', rows: [
       // clicking the current scene reloads it; Empty clears
-      { type: 'seg', key: 'preset', options: [['empty', 'Empty'], ['lab', 'Lab'], ['volcano', 'Volcano']],
+      { type: 'seg', key: 'preset', options: [['empty', 'Empty'], ['lab', 'Lab'], ['volcano', 'Volcano'], ['island', 'Island']],
         onChange: (v) => { if (loadPreset(v)) hud.toast(`Loaded ${v === 'empty' ? 'an empty box' : `the ${v}`}`); } },
     ] },
     { title: 'Simulation', rows: [
