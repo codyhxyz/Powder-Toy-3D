@@ -19,7 +19,8 @@
 // --world runs the massive world instead (?size=world): a load, edits, then
 // the window walked out and back (shift, fill, stored edits, trees, syncCopies).
 // usage: node tools/state-hash.mjs [--port 5191] [--scenes lab,volcano,island] [--sizes 128]
-//          [--steps 200] [--noskip] [--world]
+//          [--steps 200] [--noskip] [--nosleep] [--world]
+// --nosleep draws every supertile (sim.skipSleeping = false): its lines must match a normal run's
 import { chromium } from 'playwright';
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
@@ -55,7 +56,7 @@ for (const size of sizes) {
   await page.goto(`http://localhost:${port}/?size=${size}&preset=empty`);
   await page.waitForFunction(() => window.__app?.sim, null, { timeout: 60000 });
   for (const scene of scenes) {
-    const lines = await page.evaluate(async ({ scene, steps, noskip, paintSteps, worldMoves, winStep, TRANSFER_TAKES }) => {
+    const lines = await page.evaluate(async ({ scene, steps, noskip, nosleep, paintSteps, worldMoves, winStep, TRANSFER_TAKES }) => {
       const a = window.__app, sim = a.sim, R = a.renderer, g = sim.g, gl = R.getContext(), THREE = a.THREE;
       a.settings.paused = true;
       const { createPacker, createUnpacker } = await import('/src/net/codec.js');
@@ -131,6 +132,7 @@ for (const size of sizes) {
       const run = (n) => { for (let i = 0; i < n; i++) sim.step(); };
       const stroke = (tool, at, radius = 5, replace = false, shape = 0) => sim.paint({ center: new V3(...at), radius, shape, tool, rate: 1, replace });
       sim.skipQuiet = !noskip;
+      sim.skipSleeping = !nosleep;
 
       if (scene === 'world') {
         // ---- the massive world: a load, edits, a walk out and back ----
@@ -253,7 +255,7 @@ for (const size of sizes) {
       run(steps); hash('steps');
       comTarget.dispose();
       return out;
-    }, { scene, steps: STEPS, noskip: args.includes('--noskip'), paintSteps: PAINT_STEPS, worldMoves: WORLD_MOVES, winStep: WIN_STEP, TRANSFER_TAKES });
+    }, { scene, steps: STEPS, noskip: args.includes('--noskip'), nosleep: args.includes('--nosleep'), paintSteps: PAINT_STEPS, worldMoves: WORLD_MOVES, winStep: WIN_STEP, TRANSFER_TAKES });
     console.log(`# ${scene} ${size}${args.includes('--noskip') ? ' noskip' : ''}`);
     for (const l of lines) console.log(l);
   }
