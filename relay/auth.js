@@ -1,6 +1,6 @@
-// Player accounts: Google and GitHub sign-in run by this Worker (no auth
+// Player accounts: Google sign-in run by this Worker (no auth
 // vendor), with users and sessions in D1 (env.DB, schema in migrations/).
-//   GET  /auth/start/:provider?return=<page>   302 to the provider (google | github | dev)
+//   GET  /auth/start/:provider?return=<page>   302 to the provider (google | dev)
 //   GET  /auth/callback/:provider?code&state   302 back to <page>#tpt3d_session=<token>,
 //                                              or <page>#tpt3d_auth_error=<message>
 //   GET  /auth/me       { user: { id, name, email, avatar, plan } }, or 401
@@ -11,7 +11,7 @@
 // opaque bearer token: the page keeps it in localStorage and sends
 // `Authorization: Bearer <token>`; D1 only holds its SHA-256. It reaches the page
 // in the URL fragment, which browsers never send to a server. No cookies.
-// Secrets: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET.
+// Secrets: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET.
 // AUTH_DEV=1 (local only, relay/.dev.vars) adds the 'dev' provider, which signs in
 // a fake player at once, and lets sign-in return to plain-http dev and LAN pages.
 export const AUTH = {
@@ -20,7 +20,7 @@ export const AUTH = {
   TOKEN_BYTES: 32,                 // session token randomness
   STATE_BYTES: 32,                 // OAuth state randomness
   VERIFIER_BYTES: 32,              // PKCE verifier randomness (43 chars, RFC 7636's minimum)
-  PROVIDER_TIMEOUT_MS: 10_000,     // per request to Google or GitHub
+  PROVIDER_TIMEOUT_MS: 10_000,     // per request to Google
   MAX_RETURN_CHARS: 2048,          // longest return URL accepted
   MAX_CODE_CHARS: 2048,            // longest authorization code accepted
   MAX_PROVIDER_ID_CHARS: 255,      // longer provider account ids are refused, not cut
@@ -41,14 +41,12 @@ const base64Chars = (bytes) => Math.ceil((bytes * BITS_PER_BYTE) / BITS_PER_BASE
 const FLOW_PATH = /^\/auth\/(start|callback)\/([a-z]+)$/;
 const STATE_FORMAT = new RegExp(`^[A-Za-z0-9_-]{${base64Chars(AUTH.STATE_BYTES)}}$`);
 const BEARER = new RegExp(`^Bearer ([A-Za-z0-9_-]{${base64Chars(AUTH.TOKEN_BYTES)}})$`, 'i');
-const USER_AGENT = 'tpt3d-relay'; // GitHub's API refuses requests without one
+const USER_AGENT = 'tpt3d-relay'; // some provider APIs refuse requests without one
 const DEFAULT_NAME = 'Player';    // when a provider gives neither a name nor an email
 const DEV_CODE = 'dev';           // the dev provider's stand-in authorization code
 const DEV_PROFILE = { id: 'dev', name: 'Dev Player', email: 'dev@example.com', avatar: null };
 
 const GOOGLE_USERINFO = 'https://openidconnect.googleapis.com/v1/userinfo';
-const GITHUB_USER = 'https://api.github.com/user';
-const GITHUB_EMAILS = 'https://api.github.com/user/emails';
 
 const PROVIDERS = {
   google: {
@@ -59,15 +57,6 @@ const PROVIDERS = {
     clientId: 'GOOGLE_CLIENT_ID',
     clientSecret: 'GOOGLE_CLIENT_SECRET',
     profile: googleProfile,
-  },
-  github: {
-    label: 'GitHub',
-    authorize: 'https://github.com/login/oauth/authorize',
-    token: 'https://github.com/login/oauth/access_token',
-    params: { scope: 'read:user user:email' },
-    clientId: 'GITHUB_CLIENT_ID',
-    clientSecret: 'GITHUB_CLIENT_SECRET',
-    profile: githubProfile,
   },
   dev: { label: 'Dev', dev: true },
 };
@@ -324,7 +313,7 @@ async function exchangeCode(provider, creds, code, verifier, redirectURI) {
     signal: AbortSignal.timeout(AUTH.PROVIDER_TIMEOUT_MS),
   });
   const body = await res.json().catch(() => null);
-  // GitHub answers a bad code with 200 and { error }, so check for the token itself.
+  // Some providers answer a bad code with 200 and { error }, so check for the token itself.
   if (!res.ok || typeof body?.access_token !== 'string') {
     throw new Error(`token exchange: HTTP ${res.status}${typeof body?.error === 'string' ? ` ${body.error}` : ''}`);
   }
@@ -343,16 +332,6 @@ async function getJSON(url, accessToken) {
 async function googleProfile(accessToken) {
   const me = await getJSON(GOOGLE_USERINFO, accessToken);
   return { id: me.sub, name: me.name, email: me.email_verified === false ? null : me.email, avatar: me.picture };
-}
-
-async function githubProfile(accessToken) {
-  const me = await getJSON(GITHUB_USER, accessToken);
-  let email = me.email; // the public email, if they set one
-  if (!email) {
-    const emails = await getJSON(GITHUB_EMAILS, accessToken).catch(() => null);
-    email = Array.isArray(emails) ? emails.find((e) => e?.primary && e?.verified)?.email : null;
-  }
-  return { id: typeof me.id === 'number' ? String(me.id) : null, name: me.name || me.login, email, avatar: me.avatar_url };
 }
 
 // Provider data is untrusted: keep only well-formed, bounded fields. Null when
