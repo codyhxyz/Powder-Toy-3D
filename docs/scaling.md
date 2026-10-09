@@ -165,14 +165,27 @@ As implemented (`sim.updateDirty`, `shaders/passes.js` dirtyFrag, `gfx/regions.j
   EMA; the blurs and boost stages 0–4 use WORK; the last boost stage uses FIELDS and discards texels outside
   FIELDS bricks, since its regions reach cells whose inputs this frame didn't compute. The EMA is no longer a
   ping-pong: it is computed into scratch and copied back over the same regions, so a skipped texel needs no
-  second copy, and the targets and memory stay as they were. Above `FIELD_FULL_SHARE` of regions flagged, a pass
-  draws one full-screen quad instead; the share is computed on the GPU and read by the vertex shader, so nothing
-  is read back.
+  second copy, and the targets and memory stay as they were (a ping-pong plus a third scratch target would save
+  the copy, about 0.1 ms per frame at full share, for 26 MB at 128³). Above `FIELD_FULL_SHARE` of regions flagged,
+  a pass draws one full-screen quad instead; the share is computed on the GPU and read by the vertex shader, so
+  nothing is read back. The region size (8 bricks) and the share (0.75) are provisional: picking them by
+  measurement (`tools/derived-bench.mjs` over builds with other values) is still owed.
 - **Brick map** rebuilds FIELDS bricks only (the rest discard). The empty-space distance and the glow volume are
   cheap brick-resolution passes and stay full.
-- **Shadow and GI** stay full every derived frame: see Measured.
-- **Proofs:** `tools/regress.mjs`, settled and `--motion`, with detail off and on, and `tools/derived-check.mjs`
-  (every derived target bit for bit against `sim.incremental = false`).
+- **Shadow and GI** stay full every derived frame.
+  - The shadow map's texels each depend on every brick their sun ray crosses. With the sun held (`DAY.running`
+    is off by default) an exact incremental map would re-trace every ray through a brick whose state, fields or
+    empty-space distance changed. The distance matters because `skipEmpty`'s jumps set `tEnter` where a cell step
+    would accumulate `tMax`, so the stored depths change in their last bits; a brick filling or emptying changes the
+    distance of every brick within `BRICK_DIST_MAX` (8) of it. How much of the map that leaves untouched in running
+    scenes is still to be measured; not done.
+  - GI blends its probes every frame, each traced every other frame, and its sources read the previous probes for
+    bounce light, so its values keep moving everywhere the blend hasn't settled in half floats, and a change
+    reaches every probe whose rays (up to about 18 bricks) cross it. Nothing local stays fixed to skip.
+- **Proofs:** `tools/regress.mjs` against `scale`, settled and `--motion`, with detail off and on: all 26 views
+  AE 0. `tools/derived-check.mjs` (every derived target bit for bit against `sim.incremental = false`, over steps,
+  painting, the heat tool, undo, a pause and 1, 3 or 4 steps per frame): identical at 128³, 96³, 64³ and wide.
+  Timings (`tools/derived-bench.mjs`): owed; the GPU was saturated by other runs, then live tests paused for battery.
 
 ### D10. Undo (deferred)
 Copying only the bricks a stroke touches isn't a correct undo: matter flows out of those bricks afterwards.
