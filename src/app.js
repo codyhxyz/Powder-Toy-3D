@@ -23,6 +23,7 @@ import { GI_BLEND } from './sim.js';
 import { createMultiplayer } from './net/multiplayer.js';
 import { createPov } from './pov/index.js';
 import { renderViewmodels } from './pov/viewmodel.js';
+import { POV_FOV, POV_FOV_RANGE, LOOK_SPEED_RANGE } from './pov/camera.js';
 import { finishSignIn, account, accountsEnabled } from './account.js';
 import { accountSection } from './ui/account-section.js';
 
@@ -44,10 +45,10 @@ const DEFAULTS = {
   tool: E.SAND, radius: 5, shape: 0, rate: 1, replace: false,
   steps: 4, gravity: 0.025, paused: false,
   view: 0, camSpeed: 1, upscale: 'native', dockCollapsed: false,
-  figure: 'real',
+  figure: 'real', povFov: POV_FOV, lookSpeed: 1,
 };
 const PERSIST = ['size', 'preset', 'tool', 'radius', 'shape', 'rate', 'replace', 'steps', 'gravity', 'view',
-  'camSpeed', 'upscale', 'dockCollapsed', 'figure'];
+  'camSpeed', 'upscale', 'dockCollapsed', 'figure', 'povFov', 'lookSpeed'];
 const STORE = 'powder-toy-3d:settings';
 // Fixed look: glow is heat-driven light (×uLightGain); smoothing, TAA, bloom and
 // exposure keep their defaults in gfx/uniforms.js and gfx/post.js.
@@ -477,6 +478,10 @@ const settingsPanel = createSettings({
     { title: 'First person', rows: [
       { type: 'seg', key: 'figure', options: [['stick', 'Stickman'], ['real', 'Realistic']],
         onChange: (v) => { settings.figure = v; save(); pacer.wake(); } },
+      { type: 'slider', key: 'lookSpeed', label: 'Look speed (mouse)', min: LOOK_SPEED_RANGE[0], max: LOOK_SPEED_RANGE[1], step: 0.05,
+        def: DEFAULTS.lookSpeed, fmt: (v) => `${v.toFixed(2)}×`, onChange: save },
+      { type: 'slider', key: 'povFov', label: 'Field of view', min: POV_FOV_RANGE[0], max: POV_FOV_RANGE[1], step: 1,
+        def: DEFAULTS.povFov, fmt: (v) => `${v}°`, onChange: save },
     ] },
     ...(accountsEnabled ? [accountSection({ toast: (text) => hud.toast(text) })] : []),
   ],
