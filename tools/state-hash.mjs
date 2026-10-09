@@ -6,7 +6,8 @@
 // readState/load round trip). After each stage it prints a hash of every
 // cell's state in the D5 float layout (sim.readState(): A = id, °C, life,
 // ctype + seed; B = velocity, pressure), taken in cell order through
-// sim.cellTexel, so builds with different texel layouts compare too.
+// sim.cellTexel, so builds with different texel layouts compare too. Where
+// the build has one, the renderer's flow field (sim.flowV) gets a hash too.
 // usage: node tools/state-hash.mjs [--port 5191] [--scenes lab,volcano,island] [--sizes 128]
 //          [--steps 200] [--noskip]
 import { chromium } from 'playwright';
@@ -58,7 +59,21 @@ for (const size of sizes) {
               for (let k = 0; k < 4; k++) mix(ua[i + k]);
               for (let k = 0; k < 4; k++) mix(ub[i + k]);
             }
-        out.push(`${label.padEnd(10)} ${(h >>> 0).toString(16).padStart(8, '0')}  frame ${sim.frame}`);
+        // the renderer's flow field (sim.flowV: half floats, state atlas), where the build has one
+        let flow = '';
+        if (sim.flowV) {
+          const t = sim.flowV, f = new Uint16Array(t.width * t.height * 4);
+          R.readRenderTargetPixels(t, 0, 0, t.width, t.height, f);
+          let hf = 0x811c9dc5;
+          for (let y = 0; y < g.ny; y++)
+            for (let z = 0; z < g.nz; z++)
+              for (let x = 0; x < g.nx; x++) {
+                const i = sim.cellTexel(x, y, z) * 4;
+                for (let k = 0; k < 4; k++) { hf ^= f[i + k]; hf = Math.imul(hf, 0x01000193); }
+              }
+          flow = `  flow ${(hf >>> 0).toString(16).padStart(8, '0')}`;
+        }
+        out.push(`${label.padEnd(10)} ${(h >>> 0).toString(16).padStart(8, '0')}${flow}  frame ${sim.frame}`);
       };
       const V3 = sim.mats.paint.uniforms.uCenter.value.constructor;
       const c = [g.nx / 2, g.ny * 0.6, g.nz / 2];

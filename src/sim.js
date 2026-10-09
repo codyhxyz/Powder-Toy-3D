@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { quadVert, BRICK, SEED_MAX, TILE, SUPER, SUPER_TEX, SUPER_CELLS, stateUniforms } from './shaders/common.js';
 import { inertFrag, inertRowsFrag, inertJoinFrag, quietFrag, activityPeriod } from './shaders/activity.js';
-import { moveBlockFrag, moveGatherFrag, moveFlowFrag } from './shaders/move.js';
+import { moveBlockFrag, moveFlowFrag, SLOTS } from './shaders/move.js';
 import { reactFrag } from './shaders/react.js';
 import { paintFrag, copyFrag, brickFrag, blurFrag, brickDistFrag } from './shaders/passes.js';
 import { fieldEmaFrag, fieldBlurFrag, fieldBoostFrag, BOOST_STAGES } from './shaders/fields.js';
@@ -173,7 +173,16 @@ export class Simulation {
 
     this.targets = [makeStateTarget(g.width, g.height), makeStateTarget(g.width, g.height)];
     this.cur = 0;
-    this.blocks = makeTarget(g.mwidth, g.mheight, 8);
+    // The block pass's results: slot i of every block in layer i of one array
+    // texture (shaders/move.js slotGLSL). three.js gives a multi-target its own
+    // textures, so the block pass draws into this.blocks, whose colour
+    // attachments are pointed at the slot layers (attachSlots).
+    this.slots = new THREE.WebGLArrayRenderTarget(g.mwidth, g.mheight, SLOTS, {
+      type: THREE.FloatType, format: THREE.RGBAFormat, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter,
+      depthBuffer: false, stencilBuffer: false, generateMipmaps: false,
+    });
+    this.blocks = makeTarget(g.mwidth, g.mheight, SLOTS);
+    this.attachSlots();
     this.brick = makeTarget(g.bwidth, g.bheight, 1);
     this.light = [makeTarget(g.bwidth, g.bheight, 1), makeTarget(g.bwidth, g.bheight, 1)];
     // render fields (see shaders/fields.js): EMA ping-pong + blur and boost
@@ -220,15 +229,16 @@ export class Simulation {
     this.scene.add(this.quad);
 
     const state = stateUniforms;
+    // the block pass's results, as passes that read them per cell take them (shaders/move.js slotGLSL)
+    const slots = () => ({ uParity: { value: 0 }, tSlots: { value: null } });
     this.mats = {
       moveBlock: rawMat(moveBlockFrag(g), {
         ...state(), uParity: { value: 0 }, uFrame: { value: 0 }, uGravity: { value: this.gravity }, tQuiet: { value: null },
       }),
-      moveGather: rawMat(moveGatherFrag(g), {
-        ...state(), uParity: { value: 0 }, uFresh: { value: false },
-        ...Object.fromEntries([...Array(8).keys()].map((i) => [`tM${i}`, { value: null }])),
+      react: rawMat(reactFrag(g), {
+        ...state(), ...slots(), uFrame: { value: 0 }, uGravity: { value: this.gravity }, tQuiet: { value: null },
+        uFresh: { value: false },
       }),
-      react: rawMat(reactFrag(g), { ...state(), uFrame: { value: 0 }, uGravity: { value: this.gravity }, tQuiet: { value: null } }),
       inert: rawMat(inertFrag(g), { tF: { value: null } }),
       inertRows: rawMat(inertRowsFrag(g), { tA: { value: null }, tF: { value: null }, tClass: { value: null } }),
       inertJoin: rawMat(inertJoinFrag(g), { tClass: { value: null }, tRows: { value: null } }),
@@ -238,9 +248,7 @@ export class Simulation {
         uShape: { value: 0 }, uTool: { value: 2 }, uRate: { value: 1 }, uReplace: { value: false },
       }),
       copy: rawMat(copyFrag(g), state()),
-      moveFlow: rawMat(moveFlowFrag(g), {
-        uParity: { value: 0 }, tQuiet: { value: null }, ...Object.fromEntries([...Array(8).keys()].map((i) => [`tM${i}`, { value: null }])),
-      }),
+      moveFlow: rawMat(moveFlowFrag(g), { ...slots(), tQuiet: { value: null } }),
       brick: rawMat(brickFrag(g), {
         tA: { value: null }, tB: { value: null }, tFS: { value: null }, tFM: { value: null }, tFT: { value: null },
       }),
@@ -281,6 +289,25 @@ export class Simulation {
     // profiling hook (gfx/profiler.js): onPass(name, target) after every pass
     this.onPass = null;
     this.clear();
+  }
+
+  // Point the block pass's colour attachments (this.blocks) at the layers of
+  // this.slots, and shrink the block target's own textures, which nothing
+  // draws into or reads.
+  attachSlots() {
+    const r = this.renderer, gl = r.getContext(), keep = r.getRenderTarget();
+    r.initRenderTarget(this.slots);
+    r.initRenderTarget(this.blocks);
+    const layers = r.properties.get(this.slots.texture).__webglTexture;
+    r.state.bindFramebuffer(gl.FRAMEBUFFER, r.properties.get(this.blocks).__webglFramebuffer);
+    for (let i = 0; i < SLOTS; i++) gl.framebufferTextureLayer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + i, layers, 0, i);
+    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) throw new Error('block pass: slot layers not attachable');
+    for (const t of this.blocks.textures) {
+      r.state.bindTexture(gl.TEXTURE_2D, r.properties.get(t).__webglTexture);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, 1, 1, 0, gl.RGBA, gl.FLOAT, null);
+    }
+    r.state.unbindTexture();
+    r.setRenderTarget(keep);
   }
 
   get stateA() { return this.targets[this.cur].textures[0]; }
@@ -371,27 +398,29 @@ export class Simulation {
     if (this.actDirty || this.actAge >= ACTIVITY_PERIOD) this.updateActivity();
     this.actAge++;
     this.stepping = true;
-    const { moveBlock, moveGather, react } = this.mats;
-    moveBlock.uniforms.tQuiet.value = react.uniforms.tQuiet.value = this.actQuiet.texture;
-    // movement: solve each 2×2×2 block once, then every cell gathers its result
-    moveBlock.uniforms.uParity.value = this.frame & 1;
+    const { moveBlock, moveFlow, react } = this.mats;
+    const parity = this.frame & 1;
+    // movement: solve each 2×2×2 block once (moveBlock); the passes after it
+    // read every cell's result through the block results
+    moveBlock.uniforms.tQuiet.value = this.actQuiet.texture;
+    moveBlock.uniforms.uParity.value = parity;
     moveBlock.uniforms.uFrame.value = this.frame;
     moveBlock.uniforms.uGravity.value = this.gravity;
     moveBlock.uniforms.tA.value = this.stateA;
     moveBlock.uniforms.tB.value = this.stateB;
     this.run(moveBlock, this.blocks);
-    moveGather.uniforms.uParity.value = this.frame & 1;
-    moveGather.uniforms.uFresh.value = this.actFresh;
-    this.actFresh = false;
-    for (let i = 0; i < 8; i++) moveGather.uniforms[`tM${i}`].value = this.blocks.textures[i];
-    this.pass(moveGather);
-    const { moveFlow } = this.mats;
-    moveFlow.uniforms.uParity.value = this.frame & 1;
-    moveFlow.uniforms.tQuiet.value = this.actQuiet.texture;
-    for (let i = 0; i < 8; i++) moveFlow.uniforms[`tM${i}`].value = this.blocks.textures[i];
+    for (const m of [moveFlow, react]) {
+      m.uniforms.uParity.value = parity;
+      m.uniforms.tQuiet.value = this.actQuiet.texture;
+      m.uniforms.tSlots.value = this.slots.texture;
+    }
+    // the flow field for the renderer
     this.run(moveFlow, this.flowV);
+    // react: the moved state, and everything that changes a cell in place
     react.uniforms.uFrame.value = this.frame;
     react.uniforms.uGravity.value = this.gravity;
+    react.uniforms.uFresh.value = this.actFresh;
+    this.actFresh = false;
     this.pass(react);
     this.stepping = false;
   }
@@ -617,6 +646,7 @@ export class Simulation {
     this.targets.forEach((t) => t.dispose());
     this.brick.dispose();
     this.blocks.dispose();
+    this.slots.dispose();
     this.light.forEach((t) => t.dispose());
     this.fieldEma.forEach((t) => t.dispose());
     this.fieldTmp.dispose();
