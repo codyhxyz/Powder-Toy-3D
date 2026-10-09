@@ -1,6 +1,9 @@
 // Deterministic render regression: seeds Math.random, loads a preset, runs a
 // fixed number of sim steps by hand (no wall-clock dependence), pauses, renders
-// a fixed number of frames from fixed cameras and screenshots them.
+// a fixed number of frames from fixed cameras and screenshots them. The app's
+// frame loop only runs when this script pumps it, so every shot follows the
+// same frames (letting it run on rAF between shots made the count, and so the
+// frame-indexed noise, depend on GPU load).
 // usage: node tools/regress.mjs <outDir> --port N
 // Compare two runs with: compare -metric AE -fuzz 1% a.png b.png null:
 import { chromium } from 'playwright';
@@ -22,27 +25,21 @@ await p.addInitScript(() => {
     st.textContent = 'body > *:not(canvas):not(:has(canvas)) { visibility: hidden !important; }';
     document.head.appendChild(st);
   });
-  // virtual clock: every animation frame advances exactly 1/60 s
-  let vt = 0;
-  const raf = window.requestAnimationFrame.bind(window);
-  // __hold() parks the frame loop (callbacks wait instead of running) so a
-  // screenshot captures a fixed frame, not whichever one the timing lands on;
-  // __release() lets it run again
-  let held = null;
-  window.requestAnimationFrame = (cb) => {
-    if (held) { held.push(cb); return 0; }
-    return raf(() => { vt += 1000 / 60; cb(vt); });
-  };
-  window.__hold = () => { held ??= []; };
-  window.__release = () => { const h = held ?? []; held = null; h.forEach((cb) => window.requestAnimationFrame(cb)); };
-  window.__rawFrame = () => new Promise((r) => raf(() => r()));
+  // every requestAnimationFrame callback waits until __pump(n) runs n frames'
+  // worth of them, each 1/60 s later on a virtual clock
+  const FRAME_MS = 1000 / 60;
+  let vt = 0, held = new Map(), id = 1;
+  window.requestAnimationFrame = (cb) => { held.set(id, cb); return id++; };
+  window.cancelAnimationFrame = (i) => held.delete(i);
+  window.__pump = (n = 1) => { for (let k = 0; k < n; k++) { const cbs = [...held.values()]; held = new Map(); vt += FRAME_MS; cbs.forEach((cb) => cb(vt)); } };
   performance.now = () => vt;
 });
 const errs = [];
 p.on('console', (m) => { if (m.type() === 'error') errs.push(m.text().slice(0, 500)); });
 p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 500)));
 await p.goto(`http://localhost:${port}/?preset=lab`);
-await p.waitForTimeout(2500);
+await p.waitForFunction(() => window.__app?.sim, null, { timeout: 60000 });
+await p.evaluate(() => window.__pump(4));   // first frames: shaders compile
 const views = {
   lab: { steps: 300, cams: { lab: [[11, 12.5, 13], [0, 2.5, 0]], labLava: [[3.6, 1.5, 3.6], [2.6, 0.9, 2.6]], labTank: [[0.6, 2.9, 1.6], [-2.2, 1.4, -2.2]] } },
   volcano: { steps: 300, cams: { volcano: [[11, 12.5, 13], [0, 2.5, 0]], summit: [[1.3, 4.3, 1.6], [0, 3.6, 0]] } },
@@ -60,7 +57,7 @@ for (const [preset, v] of Object.entries(views)) {
     a.sim.frame = 0;               // the sim's random streams are seeded by its step counter
     for (let i = 0; i < steps; i++) a.sim.step();
     // let the frame loop see the world change now, not after the cameras reset uTime
-    for (let i = 0; i < 2; i++) await new Promise((r) => requestAnimationFrame(r));
+    window.__pump(2);
   }, [preset, v.steps]);
   for (const [name, [pos, tgt]] of Object.entries(v.cams)) {
     await p.evaluate(async ([pos, tgt]) => {
@@ -72,13 +69,9 @@ for (const [preset, v] of Object.entries(views)) {
       const u = a.volume.material.uniforms;
       u.uFrame.value = 0;
       u.uTime.value = 0;
-      for (let i = 0; i < 40; i++) await new Promise((r) => requestAnimationFrame(r));
-      // park the loop; the frame already queued runs once more, then nothing moves
-      window.__hold();
-      for (let i = 0; i < 2; i++) await window.__rawFrame();
+      window.__pump(40);
     }, [pos, tgt]);
     await p.screenshot({ path: `${out}/${name}.png` });
-    await p.evaluate(() => window.__release());
   }
 }
 console.log(errs.length ? errs.join('\n') : 'no console errors');
