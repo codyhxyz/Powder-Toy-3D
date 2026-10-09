@@ -7,6 +7,7 @@ import { ELEMENTS, E, toolById, isBuild } from './elements.js';
 import { buildPreset } from './presets.js';
 import { loadIsland } from './world/gpu.js';
 import { WorldWindow } from './world/window.js';
+import { FarField } from './world/far.js';
 import { quadVert } from './shaders/common.js';
 import { createBrushCursor } from './brush.js';
 import { createCameraRig } from './camera.js';
@@ -210,6 +211,8 @@ function build() {
   volume.scale.setScalar(scale);
   volume.frustumCulled = false;
   scene.add(volume);
+  // world mode: the world outside the window (world/far.js), drawn before everything else
+  if (win) scene.add((win.far = new FarField(renderer, win, { sun: SUN, time: volume.material.uniforms.uTime })).mesh);
 
   edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo),
     new THREE.LineBasicMaterial({ color: 0x56607a, transparent: true, opacity: EDGE_OPACITY }));
@@ -1006,6 +1009,7 @@ function frame(now) {
     u.tLight.value = sim.lightTexture;
     u.uCam.value.copy(camera.position).applyMatrix4(invVol.copy(volume.matrixWorld).invert());
     detailGate.update(camera, u.uCam.value, [sim.g.nx, sim.g.ny, sim.g.nz], scene);
+    win?.far.view(volume, settings.view === 0);
     u.uView.value = settings.view;
     if (worldChanged) u.uTime.value += dt;   // animated looks (lava, ripples) hold still while the world does
 
