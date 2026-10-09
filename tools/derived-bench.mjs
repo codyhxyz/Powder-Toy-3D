@@ -15,8 +15,12 @@
 // Reported: medians and quartiles over the kept rounds.
 //
 // usage: node tools/derived-bench.mjs --ports 5422,5423[:full] [--scen lab,island,volcano]
-//          [--rounds 20] [--k 8] [--out report.json]
+//          [--rounds 20] [--k 8] [--light 0] [--quiet-wait ms] [--out report.json]
 //   port:full runs that build with sim.incremental = false (a full rebuild every frame).
+//   --quiet-wait: how long a round waits for a quiet GPU (default QUIET_WAIT_MAX_MS); on a
+//   machine other runs keep busy, shorten it and add rounds.
+//   --light 0 leaves out the L chunks (shadow and GI). A build with region draws also
+//   reports the share of field-atlas regions its dirty sets flagged (EMA, FIELDS, WORK).
 // Serve each build with its own vite (a checkout: git archive <ref> | tar -x -C <dir>,
 // node_modules symlinked); serve it without a file watcher, so nothing reloads mid-run.
 import { chromium } from 'playwright';
@@ -30,6 +34,7 @@ const scens = opt('scen', 'lab,island,volcano').split(',');
 const ROUNDS = +opt('rounds', '20');
 const K = +opt('k', '8');                    // frames per chunk
 const OUT = opt('out', null);
+const LIGHT = opt('light', '1') !== '0';
 const STEPS = 4;                             // sim steps per frame (the app's default speed)
 const WARM = { lab: 300, island: 1500, volcano: 300 };   // steps from load to the measured state
 const WARM_YIELD = 50;                       // steps between yields to the page while warming
@@ -41,7 +46,7 @@ const CAPTURE_FRAMES = 3;                    // app frames run to capture the sh
 const QUIET_UTIL = 15;                       // % GPU utilization counted as quiet (ioreg)
 const QUIET_SAMPLES = 3;                     // consecutive quiet samples before a round
 const QUIET_POLL_MS = 400;
-const QUIET_WAIT_MAX_MS = 120000;
+const QUIET_WAIT_MAX_MS = +opt('quiet-wait', '120000');
 const CONTENDED = 1.5;
 
 const gpuUtil = () => {
@@ -128,7 +133,15 @@ async function chunk(pg, kind) {
       R.getContext().flush();
     }
     sync();
-    return performance.now() - t0;
+    const ms = performance.now() - t0;
+    // the share of regions each dirty set flagged on the last frame (builds with region draws)
+    let share = null;
+    if (kind === 'D' && sim.regionShare) {
+      const v = new Float32Array(4);
+      R.readRenderTargetPixels(sim.regionShare, 0, 0, 1, 1, v);
+      share = [...v].slice(0, 3);
+    }
+    return { ms, share };
   }, [kind, K, STEPS]);
 }
 
@@ -137,13 +150,18 @@ const fmt = (x) => x.toFixed(2).padStart(6);
 const report = {};
 for (const scen of scens) {
   for (const pg of pages) await setup(pg, scen);
-  const acc = pages.map(() => ({ S: [], D: [], L: [] }));
+  const acc = pages.map(() => ({ S: [], D: [], L: [], share: [] }));
+  const kinds = LIGHT ? ['S', 'D', 'L'] : ['S', 'D'];
   let quiet = 0;
   for (let r = 0; r < ROUNDS; r++) {
     quiet += (await waitQuiet()) ? 1 : 0;
     for (let k = 0; k < pages.length; k++) {
       const i = r % 2 ? pages.length - 1 - k : k;
-      for (const kind of (r + k) % 2 ? ['S', 'D', 'L'] : ['L', 'D', 'S']) acc[i][kind].push(await chunk(pages[i], kind));
+      for (const kind of (r + k) % 2 ? kinds : [...kinds].reverse()) {
+        const c = await chunk(pages[i], kind);
+        acc[i][kind].push(c.ms);
+        if (c.share) acc[i].share.push(c.share);
+      }
     }
   }
   const fastest = acc.map((A) => Math.min(...A.S));
@@ -152,11 +170,13 @@ for (const scen of scens) {
   report[scen] = {};
   pages.forEach((pg, i) => {
     const A = acc[i];
-    const derived = keep.map((j) => (A.D[j] - A.S[j]) / K), light = keep.map((j) => (A.L[j] - A.D[j]) / K);
+    const derived = keep.map((j) => (A.D[j] - A.S[j]) / K), light = LIGHT ? keep.map((j) => (A.L[j] - A.D[j]) / K) : [];
     const steps = keep.map((j) => A.S[j] / K);
-    report[scen][pg.spec] = { derived, light, steps, raw: A };
+    const share = A.share.length ? [0, 1, 2].map((c) => q(A.share.map((x) => x[c]), 0.5)) : null;
+    report[scen][pg.spec] = { derived, light, steps, share, raw: A };
     console.log(`${pg.spec.padEnd(10)} ms/frame: steps ${fmt(q(steps, 0.5))}  derived ${fmt(q(derived, 0.5))} (${fmt(q(derived, 0.25))}–${fmt(q(derived, 0.75))})`
-      + `  shadow+GI ${fmt(q(light, 0.5))} (${fmt(q(light, 0.25))}–${fmt(q(light, 0.75))})`);
+      + (LIGHT ? `  shadow+GI ${fmt(q(light, 0.5))} (${fmt(q(light, 0.25))}–${fmt(q(light, 0.75))})` : '')
+      + (share ? `  regions E/D/W ${share.map((x) => (x * 100).toFixed(0) + '%').join(' ')}` : ''));
   });
   if (OUT) writeFileSync(OUT, JSON.stringify(report));
 }
