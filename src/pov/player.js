@@ -29,38 +29,41 @@ const HW = BODY_WIDTH / 2;             // cells, half the footprint
 const H = BODY_HEIGHT;
 const EPS = 1e-4;                      // cells: faces this close to a cell boundary don't overlap it
 
-// ---- gravity and moving ----
-const G_EARTH = 9.8;                   // m/s²
-const GRAVITY_FEEL = 1.3;              // × real gravity: a touch snappier than life, so jumps don't float
-const GRAVITY = G_EARTH * GRAVITY_FEEL / CELL_METERS;   // cells/s² (≈ 42) at the default sim gravity...
+// ---- gravity and moving: Noita's player ----
+// The numbers are the Noita player's own (data/entities/player.xml,
+// CharacterPlatformingComponent), in pixels and 60 Hz frames, scaled by body
+// height: Mina is NOITA_BODY_PX tall, this body BODY_HEIGHT cells. Velocity
+// isn't pushed by forces; every frame it closes a fixed share of the gap to the
+// speed you ask for, which is what makes Noita's movement feel fluid.
+const NOITA_FPS = 60;
+const NOITA_BODY_PX = 11;              // px, Mina head to feet
+const PX = BODY_HEIGHT / NOITA_BODY_PX; // cells per Noita pixel
+const GRAVITY = 350 * PX;              // cells/s² (175, 5.4 g) at the default sim gravity (pixel_gravity)...
 const SIM_GRAVITY_REF = 0.025;         // ...which is this many cells/step² (sim.js GRAVITY_DEFAULT); the setting scales it
-const WALK_SPEED = 1.5 / CELL_METERS;  // cells/s (1.5 m/s)
-const SPRINT_SPEED = 4.5 / CELL_METERS; // cells/s (4.5 m/s)
-const GROUND_ACCEL = 80;               // cells/s², speeding up and braking on the ground
-const AIR_ACCEL = 12;                  // cells/s², steering in the air
-const JUMP_HEIGHT = 1.6;               // cells (≈ 0.5 m) at the default gravity
-const JUMP_SPEED = Math.sqrt(2 * GRAVITY * JUMP_HEIGHT);   // cells/s
+const SPRINT_SPEED = 57 * PX;          // cells/s (8.6 m/s): Mina's run (velocity_max_x)
+const WALK_SPEED = SPRINT_SPEED / 3;   // cells/s (2.9 m/s): Noita has no walk; holding sprint runs as Mina does
+const MOVE_EASE = 0.15;                // share of the gap to the wished speed closed per Noita frame, ground and air (accel_x)
+const JUMP_SPEED = 95 * PX;            // cells/s: a 1.9 m jump (jump_velocity_y)
 const STEP_HEIGHT = 1.1;               // cells: ledges up to this are stepped onto (1 cell + slack)
 const STEP_DOWN = 1.1;                 // cells: walking off a ledge this low follows the ground down
-const MAX_SPEED = 90;                  // cells/s (27 m/s): faster than any fall the grid allows
+const MAX_SPEED = 350 * PX;            // cells/s (52 m/s): Noita's fastest fall (velocity_max_y), past a lethal one
 const SUBSTEP = 0.4;                   // cells: longest move per collision substep
 const MAX_DT = 0.1;                    // s: longer frames are simulated as this long
 
 // ---- jetpack: Noita's levitation. Hold jump in the air to climb; the tank
 // drains while it fires and refills fast on the ground, slowly in the air.
 // The tank and recharge are the Noita player's own (data/entities/player.xml,
-// CharacterPlatformingComponent: fly_time_max, fly_recharge_spd_ground,
+// CharacterDataComponent: fly_time_max, fly_recharge_spd_ground,
 // fly_recharge_spd, flying_in_air_wait_frames, flying_recharge_removal_frames;
-// Noita runs at 60 frames/s).
-const NOITA_FPS = 60;
+// fly_speed_max_up, fly_speed_change_spd, fly_velocity_x).
 const JET_FUEL_S = 3;                  // s of thrust on a full tank (fly_time_max)
 const JET_REFILL_GROUND = 6;           // s of thrust regained per s, feet on the ground: full in 0.5 s (fly_recharge_spd_ground)
 const JET_REFILL_AIR = 0.4;            // s of thrust regained per s in the air, not firing (fly_recharge_spd)
 const JET_AIR_WAIT_S = 38 / NOITA_FPS; // s off the jet before the air recharge starts (flying_in_air_wait_frames)
 const JET_TAP_S = 8 / NOITA_FPS;       // s of fuel every press burns at least, so tapping can't hover for free (flying_recharge_removal_frames)
-const JET_THRUST = 4.8;                // × gravity, upward: a 3.8 g net climb against gravity
-const JET_MAX_RISE = 9 / CELL_METERS;  // cells/s (9 m/s): thrust stops adding speed past this climb
-const JET_STEER = 2;                   // × AIR_ACCEL: steering while the jet fires (Noita flies, it doesn't drift)
+const JET_RISE = 95 * PX;              // cells/s (14 m/s): the climb the jet eases toward (fly_speed_max_up)
+const JET_EASE = 0.25;                 // share of the gap to JET_RISE closed per Noita frame, gravity off while it fires (fly_speed_change_spd)
+const JET_FLY_SPEED = 52 * PX;         // cells/s: horizontal speed while the jet fires (fly_velocity_x)
 
 // ---- liquids ----
 const WADE_SHARE = 0.15;               // submerged share of the body that counts as "in" liquid
@@ -100,6 +103,9 @@ const UNKNOWN = -2;                    // id of a cell outside the probed box
 
 // ---- events ----
 const LAND_EVENT_SPEED = 3;            // cells/s: softer touchdowns aren't reported as 'land'
+
+// share of a gap closed over dt by an ease of `share` per Noita frame (frame-rate independent)
+const ease = (share, dt) => 1 - (1 - share) ** (NOITA_FPS * dt);
 
 const KIND = ELEMENTS.map((e) => e.kind);
 const DENS = ELEMENTS.map((e) => e.dens);
@@ -466,19 +472,16 @@ export function createPlayer({ renderer, getSim }) {
     if (wish.length() > 1) wish.normalize();
     const vh = new THREE.Vector2(v.x, v.z);
     let jumpedNow = false;
-    if (p.onGround) {   // walking, also on the bottom of a pool
-      const target = wish.clone().multiplyScalar(alive && input.sprint ? SPRINT_SPEED : WALK_SPEED);
-      const diff = target.sub(vh);
-      const max = GROUND_ACCEL * dt;
-      if (diff.length() > max) diff.setLength(max);
-      vh.add(diff);
-      if (alive && input.jump) { v.y = JUMP_SPEED; p.onGround = false; jumpedNow = true; }
-    } else if (wish.lengthSq() > 0) {
-      // accelerate toward the wished speed, never brake (air control, strokes)
-      const speed = swimming ? SWIM_SPEED : (input.sprint ? SPRINT_SPEED : WALK_SPEED);
+    const runSpeed = p.jetting ? JET_FLY_SPEED : alive && input.sprint ? SPRINT_SPEED : WALK_SPEED;
+    if (!swimming && (p.onGround || wish.lengthSq() > 0 || vh.length() <= runSpeed)) {
+      // Noita: ease toward the wished speed, on the ground and in the air alike.
+      // With no input in the air faster than a run (a blast), keep the momentum.
+      vh.lerp(wish.clone().multiplyScalar(runSpeed), ease(MOVE_EASE, dt));
+      if (p.onGround && alive && input.jump) { v.y = JUMP_SPEED; p.onGround = false; jumpedNow = true; }
+    } else if (swimming && wish.lengthSq() > 0) {
+      // strokes: accelerate toward the wished speed, never brake
       const dir = wish.clone().normalize();
-      const accel = swimming ? SWIM_ACCEL : AIR_ACCEL * (p.jetting ? JET_STEER : 1);
-      const add = Math.min(Math.max(speed * wish.length() - vh.dot(dir), 0), accel * dt);
+      const add = Math.min(Math.max(SWIM_SPEED * wish.length() - vh.dot(dir), 0), SWIM_ACCEL * dt);
       vh.addScaledVector(dir, add);
     }
     v.x = vh.x; v.z = vh.y;
@@ -493,7 +496,7 @@ export function createPlayer({ renderer, getSim }) {
       p.jetFuel = Math.max(0, p.jetFuel - dt / JET_FUEL_S);
       p.jetBurnS += dt;
       p.jetIdleS = 0;
-      if (v.y < JET_MAX_RISE) v.y = Math.min(v.y + JET_THRUST * grav * dt, Math.max(v.y, JET_MAX_RISE));
+      if (v.y < JET_RISE) v.y += (JET_RISE - v.y) * ease(JET_EASE, dt);
     } else {
       if (p.jetting && p.jetBurnS < JET_TAP_S) p.jetFuel = Math.max(0, p.jetFuel - (JET_TAP_S - p.jetBurnS) / JET_FUEL_S);
       p.jetBurnS = 0;
@@ -502,7 +505,7 @@ export function createPlayer({ renderer, getSim }) {
     if (jet !== p.jetting) { p.jetting = jet; povEvents.emit('player:jet', { on: jet }); }
 
     // gravity and buoyancy (Archimedes over the submerged share)
-    v.y += (env2.buoy - 1) * grav * dt;
+    v.y += (env2.buoy - (jet ? 0 : 1)) * grav * dt;   // the jet holds you up as Noita's does
     // drag in liquid, scaled by how much of the body is in it
     if (sub > 0 && env2.densL > 0) {
       const k = (VISCOUS_DRAG * env2.dragL + FORM_DRAG * env2.densL / BODY_DENS * v.length()) * sub;
