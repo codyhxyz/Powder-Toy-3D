@@ -340,6 +340,39 @@ export function faceNormal(face, out = new THREE.Vector3()) {
   return out;
 }
 
+const MUZZLE_SEARCH = 16;           // cells walked along the ray by muzzleCell
+
+// First cell along eye + t·dir that doesn't overlap the body box (feet at
+// pos, BODY_WIDTH square, BODY_HEIGHT tall), by grid DDA: { cell, t, path },
+// t the ray distance at which it enters that cell and path every cell from
+// the eye's to it. null if none within MUZZLE_SEARCH cells or it is outside
+// the grid.
+// (the gun's muzzle, where a thrown bomb leaves the hand)
+export function muzzleCell(eye, dir, pos, g) {
+  const half = BODY_WIDTH / 2;
+  const lo = [pos.x - half, pos.y, pos.z - half], hi = [pos.x + half, pos.y + BODY_HEIGHT, pos.z + half];
+  const o = [eye.x, eye.y, eye.z], d = [dir.x, dir.y, dir.z];
+  const c = o.map(Math.floor);
+  const step = d.map(Math.sign);
+  const tDelta = d.map((v) => (v === 0 ? Infinity : Math.abs(1 / v)));
+  const tMax = d.map((v, k) => (v === 0 ? Infinity : ((v > 0 ? c[k] + 1 : c[k]) - o[k]) / v));
+  const overlaps = () => c.every((v, k) => v < hi[k] && v + 1 > lo[k]);
+  const path = [];
+  let t = 0;
+  for (let i = 0; i < MUZZLE_SEARCH; i++) {
+    path.push(new THREE.Vector3(...c));
+    if (!overlaps()) {
+      const inGrid = c[0] >= 0 && c[1] >= 0 && c[2] >= 0 && c[0] < g.nx && c[1] < g.ny && c[2] < g.nz;
+      return inGrid ? { cell: new THREE.Vector3(...c), t, path } : null;
+    }
+    const k = tMax[0] < tMax[1] ? (tMax[0] < tMax[2] ? 0 : 2) : (tMax[1] < tMax[2] ? 1 : 2);
+    t = tMax[k];
+    c[k] += step[k];
+    tMax[k] += tDelta[k];
+  }
+  return null;
+}
+
 // Radius of a ball of n cells.
 export const ballRadius = (n) => Math.cbrt((3 * n) / (4 * Math.PI));
 

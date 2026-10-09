@@ -31,6 +31,12 @@
      face you aim at; right-click picks the material. The cells are the pack's own, so a sand block slumps.
   7. **Scanner**: the god view's hover readout at the crosshair, at any range: material, temperature,
      pressure, distance.
+  8. **Blowtorch**: hold for a roofing torch's flame: engine FIRE at 1,900 °C blown along the aim, and what it
+     touches heats toward that (shaders/povTools.js TORCH). The engine lights wood, sets off gunpowder,
+     melts metal.
+  9. **Bomb**: a thrown pipe bomb (18 m/s plus yours, 1 g, on the shared projectiles) that becomes a 5³
+     charge of gunpowder where it lands, lit by one detonator cell so the burn runs through it as a wave
+     and the blasts stack; the blast is the engine's.
 - Mouse look with pointer lock. `V` toggles first and third person. A crosshair, health and breath bars, and
   screen effects for what the body feels: heat glow at the edges, frost, a murky tint underwater, a red flash
   when hurt.
@@ -148,6 +154,9 @@ export default {
 - `env.feedback.notice(text)` / `refuse(text, { id, point })`: the throttled "can't" toast, slot shake and
   `tool:action 'refuse'`.
 - `readout?(ctx)`: text beside the crosshair, in the god view's hover chip (the scanner, the trowel's material).
+- `env.ballistics`: the shared projectiles; `fire(origin, dir, gravityScale(sim), { speed, carry, kind,
+  onStrike })` flies anything ballistic (the gun's rounds, the bomb) and the toolbelt keeps it flying.
+- `transfer.js` `muzzleCell()`: where something leaves the hand (the first cell clear of the body).
 - `transfer.js` `pack()`: the shared inventory of loose matter; `put(load, { id })` places one element of it.
 
 `ctx` is built by the body module every frame in POV:
@@ -179,13 +188,14 @@ say world. Emitters own their event names. Listeners never mutate payloads.
 
 | Event | Emitted by | Payload |
 |---|---|---|
+| `blast` | bomb | `{ point }` grid. A charge was set off there (sound, shake). |
 | `punch` | `rig.hit` (viewmodel.js `HIT`) | `{ pitch, yaw }` rad, + up and + left. Throws the view punch (feel.js). |
 | `gun:fire` | gun | `{ origin, dir, muzzleWorld }`. The round left the muzzle (origin grid, dir unit; muzzleWorld is the viewmodel muzzle in world space, for the flash). |
 | `gun:dry` | gun | `{}`. The trigger clicked but nothing fired (muzzle blocked). |
-| `round:move` | gun | `{ id, from, to }`. A round in flight moved this frame (grid), for tracers. |
-| `round:end` | gun | `{ id }`. The round is gone (impact or out of the box). |
+| `round:move` | gun, bomb | `{ id, kind, from, to }` (kind 'round' or 'bomb'). A round in flight moved this frame (grid), for tracers. |
+| `round:end` | gun, bomb | `{ id, kind }`. The round is gone (impact or out of the box). |
 | `impact` | gun, axe | `{ source: 'gun'\|'axe', point, normal, id, energy, broke }`. Something was struck. id is the element hit, energy is ½·DENS·v² in sim units, and broke is true/false when the striker knows, else null. |
-| `tool:action` | shovel, bucket, axe, physgun, trowel | `{ tool, action, id?, point?, amount? }`. tool is 'shovel'\|'bucket'\|'axe'\|'physgun'\|'trowel'; action is 'dig'\|'place'\|'dump'\|'scoop'\|'pour'\|'swing'\|'refuse'\|'grab'\|'fling'\|'release'. Physgun 'hold' state is read from the tool, not an event. |
+| `tool:action` | shovel, bucket, axe, physgun, trowel, blowtorch, bomb | `{ tool, action, id?, point?, amount? }`. tool is 'shovel'\|'bucket'\|'axe'\|'physgun'\|'trowel'\|'blowtorch'\|'bomb'; action is 'dig'\|'place'\|'on'\|'off'\|'throw'\|'dump'\|'scoop'\|'pour'\|'swing'\|'refuse'\|'grab'\|'fling'\|'release'. Physgun 'hold' state is read from the tool, not an event. |
 | `player:step` | shell (camera bob cycle) | `{ speed, inLiquid }`. A footfall. |
 
 The player's own events (`player.on('hurt'|'death'|'land'|'splash')`) stay as they are; listeners subscribe there too.

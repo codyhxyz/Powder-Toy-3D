@@ -30,6 +30,8 @@ export const MODELS = {
   bucket: { fit: 'y', size: 0.9, anchor: [0.5, 0.5, 0.5], arm: ARM_UP },        // upright, held by the bail
   trowel: { fit: 'z', size: 1.3, anchor: [0.5, 1, 1], arm: ARM_DOWN },          // blade flat and forward, held at the end of the handle
   scanner: { fit: 'z', size: 0.6, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN },     // a handheld box, screen up toward the eye
+  torch: { fit: 'z', size: 1.1, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN },       // held by the tank, nozzle and flame forward
+  bomb: { fit: 'z', size: 0.8, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN },        // a capped pipe with a lit fuse
 };
 
 // RS2 stores a colour as 16-bit HSL: 6 bits of hue, 3 of saturation, 7 of lightness.
@@ -47,9 +49,9 @@ export function jagexColor(color) {
 const COLORS = {
   wood: '#7a5230', iron: '#9aa0a6', ironDark: '#585d62', metal: '#4a4f55', metalDark: '#2c2f33',
   grip: '#3a3530', orange: '#d87a22', white: '#d6dbe0', glow: '#5ff0ff', skin: '#c48a5c', sleeve: '#8a3a2a',
-  screen: '#7dff9a',
+  screen: '#7dff9a', red: '#b8322a', flame: '#6fa8ff', spark: '#ffb347',
 };
-const UNLIT = new Set(['glow', 'screen']);
+const UNLIT = new Set(['glow', 'screen', 'flame', 'spark']);
 
 // shapes
 const CHUNK = 1.35;          // thin parts (under CHUNK_BELOW units) are thickened this much: RS2's stubby proportions
@@ -72,7 +74,7 @@ const STOCK_GRIP = { geo: 'box', s: [0.13, 0.32, 0.15], p: [0, -0.03, 0.06], rot
 
 // Parts: box (s: size), cyl (r, or rt/rb top/bottom radii, h: height, along y), torus (R, tube, arc;
 // in the xy plane), sphere (r), plate (pts: an outline in xy, extruded `depth` along z).
-// p: position, rot: Euler XYZ, m: COLORS key.
+// p: position, rot: Euler XYZ, m: COLORS key, name: for a tool to find the part (the torch's flame).
 const PARTS = {
   shovel: [
     { geo: 'cyl', r: 0.045, h: 1.5, p: [0, 0, -0.65], rot: [H, 0, 0], m: 'wood' },
@@ -93,6 +95,22 @@ const PARTS = {
     { geo: 'cyl', r: 0.06, h: 0.05, p: [0, 0, -0.17], rot: [H, 0, 0], m: 'ironDark' },
     { geo: 'box', s: [0.03, 0.03, 0.12], p: [0, -0.04, -0.23], rot: [0.6, 0, 0], m: 'ironDark' },
     { geo: 'plate', pts: [[0, 0], [0.18, 0.22], [0, 0.66], [-0.18, 0.22]], depth: 0.02, p: [0, -0.09, -0.27], rot: [-H, 0, 0], m: 'iron' },
+  ],
+  torch: [
+    { geo: 'cyl', r: 0.13, h: 0.5, p: [0, 0, 0], m: 'red' },
+    { geo: 'cyl', rt: 0.06, rb: 0.13, h: 0.08, p: [0, 0.29, 0], m: 'red' },
+    { geo: 'box', s: [0.1, 0.1, 0.12], p: [0, 0.36, -0.02], m: 'iron' },
+    { geo: 'cyl', r: 0.05, h: 0.1, p: [0.09, 0.36, -0.02], rot: [0, 0, H], m: 'orange' },
+    { geo: 'cyl', r: 0.03, h: 0.45, p: [0, 0.38, -0.3], rot: [H, 0, 0], m: 'iron' },
+    { geo: 'cyl', r: 0.05, h: 0.14, p: [0, 0.38, -0.58], rot: [H, 0, 0], m: 'metalDark' },
+    { geo: 'cyl', rt: 0, rb: 0.05, h: 0.35, p: [0, 0.38, -0.82], rot: [-H, 0, 0], m: 'flame', name: 'flame' },
+  ],
+  bomb: [
+    { geo: 'cyl', r: 0.09, h: 0.45, p: [0, 0, 0], rot: [H, 0, 0], m: 'metal' },
+    { geo: 'cyl', r: 0.11, h: 0.06, p: [0, 0, 0.24], rot: [H, 0, 0], m: 'metalDark' },
+    { geo: 'cyl', r: 0.11, h: 0.06, p: [0, 0, -0.24], rot: [H, 0, 0], m: 'metalDark' },
+    { geo: 'cyl', r: 0.012, h: 0.12, p: [0, 0.1, -0.24], rot: [0.4, 0, 0], m: 'grip' },
+    { geo: 'sphere', r: 0.035, p: [0, 0.16, -0.27], m: 'spark', name: 'spark' },
   ],
   scanner: [
     { geo: 'box', s: [0.3, 0.16, 0.48], p: [0, 0.2, -0.12], m: 'metal' },
@@ -166,6 +184,7 @@ function build(key) {
     const m = new THREE.Mesh(partGeometry(p), material(p.m));
     m.position.set(...p.p);
     if (p.rot) m.rotation.set(...p.rot);
+    if (p.name) m.name = p.name;
     g.add(m);
   }
   return g;
@@ -185,8 +204,8 @@ function arm(dir) {
 const AXIS = { x: 0, y: 1, z: 2 };
 
 // A normalised model `key` (see MODELS), wrapped in a group whose origin is the
-// anchor, with the arm on its grip.
-function normalised(key) {
+// anchor, with the arm on its grip (unless withArm is false: a thrown bomb).
+function normalised(key, withArm = true) {
   const def = MODELS[key];
   const inner = build(key);
   const box = new THREE.Box3().setFromObject(inner);
@@ -195,16 +214,19 @@ function normalised(key) {
   inner.scale.setScalar(k);
   inner.position.copy(new THREE.Vector3(...def.anchor).multiply(size).add(box.min).multiplyScalar(-k));
   const outer = new THREE.Group();
-  const hand = arm(def.arm);
-  hand.position.copy(inner.position);   // the parts' origin is the grip
-  outer.add(inner, hand);
+  outer.add(inner);
+  if (withArm) {
+    const hand = arm(def.arm);
+    hand.position.copy(inner.position);   // the parts' origin is the grip
+    outer.add(hand);
+  }
   return { obj: outer, size: size.multiplyScalar(k) };
 }
 
 // Add model `key` to `parent`; onLoad(obj, info) runs before this returns.
-// Returns { dispose(), get obj() }.
-export function attachModel(parent, key, onLoad) {
-  const { obj, size } = normalised(key);
+// opts.arm: false leaves the forearm off. Returns { dispose(), get obj() }.
+export function attachModel(parent, key, onLoad, { arm: withArm = true } = {}) {
+  const { obj, size } = normalised(key, withArm);
   obj.name = `viewmodel-${key}`;
   parent.add(obj);
   onLoad?.(obj, { size });

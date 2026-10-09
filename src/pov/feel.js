@@ -48,6 +48,9 @@ const TRAUMA_BLAST_DV = 0.8;
 const PRESSURE_SHAKE_MIN = 4;           // sim pressure units the body doesn't feel
 const PRESSURE_SHAKE_SPAN = 20;         // pressure above the minimum for the full rate
 const TRAUMA_PRESSURE_RATE = 2.5;       // trauma per second at full pressure
+// a bomb's blast ('blast' event): trauma at the eye, falling off with distance like an impact's
+const TRAUMA_BOMB = 0.9;
+const BOMB_FAR = 48;                    // cells: no shake from a blast this far away
 // hard landings ('land' speed, cells/s)
 const LAND_TRAUMA_MIN = 13;             // softer than this (a jump lands at ≈ 12) doesn't shake
 const LAND_TRAUMA_FULL = 55;            // cells/s for the full TRAUMA_LAND
@@ -102,6 +105,11 @@ export function createFeel({ hud }) {
         addTrauma(TRAUMA_IMPACT * clamp01((e.energy ?? 0) / IMPACT_ENERGY_FULL) * near);
       }
       if (e.source === 'gun') { hitT = HIT_TIME; hitBroke = e.broke === true; }
+    }),
+    povEvents.on('blast', ({ point }) => {
+      if (!live || !point) return;
+      const d = Math.hypot(point.x - eye.x, point.y - eye.y, point.z - eye.z);
+      addTrauma(TRAUMA_BOMB * (1 - smooth01((d - IMPACT_NEAR) / (BOMB_FAR - IMPACT_NEAR))));
     }),
     povEvents.on('punch', ({ pitch = 0, yaw = 0 }) => {
       if (!live) return;

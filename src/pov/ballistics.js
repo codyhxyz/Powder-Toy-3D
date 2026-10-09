@@ -41,7 +41,12 @@ import { povEvents } from './events.js';
 //
 // Units: grid cells, seconds, cells/s (cells/step for the sim's velocities).
 //
-// Events (docs/pov.md): round:move every frame per round, round:end, impact.
+// Other projectiles fly the same way: fire()'s options give a throw speed and
+// an onStrike that hands something else to the sim (the bomb's charge) instead
+// of the slug.
+//
+// Events (docs/pov.md): round:move every frame per round, round:end (both with
+// the projectile's kind), impact (slugs only).
 
 const G_EARTH = 9.8;                    // m/s²
 const MUZZLE_SPEED_MS = 360;            // m/s, a subsonic pistol round
@@ -51,7 +56,9 @@ export const ROUND_GRAVITY = G_EARTH / CELL_METERS;        // cells/s² (≈ 33)
 export const ROUND_SLUG = E.SCRAP;                         // what a round becomes at impact
 // ½·DENS·V_MAX²: the most kinetic energy the slug carries along one axis in the sim
 export const ROUND_ENERGY = 0.5 * ELEMENTS[ROUND_SLUG].dens * ENGINE.V_MAX * ENGINE.V_MAX;
-export const MAX_ROUNDS = TRACE.ROUNDS;                    // rounds the trace pass can follow at once
+export const MAX_ROUNDS = TRACE.ROUNDS;
+// fire()'s gravityScale for the sim's gravity setting: projectiles fall at 1 g at the default
+export const gravityScale = (sim) => sim.gravity / SIM_GRAVITY_REF;                    // rounds the trace pass can follow at once
 
 const TRACE_INFLIGHT = 3;               // trace readbacks in flight at once
 const LATENCY_INIT = 2;                 // frames a readback is assumed to take before the first one lands
@@ -154,16 +161,21 @@ export function createBallistics({ renderer }) {
     const i = rounds.indexOf(r);
     if (i >= 0) rounds.splice(i, 1);
     r.alive = false;
-    povEvents.emit('round:end', { id: r.id });
+    povEvents.emit('round:end', { id: r.id, kind: r.kind });
   }
 
   // origin, dir: grid cells and unit heading. gravityScale: sim.gravity / default.
+  // opts: speed (cells/s, default the round's), carry (cells/s added: the
+  // thrower's own velocity), kind (named in the events), onStrike({ sim, hit,
+  // dir }) to hand over something other than the slug.
   // Returns the round's id, or 0 if MAX_ROUNDS are already in flight.
-  function fire(origin, dir, gravityScale = 1) {
+  function fire(origin, dir, gravityScale = 1, { speed = ROUND_SPEED, carry = null, kind = 'round', onStrike = null } = {}) {
     if (rounds.length >= MAX_ROUNDS) return 0;
+    const v0 = dir.clone().normalize().multiplyScalar(speed);
+    if (carry) v0.add(carry);
     const r = {
-      id: nextId++, alive: true,
-      p0: origin.clone(), v0: dir.clone().normalize().multiplyScalar(ROUND_SPEED),
+      id: nextId++, alive: true, kind, onStrike,
+      p0: origin.clone(), v0,
       g: new THREE.Vector3(0, -ROUND_GRAVITY * gravityScale, 0),
       t: 0,              // s of flight so far
       tShown: 0,         // s of flight round:move has shown
@@ -253,8 +265,9 @@ export function createBallistics({ renderer }) {
   function strike(sim, r) {
     const h = r.hit;
     // (an answer that came late finds the round already past the hit: nothing left to show)
-    if (h.t > r.tShown) povEvents.emit('round:move', { id: r.id, from: r.shown.clone(), to: h.point.clone() });
+    if (h.t > r.tShown) povEvents.emit('round:move', { id: r.id, kind: r.kind, from: r.shown.clone(), to: h.point.clone() });
     const dir = velAt(r, h.t).normalize();
+    if (r.onStrike) { r.onStrike({ sim, hit: h, dir, normal: new THREE.Vector3(...NORMALS[h.face]) }); end(r); return; }
     const vel = slugVelocity(dir);
     const normal = new THREE.Vector3(...NORMALS[h.face]);
     // what the engine will test: ½·DENS·vn², vn the slug's speed into the face
@@ -301,7 +314,7 @@ export function createBallistics({ renderer }) {
         // shown only as far as the traces have cleared: a round never flies through what it hit
         const tAt = Math.min(r.t, r.tClear, r.hit ? r.hit.t : Infinity);
         const at = posAt(r, tAt);
-        povEvents.emit('round:move', { id: r.id, from: r.shown.clone(), to: at.clone() });
+        povEvents.emit('round:move', { id: r.id, kind: r.kind, from: r.shown.clone(), to: at.clone() });
         r.shown.copy(at); r.tShown = tAt;
         // out of the box, with every trace of its path back and clear
         if (!r.hit && !inBox(at, sim.g) && !r.pending.length

@@ -137,6 +137,10 @@ const PRESETS = {
   pourLoop: [.45, 0, 300, , 1, 0, 4, 1, , , , , .07, 6, , , , .7, , .25, -1600],
   // axe swing: an airy whoosh that rises through the swing
   swoosh: [.5, .1, 140, .06, .04, .14, 4, 1, 4, , , , , 6, , , , .7, , , -900],
+  // blowtorch burning (loops): a steady high-passed roar of noise with a slight flutter
+  torchLoop: [.35, 0, 200, , 1, 0, 4, 1, , , , , , 12, , , , .9, , .08, 900],
+  // a bomb going off: a deep noise burst sliding down, a long crushed tail
+  boom: [2, .1, 70, .01, .25, 1.3, 4, 1.5, -0.3, , , , , 1.2, , .4, , .4, .15, , -700],
   // a tool that can't (WALL, a full bucket): a dull, dead clunk
   refuse: [.7, .05, 110, , .02, .09, 1, 2, -2, , , , , .5, , , , .5],
   // physgun grab: a rising electric zap
@@ -171,7 +175,7 @@ const PRESETS = {
   death: [.8, 0, 220, .02, .3, .6, 2, 1, -2, , , , , , , .2, , .6, , , -1200],
 };
 // presets that play as seamless loops (one render each)
-const LOOPS = new Set(['pourLoop', 'physHum']);
+const LOOPS = new Set(['pourLoop', 'physHum', 'torchLoop']);
 
 // ---- material families: which sound a struck element makes
 const FAMILY_BY_KEY = {
@@ -411,6 +415,12 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
     play('shotEcho', { gain: ECHO_GAIN, delay: ECHO_DELAY_S });
   });
   povEvents.on('gun:dry', () => { if (live()) play('dryClick'); });
+  // a bomb's charge went off: the boom where it is, and its echo off the far walls
+  povEvents.on('blast', ({ point }) => {
+    if (!live()) return;
+    play('boom', { at: point ?? null });
+    play('shotEcho', { at: point ?? null, delay: ECHO_DELAY_S });
+  });
 
   povEvents.on('impact', ({ source, point, id, energy, broke }) => {
     if (!live()) return;
@@ -455,6 +465,9 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
         break;
       }
       case 'axe:swing': play('swoosh'); break;
+      case 'bomb:throw': play('swoosh'); break;
+      case 'blowtorch:on': loop('torchLoop', true); break;
+      case 'blowtorch:off': loop('torchLoop', false); break;
       case 'physgun:grab': play('physGrab'); loop('physHum', true); humSince = clock(); break;
       case 'physgun:fling': play('physFling'); loop('physHum', false); break;
       case 'physgun:release': play('physRelease'); loop('physHum', false); break;

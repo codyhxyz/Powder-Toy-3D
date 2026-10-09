@@ -369,7 +369,7 @@ export function createVfx(env) {
       }
     }),
     povEvents.on('round:move', (e) => {
-      if (!live() || !e.from || !e.to) return;
+      if (!live() || !e.from || !e.to || e.kind !== 'round') return;   // bullets streak; a thrown bomb is drawn by its tool
       tracer(toWorld(e.from, vA), toWorld(e.to, vB));
     }),
   ];

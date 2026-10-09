@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { prelude, quadVert } from './common.js';
 import { BODY_WIDTH } from '../pov/constants.js';
 
-// GPU passes for the POV axe, gun and physgun (src/pov/tools/*.tool.js).
+// GPU passes for the POV axe, gun, physgun and blowtorch (src/pov/tools/*.tool.js).
 //
 // Each is a full-grid ping-pong pass run through sim.pass(mat), like the
 // brush (paintFrag in passes.js): every texel copies its cell, and only the
@@ -119,6 +119,63 @@ void main() {
     oB.xyz = uDir * v;
   } else if (KIND[id] == K_POWDER) {
     oB.xyz = clamp(b.xyz + uDir * AXE_SHOVE * (1.0 - r2), -V_MAX, V_MAX);
+  }
+}
+`;
+
+// Blowtorch: a roofing torch's flame (propane in air), a cone from the nozzle
+// along the aim. Air in the cone becomes engine FIRE at the flame's
+// temperature, blown along the aim, and matter the flame touches is heated
+// toward that temperature; the engine does the rest (wood and powder light,
+// gunpowder goes off, ice and metal melt). Heat goes in as
+//   T += (FLAME_T − T) · (1 − exp(−HEAT_RATE · dt / CAP)),
+// so nothing gets hotter than the flame and a high heat capacity heats slowly.
+// HEAT_RATE stands in for the hot spot at the flame's tip, which a 30 cm cell
+// can't resolve (as physics.js KE_TO_HEAT does for impacts): wood lights in a
+// third of a second, a metal cell starts to melt in about ten.
+export const TORCH = {
+  FLAME_T: 1900,     // °C, propane–air adiabatic flame temperature
+  LENGTH: 4,         // cells (1.2 m), a roofing torch's flame
+  RADIUS0: 0.6,      // cells, the flame's radius at the nozzle
+  SPREAD: 0.2,       // cells of radius gained per cell along it
+  SPAWN: 0.5,        // chance per frame an air cell in the flame becomes fire
+  SPEED: 0.5,        // cells/step the flame's gas leaves along the aim (≈ 36 m/s)
+  HEAT_RATE: 0.15,   // 1/s × CAP: share of the gap to FLAME_T closed per second (see above)
+  BITE: 1,           // cells past the struck face the flame heats into
+};
+
+export const torchFrag = (g) => /* glsl */ `
+${head(g)}
+${defines('TORCH', TORCH)}
+uniform vec3 uNozzle;   // grid cells
+uniform vec3 uDir;      // unit aim
+uniform float uReach;   // cells along the aim to the struck face (the flame stops there), ≤ TORCH_LENGTH
+uniform float uDt;      // s this frame
+uniform uint uFrame;
+#define TORCH_RNG_SALT 0x70u   // keeps the torch's random draws apart from other passes'
+
+void main() {
+  ivec2 t = ivec2(gl_FragCoord.xy);
+  vec4 a = texelFetch(tA, t, 0);
+  vec4 b = texelFetch(tB, t, 0);
+  oA = a; oB = b;
+  ivec3 p = cellFromFrag(t);
+  if (p.y >= NY) return;
+  vec3 d = vec3(p) + 0.5 - uNozzle;
+  float along = dot(d, uDir);
+  if (along < 0.0 || along > uReach + TORCH_BITE) return;
+  float r = length(d - along * uDir);
+  float radius = TORCH_RADIUS0 + TORCH_SPREAD * along;
+  if (r > radius) return;
+  int id = eid(a);
+  uint rs = seed3(p, uFrame, TORCH_RNG_SALT);
+  if (isGasLike(id)) {
+    if (along > uReach || rnd(rs) > TORCH_SPAWN) return;
+    oA = vec4(float(E_FIRE), TORCH_FLAME_T, SPAWNLIFE[E_FIRE], rnd(rs) * SEED_MAX);
+    oB.xyz = uDir * TORCH_SPEED;
+  } else {
+    float k = 1.0 - exp(-TORCH_HEAT_RATE * uDt / CAP[id]);
+    oA.y = a.y + max(TORCH_FLAME_T - a.y, 0.0) * k;
   }
 }
 `;
