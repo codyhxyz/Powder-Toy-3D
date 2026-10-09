@@ -198,9 +198,9 @@ function createRig(env) {
 }
 
 // A material for meshes a tool adds to its model (the shovel's heap, the
-// bucket's liquid): lit by the pass's lights, like the models.
+// bucket's liquid): flat-shaded and lit by the pass's lights, like the models.
 export function heldMaterial(color) {
-  return new THREE.MeshStandardMaterial({ color, roughness: 1, metalness: 0 });
+  return new THREE.MeshLambertMaterial({ color, flatShading: true });
 }
 
 function setLayers(obj) {

@@ -5,7 +5,7 @@ import {
   persistentLoad, cellsNear, outsideBody, bodyExit, toStepVelocity, aimInReach, faceNormal, recolor,
 } from './transfer.js';
 import { povEvents } from '../events.js';
-import { attachModel } from '../models.js';
+import { attachModel, BUCKET_SIDES } from '../models.js';
 import { viewmodelRig, heldMaterial } from '../viewmodel.js';
 
 // Bucket (slot 2). Left-click dips it into the liquid you aim at; hold to keep
@@ -36,9 +36,9 @@ const HELD_POS = [0.8, -0.8, -1.8];  // right, down, ahead of the eye
 const HELD_TILT = 0.35;              // radians, the rim tips toward the eye
 const PAIL_FLOOR = 0.04;             // the pail's floor, as a share of the model's height from its bottom...
 const PAIL_RIM = 0.6;                // ...and its rim (the bail rises above it)
-const PAIL_BASE_R = 0.36;            // the pail's inner radius at the floor, as a share of the model's width...
-const PAIL_RIM_R = 0.46;             // ...and at the rim
-const SEGMENTS = 18;
+const PAIL_BASE_R = 0.32;            // the pail's inner radius at the floor, as a share of the model's width...
+const PAIL_RIM_R = 0.42;             // ...and at the rim
+const SEGMENTS = BUCKET_SIDES;       // the pail's sides, so the disc's edge lies along its walls
 
 const ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 9h14l-1.6 10.2a1.5 1.5 0 0 1-1.5 1.3H8.1a1.5 1.5 0 0 1-1.5-1.3z"/>'
   + '<path d="M5 9c0-3.5 3-5.5 7-5.5s7 2 7 5.5"/></svg>';

@@ -23,11 +23,12 @@ export function createToolbar({ views, settings, actions }) {
   const pause = btn('pause', 'Pause (Space)', actions.togglePause);
   const undo = btn('undo', 'Undo (⌘Z)', actions.undo);
   const recenter = btn('recenter', 'Reset camera (R)', actions.resetCamera);
+  const walk = btn('person', 'First-person mode (F)', actions.firstPerson);
   const shot = btn('camera', 'Save screenshot (P)', actions.screenshot);
   const gear = btn('gear', 'Settings (,)', actions.toggleSettings);
   const help = btn('help', 'Keyboard shortcuts (?)', actions.toggleHelp);
 
-  const bar = h('div.toolbar.panel', {}, viewBtn, h('span.sep'), pause, undo, recenter, shot, h('span.sep'), gear, help);
+  const bar = h('div.toolbar.panel', {}, viewBtn, h('span.sep'), pause, undo, recenter, walk, shot, h('span.sep'), gear, help);
 
   // ---- views popover ----
   const cards = views.map((v) => {

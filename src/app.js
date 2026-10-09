@@ -434,6 +434,7 @@ const actions = {
   undo,
   resetCamera: () => { rig.reset(); hud.toast('Camera reset'); },
   screenshot: () => { wantShot = true; },
+  firstPerson: () => { painting = false; pov?.toggle(); },
   toggleSettings: () => setSettingsOpen(!settingsPanel.isOpen),
   toggleHelp: () => help.setOpen(!help.isOpen),
   setView,
@@ -461,7 +462,7 @@ const settingsPanel = createSettings({
     ] },
     // a cost lever too: sim work grows with cells, ray marching with the grid's span
     { title: 'Lighting', rows: [
-      // the day keeps running from wherever this puts it
+      // the day is held at this hour (DAY.running)
       { type: 'slider', key: 'time', label: 'Time of day', min: 0, max: HOURS - TIME_STEP, step: TIME_STEP, def: DAY.startPhase * HOURS,
         fmt: fmtTime, onChange: (v) => { day.clock = phaseSteps(v / HOURS); updateSun(); } },
       // each costs GPU time; turning one off restores the softer probe-only light
@@ -686,7 +687,7 @@ addEventListener('keydown', (e) => {
   if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); return; }
   if (mod) return;
   const k = e.key;
-  if (k === 'f' || k === 'F') { if (!e.repeat) { painting = false; pov?.toggle(); } return; }
+  if (k === 'f' || k === 'F') { if (!e.repeat) actions.firstPerson(); return; }
   if (pov?.blocksKey(e)) return;   // POV owns movement, Space and the digits while active
   if (e.code === 'Space') { e.preventDefault(); setPaused(!settings.paused); }
   else if (k === '.') stepOnce = true;
@@ -863,9 +864,9 @@ function frame(now) {
   }
   if (!mp.isGuest && (!settings.paused || stepOnce)) {
     for (let i = 0; i < settings.steps; i++) sim.step();
-    day.clock += settings.steps;
+    if (DAY.running) day.clock += settings.steps;
     stepOnce = false;
-  } else if (mp.isGuest) day.clock += settings.steps;   // guests don't step: keep the day going at their own rate
+  } else if (mp.isGuest && DAY.running) day.clock += settings.steps;   // guests don't step: keep the day going at their own rate
   updateSun();
   if (settings.time !== timeShown) {
     timeShown = settings.time;
