@@ -30,6 +30,7 @@ const sizes = world ? ['world'] : opt('sizes', '128').split(',');
 const STEPS = +opt('steps', '200');   // steps per stretch
 const SEED = 12345;                   // Math.random seed (mulberry32, as tools/regress.mjs)
 const PAINT_STEPS = 24;               // strokes in the stretch that paints between single steps
+const TRANSFER_TAKES = 40;            // cells the transfer stage takes at most (a tool's load)
 const WORLD_MOVES = 6;                // window moves out along x, then as many back
 const WIN_STEP = 16;                  // cells per move (world/window.js)
 
@@ -54,7 +55,7 @@ for (const size of sizes) {
   await page.goto(`http://localhost:${port}/?size=${size}&preset=empty`);
   await page.waitForFunction(() => window.__app?.sim, null, { timeout: 60000 });
   for (const scene of scenes) {
-    const lines = await page.evaluate(async ({ scene, steps, noskip, paintSteps, worldMoves, winStep }) => {
+    const lines = await page.evaluate(async ({ scene, steps, noskip, paintSteps, worldMoves, winStep, TRANSFER_TAKES }) => {
       const a = window.__app, sim = a.sim, R = a.renderer, g = sim.g, gl = R.getContext(), THREE = a.THREE;
       a.settings.paused = true;
       const { createPacker, createUnpacker } = await import('/src/net/codec.js');
@@ -164,12 +165,11 @@ for (const size of sizes) {
       const { povCouplingFrag } = await import('/src/shaders/povBody.js');
       const { axeFrag, physgunFrag, physgunComFrag, toolPass, PHYS: GUN, PHYS_MODE } = await import('/src/shaders/povTools.js');
       const { handoffFrag } = await import('/src/shaders/povTrace.js');
-      const { createTransfer } = await import('/src/pov/tools/transfer.js');
-      const { TRANSFER_TAKE, TRANSFER_PUT } = await import('/src/shaders/transfer.js');
+      const { createTransfer, Load } = await import('/src/pov/tools/transfer.js');
       const { generatorFor } = await import('/src/world/gpu.js');
       const { runGenerator, bake } = await import('/src/constructions/runtime.js');
       const { BUILTINS } = await import('/src/constructions/builtins.js');
-      const { K, KIND } = await import('/src/elements.js');
+      const { K } = await import('/src/elements.js');
       const c = [g.nx / 2, g.ny * 0.6, g.nz / 2];
       window.__reseed();
       a.loadPreset(scene, false);
@@ -234,14 +234,14 @@ for (const size of sizes) {
       });
       sim.pass(handoff);
       hash('pov');
+      // the pack and trowel: take loose matter and solids out of a patch, put it back higher up
       const transfer = createTransfer({ renderer: R, getSim: () => sim });
+      const load = new Load(TRANSFER_TAKES);
       const cells = [];
-      for (let x = -3; x <= 3; x++) for (let z = -3; z <= 3; z++) cells.push([Math.floor(c[0]) + x, 3, Math.floor(c[2]) + z]);
-      const kinds = (1 << K.POWDER) | (1 << K.LIQUID) | (1 << K.SOLID);
-      const took = await transfer.run({ cells, mode: TRANSFER_TAKE, kinds, limit: 20 });
-      const items = [];
-      for (let i = 0; i < (took?.length ?? 0) / 4; i++) if (took[i * 4] >= 0 && KIND[took[i * 4]] !== K.SOLID) items.push(took.slice(i * 4, i * 4 + 4));
-      if (items.length) await transfer.run({ cells: cells.map(([x, y, z]) => [x, y + 20, z]), items, mode: TRANSFER_PUT, limit: items.length });
+      for (let x = -3; x <= 3; x++) for (let z = -3; z <= 3; z++) for (let y = 1; y <= 4; y++) cells.push([Math.floor(c[0]) + x, y, Math.floor(c[2]) + z]);
+      await transfer.take(load, { cells, kinds: [K.POWDER, K.LIQUID, K.SOLID] });
+      if (load.cells.length) await transfer.put(load, { cells: cells.map(([x, y, z]) => [x, y + 20, z]), vel: new V3(0, -0.2, 0) });
+      transfer.dispose();
       hash('transfer');
       run(steps / 2); hash('steps');
       // painting between single steps: every map but the first has one step and a write before it
@@ -253,7 +253,7 @@ for (const size of sizes) {
       run(steps); hash('steps');
       comTarget.dispose();
       return out;
-    }, { scene, steps: STEPS, noskip: args.includes('--noskip'), paintSteps: PAINT_STEPS, worldMoves: WORLD_MOVES, winStep: WIN_STEP });
+    }, { scene, steps: STEPS, noskip: args.includes('--noskip'), paintSteps: PAINT_STEPS, worldMoves: WORLD_MOVES, winStep: WIN_STEP, TRANSFER_TAKES });
     console.log(`# ${scene} ${size}${args.includes('--noskip') ? ' noskip' : ''}`);
     for (const l of lines) console.log(l);
   }
