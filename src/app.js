@@ -133,7 +133,8 @@ controls.dampingFactor = 0.12;
 controls.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE };
 controls.zoomToCursor = true;
 
-const floorGrid = new THREE.GridHelper(80, 80, 0x2b3240, 0x1b2029);
+const FLOOR_SPAN = 80;   // scene units the floor grid spans, a line every unit (a world's is stretched over it)
+const floorGrid = new THREE.GridHelper(FLOOR_SPAN, FLOOR_SPAN, 0x2b3240, 0x1b2029);
 floorGrid.position.y = -0.002;
 // GL lines are one rendered pixel wide: under TAAU that is 1/scale output pixels,
 // so the grid and the box outline fade by the render scale to keep their weight.
@@ -205,6 +206,11 @@ function build() {
   }
   // the grid starts centred on the scene's origin
   anchor.set(sim.origin.x + nx / 2, sim.origin.z + nz / 2);
+  // the floor grid: under a box, or across a world's whole footprint
+  const span = win ? [win.size[0] * scale, win.size[2] * scale] : [FLOOR_SPAN, FLOOR_SPAN];
+  floorGrid.scale.set(span[0] / FLOOR_SPAN, 1, span[1] / FLOOR_SPAN);
+  floorGrid.position.x = win ? (win.size[0] / 2 - anchor.x) * scale : 0;
+  floorGrid.position.z = win ? (win.size[2] / 2 - anchor.y) * scale : 0;
 
   const geo = new THREE.BoxGeometry(nx, ny, nz);
   geo.translate(nx / 2, ny / 2, nz / 2);
@@ -1158,6 +1164,8 @@ try {
       requestRender: () => pacer.wake(),
     });
   }
+  // a guest gets the host's box (multiplayer.js): opening an invite in World starts in a box, not the world
+  if (mp.joining && settings.size in WORLDS) settings.size = boxSize;
   build();
   rig.setSpeed(settings.camSpeed);
   selectTool(settings.tool);

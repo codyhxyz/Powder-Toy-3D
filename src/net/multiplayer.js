@@ -303,6 +303,7 @@ export function createMultiplayer({ renderer, scene, camera, hud, getSim, getVol
   return {
     get role() { return role; },
     get isGuest() { return role === 'guest'; },
+    get joining() { return role === 'guest' || joiningAs === 'guest'; },   // a guest, or on the way to being one
     get panelOpen() { return panelOpen; },
     closePanel,
 
