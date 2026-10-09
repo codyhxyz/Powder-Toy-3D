@@ -15,12 +15,15 @@ import * as THREE from 'three';
 // instead. That choice is made on the GPU too, from a share the caller computes
 // in an earlier pass, so nothing is read back.
 //
-// Every pass drawn this way (a material made with regionMaterial) draws
-// instance 0 as the full-screen quad and instance i > 0 as region i - 1, each
-// only when chosen. Its fragment shader is the pass's own: it sees gl_FragCoord
-// only, exactly as with a full-screen quad. A texel it skips keeps its value,
-// so a target that ping-pongs must already hold the same value in both copies
-// there.
+// Every pass drawn this way (a material made with regionMaterial, drawn with
+// Simulation.run(mat, target, quads)) draws instance 0 as the full-screen quad
+// and instance i > 0 as region i - 1, each only when chosen. Its fragment
+// shader is the pass's own: it sees gl_FragCoord only, exactly as with a
+// full-screen quad. A texel it skips keeps its value, so a target that
+// ping-pongs must already hold the same value in both copies there. A region
+// is coarser than what flags it: a pass whose output lasts beyond the frame
+// must not write a texel whose inputs this frame's passes didn't all compute
+// (the field passes' last stage discards outside its bricks).
 //
 // The caller describes its regions in GLSL (regionsGLSL), with any uniforms
 // they read (the flag and share textures):
