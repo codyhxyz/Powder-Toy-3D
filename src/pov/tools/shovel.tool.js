@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { ELEMENTS, K } from '../../elements.js';
 import { HAND_REACH } from '../constants.js';
 import {
-  persistentLoad, cellsNear, outsideBody, bodyExit, toStepVelocity, aimInReach, faceNormal, ballRadius, recolor, pinned,
+  pack, cellsNear, outsideBody, bodyExit, toStepVelocity, aimInReach, faceNormal, ballRadius, recolor, pinned,
 } from './transfer.js';
 import { povEvents } from '../events.js';
 import { trigger } from './action.js';
@@ -13,12 +13,14 @@ import { viewmodelRig, heldMaterial } from '../viewmodel.js';
 // time; on a breakable solid, the dig energy builds up until it beats the
 // cell's hardness and the cell comes up as its debris (ROCK → STONE, WOOD →
 // SAWDUST). WALL and CLONE don't break, and liquids run off the blade.
-// Right-click throws the whole load where you aim, or in front of you.
+// What comes up goes into the pack (transfer.js), the inventory the trowel
+// builds from. Right-click throws a bladeful (the newest BLADE_LOAD cells) where
+// you aim, or in front of you.
 //
 // Events: tool:action 'dig' (cells came up), 'dump' (cells landed) and 'refuse'
 // (won't break, or full), with the element, the point and the cell count.
 
-const SHOVEL_CAPACITY = 30;          // cells one load holds
+const BLADE_LOAD = 30;               // cells one throw takes from the pack (a bladeful)
 const SCOOP_RADIUS = 1.8;            // cells: a scoop of powder comes from this close to the aim cell
 const SCOOP_SINK = 1;                // cells: the blade bites this far under the surface it hits
 const SCOOP_INTERVAL = 0.25;         // s between scoops while the button is held
@@ -47,7 +49,7 @@ export default {
   key: 'SHOVEL', name: 'Shovel', slot: 1, icon: ICON, color: '#b08454',
   desc: 'Hold left-click to dig powder or break solids into debris. Right-click throws the load.',
   create(env) {
-    const load = persistentLoad('SHOVEL', SHOVEL_CAPACITY);
+    const load = pack();
     const transfer = env.transfer;
     const scoop = trigger(SCOOP_INTERVAL);   // powder scoops, hold to repeat
     let energy = 0, energyKey = '';
@@ -80,7 +82,7 @@ export default {
         center.addScaledVector(faceNormal(aim.face), -SCOOP_SINK);
         energy = 0;
         if (!go) return;
-        if (load.free <= 0) { if (!load.busy) refuse('The shovel is full: right-click to throw the load', aim.id); return; }
+        if (load.free <= 0) { if (!load.busy) refuse('Your pack is full: build with the trowel or right-click to throw', aim.id); return; }
         const p = transfer.take(load, { cells: cellsNear(center, SCOOP_RADIUS, g), kinds: [K.POWDER] });
         if (p) {
           scoop.fire();
@@ -93,7 +95,7 @@ export default {
         if (key !== energyKey) { energy = 0; energyKey = key; }
         energy = Math.min(energy + DIG_POWER * ctx.dt, el.hard * BREAK_MAX);
         const n = Math.min(Math.floor(energy / el.hard), load.free);
-        if (n < 1) { if (load.free <= 0 && !load.busy) refuse('The shovel is full: right-click to throw the load', aim.id); return; }
+        if (n < 1) { if (load.free <= 0 && !load.busy) refuse('Your pack is full: build with the trowel or right-click to throw', aim.id); return; }
         const p = transfer.take(load, {
           cells: cellsNear(center, BREAK_RADIUS, g), kinds: [K.SOLID], want: aim.id, breakDebris: true, limit: n,
         });
@@ -108,7 +110,7 @@ export default {
     }
 
     function dump(ctx, aim) {
-      const n = load.cells.length;
+      const n = Math.min(load.cells.length, BLADE_LOAD);
       if (!n) return;
       const feet = ctx.player?.pos;
       const clear = feet ? outsideBody(feet, BODY_CLEARANCE) : null;
@@ -127,8 +129,8 @@ export default {
       const cells = cellsNear(center, ballRadius(n * DUMP_SLACK), ctx.sim.g, keep);
       const v = ctx.dir.clone().multiplyScalar(THROW_SPEED);
       if (ctx.player?.vel) v.add(ctx.player.vel);
-      const id = load.mainId, at = pinned(center, ctx.sim);
-      transfer.put(load, { cells, vel: toStepVelocity(v, ctx) })
+      const id = load.cells.at(-1)[0], at = pinned(center, ctx.sim);   // the dump's sound stays where it happened (D11)
+      transfer.put(load, { cells, max: n, vel: toStepVelocity(v, ctx) })
         ?.then((landed) => { if (landed) act('dump', { id, point: at(), amount: landed }); });
     }
 
@@ -140,8 +142,8 @@ export default {
         if (load.version !== heapVersion) {
           heapVersion = load.version;
           heap.visible = load.cells.length > 0;
-          if (heap.visible) recolor(heap, ELEMENTS[load.mainId].color);
-          heap.scale.setScalar(Math.max(HEAP_MIN, load.cells.length / SHOVEL_CAPACITY));
+          if (heap.visible) recolor(heap, ELEMENTS[load.cells.at(-1)[0]].color);   // the newest, which a throw takes first
+          heap.scale.setScalar(Math.max(HEAP_MIN, Math.min(1, load.cells.length / BLADE_LOAD)));
         }
         const aim = aimInReach(ctx, HAND_REACH);
         const go = scoop.ready(ctx);

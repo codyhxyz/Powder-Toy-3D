@@ -44,8 +44,8 @@ export function createHud() {
       readout.style.left = '0'; readout.style.top = '0';
       chip.style.background = info.color;
       setText(name, info.name);
-      setText(temp, `${info.T.toFixed(1)} °C`);
-      setText(pres, Math.abs(info.P) >= PRESSURE_SHOWN ? `pressure ${info.P.toFixed(1)}` : '');
+      setText(temp, info.T == null ? (info.note ?? '') : `${info.T.toFixed(1)} °C`);
+      setText(pres, info.P != null && Math.abs(info.P) >= PRESSURE_SHOWN ? `pressure ${info.P.toFixed(1)}` : '');
     },
     setPaused: (p) => pill.classList.toggle('show', p),
     toast(text) {

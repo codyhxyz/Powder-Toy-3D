@@ -4,8 +4,8 @@
 body.pov-on .dock,
 body.pov-on .dock-tab,
 body.pov-on .card,
-body.pov-on .hint,
-body.pov-on .readout { opacity: 0 !important; pointer-events: none !important; }
+body.pov-on .hint { opacity: 0 !important; pointer-events: none !important; }
+/* the hover readout stays: in POV it's the held tool's (app.js shows it only then) */
 body.pov-on .dock { transform: translate(-50%, calc(100% + 30px)); }
 body.pov-on .brand { opacity: 0.35; transition: opacity 300ms; }
 body.pov-locked canvas { cursor: none; }
@@ -19,14 +19,6 @@ body.pov-locked canvas { cursor: none; }
 
 /* ---- screen effects (opacity driven by what the body feels) */
 .pov-fx { position: absolute; inset: 0; opacity: 0; transition: opacity 120ms linear; }
-.pov-water {
-  --liq: #2a6fb0;
-  background:
-    radial-gradient(130% 100% at 50% 40%, color-mix(in srgb, var(--liq) 22%, transparent) 0%, color-mix(in srgb, var(--liq) 55%, rgba(4, 8, 14, 0.85)) 100%),
-    linear-gradient(180deg, color-mix(in srgb, var(--liq) 18%, transparent), color-mix(in srgb, var(--liq) 30%, rgba(0, 0, 0, 0.5)));
-  mix-blend-mode: normal;
-  transition: opacity 90ms linear;
-}
 .pov-heat {
   background: radial-gradient(120% 95% at 50% 55%, transparent 48%, rgba(255, 120, 30, 0.35) 72%, rgba(255, 70, 10, 0.75) 100%);
   mix-blend-mode: screen;
@@ -99,6 +91,11 @@ body.pov-locked canvas { cursor: none; }
 .pov-breath .pov-ic svg { fill: none; stroke: #7cc4ff; stroke-width: 1.4; }
 .pov-breath .pov-fill { background: linear-gradient(90deg, #3d8fd6, #7cc4ff); transition: transform 120ms linear; }
 .pov-breath.low .pov-fill { background: linear-gradient(90deg, #6b4fd6, #b08cff); }
+.pov-jet { display: none; }
+.pov-jet.show { display: flex; animation: pov-in 200ms var(--ease); }
+.pov-jet .pov-ic svg { fill: #ffa94d; }
+.pov-jet .pov-fill { background: linear-gradient(90deg, #e8590c, #ffc078); transition: transform 90ms linear; }
+.pov-jet.low .pov-fill { background: linear-gradient(90deg, #c92a2a, #ff8787); }
 @keyframes pov-in { from { opacity: 0; transform: translateY(4px); } }
 
 /* ---- pointer-lock prompt */

@@ -5,6 +5,7 @@ import {
 } from 'three.quarks';
 import { ELEMENTS, E, K } from '../elements.js';
 import { povEvents } from './events.js';
+import { JET_NOZZLES } from './figure.js';
 
 // POV effects, with three.quarks: muzzle flash (and a short light), sparks,
 // dust and chips, splash mist and tracers. Cosmetic only: the real debris,
@@ -26,6 +27,8 @@ const DEBRIS_MAX = 64;
 const CHIP_MAX = 48;
 const MIST_MAX = 96;
 const TRACER_MAX = 48;
+const JET_MAX = 90;
+const JET_SMOKE_MAX = 60;
 
 // ---- muzzle flash
 const FLASH_LIFE = 0.055;               // s
@@ -96,6 +99,23 @@ const TRACER_LIFE = 0.07;               // s
 const TRACER_WIDTH = 0.12;              // cells
 const TRACER_COLOR = [5, 3.2, 1.4];     // HDR
 const TRACER_NEAR = 2.5;                // cells: the part of a segment closer than this to the camera isn't drawn
+
+// ---- jetpack exhaust: flame licks and a smoke trail out of each nozzle
+const JET_RATE = 70;                    // flame particles/s per nozzle
+const JET_SMOKE_RATE = 14;              // smoke puffs/s per nozzle
+const JET_SPEED = [10, 18];             // cells/s, down out of the nozzle
+const JET_SPREAD = 0.12;                // share of the speed thrown sideways at most
+const JET_LIFE = [0.08, 0.16];          // s
+const JET_SIZE = [0.35, 0.6];           // cells across
+const JET_COLOR = [6, 2.6, 0.7];        // HDR, orange flame
+const JET_SMOKE_COLOR = [0.42, 0.4, 0.4];
+const JET_SMOKE_SPEED = [4, 8];         // cells/s, down
+const JET_SMOKE_GRAVITY = -8;           // cells/s²: hot smoke rises once it slows
+const JET_SMOKE_DRAG = 4;               // 1/s
+const JET_SMOKE_SIZE = [0.4, 0.7];      // cells across at birth
+const JET_SMOKE_GROW = 3;
+const JET_SMOKE_LIFE = [0.5, 0.9];      // s
+const JET_SMOKE_ALPHA = 0.4;
 
 // ---- textures
 const TEX_SIZE = 64;                    // px square
@@ -199,10 +219,13 @@ export function createVfx(env) {
   system('chip', { max: CHIP_MAX, material: dotNormal, behaviors: [FADE_OUT()] });
   system('mist', { max: MIST_MAX, material: dotNormal, behaviors: [FADE_OUT()] });
   system('tracer', { max: TRACER_MAX, material: dotAdd, renderMode: RenderMode.StretchedBillBoard, behaviors: [FADE_SHARP()] });
+  system('jet', { max: JET_MAX, material: dotAdd, behaviors: [FADE_SHARP()] });
+  system('jetSmoke', { max: JET_SMOKE_MAX, material: dotNormal, behaviors: [FADE_OUT()] });
   // dust and mist puffs grow (from each particle's own start size); chips don't.
   // Systems with the same material and mode share one batch (one draw call).
   fx.debris.sys.addBehavior(GROW(DUST_GROW));
   fx.mist.sys.addBehavior(GROW(MIST_GROW));
+  fx.jetSmoke.sys.addBehavior(GROW(JET_SMOKE_GROW));
 
   const light = new THREE.PointLight(FLASH_LIGHT_COLOR, 0, 0, 2);
   light.name = 'pov-muzzle-light';
@@ -343,6 +366,32 @@ export function createVfx(env) {
     });
   }
 
+  // jetpack exhaust for dt seconds, out of the nozzles of a body at feet (grid) facing yaw
+  let jetAcc = 0, smokeAcc = 0;
+  const vN = new THREE.Vector3();
+  function jet(feet, yaw, dt, N = JET_NOZZLES) {
+    const s = env.getScale();
+    jetAcc += JET_RATE * dt;
+    smokeAcc += JET_SMOKE_RATE * dt;
+    const nFlame = Math.floor(jetAcc), nSmoke = Math.floor(smokeAcc);
+    jetAcc -= nFlame; smokeAcc -= nSmoke;
+    const bx = Math.sin(yaw), bz = Math.cos(yaw);   // behind the body (forward is −z at yaw 0)
+    for (const side of [-1, 1]) {
+      vN.set(feet.x + bx * N.back + bz * N.side * side, feet.y + N.up, feet.z + bz * N.back - bx * N.side * side);
+      const at = toWorld(vN, vP);
+      burst(fx.jet, nFlame, (p) => {
+        vV.randomDirection().multiplyScalar(JET_SPREAD); vV.y -= 1;
+        vV.multiplyScalar(randIn(JET_SPEED) * s);
+        setP(p, at, vV, randIn(JET_SIZE) * s, JET_COLOR, 1, randIn(JET_LIFE));
+      });
+      burst(fx.jetSmoke, nSmoke, (p) => {
+        vV.randomDirection().multiplyScalar(JET_SPREAD * 2); vV.y -= 1;
+        vV.multiplyScalar(randIn(JET_SMOKE_SPEED) * s);
+        setP(p, at, vV, randIn(JET_SMOKE_SIZE) * s, JET_SMOKE_COLOR, JET_SMOKE_ALPHA, randIn(JET_SMOKE_LIFE), JET_SMOKE_GRAVITY, JET_SMOKE_DRAG);
+      });
+    }
+  }
+
   // ---- events
   const live = () => env.isActive();
   const offs = [
@@ -369,7 +418,7 @@ export function createVfx(env) {
       }
     }),
     povEvents.on('round:move', (e) => {
-      if (!live() || !e.from || !e.to) return;
+      if (!live() || !e.from || !e.to || e.kind !== 'round') return;   // bullets streak; a thrown bomb is drawn by its tool
       tracer(toWorld(e.from, vA), toWorld(e.to, vB));
     }),
   ];
@@ -389,6 +438,8 @@ export function createVfx(env) {
       const n = Math.min(MIST_SPLASH_MAX, speed * MIST_SPLASH_PER_SPEED);
       mist(toWorld(feet, vA), n, vB.set(0, 1, 0), liquidId ?? E.WATER, MIST_SPLASH_RING);
     },
+    // the jetpack firing this frame: feet (grid), yaw (rad), dt (s), nozzles (the body's, JET_NOZZLES' shape)
+    jet(feet, yaw, dt, nozzles) { if (live()) jet(feet, yaw, dt, nozzles); },
     // every POV frame; true while anything is still showing (keep rendering)
     update(dt) {
       batch.update(dt);

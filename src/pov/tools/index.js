@@ -1,6 +1,7 @@
 import { createHotbar, HOTBAR_SLOTS } from './hotbar.js';
 import { sharedTransfer, emptyLoads } from './transfer.js';
 import { povEvents } from '../events.js';
+import { createBallistics } from '../ballistics.js';
 
 export { emptyLoads };
 
@@ -9,6 +10,8 @@ export { emptyLoads };
 //
 // Tools get the shell's env plus:
 //   env.transfer   the shared exact cell transfer (transfer.js)
+//   env.ballistics the shared projectiles (ballistics.js: the gun's rounds, the bomb): the toolbelt
+//                  flies them every frame whichever tool is held, and on its own clock while hidden
 //   env.feedback   the shared "can't" responses, the same for every tool:
 //                    toast(text)         a toast
 //                    notice(text)        a toast, at most once per NOTICE_INTERVAL per tool
@@ -23,6 +26,19 @@ const MS_PER_S = 1000;
 export function createToolbelt(env) {
   const hotbar = createHotbar();
   const transfer = sharedTransfer(env);
+  const ballistics = createBallistics({ renderer: env.renderer });
+  ballistics.prepare(env.getSim());
+  // Hidden (out of POV, dead) the toolbelt isn't updated, but what's in the air
+  // keeps flying until it lands, at the last frame's step rate.
+  let shown = false, lastSteps = 0, raf = 0, rafAt = 0;
+  function drive(now) {
+    raf = 0;
+    if (shown || !ballistics.count) return;
+    const dt = rafAt ? (now - rafAt) / MS_PER_S : 0;
+    rafAt = now;
+    ballistics.update({ sim: env.getSim(), dt, stepsPerFrame: lastSteps });
+    raf = requestAnimationFrame(drive);
+  }
   const tools = Array(HOTBAR_SLOTS).fill(null);   // { def, inst } per slot
 
   for (const [path, mod] of Object.entries(modules)) {
@@ -50,11 +66,12 @@ export function createToolbelt(env) {
         povEvents.emit('tool:action', { tool: def.key.toLowerCase(), action: 'refuse', ...extra });
       },
     };
-    tools[i] = { def, inst: def.create({ ...env, transfer, feedback }) };
+    tools[i] = { def, inst: def.create({ ...env, transfer, ballistics, feedback }) };
     hotbar.setTool(i, def);
   }
 
   let selected = DEFAULT_SLOT;
+  let readout = null;   // the selected tool's readout?.(ctx) from the last update
   hotbar.select(selected);
 
   function select(i) {
@@ -82,23 +99,32 @@ export function createToolbelt(env) {
   return {
     get selected() { return selected; },
     get transfer() { return transfer; },
+    get ballistics() { return ballistics; },
+    get readout() { return readout; },
     tool: (i) => tools[i]?.inst ?? null,
     select,
     update(ctx) {
       const cur = tools[selected]?.inst;
       if (ctx.wheel && !cur?.wantsWheel?.()) select(selected + Math.sign(ctx.wheel));
       tools[selected]?.inst.update(ctx);
+      readout = tools[selected]?.inst.readout?.(ctx) ?? null;
+      lastSteps = ctx.stepsPerFrame;
+      ballistics.update(ctx);
       tools.forEach((t, i) => hotbar.setStatus(i, t?.inst.status?.() ?? ''));
     },
     setVisible(v) {
       hotbar.setVisible(v);
-      if (!v) tools[selected]?.inst.deselect?.();
+      shown = v;
+      if (!v && ballistics.count && !raf) { rafAt = 0; raf = requestAnimationFrame(drive); }
+      if (!v) { tools[selected]?.inst.deselect?.(); readout = null; }
     },
     // The window moved over the world by (dx, 0, dz) cells (docs/scaling.md
     // D11): every tool, selected or not, moves the grid positions it keeps.
     windowShifted(dx, dz) { tools.forEach((t) => t?.inst.windowShifted?.(dx, dz)); },
     dispose() {
       removeEventListener('keydown', onKey, { capture: true });
+      if (raf) cancelAnimationFrame(raf);
+      ballistics.dispose();
       tools.forEach((t) => { t?.inst.deselect?.(); t?.inst.dispose?.(); });
       hotbar.dispose();
     },

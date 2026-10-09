@@ -129,6 +129,16 @@ export class Load {
   }
 }
 
+// The pack: the player's inventory of loose matter. The shovel digs into it, the
+// trowel builds from it and the shovel throws from it. Liquids go in the bucket.
+export const PACK_KEY = 'PACK';
+export const PACK_CAPACITY = 1000;   // cells (≈ 27 m³ at 30 cm cells: about 37 trowel blocks)
+export const pack = () => persistentLoad(PACK_KEY, PACK_CAPACITY);
+// what the pack holds, by element: [[id, count], ...], most first
+export function packContents(load = pack()) {
+  return Object.entries(load.totals()).map(([id, n]) => [+id, n]).sort((a, b) => b[1] - a[1]);
+}
+
 const loads = new Map();
 // The load a tool keeps across toolbelts (POV sessions): one per key.
 export function persistentLoad(key, capacity) {
@@ -265,16 +275,23 @@ export function createTransfer({ renderer, getSim }) {
       });
     },
 
-    // Place up to `max` cells from `load` (the most recently loaded first) into
-    // the empty cells among `cells` (nearest first), moving at `vel` cells/step.
-    // Returns a promise of how many landed; the rest go back into the load.
-    put(load, { cells, max = Infinity, vel }) {
-      const n = Math.min(max, load.cells.length, TRANSFER_SLOTS);
+    // Place up to `max` cells from `load` (the most recently loaded first; only
+    // element `id`, if given) into the empty cells among `cells` (nearest first),
+    // moving at `vel` cells/step. Returns a promise of how many landed; the rest
+    // go back into the load.
+    put(load, { cells, max = Infinity, vel, id = ANY_ID }) {
+      const picked = [];   // indices into load.cells, newest first
+      const want = Math.min(max, TRANSFER_SLOTS);
+      for (let i = load.cells.length - 1; i >= 0 && picked.length < want; i--) {
+        if (id === ANY_ID || load.cells[i][0] === id) picked.push(i);
+      }
+      const n = picked.length;
       if (n <= 0) return null;
-      const items = load.cells.slice(load.cells.length - n).reverse();
+      const items = picked.map((i) => load.cells[i]);
       const p = run({ cells, items, mode: TRANSFER_PUT, limit: n, vel });
       if (!p) return null;
-      load.cells.length -= n;
+      const out = new Set(picked);
+      load.cells = load.cells.filter((_, i) => !out.has(i));
       load.out += n;
       load.version++;
       return p.then((buf) => {
@@ -329,6 +346,39 @@ export function faceNormal(face, out = new THREE.Vector3()) {
   out.set(0, 0, 0);
   out.setComponent(Math.floor(face / 2), face % 2 === 0 ? 1 : -1);
   return out;
+}
+
+const MUZZLE_SEARCH = 16;           // cells walked along the ray by muzzleCell
+
+// First cell along eye + t·dir that doesn't overlap the body box (feet at
+// pos, BODY_WIDTH square, BODY_HEIGHT tall), by grid DDA: { cell, t, path },
+// t the ray distance at which it enters that cell and path every cell from
+// the eye's to it. null if none within MUZZLE_SEARCH cells or it is outside
+// the grid.
+// (the gun's muzzle, where a thrown bomb leaves the hand)
+export function muzzleCell(eye, dir, pos, g) {
+  const half = BODY_WIDTH / 2;
+  const lo = [pos.x - half, pos.y, pos.z - half], hi = [pos.x + half, pos.y + BODY_HEIGHT, pos.z + half];
+  const o = [eye.x, eye.y, eye.z], d = [dir.x, dir.y, dir.z];
+  const c = o.map(Math.floor);
+  const step = d.map(Math.sign);
+  const tDelta = d.map((v) => (v === 0 ? Infinity : Math.abs(1 / v)));
+  const tMax = d.map((v, k) => (v === 0 ? Infinity : ((v > 0 ? c[k] + 1 : c[k]) - o[k]) / v));
+  const overlaps = () => c.every((v, k) => v < hi[k] && v + 1 > lo[k]);
+  const path = [];
+  let t = 0;
+  for (let i = 0; i < MUZZLE_SEARCH; i++) {
+    path.push(new THREE.Vector3(...c));
+    if (!overlaps()) {
+      const inGrid = c[0] >= 0 && c[1] >= 0 && c[2] >= 0 && c[0] < g.nx && c[1] < g.ny && c[2] < g.nz;
+      return inGrid ? { cell: new THREE.Vector3(...c), t, path } : null;
+    }
+    const k = tMax[0] < tMax[1] ? (tMax[0] < tMax[2] ? 0 : 2) : (tMax[1] < tMax[2] ? 1 : 2);
+    t = tMax[k];
+    c[k] += step[k];
+    tMax[k] += tDelta[k];
+  }
+  return null;
 }
 
 // Radius of a ball of n cells.

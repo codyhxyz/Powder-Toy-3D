@@ -13,10 +13,24 @@
   (the same a = −∇P/ρ the sim uses). Heat, cold, acid, lava, drowning, being buried and hard falls hurt.
   You die, the camera pulls back with the cause ("Killed by lava, 1,140 °C"), and you respawn at the drop-in
   point.
+- **Jetpack** (Noita's levitation): hold `Space` in the air to fly. Movement is Noita's player (player.xml values scaled by body height: 5.4 g, a 1.9 m jump, an 8.6 m/s run): velocity eases a fixed share per frame toward the wished speed instead of being pushed by forces. The jet eases the climb toward 14 m/s with gravity off while it fires,
+  the tank holds 3 s of thrust and recharges as Noita's does (its player.xml values): full in 0.5 s on the ground, and in the air at 0.4 s per s once the jet has been off for 0.63 s; every tap burns at least 8 frames. The fuel bar
+  shows under health while it isn't full. Swimming strokes take over in deep liquid. The exhaust is cosmetic
+  (vfx.js `jet`), with a roar loop (audio.js `jetLoop`).
+- **The body** (setting: Wizard | Realistic | Stickman, key `character`): Wizard is the default, drawn the
+  way Castle Crashers draws its people (figureCrasher.js): a huge round head lost in a floppy pointed hood,
+  the face a black shadow with two glowing eyes (the game's Evil Wizard), a stubby robed body with mittens,
+  a brass jetpack that flames while it fires, inverted-hull outlines and two-tone cel shading. It is the
+  stickman's rig and animation with another look (`createFigure(build)`; a look can ask for `outline`,
+  `toon`, glowing parts, `flames` and its own `nozzles` for the exhaust). Realistic is the skinned
+  mannequin dressed as a wizard, a pointed hat and a robe skinned to its skeleton (garb.js: the robe's
+  weights are transferred from the nearest body vertices and eased toward the pelvis below the hips).
+  Stickman stands in while it loads. The jet exhaust leaves from the small of the back (`JET_NOZZLES`).
 - **Physical, finite tools on a Minecraft-style hotbar** (keys `1`–`9` and the scroll wheel in POV). God powers
   (infinite painting) stay in god view, one `F` away.
-  1. **Shovel**: digs one load of powder, or breaks solids into their debris (slower the harder they are;
-     WALL refuses). Right-click dumps the load where you aim.
+  1. **Shovel**: digs powder, or breaks solids into their debris (slower the harder they are; WALL
+     refuses), into the **pack** (the inventory, `transfer.js` `pack()`, 1,000 cells). Right-click throws a
+     bladeful from it where you aim.
   2. **Bucket**: scoops a load of liquid, and right-click pours it out. A bucket of lava is allowed.
   3. **Axe**: a short-range swing that breaks breakable solids in a wide, shallow patch into debris. It's
      weaker and less focused than the gun, and chops trees and smashes windows.
@@ -26,8 +40,18 @@
   5. **Physgun**: a force beam on loose matter (powders, liquids, gases). Hold left-click to grab a ball of
      stuff at the aim point and carry it around floating, right-click to fling it, release to drop it. It
      can't lift solids (no rigid bodies).
+  6. **Trowel**: builds Minecraft-style 1 m blocks (3³ cells on a fixed lattice) from the pack against the
+     face you aim at; right-click picks the material. The cells are the pack's own, so a sand block slumps.
+  7. **Scanner**: the god view's hover readout at the crosshair, at any range: material, temperature,
+     pressure, distance.
+  8. **Blowtorch**: hold for a roofing torch's flame: engine FIRE at 1,900 °C blown along the aim, and what it
+     touches heats toward that (shaders/povTools.js TORCH). The engine lights wood, sets off gunpowder,
+     melts metal.
+  9. **Bomb**: a thrown pipe bomb (18 m/s plus yours, 1 g, on the shared projectiles) that becomes a 5³
+     charge of gunpowder where it lands, lit by one detonator cell so the burn runs through it as a wave
+     and the blasts stack; the blast is the engine's.
 - Mouse look with pointer lock. `V` toggles first and third person. A crosshair, health and breath bars, and
-  screen effects for what the body feels: heat glow at the edges, frost, a murky tint underwater, a red flash
+  screen effects for what the body feels: heat glow at the edges, frost, a red flash
   when hurt.
 - Cut for now: NPCs, inventory or crafting, ammo, multiplayer POV (guests get a toast), audio,
   physgun on solids.
@@ -91,6 +115,7 @@ player.update(dt, input)                  // every POV frame; input = {
 player.pos, player.vel                    // feet position (grid), velocity (cells/s)
 player.onGround, player.inLiquid, player.headInLiquid, player.liquidId
 player.health, player.breath              // 0..1
+player.jetFuel, player.jetting            // jetpack tank 0..1, firing this frame
 player.feel = { heat, cold, acid, hurt }  // 0..1 intensities for screen effects (hurt decays after a hit)
 player.dead, player.cause                 // cause: 'Killed by lava, 1,140 °C'
 player.applyImpulse(dv /* cells/s */)
@@ -137,6 +162,7 @@ export default {
                           // the tool keeps by (-dx, 0, -dz), so it stays put in the world (the gun's rounds
                           // in the air, the physgun's hold point). A point an async result reports later
                           // is pinned at the time with transfer.js pinned(point, sim).
+    readout?(ctx),        // { name, color, T?, P?, note? } shown beside the crosshair (ui/hud.js showReadout), or null
     dispose?(),
   }
 }
@@ -152,6 +178,11 @@ export default {
   the view punch (feel.js, Source's ViewPunch spring). Add a row to `HIT` for a new tool.
 - `env.feedback.notice(text)` / `refuse(text, { id, point })`: the throttled "can't" toast, slot shake and
   `tool:action 'refuse'`.
+- `readout?(ctx)`: text beside the crosshair, in the god view's hover chip (the scanner, the trowel's material).
+- `env.ballistics`: the shared projectiles; `fire(origin, dir, gravityScale(sim), { speed, carry, kind,
+  onStrike })` flies anything ballistic (the gun's rounds, the bomb) and the toolbelt keeps it flying.
+- `transfer.js` `muzzleCell()`: where something leaves the hand (the first cell clear of the body).
+- `transfer.js` `pack()`: the shared inventory of loose matter; `put(load, { id })` places one element of it.
 
 `ctx` is built by the body module every frame in POV:
 
@@ -182,14 +213,16 @@ say world. Emitters own their event names. Listeners never mutate payloads.
 
 | Event | Emitted by | Payload |
 |---|---|---|
+| `blast` | bomb | `{ point }` grid. A charge was set off there (sound, shake). |
 | `punch` | `rig.hit` (viewmodel.js `HIT`) | `{ pitch, yaw }` rad, + up and + left. Throws the view punch (feel.js). |
 | `gun:fire` | gun | `{ origin, dir, muzzleWorld }`. The round left the muzzle (origin grid, dir unit; muzzleWorld is the viewmodel muzzle in world space, for the flash). |
 | `gun:dry` | gun | `{}`. The trigger clicked but nothing fired (muzzle blocked). |
-| `round:move` | gun | `{ id, from, to }`. A round in flight moved this frame (grid), for tracers. |
-| `round:end` | gun | `{ id }`. The round is gone (impact or out of the box). |
+| `round:move` | gun, bomb | `{ id, kind, from, to }` (kind 'round' or 'bomb'). A round in flight moved this frame (grid), for tracers. |
+| `round:end` | gun, bomb | `{ id, kind }`. The round is gone (impact or out of the box). |
 | `impact` | gun, axe | `{ source: 'gun'\|'axe', point, normal, id, energy, broke }`. Something was struck. id is the element hit, energy is ½·DENS·v² in sim units, and broke is true/false when the striker knows, else null. |
-| `tool:action` | shovel, bucket, axe, physgun | `{ tool, action, id?, point?, amount? }`. tool is 'shovel'\|'bucket'\|'axe'\|'physgun'; action is 'dig'\|'dump'\|'scoop'\|'pour'\|'swing'\|'refuse'\|'grab'\|'fling'\|'release'. Physgun 'hold' state is read from the tool, not an event. |
+| `tool:action` | shovel, bucket, axe, physgun, trowel, blowtorch, bomb | `{ tool, action, id?, point?, amount? }`. tool is 'shovel'\|'bucket'\|'axe'\|'physgun'\|'trowel'\|'blowtorch'\|'bomb'; action is 'dig'\|'place'\|'on'\|'off'\|'throw'\|'dump'\|'scoop'\|'pour'\|'swing'\|'refuse'\|'grab'\|'fling'\|'release'. Physgun 'hold' state is read from the tool, not an event. |
 | `player:step` | shell (camera bob cycle) | `{ speed, inLiquid }`. A footfall. |
+| `player:jet` | player | `{ on }`. The jetpack lit or went out. |
 
 The player's own events (`player.on('hurt'|'death'|'land'|'splash')`) stay as they are; listeners subscribe there too.
 

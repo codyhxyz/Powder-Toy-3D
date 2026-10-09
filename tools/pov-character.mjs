@@ -42,7 +42,8 @@ const weights = () => ev(() => {
 const top = (w) => Object.entries(w).sort((a, b) => b[1] - a[1])[0]?.[0];
 const setFigure = (v) => ev((v) => document.querySelector(`.drawer button[data-value="${v}"]`).click(), v);
 
-check('defaults to realistic', (await ev(() => window.__app.settings.figure)) === 'real');
+check('defaults to the wizard', (await ev(() => window.__app.settings.character)) === 'wizard');
+await ev(() => { window.__app.settings.character = 'real'; });
 
 // ---- drop in, third person
 await p.mouse.move(W * 0.5, H * 0.62);
@@ -121,7 +122,7 @@ async function bodyBrightness() {
 const litReal = await bodyBrightness();
 await setFigure('stick');
 await settle(300);
-check('setting switches live to the stickman', (await ev(() => window.__app.pov.figure.showing)) === 'stick' && (await ev(() => window.__app.settings.figure)) === 'stick');
+check('setting switches live to the stickman', (await ev(() => window.__app.pov.figure.showing)) === 'stick' && (await ev(() => window.__app.settings.character)) === 'stick');
 const litStick = await bodyBrightness();
 const ratio = litReal.mean / Math.max(litStick.mean, 1);
 check('realistic body is lit (not black)', litReal.pixels > 200 && litReal.mean > 30, JSON.stringify(litReal));

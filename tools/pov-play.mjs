@@ -141,7 +141,7 @@ await settle(2500);
 await ev(() => { const a = window.__app; a.pov.player.spawn(a.pov.player.pos.clone().set(96, 10, 64)); a.pov.setLook(-Math.PI / 2, -0.3); });
 await slot(2);
 await settle(2500);
-const swim = await ev(() => { const pl = window.__app.pov.player; return { y: +pl.pos.y.toFixed(2), inLiquid: pl.inLiquid, head: pl.headInLiquid, breath: +pl.breath.toFixed(2), water: getComputedStyle(document.querySelector('.pov-water')).opacity }; });
+const swim = await ev(() => { const pl = window.__app.pov.player; return { y: +pl.pos.y.toFixed(2), inLiquid: pl.inLiquid, head: pl.headInLiquid, breath: +pl.breath.toFixed(2)}; });
 check('in the pool', swim.inLiquid, JSON.stringify(swim));
 await shot('underwater');
 const b0 = await named(await census());

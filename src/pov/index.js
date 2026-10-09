@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-import { ELEMENTS } from '../elements.js';
 import { BODY_HEIGHT, BODY_WIDTH, EYE_HEIGHT, HAND_REACH } from './constants.js';
 import { createPovCamera, ENTRY_PITCH, FIGURE_HIDE_DIST, RESPAWN_SWOOP_S, SWOOP_S } from './camera.js';
 import { createBody } from './figureReal.js';
@@ -153,7 +152,7 @@ export function createPov(app) {
   // ---- lazily built parts
   function ensureFigure() {
     if (!figure) {
-      figure = createBody({ choice: () => app.settings.figure });   // stickman or realistic, live
+      figure = createBody({ choice: () => app.settings.character });   // realistic or stickman, live
       scene.add(figure.root);
     }
     figure.bind(app.getVolume(), app.getSim().g);
@@ -410,8 +409,9 @@ export function createPov(app) {
     figure.update(dt, {
       feet: vFeet, scale, yaw: povCam.look.yaw, worldToGrid,
       speedH, velY: player.vel.y, onGround: player.onGround, inLiquid: player.inLiquid, headInLiquid: player.headInLiquid,
-      dead: deadSeen, deadTime, heat: player.feel?.heat ?? 0,
+      dead: deadSeen, deadTime, heat: player.feel?.heat ?? 0, jetting: player.jetting,
     });
+    if (player.jetting && mode === 'on') vfx?.jet(player.pos, povCam.look.yaw, dt, figure.nozzles);
     viewmodel.visible = mode === 'on' && !deadSeen && pose.eyeDist <= FIGURE_HIDE_DIST && !hudHidden;
 
     // the toolbelt
@@ -452,11 +452,9 @@ export function createPov(app) {
     if (vfx?.update(dt)) app.requestRender();
 
     // the HUD
-    const liq = player.headInLiquid ? ELEMENTS[player.liquidId] : null;
     povHud.update({
       dt, health: player.health, breath: player.breath, feel: player.feel,
-      headInLiquid: player.headInLiquid && mode === 'on',
-      liquidColor: liq?.color ?? null,
+      jetFuel: player.jetFuel, jetting: player.jetting,
       dead: deadSeen, cause: player.cause, respawnIn: RESPAWN_DELAY - deadTime,
       locked: isLocked(), swooping: mode !== 'on',
       aimValid: aim.valid, aimInReach: aim.valid && aim.dist <= HAND_REACH, third: povCam.third,
@@ -488,6 +486,8 @@ export function createPov(app) {
     get locked() { return isLocked(); },
     get player() { return player; },
     get toolbelt() { return toolbelt; },
+    // what the held tool shows next to the crosshair ({ name, color, T?, P?, note? } for ui/hud.js showReadout), or null
+    get readout() { return live() && mode === 'on' && toolbelt ? toolbelt.readout : null; },
     get figure() { return figure; },
     get vfx() { return vfx; },
     feel,

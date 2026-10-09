@@ -69,13 +69,13 @@ const DEFAULTS = {
   tool: E.SAND, radius: 5, shape: 0, rate: 1, replace: false,
   steps: 4, gravity: 0.025, paused: false,
   view: 0, camSpeed: 1, upscale: 'quality', dockCollapsed: false,
-  figure: 'real', povFov: POV_FOV, sensitivity: 1, viewBobbing: true, sprintMode: 'hold',
+  character: 'wizard', povFov: POV_FOV, sensitivity: 1, viewBobbing: true, sprintMode: 'hold',
   nearGI: true, glowLights: true, caustics: true,
   ...detailDefaults(),
   profiler: false,
 };
 const PERSIST = ['size', 'preset', 'tool', 'radius', 'shape', 'rate', 'replace', 'steps', 'gravity', 'view',
-  'camSpeed', 'upscale', 'dockCollapsed', 'figure', 'povFov', 'sensitivity', 'viewBobbing', 'sprintMode',
+  'camSpeed', 'upscale', 'dockCollapsed', 'character', 'povFov', 'sensitivity', 'viewBobbing', 'sprintMode',
   'nearGI', 'glowLights', 'caustics', ...DETAIL.map(settingKey), 'profiler'];
 const STORE = 'powder-toy-3d:settings';
 // Fixed look: glow is heat-driven light (×uLightGain); smoothing, TAA, bloom and
@@ -100,7 +100,7 @@ if (!knownSize(settings.size)) settings.size = DEFAULTS.size;
 let boxSize = settings.size in SIZES ? settings.size : DEFAULTS.size;
 if (!toolById(settings.tool)) settings.tool = DEFAULTS.tool;
 if (!VIEWS.some((v) => v.id === settings.view)) settings.view = 0;
-if (!['stick', 'real'].includes(settings.figure)) settings.figure = DEFAULTS.figure;
+if (!['wizard', 'real', 'stick'].includes(settings.character)) settings.character = DEFAULTS.character;
 settings.paused = false;
 
 let saveTimer = 0;
@@ -647,12 +647,14 @@ const settingsPanel = createSettings({
       { type: 'slider', key: 'camSpeed', label: 'Move speed (WASD)', min: 0.25, max: 3, step: 0.05, def: DEFAULTS.camSpeed,
         fmt: (v) => `${v.toFixed(2)}×`, onChange: (v) => { rig.setSpeed(v); save(); } },
     ] },
-    // The body you see in third person and when you die. The first graphics-level
-    // option: Stickman is the low setting, Realistic (a skinned, animated
-    // mannequin) the high one. It switches live, in POV too.
+    // The body you see in third person and when you die: Wizard (Castle
+    // Crashers-style, the default), Realistic (a skinned, animated mannequin
+    // in a wizard's hat and robe) or Stickman (the TPT homage). It switches
+    // live, in POV too. The key was 'body' before Wizard; the new key starts
+    // everyone on the default.
     { title: 'First person', rows: [
-      { type: 'seg', key: 'figure', options: [['stick', 'Stickman'], ['real', 'Realistic']],
-        onChange: (v) => { settings.figure = v; save(); pacer.wake(); } },
+      { type: 'seg', key: 'character', options: [['wizard', 'Wizard'], ['real', 'Realistic'], ['stick', 'Stickman']],
+        onChange: (v) => { settings.character = v; save(); pacer.wake(); } },
       // named as Minecraft names them
       { type: 'slider', key: 'sensitivity', label: 'Mouse Sensitivity', min: SENSITIVITY_RANGE[0], max: SENSITIVITY_RANGE[1], step: 0.05,
         def: DEFAULTS.sensitivity, fmt: (v) => `${Math.round(v * 100)}%`, onChange: save },
@@ -1133,7 +1135,11 @@ function frame(now) {
     requestPick();
   } else if (pov?.active) requestPick();   // the crosshair cell stays fresh for the tools
 
-  if (!pov?.active && pointerInside && !uiHover && hover.valid && hover.id >= 0 && !painting) {
+  const povReadout = pov?.active ? pov.readout : null;   // the held tool's (the scanner's, the trowel's)
+  if (povReadout) {
+    const r = renderer.domElement.getBoundingClientRect();
+    hud.showReadout(r.left + r.width / 2, r.top + r.height / 2, povReadout);
+  } else if (!pov?.active && pointerInside && !uiHover && hover.valid && hover.id >= 0 && !painting) {
     const el = ELEMENTS[hover.id];
     hud.showReadout(pointerClient[0], pointerClient[1], { name: el.name, color: el.color, T: hover.T, P: hover.P });
   } else {

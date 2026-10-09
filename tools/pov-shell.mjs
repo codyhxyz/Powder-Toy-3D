@@ -113,9 +113,9 @@ await ev(async () => {
   pl.breath = 0.4; pl.headInLiquid = true; pl.liquidId = E.WATER; pl.feel.cold = 0.2;
 });
 await frames(6);
-const hud2 = await ev(() => ({ breath: document.querySelector('.pov-breath').classList.contains('show'), water: getComputedStyle(document.querySelector('.pov-water')).opacity, liq: document.querySelector('.pov-water').style.getPropertyValue('--liq') }));
+const hud2 = await ev(() => ({ breath: document.querySelector('.pov-breath').classList.contains('show'), tint: !!document.querySelector('.pov-water') }));
 check('breath bar shows below full', hud2.breath);
-check('underwater tint on', hud2.water === '1', JSON.stringify(hud2));
+check('no screen tint underwater', !hud2.tint, JSON.stringify(hud2));
 await shot('pov-underwater');
 await ev(() => { const pl = window.__app.pov.player; pl.breath = 1; pl.headInLiquid = false; pl.liquidId = -1; pl.feel.cold = 0; pl.feel.heat = 0.8; pl._hurt(0.3); });
 await frames(2);   // (the flash decays: read it right away)

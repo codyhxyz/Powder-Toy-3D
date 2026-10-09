@@ -1,6 +1,6 @@
 import { RELAY_HTTP, LOCAL_RELAY } from './net/relay-url.js';
 
-// Player accounts. Signing in (Google or GitHub, through the relay's auth.js)
+// Player accounts. Signing in (Google, through the relay's auth.js)
 // raises the free AI's daily limit; everything else works the same signed out.
 //
 // The relay runs the OAuth flow and sends the page back with a session token in
@@ -39,7 +39,6 @@ export const PRIVACY_URL = '/privacy.html';
 // Sign-in buttons, in order. Only the ones the relay says are set up show (signInOptions).
 const SIGN_IN_PROVIDERS = [
   { id: 'google', label: 'Continue with Google' },
-  { id: 'github', label: 'Continue with GitHub' },
   ...(LOCAL_RELAY ? [{ id: 'dev', label: 'Dev sign-in' }] : []),
 ];
 
