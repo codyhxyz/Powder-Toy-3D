@@ -140,7 +140,7 @@ R16UI texture for vz and the flags (18 bytes per cell).
 
 Sleeping supertiles as implemented (`shaders/activity.js` superMapFrag, SUPER_MAP; `Simulation.step`):
 - **The supertile map.** Built with every activity map: one pass after the quiet map (and `noteAwake`), one byte
-  per channel per supertile, then a one-texel pass with each channel's share, which the vertex shaders read.
+  per channel per supertile, then each channel's share of supertiles (one texel), which the vertex shaders read.
   - AWAKE: a brick of the supertile is not quiet, or one just below it along x, y or z. At partition offset 1 a
     Margolus block belongs to the brick holding its base cell and reaches one cell past it, so a block based in
     the brick below moves cells of the supertile's low faces. (This was already so: the gather tests a block's
@@ -178,10 +178,40 @@ Sleeping supertiles as implemented (`shaders/activity.js` superMapFrag, SUPER_MA
   - Load, undo and the codec's unpack (multiplayer guests) rewrite the current copy alone: everything wakes.
 - **Regions.** One `RegionQuads` instance per supertile, culled in the vertex shader (`stepRegionsGLSL`): its
   SUPER_TEX square of the state atlas (and the flow field, which shares it), or its 16×8 texels of home blocks in
-  the block atlas, plus the block atlas's low-margin rows at partition offset 1. Above STEP_FULL_SHARE of a pass's
-  channel (a uniform, `sim.superU.uFullShare`), one full-screen quad. `sim.skipSleeping = false` draws
-  full-screen always (A/B).
-- **Proofs and timings:** owed (battery; see the session report).
+  the block atlas, plus the block atlas's low-margin rows at partition offset 1. Above STEP_FULL_SHARE (0.9) of a
+  pass's channel (a uniform, `sim.superU.uFullShare`), one full-screen quad. `sim.skipSleeping = false` draws
+  full-screen always (A/B). The shares come from two small passes (row counts, then their sum): one fragment
+  summing all 2048 supertiles cost ~0.03 ms a step in an empty world.
+- **The threshold** (`tools/sleep-crossover.mjs`, quiet M5, 128³, the two ways alternating at the same states): a
+  quad per drawn supertile costs 0.75 of one full-screen quad with 32% drawn, 0.86 at 49%, 0.91 at 73%, 0.98 at
+  87%, 1.02 at 97%, 1.06 at 100%. So 0.9.
+- **Proofs** (against `scale` at 562bb8b, bit for bit):
+  - `tools/state-hash.mjs` hashes, after every stage, the state cell by cell, the flow field, both state copies
+    texel by texel with their activity flags, and every activity map built since (inert and quiet). Identical for
+    lab, volcano and island at 128³, 64³ and wide, and `--world` (load, edits, six window moves out and six back:
+    shifts, fills, trees, stored edits, `syncCopies`). Stages: steps, every brush tool, replace and undo, codec
+    pack/unpack, readState/load, a stamp, the first-person passes (the body's coupling and the physgun with their
+    boxes, the axe, the gun's handoff), a pack/trowel take and put, and painting between single steps.
+  - `tools/regress.mjs`: settled, `--motion` and `--detail on`, every shot AE 0.
+  - `tools/activity-check.mjs`: lab, volcano, island, 300 maps each with every writer: 0 bricks differ.
+  - `tools/world-check.mjs` (1–4): the diff exact, 76/76 edited bricks back exactly and none different, seams
+    identical, a move's first frame 0.4% of pixels as before. `tools/derived-check.mjs`: every case identical.
+  - The body's coupling and the physgun change no cell outside the box they declare (checked on lab).
+- **Timings** (`tools/bench.mjs`, A = `scale`, B = this; ms per step, median of 7 interleaved rounds, quiet GPU):
+
+  | 128³ after 200 steps | supertiles drawn | A | B | B/A | B drawing every supertile |
+  |---|---|---|---|---|---|
+  | empty | 0% | 0.835 | 0.182 | 0.22 | 0.900 |
+  | island | 26% | 1.90 | 1.43 | 0.75 | 1.98 |
+  | lab | 39% | 2.21 | 1.81 | 0.82 | 2.36 |
+  | volcano | 45% | 2.23 | 1.96 | 0.87 | 2.51 |
+
+  The last column is timed after the B column each round, so a little later in the scene. In the empty world,
+  where nothing changes, drawing everything costs 8% more than the base (0.900 against 0.835 ms): the supertile
+  map's passes and the instanced draw. Above the threshold that is what a step pays.
+  What a world asleep still costs (empty, 0.18 ms a step): ~0.155 ms rebuilding the activity map every second
+  step (it reads every cell's flags), ~0.03 ms the four step passes with every quad culled. Awake supertiles cost
+  what they did: the gain is the early-outs of quiet bricks no longer drawn.
 
 ### D9. Derived passes are incremental where they can be
 Fields, bricks and light are rebuilt only for bricks that changed within their settle window (EMA), dilated by
