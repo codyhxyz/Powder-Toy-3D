@@ -4,6 +4,8 @@ import { lib } from './render.js';
 import { surfaceGLSL } from './gfx/surface.js';
 import { liquidGLSL } from './gfx/liquid.js';
 import { CELL_M } from '../scale.js';
+import { TREE, MID_TREES, HIGH_TREES } from '../world/generator.js';
+import { scaleFor } from '../constructions/runtime.js';
 
 // The far field (docs/scaling.md D11, "Far field"; phase W4): everything of a
 // massive world outside the simulated window, at brick resolution.
@@ -206,6 +208,301 @@ vec4 farPack(FarCount c) {
 }
 `;
 
+// ---------------------------------------------------------------- trees
+// The window plants the generator's trees (world/generator.js treesIn) as the
+// TREE constructions (constructions/builtins.js TREES) when their columns are
+// first visited. The far field places the same trees at world load, on the
+// GPU: a candidate per brick column (farTreeCandFrag, treeCandidate's twin),
+// thinned by the same rule (farTreeThinFrag), each drawn into the far grid as
+// its construction's shape at brick scale (farGenFrag). The constructions
+// draw from mulberry32 (runtime.js makeRng), whose i-th draw is a function of
+// the seed and i alone, and every draw before a shape that consumes draws per
+// cell (ball, a frayed disc) is a known count in: so each tree's height, an
+// oak's crowns, a pine's tiers and a palm's lean are its construction's own;
+// what comes after (crown sizes, birch clusters, fronds) takes the range's
+// middle. Keep the numbers below in step with constructions/builtins.js.
+export const TREE_VARIANTS = ['oak', 'birch', 'pine', 'palm', 'dead'];
+// Draw ranges and shares of a tree's height H, from constructions/builtins.js TREES.
+export const TREE_SHAPE = {
+  OAK_H: [21, 26],          // H = round(range(...) · T)
+  OAK_TRUNK: [0.36, 0.44],  // trunk height, share of H (draw 1)
+  OAK_TR: 1.1,              // trunk radius tr = max(0.5, OAK_TR · T), drawn tr + OAK_TR_PAD...
+  OAK_TR_PAD: 0.4,
+  OAK_FLARE: 1.6,           // ...and a root-flare disc of radius tr + OAK_FLARE (one draw per cell of its square)
+  OAK_CROWN_Y: 0.3,         // the first crown: above the trunk by this share of H
+  OAK_BRANCHES: [3, 5],     // branches (draws: count, then the first azimuth)
+  OAK_AZ_JITTER: 0.3,       // per branch: azimuth jitter (radians)...
+  OAK_EL: [0.5, 1.0],       // ...elevation (radians)...
+  OAK_DROP: [0, 2],         // ...start this many cells below the trunk's top...
+  OAK_LEN: [0.26, 0.36],    // ...length, share of H; a crown at its end
+  OAK_CROWN_R: 0.23,        // crown radius, share of H (the middle of 0.2..0.26)...
+  OAK_CROWN_SY: 0.75,       // ...squashed vertically
+  PINE_H: [26, 32],
+  PINE_Y0: [0.14, 0.22],    // lowest tier, share of H (draw 1)
+  PINE_R: [0.22, 0.27],     // tier radius at the bottom, share of H (draw 2)
+  PINE_TIERS: [4, 5.5],     // tiers · sqrt(T) (draw 3), at least PINE_TIERS_MIN
+  PINE_TIERS_MIN: 3,
+  PINE_TAPER: 0.9,          // a tier's radius: R (1 - u)^TAPER (1 - FLARE · phase) + TIP
+  PINE_FLARE: 0.5,
+  PINE_TIP: 0.6,
+  BIRCH_H: [28, 34],
+  BIRCH_CROWN_Y: 0.65,      // leaf clusters around the trunk from 0.4 H to 0.9 H: their middle...
+  BIRCH_CROWN_R: 0.17,      // ...their reach from the trunk, share of H...
+  BIRCH_CROWN_RV: 0.32,     // ...and half their height
+  PALM_H: [20, 25],
+  PALM_LEAN: [0.18, 0.32],  // the top leans this share of H toward a drawn azimuth (draws 1, 2)
+  PALM_FROND: 0.41,         // frond length, share of H (the middle of 0.36..0.46)...
+  PALM_CROWN_DROP: 0.12,    // ...the canopy's middle this share of a frond below the top...
+  PALM_CROWN_R: 0.85,       // ...its radius and half height, shares of a frond
+  PALM_CROWN_RV: 0.28,
+  DEAD_H: [17, 22],
+  DEAD_TRUNK: 0.42,         // the trunk: this share of H, radius max(0.5, T)
+  TOP: 1.15,                // a tree's shape stays below this share of H above its base...
+  REACH: [0.75, 0.3, 0.32, 0.85, 0.3],   // ...and within this share of H of its trunk, by kind (TREE_VARIANTS)
+};
+// A trunk's cross-section in cells: the lattice points a rod of radius r covers (runtime.js rod).
+const rodCells = (r) => { let n = 0; for (let x = -2; x <= 2; x++) for (let z = -2; z <= 2; z++) if (x * x + z * z <= r * r) n++; return n; };
+const TREE_SIZES = TREE.SIZE_MAX - TREE.SIZE_MIN + 1;
+const treeT = (k) => scaleFor(TREE.SIZE_MIN + k);
+// trunk cross-sections per variant and size: oak tr + pad, dead max(0.5, T), the rest single cells (r 0.5 at T ≤ 1)
+const trunkCells = (v, k) => {
+  const T = treeT(k), S = TREE_SHAPE;
+  if (v === 'oak') return rodCells(Math.max(0.5, S.OAK_TR * T) + S.OAK_TR_PAD);
+  if (v === 'dead') return rodCells(Math.max(0.5, T));
+  return 1;
+};
+// treeCandidate's choice of kind, generated from the zone tables
+const zoneGLSL = (zone) => zone.map(([v, w]) => `if (pick < ${glf(w)}) return TV_${v.toUpperCase()};`).join(' ');
+const treeGLSL = () => /* glsl */ `
+#define TREE_CHANCE ${glf(TREE.CHANCE)}
+#define TREE_SPACING ${glf(TREE.SPACING)}
+#define TREE_THIN_R ${Math.ceil(TREE.SPACING / BRICK)}      // brick columns a candidate's rivals stand within
+#define TREE_ABOVE_SEA ${glf(TREE.ABOVE_SEA)}
+#define TREE_SLOPE_MAX ${glf(TREE.SLOPE_MAX)}
+#define TREE_PALM_BELOW ${glf(TREE.PALM_BELOW)}
+#define TREE_PINE_ABOVE ${glf(TREE.PINE_ABOVE)}
+#define TREE_SNOW_GAP ${glf(TREE.SNOW_GAP)}
+#define TREE_REACH_B ${Math.ceil(TREE.REACH / BRICK)}       // brick columns a crown reaches from its trunk
+#define TREE_SIZES ${TREE_SIZES}
+#define TREE_UNIT16 (1.0 / 65536.0)   // a 16-bit hash field to [0, 1)
+#define TREE_NONE_LO 1e4              // band of a column with no tree in reach: empty
+#define TREE_NONE_HI (-1e4)
+#define TREE_VARIANTS ${TREE_VARIANTS.length}
+${TREE_VARIANTS.map((v, i) => `#define TV_${v.toUpperCase()} ${i}`).join('\n')}
+const float TREE_T[TREE_SIZES] = float[TREE_SIZES](${Array.from({ length: TREE_SIZES }, (_, k) => glf(+treeT(k).toFixed(4))).join(', ')});
+const float TREE_TRUNK_CELLS[TREE_VARIANTS * TREE_SIZES] = float[TREE_VARIANTS * TREE_SIZES](${TREE_VARIANTS.flatMap((v) => Array.from({ length: TREE_SIZES }, (_, k) => glf(trunkCells(v, k)))).join(', ')});
+${Object.entries(TREE_SHAPE).filter(([k]) => k !== 'REACH').map(([k, v]) => (Array.isArray(v)
+    ? `#define TS_${k}_LO ${glf(v[0])}\n#define TS_${k}_HI ${glf(v[1])}`
+    : `#define TS_${k} ${glf(v)}`)).join('\n')}
+const float TS_REACH[TREE_VARIANTS] = float[TREE_VARIANTS](${TREE_SHAPE.REACH.map(glf).join(', ')});
+#define TREE_TAU 6.28318530718
+int treeVariant(bool coast, bool high, float pick) {
+  if (coast) return TV_PALM;
+  if (high) { ${zoneGLSL(HIGH_TREES)} return TV_DEAD; }
+  ${zoneGLSL(MID_TREES)} return TV_DEAD;
+}
+// mulberry32 (constructions/runtime.js makeRng): draw i (from 0) of seed s, and its range helpers
+#define MB_STEP 0x6d2b79f5u
+float mbDraw(uint s, int i) {
+  uint t = s + uint(i + 1) * MB_STEP;
+  t = (t ^ (t >> 15u)) * (t | 1u);
+  t ^= t + (t ^ (t >> 7u)) * (t | 61u);
+  return float(t ^ (t >> 14u)) * UINT_TO_UNIT;
+}
+float mbRange(uint s, int i, float lo, float hi) { return lo + (hi - lo) * mbDraw(s, i); }
+int mbInt(uint s, int i, int lo, int hi) { return lo + int(floor(float(hi - lo + 1) * mbDraw(s, i))); }
+float jsRound(float x) { return floor(x + 0.5); }   // Math.round (half up)
+
+// A tree map texel: x = 1 + offset x + BS · offset z + BS² · (variant + TREE_VARIANTS · size) (0: none),
+// y = its ground (the trunk's base cell), z, w = the low and high 16 bits of h3 (treeCandidate's third hash).
+struct Tree { vec3 base; int variant; int size; float T; float H; uint seed; int quarter; };
+Tree treeOf(vec4 t, ivec2 bc) {
+  int k = int(t.x + 0.5) - 1;
+  int rest = k / (BS * BS);
+  Tree r;
+  r.base = vec3(float(bc.x * BS + k % BS), t.y, float(bc.y * BS + (k / BS) % BS)) + 0.5;   // the base cell's centre
+  r.variant = rest % TREE_VARIANTS;
+  r.size = rest / TREE_VARIANTS;
+  r.T = TREE_T[r.size];
+  uint h3 = uint(t.z + 0.5) | (uint(t.w + 0.5) << 16u);
+  r.seed = pcg(h3);                    // its construction seed (treeCandidate)
+  r.quarter = int((h3 >> 20u) & 3u);   // which way it faces (runtime.js bake)
+  vec2 hr = r.variant == TV_OAK ? vec2(TS_OAK_H_LO, TS_OAK_H_HI) : r.variant == TV_BIRCH ? vec2(TS_BIRCH_H_LO, TS_BIRCH_H_HI)
+          : r.variant == TV_PINE ? vec2(TS_PINE_H_LO, TS_PINE_H_HI) : r.variant == TV_PALM ? vec2(TS_PALM_H_LO, TS_PALM_H_HI)
+          : vec2(TS_DEAD_H_LO, TS_DEAD_H_HI);
+  r.H = jsRound(mbRange(r.seed, 0, hr.x, hr.y) * r.T);   // draw 0: every kind's height
+  return r;
+}
+// a world offset turned back into the construction's frame (the inverse of runtime.js TURN[quarter])
+vec2 treeUnturn(vec2 v, int q) {
+  return q == 0 ? v : (q == 1 ? vec2(-v.y, v.x) : (q == 2 ? -v : vec2(v.y, -v.x)));
+}
+`;
+
+// What a tree fills of the cube of FAR.CUBE cells centred at a point (the far
+// grid's opaque share; a wide shape's share ramps over the cube across its
+// surface, a trunk's is its cells in the cube), and of the brick there (its
+// element: x = leaves (PLANT), y = trunk (WOOD), 0 or 1).
+export const TREE_OWN_REACH = 2;   // cells: a brick whose centre is this close inside a crown's surface holds leaves
+const treeShapeGLSL = /* glsl */ `
+#define TREE_OWN_REACH ${glf(TREE_OWN_REACH)}
+float treeRamp(float d) { return clamp(0.5 - d / float(FAR_CUBE), 0.0, 1.0); }
+// an ellipsoid's distance (approximate: exact for a sphere) at q, centre c, radii r
+float treeEllipsoid(vec3 q, vec3 c, vec3 r) { return (length((q - c) / r) - 1.0) * min(r.x, r.y); }
+// a vertical trunk of n cells' cross-section from y0 to y1 on the base's axis: its cells in the cube at q
+float treeTrunk(vec3 q, float y0, float y1, float n) {
+  float h = 0.5 * float(FAR_CUBE);
+  if (abs(q.x) > h || abs(q.z) > h) return 0.0;
+  return n * clamp(min(q.y + h, y1) - max(q.y - h, y0), 0.0, float(FAR_CUBE)) / float(FAR_CUBE * FAR_CUBE * FAR_CUBE);
+}
+// t: the tree, p: the cube's centre (world cells). Returns (cube share, leaves here, trunk here).
+vec3 treeFill(Tree t, vec3 p) {
+  vec3 q = p - t.base;
+  q.xz = treeUnturn(q.xz, t.quarter);
+  float H = t.H, T = t.T, crown = 1e9, trunkTop = 0.0;
+  float cells = TREE_TRUNK_CELLS[t.variant * TREE_SIZES + t.size];
+  if (t.variant == TV_OAK) {
+    float th = jsRound(H * mbRange(t.seed, 1, TS_OAK_TRUNK_LO, TS_OAK_TRUNK_HI));
+    float tr = max(0.5, TS_OAK_TR * T);
+    int R = int(ceil(tr + TS_OAK_FLARE + 1.0));   // the root flare's disc: one draw per cell of its square
+    int i0 = 2 + (2 * R + 1) * (2 * R + 1);
+    int n = mbInt(t.seed, i0, int(TS_OAK_BRANCHES_LO), int(TS_OAK_BRANCHES_HI));
+    float a0 = mbDraw(t.seed, i0 + 1) * TREE_TAU;
+    vec3 rad = vec3(1.0, TS_OAK_CROWN_SY, 1.0) * TS_OAK_CROWN_R * H;
+    crown = treeEllipsoid(q, vec3(0.0, th + TS_OAK_CROWN_Y * H, 0.0), rad);
+    for (int i = 0; i < int(TS_OAK_BRANCHES_HI); i++) {
+      if (i >= n) break;
+      int k = i0 + 2 + 4 * i;
+      float az = a0 + float(i) / float(n) * TREE_TAU + mbRange(t.seed, k, -TS_OAK_AZ_JITTER, TS_OAK_AZ_JITTER);
+      float el = mbRange(t.seed, k + 1, TS_OAK_EL_LO, TS_OAK_EL_HI);
+      float y = th - float(mbInt(t.seed, k + 2, int(TS_OAK_DROP_LO), int(TS_OAK_DROP_HI)));
+      float len = H * mbRange(t.seed, k + 3, TS_OAK_LEN_LO, TS_OAK_LEN_HI);
+      vec3 b = vec3(0.0, y, 0.0) + vec3(cos(az) * cos(el), sin(el), sin(az) * cos(el)) * len;
+      crown = min(crown, treeEllipsoid(q, b, rad));
+    }
+    trunkTop = th;
+  } else if (t.variant == TV_PINE) {
+    float y0 = jsRound(H * mbRange(t.seed, 1, TS_PINE_Y0_LO, TS_PINE_Y0_HI));
+    float R = H * mbRange(t.seed, 2, TS_PINE_R_LO, TS_PINE_R_HI);
+    float tiers = max(TS_PINE_TIERS_MIN, jsRound(mbRange(t.seed, 3, TS_PINE_TIERS_LO, TS_PINE_TIERS_HI) * sqrt(T)));
+    float u = (clamp(q.y, y0, H) - y0) / max(H - y0, 1.0);
+    float r = R * pow(1.0 - u, TS_PINE_TAPER) * (1.0 - TS_PINE_FLARE * fract(u * tiers)) + TS_PINE_TIP;
+    crown = max(length(q.xz) - r, max(y0 - q.y, q.y - H));
+    trunkTop = H;
+  } else if (t.variant == TV_BIRCH) {
+    crown = treeEllipsoid(q, vec3(0.0, TS_BIRCH_CROWN_Y * H, 0.0), vec3(TS_BIRCH_CROWN_R, TS_BIRCH_CROWN_RV, TS_BIRCH_CROWN_R) * H);
+    trunkTop = H;
+  } else if (t.variant == TV_PALM) {
+    float az = mbDraw(t.seed, 1) * TREE_TAU;
+    float lean = H * mbRange(t.seed, 2, TS_PALM_LEAN_LO, TS_PALM_LEAN_HI);
+    float L = TS_PALM_FROND * H;
+    vec3 top = vec3(cos(az) * lean, H, sin(az) * lean);
+    crown = treeEllipsoid(q, top - vec3(0.0, TS_PALM_CROWN_DROP * L, 0.0), vec3(TS_PALM_CROWN_R, TS_PALM_CROWN_RV, TS_PALM_CROWN_R) * L);
+    trunkTop = H;
+  } else {
+    trunkTop = TS_DEAD_TRUNK * H;
+  }
+  float share = max(crown < 1e8 ? treeRamp(crown) : 0.0, treeTrunk(q, 0.0, trunkTop, cells));
+  float h = 0.5 * float(BS);
+  bool trunkHere = abs(q.x) < h && abs(q.z) < h && q.y > -h && q.y < trunkTop + h;
+  return vec3(share, crown < TREE_OWN_REACH ? 1.0 : 0.0, trunkHere ? 1.0 : 0.0);
+}
+`;
+
+// Tree candidates, per brick column (treeCandidate's twin): its trunk's
+// column hashed from the brick column, kept on ground it may stand on (the
+// world's columns: tCol, genColumn plus the margin; slope as layersAt has it).
+export const farTreeCandFrag = (g, L) => /* glsl */ `
+${prelude(g)}
+${generatorGLSL}
+${layersGLSL}
+${farLayoutGLSL(L)}
+${treeGLSL()}
+out vec4 oC;
+void main() {
+  ivec2 bc = ivec2(gl_FragCoord.xy);
+  oC = vec4(0.0);
+  uint h = pcg(uint(bc.x) + pcg(uint(bc.y) + genStream(GEN_SALT_TREE)));
+  if (float(h & 0xffffu) * TREE_UNIT16 >= TREE_CHANCE) return;
+  uint h2 = pcg(h), h3 = pcg(h2);
+  ivec2 o = ivec2(int(h2 & uint(BS - 1)), int((h2 >> 2u) & uint(BS - 1)));
+  ivec2 col = bc * BS + o;
+  GenLayers Lc = columnLayers(col);
+  float slope = 0.5 * length(vec2(colHeight(col + ivec2(1, 0)) - colHeight(col - ivec2(1, 0)),
+                                  colHeight(col + ivec2(0, 1)) - colHeight(col - ivec2(0, 1))));
+  float above = float(Lc.ground) - uGenSea;
+  bool sand = Lc.sand > 0;
+  if (above < TREE_ABOVE_SEA || slope >= TREE_SLOPE_MAX || !(Lc.plant || sand)) return;
+  if (float(Lc.ground) > genFrostLine() - TREE_SNOW_GAP) return;
+  bool coast = sand && above <= TREE_PALM_BELOW;
+  if (sand && !coast) return;
+  int variant = treeVariant(coast, above >= TREE_PINE_ABOVE * uGenRelief, float(h3 & 0xffffu) * TREE_UNIT16);
+  int size = int((h3 >> 16u) % uint(TREE_SIZES));
+  // (x: the packed tree; y: its ground; z: its priority, h2's top 24 bits)
+  oC = vec4(float(1 + o.x + BS * o.y + BS * BS * (variant + TREE_VARIANTS * size)), float(Lc.ground), float(h2 >> 8u), 0.0);
+}
+`;
+
+// Thinning (treesIn): a candidate with a rival within TREE.SPACING that has a
+// higher priority (ties: the lower brick index) is dropped. Out: the tree map
+// (treeOf), with the candidate's h3 (hashed again from its brick column) for
+// the shapes.
+export const farTreeThinFrag = (g, L) => /* glsl */ `
+${prelude(g)}
+${generatorGLSL}
+${farLayoutGLSL(L)}
+${treeGLSL()}
+uniform sampler2D tCand;
+out vec4 oC;
+vec2 trunkXZ(ivec2 bc, vec4 c) { int k = int(c.x + 0.5) - 1; return vec2(bc * BS + ivec2(k % BS, (k / BS) % BS)); }
+void main() {
+  ivec2 bc = ivec2(gl_FragCoord.xy);
+  vec4 c = texelFetch(tCand, bc, 0);
+  oC = vec4(0.0);
+  if (c.x == 0.0) return;
+  vec2 pc = trunkXZ(bc, c);
+  for (int dz = -TREE_THIN_R; dz <= TREE_THIN_R; dz++)
+  for (int dx = -TREE_THIN_R; dx <= TREE_THIN_R; dx++) {
+    if (dx == 0 && dz == 0) continue;
+    ivec2 nb = bc + ivec2(dx, dz);
+    if (any(lessThan(nb, ivec2(0))) || any(greaterThanEqual(nb, WB.xz))) continue;   // past the world: deep sea, no trees
+    vec4 o = texelFetch(tCand, nb, 0);
+    if (o.x == 0.0 || distance(trunkXZ(nb, o), pc) >= TREE_SPACING) continue;
+    if (o.z > c.z || (o.z == c.z && (dz < 0 || (dz == 0 && dx < 0)))) return;
+  }
+  // kept: h3 from the brick column's hash chain (as the candidate pass), in 16-bit halves
+  uint h = pcg(uint(bc.x) + pcg(uint(bc.y) + genStream(GEN_SALT_TREE)));
+  uint h3 = pcg(pcg(h));
+  oC = vec4(c.x, c.y, float(h3 & 0xffffu), float(h3 >> 16u));
+}
+`;
+
+// Tree bands, per brick column: the lowest base and highest top (cells) of the
+// trees in reach of it (TREE_NONE_* if none): farGenFrag looks for trees only
+// in bricks inside the band.
+export const farTreeBandFrag = (g, L) => /* glsl */ `
+${prelude(g)}
+${farLayoutGLSL(L)}
+${treeGLSL()}
+uniform sampler2D tTrees;
+out vec4 oC;
+void main() {
+  ivec2 bc = ivec2(gl_FragCoord.xy);
+  float lo = TREE_NONE_LO, hi = TREE_NONE_HI;
+  for (int dz = -TREE_REACH_B; dz <= TREE_REACH_B; dz++)
+  for (int dx = -TREE_REACH_B; dx <= TREE_REACH_B; dx++) {
+    ivec2 nb = bc + ivec2(dx, dz);
+    if (any(lessThan(nb, ivec2(0))) || any(greaterThanEqual(nb, WB.xz))) continue;
+    vec4 t = texelFetch(tTrees, nb, 0);
+    if (t.x == 0.0) continue;
+    Tree tr = treeOf(t, nb);
+    lo = min(lo, t.y);
+    hi = max(hi, t.y + TS_TOP * tr.H);
+  }
+  oC = vec4(lo, hi, 0.0, 1.0);
+}
+`;
+
 // Generator → layers, per world column: what genLayers says column (x, z)
 // holds, as bytes (ground, sand, snow, plant). tCol: genColumn of the world's
 // columns plus COLUMN_MARGIN (the column pass with uColOrigin = -margin).
@@ -224,16 +521,23 @@ void main() {
 
 // Generator → far grid, at world load: every brick from the world's layers
 // (genId per cell, as the fill pass makes them; the cubes' shares counted per
-// column from its ground and the sea). Columns past the world's edge repeat
-// its edge. The trees aren't in it; the window adds the ones it plants as
-// slabs leave.
+// column from its ground and the sea), and the trees in reach (their shapes'
+// shares joined to the ground's, their leaves or trunk the brick's element).
+// Columns past the world's edge repeat its edge.
+export const FAR_TREE_W = 512;   // dominant-element weight of a tree's leaves or trunk in a brick (over the ground's)
 export const farGenFrag = (g, L) => /* glsl */ `
 ${prelude(g)}
 ${generatorGLSL}
 ${farLayoutGLSL(L)}
 ${countGLSL}
-uniform sampler2D tLayers;   // world column (x, z): ground, sand, snow, plant (farLayersFrag)
+${treeGLSL()}
+${treeShapeGLSL}
+uniform sampler2D tLayers;     // world column (x, z): ground, sand, snow, plant (farLayersFrag)
+uniform sampler2D tTrees;      // the tree map (farTreeThinFrag)
+uniform sampler2D tTreeBand;   // per brick column, the trees' band in reach (farTreeBandFrag)
 out vec4 oC;
+#define FAR_TREE_W ${glf(FAR_TREE_W)}
+#define FAR_TREE_PAD ${glf(Math.SQRT2 * FAR.CUBE / 2)}   // cells: a cube's half diagonal across, past a tree's reach
 #define LAYER_BYTE ${glf(LAYER_BYTE)}
 GenLayers worldLayers(ivec2 col) {
   ivec4 t = ivec4(texelFetch(tLayers, clamp(col, ivec2(0), WORLD.xz - 1), 0) * LAYER_BYTE + 0.5);
@@ -263,6 +567,35 @@ void main() {
       int id = genId(L, o.y + y);
       farCell(c, id, above, AMBIENT);
       above = id;
+    }
+  }
+  // the trees in reach, where the cubes meet their band: the union of their shares with the ground's
+  vec2 band = texelFetch(tTreeBand, b.xz, 0).xy;
+  if (float(yb) < band.y && float(y0 + FAR_CUBE) > band.x) {
+    vec3 pc = vec3(o) + 0.5 * float(BS);   // the brick's (and its cube's) centre
+    float ts = 0.0, tsb = 0.0, leaves = 0.0, trunk = 0.0;
+    for (int dz = -TREE_REACH_B; dz <= TREE_REACH_B; dz++)
+    for (int dx = -TREE_REACH_B; dx <= TREE_REACH_B; dx++) {
+      ivec2 nb = b.xz + ivec2(dx, dz);
+      if (any(lessThan(nb, ivec2(0))) || any(greaterThanEqual(nb, WB.xz))) continue;
+      vec4 t = texelFetch(tTrees, nb, 0);
+      if (t.x == 0.0) continue;
+      Tree tr = treeOf(t, nb);
+      // too far from its trunk, above its top or under its base for either cube
+      if (length(pc.xz - tr.base.xz) > TS_REACH[tr.variant] * tr.H + FAR_TREE_PAD
+          || float(yb) > tr.base.y + TS_TOP * tr.H || float(y0 + FAR_CUBE) < tr.base.y) continue;
+      vec3 f = treeFill(tr, pc);
+      ts = max(ts, f.x);
+      tsb = max(tsb, treeFill(tr, pc - vec3(0.0, BS, 0.0)).x);
+      leaves = max(leaves, f.y);
+      trunk = max(trunk, f.z);
+    }
+    float n = float(FAR_CUBE * FAR_CUBE * FAR_CUBE);
+    c.s = max(c.s, ts * n);
+    c.sb = max(c.sb, tsb * n);
+    if (leaves > 0.0 || trunk > 0.0) {
+      c.w[leaves > 0.0 ? E_PLANT : E_WOOD] += FAR_TREE_W;
+      c.open += 1.0;
     }
   }
   oC = farPack(c);

@@ -2,8 +2,8 @@ import * as THREE from 'three';
 import { BRICK } from '../shaders/common.js';
 import { columnFrag, COLUMN_MARGIN } from '../shaders/generate.js';
 import {
-  farLayout, farRegionVert, farLayersFrag, farGenFrag, farWinFrag, farMip1Frag, farMip2Frag,
-  farTopFrag, farShadowFrag, farCastersGLSL, farVert, farFrag,
+  farLayout, farRegionVert, farLayersFrag, farTreeCandFrag, farTreeThinFrag, farTreeBandFrag, farGenFrag,
+  farWinFrag, farMip1Frag, farMip2Frag, farTopFrag, farShadowFrag, farCastersGLSL, farVert, farFrag,
 } from '../shaders/far.js';
 import { shadowFrag } from '../shaders/render.js';
 import { rawMat, makeFieldTarget } from '../sim.js';
@@ -15,8 +15,9 @@ import { gfxUniforms } from '../gfx/uniforms.js';
 // the whole world, drawn wherever the window isn't.
 //
 // Built at world load from the generator, at world scale: genColumn for every
-// world column, genLayers for every column, then every brick from its 16
-// columns' layers. The trees aren't in it until the window has planted them.
+// world column, genLayers for every column, the trees (a candidate per brick
+// column, thinned: treesIn's own placement), then every brick from the layers
+// of the columns its cube spans and the shapes of the trees in reach.
 //
 // Kept up to date from the window, whose state wins wherever it has been:
 //   - a move summarizes the slab about to leave (world/window.js, before the
@@ -96,7 +97,12 @@ export class FarField {
     this.mats = {
       farColumn: rawMat(columnFrag(g), { ...genUniforms(), uColOrigin: { value: new THREE.Vector2(-COLUMN_MARGIN, -COLUMN_MARGIN) } }),
       farLayers: rawMat(farLayersFrag(g), { ...genUniforms(), tCol: { value: null } }),
-      farGen: region(farGenFrag(g, L), { ...genUniforms(), tLayers: { value: null } }),
+      farTreeCand: rawMat(farTreeCandFrag(g, L), { ...genUniforms(), tCol: { value: null } }),
+      farTreeThin: rawMat(farTreeThinFrag(g, L), { ...genUniforms(), tCand: { value: null } }),
+      farTreeBand: rawMat(farTreeBandFrag(g, L), { tTrees: { value: null } }),
+      farGen: region(farGenFrag(g, L), {
+        ...genUniforms(), tLayers: { value: null }, tTrees: { value: null }, tTreeBand: { value: null },
+      }),
       farWin: region(farWinFrag(g, L), { tA: { value: null }, uOrigin: this.sim.originUniform }),
       farMip1: rawMat(farMip1Frag(L), { tFar: { value: this.grid.texture } }),
       farMip2: rawMat(farMip2Frag(L), { tFar1: { value: this.l1.texture } }),
@@ -151,22 +157,54 @@ export class FarField {
   build() {
     const t0 = performance.now();
     const sim = this.sim, L = this.L, [wx, , wz] = L.size, P = this.win.P;
-    const { farColumn, farLayers, farGen } = this.mats;
+    const { farColumn, farLayers, farTreeBand, farGen } = this.mats;
     for (const m of [farColumn, farLayers, farGen]) setWorld(m.uniforms, P);
     // genColumn for every world column plus the margin genLayers reads, then genLayers per column
-    const columns = makeFieldTarget(wx + 2 * COLUMN_MARGIN, wz + 2 * COLUMN_MARGIN, 1, THREE.FloatType, THREE.NearestFilter);
-    const layers = makeFieldTarget(wx, wz, 1, THREE.UnsignedByteType, THREE.NearestFilter);
+    const F32 = THREE.FloatType, NEAR = THREE.NearestFilter, [bx, , bz] = L.bricks.n;
+    const columns = makeFieldTarget(wx + 2 * COLUMN_MARGIN, wz + 2 * COLUMN_MARGIN, 1, F32, NEAR);
+    const layers = makeFieldTarget(wx, wz, 1, THREE.UnsignedByteType, NEAR);
     sim.run(farColumn, columns);
     farLayers.uniforms.tCol.value = columns.texture;
     sim.run(farLayers, layers);
-    farGen.uniforms.tLayers.value = layers.texture;
-    this.drawRegion(farGen, [0, 0], [L.bricks.n[0], L.bricks.n[2]]);
-    columns.dispose();
-    layers.dispose();
+    // the trees: candidates per brick column, thinned, and the band each column's bricks find them in
+    const trees = this.placeTrees(columns);
+    const band = makeFieldTarget(bx, bz, 1, F32, NEAR);
+    farTreeBand.uniforms.tTrees.value = trees.texture;
+    sim.run(farTreeBand, band);
+    const u = farGen.uniforms;
+    u.tLayers.value = layers.texture;
+    u.tTrees.value = trees.texture;
+    u.tTreeBand.value = band.texture;
+    this.drawRegion(farGen, [0, 0], [bx, bz]);
+    for (const t of [columns, layers, trees, band]) t.dispose();
     this.built = true;
     this.summarizeWindow();
     this.refresh(true);
     this.last = { buildMs: performance.now() - t0 };
+  }
+
+  // The world's trees, as treesIn places them: a target with one texel per
+  // brick column (shaders/far.js treeOf), from the world's columns (genColumn
+  // plus the margin; the caller disposes of the target). Without columns, it
+  // makes them (tools: tools/far-check.mjs compares it with treesIn).
+  placeTrees(columns = null) {
+    const sim = this.sim, L = this.L, [wx, , wz] = L.size, [bx, , bz] = L.bricks.n, P = this.win.P;
+    const F32 = THREE.FloatType, NEAR = THREE.NearestFilter;
+    const { farColumn, farTreeCand, farTreeThin } = this.mats;
+    for (const m of [farColumn, farTreeCand, farTreeThin]) setWorld(m.uniforms, P);
+    const own = !columns;
+    if (own) {
+      columns = makeFieldTarget(wx + 2 * COLUMN_MARGIN, wz + 2 * COLUMN_MARGIN, 1, F32, NEAR);
+      sim.run(farColumn, columns);
+    }
+    const cand = makeFieldTarget(bx, bz, 1, F32, NEAR), trees = makeFieldTarget(bx, bz, 1, F32, NEAR);
+    farTreeCand.uniforms.tCol.value = columns.texture;
+    sim.run(farTreeCand, cand);
+    farTreeThin.uniforms.tCand.value = cand.texture;
+    sim.run(farTreeThin, trees);
+    cand.dispose();
+    if (own) columns.dispose();
+    return trees;
   }
 
   // Summarize the window's bricks [lo, lo + bricks) (grid cells lo, brick

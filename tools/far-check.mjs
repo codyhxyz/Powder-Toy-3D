@@ -10,7 +10,9 @@
 //   5. cost: the scene pass with and without the far field, interleaved,
 //      each GPU-synced by a 1-texel read of the target it drew (a fresh frame
 //      every time: consecutive full-screen draws into one target get merged);
-//      plus the far grid's build and refresh.
+//      plus the far grid's build and refresh;
+//   6. trees: the far field's tree placement (GPU) against treesIn's (the
+//      window plants those) over a region of the island.
 // usage: node tools/far-check.mjs [outDir] [--port 5471] [--skip 4,5]
 import { chromium } from 'playwright';
 import { mkdirSync } from 'fs';
@@ -28,6 +30,7 @@ const COST_ROUNDS = 40;            // interleaved timing rounds (each draws with
 const EYE_DIR = [0.82, 0.57];      // the eye view's spot: out from the island's centre this way (x, z)...
 const EYE_BELOW_FROST = 3;         // ...to where the ground is this many cells under the lowest snow (bare rock: an open view)
 const EYE_CLEAR = 24;              // cells around the spot with no tree trunk
+const TREE_REGION = [320, 320, 704, 704];   // world cells [x0, z0, x1, z1) where the tree placements are compared
 
 const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
 const p = await b.newPage({ viewport: { width: 1280, height: 800 } });
@@ -279,6 +282,38 @@ if (!skip.has(5)) {
     out.shadowRefreshMs = +median(refreshes).toFixed(2);
     return out;
   }, [COST_ROUNDS, SETTLE_FRAMES]);
+}
+
+// ------------------------------------------------------------- 6. trees: the GPU's placement against treesIn
+if (!skip.has(6)) {
+  res.trees = await p.evaluate(async (REGION) => {
+    const a = window.__app, w = a.win, r = a.renderer;
+    const { treesIn, TREE } = await import('/src/world/generator.js');
+    const { TREE_VARIANTS } = await import('/src/shaders/far.js');
+    const { BRICK } = await import('/src/shaders/common.js');
+    const t = w.far.placeTrees();
+    const n = t.width * t.height, buf = new Float32Array(n * 4);
+    r.readRenderTargetPixels(t, 0, 0, t.width, t.height, buf);
+    t.dispose();
+    const gpu = new Map();   // trunk column → { variant, size, ground }
+    for (let i = 0; i < n; i++) {
+      if (!buf[i * 4]) continue;
+      const k = buf[i * 4] - 1, bx = i % t.width, bz = Math.floor(i / t.width);
+      const x = bx * BRICK + (k % BRICK), z = bz * BRICK + (Math.floor(k / BRICK) % BRICK);
+      if (x < REGION[0] || x >= REGION[2] || z < REGION[1] || z >= REGION[3]) continue;
+      const rest = Math.floor(k / (BRICK * BRICK));
+      gpu.set(`${x},${z}`, { variant: TREE_VARIANTS[rest % TREE_VARIANTS.length], size: TREE.SIZE_MIN + Math.floor(rest / TREE_VARIANTS.length), ground: buf[i * 4 + 1] });
+    }
+    const js = treesIn(REGION[0], REGION[1], REGION[2], REGION[3], w.P);
+    let same = 0, differ = 0, onlyJs = 0;
+    for (const tr of js) {
+      const key = `${tr.x},${tr.z}`, gt = gpu.get(key);
+      if (!gt) { onlyJs++; continue; }
+      gpu.delete(key);
+      if (gt.variant === tr.variant && gt.size === tr.size && gt.ground === tr.y) same++; else differ++;
+    }
+    return { treesIn: js.length, same, differ, onlyTreesIn: onlyJs, onlyGpu: gpu.size };
+  }, TREE_REGION);
 }
 
 console.log(JSON.stringify(res, null, 1));
