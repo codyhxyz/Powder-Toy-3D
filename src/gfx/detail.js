@@ -44,6 +44,13 @@ const CLODS_FADE_M = 0.34 * CELL_M / 8;   // m per pixel
 // pixel). The finer media sampling and flow-following apply at any distance
 // (no fadeM: always in).
 const MEDIA_FINE_FADE_M = 0.4 * 0.2;   // m per pixel
+// Liquid ripples (shaders/gfx/liquidDetail.js) start as their longest new
+// octave (24.5 cm) passes the same fade-out; the meniscus, over the capillary
+// length (2.7 mm for water), is averaged away once a pixel spans more than
+// MENISCUS_PX of them. Whitewater follows speed at any distance (no fadeM).
+const RIPPLE_FADE_M = 0.4 * 0.245;      // m per pixel
+const MENISCUS_PX = 4;                  // capillary lengths per pixel
+const MENISCUS_FADE_M = MENISCUS_PX * 0.0027;   // m per pixel
 
 export const DETAIL = [
   // relief: extra ms, worst camera: lab ~6-12 (eyeSandClose), volcano ~6 (eyeFlank). Measured on
@@ -76,6 +83,12 @@ export const DETAIL = [
     desc: 'Samples smoke, steam and fire more finely near the camera: crisper wisps, less grain', cost: 'medium' },
   { key: 'mediaFlow', define: 'DETAIL_MEDIA_FLOW', label: 'Smoke follows the flow',
     desc: 'Wisps of smoke, steam and fire ride the simulated flow instead of a steady rise', cost: 'high' },
+  { key: 'liquidRipples', define: 'DETAIL_LIQ_RIPPLES', label: 'Liquid ripples', fadeM: RIPPLE_FADE_M,
+    desc: 'Centimetre capillary ripples on open liquid, fading in as you get close.', cost: 'low' },   // ~0 ms (−0.3 eyeTank, 25 rounds; within noise)
+  { key: 'liquidMeniscus', define: 'DETAIL_LIQ_MENISCUS', label: 'Liquid meniscus', fadeM: MENISCUS_FADE_M,
+    desc: 'Liquid climbing walls and glass over its last few millimetres.', cost: 'low' },   // ~0 ms (−1.7 eyeTank, 25 rounds; within noise)
+  { key: 'liquidFoam', define: 'DETAIL_LIQ_FOAM', label: 'Whitewater',
+    desc: 'Falling and splashing liquid roughens and foams where it moves fast.', cost: 'medium' },   // 1.4 ms eyeTank (25 rounds), 1.2–2.4 in 7-round runs; GPU shared with other benches
 ];
 
 export const settingKey = (f) => `detail_${f.key}`;

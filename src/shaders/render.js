@@ -8,6 +8,7 @@ import { noiseGLSL } from './gfx/noise.js';
 import { lightingGLSL } from './gfx/lighting.js';
 import { surfaceGLSL } from './gfx/surface.js';
 import { liquidGLSL } from './gfx/liquid.js';
+import { liquidDetailGLSL } from './gfx/liquidDetail.js';
 import { mediaGLSL } from './gfx/media.js';
 import { plainGLSL } from './gfx/plain.js';
 import { grainsGLSL } from './gfx/grains.js';
@@ -177,6 +178,7 @@ ${flush}
 ${lib(g)}
 ${surfaceGLSL}
 ${liquidGLSL}
+${liquidDetailGLSL}
 ${mediaGLSL}
 uniform vec3 uCam;
 uniform mat4 projectionMatrix;
@@ -872,6 +874,9 @@ void main() {
           // liquid surface: refract in or out
           vec3 n = liquidRipple(hp, surfNormal(hp, CH_LIQUID, ev == EV_ENTER ? -rd : rd));
           int lid = ev == EV_ENTER ? liquidIdAt(hp - n * IFACE_PROBE, E_WATER) : liq;
+#ifdef LIQ_DETAIL
+          n = liquidDetail(hp, n, lid, col, trans);   // close-up detail (gfx/liquidDetail.js)
+#endif
           if (bends < MAX_BENDS) {
             bends++;
             // the scene shows in the reflection only off the first surface the eye ray meets
