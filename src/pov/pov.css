@@ -178,3 +178,16 @@ body.pov-locked canvas { cursor: none; }
   background: #fff;
   box-shadow: 0 0 3px rgba(0, 0, 0, 0.8), 0 0 7px rgba(255, 255, 255, 0.9);
 }
+
+/* F1 (as in Minecraft): the HUD and the hand hidden. Screen effects, the death
+   screen and the click-to-look prompt stay. */
+body.pov-on.pov-nohud .pov-cross,
+body.pov-on.pov-nohud .pov-hitmark,
+body.pov-on.pov-nohud .pov-vitals,
+body.pov-on.pov-nohud .hotbar,
+body.pov-on.pov-nohud .hb-name,
+body.pov-on.pov-nohud .brand,
+body.pov-on.pov-nohud .toolbar,
+body.pov-on.pov-nohud .stats,
+body.pov-on.pov-nohud .toasts,
+body.pov-on.pov-nohud .legend-box { visibility: hidden !important; }
