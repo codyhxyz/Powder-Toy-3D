@@ -274,14 +274,25 @@ const mat3 TURN_Y30 = mat3(0.866, 0.0, 0.5, 0.0, 1.0, 0.0, -0.5, 0.0, 0.866);
 // Sand: clumps and dimples.
 // Sizes are in metres (m), converted to cells through CELL_M (src/scale.js):
 // a wavelength X_M becomes X_F = CELL_M / X_M per cell, a height X_H = m / CELL_M cells.
+// Sand: the lumpy slump surface a pile's avalanches leave (lumps 1-3 cm
+// high over ~30 cm), and clumps and dimples on it.
+const float SAND_SLUMP_M = 0.27;              // m, slump wavelength
+const float SAND_SLUMP_F = CELL_M / SAND_SLUMP_M;   // per cell
+const float SAND_SLUMP_H = 0.04 / CELL_M;     // 4 cm per unit of noise (±1-2 cm), in cells
+const int SAND_SLUMP_OCT = 2;                 // fBm octaves
+vec4 sandSlumps(vec3 p, float fp) { return mFbmD(p, SAND_SLUMP_F, SAND_SLUMP_OCT, fp); }
 const float SAND_CLUMP_M = 0.025;             // m, clump wavelength
 const float SAND_CLUMP_F = CELL_M / SAND_CLUMP_M;   // per cell
-const float SAND_CLUMP_H = 0.0064 / CELL_M;   // 6.4 mm per unit of noise, in cells
+const float SAND_CLUMP_H = 0.01 / CELL_M;     // 1 cm per unit of noise (±3-4 mm), in cells
 const int SAND_CLUMP_OCT = 3;     // fBm octaves
 vec4 sandClumps(vec3 p, float fp) { return mFbmD(p, SAND_CLUMP_F, SAND_CLUMP_OCT, fp); }
-// Snow: clumps.
+// Snow: soft drifts (1-2 cm over ~35 cm) and clumps.
+const float SNOW_DRIFT_M = 0.36;              // m, wavelength
+const float SNOW_DRIFT_F = CELL_M / SNOW_DRIFT_M, SNOW_DRIFT_H = 0.05 / CELL_M;
+const int SNOW_DRIFT_OCT = 2;
+vec4 snowDrifts(vec3 p, float fp) { return mFbmD(p, SNOW_DRIFT_F, SNOW_DRIFT_OCT, fp); }
 const float SNOW_CLUMP_M = 0.031;             // m, wavelength
-const float SNOW_CLUMP_F = CELL_M / SNOW_CLUMP_M, SNOW_CLUMP_H = 0.0048 / CELL_M;
+const float SNOW_CLUMP_F = CELL_M / SNOW_CLUMP_M, SNOW_CLUMP_H = 0.008 / CELL_M;
 const int SNOW_CLUMP_OCT = 2;
 vec4 snowClumps(vec3 p, float fp) { return mFbmD(p, SNOW_CLUMP_F, SNOW_CLUMP_OCT, fp); }
 // Gunpowder: lumps of granules.
@@ -300,8 +311,10 @@ const float ROCK_LUMP_M = 0.5;                // m, wavelength
 const float ROCK_LUMP_F = CELL_M / ROCK_LUMP_M, ROCK_LUMP_H = 0.072 / CELL_M;
 const int ROCK_LUMP_OCT = 3;
 vec4 rockLumps(vec3 p, float fp) { return mFbmD(p, ROCK_LUMP_F, ROCK_LUMP_OCT, fp); }
-const float ROCK_CRAG_M = 0.145;              // m, wavelength of the first crag octave
-const float ROCK_CRAG_F = CELL_M / ROCK_CRAG_M, ROCK_CRAG_H = 0.0112 / CELL_M;   // its frequency (per cell), relief (1.1 cm, in cells)
+// Crags, ledges and cracks of weathered lava rock: 25, 12 and 5.5 cm octaves,
+// knobs ~2 cm proud and creases ~3-5 cm deep.
+const float ROCK_CRAG_M = 0.25;               // m, wavelength of the first crag octave
+const float ROCK_CRAG_F = CELL_M / ROCK_CRAG_M, ROCK_CRAG_H = 0.035 / CELL_M;   // its frequency (per cell), relief (3.5 cm, in cells)
 const float ROCK_CRAG_LAC = 2.13, ROCK_CRAG_GAIN = 0.55;   // per octave: frequency x, relief x
 // The first octave is creases (h = 1 - (1 - c)^2: flat knobs, V valleys),
 // the finer ones sharp ridges (h = (1 - c)^2): broken, angular edges
@@ -335,15 +348,17 @@ vec4 rockCrags(vec3 p, vec4 lo, float fp, out float ws) {
 // Wood bark: long corky plates (cellular cells stretched along y, turned about
 // it), split by V furrows, each plate slightly domed. Returns (height,
 // gradient); mv = the furrows' meander noise, c = the plate cell (mCell).
-const float WOOD_PLATE_W_M = 0.04, WOOD_PLATE_L_M = 0.24;   // m: plates ~4 cm wide, ~25 cm long
+const float WOOD_PLATE_W_M = 0.05, WOOD_PLATE_L_M = 0.3;    // m: plates ~5 cm wide, ~30 cm long (big trunk)
 const float WOOD_PLATE_FH = CELL_M / WOOD_PLATE_W_M, WOOD_PLATE_FV = CELL_M / WOOD_PLATE_L_M;   // plates per cell: across, along
 const float WOOD_MEANDER_M = 0.27;           // m, furrow meander wavelength
 const float WOOD_MEANDER_F = CELL_M / WOOD_MEANDER_M, WOOD_MEANDER = 0.024 / CELL_M;   // its frequency, amplitude (2.4 cm, in cells)
 const float WOOD_WAVE_M = 0.06;              // m, wavelength of the furrow edges' wander
 const float WOOD_WAVE_F = CELL_M / WOOD_WAVE_M, WOOD_WAVE = 0.00051 / (CELL_M * CELL_M);   // its frequency, cells per unit slope
 const float WOOD_FUR_W = 0.3;                            // furrow half-width, lattice units
-const float WOOD_FUR_DEPTH = 0.004 / CELL_M, WOOD_PLATE_DOME = 0.004 / CELL_M;   // 4 mm each, in cells
-const float WOOD_FURROW_LOD = 3.0;           // narrow furrows alias sooner: fade at this multiple of WOOD_PLATE_FH
+const float WOOD_FUR_DEPTH = 0.015 / CELL_M, WOOD_PLATE_DOME = 0.006 / CELL_M;   // furrows 1.5 cm deep, plates domed 6 mm, in cells
+// Narrow furrows alias a little sooner than the plates: fade at this multiple
+// of WOOD_PLATE_FH (plates fully drawn while ~10 px across, ~10 m away).
+const float WOOD_FURROW_LOD = 1.3;
 const int WOOD_MEANDER_OCT = 2, WOOD_WAVE_OCT = 1;       // fBm octaves
 const vec2 WOOD_TOP_EDGE = vec2(0.6, 0.9);   // |n.y| range over which a face turns into end grain
 vec4 woodPlates(vec3 p, float fp, out vec4 mv, out vec4 c) {
@@ -365,8 +380,8 @@ float woodEndGrain(vec3 n) { return smoothstep(WOOD_TOP_EDGE.x, WOOD_TOP_EDGE.y,
 // bump that is real geometry up close. n: the surface normal (wood's end
 // grain is flat). Elements without one return 0.
 vec4 reliefHeight(int id, vec3 p, vec3 n, float fp) {
-  if (id == E_SAND) return SAND_CLUMP_H * sandClumps(p, fp);
-  if (id == E_SNOW) return SNOW_CLUMP_H * snowClumps(p, fp);
+  if (id == E_SAND) return SAND_SLUMP_H * sandSlumps(p, fp) + SAND_CLUMP_H * sandClumps(p, fp);
+  if (id == E_SNOW) return SNOW_DRIFT_H * snowDrifts(p, fp) + SNOW_CLUMP_H * snowClumps(p, fp);
   if (id == E_GUNPOWDER) return POWDER_LUMP_H * powderLumps(p, fp);
   if (id == E_ASH) return ASH_LUMP_H * ashLumps(p, fp);
   if (id == E_ROCK) { float ws; return ROCK_CRAG_H * rockCrags(p, rockLumps(p, fp), fp, ws); }
@@ -419,25 +434,26 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
     // matte surface with soft mottling (sorting, damp patches), shallow
     // dimples, a faint grain-scale mottle and, up close, scattered dark
     // mineral grains. The sparkle of the quartz faces comes from the glints.
-    const float PATCH_M = 0.27, GRAIN_M = 0.0067;   // m, wavelengths
-    const float PATCH_F = CELL_M / PATCH_M, GRAIN_F = CELL_M / GRAIN_M;
-    const float PATCH_H = 0.028 / CELL_M, GRAIN_H = 0.00048 / CELL_M;   // 2.8 cm, 0.5 mm, in cells
+    // (slumps and clumps: sandSlumps, sandClumps)
+    const float GRAIN_M = 0.0067;              // m, wavelength
+    const float GRAIN_F = CELL_M / GRAIN_M;
+    const float GRAIN_H = 0.00048 / CELL_M;    // 0.5 mm, in cells
     const vec3 HUE = vec3(0.07, 0.0, -0.1);    // patches drift yellow-red .. grey
     const float DARK_M = 0.0044;               // m: coarse dark grains ~4 mm apart
     const float DARK_F = CELL_M / DARK_M;      // their lattice, per cell
     const float DARK_P = 0.4, DARK_R = 0.25;   // how many, how big (lattice units)
     const float DARK_ALB = 0.45;               // their albedo relative to the sand
     const float DARK_WARP = 0.000032 / (CELL_M * CELL_M);   // bends the grains out of round (cells per unit slope)
-    const int PATCH_OCT = 2, GRAIN_OCT = 2;                            // fBm octaves
+    const int GRAIN_OCT = 2;                                           // fBm octaves
     const float PATCH_ALB = 0.25, CLUMP_ALB = 0.18, GRAIN_ALB = 0.3;   // albedo swing per unit of each noise
     const float CLUMP_CAV = 0.4;               // cavity swing of the clumps
-    vec4 lo = mFbmD(p, PATCH_F, PATCH_OCT, fp);
+    vec4 lo = sandSlumps(p, fp);
     vec4 gr = sandClumps(p, fp);
     vec4 fg = mFbmD(p, GRAIN_F, GRAIN_OCT, fp);
     float dh;
     vec4 dk = mDots(p + DARK_WARP * fg.yzw, DARK_F, DARK_P, DARK_R, fp, dh);
     m.alb *= (1.0 + PATCH_ALB * lo.x + CLUMP_ALB * gr.x + GRAIN_ALB * fg.x) * (1.0 + HUE * lo.x) * mix(1.0, DARK_ALB, dk.x);
-    m.g = PATCH_H * lo.yzw + SAND_CLUMP_H * gr.yzw + GRAIN_H * fg.yzw;
+    m.g = SAND_SLUMP_H * lo.yzw + SAND_CLUMP_H * gr.yzw + GRAIN_H * fg.yzw;
     m.cav = 1.0 + CLUMP_CAV * gr.x;
   } else if (id == E_STONE) {
     // Gravel: rounded pebbles of mixed rock. Each pebble is a disc of its own
@@ -479,18 +495,19 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
   } else if (id == E_SNOW) {
     // Old powder snow: soft drifts, clumps and (up close) a sugary crust of
     // crystals; the sparkle comes from the glints.
-    const float DRIFT_M = 0.36, CRYSTAL_M = 0.008;   // m, wavelengths
-    const float DRIFT_F = CELL_M / DRIFT_M, CRYSTAL_F = CELL_M / CRYSTAL_M;
-    const float DRIFT_H = 0.048 / CELL_M, CRYSTAL_H = 0.00064 / CELL_M;   // 4.8 cm, 0.6 mm, in cells
-    const int DRIFT_OCT = 2, CRYSTAL_OCT = 2;                  // fBm octaves
+    // (drifts and clumps: snowDrifts, snowClumps)
+    const float CRYSTAL_M = 0.008;             // m, wavelength
+    const float CRYSTAL_F = CELL_M / CRYSTAL_M;
+    const float CRYSTAL_H = 0.00064 / CELL_M;  // 0.6 mm, in cells
+    const int CRYSTAL_OCT = 2;                 // fBm octaves
     const float DRIFT_ALB = 0.03, CLUMP_ALB = 0.04;           // albedo swing per unit of each noise
     const vec3 DEEP_TINT = vec3(0.8, 0.94, 1.12);  // deep-scattered light: ice absorbs red
     const float GLINT_DENS = 1.4;              // ice crystals: more facets than sand
-    vec4 lo = mFbmD(p, DRIFT_F, DRIFT_OCT, fp);
+    vec4 lo = snowDrifts(p, fp);
     vec4 gr = snowClumps(p, fp);
     vec4 cr = mFbmD(p, CRYSTAL_F, CRYSTAL_OCT, fp);
     m.alb *= 1.0 + DRIFT_ALB * lo.x + CLUMP_ALB * gr.x;
-    m.g = DRIFT_H * lo.yzw + SNOW_CLUMP_H * gr.yzw + CRYSTAL_H * cr.yzw;
+    m.g = SNOW_DRIFT_H * lo.yzw + SNOW_CLUMP_H * gr.yzw + CRYSTAL_H * cr.yzw;
     m.sssCol = DEEP_TINT;
     m.glintDens = GLINT_DENS;
   } else if (id == E_GUNPOWDER) {
@@ -832,6 +849,7 @@ void applyMat(inout Surf s, Mat m) {
   s.n = normalize(s.ng - gt);
 }
 
+${reliefGLSL}
 // Surface record for a smooth-channel hit: blend the material of the cells of
 // that channel around the point, weighted trilinearly. The two most common
 // elements get a full material each; their border is broken up with noise so
@@ -899,10 +917,12 @@ Surf gatherSurf(vec3 hp, vec3 n, int ch) {
     if (k > 0.0) m = mixMat(m, matOf(id2, hp, n, s.T, ct2, fp), k);
   }
   applyMat(s, m);
+#ifdef DETAIL_RELIEF
+  s.cav *= reliefSkyVis(hp);   // down a carved crevice (gfx/relief.js)
+#endif
   return s;
 }
 
-${reliefGLSL}
 // ---- crisp voxels: bevelled boxes ----
 // A crisp neighbour that a voxel's face is flush with (the floor counts; glass doesn't).
 bool flushNb(ivec3 c) {
@@ -1152,9 +1172,6 @@ vec3 shadeSurf(Surf s, vec3 rd) {
   float w = s.sss;
   vec3 sh = vec3(0.0);
   if (max(nl, ngl) + w > 0.0) sh = uShadows ? sunShadow(s.p, ng) : vec3(1.0);
-#if defined(DETAIL_RELIEF) && defined(DETAIL_RELIEF_SHADOW)
-  if (s.ch >= 0 && max(sh.x, max(sh.y, sh.z)) > 0.0) sh *= reliefSunVis(s.p);   // the relief's own shade (gfx/relief.js)
-#endif
 #ifdef GRAINS_ANY
   sh *= gGrainSun;   // a grain shaded by the grains next to it (gfx/grains.js)
 #endif

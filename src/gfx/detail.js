@@ -33,8 +33,8 @@ export const costTier = (ms) => (ms < COST_LOW_MS ? 'low' : ms < COST_MEDIUM_MS 
 // (metres per pixel) above which the feature draws nothing, so the view
 // shader leaves it out (gfx/detailGate.js). Infinity = always in.
 // Relief (shaders/gfx/relief.js) starts once its tallest feature, rock crags
-// (ROCK_CRAG_H · RELIEF_CRAG_TOP ≈ 5.6 mm), spans RELIEF_PX_LO = 1 pixel.
-const RELIEF_FADE_M = 0.0056;   // m per pixel
+// (top ≈ 17.5 mm), spans RELIEF_PX_LO = 1 pixel.
+const RELIEF_FADE_M = 0.0175;   // m per pixel
 // Grains (shaders/gfx/grains.js) start where a pebble (PEBBLE_M = 5 cm) or a
 // clod's lump (2 · CLOD_LUMP_R = 0.34 cells ≈ 10 cm) spans 8 pixels (*_PX_NONE).
 const GRAINS_FADE_M = 0.05 / 8;           // m per pixel
@@ -57,9 +57,6 @@ export const DETAIL = [
   // a shared GPU (identical shaders varied by up to ±8 ms), so high until re-measured quiet.
   { key: 'relief', define: 'DETAIL_RELIEF', label: 'Surface relief up close', cost: 'high', fadeM: RELIEF_FADE_M,
     desc: 'Sand, snow, ash, gunpowder, rock and wood get real relief when you are close: crags, clumps and bark furrows with true outlines and parallax' },
-  // reliefShadow: relief + shadow vs off (bench --all): lab ~5, volcano ~20-26 ms; same caveat.
-  { key: 'reliefShadow', define: 'DETAIL_RELIEF_SHADOW', label: 'Relief self-shadowing', cost: 'high', fadeM: RELIEF_FADE_M,
-    desc: 'The close-up relief casts sunlight shadows on itself (needs Surface relief up close)' },
   { key: 'grains', define: 'DETAIL_GRAINS', label: 'Pebbles and grains up close', fadeM: GRAINS_FADE_M,
     desc: 'Up close, gravel is a pile of real pebbles (~5 cm): outlines, gaps and contact shadows instead of a texture',
     cost: 'high' },   // worst +30 ms (volcano eyeSummit, 11 rounds; god view +4.6 ms: shader size)
