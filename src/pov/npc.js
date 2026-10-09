@@ -18,7 +18,8 @@ import { BODY_HEIGHT, BODY_WIDTH } from './constants.js';
 // ground plane. Pursuit steers toward where the player is heading, not where
 // they are. Each frame the vehicle's steered velocity becomes the body's wished
 // move (direction and share of top speed), the same input the player's keys
-// give, and the body does the moving. When the body is blocked it jumps.
+// give, and the body does the moving. When the body is blocked it jumps; in
+// liquid it swims up to keep its head out, and jets out when a wall stops it.
 //
 // The player's axe and gun hit it through targets.js.
 
@@ -73,7 +74,7 @@ const AXE_COLORS = { handle: [0.3, 0.15, 0.06], blade: [0.5, 0.52, 0.56] };
 const HW = BODY_WIDTH / 2;
 
 function buildAxeman() {
-  const rig = buildCrasher({ palette: PALETTE, eyeGlow: EYE_GLOW, pack: false });
+  const rig = buildCrasher({ palette: PALETTE, eyeGlow: EYE_GLOW });
   // the axe: handle out forward from the right mitten, the head at its end, edge down
   const grip = new THREE.Group();
   grip.position.y = rig.handY;
@@ -142,7 +143,7 @@ class Brain extends Vehicle {
 
 // One axeman. world (each frame): { player, toWorld(grid, out), worldToGrid, scale }
 export function createAxeman({ renderer, getSim }) {
-  const body = createPlayer({ renderer, getSim });
+  const body = createPlayer({ renderer, getSim, quiet: true });
   const figure = createFigure(buildAxeman);
   const npc = { flinch: 0 };
   const brain = new Brain(npc);
@@ -229,8 +230,13 @@ export function createAxeman({ renderer, getSim }) {
       const want = share * MAX_SPEED, got = Math.hypot(body.vel.x, body.vel.z);
       stuckT = want > 0 && got < want * STUCK_SPEED ? stuckT + dt : 0;
       const climb = brain.fsm.in('chase') && npc.preyDy() > CLIMB_FROM && npc.preyDist() < SIGHT / 4;
-      input.jump = alive && body.onGround && jumpWait === 0 && (stuckT > STUCK_S || climb);
-      if (input.jump) { jumpWait = JUMP_COOLDOWN_S; stuckT = 0; }
+      if (body.inLiquid) {
+        // swim up to breathe; stopped by a wall (a tank's side), hold it: the jet lifts it out
+        input.jump = alive && (body.headInLiquid || stuckT > STUCK_S);
+      } else {
+        input.jump = alive && body.onGround && jumpWait === 0 && (stuckT > STUCK_S || climb);
+        if (input.jump) { jumpWait = JUMP_COOLDOWN_S; stuckT = 0; }
+      }
       body.update(dt, input);
 
       // the figure: faces where it's going, or the player while it swings
@@ -242,7 +248,7 @@ export function createAxeman({ renderer, getSim }) {
       figure.update(dt, {
         feet: vFeet, scale: w.scale, yaw, worldToGrid: w.worldToGrid,
         speedH: got, velY: body.vel.y, onGround: body.onGround, inLiquid: body.inLiquid, headInLiquid: body.headInLiquid,
-        dead: body.dead, deadTime, heat: body.feel?.heat ?? 0, jetting: false,
+        dead: body.dead, deadTime, heat: body.feel?.heat ?? 0, jetting: body.jetting,
         chop: swinging ? Math.min(brain.swingT / SWING_S, 1) : null,
       });
     },

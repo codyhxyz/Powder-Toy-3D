@@ -125,7 +125,8 @@ function rawMat(frag, uniforms) {
   });
 }
 
-export function createPlayer({ renderer, getSim }) {
+// quiet: a body that isn't the player's (an NPC, npc.js) doesn't announce its jet on povEvents
+export function createPlayer({ renderer, getSim, quiet = false }) {
   const listeners = {};
   const emit = (name, data) => (listeners[name] || []).forEach((fn) => fn(data));
   const vitals = createVitals(emit);
@@ -501,7 +502,7 @@ export function createPlayer({ renderer, getSim }) {
       p.jetBurnS = 0;
       p.jetIdleS += dt;
     }
-    if (jet !== p.jetting) { p.jetting = jet; povEvents.emit('player:jet', { on: jet }); }
+    if (jet !== p.jetting) { p.jetting = jet; if (!quiet) povEvents.emit('player:jet', { on: jet }); }
 
     // gravity and buoyancy (Archimedes over the submerged share)
     v.y += (env2.buoy - (jet ? 0 : 1)) * grav * dt;   // the jet holds you up as Noita's does
@@ -579,7 +580,7 @@ export function createPlayer({ renderer, getSim }) {
     impulse.set(0, 0, 0);
     p.onGround = false; p.inLiquid = false; p.headInLiquid = false; p.liquidId = -1; p.submerged = 0;
     p.jetFuel = 1; p.jetBurnS = 0; p.jetIdleS = 0;
-    if (p.jetting) { p.jetting = false; povEvents.emit('player:jet', { on: false }); }
+    if (p.jetting) { p.jetting = false; if (!quiet) povEvents.emit('player:jet', { on: false }); }
     generation++; probe.valid = false;   // wait for cells around the new spot
     vitals.reset();
   }
