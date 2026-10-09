@@ -189,7 +189,9 @@ Sleeping supertiles as implemented (`shaders/activity.js` superMapFrag, SUPER_MA
   SUPER_TEX square of the state atlas (and the flow field, which shares it), or its 16×8 texels of home blocks in
   the block atlas, plus the block atlas's low-margin rows at partition offset 1. Above STEP_FULL_SHARE (0.9) of a
   pass's channel (a uniform, `sim.superU.uFullShare`), one full-screen quad. `sim.skipSleeping = false` draws
-  full-screen always (A/B). The shares come from two small passes (row counts, then their sum): one fragment
+  full-screen always (A/B). Whitewater's aeration field (`gfx/foam.js`, render state the sim never reads) is the exception: it
+  draws every cell each step, since a settled pool goes quiet and sleeps while the foam on it must still burst, and
+  it keeps stepping (cells held in place) for `AER_IDLE_STEPS` after the world goes idle, then clears. The shares come from two small passes (row counts, then their sum): one fragment
   summing all 2048 supertiles cost ~0.03 ms a step in an empty world.
 - **The threshold** (`tools/sleep-crossover.mjs`, quiet M5, 128³, the two ways alternating at the same states): a
   quad per drawn supertile costs 0.75 of one full-screen quad with 32% drawn, 0.86 at 49%, 0.91 at 73%, 0.98 at
@@ -390,7 +392,7 @@ The world is much larger than what lives on the GPU. Its size is `WORLD` cells, 
     detail, floor lines. The shadow map's lattice snaps to whole texels of the offset. The box sits at its world
     origin in the scene, so a move leaves the camera (and TAA's history) alone.
   - A move: stage the leaving slab and flag its bricks against the generator; `Simulation.shift` (state, the field
-    EMA through the EMA pass's `uShift`, GI probes, the flow field); the generator fills the uncovered slab; stored
+    EMA through the EMA pass's `uShift`, GI probes, the flow field and whitewater's aeration field); the generator fills the uncovered slab; stored
     bricks are written back; trees are stamped into brick columns visited for the first time (one batched pass
     clipped by a column mask, a per-world planted record), so a visited tree comes back as stored bricks;
     `syncCopies`. At most one move per frame, none while the last slab is still being read back.

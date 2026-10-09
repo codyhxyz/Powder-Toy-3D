@@ -90,9 +90,14 @@ export const DETAIL = [
   // low: ~0 ms (25 rounds at eyeTank; within noise)
   { key: 'liquidMeniscus', define: 'DETAIL_LIQ_MENISCUS', label: 'Liquid meniscus', cost: 'low', fadeM: MENISCUS_FADE_M,
     desc: 'Liquid climbing walls and glass over its last few millimetres' },
-  // medium: 1.4 ms at eyeTank (25 rounds)
+  // medium: 1.4 ms at eyeTank (25 rounds), before the aeration field. Its
+  // per-step pass (gfx/foam.js) adds ~0.4 ms a step on a 128³ grid with a
+  // pool over the whole floor (7 interleaved rounds, 2026-10-10), ~1.6 ms a
+  // frame at 4 steps; the view's lookup costs no more than the old column
+  // walks did. The pour / pourAfter presets of tools/detail-bench.mjs add
+  // the step cost to the tier.
   { key: 'liquidFoam', define: 'DETAIL_LIQ_FOAM', label: 'Whitewater', cost: 'medium',
-    desc: 'Falling and splashing liquid roughens and foams where it moves fast' },
+    desc: 'Liquid that plunges or lands hard turns white with foam that drifts on the flow and bursts over a few seconds; long falls tear into spray' },
 ];
 
 export const settingKey = (f) => `detail_${f.key}`;
