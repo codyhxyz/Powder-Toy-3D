@@ -8,12 +8,12 @@ import {
 
 // The realistic body: Quaternius's mannequin (Universal Animation Library,
 // CC0), skinned and played by an AnimationMixer, behind the "Body" setting.
-// The stickman (figure.js) is the low setting, and it stands in while the
+// The procedural bodies (figure.js) are the low settings; the cute one stands in while the
 // model loads or if it fails to.
 //
 // createBody({ choice }) returns the stickman's interface (root, bind,
 // compile, update, setVisible, dispose), so the shell swaps them freely.
-// choice() is read every frame: 'stick' or 'real'.
+// choice() is read every frame: 'cute', 'stick' or 'real'.
 //
 // Lighting: the mannequin's meshes use figure.js's figureFrag, the world's own
 // lighting (sun and its shadow map, GI probes, glow from hot matter), with a
@@ -196,16 +196,18 @@ function createRealFigure(gltf) {
   };
 }
 
-// The body the shell shows: the stickman or the mannequin, by choice(), with
-// the stickman standing in until the mannequin is loaded and compiled.
+// The body the shell shows: the cute wizard, the stickman or the mannequin,
+// by choice(), with the cute one standing in until the mannequin is loaded
+// and compiled.
 export function createBody({ choice }) {
-  const stick = createFigure();
+  const stick = createFigure('stick');
+  const cute = createFigure('cute');
+  const light = [stick, cute];   // the procedural bodies: cheap, always built
   let real = null, failed = false, loading = false;
   let bound = null, compileArgs = null;
   const root = new THREE.Group();
   root.visible = false;
-  root.add(stick.root);
-  stick.setVisible(true);   // the parts show or hide by choice; root is the body's visibility
+  for (const f of light) { root.add(f.root); f.setVisible(true); }   // the parts show or hide by choice; root is the body's visibility
 
   const wantsReal = () => choice() === 'real' && !failed;
   function load() {
@@ -219,38 +221,38 @@ export function createBody({ choice }) {
         root.add(fig.root);
         real = fig;
       })
-      .catch((err) => { failed = true; console.error('Realistic body failed to load; using the stickman', err); })
+      .catch((err) => { failed = true; console.error('Realistic body failed to load; using the cute one', err); })
       .finally(() => { loading = false; });
   }
-  const active = () => (wantsReal() && real ? real : stick);
+  const active = () => (wantsReal() ? real ?? cute : choice() === 'stick' ? stick : cute);
 
   return {
     root,
     bind(volume, g) {
       bound = [volume, g];
-      stick.bind(volume, g);
+      for (const f of light) f.bind(volume, g);
       real?.bind(volume, g);
       if (wantsReal()) load();
     },
     get material() { return active().material; },
     compile(renderer, camera, scene) {
       compileArgs = [renderer, camera, scene];
-      return Promise.all([stick.compile(renderer, camera, scene), real?.compile(renderer, camera, scene)]);
+      return Promise.all([...light.map((f) => f.compile(renderer, camera, scene)), real?.compile(renderer, camera, scene)]);
     },
     update(dt, s) {
       if (wantsReal()) load();
       const fig = active();
-      stick.setVisible(fig === stick);
+      for (const f of light) f.setVisible(fig === f);
       real?.setVisible(fig === real);
       fig.update(dt, s);
     },
     setVisible(v) { root.visible = v; },
-    // which body is showing: 'stick' or 'real' (tests)
-    get showing() { return active() === real ? 'real' : 'stick'; },
+    // which body is showing: 'cute', 'stick' or 'real' (tests)
+    get showing() { const f = active(); return f === real ? 'real' : f === stick ? 'stick' : 'cute'; },
     get loaded() { return !!real; },
     get real() { return real; },
     dispose() {
-      stick.dispose();
+      for (const f of light) f.dispose();
       real?.dispose();
     },
   };

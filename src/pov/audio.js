@@ -139,6 +139,8 @@ const PRESETS = {
   swoosh: [.5, .1, 140, .06, .04, .14, 4, 1, 4, , , , , 6, , , , .7, , , -900],
   // blowtorch burning (loops): a steady high-passed roar of noise with a slight flutter
   torchLoop: [.35, 0, 200, , 1, 0, 4, 1, , , , , , 12, , , , .9, , .08, 900],
+  // the jetpack firing: a low, rumbling roar under the torch's hiss
+  jetLoop: [.45, 0, 90, , 1, 0, 4, 1, , , , , , 20, , , , .9, , .15, 500],
   // a bomb going off: a deep noise burst sliding down, a long crushed tail
   boom: [2, .1, 70, .01, .25, 1.3, 4, 1.5, -0.3, , , , , 1.2, , .4, , .4, .15, , -700],
   // a tool that can't (WALL, a full bucket): a dull, dead clunk
@@ -175,7 +177,7 @@ const PRESETS = {
   death: [.8, 0, 220, .02, .3, .6, 2, 1, -2, , , , , , , .2, , .6, , , -1200],
 };
 // presets that play as seamless loops (one render each)
-const LOOPS = new Set(['pourLoop', 'physHum', 'torchLoop']);
+const LOOPS = new Set(['pourLoop', 'physHum', 'torchLoop', 'jetLoop']);
 
 // ---- material families: which sound a struck element makes
 const FAMILY_BY_KEY = {
@@ -474,6 +476,8 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
       default: break;
     }
   });
+
+  povEvents.on('player:jet', ({ on }) => loop('jetLoop', !!on && live()));
 
   povEvents.on('player:step', ({ speed = STEP_LOUD_SPEED, inLiquid } = {}) => {
     if (!live()) return;

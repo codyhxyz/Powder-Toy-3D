@@ -152,7 +152,7 @@ export function createPov(app) {
   // ---- lazily built parts
   function ensureFigure() {
     if (!figure) {
-      figure = createBody({ choice: () => app.settings.figure });   // stickman or realistic, live
+      figure = createBody({ choice: () => app.settings.body });   // cute, stickman or realistic, live
       scene.add(figure.root);
     }
     figure.bind(app.getVolume(), app.getSim().g);
@@ -393,8 +393,9 @@ export function createPov(app) {
     figure.update(dt, {
       feet: vFeet, scale, yaw: povCam.look.yaw, worldToGrid,
       speedH, velY: player.vel.y, onGround: player.onGround, inLiquid: player.inLiquid, headInLiquid: player.headInLiquid,
-      dead: deadSeen, deadTime, heat: player.feel?.heat ?? 0,
+      dead: deadSeen, deadTime, heat: player.feel?.heat ?? 0, jetting: player.jetting,
     });
+    if (player.jetting && mode === 'on') vfx?.jet(player.pos, povCam.look.yaw, dt);
     viewmodel.visible = mode === 'on' && !deadSeen && pose.eyeDist <= FIGURE_HIDE_DIST && !hudHidden;
 
     // the toolbelt
@@ -438,6 +439,7 @@ export function createPov(app) {
     const liq = player.headInLiquid ? ELEMENTS[player.liquidId] : null;
     povHud.update({
       dt, health: player.health, breath: player.breath, feel: player.feel,
+      jetFuel: player.jetFuel, jetting: player.jetting,
       headInLiquid: player.headInLiquid && mode === 'on',
       liquidColor: liq?.color ?? null,
       dead: deadSeen, cause: player.cause, respawnIn: RESPAWN_DELAY - deadTime,

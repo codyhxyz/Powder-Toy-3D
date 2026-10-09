@@ -13,6 +13,13 @@
   (the same a = −∇P/ρ the sim uses). Heat, cold, acid, lava, drowning, being buried and hard falls hurt.
   You die, the camera pulls back with the cause ("Killed by lava, 1,140 °C"), and you respawn at the drop-in
   point.
+- **Jetpack** (Noita's levitation): hold `Space` in the air to fly. It climbs at up to 3 m/s against gravity,
+  the tank holds 3 s of thrust and refills only with your feet on the ground (1.2 s from empty). The fuel bar
+  shows under health while it isn't full. Swimming strokes take over in deep liquid. The exhaust is cosmetic
+  (vfx.js `jet`), with a roar loop (audio.js `jetLoop`).
+- **The body** (setting "Body": Cute | Stickman | Realistic, key `body`): Cute is the default, a chibi wizard
+  in a pointed hood (a nod to Noita's Mina) with a two-tank jetpack whose nozzles flame while it fires
+  (figure.js `buildCute`, nozzle spot `JET_NOZZLES`). Cute and Stickman share one rig and animation.
 - **Physical, finite tools on a Minecraft-style hotbar** (keys `1`–`9` and the scroll wheel in POV). God powers
   (infinite painting) stay in god view, one `F` away.
   1. **Shovel**: digs powder, or breaks solids into their debris (slower the harder they are; WALL
@@ -97,6 +104,7 @@ player.update(dt, input)                  // every POV frame; input = {
 player.pos, player.vel                    // feet position (grid), velocity (cells/s)
 player.onGround, player.inLiquid, player.headInLiquid, player.liquidId
 player.health, player.breath              // 0..1
+player.jetFuel, player.jetting            // jetpack tank 0..1, firing this frame
 player.feel = { heat, cold, acid, hurt }  // 0..1 intensities for screen effects (hurt decays after a hit)
 player.dead, player.cause                 // cause: 'Killed by lava, 1,140 °C'
 player.applyImpulse(dv /* cells/s */)
@@ -197,6 +205,7 @@ say world. Emitters own their event names. Listeners never mutate payloads.
 | `impact` | gun, axe | `{ source: 'gun'\|'axe', point, normal, id, energy, broke }`. Something was struck. id is the element hit, energy is ½·DENS·v² in sim units, and broke is true/false when the striker knows, else null. |
 | `tool:action` | shovel, bucket, axe, physgun, trowel, blowtorch, bomb | `{ tool, action, id?, point?, amount? }`. tool is 'shovel'\|'bucket'\|'axe'\|'physgun'\|'trowel'\|'blowtorch'\|'bomb'; action is 'dig'\|'place'\|'on'\|'off'\|'throw'\|'dump'\|'scoop'\|'pour'\|'swing'\|'refuse'\|'grab'\|'fling'\|'release'. Physgun 'hold' state is read from the tool, not an event. |
 | `player:step` | shell (camera bob cycle) | `{ speed, inLiquid }`. A footfall. |
+| `player:jet` | player | `{ on }`. The jetpack lit or went out. |
 
 The player's own events (`player.on('hurt'|'death'|'land'|'splash')`) stay as they are; listeners subscribe there too.
 

@@ -5,6 +5,7 @@ import { quadVert } from '../shaders/common.js';
 import { povProbeFrag, povCouplingFrag, PROBE, PROBE_OUTSIDE } from '../shaders/povBody.js';
 import { BODY_HEIGHT, BODY_WIDTH, EYE_HEIGHT, BODY_DENS } from './constants.js';
 import { createVitals, CELL_METERS, SAFE_FALL_M, LETHAL_FALL_M } from './vitals.js';
+import { povEvents } from './events.js';
 
 // The first-person body: an upright AABB (BODY_WIDTH × BODY_HEIGHT × BODY_WIDTH
 // cells) moving through the voxel grid in real time.
@@ -44,6 +45,14 @@ const STEP_DOWN = 1.1;                 // cells: walking off a ledge this low fo
 const MAX_SPEED = 90;                  // cells/s (27 m/s): faster than any fall the grid allows
 const SUBSTEP = 0.4;                   // cells: longest move per collision substep
 const MAX_DT = 0.1;                    // s: longer frames are simulated as this long
+
+// ---- jetpack: Noita's levitation. Hold jump in the air to climb; the tank
+// drains while it fires and refills only with your feet on the ground.
+const JET_FUEL_S = 3;                  // s of thrust on a full tank (Noita's starting levitation)
+const JET_REFILL_S = 1.2;              // s to refill an empty tank standing on the ground
+const JET_THRUST = 1.6;                // × gravity, upward: a 0.6 g net climb against gravity
+const JET_MAX_RISE = 3 / CELL_METERS;  // cells/s (3 m/s): thrust stops adding speed past this climb
+const JET_STEER = 2;                   // × AIR_ACCEL: steering while the jet fires (Noita flies, it doesn't drift)
 
 // ---- liquids ----
 const WADE_SHARE = 0.15;               // submerged share of the body that counts as "in" liquid
@@ -132,6 +141,8 @@ export function createPlayer({ renderer, getSim }) {
     pos: new THREE.Vector3(), vel: new THREE.Vector3(),
     onGround: false, inLiquid: false, headInLiquid: false, liquidId: -1,
     submerged: 0,                 // share of the body under liquid, 0..1
+    jetFuel: 1,                   // jetpack tank, 0..1
+    jetting: false,               // the jetpack is firing this frame
     get health() { return vitals.health; },
     get breath() { return vitals.breath; },
     get feel() { return vitals.feel; },
@@ -444,18 +455,20 @@ export function createPlayer({ renderer, getSim }) {
     wish.set(alive ? input.move?.x ?? 0 : 0, alive ? input.move?.z ?? 0 : 0);
     if (wish.length() > 1) wish.normalize();
     const vh = new THREE.Vector2(v.x, v.z);
+    let jumpedNow = false;
     if (p.onGround) {   // walking, also on the bottom of a pool
       const target = wish.clone().multiplyScalar(alive && input.sprint ? SPRINT_SPEED : WALK_SPEED);
       const diff = target.sub(vh);
       const max = GROUND_ACCEL * dt;
       if (diff.length() > max) diff.setLength(max);
       vh.add(diff);
-      if (alive && input.jump) { v.y = JUMP_SPEED; p.onGround = false; }
+      if (alive && input.jump) { v.y = JUMP_SPEED; p.onGround = false; jumpedNow = true; }
     } else if (wish.lengthSq() > 0) {
       // accelerate toward the wished speed, never brake (air control, strokes)
       const speed = swimming ? SWIM_SPEED : (input.sprint ? SPRINT_SPEED : WALK_SPEED);
       const dir = wish.clone().normalize();
-      const add = Math.min(Math.max(speed * wish.length() - vh.dot(dir), 0), (swimming ? SWIM_ACCEL : AIR_ACCEL) * dt);
+      const accel = swimming ? SWIM_ACCEL : AIR_ACCEL * (p.jetting ? JET_STEER : 1);
+      const add = Math.min(Math.max(speed * wish.length() - vh.dot(dir), 0), accel * dt);
       vh.addScaledVector(dir, add);
     }
     v.x = vh.x; v.z = vh.y;
@@ -463,6 +476,14 @@ export function createPlayer({ renderer, getSim }) {
       if (input.jump && swimming) v.y += SWIM_UP * GRAVITY * dt;
       if (input.down) v.y -= SWIM_DOWN * GRAVITY * dt;
     }
+
+    // jetpack: thrust while jump is held in the air (swimming strokes instead)
+    const jet = alive && !!input.jump && !p.onGround && !jumpedNow && !swimming && p.jetFuel > 0;
+    if (jet) {
+      p.jetFuel = Math.max(0, p.jetFuel - dt / JET_FUEL_S);
+      if (v.y < JET_MAX_RISE) v.y = Math.min(v.y + JET_THRUST * grav * dt, Math.max(v.y, JET_MAX_RISE));
+    }
+    if (jet !== p.jetting) { p.jetting = jet; povEvents.emit('player:jet', { on: jet }); }
 
     // gravity and buoyancy (Archimedes over the submerged share)
     v.y += (env2.buoy - 1) * grav * dt;
@@ -522,6 +543,8 @@ export function createPlayer({ renderer, getSim }) {
       if (r.id !== null && r.id !== UNKNOWN) { p.pos.y += r.d; p.onGround = true; v.y = Math.min(v.y, 0); }
     }
 
+    if (p.onGround) p.jetFuel = Math.min(1, p.jetFuel + dt / JET_REFILL_S);
+
     // landing and impacts
     if (p.onGround && !wasGround && landSpeed > LAND_EVENT_SPEED) emit('land', { speed: landSpeed });
     if (p.onGround || p.inLiquid) {
@@ -541,6 +564,8 @@ export function createPlayer({ renderer, getSim }) {
     p.vel.set(0, 0, 0);
     impulse.set(0, 0, 0);
     p.onGround = false; p.inLiquid = false; p.headInLiquid = false; p.liquidId = -1; p.submerged = 0;
+    p.jetFuel = 1;
+    if (p.jetting) { p.jetting = false; povEvents.emit('player:jet', { on: false }); }
     apexY = feet.y;
     generation++; probe.valid = false;   // wait for cells around the new spot
     vitals.reset();

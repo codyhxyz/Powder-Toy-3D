@@ -99,6 +99,11 @@ body.pov-locked canvas { cursor: none; }
 .pov-breath .pov-ic svg { fill: none; stroke: #7cc4ff; stroke-width: 1.4; }
 .pov-breath .pov-fill { background: linear-gradient(90deg, #3d8fd6, #7cc4ff); transition: transform 120ms linear; }
 .pov-breath.low .pov-fill { background: linear-gradient(90deg, #6b4fd6, #b08cff); }
+.pov-jet { display: none; }
+.pov-jet.show { display: flex; animation: pov-in 200ms var(--ease); }
+.pov-jet .pov-ic svg { fill: #ffa94d; }
+.pov-jet .pov-fill { background: linear-gradient(90deg, #e8590c, #ffc078); transition: transform 90ms linear; }
+.pov-jet.low .pov-fill { background: linear-gradient(90deg, #c92a2a, #ff8787); }
 @keyframes pov-in { from { opacity: 0; transform: translateY(4px); } }
 
 /* ---- pointer-lock prompt */
