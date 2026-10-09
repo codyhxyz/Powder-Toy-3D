@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { BRICK } from '../shaders/common.js';
+import { SUPER_MAP } from '../shaders/activity.js';
 
 // In-app GPU/CPU profiler (Settings → Developer; the overlay is ui/profiler.js).
 //
@@ -42,7 +43,7 @@ const MS_PER_S = 1000;
 // Frame phases in display order; a pass belongs to the phase marked last (app.js frame()).
 export const PHASES = [
   { id: 'paint', label: 'Paint' },       // the brush
-  { id: 'sim', label: 'Sim' },           // the steps: activity map (inert, inertRows, inertJoin, quiet), moveBlock, moveFlow, moveGather, react
+  { id: 'sim', label: 'Sim' },           // the steps: activity map (inert, inertRows, inertJoin, quiet, awake, superMap, superRows, superShare), moveBlock, moveGather, moveFlow, react
   { id: 'derived', label: 'Derived' },   // render fields, bricks, empty-space distance, glow volume
   { id: 'shadow', label: 'Shadow' },     // the sun's shadow map
   { id: 'gi', label: 'GI' },             // GI probes
@@ -147,6 +148,15 @@ export function createProfiler(renderer, { describe, onSample }) {
     return 1 - quiet / ((nx / BRICK) * (ny / BRICK) * (nz / BRICK));
   }
 
+  // Share of supertiles the state passes draw (shaders/activity.js SUPER_MAP:
+  // the rest sleep), or null for a build without them.
+  function drawnShare(sim) {
+    if (!sim.superShare) return null;
+    if (!sim.skipSleeping) return 1;
+    renderer.readRenderTargetPixels(sim.superShare, 0, 0, 1, 1, f32);
+    return f32[SUPER_MAP.DRAWN];
+  }
+
   function finishMeasuring(frameSteps) {
     measuring = false;
     lastSample = frameNow;
@@ -171,7 +181,7 @@ export function createProfiler(renderer, { describe, onSample }) {
     const { sim, targets, renderScale } = describe();
     let memory = renderer.getDrawingBufferSize(drawSize).x * drawSize.y * CANVAS_BYTES;
     for (const t of collectTargets(targets)) memory += targetBytes(t);
-    const awake = awakeShare(sim);
+    const awake = awakeShare(sim), drawn = drawnShare(sim);
     const fps = drawN ? drawN / (drawDt / MS_PER_S) : null;
     const sample = {
       phases, passes, totals: [...totals], overhead,
@@ -182,6 +192,7 @@ export function createProfiler(renderer, { describe, onSample }) {
       fps,
       stepsPerSec: fps != null && workedFrames ? (steps / workedFrames) * fps : null,
       awake,
+      drawn,
       memory,
       grid: [sim.g.nx, sim.g.ny, sim.g.nz],
       canvas: [drawSize.x, drawSize.y],

@@ -436,6 +436,9 @@ export function createPlayer({ renderer, getSim }) {
     u.uLift.value = speed > EPS ? DISPLACE_LIFT * Math.max(0, -p.vel.y) / speed : 0;
     u.uAhead.value.set(p.vel.x, p.vel.z).multiplyScalar(speed > EPS ? DISPLACE_AHEAD / speed : 0);
     u.uFrame.value = sim.frame;
+    // it changes only cells whose centres are in the body's box (shaders/povBody.js),
+    // so only those are rebuilt and woken (Simulation.touch)
+    sim.touchCentres(lo, hi);
     sim.pass(mats.couple);
   }
 

@@ -1,4 +1,4 @@
-import { prelude, inertSelfGLSL } from './common.js';
+import { prelude, inertSelfGLSL, SUPER, SUPER_TEX, BLOCK_TILE } from './common.js';
 
 // Activity map: which 4×4×4 bricks the simulation may skip.
 //
@@ -261,3 +261,168 @@ bool quietCell(ivec3 c) {
   return texelFetch(tQuiet, brickAtlas(b), 0).x > 0.5;
 }
 `;
+
+// ---- sleeping supertiles (docs/scaling.md D8) ----
+// The step passes draw one instanced quad per supertile of their target (4×2×2
+// bricks: one SUPER_TEX square of the state atlas; gfx/regions.js), and the
+// vertex shader drops the supertiles nothing can change, so their tiles are
+// never loaded. Inside a drawn supertile, quiet bricks still take the passes'
+// own early-outs. Built with every activity map, per supertile (superMapFrag;
+// texel (i % STW, i / STW), its slot in the state atlas), a byte per channel:
+//   AWAKE  this map's steps may change it: a brick in it is not quiet, or one
+//          just below it along x, y or z (with the partition offset at 1 a
+//          Margolus block belongs to the brick holding its base cell, and
+//          reaches one cell past it along each axis: shaders/move.js)
+//   STEPS  a brick in it is not quiet: the flow pass writes only such bricks'
+//          cells, so it draws these supertiles
+//   BLOCKS a brick in it is not quiet, or one just above it along x, y or z:
+//          the block pass draws these. It solves the blocks based in bricks
+//          that aren't quiet (the gather reads them), and gives a block based
+//          in a quiet brick its identity slots, which the flow pass reads for
+//          that block's cells in a brick that isn't quiet (shaders/move.js)
+//   DRAWN  the gather and react passes draw it: AWAKE under this map or the
+//          last one, or written since the last map by something other than a
+//          step (Simulation.noteWrite)
+// The two-map rule. Under a map that leaves a supertile asleep (not AWAKE),
+// its steps leave its cells as they are: the gather copies them (no block
+// reaching into it moves) and react writes each one back as quiet, with its
+// flags settled: its own, NEAR, and DIRTY as the gather left it, which the
+// map's first step clears. So once a map's steps have drawn a supertile that
+// sleeps under it, the current state copy holds its cells with settled flags
+// and the other copy the same cells; after a second step the same flags too.
+// A write that isn't a step can end a map after one step, but it either copies
+// the current state into both copies there (sim.pass copies through every cell
+// outside the box it declared) or marks the supertile written
+// (Simulation.noteWrite). If the supertile still sleeps under the next map,
+// that map's steps would write exactly what both copies hold: they skip it. A
+// map whose steps didn't settle what slept under it (none, or one with no
+// write after it: a tool building maps by hand) passes its DRAWN on instead
+// (uPrevSettled).
+export const SUPER_MAP = { AWAKE: 0, STEPS: 1, DRAWN: 2, BLOCKS: 3 };
+// Steps under one map that settle both copies of a supertile sleeping under it (above).
+export const SUPER_SETTLE_STEPS = 2;
+const superMapGLSL = Object.entries(SUPER_MAP).map(([k, v]) => `#define SUPER_${k} ${v}`).join('\n');
+
+// Share of a step pass's supertiles above which it draws one full-screen quad
+// instead of a quad per supertile (gfx/regions.js). Measured on an M5 (ANGLE
+// Metal, 128³, steps alternating between the two at the same states): a quad
+// per drawn supertile costs 0.75 of one full-screen quad with 32% drawn, 0.86
+// at 49%, 0.91 at 73%, 0.98 at 87%, 1.02 at 97% and 1.06 at 100%. It reaches
+// the vertex shaders as a uniform (uFullShare), so a tool can move it.
+export const STEP_FULL_SHARE = 0.9;
+const superCount = (g) => g.stx * g.sty * g.stz;
+
+// The supertile map (target: one texel per supertile slot, STW × the atlas's
+// rows of supertiles). Needs tQuiet (this map), tPrev (the last supertile map)
+// and the uniforms below.
+export const superMapFrag = (g) => /* glsl */ `
+${prelude(g)}
+${superMapGLSL}
+uniform sampler2D tQuiet;
+uniform sampler2D tPrev;
+uniform bool uPrevSettled;   // the last map's steps settled what slept under it (else its DRAWN carries over)
+uniform bool uForceAll;      // every supertile was written since the last map by something other than a step
+uniform ivec3 uForceLo;      // ...or the ones in this box (supertiles, inclusive; none if lo > hi)
+uniform ivec3 uForceHi;
+out vec4 oC;
+void main() {
+  ivec2 f = ivec2(gl_FragCoord.xy);
+  int i = f.x + STW * f.y;
+  oC = vec4(0.0);
+  if (i >= STX * STY * STZ) return;   // a slot past the last supertile
+  ivec3 s = ivec3(i % STX, i / (STX * STZ), (i / STX) % STZ), b0 = s * SUPER_B;
+  bool awake = false, steps = false, blocks = false;
+  // its bricks; the ones just below it, whose blocks reach into it (the grid's
+  // low margin has none: blocks there belong to brick 0); and the ones just
+  // above it, which its blocks reach into
+  for (int z = -1; z <= SBZ; z++)
+  for (int y = -1; y <= SBY; y++)
+  for (int x = -1; x <= SBX; x++) {
+    ivec3 l = ivec3(x, y, z), b = b0 + l;
+    if (any(lessThan(b, ivec3(0))) || any(greaterThanEqual(b, ivec3(BX, BY, BZ)))) continue;
+    if (texelFetch(tQuiet, brickAtlas(b), 0).x > 0.5) continue;
+    bool below = any(lessThan(l, ivec3(0))), above = any(greaterThanEqual(l, SUPER_B));
+    awake = awake || !above;
+    blocks = blocks || !below;
+    steps = steps || (!below && !above);
+  }
+  bool forced = uForceAll || (all(greaterThanEqual(s, uForceLo)) && all(lessThanEqual(s, uForceHi)));
+  vec4 prev = texelFetch(tPrev, f, 0);
+  bool drawn = awake || forced || (uPrevSettled ? prev[SUPER_AWAKE] : prev[SUPER_DRAWN]) > 0.5;
+  oC[SUPER_AWAKE] = awake ? 1.0 : 0.0;
+  oC[SUPER_STEPS] = steps ? 1.0 : 0.0;
+  oC[SUPER_DRAWN] = drawn ? 1.0 : 0.0;
+  oC[SUPER_BLOCKS] = blocks ? 1.0 : 0.0;
+}
+`;
+
+// The share of supertiles on in each channel of the supertile map, in two
+// passes, so no fragment sums them all (one summing 2048 cost ~0.06 ms here):
+//   superRowsFrag   one texel per row of supertile slots (target: rows × 1):
+//                   the supertiles on in it, per channel
+//   superShareFrag  one texel: those counts summed, over the supertiles
+// (Counts are whole numbers far below 2^24: exact in floats.)
+const superSumsGLSL = (g) => /* glsl */ `
+precision highp float;
+precision highp int;
+precision highp sampler2D;
+out vec4 oC;
+#define STW ${g.stw}                   // supertile slots per row
+#define STH ${g.height / SUPER_TEX}   // rows of supertile slots
+#define NSUPER ${superCount(g)}
+`;
+export const superRowsFrag = (g) => /* glsl */ `
+${superSumsGLSL(g)}
+uniform sampler2D tSuper;
+void main() {
+  int v = int(gl_FragCoord.x);
+  vec4 n = vec4(0.0);
+  for (int u = 0; u < STW; u++) n += texelFetch(tSuper, ivec2(u, v), 0);
+  oC = n;
+}
+`;
+export const superShareFrag = (g) => /* glsl */ `
+${superSumsGLSL(g)}
+uniform sampler2D tRows;
+void main() {
+  vec4 n = vec4(0.0);
+  for (int v = 0; v < STH; v++) n += texelFetch(tRows, ivec2(v, 0), 0);
+  oC = n / float(NSUPER);
+}
+`;
+
+// regionVert's GLSL (gfx/regions.js) for a step pass: region i < NSUPER is
+// supertile i, drawn where channel `ch` of the supertile map is on, over the
+// state atlas (its SUPER_TEX squares; the flow field shares that layout) or,
+// with block, the block atlas (shaders/common.js BLOCK_TILE: a supertile's
+// home blocks fill a SUPER.x·BLOCK_TILE.x × SUPER.z·SUPER.y·BLOCK_TILE.y
+// rect). Region NSUPER is the block atlas's rows for the grid's low margin,
+// whose blocks exist at partition offset 1 only (needs uParity).
+export function stepRegionsGLSL(g, ch, block = false) {
+  const size = block ? [SUPER.x * BLOCK_TILE.x, SUPER.z * SUPER.y * BLOCK_TILE.y] : [SUPER_TEX, SUPER_TEX];
+  const [w, h] = block ? [g.mwidth, g.mheight] : [g.width, g.height];
+  return /* glsl */ `
+#define REGION_COUNT ${superCount(g) + 1}   // the supertiles, then the block atlas's low margin
+#define NSUPER ${superCount(g)}
+#define STW ${g.stw}            // supertiles per atlas row
+#define SUPER_CH ${ch}          // the supertile map's channel that draws a supertile (SUPER_MAP)
+const vec2 TARGET = vec2(${w}.0, ${h}.0);      // texels
+const vec2 SUPER_RECT = vec2(${size[0]}.0, ${size[1]}.0);   // a supertile's rect in it
+uniform sampler2D tSuper;        // supertile map (shaders/activity.js superMapFrag)
+uniform sampler2D tSuperShare;   // share of supertiles on in each of its channels
+uniform float uFullShare;        // above this share, one full-screen quad (STEP_FULL_SHARE)
+${block ? 'uniform int uParity;      // the step\'s partition offset' : ''}
+float superShare() { return texelFetch(tSuperShare, ivec2(0), 0)[SUPER_CH]; }
+vec2 regionTarget() { return TARGET; }
+bool regionsFull() { return superShare() > uFullShare; }
+bool regionOn(int i) {
+  if (i == NSUPER) return ${block ? 'uParity == 1 && superShare() > 0.0' : 'false'};
+  return texelFetch(tSuper, ivec2(i % STW, i / STW), 0)[SUPER_CH] > 0.5;
+}
+vec4 regionRect(int i) {
+  ${block ? `if (i == NSUPER) return vec4(0.0, ${g.mmainh}.0, TARGET);   // (below the home blocks)` : ''}
+  vec2 lo = vec2(i % STW, i / STW) * SUPER_RECT;
+  return vec4(lo, lo + SUPER_RECT);
+}
+`;
+}

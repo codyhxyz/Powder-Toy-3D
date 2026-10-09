@@ -138,6 +138,81 @@ R16UI texture for vz and the flags (18 bytes per cell).
     needs to write it.
   - Every pass that writes only some supertiles must keep that two-map rule.
 
+Sleeping supertiles as implemented (`shaders/activity.js` superMapFrag, SUPER_MAP; `Simulation.step`):
+- **The supertile map.** Built with every activity map: one pass after the quiet map (and `noteAwake`), one byte
+  per channel per supertile, then each channel's share of supertiles (one texel), which the vertex shaders read.
+  - AWAKE: a brick of the supertile is not quiet, or one just below it along x, y or z. At partition offset 1 a
+    Margolus block belongs to the brick holding its base cell and reaches one cell past it, so a block based in
+    the brick below moves cells of the supertile's low faces. (This was already so: the gather tests a block's
+    base brick, so a quiet brick's low faces can trade cells with an awake neighbour's. Within an inert halo
+    only air moves, jittering, but a quiet brick's state is then not quite unchanged by its map's steps, as D9's
+    contract asks. Noted, not changed: skipping stays bit-exact with the base.)
+  - STEPS: one of its own bricks is not quiet. The flow pass draws these (it writes only cells of such bricks).
+  - BLOCKS: one of its own bricks is not quiet, or one just above it. The block pass draws these: it solves the
+    blocks based in bricks that aren't quiet (the gather reads them) and gives a block based in a quiet brick its
+    identity slots, which the flow pass reads for that block's cells in a brick that isn't quiet. (Skipping those
+    identity slots too and testing the base in the flow pass instead is exact in value, but not bit for bit: the
+    flow pass's blend into the half-float field is folded into its shader by Apple's compiler, and any change to
+    that shader's code moved some blended values by one unit in the last place. The flow and block shaders are the
+    base's, unchanged.)
+  - DRAWN: AWAKE under this map or the last one, or written since the last map by something that isn't a step.
+    The gather and react draw these.
+- **Why the last map too.** Under a map that leaves a supertile asleep, the gather copies its cells and react
+  writes them back with their flags settled (own flags, NEAR, and the DIRTY the map's first step cleared). Once a
+  map's steps have drawn it asleep, both copies hold its cells and the current one settled flags; after the
+  map's second step, the same flags in both. A write that isn't a step can end a map after one step, but it copies
+  the current state into both copies outside the box it declared (every `sim.pass` copies through) or wakes the
+  supertile. So when the next map leaves it asleep too, its steps would write what both copies already hold.
+  A map whose steps didn't settle what slept under it (none, or one with no write after it: tools build maps by
+  hand) passes its DRAWN on instead. A CPU model of these passes (`tools/skip-model.mjs`: 1-D, random maps and
+  writes, drawn against skipped) agrees in both copies, flags included, and in the flow field, and fails without
+  the low halo, the high halo for the block pass, the last map, the written boxes or the carry.
+- **Writes that aren't steps.** Each goes through `Simulation.run` into a state target, which notes it
+  (`noteWrite`, as D9 does): the box declared with `touch()`, or everything, is drawn by the next map's steps.
+  - The brush copies through and declares its box. So do the first-person body's coupling and the physgun now
+    (`touchCentres`): each writes every frame it acts, and without a box every such frame woke everything.
+  - Constructions' stamps, the axe, the gun's handoff and the pack/trowel transfer copy through without a box:
+    everything wakes for one map.
+  - The world window's shift (fresh flags everywhere), generator fill, stored edits, tree stamps and `syncCopies`:
+    everything wakes.
+  - Load, undo and the codec's unpack (multiplayer guests) rewrite the current copy alone: everything wakes.
+- **Regions.** One `RegionQuads` instance per supertile, culled in the vertex shader (`stepRegionsGLSL`): its
+  SUPER_TEX square of the state atlas (and the flow field, which shares it), or its 16×8 texels of home blocks in
+  the block atlas, plus the block atlas's low-margin rows at partition offset 1. Above STEP_FULL_SHARE (0.9) of a
+  pass's channel (a uniform, `sim.superU.uFullShare`), one full-screen quad. `sim.skipSleeping = false` draws
+  full-screen always (A/B). The shares come from two small passes (row counts, then their sum): one fragment
+  summing all 2048 supertiles cost ~0.03 ms a step in an empty world.
+- **The threshold** (`tools/sleep-crossover.mjs`, quiet M5, 128³, the two ways alternating at the same states): a
+  quad per drawn supertile costs 0.75 of one full-screen quad with 32% drawn, 0.86 at 49%, 0.91 at 73%, 0.98 at
+  87%, 1.02 at 97%, 1.06 at 100%. So 0.9.
+- **Proofs** (against `scale` at 562bb8b, bit for bit):
+  - `tools/state-hash.mjs` hashes, after every stage, the state cell by cell, the flow field, both state copies
+    texel by texel with their activity flags, and every activity map built since (inert and quiet). Identical for
+    lab, volcano and island at 128³, 64³ and wide, and `--world` (load, edits, six window moves out and six back:
+    shifts, fills, trees, stored edits, `syncCopies`). Stages: steps, every brush tool, replace and undo, codec
+    pack/unpack, readState/load, a stamp, the first-person passes (the body's coupling and the physgun with their
+    boxes, the axe, the gun's handoff), a pack/trowel take and put, and painting between single steps.
+  - `tools/regress.mjs`: settled, `--motion` and `--detail on`, every shot AE 0.
+  - `tools/activity-check.mjs`: lab, volcano, island, 300 maps each with every writer: 0 bricks differ.
+  - `tools/world-check.mjs` (1–4): the diff exact, 76/76 edited bricks back exactly and none different, seams
+    identical, a move's first frame 0.4% of pixels as before. `tools/derived-check.mjs`: every case identical.
+  - The body's coupling and the physgun change no cell outside the box they declare (checked on lab).
+- **Timings** (`tools/bench.mjs`, A = `scale`, B = this; ms per step, median of 7 interleaved rounds, quiet GPU):
+
+  | 128³ after 200 steps | supertiles drawn | A | B | B/A | B drawing every supertile |
+  |---|---|---|---|---|---|
+  | empty | 0% | 0.835 | 0.182 | 0.22 | 0.900 |
+  | island | 26% | 1.90 | 1.43 | 0.75 | 1.98 |
+  | lab | 39% | 2.21 | 1.81 | 0.82 | 2.36 |
+  | volcano | 45% | 2.23 | 1.96 | 0.87 | 2.51 |
+
+  The last column is timed after the B column each round, so a little later in the scene. In the empty world,
+  where nothing changes, drawing everything costs 8% more than the base (0.900 against 0.835 ms): the supertile
+  map's passes and the instanced draw. Above the threshold that is what a step pays.
+  What a world asleep still costs (empty, 0.18 ms a step): ~0.155 ms rebuilding the activity map every second
+  step (it reads every cell's flags), ~0.03 ms the four step passes with every quad culled. Awake supertiles cost
+  what they did: the gain is the early-outs of quiet bricks no longer drawn.
+
 ### D9. Derived passes are incremental where they can be
 Fields, bricks and light are rebuilt only for bricks that changed within their settle window (EMA), dilated by
 each kernel's reach. Shadow and GI keep their own cadence. Converged regions cost nothing.
@@ -147,8 +222,9 @@ As implemented (`sim.updateDirty`, `shaders/passes.js` dirtyFrag, `gfx/regions.j
   it: every map a step used is noted (`noteAwake`: 1 − quiet into `actChanged`, the first map after an update
   overwriting it and later ones blending with MAX, so nothing has to clear it), including a map still current at
   the last update that later steps reuse. A write that isn't a step changes every brick,
-  unless it declared its box first with `sim.touch(lo, hi)`; the brush does. Loads, undo, network frames, stamps
-  and first-person tools rebuild everything for a settle period.
+  unless it declared its box first with `sim.touch(lo, hi)`; the brush, the first-person body's coupling and the
+  physgun do (`touchCentres`). Loads, undo, network frames, stamps and the other first-person tools rebuild
+  everything for a settle period.
   - **Contract for D8:** whatever builds the quiet map calls `noteAwake()` after building it (and the carry check
     before replacing it), and a quiet brick's state must be unchanged by the steps that use the map.
 - **Ages and dirty sets.** Each brick's age is the frames since it last changed (8-bit, ping-pong). Three sets:

@@ -85,6 +85,12 @@ for (const [label, dims] of Object.entries(grids)) {
   check(`inertJoin-${label}`, raw + activity.inertJoinFrag(g), 'frag');
   check(`inertRef-${label}`, raw + activity.inertRefFrag(g), 'frag');
   check(`quiet-${label}`, raw + activity.quietFrag(g), 'frag');
+  check(`superMap-${label}`, raw + activity.superMapFrag(g), 'frag');
+  check(`superRows-${label}`, raw + activity.superRowsFrag(g), 'frag');
+  check(`superShare-${label}`, raw + activity.superShareFrag(g), 'frag');
+  for (const ch of Object.values(activity.SUPER_MAP)) {
+    for (const block of [false, true]) check(`stepRegionVert${ch}${block ? 'block' : ''}-${label}`, raw + regionVert(activity.stepRegionsGLSL(g, ch, block)), 'vert');
+  }
   check(`fieldEma-${label}`, raw + fields.fieldEmaFrag(g), 'frag');
   check(`fieldBlur-${label}`, raw + fields.fieldBlurFrag(g, false), 'frag');
   check(`fieldFinal-${label}`, raw + fields.fieldBlurFrag(g, true), 'frag');

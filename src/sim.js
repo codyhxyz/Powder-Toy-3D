@@ -1,6 +1,9 @@
 import * as THREE from 'three';
 import { quadVert, BRICK, SEED_MAX, TILE, SUPER, SUPER_TEX, SUPER_CELLS, BLOCK_TILE, stateUniforms } from './shaders/common.js';
-import { inertFrag, inertRowsFrag, inertJoinFrag, quietFrag, activityPeriod } from './shaders/activity.js';
+import {
+  inertFrag, inertRowsFrag, inertJoinFrag, quietFrag, activityPeriod, superMapFrag, superRowsFrag, superShareFrag, stepRegionsGLSL,
+  SUPER_MAP, SUPER_SETTLE_STEPS, STEP_FULL_SHARE,
+} from './shaders/activity.js';
 import { moveBlockFrag, moveFlowFrag, moveGatherFrag, SLOTS } from './shaders/move.js';
 import { reactFrag } from './shaders/react.js';
 import {
@@ -27,11 +30,14 @@ const ACTIVITY_PERIOD = activityPeriod(BRICK);
 // The state atlas may be at most this many times wider than tall (atlasColumns).
 const ATLAS_ASPECT_MAX = 4;
 
-// A box of bricks no brick is in (no write touched any): lo > hi.
+// A box of bricks (or supertiles) none is in (no write touched any): lo > hi.
 const TOUCH_NONE_LO = 2 ** 30, TOUCH_NONE_HI = -1;
-// Cells added around the brush's radius in the box it declares (touch()): its
-// cells' centres sit half a cell off the grid, so this covers them with room.
-const BRUSH_TOUCH_MARGIN = 1;
+// Cells per supertile along x, y, z (shaders/common.js SUPER_CELLS), indexed like a cell's [x, y, z].
+const SUPER_SIDE = [SUPER_CELLS.x, SUPER_CELLS.y, SUPER_CELLS.z];
+// Cells added around a box of cell centres in the box a write declares
+// (touchCentres(): the brush, the first-person body and physgun): the centres
+// sit half a cell off the grid, so this covers them with room.
+const TOUCH_MARGIN = 1;
 
 // Supertiles per state-atlas row: the smallest divisor of their count from its
 // square root up, so the atlas is near square and every texel holds a cell
@@ -245,8 +251,26 @@ export class Simulation {
     this.actAge = ACTIVITY_PERIOD;
     this.actDirty = true;
     this.actFresh = false;   // the next step is the first since a map was built (its dirty marks start over)
+    this.actSteps = 0;       // steps that used the current map
     this.stepping = false;
     this.skipQuiet = true;   // false: step every brick (A/B testing)
+    // Sleeping supertiles (docs/scaling.md D8, shaders/activity.js SUPER_MAP):
+    // with each activity map, which supertiles each step pass draws (ping-pong:
+    // a map reads the last one), and the share of them on per channel. The step
+    // passes draw a quad per supertile (stepQuads), or one full-screen quad.
+    const supers = g.stx * g.sty * g.stz;
+    this.superMap = [0, 1].map(() => makeFieldTarget(g.stw, g.height / SUPER_TEX, 1, U8, NEAR));
+    this.superCur = 0;
+    this.superRows = makeFieldTarget(g.height / SUPER_TEX, 1, 1, THREE.FloatType, NEAR);   // (counts per row of the map)
+    this.superShare = makeFieldTarget(1, 1, 1, THREE.FloatType, NEAR);
+    this.stepQuads = new RegionQuads(supers + 1);   // (the last region: the block atlas's low margin)
+    this.skipSleeping = true;   // false: draw every supertile (A/B testing)
+    // Writes that aren't steps since the last map: their supertiles are drawn
+    // by the next map's steps (noteWrite). All of them, or a box (inclusive).
+    this.forceAll = true;
+    this.forceLo = [TOUCH_NONE_LO, TOUCH_NONE_LO, TOUCH_NONE_LO];
+    this.forceHi = [TOUCH_NONE_HI, TOUCH_NONE_HI, TOUCH_NONE_HI];
+    this.wroteSinceStep = false;   // a write that isn't a step came after the last step
     // Incremental derived passes (docs/scaling.md D9, shaders/passes.js
     // dirtyFrag): the bricks the state may have changed in since the last
     // updateBricks (every quiet map a step used, as 1 - quiet: the first
@@ -294,22 +318,35 @@ export class Simulation {
     // field passes draw over the regions of their dirty set (gfx/regions.js)
     const regionU = { tRegion: { value: this.regionMap.texture }, tShare: { value: this.regionShare.texture } };
     const fieldMat = (frag, uniforms, set) => regionMaterial(this.fieldQuads, frag, fieldRegionsGLSL(g, set), { ...uniforms, ...regionU });
+    // step passes draw over the supertiles on in channel ch of the supertile map
+    // (over the block atlas: block); tSuper follows the map's ping-pong
+    this.superU = {
+      tSuper: { value: this.superMap[this.superCur].texture }, tSuperShare: { value: this.superShare.texture },
+      uFullShare: { value: STEP_FULL_SHARE },   // (a tool may move it: A/B and measuring the crossover)
+    };
+    const stepMat = (frag, uniforms, ch, block = false) => regionMaterial(this.stepQuads, frag, stepRegionsGLSL(g, ch, block), { ...uniforms, ...this.superU });
     this.mats = {
-      moveBlock: rawMat(moveBlockFrag(g), {
+      moveBlock: stepMat(moveBlockFrag(g), {
         ...state(), uParity: { value: 0 }, uFrame: { value: 0 }, uGravity: { value: this.gravity }, tQuiet: { value: null },
-      }),
-      moveGather: rawMat(moveGatherFrag(g), { ...state(), ...slots(), tQuiet: { value: null }, uFresh: { value: false } }),
-      react: rawMat(reactFrag(g), { ...state(), uFrame: { value: 0 }, uGravity: { value: this.gravity }, tQuiet: { value: null } }),
+      }, SUPER_MAP.BLOCKS, true),
+      moveGather: stepMat(moveGatherFrag(g), { ...state(), ...slots(), tQuiet: { value: null }, uFresh: { value: false } }, SUPER_MAP.DRAWN),
+      react: stepMat(reactFrag(g), { ...state(), uFrame: { value: 0 }, uGravity: { value: this.gravity }, tQuiet: { value: null } }, SUPER_MAP.DRAWN),
       inert: rawMat(inertFrag(g), { tF: { value: null } }),
       inertRows: rawMat(inertRowsFrag(g), { tA: { value: null }, tF: { value: null }, tClass: { value: null } }),
       inertJoin: rawMat(inertJoinFrag(g), { tClass: { value: null }, tRows: { value: null } }),
       quiet: rawMat(quietFrag(g), { tInert: { value: null }, uEnabled: { value: true } }),
+      superMap: rawMat(superMapFrag(g), {
+        tQuiet: { value: this.actQuiet.texture }, tPrev: { value: null }, uPrevSettled: { value: false },
+        uForceAll: { value: true }, uForceLo: { value: new THREE.Vector3() }, uForceHi: { value: new THREE.Vector3() },
+      }),
+      superRows: rawMat(superRowsFrag(g), { tSuper: { value: null } }),
+      superShare: rawMat(superShareFrag(g), { tRows: { value: this.superRows.texture } }),
       paint: rawMat(paintFrag(g), {
         ...state(), uFrame: { value: 0 }, uCenter: { value: new THREE.Vector3() }, uRadius: { value: 4 },
         uShape: { value: 0 }, uTool: { value: 2 }, uRate: { value: 1 }, uReplace: { value: false },
       }),
       copy: rawMat(copyFrag(g), state()),
-      moveFlow: rawMat(moveFlowFrag(g), { ...slots(), tQuiet: { value: null } }),
+      moveFlow: stepMat(moveFlowFrag(g), { ...slots(), tQuiet: { value: null } }, SUPER_MAP.STEPS),
       brick: rawMat(brickFrag(g), {
         tA: { value: null }, tB: { value: null }, tFS: { value: null }, tFM: { value: null }, tFT: { value: null },
         tDirty: { value: this.dirty.texture },
@@ -449,21 +486,39 @@ export class Simulation {
 
   // The next pass, a write to the state that isn't a step (run outside
   // step()), changes only cells in [lo, hi] (inclusive; [x, y, z] arrays), so
-  // the derived passes rebuild only the bricks there. Without it such a write
-  // rebuilds every brick.
+  // the derived passes rebuild only the bricks there, and only the supertiles
+  // there are woken for the next activity map's steps (noteWrite). Without it
+  // such a write rebuilds every brick and wakes every supertile. The pass must
+  // copy every cell outside the box through unchanged, flags and all (as
+  // shaders/common.js copyThroughMain does): sleeping supertiles count on both
+  // state copies holding the same there.
   touch(lo, hi) {
     this.touchNext = { lo, hi };
   }
 
+  // touch() for a pass that changes only cells whose centres lie in the box
+  // [lo, hi] (grid cells, any reals; [x, y, z] arrays).
+  touchCentres(lo, hi) {
+    this.touch(lo.map((x) => Math.floor(x) - TOUCH_MARGIN), hi.map((x) => Math.floor(x) + TOUCH_MARGIN));
+  }
+
   // A write that isn't a step: the box it declared changed, or every brick.
+  // The derived passes rebuild those bricks (D9), and the next activity map's
+  // steps draw those supertiles even where they sleep (D8): the write may have
+  // left the two state copies different there, or flags the steps settle
+  // (shaders/activity.js SUPER_MAP).
   noteWrite(t) {
+    this.wroteSinceStep = true;
     if (!t) {
       this.changedAll = true;
+      this.forceAll = true;
       return;
     }
     for (let k = 0; k < 3; k++) {
       this.touchLo[k] = Math.min(this.touchLo[k], Math.floor(t.lo[k] / BRICK));
       this.touchHi[k] = Math.max(this.touchHi[k], Math.floor(t.hi[k] / BRICK));
+      this.forceLo[k] = Math.min(this.forceLo[k], Math.floor(t.lo[k] / SUPER_SIDE[k]));
+      this.forceHi[k] = Math.max(this.forceHi[k], Math.floor(t.hi[k] / SUPER_SIDE[k]));
     }
   }
 
@@ -497,16 +552,34 @@ export class Simulation {
     this.actDirty = false;
     this.actFresh = true;
     this.noteAwake();   // the step about to run uses it
+    // the supertiles its steps draw: from this map, the last one and the
+    // writes since (shaders/activity.js SUPER_MAP), and their shares
+    const { superMap, superRows, superShare } = this.mats, u = superMap.uniforms;
+    u.tPrev.value = this.superMap[this.superCur].texture;
+    u.uPrevSettled.value = this.actSteps >= SUPER_SETTLE_STEPS || (this.actSteps > 0 && this.wroteSinceStep);
+    u.uForceAll.value = this.forceAll;
+    u.uForceLo.value.fromArray(this.forceLo);
+    u.uForceHi.value.fromArray(this.forceHi);
+    this.superCur = 1 - this.superCur;
+    this.run(superMap, this.superMap[this.superCur]);
+    this.superU.tSuper.value = superRows.uniforms.tSuper.value = this.superMap[this.superCur].texture;
+    this.run(superRows, this.superRows);
+    this.run(superShare, this.superShare);
+    this.forceAll = false;
+    this.forceLo.fill(TOUCH_NONE_LO);
+    this.forceHi.fill(TOUCH_NONE_HI);
+    this.actSteps = 0;
   }
 
   // Ping-pong pass over the state. The pass writes every cell, flags and all
-  // (shaders/common.js stateOutGLSL), so it needs stateUniforms().
-  pass(mat) {
+  // (shaders/common.js stateOutGLSL), so it needs stateUniforms(); with quads
+  // (a step's passes), every cell of the supertiles they draw (run).
+  pass(mat, quads = null) {
     if (!mat.uniforms.tF) throw new Error(`pass ${mat.name || '(unnamed)'}: a state writer needs stateUniforms() (tF)`);
     mat.uniforms.tA.value = this.stateA;
     mat.uniforms.tB.value = this.stateB;
     mat.uniforms.tF.value = this.stateF;
-    this.run(mat, this.targets[1 - this.cur]);
+    this.run(mat, this.targets[1 - this.cur], quads);
     this.cur = 1 - this.cur;
   }
 
@@ -514,9 +587,15 @@ export class Simulation {
     this.frame++;
     if (this.actDirty || this.actAge >= ACTIVITY_PERIOD) this.updateActivity();
     this.actAge++;
+    this.actSteps++;
+    this.wroteSinceStep = false;
     this.stepping = true;
     const { moveBlock, moveFlow, moveGather, react } = this.mats;
     const parity = this.frame & 1;
+    // each pass draws only the supertiles the map's steps can change (the
+    // supertile map), or one full-screen quad
+    const quads = this.stepQuads;
+    quads.fullOnly = !this.skipSleeping;
     // movement: solve each 2×2×2 block once (moveBlock), then every cell
     // gathers its result (moveGather) and the flow field takes its move
     for (const m of [moveBlock, moveGather, moveFlow, react]) m.uniforms.tQuiet.value = this.actQuiet.texture;
@@ -525,18 +604,18 @@ export class Simulation {
     moveBlock.uniforms.uGravity.value = this.gravity;
     moveBlock.uniforms.tA.value = this.stateA;
     moveBlock.uniforms.tB.value = this.stateB;
-    this.run(moveBlock, this.blocks);
+    this.run(moveBlock, this.blocks, quads);
     for (const m of [moveGather, moveFlow]) {
       m.uniforms.uParity.value = parity;
       m.uniforms.tSlots.value = this.slots.texture;
     }
     moveGather.uniforms.uFresh.value = this.actFresh;
     this.actFresh = false;
-    this.pass(moveGather);
-    this.run(moveFlow, this.flowV);
+    this.pass(moveGather, quads);
+    this.run(moveFlow, this.flowV, quads);
     react.uniforms.uFrame.value = this.frame;
     react.uniforms.uGravity.value = this.gravity;
-    this.pass(react);
+    this.pass(react, quads);
     this.stepping = false;
   }
 
@@ -557,7 +636,7 @@ export class Simulation {
     u.uReplace.value = replace;
     // it changes cells within radius of its centre (either shape)
     const c = [center.x, center.y, center.z];
-    this.touch(c.map((x) => Math.floor(x - radius) - BRUSH_TOUCH_MARGIN), c.map((x) => Math.floor(x + radius) + BRUSH_TOUCH_MARGIN));
+    this.touchCentres(c.map((x) => x - radius), c.map((x) => x + radius));
     this.pass(this.mats.paint);
   }
 
@@ -763,8 +842,9 @@ export class Simulation {
   }
 
   // Copy the current state into the other copy, so both hold it (after passes
-  // that leave it stale: a shift and its fill). Where nothing steps, the two
-  // copies must agree (docs/scaling.md D8).
+  // that leave it stale: a shift and its fill). Like every write that isn't a
+  // step, it has the next map's steps draw every supertile (noteWrite; the copy
+  // pass leaves fresh flags in the other copy: docs/scaling.md D8).
   syncCopies() {
     const u = this.mats.copy.uniforms;
     u.tA.value = this.stateA;
@@ -907,6 +987,10 @@ export class Simulation {
     this.actRows.dispose();
     this.actInert.dispose();
     this.actQuiet.dispose();
+    this.superMap.forEach((t) => t.dispose());
+    this.superRows.dispose();
+    this.superShare.dispose();
+    this.stepQuads.dispose();
     this.actChanged.dispose();
     this.brickAge.forEach((t) => t.dispose());
     this.dirty.dispose();

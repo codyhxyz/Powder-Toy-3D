@@ -23,6 +23,7 @@ const gridText = ([nx, ny, nz]) => (nx === ny && ny === nz ? `${nx}³` : `${nx}�
 const sceneSize = (s) => s.canvas.map((n) => Math.max(1, Math.round(n * s.renderScale))).join('×');
 const perStep = (s, v) => (s.steps && v != null ? v / s.steps : null);
 const simPhase = (s) => s.phases.find((p) => p.id === 'sim');
+const drawnText = (s, label) => (s.drawn == null ? '' : `${label}${share(s.drawn)}`);   // supertiles the step passes draw
 const rateText = (s) => `${s.fps == null ? '–' : s.fps.toFixed(0)} fps · ${s.stepsPerSec == null ? '–' : s.stepsPerSec.toFixed(0)} steps/s`
   + ` · ${ms(perStep(s, simPhase(s).gpu))} ms/step`;
 
@@ -33,7 +34,7 @@ function report(s) {
   const lines = [
     `Powder Toy 3D profile, ${new Date().toISOString().slice(0, 19).replace('T', ' ')}`,
     `GPU       ${s.gpuName}`,
-    `grid      ${s.grid.join('×')} (${(s.grid.reduce((a, b) => a * b, 1) / MILLION).toFixed(2)}M cells), awake bricks ${share(s.awake)}`,
+    `grid      ${s.grid.join('×')} (${(s.grid.reduce((a, b) => a * b, 1) / MILLION).toFixed(2)}M cells), awake bricks ${share(s.awake)}${drawnText(s, ', supertiles drawn ')}`,
     `canvas    ${s.canvas.join('×')} at pixel ratio ${s.pixelRatio.toFixed(2)}; scene ${sceneSize(s)} (render scale ${s.renderScale.toFixed(2)})`,
     `rate      ${s.fps == null ? '–' : s.fps.toFixed(1)} fps, ${s.stepsPerSec == null ? '–' : s.stepsPerSec.toFixed(0)} steps/s; ${s.steps} steps in the sampled frame`,
     `sim step  ${ms(perStep(s, simPhase(s).gpu))} ms GPU, ${ms(perStep(s, simPhase(s).cpu))} ms CPU`,
@@ -111,7 +112,7 @@ export function createProfilerPanel() {
       status.textContent = `sampled · sync ${ms(s.overhead)} ms`;
       lastRates = rateText(s);
       rates.textContent = lastRates;
-      state.textContent = `awake ${share(s.awake)} · ${(s.memory / MB).toFixed(0)} MB · ${gridText(s.grid)} · ${s.canvas.join('×')}`
+      state.textContent = `awake ${share(s.awake)}${drawnText(s, ' · drawn ')} · ${(s.memory / MB).toFixed(0)} MB · ${gridText(s.grid)} · ${s.canvas.join('×')}`
         + (s.renderScale < 1 ? ` → ${sceneSize(s)}` : '');
       const span = Math.max(s.gpu, BUDGET_MS);
       rows.forEach((r, i) => {

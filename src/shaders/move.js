@@ -296,6 +296,11 @@ void main() {
 // every block (Simulation.slots), so a cell's slot is one fetch whatever its
 // place in its block: picking among 8 textures per cell costs a fetch from
 // each, since the cells of a SIMD group sit at all 8 places.
+// The block pass draws only the supertiles whose slots a step reads (sleeping
+// supertiles, shaders/activity.js SUPER_MAP BLOCKS): those of blocks based in
+// a brick that isn't quiet (the gather and the flow pass), and those of quiet
+// blocks reaching into one (the flow pass reads their identity slots). The
+// rest hold an older step's slots, which nothing reads.
 export const slotGLSL = /* glsl */ `
 uniform highp sampler2DArray tSlots;
 uniform int uParity;
