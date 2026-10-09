@@ -197,7 +197,7 @@ function build() {
   const [nx, ny, nz] = worldMode?.win ?? SIZES[settings.size];
   win?.dispose();
   win = null;
-  sim = new Simulation(renderer, nx, ny, nz);
+  sim = new Simulation(renderer, nx, ny, nz, { windowed: !!worldMode });
   sim.gravity = settings.gravity;
   sim.onPass = prof.on ? simPass : null;
   scale = 10 / Math.max(nx, nz);

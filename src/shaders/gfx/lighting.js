@@ -157,11 +157,13 @@ void sunBasis(out vec3 c, out float R, out vec3 u, out vec3 v) {
   // (docs/scaling.md D11): the centre takes the window's offset rounded to
   // whole texels across the sun (along it, depths only shift). Within half a
   // texel, which SHADOW_PAD covers.
+#if WINDOWED
   vec3 o = vec3(uOrigin);
   float T = 2.0 * R / float(max(uShadowRes, 1));   // texel size (a pass without a map: anything finite)
   vec2 ot = vec2(dot(o, u), dot(o, v)) / T;
   vec2 snap = (round(ot) - ot) * T;
   c += snap.x * u + snap.y * v;
+#endif
 }
 
 // 1 if the ray from ro toward the sun gets tLim voxels without entering an

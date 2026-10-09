@@ -104,7 +104,8 @@ for (const [label, dims] of Object.entries(grids)) {
 }
 // the far field (world mode: ?size=world, a 1024×128×1024 world through a 128³ window)
 {
-  const g = gridLayout(128, 128, 128), L = far.farLayout([1024, 128, 1024]);
+  // a window of a larger world: the look's world offset compiles in (common.js WINDOWED)
+  const g = { ...gridLayout(128, 128, 128), windowed: true }, L = far.farLayout([1024, 128, 1024]);
   check('farView', shaderMatFrag + far.farFrag(g, L), 'frag');
   check('shadow-farCasters', raw + render.shadowFrag(g, far.farCastersGLSL(L)), 'frag');
   check('volume-farHaze', shaderMatFrag + render.volumeFrag(g, far.farHazeGLSL), 'frag');

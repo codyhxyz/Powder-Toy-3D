@@ -191,10 +191,12 @@ const simOrigins = new WeakSet();
 
 // GPU simulation driver: owns the state ping-pong targets and runs passes.
 export class Simulation {
-  constructor(renderer, nx, ny, nz) {
+  // windowed: the grid is a window of a larger world (docs/scaling.md D11; app.js World)
+  constructor(renderer, nx, ny, nz, { windowed = false } = {}) {
     this.renderer = renderer;
     this.id = nextSimId++;   // tells a rebuilt simulation from the old one
     this.g = gridLayout(nx, ny, nz);
+    this.g.windowed = windowed;   // shaders compile the world offset only then (common.js WINDOWED)
     const g = this.g;
     this.frame = 0;
     this.paints = 0;   // brush strokes applied (the paint pass's random stream)

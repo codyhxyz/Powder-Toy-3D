@@ -35,7 +35,11 @@ bool outside(ivec3 c) { return any(lessThan(c, ivec3(0))) || any(greaterThanEqua
 // to it (surface textures, glints, ripples, gas detail, floor lines), so moving
 // the window doesn't move the textures; everything that samples the grid's own
 // textures (fields, bricks, probes, the shadow map) stays in grid space.
+#if WINDOWED
 vec3 worldPos(vec3 p) { return p + vec3(uOrigin); }
+#else
+vec3 worldPos(vec3 p) { return p; }
+#endif
 
 // Crisp elements are drawn as voxels; everything else is a field.
 bool isCrisp(int id) { return id != E_EMPTY && SURFCH[id] < 0 && MEDIACH[id] < 0; }

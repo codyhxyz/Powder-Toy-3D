@@ -473,7 +473,7 @@ vec3 flowTint(vec3 still, vec3 v, float w) {
 #define FLOW_STROKE_TAIL 0.2       // brightness at the tail ...
 #define FLOW_STROKE_HEAD_GAIN 0.8  // ... plus this at the head
 float brickStroke(ivec3 bc, vec3 ro, vec3 rd, float ta, float tb, bool check, out vec3 v, out float gt) {
-  ivec3 wb = bc + uOrigin / BS;   // the jitter is the world brick's
+  ivec3 wb = WINDOWED != 0 ? bc + uOrigin / BS : bc;   // the jitter is the world brick's
   uint hs = pcg(uint(wb.x) | uint(wb.y) << 10 | uint(wb.z) << 20);
   vec3 cc = vec3(bc * BS) + 0.5 * float(BS) + (vec3(uvec3(hs, hs >> 8, hs >> 16) & 255u) * (1.0 / 255.0) - 0.5);
   ivec3 c = ivec3(floor(cc));

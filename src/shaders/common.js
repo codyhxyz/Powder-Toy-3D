@@ -185,6 +185,10 @@ bool inGrid(ivec3 p) {
 // not depend on where the window is (random streams, the look) adds uOrigin.
 // A grid that is its whole world sits at 0. Simulation.run sets it on every pass.
 uniform ivec3 uOrigin;
+// 1 when the grid is a window of a larger world. The look's world anchoring
+// (gfx/core.js worldPos, the shadow map's snap) compiles only then: in a box
+// uOrigin is always 0, and those adds ran in the raymarcher's hottest loops.
+#define WINDOWED ${g.windowed ? 1 : 0}
 
 // ---- the state (see the top of shaders/common.js) ----
 uniform sampler2D tA;
