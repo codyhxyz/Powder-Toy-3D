@@ -25,7 +25,17 @@ await p.addInitScript(() => {
   // virtual clock: every animation frame advances exactly 1/60 s
   let vt = 0;
   const raf = window.requestAnimationFrame.bind(window);
-  window.requestAnimationFrame = (cb) => raf(() => { vt += 1000 / 60; cb(vt); });
+  // __hold() parks the frame loop (callbacks wait instead of running) so a
+  // screenshot captures a fixed frame, not whichever one the timing lands on;
+  // __release() lets it run again
+  let held = null;
+  window.requestAnimationFrame = (cb) => {
+    if (held) { held.push(cb); return 0; }
+    return raf(() => { vt += 1000 / 60; cb(vt); });
+  };
+  window.__hold = () => { held ??= []; };
+  window.__release = () => { const h = held ?? []; held = null; h.forEach((cb) => window.requestAnimationFrame(cb)); };
+  window.__rawFrame = () => new Promise((r) => raf(() => r()));
   performance.now = () => vt;
 });
 const errs = [];
@@ -63,8 +73,12 @@ for (const [preset, v] of Object.entries(views)) {
       u.uFrame.value = 0;
       u.uTime.value = 0;
       for (let i = 0; i < 40; i++) await new Promise((r) => requestAnimationFrame(r));
+      // park the loop; the frame already queued runs once more, then nothing moves
+      window.__hold();
+      for (let i = 0; i < 2; i++) await window.__rawFrame();
     }, [pos, tgt]);
     await p.screenshot({ path: `${out}/${name}.png` });
+    await p.evaluate(() => window.__release());
   }
 }
 console.log(errs.length ? errs.join('\n') : 'no console errors');
