@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { quadVert, BRICK, SEED_MAX, TILE, SUPER, SUPER_TEX, SUPER_CELLS, BLOCK_TILE, stateUniforms } from './shaders/common.js';
 import {
   inertFrag, inertRowsFrag, inertJoinFrag, quietFrag, activityPeriod, superMapFrag, superShareFrag, stepRegionsGLSL,
-  SUPER_MAP, SUPER_SETTLE_STEPS,
+  SUPER_MAP, SUPER_SETTLE_STEPS, STEP_FULL_SHARE,
 } from './shaders/activity.js';
 import { moveBlockFrag, moveFlowFrag, moveGatherFrag, SLOTS } from './shaders/move.js';
 import { reactFrag } from './shaders/react.js';
@@ -314,7 +314,10 @@ export class Simulation {
     const fieldMat = (frag, uniforms, set) => regionMaterial(this.fieldQuads, frag, fieldRegionsGLSL(g, set), { ...uniforms, ...regionU });
     // step passes draw over the supertiles on in channel ch of the supertile map
     // (over the block atlas: block); tSuper follows the map's ping-pong
-    this.superU = { tSuper: { value: this.superMap[this.superCur].texture }, tSuperShare: { value: this.superShare.texture } };
+    this.superU = {
+      tSuper: { value: this.superMap[this.superCur].texture }, tSuperShare: { value: this.superShare.texture },
+      uFullShare: { value: STEP_FULL_SHARE },   // (a tool may move it: A/B and measuring the crossover)
+    };
     const stepMat = (frag, uniforms, ch, block = false) => regionMaterial(this.stepQuads, frag, stepRegionsGLSL(g, ch, block), { ...uniforms, ...this.superU });
     this.mats = {
       moveBlock: stepMat(moveBlockFrag(g), {

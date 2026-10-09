@@ -303,8 +303,8 @@ const superMapGLSL = Object.entries(SUPER_MAP).map(([k, v]) => `#define SUPER_${
 // Share of a step pass's supertiles above which it draws one full-screen quad
 // instead of a quad per supertile (instancing every region costs more than one
 // full-screen quad: gfx/regions.js). Provisional until measured (tools/bench.mjs).
+// It reaches the vertex shaders as a uniform (uFullShare), so a tool can move it.
 export const STEP_FULL_SHARE = 0.75;
-const glslFloat = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
 const superCount = (g) => g.stx * g.sty * g.stz;
 
 // The supertile map (target: one texel per supertile slot, STW × the atlas's
@@ -379,15 +379,15 @@ export function stepRegionsGLSL(g, ch, block = false) {
 #define NSUPER ${superCount(g)}
 #define STW ${g.stw}            // supertiles per atlas row
 #define SUPER_CH ${ch}          // the supertile map's channel that draws a supertile (SUPER_MAP)
-#define FULL_SHARE ${glslFloat(STEP_FULL_SHARE)}
 const vec2 TARGET = vec2(${w}.0, ${h}.0);      // texels
 const vec2 SUPER_RECT = vec2(${size[0]}.0, ${size[1]}.0);   // a supertile's rect in it
 uniform sampler2D tSuper;        // supertile map (shaders/activity.js superMapFrag)
 uniform sampler2D tSuperShare;   // share of supertiles on in each of its channels
+uniform float uFullShare;        // above this share, one full-screen quad (STEP_FULL_SHARE)
 ${block ? 'uniform int uParity;      // the step\'s partition offset' : ''}
 float superShare() { return texelFetch(tSuperShare, ivec2(0), 0)[SUPER_CH]; }
 vec2 regionTarget() { return TARGET; }
-bool regionsFull() { return superShare() > FULL_SHARE; }
+bool regionsFull() { return superShare() > uFullShare; }
 bool regionOn(int i) {
   if (i == NSUPER) return ${block ? 'uParity == 1 && superShare() > 0.0' : 'false'};
   return texelFetch(tSuper, ivec2(i % STW, i / STW), 0)[SUPER_CH] > 0.5;

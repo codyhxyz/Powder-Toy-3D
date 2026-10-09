@@ -18,6 +18,10 @@
 //   stepNoSkip  ms per sim.step() with sim.skipQuiet = false
 //   stepNoSleep ms per sim.step() with sim.skipSleeping = false: every supertile drawn, quiet
 //               bricks still skipped (docs/scaling.md D8)
+//   stepRegions ms per sim.step() drawing the awake supertiles one quad each however many there
+//               are (no full-screen quad above STEP_FULL_SHARE): with stepNoSleep, where the
+//               crossover lies. The report gives the share of supertiles the state passes draw
+//               after settling (shaders/activity.js SUPER_MAP DRAWN), where a build has them.
 // A round's value per build is its median chunk (per iteration), and its B/A
 // the median ratio of the chunk pairs (each A chunk with the B chunk next to it),
 // so a burst of contention in one chunk doesn't decide the round. Reported: the
@@ -35,7 +39,7 @@
 // and liquid cells, at load and after settling.
 //
 // usage: node tools/bench.mjs --a <dirA> --b <dirB> [--scenarios lab:128,volcano:128,empty:128]
-//          [--rounds 5] [--settle 200] [--metrics derived,view,step,stepNoSkip,stepNoSleep] [--out report.json]
+//          [--rounds 5] [--settle 200] [--metrics derived,view,step,stepNoSkip,stepNoSleep,stepRegions] [--out report.json]
 //          [--census] [--wait-idle] [--port 5391]
 // A scenario is preset:size (a size from ?size=). Each dir is a full checkout with node_modules;
 // a baseline from a branch: git archive main | tar -x -C <dir> && ln -s <repo>/node_modules <dir>/node_modules
@@ -45,6 +49,7 @@ import { existsSync, realpathSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { resolve } from 'path';
 import { pathToFileURL } from 'url';
+import { SUPER_MAP } from '../src/shaders/activity.js';
 
 const SEED = 12345;                                 // Math.random seed (mulberry32, as tools/regress.mjs)
 const VIEWPORT = { width: 1280, height: 800 };      // CSS px at device pixel ratio 1 (as tools/regress.mjs)
@@ -75,7 +80,11 @@ const METRICS = {
   step: { warmup: 8, chunks: 8 },
   stepNoSkip: { warmup: 8, chunks: 8 },
   stepNoSleep: { warmup: 8, chunks: 8 },
+  stepRegions: { warmup: 8, chunks: 8 },
 };
+// stepRegions: a full-screen threshold above any share (shares are at most 1)
+const REGIONS_ONLY_SHARE = 2;
+const SUPER_DRAWN = SUPER_MAP.DRAWN;   // channel of the supertile share the report gives
 // A chunk is as many iterations as take the faster build about this long, judged by its fastest
 // warmup iteration in the first round (the least slowed by contention), then fixed and the same
 // for both builds, so their worlds advance in step. Long enough that a sync's own cost
@@ -102,7 +111,7 @@ const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i
 const flag = (k) => args.includes(`--${k}`);
 if (!opt('a') || !opt('b')) {
   console.error('usage: node tools/bench.mjs --a <dirA> --b <dirB> [--scenarios lab:128,...] [--rounds 5] [--settle 200]'
-    + ' [--metrics derived,view,step,stepNoSkip,stepNoSleep] [--out report.json] [--census] [--wait-idle] [--port 5391]');
+    + ' [--metrics derived,view,step,stepNoSkip,stepNoSleep,stepRegions] [--out report.json] [--census] [--wait-idle] [--port 5391]');
   process.exit(2);
 }
 const builds = ['a', 'b'].map((k) => ({ name: k.toUpperCase(), dir: resolve(opt(k)), errors: [], failed: [] }));
@@ -226,7 +235,7 @@ function pageInit({ seed, pumpStepMs }) {
 }
 
 // Installs the timing and census helpers once the app has booted.
-function pageSetup({ bootFrames, cellTexelExports, quietMin }) {
+function pageSetup({ bootFrames, cellTexelExports, quietMin, regionsOnly }) {
   const RGBA = 4;
   const b = window.__bench, a = window.__app, r = a.renderer, gl = r.getContext();
   a.settings.paused = true;     // pumped frames must not step the sim
@@ -313,6 +322,15 @@ function pageSetup({ bootFrames, cellTexelExports, quietMin }) {
       },
       run: () => a.sim.step(),
       teardown() { a.sim.skipSleeping = this.sleep; },
+    },
+    stepRegions: {
+      supported: () => Boolean(a.sim.superU?.uFullShare),
+      setup() {
+        this.full = a.sim.superU.uFullShare.value;
+        a.sim.superU.uFullShare.value = regionsOnly;
+      },
+      run: () => a.sim.step(),
+      teardown() { a.sim.superU.uFullShare.value = this.full; },
     },
   };
   // Each run is flushed, so the GPU starts on it while the next is issued: a chunk takes the
@@ -436,13 +454,18 @@ function pageSetup({ bootFrames, cellTexelExports, quietMin }) {
 }
 
 // Load the scenario from the seed and settle it.
-function pageSettle({ preset, settle }) {
+function pageSettle({ preset, settle, drawnCh }) {
   const b = window.__bench, a = window.__app;
   b.reseed();                     // the same scene every round, on both builds
   a.loadPreset(preset, false);
   a.sim.frame = 0;                // the sim's random streams are seeded by its step counter
   for (let i = 0; i < settle; i++) a.sim.step();
   b.sync();
+  // the share of supertiles the state passes draw now, where the build has them
+  if (!a.sim.superShare) return null;
+  const f = new Float32Array(4);
+  a.renderer.readRenderTargetPixels(a.sim.superShare, 0, 0, 1, 1, f);
+  return f[drawnCh];
 }
 
 async function pageCensus({ preset, settle }) {
@@ -464,6 +487,7 @@ const report = {
   builds: {},
   gpuUtil: { before: gpuUtil(), rounds: [], after: null },
   results: {},
+  drawn: {},   // per scenario and build: the share of supertiles drawn after settling, per round
   census: {},
   warnings: [],
 };
@@ -496,7 +520,9 @@ try {
       // e.g. a node_modules without every package in package.json: vite answers 500 for the imports
       throw new Error(`${b.name} (${b.dir}) didn't boot.\n${[...b.failed, ...b.errors].slice(0, BOOT_REPORT).join('\n')}`);
     }
-    const info = await b.page.evaluate(pageSetup, { bootFrames: BOOT_FRAMES, cellTexelExports: CELL_TEXEL_EXPORTS, quietMin: QUIET_MIN });
+    const info = await b.page.evaluate(pageSetup, {
+      bootFrames: BOOT_FRAMES, cellTexelExports: CELL_TEXEL_EXPORTS, quietMin: QUIET_MIN, regionsOnly: REGIONS_ONLY_SHARE,
+    });
     if (info.size !== size) throw new Error(`${b.name} has no grid size ${size}`);
     Object.assign(b, info, { size });
   };
@@ -522,7 +548,10 @@ try {
       const util = gpuUtil();
       report.gpuUtil.rounds.push(util);
       const order = i % 2 ? [...builds].reverse() : builds;
-      for (const b of order) await b.page.evaluate(pageSettle, { preset: sc.preset, settle });
+      for (const b of order) {
+        const drawn = await b.page.evaluate(pageSettle, { preset: sc.preset, settle, drawnCh: SUPER_DRAWN });
+        if (drawn !== null) (report.drawn[sc.name] ??= { A: [], B: [] })[b.name].push(drawn);
+      }
       for (const m of plan) {
         const { warmup, chunks } = METRICS[m];
         const runs = [], per = [];
@@ -597,6 +626,9 @@ if (!census) {
         if (share > RESIDUAL_WARN) warn(`${sc} ${m} ${b}: ${(share * 100).toFixed(1)}% of a chunk (median) was still running after its sync`);
       }
     }
+  }
+  for (const [sc, d] of Object.entries(report.drawn)) {
+    lines.push(`| ${sc} | supertiles drawn after settling | ${range(stats(d.A), (v) => `${(v * 100).toFixed(1)}%`)} | ${range(stats(d.B), (v) => `${(v * 100).toFixed(1)}%`)} | |`);
   }
   lines.push('', 'Median [interquartile range] over the rounds. Per round: the median chunk per iteration, and the median B/A of the chunk pairs.');
 } else {
