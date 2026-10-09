@@ -142,6 +142,37 @@ R16UI texture for vz and the flags (18 bytes per cell).
 Fields, bricks and light are rebuilt only for bricks that changed within their settle window (EMA), dilated by
 each kernel's reach. Shadow and GI keep their own cadence. Converged regions cost nothing.
 
+As implemented (`sim.updateDirty`, `shaders/passes.js` dirtyFrag, `gfx/regions.js`):
+- **What changed.** A brick may have changed since the last `updateBricks` if a step's quiet map didn't skip
+  it: every map a step used is noted (`noteAwake`, 1 − quiet blended with MAX into `actChanged`), including a
+  map still current at the last update that later steps reuse. A write that isn't a step changes every brick,
+  unless it declared its box first with `sim.touch(lo, hi)`; the brush does. Loads, undo, network frames, stamps
+  and first-person tools rebuild everything for a settle period.
+  - **Contract for D8:** whatever builds the quiet map calls `noteAwake()` after building it (and the carry check
+    before replacing it), and a quiet brick's state must be unchanged by the steps that use the map.
+- **Ages and dirty sets.** Each brick's age is the frames since it last changed (8-bit, ping-pong). Three sets:
+  - EMA: age < `FIELD_EMA_SETTLE` = 13 frames. That is when the slowest channel's 8-bit blend (liquid,
+    0.35) reaches its fixed point: one more blend rounds back to the same value, so skipping it changes nothing
+    (`gfx/pacing.js blendFixedFrames`; exact, unlike `settleFrames`, which says 8 for 0.5 where 9 are needed).
+  - FIELDS: an EMA brick within 1 brick. A change reaches 4 cells into the final fields along each axis: 2 from
+    the 5-tap blur, 2 from the boost (6 stages, 2 per axis).
+  - WORK: an EMA brick within 2 bricks. The passes between the EMA and the final fields share scratch targets,
+    which outside this frame's regions hold another pass's output, so each covers what the passes after it read:
+    the first blur's output is read 4 more cells away (the other blurs and the boost).
+- **Field passes** draw instanced quads over regions of the field atlas: 8×8 bricks of one Y-slice (32×32 texels,
+  one hardware tile), culled in the vertex shader from a region map of their set. The EMA pass and its copy use
+  EMA; the blurs and boost stages 0–4 use WORK; the last boost stage uses FIELDS and discards texels outside
+  FIELDS bricks, since its regions reach cells whose inputs this frame didn't compute. The EMA is no longer a
+  ping-pong: it is computed into scratch and copied back over the same regions, so a skipped texel needs no
+  second copy, and the targets and memory stay as they were. Above `FIELD_FULL_SHARE` of regions flagged, a pass
+  draws one full-screen quad instead; the share is computed on the GPU and read by the vertex shader, so nothing
+  is read back.
+- **Brick map** rebuilds FIELDS bricks only (the rest discard). The empty-space distance and the glow volume are
+  cheap brick-resolution passes and stay full.
+- **Shadow and GI** stay full every derived frame: see Measured.
+- **Proofs:** `tools/regress.mjs`, settled and `--motion`, with detail off and on, and `tools/derived-check.mjs`
+  (every derived target bit for bit against `sim.incremental = false`).
+
 ### D10. Undo (deferred)
 Copying only the bricks a stroke touches isn't a correct undo: matter flows out of those bricks afterwards.
 The exact version copies each brick when it first wakes after the snapshot (a sleeping brick hasn't changed), so
