@@ -91,18 +91,28 @@ fetch outside common.js, so code merged from main can't bypass the accessors.
   pixel-identical too.
 
 ### D7. Packed state
-Two integer textures per copy, 20 bytes per cell instead of 32:
-- **A = RGBA32UI**
-  - x: id 8 | ctype 8 | seed 16 (the seed field may become the rest position; keep it 16 bits)
-  - y: temperature as f32 bits
-  - z: life f16 | pressure f16
-  - w: vx f16 | vy f16
-- **B = R32UI**
-  - x: vz f16 | flags 16. Bit 0 = inert (written by react). The other bits are reserved.
+Cost follows bytes per cell (see Measured), so the target is one RGBA32UI texture per copy, 16 bytes per cell
+instead of 32:
+- x: id 6 | ctype 6 | flags 4 | seed 16
+  - Flag bit 0 = inert, written by react; the other flag bits are reserved.
+  - The seed field may become a grain's rest position; keep it 16 bits.
+- y: temperature as f32 bits. Conduction fluxes are tiny and must not round away.
+- z: life f16 | pressure f16
+- w: velocity, 3 × 10-bit signed fixed point over [−V_MAX, V_MAX], with 2 bits spare.
+  - Stochastic rounding, using the cell's hash random stream, keeps the expected value exact, so gravity, drag
+    and friction integrate without bias.
+  - Exact zero stays exact zero, which rest states need.
 
-The accessors decode to the D5 floats, so readers don't change. Temperature stays f32 (conduction fluxes are
-tiny and must not round away). This is a precision change: prove it statistically (census, conservation,
-settling), not pixel-wise.
+The accessors decode to the D5 floats, so readers don't change. This is a precision change: prove it
+statistically, not pixel-wise:
+- census and conservation;
+- fall times;
+- pile angle;
+- splash and flow;
+- settling.
+
+**Fallback.** If 10-bit velocity measurably changes behaviour, use f16 velocity: w = vx | vy, plus a second
+R16UI texture for vz and the flags (18 bytes per cell).
 
 ### D8. Two passes per step, and skipping sleeping bricks
 - **Gather fused into react.** A step is a block pass (one fragment per Margolus block, 8 slot results), then a
