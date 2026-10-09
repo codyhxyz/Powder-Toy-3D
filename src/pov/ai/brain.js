@@ -206,7 +206,7 @@ export class Agent extends Vehicle {
     if (this.regulator.ready()) this.brain.arbitrate();
     this.brain.execute();
     const g = this.brain.currentSubgoal();
-    this.lastGoal = g ? g.constructor.name : '';
+    this.lastGoal = g?.label ?? '';
   }
 }
 
@@ -659,5 +659,9 @@ function coverWall() {
     return undefined;
   };
 }
+
+// readable names for checks (class names don't survive minification)
+for (const [G, label] of [[AttackGoal, 'Attack'], [HuntGoal, 'Hunt'], [BreachGoal, 'Breach'], [ClimbGoal, 'Climb'], [CoverGoal, 'Cover'],
+  [ExtinguishGoal, 'Extinguish'], [GatherGoal, 'Gather'], [WanderGoal, 'Wander'], [GoToGoal, 'GoTo'], [ToolGoal, 'Tool']]) G.prototype.label = label;
 
 export { WEAPONS, BLOCK_CELLS, BODY_HEIGHT };
