@@ -193,6 +193,7 @@ export const FIELD_SCRATCH_REACH = BLUR_REACH + BOOST_REACH;
 export const FIELD_REGION_BRICKS = 8;   // 32 cells: one hardware tile of a slice
 // Share of regions flagged above which one full-screen quad is drawn instead.
 export const FIELD_FULL_SHARE = 0.75;
+const glslFloat = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
 export function fieldRegions(g) {
   const side = FIELD_REGION_BRICKS;
   const rx = Math.ceil(g.nx / BRICK / side), rz = Math.ceil(g.nz / BRICK / side);
@@ -213,7 +214,7 @@ export function fieldRegionsGLSL(g, set) {
 #define RZ ${rz}
 #define REGION_CELLS ${side * BRICK}   // region side (cells = texels)
 #define SET ${set}            // dirty set (channel of the region map and the share)
-#define FULL_SHARE ${FIELD_FULL_SHARE}
+#define FULL_SHARE ${glslFloat(FIELD_FULL_SHARE)}
 uniform sampler2D tRegion;   // region flags, per dirty set
 uniform sampler2D tShare;    // share of regions flagged, per dirty set
 vec2 regionTarget() { return vec2(FTX * NX, FTY * NZ); }
