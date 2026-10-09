@@ -50,8 +50,8 @@ const MAX_DT = 0.1;                    // s: longer frames are simulated as this
 // drains while it fires and refills only with your feet on the ground.
 const JET_FUEL_S = 3;                  // s of thrust on a full tank (Noita's starting levitation)
 const JET_REFILL_S = 1.2;              // s to refill an empty tank standing on the ground
-const JET_THRUST = 1.6;                // × gravity, upward: a 0.6 g net climb against gravity
-const JET_MAX_RISE = 3 / CELL_METERS;  // cells/s (3 m/s): thrust stops adding speed past this climb
+const JET_THRUST = 4.8;                // × gravity, upward: a 3.8 g net climb against gravity
+const JET_MAX_RISE = 9 / CELL_METERS;  // cells/s (9 m/s): thrust stops adding speed past this climb
 const JET_STEER = 2;                   // × AIR_ACCEL: steering while the jet fires (Noita flies, it doesn't drift)
 
 // ---- liquids ----

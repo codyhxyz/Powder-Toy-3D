@@ -13,7 +13,7 @@
   (the same a = −∇P/ρ the sim uses). Heat, cold, acid, lava, drowning, being buried and hard falls hurt.
   You die, the camera pulls back with the cause ("Killed by lava, 1,140 °C"), and you respawn at the drop-in
   point.
-- **Jetpack** (Noita's levitation): hold `Space` in the air to fly. It climbs at up to 3 m/s against gravity,
+- **Jetpack** (Noita's levitation): hold `Space` in the air to fly. It climbs at up to 9 m/s against gravity (4.8 g of thrust),
   the tank holds 3 s of thrust and refills only with your feet on the ground (1.2 s from empty). The fuel bar
   shows under health while it isn't full. Swimming strokes take over in deep liquid. The exhaust is cosmetic
   (vfx.js `jet`), with a roar loop (audio.js `jetLoop`).
