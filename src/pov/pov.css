@@ -4,8 +4,8 @@
 body.pov-on .dock,
 body.pov-on .dock-tab,
 body.pov-on .card,
-body.pov-on .hint,
-body.pov-on .readout { opacity: 0 !important; pointer-events: none !important; }
+body.pov-on .hint { opacity: 0 !important; pointer-events: none !important; }
+/* the hover readout stays: in POV it's the held tool's (app.js shows it only then) */
 body.pov-on .dock { transform: translate(-50%, calc(100% + 30px)); }
 body.pov-on .brand { opacity: 0.35; transition: opacity 300ms; }
 body.pov-locked canvas { cursor: none; }

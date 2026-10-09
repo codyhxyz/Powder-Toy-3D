@@ -59,6 +59,7 @@ export const HIT = {
   DRY: { kick: 0.25 },                                                                 // a dry click
   AXE: { kick: 0.5, punch: { pitch: [-2 * DEG, -1 * DEG], yaw: [-2 * DEG, -1 * DEG] } },   // a blow landing
   FLING: { kick: 0.6 },                                                                // a physgun fling
+  PLACE: { kick: 0.3 },                                                                // a trowel block set down
 };
 const randIn = ([lo, hi] = [0, 0]) => lo + Math.random() * (hi - lo);
 

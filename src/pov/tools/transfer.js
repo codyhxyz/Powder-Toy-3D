@@ -129,6 +129,16 @@ export class Load {
   }
 }
 
+// The pack: the player's inventory of loose matter. The shovel digs into it, the
+// trowel builds from it and the shovel throws from it. Liquids go in the bucket.
+export const PACK_KEY = 'PACK';
+export const PACK_CAPACITY = 1000;   // cells (≈ 27 m³ at 30 cm cells: about 37 trowel blocks)
+export const pack = () => persistentLoad(PACK_KEY, PACK_CAPACITY);
+// what the pack holds, by element: [[id, count], ...], most first
+export function packContents(load = pack()) {
+  return Object.entries(load.totals()).map(([id, n]) => [+id, n]).sort((a, b) => b[1] - a[1]);
+}
+
 const loads = new Map();
 // The load a tool keeps across toolbelts (POV sessions): one per key.
 export function persistentLoad(key, capacity) {
@@ -265,16 +275,23 @@ export function createTransfer({ renderer, getSim }) {
       });
     },
 
-    // Place up to `max` cells from `load` (the most recently loaded first) into
-    // the empty cells among `cells` (nearest first), moving at `vel` cells/step.
-    // Returns a promise of how many landed; the rest go back into the load.
-    put(load, { cells, max = Infinity, vel }) {
-      const n = Math.min(max, load.cells.length, TRANSFER_SLOTS);
+    // Place up to `max` cells from `load` (the most recently loaded first; only
+    // element `id`, if given) into the empty cells among `cells` (nearest first),
+    // moving at `vel` cells/step. Returns a promise of how many landed; the rest
+    // go back into the load.
+    put(load, { cells, max = Infinity, vel, id = ANY_ID }) {
+      const picked = [];   // indices into load.cells, newest first
+      const want = Math.min(max, TRANSFER_SLOTS);
+      for (let i = load.cells.length - 1; i >= 0 && picked.length < want; i--) {
+        if (id === ANY_ID || load.cells[i][0] === id) picked.push(i);
+      }
+      const n = picked.length;
       if (n <= 0) return null;
-      const items = load.cells.slice(load.cells.length - n).reverse();
+      const items = picked.map((i) => load.cells[i]);
       const p = run({ cells, items, mode: TRANSFER_PUT, limit: n, vel });
       if (!p) return null;
-      load.cells.length -= n;
+      const out = new Set(picked);
+      load.cells = load.cells.filter((_, i) => !out.has(i));
       load.out += n;
       load.version++;
       return p.then((buf) => {

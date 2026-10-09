@@ -28,6 +28,8 @@ export const MODELS = {
   axe: { fit: 'y', size: 1.25, anchor: [0.5, 0, 0.5], arm: ARM_DOWN },          // handle up from the hand, blade forward
   shovel: { fit: 'z', size: 2.2, anchor: [0.5, 0.5, 1], arm: ARM_DOWN },        // laid flat, blade forward, held at the end of the handle
   bucket: { fit: 'y', size: 0.9, anchor: [0.5, 0.5, 0.5], arm: ARM_UP },        // upright, held by the bail
+  trowel: { fit: 'z', size: 1.3, anchor: [0.5, 1, 1], arm: ARM_DOWN },          // blade flat and forward, held at the end of the handle
+  scanner: { fit: 'z', size: 0.6, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN },     // a handheld box, screen up toward the eye
 };
 
 // RS2 stores a colour as 16-bit HSL: 6 bits of hue, 3 of saturation, 7 of lightness.
@@ -45,8 +47,9 @@ export function jagexColor(color) {
 const COLORS = {
   wood: '#7a5230', iron: '#9aa0a6', ironDark: '#585d62', metal: '#4a4f55', metalDark: '#2c2f33',
   grip: '#3a3530', orange: '#d87a22', white: '#d6dbe0', glow: '#5ff0ff', skin: '#c48a5c', sleeve: '#8a3a2a',
+  screen: '#7dff9a',
 };
-const UNLIT = new Set(['glow']);
+const UNLIT = new Set(['glow', 'screen']);
 
 // shapes
 const CHUNK = 1.35;          // thin parts (under CHUNK_BELOW units) are thickened this much: RS2's stubby proportions
@@ -84,6 +87,20 @@ const PARTS = {
     { geo: 'torus', R: 0.3, tube: 0.016, arc: Math.PI, ring: 6, p: [0, -0.3, 0], m: 'ironDark' },
     { geo: 'box', s: [0.05, 0.08, 0.05], p: [0.3, -0.34, 0], m: 'ironDark' },
     { geo: 'box', s: [0.05, 0.08, 0.05], p: [-0.3, -0.34, 0], m: 'ironDark' },
+  ],
+  trowel: [
+    { geo: 'cyl', r: 0.05, h: 0.4, p: [0, 0, 0.05], rot: [H, 0, 0], m: 'wood' },
+    { geo: 'cyl', r: 0.06, h: 0.05, p: [0, 0, -0.17], rot: [H, 0, 0], m: 'ironDark' },
+    { geo: 'box', s: [0.03, 0.03, 0.12], p: [0, -0.04, -0.23], rot: [0.6, 0, 0], m: 'ironDark' },
+    { geo: 'plate', pts: [[0, 0], [0.18, 0.22], [0, 0.66], [-0.18, 0.22]], depth: 0.02, p: [0, -0.09, -0.27], rot: [-H, 0, 0], m: 'iron' },
+  ],
+  scanner: [
+    { geo: 'box', s: [0.3, 0.16, 0.48], p: [0, 0.2, -0.12], m: 'metal' },
+    { geo: 'box', s: [0.22, 0.02, 0.26], p: [0, 0.285, -0.04], m: 'screen' },
+    { geo: 'box', s: [0.31, 0.05, 0.08], p: [0, 0.2, -0.38], m: 'orange' },
+    { geo: 'cyl', r: 0.015, h: 0.3, p: [0.1, 0.38, -0.3], rot: [-0.4, 0, 0], m: 'metalDark' },
+    { geo: 'sphere', r: 0.035, p: [0.1, 0.52, -0.36], m: 'glow' },
+    STOCK_GRIP,
   ],
   axe: [
     { geo: 'cyl', r: 0.045, h: 1.25, p: [0, 0.5, 0], m: 'wood' },

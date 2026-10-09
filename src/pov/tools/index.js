@@ -55,6 +55,7 @@ export function createToolbelt(env) {
   }
 
   let selected = DEFAULT_SLOT;
+  let readout = null;   // the selected tool's readout?.(ctx) from the last update
   hotbar.select(selected);
 
   function select(i) {
@@ -82,17 +83,19 @@ export function createToolbelt(env) {
   return {
     get selected() { return selected; },
     get transfer() { return transfer; },
+    get readout() { return readout; },
     tool: (i) => tools[i]?.inst ?? null,
     select,
     update(ctx) {
       const cur = tools[selected]?.inst;
       if (ctx.wheel && !cur?.wantsWheel?.()) select(selected + Math.sign(ctx.wheel));
       tools[selected]?.inst.update(ctx);
+      readout = tools[selected]?.inst.readout?.(ctx) ?? null;
       tools.forEach((t, i) => hotbar.setStatus(i, t?.inst.status?.() ?? ''));
     },
     setVisible(v) {
       hotbar.setVisible(v);
-      if (!v) tools[selected]?.inst.deselect?.();
+      if (!v) { tools[selected]?.inst.deselect?.(); readout = null; }
     },
     dispose() {
       removeEventListener('keydown', onKey, { capture: true });

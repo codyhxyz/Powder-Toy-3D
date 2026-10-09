@@ -471,6 +471,8 @@ export function createPov(app) {
     get locked() { return isLocked(); },
     get player() { return player; },
     get toolbelt() { return toolbelt; },
+    // what the held tool shows next to the crosshair ({ name, color, T?, P?, note? } for ui/hud.js showReadout), or null
+    get readout() { return live() && mode === 'on' && toolbelt ? toolbelt.readout : null; },
     get figure() { return figure; },
     get vfx() { return vfx; },
     feel,

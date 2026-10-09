@@ -15,8 +15,9 @@
   point.
 - **Physical, finite tools on a Minecraft-style hotbar** (keys `1`–`9` and the scroll wheel in POV). God powers
   (infinite painting) stay in god view, one `F` away.
-  1. **Shovel**: digs one load of powder, or breaks solids into their debris (slower the harder they are;
-     WALL refuses). Right-click dumps the load where you aim.
+  1. **Shovel**: digs powder, or breaks solids into their debris (slower the harder they are; WALL
+     refuses), into the **pack** (the inventory, `transfer.js` `pack()`, 1,000 cells). Right-click throws a
+     bladeful from it where you aim.
   2. **Bucket**: scoops a load of liquid, and right-click pours it out. A bucket of lava is allowed.
   3. **Axe**: a short-range swing that breaks breakable solids in a wide, shallow patch into debris. It's
      weaker and less focused than the gun, and chops trees and smashes windows.
@@ -26,6 +27,10 @@
   5. **Physgun**: a force beam on loose matter (powders, liquids, gases). Hold left-click to grab a ball of
      stuff at the aim point and carry it around floating, right-click to fling it, release to drop it. It
      can't lift solids (no rigid bodies).
+  6. **Trowel**: builds Minecraft-style 1 m blocks (3³ cells on a fixed lattice) from the pack against the
+     face you aim at; right-click picks the material. The cells are the pack's own, so a sand block slumps.
+  7. **Scanner**: the god view's hover readout at the crosshair, at any range: material, temperature,
+     pressure, distance.
 - Mouse look with pointer lock. `V` toggles first and third person. A crosshair, health and breath bars, and
   screen effects for what the body feels: heat glow at the edges, frost, a murky tint underwater, a red flash
   when hurt.
@@ -126,6 +131,7 @@ export default {
     deselect?(),          // when switching away (drop what the physgun holds, etc.)
     status?(),            // short text for the hotbar slot, e.g. 'SAND ×37' (or null)
     wantsWheel?(),        // true while the tool uses the wheel (physgun distance)
+    readout?(ctx),        // { name, color, T?, P?, note? } shown beside the crosshair (ui/hud.js showReadout), or null
     dispose?(),
   }
 }
@@ -141,6 +147,8 @@ export default {
   the view punch (feel.js, Source's ViewPunch spring). Add a row to `HIT` for a new tool.
 - `env.feedback.notice(text)` / `refuse(text, { id, point })`: the throttled "can't" toast, slot shake and
   `tool:action 'refuse'`.
+- `readout?(ctx)`: text beside the crosshair, in the god view's hover chip (the scanner, the trowel's material).
+- `transfer.js` `pack()`: the shared inventory of loose matter; `put(load, { id })` places one element of it.
 
 `ctx` is built by the body module every frame in POV:
 
@@ -177,7 +185,7 @@ say world. Emitters own their event names. Listeners never mutate payloads.
 | `round:move` | gun | `{ id, from, to }`. A round in flight moved this frame (grid), for tracers. |
 | `round:end` | gun | `{ id }`. The round is gone (impact or out of the box). |
 | `impact` | gun, axe | `{ source: 'gun'\|'axe', point, normal, id, energy, broke }`. Something was struck. id is the element hit, energy is ½·DENS·v² in sim units, and broke is true/false when the striker knows, else null. |
-| `tool:action` | shovel, bucket, axe, physgun | `{ tool, action, id?, point?, amount? }`. tool is 'shovel'\|'bucket'\|'axe'\|'physgun'; action is 'dig'\|'dump'\|'scoop'\|'pour'\|'swing'\|'refuse'\|'grab'\|'fling'\|'release'. Physgun 'hold' state is read from the tool, not an event. |
+| `tool:action` | shovel, bucket, axe, physgun, trowel | `{ tool, action, id?, point?, amount? }`. tool is 'shovel'\|'bucket'\|'axe'\|'physgun'\|'trowel'; action is 'dig'\|'place'\|'dump'\|'scoop'\|'pour'\|'swing'\|'refuse'\|'grab'\|'fling'\|'release'. Physgun 'hold' state is read from the tool, not an event. |
 | `player:step` | shell (camera bob cycle) | `{ speed, inLiquid }`. A footfall. |
 
 The player's own events (`player.on('hurt'|'death'|'land'|'splash')`) stay as they are; listeners subscribe there too.

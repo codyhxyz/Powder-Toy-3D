@@ -440,6 +440,10 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
         play('shovelPatter', { at, gain });
         if (DUMP_RINGS.has(family)) play(family, { at, gain: TOOL_HIT_GAIN, rate });
         break;
+      case 'trowel:place':   // a block set down: the shovel's thud, with a knock if it's a solid
+        play('shovelDump', { at, gain });
+        if (family && ELEMENTS[id].kind === K.SOLID) play(family, { at, gain: TOOL_HIT_GAIN, rate });
+        break;
       case 'bucket:scoop':
         play('bucketScoop', { at, gain, rate });
         if (id === E.LAVA) play('sizzle', { at, gain: TOOL_HIT_GAIN });
