@@ -155,6 +155,8 @@ vec3 liquidMeniscus(vec3 p, vec3 n, int id) {
 // bilinear across the four columns around the point. Over a pool that is
 // what lands there; on a stream's side, the stream above.
 #define AGIT_REACH 4           // cells above the point (1.2 m at CELL_M = 0.3)
+#define AGIT_GATE_LIFT 2.5     // cells above the point where the gate reads the liquid field
+#define AGIT_GATE_PHI 0.02     // liquid field below which nothing is up there
 // Air entrainment by a plunging jet starts at ~1 m/s (Ervine et al. 1980;
 // Chanson 1997); a jet past ~4 m/s is white with it.
 #define FOAM_V_ONSET 1.0       // m/s
@@ -174,10 +176,12 @@ float columnFlux(ivec3 c) {   // c = lowest cell; cells/step
   return s / float(AGIT_REACH);
 }
 float agitation(vec3 p) {   // 0..1
+  // Cheap gate first: the (blurred, time-smoothed) liquid field halfway up
+  // the reach. Over a flat pool it is the tail of the blur, ~0.006 there
+  // (σ = 1 cell, 2.5 cells above the 0.5 level); a single drop anywhere in
+  // the reach lifts it past ~0.05. So nothing above: no column walks.
+  if (surfField(p + vec3(0.0, AGIT_GATE_LIFT, 0.0)).x < AGIT_GATE_PHI) return 0.0;
   ivec3 c = ivec3(floor(p));
-  // skip when the bricks above hold no matter at all
-  ivec3 b0 = c / BS, b1 = (c + ivec3(0, AGIT_REACH - 1, 0)) / BS;
-  if (brickInfo(clamp(b0, ivec3(0), ivec3(BX, BY, BZ) - 1)) == 0 && brickInfo(clamp(b1, ivec3(0), ivec3(BX, BY, BZ) - 1)) == 0) return 0.0;
   vec2 q = p.xz - 0.5;
   ivec2 i = ivec2(floor(q));
   vec2 f = q - vec2(i);
