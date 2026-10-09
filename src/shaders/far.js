@@ -842,6 +842,55 @@ float farCasterDepth(vec3 ro, vec3 rd, float t0, float t1) {
 }
 `;
 
+// The far field in the window's GI (gi.js giGatherFrag's far): a probe's ray
+// that has marched its bricks without being stopped reads the far field past
+// where it ended, at doubling distances: the brick-column tops (the window's
+// own region included, from its summary), so distant hills block the low sky
+// and send back the light of their ground (its element's albedo, the sun
+// through the shadow heights, the sky over it); a ray going down past the
+// coast meets the sea (the sky in it by Fresnel, and its body); else the sky.
+export const FAR_GI_STEPS = 6;       // reads along the ray past its end...
+export const FAR_GI_STEP0 = 8;       // ...the first this many cells out, each next twice as far (~500 cells in all)
+export const farGIGLSL = (L) => /* glsl */ `
+${farLayoutGLSL(L)}
+uniform sampler2D tFar;
+uniform sampler2D tFarTop;
+uniform sampler2D tFarShadow;
+uniform float uSea;
+#define FAR_GI_STEPS ${FAR_GI_STEPS}
+#define FAR_GI_STEP0 ${glf(FAR_GI_STEP0)}
+#define FAR_SHADOW_SOFT ${glf(FAR_SHADOW_SOFT)}
+#define FAR_SHADOW_BIAS ${glf(FAR_SHADOW_BIAS)}
+#define FAR_SEA_F0 0.02   // water's reflectance face on ((1.333 - 1) / (1.333 + 1))²
+vec3 farGround(vec3 r, float top) {
+  ivec3 b = clamp(ivec3(floor(vec3(r.x, top - 1.0, r.z) / float(FAR_BRICK))), ivec3(0), WB - 1);   // the brick under the top
+  int v = int(texelFetch(tFar, farTexel(b), 0).b * FAR_ID_SCALE + 0.5);
+  int id = (v % FAR_OPEN) % FAR_LIQ_STRIDE;
+  float s = texture(tFarShadow, r.xz / vec2(WORLD.xz)).x;
+  float sun = smoothstep(-FAR_SHADOW_SOFT, FAR_SHADOW_SOFT, top + FAR_SHADOW_BIAS - s);
+  return ALBEDO[id == E_EMPTY ? E_ROCK : id] * (SUN_COL * max(uSun.y, 0.0) * sun + uSkyUp);
+}
+vec3 farSea(vec3 d) {
+  float F = FAR_SEA_F0 + (1.0 - FAR_SEA_F0) * pow(1.0 - clamp(-d.y, 0.0, 1.0), 5.0);
+  return F * skyColor(reflect(d, vec3(0.0, 1.0, 0.0))) + (1.0 - F) * SCATALB[E_WATER] * uSkyUp;
+}
+vec3 farBeyond(vec3 P, vec3 Q, vec3 d, inout float open) {
+  vec3 w = Q + vec3(uOrigin);
+  float s = FAR_GI_STEP0;
+  for (int i = 0; i < FAR_GI_STEPS; i++) {
+    vec3 r = w + d * s;
+    if (any(lessThan(r.xz, vec2(0.0))) || any(greaterThanEqual(r.xz, vec2(WORLD.xz)))) break;
+    float top = texture(tFarTop, r.xz / vec2(WORLD.xz)).x;
+    if (r.y < max(top, uSea)) {
+      open = 0.0;
+      return top >= uSea ? farGround(r, top) : farSea(d);
+    }
+    s *= 2.0;
+  }
+  return d.y >= 0.0 ? skyColor(d) : farSea(d);
+}
+`;
+
 // The full-screen pass: a triangle covering the screen, each pixel's ray as
 // the homogeneous world point it meets on the far plane.
 export const farVert = /* glsl */ `

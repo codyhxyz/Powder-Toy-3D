@@ -250,14 +250,18 @@ The world is much larger than what lives on the GPU. Its size is `WORLD` cells, 
     the sun of their top less the sun ray's drop), sky ambient with a two-tap field AO, glow; liquids with Fresnel
     to the sky and the sun's glint and a Beer–Lambert body down to the bed; aerial perspective from the sky model
     (12 km visibility, the sky's spectral shape). Depth is written, so the volume and scene objects composite.
-  - The window takes two things from it (world mode only, `FarField.attach`): its sun shadow map the far field's
+  - The window takes three things from it (world mode only, `FarField.attach`): its sun shadow map the far field's
     shadows (`shadowFrag`'s casters: along a sun ray the shadow height above it only falls, so one read says whether
-    a texel ray goes under it and bisection finds where; GI gets them through the map), and its volume the same
-    aerial perspective (`volumeFrag`'s haze), so the window doesn't stand out crisper than the land around it.
+    a texel ray goes under it and bisection finds where; GI gets them through the map); its GI the far field past
+    where a probe's ray ends (`giGatherFrag`'s far: the brick-column tops at doubling distances, so distant hills
+    block the low sky and light it back with their ground's albedo, and the sea lies past the coast, instead of open
+    sky and a concrete floor); and its volume the same aerial perspective (`volumeFrag`'s haze), so the window
+    doesn't stand out crisper than the land around it.
   - The view's program compiles in the background (`compileAsync`); the far field shows once it's ready.
   - Today's sizes build none of it and compile byte-identical shader sources.
-  - Not yet: the window's GI doesn't see the far field (it sees open sky past its box); no blend band at the window's
-    sides; the far field isn't drawn in the data views; guests don't get the host's edits outside the window (W5).
+  - Not yet: no blend band at the window's sides; no gases (smoke, steam, fire) in the far field; the far field's own
+    ambient sees only a two-tap AO, not distant hills; it isn't drawn in the data views; guests don't get the host's
+    edits outside the window (W5).
 
 ## Measured (M5, headless Chrome, ANGLE Metal, 128³)
 - Lab step: 2.6 ms with 42% of bricks skipped, 3.75 ms with none skipped. An empty box still costs 2.1–2.8 ms.

@@ -96,6 +96,7 @@ for (const [label, dims] of Object.entries(grids)) {
   check('farView', shaderMatFrag + far.farFrag(g, L), 'frag');
   check('shadow-farCasters', raw + render.shadowFrag(g, far.farCastersGLSL(L)), 'frag');
   check('volume-farHaze', shaderMatFrag + render.volumeFrag(g, far.farHazeGLSL), 'frag');
+  check('giGather-far', raw + gi.giGatherFrag(g, far.farGIGLSL(L)), 'frag');
   const defs = Object.entries(allDetailDefines()).map(([k, v]) => `#define ${k} ${v}\n`).join('');
   check('volume-farHaze-detail', shaderMatFrag + defs + render.volumeFrag(g, far.farHazeGLSL), 'frag');
   check('farViewVert', shaderMatVert + far.farVert, 'vert');

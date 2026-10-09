@@ -3,9 +3,11 @@ import { BRICK } from '../shaders/common.js';
 import { columnFrag, COLUMN_MARGIN } from '../shaders/generate.js';
 import {
   farLayout, farRegionVert, farLayersFrag, farTreeCandFrag, farTreeThinFrag, farTreeBandFrag, farGenFrag,
-  farWinFrag, farMip1Frag, farMip2Frag, farTopFrag, farShadowFrag, farCastersGLSL, farHazeGLSL, farVert, farFrag,
+  farWinFrag, farMip1Frag, farMip2Frag, farTopFrag, farShadowFrag, farCastersGLSL, farHazeGLSL, farGIGLSL,
+  farVert, farFrag,
 } from '../shaders/far.js';
 import { shadowFrag, volumeFrag } from '../shaders/render.js';
+import { giGatherFrag } from '../shaders/gi.js';
 import { rawMat, makeFieldTarget } from '../sim.js';
 import { genUniforms, setWorld } from './gpu.js';
 import { gfxUniforms } from '../gfx/uniforms.js';
@@ -31,10 +33,11 @@ import { gfxUniforms } from '../gfx/uniforms.js';
 //     view marches it; after a sweep, at its end), and the shadow heights
 //     again when the sun or the window moves.
 //
-// The window takes two things from the far field (attach): its shadow map
+// The window takes three things from the far field (attach): its shadow map
 // the far field's shadows (a mountain outside shades the window, and its GI),
-// and its volume the same aerial perspective, so the window doesn't stand out
-// crisper than the land around it at the same distance.
+// its GI the far field past where its rays end (distant hills block the low
+// sky and light it back), and its volume the same aerial perspective, so the
+// window doesn't stand out crisper than the land around it at the same distance.
 //
 // The view is one full-screen pass drawn before everything else in the scene
 // (FarField.mesh): sky, the open sea beyond the world and the far grid, with
@@ -295,16 +298,25 @@ export class FarField {
   }
 
   // The window's volume and sun shadow map (the app's materials; before the
-  // detail gate copies the volume's): the volume with the far field's aerial
-  // perspective (render.js volumeFrag's haze), the shadow map shaded from
-  // outside the window too, by the shadow heights of the columns outside it
-  // (shadowFrag's casters).
+  // detail gate copies the volume's) and its GI (the simulation's): the volume
+  // with the far field's aerial perspective (render.js volumeFrag's haze), the
+  // shadow map shaded from outside the window too, by the shadow heights of the
+  // columns outside it (shadowFrag's casters), the GI's rays reading the far
+  // field past their end (gi.js giGatherFrag's far).
   attach(volumeMat, shadowMat) {
-    volumeMat.fragmentShader = volumeFrag(this.sim.g, farHazeGLSL);
+    const g = this.sim.g;
+    volumeMat.fragmentShader = volumeFrag(g, farHazeGLSL);
     volumeMat.needsUpdate = true;
-    shadowMat.fragmentShader = shadowFrag(this.sim.g, farCastersGLSL(this.L));
+    shadowMat.fragmentShader = shadowFrag(g, farCastersGLSL(this.L));
     shadowMat.uniforms.tFarShadow = { value: this.shadow.texture };
     shadowMat.needsUpdate = true;
+    const gi = this.sim.mats.giGather;
+    gi.fragmentShader = giGatherFrag(g, farGIGLSL(this.L));
+    Object.assign(gi.uniforms, {
+      tFar: { value: this.grid.texture }, tFarTop: { value: this.top.texture }, tFarShadow: { value: this.shadow.texture },
+      uSea: { value: this.win.P.sea },
+    });
+    gi.needsUpdate = true;
   }
 
   // Before the scene renders: the view's transforms for this frame (the
