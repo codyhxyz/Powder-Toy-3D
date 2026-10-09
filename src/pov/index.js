@@ -227,9 +227,14 @@ export function createPov(app) {
     if (!createPlayer) { hud.toast('First-person mode is still being built'); return; }
     requestLock();   // while the key press still counts as a user gesture
     starting = true;
+    const foundAt = new THREE.Vector3();   // the window's origin when the drop point was found (docs/scaling.md D11)
     try {
-      await Promise.all([findDropPoint(dropPoint), ensureFigure()]);
+      await Promise.all([findDropPoint(dropPoint).then(() => foundAt.copy(app.getSim().origin)), ensureFigure()]);
       ensureParts();
+      // the figure may compile for a while, and a world's window move meanwhile
+      const o = app.getSim().origin;
+      dropPoint.x += foundAt.x - o.x;
+      dropPoint.z += foundAt.z - o.z;
     } catch (err) {
       console.error('POV failed to start', err);
       hud.toast("Couldn't drop in here");

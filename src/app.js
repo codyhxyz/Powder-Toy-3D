@@ -1043,6 +1043,8 @@ function frame(now) {
     controls.update();
   }
   if (win) moveWindow();
+  // a world's window outline marks where the god view paints; from inside it, in POV, it would only be lines in the landscape
+  edges.visible = !(win && pov?.active);
   updateBrush();
 
   prof.phase('paint');
