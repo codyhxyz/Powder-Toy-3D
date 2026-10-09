@@ -341,7 +341,7 @@ vec2 treeUnturn(vec2 v, int q) {
 // What a tree fills of the cube of FAR.CUBE cells centred at a point (the far
 // grid's opaque share; a wide shape's share ramps over the cube across its
 // surface, a trunk's is its cells in the cube), and of the brick there (its
-// element: x = leaves (PLANT), y = trunk (WOOD), 0 or 1).
+// element's vote: leaves (PLANT) 0 or 1, its trunk's cells (WOOD)).
 export const TREE_OWN_REACH = 2;   // cells: a brick whose centre is this close inside a crown's surface holds leaves
 const treeShapeGLSL = /* glsl */ `
 #define TREE_OWN_REACH ${glf(TREE_OWN_REACH)}
@@ -354,7 +354,7 @@ float treeTrunk(vec3 q, float y0, float y1, float n) {
   if (abs(q.x) > h || abs(q.z) > h) return 0.0;
   return n * clamp(min(q.y + h, y1) - max(q.y - h, y0), 0.0, float(FAR_CUBE)) / float(FAR_CUBE * FAR_CUBE * FAR_CUBE);
 }
-// t: the tree, p: the cube's centre (world cells). Returns (cube share, leaves here, trunk here).
+// t: the tree, p: the cube's centre (world cells). Returns (cube share, leaves here, trunk cells here).
 vec3 treeFill(Tree t, vec3 p) {
   vec3 q = p - t.base;
   q.xz = treeUnturn(q.xz, t.quarter);
@@ -403,8 +403,8 @@ vec3 treeFill(Tree t, vec3 p) {
   }
   float share = max(crown < 1e8 ? treeRamp(crown) : 0.0, treeTrunk(q, 0.0, trunkTop, cells));
   float h = 0.5 * float(BS);
-  bool trunkHere = abs(q.x) < h && abs(q.z) < h && q.y > -h && q.y < trunkTop + h;
-  return vec3(share, crown < TREE_OWN_REACH ? 1.0 : 0.0, trunkHere ? 1.0 : 0.0);
+  float rows = abs(q.x) < h && abs(q.z) < h ? clamp(min(q.y + h, trunkTop) - max(q.y - h, 0.0), 0.0, float(BS)) : 0.0;
+  return vec3(share, crown < TREE_OWN_REACH ? 1.0 : 0.0, cells * rows);
 }
 `;
 
@@ -523,7 +523,7 @@ void main() {
 // column from its ground and the sea), and the trees in reach (their shapes'
 // shares joined to the ground's, their leaves or trunk the brick's element).
 // Columns past the world's edge repeat its edge.
-export const FAR_TREE_W = 512;   // dominant-element weight of a tree's leaves or trunk in a brick (over the ground's)
+export const FAR_TREE_W = 512;   // dominant-element weight of a crown in a brick (a brick's 64 cells, open: over the ground's)
 export const farGenFrag = (g, L) => /* glsl */ `
 ${prelude(g)}
 ${generatorGLSL}
@@ -587,15 +587,14 @@ void main() {
       ts = max(ts, f.x);
       tsb = max(tsb, treeFill(tr, pc - vec3(0.0, BS, 0.0)).x);
       leaves = max(leaves, f.y);
-      trunk = max(trunk, f.z);
+      trunk += f.z;
     }
     float n = float(FAR_CUBE * FAR_CUBE * FAR_CUBE);
     c.s = max(c.s, ts * n);
     c.sb = max(c.sb, tsb * n);
-    if (leaves > 0.0 || trunk > 0.0) {
-      c.w[leaves > 0.0 ? E_PLANT : E_WOOD] += FAR_TREE_W;
-      c.open += 1.0;
-    }
+    // their cells vote as open ones (FAR.SURFACE_W): a crown's outweigh the ground's, a thin trunk's don't
+    if (leaves > 0.0) { c.w[E_PLANT] += FAR_TREE_W; c.open += 1.0; }
+    else if (trunk > 0.0) { c.w[E_WOOD] += trunk * FAR_SURFACE_W; c.open += 1.0; }
   }
   oC = farPack(c);
 }
