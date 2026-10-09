@@ -1,10 +1,10 @@
 import * as THREE from 'three';
-import { ELEMENTS } from '../../elements.js';
-import { BODY_WIDTH, BODY_HEIGHT, BODY_DENS } from '../constants.js';
-import { createBallistics, ROUND_SPEED, ROUND_SLUG, MAX_ROUNDS } from '../ballistics.js';
+import { BODY_WIDTH, BODY_HEIGHT } from '../constants.js';
+import { createBallistics, ROUND_SPEED, MAX_ROUNDS } from '../ballistics.js';
 import { povEvents } from '../events.js';
 import { attachModel } from '../models.js';
-import { viewmodelRig } from '../viewmodel.js';
+import { viewmodelRig, HIT } from '../viewmodel.js';
+import { trigger } from './action.js';
 
 // Gun: fires a round that flies with real ballistics (360 m/s, 1 g) outside
 // the sim and becomes a SCRAP slug, a sim cell, where it strikes (ballistics.js).
@@ -15,38 +15,37 @@ import { viewmodelRig } from '../viewmodel.js';
 // body box. The trigger only clicks (gun:dry) when that cell, or one between
 // the eye and it, is matter: the pick under the crosshair is that close.
 //
-// Recoil conserves momentum: Δv_body = m_round·v_round / m_body, masses on the
-// element table's density scale (DENS × cells), v the round's muzzle speed in
-// cells/s. A one-cell round is a 30 cm block of metal at 360 m/s, so that kick
-// is enormous; the player's speed cap (player.js MAX_SPEED) clamps what it
-// does to the body. Standing, the ground takes it the way it takes any impact
-// (solids are immovable in the sim): friction the sideways part, the floor the
-// downward part. Only an upward kick (shooting at your feet: a rocket jump) or
-// a shot fired in the air or water moves you.
+// Recoil conserves momentum: Δv_body = m_round·v_round / m_body, v the
+// round's muzzle speed. The masses are a real pistol bullet's and a person's,
+// not the slug cell's: the cell the round becomes at impact is a 30 cm block
+// of metal, and kicking the body with that much momentum (~600 cells/s,
+// clamped only by player.js MAX_SPEED) threw the player across the box with
+// every shot. A real round nudges you by ~4 cm/s. Standing, the ground takes it
+// the way it takes any impact: friction the sideways part, the floor the
+// downward part, so only an upward kick or a shot fired in the air or water
+// moves you, and then barely.
 //
 // Events (docs/pov.md): gun:fire, gun:dry here; round:move, round:end and
 // impact from ballistics.js.
 
-const FIRE_INTERVAL = 0.35;        // s between shots
+const FIRE_INTERVAL = 0.35;        // s between shots (one per click: action.js trigger, no hold)
 const SPAWN_SEARCH = 16;           // cells walked along the ray looking for the muzzle cell
 const MUZZLE_NUDGE = 1e-3;         // cells past the muzzle cell's entry face the round starts
 const ROUNDS_IN_FLIGHT_MAX = MAX_ROUNDS;   // rounds the gun keeps in the air at once (the trace pass's width)
-const ROUND_CELLS = 1;             // a round is one cell of slug
-const ROUND_MASS = ELEMENTS[ROUND_SLUG].dens * ROUND_CELLS;
-const BODY_MASS = BODY_DENS * BODY_WIDTH * BODY_WIDTH * BODY_HEIGHT;
+const ROUND_MASS_KG = 0.008;        // kg, a 9 mm pistol bullet (the 360 m/s round of ballistics.js)
+const BODY_MASS_KG = 70;           // kg, the player
 const SIM_GRAVITY_REF = 0.025;     // cells/step², the sim's default gravity (sim.js GRAVITY_DEFAULT): rounds fall at 1 g there
 const MS_PER_S = 1000;
 
 // viewmodel, in cells (camera space: +x right, +y up, −z forward). The recoil
-// is the viewmodel rig's spring (viewmodel.js), thrown by gun:fire and gun:dry.
+// is the viewmodel rig's spring and the view punch (viewmodel.js HIT.GUN, HIT.DRY).
 const GUN_POS = [0.5, -0.45, -1.5];
-const MUZZLE = [0, 0.1, -0.66];    // cells from the model's centre to the end of the bore
-const DRY_TOAST_INTERVAL = 1.5;    // s between "blocked" toasts
+const MUZZLE = [0, 0.094, -0.625];    // cells from the model's centre to the end of the bore
 
 const ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round">
 <path d="M3 8h15l1-2h2v5h-6l-1 2h-3l-1 5H5l1-5H3z"/></svg>`;
 
-// The held gun: the Kenney model (models.js, async) on a hand of the
+// The held gun: the model (models.js) on a hand of the
 // viewmodel rig and a muzzle point at the end of its bore. The flash is vfx.js's,
 // drawn at gun:fire's muzzleWorld.
 function buildModel(env) {
@@ -96,12 +95,12 @@ export function muzzleCell(eye, dir, pos, g) {
 
 export default {
   key: 'GUN', name: 'Gun', slot: 4, icon: ICON,
-  desc: 'Fires a metal round that flies fast, drops a little and smashes what it hits. Kicks back hard.',
+  desc: 'Fires a metal round that flies fast, drops a little and smashes what it hits.',
   create(env) {
     const model = buildModel(env);
     const ballistics = createBallistics({ renderer: env.renderer });
     ballistics.prepare(env.getSim());
-    let time = 0, nextFire = 0, nextDryToast = 0;
+    const button = trigger(FIRE_INTERVAL, { hold: false });
     let lastShot = null;
     // While the gun is put away the toolbelt stops calling update, but rounds
     // already in the air keep flying: this drives them until they land, at the
@@ -110,7 +109,8 @@ export default {
 
     const dry = () => {
       povEvents.emit('gun:dry', {});
-      if (time >= nextDryToast) { env.hud?.toast?.('Click. The muzzle is blocked.'); nextDryToast = time + DRY_TOAST_INTERVAL; }
+      model.rig.hit(HIT.DRY);
+      env.feedback?.notice('Click. The muzzle is blocked.');
     };
 
     // the muzzle in world space: the viewmodel's muzzle while it's shown, else the eye
@@ -131,10 +131,11 @@ export default {
       const origin = ctx.eye.clone().addScaledVector(dir, m.t + MUZZLE_NUDGE);
       const id = ballistics.fire(origin, dir, sim.gravity / SIM_GRAVITY_REF);
       // momentum: the round's at its muzzle speed (cells/s)
-      const dv = dir.clone().multiplyScalar(-ROUND_MASS * ROUND_SPEED / BODY_MASS);
+      const dv = dir.clone().multiplyScalar(-ROUND_MASS_KG * ROUND_SPEED / BODY_MASS_KG);
       if (ctx.player.onGround) dv.set(0, Math.max(dv.y, 0), 0);
       ctx.player.applyImpulse(dv);
       lastShot = { id, origin: origin.clone(), dir: dir.clone(), cell: m.cell.clone(), dv: dv.clone() };
+      model.rig.hit(HIT.GUN);
       povEvents.emit('gun:fire', { origin: origin.clone(), dir: dir.clone(), muzzleWorld: muzzleWorld(ctx.eye) });
     }
 
@@ -150,12 +151,11 @@ export default {
     return {
       update(ctx) {
         selected = true;
-        time += ctx.dt;
         lastSteps = ctx.stepsPerFrame;
         model.hand.visible = true;
         model.rig.update(ctx);
-        if (ctx.primaryPressed && time >= nextFire) {
-          nextFire = time + FIRE_INTERVAL;
+        if (button.ready(ctx)) {
+          button.fire();
           fire(ctx);
         }
         ballistics.update(ctx);

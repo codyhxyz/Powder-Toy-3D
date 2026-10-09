@@ -10,8 +10,9 @@ import { prelude, quadVert, stateOutGLSL } from '../shaders/common.js';
 //   G  temperature code (see TEMP below); air is always sent as ambient
 //   B  life, only for elements whose look depends on it (smoke density, fire)
 //   A  ctype (what lava melted from sets where its crust forms; what a clone copies)
-// Velocity and pressure aren't sent, and the per-grain colour seed is
-// re-derived from the cell position on the guest.
+// Velocity and pressure aren't sent (so a guest's grains are textured in
+// place, without flow), and the per-grain colour seed is re-derived from the
+// cell position on the guest.
 
 const BYTE_MAX = 255;
 const TEXEL_BYTES = 4; // RGBA8
@@ -146,6 +147,7 @@ export function createUnpacker() {
       tex.image.data = bytes;
       tex.needsUpdate = true;
       sim.run(mat, sim.targets[sim.cur]);
+      sim.stillFlow();   // no velocity is sent, so a guest's grains are textured in place
     },
   };
 }
