@@ -547,7 +547,8 @@ Mat baseMat(int id) {
 // ray along rd; sets gGrainSun for its shadeSurf.
 Surf grainSurf(ivec3 aH, int k, vec3 p, vec3 rd) {
   Surf s;
-  s.p = p; s.ch = CH_GRANULAR; s.face = ivec3(0, 1, 0);
+  s.p = p; s.tp = p; s.tp1 = p; s.flowW = 0.0;   // glints sample at tp (shadeSurf); grains have one layer
+  s.ch = CH_GRANULAR; s.face = ivec3(0, 1, 0);
   float fp = footprint(p);
   gGrainSun = 1.0;
   Mat m;
