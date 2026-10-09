@@ -281,11 +281,12 @@ export const moveGatherFrag = (g) => /* glsl */ `
 ${prelude(g)}
 ${CELLS.map((i) => `uniform sampler2D tM${i};`).join('\n')}
 uniform int uParity;
+uniform bool uFresh;   // the first step since the activity map was built: dirty marks start over
 ${stateOutGLSL}
 ${heatGLSL}
 void main() {
   ivec3 p = cellFromFrag(ivec2(gl_FragCoord.xy));
-  if (!inGrid(p)) { writeState(vec4(0.0), vec4(0.0)); return; }   // a texel holding no cell
+  if (!inGrid(p)) { writeState(vec4(0.0), vec4(0.0), 0u); return; }   // a texel holding no cell
   ivec3 off = ivec3(uParity);
   ivec3 base = ((p + off) / 2) * 2 - off;
   ivec3 lp = p - base;
@@ -299,6 +300,11 @@ void main() {
   vec4 a = fetchA(q);
   float heat = float(code / SLOTS) / HEAT_QUANTA;   // impact energy this cell took (block pass)
   if (heat > 0.0) a.y = min(a.y + heat * KE_TO_HEAT / CAP[eid(a)], CELL_TEMP_MAX);
-  writeState(a, vec4(m.yzw, fetchB(p).w));
+  // activity flags: the react pass after this one re-tests the cell; mark it
+  // dirty if the move changed what its neighbours' tests read (shaders/common.js FLAG)
+  uint f = fetchF(p);
+  if (uFresh) f &= ~FLAG_DIRTY;
+  if (nearChange(fetchA(p), a)) f |= FLAG_DIRTY;
+  writeState(a, vec4(m.yzw, fetchB(p).w), f);
 }
 `;

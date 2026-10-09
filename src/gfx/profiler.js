@@ -55,7 +55,7 @@ const OTHER = PHASE_INDEX.other;
 
 // GPU memory estimate: bytes per channel by texture type, channels by format.
 const TYPE_BYTES = { [THREE.FloatType]: 4, [THREE.HalfFloatType]: 2, [THREE.UnsignedByteType]: 1 };
-const FORMAT_CHANNELS = { [THREE.RGBAFormat]: 4, [THREE.RGFormat]: 2, [THREE.RedFormat]: 1 };
+const FORMAT_CHANNELS = { [THREE.RGBAFormat]: 4, [THREE.RGFormat]: 2, [THREE.RedFormat]: 1, [THREE.RedIntegerFormat]: 1 };
 const RGBA = 4;
 const DEPTH_BYTES = 4;    // per pixel of a depth buffer: 24-bit depth padded to 32, or a float depth texture
 const CANVAS_BYTES = 4;   // per drawing-buffer pixel: RGBA8, no depth, no MSAA (see app.js)

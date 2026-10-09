@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { quadVert, BRICK, SEED_MAX, TILE, SUPER, SUPER_TEX, SUPER_CELLS } from './shaders/common.js';
-import { inertFrag, quietFrag, activityPeriod } from './shaders/activity.js';
+import { quadVert, BRICK, SEED_MAX, TILE, SUPER, SUPER_TEX, SUPER_CELLS, stateUniforms } from './shaders/common.js';
+import { inertFrag, inertRowsFrag, inertJoinFrag, quietFrag, activityPeriod } from './shaders/activity.js';
 import { moveBlockFrag, moveGatherFrag } from './shaders/move.js';
 import { reactFrag } from './shaders/react.js';
 import { paintFrag, copyFrag, brickFrag, blurFrag, brickDistFrag } from './shaders/passes.js';
@@ -102,6 +102,16 @@ function makeTarget(w, h, count = 2) {
   });
 }
 
+// A copy of the state: A and B (RGBA32F), and the activity flags (R8UI, one
+// byte per cell: shaders/common.js FLAG).
+const STATE_FLAGS = 2;   // attachment index of the flags
+function makeStateTarget(w, h) {
+  const t = makeTarget(w, h, STATE_FLAGS + 1);
+  t.textures[STATE_FLAGS].format = THREE.RedIntegerFormat;
+  t.textures[STATE_FLAGS].type = THREE.UnsignedByteType;
+  return t;
+}
+
 export function makeFieldTarget(w, h, count, type, filter) {
   return new THREE.WebGLRenderTarget(w, h, {
     count, type, format: THREE.RGBAFormat, minFilter: filter, magFilter: filter,
@@ -155,7 +165,7 @@ export class Simulation {
     // updates), so callers can tell when the world changed
     this.version = 0;
 
-    this.targets = [makeTarget(g.width, g.height), makeTarget(g.width, g.height)];
+    this.targets = [makeStateTarget(g.width, g.height), makeStateTarget(g.width, g.height)];
     this.cur = 0;
     this.blocks = makeTarget(g.mwidth, g.mheight, 8);
     this.brick = makeTarget(g.bwidth, g.bheight, 1);
@@ -182,10 +192,15 @@ export class Simulation {
     // write that isn't a step (painting, loads), which may wake a brick.
     // empty-space distance per brick (shaders/passes.js brickDistFrag), and its scratch
     this.brickDist = [makeFieldTarget(g.bwidth, g.bheight, 1, U8, NEAR), makeFieldTarget(g.bwidth, g.bheight, 1, U8, NEAR)];
+    // (built in passes: per-brick decisions from the activity flags, the
+    // re-tests of the bricks they leave open, row by row, then the join)
+    this.actClass = makeFieldTarget(g.bwidth, g.bheight, 1, U8, NEAR);
+    this.actRows = makeFieldTarget(g.bwidth * BRICK, g.bheight * BRICK, 1, U8, NEAR);
     this.actInert = makeFieldTarget(g.bwidth, g.bheight, 1, U8, NEAR);
     this.actQuiet = makeFieldTarget(g.bwidth, g.bheight, 1, U8, NEAR);
     this.actAge = ACTIVITY_PERIOD;
     this.actDirty = true;
+    this.actFresh = false;   // the next step is the first since a map was built (its dirty marks start over)
     this.stepping = false;
     this.skipQuiet = true;   // false: step every brick (A/B testing)
 
@@ -195,17 +210,19 @@ export class Simulation {
     this.quad.frustumCulled = false;
     this.scene.add(this.quad);
 
-    const state = () => ({ tA: { value: null }, tB: { value: null } });
+    const state = stateUniforms;
     this.mats = {
       moveBlock: rawMat(moveBlockFrag(g), {
         ...state(), uParity: { value: 0 }, uFrame: { value: 0 }, uGravity: { value: this.gravity }, tQuiet: { value: null },
       }),
       moveGather: rawMat(moveGatherFrag(g), {
-        ...state(), uParity: { value: 0 },
+        ...state(), uParity: { value: 0 }, uFresh: { value: false },
         ...Object.fromEntries([...Array(8).keys()].map((i) => [`tM${i}`, { value: null }])),
       }),
       react: rawMat(reactFrag(g), { ...state(), uFrame: { value: 0 }, uGravity: { value: this.gravity }, tQuiet: { value: null } }),
-      inert: rawMat(inertFrag(g), state()),
+      inert: rawMat(inertFrag(g), { tF: { value: null } }),
+      inertRows: rawMat(inertRowsFrag(g), { tA: { value: null }, tF: { value: null }, tClass: { value: null } }),
+      inertJoin: rawMat(inertJoinFrag(g), { tClass: { value: null }, tRows: { value: null } }),
       quiet: rawMat(quietFrag(g), { tInert: { value: null }, uEnabled: { value: true } }),
       paint: rawMat(paintFrag(g), {
         ...state(), uFrame: { value: 0 }, uCenter: { value: new THREE.Vector3() }, uRadius: { value: 4 },
@@ -251,6 +268,10 @@ export class Simulation {
 
   get stateA() { return this.targets[this.cur].textures[0]; }
   get stateB() { return this.targets[this.cur].textures[1]; }
+  get stateF() { return this.targets[this.cur].textures[STATE_FLAGS]; }
+  // A target shaped like the state (its attachments and formats), for code
+  // that draws a state pass somewhere else (e.g. once, to build its pipeline).
+  makeStateTarget(w, h) { return makeStateTarget(w, h); }
 
   // Index of cell (x, y, z)'s texel in the state arrays, and back (cellTexel, texelCell).
   cellTexel(x, y, z) { return cellTexel(this.g, x, y, z); }
@@ -297,23 +318,33 @@ export class Simulation {
     }
   }
 
-  // Rebuild the activity map from the current state (shaders/activity.js).
+  // Rebuild the activity map from the current state's activity flags (shaders/activity.js).
   updateActivity() {
-    const { inert, quiet } = this.mats;
-    inert.uniforms.tA.value = this.stateA;
-    inert.uniforms.tB.value = this.stateB;
-    this.run(inert, this.actInert);
+    const { inert, inertRows, inertJoin, quiet } = this.mats;
+    inert.uniforms.tF.value = this.stateF;
+    this.run(inert, this.actClass);
+    inertRows.uniforms.tA.value = this.stateA;
+    inertRows.uniforms.tF.value = this.stateF;
+    inertRows.uniforms.tClass.value = this.actClass.texture;
+    this.run(inertRows, this.actRows);
+    inertJoin.uniforms.tClass.value = this.actClass.texture;
+    inertJoin.uniforms.tRows.value = this.actRows.texture;
+    this.run(inertJoin, this.actInert);
     quiet.uniforms.tInert.value = this.actInert.texture;
     quiet.uniforms.uEnabled.value = this.skipQuiet;
     this.run(quiet, this.actQuiet);
     this.actAge = 0;
     this.actDirty = false;
+    this.actFresh = true;
   }
 
-  // Ping-pong pass over the state.
+  // Ping-pong pass over the state. The pass writes every cell, flags and all
+  // (shaders/common.js stateOutGLSL), so it needs stateUniforms().
   pass(mat) {
+    if (!mat.uniforms.tF) throw new Error(`pass ${mat.name || '(unnamed)'}: a state writer needs stateUniforms() (tF)`);
     mat.uniforms.tA.value = this.stateA;
     mat.uniforms.tB.value = this.stateB;
+    mat.uniforms.tF.value = this.stateF;
     this.run(mat, this.targets[1 - this.cur]);
     this.cur = 1 - this.cur;
   }
@@ -333,6 +364,8 @@ export class Simulation {
     moveBlock.uniforms.tB.value = this.stateB;
     this.run(moveBlock, this.blocks);
     moveGather.uniforms.uParity.value = this.frame & 1;
+    moveGather.uniforms.uFresh.value = this.actFresh;
+    this.actFresh = false;
     for (let i = 0; i < 8; i++) moveGather.uniforms[`tM${i}`].value = this.blocks.textures[i];
     this.pass(moveGather);
     react.uniforms.uFrame.value = this.frame;
@@ -553,6 +586,8 @@ export class Simulation {
     this.fieldsBlurred.dispose();
     this.fields.dispose();
     this.brickDist.forEach((t) => t.dispose());
+    this.actClass.dispose();
+    this.actRows.dispose();
     this.actInert.dispose();
     this.actQuiet.dispose();
     this.giSrc.dispose();

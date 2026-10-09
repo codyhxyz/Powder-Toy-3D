@@ -1,5 +1,5 @@
 import { prelude, stateOutGLSL } from './common.js';
-import { quietGLSL } from './activity.js';
+import { quietGLSL, inertNearGLSL } from './activity.js';
 import { ELEMENTS } from '../elements.js';
 
 // The softest breakable solid: a cell carrying less kinetic energy than this
@@ -41,12 +41,15 @@ const HARD_MIN = Math.min(...ELEMENTS.filter((e) => e.breakInto).map((e) => e.ha
 //     momentum and the fracture work as heat. The move pass that runs before
 //     this one leaves a projectile that can break what it's touching unbounced
 //     (move.js), so it reaches this check with its velocity intact.
+//   - The activity flags (shaders/common.js FLAG): the rest test on the cell's
+//     new state, its neighbours as this pass saw them (activity.js).
 export const reactFrag = (g) => /* glsl */ `
 ${prelude(g)}
 uniform uint uFrame;
 uniform float uGravity;
 ${stateOutGLSL}
 ${quietGLSL}
+${inertNearGLSL}
 
 const ivec3 DIRS[6] = ivec3[6](ivec3(1,0,0), ivec3(-1,0,0), ivec3(0,1,0), ivec3(0,-1,0), ivec3(0,0,1), ivec3(0,0,-1));
 
@@ -97,12 +100,15 @@ bool latent(inout float T, inout float acc, float Tp, float C, float L, bool ris
 
 void main() {
   ivec3 p = cellFromFrag(ivec2(gl_FragCoord.xy));
-  if (!inGrid(p)) { writeState(vec4(0.0), vec4(0.0)); return; }   // a texel holding no cell
+  if (!inGrid(p)) { writeState(vec4(0.0), vec4(0.0), 0u); return; }   // a texel holding no cell
 
   vec4 a = fetchA(p);
   vec4 b = fetchB(p);
-  // quiet brick (shaders/activity.js): nothing here can change, keep it as is
-  if (quietCell(p)) { writeState(a, b); return; }
+  uint dirty = fetchF(p) & FLAG_DIRTY;   // the move pass's mark (shaders/common.js nearChange)
+  // quiet brick (shaders/activity.js): nothing here can change, keep it as is.
+  // Its cells were inert when the activity map was built, so their neighbour
+  // tests passed then, and still do unless something around them is dirty.
+  if (quietCell(p)) { writeState(a, b, ownFlags(a, b) | FLAG_NEAR | dirty); return; }
   int id = eid(a);
   float T = a.y, life = a.z;
   float ctype = floor(a.w), seed = fract(a.w);
@@ -371,6 +377,12 @@ void main() {
   }
 
   T = clamp(T, CELL_TEMP_MIN, CELL_TEMP_MAX);
-  writeState(vec4(float(nidOut), T, life, ctype + seed), vec4(v, clamp(P, P_MIN, P_MAX)));
+  vec4 outA = vec4(float(nidOut), T, life, ctype + seed), outB = vec4(v, clamp(P, P_MIN, P_MAX));
+  // the rest test on what this cell becomes, its neighbours as this pass saw
+  // them (the activity map redoes the neighbour test where one has changed: dirty)
+  uint flags = ownFlags(outA, outB) | dirty;
+  if ((flags & FLAG_SELF) != 0u && inertNear(p, outA, na)) flags |= FLAG_NEAR;
+  if (nearChange(a, outA)) flags |= FLAG_DIRTY;
+  writeState(outA, outB, flags);
 }
 `;

@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { ELEMENTS, E, K } from '../elements.js';
 import { PHYS } from '../physics.js';
-import { quadVert } from '../shaders/common.js';
+import { quadVert, stateUniforms } from '../shaders/common.js';
 import { povProbeFrag, povCouplingFrag, PROBE, PROBE_OUTSIDE } from '../shaders/povBody.js';
 import { BODY_HEIGHT, BODY_WIDTH, EYE_HEIGHT, BODY_DENS } from './constants.js';
 import { createVitals, CELL_METERS, SAFE_FALL_M, LETHAL_FALL_M } from './vitals.js';
@@ -153,7 +153,7 @@ export function createPlayer({ renderer, getSim }) {
     mats = {
       probe: rawMat(povProbeFrag(g), { tA: { value: null }, tB: { value: null }, uOrigin: { value: new THREE.Vector3() } }),
       couple: rawMat(povCouplingFrag(g), {
-        tA: { value: null }, tB: { value: null }, uFrame: { value: 0 },
+        ...stateUniforms(), uFrame: { value: 0 },
         uMin: { value: new THREE.Vector3() }, uMax: { value: new THREE.Vector3() }, uVel: { value: new THREE.Vector3() },
         uPushFluid: { value: 0 }, uPushPowder: { value: 0 }, uLift: { value: 0 }, uAhead: { value: new THREE.Vector2() },
       }),

@@ -83,7 +83,8 @@ void main() {
   ivec2 fc = ivec2(gl_FragCoord.xy);
   vec4 q = round(texelFetch(tPacked, fc, 0) * BYTE_MAX);
   uint rs = seed3(cellFromFrag(fc), 0u, SEED_SALT);
-  writeState(vec4(q.x, decodeTemp(q.y), q.z / BYTE_MAX, q.w + rnd(rs) * SEED_SPAN), vec4(0.0));
+  vec4 a = vec4(q.x, decodeTemp(q.y), q.z / BYTE_MAX, q.w + rnd(rs) * SEED_SPAN), b = vec4(0.0);
+  writeState(a, b, freshFlags(a, b));
 }
 `;
 

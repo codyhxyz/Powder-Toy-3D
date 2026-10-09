@@ -1,4 +1,4 @@
-import { prelude } from './common.js';
+import { prelude, inertSelfGLSL } from './common.js';
 
 // Activity map: which 4×4×4 bricks the simulation may skip.
 //
@@ -27,19 +27,31 @@ import { prelude } from './common.js';
 // leaves out is the sub-tolerance drift: heat across faces within the
 // tolerances (bounded in physics.js), the last of a pressure below REST_P
 // decaying, the air's brownian shuffle.
+//
+// The test has two halves: inertSelf, on the cell's own state
+// (shaders/common.js), and inertNear, on its neighbours' states A. Rather than
+// run both over the whole state per brick, the brick pass reduces the
+// activity flags every state writer leaves beside a cell (common.js FLAG):
+// SELF is always exact, and NEAR is the react pass's evaluation of inertNear,
+// which may have seen a neighbour before the step changed it. So NEAR is
+// trusted only where nothing a brick's neighbour tests read is DIRTY (changed
+// since the last map in a way they read), and inertNear is rerun from the
+// state where something is. A brick that was quiet all period has NEAR set by
+// react (its cells were inert when the map was built, and are unchanged), so
+// the result is the test above, exactly: inertRefFrag runs it the old way, for
+// tools/activity-check.mjs to compare.
 
 // Cells a change can travel in one step: one by moving, one by the react pass's stencil.
 export const INFLUENCE_PER_STEP = 2;
 // Steps an activity map stays valid: its one-brick halo, crossed at the speed above.
 export const activityPeriod = (brickSize) => Math.floor(brickSize / INFLUENCE_PER_STEP);
 
-// Needs the state as uniforms tA, tB.
-const INERT = /* glsl */ `
-// Air's steady jitter speed: the react pass does v' = v·(1 - drag) + j with
-// |j| ≤ jitter / 2, whose bound is this. Calmer than that is no wind (cells/step).
-const float AIR_JITTER_V = 0.5 * JITTER[E_EMPTY] / DRAG[E_EMPTY];
+// The neighbour half of the rest test, for cell c holding a, given its face
+// neighbours' states A in FACES order (nA; those outside the box are skipped:
+// the box walls insulate, never react and can't be entered). It reads the
+// lower ring itself, from the pass's input state (fetchA).
+export const inertNearGLSL = /* glsl */ `
 const ivec3 FACES[6] = ivec3[6](ivec3(1,0,0), ivec3(-1,0,0), ivec3(0,1,0), ivec3(0,-1,0), ivec3(0,0,1), ivec3(0,0,-1));
-#define MASK_WORDS ((BS * BS * BS + 31) / 32)   // uints for one bit per cell of a brick
 
 // What acid eats (react.js): all but air, acid, walls, glass, water and gases.
 bool acidEats(int j) {
@@ -47,42 +59,14 @@ bool acidEats(int j) {
       && KIND[j] != K_GAS;
 }
 
-// Inert as far as the cell's own state can tell.
-bool inertSelf(vec4 a, vec4 b) {
-  int id = eid(a);
-  float T = a.y;
-  if (id == E_EMPTY) {
-    vec3 v = abs(b.xyz);
-    return abs(T - AMBIENT) <= AIR_REST_T && abs(b.w) <= REST_P && max(v.x, max(v.y, v.z)) <= AIR_JITTER_V + REST_V_SLOP;
-  }
-  int k = KIND[id];
-  if (k == K_GAS) return false;   // smoke, steam and flames rise, fade and burn
-  // moving, or pressure still settling (solids hold none)
-  if (k != K_SOLID && (b.xyz != vec3(0.0) || abs(b.w) > REST_P)) return false;
-  if (MELT[id] > 0.0 && T > MELT[id]) return false;
-  if (IGNITE[id] > 0.0 && T >= IGNITE[id]) return false;   // burning, or hot enough to light the air
-  // latent heat: water and ice at rest have nothing banked and sit within their phase
-  if (id == E_WATER) return a.z == 0.0 && T >= 0.0 && T <= 100.0;
-  if (id == E_ICE || id == E_SNOW) return a.z == 0.0 && T <= 0.0;
-  if (id == E_LAVA) {
-    int ct = int(floor(a.w));
-    if (ct <= 0 || ct >= NE) ct = E_STONE;
-    return T >= MELT[ct] - LAVA_FREEZE_BELOW;   // not cool enough to set
-  }
-  return true;
-}
-
-// The rest of the test, from its neighbours (outside the box is wall, which
-// insulates, never reacts and can't be entered).
-bool inertNear(ivec3 c, vec4 a) {
+bool inertNear(ivec3 c, vec4 a, vec4 nA[6]) {
   int id = eid(a);
   if (id == E_EMPTY) return true;   // what changes air is a neighbour that isn't inert
   int k = KIND[id];
   float T = a.y, d = densityOf(id, T);
   for (int i = 0; i < 6; i++) {
-    ivec3 q = c + FACES[i];
-    if (!inGrid(q)) continue;
-    vec4 n = fetchA(q);
+    if (!inGrid(c + FACES[i])) continue;
+    vec4 n = nA[i];
     int j = eid(n);
     // thermally quiet; a face touching air carries heat at air's conductance, so it takes air's tolerance
     if (j == E_EMPTY ? abs(T - AMBIENT) > AIR_REST_T : abs(T - n.y) > MATTER_REST_T) return false;
@@ -106,12 +90,116 @@ bool inertNear(ivec3 c, vec4 a) {
   }
   return true;
 }
+
+// inertNear of cell c, its neighbours read from the pass's input state.
+bool inertNearHere(ivec3 c) {
+  vec4 nA[6];
+  for (int i = 0; i < 6; i++) {
+    ivec3 q = c + FACES[i];
+    nA[i] = inGrid(q) ? fetchA(q) : vec4(0.0);
+  }
+  return inertNear(c, fetchA(c), nA);
+}
 `;
 
-// Brick resolution: 1 if every cell of the brick is inert.
+// The inert map takes three passes, so the re-tests run in parallel:
+//   inertFrag      brick resolution: decides each brick from its flags where
+//                  it can (r: inert), else marks it stale (g)
+//   inertRowsFrag  BS × BS fragments per brick (target bwidth·BS × bheight·BS),
+//                  each re-testing the BS cells along x of one row (y, z) of a
+//                  stale brick: 1 if they all pass
+//   inertJoinFrag  brick resolution: the decision, or the AND of the rows
+// (A stale brick in one fragment would run up to BS³ neighbour tests in a row.)
+
+// Brick pass (needs uniform tF): r = 1 if the brick is inert by its flags,
+// g = 1 if they don't decide it (inertRowsFrag re-tests it).
 export const inertFrag = (g) => /* glsl */ `
 ${prelude(g)}
-${INERT}
+out vec4 oC;
+
+// Is anything the brick's neighbour tests read outside it (within a cell of
+// it: its faces' cells and the lower rings) dirty?
+bool haloDirty(ivec3 o) {
+  for (int z = -1; z <= BS; z++)
+  for (int y = -1; y <= BS; y++)
+  for (int x = -1; x <= BS; x++) {
+    ivec3 l = ivec3(x, y, z);
+    if (all(greaterThanEqual(l, ivec3(0))) && all(lessThan(l, ivec3(BS)))) continue;   // the brick itself
+    ivec3 q = o + l;
+    if (inGrid(q) && (fetchF(q) & FLAG_DIRTY) != 0u) return true;
+  }
+  return false;
+}
+
+void main() {
+  ivec3 bc = brickFromFrag(ivec2(gl_FragCoord.xy));
+  oC = vec4(0.0);
+  if (bc.y >= BY) return;
+  ivec3 o = bc * BS;
+  uint every = ~0u, some = 0u;   // AND and OR of the brick's flags
+  for (int z = 0; z < BS; z++)
+  for (int y = 0; y < BS; y++)
+  for (int x = 0; x < BS; x++) {
+    uint f = fetchF(o + ivec3(x, y, z));
+    every &= f;
+    some |= f;
+  }
+  if ((every & FLAG_SELF) == 0u) return;   // a cell moves, reacts, or is off its rest temperature
+  // only air: nothing to test against the neighbours
+  if ((some & FLAG_MATTER) == 0u) { oC = vec4(1.0); return; }
+  // nothing the neighbour tests read changed since the last map: their NEAR stands
+  if ((some & FLAG_DIRTY) == 0u && !haloDirty(o)) {
+    if ((every & FLAG_NEAR) != 0u) oC = vec4(1.0);
+    return;
+  }
+  oC = vec4(0.0, 1.0, 0.0, 0.0);   // else the rows redo them from the state
+}
+`;
+
+// Row pass (needs tA, tF and tClass, the brick pass's output).
+export const inertRowsFrag = (g) => /* glsl */ `
+${prelude(g)}
+${inertNearGLSL}
+uniform sampler2D tClass;
+out vec4 oC;
+void main() {
+  ivec2 f = ivec2(gl_FragCoord.xy), bf = f / BS, row = f - bf * BS;   // brick texel, and the row (y, z) in it
+  oC = vec4(1.0);
+  if (texelFetch(tClass, bf, 0).g < 0.5) return;   // decided by its flags
+  ivec3 o = brickFromFrag(bf) * BS + ivec3(0, row.x, row.y);
+  for (int x = 0; x < BS; x++) {
+    ivec3 c = o + ivec3(x, 0, 0);
+    if ((fetchF(c) & FLAG_MATTER) != 0u && !inertNearHere(c)) { oC = vec4(0.0); return; }
+  }
+}
+`;
+
+// Join pass (needs tClass and tRows): the inert map, 1 if the brick is inert.
+export const inertJoinFrag = (g) => /* glsl */ `
+${prelude(g)}
+uniform sampler2D tClass;
+uniform sampler2D tRows;
+out vec4 oC;
+void main() {
+  ivec2 bf = ivec2(gl_FragCoord.xy);
+  vec4 decided = texelFetch(tClass, bf, 0);
+  oC = vec4(decided.r);
+  if (decided.g < 0.5) return;
+  for (int z = 0; z < BS; z++)
+  for (int y = 0; y < BS; y++)
+    if (texelFetch(tRows, bf * BS + ivec2(y, z), 0).r < 0.5) { oC = vec4(0.0); return; }
+  oC = vec4(1.0);
+}
+`;
+
+// The same map computed from the state alone, the way the brick pass did
+// before the activity flags (needs tA, tB): the reference the flags must
+// reproduce exactly (tools/activity-check.mjs).
+export const inertRefFrag = (g) => /* glsl */ `
+${prelude(g)}
+${inertSelfGLSL}
+${inertNearGLSL}
+#define MASK_WORDS ((BS * BS * BS + 31) / 32)   // uints for one bit per cell of a brick
 out vec4 oC;
 void main() {
   ivec3 bc = brickFromFrag(ivec2(gl_FragCoord.xy));
@@ -137,8 +225,7 @@ void main() {
   for (int x = 0; x < BS; x++) {
     int i = x + BS * (y + BS * z);
     if ((matter[i >> 5] & (1u << (i & 31))) == 0u) continue;
-    ivec3 c = o + ivec3(x, y, z);
-    if (!inertNear(c, fetchA(c))) return;
+    if (!inertNearHere(o + ivec3(x, y, z))) return;
   }
   oC = vec4(1.0);
 }

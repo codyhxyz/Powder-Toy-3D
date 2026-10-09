@@ -1,6 +1,6 @@
-import { elementsGLSL } from '../elements.js';
+import { elementsGLSL, ELEMENTS, K } from '../elements.js';
 import { incandescenceGLSL } from '../gfx/incandescence.js';
-import { physicsGLSL } from '../physics.js';
+import { physicsGLSL, PHYS } from '../physics.js';
 
 // Shared GLSL prelude. The 3D grid (NX × NY × NZ) is stored in 2D atlases and
 // every pass reads cells with texelFetch through the atlas functions below, so
@@ -12,6 +12,8 @@ import { physicsGLSL } from '../physics.js';
 // format can change here alone (D5; tools/check-state-access.mjs enforces it):
 //   A = (element id, temperature °C, life/latent/fuel, ctype + seed)
 //   B = (velocity xyz in cells/step, air pressure)
+// Beside them, in the same atlas, one byte of activity flags per cell (FLAG
+// below, fetchF), which the activity map reduces per brick (shaders/activity.js).
 // The render fields (shaders/fields.js) keep an atlas of horizontal Y-slices,
 // FTX slices per row (fieldAtlas(), fieldCellFromFrag()): hardware bilinear
 // filtering works inside a slice (gfx/core.js fieldTex).
@@ -30,6 +32,29 @@ export const SUPER_CELLS = { x: SUPER.x * BRICK, y: SUPER.y * BRICK, z: SUPER.z 
 // A cell's random seed is the fraction of state A's w, kept below 1 so it
 // never carries into the integer ctype.
 export const SEED_MAX = 0.999;
+
+// Activity flags (docs/scaling.md D8): bits of the byte each state writer
+// leaves beside a cell, so the activity map (shaders/activity.js) can tell
+// whether a brick is inert from 1 byte per cell instead of re-running the
+// rest test on the whole state:
+//   SELF    the cell's own state passes the rest test (inertSelf). Always
+//           exact: whoever writes a cell evaluates it on what it writes.
+//   NEAR    its neighbour test (activity.js inertNear) passed when last
+//           evaluated (air passes trivially). Trusted only while nothing it
+//           reads is DIRTY; the activity map redoes it otherwise.
+//   MATTER  the cell holds matter, not air (air's neighbour test is empty).
+//   DIRTY   since the activity map was last built, the cell changed in a
+//           way its neighbours' tests read (nearChange), or a writer gave it
+//           a new state A: the NEAR around it may be stale. The first step
+//           after a build clears it.
+export const FLAG = { SELF: 1, NEAR: 2, MATTER: 4, DIRTY: 8 };
+// A neighbour test reads an air cell's temperature only through canMove's
+// density test, for a powder or liquid that might fall or flow into it. Air
+// is at most 1 - AIR_DENS_LO dense (airDensity), so unless some loose element
+// is that light, an air cell counts only as air there, and air that warms,
+// cools or swaps with other air changes no neighbour's test.
+const AIR_DENS_MAX = 1 - PHYS.AIR_DENS_LO;
+const AIR_T_IN_NEAR = ELEMENTS.some((e) => (e.kind === K.POWDER || e.kind === K.LIQUID) && e.dens <= AIR_DENS_MAX);
 
 export function prelude(g) {
   return /* glsl */ `
@@ -61,6 +86,8 @@ precision highp sampler2D;
 #define MTX ${g.mtx}
 ${physicsGLSL()}
 #define SEED_MAX ${SEED_MAX}   // a cell's random seed (the fraction in state A's w) stays below this
+${Object.entries(FLAG).map(([k, v]) => `#define FLAG_${k} ${v}u`).join('\n')}
+#define AIR_T_IN_NEAR ${AIR_T_IN_NEAR}   // an air cell's temperature can decide a neighbour test (see AIR_T_IN_NEAR)
 
 ${elementsGLSL()}
 
@@ -114,8 +141,10 @@ bool inGrid(ivec3 p) {
 // ---- the state (see the top of shaders/common.js) ----
 uniform sampler2D tA;
 uniform sampler2D tB;
+uniform highp usampler2D tF;   // activity flags (FLAG_*)
 vec4 fetchA(ivec3 c) { return texelFetch(tA, atlas(c), 0); }
 vec4 fetchB(ivec3 c) { return texelFetch(tB, atlas(c), 0); }
+uint fetchF(ivec3 c) { return texelFetch(tF, atlas(c), 0).r; }
 int eid(vec4 a) { return int(floor(a.x + 0.5)); }
 
 // PCG hash (Jarzynski & Olano 2020, "Hash Functions for GPU Rendering"); the
@@ -180,12 +209,72 @@ ${incandescenceGLSL()}
 `;
 }
 
-// The outputs of a pass that writes the state (MRT attachments 0 and 1), and
-// the one way to write them: a and b in the fetchA/fetchB layout.
+// The rest test on a cell's own state (docs/scaling.md D2; the half that reads
+// its neighbours is shaders/activity.js inertNear). Every state writer
+// evaluates it on what it writes (FLAG_SELF); see activity.js for the rules.
+export const inertSelfGLSL = /* glsl */ `
+// Air's steady jitter speed: the react pass does v' = v·(1 - drag) + j with
+// |j| ≤ jitter / 2, whose bound is this. Calmer than that is no wind (cells/step).
+const float AIR_JITTER_V = 0.5 * JITTER[E_EMPTY] / DRAG[E_EMPTY];
+bool inertSelf(vec4 a, vec4 b) {
+  int id = eid(a);
+  float T = a.y;
+  if (id == E_EMPTY) {
+    vec3 v = abs(b.xyz);
+    return abs(T - AMBIENT) <= AIR_REST_T && abs(b.w) <= REST_P && max(v.x, max(v.y, v.z)) <= AIR_JITTER_V + REST_V_SLOP;
+  }
+  int k = KIND[id];
+  if (k == K_GAS) return false;   // smoke, steam and flames rise, fade and burn
+  // moving, or pressure still settling (solids hold none)
+  if (k != K_SOLID && (b.xyz != vec3(0.0) || abs(b.w) > REST_P)) return false;
+  if (MELT[id] > 0.0 && T > MELT[id]) return false;
+  if (IGNITE[id] > 0.0 && T >= IGNITE[id]) return false;   // burning, or hot enough to light the air
+  // latent heat: water and ice at rest have nothing banked and sit within their phase
+  if (id == E_WATER) return a.z == 0.0 && T >= 0.0 && T <= 100.0;
+  if (id == E_ICE || id == E_SNOW) return a.z == 0.0 && T <= 0.0;
+  if (id == E_LAVA) {
+    int ct = int(floor(a.w));
+    if (ct <= 0 || ct >= NE) ct = E_STONE;
+    return T >= MELT[ct] - LAVA_FREEZE_BELOW;   // not cool enough to set
+  }
+  return true;
+}
+// FLAG_SELF and FLAG_MATTER of a cell holding (a, b).
+uint ownFlags(vec4 a, vec4 b) {
+  return (inertSelf(a, b) ? FLAG_SELF : 0u) | (eid(a) != E_EMPTY ? FLAG_MATTER : 0u);
+}
+// Does a cell going from state A a0 to a1 change what its neighbours' tests
+// (activity.js inertNear) read of it? Its element, and its temperature unless
+// it is air (AIR_T_IN_NEAR). Its life and ctype + seed they don't read.
+bool nearChange(vec4 a0, vec4 a1) {
+  int i1 = eid(a1);
+  return eid(a0) != i1 || (a0.y != a1.y && (i1 != E_EMPTY || AIR_T_IN_NEAR));
+}
+`;
+
+// The outputs of a pass that writes the state (MRT attachments 0, 1 and 2),
+// and the one way to write them: a and b in the fetchA/fetchB layout, and the
+// cell's activity flags (FLAG). A pass that rewrites cells without testing
+// them leaves writtenFlags (or freshFlags) for them.
 export const stateOutGLSL = /* glsl */ `
 layout(location = 0) out vec4 outStateA;
 layout(location = 1) out vec4 outStateB;
-void writeState(vec4 a, vec4 b) { outStateA = a; outStateB = b; }
+layout(location = 2) out uint outFlags;
+void writeState(vec4 a, vec4 b, uint flags) { outStateA = a; outStateB = b; outFlags = flags; }
+${inertSelfGLSL}
+// A cell given the state (a, b) with no neighbour test: FLAG_DIRTY has the
+// activity map run the neighbour tests around it (its own included).
+uint freshFlags(vec4 a, vec4 b) { return ownFlags(a, b) | FLAG_DIRTY; }
+// The flags a writer leaves on a cell that held (a, b) with flags f and now
+// holds (oA, oB): an untouched cell keeps its flags; a new element,
+// temperature or ctype + seed is fresh (freshFlags: the cell's own neighbour
+// test reads them too); a new life or state B (velocity, pressure) only
+// redoes its own test, since no neighbour test reads them.
+uint writtenFlags(uint f, vec4 a, vec4 b, vec4 oA, vec4 oB) {
+  if (oA.xyw != a.xyw) return freshFlags(oA, oB);
+  if (oA != a || oB != b) return inertSelf(oA, oB) ? f | FLAG_SELF : f & ~FLAG_SELF;
+  return f;
+}
 `;
 
 // main() of a pass that changes a few cells of the state and copies the rest
@@ -194,15 +283,21 @@ void writeState(vec4 a, vec4 b) { outStateA = a; outStateB = b; }
 //   void update(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB)
 // which gets cell p's state (a, b) and leaves its new state in oA, oB (they
 // start as a copy of a, b). Padding texels, which hold no cell, copy through.
+// The activity flags follow (writtenFlags): the update needn't know about them.
 export const copyThroughMain = (update) => /* glsl */ `
 void main() {
   ivec3 p = cellFromFrag(ivec2(gl_FragCoord.xy));
   vec4 a = fetchA(p), b = fetchB(p);
   vec4 oA = a, oB = b;
   if (inGrid(p)) ${update}(p, a, b, oA, oB);
-  writeState(oA, oB);
+  writeState(oA, oB, writtenFlags(fetchF(p), a, b, oA, oB));
 }
 `;
+
+// The uniforms of a pass that reads the state through the accessors above
+// (fetchA, fetchB, fetchF). A pass that writes it (sim.pass) needs all three:
+// it carries the activity flags through.
+export const stateUniforms = () => ({ tA: { value: null }, tB: { value: null }, tF: { value: null } });
 
 export const quadVert = /* glsl */ `
 in vec3 position;

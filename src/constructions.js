@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { quadVert } from './shaders/common.js';
+import { quadVert, stateUniforms } from './shaders/common.js';
 import { stampFrag } from './shaders/stamp.js';
 import { ELEMENTS, BUILDS, isBuild } from './elements.js';
 import { h } from './ui/dom.js';
@@ -272,7 +272,7 @@ export class Constructions {
         vertexShader: quadVert,
         fragmentShader: stampFrag(g),
         uniforms: {
-          tA: { value: null }, tB: { value: null }, tStamp: { value: null },
+          ...stateUniforms(), tStamp: { value: null },
           uOrigin: { value: new THREE.Vector3() }, uSize: { value: new THREE.Vector3() },
           uFoot: { value: 0 }, uSeed: { value: 0 },
         },

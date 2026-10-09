@@ -62,13 +62,16 @@ void brush(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
 ${copyThroughMain('brush')}`;
 
 // Copy a state (uploaded data textures, an undo snapshot) into a target.
-// Padding texels copy too: cellFromFrag and atlas() round-trip them.
+// Padding texels copy too: cellFromFrag and atlas() round-trip them. Every
+// cell is new to the activity map (freshFlags); a target with no flags
+// attachment (an undo snapshot) drops them.
 export const copyFrag = (g) => /* glsl */ `
 ${prelude(g)}
 ${stateOutGLSL}
 void main() {
   ivec3 p = cellFromFrag(ivec2(gl_FragCoord.xy));
-  writeState(fetchA(p), fetchB(p));
+  vec4 a = fetchA(p), b = fetchB(p);
+  writeState(a, b, freshFlags(a, b));
 }
 `;
 
