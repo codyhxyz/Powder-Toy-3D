@@ -3,7 +3,7 @@
 // (the god view and eye-level close-ups, the POV-mode worst case) times the
 // view raymarch with the feature off and on, alternating A/B rounds, and
 // prints the median extra GPU ms per frame and the tier that gives.
-// usage: node tools/detail-bench.mjs [--port 5191] [--preset lab|volcano] [--cams eyeSand,god]
+// usage: node tools/detail-bench.mjs [--port 5191] [--preset lab|volcano|plume] [--cams eyeSand,god]
 //        [--features relief,grains] [--shots outDir]
 // Noise: identical shaders differ by up to ~0.4 ms per camera; rerun a tier
 // that sits near a COST_*_MS boundary.
@@ -23,6 +23,8 @@ const only = opt('features', '');
 const features = DETAIL.filter((f) => !only || only.split(',').includes(f.key));
 if (shots) mkdirSync(shots, { recursive: true });
 
+const APP_TIMEOUT_MS = 30000;   // for the app to start
+const APP_SETTLE_MS = 1500;     // after it has, before the first evaluate
 const SIM_STEPS = 900;     // the lab sand has landed and piled
 const ROUNDS = 7;          // A/B rounds per feature and camera (median taken)
 const FRAMES = 20;         // renders per timing sample
@@ -48,8 +50,24 @@ const CAMS = {
     eyeFlank: { feet: [104, 64], look: [84, 64] },  // on the rock flank looking up: trees, snow
     eyeSummit: { feet: [72, 72], look: [64, 64] },  // at the vent: lava, stone
   },
+  // The lab with plumes painted in (PLUME below): media close up. Fixed
+  // [eye, target] cameras, in and beside the plumes.
+  plume: {
+    god: null,
+    smokeIn: [[42, 16, 105], [50, 20, 116]],
+    steamNear: [[73, 14, 103], [66, 18, 114]],
+    fireNear: [[57, 8, 79], [57, 9, 88]],
+  },
+};
+// The plume scene: on the freshly loaded lab, a wood fire burns for
+// PLUME_FIRE_STEPS while smoke and steam columns are painted for PLUME_STEPS.
+const PLUME = {
+  base: 'lab', steps: 90, fireSteps: 30,
+  wood: { at: [57, 2, 88], r: 4 }, fire: { at: [57, 7, 88], r: 4 },
+  smoke: { x: 48, z: 112, r: 3 }, steam: { x: 66, z: 112, r: 3 }, columnYs: [4, 14, 24],
 };
 const preset = opt('preset', 'lab');
+const loadName = preset === 'plume' ? PLUME.base : preset;
 const camSel = opt('cams', '');
 const cams = Object.fromEntries(Object.entries(CAMS[preset]).filter(([k]) => !camSel || camSel.split(',').includes(k)));
 
@@ -68,22 +86,35 @@ await p.addInitScript(() => {
 const errs = [];
 p.on('console', (m) => { if (m.type() === 'error') errs.push(m.text().slice(0, 500)); });
 p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 500)));
-await p.goto(`http://localhost:${port}/?preset=${preset}`);
-await p.waitForTimeout(2500);
-await p.evaluate(async ([steps, keys, preset]) => {
+await p.goto(`http://localhost:${port}/?preset=${loadName}`);
+await p.waitForFunction(() => window.__app?.sim, null, { timeout: APP_TIMEOUT_MS });
+await p.waitForTimeout(APP_SETTLE_MS);
+const ids = Object.fromEntries(['WOOD', 'FIRE', 'SMOKE', 'STEAM'].map((k) => [k, ELEMENTS.findIndex((e) => e.key === k)]));
+await p.evaluate(async ([steps, keys, loadName, plume, ids]) => {
   const a = window.__app;
   a.settings.paused = true;
   a.autoRes.enabled = false;   // a fixed resolution: auto resolution would change it mid-run
   a.post.settings.taa = false;
   for (const k of keys) a.settings[k] = false;
   a.applyDetail();
-  a.loadPreset(preset, false);
+  a.loadPreset(loadName, false);
   // screenshots show only the scene
   const cv = a.renderer.domElement;
   document.querySelectorAll('body *').forEach((el) => { if (!el.contains(cv)) el.style.visibility = 'hidden'; });
   a.sim.frame = 0;
-  for (let i = 0; i < steps; i++) a.sim.step();
-}, [SIM_STEPS, DETAIL.map(settingKey), preset]);
+  if (!plume) { for (let i = 0; i < steps; i++) a.sim.step(); return; }
+  const V = a.THREE.Vector3;
+  const paint = (tool, [x, y, z], radius) => a.sim.paint({ center: new V(x, y, z), radius, shape: 0, tool, rate: 1, replace: false });
+  paint(ids.WOOD, plume.wood.at, plume.wood.r);
+  for (let i = 0; i < plume.steps; i++) {
+    for (const y of plume.columnYs) {
+      paint(ids.SMOKE, [plume.smoke.x, y, plume.smoke.z], plume.smoke.r);
+      paint(ids.STEAM, [plume.steam.x, y, plume.steam.z], plume.steam.r);
+    }
+    if (i < plume.fireSteps) paint(ids.FIRE, plume.fire.at, plume.fire.r);
+    a.sim.step();
+  }
+}, [SIM_STEPS, DETAIL.map(settingKey), loadName, preset === 'plume' ? PLUME : null, ids]);
 
 const frames = (n) => p.evaluate(async (n) => { for (let i = 0; i < n; i++) await new Promise((r) => requestAnimationFrame(r)); }, n);
 
@@ -91,6 +122,11 @@ async function setCam(cam) {
   await p.evaluate(([cam, EYE_H, LOOK_DROP, gasIds]) => {
     const a = window.__app;
     if (!cam) { a.rig.reset(true); return; }
+    if (Array.isArray(cam)) {   // fixed [eye, target], grid cells
+      const g = (c) => a.volume.position.clone().addScaledVector({ x: c[0], y: c[1], z: c[2] }, a.scale);
+      a.camera.position.copy(g(cam[0])); a.controls.target.copy(g(cam[1])); a.controls.update();
+      return;
+    }
     const { width, height, nx, ny, nz, tx } = a.sim.g;
     const st = new Float32Array(width * height * 4);
     a.renderer.readRenderTargetPixels(a.sim.targets[a.sim.cur], 0, 0, width, height, st, undefined, 0);

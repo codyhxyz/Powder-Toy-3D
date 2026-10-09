@@ -52,40 +52,40 @@ const RIPPLE_FADE_M = 0.4 * 0.245;      // m per pixel
 const MENISCUS_PX = 4;                  // capillary lengths per pixel
 const MENISCUS_FADE_M = MENISCUS_PX * 0.0027;   // m per pixel
 
+// Costs below: extra GPU ms per frame at 1280×800 on the M-series laptop
+// (tools/detail-bench.mjs, 2026-10-08, after all features were merged and
+// distance-gated), worst camera of lab / volcano / plume. The GPU was still
+// shared with other sessions (identical shaders varied by ~±3 ms), so small
+// figures are the features' own 25-round runs. God view: ~0 for every gated
+// feature.
 export const DETAIL = [
-  // relief: extra ms, worst camera: lab ~6-12 (eyeSandClose), volcano ~6 (eyeFlank). Measured on
-  // a shared GPU (identical shaders varied by up to ±8 ms), so high until re-measured quiet.
+  // high: lab eyeWood (a wall of bark face-on) 9 → 48 ms; eyeSand +4, volcano eyeFlank +10
   { key: 'relief', define: 'DETAIL_RELIEF', label: 'Surface relief up close', cost: 'high', fadeM: RELIEF_FADE_M,
     desc: 'Sand, snow, ash, gunpowder, rock and wood get real relief when you are close: crags, clumps and bark furrows with true outlines and parallax' },
-  { key: 'grains', define: 'DETAIL_GRAINS', label: 'Pebbles and grains up close', fadeM: GRAINS_FADE_M,
-    desc: 'Up close, gravel is a pile of real pebbles (~5 cm): outlines, gaps and contact shadows instead of a texture',
-    cost: 'high' },   // worst +30 ms (volcano eyeSummit, 11 rounds; god view +4.6 ms: shader size)
-  { key: 'grainClusters', define: 'DETAIL_GRAIN_CLUSTERS', label: 'Loose clumps up close', fadeM: CLODS_FADE_M,
-    desc: 'Up close, a lone cell of sand, snow, powder or ash is a lumpy 30 cm clod instead of a round blob',
-    cost: 'high' },   // worst +15.5 ms (volcano eyeFlank; god view +7 ms: shader size, see gfx/grains.js)
-  // Smoke, steam and fire up close (shaders/gfx/mediaDetail.js). Measured on a
-  // shared, heavily contended GPU (bench base 27-86 ms instead of ~13, noise
-  // +-6 ms per camera), so tiers come from a smoke-filled close-up scene too
-  // (eye inside / beside plumes, 9 A/B rounds), where these features matter:
-  //   mediaFine  bench worst 3.3 ms (lab eyeSandClose, ~noise); plumes +14-25 ms
-  //              on a ~90 ms contended frame (~20%): high
-  //   mediaStep  bench worst 4.8 ms (volcano eyeFlank, noise: other runs 0.0, 0.7);
-  //              plumes +0.2-6 ms (one 17.6 outlier): medium
-  //   mediaFlow  bench worst 7.1 ms (lab eyeTank; other runs 0.7, 1.7); plumes
-  //              +7-15 ms, measured with the transmittance gate it no longer
-  //              has (the gate drew rings), so somewhat more now: high
-  { key: 'mediaFine', define: 'DETAIL_MEDIA_FINE', label: 'Smoke filaments', fadeM: MEDIA_FINE_FADE_M,
-    desc: 'Fine wisps and filaments (20 cm and 5 cm) in smoke, steam and flames when you are close to them', cost: 'high' },
-  { key: 'mediaStep', define: 'DETAIL_MEDIA_STEP', label: 'Fine smoke sampling',
-    desc: 'Samples smoke, steam and fire more finely near the camera: crisper wisps, less grain', cost: 'medium' },
-  { key: 'mediaFlow', define: 'DETAIL_MEDIA_FLOW', label: 'Smoke follows the flow',
-    desc: 'Wisps of smoke, steam and fire ride the simulated flow instead of a steady rise', cost: 'high' },
-  { key: 'liquidRipples', define: 'DETAIL_LIQ_RIPPLES', label: 'Liquid ripples', fadeM: RIPPLE_FADE_M,
-    desc: 'Centimetre capillary ripples on open liquid, fading in as you get close.', cost: 'low' },   // ~0 ms (−0.3 eyeTank, 25 rounds; within noise)
-  { key: 'liquidMeniscus', define: 'DETAIL_LIQ_MENISCUS', label: 'Liquid meniscus', fadeM: MENISCUS_FADE_M,
-    desc: 'Liquid climbing walls and glass over its last few millimetres.', cost: 'low' },   // ~0 ms (−1.7 eyeTank, 25 rounds; within noise)
-  { key: 'liquidFoam', define: 'DETAIL_LIQ_FOAM', label: 'Whitewater',
-    desc: 'Falling and splashing liquid roughens and foams where it moves fast.', cost: 'medium' },   // 1.4 ms eyeTank (25 rounds), 1.2–2.4 in 7-round runs; GPU shared with other benches
+  // high: volcano eyeSummit +17, eyeFlank +12 ms
+  { key: 'grains', define: 'DETAIL_GRAINS', label: 'Pebbles and grains up close', cost: 'high', fadeM: GRAINS_FADE_M,
+    desc: 'Up close, gravel is a pile of real pebbles (~5 cm): outlines, gaps and contact shadows instead of a texture' },
+  // high: volcano eyeFlank +14, lab +9 ms
+  { key: 'grainClusters', define: 'DETAIL_GRAIN_CLUSTERS', label: 'Loose clumps up close', cost: 'high', fadeM: CLODS_FADE_M,
+    desc: 'Up close, a lone cell of sand, snow, powder or ash is a lumpy 30 cm clod instead of a round blob' },
+  // high: plume fireNear +16, smokeIn / steamNear +9 ms (shaders/gfx/mediaDetail.js)
+  { key: 'mediaFine', define: 'DETAIL_MEDIA_FINE', label: 'Smoke filaments', cost: 'high', fadeM: MEDIA_FINE_FADE_M,
+    desc: 'Fine wisps and filaments (20 cm and 5 cm) in smoke, steam and flames when you are close to them' },
+  // medium: plume smokeIn / steamNear +1.9 ms
+  { key: 'mediaStep', define: 'DETAIL_MEDIA_STEP', label: 'Fine smoke sampling', cost: 'medium',
+    desc: 'Samples smoke, steam and fire more finely near the camera: crisper wisps, less grain' },
+  // high: plume fireNear +5.9, smokeIn / steamNear +3-4 ms
+  { key: 'mediaFlow', define: 'DETAIL_MEDIA_FLOW', label: 'Smoke follows the flow', cost: 'high',
+    desc: 'Wisps of smoke, steam and fire ride the simulated flow instead of a steady rise' },
+  // low: ~0 ms (25 rounds at eyeTank: -0.3; within noise) (shaders/gfx/liquidDetail.js)
+  { key: 'liquidRipples', define: 'DETAIL_LIQ_RIPPLES', label: 'Liquid ripples', cost: 'low', fadeM: RIPPLE_FADE_M,
+    desc: 'Centimetre capillary ripples on open liquid, fading in as you get close' },
+  // low: ~0 ms (25 rounds at eyeTank; within noise)
+  { key: 'liquidMeniscus', define: 'DETAIL_LIQ_MENISCUS', label: 'Liquid meniscus', cost: 'low', fadeM: MENISCUS_FADE_M,
+    desc: 'Liquid climbing walls and glass over its last few millimetres' },
+  // medium: 1.4 ms at eyeTank (25 rounds)
+  { key: 'liquidFoam', define: 'DETAIL_LIQ_FOAM', label: 'Whitewater', cost: 'medium',
+    desc: 'Falling and splashing liquid roughens and foams where it moves fast' },
 ];
 
 export const settingKey = (f) => `detail_${f.key}`;
