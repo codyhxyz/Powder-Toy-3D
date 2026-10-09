@@ -185,7 +185,9 @@ As implemented (`sim.updateDirty`, `shaders/passes.js` dirtyFrag, `gfx/regions.j
 - **Proofs:** `tools/regress.mjs` against `scale`, settled and `--motion`, with detail off and on: all 26 views
   AE 0. `tools/derived-check.mjs` (every derived target bit for bit against `sim.incremental = false`, over steps,
   painting, the heat tool, undo, a pause and 1, 3 or 4 steps per frame): identical at 128³, 96³, 64³ and wide.
-  Timings (`tools/derived-bench.mjs`): owed; the GPU was saturated by other runs, then live tests paused for battery.
+  Both ran before the last two changes (no clearing pass for the changed map; a touch box covers the next pass
+  only), which are still to be re-run. Timings (`tools/derived-bench.mjs`): owed; the GPU was saturated by other
+  runs, then live tests paused for battery.
 
 ### D10. Undo (deferred)
 Copying only the bricks a stroke touches isn't a correct undo: matter flows out of those bricks afterwards.
