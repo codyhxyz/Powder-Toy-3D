@@ -844,6 +844,8 @@ const FAR_HAZE_VISIBILITY_M = 12000;   // m: meteorological range of the air (a 
 const KOSCHMIEDER = 3.912;             // ln(1/0.02): the 2 % contrast threshold of the visibility definition
 export const FAR_VIEW = {
   MAX_STEPS: 400,          // march iterations per ray (node skips and brick segments)
+  COARSE_T: 400,           // cells: past this a set node is walked two bricks at a time (a brick is a pixel or
+                           // two there, and the field has no feature narrower than its cube but thin matter)
   NUDGE: 0.01,             // a ray restarts this far past a node's exit
   NEAR: 0.2,               // a brick segment whose ends both read below this gets no middle sample
   ROOT_STEPS: 4,           // regula falsi steps on a crossing
@@ -904,6 +906,7 @@ uniform float uFloor;         // the sea floor beyond the world (cells)
 in vec4 vFar;
 
 #define FAR_MAX_STEPS ${FAR_VIEW.MAX_STEPS}
+#define FAR_COARSE_T ${glf(FAR_VIEW.COARSE_T)}
 #define FAR_NUDGE ${glf(FAR_VIEW.NUDGE)}
 #define FAR_NEAR ${glf(FAR_VIEW.NEAR)}
 #define FAR_ROOT_STEPS ${FAR_VIEW.ROOT_STEPS}
@@ -950,9 +953,9 @@ float farRoot(vec3 ro, vec3 rd, float ta, float tb, float fa, float fb) {
 
 // The first point along ro + rd t, t in [t0, t1], where the matter field
 // reaches FAR_ISO, the window's stretch (w0, w1) left out; NO_HIT if none.
-// Unset L2 and L1 nodes are crossed whole; a set one is walked brick by brick,
-// the field sampled at each brick segment's ends (and its middle when either
-// end is near the level). cut: the ray was already inside matter where it
+// Unset L2 and L1 nodes are crossed whole; a set one is walked brick by brick
+// (two at a time past FAR_COARSE_T), the field sampled at each segment's ends
+// (and its middle when either end is near the level). cut: the ray was already inside matter where it
 // came out of the window (it went through the window's ground, which the
 // volume draws in front: the far field only fills in behind it).
 float farMarch(vec3 ro, vec3 rd, float t0, float t1, float w0, float w1, out bool cut) {
@@ -972,7 +975,8 @@ float farMarch(vec3 ro, vec3 rd, float t0, float t1, float w0, float w1, out boo
     ivec3 n1 = c / FAR_L1_CELLS;
     if (n1 != n1Last) { n1Last = n1; o1 = farOcc1(n1); }
     if (!o1) { t = farExit(ro, inv, vec3(n1 * FAR_L1_CELLS), float(FAR_L1_CELLS)) + FAR_NUDGE; f = -1.0; continue; }
-    float te = min(farExit(ro, inv, vec3(c / BS * BS), float(BS)), t1);
+    int seg = t > FAR_COARSE_T ? 2 * BS : BS;   // the segment: a brick, or a pair far off
+    float te = min(farExit(ro, inv, vec3(c / seg * seg), float(seg)), t1);
     if (t < w0 && te > w0) te = w0;   // the window starts inside this brick
     if (f < 0.0) {
       f = farMatter(p);
