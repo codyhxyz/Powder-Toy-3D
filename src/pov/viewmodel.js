@@ -142,7 +142,8 @@ function createRig(env) {
     const p = ctx.player ?? {};
     const speedH = p.vel ? Math.hypot(p.vel.x, p.vel.z) : 0;
     const walking = p.onGround && !p.inLiquid;
-    bobAmp += ((walking ? Math.min(speedH / BOB_FULL_SPEED, 1) : 0) - bobAmp) * approach(BOB_RATE, dt);
+    const bobbing = ctx.viewBobbing !== false;   // the View Bobbing setting (Minecraft's: it stills the hand too)
+    bobAmp += ((walking && bobbing ? Math.min(speedH / BOB_FULL_SPEED, 1) : 0) - bobAmp) * approach(BOB_RATE, dt);
     if (walking) bobPhase += (speedH / BOB_STRIDE) * 2 * Math.PI * dt;
     const bobY = -BOB_Y * bobAmp * 0.5 * (1 - Math.cos(2 * bobPhase));
     const bobX = BOB_X * bobAmp * Math.sin(bobPhase);
@@ -220,7 +221,9 @@ function createPass(renderer) {
   sky.layers.set(VIEWMODEL_LAYER);
   sky.position.set(0, 1, 0);
   const target = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: VM_MSAA });
-  // composite: linear premultiplied radiance → three's AgX at the post pass's exposure → sRGB, over the frame
+  // composite: linear premultiplied radiance → three's AgX at the post pass's exposure → sRGB, over the frame.
+  // Tone mapping and the sRGB curve are nonlinear, so they run on straight colour: applied to premultiplied
+  // colour they brighten every partly covered (anti-aliased) edge pixel into a pale outline.
   const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.ShaderMaterial({
     uniforms: { tColor: { value: target.texture } },
     vertexShader: /* glsl */ `
@@ -230,9 +233,12 @@ function createPass(renderer) {
       uniform sampler2D tColor;
       varying vec2 vUv;
       void main() {
-        gl_FragColor = texture2D(tColor, vUv);
+        vec4 c = texture2D(tColor, vUv);
+        if (c.a <= 0.0) discard;
+        gl_FragColor = vec4(c.rgb / c.a, c.a);
         #include <tonemapping_fragment>
         #include <colorspace_fragment>
+        gl_FragColor.rgb *= gl_FragColor.a;
       }`,
     depthTest: false, depthWrite: false, transparent: true, premultipliedAlpha: true,
   }));

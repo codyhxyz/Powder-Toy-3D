@@ -1123,11 +1123,15 @@ vec3 shadeSurf(Surf s, vec3 rd) {
   float blur = smoothstep(ENV_SHARP_ROUGH, ENV_BLUR_ROUGH, s.rough);
   vec3 envSharp = mix(giRadiance(gi, r, 0.0), skyColor(r), giSkyVis(gi, r));
   vec3 envL = mix(envSharp, giRadiance(gi, r, blur), blur);
+  // indirect diffuse: the probes' light times AO, or the traced near field
+  vec3 ind = irr * aoT;
+  if (uNearGI) { float vis; ind = nearField(s.p, ng, n, irr, vis) * s.cav; aoT = vis * s.cav; }
+  if (glowWorthIt(local, irr)) local *= glowLightScale(s.p, ng, n);
   // specular occlusion (Lagarde & de Rousiers 2014)
   float specAO = clamp(pow(nv + aoT, exp2(-16.0 * s.rough - 1.0)) - 1.0 + aoT, 0.0, 1.0);
   c += (envL * FssEss * hor * hor + irr * Fms * Ems) * specAO;
   // indirect (sky + bounce) and glow volume: diffuse
-  c += kD * (irr * aoT + local * (LOCAL_AO_MIN + LOCAL_AO_GAIN * aoT));
+  c += kD * (ind + local * (LOCAL_AO_MIN + LOCAL_AO_GAIN * aoT));
   return c + s.emit;
 }
 
@@ -1144,6 +1148,10 @@ vec3 shadeFloor(vec3 hp, vec3 rd) {
   float ao = min(faceAO(ivec3(floor(hp.x), -1, floor(hp.z)), ivec3(0, 1, 0), hp), fieldAO(vec3(hp.x, 0.0, hp.z), n));
   vec3 local = sampleLight(vec3(hp.x, 0.5, hp.z)) * uLightGain;
   vec3 irr = giIrradiance(surfProbe(vec3(hp.x, 0.0, hp.z), n), n);
-  return alb * (SUN_COL * ndl * sh + irr * ao + local * (LOCAL_AO_MIN + LOCAL_AO_GAIN * ao));
+  vec3 ind = irr * ao;
+  vec3 pf = vec3(hp.x, 0.0, hp.z);
+  if (uNearGI) ind = nearField(pf, n, n, irr, ao);
+  if (glowWorthIt(local, irr)) local *= glowLightScale(pf, n, n);
+  return alb * (SUN_COL * ndl * sh + ind + local * (LOCAL_AO_MIN + LOCAL_AO_GAIN * ao));
 }
 `;

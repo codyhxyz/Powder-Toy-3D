@@ -126,8 +126,11 @@ const PRESETS = {
   // -- tools
   // shovel into loose matter: a scraping crunch of grains (tremolo makes the grit)
   shovelScrape: [.55, .2, 160, .02, .06, .12, 4, 1, , , , , .015, 4, , , , .6, , .4, -1200],
-  // shovel load thrown out: a soft whoosh and patter of falling grains
-  shovelDump: [.8, .2, 90, .03, .1, .25, 4, 1, , , , , , 5, , , .03, .5, , .2, -600],
+  // shovel load landing: a soft, low whump (a sine sliding down, low-passed; no tremolo or echo, which
+  // made the first version warble)...
+  shovelDump: [.9, .1, 75, .005, .03, .2, 0, 1, -4, , , , , 1, , , , .5, , , -400],
+  // ...and the grains settling after it: a short, quiet patter of low-passed noise
+  shovelPatter: [.35, .2, 300, .01, .1, .2, 4, 1, , , , , .03, 2, , , , .4, , , -900],
   // bucket dipped: a hollow slosh with a rising gloop
   bucketScoop: [.6, .15, 180, .02, .08, .2, 0, 1, 6, , , , , 2, , , .04, .6, , , -1500],
   // bucket pouring (loops while pouring): a steady burbling stream of low-passed noise
@@ -432,7 +435,9 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
         if (family && ELEMENTS[id].kind === K.SOLID) play(family, { at, gain: TOOL_HIT_GAIN, rate });
         break;
       case 'shovel:dump':
-        play('shovelDump', { at, gain, rate });
+        // the load's own pitch stays put: shifting a thump by material made it sound wrong
+        play('shovelDump', { at, gain });
+        play('shovelPatter', { at, gain });
         if (DUMP_RINGS.has(family)) play(family, { at, gain: TOOL_HIT_GAIN, rate });
         break;
       case 'bucket:scoop':

@@ -232,6 +232,12 @@ settles it. Indirect light comes from one probe per 4×4×4 brick: every frame, 
 collect the sky, the ground and the light bounced off lit matter (fed back over frames, so bounces add up), stored as L1
 spherical harmonics with the sky's visibility. Surfaces take their ambient light and blurry reflections from the probes,
 plus near-field occlusion from the fields; polished ones still see the sky itself where it is open.
+Three upgrades sit on top, each switchable in Settings → Lighting (all on by default). Contact shadows and bounce: two
+short rays per pixel walk the voxel grid; a ray that hits matter within six cells sees that matter's own sunlit, probe-lit
+colour, and one that escapes falls back to the probes. Caustics: where the shadow map says a point lies under a pool,
+the ripple height field's curvature focuses the sunlight reaching it (crests brighten, troughs spread), blurred with
+depth by the sun's disc. Lava and fire as lights: each pixel picks one nearby emitting brick, weighted by its power over
+distance², and traces a shadow ray to it, so the glow gets a direction and casts shadows.
 
 **Glow.** Anything above ~500 °C glows (`src/gfx/incandescence.js`): the colour is Planck's law through the CIE colour matching functions, the brightness is the
 physical luminance compressed by a power law, so steel reads dull red at 600–700 °C, cherry to orange at 800–1000 °C and
