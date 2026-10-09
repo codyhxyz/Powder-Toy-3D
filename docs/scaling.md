@@ -258,6 +258,19 @@ The world is much larger than what lives on the GPU. Its size is `WORLD` cells, 
     opened with World saved boots in a box.
   - `Simulation.run` gives a pass kept across grids of the same size (a POV tool's, the construction stamp) the
     current simulation's origin, instead of keeping the first one's.
+  - Checked headless (under other sessions' GPU load, 11–16 fps):
+    - 3 box → World → box round trips plus 64³, 160×96 and 96³: `renderer.info` geometries 5 → 5, textures
+      58 → 58 (World holds 60, the same every time), programs settle at 35; no console errors; World survives a reload.
+    - Boxes render as before: `tools/regress.mjs` against `scale` differs by 0 pixels at the tool's 1% fuzz, detail
+      on and off (unfuzzed, two `scale` runs differ from each other by as much as `scale` and this branch do).
+    - In POV across 9 window moves, signs keep their world cell and scene position, hide outside the window and show
+      live values back inside; a physgun ball holds its world position over a move and back; a round fired across a
+      move strikes the plate where it is (a control with the rounds left unshifted misses by the 16 cells).
+    - A house walked 320 cells away and back (40 moves) comes back cell for cell; an undo after 2 moves takes a
+      stroke back and changes nothing else; from 160 cells away it refuses and works on return.
+    - Hosting in World, World while hosting and a World invite all end in a box with the toast.
+    - A move waits for its leaving slab's readback: here ~9 frames (~320 ms) a move, so the window followed at
+      ~35–100 cells/s; WORLD_CAM_SPEED_MAX (9 units/s, 115 cells/s) is what an unloaded GPU should keep up with.
 
 ## Measured (M5, headless Chrome, ANGLE Metal, 128³)
 - Lab step: 2.6 ms with 42% of bricks skipped, 3.75 ms with none skipped. An empty box still costs 2.1–2.8 ms.
