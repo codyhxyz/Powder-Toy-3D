@@ -71,7 +71,9 @@ export const PHYS = {
   // pulls the awake cell toward the frozen one, so a face books at most
   // cap·tolerance before they agree; if anything drives the awake cell past
   // its tolerance instead, it stops being inert and the region wakes at the
-  // next activity map (activity.js ACTIVITY_PERIOD).
+  // next activity map (activity.js ACTIVITY_PERIOD). Sleeping air also skips
+  // AIR_AMBIENT_PULL, so it keeps up to cap·AIR_REST_T (0.02 cap·°C per cell)
+  // that stepping would have handed to the world outside the box.
   MATTER_REST_T: 0.01,
 
   // movement (move.js)

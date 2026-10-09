@@ -421,11 +421,11 @@ export class World {
           else vy -= g * GRAV[id];
           vx *= 1 - DRAG[id];
           vy *= 1 - DRAG[id];
-          // normal force: held up by what's below, this step's forces can't speed it up downward (react.js)
+          // normal force: at rest on what can hold it up, gravity can't start it moving down (react.js)
           const d = densityOf(id, T0);
-          const held = (KIND[id] === K.POWDER || KIND[id] === K.LIQUID) && (y === 0 || KIND[nid[3]] === K.SOLID
+          const held = (KIND[id] === K.POWDER || KIND[id] === K.LIQUID) && VY[i] >= 0 && (y === 0 || KIND[nid[3]] === K.SOLID
             || (!canMove(id, nid[3], d, densityOf(nid[3], nT[3]), 0) && nVY[3] >= 0));
-          if (held) vy = Math.max(vy, Math.min(VY[i], 0));
+          if (held) vy = Math.max(vy, 0);
           const below = KIND[nid[3]];
           const supported = y === 0 || below === K.SOLID || below === K.POWDER;
           if (supported) vx *= 1 - FRICTION[id];

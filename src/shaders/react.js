@@ -201,15 +201,15 @@ void main() {
     if (id == E_EMPTY) v.y += uGravity * clamp((T - AMBIENT) / (AMBIENT + KELVIN), AIR_BUOY_LO, AIR_BUOY_HI);
     else v.y -= uGravity * GRAV[id];
     v *= 1.0 - DRAG[id];
-    // Normal force: a powder or liquid resting on what it can't push aside
+    // Normal force: a powder or liquid at rest on what it can't push aside
     // (the floor, a solid, or a grain or liquid that isn't falling itself) is
-    // held up, so this step's forces can't speed it up downward. Speed it
-    // already had (a landing, a knock from above) is left to the move pass,
-    // which lands it with its splash, scatter and impact heat.
+    // held up, so gravity can't start it moving down. One already moving down
+    // (falling, landing, knocked from above) isn't at rest: it keeps feeling
+    // gravity, and the move pass lands it with its splash, scatter and heat.
     float d = densityOf(id, a.y);
-    bool held = (KIND[id] == K_POWDER || KIND[id] == K_LIQUID) && (p.y == 0 || KIND[nid[3]] == K_SOLID
+    bool held = (KIND[id] == K_POWDER || KIND[id] == K_LIQUID) && b.y >= 0.0 && (p.y == 0 || KIND[nid[3]] == K_SOLID
       || (!canMove(id, nid[3], d, densityOf(nid[3], na[3].y), 0) && nb[3].y >= 0.0));
-    if (held) v.y = max(v.y, min(b.y, 0.0));
+    if (held) v.y = max(v.y, 0.0);
     // grains only feel friction while resting on something
     bool supported = p.y == 0 || KIND[nid[3]] == K_SOLID || KIND[nid[3]] == K_POWDER;
     if (supported) v.xz *= 1.0 - FRICTION[id];
