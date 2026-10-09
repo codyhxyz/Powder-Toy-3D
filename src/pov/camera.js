@@ -9,17 +9,17 @@ import { BODY_HEIGHT } from './constants.js';
 
 const DEG = THREE.MathUtils.degToRad;
 
-export const POV_FOV = 75;              // degrees, vertical: the default of the Field of view setting
+export const POV_FOV = 75;              // degrees, vertical: the default of the FOV setting
 export const POV_FOV_RANGE = [55, 110]; // degrees, the setting's slider
 const SPRINT_FOV_BOOST = 7;             // degrees wider while sprinting
 const SPRINT_FOV_SPEED = 8;             // cells/s of ground speed from which the sprint FOV shows
 const FOV_RATE = 5;                     // 1/s: how fast the FOV follows its target
 
 // Mouse look
-// rad per pixel of mouse movement at Look speed 1×. Pointer lock reports raw,
+// rad per pixel of mouse movement at Mouse Sensitivity 100%. Pointer lock reports raw,
 // unaccelerated mouse motion, so this is set well above a desktop cursor's feel.
 const LOOK_SENSITIVITY = 0.006;
-export const LOOK_SPEED_RANGE = [0.25, 4];   // the Look speed setting's multiplier
+export const SENSITIVITY_RANGE = [0.25, 4];  // the Mouse Sensitivity setting's multiplier (25%–400%)
 const LOOK_MAX_PX = 250;                // px: bigger single jumps (a browser hiccup on lock) are clamped
 const PITCH_LIMIT = DEG(88);            // up and down from level
 export const ENTRY_PITCH = DEG(-8);     // dropping in, the view starts a little below the horizon
@@ -83,8 +83,8 @@ function yawPitch(d, out) {
 const smoother01 = (x) => { const t = Math.min(Math.max(x, 0), 1); return t * t * t * (t * (6 * t - 15) + 10); };
 const approach = (rate, dt) => 1 - Math.exp(-rate * dt);
 
-// opts.fov(): the Field of view setting (degrees); opts.lookSpeed(): the Look speed multiplier
-export function createPovCamera({ fov: fovSetting = () => POV_FOV, lookSpeed = () => 1 } = {}) {
+// opts.fov(): the FOV setting (degrees); opts.sensitivity(): the Mouse Sensitivity multiplier
+export function createPovCamera({ fov: fovSetting = () => POV_FOV, sensitivity = () => 1 } = {}) {
   const UP = new THREE.Vector3(0, 1, 0);
   const euler = new THREE.Euler(0, 0, 0, 'YXZ');
   const m4 = new THREE.Matrix4();
@@ -141,7 +141,7 @@ export function createPovCamera({ fov: fovSetting = () => POV_FOV, lookSpeed = (
     turn(dx, dy) {
       const cx = THREE.MathUtils.clamp(dx, -LOOK_MAX_PX, LOOK_MAX_PX);
       const cy = THREE.MathUtils.clamp(dy, -LOOK_MAX_PX, LOOK_MAX_PX);
-      const k = LOOK_SENSITIVITY * lookSpeed();
+      const k = LOOK_SENSITIVITY * sensitivity();
       look.yaw -= cx * k;
       look.pitch = THREE.MathUtils.clamp(look.pitch - cy * k, -PITCH_LIMIT, PITCH_LIMIT);
     },

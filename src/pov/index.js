@@ -43,7 +43,7 @@ export function createPov(app) {
   const createPlayer = playerModule?.createPlayer;
   const createToolbelt = toolsModule?.createToolbelt;
 
-  const povCam = createPovCamera({ fov: () => app.settings.povFov, lookSpeed: () => app.settings.lookSpeed });
+  const povCam = createPovCamera({ fov: () => app.settings.povFov, sensitivity: () => app.settings.sensitivity });
   const povHud = createPovHud();
   // feedback: everything here hears povEvents (events.js) and the body's events
   const feel = createFeel({ hud: povHud });
