@@ -19,6 +19,7 @@ const genUniforms = () => ({
   uGenSeed: { value: 0 }, uGenSea: { value: 0 }, uGenRelief: { value: 0 }, uGenFloor: { value: 0 },
   uGenCenter: { value: new THREE.Vector2() }, uGenRadius: { value: 1 },
   uGenAxis: { value: new THREE.Vector2(1, 0) }, uGenStretch: { value: 1 }, uGenFeature: { value: 1 },
+  uGenSnow: { value: true },
 });
 function setWorld(u, P) {
   u.uGenSeed.value = P.seed;
@@ -30,6 +31,7 @@ function setWorld(u, P) {
   u.uGenAxis.value.set(...P.axis);
   u.uGenStretch.value = P.stretch;
   u.uGenFeature.value = P.feature;
+  u.uGenSnow.value = P.snow;
 }
 
 export class WorldGenerator {
@@ -209,6 +211,12 @@ export function generatorFor(sim) {
     current = new WorldGenerator(sim);
   }
   return current;
+}
+// The simulation is going away: so does its generator, if it has one.
+export function releaseGenerator(sim) {
+  if (current?.sim !== sim) return;
+  current.dispose();
+  current = null;
 }
 
 // The Island scene: a world the size of the grid, at origin 0, with its trees.

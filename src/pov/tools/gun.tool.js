@@ -166,6 +166,11 @@ export default {
         if (ballistics.count && !raf) { rafAt = 0; raf = requestAnimationFrame(drive); }
       },
       status: () => null,
+      // rounds in the air keep flying where they are in the world (docs/scaling.md D11)
+      windowShifted(dx, dz) {
+        ballistics.windowShifted(dx, dz);
+        for (const v of lastShot ? [lastShot.origin, lastShot.cell] : []) { v.x -= dx; v.z -= dz; }
+      },
       // for checks: the last shot ({ id, origin, dir, cell (muzzle), dv (recoil) }) and the rounds
       get lastShot() { return lastShot; },
       get ballistics() { return ballistics; },

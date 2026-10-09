@@ -221,7 +221,7 @@ if (!skip.has(2)) {
         const { WorldWindow } = await import('/src/world/window.js');
         const built = sim.readState();
         const sim2 = new Simulation(a.renderer, g.nx, g.ny, g.nz);
-        const w2 = new WorldWindow(a.renderer, sim2, { size: w.size, seed: w.P.seed });
+        const w2 = new WorldWindow(a.renderer, sim2, { size: w.size, seed: w.P.seed, snow: w.P.snow });
         w2.load([sim.origin.x, 0, sim.origin.z]);
         const one = sim2.readState();
         let cells = 0, diffA = 0, diffB = 0;

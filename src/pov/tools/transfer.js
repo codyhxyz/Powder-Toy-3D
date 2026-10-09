@@ -315,6 +315,14 @@ export function aimInReach(ctx, reach) {
   return dist <= reach ? a : null;
 }
 
+// A grid point kept on its world cell while the window moves over a larger
+// world (docs/scaling.md D11): pinned(point, sim)() is that point in the grid
+// as it is then, for a result that lands a few frames after it was asked for.
+export function pinned(point, sim) {
+  const p = point.clone().add(sim.origin);
+  return () => p.clone().sub(sim.origin);
+}
+
 // The outward normal of a pick face (shaders/render.js pickFrag: axis * 2, +1
 // when the ray stepped +axis, so even faces face +axis).
 export function faceNormal(face, out = new THREE.Vector3()) {

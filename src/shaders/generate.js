@@ -34,6 +34,7 @@ uniform float uGenRadius;    // the island's radius, cells
 uniform vec2 uGenAxis;       // the island's long axis (unit, x and z)
 uniform float uGenStretch;   // long / wide = stretch²
 uniform float uGenFeature;   // cells per feature length: the unit of every noise frequency
+uniform bool uGenSnow;       // snow caps on frozen rock (false: bare rock peaks, nothing frozen)
 
 #define GEN_TAU 6.28318530718
 
@@ -173,7 +174,7 @@ GenLayers genLayers(float h[9], vec4 far, float band, float meadow) {
   float g = float(L.ground), sea = uGenSea;
   bool beach = g >= sea - GEN_BEACH_BELOW && g <= sea + GEN_BEACH_ABOVE + GEN_BEACH_JITTER * band
             && slope < GEN_BEACH_SLOPE_MAX && !knocked;
-  bool snow = g >= genFrostLine() + GEN_SNOW_JITTER * (1.0 + band) && slope < GEN_SNOW_SLOPE_MAX;
+  bool snow = uGenSnow && g >= genFrostLine() + GEN_SNOW_JITTER * (1.0 + band) && slope < GEN_SNOW_SLOPE_MAX;
   if (stable && beach) L.sand = GEN_SAND_DEPTH;
   else if (stable && snow) L.snow = GEN_SNOW_DEPTH;
   else L.plant = g >= sea + GEN_PLANT_ABOVE && g <= genFrostLine() - GEN_PLANT_SNOW_GAP - GEN_PLANT_JITTER * (1.0 + band) * 0.5
@@ -204,7 +205,7 @@ int genId(GenLayers L, int y) {
 // colour seed hashed from its world position.
 void genCell(GenLayers L, ivec3 w, out vec4 A, out vec4 B) {
   int id = genId(L, w.y);
-  float T = id == E_ROCK ? mix(SPAWNT[E_ROCK], SPAWNT[E_SNOW], genFrost(w.y)) : SPAWNT[id];
+  float T = id == E_ROCK && uGenSnow ? mix(SPAWNT[E_ROCK], SPAWNT[E_SNOW], genFrost(w.y)) : SPAWNT[id];
   float seed = float(seedWorld(w, uGenSeed, GEN_SALT_CELL)) * UINT_TO_UNIT * SEED_MAX;
   A = vec4(float(id), T, SPAWNLIFE[id], seed);
   B = vec4(0.0);

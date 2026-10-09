@@ -12,6 +12,10 @@ import './signs.css';
 // ray from the camera to every anchor to find out whether voxels hide it, and
 // reads the attached cell's state for the live placeholders {t} {p} {e}. That
 // pass runs at most every PROBE_MS and is read back asynchronously.
+//
+// A sign is pinned to a world cell: in a world larger than the grid (the
+// massive world's window, docs/scaling.md D11) it stays put while the window
+// moves, and it is hidden, and not probed, while its cell is outside it.
 
 const MAX_CHARS = 80;
 const PROBE_MS = 100;
@@ -70,6 +74,8 @@ export class Signs {
     this.lastProbe = -1e9;
     this.generation = 0;   // bumps on rebuild/clear so stale readbacks are dropped
     this.dataDirty = true;
+    this.batch = [];       // the signs in the probe's data, in its order: those inside the window
+    this.at = new THREE.Vector3(NaN, NaN, NaN);   // the window's origin the signs were last placed for
 
     this._edit = null;     // sign whose input is focused
     this._v = new THREE.Vector3();
@@ -105,24 +111,30 @@ export class Signs {
 
   get editing() { return this._edit !== null; }
 
-  add({ cell, normal, text = '', edit = true }) {
+  // cell: the grid cell the sign is on (a world cell with world: true); normal: the face's
+  add({ cell, normal, text = '', edit = true, world = false }) {
     if (this.list.length >= MAX_SIGNS) {
       console.warn(`Signs: limit of ${MAX_SIGNS} reached`);
       return null;
     }
+    const sim = this.getSim();
     const c = new THREE.Vector3(Math.round(cell.x), Math.round(cell.y), Math.round(cell.z));
+    if (!world && sim) c.add(sim.origin);
     const n = new THREE.Vector3(Math.sign(Math.round(normal.x)), Math.sign(Math.round(normal.y)), Math.sign(Math.round(normal.z)));
     if (n.lengthSq() !== 1) n.set(0, 1, 0);
     const sign = {
       id: nextId++,
-      cell: c,
+      world: c,        // the world cell it is pinned to
+      cell: new THREE.Vector3(),     // ...that cell in the grid, and the anchor (_locate keeps both)
       normal: n,
       text: clean(text),
-      anchor: c.clone().addScalar(0.5).addScaledVector(n, 0.5),
+      anchor: new THREE.Vector3(),
+      inside: true,    // the window holds its cell
       live: null,      // { id, T, P, transmittance } once the probe has run
       occluded: false,
       isNew: edit,
     };
+    if (sim) this._locate(sign, sim);
     this._buildDom(sign);
     this.list.push(sign);
     this.dataDirty = true;
@@ -182,6 +194,7 @@ export class Signs {
     this.probeMat = null;
     this.gridKey = '';
     this.dataDirty = true;
+    this.at.set(NaN, NaN, NaN);
   }
 
   setVisible(v) {
@@ -190,8 +203,9 @@ export class Signs {
     if (!this.visible && this._edit) this._commit(this._edit);
   }
 
+  // (cells are world cells)
   toJSON() {
-    return this.list.map((s) => ({ cell: s.cell.toArray(), normal: s.normal.toArray(), text: s.text }));
+    return this.list.map((s) => ({ cell: s.world.toArray(), normal: s.normal.toArray(), text: s.text }));
   }
 
   fromJSON(arr) {
@@ -202,7 +216,7 @@ export class Signs {
       const v = (a) => (Array.isArray(a) ? new THREE.Vector3().fromArray(a) : new THREE.Vector3(a.x, a.y, a.z));
       for (const o of arr || []) {
         if (!o?.cell || !o?.normal || !clean(o.text)) continue;
-        if (!this.add({ cell: v(o.cell), normal: v(o.normal), text: o.text, edit: false })) break;
+        if (!this.add({ cell: v(o.cell), normal: v(o.normal), text: o.text, edit: false, world: true })) break;
       }
     } finally {
       this.onChange = notify;
@@ -216,6 +230,7 @@ export class Signs {
     const volume = this.getVolume();
     if (!sim || !volume || !this.visible || this.list.length === 0) return;
     this._ensureProbe(sim);
+    if (!sim.origin.equals(this.at)) this._relocate(sim);
     const info = this._frameInfo();
     let shown = 0;
     for (const s of this.list) shown += this._place(s, info) ? 1 : 0;
@@ -256,11 +271,31 @@ export class Signs {
     });
   }
 
+  // Sign s in the grid of sim (whose window may have moved over the world), and whether the window holds it.
+  _locate(s, sim) {
+    const g = sim.g;
+    s.cell.copy(s.world).sub(sim.origin);
+    s.anchor.copy(s.cell).addScalar(0.5).addScaledVector(s.normal, 0.5);
+    s.inside = s.cell.x >= 0 && s.cell.x < g.nx && s.cell.z >= 0 && s.cell.z < g.nz;
+  }
+
+  // The window moved (or is new): every sign's place in it, and the probe's data, change.
+  _relocate(sim) {
+    for (const s of this.list) {
+      this._locate(s, sim);
+      if (!s.inside && s === this._edit) this._commit(s);
+    }
+    this.at.copy(sim.origin);
+    this.dataDirty = true;
+  }
+
+  // The probe's data: the signs inside the window (this.batch, in its order).
   _uploadSigns(g) {
     const d = this.signData;
     d.fill(0);
     const row = MAX_SIGNS * 4;
-    this.list.forEach((s, i) => {
+    this.batch = this.list.filter((s) => s.inside);
+    this.batch.forEach((s, i) => {
       d.set([s.anchor.x, s.anchor.y, s.anchor.z, 1], i * 4);
       // floor signs (and anything else outside the grid) read the cell in front of the face
       const c = s.cell.clone();
@@ -273,7 +308,9 @@ export class Signs {
 
   _probe(sim, info) {
     if (this.dataDirty) this._uploadSigns(sim.g);
-    const n = this.list.length;
+    const n = this.batch.length;
+    this.lastProbe = info.now;
+    if (!n) return;
     const u = this.probeMat.uniforms;
     u.tA.value = sim.stateA;
     u.tB.value = sim.stateB;
@@ -285,12 +322,11 @@ export class Signs {
     sim.run(this.probeMat, this.probeTarget);
     this.renderer.setRenderTarget(prev);
 
-    const batch = this.list.slice();
+    const batch = this.batch.slice();
     const gen = this.generation;
     const buf = this.probeBuf.subarray(0, n * 4);
     const t0 = info.now;
     this.pending = true;
-    this.lastProbe = info.now;
     this.stats.probes++;
     this.renderer.readRenderTargetPixelsAsync(this.probeTarget, 0, 0, n, 1, buf).then(() => {
       this.pending = false;
@@ -331,7 +367,7 @@ export class Signs {
     const v = this._v.copy(s.anchor).applyMatrix4(info.volume.matrixWorld);
     const dist = v.distanceTo(info.camWorld);
     v.applyMatrix4(this.camera.matrixWorldInverse);
-    let show = v.z < -this.camera.near;
+    let show = s.inside && v.z < -this.camera.near;   // (outside the window: hidden)
     let x = 0, y = 0;
     if (show) {
       v.applyMatrix4(this.camera.projectionMatrix);

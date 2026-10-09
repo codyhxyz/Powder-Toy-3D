@@ -94,6 +94,9 @@ export function createToolbelt(env) {
       hotbar.setVisible(v);
       if (!v) tools[selected]?.inst.deselect?.();
     },
+    // The window moved over the world by (dx, 0, dz) cells (docs/scaling.md
+    // D11): every tool, selected or not, moves the grid positions it keeps.
+    windowShifted(dx, dz) { tools.forEach((t) => t?.inst.windowShifted?.(dx, dz)); },
     dispose() {
       removeEventListener('keydown', onKey, { capture: true });
       tools.forEach((t) => { t?.inst.deselect?.(); t?.inst.dispose?.(); });

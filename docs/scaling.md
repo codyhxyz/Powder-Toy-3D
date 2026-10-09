@@ -192,8 +192,9 @@ As implemented (`sim.updateDirty`, `shaders/passes.js` dirtyFrag, `gfx/regions.j
 ### D10. Undo (deferred)
 Copying only the bricks a stroke touches isn't a correct undo: matter flows out of those bricks afterwards.
 The exact version copies each brick when it first wakes after the snapshot (a sleeping brick hasn't changed), so
-it needs D8's activity machinery. Until then, snapshots stay full copies: packing (D7) halves them, and window
-moves (D11) clear the history.
+it needs D8's activity machinery. Until then, snapshots stay full copies: packing (D7) halves them. Each keeps the
+window's origin it was taken at, so an undo after window moves (D11) brings back what the old and new windows
+share (W5 below).
 
 ### D11. Massive world
 The world is much larger than what lives on the GPU. Its size is `WORLD` cells, for example 1024×256×1024.
@@ -260,16 +261,63 @@ The world is much larger than what lives on the GPU. Its size is `WORLD` cells, 
     transposed and PackBits coded, synchronously (the uncovered slab is filled in the same frame). A brick that
     matches the generator leaves the store, and so does one that comes back into the window.
   - Store tolerances: matter within STORE_MATTER_T (0.5 °C) and STORE_LIFE_TOL of the generator, seed and ctype
-    exact. Snow and the frozen rock under it drift past them while the sim runs (no cold air yet), so they are
-    stored as they drift.
+    exact. Snow and the frozen rock under it drift past them while the sim runs (no cold air yet), so they were
+    stored as they drifted; W5's World has no snow.
   - Render history moves with the cells rather than starting over: the first frame after a move differs from the
     one before in 0.4% of its pixels (starting over: 2.4%; drawn without world anchoring: 43%).
   - Measured per move under other sessions' GPU load: ~4–6 ms GPU (shift 0.8, flow field 0.6, GI 0.3, stage 0.6,
     flags 0.7, columns and fill 0.8, copy sync 0.5; stored bricks +0.9, first-visit trees +1.6–2.8) and 2–3 ms CPU
     (+3 ms placing and baking trees on new ground); when the slab lands, 1.1 ms copying ~450 bricks and 2.2 ms
     coding them. The store after a loop more than 3 window widths out: ~13,000 bricks, 4.8 MB, mostly trees.
-  - Not yet: undo is cleared by every move and reload; signs, construction previews, POV tool holds and
-    multiplayer guests don't follow the window (W5); nothing outside the window is drawn or casts light (W4).
+  - Not yet (at W2): undo was cleared by every move; signs, construction previews, POV tool holds and multiplayer
+    guests didn't follow the window (W5, below); nothing outside the window is drawn or casts light (W4).
+- **W5 as implemented** (the app: `src/app.js`, signs, POV, multiplayer; the World option in Settings → Grid size).
+  - World is a size of the Grid size row (`WORLDS.world`: 1024×128×1024 through 128³), saved like the box sizes;
+    `?size=world` still works. Clicking it again starts the world over. The Scene row lights nothing in World, and
+    picking a scene there goes back to the last box size with it. A switch disposes the window, its generator, the
+    Island scene's generator (`releaseGenerator`) and the box's outline material.
+  - It has no snow caps (`worldParams({ snow: false })`, `uGenSnow`): the air is 20 °C everywhere, so snow would
+    melt and every melting brick would be stored. Its peaks are bare rock above the plant line, and no rock is
+    frozen, so nothing it generates drifts. The box's Island scene keeps its snow.
+  - The window starts on the island's shore toward the god view's camera (`worldStart`: from the island's centre
+    toward the camera, a WIN_STEP at a time, to the waterline; centred a quarter of its width inland), so the first
+    view is sea, beach, trees and the hills behind; the middle of the island is bare rock. The god view's home is
+    framed over the window's centre, the orbit target on the ground (`homeOver`); R frames it again over where the
+    camera looks instead of flying back. WASD tops out at WORLD_CAM_SPEED_MAX so the window keeps up. The floor
+    grid spans the world's footprint, and the window's outline shows in the god view (where it paints), not in POV.
+  - Picks remember the origin they were asked at and land in the grid as it is (`pickedNow`); a picked cell that
+    has left the window doesn't count. So the brush, the construction ghost and placement, the eyedropper, signs
+    and the POV crosshair act only inside the window: drag-painting past its edge shows no brush and paints
+    nothing (a box's brush still stops at its walls). The HUD reads "2.1M of 134.2M cells".
+  - Signs are pinned to world cells (`sign.world`) and placed in the grid from `sim.origin` every frame; outside
+    the window they are hidden and left out of the probe.
+  - Undo: each snapshot keeps its origin. An undo after moves copies the cells the old and new windows share
+    (`undoShiftFrag`: the snapshot's cell p + shift; everything else is discarded, so it keeps what it holds), at no
+    cost per move. If they share nothing it does nothing, says "Too far away to undo that", and keeps the snapshot
+    for when the window is back. Out of reach: the part of a change that has left the window (it is a stored edit).
+  - POV: the body's probes in flight land shifted rather than dropped, so a move never stalls it; a body outside the
+    grid's columns waits (a respawn far away: the drop point stays put in the world and the window comes to it).
+    `toolbelt.windowShifted` reaches every tool: the gun's rounds (positions, trace answers asked before the move,
+    the last impact), the physgun's hold point, the axe's last hit; a tool's async event pins its point
+    (`transfer.js pinned`). Leaving POV in World brings the god view back over the body, framed as it was.
+  - Multiplayer: hosting in World is refused ("Multiplayer isn't available in World yet"), and so is World while
+    hosting; a guest's grid always follows the host's box (a key frame takes a guest out of World), and an invite
+    opened with World saved boots in a box.
+  - `Simulation.run` gives a pass kept across grids of the same size (a POV tool's, the construction stamp) the
+    current simulation's origin, instead of keeping the first one's.
+  - Checked headless (under other sessions' GPU load, 11–16 fps):
+    - 3 box → World → box round trips plus 64³, 160×96 and 96³: `renderer.info` geometries 5 → 5, textures
+      58 → 58 (World holds 60, the same every time), programs settle at 35; no console errors; World survives a reload.
+    - Boxes render as before: `tools/regress.mjs` against `scale` differs by 0 pixels at the tool's 1% fuzz, detail
+      on and off (unfuzzed, two `scale` runs differ from each other by as much as `scale` and this branch do).
+    - In POV across 9 window moves, signs keep their world cell and scene position, hide outside the window and show
+      live values back inside; a physgun ball holds its world position over a move and back; a round fired across a
+      move strikes the plate where it is (a control with the rounds left unshifted misses by the 16 cells).
+    - A house walked 320 cells away and back (40 moves) comes back cell for cell; an undo after 2 moves takes a
+      stroke back and changes nothing else; from 160 cells away it refuses and works on return.
+    - Hosting in World, World while hosting and a World invite all end in a box with the toast.
+    - A move waits for its leaving slab's readback: here ~9 frames (~320 ms) a move, so the window followed at
+      ~35–100 cells/s; WORLD_CAM_SPEED_MAX (9 units/s, 115 cells/s) is what an unloaded GPU should keep up with.
 
 ## Measured (M5, headless Chrome, ANGLE Metal, 128³)
 - Lab step: 2.6 ms with 42% of bricks skipped, 3.75 ms with none skipped. An empty box still costs 2.1–2.8 ms.

@@ -9,7 +9,7 @@ Every cell of a 128³ grid (2.1M cells, up to 160×96×160) is simulated and ray
 
 ```sh
 npm install
-npm run dev        # http://localhost:5173  (?preset=lab|volcano|empty&size=64|96|128|wide)
+npm run dev        # http://localhost:5173  (?preset=lab|volcano|empty&size=64|96|128|wide|world)
 ```
 
 ## Controls
@@ -83,6 +83,15 @@ kick the camera, nearby blasts and hard landings shake it, and [three.quarks](ht
 draws the muzzle flash, sparks, dust and tracers. The held tools are low-poly and flat-shaded in the RuneScape style, and
 **Settings → First person** picks the body: the stickman, or a realistic one animated with
 [Quaternius](https://quaternius.com)'s CC0 animation library.
+
+## World
+
+**Settings → Grid size → World** swaps the box for a whole island: 1024 × 128 × 1024 cells (about 300 m across),
+generated from a seed with hills, cliffs, beaches, meadows, forests and rock peaks. Only a 128³ window around you
+is simulated (the orbit target in the god view, your body in first person), and it slides along 16 cells at a time
+as you move. Whatever you change stays changed: the bricks you leave behind are compressed and kept, and they come
+back when you return, so a house you built or a crater you blew is still there. Painting, tools, signs and undo
+work inside the window. Multiplayer doesn't work in World yet. Picking a scene goes back to a box.
 
 ## Elements
 

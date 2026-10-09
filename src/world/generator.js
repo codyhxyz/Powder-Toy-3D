@@ -35,6 +35,9 @@ import { BRICK } from '../shaders/common.js';
 //   - Snow lies on rock frozen to its own temperature (FROST_DEPTH, FROST_SPAN),
 //     so the ground doesn't melt it from below. The 20 °C air still will,
 //     slowly: the box has no cold upper air.
+//   - A world without snow (worldParams snow: false) has bare rock peaks and
+//     no frozen rock: everything it generates is at its spawn temperature, so
+//     nothing in it drifts.
 
 // ---------------------------------------------------------------- constants
 // Shared by the GLSL generator (as #defines, see genGLSL) and the JS twin
@@ -138,8 +141,8 @@ const ISLAND_SHARE = 0.76;            // island diameter (if it were round), sha
 const FEATURE_SHARE = 0.38;           // the largest hills' wavelength, share of the world's shorter side
 const STRETCH_MAX = 1.18;             // the island is longer than wide by up to this squared (seeded)
 
-// size: the world in cells [x, y, z]
-export function worldParams({ size, seed = WORLD_SEED } = {}) {
+// size: the world in cells [x, y, z]; snow: false leaves the peaks bare rock
+export function worldParams({ size, seed = WORLD_SEED, snow = true } = {}) {
   const [wx, wy, wz] = size;
   const side = Math.min(wx, wz);
   const sea = Math.round(SEA_SHARE * wy);
@@ -159,6 +162,7 @@ export function worldParams({ size, seed = WORLD_SEED } = {}) {
     axis: [Math.cos(angle), Math.sin(angle)],   // the island's long axis (unit, x and z)
     stretch: 1 + (STRETCH_MAX - 1) * ((shape >>> 16) / 0x10000),   // long / wide = stretch²
     feature: FEATURE_SHARE * side,    // cells per feature length (noise frequency unit)
+    snow,                             // snow on gentle high ground, on frozen rock
   };
 }
 
@@ -299,7 +303,7 @@ export function layersAt(x, z, P) {
   const sea = P.sea, frost = frostLine(P);
   const beach = ground >= sea - GEN.BEACH_BELOW && ground <= sea + GEN.BEACH_ABOVE + GEN.BEACH_JITTER * band
     && slope < GEN.BEACH_SLOPE_MAX && !knocked;
-  const snowy = ground >= frost + GEN.SNOW_JITTER * (1 + band) && slope < GEN.SNOW_SLOPE_MAX;
+  const snowy = P.snow && ground >= frost + GEN.SNOW_JITTER * (1 + band) && slope < GEN.SNOW_SLOPE_MAX;
   const L = { ground, sand: 0, snow: 0, plant: false, slope };
   if (stable && beach) L.sand = I.SAND_DEPTH;
   else if (stable && snowy) L.snow = I.SNOW_DEPTH;
