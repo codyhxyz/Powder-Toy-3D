@@ -94,6 +94,24 @@ bool isGasLike(int id) { return KIND[id] == K_GAS || id == E_EMPTY; }
 bool isFluid(int id) { return KIND[id] == K_LIQUID || isGasLike(id); }
 bool movable(int id) { return KIND[id] != K_SOLID; }
 
+// Can a particle (id a, density da) move into the place of (b, db), travelling
+// in direction dir (0 = down, 1 = up, 2 = sideways)? The move pass's rule;
+// the react pass and the activity map ask it too, so all three agree on what
+// is blocked.
+bool canMove(int a, int b, float da, float db, int dir) {
+  if (!movable(a) || !movable(b)) return false;
+  if (a == b && a != E_EMPTY) return false;
+  if (isGasLike(a) && isGasLike(b)) {
+    if (dir == 0) return da > db - GAS_DENS_TOL;
+    if (dir == 1) return da < db + GAS_DENS_TOL;
+    return true;
+  }
+  if (!isFluid(a) && !isFluid(b)) return false; // grains don't sink into grains
+  if (dir == 0) return da > db;
+  if (dir == 1) return da != db;               // buoyant rise, or thrown upward
+  return db < da;
+}
+
 // Rough blackbody colour (normalised) for a temperature in °C: Tanner Helland's
 // fit (2012), in hundreds of kelvin with its knee at 6600 K; the numbers are the
 // fit's coefficients.

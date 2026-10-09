@@ -39,25 +39,33 @@ stage 3 ("WebGPU") is therefore implemented on WebGL2 here.
 These rules make resting matter a true fixed point, so it can sleep without changing the physics:
 - **Normal force.** Gravity can't accelerate a cell downward into something it can't enter that is itself at
   rest (the floor, a solid, or a resting grain or liquid it can't displace): `v.y = max(v.y, 0)` after gravity.
-  This must not stop a falling column: a cell moving down is not "at rest". Snap a supported cell's tiny speeds
-  to exactly 0 below a named epsilon.
+  This must not stop a falling column: a cell moving down is not "at rest". That goes for the cell itself too:
+  only a cell that starts the step with `v.y >= 0` is held, so a falling, landing or knocked cell keeps feeling
+  gravity and the move pass lands it (splash, scatter, impact heat). Snap a held cell's tiny speeds to exactly 0
+  below REST_V. The move pass only topples a cell that pressed on what's below, so a top cell held at rest
+  (`v.y = 0` under gravity) counts as pressing: piles keep toppling, they just stop landing every step.
 - **Liquids flow only where they can.** A pool's flow is re-kicked (react.js FLOW_KICK) only when the cell has
-  somewhere to go: an open or lighter side neighbour, or an open lower diagonal. Otherwise its velocity decays
-  and snaps to 0. Measured today: water that can't move carries 0.77 cells/step forever.
+  somewhere to go: a side neighbour it can enter (canMove). The same gate holds back a film's cohesion pull and a
+  droplet's wander, which otherwise push a boxed-in cell against its own puddle forever. A lower diagonal needs
+  no push (the move pass topples into it regardless), so it is not part of the gate. Otherwise its velocity
+  decays and snaps to 0. Measured before: water that can't move carries 0.77 cells/step forever.
 - **Inert means nothing can change.** This replaces "air at 20 °C or a solid at 20 °C". A cell is inert when:
   - it can't move: it is at rest, and for powders and liquids every place it could move into is blocked,
     including the diagonals the move pass topples into;
   - nothing can react: no ignition, melting, acid, plant growth, clone emission, fire, smoke or gas;
-  - it is thermally quiet: air within AIR_REST_T (1 °C) of ambient, and matter within MATTER_REST_T of every
-    neighbour.
+  - it is thermally quiet: air within AIR_REST_T (1 °C) of ambient, and matter within MATTER_REST_T (0.01 °C)
+    of every matter face neighbour. A face touching air carries heat at air's conductance, so matter there
+    takes air's tolerance instead (within AIR_REST_T of ambient).
 
-  A brick is quiet (skipped) when it and its 26 neighbours are inert. Measured: a 1 °C air tolerance alone
-  takes the skipped share from about 45% to 64% (lab, volcano).
+  A brick is quiet (skipped) when it and its 26 neighbours are inert. Measured after settling (128³): the
+  quiet share goes from 40% to 60% (lab), 39% to 58% (volcano), and 35% to 52% on the wide volcano.
 - **Energy bound.** The halo rule means heat flows into or out of a sleeping region only below the tolerance,
   and any drift past it wakes the brick. State this bound in a comment where the tolerance is defined.
-- **Heat that can't overshoot.** Cap each face's exchange at 1/6 of the energy that would bring the pair to
-  the same temperature. The limiter is symmetric in the pair, so conduction stays exactly conservative and
-  becomes unconditionally monotone.
+- **Heat that can't overshoot.** Cap each face's exchange at 1/6 of the energy that would bring the
+  smaller-capacity cell of the pair to the other's temperature: `|flux| <= |ΔT|·min(Ca, Cb)/6`. The limiter is
+  symmetric in the pair, so conduction stays exactly conservative and becomes unconditionally monotone. It is
+  elements.js's stability rule (6·cond/cap < 1) applied per face, so no current element reaches it; a cap of 1/6
+  of the pair's equalising energy (`|ΔT|·Ca·Cb/(Ca+Cb)/6`) would slow metal by 29% and fire by 38%.
 - Every new tolerance and epsilon is a named constant in `src/physics.js` (they reach GLSL as #defines).
 - The CPU tile engine (`src/ui/tiles/engine.js`) gets the same rules. Run `node scripts/check-tile-engine.mjs`.
 

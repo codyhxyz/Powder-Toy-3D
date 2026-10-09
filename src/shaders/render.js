@@ -415,7 +415,7 @@ ${march('marchPressure', AIR_FLAGS.PRESSURE, /* glsl */ `
 
 // ---- flow ----
 // Can particle a displace b moving down (0), up (1) or sideways (2)? Mirrors
-// canMove() in move.js.
+// canMove() in common.js.
 bool canDisplace(int a, int b, int dir) {
   if (KIND[a] == K_SOLID || KIND[b] == K_SOLID || a == b) return false;
   if (isGasLike(a) && isGasLike(b)) return true;
@@ -423,13 +423,13 @@ bool canDisplace(int a, int b, int dir) {
   float da = DENS[a], db = DENS[b];
   return dir == 0 ? da > db : (dir == 1 ? da != db : db < da);
 }
-// The part of a particle's velocity that actually moves it. Liquid under a
-// head keeps a random sideways velocity even in a still pool, and resting
-// grains keep one tick of gravity; components pointing into something the
-// particle can't displace (a wall, the same material, a denser grain) are
-// dropped. A liquid's free surface also churns sideways at random as the
-// automaton levels it, so sideways motion only counts for liquid that isn't
-// resting on more of itself (a film spreading, a stream crossing ground).
+// The part of a particle's velocity that actually moves it: components
+// pointing into something the particle can't displace (a wall, the same
+// material, a denser grain), like a flowing liquid's push against the side
+// of its basin, are dropped. A liquid's free surface also churns sideways at
+// random as the automaton levels it, so sideways motion only counts for
+// liquid that isn't resting on more of itself (a film spreading, a stream
+// crossing ground).
 #define FLOW_MIN_VEL 0.01   // velocity components below this (cells/step) don't move it
 vec3 mobileVel(ivec3 c, int id, vec3 v) {
   if (KIND[id] == K_LIQUID && c.y > 0 && eid(cellA(c - ivec3(0, 1, 0))) == id) v.xz = vec2(0.0);
