@@ -131,6 +131,17 @@ export default {
 }
 ```
 
+**Shared feel: use these, don't hand-roll per tool**, so every tool (and a new one) acts and responds the same:
+
+- `tools/action.js` `trigger(interval, { hold, button })`: when a button acts. HL2's weapon timing: acts on
+  the frame the button goes down, then every `interval` while held (`hold: false` for one per click), and
+  a click during the wait is buffered. `swing(spec)`: a melee blow's eased pose, stopping short on a hit and
+  following through on a miss.
+- `viewmodel.js` `HIT` and `rig.hit(HIT.X)`: a tool's shot, blow or fling, as the hand's spring kick plus
+  the view punch (feel.js, Source's ViewPunch spring). Add a row to `HIT` for a new tool.
+- `env.feedback.notice(text)` / `refuse(text, { id, point })`: the throttled "can't" toast, slot shake and
+  `tool:action 'refuse'`.
+
 `ctx` is built by the body module every frame in POV:
 
 ```js
@@ -160,6 +171,7 @@ say world. Emitters own their event names. Listeners never mutate payloads.
 
 | Event | Emitted by | Payload |
 |---|---|---|
+| `punch` | `rig.hit` (viewmodel.js `HIT`) | `{ pitch, yaw }` rad, + up and + left. Throws the view punch (feel.js). |
 | `gun:fire` | gun | `{ origin, dir, muzzleWorld }`. The round left the muzzle (origin grid, dir unit; muzzleWorld is the viewmodel muzzle in world space, for the flash). |
 | `gun:dry` | gun | `{}`. The trigger clicked but nothing fired (muzzle blocked). |
 | `round:move` | gun | `{ id, from, to }`. A round in flight moved this frame (grid), for tracers. |

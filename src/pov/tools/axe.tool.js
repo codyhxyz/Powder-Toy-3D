@@ -4,7 +4,8 @@ import { HAND_REACH } from '../constants.js';
 import { axeFrag, toolPass, AXE } from '../../shaders/povTools.js';
 import { povEvents } from '../events.js';
 import { attachModel } from '../models.js';
-import { viewmodelRig, KICK } from '../viewmodel.js';
+import { viewmodelRig, HIT } from '../viewmodel.js';
+import { trigger, swing } from './action.js';
 import { faceNormal } from './transfer.js';
 
 // Axe: a short-range swing that breaks breakable solids in a wide, shallow
@@ -15,10 +16,10 @@ import { faceNormal } from './transfer.js';
 // debris in place, so mass is conserved.
 //
 // The swing is Half-Life 2's crowbar (source-sdk-2013 basebludgeonweapon.cpp,
-// weapon_crowbar.h): the blow lands on the frame you click, not after a
-// wind-up; holding the button swings again every REFIRE; a hit throws the view
-// punch (feel.js) and the blade stops at the wood and rebounds, a miss follows
-// through. A click during the refire wait is kept and swings as soon as it can.
+// weapon_crowbar.h), from the shared pieces in action.js and viewmodel.js HIT:
+// the blow lands on the frame you click, holding swings again every REFIRE, a
+// hit throws the hand's kick and the view punch and the blade stops at the
+// wood, a miss follows through.
 //
 // Events: tool:action 'swing' on every swing; when the blade lands on
 // something, impact (source 'axe') and the rig's kick, plus tool:action
@@ -50,23 +51,14 @@ function buildModel(env) {
   return { rig, hand, pivot, dispose() { mesh.dispose(); hand.removeFromParent(); } };
 }
 
-const easeOutCubic = (x) => 1 - (1 - x) ** 3;
-const easeInOutQuad = (x) => (x < 0.5 ? 2 * x * x : 1 - (-2 * x + 2) ** 2 / 2);
-
-// Swing pose: a fast eased chop from rest to `low`, then eased back to rest.
-function swingPitch(t, low) {
-  if (t < 0 || t >= SETTLE_TIME) return REST_PITCH;
-  if (t < STRIKE_TIME) return THREE.MathUtils.lerp(REST_PITCH, low, easeOutCubic(t / STRIKE_TIME));
-  return THREE.MathUtils.lerp(low, REST_PITCH, easeInOutQuad((t - STRIKE_TIME) / (SETTLE_TIME - STRIKE_TIME)));
-}
-
 export default {
   key: 'AXE', name: 'Axe', slot: 3, icon: ICON,
   desc: 'Chops wood, smashes glass and ice, clears plants. Too weak for rock or metal.',
   create(env) {
     const model = buildModel(env);
     const pass = toolPass(axeFrag, () => ({ uCenter: { value: new THREE.Vector3() }, uDir: { value: new THREE.Vector3() } }));
-    let time = 0, swingAt = -Infinity, nextSwing = 0, queued = false, low = REST_PITCH;
+    const button = trigger(REFIRE);
+    const pose = swing({ rest: REST_PITCH, hit: HIT_PITCH, miss: MISS_PITCH, strike: STRIKE_TIME, settle: SETTLE_TIME });
     let lastHit = null;
 
     function strike(ctx) {
@@ -84,25 +76,23 @@ export default {
       const broke = solid ? Boolean(el.breakInto) && AXE.ENERGY >= el.hard : null;
       const point = aim.cell.clone().addScalar(0.5);
       povEvents.emit('impact', { source: 'axe', point, normal: faceNormal(aim.face), id: aim.id, energy: AXE.ENERGY, broke });
-      model.rig.kick(KICK.AXE);
+      model.rig.hit(HIT.AXE);
       if (broke === false) povEvents.emit('tool:action', { tool: 'axe', action: 'refuse', id: aim.id, point });
       return true;
     }
 
     return {
       update(ctx) {
-        time += ctx.dt;
         model.hand.visible = true;
         model.rig.update(ctx);
-        if (ctx.primaryPressed) queued = true;
-        if ((ctx.primary || queued) && time >= nextSwing) {
-          swingAt = time; nextSwing = time + REFIRE; queued = false;
+        if (button.ready(ctx)) {
+          button.fire();
           povEvents.emit('tool:action', { tool: 'axe', action: 'swing' });
-          low = strike(ctx) ? HIT_PITCH : MISS_PITCH;
+          pose.start(strike(ctx));
         }
-        model.pivot.rotation.set(swingPitch(time - swingAt, low), 0, REST_ROLL);
+        model.pivot.rotation.set(pose.angle(ctx.dt), 0, REST_ROLL);
       },
-      deselect() { model.hand.visible = false; queued = false; },
+      deselect() { model.hand.visible = false; button.reset(); pose.stop(); },
       status: () => null,
       get lastHit() { return lastHit; },   // for checks: the cell the last swing struck
       dispose() { pass.dispose(); model.dispose(); },

@@ -8,7 +8,7 @@ import { povEvents } from './events.js';
 // at the tool's rest pose in cells (camera space: +x right, +y up, −z forward).
 // On top of that rest pose the rig adds, the same for every hand:
 //   - spring recoil with overshoot, on position and rotation: kick(strength)
-//     throws the spring (gun:fire, gun:dry and every axe swing), and an
+//     throws the spring, and an
 //     underdamped spring (natural frequency SPRING_OMEGA, damping ratio
 //     SPRING_ZETA, the Gunplay Feel Lab's k = 260 /s², c = 18 /s) brings it
 //     back past rest and settles it;
@@ -19,7 +19,9 @@ import { povEvents } from './events.js';
 //
 //   const rig = viewmodelRig(env);        // one per env.viewmodel, shared by every tool
 //   const hand = rig.hand([x, y, z]);     // add the model to hand; hand.visible is the tool's to set
-//   rig.update(ctx); rig.kick(1);
+//   rig.update(ctx);
+//   rig.hit(HIT.AXE);                      // a tool's blow, shot or fling: the hand's kick and the view punch
+//   rig.kick(1);                           // the hand's kick alone
 //   rig.state                              // { pos, rot, spring } the rig's current offset (cells, rad), for checks
 //
 // The pass. The hands are drawn after the main post pass, in their own render
@@ -44,7 +46,21 @@ const KICK_BACK = 0.22 * 30;          // cells/s, back toward the eye (+z)
 const KICK_PITCH = 0.16 * 30;         // rad/s, muzzle up
 const KICK_ROLL = 0.05 * 30;          // rad/s, either way at random
 const KICK_RISE = 0.05 * 30;          // cells/s, up
-export const KICK = { GUN: 1, DRY: 0.25, AXE: 0.5, FLING: 0.6 };   // strengths: a shot, a dry click, an axe blow landing, a physgun fling
+
+// How each tool's moment feels, in one table so every tool (and any new one) gets the same treatment:
+// kick, the hand's spring strength (above); punch, the view punch (feel.js, Source's ViewPunch spring) as
+// [min, max] rad ranges, pitch + up and yaw + left. The axe's are HL2's crowbar (CWeaponCrowbar::AddViewKick:
+// 1–2° down, 1–2° right). The gun's peaks where its old camera kick did (2°): Source's spring peaks at
+// ≈ 1.28 × the punch angle, so 2° / 1.28.
+const DEG = Math.PI / 180;
+const GUN_PUNCH = (2 / 1.28) * DEG;
+export const HIT = {
+  GUN: { kick: 1, punch: { pitch: [GUN_PUNCH, GUN_PUNCH] } },                          // a shot
+  DRY: { kick: 0.25 },                                                                 // a dry click
+  AXE: { kick: 0.5, punch: { pitch: [-2 * DEG, -1 * DEG], yaw: [-2 * DEG, -1 * DEG] } },   // a blow landing
+  FLING: { kick: 0.6 },                                                                // a physgun fling
+};
+const randIn = ([lo, hi] = [0, 0]) => lo + Math.random() * (hi - lo);
 
 // sway (the hand trails the look)
 const SWAY_GAIN = 0.05;               // s: offset per rad/s of look rate (Feel Lab)
@@ -171,11 +187,11 @@ function createRig(env) {
     if (!settled()) globalThis.__app?.requestRender?.();
   }
 
-  // gun events throw the spring
-  const offs = [
-    povEvents.on('gun:fire', () => kick(KICK.GUN)),
-    povEvents.on('gun:dry', () => kick(KICK.DRY)),
-  ];
+  // a HIT entry: the hand's kick, and the view punch (feel.js listens for 'punch')
+  function hit(spec) {
+    if (spec.kick) kick(spec.kick);
+    if (spec.punch) povEvents.emit('punch', { pitch: randIn(spec.punch.pitch), yaw: randIn(spec.punch.yaw) });
+  }
 
   return {
     root,
@@ -190,10 +206,11 @@ function createRig(env) {
     },
     update,
     kick,
+    hit,
     get state() {
       return { pos: pos.clone(), rot: new THREE.Vector3(rot.x, rot.y, rot.z), spring: { ...sp } };
     },
-    dispose() { offs.forEach((off) => off()); root.removeFromParent(); },
+    dispose() { root.removeFromParent(); },
   };
 }
 

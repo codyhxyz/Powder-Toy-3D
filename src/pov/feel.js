@@ -1,27 +1,21 @@
 import { povEvents } from './events.js';
 
-// Feel: what a shot, a blast or a hard landing does to the view. A camera
-// kick that recovers, a trauma shake (Eiserloh: shake = trauma² × smooth
+// Feel: what a shot, a blow, a blast or a hard landing does to the view. A
+// view punch that springs back, a trauma shake (Eiserloh: shake = trauma² × smooth
 // noise, so bursts build up and small knocks stay small), the hitmarker and
 // the crosshair bloom. Everything comes in through povEvents and the player's
 // own events; the camera reads `offsets` and adds them on top of the look.
 // Angles in radians, distances in grid cells, times in seconds.
 
-// ---- camera kick: each shot tips the view up, then it eases back
-const CAM_KICK = 0.035;                 // rad of pitch per shot
-const CAM_RECOVER = 9;                  // 1/s: the kick decays as exp(−rate·t)
-const CAM_KICK_MAX = 0.12;              // rad: a burst of kicks never tips the view further than this
-
-// ---- view punch: Source's (source-sdk-2013 CBasePlayer::ViewPunch, CGameMovement::DecayPunchAngle),
-// thrown by an axe blow that lands, with HL2's crowbar angles (CWeaponCrowbar::AddViewKick)
+// ---- view punch: Source's (source-sdk-2013 CBasePlayer::ViewPunch, CGameMovement::DecayPunchAngle).
+// Tools throw it with a 'punch' event {pitch, yaw} (rad; viewmodel.js HIT has each tool's angles):
+// the angle × PUNCH_VEL_GAIN goes into the punch's angular velocity and a damped spring brings it back.
 const DEG = Math.PI / 180;
 const PUNCH_VEL_GAIN = 20;              // 1/s: ViewPunch adds angle × this to the punch's angular velocity
 const PUNCH_DAMPING = 9;                // 1/s: velocity damping (PUNCH_DAMPING)
 const PUNCH_SPRING = 65;                // 1/s²: torsional spring back to zero (PUNCH_SPRING_CONSTANT)
 const PUNCH_SPRING_STEP_MAX = 2;        // the spring's per-frame factor is clamped to this (Source's clamp)
 const PUNCH_EPS = 0.001 * DEG * DEG;    // rad²: below this angle² and rate² the punch snaps to rest (Source's 0.001 deg²)
-const AXE_PUNCH_DOWN = [1 * DEG, 2 * DEG];    // rad: view tips down (Source pitch +1..2°)
-const AXE_PUNCH_RIGHT = [1 * DEG, 2 * DEG];   // rad: and right (Source yaw −2..−1°)
 
 // ---- trauma shake
 export const SHAKE_SCALE = 1;           // global multiplier on the shake (0 turns it off)
@@ -82,7 +76,7 @@ export function createFeel({ hud }) {
   const reduced = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)');
   const motionScale = () => SHAKE_SCALE * (reduced?.matches ? REDUCED_MOTION_SHAKE : 1);
 
-  let kick = 0, trauma = 0, time = 0;
+  let trauma = 0, time = 0;
   const punch = { pitch: 0, yaw: 0, vp: 0, vy: 0 };   // rad and rad/s
   let bloom = 0, hitT = 0, hitBroke = false;
   let player = null, unbindPlayer = [];
@@ -97,7 +91,6 @@ export function createFeel({ hud }) {
   const offs = [
     povEvents.on('gun:fire', () => {
       if (!live) return;
-      kick = Math.min(CAM_KICK_MAX, kick + CAM_KICK);
       addTrauma(TRAUMA_SHOT);
       bloom = Math.min(1, bloom + BLOOM_PER_SHOT);
     }),
@@ -109,11 +102,12 @@ export function createFeel({ hud }) {
         addTrauma(TRAUMA_IMPACT * clamp01((e.energy ?? 0) / IMPACT_ENERGY_FULL) * near);
       }
       if (e.source === 'gun') { hitT = HIT_TIME; hitBroke = e.broke === true; }
-      if (e.source === 'axe') {
-        const rand = ([lo, hi]) => lo + Math.random() * (hi - lo);
-        punch.vp -= rand(AXE_PUNCH_DOWN) * PUNCH_VEL_GAIN;
-        punch.vy -= rand(AXE_PUNCH_RIGHT) * PUNCH_VEL_GAIN;
-      }
+    }),
+    povEvents.on('punch', ({ pitch = 0, yaw = 0 }) => {
+      if (!live) return;
+      punch.vp += pitch * PUNCH_VEL_GAIN;
+      punch.vy += yaw * PUNCH_VEL_GAIN;
+      globalThis.__app?.requestRender?.();
     }),
   ];
 
@@ -131,7 +125,7 @@ export function createFeel({ hud }) {
     offsets,
     get time() { return time; },         // s of POV frames seen (checks)
     get trauma() { return trauma; },
-    get kick() { return kick; },
+    get kick() { return punch.pitch; },   // the view punch's pitch (rad), for checks
     get punch() { return { pitch: punch.pitch, yaw: punch.yaw }; },
     get bloom() { return bloom; },
     get hit() { return hitT; },
@@ -145,7 +139,7 @@ export function createFeel({ hud }) {
     },
     // a fresh body (drop in, respawn): nothing carried over
     reset() {
-      kick = trauma = bloom = hitT = 0;
+      trauma = bloom = hitT = 0;
       punch.pitch = punch.yaw = punch.vp = punch.vy = 0;
       prevValid = false;
       offsets.pitch = offsets.yaw = offsets.roll = 0;
@@ -174,7 +168,6 @@ export function createFeel({ hud }) {
         }
       } else prevValid = false;
 
-      kick *= Math.exp(-CAM_RECOVER * dt);
       if (punch.pitch ** 2 + punch.yaw ** 2 > PUNCH_EPS || punch.vp ** 2 + punch.vy ** 2 > PUNCH_EPS) {
         punch.pitch += punch.vp * dt; punch.yaw += punch.vy * dt;
         const damp = Math.max(0, 1 - PUNCH_DAMPING * dt);
@@ -187,7 +180,7 @@ export function createFeel({ hud }) {
       const m = motionScale();
       const shake = trauma * trauma * SHAKE_ANGLE * m;
       const t = time * SHAKE_FREQ;
-      offsets.pitch = (kick + punch.pitch) * m + shake * noise(t, SEED_PITCH);
+      offsets.pitch = punch.pitch * m + shake * noise(t, SEED_PITCH);
       offsets.yaw = punch.yaw * m + shake * noise(t, SEED_YAW);
       offsets.roll = shake * SHAKE_ROLL * noise(t, SEED_ROLL);
 

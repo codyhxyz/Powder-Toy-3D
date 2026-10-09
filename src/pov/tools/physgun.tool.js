@@ -3,7 +3,7 @@ import { PHYS as ENGINE } from '../../physics.js';
 import { physgunFrag, physgunComFrag, toolPass, PHYS, PHYS_MODE, glowTexture, disposeTree } from '../../shaders/povTools.js';
 import { povEvents } from '../events.js';
 import { attachModel } from '../models.js';
-import { viewmodelRig, KICK } from '../viewmodel.js';
+import { viewmodelRig, HIT } from '../viewmodel.js';
 
 // Physgun: a force beam on loose matter (powders, liquids, gases). Press and
 // hold left-click to grab what's around the aim point: every frame one pass
@@ -184,7 +184,7 @@ export default {
           if (ctx.primaryPressed) prevHold.copy(hold);
           if (ctx.secondaryPressed) {
             run(ctx, PHYS_MODE.FLING);
-            model.rig.kick(KICK.FLING);
+            model.rig.hit(HIT.FLING);
             povEvents.emit('tool:action', { tool: 'physgun', action: 'fling', point: hold.clone() });
             holding = false;
           } else if (ctx.stepsPerFrame > 0) run(ctx, PHYS_MODE.HOLD);
