@@ -14,6 +14,7 @@ const size = opt('size', '128');
 const SEED = 4242;           // Math.random seed (mulberry32) for each load
 const COMPARE_EVERY = 6;     // frames between comparisons (and after the last frame)
 const BOOT_MS = 3000;
+const LOAD_TIMEOUT_MS = 120000;   // page load (shader compiles stall it when the GPU is busy)
 const WATER = 7, HEAT = -2;  // brush tools (elements.js ids)
 // [preset, steps before, frames, steps per frame, writes]. Writes: 'paint' (a moving
 // water brush every frame), 'heat' (the heat tool every frame), 'undo' (a snapshot,
@@ -37,7 +38,7 @@ await p.addInitScript(() => localStorage.setItem('powder-toy-3d:settings', JSON.
 const errs = [];
 p.on('console', (m) => { if (m.type() === 'error' && !/ERR_CONNECTION_REFUSED/.test(m.text())) errs.push(m.text().slice(0, 300)); });
 p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 300)));
-await p.goto(`http://localhost:${port}/?preset=lab&size=${size}`);
+await p.goto(`http://localhost:${port}/?preset=lab&size=${size}`, { timeout: LOAD_TIMEOUT_MS });
 await p.waitForTimeout(BOOT_MS);
 let failed = false;
 for (const c of CASES) {
