@@ -1,5 +1,6 @@
 import { createHotbar, HOTBAR_SLOTS } from './hotbar.js';
 import { sharedTransfer, emptyLoads } from './transfer.js';
+import { povEvents } from '../events.js';
 
 export { emptyLoads };
 
@@ -8,10 +9,16 @@ export { emptyLoads };
 //
 // Tools get the shell's env plus:
 //   env.transfer   the shared exact cell transfer (transfer.js)
-//   env.feedback   { toast(text), shake() }: a toast, or a shake of the tool's slot
+//   env.feedback   the shared "can't" responses, the same for every tool:
+//                    toast(text)         a toast
+//                    notice(text)        a toast, at most once per NOTICE_INTERVAL per tool
+//                    shake()             a shake of the tool's slot
+//                    refuse(text, extra) a notice, a shake and tool:action 'refuse' (extra: { id, point })
 
 const modules = import.meta.glob('./*.tool.js', { eager: true });
 const DEFAULT_SLOT = 0;   // slot 1 (the shovel) is selected first
+const NOTICE_INTERVAL = 1.5;   // s between repeats of a tool's notice and refuse toasts
+const MS_PER_S = 1000;
 
 export function createToolbelt(env) {
   const hotbar = createHotbar();
@@ -26,9 +33,22 @@ export function createToolbelt(env) {
       console.warn(`toolbelt: ${path} wants slot ${def.slot}, which is ${tools[i] ? 'taken' : 'out of range'}`);
       continue;
     }
+    let lastNotice = -Infinity;
     const feedback = {
       toast: (text) => env.hud?.toast?.(text),
       shake: () => hotbar.shake(i),
+      notice(text) {
+        const now = performance.now() / MS_PER_S;
+        if (now - lastNotice < NOTICE_INTERVAL) return false;
+        lastNotice = now;
+        feedback.toast(text);
+        return true;
+      },
+      refuse(text, extra) {
+        if (!feedback.notice(text)) return;
+        feedback.shake();
+        povEvents.emit('tool:action', { tool: def.key.toLowerCase(), action: 'refuse', ...extra });
+      },
     };
     tools[i] = { def, inst: def.create({ ...env, transfer, feedback }) };
     hotbar.setTool(i, def);
