@@ -6,6 +6,7 @@ import { volumeVert, volumeFrag, pickFrag, shadowFrag } from './shaders/render.j
 import { ELEMENTS, E, toolById, isBuild } from './elements.js';
 import { buildPreset } from './presets.js';
 import { loadIsland } from './world/gpu.js';
+import { WorldWindow } from './world/window.js';
 import { quadVert } from './shaders/common.js';
 import { createBrushCursor } from './brush.js';
 import { createCameraRig } from './camera.js';
@@ -40,6 +41,10 @@ const SignsClass = optional['./signs.js']?.Signs;
 const BuildsClass = optional['./constructions.js']?.Constructions;
 
 const SIZES = { '64': [64, 64, 64], '96': [96, 96, 96], '128': [128, 128, 128], wide: [160, 96, 160] };
+// Massive worlds (docs/scaling.md D11): the generator's world, `size` cells,
+// simulated and drawn through a window of `win` cells that follows the focus.
+// A test mode for now (?size=world): not in the Settings UI and not saved.
+const WORLDS = { world: { win: [128, 128, 128], size: [1024, 128, 1024] } };
 const SIGN_TOOL = -5;
 
 // ---------------------------------------------------------------- settings
@@ -69,6 +74,7 @@ if (params.get('size') in SIZES) settings.size = params.get('size');
 if (params.get('preset')) settings.preset = params.get('preset');
 // the Island scene's world seed (world/generator.js); its default world without one
 const worldSeed = params.has('seed') ? Number(params.get('seed')) >>> 0 : undefined;
+const worldMode = WORLDS[params.get('size')] ?? null;
 if (!(settings.size in SIZES)) settings.size = DEFAULTS.size;
 if (!toolById(settings.tool)) settings.tool = DEFAULTS.tool;
 if (!VIEWS.some((v) => v.id === settings.view)) settings.view = 0;
@@ -141,6 +147,9 @@ const isTyping = () => {
 const rig = createCameraRig(camera, controls, isTyping);
 
 let sim, volume, edges, pickMat, shadowMat, shadowTarget, scale;
+// world mode: the window over the world, and the world cell (x, z) at the scene's origin
+let win = null;
+const anchor = new THREE.Vector2();
 const pickTarget = new THREE.WebGLRenderTarget(2, 1, { type: THREE.FloatType, depthBuffer: false });
 const pickBuf = new Float32Array(8);
 let pickPending = false;
@@ -158,11 +167,19 @@ function build() {
     shadowMat.dispose();
     shadowTarget.dispose();
   }
-  const [nx, ny, nz] = SIZES[settings.size];
+  const [nx, ny, nz] = worldMode?.win ?? SIZES[settings.size];
+  win?.dispose();
+  win = null;
   sim = new Simulation(renderer, nx, ny, nz);
   sim.gravity = settings.gravity;
   sim.onPass = prof.on ? simPass : null;
   scale = 10 / Math.max(nx, nz);
+  if (worldMode) {
+    win = new WorldWindow(renderer, sim, { size: worldMode.size, seed: worldSeed });
+    sim.origin.fromArray(win.centre());
+  }
+  // the grid starts centred on the scene's origin
+  anchor.set(sim.origin.x + nx / 2, sim.origin.z + nz / 2);
 
   const geo = new THREE.BoxGeometry(nx, ny, nz);
   geo.translate(nx / 2, ny / 2, nz / 2);
@@ -185,16 +202,14 @@ function build() {
     blendDst: THREE.OneMinusSrcAlphaFactor,
   }));
   volume.scale.setScalar(scale);
-  volume.position.set(-nx / 2 * scale, 0, -nz / 2 * scale);
   volume.frustumCulled = false;
   scene.add(volume);
-  volume.updateMatrixWorld();
 
   edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo),
     new THREE.LineBasicMaterial({ color: 0x56607a, transparent: true, opacity: EDGE_OPACITY }));
   edges.scale.copy(volume.scale);
-  edges.position.copy(volume.position);
   scene.add(edges);
+  placeVolume();
 
   pickMat = new THREE.RawShaderMaterial({
     name: 'pick',
@@ -237,6 +252,33 @@ function build() {
   loadPreset(settings.preset, false);
 }
 
+// The grid's box in the scene: at its world origin, so a window moving over
+// the world leaves the camera and everything already drawn where they are.
+function placeVolume() {
+  volume.position.set((sim.origin.x - anchor.x) * scale, 0, (sim.origin.z - anchor.y) * scale);
+  edges.position.copy(volume.position);
+  volume.updateMatrixWorld();
+  edges.updateMatrixWorld();
+}
+
+// World mode: keep the window on the focus, the POV body or else the orbit
+// target (a tool may pin it: __app.worldFocus = [x, z] in world cells).
+function moveWindow() {
+  let fx, fz;
+  if (worldFocus) [fx, fz] = worldFocus;
+  else if (pov?.active && pov.player) { fx = pov.player.pos.x + sim.origin.x; fz = pov.player.pos.z + sim.origin.z; }
+  else { fx = controls.target.x / scale + anchor.x; fz = controls.target.z / scale + anchor.y; }
+  const move = win.update(fx, fz);
+  if (!move) return;
+  const [dx, dz] = move;
+  placeVolume();
+  pov?.windowShifted(dx, dz);
+  hover.cell.x -= dx;   // the last pick, in the moved grid
+  hover.cell.z -= dz;
+  toolbar.setUndoEnabled(sim.canUndo);
+}
+let worldFocus = null;
+
 // Multiplayer guests follow the host's grid size.
 function setGrid(dims) {
   const size = Object.keys(SIZES).find((k) => SIZES[k].every((n, i) => n === dims[i]));
@@ -250,7 +292,11 @@ function loadPreset(name, undoable = true) {
   if (undoable && mp.guard()) return false;
   if (undoable) sim.snapshot();
   settings.preset = name;
-  if (name === 'empty') sim.clear();
+  if (win) {
+    // a world has one scene, its own: loading starts it over
+    win.load(win.centre());
+    placeVolume();
+  } else if (name === 'empty') sim.clear();
   else if (name === 'island') loadIsland(sim, { seed: worldSeed });
   else buildPreset(name, sim);
   post.reset();
@@ -862,6 +908,7 @@ function frame(now) {
     rig.update(dt);
     controls.update();
   }
+  if (win) moveWindow();
   updateBrush();
 
   prof.phase('paint');
@@ -993,6 +1040,10 @@ try {
   window.__app = {
     get sim() { return sim; }, get volume() { return volume; }, get scale() { return scale; }, get signs() { return signs; }, get builds() { return builds; },
     get pov() { return pov; },
+    get win() { return win; },
+    // world mode: start the world over with the window at `origin` (world cells)
+    worldLoad(origin) { win.load(origin); placeVolume(); post.reset(); pov?.worldReplaced(); },
+    get worldFocus() { return worldFocus; }, set worldFocus(v) { worldFocus = v; },
     SUN, day, scene, settings, camera, controls, loadPreset, selectTool, setView, hover, renderer, rig, renderThumb, gfx, post, mp, autoRes, prof,
     requestRender: () => pacer.wake(),   // for changes the frame loop can't see (async results)
   };

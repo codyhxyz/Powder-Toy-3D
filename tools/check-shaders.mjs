@@ -80,7 +80,7 @@ for (const [label, dims] of Object.entries(grids)) {
   for (const [k, v] of Object.entries({ ...move, ...react, ...probe, ...stamp, ...gi, ...povBody, ...transfer, ...windowPasses })) if (typeof v === 'function') check(`${k}-${label}`, raw + v(g), 'frag');
   for (const k of ['axeFrag', 'physgunComFrag', 'physgunFrag']) check(`${k}-${label}`, raw + povTools[k](g), 'frag');
   for (const k of ['traceFrag', 'handoffFrag']) check(`${k}-${label}`, raw + povTrace[k](g), 'frag');
-  for (const k of ['columnFrag', 'fillFrag', 'summaryFrag']) check(`${k}-${label}`, raw + generate[k](g), 'frag');
+  for (const k of ['columnFrag', 'fillFrag', 'summaryFrag', 'diffFrag']) check(`${k}-${label}`, raw + generate[k](g), 'frag');
 }
 check('volumeVert', shaderMatVert + render.volumeVert, 'vert');
 check('quadVert', raw + quadVert, 'vert');

@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { rawMat, makeFieldTarget } from '../sim.js';
-import { columnFrag, fillFrag, summaryFrag, COLUMN_MARGIN } from '../shaders/generate.js';
-import { stampFrag } from '../shaders/stamp.js';
+import { columnFrag, fillFrag, summaryFrag, diffFrag, COLUMN_MARGIN } from '../shaders/generate.js';
+import { stampFrag, stampManyFrag, MAX_STAMPS } from '../shaders/stamp.js';
 import { runGenerator, bake, MAX_FOOT } from '../constructions/runtime.js';
 import { BUILTINS } from '../constructions/builtins.js';
 import { worldParams, treesIn, TREE } from './generator.js';
@@ -55,6 +55,74 @@ export class WorldGenerator {
         uAt: v3(), uSize: v3(), uFoot: { value: 0 }, uSeed: { value: 0 },
       }),
     };
+    // the world window's passes (docs/scaling.md D11) are made on first use
+    this.v3 = v3;
+  }
+
+  // Which bricks of the slab of grid cells [lo, lo + 4·bricks) differ from
+  // world P (shaders/generate.js diffFrag), the grid sitting at the
+  // simulation's origin: written to target, one texel per brick.
+  diff(P, lo, bricks, target) {
+    const o = this.sim.origin;
+    this.updateColumns(P, [o.x, o.y, o.z]);
+    this.mats.diff ??= Object.assign(rawMat(diffFrag(this.sim.g), {
+      ...genUniforms(), tA: { value: null }, tB: { value: null }, tCol: { value: null },
+      uLo: this.v3(), uBricks: this.v3(),
+    }), { name: 'diff' });
+    setWorld(this.mats.diff.uniforms, P);
+    const u = this.mats.diff.uniforms;
+    u.tA.value = this.sim.stateA;
+    u.tB.value = this.sim.stateB;
+    u.tCol.value = this.columns.texture;
+    u.uLo.value.set(...lo);
+    u.uBricks.value.set(...bricks);
+    this.sim.run(this.mats.diff, target);
+  }
+
+  // Stamp baked constructions (runtime.js bake) in as few passes as there are
+  // MAX_STAMPS of them (shaders/stamp.js stampManyFrag), each { s, at, seed }
+  // with at its low corner in grid cells, writing only the grid brick columns
+  // set in colMask (a texture, one texel per brick column x, z).
+  stampMany(list, colMask) {
+    const g = this.sim.g;
+    this.mats.stampMany ??= Object.assign(rawMat(stampManyFrag(g), {
+      tA: { value: null }, tB: { value: null }, tStamps: { value: null }, tColMask: { value: null },
+      uStampCount: { value: 0 },
+      uStampAt: { value: new Int32Array(3 * MAX_STAMPS) }, uStampBox: { value: new Int32Array(4 * MAX_STAMPS) },
+      uStampFoot: { value: new Int32Array(MAX_STAMPS) }, uStampSeed: { value: new Uint32Array(MAX_STAMPS) },
+    }), { name: 'stampMany' });
+    const u = this.mats.stampMany.uniforms;
+    u.tColMask.value = colMask;
+    for (let k = 0; k < list.length; k += MAX_STAMPS) {
+      const batch = list.slice(k, k + MAX_STAMPS);
+      // the batch's stamps side by side along x in one 3D texture
+      const W = batch.reduce((n, b) => n + b.s.w, 0);
+      const H = Math.max(...batch.map((b) => b.s.h)), D = Math.max(...batch.map((b) => b.s.d));
+      const data = new Float32Array(W * H * D * 4);
+      let x0 = 0;
+      batch.forEach(({ s, at, seed }, i) => {
+        for (let z = 0; z < s.d; z++)
+          for (let y = 0; y < s.h; y++) {
+            const src = ((z * s.h + y) * s.w) * 4;
+            data.set(s.data.subarray(src, src + s.w * 4), ((z * H + y) * W + x0) * 4);
+          }
+        u.uStampAt.value.set(at, 3 * i);
+        u.uStampBox.value.set([s.w, s.h, s.d, x0], 4 * i);
+        u.uStampFoot.value[i] = Math.min(s.foot, MAX_FOOT);
+        u.uStampSeed.value[i] = seed;
+        x0 += s.w;
+      });
+      const tex = new THREE.Data3DTexture(data, W, H, D);
+      tex.format = THREE.RGBAFormat;
+      tex.type = THREE.FloatType;
+      tex.minFilter = tex.magFilter = THREE.NearestFilter;
+      tex.unpackAlignment = 1;
+      tex.needsUpdate = true;
+      u.tStamps.value = tex;
+      u.uStampCount.value = batch.length;
+      this.sim.pass(this.mats.stampMany);
+      tex.dispose();
+    }
   }
 
   // Evaluate genColumn for the grid at world origin [x, y, z] (kept until the world or origin changes).
@@ -79,9 +147,6 @@ export class WorldGenerator {
     u.uFillMin.value.set(...min);
     u.uFillMax.value.set(...(max ?? [g.nx, g.ny, g.nz]));
     this.sim.pass(this.mats.fill);
-    // a new scene: the render fields and GI start over instead of blending in
-    this.sim.fieldReset = true;
-    this.sim.giReset = true;
   }
 
   // The far-field summary of world P over the grid's bricks: one RGBA8 texel
@@ -151,5 +216,8 @@ export function loadIsland(sim, { seed } = {}) {
   const gen = generatorFor(sim);
   gen.fill(P);
   gen.plantTrees(P);
+  // a new scene: the render fields and GI start over instead of blending in
+  sim.fieldReset = true;
+  sim.giReset = true;
   return P;
 }

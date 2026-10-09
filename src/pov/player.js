@@ -555,8 +555,18 @@ export function createPlayer({ renderer, getSim }) {
     for (const k in listeners) delete listeners[k];
   }
 
+  // The window moved over the world by (dx, 0, dz) cells (docs/scaling.md D11):
+  // the grid moved the other way under the body, which stays put in the world.
+  // The last probe still holds the same cells; the ones in flight don't.
+  function windowShifted(dx, dz) {
+    p.pos.x -= dx;
+    p.pos.z -= dz;
+    probe.origin = [probe.origin[0] - dx, probe.origin[1], probe.origin[2] - dz];
+    generation++;
+  }
+
   return Object.assign(p, {
-    spawn, update, dispose,
+    spawn, update, dispose, windowShifted,
     applyImpulse(dv) { impulse.add(dv); },
     on(name, fn) {
       (listeners[name] ??= []).push(fn);

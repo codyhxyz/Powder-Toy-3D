@@ -90,6 +90,13 @@ export function texelCell(g, t) {
   ];
 }
 
+// JS mirror of brickAtlas() (shaders/common.js): the index of brick (bx, by,
+// bz)'s texel in the brick-resolution targets (bwidth × bheight).
+export function brickTexel(g, bx, by, bz) {
+  const BX = g.nx / BRICK, BZ = g.nz / BRICK;
+  return (Math.floor(by / g.btx) * BZ + bz) * g.bwidth + (by % g.btx) * BX + bx;
+}
+
 function makeTarget(w, h, count = 2) {
   return new THREE.WebGLRenderTarget(w, h, {
     count,

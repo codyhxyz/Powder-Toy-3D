@@ -482,6 +482,12 @@ export function createPov(app) {
     update,
     // the world was replaced (undo, a scene load): tools drop what they carry from the old one
     worldReplaced: () => toolsModule?.emptyLoads?.(),
+    // the window moved over the world by (dx, 0, dz) cells (docs/scaling.md D11): grid positions move back
+    windowShifted(dx, dz) {
+      dropPoint.x -= dx;
+      dropPoint.z -= dz;
+      player?.windowShifted(dx, dz);
+    },
     aimRay,
     blocksKey,
     // tests: look around without pointer lock (radians)

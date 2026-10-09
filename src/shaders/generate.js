@@ -321,3 +321,54 @@ void main() {
   oC = vec4(float(best) / ID_SCALE, solid / cells, liquid / cells, 0.0);
 }
 `;
+
+// Diff pass, over a slab about to leave the window (docs/scaling.md D11,
+// "Leaving slabs"): one texel per brick of grid cells [uLo, uLo + 4·uBricks),
+// DIFF_W per row in slab-brick order (shaders/window.js), r = 1 where the brick
+// differs from what the generator makes there, so world/window.js keeps it.
+// Air counts as unchanged while it is still air within AIR_REST_T of the
+// generator's temperature: its seed, velocity and pressure don't matter.
+// Matter needs the same element, ctype and seed (state A's w holds both),
+// life within STORE_LIFE_TOL and temperature within STORE_MATTER_T; its
+// velocity and pressure are ignored too. uOrigin (the prelude's) is the
+// window's, and tCol its columns.
+export const STORE_MATTER_T = 0.5;   // °C: drift a regenerated brick may lose (it is still quiet: well under AIR_REST_T)
+export const STORE_LIFE_TOL = 1e-4;  // life/latent/fuel units: float slop only (life changes by reactions)
+export const DIFF_W = 64;            // texels per row of the diff target
+export const diffFrag = (g) => /* glsl */ `
+${prelude(g)}
+${generatorGLSL}
+${layersGLSL}
+uniform ivec3 uLo;       // the slab's low corner, grid cells (brick-aligned)
+uniform ivec3 uBricks;   // the slab's size in bricks
+out vec4 oC;
+#define DIFF_W ${DIFF_W}
+#define STORE_MATTER_T ${STORE_MATTER_T}
+#define STORE_LIFE_TOL ${STORE_LIFE_TOL}
+bool cellDiffers(vec4 a, vec4 gen) {
+  int id = eid(a);
+  if (id != eid(gen)) return true;
+  if (id == E_EMPTY) return abs(a.y - gen.y) > AIR_REST_T;
+  return a.w != gen.w || abs(a.y - gen.y) > STORE_MATTER_T || abs(a.z - gen.z) > STORE_LIFE_TOL;
+}
+void main() {
+  ivec2 f = ivec2(gl_FragCoord.xy);
+  int i = f.x + DIFF_W * f.y;
+  ivec3 b = ivec3(i % uBricks.x, (i / uBricks.x) % uBricks.y, i / (uBricks.x * uBricks.y));
+  oC = vec4(0.0);
+  if (b.z >= uBricks.z) return;
+  ivec3 o = uLo + b * BS;
+  bool diff = false;
+  for (int z = 0; z < BS && !diff; z++)
+  for (int x = 0; x < BS && !diff; x++) {
+    GenLayers L = columnLayers(o.xz + ivec2(x, z));
+    for (int y = 0; y < BS; y++) {
+      ivec3 p = o + ivec3(x, y, z);
+      vec4 gA, gB;
+      genCell(L, uOrigin + p, gA, gB);
+      if (cellDiffers(fetchA(p), gA)) { diff = true; break; }
+    }
+  }
+  oC = vec4(diff ? 1.0 : 0.0, 0.0, 0.0, 1.0);
+}
+`;
