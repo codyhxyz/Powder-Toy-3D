@@ -137,6 +137,10 @@ export default {
       u.uGravity.value = sim.gravity;
       u.uMode.value = mode;
       u.uFling.value.copy(ctx.dir).normalize().multiplyScalar(PHYS.FLING);
+      // it changes only cells whose centres are within the beam's reach of the
+      // hold point (shaders/povTools.js), so only those are rebuilt and woken (Simulation.touch)
+      const at = hold.toArray();
+      sim.touchCentres(at.map((x) => x - PHYS.RADIUS), at.map((x) => x + PHYS.RADIUS));
       sim.pass(mat);
     }
 

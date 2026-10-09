@@ -33,9 +33,10 @@ const ATLAS_ASPECT_MAX = 4;
 const TOUCH_NONE_LO = 2 ** 30, TOUCH_NONE_HI = -1;
 // Cells per supertile along x, y, z (shaders/common.js SUPER_CELLS), indexed like a cell's [x, y, z].
 const SUPER_SIDE = [SUPER_CELLS.x, SUPER_CELLS.y, SUPER_CELLS.z];
-// Cells added around the brush's radius in the box it declares (touch()): its
-// cells' centres sit half a cell off the grid, so this covers them with room.
-const BRUSH_TOUCH_MARGIN = 1;
+// Cells added around a box of cell centres in the box a write declares
+// (touchCentres(): the brush, the first-person body and physgun): the centres
+// sit half a cell off the grid, so this covers them with room.
+const TOUCH_MARGIN = 1;
 
 // Supertiles per state-atlas row: the smallest divisor of their count from its
 // square root up, so the atlas is near square and every texel holds a cell
@@ -472,10 +473,17 @@ export class Simulation {
 
   // The next pass, a write to the state that isn't a step (run outside
   // step()), changes only cells in [lo, hi] (inclusive; [x, y, z] arrays), so
-  // the derived passes rebuild only the bricks there. Without it such a write
-  // rebuilds every brick.
+  // the derived passes rebuild only the bricks there, and only the supertiles
+  // there are woken for the next activity map's steps (noteWrite). Without it
+  // such a write rebuilds every brick and wakes every supertile.
   touch(lo, hi) {
     this.touchNext = { lo, hi };
+  }
+
+  // touch() for a pass that changes only cells whose centres lie in the box
+  // [lo, hi] (grid cells, any reals; [x, y, z] arrays).
+  touchCentres(lo, hi) {
+    this.touch(lo.map((x) => Math.floor(x) - TOUCH_MARGIN), hi.map((x) => Math.floor(x) + TOUCH_MARGIN));
   }
 
   // A write that isn't a step: the box it declared changed, or every brick.
@@ -609,7 +617,7 @@ export class Simulation {
     u.uReplace.value = replace;
     // it changes cells within radius of its centre (either shape)
     const c = [center.x, center.y, center.z];
-    this.touch(c.map((x) => Math.floor(x - radius) - BRUSH_TOUCH_MARGIN), c.map((x) => Math.floor(x + radius) + BRUSH_TOUCH_MARGIN));
+    this.touchCentres(c.map((x) => x - radius), c.map((x) => x + radius));
     this.pass(this.mats.paint);
   }
 
