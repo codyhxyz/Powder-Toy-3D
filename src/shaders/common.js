@@ -1,6 +1,7 @@
 import { elementsGLSL, ELEMENTS, K } from '../elements.js';
 import { incandescenceGLSL } from '../gfx/incandescence.js';
 import { physicsGLSL, PHYS } from '../physics.js';
+import { CELL_M } from '../scale.js';
 
 // Shared GLSL prelude. The 3D grid (NX × NY × NZ) is stored in 2D atlases and
 // every pass reads cells with texelFetch through the atlas functions below, so
@@ -65,6 +66,7 @@ precision highp sampler2D;
 #define NX ${g.nx}
 #define NY ${g.ny}
 #define NZ ${g.nz}
+#define CELL_M ${CELL_M.toFixed(4)}   // metres per cell (src/scale.js)
 #define BS ${BRICK}
 #define TILE ${TILE}         // state atlas: texels per brick tile edge
 #define SBX ${SUPER.x}          // bricks per supertile along x, y, z

@@ -1,4 +1,4 @@
-// POV viewmodel check (Gunplay v2): every tool's Kenney model loads and shows,
+// POV viewmodel check (Gunplay v2): every tool's model shows,
 // it doesn't clip into a wall you stand against, the spring recoil overshoots
 // and settles, and the tools announce their actions on the POV event bus.
 // usage: node tools/pov-viewmodels.mjs [--port 5242] [--sheet out.jpg]   (needs a dev server)

@@ -3,7 +3,7 @@ import { PHYS as ENGINE } from '../../physics.js';
 import { physgunFrag, physgunComFrag, toolPass, PHYS, PHYS_MODE, glowTexture, disposeTree } from '../../shaders/povTools.js';
 import { povEvents } from '../events.js';
 import { attachModel } from '../models.js';
-import { viewmodelRig, KICK } from '../viewmodel.js';
+import { viewmodelRig, HIT } from '../viewmodel.js';
 
 // Physgun: a force beam on loose matter (powders, liquids, gases). Press and
 // hold left-click to grab what's around the aim point: every frame one pass
@@ -24,7 +24,7 @@ import { viewmodelRig, KICK } from '../viewmodel.js';
 
 // viewmodel, in cells (camera space: +x right, +y up, −z forward)
 const GUN_POS = [0.6, -0.42, -1.45];
-const TIP = [0, 0.05, -0.72];     // cells from the model's centre: where the beam leaves
+const TIP = [0, 0.1, -0.65];      // cells from the model's centre: where the beam leaves
 const BEAM_TIP_RADIUS = 0.02;     // cells, where the beam leaves the gun...
 const BEAM_END_RADIUS = 0.15;     // ...and at the hold point (perspective evens it out)
 const BEAM_PULSE = 9;             // rad/s the beam's brightness throbs at
@@ -67,7 +67,7 @@ function rimMaterial() {
   });
 }
 
-// The held gun (the Kenney model, async, on a hand of the viewmodel rig) with
+// The held gun (the model, models.js, on a hand of the viewmodel rig) with
 // the tip glow, and the beam and reach ball in the world.
 function buildModel(env) {
   const rig = viewmodelRig(env);
@@ -184,7 +184,7 @@ export default {
           if (ctx.primaryPressed) prevHold.copy(hold);
           if (ctx.secondaryPressed) {
             run(ctx, PHYS_MODE.FLING);
-            model.rig.kick(KICK.FLING);
+            model.rig.hit(HIT.FLING);
             povEvents.emit('tool:action', { tool: 'physgun', action: 'fling', point: hold.clone() });
             holding = false;
           } else if (ctx.stepsPerFrame > 0) run(ctx, PHYS_MODE.HOLD);

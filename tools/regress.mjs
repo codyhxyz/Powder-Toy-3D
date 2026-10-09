@@ -4,21 +4,28 @@
 // frame loop only runs when this script pumps it, so every shot follows the
 // same frames (letting it run on rAF between shots made the count, and so the
 // frame-indexed noise, depend on GPU load).
-// usage: node tools/regress.mjs <outDir> --port N
+// usage: node tools/regress.mjs <outDir> --port N [--detail off|on|default]
+//   --detail: close-up detail features (gfx/detail.js) all off (the default,
+//   so a feature switched off can be proven pixel-identical), all on, or as
+//   their cost tiers set them.
 // Compare two runs with: compare -metric AE -fuzz 1% a.png b.png null:
 import { chromium } from 'playwright';
 import { mkdirSync } from 'fs';
+import { DETAIL, settingKey, detailDefaults } from '../src/gfx/detail.js';
 const args = process.argv.slice(2);
 const out = args[0];
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
 const port = opt('port', '5191');
 mkdirSync(out, { recursive: true });
+const detailMode = opt('detail', 'off');
+const detail = detailMode === 'default' ? detailDefaults()
+  : Object.fromEntries(DETAIL.map((f) => [settingKey(f), detailMode === 'on']));
 const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
 const p = await b.newPage({ viewport: { width: 1280, height: 800 } });
-await p.addInitScript(() => {
+await p.addInitScript((detail) => {
   let s = 12345;   // mulberry32: same scene every run
   Math.random = () => { s |= 0; s = (s + 0x6d2b79f5) | 0; let t = Math.imul(s ^ (s >>> 15), 1 | s); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
-  localStorage.setItem('powder-toy-3d:settings', JSON.stringify({ paused: true }));
+  localStorage.setItem('powder-toy-3d:settings', JSON.stringify({ paused: true, ...detail }));
   // the UI (hint toast, sliders) animates on wall-clock timers: hide it
   addEventListener('DOMContentLoaded', () => {
     const st = document.createElement('style');
@@ -33,7 +40,7 @@ await p.addInitScript(() => {
   window.cancelAnimationFrame = (i) => held.delete(i);
   window.__pump = (n = 1) => { for (let k = 0; k < n; k++) { const cbs = [...held.values()]; held = new Map(); vt += FRAME_MS; cbs.forEach((cb) => cb(vt)); } };
   performance.now = () => vt;
-});
+}, detail);
 const errs = [];
 p.on('console', (m) => { if (m.type() === 'error') errs.push(m.text().slice(0, 500)); });
 p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 500)));

@@ -5,7 +5,8 @@ import {
   persistentLoad, cellsNear, outsideBody, bodyExit, toStepVelocity, aimInReach, faceNormal, recolor,
 } from './transfer.js';
 import { povEvents } from '../events.js';
-import { attachModel } from '../models.js';
+import { trigger } from './action.js';
+import { attachModel, BUCKET_SIDES } from '../models.js';
 import { viewmodelRig, heldMaterial } from '../viewmodel.js';
 
 // Bucket (slot 2). Left-click dips it into the liquid you aim at; hold to keep
@@ -27,7 +28,6 @@ const POUR_SPEED = 6;                // cells/s along the aim, on top of the bod
 const POUR_REACH = 1.5;              // cells from the eye to the spout
 const SPOUT_RADIUS = 1.2;            // cells: the stream fills empty cells this close to the spout
 const BODY_CLEARANCE = 0.3;          // cells kept clear around the body
-const REFUSE_TOAST_INTERVAL = 1.5;   // s between repeated toasts
 
 // held item, in cells (camera space; the viewmodel rig scales it by the world's
 // cell size). The model (models.js 'bucket') is upright and centred; the
@@ -36,9 +36,9 @@ const HELD_POS = [0.8, -0.8, -1.8];  // right, down, ahead of the eye
 const HELD_TILT = 0.35;              // radians, the rim tips toward the eye
 const PAIL_FLOOR = 0.04;             // the pail's floor, as a share of the model's height from its bottom...
 const PAIL_RIM = 0.6;                // ...and its rim (the bail rises above it)
-const PAIL_BASE_R = 0.36;            // the pail's inner radius at the floor, as a share of the model's width...
-const PAIL_RIM_R = 0.46;             // ...and at the rim
-const SEGMENTS = 18;
+const PAIL_BASE_R = 0.32;            // the pail's inner radius at the floor, as a share of the model's width...
+const PAIL_RIM_R = 0.42;             // ...and at the rim
+const SEGMENTS = BUCKET_SIDES;       // the pail's sides, so the disc's edge lies along its walls
 
 const ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 9h14l-1.6 10.2a1.5 1.5 0 0 1-1.5 1.3H8.1a1.5 1.5 0 0 1-1.5-1.3z"/>'
   + '<path d="M5 9c0-3.5 3-5.5 7-5.5s7 2 7 5.5"/></svg>';
@@ -49,8 +49,8 @@ export default {
   create(env) {
     const load = persistentLoad('BUCKET', BUCKET_CAPACITY);
     const transfer = env.transfer;
-    let scoopWait = 0, pour = 0;
-    let lastRefuse = -Infinity, clock = 0;
+    const dip = trigger(SCOOP_INTERVAL);   // dips, hold to repeat
+    let pour = 0;
 
     // held item: the pail on a hand of the viewmodel rig, and the liquid's surface in it
     const rig = viewmodelRig(env);
@@ -72,24 +72,17 @@ export default {
     });
     const act = (action, extra) => povEvents.emit('tool:action', { tool: 'bucket', action, ...extra });
 
-    function refuse(text, id) {
-      if (clock - lastRefuse < REFUSE_TOAST_INTERVAL) return;
-      lastRefuse = clock;
-      env.feedback?.toast(text);
-      env.feedback?.shake();
-      act('refuse', { id });
-    }
+    const refuse = (text, id) => env.feedback?.refuse(text, { id });
 
     function scoop(ctx, aim) {
-      scoopWait -= ctx.dt;
-      if (scoopWait > 0 || !aim || aim.id < 0 || ELEMENTS[aim.id].kind !== K.LIQUID) return;
+      if (!aim || aim.id < 0 || ELEMENTS[aim.id].kind !== K.LIQUID) return;
       const holds = load.cells.length ? load.mainId : -1;
       if (holds >= 0 && holds !== aim.id) { refuse(`The bucket holds ${ELEMENTS[holds].name.toLowerCase()}`, aim.id); return; }
       if (load.free <= 0) { if (!load.busy && ctx.primaryPressed) refuse('The bucket is full', aim.id); return; }
       const center = aim.cell.clone().addScalar(0.5).addScaledVector(faceNormal(aim.face), -DIP_SINK);
       const p = transfer.take(load, { cells: cellsNear(center, SCOOP_RADIUS, ctx.sim.g), kinds: [K.LIQUID], want: aim.id });
       if (p) {
-        scoopWait = SCOOP_INTERVAL;
+        dip.fire();
         const id = aim.id;
         p.then((got) => { if (got.length) act('scoop', { id, point: center, amount: got.length }); });
       }
@@ -121,7 +114,6 @@ export default {
     return {
       load,
       update(ctx) {
-        clock += ctx.dt;
         hand.visible = true;
         rig.update(ctx);
         if (load.version !== surfaceVersion) {
@@ -132,8 +124,7 @@ export default {
           surface.position.y = THREE.MathUtils.lerp(pail.floor, pail.rim, fill);
           surface.scale.setScalar(THREE.MathUtils.lerp(pail.baseR, pail.rimR, fill));
         }
-        if (ctx.primary) scoop(ctx, aimInReach(ctx, HAND_REACH));
-        else scoopWait = 0;
+        if (dip.ready(ctx) && ctx.primary) scoop(ctx, aimInReach(ctx, HAND_REACH));
         if (ctx.secondaryPressed) pourPress++;
         if (ctx.secondary) pourOut(ctx);
         else pour = 0;

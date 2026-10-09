@@ -101,8 +101,9 @@ fetch outside common.js, so code merged from main can't bypass the accessors.
 ### D7. Packed state
 Cost follows bytes per cell (see Measured), so the target is one RGBA32UI texture per copy, 16 bytes per cell
 instead of 32:
-- x: id 6 | ctype 6 | inert 1 | seed 19
-  - inert is written by react.
+- x: id 6 | ctype 6 | spare 1 | seed 19
+  - The inert flag lives in its own R8 target written by react and every other state writer (D8), so the
+    activity reduction reads 1 byte per cell.
   - Another session (`../tpt-rest-pos`, not yet on main) turns the seed into a grain's rest position: three
     6-bit axes plus a free-fall flag, scrambled, in 19 bits (`src/shaders/rest.js`). The seed field holds all 19.
 - y: temperature as f32 bits. Conduction fluxes are tiny and must not round away.
@@ -141,8 +142,11 @@ R16UI texture for vz and the flags (18 bytes per cell).
 Fields, bricks and light are rebuilt only for bricks that changed within their settle window (EMA), dilated by
 each kernel's reach. Shadow and GI keep their own cadence. Converged regions cost nothing.
 
-### D10. Undo stores changed bricks
-Snapshots copy only the bricks a stroke or scene change touches, not three full copies of the state.
+### D10. Undo (deferred)
+Copying only the bricks a stroke touches isn't a correct undo: matter flows out of those bricks afterwards.
+The exact version copies each brick when it first wakes after the snapshot (a sleeping brick hasn't changed), so
+it needs D8's activity machinery. Until then, snapshots stay full copies: packing (D7) halves them, and window
+moves (D11) clear the history.
 
 ### D11. Massive world
 The world is much larger than what lives on the GPU. Its size is `WORLD` cells, for example 1024×256×1024.

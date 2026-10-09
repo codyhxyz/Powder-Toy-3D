@@ -21,6 +21,9 @@ const WISP_PERIODS = [5, 10, 16];
 const TONGUE_PERIODS = [4, 8, 16];
 const FLICKER_PERIODS = [4, 8, 16];
 const OCTAVE_WEIGHTS = [0.57, 0.29, 0.14];
+// the finest lattice period of any channel (lattice cells per tile): close-up
+// detail (shaders/gfx/mediaDetail.js) reads the tile scaled down from here
+export const NOISE_FINEST_PERIOD = Math.max(...BILLOW_PERIODS, ...WISP_PERIODS, ...TONGUE_PERIODS, ...FLICKER_PERIODS);
 // Hash seeds of the channels (each octave adds its index), so they're independent.
 const BILLOW_SEED = 11, WISP_SEED = 23, TONGUE_SEED = 37, FLICKER_SEED = 53;
 const HIST_BINS = 4096;               // equalisation histogram resolution

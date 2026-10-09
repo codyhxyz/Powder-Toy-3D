@@ -5,6 +5,7 @@
 import * as THREE from 'three';
 
 export const DAY = {
+  running: false,      // the clock is held: the user doesn't want night (the slider still sets the hour)
   cycleSteps: 72000,    // simulation steps per day and night: 5 min at 4 steps per frame and 60 fps
   startPhase: 10 / 24,  // share of the day at load (0 midnight, 0.25 sunrise, 0.5 noon): 10 am
   latitude: 35,         // degrees; at the equinox the sun peaks at 90 - latitude

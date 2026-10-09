@@ -277,6 +277,20 @@ void main() {
 }
 `;
 
+// Cell p's slot in the block pass output: m (its packed source and new
+// velocity) and q, the cell its content comes from.
+const slotLookup = () => /* glsl */ `
+  ivec3 off = ivec3(uParity);
+  ivec3 base = ((p + off) / 2) * 2 - off;
+  ivec3 lp = p - base;
+  int me = lp.x + 2 * lp.y + 4 * lp.z;
+  ivec2 bt = blockAtlas((base + off) / 2);
+  vec4 m;
+  ${CELLS.map((i) => `${i ? 'else ' : ''}if (me == ${i}) m = texelFetch(tM${i}, bt, 0);`).join('\n  ')}
+  int code = int(m.x + 0.5);
+  int src = code % SLOTS;
+  ivec3 q = base + ivec3(src & 1, (src >> 1) & 1, (src >> 2) & 1);`;
+
 export const moveGatherFrag = (g) => /* glsl */ `
 ${prelude(g)}
 ${CELLS.map((i) => `uniform sampler2D tM${i};`).join('\n')}
@@ -287,16 +301,7 @@ ${heatGLSL}
 void main() {
   ivec3 p = cellFromFrag(ivec2(gl_FragCoord.xy));
   if (!inGrid(p)) { writeState(vec4(0.0), vec4(0.0), 0u); return; }   // a texel holding no cell
-  ivec3 off = ivec3(uParity);
-  ivec3 base = ((p + off) / 2) * 2 - off;
-  ivec3 lp = p - base;
-  int me = lp.x + 2 * lp.y + 4 * lp.z;
-  ivec2 bt = blockAtlas((base + off) / 2);
-  vec4 m;
-  ${CELLS.map((i) => `${i ? 'else ' : ''}if (me == ${i}) m = texelFetch(tM${i}, bt, 0);`).join('\n  ')}
-  int code = int(m.x + 0.5);
-  int src = code % SLOTS;
-  ivec3 q = base + ivec3(src & 1, (src >> 1) & 1, (src >> 2) & 1);
+  ${slotLookup()}
   vec4 a = fetchA(q);
   float heat = float(code / SLOTS) / HEAT_QUANTA;   // impact energy this cell took (block pass)
   if (heat > 0.0) a.y = min(a.y + heat * KE_TO_HEAT / CAP[eid(a)], CELL_TEMP_MAX);
@@ -306,5 +311,27 @@ void main() {
   if (uFresh) f &= ~FLAG_DIRTY;
   if (nearChange(fetchA(p), a)) f |= FLAG_DIRTY;
   writeState(a, vec4(m.yzw, fetchB(p).w), f);
+}
+`;
+
+// Flow field for the renderer (gfx/surface.js, flowing grains): how far each
+// cell's content moved this step (from q to p, as the gather reads it), which
+// the blend unit averages into the field over recent steps (Simulation's
+// FLOW_BLEND). This is motion that happened, not velocity: grains pressed
+// against a pile want to fall but go nowhere, so a resting pile reads 0.
+// Quiet bricks (shaders/activity.js) hold only still air and solids, which
+// the renderer doesn't read flow for, so they keep what they have.
+export const moveFlowFrag = (g) => /* glsl */ `
+${prelude(g)}
+${CELLS.map((i) => `uniform sampler2D tM${i};`).join('\n')}
+uniform int uParity;
+out vec4 oV;
+${heatGLSL}
+${quietGLSL}
+void main() {
+  ivec3 p = cellFromFrag(ivec2(gl_FragCoord.xy));
+  if (!inGrid(p) || quietCell(p)) discard;
+  ${slotLookup()}
+  oV = vec4(vec3(p - q), 0.0);
 }
 `;

@@ -136,6 +136,17 @@ export default {
 }
 ```
 
+**Shared feel: use these, don't hand-roll per tool**, so every tool (and a new one) acts and responds the same:
+
+- `tools/action.js` `trigger(interval, { hold, button })`: when a button acts. HL2's weapon timing: acts on
+  the frame the button goes down, then every `interval` while held (`hold: false` for one per click), and
+  a click during the wait is buffered. `swing(spec)`: a melee blow's eased pose, stopping short on a hit and
+  following through on a miss.
+- `viewmodel.js` `HIT` and `rig.hit(HIT.X)`: a tool's shot, blow or fling, as the hand's spring kick plus
+  the view punch (feel.js, Source's ViewPunch spring). Add a row to `HIT` for a new tool.
+- `env.feedback.notice(text)` / `refuse(text, { id, point })`: the throttled "can't" toast, slot shake and
+  `tool:action 'refuse'`.
+
 `ctx` is built by the body module every frame in POV:
 
 ```js
@@ -165,6 +176,7 @@ say world. Emitters own their event names. Listeners never mutate payloads.
 
 | Event | Emitted by | Payload |
 |---|---|---|
+| `punch` | `rig.hit` (viewmodel.js `HIT`) | `{ pitch, yaw }` rad, + up and + left. Throws the view punch (feel.js). |
 | `gun:fire` | gun | `{ origin, dir, muzzleWorld }`. The round left the muzzle (origin grid, dir unit; muzzleWorld is the viewmodel muzzle in world space, for the flash). |
 | `gun:dry` | gun | `{}`. The trigger clicked but nothing fired (muzzle blocked). |
 | `round:move` | gun | `{ id, from, to }`. A round in flight moved this frame (grid), for tracers. |
@@ -180,7 +192,7 @@ The player's own events (`player.on('hurt'|'death'|'land'|'splash')`) stay as th
 | Area | Owner | Files |
 |---|---|---|
 | Ballistic rounds, GPU segment trace, impact handoff | gun | `src/pov/tools/gun.tool.js` (all but `buildModel`), `src/pov/ballistics.js`, `src/shaders/povTrace.js` |
-| Viewmodels (Kenney CC0 glTF), viewmodel rig (spring recoil, sway), overlay render pass, tool emits | viewmodels | `public/models/tools/**`, `src/pov/models.js`, `src/pov/viewmodel.js`, the model-building code in every `*.tool.js` (and `buildModel` in gun.tool.js), `tool:action` emits in shovel/bucket/axe/physgun, the overlay hook in `src/app.js` |
+| Viewmodels (procedural RuneScape-style models), viewmodel rig (spring recoil, sway), overlay render pass, tool emits | viewmodels | `src/pov/models.js`, `src/pov/viewmodel.js`, the model-building code in every `*.tool.js` (and `buildModel` in gun.tool.js), `tool:action` emits in shovel/bucket/axe/physgun, the overlay hook in `src/app.js` |
 | Camera kick, trauma shake, hitmarker, crosshair bloom, three.quarks VFX (flash, sparks, dust, tracer), footsteps | feel | `src/pov/feel.js`, `src/pov/vfx.js`, `src/pov/camera.js`, `src/pov/hud.js`, `src/pov/pov.css`, `src/pov/index.js` |
 | Sound (ZzFX + PositionalAudio) for every POV event | audio | `src/pov/audio.js` (+ one wiring line in `src/pov/index.js`) |
 | Realistic body (Quaternius, AnimationMixer) behind a Stickman/Realistic setting | character | `public/models/character/**`, `src/pov/figureReal.js`, the settings row in `src/app.js`, a figure switch in `src/pov/index.js` |
