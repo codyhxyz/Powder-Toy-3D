@@ -276,10 +276,12 @@ function pageSetup({ bootFrames, cellTexelExports, quietMin }) {
     if (b.canvasLast) b.syncOwn();
   };
 
-  // The timed work. setup/teardown run untimed around a metric's chunks.
+  // The timed work. setup/teardown run untimed around a metric's chunks; a build without what
+  // a metric calls reports — for it instead of failing the run.
   b.metrics = {
-    derived: { run: () => a.sim.updateBricks() },
+    derived: { supported: () => typeof a.sim.updateBricks === 'function', run: () => a.sim.updateBricks() },
     view: {
+      supported: () => typeof a.post?.render === 'function',
       setup() {
         a.rig?.reset(true);   // the home view
         b.pump(1);           // one app frame: derived passes, shadow, GI and the volume's uniforms for this state
