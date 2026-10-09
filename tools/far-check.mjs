@@ -171,10 +171,31 @@ if (out && !skip.has(3)) {
   await still(`${out}/move-after1.png`);
   await p.evaluate(async (SETTLE) => { await window.__fc.frames(SETTLE); }, SETTLE_FRAMES);
   await still(`${out}/move-settled.png`);
+  // the far field's own pixels: the window's box before and after the move (its screen rectangle) blacked out
+  const rect = await p.evaluate(() => {
+    const a = window.__app, g = a.sim.g, s = a.scale, v = a.volume.position, d = a.win.last?.dx ?? 0;
+    const V = a.camera.position.constructor;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (let i = 0; i < 8; i++) {
+      // the moved box sits at v; the old one d cells back along x
+      const q = new V(v.x + ((i & 1) ? g.nx : -d) * s, v.y + ((i >> 1) & 1) * g.ny * s, v.z + ((i >> 2) & 1) * g.nz * s).project(a.camera);
+      const x = (q.x * 0.5 + 0.5) * innerWidth, y = (0.5 - q.y * 0.5) * innerHeight;
+      x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y);
+    }
+    return [x0, y0, x1, y1].map(Math.round);
+  });
+  const mask = (f) => {
+    const m = f.replace('.png', '-masked.png');
+    execFileSync('magick', [f, '-fill', 'black', '-draw', `rectangle ${rect.join(',')}`, m]);
+    return m;
+  };
+  const [mb, m1, ms] = ['move-before', 'move-after1', 'move-settled'].map((n) => mask(`${out}/${n}.png`));
   res.move = {
     moved: await p.evaluate(() => window.__app.win.last && [window.__app.win.last.dx, window.__app.win.last.dz]),
+    windowRect: rect,
     firstFramePixels: ae(`${out}/move-before.png`, `${out}/move-after1.png`),
-    settledPixels: ae(`${out}/move-before.png`, `${out}/move-settled.png`),
+    farFieldPixels: ae(mb, m1),
+    farFieldSettledPixels: ae(mb, ms),
   };
   await p.evaluate(() => { window.__app.post.settings.taa = true; window.__app.worldFocus = null; });
 }
