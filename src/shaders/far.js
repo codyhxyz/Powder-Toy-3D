@@ -962,6 +962,10 @@ export const FAR_VIEW = {
   AO_MIN: 0.35,            // ...down to this
   WATER_STEP: 4.0,         // the refracted ray's steps under water, looking for the bed...
   WATER_STEPS: 8,          // ...this many at most (deeper reads as open water)
+  CLUMP_M: 0.6,            // m: clumps of foliage on a far crown (its leaves are below a pixel there)...
+  CLUMP_H_M: 0.15,         // ...their relief (m), a bump...
+  CLUMP_CAV: 0.9,          // ...and the shade in their hollows (cavity swing per unit of the clump noise)
+  CLUMP_OCT: 2,            // fBm octaves of the clumps
   SUN_DISC: 40.0,          // the sun's disc radiance, × the sunlight at the ground (the real ratio blooms the whole sky)
   SUN_DISC_EDGE: 0.15,     // its soft edge, share of its radius
   HAZE: KOSCHMIEDER / (FAR_HAZE_VISIBILITY_M / CELL_M),   // extinction per cell of the air, green (blue and red follow the sky's)
@@ -1025,6 +1029,10 @@ const float FAR_SUN_RAY[FAR_SUN_RAY_N] = float[FAR_SUN_RAY_N](${FAR_VIEW.SUN_RAY
 #define FAR_SUN_RAY_LIFT ${glf(FAR_VIEW.SUN_RAY_LIFT)}
 #define FAR_SUN_RAY_LO ${glf(FAR_VIEW.SUN_RAY_EDGE[0])}
 #define FAR_SUN_RAY_HI ${glf(FAR_VIEW.SUN_RAY_EDGE[1])}
+#define FAR_CLUMP_F ${glf(+(CELL_M / FAR_VIEW.CLUMP_M).toFixed(4))}   // per cell
+#define FAR_CLUMP_H ${glf(+(FAR_VIEW.CLUMP_H_M / CELL_M).toFixed(4))}   // cells
+#define FAR_CLUMP_CAV ${glf(FAR_VIEW.CLUMP_CAV)}
+#define FAR_CLUMP_OCT ${FAR_VIEW.CLUMP_OCT}
 #define FAR_AO_D1 ${glf(FAR_VIEW.AO_D1)}
 #define FAR_AO_D2 ${glf(FAR_VIEW.AO_D2)}
 #define FAR_AO_K ${glf(FAR_VIEW.AO_K)}
@@ -1165,7 +1173,14 @@ float farGlowT(vec3 p, vec3 n) {
 // over its open share, its own glow.
 vec3 farShadeOpaque(vec3 p, vec3 n, vec3 rd, float sunVis) {
   int id = farElement(p, n);
-  Mat m = matOf(id, p, n, farGlowT(p, n), 0.0, footprint(p));
+  float fp = footprint(p);
+  Mat m = matOf(id, p, n, farGlowT(p, n), 0.0, fp);
+  if (id == E_PLANT) {
+    // foliage: its leaves have faded into the far look; clumps of them still show (fading in turn)
+    vec4 cl = mFbmD(p, FAR_CLUMP_F, FAR_CLUMP_OCT, fp);
+    m.g += FAR_CLUMP_H * cl.yzw;
+    m.cav *= 1.0 + FAR_CLUMP_CAV * cl.x;
+  }
   // the material's bump tilts the normal (applyMat)
   vec3 gt = m.g - n * dot(n, m.g);
   float gl = length(gt);
@@ -1277,8 +1292,12 @@ void main() {
   } else if (tHit < NO_HIT) {
     vec3 p = ro + rd * tHit;
     if (cut) {
-      // behind the window's ground: hidden but for a dug-out window side; flat, unlit by the sun
-      col = ALBEDO[farIds(p).x] * skyAmbient(-rd);
+      // came out of the window inside matter. Behind the window's ground: hidden
+      // (but for a dug-out side), so flat and unlit by the sun. In its water,
+      // which the volume draws see-through: the water body's own light, as
+      // deep water shows, so the window's water carries on past its side.
+      vec4 v = farSample(p);
+      col = v.r >= v.g ? ALBEDO[farIds(p).x] * skyAmbient(-rd) : farInScatter(farLiquidId(farIds(p).y), farSunVis(p, 0));
     } else {
       vec4 v = farSample(p);
       float sunVis = farSunVis(p, 0);

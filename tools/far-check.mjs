@@ -27,10 +27,15 @@ if (out) mkdirSync(out, { recursive: true });
 const SUN = { az: 215, el: 38 };   // a fixed sun for every still
 const SETTLE_FRAMES = 90;          // frames for the derived passes, GI and TAA to converge
 const COST_ROUNDS = 40;            // interleaved timing rounds (each draws with and without)
-const EYE_DIR = [0.82, 0.57];      // the eye view's spot: out from the island's centre this way (x, z)...
-const EYE_BELOW_FROST = 3;         // ...to where the ground is this many cells under the lowest snow (bare rock: an open view)
-const EYE_CLEAR = 24;              // cells around the spot with no tree trunk (on the rock)...
-const EYE_BEACH_CLEAR = 20;        // ...and on the beach (palms grow there; crowns reach 16)
+const EYE_DIR = [0.82, 0.57];      // the eye views' beach: out from the island's centre this way (x, z)...
+const EYE_INLAND = 4;              // ...this many cells in from the waterline, on sand...
+const EYE_CLEAR = 12;              // ...with no trunk this close (else on round the coast by EYE_TURN_STEP radians)
+const EYE_TURN_STEP = 0.05;
+const EYE_DROP = 2;                // cells over the ground the body is put down at
+// the looks from the beach and the summit: [name, yaw from facing out to sea (radians), pitch]
+const EYE_BEACH_LOOKS = [['sea', 0, -0.04], ['coast', 1.35, 0.05]];
+const EYE_SUMMIT_LOOKS = [['hills', 0, -0.16]];
+const EYE_SUMMIT_OUT = 100;        // cells out from the island's centre along EYE_DIR: the summit snow's edge
 const TREE_REGION = [320, 320, 704, 704];   // world cells [x0, z0, x1, z1) where the tree placements are compared
 
 const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
@@ -121,43 +126,51 @@ if (out && !skip.has(1)) {
 }
 
 // ------------------------------------------------------------- 2. eye level, first person
-// Two spots out along EYE_DIR: the bare rock under the snow, looking out over
-// the slopes to the sea; a beach, looking inland to the hills.
+// From a beach out along EYE_DIR: out to sea, and along the coast; from the
+// summit's snow: out and down over the forested hills to the sea.
 if (out && !skip.has(2)) {
-  for (const [tag, from, toward] of [['sea', 'rock', 'edge'], ['hills', 'beach', 'centre']]) {
-    await p.evaluate(async ([DIR, BELOW, CLEAR, BEACH_CLEAR, from, toward, SETTLE]) => {
+  for (const [where, looks] of [['beach', EYE_BEACH_LOOKS], ['summit', EYE_SUMMIT_LOOKS]]) {
+    await p.evaluate(async ([where, DIR, INLAND, CLEAR, TURN_STEP, EYE_DROP, SUMMIT_OUT]) => {
       const a = window.__app, H = window.__fc, g = a.sim.g, w = a.win;
-      const { heightAt, frostLine, treesIn } = await import('/src/world/generator.js');
+      const { heightAt, layersAt, treesIn } = await import('/src/world/generator.js');
       const c = [w.size[0] / 2, w.size[2] / 2];
-      const clear = (x, z, r) => !treesIn(x - r, z - r, x + r, z + r, w.P).length;
       let spot = c;
-      if (from === 'rock') {
-        // out from the centre to the bare rock under the snow, then on to a spot with no tree near
-        for (let r = 0; r < c[0]; r += 2) {
-          const x = c[0] + DIR[0] * r, z = c[1] + DIR[1] * r;
-          if (heightAt(x, z, w.P) <= frostLine(w.P) - BELOW && clear(x, z, CLEAR)) { spot = [x, z]; break; }
+      if (where === 'beach') {
+        // round the coast from EYE_DIR: in from the world's edge to the first dry
+        // land, a few cells on: the first such spot on sand with no trunk near
+        const a0 = Math.atan2(DIR[1], DIR[0]);
+        for (let k = 0; k < 2 * Math.PI / TURN_STEP && spot === c; k++) {
+          const d = [Math.cos(a0 + k * TURN_STEP), Math.sin(a0 + k * TURN_STEP)];
+          let r = c[0];
+          while (r > 0 && heightAt(c[0] + d[0] * r, c[1] + d[1] * r, w.P) <= w.P.sea + 1) r--;
+          const x = c[0] + d[0] * (r - INLAND), z = c[1] + d[1] * (r - INLAND);
+          if (layersAt(Math.floor(x), Math.floor(z), w.P).sand && !treesIn(x - CLEAR, z - CLEAR, x + CLEAR, z + CLEAR, w.P).length) spot = [x, z];
         }
       } else {
-        // in from the world's edge to the first dry land, then on to a spot with no tree near
-        let land = false;
-        for (let r = c[0]; r > 0; r -= 2) {
-          const x = c[0] + DIR[0] * r, z = c[1] + DIR[1] * r;
-          land ||= heightAt(x, z, w.P) > w.P.sea + 1;
-          if (land && clear(x, z, BEACH_CLEAR)) { spot = [x, z]; break; }
-        }
+        spot = [c[0] + DIR[0] * SUMMIT_OUT, c[1] + DIR[1] * SUMMIT_OUT];
       }
       if (a.pov.active) { a.pov.exit(true); await H.frames(3); }
       a.worldLoad([Math.round((spot[0] - g.nx / 2) / 16) * 16, 0, Math.round((spot[1] - g.nz / 2) / 16) * 16]);
       await H.frames(10);
       await a.pov.enter();
-      await H.frames(120);   // swoop in, land
-      const o = a.sim.origin, pp = a.pov.player.pos;
-      const here = [o.x + pp.x, o.z + pp.z];
-      const d = toward === 'centre' ? [c[0] - here[0], c[1] - here[1]] : [here[0] - c[0], here[1] - c[1]];
-      a.pov.setLook(Math.atan2(-d[0], -d[1]), toward === 'centre' ? 0.06 : -0.04);
-      await H.frames(SETTLE);
-    }, [EYE_DIR, EYE_BELOW_FROST, EYE_CLEAR, EYE_BEACH_CLEAR, from, toward, SETTLE_FRAMES]);
-    await still(`${out}/eye-${tag}.png`);
+      await H.frames(120);   // swoop in
+      // (it drops in at the window's middle, onto whatever is there: put the body on the spot, over its ground)
+      const o = a.sim.origin, V3 = a.camera.position.constructor;
+      a.pov.player.spawn(new V3(spot[0] - o.x, heightAt(spot[0], spot[1], w.P) + EYE_DROP, spot[1] - o.z));
+      await H.frames(90);    // land
+    }, [where, EYE_DIR, EYE_INLAND, EYE_CLEAR, EYE_TURN_STEP, EYE_DROP, EYE_SUMMIT_OUT]);
+    for (const [tag, turn, pitch] of looks) {
+      await p.evaluate(async ([turn, pitch, SETTLE]) => {
+        const a = window.__app, H = window.__fc, w = a.win;
+        const c = [w.size[0] / 2, w.size[2] / 2], o = a.sim.origin, pp = a.pov.player.pos;
+        let d = [o.x + pp.x - c[0], o.z + pp.z - c[1]];
+        if (Math.hypot(...d) < 1) d = [1, 0];
+        const outward = Math.atan2(-d[0], -d[1]);   // yaw facing away from the island's centre
+        a.pov.setLook(outward + turn, pitch);
+        await H.frames(SETTLE);
+      }, [turn, pitch, SETTLE_FRAMES]);
+      await still(`${out}/eye-${tag}.png`);
+    }
   }
   await p.evaluate(async () => { window.__app.pov.exit(true); await window.__fc.frames(5); });
 }
