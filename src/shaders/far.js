@@ -681,8 +681,9 @@ void main() {
 `;
 
 // Brick-column tops: the height (cells) of the top of each column's opaque
-// matter, from its highest brick holding some (FAR.THIN_MIN: loose grains
-// don't count): 4·y + 4·value, exact for the ground's top brick; 0 for none.
+// matter, where the opaque field falls through FAR.ISO above its highest
+// brick at or over it, between that brick's centre and the one above (exact
+// for the ground: the field is 0.5 + (h - y) / 8 there); 0 for none.
 export const farTopFrag = (L) => /* glsl */ `
 precision highp float;
 precision highp int;
@@ -690,12 +691,17 @@ precision highp sampler2D;
 ${farLayoutGLSL(L)}
 uniform sampler2D tFar;
 out vec4 oC;
+#define FAR_TOP_EPS 1e-3   // value steps below this count as none
 void main() {
   ivec2 c = ivec2(gl_FragCoord.xy);
-  float h = 0.0;
+  float h = 0.0, above = 0.0;
   for (int y = WBY - 1; y >= 0; y--) {
     float v = texelFetch(tFar, farTexel(ivec3(c.x, y, c.y)), 0).r;
-    if (v >= FAR_THIN_MIN) { h = float(y * FAR_BRICK) + float(FAR_BRICK) * min(v, 1.0); break; }
+    if (v >= FAR_ISO) {
+      h = (float(y) + 0.5 + (v - FAR_ISO) / max(v - above, FAR_TOP_EPS)) * float(FAR_BRICK);
+      break;
+    }
+    above = v;
   }
   oC = vec4(h, 0.0, 0.0, 1.0);
 }
@@ -921,8 +927,11 @@ float farRoot(vec3 ro, vec3 rd, float ta, float tb, float fa, float fb) {
 // reaches FAR_ISO, the window's stretch (w0, w1) left out; NO_HIT if none.
 // Unset L2 and L1 nodes are crossed whole; a set one is walked brick by brick,
 // the field sampled at each brick segment's ends (and its middle when either
-// end is near the level).
-float farMarch(vec3 ro, vec3 rd, float t0, float t1, float w0, float w1) {
+// end is near the level). cut: the ray was already inside matter where it
+// came out of the window (it went through the window's ground, which the
+// volume draws in front: the far field only fills in behind it).
+float farMarch(vec3 ro, vec3 rd, float t0, float t1, float w0, float w1, out bool cut) {
+  cut = false;
   vec3 inv = 1.0 / rd;
   float t = t0, f = -1.0;   // f: the field at t (-1: not read since the last jump)
   ivec3 n2Last = ivec3(-1), n1Last = ivec3(-1);
@@ -942,7 +951,7 @@ float farMarch(vec3 ro, vec3 rd, float t0, float t1, float w0, float w1) {
     if (t < w0 && te > w0) te = w0;   // the window starts inside this brick
     if (f < 0.0) {
       f = farMatter(p);
-      if (f >= FAR_ISO) return t;      // (starts inside matter: a jump landed in it, or the window's side cut it)
+      if (f >= FAR_ISO) { cut = true; return t; }   // (started inside matter: past the window, or at the camera)
     }
     float fe = farMatter(ro + rd * te);
     if (max(f, fe) > FAR_NEAR) {
@@ -1107,7 +1116,8 @@ void main() {
   if (tw.x > tw.y || tw.y < 0.0) tw = vec2(NO_HIT);
   vec2 tb = farSlab(ro, inv, vec3(0.0), vec3(WORLD));
   float t0 = max(tb.x, 0.0), t1 = tb.y;
-  float tHit = t0 < t1 ? farMarch(ro, rd, t0, t1, tw.x, tw.y) : NO_HIT;
+  bool cut = false;
+  float tHit = t0 < t1 ? farMarch(ro, rd, t0, t1, tw.x, tw.y, cut) : NO_HIT;
 
   // the open sea beyond the world (and a march that ran out of steps over it)
   float tSea = rd.y < 0.0 && ro.y > uSea ? (uSea - ro.y) / rd.y : NO_HIT;
@@ -1124,10 +1134,15 @@ void main() {
     depth = farDepth(ps);
   } else if (tHit < NO_HIT) {
     vec3 p = ro + rd * tHit;
-    vec4 v = farSample(p);
-    float sunVis = farSunVis(p, 0);
-    if (v.g > v.r) col = farLiquid(p, rd, farIds(p - vec3(0.0, FAR_ID_INSET, 0.0)).y, sunVis, -1.0);
-    else col = farShadeOpaque(p, farNormal(p, 0), rd, sunVis);
+    if (cut) {
+      // behind the window's ground: hidden but for a dug-out window side; flat, unlit by the sun
+      col = ALBEDO[farIds(p).x] * skyAmbient(-rd);
+    } else {
+      vec4 v = farSample(p);
+      float sunVis = farSunVis(p, 0);
+      if (v.g > v.r) col = farLiquid(p, rd, farIds(p - vec3(0.0, FAR_ID_INSET, 0.0)).y, sunVis, -1.0);
+      else col = farShadeOpaque(p, farNormal(p, 0), rd, sunVis);
+    }
     col = farHaze(col, rd, tHit);
     depth = farDepth(p);
   } else {

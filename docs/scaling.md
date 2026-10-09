@@ -222,7 +222,41 @@ The world is much larger than what lives on the GPU. Its size is `WORLD` cells, 
     (+3 ms placing and baking trees on new ground); when the slab lands, 1.1 ms copying ~450 bricks and 2.2 ms
     coding them. The store after a loop more than 3 window widths out: ~13,000 bricks, 4.8 MB, mostly trees.
   - Not yet: undo is cleared by every move and reload; signs, construction previews, POV tool holds and
-    multiplayer guests don't follow the window (W5); nothing outside the window is drawn or casts light (W4).
+    multiplayer guests don't follow the window (W5).
+- **W4 as implemented** (`src/world/far.js`, `src/shaders/far.js`; checked by `tools/far-check.mjs` and, on the CPU,
+  `tools/check-far-trees.mjs`).
+  - The far grid is a 2D atlas of brick slices (2048×1024 RGBA8 for 1024×128×1024, 8 MB), not a 3D texture: a
+    region of it is one draw, and two bilinear taps make a trilinear sample. Per brick: the opaque and the liquid
+    share of the 8-cell cube centred on it, its dominant opaque element (open cells count 8×) with its liquid's kind
+    and an "open" bit, and glow. A cube twice the brick makes the field linear in the ground's height between two
+    centres, so its 0.5 level sits on the terrain (a brick's own share put it up to ⅓ cell off: terraces). Matter
+    under half a cube with nothing at the surface level below it (trunks, walls up to 3 cells, roofs, streams)
+    reads as full, so it shows as a blob, rod or slab instead of vanishing.
+  - Occupancy: L1 (16³ cells) set where some brick in it or next to it reaches 0.5, L2 (64³) where an L1 is.
+  - Built at load from the generator at world scale: genColumn and genLayers per world column, then every brick
+    from the layers of the columns its cube spans. The trees are in it too: a GPU twin of `treeCandidate` per brick
+    column, thinned by `treesIn`'s rule, each drawn as its construction at brick scale. mulberry32's i-th draw is a
+    function of seed and i, and the draws before a construction's first per-cell shape are a known count, so
+    heights, oak crowns, pine tiers and palm leans are the construction's own.
+  - Updated from the window: the slab about to leave is summarized in the move's step 1 (from the state, before the
+    shift), so edits stay visible after they leave; while the sim changes the window, it is swept a 16-cell slab a
+    frame every 30 frames (its copy casts the far field's shadows). Then the occupancy, the brick-column tops and the
+    shadow heights are rebuilt.
+  - Drawn by one full-screen pass before the scene (renderOrder −10, depth func always): sky with the sun's disc, the
+    open sea beyond the world (its bed at the generator's floor, so the world's edge doesn't show), and the far grid.
+    Rays skip the window's box (the volume draws it), cross unset L2/L1 nodes whole and walk set ones brick by
+    brick, root-finding the trilinear field. Shading: `matOf` at the pixel's footprint (its texture fades to its far
+    look like the window's), sun through a shadow height field (per brick column: the max over the columns toward
+    the sun of their top less the sun ray's drop), sky ambient with a two-tap field AO, glow; liquids with Fresnel
+    to the sky and the sun's glint and a Beer–Lambert body down to the bed; aerial perspective from the sky model
+    (12 km visibility, the sky's spectral shape). Depth is written, so the volume and scene objects composite.
+  - The window's sun shadow map takes the far field's shadows (`shadowFrag`'s casters, world mode only): along a
+    sun ray the shadow height above it only falls, so one read says whether a texel ray goes under it and bisection
+    finds where. GI gets them through the map.
+  - Today's sizes build none of it and compile byte-identical shader sources.
+  - Not yet: the window's GI doesn't see the far field (it sees open sky past its box); no blend band at the window's
+    sides (the volume stays as it was); the far field isn't drawn in the data views; guests don't get the host's
+    edits outside the window (W5).
 
 ## Measured (M5, headless Chrome, ANGLE Metal, 128³)
 - Lab step: 2.6 ms with 42% of bricks skipped, 3.75 ms with none skipped. An empty box still costs 2.1–2.8 ms.
