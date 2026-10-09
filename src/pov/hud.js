@@ -22,7 +22,6 @@ const key = (k) => h('kbd', { text: k });
 
 export function createPovHud() {
   const fx = {
-    water: h('div.pov-fx.pov-water'),
     heat: h('div.pov-fx.pov-heat'),
     frost: h('div.pov-fx.pov-frost'),
     acid: h('div.pov-fx.pov-acid'),
@@ -63,7 +62,7 @@ export function createPovHud() {
     h('span', {}, key('F'), ' leave'));
 
   const root = h('div.pov-hud', { 'aria-hidden': 'true' },
-    fx.water, fx.heat, fx.frost, fx.acid, fx.hurt, cross, hitmark, vitals, lock, death, hint);
+    fx.heat, fx.frost, fx.acid, fx.hurt, cross, hitmark, vitals, lock, death, hint);
   document.body.append(root);
 
   // DOM writes only on change
@@ -93,7 +92,7 @@ export function createPovHud() {
       clearTimeout(hintTimer);
       hintTimer = setTimeout(() => set(hint, '.show', false), HINT_S * 1000);
     },
-    // s = { dt, health, breath, jetFuel (0..1), jetting, feel {heat, cold, acid, hurt}, headInLiquid, liquidColor (#hex),
+    // s = { dt, health, breath, jetFuel (0..1), jetting, feel {heat, cold, acid, hurt}, 
     //       dead, cause, respawnIn (s), locked, swooping, aimInReach, aimValid, third }
     update(s) {
       const live = !s.dead && !s.swooping;
@@ -127,8 +126,6 @@ export function createPovHud() {
       set(fx.frost, 'opacity', String(round(f.cold ?? 0)));
       set(fx.acid, 'opacity', String(round(f.acid ?? 0)));
       set(fx.hurt, 'opacity', String(round((f.hurt ?? 0) * HURT_FLASH_GAIN)));
-      set(fx.water, 'opacity', s.headInLiquid ? '1' : '0');
-      if (s.liquidColor) set(fx.water, '--liq', s.liquidColor);
 
       // death screen
       set(death, '.show', !!s.dead);

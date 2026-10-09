@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-import { ELEMENTS } from '../elements.js';
 import { BODY_HEIGHT, BODY_WIDTH, EYE_HEIGHT, HAND_REACH } from './constants.js';
 import { createPovCamera, ENTRY_PITCH, FIGURE_HIDE_DIST, RESPAWN_SWOOP_S, SWOOP_S } from './camera.js';
 import { createBody } from './figureReal.js';
@@ -436,12 +435,9 @@ export function createPov(app) {
     if (vfx?.update(dt)) app.requestRender();
 
     // the HUD
-    const liq = player.headInLiquid ? ELEMENTS[player.liquidId] : null;
     povHud.update({
       dt, health: player.health, breath: player.breath, feel: player.feel,
       jetFuel: player.jetFuel, jetting: player.jetting,
-      headInLiquid: player.headInLiquid && mode === 'on',
-      liquidColor: liq?.color ?? null,
       dead: deadSeen, cause: player.cause, respawnIn: RESPAWN_DELAY - deadTime,
       locked: isLocked(), swooping: mode !== 'on',
       aimValid: aim.valid, aimInReach: aim.valid && aim.dist <= HAND_REACH, third: povCam.third,

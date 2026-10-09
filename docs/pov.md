@@ -14,7 +14,7 @@
   You die, the camera pulls back with the cause ("Killed by lava, 1,140 °C"), and you respawn at the drop-in
   point.
 - **Jetpack** (Noita's levitation): hold `Space` in the air to fly. It climbs at up to 9 m/s against gravity (4.8 g of thrust),
-  the tank holds 3 s of thrust and refills only with your feet on the ground (1.2 s from empty). The fuel bar
+  the tank holds 3 s of thrust and recharges as Noita's does (its player.xml values): full in 0.5 s on the ground, and in the air at 0.4 s per s once the jet has been off for 0.63 s; every tap burns at least 8 frames. The fuel bar
   shows under health while it isn't full. Swimming strokes take over in deep liquid. The exhaust is cosmetic
   (vfx.js `jet`), with a roar loop (audio.js `jetLoop`).
 - **The body** (setting "Body": Realistic | Stickman, key `body`): Realistic is the default, the skinned
@@ -46,7 +46,7 @@
      charge of gunpowder where it lands, lit by one detonator cell so the burn runs through it as a wave
      and the blasts stack; the blast is the engine's.
 - Mouse look with pointer lock. `V` toggles first and third person. A crosshair, health and breath bars, and
-  screen effects for what the body feels: heat glow at the edges, frost, a murky tint underwater, a red flash
+  screen effects for what the body feels: heat glow at the edges, frost, a red flash
   when hurt.
 - Cut for now: NPCs, inventory or crafting, ammo, multiplayer POV (guests get a toast), audio,
   physgun on solids.
