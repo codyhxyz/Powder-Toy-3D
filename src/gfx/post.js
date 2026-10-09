@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-import { invalidateTarget } from './invalidate.js';
 
 // HDR post-processing: scene → RGBA16F (+ depth) → TAA → bloom → AgX → sRGB canvas.
 //
@@ -641,7 +640,7 @@ export function createPost(renderer, { pixScale } = {}) {
         u.uSize.value.copy(size);
         u.uHistoryValid.value = historyValid;
         cur = 1 - cur;
-        pass(m, history[cur], true);
+        pass(m, history[cur]);
         post.onPass?.('taa', history[cur]);
         color = history[cur].texture;
         historyValid = true;
@@ -654,13 +653,13 @@ export function createPost(renderer, { pixScale } = {}) {
       const bloomOn = s.bloom > 0 && !s.raw;
       if (bloomOn) {
         prefilterMat.uniforms.tSrc.value = color;
-        pass(prefilterMat, down[0], true);
+        pass(prefilterMat, down[0]);
         for (let i = 1; i < MIPS; i++) {
           const u = downMat.uniforms;
           u.tSrc.value = down[i - 1].texture;
           u.uTexel.value.set(1 / down[i - 1].width, 1 / down[i - 1].height);
           u.uDst.value.set(down[i].width, down[i].height);
-          pass(downMat, down[i], true);
+          pass(downMat, down[i]);
         }
         for (let i = MIPS - 2; i >= 0; i--) {
           const low = i === MIPS - 2 ? down[MIPS - 1] : up[i + 1];
@@ -670,7 +669,7 @@ export function createPost(renderer, { pixScale } = {}) {
           u.uLowTexel.value.set(1 / low.width, 1 / low.height);
           u.uDst.value.set(up[i].width, up[i].height);
           u.uScatter.value = s.bloomScatter;
-          pass(upMat, up[i], true);
+          pass(upMat, up[i]);
         }
         post.onPass?.('bloom', up[0]);
       }
@@ -687,7 +686,7 @@ export function createPost(renderer, { pixScale } = {}) {
       u.uLook.value = s.look;
       u.uRaw.value = s.raw ? 1 : 0;
       u.uHot.value.set(s.hotStart, s.hotFull);
-      pass(compMat, target, true);
+      pass(compMat, target);
       if (target) post.onPass?.('composite', target);
 
       renderer.setRenderTarget(prevTarget);
@@ -720,7 +719,7 @@ export function createPost(renderer, { pixScale } = {}) {
       u.uLook.value = s.look;
       u.uRaw.value = s.raw ? 1 : 0;
       u.uHot.value.set(s.hotStart, s.hotFull);
-      pass(compMat, target, true);
+      pass(compMat, target);
       renderer.setRenderTarget(prevTarget);
       renderer.setClearColor(savedClear, savedAlpha);
     },
@@ -736,13 +735,9 @@ export function createPost(renderer, { pixScale } = {}) {
   // Is the scene rendering below output size (TAAU)?
   function upscaling() { return inSize.x !== size.x || inSize.y !== size.y; }
 
-  // overwrite: the pass writes every texel of target without blending, so a
-  // target's old contents are invalidated instead of loaded (gfx/invalidate.js).
-  // Every pass here is a full-screen, unblended draw; the canvas is left alone.
-  function pass(material, target, overwrite = false) {
+  function pass(material, target) {
     quad.material = material;
     renderer.setRenderTarget(target);
-    if (overwrite && target) invalidateTarget(renderer, target);
     renderer.render(quadScene, quadCam);
   }
 

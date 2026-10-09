@@ -857,7 +857,7 @@ function frame(now) {
     if (VIEWS.find((v) => v.id === settings.view)?.shadows) {
       shadowMat.uniforms.tA.value = sim.stateA;
       shadowMat.uniforms.tBrick.value = sim.brick.texture;
-      sim.run(shadowMat, shadowTarget, true);   // one ray per texel: every texel written
+      sim.run(shadowMat, shadowTarget);
     }
     if (settings.view === 0) sim.updateGI(SUN, shadowTarget.texture, shadowMat.uniforms.uShadowRes.value, true);
   }

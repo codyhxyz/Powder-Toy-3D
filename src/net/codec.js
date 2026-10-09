@@ -122,7 +122,7 @@ export function createPacker(renderer) {
       const slot = free.pop();
       if (!slot) return null;
       mat.uniforms.tA.value = sim.stateA;
-      sim.run(mat, slot.target, true);   // every texel written (padding as 0)
+      sim.run(mat, slot.target);
       renderer.setRenderTarget(null);
       const gen = generation, dims = [g.nx, g.ny, g.nz];
       const release = () => { if (gen === generation) free.push(slot); else slot.target.dispose(); };
@@ -145,7 +145,7 @@ export function createUnpacker() {
       }
       tex.image.data = bytes;
       tex.needsUpdate = true;
-      sim.run(mat, sim.targets[sim.cur], true);   // every texel written
+      sim.run(mat, sim.targets[sim.cur]);
     },
   };
 }
