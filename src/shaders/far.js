@@ -6,6 +6,7 @@ import { liquidGLSL } from './gfx/liquid.js';
 import { CELL_M } from '../scale.js';
 import { TREE, MID_TREES, HIGH_TREES } from '../world/generator.js';
 import { scaleFor } from '../constructions/runtime.js';
+import { E } from '../elements.js';
 
 // The far field (docs/scaling.md D11, "Far field"; phase W4): everything of a
 // massive world outside the simulated window, at brick resolution.
@@ -20,8 +21,9 @@ import { scaleFor } from '../constructions/runtime.js';
 //   b  ids (texelFetch only), of the brick's own cells: its dominant opaque
 //      element, a cell open above counting FAR.SURFACE_W times (a brick reads
 //      as its surface: grass on rock reads as grass), plus FAR.LIQ_STRIDE × its
-//      liquid's kind, plus FAR.OPEN if it holds open opaque cells (the view
-//      reads a surface's element from such a brick)
+//      liquid's kind (FAR_LIQUIDS; one past them: none), plus FAR.OPEN if it
+//      holds open opaque cells (the view reads a surface's element from such
+//      a brick)
 //   a  glow: how hot its open opaque cells are, from the incandescence's first
 //      knot up over FAR.GLOW_SPAN °C
 // Values sit at brick centres. The drawn surface is where the trilinear field
@@ -40,7 +42,8 @@ import { scaleFor } from '../constructions/runtime.js';
 // a rod ~2.3 cells thick, a sheet as a slab one brick thick. Next to a brick at
 // the surface level a brick keeps its share: that is what puts the ground's
 // surface, a crown's or a cliff's, where it is. Scattered matter under
-// FAR.THIN_MIN keeps its share too (a few loose grains draw nothing).
+// FAR.THIN_MIN (less than a line of cells through the cube) keeps its share
+// too: a few loose grains draw nothing.
 //
 // Occupancy. Two coarser levels say where the surface can be at all: an L1
 // node (4³ bricks, 16³ cells) is set when some brick in it or next to it
@@ -57,7 +60,8 @@ import { scaleFor } from '../constructions/runtime.js';
 export const FAR = {
   ISO: 0.5,            // the field's surface level
   CUBE: 8,             // cells: the edge of the cube centred on a brick whose share it holds (twice the brick)
-  THIN_MIN: 1 / 16,    // matter filling at least this share of its cube, with no brick next to it at ISO, reads as THIN_V...
+  THIN_MIN: 1 / 80,    // matter filling at least this share of its cube (a line of cells through it, a single-cell
+                       // trunk: 8/512, safely over it in 8 bits), with no brick next to it at ISO, reads as THIN_V...
   THIN_V: 1.0,         // ...so it stands as a blob, rod or slab instead of vanishing
   SURFACE_W: 8,        // a cell open above counts this many times toward the dominant element
   LIQ_STRIDE: 32,      // the id channel: opaque id + LIQ_STRIDE × liquid kind (element ids stay below it)...
@@ -65,10 +69,12 @@ export const FAR = {
   ID_SCALE: 255,       // an id channel value in an 8-bit channel
   GLOW_SPAN: 2000,     // °C the glow channel spans above the incandescence table's first knot
 };
-// Liquid kinds of the id channel (index → element key; the first is the default).
+// Liquid kinds of the id channel (index → element key; the first is the
+// default); one more says the brick's own cells hold none.
 export const FAR_LIQUIDS = ['WATER', 'OIL', 'ACID'];
 const liquidKindGLSL = () => /* glsl */ `
 #define FAR_KINDS ${FAR_LIQUIDS.length}
+#define FAR_KIND_NONE ${FAR_LIQUIDS.length}
 int farLiquidKind(int id) { ${FAR_LIQUIDS.slice(1).map((k, i) => `if (id == E_${k}) return ${i + 1};`).join(' ')} return 0; }
 int farLiquidId(int kind) { ${FAR_LIQUIDS.slice(1).map((k, i) => `if (kind == ${i + 1}) return E_${k};`).join(' ')} return E_${FAR_LIQUIDS[0]}; }
 `;
@@ -209,6 +215,7 @@ vec4 farPack(FarCount c) {
   for (int i = 1; i < NE; i++) if (c.w[i] > c.w[best]) best = i;
   int lk = 0;
   for (int i = 1; i < FAR_KINDS; i++) if (c.wl[i] > c.wl[lk]) lk = i;
+  if (c.wl[lk] == 0.0) lk = FAR_KIND_NONE;
   float glow = c.open > 0.0 ? c.heat / c.open / FAR_GLOW_SPAN : 0.0;
   int open = c.open > 0.0 ? FAR_OPEN : 0;
   return vec4(c.s / n, c.l / n, float(best + FAR_LIQ_STRIDE * lk + open) / FAR_ID_SCALE, clamp(glow, 0.0, 1.0));
@@ -350,7 +357,7 @@ vec2 treeUnturn(vec2 v, int q) {
 // grid's opaque share; a wide shape's share ramps over the cube across its
 // surface, a trunk's is its cells in the cube), and of the brick there (its
 // element's vote: leaves (PLANT) 0 or 1, its trunk's cells (WOOD)).
-export const TREE_OWN_REACH = 3.5;   // cells: a brick whose centre is this close to a crown (or inside it) holds leaves (half its diagonal)
+export const TREE_OWN_REACH = 2;   // cells: a brick whose centre is this close to a crown (or inside it) holds leaves (half its width)
 const treeShapeGLSL = /* glsl */ `
 #define TREE_OWN_REACH ${glf(TREE_OWN_REACH)}
 float treeRamp(float d) { return clamp(0.5 - d / float(FAR_CUBE), 0.0, 1.0); }
@@ -639,19 +646,26 @@ void main() {
 
 // The field the view draws, per brick of the region being drawn, from the
 // grid's raw shares: a brick keeps its share where it or one of its 26
-// neighbours reaches FAR.ISO (opaque; for the liquid, opaque + liquid), or
-// where it holds less than FAR.THIN_MIN; else it is thin matter: FAR.THIN_V.
-// Below the world counts as reaching it.
+// neighbours reaches FAR.ISO (opaque; for the liquid, opaque + liquid), where
+// it holds less than FAR.THIN_MIN, or where its own cells hold none of it (the
+// share is its neighbours' matter reaching into its cube: an element-less
+// blob); else it is thin matter: FAR.THIN_V. Below the world counts as
+// reaching it.
 export const farBoostFrag = (L) => /* glsl */ `
 precision highp float;
 precision highp int;
 precision highp sampler2D;
 ${farLayoutGLSL(L)}
+#define E_EMPTY ${E.EMPTY}
+${liquidKindGLSL().split('\n').filter((l) => l.startsWith('#define')).join('\n')}
 uniform sampler2D tFar;
 out vec4 oC;
 void main() {
   ivec3 b = farBrickFromFrag(ivec2(gl_FragCoord.xy));
-  vec2 raw = texelFetch(tFar, farTexel(b), 0).rg;
+  vec4 t = texelFetch(tFar, farTexel(b), 0);
+  vec2 raw = t.rg;
+  int ids = int(t.b * FAR_ID_SCALE + 0.5) % FAR_OPEN;
+  bool ownS = ids % FAR_LIQ_STRIDE != E_EMPTY, ownL = ids / FAR_LIQ_STRIDE != FAR_KIND_NONE;
   float ns = raw.r, nm = raw.r + raw.g;   // the most opaque, and most matter, here and next to it
   if (b.y == 0) ns = nm = 1.0;
   for (int dz = -1; dz <= 1; dz++)
@@ -663,8 +677,8 @@ void main() {
     ns = max(ns, v.r);
     nm = max(nm, v.r + v.g);
   }
-  oC = vec4(ns >= FAR_ISO || raw.r < FAR_THIN_MIN ? raw.r : FAR_THIN_V,
-            nm >= FAR_ISO || raw.g < FAR_THIN_MIN ? raw.g : FAR_THIN_V, 0.0, 1.0);
+  oC = vec4(ns >= FAR_ISO || raw.r < FAR_THIN_MIN || !ownS ? raw.r : FAR_THIN_V,
+            nm >= FAR_ISO || raw.g < FAR_THIN_MIN || !ownL ? raw.g : FAR_THIN_V, 0.0, 1.0);
 }
 `;
 
@@ -939,6 +953,10 @@ export const FAR_VIEW = {
   ID_JITTER_F: 0.21,       // that noise's frequency, per cell
   ID_DITHER: 2.0,          // ...plus up to half this per pixel and frame, which TAA blends into a soft border (LIQ_ID_DITHER)
   ID_DEEPER: 3.0,          // ...or this far inside, if that brick holds no open cells
+  SUN_RAY: [2.0, 4.5, 8.0, 12.5, 18.0],   // cells toward the sun of the short shadow ray's samples (crowns shading
+                           // each other and the ground under them: the height field leaves crowns out)
+  SUN_RAY_LIFT: 1.0,       // cells off the surface along its normal the short ray starts
+  SUN_RAY_EDGE: [0.35, 0.65],   // field values over which a sample goes from clear to blocking
   AO_D1: 4.0, AO_D2: 10.0, // AO samples out along the normal...
   AO_K: 0.7,               // ...darkening per unit of field found there...
   AO_MIN: 0.35,            // ...down to this
@@ -1002,6 +1020,11 @@ in vec4 vFar;
 #define FAR_ID_JITTER_F ${glf(FAR_VIEW.ID_JITTER_F)}
 #define FAR_ID_DITHER ${glf(FAR_VIEW.ID_DITHER)}
 #define FAR_ID_DEEPER ${glf(FAR_VIEW.ID_DEEPER)}
+#define FAR_SUN_RAY_N ${FAR_VIEW.SUN_RAY.length}
+const float FAR_SUN_RAY[FAR_SUN_RAY_N] = float[FAR_SUN_RAY_N](${FAR_VIEW.SUN_RAY.map(glf).join(', ')});
+#define FAR_SUN_RAY_LIFT ${glf(FAR_VIEW.SUN_RAY_LIFT)}
+#define FAR_SUN_RAY_LO ${glf(FAR_VIEW.SUN_RAY_EDGE[0])}
+#define FAR_SUN_RAY_HI ${glf(FAR_VIEW.SUN_RAY_EDGE[1])}
 #define FAR_AO_D1 ${glf(FAR_VIEW.AO_D1)}
 #define FAR_AO_D2 ${glf(FAR_VIEW.AO_D2)}
 #define FAR_AO_K ${glf(FAR_VIEW.AO_K)}
@@ -1091,6 +1114,16 @@ vec3 farNormal(vec3 p, int ch) {
           + k.yxy * farChannel(p + k.yxy * h, ch) + k.xxx * farChannel(p + k.xxx * h, ch);
   float l = length(gr);
   return l > FAR_FLAT_EPS ? -gr / l : vec3(0.0, 1.0, 0.0);
+}
+
+// Sunlight past what's near (crowns, the ground's bumps): a short coarse ray
+// toward the sun through the field, which the height field's shadows (the
+// ground, from far) multiply.
+float farSunRay(vec3 p, vec3 n) {
+  vec3 o = p + n * FAR_SUN_RAY_LIFT;
+  float vis = 1.0;
+  for (int i = 0; i < FAR_SUN_RAY_N; i++) vis *= 1.0 - smoothstep(FAR_SUN_RAY_LO, FAR_SUN_RAY_HI, farMatter(o + uSun * FAR_SUN_RAY[i]));
+  return vis;
 }
 
 // Open sky around the surface: two field samples out along the normal.
@@ -1250,7 +1283,10 @@ void main() {
       vec4 v = farSample(p);
       float sunVis = farSunVis(p, 0);
       if (v.g > v.r) col = farLiquid(p, rd, farIds(p - vec3(0.0, FAR_ID_INSET, 0.0)).y, sunVis, -1.0);
-      else col = farShadeOpaque(p, farNormal(p, 0), rd, sunVis);
+      else {
+      vec3 n = farNormal(p, 0);
+      col = farShadeOpaque(p, n, rd, sunVis * (sunVis > 0.0 && dot(n, uSun) > 0.0 ? farSunRay(p, n) : 1.0));
+    }
     }
     col = farHaze(col, rd, tHit);
     depth = farDepth(p);
