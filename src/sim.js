@@ -3,12 +3,18 @@ import { quadVert, BRICK, SEED_MAX, TILE, SUPER, SUPER_TEX, SUPER_CELLS } from '
 import { inertFrag, quietFrag, activityPeriod } from './shaders/activity.js';
 import { moveBlockFrag, moveGatherFrag, moveFlowFrag } from './shaders/move.js';
 import { reactFrag } from './shaders/react.js';
-import { paintFrag, copyFrag, brickFrag, blurFrag, brickDistFrag } from './shaders/passes.js';
-import { fieldEmaFrag, fieldBlurFrag, fieldBoostFrag, BOOST_STAGES } from './shaders/fields.js';
+import {
+  paintFrag, copyFrag, brickFrag, blurFrag, brickDistFrag,
+  awakeFrag, ageFrag, dirtyFrag, fieldRegionMapFrag, regionShareFrag,
+} from './shaders/passes.js';
+import {
+  fieldEmaFrag, fieldCopyFrag, fieldBlurFrag, fieldBoostFrag, fieldRegions, fieldRegionsGLSL, BOOST_STAGES, BLUR_TAPS, DIRTY,
+} from './shaders/fields.js';
 import { giSourceFrag, giGatherFrag } from './shaders/gi.js';
 import { shiftFrag, giShiftFrag, flowShiftFrag } from './shaders/window.js';
 import { CHANNELS, MEDIA, gauss5, bulkPeak, bulkPeakCubic, CUBIC_LATTICE } from './gfx/materials.js';
 import { gfxUniforms } from './gfx/uniforms.js';
+import { RegionQuads, regionMaterial } from './gfx/regions.js';
 
 // cells/step² downward (the app's gravity setting overrides it)
 const GRAVITY_DEFAULT = 0.025;
@@ -20,6 +26,12 @@ const ACTIVITY_PERIOD = activityPeriod(BRICK);
 
 // The state atlas may be at most this many times wider than tall (atlasColumns).
 const ATLAS_ASPECT_MAX = 4;
+
+// A box of bricks no brick is in (no write touched any): lo > hi.
+const TOUCH_NONE_LO = 2 ** 30, TOUCH_NONE_HI = -1;
+// Cells added around the brush's radius in the box it declares (touch()): its
+// cells' centres sit half a cell off the grid, so this covers them with room.
+const BRUSH_TOUCH_MARGIN = 1;
 
 // Supertiles per state-atlas row: the smallest divisor of their count from its
 // square root up, so the atlas is near square and every texel holds a cell
@@ -150,7 +162,7 @@ export const GI_BLEND = 0.4;
 
 const fieldBlurUniforms = () => ({
   t0: { value: null }, t1: { value: null }, t2: { value: null }, uAxis: { value: 0 },
-  uW: { value: [...Array(5)].map(() => new THREE.Vector4()) },
+  uW: { value: [...Array(BLUR_TAPS)].map(() => new THREE.Vector4()) },
 });
 
 let nextSimId = 0;
@@ -174,19 +186,19 @@ export class Simulation {
     this.blocks = makeTarget(g.mwidth, g.mheight, 8);
     this.brick = makeTarget(g.bwidth, g.bheight, 1);
     this.light = [makeTarget(g.bwidth, g.bheight, 1), makeTarget(g.bwidth, g.bheight, 1)];
-    // render fields (see shaders/fields.js): EMA ping-pong + blur and boost
-    // scratch in RGBA8, the blurred fields in half floats, the boosted final
-    // fields (and the thin-feature mask) in filterable half floats
+    // render fields (see shaders/fields.js): the EMA (kept from frame to frame)
+    // and two scratch targets for the blur and boost in RGBA8, the blurred
+    // fields in half floats, the boosted final fields (and the thin-feature
+    // mask) in filterable half floats
     const U8 = THREE.UnsignedByteType, NEAR = THREE.NearestFilter, HALF = THREE.HalfFloatType;
     // (all in the field atlas: Y-slices, fwidth × fheight)
-    this.fieldEma = [makeFieldTarget(g.fwidth, g.fheight, 3, U8, NEAR), makeFieldTarget(g.fwidth, g.fheight, 3, U8, NEAR)];
-    this.fieldTmp = makeFieldTarget(g.fwidth, g.fheight, 3, U8, NEAR);
+    this.fieldEma = makeFieldTarget(g.fwidth, g.fheight, 3, U8, NEAR);
+    this.fieldTmp = [makeFieldTarget(g.fwidth, g.fheight, 3, U8, NEAR), makeFieldTarget(g.fwidth, g.fheight, 3, U8, NEAR)];
     this.fieldsBlurred = makeFieldTarget(g.fwidth, g.fheight, 2, HALF, NEAR);
     this.fields = makeFieldTarget(g.fwidth, g.fheight, 3, HALF, THREE.LinearFilter);
     // how fast matter has been moving through each cell (shaders/move.js moveFlowFrag);
     // read with atlas(), so it shares the state's texel layout and size
     this.flowV = makeFieldTarget(g.width, g.height, 1, HALF, NEAR);
-    this.fieldCur = 0;
     this.fieldReset = true;
     this.smoothing = 1;
     // GI (shaders/gi.js): per-brick light sources and blockers, and the probe
@@ -205,6 +217,29 @@ export class Simulation {
     this.actDirty = true;
     this.stepping = false;
     this.skipQuiet = true;   // false: step every brick (A/B testing)
+    // Incremental derived passes (docs/scaling.md D9, shaders/passes.js
+    // dirtyFrag): the bricks the state may have changed in since the last
+    // updateBricks (every quiet map a step used, as 1 - quiet: the first
+    // overwrites, the rest blend with MAX; writes that aren't steps add
+    // changedAll or a touched box), each
+    // brick's age in frames since it last changed (ping-pong), the dirty sets
+    // derived from that, and per region of the field atlas, with their shares.
+    const fr = fieldRegions(g);
+    this.actChanged = makeFieldTarget(g.bwidth, g.bheight, 1, U8, NEAR);
+    this.brickAge = [makeFieldTarget(g.bwidth, g.bheight, 1, U8, NEAR), makeFieldTarget(g.bwidth, g.bheight, 1, U8, NEAR)];
+    this.ageCur = 0;
+    this.dirty = makeFieldTarget(g.bwidth, g.bheight, 1, U8, NEAR);
+    this.regionMap = makeFieldTarget(fr.mapWidth, fr.mapHeight, 1, U8, NEAR);
+    this.regionShare = makeFieldTarget(1, 1, 1, THREE.FloatType, NEAR);
+    this.fieldQuads = new RegionQuads(fr.count);
+    this.changedAll = true;
+    this.touchLo = [TOUCH_NONE_LO, TOUCH_NONE_LO, TOUCH_NONE_LO];   // bricks, inclusive
+    this.touchHi = [TOUCH_NONE_HI, TOUCH_NONE_HI, TOUCH_NONE_HI];
+    this.touchNext = null;   // the box the next write that isn't a step declared (touch())
+    this.actCarry = null;    // actAge at the last updateBricks while that quiet map is current
+    this.actNoted = false;   // actChanged holds a quiet map noted since the last updateBricks
+    this.lastSmoothing = null;
+    this.incremental = true;   // false: rebuild every brick every frame (A/B testing)
 
     // The grid is a window of the world (docs/scaling.md D11): origin is the
     // world cell of grid cell (0, 0, 0), the prelude's uOrigin in every pass
@@ -223,6 +258,9 @@ export class Simulation {
     this.scene.add(this.quad);
 
     const state = () => ({ tA: { value: null }, tB: { value: null } });
+    // field passes draw over the regions of their dirty set (gfx/regions.js)
+    const regionU = { tRegion: { value: this.regionMap.texture }, tShare: { value: this.regionShare.texture } };
+    const fieldMat = (frag, uniforms, set) => regionMaterial(this.fieldQuads, frag, fieldRegionsGLSL(g, set), { ...uniforms, ...regionU });
     this.mats = {
       moveBlock: rawMat(moveBlockFrag(g), {
         ...state(), uParity: { value: 0 }, uFrame: { value: 0 }, uGravity: { value: this.gravity }, tQuiet: { value: null },
@@ -244,18 +282,28 @@ export class Simulation {
       }),
       brick: rawMat(brickFrag(g), {
         tA: { value: null }, tB: { value: null }, tFS: { value: null }, tFM: { value: null }, tFT: { value: null },
+        tDirty: { value: this.dirty.texture },
       }),
-      fieldEma: rawMat(fieldEmaFrag(g), {
+      fieldEma: fieldMat(fieldEmaFrag(g), {
         tA: { value: null }, tP0: { value: null }, tP1: { value: null },
         uEmaS: { value: new THREE.Vector4() }, uEmaM: { value: new THREE.Vector4() }, uShift: { value: new THREE.Vector3() },
-      }),
-      fieldBlur: rawMat(fieldBlurFrag(g, false), fieldBlurUniforms()),
-      fieldFinal: rawMat(fieldBlurFrag(g, true), fieldBlurUniforms()),
-      fieldBoost: [...Array(BOOST_STAGES).keys()].map((stage) => rawMat(fieldBoostFrag(g, stage), {
+      }, DIRTY.EMA),
+      fieldCopy: fieldMat(fieldCopyFrag(), { t0: { value: null }, t1: { value: null }, t2: { value: null } }, DIRTY.EMA),
+      fieldBlur: fieldMat(fieldBlurFrag(g, false), fieldBlurUniforms(), DIRTY.WORK),
+      fieldFinal: fieldMat(fieldBlurFrag(g, true), fieldBlurUniforms(), DIRTY.WORK),
+      fieldBoost: [...Array(BOOST_STAGES).keys()].map((stage) => fieldMat(fieldBoostFrag(g, stage), {
         tA: { value: null }, t0: { value: null }, t1: { value: null }, tPhi: { value: null }, tMed: { value: null },
         uS: { value: new THREE.Vector4(...CHANNELS.map((c) => (c.cubic ? CUBIC_LATTICE[1] : 1))) },
-        uBulk: { value: new THREE.Vector4() },
-      })),
+        uBulk: { value: new THREE.Vector4() }, tDirty: { value: this.dirty.texture },
+      }, stage === BOOST_STAGES - 1 ? DIRTY.FIELDS : DIRTY.WORK)),
+      awake: rawMat(awakeFrag(), { tQuiet: { value: this.actQuiet.texture } }),
+      age: rawMat(ageFrag(g), {
+        tAge: { value: null }, tChanged: { value: this.actChanged.texture }, uSteps: { value: false }, uAll: { value: true },
+        uTouchLo: { value: new THREE.Vector3() }, uTouchHi: { value: new THREE.Vector3() },
+      }),
+      dirty: rawMat(dirtyFrag(g), { tAge: { value: null } }),
+      regionMap: rawMat(fieldRegionMapFrag(g), { tDirty: { value: this.dirty.texture } }),
+      regionShare: rawMat(regionShareFrag(g), { tRegion: { value: this.regionMap.texture } }),
       blur: rawMat(blurFrag(g), { tSrc: { value: null }, uAxis: { value: 0 } }),
       brickDist: [0, 1, 2].map((axis) => rawMat(brickDistFrag(g, axis), { tSrc: { value: null } })),
       giSource: rawMat(giSourceFrag(g), { ...giUniforms(), ...giProbeUniforms() }),
@@ -274,6 +322,8 @@ export class Simulation {
       blending: THREE.CustomBlending, blendEquation: THREE.AddEquation,
       blendSrc: THREE.ConstantAlphaFactor, blendDst: THREE.OneMinusConstantAlphaFactor,
     });
+    // awake bricks accumulate into the changed map: max(old, new) (noteAwake)
+    this.mats.awake.blendEquation = THREE.MaxEquation;
     // pass names (the profiler's labels): the key, plus the stage for staged passes (fieldBoost0…)
     for (const [key, m] of Object.entries(this.mats)) {
       if (Array.isArray(m)) m.forEach((stage, i) => { stage.name = `${key}${i}`; });
@@ -321,21 +371,61 @@ export class Simulation {
     this.renderer.readRenderTargetPixels(this.targets[this.cur], 0, 0, 1, 1, this.syncTexel, undefined, 0);
   }
 
-  run(mat, target) {
-    // every pass sees the window's origin (shaders/common.js uOrigin), unless it brings its own
+  // A pass into target: one full-screen quad, or quads (gfx/regions.js
+  // RegionQuads) over the regions its material picks.
+  // Every pass sees the window's origin (shaders/common.js uOrigin), unless it
+  // brings its own.
+  run(mat, target, quads = null) {
     mat.uniforms.uOrigin ??= this.originUniform;
-    this.quad.material = mat;
+    const mesh = quads ? quads.mesh : this.quad;
+    mesh.material = mat;
     this.renderer.setRenderTarget(target);
-    this.renderer.render(this.scene, this.camera);
+    this.renderer.render(quads ? quads.scene : this.scene, this.camera);
     this.onPass?.(mat.name, target);
+    const touched = this.touchNext;   // (for this pass only)
+    this.touchNext = null;
     if (target === this.targets[0] || target === this.targets[1]) {
       this.version++;
-      if (!this.stepping) this.actDirty = true;
+      if (!this.stepping) {
+        this.actDirty = true;
+        this.noteWrite(touched);
+      }
     }
+  }
+
+  // The next pass, a write to the state that isn't a step (run outside
+  // step()), changes only cells in [lo, hi] (inclusive; [x, y, z] arrays), so
+  // the derived passes rebuild only the bricks there. Without it such a write
+  // rebuilds every brick.
+  touch(lo, hi) {
+    this.touchNext = { lo, hi };
+  }
+
+  // A write that isn't a step: the box it declared changed, or every brick.
+  noteWrite(t) {
+    if (!t) {
+      this.changedAll = true;
+      return;
+    }
+    for (let k = 0; k < 3; k++) {
+      this.touchLo[k] = Math.min(this.touchLo[k], Math.floor(t.lo[k] / BRICK));
+      this.touchHi[k] = Math.max(this.touchHi[k], Math.floor(t.hi[k] / BRICK));
+    }
+  }
+
+  // The bricks the current quiet map doesn't skip may change: note them in the
+  // changed map, over what it holds unless it was consumed since.
+  noteAwake() {
+    this.mats.awake.blending = this.actNoted ? THREE.CustomBlending : THREE.NoBlending;
+    this.run(this.mats.awake, this.actChanged);
+    this.actNoted = true;
   }
 
   // Rebuild the activity map from the current state (shaders/activity.js).
   updateActivity() {
+    // the outgoing map, if steps used it since the last updateBricks noted it
+    if (this.actCarry !== null && this.actAge > this.actCarry) this.noteAwake();
+    this.actCarry = null;
     const { inert, quiet } = this.mats;
     inert.uniforms.tA.value = this.stateA;
     inert.uniforms.tB.value = this.stateB;
@@ -345,6 +435,7 @@ export class Simulation {
     this.run(quiet, this.actQuiet);
     this.actAge = 0;
     this.actDirty = false;
+    this.noteAwake();   // the step about to run uses it
   }
 
   // Ping-pong pass over the state.
@@ -398,6 +489,9 @@ export class Simulation {
     u.uTool.value = tool;
     u.uRate.value = rate;
     u.uReplace.value = replace;
+    // it changes cells within radius of its centre (either shape)
+    const c = [center.x, center.y, center.z];
+    this.touch(c.map((x) => Math.floor(x - radius) - BRUSH_TOUCH_MARGIN), c.map((x) => Math.floor(x + radius) + BRUSH_TOUCH_MARGIN));
     this.pass(this.mats.paint);
   }
 
@@ -406,41 +500,46 @@ export class Simulation {
   get fieldMedia() { return this.fields.textures[1]; }
   get fieldThin() { return this.fields.textures[2]; }
 
-  // Rebuild the renderer's continuous fields (shaders/fields.js).
+  // Rebuild the renderer's continuous fields (shaders/fields.js), over the
+  // regions of the dirty sets (updateDirty): the rest of every target keeps
+  // what it holds, which is what these passes would write there again.
   updateFields() {
-    const { fieldEma, fieldBlur, fieldFinal } = this.mats;
-    const prev = this.fieldEma[this.fieldCur], next = this.fieldEma[1 - this.fieldCur];
+    const { fieldEma, fieldCopy, fieldBlur, fieldFinal } = this.mats;
+    const [tmpA, tmpB] = this.fieldTmp;
+    const quads = this.fieldQuads;
     const reset = this.fieldReset;
     this.fieldReset = false;
     const u = fieldEma.uniforms;
     u.tA.value = this.stateA;
-    u.tP0.value = prev.textures[0];
-    u.tP1.value = prev.textures[1];
+    u.tP0.value = this.fieldEma.textures[0];
+    u.tP1.value = this.fieldEma.textures[1];
     u.uEmaS.value.set(...CHANNELS.map((c) => (reset ? 1 : c.ema)));
     u.uEmaM.value.set(...MEDIA.map((m) => (reset ? 1 : m.ema)));
-    u.uShift.value.copy(this.fieldShift);
+    u.uShift.value.copy(this.fieldShift);   // the window moved (D11): the history follows its cells
     this.fieldShift.set(0, 0, 0);
-    this.run(fieldEma, next);
-    this.fieldCur = 1 - this.fieldCur;
+    // into scratch, then copied back over the same regions
+    this.run(fieldEma, tmpA, quads);
+    tmpA.textures.forEach((t, i) => { fieldCopy.uniforms[`t${i}`].value = t; });
+    this.run(fieldCopy, this.fieldEma, quads);
     // per-channel kernels, tap-major
     const k = CHANNELS.map((c) => gauss5(Math.max(c.sigma * this.smoothing, 0.05)));
     const setW = (mat) => mat.uniforms.uW.value.forEach((v, i) => v.set(k[0][i], k[1][i], k[2][i], k[3][i]));
-    // x: next -> prev (free until the next frame), y: prev -> tmp, z: tmp -> blurred
-    const passes = [[fieldBlur, next, prev], [fieldBlur, prev, this.fieldTmp], [fieldFinal, this.fieldTmp, this.fieldsBlurred]];
+    // x: EMA -> A, y: A -> B, z: B -> blurred
+    const passes = [[fieldBlur, this.fieldEma, tmpA], [fieldBlur, tmpA, tmpB], [fieldFinal, tmpB, this.fieldsBlurred]];
     passes.forEach(([mat, src, dst], axis) => {
       setW(mat);
       mat.uniforms.uAxis.value = axis;
       mat.uniforms.t0.value = src.textures[0];
       mat.uniforms.t1.value = src.textures[1];
       mat.uniforms.t2.value = src.textures[2];
-      this.run(mat, dst);
+      this.run(mat, dst, quads);
     });
     // thin-feature boost: smooth x, y, z then peak x, y, z, ping-ponging
-    // between prev and tmp; stage 0 reads the blurred fields and the state,
-    // the last writes the final fields
+    // between A and B; stage 0 reads the blurred fields and the state, the
+    // last writes the final fields
     const boost = this.mats.fieldBoost;
     const last = BOOST_STAGES - 1;
-    const dst = (s) => (s === last ? this.fields : s % 2 ? this.fieldTmp : prev);
+    const dst = (s) => (s === last ? this.fields : s % 2 ? tmpB : tmpA);
     const lu = boost[last].uniforms;
     lu.tPhi.value = this.fieldsBlurred.textures[0];
     lu.tMed.value = this.fieldsBlurred.textures[1];
@@ -449,12 +548,45 @@ export class Simulation {
       mat.uniforms.t0.value = s ? dst(s - 1).textures[0] : this.fieldsBlurred.textures[0];
       if (s) mat.uniforms.t1.value = dst(s - 1).textures[1];
       else mat.uniforms.tA.value = this.stateA;
-      this.run(mat, dst(s));
+      this.run(mat, dst(s), quads);
     });
   }
 
-  // Rebuild the render fields, the empty-space bricks and the blurred light volume.
+  // Which bricks the derived passes rebuild this frame: ages from what changed
+  // since the last call, then the dirty sets, their regions of the field atlas
+  // and the regions' shares (shaders/passes.js dirtyFrag).
+  updateDirty() {
+    // the quiet map still current at the last call, if steps used it since
+    if (this.actCarry !== null && this.actAge > this.actCarry) this.noteAwake();
+    this.actCarry = this.actAge;
+    // a new kernel or a reset changes the fields everywhere
+    if (this.smoothing !== this.lastSmoothing || this.fieldReset) this.changedAll = true;
+    this.lastSmoothing = this.smoothing;
+    const { age, dirty, regionMap, regionShare } = this.mats;
+    const prev = this.brickAge[this.ageCur], next = this.brickAge[1 - this.ageCur];
+    this.ageCur = 1 - this.ageCur;
+    const u = age.uniforms;
+    u.tAge.value = prev.texture;
+    u.uSteps.value = this.actNoted;
+    u.uAll.value = this.changedAll || !this.incremental;
+    u.uTouchLo.value.fromArray(this.touchLo);
+    u.uTouchHi.value.fromArray(this.touchHi);
+    this.run(age, next);
+    this.changedAll = false;
+    this.actNoted = false;
+    this.touchLo.fill(TOUCH_NONE_LO);
+    this.touchHi.fill(TOUCH_NONE_HI);
+    dirty.uniforms.tAge.value = next.texture;
+    this.run(dirty, this.dirty);
+    this.run(regionMap, this.regionMap);
+    this.run(regionShare, this.regionShare);
+    this.fieldQuads.fullOnly = !this.incremental;
+  }
+
+  // Rebuild the render fields, the empty-space bricks and the blurred light
+  // volume: the fields and bricks only where they may have changed.
   updateBricks() {
+    this.updateDirty();
     this.updateFields();
     this.mats.brick.uniforms.tA.value = this.stateA;
     this.mats.brick.uniforms.tB.value = this.stateB;
@@ -671,8 +803,8 @@ export class Simulation {
     this.brick.dispose();
     this.blocks.dispose();
     this.light.forEach((t) => t.dispose());
-    this.fieldEma.forEach((t) => t.dispose());
-    this.fieldTmp.dispose();
+    this.fieldEma.dispose();
+    this.fieldTmp.forEach((t) => t.dispose());
     this.fieldsBlurred.dispose();
     this.fields.dispose();
     this.flowV.dispose();
@@ -680,6 +812,12 @@ export class Simulation {
     this.brickDist.forEach((t) => t.dispose());
     this.actInert.dispose();
     this.actQuiet.dispose();
+    this.actChanged.dispose();
+    this.brickAge.forEach((t) => t.dispose());
+    this.dirty.dispose();
+    this.regionMap.dispose();
+    this.regionShare.dispose();
+    this.fieldQuads.dispose();
     this.giSrc.dispose();
     this.giProbes.dispose();
     this.giProbesTmp?.dispose();

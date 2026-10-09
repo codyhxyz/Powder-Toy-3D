@@ -24,6 +24,7 @@ import * as povTools from '../src/shaders/povTools.js';
 import * as povTrace from '../src/shaders/povTrace.js';
 import * as generate from '../src/shaders/generate.js';
 import * as windowPasses from '../src/shaders/window.js';
+import { regionVert } from '../src/gfx/regions.js';
 import { figureFrag, figureSkinnedVert } from '../src/pov/figure.js';
 import { ShaderChunk } from 'three';
 
@@ -84,6 +85,8 @@ for (const [label, dims] of Object.entries(grids)) {
   check(`fieldBlur-${label}`, raw + fields.fieldBlurFrag(g, false), 'frag');
   check(`fieldFinal-${label}`, raw + fields.fieldBlurFrag(g, true), 'frag');
   for (let stage = 0; stage < fields.BOOST_STAGES; stage++) check(`fieldBoost${stage}-${label}`, raw + fields.fieldBoostFrag(g, stage), 'frag');
+  check(`fieldCopy-${label}`, raw + fields.fieldCopyFrag(g), 'frag');
+  for (const set of Object.values(fields.DIRTY)) check(`fieldRegionVert${set}-${label}`, raw + regionVert(fields.fieldRegionsGLSL(g, set)), 'vert');
   for (const [k, v] of Object.entries({ ...move, ...react, ...probe, ...stamp, ...gi, ...povBody, ...transfer, ...windowPasses })) if (typeof v === 'function') check(`${k}-${label}`, raw + v(g), 'frag');
   for (const k of ['axeFrag', 'physgunComFrag', 'physgunFrag']) check(`${k}-${label}`, raw + povTools[k](g), 'frag');
   for (const k of ['traceFrag', 'handoffFrag']) check(`${k}-${label}`, raw + povTrace[k](g), 'frag');
