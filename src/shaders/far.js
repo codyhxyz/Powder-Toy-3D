@@ -852,6 +852,7 @@ export const FAR_VIEW = {
   ID_INSET: 0.6,           // the element is read this far inside the surface (in the top cell)...
   ID_JITTER: 5.0,          // ...at a point moved along it up to half this far by world noise (borders don't follow bricks)
   ID_JITTER_F: 0.21,       // that noise's frequency, per cell
+  ID_DITHER: 2.0,          // ...plus up to half this per pixel and frame, which TAA blends into a soft border (LIQ_ID_DITHER)
   ID_DEEPER: 3.0,          // ...or this far inside, if that brick holds no open cells
   AO_D1: 4.0, AO_D2: 10.0, // AO samples out along the normal...
   AO_K: 0.7,               // ...darkening per unit of field found there...
@@ -913,6 +914,7 @@ in vec4 vFar;
 #define FAR_ID_INSET ${glf(FAR_VIEW.ID_INSET)}
 #define FAR_ID_JITTER ${glf(FAR_VIEW.ID_JITTER)}
 #define FAR_ID_JITTER_F ${glf(FAR_VIEW.ID_JITTER_F)}
+#define FAR_ID_DITHER ${glf(FAR_VIEW.ID_DITHER)}
 #define FAR_ID_DEEPER ${glf(FAR_VIEW.ID_DEEPER)}
 #define FAR_AO_D1 ${glf(FAR_VIEW.AO_D1)}
 #define FAR_AO_D2 ${glf(FAR_VIEW.AO_D2)}
@@ -1022,7 +1024,8 @@ float farAO(vec3 p, vec3 n) {
 #define FAR_ID_SALT_Z 31.0
 int farElement(vec3 p, vec3 n) {
   vec3 j = (vec3(vnoise(p * FAR_ID_JITTER_F), vnoise(p * FAR_ID_JITTER_F + FAR_ID_SALT_Y),
-                 vnoise(p * FAR_ID_JITTER_F + FAR_ID_SALT_Z)) - 0.5) * FAR_ID_JITTER;
+                 vnoise(p * FAR_ID_JITTER_F + FAR_ID_SALT_Z)) - 0.5) * FAR_ID_JITTER
+         + (hash33(vec3(gl_FragCoord.xy, float(uFrame))) - 0.5) * FAR_ID_DITHER;
   vec3 q = p + j - n * dot(n, j);
   ivec3 a = farIds(q - n * FAR_ID_INSET);
   if (a.z == 0) {
