@@ -48,8 +48,6 @@ bool inertCell(vec4 a, vec4 b) {
 export const inertFrag = (g) => /* glsl */ `
 ${prelude(g)}
 ${INERT}
-uniform sampler2D tA;
-uniform sampler2D tB;
 out vec4 oC;
 void main() {
   ivec3 bc = brickFromFrag(ivec2(gl_FragCoord.xy));
@@ -59,8 +57,8 @@ void main() {
   for (int z = 0; z < BS; z++)
   for (int y = 0; y < BS; y++)
   for (int x = 0; x < BS; x++) {
-    ivec2 t = atlas(o + ivec3(x, y, z));
-    if (!inertCell(texelFetch(tA, t, 0), texelFetch(tB, t, 0))) return;
+    ivec3 c = o + ivec3(x, y, z);
+    if (!inertCell(fetchA(c), fetchB(c))) return;
   }
   oC = vec4(1.0);
 }

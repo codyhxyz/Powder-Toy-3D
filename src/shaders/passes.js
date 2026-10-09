@@ -1,4 +1,4 @@
-import { prelude } from './common.js';
+import { prelude, stateOutGLSL, copyThroughMain } from './common.js';
 import { materialsGLSL } from '../gfx/materials.js';
 
 // What a brick holding matter carries (brickFrag): a = 1 + gas/BRICK_GAS_DIV +
@@ -19,8 +19,6 @@ export const brickGLSL = [
 // Brush: spawns elements / applies tools inside a sphere or cube.
 export const paintFrag = (g) => /* glsl */ `
 ${prelude(g)}
-uniform sampler2D tA;
-uniform sampler2D tB;
 uniform uint uFrame;
 uniform vec3 uCenter;
 uniform float uRadius;
@@ -30,16 +28,9 @@ uniform int uShape;     // 0 sphere, 1 cube
 uniform int uTool;      // element id, or negative tool id
 uniform float uRate;    // spawn density multiplier
 uniform bool uReplace;
-layout(location = 0) out vec4 oA;
-layout(location = 1) out vec4 oB;
+${stateOutGLSL}
 
-void main() {
-  ivec3 p = cellFromFrag(ivec2(gl_FragCoord.xy));
-  vec4 a = texelFetch(tA, ivec2(gl_FragCoord.xy), 0);
-  vec4 b = texelFetch(tB, ivec2(gl_FragCoord.xy), 0);
-  oA = a; oB = b;
-  if (p.y >= NY) return;
-
+void brush(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
   vec3 d = vec3(p) + 0.5 - uCenter;
   float r = uShape == 0 ? length(d) : max(abs(d.x), max(abs(d.y), abs(d.z)));
   if (r > uRadius) return;
@@ -68,18 +59,16 @@ void main() {
     oB.w = b.w + TOOL_PRESSURE * falloff;
   }
 }
-`;
+${copyThroughMain('brush')}`;
 
-// Initialise both MRT attachments from uploaded data textures.
+// Copy a state (uploaded data textures, an undo snapshot) into a target.
+// Padding texels copy too: cellFromFrag and atlas() round-trip them.
 export const copyFrag = (g) => /* glsl */ `
 ${prelude(g)}
-uniform sampler2D tA;
-uniform sampler2D tB;
-layout(location = 0) out vec4 oA;
-layout(location = 1) out vec4 oB;
+${stateOutGLSL}
 void main() {
-  oA = texelFetch(tA, ivec2(gl_FragCoord.xy), 0);
-  oB = texelFetch(tB, ivec2(gl_FragCoord.xy), 0);
+  ivec3 p = cellFromFrag(ivec2(gl_FragCoord.xy));
+  writeState(fetchA(p), fetchB(p));
 }
 `;
 
@@ -105,8 +94,6 @@ export const brickFrag = (g) => /* glsl */ `
 ${prelude(g)}
 ${materialsGLSL()}
 ${brickGLSL}
-uniform sampler2D tA;
-uniform sampler2D tB;
 uniform sampler2D tFS;
 uniform sampler2D tFM;
 uniform sampler2D tFT;   // thin-feature mask (x: liquid)
@@ -132,7 +119,7 @@ float openFaces(ivec3 c) {
     q[k >> 1] += (k & 1) == 0 ? -1 : 1;
     if (q.y < 0) continue;                       // the floor
     if (!inGrid(q)) { n += 1.0; continue; }      // open sky past the box
-    if (RCLASS[eid(texelFetch(tA, atlas(q), 0))] != R_OPAQUE) n += 1.0;
+    if (RCLASS[eid(fetchA(q))] != R_OPAQUE) n += 1.0;
   }
   return n;
 }
@@ -149,8 +136,9 @@ void main() {
   for (int z = 0; z < BS; z++)
   for (int y = 0; y < BS; y++)
   for (int x = 0; x < BS; x++) {
-    ivec2 t = atlas(o + ivec3(x, y, z));
-    vec4 a = texelFetch(tA, t, 0);
+    ivec3 c = o + ivec3(x, y, z);
+    ivec2 t = atlas(c);   // the render fields share the state's atlas
+    vec4 a = fetchA(c);
     vec4 s = texelFetch(tFS, t, 0);
     vec4 m = texelFetch(tFM, t, 0);
     int id = eid(a);
@@ -171,7 +159,7 @@ void main() {
     else if (id != E_EMPTY && KIND[id] != K_GAS && a.y > INCAND_T0) {
       // the light of the visible skin (metals have none to speak of)
       vec3 e = incandescence(a.y - (id == E_METAL ? 0.0 : INCAND_SKIN_DROP));
-      if (dot(e, e) > 0.0) em += e * (RCLASS[id] == R_OPAQUE ? openFaces(o + ivec3(x, y, z)) * GLOW_FACE_GAIN : 1.0);
+      if (dot(e, e) > 0.0) em += e * (RCLASS[id] == R_OPAQUE ? openFaces(c) * GLOW_FACE_GAIN : 1.0);
     }
   }
   // Pressure and air velocity are smooth fields, so the brick's 2×2×2 core is
@@ -180,7 +168,7 @@ void main() {
   for (int z = 1; z < 3; z++)
   for (int y = 1; y < 3; y++)
   for (int x = 1; x < 3; x++) {
-    vec4 b = texelFetch(tB, atlas(o + ivec3(x, y, z)), 0);
+    vec4 b = fetchB(o + ivec3(x, y, z));
     pm = max(pm, abs(b.w));
     vm = max(vm, dot(b.xyz, b.xyz));
   }

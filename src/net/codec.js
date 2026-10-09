@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { prelude, quadVert } from '../shaders/common.js';
+import { prelude, quadVert, stateOutGLSL } from '../shaders/common.js';
 
 // World stream codec. The host packs the state into 4 bytes per cell holding
 // only what guests render, and sends a keyframe or an XOR delta against the
@@ -62,12 +62,11 @@ bool sendsLife(int id) { return id == E_SMOKE || id == E_FIRE; }
 const packFrag = (g) => /* glsl */ `
 ${prelude(g)}
 ${codecGLSL}
-uniform sampler2D tA;
 out vec4 oP;
 void main() {
-  ivec2 fc = ivec2(gl_FragCoord.xy);
-  if (cellFromFrag(fc).y >= NY) { oP = vec4(0.0); return; }
-  vec4 a = texelFetch(tA, fc, 0);
+  ivec3 p = cellFromFrag(ivec2(gl_FragCoord.xy));
+  if (p.y >= NY) { oP = vec4(0.0); return; }
+  vec4 a = fetchA(p);
   int id = eid(a);
   float T = encodeTemp(id == E_EMPTY ? AMBIENT : a.y);
   float life = sendsLife(id) ? round(clamp(a.z, 0.0, 1.0) * BYTE_MAX) : 0.0;
@@ -78,15 +77,13 @@ void main() {
 const unpackFrag = (g) => /* glsl */ `
 ${prelude(g)}
 ${codecGLSL}
-uniform sampler2D tPacked;
-layout(location = 0) out vec4 oA;
-layout(location = 1) out vec4 oB;
+uniform sampler2D tPacked;   // in the state's atlas layout: texel f holds cell cellFromFrag(f)
+${stateOutGLSL}
 void main() {
   ivec2 fc = ivec2(gl_FragCoord.xy);
   vec4 q = round(texelFetch(tPacked, fc, 0) * BYTE_MAX);
   uint rs = seed3(cellFromFrag(fc), 0u, SEED_SALT);
-  oA = vec4(q.x, decodeTemp(q.y), q.z / BYTE_MAX, q.w + rnd(rs) * SEED_SPAN);
-  oB = vec4(0.0);
+  writeState(vec4(q.x, decodeTemp(q.y), q.z / BYTE_MAX, q.w + rnd(rs) * SEED_SPAN), vec4(0.0));
 }
 `;
 

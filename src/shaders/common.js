@@ -6,8 +6,12 @@ import { physicsGLSL } from '../physics.js';
 // horizontal Y-slices, TX slices per atlas row. Every pass reads cells with
 // texelFetch through atlas(), so there is no filtering and no precision loss.
 //
-// State texture A: (element id, temperature °C, life/latent/fuel, ctype + seed)
-// State texture B: (velocity xyz in cells/step, air pressure)
+// The simulation state is two textures in that atlas, read only through
+// fetchA/fetchB and written only through writeState (stateOutGLSL), so the
+// texel layout and format can change here alone (docs/scaling.md D5;
+// tools/check-state-access.mjs enforces it):
+//   A = (element id, temperature °C, life/latent/fuel, ctype + seed)
+//   B = (velocity xyz in cells/step, air pressure)
 // Edge of a brick, in cells: the unit of empty-space skipping, the light and
 // GI volumes, and the simulation's activity map.
 export const BRICK = 4;
@@ -64,6 +68,12 @@ ivec3 blockFromFrag(ivec2 f) {
 bool inGrid(ivec3 p) {
   return all(greaterThanEqual(p, ivec3(0))) && all(lessThan(p, ivec3(NX, NY, NZ)));
 }
+
+// ---- the state (see the top of shaders/common.js) ----
+uniform sampler2D tA;
+uniform sampler2D tB;
+vec4 fetchA(ivec3 c) { return texelFetch(tA, atlas(c), 0); }
+vec4 fetchB(ivec3 c) { return texelFetch(tB, atlas(c), 0); }
 int eid(vec4 a) { return int(floor(a.x + 0.5)); }
 
 // PCG hash (Jarzynski & Olano 2020, "Hash Functions for GPU Rendering"); the
@@ -109,6 +119,30 @@ vec3 blackbody(float tC) {
 ${incandescenceGLSL()}
 `;
 }
+
+// The outputs of a pass that writes the state (MRT attachments 0 and 1), and
+// the one way to write them: a and b in the fetchA/fetchB layout.
+export const stateOutGLSL = /* glsl */ `
+layout(location = 0) out vec4 outStateA;
+layout(location = 1) out vec4 outStateB;
+void writeState(vec4 a, vec4 b) { outStateA = a; outStateB = b; }
+`;
+
+// main() of a pass that changes a few cells of the state and copies the rest
+// through (the brush, stamps, transfers, the POV body and tools). update names
+// the pass's GLSL function
+//   void update(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB)
+// which gets cell p's state (a, b) and leaves its new state in oA, oB (they
+// start as a copy of a, b). Padding texels, which hold no cell, copy through.
+export const copyThroughMain = (update) => /* glsl */ `
+void main() {
+  ivec3 p = cellFromFrag(ivec2(gl_FragCoord.xy));
+  vec4 a = fetchA(p), b = fetchB(p);
+  vec4 oA = a, oB = b;
+  if (p.y < NY) ${update}(p, a, b, oA, oB);
+  writeState(oA, oB);
+}
+`;
 
 export const quadVert = /* glsl */ `
 in vec3 position;

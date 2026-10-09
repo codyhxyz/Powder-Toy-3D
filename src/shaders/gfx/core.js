@@ -1,11 +1,10 @@
 import { brickGLSL, BRICK_DIST_SCALE } from '../passes.js';
 
-// Shared render core: state/brick/field access, the DDA helpers and the
-// smooth-surface machinery (sampling, root finding, normals).
+// Shared render core: brick/field access, the DDA helpers and the
+// smooth-surface machinery (sampling, root finding, normals). The state is
+// read with the prelude's fetchA/fetchB (shaders/common.js).
 export const coreGLSL = (g) => /* glsl */ `
 ${brickGLSL}
-uniform sampler2D tA;
-uniform sampler2D tB;    // velocity xyz (cells/step), air pressure
 uniform sampler2D tBrick;
 uniform sampler2D tBrickDist;   // empty-space distance per brick (shaders/passes.js)
 #define BRICK_DIST_SCALE ${BRICK_DIST_SCALE.toFixed(1)}
@@ -27,8 +26,6 @@ uniform float uPixScale;
 const ivec3 GRID = ivec3(NX, NY, NZ);
 #define MAX_STEPS ${g.maxSteps}
 
-vec4 cellA(ivec3 c) { return texelFetch(tA, atlas(c), 0); }
-vec4 cellB(ivec3 c) { return texelFetch(tB, atlas(c), 0); }
 bool outside(ivec3 c) { return any(lessThan(c, ivec3(0))) || any(greaterThanEqual(c, GRID)); }
 
 // Crisp elements are drawn as voxels; everything else is a field.

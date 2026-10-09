@@ -37,6 +37,20 @@ export function gridLayout(nx, ny, nz) {
   };
 }
 
+// JS mirror of atlas() and cellFromFrag() (shaders/common.js), for CPU code
+// that builds or reads the state: the index of cell (x, y, z)'s texel in a
+// width × height state texture (× 4 for its RGBA floats), and back ([x, y, z],
+// or null for a padding texel, which holds no cell).
+export function cellTexel(g, x, y, z) {
+  return (Math.floor(y / g.tx) * g.nz + z) * g.width + (y % g.tx) * g.nx + x;
+}
+export function texelCell(g, i) {
+  const fx = i % g.width, fy = Math.floor(i / g.width);
+  const sx = Math.floor(fx / g.nx), sy = Math.floor(fy / g.nz);   // slice column, row
+  const y = sy * g.tx + sx;
+  return y < g.ny ? [fx - sx * g.nx, y, fy - sy * g.nz] : null;
+}
+
 function makeTarget(w, h, count = 2) {
   return new THREE.WebGLRenderTarget(w, h, {
     count,
@@ -167,7 +181,7 @@ export class Simulation {
       fieldBlur: rawMat(fieldBlurFrag(g, false), fieldBlurUniforms()),
       fieldFinal: rawMat(fieldBlurFrag(g, true), fieldBlurUniforms()),
       fieldBoost: [...Array(BOOST_STAGES).keys()].map((stage) => rawMat(fieldBoostFrag(g, stage), {
-        t0: { value: null }, t1: { value: null }, tPhi: { value: null }, tMed: { value: null },
+        tA: { value: null }, t0: { value: null }, t1: { value: null }, tPhi: { value: null }, tMed: { value: null },
         uS: { value: new THREE.Vector4(...CHANNELS.map((c) => (c.cubic ? CUBIC_LATTICE[1] : 1))) },
         uBulk: { value: new THREE.Vector4() },
       })),
@@ -189,6 +203,40 @@ export class Simulation {
 
   get stateA() { return this.targets[this.cur].textures[0]; }
   get stateB() { return this.targets[this.cur].textures[1]; }
+
+  // Index of cell (x, y, z)'s texel in the state arrays, and back (cellTexel, texelCell).
+  cellTexel(x, y, z) { return cellTexel(this.g, x, y, z); }
+  texelCell(i) { return texelCell(this.g, i); }
+
+  // The current state read back, as float RGBA per atlas texel in the
+  // fetchA/fetchB layout (what load() takes): [A, B]. For CPU checks and
+  // tools; cellTexel finds a cell in it.
+  readState() {
+    const { width, height } = this.g;
+    const t = this.targets[this.cur];
+    const a = new Float32Array(width * height * 4), b = new Float32Array(width * height * 4);
+    this.renderer.readRenderTargetPixels(t, 0, 0, width, height, a, undefined, 0);
+    this.renderer.readRenderTargetPixels(t, 0, 0, width, height, b, undefined, 1);
+    return [a, b];
+  }
+
+  // One cell of the current state, read back: [a, b] in the fetchA/fetchB
+  // layout (two RGBA float arrays). Synchronous; for tests and tools.
+  readCell(x, y, z) {
+    const i = this.cellTexel(x, y, z), w = this.g.width;
+    const t = this.targets[this.cur];
+    const a = new Float32Array(4), b = new Float32Array(4);
+    this.renderer.readRenderTargetPixels(t, i % w, Math.floor(i / w), 1, 1, a, undefined, 0);
+    this.renderer.readRenderTargetPixels(t, i % w, Math.floor(i / w), 1, 1, b, undefined, 1);
+    return [a, b];
+  }
+
+  // Block until the GPU has done everything queued so far, by reading one
+  // texel of the current state back (wall-clock timing of GPU work).
+  gpuSync() {
+    this.syncTexel ??= new Float32Array(4);
+    this.renderer.readRenderTargetPixels(this.targets[this.cur], 0, 0, 1, 1, this.syncTexel, undefined, 0);
+  }
 
   // Draw mat over the whole of target. overwrite: the pass writes every texel
   // of target without blending, so the target's old contents are invalidated
@@ -305,7 +353,8 @@ export class Simulation {
     lu.uBulk.value.set(...k.map((w, i) => (CHANNELS[i].cubic ? bulkPeakCubic(w) : bulkPeak(w))));
     boost.forEach((mat, s) => {
       mat.uniforms.t0.value = s ? dst(s - 1).textures[0] : this.fieldsBlurred.textures[0];
-      mat.uniforms.t1.value = s ? dst(s - 1).textures[1] : this.stateA;
+      if (s) mat.uniforms.t1.value = dst(s - 1).textures[1];
+      else mat.uniforms.tA.value = this.stateA;
       this.run(mat, dst(s), true);
     });
   }
@@ -426,14 +475,13 @@ export class Simulation {
 
   // Debug: read the full state back and summarise it per element.
   census() {
-    const { width, height, nx, ny, nz, tx } = this.g;
-    const a = new Float32Array(width * height * 4);
-    this.renderer.readRenderTargetPixels(this.targets[this.cur], 0, 0, width, height, a, undefined, 0);
+    const { nx, ny, nz } = this.g;
+    const [a] = this.readState();
     const out = {};
     for (let y = 0; y < ny; y++)
       for (let z = 0; z < nz; z++)
         for (let x = 0; x < nx; x++) {
-          const i = ((Math.floor(y / tx) * nz + z) * width + (y % tx) * nx + x) * 4;
+          const i = this.cellTexel(x, y, z) * 4;
           const id = Math.round(a[i]);
           const o = (out[id] ??= { n: 0, T: 0, minY: 1e9, maxY: -1, Tmax: -1e9 });
           o.n++; o.T += a[i + 1]; o.minY = Math.min(o.minY, y); o.maxY = Math.max(o.maxY, y); o.Tmax = Math.max(o.Tmax, a[i + 1]);

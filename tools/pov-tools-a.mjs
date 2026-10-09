@@ -34,14 +34,8 @@ const res = await p.evaluate(async () => {
   const belt = createToolbelt(env);
   belt.setVisible(true);
 
-  // one cell of the state, read synchronously (test only)
-  const cellBuf = new Float32Array(4);
-  function cell(x, y, z) {
-    const g = sim().g;
-    const ax = (y % g.tx) * g.nx + x, ay = Math.floor(y / g.tx) * g.nz + z;
-    a.renderer.readRenderTargetPixels(sim().targets[sim().cur], ax, ay, 1, 1, cellBuf, undefined, 0);
-    return Math.round(cellBuf[0]);
-  }
+  // one cell's element, read synchronously (test only)
+  const cell = (x, y, z) => Math.round(sim().readCell(x, y, z)[0][0]);
   const top = (x, z) => { for (let y = sim().g.ny - 1; y >= 0; y--) if (cell(x, y, z) !== E.EMPTY) return y; return -1; };
   // matter: grid census plus every load (ids other than air)
   function totals() {

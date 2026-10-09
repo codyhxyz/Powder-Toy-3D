@@ -121,7 +121,7 @@ float sunRayClear(vec3 ro, float tLim) {
     ivec3 bc = cell / BS;
     if (bc != lastB) { lastB = bc; occ = brickOcc(bc); }
     if (occ < 0.5) { skipEmpty(bc, ro, rd, istp, cell, tMax, tEnter); continue; }
-    int id = eid(cellA(cell));
+    int id = eid(fetchA(cell));
     if (id != E_EMPTY && RCLASS[id] == R_OPAQUE && (isCrisp(id) || tEnter - t > SUN_RAY_SELF_SKIP)) return 0.0;
     int ax = argmin3(tMax);
     tEnter = tMax[ax];
@@ -313,7 +313,7 @@ vec3 sampleLight(vec3 gp) {
 bool occluder(ivec3 c) {
   if (c.y < 0) return true;
   if (outside(c)) return false;
-  int id = eid(cellA(c));
+  int id = eid(fetchA(c));
   return id != E_EMPTY && KIND[id] != K_GAS;
 }
 
@@ -344,7 +344,7 @@ float solidity(vec3 p) {
   vec4 s = surfField(p);
   float o = max(max(s.y, s.z), max(s.w, s.x * AO_LIQUID_SOLIDITY));
   ivec3 c = ivec3(floor(p));
-  if (!outside(c) && isCrisp(eid(cellA(c)))) o = 1.0;
+  if (!outside(c) && isCrisp(eid(fetchA(c)))) o = 1.0;
   return clamp(o, 0.0, 1.0);
 }
 

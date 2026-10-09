@@ -1,4 +1,4 @@
-import { prelude } from './common.js';
+import { prelude, stateOutGLSL, copyThroughMain } from './common.js';
 import { MAX_FOOT } from '../constructions/runtime.js';
 
 export { MAX_FOOT };
@@ -14,28 +14,19 @@ export { MAX_FOOT };
 export const stampFrag = (g) => /* glsl */ `
 ${prelude(g)}
 precision highp sampler3D;
-uniform sampler2D tA;
-uniform sampler2D tB;
 uniform sampler3D tStamp;
 uniform ivec3 uOrigin;
 uniform ivec3 uSize;
 uniform int uFoot;
 uniform uint uSeed;
-layout(location = 0) out vec4 oA;
-layout(location = 1) out vec4 oB;
+${stateOutGLSL}
 
 bool bearsWeight(ivec3 c) {
-  int id = eid(texelFetch(tA, atlas(c), 0));
+  int id = eid(fetchA(c));
   return id != E_EMPTY && KIND[id] != K_GAS && KIND[id] != K_LIQUID;
 }
 
-void main() {
-  ivec2 f = ivec2(gl_FragCoord.xy);
-  ivec3 p = cellFromFrag(f);
-  vec4 a = texelFetch(tA, f, 0);
-  vec4 b = texelFetch(tB, f, 0);
-  oA = a; oB = b;
-  if (p.y >= NY) return;
+void stamp(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
   ivec3 q = p - uOrigin;
   if (q.x < 0 || q.z < 0 || q.x >= uSize.x || q.z >= uSize.z || q.y >= uSize.y || q.y < -uFoot) return;
 
@@ -67,4 +58,4 @@ void main() {
   oA = vec4(float(id), s.y, SPAWNLIFE[id], s.z + rnd(rs) * 0.999);
   oB = vec4(0.0, 0.0, 0.0, b.w);
 }
-`;
+${copyThroughMain('stamp')}`;

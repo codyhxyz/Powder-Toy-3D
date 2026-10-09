@@ -36,7 +36,6 @@ import { materialsGLSL } from '../gfx/materials.js';
 export const fieldEmaFrag = (g) => /* glsl */ `
 ${prelude(g)}
 ${materialsGLSL()}
-uniform sampler2D tA;
 uniform sampler2D tP0;
 uniform sampler2D tP1;
 uniform vec4 uEmaS;
@@ -48,7 +47,7 @@ void main() {
   ivec2 f = ivec2(gl_FragCoord.xy);
   ivec3 p = cellFromFrag(f);
   if (p.y >= NY) { o0 = o1 = o2 = vec4(0.0); return; }
-  vec4 a = texelFetch(tA, f, 0);
+  vec4 a = fetchA(p);
   int id = eid(a);
   vec4 s = vec4(0.0), m = vec4(0.0);
   int ch = SURFCH[id], md = MEDIACH[id];
@@ -115,7 +114,7 @@ export const fieldBoostFrag = (g, stage) => /* glsl */ `
 ${prelude(g)}
 ${materialsGLSL()}
 uniform sampler2D t0;   // stage 0: φ, else the previous stage's field
-uniform sampler2D t1;   // stage 0: state A, else the occupancy so far
+${stage > 0 ? 'uniform sampler2D t1;   // the occupancy so far (stage 0 reads the state instead)' : ''}
 ${stage < 3 ? 'uniform vec4 uS;      // per-channel centre weight of the lattice smoothing (1 = none)' : ''}
 ${stage === LAST ? `uniform sampler2D tPhi;
 uniform sampler2D tMed;
@@ -135,7 +134,7 @@ ${stage < 3 ? `    // clamped to the edge, like the tracer's cubic sample
     ivec3 q = clamp(p + dir * i, ivec3(0), ivec3(NX, NY, NZ) - 1);
     ivec2 t = atlas(q);
     acc += (i == 0 ? uS : 0.5 * (1.0 - uS)) * texelFetch(t0, t, 0);
-${stage === 0 ? `    int ch = SURFCH[eid(texelFetch(t1, t, 0))];
+${stage === 0 ? `    int ch = SURFCH[eid(fetchA(q))];
     if (ch >= 0) occ[ch] = 1.0;` : '    occ = max(occ, texelFetch(t1, t, 0));'}` : `    ivec3 q = p + dir * i;
     if (inGrid(q)) acc = max(acc, texelFetch(t0, atlas(q), 0));`}
   }
