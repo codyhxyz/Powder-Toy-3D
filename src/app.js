@@ -44,11 +44,13 @@ const DEFAULTS = {
   size: '128', preset: 'lab',
   tool: E.SAND, radius: 5, shape: 0, rate: 1, replace: false,
   steps: 4, gravity: 0.025, paused: false,
-  view: 0, camSpeed: 1, upscale: 'native', dockCollapsed: false,
+  view: 0, camSpeed: 1, upscale: 'quality', dockCollapsed: false,
   figure: 'real', povFov: POV_FOV, sensitivity: 1, viewBobbing: true, sprintMode: 'hold',
+  nearGI: true, glowLights: true, caustics: true,
 };
 const PERSIST = ['size', 'preset', 'tool', 'radius', 'shape', 'rate', 'replace', 'steps', 'gravity', 'view',
-  'camSpeed', 'upscale', 'dockCollapsed', 'figure', 'povFov', 'sensitivity', 'viewBobbing', 'sprintMode'];
+  'camSpeed', 'upscale', 'dockCollapsed', 'figure', 'povFov', 'sensitivity', 'viewBobbing', 'sprintMode',
+  'nearGI', 'glowLights', 'caustics'];
 const STORE = 'powder-toy-3d:settings';
 // Fixed look: glow is heat-driven light (×uLightGain); smoothing, TAA, bloom and
 // exposure keep their defaults in gfx/uniforms.js and gfx/post.js.
@@ -458,6 +460,10 @@ const settingsPanel = createSettings({
       // the day keeps running from wherever this puts it
       { type: 'slider', key: 'time', label: 'Time of day', min: 0, max: HOURS - TIME_STEP, step: TIME_STEP, def: DAY.startPhase * HOURS,
         fmt: fmtTime, onChange: (v) => { day.clock = phaseSteps(v / HOURS); updateSun(); } },
+      // each costs GPU time; turning one off restores the softer probe-only light
+      ...[['nearGI', 'Contact Shadows'], ['glowLights', 'Lava Lights'], ['caustics', 'Caustics']]
+        .map(([key, label]) => ({ type: 'seg', key, options: [[true, `${label}: On`], [false, 'Off']],
+          onChange: (v) => { settings[key] = v; save(); } })),
     ] },
     { title: 'Grid size', rows: [
       { type: 'seg', key: 'size', options: [['64', '64³'], ['96', '96³'], ['128', '128³'], ['wide', '160×96']],
@@ -885,6 +891,9 @@ function frame(now) {
 
     post.settings.raw = settings.view !== 0;
     post.settings.upscale = UPSCALE[settings.upscale] ?? UPSCALE.native;
+    gfxUniforms.uNearGI.value = settings.nearGI;
+    gfxUniforms.uGlowLights.value = settings.glowLights;
+    gfxUniforms.uCaustics.value = settings.caustics;
     floorGrid.material.opacity = post.renderScale;
     edges.material.opacity = EDGE_OPACITY * post.renderScale;
     post.render(scene, camera);

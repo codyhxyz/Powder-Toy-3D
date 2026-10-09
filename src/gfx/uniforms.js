@@ -42,6 +42,9 @@ export const gfxUniforms = {
   uMatDetail: { value: 1 },
   uBevel: { value: 0.12 },
   uGlints: { value: 0.4 },
+  uNearGI: { value: true },     // lighting upgrades (gfx/lighting.js), switched from Settings → Lighting
+  uGlowLights: { value: true },
+  uCaustics: { value: true },
 };
 
 const sky = { sunExt: null, sunCol: null, skyUp: null, ground: null };
