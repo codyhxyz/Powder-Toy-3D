@@ -29,7 +29,8 @@ const SETTLE_FRAMES = 90;          // frames for the derived passes, GI and TAA 
 const COST_ROUNDS = 40;            // interleaved timing rounds (each draws with and without)
 const EYE_DIR = [0.82, 0.57];      // the eye view's spot: out from the island's centre this way (x, z)...
 const EYE_BELOW_FROST = 3;         // ...to where the ground is this many cells under the lowest snow (bare rock: an open view)
-const EYE_CLEAR = 24;              // cells around the spot with no tree trunk
+const EYE_CLEAR = 24;              // cells around the spot with no tree trunk (on the rock)...
+const EYE_BEACH_CLEAR = 10;        // ...and on the beach (palms grow there)
 const TREE_REGION = [320, 320, 704, 704];   // world cells [x0, z0, x1, z1) where the tree placements are compared
 
 const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
@@ -117,33 +118,42 @@ if (out && !skip.has(1)) {
 }
 
 // ------------------------------------------------------------- 2. eye level, first person
+// Two spots out along EYE_DIR: the bare rock under the snow, looking out over
+// the slopes to the sea; a beach, looking inland to the hills.
 if (out && !skip.has(2)) {
-  for (const [tag, toward] of [['hills', 'centre'], ['sea', 'edge']]) {
-    await p.evaluate(async ([DIR, BELOW, CLEAR, toward, SETTLE]) => {
+  for (const [tag, from, toward] of [['sea', 'rock', 'edge'], ['hills', 'beach', 'centre']]) {
+    await p.evaluate(async ([DIR, BELOW, CLEAR, BEACH_CLEAR, from, toward, SETTLE]) => {
       const a = window.__app, H = window.__fc, g = a.sim.g, w = a.win;
       const { heightAt, frostLine, treesIn } = await import('/src/world/generator.js');
       const c = [w.size[0] / 2, w.size[2] / 2];
-      // out from the centre to the bare rock under the snow, then on to the first spot with no tree near
+      const clear = (x, z, r) => !treesIn(x - r, z - r, x + r, z + r, w.P).length;
       let spot = c;
-      for (let r = 0; r < c[0]; r += 2) {
-        const x = c[0] + DIR[0] * r, z = c[1] + DIR[1] * r;
-        if (heightAt(x, z, w.P) > frostLine(w.P) - BELOW) continue;
-        if (treesIn(x - CLEAR, z - CLEAR, x + CLEAR, z + CLEAR, w.P).length) continue;
-        spot = [x, z];
-        break;
+      if (from === 'rock') {
+        // out from the centre to the bare rock under the snow, then on to a spot with no tree near
+        for (let r = 0; r < c[0]; r += 2) {
+          const x = c[0] + DIR[0] * r, z = c[1] + DIR[1] * r;
+          if (heightAt(x, z, w.P) <= frostLine(w.P) - BELOW && clear(x, z, CLEAR)) { spot = [x, z]; break; }
+        }
+      } else {
+        // in from the world's edge to the first dry land, then on to a spot with no tree near
+        let land = false;
+        for (let r = c[0]; r > 0; r -= 2) {
+          const x = c[0] + DIR[0] * r, z = c[1] + DIR[1] * r;
+          land ||= heightAt(x, z, w.P) > w.P.sea + 1;
+          if (land && clear(x, z, BEACH_CLEAR)) { spot = [x, z]; break; }
+        }
       }
-      if (!a.pov.active) {
-        a.worldLoad([Math.round((spot[0] - g.nx / 2) / 16) * 16, 0, Math.round((spot[1] - g.nz / 2) / 16) * 16]);
-        await H.frames(10);
-        await a.pov.enter();
-        await H.frames(120);   // swoop in, land
-      }
+      if (a.pov.active) { a.pov.exit(true); await H.frames(3); }
+      a.worldLoad([Math.round((spot[0] - g.nx / 2) / 16) * 16, 0, Math.round((spot[1] - g.nz / 2) / 16) * 16]);
+      await H.frames(10);
+      await a.pov.enter();
+      await H.frames(120);   // swoop in, land
       const o = a.sim.origin, pp = a.pov.player.pos;
       const here = [o.x + pp.x, o.z + pp.z];
       const d = toward === 'centre' ? [c[0] - here[0], c[1] - here[1]] : [here[0] - c[0], here[1] - c[1]];
-      a.pov.setLook(Math.atan2(-d[0], -d[1]), toward === 'centre' ? 0.04 : -0.02);
+      a.pov.setLook(Math.atan2(-d[0], -d[1]), toward === 'centre' ? 0.06 : -0.04);
       await H.frames(SETTLE);
-    }, [EYE_DIR, EYE_BELOW_FROST, EYE_CLEAR, toward, SETTLE_FRAMES]);
+    }, [EYE_DIR, EYE_BELOW_FROST, EYE_CLEAR, EYE_BEACH_CLEAR, from, toward, SETTLE_FRAMES]);
     await still(`${out}/eye-${tag}.png`);
   }
   await p.evaluate(async () => { window.__app.pov.exit(true); await window.__fc.frames(5); });
