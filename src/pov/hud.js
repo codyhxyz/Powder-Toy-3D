@@ -47,7 +47,7 @@ export function createPovHud() {
   const death = h('div.pov-death', {},
     h('div.pov-died', { text: 'You died' }),
     deathCause,
-    h('div.pov-respawn', {}, 'Back at the drop point in ', deathCount, h('span.pov-dot', { text: '·' }), key('F'), ' for god view'));
+    h('div.pov-respawn', {}, 'Back at the drop point in ', deathCount, h('span.pov-dot', { text: '·' }), 'click or ', key('Space'), ' now', h('span.pov-dot', { text: '·' }), key('F'), ' for god view'));
 
   const hint = h('div.pov-hint.panel', {},
     h('span', {}, key('W'), key('A'), key('S'), key('D'), ' move'),
