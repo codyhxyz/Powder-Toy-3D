@@ -295,7 +295,7 @@ ${stateOutGLSL}
 ${heatGLSL}
 void main() {
   ivec3 p = cellFromFrag(ivec2(gl_FragCoord.xy));
-  if (p.y >= NY) { writeState(vec4(0.0), vec4(0.0)); return; }
+  if (!inGrid(p)) { writeState(vec4(0.0), vec4(0.0)); return; }   // a texel holding no cell
   ivec3 off = ivec3(uParity);
   ivec3 base = ((p + off) / 2) * 2 - off;
   ivec3 lp = p - base;

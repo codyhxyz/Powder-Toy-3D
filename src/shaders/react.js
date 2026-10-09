@@ -80,7 +80,7 @@ bool latent(inout float T, inout float acc, float Tp, float C, float L, bool ris
 
 void main() {
   ivec3 p = cellFromFrag(ivec2(gl_FragCoord.xy));
-  if (p.y >= NY) { writeState(vec4(0.0), vec4(0.0)); return; }
+  if (!inGrid(p)) { writeState(vec4(0.0), vec4(0.0)); return; }   // a texel holding no cell
 
   vec4 a = fetchA(p);
   vec4 b = fetchB(p);

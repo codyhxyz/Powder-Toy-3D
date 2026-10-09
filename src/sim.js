@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { quadVert, BRICK, SEED_MAX } from './shaders/common.js';
+import { quadVert, BRICK, SEED_MAX, TILE, SUPER, SUPER_TEX, SUPER_CELLS } from './shaders/common.js';
 import { inertFrag, quietFrag, activityPeriod } from './shaders/activity.js';
 import { moveBlockFrag, moveGatherFrag } from './shaders/move.js';
 import { reactFrag } from './shaders/react.js';
@@ -17,9 +17,31 @@ const LIGHT_BLUR_PASSES = 6;
 // Steps an activity map stays valid (shaders/activity.js).
 const ACTIVITY_PERIOD = activityPeriod(BRICK);
 
+// The state atlas may be at most this many times wider than tall (atlasColumns).
+const ATLAS_ASPECT_MAX = 4;
+
+// Supertiles per state-atlas row: the smallest divisor of their count from its
+// square root up, so the atlas is near square and every texel holds a cell
+// (all the app's grid sizes). If that would make it more than ATLAS_ASPECT_MAX
+// times wider than tall, a square atlas whose last row is partly empty.
+function atlasColumns(count) {
+  const root = Math.ceil(Math.sqrt(count));
+  let w = root;
+  while (count % w) w++;
+  return w * w <= ATLAS_ASPECT_MAX * count ? w : root;
+}
+
 export function gridLayout(nx, ny, nz) {
-  const tx = Math.ceil(Math.sqrt((ny * nz) / nx));
-  const ty = Math.ceil(ny / tx);
+  if (nx % SUPER_CELLS.x || ny % SUPER_CELLS.y || nz % SUPER_CELLS.z) {
+    throw new Error(`grid ${nx}×${ny}×${nz}: sides must be multiples of ${SUPER_CELLS.x}×${SUPER_CELLS.y}×${SUPER_CELLS.z} (a supertile)`);
+  }
+  // state atlas (brick-major, shaders/common.js): supertiles row-major
+  const stx = nx / SUPER_CELLS.x, sty = ny / SUPER_CELLS.y, stz = nz / SUPER_CELLS.z;
+  const stw = atlasColumns(stx * sty * stz);
+  const sth = Math.ceil((stx * sty * stz) / stw);
+  // render-field atlas: Y-slices, ftx per row
+  const ftx = Math.ceil(Math.sqrt((ny * nz) / nx));
+  const fty = Math.ceil(ny / ftx);
   const bx = nx / BRICK, by = ny / BRICK, bz = nz / BRICK;
   const btx = Math.ceil(Math.sqrt((by * bz) / bx));
   const bty = Math.ceil(by / btx);
@@ -28,8 +50,9 @@ export function gridLayout(nx, ny, nz) {
   const mtx = Math.ceil(Math.sqrt((my * mz) / mx));
   const mty = Math.ceil(my / mtx);
   return {
-    nx, ny, nz, tx, ty, btx, bty, mx, my, mz, mtx,
-    width: tx * nx, height: ty * nz,
+    nx, ny, nz, stx, sty, stz, stw, ftx, btx, bty, mx, my, mz, mtx,
+    width: stw * SUPER_TEX, height: sth * SUPER_TEX,
+    fwidth: ftx * nx, fheight: fty * nz,
     bwidth: btx * bx, bheight: bty * bz,
     mwidth: mtx * mx, mheight: mty * mz,
     maxSteps: nx + ny + nz + 8,
@@ -39,15 +62,31 @@ export function gridLayout(nx, ny, nz) {
 // JS mirror of atlas() and cellFromFrag() (shaders/common.js), for CPU code
 // that builds or reads the state: the index of cell (x, y, z)'s texel in a
 // width × height state texture (× 4 for its RGBA floats), and back ([x, y, z],
-// or null for a padding texel, which holds no cell).
+// or null for a texel past the last supertile, which holds no cell).
 export function cellTexel(g, x, y, z) {
-  return (Math.floor(y / g.tx) * g.nz + z) * g.width + (y % g.tx) * g.nx + x;
+  const bx = Math.floor(x / BRICK), by = Math.floor(y / BRICK), bz = Math.floor(z / BRICK);   // brick
+  const sx = Math.floor(bx / SUPER.x), sy = Math.floor(by / SUPER.y), sz = Math.floor(bz / SUPER.z);   // supertile
+  const i = sx + g.stx * (sz + g.stz * sy);   // supertile number
+  const ly = y - by * BRICK;
+  const u = (i % g.stw) * SUPER_TEX + (bx - sx * SUPER.x) * TILE + (x - bx * BRICK) + BRICK * (ly & 1);
+  const v = Math.floor(i / g.stw) * SUPER_TEX + (bz - sz * SUPER.z + SUPER.z * (by - sy * SUPER.y)) * TILE
+    + (z - bz * BRICK) + BRICK * (ly >> 1);
+  return v * g.width + u;
 }
-export function texelCell(g, i) {
-  const fx = i % g.width, fy = Math.floor(i / g.width);
-  const sx = Math.floor(fx / g.nx), sy = Math.floor(fy / g.nz);   // slice column, row
-  const y = sy * g.tx + sx;
-  return y < g.ny ? [fx - sx * g.nx, y, fy - sy * g.nz] : null;
+export function texelCell(g, t) {
+  const u = t % g.width, v = Math.floor(t / g.width);
+  const su = Math.floor(u / SUPER_TEX), sv = Math.floor(v / SUPER_TEX);   // supertile slot
+  const i = su + g.stw * sv;
+  if (i >= g.stx * g.sty * g.stz) return null;
+  const sx = i % g.stx, sz = Math.floor(i / g.stx) % g.stz, sy = Math.floor(i / (g.stx * g.stz));
+  const tu = u - su * SUPER_TEX, tv = v - sv * SUPER_TEX;   // texel in the supertile
+  const ku = Math.floor(tu / TILE), kv = Math.floor(tv / TILE);   // brick tile
+  const lu = tu - ku * TILE, lv = tv - kv * TILE;           // texel in the tile
+  return [
+    (sx * SUPER.x + ku) * BRICK + (lu % BRICK),
+    (sy * SUPER.y + Math.floor(kv / SUPER.z)) * BRICK + (Math.floor(lu / BRICK) | (Math.floor(lv / BRICK) << 1)),
+    (sz * SUPER.z + (kv % SUPER.z)) * BRICK + (lv % BRICK),
+  ];
 }
 
 function makeTarget(w, h, count = 2) {
@@ -125,10 +164,11 @@ export class Simulation {
     // scratch in RGBA8, the blurred fields in half floats, the boosted final
     // fields (and the thin-feature mask) in filterable half floats
     const U8 = THREE.UnsignedByteType, NEAR = THREE.NearestFilter, HALF = THREE.HalfFloatType;
-    this.fieldEma = [makeFieldTarget(g.width, g.height, 3, U8, NEAR), makeFieldTarget(g.width, g.height, 3, U8, NEAR)];
-    this.fieldTmp = makeFieldTarget(g.width, g.height, 3, U8, NEAR);
-    this.fieldsBlurred = makeFieldTarget(g.width, g.height, 2, HALF, NEAR);
-    this.fields = makeFieldTarget(g.width, g.height, 3, HALF, THREE.LinearFilter);
+    // (all in the field atlas: Y-slices, fwidth × fheight)
+    this.fieldEma = [makeFieldTarget(g.fwidth, g.fheight, 3, U8, NEAR), makeFieldTarget(g.fwidth, g.fheight, 3, U8, NEAR)];
+    this.fieldTmp = makeFieldTarget(g.fwidth, g.fheight, 3, U8, NEAR);
+    this.fieldsBlurred = makeFieldTarget(g.fwidth, g.fheight, 2, HALF, NEAR);
+    this.fields = makeFieldTarget(g.fwidth, g.fheight, 3, HALF, THREE.LinearFilter);
     this.fieldCur = 0;
     this.fieldReset = true;
     this.smoothing = 1;
@@ -455,12 +495,22 @@ export class Simulation {
   }
 
   blankState() {
-    const { width, height } = this.g;
-    const a = new Float32Array(width * height * 4);
-    const b = new Float32Array(width * height * 4);
-    for (let i = 0; i < width * height; i++) {
-      a[i * 4 + 1] = 20;
-      a[i * 4 + 3] = Math.random() * SEED_MAX;
+    const g = this.g;
+    const a = new Float32Array(g.width * g.height * 4);
+    const b = new Float32Array(g.width * g.height * 4);
+    for (let i = 0; i < g.width * g.height; i++) a[i * 4 + 1] = 20;
+    // One seed per texel of the Y-slice field atlas, in its row order, padding
+    // included: the state atlas's order before it went brick-major, so a
+    // seeded Math.random (tools/regress.mjs) still gives each cell its seed.
+    for (let fy = 0; fy < g.fheight; fy++) {
+      const row = Math.floor(fy / g.nz), z = fy - row * g.nz;
+      for (let col = 0; col < g.ftx; col++) {
+        const y = row * g.ftx + col;
+        for (let x = 0; x < g.nx; x++) {
+          const seed = Math.random() * SEED_MAX;
+          if (y < g.ny) a[cellTexel(g, x, y, z) * 4 + 3] = seed;
+        }
+      }
     }
     return [a, b];
   }

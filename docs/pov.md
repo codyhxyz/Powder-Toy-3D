@@ -45,12 +45,17 @@
 
 ## Engine facts you need
 
-- The grid is NX×NY×NZ cells, stored as a 2D atlas (`atlas(ivec3)` in shaders/common.js).
+- The grid is NX×NY×NZ cells, stored as a 2D atlas that only shaders/common.js knows the layout of.
+  Shaders read a cell with `fetchA(cell)` / `fetchB(cell)` and never sample `tA`/`tB` directly
+  (`node tools/check-state-access.mjs` checks):
   - State A = (element id, temperature °C, life, ctype + seed fraction).
   - State B = (velocity xyz in cells/step, air pressure).
-- `sim.pass(mat)` ping-pongs a full-grid RawShaderMaterial with uniforms `tA`/`tB` that writes `oA`/`oB`
-  (location 0/1). Every brush and tool change goes through a pass like this; see `paintFrag` in
+- `sim.pass(mat)` ping-pongs a full-grid RawShaderMaterial (uniforms `tA`/`tB`) that writes the state with
+  `writeState(a, b)` from `stateOutGLSL`. A pass that changes a few cells and copies the rest supplies an
+  update function to `copyThroughMain`; every brush and tool change goes through one, see `paintFrag` in
   shaders/passes.js. `sim.run(mat, target)` renders into any target, e.g. a small readback target.
+- CPU side: `sim.cellTexel(x, y, z)` indexes the arrays `sim.blankState()` / `sim.readState()` use;
+  `sim.readCell(x, y, z)` reads one cell back (tests only).
 - GPU→CPU: `renderer.readRenderTargetPixelsAsync(target, ...)` (see `requestPick` in app.js). Keep readbacks
   small (a few hundred texels).
 - Grid ↔ world: `world = volume.position + grid * scale` (`window.__app.volume`, `.scale`). Grid y is up,

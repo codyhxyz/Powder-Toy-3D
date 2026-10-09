@@ -141,7 +141,7 @@ Every construction is a small program written against one API (`src/construction
 
 ## How the physics works
 
-Per simulation step there are three GPU passes over the state (two RGBA32F textures packed as a 2D atlas of Y-slices):
+Per simulation step there are three GPU passes over the state (two RGBA32F textures in a brick-major 2D atlas: each 4×4×4 brick is an 8×8-texel tile, see `src/shaders/common.js`):
 
 **1. Movement: a Margolus block cellular automaton** (`src/shaders/move.js`).
 The grid is split into 2×2×2 blocks whose partition shifts by one cell every step.

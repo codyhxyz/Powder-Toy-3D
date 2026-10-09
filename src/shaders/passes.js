@@ -137,7 +137,7 @@ void main() {
   for (int y = 0; y < BS; y++)
   for (int x = 0; x < BS; x++) {
     ivec3 c = o + ivec3(x, y, z);
-    ivec2 t = atlas(c);   // the render fields share the state's atlas
+    ivec2 t = fieldAtlas(c);   // the render fields have an atlas of their own
     vec4 a = fetchA(c);
     vec4 s = texelFetch(tFS, t, 0);
     vec4 m = texelFetch(tFM, t, 0);

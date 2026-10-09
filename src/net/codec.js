@@ -65,7 +65,7 @@ ${codecGLSL}
 out vec4 oP;
 void main() {
   ivec3 p = cellFromFrag(ivec2(gl_FragCoord.xy));
-  if (p.y >= NY) { oP = vec4(0.0); return; }
+  if (!inGrid(p)) { oP = vec4(0.0); return; }   // a texel holding no cell
   vec4 a = fetchA(p);
   int id = eid(a);
   float T = encodeTemp(id == E_EMPTY ? AMBIENT : a.y);
