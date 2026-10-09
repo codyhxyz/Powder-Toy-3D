@@ -142,6 +142,25 @@ export class FarField {
     this.mesh.frustumCulled = false;
     this.mesh.renderOrder = VIEW_ORDER;
     this.mesh.visible = false;
+    // the view's program is as big as the volume's: compiled in the background
+    // (parallel compile), the far field showing once it's ready, instead of
+    // stalling the first frame
+    this.ready = false;
+    this.compile();
+  }
+
+  compile() {
+    // post.js's scene target formats, so the program compiled is the one the view uses
+    const target = new THREE.WebGLRenderTarget(1, 1, {
+      type: THREE.HalfFloatType, format: THREE.RGBAFormat, depthBuffer: true,
+      depthTexture: new THREE.DepthTexture(1, 1, THREE.FloatType),
+    });
+    const prev = this.renderer.getRenderTarget();
+    this.renderer.setRenderTarget(target);
+    const done = this.renderer.compileAsync(this.mesh, new THREE.PerspectiveCamera(), new THREE.Scene());
+    this.renderer.setRenderTarget(prev);
+    done.then(() => { this.ready = true; }, (err) => console.error('far field: the view failed to compile', err))
+      .finally(() => { target.depthTexture.dispose(); target.dispose(); });
   }
 
   // Draw material mat into the far grid over world bricks [lo, lo + size) along x and z (every slice).
@@ -290,7 +309,7 @@ export class FarField {
   // volume's matrix maps grid cells into the scene; world = grid + origin).
   // visible: the realistic view (the data views draw the window alone).
   view(volume, visible) {
-    this.mesh.visible = visible && this.built;
+    this.mesh.visible = visible && this.built && this.ready;
     if (!this.mesh.visible) return;
     const o = this.sim.origin;
     this.worldToScene.copy(volume.matrixWorld).multiply(new THREE.Matrix4().makeTranslation(-o.x, -o.y, -o.z));
