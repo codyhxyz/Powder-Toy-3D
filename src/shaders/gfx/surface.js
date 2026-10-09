@@ -821,6 +821,7 @@ void applyMat(inout Surf s, Mat m) {
   s.n = normalize(s.ng - gt);
 }
 
+${reliefGLSL}
 // Surface record for a smooth-channel hit: blend the material of the cells of
 // that channel around the point, weighted trilinearly. The two most common
 // elements get a full material each; their border is broken up with noise so
@@ -888,10 +889,12 @@ Surf gatherSurf(vec3 hp, vec3 n, int ch) {
     if (k > 0.0) m = mixMat(m, matOf(id2, hp, n, s.T, ct2, fp), k);
   }
   applyMat(s, m);
+#ifdef DETAIL_RELIEF
+  s.cav *= reliefSkyVis(hp);   // down a carved crevice (gfx/relief.js)
+#endif
   return s;
 }
 
-${reliefGLSL}
 // ---- crisp voxels: bevelled boxes ----
 // A crisp neighbour that a voxel's face is flush with (the floor counts; glass doesn't).
 bool flushNb(ivec3 c) {
@@ -1141,9 +1144,6 @@ vec3 shadeSurf(Surf s, vec3 rd) {
   float w = s.sss;
   vec3 sh = vec3(0.0);
   if (max(nl, ngl) + w > 0.0) sh = uShadows ? sunShadow(s.p, ng) : vec3(1.0);
-#if defined(DETAIL_RELIEF) && defined(DETAIL_RELIEF_SHADOW)
-  if (s.ch >= 0 && max(sh.x, max(sh.y, sh.z)) > 0.0) sh *= reliefSunVis(s.p);   // the relief's own shade (gfx/relief.js)
-#endif
   float aoT = ao * s.cav;
 
   // specular layer (F0) and the energy it takes from the diffuse one

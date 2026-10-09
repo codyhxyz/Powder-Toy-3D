@@ -33,9 +33,6 @@ export const DETAIL = [
   // a shared GPU (identical shaders varied by up to ±8 ms), so high until re-measured quiet.
   { key: 'relief', define: 'DETAIL_RELIEF', label: 'Surface relief up close', cost: 'high',
     desc: 'Sand, snow, ash, gunpowder, rock and wood get real relief when you are close: crags, clumps and bark furrows with true outlines and parallax' },
-  // reliefShadow: relief + shadow vs off (bench --all): lab ~5, volcano ~20-26 ms; same caveat.
-  { key: 'reliefShadow', define: 'DETAIL_RELIEF_SHADOW', label: 'Relief self-shadowing', cost: 'high',
-    desc: 'The close-up relief casts sunlight shadows on itself (needs Surface relief up close)' },
 ];
 
 export const settingKey = (f) => `detail_${f.key}`;

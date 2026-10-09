@@ -1,4 +1,4 @@
-// Surface relief up close (gfx/detail.js: DETAIL_RELIEF, DETAIL_RELIEF_SHADOW).
+// Surface relief up close (gfx/detail.js: DETAIL_RELIEF).
 //
 // The smooth solids (powders, wood, rock) are the 0.5 isosurface of blurred
 // occupancy, so up close they are smooth blobs whose texture is only a bump
@@ -23,8 +23,8 @@
 // surface's normal: it is not bumped again. Lighting lookups (shadow map,
 // AO, probes) stay those of the envelope; the shadow map's bias (≥ 0.8
 // cells) covers the carving, so carved points don't self-shadow from it.
-// With DETAIL_RELIEF_SHADOW the relief also shades itself: a short march
-// toward the sun through the shell.
+// What the envelope's lighting can't see is how far down a crevice the hit
+// is: reliefSkyVis darkens the cavity term (ambient and sky) by that.
 //
 // Everything is a function of position, the element and its cells' data: the
 // relief is anchored in the matter like its texture.
@@ -74,7 +74,7 @@ float reliefFeature(int id) {
   return WOOD_FUR_W / WOOD_PLATE_FH;   // wood: a furrow's half-width
 }
 
-// The relief being traced (set by reliefHit, read by reliefSunVis)
+// The relief being traced (set by reliefHit, read by reliefSkyVis)
 bool gRelOn = false;
 int gRelId, gRelCh;
 float gRelW, gRelTop, gRelSlope, gRelFp;
@@ -148,13 +148,17 @@ bool reliefHit(vec3 ro, vec3 rd, int ch, inout float t) {
     float ts = dt * float(i);
     vec3 p = p0 + rd * ts;
     phi = surfChannel(p, ch);
-    // in the envelope and out again: it went through a groove. (Never in:
-    // the tracer's root fell short of the envelope, by less than this path.)
+    // in the envelope and out again: it went through a groove
     if (phi < SURF_ISO && wasIn) { t += ts; return false; }
     wasIn = wasIn || phi >= SURF_ISO;
     if (reliefInside(p, phi) >= 0.0) { tb = ts; hit = true; break; }
     ta = ts;
   }
+  // Never in the envelope: the tracer's crossing was a grazing touch (or its
+  // root fell short of the surface) that this path doesn't confirm. Keep the
+  // tracer's hit, as without relief: moving it along a path through air put
+  // a bright fringe on silhouettes.
+  if (!hit && !wasIn) return true;
   // else deeper than any crevice (or the path cut): solid by then
   if (hit) {
     for (int i = 0; i < RELIEF_BISECT; i++) {
@@ -167,38 +171,26 @@ bool reliefHit(vec3 ro, vec3 rd, int ch, inout float t) {
   return true;
 }
 
-#ifdef DETAIL_RELIEF_SHADOW
-// Sunlight reaching carved point p past the relief around it: a march toward
-// the sun until it leaves the shell. Each sample sees the relief under it at
-// an elevation angle (clearance / distance); the share of the sun's disc
-// (RELIEF_SUN_DISC radians across) above the highest such horizon is the
-// light that gets through: a true penumbra. The envelope
-// is taken as its tangent plane at p: its own shape at the cell scale (and
-// the trilinear field's creases) is the shadow map's business; here only the
-// relief can block the sun. (Relative to p's own carving, too: the hit is
-// only found to within a step, and a lit face mustn't shade itself.)
-const float RELIEF_SUN_DISC = 0.0093;     // the sun's angular diameter (0.53°)
-const int RELIEF_SUN_STEPS_MIN = 3, RELIEF_SUN_STEPS_MAX = 8;
-const float RELIEF_SUN_PX_STEP = 4.0;   // pixels of path per sample (shadows need fewer than the hit)
-float reliefSunVis(vec3 p) {
-  if (!gRelOn) return 1.0;
-  float cl = dot(uSun, gRelN);
-  if (cl <= 0.0) return 1.0;   // the envelope faces away: the shadow map has it
-  float L = min(gRelW * gRelTop * RELIEF_SPAN / max(cl, RELIEF_COS_MIN), RELIEF_PATH_MAX);
-  float step = max(gRelFp * RELIEF_SUN_PX_STEP, RELIEF_STEP_PER_FEATURE * reliefFeature(gRelId));
-  int n = clamp(int(ceil(L / step)), RELIEF_SUN_STEPS_MIN, RELIEF_SUN_STEPS_MAX);
-  float dt = L / float(n);
-  float vis = 1.0, c0 = reliefCarve(p);
-  for (int i = 1; i <= RELIEF_SUN_STEPS_MAX; i++) {
-    if (i > n) break;
-    float ts = dt * float(i);
-    // height of the sun ray above the carved surface under it
-    float clear = ts * cl + reliefCarve(p + uSun * ts) - c0;
-    vis = min(vis, clamp(0.5 + clear / (ts * RELIEF_SUN_DISC), 0.0, 1.0));
-    if (vis <= 0.0) break;
-  }
-  return vis;
+// Sky (and ambient) seen from the carved hit p, from its depth d below the
+// envelope in a crevice of width W: from the floor of a long slot the sky is
+// the opening's angle, a view factor of 1 / sqrt(1 + (2 d / W)^2) (as deep
+// as it is wide: 0.45, about half). d carries the fade-in w, so far away
+// (w = 0) nothing changes. W is the relief's typical crevice: half the
+// wavelength of its main octave, or a bark furrow rim to rim.
+const float RELIEF_CREVICE_PER_WAVE = 0.5;
+float reliefWidth(int id) {
+  if (id == E_SAND) return RELIEF_CREVICE_PER_WAVE * SAND_SLUMP_M / CELL_M;
+  if (id == E_SNOW) return RELIEF_CREVICE_PER_WAVE * SNOW_DRIFT_M / CELL_M;
+  if (id == E_GUNPOWDER) return RELIEF_CREVICE_PER_WAVE * POWDER_LUMP_M / CELL_M;
+  if (id == E_ASH) return RELIEF_CREVICE_PER_WAVE * ASH_LUMP_M / CELL_M;
+  if (id == E_ROCK) return RELIEF_CREVICE_PER_WAVE * ROCK_CRAG_M / CELL_M;
+  return 2.0 * WOOD_FUR_W / WOOD_PLATE_FH;   // wood: a furrow, rim to rim (half-width x 2)
 }
-#endif
+float reliefSkyVis(vec3 p) {
+  if (!gRelOn) return 1.0;
+  gRelOn = false;   // once, for the hit that set it
+  float r = 2.0 * reliefCarve(p) / reliefWidth(gRelId);
+  return inversesqrt(1.0 + r * r);
+}
 #endif
 `;
