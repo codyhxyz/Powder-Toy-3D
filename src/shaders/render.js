@@ -666,6 +666,15 @@ void dataView(vec3 ro, vec3 rd, float t0, vec3 bh) {
 // The first this many panes along the eye ray trace their reflection
 // (reflectTrace, gfx/liquid.js); panes past them reflect the sky.
 #define GLASS_TRACED_PANES 2
+
+// The opaque hit that ends the ray is recorded and shaded once, after the
+// march: a GPU compiler inlines every call, so each call site of the surface
+// code (materials, lighting) is another copy of it to compile, and the march
+// has several ways to end on a surface.
+#define HIT_NONE 0
+#define HIT_CRISP 1    // a crisp voxel (hitCell, hitId, hitA; normal hitN)
+#define HIT_SMOOTH 2   // a smooth surface of channel hitCh (normal hitN; zero: the field's)
+#define HIT_GRAIN 3    // grain geometry (gfx/grains.js: gHitA, gHitK)
 ${grainsGLSL}
 
 void main() {
@@ -713,6 +722,11 @@ void main() {
   int flags = 0;
   vec4 phiA = surfSample(ro + rd * tEnter);   // fields at the current segment start
   bool phiStale = false;
+  // the hit that ends the ray (HIT_*), shaded after the march
+  int hitK = HIT_NONE, hitCh = -1, hitId = E_EMPTY;
+  vec3 hitP = vec3(0.0), hitN = vec3(0.0);
+  ivec3 hitCell = ivec3(0);
+  vec4 hitA = vec4(0.0);
 
   // Entering the box inside a smooth material: the box wall cuts it open.
   {
@@ -725,8 +739,7 @@ void main() {
       vec3 hp = ro + rd * tEnter;
       anyHit = true; hitPos = hp;
       if (ch != CH_LIQUID) {
-        col = shadeSurf(gatherSurf(hp, n0, ch), rd);
-        trans = vec3(0.0);
+        hitK = HIT_SMOOTH; hitP = hp; hitN = n0; hitCh = ch;
         stop = true;
       } else {
         int lid = liquidIdAt(hp - n0 * IFACE_PROBE, E_WATER);
@@ -765,8 +778,7 @@ void main() {
         if (crispHit(cell, id, ro, rd, tEnter, tExit, th, nh)) {
           vec3 hp = ro + rd * th;
           if (!anyHit) { anyHit = true; hitPos = hp; }
-          col += trans * shadeSurf(crispSurf(cell, id, a, hp, nh), rd);
-          trans = vec3(0.0);
+          hitK = HIT_CRISP; hitP = hp; hitN = nh; hitCell = cell; hitId = id; hitA = a;
           break;
         }
         phiStale = true;
@@ -841,23 +853,22 @@ void main() {
           tM = tClosest(cell, ro, rd, tEnter, tExit);
           phiM = surfSample(ro + rd * tM);
         }
-        if (ev != EV_NONE) {
-          // handled below
-        } else if (liq == E_EMPTY) {
+        if (ev == EV_NONE) {
+          // the first surface crossed, channel by channel (one surfCross call
+          // site: the root finding is inlined wherever it is called). In
+          // liquid, its surface is crossed going out (channel CH_LIQUID = 0).
+          bool inLiq = liq != E_EMPTY;
           for (int c = 0; c < 4; c++) {
-            float t = surfCross(ro, rd, c, true, tEnter, tM, tExit, phiA[c], phiM[c], phiB[c]);
-            if (t < tEv) { tEv = t; evCh = c; ev = c == CH_LIQUID ? EV_ENTER : EV_OPAQUE; }
-          }
-        } else {
-          float tx = surfCross(ro, rd, CH_LIQUID, false, tEnter, tM, tExit, phiA.x, phiM.x, phiB.x);
-          if (tx < tEv) {
-            tEv = tx; evCh = CH_LIQUID; ev = EV_EXIT;
-          } else if (max(phiA.x, max(phiM.x, phiB.x)) < SURF_ISO) {
-            liq = E_EMPTY;   // lost the surface (grazing ray): quietly back in air
-          }
-          for (int c = 1; c < 4; c++) {
-            float t = surfCross(ro, rd, c, true, tEnter, tM, tExit, phiA[c], phiM[c], phiB[c]);
-            if (t <= tEv + OPAQUE_TIE) { tEv = min(t, tEv); evCh = c; ev = EV_OPAQUE; }
+            float t = surfCross(ro, rd, c, !(inLiq && c == CH_LIQUID), tEnter, tM, tExit, phiA[c], phiM[c], phiB[c]);
+            if (!inLiq) {
+              if (t < tEv) { tEv = t; evCh = c; ev = c == CH_LIQUID ? EV_ENTER : EV_OPAQUE; }
+            } else if (c == CH_LIQUID) {
+              if (t < tEv) {
+                tEv = t; evCh = CH_LIQUID; ev = EV_EXIT;
+              } else if (max(phiA.x, max(phiM.x, phiB.x)) < SURF_ISO) {
+                liq = E_EMPTY;   // lost the surface (grazing ray): quietly back in air
+              }
+            } else if (t <= tEv + OPAQUE_TIE) { tEv = min(t, tEv); evCh = c; ev = EV_OPAQUE; }
           }
         }
         phiStale = false;
@@ -905,12 +916,10 @@ void main() {
         vec3 hp = ro + rd * tEv;
         if (!anyHit) { anyHit = true; hitPos = hp; }
 #ifdef GRAINS_ANY
-        if (ev == EV_GRAIN) { gHitP = hp; break; }   // shaded below, out of the loop
+        if (ev == EV_GRAIN) { hitK = HIT_GRAIN; hitP = hp; break; }
 #endif
         if (ev == EV_OPAQUE) {
-          vec3 n = dot(evN, evN) > 0.0 ? evN : surfNormal(hp, evCh, -rd);
-          col += trans * shadeSurf(gatherSurf(hp, n, evCh), rd);
-          trans = vec3(0.0);
+          hitK = HIT_SMOOTH; hitP = hp; hitN = evN; hitCh = evCh;
           break;
         } else {
           // liquid surface: refract in or out
@@ -934,8 +943,7 @@ void main() {
             int oc = -1;
             for (int c = 1; c < 4; c++) if (phiA[c] >= SURF_ISO) oc = c;
             if (oc > 0) {
-              col += trans * shadeSurf(gatherSurf(ro, surfNormal(ro, oc, -rd), oc), rd);
-              trans = vec3(0.0);
+              hitK = HIT_SMOOTH; hitP = ro; hitN = vec3(0.0); hitCh = oc;
               break;
             }
             continue;
@@ -955,21 +963,55 @@ void main() {
     tMax[ax] += tDelta[ax];
   }
 
+  // ---- shading, one call site for every kind of hit ----
+  // Pass 0 shades the hit that ended the ray, then the floor if the ray got
+  // there. With grains, pass 1 shades the hand-off band's path not taken and
+  // blends it in (gfx/grains.js).
 #ifdef GRAINS_ANY
-  if (gHitP.x > GRAIN_NO_P) { col += trans * grainShade(gHitP, rd); trans = vec3(0.0); }
+  int passes = gAltW < 0.0 ? 1 : 2;
+#else
+  const int passes = 1;
 #endif
-  // floor of the box
-  if (max(trans.x, max(trans.y, trans.z)) >= RAY_MIN_TRANS && cell.y < 0 && rd.y < 0.0) {
-    float tf = -ro.y / rd.y;
-    vec3 hp = ro + rd * tf;
-    if (!anyHit) { anyHit = true; hitPos = hp; }
-    col += trans * shadeFloor(hp, rd);
-    trans = vec3(0.0);
+  vec3 shadeRd = rd;
+  for (int pass = 0; pass < passes; pass++) {
+#ifdef GRAINS_ANY
+    if (pass == 1) {
+      hitK = gAltGeom ? HIT_GRAIN : HIT_SMOOTH; hitP = gAltP; hitN = vec3(0.0); hitCh = CH_GRANULAR;
+      gHitA = gAltA; gHitK = gAltK; shadeRd = gAltRd;
+    }
+#endif
+    vec3 c = vec3(0.0);
+    if (hitK != HIT_NONE) {
+      Surf s;
+      if (hitK == HIT_CRISP) s = crispSurf(hitCell, hitId, hitA, hitP, hitN);
+#ifdef GRAINS_ANY
+      else if (hitK == HIT_GRAIN) s = grainSurf(gHitA, gHitK, hitP, shadeRd);
+#endif
+      else s = gatherSurf(hitP, dot(hitN, hitN) > 0.0 ? hitN : surfNormal(hitP, hitCh, -shadeRd), hitCh);
+      c = shadeSurf(s, shadeRd);
+#ifdef GRAINS_ANY
+      gGrainSun = 1.0;   // (grainSurf set it for this shadeSurf)
+#endif
+    }
+    if (pass == 0) {
+      if (hitK != HIT_NONE) { col += trans * c; trans = vec3(0.0); }
+      // floor of the box
+      if (max(trans.x, max(trans.y, trans.z)) >= RAY_MIN_TRANS && cell.y < 0 && rd.y < 0.0) {
+        float tf = -ro.y / rd.y;
+        vec3 hp = ro + rd * tf;
+        if (!anyHit) { anyHit = true; hitPos = hp; }
+        col += trans * shadeFloor(hp, rd);
+        trans = vec3(0.0);
+      }
+    }
+#ifdef GRAINS_ANY
+    else {
+      float w = gAltGeom ? gAltW : 1.0 - gAltW;   // weight of the stored path
+      col = mix(col, gAltCol + gAltTrans * c, w);
+      trans *= 1.0 - w;
+    }
+#endif
   }
-
-#ifdef GRAINS_ANY
-  grainResolve(col, trans);   // hand-off band: blend in the path not taken
-#endif
   // only thin gas: keep it (and its glow), at its depth
   if (!anyHit && (mOp > MEDIA_KEEP_ALPHA || dot(col, vec3(1.0)) > MEDIA_KEEP_RADIANCE)) anyHit = true;
   if (!anyHit) discard;

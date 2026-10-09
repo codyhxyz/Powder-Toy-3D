@@ -1056,12 +1056,15 @@ const float MAT_BORDER_F = 1.7;      // frequency of the noise breaking up that 
 const float MAT_BORDER_SALT = 2.9;   // its noise offset
 const float MAT_BORDER_AMP = 0.6;    // how far it shifts the share
 // The material of a two-element mix at texture point p (r: share of id2).
+// matOf is huge and a GPU compiler inlines every call to it: the two
+// materials are one call in a loop, not two calls.
 Mat gatherMat(int id1, int id2, float ct1, float ct2, float r, vec3 p, vec3 n, float T, float fp) {
-  Mat m = matOf(id1, p, n, T, ct1, fp);
-  if (id2 >= 0) {
-    float k = smoothstep(MAT_BORDER_EDGE.x, MAT_BORDER_EDGE.y,
+  float k = id2 < 0 ? 0.0 : smoothstep(MAT_BORDER_EDGE.x, MAT_BORDER_EDGE.y,
                          r + (vnoise(M_ROT * p * MAT_BORDER_F + MAT_BORDER_SALT) - 0.5) * MAT_BORDER_AMP);
-    if (k > 0.0) m = mixMat(m, matOf(id2, p, n, T, ct2, fp), k);
+  Mat m;
+  for (int j = 0; j < (k > 0.0 ? 2 : 1); j++) {
+    Mat mj = matOf(j == 0 ? id1 : id2, p, n, T, j == 0 ? ct1 : ct2, fp);
+    if (j == 0) m = mj; else m = mixMat(m, mj, k);   // (WebGL: no ?: on structs)
   }
   return m;
 }
@@ -1147,9 +1150,13 @@ Surf gatherSurf(vec3 hp, vec3 n, int ch) {
     s.tp -= travel * (ph - 0.5);
     s.flowW = abs(2.0 * ph - 1.0);   // 0 while the second layer resets, 1 while the first does
   }
-  // the texture is anchored in the world (tp, tp1 stay grid points: footprints and glints take them)
-  Mat m = gatherMat(id1, id2, ct1, ct2, r, worldPos(s.tp), n, s.T, fp);
-  if (s.flowW > 0.0) m = mixMat(m, gatherMat(id1, id2, ct1, ct2, r, worldPos(s.tp1), n, s.T, fp), s.flowW);
+  // the texture is anchored in the world (tp, tp1 stay grid points: footprints and glints take them);
+  // the flow layers: one gatherMat call in a loop (see gatherMat)
+  Mat m;
+  for (int j = 0; j < (s.flowW > 0.0 ? 2 : 1); j++) {
+    Mat mj = gatherMat(id1, id2, ct1, ct2, r, worldPos(j == 0 ? s.tp : s.tp1), n, s.T, fp);
+    if (j == 0) m = mj; else m = mixMat(m, mj, s.flowW);
+  }
   applyMat(s, m);
   return s;
 }

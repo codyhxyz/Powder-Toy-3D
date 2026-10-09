@@ -38,8 +38,9 @@
 // both are traced and crossfaded by distance, with no threshold to pop.
 // Beyond the band nothing here runs past a footprint test.
 //
-// Hooks in render.js: grainEvent per cell of the realistic march, the
-// EV_GRAIN event (shaded after the march by grainShade), and grainResolve.
+// Hooks in render.js: grainEvent per cell of the realistic march, and the
+// EV_GRAIN hit and the hand-off's path not taken (gAlt*), both shaded after
+// the march through grainSurf.
 export const grainsGLSL = /* glsl */ `
 #ifdef GRAINS_ANY
 #define EV_GRAIN 4   // tracer event (render.js EV_*): the ray hit a grain
@@ -387,9 +388,7 @@ int gPebSteps = 0;          // sub-lattice steps walked so far
 int gClodCells = 0;         // lone cells tested so far
 bool gPebInside = false;    // the ray is inside the gravel's smooth surface (it was skipped)
 ivec3 gHitA = ivec3(0);     // the EV_GRAIN hit: pebble site, or the clod's cell ...
-int gHitK = GK_VOID;        // ... GK_* or the clod's lobe ...
-const float GRAIN_NO_P = -1.0;         // (gHitP.x at or below this: no hit)
-vec3 gHitP = vec3(GRAIN_NO_P - 1.0);   // ... and where (shaded after the march)
+int gHitK = GK_VOID;        // ... and GK_* or the clod's lobe (shaded after the march)
 // The path not taken while crossfading in the hand-off band: it ended at gAltP
 // (geometry: gAltA, gAltK; else the granular surface) with (col, trans) in
 // front of it; gAltW = the geometry's weight there (< 0: none); gAltGeom: the
@@ -426,7 +425,7 @@ bool grainSuppress(vec3 hp, out float w) {
 // becomes EV_GRAIN), and the granular surface is skipped where geometry
 // replaces it. In the hand-off band the first of the two to be reached is
 // stored as the other path (gAlt*) and the ray goes on as the other;
-// grainResolve blends them.
+// render.js shades both after the march and blends them.
 void grainEvent(ivec3 cell, int id, vec4 a, vec3 ro, vec3 rd, float tEnter, float tExit,
                 vec3 col, vec3 trans, inout int ev, int evCh, inout float tEv,
                 inout bool anyHit, inout vec3 hitPos) {
@@ -629,24 +628,5 @@ Surf grainSurf(ivec3 aH, int k, vec3 p, vec3 rd) {
   return s;
 }
 
-// Radiance of the EV_GRAIN hit (render.js).
-vec3 grainShade(vec3 hp, vec3 rd) {
-  vec3 c = shadeSurf(grainSurf(gHitA, gHitK, hp, rd), rd);
-  gGrainSun = 1.0;
-  return c;
-}
-
-// End of the ray: blend in the path not taken (hand-off band).
-void grainResolve(inout vec3 col, inout vec3 trans) {
-  if (gAltW < 0.0) return;
-  Surf s;
-  if (gAltGeom) s = grainSurf(gAltA, gAltK, gAltP, gAltRd);
-  else s = gatherSurf(gAltP, surfNormal(gAltP, CH_GRANULAR, -gAltRd), CH_GRANULAR);
-  vec3 alt = gAltCol + gAltTrans * shadeSurf(s, gAltRd);
-  gGrainSun = 1.0;
-  float w = gAltGeom ? gAltW : 1.0 - gAltW;   // weight of the stored path
-  col = mix(col, alt, w);
-  trans *= 1.0 - w;
-}
 #endif
 `;
