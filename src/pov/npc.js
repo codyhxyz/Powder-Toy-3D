@@ -189,6 +189,7 @@ export function createAxeman({ renderer, getSim }) {
     const z = THREE.MathUtils.clamp(p.z + Math.sin(a) * SPAWN_DIST, EDGE, g.nz - EDGE);
     const y = Math.min(p.y + SPAWN_DROP, g.ny - BODY_HEIGHT - 1);
     body.spawn(new THREE.Vector3(x, y, z));
+    brain.velocity.set(0, 0, 0);
     brain.fsm.changeTo('wander');
     deadTime = 0; stuckT = 0; npc.flinch = 0;
     spawned = true;
@@ -211,9 +212,9 @@ export function createAxeman({ renderer, getSim }) {
       }
       npc.flinch = Math.max(0, npc.flinch - dt);
 
-      // the brain, on the ground plane
+      // the brain, on the ground plane. Yuka keeps its own velocity (its turning
+      // is limited by maxForce); only the position follows the body.
       brain.position.set(body.pos.x, 0, body.pos.z);
-      brain.velocity.set(body.vel.x, 0, body.vel.z);
       brain.prey.position.set(w.player.pos.x, 0, w.player.pos.z);
       brain.prey.velocity.set(w.player.vel.x, 0, w.player.vel.z);
       if (!body.dead) manager.update(dt);
