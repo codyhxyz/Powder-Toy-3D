@@ -1,0 +1,180 @@
+/* ------------------------------------------------------------------ POV (first person) */
+
+/* the god-mode chrome steps aside: the toolbelt's hotbar takes the bottom */
+body.pov-on .dock,
+body.pov-on .dock-tab,
+body.pov-on .card,
+body.pov-on .hint,
+body.pov-on .readout { opacity: 0 !important; pointer-events: none !important; }
+body.pov-on .dock { transform: translate(-50%, calc(100% + 30px)); }
+body.pov-on .brand { opacity: 0.35; transition: opacity 300ms; }
+body.pov-locked canvas { cursor: none; }
+
+.pov-hud {
+  position: fixed; inset: 0; z-index: 4;
+  pointer-events: none;
+  display: none;
+}
+.pov-hud.on { display: block; }
+
+/* ---- screen effects (opacity driven by what the body feels) */
+.pov-fx { position: absolute; inset: 0; opacity: 0; transition: opacity 120ms linear; }
+.pov-water {
+  --liq: #2a6fb0;
+  background:
+    radial-gradient(130% 100% at 50% 40%, color-mix(in srgb, var(--liq) 22%, transparent) 0%, color-mix(in srgb, var(--liq) 55%, rgba(4, 8, 14, 0.85)) 100%),
+    linear-gradient(180deg, color-mix(in srgb, var(--liq) 18%, transparent), color-mix(in srgb, var(--liq) 30%, rgba(0, 0, 0, 0.5)));
+  mix-blend-mode: normal;
+  transition: opacity 90ms linear;
+}
+.pov-heat {
+  background: radial-gradient(120% 95% at 50% 55%, transparent 48%, rgba(255, 120, 30, 0.35) 72%, rgba(255, 70, 10, 0.75) 100%);
+  mix-blend-mode: screen;
+  animation: pov-flicker 0.9s steps(6) infinite alternate;
+}
+@keyframes pov-flicker {
+  0% { filter: brightness(1); }
+  50% { filter: brightness(1.25); }
+  100% { filter: brightness(0.9); }
+}
+.pov-frost {
+  background:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' seed='7'/%3E%3CfeColorMatrix values='0 0 0 0 0.85 0 0 0 0 0.93 0 0 0 0 1 0 0 0 1.6 -0.55'/%3E%3C/filter%3E%3Crect width='240' height='240' filter='url(%23n)'/%3E%3C/svg%3E"),
+    radial-gradient(120% 95% at 50% 50%, transparent 50%, rgba(200, 230, 255, 0.35) 78%, rgba(225, 242, 255, 0.7) 100%);
+  -webkit-mask-image: radial-gradient(120% 95% at 50% 50%, transparent 42%, #000 85%);
+  mask-image: radial-gradient(120% 95% at 50% 50%, transparent 42%, #000 85%);
+}
+.pov-acid {
+  background: radial-gradient(120% 95% at 50% 55%, transparent 50%, rgba(120, 230, 60, 0.3) 78%, rgba(90, 210, 40, 0.6) 100%);
+  mix-blend-mode: screen;
+}
+.pov-hurt {
+  background: radial-gradient(115% 90% at 50% 50%, transparent 38%, rgba(200, 20, 30, 0.45) 75%, rgba(150, 0, 10, 0.85) 100%);
+  transition: opacity 60ms linear;
+}
+
+/* ---- crosshair: four ticks and a dot, brighter when the hands can reach */
+.pov-cross {
+  --gap: 4px; --len: 7px; --w: 2px;
+  position: absolute; left: 50%; top: 50%; width: 0; height: 0;
+  opacity: 0; transition: opacity 160ms;
+  filter: drop-shadow(0 0 1.5px rgba(0, 0, 0, 0.8));
+}
+.pov-cross.show { opacity: 0.9; }
+.pov-cross i { position: absolute; background: rgba(255, 255, 255, 0.85); border-radius: 1px; transition: transform 140ms var(--ease), background 140ms; }
+.pov-cross i:nth-child(1) { width: var(--w); height: var(--len); left: calc(var(--w) / -2); bottom: var(--gap); }
+.pov-cross i:nth-child(2) { width: var(--w); height: var(--len); left: calc(var(--w) / -2); top: var(--gap); }
+.pov-cross i:nth-child(3) { height: var(--w); width: var(--len); top: calc(var(--w) / -2); right: var(--gap); }
+.pov-cross i:nth-child(4) { height: var(--w); width: var(--len); top: calc(var(--w) / -2); left: var(--gap); }
+.pov-cross b { position: absolute; width: 3px; height: 3px; left: -1.5px; top: -1.5px; border-radius: 50%; background: #fff; opacity: 0; transition: opacity 140ms; }
+.pov-cross.reach i { background: var(--accent); }
+.pov-cross.reach i:nth-child(1) { transform: translateY(1.5px); }
+.pov-cross.reach i:nth-child(2) { transform: translateY(-1.5px); }
+.pov-cross.reach i:nth-child(3) { transform: translateX(1.5px); }
+.pov-cross.reach i:nth-child(4) { transform: translateX(-1.5px); }
+.pov-cross.reach b { opacity: 1; background: var(--accent); }
+
+/* ---- vitals (bottom left; the hotbar owns the bottom centre) */
+.pov-vitals {
+  position: absolute; left: 16px; bottom: 16px;
+  display: flex; flex-direction: column; gap: 7px;
+  padding: 9px 12px 9px 10px; width: 210px;
+  opacity: 0; transform: translateY(8px);
+  transition: opacity 220ms, transform 260ms var(--ease);
+}
+.pov-vitals.show { opacity: 1; transform: none; }
+.pov-bar { display: flex; align-items: center; gap: 8px; }
+.pov-bar .pov-ic { flex: 0 0 auto; width: 14px; height: 14px; display: grid; place-items: center; }
+.pov-bar .pov-ic svg { width: 14px; height: 14px; }
+.pov-track { position: relative; flex: 1; height: 7px; border-radius: 4px; background: rgba(255, 255, 255, 0.07); box-shadow: inset 0 0 0 1px var(--line); overflow: hidden; }
+.pov-fill, .pov-trail { position: absolute; inset: 0; transform-origin: left center; border-radius: 4px; }
+.pov-trail { background: rgba(255, 236, 220, 0.75); }
+.pov-health .pov-ic svg { fill: #e5536a; }
+.pov-health .pov-fill { background: linear-gradient(90deg, #c23a52, #e5536a); transition: transform 90ms linear; }
+.pov-health.low .pov-ic { animation: pov-pulse 0.8s ease-in-out infinite; }
+.pov-health.low .pov-fill { background: linear-gradient(90deg, #a01d33, #ff4a5e); }
+@keyframes pov-pulse { 50% { transform: scale(1.3); } }
+.pov-breath { display: none; }
+.pov-breath.show { display: flex; animation: pov-in 200ms var(--ease); }
+.pov-breath .pov-ic svg { fill: none; stroke: #7cc4ff; stroke-width: 1.4; }
+.pov-breath .pov-fill { background: linear-gradient(90deg, #3d8fd6, #7cc4ff); transition: transform 120ms linear; }
+.pov-breath.low .pov-fill { background: linear-gradient(90deg, #6b4fd6, #b08cff); }
+@keyframes pov-in { from { opacity: 0; transform: translateY(4px); } }
+
+/* ---- pointer-lock prompt */
+.pov-lock {
+  position: absolute; left: 50%; top: calc(50% - 70px); transform: translate(-50%, 4px);
+  display: flex; align-items: center; gap: 6px;
+  padding: 7px 13px; border-radius: 999px; font-size: 12.5px;
+  opacity: 0; transition: opacity 180ms, transform 220ms var(--ease);
+}
+.pov-lock.show { opacity: 1; transform: translate(-50%, 0); }
+.pov-lock b { font-weight: 640; }
+.pov-dot { color: var(--faint); margin: 0 3px; }
+
+/* ---- death */
+.pov-death {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+  background: radial-gradient(90% 80% at 50% 50%, rgba(40, 0, 6, 0.15), rgba(30, 0, 4, 0.7));
+  opacity: 0; transition: opacity 600ms 250ms;
+  text-align: center;
+}
+.pov-death.show { opacity: 1; }
+.pov-died {
+  font: 400 16px/1 var(--pixel);
+  letter-spacing: 0.3em; text-transform: uppercase;
+  color: #ff8794;
+  text-shadow: 0 0 14px rgba(255, 60, 80, 0.65), 0 2px 8px rgba(0, 0, 0, 0.6);
+}
+.pov-cause {
+  font-size: 30px; font-weight: 760; font-variation-settings: 'wdth' 112;
+  letter-spacing: -0.01em;
+  text-shadow: 0 3px 22px rgba(0, 0, 0, 0.6);
+  max-width: calc(100vw - 48px);
+}
+.pov-cause:empty { display: none; }
+.pov-respawn { display: flex; align-items: center; gap: 5px; color: #c9ced8; font-size: 13px; font-variant-numeric: tabular-nums; }
+.pov-respawn b { color: var(--text); font-weight: 640; }
+.pov-death.show .pov-died, .pov-death.show .pov-cause { animation: pov-rise 900ms 250ms var(--ease) both; }
+@keyframes pov-rise { from { opacity: 0; transform: translateY(10px); } }
+
+/* ---- entry hint */
+.pov-hint {
+  position: absolute; left: 50%; top: 18%;
+  transform: translate(-50%, -6px);
+  display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 14px;
+  padding: 8px 14px; border-radius: 999px;
+  max-width: calc(100vw - 32px);
+  font-size: 12.5px; color: var(--muted);
+  opacity: 0; transition: opacity 500ms, transform 400ms var(--ease);
+}
+.pov-hint.show { opacity: 1; transform: translate(-50%, 0); }
+.pov-hint span { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
+.pov-hint kbd { color: var(--text); }
+
+/* ---- hitmarker: four short diagonal ticks around the centre (feel.js drives opacity) */
+.pov-hitmark {
+  --hm-size: 22px; --hm-w: 2px; --hm-cut: 36%;
+  position: absolute; left: 50%; top: 50%;
+  width: var(--hm-size); height: var(--hm-size);
+  margin: calc(var(--hm-size) / -2) 0 0 calc(var(--hm-size) / -2);
+  opacity: 0;
+}
+.pov-hitmark::before, .pov-hitmark::after {
+  content: ''; position: absolute;
+  left: calc(50% - var(--hm-w) / 2); top: -1px;
+  width: var(--hm-w); height: calc(100% + 2px);
+  background: rgba(255, 255, 255, 0.85);
+  box-shadow: 0 0 3px rgba(0, 0, 0, 0.8);
+  /* only the outer ends: the middle is cut away, so the crosshair shows through */
+  clip-path: polygon(0 0, 100% 0, 100% var(--hm-cut), 0 var(--hm-cut), 0 calc(100% - var(--hm-cut)), 100% calc(100% - var(--hm-cut)), 100% 100%, 0 100%);
+  transform: rotate(45deg);
+}
+.pov-hitmark::after { transform: rotate(-45deg); }
+/* the strike broke what it hit: brighter, a touch bigger, glowing */
+.pov-hitmark.broke { --hm-size: 26px; --hm-w: 2.5px; }
+.pov-hitmark.broke::before, .pov-hitmark.broke::after {
+  background: #fff;
+  box-shadow: 0 0 3px rgba(0, 0, 0, 0.8), 0 0 7px rgba(255, 255, 255, 0.9);
+}

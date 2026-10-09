@@ -8,7 +8,7 @@
 // elements.js. Only an element with its own special case in react.js (water,
 // fire, clone...) needs the same case added below; scripts/check-tile-engine.mjs
 // flags any that are missing.
-import { ELEMENTS, E, K, meltInto } from '../../elements.js';
+import { ELEMENTS, E, K, meltInto, breakInto } from '../../elements.js';
 import { PHYS } from '../../physics.js';
 
 // ---- element table, as the GLSL arrays (elements.js elementsGLSL) ----
@@ -34,6 +34,10 @@ export const SPAWNLIFE = col('life');
 export const SPAWNDENS = col('spawn');
 export const RAD = col('rad');
 export const MELTINTO = Int8Array.from(ELEMENTS, meltInto);
+export const HARD = col('hard');
+export const BREAKINTO = Int8Array.from(ELEMENTS, breakInto);
+// the softest breakable solid (react.js HARD_MIN)
+const HARD_MIN = Math.min(...ELEMENTS.filter((e) => e.breakInto).map((e) => e.hard));
 
 export const AMBIENT = PHYS.AMBIENT;
 
@@ -70,6 +74,21 @@ function dragF(a, b, da, db) {
   return 1;
 }
 const bounceR = (id) => (KIND[id] === K.LIQUID ? PHYS.BOUNCE_LIQUID : KIND[id] === K.POWDER ? 0 : PHYS.BOUNCE_GAS);
+
+// ---- breaking (react.js impactKE, shatter) ----
+// kinetic energy a cell carries along an axis toward a neighbour, vn > 0 toward it
+const impactKE = (id, T, vn) => (movable(id) && vn > 0 ? 0.5 * densityOf(id, T) * vn * vn : 0);
+// projectile (density m, speed u) breaks a solid of hardness H into debris of
+// density M: the fracture takes H, then it hits the debris head on (collide)
+const shat = { u: 0, d: 0 };
+function shatter(m, u, H, M) {
+  const u1 = Math.sqrt(Math.max(u * u - 2 * H / m, 0));
+  if (u1 <= PHYS.COLLIDE_V) { shat.u = u1; shat.d = 0; return shat; }
+  const inv = 1 / (m + M), vc = m * u1 * inv;
+  shat.u = vc - PHYS.RESTITUTION * M * inv * u1;
+  shat.d = Math.min(vc + PHYS.RESTITUTION * m * inv * u1, PHYS.V_MAX);
+  return shat;
+}
 
 // latent heat bookkeeping (react.js latent): returns true when the transition completes
 const lat = { T: 0, acc: 0 };
@@ -203,6 +222,22 @@ export class World {
     t = d[i]; d[i] = d[j]; d[j] = t;
     m[i] = 1; m[j] = 1;
   }
+  // would particle i, at speed vn toward solid j, break it? (move.js breaks)
+  breaks(i, j, vn) {
+    const k = this.bk;
+    return BREAKINTO[k[j]] >= 0 && 0.5 * this.bd[i] * vn * vn >= HARD[k[j]];
+  }
+  // particle i (velocity before: v0x, v0y) was stopped by solid j: a grain's
+  // real impact turns the kinetic energy it lost into heat, shared by capacity
+  // so both warm alike (move.js impactHeat)
+  impactHeat(i, j, v0x, v0y, speed) {
+    const { bk: k, bn: n, bvx: vx, bvy: vy, bd: d } = this;
+    if (KIND[k[i]] !== K.POWDER || speed <= PHYS.COLLIDE_V) return;
+    const lost = Math.max(0.5 * d[i] * (v0x * v0x + v0y * v0y - vx[i] * vx[i] - vy[i] * vy[i]), 0);
+    const dT = lost * PHYS.KE_TO_HEAT / (CAP[k[i]] + CAP[k[j]]);
+    const tT = this.tA[1];
+    tT[n[i]] += dT; tT[n[j]] += dT;   // a box edge (j outside) takes its share away
+  }
   // a particle tried to fall at vyIn and hit something
   land(i, vyIn) {
     const { bk: k, bvx: vx, bvy: vy } = this, id = k[i];
@@ -235,8 +270,16 @@ export class World {
     const mt = movable(k[t]), mb = movable(k[b]);
     const down = vy[t] < 0, up = vy[b] > 0;
     if (!mt || !mb) {
-      if (mt && down) { this.land(t, vy[t]); s[t] = 1; }
-      if (mb && up) { vy[b] = 0; s[b] = 1; }
+      if (mt && down && !this.breaks(t, b, vy[t])) {
+        const v0x = this.bvx[t], v0y = vy[t];
+        this.land(t, vy[t]); s[t] = 1;
+        this.impactHeat(t, b, v0x, v0y, -v0y);
+      }
+      if (mb && up && !this.breaks(b, t, vy[b])) {
+        const v0x = this.bvx[b], v0y = vy[b];
+        vy[b] = 0; s[b] = 1;
+        this.impactHeat(b, t, v0x, v0y, v0y);
+      }
     } else if (down || up) {
       const okDown = down && canMove(k[t], k[b], d[t], d[b], 0);
       const okUp = up && canMove(k[b], k[t], d[b], d[t], 1);
@@ -280,8 +323,9 @@ export class World {
     } else if (movable(k[i]) && movable(k[j])) {
       this.collide(i, j, vx);
     } else {
-      if (w0) vx[i] *= bounceR(k[i]);
-      if (w1) vx[j] *= bounceR(k[j]);
+      const vy = this.bvy;
+      if (w0 && !this.breaks(i, j, h0)) { const v0y = vy[i]; vx[i] *= bounceR(k[i]); this.impactHeat(i, j, h0, v0y, h0); }
+      if (w1 && !this.breaks(j, i, h1)) { const v0y = vy[j]; vx[j] *= bounceR(k[j]); this.impactHeat(j, i, h1, v0y, -h1); }
     }
   }
 
@@ -291,6 +335,7 @@ export class World {
     const ID = this.id, TT = this.T, LIFE = this.life, CT = this.ctype, VX = this.vx, VY = this.vy, PP = this.P;
     const oID = this._id, oT = this._T, oLife = this._life, oCT = this._ctype, oVX = this._vx, oVY = this._vy, oP = this._P;
     const nid = [0, 0, 0, 0], nT = [0, 0, 0, 0], nW = [0, 0, 0, 0], nP = [0, 0, 0, 0], pn = [0, 0, 0, 0];
+    const nVX = [0, 0, 0, 0], nVY = [0, 0, 0, 0];
     const g = this.gravity;
     for (let y = 0; y < ny; y++)
       for (let x = 0; x < nx; x++) {
@@ -302,8 +347,39 @@ export class World {
           const qx = x + DX[q], qy = y + DY[q];
           if (qx >= 0 && qy >= 0 && qx < nx && qy < ny) {
             const j = qy * nx + qx;
-            nid[q] = ID[j]; nT[q] = TT[j]; nW[q] = CT[j]; nP[q] = PP[j];
-          } else { nid[q] = E.WALL; nT[q] = T; nW[q] = 0; nP[q] = P0; } // insulating, pressure-reflecting box
+            nid[q] = ID[j]; nT[q] = TT[j]; nW[q] = CT[j]; nP[q] = PP[j]; nVX[q] = VX[j]; nVY[q] = VY[j];
+          } else { nid[q] = E.WALL; nT[q] = T; nW[q] = 0; nP[q] = P0; nVX[q] = 0; nVY[q] = 0; } // insulating, pressure-reflecting box
+        }
+
+        // breaking (impacts and blasts), from the input state
+        // as a projectile: each breakable neighbour I hit hard enough costs me its hardness
+        let dvx = 0, dvy = 0;
+        const T0 = TT[i];
+        if (movable(id) && 0.5 * densityOf(id, T0) * (vx * vx + vy * vy) >= HARD_MIN) {
+          const m = densityOf(id, T0);
+          for (let q = 0; q < 4; q++) {
+            const sId = nid[q];
+            if (BREAKINTO[sId] < 0) continue;
+            const u = DX[q] * vx + DY[q] * vy;
+            if (impactKE(id, T0, u) < HARD[sId]) continue;
+            const du = u - shatter(m, u, HARD[sId], densityOf(BREAKINTO[sId], T0)).u;
+            dvx -= DX[q] * du; dvy -= DY[q] * du;
+          }
+        }
+        // as a breakable solid: the same test from my side, plus a blast across me
+        let broke = false, fractureE = 0, dbx = 0, dby = 0;
+        if (BREAKINTO[id] >= 0) {
+          const M = densityOf(BREAKINTO[id], T0);
+          for (let q = 0; q < 4; q++) {
+            const u = -(DX[q] * nVX[q] + DY[q] * nVY[q]);   // the neighbour's speed toward me
+            if (impactKE(nid[q], nT[q], u) < HARD[id]) continue;
+            const ud = shatter(densityOf(nid[q], nT[q]), u, HARD[id], M).d;
+            dbx -= DX[q] * ud; dby -= DY[q] * ud;
+            fractureE += HARD[id];
+            broke = true;
+          }
+          for (let q = 0; q < 4; q++) pn[q] = KIND[nid[q]] !== K.SOLID ? nP[q] : 0;
+          if (Math.max(Math.abs(pn[0] - pn[1]), Math.abs(pn[2] - pn[3])) > HARD[id] * PHYS.P_BREAK_PER_HARD) broke = true;
         }
 
         // heat conduction (energy conserving)
@@ -355,6 +431,7 @@ export class World {
             }
           }
           if (JITTER[id] > 0) { vx += (rnd() - 0.5) * JITTER[id]; vy += (rnd() - 0.5) * JITTER[id]; }
+          vx += dvx; vy += dvy;
           vx = Math.max(-PHYS.V_MAX, Math.min(PHYS.V_MAX, vx));
           vy = Math.max(-PHYS.V_MAX, Math.min(PHYS.V_MAX, vy));
         } else { vx = 0; vy = 0; }
@@ -372,7 +449,13 @@ export class World {
           if (IGNITE[j] > 0 && j !== E.GUNPOWDER && nT[q] >= IGNITE[j]) { nBurning++; flame = Math.max(flame, FLAMET[j]); }
         }
 
-        if (id === E.WATER) {
+        if (broke) {
+          // debris keeps temperature, life and ctype, takes the fracture work as heat and the hits' momentum
+          out = BREAKINTO[id];
+          T += fractureE * PHYS.KE_TO_HEAT / CAP[out];
+          vx = Math.max(-PHYS.V_MAX, Math.min(PHYS.V_MAX, dbx));
+          vy = Math.max(-PHYS.V_MAX, Math.min(PHYS.V_MAX, dby));
+        } else if (id === E.WATER) {
           let up = Math.max(life, 0), dn = Math.max(-life, 0);
           const boil = latent(T, up, 100, C, PHYS.L_BOIL, true); T = lat.T; up = lat.acc;
           const freeze = latent(T, dn, 0, C, PHYS.L_FUSE, false); T = lat.T; dn = lat.acc;
@@ -400,7 +483,8 @@ export class World {
           let victims = 0;
           for (let q = 0; q < 4; q++) {
             const j = nid[q];
-            if (j !== E.EMPTY && j !== E.ACID && j !== E.WALL && j !== E.GLASS && j !== E.WATER && KIND[j] !== K.GAS) victims++;
+            if (j !== E.EMPTY && j !== E.ACID && j !== E.WALL && j !== E.GLASS && j !== E.SHARDS && j !== E.WATER
+              && KIND[j] !== K.GAS) victims++;
           }
           life -= PHYS.ACID_USE * victims;
           if (life <= 0) { out = rnd() < PHYS.ACID_TO_SMOKE ? E.SMOKE : E.EMPTY; reset = true; }
@@ -425,7 +509,10 @@ export class World {
         // combustion
         if (out === id && IGNITE[id] > 0) {
           if (id === E.GUNPOWDER) {
-            if (T >= IGNITE[id] || (nFire > 0 && rnd() < PHYS.GUNPOWDER_FIRE)) { out = E.FIRE; reset = true; T = PHYS.GUNPOWDER_T; P += PHYS.GUNPOWDER_P; }
+            // at its ignition point, or touching something that hot (not a gas: a flame only might)
+            let hotTouch = false;
+            for (let q = 0; q < 4; q++) hotTouch ||= !isGasLike(nid[q]) && nT[q] >= IGNITE[id];
+            if (T >= IGNITE[id] || hotTouch || (nFire > 0 && rnd() < PHYS.GUNPOWDER_FIRE)) { out = E.FIRE; reset = true; T = PHYS.GUNPOWDER_T; P += PHYS.GUNPOWDER_P; }
           } else if (T >= IGNITE[id] && (nAir > 0 || nFire > 0)) {
             life -= BURNRATE[id];
             T = Math.max(T, Math.min(T + BURNHEAT[id] / C, FLAMET[id]));
@@ -440,7 +527,7 @@ export class World {
 
         // acid eats its neighbours
         if (out === id && nAcid > 0 && id !== E.EMPTY && id !== E.ACID && id !== E.WALL && id !== E.GLASS
-          && id !== E.WATER && KIND[id] !== K.GAS) {
+          && id !== E.SHARDS && id !== E.WATER && KIND[id] !== K.GAS) {
           if (rnd() < PHYS.ACID_USE * nAcid) { out = rnd() < PHYS.ACID_TO_SMOKE ? E.SMOKE : E.EMPTY; reset = true; }
         }
 

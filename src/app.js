@@ -14,13 +14,15 @@ import { createCard } from './ui/card.js';
 import { createSettings } from './ui/settings.js';
 import { createHud, createHelp } from './ui/hud.js';
 import { inkFor, luminance } from './ui/dom.js';
-import { logoMark } from './ui/logo.js';
 import { gfx, gfxUniforms, updateGfxUniforms } from './gfx/uniforms.js';
 import { createPost, UPSCALE } from './gfx/post.js';
 import { createPacer, settleFrames, sceneKey } from './gfx/pacing.js';
 import { CHANNELS, MEDIA } from './gfx/materials.js';
+import { DAY, dayPhase, phaseSteps, keyLight } from './gfx/daylight.js';
 import { GI_BLEND } from './sim.js';
 import { createMultiplayer } from './net/multiplayer.js';
+import { createPov } from './pov/index.js';
+import { renderViewmodels } from './pov/viewmodel.js';
 import { finishSignIn, account, accountsEnabled } from './account.js';
 import { accountSection } from './ui/account-section.js';
 
@@ -41,10 +43,11 @@ const DEFAULTS = {
   size: '128', preset: 'lab',
   tool: E.SAND, radius: 5, shape: 0, rate: 1, replace: false,
   steps: 4, gravity: 0.025, paused: false,
-  view: 0, sunAz: 38, sunEl: 55, camSpeed: 1, upscale: 'native', dockCollapsed: false,
+  view: 0, camSpeed: 1, upscale: 'native', dockCollapsed: false,
+  figure: 'real',
 };
 const PERSIST = ['size', 'preset', 'tool', 'radius', 'shape', 'rate', 'replace', 'steps', 'gravity', 'view',
-  'sunAz', 'sunEl', 'camSpeed', 'upscale', 'dockCollapsed'];
+  'camSpeed', 'upscale', 'dockCollapsed', 'figure'];
 const STORE = 'powder-toy-3d:settings';
 // Fixed look: glow is heat-driven light (×uLightGain); smoothing, TAA, bloom and
 // exposure keep their defaults in gfx/uniforms.js and gfx/post.js.
@@ -63,6 +66,7 @@ if (params.get('preset')) settings.preset = params.get('preset');
 if (!(settings.size in SIZES)) settings.size = DEFAULTS.size;
 if (!toolById(settings.tool)) settings.tool = DEFAULTS.tool;
 if (!VIEWS.some((v) => v.id === settings.view)) settings.view = 0;
+if (!['stick', 'real'].includes(settings.figure)) settings.figure = DEFAULTS.figure;
 settings.paused = false;
 
 let saveTimer = 0;
@@ -105,10 +109,18 @@ floorGrid.renderOrder = -1;
 const EDGE_OPACITY = 0.55;
 scene.add(floorGrid);
 
+// The key light (gfx/daylight.js): its direction and colour scale follow the
+// day clock, in simulation steps. Tools pin it with __app.day.fixed = { az, el }.
 const SUN = new THREE.Vector3();
+const KEY_LIGHT = [1, 1, 1];
+// settings.time (hours) mirrors the clock for the drawer's slider; it isn't saved.
+const HOURS = 24;
+const TIME_STEP = 0.25;   // h: the slider's resolution, and how far the clock runs before the open drawer redraws it
+const day = { clock: 0, fixed: null };
 function updateSun() {
-  const az = THREE.MathUtils.degToRad(settings.sunAz), el = THREE.MathUtils.degToRad(settings.sunEl);
-  SUN.set(Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az)).normalize();
+  const phase = dayPhase(day.clock);
+  keyLight(phase, SUN, KEY_LIGHT, day.fixed);
+  settings.time = Math.round(phase * HOURS / TIME_STEP) * TIME_STEP % HOURS;
 }
 updateSun();
 
@@ -128,6 +140,8 @@ const pickBuf = new Float32Array(8);
 let pickPending = false;
 
 function build() {
+  pov?.exit(true);   // the body lives in the old grid
+  pov?.worldReplaced();
   if (sim) {
     sim.dispose();
     scene.remove(volume, edges);
@@ -230,6 +244,7 @@ function loadPreset(name, undoable = true) {
   else buildPreset(name, sim);
   post.reset();
   signs?.clear();
+  pov?.worldReplaced();
   save();
   return true;
 }
@@ -240,6 +255,7 @@ Object.assign(signLayer.style, { position: 'fixed', inset: '0', pointerEvents: '
 document.body.append(signLayer);
 let signs = null;
 let builds = null; // constructions (optional module)
+let pov = null;    // first-person mode (src/pov)
 
 // ---------------------------------------------------------------- picking & brush
 const pointer = new THREE.Vector2();
@@ -258,9 +274,12 @@ function gridRay() {
   return raycaster.ray.clone().applyMatrix4(invVolume.copy(volume.matrixWorld).invert());
 }
 
+// In POV the pick follows the crosshair (the screen centre) instead of the pointer.
+const povRay = new THREE.Ray();
 function requestPick() {
-  if (pickPending || !pointerInside) return;
-  const ray = gridRay();
+  const fromPov = !!pov?.aimRay(povRay.origin, povRay.direction);
+  if (pickPending || (!pointerInside && !fromPov)) return;
+  const ray = fromPov ? povRay : gridRay();
   pickMat.uniforms.uRo.value.copy(ray.origin);
   pickMat.uniforms.uRd.value.copy(ray.direction);
   pickMat.uniforms.tA.value = sim.stateA;
@@ -279,6 +298,23 @@ function requestPick() {
       hover.P = pickBuf[6];
     }
   }).catch(() => { pickPending = false; });
+}
+
+// One-off pick along a grid-space ray (ro, rd), e.g. to find the ground: resolves to
+// { valid, cell, face, id, T, P } like `hover`.
+const rayTarget = new THREE.WebGLRenderTarget(2, 1, { type: THREE.FloatType, depthBuffer: false });
+function pickRay(ro, rd) {
+  pickMat.uniforms.uRo.value.copy(ro);
+  pickMat.uniforms.uRd.value.copy(rd);
+  pickMat.uniforms.tA.value = sim.stateA;
+  pickMat.uniforms.tB.value = sim.stateB;
+  pickMat.uniforms.tBrick.value = sim.brick.texture;
+  sim.run(pickMat, rayTarget);
+  const buf = new Float32Array(8);
+  return renderer.readRenderTargetPixelsAsync(rayTarget, 0, 0, 2, 1, buf).then(() => ({
+    valid: buf[3] >= 0, cell: new THREE.Vector3(buf[0], buf[1], buf[2]), face: buf[3],
+    id: Math.round(buf[4]), T: buf[5], P: buf[6],
+  }));
 }
 
 const isTool = () => settings.tool < 0;
@@ -301,6 +337,11 @@ const tmpV = new THREE.Vector3();
 function updateBrush() {
   const g = sim.g;
   brushValid = false;
+  if (pov?.active) {
+    brush.set({ visible: false });
+    builds?.update({ hover, active: false });
+    return;
+  }
   if (settings.tool !== SIGN_TOOL && !isBuild(settings.tool)) {
     if (painting) {
       plane.constant = -dragY;
@@ -316,17 +357,18 @@ function updateBrush() {
     brushCenter.z = THREE.MathUtils.clamp(brushCenter.z, 0, g.nz);
   }
   brush.set({
-    visible: brushValid && pointerInside && !uiHover,
+    visible: brushValid && pointerInside && !uiHover && !eyedropper,
     position: tmpV.copy(brushCenter).multiplyScalar(scale).add(volume.position),
     radius: settings.radius * scale,
     shape: settings.shape,
     color: toolById(settings.tool).color,
   });
-  builds?.update({ hover, active: isBuild(settings.tool) && pointerInside && !uiHover });
+  builds?.update({ hover, active: isBuild(settings.tool) && pointerInside && !uiHover && !eyedropper });
 }
 
 // ---------------------------------------------------------------- UI
 let uiHover = false;
+let eyedropper = false; // armed by the dock's Eyedropper or by I away from any element
 createBrand();
 const card = createCard();
 const hud = createHud();
@@ -344,6 +386,7 @@ function accentFor(hex) {
 // the last element or tool picked, for leaving a construction's options
 let lastPaintTool = E.SAND;
 function selectTool(id) {
+  setEyedropper(false);
   if (!isBuild(id)) lastPaintTool = id;
   settings.tool = id;
   const it = toolById(id);
@@ -363,7 +406,21 @@ const dock = createDock({
   onSelect: selectTool,
   onBrushChange: (patch) => { Object.assign(settings, patch); dock.sync(); save(); },
   onHover: (id) => card.show(id ?? settings.tool),
+  onEyedropper: () => setEyedropper(!eyedropper),
 });
+
+// Eyedropper: the next click on the scene selects whatever element it lands on.
+function setEyedropper(on) {
+  eyedropper = on;
+  document.body.classList.toggle('eyedropper', on);
+  dock.setEyedropper(on);
+}
+function pickHovered() {
+  if (!(hover.valid && hover.id > 0)) return false;
+  selectTool(hover.id);
+  hud.toast(`Picked ${ELEMENTS[hover.id].name}`);
+  return true;
+}
 
 const actions = {
   togglePause: () => setPaused(!settings.paused),
@@ -379,6 +436,7 @@ const toolbar = createToolbar({ views: VIEWS, settings, actions });
 const mp = createMultiplayer({ renderer, scene, camera, hud, getSim: () => sim, getVolume: () => volume, setGrid });
 
 const fmtSpeed = (v) => `${v}×`;
+const fmtTime = (v) => `${Math.floor(v)}:${String(Math.round((v % 1) * 60)).padStart(2, '0')}`;
 const settingsPanel = createSettings({
   settings,
   onClose: () => setSettingsOpen(false),
@@ -395,15 +453,14 @@ const settingsPanel = createSettings({
         fmt: (v) => `${(v / DEFAULTS.gravity).toFixed(1)} g`, onChange: (v) => { sim.gravity = v; save(); } },
     ] },
     // a cost lever too: sim work grows with cells, ray marching with the grid's span
+    { title: 'Lighting', rows: [
+      // the day keeps running from wherever this puts it
+      { type: 'slider', key: 'time', label: 'Time of day', min: 0, max: HOURS - TIME_STEP, step: TIME_STEP, def: DAY.startPhase * HOURS,
+        fmt: fmtTime, onChange: (v) => { day.clock = phaseSteps(v / HOURS); updateSun(); } },
+    ] },
     { title: 'Grid size', rows: [
       { type: 'seg', key: 'size', options: [['64', '64³'], ['96', '96³'], ['128', '128³'], ['wide', '160×96']],
         onChange: (v) => { if (mp.guard()) return; settings.size = v; build(); save(); hud.toast(`Grid is now ${v === 'wide' ? '160 × 96 × 160' : `${v}³`}`); } },
-    ] },
-    { title: 'Lighting', rows: [
-      { type: 'slider', key: 'sunEl', label: 'Sun height', min: 12, max: 85, step: 1, def: DEFAULTS.sunEl,
-        fmt: (v) => `${v}°`, onChange: () => { updateSun(); save(); } },
-      { type: 'slider', key: 'sunAz', label: 'Sun direction', min: 0, max: 360, step: 1, def: DEFAULTS.sunAz,
-        fmt: (v) => `${v}°`, onChange: () => { updateSun(); save(); } },
     ] },
     // the scene renders at a share of the screen's pixels and TAA rebuilds full detail over frames
     { title: 'Upscaling', rows: [
@@ -413,6 +470,13 @@ const settingsPanel = createSettings({
     { title: 'Camera', rows: [
       { type: 'slider', key: 'camSpeed', label: 'Move speed (WASD)', min: 0.25, max: 3, step: 0.05, def: DEFAULTS.camSpeed,
         fmt: (v) => `${v.toFixed(2)}×`, onChange: (v) => { rig.setSpeed(v); save(); } },
+    ] },
+    // The body you see in third person and when you die. The first graphics-level
+    // option: Stickman is the low setting, Realistic (a skinned, animated
+    // mannequin) the high one. It switches live, in POV too.
+    { title: 'First person', rows: [
+      { type: 'seg', key: 'figure', options: [['stick', 'Stickman'], ['real', 'Realistic']],
+        onChange: (v) => { settings.figure = v; save(); pacer.wake(); } },
     ] },
     ...(accountsEnabled ? [accountSection({ toast: (text) => hud.toast(text) })] : []),
   ],
@@ -429,7 +493,6 @@ function resetSettings() {
   Object.assign(settings, DEFAULTS, keep);
   sim.gravity = settings.gravity;
   rig.setSpeed(settings.camSpeed);
-  updateSun();
   dock.sync();
   toolbar.sync();
   save();
@@ -466,7 +529,7 @@ function setPixelRatio(r) {
 
 function undo() {
   if (mp.guard()) return;
-  if (sim.undo()) hud.toast('Undone');
+  if (sim.undo()) { pov?.worldReplaced(); hud.toast('Undone'); }
   else hud.toast('Nothing to undo');
   toolbar.setUndoEnabled(sim.canUndo);
 }
@@ -482,7 +545,7 @@ const thumbTarget = new THREE.WebGLRenderTarget(320, 200, { depthBuffer: true })
 const thumbCam = new THREE.PerspectiveCamera();
 const thumbPixels = new Uint8Array(320 * 200 * 4);
 function renderThumb(viewId, canvas) {
-  thumbCam.copy(camera);
+  thumbCam.copy(camera, false);   // not its children (the POV viewmodel)
   thumbCam.aspect = 1.6;
   thumbCam.updateProjectionMatrix();
   const u = volume.material.uniforms;
@@ -527,10 +590,15 @@ canvasEl.addEventListener('pointermove', (e) => {
 canvasEl.addEventListener('pointerleave', () => { pointerInside = false; });
 canvasEl.addEventListener('pointerdown', (e) => {
   toolbar.close();
+  if (pov?.active) return;   // POV handles its own mouse buttons
   const wasEditing = !!signs?.editing;
   if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
   if (e.button !== 0 || e.altKey || wasEditing) return; // a click that just finishes editing a sign doesn't paint
   pointer.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+  if (eyedropper) {
+    if (!pickHovered()) hud.toast('Nothing to pick there');
+    return;
+  }
   if (settings.tool === SIGN_TOOL) {
     if (signs && hover.valid) signs.add({ cell: hover.cell.clone(), normal: faceNormal(hover.face) });
     else if (!signs) hud.toast('Signs are still loading');
@@ -556,7 +624,7 @@ canvasEl.addEventListener('contextmenu', (e) => e.preventDefault());
 
 // Shift + scroll changes the brush size instead of zooming.
 canvasEl.addEventListener('wheel', (e) => {
-  if (!e.shiftKey) return;
+  if (!e.shiftKey || pov?.active) return;
   e.preventDefault();
   e.stopImmediatePropagation();
   const d = e.deltaY || e.deltaX;
@@ -570,6 +638,7 @@ function setRadius(r) {
 }
 
 let stepOnce = false;
+let timeShown = NaN;   // the time of day the drawer last showed
 let wantShot = false;
 
 addEventListener('keydown', (e) => {
@@ -580,13 +649,15 @@ addEventListener('keydown', (e) => {
   if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); return; }
   if (mod) return;
   const k = e.key;
+  if (k === 'f' || k === 'F') { if (!e.repeat) { painting = false; pov?.toggle(); } return; }
+  if (pov?.blocksKey(e)) return;   // POV owns movement, Space and the digits while active
   if (e.code === 'Space') { e.preventDefault(); setPaused(!settings.paused); }
   else if (k === '.') stepOnce = true;
   else if (k === '[') setRadius(settings.radius - 1);
   else if (k === ']') setRadius(settings.radius + 1);
   else if (k === 'b' || k === 'B') { settings.shape ^= 1; dock.sync(); save(); }
   else if (k === 'x' || k === 'X') { settings.replace = !settings.replace; dock.sync(); save(); hud.toast(settings.replace ? 'Replace mode on' : 'Replace mode off'); }
-  else if (k === 'i' || k === 'I') { if (hover.valid && hover.id > 0) { selectTool(hover.id); hud.toast(`Picked ${ELEMENTS[hover.id].name}`); } }
+  else if (k === 'i' || k === 'I') { if (!(pointerInside && !uiHover && pickHovered())) setEyedropper(!eyedropper); }
   else if (k === 'r' || k === 'R') actions.resetCamera();
   else if (k === 't' || k === 'T') dock.toggle();
   else if (k === '/') { e.preventDefault(); dock.focusSearch(); }
@@ -594,8 +665,8 @@ addEventListener('keydown', (e) => {
   else if (k === '?') actions.toggleHelp();
   else if (k === 'p' || k === 'P') actions.screenshot();
   else if (k === 'Escape') {
-    const overlay = toolbar.isOpen || settingsPanel.isOpen || help.isOpen || mp.panelOpen;
-    toolbar.close(); setSettingsOpen(false); help.setOpen(false); mp.closePanel();
+    const overlay = eyedropper || toolbar.isOpen || settingsPanel.isOpen || help.isOpen || mp.panelOpen;
+    setEyedropper(false); toolbar.close(); setSettingsOpen(false); help.setOpen(false); mp.closePanel();
     if (!overlay) leaveBuild();
   }
   else if (/^[0-9]$/.test(k)) { const v = VIEWS.find((x) => x.hotkey === k); if (v) setView(v.id); }
@@ -676,8 +747,49 @@ function autoResolution(dt, now) {
   }
 }
 
+// Screenshots: the canvas is transparent where the page's sky shows through
+// (body's background in ui/styles.css), so the shot paints that sky first, then
+// the scene, then a small credit so shared images lead back to the app.
+const SHOT_SKY = [[0, '#232b3a'], [0.55, '#161b25'], [1, '#0e1117']];   // the sky's linear gradient, top to bottom
+const SHOT_GLOW = { color: 'rgba(255, 196, 120, 0.06)', x: 0.5, y: 1.08, rx: 1.2, ry: 0.7, end: 0.6 };   // its warm radial glow
+const SHOT_CREDIT = 'tpt3d.codyh.xyz';
+const SHOT_CREDIT_SIZE = 0.022;   // credit text height, as a share of the image height
+const SHOT_CREDIT_MIN_PX = 12;
+const SHOT_CREDIT_ALPHA = 0.75;
+const SHOT_MARK_SCALE = 1.5;      // logo mark size relative to the text
+const shotMark = Object.assign(new Image(), { src: '/favicon.svg' });
+
 function saveScreenshot() {
-  renderer.domElement.toBlob((blob) => {
+  const src = renderer.domElement, w = src.width, h = src.height;
+  const shot = Object.assign(document.createElement('canvas'), { width: w, height: h });
+  const ctx = shot.getContext('2d');
+  const sky = ctx.createLinearGradient(0, 0, 0, h);
+  for (const [t, c] of SHOT_SKY) sky.addColorStop(t, c);
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, w, h);
+  ctx.save();
+  ctx.translate(SHOT_GLOW.x * w, SHOT_GLOW.y * h);
+  ctx.scale(SHOT_GLOW.rx * w, SHOT_GLOW.ry * h);
+  const glow = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
+  glow.addColorStop(0, SHOT_GLOW.color);
+  glow.addColorStop(SHOT_GLOW.end, 'transparent');
+  ctx.fillStyle = glow;
+  ctx.fillRect(-SHOT_GLOW.x / SHOT_GLOW.rx, -SHOT_GLOW.y / SHOT_GLOW.ry, 1 / SHOT_GLOW.rx, 1 / SHOT_GLOW.ry);
+  ctx.restore();
+  ctx.drawImage(src, 0, 0);   // same task as the render, so the drawing buffer is still intact
+
+  const px = Math.max(SHOT_CREDIT_MIN_PX, Math.round(h * SHOT_CREDIT_SIZE)), mark = px * SHOT_MARK_SCALE;
+  ctx.font = `600 ${px}px Archivo, sans-serif`;
+  ctx.textBaseline = 'middle';
+  ctx.globalAlpha = SHOT_CREDIT_ALPHA;
+  ctx.shadowColor = 'rgba(0, 0, 0, 0.6)';
+  ctx.shadowBlur = px / 2;
+  ctx.fillStyle = '#e7eaf0';
+  const tw = ctx.measureText(SHOT_CREDIT).width, y = h - px - mark / 2;
+  ctx.fillText(SHOT_CREDIT, w - px - tw, y);
+  if (shotMark.complete && shotMark.naturalWidth) ctx.drawImage(shotMark, w - px - tw - px / 2 - mark, y - mark / 2, mark, mark);
+
+  shot.toBlob((blob) => {
     if (!blob) return;
     const a = Object.assign(document.createElement('a'), {
       href: URL.createObjectURL(blob),
@@ -697,8 +809,11 @@ function frame(now) {
   // only frames that rendered measure how expensive rendering is
   if (renderedLast) autoResolution(dt, clock.getElapsed());
 
-  rig.update(dt);
-  controls.update();
+  if (pov?.active) pov.update(dt);
+  else {
+    rig.update(dt);
+    controls.update();
+  }
   updateBrush();
 
   if (painting && brushValid) {
@@ -711,7 +826,13 @@ function frame(now) {
   }
   if (!mp.isGuest && (!settings.paused || stepOnce)) {
     for (let i = 0; i < settings.steps; i++) sim.step();
+    day.clock += settings.steps;
     stepOnce = false;
+  } else if (mp.isGuest) day.clock += settings.steps;   // guests don't step: keep the day going at their own rate
+  updateSun();
+  if (settings.time !== timeShown) {
+    timeShown = settings.time;
+    if (settingsPanel.isOpen) settingsPanel.sync();
   }
   mp.update(dt, {
     visible: brushValid && pointerInside && !uiHover, center: brushCenter, painting,
@@ -720,7 +841,7 @@ function frame(now) {
   const worldChanged = sim.version !== lastVersion;
   lastVersion = sim.version;
   const runDerived = pacer.derived(
-    `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${settings.view}|${gfx.smoothing}`);
+    `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${KEY_LIGHT}|${settings.view}|${gfx.smoothing}`);
   const runView = pacer.view(
     `${camera.matrixWorld.elements}|${camera.projectionMatrix.elements}|${pixelRatio}|${innerWidth}x${innerHeight}`
     + `|${JSON.stringify(settings)}|${JSON.stringify(gfx)}|${JSON.stringify(post.settings)}|${sceneKey(scene)}`,
@@ -730,7 +851,7 @@ function frame(now) {
   if (fpsTime > FPS_WINDOW) { fps = frames / fpsTime; frames = 0; fpsTime = 0; }
   idleTime = runView ? 0 : idleTime + dt;
   renderedLast = runView;
-  if (runView) updateGfxUniforms(sim, SUN);   // (runDerived implies runView)
+  if (runView) updateGfxUniforms(sim, SUN, KEY_LIGHT);   // (runDerived implies runView)
   if (runDerived) {
     sim.updateBricks();
     if (VIEWS.find((v) => v.id === settings.view)?.shadows) {
@@ -757,13 +878,16 @@ function frame(now) {
     floorGrid.material.opacity = post.renderScale;
     edges.material.opacity = EDGE_OPACITY * post.renderScale;
     post.render(scene, camera);
+    // POV: the held tool, drawn over the finished frame in its own pass (no TAA, its
+    // own depth, so it never clips into walls); before the screenshot reads the canvas
+    renderViewmodels(renderer, scene, camera, post);
     if (wantShot) { wantShot = false; saveScreenshot(); }
 
     signs?.update();
     requestPick();
-  }
+  } else if (pov?.active) requestPick();   // the crosshair cell stays fresh for the tools
 
-  if (pointerInside && !uiHover && hover.valid && hover.id >= 0 && !painting) {
+  if (!pov?.active && pointerInside && !uiHover && hover.valid && hover.id >= 0 && !painting) {
     const el = ELEMENTS[hover.id];
     hud.showReadout(pointerClient[0], pointerClient[1], { name: el.name, color: el.color, T: hover.T, P: hover.P });
   } else {
@@ -781,8 +905,6 @@ function frame(now) {
 // ---------------------------------------------------------------- boot
 try {
   if (!renderer.capabilities.isWebGL2) throw new Error('This needs WebGL2, which your browser does not provide.');
-  const favicon = document.querySelector('link[rel=icon]');
-  if (favicon) favicon.href = `data:image/svg+xml,${encodeURIComponent(logoMark(64).replace('class="mark"', 'xmlns="http://www.w3.org/2000/svg"'))}`;
   if (SignsClass) {
     signs = new SignsClass({
       renderer, camera, container: signLayer,
@@ -802,9 +924,16 @@ try {
   setView(settings.view);
   setPaused(false);
   toolbar.setUndoEnabled(false);
+  pov = createPov({
+    renderer, scene, camera, controls, canvas: renderer.domElement, hud, settings, mp, isTyping,
+    getSim: () => sim, getVolume: () => volume, getScale: () => scale,
+    hover, pointerHover: () => pointerInside && !uiHover, pickRay,
+    requestRender: () => pacer.wake(),
+  });
   window.__app = {
     get sim() { return sim; }, get volume() { return volume; }, get scale() { return scale; }, get signs() { return signs; }, get builds() { return builds; },
-    SUN, scene, settings, camera, controls, loadPreset, selectTool, setView, hover, renderer, rig, renderThumb, gfx, post, mp, autoRes,
+    get pov() { return pov; },
+    SUN, day, scene, settings, camera, controls, loadPreset, selectTool, setView, hover, renderer, rig, renderThumb, gfx, post, mp, autoRes,
     requestRender: () => pacer.wake(),   // for changes the frame loop can't see (async results)
   };
   requestAnimationFrame(frame);

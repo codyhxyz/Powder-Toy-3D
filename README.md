@@ -1,6 +1,8 @@
 # Powder Toy 3D
 
-![Powder Toy 3D: a volcano erupts on a voxel island, lava runs down the slopes and sets the trees on fire](docs/hero.jpg)
+**Play it in your browser: [tpt3d.codyh.xyz](https://tpt3d.codyh.xyz)**
+
+[![Powder Toy 3D: trees burn on a volcano island while smoke rises from the summit](docs/hero.jpg)](https://tpt3d.codyh.xyz)
 
 A GPU-native, 3D falling-sand sandbox in the spirit of The Powder Toy, built on three.js (WebGL2).
 Every cell of a 128³ grid (2.1M cells, up to 160×96×160) is simulated and raymarched on the GPU, at ~240 sim steps/s.
@@ -19,7 +21,7 @@ Press `?` in the app for the full list.
 | Left-drag | paint with the selected element or tool (the brush stays at the height where you clicked) |
 | `[` `]` or Shift + scroll | brush size |
 | `B` / `X` | sphere or cube brush / paint over existing material |
-| `I` | pick the element under the cursor |
+| `I` | eyedropper: pick the element under the cursor (or click the Eyedropper in the dock, then click the scene) |
 | ⌘Z / Ctrl+Z | undo the last stroke, clear or scene change |
 | `/` | find an element |
 
@@ -30,6 +32,7 @@ Press `?` in the app for the full list.
 | Scroll | zoom |
 | `W` `A` `S` `D`, `Q` `E` | move, turn left/right (hold Shift to go faster) |
 | `R` | reset the camera |
+| `F` | drop into the world as a person, or pop back out |
 
 | Everything else | |
 |---|---|
@@ -41,11 +44,51 @@ Press `?` in the app for the full list.
 
 Hovering shows the element, temperature and air pressure under the cursor. Settings are remembered between visits.
 
+## First person
+
+Press `F` to drop a body onto the surface under the cursor. The camera swoops down into its eyes and the world stays
+running around you. You're about 5½ cells tall (one cell is roughly 30 cm), so a lava flow is a river and a house is
+a building. `F` again swoops back out.
+
+The body is as mortal as a sand grain. You float or sink by density (hold Space to keep your head out of water),
+blasts throw you along the pressure gradient, and heat, lava, cold, acid, drowning, being buried and hard landings
+hurt. When you die, the camera pulls back and shows what killed you, then you respawn where you dropped in.
+
+| In first person | |
+|---|---|
+| Mouse | look (click to capture the mouse, Esc to release it) |
+| `W` `A` `S` `D`, Shift | walk, sprint |
+| Space / `C` | jump or swim up / swim down |
+| Left / right click | use the tool / its second action |
+| `1`–`5` or scroll | pick a tool |
+| `V` | first or third person |
+
+The tools are physical and finite. Infinite painting stays in the god view.
+
+1. **Shovel:** digs a load of powder, or breaks solids into their debris (slower the harder they are). Right-click
+   dumps the load where you aim.
+2. **Bucket:** scoops a load of liquid, and right-click pours it. A bucket of lava stays hot.
+3. **Axe:** a short, wide swing that chops wood and smashes glass, ice and plants.
+4. **Gun:** fires a metal round at 360 m/s under real gravity, so it crosses the whole box with a few cm of drop.
+   The round flies outside the sim (a GPU trace checks its path each frame) and becomes a real slug cell where it
+   hits, so the engine decides what breaks: glass shatters, metal holds, a keg goes off. Shot in the air, its recoil
+   throws you.
+5. **Physgun:** a force beam on loose matter. Hold to carry a floating ball of water or sand, right-click to fling it.
+
+Nothing a tool carries is made up: the cells it takes come back out exactly (same element, temperature and state).
+
+Everything you do makes a sound (synthesised with [ZzFX](https://github.com/KilledByAPixel/ZzFX) and placed in 3D):
+impacts sound like the material they hit, pitched by its hardness, and the world goes muffled under water. Shots
+kick the camera, nearby blasts and hard landings shake it, and [three.quarks](https://github.com/Alchemist0823/three.quarks)
+draws the muzzle flash, sparks, dust and tracers. The held tools are [Kenney](https://kenney.nl)'s CC0 models, and
+**Settings → First person** picks the body: the stickman, or a realistic one animated with
+[Quaternius](https://quaternius.com)'s CC0 animation library.
+
 ## Elements
 
 The dock groups elements like a periodic-table strip, each tile in the element's colour with a TPT-style abbreviation:
 
-- **Powders:** SAND, STNE, GUNP, ASH, SNOW
+- **Powders:** SAND, STNE, GUNP, ASH, SNOW, BGLA (broken glass), SAWD (sawdust), BRMT (scrap metal)
 - **Liquids:** WATR, ACID, OIL, LAVA
 - **Gases:** WTRV (steam), SMKE, FIRE
 - **Solids:** WALL, METL, GLAS, ICE, WOOD, PLNT, CLNE
@@ -130,6 +173,13 @@ Density decides whether it can displace its neighbour, so sand sinks through wat
 - **Air pressure.** Pressure diffuses, and a shock front also propagates one cell per step with exponential falloff, blocked by solids.
   Its gradient accelerates matter (a = −∇P/ρ), so explosions throw things and walls shield them.
 - **Forces.** Gravity, buoyancy, drag and jitter.
+- **Hardness and breaking.** Solids have a hardness in the sim's kinetic-energy units (½·density·speed²). A grain, drop or
+  slug that runs into a solid carrying at least that much energy breaks it into debris: glass into shards, wood into
+  sawdust, metal into scrap, rock into stone, ice into snow. The projectile pays the hardness out of its energy, and the
+  debris flies off with its momentum, heated by the work of breaking it. Impacts that don't break anything stop the
+  grain and turn its energy into heat, which is how a slug can set off a powder keg. A blast breaks a solid when the
+  pressure difference across it exceeds a multiple of its hardness, so windows shatter well away from an explosion,
+  rock chips only right beside one, and metal never breaks.
 
 **3. Brush** (only while painting).
 
@@ -170,7 +220,9 @@ moved on still fade. `gfx.smoothing` (src/gfx/uniforms.js) scales every blur rad
 
 **Light** (`src/shaders/gfx/lighting.js`, `src/gfx/sky.js`, `src/shaders/gi.js`). The sky is a clear-sky atmosphere
 (single Rayleigh and haze scattering, integrated in closed form along the view ray) that also sets the sun's colour, warmer
-as it sinks. A per-frame voxel shadow map is traced from the sun with the same surfaces. It records the opaque depth plus
+as it sinks. Day turns to night as the simulation runs (`src/gfx/daylight.js`: one day is 72,000 steps, about five
+minutes at the default speed, and it holds still while paused; Settings → Lighting sets the time); after sunset a full moon lights the scene through the same
+sky, dimmed and shifted blue the way a night-adapted eye sees it. A per-frame voxel shadow map is traced from the sun with the same surfaces. It records the opaque depth plus
 optical depth through liquids, glass and gas, so water casts tinted shadows and smoke casts soft ones. Shadows soften with
 distance from their caster (PCSS: the sun is a disc); at a contact edge within a texel, an exact DDA ray toward the sun
 settles it. Indirect light comes from one probe per 4×4×4 brick: every frame, rays from the probes march the brick map and
@@ -236,7 +288,7 @@ XORs it against the last frame it sent and deflates it. A 128³ world is a 30–
 The relay (`relay/worker.js`, one Cloudflare Durable Object per room) only forwards messages. It accepts pages from the site,
 its Pages previews and local development (`SITE_HOSTS` and friends in `relay/worker.js`), and players can't forge its own messages.
 To deploy it, run `wrangler deploy --config relay/wrangler.toml`. The production relay lives at `wss://tpt3d-relay.codyh.xyz` (set in `.env.production`).
-The site itself deploys with `npm run deploy` (Cloudflare Pages project `tpt3d`, served at https://tpt3d.codyh.xyz).
+The site deploys itself: every push to `main` on GitHub builds it and ships it to the Cloudflare Pages project `tpt3d` (served at https://tpt3d.codyh.xyz; see `.github/workflows/deploy.yml`).
 Without `VITE_RELAY_URL`, production builds hide multiplayer.
 Guests don't receive velocity, pressure or air temperature, so their pressure and flow views look empty, the heat view shows no warm air and flames look a little dimmer. Signs aren't shared.
 
