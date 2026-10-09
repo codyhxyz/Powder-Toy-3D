@@ -14,6 +14,7 @@ import * as activity from '../src/shaders/activity.js';
 import * as move from '../src/shaders/move.js';
 import * as react from '../src/shaders/react.js';
 import { quadVert } from '../src/shaders/common.js';
+import { allDetailDefines } from '../src/gfx/detail.js';
 import * as probe from '../src/shaders/probe.js';
 import * as stamp from '../src/shaders/stamp.js';
 import * as gi from '../src/shaders/gi.js';
@@ -68,6 +69,12 @@ for (const [label, dims] of Object.entries(grids)) {
   check(`pick-${label}`, raw + opt(render.pickFrag), 'frag');
   check(`shadow-${label}`, raw + opt(render.shadowFrag), 'frag');
   check(`povFigure-${label}`, shaderMatFrag + figureFrag(g), 'frag');
+  // the same with every close-up detail feature compiled in (gfx/detail.js)
+  const defs = Object.entries(allDetailDefines()).map(([k, v]) => `#define ${k} ${v}\n`).join('');
+  if (defs) {
+    check(`volume-detail-${label}`, shaderMatFrag + defs + opt(render.volumeFrag), 'frag');
+    check(`shadow-detail-${label}`, raw + defs + opt(render.shadowFrag), 'frag');
+  }
   for (const [k, v] of Object.entries(passes)) if (typeof v === 'function') check(`${k}-${label}`, raw + v(g), 'frag');
   for (const axis of [0, 1, 2]) check(`brickDist${axis}-${label}`, raw + passes.brickDistFrag(g, axis), 'frag');
   check(`inert-${label}`, raw + activity.inertFrag(g), 'frag');

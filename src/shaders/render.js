@@ -8,8 +8,10 @@ import { noiseGLSL } from './gfx/noise.js';
 import { lightingGLSL } from './gfx/lighting.js';
 import { surfaceGLSL } from './gfx/surface.js';
 import { liquidGLSL } from './gfx/liquid.js';
+import { liquidDetailGLSL } from './gfx/liquidDetail.js';
 import { mediaGLSL } from './gfx/media.js';
 import { plainGLSL } from './gfx/plain.js';
+import { grainsGLSL } from './gfx/grains.js';
 
 
 // Hybrid raymarcher. Rays walk the voxel grid with an Amanatides–Woo DDA
@@ -176,6 +178,7 @@ ${flush}
 ${lib(g)}
 ${surfaceGLSL}
 ${liquidGLSL}
+${liquidDetailGLSL}
 ${mediaGLSL}
 uniform vec3 uCam;
 uniform mat4 projectionMatrix;
@@ -648,6 +651,7 @@ void dataView(vec3 ro, vec3 rd, float t0, vec3 bh) {
 // Glass reflects less from inside liquid than from air (the index contrast is
 // smaller); share of its Fresnel reflectance kept there.
 #define GLASS_IN_LIQUID_F 0.3
+${grainsGLSL}
 
 void main() {
   vec3 ro = uCam;
@@ -818,6 +822,9 @@ void main() {
       } else {
         phiStale = true;
       }
+#ifdef GRAINS_ANY
+      grainEvent(cell, id, a, ro, rd, tEnter, tExit, col, trans, ev, evCh, tEv, anyHit, hitPos);   // gfx/grains.js
+#endif
 
       // ---- what lies along [tEnter, tEv] ----
       if (liq != E_EMPTY) {
@@ -841,9 +848,23 @@ void main() {
       }
 
       // ---- the event ----
+#ifdef DETAIL_RELIEF
+      // up close the hit moves onto the carved relief (gfx/relief.js), or the
+      // ray passes through a groove: its march restarts where it leaves
+      if (ev == EV_OPAQUE && dot(evN, evN) == 0.0 && !reliefHit(ro, rd, evCh, tEv)) {
+        ro += rd * tEv; mNext -= tEv;
+        cell = ivec3(floor(ro)); tMax = (vec3(cell) + step(0.0, rd) - ro) / rd;
+        tEnter = 0.0; lastB = ivec3(-1); ax = argmin3(tMax);
+        phiA = surfSample(ro); phiStale = false;
+        continue;
+      }
+#endif
       if (ev != EV_NONE) {
         vec3 hp = ro + rd * tEv;
         if (!anyHit) { anyHit = true; hitPos = hp; }
+#ifdef GRAINS_ANY
+        if (ev == EV_GRAIN) { gHitP = hp; break; }   // shaded below, out of the loop
+#endif
         if (ev == EV_OPAQUE) {
           vec3 n = dot(evN, evN) > 0.0 ? evN : surfNormal(hp, evCh, -rd);
           col += trans * shadeSurf(gatherSurf(hp, n, evCh), rd);
@@ -853,6 +874,9 @@ void main() {
           // liquid surface: refract in or out
           vec3 n = liquidRipple(hp, surfNormal(hp, CH_LIQUID, ev == EV_ENTER ? -rd : rd));
           int lid = ev == EV_ENTER ? liquidIdAt(hp - n * IFACE_PROBE, E_WATER) : liq;
+#ifdef LIQ_DETAIL
+          n = liquidDetail(hp, n, lid, col, trans);   // close-up detail (gfx/liquidDetail.js)
+#endif
           if (bends < MAX_BENDS) {
             bends++;
             // the scene shows in the reflection only off the first surface the eye ray meets
@@ -889,6 +913,9 @@ void main() {
     tMax[ax] += tDelta[ax];
   }
 
+#ifdef GRAINS_ANY
+  if (gHitP.x > GRAIN_NO_P) { col += trans * grainShade(gHitP, rd); trans = vec3(0.0); }
+#endif
   // floor of the box
   if (max(trans.x, max(trans.y, trans.z)) >= RAY_MIN_TRANS && cell.y < 0 && rd.y < 0.0) {
     float tf = -ro.y / rd.y;
@@ -898,6 +925,9 @@ void main() {
     trans = vec3(0.0);
   }
 
+#ifdef GRAINS_ANY
+  grainResolve(col, trans);   // hand-off band: blend in the path not taken
+#endif
   // only thin gas: keep it (and its glow), at its depth
   if (!anyHit && (mOp > MEDIA_KEEP_ALPHA || dot(col, vec3(1.0)) > MEDIA_KEEP_RADIANCE)) anyHit = true;
   if (!anyHit) discard;

@@ -9,6 +9,7 @@ export const ICON = {
   recenter: svg('<path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v4.5h4.5"/><circle cx="12" cy="12" r="2.5"/>'),
   camera: svg('<path d="M4 8h3l1.5-2h7L17 8h3v11H4z"/><circle cx="12" cy="13.5" r="3.5"/>'),
   undo: svg('<path d="M9 14L4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>'),
+  person: svg('<circle cx="12" cy="5" r="2.5"/><path d="M12 8.5v6M12 14.5l-3.5 6M12 14.5l3.5 6M7 11.5l5-2 5 2"/>'),
   close: svg('<path d="M6 6l12 12M18 6L6 18"/>'),
   chevDown: '<svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>',
   chevUp: svg('<path d="M6 15l6-6 6 6"/>'),

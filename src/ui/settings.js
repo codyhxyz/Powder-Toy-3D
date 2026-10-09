@@ -4,6 +4,9 @@ import { ICON } from './icons.js';
 // Settings drawer built from a declarative spec.
 //   { type: 'seg', key, options: [[value, label]], onChange }
 //   { type: 'slider', key, label, min, max, step, def, fmt, onChange }
+//   { type: 'switch', key, label, desc?, badge?, tier?, onChange }   (badge: a cost label, styled by tier)
+//   { type: 'more', label, rows }   rows tucked under a collapsed disclosure
+// A seg row may take value() instead of reading settings[key] (a derived setting).
 //   { type: 'custom', el, sync }   an element the caller keeps up to date; sync runs with the others
 export function createSettings({ settings, sections, footer, onClose }) {
   const syncers = [];
@@ -15,7 +18,7 @@ export function createSettings({ settings, sections, footer, onClose }) {
         b.dataset.value = value;
         return b;
       });
-      syncers.push(() => btns.forEach((b) => b.classList.toggle('on', String(settings[r.key]) === b.dataset.value)));
+      syncers.push(() => btns.forEach((b) => b.classList.toggle('on', String(r.value ? r.value() : settings[r.key]) === b.dataset.value)));
       return h('div.seg', { role: 'radiogroup' }, btns);
     }
     if (r.type === 'slider') {
@@ -35,6 +38,20 @@ export function createSettings({ settings, sections, footer, onClose }) {
       };
       syncers.push(sync);
       return field;
+    }
+    if (r.type === 'switch') {
+      const sw = h('button.switch', { type: 'button', role: 'switch', 'aria-label': r.label });
+      sw.addEventListener('click', () => { settings[r.key] = !settings[r.key]; r.onChange?.(settings[r.key]); syncAll(); });
+      syncers.push(() => sw.setAttribute('aria-checked', String(!!settings[r.key])));
+      const label = r.badge
+        ? h('span', {}, h('span', { text: r.label }), h(`span.badge.${r.tier}`, { text: r.badge }))
+        : h('span', { text: r.label });
+      const el = h('div.switch-row', {}, label, sw);
+      if (r.desc) el.title = r.desc;
+      return el;
+    }
+    if (r.type === 'more') {
+      return h('details.more', {}, h('summary', { text: r.label }), r.rows.map(row));
     }
     if (r.type === 'custom') {
       if (r.sync) syncers.push(r.sync);

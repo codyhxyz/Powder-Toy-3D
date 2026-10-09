@@ -71,8 +71,8 @@ The tools are physical and finite. Infinite painting stays in the god view.
 3. **Axe:** a short, wide swing that chops wood and smashes glass, ice and plants.
 4. **Gun:** fires a metal round at 360 m/s under real gravity, so it crosses the whole box with a few cm of drop.
    The round flies outside the sim (a GPU trace checks its path each frame) and becomes a real slug cell where it
-   hits, so the engine decides what breaks: glass shatters, metal holds, a keg goes off. Shot in the air, its recoil
-   throws you.
+   hits, so the engine decides what breaks: glass shatters, metal holds, a keg goes off. Recoil is a real round's: a
+   nudge, not a launch.
 5. **Physgun:** a force beam on loose matter. Hold to carry a floating ball of water or sand, right-click to fling it.
 
 Nothing a tool carries is made up: the cells it takes come back out exactly (same element, temperature and state).
@@ -80,7 +80,7 @@ Nothing a tool carries is made up: the cells it takes come back out exactly (sam
 Everything you do makes a sound (synthesised with [ZzFX](https://github.com/KilledByAPixel/ZzFX) and placed in 3D):
 impacts sound like the material they hit, pitched by its hardness, and the world goes muffled under water. Shots
 kick the camera, nearby blasts and hard landings shake it, and [three.quarks](https://github.com/Alchemist0823/three.quarks)
-draws the muzzle flash, sparks, dust and tracers. The held tools are [Kenney](https://kenney.nl)'s CC0 models, and
+draws the muzzle flash, sparks, dust and tracers. The held tools are low-poly and flat-shaded in the RuneScape style, and
 **Settings → First person** picks the body: the stickman, or a realistic one animated with
 [Quaternius](https://quaternius.com)'s CC0 animation library.
 
@@ -211,7 +211,10 @@ moved on still fade. `gfx.smoothing` (src/gfx/uniforms.js) scales every blur rad
   with depth: water is clear when shallow and blue-green when deep, oil amber, acid a milky green, ice cloudy. Thin
   liquid (drops, streams) is read as a cubic B-spline instead of trilinearly, so drops are round lenses, not faceted gems;
 - powders, lava and organics are opaque smooth surfaces with world-space textures and bump detail (`gfx/surface.js`), the
-  material blended between neighbouring cells; lava grows a cooling crust with glowing cracks;
+  material blended between neighbouring cells; lava grows a cooling crust with glowing cracks. Sliding sand carries its
+  texture with it, using Portal 2's flow-map technique: the texture is pushed along a flow field of how fast grains have
+  actually been moving (`moveFlowFrag` in `shaders/move.js`), in two crossfaded layers that reset in turn so it never
+  stretches. Still piles have no flow, so their texture stays put;
 - crisp voxels get rounded edges where they're exposed;
 - smoke, steam and fire are density volumes (`gfx/media.js`), sampled on a jittered lattice along the ray with sub-cell
   noise that curls and frays them and rises with the gas, so a lone cell is a faint wisp, not a sprite. They scatter
@@ -229,6 +232,12 @@ settles it. Indirect light comes from one probe per 4×4×4 brick: every frame, 
 collect the sky, the ground and the light bounced off lit matter (fed back over frames, so bounces add up), stored as L1
 spherical harmonics with the sky's visibility. Surfaces take their ambient light and blurry reflections from the probes,
 plus near-field occlusion from the fields; polished ones still see the sky itself where it is open.
+Three upgrades sit on top, each switchable in Settings → Lighting (all on by default). Contact shadows and bounce: two
+short rays per pixel walk the voxel grid; a ray that hits matter within six cells sees that matter's own sunlit, probe-lit
+colour, and one that escapes falls back to the probes. Caustics: where the shadow map says a point lies under a pool,
+the ripple height field's curvature focuses the sunlight reaching it (crests brighten, troughs spread), blurred with
+depth by the sun's disc. Lava and fire as lights: each pixel picks one nearby emitting brick, weighted by its power over
+distance², and traces a shadow ray to it, so the glow gets a direction and casts shadows.
 
 **Glow.** Anything above ~500 °C glows (`src/gfx/incandescence.js`): the colour is Planck's law through the CIE colour matching functions, the brightness is the
 physical luminance compressed by a power law, so steel reads dull red at 600–700 °C, cherry to orange at 800–1000 °C and
