@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { quadVert, BRICK, SEED_MAX, TILE, SUPER, SUPER_TEX, SUPER_CELLS, BLOCK_TILE, stateUniforms } from './shaders/common.js';
 import {
-  inertFrag, inertRowsFrag, inertJoinFrag, quietFrag, activityPeriod, superMapFrag, superShareFrag, stepRegionsGLSL,
+  inertFrag, inertRowsFrag, inertJoinFrag, quietFrag, activityPeriod, superMapFrag, superRowsFrag, superShareFrag, stepRegionsGLSL,
   SUPER_MAP, SUPER_SETTLE_STEPS, STEP_FULL_SHARE,
 } from './shaders/activity.js';
 import { moveBlockFrag, moveFlowFrag, moveGatherFrag, SLOTS } from './shaders/move.js';
@@ -257,6 +257,7 @@ export class Simulation {
     const supers = g.stx * g.sty * g.stz;
     this.superMap = [0, 1].map(() => makeFieldTarget(g.stw, g.height / SUPER_TEX, 1, U8, NEAR));
     this.superCur = 0;
+    this.superRows = makeFieldTarget(g.height / SUPER_TEX, 1, 1, THREE.FloatType, NEAR);   // (counts per row of the map)
     this.superShare = makeFieldTarget(1, 1, 1, THREE.FloatType, NEAR);
     this.stepQuads = new RegionQuads(supers + 1);   // (the last region: the block atlas's low margin)
     this.skipSleeping = true;   // false: draw every supertile (A/B testing)
@@ -333,7 +334,8 @@ export class Simulation {
         tQuiet: { value: this.actQuiet.texture }, tPrev: { value: null }, uPrevSettled: { value: false },
         uForceAll: { value: true }, uForceLo: { value: new THREE.Vector3() }, uForceHi: { value: new THREE.Vector3() },
       }),
-      superShare: rawMat(superShareFrag(g), { tSuper: { value: null } }),
+      superRows: rawMat(superRowsFrag(g), { tSuper: { value: null } }),
+      superShare: rawMat(superShareFrag(g), { tRows: { value: this.superRows.texture } }),
       paint: rawMat(paintFrag(g), {
         ...state(), uFrame: { value: 0 }, uCenter: { value: new THREE.Vector3() }, uRadius: { value: 4 },
         uShape: { value: 0 }, uTool: { value: 2 }, uRate: { value: 1 }, uReplace: { value: false },
@@ -546,7 +548,7 @@ export class Simulation {
     this.noteAwake();   // the step about to run uses it
     // the supertiles its steps draw: from this map, the last one and the
     // writes since (shaders/activity.js SUPER_MAP), and their shares
-    const { superMap, superShare } = this.mats, u = superMap.uniforms;
+    const { superMap, superRows, superShare } = this.mats, u = superMap.uniforms;
     u.tPrev.value = this.superMap[this.superCur].texture;
     u.uPrevSettled.value = this.actSteps >= SUPER_SETTLE_STEPS || (this.actSteps > 0 && this.wroteSinceStep);
     u.uForceAll.value = this.forceAll;
@@ -554,7 +556,8 @@ export class Simulation {
     u.uForceHi.value.fromArray(this.forceHi);
     this.superCur = 1 - this.superCur;
     this.run(superMap, this.superMap[this.superCur]);
-    this.superU.tSuper.value = superShare.uniforms.tSuper.value = this.superMap[this.superCur].texture;
+    this.superU.tSuper.value = superRows.uniforms.tSuper.value = this.superMap[this.superCur].texture;
+    this.run(superRows, this.superRows);
     this.run(superShare, this.superShare);
     this.forceAll = false;
     this.forceLo.fill(TOUCH_NONE_LO);
@@ -953,6 +956,7 @@ export class Simulation {
     this.actInert.dispose();
     this.actQuiet.dispose();
     this.superMap.forEach((t) => t.dispose());
+    this.superRows.dispose();
     this.superShare.dispose();
     this.stepQuads.dispose();
     this.actChanged.dispose();

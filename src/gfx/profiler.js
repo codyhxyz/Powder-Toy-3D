@@ -43,7 +43,7 @@ const MS_PER_S = 1000;
 // Frame phases in display order; a pass belongs to the phase marked last (app.js frame()).
 export const PHASES = [
   { id: 'paint', label: 'Paint' },       // the brush
-  { id: 'sim', label: 'Sim' },           // the steps: activity map (inert, inertRows, inertJoin, quiet, awake, superMap, superShare), moveBlock, moveGather, moveFlow, react
+  { id: 'sim', label: 'Sim' },           // the steps: activity map (inert, inertRows, inertJoin, quiet, awake, superMap, superRows, superShare), moveBlock, moveGather, moveFlow, react
   { id: 'derived', label: 'Derived' },   // render fields, bricks, empty-space distance, glow volume
   { id: 'shadow', label: 'Shadow' },     // the sun's shadow map
   { id: 'gi', label: 'GI' },             // GI probes

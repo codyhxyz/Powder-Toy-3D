@@ -85,6 +85,7 @@ for (const [label, dims] of Object.entries(grids)) {
   check(`inertRef-${label}`, raw + activity.inertRefFrag(g), 'frag');
   check(`quiet-${label}`, raw + activity.quietFrag(g), 'frag');
   check(`superMap-${label}`, raw + activity.superMapFrag(g), 'frag');
+  check(`superRows-${label}`, raw + activity.superRowsFrag(g), 'frag');
   check(`superShare-${label}`, raw + activity.superShareFrag(g), 'frag');
   for (const ch of Object.values(activity.SUPER_MAP)) {
     for (const block of [false, true]) check(`stepRegionVert${ch}${block ? 'block' : ''}-${label}`, raw + regionVert(activity.stepRegionsGLSL(g, ch, block)), 'vert');

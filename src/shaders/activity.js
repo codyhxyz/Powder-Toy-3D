@@ -354,20 +354,37 @@ void main() {
 }
 `;
 
-// One texel: the share of supertiles on in each channel of the supertile map.
-export const superShareFrag = (g) => /* glsl */ `
+// The share of supertiles on in each channel of the supertile map, in two
+// passes, so no fragment sums them all (one summing 2048 cost ~0.06 ms here):
+//   superRowsFrag   one texel per row of supertile slots (target: rows × 1):
+//                   the supertiles on in it, per channel
+//   superShareFrag  one texel: those counts summed, over the supertiles
+// (Counts are whole numbers far below 2^24: exact in floats.)
+const superSumsGLSL = (g) => /* glsl */ `
 precision highp float;
 precision highp int;
 precision highp sampler2D;
-uniform sampler2D tSuper;
 out vec4 oC;
-#define STW ${g.stw}
+#define STW ${g.stw}                   // supertile slots per row
 #define STH ${g.height / SUPER_TEX}   // rows of supertile slots
 #define NSUPER ${superCount(g)}
+`;
+export const superRowsFrag = (g) => /* glsl */ `
+${superSumsGLSL(g)}
+uniform sampler2D tSuper;
+void main() {
+  int v = int(gl_FragCoord.x);
+  vec4 n = vec4(0.0);
+  for (int u = 0; u < STW; u++) n += texelFetch(tSuper, ivec2(u, v), 0);
+  oC = n;
+}
+`;
+export const superShareFrag = (g) => /* glsl */ `
+${superSumsGLSL(g)}
+uniform sampler2D tRows;
 void main() {
   vec4 n = vec4(0.0);
-  for (int v = 0; v < STH; v++)
-  for (int u = 0; u < STW; u++) n += texelFetch(tSuper, ivec2(u, v), 0);
+  for (int v = 0; v < STH; v++) n += texelFetch(tRows, ivec2(v, 0), 0);
   oC = n / float(NSUPER);
 }
 `;
