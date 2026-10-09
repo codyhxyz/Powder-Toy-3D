@@ -26,7 +26,7 @@ const HARD_MIN = Math.min(...ELEMENTS.filter((e) => e.breakInto).map((e) => e.ha
 //     gets there in L steps. Walls block it. The gradient accelerates matter
 //     (a = -∇P / ρ), so explosions throw things outward.
 //   - Forces: gravity, buoyancy (hot air rises), drag, brownian jitter. A
-//     powder or liquid held up by what's below it feels a normal force that
+//     powder or liquid at rest on what's below it feels a normal force that
 //     cancels gravity, and liquids are only pushed sideways where they can
 //     go, so resting matter comes to a full stop: a fixed point the activity
 //     map can skip (activity.js).
@@ -215,8 +215,8 @@ void main() {
     if (supported) v.xz *= 1.0 - FRICTION[id];
 
     // Liquids: hydrostatic head drives spreading, surface tension stops it.
-    // Either only pushes a liquid that has somewhere to go, a side neighbour
-    // it can move into; boxed in, its speed just decays to a stop. (A lower
+    // Both push only a liquid that has somewhere to go, a side neighbour it
+    // can move into; boxed in, its speed just decays to a stop. (A lower
     // diagonal needs no push: the move pass topples into it regardless.)
     if (KIND[id] == K_LIQUID && (supported || KIND[nid[3]] == K_LIQUID)) {
       bool open = false;
