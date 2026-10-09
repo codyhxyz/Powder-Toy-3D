@@ -511,7 +511,7 @@ const settingsPanel = createSettings({
 // and into the view only while the camera is near enough for them to show
 // (gfx/detailGate.js). The shadow map sees every switched-on feature.
 let detailVersion = 0;
-const detailGate = createDetailGate(renderer, () => pacer.wake(), () => hud.toast('Preparing close-up detail…'));
+const detailGate = createDetailGate(renderer, () => pacer.wake(), () => hud.toast('Preparing close-up detail… the first time after an update this can take half a minute'));
 function applyDetail() {
   shadowMat.defines = detailDefines(settings);
   shadowMat.needsUpdate = true;
