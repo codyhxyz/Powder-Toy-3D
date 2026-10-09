@@ -198,6 +198,31 @@ The world is much larger than what lives on the GPU. Its size is `WORLD` cells, 
   - W3: the generator's look.
   - W4: the far field.
   - W5: UI (a "World" size), camera and POV focus, painting only inside the window, signs, multiplayer limits.
+- **W1–W2 as implemented** (`src/world/window.js`, `src/world/store.js`, `src/shaders/window.js`; test mode
+  `?size=world`: 1024×128×1024 through a 128³ window; checked by `tools/world-check.mjs`).
+  - `uOrigin` lives in the prelude and `Simulation.run` sets it on every pass; `seed3` hashes the world cell
+    (`seedWorld`). The look reads `worldPos(p)`: materials, relief, glints, ripples, caustics, liquid and media
+    detail, floor lines. The shadow map's lattice snaps to whole texels of the offset. The box sits at its world
+    origin in the scene, so a move leaves the camera (and TAA's history) alone.
+  - A move: stage the leaving slab and flag its bricks against the generator; `Simulation.shift` (state, the field
+    EMA through the EMA pass's `uShift`, GI probes, the flow field); the generator fills the uncovered slab; stored
+    bricks are written back; trees are stamped into brick columns visited for the first time (one batched pass
+    clipped by a column mask, a per-world planted record), so a visited tree comes back as stored bricks;
+    `syncCopies`. At most one move per frame, none while the last slab is still being read back.
+  - Readback in two phases: the flags, then only the differing bricks, packed. Bricks are stored byte-plane
+    transposed and PackBits coded, synchronously (the uncovered slab is filled in the same frame). A brick that
+    matches the generator leaves the store, and so does one that comes back into the window.
+  - Store tolerances: matter within STORE_MATTER_T (0.5 °C) and STORE_LIFE_TOL of the generator, seed and ctype
+    exact. Snow and the frozen rock under it drift past them while the sim runs (no cold air yet), so they are
+    stored as they drift.
+  - Render history moves with the cells rather than starting over: the first frame after a move differs from the
+    one before in 0.4% of its pixels (starting over: 2.4%; drawn without world anchoring: 43%).
+  - Measured per move under other sessions' GPU load: ~4–6 ms GPU (shift 0.8, flow field 0.6, GI 0.3, stage 0.6,
+    flags 0.7, columns and fill 0.8, copy sync 0.5; stored bricks +0.9, first-visit trees +1.6–2.8) and 2–3 ms CPU
+    (+3 ms placing and baking trees on new ground); when the slab lands, 1.1 ms copying ~450 bricks and 2.2 ms
+    coding them. The store after a loop more than 3 window widths out: ~13,000 bricks, 4.8 MB, mostly trees.
+  - Not yet: undo is cleared by every move and reload; signs, construction previews, POV tool holds and
+    multiplayer guests don't follow the window (W5); nothing outside the window is drawn or casts light (W4).
 
 ## Measured (M5, headless Chrome, ANGLE Metal, 128³)
 - Lab step: 2.6 ms with 42% of bricks skipped, 3.75 ms with none skipped. An empty box still costs 2.1–2.8 ms.
