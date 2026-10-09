@@ -117,6 +117,10 @@ ${final ? `
 // the thin mask.
 export const BOOST_STAGES = 6;
 const LAST = BOOST_STAGES - 1;
+// The dirty sets of the incremental passes (docs/scaling.md D9; built by
+// shaders/passes.js dirtyFrag): the channel of the dirty map, the region map
+// and the share that holds each.
+export const DIRTY = { EMA: 0, FIELDS: 1, WORK: 2 };
 const AXES = 3;
 // Cells each boost stage reads to either side along its axis, and so the whole
 // boost along each axis (two stages per axis).
@@ -130,7 +134,8 @@ ${stage > 0 ? 'uniform sampler2D t1;   // the occupancy so far (stage 0 reads th
 ${stage < 3 ? 'uniform vec4 uS;      // per-channel centre weight of the lattice smoothing (1 = none)' : ''}
 ${stage === LAST ? `uniform sampler2D tPhi;
 uniform sampler2D tMed;
-uniform vec4 uBulk;     // per-channel bulk peak` : ''}
+uniform vec4 uBulk;     // per-channel bulk peak
+uniform sampler2D tDirty;   // dirty sets, per brick` : ''}
 layout(location = 0) out vec4 o0;
 layout(location = 1) out vec4 o1;
 layout(location = 2) out vec4 o2;   // ${stage < LAST ? 'the scratch targets have three attachments: unused' : 'thin mask'}
@@ -139,6 +144,9 @@ void main() {
   ivec3 p = fieldCellFromFrag(f);
   o2 = vec4(0.0);
   if (!inGrid(p)) { o0 = o1 = vec4(0.0); return; }
+${stage === LAST ? `  // Only bricks whose fields may change are written. The regions drawn reach
+  // past them, to cells whose inputs this frame's passes didn't all compute.
+  if (texelFetch(tDirty, brickAtlas(p / BS), 0)[${DIRTY.FIELDS}] < 0.5) discard;` : ''}
   const ivec3 dir = ivec3(${['1, 0, 0', '0, 1, 0', '0, 0, 1'][stage % 3]});
   vec4 acc = vec4(0.0), occ = vec4(0.0);
   for (int i = -1; i <= 1; i++) {

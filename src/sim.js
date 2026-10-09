@@ -5,10 +5,10 @@ import { moveBlockFrag, moveGatherFrag } from './shaders/move.js';
 import { reactFrag } from './shaders/react.js';
 import {
   paintFrag, copyFrag, brickFrag, blurFrag, brickDistFrag,
-  awakeFrag, fillFrag, ageFrag, dirtyFrag, fieldRegionMapFrag, regionShareFrag, DIRTY,
+  awakeFrag, fillFrag, ageFrag, dirtyFrag, fieldRegionMapFrag, regionShareFrag,
 } from './shaders/passes.js';
 import {
-  fieldEmaFrag, fieldCopyFrag, fieldBlurFrag, fieldBoostFrag, fieldRegions, fieldRegionsGLSL, BOOST_STAGES, BLUR_TAPS,
+  fieldEmaFrag, fieldCopyFrag, fieldBlurFrag, fieldBoostFrag, fieldRegions, fieldRegionsGLSL, BOOST_STAGES, BLUR_TAPS, DIRTY,
 } from './shaders/fields.js';
 import { giSourceFrag, giGatherFrag } from './shaders/gi.js';
 import { CHANNELS, MEDIA, gauss5, bulkPeak, bulkPeakCubic, CUBIC_LATTICE } from './gfx/materials.js';
@@ -262,7 +262,7 @@ export class Simulation {
       fieldBoost: [...Array(BOOST_STAGES).keys()].map((stage) => fieldMat(fieldBoostFrag(g, stage), {
         tA: { value: null }, t0: { value: null }, t1: { value: null }, tPhi: { value: null }, tMed: { value: null },
         uS: { value: new THREE.Vector4(...CHANNELS.map((c) => (c.cubic ? CUBIC_LATTICE[1] : 1))) },
-        uBulk: { value: new THREE.Vector4() },
+        uBulk: { value: new THREE.Vector4() }, tDirty: { value: this.dirty.texture },
       }, stage === BOOST_STAGES - 1 ? DIRTY.FIELDS : DIRTY.WORK)),
       awake: rawMat(awakeFrag(), { tQuiet: { value: this.actQuiet.texture } }),
       fill: rawMat(fillFrag(), { uValue: { value: new THREE.Vector4() } }),

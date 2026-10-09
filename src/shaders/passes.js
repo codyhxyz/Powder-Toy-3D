@@ -1,11 +1,6 @@
 import { prelude, stateOutGLSL, copyThroughMain, BRICK } from './common.js';
 import { materialsGLSL } from '../gfx/materials.js';
-import { FIELD_EMA_SETTLE, FIELD_REACH, FIELD_SCRATCH_REACH, fieldRegions } from './fields.js';
-
-// Dirty sets of the incremental derived passes (dirtyFrag below): the channel
-// of the dirty map, the region map and the share that holds each.
-export const DIRTY = { EMA: 0, FIELDS: 1, WORK: 2 };
-const DIRTY_FIELDS = DIRTY.FIELDS;
+import { FIELD_EMA_SETTLE, FIELD_REACH, FIELD_SCRATCH_REACH, fieldRegions, DIRTY } from './fields.js';
 
 // What a brick holding matter carries (brickFrag): a = 1 + gas/BRICK_GAS_DIV +
 // 2·bits + air flags/BRICK_FLAG_DIV. Decoded by gfx/core.js (brickInfo & co.)
@@ -136,7 +131,7 @@ float openFaces(ivec3 c) {
 void main() {
   ivec3 bc = brickFromFrag(ivec2(gl_FragCoord.xy));
   if (bc.y >= BY) { oC = vec4(0.0); return; }
-  if (texelFetch(tDirty, ivec2(gl_FragCoord.xy), 0)[${DIRTY_FIELDS}] < 0.5) discard;
+  if (texelFetch(tDirty, ivec2(gl_FragCoord.xy), 0)[${DIRTY.FIELDS}] < 0.5) discard;
   float occ = 0.0, gas = 0.0, surf = 0.0, media = 0.0, opaque = 0.0, thin = 0.0;
   int flags = 0;
   int liq0 = E_EMPTY;     // first liquid-channel element seen (liquids, ice)
@@ -257,7 +252,7 @@ void main() {
 //            ones every activity map a step used didn't skip (awakeFrag), and
 //            those a write that isn't a step touched
 //   ageFrag  frames since each brick last changed
-//   dirtyFrag  from the ages, three sets (DIRTY), one channel each (1 = in):
+//   dirtyFrag  from the ages, three sets (shaders/fields.js DIRTY), one channel each (1 = in):
 //     EMA     the field EMA may still change: changed within the last
 //             FIELD_EMA_SETTLE frames (shaders/fields.js)
 //     FIELDS  the final fields and the brick map may change: an EMA brick
