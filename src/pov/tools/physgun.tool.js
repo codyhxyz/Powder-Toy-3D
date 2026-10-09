@@ -205,6 +205,10 @@ export default {
       },
       status: () => (holding ? `${Math.round(dist)} cells` : null),
       wantsWheel: () => holding,
+      // the hold point stays put in the world, so the carried ball doesn't get yanked (docs/scaling.md D11)
+      windowShifted(dx, dz) {
+        for (const v of [hold, prevHold]) { v.x -= dx; v.z -= dz; }
+      },
       get hold() { return holding ? hold.clone() : null; },   // for checks
       readCom() {   // for checks: [com x, y, z, cells] of the last frame (a synchronous readback)
         const buf = new Float32Array(4);

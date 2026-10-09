@@ -113,8 +113,10 @@ env = {
   viewmodel,           // THREE.Group attached to the POV camera; tools may add meshes (held item)
   isActive: () => bool // true while in POV (gate your own key/wheel listeners on it)
 }
-toolbelt = createToolbelt(env) → { update(ctx), select(index), setVisible(bool), dispose() }
+toolbelt = createToolbelt(env) → { update(ctx), select(index), setVisible(bool), windowShifted(dx, dz), dispose() }
 // The shell calls setVisible(true/false) on entering/leaving POV, and update(ctx) every POV frame.
+// In World the grid is a window that moves over the world (docs/scaling.md D11): the shell calls
+// windowShifted when it does, and the toolbelt passes it to every tool.
 // The toolbelt listens for keys 1–9 itself (only while env.isActive()). The wheel comes in ctx.wheel:
 // it switches slots unless the selected tool's wantsWheel?.() returns true, then it goes to the tool.
 ```
@@ -131,6 +133,10 @@ export default {
     deselect?(),          // when switching away (drop what the physgun holds, etc.)
     status?(),            // short text for the hotbar slot, e.g. 'SAND ×37' (or null)
     wantsWheel?(),        // true while the tool uses the wheel (physgun distance)
+    windowShifted?(dx, dz), // the window moved (dx, 0, dz) cells over the world: move every grid position
+                          // the tool keeps by (-dx, 0, -dz), so it stays put in the world (the gun's rounds
+                          // in the air, the physgun's hold point). A point an async result reports later
+                          // is pinned at the time with transfer.js pinned(point, sim).
     dispose?(),
   }
 }

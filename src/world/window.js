@@ -44,15 +44,16 @@ const MASK_SET = 255;                // a set byte of the column mask (the shade
 
 export class WorldWindow {
   // sim: the window's Simulation (its grid spans the world's height);
-  // size: the world in cells [x, y, z]; seed: its generator seed
-  constructor(renderer, sim, { size, seed }) {
+  // size: the world in cells [x, y, z]; seed: its generator seed; snow: its
+  // snow caps (world/generator.js worldParams)
+  constructor(renderer, sim, { size, seed, snow }) {
     const g = sim.g;
     if (g.ny !== size[1]) throw new Error(`window ${g.ny} cells tall in a world ${size[1]} tall: it spans the world's height`);
     if (size.some((n, i) => n % WIN_STEP && i !== 1)) throw new Error(`world ${size}: x and z must be multiples of ${WIN_STEP}`);
     this.renderer = renderer;
     this.sim = sim;
     this.size = size;
-    this.P = worldParams({ size, seed });
+    this.P = worldParams({ size, seed, snow });
     this.gen = new WorldGenerator(sim);   // its own, not generatorFor's shared one: tools run two windows
     this.wb = size.map((n) => n / BRICK);                          // the world in bricks
     this.store = new BrickStore(this.wb);

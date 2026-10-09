@@ -35,6 +35,9 @@ const HOST_AWAY = 'The host switched to another tab, so the world is paused unti
 const HOST_BACK = 'The host is back';
 const STOPPED_HOSTING = 'Stopped hosting';
 const LEFT_WORLD = 'You left the host\'s world';
+// The massive world (the World grid size, docs/scaling.md D11) streams a window
+// that moves; guests can't follow it yet, so it can't be hosted or joined.
+const NO_WORLD = 'Multiplayer isn\'t available in World yet';
 const CLOSE_NORMAL = 1000; // WebSocket close code for a deliberate disconnect
 
 const ICON_PLAYERS = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18 14.5a6.5 6.5 0 0 1 3.5 5.5"/></svg>';
@@ -50,8 +53,9 @@ const sameDims = (g, dims) => g.nx === dims[0] && g.ny === dims[1] && g.nz === d
 
 // app hooks:
 //   getSim(), getVolume()   current simulation and volume mesh (both are rebuilt on grid size changes)
-//   setGrid([nx, ny, nz])   rebuild the world at the host's grid size; returns false if unsupported
-export function createMultiplayer({ renderer, scene, camera, hud, getSim, getVolume, setGrid }) {
+//   setGrid([nx, ny, nz])   rebuild the world at the host's grid size (a box, never World); returns false if unsupported
+//   inWorld()               the grid is World's window (docs/scaling.md D11): no hosting, and a guest leaves it
+export function createMultiplayer({ renderer, scene, camera, hud, getSim, getVolume, setGrid, inWorld = () => false }) {
   let role = 'solo';
   let socket = null, room = null, me = null;
   let joiningAs = null; // the role we asked the relay for, until it welcomes us
@@ -201,7 +205,8 @@ export function createMultiplayer({ renderer, scene, camera, hud, getSim, getVol
     if (role !== 'guest') return;
     const { kind, seq: n, dims, body } = await decodeFrame(buf);
     if (kind === FRAME_KEY) {
-      if (!sameDims(getSim().g, dims) && !setGrid(dims)) { socket?.close(); end('The host is using a grid size this version does not know'); return; }
+      // (World's window can be the host's size: a guest still leaves World for the host's box)
+      if ((inWorld() || !sameDims(getSim().g, dims)) && !setGrid(dims)) { socket?.close(); end('The host is using a grid size this version does not know'); return; }
       world = body;
     } else if (kind === FRAME_DELTA && world && n === worldSeq + 1 && body.length === world.length) {
       xorInto(world, world, body);
@@ -244,6 +249,7 @@ export function createMultiplayer({ renderer, scene, camera, hud, getSim, getVol
 
   async function onButton() {
     if (role === 'solo' && !socket) {
+      if (inWorld()) { hud.toast(NO_WORLD); return; }
       const code = crypto.randomUUID().replaceAll('-', '').slice(0, ROOM_CODE_LENGTH);
       connect('host', code);
       syncButton();
@@ -304,6 +310,13 @@ export function createMultiplayer({ renderer, scene, camera, hud, getSim, getVol
     guard() {
       if (role !== 'guest') return false;
       hud.toast(GUEST_BLOCKED);
+      return true;
+    },
+
+    // In a session (or joining one), World can't be chosen: shows a toast and returns true.
+    guardWorld() {
+      if (role === 'solo' && !socket) return false;
+      hud.toast(role === 'guest' ? GUEST_BLOCKED : NO_WORLD);
       return true;
     },
 

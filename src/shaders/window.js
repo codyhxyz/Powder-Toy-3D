@@ -38,6 +38,22 @@ void main() {
 }
 `;
 
+// Undo after the window moved (docs/scaling.md D10, D11): grid cell p takes
+// the snapshot's cell p + uShift, tA/tB being the snapshot, which holds the
+// window where it was when it was taken. Cells the snapshot doesn't hold are
+// discarded, so they keep what the target (the current state) holds.
+export const undoShiftFrag = (g) => /* glsl */ `
+${prelude(g)}
+uniform ivec3 uShift;   // grid cells the window moved since the snapshot
+${stateOutGLSL}
+void main() {
+  ivec3 p = cellFromFrag(ivec2(gl_FragCoord.xy));
+  ivec3 q = p + uShift;
+  if (!inGrid(p) || !inGrid(q)) discard;
+  writeState(fetchA(q), fetchB(q));
+}
+`;
+
 // Stage: copies the slab of grid cells [uLo, uLo + 4·uBricks) into the staging
 // textures (slab layout above), brick i at slab brick (i % bx, i / bx % by, i / bx / by).
 export const stageFrag = (g) => /* glsl */ `

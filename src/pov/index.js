@@ -38,7 +38,7 @@ const PASS_KEYS = new Set(['Escape', '?', ',', 'p', 'P']);
 
 // app = { renderer, scene, camera, controls, canvas, hud, settings, mp, isTyping,
 //         getSim, getVolume, getScale, hover, pointerHover (() => bool), pickRay (ro, rd → Promise<hit>),
-//         requestRender }
+//         requestRender, inWorld (() => bool: the grid is a window of a larger world, docs/scaling.md D11) }
 export function createPov(app) {
   const { renderer, scene, camera, controls, canvas, hud } = app;
   const createPlayer = playerModule?.createPlayer;
@@ -64,6 +64,7 @@ export function createPov(app) {
   let firstEntry = true;
   const dropPoint = new THREE.Vector3();
   const saved = { pos: new THREE.Vector3(), quat: new THREE.Quaternion(), target: new THREE.Vector3(), fov: 40, near: 0.05 };
+  const enteredAt = new THREE.Vector3();   // the drop point in world cells (exit, in a larger world)
 
   // input
   const keys = new Set();
@@ -254,6 +255,7 @@ export function createPov(app) {
     povCam.reset();
     feel.reset();
     player.spawn(dropPoint.clone());
+    enteredAt.copy(dropPoint).add(app.getSim().origin);
     deadSeen = false;
     povCam.startSwoop('in', camPose(), { duration: SWOOP_S });
     camera.near = POV_NEAR * app.getScale();
@@ -272,6 +274,16 @@ export function createPov(app) {
     viewmodel.visible = false;
     if (document.pointerLockElement === canvas) document.exitPointerLock();
     releaseInput();
+    // In a world larger than the grid, the god view comes back over where the
+    // body is now, as it was framed over the drop point, not across the world
+    // where it went in (the window would have to go all the way back).
+    if (app.inWorld?.() && player) {
+      const here = vB.copy(player.pos).add(app.getSim().origin);
+      const moved = vA.subVectors(here, enteredAt).multiplyScalar(app.getScale());
+      saved.pos.add(moved);
+      saved.target.add(moved);
+      enteredAt.copy(here);   // (flying back in and out again moves it on from here)
+    }
     if (instant) { finishExit(); return; }
     mode = 'exiting';
     povCam.startSwoop('out', camPose(), { to: { pos: saved.pos, quat: saved.quat, fov: saved.fov } });
@@ -485,11 +497,14 @@ export function createPov(app) {
     update,
     // the world was replaced (undo, a scene load): tools drop what they carry from the old one
     worldReplaced: () => toolsModule?.emptyLoads?.(),
-    // the window moved over the world by (dx, 0, dz) cells (docs/scaling.md D11): grid positions move back
+    // the window moved over the world by (dx, 0, dz) cells (docs/scaling.md D11): grid positions move back.
+    // The drop point stays put in the world: a respawn far away waits there
+    // for the window to come (player.js).
     windowShifted(dx, dz) {
       dropPoint.x -= dx;
       dropPoint.z -= dz;
       player?.windowShifted(dx, dz);
+      toolbelt?.windowShifted(dx, dz);
     },
     aimRay,
     blocksKey,

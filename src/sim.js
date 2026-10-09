@@ -6,7 +6,7 @@ import { reactFrag } from './shaders/react.js';
 import { paintFrag, copyFrag, brickFrag, blurFrag, brickDistFrag } from './shaders/passes.js';
 import { fieldEmaFrag, fieldBlurFrag, fieldBoostFrag, BOOST_STAGES } from './shaders/fields.js';
 import { giSourceFrag, giGatherFrag } from './shaders/gi.js';
-import { shiftFrag, giShiftFrag, flowShiftFrag } from './shaders/window.js';
+import { shiftFrag, giShiftFrag, flowShiftFrag, undoShiftFrag } from './shaders/window.js';
 import { CHANNELS, MEDIA, gauss5, bulkPeak, bulkPeakCubic, CUBIC_LATTICE } from './gfx/materials.js';
 import { gfxUniforms } from './gfx/uniforms.js';
 
@@ -155,6 +155,10 @@ const fieldBlurUniforms = () => ({
 
 let nextSimId = 0;
 
+// Every simulation's uOrigin uniform (run): a pass kept across grids, made for
+// an older simulation of the same size (a tool's), takes the current one's.
+const simOrigins = new WeakSet();
+
 // GPU simulation driver: owns the state ping-pong targets and runs passes.
 export class Simulation {
   constructor(renderer, nx, ny, nz) {
@@ -211,6 +215,7 @@ export class Simulation {
     // (run). A grid that is its whole world stays at 0; shift() moves it.
     this.origin = new THREE.Vector3();
     this.originUniform = { value: this.origin };
+    simOrigins.add(this.originUniform);
     // grid cells the window moved since the render fields last updated (their history follows)
     this.fieldShift = new THREE.Vector3();
     // false: a shift starts the render fields and GI over instead of moving their history (A/B)
@@ -323,7 +328,8 @@ export class Simulation {
 
   run(mat, target) {
     // every pass sees the window's origin (shaders/common.js uOrigin), unless it brings its own
-    mat.uniforms.uOrigin ??= this.originUniform;
+    const o = mat.uniforms.uOrigin;
+    if (!o || simOrigins.has(o)) mat.uniforms.uOrigin = this.originUniform;
     this.quad.material = mat;
     this.renderer.setRenderTarget(target);
     this.renderer.render(this.scene, this.camera);
@@ -518,7 +524,8 @@ export class Simulation {
   // stale until syncCopies(), so the caller fills first and syncs once. The
   // render fields' history, the GI probes and the flow field move with the
   // cells, the brick maps rebuild with the next updateBricks and the activity
-  // map is redone (run). Undo snapshots hold the old window: they are dropped.
+  // map is redone (run). Undo snapshots keep the window where they were taken
+  // (undo maps them across).
   shift(dx, dz) {
     if (dx % SUPER_CELLS.x || dz % SUPER_CELLS.z) {
       throw new Error(`shift ${dx}, ${dz}: must be whole supertiles (${SUPER_CELLS.x} × ${SUPER_CELLS.z} cells)`);
@@ -555,7 +562,6 @@ export class Simulation {
         [this.giProbes, this.giProbesTmp] = [this.giProbesTmp, this.giProbes];
       }
     }
-    this.dropHistory();
   }
 
   // Forget the undo snapshots (they hold a window that has moved or been replaced).
@@ -597,6 +603,8 @@ export class Simulation {
 
   // ---- undo history: full GPU copies of the state, newest last ----
   // Each snapshot is two RGBA32F atlases (~70 MB at 128³), so keep only a few.
+  // Each remembers the window's origin it was taken at (t.origin): after the
+  // window moves (docs/scaling.md D11) it still holds the cells where they were.
   snapshot(limit = 3) {
     this.history ??= [];
     const t = this.history.length >= limit ? this.history.shift() : makeTarget(this.g.width, this.g.height);
@@ -604,18 +612,42 @@ export class Simulation {
     u.tA.value = this.stateA;
     u.tB.value = this.stateB;
     this.run(this.mats.copy, t);
+    t.origin = this.origin.clone();
     this.history.push(t);
   }
 
   get canUndo() { return (this.history?.length ?? 0) > 0; }
 
+  // Grid cells [dx, dz] the window moved since the newest snapshot was taken, or null without one.
+  get undoShift() {
+    const t = this.history?.at(-1);
+    return t ? [this.origin.x - t.origin.x, this.origin.z - t.origin.z] : null;
+  }
+
+  // Bring the newest snapshot back. Taken before the window moved, it brings
+  // back the cells the old and the new window share, and the rest keep what
+  // they hold now (the cells that left the window are stored edits, out of
+  // its reach). If the two don't overlap at all it does nothing and keeps the
+  // snapshot for when the window comes back: returns false then, and when
+  // there is none.
   undo() {
-    const t = this.history?.pop();
+    const t = this.history?.at(-1);
     if (!t) return false;
-    const u = this.mats.copy.uniforms;
-    u.tA.value = t.textures[0];
-    u.tB.value = t.textures[1];
-    this.run(this.mats.copy, this.targets[this.cur]);
+    const [dx, dz] = this.undoShift;
+    if (Math.abs(dx) >= this.g.nx || Math.abs(dz) >= this.g.nz) return false;
+    this.history.pop();
+    let mat = this.mats.copy;
+    if (dx || dz) {
+      // (made on the first undo after a move: only a window of a larger world moves)
+      this.mats.undoShift ??= Object.assign(rawMat(undoShiftFrag(this.g), {
+        tA: { value: null }, tB: { value: null }, uShift: { value: new THREE.Vector3() },
+      }), { name: 'undoShift' });
+      mat = this.mats.undoShift;
+      mat.uniforms.uShift.value.set(dx, 0, dz);
+    }
+    mat.uniforms.tA.value = t.textures[0];
+    mat.uniforms.tB.value = t.textures[1];
+    this.run(mat, this.targets[this.cur]);
     this.stillFlow();
     t.dispose();
     return true;
