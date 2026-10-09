@@ -318,6 +318,59 @@ The world is much larger than what lives on the GPU. Its size is `WORLD` cells, 
     - Hosting in World, World while hosting and a World invite all end in a box with the toast.
     - A move waits for its leaving slab's readback: here ~9 frames (~320 ms) a move, so the window followed at
       ~35–100 cells/s; WORLD_CAM_SPEED_MAX (9 units/s, 115 cells/s) is what an unloaded GPU should keep up with.
+  - Not yet: undo is cleared by every move and reload; signs, construction previews, POV tool holds and
+    multiplayer guests don't follow the window (W5).
+- **W4 as implemented** (`src/world/far.js`, `src/shaders/far.js`; checked by `tools/far-check.mjs` and, on the CPU,
+  `tools/check-far-trees.mjs`).
+  - The far grid is a 2D atlas of brick slices (2048×1024 RGBA8 for 1024×128×1024, 8 MB), not a 3D texture: a
+    region of it is one draw, and two bilinear taps make a trilinear sample. Per brick: the opaque and the liquid
+    share of the 8-cell cube centred on it, its dominant opaque element (open cells count 8×) with its liquid's kind
+    and an "open" bit, and glow. A cube twice the brick makes the field linear in the ground's height between two
+    centres, so its 0.5 level sits on the terrain (a brick's own share put it up to ⅓ cell off: terraces). The view
+    samples a second, filtered target, the field: there matter under half a cube with no neighbouring brick at the
+    surface level (trunks, walls up to 3 cells, roofs, streams) reads as full, so it shows as a blob, rod or slab
+    instead of vanishing, while crowns, cliffs and the ground keep their shares (and their shapes).
+  - Occupancy: L1 (16³ cells) set where some brick in it or next to it reaches 0.5, L2 (64³) where an L1 is.
+  - Built at load from the generator at world scale: genColumn and genLayers per world column, then every brick
+    from the layers of the columns its cube spans. The trees are in it too: a GPU twin of `treeCandidate` per brick
+    column, thinned by `treesIn`'s rule, each drawn as its construction at brick scale. mulberry32's i-th draw is a
+    function of seed and i, and the draws before a construction's first per-cell shape are a known count, so
+    heights, oak crowns, pine tiers and palm leans are the construction's own.
+  - Updated from the window: the slab about to leave is summarized in the move's step 1 (from the state, before the
+    shift), so edits stay visible after they leave; while the sim changes the window, it is swept a 16-cell slab a
+    frame every 120 frames (its copy casts the far field's shadows and feeds the window's GI). Then the occupancy, the brick-column tops and the
+    shadow heights are rebuilt.
+  - Drawn by one full-screen pass before the scene (renderOrder −10, depth func always): sky with the sun's disc, the
+    open sea beyond the world (its bed at the generator's floor, so the world's edge doesn't show), and the far grid.
+    Rays skip the window's box (the volume draws it), cross unset L2/L1 nodes whole and walk set ones brick by
+    brick, root-finding the trilinear field. Shading: `matOf` at the pixel's footprint (its texture fades to its far
+    look like the window's), sun through a shadow height field (per brick column: the max over the columns toward
+    the sun of their ground's top, seen from below, less the sun ray's drop; crowns don't cast: as pillars they
+    shaded whole forests and beaches), sky ambient with a two-tap field AO, glow; liquids with Fresnel
+    to the sky and the sun's glint and a Beer–Lambert body down to the bed; aerial perspective from the sky model
+    (12 km visibility, the sky's spectral shape). Depth is written, so the volume and scene objects composite.
+  - The window takes three things from it (world mode only, `FarField.attach`): its sun shadow map the far field's
+    shadows (`shadowFrag`'s casters: along a sun ray the shadow height above it only falls, so one read says whether
+    a texel ray goes under it and bisection finds where; GI gets them through the map); its GI the far field past
+    where a probe's ray ends (`giGatherFrag`'s far: the brick-column tops at doubling distances, so distant hills
+    block the low sky and light it back with their ground's albedo, and the sea lies past the coast, instead of open
+    sky and a concrete floor); and its volume the same aerial perspective (`volumeFrag`'s haze), so the window
+    doesn't stand out crisper than the land around it.
+  - The view's program compiles in the background (`compileAsync`); the far field shows once it's ready.
+  - Today's sizes build none of it and compile byte-identical shader sources (volume, shadow, pick, GI, generator;
+    checked on the CPU). `regress.mjs` against `scale` isn't deterministic run to run on a busy GPU (its hidden
+    dock tiles draw from the seeded `Math.random` as wall-clock frames go by, and `sim.giFrame`'s parity depends
+    on frames since boot); reseeding and zeroing those before each preset load, this branch differs from `scale`
+    by less than `scale` differs from itself (summit 1 vs 5 px, volcano 10 vs 14).
+  - Measured (M5, headless, other sessions holding the GPU at 70–99%, so these are high): the far pass, interleaved
+    with and without it, 1.5–3 ms in the god view and 2.2–4.9 ms in a low view at the default render scale
+    (853×533 for a 1280×800 canvas), 4–9 ms at 1280×800 native; about a third is the march, the rest shading
+    (`matOf`, the short sun ray). The build at world load 40–75 ms GPU-synced; a move's leaving slab ~1.4 ms; a
+    sweep frame the same; shadow heights 0.1–0.2 ms. A move changes 6 of the far field's pixels (window masked
+    out, frame fixed). The GPU's tree placement agrees with `treesIn` (350 of 350 trees over a region).
+  - Not yet: no blend band at the window's sides; no gases (smoke, steam, fire) in the far field; the far field's own
+    ambient sees only a two-tap AO, not distant hills; it isn't drawn in the data views; guests don't get the host's
+    edits outside the window (W5).
 
 ## Measured (M5, headless Chrome, ANGLE Metal, 128³)
 - Lab step: 2.6 ms with 42% of bricks skipped, 3.75 ms with none skipped. An empty box still costs 2.1–2.8 ms.

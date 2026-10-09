@@ -35,6 +35,10 @@ import { BrickStore, encodeBrick, decodeBrick, BRICK_FLOATS } from './store.js';
 //   5. both state copies are made the same.
 // No move starts while a leaving slab is still being read back, so the store
 // holds everything a move can bring back.
+//
+// The far field (world/far.js), when the app gives the window one (far), is
+// built on load, summarizes the slab about to leave in step 1, and sweeps over
+// the window's region while it changes (update).
 
 export const WIN_STEP = 16;          // cells: how far the window moves at a time (whole supertiles along x and z)
 export const WIN_HYSTERESIS = 4;     // cells past WIN_STEP from the centre the focus goes before a move
@@ -64,6 +68,7 @@ export class WorldWindow {
     this.epoch = 0;                                               // bumped by load and dispose: older readbacks are dropped
     this.last = null;                                             // what the last move cost (tools)
     this.plantCost = null;                                        // the move's tree placing and baking, ms (tools)
+    this.far = null;                                              // the far field (world/far.js), if the app draws one
 
     // the largest slab a move exchanges, and the targets it goes through
     const step = WIN_STEP / BRICK, BX = g.nx / BRICK, BY = g.ny / BRICK, BZ = g.nz / BRICK;
@@ -113,6 +118,7 @@ export class WorldWindow {
     this.gen.fill(this.P, [origin[0], 0, origin[2]]);
     this.plant([0, 0, 0], [g.nx, g.ny, g.nz]);
     sim.syncCopies();
+    this.far?.build();
     sim.dropHistory();   // undo would bring back a window of the old world
     // a new scene: the render fields and GI start over instead of blending in, and nothing is moving
     sim.fieldReset = sim.giReset = true;
@@ -122,6 +128,7 @@ export class WorldWindow {
   // Keep the window centred on the focus (world cells, x and z). Returns the
   // move made, [dx, dz] world cells, or null.
   update(fx, fz) {
+    this.far?.tick();
     if (this.pending) return null;
     const g = this.sim.g, o = this.sim.origin, lim = WIN_STEP + WIN_HYSTERESIS;
     const off = [fx - (o.x + g.nx / 2), fz - (o.z + g.nz / 2)];
@@ -157,6 +164,7 @@ export class WorldWindow {
     sim.run(this.mats.stage, this.stage);
     this.gen.diff(this.P, leaveLo, bricks, this.diffTarget);
     this.readBack([before.x / BRICK + leaveLo[0] / BRICK, 0, before.z / BRICK + leaveLo[2] / BRICK], bricks);
+    this.far?.summarize(leaveLo, bricks);
     // 2.
     sim.shift(dx, dz);
     // 3.
@@ -293,6 +301,7 @@ export class WorldWindow {
 
   dispose() {
     this.epoch++;
+    this.far?.dispose();
     this.gen.dispose();
     this.stage.dispose();
     this.packed.dispose();

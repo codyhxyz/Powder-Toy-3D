@@ -339,9 +339,10 @@ export const TREE = {
   REACH: 16,                 // cells: the widest crown's reach from its trunk (a region stamps trees this far outside it)
 };
 // Kinds by zone: cumulative weights for the mid slopes (the rest is dead trees).
-const MID_TREES = [['oak', 0.5], ['birch', 0.75], ['pine', 0.95]];
-const HIGH_TREES = [['pine', 0.85], ['birch', 0.97]];   // the rest dead
-const UNIT16 = 0x10000;                                  // 16-bit hash field to [0, 1)
+// (The far field places the same trees on the GPU: shaders/far.js.)
+export const MID_TREES = [['oak', 0.5], ['birch', 0.75], ['pine', 0.95]];
+export const HIGH_TREES = [['pine', 0.85], ['birch', 0.97]];   // the rest dead
+const UNIT16 = 0x10000;                                         // 16-bit hash field to [0, 1)
 
 function treeCandidate(bx, bz, P) {
   const h = latticeHash(bx, bz, stream(P.seed, GEN_SALT.TREE));

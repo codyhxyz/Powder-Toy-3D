@@ -227,9 +227,9 @@ export const COLUMN_MARGIN = 2;
 
 // Column pass: genColumn for one region of world columns, one texel each
 // (RGBA32F): texel (i, j) is world column uColOrigin + (i, j). The fill and
-// summary passes read a grid's columns plus COLUMN_MARGIN on every side, so
+// diff passes read a grid's columns plus COLUMN_MARGIN on every side, so
 // their target is (NX + 2·margin) × (NZ + 2·margin), with uColOrigin = the
-// grid's origin less the margin.
+// grid's origin less the margin (the far field's: the whole world's).
 export const columnFrag = (g) => /* glsl */ `
 ${prelude(g)}
 ${generatorGLSL}
@@ -241,8 +241,9 @@ void main() {
 `;
 
 // Reads the layers of grid column c (window-local x, z) from the column
-// texture (tCol: the grid's columns plus the margin).
-const layersGLSL = /* glsl */ `
+// texture (tCol: the grid's columns plus the margin). The far field reads a
+// world's columns the same way (shaders/far.js farLayersFrag).
+export const layersGLSL = /* glsl */ `
 uniform sampler2D tCol;
 #define COLUMN_MARGIN ${COLUMN_MARGIN}
 float colHeight(ivec2 c) { return texelFetch(tCol, c + COLUMN_MARGIN, 0).x; }
@@ -277,51 +278,6 @@ void main() {
   vec4 A, B;
   genCell(columnLayers(p.xz), uOrigin + p, A, B);
   writeState(A, B, writtenFlags(f, a, b, A, B));
-}
-`;
-
-// Brick summary, for the far field (docs/scaling.md D11, "Far field": its
-// world-sized brick grid is built from this). One RGBA8 texel per 4³ brick of
-// the grid, laid out like the other brick targets (brickAtlas):
-//   r  dominant element id / 255: the most common matter (not air or gas),
-//      a cell open to the air above counting SUMMARY_SURFACE_W times, so a
-//      brick reads as its surface (grass on rock reads as grass)
-//   g  solid fraction: cells of solids and powders, which stop a ray
-//   b  liquid fraction
-//   a  glow: 0 (the generator makes nothing hot; leaving slabs fill it in)
-export const SUMMARY_SURFACE_W = 8;
-export const summaryFrag = (g) => /* glsl */ `
-${prelude(g)}
-${generatorGLSL}
-${layersGLSL}
-out vec4 oC;
-#define SUMMARY_SURFACE_W ${SUMMARY_SURFACE_W.toFixed(1)}
-#define ID_SCALE 255.0   // an element id in an 8-bit channel
-void main() {
-  ivec3 bc = brickFromFrag(ivec2(gl_FragCoord.xy));
-  oC = vec4(0.0);
-  if (bc.y >= BY) return;
-  float weight[NE];
-  for (int i = 0; i < NE; i++) weight[i] = 0.0;
-  float solid = 0.0, liquid = 0.0;
-  ivec3 o = bc * BS;
-  for (int z = 0; z < BS; z++)
-  for (int x = 0; x < BS; x++) {
-    GenLayers L = columnLayers(o.xz + ivec2(x, z));
-    int above = genId(L, uOrigin.y + o.y + BS);   // the cell over the brick's top layer
-    for (int y = BS - 1; y >= 0; y--) {
-      int id = genId(L, uOrigin.y + o.y + y);
-      int k = KIND[id];
-      if (k == K_SOLID || k == K_POWDER) solid += 1.0;
-      else if (k == K_LIQUID) liquid += 1.0;
-      if (id != E_EMPTY && k != K_GAS) weight[id] += above == E_EMPTY ? SUMMARY_SURFACE_W : 1.0;
-      above = id;
-    }
-  }
-  int best = E_EMPTY;
-  for (int i = 0; i < NE; i++) if (weight[i] > weight[best]) best = i;
-  float cells = float(BS * BS * BS);
-  oC = vec4(float(best) / ID_SCALE, solid / cells, liquid / cells, 0.0);
 }
 `;
 

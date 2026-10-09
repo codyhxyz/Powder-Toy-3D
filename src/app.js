@@ -8,6 +8,7 @@ import { buildPreset } from './presets.js';
 import { loadIsland, releaseGenerator } from './world/gpu.js';
 import { WorldWindow, WIN_STEP } from './world/window.js';
 import { heightAt } from './world/generator.js';
+import { FarField } from './world/far.js';
 import { quadVert } from './shaders/common.js';
 import { createBrushCursor } from './brush.js';
 import { createCameraRig } from './camera.js';
@@ -235,6 +236,8 @@ function build() {
   volume.scale.setScalar(scale);
   volume.frustumCulled = false;
   scene.add(volume);
+  // world mode: the world outside the window (world/far.js), drawn before everything else
+  if (win) scene.add((win.far = new FarField(renderer, win, { sun: SUN, time: volume.material.uniforms.uTime })).mesh);
 
   edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo),
     new THREE.LineBasicMaterial({ color: 0x56607a, transparent: true, opacity: EDGE_OPACITY }));
@@ -273,6 +276,7 @@ function build() {
     depthTest: false,
     depthWrite: false,
   });
+  win?.far.attach(volume.material, shadowMat);   // world mode: the far field's haze and shadows on the window
   applyDetail();
   volume.material.uniforms.tShadow.value = shadowTarget.texture;
   volume.material.uniforms.uShadowRes.value = shadowRes;
@@ -1045,8 +1049,9 @@ function frame(now) {
     controls.update();
   }
   if (win) moveWindow();
-  // a world's window outline marks where the god view paints; from inside it, in POV, it would only be lines in the landscape
-  edges.visible = !(win && pov?.active);
+  // In World the far field carries on past the window, so its outline would only be lines in the sky
+  // and the landscape; where the god view can paint shows by the brush, which stops at the window's edge.
+  edges.visible = !win;
   updateBrush();
 
   prof.phase('paint');
@@ -1114,6 +1119,7 @@ function frame(now) {
     u.tLight.value = sim.lightTexture;
     u.uCam.value.copy(camera.position).applyMatrix4(invVol.copy(volume.matrixWorld).invert());
     detailGate.update(camera, u.uCam.value, [sim.g.nx, sim.g.ny, sim.g.nz], scene);
+    win?.far.view(volume, settings.view === 0);
     u.uView.value = settings.view;
     if (worldChanged) u.uTime.value += dt;   // animated looks (lava, ripples) hold still while the world does
 

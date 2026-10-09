@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { rawMat, makeFieldTarget } from '../sim.js';
 import { stateUniforms } from '../shaders/common.js';
-import { columnFrag, fillFrag, summaryFrag, diffFrag, COLUMN_MARGIN } from '../shaders/generate.js';
+import { columnFrag, fillFrag, diffFrag, COLUMN_MARGIN } from '../shaders/generate.js';
 import { stampFrag, stampManyFrag, MAX_STAMPS } from '../shaders/stamp.js';
 import { runGenerator, bake, MAX_FOOT } from '../constructions/runtime.js';
 import { BUILTINS } from '../constructions/builtins.js';
@@ -11,17 +11,17 @@ import { worldParams, treesIn, TREE } from './generator.js';
 // grid: a window of the world (world/generator.js) at a world-cell origin.
 // Today's grid sizes are a world the size of the grid at origin 0 (the Island
 // scene, loadIsland below); the massive world's window (docs/scaling.md D11)
-// fills the slabs a shift uncovers with fill(..., min, max) and builds its far
-// field from summarize().
+// fills the slabs a shift uncovers with fill(..., min, max). Its far field
+// (world/far.js) runs the column pass over the whole world.
 
 // The generator's uniforms (shaders/generate.js), set from a world's parameters.
-const genUniforms = () => ({
+export const genUniforms = () => ({
   uGenSeed: { value: 0 }, uGenSea: { value: 0 }, uGenRelief: { value: 0 }, uGenFloor: { value: 0 },
   uGenCenter: { value: new THREE.Vector2() }, uGenRadius: { value: 1 },
   uGenAxis: { value: new THREE.Vector2(1, 0) }, uGenStretch: { value: 1 }, uGenFeature: { value: 1 },
   uGenSnow: { value: true },
 });
-function setWorld(u, P) {
+export function setWorld(u, P) {
   u.uGenSeed.value = P.seed;
   u.uGenSea.value = P.sea;
   u.uGenRelief.value = P.relief;
@@ -38,12 +38,10 @@ export class WorldGenerator {
   constructor(sim) {
     this.sim = sim;
     const g = sim.g;
-    const F32 = THREE.FloatType, U8 = THREE.UnsignedByteType, NEAR = THREE.NearestFilter;
+    const F32 = THREE.FloatType, NEAR = THREE.NearestFilter;
     // genColumn for the grid's columns plus a margin (columnFrag)
     this.columns = makeFieldTarget(g.nx + 2 * COLUMN_MARGIN, g.nz + 2 * COLUMN_MARGIN, 1, F32, NEAR);
     this.columnsKey = '';
-    // the grid's far-field brick summary (summaryFrag)
-    this.summary = makeFieldTarget(g.bwidth, g.bheight, 1, U8, NEAR);
     const v3 = () => ({ value: new THREE.Vector3() });
     this.mats = {
       column: rawMat(columnFrag(g), { ...genUniforms(), uColOrigin: { value: new THREE.Vector2() } }),
@@ -51,7 +49,6 @@ export class WorldGenerator {
         ...genUniforms(), ...stateUniforms(), tCol: { value: null },
         uOrigin: v3(), uFillMin: v3(), uFillMax: v3(),
       }),
-      summary: rawMat(summaryFrag(g), { ...genUniforms(), tCol: { value: null }, uOrigin: v3() }),
       // constructions.js places its stamps with the same pass
       stamp: rawMat(stampFrag(g), {
         ...stateUniforms(), tStamp: { value: null },
@@ -133,8 +130,8 @@ export class WorldGenerator {
   updateColumns(P, origin) {
     const key = JSON.stringify([P, origin]);
     if (key === this.columnsKey) return;
-    const { column, fill, summary } = this.mats;
-    for (const m of [column, fill, summary]) setWorld(m.uniforms, P);
+    const { column, fill } = this.mats;
+    for (const m of [column, fill]) setWorld(m.uniforms, P);
     column.uniforms.uColOrigin.value.set(origin[0] - COLUMN_MARGIN, origin[2] - COLUMN_MARGIN);
     this.sim.run(column, this.columns);
     this.columnsKey = key;
@@ -151,17 +148,6 @@ export class WorldGenerator {
     u.uFillMin.value.set(...min);
     u.uFillMax.value.set(...(max ?? [g.nx, g.ny, g.nz]));
     this.sim.pass(this.mats.fill);
-  }
-
-  // The far-field summary of world P over the grid's bricks: one RGBA8 texel
-  // per brick (shaders/generate.js summaryFrag). Returns the target.
-  summarize(P, origin = [0, 0, 0]) {
-    this.updateColumns(P, origin);
-    const u = this.mats.summary.uniforms;
-    u.tCol.value = this.columns.texture;
-    u.uOrigin.value.set(...origin);
-    this.sim.run(this.mats.summary, this.summary);
-    return this.summary;
   }
 
   // Stamp the trees of world P whose crowns may reach the grid. Returns them.
@@ -198,7 +184,6 @@ export class WorldGenerator {
 
   dispose() {
     this.columns.dispose();
-    this.summary.dispose();
     Object.values(this.mats).forEach((m) => m.dispose());
   }
 }

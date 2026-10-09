@@ -90,7 +90,10 @@ const viewIdsGLSL = () => VIEWS.map((v) => `#define VIEW_${v.key.toUpperCase()} 
 // restarts the ray, so its path can be longer than one crossing of the box.
 const BEND_EXTRA_STEPS = 128;
 
-export const volumeFrag = (g) => {
+// haze: GLSL defining farHazePremul(col, alpha, eye, p), the air between the
+// eye and the hit (a massive world: shaders/far.js, the same as its far
+// field's, so the window and what lies past it fade alike); none otherwise.
+export const volumeFrag = (g, haze = '') => {
   // DDA shared by the data views. `body` runs for every voxel the ray visits
   // inside a brick holding matter, with cell, a (state A), id, n (entry face
   // normal), hp (entry point), seg, tEnter, tExit, occ, prevId and airOn (the
@@ -179,7 +182,7 @@ ${lib(g)}
 ${surfaceGLSL}
 ${liquidGLSL}
 ${liquidDetailGLSL}
-${mediaGLSL}
+${mediaGLSL}${haze}
 uniform vec3 uCam;
 uniform mat4 projectionMatrix;
 uniform mat4 modelMatrix;
@@ -934,7 +937,8 @@ void main() {
   if (!anyHit) discard;
   float alpha = 1.0 - dot(trans, vec3(1.0 / 3.0));
   // linear HDR radiance, premultiplied; tone mapping happens in post (src/gfx/post.js)
-  gl_FragColor = vec4(col * (alpha > 0.0 ? 1.0 : 0.0), alpha);
+  gl_FragColor = vec4(col * (alpha > 0.0 ? 1.0 : 0.0), alpha);${haze && `
+  gl_FragColor.rgb = farHazePremul(gl_FragColor.rgb, alpha, uCam, hitPos);`}
 
   vec4 clip = projectionMatrix * viewMatrix * modelMatrix * vec4(hitPos, 1.0);
   gl_FragDepth = clamp(clip.z / clip.w * 0.5 + 0.5, 0.0, 1.0);
@@ -1001,9 +1005,12 @@ void main() {
 // Shadow map pass: one ray per texel, marching from the sun toward the box.
 // Opaque = crisp voxels and the smooth opaque surfaces (same root finding as
 // the camera rays, so shadows line up with what is drawn). Liquids, glass and
-// media add optical depth.
-export const shadowFrag = (g) => /* glsl */ `
-${lib(g)}
+// media add optical depth. casters: GLSL defining farCasterDepth(ro, rd, t0,
+// t1), the depth along the texel's ray where the world outside the window
+// starts to shade it (a massive world's far field: shaders/far.js); none for
+// a grid that is its whole world.
+export const shadowFrag = (g, casters = '') => /* glsl */ `
+${lib(g)}${casters}
 // Texel encoding, decoded by sunShadow (gfx/lighting.js, which defines
 // SHADOW_TINT_ID_SCALE): w = tint element id * SHADOW_TINT_ID_SCALE + optical
 // depth (capped below it).
@@ -1090,7 +1097,8 @@ void main() {
     cell[ax] += istp[ax];
     tMax[ax] += tDelta[ax];
   }
-  if (!hit && rd.y < 0.0) oC.x = ro.y / -rd.y; // floor
+  if (!hit && rd.y < 0.0) oC.x = ro.y / -rd.y; // floor${casters && `
+  oC.x = min(oC.x, farCasterDepth(ro, rd, t, bh.y));   // shaded from outside the window`}
   oC.w = float(tid) * SHADOW_TINT_ID_SCALE + min(tau, SHADOW_TAU_MAX);
 }
 `;
