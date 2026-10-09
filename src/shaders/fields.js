@@ -1,5 +1,6 @@
-import { prelude } from './common.js';
-import { materialsGLSL } from '../gfx/materials.js';
+import { prelude, BRICK } from './common.js';
+import { materialsGLSL, CHANNELS, MEDIA } from '../gfx/materials.js';
+import { blendFixedFrames } from '../gfx/pacing.js';
 
 // Render fields: continuous versions of the blocky state, rebuilt once per
 // frame for the renderer only (the simulation never reads them).
@@ -66,13 +67,19 @@ void main() {
 }
 `;
 
+// Taps of the separable Gaussian (gfx/materials.js gauss5), centred: each pass
+// reads BLUR_REACH cells to either side along its axis.
+export const BLUR_TAPS = 5;
+export const BLUR_REACH = (BLUR_TAPS - 1) / 2;
 export const fieldBlurFrag = (g, final) => /* glsl */ `
 ${prelude(g)}
+#define BLUR_TAPS ${BLUR_TAPS}
+#define BLUR_REACH ${BLUR_REACH}
 uniform sampler2D t0;
 uniform sampler2D t1;
 uniform sampler2D t2;
 uniform int uAxis;
-uniform vec4 uW[5];   // per-tap weights, one per surface channel (media use .x)
+uniform vec4 uW[BLUR_TAPS];   // per-tap weights, one per surface channel (media use .x)
 // below this blurred non-crisp weight (deep inside crisp solids) there is nothing to normalise by
 #define NORM_FLOOR 0.02
 layout(location = 0) out vec4 o0;
@@ -83,8 +90,8 @@ void main() {
   if (!inGrid(p)) { o0 = o1 = vec4(0.0); ${final ? '' : 'o2 = vec4(0.0);'} return; }
   ivec3 dir = uAxis == 0 ? ivec3(1, 0, 0) : (uAxis == 1 ? ivec3(0, 1, 0) : ivec3(0, 0, 1));
   vec4 s = vec4(0.0), m = vec4(0.0), d = vec4(0.0);
-  for (int i = 0; i < 5; i++) {
-    ivec3 q = p + dir * (i - 2);
+  for (int i = 0; i < BLUR_TAPS; i++) {
+    ivec3 q = p + dir * (i - BLUR_REACH);
     if (!inGrid(q)) continue;   // outside the box = crisp
     ivec2 t = fieldAtlas(q);
     vec4 w = uW[i];
@@ -110,6 +117,11 @@ ${final ? `
 // the thin mask.
 export const BOOST_STAGES = 6;
 const LAST = BOOST_STAGES - 1;
+const AXES = 3;
+// Cells each boost stage reads to either side along its axis, and so the whole
+// boost along each axis (two stages per axis).
+const BOOST_STAGE_REACH = 1;
+export const BOOST_REACH = (BOOST_STAGES / AXES) * BOOST_STAGE_REACH;
 export const fieldBoostFrag = (g, stage) => /* glsl */ `
 ${prelude(g)}
 ${materialsGLSL()}
@@ -145,5 +157,87 @@ ${stage === LAST ? `  vec4 k = max(vec4(1.0), uBulk / max(acc, vec4(THIN_MIN_PEA
   o1 = texelFetch(tMed, f, 0);
   o2 = boosted * smoothstep(vec4(THIN_MASK_LO), vec4(THIN_MASK_HI), k);` : `  o0 = acc;
   o1 = occ;`}
+}
+`;
+
+// ---- incremental updates (docs/scaling.md D9) ----
+// The passes above run only over the bricks that may have changed (sim.js
+// updateBricks; the dirty sets are built by shaders/passes.js dirtyFrag).
+//
+// Frames a cell's EMA keeps changing after its state last did: the slowest
+// channel's blend reaches its 8-bit fixed point by then (gfx/pacing.js
+// blendFixedFrames; 13 for the liquid's 0.35), and the EMA pass may skip it.
+export const FIELD_EMA_SETTLE = Math.max(...[...new Set([...CHANNELS, ...MEDIA].map((c) => c.ema))].map(blendFixedFrames));
+// Cells a change in the EMA (or the state) reaches into the final fields
+// along each axis: the blur's taps, then the boost's stages.
+export const FIELD_REACH = BLUR_REACH + BOOST_REACH;
+// The passes between the EMA and the final fields share scratch targets, which
+// outside this frame's regions hold some other pass's output: each must cover
+// every cell the passes after it read. The first blur's output (x) is read
+// farthest from a final field cell: along y (or z) by one more blur and the
+// boost's stages.
+export const FIELD_SCRATCH_REACH = BLUR_REACH + BOOST_REACH;
+
+// The field atlas in regions (gfx/regions.js): a region is FIELD_REGION_BRICKS
+// bricks square in x and z, in one Y-slice; instance i is region
+// (i % rx, (i / rx) % rz) of slice i / (rx · rz). Its flag is the region map's
+// texel (rx + RX · rz, brick layer) (shaders/passes.js fieldRegionMapFrag).
+export const FIELD_REGION_BRICKS = 8;   // 32 cells: one hardware tile of a slice
+// Share of regions flagged above which one full-screen quad is drawn instead.
+export const FIELD_FULL_SHARE = 0.75;
+export function fieldRegions(g) {
+  const side = FIELD_REGION_BRICKS;
+  const rx = Math.ceil(g.nx / BRICK / side), rz = Math.ceil(g.nz / BRICK / side);
+  return { side, rx, rz, count: rx * rz * g.ny, mapWidth: rx * rz, mapHeight: g.ny / BRICK };
+}
+// regionVert's GLSL for a field pass over dirty set `set` (shaders/passes.js DIRTY).
+export function fieldRegionsGLSL(g, set) {
+  const { side, rx, rz, count } = fieldRegions(g);
+  const fty = Math.round(g.fheight / g.nz);
+  return /* glsl */ `
+#define REGION_COUNT ${count}
+#define NX ${g.nx}
+#define NZ ${g.nz}
+#define BS ${BRICK}
+#define FTX ${g.ftx}          // field atlas: Y-slices per row
+#define FTY ${fty}          // …and rows
+#define RX ${rx}          // regions per slice along x, z
+#define RZ ${rz}
+#define REGION_CELLS ${side * BRICK}   // region side (cells = texels)
+#define SET ${set}            // dirty set (channel of the region map and the share)
+#define FULL_SHARE ${FIELD_FULL_SHARE}
+uniform sampler2D tRegion;   // region flags, per dirty set
+uniform sampler2D tShare;    // share of regions flagged, per dirty set
+vec2 regionTarget() { return vec2(FTX * NX, FTY * NZ); }
+bool regionsFull() { return texelFetch(tShare, ivec2(0), 0)[SET] > FULL_SHARE; }
+bool regionOn(int i) {
+  int y = i / (RX * RZ), r = i - y * (RX * RZ);
+  return texelFetch(tRegion, ivec2(r, y / BS), 0)[SET] > 0.5;
+}
+vec4 regionRect(int i) {
+  int y = i / (RX * RZ), r = i - y * (RX * RZ);
+  ivec2 slice = ivec2((y % FTX) * NX, (y / FTX) * NZ);
+  ivec2 lo = slice + ivec2(r % RX, r / RX) * REGION_CELLS;
+  return vec4(lo, min(lo + REGION_CELLS, slice + ivec2(NX, NZ)));
+}
+`;
+}
+
+// Copy of the EMA (three attachments) from the pass's output into the
+// persistent EMA target, over the regions the EMA pass drew.
+export const fieldCopyFrag = () => /* glsl */ `
+precision highp float;
+precision highp sampler2D;
+uniform sampler2D t0;
+uniform sampler2D t1;
+uniform sampler2D t2;
+layout(location = 0) out vec4 o0;
+layout(location = 1) out vec4 o1;
+layout(location = 2) out vec4 o2;
+void main() {
+  ivec2 f = ivec2(gl_FragCoord.xy);
+  o0 = texelFetch(t0, f, 0);
+  o1 = texelFetch(t1, f, 0);
+  o2 = texelFetch(t2, f, 0);
 }
 `;
