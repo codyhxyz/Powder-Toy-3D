@@ -47,9 +47,17 @@ const SUBSTEP = 0.4;                   // cells: longest move per collision subs
 const MAX_DT = 0.1;                    // s: longer frames are simulated as this long
 
 // ---- jetpack: Noita's levitation. Hold jump in the air to climb; the tank
-// drains while it fires and refills only with your feet on the ground.
-const JET_FUEL_S = 3;                  // s of thrust on a full tank (Noita's starting levitation)
-const JET_REFILL_S = 1.2;              // s to refill an empty tank standing on the ground
+// drains while it fires and refills fast on the ground, slowly in the air.
+// The tank and recharge are the Noita player's own (data/entities/player.xml,
+// CharacterPlatformingComponent: fly_time_max, fly_recharge_spd_ground,
+// fly_recharge_spd, flying_in_air_wait_frames, flying_recharge_removal_frames;
+// Noita runs at 60 frames/s).
+const NOITA_FPS = 60;
+const JET_FUEL_S = 3;                  // s of thrust on a full tank (fly_time_max)
+const JET_REFILL_GROUND = 6;           // s of thrust regained per s, feet on the ground: full in 0.5 s (fly_recharge_spd_ground)
+const JET_REFILL_AIR = 0.4;            // s of thrust regained per s in the air, not firing (fly_recharge_spd)
+const JET_AIR_WAIT_S = 38 / NOITA_FPS; // s off the jet before the air recharge starts (flying_in_air_wait_frames)
+const JET_TAP_S = 8 / NOITA_FPS;       // s of fuel every press burns at least, so tapping can't hover for free (flying_recharge_removal_frames)
 const JET_THRUST = 4.8;                // × gravity, upward: a 3.8 g net climb against gravity
 const JET_MAX_RISE = 9 / CELL_METERS;  // cells/s (9 m/s): thrust stops adding speed past this climb
 const JET_STEER = 2;                   // × AIR_ACCEL: steering while the jet fires (Noita flies, it doesn't drift)
@@ -143,6 +151,8 @@ export function createPlayer({ renderer, getSim }) {
     submerged: 0,                 // share of the body under liquid, 0..1
     jetFuel: 1,                   // jetpack tank, 0..1
     jetting: false,               // the jetpack is firing this frame
+    jetBurnS: 0,                  // s the current press has fired
+    jetIdleS: 0,                  // s since the jet last fired
     get health() { return vitals.health; },
     get breath() { return vitals.breath; },
     get feel() { return vitals.feel; },
@@ -481,7 +491,13 @@ export function createPlayer({ renderer, getSim }) {
     const jet = alive && !!input.jump && !p.onGround && !jumpedNow && !swimming && p.jetFuel > 0;
     if (jet) {
       p.jetFuel = Math.max(0, p.jetFuel - dt / JET_FUEL_S);
+      p.jetBurnS += dt;
+      p.jetIdleS = 0;
       if (v.y < JET_MAX_RISE) v.y = Math.min(v.y + JET_THRUST * grav * dt, Math.max(v.y, JET_MAX_RISE));
+    } else {
+      if (p.jetting && p.jetBurnS < JET_TAP_S) p.jetFuel = Math.max(0, p.jetFuel - (JET_TAP_S - p.jetBurnS) / JET_FUEL_S);
+      p.jetBurnS = 0;
+      p.jetIdleS += dt;
     }
     if (jet !== p.jetting) { p.jetting = jet; povEvents.emit('player:jet', { on: jet }); }
 
@@ -543,7 +559,8 @@ export function createPlayer({ renderer, getSim }) {
       if (r.id !== null && r.id !== UNKNOWN) { p.pos.y += r.d; p.onGround = true; v.y = Math.min(v.y, 0); }
     }
 
-    if (p.onGround) p.jetFuel = Math.min(1, p.jetFuel + dt / JET_REFILL_S);
+    if (p.onGround) p.jetFuel = Math.min(1, p.jetFuel + dt * JET_REFILL_GROUND / JET_FUEL_S);
+    else if (p.jetIdleS > JET_AIR_WAIT_S) p.jetFuel = Math.min(1, p.jetFuel + dt * JET_REFILL_AIR / JET_FUEL_S);
 
     // landing and impacts
     if (p.onGround && !wasGround && landSpeed > LAND_EVENT_SPEED) emit('land', { speed: landSpeed });
@@ -564,7 +581,7 @@ export function createPlayer({ renderer, getSim }) {
     p.vel.set(0, 0, 0);
     impulse.set(0, 0, 0);
     p.onGround = false; p.inLiquid = false; p.headInLiquid = false; p.liquidId = -1; p.submerged = 0;
-    p.jetFuel = 1;
+    p.jetFuel = 1; p.jetBurnS = 0; p.jetIdleS = 0;
     if (p.jetting) { p.jetting = false; povEvents.emit('player:jet', { on: false }); }
     apexY = feet.y;
     generation++; probe.valid = false;   // wait for cells around the new spot
