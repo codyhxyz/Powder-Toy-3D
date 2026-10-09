@@ -281,17 +281,19 @@ bool quietCell(ivec3 c) {
 //          last one, or written since the last map by something other than a
 //          step (Simulation.noteWrite)
 // The two-map rule. Under a map that leaves a supertile asleep (not AWAKE),
-// every step leaves its cells as they are: the gather copies them (every
-// block reaching into it stayed put) and react writes each one back as quiet,
-// with its flags settled to its own, NEAR, and DIRTY as the gather left it,
-// which the map's first step clears. So once a map's steps have drawn it while
-// it slept, both state copies hold its cells, the current one with settled
-// flags; a map has two steps (ACTIVITY_PERIOD) unless a write that isn't a
-// step comes between them, and that write either copies the current state
-// into both copies there (sim.pass: every pass that copies through, outside
-// the box it declared) or marks the supertile written. If the next map leaves
-// it asleep too, its steps would write exactly what both copies hold: they
-// skip it. (A map that no step used carries its DRAWN over instead: uPrevStepped.)
+// its steps leave its cells as they are: the gather copies them (no block
+// reaching into it moves) and react writes each one back as quiet, with its
+// flags settled: its own, NEAR, and DIRTY as the gather left it, which the
+// map's first step clears. So once a map's steps have drawn a supertile that
+// sleeps under it, the current state copy holds its cells with settled flags
+// and the other copy the same cells; after the map's second step
+// (ACTIVITY_PERIOD) the same flags too. A write that isn't a step can end a
+// map after one step, but it either copies the current state into both copies
+// there (sim.pass copies through every cell outside the box it declared) or
+// marks the supertile written (Simulation.noteWrite). If the supertile still
+// sleeps under the next map, that map's steps would write exactly what both
+// copies hold: they skip it. A map no step used (a tool building one by hand)
+// passes its DRAWN on instead (uPrevStepped).
 export const SUPER_MAP = { AWAKE: 0, STEPS: 1, DRAWN: 2 };
 const superMapGLSL = Object.entries(SUPER_MAP).map(([k, v]) => `#define SUPER_${k} ${v}`).join('\n');
 

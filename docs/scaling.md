@@ -138,6 +138,42 @@ R16UI texture for vz and the flags (18 bytes per cell).
     needs to write it.
   - Every pass that writes only some supertiles must keep that two-map rule.
 
+Sleeping supertiles as implemented (`shaders/activity.js` superMapFrag, SUPER_MAP; `Simulation.step`):
+- **The supertile map.** Built with every activity map: one pass after the quiet map (and `noteAwake`), one byte
+  per channel per supertile, then a one-texel pass with each channel's share, which the vertex shaders read.
+  - AWAKE: a brick of the supertile is not quiet, or one just below it along x, y or z. At partition offset 1 a
+    Margolus block belongs to the brick holding its base cell and reaches one cell past it, so a block based in
+    the brick below moves cells of the supertile's low faces. (This was already so: the gather tests a block's
+    base brick, so a quiet brick's low faces can trade cells with an awake neighbour's. Within an inert halo
+    only air moves, jittering, but a quiet brick's state is then not quite unchanged by its map's steps, as D9's
+    contract asks. Noted, not changed: skipping stays bit-exact with the base.)
+  - STEPS: one of its own bricks is not quiet. The block pass and the flow pass draw these. A block based in a
+    quiet brick now writes no slots, and the flow pass, like the gather, reads a cell's slot only when its block's
+    base brick isn't quiet (a block that stayed put means a flow of 0).
+  - DRAWN: AWAKE under this map or the last one, or written since the last map by something that isn't a step.
+    The gather and react draw these.
+- **Why the last map too.** Under a map that leaves a supertile asleep, the gather copies its cells and react
+  writes them back with their flags settled (own flags, NEAR, and the DIRTY the map's first step cleared). Once a
+  map's steps have drawn it asleep, both copies hold its cells and the current one settled flags; after the
+  map's second step, the same flags in both. A write that isn't a step can end a map after one step, but it copies
+  the current state into both copies outside the box it declared (every `sim.pass` copies through) or wakes the
+  supertile. So when the next map leaves it asleep too, its steps would write what both copies already hold.
+  A map no step used (a tool building one by hand) passes its DRAWN on instead.
+- **Writes that aren't steps.** Each goes through `Simulation.run` into a state target, which notes it
+  (`noteWrite`, as D9 does): the box declared with `touch()`, or everything, is drawn by the next map's steps.
+  - The brush copies through and declares its box. So do the first-person body's coupling and the physgun now
+    (`touchCentres`): each writes every frame it acts, and without a box every such frame woke everything.
+  - Constructions' stamps, the axe, the gun's handoff and the pack/trowel transfer copy through without a box:
+    everything wakes for one map.
+  - The world window's shift (fresh flags everywhere), generator fill, stored edits, tree stamps and `syncCopies`:
+    everything wakes.
+  - Load, undo and the codec's unpack (multiplayer guests) rewrite the current copy alone: everything wakes.
+- **Regions.** One `RegionQuads` instance per supertile, culled in the vertex shader (`stepRegionsGLSL`): its
+  SUPER_TEX square of the state atlas (and the flow field, which shares it), or its 16×8 texels of home blocks in
+  the block atlas, plus the block atlas's low-margin rows at partition offset 1. Above STEP_FULL_SHARE of a pass's
+  channel, one full-screen quad. `sim.skipSleeping = false` draws full-screen always (A/B).
+- **Proofs and timings:** owed (battery; see the session report).
+
 ### D9. Derived passes are incremental where they can be
 Fields, bricks and light are rebuilt only for bricks that changed within their settle window (EMA), dilated by
 each kernel's reach. Shadow and GI keep their own cadence. Converged regions cost nothing.
@@ -147,8 +183,9 @@ As implemented (`sim.updateDirty`, `shaders/passes.js` dirtyFrag, `gfx/regions.j
   it: every map a step used is noted (`noteAwake`: 1 − quiet into `actChanged`, the first map after an update
   overwriting it and later ones blending with MAX, so nothing has to clear it), including a map still current at
   the last update that later steps reuse. A write that isn't a step changes every brick,
-  unless it declared its box first with `sim.touch(lo, hi)`; the brush does. Loads, undo, network frames, stamps
-  and first-person tools rebuild everything for a settle period.
+  unless it declared its box first with `sim.touch(lo, hi)`; the brush, the first-person body's coupling and the
+  physgun do (`touchCentres`). Loads, undo, network frames, stamps and the other first-person tools rebuild
+  everything for a settle period.
   - **Contract for D8:** whatever builds the quiet map calls `noteAwake()` after building it (and the carry check
     before replacing it), and a quiet brick's state must be unchanged by the steps that use the map.
 - **Ages and dirty sets.** Each brick's age is the frames since it last changed (8-bit, ping-pong). Three sets:
