@@ -31,8 +31,9 @@ const BREATH_RECOVER_TIME = 3;  // s to refill from empty
 const SUFFOCATE_DAMAGE = 0.25;  // health/s once breath is gone (drowning, buried)
 
 // ---- impacts ----
-// Hard landings: safe up to a fall of SAFE_FALL_M, lethal from LETHAL_FALL_M,
-// with damage linear in impact energy (v²) between. The player converts these
+// Slams (a blast throwing the body into a wall or ceiling; landings never
+// hurt): safe up to the speed of a fall of SAFE_FALL_M, lethal from that of
+// LETHAL_FALL_M, with damage linear in impact energy (v²) between. The player converts these
 // heights to impact speeds with its own gravity (impactSpeedFor).
 export const SAFE_FALL_M = 3;
 export const LETHAL_FALL_M = 15;

@@ -10,7 +10,7 @@
 - **You are small**: about 5.5 cells tall in a 128-cell world (one cell ≈ 30 cm). Lava flows are rivers and
   houses are buildings.
 - **A real, mortal body**. You walk, sprint, jump and swim, and you float or sink by density. Blasts shove you
-  (the same a = −∇P/ρ the sim uses). Heat, cold, acid, lava, drowning, being buried and hard falls hurt.
+  (the same a = −∇P/ρ the sim uses). Heat, cold, acid, lava, drowning, being buried and being thrown into walls hurt; landings never do (Noita has no fall damage).
   You die, the camera pulls back with the cause ("Killed by lava, 1,140 °C"), and you respawn at the drop-in
   point.
 - **Jetpack** (Noita's levitation): hold `Space` in the air to fly. Movement is Noita's player (player.xml values scaled by body height: 5.4 g, a 1.9 m jump, an 8.6 m/s run): velocity eases a fixed share per frame toward the wished speed instead of being pushed by forces. The jet eases the climb toward 14 m/s with gravity off while it fires,

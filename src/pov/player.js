@@ -167,7 +167,6 @@ export function createPlayer({ renderer, getSim }) {
     get skinT() { return vitals.skinT; },
     stepRate: 0,                  // sim steps/s, as measured
   };
-  let apexY = 0;
   const impulse = new THREE.Vector3();
 
   // ---------------------------------------------------------------- probe
@@ -528,7 +527,7 @@ export function createPlayer({ renderer, getSim }) {
     const jumped = v.y > 0 && wasGround;
     rise();
     p.onGround = false;
-    let landSpeed = 0, landId = -1, slam = 0, slamId = -1;
+    let landSpeed = 0, slam = 0, slamId = -1;
     const n = Math.max(1, Math.ceil(v.length() * dt / SUBSTEP));
     const h = dt / n;
     for (let s = 0; s < n; s++) {
@@ -537,7 +536,7 @@ export function createPlayer({ renderer, getSim }) {
       p.pos.y += ry.d;
       if (ry.id === UNKNOWN) stalled[1] = true;
       else if (ry.id !== null) {
-        if (vy < 0) { p.onGround = true; landSpeed = Math.max(landSpeed, -vy); landId = ry.id; }
+        if (vy < 0) { p.onGround = true; landSpeed = Math.max(landSpeed, -vy); }
         else { slam = Math.max(slam, vy); slamId = ry.id; }
         v.y = 0;
       }
@@ -565,14 +564,9 @@ export function createPlayer({ renderer, getSim }) {
     if (p.onGround) p.jetFuel = Math.min(1, p.jetFuel + dt * JET_REFILL_GROUND / JET_FUEL_S);
     else if (p.jetIdleS > JET_AIR_WAIT_S) p.jetFuel = Math.min(1, p.jetFuel + dt * JET_REFILL_AIR / JET_FUEL_S);
 
-    // landing and impacts
+    // landing and impacts. Landings never hurt, as in Noita (no fall damage);
+    // being thrown into a wall or ceiling (a blast) still does.
     if (p.onGround && !wasGround && landSpeed > LAND_EVENT_SPEED) emit('land', { speed: landSpeed });
-    if (p.onGround || p.inLiquid) {
-      if (landSpeed > 0) vitals.impact(landSpeed, SAFE_IMPACT, LETHAL_IMPACT, Math.max(0, apexY - p.pos.y), landId);
-      apexY = p.pos.y;
-    } else {
-      apexY = Math.max(apexY, p.pos.y);
-    }
     if (slam > 0) vitals.impact(slam, SAFE_IMPACT, LETHAL_IMPACT, 0, slamId >= 0 ? slamId : -1);
 
     vitals.update(dt, env);
@@ -586,7 +580,6 @@ export function createPlayer({ renderer, getSim }) {
     p.onGround = false; p.inLiquid = false; p.headInLiquid = false; p.liquidId = -1; p.submerged = 0;
     p.jetFuel = 1; p.jetBurnS = 0; p.jetIdleS = 0;
     if (p.jetting) { p.jetting = false; povEvents.emit('player:jet', { on: false }); }
-    apexY = feet.y;
     generation++; probe.valid = false;   // wait for cells around the new spot
     vitals.reset();
   }

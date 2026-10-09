@@ -51,8 +51,8 @@ running around you. You're about 5½ cells tall (one cell is roughly 30 cm), so 
 a building. `F` again swoops back out.
 
 The body is as mortal as a sand grain. You float or sink by density (hold Space to keep your head out of water),
-blasts throw you along the pressure gradient, and heat, lava, cold, acid, drowning, being buried and hard landings
-hurt. When you die, the camera pulls back and shows what killed you, then you respawn where you dropped in.
+blasts throw you along the pressure gradient, and heat, lava, cold, acid, drowning, being buried and being thrown
+into walls hurt (falls don't, as in Noita). When you die, the camera pulls back and shows what killed you, then you respawn where you dropped in.
 
 | In first person | |
 |---|---|
