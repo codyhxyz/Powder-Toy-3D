@@ -16,6 +16,8 @@
 //   view        ms per post.render(scene, camera), from the home view
 //   step        ms per sim.step()
 //   stepNoSkip  ms per sim.step() with sim.skipQuiet = false
+//   stepNoSleep ms per sim.step() with sim.skipSleeping = false: every supertile drawn, quiet
+//               bricks still skipped (docs/scaling.md D8)
 // A round's value per build is its median chunk (per iteration), and its B/A
 // the median ratio of the chunk pairs (each A chunk with the B chunk next to it),
 // so a burst of contention in one chunk doesn't decide the round. Reported: the
@@ -33,7 +35,7 @@
 // and liquid cells, at load and after settling.
 //
 // usage: node tools/bench.mjs --a <dirA> --b <dirB> [--scenarios lab:128,volcano:128,empty:128]
-//          [--rounds 5] [--settle 200] [--metrics derived,view,step,stepNoSkip] [--out report.json]
+//          [--rounds 5] [--settle 200] [--metrics derived,view,step,stepNoSkip,stepNoSleep] [--out report.json]
 //          [--census] [--wait-idle] [--port 5391]
 // A scenario is preset:size (a size from ?size=). Each dir is a full checkout with node_modules;
 // a baseline from a branch: git archive main | tar -x -C <dir> && ln -s <repo>/node_modules <dir>/node_modules
@@ -72,6 +74,7 @@ const METRICS = {
   view: { warmup: 4, chunks: 8 },
   step: { warmup: 8, chunks: 8 },
   stepNoSkip: { warmup: 8, chunks: 8 },
+  stepNoSleep: { warmup: 8, chunks: 8 },
 };
 // A chunk is as many iterations as take the faster build about this long, judged by its fastest
 // warmup iteration in the first round (the least slowed by contention), then fixed and the same
@@ -99,7 +102,7 @@ const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i
 const flag = (k) => args.includes(`--${k}`);
 if (!opt('a') || !opt('b')) {
   console.error('usage: node tools/bench.mjs --a <dirA> --b <dirB> [--scenarios lab:128,...] [--rounds 5] [--settle 200]'
-    + ' [--metrics derived,view,step,stepNoSkip] [--out report.json] [--census] [--wait-idle] [--port 5391]');
+    + ' [--metrics derived,view,step,stepNoSkip,stepNoSleep] [--out report.json] [--census] [--wait-idle] [--port 5391]');
   process.exit(2);
 }
 const builds = ['a', 'b'].map((k) => ({ name: k.toUpperCase(), dir: resolve(opt(k)), errors: [], failed: [] }));
@@ -301,6 +304,15 @@ function pageSetup({ bootFrames, cellTexelExports, quietMin }) {
         a.sim.skipQuiet = this.skip;
         a.sim.actDirty = true;
       },
+    },
+    stepNoSleep: {
+      supported: () => 'skipSleeping' in a.sim,
+      setup() {
+        this.sleep = a.sim.skipSleeping;
+        a.sim.skipSleeping = false;
+      },
+      run: () => a.sim.step(),
+      teardown() { a.sim.skipSleeping = this.sleep; },
     },
   };
   // Each run is flushed, so the GPU starts on it while the next is issued: a chunk takes the
