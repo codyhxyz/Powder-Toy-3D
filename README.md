@@ -71,8 +71,8 @@ The tools are physical and finite. Infinite painting stays in the god view.
 3. **Axe:** a short, wide swing that chops wood and smashes glass, ice and plants.
 4. **Gun:** fires a metal round at 360 m/s under real gravity, so it crosses the whole box with a few cm of drop.
    The round flies outside the sim (a GPU trace checks its path each frame) and becomes a real slug cell where it
-   hits, so the engine decides what breaks: glass shatters, metal holds, a keg goes off. Shot in the air, its recoil
-   throws you.
+   hits, so the engine decides what breaks: glass shatters, metal holds, a keg goes off. Recoil is a real round's: a
+   nudge, not a launch.
 5. **Physgun:** a force beam on loose matter. Hold to carry a floating ball of water or sand, right-click to fling it.
 
 Nothing a tool carries is made up: the cells it takes come back out exactly (same element, temperature and state).
