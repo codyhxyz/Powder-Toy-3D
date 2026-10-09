@@ -44,7 +44,7 @@ import { gfxUniforms } from '../gfx/uniforms.js';
 // depth, so the window's volume and the scene's objects composite over it.
 // It marches the far grid past the window's box, which the volume draws.
 
-const SWEEP_FRAMES = 30;         // frames between sweeps over the window's own region while the sim changes it...
+const SWEEP_FRAMES = 120;        // frames between sweeps over the window's own region while the sim changes it (its copy only casts the far shadows and feeds the window's GI)
 const SWEEP_CELLS = 16;          // ...summarizing this many cells of it along x per frame
 const VIEW_ORDER = -10;          // renderOrder of the view: first of the scene's opaque objects
 
@@ -75,9 +75,7 @@ export class FarField {
     const g = this.sim.g, L = this.L = farLayout(win.size);
     const U8 = THREE.UnsignedByteType, HALF = THREE.HalfFloatType, NEAR = THREE.NearestFilter, LIN = THREE.LinearFilter;
     this.grid = makeFieldTarget(L.bricks.width, L.bricks.height, 1, U8, NEAR);   // raw shares, ids, glow
-    this.field = new THREE.WebGLRenderTarget(L.bricks.width, L.bricks.height, {   // what the view draws (farBoostFrag)
-      type: U8, format: THREE.RGFormat, minFilter: LIN, magFilter: LIN, depthBuffer: false, generateMipmaps: false,
-    });
+    this.field = makeFieldTarget(L.bricks.width, L.bricks.height, 1, U8, LIN);   // what the view draws (farBoostFrag)
     this.l1 = makeFieldTarget(L.l1.width, L.l1.height, 1, U8, NEAR);
     this.l2 = makeFieldTarget(L.l2.width, L.l2.height, 1, U8, NEAR);
     this.top = makeFieldTarget(L.bricks.n[0], L.bricks.n[2], 1, HALF, LIN);

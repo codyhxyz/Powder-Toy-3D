@@ -241,7 +241,7 @@ The world is much larger than what lives on the GPU. Its size is `WORLD` cells, 
     heights, oak crowns, pine tiers and palm leans are the construction's own.
   - Updated from the window: the slab about to leave is summarized in the move's step 1 (from the state, before the
     shift), so edits stay visible after they leave; while the sim changes the window, it is swept a 16-cell slab a
-    frame every 30 frames (its copy casts the far field's shadows). Then the occupancy, the brick-column tops and the
+    frame every 120 frames (its copy casts the far field's shadows and feeds the window's GI). Then the occupancy, the brick-column tops and the
     shadow heights are rebuilt.
   - Drawn by one full-screen pass before the scene (renderOrder −10, depth func always): sky with the sun's disc, the
     open sea beyond the world (its bed at the generator's floor, so the world's edge doesn't show), and the far grid.

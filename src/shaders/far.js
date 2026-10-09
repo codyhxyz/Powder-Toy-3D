@@ -650,7 +650,9 @@ void main() {
 // it holds less than FAR.THIN_MIN, or where its own cells hold none of it (the
 // share is its neighbours' matter reaching into its cube: an element-less
 // blob); else it is thin matter: FAR.THIN_V. Below the world counts as
-// reaching it.
+// reaching it. b: 1 if it or a neighbour holds FAR.THIN_MIN of matter: the
+// field can only reach FAR.ISO in a brick next to one at FAR.ISO, boosted or
+// not, so a ray crosses a brick without it in one step.
 export const farBoostFrag = (L) => /* glsl */ `
 precision highp float;
 precision highp int;
@@ -678,7 +680,8 @@ void main() {
     nm = max(nm, v.r + v.g);
   }
   oC = vec4(ns >= FAR_ISO || raw.r < FAR_THIN_MIN || !ownS ? raw.r : FAR_THIN_V,
-            nm >= FAR_ISO || raw.g < FAR_THIN_MIN || !ownL ? raw.g : FAR_THIN_V, 0.0, 1.0);
+            nm >= FAR_ISO || raw.g < FAR_THIN_MIN || !ownL ? raw.g : FAR_THIN_V,
+            nm >= FAR_THIN_MIN ? 1.0 : 0.0, 1.0);
 }
 `;
 
@@ -809,7 +812,7 @@ export const FAR_SHADOW_SOFT = 1.5;    // cells: half the width of a far shadow'
 export const FAR_SHADOW_BIAS = 1.0;    // cells a point is lifted before its shadow-height test (column tops are coarse)
 const farSampleGLSL = /* glsl */ `
 uniform sampler2D tFar;        // ids and glow (texelFetch)
-uniform sampler2D tFarField;   // the field: opaque, liquid (filtered)
+uniform sampler2D tFarField;   // the field: opaque, liquid (filtered), near (texelFetch)
 uniform sampler2D tFar1;
 uniform sampler2D tFar2;
 uniform sampler2D tFarShadow;
@@ -841,6 +844,7 @@ float farGlow(vec3 p) {
   ivec3 b = clamp(ivec3(floor(p * (1.0 / float(BS)))), ivec3(0), WB - 1);
   return texelFetch(tFar, farTexel(b), 0).a;
 }
+bool farNear(ivec3 b) { return texelFetch(tFarField, farTexel(b), 0).b > 0.5; }
 bool farOcc1(ivec3 n) { return texelFetch(tFar1, far1Texel(n), 0).r > 0.5; }
 bool farOcc2(ivec3 n) { return texelFetch(tFar2, far2Texel(n), 0).r > 0.5; }
 // Sun visibility at world point p from the shadow heights: ch 0 every caster, 1 those outside the window.
@@ -1073,7 +1077,8 @@ float farRoot(vec3 ro, vec3 rd, float ta, float tb, float fa, float fb) {
 // reaches FAR_ISO, the window's stretch (w0, w1) left out; NO_HIT if none.
 // Unset L2 and L1 nodes are crossed whole; a set one is walked brick by brick
 // (two at a time past FAR_COARSE_T), the field sampled at each segment's ends
-// (and its middle when either end is near the level). cut: the ray was already inside matter where it
+// (and its middle when either end is near the level); a brick with no matter
+// around it (farNear) is crossed in one step. cut: the ray was already inside matter where it
 // came out of the window (it went through the window's ground, which the
 // volume draws in front: the far field only fills in behind it).
 float farMarch(vec3 ro, vec3 rd, float t0, float t1, float w0, float w1, out bool cut) {
@@ -1093,6 +1098,7 @@ float farMarch(vec3 ro, vec3 rd, float t0, float t1, float w0, float w1, out boo
     ivec3 n1 = c / FAR_L1_CELLS;
     if (n1 != n1Last) { n1Last = n1; o1 = farOcc1(n1); }
     if (!o1) { t = farExit(ro, inv, vec3(n1 * FAR_L1_CELLS), float(FAR_L1_CELLS)) + FAR_NUDGE; f = -1.0; continue; }
+    if (!farNear(c / BS)) { t = farExit(ro, inv, vec3(c / BS * BS), float(BS)) + FAR_NUDGE; f = -1.0; continue; }
     int seg = t > FAR_COARSE_T ? 2 * BS : BS;   // the segment: a brick, or a pair far off
     float te = min(farExit(ro, inv, vec3(c / seg * seg), float(seg)), t1);
     if (t < w0 && te > w0) te = w0;   // the window starts inside this brick
