@@ -58,9 +58,12 @@ const BOOT_FRAMES = 4;            // app frames pumped after boot: compiles the 
 const PUMP_STEP_MS = 100;         // virtual time between pumped frames: longer than any frame-pacing interval
 const KILL_GRACE_MS = 3000;       // a server gets SIGTERM, then SIGKILL after this
 const ERROR_CHARS = 500;          // page errors are kept to this length
+const HTTP_ERROR = 400;           // responses from this status up are failed loads (a boot failure lists them)
+const BOOT_REPORT = 8;            // failed loads and errors a boot failure lists, at most
 const ROUNDS = 5;                 // default --rounds
 const SETTLE_STEPS = 200;         // default --settle: steps from load to the measured state
 const SCENARIOS = 'lab:128,volcano:128,empty:128';   // default --scenarios
+const DEFAULT_SIZE = '128';       // a scenario's size when it names none (the app's default grid)
 // Timed work per round and build, in run order (derived and view leave the state as it is):
 // warmup iterations (GPU clocks up, shaders compiled; each also timed on its own, to size the
 // chunks), then `chunks` chunks per build.
@@ -99,14 +102,14 @@ if (!opt('a') || !opt('b')) {
     + ' [--metrics derived,view,step,stepNoSkip] [--out report.json] [--census] [--wait-idle] [--port 5391]');
   process.exit(2);
 }
-const builds = ['a', 'b'].map((k) => ({ name: k.toUpperCase(), dir: resolve(opt(k)), errors: [] }));
+const builds = ['a', 'b'].map((k) => ({ name: k.toUpperCase(), dir: resolve(opt(k)), errors: [], failed: [] }));
 for (const b of builds) {
   if (!existsSync(`${b.dir}/src/app.js`) || !existsSync(`${b.dir}/node_modules/vite/dist/node/index.js`))
     throw new Error(`${b.dir} isn't a checkout with node_modules (symlink the repo's)`);
 }
 const scenarios = opt('scenarios', SCENARIOS).split(',').map((s) => {
   const [preset, size] = s.split(':');
-  return { name: s, preset, size: size ?? '128' };
+  return { name: s, preset, size: size ?? DEFAULT_SIZE };
 });
 const rounds = +opt('rounds', ROUNDS);
 const settle = +opt('settle', SETTLE_STEPS);
@@ -278,7 +281,7 @@ function pageSetup({ bootFrames, cellTexelExports, quietMin }) {
     derived: { run: () => a.sim.updateBricks() },
     view: {
       setup() {
-        a.rig.reset(true);   // the home view
+        a.rig?.reset(true);   // the home view
         b.pump(1);           // one app frame: derived passes, shadow, GI and the volume's uniforms for this state
       },
       run: () => a.post.render(a.scene, a.camera),
@@ -287,12 +290,13 @@ function pageSetup({ bootFrames, cellTexelExports, quietMin }) {
     stepNoSkip: {
       supported: () => 'skipQuiet' in a.sim,
       setup() {
+        this.skip = a.sim.skipQuiet;
         a.sim.skipQuiet = false;
         a.sim.actDirty = true;   // the next step rebuilds the activity map, with nothing skipped
       },
       run: () => a.sim.step(),
       teardown() {
-        a.sim.skipQuiet = true;
+        a.sim.skipQuiet = this.skip;
         a.sim.actDirty = true;
       },
     },
@@ -466,12 +470,18 @@ try {
       if (m.type() === 'error' && !m.text().startsWith('Failed to load resource')) b.errors.push(m.text().slice(0, ERROR_CHARS));
     });
     b.page.on('pageerror', (e) => b.errors.push(`PAGEERROR ${String(e).slice(0, ERROR_CHARS)}`));
+    b.page.on('response', (r) => { if (r.status() >= HTTP_ERROR) b.failed.push(`${r.status()} ${r.url()}`); });
   }
   // load a size (one build at a time, so their first loads don't compete)
   const boot = async (b, size) => {
     if (b.size === size) return;
     await b.page.goto(`http://${HOST}:${b.port}/?size=${size}&preset=empty`);
-    await b.page.waitForFunction(() => window.__app?.sim, null, { polling: POLL_MS, timeout: BOOT_TIMEOUT_MS });
+    try {
+      await b.page.waitForFunction(() => window.__app?.sim, null, { polling: POLL_MS, timeout: BOOT_TIMEOUT_MS });
+    } catch {
+      // e.g. a node_modules without every package in package.json: vite answers 500 for the imports
+      throw new Error(`${b.name} (${b.dir}) didn't boot.\n${[...b.failed, ...b.errors].slice(0, BOOT_REPORT).join('\n')}`);
+    }
     const info = await b.page.evaluate(pageSetup, { bootFrames: BOOT_FRAMES, cellTexelExports: CELL_TEXEL_EXPORTS, quietMin: QUIET_MIN });
     if (info.size !== size) throw new Error(`${b.name} has no grid size ${size}`);
     Object.assign(b, info, { size });
@@ -588,7 +598,8 @@ if (!census) {
     lines.push(`| quiet bricks | ${pct(A.quiet)} | ${pct(B.quiet)} | ${A.quiet === null || B.quiet === null ? '—' : `${((B.quiet - A.quiet) * 100).toFixed(1)} pt`} |`);
     lines.push(`| mean \\|v\\| powder | ${num(A.vPowder)} | ${num(B.vPowder)} | ${A.vPowder === null || B.vPowder === null ? '—' : num(B.vPowder - A.vPowder)} |`);
     lines.push(`| mean \\|v\\| liquid | ${num(A.vLiquid)} | ${num(B.vLiquid)} | ${A.vLiquid === null || B.vLiquid === null ? '—' : num(B.vLiquid - A.vLiquid)} |`);
-    const same = JSON.stringify(byBuild.A.initial.cells) === JSON.stringify(byBuild.B.initial.cells) && byBuild.A.initial.energy === byBuild.B.initial.energy;
+    const [a0, b0] = [byBuild.A.initial, byBuild.B.initial];
+    const same = a0.energy === b0.energy && Object.keys({ ...a0.cells, ...b0.cells }).every((k) => a0.cells[k] === b0.cells[k]);
     lines.push('', `At load: A and B ${same ? 'identical' : 'differ'} (energy ${num(byBuild.A.initial.energy, 1)} / ${num(byBuild.B.initial.energy, 1)}).`, '');
     for (const b of ['A', 'B']) {
       for (const when of ['initial', 'settled']) {
