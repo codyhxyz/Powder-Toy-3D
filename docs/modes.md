@@ -40,7 +40,9 @@ revealed to everyone (Halo's waypoints) and a carrier counts as 30 cells nearer.
 
 Objectives are one more `GoalEvaluator` (`src/game/bots.js`) beside the fight ones: the game says what this bot's
 objective is (`objective(bot)` → `{ kind, at, r, want }`), the bot walks there (A*) and holds a zone or arrives at a
-point; a point that moves (a carrier) is followed without re-running A* every frame. Desirabilities on the brain's
+point; a point that moves (a carrier) is followed without re-running A* every frame. On the way and in a zone it
+still shoots what it sees (Raven's weapon system runs beside the goals: `takeAimAndShoot` in `ai/brain.js`, the gun
+under the same fairness rules); a carrier only runs. Desirabilities on the brain's
 scale (Attack 0.6 when an enemy is in sight, Hunt 0.45):
 
 | Objective | When | Want |
@@ -115,9 +117,12 @@ kills score (Slayer), a flag is taken and captured or returned (CTF), the hill s
 spreads (Infection), the first half ends and the sides swap (Siege); no page errors. `--sweep` measures the frame
 rate and the bots' CPU time per frame with that many bots; `--tour` screenshots a CTF match on red.
 
-Measured 2026-10-10 (M-series MacBook, headless Chromium on Metal, other agents' GPU runs sharing the machine):
-the bots' brains and bodies cost about 1 ms of CPU a frame for 8 bots (up to 5 ms in CTF while they path to moving
-flags); the frame rate barely moved from 0 to 6 bots and dropped about a fifth at 8, so 4v4 (7 bots) is the default.
+Measured 2026-10-10 (M-series MacBook, headless Chromium on Metal, with other agents' GPU runs sharing the
+machine, so absolute frame rates are noisy): the bots' brains and bodies cost 1–3 ms of CPU a frame for 8 bots
+(`state.botMs`); the frame rate showed no consistent drop from 0 to 8 bots (sweeps: 12 → 9 fps and 14 → 20 fps, the
+machine's load setting both), so 4v4 counting the player (7 bots) is the default. Results of the bots-only run:
+Slayer scored in 8–27 s, CTF took and returned a flag in 15–40 s and captured one in 181 s (`--strict`), KOTH's hill
+scored 5 points in 14–40 s, Infection spread in 12–31 s, Siege swapped sides at 50 s and played both halves to a result.
 
 ## Not yet
 
@@ -125,5 +130,7 @@ flags); the frame rate barely moved from 0 to 6 bots and dropped about a fifth a
   the infected a loadout (`applyClass`).
 - Siege swaps who attacks, not where the core is: the core stays by the first defenders' base and the second
   attackers spawn on the first attackers' side, as in TF2.
-- Bots don't shoot while running an objective (they fight when the fight outranks the objective).
+- Siege is hard on the attackers: with 4v4 on the lab the defenders nearly always stand on the core, so holds are a
+  second or two and halves end on the clock. TF2 balances this with respawn waves; ours are equal.
+- The POV entry hint (the first 7 s in first person) sits over the objective line.
 - Not in worlds (the window): NPCs don't follow it, so team games are box presets only.
