@@ -288,6 +288,7 @@ export function createPov(app) {
         });
       } catch (err) { console.error('POV toolbelt failed to start', err); }
     }
+    if (toolbelt && player?.kicker) player.kicker.ballistics = toolbelt.ballistics;   // kicked sand flies as a projectile (kick.js)
   }
 
   // Where to drop in: on top of the hovered surface, else on whatever is in

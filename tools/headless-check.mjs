@@ -101,7 +101,15 @@ try {
   assert.equal(await manual.evaluate(() => window.__app.sim.frame), 0, 'parked app ran automatically');
   await manual.evaluate(() => window.__app.test.step(12));
   const before = await manual.evaluate(() => ({ step: window.__app.sim.frame, day: window.__app.day.clock }));
+  await manual.evaluate(async () => {
+    const { PERK } = await import('/src/pov/perks.js');
+    const a = __app;
+    a.perkOrbs.add(Object.keys(PERK)[0], new a.THREE.Vector3(32, 32, 32));
+    window.__birdCount = Object.getOwnPropertyDescriptor(a.birds, 'count');
+    Object.defineProperty(a.birds, 'count', { configurable: true, value: 1 });
+  }); // marker animation must freeze too, or snapshot rendering never converges
   await render(manual);
+  await manual.evaluate(() => Object.defineProperty(__app.birds, 'count', window.__birdCount));
   assert.deepEqual(await manual.evaluate(() => ({ step: window.__app.sim.frame, day: window.__app.day.clock })), before);
   const shot = await manual.screenshot();
   assert(shot.length > 1000);

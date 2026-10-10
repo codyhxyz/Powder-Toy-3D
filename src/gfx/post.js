@@ -45,7 +45,8 @@ import * as THREE from 'three';
 
 export const POST_DEFAULTS = {
   taa: true,
-  upscale: 1, // render scale per axis under TAA (1 = native; see UPSCALE)
+  upscale: 1, // render scale ceiling per axis under TAA (1 = native; see UPSCALE)
+  resolutionScale: 1, // automatic scene-only multiplier; output/TAA history stay native
   bloom: 0.3, // fraction of above-threshold light scattered into the halo (0..1)
   // EV stops. +0.7 with look 0.5 reproduces the mean brightness and saturation of the
   // old in-shader ACES (measured on the lab and volcano presets).
@@ -84,6 +85,60 @@ export const ADAPT = {
   SETTLED: 1e-3,       // relative gap to its target under which the gain snaps onto it
   DT: 1 / 60,          // s: the frame time assumed when render() isn't given one
 };
+
+// Frame-time trials, not a refresh-rate target alone: a capped 30 Hz page can
+// regain detail too. Failed trials back off so CPU-bound scenes don't keep cycling.
+export function createAutoResolution() {
+  const WINDOW = 1.2, MIN = 0.6, HOLD = 15, MAX_HOLD = 120;
+  let time = 0, frames = 0, trial = null, resting = false;
+  let downAt = 0, upAt = HOLD, downHold = HOLD, upHold = HOLD;
+  const auto = {
+    enabled: true, // tools disable adaptation for stable timings (freeze current scale)
+    scale: 1,
+    // Finish a still at selected quality, without measuring its settling frames
+    // and degrading again. Only outside input/state changes release this lock.
+    recover(now) {
+      if (!auto.enabled || resting) return false;
+      resting = true;
+      time = frames = 0; trial = null;
+      upAt = now + HOLD;
+      const changed = auto.scale !== 1;
+      auto.scale = 1;
+      return changed;
+    },
+    wake() { resting = false; },
+    update(dt, now) {
+      if (!auto.enabled || resting) { time = frames = 0; trial = null; return; }
+      time += dt; frames++;
+      if (time < WINDOW) return;
+      const avg = time / frames;
+      time = frames = 0;
+      if (trial) {
+        const { scale, baseline, up } = trial;
+        const accepted = up ? avg <= baseline / 0.93 : avg <= baseline * 0.93;
+        if (!accepted) auto.scale = scale;
+        if (up) {
+          upAt = now + (accepted ? WINDOW : upHold);
+          upHold = accepted ? HOLD : Math.min(MAX_HOLD, upHold * 2);
+          // Don't immediately undo a successful recovery at a refresh-rate cap.
+          downAt = Math.max(downAt, now + HOLD);
+        } else {
+          downAt = now + (accepted ? 0 : downHold);
+          downHold = accepted ? HOLD : Math.min(MAX_HOLD, downHold * 2);
+          upAt = Math.max(upAt, now + HOLD);
+        }
+        trial = null;
+        return;
+      }
+      const up = auto.scale < 1 && now >= upAt;
+      if (up || (avg > 1 / 50 && auto.scale > MIN && now >= downAt)) {
+        trial = { scale: auto.scale, baseline: avg, up };
+        auto.scale = up ? Math.min(1, auto.scale * 1.08) : Math.max(MIN, auto.scale * 0.85);
+      }
+    },
+  };
+  return auto;
+}
 
 const MIPS = 6;
 const JITTER_PERIOD = 16;
@@ -765,7 +820,7 @@ export function createPost(renderer, { pixScale } = {}) {
     /** Render scale per axis the next render uses (upscaling is TAA's job). */
     get renderScale() {
       const s = { ...POST_DEFAULTS, ...post.settings };
-      return s.taa ? s.upscale : 1;
+      return s.taa ? s.upscale * Math.min(1, Math.max(0.6, s.resolutionScale)) : 1;
     },
     get targets() { return { scene: sceneRT, history: history[cur], bloom: up[0] ?? down[0], down, up }; },
 

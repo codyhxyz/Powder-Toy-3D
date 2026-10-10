@@ -33,7 +33,7 @@ import { gfx, gfxUniforms, updateGfxUniforms } from './gfx/uniforms.js';
 import { DETAIL, settingKey, detailDefaults, detailDefines, detailRows } from './gfx/detail.js';
 import { createDetailGate } from './gfx/detailGate.js';
 import { claimPrograms } from './gfx/programs.js';
-import { createPost, UPSCALE } from './gfx/post.js';
+import { createPost, createAutoResolution, UPSCALE } from './gfx/post.js';
 import { createPacer, settleFrames, sceneKey, createCapCheck, CAP_IDLE_MS, MAX_FPS } from './gfx/pacing.js';
 import { CHANNELS, MEDIA } from './gfx/materials.js';
 import { DAY, dayPhase, phaseSteps, keyLight, sunElevation } from './gfx/daylight.js';
@@ -136,7 +136,6 @@ const STORE = 'powder-toy-3d:settings';
 // Fixed look: glow is heat-driven light (×uLightGain); smoothing, TAA, bloom and
 // exposure keep their defaults in gfx/uniforms.js and gfx/post.js.
 const GLOW_GAIN = 1.6;
-const RES_MAX = Math.min(devicePixelRatio, 1.5);   // auto resolution's ceiling (pixel ratio)
 
 const settings = { ...DEFAULTS };
 try {
@@ -190,7 +189,8 @@ function save() {
 // both would only cost memory and bandwidth (~165 MB at 2880×1800).
 const renderer = new THREE.WebGLRenderer({ antialias: false, depth: false, alpha: true, powerPreference: 'high-performance' });
 renderer.setClearColor(0x000000, 0);
-let pixelRatio = Math.min(RES_MAX, 1);
+// Keep the existing CSS-native output; adaptation only changes scene pixels.
+const pixelRatio = Math.min(devicePixelRatio, 1);
 renderer.setPixelRatio(pixelRatio);
 renderer.setSize(innerWidth, innerHeight);
 renderer.autoClear = false;
@@ -961,12 +961,6 @@ function setView(id) {
   save();
 }
 
-function setPixelRatio(r) {
-  pixelRatio = r;
-  renderer.setPixelRatio(r);
-  renderer.setSize(innerWidth, innerHeight);
-}
-
 function undo() {
   if (mp.guard()) return;
   const shrine = sim.history?.at(-1)?.note?.shrine;
@@ -1234,7 +1228,7 @@ const pacer = createPacer({
 });
 // input of any kind may change what the view shows
 for (const type of ['pointermove', 'pointerdown', 'pointerup', 'wheel', 'keydown', 'keyup', 'input', 'change', 'resize']) {
-  addEventListener(type, () => pacer.wake(), { capture: true, passive: true });
+  addEventListener(type, () => { autoRes.wake(); pacer.wake(); }, { capture: true, passive: true });
 }
 let lastVersion = -1, renderedLast = false;
 // the browser capping the page at 30 Hz (gfx/pacing.js createCapCheck): say so once
@@ -1244,46 +1238,9 @@ const CAP_NOTICE = 'Your browser is holding this page at 30 fps. In Chrome, turn
 const CAP_NOTICE_MS = 9000;
 const DT_MAX = 0.1;      // s: longer gaps (a hidden tab) count as this, so animations don't jump
 const FPS_WINDOW = 0.5;  // s over which the fps readout averages
-let resTime = 0, resFrames = 0, resDt = 0;
 const invVol = new THREE.Matrix4();
-
-// Lower the render resolution when frames run long, but only if it actually
-// helps: when the simulation (not drawing) is the bottleneck, a lower
-// resolution just blurs the picture, so we undo the drop and stop trying.
-// Auto resolution: every AUTO_RES_WINDOW seconds, drop the pixel ratio by
-// AUTO_RES_DOWN when frames run slower than AUTO_RES_SLOW_FPS, raise it by
-// AUTO_RES_UP when faster than AUTO_RES_FAST_FPS. A drop that didn't speed
-// frames up by AUTO_RES_MIN_GAIN is undone and not retried for AUTO_RES_HOLD seconds.
-const AUTO_RES_WINDOW = 1.2;      // s
-const AUTO_RES_MIN = 0.6;         // lowest pixel ratio it goes to
-const AUTO_RES_SLOW_FPS = 50;
-const AUTO_RES_FAST_FPS = 57;
-const AUTO_RES_DOWN = 0.85;
-const AUTO_RES_UP = 1.08;
-const AUTO_RES_MIN_GAIN = 0.93;   // frame time must fall below this × the old one
-const AUTO_RES_HOLD = 15;         // s
-const autoRes = { enabled: !testMode || testMode === 'visual', lastDt: 0, tried: 0, holdUntil: 0 };   // a deliberate preview cap is not GPU slowness
-function autoResolution(dt, now) {
-  if (!autoRes.enabled) return;
-  resTime += dt; resFrames++; resDt += dt;
-  if (resTime < AUTO_RES_WINDOW) return;
-  const avg = resDt / resFrames;
-  resTime = resFrames = resDt = 0;
-  const max = RES_MAX, min = AUTO_RES_MIN;
-  if (autoRes.tried) {
-    // judge the previous decrease
-    if (avg > autoRes.lastDt * AUTO_RES_MIN_GAIN) { setPixelRatio(autoRes.tried); autoRes.holdUntil = now + AUTO_RES_HOLD; }
-    autoRes.tried = 0;
-    return;
-  }
-  if (avg > 1 / AUTO_RES_SLOW_FPS && pixelRatio > min && now > autoRes.holdUntil) {
-    autoRes.tried = pixelRatio;
-    autoRes.lastDt = avg;
-    setPixelRatio(Math.max(min, pixelRatio * AUTO_RES_DOWN));
-  } else if (avg < 1 / AUTO_RES_FAST_FPS && pixelRatio < max) {
-    setPixelRatio(Math.min(max, pixelRatio * AUTO_RES_UP));
-  }
-}
+const autoRes = createAutoResolution();
+autoRes.enabled = !testMode || testMode === 'visual'; // intentional preview caps are not GPU slowness
 
 // Screenshots: the canvas is transparent where the page's sky shows through
 // (body's background in ui/styles.css), so the shot paints that sky first, then
@@ -1357,7 +1314,9 @@ function tick(now, renderOnly = false) {
   if (!renderOnly) clock.update(now);
   const dt = renderOnly ? 0 : Math.min(clock.getDelta(), DT_MAX);
   // only frames that rendered measure how expensive rendering is
-  if (!renderOnly && renderedLast) autoResolution(dt, clock.getElapsed());
+  if (!renderOnly && renderedLast && post.settings.taa) autoRes.update(dt, clock.getElapsed());
+  // Set before pacing's view key so a scale change always schedules a render.
+  post.settings.resolutionScale = autoRes.scale;
 
   if (!renderOnly) {
     const cam = camState();
@@ -1394,7 +1353,7 @@ function tick(now, renderOnly = false) {
   if (birds) {
     prof.phase('other');   // (their probe pass, birdProbe, counts here)
     birds.update(settings.paused ? 0 : dt);   // they hold still with the world
-    if (!settings.paused && birds.count) pacer.wake();
+    if (!renderOnly && !settings.paused && birds.count) pacer.wake();
   }
   if (settings.time !== timeShown) {
     timeShown = settings.time;
@@ -1406,17 +1365,23 @@ function tick(now, renderOnly = false) {
     radius: settings.radius, shape: settings.shape, tool: settings.tool,
   });
   const worldChanged = sim.version !== lastVersion;
+  if (worldChanged) autoRes.wake();
   lastVersion = sim.version;
   // Keep animation time tied to simulation, not the test preview's draw rate.
   if (worldChanged) volume.material.uniforms.uTime.value += dt;
   const present = renderOnly || pacer.present(now, wantShot);
   const runDerived = present && pacer.derived(
     `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${KEY_LIGHT}|${settings.view}|${gfx.smoothing}|${detailVersion}`);
-  const runView = present && pacer.view(
+  let runView = present && pacer.view(
     `${camera.matrixWorld.elements}|${camera.projectionMatrix.elements}|${pixelRatio}|${innerWidth}x${innerHeight}`
     + `|${JSON.stringify(settings)}|${JSON.stringify(gfx)}|${JSON.stringify(post.settings)}|${sceneKey(scene)}`
     + `|${win?.far?.chunksDrawn}`,   // a world scene's far field filling in (world/far.js)
-    runDerived || wantShot || post.adapting);   // (eyes adjusting to the dark: gfx/post.js ADAPT)
+    runDerived || wantShot || (!renderOnly && post.adapting));   // frozen-time snapshots cannot advance eye adaptation
+  if (present && !runView && autoRes.recover(clock.getElapsed())) {
+    post.settings.resolutionScale = autoRes.scale;
+    pacer.wake();   // settle the final full-quality still; don't wake auto resolution
+    runView = true;
+  }
   if (!renderOnly) {
     // Preview draws are not adjacent app ticks; report draw and step rates separately.
     if (runView) {
@@ -1457,7 +1422,7 @@ function tick(now, renderOnly = false) {
     u.tLight.value = sim.lightTexture;
     u.uCam.value.copy(camera.position).applyMatrix4(invVol.copy(volume.matrixWorld).invert());
     detailGate.update(camera, u.uCam.value, [sim.g.nx, sim.g.ny, sim.g.nz], scene);
-    win?.far.view(volume, settings.view === 0);
+    win?.far.view(volume, settings.view === 0, camera);
     u.uView.value = settings.view;
 
     post.settings.raw = settings.view !== 0;
@@ -1480,8 +1445,8 @@ function tick(now, renderOnly = false) {
   // Picking is input work, not presentation: a preview must keep it responsive.
   if (!renderOnly && (runView || pov?.active || testMode === 'preview')) requestPick();
   if (spawners) { spawners.setGhosts(!pov?.active); spawners.update(); }   // the crosshair cell stays fresh for the tools
-  perkOrbs?.update();
-  arenaMarkers?.update();
+  perkOrbs?.update(clock.getElapsed());
+  arenaMarkers?.update(clock.getElapsed());
   if (renderOnly) { prof.endFrame(0); return; }
 
   const povReadout = pov?.active ? pov.readout : null;   // the held tool's (the scanner's, the trowel's)
@@ -1500,7 +1465,7 @@ function tick(now, renderOnly = false) {
     stepsV: settings.paused || mp.isGuest ? 0 : stepRate, // preview fps is not the simulation rate
     // the cells simulated (a world's window), and the world's
     cellsV: `${millions([g.nx, g.ny, g.nz])}${win ? ` of ${millions(win.size)}` : ''}`,
-    resV: autoRes.enabled ? `${Math.round(pixelRatio * 100)}% res` : '',
+    resV: autoRes.enabled ? `${Math.round(post.renderScale * 100)}% res` : '',
   });
   prof.endFrame(stepping ? settings.steps : 0);
   lastIdle = !runView && !stepping && performance.now() - t0 < CAP_IDLE_MS;

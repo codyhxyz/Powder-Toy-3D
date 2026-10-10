@@ -221,6 +221,9 @@ export class Simulation {
     const g = this.g;
     this.frame = 0;
     this.paints = 0;   // brush strokes applied (the paint pass's random stream)
+    this.idleEpoch = 0;
+    this.idleCertified = false;
+    this.idleRead = null;   // at most one asynchronous one-texel readback
     this.gravity = GRAVITY_DEFAULT;
     // bumped by every write to the state (steps, painting, loads, undo, network
     // updates), so callers can tell when the world changed
@@ -451,6 +454,36 @@ export class Simulation {
     r.setRenderTarget(keep);
   }
 
+  // Settings can change while asleep (including away and back during a readback).
+  get gravity() { return this._gravity; }
+  set gravity(v) { if (v !== this._gravity) { this._gravity = v; this.wake(); } }
+  get skipQuiet() { return this._skipQuiet; }
+  set skipQuiet(v) { if (v !== this._skipQuiet) { this._skipQuiet = v; this.wake(); } }
+  get skipSleeping() { return this._skipSleeping; }
+  set skipSleeping(v) { if (v !== this._skipSleeping) { this._skipSleeping = v; this.wake(); } }
+
+  wake() {
+    this.idleEpoch++;
+    this.idleCertified = false;
+    this.actDirty = true;
+  }
+
+  // A zero share in *every* channel certifies not just quiet cells, but that
+  // the previous map settled both state histories (DRAWN). Steps cannot wake
+  // this state themselves. External writes/settings invalidate even a late
+  // result; ordinary steps/map rebuilds need not, so a slow read can finish.
+  checkIdle() {
+    if (this.idleRead || this.idleCertified || !this.skipQuiet || !this.skipSleeping || this.rays.active || this.disposed) return;
+    const epoch = this.idleEpoch;
+    const pixels = new Float32Array(4).fill(NaN);   // a failed/unsupported read must not certify sleep
+    this.idleRead = this.renderer.readRenderTargetPixelsAsync(this.superShare, 0, 0, 1, 1, pixels)
+      .then(() => {
+        if (!this.disposed && epoch === this.idleEpoch && pixels.every((v) => v === 0)) this.idleCertified = true;
+      })
+      .catch(() => {})   // readback failure only disables this optimization; keep stepping
+      .finally(() => { this.idleRead = null; });
+  }
+
   get stateA() { return this.targets[this.cur].textures[0]; }
   get stateB() { return this.targets[this.cur].textures[1]; }
   get stateF() { return this.targets[this.cur].textures[STATE_FLAGS]; }
@@ -508,10 +541,7 @@ export class Simulation {
     this.touchNext = null;
     if (target === this.targets[0] || target === this.targets[1]) {
       this.version++;
-      if (!this.stepping) {
-        this.actDirty = true;
-        this.noteWrite(touched);
-      }
+      if (!this.stepping) this.noteWrite(touched);
     }
   }
 
@@ -539,6 +569,7 @@ export class Simulation {
   // left the two state copies different there, or flags the steps settle
   // (shaders/activity.js SUPER_MAP).
   noteWrite(t) {
+    this.wake();
     this.wroteSinceStep = true;
     if (!t) {
       this.changedAll = true;
@@ -603,6 +634,7 @@ export class Simulation {
     this.forceLo.fill(TOUCH_NONE_LO);
     this.forceHi.fill(TOUCH_NONE_HI);
     this.actSteps = 0;
+    this.checkIdle();
   }
 
   // Ping-pong pass over the state. The pass writes every cell, flags and all
@@ -618,7 +650,11 @@ export class Simulation {
   }
 
   step() {
-    this.frame++;
+    this.frame++;   // simulation time/parity advance even when no GPU work is needed
+    // Finish fresh flags and both ping-pong histories before sleeping. A quiet
+    // flow pass already discards every cell, so its EMA needs no further work.
+    if (this.idleCertified && !this.actDirty && !this.actFresh && this.actSteps >= SUPER_SETTLE_STEPS
+        && this.skipQuiet && this.skipSleeping && !this.rays.active) return;
     // particles fly first: the map below keeps the bricks they're in awake
     this.stepping = true;
     this.rays.step();
@@ -1025,6 +1061,8 @@ export class Simulation {
   // app disposes of them once the next grid's have claimed their programs, so
   // the programs both use carry over: app.js build).
   dispose(retire = null) {
+    this.disposed = true;
+    this.wake();   // an outstanding readback cannot certify a disposed simulation
     this.targets.forEach((t) => t.dispose());
     this.brick.dispose();
     this.blocks.dispose();
