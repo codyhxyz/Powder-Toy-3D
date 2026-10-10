@@ -6,7 +6,7 @@ const TOAST_MS = 2300;        // on screen
 const TOAST_FADE_LEAD = 100;  // ms: its fade-out animation ends this long before it is removed
 
 export function createHud() {
-  // stats (bottom right)
+  // stats below the toolbar
   const fps = h('b'), cells = h('b'), steps = h('b'), res = h('b');
   const fpsUnit = document.createTextNode(' fps');
   const stats = h('div.stats', {}, h('span', {}, fps, fpsUnit), h('span', {}, steps, ' steps/s'), h('span', {}, cells, ' cells'), h('span', {}, res));
@@ -15,8 +15,6 @@ export function createHud() {
   const chip = h('i'), name = h('b'), temp = h('span'), pres = h('span');
   const readout = h('div.readout', {}, chip, name, temp, pres);
 
-  // paused pill
-  const pill = h('div.pill.panel', {}, h('span.dot'), 'Paused', h('kbd', { text: 'Space' }));
   const toasts = h('div.toasts');
   const TOUCH_FIRST = matchMedia('(hover: none) and (pointer: coarse)').matches;
   const hint = h('div.hint.panel', { html: TOUCH_FIRST
@@ -26,7 +24,7 @@ export function createHud() {
   // colour key for data views (heat, pressure, ...); hidden in the realistic view
   const legendBox = h('div.legend-box.panel', { 'aria-live': 'polite' });
 
-  document.body.append(stats, readout, pill, toasts, hint, legendBox);
+  document.body.append(stats, readout, toasts, hint, legendBox);
 
   const setText = (el, t) => { if (el.textContent !== t) el.textContent = t; };
   const READOUT_DX = 16, READOUT_DY = 14;   // px: the hover readout sits below-right of the pointer
@@ -54,7 +52,6 @@ export function createHud() {
       setText(temp, info.T == null ? (info.note ?? '') : `${info.T.toFixed(1)} °C`);
       setText(pres, info.P != null && Math.abs(info.P) >= PRESSURE_SHOWN ? `pressure ${info.P.toFixed(1)}` : '');
     },
-    setPaused: (p) => pill.classList.toggle('show', p),
     toast(text, ms = TOAST_MS) {
       const t = h('div.toast.panel', { text, style: { animationDuration: `${ms - TOAST_FADE_LEAD}ms` } });
       toasts.append(t);
@@ -100,17 +97,18 @@ export function createHelp(onClose) {
         row('Move faster', 'Shift'),
         row('Reset camera', 'R'),
         h('h3', { text: 'First person' }),
-        row('Drop in or pop out', 'F'),
+        row('God view, or back in the body', 'V'),
         row('Look around', 'Mouse'),
         row('Walk', 'W', 'A', 'S', 'D'),
         row('Jump or swim up', 'Space'),
         row('Sprint (hold, or toggle in settings)', 'Shift'),
         row('Swim down', 'C'),
+        row('Zoom (hold; scroll to zoom further)', 'Z'),
         row('Use tool / its other action', 'Left', 'Right'),
         row('Pick a tool slot; again for the next in it', '1', '–', '6'),
         row('Tools menu: get more tools', 'Q'),
         row('Drink from the flask', 'H'),
-        row('First or third person', 'V'),
+        row('First or third person', 'F5'),
         row('Get in or out of a vehicle (drive: W A S D, Space, Shift)', 'E'),
         CLASSES_ENABLED ? row('Choose a class (Team Fortress 2\'s key)', ',') : null,
         row('Hide the HUD and hand', 'F1'),
@@ -123,7 +121,7 @@ export function createHelp(onClose) {
         row('Chat, when playing together', 'T'),
         row(CLASSES_ENABLED ? 'Settings (in first person, the gear)' : 'Settings', ','),
         row('Screenshot', 'P'),
-        row('Close menus', 'Esc'),
+        row('Close menus; with none open, the map menu', 'Esc'),
       ),
       h('p', { text: 'Signs can show live values: write {t} for temperature, {p} for pressure and {e} for the element under the sign.' })));
   document.body.append(el);

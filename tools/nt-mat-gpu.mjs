@@ -45,7 +45,7 @@ await p.addInitScript(() => {
   performance.now = () => vt;
 });
 const t0 = Date.now();
-await p.goto(`http://localhost:${port}/?preset=empty&size=64`);
+await p.goto(`http://localhost:${port}/?preset=empty&size=64`, { waitUntil: 'commit', timeout: 120000 });
 await p.waitForFunction(() => window.__app?.sim, null, { timeout: 120000 });
 const loadS = (Date.now() - t0) / 1000;
 await p.waitForTimeout(2000);
@@ -129,7 +129,7 @@ const act = await ev(async (steps) => {
   const tex = sim.actInert.texture;
   const refInert = makeFieldTarget(w, h, 1, tex.type, tex.minFilter);
   const refQuiet = makeFieldTarget(w, h, 1, tex.type, tex.minFilter);
-  const ref = rawMat(inertRefFrag(g), { tA: { value: null }, tB: { value: null } });
+  const ref = rawMat(inertRefFrag(g), { tA: { value: null }, tB: { value: null }, tRx: { value: sim.reactionTable } });
   const px = () => new Uint8Array(w * h * 4);
   const bufs = { inert: px(), quiet: px(), refInert: px(), refQuiet: px() };
   const read = (tg, buf) => R.readRenderTargetPixels(tg, 0, 0, w, h, buf);

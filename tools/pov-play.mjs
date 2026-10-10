@@ -153,11 +153,11 @@ const b1 = await named(await census());
 check('bucket scooped water', (b0.WATER ?? 0) - (b1.WATER ?? 0) > 10, `${(b0.WATER ?? 0) - (b1.WATER ?? 0)} cells; hotbar: ${bucketStatus}`);
 
 // ---- third person, then out
-await p.keyboard.press('v');
+await p.keyboard.press('F5');
 await settle(1000);
 await shot('third-person');
+await p.keyboard.press('F5');
 await p.keyboard.press('v');
-await p.keyboard.press('f');
 await p.waitForFunction(() => window.__app.pov.mode === 'off', null, { timeout: 10000 }).catch(() => {});
 check('popped out', (await ev(() => window.__app.pov.mode)) === 'off');
 

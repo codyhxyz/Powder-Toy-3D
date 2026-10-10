@@ -9,9 +9,12 @@ import { createKit } from './tools/index.js';
 import { gearByKey } from './tools/catalog.js';
 import { pack, persistentLoad, ownedKey } from './tools/transfer.js';
 import { Agent } from './ai/brain.js';
+import { GunnerAgent } from './ai/gunner.js';
 import { createWorldModel } from './ai/world.js';
 import { createNav } from './ai/nav.js';
 import { BODY_HEIGHT, BODY_WIDTH, EYE_HEIGHT } from './constants.js';
+
+export { createWorm } from './worm.js';
 
 // An NPC that hunts the player with every tool the player has (the lab world,
 // in POV). Three parts, each a solved problem done by the book:
@@ -30,6 +33,11 @@ import { BODY_HEIGHT, BODY_WIDTH, EYE_HEIGHT } from './constants.js';
 //
 // It looks like the Castle Crashers wizard in red, the tool in use in its right
 // mitten; the player's axe and gun hit it through targets.js.
+//
+// style 'gunner' is Noita's jetpack Hiisi on the same body: its mind is
+// ai/gunner.js (guns only, keeps its range, flies to a vantage on the body's
+// jetpack and lands to refuel), and it wears olive. A worm is another creature
+// altogether (worm.js, re-exported here so one lazy import brings them all).
 
 // reflexes
 const STUCK_SPEED = 0.25;         // share of the wished speed below which it counts as blocked...
@@ -55,10 +63,17 @@ const PALETTE = {
   robe: [0.32, 0.02, 0.02], hood: [0.22, 0.015, 0.015], trim: [0.25, 0.25, 0.27], belt: [0.06, 0.05, 0.05],
 };
 const EYE_GLOW = [4, 0.35, 0.15]; // HDR: red eyes
+// the jetpack gunner: olive drab and gunmetal, amber eyes
+const GUNNER_PALETTE = {
+  ...CRASHER_COLORS,
+  robe: [0.09, 0.1, 0.035], hood: [0.06, 0.07, 0.025], trim: [0.12, 0.12, 0.13], belt: [0.05, 0.035, 0.02], brass: [0.3, 0.3, 0.32],
+};
+const GUNNER_EYE_GLOW = [4, 2.2, 0.2];
+const LOOK = { axeman: { palette: PALETTE, eyeGlow: EYE_GLOW }, gunner: { palette: GUNNER_PALETTE, eyeGlow: GUNNER_EYE_GLOW } };
 const HELD_SCALE = 1.8;           // the viewmodels (cells, sized for the camera) grown to read in its big mitten
 const CHOP_S = 0.25;              // s the chop's follow-through shows after a blow
 // the tool's model for each tool the brain uses (models.js, by the catalog)
-const MODEL_OF = Object.fromEntries(['SHOVEL', 'BUCKET', 'AXE', 'GUN', 'PHYSGUN', 'TROWEL', 'SCANNER', 'BLOWTORCH', 'BOMB', 'PICKAXE'].map((k) => [k, gearByKey(k).model]));
+const MODEL_OF = Object.fromEntries(['SHOVEL', 'BUCKET', 'AXE', 'GUN', 'SMG', 'SNIPER', 'PHYSGUN', 'TROWEL', 'SCANNER', 'BLOWTORCH', 'BOMB', 'PICKAXE'].map((k) => [k, gearByKey(k).model]));
 
 const HW = BODY_WIDTH / 2;
 const AIM_REACH = 256;            // cells the tools' pick looks along
@@ -67,9 +82,9 @@ let nextId = 1;
 // The figure, with every tool's model in its right mitten (hidden but the held
 // one). The models' meshes take the figure's lighting: each gets its colour as
 // an albedo, and createFigure lights it like the body.
-function buildWizard(held) {
+function buildWizard(held, look = LOOK.axeman) {
   return () => {
-    const rig = buildCrasher({ palette: PALETTE, eyeGlow: EYE_GLOW });
+    const rig = buildCrasher(look);
     const grip = new THREE.Group();
     grip.position.y = rig.handY;
     grip.scale.setScalar(HELD_SCALE);
@@ -98,16 +113,16 @@ export function createAi({ renderer, getSim }) {
 // (renderer, scene, getSim, getVolume, getScale) plus ballistics (the player's).
 // home(): where it appears and comes back (grid cells, feet: its spawner), or
 // null for a random spot near the player.
-export function createNpc({ env, ai, home = () => null }) {
+export function createNpc({ env, ai, home = () => null, style = 'axeman' }) {
   const id = `npc${nextId++}`;
   const body = createPlayer({ renderer: env.renderer, getSim: env.getSim, quiet: true });
   const held = {};
-  const figure = createFigure(buildWizard(held));
+  const figure = createFigure(buildWizard(held, LOOK[style] ?? LOOK.axeman));
   const viewmodel = new THREE.Group();   // its tools' hands hang here; never drawn (the figure holds the models)
   const kit = createKit({ ...env, viewmodel, owner: id });
   let world = null;   // the frame's: { player, holding, toWorld, worldToGrid, scale, stepsPerFrame }
   const charmed = () => !!(body.status?.has('CHARMED') || world.player.status?.has('CHARMED'));
-  const agent = new Agent({
+  const agent = new (style === 'gunner' ? GunnerAgent : Agent)({
     body, world: ai.world, nav: ai.nav, kit, getSim: env.getSim,
     packCells: () => pack(id).cells.length,
     bucket: () => { const l = persistentLoad(ownedKey('BUCKET', id), Infinity); return { id: l.cells[0]?.[0] ?? -1, n: l.cells.length }; },
@@ -178,7 +193,7 @@ export function createNpc({ env, ai, home = () => null }) {
   }
 
   return {
-    id,
+    id, kind: style,
     root: figure.root,
     bind(volume, g) { figure.bind(volume, g); },
     compile(r, camera, scene) { return figure.compile(r, camera, scene); },
@@ -187,7 +202,10 @@ export function createNpc({ env, ai, home = () => null }) {
     get kit() { return kit; },
     // what it's doing (checks): its goal, weapon, tool, pack
     get debug() {
-      return { goal: agent.lastGoal, weapon: agent.weapon, tool: agent.intent.tool, sees: agent.sees, knows: agent.knows, pack: pack(id).cells.length, refusal: kit.lastRefusal?.text ?? null };
+      return {
+        style, goal: agent.lastGoal, weapon: agent.weapon, tool: agent.intent.tool, sees: agent.sees, knows: agent.knows, pack: pack(id).cells.length, refusal: kit.lastRefusal?.text ?? null,
+        range: agent.mode ?? null, flight: agent.flight ?? null, fuel: body.jetFuel, jetting: body.jetting,
+      };
     },
     update(dt, w) {
       world = w;
@@ -225,6 +243,7 @@ export function createNpc({ env, ai, home = () => null }) {
       } else {
         input.jump = alive && body.onGround && jumpWait === 0 && (stuckT > STUCK_S || it.jump);
         if (input.jump) { jumpWait = JUMP_COOLDOWN_S; stuckT = 0; }
+        if (alive && it.jet && !body.onGround) input.jump = true;   // held in the air: the jetpack (the gunner flies)
       }
       body.update(dt, input);
 

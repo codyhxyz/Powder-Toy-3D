@@ -32,7 +32,7 @@ export function house({ put, box, footing, rnd, T }, variant) {
   const hw = (W - 1) / 2, hd = (D - 1) / 2;
   const H = Math.max(4, Math.round(HUMAN.ROOM_H * T)); // wall height above the slab
   const green = variant === 'greenhouse', cabin = variant === 'cabin';
-  const wall = variant === 'brick' ? MASONRY : green ? 'GLASS' : 'WOOD';
+  const wall = variant === 'brick' ? 'BRICK' : green ? 'GLASS' : 'WOOD';
   const roof = green ? 'GLASS' : 'WOOD';
   const dw = odd(HUMAN.DOOR_W * T), dh = Math.min(H - 1, Math.max(3, Math.round(HUMAN.DOOR_H * T)));
   const cz = -Math.round(hd * HOUSE.CHIMNEY_Z);

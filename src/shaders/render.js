@@ -12,6 +12,7 @@ import { liquidDetailGLSL } from './gfx/liquidDetail.js';
 import { mediaGLSL } from './gfx/media.js';
 import { plainGLSL } from './gfx/plain.js';
 import { grainsGLSL } from './gfx/grains.js';
+import { crystalGLSL } from './gfx/crystal.js';
 
 
 // Hybrid raymarcher. Rays walk the voxel grid with an Amanatides–Woo DDA
@@ -32,6 +33,7 @@ ${materialsGLSL()}
 ${coreGLSL(g)}
 ${noiseGLSL}
 ${lightingGLSL}
+${crystalGLSL}
 `;
 
 export const volumeVert = /* glsl */ `
@@ -658,6 +660,12 @@ void dataView(vec3 ro, vec3 rd, float t0, vec3 bh) {
 // Glass reflects less from inside liquid than from air (the index contrast is
 // smaller); share of its Fresnel reflectance kept there.
 #define GLASS_IN_LIQUID_F 0.3
+// A pane reflects the scene, not just the sky: seen from inside a glass room
+// the sky's reflection lies over the sky behind the pane and the pane vanishes;
+// the room's floor and contents reflected in it are what show it is there.
+// The first this many panes along the eye ray trace their reflection
+// (reflectTrace, gfx/liquid.js); panes past them reflect the sky.
+#define GLASS_TRACED_PANES 2
 ${grainsGLSL}
 
 void main() {
@@ -689,6 +697,9 @@ void main() {
   vec3 hitPos = vec3(0.0);
   int liq = E_EMPTY;          // smooth liquid the ray is inside (E_EMPTY = air)
   int prevCrisp = E_EMPTY;    // crisp transparent cell the ray just came through
+  int panes = 0;              // glass runs entered so far
+  vec3 paneEnv = vec3(0.0);   // what the current pane's front face reflects ...
+  int paneAx = -1;            // ... and the axis of that face
   vec3 mediumLight = vec3(1.0);
   // sun visibility inside liquid: read at a reference point (where the ray
   // got in), then faded with depth below it
@@ -766,10 +777,33 @@ void main() {
         // glass interface (flat faces: no bending)
         float F = fresnelSchlick(abs(dot(nFace, rd)), IOR[id]) * (liq == E_EMPTY ? 1.0 : GLASS_IN_LIQUID_F);
         mediumLight = uShadows ? sunShadow(hp + nFace * IFACE_PROBE) : vec3(1.0);
-        col += trans * F * envReflectGI(hp, nFace, reflect(rd, nFace), mediumLight);
+        Probe gi = surfProbe(hp, nFace);
+        gSkyIn = skyInAt(gi);
+        vec3 r = reflect(rd, nFace);
+        paneEnv = envReflectGI(gi, r, mediumLight);
+        if (panes < GLASS_TRACED_PANES) paneEnv = reflectTrace(hp + nFace * REFL_START, r, paneEnv);
+        paneAx = ax;
+        panes++;
+        col += trans * F * paneEnv;
         trans *= 1.0 - F;
       }
       absorbSegment(id, hp, tExit - tEnter, mediumLight, a.y, col, trans);
+      // Leaving the pane, its far face reflects as much again (into air; less
+      // into liquid; none against something opaque, which it touches, the
+      // floor included). A face parallel to the front one reflects the same view.
+      int xa = argmin3(tMax);
+      ivec3 nc = cell;
+      nc[xa] += istp[xa];
+      int nid = outside(nc) ? E_EMPTY : eid(fetchA(nc));
+      if (nc.y >= 0 && RCLASS[nid] != R_GLASS && RCLASS[nid] != R_OPAQUE) {
+        vec3 nX = vec3(0.0);
+        nX[xa] = float(istp[xa]);
+        vec3 hx = ro + rd * tExit;
+        float F = fresnelSchlick(abs(dot(nX, rd)), IOR[id]) * (SURFCH[nid] == CH_LIQUID ? GLASS_IN_LIQUID_F : 1.0);
+        vec3 r = reflect(rd, nX);
+        col += trans * F * (xa == paneAx ? paneEnv : envReflectGI(surfProbe(hx, -nX), r, mediumLight));
+        trans *= 1.0 - F;
+      }
       prevCrisp = id;
       phiStale = true;
       }
@@ -794,6 +828,7 @@ void main() {
               vec3 p0 = ro + rd * tEnter;
               lightRef = uShadows ? sunShadow(p0) : vec3(1.0);   // inside: the map carries the liquid above
               lightY = p0.y;
+              gSkyIn = skyInAt(probeAt(p0));
             }
             else if (ic >= 0) { ev = EV_OPAQUE; evCh = ic; tEv = tEnter; evN = vec3(0.0); evN[ax] = -float(istp[ax]); }
           }
@@ -907,7 +942,7 @@ void main() {
           }
           // out of bends: switch medium, keep straight
           liq = ev == EV_ENTER ? lid : E_EMPTY;
-          if (ev == EV_ENTER) { lightRef = uShadows ? sunShadow(hp + n * IFACE_PROBE) : vec3(1.0); lightY = hp.y; }
+          if (ev == EV_ENTER) { lightRef = uShadows ? sunShadow(hp + n * IFACE_PROBE) : vec3(1.0); lightY = hp.y; gSkyIn = skyInAt(surfProbe(hp, n)); }
         }
       }
       phiA = phiB;
@@ -1054,7 +1089,13 @@ void main() {
     int ax = argmin3(tMax);
     float tExit = tMax[ax];
     int id = eid(fetchA(cell));
-    if (isCrisp(id)) {
+    if (id == E_CRYSTAL) {
+      // its prisms (gfx/crystal.js), as the view draws them
+      float th = tEnter;
+      vec3 nh = vec3(0.0);
+      if (crystalHit(cell, ro, rd, tEnter, tExit, th, nh)) { oC.x = th; hit = true; break; }
+      phiStale = true;
+    } else if (isCrisp(id)) {
       if (RCLASS[id] != R_GLASS) { oC.x = tEnter; hit = true; break; }
       if (tid == 0 || RCLASS[tid] == R_GAS) { if (tid == 0) oC.y = tEnter; tid = id; }
       tau += dot(SIGMA[id], vec3(1.0 / 3.0)) * (tExit - tEnter);

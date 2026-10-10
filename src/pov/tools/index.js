@@ -35,7 +35,7 @@ const toolDefs = () => Object.entries(modules).map(([path, mod]) => ({ path, def
     return false;
   })
   .sort((a, b) => GEAR.indexOf(gearByKey(a.def.key)) - GEAR.indexOf(gearByKey(b.def.key)));
-const DEFAULT_TOOL = GEAR.find((g) => g.start).key;   // in hand first (the shovel)
+const DEFAULT_TOOL = GEAR[0].key;   // in hand first (the shovel)
 const NOTICE_INTERVAL = 1.5;   // s between repeats of a tool's notice and refuse toasts
 const MS_PER_S = 1000;
 // the body holding the tools has a status that takes its hands (status.js noTools: Polymorph);

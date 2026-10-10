@@ -6,7 +6,6 @@ import { buildGarb, GARB_COLORS } from './garb.js';
 import {
   createFigure, createContactShadow, JET_NOZZLES, figureFrag, figureSkinnedVert, FIGURE_ALBEDO, FIGURE_HEAT_GLOW,
 } from './figure.js';
-import { createCrasher } from './figureCrasher.js';
 
 // The realistic body: Quaternius's mannequin (Universal Animation Library,
 // CC0), skinned and played by an AnimationMixer, dressed as a wizard (a
@@ -219,13 +218,12 @@ function createRealFigure(gltf) {
   };
 }
 
-// The body the shell shows, by choice(): 'wizard' (the Castle Crashers-style
-// one, figureCrasher.js), 'real' (the wizard mannequin) or 'stick', with the
-// stickman standing in until the mannequin is loaded and compiled.
+// The body the shell shows, by choice(): 'real' (the wizard mannequin) or
+// 'stick', with the stickman standing in until the mannequin is loaded and
+// compiled. (The Castle Crashers wizard, figureCrasher.js, now only draws NPCs.)
 export function createBody({ choice }) {
   const stick = createFigure();
-  const wizard = createCrasher();
-  const light = [stick, wizard];   // the procedural bodies: cheap, always built
+  const light = [stick];   // the procedural body: cheap, always built
   let real = null, failed = false, loading = false;
   let bound = null, compileArgs = null;
   const root = new THREE.Group();
@@ -247,7 +245,7 @@ export function createBody({ choice }) {
       .catch((err) => { failed = true; console.error('Realistic body failed to load; using the stickman', err); })
       .finally(() => { loading = false; });
   }
-  const active = () => (wantsReal() ? real ?? stick : choice() === 'stick' ? stick : wizard);
+  const active = () => (wantsReal() ? real ?? stick : stick);
 
   return {
     root,
@@ -270,8 +268,8 @@ export function createBody({ choice }) {
       fig.update(dt, s);
     },
     setVisible(v) { root.visible = v; },
-    // which body is showing: 'wizard', 'stick' or 'real' (tests)
-    get showing() { const f = active(); return f === real ? 'real' : f === stick ? 'stick' : 'wizard'; },
+    // which body is showing: 'stick' or 'real' (tests)
+    get showing() { return active() === real ? 'real' : 'stick'; },
     // where the showing body's jetpack exhaust leaves (vfx.js)
     get nozzles() { return active().nozzles ?? JET_NOZZLES; },
     get loaded() { return !!real; },

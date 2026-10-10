@@ -167,8 +167,9 @@ const FEATURE_SHARE = 0.38;           // the largest hills' wavelength, share of
 const STRETCH_MAX = 1.18;             // the island is longer than wide by up to this squared (seeded)
 const TAU = Math.PI * 2;
 
-// size: the world in cells [x, y, z]; snow: false leaves the peaks bare rock
-export function worldParams({ size, seed = WORLD_SEED, snow = true } = {}) {
+// size: the world in cells [x, y, z]; snow: false leaves the peaks bare rock;
+// sites: its landform sites when they are known already (world/bake.js)
+export function worldParams({ size, seed = WORLD_SEED, snow = true, sites = null } = {}) {
   const [wx, wy, wz] = size;
   const side = Math.min(wx, wz);
   const sea = Math.round(SEA_SHARE * wy);
@@ -191,7 +192,7 @@ export function worldParams({ size, seed = WORLD_SEED, snow = true } = {}) {
     snow,                             // snow on gentle high ground, on frozen rock
   };
   // where the landforms go, picked from the terrain before them (the twin of P without them)
-  return { ...P, landforms: landforms.sites(P, islandTwin(P)) };
+  return { ...P, landforms: sites ?? landforms.sites(P, islandTwin(P)) };
 }
 
 // The world's parameters by the names the source reads them by: uniforms on

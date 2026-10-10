@@ -21,6 +21,7 @@ import { World } from '../src/ui/tiles/engine.js';
 import { E, ELEMENTS } from '../src/elements.js';
 import { PHYS } from '../src/physics.js';
 import { FAR } from '../src/shaders/far.js';
+import { CONDUCTS } from '../src/electricity.js';
 
 const GRAVITY = 0.025;           // the app's default gravity (app.js DEFAULTS)
 const SETTLE = 6000;             // steps for liquids to layer
@@ -28,12 +29,15 @@ const GROW_FAST = 0.01;          // growth chance per step per damp neighbour wh
 const GROW_STEPS = 60000;        // steps of fast growth (≈ 600 expected events per site: every site fills)
 const REST_STEPS = 600;          // steps a loaded world must hold still (tools/gen-check.mjs)
 const REAL_STEPS = 50000;        // steps at the real rate (≈ 3.5 min of play at 4 steps a frame)
+const PHASE_STEPS = 2000;        // steps a cell is held hot or cold
 const LIGHT_MAX = 400;           // steps to wait for a flame to light a liquid
 const WARM_T = 40;               // °C: warm whiskey, past its flash point, far below autoignition
 const FLAMBE_T = 40;             // °C: whiskey warmed for a flambé (40-50 °C), past its flash point
+const POOL_ROWS = 40;            // rows of the lit pools' box (two of whiskey)
 const MATCH_STEPS = 10;          // steps a match is held to a pool (a flame cell kept at one spot)
 const POOL_TRIALS = 20;          // lit pools per temperature (lighting is chancy)
-const POOL_WARM_MIN = 0.75;      // share of warm pools that must burn down (a low-heat flame can die mid-pool)
+const POOL_WARM_MIN = 0.75;      // share of warm pools that must take the flame
+const POOL_TAKEN = 2;            // cells of whiskey burnt or boiled off that count as taking it (a tenth of the pool)
 
 let failures = 0;
 const ok = (cond, msg) => { console.log(`${cond ? 'ok  ' : 'FAIL'} ${msg}`); if (!cond) failures++; };
@@ -45,20 +49,24 @@ const changed = (w, s) => { let n = 0; for (let i = 0; i < s.length; i++) n += s
 
 // ---- ids
 ok(ELEMENTS.length <= FAR.PAYLOAD, `${ELEMENTS.length} elements fit the far grid's ${FAR.PAYLOAD} ids`);
+// moss and fungus keep their damp in ctype, where a conductor keeps its spark
+// (src/electricity.js): no grower may conduct
+ok(!CONDUCTS[E.MOSS] && !CONDUCTS[E.FUNGUS], 'moss and fungus are not conductors: their damp and a spark never share a ctype');
 
 // ---- layering: a tank, rock walls, the test liquid poured as the bottom
 // half under water (or above it, for the light ones): it must end on its side
-function layer(key) {
+function layer(key, under = 'WATER') {
   const W = 12, H = 24, w = world(W, H);
   for (let y = 0; y < H; y++) { w.put(0, y, E.WALL); w.put(W - 1, y, E.WALL); }
-  const heavy = ELEMENTS[E[key]].dens > ELEMENTS[E.WATER].dens;
+  const heavy = ELEMENTS[E[key]].dens > ELEMENTS[E[under]].dens;
   // start inverted: the heavy one on top
-  for (let x = 1; x < W - 1; x++) for (let y = 0; y < 16; y++) w.put(x, y, (y < 8) === heavy ? E.WATER : E[key]);
+  for (let x = 1; x < W - 1; x++) for (let y = 0; y < 16; y++) w.put(x, y, (y < 8) === heavy ? E[under] : E[key]);
   for (let s = 0; s < SETTLE; s++) w.step();
-  const yk = meanY(w, E[key]), yw = meanY(w, E.WATER);
-  ok(heavy ? yk < yw : yk > yw, `${key} (dens ${ELEMENTS[E[key]].dens}) settles ${heavy ? 'under' : 'over'} water: mean row ${yk.toFixed(1)} vs water ${yw.toFixed(1)}`);
+  const yk = meanY(w, E[key]), yw = meanY(w, E[under]);
+  ok(heavy ? yk < yw : yk > yw, `${key} (dens ${ELEMENTS[E[key]].dens}) settles ${heavy ? 'under' : 'over'} ${under.toLowerCase()} (dens ${ELEMENTS[E[under]].dens}): mean row ${yk.toFixed(1)} vs ${yw.toFixed(1)}`);
 }
-for (const k of ['WHISKEY', 'TOXIC', 'BLOOD', 'SLIME', 'TELEPORTATIUM', 'LEVITATIUM', 'HEALTHIUM', 'BERSERKIUM', 'POLYMORPHINE', 'PHEROMONE']) layer(k);
+layer('TOXIC', 'BLOOD');   // (water washes sludge away: a REACTIONS row)
+for (const k of ['WHISKEY', 'BLOOD', 'SLIME', 'TELEPORTATIUM', 'LEVITATIUM', 'HEALTHIUM', 'BERSERKIUM', 'POLYMORPHINE', 'PHEROMONE']) layer(k);
 
 // ---- whiskey: a flame on its surface; and warm with no flame
 function lightAt(key) {
@@ -82,21 +90,24 @@ ok(tW < tO && tW <= 3, `a flame lights whiskey in ${tW} steps (flash point ${ELE
     `whiskey at ${WARM_T} °C with no flame never burns (autoignition ${ELEMENTS[E.WHISKEY].ignite} °C)`);
 }
 // a pool with a match held to it for MATCH_STEPS: warmed past its flash point
-// (as for a flambé) it burns down; at room temperature, just under it, the
-// flame often dies before the pool takes (as a match on cold spirit does)
-function poolBurns(T) {
-  const w = world(10, 10);
+// (as for a flambé) it takes the flame and burns on after the match is gone,
+// held at its boiling point (it boils off as it burns) until the flame dies,
+// as a flambé does once the alcohol is spent; at room temperature, just
+// under its flash point, the flame often dies first (a match on cold spirit)
+function poolTakes(T) {
+  const w = world(10, POOL_ROWS);   // room for its smoke and steam: a closed tile's air runs out
   for (let x = 0; x < 10; x++) for (let y = 0; y < 2; y++) w.put(x, y, E.WHISKEY, { T });
   const n0 = cells(w, E.WHISKEY).length;
   for (let s = 0; s < SETTLE; s++) {
     if (s < MATCH_STEPS && w.id[w.idx(5, 2)] === E.EMPTY) w.put(5, 2, E.FIRE);
     w.step();
   }
-  return cells(w, E.WHISKEY).length < n0 / 2;
+  const left = cells(w, E.WHISKEY).reduce((t, i) => t + w.life[i], 0);
+  return n0 - left >= POOL_TAKEN;   // whiskey burnt or boiled off, in cells
 }
-const share = (T) => { let n = 0; for (let r = 0; r < POOL_TRIALS; r++) n += poolBurns(T); return n / POOL_TRIALS; };
+const share = (T) => { let n = 0; for (let r = 0; r < POOL_TRIALS; r++) n += poolTakes(T); return n / POOL_TRIALS; };
 const warm = share(FLAMBE_T), cold = share(PHYS.AMBIENT);
-ok(warm >= POOL_WARM_MIN, `a whiskey pool at ${FLAMBE_T} °C with a match held to it for ${MATCH_STEPS} steps burns down in ${(warm * 100).toFixed(0)} % of ${POOL_TRIALS} trials; at ${PHYS.AMBIENT} °C in ${(cold * 100).toFixed(0)} %`);
+ok(warm >= POOL_WARM_MIN, `a whiskey pool at ${FLAMBE_T} °C with a match held to it for ${MATCH_STEPS} steps takes the flame (${POOL_TAKEN}+ cells burnt or boiled off) in ${(warm * 100).toFixed(0)} % of ${POOL_TRIALS} trials; at ${PHYS.AMBIENT} °C in ${(cold * 100).toFixed(0)} %`);
 
 // ---- moss: a rock floor, a pool held by moss at x = 4, a rock wall at x = 8
 const DR = PHYS.DAMP_REACH;
@@ -195,6 +206,32 @@ function logScene({ water = true } = {}) {
   const w = logScene({ water: false });
   grow(w, GROW_STEPS, GROW_FAST);
   ok(cells(w, E.FUNGUS).length === 1, `fungus on a dry log never spreads: ${cells(w, E.FUNGUS).length} cell(s)`);
+}
+
+// ---- phase rows and Noita's reactions (el-core's cold, hot and REACTIONS)
+function heatedTo(key, T, steps = PHASE_STEPS) {
+  const w = world(6, 6);
+  for (let x = 0; x < 6; x++) w.put(x, 0, E.WALL);
+  w.put(2, 1, E[key], { T });
+  const i = w.idx(2, 1);
+  const hold = T > PHYS.AMBIENT ? Math.max : Math.min;
+  for (let s = 0; s < steps; s++) { w.T[i] = hold(w.T[i], T); w.step(); }   // held at T, as on a hot plate (or a cold one)
+  const c = {}; for (const id of w.id) if (id !== E.EMPTY && id !== E.WALL) c[ELEMENTS[id].key] = (c[ELEMENTS[id].key] ?? 0) + 1;
+  return c;
+}
+{
+  const b = heatedTo('BLOOD', 120), wh = heatedTo('WHISKEY', 90), wc = heatedTo('WHISKEY', 70);
+  ok(!b.BLOOD, `blood held at 120 °C boils away (its steam may condense and the cloud clear): ${JSON.stringify(b)}`);
+  ok(!wh.WHISKEY && wc.WHISKEY === 1, `whiskey boils between 70 and 90 °C (bubble point ${ELEMENTS[E.WHISKEY].hot.T} °C): at 90 ${JSON.stringify(wh)}, at 70 ${JSON.stringify(wc)}`);
+  const f = heatedTo('BLOOD', -10), fw = heatedTo('WHISKEY', -10);
+  ok(f.ICE === 1 && fw.WHISKEY === 1, `at -10 °C blood freezes (${JSON.stringify(f)}), whiskey (freezing at ${ELEMENTS[E.WHISKEY].cold.T} °C) doesn't (${JSON.stringify(fw)})`);
+}
+{
+  // water washes sludge away (Noita): a sludge layer under water
+  const w = world(10, 10);
+  for (let x = 0; x < 10; x++) { w.put(x, 0, E.TOXIC); w.put(x, 1, E.WATER); w.put(x, 2, E.WATER); }
+  for (let s = 0; s < SETTLE; s++) w.step();
+  ok(cells(w, E.TOXIC).length === 0, `water washes a sludge layer away (Noita's rule): ${cells(w, E.TOXIC).length} sludge cells left`);
 }
 
 console.log(failures ? `${failures} check(s) failed` : 'all checks passed');

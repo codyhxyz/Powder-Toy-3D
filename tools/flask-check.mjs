@@ -6,22 +6,96 @@
 // broken glass plus everything it held. Part 2 goes through the real shell and
 // body: H drinks, lava kills with its cause, whiskey's row sways the view, and each of
 // Noita's potions (potions.js) gives its status by touch and by drink.
-// usage: node tools/flask-check.mjs [--port 5433] [--shot file.png]   (needs a dev server; AC power)
+// The CPU part runs first, in node: the drink's shares and the ingestion rows on a body built as
+// player.js builds it (vitals, perks, a status set fed made-up contact cells), each potion's status
+// by touch and by drink, Regeneration, Berserk, Polymorph, Teleportitis's safe spots and the drunk sway.
+// usage: node tools/flask-check.mjs [--cpu] [--port 5433] [--shot file.png]
+//   --cpu: the node part only; without it the GPU part follows (needs a dev server; AC power)
 import { chromium } from 'playwright';
+import { E } from '../src/elements.js';
+import { createVitals } from '../src/pov/vitals.js';
+import { createPerkSet } from '../src/pov/perks.js';
+import { createStatusSet } from '../src/pov/status.js';
+import '../src/pov/stains.js';
+import { POTION_STATUS, POTION_TIMES, safeSpot } from '../src/pov/potions.js';
+import { ingest } from '../src/pov/ingest.js';
+import { createFeel } from '../src/pov/feel.js';
+import { DRINK_CELLS } from '../src/pov/tools/flask.tool.js';
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
 const port = opt('port', '5433');
 const shot = opt('shot');
+const cpuOnly = args.includes('--cpu');
 const W = 960, H = 600;
+let fails = 0;
+const check = (name, ok, info = '') => { if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${info ? `  ${typeof info === 'string' ? info : JSON.stringify(info)}` : ''}`); };
+const zero = (d) => Object.keys(d).length === 0;
+
+// ================= the CPU part
+{
+  const N = 200, DT = 1 / 60, T_ROOM = 20;
+  const full = (id) => [{ id, n: DRINK_CELLS, share: 1, T: T_ROOM }];
+  function makeBody() {
+    const perks = createPerkSet();
+    const ctx = { world: { burn() {}, spill() {} }, hurt: (a, c, o) => vitals.hurt(a, c, false, o) };
+    const body = { pos: { x: 0, y: 0, z: 0 }, perks };
+    const vitals = createVitals(() => {}, perks);
+    Object.defineProperties(body, {
+      skinT: { get: () => vitals.skinT, set: (t) => { vitals.skinT = t; } }, dead: { get: () => vitals.dead },
+      health: { get: () => vitals.health }, cause: { get: () => vitals.cause },
+    });
+    body.hurt = (a, c, o = {}) => vitals.hurt(a, c, true, { shielded: true, ...o });
+    body.heal = (a) => { vitals.health = Math.min(1, vitals.health + a); };
+    body.status = createStatusSet(body, ctx);
+    const env = { contactId: new Int32Array(N).fill(E.EMPTY), contactT: new Float32Array(N).fill(T_ROOM), contactLife: new Float32Array(N), contactN: N };
+    const run = (s) => { for (let t = 0; t < s / DT; t++) { vitals.update(DT, env); body.status.update(DT, env); } };
+    return { body, vitals, env, run };
+  }
+  // the built-in rows
+  { const a = makeBody(); a.vitals.skinT = 70; ingest(a.body, full(E.WATER)); check('cpu: water quenches and cools', a.body.skinT < 37 && a.body.health === 1, { skinT: +a.body.skinT.toFixed(1) }); }
+  { const a = makeBody(); ingest(a.body, full(E.ACID)); check('cpu: acid hurts', a.body.health < 1 && /acid/.test(a.vitals.cause || 'acid'), { health: a.body.health }); }
+  { const a = makeBody(); ingest(a.body, [{ id: E.LAVA, n: 1, share: 1 / DRINK_CELLS, T: 1600 }]); check('cpu: one cell of lava kills', a.body.dead && /Drank lava/.test(a.body.cause), { cause: a.body.cause }); }
+  { const a = makeBody(); ingest(a.body, full(E.OIL)); check('cpu: oil makes you sick', a.body.health < 1 && a.body.health > 0.8, { health: a.body.health }); }
+  {
+    const feel = createFeel({ hud: null });
+    feel.update({ dt: DT, live: true, eye: { x: 0, y: 0, z: 0 } });
+    const a = makeBody();
+    ingest(a.body, full(E.WHISKEY));
+    let roll = 0;
+    for (let t = 0; t < 5 / DT; t++) roll = Math.max(roll, Math.abs(feel.update({ dt: DT, live: true }).roll));
+    check('cpu: a full drink of whiskey: 30 s of Drunk, and the view sways', Math.abs(feel.drunk + 5 - 30) < 0.1 && roll > 0, { drunk: +feel.drunk.toFixed(1), roll });
+    feel.dispose();
+  }
+  // each potion's status by touch (half the skin in it for a second) and by drink (adding up)
+  for (const [el, st] of Object.entries({ ...POTION_STATUS, TOXIC: 'TOXIC' })) {
+    const a = makeBody();
+    for (let i = 0; i < N / 2; i++) a.env.contactId[i] = E[el];
+    a.run(1);
+    const b = makeBody();
+    ingest(b.body, full(E[el]));
+    const one = b.body.status.time(st);
+    ingest(b.body, full(E[el]));
+    check(`cpu: ${st} by touching and by drinking ${el}`, a.body.status.has(st) && b.body.status.has(st) && Math.abs(b.body.status.time(st) - 2 * one) < 1e-6,
+      { touch: +a.body.status.time(st).toFixed(1), drink: one, twoDrinks: b.body.status.time(st) });
+  }
+  { const a = makeBody(); a.vitals.hurt(0.7, 'test'); ingest(a.body, full(E.HEALTHIUM)); a.run(2); check('cpu: Regeneration heals 10% a second', Math.abs(a.body.health - (0.3 + 2 * POTION_TIMES.REGEN_RATE)) < 0.02, { health: +a.body.health.toFixed(3) }); }
+  { const a = makeBody(); ingest(a.body, full(E.BERSERKIUM)); ingest(a.body, full(E.POLYMORPHINE)); check('cpu: Berserk 2× dealt, Polymorph no tools', a.body.status.damageScale === 2 && a.body.status.noTools, {}); }
+  {
+    const floor = 4;   // a flat rock floor's top, 64³
+    const world = { dims: [64, 64, 64], standAt: () => floor, id: (x, y) => (y < floor ? E.ROCK : E.EMPTY), blocks: (x, y) => y < floor, isLiquid: () => false, hotNear: () => false };
+    const s = safeSpot(world, { x: 32, y: floor, z: 32 });
+    const d = s ? Math.hypot(s.x - 32, s.z - 32) : 0;
+    const lake = { ...world, id: (x, y) => (y < floor ? E.WATER : E.EMPTY), blocks: () => false, isLiquid: (x, y) => y < floor };
+    check('cpu: Teleportitis finds a spot on rock in reach, none on a lake', s && s.y === floor && d >= POTION_TIMES.TELEPORT_MIN && d <= POTION_TIMES.TELEPORT_MAX && safeSpot(lake, { x: 32, y: floor, z: 32 }) === null, { s, d: +d.toFixed(1) });
+  }
+}
+if (cpuOnly) { console.log(fails ? `${fails} failed` : 'all ok'); process.exit(fails ? 1 : 0); }
 
 const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
 const p = await b.newPage({ viewport: { width: W, height: H } });
 const errs = [];
 p.on('console', (m) => { if (m.type() === 'error' && !/ERR_CONNECTION_REFUSED/.test(m.text())) errs.push(m.text().slice(0, 600)); });
 p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 600)));
-let fails = 0;
-const check = (name, ok, info = '') => { if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${info ? `  ${typeof info === 'string' ? info : JSON.stringify(info)}` : ''}`); };
-const zero = (d) => Object.keys(d).length === 0;
 
 try {
   // ================= part 1: the toolbelt alone
@@ -201,7 +275,7 @@ try {
   await p.waitForFunction(() => window.__app?.pov, null, { timeout: 60000 });
   await p.waitForTimeout(1500);
   await p.mouse.move(W / 2, H * 0.62);
-  await p.keyboard.press('f');
+  await p.keyboard.press('v');   // V: into the body (app.js)
   await p.waitForFunction(() => window.__app.pov.mode === 'on', null, { timeout: 30000 });
   await p.evaluate(() => { window.__app.pov.test.assumeLocked = true; window.__app.pov.toolbelt.select('FLASK'); });
   await p.waitForTimeout(500);
