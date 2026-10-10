@@ -60,6 +60,9 @@ const SHORE_NOISE = 3;               // cells its shoreline wanders in by
 const BASIN_X0 = 108;                // the spillway basin's flat floor spans x in [BASIN_X0, NX - BASIN_X0)...
 const BASIN_Z0 = 30;                 // ...and z in [BASIN_Z0, DAM_Z0)
 const BASIN_BANK = 0.8;              // rise per cell of the basin's banks (walkable)
+const BOULDERS = [[113, 36, 3.4], [121, 46, 2.8], [125, 34, 2.2]];   // boulders in the basin (x, z, radius; red's half)
+const BOULDER_SQUASH = 0.75;         // their height over their width
+const BOULDER_ROUGH = 0.8;           // cells their surface wanders by
 const NOISE_CELL = 12;               // cells per lattice step of the ground's value noise
 const FLOOR_NOISE = 1.6;             // cells of rise and fall on the valley floor and slopes
 const RIDGE_NOISE = 5;               // cells of rise and fall on the ridges' faces
@@ -76,13 +79,13 @@ const TUN_PORTAL_COVER = 3;          // cells of rock a portal needs over its ro
 const ROOM_X0 = 114;                 // the pump room spans x in [ROOM_X0, NX - ROOM_X0)...
 const ROOM_Z0 = 54, ROOM_Z1 = 66;    // ...z in [ROOM_Z0, ROOM_Z1)...
 const ROOM_H = 14;                   // ...and this tall (the shrine's roof is 12 up)
-const GATE_X0 = 120;                 // the sluice gate spans x in [GATE_X0, NX - GATE_X0) of the room's back wall
-const GATE_H = 10;                   // ...this high from the room's floor
+const GATE_W = 6;                    // a sluice gate in each end of the room's back wall, this wide...
+const GATE_H = 10;                   // ...and this high from the room's floor
 const WINDOW_EVERY = 12;             // a window slit through the dam's face onto the tunnel every this many cells
 const WINDOW_W = 3, WINDOW_Y0 = 4, WINDOW_H = 3;   // a slit's width, its sill above the tunnel floor, its height
 const ROOM_WINDOW_Y0 = 3, ROOM_WINDOW_H = 7;       // the pump room's window band onto the basin
 const KEG_SIZE = 2;                  // construction size of the powder kegs by the gate
-const KEG_X = 116, KEG_Z = 63;       // a keg's middle (red side; the other mirrors it), clear of the shrine
+const KEG_X = ROOM_X0 + GATE_W / 2 - 1, KEG_Z = 63;   // a keg's middle, against the gate (red side; the other mirrors it)
 
 // ---- the bases (red's; blue's mirrors them)
 const FORT_X0 = 4, FORT_X1 = 32;     // the fortress's outer walls span x in [FORT_X0, FORT_X1)...
@@ -222,6 +225,12 @@ export const DAM_VALLEY_LAYOUT = {
   ]),
 };
 
+// Where the dam's working parts are, for tools/arena-check.mjs (grid cells).
+export const DAM_VALLEY_PARTS = {
+  lakeZ0: DAM_Z1, gateZ: [ROOM_Z1, DAM_Z1], gateY: [TUN_Y, TUN_Y + GATE_H], roomZ: [ROOM_Z0, ROOM_Z1],
+  keg: [KEG_X + 0.5, TUN_Y + 2, KEG_Z + 0.5], baseX1: BASE_X1, baseY: BASE_Y,
+};
+
 // Where each shrine's perk orbs float (grid cells: each orb's foot), as the
 // Shrine construction's anchors (constructions.js _anchored).
 // `s` is a layout shrine (feet on its floor).
@@ -263,13 +272,22 @@ export function buildDamValley() {
       height[z * NX + x] = h;
       box(x, 0, z, x + 1, h, z + 1, E.ROCK);
       const xr = mirror(x);
-      const grassy = h >= FLOOR_Y - 1 && h < CREST_Y && xr >= BASE_X1 && Math.min(z, NZ - 1 - z) > RIDGE_W
+      const grassy = h >= FLOOR_Y - 1 && h <= CREST_Y && xr >= BASE_X1 && Math.min(z, NZ - 1 - z) > RIDGE_W
         && !inLake(x, z) && rectDist(xr, z, LAKE_X0, MID_X, DAM_Z0, LAKE_Z1) > LAKE_CLEAR;
       if (grassy) put(x, h - 1, z, E.PLANT);
     }
   // the basin's dry riverbed: a layer of sand on its flat floor
   for (let z = BASIN_Z0; z < DAM_Z0; z++)
     for (let x = BASIN_X0; x < NX - BASIN_X0; x++) if (height[z * NX + x] === BASIN_Y) put(x, BASIN_Y - 1, z, E.SAND);
+
+  // boulders on it: cover on the low way across
+  for (const [bx, bz, r] of BOULDERS)
+    for (const x0 of [bx, NX - 1 - bx])
+      for (let y = BASIN_Y - 1; y <= BASIN_Y + r; y++)
+        for (let z = Math.floor(bz - r); z <= bz + r; z++)
+          for (let x = Math.floor(x0 - r); x <= x0 + r; x++)
+            if (Math.hypot(x - x0, (y - BASIN_Y + 1) / BOULDER_SQUASH, z - bz) <= r + BOULDER_ROUGH * noise(mirror(x) * NOISE_CELL / 2, y * NOISE_CELL / 2 + z, 5))
+              put(x, y, z, E.ROCK);
 
   // ---- the reservoir
   for (let z = DAM_Z1; z < LAKE_Z1; z++)
@@ -309,7 +327,8 @@ export function buildDamValley() {
   // the pump room in the middle, its sluice gate in the back wall, a window band onto the basin
   box(ROOM_X0, TUN_Y, ROOM_Z0, NX - ROOM_X0, TUN_Y + ROOM_H, ROOM_Z1, E.EMPTY);
   box(ROOM_X0, TUN_Y - 1, ROOM_Z0, NX - ROOM_X0, TUN_Y, ROOM_Z1, E.WALL);
-  box(GATE_X0, TUN_Y, ROOM_Z1, NX - GATE_X0, TUN_Y + GATE_H, DAM_Z1, E.WOOD);
+  box(ROOM_X0, TUN_Y, ROOM_Z1, ROOM_X0 + GATE_W, TUN_Y + GATE_H, DAM_Z1, E.WOOD);
+  box(NX - ROOM_X0 - GATE_W, TUN_Y, ROOM_Z1, NX - ROOM_X0, TUN_Y + GATE_H, DAM_Z1, E.WOOD);
   box(ROOM_X0, TUN_Y + ROOM_WINDOW_Y0, DAM_Z0, NX - ROOM_X0, TUN_Y + ROOM_WINDOW_Y0 + ROOM_WINDOW_H, ROOM_Z0, E.GLASS);
   // the powder kegs by the gate
   const keg = runGenerator(BUILTINS.BARREL, { size: KEG_SIZE, seed: SEED, variant: 'keg' });

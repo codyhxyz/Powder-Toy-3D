@@ -768,7 +768,7 @@ const toolbar = createToolbar({ views: VIEWS, settings, actions });
 const mp = createMultiplayer({ renderer, scene, camera, hud, getSim: () => sim, getVolume: () => volume, setGrid, inWorld: () => !!win });
 
 const fmtSpeed = (v) => `${v}×`;
-const SCENE_COLS = 3;   // world scenes per row of the Scene row (six don't fit the drawer's width in one)
+const SCENE_COLS = 3;   // scenes per row of the Scene row (five or six don't fit the drawer's width in one)
 const fmtTime = (v) => `${Math.floor(v)}:${String(Math.round((v % 1) * 60)).padStart(2, '0')}`;
 const settingsPanel = createSettings({
   settings,
@@ -777,7 +777,7 @@ const settingsPanel = createSettings({
   sections: [
     { title: 'Scene', rows: [
       // a box's scenes: clicking the current one reloads it; Empty clears
-      { type: 'seg', key: 'preset', hidden: () => !!win,
+      { type: 'seg', key: 'preset', hidden: () => !!win, cols: SCENE_COLS,
         options: [['empty', 'Empty'], ['lab', 'Lab'], ['volcano', 'Volcano'], ['island', 'Island'], ['damValley', 'Dam Valley']],
         onChange: (v) => {
           if (pickBoxScene(v)) hud.toast(`Loaded ${v === 'empty' ? 'an empty box' : v in ARENA_GRID ? arenaLayout?.name ?? v : `the ${v}`}`);

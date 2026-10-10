@@ -15,17 +15,26 @@
 // 'wide' grid's Lab; and with --shots <dir> takes the overview shots and a
 // contact sheet (ImageMagick's montage).
 //
-// usage: node tools/arena-check.mjs [--port 5404] [--secs 30] [--shots dir]
+// With --flood it then blows the dam (heats the powder keg by a sluice gate)
+// and checks the reservoir pours out through the tunnel and the bases stay dry.
+//
+// usage: node tools/arena-check.mjs [--port 5404] [--secs 30] [--shots dir] [--flood [--flood-secs 40]]
 import { execFileSync } from 'child_process';
 import { mkdirSync } from 'fs';
 import { E, ELEMENTS, K } from '../src/elements.js';
-import { ARENA_SIZE, DAM_VALLEY_LAYOUT, buildDamValley, shrineAltars } from '../src/arenas/damValley.js';
+import { ARENA_SIZE, DAM_VALLEY_LAYOUT, DAM_VALLEY_PARTS, buildDamValley, shrineAltars } from '../src/arenas/damValley.js';
 
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
 const port = opt('port', null);
 const secs = Number(opt('secs', 30));
 const shots = opt('shots', null);
+const flood = args.includes('--flood');      // also blow the dam (after the shots)
+const floodSecs = Number(opt('flood-secs', 40));
+const FLOOD_OUT = 2000;          // water cells out of the reservoir that count as a flood
+const HEAT_TOOL = -2;            // elements.js TOOLS: Heat
+const KEG_HEATS = 40;            // frames the keg is heated (each adds the tool's heat)
+const KEG_HEAT_R = 3;            // cells, the heat brush's radius
 const BODY_CELLS = 6;            // cells of air a standing body needs (5.5 tall)
 const JEEP_HALF = [8, 4];        // cells: a jeep's half-footprint (x, z) along its length...
 const BIKE_HALF = [3, 2];        // ...and a hoverbike's
@@ -288,6 +297,44 @@ if (port) {
       } catch (e) { console.log('montage failed:', String(e).slice(0, 200)); }
     }
 
+    // ---- blowing the dam: heat red's powder keg by its sluice gate, and the
+    // reservoir should pour through the pump room and out along the tunnel
+    if (flood) {
+      const where = () => ev(async (P) => {
+        const { E } = await import('/src/elements.js');
+        const a = window.__app, g = a.sim.g, [A] = a.sim.readState();
+        let out = 0, tunnel = 0, gate = 0, baseWet = 0, fire = 0;
+        for (let y = 0; y < g.ny; y++) for (let z = 0; z < g.nz; z++) for (let x = 0; x < g.nx; x++) {
+          const k = Math.round(A[a.sim.cellTexel(x, y, z) * 4]);
+          if (k === E.FIRE) fire++;
+          const gy = y >= P.gateY[0] && y < P.gateY[1];
+          if (k === E.WOOD && z >= P.gateZ[0] && z < P.gateZ[1] && gy) gate++;
+          if (k !== E.WATER) continue;
+          if (z < P.lakeZ0) out++;
+          if (z >= P.roomZ[0] && z < P.roomZ[1] && gy) tunnel++;
+          if ((x < P.baseX1 || x >= g.nx - P.baseX1) && y >= P.baseY) baseWet++;
+        }
+        return { out, tunnel, gate, baseWet, fire };
+      }, DAM_VALLEY_PARTS);
+      const f0 = await where();
+      await ev(async ([keg, n, r, tool]) => {
+        const a = window.__app, C = a.camera.position.constructor;
+        a.settings.paused = false;
+        for (let i = 0; i < n; i++) {
+          a.sim.paint({ center: new C(...keg), radius: r, shape: 1, tool, rate: 1, replace: false });
+          await new Promise((res) => requestAnimationFrame(res));
+        }
+      }, [DAM_VALLEY_PARTS.keg, KEG_HEATS, KEG_HEAT_R, HEAT_TOOL]);
+      const t1 = Date.now();
+      let f1 = f0;
+      while (Date.now() - t1 < floodSecs * 1000 && f1.out < FLOOD_OUT) { await p.waitForTimeout(3000); f1 = await where(); }
+      await ev(() => { window.__app.settings.paused = true; });
+      console.log(`flood after ${((Date.now() - t1) / 1000).toFixed(0)} s: ${JSON.stringify(f0)} → ${JSON.stringify(f1)}`);
+      check('the keg blows the sluice gate', f1.gate < f0.gate, `gate wood ${f0.gate} → ${f1.gate}`);
+      check('the reservoir floods out through the tunnel', f1.out >= FLOOD_OUT, `${f1.out} water cells out of the reservoir, ${f1.tunnel} in the pump room`);
+      check('the bases stay dry', f1.baseWet === 0, `${f1.baseWet}`);
+    }
+
     // ---- 'wide' with the Lab, for the step cost
     await ev(() => { const a = window.__app; a.settings.preset = 'lab'; a.setSize('wide'); });
     await frames(10);
@@ -295,6 +342,12 @@ if (port) {
     await p.waitForTimeout(3000);   // (the lab settles a little, as the valley did)
     await holdLoop();
     const wide = await stepMs();
+    // and the valley again (GPU contention from other work drifts: two samples of it)
+    await ev(() => { const a = window.__app; a.settings.preset = 'damValley'; a.setSize('valley'); });
+    await frames(10);
+    await holdLoop();
+    const valley2 = await stepMs();
+    console.log(`step ms, the valley rebuilt: ${JSON.stringify(valley2)}`);
     console.log(`step ms (median of ${STEP_CHUNKS}×${STEP_ITERS}): valley ${JSON.stringify(valley)}, wide+lab ${JSON.stringify(wide)}`);
     console.log(`ratio valley/wide: as run ${(valley.sleep / wide.sleep).toFixed(2)}, every supertile ${(valley.noSleep / wide.noSleep).toFixed(2)}, every brick awake ${(valley.awake / wide.awake).toFixed(2)}`);
   } catch (err) {
