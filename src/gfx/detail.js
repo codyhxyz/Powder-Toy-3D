@@ -17,6 +17,13 @@ import { CELL_M } from '../scale.js';
 
 export const BENCH_W = 1280, BENCH_H = 800;   // px, the benchmark viewport
 
+// Material texture LOD (shaders/gfx/surface.js lodFade): detail of spatial
+// frequency f is fully drawn up to DETAIL_FADE_LO cycles per pixel and gone at
+// DETAIL_FADE_HI, the Nyquist limit. TAA's sub-pixel jitter resolves what lies
+// between, so fading had started at 0.15 (~7 px per cycle) washed textures out
+// a few metres from the camera: bark was smooth plastic from any normal view.
+export const DETAIL_FADE_LO = 0.25, DETAIL_FADE_HI = 0.5;
+
 // Cost tiers, by extra GPU ms per frame (measured as above).
 export const COST_LOW_MS = 0.5;       // below this: low
 export const COST_MEDIUM_MS = 2;      // below this: medium; above it: high
@@ -40,15 +47,15 @@ const RELIEF_FADE_M = 0.0175;   // m per pixel
 const GRAINS_FADE_M = 0.05 / 8;           // m per pixel
 const CLODS_FADE_M = 0.34 * CELL_M / 8;   // m per pixel
 // Smoke filaments start once their coarser octave (FILAMENT_1_M = 20 cm)
-// passes the material LOD's fade-out (lodFade: DETAIL_FADE_HI = 0.4 cycles per
+// passes the material LOD's fade-out (lodFade: DETAIL_FADE_HI cycles per
 // pixel). The finer media sampling and flow-following apply at any distance
 // (no fadeM: always in).
-const MEDIA_FINE_FADE_M = 0.4 * 0.2;   // m per pixel
+const MEDIA_FINE_FADE_M = DETAIL_FADE_HI * 0.2;   // m per pixel
 // Liquid ripples (shaders/gfx/liquidDetail.js) start as their longest new
 // octave (24.5 cm) passes the same fade-out; the meniscus, over the capillary
 // length (2.7 mm for water), is averaged away once a pixel spans more than
 // MENISCUS_PX of them. Whitewater follows speed at any distance (no fadeM).
-const RIPPLE_FADE_M = 0.4 * 0.245;      // m per pixel
+const RIPPLE_FADE_M = DETAIL_FADE_HI * 0.245;   // m per pixel
 const MENISCUS_PX = 4;                  // capillary lengths per pixel
 const MENISCUS_FADE_M = MENISCUS_PX * 0.0027;   // m per pixel
 

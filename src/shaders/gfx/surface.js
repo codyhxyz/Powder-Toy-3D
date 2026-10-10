@@ -1,4 +1,5 @@
 import { reliefGLSL } from './relief.js';
+import { DETAIL_FADE_LO, DETAIL_FADE_HI } from '../../gfx/detail.js';
 
 // Opaque surfaces: per-element solid textures (world-space, so nothing
 // reveals the grid), bevelled crisp voxels, and energy-conserving PBR shading.
@@ -59,8 +60,8 @@ void surfView(vec3 eye, vec3 rd) {
 // size of a pixel at p, in grid units
 float footprint(vec3 p) { return distance(p, gEye) * gPixAng; }
 // weight of detail with spatial frequency f (cycles per cell): fades out
-// before it would alias (Nyquist = 0.5 cycles per pixel)
-const float DETAIL_FADE_LO = 0.15, DETAIL_FADE_HI = 0.4;   // fade range, cycles per pixel
+// before it would alias (Nyquist = 0.5 cycles per pixel; gfx/detail.js)
+const float DETAIL_FADE_LO = ${DETAIL_FADE_LO}, DETAIL_FADE_HI = ${DETAIL_FADE_HI};   // fade range, cycles per pixel
 float lodFade(float f, float fp) { return 1.0 - smoothstep(DETAIL_FADE_LO, DETAIL_FADE_HI, f * fp); }
 
 // ---- material noise (all world space; the lattice is rotated so it never lines up with the grid) ----
@@ -350,8 +351,12 @@ vec4 rockCrags(vec3 p, vec4 lo, float fp, out float ws) {
   return vec4(hc, gc);
 }
 // Wood bark: long corky plates (cellular cells stretched along y, turned about
-// it), split by V furrows, each plate slightly domed. Returns (height,
-// gradient); mv = the furrows' meander noise, c = the plate cell (mCell).
+// it), split by V furrows, each plate slightly domed; and, a scale up, ridges
+// of plates split by deep fissures (crease noise stretched along y), which is
+// what still reads as bark from across the box, long after the plates are
+// sub-pixel. Returns (height, gradient); mv = the furrows' meander noise, c =
+// the plate cell (mCell), fr = 0 down a fissure .. 1 on a ridge (faded to its
+// area mean far away).
 const float WOOD_PLATE_W_M = 0.05, WOOD_PLATE_L_M = 0.3;    // m: plates ~5 cm wide, ~30 cm long (big trunk)
 const float WOOD_PLATE_FH = CELL_M / WOOD_PLATE_W_M, WOOD_PLATE_FV = CELL_M / WOOD_PLATE_L_M;   // plates per cell: across, along
 const float WOOD_MEANDER_M = 0.27;           // m, furrow meander wavelength
@@ -364,8 +369,14 @@ const float WOOD_FUR_DEPTH = 0.015 / CELL_M, WOOD_PLATE_DOME = 0.006 / CELL_M;  
 // of WOOD_PLATE_FH (plates fully drawn while ~10 px across, ~10 m away).
 const float WOOD_FURROW_LOD = 1.3;
 const int WOOD_MEANDER_OCT = 2, WOOD_WAVE_OCT = 1;       // fBm octaves
+const float WOOD_RIDGE_W_M = 0.15, WOOD_RIDGE_L_M = 0.9; // m: ridges of plates ~15 cm apart, ~90 cm long
+const float WOOD_RIDGE_FH = CELL_M / WOOD_RIDGE_W_M, WOOD_RIDGE_FV = CELL_M / WOOD_RIDGE_L_M;   // per cell: across, along
+const float WOOD_FISSURE_W = 0.2;            // fissure half-width in crease units (|2n - 1|): ~20% of the bark
+const float WOOD_FISSURE_MEAN = 0.8;         // area mean of smoothstep(0, WOOD_FISSURE_W, crease) (value noise, sampled)
+const float WOOD_FISSURE_DEPTH = 0.02 / CELL_M;   // fissures 2 cm below the plates' furrows' level, in cells
+const vec3 WOOD_FISSURE_SALT = vec3(3.7);    // decorrelates the fissures from the other layers
 const vec2 WOOD_TOP_EDGE = vec2(0.6, 0.9);   // |n.y| range over which a face turns into end grain
-vec4 woodPlates(vec3 p, float fp, out vec4 mv, out vec4 c) {
+vec4 woodPlates(vec3 p, float fp, out vec4 mv, out vec4 c, out float fr) {
   mat3 J = TURN_Y30 * mat3(WOOD_PLATE_FH, 0.0, 0.0, 0.0, WOOD_PLATE_FV, 0.0, 0.0, 0.0, WOOD_PLATE_FH);
   mv = mFbmD(p, WOOD_MEANDER_F, WOOD_MEANDER_OCT, fp);
   vec4 wv = mFbmD(p, WOOD_WAVE_F, WOOD_WAVE_OCT, fp);
@@ -375,7 +386,14 @@ vec4 woodPlates(vec3 p, float fp, out vec4 mv, out vec4 c) {
   float lwF = lodFade(WOOD_PLATE_FH * WOOD_FURROW_LOD, fp);
   // furrow: up from its floor to the plate; dome: down from the plate's seed
   float h = WOOD_FUR_DEPTH * smoothstep(0.0, WOOD_FUR_W, c.y) - 0.5 * WOOD_PLATE_DOME * dot(r1, r1);
-  return vec4(lwF * h, lwF * transpose(J) * (WOOD_FUR_DEPTH * dSmooth(0.0, WOOD_FUR_W, c.y) * ge + WOOD_PLATE_DOME * r1));
+  vec4 pl = lwF * vec4(h, transpose(J) * (WOOD_FUR_DEPTH * dSmooth(0.0, WOOD_FUR_W, c.y) * ge + WOOD_PLATE_DOME * r1));
+  // fissures: down from the plates' level (the relief's top stays the plates')
+  mat3 JR = TURN_Y30 * mat3(WOOD_RIDGE_FH, 0.0, 0.0, 0.0, WOOD_RIDGE_FV, 0.0, 0.0, 0.0, WOOD_RIDGE_FH);
+  vec4 cr = mCreaseJ(pw, JR, WOOD_FISSURE_SALT);
+  float lwR = lodFade(WOOD_RIDGE_FH * WOOD_FURROW_LOD, fp);
+  float ridge = smoothstep(0.0, WOOD_FISSURE_W, cr.x);
+  fr = mix(WOOD_FISSURE_MEAN, ridge, lwR);
+  return pl + lwR * WOOD_FISSURE_DEPTH * vec4(ridge - 1.0, dSmooth(0.0, WOOD_FISSURE_W, cr.x) * cr.yzw);
 }
 // share of sawn end grain (no bark) on a face with normal n
 float woodEndGrain(vec3 n) { return smoothstep(WOOD_TOP_EDGE.x, WOOD_TOP_EDGE.y, abs(n.y)); }
@@ -389,7 +407,7 @@ vec4 reliefHeight(int id, vec3 p, vec3 n, float fp) {
   if (id == E_GUNPOWDER) return POWDER_LUMP_H * powderLumps(p, fp);
   if (id == E_ASH) return ASH_LUMP_H * ashLumps(p, fp);
   if (id == E_ROCK) { float ws; return ROCK_CRAG_H * rockCrags(p, rockLumps(p, fp), fp, ws); }
-  if (id == E_WOOD) { vec4 mv, c; return woodPlates(p, fp, mv, c) * (1.0 - woodEndGrain(n)); }
+  if (id == E_WOOD) { vec4 mv, c; float fr; return woodPlates(p, fp, mv, c, fr) * (1.0 - woodEndGrain(n)); }
   return vec4(0.0);
 }
 
@@ -577,7 +595,8 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
     const float FURROW_CAV = 0.3;                  // cavity term down in a furrow
     const vec3 FLAKE_SALT = vec3(13.1), FIB_SALT = vec3(5.7);   // noise offsets (decorrelate the layers)
     vec4 mv, c;
-    vec4 pl = woodPlates(p, fp, mv, c);
+    float fr;   // 0 down a fissure .. 1 on a ridge
+    vec4 pl = woodPlates(p, fp, mv, c, fr);
     vec4 fl = mNoiseJ(p, TURN_Y30 * mat3(FLAKE_FH, 0.0, 0.0, 0.0, FLAKE_FV, 0.0, 0.0, 0.0, FLAKE_FH), FLAKE_SALT);
     vec4 fb = mNoiseJ(p, TURN_Y30 * mat3(FIB_FH, 0.0, 0.0, 0.0, FIB_FV, 0.0, 0.0, 0.0, FIB_FH), FIB_SALT);
     // narrow furrows alias sooner than the plate frequency says
@@ -585,10 +604,11 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
     float ridge = smoothstep(0.0, WOOD_FUR_W, c.y);   // 0 in a furrow, 1 on a plate
     float rl = mix(RIDGE_MEAN, ridge, lwF);
     vec3 plate = mix(vec3(1.0), (PLATE_SHADE_MIN + PLATE_SHADE_RANGE * c.z) * mix(vec3(1.0), GREY, c.w), lwF);
-    m.alb *= mix(FURROW, plate, rl) * (1.0 + MEANDER_ALB * mv.x) * (1.0 + FLAKE_ALB * lwL * (fl.x - 0.5))
-           * (1.0 + FIB_ALB * lwB * (fb.x - 0.5));
+    // (fissures keep the bark's mean albedo: they darken their share, the ridges make it up)
+    m.alb *= mix(FURROW, plate, rl) * mix(FURROW, vec3(1.0), fr) / mix(FURROW, vec3(1.0), WOOD_FISSURE_MEAN) * (1.0 + MEANDER_ALB * mv.x)
+           * (1.0 + FLAKE_ALB * lwL * (fl.x - 0.5)) * (1.0 + FIB_ALB * lwB * (fb.x - 0.5));
     m.g = pl.yzw + lwL * FLAKE_H * ridge * fl.yzw + lwB * FIB_H * fb.yzw;
-    m.cav = mix(FURROW_CAV, 1.0, rl);
+    m.cav = mix(FURROW_CAV, 1.0, rl) * mix(FURROW_CAV, 1.0, fr);
     // Sawn end grain on top faces: growth rings around the pith of each log
     // (piths on a coarse jittered lattice), wobbling with the grain, latewood
     // bands darker, heartwood darker than sapwood.

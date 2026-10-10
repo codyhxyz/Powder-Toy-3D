@@ -27,7 +27,11 @@
 // scatters isotropically.
 // Flames are soot: sheets with a sharp edge that rise in tongues, absorbing and
 // emitting blackbody light (Kirchhoff) at the temperature of the burning gas,
-// hotter in the core, with a flicker.
+// hotter in the core, with a flicker. Tongues are sized like a real fire's
+// (a few tenths of its width), and they split dense fire as well as its edge,
+// so a big fire is a crown of tongues, not a ball. Inside, the soot gathers
+// on thin wrinkled sheets (flamelets) around the noise's mid-level, which
+// keeps the mean density: a flame is streaked, not an even glow.
 import { mediaDetailGLSL } from './mediaDetail.js';
 
 export const mediaGLSL = /* glsl */ `
@@ -52,7 +56,12 @@ uniform highp sampler3D tMediaNoise;   // r billows, g wisps, b flame tongues, a
 // Flames are sheets with a sharp luminous edge: the fire density, displaced by
 // rising tongue noise, crosses FLAME_LEVEL there.
 #define FLAME_STRETCH 2.0       // tongues are this much taller than wide (a power of 2: seamless clock wrap)
+#define FLAME_SCALE 2.0         // tongue noise read this many times finer than smoke's (a whole number:
+                                // seamless clock wrap): its finest tongues ~2 cells (0.6 m) across
 #define FLAME_DETAIL 0.3        // how far the tongues displace the flame's edge (fire density units)
+#define FLAME_SPLIT 0.85        // ...and how much they scale the fire around its mean (0-1): dense fire splits too
+#define FLAME_SHEET 0.6         // share of the soot that gathers on the flamelet sheets (0 = an even glow)
+#define FLAME_SHEET_EXP 2.0     // their sharpness: soot ~ (1 - |2n - 1|)^this, (this + 1) times that keeps the mean
 #define FLAME_LEVEL 0.12        // fire density at the flame's edge
 #define FLAME_SOFT 0.05         // half-width of that edge
 #define FLAME_FLICKER 0.12      // turbulent temperature fluctuation of flames (relative)
@@ -92,14 +101,15 @@ const vec3 MD_TRANSPORT = MD_EXT * (1.0 - MD_ALBEDO * MD_G);
 
 ${mediaDetailGLSL}
 
-// Detail noise at p, drifting up at 'rise' cells/step and stretched along y.
-vec4 gasNoise(vec3 p, float rise, float stretch) {
+// Detail noise at p, read 'scale' times finer (a whole number), drifting up
+// at 'rise' cells/step and stretched along y.
+vec4 gasNoise(vec3 p, float rise, float stretch, float scale) {
 #ifdef DETAIL_MEDIA_FLOW
-  return flowNoise(p, 1.0, vec3(0.0), stretch);   // riding the flow instead
+  return flowNoise(p, scale, vec3(0.0), stretch);   // riding the flow instead
 #endif
   p = worldPos(p);   // anchored in the world
   p.y = (p.y - mod(uSimClock * rise, MEDIA_NOISE_CELLS * stretch)) / stretch;
-  return texture(tMediaNoise, p * (1.0 / MEDIA_NOISE_CELLS));
+  return texture(tMediaNoise, p * (scale / MEDIA_NOISE_CELLS));
 }
 
 // Smoke and steam detail: dense gas billows (finer wisps on top); thin gas,
@@ -125,7 +135,7 @@ vec3 gasDensity(vec3 p, float warp, out vec4 m, out vec4 nf) {
   // transmittance, a shell around the eye) shears the advected noise into rings
   gFlowV = flowVel(p);
 #endif
-  vec4 n = gasNoise(p, MD_RISE.y, 1.0);
+  vec4 n = gasNoise(p, MD_RISE.y, 1.0, 1.0);
   if (warp > 0.0) {
     p += warp * (2.0 * n.gba - 1.0);
     m = mediaField(p);
@@ -141,12 +151,15 @@ vec3 gasDensity(vec3 p, float warp, out vec4 m, out vec4 nf) {
   }
 #endif
   if (d.z > 0.0) {
-    nf = gasNoise(p, MD_RISE.z, FLAME_STRETCH);
-    float v = d.z + FLAME_DETAIL * (nf.b - NOISE_MEAN);
+    nf = gasNoise(p, MD_RISE.z, FLAME_STRETCH, FLAME_SCALE);
+    float v = d.z * (1.0 + FLAME_SPLIT * (2.0 * nf.b - 1.0)) + FLAME_DETAIL * (nf.b - NOISE_MEAN);
 #ifdef DETAIL_MEDIA_FINE
     if (fw.x > 0.0) v += flameFine(fw, f1, f2);
 #endif
     d.z = smoothstep(FLAME_LEVEL - FLAME_SOFT, FLAME_LEVEL + FLAME_SOFT, v);
+    // flamelets: the soot on the sheets where the wisp noise crosses its mean
+    float sheet = (FLAME_SHEET_EXP + 1.0) * pow(1.0 - abs(2.0 * nf.g - 1.0), FLAME_SHEET_EXP);
+    d.z *= 1.0 + FLAME_SHEET * (sheet - 1.0);
   }
   return d;
 }
@@ -175,7 +188,7 @@ vec3 gasSun(vec3 p, float sigT) {
   vec4 m = mediaField(q);
   if (max(m.x, max(m.y, m.z)) <= MEDIA_FLOOR) return T;
   vec3 d = gasBase(m);
-  d.xy = gasDetail(d.xy, gasNoise(q, MD_RISE.y, 1.0));
+  d.xy = gasDetail(d.xy, gasNoise(q, MD_RISE.y, 1.0, 1.0));
   return T * exp(-dot(MD_EXT, d) * SELF_SHADOW_DIST);
 }
 

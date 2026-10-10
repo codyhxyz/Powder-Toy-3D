@@ -79,10 +79,12 @@ const float SHADOW_BIAS_MIN = 0.8;
 const float SHADOW_BIAS_NS_MIN = 0.25;
 const float SHADOW_BIAS_PAD = 0.1;
 const float VOLUME_SHADOW_BIAS = 0.6;      // depth bias (voxels) for points inside volumes (no normal)
-// Exact sun rays: a smooth opaque surface's own cells are ignored for this many
-// voxels from the start, and the ray stops this far past the nearest occluder
-// depth the shadow-map taps saw.
-const float SUN_RAY_SELF_SKIP = 1.2;
+// Exact sun rays: smooth opaque surfaces block them where their field is
+// inside (by SUN_RAY_ISO_MARGIN: trilinear creases wobble about the level),
+// except within SUN_RAY_SMOOTH_SKIP voxels of the start, which sits on one;
+// the ray stops this far past the nearest occluder depth the shadow-map taps saw.
+const float SUN_RAY_SMOOTH_SKIP = 0.5;
+const float SUN_RAY_ISO_MARGIN = 0.02;
 const float SUN_RAY_REACH_PAD = 1.5;
 const float SUN_RAY_NUDGE = 1e-4;          // voxels past the box entry at which the start cell is looked up
 
@@ -166,10 +168,12 @@ void sunBasis(out vec3 c, out float R, out vec3 u, out vec3 v) {
 #endif
 }
 
-// 1 if the ray from ro toward the sun gets tLim voxels without entering an
-// opaque voxel, else 0 (exact DDA, same traversal as the view rays). Cells of
-// a smooth opaque surface only count beyond SUN_RAY_SELF_SKIP: the surface the
-// ray starts on may sit inside its own cells.
+// 1 if the ray from ro toward the sun gets tLim voxels without entering
+// opaque matter, else 0 (exact DDA, same traversal as the view rays). Crisp
+// voxels block as cubes. Smooth surfaces block as drawn, by their field (as
+// the shadow map pass sees them), not as their cells: the cells' staircase
+// stands proud of a smooth slope, and on lit sand it cut jagged shadows.
+float smoothOpaque(vec3 p) { vec4 s = surfField(p); return max(s.y, max(s.z, s.w)); }
 float sunRayClear(vec3 ro, float tLim) {
   vec3 rd = safeDir(uSun);
   vec3 bh = boxHit(ro, rd);
@@ -180,6 +184,7 @@ float sunRayClear(vec3 ro, float tLim) {
   ivec3 cell = clamp(ivec3(floor(ro + rd * (t + SUN_RAY_NUDGE))), ivec3(0), GRID - 1);
   vec3 tMax = (vec3(cell) + step(0.0, rd) - ro) / rd;
   float tEnter = t;
+  float tSkip = t + SUN_RAY_SMOOTH_SKIP;
   ivec3 lastB = ivec3(-1);
   float occ = 0.0;
   for (int i = 0; i < MAX_STEPS; i++) {
@@ -188,8 +193,17 @@ float sunRayClear(vec3 ro, float tLim) {
     if (bc != lastB) { lastB = bc; occ = brickOcc(bc); }
     if (occ < 0.5) { skipEmpty(bc, ro, rd, istp, cell, tMax, tEnter); continue; }
     int id = eid(fetchA(cell));
-    if (id != E_EMPTY && RCLASS[id] == R_OPAQUE && (isCrisp(id) || tEnter - t > SUN_RAY_SELF_SKIP)) return 0.0;
     int ax = argmin3(tMax);
+    float tExit = min(tMax[ax], tLim);
+    if (isCrisp(id)) {
+      if (RCLASS[id] == R_OPAQUE) return 0.0;
+    } else {
+      // where the ray passes closest to the cell centre (a lone grain can
+      // sit between the ends) and where it leaves the cell
+      float tM = tClosest(cell, ro, rd, tEnter, tExit);
+      if (tM > tSkip && smoothOpaque(ro + rd * tM) > SURF_ISO + SUN_RAY_ISO_MARGIN) return 0.0;
+      if (tExit > tSkip && smoothOpaque(ro + rd * tExit) > SURF_ISO + SUN_RAY_ISO_MARGIN) return 0.0;
+    }
     tEnter = tMax[ax];
     cell[ax] += istp[ax];
     tMax[ax] += tDelta[ax];
@@ -441,9 +455,16 @@ float fieldAO(vec3 p, vec3 n) {
 // First matter a ray from ro along rd enters within tLim cells: returns its
 // distance (or -1) and the cell and entry-face normal. opaqueOnly: only matter
 // that blocks light outright counts (shadow rays); otherwise anything but gas
-// does (AO). Smooth surfaces sit inside their own cells, so non-crisp cells
-// count only from selfSkip cells out; the floor counts as matter.
+// does (AO). Smooth surfaces count as drawn, where their field is inside
+// (sampled where the ray passes closest to the cell centre: their cells'
+// staircase stands proud of a slope), and only from selfSkip cells out, since
+// the ray starts by one; the floor counts as matter.
 const int NEAR_MAX_STEPS = 48;   // cells (or empty-region jumps) a traced ray may visit
+// Whether p is inside a smooth surface (opaqueOnly: an opaque one; else liquid too).
+bool nearSmoothIn(vec3 p, bool opaqueOnly) {
+  vec4 s = surfField(p);
+  return max(max(s.y, s.z), max(s.w, opaqueOnly ? 0.0 : s.x)) >= SURF_ISO;
+}
 float traceNear(vec3 ro, vec3 rd, float tLim, bool opaqueOnly, float selfSkip, out ivec3 hc, out vec3 hn) {
   rd = safeDir(rd);
   ivec3 istp = ivec3(sign(rd));
@@ -464,13 +485,14 @@ float traceNear(vec3 ro, vec3 rd, float tLim, bool opaqueOnly, float selfSkip, o
     if (bc != lastB) { lastB = bc; occ = brickOcc(bc); }
     if (occ < 0.5) { ax = skipEmpty(bc, ro, rd, istp, cell, tMax, tEnter); continue; }
     int id = eid(fetchA(cell));
+    int axOut = argmin3(tMax);
     if (id != E_EMPTY && KIND[id] != K_GAS && (!opaqueOnly || RCLASS[id] == R_OPAQUE)
-        && (isCrisp(id) || tEnter > selfSkip)) {
+        && (isCrisp(id) || (tEnter > selfSkip && nearSmoothIn(ro + rd * tClosest(cell, ro, rd, tEnter, tMax[axOut]), opaqueOnly)))) {
       hc = cell;
       hn = vec3(0.0); hn[ax] = -float(istp[ax]);
       return tEnter;
     }
-    ax = argmin3(tMax);
+    ax = axOut;
     tEnter = tMax[ax];
     cell[ax] += istp[ax];
     tMax[ax] += tDelta[ax];
