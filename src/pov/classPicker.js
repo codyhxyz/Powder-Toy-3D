@@ -104,7 +104,8 @@ export function createClassPicker(env) {
     h('span.cp-stats', {}, STATS.map(({ key, name }) => h('span.cp-stat', {},
       h('span', { text: name }),
       h('i', { style: `--v:${Math.max(1, Math.round(stats[key] * STAT_PIPS)) / STAT_PIPS}` })))));
-    card.addEventListener('mouseenter', () => setFocus(i, false));
+    // focus follows the mouse once it moves (not when the cards slide in under a resting cursor)
+    card.addEventListener('pointermove', () => { if (focus !== i) setFocus(i, false); });
     card.addEventListener('focus', () => setFocus(i, false));
     card.addEventListener('click', () => choose(cls.key, { close: true }));
     return { card, img, cls };

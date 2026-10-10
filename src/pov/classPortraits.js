@@ -15,11 +15,11 @@ import { attachModel, MODELS } from './models.js';
 export const PORTRAIT_W = 240;          // px drawn (the card shows it at half: sharp on a 2x screen)
 export const PORTRAIT_H = 300;
 const FOV = 24;                         // degrees: long lens, little distortion
-const FRAME_MARGIN = 1.12;              // room round the figure's box
+const FRAME_MARGIN = 1.04;              // room round the figure's box
 const FRAME_LIFT = 0.04;                // share of the box height the frame centre sits above the box centre (room for the hood)
 const LOW_ANGLE = 0.12;                 // rad the camera looks up at the figure: heroic
-const YAW = 0.55;                       // rad the figure turns to its left: three-quarter view
-const HELD_SCALE = 1.8;                 // a tool's viewmodel (sized for the eye) grown to read in the mitten (npc.js's)
+const YAW = 0.95;                       // rad the figure turns to screen right: nearly Castle Crashers' side view, the tool out in front
+const HELD_SCALE = 3.2;                 // a tool's viewmodel (sized for the eye) grown to Castle Crashers' size, to read in a thumbnail
 
 // look
 const TONES = [0.38, 1];                // toon ramp: shaded, lit (Castle Crashers' two tones)
@@ -36,7 +36,8 @@ const EYE_GAIN = 2.2;                   // eyes glow in the class colour, this b
 const OUTLINE_W = 0.09;                 // cells
 const OUTLINE_COLOR = 0x0a0608;
 const FLAME = [1, 0.62, 0.22];          // jet flame colour (unlit)
-const FLAME_LEN = 1.6;                  // × the flame mesh's length, at full burn
+const FLAME_LEN = 3;                    // × the flame mesh's length: long enough to show below the robe
+const FLAME_WIDTH = 1.8;                // × its width, to read at a thumbnail's size
 
 // Poses: joint angles in radians (figure.js's rig: x swings a limb forward,
 // z out to the side; knees bend back with −x). sh/hip: [x, z]; el/kn: x.
@@ -46,8 +47,8 @@ const AIM = { shR: [1.25, 0.06], elR: 0.25, shL: [0.95, 0.42], elL: 0.75, hipL: 
 const POSES = {
   aim: AIM,
   shoulder: { ...AIM, shR: [1.55, 0.1], elR: 0.05, shL: [1.25, 0.5], elL: 0.5, hipL: [0.3, -0.15], knL: -0.3, hipR: [-0.25, 0.12], knR: -0.2 },
-  sprint: { shR: [-0.7, 0.15], elR: 1.3, shL: [0.9, -0.15], elL: 1.1, hipL: [0.95, -0.05], knL: -0.5, hipR: [-0.55, 0.05], knR: -1.3, lean: 0.32, lift: 0.35 },
-  hover: { shR: [1.0, 0.12], elR: 0.35, shL: [0.3, -0.75], elL: 0.4, hipL: [0.35, -0.12], knL: -0.7, hipR: [0.15, 0.12], knR: -0.45, lift: 1.4, flames: true },
+  sprint: { shR: [1.7, 0.1], elR: 0.5, shL: [-0.8, -0.15], elL: 0.9, hipL: [0.95, -0.05], knL: -0.4, hipR: [-0.6, 0.05], knR: -1.4, lean: 0.3, lift: 0.35 },
+  hover: { shR: [1.0, 0.12], elR: 0.35, shL: [0.3, -0.75], elL: 0.4, hipL: [0.35, -0.12], knL: -0.7, hipR: [0.15, 0.12], knR: -0.45, lean: 0.18, lift: 1.8, flames: true },
   brace: { shR: [1.05, 0.0], elR: 0.45, shL: [1.0, 0.35], elL: 0.9, hipL: [0.25, -0.32], knL: -0.35, hipR: [-0.2, 0.32], knR: -0.3, lean: 0.12, drop: 0.22 },
   sneak: { shR: [0.55, 0.12], elR: 0.9, shL: [0.6, -0.2], elL: 1.2, hipL: [1.0, -0.12], knL: -1.5, hipR: [0.35, 0.12], knR: -1.2, lean: 0.45, drop: 0.5 },
   swing: { shR: [2.75, 0.18], elR: 0.55, shL: [0.5, -0.35], elL: 0.6, hipL: [0.3, -0.15], knL: -0.25, hipR: [-0.3, 0.15], knR: -0.25, lean: -0.08, grip: -0.5 },
@@ -111,7 +112,7 @@ function buildFigure({ color, pose, model }, k) {
   rig.torso.rotation.x = -(P.lean ?? 0);
   // sleeves a shade darker than the robe, so the arms read against it
   for (const j of [rig.shL, rig.shR, rig.elL, rig.elR]) j.children.forEach((m) => { if (m.isMesh && m.userData.albedo === palette.robe) m.userData.albedo = shade(accent, SLEEVE_SHADE); });
-  for (const f of rig.flames) { f.visible = !!P.flames; f.material.color.setRGB(...FLAME); f.scale.y = FLAME_LEN; }
+  for (const f of rig.flames) { f.visible = !!P.flames; f.material.color.setRGB(...FLAME); f.scale.set(FLAME_WIDTH, FLAME_LEN, FLAME_WIDTH); }
 
   // the tool in the right mitten, held along the forearm, levelled toward forward
   let held = null;
@@ -138,7 +139,7 @@ function buildFigure({ color, pose, model }, k) {
   root.traverse((o) => {
     if (o.isMesh && o.userData.albedo != null && o.userData.outline && !o.userData.glow) o.add(new THREE.Mesh(o.geometry, k.outline));
   });
-  root.rotation.y = YAW;
+  root.rotation.y = P.yaw ?? YAW;
   return {
     root, accent,
     dispose() {
@@ -156,7 +157,7 @@ function draw(entry) {
   k.scene.add(fig.root);
   fig.root.updateMatrixWorld(true);
   // frame the posed figure: its box, from the front (the figure faces −z)
-  const box = new THREE.Box3().setFromObject(fig.root, true);
+  const box = new THREE.Box3().setFromObject(fig.root, true).expandByPoint(new THREE.Vector3(0, 0, 0));   // and the ground under it (a hover reads)
   const c = box.getCenter(new THREE.Vector3()), s = box.getSize(new THREE.Vector3());
   c.y += s.y * FRAME_LIFT;
   const half = (Math.max(s.y, s.x / k.camera.aspect) / 2) * FRAME_MARGIN;
