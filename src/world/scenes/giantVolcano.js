@@ -211,7 +211,8 @@ const MATTER_TOP = Math.max(CONDUIT_TOP, VOLC_FLOOR + CONE_H + SNOW_DEPTH,
 // a trunk on the outermost ring still stands on the shore, not in the sea
 if (topAt(TREE_IN + (TREE_RINGS - 1) * TREE_RING_W + TRUNK_REACH) <= VOLC_SEA) throw new Error('giant volcano: trees stand in the sea');
 
-const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
+const GLSL_DIGITS = 6;            // decimals a float #define keeps (float32 holds ~7 significant digits)
+const f = (x) => { const r = +x.toFixed(GLSL_DIGITS); return Number.isInteger(r) ? r.toFixed(1) : String(r); };
 const glsl = () => /* glsl */ `
 #define GVOL_CENTER vec2(${f(CENTER[0])}, ${f(CENTER[1])})   // the summit's column
 #define GVOL_R ${f(CONE_R)}             // the cone's radius at its foot
