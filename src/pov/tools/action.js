@@ -37,8 +37,10 @@ export function trigger(interval, { hold = true, button = 'primary' } = {}) {
   // one starts that much early (HL2: m_flNextPrimaryAttack += fire rate), so a
   // held SMG keeps its 13 a second at 30 fps instead of rounding up to every
   // third frame. At most one frame's worth carries over: no burst after a pause.
+  // Only an overshoot carries: a click that fires before the held repeat was
+  // due restarts that wait rather than adding to it.
   let wait = 0, queued = 0, heldWait = 0, frame = 0;
-  const carry = (w) => Math.max(w, -frame);
+  const carry = (w) => Math.min(0, Math.max(w, -frame));
   return {
     // true when the tool should act this frame (call once a frame while selected)
     ready(ctx) {

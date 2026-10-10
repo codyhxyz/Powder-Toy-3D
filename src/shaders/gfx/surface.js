@@ -1304,6 +1304,7 @@ vec3 shadeSurf(Surf s, vec3 rd) {
   c += (envL * FssEss * hor * hor + irr * Fms * Ems) * specAO;
   // indirect (sky + bounce) and glow volume: diffuse
   c += kD * (ind + local * (LOCAL_AO_MIN + LOCAL_AO_GAIN * aoT));
+  if (uLampCount > 0) c += kD * lampLight(s.p, ng, n);   // a torch or lantern (traced shadows, so no AO)
   return c + s.emit;
 }
 
@@ -1324,6 +1325,7 @@ vec3 shadeFloor(vec3 hp, vec3 rd) {
   vec3 pf = vec3(hp.x, 0.0, hp.z);
   if (uNearGI) ind = nearField(pf, n, n, irr, ao);
   if (glowWorthIt(local, irr)) local *= glowLightScale(pf, n, n);
-  return alb * (SUN_COL * ndl * sh + ind + local * (LOCAL_AO_MIN + LOCAL_AO_GAIN * ao));
+  vec3 lamps = uLampCount > 0 ? lampLight(pf, n, n) : vec3(0.0);
+  return alb * (SUN_COL * ndl * sh + ind + local * (LOCAL_AO_MIN + LOCAL_AO_GAIN * ao) + lamps);
 }
 `;

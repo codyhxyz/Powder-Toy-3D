@@ -141,8 +141,8 @@ const PRESETS = {
   pourLoop: [.45, 0, 300, , 1, 0, 4, 1, , , , , .07, 6, , , , .7, , .25, -1600],
   // axe or pickaxe swing: an airy whoosh that rises through the swing
   swoosh: [.5, .1, 140, .06, .04, .14, 4, 1, 4, , , , , 6, , , , .7, , , -900],
-  // blowtorch burning (loops): a steady high-passed roar of noise with a slight flutter
-  torchLoop: [.35, 0, 200, , 1, 0, 4, 1, , , , , , 12, , , , .9, , .08, 900],
+  // flamethrower burning (loops): a steady, deep roar of noise with a slight flutter
+  torchLoop: [.5, 0, 120, , 1, 0, 4, 1, , , , , , 16, , , , .9, , .1, 600],
   // the jetpack firing: a low, rumbling roar under the torch's hiss
   jetLoop: [.45, 0, 90, , 1, 0, 4, 1, , , , , , 20, , , , .9, , .15, 500],
   // a bomb going off: a deep noise burst sliding down, a long crushed tail
@@ -483,7 +483,9 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
         break;
       }
       case 'axe:swing': case 'pickaxe:swing': play('swoosh', { at }); break;
-      case 'bomb:throw': play('swoosh', { at }); break;
+      case 'bomb:throw': case 'torch:throw': case 'lantern:throw': play('swoosh', { at }); break;
+      case 'torch:land': case 'lantern:land': play('thunk', { at, gain: TOOL_HIT_GAIN }); break;
+      case 'lantern:toggle': play('dryClick', { at }); break;
       case 'blowtorch:on': loop('torchLoop', true); break;
       case 'blowtorch:off': loop('torchLoop', false); break;
       case 'physgun:grab': play('physGrab'); loop('physHum', true); humSince = clock(); break;

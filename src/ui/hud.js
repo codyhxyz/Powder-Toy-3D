@@ -106,7 +106,7 @@ export function createHelp(onClose) {
         row('Sprint (hold, or toggle in settings)', 'Shift'),
         row('Swim down', 'C'),
         row('Use tool / its other action', 'Left', 'Right'),
-        row('Pick a tool slot; again for the next in it', '1', '–', '5'),
+        row('Pick a tool slot; again for the next in it', '1', '–', '6'),
         row('Tools menu: get more tools', 'Q'),
         row('First or third person', 'V'),
         row('Hide the HUD and hand', 'F1'),

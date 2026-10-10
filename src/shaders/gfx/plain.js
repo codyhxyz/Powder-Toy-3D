@@ -108,7 +108,8 @@ vec3 plainOpaque(ivec3 cell, int id, vec4 a, vec3 hp, vec3 n, vec3 rd) {
   float ao = faceAO(cell, ivec3(n), hp);
   vec3 sky = mix(PLAIN_AMB_DOWN, PLAIN_AMB_UP, n.y * 0.5 + 0.5);
   vec3 local = sampleLight(hp + n * 0.75) * uLightGain;
-  vec3 c = alb * (PLAIN_SUN * ndl * sh + sky * ao + local * (PLAIN_LOCAL_MIN + (1.0 - PLAIN_LOCAL_MIN) * ao));
+  vec3 lamps = uLampCount > 0 ? lampLight(hp, n, n) : vec3(0.0);   // a torch or lantern
+  vec3 c = alb * (PLAIN_SUN * ndl * sh + sky * ao + local * (PLAIN_LOCAL_MIN + (1.0 - PLAIN_LOCAL_MIN) * ao) + lamps);
   if (id == E_METAL || id == E_WALL) {
     vec3 hv = normalize(uSun - rd);
     bool metal = id == E_METAL;
@@ -126,7 +127,8 @@ vec3 plainFloor(vec3 hp) {
   vec3 sh = uShadows ? sunShadow(hp, n) : vec3(1.0);
   float ao = faceAO(ivec3(floor(hp.x), -1, floor(hp.z)), ivec3(0, 1, 0), hp);
   vec3 local = sampleLight(vec3(hp.x, 0.5, hp.z)) * uLightGain;
-  return alb * (PLAIN_SUN * max(uSun.y, 0.0) * sh + PLAIN_FLOOR_AMB * ao + local * (PLAIN_LOCAL_MIN + (1.0 - PLAIN_LOCAL_MIN) * ao));
+  vec3 lamps = uLampCount > 0 ? lampLight(vec3(hp.x, 0.0, hp.z), n, n) : vec3(0.0);
+  return alb * (PLAIN_SUN * max(uSun.y, 0.0) * sh + PLAIN_FLOOR_AMB * ao + local * (PLAIN_LOCAL_MIN + (1.0 - PLAIN_LOCAL_MIN) * ao) + lamps);
 }
 
 void plainView(vec3 ro, vec3 rd, float t0, vec3 bh) {
