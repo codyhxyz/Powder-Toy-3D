@@ -53,11 +53,9 @@ export const activityPeriod = (brickSize) => Math.floor(brickSize / INFLUENCE_PE
 export const inertNearGLSL = /* glsl */ `
 const ivec3 FACES[6] = ivec3[6](ivec3(1,0,0), ivec3(-1,0,0), ivec3(0,1,0), ivec3(0,-1,0), ivec3(0,0,1), ivec3(0,0,-1));
 
-// What acid eats (react.js): all but air, acid, walls, glass, water and gases.
-bool acidEats(int j) {
-  return j != E_EMPTY && j != E_ACID && j != E_WALL && j != E_GLASS && j != E_SHARDS && j != E_WATER
-      && KIND[j] != K_GAS;
-}
+// What acid eats (react.js): all matter that isn't acid-proof (elements.js
+// acidProof: acid itself, walls, glass, water). Never air or gases.
+bool acidEats(int j) { return KIND[j] != K_EMPTY && KIND[j] != K_GAS && !ACIDPROOF[j]; }
 
 bool inertNear(ivec3 c, vec4 a, vec4 nA[6]) {
   int id = eid(a);

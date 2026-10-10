@@ -1,7 +1,7 @@
 import { h } from '../ui/dom.js';
 
-// The POV HUD: crosshair (with its bloom) and hitmarker, health and breath, screen effects for what the body
-// feels, the pointer-lock prompt, the death screen and the entry hint. Styles
+// The POV HUD: crosshair (with its bloom) and hitmarker, the Energy Shield (Halo's bar over health), health and breath, the perks held (Noita's row of
+// icons), screen effects for what the body feels, the pointer-lock prompt, the death screen and the entry hint. Styles
 // in pov.css. update() runs every frame and only touches the DOM when a
 // (rounded) value changes.
 
@@ -16,6 +16,10 @@ const HURT_FLASH_GAIN = 0.85;           // opacity of the red flash at feel.hurt
 const CROSS_GAP_PX = 4;                 // px from the centre to the crosshair ticks at rest
 const BLOOM_GAP_PX = 9;                 // px more at full bloom (just after a shot)
 const GAP_STEPS = 2;                    // the gap is rounded to 1/this px (fewer style writes)
+// The shield bar: Halo's, which flashes when a hit lands on it, pops and blinks red once it's
+// broken, and sweeps back up as it refills (pov.css animates each state).
+const SHIELD_HIT_MS = 160;              // ms a hit's flash lasts (pov.css .pov-shield.hit)
+const SHIELD_POP_MS = 420;              // ms the break's pop lasts (pov.css .pov-shield.pop)
 
 const round = (x) => Math.round(x * FX_STEPS) / FX_STEPS;
 const key = (k) => h('kbd', { text: k });
@@ -42,7 +46,12 @@ export function createPovHud() {
   const jetRow = h('div.pov-bar.pov-jet', { 'aria-label': 'Jetpack' },
     h('span.pov-ic', { html: '<svg viewBox="0 0 16 16"><path d="M8 1.5c.6 2.4 4 4.2 4 8a4 4 0 0 1-8 0c0-1.7.9-2.7 1.6-3.4.2 1.2.8 2 1.6 2.3C6.8 6 7.3 3.6 8 1.5z"/></svg>' }),
     h('div.pov-track', {}, jetFill));
-  const vitals = h('div.pov-vitals.panel', {}, healthRow, breathRow, jetRow);
+  const shieldFill = h('div.pov-fill');
+  const shieldRow = h('div.pov-bar.pov-shield', { 'aria-label': 'Shield' },
+    h('span.pov-ic', { html: '<svg viewBox="0 0 16 16"><path d="M8 1.5 13.5 3.6v4.1c0 3.3-2.3 5.6-5.5 6.8-3.2-1.2-5.5-3.5-5.5-6.8V3.6z"/></svg>' }),
+    h('div.pov-track', {}, shieldFill));
+  const perkRow = h('div.pov-perks');   // above health, in the same panel
+  const vitals = h('div.pov-vitals.panel', {}, perkRow, shieldRow, healthRow, breathRow, jetRow);
 
   const lock = h('div.pov-lock.panel', {}, h('b', { text: 'Click' }), ' to look around', h('span.pov-dot', { text: '·' }), key('F'), ' to leave');
 
@@ -80,6 +89,8 @@ export function createPovHud() {
   };
 
   let trail = 1, trailHold = 0, lastHealth = 1;
+  let lastShield = 0, shieldHitT = 0, shieldPopT = 0;
+  let perkVersion = -1, perkSet = null;
   let hintTimer = 0;
 
   return {
@@ -92,7 +103,8 @@ export function createPovHud() {
       clearTimeout(hintTimer);
       hintTimer = setTimeout(() => set(hint, '.show', false), HINT_S * 1000);
     },
-    // s = { dt, health, breath, jetFuel (0..1), jetting, feel {heat, cold, acid, hurt}, 
+    // s = { dt, health, breath, jetFuel (0..1), jetting, perks (pov/perks.js set), feel {heat, cold, acid, hurt},
+    //       shield, shieldMax (base lives; no bar while shieldMax is 0), shieldCharging,
     //       dead, cause, respawnIn (s), locked, swooping, aimInReach, aimValid, third }
     update(s) {
       const live = !s.dead && !s.swooping;
@@ -100,6 +112,12 @@ export function createPovHud() {
       set(cross, '.reach', !!s.aimInReach);
       set(cross, '.third', !!s.third);
       set(vitals, '.show', live);
+      // perks: an icon each, with its stacks, redrawn when the set changes
+      if (s.perks && (s.perks !== perkSet || s.perks.version !== perkVersion)) {
+        perkSet = s.perks; perkVersion = s.perks.version;
+        perkRow.replaceChildren(...s.perks.list().map(({ perk, n }) => h('span.pov-perk', { title: `${perk.name}: ${perk.desc}`, style: { '--c': perk.color } },
+          h('i', { text: perk.icon }), n > 1 ? h('b', { text: `×${n}` }) : null)));
+      }
       set(lock, '.show', live && !s.locked);
 
       // health, with a trail that shows what the last hit took
@@ -112,6 +130,22 @@ export function createPovHud() {
       set(healthFill, 'transform', `scaleX(${round(hp)})`);
       set(healthTrail, 'transform', `scaleX(${round(trail)})`);
       set(healthRow, '.low', hp < HEALTH_LOW);
+      // the shield: flash on a hit, pop when it breaks, blink while empty, a sweep while it refills
+      const sMax = s.shieldMax ?? 0, sh = sMax > 0 ? Math.max(0, Math.min(1, (s.shield ?? 0) / sMax)) : 0;
+      const shAbs = s.shield ?? 0;   // compared unscaled, so another stack (a bigger maximum) isn't a hit
+      if (sMax > 0 && shAbs < lastShield) {
+        shieldHitT = SHIELD_HIT_MS / 1000;
+        if (sh <= 0) shieldPopT = SHIELD_POP_MS / 1000;
+      }
+      lastShield = shAbs;
+      shieldHitT = Math.max(0, shieldHitT - s.dt);
+      shieldPopT = Math.max(0, shieldPopT - s.dt);
+      set(shieldRow, '.show', sMax > 0);
+      set(shieldFill, 'transform', `scaleX(${round(sh)})`);
+      set(shieldRow, '.hit', shieldHitT > 0);
+      set(shieldRow, '.pop', shieldPopT > 0);
+      set(shieldRow, '.empty', sMax > 0 && sh <= 0);
+      set(shieldRow, '.charging', !!s.shieldCharging);
       set(breathRow, '.show', s.breath < BREATH_SHOWN_BELOW);
       set(breathFill, 'transform', `scaleX(${round(Math.max(0, s.breath))})`);
       set(breathRow, '.low', s.breath < HEALTH_LOW);

@@ -1,4 +1,6 @@
 import { skyGLSL } from '../../gfx/sky.js';
+import { cloudDeckGLSL } from './clouds.js';
+import { LAMP_MAX, LAMP_UNIT } from '../../gfx/lamps.js';
 
 // Soft-shadow taps per pass (blocker search, then filter).
 const PCSS_TAPS = 8;
@@ -19,6 +21,12 @@ const float PI_L = 3.14159265;
 uniform bool uNearGI;      // traced voxel AO and nearby bounce light
 uniform bool uGlowLights;  // lava and fire as shadowed lights
 uniform bool uCaustics;    // sun caustics through liquid
+// Hand lamps (src/pov/lamps.js): point lights the first-person body carries or
+// throws, the torch and the lantern. uLampCount 0 (none lit) costs nothing.
+#define LAMP_MAX ${LAMP_MAX}
+uniform int uLampCount;
+uniform vec4 uLampPos[LAMP_MAX];   // xyz grid cells, w its reach (cells)
+uniform vec4 uLampCol[LAMP_MAX];   // rgb: linear colour × intensity, in SUN_COL's units at LAMP_UNIT cells
 
 // ---- sun and sky: a clear-sky atmosphere (gfx/sky.js) ----
 // Values that only depend on the sun are computed once per frame in JS.
@@ -29,6 +37,8 @@ uniform vec3 uSkyUp;    // open-sky irradiance on an upward surface
 uniform vec3 uGround;   // radiance of the sunlit, sky-lit ground around the box
 uniform vec3 uKeyLight; // sunlight's colour scale: 1 by day, dim blue under the moon (gfx/daylight.js)
 #define SUN_COL uSunCol
+// World's cumulus deck (clouds.js): sunShadow multiplies its shadow in.
+${cloudDeckGLSL}
 const float HORIZON_BLEND = 0.02;  // sky -> ground blend half-width at the horizon (direction y)
 
 float airMass(float cz) {
@@ -212,8 +222,9 @@ float sunRayClear(vec3 ro, float tLim) {
 // The taps: a Vogel (sunflower) disc of radius 1, rotated per pixel and frame.
 const vec2 VOGEL[PCSS_TAPS] = vec2[PCSS_TAPS](${vogel(PCSS_TAPS)});
 
-// Sun visibility at a surface point hp with normal n.
-vec3 sunShadow(vec3 hp, vec3 n) {
+// Sun visibility at a surface point hp with normal n, from the map (sunShadow
+// below adds the clouds).
+vec3 sunMapShadow(vec3 hp, vec3 n) {
   vec3 c, u, v; float R;
   sunBasis(c, R, u, v);
   vec3 p = hp + n * SHADOW_NORMAL_OFFSET;
@@ -300,8 +311,8 @@ vec3 sunShadow(vec3 hp, vec3 n) {
 // Bilinear weight of tap o (0/1 each way) at fraction w.
 float wk0(ivec2 o, vec2 w) { return (o.x == 1 ? w.x : 1.0 - w.x) * (o.y == 1 ? w.y : 1.0 - w.y); }
 
-// Sun visibility at a point inside a volume (media, liquid interiors).
-vec3 sunShadow(vec3 p) {
+// Sun visibility at a point inside a volume (media, liquid interiors), from the map.
+vec3 sunMapShadow(vec3 p) {
   vec3 c, u, v; float R;
   sunBasis(c, R, u, v);
   vec3 q = p - c;
@@ -328,6 +339,17 @@ vec3 sunShadow(vec3 p) {
   }
   if (uCaustics && cW > 0.0) acc *= mix(1.0, causticGain(p, cD / cW), cW);
   return acc;
+}
+
+// Sunlight at grid point p: the map, under the clouds' shadow (a fully
+// clouded point skips the map).
+vec3 sunShadow(vec3 hp, vec3 n) {
+  float c = cloudShadow(worldPos(hp));
+  return c > CLOUD_SHADOW_SKIP ? c * sunMapShadow(hp, n) : vec3(0.0);
+}
+vec3 sunShadow(vec3 p) {
+  float c = cloudShadow(worldPos(p));
+  return c > CLOUD_SHADOW_SKIP ? c * sunMapShadow(p) : vec3(0.0);
 }
 
 // ---- indirect light: the GI probe volume (shaders/gi.js) ----
@@ -598,5 +620,35 @@ float glowLightScale(vec3 p, vec3 ng, vec3 n) {
   ivec3 hc; vec3 hn;
   float t = traceNear(ro, d, max(tIn - GLOW_ENTRY_PAD, 0.0), true, GLOW_SELF_SKIP, hc, hn);
   return t < 0.0 ? 2.0 * nl : 0.0;
+}
+
+// ---- hand lamps ----
+// The light of the lamps at surface point p (normal n, geometric normal ng),
+// to be multiplied by the albedo: each an inverse-square point light,
+// (LAMP_UNIT / d)² × its colour, faded smoothly to nothing at its reach, and
+// shadowed by a traced ray to it (opaque matter only, as the glow lights').
+const float LAMP_UNIT = ${LAMP_UNIT.toFixed(1)};        // cells at which a lamp's colour is its irradiance
+const float LAMP_START = 0.55;      // cells off the surface a shadow ray starts
+const float LAMP_SELF_SKIP = 1.0;   // smooth-surface cells ignored this close to its start
+const float LAMP_PAD = 0.3;         // cells short of the lamp the shadow ray stops (it hangs in air)
+vec3 lampLight(vec3 p, vec3 ng, vec3 n) {
+  vec3 sum = vec3(0.0);
+  for (int i = 0; i < LAMP_MAX; i++) {
+    if (i >= uLampCount) break;
+    vec3 ro = p + ng * LAMP_START;
+    vec3 dv = uLampPos[i].xyz - ro;
+    float d2 = dot(dv, dv), R = uLampPos[i].w;
+    if (d2 >= R * R) continue;
+    float d = sqrt(d2);
+    vec3 l = dv / max(d, 1e-4);
+    float nl = dot(n, l);
+    if (nl <= 0.0) continue;
+    float fade = 1.0 - d2 / (R * R);
+    float fall = LAMP_UNIT * LAMP_UNIT / max(d2, LAMP_UNIT) * fade * fade;
+    ivec3 hc; vec3 hn;
+    if (traceNear(ro, l, max(d - LAMP_PAD, 0.0), true, LAMP_SELF_SKIP, hc, hn) >= 0.0) continue;
+    sum += uLampCol[i].rgb * nl * fall;
+  }
+  return sum;
 }
 `;

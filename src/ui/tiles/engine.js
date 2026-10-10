@@ -36,6 +36,9 @@ export const RAD = col('rad');
 export const MELTINTO = Int8Array.from(ELEMENTS, meltInto);
 export const HARD = col('hard');
 export const BREAKINTO = Int8Array.from(ELEMENTS, breakInto);
+export const ACIDPROOF = ELEMENTS.map((e) => e.acidProof);
+export const FIZZ = col('fizz');
+export const LEAVES_ASH = ELEMENTS.map((e) => e.ash);
 // the softest breakable solid (react.js HARD_MIN)
 const HARD_MIN = Math.min(...ELEMENTS.filter((e) => e.breakInto).map((e) => e.hard));
 
@@ -44,6 +47,8 @@ export const AMBIENT = PHYS.AMBIENT;
 const isGasLike = (id) => KIND[id] === K.GAS || id === E.EMPTY;
 const isFluid = (id) => KIND[id] === K.LIQUID || isGasLike(id);
 const movable = (id) => KIND[id] !== K.SOLID;
+// what acid eats: matter that isn't acid-proof (activity.js acidEats)
+const acidEats = (id) => KIND[id] !== K.EMPTY && KIND[id] !== K.GAS && !ACIDPROOF[id];
 const airDensity = (T) => 1 - Math.min(PHYS.AIR_DENS_HI, Math.max(PHYS.AIR_DENS_LO, (T - AMBIENT) / PHYS.AIR_DENS_SPAN));
 // gases thin with heat the way air does; DENS is a gas's density at its spawn temperature (common.js)
 export const densityOf = (id, T) => {
@@ -305,12 +310,12 @@ export class World {
       }
     } else if (held && !canMove(k[t], k[b], d[t], d[b], 0)) s[t] = 1;
   }
-  // 2. a blocked top cell topples diagonally (powders, liquids); a blocked bottom gas cell rises diagonally
+  // 2. a blocked top cell topples diagonally (powders, liquids); a blocked bottom buoyant gas cell rises diagonally
   diagonal(i) {
     const { bk: k, bd: d, bm: m, bs: s } = this;
     if (!s[i] || m[i]) return;
     const top = (i & 2) !== 0, xi = i & 1, kd = KIND[k[i]];
-    if (top ? !(kd === K.POWDER || kd === K.LIQUID) : kd !== K.GAS) return;
+    if (top ? !(kd === K.POWDER || kd === K.LIQUID) : !(kd === K.GAS && GRAV[k[i]] < 0)) return;   // buoyant gases (not cloud)
     if (kd === K.POWDER && rnd() > SLIDE[k[i]]) return;
     const c = 1 - xi, target = c + (top ? 0 : 2), path = c + (top ? 2 : 0);
     const passable = top ? isFluid(k[path]) && d[path] < d[i] : isFluid(k[path]);
@@ -417,8 +422,8 @@ export class World {
           const rho = Math.max(densityOf(id, T) * PHYS.RHO_SCALE, PHYS.RHO_MIN);
           vx -= gx * PHYS.P_ACCEL / rho;
           vy -= gy * PHYS.P_ACCEL / rho;
-          if (id === E.EMPTY) vy += g * Math.min(PHYS.AIR_BUOY_HI, Math.max(PHYS.AIR_BUOY_LO, (T - AMBIENT) / (AMBIENT + PHYS.KELVIN)));
-          else vy -= g * GRAV[id];
+          if (id === E.EMPTY || id === E.CLOUD) vy += g * Math.min(PHYS.AIR_BUOY_HI, Math.max(PHYS.AIR_BUOY_LO, (T - AMBIENT) / (AMBIENT + PHYS.KELVIN)));
+          if (id !== E.EMPTY) vy -= g * GRAV[id];
           vx *= 1 - DRAG[id];
           vy *= 1 - DRAG[id];
           // normal force: at rest on what can hold it up, gravity can't start it moving down (react.js)
@@ -455,10 +460,14 @@ export class World {
 
         // reactions and phase changes
         let out = id, reset = false;
-        let nAir = 0, nFire = 0, nAcid = 0, nPlant = 0, nBurning = 0, flame = 0, cloneOf = 0;
+        let nAir = 0, nFire = 0, nAcid = 0, nPlant = 0, nBurning = 0, flame = 0, cloneOf = 0, nCloud = 0;
+        let surface = false;   // a non-gas neighbour to condense onto (the floor counts, the sides and lid don't)
         for (let q = 0; q < 4; q++) {
           const j = nid[q];
           if (j === E.EMPTY) nAir++;
+          if (j === E.CLOUD) nCloud++;
+          const qx = x + DX[q], qy = y + DY[q];
+          if (!isGasLike(j) && ((qx >= 0 && qy >= 0 && qx < nx && qy < ny) || q === 3)) surface = true;
           if (j === E.FIRE) nFire++;
           if (j === E.ACID) nAcid++;
           if (j === E.PLANT) nPlant++;
@@ -485,7 +494,21 @@ export class World {
           if (melt) { out = E.WATER; life = 0; }
         } else if (id === E.STEAM) {
           const cond = latent(T, life, 100, C, PHYS.L_BOIL, false); T = lat.T; life = lat.acc;
-          if (cond) { out = E.WATER; life = 0; }
+          if (cond) { out = surface ? E.WATER : E.CLOUD; life = 0; }
+        } else if (id === E.CLOUD) {
+          let up = Math.max(life, 0), dn = Math.max(-life, 0);
+          const boil = latent(T, up, 100, C, PHYS.L_BOIL, true); T = lat.T; up = lat.acc;
+          const freeze = latent(T, dn, 0, C, PHYS.L_FUSE, false); T = lat.T; dn = lat.acc;
+          life = up - dn;
+          if (boil) { out = E.STEAM; life = 0; }
+          else if (freeze) { out = E.SNOW; life = 0; }
+          else {
+            const rain = PHYS.CLOUD_RAIN * Math.max(nCloud - PHYS.CLOUD_RAIN_NB, 0);
+            const es = Math.exp(PHYS.MAGNUS_A * (T / (T + PHYS.MAGNUS_B) - AMBIENT / (AMBIENT + PHYS.MAGNUS_B)));
+            const r = rnd();
+            if (r < rain) { out = E.WATER; life = 0; }
+            else if (r < rain + PHYS.CLOUD_EVAP * Math.max(nAir - PHYS.CLOUD_EVAP_NB, 0) * es) { out = E.EMPTY; reset = true; T -= PHYS.CLOUD_EVAP_COOL; }
+          }
         } else if (id === E.LAVA) {
           let ct = ctype;
           if (ct <= 0 || ct >= NE) ct = E.STONE;
@@ -498,11 +521,7 @@ export class World {
           if (life <= 0) { out = E.EMPTY; reset = true; }
         } else if (id === E.ACID) {
           let victims = 0;
-          for (let q = 0; q < 4; q++) {
-            const j = nid[q];
-            if (j !== E.EMPTY && j !== E.ACID && j !== E.WALL && j !== E.GLASS && j !== E.SHARDS && j !== E.WATER
-              && KIND[j] !== K.GAS) victims++;
-          }
+          for (let q = 0; q < 4; q++) if (acidEats(nid[q])) victims++;
           life -= PHYS.ACID_USE * victims;
           if (life <= 0) { out = rnd() < PHYS.ACID_TO_SMOKE ? E.SMOKE : E.EMPTY; reset = true; }
         } else if (id === E.EMPTY) {
@@ -535,17 +554,19 @@ export class World {
             T = Math.max(T, Math.min(T + BURNHEAT[id] / C, FLAMET[id]));
             P += PHYS.BURN_P;
             if (life <= 0) {
-              out = id !== E.OIL && rnd() < PHYS.ASH_SHARE ? E.ASH : E.FIRE;
+              out = LEAVES_ASH[id] && rnd() < PHYS.ASH_SHARE ? E.ASH : E.FIRE;
               reset = true;
               T = Math.max(T, PHYS.BURNT_MIN_T);
             }
           }
         }
 
-        // acid eats its neighbours
-        if (out === id && nAcid > 0 && id !== E.EMPTY && id !== E.ACID && id !== E.WALL && id !== E.GLASS
-          && id !== E.SHARDS && id !== E.WATER && KIND[id] !== K.GAS) {
-          if (rnd() < PHYS.ACID_USE * nAcid) { out = rnd() < PHYS.ACID_TO_SMOKE ? E.SMOKE : E.EMPTY; reset = true; }
+        // acid eats its neighbours; what fizzes (limestone) sets its gas free as a puff
+        if (out === id && nAcid > 0 && acidEats(id)) {
+          if (rnd() < PHYS.ACID_USE * nAcid) {
+            out = rnd() < PHYS.ACID_TO_SMOKE ? E.SMOKE : E.EMPTY; reset = true;
+            P += PHYS.STEAM_BOIL_PUFF * FIZZ[id] / PHYS.STEAM_EXPANSION;
+          }
         }
 
         if (out !== id) {

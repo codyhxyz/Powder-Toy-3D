@@ -166,6 +166,9 @@ const giUniforms = () => ({
   // sky values (computed per frame by updateGfxUniforms)
   uSunExt: gfxUniforms.uSunExt, uSunCol: gfxUniforms.uSunCol, uSkyUp: gfxUniforms.uSkyUp, uGround: gfxUniforms.uGround,
   uKeyLight: gfxUniforms.uKeyLight,
+  // the cloud deck's shadows (shaders/gfx/clouds.js, in sunShadow)
+  tMediaNoise: gfxUniforms.tMediaNoise, uClouds: gfxUniforms.uClouds, uCloudShift: gfxUniforms.uCloudShift,
+  uCloudSea: gfxUniforms.uCloudSea,
 });
 const giProbeUniforms = () => Object.fromEntries([0, 1, 2, 3].map((i) => [`tGI${i}`, { value: null }]));
 
@@ -890,6 +893,7 @@ export class Simulation {
     u.tB.value = this.stateB;
     this.run(this.mats.copy, t);
     t.origin = this.origin.clone();
+    t.note = null;   // the app's tag for what undoing this takes back besides cells (app.js: a shrine's orbs)
     this.history.push(t);
   }
 

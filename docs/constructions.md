@@ -54,7 +54,10 @@ and *New seed* work.
 ## Adding a built-in
 
 1. Write the generator in `src/constructions/builtins.js` as `function name({ put, box, ... }, variant)` and add it to
-   `BUILTINS`.
+   `BUILTINS`. Structures made for the World island go in `src/constructions/structures.js` (`STRUCTURES`) instead, so
+   the AI prompt (which quotes `builtins.js`) stays short; `docs/structures.md` says where they are placed.
+   Build to the human scale in `src/constructions/shared.js` (`HUMAN`: a 7 × 3-cell door, an 8-cell room, eye-level
+   windows, 1-cell stair steps under 7 clear) so the first-person body can walk in at T = 1.
 2. Add an entry to `BUILDS` in `src/elements.js` (id `-100` and below, a 4-letter `abbr`, colour, description, optional
    `variants`) and list its key in the Constructions group of `PALETTE`.
 3. `npm run construct -- --builtins` must print `ok` for every variant.

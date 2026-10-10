@@ -13,7 +13,8 @@
 // phase (the silver lining toward the sun), sky and ground light by height.
 // The haze in front fades distant clouds into the horizon, through the
 // aerosol's scale height rather than the far field's ground-level air.
-// The wind drifts the deck with the simulation clock (frozen when paused).
+// Its shadows fall on the island (cloudShadow, in every sun lookup). The wind
+// drifts the deck with the simulation clock (frozen when paused).
 import { CELL_M } from '../../scale.js';
 
 export const CLOUD = {
@@ -33,6 +34,8 @@ export const CLOUD = {
   dome: 0.9,            // how much the profile thins the coverage away from the core (domes)
   sigmaM: 0.04,         // 1/m: extinction of cloud at density 1 (visibility ~75 m inside)
   steps: 24,            // view-ray samples through the deck
+  shadowSamples: 2,     // samples through the deck along the sun for the shadows on the ground
+  shadowSkip: 1e-3,     // sunlight through the deck below this skips the shadow map (it can't show)
   maxSpanM: 7000,       // m: the deck's stretch along grazing rays is clipped to this...
   maxDistM: 40000,      // m: ...and nothing farther is drawn (gone into the haze)
   lightSteps: 5,        // samples toward the sun, each segment twice the last...
@@ -70,11 +73,16 @@ export function cloudShift(steps, out) {
 const glf = (x) => { const s = String(+(+x).toPrecision(7)); return /[.e]/.test(s) ? s : s + '.0'; };
 const cells = (m) => glf(m / CELL_M);
 
-// Needs (before it): lighting.js (uSun, SUN_COL, uSkyUp, uGround, PI_L), the
-// far field's haze (farAir, FAR_HAZE_RGB), hash33, uFrame, uSea.
-export const cloudsGLSL = /* glsl */ `
-uniform highp sampler3D tMediaNoise;   // r billows, g wisps (gfx/mediaNoise.js)
+// The deck itself and the sunlight through it, in every program that lights
+// with the sun (lighting.js: sunShadow multiplies it in, so the window's
+// surfaces, media, figures and GI probes all lie in the clouds' shadows), off
+// in a box. Its sampler is declared here for every program (media.js reads it
+// too); programs that never call sunShadow drop it unused.
+export const cloudDeckGLSL = /* glsl */ `
+uniform highp sampler3D tMediaNoise;   // r billows, g wisps, b flame tongues, a flicker (gfx/mediaNoise.js)
+uniform bool uClouds;                  // world mode: the deck is overhead (a box has none)
 uniform vec2 uCloudShift;              // cells: the wind's drift of the deck
+uniform float uCloudSea;               // world cells: the sea level the deck's height counts from
 #define CLOUD_BASE ${cells(CLOUD.baseM)}
 #define CLOUD_THICK ${cells(CLOUD.thickM)}
 #define CLOUD_COVER ${glf(CLOUD.cover)}
@@ -92,6 +100,45 @@ uniform vec2 uCloudShift;              // cells: the wind's drift of the deck
 #define CLOUD_ROUND_HI ${glf(CLOUD.roundHi)}
 #define CLOUD_DOME ${glf(CLOUD.dome)}
 #define CLOUD_SIGMA ${glf(CLOUD.sigmaM * CELL_M)}   // per cell
+#define CLOUD_SHADOW_N ${CLOUD.shadowSamples}
+#define CLOUD_SHADOW_SKIP ${glf(CLOUD.shadowSkip)}   // sunlight through the deck below this: the shadow map isn't read
+
+// Cloud density (0..1) at world point p (cells); detail (0..1): how much the
+// fine billows erode it (0: their mean, for the light march and far off).
+float cloudDensity(vec3 p, float detail) {
+  float h = (p.y - uCloudSea - CLOUD_BASE) / CLOUD_THICK;
+  if (h <= 0.0 || h >= 1.0) return 0.0;
+  vec2 xz = p.xz + uCloudShift;
+  float w = mix(texture(tMediaNoise, vec3(xz * CLOUD_SHAPE_A_F, CLOUD_SLICE_A)).r,
+                texture(tMediaNoise, vec3(xz.yx * CLOUD_SHAPE_B_F, CLOUD_SLICE_B)).g, CLOUD_SHAPE_B_W);
+  float cov = (w - (1.0 - CLOUD_COVER)) / CLOUD_COVER;
+  if (cov <= 0.0) return 0.0;
+  // flat bases, domed tops: the profile thins the coverage away from the core
+  float prof = smoothstep(0.0, CLOUD_ROUND_LO, h) * (1.0 - smoothstep(CLOUD_ROUND_HI, 1.0, h));
+  float d = cov - CLOUD_DOME * (1.0 - prof);
+  if (d <= 0.0) return 0.0;
+  float n = detail > 0.0 ? texture(tMediaNoise, vec3(xz.x, p.y, xz.y) * CLOUD_DETAIL_F).r : CLOUD_NOISE_MEAN;
+  return clamp(d - CLOUD_ERODE * (1.0 - mix(CLOUD_NOISE_MEAN, n, detail)), 0.0, 1.0);
+}
+
+// Sunlight reaching world point w (cells) through the deck: its optical depth
+// along the sun, read at CLOUD_SHADOW_N heights through it (the shapes without
+// their fine detail, which the sun's penumbra at that height, ~10 m, blurs).
+float cloudShadow(vec3 w) {
+  if (!uClouds) return 1.0;
+  float od = 0.0;
+  for (int k = 0; k < CLOUD_SHADOW_N; k++) {
+    float y = uCloudSea + CLOUD_BASE + (float(k) + 0.5) / float(CLOUD_SHADOW_N) * CLOUD_THICK;
+    od += cloudDensity(w + uSun * ((y - w.y) / uSun.y), 0.0);   // (the key light stays above DAY.keyElMin)
+  }
+  return exp(-CLOUD_SIGMA * od * CLOUD_THICK / (uSun.y * float(CLOUD_SHADOW_N)));
+}
+`;
+
+// The deck seen in World's sky (far.js farSky). Needs (before it): the deck,
+// lighting.js (uSun, SUN_COL, uSkyUp, uGround, PI_L), the far field's haze
+// (farAir, FAR_HAZE_RGB), hash33, uFrame.
+export const cloudsGLSL = /* glsl */ `
 #define CLOUD_STEPS ${CLOUD.steps}
 #define CLOUD_MAX_SPAN ${cells(CLOUD.maxSpanM)}
 #define CLOUD_MAX_DIST ${cells(CLOUD.maxDistM)}
@@ -109,24 +156,6 @@ uniform vec2 uCloudShift;              // cells: the wind's drift of the deck
 #define CLOUD_HAZE_H ${cells(CLOUD.hazeScaleM)}
 #define CLOUD_FLAT_EPS 1e-4   // height differences below this count as level (the haze's scale-height factor)
 
-// Cloud density (0..1) at world point p (cells); detail (0..1): how much the
-// fine billows erode it (0: their mean, for the light march and far off).
-float cloudDensity(vec3 p, float detail) {
-  float h = (p.y - uSea - CLOUD_BASE) / CLOUD_THICK;
-  if (h <= 0.0 || h >= 1.0) return 0.0;
-  vec2 xz = p.xz + uCloudShift;
-  float w = mix(texture(tMediaNoise, vec3(xz * CLOUD_SHAPE_A_F, CLOUD_SLICE_A)).r,
-                texture(tMediaNoise, vec3(xz.yx * CLOUD_SHAPE_B_F, CLOUD_SLICE_B)).g, CLOUD_SHAPE_B_W);
-  float cov = (w - (1.0 - CLOUD_COVER)) / CLOUD_COVER;
-  if (cov <= 0.0) return 0.0;
-  // flat bases, domed tops: the profile thins the coverage away from the core
-  float prof = smoothstep(0.0, CLOUD_ROUND_LO, h) * (1.0 - smoothstep(CLOUD_ROUND_HI, 1.0, h));
-  float d = cov - CLOUD_DOME * (1.0 - prof);
-  if (d <= 0.0) return 0.0;
-  float n = detail > 0.0 ? texture(tMediaNoise, vec3(xz.x, p.y, xz.y) * CLOUD_DETAIL_F).r : CLOUD_NOISE_MEAN;
-  return clamp(d - CLOUD_ERODE * (1.0 - mix(CLOUD_NOISE_MEAN, n, detail)), 0.0, 1.0);
-}
-
 float cloudHG(float mu, float g) {
   float g2 = g * g;
   return (1.0 - g2) / (4.0 * PI_L * pow(1.0 + g2 - 2.0 * g * mu, 1.5));
@@ -136,7 +165,7 @@ float cloudHG(float mu, float g) {
 // (premultiplied, hazed), a = how much of what lies behind it still shows.
 vec4 cloudLayer(vec3 ro, vec3 rd) {
   if (rd.y <= 0.0) return vec4(0.0, 0.0, 0.0, 1.0);
-  float lo = uSea + CLOUD_BASE, hi = lo + CLOUD_THICK;
+  float lo = uCloudSea + CLOUD_BASE, hi = lo + CLOUD_THICK;
   float t0 = max((lo - ro.y) / rd.y, 0.0);
   if (t0 > CLOUD_MAX_DIST) return vec4(0.0, 0.0, 0.0, 1.0);
   float t1 = min((hi - ro.y) / rd.y, t0 + CLOUD_MAX_SPAN);

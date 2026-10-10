@@ -77,7 +77,8 @@ void main() {
 `;
 
 // Brick pass: one texel per 4×4×4 brick. rgb = average emitted light (lava,
-// fire, glowing-hot metal), later blurred into a coarse light volume.
+// fire, glowing-hot metal, luminous crystal), later blurred into a coarse
+// light volume.
 // a also carries what each brick holds, and flags for what the data views draw
 // in air (1 warmer/colder than ambient, 2 pressure, 4 moving):
 //   0                          empty
@@ -115,9 +116,10 @@ out vec4 oC;
 #define FIRE_GLOW_T 1500.0
 #define FIRE_GLOW_GAIN 1.5
 
-// A hot opaque cell lights its surroundings only through its open faces: buried
-// lava or a conduit of hot rock casts no light. Per open face it counts as the
-// brick-deep column under a flat surface did when every hot cell counted.
+// A hot or luminous opaque cell lights its surroundings only through its open
+// faces: buried lava or a conduit of hot rock casts no light. Per open face it
+// counts as the brick-deep column under a flat surface did when every hot
+// cell counted.
 #define GLOW_FACE_GAIN float(BS)
 float openFaces(ivec3 c) {
   float n = 0.0;
@@ -152,7 +154,7 @@ void main() {
     int id = eid(a);
     if (id != E_EMPTY) occ = 1.0;
     else if (abs(a.y - AMBIENT) > AIR_FLAG_T) flags |= AIR_HOT;
-    if (id == E_STEAM || id == E_SMOKE) gas += 1.0;
+    if (id == E_STEAM || id == E_CLOUD || id == E_SMOKE) gas += 1.0;
     surf = max(surf, max(max(s.x, s.y), max(s.z, s.w)));
     // something opaque (not liquid, glass or gas) here or in an opaque surface field
     if (id != E_EMPTY && KIND[id] != K_GAS && RCLASS[id] != R_LIQUID && RCLASS[id] != R_GLASS) opaque = 1.0;
@@ -164,9 +166,9 @@ void main() {
     }
     media = max(media, max(m.x, max(m.y, m.z)));
     if (id == E_FIRE) em += blackbody(a.y) * (FIRE_GLOW_BASE + a.y / FIRE_GLOW_T) * FIRE_GLOW_GAIN;
-    else if (id != E_EMPTY && KIND[id] != K_GAS && a.y > INCAND_T0) {
+    else if (id != E_EMPTY && KIND[id] != K_GAS && (a.y > INCAND_T0 || luminous(id))) {
       // the light of the visible skin (metals have none to speak of)
-      vec3 e = incandescence(a.y - (id == E_METAL ? 0.0 : INCAND_SKIN_DROP));
+      vec3 e = emission(id, a.y - (id == E_METAL ? 0.0 : INCAND_SKIN_DROP));
       if (dot(e, e) > 0.0) em += e * (RCLASS[id] == R_OPAQUE ? openFaces(c) * GLOW_FACE_GAIN : 1.0);
     }
   }

@@ -97,14 +97,16 @@ work inside the window. Multiplayer doesn't work in World yet. Picking a scene g
 
 The dock groups elements like a periodic-table strip, each tile in the element's colour with a TPT-style abbreviation:
 
-- **Powders:** SAND, STNE, GUNP, ASH, SNOW, BGLA (broken glass), SAWD (sawdust), BRMT (scrap metal)
+- **Powders:** SAND, STNE, BCOL (broken coal), GUNP, ASH, SNOW, BGLA (broken glass), SAWD (sawdust), BRMT (scrap metal)
 - **Liquids:** WATR, ACID, OIL, LAVA
-- **Gases:** WTRV (steam), SMKE, FIRE
-- **Solids:** WALL, METL, GLAS, ICE, WOOD, PLNT, CLNE
+- **Gases:** WTRV (steam), CLOD (cloud), SMKE, FIRE
+- **Solids:** WALL, COAL, ROCK, LMST (limestone), SDST (sandstone), METL, GLAS, ICE, WOOD, PLNT, CLNE
 - **Tools:** HEAT, COOL, ERAS, PRES (pressure), SIGN
 - **Constructions:** HOUS (cottage, log cabin, brick, greenhouse), TREE (oak, pine, birch, palm, willow, dead), CAMP, IGLO, BRRL (oil drum, powder keg), AQUA, FNTN, AI (your own, written by a model or pasted)
 
-All element properties live in one table (`src/elements.js`) that is baked into the shaders as GLSL constants.
+All element properties live in one table (`src/elements.js`) that is baked into the shaders as GLSL constants,
+and how each one is drawn in another (`LOOKS` in `src/gfx/materials.js`). Adding an element is a row in each plus a palette
+entry; the checklist at the top of `src/elements.js` lists what is data and what still needs code.
 The rules around them (latent heats, pressure diffusion, collision restitution, tool strengths...) live in `src/physics.js`,
 which reaches the shaders as `#define`s.
 
@@ -173,6 +175,10 @@ Density decides whether it can displace its neighbour, so sand sinks through wat
 - **Latent heat.** Water, ice, snow and steam pin their temperature at 0 °C or 100 °C while banking energy until a full latent heat
   (80 for fusion, 540 for vaporisation, in water-heat-capacity units) has been absorbed or released.
   That's why ice keeps water at 0 °C, why boiling takes a while, and why lava hitting the sea makes a burst of steam and a rock crust.
+- **Clouds.** Steam that condenses in open air becomes cloud (droplets riding in air; onto a surface it becomes water). Cloud
+  moves with the air, buoyant only by its temperature. Its thick cores coalesce into raindrops; cells mostly exposed to air
+  evaporate, faster the warmer they are (Magnus saturation vapour pressure), so kettle mist vanishes and cold fog lingers.
+  It boils back to steam at 100 °C and freezes into snow below 0 °C, with the same latent heats as water.
 - **Convection.** Air and gases thin with temperature the way an ideal gas does, so hot air rises and carries heat,
   and smoke from a fire rises with it.
 - **Combustion.** Flammables above their ignition temperature that touch air burn their fuel, release heat and spawn flames into
@@ -255,8 +261,10 @@ distance², and traces a shadow ray to it, so the glow gets a direction and cast
 **Glow.** Anything above ~500 °C glows (`src/gfx/incandescence.js`): the colour is Planck's law through the CIE colour matching functions, the brightness is the
 physical luminance compressed by a power law, so steel reads dull red at 600–700 °C, cherry to orange at 800–1000 °C and
 molten rock outshines daylight. Surfaces emit what they don't reflect (Kirchhoff), and the open skin of hot rock runs cooler
-than its cracks; hot steel grows a patchy black scale. Exposed hot faces feed a coarse light volume that lights the
-surroundings. The raymarcher writes depth, so three.js lines and the brush composite correctly.
+than its cracks; hot steel grows a patchy black scale. Some matter also glows by itself at any temperature (a material's
+`emit` in `src/gfx/materials.js`): crystal is fluorite, lit by the blue-violet band its europium gives off under ultraviolet
+light, here without the lamp. One function, `emission()`, adds that to the thermal glow for every path that draws matter's
+light. Exposed glowing faces feed a coarse light volume that lights the surroundings. The raymarcher writes depth, so three.js lines and the brush composite correctly.
 
 **Empty space** is crossed in jumps: a distance map over the bricks (`brickDistFrag` in `src/shaders/passes.js`) says
 how far each empty brick is from anything, and camera, shadow, sun and reflection rays leap that whole empty cube at once.

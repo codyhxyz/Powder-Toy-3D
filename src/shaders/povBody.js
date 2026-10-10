@@ -80,3 +80,36 @@ void couple(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
   oB.xyz = clamp(v, -V_MAX, V_MAX);
 }
 ${copyThroughMain('couple')}`;
+
+// 3. Perk field (pov/perks.js): one pass over a spherical shell around the
+//    body's middle, reaching into the world through the engine's own state.
+//    Freeze Field: liquids and fire in it lose uCool °C (down to uFloor), and
+//    the engine does the rest: water freezes into ice, lava sets back into what
+//    it melted from, fire goes out below its minimum temperature. A column
+//    around the body from the feet up (uClear) is left alone, so the body
+//    stands on the ice it makes rather than in it. Revenge Explosion: air and
+//    loose matter in the shell gain uPressure, a blast the engine then spreads;
+//    solids reflect pressure (react.js), so they get none. The body sits in
+//    the shell's eye (uInner).
+export const povFieldFrag = (g) => /* glsl */ `
+${prelude(g)}
+uniform vec3 uCenter;       // the shell's centre, grid cells
+uniform float uInner;       // its radii, cells
+uniform float uOuter;
+uniform vec3 uFeet;         // the body's feet, grid cells
+uniform float uClear;       // cells around the body, from the feet up, left alone
+uniform float uCool;        // °C taken from liquids and fire this pass
+uniform float uFloor;       // °C they're cooled no further than
+uniform float uPressure;    // air pressure added this pass
+${stateOutGLSL}
+
+void field(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
+  vec3 c = vec3(p) + 0.5;
+  float r = length(c - uCenter);
+  if (r > uOuter || r < uInner) return;
+  if (c.y >= uFeet.y && length(c.xz - uFeet.xz) < uClear) return;
+  int id = eid(a);
+  if (uCool > 0.0 && (KIND[id] == K_LIQUID || id == E_FIRE) && a.y > uFloor) oA.y = max(a.y - uCool, uFloor);
+  if (uPressure > 0.0 && KIND[id] != K_SOLID) oB.w = b.w + uPressure;
+}
+${copyThroughMain('field')}`;

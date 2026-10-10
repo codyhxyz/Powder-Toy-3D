@@ -14,8 +14,22 @@
 //   scatter  transparent elements: the scattering part of their extinction
 //          (elements.js sigma) per cell, RGB; the rest is absorbed. Ratios to
 //          sigma give the colour a deep body of it glows with.
+//   emit   light it gives off by itself at any temperature (luminescence), as
+//          linear RGB radiance in the incandescence's scene units (sunlit
+//          white ≈ 1.2): what a body of it shows. It adds to the thermal glow
+//          wherever matter's light is used (emission(), below).
 
 import { ELEMENTS } from '../elements.js';
+import { bandGlow } from './incandescence.js';
+
+// Fluorite's blue-violet fluorescence: the Eu²⁺ band at 424 nm, ~25 nm wide
+// (CaF₂:Eu²⁺; "fluorescence" is named after fluorite). Under a UV lamp it is
+// a few cd/m², which the incandescence's brightness curve would put near 0.03.
+// A game liberty: it glows without the lamp, as bright as steel at ~1050 °C.
+// That lights the rock around it, and is about the brightest the film-like
+// roll-off of saturated light (gfx/post.js tonemap) still shows violet, not pink.
+const FLUORITE_BAND = { peak: 424, fwhm: 25, lum: 0.15 };
+const FLUORITE_GLOW = bandGlow(FLUORITE_BAND.peak, FLUORITE_BAND.fwhm, FLUORITE_BAND.lum);
 
 // Smooth-surface channels. sigma = blur radius in cells (how much the
 // blockiness is smoothed away), ema = per-frame blend toward the new state
@@ -69,10 +83,17 @@ export const MEDIA_NOISE_CELLS = 64;
 //          terminator in porous or translucent stuff (snow, ash, leaves)
 //   glint  fraction of the sun's specular that arrives as discrete sparkles
 //          from individual grain facets (sand, snow, gunpowder)
+//   surf   a texture family several elements share (SURFS), with its
+//          parameters per element: 'CRAG' = natural rock (shaders/gfx/surface.js
+//          rockCrags and its matOf branch): lumps, crags and creases, carved as
+//          relief up close, with grit, stains, banding and pits; crag holds
+//          its parameters (CRAG_PARAMS), each a multiple of ROCK's basalt
 // Albedo sources (approximate, visible band): dry quartz sand 0.35-0.55, fresh
 // snow 0.85-0.95, concrete 0.25-0.4, wood ash 0.3-0.4, black powder ~0.04,
-// bark 0.05-0.15, leaves ~0.05/0.15/0.03, basalt 0.08-0.15. Metal F0 from
-// measured complex IORs (iron/steel 0.56-0.58, gold 1.0/0.77/0.34).
+// bark 0.05-0.15, leaves ~0.05/0.15/0.03, basalt 0.08-0.15, tan sandstone
+// 0.3-0.4 (redder toward the red end), limestone 0.4-0.6, coal 0.04-0.05
+// (USGS spectral library, Clark et al. 2007). Metal F0 from measured complex
+// IORs (iron/steel 0.56-0.58, gold 1.0/0.77/0.34).
 const LOOKS = {
   WALL: { rough: 0.85, alb: '#8f8c87' },
   SAND: { ch: 'GRANULAR', rough: 0.9, ior: 1.54, alb: '#c4a77c', glint: 0.55 },
@@ -90,6 +111,7 @@ const LOOKS = {
   ACID: { ch: 'LIQUID', ior: 1.36, rough: 0.03, scatter: [0.02, 0.03, 0.02] },
   LAVA: { ch: 'MOLTEN', rough: 0.35, alb: '#2a2522' },
   STEAM: { media: 'STEAM' },
+  CLOUD: { media: 'STEAM' },   // the same water droplets (what you see of steam is condensed mist)
   SMOKE: { media: 'SMOKE' },
   FIRE: { media: 'FIRE' },
   WOOD: { ch: 'ORGANIC', rough: 0.8, alb: '#5a4637' },
@@ -102,8 +124,40 @@ const LOOKS = {
   ICE: { ch: 'LIQUID', ior: 1.31, rough: 0.06, scatter: [0.025, 0.025, 0.025] },
   CLONE: { rough: 0.25, metal: 1, alb: [1.0, 0.766, 0.336] },   // polished gold
   // natural rock (terrain): weathered basalt, part of the natural-solids surface
-  ROCK: { ch: 'ORGANIC', rough: 0.85, alb: '#4e4b48' },
+  ROCK: { ch: 'ORGANIC', rough: 0.85, alb: '#4e4b48', surf: 'CRAG' },
+  // The other rocks share it (and its texture: surf CRAG, crag below).
+  // Sandstone: quartz grains (n = 1.54, they glint like sand's) in a tan,
+  // iron-stained cement, linear albedo ~0.45/0.33/0.2. Limestone: calcite
+  // (n ~1.6), pale grey-buff ~0.5/0.48/0.43. Coal: albedo ~0.045 with a
+  // sheen. Polished vitrinite has n ~1.7-1.8, but a natural face reflects only
+  // the measured 0.04-0.05 in all, so its specular is no more than any
+  // rock's (n 1.5, the default): its sheen is a smoother face than rock's.
+  // (Glossier, it outshone the basalt beside it under a low sun.) Broken coal
+  // shows the same faces fresh, glinting where they catch the sun.
+  SANDSTONE: { ch: 'ORGANIC', rough: 0.9, ior: 1.54, alb: '#b39c7c', glint: 0.25, surf: 'CRAG',
+    crag: { relief: 0.6, pits: 0, bands: 2.5, stain: 1.5 } },   // rounded by weathering, bedded, iron-stained
+  LIMESTONE: { ch: 'ORGANIC', rough: 0.8, ior: 1.6, alb: '#bcb8af', surf: 'CRAG',
+    crag: { relief: 1, pits: 0.4, bands: 1.5, stain: 0.4 } },   // sharp solution runnels and pits, bedded
+  COAL: { ch: 'ORGANIC', rough: 0.75, alb: '#3c3c3d', surf: 'CRAG',
+    crag: { relief: 0.5, pits: 0, bands: 2, stain: 0 } },       // blocky cleat, bright and dull bands
+  BROKENCOAL: { ch: 'GRANULAR', rough: 0.75, alb: '#3c3c3d', glint: 0.5 },
+  // Purple fluorite (elements.js CRYSTAL): n = 1.434, polished cleavage faces;
+  // massive fluorite is translucent and cloudy, so light wraps into it. Its
+  // dust is pale, as any crushed coloured crystal is (scattering at the grain
+  // faces swamps the absorption), and keeps the glow (powdered phosphors do).
+  CRYSTAL: { rough: 0.15, ior: 1.434, alb: '#5c3f8a', sss: 0.4, emit: FLUORITE_GLOW },
+  CRYSTAL_DUST: { ch: 'GRANULAR', rough: 0.6, ior: 1.434, alb: '#b7a2d2', sss: 0.3, glint: 0.4, emit: FLUORITE_GLOW },
 };
+
+// Shared texture families (LOOKS surf). NONE: an element's own (or none).
+export const SURFS = ['NONE', 'CRAG'];
+// CRAG parameters, as multiples of ROCK's weathered basalt (the defaults):
+//   relief  height of the crags and creases (and of their carving up close)
+//   pits    gas vesicles in basalt; small solution pits in limestone
+//   bands   lava-flow banding in basalt; bedding in sedimentary rock
+//   stain   rusty iron-oxide patches
+const CRAG_PARAMS = ['relief', 'pits', 'bands', 'stain'];
+const CRAG_DEFAULT = { relief: 1, pits: 1, bands: 1, stain: 1 };
 
 // Defaults for elements LOOKS leaves out (the rest default to 0: none).
 const DEFAULT_ROUGH = 0.7;
@@ -132,6 +186,9 @@ export const LOOK = ELEMENTS.map((e) => {
   return {
     ch: chIndex(l.ch), media: mediaIndex(l.media), rough: l.rough ?? DEFAULT_ROUGH, metal: l.metal ?? 0, ior: l.ior ?? DEFAULT_IOR,
     alb: linearOf(l.alb ?? e.color).map((v) => +v.toFixed(GLSL_DIGITS)), sss: l.sss ?? 0, glint: l.glint ?? 0,
+    emit: (l.emit ?? [0, 0, 0]).map((v) => +v.toFixed(GLSL_DIGITS)),
+    surf: SURFS.indexOf(l.surf ?? 'NONE'),
+    crag: l.surf === 'CRAG' ? CRAG_PARAMS.map((k) => (l.crag ?? CRAG_DEFAULT)[k] ?? CRAG_DEFAULT[k]) : CRAG_PARAMS.map(() => 0),
     // single-scattering albedo: the scattered share of the extinction
     scatAlb: (l.scatter ?? [0, 0, 0]).map((s, i) => +(e.sigma[i] > 0 ? Math.min(1, s / e.sigma[i]) : 0).toFixed(GLSL_DIGITS)),
   };
@@ -196,12 +253,24 @@ export function bulkPeakCubic(w) {
 
 const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
 
+// The light matter gives off, as radiance: the thermal glow of its visible skin
+// at Ts (°C; emissivity: the share it emits of a blackbody's, Kirchhoff) plus
+// its own luminescence (EMIT). The one place the two meet: surfaces,
+// transparent bodies, the glow volume (and so the glow lights, the light it
+// sheds on gas and bodies) and the far field all draw matter's light from it.
+// Elements that luminesce: passes that skip cold matter still visit these.
+const LUMINOUS = ELEMENTS.filter((e) => LOOK[e.id].emit.some((v) => v > 0));
+const EMISSION_GLSL = /* glsl */ `
+vec3 emission(int id, float Ts, float emissivity) { return emissivity * incandescence(Ts) + EMIT[id]; }
+vec3 emission(int id, float Ts) { return emission(id, Ts, 1.0); }`;
+
 export function materialsGLSL() {
   const ints = (name, key) => `const int ${name}[NE] = int[NE](${LOOK.map((l) => l[key]).join(', ')});`;
   const floats = (name, key) => `const float ${name}[NE] = float[NE](${LOOK.map((l) => f(l[key])).join(', ')});`;
   return [
     ...CHANNELS.map((c, i) => `#define CH_${c.key} ${i}`),
     ...MEDIA.map((m, i) => `#define MD_${m.key} ${i}`),
+    ...SURFS.map((k, i) => `#define SURF_${k} ${i}`),
     `#define HEAT_RANGE ${f(HEAT_RANGE)}`,
     `#define FIRE_BASE ${f(FIRE_BASE)}`,
     `#define MEDIA_FLOOR ${f(MEDIA_FLOOR)}`,
@@ -221,5 +290,11 @@ export function materialsGLSL() {
     floats('GLINT', 'glint'),
     `const vec3 ALBEDO[NE] = vec3[NE](${LOOK.map((l) => `vec3(${l.alb.map(f).join(', ')})`).join(', ')});`,
     `const vec3 SCATALB[NE] = vec3[NE](${LOOK.map((l) => `vec3(${l.scatAlb.map(f).join(', ')})`).join(', ')});`,
+    `const vec3 EMIT[NE] = vec3[NE](${LOOK.map((l) => `vec3(${l.emit.map(f).join(', ')})`).join(', ')});`,
+    `bool luminous(int id) { return ${LUMINOUS.map((e) => `id == E_${e.key}`).join(' || ') || 'false'}; }`,
+    EMISSION_GLSL,
+    ints('SURF', 'surf'),
+    `const vec4 CRAG[NE] = vec4[NE](${LOOK.map((l) => `vec4(${l.crag.map(f).join(', ')})`).join(', ')});`,
   ].join('\n');
 }
+

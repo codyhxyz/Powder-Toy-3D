@@ -79,6 +79,19 @@ body.pov-locked canvas { cursor: none; }
    vitals (16px + 210px from the left), the vitals sit above it instead. */
 @media (max-width: 1040px) { .pov-vitals { bottom: 88px; } }
 .pov-bar { display: flex; align-items: center; gap: 8px; }
+/* perks held (pov/perks.js): Noita's row of icons, each with its stacks */
+.pov-perks { display: flex; flex-wrap: wrap; gap: 4px; }
+.pov-perks:empty { display: none; }
+.pov-perk {
+  position: relative; width: 24px; height: 24px; display: grid; place-items: center;
+  border-radius: 6px; background: color-mix(in srgb, var(--c) 22%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 60%, transparent);
+}
+.pov-perk i { font-style: normal; font-size: 14px; line-height: 1; }
+.pov-perk b {
+  position: absolute; right: -3px; bottom: -4px; font-size: 9px; font-weight: 700; line-height: 1;
+  padding: 1px 2px; border-radius: 3px; background: rgba(0, 0, 0, 0.75); color: #fff;
+}
 .pov-bar .pov-ic { flex: 0 0 auto; width: 14px; height: 14px; display: grid; place-items: center; }
 .pov-bar .pov-ic svg { width: 14px; height: 14px; }
 .pov-track { position: relative; flex: 1; height: 7px; border-radius: 4px; background: rgba(255, 255, 255, 0.07); box-shadow: inset 0 0 0 1px var(--line); overflow: hidden; }
@@ -99,6 +112,24 @@ body.pov-locked canvas { cursor: none; }
 .pov-jet .pov-ic svg { fill: #ffa94d; }
 .pov-jet .pov-fill { background: linear-gradient(90deg, #e8590c, #ffc078); transition: transform 90ms linear; }
 .pov-jet.low .pov-fill { background: linear-gradient(90deg, #c92a2a, #ff8787); }
+/* the Energy Shield (Halo's): cyan over health; a hit flashes it white, a break pops the bar and
+   the empty track blinks red until the refill sweeps back up */
+.pov-shield { display: none; }
+.pov-shield.show { display: flex; animation: pov-in 200ms var(--ease); }
+.pov-shield .pov-ic svg { fill: #5fd3ff; }
+.pov-shield .pov-fill { background: linear-gradient(90deg, #2f9fe0, #8fe6ff); transition: transform 90ms linear; }
+.pov-shield.hit .pov-fill { background: linear-gradient(90deg, #bff0ff, #ffffff); }
+.pov-shield.hit .pov-track { box-shadow: inset 0 0 0 1px #bff0ff, 0 0 8px #5fd3ff; }
+.pov-shield.pop .pov-track { animation: pov-shield-pop 420ms var(--ease); }
+.pov-shield.empty .pov-track { animation: pov-shield-blink 0.5s steps(1) infinite; }
+.pov-shield.empty .pov-ic svg { fill: #ff5d5d; }
+.pov-shield.charging .pov-fill {
+  background: linear-gradient(90deg, #2f9fe0, #8fe6ff 40%, #ffffff 50%, #8fe6ff 60%, #2f9fe0);
+  background-size: 200% 100%; animation: pov-shield-sweep 0.6s linear infinite;
+}
+@keyframes pov-shield-pop { 0% { transform: scale(1); } 30% { transform: scale(1.12, 1.6); box-shadow: inset 0 0 0 1px #fff, 0 0 12px #5fd3ff; } 100% { transform: scale(1); } }
+@keyframes pov-shield-blink { 50% { background: rgba(255, 70, 70, 0.35); } }
+@keyframes pov-shield-sweep { from { background-position: 100% 0; } to { background-position: -100% 0; } }
 @keyframes pov-in { from { opacity: 0; transform: translateY(4px); } }
 
 /* ---- pointer-lock prompt */
@@ -191,3 +222,10 @@ body.pov-on.pov-nohud .toolbar,
 body.pov-on.pov-nohud .stats,
 body.pov-on.pov-nohud .toasts,
 body.pov-on.pov-nohud .legend-box { visibility: hidden !important; }
+
+/* Q in first person: the tools menu (pov/index.js setMenu). The palette comes
+   back so its Tools group can give tools, GMod's spawn menu; the hotbar steps aside. */
+body.pov-on.pov-menu .dock { opacity: 1 !important; pointer-events: auto !important; transform: translateX(-50%); }
+body.pov-on.pov-menu .card { opacity: 1 !important; }
+body.pov-on.pov-menu .hotbar { opacity: 0; pointer-events: none; }
+body.pov-on.pov-menu .pov-lock { display: none; }

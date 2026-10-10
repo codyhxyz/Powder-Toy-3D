@@ -3,12 +3,16 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import './ui/styles.css';
 import { Simulation } from './sim.js';
 import { volumeVert, volumeFrag, pickFrag, shadowFrag } from './shaders/render.js';
-import { ELEMENTS, E, toolById, isBuild, isSpawnerTool } from './elements.js';
+import { ELEMENTS, E, toolById, isBuild, isSpawnerTool, isGearTool } from './elements.js';
 import { Spawners, SPAWNER, feetOnHit } from './spawners.js';
-import { buildPreset } from './presets.js';
+import { PerkOrbs } from './perkOrbs.js';
+import { buildPreset, ARENA_PRESETS } from './presets.js';
+import { ArenaMarkers } from './arenas/markers.js';
+import { DAM_VALLEY_BANNERS, shrineAltars } from './arenas/damValley.js';
 import { loadIsland, releaseGenerator } from './world/gpu.js';
 import { WorldWindow, WIN_STEP } from './world/window.js';
-import { heightAt } from './world/generator.js';
+import { bakedAir } from './constructions/runtime.js';
+import { WORLD_SCENES, sceneByKey } from './world/scenes/index.js';
 import { FarField } from './world/far.js';
 import { farHazeGLSL, farCastersGLSL, farLayout, WORLD_SIZE } from './shaders/far.js';
 import { quadVert } from './shaders/common.js';
@@ -33,6 +37,8 @@ import { createMultiplayer } from './net/multiplayer.js';
 import { createProfiler } from './gfx/profiler.js';
 import { createProfilerPanel } from './ui/profiler.js';
 import { createPov } from './pov/index.js';
+import { inventory } from './pov/tools/inventory.js';
+import { gearByKey, SLOTS } from './pov/tools/catalog.js';
 import { renderViewmodels } from './pov/viewmodel.js';
 import { POV_FOV, POV_FOV_RANGE, SENSITIVITY_RANGE } from './pov/camera.js';
 import { finishSignIn, account, accountsEnabled } from './account.js';
@@ -47,21 +53,25 @@ const VIEWS = optional['./views.js']?.VIEWS ?? [
 const SignsClass = optional['./signs.js']?.Signs;
 const BuildsClass = optional['./constructions.js']?.Constructions;
 
-const SIZES = { '64': [64, 64, 64], '96': [96, 96, 96], '128': [128, 128, 128], wide: [160, 96, 160] };
-// Massive worlds (docs/scaling.md D11): the generator's world, `size` cells,
-// simulated and drawn through a window of `win` cells that follows the focus
-// (the POV body, else the orbit target). The Grid size row's World. Its peaks
-// are bare rock (snow: false): the air is 20 °C everywhere, so snow caps would
-// melt, and the window keeps every brick that leaves it changed.
-const WORLDS = { world: { win: [128, 128, 128], size: WORLD_SIZE, snow: false } };
+const SIZES = { '64': [64, 64, 64], '96': [96, 96, 96], '128': [128, 128, 128], wide: [160, 96, 160],
+  valley: ARENA_PRESETS.damValley.size };
+// Arena scenes (presets.js ARENA_PRESETS) are built for one grid each: picking
+// one switches the grid to it, and any other box scene switches back. Their
+// grids aren't in the Grid size row.
+const ARENA_GRID = { damValley: 'valley' };
+const ARENA_GRIDS = new Set(Object.values(ARENA_GRID));
+// an arena's team banners (arenas/markers.js), by preset
+const ARENA_BANNERS = { damValley: DAM_VALLEY_BANNERS };
+// Massive worlds (docs/scaling.md D11): a world scene (world/scenes,
+// settings.scene: the island by default), `size` cells, simulated and drawn
+// through a window of `win` cells that follows the focus (the POV body, else
+// the orbit target). The Grid size row's World.
+const WORLDS = { world: { win: [128, 128, 128], size: WORLD_SIZE } };
 // God view over a world: the orbit target on the ground, the camera this far
 // off it along the box view's direction (scene units), so the window fills
 // about as much of the view as a box does
 const WORLD_VIEW_DIR = [11, 9.5, 13];
 const WORLD_VIEW_DIST = 21;
-// A world starts with the window on the island's shore, seen from the sea
-// (worldStart): its centre this share of its width inland from the waterline
-const WORLD_START_INLAND = 0.25;
 // WASD in a world: no faster than the window can follow the orbit target
 // (one WIN_STEP move every few frames), in scene units per second
 const WORLD_CAM_SPEED_MAX = 9;
@@ -74,7 +84,7 @@ const LAB_ENEMY_AT = [0.555, 0.86];
 // the box the Scene row goes back to from World, and phones' grid
 const BOX_DEFAULT = '128';
 const DEFAULTS = {
-  size: 'world', preset: 'lab',
+  size: 'world', preset: 'lab', scene: 'island',
   tool: E.SAND, radius: 5, shape: 0, rate: 1, replace: false,
   steps: 4, gravity: 0.025, paused: false,
   view: 0, camSpeed: 1, upscale: 'quality', dockCollapsed: false,
@@ -103,7 +113,7 @@ const DEFAULT_CHANGES = [
 ];
 const REV_KEY = 'rev';
 const LEGACY_MOBILE_KEY = 'mobileLite';   // rev 1's flag before REV_KEY
-const PERSIST = ['size', 'preset', 'tool', 'radius', 'shape', 'rate', 'replace', 'steps', 'gravity', 'view',
+const PERSIST = ['size', 'preset', 'scene', 'tool', 'radius', 'shape', 'rate', 'replace', 'steps', 'gravity', 'view',
   'camSpeed', 'upscale', 'dockCollapsed', 'character', 'povFov', 'sensitivity', 'viewBobbing', 'sprintMode',
   'nearGI', 'glowLights', 'caustics', ...DETAIL.map(settingKey), 'profiler'];
 const STORE = 'powder-toy-3d:settings';
@@ -124,13 +134,17 @@ const params = new URLSearchParams(location.search);
 const knownSize = (s) => s in SIZES || s in WORLDS;
 if (knownSize(params.get('size'))) settings.size = params.get('size');
 if (params.get('preset')) settings.preset = params.get('preset');
+if (params.get('scene')) settings.scene = params.get('scene');
+settings.scene = sceneByKey(settings.scene).key;   // (a scene no longer listed: the island)
 // the Island scene's world seed (world/generator.js), and World's; its default world without one
 const worldSeed = params.has('seed') ? Number(params.get('seed')) >>> 0 : undefined;
 if (!knownSize(settings.size)) settings.size = DEFAULTS.size;
 // the box size the Scene row goes back to from World
-let boxSize = settings.size in SIZES ? settings.size : BOX_DEFAULT;
+let boxSize = settings.size in SIZES && !ARENA_GRIDS.has(settings.size) ? settings.size : BOX_DEFAULT;
 // a scene named in the URL is a box scene (World has its own), as in the Scene row
 if (params.get('preset') && !params.get('size') && settings.size in WORLDS) settings.size = boxSize;
+// an arena named in the URL brings its grid
+if (params.get('preset') in ARENA_GRID && !params.get('size')) settings.size = ARENA_GRID[params.get('preset')];
 if (!toolById(settings.tool)) settings.tool = DEFAULTS.tool;
 if (!VIEWS.some((v) => v.id === settings.view)) settings.view = 0;
 if (!['wizard', 'real', 'stick'].includes(settings.character)) settings.character = DEFAULTS.character;
@@ -159,6 +173,8 @@ document.getElementById('app').appendChild(renderer.domElement);
 const post = createPost(renderer, { pixScale: gfxUniforms.uPixScale });
 
 const scene = new THREE.Scene();
+let perkOrbs = null;   // perk orbs (perkOrbs.js), made with the spawners
+let lastShrine = 0;    // the shrine id the last placement's orbs got (0: it set none)
 let spawners = null;   // enemy and player spawners (spawners.js), made once the volume is
 const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.05, 200);
 const controls = new OrbitControls(camera, renderer.domElement);
@@ -232,14 +248,14 @@ function build() {
   }
   worldMode = WORLDS[settings.size] ?? null;
   const [nx, ny, nz] = worldMode?.win ?? SIZES[settings.size];
-  win?.dispose();
+  win?.dispose(retired);   // (a new window over the world shares most of its passes' programs)
   win = null;
   sim = new Simulation(renderer, nx, ny, nz, { windowed: !!worldMode });
   sim.gravity = settings.gravity;
   sim.onPass = prof.on ? simPass : null;
   scale = 10 / Math.max(nx, nz);
   if (worldMode) {
-    win = new WorldWindow(renderer, sim, { size: worldMode.size, seed: worldSeed, snow: worldMode.snow });
+    win = new WorldWindow(renderer, sim, { size: worldMode.size, seed: worldSeed, scene: sceneByKey(settings.scene) });
     sim.origin.fromArray(worldStart());
   }
   // the grid starts centred on the scene's origin
@@ -318,6 +334,7 @@ function build() {
     depthTest: false,
     depthWrite: false,
   });
+  gfxUniforms.uClouds.value = false;   // a box has no sky of its own (a world's far field turns its clouds on)
   win?.far.attach(volume.material, shadowMat);   // world mode: the far field's haze and shadows on the window
   applyDetail();
   volume.material.uniforms.tShadow.value = shadowTarget.texture;
@@ -331,22 +348,18 @@ function build() {
   if (signs) { signs.clear(); signs.rebuild(); }
   claimPrograms(renderer, [...sim.materials(), pickMat, shadowMat], { lights: scene });
   claimPrograms(renderer, [volume.material], { geometry: volume.geometry, lights: scene });
+  // an arena only fits its own grid: in another, the lab
+  if (!win && settings.preset in ARENA_GRID && ARENA_GRID[settings.preset] !== settings.size) settings.preset = 'lab';
   loadPreset(settings.preset, false);   // (the Island's generator claims its programs as it runs; a world's start compiling)
   retired.forEach((m) => m.dispose());
 }
 
-// World: the window's first origin (world cells). The island's middle is bare
-// rock, so it starts where the most is going on: on the shore the god view
-// looks from, the sea in front, then beach, meadows and trees, and the hills
-// behind. Found by walking from the island's centre toward the camera to the
-// waterline, a WIN_STEP at a time.
+// World: the window's first origin (world cells): centred on the column its
+// scene starts at (where the most is going on: the island's shore, seen from
+// the sea), snapped to WIN_STEP and inside the world.
 function worldStart() {
   const P = win.P, g = sim.g, n = [g.nx, g.nz];
-  const d = new THREE.Vector2(WORLD_VIEW_DIR[0], WORLD_VIEW_DIR[2]).normalize();
-  const at = (r) => [P.center[0] + d.x * r, P.center[1] + d.y * r];
-  let r = 0;
-  while (r < Math.max(P.size[0], P.size[2]) / 2 && heightAt(...at(r), P) >= P.sea) r += WIN_STEP;
-  const c = at(r - WORLD_START_INLAND * Math.max(...n));
+  const c = win.scene.start(P, n);
   const origin = [0, 1].map((k) => {
     const o = Math.round((c[k] - n[k] / 2) / WIN_STEP) * WIN_STEP;
     return THREE.MathUtils.clamp(o, 0, P.size[2 * k] - n[k]);
@@ -354,10 +367,65 @@ function worldStart() {
   return [origin[0], 0, origin[1]];
 }
 
+// World: every world gets a shrine (constructions/builtins.js shrine, with its
+// perk orbs) near the middle of its first window, where the god view starts:
+// on flat dry ground, with as few trees about as it can find, in a clearing
+// (the island's trees around it are felled: stamped over with air, exactly as
+// they were planted). It's stamped into the window like a placed one, so the
+// window keeps it as an edit when it moves away (world/store.js).
+const SHRINE_HALF = [9, 6];        // cells: half the shrine's footprint (x, z), a cell to spare
+const SHRINE_SEARCH = 40;          // cells from the window's middle it looks within...
+const SHRINE_SEARCH_STEP = 4;      // ...on a lattice this fine
+const SHRINE_SAMPLE = 2;           // cells between the ground samples under a footprint
+const SHRINE_FLAT = 3;             // cells of rise and fall it accepts under its floor
+const SHRINE_DRY = 2;              // cells above the sea its lowest ground must be
+const SHRINE_HEADROOM = 16;        // cells of window it needs above its floor (the roof, and a hop)
+const SHRINE_GLADE = 10;           // cells around its footprint the clearing reaches (trunks within it are felled)
+const SHRINE_TREE_COST = 2;        // a spot's score: cells of rise, plus this per tree to fell...
+const SHRINE_FAR_COST = 0.05;      // ...plus this per cell from the window's middle (lowest wins)
+function worldShrine() {
+  if (!win || !builds) return;
+  const P = win.P, g = sim.g, o = sim.origin, [hx, hz] = SHRINE_HALF;
+  const sea = P.sea ?? 0;
+  const fits = (x, z) => x - hx >= 0 && z - hz >= 0 && x + hx < g.nx && z + hz < g.nz;
+  // the ground's lowest and highest under a footprint centred on grid column (x, z)
+  const span = (x, z) => {
+    let lo = Infinity, hi = -Infinity;
+    for (let i = -hx; i <= hx; i += SHRINE_SAMPLE)
+      for (let k = -hz; k <= hz; k += SHRINE_SAMPLE) {
+        const h = win.scene.ground(o.x + x + i, o.z + z + k, P);
+        lo = Math.min(lo, h); hi = Math.max(hi, h);
+      }
+    return [lo, hi];
+  };
+  // the trees whose trunks stand in its glade (the scene's, if it plants any: the island's)
+  const glade = (x, z) => (win.scene.trees
+    ? win.scene.trees.treesIn(o.x + x - hx - SHRINE_GLADE, o.z + z - hz - SHRINE_GLADE, o.x + x + hx + SHRINE_GLADE + 1, o.z + z + hz + SHRINE_GLADE + 1, P, win.candidates)
+    : []);
+  const cx = Math.round(g.nx / 2), cz = Math.round(g.nz / 2);
+  let best = null;
+  for (let dx = -SHRINE_SEARCH; dx <= SHRINE_SEARCH; dx += SHRINE_SEARCH_STEP)
+    for (let dz = -SHRINE_SEARCH; dz <= SHRINE_SEARCH; dz += SHRINE_SEARCH_STEP) {
+      const x = cx + dx, z = cz + dz;
+      if (!fits(x, z)) continue;
+      const [lo, hi] = span(x, z);
+      if (hi - lo > SHRINE_FLAT || lo < sea + SHRINE_DRY || hi + SHRINE_HEADROOM > g.ny) continue;
+      const trees = glade(x, z);
+      const score = hi - lo + SHRINE_TREE_COST * trees.length + SHRINE_FAR_COST * Math.hypot(dx, dz);
+      if (!best || score < best.score) best = { x, z, y: Math.ceil(hi), trees, score };
+    }
+  if (!best) return;
+  for (const t of best.trees) {
+    const baked = win.bakeTree(t);
+    if (baked) builds.stampBaked(bakedAir(baked), new THREE.Vector3(t.x - o.x - baked.base.x, t.y - o.y - baked.base.y, t.z - o.z - baked.base.z));
+  }
+  builds.stampAt('SHRINE', new THREE.Vector3(best.x, best.y, best.z));   // (onPlaced sets its orbs)
+}
+
 // World: the god view's home over world column (x, z), the orbit target on
-// the ground there (on the sea where the sea floor is lower).
+// the ground there (the scene's: on the sea where the sea floor is lower).
 function homeOver(x, z) {
-  const ground = Math.max(heightAt(x, z, win.P), win.P.sea);
+  const ground = win.scene.ground(x, z, win.P);
   const target = new THREE.Vector3((x - anchor.x) * scale, ground * scale, (z - anchor.y) * scale);
   rig.setHome(new THREE.Vector3(...WORLD_VIEW_DIR).setLength(WORLD_VIEW_DIST).add(target), target);
 }
@@ -413,9 +481,20 @@ function setGrid(dims) {
 // Switch the grid to `size` (SIZES or WORLDS) and rebuild.
 function setSize(size) {
   settings.size = size;
-  if (size in SIZES) boxSize = size;
+  if (size in SIZES && !ARENA_GRIDS.has(size)) boxSize = size;
   build();
   save();
+}
+
+// The Scene row's box scenes: an arena brings its own grid, any other goes
+// back to the box size from before (build() loads settings.preset).
+function pickBoxScene(name) {
+  const grid = ARENA_GRID[name] ?? boxSize;
+  if (settings.size === grid) return loadPreset(name);
+  if (mp.guard()) return false;
+  settings.preset = name;
+  setSize(grid);
+  return true;
 }
 // cells [nx, ny, nz] for a toast: '128³', '160 × 96 × 160'; for the HUD: '2.1M'
 const dimsName = (d) => (d.every((n) => n === d[0]) ? `${d[0]}³` : d.join(' × '));
@@ -437,11 +516,13 @@ function loadPreset(name, undoable = true) {
       placeVolume();
       post.reset();
       pov?.worldReplaced();
-    }, (err) => console.error('world: its passes failed to compile', err));
+      worldShrine();
+    }, (err) => console.error('world: its passes failed to compile, or its scene to prepare', err));
     toolbar.setUndoEnabled(false);
   } else if (name === 'empty') sim.clear();
   else if (name === 'island') loadIsland(sim, { seed: worldSeed });
-  else buildPreset(name, sim);
+  else arenaLayout = buildPreset(name, sim);
+  if (win || !(name in ARENA_GRID)) arenaLayout = null;
   post.reset();
   signs?.clear();
   resetSpawners(name);
@@ -450,12 +531,24 @@ function loadPreset(name, undoable = true) {
   return true;
 }
 
-// A new scene clears the spawners; the lab comes with an enemy spawner of its own.
+// A new scene clears the spawners; the lab comes with an enemy spawner of its
+// own. An arena sets its shrines' perk orbs, its team banners, and player
+// spawners at red's spawn points (F drops you into the red base).
 function resetSpawners(name) {
+  perkOrbs?.clear();
+  arenaMarkers?.clear();
   if (!spawners) return;
   spawners.clear();
   if (name === 'lab' && !win) spawners.add(SPAWNER.ENEMY, new THREE.Vector3(Math.round(sim.g.nx * LAB_ENEMY_AT[0]), 0, Math.round(sim.g.nz * LAB_ENEMY_AT[1])));
+  const a = arenaLayout;
+  if (!a) return;
+  for (const p of a.spawns.red) spawners.add(SPAWNER.PLAYER, new THREE.Vector3(p[0] + 0.5, p[1], p[2] + 0.5));
+  for (const s of a.shrines) perkOrbs?.shrineAt(shrineAltars(s).map((p) => new THREE.Vector3(...p)));
+  arenaMarkers?.set(ARENA_BANNERS[name] ?? []);
 }
+// the loaded arena's layout (arenas/damValley.js DAM_VALLEY_LAYOUT), else null: __app.arena
+let arenaLayout = null;
+let arenaMarkers = null;   // its team banners (arenas/markers.js)
 
 // ---------------------------------------------------------------- signs (optional module)
 const signLayer = Object.assign(document.createElement('div'), { className: 'sign-layer' });
@@ -611,12 +704,25 @@ function selectTool(id) {
   save();
 }
 
+// A first-person tool from the palette's Tools group (GMod's spawn menu): it
+// goes into the inventory and in hand, now in first person or at the next drop-in.
+function giveGear(id) {
+  const it = toolById(id);
+  const g = gearByKey(it.gear);
+  const fresh = inventory.give(g.key);
+  const slot = `key ${g.slot + 1} (${SLOTS[g.slot]})`;
+  if (pov?.active) {
+    pov.closeMenu();
+    hud.toast(fresh ? `${it.name} added: ${slot}` : `${it.name}: ${slot}`);
+  } else hud.toast(`${it.name} ${fresh ? 'added to your tools' : 'is in your tools'}: press F, then ${slot}`);
+}
+
 // Closing a construction's options goes back to the last element or tool.
 function leaveBuild() { if (isBuild(settings.tool)) selectTool(lastPaintTool); }
 
 const dock = createDock({
   settings,
-  onSelect: selectTool,
+  onSelect: (id) => (isGearTool(id) ? giveGear(id) : selectTool(id)),
   onBrushChange: (patch) => { Object.assign(settings, patch); dock.sync(); save(); },
   onHover: (id) => card.show(id ?? settings.tool),
   onEyedropper: () => setEyedropper(!eyedropper),
@@ -662,6 +768,7 @@ const toolbar = createToolbar({ views: VIEWS, settings, actions });
 const mp = createMultiplayer({ renderer, scene, camera, hud, getSim: () => sim, getVolume: () => volume, setGrid, inWorld: () => !!win });
 
 const fmtSpeed = (v) => `${v}×`;
+const SCENE_COLS = 3;   // scenes per row of the Scene row (five or six don't fit the drawer's width in one)
 const fmtTime = (v) => `${Math.floor(v)}:${String(Math.round((v % 1) * 60)).padStart(2, '0')}`;
 const settingsPanel = createSettings({
   settings,
@@ -669,17 +776,20 @@ const settingsPanel = createSettings({
   // Sections and their rows run from most to least reached-for; keep that order when adding settings.
   sections: [
     { title: 'Scene', rows: [
-      // clicking the current scene reloads it; Empty clears. World is its own
-      // scene (none is lit): picking one goes back to the last box size with it.
-      { type: 'seg', key: 'preset', value: () => (win ? '' : settings.preset),
-        options: [['empty', 'Empty'], ['lab', 'Lab'], ['volcano', 'Volcano'], ['island', 'Island']],
+      // a box's scenes: clicking the current one reloads it; Empty clears
+      { type: 'seg', key: 'preset', hidden: () => !!win, cols: SCENE_COLS,
+        options: [['empty', 'Empty'], ['lab', 'Lab'], ['volcano', 'Volcano'], ['island', 'Island'], ['damValley', 'Dam Valley']],
         onChange: (v) => {
-          const name = v === 'empty' ? 'an empty box' : `the ${v}`;
-          if (!win) { if (loadPreset(v)) hud.toast(`Loaded ${name}`); return; }
+          if (pickBoxScene(v)) hud.toast(`Loaded ${v === 'empty' ? 'an empty box' : v in ARENA_GRID ? arenaLayout?.name ?? v : `the ${v}`}`);
+        } },
+      // a world's (world/scenes), in rows of three: clicking one starts the world over with it
+      { type: 'seg', key: 'scene', hidden: () => !win, cols: SCENE_COLS,
+        options: WORLD_SCENES.map((s) => [s.key, s.label]),
+        onChange: (v) => {
           if (mp.guard()) return;
-          settings.preset = v;
-          setSize(boxSize);
-          hud.toast(`Loaded ${name}, in a ${dimsName(SIZES[boxSize])} box`);
+          settings.scene = v;
+          setSize('world');
+          hud.toast(`Loaded ${sceneByKey(v).label}`);
         } },
     ] },
     { title: 'Simulation', rows: [
@@ -698,8 +808,8 @@ const settingsPanel = createSettings({
           onChange: (v) => { settings[key] = v; save(); } })),
     ] },
     { title: 'Grid size', rows: [
-      // World: the generator's island, simulated through a window that follows you
-      // (clicking it again starts the world over)
+      // World: a world scene (the Scene row's; the island by default), simulated
+      // through a window that follows you (clicking it again starts the world over)
       { type: 'seg', key: 'size', options: [['64', '64³'], ['96', '96³'], ['128', '128³'], ['wide', '160×96'], ['world', 'World']],
         onChange: (v) => {
           if (mp.guard() || (v in WORLDS && mp.guardWorld())) return;
@@ -767,7 +877,7 @@ if (signInResult.error) hud.toast(signInResult.error);
 account().then((user) => { if (signInResult.signedIn && user) hud.toast(`Signed in as ${user.name}`); });
 
 function resetSettings() {
-  const keep = { size: settings.size, preset: settings.preset, tool: settings.tool, paused: settings.paused, dockCollapsed: settings.dockCollapsed };
+  const keep = { size: settings.size, preset: settings.preset, scene: settings.scene, tool: settings.tool, paused: settings.paused, dockCollapsed: settings.dockCollapsed };
   Object.assign(settings, DEFAULTS, keep);
   sim.gravity = settings.gravity;
   rig.setSpeed(settings.camSpeed);
@@ -808,7 +918,8 @@ function setPixelRatio(r) {
 
 function undo() {
   if (mp.guard()) return;
-  if (sim.undo()) { pov?.worldReplaced(); hud.toast('Undone'); }
+  const shrine = sim.history?.at(-1)?.note?.shrine;
+  if (sim.undo()) { if (shrine) perkOrbs?.removeShrine(shrine); pov?.worldReplaced(); hud.toast('Undone'); }
   // (a world's window moved off all of it: it's kept for when the window comes back)
   else hud.toast(sim.canUndo ? 'Too far away to undo that: go back to it first' : 'Nothing to undo');
   toolbar.setUndoEnabled(sim.canUndo);
@@ -901,7 +1012,15 @@ function press(e) {
   if (isBuild(settings.tool)) {
     if (mp.guard()) return;
     if (!builds) hud.toast('Constructions are still loading');
-    else if (builds.ready) { sim.snapshot(); toolbar.setUndoEnabled(true); builds.place(); hud.dismissHint(); }
+    else if (builds.ready) {
+      sim.snapshot();
+      toolbar.setUndoEnabled(true);
+      lastShrine = 0;
+      builds.place();
+      // a shrine's orbs go with its snapshot: undoing it takes them away (undo)
+      if (lastShrine) { sim.history.at(-1).note = { shrine: lastShrine }; hud.toast('Shrine set: in first person (F), take one perk and the others vanish'); }
+      hud.dismissHint();
+    }
     return;
   }
   dragY = hover.valid ? hoverBrushCenter(tmpV).y : (isTool() ? 0.5 : settings.radius);
@@ -1215,7 +1334,8 @@ function frame(now) {
     `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${KEY_LIGHT}|${settings.view}|${gfx.smoothing}|${detailVersion}`);
   const runView = pacer.view(
     `${camera.matrixWorld.elements}|${camera.projectionMatrix.elements}|${pixelRatio}|${innerWidth}x${innerHeight}`
-    + `|${JSON.stringify(settings)}|${JSON.stringify(gfx)}|${JSON.stringify(post.settings)}|${sceneKey(scene)}`,
+    + `|${JSON.stringify(settings)}|${JSON.stringify(gfx)}|${JSON.stringify(post.settings)}|${sceneKey(scene)}`
+    + `|${win?.far?.chunksDrawn}`,   // a world scene's far field filling in (world/far.js)
     runDerived || wantShot);
   // a frame's dt measures the drawing rate only when the frame before it drew too
   if (runView && renderedLast) { frames++; fpsTime += dt; }
@@ -1270,6 +1390,8 @@ function frame(now) {
     requestPick();
   } else if (pov?.active) requestPick();
   if (spawners) { spawners.setGhosts(!pov?.active); spawners.update(); }   // the crosshair cell stays fresh for the tools
+  perkOrbs?.update();
+  arenaMarkers?.update();
 
   const povReadout = pov?.active ? pov.readout : null;   // the held tool's (the scanner's, the trowel's)
   if (povReadout) {
@@ -1304,10 +1426,14 @@ try {
     });
   }
   spawners = new Spawners({ scene, getSim: () => sim, getVolume: () => volume, getScale: () => scale });   // seeded by build()'s loadPreset, once there is a grid
+  perkOrbs = new PerkOrbs({ scene, getSim: () => sim, getVolume: () => volume, getScale: () => scale });
+  arenaMarkers = new ArenaMarkers({ scene, getSim: () => sim, getVolume: () => volume, getScale: () => scale });
   if (BuildsClass) {
     builds = new BuildsClass({
       scene, camera, settings, getSim: () => sim, getVolume: () => volume, getScale: () => scale, onClose: leaveBuild,
       requestRender: () => pacer.wake(),
+      // a shrine: a random perk orb over each plinth
+      onPlaced: ({ key, anchors }) => { if (key === 'SHRINE') lastShrine = perkOrbs?.shrineAt(anchors)?.[0]?.shrine ?? 0; },
     });
   }
   // a guest gets the host's box (multiplayer.js): opening an invite in World starts in a box, not the world
@@ -1323,13 +1449,18 @@ try {
     getSim: () => sim, getVolume: () => volume, getScale: () => scale,
     hover, pointerHover: () => pointerInside && !uiHover, pickRay,
     getSpawners: () => spawners,
+    getPerkOrbs: () => perkOrbs,
     requestRender: () => pacer.wake(),
     inWorld: () => !!win,
+    showToolsMenu: () => dock.reveal((it) => isGearTool(it.id)),   // Q in first person: the palette at its first-person tools
   });
   window.__app = {
     get sim() { return sim; }, get volume() { return volume; }, get scale() { return scale; }, get signs() { return signs; }, get builds() { return builds; },
     get pov() { return pov; },
     get spawners() { return spawners; },
+    get perkOrbs() { return perkOrbs; },
+    // the loaded arena's layout (spawns, flags, hills, siege core, shrines, vehicles: arenas/damValley.js), else null
+    get arena() { return arenaLayout; },
     get win() { return win; },
     // world mode: start the world over with the window at `origin` (world cells)
     worldLoad(origin) { win.load(origin); placeVolume(); post.reset(); pov?.worldReplaced(); },

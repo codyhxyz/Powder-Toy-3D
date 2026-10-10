@@ -11,10 +11,11 @@ function facts(it) {
   if (it.id < 0) return out;
   const k = kindOf(it);
   if (k === 'powder' || k === 'liquid') out.push(['', `${+(it.dens / 10).toFixed(2)}×`, ' density of water']);
-  if (k === 'gas') out.push(['Rises', '', '']);
+  if (k === 'gas' && it.key !== 'CLOUD') out.push(['Rises', '', '']);
   if (it.key === 'WATER') out.push(['Freezes ', deg(0), ''], ['Boils ', deg(100), '']);
   if (it.key === 'ICE' || it.key === 'SNOW') out.push(['Melts ', deg(0), '']);
   if (it.key === 'STEAM') out.push(['Condenses ', deg(100), '']);
+  if (it.key === 'CLOUD') out.push(['Rains where thick', '', ''], ['Snows ', deg(0), ''], ['Boils ', deg(100), '']);
   if (it.melt) out.push(['Melts ', deg(it.melt), '']);
   if (it.ignite) out.push([it.key === 'GUNPOWDER' ? 'Explodes ' : 'Ignites ', deg(it.ignite), '']);
   if (it.temp !== 20) out.push(['Starts at ', deg(it.temp), '']);

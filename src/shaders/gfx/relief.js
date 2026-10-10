@@ -53,13 +53,13 @@ const float RELIEF_SLOPE_MIN = 0.05;   // floor on |∇φ| (per cell) when conve
 // The high point 'top' of each element's height (cells): a high quantile of
 // it. fBm heights (mFbmD) are ±0.45 at most and mostly within ±0.3 units.
 const float RELIEF_FBM_TOP = 0.3;
-const float RELIEF_CRAG_TOP = 0.5;     // rock crags, in units of ROCK_CRAG_H (rockCrags: ~±0.9)
+const float RELIEF_CRAG_TOP = 0.5;     // rock crags, in units of ROCK_CRAG_H (rockCrags: ~±0.9) times the element's relief
 float reliefTop(int id) {
   if (id == E_SAND) return (SAND_SLUMP_H + SAND_CLUMP_H) * RELIEF_FBM_TOP;
   if (id == E_SNOW) return (SNOW_DRIFT_H + SNOW_CLUMP_H) * RELIEF_FBM_TOP;
   if (id == E_GUNPOWDER) return POWDER_LUMP_H * RELIEF_FBM_TOP;
   if (id == E_ASH) return ASH_LUMP_H * RELIEF_FBM_TOP;
-  if (id == E_ROCK) return ROCK_CRAG_H * RELIEF_CRAG_TOP;
+  if (SURF[id] == SURF_CRAG) return CRAG[id].x * ROCK_CRAG_H * RELIEF_CRAG_TOP;
   if (id == E_WOOD) return WOOD_FUR_DEPTH;   // the plates' surface (furrows and domes go down from it)
   return 0.0;
 }
@@ -70,7 +70,7 @@ float reliefFeature(int id) {
   if (id == E_SNOW) return 1.0 / (SNOW_CLUMP_F * MFBM_LACUNARITY);
   if (id == E_GUNPOWDER) return 1.0 / (POWDER_LUMP_F * MFBM_LACUNARITY);
   if (id == E_ASH) return 1.0 / (ASH_LUMP_F * MFBM_LACUNARITY * MFBM_LACUNARITY);
-  if (id == E_ROCK) return 1.0 / (ROCK_CRAG_F * ROCK_CRAG_LAC * ROCK_CRAG_LAC);
+  if (SURF[id] == SURF_CRAG) return 1.0 / (ROCK_CRAG_F * ROCK_CRAG_LAC * ROCK_CRAG_LAC);
   return WOOD_FUR_W / WOOD_PLATE_FH;   // wood: a furrow's half-width
 }
 
@@ -184,7 +184,7 @@ float reliefWidth(int id) {
   if (id == E_SNOW) return RELIEF_CREVICE_PER_WAVE * SNOW_DRIFT_M / CELL_M;
   if (id == E_GUNPOWDER) return RELIEF_CREVICE_PER_WAVE * POWDER_LUMP_M / CELL_M;
   if (id == E_ASH) return RELIEF_CREVICE_PER_WAVE * ASH_LUMP_M / CELL_M;
-  if (id == E_ROCK) return RELIEF_CREVICE_PER_WAVE * ROCK_CRAG_M / CELL_M;
+  if (SURF[id] == SURF_CRAG) return RELIEF_CREVICE_PER_WAVE * ROCK_CRAG_M / CELL_M;
   return 2.0 * WOOD_FUR_W / WOOD_PLATE_FH;   // wood: a furrow, rim to rim (half-width x 2)
 }
 float reliefSkyVis(vec3 p) {

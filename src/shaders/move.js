@@ -135,7 +135,7 @@ const vertical = (b, t) => `
   }`;
 
 // 2. diagonal topple: a blocked top cell falls diagonally (powders/liquids),
-// a blocked bottom gas cell rises diagonally. Candidates are scored by the
+// a blocked bottom gas cell that is buoyant rises diagonally. Candidates are scored by the
 // particle's horizontal velocity plus noise; the best open one wins.
 const diagonal = (i) => {
   const top = (i & 2) !== 0;
@@ -149,7 +149,7 @@ const diagonal = (i) => {
     const passable = top ? `isFluid(k${path}) && d${path} < d${i}` : `isFluid(k${path})`;
     return `(!m${target} && ${passable} && ${can(i, target, top ? 0 : 1)})`;
   };
-  const kindOk = top ? `(kd == K_POWDER || kd == K_LIQUID)` : `kd == K_GAS`;
+  const kindOk = top ? `(kd == K_POWDER || kd == K_LIQUID)` : `(kd == K_GAS && GRAV[k${i}] < 0.0)`;   // buoyant gases (not cloud, which rides the air)
   return `
   if (s${i} && !m${i}) {
     int kd = KIND[k${i}];

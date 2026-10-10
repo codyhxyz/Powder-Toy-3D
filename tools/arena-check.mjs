@@ -1,0 +1,361 @@
+// Checks of the arena presets (src/arenas): Dam Valley.
+//
+// On the CPU (always): builds the preset in Node and checks
+//   - every layout point (spawns, flags, hills, siege core, shrines, vehicle
+//     pads) is standable: air for a body's height over solid footing, and a
+//     vehicle pad clear over its whole footprint;
+//   - the reservoir is sealed: no water cell has air beside or under it;
+//   - no loose powder: every grain rests on something with its lower
+//     diagonals filled (else it slides), and no plant touches water (it grows);
+//   - nothing burning or molten, and the two halves mirror each other.
+// On the GPU (with --port, a dev server running): loads the preset through the
+// app, checks __app.arena, the player spawners and shrine orbs, then runs the
+// sim for --secs and diffs the whole state against the state at load ("nothing
+// churns but what should"); times sim.step() on Dam Valley's grid against the
+// 'wide' grid's Lab; and with --shots <dir> takes the overview shots and a
+// contact sheet (ImageMagick's montage).
+//
+// With --flood it then blows the dam (heats the powder keg by a sluice gate)
+// and checks the reservoir pours out through the tunnel and the bases stay dry.
+//
+// usage: node tools/arena-check.mjs [--port 5404] [--secs 30] [--shots dir] [--flood [--flood-secs 40]]
+import { execFileSync } from 'child_process';
+import { mkdirSync } from 'fs';
+import { E, ELEMENTS, K } from '../src/elements.js';
+import { ARENA_SIZE, DAM_VALLEY_LAYOUT, DAM_VALLEY_PARTS, buildDamValley, shrineAltars } from '../src/arenas/damValley.js';
+
+const args = process.argv.slice(2);
+const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
+const port = opt('port', null);
+const secs = Number(opt('secs', 30));
+const shots = opt('shots', null);
+const flood = args.includes('--flood');      // also blow the dam (after the shots)
+const floodSecs = Number(opt('flood-secs', 40));
+const FLOOD_OUT = 2000;          // water cells out of the reservoir that count as a flood
+const HEAT_TOOL = -2;            // elements.js TOOLS: Heat
+const KEG_HEATS = 40;            // frames the keg is heated (each adds the tool's heat)
+const KEG_HEAT_R = 3;            // cells, the heat brush's radius
+const BODY_CELLS = 6;            // cells of air a standing body needs (5.5 tall)
+const JEEP_HALF = [8, 4];        // cells: a jeep's half-footprint (x, z) along its length...
+const BIKE_HALF = [3, 2];        // ...and a hoverbike's
+const VEHICLE_CELLS = 6;         // cells of air over a vehicle pad
+const STEP_ITERS = 40;           // sim steps per timing chunk...
+const STEP_CHUNKS = 7;           // ...chunks per grid (the median is reported)
+const SHOT_W = 1280, SHOT_H = 800;
+const SHEET_TILE = 640;          // px across each shot in the contact sheet
+
+let fails = 0;
+const check = (name, ok, info = '') => { if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${info ? `  ${info}` : ''}`); };
+
+// ---------------------------------------------------------------- CPU
+const [NX, NY, NZ] = ARENA_SIZE;
+const t0 = performance.now();
+const { ids, layout } = buildDamValley();
+console.log(`built ${NX}×${NY}×${NZ} in ${(performance.now() - t0).toFixed(0)} ms`);
+const id = (x, y, z) => (x < 0 || y < 0 || z < 0 || x >= NX || y >= NY || z >= NZ ? E.WALL : ids[(y * NZ + z) * NX + x]);
+const solid = (k) => ELEMENTS[k].kind === K.SOLID;
+const footing = (k) => solid(k) || ELEMENTS[k].kind === K.POWDER;
+const counts = {};
+for (const k of ids) counts[k] = (counts[k] ?? 0) + 1;
+console.log('cells:', Object.entries(counts).map(([k, n]) => `${ELEMENTS[k].key} ${n}`).join(', '));
+
+check('layout is the exported constant', layout === DAM_VALLEY_LAYOUT);
+check('layout size is the grid', layout.size.join() === ARENA_SIZE.join());
+check('at least 4 spawns a team', layout.spawns.red.length >= 4 && layout.spawns.blue.length >= 4);
+
+// standable: air for a body over solid ground (or a solid's top) at the feet's column
+const standable = ([x, y, z]) => {
+  const cx = Math.floor(x), cz = Math.floor(z);
+  if (!footing(id(cx, y - 1, cz))) return `nothing to stand on (${ELEMENTS[id(cx, y - 1, cz)].key})`;
+  for (let k = 0; k < BODY_CELLS; k++) if (id(cx, y + k, cz) !== E.EMPTY) return `${ELEMENTS[id(cx, y + k, cz)].key} at +${k}`;
+  return null;
+};
+const points = [
+  ...layout.spawns.red.map((p, i) => [`red spawn ${i}`, p]),
+  ...layout.spawns.blue.map((p, i) => [`blue spawn ${i}`, p]),
+  ['red flag', layout.flags.red], ['blue flag', layout.flags.blue],
+  ...layout.hills.map((h, i) => [`hill ${i}`, h.slice(0, 3)]),
+  ['siege core', layout.siege.core.slice(0, 3)],
+  ...layout.shrines.map((s, i) => [`shrine ${i} floor`, [s[0], s[1], s[2] + 3]]),   // (its middle is a plinth)
+];
+const bad = points.map(([name, p]) => [name, p, standable(p)]).filter(([, , why]) => why);
+check('every layout point is standable', !bad.length, bad.map(([n, p, w]) => `${n} ${p}: ${w}`).join('; '));
+const plinths = layout.shrines.flatMap((s) => shrineAltars(s)).filter(([x, y, z]) => id(Math.floor(x), y - 1, Math.floor(z)) !== E.METAL);
+check('every shrine altar is a steel-topped plinth', !plinths.length, JSON.stringify(plinths));
+const padBad = layout.vehicles.filter((v) => {
+  const [hx, hz] = v.kind === 'jeep' ? JEEP_HALF : BIKE_HALF;
+  const [x0, y, z0] = v.at;
+  for (let z = z0 - hz; z <= z0 + hz; z++)
+    for (let x = x0 - hx; x <= x0 + hx; x++) {
+      if (!solid(id(x, y - 1, z))) return true;
+      for (let k = 0; k < VEHICLE_CELLS; k++) if (id(x, y + k, z) !== E.EMPTY) return true;
+    }
+  return false;
+});
+check('every vehicle pad is flat and clear', !padBad.length, JSON.stringify(padBad));
+
+// the reservoir is sealed; powders rest; plants stay dry; nothing hot
+let leaks = 0, loose = 0, wetPlants = 0, water = 0, leakAt = null, looseAt = null;
+const SIDES = [[1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, -1, 0]];
+const DIAG = [[1, -1, 0], [-1, -1, 0], [0, -1, 1], [0, -1, -1]];
+for (let y = 0; y < NY; y++)
+  for (let z = 0; z < NZ; z++)
+    for (let x = 0; x < NX; x++) {
+      const k = id(x, y, z);
+      if (k === E.WATER) {
+        water++;
+        if (SIDES.some(([dx, dy, dz]) => id(x + dx, y + dy, z + dz) === E.EMPTY)) { leaks++; leakAt ??= [x, y, z]; }
+      } else if (ELEMENTS[k].kind === K.POWDER) {
+        if ([[0, -1, 0], ...DIAG].some(([dx, dy, dz]) => id(x + dx, y + dy, z + dz) === E.EMPTY)) { loose++; looseAt ??= [x, y, z, ELEMENTS[k].key]; }
+      } else if (k === E.PLANT) {
+        for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++)
+          if (id(x + dx, y + dy, z + dz) === E.WATER) { wetPlants++; dy = dz = dx = 2; }
+      }
+    }
+check('the reservoir is sealed', water > 0 && leaks === 0, `${water} water cells, ${leaks} by air${leakAt ? ` (first ${leakAt})` : ''}`);
+check('no loose powder', loose === 0, loose ? `${loose} grains, first ${looseAt}` : `${(counts[E.SAND] ?? 0) + (counts[E.GUNPOWDER] ?? 0)} grains all resting`);
+check('no plant touches water', wetPlants === 0, `${wetPlants}`);
+check('nothing burning or molten', !counts[E.FIRE] && !counts[E.LAVA] && !counts[E.STEAM]);
+// (the shrines are an odd number of cells wide, so they can't mirror about the grid's middle)
+const SHRINE_REACH = [9, 6];   // cells round a shrine's middle (x, z) its pavilion and site take
+const inShrine = (x, y, z) => layout.shrines.some((s) => Math.abs(x - s[0]) <= SHRINE_REACH[0] && Math.abs(z - s[2]) <= SHRINE_REACH[1]
+  && y >= s[1] - 2 && y < s[1] + 14);
+let asym = 0;
+for (let y = 0; y < NY; y++) for (let z = 0; z < NZ; z++) for (let x = 0; x < NX / 2; x++)
+  if (id(x, y, z) !== id(NX - 1 - x, y, z) && !inShrine(x, y, z) && !inShrine(NX - 1 - x, y, z)) asym++;
+check('the halves mirror each other (but the shrines)', asym === 0, `${asym} cells differ`);
+
+// on foot from red's first spawn: steps up a cell at most (the body's STEP_HEIGHT),
+// drops any height; the ridges' shrines are for jetpacks, the rest must be reachable
+const STEP_UP = 1;
+const stands = (x, y, z) => footing(id(x, y - 1, z)) && [0, 1, 2, 3, 4, 5].every((k) => id(x, y + k, z) === E.EMPTY);
+const key = (x, y, z) => (y * NZ + z) * NX + x;
+const seen = new Uint8Array(NX * NY * NZ);
+const queue = [layout.spawns.red[0]];
+seen[key(...layout.spawns.red[0])] = 1;
+while (queue.length) {
+  const [x, y, z] = queue.pop();
+  for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+    const nx = x + dx, nz = z + dz;
+    if (nx < 0 || nz < 0 || nx >= NX || nz >= NZ) continue;
+    for (let ny = Math.min(NY - 6, y + STEP_UP); ny >= 1; ny--) {
+      if (ny < y && id(nx, ny + BODY_CELLS - 1, nz) !== E.EMPTY) break;   // (falling: down the open column only)
+      if (!stands(nx, ny, nz)) continue;
+      if (!seen[key(nx, ny, nz)]) { seen[key(nx, ny, nz)] = 1; queue.push([nx, ny, nz]); }
+      break;
+    }
+  }
+}
+const reach = ([x, y, z]) => seen[key(Math.floor(x), y, Math.floor(z))] === 1;
+const walk = [['blue flag', layout.flags.blue], ['siege core', layout.siege.core], ...layout.hills.map((h, i) => [`hill ${i}`, h]),
+  ['crest shrine', [layout.shrines[0][0], layout.shrines[0][1], layout.shrines[0][2] + 3]],
+  ['pump room shrine', [layout.shrines[1][0], layout.shrines[1][1], layout.shrines[1][2] + 3]], ['blue spawn', layout.spawns.blue[0]]];
+const cut = walk.filter(([, p]) => !reach(p));
+check('on foot from red spawn: the flags, hills, core, crest and tunnel', !cut.length, cut.map(([n]) => n).join(', '));
+const ridges = layout.shrines.slice(2).filter((s) => reach([s[0], s[1], s[2] + 3])).length;
+console.log(`     (ridge shrines reachable on foot: ${ridges} of 2; they're meant for jetpacks)`);
+
+// ---------------------------------------------------------------- GPU
+if (port) {
+  const { chromium } = await import('playwright');
+  const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
+  const p = await b.newPage({ viewport: { width: SHOT_W, height: SHOT_H } });
+  const errs = [];
+  p.on('console', (m) => { if (m.type() === 'error' && !/ERR_CONNECTION_REFUSED/.test(m.text())) errs.push(m.text().slice(0, 400)); });
+  p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 600)));
+  const ev = (fn, arg) => p.evaluate(fn, arg);
+  const frames = (n) => ev(async (n) => { for (let i = 0; i < n; i++) await new Promise((r) => requestAnimationFrame(r)); }, n);
+  try {
+    await p.addInitScript(() => addEventListener('DOMContentLoaded', () => {
+      const st = document.createElement('style');
+      st.id = 'arena-hide';
+      st.textContent = 'body > *:not(canvas):not(:has(canvas)), .dock, .card, .topbar, .hud, .toast { visibility: hidden !important; }';
+      document.head.appendChild(st);
+    }));
+    await p.goto(`http://localhost:${port}/?preset=damValley`);
+    await p.waitForFunction(() => window.__app?.arena && window.__app.pov, null, { timeout: 60000 });
+    await frames(10);
+    const app = await ev(() => {
+      const a = window.__app;
+      return { size: [a.sim.g.nx, a.sim.g.ny, a.sim.g.nz], name: a.arena.name, spawns: a.spawners.of('player').length,
+        orbs: a.perkOrbs.list.length, preset: a.settings.preset, gridSize: a.settings.size };
+    });
+    check('the app loads Dam Valley on its grid', app.size.join() === ARENA_SIZE.join() && app.name === 'Dam Valley', JSON.stringify(app));
+    check('player spawners at red spawns', app.spawns === layout.spawns.red.length, `${app.spawns}`);
+    check('perk orbs over every shrine', app.orbs === 3 * layout.shrines.length, `${app.orbs}`);
+
+    // ---- the GPU state matches the CPU build, then nothing churns
+    const readIds = () => ev(() => {
+      const a = window.__app, g = a.sim.g, [A] = a.sim.readState();
+      const out = new Uint8Array(g.nx * g.ny * g.nz);
+      for (let y = 0; y < g.ny; y++) for (let z = 0; z < g.nz; z++) for (let x = 0; x < g.nx; x++)
+        out[(y * g.nz + z) * g.nx + x] = Math.round(A[a.sim.cellTexel(x, y, z) * 4]);
+      window.__ids = out;
+      return out.length;
+    });
+    const diff = (prev) => ev((prev) => {
+      const a = window.__app, g = a.sim.g, [A] = a.sim.readState();
+      const pairs = {}, cur = new Uint8Array(window.__ids.length);
+      let n = 0, hot = 0;
+      for (let y = 0; y < g.ny; y++) for (let z = 0; z < g.nz; z++) for (let x = 0; x < g.nx; x++) {
+        const t = a.sim.cellTexel(x, y, z) * 4, i = (y * g.nz + z) * g.nx + x, k = Math.round(A[t]);
+        cur[i] = k;
+        if (A[t + 1] > 60) hot++;
+        const was = prev ? window.__ids0[i] : window.__ids[i];
+        if (k !== was) { n++; const key = `${was}>${k}`; pairs[key] = (pairs[key] ?? 0) + 1; }
+      }
+      return { n, hot, pairs: Object.entries(pairs).sort((u, v) => v[1] - u[1]).slice(0, 8) };
+    }, prev);
+    await readIds();
+    const gpuVsCpu = await ev((cpu) => {
+      let n = 0; for (let i = 0; i < cpu.length; i++) if (window.__ids[i] !== cpu[i]) n++; return n;
+    }, Array.from(ids));
+    check('the GPU state at load is the CPU build', gpuVsCpu === 0, `${gpuVsCpu} cells differ`);
+    await ev(() => { window.__ids0 = window.__ids; });
+    const census = () => ev(async () => {
+      const { E } = await import('/src/elements.js');
+      const c = window.__app.sim.census();
+      return Object.fromEntries(['WATER', 'FIRE', 'SMOKE', 'STEAM', 'SAND', 'GUNPOWDER', 'PLANT', 'WOOD', 'LAVA', 'CLOUD'].map((k) => [k, c[E[k]]?.n ?? 0]));
+    });
+    const c0 = await census();
+    const steps0 = await ev(() => { const a = window.__app; a.__steps = 0; const s = a.sim.step.bind(a.sim); a.sim.step = () => { a.__steps++; s(); }; a.settings.paused = false; return a.settings.steps; });
+    await p.waitForTimeout(secs * 1000);
+    const ran = await ev(() => { const a = window.__app; a.settings.paused = true; return a.__steps; });
+    await frames(2);
+    const c1 = await census();
+    const d = await diff(true);
+    console.log(`ran ${secs} s: ${ran} steps (${steps0} a frame)`);
+    console.log('census at load', JSON.stringify(c0));
+    console.log(`census after  `, JSON.stringify(c1));
+    check('the reservoir holds (water count steady)', Math.abs(c1.WATER - c0.WATER) <= c0.WATER * 0.001, `${c0.WATER} → ${c1.WATER}`);
+    check('nothing lit', !c1.FIRE && !c1.SMOKE && !c1.STEAM && !c1.LAVA, JSON.stringify(c1));
+    check('nothing churns', d.n <= 0.0005 * NX * NY * NZ, `${d.n} cells changed; ${d.hot} hot; top old>new: ${JSON.stringify(d.pairs)}`);
+
+    // ---- step cost: Dam Valley's grid vs 'wide' (160×96×160) with the Lab
+    const stepMs = () => ev(([iters, chunks]) => {
+      const a = window.__app, sim = a.sim, out = { sleep: [], noSleep: [], awake: [] };
+      for (const [k, sleep, quiet] of [['sleep', true, true], ['noSleep', false, true], ['awake', false, false]]) {
+        sim.skipSleeping = sleep;
+        sim.skipQuiet = quiet;
+        for (let i = 0; i < 5; i++) sim.step();
+        sim.gpuSync();
+        for (let c = 0; c < chunks; c++) {
+          const t = performance.now();
+          for (let i = 0; i < iters; i++) sim.step();
+          sim.gpuSync();
+          out[k].push((performance.now() - t) / iters);
+        }
+        out[k].sort((u, v) => u - v);
+        out[k] = +out[k][Math.floor(chunks / 2)].toFixed(3);
+      }
+      sim.skipSleeping = sim.skipQuiet = true;
+      return out;
+    }, [STEP_ITERS, STEP_CHUNKS]);
+    const holdLoop = () => ev(() => { const a = window.__app; a.settings.paused = true; });
+    await holdLoop();
+    const valley = await stepMs();
+
+    // ---- shots (before leaving the valley)
+    if (shots) {
+      mkdirSync(shots, { recursive: true });
+      await ev(() => { window.__app.day.fixed = { az: 215, el: 38 }; window.__app.autoRes.enabled = false; });
+      // a camera at grid cell `from` looking at grid cell `to`
+      const cam = async (from, to) => {
+        await ev(([from, to]) => {
+          const a = window.__app, g = a.sim.g, s = a.scale, v = a.volume.position;
+          const w = (c) => [v.x + c[0] * s, v.y + c[1] * s, v.z + c[2] * s];
+          a.camera.position.set(...w(from));
+          a.controls.target.set(...w(to));
+          a.controls.update();
+          a.post.reset();
+        }, [from, to]);
+        await frames(30);
+      };
+      const shot = (name) => p.screenshot({ path: `${shots}/${name}.png` });
+      await cam([-40, 104, 26], [150, 12, 70]); await shot('1-aerial-red-end');
+      await cam([NX + 40, 104, NZ - 26], [106, 12, 58]); await shot('2-aerial-blue-end');
+      await cam([128, 230, -90], [128, 0, 66]); await shot('3-overview');
+      await cam([150, 44, 22], [124, 24, 62]); await shot('4-dam-face');
+      await cam([70, 58, 118], [128, 30, 70]); await shot('5-reservoir');
+      await cam([66, 52, 30], [16, 26, 64]); await shot('6-red-base');
+      // first person: the red base's door, its roof, the crest, the pump room
+      await p.keyboard.press('f');
+      await p.waitForFunction(() => window.__app.pov.mode === 'on', null, { timeout: 15000 }).catch(() => {});
+      await ev(() => { window.__app.pov.test.assumeLocked = true; });
+      const fp = async (at, yaw, pitch, name) => {
+        await ev(([at, yaw, pitch]) => { const a = window.__app; a.pov.player.spawn(a.pov.player.pos.clone().set(...at)); a.pov.setLook(yaw, pitch); a.post.reset(); }, [at, yaw, pitch]);
+        await frames(40);
+        await shot(name);
+      };
+      await fp([28.5, 42, 52], -Math.PI / 2 + 0.2, -0.1, '7-fp-red-tower');
+      await fp([102, 34, 60.5], -Math.PI / 2, -0.03, '8-fp-crest');
+      await fp([108, 14, 60], -Math.PI / 2, 0.02, '9-fp-tunnel');
+      await ev(() => window.__app.pov.exit(true));
+      try {
+        execFileSync('montage', [`${shots}/[1-9]-*.png`, '-resize', `${SHEET_TILE}x`, '-tile', '3x', '-geometry', '+4+4', '-background', '#111', `${shots}/sheet.jpg`]);
+        console.log(`contact sheet: ${shots}/sheet.jpg`);
+      } catch (e) { console.log('montage failed:', String(e).slice(0, 200)); }
+    }
+
+    // ---- blowing the dam: heat red's powder keg by its sluice gate, and the
+    // reservoir should pour through the pump room and out along the tunnel
+    if (flood) {
+      const where = () => ev(async (P) => {
+        const { E } = await import('/src/elements.js');
+        const a = window.__app, g = a.sim.g, [A] = a.sim.readState();
+        let out = 0, tunnel = 0, gate = 0, baseWet = 0, fire = 0;
+        for (let y = 0; y < g.ny; y++) for (let z = 0; z < g.nz; z++) for (let x = 0; x < g.nx; x++) {
+          const k = Math.round(A[a.sim.cellTexel(x, y, z) * 4]);
+          if (k === E.FIRE) fire++;
+          const gy = y >= P.gateY[0] && y < P.gateY[1];
+          if (k === E.WOOD && z >= P.gateZ[0] && z < P.gateZ[1] && gy) gate++;
+          if (k !== E.WATER) continue;
+          if (z < P.lakeZ0) out++;
+          if (z >= P.roomZ[0] && z < P.roomZ[1] && gy) tunnel++;
+          if ((x < P.baseX1 || x >= g.nx - P.baseX1) && y >= P.baseY) baseWet++;
+        }
+        return { out, tunnel, gate, baseWet, fire };
+      }, DAM_VALLEY_PARTS);
+      const f0 = await where();
+      await ev(async ([keg, n, r, tool]) => {
+        const a = window.__app, C = a.camera.position.constructor;
+        a.settings.paused = false;
+        for (let i = 0; i < n; i++) {
+          a.sim.paint({ center: new C(...keg), radius: r, shape: 1, tool, rate: 1, replace: false });
+          await new Promise((res) => requestAnimationFrame(res));
+        }
+      }, [DAM_VALLEY_PARTS.keg, KEG_HEATS, KEG_HEAT_R, HEAT_TOOL]);
+      const t1 = Date.now();
+      let f1 = f0;
+      while (Date.now() - t1 < floodSecs * 1000 && f1.out < FLOOD_OUT) { await p.waitForTimeout(3000); f1 = await where(); }
+      await ev(() => { window.__app.settings.paused = true; });
+      console.log(`flood after ${((Date.now() - t1) / 1000).toFixed(0)} s: ${JSON.stringify(f0)} → ${JSON.stringify(f1)}`);
+      check('the keg blows the sluice gate', f1.gate < f0.gate, `gate wood ${f0.gate} → ${f1.gate}`);
+      check('the reservoir floods out through the tunnel', f1.out >= FLOOD_OUT, `${f1.out} water cells out of the reservoir, ${f1.tunnel} in the pump room`);
+      check('the bases stay dry', f1.baseWet === 0, `${f1.baseWet}`);
+    }
+
+    // ---- 'wide' with the Lab, for the step cost
+    await ev(() => { const a = window.__app; a.settings.preset = 'lab'; a.setSize('wide'); });
+    await frames(10);
+    await ev(() => { window.__app.settings.paused = false; });
+    await p.waitForTimeout(3000);   // (the lab settles a little, as the valley did)
+    await holdLoop();
+    const wide = await stepMs();
+    // and the valley again (GPU contention from other work drifts: two samples of it)
+    await ev(() => { const a = window.__app; a.settings.preset = 'damValley'; a.setSize('valley'); });
+    await frames(10);
+    await holdLoop();
+    const valley2 = await stepMs();
+    console.log(`step ms, the valley rebuilt: ${JSON.stringify(valley2)}`);
+    console.log(`step ms (median of ${STEP_CHUNKS}×${STEP_ITERS}): valley ${JSON.stringify(valley)}, wide+lab ${JSON.stringify(wide)}`);
+    console.log(`ratio valley/wide: as run ${(valley.sleep / wide.sleep).toFixed(2)}, every supertile ${(valley.noSleep / wide.noSleep).toFixed(2)}, every brick awake ${(valley.awake / wide.awake).toFixed(2)}`);
+  } catch (err) {
+    fails++;
+    console.log('FAIL threw', String(err).slice(0, 600));
+  }
+  check('no console errors', errs.length === 0, errs.slice(0, 4).join(' || '));
+  await b.close();
+}
+console.log(fails ? `${fails} failed` : 'all ok');
+process.exit(fails ? 1 : 0);

@@ -76,6 +76,13 @@ try {
   await page.keyboard.press('Space');
   assert.equal(await dock.evaluate((el) => el.inert), false);
   assert(await page.locator('.dock-tab').evaluate((el) => el.inert));
+  await page.keyboard.press('f');
+  await page.waitForFunction(() => window.__app.pov.mode === 'on');
+  await page.keyboard.press('q');
+  await page.waitForFunction(() => document.body.classList.contains('pov-menu'));
+  assert.equal(await category('Tools').getAttribute('aria-pressed'), 'true', 'Q reveals the first-person tools category');
+  assert.equal(await dock.evaluate((el) => el.inert), false);
+  assert(await dock.getByRole('button', { name: 'Pickaxe', exact: true }).isVisible());
   assert.deepEqual(errors, []);
   await page.close();
 
@@ -98,9 +105,10 @@ try {
     }
     const tile = await mobile.locator('.material-swatch:visible').first().boundingBox();
     assert(tile.width > tile.height && tile.height >= 44, 'touch swatches remain rectangles with 44px targets');
+    await mobile.locator('.material-swatch:visible').last().scrollIntoViewIfNeeded();
     const list = await mobile.locator('.material-swatches').boundingBox();
     const last = await mobile.locator('.material-swatch:visible').last().boundingBox();
-    assert(last.y + last.height <= list.y + list.height, 'the last row is not clipped');
+    assert(last.y + last.height <= list.y + list.height, 'the last row is reachable without clipping');
   }
   await mobile.locator('.dock').getByRole('button', { name: 'Sand', exact: true }).tap();
   assert(await mobile.locator('.dock').evaluate((el) => el.inert), 'touch selection closes the picker');

@@ -26,17 +26,18 @@
   mannequin dressed as a wizard, a pointed hat and a robe skinned to its skeleton (garb.js: the robe's
   weights are transferred from the nearest body vertices and eased toward the pelvis below the hips).
   Stickman stands in while it loads. The jet exhaust leaves from the small of the back (`JET_NOZZLES`).
-- **Physical, finite tools on a Minecraft-style hotbar** (keys `1`–`9` and `0`, and the scroll wheel in POV). God powers
-  (infinite painting) stay in god view, one `F` away.
+- **Physical, finite tools in Half-Life 2 / Garry's Mod weapon slots** (see "Inventory" below): keys `1`–`5`
+  are slots (Dig, Build, Guns, Explosives, Gadgets); pressing one again steps to the next tool in it, and the
+  wheel steps through everything carried. God powers (infinite painting) stay in god view, one `F` away. The
+  list below is the original ten; the guns and the rocket launcher are under "Guns" below.
   1. **Shovel**: digs powder, or breaks solids into their debris (slower the harder they are; WALL
      refuses), into the **pack** (the inventory, `transfer.js` `pack()`, 1,000 cells). Right-click throws a
      bladeful from it where you aim.
   2. **Bucket**: scoops a load of liquid, and right-click pours it out. A bucket of lava is allowed.
   3. **Axe**: a short-range swing that breaks breakable solids in a wide, shallow patch into debris. It's
      weaker and less focused than the gun, and chops trees and smashes windows.
-  4. **Gun**: fires a SCRAP (metal) slug at V_MAX from the eye. It's a real cell in the sim: it drops, slows
-     in water, and breaks what it hits if its kinetic energy beats the target's hardness. The impact turns
-     kinetic energy into heat, so shooting a powder keg sets it off. Recoil conserves momentum.
+  4. **Pistol** (key `GUN`): see "Guns" below. (It used to fire a SCRAP slug that stayed in the world;
+     the slugs plugged the holes they made, so rounds now add nothing.)
   5. **Physgun**: a force beam on loose matter (powders, liquids, gases). Hold left-click to grab a ball of
      stuff at the aim point and carry it around floating, right-click to fling it, release to drop it.
      Right-click with nothing held blasts the loose matter in a cone along the aim (one impulse, so light
@@ -45,9 +46,7 @@
      face you aim at; right-click picks the material. The cells are the pack's own, so a sand block slumps.
   7. **Scanner**: the god view's hover readout at the crosshair, at any range: material, temperature,
      pressure, distance.
-  8. **Blowtorch**: hold for a roofing torch's flame: engine FIRE at 1,900 °C blown along the aim, and what it
-     touches heats toward that (shaders/povTools.js TORCH). The engine lights wood, sets off gunpowder,
-     melts metal.
+  8. **Flamethrower** (was the blowtorch): see "Light and fire" below.
   9. **Bomb**: a thrown pipe bomb (18 m/s plus yours, 1 g, on the shared projectiles) that becomes a 5³
      charge of gunpowder where it lands, lit by one detonator cell so the burn runs through it as a wave
      and the blasts stack; the blast is the engine's.
@@ -57,12 +56,70 @@
 - Mouse look with pointer lock. `V` toggles first and third person. A crosshair, health and breath bars, and
   screen effects for what the body feels: heat glow at the edges, frost, a red flash
   when hurt.
-- Cut for now: NPCs, inventory or crafting, ammo, multiplayer POV (guests get a toast), audio,
-  physgun on solids.
+- Cut for now: crafting, ammo, multiplayer POV (guests get a toast), physgun on solids.
+
+## Inventory (2026-10-10): Garry's Mod's slots and spawn menu
+
+- `src/pov/tools/catalog.js` is the list of tools (plain data: key, slot, start, name, model, desc), so the
+  palette lists them without loading the tools. Each `*.tool.js` spreads `...gear('KEY')` into its definition.
+- Slots are Half-Life 2's weapon buckets: `SLOTS = ['Dig', 'Build', 'Guns', 'Explosives', 'Gadgets', 'Light']`,
+  one number key each. A key picks the tool last held in its slot; pressed again with that slot in hand it steps
+  to the next (HL2's `hud_fastswitch`). The bar stays six wide however many tools there are, with a pip per
+  tool in a slot and the slot's names shown after a switch.
+- `src/pov/tools/inventory.js` is what the player carries: the catalog's `start` tools plus every tool given
+  since, kept in localStorage (`tpt3d.pov.given`). It lives outside the toolbelt, so a tool given in the god
+  view is in hand at the next drop-in.
+- Giving: the palette's Tools group lists every tool (elements.js `GEAR_ITEMS`, ids −300…). A click gives it
+  (app.js `giveGear`). In first person, `Q` frees the mouse and shows the palette at those tiles: GMod's
+  spawn menu. The SMG, sniper rifle and rocket launcher start out there.
+
+## Guns (2026-10-10)
+
+`tools/firearm.js` is the shared gun (as `melee.js` is the shared swing): the pistol, SMG and sniper are
+specs of it. Rounds fly on the shared projectiles (`ballistics.js`) and where they strike,
+`shaders/povTrace.js strikeFrag` walks on along the path spending the round's energy by the engine's
+projectile rule (each solid broken costs its hardness; powder and liquid cost DENS · DRAG; a solid it can't
+break stops it). Nothing is added: struck cells become their own debris or are shoved.
+
+| Gun | Fire | Round energy (sim KE) | Borrowed from |
+|---|---|---|---|
+| Pistol | every click, up to 10/s; 0.5 s held; spread 1°→6° as you spam | 39: glass, wood, rock's face | HL2/GMod pistol (`weapon_pistol.cpp`) |
+| SMG | held, 0.075 s; spread 2°→7° | 22: glass, wood, not rock | HL2 SMG1 |
+| Sniper rifle | a click per 1.2 s; right-click scope ×4 | 300, 48 cells deep: ~10 rock or 5 metal | HL2 crossbow's zoom |
+| Rocket launcher | a click per 0.8 s; 21 m/s, no drop | `rocketFrag`: crater (ENERGY 90 in 4 cells), fire, pressure 140 out to 9 cells | TF2's Soldier |
+
+- `action.js trigger(interval, { hold })`: `hold` may be a number, the seconds between held repeats (the
+  pistol's clicks outpace its held fire).
+- A scope: the tool's `zoom()` → `toolbelt.zoom` → `povCam.zoom`; FOV ÷ zoom, look sensitivity scaled with it.
+- Your own blast (a `blast` event with no `by`) hurts you at `vitals.js SELF_BLAST_SHARE` for a second
+  (Quake III halves self-splash): a rocket at your feet throws you ~5 m and costs about a quarter of your
+  health.
+- `tools/weapons-check.mjs` checks all of it end to end.
+
+## Light and fire (2026-10-10)
+
+- **Flamethrower** (the blowtorch's key, `BLOWTORCH`; `shaders/povTools.js FLAMER`): Team Fortress 2's Pyro's
+  reach, 20 cells (6 m). Every frame the whole cone to what it hits becomes engine FIRE (SPAWN 1), blown along
+  the aim, and vfx.js draws it as one stream (the `flame` event). The flame pass is a factory
+  (`flameFrag(P)`) shared with a lying torch's `TORCH_FIRE`.
+- **Hand lamps** (`tools/lamp.js`, the torch and the lantern, slot 6 'Light'): a point light in the world shader
+  (`shaders/gfx/lighting.js lampLight`: inverse-square from LAMP_UNIT, faded to its reach, a traced shadow ray,
+  so light doesn't leak through walls). `src/pov/lamps.js` keeps the lit ones and writes `gfxUniforms`
+  (`uLampCount`, `uLampPos`, `uLampCol`); at most `gfx/lamps.js LAMP_MAX` at once, a held lamp first. No lamps,
+  no cost.
+  - Torch: warm and flickering, 18 cells. Left-click touches its flame to what you aim at; right-click throws
+    it, and it lies lit where it lands for two minutes, licking a small flame that lights what burns.
+  - Lantern: white and much brighter, 40 cells. Left-click switches it; right-click throws it, and it lands
+    unbroken and shines until it's one too many (PROPS_MAX per tool).
+- Tools may have `tick(ctx)` (every frame in first person, held or not) and `worldReplaced()` (a scene load,
+  undo or new grid: what they left in the world goes).
+- `tools/lights-check.mjs` checks it at midnight on the GPU.
 
 ## Physics rules (non-negotiable, see feedback in project memory)
 
-- Everything obeys the engine. No visual fakes, no scripted immunities. Matter is conserved: a tool that
+- Everything obeys the engine. No visual fakes. The world never gets scripted exceptions: a perk (see
+  "Perks") may change only what a body can take and do (its tolerances, moves and hands), and when it reaches
+  into the world it does so through the engine (cooling cells, adding air pressure). Matter is conserved: a tool that
   takes cells puts the same cells (element, temperature, life, ctype) back when it dumps them, or it keeps
   them.
 - **No magic numbers.** Every threshold, rate or size is a named constant with a unit comment. GLSL gets
@@ -142,12 +199,12 @@ env = {
   viewmodel,           // THREE.Group attached to the POV camera; tools may add meshes (held item)
   isActive: () => bool // true while in POV (gate your own key/wheel listeners on it)
 }
-toolbelt = createToolbelt(env) → { update(ctx), select(index), setVisible(bool), windowShifted(dx, dz), dispose() }
+toolbelt = createToolbelt(env) → { update(ctx), select(key), pressSlot(i), zoom, setVisible(bool), windowShifted(dx, dz), dispose() }
 // The shell calls setVisible(true/false) on entering/leaving POV, and update(ctx) every POV frame.
 // In World the grid is a window that moves over the world (docs/scaling.md D11): the shell calls
 // windowShifted when it does, and the toolbelt passes it to every tool.
-// The toolbelt listens for the number keys itself (1–9, 0 for slot 10) (only while env.isActive()). The wheel comes in ctx.wheel:
-// it switches slots unless the selected tool's wantsWheel?.() returns true, then it goes to the tool.
+// The toolbelt listens for the number keys itself (1–5, one per catalog slot) (only while env.isActive()). The wheel comes in ctx.wheel:
+// it steps through the tools carried unless the selected tool's wantsWheel?.() returns true, then it goes to the tool.
 ```
 
 The toolbelt finds tools with `import.meta.glob('./*.tool.js', { eager: true })`. Each tool file
@@ -155,8 +212,7 @@ default-exports:
 
 ```js
 export default {
-  key: 'GUN', name: 'Gun', slot: 4, model: 'gun' /* models.js key: its hotbar icon is a sprite of it */,
-  desc: 'one line for the hotbar tooltip',
+  ...gear('GUN'),        // key, name, model (models.js: its hotbar icon is a sprite of it), desc: catalog.js
   create(env) → {
     update(ctx),          // every frame while selected
     deselect?(),          // when switching away (drop what the physgun holds, etc.)
@@ -178,9 +234,12 @@ export default {
   the frame the button goes down, then every `interval` while held (`hold: false` for one per click), and
   a click during the wait is buffered. `swing(spec)`: a melee blow's eased pose, stopping short on a hit and
   following through on a miss.
-- `tools/melee.js` `meleeTool(spec)`: a whole swung tool (the axe, the pickaxe) from its blow's tuning, pass,
+- `tools/melee.js` `meleeTool(spec)`: a whole swung tool (the axe, the pickaxe, the knife) from its blow's tuning, pass,
   `HIT` row, refire, body damage and held pose. A new swung tool is a config file; add its impact source to
-  `constants.js` `MELEE_SOURCES` so sparks and ricochets treat it as a blow, not a round.
+  `constants.js` `MELEE_SOURCES` so sparks and ricochets treat it as a blow, not a round. Optional: `reach`,
+  `bodyBlow(ctx, target)` (this blow on this body: damage, cause, `HIT` row, `lethal`), `tell(ctx, target)`
+  (the held model eases to `pose.ready`/`readyPos` while it holds: a lined-up special blow), `pose.thrust`
+  (a stab drives forward instead of only turning) and `pose.lethal` (a lethal blow's own motion).
 - `viewmodel.js` `HIT` and `rig.hit(HIT.X)`: a tool's shot, blow or fling, as the hand's spring kick plus
   the view punch (feel.js, Source's ViewPunch spring). Add a row to `HIT` for a new tool.
 - `env.feedback.notice(text)` / `refuse(text, { id, point })`: the throttled "can't" toast, slot shake and
@@ -203,9 +262,19 @@ ctx = {
   primaryPressed, secondaryPressed, // went down this frame
   wheel,                          // wheel notches this frame (+1 = scrolled down/away), 0 if none
   aim: { valid, cell: Vector3, face, id, T, P, dist },   // the cell under the crosshair (pick pass)
-  player: { pos, vel, onGround, inLiquid, applyImpulse(dv /* cells/s */) },
+  player: { pos, vel, onGround, inLiquid, applyImpulse(dv /* cells/s */), holdPogo() },
 }
 ```
+
+### Knife and pogo stick (2026-10-10, Big Team Battle)
+
+| Tool | Key | What | Where the rules come from |
+|---|---|---|---|
+| Knife (`KNIFE`, Dig slot with the axe) | `knife.tool.js` | `meleeTool` with a thrust. From behind a body it kills outright, through any shield (`hurt(..., { lethal: true })`); anywhere else a stab of 0.34 × 40/65 ≈ 0.21 (the axe's blow × TF2's knife over its Fire Axe). While a backstab is lined up the knife comes up (the tell), and a backstab plunges with its own motion. Reach 4.4 cells (TF2's 48 HU trace + 18 HU hull, scaled from an 82 HU player to this body); 0.8 s refire. Its cell blow (`povTools.js` `KNIFE`, energy 7) cuts a plant or chips ice where it lands, nothing harder. | TF2: `CTFKnife::IsBehindAndFacingTarget` on the ground plane: `dot(myFwd, toTarget) > 0.5`, `dot(itsFwd, toTarget) > 0`, `dot(myFwd, itsFwd) > −0.3`. A target needs `facing(out)` (targets.js; the player and NPCs have it) to be backstabbed. |
+| Pogo stick (`POGO`, Gadgets slot) | `pogo.tool.js` + player.js | While held (`ctx.player.holdPogo()` every frame) every landing bounces. A press of jump within 0.21 s of a landing (before or after) climbs a step; a landing without one drops back. Heights, as shares of the body's 1.9 m jump: 0.67, then +0.68 a step, three steps (≈ 1.3, 2.6, 3.9, 5.3 m). Not off liquid (swimming stops it). The spring takes landings and head bonks up to the top bounce's speed (no 'land', no slam). A tap is a bounce, holding jump past the window flies the jetpack. Body event `pogo` `{ step, timed, late?, speed }` (late: a press just after the bounce stepped the same bounce up). | Commander Keen 4 (Omnispeak `ck_keen.c`, `ck_phys.c`, 70 tics/s): a bounce leaves at −48 against a jump's −40 and heeds the button for its timer's first 15 of 24 tics; simulated, Keen's jump rises 1124 units, a released bounce 750, a held one 1518. Super Mario 64's triple jump for the three timed steps. |
+
+Both are catalog `GEAR` entries (`...gear('KNIFE')`, `...gear('POGO')`), not start tools: the palette's Tools
+group, Q in first person, or a class (classes.js: the Scout's pogo, the Spy's knife) gives them.
 
 ## Gunplay v2 (2026-10-08): events and ownership
 
@@ -220,18 +289,20 @@ say world. Emitters own their event names. Listeners never mutate payloads.
 
 | Event | Emitted by | Payload |
 |---|---|---|
-| `blast` | bomb | `{ point }` grid. A charge was set off there (sound, shake). |
+| `blast` | bomb, rocket | `{ point }` grid. A charge or rocket went off there (sound, shake, fireball; with no `by`, the player's own: less blast damage). |
 | `punch` | `rig.hit` (viewmodel.js `HIT`) | `{ pitch, yaw }` rad, + up and + left. Throws the view punch (feel.js). |
-| `gun:fire` | gun | `{ origin, dir, muzzleWorld }`. The round left the muzzle (origin grid, dir unit; muzzleWorld is the viewmodel muzzle in world space, for the flash). |
+| `gun:fire` | pistol, SMG, sniper, rocket | `{ origin, dir, muzzleWorld, gun, sound }`. The round left the muzzle (origin grid, dir unit; muzzleWorld is the viewmodel muzzle in world space, for the flash; gun the tool key; sound `{ rate, gain, thump, voice }` scales the pistol's shot). |
 | `gun:dry` | gun | `{}`. The trigger clicked but nothing fired (muzzle blocked). |
-| `round:move` | gun, bomb | `{ id, kind, from, to }` (kind 'round' or 'bomb'). A round in flight moved this frame (grid), for tracers. |
-| `round:end` | gun, bomb | `{ id, kind }`. The round is gone (impact or out of the box). |
-| `impact` | gun, axe, pickaxe | `{ source: 'gun'\|'axe'\|'pickaxe', point, normal, id, energy, broke, body? }` (body: a target, not a cell, was hit; id −1). Something was struck. id is the element hit, energy is ½·DENS·v² in sim units, and broke is true/false when the striker knows, else null. |
-| `tool:action` | shovel, bucket, axe, pickaxe, physgun, trowel, blowtorch, bomb | `{ tool, action, id?, point?, amount? }`. tool is 'shovel'\|'bucket'\|'axe'\|'pickaxe'\|'physgun'\|'trowel'\|'blowtorch'\|'bomb'; action is 'dig'\|'place'\|'on'\|'off'\|'throw'\|'dump'\|'scoop'\|'pour'\|'swing'\|'refuse'\|'grab'\|'fling'\|'release'\|'blast'. Physgun 'hold' state is read from the tool, not an event. |
+| `round:move` | guns, bomb, rocket | `{ id, kind, from, to }` (kind 'round', 'bomb' or 'rocket'). A round in flight moved this frame (grid), for tracers and the rocket's smoke. |
+| `round:end` | guns, bomb, rocket | `{ id, kind }`. The round is gone (impact or out of the box). |
+| `impact` | gun, axe, pickaxe, knife | `{ source: 'gun'\|'axe'\|'pickaxe'\|'knife', point, normal, id, energy, broke, body?, backstab? }` (body: a target, not a cell, was hit; id −1; backstab: the knife's lethal blow). Something was struck. id is the element hit, energy is ½·DENS·v² in sim units, and broke is true/false when the striker knows, else null. |
+| `tool:action` | shovel, bucket, axe, pickaxe, knife, physgun, trowel, blowtorch, bomb | `{ tool, action, id?, point?, amount? }`. tool is 'shovel'\|'bucket'\|'axe'\|'pickaxe'\|'knife'\|'physgun'\|'trowel'\|'blowtorch'\|'bomb'; action is 'dig'\|'place'\|'on'\|'off'\|'throw'\|'dump'\|'scoop'\|'pour'\|'swing'\|'refuse'\|'grab'\|'fling'\|'release'\|'blast'. Physgun 'hold' state is read from the tool, not an event. |
 | `player:step` | shell (camera bob cycle) | `{ speed, inLiquid }`. A footfall. |
 | `player:jet` | player | `{ on }`. The jetpack lit or went out. |
+| `perk:take` | shell | `{ key, keys, point, by? }`. A body took a perk orb: key is the orb's, keys what it gained (Gamble's two). |
+| `perk:revive` | shell | `{ point }`. Extra Life brought the player back. |
 
-The player's own events (`player.on('hurt'|'death'|'land'|'splash')`) stay as they are; listeners subscribe there too.
+The player's own events (`player.on('hurt'|'death'|'land'|'splash'|'revive'|'revenge')`) stay as they are; listeners subscribe there too.
 
 ### Ownership (v2)
 
@@ -300,6 +371,50 @@ Playtest: `node tools/npc-playtest.mjs [--url …] [--styles afk,gunner,brawler,
 Scripted players fight it with real input; it reports wins, time to kill both ways, damage by cause and the
 worst second. Targets: an AFK player lasts 20–60 s; a fighting player wins most duels but loses some health;
 no second takes more than half your health; a runner gets away.
+
+## Perks (2026-10-10): Noita's, in a falling-sand world
+
+Perks come from shrines, Noita's Holy Mountain: the Shrine construction (`constructions/builtins.js` `shrine`, a
+fixed-size stone pavilion with three plinths) with a random perk orb floating over each plinth
+(`SHRINE_ALTARS`; `constructions.js` hands their grid cells to `onPlaced`, and app.js sets the orbs). The orbs
+(`src/perkOrbs.js`) are markers pinned to world cells, like the spawners: the perk's icon at chest height over a
+pad. A body (the player's or an NPC's) that walks into one, or stands against its plinth, gains the perk
+(`pov/index.js` `takePerks`), and the shrine's other orbs vanish. Undoing a placed shrine takes its orbs too (the
+undo snapshot's `note`). A new scene clears the orbs.
+
+Every world gets a shrine (app.js `worldShrine`) once its first window loads: on flat dry ground near the window's
+middle, where the god view starts, scored by rise, trees in the way and distance. The island's trees around it
+are felled (each regenerated and stamped over with air, `runtime.js` `bakedAir`), so it stands in a clearing. It is
+stamped into the window like a placed construction, so the window keeps it as an edit.
+
+Every perk stacks. The list and its sizes are in `pov/perks.js`; a body's set is `player.perks`
+(`createPerkSet`: `count`, `has`, `add`, `take`, `list`, and what the stacks add up to). Death takes them, unless
+Extra Life brings the body back where it fell.
+
+| Perk (Noita's) | Here | Where | Another stack |
+|---|---|---|---|
+| Breathless | breath never drains | vitals.js | — |
+| Fire Immunity | the skin never burns (you float on lava: 9.8 < 25) | vitals.js | — |
+| Explosion Immunity | no blast or slam damage; blasts still throw you | vitals.js | — |
+| Freeze Field | liquids and fire within reach lose 600 °C/s down to −20 °C; the engine freezes water, sets lava, puts fire out. A column from your feet up is left alone, so you stand on the ice | player.js + povBody.js `povFieldFrag` | reaches further |
+| Lukki Mutation | while a wall or ceiling is within reach, the jet fires on an empty tank and the tank holds | player.js `clinging` | — |
+| Sand Swimmer (Dissolve Powders) | powders don't block the body; it swims in them at neutral buoyancy (matter stays conserved: the grains are pushed aside, not deleted). Still chokes: take Breathless | player.js | — |
+| Revenge Explosion | a hurt adds air pressure in a shell around the body (it sits in the eye), once a second | player.js + `povFieldFrag` | harder, wider |
+| Saving Grace | a blow that would kill from above 1% leaves 1% | vitals.js | — |
+| Extra Life | death brings you back where you fell, full health, perks kept | vitals.js (`revive`) | one more life |
+| Extra Health | every hurt is divided by 1 + 0.5 per stack (health stays 0..1) | vitals.js | +50% |
+| Faster Tools (Faster Wands) | every tool's clock runs 2× (`tools/action.js` `toolDt`: refire waits, swings, digging, pouring, the torch's heat, the physgun's blast cooldown), via `ctx.toolRate` | action.js | 2× again, up to 16× |
+| Gamble | two random other perks, not kept itself | perks.js `grant` | — |
+| Energy Shield (Halo 3's) | a shield of 70/45 of a life over health. Blows, blasts and slams hit it first and what's left goes on to health; heat, cold, acid and choking get past it; a lethal blow (a backstab) ignores it. Any hurt holds the refill off 5 s, then it fills in 2 s. Body event `shield` `{ state: 'hit'\|'break'\|'recharge'\|'full' }`; the HUD's bar above health flashes, pops, blinks red while empty and sweeps as it refills; sounds for each and an empty alarm | vitals.js, hud.js, audio.js | +70/45 of a life |
+| Fleet Foot | sprint ×2 | player.js | ×2 again, capped at 60 cells/s (a blast's throw: the probe keeps up) |
+| Rocket Boots | jet climb and fly speed ×2 | player.js | ×2 again, capped at 60 cells/s sideways and 175 up (Noita's fastest fall) |
+| Big Tank | jet fuel ×2: twice the time aloft (the refill rates are Noita's, so it fills slower too) | player.js | ×2 again |
+
+A new tool gets Faster Tools for free by timing its actions with `trigger` and `toolDt(ctx)` instead of `ctx.dt`.
+NPC bodies carry perks too (npc.js passes `toolRate` into its kit's ctx).
+
+Check: `node tools/perks-check.mjs [--port …] [--shot file.jpg] [--worldshot file.jpg]` (a dev server; AC power).
+Combat (shield, movement perks, knife, pogo): `node tools/combat-check.mjs [--port …] [--shot file.jpg]`.
 
 ## Verifying (headless GPU)
 

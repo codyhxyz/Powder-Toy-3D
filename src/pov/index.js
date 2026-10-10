@@ -9,6 +9,9 @@ import { createVfx } from './vfx.js';
 import { povEvents } from './events.js';
 import './pov.css';
 import { addTarget, PLAYER } from './targets.js';
+import { grant, PERK } from './perks.js';
+import { CLASSES_ENABLED } from './classes.js';
+import { createClassPicker } from './classPicker.js';
 
 // First-person (POV) mode: drop into the world with F, walk around in it,
 // pop back out with F. This module is the shell: input, the camera, the
@@ -24,6 +27,7 @@ const ENEMY = 'enemy';
 const PLAYER_KNOCKBACK = 18;   // cells/s a blow from an NPC throws the player
 const PLAYER_KNOCK_UP = 0.4;   // its upward share
 const PLAYER_DAMAGE_TAKEN = 0.5;   // share of a weapon's damage the player takes from NPCs (the hero is tougher)
+const perkName = (key) => `${PERK[key].icon} ${PERK[key].name}`;
 
 const PREWARM_DELAY_MS = 2000;          // ms after start-up before the figure's shader compiles in the background
 const RESPAWN_DELAY = 3.5;              // s from death to respawning at the drop point on its own
@@ -38,12 +42,14 @@ const WHEEL_LINE_PX = 40;               // px per line, for wheels that report l
 const WHEEL_PAGE_PX = 800;              // px per page
 
 const MOVE_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ShiftLeft', 'ShiftRight', 'KeyC']);
-// god-mode keys that stay live in POV: help, settings, screenshot, closing menus
-const PASS_KEYS = new Set(['Escape', '?', ',', 'p', 'P']);
+// god-mode keys that stay live in POV: help, settings, screenshot, closing menus.
+// With classes on, comma is TF2's class key in POV (classPicker.js), not settings.
+const PASS_KEYS = new Set(['Escape', '?', ...(CLASSES_ENABLED ? [] : [',']), 'p', 'P']);
 
 // app = { renderer, scene, camera, controls, canvas, hud, settings, mp, isTyping,
 //         getSim, getVolume, getScale, hover, pointerHover (() => bool), pickRay (ro, rd → Promise<hit>),
-//         requestRender, inWorld (() => bool: the grid is a window of a larger world, docs/scaling.md D11) }
+//         requestRender, inWorld (() => bool: the grid is a window of a larger world, docs/scaling.md D11),
+//         showToolsMenu (the palette's first-person tools brought into view: Q) }
 export function createPov(app) {
   const { renderer, scene, camera, controls, canvas, hud } = app;
   const createPlayer = playerModule?.createPlayer;
@@ -67,9 +73,10 @@ export function createPov(app) {
       min.set(player.pos.x - BODY_WIDTH / 2, player.pos.y, player.pos.z - BODY_WIDTH / 2);
       max.set(player.pos.x + BODY_WIDTH / 2, player.pos.y + BODY_HEIGHT, player.pos.z + BODY_WIDTH / 2);
     },
-    hurt(amount, cause, d) {
+    facing: (out) => povCam.dir(out),   // where the player looks (the knife's backstab test)
+    hurt(amount, cause, d, opts) {
       povEvents.emit('player:hit', { amount });   // inside the attacker's povEvents.as(): carries its id
-      player.hurt(amount * PLAYER_DAMAGE_TAKEN, cause);
+      player.hurt(amount * PLAYER_DAMAGE_TAKEN, cause, opts);
       player.applyImpulse(d.clone().setY(Math.max(d.y, 0) + PLAYER_KNOCK_UP).normalize().multiplyScalar(PLAYER_KNOCKBACK));
     },
   });
@@ -111,12 +118,25 @@ export function createPov(app) {
   document.addEventListener('pointerlockchange', () => {
     locked = document.pointerLockElement === canvas;
     document.body.classList.toggle('pov-locked', locked);
+    if (locked) setMenu(false);
     if (!locked) releaseInput();
     app.requestRender();
   });
   function releaseInput() {
     keys.clear();
     buttons.primary = buttons.secondary = false;
+  }
+
+  // Q: the tools menu, Garry's Mod's spawn menu: the mouse is freed and the
+  // palette shows, its Tools group giving tools (app.js giveGear). Q again, a
+  // click on the world or a tool given closes it.
+  let menuOpen = false;
+  function setMenu(v) {
+    menuOpen = !!v && active();
+    document.body.classList.toggle('pov-menu', menuOpen);
+    if (menuOpen) app.showToolsMenu?.();
+    if (menuOpen && document.pointerLockElement === canvas) document.exitPointerLock();
+    app.requestRender();
   }
 
   // F1: the HUD and the hand hidden (death and the mouse prompt still show)
@@ -131,11 +151,26 @@ export function createPov(app) {
     if ((e.code === 'ShiftLeft' || e.code === 'ShiftRight') && !e.repeat && app.settings.sprintMode === 'toggle') sprintOn = !sprintOn;
     // F1, as in Minecraft: hide the HUD and the hand, for a clean view or a screenshot
     if (e.code === 'F1') { e.preventDefault(); if (!e.repeat) setHudHidden(!hudHidden); }
+    if (e.code === 'KeyQ' && !e.repeat && mode === 'on') {
+      if (menuOpen) { setMenu(false); requestLock(); } else setMenu(true);
+    }
     // settings and help need the mouse
-    if ((e.key === ',' || e.key === '?') && document.pointerLockElement === canvas) document.exitPointerLock();
+    if (((e.key === ',' && !classes) || e.key === '?') && document.pointerLockElement === canvas) document.exitPointerLock();
   });
   addEventListener('keyup', (e) => keys.delete(e.code));
   addEventListener('blur', releaseInput);
+
+  // TF2's class picker on its key, comma (classPicker.js, docs/classes.md). Made
+  // now, so its keys are heard before the toolbelt's digits.
+  const classes = CLASSES_ENABLED ? createClassPicker({
+    isActive: () => active() && mode !== 'exiting',
+    getBody: () => player,
+    getToolbelt: () => toolbelt,
+    lock: requestLock,
+    unlock: () => { if (document.pointerLockElement === canvas) document.exitPointerLock(); },
+    isLocked: () => locked,
+    toast: (text) => hud.toast(text),
+  }) : null;
 
   canvas.addEventListener('mousedown', (e) => {
     if (!active()) return;
@@ -189,6 +224,9 @@ export function createPov(app) {
     if (!player) {
       player = createPlayer({ renderer, getSim: app.getSim });
       player.on('land', ({ speed }) => povCam.land(speed));
+      player.on('revive', () => { hud.toast(`${perkName('EXTRA_LIFE')}: back on your feet`); povEvents.emit('perk:revive', { point: player.pos.clone() }); });
+      player.on('revenge', ({ point }) => povEvents.emit('blast', { point }));
+      povEvents.on('blast', ({ by }) => { if (!by) player.ownBlast(); });   // the player's own rocket or bomb
       player.on('splash', ({ speed }) => vfx?.splash(player.pos, speed, player.liquidId));
       feel.bindPlayer(player);
     }
@@ -288,6 +326,7 @@ export function createPov(app) {
     povCam.reset();
     feel.reset();
     player.spawn(dropPoint.clone());
+    classes?.spawned(player);
     enteredAt.copy(dropPoint).add(app.getSim().origin);
     deadSeen = false;
     povCam.startSwoop('in', camPose(), { duration: SWOOP_S });
@@ -303,8 +342,10 @@ export function createPov(app) {
 
   function exit(instant = false) {
     if (!active()) return;
+    setMenu(false);
     toolbelt?.setVisible(false);
     viewmodel.visible = false;
+    classes?.close({ relock: false });
     if (document.pointerLockElement === canvas) document.exitPointerLock();
     releaseInput();
     // In a world larger than the grid, the god view comes back over where the
@@ -348,11 +389,12 @@ export function createPov(app) {
   // ---- per frame
   const ctx = {
     sim: null, dt: 0, stepsPerFrame: 0,
+    toolRate: 1,                    // tool speed (the Faster Tools perk; tools/action.js toolDt)
     eye: new THREE.Vector3(), dir: new THREE.Vector3(),
     primary: false, secondary: false, primaryPressed: false, secondaryPressed: false, wheel: 0,
     viewBobbing: true,              // the View Bobbing setting (the viewmodel rig's hand bob reads it)
     aim: { valid: false, cell: new THREE.Vector3(), face: 0, id: -1, T: 0, P: 0, dist: Infinity },
-    player: { pos: null, vel: null, onGround: false, inLiquid: false, applyImpulse: (dv) => player?.applyImpulse(dv) },
+    player: { pos: null, vel: null, onGround: false, inLiquid: false, applyImpulse: (dv) => player?.applyImpulse(dv), holdPogo: () => player?.holdPogo() },
   };
   const input = { move: { x: 0, z: 0 }, jump: false, sprint: false, down: false };
   let sprintOn = false;     // Sprint: Toggle's state
@@ -402,6 +444,7 @@ export function createPov(app) {
       if ((deadTime >= RESPAWN_DELAY || asked) && mode === 'on') {
         keys.delete('Space');   // the key that respawned doesn't also jump
         player.spawn(dropPoint.clone());
+        classes?.spawned(player);
         deadSeen = false;
         povCam.reset();
         feel.reset();
@@ -430,6 +473,7 @@ export function createPov(app) {
           home: () => sp.feet(s),   // it appears, and comes back, on its spawner
         });
         scene.add(n.root);
+        n.body.on('revenge', ({ point }) => povEvents.emit('blast', { point }));
         n.bind(app.getVolume(), g);
         n.compile(renderer, camera, scene);
         npcs.set(s.id, n);
@@ -446,9 +490,12 @@ export function createPov(app) {
       } else for (const n of npcs.values()) n.reset();
     }
 
+    takePerks();
+
     // the camera, with the kick and shake on top of the look
     vA.copy(player.pos).setY(player.pos.y + EYE_HEIGHT);
     const shake = feel.update({ dt, live: mode === 'on' && !deadSeen, eye: vA });
+    povCam.zoom = mode === 'on' && !deadSeen && toolbelt ? toolbelt.zoom : 1;   // a scope (the sniper's)
     toWorld(vEye.copy(vA), vEye);
     toWorld(player.pos, vFeet);
     const pose = povCam.update({
@@ -496,6 +543,7 @@ export function createPov(app) {
     if (live() && toolbelt) {
       ctx.sim = sim;
       ctx.dt = dt;
+      ctx.toolRate = player.perks.toolRate;
       ctx.stepsPerFrame = app.settings.paused ? 0 : app.settings.steps;
       const use = isLocked();
       ctx.primary = use && buttons.primary;
@@ -519,11 +567,37 @@ export function createPov(app) {
     // the HUD
     povHud.update({
       dt, health: player.health, breath: player.breath, feel: player.feel,
-      jetFuel: player.jetFuel, jetting: player.jetting,
+      shield: player.shield, shieldMax: player.shieldMax, shieldCharging: player.shieldCharging,
+      jetFuel: player.jetFuel, jetting: player.jetting, perks: player.perks,
       dead: deadSeen, cause: player.cause, respawnIn: RESPAWN_DELAY - deadTime,
       locked: isLocked(), swooping: mode !== 'on',
       aimValid: aim.valid, aimInReach: aim.valid && aim.dist <= HAND_REACH, third: povCam.third,
     });
+  }
+
+  // Perk orbs (perkOrbs.js): a body that walks into one gains its perk, the
+  // player's and the NPCs' alike.
+  function takePerks() {
+    const orbs = app.getPerkOrbs?.();
+    if (!orbs?.list.length) return;
+    if (mode === 'on' && !player.dead) {
+      const got = orbs.takeAt(player.pos);
+      if (got) gainPerk(player, got);
+    }
+    for (const n of npcs.values()) {
+      if (n.body.dead) continue;
+      const got = orbs.takeAt(n.body.pos);
+      if (got) gainPerk(n.body, got, n.id);
+    }
+  }
+  function gainPerk(body, { key, at }, by) {
+    app.requestRender();   // the orb is gone
+    const keys = grant(body.perks, key);
+    const names = keys.map(perkName).join(' + ');
+    povEvents.emit('perk:take', { key, keys, point: at, by });
+    if (by) hud.toast(`The enemy took ${names}`);
+    else if (keys.length === 1 && keys[0] === key) hud.toast(`${names}${body.perks.count(key) > 1 ? ` ×${body.perks.count(key)}` : ''}: ${PERK[key].desc}`);
+    else hud.toast(`${perkName(key)}: ${names}`);
   }
 
   // The pick ray in grid space (for app's requestPick): the screen centre.
@@ -551,6 +625,7 @@ export function createPov(app) {
     get locked() { return isLocked(); },
     get player() { return player; },
     get toolbelt() { return toolbelt; },
+    get classes() { return classes; },   // the class picker (classPicker.js), or null with CLASSES_ENABLED off
     // what the held tool shows next to the crosshair ({ name, color, T?, P?, note? } for ui/hud.js showReadout), or null
     get readout() { return live() && mode === 'on' && toolbelt ? toolbelt.readout : null; },
     get figure() { return figure; },
@@ -569,7 +644,7 @@ export function createPov(app) {
     exit,
     update,
     // the world was replaced (undo, a scene load): tools drop what they carry from the old one
-    worldReplaced: () => toolsModule?.emptyLoads?.(),
+    worldReplaced: () => { toolsModule?.emptyLoads?.(); toolbelt?.worldReplaced(); },
     // the window moved over the world by (dx, 0, dz) cells (docs/scaling.md D11): grid positions move back.
     // The drop point stays put in the world: a respawn far away waits there
     // for the window to come (player.js).
@@ -581,6 +656,8 @@ export function createPov(app) {
     },
     aimRay,
     blocksKey,
+    // close the tools menu and take the mouse back (a tool was given from it: a click, so the lock is allowed)
+    closeMenu() { if (!menuOpen) return; setMenu(false); requestLock(); },
     // tests: look around without pointer lock (radians)
     setLook: (yaw, pitch) => povCam.setLook(yaw, pitch),
   };

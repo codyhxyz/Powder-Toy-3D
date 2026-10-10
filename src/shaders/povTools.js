@@ -4,7 +4,7 @@ import { BODY_WIDTH } from '../pov/constants.js';
 import { ELEMENTS } from '../elements.js';
 import { PHYS as ENGINE } from '../physics.js';
 
-// GPU passes for the POV axe, pickaxe, gun, physgun and blowtorch (src/pov/tools/*.tool.js).
+// GPU passes for the POV axe, pickaxe, physgun, flamethrower, torch and rocket (src/pov/tools/*.tool.js).
 //
 // Each is a full-grid ping-pong pass run through sim.pass(mat), like the
 // brush (paintFrag in passes.js): every texel copies its cell, and only the
@@ -46,8 +46,16 @@ export const PICK = {
   SHOVE: 0.25,       // cells/step pushed into loose powder at the patch centre
 };
 
-// Gun: one SCRAP slug per shot, launched at V_MAX along the aim (see
-// gun.tool.js). The pass only writes it if its cell holds air or a gas.
+// Knife: the same blow from a blade, which is for bodies (tools/knife.tool.js), not cells. Its
+// energy sits just over PLANT's and ICE's hardness (6) and under GLASS's (8), in a patch no
+// bigger than the struck cell: it cuts a plant or chips ice where it lands and nothing harder.
+export const KNIFE = {
+  ENERGY: 7,         // sim KE units at the patch centre (above PLANT and ICE's 6, below GLASS's 8)
+  RADIUS: 0.8,       // cells, half-width across the stab: the struck cell
+  DEPTH: 1,          // cells, half-depth along it
+  CHIP_MAX: 0.3,     // cells/step, fastest a chip leaves the cut
+  SHOVE: 0.1,        // cells/step pushed into loose powder: a blade parts it, it doesn't shovel
+};
 
 // Physgun: a spring on the centre of mass of the loose matter near a hold
 // point (powders, liquids, gases within RADIUS of it, fading toward RADIUS).
@@ -164,57 +172,76 @@ void blow(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
 ${copyThroughMain('blow')}`;
 export const axeFrag = blowFrag(AXE);
 export const pickaxeFrag = blowFrag(PICK);
+export const knifeFrag = blowFrag(KNIFE);
 
-// Blowtorch: a roofing torch's flame (propane in air), a cone from the nozzle
-// along the aim. Air in the cone becomes engine FIRE at the flame's
-// temperature, blown along the aim, and matter the flame touches is heated
-// toward that temperature; the engine does the rest (wood and powder light,
-// gunpowder goes off, ice and metal melt). Heat goes in as
+// A flame: a cone from a nozzle along a direction (P: FLAMER, the
+// flamethrower's, or TORCH_FIRE, a thrown torch's). Air in the cone becomes
+// engine FIRE at the flame's temperature, blown along it, and matter the flame
+// touches is heated toward that temperature; the engine does the rest (wood
+// and powder light, gunpowder goes off, ice and metal melt). Heat goes in as
 //   T += (FLAME_T − T) · (1 − exp(−HEAT_RATE · dt / CAP)),
 // so nothing gets hotter than the flame and a high heat capacity heats slowly.
-// HEAT_RATE stands in for the hot spot at the flame's tip, which a 30 cm cell
-// can't resolve (as physics.js KE_TO_HEAT does for impacts): wood lights in a
-// third of a second, a metal cell starts to melt in about ten.
-export const TORCH = {
+// HEAT_RATE stands in for the hot spot a 30 cm cell can't resolve (as
+// physics.js KE_TO_HEAT does for impacts): wood lights in a third of a second,
+// a metal cell starts to melt in about ten.
+//
+// The flamethrower's is Team Fortress 2's Pyro's reach (≈ 6 m) and fills its
+// whole cone with fire every frame, so the stream is one continuous jet; its
+// fire is the hotter propane–air flame the blowtorch had.
+export const FLAMER = {
   FLAME_T: 1900,     // °C, propane–air adiabatic flame temperature
-  LENGTH: 4,         // cells (1.2 m), a roofing torch's flame
-  RADIUS0: 0.6,      // cells, the flame's radius at the nozzle
-  SPREAD: 0.2,       // cells of radius gained per cell along it
-  SPAWN: 0.5,        // chance per frame an air cell in the flame becomes fire
-  SPEED: 0.5,        // cells/step the flame's gas leaves along the aim (≈ 36 m/s)
+  LENGTH: 20,        // cells (6 m)
+  RADIUS0: 0.5,      // cells, the stream's radius at the nozzle
+  SPREAD: 0.12,      // cells of radius gained per cell along it (≈ 2.9 at its end)
+  SPAWN: 1,          // chance per frame an air cell in the stream becomes fire
+  SPEED: 0.6,        // cells/step the fire leaves along the aim (≈ 43 m/s)
   HEAT_RATE: 0.15,   // 1/s × CAP: share of the gap to FLAME_T closed per second (see above)
-  BITE: 1,           // cells past the struck face the flame heats into
+  BITE: 1.5,         // cells past the struck face the flame heats into
+};
+// A burning torch lying where it was thrown (lamp.js): a small flame licking
+// up off its head, hot enough to light wood and paper that touch it.
+export const TORCH_FIRE = {
+  FLAME_T: 900,      // °C, a pitch torch's flame
+  LENGTH: 1.5,       // cells
+  RADIUS0: 0.4,
+  SPREAD: 0.3,
+  SPAWN: 0.3,
+  SPEED: 0.15,
+  HEAT_RATE: 0.15,
+  BITE: 1,
 };
 
-export const torchFrag = (g) => /* glsl */ `
+const flameFrag = (P) => (g) => /* glsl */ `
 ${head(g)}
-${defines('TORCH', TORCH)}
+${defines('FLM', P)}   // (FLM_: FLAME_ is the renderer's)
 uniform vec3 uNozzle;   // grid cells
-uniform vec3 uDir;      // unit aim
-uniform float uReach;   // cells along the aim to the struck face (the flame stops there), ≤ TORCH_LENGTH
+uniform vec3 uDir;      // unit direction
+uniform float uReach;   // cells along it to the struck face (the flame stops there), ≤ FLM_LENGTH
 uniform float uDt;      // s this frame
 uniform uint uFrame;
-#define TORCH_RNG_SALT 0x70u   // keeps the torch's random draws apart from other passes'
+#define FLM_RNG_SALT 0x70u   // keeps the flame's random draws apart from other passes'
 
-void torch(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
+void flame(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
   vec3 d = vec3(p) + 0.5 - uNozzle;
   float along = dot(d, uDir);
-  if (along < 0.0 || along > uReach + TORCH_BITE) return;
+  if (along < 0.0 || along > uReach + FLM_BITE) return;
   float r = length(d - along * uDir);
-  float radius = TORCH_RADIUS0 + TORCH_SPREAD * along;
+  float radius = FLM_RADIUS0 + FLM_SPREAD * along;
   if (r > radius) return;
   int id = eid(a);
-  uint rs = seed3(p, uFrame, TORCH_RNG_SALT);
+  uint rs = seed3(p, uFrame, FLM_RNG_SALT);
   if (isGasLike(id)) {
-    if (along > uReach || rnd(rs) > TORCH_SPAWN) return;
-    oA = vec4(float(E_FIRE), TORCH_FLAME_T, SPAWNLIFE[E_FIRE], rnd(rs) * SEED_MAX);
-    oB.xyz = uDir * TORCH_SPEED;
+    if (along > uReach || rnd(rs) > FLM_SPAWN) return;
+    oA = vec4(float(E_FIRE), FLM_FLAME_T, SPAWNLIFE[E_FIRE], rnd(rs) * SEED_MAX);
+    oB.xyz = uDir * FLM_SPEED;
   } else {
-    float k = 1.0 - exp(-TORCH_HEAT_RATE * uDt / CAP[id]);
-    oA.y = a.y + max(TORCH_FLAME_T - a.y, 0.0) * k;
+    float k = 1.0 - exp(-FLM_HEAT_RATE * uDt / CAP[id]);
+    oA.y = a.y + max(FLM_FLAME_T - a.y, 0.0) * k;
   }
 }
-${copyThroughMain('torch')}`;
+${copyThroughMain('flame')}`;
+export const flamerFrag = flameFrag(FLAMER);
+export const torchFireFrag = flameFrag(TORCH_FIRE);
 
 const physGLSL = /* glsl */ `
 ${defines('PHYS', PHYS)}
@@ -322,6 +349,72 @@ void blast(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
   oB.xyz = clamp(b.xyz + away * min(BLAST_IMPULSE / DENS[id], V_MAX) * w, -V_MAX, V_MAX);
 }
 ${copyThroughMain('blast')}`;
+
+// Rocket (rocket.tool.js): one blast where it strikes, adding no matter to the
+// world. Its reach is Team Fortress 2's rocket's (146 HU ≈ 2.8 m ≈ 9 cells).
+// Around the centre, r cells out:
+//   - a solid within BREAK_RADIUS takes a blow of E(r) = ENERGY·(1 − (r/R)²)
+//     and breaks into its debris where E beats its hardness (as the axe's
+//     blow, blowFrag): ROCK (30) out to 0.82 R, METAL (60) out to 0.58 R. The
+//     debris flies outward with what the break didn't use (CHIP_MAX at most).
+//   - air and gas within FIRE_RADIUS turn to engine FIRE at the gunpowder
+//     blast's temperature, blown outward (it burns out, as the blowtorch's).
+//   - loose matter within PULSE_RADIUS is shoved outward, IMPULSE / DENS
+//     (as the physgun's blast), and every non-solid cell there gets air
+//     pressure PULSE_P, a blast the engine spreads (react.js): it throws
+//     loose matter and bodies (player.js, which it can hurt) and breaks the
+//     solids it beats. Both fade from full strength at EDGE of the radius.
+// Each change turns a cell into its own debris, air into fire, or sets a
+// velocity or a pressure: nothing is added that could plug what it opened.
+export const ROCKET = {
+  ENERGY: 90,        // sim KE units at the centre
+  BREAK_RADIUS: 4,   // cells
+  CHIP_MAX: 0.8,     // cells/step, fastest debris flies out
+  FIRE_RADIUS: 2.5,  // cells
+  FIRE_SPAWN: 0.6,   // chance an air cell in reach becomes fire
+  FIRE_SPEED: 0.6,   // cells/step outward
+  PULSE_RADIUS: 9,   // cells (TF2's 146 HU)
+  PULSE_P: 140,      // air pressure at full strength: breaks wood (20 × 5 = 100), not rock (150)
+  IMPULSE: 20,       // DENS · cells/step given to loose matter at full strength
+  EDGE: 0.4,         // share of a radius held at full strength before fading
+};
+ROCKET.FIRE_T = ENGINE.GUNPOWDER_T;   // °C, the gunpowder blast's (physics.js)
+
+export const rocketFrag = (g) => /* glsl */ `
+${head(g)}
+${defines('ROCKET', ROCKET)}
+#define ROCKET_RNG_SALT 0x72u   // keeps the rocket's random draws apart from other passes'
+uniform vec3 uCenter;   // grid cells
+uniform uint uFrame;
+
+float rocketFade(float x) { return 1.0 - smoothstep(ROCKET_EDGE, 1.0, x); }
+
+void rocket(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
+  vec3 d = vec3(p) + 0.5 - uCenter;
+  float r = length(d);
+  if (r >= ROCKET_PULSE_RADIUS) return;
+  uint rs = seed3(p, uFrame, ROCKET_RNG_SALT);
+  vec3 away = r > 0.5 ? d / r : normalize(vec3(rnd(rs) - 0.5, rnd(rs), rnd(rs) - 0.5) + vec3(0.0, 0.1, 0.0));
+  int id = eid(a);
+  if (KIND[id] == K_SOLID) {
+    float x = r / ROCKET_BREAK_RADIUS;
+    float E = ROCKET_ENERGY * (1.0 - x * x);
+    int into = BREAKINTO[id];
+    if (x >= 1.0 || into < 0 || E < HARD[id]) return;
+    oA.x = float(into);
+    oB.xyz = away * min(sqrt(2.0 * (E - HARD[id]) / DENS[into]), ROCKET_CHIP_MAX);
+    id = into;
+  } else if (isGasLike(id) && r < ROCKET_FIRE_RADIUS && rnd(rs) < ROCKET_FIRE_SPAWN) {
+    oA = vec4(float(E_FIRE), ROCKET_FIRE_T, SPAWNLIFE[E_FIRE], rnd(rs) * SEED_MAX);
+    oB.xyz = away * ROCKET_FIRE_SPEED;
+    id = E_FIRE;
+  } else if (!isGasLike(id)) {
+    float w = rocketFade(r / ROCKET_PULSE_RADIUS);
+    oB.xyz = clamp(b.xyz + away * min(ROCKET_IMPULSE / DENS[id], V_MAX) * w, -V_MAX, V_MAX);
+  }
+  oB.w = max(oB.w, ROCKET_PULSE_P * rocketFade(r / ROCKET_PULSE_RADIUS));
+}
+${copyThroughMain('rocket')}`;
 
 // A pass material for the current simulation. Grids can be rebuilt (a size
 // change makes a new sim), so callers keep one per sim: see toolPass.

@@ -1,22 +1,30 @@
 import * as THREE from 'three';
 import { BRICK } from '../shaders/common.js';
-import { columnFrag, COLUMN_MARGIN } from '../shaders/generate.js';
 import {
-  farLayout, farRegionVert, farLayersFrag, farTreeCandFrag, farTreeThinFrag, farTreeBandFrag, farGenFrag,
+  farLayout, farRegionVert, farTreeCandFrag, farTreeThinFrag, farTreeBandFrag,
   farWinFrag, farBoostFrag, farMip1Frag, farMip2Frag, farTopFrag, farShadowFrag, farVert, farFrag, WORLD_SIZE,
+  farSceneCellsFrag, farSceneFrag, farSceneLayout, FAR_SCENE, FAR,
 } from '../shaders/far.js';
 import { rawMat, makeFieldTarget } from '../sim.js';
-import { genUniforms, setWorld } from './gpu.js';
 import { gfxUniforms } from '../gfx/uniforms.js';
 
 // The far field of a massive world (docs/scaling.md D11, phase W4; the GLSL
 // and the far grid's layout are in shaders/far.js): a brick-resolution grid of
 // the whole world, drawn wherever the window isn't.
 //
-// Built at world load from the generator, at world scale: genColumn for every
-// world column, genLayers for every column, the trees (a candidate per brick
-// column, thinned: treesIn's own placement), then every brick from the layers
-// of the columns its cube spans and the shapes of the trees in reach.
+// Built from the world's scene (world/scenes), progressively: the window's
+// region from its state at once, then the rest a chunk at a time from the
+// scene's sceneCell (shaders/far.js farSceneCellsFrag, farSceneFrag),
+// SCENE_CHUNKS_PER_FRAME chunks a frame (or the scene's farChunksPerFrame)
+// in tick, nearest the window first, so no draw is long and the far field
+// fills in around you; the view draws what is built so far (the rest is the
+// plain or sea beyond: unbuilt bricks are empty). A brick column the window
+// has summarized (on load, a leaving slab, a sweep) is left as it is
+// (winMask): the window's state wins there. The levels, tops and shadows
+// follow every SCENE_REFRESH_FRAMES frames of it, and at its end. A scene
+// with trees (scene.trees: the island) has them placed first, on the GPU (a
+// candidate per brick column, thinned: its treesIn's own placement), and each
+// chunk's bricks join the shapes of the trees in reach.
 //
 // Kept up to date from the window, whose state wins wherever it has been:
 //   - a move summarizes the slab about to leave (world/window.js, before the
@@ -44,6 +52,27 @@ import { gfxUniforms } from '../gfx/uniforms.js';
 const SWEEP_FRAMES = 120;        // frames between sweeps over the window's own region while the sim changes it (its copy only casts the far shadows and feeds the window's GI)
 const SWEEP_CELLS = 16;          // ...summarizing this many cells of it along x per frame
 const VIEW_ORDER = -10;          // renderOrder of the view: first of the scene's opaque objects
+const SCENE_CHUNKS_PER_FRAME = 1;   // a scene's far build: chunks a frame (each ~0.6M sceneCells, then twice a leaving slab's summary;
+                                    // 256 chunks: ~4 s at 60 fps, the chunks around the window in the first few frames),
+                                    // unless the scene says how many (farChunksPerFrame: cheap cells)
+const SCENE_REFRESH_FRAMES = 8;     // ...and frames between rebuilding the levels, tops and shadows while it runs
+const MASK_SET = 255;               // a set byte of the window mask (the shader reads it as 1)
+const EDGE_SAMPLES = 256;           // columns along the world's edge whose ground a sea-less world's plain beyond it is the median of
+
+// The open level beyond a world's edge (cells): its sea, or for a world
+// without one (sea 0: world/scenes) the plain the far view draws there, at the
+// median height of the ground along its edge, so the plain meets it.
+function beyondLevel(scene, P) {
+  if (P.sea > 0) return P.sea;
+  const [wx, , wz] = P.size, per = 2 * (wx + wz), hs = [];
+  for (let i = 0; i < EDGE_SAMPLES; i++) {
+    const d = (i + 0.5) * per / EDGE_SAMPLES;   // distance along the edge, from (0, 0) round by +x
+    const [x, z] = d < wx ? [d, 0] : d < wx + wz ? [wx - 1, d - wx] : d < 2 * wx + wz ? [2 * wx + wz - d, wz - 1] : [0, per - d];
+    hs.push(scene.ground(Math.floor(x), Math.floor(z), P));
+  }
+  hs.sort((a, b) => a - b);
+  return hs[EDGE_SAMPLES >> 1];
+}
 
 // A full-screen triangle (clip space): the view's geometry.
 function screenTriangle() {
@@ -87,6 +116,9 @@ export class FarField {
     this.version = -1;           // the simulation's version then
     this.sweep = -1;             // the next slab of the sweep under way (-1: none)
     this.last = null;            // what the last build or refresh cost (tools)
+    this.scene = win.scene;
+    this.queue = [];             // a scene's far build: the chunks still to draw (world brick column [x, z] of each), nearest last
+    this.chunksDrawn = 0;        // ...and how many it has drawn (the app redraws the view as it grows)
 
     // region draws into the far grid (farRegionVert): their own scene
     const region = (frag, uniforms) => new THREE.RawShaderMaterial({
@@ -100,14 +132,7 @@ export class FarField {
     this.regionScene.add(this.regionMesh);
     this.regionCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
     this.mats = {
-      farColumn: rawMat(columnFrag(g), { ...genUniforms(), uColOrigin: { value: new THREE.Vector2(-COLUMN_MARGIN, -COLUMN_MARGIN) } }),
-      farLayers: rawMat(farLayersFrag(g), { ...genUniforms(), tCol: { value: null } }),
-      farTreeCand: rawMat(farTreeCandFrag(g, L), { ...genUniforms(), tCol: { value: null } }),
-      farTreeThin: rawMat(farTreeThinFrag(g, L), { ...genUniforms(), tCand: { value: null } }),
-      farTreeBand: rawMat(farTreeBandFrag(g, L), { tTrees: { value: null } }),
-      farGen: region(farGenFrag(g, L), {
-        ...genUniforms(), tLayers: { value: null }, tTrees: { value: null }, tTreeBand: { value: null },
-      }),
+      ...this.sceneMats(region),
       farWin: region(farWinFrag(g, L), { tA: { value: null }, uOrigin: this.sim.originUniform }),
       farBoost: region(farBoostFrag(L), { tFar: { value: this.grid.texture } }),
       farMip1: rawMat(farMip1Frag(L), { tFar: { value: this.field.texture } }),
@@ -123,6 +148,7 @@ export class FarField {
     this.worldToScene = new THREE.Matrix4();
     this.sceneToWorld = new THREE.Matrix4();
     const P = win.P;
+    this.level = beyondLevel(this.scene, P);
     this.mesh = new THREE.Mesh(screenTriangle(), new THREE.ShaderMaterial({
       name: 'far',
       vertexShader: farVert,
@@ -133,7 +159,8 @@ export class FarField {
         tFar1: { value: this.l1.texture }, tFar2: { value: this.l2.texture }, tFarShadow: { value: this.shadow.texture },
         uWorldToScene: { value: this.worldToScene }, uSceneToWorld: { value: this.sceneToWorld },
         uWinLo: { value: new THREE.Vector3() },
-        uSea: { value: P.sea }, uFloor: { value: P.floor },
+        // the sea beyond the world and its bed, or (sea 0) the plain there
+        uSea: { value: P.sea }, uFloor: { value: P.sea > 0 ? P.floor : this.level },
         uOrigin: { value: new THREE.Vector3() },   // world cells throughout: the look's worldPos() is the identity
         uSun: { value: sun }, uTime: time,
       },
@@ -151,6 +178,33 @@ export class FarField {
     // stalling the first frame
     this.ready = false;
     this.compile();
+  }
+
+  // The scene's build passes (and its trees', if it has any), its window mask
+  // (one byte per world brick column) and its cells' target, made at build
+  // (sceneBuild).
+  sceneMats(region) {
+    const g = this.sim.g, L = this.L, [bx, , bz] = L.bricks.n, trees = this.scene.trees, glsl = this.scene.glsl(g);
+    this.winMask = new Uint8Array(bx * bz);
+    this.winMaskTex = new THREE.DataTexture(this.winMask, bx, bz, THREE.RedFormat, THREE.UnsignedByteType);
+    this.winMaskTex.minFilter = this.winMaskTex.magFilter = THREE.NearestFilter;
+    this.winMaskTex.unpackAlignment = 1;
+    this.winMaskTex.needsUpdate = true;
+    this.cells = null;
+    this.trees = null;   // the tree map and bands while a build with trees runs
+    const chunkLo = { value: new THREE.Vector2() };   // (both passes': the chunk being drawn)
+    const treeMaps = trees ? { tTrees: { value: null }, tTreeBand: { value: null } } : {};
+    return {
+      farSceneCells: rawMat(farSceneCellsFrag(g, L, glsl), { ...this.win.sceneU, uChunkLo: chunkLo }),
+      farScene: region(farSceneFrag(g, L, !!trees), {
+        tCells: { value: null }, tWinMask: { value: this.winMaskTex }, uChunkLo: chunkLo, ...treeMaps,
+      }),
+      ...(trees ? {
+        farTreeCand: rawMat(farTreeCandFrag(g, L, glsl, trees.glsl), { ...this.win.sceneU }),
+        farTreeThin: rawMat(farTreeThinFrag(g, L, glsl, trees.glsl), { ...this.win.sceneU, tCand: { value: null } }),
+        farTreeBand: rawMat(farTreeBandFrag(g, L), { tTrees: { value: null } }),
+      } : {}),
+    };
   }
 
   compile() {
@@ -187,60 +241,102 @@ export class FarField {
     this.drawRegion(this.mats.farBoost, a, [b[0] - a[0], b[1] - a[1]], this.field);
   }
 
-  // The whole far grid from the generator, then the window's own region from
-  // its state (world/window.js load: the window has just been generated).
-  build() {
+  // Build the far grid from the scene (world/window.js load: the window has
+  // just been generated): its region from the window's state now, the rest
+  // over the next frames (tick).
+  build() { this.sceneBuild(); }
+
+  // A scene's build: the far grid starts empty but for the window's region,
+  // summarized from its state, and the chunks are queued nearest the window
+  // last (tick draws them from the end).
+  sceneBuild() {
     const t0 = performance.now();
-    const sim = this.sim, L = this.L, [wx, , wz] = L.size, P = this.win.P;
-    const { farColumn, farLayers, farTreeBand, farGen } = this.mats;
-    for (const m of [farColumn, farLayers, farGen]) setWorld(m.uniforms, P);
-    // genColumn for every world column plus the margin genLayers reads, then genLayers per column
-    const F32 = THREE.FloatType, NEAR = THREE.NearestFilter, [bx, , bz] = L.bricks.n;
-    const columns = makeFieldTarget(wx + 2 * COLUMN_MARGIN, wz + 2 * COLUMN_MARGIN, 1, F32, NEAR);
-    const layers = makeFieldTarget(wx, wz, 1, THREE.UnsignedByteType, NEAR);
-    sim.run(farColumn, columns);
-    farLayers.uniforms.tCol.value = columns.texture;
-    sim.run(farLayers, layers);
-    // the trees: candidates per brick column, thinned, and the band each column's bricks find them in
-    const trees = this.placeTrees(columns);
-    const band = makeFieldTarget(bx, bz, 1, F32, NEAR);
-    farTreeBand.uniforms.tTrees.value = trees.texture;
-    sim.run(farTreeBand, band);
-    const u = farGen.uniforms;
-    u.tLayers.value = layers.texture;
-    u.tTrees.value = trees.texture;
-    u.tTreeBand.value = band.texture;
-    this.drawRegion(farGen, [0, 0], [bx, bz]);
-    this.boost([0, 0], [bx, bz]);
-    for (const t of [columns, layers, trees, band]) t.dispose();
+    const L = this.L, [bx, , bz] = L.bricks.n, C = FAR_SCENE.CHUNK;
+    const r = this.renderer, prev = r.getRenderTarget(), color = r.getClearColor(new THREE.Color()), alpha = r.getClearAlpha();
+    r.setClearColor(0x000000, 0);
+    for (const t of [this.grid, this.field]) { r.setRenderTarget(t); r.clear(true, false, false); }
+    r.setClearColor(color, alpha);
+    r.setRenderTarget(prev);
+    this.winMask.fill(0);
+    this.winMaskTex.needsUpdate = true;
     this.built = true;
     this.summarizeWindow();
+    const o = this.sim.origin, g = this.sim.g;
+    const mid = [(o.x + g.nx / 2) / BRICK, (o.z + g.nz / 2) / BRICK];   // the window's centre, brick columns
+    const dist = ([x, z]) => Math.hypot(x + C / 2 - mid[0], z + C / 2 - mid[1]);
+    this.queue = [];
+    for (let z = 0; z < bz; z += C) for (let x = 0; x < bx; x += C) this.queue.push([x, z]);
+    this.queue.sort((a, b) => dist(b) - dist(a));
+    this.chunksDrawn = 0;
+    this.buildFrames = 0;
+    this.buildStart = t0;
+    if (!this.cells) {
+      const S = farSceneLayout(L);
+      this.cells = makeFieldTarget(S.width, S.height, 1, THREE.HalfFloatType, THREE.NearestFilter);
+      this.mats.farScene.uniforms.tCells.value = this.cells.texture;
+    }
+    if (this.scene.trees) this.placeTreeMaps();
     this.refresh(true);
-    this.last = { buildMs: performance.now() - t0 };
+    this.last = { buildMs: null, chunks: this.queue.length };
   }
 
-  // The world's trees, as treesIn places them: a target with one texel per
-  // brick column (shaders/far.js treeOf), from the world's columns (genColumn
-  // plus the margin; the caller disposes of the target). Without columns, it
-  // makes them (tools: tools/far-check.mjs compares it with treesIn).
-  placeTrees(columns = null) {
-    const sim = this.sim, L = this.L, [wx, , wz] = L.size, [bx, , bz] = L.bricks.n, P = this.win.P;
-    const F32 = THREE.FloatType, NEAR = THREE.NearestFilter;
-    const { farColumn, farTreeCand, farTreeThin } = this.mats;
-    for (const m of [farColumn, farTreeCand, farTreeThin]) setWorld(m.uniforms, P);
-    const own = !columns;
-    if (own) {
-      columns = makeFieldTarget(wx + 2 * COLUMN_MARGIN, wz + 2 * COLUMN_MARGIN, 1, F32, NEAR);
-      sim.run(farColumn, columns);
+  // Draw the next chunks of a scene's build (tick, every frame while there are any).
+  sceneChunks() {
+    const sim = this.sim, L = this.L, [bx, , bz] = L.bricks.n, C = FAR_SCENE.CHUNK;
+    const lo = (FAR.CUBE - BRICK) / 2;   // the cells a brick's cube reaches past it (FAR_CUBE_LO)
+    const { farSceneCells, farScene } = this.mats, n = this.scene.farChunksPerFrame ?? SCENE_CHUNKS_PER_FRAME;
+    for (let k = 0; k < n && this.queue.length; k++) {
+      const [x, z] = this.queue.pop(), size = [Math.min(C, bx - x), Math.min(C, bz - z)];
+      farSceneCells.uniforms.uChunkLo.value.set(x * BRICK - lo, z * BRICK - lo);
+      sim.run(farSceneCells, this.cells);
+      this.drawRegion(farScene, [x, z], size);
+      this.boost([x, z], size);
+      this.chunksDrawn++;
     }
+    this.buildFrames++;
+    if (!this.queue.length) {
+      this.cells.dispose();
+      this.cells = null;
+      this.mats.farScene.uniforms.tCells.value = null;
+      this.disposeTreeMaps();
+      this.dirty = true;
+      this.last = { ...this.last, buildMs: performance.now() - this.buildStart, frames: this.buildFrames };
+    } else if (this.buildFrames % SCENE_REFRESH_FRAMES === 0) this.dirty = true;
+  }
+
+  // The scene's trees, as its treesIn places them: a target with one texel per
+  // brick column (shaders/far.js treeOf; the caller disposes of it).
+  // (tools/far-check.mjs compares it with treesIn.)
+  placeTrees() {
+    const sim = this.sim, [bx, , bz] = this.L.bricks.n, F32 = THREE.FloatType, NEAR = THREE.NearestFilter;
+    const { farTreeCand, farTreeThin } = this.mats;
     const cand = makeFieldTarget(bx, bz, 1, F32, NEAR), trees = makeFieldTarget(bx, bz, 1, F32, NEAR);
-    farTreeCand.uniforms.tCol.value = columns.texture;
     sim.run(farTreeCand, cand);
     farTreeThin.uniforms.tCand.value = cand.texture;
     sim.run(farTreeThin, trees);
     cand.dispose();
-    if (own) columns.dispose();
     return trees;
+  }
+
+  // The tree map and the band each brick column finds its trees in, for the
+  // chunks of a build (sceneBuild; disposeTreeMaps when it's done).
+  placeTreeMaps() {
+    this.disposeTreeMaps();
+    const [bx, , bz] = this.L.bricks.n, { farTreeBand, farScene } = this.mats;
+    const map = this.placeTrees(), band = makeFieldTarget(bx, bz, 1, THREE.FloatType, THREE.NearestFilter);
+    farTreeBand.uniforms.tTrees.value = map.texture;
+    this.sim.run(farTreeBand, band);
+    farScene.uniforms.tTrees.value = map.texture;
+    farScene.uniforms.tTreeBand.value = band.texture;
+    this.trees = { map, band };
+  }
+
+  disposeTreeMaps() {
+    if (!this.trees) return;
+    this.trees.map.dispose();
+    this.trees.band.dispose();
+    this.trees = null;
+    this.mats.farScene.uniforms.tTrees.value = this.mats.farScene.uniforms.tTreeBand.value = null;
   }
 
   // Summarize the window's bricks [lo, lo + bricks) (grid cells lo, brick
@@ -255,6 +351,10 @@ export class FarField {
     this.drawRegion(m, at, size);
     this.boost(at, size);
     if (derive) this.dirty = true;
+    if (this.winMask) {
+      for (let z = at[1]; z < at[1] + size[1]; z++) this.winMask.fill(MASK_SET, z * this.L.bricks.n[0] + at[0], z * this.L.bricks.n[0] + at[0] + size[0]);
+      this.winMaskTex.needsUpdate = true;
+    }
   }
 
   summarizeWindow() {
@@ -269,6 +369,7 @@ export class FarField {
   // a slab a frame, while the simulation changes it.
   tick() {
     if (!this.built) return;
+    if (this.queue.length) this.sceneChunks();
     const g = this.sim.g;
     this.age++;
     if (this.sweep < 0) {
@@ -326,6 +427,8 @@ export class FarField {
     gi.tFarTop.value = this.top.texture;
     gi.tFarShadow.value = this.shadow.texture;
     gi.uSea.value = this.win.P.sea;
+    gfxUniforms.uClouds.value = true;   // the cumulus deck overhead, and its shadows (shaders/gfx/clouds.js)
+    gfxUniforms.uCloudSea.value = this.level;   // (the sea's, or a sea-less world's plain's)
   }
 
   // Before the scene renders: the view's transforms for this frame (the
@@ -341,12 +444,19 @@ export class FarField {
     this.refresh();
   }
 
-  dispose() {
+  // retire: as Simulation.dispose's (the view's program and the passes' carry
+  // over to a new far field that claims them before they're disposed of)
+  dispose(retire = null) {
+    this.queue = [];
     this.mesh.removeFromParent();
     this.mesh.geometry.dispose();
-    this.mesh.material.dispose();
     this.regionMesh.geometry.dispose();
     for (const t of [this.grid, this.field, this.l1, this.l2, this.top, this.shadow]) t.dispose();
-    Object.values(this.mats).forEach((m) => m.dispose());
+    this.cells?.dispose();
+    this.disposeTreeMaps();
+    this.winMaskTex?.dispose();
+    const mats = [this.mesh.material, ...Object.values(this.mats)];
+    if (retire) retire.push(...mats);
+    else mats.forEach((m) => m.dispose());
   }
 }

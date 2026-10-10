@@ -5,11 +5,12 @@ import {
   persistentLoad, ownedKey, cellsNear, outsideBody, bodyExit, toStepVelocity, aimInReach, faceNormal, recolor, pinned,
 } from './transfer.js';
 import { povEvents } from '../events.js';
-import { trigger } from './action.js';
+import { trigger, toolDt } from './action.js';
 import { attachModel, BUCKET_SIDES } from '../models.js';
 import { viewmodelRig, heldMaterial } from '../viewmodel.js';
+import { gear } from './catalog.js';
 
-// Bucket (slot 2). Left-click dips it into the liquid you aim at; hold to keep
+// Bucket. Left-click dips it into the liquid you aim at; hold to keep
 // dipping until it's full. Hold right-click to pour a stream out in front of
 // you. A bucket holds one liquid at a time, at the temperature it was scooped
 // (a bucket of lava stays at 1,600 °C). The player's is bottomless (an NPC's
@@ -44,8 +45,7 @@ const PAIL_RIM_R = 0.42;             // ...and at the rim
 const SEGMENTS = BUCKET_SIDES;       // the pail's sides, so the disc's edge lies along its walls
 
 export default {
-  key: 'BUCKET', name: 'Bucket', slot: 2, model: 'bucket',
-  desc: 'Left-click scoops up liquid, hold right-click to pour it out forever: it never runs dry. Lava is fine.',
+  ...gear('BUCKET'),
   create(env) {
     const load = persistentLoad(ownedKey('BUCKET', env.owner), BUCKET_CAPACITY);
     const bottomless = !env.owner;
@@ -95,7 +95,7 @@ export default {
     }
 
     function pourOut(ctx) {
-      pour = Math.min(pour + POUR_RATE * ctx.dt, POUR_BACKLOG);
+      pour = Math.min(pour + POUR_RATE * toolDt(ctx), POUR_BACKLOG);
       const n = Math.min(Math.floor(pour), load.cells.length);
       if (n < 1) return;
       const feet = ctx.player?.pos;

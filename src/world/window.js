@@ -4,7 +4,8 @@ import { stageFrag, editFrag, gatherFrag, STAGE_W, BRICK_CELLS, SLOT_W } from '.
 import { DIFF_W } from '../shaders/generate.js';
 import { rawMat, makeFieldTarget, brickTexel } from '../sim.js';
 import { WorldGenerator } from './gpu.js';
-import { worldParams, treesIn, TREE } from './generator.js';
+import { TREE, WORLD_SEED } from './generator.js';
+import { island } from './scenes/island.js';
 import { runGenerator, bake } from '../constructions/runtime.js';
 import { BUILTINS } from '../constructions/builtins.js';
 import { BrickStore, encodeBrick, decodeBrick, BRICK_FLOATS } from './store.js';
@@ -23,16 +24,17 @@ import { compileInBackground } from '../gfx/programs.js';
 // A move:
 //   1. the slab about to leave is copied out (shaders/window.js stageFrag) and
 //      compared with the generator brick by brick (shaders/generate.js
-//      diffFrag). The flags are read back asynchronously: the bricks that
+//      sceneDiffFrag). The flags are read back asynchronously: the bricks that
 //      match leave the store, and only the ones that differ are packed
 //      (gatherFrag) and read back in turn, into the store (world/store.js);
 //   2. Simulation.shift moves the state, the render fields' history and GI;
 //   3. the generator fills the slab the move uncovers, then that slab's
 //      stored bricks are written back (editFrag);
-//   4. trees are stamped into the brick columns the move visits for the first
-//      time, clipped to those columns (the planted record): a tree is planted
-//      once, piece by piece as its columns are first visited, and comes back
-//      from the store as edits after that;
+//   4. the scene's trees (scene.trees: the island's) are stamped into the
+//      brick columns the move visits for the first time, clipped to those
+//      columns (the planted record): a tree is planted once, piece by piece as
+//      its columns are first visited, and comes back from the store as edits
+//      after that;
 //   5. both state copies are made the same.
 // No move starts while a leaving slab is still being read back, so the store
 // holds everything a move can bring back.
@@ -40,6 +42,14 @@ import { compileInBackground } from '../gfx/programs.js';
 // The far field (world/far.js), when the app gives the window one (far), is
 // built on load, summarizes the slab about to leave in step 1, and sweeps over
 // the window's region while it changes (update).
+//
+// What the world holds is its scene (world/scenes): P = scene.params. Every
+// scene fills and diffs through its sceneCell (world/gpu.js), its uniforms
+// shared by every pass that includes its GLSL (sceneU: the fill, the diff, the
+// far field's build), and plants its trees if it has any (steps 3 and 4). A
+// scene's prepare (GPU work before its first fill: the island bakes its
+// columns) runs with the background compile (whenReady), and its dispose with
+// the window's.
 //
 // The window's own passes and the far field's are compiled in the background
 // (whenReady); the app loads the world once they are ready, so switching to a
@@ -55,17 +65,21 @@ const MASK_SET = 255;                // a set byte of the column mask (the shade
 
 export class WorldWindow {
   // sim: the window's Simulation (its grid spans the world's height);
-  // size: the world in cells [x, y, z]; seed: its generator seed; snow: its
-  // snow caps (world/generator.js worldParams)
-  constructor(renderer, sim, { size, seed, snow }) {
+  // size: the world in cells [x, y, z]; seed: its seed (the generator's
+  // default world's without one); scene: what it holds (world/scenes)
+  constructor(renderer, sim, { size, seed = WORLD_SEED, scene = island }) {
     const g = sim.g;
     if (g.ny !== size[1]) throw new Error(`window ${g.ny} cells tall in a world ${size[1]} tall: it spans the world's height`);
     if (size.some((n, i) => n % WIN_STEP && i !== 1)) throw new Error(`world ${size}: x and z must be multiples of ${WIN_STEP}`);
     this.renderer = renderer;
     this.sim = sim;
     this.size = size;
-    this.P = worldParams({ size, seed, snow });
-    this.gen = new WorldGenerator(sim);   // its own, not generatorFor's shared one: tools run two windows
+    this.scene = scene;
+    this.P = scene.params({ size, seed });
+    // a scene's uniforms, the same objects in every pass that includes its GLSL (whenReady refreshes their values)
+    this.sceneU = scene.uniforms(this.P);
+    // its own generator, not generatorFor's shared one: tools run two windows
+    this.gen = new WorldGenerator(sim, { glsl: scene.glsl(g), uniforms: this.sceneU, trees: scene.trees });
     this.wb = size.map((n) => n / BRICK);                          // the world in bricks
     this.store = new BrickStore(this.wb);
     this.planted = new Uint8Array(this.wb[0] * this.wb[2]);       // brick columns whose trees are in
@@ -117,11 +131,19 @@ export class WorldWindow {
     return [...Object.values(this.mats), ...Object.values(this.gen.mats), ...Object.values(this.far?.mats ?? {})];
   }
 
-  // Resolves once every pass of the window and its far field is compiled
-  // (started in the background on the first call; give the window its far
-  // field first): load and the moves then run without a compile stall.
+  // Resolves once every pass of the window and its far field is compiled and
+  // the scene has prepared (both started in the background on the first call;
+  // give the window its far field first): load and the moves then run without
+  // a compile stall.
   whenReady() {
-    return (this.ready ??= compileInBackground(this.renderer, this.materials()));
+    return (this.ready ??= Promise.all([
+      compileInBackground(this.renderer, this.materials()),
+      this.scene.prepare?.(this.renderer, this.P),
+    ]).then(() => {
+      // what prepare made (its textures) into the passes' shared uniform objects
+      const fresh = this.scene.uniforms(this.P);
+      for (const [k, u] of Object.entries(fresh)) if (this.sceneU[k]) this.sceneU[k].value = u.value;
+    }));
   }
 
   // The origin that centres the window in the world.
@@ -138,7 +160,7 @@ export class WorldWindow {
     this.planted.fill(0);
     sim.origin.set(origin[0], 0, origin[2]);
     this.gen.fill(this.P, [origin[0], 0, origin[2]]);
-    this.plant([0, 0, 0], [g.nx, g.ny, g.nz]);
+    if (this.scene.trees) this.plant([0, 0, 0], [g.nx, g.ny, g.nz]);
     sim.syncCopies();
     this.far?.build();
     sim.dropHistory();   // undo would bring back a window of the old world
@@ -197,7 +219,7 @@ export class WorldWindow {
     const restored = this.restore(enterLo, bricks);
     // 4.
     this.plantCost = { placeMs: 0, bakeMs: 0 };
-    const trees = this.plant(enterLo, enterHi);
+    const trees = this.scene.trees ? this.plant(enterLo, enterHi) : 0;
     // 5.
     sim.syncCopies();
     this.last = { dx, dz, ms: performance.now() - t0, restored, trees, ...this.plantCost, readbackMs: null, kept: null };
@@ -272,7 +294,7 @@ export class WorldWindow {
     return slots.length;
   }
 
-  // Stamp the trees of the brick columns of grid cells [lo, hi) (x and z,
+  // Stamp the scene's trees in the brick columns of grid cells [lo, hi) (x and z,
   // brick-aligned) that are visited for the first time, clipped to those
   // columns, and mark them planted. Returns how many trees were stamped.
   plant(lo, hi) {
@@ -292,7 +314,8 @@ export class WorldWindow {
     if (!fresh) return 0;
     const R = TREE.REACH, list = [];
     if (this.candidates.size > CANDIDATES_KEEP) this.candidates.clear();
-    const t0 = performance.now(), trees = treesIn(x0 - R, z0 - R, x1 + R, z1 + R, this.P, this.candidates), t1 = performance.now();
+    const t0 = performance.now(), trees = this.scene.trees.treesIn(x0 - R, z0 - R, x1 + R, z1 + R, this.P, this.candidates);
+    const t1 = performance.now();
     if (this.plantCost) this.plantCost.placeMs += t1 - t0;
     for (const t of trees) {
       const s = this.bakeTree(t);
@@ -323,17 +346,21 @@ export class WorldWindow {
     return { bricks: this.store.size, bytes: this.store.bytes, planted: this.planted.reduce((n, v) => n + v, 0) };
   }
 
-  dispose() {
+  // retire: as Simulation.dispose's (the materials go into it, to be disposed
+  // of once a new window's have claimed the programs they share)
+  dispose(retire = null) {
     this.epoch++;
-    this.far?.dispose();
-    this.gen.dispose();
+    this.far?.dispose(retire);
+    this.gen.dispose(retire);
     this.stage.dispose();
     this.packed.dispose();
     this.slotsTex.dispose();
     this.diffTarget.dispose();
     this.editIdxTex.dispose();
     this.colMaskTex.dispose();
-    Object.values(this.mats).forEach((m) => m.dispose());
+    if (retire) retire.push(...Object.values(this.mats));
+    else Object.values(this.mats).forEach((m) => m.dispose());
+    this.scene.dispose?.();
   }
 }
 

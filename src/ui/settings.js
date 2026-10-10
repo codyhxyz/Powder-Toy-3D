@@ -6,12 +6,20 @@ import { ICON } from './icons.js';
 //   { type: 'slider', key, label, min, max, step, def, fmt, onChange }
 //   { type: 'switch', key, label, desc?, badge?, tier?, onChange }   (badge: a cost label, styled by tier)
 //   { type: 'more', label, rows }   rows tucked under a collapsed disclosure
-// A seg row may take value() instead of reading settings[key] (a derived setting).
+// A seg row may take value() instead of reading settings[key] (a derived setting),
+// and cols: its options in rows of that many (too many to fit side by side).
 //   { type: 'custom', el, sync }   an element the caller keeps up to date; sync runs with the others
+// Any row may take hidden(): it shows only while that is false (checked when the rows sync).
 export function createSettings({ settings, sections, footer, onClose }) {
   const syncers = [];
 
   const row = (r) => {
+    const el = rowEl(r);
+    if (el && r.hidden) syncers.push(() => { el.style.display = r.hidden() ? 'none' : ''; });
+    return el;
+  };
+
+  const rowEl = (r) => {
     if (r.type === 'seg') {
       const btns = r.options.map(([value, label]) => {
         const b = h('button', { type: 'button', text: label, on: { click: () => { r.onChange(value); syncAll(); } } });
@@ -19,7 +27,7 @@ export function createSettings({ settings, sections, footer, onClose }) {
         return b;
       });
       syncers.push(() => btns.forEach((b) => b.classList.toggle('on', String(r.value ? r.value() : settings[r.key]) === b.dataset.value)));
-      return h('div.seg', { role: 'radiogroup' }, btns);
+      return h(r.cols ? 'div.seg.rows' : 'div.seg', { role: 'radiogroup', style: r.cols ? { '--cols': r.cols } : null }, btns);
     }
     if (r.type === 'slider') {
       const input = h('input', { type: 'range', min: r.min, max: r.max, step: r.step, 'aria-label': r.label });

@@ -1,9 +1,25 @@
 import { ELEMENTS, E } from '../elements.js';
+import { SAVING_GRACE_HEALTH } from './perks.js';
 
 // Health, breath and everything that hurts the first-person body. The player
 // (player.js) measures the cells around the body every frame and hands them
 // here; this module turns them into damage, a cause of death and the 0..1
 // "feel" intensities the screen effects draw. Health and breath run 0..1.
+//
+// The body's perks (perks.js) change what it can take: Fire Immunity (no
+// burns), Explosion Immunity (no blast or slam damage), Breathless (breath
+// never drains), Extra Health (every hurt is divided by the larger maximum, so
+// health stays 0..1), Saving Grace and Extra Life. Death takes the perks.
+//
+// Energy Shield is Halo's: a recharging layer over health, in the same units
+// as a hurt before Extra Health divides it (1 = one base life). It takes what
+// strikes the body (weapons, blasts, slams) first, and what's left of a blow
+// goes on to health. What the body is in (heat, cold, acid) and choking get
+// past it: a shield is a barrier outside the skin, not air or insulation. A
+// lethal blow (the knife's backstab) ignores it, as a melee to the back kills
+// through shields in Halo 2 and 3. Any hurt holds off the recharge for
+// SHIELD_DELAY; then it fills in SHIELD_REFILL from empty. Its events (on the
+// body's emitter): 'shield' { state: 'hit' | 'break' | 'recharge' | 'full', amount? }.
 
 // One cell is about this many metres (pov/constants.js: the body is 5.5 cells ≈ 1.7 m).
 export const CELL_METERS = 0.3;
@@ -38,9 +54,21 @@ const SUFFOCATE_DAMAGE = 0.25;  // health/s once breath is gone (drowning, burie
 export const SAFE_FALL_M = 3;
 export const LETHAL_FALL_M = 15;
 
+// ---- energy shield (Halo 3's, Halopedia "Energy shielding": regeneration starts 5 s after
+// the last hit and takes 2 s from a total drain; its size per stack is in perks.js) ----
+const SHIELD_DELAY = 5;         // s after the last hurt before the shield starts to refill
+const SHIELD_REFILL = 2;        // s to refill from empty
+const SHIELD_FULL_EPS = 1e-6;   // a shield this close to full counts as full
+
 // ---- blasts ----
 const BLAST_HURT_P = 8;         // air pressure (sim units) the body shrugs off...
 const BLAST_DAMAGE = 0.4;       // ...health/s per unit above it
+// Your own blast (a rocket or bomb you set off: ownBlast) hurts you less, the
+// shooter games' rule (Quake III halves self-splash, G_Damage), so a rocket
+// jump is a price, not a death: one at your feet costs about a quarter of your
+// health (its full pressure would take ~2.4, measured by tools/weapons-check.mjs).
+const SELF_BLAST_SHARE = 0.1;   // share of blast damage taken...
+const SELF_BLAST_TIME = 1;      // ...for this many s after your own blast goes off
 
 // ---- feel (0..1 screen-effect intensities) ----
 const FEEL_HEAT_SPAN = 40;      // °C of skin above BODY_T for full heat glow
@@ -66,16 +94,24 @@ function heatCause(id, T) {
   return `Burned by ${lower(id)}, ${fmtT(T)}`;
 }
 
-export function createVitals(emit) {
+export function createVitals(emit, perks = null) {
+  const has = (key) => !!perks?.has(key);
+  const shieldMax = () => perks?.shieldMax ?? 0;
   const v = {
     health: 1, breath: 1, skinT: BODY_T,
+    shield: 0,                 // energy shield left, base lives (0..shieldMax)
+    shieldWait: 0,             // s before it starts to refill
+    shieldCharging: false,     // refilling now
     feel: { heat: 0, cold: 0, acid: 0, hurt: 0 },
     dead: false, cause: '',
+    get shieldMax() { return shieldMax(); },
   };
   let pending = 0, pendingCause = '', pendingAge = 0;
+  let selfBlastT = 0;   // s left of your own blast's reduced damage
 
   v.reset = () => {
     v.health = 1; v.breath = 1; v.skinT = BODY_T;
+    v.shield = shieldMax(); v.shieldWait = 0; v.shieldCharging = false;
     Object.assign(v.feel, { heat: 0, cold: 0, acid: 0, hurt: 0 });
     v.dead = false; v.cause = '';
     pending = 0; pendingCause = ''; pendingAge = 0;
@@ -87,31 +123,70 @@ export function createVitals(emit) {
   }
 
   // Take `amount` health. `burst` (an impact or a blast) is reported at once.
-  function hurt(amount, cause, burst = false) {
+  // shielded: the Energy Shield takes it first (blows, blasts, slams);
+  // lethal: it takes all the health there is, shield or not (a backstab).
+  function hurt(amount, cause, burst = false, { shielded = false, lethal = false } = {}) {
     if (v.dead || !(amount > 0)) return;
+    const maxHealth = perks?.maxHealth ?? 1;
+    // any hurt holds the shield's refill off (Halo)
+    v.shieldWait = SHIELD_DELAY;
+    v.shieldCharging = false;
+    if (lethal) amount = v.health * maxHealth;
+    else if (shielded && v.shield > 0) {
+      const took = Math.min(v.shield, amount);
+      v.shield -= took;
+      amount -= took;
+      emit('shield', { state: v.shield > 0 ? 'hit' : 'break', amount: took });
+      if (!(amount > 0)) return;
+    }
+    amount /= maxHealth;
+    const before = v.health;
     v.health = Math.max(0, v.health - amount);
+    // Saving Grace: a blow that would kill from above the last sliver leaves the sliver
+    if (v.health <= 0 && before > SAVING_GRACE_HEALTH && has('SAVING_GRACE')) v.health = SAVING_GRACE_HEALTH;
     v.feel.hurt = Math.min(1, v.feel.hurt + amount * HURT_FEEL_GAIN);
     pending += amount;
     pendingCause = cause;
     if (burst || pending >= HURT_EVENT_MIN) flushHurt();
     if (v.health <= 0) {
       flushHurt();
+      // Extra Life: back on your feet where you fell, with your perks
+      if (perks?.take('EXTRA_LIFE')) {
+        v.health = 1; v.breath = 1; v.skinT = BODY_T;
+        emit('revive', { cause });
+        return;
+      }
       v.dead = true;
       v.cause = cause;
+      perks?.clear();
       emit('death', { cause });
     }
   }
   v.hurt = hurt;
+  // a blast of your own just went off (see SELF_BLAST_SHARE)
+  v.ownBlast = () => { selfBlastT = SELF_BLAST_TIME; };
+
+  // The shield: Halo's refill after the delay; a smaller maximum (death took the perk) clips it.
+  function shieldUpdate(dt) {
+    const max = shieldMax();
+    if (v.shield > max) v.shield = max;
+    if (v.dead || max <= 0) { v.shieldCharging = false; return; }
+    if (v.shieldWait > 0) { v.shieldWait = Math.max(0, v.shieldWait - dt); return; }
+    if (v.shield >= max - SHIELD_FULL_EPS) { v.shield = max; return; }
+    if (!v.shieldCharging) { v.shieldCharging = true; emit('shield', { state: 'recharge' }); }
+    v.shield = Math.min(max, v.shield + max * dt / SHIELD_REFILL);
+    if (v.shield >= max - SHIELD_FULL_EPS) { v.shield = max; v.shieldCharging = false; emit('shield', { state: 'full' }); }
+  }
 
   // Impact on landing or slamming into something. speed: cells/s into the
   // surface; safe/lethal: impact speeds (cells/s) for SAFE_FALL_M and
   // LETHAL_FALL_M; fallCells: height fallen (vertical impacts), else 0.
   v.impact = (speed, safe, lethal, fallCells, surfaceId) => {
-    if (speed <= safe) return;
+    if (speed <= safe || has('EXPLOSION_IMMUNITY')) return;   // slams only come from blasts (landings never hurt)
     const dmg = (speed * speed - safe * safe) / (lethal * lethal - safe * safe);
     const m = Math.round(fallCells * CELL_METERS);
     const cause = fallCells > 0 && m >= 1 ? `Fell ${m} m` : `Slammed into ${surfaceId >= 0 ? lower(surfaceId) : 'the wall'}`;
-    hurt(dmg, cause, true);
+    hurt(dmg, cause, true, { shielded: true });
   };
 
   // env (measured by the player this frame):
@@ -148,15 +223,18 @@ export function createVitals(emit) {
     f.cold += (clamp01((BODY_T - v.skinT) / FEEL_COLD_SPAN) - f.cold) * ease;
     f.acid += (clamp01(acidShare / FEEL_ACID_SHARE) - f.acid) * ease;
 
+    shieldUpdate(dt);
     if (v.dead) return;
 
-    if (v.skinT > SKIN_BURN_T) hurt((v.skinT - SKIN_BURN_T) * HEAT_DAMAGE * dt, heatCause(worstId, worstT));
+    if (v.skinT > SKIN_BURN_T && !has('FIRE_IMMUNITY')) hurt((v.skinT - SKIN_BURN_T) * HEAT_DAMAGE * dt, heatCause(worstId, worstT));
     if (v.skinT < SKIN_COLD_T) hurt((SKIN_COLD_T - v.skinT) * COLD_DAMAGE * dt, 'Froze');
     if (acid) hurt(ACID_DAMAGE * acidShare * dt, 'Dissolved by acid');
-    if (env.pressure > BLAST_HURT_P) hurt((env.pressure - BLAST_HURT_P) * BLAST_DAMAGE * dt, 'Blown up');
+    const blastShare = selfBlastT > 0 ? SELF_BLAST_SHARE : 1;
+    selfBlastT = Math.max(0, selfBlastT - dt);
+    if (env.pressure > BLAST_HURT_P && !has('EXPLOSION_IMMUNITY')) hurt((env.pressure - BLAST_HURT_P) * BLAST_DAMAGE * blastShare * dt, 'Blown up', false, { shielded: true });
 
     // breath
-    const choking = env.headInLiquid || env.buriedId >= 0;
+    const choking = (env.headInLiquid || env.buriedId >= 0) && !has('BREATHLESS');
     if (choking) {
       v.breath = Math.max(0, v.breath - dt / BREATH_TIME);
       if (v.breath <= 0) {
@@ -171,4 +249,4 @@ export function createVitals(emit) {
 }
 
 // Exposed for tests and tuning.
-export const VITALS = { BODY_T, SKIN_BURN_T, SKIN_COLD_T, BREATH_TIME, BLAST_HURT_P };
+export const VITALS = { BODY_T, SKIN_BURN_T, SKIN_COLD_T, BREATH_TIME, BLAST_HURT_P, SHIELD_DELAY, SHIELD_REFILL };

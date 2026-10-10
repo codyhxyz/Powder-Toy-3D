@@ -83,6 +83,10 @@ const HURT_GAP_S = 0.3;                 // s between hurt sounds (continuous dam
 const HURT_FULL = 0.15;                 // health lost (0..1) in one report for a full-volume hurt sound
 const HURT_GAIN_MIN = 0.35;
 const LOG_SIZE = 16;                    // recent plays kept for stats()
+const SHIELD_HIT_GAP_S = 0.12;          // s between shield-hit crackles (a blast hits it every frame)
+const SHIELD_BEEP_S = 0.5;              // s between beeps of the empty-shield alarm (Halo's), by ear
+const POGO_PITCH_STEP = 0.12;           // × playback rate per timed step up: each climb boings higher
+const KNIFE_SWING_RATE = 1.35;          // the knife's swing is the axe's whoosh, quicker and thinner
 
 // ---- presets
 // ZzFX parameter order (paste any of these into https://killedbyapixel.github.io/ZzFX/ to retune):
@@ -92,6 +96,9 @@ const LOG_SIZE = 16;                    // recent plays kept for stats()
 // shape: 0 sine, 1 triangle, 2 saw, 3 tan, 4 noise, 5 square. slide is Hz/s ÷ 500.
 // filter: > 0 high-pass, < 0 low-pass (cutoff ≈ 2 × |value| Hz). Empty slots are ZzFX defaults.
 const PRESETS = {
+  // -- perks
+  // a perk taken: a bright sine arpeggio climbing in steps (pitch jumps every 70 ms), Noita's pickup sparkle
+  perk: [.7, .05, 520, .01, .16, .4, 0, 1.5, , , 260, .07, .07, , , , , .7, .05],
   // -- the gun
   // a hard crack-boom: a noise burst sliding down with a crushed, 0.3 s tail
   shot: [1.6, .05, 140, .003, .03, .28, 4, 2.4, -0.6, , , , , 1.8, , .25, , .55, .07],
@@ -138,8 +145,8 @@ const PRESETS = {
   pourLoop: [.45, 0, 300, , 1, 0, 4, 1, , , , , .07, 6, , , , .7, , .25, -1600],
   // axe or pickaxe swing: an airy whoosh that rises through the swing
   swoosh: [.5, .1, 140, .06, .04, .14, 4, 1, 4, , , , , 6, , , , .7, , , -900],
-  // blowtorch burning (loops): a steady high-passed roar of noise with a slight flutter
-  torchLoop: [.35, 0, 200, , 1, 0, 4, 1, , , , , , 12, , , , .9, , .08, 900],
+  // flamethrower burning (loops): a steady, deep roar of noise with a slight flutter
+  torchLoop: [.5, 0, 120, , 1, 0, 4, 1, , , , , , 16, , , , .9, , .1, 600],
   // the jetpack firing: a low, rumbling roar under the torch's hiss
   jetLoop: [.45, 0, 90, , 1, 0, 4, 1, , , , , , 20, , , , .9, , .15, 500],
   // a bomb going off: a deep noise burst sliding down, a long crushed tail
@@ -154,6 +161,22 @@ const PRESETS = {
   physFling: [.6, .05, 900, , .05, .25, 2, 1, -12, , , , , 1, , , , .6, , , -3000],
   // physgun let go: a small, soft blip down
   physRelease: [.25, .05, 400, , .02, .08, 0, 1, -8],
+
+  // -- combat (Big Team Battle)
+  // a hit on the Energy Shield: a short electric crackle, a buzzing tan wave sliding down with FM grit
+  shieldHit: [.5, .1, 1100, , .02, .12, 3, 1, -8, , , , , 1.5, 30, .2, , .6],
+  // the shield breaking: Halo's pop, a bright noise burst with a pitch jump and a crushed fizzle
+  shieldBreak: [.9, .05, 600, , .03, .3, 4, 1.5, -2, , 300, .03, , 3, , .4, .05, .5, .04],
+  // the recharge starting: the rising hum, a saw sweeping up under a low-pass
+  shieldCharge: [.45, 0, 220, .05, .5, .3, 2, 1, 1.5, , , , , , , , , .6, , .15, -1500],
+  // the empty-shield alarm: a short square beep
+  shieldBeep: [.25, 0, 1800, , .05, .03, 5, 1, , , , , , , , , , .8],
+  // a pogo bounce: a sprung "boing", a sine sliding up with a fast vibrato
+  boing: [.6, .05, 300, , .06, .2, 0, 1, 6, , , , , , 12, , , .6],
+  // the knife going into a body: a short, wet, low-passed thud
+  stab: [.8, .1, 140, , .01, .08, 4, 1, -4, , , , , 3, , , , .5, , , -1200],
+  // a backstab: a hard metallic ring over the stab (TF2's crit), FM'd like the metal ping
+  backstab: [1, .02, 1600, , .03, .45, 0, 1, , , -400, .05, , , 22, , .06, .6],
 
   // -- the body
   // a footfall on dry ground: a short, low, padded thud
@@ -180,18 +203,14 @@ const PRESETS = {
 // presets that play as seamless loops (one render each)
 const LOOPS = new Set(['pourLoop', 'physHum', 'torchLoop', 'jetLoop']);
 
-// ---- material families: which sound a struck element makes
-const FAMILY_BY_KEY = {
-  GLASS: 'shatter', SHARDS: 'shatter',
-  WOOD: 'thunk', SAWDUST: 'thunk', PLANT: 'thunk',
-  METAL: 'ping', SCRAP: 'ping',
-  ROCK: 'crack', STONE: 'crack', WALL: 'crack', CLONE: 'crack', ICE: 'crack',
-  LAVA: 'sizzle',
-};
+// ---- material families: which sound a struck element makes. An element's
+// own (elements.js sound: glass shatters, wood thunks, metal pings), else its
+// kind's: any rock or other solid cracks.
 const FAMILY_BY_KIND = { [K.SOLID]: 'crack', [K.POWDER]: 'puff', [K.LIQUID]: 'splash' };
 // Where each family plays at its own pitch: the reference element's hardness
 // (for solids) and density (for loose matter). Elements stiffer than the
-// reference ring higher, heavier loose matter sounds lower.
+// reference ring higher, heavier loose matter sounds lower, so a new member
+// of a family (sandstone, coal) pitches itself from its own hard or dens.
 const FAMILY_REF = {
   shatter: { hard: E.GLASS, dens: E.SHARDS },
   thunk: { hard: E.WOOD, dens: E.SAWDUST },
@@ -216,7 +235,7 @@ const clamp = THREE.MathUtils.clamp;
 export function familyOf(id) {
   const el = ELEMENTS[id];
   if (!el) return null;
-  return FAMILY_BY_KEY[el.key] ?? FAMILY_BY_KIND[el.kind] ?? null;
+  return el.sound ?? FAMILY_BY_KIND[el.kind] ?? null;
 }
 
 // playback rate for a material within its family
@@ -260,6 +279,7 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
   let zz = null;
   let boundPlayer = null, unbindPlayer = [];
   let lastPour = -Infinity, frameDt = 0, lastTick = 0, lastSizzle = -Infinity, humSince = 0, lastHurt = -Infinity;
+  let lastShieldHit = -Infinity, lastBeep = -Infinity;
   const lastStart = new Map();   // preset → { t, at }
   const vWorld = new THREE.Vector3(), vEar = new THREE.Vector3();
 
@@ -411,12 +431,14 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
   // ---- events
   const live = () => S.started && state().active;
 
-  povEvents.on('gun:fire', ({ by, origin }) => {
+  // each gun's shot is the pistol's, pitched and scaled by its sound ({ rate, gain, thump, voice }: tools/firearm.js)
+  povEvents.on('gun:fire', ({ by, origin, sound }) => {
     if (!live()) return;
-    if (by) { play('shot', { at: origin ?? null }); play('shotEcho', { at: origin ?? null, gain: ECHO_GAIN, delay: ECHO_DELAY_S }); return; }   // an NPC's: where it is
-    play('shot');
-    play('shotThump');
-    play('shotEcho', { gain: ECHO_GAIN, delay: ECHO_DELAY_S });
+    const { rate = 1, gain = 1, thump = 1, voice = 'shot' } = sound ?? {};
+    if (by) { play(voice, { at: origin ?? null, rate, gain }); play('shotEcho', { at: origin ?? null, gain: ECHO_GAIN * gain, delay: ECHO_DELAY_S, rate }); return; }   // an NPC's: where it is
+    play(voice, { rate, gain });
+    play('shotThump', { rate, gain: thump });
+    play('shotEcho', { gain: ECHO_GAIN * gain, delay: ECHO_DELAY_S, rate });
   });
   povEvents.on('gun:dry', ({ by }) => { if (live() && !by) play('dryClick'); });
   // a bomb's charge went off: the boom where it is, and its echo off the far walls
@@ -426,8 +448,14 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
     play('shotEcho', { at: point ?? null, delay: ECHO_DELAY_S });
   });
 
-  povEvents.on('impact', ({ source, point, id, energy, broke }) => {
+  // a perk taken (pov/index.js), yours up close, an NPC's where it stands; an Extra Life spent sounds the same
+  povEvents.on('perk:take', ({ point, by }) => { if (live()) play('perk', { at: by ? point ?? null : null }); });
+  povEvents.on('perk:revive', () => { if (live()) play('perk'); });
+
+  povEvents.on('impact', ({ source, point, id, energy, broke, body, backstab }) => {
     if (!live()) return;
+    // the knife in a body: a stab, and a ring on top for a backstab
+    if (source === 'knife' && body) { play('stab', { at: point ?? null }); if (backstab) play('backstab', { at: point ?? null }); return; }
     const family = familyOf(id);
     if (!family) return;
     const gain = energyGain(energy), rate = materialRate(id, family), at = point ?? null;
@@ -474,7 +502,10 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
         break;
       }
       case 'axe:swing': case 'pickaxe:swing': play('swoosh', { at }); break;
-      case 'bomb:throw': play('swoosh', { at }); break;
+      case 'knife:swing': play('swoosh', { at, rate: KNIFE_SWING_RATE }); break;
+      case 'bomb:throw': case 'torch:throw': case 'lantern:throw': play('swoosh', { at }); break;
+      case 'torch:land': case 'lantern:land': play('thunk', { at, gain: TOOL_HIT_GAIN }); break;
+      case 'lantern:toggle': play('dryClick', { at }); break;
       case 'blowtorch:on': loop('torchLoop', true); break;
       case 'blowtorch:off': loop('torchLoop', false); break;
       case 'physgun:grab': play('physGrab'); loop('physHum', true); humSince = clock(); break;
@@ -518,6 +549,14 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
         stopLoops();
         play('death');
       }),
+      // the Energy Shield (vitals.js): a crackle per hit, the pop when it breaks, the hum as it refills
+      player.on('shield', ({ state: st }) => {
+        if (!live()) return;
+        if (st === 'hit' && clock() - lastShieldHit >= SHIELD_HIT_GAP_S) { lastShieldHit = clock(); play('shieldHit'); }
+        else if (st === 'break') play('shieldBreak');
+        else if (st === 'recharge') play('shieldCharge');
+      }),
+      player.on('pogo', ({ step = 0 }) => { if (live()) play('boing', { rate: 1 + POGO_PITCH_STEP * step }); }),
     );
   }
 
@@ -555,6 +594,9 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
       if (!s.active || s.player?.dead) stopLoops();
       if (S.loops.pourLoop.on && clock() - lastPour > Math.max(POUR_TAIL_S, POUR_TAIL_FRAMES * frameDt)) loop('pourLoop', false);
       if (S.loops.physHum.on && clock() - humSince > HUM_GRACE_S && !physgunHolds(s.toolbelt)) loop('physHum', false);
+      // Halo's alarm while the shield is down and not yet refilling
+      const pl = s.player;
+      if (s.active && pl && !pl.dead && pl.shieldMax > 0 && pl.shield <= 0 && !pl.shieldCharging && t - lastBeep >= SHIELD_BEEP_S) { lastBeep = t; play('shieldBeep'); }
     }
     if (s.active && !document.hidden) requestAnimationFrame(tick);
     else setTimeout(tick, IDLE_POLL_MS);

@@ -299,12 +299,44 @@ The world is much larger than what lives on the GPU. Its size is `WORLD` cells, 
 - **Generator.** Deterministic from a world seed, evaluated per cell in a GPU pass:
   - a heightfield from fBm noise with domain warping;
   - rock under soil;
-  - sand at sea level, water below it;
+  - sand at the water's level, water below it;
   - snow on peaks;
   - plants on gentle slopes.
 
   Trees and other structures are stamped by the CPU from the existing constructions, placed deterministically
   per brick column, when their slab loads.
+
+  As implemented (`src/world/generator.js`, `src/world/scenes/island.js`, the hooks in `src/world/island`), the
+  island is an ordinary world scene ("Scenes", below), written once:
+  - **One source.** The algorithm is GLSL in the shared subset (`scenes/themedShared.js`; extended for it by
+    `thStream`, `thNoised` with `thNoiseDx`/`thNoiseDz` for gradient noise with derivatives, and `smoothstep`).
+    The GPU compiles it; the CPU runs its JS twin (`islandTwin`) for tree placement, `start`, `ground` and tools.
+  - **Two stages.** Per world column (`ISLAND_COLUMN_SRC`): the terrain height, the landforms hook, the band and
+    meadow noise, the standing water's level. The scene's `prepare` bakes them for the whole world plus a
+    2-column margin into an RGBA32F texture (`IslandColumns`, 1028×1028 for the 1024² world, ~17 MB, kept while
+    the world is). Per cell (`ISLAND_CELL_SRC`), reading the baked columns: the cover (sand, snow, plant: the
+    13-column layer rules, asked only for the top cells), the strata hook for the bedrock, then the caves hook on
+    every cell (`islandCell`). The twin caches columns instead of baking them.
+  - **Hooks** (`world/island/*.js`, each `{ prefix, tables, src }` in the subset, no-ops for now):
+    `float islandLandform(float x, float z, float h)` and `float islandWaterLevel(float x, float z, float h)` in the
+    column bake (so layers, trees and cells follow them: water fills cells below a column's level, not just
+    below sea level); `int islandRock(int x, int y, int z, float ground)` for every ground cell under the cover;
+    `int islandCave(int x, int y, int z, float ground, float water, int id)` last, on every cell. The trees'
+    ground check (`genTreeZone`) asks `islandCell` for the trunk's footing, so carving reaches tree placement
+    and `ground()` too.
+  - **Same world.** Against the two-path generator it replaced (origin/main 1e72afa), headless on the GPU: the
+    box's Island preset (128³, with snow and frozen rock), the world's window at load and after 8 moves (slab
+    fills and planted trees) and the complete far grid (2,097,152 texels) are bit-identical (0 cells differ in
+    id, °C, life or seed). The CPU twin places the same trees (1701 of 1701 over the world, 20/20 and 33/33 in
+    the 128³ and 160×96 boxes) with the same layers everywhere; its heights differ from the old JS's by under
+    1e-13 cells (`sqrt` for `Math.hypot`). `tools/island-dump.mjs` dumps and compares two builds.
+  - **Cost**, against the same baseline, headless (M5, other sessions holding the GPU at 80–95%; minimums of
+    4–8 runs): the box's Island preset loads in 11 ms GPU-synced (was 21: a cell reads one baked texel, and the
+    13-column layer rules only for its top cells); a switch box → World has the window loaded in 240 ms (was
+    247) and the far field complete in 268 ms (was 247: 4 frames of 64 chunks, done 30–40 ms after load); a
+    window move 2.5 ms (was 3.7), its slab fill 0.4 ms (0.5) and slab diff 0.6 ms (0.6). The far build does more
+    GPU work in all (~140 ms over the 256 chunks under that load, against 40–75 ms for the one-pass build), spread
+    over those frames.
 - **Boundary.** Cells outside the window are a frozen boundary for the sim. They can't move, nothing moves into
   them, and they conduct no heat.
 - **Far field.** A world-sized brick grid (a WebGL2 3D texture, one RGBA8 texel per world brick) holds what the
@@ -351,10 +383,10 @@ The world is much larger than what lives on the GPU. Its size is `WORLD` cells, 
     guests didn't follow the window (W5, below); nothing outside the window is drawn or casts light (W4).
 - **W5 as implemented** (the app: `src/app.js`, signs, POV, multiplayer; the World option in Settings → Grid size).
   - World is a size of the Grid size row (`WORLDS.world`: 1024×128×1024 through 128³), saved like the box sizes;
-    `?size=world` still works. Clicking it again starts the world over. The Scene row lights nothing in World, and
-    picking a scene there goes back to the last box size with it. A switch disposes the window, its generator, the
-    Island scene's generator (`releaseGenerator`) and the box's outline material.
-  - It has no snow caps (`worldParams({ snow: false })`, `uGenSnow`): the air is 20 °C everywhere, so snow would
+    `?size=world` still works. Clicking it again starts the world over. In World the Scene row lists the world's
+    scenes instead of the box's ("Scenes", below); the Grid size row goes back to a box. A switch disposes the
+    window, its generator, the Island scene's generator (`releaseGenerator`) and the box's outline material.
+  - The island world has no snow caps (`scenes/island.js`: `worldParams({ snow: false })`, `uGenSnow`): the air is 20 °C everywhere, so snow would
     melt and every melting brick would be stored. Its peaks are bare rock above the plant line, and no rock is
     frozen, so nothing it generates drifts. The box's Island scene keeps its snow.
   - The window starts on the island's shore toward the god view's camera (`worldStart`: from the island's centre
@@ -409,11 +441,11 @@ The world is much larger than what lives on the GPU. Its size is `WORLD` cells, 
     surface level (trunks, walls up to 3 cells, roofs, streams) reads as full, so it shows as a blob, rod or slab
     instead of vanishing, while crowns, cliffs and the ground keep their shares (and their shapes).
   - Occupancy: L1 (16³ cells) set where some brick in it or next to it reaches 0.5, L2 (64³) where an L1 is.
-  - Built at load from the generator at world scale: genColumn and genLayers per world column, then every brick
-    from the layers of the columns its cube spans. The trees are in it too: a GPU twin of `treeCandidate` per brick
-    column, thinned by `treesIn`'s rule, each drawn as its construction at brick scale. mulberry32's i-th draw is a
-    function of seed and i, and the draws before a construction's first per-cell shape are a known count, so
-    heights, oak crowns, pine tiers and palm leans are the construction's own.
+  - Built from the scene's `sceneCell`, progressively ("Scenes", below), the island's included. Its trees are in it
+    too (the scene's `trees` hook): a GPU twin of `treeCandidate` per brick column, thinned by `treesIn`'s rule,
+    each drawn as its construction at brick scale. mulberry32's i-th draw is a function of seed and i, and the
+    draws before a construction's first per-cell shape are a known count, so heights, oak crowns, pine tiers and
+    palm leans are the construction's own.
   - Updated from the window: the slab about to leave is summarized in the move's step 1 (from the state, before the
     shift), so edits stay visible after they leave; while the sim changes the window, it is swept a 16-cell slab a
     frame every 120 frames (its copy casts the far field's shadows and feeds the window's GI). Then the occupancy, the brick-column tops and the
@@ -458,6 +490,38 @@ The world is much larger than what lives on the GPU. Its size is `WORLD` cells, 
   - Not yet: no blend band at the window's sides; no gases (smoke, steam, fire) in the far field; the far field's own
     ambient sees only a two-tap AO, not distant hills; it isn't drawn in the data views; guests don't get the host's
     edits outside the window (W5).
+
+- **Scenes** (`src/world/scenes`; checked on the CPU by `tools/check-scenes.mjs`). What a world holds is a scene:
+  the island and five more, picked in Settings → Scene while the grid is World (`settings.scene`, saved; `?scene=`
+  too). Picking one starts the world over with it (`build`, as clicking World again does).
+  - A scene is an object (`scenes/index.js` documents it): `params({ size, seed })` → P with at least `sea` and
+    `floor`; `glsl(g)` defining `sceneCell(world cell, A, B)`, the generated state of any cell, a pure function of
+    the cell and the scene's `uniforms(P)`; `start(P, win)` and `ground(x, z, P)` on the CPU (the window's first
+    centre, and the god view's home over a column); optional `prepare(renderer, P)` (a Promise for GPU work before
+    the first fill, e.g. baked textures) and `dispose()`. Adding one is its file plus a line in `WORLD_SCENES`.
+  - Every scene, the island too, fills and diffs through `sceneFillFrag` and `sceneDiffFrag` (`shaders/generate.js`,
+    the store tolerances above), and plants trees only through its optional `trees` hook (the island's: `treesIn`
+    for the window's stamps, a GLSL candidate for the far field's). Its GLSL goes only into the world's own small passes (fill, diff, far build), after the prelude and nothing
+    else, so the window still draws with the box's big programs. Its uniform objects are shared by all of them;
+    `prepare` runs with the window's background compile (`whenReady`), which then refreshes their values, and the
+    world loads once both are done. `dispose` runs with the window's; the old window's materials are retired
+    until the new one has claimed their programs, so a scene switch compiles only the new scene's passes.
+  - Its far field is built from `sceneCell` progressively (`world/far.js sceneBuild`): the window's region from
+    its state at once, then the rest in chunks of 16×16 brick columns, one a frame, nearest the window first (about
+    four seconds for the whole world at 60 fps, the ground around the window in the first few frames; each draw is
+    small; a scene with cheap cells sets `farChunksPerFrame`: the island 64, 4 frames). A chunk is two passes:
+    `farSceneCellsFrag` evaluates `sceneCell` once per cell of its columns and the two around them that its bricks'
+    cubes reach (an 816×768 half-float atlas of (id, °C)), and `farSceneFrag` summarizes its bricks from those
+    cells exactly as `farWinFrag` does from the window's state, joining a scene's trees (its tree map and bands,
+    placed when the build starts) where their bands reach. Brick columns the window has summarized (on load, leaving slabs,
+    sweeps) are left alone (a per-column mask), so its edits win. The view draws what is built so far (the rest
+    reads as empty), and redraws as chunks land; the levels, tops and shadows follow every 8 frames and at the end.
+  - Sea level 0 means no open sea: the far view draws a rock plain beyond the world instead, at the median ground
+    height along the world's edge (the scene's `ground`), so it meets the edge, and inside the world a ray that
+    meets nothing (an empty column down to the world's bottom) ends on the bottom, not on a sea; the GI's rays read
+    rock past the edge instead of sea, and the cloud deck counts its height from the plain.
+  - Not yet: two live windows over the same scene (only tools make them) share its `prepare`d textures, so the
+    first one's `dispose` takes them from the second.
 
 ## Measured (M5, headless Chrome, ANGLE Metal, 128³)
 - Lab step: 2.6 ms with 42% of bricks skipped, 3.75 ms with none skipped. An empty box still costs 2.1–2.8 ms.

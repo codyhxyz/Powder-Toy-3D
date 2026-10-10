@@ -2,20 +2,25 @@ import { prelude, stateOutGLSL, copyThroughMain } from './common.js';
 import { materialsGLSL } from '../gfx/materials.js';
 import { coreGLSL } from './gfx/core.js';
 
-// GPU passes for the gun's ballistic rounds (src/pov/ballistics.js).
+// GPU passes for the guns' ballistic rounds (src/pov/ballistics.js).
 //
 // A round flies outside the sim, on the CPU, with real ballistics. Each frame
 // traceFrag marches the stretch of path it will cover next through the grid,
 // one fragment per round, and the CPU reads the answers back a frame or two
-// later. Where a round strikes matter, handoffFrag turns it into a SCRAP cell
-// in front of what it struck, and from then on the engine owns it.
+// later. Where a round strikes matter, strikeFrag spends its energy on what it
+// meets: it breaks and shoves cells, and adds none.
 //
 // Units: grid cells, cells/step for the sim's velocities.
 
 export const TRACE = {
   ROUNDS: 16,        // texels across the trace target: rounds traced per pass
   ROWS: 3,           // texel rows per round (see traceFrag's output)
-  HANDOFF_WALK: 4,   // cells the handoff walks back from the struck face looking for air
+};
+// A round's strike (strikeFrag):
+export const STRIKE = {
+  DEPTH_MAX: 64,     // cells: the longest path a strike walks (the most any gun's round goes through)
+  CHIP_MAX: 0.5,     // cells/step: fastest the debris of a cell a round breaks flies on
+  DRAG: 1,           // energy a round loses per cell of powder or liquid, per unit of its DENS (water: 10)
 };
 // Face codes are axis * 2 + (1 if the ray steps +axis), as the pick pass's; the
 // face's normal is minus that step. The floor is hit stepping down y.
@@ -116,56 +121,75 @@ void main() {
 }
 `;
 
-// Hand a round to the sim: write one SCRAP cell, at uVel, into the first air
-// cell (a gas cell if no air is in reach) found walking back along −uDir from
-// the struck face's entry point uEntry: at most HANDOFF_WALK cells, and none
-// that starts more than uReach cells back (where the round left the muzzle:
-// the cells behind it are the shooter's). The walk re-reads the state this pass sees, so
-// the slug never lands on matter that moved in since the trace; if the walk
-// finds no room the slug is dropped (the pass changes nothing). Every
-// fragment in the walk's bounding box (uLo..uHi) runs the same walk, so they
-// agree on the one cell that takes the slug.
-export const handoffFrag = (g) => /* glsl */ `
+// A round strikes: from the struck face's entry point uEntry it walks on along
+// uDir (a DDA, as the trace) for up to uDepth cells, spending its energy
+// uEnergy (the sim's kinetic energy units, as HARD) cell by cell. That is the
+// engine's projectile rule (react.js): every breakable solid a projectile
+// breaks costs it that solid's hardness.
+//   breakable solid, energy ≥ its hardness: breaks into its debris in place
+//     (only the element changes), which flies on along uDir with the energy
+//     left (CHIP_MAX at most); the round pays the hardness
+//   any other solid: the round stops there
+//   powder or liquid: shoved along uDir; the round pays DENS · DRAG
+//   air or gas: free
+// Nothing is added to the world: each change turns a cell into its own debris
+// or gives it a velocity. The walk re-reads the state this pass sees, so it
+// meets whatever moved in since the trace. Every fragment near the path (in
+// uLo..uHi and within a cell of the line) runs the same walk and changes only
+// its own cell, so they agree.
+export const strikeFrag = (g) => /* glsl */ `
 ${prelude(g)}
-#define HANDOFF_WALK ${TRACE.HANDOFF_WALK}
-#define HANDOFF_NUDGE 1e-3   // cells: the walk starts this far back from the entry point, in the cell before the face
+#define STRIKE_DEPTH_MAX ${STRIKE.DEPTH_MAX}
+#define STRIKE_CHIP_MAX ${f(STRIKE.CHIP_MAX)}
+#define STRIKE_DRAG ${f(STRIKE.DRAG)}
+#define STRIKE_NUDGE 1e-3   // cells: the walk starts this far past the entry point, inside the struck cell
+#define STRIKE_NEAR 1.0     // cells from the path's line a fragment must be within to be on it
 ${stateOutGLSL}
-uniform vec3 uEntry;   // grid cells
-uniform vec3 uDir;     // unit heading of the round
-uniform vec3 uVel;     // cells/step, the slug's velocity
-uniform float uReach;  // cells back from uEntry the walk may enter a cell at
-uniform vec3 uLo;      // the walk's bounding box, in cells
+uniform vec3 uEntry;    // grid cells
+uniform vec3 uDir;      // unit heading of the round
+uniform float uEnergy;  // the round's energy at the face
+uniform float uDepth;   // cells the walk goes at most (≤ STRIKE_DEPTH_MAX)
+uniform vec3 uLo;       // the walk's bounding box, in cells
 uniform vec3 uHi;
 
-int idAt(ivec3 c) { return eid(fetchA(c)); }
-
-void handoff(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
+void strike(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
   vec3 pc = vec3(p);
   if (any(lessThan(pc, uLo)) || any(greaterThan(pc, uHi))) return;
+  vec3 d = pc + 0.5 - uEntry;
+  if (length(d - dot(d, uDir) * uDir) > STRIKE_NEAR) return;
 
-  // walk back: a DDA from just before the entry point along -uDir
-  vec3 rd = -uDir;
-  rd = vec3(abs(rd.x) < 1e-6 ? 1e-6 : rd.x, abs(rd.y) < 1e-6 ? 1e-6 : rd.y, abs(rd.z) < 1e-6 ? 1e-6 : rd.z);
-  vec3 ro = uEntry + rd * HANDOFF_NUDGE;
+  vec3 rd = vec3(abs(uDir.x) < 1e-6 ? 1e-6 : uDir.x, abs(uDir.y) < 1e-6 ? 1e-6 : uDir.y, abs(uDir.z) < 1e-6 ? 1e-6 : uDir.z);
+  vec3 ro = uEntry + rd * STRIKE_NUDGE;
   ivec3 istp = ivec3(sign(rd));
   vec3 tDelta = abs(1.0 / rd);
   ivec3 c = ivec3(floor(ro));
   vec3 tMax = (vec3(c) + step(0.0, rd) - ro) / rd;
-  ivec3 air = ivec3(-1), gas = ivec3(-1);
-  float tEnter = 0.0;
-  for (int k = 0; k < HANDOFF_WALK; k++) {
-    if (tEnter > uReach || !inGrid(c)) break;
-    int id = idAt(c);
-    if (id == E_EMPTY) { air = c; break; }
-    if (KIND[id] == K_GAS && gas.x < 0) gas = c;
+  float E = uEnergy, tEnter = 0.0;
+  for (int k = 0; k < STRIKE_DEPTH_MAX; k++) {
+    if (tEnter > uDepth || E <= 0.0 || !inGrid(c)) return;
+    int id = c == p ? eid(a) : eid(fetchA(c));
+    int kind = KIND[id];
+    if (c == p) {
+      if (kind == K_SOLID) {
+        int into = BREAKINTO[id];
+        if (into < 0 || E < HARD[id]) return;
+        oA.x = float(into);
+        oB.xyz = uDir * min(sqrt(2.0 * (E - HARD[id]) / DENS[into]), STRIKE_CHIP_MAX);
+      } else if (kind == K_POWDER || kind == K_LIQUID) {
+        oB.xyz = clamp(b.xyz + uDir * min(sqrt(2.0 * E / DENS[id]), V_MAX), -V_MAX, V_MAX);
+      }
+      return;
+    }
+    if (kind == K_SOLID) {
+      if (BREAKINTO[id] < 0 || E < HARD[id]) return;
+      E -= HARD[id];
+    } else if (kind == K_POWDER || kind == K_LIQUID) {
+      E -= DENS[id] * STRIKE_DRAG;
+    }
     int ax = tMax.x <= tMax.y && tMax.x <= tMax.z ? 0 : (tMax.y <= tMax.z ? 1 : 2);
     tEnter = tMax[ax];
     c[ax] += istp[ax];
     tMax[ax] += tDelta[ax];
   }
-  ivec3 slot = air.x >= 0 ? air : gas;
-  if (slot != p) return;
-  oA = vec4(float(E_SCRAP), AMBIENT, SPAWNLIFE[E_SCRAP], fract(a.w));
-  oB = vec4(uVel, b.w);
 }
-${copyThroughMain('handoff')}`;
+${copyThroughMain('strike')}`;

@@ -6,7 +6,7 @@ import {
 } from 'yuka';
 import { ELEMENTS, E, K } from '../../elements.js';
 import { HAND_REACH, BODY_HEIGHT, EYE_HEIGHT } from '../constants.js';
-import { AXE, PICK, TORCH, PHYS } from '../../shaders/povTools.js';
+import { AXE, PICK, FLAMER, PHYS } from '../../shaders/povTools.js';
 import { ROUND_GRAVITY, gravityScale } from '../ballistics.js';
 import { THROW_SPEED } from '../tools/bomb.tool.js';
 
@@ -59,7 +59,7 @@ const AXE_WINDUP = 0.6;              // s it faces the target, axe up, before a 
 const AXE_COOLDOWN = 0.5;            // s after a blow
 const PICK_COOLDOWN = 0.7;           // s after a pickaxe blow (its refire is 0.6)
 const AXE_RANGE = Math.min(HAND_REACH, 6);   // cells: it swings from closer than the hand's reach
-const TORCH_RANGE = 1.5 + TORCH.LENGTH;      // cells: nozzle reach + flame
+const TORCH_RANGE = 1.5 + FLAMER.LENGTH;      // cells: nozzle reach + flame
 const BOMB_MIN = 10;                 // cells: closer than this a bomb would hurt itself
 const BOMB_COOLDOWN = 7;             // s between bombs
 const BOMB_ERROR = 0.12;             // its throw's spread: σ of the landing point, as a share of the distance
@@ -270,12 +270,13 @@ class ClimbEvaluator extends GoalEvaluator {
   }
   setGoal(a) { if (!(a.brain.currentSubgoal() instanceof ClimbGoal)) { a.brain.clearSubgoals(); a.brain.addSubgoal(new ClimbGoal(a)); } }
 }
-// Hurt and under fire: wall itself off.
+// Hurt and under fire: wall itself off, the sooner if the target holds something that reaches it.
+const RANGED = new Set(['GUN', 'SMG', 'SNIPER', 'BOMB', 'ROCKET']);
 class CoverEvaluator extends GoalEvaluator {
   calculateDesirability(a) {
     const b = a.npc.body;
     if (!a.sees || b.health > COVER_HEALTH || !a.ready('COVER') || a.npc.packCells() < 2 * BLOCK_CELLS) return 0;
-    return a.target.holding === 'GUN' || a.target.holding === 'BOMB' ? 0.8 : 0.5;
+    return RANGED.has(a.target.holding) ? 0.8 : 0.5;
   }
   setGoal(a) { if (!(a.brain.currentSubgoal() instanceof CoverGoal)) { a.brain.clearSubgoals(); a.brain.addSubgoal(new CoverGoal(a)); } }
 }
