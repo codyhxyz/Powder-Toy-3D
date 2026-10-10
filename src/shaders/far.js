@@ -91,6 +91,11 @@ function sliceCols(n, w, h) {
   return root;
 }
 
+// The one world size (app.js WORLDS). Its far layout is compiled into the
+// box's view, shadow and GI programs too, their far parts off (uFar): a box and
+// a world then share every big program, so switching to a world compiles none.
+export const WORLD_SIZE = [1024, 128, 1024];
+
 // The far grid's layout for a world of `size` cells: bricks, the atlas, the
 // occupancy levels and the brick-column maps.
 export function farLayout(size) {

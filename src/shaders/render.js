@@ -92,7 +92,9 @@ const BEND_EXTRA_STEPS = 128;
 
 // haze: GLSL defining farHazePremul(col, alpha, eye, p), the air between the
 // eye and the hit (a massive world: shaders/far.js, the same as its far
-// field's, so the window and what lies past it fade alike); none otherwise.
+// field's, so the window and what lies past it fade alike), applied while
+// uFar is on. The app compiles it into the box's view too, off: a box and a
+// world then share the program, and switching to a world compiles nothing.
 export const volumeFrag = (g, haze = '') => {
   // DDA shared by the data views. `body` runs for every voxel the ray visits
   // inside a brick holding matter, with cell, a (state A), id, n (entry face
@@ -182,7 +184,8 @@ ${lib(g)}
 ${surfaceGLSL}
 ${liquidGLSL}
 ${liquidDetailGLSL}
-${mediaGLSL}${haze}
+${mediaGLSL}${haze}${haze && `
+uniform bool uFar;   // a world's far field is drawn: the window takes its haze`}
 uniform vec3 uCam;
 uniform mat4 projectionMatrix;
 uniform mat4 modelMatrix;
@@ -473,7 +476,7 @@ vec3 flowTint(vec3 still, vec3 v, float w) {
 #define FLOW_STROKE_TAIL 0.2       // brightness at the tail ...
 #define FLOW_STROKE_HEAD_GAIN 0.8  // ... plus this at the head
 float brickStroke(ivec3 bc, vec3 ro, vec3 rd, float ta, float tb, bool check, out vec3 v, out float gt) {
-  ivec3 wb = WINDOWED != 0 ? bc + uOrigin / BS : bc;   // the jitter is the world brick's
+  ivec3 wb = bc + uOrigin / BS;   // the jitter is the world brick's
   uint hs = pcg(uint(wb.x) | uint(wb.y) << 10 | uint(wb.z) << 20);
   vec3 cc = vec3(bc * BS) + 0.5 * float(BS) + (vec3(uvec3(hs, hs >> 8, hs >> 16) & 255u) * (1.0 / 255.0) - 0.5);
   ivec3 c = ivec3(floor(cc));
@@ -938,7 +941,7 @@ void main() {
   float alpha = 1.0 - dot(trans, vec3(1.0 / 3.0));
   // linear HDR radiance, premultiplied; tone mapping happens in post (src/gfx/post.js)
   gl_FragColor = vec4(col * (alpha > 0.0 ? 1.0 : 0.0), alpha);${haze && `
-  gl_FragColor.rgb = farHazePremul(gl_FragColor.rgb, alpha, uCam, hitPos);`}
+  if (uFar) gl_FragColor.rgb = farHazePremul(gl_FragColor.rgb, alpha, uCam, hitPos);`}
 
   vec4 clip = projectionMatrix * viewMatrix * modelMatrix * vec4(hitPos, 1.0);
   gl_FragDepth = clamp(clip.z / clip.w * 0.5 + 0.5, 0.0, 1.0);
@@ -1007,10 +1010,11 @@ void main() {
 // the camera rays, so shadows line up with what is drawn). Liquids, glass and
 // media add optical depth. casters: GLSL defining farCasterDepth(ro, rd, t0,
 // t1), the depth along the texel's ray where the world outside the window
-// starts to shade it (a massive world's far field: shaders/far.js); none for
-// a grid that is its whole world.
+// starts to shade it (a massive world's far field: shaders/far.js), applied
+// while uFar is on (compiled into the box's pass too, off, like the view's haze).
 export const shadowFrag = (g, casters = '') => /* glsl */ `
-${lib(g)}${casters}
+${lib(g)}${casters}${casters && `
+uniform bool uFar;   // a world's far field is drawn: it shades the window`}
 // Texel encoding, decoded by sunShadow (gfx/lighting.js, which defines
 // SHADOW_TINT_ID_SCALE): w = tint element id * SHADOW_TINT_ID_SCALE + optical
 // depth (capped below it).
@@ -1098,7 +1102,7 @@ void main() {
     tMax[ax] += tDelta[ax];
   }
   if (!hit && rd.y < 0.0) oC.x = ro.y / -rd.y; // floor${casters && `
-  oC.x = min(oC.x, farCasterDepth(ro, rd, t, bh.y));   // shaded from outside the window`}
+  if (uFar) oC.x = min(oC.x, farCasterDepth(ro, rd, t, bh.y));   // shaded from outside the window`}
   oC.w = float(tid) * SHADOW_TINT_ID_SCALE + min(tau, SHADOW_TAU_MAX);
 }
 `;

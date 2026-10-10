@@ -9,6 +9,7 @@ import { loadIsland, releaseGenerator } from './world/gpu.js';
 import { WorldWindow, WIN_STEP } from './world/window.js';
 import { heightAt } from './world/generator.js';
 import { FarField } from './world/far.js';
+import { farHazeGLSL, farCastersGLSL, farLayout, WORLD_SIZE } from './shaders/far.js';
 import { quadVert } from './shaders/common.js';
 import { createBrushCursor } from './brush.js';
 import { createCameraRig } from './camera.js';
@@ -21,6 +22,7 @@ import { inkFor, luminance } from './ui/dom.js';
 import { gfx, gfxUniforms, updateGfxUniforms } from './gfx/uniforms.js';
 import { DETAIL, settingKey, detailDefaults, detailDefines, detailRows } from './gfx/detail.js';
 import { createDetailGate } from './gfx/detailGate.js';
+import { claimPrograms } from './gfx/programs.js';
 import { createPost, UPSCALE } from './gfx/post.js';
 import { createPacer, settleFrames, sceneKey, createCapCheck, CAP_IDLE_MS } from './gfx/pacing.js';
 import { CHANNELS, MEDIA } from './gfx/materials.js';
@@ -50,7 +52,7 @@ const SIZES = { '64': [64, 64, 64], '96': [96, 96, 96], '128': [128, 128, 128], 
 // (the POV body, else the orbit target). The Grid size row's World. Its peaks
 // are bare rock (snow: false): the air is 20 °C everywhere, so snow caps would
 // melt, and the window keeps every brick that leaves it changed.
-const WORLDS = { world: { win: [128, 128, 128], size: [1024, 128, 1024], snow: false } };
+const WORLDS = { world: { win: [128, 128, 128], size: WORLD_SIZE, snow: false } };
 // God view over a world: the orbit target on the ground, the camera this far
 // off it along the box view's direction (scene units), so the window fills
 // about as much of the view as a box does
@@ -195,16 +197,19 @@ let pickPending = false;
 function build() {
   pov?.exit(true);   // the body lives in the old grid
   pov?.worldReplaced();
+  // The old grid's materials, disposed of only once the new grid's have
+  // claimed their programs (the end of build): every program both use carries
+  // over instead of compiling again (gfx/programs.js). A box and a world share
+  // all of them but the world's own passes, so a switch compiles nothing big.
+  const retired = [];
   if (sim) {
-    releaseGenerator(sim);   // the Island scene's, made for this grid
-    sim.dispose();
+    releaseGenerator(sim, retired);   // the Island scene's, made for this grid
+    sim.dispose(retired);
     scene.remove(volume, edges);
     volume.geometry.dispose();
-    volume.material.dispose();
+    retired.push(volume.material, pickMat, shadowMat);
     edges.geometry.dispose();
     edges.material.dispose();
-    pickMat.dispose();
-    shadowMat.dispose();
     shadowTarget.dispose();
   }
   worldMode = WORLDS[settings.size] ?? null;
@@ -229,15 +234,19 @@ function build() {
 
   const geo = new THREE.BoxGeometry(nx, ny, nz);
   geo.translate(nx / 2, ny / 2, nz / 2);
+  // The view, shadow and GI programs hold a world's far-field parts for every
+  // grid, off until a far field attaches (world/far.js attach): a box and a
+  // world share all of them, so switching between them compiles nothing big.
   volume = new THREE.Mesh(geo, new THREE.ShaderMaterial({
     vertexShader: volumeVert,
-    fragmentShader: volumeFrag(sim.g),
+    fragmentShader: volumeFrag(sim.g, farHazeGLSL),
     uniforms: {
       tA: { value: null }, tB: { value: null }, tBrick: { value: null }, tLight: { value: null },
       uCam: { value: new THREE.Vector3() },
       uSun: { value: SUN }, tShadow: { value: null }, uShadowRes: { value: 0 },
       uView: { value: 0 }, uShadows: { value: true }, uTime: { value: 0 }, uLightGain: { value: GLOW_GAIN },
       uOrigin: sim.originUniform,   // the window's place in the world (the sim passes get it from sim.run)
+      uFar: { value: false },
       ...gfxUniforms,
     },
     side: THREE.BackSide,
@@ -281,10 +290,11 @@ function build() {
     name: 'shadow',
     glslVersion: THREE.GLSL3,
     vertexShader: quadVert,
-    fragmentShader: shadowFrag(sim.g),
+    fragmentShader: shadowFrag(sim.g, farCastersGLSL(farLayout(WORLD_SIZE))),
     uniforms: {
       tA: { value: null }, tBrick: { value: null }, tLight: { value: null },
       uSun: { value: SUN }, tShadow: { value: null }, uShadowRes: { value: shadowRes },
+      uFar: { value: false }, tFarShadow: { value: null },
       ...gfxUniforms,
     },
     depthTest: false,
@@ -301,7 +311,10 @@ function build() {
   rig.setMaxSpeed(win ? WORLD_CAM_SPEED_MAX : Infinity);
   rig.reset(true);
   if (signs) { signs.clear(); signs.rebuild(); }
-  loadPreset(settings.preset, false);
+  claimPrograms(renderer, [...sim.materials(), pickMat, shadowMat], { lights: scene });
+  claimPrograms(renderer, [volume.material], { geometry: volume.geometry, lights: scene });
+  loadPreset(settings.preset, false);   // (the Island's generator claims its programs as it runs; a world's start compiling)
+  retired.forEach((m) => m.dispose());
 }
 
 // World: the window's first origin (world cells). The island's middle is bare
@@ -395,9 +408,18 @@ function loadPreset(name, undoable = true) {
   if (undoable && !win) sim.snapshot();
   settings.preset = name;
   if (win) {
-    // a world has one scene, its own: loading starts it over (and can't be undone)
-    win.load(worldStart());
-    placeVolume();
+    // A world has one scene, its own: loading starts it over (and can't be
+    // undone). Its passes compile in the background first (the first time):
+    // till then the window is empty air, and the world fills in when they're done.
+    const w = win, epoch = w.epoch;
+    if (!w.loaded) sim.clear();
+    w.whenReady().then(() => {
+      if (win !== w || w.epoch !== epoch) return;   // rebuilt or loaded meanwhile (load bumps the epoch)
+      w.load(worldStart());
+      placeVolume();
+      post.reset();
+      pov?.worldReplaced();
+    }, (err) => console.error('world: its passes failed to compile', err));
     toolbar.setUndoEnabled(false);
   } else if (name === 'empty') sim.clear();
   else if (name === 'island') loadIsland(sim, { seed: worldSeed });
