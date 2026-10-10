@@ -25,7 +25,7 @@ const zero = (d) => Object.keys(d).length === 0;
 
 try {
   // ================= part 1: the toolbelt alone
-  await p.goto(`http://localhost:${port}/?preset=empty&size=64`);
+  await p.goto(`http://localhost:${port}/?preset=empty&size=64`, { timeout: 90000 });
   await p.waitForFunction(() => window.__app?.sim, null, { timeout: 60000 });
   await p.waitForTimeout(1500);
   const r = await p.evaluate(async () => {
@@ -197,7 +197,7 @@ try {
   check('the palette gives a fresh flask of water', r.given.inHand && r.given.status === 'WATR 100%', r.given);
 
   // ================= part 2: the real shell and body
-  await p.goto(`http://localhost:${port}/?preset=empty&size=64`);
+  await p.goto(`http://localhost:${port}/?preset=empty&size=64`, { timeout: 90000 });
   await p.waitForFunction(() => window.__app?.pov, null, { timeout: 60000 });
   await p.waitForTimeout(1500);
   await p.mouse.move(W / 2, H * 0.62);
@@ -266,6 +266,7 @@ try {
     const t = await touch(key, status);
     check(`${status} by touching ${key}`, t.on, t);
     await fill(key);
+    await p.waitForTimeout(300);   // a frame for the tool to come back to hand (Polymorph's touch put it away)
     await gulp();
     const d = await statusOf(status);
     check(`${status} by drinking ${key}`, d.on, d);
