@@ -3,7 +3,8 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import './ui/styles.css';
 import { Simulation } from './sim.js';
 import { volumeVert, volumeFrag, pickFrag, shadowFrag } from './shaders/render.js';
-import { ELEMENTS, E, toolById, isBuild, isSpawnerTool, isGearTool } from './elements.js';
+import { ELEMENTS, E, toolById, isBuild, isSpawnerTool, isGearTool, LIGHTNING_TOOL } from './elements.js';
+import { createLightning } from './lightning.js';
 import { Spawners, SPAWNER, feetOnHit } from './spawners.js';
 import { PerkOrbs } from './perkOrbs.js';
 import { buildPreset, ARENA_PRESETS } from './presets.js';
@@ -174,6 +175,8 @@ renderer.setPixelRatio(pixelRatio);
 renderer.setSize(innerWidth, innerHeight);
 renderer.autoClear = false;
 document.getElementById('app').appendChild(renderer.domElement);
+// the Lightning tool's bolts and storms' (src/lightning.js)
+const lightning = createLightning({ renderer });
 // HDR post: TAA, bloom, AgX tone mapping (src/gfx/post.js)
 const post = createPost(renderer, { pixScale: gfxUniforms.uPixScale });
 
@@ -1010,6 +1013,16 @@ function press(e) {
     else if (!signs) hud.toast('Signs are still loading');
     return;
   }
+  if (settings.tool === LIGHTNING_TOOL) {
+    if (mp.guard()) return;
+    if (!hover.valid) { hud.toast('Click a surface to strike it'); return; }
+    sim.snapshot();
+    toolbar.setUndoEnabled(true);
+    lightning.strikeTool(sim, hover, settings.radius);
+    pacer.wake();
+    hud.dismissHint();
+    return;
+  }
   if (isSpawnerTool(settings.tool)) {
     if (mp.guard()) return;
     if (!hover.valid) { hud.toast('Click a surface to set it on'); return; }
@@ -1328,6 +1341,7 @@ function frame(now) {
   const stepping = !mp.isGuest && (!settings.paused || stepOnce);
   if (stepping) {
     for (let i = 0; i < settings.steps; i++) sim.step();
+    lightning.update(sim);   // storms: charged cloud strikes by itself (src/lightning.js)
     if (DAY.running) day.clock += settings.steps;
     stepOnce = false;
   } else if (mp.isGuest && DAY.running) day.clock += settings.steps;   // guests don't step: keep the day going at their own rate
@@ -1474,6 +1488,7 @@ try {
     get pov() { return pov; },
     get spawners() { return spawners; },
     get perkOrbs() { return perkOrbs; },
+    lightning,     // the Lightning tool's and storms' bolts (src/lightning.js)
     // the loaded arena's layout (spawns, flags, hills, siege core, shrines, vehicles: arenas/damValley.js), else null
     get arena() { return arenaLayout; },
     get win() { return win; },

@@ -11,7 +11,7 @@ export const PHYS = {
   L_FUSE: 80,                // latent heat of melting/freezing, cap·°C
   L_BOIL: 540,               // latent heat of boiling/condensing, cap·°C
   CELL_TEMP_MIN: -273.15,
-  CELL_TEMP_MAX: 6000,
+  CELL_TEMP_MAX: 10000,      // plasma's 10,000 °C (elements.js PLASMA, TPT's MAX_TEMP)
   // Each face moves at most this share of the energy that would bring the
   // smaller-capacity cell of the pair to the other's temperature, per step:
   // |flux| ≤ |ΔT|·min(Ca, Cb)·COND_FLUX_SHARE. With one share per face (1/6),
@@ -108,6 +108,24 @@ export const PHYS = {
   MAGNUS_B: 243.04,          // (°C; Alduchov & Eskridge 1996): warm mist vanishes fast, cold fog lingers
   CLOUD_EVAP_NB: 3,          // air neighbours a cell can have and stay (air inside and along a cloud is saturated: wisps and protrusions go)
   CLOUD_EVAP_COOL: 1,        // °C the evaporating cell's air cools by (the latent heat of a real cloud's ~0.5 g/m³)
+  // Storm charge (react.js; strikes: src/bolt.js STORM). A thundercloud
+  // charges where graupel falls through supercooled droplets held up by the
+  // updraft: each rebounding collision moves ~10-100 fC between them
+  // (non-inductive charging: Takahashi 1978, J. Atmos. Sci. 35; Saunders et
+  // al. 1991), so the charging rate goes as the collision rate, the closing
+  // speed of ice and droplet. Here: SNOW (the graupel) next to freezing CLOUD
+  // (a cloud cell at 0 °C banking its latent heat toward snow: the mixed-phase
+  // region), counted along each face as their closing speed, the cloud's own
+  // updraft included. A cloud cell's charge is a whole count in its ctype.
+  CHARGE_T_MAX: 0,           // °C: only cloud this cold charges (freezing cloud is held at 0 °C)
+  CHARGE_RATE: 0.5,          // units of charge per step per cell/step of closing speed with a snow neighbour (as a chance)
+  // Charge at which a cell's field breaks the air down and it strikes. Air
+  // breaks down at ~3 MV/m dry, but a cloud's field reaches only ~0.1-0.4
+  // MV/m: lightning starts where ice crystals bring it down locally
+  // (Rakov & Uman, Lightning, 2003). A count that ~100 grains of snow
+  // falling past one cloud cell build.
+  CHARGE_BREAKDOWN: 40,
+  CHARGE_MAX: 60,            // ctype cap (the id-width audit gives ctype 8 bits)
   PLANT_GROW: 0.006,         // chance per step per neighbouring plant that water becomes plant
   LAVA_FREEZE_BELOW: 150,    // °C under the melting point where lava sets
   FIRE_BURN: 0.02,           // flame life lost per step: BURN + BURN_SPREAD·rnd
