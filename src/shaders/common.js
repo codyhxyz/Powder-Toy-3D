@@ -1,4 +1,4 @@
-import { elementsGLSL, ELEMENTS, K } from '../elements.js';
+import { elementsGLSL, ELEMENTS, K, REACTIONS } from '../elements.js';
 import { electricityGLSL } from '../electricity.js';
 import { incandescenceGLSL } from '../gfx/incandescence.js';
 import { physicsGLSL, PHYS } from '../physics.js';
@@ -66,7 +66,9 @@ export const FLAG = { SELF: 1, NEAR: 2, MATTER: 4, DIRTY: 8 };
 // is that light, an air cell counts only as air there, and air that warms,
 // cools or swaps with other air changes no neighbour's test.
 const AIR_DENS_MAX = 1 - PHYS.AIR_DENS_LO;
-const AIR_T_IN_NEAR = ELEMENTS.some((e) => (e.kind === K.POWDER || e.kind === K.LIQUID) && e.dens <= AIR_DENS_MAX);
+// A reaction with air (elements.js REACTIONS naming EMPTY) reads its temperature too (its gate).
+const AIR_T_IN_NEAR = ELEMENTS.some((e) => (e.kind === K.POWDER || e.kind === K.LIQUID) && e.dens <= AIR_DENS_MAX)
+  || REACTIONS.some((r) => r.a === 'EMPTY' || r.b === 'EMPTY');
 
 export function prelude(g) {
   return /* glsl */ `
@@ -227,6 +229,25 @@ float densityOf(int id, float T) {
 bool isGasLike(int id) { return KIND[id] == K_GAS || id == E_EMPTY; }
 bool isFluid(int id) { return KIND[id] == K_LIQUID || isGasLike(id); }
 bool movable(int id) { return KIND[id] != K_SOLID; }
+// The kinetic energy a hit between two cells closing at speed u dissipates:
+// ½·μ·u², μ their reduced mass; against a solid (jSolid), the mover's mass.
+float hitKE(float mi, float mj, bool jSolid, float u) {
+  return 0.5 * (jSolid ? mi : mi * mj / (mi + mj)) * u * u;
+}
+// Would a hit with kinetic energy ke between cells of elements i and j set
+// off an explosive on either side (elements.js blast.shock)? Cells of one
+// element don't set each other off: a pool's own flow isn't a hit.
+bool shockActs(int i, int j, float ke) {
+  return i != j && ((BLAST[i].z > 0.0 && ke >= BLAST[i].z) || (BLAST[j].z > 0.0 && ke >= BLAST[j].z));
+}
+// Does a hit carrying kinetic energy ke, by a cell of element i on a solid
+// of element j, do anything: break j (elements.js hard, breakInto) or set off
+// an explosive? The move pass leaves such a projectile unbounced (and a
+// shockActs hit between two loose cells uncollided), so the react pass sees
+// the hit (react.js).
+bool impactActs(int i, int j, float ke) {
+  return (BREAKINTO[j] >= 0 && ke >= HARD[j]) || shockActs(i, j, ke);
+}
 
 // Can a particle (id a, density da) move into the place of (b, db), travelling
 // in direction dir (0 = down, 1 = up, 2 = sideways)? The move pass's rule;
@@ -283,6 +304,11 @@ bool inertSelf(vec4 a, vec4 b) {
   if (k != K_SOLID && (b.xyz != vec3(0.0) || abs(b.w) > REST_P)) return false;
   if (MELT[id] > 0.0 && T > MELT[id]) return false;
   if (IGNITE[id] > 0.0 && T >= IGNITE[id]) return false;   // burning, or hot enough to light the air
+  // a phase change from the table (elements.js cold/hot): past its point, at
+  // it with no latent heat to bank (instant), or with some banked
+  if (INTO[id][PH_HOT] >= 0 && (T > HOT[id].x || (T == HOT[id].x && HOT[id].y == 0.0))) return false;
+  if (INTO[id][PH_COLD] >= 0 && (T < COLD[id].x || (T == COLD[id].x && COLD[id].y == 0.0))) return false;
+  if (LIFE_BANK[id] && (HOT[id].y > 0.0 || COLD[id].y > 0.0) && a.z != 0.0) return false;
   // latent heat: water and ice at rest have nothing banked and sit within their phase
   if (id == E_WATER) return a.z == 0.0 && T >= 0.0 && T <= 100.0;
   if (id == E_ICE || id == E_SNOW) return a.z == 0.0 && T <= 0.0;

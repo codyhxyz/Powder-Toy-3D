@@ -5,7 +5,7 @@ import { BODY_HEIGHT, BODY_WIDTH } from './pov/constants.js';
 //
 //   enemy   in first person, keeps one NPC (pov/npc.js) alive here: it appears
 //           here, and comes back here a few seconds after it dies
-//   player  where F drops you in (the one nearest the cursor) and where you respawn
+//   player  where V drops you in (the one nearest the cursor) and where you respawn
 //   jeep, hoverbike
 //           in first person, keeps one vehicle (pov/vehicles/) parked here: it
 //           comes back here a few seconds after it's destroyed

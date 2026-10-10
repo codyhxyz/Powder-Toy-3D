@@ -7,6 +7,13 @@ import { electricReactGLSL } from '../electricity.js';
 // can't break anything, which lets almost every cell skip the impact check.
 const HARD_MIN = Math.min(...ELEMENTS.filter((e) => e.breakInto).map((e) => e.hard));
 
+// Reactions pair each cell with one face neighbour per step (see the reactions
+// block): along one of the 3 axes, toward + or − by a parity, so a given
+// touching pair is partners once every RX_PAIRINGS steps, and a reaction's
+// chance per step becomes chance·RX_PAIRINGS per pairing.
+export const RX_PAIRINGS = 3 * 2;
+const RX_SALT = 0x52;   // keeps a pair's random stream apart from the cells' own (seed3 salt)
+
 // React pass: everything that only changes a cell in place, using its six
 // face neighbours.
 //   - Heat conduction. Flux between two cells uses min(cond_a, cond_b), so it
@@ -21,8 +28,15 @@ const HARD_MIN = Math.min(...ELEMENTS.filter((e) => e.breakInto).map((e) => e.ha
 //     surface and into cloud in open air; cloud boils back to steam, freezes
 //     into snow, rains where it is thick and evaporates at its edges.
 //   - Combustion: flammables above their ignition temperature that touch air
-//     burn fuel, release heat and spawn flames into adjacent air; with a flame
-//     touching them, from their flash point.
+//     burn fuel, release heat and spawn flames into adjacent air. Oxygen
+//     feeds them: they burn faster and hotter by the oxygen in the gas around
+//     them (oxyShare, oxyFlameT), and flames spread into it as into air. A
+//     flame burning in oxygen keeps E_OXYGEN as its ctype, and counts as
+//     oxygen to the fuel it burns.
+//     Carbon dioxide smothers them: where it makes up CO2_SMOTHER of the gas
+//     around, flames go out, fuel stops burning and air doesn't catch.
+//     With a flame touching it, a fuel burns from its flash point (elements.js
+//     flash), and air touching a flame and a fuel past its flash point catches.
 //   - Growth: plant grows into water; moss creeps over damp bare rock and
 //     fungus rots damp wood, sawdust and plant (activity.js growers). Each
 //     moss or fungus cell first updates its damp (its ctype).
@@ -48,6 +62,13 @@ const HARD_MIN = Math.min(...ELEMENTS.filter((e) => e.breakInto).map((e) => e.ha
 //     momentum and the fracture work as heat. The move pass that runs before
 //     this one leaves a projectile that can break what it's touching unbounced
 //     (move.js), so it reaches this check with its velocity intact.
+//   - The shared mechanisms (elements.js; docs/elements.md): phase changes
+//     from the table (cold, hot, with latent heat banked in life as water's
+//     is; crush), reactions between touching pairs (REACTIONS: each cell
+//     pairs with one face neighbour per step and both evaluate one predicate
+//     on this pass's input, so they agree without a race, and a cell reacts
+//     with at most one partner), and explosives (blast: set off by ignite, a
+//     flame's touch, a hit of `shock` kinetic energy, or `crushP` air pressure).
 //   - Electricity (src/electricity.js): sparks hop between conductors, one
 //     face a step, losing what each cell's resistance costs and heating it;
 //     batteries and sensors start them, switches gate them.
@@ -71,6 +92,24 @@ const ivec3 DIRS[6] = ivec3[6](ivec3(1,0,0), ivec3(-1,0,0), ivec3(0,1,0), ivec3(
 // Latent heat bookkeeping. acc is energy banked toward a transition at Tp.
 // rising: transition happens when heated past Tp (melting, boiling).
 #define HARD_MIN ${HARD_MIN.toFixed(1)}   // the softest breakable solid's hardness
+#define RX_PAIRINGS ${RX_PAIRINGS.toFixed(1)}   // steps per cycle of partner choices (RX_PAIRINGS)
+#define RX_SALT ${RX_SALT}u
+
+// The product of an \`into\` (elements.js mechanisms specs): one draw from s
+// when it is a weighted list, none when it is a single element. -1 = SAME.
+int pickOut(int sp, inout uint s) {
+  ivec2 at = SPEC[sp];
+  if (at.y == 1) return int(OUT[at.x].x);
+  float r = rnd(s);
+  for (int k = 0; k < at.y - 1; k++) if (r < OUT[at.x + k].y) return int(OUT[at.x + k].x);
+  return int(OUT[at.x + at.y - 1].x);
+}
+// What a product's ctype is: for LAVA, what it sets back into (of, or the
+// element it came from); nothing for anything else.
+float ctypeOf(int prod, int of, int self) { return prod == E_LAVA ? float(of >= 0 ? of : self) : 0.0; }
+// Air pressure from gas set free: puff volumes (at ambient) per volume, scaled
+// from water flashing to steam (physics.js STEAM_BOIL_PUFF), as fizz is.
+float puffP(float puff) { return STEAM_BOIL_PUFF * puff / STEAM_EXPANSION; }
 
 // Kinetic energy a cell (id, T, v) carries along the unit axis n: ½·ρ·vn², or
 // 0 when it is moving away or can't move.
@@ -100,6 +139,28 @@ float condFlux(int a, float Ta, int b, float Tb) {
   float dT = Tb - Ta;
   float lim = abs(dT) * min(CAP[a], CAP[b]) * COND_FLUX_SHARE;
   return clamp(min(COND[a], COND[b]) * dT, -lim, lim);
+}
+
+// The oxygen in the gas around a cell over air's: 1 in air (flames are burning
+// air), O2_PER_AIR in pure oxygen (physics.js).
+float oxyShare(int nAir, int nOxy) {
+  return nAir + nOxy > 0 ? (float(nAir) + O2_PER_AIR * float(nOxy)) / float(nAir + nOxy) : 1.0;
+}
+// A flame of temperature T (°C) in air burns this hot with that much oxygen
+// (OXY_FLAME_GAIN in kelvin, all oxygen).
+float oxyFlameT(float T, float oxy) {
+  float gain = 1.0 + (OXY_FLAME_GAIN - 1.0) * (oxy - 1.0) / (O2_PER_AIR - 1.0);
+  return (T + KELVIN) * gain - KELVIN;
+}
+
+// Latent heat with no bank (elements.js LIFE_BANK false: the cell's life holds
+// something else): the heat crossing Tp this step goes into the change, which
+// happens with that heat over L as its chance. On average that is the bank.
+bool latentChance(inout float T, float Tp, float C, float L, bool rising, inout uint s) {
+  float e = rising ? (T - Tp) * C : (Tp - T) * C;
+  if (e <= 0.0) return false;
+  T = Tp;
+  return rnd(s) * L < e;
 }
 
 bool latent(inout float T, inout float acc, float Tp, float C, float L, bool rising) {
@@ -184,6 +245,72 @@ void main() {
     for (int i = 0; i < 6; i++) pa[i] = KIND[nid[i]] != K_SOLID ? nb[i].w : 0.0;
     float dP = max(abs(pa[0] - pa[1]), max(abs(pa[2] - pa[3]), abs(pa[4] - pa[5])));
     if (dP > HARD[id] * P_BREAK_PER_HARD) broke = true;
+  }
+
+  // ---- what sets off an explosive or crushes a cell, from this pass's input ----
+  // a hit (elements.js blast.shock): matter and I closing at speed u, a
+  // neighbour running into me or me into it, landing included (the move pass
+  // left it as it was: common.js impactActs, shockActs), with ½·μ·u² of
+  // kinetic energy. Cells of my own element don't count.
+  bool shocked = false;
+  if (BLAST[id].z > 0.0) {
+    float m = densityOf(id, a.y);
+    bool meSolid = KIND[id] == K_SOLID;
+    for (int i = 0; i < 6; i++) {
+      int j = nid[i];
+      float u = dot(b.xyz - nb[i].xyz, vec3(DIRS[i]));
+      if (j == id || isGasLike(j) || u <= 0.0) continue;
+      float mj = densityOf(j, na[i].y);
+      float ke = meSolid ? hitKE(mj, m, true, u) : hitKE(m, mj, KIND[j] == K_SOLID, u);
+      shocked = shocked || ke >= BLAST[id].z;
+    }
+  }
+  // the highest air pressure on me: my own, and my open neighbours' (a solid holds none)
+  float pOn = KIND[id] == K_SOLID ? P_MIN : P0;
+  bool touchAir = false;
+  for (int i = 0; i < 6; i++) {
+    if (KIND[nid[i]] != K_SOLID) pOn = max(pOn, nb[i].w);
+    touchAir = touchAir || nid[i] == E_EMPTY;
+  }
+  // an explosive that needs air (blast.air) goes off only touching it
+  bool blastAir = BLAST_LIT[id].y == 0.0 || touchAir;
+  // set off by a hit or a blast's pressure: an explosive goes off rather than break
+  bool setOff = blastAir && (shocked || (BLAST[id].w > 0.0 && pOn > BLAST[id].w));
+
+  // ---- reactions (elements.js REACTIONS), decided from this pass's input ----
+  // This step every cell's partner is its face neighbour along axis
+  // uFrame % 3: toward + where its world coordinate plus the parity
+  // (uFrame / 3) % 2 is even, else toward −. Partners are mutual, so a cell
+  // reacts with at most one, and both cells of a pair evaluate the same
+  // predicate on the same input, with one random stream seeded at the pair's
+  // base cell: they agree, without a race. A reaction takes precedence over
+  // everything else a cell might do this step (both sides know it; neither
+  // knows the other's breaking or burning).
+  bool reacted = false;
+  int rxOut = id;
+  float rxT = 0.0, rxP = 0.0;
+  if (RX_ANY) {
+    int ax = int(uFrame % 3u), par = int((uFrame / 3u) & 1u);
+    ivec3 w = p + uOrigin;   // world cell: the pairing doesn't depend on where the window is
+    bool base = ((w[ax] + par) & 1) == 0;
+    int k = 2 * ax + (base ? 0 : 1);   // the partner's DIRS index
+    int rx = rxAt(id, nid[k]);
+    if (rx > 0 && inGrid(p + DIRS[k])) {
+      int r = (rx - 1) >> 1;
+      bool isA = ((rx - 1) & 1) == 0;
+      uint ps = seed3(base ? p : p + DIRS[k], uFrame, RX_SALT);
+      if (rxGate(r, a.y, na[k].y) && rnd(ps) < RX[r].x * RX_PAIRINGS) {
+        int ida = isA ? id : nid[k], idb = isA ? nid[k] : id;
+        int oa = pickOut(RX_INTO[r].x, ps), ob = pickOut(RX_INTO[r].y, ps);
+        if (oa < 0) oa = ida;   // SAME
+        if (ob < 0) ob = idb;
+        reacted = true;
+        rxOut = isA ? oa : ob;
+        // the heat, shared so both products warm alike; the gas, half each
+        rxT = RX[r].w / (CAP[oa] + CAP[ob]);
+        rxP = 0.5 * puffP(RX_PUFF[r]);
+      }
+    }
   }
 
   // ---- heat conduction (energy conserving) ----
@@ -288,11 +415,12 @@ void main() {
   int nidOut = id;
   bool reset = false;   // new element: take its spawn life
 
-  int nAir = 0, nFire = 0, nAcid = 0, nPlant = 0, nBurning = 0, nCloud = 0;
+  int nAir = 0, nFire = 0, nAcid = 0, nPlant = 0, nBurning = 0, nCloud = 0, nVoid = 0, nOxy = 0, nOxyFire = 0, nCO2 = 0, nGas = 0;
   int nWetMoss = 0, nWetFungus = 0, nFlash = 0;
   float flashFlame = 0.0;
   bvec3 wetMoss = bvec3(false), bed = bvec3(false);   // axes holding damp moss, bare rock (mossSite)
   float flame = 0.0;
+  float closing = 0.0;   // snow neighbours' closing speed on me, summed (storm charge)
   int cloneOf = 0;
   bool surface = false;   // a non-gas neighbour to condense onto (the box's floor counts, its sides and lid don't)
   for (int i = 0; i < 6; i++) {
@@ -305,17 +433,29 @@ void main() {
     if (j == E_CLOUD) nCloud++;
     if (!isGasLike(j) && (inGrid(p + DIRS[i]) || i == 3)) surface = true;
     if (j == E_FIRE) nFire++;
-    if (j == E_ACID) nAcid++;
+    if (j == E_OXYGEN) nOxy++;
+    if (j == E_FIRE && floor(na[i].w) == float(E_OXYGEN)) nOxyFire++;   // a flame burning in oxygen
+    if (j == E_CO2) nCO2++;
+    if (isGasLike(j)) nGas++;
+    if (ACIDIC[j]) nAcid++;
     if (j == E_PLANT) nPlant++;
+    if (j == E_VOID) nVoid++;
+    if (j == E_SNOW) closing += max(dot(b.xyz - nb[i].xyz, vec3(DIRS[i])), 0.0);
     if ((j == E_CLONE || (j == E_PCLN && na[i].z == SWITCH_ON)) && na[i].w >= 1.0) cloneOf = int(floor(na[i].w));   // a powered clone only while on
-    if (IGNITE[j] > 0.0 && j != E_GUNPOWDER && na[i].y >= IGNITE[j]) { nBurning++; flame = max(flame, FLAMET[j]); }
-    else if (FLASH[j] < IGNITE[j] && na[i].y >= FLASH[j]) { nFlash++; flashFlame = max(flashFlame, FLAMET[j]); }
+    if (IGNITE[j] > 0.0 && INTO[j][PH_BLAST] < 0 && na[i].y >= IGNITE[j]) { nBurning++; flame = max(flame, FLAMET[j]); }   // (explosives go off instead)
+    else if (FLASH[j] < IGNITE[j] && INTO[j][PH_BLAST] < 0 && na[i].y >= FLASH[j]) { nFlash++; flashFlame = max(flashFlame, FLAMET[j]); }
   }
-  // past its flash point a fuel's vapour carries a flame along it: air
-  // touching a flame and such a fuel catches as if the fuel were burning
+  // past its flash point a fuel's vapour carries a flame along it: air (or
+  // oxygen) touching a flame and such a fuel catches as if the fuel were burning
   if (nFire > 0 && nFlash > 0) { nBurning += nFlash; flame = max(flame, flashFlame); }
+  float oxy = oxyShare(nAir + nFire - nOxyFire, nOxy + nOxyFire);
+  bool smothered = nCO2 > 0 && float(nCO2) >= CO2_SMOTHER * float(nGas);
 
-  if (broke) {
+  if (reacted) {
+    T += rxT;
+    P += rxP;
+    if (rxOut != id) { nidOut = rxOut; reset = true; ctype = 0.0; }
+  } else if (broke && !setOff) {
     // debris keeps my temperature, life (fuel, banked latent heat) and ctype,
     // takes the fracture work as heat and flies off with the hits' momentum;
     // it reacts as itself from the next step
@@ -352,25 +492,30 @@ void main() {
       if (r < rain) { nidOut = E_WATER; life = 0.0; }
       else if (r < rain + CLOUD_EVAP * max(float(nAir) - CLOUD_EVAP_NB, 0.0) * es) { nidOut = E_EMPTY; reset = true; T -= CLOUD_EVAP_COOL; }
     }
+    // storm charge (physics.js CHARGE_*): freezing cloud struck by falling
+    // snow; the strike that spends it is src/lightning.js's
+    if (nidOut == E_CLOUD && T <= CHARGE_T_MAX && rnd(rs) < CHARGE_RATE * closing) ctype = min(ctype + 1.0, CHARGE_MAX);
+    if (nidOut != E_CLOUD) ctype = 0.0;   // the charge goes with the droplets
   } else if (id == E_LAVA) {
     int ct = int(ctype);
     if (ct <= 0 || ct >= NE) ct = E_STONE;
     if (T < MELT[ct] - LAVA_FREEZE_BELOW) { nidOut = ct; reset = true; ctype = 0.0; }
   } else if (id == E_FIRE) {
     life -= FIRE_BURN + FIRE_BURN_SPREAD * rnd(rs);
-    if (life <= 0.0 || T < FIRE_MIN_T) { nidOut = rnd(rs) < FIRE_TO_SMOKE ? E_SMOKE : E_EMPTY; reset = true; }
+    if (life <= 0.0 || T < FIRE_MIN_T || smothered) { nidOut = rnd(rs) < FIRE_TO_SMOKE ? E_SMOKE : E_EMPTY; reset = true; ctype = 0.0; }
   } else if (id == E_SMOKE) {
     life -= SMOKE_FADE;
     if (life <= 0.0) { nidOut = E_EMPTY; reset = true; }
-  } else if (id == E_ACID) {
+  } else if (ACIDIC[id]) {
+    // acid, and caustic gas: used up by what they eat
     int victims = 0;
     for (int i = 0; i < 6; i++) if (acidEats(nid[i])) victims++;
     life -= ACID_USE * float(victims);
     if (life <= 0.0) { nidOut = rnd(rs) < ACID_TO_SMOKE ? E_SMOKE : E_EMPTY; reset = true; }
   } else if (id == E_EMPTY) {
     // flames lick out of anything burning next to us
-    if (nBurning > 0 && rnd(rs) < FLAME_SPREAD * float(nBurning)) {
-      nidOut = E_FIRE; reset = true; T = max(T, flame * (FLAME_T_MIN + FLAME_T_SPREAD * rnd(rs)));
+    if (nBurning > 0 && !smothered && rnd(rs) < FLAME_SPREAD * float(nBurning)) {
+      nidOut = E_FIRE; reset = true; ctype = 0.0; T = max(T, flame * (FLAME_T_MIN + FLAME_T_SPREAD * rnd(rs)));
     } else if (cloneOf > 0 && rnd(rs) < CLONE_RATE) {
       nidOut = cloneOf; reset = true; T = SPAWNT[cloneOf];
       ctype = cloneOf == E_LAVA ? float(E_STONE) : 0.0;
@@ -380,6 +525,13 @@ void main() {
     }
   } else if (id == E_MOSS || id == E_FUNGUS) {
     ctype = dampOf(T, na);
+  } else if (id == E_OXYGEN) {
+    // flames lick into oxygen as into air, as much more often as it holds more
+    // oxygen, and hotter
+    if (nBurning > 0 && !smothered && rnd(rs) < FLAME_SPREAD * O2_PER_AIR * float(nBurning)) {
+      nidOut = E_FIRE; reset = true; ctype = float(E_OXYGEN);
+      T = max(T, oxyFlameT(flame, O2_PER_AIR) * (FLAME_T_MIN + FLAME_T_SPREAD * rnd(rs)));
+    }
   } else if ((id == E_CLONE || id == E_PCLN) && ctype < 1.0) {
     for (int i = 0; i < 6; i++) {
       int j = nid[i];
@@ -387,25 +539,62 @@ void main() {
     }
   }
 
+  // phase changes from the table (elements.js cold, hot). With latent heat,
+  // life is a signed bank as water's is (+ toward hot, − toward cold), or, if
+  // life holds something else, the change is stochastic (latentChance).
+  if (!reacted && nidOut == id && (INTO[id][PH_HOT] >= 0 || INTO[id][PH_COLD] >= 0)) {
+    float up = max(life, 0.0), dn = max(-life, 0.0);
+    bool goHot = false, goCold = false, bank = LIFE_BANK[id];
+    if (INTO[id][PH_HOT] >= 0) goHot = HOT[id].y == 0.0 ? T >= HOT[id].x
+      : bank ? latent(T, up, HOT[id].x, C, HOT[id].y, true) : latentChance(T, HOT[id].x, C, HOT[id].y, true, rs);
+    if (INTO[id][PH_COLD] >= 0 && !goHot) goCold = COLD[id].y == 0.0 ? T <= COLD[id].x
+      : bank ? latent(T, dn, COLD[id].x, C, COLD[id].y, false) : latentChance(T, COLD[id].x, C, COLD[id].y, false, rs);
+    if (bank && (HOT[id].y > 0.0 || COLD[id].y > 0.0)) life = up - dn;
+    if (goHot || goCold) {
+      int ph = goHot ? PH_HOT : PH_COLD;
+      nidOut = pickOut(INTO[id][ph], rs);
+      ctype = ctypeOf(nidOut, OF[id][ph], id);
+      reset = true;
+      P += puffP(goHot ? HOT[id].z : COLD[id].z);
+    }
+  }
+  // crushed by air pressure (elements.js crush)
+  if (!reacted && nidOut == id && INTO[id][PH_CRUSH] >= 0 && pOn > CRUSH_P[id]) {
+    nidOut = pickOut(INTO[id][PH_CRUSH], rs);
+    ctype = ctypeOf(nidOut, OF[id][PH_CRUSH], id);
+    reset = true;
+  }
+
   // melting (stone, sand, metal, glass → lava that remembers what it was)
-  if (nidOut == id && MELT[id] > 0.0 && T > MELT[id]) {
+  if (!reacted && nidOut == id && MELT[id] > 0.0 && T > MELT[id]) {
     nidOut = E_LAVA; ctype = float(MELTINTO[id]); life = 0.0;
   }
 
-  // combustion
-  if (nidOut == id && IGNITE[id] > 0.0) {
-    if (id == E_GUNPOWDER) {
-      // It goes off at its ignition point, or the moment it touches something
-      // that hot (an ember, hot metal, lava, a splinter heated by a shot); a
-      // flame's touch flickers, so a flame next to it only might.
-      bool hotTouch = false;
-      for (int i = 0; i < 6; i++) hotTouch = hotTouch || (!isGasLike(nid[i]) && na[i].y >= IGNITE[id]);
-      if (T >= IGNITE[id] || hotTouch || (nFire > 0 && rnd(rs) < GUNPOWDER_FIRE)) {
-        nidOut = E_FIRE; reset = true; T = GUNPOWDER_T; P += GUNPOWDER_P;
+  // explosives (elements.js blast) and combustion
+  if (!reacted && nidOut == id && INTO[id][PH_BLAST] >= 0) {
+    // It goes off at its ignition point, or the moment it touches something
+    // that hot (an ember, hot metal, lava, a splinter heated by a shot); a
+    // flame's touch flickers, so a flame next to it only might (blast.flame
+    // per step). Or by a hard enough hit, or a blast's pressure (setOff).
+    bool lit = false;
+    if (blastAir) {
+      if (IGNITE[id] > 0.0) {
+        bool hotTouch = false;
+        for (int i = 0; i < 6; i++) hotTouch = hotTouch || (!isGasLike(nid[i]) && na[i].y >= IGNITE[id]);
+        lit = T >= IGNITE[id] || hotTouch;
       }
-    } else if ((T >= IGNITE[id] || (nFire > 0 && T >= FLASH[id])) && (nAir > 0 || nFire > 0)) {
-      life -= BURNRATE[id];
-      T = max(T, min(T + BURNHEAT[id] / C, FLAMET[id]));
+      lit = lit || setOff || (nFire > 0 && BLAST_LIT[id].x > 0.0 && rnd(rs) < BLAST_LIT[id].x);
+    }
+    if (lit) {
+      nidOut = pickOut(INTO[id][PH_BLAST], rs);
+      ctype = ctypeOf(nidOut, OF[id][PH_BLAST], id);
+      reset = true; T = BLAST[id].y; P += BLAST[id].x;
+    }
+  } else if (!reacted && nidOut == id && IGNITE[id] > 0.0) {
+    if ((T >= IGNITE[id] || (nFire > 0 && T >= FLASH[id])) && (nAir > 0 || nFire > 0 || nOxy > 0) && !smothered) {
+      // as fast as oxygen reaches it, so its heat comes out as much faster
+      life -= BURNRATE[id] * oxy;
+      T = max(T, min(T + BURNHEAT[id] * oxy / C, oxyFlameT(FLAMET[id], oxy)));
       P += BURN_P;
       if (life <= 0.0) {
         nidOut = (LEAVES_ASH[id] && rnd(rs) < ASH_SHARE) ? E_ASH : E_FIRE;
@@ -416,16 +605,21 @@ void main() {
   }
 
   // damp fungus rots wood, sawdust and plant into more fungus
-  if (nidOut == id && nWetFungus > 0 && fungusFood(id) && T < DAMP_DRY_T && rnd(rs) < FUNGUS_GROW * float(nWetFungus)) {
+  if (!reacted && nidOut == id && nWetFungus > 0 && fungusFood(id) && T < DAMP_DRY_T && rnd(rs) < FUNGUS_GROW * float(nWetFungus)) {
     nidOut = E_FUNGUS; reset = true;
   }
 
-  // acid eats its neighbours; what fizzes (limestone) sets its gas free as a puff
-  if (nidOut == id && nAcid > 0 && acidEats(id)) {
+  // acid (and caustic gas) eats its neighbours; what fizzes (limestone) sets its gas free as a puff
+  if (!reacted && nidOut == id && nAcid > 0 && acidEats(id)) {
     if (rnd(rs) < ACID_USE * float(nAcid)) {
       nidOut = rnd(rs) < ACID_TO_SMOKE ? E_SMOKE : E_EMPTY; reset = true;
-      P += STEAM_BOIL_PUFF * FIZZ[id] / STEAM_EXPANSION;
+      P += puffP(FIZZ[id]);
     }
+  }
+
+  // Void (elements.js VOID) drains whatever can move the step it touches it
+  if (nVoid > 0 && id != E_EMPTY && KIND[id] != K_SOLID) {
+    nidOut = E_EMPTY; reset = true; T = AMBIENT; v = vec3(0.0); ctype = 0.0;
   }
 
   if (nidOut != id) {

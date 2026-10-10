@@ -19,10 +19,9 @@ vec3 envReflect(vec3 p, vec3 r, vec3 sunVis) {
 // The same inside the grid, where the GI probes know what's overhead: the sky
 // only as far as they say it is open toward r, their light (bounce, the rock
 // around) for the rest, as surface.js's sharp environment does. So a pool in a
-// cave mirrors the cave, not a sky it can't see. n: the interface's normal on
-// the side r leaves from.
-vec3 envReflectGI(vec3 p, vec3 n, vec3 r, vec3 sunVis) {
-  Probe gi = surfProbe(p, n);
+// cave mirrors the cave, not a sky it can't see. gi: the interface's probe,
+// surfProbe(p, n) with n its normal on the side r leaves from.
+vec3 envReflectGI(Probe gi, vec3 r, vec3 sunVis) {
   return mix(giRadiance(gi, r, 0.0), skyColor(r), giSkyVis(gi, r)) + sunGlint(r, sunVis);
 }
 
@@ -37,11 +36,18 @@ vec3 envReflectGI(vec3 p, vec3 n, vec3 r, vec3 sunVis) {
 // light arriving at p. sunVis is the sun's visibility there, including its
 // fade through the liquid above (the tracer refreshes it with depth); sky
 // light fades the same way, but never below a floor, so shaded liquid
-// still shows its body colour.
+// still shows its body colour. Only as much sky light gets in as the sky is
+// open above where the ray got in (gSkyIn), so a pool in a cave is lit by the
+// cave alone.
 #define SKY_IN_FLOOR 0.25   // share of the sky light that reaches liquid in shade
 #define SUN_IN_GAIN 0.6     // sunlight scattered per unit of sun elevation
+// The GI probes' sky visibility facing up where the ray last got into liquid
+// or glass (skyInAt); the tracer sets it at each way in. 1 (open sky) for
+// code without the probes: the far field's open sea.
+float gSkyIn = 1.0;
+float skyInAt(Probe gi) { return giSkyVis(gi, vec3(0.0, 1.0, 0.0)); }
 vec3 interiorScatter(int id, vec3 p, vec3 sunVis, float T) {
-  vec3 L = skyAmbient(vec3(0.0, 1.0, 0.0)) * mix(vec3(SKY_IN_FLOOR), vec3(1.0), sunVis)
+  vec3 L = skyAmbient(vec3(0.0, 1.0, 0.0)) * gSkyIn * mix(vec3(SKY_IN_FLOOR), vec3(1.0), sunVis)
          + SUN_COL * sunVis * max(uSun.y, 0.0) * SUN_IN_GAIN + sampleLight(p) * uLightGain;
   return SCATALB[id] * L + emission(id, T);
 }
@@ -197,7 +203,9 @@ bool liquidInterface(vec3 hp, vec3 n, bool entering, int id, bool mirror, inout 
     float F = fresnelSchlick(-dot(n, rd), ior);
     mediumLight = uShadows ? sunShadow(hp + n * IFACE_PROBE) : vec3(1.0);
     vec3 r = reflect(rd, n);
-    vec3 env = envReflectGI(hp, n, r, mediumLight);
+    Probe gi = surfProbe(hp, n);
+    gSkyIn = skyInAt(gi);
+    vec3 env = envReflectGI(gi, r, mediumLight);
     float wr = mirror ? smoothstep(REFL_F_LO, REFL_F_HI, F) : 0.0;
     if (wr > 0.0) env = mix(env, reflectTrace(hp + n * REFL_START, r, env), wr);
     col += trans * F * env;

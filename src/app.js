@@ -3,13 +3,14 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import './ui/styles.css';
 import { Simulation } from './sim.js';
 import { volumeVert, volumeFrag, pickFrag, shadowFrag } from './shaders/render.js';
-import { ELEMENTS, E, toolById, isBuild, isSpawnerTool, isGearTool } from './elements.js';
+import { ELEMENTS, E, toolById, isBuild, isSpawnerTool, isGearTool, LIGHTNING_TOOL } from './elements.js';
+import { createLightning } from './lightning.js';
 import { Spawners, SPAWNER, feetOnHit } from './spawners.js';
 import { PerkOrbs } from './perkOrbs.js';
 import { buildPreset, ARENA_PRESETS } from './presets.js';
 import { ArenaMarkers } from './arenas/markers.js';
 import { DAM_VALLEY_BANNERS, shrineAltars } from './arenas/damValley.js';
-import { structureClear } from './world/structures.js';
+import { structureClear, shrineAltars as worldShrineAltars } from './world/structures.js';
 import { loadIsland, releaseGenerator } from './world/gpu.js';
 import { WorldWindow, WIN_STEP } from './world/window.js';
 import { bakedAir } from './constructions/runtime.js';
@@ -79,8 +80,8 @@ const WORLD_CAM_SPEED_MAX = 9;
 const SIGN_TOOL = -5;
 const SPAWNER_KIND = { [-6]: SPAWNER.ENEMY, [-7]: SPAWNER.PLAYER, [-20]: SPAWNER.JEEP, [-21]: SPAWNER.HOVERBIKE };   // the Spawners tools' kinds
 const SPAWNER_SET = {
-  [SPAWNER.ENEMY]: 'Enemy spawner set: press F to fight', [SPAWNER.PLAYER]: 'Player spawn set: F drops you in here',
-  [SPAWNER.JEEP]: 'Jeep pad set: press F, walk up to it and press E', [SPAWNER.HOVERBIKE]: 'Hoverbike pad set: press F, walk up to it and press E',
+  [SPAWNER.ENEMY]: 'Enemy spawner set: press V to fight', [SPAWNER.PLAYER]: 'Player spawn set: V drops you in here',
+  [SPAWNER.JEEP]: 'Jeep pad set: press V, walk up to it and press E', [SPAWNER.HOVERBIKE]: 'Hoverbike pad set: press V, walk up to it and press E',
 };
 // the lab's own enemy spawner: its open south floor, as shares of the grid (the old lab NPC's arena)
 const LAB_ENEMY_AT = [0.555, 0.86];
@@ -174,6 +175,8 @@ renderer.setPixelRatio(pixelRatio);
 renderer.setSize(innerWidth, innerHeight);
 renderer.autoClear = false;
 document.getElementById('app').appendChild(renderer.domElement);
+// the Lightning tool's bolts and storms' (src/lightning.js)
+const lightning = createLightning({ renderer });
 // HDR post: TAA, bloom, AgX tone mapping (src/gfx/post.js)
 const post = createPost(renderer, { pixScale: gfxUniforms.uPixScale });
 
@@ -392,6 +395,9 @@ const SHRINE_FAR_COST = 0.05;      // ...plus this per cell from the window's mi
 function worldShrine() {
   if (!win || !builds) return;
   const P = win.P, g = sim.g, o = sim.origin, [hx, hz] = SHRINE_HALF;
+  // a scene with structures places its own (world/structures.js: generated, in a clearing): set its orbs
+  const altars = worldShrineAltars(P);
+  if (altars) { perkOrbs?.shrineAt(altars.map((a) => a.sub(o))); return; }
   const sea = P.sea ?? 0;
   const fits = (x, z) => x - hx >= 0 && z - hz >= 0 && x + hx < g.nx && z + hz < g.nz;
   // the ground's lowest and highest under a footprint centred on grid column (x, z)
@@ -540,7 +546,7 @@ function loadPreset(name, undoable = true) {
 
 // A new scene clears the spawners; the lab comes with an enemy spawner of its
 // own. An arena sets its shrines' perk orbs, its team banners, and player
-// spawners at red's spawn points (F drops you into the red base).
+// spawners at red's spawn points (V drops you into the red base).
 function resetSpawners(name) {
   perkOrbs?.clear();
   arenaMarkers?.clear();
@@ -722,7 +728,7 @@ function giveGear(id) {
   if (pov?.active) {
     pov.closeMenu();
     hud.toast(fresh ? `${it.name} added: ${slot}` : `${it.name}: ${slot}`);
-  } else hud.toast(`${it.name} ${fresh ? 'added to your tools' : 'is in your tools'}: press F, then ${slot}`);
+  } else hud.toast(`${it.name} ${fresh ? 'added to your tools' : 'is in your tools'}: press V, then ${slot}`);
 }
 
 // Closing a construction's options goes back to the last element or tool.
@@ -1007,6 +1013,16 @@ function press(e) {
     else if (!signs) hud.toast('Signs are still loading');
     return;
   }
+  if (settings.tool === LIGHTNING_TOOL) {
+    if (mp.guard()) return;
+    if (!hover.valid) { hud.toast('Click a surface to strike it'); return; }
+    sim.snapshot();
+    toolbar.setUndoEnabled(true);
+    lightning.strikeTool(sim, hover, settings.radius);
+    pacer.wake();
+    hud.dismissHint();
+    return;
+  }
   if (isSpawnerTool(settings.tool)) {
     if (mp.guard()) return;
     if (!hover.valid) { hud.toast('Click a surface to set it on'); return; }
@@ -1026,7 +1042,7 @@ function press(e) {
       lastShrine = 0;
       builds.place();
       // a shrine's orbs go with its snapshot: undoing it takes them away (undo)
-      if (lastShrine) { sim.history.at(-1).note = { shrine: lastShrine }; hud.toast('Shrine set: in first person (F), take one perk and the others vanish'); }
+      if (lastShrine) { sim.history.at(-1).note = { shrine: lastShrine }; hud.toast('Shrine set: in first person (V), take one perk and the others vanish'); }
       hud.dismissHint();
     }
     return;
@@ -1102,7 +1118,9 @@ addEventListener('keydown', (e) => {
   if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); return; }
   if (mod) return;
   const k = e.key;
-  if (k === 'f' || k === 'F') { if (!e.repeat) actions.firstPerson(); return; }
+  // V is noclip, Garry's Mod's: out of the body to the god view's free camera, and back in.
+  // F drops in too (in the body it swaps first and third person: pov/index.js).
+  if (k === 'v' || k === 'V' || ((k === 'f' || k === 'F') && !pov?.active)) { if (!e.repeat) actions.firstPerson(); return; }
   if ((k === 't' || k === 'T') && mp.chatAvailable) { e.preventDefault(); mp.openChat(); return; } // Minecraft's chat key, POV included
   if (pov?.blocksKey(e)) return;   // POV owns movement, Space and the digits while active
   if (e.code === 'Space') { e.preventDefault(); setPaused(!settings.paused); }
@@ -1323,6 +1341,7 @@ function frame(now) {
   const stepping = !mp.isGuest && (!settings.paused || stepOnce);
   if (stepping) {
     for (let i = 0; i < settings.steps; i++) sim.step();
+    lightning.update(sim);   // storms: charged cloud strikes by itself (src/lightning.js)
     if (DAY.running) day.clock += settings.steps;
     stepOnce = false;
   } else if (mp.isGuest && DAY.running) day.clock += settings.steps;   // guests don't step: keep the day going at their own rate
@@ -1469,6 +1488,7 @@ try {
     get pov() { return pov; },
     get spawners() { return spawners; },
     get perkOrbs() { return perkOrbs; },
+    lightning,     // the Lightning tool's and storms' bolts (src/lightning.js)
     // the loaded arena's layout (spawns, flags, hills, siege core, shrines, vehicles: arenas/damValley.js), else null
     get arena() { return arenaLayout; },
     get win() { return win; },
