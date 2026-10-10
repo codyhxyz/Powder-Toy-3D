@@ -20,7 +20,13 @@ const HARD_MIN = Math.min(...ELEMENTS.filter((e) => e.breakInto).map((e) => e.ha
 //     surface and into cloud in open air; cloud boils back to steam, freezes
 //     into snow, rains where it is thick and evaporates at its edges.
 //   - Combustion: flammables above their ignition temperature that touch air
-//     burn fuel, release heat and spawn flames into adjacent air.
+//     burn fuel, release heat and spawn flames into adjacent air. Oxygen
+//     feeds them: they burn faster and hotter by the oxygen in the gas around
+//     them (oxyShare, oxyFlameT), and flames spread into it as into air. A
+//     flame burning in oxygen keeps E_OXYGEN as its ctype, and counts as
+//     oxygen to the fuel it burns.
+//     Carbon dioxide smothers them: where it makes up CO2_SMOTHER of the gas
+//     around, flames go out, fuel stops burning and air doesn't catch.
 //   - Air pressure: diffuses through non-solid cells, and a shock front also
 //     propagates one cell per step with exponential falloff (each cell takes
 //     at least a decayed copy of its strongest open neighbour). Plain
@@ -87,6 +93,18 @@ float condFlux(int a, float Ta, int b, float Tb) {
   float dT = Tb - Ta;
   float lim = abs(dT) * min(CAP[a], CAP[b]) * COND_FLUX_SHARE;
   return clamp(min(COND[a], COND[b]) * dT, -lim, lim);
+}
+
+// The oxygen in the gas around a cell over air's: 1 in air (flames are burning
+// air), O2_PER_AIR in pure oxygen (physics.js).
+float oxyShare(int nAir, int nOxy) {
+  return nAir + nOxy > 0 ? (float(nAir) + O2_PER_AIR * float(nOxy)) / float(nAir + nOxy) : 1.0;
+}
+// A flame of temperature T (°C) in air burns this hot with that much oxygen
+// (OXY_FLAME_GAIN in kelvin, all oxygen).
+float oxyFlameT(float T, float oxy) {
+  float gain = 1.0 + (OXY_FLAME_GAIN - 1.0) * (oxy - 1.0) / (O2_PER_AIR - 1.0);
+  return (T + KELVIN) * gain - KELVIN;
 }
 
 bool latent(inout float T, inout float acc, float Tp, float C, float L, bool rising) {
@@ -271,7 +289,7 @@ void main() {
   int nidOut = id;
   bool reset = false;   // new element: take its spawn life
 
-  int nAir = 0, nFire = 0, nAcid = 0, nPlant = 0, nBurning = 0, nCloud = 0;
+  int nAir = 0, nFire = 0, nAcid = 0, nPlant = 0, nBurning = 0, nCloud = 0, nOxy = 0, nOxyFire = 0, nCO2 = 0, nGas = 0;
   float flame = 0.0;
   int cloneOf = 0;
   bool surface = false;   // a non-gas neighbour to condense onto (the box's floor counts, its sides and lid don't)
@@ -281,11 +299,17 @@ void main() {
     if (j == E_CLOUD) nCloud++;
     if (!isGasLike(j) && (inGrid(p + DIRS[i]) || i == 3)) surface = true;
     if (j == E_FIRE) nFire++;
-    if (j == E_ACID) nAcid++;
+    if (j == E_OXYGEN) nOxy++;
+    if (j == E_FIRE && floor(na[i].w) == float(E_OXYGEN)) nOxyFire++;   // a flame burning in oxygen
+    if (j == E_CO2) nCO2++;
+    if (isGasLike(j)) nGas++;
+    if (ACIDIC[j]) nAcid++;
     if (j == E_PLANT) nPlant++;
     if (j == E_CLONE && na[i].w >= 1.0) cloneOf = int(floor(na[i].w));
     if (IGNITE[j] > 0.0 && j != E_GUNPOWDER && na[i].y >= IGNITE[j]) { nBurning++; flame = max(flame, FLAMET[j]); }
   }
+  float oxy = oxyShare(nAir + nFire - nOxyFire, nOxy + nOxyFire);
+  bool smothered = nCO2 > 0 && float(nCO2) >= CO2_SMOTHER * float(nGas);
 
   if (broke) {
     // debris keeps my temperature, life (fuel, banked latent heat) and ctype,
@@ -330,23 +354,31 @@ void main() {
     if (T < MELT[ct] - LAVA_FREEZE_BELOW) { nidOut = ct; reset = true; ctype = 0.0; }
   } else if (id == E_FIRE) {
     life -= FIRE_BURN + FIRE_BURN_SPREAD * rnd(rs);
-    if (life <= 0.0 || T < FIRE_MIN_T) { nidOut = rnd(rs) < FIRE_TO_SMOKE ? E_SMOKE : E_EMPTY; reset = true; }
+    if (life <= 0.0 || T < FIRE_MIN_T || smothered) { nidOut = rnd(rs) < FIRE_TO_SMOKE ? E_SMOKE : E_EMPTY; reset = true; ctype = 0.0; }
   } else if (id == E_SMOKE) {
     life -= SMOKE_FADE;
     if (life <= 0.0) { nidOut = E_EMPTY; reset = true; }
-  } else if (id == E_ACID) {
+  } else if (ACIDIC[id]) {
+    // acid, and caustic gas: used up by what they eat
     int victims = 0;
     for (int i = 0; i < 6; i++) if (acidEats(nid[i])) victims++;
     life -= ACID_USE * float(victims);
     if (life <= 0.0) { nidOut = rnd(rs) < ACID_TO_SMOKE ? E_SMOKE : E_EMPTY; reset = true; }
   } else if (id == E_EMPTY) {
     // flames lick out of anything burning next to us
-    if (nBurning > 0 && rnd(rs) < FLAME_SPREAD * float(nBurning)) {
-      nidOut = E_FIRE; reset = true; T = max(T, flame * (FLAME_T_MIN + FLAME_T_SPREAD * rnd(rs)));
+    if (nBurning > 0 && !smothered && rnd(rs) < FLAME_SPREAD * float(nBurning)) {
+      nidOut = E_FIRE; reset = true; ctype = 0.0; T = max(T, flame * (FLAME_T_MIN + FLAME_T_SPREAD * rnd(rs)));
     } else if (cloneOf > 0 && rnd(rs) < CLONE_RATE) {
       nidOut = cloneOf; reset = true; T = SPAWNT[cloneOf];
       ctype = cloneOf == E_LAVA ? float(E_STONE) : 0.0;
       v = vec3(0.0, KIND[cloneOf] == K_GAS ? 0.0 : SPAWN_DROP_V, 0.0);
+    }
+  } else if (id == E_OXYGEN) {
+    // flames lick into oxygen as into air, as much more often as it holds more
+    // oxygen, and hotter
+    if (nBurning > 0 && !smothered && rnd(rs) < FLAME_SPREAD * O2_PER_AIR * float(nBurning)) {
+      nidOut = E_FIRE; reset = true; ctype = float(E_OXYGEN);
+      T = max(T, oxyFlameT(flame, O2_PER_AIR) * (FLAME_T_MIN + FLAME_T_SPREAD * rnd(rs)));
     }
   } else if (id == E_CLONE && ctype < 1.0) {
     for (int i = 0; i < 6; i++) {
@@ -371,9 +403,10 @@ void main() {
       if (T >= IGNITE[id] || hotTouch || (nFire > 0 && rnd(rs) < GUNPOWDER_FIRE)) {
         nidOut = E_FIRE; reset = true; T = GUNPOWDER_T; P += GUNPOWDER_P;
       }
-    } else if (T >= IGNITE[id] && (nAir > 0 || nFire > 0)) {
-      life -= BURNRATE[id];
-      T = max(T, min(T + BURNHEAT[id] / C, FLAMET[id]));
+    } else if (T >= IGNITE[id] && (nAir > 0 || nFire > 0 || nOxy > 0) && !smothered) {
+      // as fast as oxygen reaches it, so its heat comes out as much faster
+      life -= BURNRATE[id] * oxy;
+      T = max(T, min(T + BURNHEAT[id] * oxy / C, oxyFlameT(FLAMET[id], oxy)));
       P += BURN_P;
       if (life <= 0.0) {
         nidOut = (LEAVES_ASH[id] && rnd(rs) < ASH_SHARE) ? E_ASH : E_FIRE;
@@ -383,7 +416,7 @@ void main() {
     }
   }
 
-  // acid eats its neighbours; what fizzes (limestone) sets its gas free as a puff
+  // acid (and caustic gas) eats its neighbours; what fizzes (limestone) sets its gas free as a puff
   if (nidOut == id && nAcid > 0 && acidEats(id)) {
     if (rnd(rs) < ACID_USE * float(nAcid)) {
       nidOut = rnd(rs) < ACID_TO_SMOKE ? E_SMOKE : E_EMPTY; reset = true;

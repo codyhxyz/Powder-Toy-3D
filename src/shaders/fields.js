@@ -58,7 +58,7 @@ void main() {
   bool crisp = id != E_EMPTY && ch < 0 && md < 0;
   if (ch >= 0) s[ch] = 1.0;
   if (md == MD_SMOKE) m.x = clamp(a.z, 0.0, 1.0);
-  else if (md == MD_STEAM) m.y = 1.0;
+  else if (md == MD_STEAM) m.y = HAZE[id];   // droplets 1, a clear gas a faint haze (gfx/materials.js)
   else if (md == MD_FIRE) {
     m.z = mix(FIRE_BASE, 1.0, clamp(a.z, 0.0, 1.0));
     // flame temperature, weighted by density (see MEDIA in gfx/materials.js)

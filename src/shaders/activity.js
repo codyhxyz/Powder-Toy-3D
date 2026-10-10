@@ -13,7 +13,7 @@ import { prelude, inertSelfGLSL, SUPER, SUPER_TEX, BLOCK_TILE } from './common.j
 //     into, nor for a liquid its four sides;
 //   - nothing that reacts: no gas, nothing burning or hot enough to light
 //     the air, melting, setting, freezing, boiling or banking latent heat,
-//     nothing next to acid, no plant by water, no clone by air;
+//     nothing next to acid or caustic gas, no plant by water, no clone by air;
 //   - thermally quiet: within MATTER_REST_T of each matter face neighbour,
 //     and within AIR_REST_T of ambient where it touches air.
 // A change a neighbour sets off on its own (a flame catching in the air by
@@ -68,7 +68,7 @@ bool inertNear(ivec3 c, vec4 a, vec4 nA[6]) {
     int j = eid(n);
     // thermally quiet; a face touching air carries heat at air's conductance, so it takes air's tolerance
     if (j == E_EMPTY ? abs(T - AMBIENT) > AIR_REST_T : abs(T - n.y) > MATTER_REST_T) return false;
-    if (j == E_ACID ? acidEats(id) : id == E_ACID && acidEats(j)) return false;
+    if (ACIDIC[j] ? acidEats(id) : ACIDIC[id] && acidEats(j)) return false;   // acid, caustic gas (elements.js acid)
     if ((id == E_WATER && j == E_PLANT) || (id == E_PLANT && j == E_WATER)) return false;
     if (id == E_CLONE && (j == E_EMPTY || (a.w < 1.0 && j != E_WALL && j != E_CLONE))) return false;
     if (id == E_GUNPOWDER && !isGasLike(j) && n.y >= IGNITE[id]) return false;   // a hot touch sets it off
