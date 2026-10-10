@@ -147,6 +147,21 @@ const BLAST_SMOKE_SPEED = [3, 9];       // cells/s, every way
 const BLAST_SMOKE_SIZE = [1.2, 2];      // cells across at birth
 const BLAST_LIGHT = 4;                  // times the muzzle light's strength
 
+// ---- the burrower's drill ('drill' event): cuttings sprayed back out of the face, tinted by what it cuts
+const DRILL_CHIP_RATE = 60;             // chips/s while it cuts
+const DRILL_DUST_RATE = 14;             // dust puffs/s while it cuts
+
+// ---- the laser cannon's beam ('laser' event): a white-hot core in a red glow, fading out
+const BEAM_LINGER = 0.35;               // s the beam stays, fading linearly
+const BEAM_CORE_COLOR = [14, 10, 9];    // HDR, white-hot
+const BEAM_GLOW_COLOR = [9, 1.2, 0.8];  // HDR, laser red
+const BEAM_GLOW_SCALE = 1.6;            // the glow's radius over the core's
+const BEAM_NEAR = 5;                    // cells out from the muzzle the beam reaches full width (closer, the eye would sit inside it)...
+const BEAM_MUZZLE_SHARE = 0.08;         // ...tapering to this share of it at the muzzle
+const BEAM_GLOW_ALPHA = 0.5;            // the glow's opacity at its brightest
+const BEAM_SIDES = 12;                  // sides on the beam's cylinders
+const BEAM_LIGHT = 5;                   // its flash, times the muzzle light's strength
+
 // ---- textures
 const TEX_SIZE = 64;                    // px square
 const DOT_FALLOFF = 2;                  // alpha = (1 − r²)^this
@@ -453,6 +468,59 @@ export function createVfx(env) {
     lightT = FLASH_LIGHT_TIME * BLAST_LIGHT;
   }
 
+  // the burrower cutting for dt seconds at `at` (world), heading dir: chips and dust thrown back out of the face
+  let drillChipAcc = 0, drillDustAcc = 0;
+  function drillSpray(at, dir, id, dt) {
+    drillChipAcc += DRILL_CHIP_RATE * dt;
+    drillDustAcc += DRILL_DUST_RATE * dt;
+    const nc = Math.floor(drillChipAcc), nd = Math.floor(drillDustAcc);
+    drillChipAcc -= nc; drillDustAcc -= nd;
+    const back = vD.copy(dir).negate();
+    if (nc) chips(at, nc, back, id);
+    if (nd) dust(at, nd, back, id);
+  }
+
+  // the laser's beam from `from` to `to` (world), its core `radius` (world units) thick
+  const beamGeo = new THREE.CylinderGeometry(1, 1, 1, BEAM_SIDES, 1, true).translate(0, 0.5, 0);
+  const taperGeo = new THREE.CylinderGeometry(1, BEAM_MUZZLE_SHARE, 1, BEAM_SIDES, 1, true).translate(0, 0.5, 0);   // narrow end at the muzzle
+  const beamMat = (rgb, opacity) => new THREE.MeshBasicMaterial({
+    color: new THREE.Color(...rgb), transparent: true, opacity, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+  });
+  const beams = [];   // { group, mats, t }
+  const UP = new THREE.Vector3(0, 1, 0);
+  function laserBeam(from, to, radius) {
+    const len = vD.subVectors(to, from).length();
+    if (len <= 0) return;
+    const group = new THREE.Group();
+    group.name = 'pov-laser-beam';
+    const mats = [beamMat(BEAM_CORE_COLOR, 1), beamMat(BEAM_GLOW_COLOR, BEAM_GLOW_ALPHA)];
+    const near = Math.min(BEAM_NEAR * env.getScale(), len);
+    mats.forEach((m, i) => {
+      const r = radius * (i ? BEAM_GLOW_SCALE : 1);
+      const taper = new THREE.Mesh(taperGeo, m);
+      taper.scale.set(r, near, r);
+      const full = new THREE.Mesh(beamGeo, m);
+      full.scale.set(r, Math.max(len - near, 1e-6), r);
+      full.position.y = near;
+      for (const mesh of [taper, full]) { mesh.frustumCulled = false; group.add(mesh); }
+    });
+    group.position.copy(from);
+    group.quaternion.setFromUnitVectors(UP, vD.divideScalar(len));
+    scene.add(group);
+    beams.push({ group, mats, base: mats.map((m) => m.opacity), t: BEAM_LINGER });
+    light.position.copy(from);
+    light.distance = FLASH_LIGHT_RANGE * BEAM_LIGHT * env.getScale();
+    lightT = FLASH_LIGHT_TIME * BEAM_LIGHT;
+  }
+  function fadeBeams(dt) {
+    for (let i = beams.length - 1; i >= 0; i--) {
+      const b = beams[i];
+      b.t -= dt;
+      if (b.t <= 0) { scene.remove(b.group); b.mats.forEach((m) => m.dispose()); beams.splice(i, 1); continue; }
+      b.mats.forEach((m, k) => { m.opacity = b.base[k] * (b.t / BEAM_LINGER); });
+    }
+  }
+
   // jetpack exhaust for dt seconds, out of the nozzles of a body at feet (grid) facing yaw
   let jetAcc = 0, smokeAcc = 0;
   const vN = new THREE.Vector3();
@@ -516,10 +584,16 @@ export function createVfx(env) {
     povEvents.on('flame', (e) => {
       if (live() && !e.by) flameStream(e.muzzleWorld, e.dir, e.length, e.dt);
     }),
+    povEvents.on('drill', (e) => {
+      if (live() && e.point && e.id >= 0) drillSpray(toWorld(e.point, vA), vB.copy(e.dir), e.id, e.dt);
+    }),
+    povEvents.on('laser', (e) => {
+      if (live() && e.from && e.to) laserBeam(vA.copy(e.from), vB.copy(e.to), e.radius);
+    }),
   ];
 
   const count = () => {
-    let n = 0;
+    let n = beams.length;
     for (const k in fx) n += fx[k].sys.particleNum;
     return n;
   };
@@ -538,6 +612,7 @@ export function createVfx(env) {
     // every POV frame; true while anything is still showing (keep rendering)
     update(dt) {
       batch.update(dt);
+      fadeBeams(dt);
       lastDt = dt;
       // the light shows at its current strength this frame, then fades (at
       // least one frame lit, however slow)
@@ -558,6 +633,7 @@ export function createVfx(env) {
     // drop everything in flight (leaving POV)
     clear() {
       for (const k in fx) { fx[k].sys.particleNum = 0; }
+      fadeBeams(Infinity);
       lightT = 0;
       light.intensity = 0;
       batch.update(0);
@@ -568,6 +644,8 @@ export function createVfx(env) {
       scene.remove(batch, emitters, light);
       materials.forEach((m) => m.dispose());
       dot.dispose(); star.dispose();
+      fadeBeams(Infinity);
+      beamGeo.dispose(); taperGeo.dispose();
     },
   };
 }

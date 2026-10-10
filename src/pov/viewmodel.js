@@ -67,7 +67,9 @@ export const HIT = {
   THROW: { kick: 0.4 },                                                                // a bomb thrown
   KNIFE: { kick: 0.3, punch: { pitch: [-1 * DEG, -0.5 * DEG] } },                     // a stab: half the axe's punch, straight in
   BACKSTAB: { kick: 0.8, punch: { pitch: [-3 * DEG, -2 * DEG], yaw: [-1 * DEG, 1 * DEG] } },   // a backstab: the blade driven in, the pickaxe's weight
-  POGO: { kick: 0.2 },                                                                 // a pogo bounce: the stick's jolt in the hands
+  POGO: { kick: 0.2 },
+  LASER: { kick: 2.6, punch: { pitch: [5 * DEG, 6 * DEG], yaw: [-1 * DEG, 1 * DEG] } },        // the laser cannon's beam: the sniper's shove, harder
+  BURROWER: { kick: 1.2, punch: { pitch: [1.5 * DEG, 2.5 * DEG] } },                   // the burrower's drill leaving the tube                                                                 // a pogo bounce: the stick's jolt in the hands
 };
 const randIn = ([lo, hi] = [0, 0]) => lo + Math.random() * (hi - lo);
 
