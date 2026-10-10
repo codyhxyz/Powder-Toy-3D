@@ -137,9 +137,12 @@ export function createNpc({ env, ai, home = () => null }) {
     hurt(amount, cause, d) {
       body.hurt(amount * DAMAGE_TAKEN, cause);
       agent.stagger();   // a hit stops its wind-up
-      body.applyImpulse(tmp.set(d.x, Math.max(d.y, 0) + KNOCK_UP, d.z).normalize().multiplyScalar(HIT_KNOCKBACK));
+      // d null: the weapon shoves it itself (the kick, by momentum: shove below)
+      if (d) body.applyImpulse(tmp.set(d.x, Math.max(d.y, 0) + KNOCK_UP, d.z).normalize().multiplyScalar(HIT_KNOCKBACK));
       agent.alert();   // it knows where you are now
     },
+    shove(dv) { body.applyImpulse(dv); },   // a momentum shove (the kick, cells/s)
+    get body() { return body; },            // its body (the hook pulls on it: player.js tether)
   });
 
   // drop in at SPAWN_DIST from the player, on a random bearing, inside the box (or at `at`)
@@ -255,7 +258,7 @@ export function createNpc({ env, ai, home = () => null }) {
         feet: vFeet, scale: w.scale, yaw, worldToGrid: w.worldToGrid,
         speedH: got, velY: body.vel.y, onGround: body.onGround, inLiquid: body.inLiquid, headInLiquid: body.headInLiquid,
         dead: body.dead, deadTime, heat: body.feel?.heat ?? 0, jetting: body.jetting,
-        chop: chopT > 0 ? 1 : it.chop,
+        chop: chopT > 0 ? 1 : it.chop, kick: body.kickPose,
       });
     },
     setVisible(v) { figure.setVisible(v && spawned); },

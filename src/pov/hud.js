@@ -59,6 +59,7 @@ export function createPovHud() {
     h('span', {}, key('Space'), ' jump, hold to fly'),
     h('span', {}, key('Shift'), ' sprint'),
     h('span', {}, key('C'), ' swim down'),
+    h('span', {}, key('X'), ' kick'),
     h('span', {}, key('V'), ' third person'),
     h('span', {}, key('F'), ' leave'));
 

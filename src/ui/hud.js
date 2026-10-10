@@ -106,6 +106,7 @@ export function createHelp(onClose) {
         row('Jump or swim up', 'Space'),
         row('Sprint (hold, or toggle in settings)', 'Shift'),
         row('Swim down', 'C'),
+        row('Kick: shove, break glass, kick off walls', 'X'),
         row('Use tool / its other action', 'Left', 'Right'),
         row('Pick a tool slot; again for the next in it', '1', '–', '6'),
         row('Tools menu: get more tools', 'Q'),

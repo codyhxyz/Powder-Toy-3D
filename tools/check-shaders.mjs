@@ -22,6 +22,7 @@ import * as povBody from '../src/shaders/povBody.js';
 import * as transfer from '../src/shaders/transfer.js';
 import * as povTools from '../src/shaders/povTools.js';
 import * as povTrace from '../src/shaders/povTrace.js';
+import * as povKick from '../src/shaders/povKick.js';
 import * as generate from '../src/shaders/generate.js';
 import { island, islandGLSL, islandColumnFrag } from '../src/world/scenes/island.js';
 import * as windowPasses from '../src/shaders/window.js';
@@ -107,6 +108,7 @@ for (const [label, dims] of Object.entries(grids)) {
   for (const [k, v] of Object.entries({ ...move, ...react, ...probe, ...stamp, ...gi, ...povBody, ...transfer, ...windowPasses })) if (typeof v === 'function') check(`${k}-${label}`, raw + v(g), 'frag');
   for (const k of ['axeFrag', 'pickaxeFrag', 'physgunComFrag', 'physgunFrag', 'blastFrag', 'flamerFrag', 'torchFireFrag', 'rocketFrag']) check(`${k}-${label}`, raw + povTools[k](g), 'frag');
   for (const k of ['traceFrag', 'strikeFrag']) check(`${k}-${label}`, raw + povTrace[k](g), 'frag');
+  for (const k of ['kickFrag', 'hookCellFrag']) check(`${k}-${label}`, raw + povKick[k](g), 'frag');
   // the window's fill and diff through a world scene's sceneCell: the island's (every scene's: tools/check-scenes.mjs)
   for (const k of ['sceneFillFrag', 'sceneDiffFrag']) check(`${k}-island-${label}`, raw + generate[k](g, islandGLSL()), 'frag');
 }

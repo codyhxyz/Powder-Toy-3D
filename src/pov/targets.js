@@ -7,6 +7,10 @@ import * as THREE from 'three';
 // the NPC's), and every test skips the target whose id is `exclude`.
 //
 //   const remove = addTarget({ id, box(min, max), alive, hurt(amount, cause, dir) });
+//
+// Optional: shove(dv) gives it a velocity (cells/s) by momentum (the kick; hurt's
+// dir is then null, so it adds no knockback of its own), body is its player.js
+// body (the hook hangs it on a rope), mass its kg (pov/tug.js BODY_MASS_KG if not given).
 
 export const PLAYER = 'player';   // the player's target id (and the shooter of rounds no actor fired)
 

@@ -12,6 +12,8 @@ import { addTarget, PLAYER } from './targets.js';
 import { grant, PERK } from './perks.js';
 import { CLASSES_ENABLED } from './classes.js';
 import { createClassPicker } from './classPicker.js';
+import { KICK_KEY, createKickLeg } from './kick.js';
+import { viewmodelRig, HIT } from './viewmodel.js';
 
 // First-person (POV) mode: drop into the world with F, walk around in it,
 // pop back out with F. This module is the shell: input, the camera, the
@@ -76,8 +78,11 @@ export function createPov(app) {
     hurt(amount, cause, d) {
       povEvents.emit('player:hit', { amount });   // inside the attacker's povEvents.as(): carries its id
       player.hurt(amount * PLAYER_DAMAGE_TAKEN, cause);
-      player.applyImpulse(d.clone().setY(Math.max(d.y, 0) + PLAYER_KNOCK_UP).normalize().multiplyScalar(PLAYER_KNOCKBACK));
+      // d null: the weapon shoves by momentum itself (the kick: shove below)
+      if (d) player.applyImpulse(d.clone().setY(Math.max(d.y, 0) + PLAYER_KNOCK_UP).normalize().multiplyScalar(PLAYER_KNOCKBACK));
     },
+    shove(dv) { player.applyImpulse(dv); },   // a momentum shove (an NPC's kick, cells/s)
+    get body() { return player; },            // the body (a hook pulls on it: player.js tether)
   });
   const viewmodel = new THREE.Group();
   viewmodel.name = 'pov-viewmodel';
@@ -95,6 +100,7 @@ export function createPov(app) {
 
   // input
   const keys = new Set();
+  let kickQueued = false, kickLeg = null;   // the kick key went down; the kicking leg in the viewmodel (kick.js)
   const buttons = { primary: false, secondary: false, primaryPressed: false, secondaryPressed: false };
   let wheelAcc = 0, wheelNotches = 0, wheelLast = -Infinity, wheelDir = 0;
   const test = { assumeLocked: false };   // headless tests can't lock the pointer
@@ -146,6 +152,7 @@ export function createPov(app) {
     if (!active() || app.isTyping() || e.metaKey || e.ctrlKey || e.altKey) return;
     if (MOVE_KEYS.has(e.code)) { keys.add(e.code); if (e.code === 'Space') e.preventDefault(); }
     if (e.code === 'KeyV' && !e.repeat && mode !== 'exiting') povCam.third = !povCam.third;
+    if (e.code === KICK_KEY && !e.repeat && mode === 'on') kickQueued = true;   // the kick (kick.js): always to hand, no slot
     // Sprint: Toggle (the setting): Shift flips sprinting on and off instead of being held
     if ((e.code === 'ShiftLeft' || e.code === 'ShiftRight') && !e.repeat && app.settings.sprintMode === 'toggle') sprintOn = !sprintOn;
     // F1, as in Minecraft: hide the HUD and the hand, for a clean view or a screenshot
@@ -393,7 +400,7 @@ export function createPov(app) {
     primary: false, secondary: false, primaryPressed: false, secondaryPressed: false, wheel: 0,
     viewBobbing: true,              // the View Bobbing setting (the viewmodel rig's hand bob reads it)
     aim: { valid: false, cell: new THREE.Vector3(), face: 0, id: -1, T: 0, P: 0, dist: Infinity },
-    player: { pos: null, vel: null, onGround: false, inLiquid: false, applyImpulse: (dv) => player?.applyImpulse(dv) },
+    player: { pos: null, vel: null, onGround: false, inLiquid: false, applyImpulse: (dv) => player?.applyImpulse(dv), body: null },
   };
   const input = { move: { x: 0, z: 0 }, jump: false, sprint: false, down: false };
   let sprintOn = false;     // Sprint: Toggle's state
@@ -520,7 +527,7 @@ export function createPov(app) {
     figure.update(dt, {
       feet: vFeet, scale, yaw: povCam.look.yaw, worldToGrid,
       speedH, velY: player.vel.y, onGround: player.onGround, inLiquid: player.inLiquid, headInLiquid: player.headInLiquid,
-      dead: deadSeen, deadTime, heat: player.feel?.heat ?? 0, jetting: player.jetting,
+      dead: deadSeen, deadTime, heat: player.feel?.heat ?? 0, jetting: player.jetting, kick: player.kickPose,
     });
     if (player.jetting && mode === 'on') vfx?.jet(player.pos, povCam.look.yaw, dt, figure.nozzles);
     viewmodel.visible = mode === 'on' && !deadSeen && pose.eyeDist <= FIGURE_HIDE_DIST && !hudHidden;
@@ -555,8 +562,20 @@ export function createPov(app) {
       ctx.player.vel = player.vel;
       ctx.player.onGround = player.onGround;
       ctx.player.inLiquid = player.inLiquid;
+      ctx.player.body = player;   // the body itself, for a tool that hangs it on a rope (the hook: player.tether)
       try { toolbelt.update(ctx); } catch (err) { console.error('POV toolbelt update failed', err); }
     }
+    // the kick: the body's (player.kick), along the aim; the leg and the view's jolt are the shell's
+    if (kickQueued) {
+      kickQueued = false;
+      const r = live() && isLocked() ? player.kick(ctx.dir) : null;
+      if (r) {
+        kickLeg ??= createKickLeg({ viewmodel, getScale: app.getScale });
+        kickLeg.start(!!r.hit);
+        if (r.hit) viewmodelRig({ viewmodel, getScale: app.getScale }).hit(HIT.KICK);
+      }
+    }
+    kickLeg?.update(dt);
     buttons.primaryPressed = buttons.secondaryPressed = false;
     wheelNotches = 0;
 

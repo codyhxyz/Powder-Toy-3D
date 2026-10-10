@@ -443,6 +443,16 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
     if (broke === false && family === 'ping' && !MELEE_SOURCES.has(source)) play('ricochet', { at, gain: gain * RICOCHET_GAIN });
   });
 
+  // the kick (kick.js): the leg's whoosh every time, and a boot's thud when it lands on a body or on
+  // something it can't move (a wall: the kick-off); the struck material's own sound comes with the impact
+  povEvents.on('kick', ({ hit, point, mass, by, from }) => {
+    if (!live()) return;
+    const at = by ? point ?? from ?? null : null;
+    play('swoosh', { at });
+    if (hit === 'body') play('hurtThud', { at: point ?? at });
+    else if (hit && !Number.isFinite(mass)) play('land', { at: by ? point : null });
+  });
+
   // an NPC's tool sounds that are held loops for the player: a one-shot each where it is
   const NPC_ONE_SHOT = { 'bucket:pour': 'shovelPatter', 'blowtorch:on': 'swoosh', 'physgun:grab': 'physGrab', 'physgun:fling': 'physFling', 'physgun:release': 'physRelease', 'physgun:blast': 'physFling' };
   povEvents.on('tool:action', ({ tool, action, id, point, amount, by, from }) => {
