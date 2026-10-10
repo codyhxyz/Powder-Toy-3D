@@ -64,7 +64,8 @@ class BakeGrid {
     this.cur = 1 - this.cur;
   }
 
-  // Compile mats without stalling (KHR_parallel_shader_compile where there is one).
+  // Compile mats without stalling (KHR_parallel_shader_compile where there
+  // is one), for a render target like the ones they draw into.
   async compile(mats) {
     const scene = new THREE.Scene();
     for (const m of mats) {
@@ -72,8 +73,11 @@ class BakeGrid {
       mesh.frustumCulled = false;
       scene.add(mesh);
     }
+    const before = this.renderer.getRenderTarget();
     this.renderer.setRenderTarget(this.targets[0]);
-    await this.renderer.compileAsync(scene, this.camera);
+    const done = this.renderer.compileAsync(scene, this.camera);
+    this.renderer.setRenderTarget(before);
+    await done;
   }
 
   dispose() {
@@ -84,22 +88,30 @@ class BakeGrid {
 
 // The island box preset for world seed `seed`: { g, A }, its state A (the
 // fetchA layout, RGBA floats per atlas texel of a PATCH_TILE³ grid g).
-// renderer: the app's WebGLRenderer. Leaves its render target as it found it.
+// renderer: the app's WebGLRenderer. Its passes run in one go between the
+// compile and the readback, leaving the render target and autoClear as they
+// were (they cover every texel, and clearing a target with an integer
+// attachment is a GL error: app.js turns autoClear off too).
 export async function bakeIslandState(renderer, seed) {
   const grid = new BakeGrid(renderer, PATCH_TILE);
   const gen = new WorldGenerator(grid);
-  const before = renderer.getRenderTarget();
   try {
     await grid.compile([gen.mats.column, gen.mats.fill, gen.mats.stamp]);
-    const P = islandParams(seed);
-    gen.fill(P);
-    gen.plantTrees(P);
+    const before = renderer.getRenderTarget(), autoClear = renderer.autoClear;
+    renderer.autoClear = false;
+    try {
+      const P = islandParams(seed);
+      gen.fill(P);
+      gen.plantTrees(P);
+    } finally {
+      renderer.setRenderTarget(before);
+      renderer.autoClear = autoClear;
+    }
     const { g } = grid;
     const A = new Float32Array(g.width * g.height * 4);
     await renderer.readRenderTargetPixelsAsync(grid.targets[grid.cur], 0, 0, g.width, g.height, A, undefined, 0);
     return { g, A };
   } finally {
-    renderer.setRenderTarget(before);
     gen.dispose();
     grid.dispose();
   }
