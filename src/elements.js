@@ -121,7 +121,7 @@ export const breakInto = (e) => (e.breakInto ? E[e.breakInto] : -1);
 // SIGN is handled by the app (it pins a text label), not by the paint shader.
 // Fixed starter tiles live in Tools; selection equips POV, never paints a negative ID.
 export const WAND_STARTERS = WAND_PRESETS.slice(0, 20).map((preset, i) => ({
-  id: -20 - i, key: `WAND_${preset.id}`, abbr: 'WAND', name: preset.name,
+  id: -20 - i, key: `WAND_${preset.id.replaceAll('-', '_').toUpperCase()}`, abbr: 'WAND', name: preset.name,
   color: '#b994ff', desc: `${preset.description} Equip in first person; B edits the wand.`, preset,
 }));
 export const wandPresetForTool = (id) => WAND_STARTERS.find((item) => item.id === id)?.preset;
