@@ -561,9 +561,12 @@ export function createPov(app) {
     figure.update(dt, {
       feet: vFeet, scale, yaw: povCam.look.yaw, worldToGrid,
       speedH, velY: player.vel.y, onGround: player.onGround, inLiquid: player.inLiquid, headInLiquid: player.headInLiquid,
-      dead: deadSeen, deadTime, heat: player.feel?.heat ?? 0, jetting: player.jetting,
+      dead: deadSeen, deadTime, heat: player.feel?.heat ?? 0, jetting: player.jetting, status: player.status,
     });
     if (player.jetting && mode === 'on') vfx?.jet(player.pos, povCam.look.yaw, dt, figure.nozzles);
+    // flames licking off burning bodies (status.js BURNING), the player's and the NPCs'
+    if (player.status.has('BURNING') && !player.dead) vfx?.burn(player.pos, dt);
+    for (const n of npcs.values()) if (n.body.status?.has('BURNING') && !n.body.dead) vfx?.burn(n.body.pos, dt);
     viewmodel.visible = mode === 'on' && !deadSeen && pose.eyeDist <= FIGURE_HIDE_DIST && !hudHidden && !driving;
 
     // the toolbelt
@@ -608,7 +611,7 @@ export function createPov(app) {
     povHud.update({
       dt, health: player.health, breath: player.breath, feel: player.feel,
       shield: player.shield, shieldMax: player.shieldMax, shieldCharging: player.shieldCharging,
-      jetFuel: player.jetFuel, jetting: player.jetting, perks: player.perks,
+      jetFuel: player.jetFuel, jetting: player.jetting, perks: player.perks, status: player.status,
       dead: deadSeen, cause: player.cause, respawnIn: RESPAWN_DELAY - deadTime,
       locked: isLocked(), swooping: mode !== 'on',
       aimValid: aim.valid, aimInReach: aim.valid && aim.dist <= HAND_REACH, third: povCam.third,
