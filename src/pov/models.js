@@ -22,16 +22,21 @@ import * as THREE from 'three';
 // `arm`: the forearm's direction from the grip (model space), toward the shoulder.
 const ARM_DOWN = [0.35, -0.78, 0.52];   // right, down, back toward the eye: a hand held out in front
 const ARM_UP = [0.1, 0.45, 1];          // up and back (the bucket tips toward the eye): a hand holding something that hangs below it
+// `icon`: the model's pose in its hotbar icon (modelIcon below), turned in this order:
+// yaw about +y, then tilt about +x (toward the eye; for a model that points along z
+// after the yaw, a turn about its own length), then roll about the view axis.
+const Q = Math.PI / 4;
+const POINT_RIGHT = -Math.PI / 2;   // yaw that turns −z (forward) to +x (right)
 export const MODELS = {
-  gun: { fit: 'z', size: 1.25, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN },        // an SMG, centred
-  physgun: { fit: 'z', size: 1.3, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN },     // finned, glowing core, centred
-  axe: { fit: 'y', size: 1.25, anchor: [0.5, 0, 0.5], arm: ARM_DOWN },          // handle up from the hand, blade forward
-  shovel: { fit: 'z', size: 2.2, anchor: [0.5, 0.5, 1], arm: ARM_DOWN },        // laid flat, blade forward, held at the end of the handle
-  bucket: { fit: 'y', size: 0.9, anchor: [0.5, 0.5, 0.5], arm: ARM_UP },        // upright, held by the bail
-  trowel: { fit: 'z', size: 1.3, anchor: [0.5, 1, 1], arm: ARM_DOWN },          // blade flat and forward, held at the end of the handle
-  scanner: { fit: 'z', size: 0.6, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN },     // a handheld box, screen up toward the eye
-  torch: { fit: 'z', size: 1.1, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN },       // held by the tank, nozzle and flame forward
-  bomb: { fit: 'z', size: 0.8, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN },        // a capped pipe with a lit fuse
+  gun: { fit: 'z', size: 1.25, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.3, roll: 0.35 } },        // an SMG, centred
+  physgun: { fit: 'z', size: 1.3, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.3, roll: 0.35 } },     // finned, glowing core, centred
+  axe: { fit: 'y', size: 1.25, anchor: [0.5, 0, 0.5], arm: ARM_DOWN, icon: { yaw: -POINT_RIGHT, tilt: 0.2, roll: -Q } },           // handle up from the hand, blade forward
+  shovel: { fit: 'z', size: 2.2, anchor: [0.5, 0.5, 1], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 1.0, roll: Q } },           // laid flat, blade forward, held at the end of the handle
+  bucket: { fit: 'y', size: 0.9, anchor: [0.5, 0.5, 0.5], arm: ARM_UP, icon: { yaw: 0, tilt: 0.4, roll: 0 } },                    // upright, held by the bail
+  trowel: { fit: 'z', size: 1.3, anchor: [0.5, 1, 1], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 1.0, roll: Q } },             // blade flat and forward, held at the end of the handle
+  scanner: { fit: 'z', size: 0.6, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.7, roll: 0.25 } },    // a handheld box, screen up toward the eye
+  torch: { fit: 'z', size: 1.1, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.25, roll: 0.2 } },      // held by the tank, nozzle and flame forward
+  bomb: { fit: 'z', size: 0.8, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.35, roll: Q } },         // a capped pipe with a lit fuse
 };
 
 // RS2 stores a colour as 16-bit HSL: 6 bits of hue, 3 of saturation, 7 of lightness.
@@ -241,4 +246,99 @@ export function attachModel(parent, key, onLoad, { arm: withArm = true } = {}) {
       obj.traverse((o) => o.geometry?.dispose());   // the materials are shared
     },
   };
+}
+
+// ---- hotbar icons: an Old School RuneScape inventory sprite of the model. A
+// freeze frame of the same parts, posed by MODELS[key].icon, lit from up
+// front left and drawn by an orthographic camera at ICON_PX pixels with no
+// antialiasing, then given OSRS's 1 px black outline and its dark shadow one
+// pixel down and right. Drawn once per key by a small renderer of its own,
+// which is let go as soon as the icons in hand are done.
+export const ICON_PX = 36;           // the sprite's size, in pixels (OSRS items are 36×32)
+const ICON_PAD = 2;                  // px kept clear at each edge for the outline and shadow
+const ICON_OUTLINE = [0, 0, 0];      // OSRS's item outline
+const ICON_SHADOW = [0x30, 0x20, 0x20];   // and its drop shadow
+const ICON_SHADOW_OFFSET = 1;        // px, down and right
+const ICON_AMBIENT = 1.6;            // light on the icon: a flat fill plus a key light from up front left
+const ICON_KEY = 2.2;
+const ICON_KEY_DIR = [-1, 2, 3];
+const ICON_CAMERA_Z = 10;            // model units in front of the model; any distance clear of it
+const icons = new Map();             // key → data URL
+let iconKit = null;                  // { renderer, scene, camera } while icons are being drawn
+
+function getIconKit() {
+  if (iconKit) return iconKit;
+  const renderer = new THREE.WebGLRenderer({ antialias: false, alpha: true, preserveDrawingBuffer: true });
+  renderer.setPixelRatio(1);
+  renderer.setSize(ICON_PX, ICON_PX, false);
+  renderer.setClearColor(0x000000, 0);
+  const scene = new THREE.Scene();
+  scene.add(new THREE.AmbientLight(0xffffff, ICON_AMBIENT));
+  const key = new THREE.DirectionalLight(0xffffff, ICON_KEY);
+  key.position.set(...ICON_KEY_DIR);
+  scene.add(key);
+  const camera = new THREE.OrthographicCamera();
+  iconKit = { renderer, scene, camera };
+  setTimeout(() => {   // after this batch of icons
+    renderer.dispose();
+    renderer.forceContextLoss();
+    iconKit = null;
+  });
+  return iconKit;
+}
+
+// OSRS's outline and shadow round the sprite's opaque pixels (antialias is off,
+// so a pixel is all there or not at all).
+function outlineSprite(img) {
+  const { data, width: w, height: hgt } = img;
+  const solid = (x, y) => x >= 0 && y >= 0 && x < w && y < hgt && data[(y * w + x) * 4 + 3] > 0;
+  const set = (x, y, rgb) => { const i = (y * w + x) * 4; data.set([...rgb, 255], i); };
+  const item = [];
+  for (let y = 0; y < hgt; y++) for (let x = 0; x < w; x++) item.push(solid(x, y));
+  const was = (x, y) => x >= 0 && y >= 0 && x < w && y < hgt && item[y * w + x];
+  const edge = [];
+  for (let y = 0; y < hgt; y++) for (let x = 0; x < w; x++) {
+    if (!item[y * w + x] && (was(x - 1, y) || was(x + 1, y) || was(x, y - 1) || was(x, y + 1))) edge.push([x, y]);
+  }
+  edge.forEach(([x, y]) => set(x, y, ICON_OUTLINE));
+  const d = ICON_SHADOW_OFFSET;
+  for (let y = hgt - 1; y >= 0; y--) for (let x = w - 1; x >= 0; x--) {
+    if (!solid(x, y) && solid(x - d, y - d)) set(x, y, ICON_SHADOW);
+  }
+  return img;
+}
+
+// The hotbar icon of model `key`, as a data URL of an ICON_PX square sprite.
+export function modelIcon(key) {
+  if (icons.has(key)) return icons.get(key);
+  const pose = MODELS[key].icon;
+  const { renderer, scene, camera } = getIconKit();
+  const { obj } = normalised(key, false);
+  const q = new THREE.Quaternion();
+  const turn = (axis, angle) => q.premultiply(new THREE.Quaternion().setFromAxisAngle(axis, angle));
+  turn(new THREE.Vector3(0, 1, 0), pose.yaw);
+  turn(new THREE.Vector3(1, 0, 0), pose.tilt);
+  turn(new THREE.Vector3(0, 0, 1), pose.roll);
+  obj.quaternion.copy(q);
+  scene.add(obj);
+  obj.updateMatrixWorld(true);
+  // fit the posed model's box in the square, less the padding
+  const box = new THREE.Box3().setFromObject(obj, true);
+  const c = box.getCenter(new THREE.Vector3()), s = box.getSize(new THREE.Vector3());
+  const half = (Math.max(s.x, s.y) / 2) * (ICON_PX / (ICON_PX - 2 * ICON_PAD));
+  Object.assign(camera, { left: -half, right: half, top: half, bottom: -half, near: 0.1, far: ICON_CAMERA_Z * 2 });
+  camera.position.set(c.x, c.y, c.z + ICON_CAMERA_Z);
+  camera.updateProjectionMatrix();
+  renderer.render(scene, camera);
+  scene.remove(obj);
+  obj.traverse((o) => o.geometry?.dispose());
+
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = ICON_PX;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(renderer.domElement, 0, 0);
+  ctx.putImageData(outlineSprite(ctx.getImageData(0, 0, ICON_PX, ICON_PX)), 0, 0);
+  const url = canvas.toDataURL();
+  icons.set(key, url);
+  return url;
 }

@@ -32,11 +32,8 @@ const HELD_POS = [0.5, -0.5, -1.2];
 const REST_PITCH = 0.15;     // rad, blade tipped up toward the crosshair
 const REST_YAW = 0.25;       // rad, in toward the crosshair
 
-const ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round">'
-  + '<path d="M4 20l7-3 7-7-4-4-7 7z"/><path d="M14 6l3-3M18 10l3-3"/></svg>';
-
 export default {
-  key: 'TROWEL', name: 'Trowel', slot: 6, icon: ICON, color: '#a88f6a',
+  key: 'TROWEL', name: 'Trowel', slot: 6, model: 'trowel',
   desc: 'Builds 1 m blocks out of what the shovel dug up. Right-click picks the material.',
   create(env) {
     const load = pack(env.owner);

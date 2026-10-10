@@ -37,11 +37,8 @@ const TUMBLE = 0.4;                     // rad the thrown bomb turns per frame i
 const HELD_POS = [0.6, -0.55, -1.3];
 const HELD_YAW = 0.5;                   // rad, turned across the view
 
-const ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round">'
-  + '<rect x="6" y="9" width="12" height="11" rx="2"/><path d="M12 9V6c0-2 2-3 4-2M18 3l1-1M20 5h1"/></svg>';
-
 export default {
-  key: 'BOMB', name: 'Bomb', slot: 9, icon: ICON, color: '#5b6068',
+  key: 'BOMB', name: 'Bomb', slot: 9, model: 'bomb',
   desc: 'Throws a pipe bomb that goes off where it lands: breaks wood and glass, shoves and burns.',
   create(env) {
     const rig = viewmodelRig(env);

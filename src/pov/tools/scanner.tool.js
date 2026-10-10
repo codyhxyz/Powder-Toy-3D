@@ -14,11 +14,8 @@ const HELD_POS = [0.55, -0.5, -1.5];
 const HELD_PITCH = 0.3;      // rad, screen tipped up toward the eye
 const DIST_DECIMALS = 1;     // m shown to this many decimals
 
-const ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round">'
-  + '<rect x="5" y="8" width="14" height="12" rx="2"/><path d="M8 12h8M8 16h5M15 8l2-5"/></svg>';
-
 export default {
-  key: 'SCANNER', name: 'Scanner', slot: 7, icon: ICON, color: '#6fae7d',
+  key: 'SCANNER', name: 'Scanner', slot: 7, model: 'scanner',
   desc: 'Reads the material, temperature and pressure of whatever you point it at.',
   create(env) {
     const rig = viewmodelRig(env);

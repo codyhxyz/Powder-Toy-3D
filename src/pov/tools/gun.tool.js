@@ -39,9 +39,6 @@ const BODY_MASS_KG = 70;           // kg, the player
 const GUN_POS = [0.5, -0.45, -1.5];
 const MUZZLE = [0, 0.094, -0.625];    // cells from the model's centre to the end of the bore
 
-const ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round">
-<path d="M3 8h15l1-2h2v5h-6l-1 2h-3l-1 5H5l1-5H3z"/></svg>`;
-
 // The held gun: the model (models.js) on a hand of the
 // viewmodel rig and a muzzle point at the end of its bore. The flash is vfx.js's,
 // drawn at gun:fire's muzzleWorld.
@@ -61,7 +58,7 @@ function buildModel(env) {
 }
 
 export default {
-  key: 'GUN', name: 'Gun', slot: 4, icon: ICON,
+  key: 'GUN', name: 'Gun', slot: 4, model: 'gun',
   desc: 'Fires a metal round that flies fast, drops a little and smashes what it hits.',
   create(env) {
     const model = buildModel(env);

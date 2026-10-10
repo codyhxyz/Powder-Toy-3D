@@ -40,9 +40,6 @@ const HIT_PITCH = -0.55;     // rad, blade down where it bit into something
 const MISS_PITCH = -1.15;    // rad, blade down past the aim: a miss follows through
 const REST_ROLL = -0.25;     // rad, tilted in toward the crosshair
 
-const ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round">
-<path d="M14 3l7 7-3 3-2-2-9 9-2-2 9-9-2-2z"/><path d="M14 3c-3 0-5 2-5 5l3 1"/></svg>`;
-
 // The held axe: the model (models.js) on a hand of the
 // viewmodel rig, turned about the hand by the swing.
 function buildModel(env) {
@@ -55,7 +52,7 @@ function buildModel(env) {
 }
 
 export default {
-  key: 'AXE', name: 'Axe', slot: 3, icon: ICON,
+  key: 'AXE', name: 'Axe', slot: 3, model: 'axe',
   desc: 'Chops wood, smashes glass and ice, clears plants. Too weak for rock or metal.',
   create(env) {
     const model = buildModel(env);

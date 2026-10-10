@@ -22,11 +22,8 @@ const FLICKER = 0.25;        // the held flame's length varies by this share, fr
 // viewmodel, in cells (camera space)
 const HELD_POS = [0.55, -0.6, -1.3];
 
-const ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round">'
-  + '<rect x="4" y="11" width="6" height="10" rx="2"/><path d="M7 11V8h9l2-1M18 7c2-1 3-3 2-5-1 2-3 2-3 4"/></svg>';
-
 export default {
-  key: 'BLOWTORCH', name: 'Blowtorch', slot: 8, icon: ICON, color: '#d0603a',
+  key: 'BLOWTORCH', name: 'Blowtorch', slot: 8, model: 'torch',
   desc: 'Hold to burn: lights wood, sets off gunpowder, melts ice and, slowly, metal.',
   create(env) {
     const rig = viewmodelRig(env);

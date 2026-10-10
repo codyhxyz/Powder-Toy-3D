@@ -42,11 +42,8 @@ const HEAP_MIN = 0.3;                // a nearly empty load still shows this sha
 const HEAP_ALONG = 0.18;             // the heap's centre, as a share of the model's length behind its tip (mid-blade)
 const HEAP_SEGMENTS = [6, 3];        // around, down the dome (low-poly, like the models)
 
-const ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 3.5l5.5 5.5M17.8 6.2L11 13"/>'
-  + '<path d="M10.5 10.5l3 3-3.5 3.5c-1.6 1.6-4.4 2.5-6.5 3 .5-2.1 1.4-4.9 3-6.5z"/></svg>';
-
 export default {
-  key: 'SHOVEL', name: 'Shovel', slot: 1, icon: ICON, color: '#b08454',
+  key: 'SHOVEL', name: 'Shovel', slot: 1, model: 'shovel',
   desc: 'Hold left-click to dig powder or break solids into debris. Right-click throws the load.',
   create(env) {
     const load = pack(env.owner);

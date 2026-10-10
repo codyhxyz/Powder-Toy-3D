@@ -45,9 +45,6 @@ const TIP_IDLE = 0.35;            // tip glow opacity while not holding
 const BLAST_FLASH_S = 0.15;       // s the beam flashes along a blast
 const CHASE = 0.8;                // share of V_MAX the hold point chases the aim at, so the ball keeps up
 
-const ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
-<path d="M3 15h8l2-3h3"/><circle cx="19" cy="9" r="3"/><path d="M5 15v4h4"/></svg>`;
-
 // Additive glow strongest where the sphere is seen edge-on: a light outline of
 // the reach that never veils what's inside it.
 function rimMaterial() {
@@ -111,7 +108,7 @@ function buildModel(env) {
 const Y_AXIS = new THREE.Vector3(0, 1, 0);
 
 export default {
-  key: 'PHYSGUN', name: 'Physgun', slot: 5, icon: ICON,
+  key: 'PHYSGUN', name: 'Physgun', slot: 5, model: 'physgun',
   desc: 'Hold to lift loose powder, liquid or gas; wheel for distance, right-click to fling. Right-click empty-handed to blast.',
   create(env) {
     const model = buildModel(env);

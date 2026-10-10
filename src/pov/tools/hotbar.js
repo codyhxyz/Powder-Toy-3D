@@ -1,14 +1,14 @@
-import { h, inkFor } from '../../ui/dom.js';
+import { h } from '../../ui/dom.js';
+import { modelIcon } from '../models.js';
 import './hotbar.css';
 
 // Minecraft-style hotbar, bottom centre: HOTBAR_SLOTS slots, each with its key
-// number, the tool's icon tile and its status (e.g. 'SAND ×37'). The selected
+// number, the tool's icon (an OSRS-style sprite of its model) and its status (e.g. 'SAND ×37'). The selected
 // tool's name shows above the bar for a moment after switching.
 
 export const HOTBAR_SLOTS = 9;
 const NAME_SHOW_MS = 1800;        // how long the tool name stays up after a switch
 const SHAKE_MS = 360;             // .shake animation length (hotbar.css)
-const TOOL_COLOR = '#8b93a3';     // tile colour of a tool that names none
 
 export function createHotbar() {
   const nameEl = h('div.hb-name');
@@ -24,19 +24,16 @@ export function createHotbar() {
 
   return {
     el: bar,
-    // def: { name, icon, desc, color? } or null for an empty slot
+    // def: { name, model, desc } or null for an empty slot
     setTool(i, def) {
       const s = slots[i];
       if (!def) { s.el.setAttribute('data-empty', ''); s.icon.replaceChildren(); return; }
       s.el.removeAttribute('data-empty');
-      const color = def.color ?? TOOL_COLOR;
-      s.icon.style.setProperty('--c', color);
-      s.icon.style.setProperty('--ink', inkFor(color));
       s.el.title = def.desc ? `${def.name}: ${def.desc}` : def.name;
       s.el.dataset.name = def.name;
-      const icon = def.icon ?? def.key?.slice(0, 4) ?? '';
-      if (icon.trim().startsWith('<')) s.icon.innerHTML = icon;
-      else s.icon.replaceChildren(h('b', { text: icon }));
+      s.icon.replaceChildren(def.model
+        ? h('img', { src: modelIcon(def.model), alt: '', draggable: 'false' })
+        : h('b', { text: def.key?.slice(0, 4) ?? '' }));
     },
     select(i) {
       slots.forEach((s, j) => s.el.classList.toggle('on', j === i));

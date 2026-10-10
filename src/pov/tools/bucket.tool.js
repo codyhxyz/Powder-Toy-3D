@@ -40,11 +40,8 @@ const PAIL_BASE_R = 0.32;            // the pail's inner radius at the floor, as
 const PAIL_RIM_R = 0.42;             // ...and at the rim
 const SEGMENTS = BUCKET_SIDES;       // the pail's sides, so the disc's edge lies along its walls
 
-const ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 9h14l-1.6 10.2a1.5 1.5 0 0 1-1.5 1.3H8.1a1.5 1.5 0 0 1-1.5-1.3z"/>'
-  + '<path d="M5 9c0-3.5 3-5.5 7-5.5s7 2 7 5.5"/></svg>';
-
 export default {
-  key: 'BUCKET', name: 'Bucket', slot: 2, icon: ICON, color: '#7f8ea3',
+  key: 'BUCKET', name: 'Bucket', slot: 2, model: 'bucket',
   desc: 'Left-click scoops up liquid, hold right-click to pour it out. Lava is fine.',
   create(env) {
     const load = persistentLoad(ownedKey('BUCKET', env.owner), BUCKET_CAPACITY);

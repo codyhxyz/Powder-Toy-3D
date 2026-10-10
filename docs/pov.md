@@ -152,7 +152,7 @@ default-exports:
 
 ```js
 export default {
-  key: 'GUN', name: 'Gun', slot: 4, icon: '<svg…>' /* or a short label */,
+  key: 'GUN', name: 'Gun', slot: 4, model: 'gun' /* models.js key: its hotbar icon is a sprite of it */,
   desc: 'one line for the hotbar tooltip',
   create(env) → {
     update(ctx),          // every frame while selected
