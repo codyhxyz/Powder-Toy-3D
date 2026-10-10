@@ -36,8 +36,8 @@ export function createToolbar({ views, settings, actions }) {
   const maps = btn('maps', 'Maps and gamemodes (Esc)', actions.openMenu);
   const gear = btn('gear', 'Settings (,)', actions.toggleSettings);
   const help = btn('help', 'Keyboard shortcuts (?)', actions.toggleHelp);
-  // first person and the shortcut sheet need a keyboard: touch-first devices hide them (styles.css)
-  walk.classList.add('keys-only');
+  // the shortcut sheet needs a keyboard: touch-first devices hide it (styles.css); the
+  // cameras stay, first person having thumb controls there (pov/touch.js)
   help.classList.add('keys-only');
 
   const bar = h('div.toolbar.panel', { role: 'group', 'aria-label': 'Simulation controls' },
