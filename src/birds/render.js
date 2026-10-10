@@ -269,7 +269,7 @@ export function createBirdView({ scene, sun, getScale }) {
 
   const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), qRoll = new THREE.Quaternion(), pos = new THREE.Vector3();
   const scl = new THREE.Vector3(), Z = new THREE.Vector3(0, 0, 1), Y = new THREE.Vector3(0, 1, 0);
-  const rgb = [0, 0, 0], cam = new THREE.Vector3(), vel = new THREE.Vector3();
+  const rgb = [0, 0, 0], cam = new THREE.Vector3(), vel = new THREE.Vector3(), at = new THREE.Vector3(), rnd = new THREE.Vector3();
   const moteAcc = new Map();   // bird id → motes owed
   let clock = 0;
 
@@ -307,10 +307,10 @@ export function createBirdView({ scene, sun, getScale }) {
         if (!k) continue;
         hueRgb(r.hue + clock * HUE_DRIFT, rgb);
         vel.set(r.vel.x, r.vel.y, r.vel.z).multiplyScalar(MOTE_CARRY * s);
-        const at = pos.clone();
+        at.copy(pos);
         burst(k, (p) => {
-          p.position.set(at.x, at.y, at.z).add(new THREE.Vector3().randomDirection().multiplyScalar(MOTE_JITTER * span * s));
-          p.velocity.copy(vel).add(new THREE.Vector3().randomDirection().multiplyScalar(MOTE_DRIFT * s));
+          p.position.copy(at).add(rnd.randomDirection().multiplyScalar(MOTE_JITTER * span * s));
+          p.velocity.copy(vel).add(rnd.randomDirection().multiplyScalar(MOTE_DRIFT * s));
           const size = randIn(MOTE_SIZE) * s;
           p.startSize.set(size, size, size); p.size.copy(p.startSize);
           p.startColor.set(rgb[0] * moteRadiance, rgb[1] * moteRadiance, rgb[2] * moteRadiance, 1);

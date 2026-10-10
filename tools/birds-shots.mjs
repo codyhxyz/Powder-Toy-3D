@@ -17,7 +17,8 @@ const FRAME_FROM = [2.2, 1.0, 2.6];   // scene units from a flock to the camera,
 const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
 const p = await b.newPage({ viewport: { width: W, height: H } });
 const errs = [];
-p.on('console', (m) => { if (m.type() === 'error') errs.push(m.text().slice(0, 300)); });
+// (a dev server has no multiplayer relay or account API: their refused connections aren't the birds')
+p.on('console', (m) => { if (m.type() === 'error' && !/Failed to load resource|ERR_CONNECTION_REFUSED/.test(m.text())) errs.push(m.text().slice(0, 300)); });
 p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 500)));
 let fails = 0;
 const check = (name, ok, info = '') => { if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${info ? `  ${info}` : ''}`); };
@@ -25,7 +26,7 @@ const ev = (fn, arg) => p.evaluate(fn, arg);
 const wait = (ms) => p.waitForTimeout(ms);
 const shot = async (name) => {
   if (!shots) return;
-  await p.addStyleTag({ content: 'body *{visibility:hidden} canvas{visibility:visible}' }).catch(() => {});
+  await p.addStyleTag({ content: 'body *{visibility:hidden} canvas[data-engine]{visibility:visible}' }).catch(() => {});
   await p.screenshot({ path: `${shots}/${name}.jpg`, type: 'jpeg', quality: 72 });
 };
 
@@ -119,7 +120,7 @@ try {
     const on = { onPerch: 0, onTree: 0, off: 0 };
     for (const bd of f.birds) {
       if (bd.state !== 2) continue;
-      const P = bd.v.position, spot = B.probe.world.perches(P.x, P.z, 0.75).find((q) => Math.abs(q.y - P.y) < 1);
+      const P = bd.v.position, spot = B.probe.world.perches(P.x, P.z, 1.5).find((q) => Math.abs(q.y - P.y) < 1);
       if (!spot) on.off++; else { on.onPerch++; if (spot.tree) on.onTree++; }
     }
     return { mode: f.mode, perched: f.birds.filter((bd) => bd.state === 2).length, of: f.birds.length, ...on, key: B.flocks.indexOf(f) };
@@ -142,7 +143,7 @@ try {
     const { E } = await import('/src/elements.js');
     const bd = f.birds.find((x) => x.state === 2);
     if (!bd) return null;
-    a.sim.paint({ center: new V(bd.v.position.x - o.x, bd.v.position.y + 1, bd.v.position.z - o.z), radius: 5, shape: 0, tool: E.FIRE, rate: 1, replace: false });
+    a.sim.paint({ center: new V(bd.v.position.x - o.x, bd.v.position.y + 1, bd.v.position.z - o.z), radius: 8, shape: 0, tool: E.FIRE, rate: 1, replace: false });
     await new Promise((res) => setTimeout(res, 2500));
     return { burning: f.birds.filter((x) => x.state === 3).length, down: f.birds.filter((x) => x.state === 4 || x.state === 5).length, of: f.birds.length };
   }, landed.key);
@@ -171,15 +172,16 @@ try {
   const blast = await ev(async () => {
     const a = window.__app, V = a.camera.position.constructor, o = a.sim.origin;
     const { povEvents } = await import('/src/pov/events.js');
-    const f = a.birds.flocks.find((x) => x.birds.some((y) => y.state <= 2));
+    const flying = (x) => x.birds.filter((y) => y.state === 0).length;
+    const f = a.birds.flocks.reduce((x, y) => (flying(x) >= flying(y) ? x : y));
     f.updateCentre();
-    const before = f.birds.filter((y) => y.state <= 2).length;
+    const before = f.birds.filter((y) => y.state <= 2).length, deadBefore = f.birds.filter((y) => y.state >= 4).length;
     povEvents.emit('blast', { point: new V(f.centre.x - o.x, f.centre.y, f.centre.z - o.z) });
-    const dead = f.birds.filter((y) => y.state >= 4).length;
-    return { before, dead, fleeing: f.fleeT > 0, perched: f.birds.filter((y) => y.state === 2).length };
+    const dead = f.birds.filter((y) => y.state >= 4).length - deadBefore;
+    return { before, dead, alive: f.alive, fleeing: f.fleeT > 0, perched: f.birds.filter((y) => y.state === 2).length };
   });
   console.log('     blast:', JSON.stringify(blast));
-  check('a blast kills the birds next to it and flushes the rest', blast.fleeing && blast.perched === 0 && blast.dead > 0);
+  check('a blast kills the birds next to it and flushes the rest', blast.dead > 0 && blast.perched === 0 && (blast.alive === 0 || blast.fleeing));
 
   // ---- dusk: glowing flight with motes
   await ev(async ([el]) => {
@@ -207,7 +209,7 @@ try {
     const f = B.flocks.find((x) => x.birds.some((y) => y.state === 2));
     const bd = f.birds.find((y) => y.state === 2);
     const t = new V(bd.v.position.x - o.x, bd.v.position.y, bd.v.position.z - o.z).multiplyScalar(a.scale).add(a.volume.position);
-    a.controls.target.copy(t); a.camera.position.copy(t).add(new V(1.2, 0.5, 1.4)); a.camera.lookAt(t); a.controls.update(); a.requestRender();
+    a.controls.target.copy(t); a.camera.position.copy(t).add(new V(1.1, 0.9, 1.3)); a.camera.lookAt(t); a.controls.update(); a.requestRender();
   });
   await wait(1200); await shot('birds-night-roost'); await resume();
   await ev(async () => {

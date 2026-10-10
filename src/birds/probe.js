@@ -3,17 +3,17 @@ import { prelude, quadVert } from '../shaders/common.js';
 import { ELEMENTS, E, K } from '../elements.js';
 
 // What the birds know of the world (the `world` flock.js reads): one small
-// GPU pass a few times a second that walks every column of the window from the
-// top down and writes, per column, a texel of
+// GPU pass a few times a second that walks one column in every PROBE_STEP² of
+// the window from the top down and writes, per column, a texel of
 //   R  the surface: the top of the topmost solid, powder or liquid (cells; 0: none)
 //   G  its element id
 //   B  its rise: how far that top stands over the next surface down, across a
 //      gap of open air (a tree crown over the ground, a roof over a floor; 0:
-//      none): a perch
+//      none): a perch. A top run thicker than PERCH_RUN_MAX is ground (over a
+//      cave, say), not a perch, and the walk stops there
 //   A  the column's hot band: lowest·HOT_PACK + highest + 1 of the cells hotter
 //      than BIRD_IGNITE_T (0: none), so a bird inside it catches fire
-// read back asynchronously (nx × nz texels, 256 KB for a 128² window), so it
-// never stalls a frame. Outside the window, in a world, the scene's own ground
+// read back asynchronously (64 KB for a 128² window), so it never stalls a frame. Outside the window, in a world, the scene's own ground
 // (scene.ground, the generator's CPU twin) stands in, raised by TREE_ALLOWANCE
 // for the trees it doesn't know about; a box's outside is its floor.
 //
@@ -22,12 +22,14 @@ import { ELEMENTS, E, K } from '../elements.js';
 
 export const BIRD_IGNITE_T = 300;   // °C: feathers burn in anything this hot (the NPC's world model calls it a burn too)
 const PERCH_RISE = 5;              // cells of open air under a top for it to count as a perch (1.5 m)
+const PERCH_RUN_MAX = 8;           // cells: a top run thicker than this is ground, not a crown or a roof
+const PROBE_STEP = 2;              // cells between probed columns, along x and z
 const PROBE_S = 0.25;              // s between probes
 const HOT_PACK = 256;              // the hot band's packing (grids are under this tall)
 const TREE_ALLOWANCE = 18;         // cells over a world's generated ground outside the window: its trees' crowns (a scene that plants them)
 const GROUND_CACHE = 1 << 14;      // world columns whose scene ground is kept
 const GROUND_QUANT = 2;            // cells: scene ground looked up on this lattice outside the window
-const PERCHES_MAX = 4096;          // perch columns kept per probe
+const PERCHES_MAX = 4096;          // perch columns kept per probe (a 128² window has 4096 probed columns)
 const TREE_IDS = new Set([E.PLANT, E.WOOD]);
 
 const f = (x) => x.toFixed(1);
@@ -35,21 +37,26 @@ const probeFrag = (g) => /* glsl */ `
 ${prelude(g)}
 #define IGNITE_T ${f(BIRD_IGNITE_T)}
 #define HOT_PACK ${f(HOT_PACK)}
+#define PERCH_RUN_MAX ${PERCH_RUN_MAX}
+#define PROBE_STEP ${PROBE_STEP}
 out vec4 oP;
 void main() {
-  ivec2 c = ivec2(gl_FragCoord.xy);   // (x, z)
+  ivec2 c = ivec2(gl_FragCoord.xy) * PROBE_STEP;   // the column (x, z)
   float top = 0.0, topId = 0.0, rise = 0.0, hotLo = -1.0, hotHi = -1.0;
-  int state = 0;   // 0: above the top, 1: in the top run, 2: in the air under it, 3: past the next surface
+  int state = 0;   // 0: above the top, 1: in the top run, 2: in the air under it
   for (int y = NY - 1; y >= 0; y--) {
     vec4 a = fetchA(ivec3(c.x, y, c.y));
     int id = eid(a);
     if (a.y > IGNITE_T) { if (hotHi < 0.0) hotHi = float(y); hotLo = float(y); }
     bool matter = !isGasLike(id);
-    if (state == 0 && matter) { top = float(y + 1); topId = float(id); state = 1; }
-    else if (state == 1 && !matter) state = 2;
-    else if (state == 2 && matter) { rise = top - float(y + 1); state = 3; }
+    if (state == 0) { if (matter) { top = float(y + 1); topId = float(id); state = 1; } }
+    else if (state == 1) {
+      if (!matter) state = 2;
+      else if (top - float(y) > float(PERCH_RUN_MAX)) break;   // ground: no perch, and nothing under it a bird reaches
+    }
+    else if (matter) { rise = top - float(y + 1); break; }   // the next surface under the gap
   }
-  if (state == 2) rise = top;   // air down to the floor under an overhang
+  if (state == 2 && rise == 0.0) rise = top;   // air down to the floor under an overhang
   oP = vec4(top, topId, rise, hotHi < 0.0 ? 0.0 : hotLo * HOT_PACK + hotHi + 1.0);
 }`;
 export { probeFrag };
@@ -74,18 +81,18 @@ export function createBirdWorld({ renderer, getSim, getWin }) {
       uniforms: { tA: { value: null } }, depthTest: false, depthWrite: false,
     });
     mat.name = 'birdProbe';
-    target = new THREE.WebGLRenderTarget(g.nx, g.nz, {
+    target = new THREE.WebGLRenderTarget(g.nx / PROBE_STEP, g.nz / PROBE_STEP, {
       type: THREE.FloatType, depthBuffer: false, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter,
     });
-    buf = new Float32Array(g.nx * g.nz * 4);
-    spare = new Float32Array(g.nx * g.nz * 4);
+    buf = new Float32Array(target.width * target.height * 4);
+    spare = new Float32Array(target.width * target.height * 4);
     data = null;
   }
 
   function ingest(sim, o) {
     // the readback's buffer becomes the columns; the old columns' the next readback's
     [data, buf] = [buf, data && data.length === buf.length ? data : spare];
-    nx = sim.g.nx; nz = sim.g.nz; ox = o.x; oz = o.z;
+    nx = sim.g.nx / PROBE_STEP; nz = sim.g.nz / PROBE_STEP; ox = o.x; oz = o.z;
     perchCols = [];
     for (let i = 0; i < nx * nz && perchCols.length < PERCHES_MAX; i++) {
       const top = data[i * 4], id = data[i * 4 + 1], rise = data[i * 4 + 2];
@@ -93,10 +100,10 @@ export function createBirdWorld({ renderer, getSim, getWin }) {
     }
   }
 
-  // the window's texel of world column (x, z), or -1 outside it (or before the first probe)
+  // the probe's texel nearest world column (x, z), or -1 outside the window (or before the first probe)
   function col(x, z) {
     if (!data) return -1;
-    const gx = Math.floor(x) - ox, gz = Math.floor(z) - oz;
+    const gx = Math.floor((x - ox) / PROBE_STEP), gz = Math.floor((z - oz) / PROBE_STEP);
     return gx >= 0 && gz >= 0 && gx < nx && gz < nz ? gz * nx + gx : -1;
   }
 
@@ -138,7 +145,7 @@ export function createBirdWorld({ renderer, getSim, getWin }) {
     perches(x, z, r) {
       const out = [];
       for (const i of perchCols) {
-        const wx = (i % nx) + ox + 0.5, wz = Math.floor(i / nx) + oz + 0.5;
+        const wx = (i % nx) * PROBE_STEP + ox + 0.5, wz = Math.floor(i / nx) * PROBE_STEP + oz + 0.5;
         if (Math.hypot(wx - x, wz - z) > r) continue;
         out.push({ x: wx, y: data[i * 4], z: wz, tree: TREE_IDS.has(data[i * 4 + 1]) });
       }
@@ -167,7 +174,7 @@ export function createBirdWorld({ renderer, getSim, getWin }) {
       busy = true;
       age = 0;
       const o = sim.origin.clone(), from = sim;
-      renderer.readRenderTargetPixelsAsync(target, 0, 0, g.nx, g.nz, buf)
+      renderer.readRenderTargetPixelsAsync(target, 0, 0, target.width, target.height, buf)
         .then(() => { if (from === getSim()) ingest(from, o); })
         .catch((err) => console.error('bird probe readback failed', err))
         .finally(() => { busy = false; });
