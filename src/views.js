@@ -49,7 +49,7 @@ export const COLORMAPS = {
 // see-through and gases are faint, much like a real radiograph.
 export const XRAY_DENSITY = {
   EMPTY: 0, WALL: 2.4, SAND: 1.6, STONE: 2.6, SNOW: 0.3, GUNPOWDER: 1.0, ASH: 0.5,
-  WATER: 1.0, OIL: 0.9, ACID: 1.2, LAVA: 2.6, STEAM: 0.02, SMOKE: 0.03, FIRE: 0.01,
+  WATER: 1.0, OIL: 0.9, ACID: 1.2, LAVA: 2.6, STEAM: 0.02, CLOUD: 0.02, SMOKE: 0.03, FIRE: 0.01,
   WOOD: 0.6, PLANT: 0.5, METAL: 7.8, GLASS: 2.5, ICE: 0.92, CLONE: 2.0,
 };
 // Fallback for elements added later without an entry above.

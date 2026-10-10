@@ -1,4 +1,5 @@
 import { skyGLSL } from '../../gfx/sky.js';
+import { cloudDeckGLSL } from './clouds.js';
 
 // Soft-shadow taps per pass (blocker search, then filter).
 const PCSS_TAPS = 8;
@@ -29,6 +30,8 @@ uniform vec3 uSkyUp;    // open-sky irradiance on an upward surface
 uniform vec3 uGround;   // radiance of the sunlit, sky-lit ground around the box
 uniform vec3 uKeyLight; // sunlight's colour scale: 1 by day, dim blue under the moon (gfx/daylight.js)
 #define SUN_COL uSunCol
+// World's cumulus deck (clouds.js): sunShadow multiplies its shadow in.
+${cloudDeckGLSL}
 const float HORIZON_BLEND = 0.02;  // sky -> ground blend half-width at the horizon (direction y)
 
 float airMass(float cz) {
@@ -212,8 +215,9 @@ float sunRayClear(vec3 ro, float tLim) {
 // The taps: a Vogel (sunflower) disc of radius 1, rotated per pixel and frame.
 const vec2 VOGEL[PCSS_TAPS] = vec2[PCSS_TAPS](${vogel(PCSS_TAPS)});
 
-// Sun visibility at a surface point hp with normal n.
-vec3 sunShadow(vec3 hp, vec3 n) {
+// Sun visibility at a surface point hp with normal n, from the map (sunShadow
+// below adds the clouds).
+vec3 sunMapShadow(vec3 hp, vec3 n) {
   vec3 c, u, v; float R;
   sunBasis(c, R, u, v);
   vec3 p = hp + n * SHADOW_NORMAL_OFFSET;
@@ -300,8 +304,8 @@ vec3 sunShadow(vec3 hp, vec3 n) {
 // Bilinear weight of tap o (0/1 each way) at fraction w.
 float wk0(ivec2 o, vec2 w) { return (o.x == 1 ? w.x : 1.0 - w.x) * (o.y == 1 ? w.y : 1.0 - w.y); }
 
-// Sun visibility at a point inside a volume (media, liquid interiors).
-vec3 sunShadow(vec3 p) {
+// Sun visibility at a point inside a volume (media, liquid interiors), from the map.
+vec3 sunMapShadow(vec3 p) {
   vec3 c, u, v; float R;
   sunBasis(c, R, u, v);
   vec3 q = p - c;
@@ -328,6 +332,17 @@ vec3 sunShadow(vec3 p) {
   }
   if (uCaustics && cW > 0.0) acc *= mix(1.0, causticGain(p, cD / cW), cW);
   return acc;
+}
+
+// Sunlight at grid point p: the map, under the clouds' shadow (a fully
+// clouded point skips the map).
+vec3 sunShadow(vec3 hp, vec3 n) {
+  float c = cloudShadow(worldPos(hp));
+  return c > CLOUD_SHADOW_SKIP ? c * sunMapShadow(hp, n) : vec3(0.0);
+}
+vec3 sunShadow(vec3 p) {
+  float c = cloudShadow(worldPos(p));
+  return c > CLOUD_SHADOW_SKIP ? c * sunMapShadow(p) : vec3(0.0);
 }
 
 // ---- indirect light: the GI probe volume (shaders/gi.js) ----

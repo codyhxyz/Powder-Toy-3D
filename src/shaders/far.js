@@ -912,7 +912,7 @@ vec3 farGround(vec3 r, float top) {
   int v = int(texelFetch(tFar, farTexel(b), 0).b * FAR_ID_SCALE + 0.5);
   int id = (v % FAR_OPEN) % FAR_LIQ_STRIDE;
   float s = texture(tFarShadow, r.xz / vec2(WORLD.xz)).x;
-  float sun = smoothstep(-FAR_SHADOW_SOFT, FAR_SHADOW_SOFT, top + FAR_SHADOW_BIAS - s);
+  float sun = smoothstep(-FAR_SHADOW_SOFT, FAR_SHADOW_SOFT, top + FAR_SHADOW_BIAS - s) * cloudShadow(vec3(r.x, top, r.z));
   return ALBEDO[id == E_EMPTY ? E_ROCK : id] * (SUN_COL * max(uSun.y, 0.0) * sun + uSkyUp);
 }
 vec3 farSea(vec3 d) {
@@ -1057,6 +1057,9 @@ const float FAR_SUN_RAY[FAR_SUN_RAY_N] = float[FAR_SUN_RAY_N](${FAR_VIEW.SUN_RAY
 #define FAR_ROOT_SPLIT_HI 0.85
 #define FAR_FLAT_EPS 1e-5        // field differences below this count as flat
 #define FAR_SUN_Y_MIN 0.2        // sun elevation sine floor for light fading down through liquid (LIQ_SUN_Y_MIN in render.js)
+
+// Sunlight at world point p: the shadow heights (ch: farSunVis), under the clouds.
+float farSunLit(vec3 p, int ch) { return farSunVis(p, ch) * cloudShadow(p); }
 
 // (tNear, tFar) of the ray through the box [lo, hi); tNear > tFar: a miss
 vec2 farSlab(vec3 ro, vec3 inv, vec3 lo, vec3 hi) {
@@ -1255,7 +1258,7 @@ vec3 farLiquid(vec3 p, vec3 rd, int lk, float sunVis, float bedY) {
       if (fb >= FAR_ISO) {
         s = mix(ta, tb, clamp((FAR_ISO - fa) / max(fb - fa, FAR_FLAT_EPS), 0.0, 1.0));
         vec3 q = p + rt * s, nq = farNormal(q, 0);
-        bed = farShadeBed(farElement(q, nq), q, nq, p.y - q.y, lid, sunVis * farSunVis(q, 0));
+        bed = farShadeBed(farElement(q, nq), q, nq, p.y - q.y, lid, sunVis * farSunLit(q, 0));
         break;
       }
       ta = tb; fa = fb;
@@ -1304,7 +1307,7 @@ void main() {
   vec3 col;
   float depth = 1.0;
   if (ocean) {
-    col = farLiquid(ps, rd, 0, farSunVis(ps, 0), seaOut ? uFloor : -1.0);
+    col = farLiquid(ps, rd, 0, farSunLit(ps, 0), seaOut ? uFloor : -1.0);
     col = farHaze(col, rd, tSea);
     depth = farDepth(ps);
   } else if (tHit < NO_HIT) {
@@ -1315,10 +1318,10 @@ void main() {
       // which the volume draws see-through: the water body's own light, as
       // deep water shows, so the window's water carries on past its side.
       vec4 v = farSample(p);
-      col = v.r >= v.g ? ALBEDO[farIds(p).x] * skyAmbient(-rd) : farInScatter(farLiquidId(farIds(p).y), farSunVis(p, 0));
+      col = v.r >= v.g ? ALBEDO[farIds(p).x] * skyAmbient(-rd) : farInScatter(farLiquidId(farIds(p).y), farSunLit(p, 0));
     } else {
       vec4 v = farSample(p);
-      float sunVis = farSunVis(p, 0);
+      float sunVis = farSunLit(p, 0);
       if (v.g > v.r) col = farLiquid(p, rd, farIds(p - vec3(0.0, FAR_ID_INSET, 0.0)).y, sunVis, -1.0);
       else {
       vec3 n = farNormal(p, 0);
