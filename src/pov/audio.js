@@ -183,18 +183,14 @@ const PRESETS = {
 // presets that play as seamless loops (one render each)
 const LOOPS = new Set(['pourLoop', 'physHum', 'torchLoop', 'jetLoop']);
 
-// ---- material families: which sound a struck element makes
-const FAMILY_BY_KEY = {
-  GLASS: 'shatter', SHARDS: 'shatter', CRYSTAL: 'shatter', CRYSTAL_DUST: 'shatter',
-  WOOD: 'thunk', SAWDUST: 'thunk', PLANT: 'thunk',
-  METAL: 'ping', SCRAP: 'ping',
-  ROCK: 'crack', STONE: 'crack', WALL: 'crack', CLONE: 'crack', ICE: 'crack',
-  LAVA: 'sizzle',
-};
+// ---- material families: which sound a struck element makes. An element's
+// own (elements.js sound: glass shatters, wood thunks, metal pings), else its
+// kind's: any rock or other solid cracks.
 const FAMILY_BY_KIND = { [K.SOLID]: 'crack', [K.POWDER]: 'puff', [K.LIQUID]: 'splash' };
 // Where each family plays at its own pitch: the reference element's hardness
 // (for solids) and density (for loose matter). Elements stiffer than the
-// reference ring higher, heavier loose matter sounds lower.
+// reference ring higher, heavier loose matter sounds lower, so a new member
+// of a family (sandstone, coal) pitches itself from its own hard or dens.
 const FAMILY_REF = {
   shatter: { hard: E.GLASS, dens: E.SHARDS },
   thunk: { hard: E.WOOD, dens: E.SAWDUST },
@@ -219,7 +215,7 @@ const clamp = THREE.MathUtils.clamp;
 export function familyOf(id) {
   const el = ELEMENTS[id];
   if (!el) return null;
-  return FAMILY_BY_KEY[el.key] ?? FAMILY_BY_KIND[el.kind] ?? null;
+  return el.sound ?? FAMILY_BY_KIND[el.kind] ?? null;
 }
 
 // playback rate for a material within its family

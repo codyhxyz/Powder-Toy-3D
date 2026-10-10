@@ -336,11 +336,7 @@ void main() {
     if (life <= 0.0) { nidOut = E_EMPTY; reset = true; }
   } else if (id == E_ACID) {
     int victims = 0;
-    for (int i = 0; i < 6; i++) {
-      int j = nid[i];
-      if (j != E_EMPTY && j != E_ACID && j != E_WALL && j != E_GLASS && j != E_SHARDS && j != E_WATER
-          && KIND[j] != K_GAS) victims++;
-    }
+    for (int i = 0; i < 6; i++) if (acidEats(nid[i])) victims++;
     life -= ACID_USE * float(victims);
     if (life <= 0.0) { nidOut = rnd(rs) < ACID_TO_SMOKE ? E_SMOKE : E_EMPTY; reset = true; }
   } else if (id == E_EMPTY) {
@@ -380,17 +376,19 @@ void main() {
       T = max(T, min(T + BURNHEAT[id] / C, FLAMET[id]));
       P += BURN_P;
       if (life <= 0.0) {
-        nidOut = (id != E_OIL && rnd(rs) < ASH_SHARE) ? E_ASH : E_FIRE;
+        nidOut = (LEAVES_ASH[id] && rnd(rs) < ASH_SHARE) ? E_ASH : E_FIRE;
         reset = true;
         T = max(T, BURNT_MIN_T);
       }
     }
   }
 
-  // acid eats its neighbours
-  if (nidOut == id && nAcid > 0 && id != E_EMPTY && id != E_ACID && id != E_WALL && id != E_GLASS
-      && id != E_SHARDS && id != E_WATER && KIND[id] != K_GAS) {
-    if (rnd(rs) < ACID_USE * float(nAcid)) { nidOut = rnd(rs) < ACID_TO_SMOKE ? E_SMOKE : E_EMPTY; reset = true; }
+  // acid eats its neighbours; what fizzes (limestone) sets its gas free as a puff
+  if (nidOut == id && nAcid > 0 && acidEats(id)) {
+    if (rnd(rs) < ACID_USE * float(nAcid)) {
+      nidOut = rnd(rs) < ACID_TO_SMOKE ? E_SMOKE : E_EMPTY; reset = true;
+      P += STEAM_BOIL_PUFF * FIZZ[id] / STEAM_EXPANSION;
+    }
   }
 
   if (nidOut != id) {
