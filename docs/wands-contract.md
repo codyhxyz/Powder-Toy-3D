@@ -52,6 +52,14 @@ separate. A sequence of roots means successive casts. No deck wrapping or
 shuffle in this version. Compilation resolves modifiers and precomputes costs;
 runtime does not look up or reparse cards every frame.
 
+Each node's `params.mana` is its prepaid subtree total; only the root is charged.
+Root castDelay/recharge are subtree additive contributions. Stats:
+`{ cardCount, castCount, nodeCount, maxDepth, totalMana, maxCastMana,
+castDelays, recharge }`; castDelays includes config and a .02 s floor;
+recharge includes config and all root recharge contributions.
+Optional preset `sandboxReservoir: { material, count, label }` provides finite,
+clearly labeled starter material once per loadout, never on each equip.
+
 Required usable recipes: mining vacuum; tunnel cutter; acid shotgun; spark
 machinegun; stored scrap machinegun; recoil flying; water extinguisher;
 liquid sponge; stored lava mortar; remote black hole; double explosion;
@@ -89,6 +97,11 @@ replacement; coordinate handling must account for moving world windows.
 
 Exact stored-material absorb/release uses existing sharedTransfer/Load in
 runtime, not a lossy shader approximation. World adapter does not own inventory.
+On trace failure/busy/replacement reject the request, never report false clear
+segments. Only genuine misses use null entries. Queue velocity uses cells/s;
+dig power is hardness energy, heat/cool power is temperature delta per command,
+pressure power is pressure delta, attract/repel power is cells/s² integrated
+over command.dt. Maximum 64 effect commands in one state pass per frame.
 
 ## Runtime (runtime.js, visuals.js)
 
@@ -110,12 +123,20 @@ payload at firing; later edits never mutate flights. Self-recoil applies through
 applyImpulse. Teleport needs full clearance and non-resetting player relocation.
 Per-wand storage must not duplicate matter. Sandbox can seed clearly labeled
 starter reservoirs, separate from Create cards.
+`ctx.player.teleport(feet)` performs non-resetting relocation after runtime
+checks world.clearance(feet). UI/shell lane owns adding this method to
+player.js and forwarding it into ctx. Preserve vitals and invalidate probes.
 
 ## UI integration (editor.js/css, existing tools and POV shell)
 
 Preserve old tool slots/keys. Add wand variants associated with existing tool
 slots (mining 1/10, liquids 2, combat 4/9, manipulation 5, building 6, utility 7,
 heat 8). Provide a discoverable chooser, no replacement of old tools.
+The pre-existing categories also refer to `src/elements.js` PALETTE and the
+god-view dock. Add fixed starter-wand entries under existing Tools (no new
+Wands category), with IDs -20..-39, and intercept selection before paint.
+Selecting these equips the corresponding POV wand (enter POV if necessary).
+Use catalog PRESETS to keep mapping consistent.
 One shared wand runtime is driven even when old tools are selected.
 Editor has all implemented spells, categories/search, ordered deck, add/remove/
 move buttons, preset picker, wand statistics, readable validation and cast
