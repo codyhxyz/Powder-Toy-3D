@@ -1,12 +1,12 @@
 // End-to-end moving-camera A/B with the same fixed output and scene scale.
 // node tools/lod-frame-bench.mjs beforePort afterPort [rounds=2]
-import { chromium } from 'playwright';
+import { launchBrowser, newTestPage, ready } from './browser.mjs';
 const ports = process.argv.slice(2, 4), rounds = +(process.argv[4] ?? 2);
-const browser = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
+const browser = await launchBrowser();
 try {
   const results = {};
   for (let round = 0; round < rounds; round++) for (const port of round % 2 ? [...ports].reverse() : ports) {
-    const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+    const page = await newTestPage(browser, { mode: 'visual', viewport: { width: 1280, height: 800 } });
     await page.addInitScript(() => {
       const raf = requestAnimationFrame;
       let set = false;
@@ -23,8 +23,12 @@ try {
       });
     });
     await page.goto(`http://localhost:${port}/?map=island`, { waitUntil: 'domcontentloaded', timeout: 120000 });
+    await ready(page);
     await page.waitForFunction(() => window.__app?.win?.loaded, null, { timeout: 180000 });
-    await page.waitForTimeout(16000);
+    await page.waitForFunction(() => {
+      const a = __app, d = a.win.far.detail;
+      return a.sim.frame >= 240 && (!d || (!d.pending && d.wanted.every(c => d.entries.has(c.key) || d.blocked.has(c.key))));
+    }, null, { timeout: 120000 });
     const sample = await page.evaluate(async () => {
       const a = __app, times = [], start = performance.now(), pos = a.camera.position.clone(), target = a.controls.target.clone();
       let previous = start, versions = a.sim.version;

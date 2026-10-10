@@ -1376,7 +1376,7 @@ function tick(now, renderOnly = false) {
     `${camera.matrixWorld.elements}|${camera.projectionMatrix.elements}|${pixelRatio}|${innerWidth}x${innerHeight}`
     + `|${JSON.stringify(settings)}|${JSON.stringify(gfx)}|${JSON.stringify(post.settings)}|${sceneKey(scene)}`
     + `|${win?.far?.chunksDrawn}`,   // a world scene's far field filling in (world/far.js)
-    runDerived || wantShot || post.adapting);   // (eyes adjusting to the dark: gfx/post.js ADAPT)
+    runDerived || wantShot || (!renderOnly && post.adapting));   // frozen-time snapshots cannot advance eye adaptation
   if (present && !runView && autoRes.recover(clock.getElapsed())) {
     post.settings.resolutionScale = autoRes.scale;
     pacer.wake();   // settle the final full-quality still; don't wake auto resolution
@@ -1445,8 +1445,8 @@ function tick(now, renderOnly = false) {
   // Picking is input work, not presentation: a preview must keep it responsive.
   if (!renderOnly && (runView || pov?.active || testMode === 'preview')) requestPick();
   if (spawners) { spawners.setGhosts(!pov?.active); spawners.update(); }   // the crosshair cell stays fresh for the tools
-  perkOrbs?.update();
-  arenaMarkers?.update();
+  perkOrbs?.update(clock.getElapsed());
+  arenaMarkers?.update(clock.getElapsed());
   if (renderOnly) { prof.endFrame(0); return; }
 
   const povReadout = pov?.active ? pov.readout : null;   // the held tool's (the scanner's, the trowel's)

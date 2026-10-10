@@ -2,24 +2,26 @@
 // Fixed-output A/B: cached geometry versus the same scene's coarse fallback.
 import assert from 'node:assert/strict';
 import { mkdirSync } from 'node:fs';
-import { chromium } from 'playwright';
+import { launchBrowser, newTestPage, ready, render } from './browser.mjs';
 const port = process.argv[2] ?? '5493', out = process.argv[3] ?? '/tmp/world-detail';
 mkdirSync(out, { recursive: true });
-const browser = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
+const browser = await launchBrowser();
 try {
-  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  const page = await newTestPage(browser, { mode: 'visual', viewport: { width: 1280, height: 800 } });
   const errors = [];
   page.on('pageerror', e => errors.push(String(e)));
   page.on('console', m => {
     if (m.type() === 'error' && !/ERR_CONNECTION_REFUSED/.test(m.text())) errors.push(m.text());
   });
   await page.goto(`http://localhost:${port}/?size=world`, { waitUntil: 'domcontentloaded', timeout: 120000 });
+  await ready(page);
   await page.waitForFunction(() => window.__app?.win?.loaded, null, { timeout: 180000 });
   await page.evaluate(() => {
     const a = __app;
     a.settings.paused = true;
     a.autoRes.enabled = false;
     a.autoRes.scale = 1;
+    a.post.settings.adapt = false; // fixed exposure for the two screenshot checkpoints
     a.day.fixed = { az: 215, el: 38 };
   });
   await page.waitForFunction(() => {
@@ -34,10 +36,11 @@ try {
   assert.equal(cache.failed, false);
   assert(cache.entries > 0);
   assert(cache.bytes <= 96 * 1024 * 1024);
-  await page.waitForTimeout(2000); // TAA settles before each still
+  await render(page);
   await page.screenshot({ path: `${out}/detail.png` });
   const edit = await page.evaluate(async () => {
     const a = __app, o = a.sim.origin, g = a.sim.g;
+    a.test.resume();
     const { E } = await import('/src/elements.js');
     const world = [o.x + 8, g.ny - 12, o.z + g.nz / 2];
     const d = a.win.far.detail;
@@ -54,9 +57,7 @@ try {
   const result = await page.evaluate(async () => {
     const a = __app, d = a.win.far.detail, r = a.renderer, T = a.THREE;
     // Park only this page's loop; all following draws are controlled A/B.
-    const raf = requestAnimationFrame;
-    window.requestAnimationFrame = () => 0;
-    await new Promise(resolve => raf(resolve));
+    a.test.park();
     const mask = d.mask.slice();
     const on = (v) => {
       d.group.visible = v;

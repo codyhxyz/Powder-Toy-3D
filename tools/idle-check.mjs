@@ -2,12 +2,12 @@
 // npm run dev -- --port 5197 --strictPort
 // node tools/idle-check.mjs --port 5197
 import assert from 'node:assert/strict';
-import { chromium } from 'playwright';
+import { launchBrowser, newTestPage } from './browser.mjs';
 const args = process.argv.slice(2);
 const port = args[args.indexOf('--port') + 1] || '5197';
-const browser = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
+const browser = await launchBrowser();
 try {
-  const page = await browser.newPage();
+  const page = await newTestPage(browser, { mode: 'manual' });
   const errors = [];
   page.on('pageerror', (e) => errors.push(String(e)));
   page.on('console', (m) => {
