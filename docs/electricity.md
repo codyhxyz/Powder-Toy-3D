@@ -216,6 +216,21 @@ The three TPT groups, in the order to build them. Everything slots into `electri
 TPT's sensors look up to 2 cells away (25 for some). Six faces cover most uses; a radius needs a gather in its own
 pass, run only on awake sensors.
 
+## Checks
+
+- `node tools/elec-check.mjs`: the circuits on the dock tiles' engine (17 checks): the wire's timing through an on
+  switch and stopped by an off one, the battery's train of sparks, the P-N junction, P and N working the switch and
+  the powered clone, water's reach and Joule heating, the sensor, and the Spark tool.
+- `node tools/elec-gpu-check.mjs <outDir> --port <port>`: the same on the GPU in a Lab box (2026-10-10, M5):
+  - no shader or page errors;
+  - a battery's spark front reaches the cell k along a steel wire at step k (10, 40 and 75 steps: exact);
+  - water at the wire's tip is live 1, 2 and 3 cells in, at 0.75, 0.5 and 0.25, and not 4 cells in;
+  - P → N passes and N → P stops at the junction, the sensor fires on hot stone and the powered clone copies once
+    switched on;
+  - the activity map: 94 builds with no brick differing from the reference, and the spark states (400k values in the
+    circuits' box) identical with quiet bricks skipped or not; 8% of supertiles awake with the circuits running;
+  - stills by day and night: the live pulses glow blue-white, four cells in every nine.
+
 ## Merging
 
 - Saltwater (el-chem) must carry `elec: 5` (seawater ~4.8 S/m at 20 °C) besides `conducts: true`, or it conducts
