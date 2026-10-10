@@ -34,7 +34,10 @@ const MONTAGE_COLS = 3;
 const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
 const p = await b.newPage({ viewport: STILL });
 const errs = [];
-p.on('console', (m) => { if (m.type() === 'error' && !/ERR_CONNECTION_REFUSED/.test(m.text())) errs.push(m.text().slice(0, 600)); });
+// console errors, and WebGL's own complaints (warnings): a draw GL refuses, e.g. an unbound sampler, draws nothing
+p.on('console', (m) => {
+  if ((m.type() === 'error' && !/ERR_CONNECTION_REFUSED/.test(m.text())) || /GL_INVALID/.test(m.text())) errs.push(m.text().slice(0, 600));
+});
 p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 600)));
 p.on('crash', () => errs.push('PAGE CRASHED'));
 await p.goto(`http://localhost:${port}/?size=world`);
