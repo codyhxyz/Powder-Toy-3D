@@ -997,18 +997,30 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     });
   }
 
-  function spawn(feet) {
-    rope = null;
-    crouch = 0;
-    resize();
+  // A jump to another spot (Teleportitis, potions.js; the wand's teleport, whose
+  // runtime checks full-box clearance first): health, fuel and statuses kept,
+  // the probe re-read there.
+  function teleport(feet) {
+    if (![feet?.x, feet?.y, feet?.z].every(Number.isFinite)) return false;
+    rope = null;   // a hook rope would yank the body back across the jump
     p.pos.copy(feet);
     p.vel.set(0, 0, 0);
     impulse.set(0, 0, 0);
     p.onGround = false; p.inLiquid = false; p.headInLiquid = false; p.liquidId = -1; p.submerged = 0;
-    p.jetFuel = 1; p.jetBurnS = 0; p.jetIdleS = 0;
     p.pogoing = false; pogoStep = 0; bounceTimed = false; prevJump = false; jumpHeldS = 0; sinceJumpPress = Infinity; sinceBounce = Infinity;
     if (p.jetting) { p.jetting = false; if (!quiet) povEvents.emit('player:jet', { on: false }); }
-    generation++; probe.valid = false;   // wait for cells around the new spot
+    generation++; probe.valid = false;   // reject in-flight probes from the old spot
+    env.contactN = 0; env.headInLiquid = false; env.liquidId = E.WATER; env.buriedId = -1; env.pressure = 0;
+    contactId.fill(0); contactT.fill(0); contactSpark.fill(0);
+    for (const key of Object.keys(env2)) env2[key] = key === 'loose' ? false : 0;
+    return true;
+  }
+
+  function spawn(feet) {
+    crouch = 0;
+    resize();
+    if (!teleport(feet)) return;
+    p.jetFuel = 1; p.jetBurnS = 0; p.jetIdleS = 0;
     vitals.reset();
     p.status.clearAll('spawn');
     gibDue = false;
@@ -1040,14 +1052,9 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
   }
 
   return Object.assign(p, {
-    spawn, update, dispose, windowShifted,
+    spawn, teleport, update, dispose, windowShifted,
     applyImpulse(dv) { impulse.add(dv); },
     ownBlast() { vitals.ownBlast(); },
-    // a jump to another spot (Teleportitis, potions.js): health and statuses kept, the probe re-read there
-    teleport(feet) {
-      p.pos.copy(feet); p.vel.set(0, 0, 0); impulse.set(0, 0, 0); p.onGround = false;
-      generation++; probe.valid = false;
-    },
     heal(amount) { if (!vitals.dead) vitals.health = Math.min(1, vitals.health + amount); },   // Regeneration (potions.js)   // a blast it set off (a rocket, a bomb): it hurts this body less (vitals.js)
     // a blow from outside the sim (an NPC's axe): the Energy Shield takes it first;
     // { lethal: true } takes all the health there is, through the shield (a backstab);

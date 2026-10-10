@@ -119,6 +119,7 @@ export function createPov(app) {
   viewmodel.visible = false;
 
   let mode = 'off';                      // off | entering | on | exiting
+  let editing = false;
   let starting = false;                  // waiting for the drop point
   let locked = false;
   let deadSeen = false, deadTime = 0;
@@ -146,7 +147,7 @@ export function createPov(app) {
 
   // ---- pointer lock
   function requestLock() {
-    if (document.pointerLockElement === canvas) return;
+    if (editing || document.pointerLockElement === canvas) return;
     try { canvas.requestPointerLock()?.catch?.(() => {}); } catch { /* not allowed here */ }
   }
   document.addEventListener('pointerlockchange', () => {
@@ -158,7 +159,8 @@ export function createPov(app) {
   });
   function releaseInput() {
     keys.clear();
-    buttons.primary = buttons.secondary = false;
+    buttons.primary = buttons.secondary = buttons.primaryPressed = buttons.secondaryPressed = false;
+    wheelNotches = wheelAcc = 0;
   }
 
   // Q: the tools menu, Garry's Mod's spawn menu: the mouse is freed and the
@@ -178,7 +180,7 @@ export function createPov(app) {
   const setHudHidden = (v) => { hudHidden = v; document.body.classList.toggle('pov-nohud', v); app.requestRender(); };
 
   addEventListener('keydown', (e) => {
-    if (!active() || app.isTyping() || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (editing || !active() || app.isTyping() || e.metaKey || e.ctrlKey || e.altKey) return;
     if (MOVE_KEYS.has(e.code)) { keys.add(e.code); if (e.code === 'Space') e.preventDefault(); }
     if (e.code === VIEW_KEY) {
       e.preventDefault();
@@ -212,7 +214,7 @@ export function createPov(app) {
   }) : null;
 
   canvas.addEventListener('mousedown', (e) => {
-    if (!active()) return;
+    if (editing || !active()) return;
     if (!isLocked()) { if (mode !== 'exiting') requestLock(); return; }   // the click that locks doesn't fire
     if (e.button === 0) { buttons.primary = true; buttons.primaryPressed = true; }
     if (e.button === 2) { buttons.secondary = true; buttons.secondaryPressed = true; }
@@ -222,12 +224,12 @@ export function createPov(app) {
     if (e.button === 2) buttons.secondary = false;
   });
   document.addEventListener('mousemove', (e) => {
-    if (!active() || !locked || mode === 'exiting') return;
+    if (editing || !active() || !locked || mode === 'exiting') return;
     povCam.turn(e.movementX, e.movementY);
     lookMovedAt = performance.now();
   });
   canvas.addEventListener('wheel', (e) => {
-    if (!active()) return;
+    if (editing || !active()) return;
     e.preventDefault();
     if (!isLocked()) return;
     const px = e.deltaY * (e.deltaMode === 1 ? WHEEL_LINE_PX : e.deltaMode === 2 ? WHEEL_PAGE_PX : 1);
@@ -284,7 +286,11 @@ export function createPov(app) {
           renderer, scene,
           getSim: app.getSim, getVolume: app.getVolume, getScale: app.getScale,
           hud, viewmodel,
-          isActive: () => live(),
+          isActive: () => live() && !editing,
+          getStepsPerFrame: () => app.settings.paused ? 0 : app.settings.steps,
+          requestRender: app.requestRender,
+          releaseInput,
+          onEditorOpenChange(open) { editing = open; releaseInput(); sprintOn = false; app.requestRender(); },
         });
       } catch (err) { console.error('POV toolbelt failed to start', err); }
     }
@@ -441,7 +447,7 @@ export function createPov(app) {
     primary: false, secondary: false, primaryPressed: false, secondaryPressed: false, wheel: 0,
     viewBobbing: true,              // the View Bobbing setting (the viewmodel rig's hand bob reads it)
     aim: { valid: false, cell: new THREE.Vector3(), face: 0, id: -1, T: 0, P: 0, dist: Infinity },
-    player: { pos: null, vel: null, onGround: false, inLiquid: false, applyImpulse: (dv) => player?.applyImpulse(dv), holdPogo: () => player?.holdPogo(), body: null },   // body: the player itself (a drink acts on it: ingest.js)
+    player: { pos: null, vel: null, onGround: false, inLiquid: false, applyImpulse: (dv) => player?.applyImpulse(dv), teleport: (feet) => player?.teleport(feet), holdPogo: () => player?.holdPogo(), body: null },   // body: the player itself (a drink acts on it: ingest.js)
   };
   const input = { move: { x: 0, z: 0 }, jump: false, sprint: false, down: false, crouch: false };
   let sprintOn = false;     // Sprint: Toggle's state
@@ -455,7 +461,7 @@ export function createPov(app) {
     input.jump = input.sprint = input.down = input.crouch = false;
     const d = vehicles.drive;
     d.throttle = d.steer = 0; d.brake = d.boost = false;
-    if (mode !== 'on' || player.dead || app.isTyping()) return;
+    if (editing || mode !== 'on' || player.dead || app.isTyping()) return;
     if (vehicles.seated) {   // the keys drive: W/S throttle, A/D steer (+ is left), Space brake or hop, Shift boost
       d.throttle = (keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 1 : 0);
       d.steer = (keys.has('KeyA') ? 1 : 0) - (keys.has('KeyD') ? 1 : 0);
@@ -626,7 +632,7 @@ export function createPov(app) {
       ctx.dt = dt;
       ctx.toolRate = player.perks.toolRate;
       ctx.stepsPerFrame = app.settings.paused ? 0 : app.settings.steps;
-      const use = isLocked();
+      const use = !editing && isLocked();
       ctx.primary = use && buttons.primary;
       ctx.secondary = use && buttons.secondary;
       ctx.primaryPressed = use && buttons.primaryPressed;
@@ -734,7 +740,7 @@ export function createPov(app) {
   });
 
   // god-mode keys POV takes over (app.js skips them while active)
-  const blocksKey = (e) => active() && !PASS_KEYS.has(e.key) && !(e.metaKey || e.ctrlKey);
+  const blocksKey = (e) => editing || (active() && !PASS_KEYS.has(e.key) && !(e.metaKey || e.ctrlKey));
 
   return {
     get active() { return active(); },
@@ -744,6 +750,13 @@ export function createPov(app) {
     get toolbelt() { return toolbelt; },
     vehicles,                    // the jeep and the hoverbike (vehicles/index.js): spawnLayout(layout), list, seated
     get classes() { return classes; },   // the class picker (classPicker.js), or null with CLASSES_ENABLED off
+    get editingWand() { return editing; },
+    get wandRuntime() { return toolbelt?.wandRuntime ?? null; },
+    async equipWand(definition) {
+      await enter();
+      return active() && !!toolbelt?.equipWand(definition);
+    },
+    openWandEditor() { if (active()) toolbelt?.openEditor(); },
     // what the held tool shows next to the crosshair ({ name, color, T?, P?, note? } for ui/hud.js showReadout), or null
     get readout() { return live() && mode === 'on' && toolbelt ? toolbelt.readout : null; },
     get figure() { return figure; },

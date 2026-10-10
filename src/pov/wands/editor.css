@@ -1,0 +1,64 @@
+.wand-editor {
+  width: min(960px, calc(100vw - 32px)); max-height: calc(100dvh - 32px);
+  margin: auto; padding: 20px; overflow: auto;
+  background: var(--panel-solid); color: var(--text); border: 1px solid var(--line-hi);
+  border-radius: var(--r-panel); font: 14px/1.5 var(--ui); color-scheme: dark;
+  scrollbar-color: var(--muted) var(--panel-solid); caret-color: var(--accent);
+}
+.wand-editor::backdrop { background: rgba(5, 8, 14, 0.78); }
+.wand-editor::selection, .wand-editor ::selection { background: var(--accent); color: var(--accent-ink); }
+.wand-editor h2 { margin: 0; font: 400 19px/1.4 var(--pixel); }
+.wand-editor h3 { margin: 0 0 8px; font-size: 15px; }
+.we-header p { margin: 6px 0 18px; color: var(--muted); max-width: 72ch; }
+.wand-editor button, .wand-editor input, .wand-editor select {
+  min-height: 36px; border: 1px solid var(--line-hi); border-radius: 6px;
+  background: var(--raise); color: var(--text); font: inherit; padding: 6px 9px;
+}
+.wand-editor select option { background: var(--panel-solid); }
+.wand-editor input { min-width: 0; width: 100%; }
+.wand-editor input::placeholder { color: var(--muted); }
+.wand-editor button { cursor: pointer; white-space: nowrap; }
+.wand-editor button:hover:not(:disabled) { background: var(--raise-hi); }
+.wand-editor button:disabled { opacity: 0.45; cursor: not-allowed; }
+.wand-editor :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.we-loadout { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.we-loadout label, .we-config label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); }
+.we-note { margin: 10px 0 18px; color: var(--muted); font-size: 12px; }
+.we-columns { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); gap: 24px; }
+.we-spells, .we-build { min-width: 0; }
+.we-filters { display: flex; gap: 8px; margin-bottom: 8px; }
+.we-filters input { flex: 1; }
+.we-filters select { max-width: 48%; }
+.we-library { list-style: none; margin: 0; padding: 0; max-height: 52vh; overflow: auto; }
+.we-library li { display: flex; align-items: start; gap: 12px; padding: 12px 4px; border-bottom: 1px solid var(--line); }
+.we-library li > div { flex: 1; min-width: 0; }
+.we-library strong { display: block; }
+.we-library small { color: var(--muted); }
+.we-library p { margin: 4px 0 0; font-size: 12px; color: var(--muted); }
+.we-deck-heading { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 8px; }
+.we-deck-heading h3 { margin: 0; }
+.we-deck { padding-left: 26px; margin: 0 0 18px; max-height: 220px; overflow: auto; }
+.we-deck li { padding: 5px 0; }
+.we-deck li > span { display: block; margin-bottom: 4px; overflow-wrap: anywhere; }
+.we-deck button { margin-right: 4px; font-size: 12px; min-height: 32px; }
+.we-empty { color: var(--muted); list-style: none; font-size: 13px; }
+.we-config { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; font-size: 12px; }
+.we-stats { font-size: 12px; font-variant-numeric: tabular-nums; }
+.we-errors { color: #ff9da9; font-size: 13px; overflow-wrap: anywhere; }
+.we-errors p { margin: 6px 0; }
+.we-build > h3 { margin-top: 18px; }
+.we-preview { padding-left: 24px; margin: 0; max-height: 200px; overflow: auto; font-size: 12px; font-variant-numeric: tabular-nums; }
+.we-preview li { margin-bottom: 8px; }
+.we-preview pre { margin: 4px 0; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
+.we-footer { display: flex; justify-content: end; align-items: center; gap: 8px; margin-top: 22px; padding-top: 14px; border-top: 1px solid var(--line); }
+.we-footer span { margin-right: auto; color: var(--muted); font-size: 12px; }
+.wand-editor .we-save { background: var(--accent); color: var(--accent-ink); }
+.wand-editor .we-save:hover:not(:disabled) { background: var(--accent); filter: brightness(1.1); }
+@media (max-width: 640px) {
+  .wand-editor { width: calc(100vw - 16px); max-height: calc(100dvh - 16px); padding: 14px; }
+  .we-columns, .we-loadout { grid-template-columns: 1fr; gap: 18px; }
+  .we-library { max-height: 220px; }
+  .we-footer { flex-wrap: wrap; }
+  .we-footer span { flex-basis: 100%; }
+  .wand-editor button { min-height: 40px; }
+}

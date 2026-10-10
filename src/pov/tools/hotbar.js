@@ -19,7 +19,7 @@ export function createHotbar(onSelect, onSelectTool) {
   const hint = h('div.hb-cycle');
   const stack = h('div.hb-stack', { hidden: true },
     h('div.hb-head', {}, heading, position), list, hint,
-    h('div.hb-help', { text: 'Wheel: all tools · Q: more tools' }));
+    h('div.hb-help', { text: 'Wheel: all tools · Q: more tools · B: edit wand' }));
   const slots = SLOTS.map((label, i) => {
     const icon = h('span.hb-icon');
     const status = h('span.hb-status');

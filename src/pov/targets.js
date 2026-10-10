@@ -50,10 +50,10 @@ export function addTarget(t) {
 
 // The nearest live target a ray from `origin` along unit `dir` enters within
 // maxDist: { target, dist, point }, or null. Slab test against each box.
-export function rayTarget(origin, dir, maxDist, exclude = null) {
+export function rayTarget(origin, dir, maxDist, exclude = null, ignored = null) {
   let best = null;
   for (const t of targets) {
-    if (!t.alive || t.id === exclude || rules?.passes(exclude ?? PLAYER, t)) continue;
+    if (!t.alive || t.id === exclude || ignored?.has(t.id) || rules?.passes(exclude ?? PLAYER, t)) continue;
     t.box(lo, hi);
     let t0 = 0, t1 = maxDist;
     for (const a of ['x', 'y', 'z']) {
@@ -71,10 +71,10 @@ export function rayTarget(origin, dir, maxDist, exclude = null) {
 }
 
 // The nearest live target the segment a → b enters: as rayTarget, dist along it.
-export function segmentTarget(a, b, exclude = null) {
+export function segmentTarget(a, b, exclude = null, ignored = null) {
   const d = b.clone().sub(a);
   const len = d.length();
-  return len > 0 ? rayTarget(a, d.divideScalar(len), len, exclude) : null;
+  return len > 0 ? rayTarget(a, d.divideScalar(len), len, exclude, ignored) : null;
 }
 
 // The nearest live target to `point` within maxDist of its box: { target, dist
@@ -126,6 +126,20 @@ export const dealtScale = (actorId) => targetById(actorId ?? PLAYER)?.body?.stat
 export function targetById(id) {
   for (const t of targets) if (t.id === id) return t;
   return null;
+}
+
+// Live boxes intersecting a sphere (wand blasts/fields). Closest point avoids
+// missing a tall actor whose centre is outside the effect's radius.
+export function areaTargets(center, radius, exclude = null) {
+  const found = [];
+  for (const target of targets) {
+    if (!target.alive || target.id === exclude) continue;
+    target.box(lo, hi);
+    const point = center.clone().clamp(lo, hi);
+    const distance = point.distanceTo(center);
+    if (distance <= radius) found.push({ target, point, distance });
+  }
+  return found;
 }
 
 export const hasTargets = () => targets.size > 0;
