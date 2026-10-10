@@ -430,7 +430,7 @@ function loadPreset(name, undoable = true) {
       placeVolume();
       post.reset();
       pov?.worldReplaced();
-    }, (err) => console.error('world: its passes failed to compile', err));
+    }, (err) => console.error('world: its passes failed to compile, or its scene to prepare', err));
     toolbar.setUndoEnabled(false);
   } else if (name === 'empty') sim.clear();
   else if (name === 'island') loadIsland(sim, { seed: worldSeed });
