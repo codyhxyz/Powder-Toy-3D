@@ -27,8 +27,9 @@ import { ISLAND_VIEW_XZ } from './island.js';
 //     the heights, so the conduit's lava stands as far over its rim as in the
 //     box and spills at once.
 //   - The snow cap is a layer of the cone's height: 4 cells (1.2 m). On these
-//     flanks no column is more than a cell above its neighbour, so a layer of
-//     any depth rests (each grain has snow diagonally under it).
+//     flanks no column is more than a cell above any neighbour, so a layer of
+//     any depth rests (each grain has snow diagonally under it), but for the
+//     cap's outer edge, which slumps a little as the box's does.
 //   - The trees are scaled by the vertical scale on every axis, so they stay
 //     tree-shaped (8 times wider would be 60 m crowns): 2-cell trunks 16 tall
 //     under crowns 12 wide, about 7 m in all. There are ~16 times as many as
@@ -121,6 +122,14 @@ TREE_SECTORS.forEach((n, k) => {
   if (Math.asin(TREE_REACH / (ring - TREE_REACH)) >= Math.PI / n) throw new Error(`giant volcano: ring ${k}'s trees reach out of their sectors`);
 });
 if (CONDUIT_TOP > WY - VOLC_HEADROOM) throw new Error('giant volcano: the conduit reaches into the headroom');
+// A tree's cells stand from TRUNK_ROOT under its base to its crown's top, and
+// its base (the rock's top at its trunk's corner) is within the cone's slope
+// over that reach (plus a cell for rounding each top) of the rock's top
+// under any of its cells. Cells outside this band over their own rock's top
+// can't be part of a tree, so they skip the lookup.
+const TREE_SLOPE = Math.ceil((CONE_H / CONE_R) * (TREE_REACH + TRUNK_W)) + 1;
+const TREE_BELOW = TRUNK_ROOT + TREE_SLOPE;                         // cells under the rock's top
+const TREE_ABOVE = Math.ceil(CROWN_LIFT + CROWN_HALF) + TREE_SLOPE;  // cells over it
 
 // It starts on the shore the god view looks from (island.js ISLAND_VIEW_XZ:
 // from +x +z), with the summit and its lava ahead: the window's centre this
@@ -130,11 +139,10 @@ const START_INLAND = 0.25;
 
 // ---- the JS twin (sceneCell's, step for step) ----
 
-// the rock's top at world column (x, z): the floor, and the cone over it
-function coneTop(x, z) {
-  const d = Math.hypot(x + 0.5 - CENTER[0], z + 0.5 - CENTER[1]);
-  return VOLC_FLOOR + Math.max(0, Math.floor(CONE_H * (1 - d / CONE_R) + 0.5));
-}
+// the rock's top at distance d from the summit (of a column's centre): the floor, and the cone over it
+const topAt = (d) => VOLC_FLOOR + Math.max(0, Math.floor(CONE_H * (1 - d / CONE_R) + 0.5));
+// ...at world column (x, z)
+const coneTop = (x, z) => topAt(Math.hypot(x + 0.5 - CENTER[0], z + 0.5 - CENTER[1]));
 // the conduit's radius at height y (the chamber's below CHAMBER_TOP); 0 outside it
 function conduitR(y) {
   if (y < VOLC_FLOOR || y >= CONDUIT_TOP) return 0;
@@ -185,11 +193,11 @@ export const VOLC_TREE_BOX = { reach: Math.ceil(CROWN_R + TRUNK_W), below: TRUNK
 // The element at world cell (x, y, z) for world seed `seed`.
 export function volcCell(x, y, z, seed) {
   const ox = x + 0.5 - CENTER[0], oz = z + 0.5 - CENTER[1], d = Math.hypot(ox, oz);
-  const top = coneTop(x, z);
+  const top = topAt(d);
   let id = y < top ? E.ROCK : y < VOLC_SEA ? E.WATER : E.EMPTY;
   if (d < conduitR(y)) id = E.LAVA;
   if (x >= CLONE_LO[0] && y >= CLONE_LO[1] && z >= CLONE_LO[2] && x < CLONE_HI[0] && y < CLONE_HI[1] && z < CLONE_HI[2]) id = E.CLONE;
-  const t = treeAt(ox, oz, d, seed);
+  const t = y >= top - TREE_BELOW && y < top + TREE_ABOVE ? treeAt(ox, oz, d, seed) : null;
   const part = t ? volcTreePart(t, x, y, z) : E.EMPTY;
   if (part !== E.EMPTY) id = part;
   if (d > SNOW_IN && d < SNOW_OUT && y >= top && y < top + SNOW_DEPTH) id = E.SNOW;
@@ -198,11 +206,10 @@ export function volcCell(x, y, z, seed) {
 
 // Where ground() starts looking down: over the highest matter, the conduit's
 // lava, the snow on the summit's rock and the innermost trees' crowns.
-const treeBase = (d) => VOLC_FLOOR + Math.max(0, Math.floor(CONE_H * (1 - d / CONE_R) + 0.5));
 const MATTER_TOP = Math.max(CONDUIT_TOP, VOLC_FLOOR + CONE_H + SNOW_DEPTH,
-  Math.ceil(treeBase(TREE_IN - TREE_REACH) + CROWN_LIFT + CROWN_HALF));
+  Math.ceil(topAt(TREE_IN - TREE_REACH) + CROWN_LIFT + CROWN_HALF));
 // a trunk on the outermost ring still stands on the shore, not in the sea
-if (treeBase(TREE_IN + (TREE_RINGS - 1) * TREE_RING_W + TRUNK_REACH) <= VOLC_SEA) throw new Error('giant volcano: trees stand in the sea');
+if (topAt(TREE_IN + (TREE_RINGS - 1) * TREE_RING_W + TRUNK_REACH) <= VOLC_SEA) throw new Error('giant volcano: trees stand in the sea');
 
 const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
 const glsl = () => /* glsl */ `
@@ -236,6 +243,8 @@ const glsl = () => /* glsl */ `
 #define GVOL_CROWN_R ${f(CROWN_R)}
 #define GVOL_CROWN_HALF ${f(CROWN_HALF)}
 #define GVOL_CROWN_LIFT ${f(CROWN_LIFT)}
+#define GVOL_TREE_BELOW ${TREE_BELOW}           // a tree's cells stand within these of the rock's top under them
+#define GVOL_TREE_ABOVE ${TREE_ABOVE}
 #define GVOL_SALT_CELL ${SALT_CELL}u
 #define GVOL_SALT_TREE ${SALT_TREE}u
 #define GVOL_BYTE ${BYTE}u
@@ -244,11 +253,10 @@ const glsl = () => /* glsl */ `
 const int GVOL_TREE_SECTORS[GVOL_TREE_RINGS] = int[GVOL_TREE_RINGS](${TREE_SECTORS.join(', ')});   // sites per ring
 uniform uint uSceneSeed;
 
-// the rock's top at world column c: the floor, and the cone over it
-int gvolTop(ivec2 c) {
-  float d = length(vec2(c) + 0.5 - GVOL_CENTER);
-  return GVOL_FLOOR + max(0, int(floor(GVOL_H * (1.0 - d / GVOL_R) + 0.5)));
-}
+// the rock's top at distance d from the summit (of a column's centre): the floor, and the cone over it
+int gvolTopAt(float d) { return GVOL_FLOOR + max(0, int(floor(GVOL_H * (1.0 - d / GVOL_R) + 0.5))); }
+// ...at world column c
+int gvolTop(ivec2 c) { return gvolTopAt(length(vec2(c) + 0.5 - GVOL_CENTER)); }
 // the conduit's radius at height y (the chamber's below GVOL_CHAMBER_TOP); 0 outside it
 float gvolConduitR(int y) {
   if (y < GVOL_FLOOR || y >= GVOL_CONDUIT_TOP) return 0.0;
@@ -277,7 +285,7 @@ ivec3 gvolTree(vec2 o, float d) {
 void sceneCell(ivec3 w, out vec4 A, out vec4 B) {
   vec2 o = vec2(w.xz) + 0.5 - GVOL_CENTER;
   float d = length(o);
-  int top = gvolTop(w.xz);
+  int top = gvolTopAt(d);
   // the cone on the sea floor, the sea round it
   int id = w.y < top ? E_ROCK : w.y < GVOL_SEA ? E_WATER : E_EMPTY;
   // the magma chamber and the conduit, full of lava
@@ -286,7 +294,7 @@ void sceneCell(ivec3 w, out vec4 A, out vec4 B) {
   // itself in: the cellular automaton has no magma pressure to push lava up.)
   if (all(greaterThanEqual(w, GVOL_CLONE_LO)) && all(lessThan(w, GVOL_CLONE_HI))) id = E_CLONE;
   // trees on the flanks
-  ivec3 t = gvolTree(o, d);
+  ivec3 t = w.y >= top - GVOL_TREE_BELOW && w.y < top + GVOL_TREE_ABOVE ? gvolTree(o, d) : ivec3(0, 0, -1);
   if (t.z >= 0) {
     vec3 c = vec3(float(t.x) + 0.5 * float(GVOL_TRUNK_W), float(t.z) + GVOL_CROWN_LIFT, float(t.y) + 0.5 * float(GVOL_TRUNK_W));
     vec3 r = vec3(w) + 0.5 - c;
