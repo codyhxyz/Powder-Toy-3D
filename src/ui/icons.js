@@ -19,6 +19,8 @@ export const ICON = {
   // a black hole and its tilted accretion disk (Exotic: antimatter, singularity)
   exotic: svg('<circle cx="12" cy="12" r="3.5"/><ellipse cx="12" cy="12" rx="9.5" ry="3.5" transform="rotate(-25 12 12)"/>'),
   close: svg('<path d="M6 6l12 12M18 6L6 18"/>'),
+  // four map tiles: the start menu's grid
+  maps: svg('<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/>'),
   chevDown: '<svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>',
   chevUp: svg('<path d="M6 15l6-6 6 6"/>'),
   reset: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.4-5.7"/><path d="M4 4v4h4"/></svg>',

@@ -509,8 +509,8 @@ The world is much larger than what lives on the GPU. Its size is `WORLD` cells, 
     edits outside the window (W5).
 
 - **Scenes** (`src/world/scenes`; checked on the CPU by `tools/check-scenes.mjs`). What a world holds is a scene:
-  the island and five more, picked in Settings → Scene while the grid is World (`settings.scene`, saved; `?scene=`
-  too). Picking one starts the world over with it (`build`, as clicking World again does).
+  the island and five more, each a map in the start menu (`src/maps.js`; `settings.scene`, saved; `?scene=` and
+  `?map=` too). Picking one starts the world over with it (`build`).
   - A scene is an object (`scenes/index.js` documents it): `params({ size, seed })` → P with at least `sea` and
     `floor`; `glsl(g)` defining `sceneCell(world cell, A, B)`, the generated state of any cell, a pure function of
     the cell and the scene's `uniforms(P)`; `start(P, win)` and `ground(x, z, P)` on the CPU (the window's first
