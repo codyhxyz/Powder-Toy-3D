@@ -83,6 +83,9 @@ const METER_TAPS = 4;
 const METER_INTERVAL = 4;
 const METER_LOG_FLOOR = 1e-4; // radiance added before the log, so black pixels don't send it to −∞ (Reinhard's δ)
 const METER_COVERED = 0.5;    // alpha at which a pixel counts as scene, not the page behind the canvas
+// Night vision's screen: a Gen-3 image intensifier's P43 phosphor (green, peak 545 nm), linear sRGB, max
+// channel 1 (also tints the held tool, pov/viewmodel.js, drawn over the finished frame).
+export const NV_PHOSPHOR = [0.30, 1.0, 0.25];
 
 const VERT = /* glsl */ `
 in vec3 position;
@@ -449,8 +452,7 @@ const float CAS_LOBE_HARD = 5.0;
 const vec3 IGN = vec3(0.06711056, 0.00583715, 52.9829189);
 const float DITHER_LEVELS = 255.0;  // output code values above 0
 const float DITHER_BLACK = 1e-5;    // max channel at or below which a pixel counts as exact black (no dither)
-// Night vision: a Gen-3 image intensifier's P43 phosphor (green, peak 545 nm), in linear sRGB.
-const vec3 NV_PHOSPHOR = vec3(0.30, 1.0, 0.25);
+const vec3 NV_PHOSPHOR = vec3(${NV_PHOSPHOR.join(', ')});   // night vision's screen (NV_PHOSPHOR in JS)
 const float NV_GRAIN = 0.08;        // grain σ (display units) on a mid-grey picture at NV_GRAIN_GAIN...
 const float NV_GRAIN_GAIN = 16.0;   // ...this gain (one stack); σ ∝ √(picture·gain), shot noise
 const float NV_VIGNETTE = 0.6;      // darkening at the corners: the tube's round field of view...
