@@ -36,7 +36,7 @@ const fires = () => ev(() => window.__fires.length);
 
 // the palette's Tools group lists every first-person tool
 const tiles = await ev(() => [...document.querySelectorAll('.dock .tile')].filter((t) => +t.dataset.id <= -300).length);
-check('palette Tools group lists the tools', tiles === 13, `${tiles} tiles`);
+check('palette Tools group lists the tools', tiles === 15, `${tiles} tiles`);
 // given from the god view: it waits in the inventory
 await ev(() => document.querySelector('.dock .tile[data-id="-306"]').click());   // SMG
 const given = await ev(async () => (await import('/src/pov/tools/inventory.js')).inventory.owned);
@@ -56,7 +56,7 @@ await ev(() => { window.__app.pov.test.assumeLocked = true; });
 const held = () => ev(() => window.__app.pov.toolbelt.selectedKey);
 check('SMG given before the drop-in is in hand', (await held()) === 'SMG', await held());
 const slots = await ev(() => document.querySelectorAll('.hotbar .hb-slot').length);
-check('five slots on the bar', slots === 5, `${slots}`);
+check('six slots on the bar', slots === 6, `${slots}`);
 
 // slot keys: 1 then 1 again steps through Dig; 3 cycles the guns
 await p.keyboard.press('1'); const k1 = await held();

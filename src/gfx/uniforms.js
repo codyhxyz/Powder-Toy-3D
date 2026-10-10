@@ -5,6 +5,7 @@
 import { mediaNoiseUniform } from './mediaNoise.js';
 import { skyState } from './sky.js';
 import { cloudShift } from '../shaders/gfx/clouds.js';
+import { LAMP_MAX } from './lamps.js';
 
 // The media detail clock (simulation steps) wraps here, seamlessly for the
 // drift speeds allowed in gfx/materials.js (MEDIA rise).
@@ -50,6 +51,9 @@ export const gfxUniforms = {
   uNearGI: { value: true },     // lighting upgrades (gfx/lighting.js), switched from Settings → Lighting
   uGlowLights: { value: true },
   uCaustics: { value: true },
+  uLampCount: { value: 0 },   // hand lamps (gfx/lamps.js; src/pov/lamps.js sets them)
+  uLampPos: { value: new Float32Array(4 * LAMP_MAX) },
+  uLampCol: { value: new Float32Array(4 * LAMP_MAX) },
 };
 
 const sky = { sunExt: null, sunCol: null, skyUp: null, ground: null };

@@ -6,7 +6,7 @@ import {
 } from 'yuka';
 import { ELEMENTS, E, K } from '../../elements.js';
 import { HAND_REACH, BODY_HEIGHT, EYE_HEIGHT } from '../constants.js';
-import { AXE, PICK, TORCH, PHYS } from '../../shaders/povTools.js';
+import { AXE, PICK, FLAMER, PHYS } from '../../shaders/povTools.js';
 import { ROUND_GRAVITY, gravityScale } from '../ballistics.js';
 import { THROW_SPEED } from '../tools/bomb.tool.js';
 
@@ -59,7 +59,7 @@ const AXE_WINDUP = 0.6;              // s it faces the target, axe up, before a 
 const AXE_COOLDOWN = 0.5;            // s after a blow
 const PICK_COOLDOWN = 0.7;           // s after a pickaxe blow (its refire is 0.6)
 const AXE_RANGE = Math.min(HAND_REACH, 6);   // cells: it swings from closer than the hand's reach
-const TORCH_RANGE = 1.5 + TORCH.LENGTH;      // cells: nozzle reach + flame
+const TORCH_RANGE = 1.5 + FLAMER.LENGTH;      // cells: nozzle reach + flame
 const BOMB_MIN = 10;                 // cells: closer than this a bomb would hurt itself
 const BOMB_COOLDOWN = 7;             // s between bombs
 const BOMB_ERROR = 0.12;             // its throw's spread: σ of the landing point, as a share of the distance

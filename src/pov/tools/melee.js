@@ -30,10 +30,20 @@ import { rayTarget, PLAYER } from '../targets.js';
 //     blow, frag,              // the blow's tuning (ENERGY ...) and its pass
 //     hit,                     // viewmodel.js HIT row for a landed blow
 //     refire,                  // s between swings
+//     reach?,                  // cells from the eye a blow lands (HAND_REACH)
 //     body: { damage, energy, cause },   // a blow on a body (an NPC): health taken, impact energy, cause of death
-//     pose: { pos, rest, hit, miss, roll, strike } });   // the held model, in cells and rad (camera space)
+//     bodyBlow?(ctx, target),  // this blow on this body, instead of `body` and `hit`: { damage, energy, cause,
+//                              //   hit, lethal } (lethal: all its health, through any shield), or null (the knife's backstab)
+//     tell?(ctx, target),      // true while the next blow would be special: the held model eases to pose.ready
+//                              //   (the knife raised for a backstab); target is the body in reach (rayTarget), or null
+//     pose: { pos, rest, hit, miss, roll, strike,   // the held model, in cells and rad (camera space)
+//             thrust?: [hit, miss],                 // cells it drives forward on a blow: a stab, not a chop
+//             ready?, readyPos?: [x, y, z],         // rad and cells offset while tell() holds
+//             lethal?: { hit, miss, thrust } } });  // a lethal blow's own motion (the backstab's plunge)
 
-export function meleeTool({ key, name, model: modelKey, desc, blow, frag, hit: HIT_ROW, refire, body: BODY, pose: POSE }) {
+const TELL_RATE = 12;   // 1/s: the tell (pose.ready) eases in and out this fast, about 0.1 s (by eye, TF2's knife raise is a few frames)
+
+export function meleeTool({ key, name, model: modelKey, desc, blow, frag, hit: HIT_ROW, refire, reach = HAND_REACH, body: BODY, bodyBlow, tell, pose: POSE }) {
   const source = key.toLowerCase();
 
   // The held tool: the model (models.js) on a hand of the viewmodel rig, turned about the hand by the swing.
@@ -52,20 +62,30 @@ export function meleeTool({ key, name, model: modelKey, desc, blow, frag, hit: H
       const model = buildModel(env);
       const pass = toolPass(frag, () => ({ uCenter: { value: new THREE.Vector3() }, uDir: { value: new THREE.Vector3() } }));
       const button = trigger(refire);
-      const pose = swing({ rest: POSE.rest, hit: POSE.hit, miss: POSE.miss, strike: POSE.strike, settle: refire });
+      const motion = (m) => ({ rest: POSE.rest, hit: m.hit, miss: m.miss, strike: POSE.strike, settle: refire });
+      const pose = swing(motion(POSE));
+      const lethalPose = POSE.lethal ? swing(motion(POSE.lethal)) : pose;
+      const thrust = (m) => swing({ rest: 0, hit: m?.thrust?.[0] ?? 0, miss: m?.thrust?.[1] ?? 0, strike: POSE.strike, settle: refire });
+      const push = thrust({ thrust: POSE.thrust }), lethalPush = thrust({ thrust: POSE.lethal?.thrust });
+      let turning = pose, driving = push, tellK = 0, telling = false;
       let lastHit = null;
 
+      // the body (an NPC) in reach and nearer than the struck cell, or null
+      const bodyInReach = (ctx) => rayTarget(ctx.eye, ctx.dir.clone().normalize(), Math.min(reach, ctx.aim?.valid ? ctx.aim.dist : Infinity), povEvents.actor?.id ?? PLAYER);
+
+      // { landed, lethal }
       function strike(ctx) {
         const aim = ctx.aim;
-        // a body (an NPC) in reach and nearer than the struck cell takes the blow
-        const target = rayTarget(ctx.eye, ctx.dir.clone().normalize(), Math.min(HAND_REACH, aim?.valid ? aim.dist : Infinity), povEvents.actor?.id ?? PLAYER);
+        const target = bodyInReach(ctx);
         if (target) {
-          target.target.hurt(BODY.damage, BODY.cause, ctx.dir.clone().normalize());
-          povEvents.emit('impact', { source, point: target.point, normal: ctx.dir.clone().negate(), id: -1, energy: BODY.energy, broke: null, body: true });
-          model.rig.hit(HIT_ROW);
-          return true;
+          const b = bodyBlow?.(ctx, target) ?? null;
+          const lethal = !!b?.lethal;
+          target.target.hurt(b?.damage ?? BODY.damage, b?.cause ?? BODY.cause, ctx.dir.clone().normalize(), lethal ? { lethal } : undefined);
+          povEvents.emit('impact', { source, point: target.point, normal: ctx.dir.clone().negate(), id: -1, energy: b?.energy ?? BODY.energy, broke: null, body: true, backstab: lethal });
+          model.rig.hit(b?.hit ?? HIT_ROW);
+          return { landed: true, lethal };
         }
-        if (!aim?.valid || aim.dist > HAND_REACH || aim.cell.y < 0) return false;   // air, or the floor
+        if (!aim?.valid || aim.dist > reach || aim.cell.y < 0) return { landed: false };   // air, or the floor
         const sim = ctx.sim ?? env.getSim();
         const mat = pass(sim);
         mat.uniforms.uCenter.value.copy(aim.cell).addScalar(0.5);
@@ -80,22 +100,35 @@ export function meleeTool({ key, name, model: modelKey, desc, blow, frag, hit: H
         povEvents.emit('impact', { source, point, normal: faceNormal(aim.face), id: aim.id, energy: blow.ENERGY, broke });
         model.rig.hit(HIT_ROW);
         if (broke === false) povEvents.emit('tool:action', { tool: source, action: 'refuse', id: aim.id, point });
-        return true;
+        return { landed: true };
       }
 
       return {
         update(ctx) {
           model.hand.visible = true;
           model.rig.update(ctx);
+          const dt = toolDt(ctx);
+          // the tell: the next blow would be special (a backstab lined up)
+          telling = !!tell?.(ctx, bodyInReach(ctx));
+          tellK += ((telling ? 1 : 0) - tellK) * (1 - Math.exp(-TELL_RATE * dt));
           if (button.ready(ctx)) {
             button.fire();
             povEvents.emit('tool:action', { tool: source, action: 'swing' });
-            pose.start(strike(ctx));
+            const r = strike(ctx);
+            turning = r.lethal ? lethalPose : pose;
+            driving = r.lethal ? lethalPush : push;
+            turning.start(r.landed);
+            driving.start(r.landed);
           }
-          model.pivot.rotation.set(pose.angle(toolDt(ctx)), 0, POSE.roll);
+          // the swing's turn and drive, on top of the rest pose eased toward the tell's
+          const restAngle = POSE.rest + tellK * ((POSE.ready ?? POSE.rest) - POSE.rest);
+          model.pivot.rotation.set(restAngle + turning.angle(dt) - POSE.rest, 0, POSE.roll);
+          const rp = POSE.readyPos ?? [0, 0, 0];
+          model.pivot.position.set(rp[0] * tellK, rp[1] * tellK, rp[2] * tellK - driving.angle(dt));
         },
-        deselect() { model.hand.visible = false; button.reset(); pose.stop(); },
+        deselect() { model.hand.visible = false; button.reset(); pose.stop(); lethalPose.stop(); push.stop(); lethalPush.stop(); tellK = 0; telling = false; },
         status: () => null,
+        get telling() { return telling; },   // for checks: the tell (pose.ready) is up
         windowShifted(dx, dz) { if (lastHit) { lastHit.cell.x -= dx; lastHit.cell.z -= dz; } },   // (docs/scaling.md D11)
         get lastHit() { return lastHit; },   // for checks: the cell the last swing struck
         dispose() { pass.dispose(); model.dispose(); },

@@ -11,7 +11,7 @@
 // Within a slot, tools are in GEAR order. Each *.tool.js takes its name, model
 // and description from here: export default { ...gear('KEY'), create(env) {...} }.
 
-export const SLOTS = ['Dig', 'Build', 'Guns', 'Explosives', 'Gadgets'];
+export const SLOTS = ['Dig', 'Build', 'Guns', 'Explosives', 'Gadgets', 'Light'];
 
 export const GEAR = [
   { key: 'SHOVEL', slot: 0, start: true, name: 'Shovel', model: 'shovel', abbr: 'SHVL', color: '#8a7a5c',
@@ -20,6 +20,8 @@ export const GEAR = [
     desc: 'Mines rock into stone and breaks anything the axe can. Too weak for metal.' },
   { key: 'AXE', slot: 0, start: true, name: 'Axe', model: 'axe', abbr: 'AXE', color: '#9a6a3c',
     desc: 'Chops wood, smashes glass and ice, clears plants. Too weak for rock or metal.' },
+  { key: 'KNIFE', slot: 0, name: 'Knife', model: 'knife', abbr: 'KNIF', color: '#c9ccd1',
+    desc: 'Stab a body from behind to kill it in one blow, shield or not; from the front it is a weak stab. Useless on rock.' },
   { key: 'TROWEL', slot: 1, start: true, name: 'Trowel', model: 'trowel', abbr: 'TRWL', color: '#a4a8ad',
     desc: 'Builds 1 m blocks out of what the shovel dug up. Right-click picks the material.' },
   { key: 'BUCKET', slot: 1, start: true, name: 'Bucket', model: 'bucket', abbr: 'BCKT', color: '#7f8b95',
@@ -36,10 +38,16 @@ export const GEAR = [
     desc: 'Fires a rocket that flies straight and blows a crater where it hits, with a blast of air that throws anything near it, you included.' },
   { key: 'PHYSGUN', slot: 4, start: true, name: 'Physgun', model: 'physgun', abbr: 'PHYS', color: '#5ff0ff',
     desc: 'Hold to lift loose powder, liquid or gas; wheel for distance, right-click to fling. Right-click empty-handed to blast.' },
-  { key: 'BLOWTORCH', slot: 4, start: true, name: 'Blowtorch', model: 'torch', abbr: 'TRCH', color: '#b8322a',
-    desc: 'Hold to burn: lights wood, sets off gunpowder, melts ice and, slowly, metal.' },
+  { key: 'BLOWTORCH', slot: 4, start: true, name: 'Flamethrower', model: 'flamer', abbr: 'FLMR', color: '#b8322a',
+    desc: 'Hold for a continuous jet of fire, 6 m long: lights wood, sets off gunpowder, melts ice and, slowly, metal.' },
   { key: 'SCANNER', slot: 4, start: true, name: 'Scanner', model: 'scanner', abbr: 'SCAN', color: '#7dff9a',
     desc: 'Reads the material, temperature and pressure of whatever you point it at.' },
+  { key: 'POGO', slot: 4, name: 'Pogo stick', model: 'pogo', abbr: 'POGO', color: '#d0453a',
+    desc: 'Hold it to bounce. Press jump just as you land to bounce higher, three times in a row to the top. Hold jump to fly.' },
+  { key: 'TORCH', slot: 5, start: true, name: 'Torch', model: 'torch', abbr: 'TRCH', color: '#e07b2a',
+    desc: 'A warm, flickering light. Left-click touches its flame to things; right-click throws it, and it burns where it lands, setting fire to what burns.' },
+  { key: 'LANTERN', slot: 5, name: 'Lantern', model: 'lantern', abbr: 'LNTN', color: '#e8f0ff',
+    desc: 'A very bright white light. Left-click switches it off and on; right-click throws it, and it lands unbroken and keeps shining.' },
 ];
 
 const BY_KEY = new Map(GEAR.map((g) => [g.key, g]));
