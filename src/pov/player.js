@@ -200,8 +200,8 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
   let mats = null, matKey = '';
   let lastSim = null, lastFrame = 0, dtSmooth = 1 / 60;
 
-  const contactId = new Int32Array(PN), contactT = new Float32Array(PN), contactLife = new Float32Array(PN);
-  const env = { contactId, contactT, contactLife, contactN: 0, headInLiquid: false, liquidId: E.WATER, buriedId: -1, pressure: 0 };
+  const contactId = new Int32Array(PN), contactT = new Float32Array(PN), contactSpark = new Float32Array(PN);
+  const env = { contactId, contactT, contactSpark, contactN: 0, headInLiquid: false, liquidId: E.WATER, buriedId: -1, pressure: 0 };
 
   const p = {
     pos: new THREE.Vector3(), vel: new THREE.Vector3(),
@@ -488,7 +488,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
           if (id < 0) continue;
           contactId[cn] = id;
           contactT[cn] = tAt(x, y, z);
-          contactLife[cn] = field(x, y, z, 3, 0);
+          contactSpark[cn] = 0;   // a live cell's spark, 0..1 (status.js shock): field(x, y, z, 3, 0) once el-elec's probe carries it
           cn++;
         }
     env.contactN = cn;

@@ -31,8 +31,9 @@ import { povEvents } from './events.js';
 // ---- tuning
 export const STAIN_SHOW_S = 0.5;        // s of stain built before a stain shows and acts (a splash on a boot doesn't count)
 // Electricity (branch el-elec): a live cell the body touches shocks it. How a probe tells a
-// live cell is el-elec's (docs/electricity.md, "Telling a live cell"); until then nothing is live.
-const SHOCK_DAMAGE = 2;                 // health/s with the whole skin on live cells (scales with their share)
+// live cell is el-elec's (docs/electricity.md, "Telling a live cell"): the probe's 4th channel
+// holds its spark, 0..1. player.js puts that in env.contactSpark; until el-elec lands it's 0.
+const SHOCK_DAMAGE = 0.5;               // health/s from a full-strength (1) live cell touching dry skin (game tuning: 2 s to die)
 export const WET_SHOCK = 3;             // × shock damage while Wet: wet skin's resistance is a few times lower (IEC 60479-1: ~1 kΩ wet vs a few kΩ dry)
 
 const DEFS = new Map();                 // key → definition, in registration order
@@ -76,20 +77,13 @@ function stainsById() {
   return byId;
 }
 
-// The shock from live cells touching the body, as health/s: SHOCK_DAMAGE × their share of the
-// contact cells, × WET_SHOCK while Wet. isLive(cell) gets { id, T, life } for each contact cell.
-// The status set calls it with liveCell below: wiring electricity is changing that one line.
-const liveCell = () => false;
-export function shock(env, wet, isLive = liveCell) {
-  const n = env.contactN;
-  if (!n) return 0;
-  const cell = { id: 0, T: 0, life: 0 };
-  let live = 0;
-  for (let i = 0; i < n; i++) {
-    cell.id = env.contactId[i]; cell.T = env.contactT[i]; cell.life = env.contactLife?.[i] ?? 0;
-    if (isLive(cell)) live++;
-  }
-  return live ? SHOCK_DAMAGE * (live / n) * (wet ? WET_SHOCK : 1) : 0;
+// The shock from live cells touching the body, as health/s: SHOCK_DAMAGE × the strongest
+// spark it touches (one live conductor is enough to put a current through it), × WET_SHOCK
+// while Wet. sparkAt(i) → 0..1 for contact cell i; by default the player's env.contactSpark.
+export function shock(env, wet, sparkAt = (i) => env.contactSpark?.[i] ?? 0) {
+  let strength = 0;
+  for (let i = 0; i < env.contactN; i++) strength = Math.max(strength, sparkAt(i));
+  return strength > 0 ? SHOCK_DAMAGE * Math.min(1, strength) * (wet ? WET_SHOCK : 1) : 0;
 }
 
 // One body's statuses. body: the player object (pos, skinT, perks, dead, ...).

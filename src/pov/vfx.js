@@ -6,7 +6,7 @@ import {
 import { ELEMENTS, E, K } from '../elements.js';
 import { povEvents } from './events.js';
 import { JET_NOZZLES } from './figure.js';
-import { MELEE_SOURCES } from './constants.js';
+import { MELEE_SOURCES, BODY_WIDTH, BODY_HEIGHT } from './constants.js';
 
 // POV effects, with three.quarks: muzzle flash (and a short light), sparks,
 // dust and chips, splash mist and tracers. Cosmetic only: the real debris,
@@ -118,6 +118,15 @@ const JET_SMOKE_SIZE = [0.4, 0.7];      // cells across at birth
 const JET_SMOKE_GROW = 3;
 const JET_SMOKE_LIFE = [0.5, 0.9];      // s
 const JET_SMOKE_ALPHA = 0.4;
+
+// ---- a burning body (status.js BURNING): flame licks rising off it, and a little smoke. Its
+// fire in the grid is engine FIRE beside it (stains.js); these are the flames on the body itself.
+const BURN_RATE = 50;                   // flame licks/s per body
+const BURN_SMOKE_RATE = 6;              // smoke puffs/s per body
+const BURN_RISE = [3, 7];               // cells/s, up
+const BURN_LIFE = [0.2, 0.4];           // s
+const BURN_SIZE = [0.5, 0.9];           // cells across
+const BURN_REACH = 0.75;                // share of the body's height they start below (they rise past the head)
 
 // ---- rockets (kind 'rocket' round:move): a smoke trail and a flame at the tail
 const ROCKET_TRAIL_STEP = 1.5;          // cells of flight between smoke puffs
@@ -479,6 +488,28 @@ export function createVfx(env) {
     }
   }
 
+  // flames off a burning body at feet (grid) for dt seconds: random points on its sides,
+  // rising (a random rounding of the rate, so no per-body state)
+  function burn(feet, dt) {
+    const s = env.getScale();
+    const nFlame = Math.floor(BURN_RATE * dt + Math.random()), nSmoke = Math.floor(BURN_SMOKE_RATE * dt + Math.random());
+    const at = (out) => {
+      const a = Math.random() * TAU;
+      vN.set(feet.x + Math.cos(a) * BODY_WIDTH / 2, feet.y + Math.random() * BODY_HEIGHT * BURN_REACH, feet.z + Math.sin(a) * BODY_WIDTH / 2);
+      return toWorld(vN, out);
+    };
+    burst(fx.jet, nFlame, (p) => {
+      vV.randomDirection().multiplyScalar(JET_SPREAD); vV.y += 1;
+      vV.multiplyScalar(randIn(BURN_RISE) * s);
+      setP(p, at(vP), vV, randIn(BURN_SIZE) * s, JET_COLOR, 1, randIn(BURN_LIFE));
+    });
+    burst(fx.jetSmoke, nSmoke, (p) => {
+      vV.randomDirection().multiplyScalar(JET_SPREAD * 2); vV.y += 1;
+      vV.multiplyScalar(randIn(BURN_RISE) * s);
+      setP(p, at(vP), vV, randIn(JET_SMOKE_SIZE) * s, JET_SMOKE_COLOR, JET_SMOKE_ALPHA, randIn(JET_SMOKE_LIFE), JET_SMOKE_GRAVITY, JET_SMOKE_DRAG);
+    });
+  }
+
   // ---- events
   const live = () => env.isActive();
   const offs = [
@@ -535,6 +566,8 @@ export function createVfx(env) {
     },
     // the jetpack firing this frame: feet (grid), yaw (rad), dt (s), nozzles (the body's, JET_NOZZLES' shape)
     jet(feet, yaw, dt, nozzles) { if (live()) jet(feet, yaw, dt, nozzles); },
+    // a burning body this frame: feet (grid), dt (s)
+    burn(feet, dt) { if (live()) burn(feet, dt); },
     // every POV frame; true while anything is still showing (keep rendering)
     update(dt) {
       batch.update(dt);

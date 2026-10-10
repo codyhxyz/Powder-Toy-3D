@@ -1,8 +1,10 @@
 // Check of the status effects (src/pov/status.js, src/pov/stains.js): stains from contact
 // cells, Burning, Frozen, their cancelling, Toxic, Bleeding and an NPC's body.
-// CPU only (node): real vitals.js and status sets fed made-up contact cells, the way
-// player.js feeds them.
-// usage: node tools/status-check.mjs
+// The default run is CPU only (node): real vitals.js and status sets fed made-up contact
+// cells, the way player.js feeds them. --gpu then runs the real body in a browser (needs
+// a dev server; AC power): a pool, fire on and off the body, snow, a wound's spill, the HUD
+// row and the lab's NPC.
+// usage: node tools/status-check.mjs [--gpu] [--port 5431] [--shot file.jpg]
 import { E } from '../src/elements.js';
 import { createVitals } from '../src/pov/vitals.js';
 import { createPerkSet } from '../src/pov/perks.js';
@@ -10,6 +12,8 @@ import { createStatusSet, registerStain, statusDef, shock, WET_SHOCK } from '../
 import { wound, BLEED_ELEMENT } from '../src/pov/stains.js';
 import { povEvents } from '../src/pov/events.js';
 
+const args = process.argv.slice(2);
+const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
 let fails = 0;
 const check = (name, ok, info = '') => { if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${info ? `  ${info}` : ''}`); };
 const r2 = (x) => Math.round(x * 100) / 100;
@@ -35,7 +39,7 @@ function makeBody() {
   });
   body.status = createStatusSet(body, ctx);
   const env = {
-    contactId: new Int32Array(N), contactT: new Float32Array(N), contactLife: new Float32Array(N), contactN: N,
+    contactId: new Int32Array(N), contactT: new Float32Array(N), contactSpark: new Float32Array(N), contactN: N,
     headInLiquid: false, liquidId: -1, buriedId: -1, pressure: 0,
   };
   // touch: { elementKeyOrId: [share, T] }, the rest air at AIR_T
@@ -237,10 +241,15 @@ povEvents.on('status:off', (e) => events.push(['off', e.key, e.cause, e.by]));
 {
   const b = makeBody();
   b.touch({ METAL: [0.1, AIR_T] });
-  const live = (c) => c.id === E.METAL;
-  const dry = shock(b.env, false, live), wet = shock(b.env, true, live);
   check('shock: nothing is live by default', shock(b.env, true) === 0);
-  check('shock: wet skin takes WET_SHOCK ×', dry > 0 && Math.abs(wet / dry - WET_SHOCK) < 1e-9, `${r2(dry)} → ${r2(wet)} health/s`);
+  b.env.contactSpark[0] = 0.5;   // el-elec's probe: a spark of strength 0.5 on one contact cell
+  const dry = shock(b.env, false), wet = shock(b.env, true);
+  check('shock: wet skin takes WET_SHOCK ×', dry > 0 && Math.abs(wet / dry - WET_SHOCK) < 1e-9, `${r2(dry)} → ${r2(wet)} health/s at strength 0.5`);
+  const h0 = b.health;
+  b.status.add('WET', 5);
+  b.run(0.2);
+  check('shock: a live cell hurts the body', b.health < h0, `${r2((h0 - b.health) / 0.2)} health/s wet`);
+  b.env.contactSpark[0] = 0;
 }
 
 // ---- an NPC body: the same status set, its events carry who it is
@@ -262,6 +271,124 @@ povEvents.on('status:off', (e) => events.push(['off', e.key, e.cause, e.by]));
   check('death clears every status', b.status.list().length === 0);
 }
 
+// ---------------------------------------------------------------- GPU (the real body)
+if (args.includes('--gpu')) await gpu(opt('port', '5431'), opt('shot', null));
+
 console.log(fails ? `\n${fails} FAILED` : '\nall ok');
 process.exit(fails ? 1 : 0);
 
+
+async function gpu(port, shotPath) {
+  const { chromium } = await import('playwright');
+  const W = 960, H = 600;
+  const browser = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
+  const p = await browser.newPage({ viewport: { width: W, height: H } });
+  const errs = [];
+  // (the multiplayer relay isn't running locally: its refused connection isn't ours)
+  p.on('console', (m) => { if (m.type() === 'error' && !/ERR_CONNECTION_REFUSED/.test(m.text())) errs.push(m.text().slice(0, 400)); });
+  p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 600)));
+  const ev = (fn, arg) => p.evaluate(fn, arg);
+  const settle = (ms) => p.waitForTimeout(ms);
+  const dropIn = async (url) => {
+    await p.goto(url);
+    await p.waitForFunction(() => window.__app?.pov, null, { timeout: 60000 });
+    await settle(1500);
+    await p.mouse.move(W / 2, H / 2);
+    await p.keyboard.press('f');
+    await p.waitForFunction(() => window.__app.pov.mode === 'on', null, { timeout: 30000 }).catch(() => {});
+    await ev(() => { window.__app.pov.test.assumeLocked = true; });
+  };
+  // paint a ball of element `key` (grid cells), the brush's way
+  const paint = (key, [x, y, z], radius, replace = false) => ev(async ([key, x, y, z, radius, replace]) => {
+    const { E } = await import('/src/elements.js');
+    const a = window.__app, C = a.camera.position.constructor;
+    a.sim.paint({ center: new C(x, y, z), radius, shape: 1, tool: E[key], rate: 1, replace });
+  }, [key, x, y, z, radius, replace]);
+  const stand = (x, z, y = 0) => ev(([x, y, z]) => { const a = window.__app; a.pov.player.spawn(a.pov.player.pos.clone().set(x, y, z)); }, [x, y, z]);
+  const st = () => ev(() => window.__app.pov.player.status.list().map((s) => s.key));
+  const count = (key) => ev(async (key) => { const { E } = await import('/src/elements.js'); const c = window.__app.sim.census()[E[key]]; return c ? { n: c.n, Tmax: Math.round(c.Tmax) } : { n: 0, Tmax: 0 }; }, key);
+  const until = (fn, arg, ms) => p.waitForFunction(fn, arg, { timeout: ms, polling: 50 }).then(() => true, () => false);
+  try {
+    await dropIn(`http://localhost:${port}/?size=128&preset=empty`);
+    check('gpu: dropped in', (await ev(() => window.__app.pov.mode)) === 'on');
+
+    // ---- a wound spills cells in proportion (BLOOD is branch nt-mat's: none while it's absent)
+    await stand(30, 30);
+    await settle(800);
+    const bleedKey = await ev(async () => (await import('/src/pov/stains.js')).BLEED_ELEMENT);
+    const hasBlood = await ev(async (k) => (await import('/src/elements.js')).E[k] !== undefined, bleedKey);
+    const b0 = await count(bleedKey);
+    await ev(() => window.__app.pov.player.hurt(0.5, 'test'));
+    await settle(600);
+    const b1 = await count(bleedKey);
+    if (hasBlood) check('gpu: a wound spills cells', b1.n > b0.n, `${bleedKey} ${b0.n} → ${b1.n} for 0.5 health`);
+    else check(`gpu: no spill while ${bleedKey} doesn't exist`, b1.n === b0.n);
+    check('gpu: a wound stains Bloody', (await st()).includes('BLOODY'), JSON.stringify(await st()));
+    await ev(() => { const q = window.__app.pov.player; q.status.clearAll(); q.spawn(q.pos.clone()); });
+
+    // ---- a burning body lights the world: FIRE cells around it, the wood beside it heats
+    await stand(64, 64);
+    await paint('WOOD', [67.5, 1.5, 64.5], 1.5, true);
+    await settle(600);
+    const w0 = await count('WOOD');
+    await ev(() => window.__app.pov.player.status.add('BURNING', 4));
+    let fireSeen = 0;
+    for (let i = 0; i < 6; i++) { await settle(400); fireSeen = Math.max(fireSeen, (await count('FIRE')).n); }
+    const w1 = await count('WOOD');
+    check('gpu: a burning body puts FIRE in the air', fireSeen > 0, `${fireSeen} fire cells at most`);
+    check('gpu: the wood beside it heats', w1.Tmax > w0.Tmax + 50, `wood Tmax ${w0.Tmax} → ${w1.Tmax} °C, ${w0.n} → ${w1.n} cells`);
+    const hud = await ev(() => [...document.querySelectorAll('.pov-st')].map((e) => e.title + ' ' + e.querySelector('b')?.textContent));
+    check('gpu: the HUD row shows it', hud.some((x) => x.startsWith('Burning')), JSON.stringify(hud));
+    const tint = await ev(() => window.__app.pov.player.status.tint());
+    check('gpu: the body is tinted', tint[3] > 0, JSON.stringify(tint.map((x) => +x.toFixed(2))));
+    const burnOut = await until(() => !window.__app.pov.player.status.has('BURNING'), null, 6000);
+    check('gpu: it burns out', burnOut);
+
+    // ---- touching fire sets it alight; jumping in water puts it out
+    await stand(30, 90);
+    await settle(500);
+    await paint('FIRE', [30.5, 2.5, 92.5], 1.2);
+    const lit = await until(() => window.__app.pov.player.status.has('BURNING'), null, 3000);
+    check('gpu: touching fire sets the body alight', lit, JSON.stringify(await st()));
+    await paint('WATER', [90, 1.5, 90], 6); await paint('WATER', [90, 1.5, 90], 6); await paint('WATER', [90, 1.5, 90], 6);
+    await settle(1200);
+    await ev(() => window.__app.pov.player.status.add('BURNING', 4));
+    await stand(90, 90, 4);
+    const out = await until(() => { const s = window.__app.pov.player.status; return s.has('WET') && !s.has('BURNING'); }, null, 4000);
+    check('gpu: jumping in water gives Wet and puts Burning out', out, JSON.stringify(await st()));
+
+    // ---- buried in snow: Frozen, and it slows the body
+    await ev(() => window.__app.pov.player.status.clearAll());
+    await stand(30, 60);
+    await settle(400);
+    for (let i = 0; i < 4; i++) await paint('SNOW', [30.5, 2.5, 60.5], 3.5);
+    const froze = await until(() => window.__app.pov.player.status.has('FROZEN'), null, 6000);
+    check('gpu: buried in snow, Frozen', froze, `${JSON.stringify(await st())} moveScale ${await ev(() => window.__app.pov.player.status.moveScale)}`);
+
+    if (shotPath) {
+      await ev(() => { const q = window.__app.pov.player; q.status.clearAll(); q.spawn(q.pos.clone().set(64, 0, 40)); });
+      await settle(600);
+      await ev(() => { const q = window.__app.pov.player; q.status.add('OILY', 30); q.status.add('BURNING', 30); });
+      await p.keyboard.press('v');
+      await settle(1200);
+      await p.screenshot({ path: shotPath, type: 'jpeg', quality: 60, scale: 'css' });
+      await p.keyboard.press('v');
+    }
+
+    // ---- the lab's NPC: the same body, so the same stains
+    await dropIn(`http://localhost:${port}/?preset=lab`);
+    const npcUp = await until(() => window.__app.pov.npc?.body?.status && window.__app.pov.npc.body.pos.y >= 0, null, 30000);
+    check('gpu: the lab NPC has a status set', npcUp);
+    if (npcUp) {
+      await settle(1500);
+      const at = await ev(() => { const q = window.__app.pov.npc.body.pos; return [q.x, q.y, q.z]; });
+      for (let i = 0; i < 3; i++) await paint('WATER', [at[0], at[1] + 2, at[2]], 3);
+      const wet = await until(() => window.__app.pov.npc.body.status.has('WET'), null, 4000);
+      check('gpu: an NPC body gets Wet from water', wet, JSON.stringify(window.__app ? await ev(() => window.__app.pov.npc.body.status.list().map((s) => s.key)) : []));
+    }
+  } finally {
+    if (errs.length) { console.log('page errors:'); errs.slice(0, 8).forEach((e) => console.log('  ' + e)); }
+    check('gpu: no page errors', !errs.length);
+    await browser.close();
+  }
+}
