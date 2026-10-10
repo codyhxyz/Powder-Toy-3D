@@ -1303,8 +1303,7 @@ try {
       onChange: () => {},
     });
   }
-  spawners = new Spawners({ scene, getSim: () => sim, getVolume: () => volume, getScale: () => scale });
-  resetSpawners(settings.preset);
+  spawners = new Spawners({ scene, getSim: () => sim, getVolume: () => volume, getScale: () => scale });   // seeded by build()'s loadPreset, once there is a grid
   if (BuildsClass) {
     builds = new BuildsClass({
       scene, camera, settings, getSim: () => sim, getVolume: () => volume, getScale: () => scale, onClose: leaveBuild,
