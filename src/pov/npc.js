@@ -3,7 +3,7 @@ import { createPlayer } from './player.js';
 import { createFigure } from './figure.js';
 import { buildCrasher, CRASHER_COLORS } from './figureCrasher.js';
 import { attachModel } from './models.js';
-import { addTarget } from './targets.js';
+import { addTarget, PLAYER } from './targets.js';
 import { povEvents } from './events.js';
 import { createKit } from './tools/index.js';
 import { pack, persistentLoad, ownedKey } from './tools/transfer.js';
@@ -65,10 +65,12 @@ let nextId = 1;
 
 // The figure, with every tool's model in its right mitten (hidden but the held
 // one). The models' meshes take the figure's lighting: each gets its colour as
-// an albedo, and createFigure lights it like the body.
-function buildWizard(held) {
+// an albedo, and createFigure lights it like the body. palette and eyeGlow are
+// this NPC's own arrays: the meshes hold them, so a team's colours (tint) are
+// written into them in place.
+function buildWizard(held, palette, eyeGlow) {
   return () => {
-    const rig = buildCrasher({ palette: PALETTE, eyeGlow: EYE_GLOW });
+    const rig = buildCrasher({ palette, eyeGlow });
     const grip = new THREE.Group();
     grip.position.y = rig.handY;
     grip.scale.setScalar(HELD_SCALE);
@@ -97,11 +99,17 @@ export function createAi({ renderer, getSim }) {
 // (renderer, scene, getSim, getVolume, getScale) plus ballistics (the player's).
 // home(): where it appears and comes back (grid cells, feet: its spawner), or
 // null for a random spot near the player.
-export function createNpc({ env, ai, home = () => null }) {
+// A team game (src/game) also passes: team ('red' | 'blue' | 'infected', on
+// body.team), opponents() (who it fights: [{ id, pos, vel, alive, holding }];
+// without it, the player), respawnS (s dead before it comes back) and name.
+export function createNpc({ env, ai, home = () => null, team = null, opponents = null, respawnS = RESPAWN_S, name = null }) {
   const id = `npc${nextId++}`;
   const body = createPlayer({ renderer: env.renderer, getSim: env.getSim, quiet: true });
+  body.team = team;
   const held = {};
-  const figure = createFigure(buildWizard(held));
+  const palette = Object.fromEntries(Object.entries(PALETTE).map(([k, v]) => [k, [...v]]));
+  const eyeGlow = [...EYE_GLOW];
+  const figure = createFigure(buildWizard(held, palette, eyeGlow));
   const viewmodel = new THREE.Group();   // its tools' hands hang here; never drawn (the figure holds the models)
   const kit = createKit({ ...env, viewmodel, owner: id });
   let world = null;   // the frame's: { player, holding, toWorld, worldToGrid, scale, stepsPerFrame }
@@ -110,6 +118,7 @@ export function createNpc({ env, ai, home = () => null }) {
     packCells: () => pack(id).cells.length,
     bucket: () => { const l = persistentLoad(ownedKey('BUCKET', id), Infinity); return { id: l.cells[0]?.[0] ?? -1, n: l.cells.length }; },
     target: () => ({ pos: world.player.pos, vel: world.player.vel, alive: !world.player.dead, holding: world.holding }),
+    opponents,
   });
 
   let deadTime = 0, stuckT = 0, jumpWait = 0, spawned = false, yaw = 0, chopT = 0;
@@ -137,7 +146,7 @@ export function createNpc({ env, ai, home = () => null }) {
       body.hurt(amount * DAMAGE_TAKEN, cause);
       agent.stagger();   // a hit stops its wind-up
       body.applyImpulse(tmp.set(d.x, Math.max(d.y, 0) + KNOCK_UP, d.z).normalize().multiplyScalar(HIT_KNOCKBACK));
-      agent.alert();   // it knows where you are now
+      agent.alert(povEvents.actor?.id ?? PLAYER);   // it knows where its attacker is now
     },
   });
 
@@ -171,9 +180,25 @@ export function createNpc({ env, ai, home = () => null }) {
     } else aim.dist = Infinity;
   }
 
+  // a team's look: { colors: { robe, hood, ... } (linear albedo), eyes (HDR) }
+  function tint(look) {
+    for (const [k, c] of Object.entries(look.colors ?? {})) palette[k]?.splice(0, 3, ...c);
+    if (look.eyes) eyeGlow.splice(0, 3, ...look.eyes);
+    figure.root.traverse((o) => {
+      if (!o.isMesh) return;
+      const u = o.material?.uniforms?.uAlbedo;
+      if (u && o.userData.albedo) u.value.set(...o.userData.albedo);
+      else if (o.userData.glow && o.material?.color) o.material.color.setRGB(...o.userData.glow);
+    });
+  }
+
   return {
     id,
+    name: name ?? id,
     root: figure.root,
+    tint,
+    get team() { return body.team; },
+    set team(t) { body.team = t; },
     bind(volume, g) { figure.bind(volume, g); },
     compile(r, camera, scene) { return figure.compile(r, camera, scene); },
     get body() { return body; },
@@ -191,7 +216,7 @@ export function createNpc({ env, ai, home = () => null }) {
       if (body.dead) {
         deadTime += dt;
         kit.putAway();
-        if (deadTime >= RESPAWN_S) spawn(sim);
+        if (deadTime >= respawnS) spawn(sim);
       }
       const alive = !body.dead;
 
@@ -211,9 +236,9 @@ export function createNpc({ env, ai, home = () => null }) {
       stuckT = want > 0 && got < want * STUCK_SPEED ? stuckT + dt : 0;
       input.down = false;
       if (body.inLiquid) {
-        // reflexes in liquid: dive after a player below while breath lasts; else swim up
+        // reflexes in liquid: dive after its target below while breath lasts; else swim up
         // to breathe, and stopped by a wall (a tank's side) hold jump: the jet lifts it out
-        const dive = alive && agent.knows && w.player.pos.y - body.pos.y < -DIVE_FROM && body.breath > SURFACE_BREATH;
+        const dive = alive && agent.knows && agent.target.pos.y - body.pos.y < -DIVE_FROM && body.breath > SURFACE_BREATH;
         input.down = dive;
         input.jump = alive && !dive && (body.headInLiquid || stuckT > STUCK_S || it.jump);
       } else {

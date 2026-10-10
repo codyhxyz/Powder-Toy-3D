@@ -191,6 +191,8 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     get cause() { return vitals.cause; },
     get skinT() { return vitals.skinT; },
     stepRate: 0,                  // sim steps/s, as measured
+    team: null,                   // a team game's side ('red' | 'blue' | 'infected', src/game), or null
+    speedScale: 1,                // × its run and walk speeds (a game's: an infected runs faster)
   };
   const impulse = new THREE.Vector3();
 
@@ -560,7 +562,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     if (wish.length() > 1) wish.normalize();
     const vh = new THREE.Vector2(v.x, v.z);
     let jumpedNow = false;
-    const runSpeed = p.jetting ? JET_FLY_SPEED : alive && input.sprint ? SPRINT_SPEED : WALK_SPEED;
+    const runSpeed = (p.jetting ? JET_FLY_SPEED : alive && input.sprint ? SPRINT_SPEED : WALK_SPEED) * p.speedScale;
     if (!swimming && (p.onGround || wish.lengthSq() > 0 || vh.length() <= runSpeed)) {
       // Noita: ease toward the wished speed, on the ground and in the air alike.
       // With no input in the air faster than a run (a blast), keep the momentum.

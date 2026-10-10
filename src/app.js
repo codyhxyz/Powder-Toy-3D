@@ -1397,6 +1397,7 @@ try {
     hover, pointerHover: () => pointerInside && !uiHover, pickRay,
     getSpawners: () => spawners,
     getPerkOrbs: () => perkOrbs,
+    loadPreset: (name) => loadPreset(name, false),   // a team game's new round (src/game)
     requestRender: () => pacer.wake(),
     inWorld: () => !!win,
   });
