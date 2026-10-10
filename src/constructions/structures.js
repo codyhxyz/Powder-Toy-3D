@@ -119,8 +119,8 @@ export function dock({ put, box, footing, T }, variant) {
 
 // A tower you climb for the view: a spiral stair round a newel inside, a
 // landing at the top. 'lighthouse' is striped masonry on a cliff, with a glass
-// lantern (unlit: a lamp that burns would churn a loaded world) and a railed
-// gallery round it; 'watch' a timber frame on a hilltop with a roofed
+// lantern and a railed gallery round it, its lamp a core of glowing crystal (a flame would churn
+// a loaded world); 'watch' a timber frame on a hilltop with a roofed
 // platform; 'ruin' a broken stone keep whose stair still climbs to its
 // broken top.
 const TOWER = {
@@ -205,6 +205,7 @@ function lighthouse(api) {
   const lamp = F + LH - Math.round(S.LAMP * T);
   box(0, F + 1, 0, 0, lamp - 1, 0, 'METAL');
   box(-1, lamp, -1, 1, lamp + 1, 1, 'GLASS');
+  box(0, lamp, 0, 0, lamp + 1, 0, 'CRYSTAL');
 }
 
 function watchtower(api) {
@@ -397,9 +398,10 @@ export function well({ put, box, footing, T }) {
 
 // A drift mine's mouth: a timber portal and a gallery driven straight into the
 // hillside behind it (the construction carves its own tunnel, so it works on
-// any slope steep enough to bury it), timber sets holding the roof, rails on
-// a plank floor running out to a loaded cart. Placed facing out of a slope;
-// in the box it stands as a timber gallery in the open.
+// any slope steep enough to bury it), timber sets holding the roof and
+// crystal lamps hung from them, rails on a plank floor running out to a loaded
+// cart. Placed facing out of a slope; in the box it stands as a timber gallery
+// in the open.
 const MINE = {
   LEN: 24,        // the gallery's length into the hill, cells at T = 1 (7 m)
   W: 5,           // clear width between the posts (1.5 m)
@@ -407,6 +409,7 @@ const MINE = {
   SPUR: 9,        // rails run out past the portal this far, to a buffer (room to turn in past the cart)
   CART: [3, 3, 4],// the cart: width, height, length
   CRATE: 2,       // crates (0.6 m) at the gallery's end: two stacked on the left, one on the right
+  LAMP_EVERY: 2,  // a crystal lamp hangs under every this-many-th cap beam, above the body's head
 };
 
 export function mine({ put, box, footing, T }) {
@@ -421,6 +424,7 @@ export function mine({ put, box, footing, T }) {
   for (let z = 0; z >= -L; z -= every) {
     for (const s of [-1, 1]) box(s * x0, 1, z, s * x0, h, z, 'WOOD');
     box(-x0, h + 1, z, x0, h + 1, z, 'WOOD');
+    if ((-z / every) % MINE.LAMP_EVERY === 1) put(0, h, z, 'CRYSTAL');
   }
   // the portal: heavier posts and a header with a little gable over it
   for (const s of [-1, 1]) box(s * x0, 0, 0, s * (x0 + 1), h + 1, 1, 'WOOD');
