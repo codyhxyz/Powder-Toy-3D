@@ -8,8 +8,9 @@ import { lib } from './render.js';
 //   so a one-cell plate still blocks the light crossing it, plus the optical
 //   depth of liquid, glass and smoke), and the light its exposed faces send
 //   back out: albedo × (sunlight from the shadow map + last frame's probe
-//   light at that brick). Feeding the probes back makes bounces add up over
-//   frames.
+//   light at that brick), plus what they give off themselves (emission():
+//   lava, hot metal, luminous crystal). Feeding the probes back makes bounces
+//   add up over frames, so a glowing thing lights a room by bounce too.
 // giGatherFrag: from each brick centre, march GI_RAYS fixed directions through
 //   those bricks, collecting the light of what each ray hits and the sky or
 //   ground beyond, and project it onto L1 spherical harmonics (rgb = radiance,
@@ -106,6 +107,7 @@ void main() {
     ivec3 l = ivec3(i % BS, (i / BS) % BS, i / FACE_CELLS);
     ivec3 c = o + l;
     vec3 alb = vec3(-1.0);   // fetched once, if a face is exposed
+    vec3 em = vec3(0.0);     // what the cell gives off (likewise)
     float sunVis = -1.0;     // likewise
     for (int f = 0; f < 6; f++) {
       ivec3 fn = ivec3(0);
@@ -114,8 +116,10 @@ void main() {
       bool inBrick = all(greaterThanEqual(ln, ivec3(0))) && all(lessThan(ln, ivec3(BS)));
       if (inBrick ? maskHas(m, cellBit(ln)) : giOpaque(c + fn)) continue;
       if (alb.x < 0.0) {
-        int id = eid(fetchA(c));
+        vec4 a = fetchA(c);
+        int id = eid(a);
         alb = ALBEDO[id] * (1.0 - METAL[id] * (1.0 - GI_METAL_DIFFUSE));
+        em = cellEmission(id, a.y);
       }
       vec3 nrm = vec3(fn);
       vec3 e = giIrradiance(pr, nrm);
@@ -124,7 +128,7 @@ void main() {
         if (sunVis < 0.0) sunVis = uShadows ? dot(sunShadow(vec3(c) + 0.5 + uSun * GI_SUN_LIFT), vec3(1.0 / 3.0)) : 1.0;
         e += SUN_COL * nl * sunVis;
       }
-      vec3 L = alb * e;
+      vec3 L = alb * e + em;
       rad += L;
       dir += nrm * dot(L, vec3(1.0 / 3.0));
       nf += 1.0;
