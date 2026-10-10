@@ -63,9 +63,10 @@ import { STRATA_BEDS_SRC } from './strata.js';
 //     column's water level (islandWaterLevel: the tarn's within its rim) as
 //     their sea (generator.js genCover, genTreeZone): beaches around it, plant
 //     cover only above it, trees two cells above it.
-//   - No trees on the gorge's walls or within RIA_RIM_BARE of its rim: the
-//     rim is bare (islandBare), so a tree's footing (its root flare grows
-//     wood down to the ground, constructions/runtime.js) never hangs down a wall. Gorge walls and mesa risers are rock and too steep for sand,
+//   - No trees on the gorge's walls, within RIA_RIM_BARE of its rim or on its
+//     floor between tall walls: they are bare (islandBare), so a tree's footing
+//     (its root flare grows wood down to the ground, constructions/runtime.js)
+//     never hangs down a wall and no crown grows into one. Gorge walls and mesa risers are rock and too steep for sand,
 //     plants or trees (the layers' slope limits).
 //   - Slopes stay walkable outside the gorge's walls, the mesas' risers, the
 //     stacks and tarn headwalls: tarn shores rise LAKE_SHORE per cell, the
@@ -97,6 +98,7 @@ const L = {
     RIA_DU: 1.0,                // cells: the meander's slope is read over this step either side
     RIA_RIM_BARE: 4.0,          // cells past the gorge's rim kept bare: a tree's root flare (≤ 2.7) would grow footings down its wall...
     RIA_RIM_DROP: 3.0,          // ...where it drops more than this (a tree on the steepest ground it may stand on, 0.8, drops ~2 across its flare)
+    RIA_FLOOR_BARE: 8.0,        // its floor is bare where a wall within this many cells rises RIA_RIM_DROP above it (a crown would grow into it)
     MEANDER_AMP: 22.0,          // the centreline swings this far either side of the axis...
     MEANDER_WAVE: 110.0,        // ...over this many cells along it...
     MEANDER_FINE: 0.3,          // ...with a finer octave of this share...
@@ -212,6 +214,13 @@ float lfRia(float x, float z, float h) { return min(h, lfRiaWall(x, z, 0.0)); }
 // gorge wall more than RIA_RIM_DROP tall (or on one)? (The walls that much
 // further out would cut it that deep.)
 bool lfRiaRim(float x, float z, float h) { return lfRiaWall(x, z, LAND_RIA_RIM_BARE) < h - LAND_RIA_RIM_DROP; }
+// Is column (x, z), its ground h high, the ria's own floor or wall (its
+// ground is the ria's surface) with a wall within RIA_FLOOR_BARE cells
+// rising more than RIA_RIM_DROP above it? A dry slot canyon: no trees.
+bool lfRiaSlot(float x, float z, float h) {
+  float w = lfRiaWall(x, z, 0.0);
+  return w < LAND_FAR && w <= h && lfRiaWall(x, z, -LAND_RIA_FLOOR_BARE) > h + LAND_RIA_RIM_DROP;
+}
 
 // ---- the mesas
 // libnoise's Terrace (see the top) on stratigraphic height s, its control
@@ -299,12 +308,13 @@ float islandWaterLevel(float x, float z, float h) {
   return uGenSea;
 }
 // Does column (x, z), its ground h high (after landforms), stay bare (no
-// plant cover, so no trees)? The badlands, and the gorge's rims and walls,
-// where a tree's footing would hang down the wall. (The bake gives it no
-// meadow: generator.js genMeadow.)
+// plant cover, no trees)? The badlands; the gorge's rims, where a tree's
+// footing would hang down a wall; and its floor between tall walls, where a
+// crown would grow into them. (The bake gives it no meadow: generator.js
+// genMeadow, genTreeZone.)
 bool islandBare(float x, float z, float h) {
   float cx = x + LAND_CENTRE, cz = z + LAND_CENTRE;
-  return (lfMesaR() > 0.0 && lfMesaBare(cx, cz)) || lfRiaRim(cx, cz, h);
+  return (lfMesaR() > 0.0 && lfMesaBare(cx, cz)) || lfRiaRim(cx, cz, h) || lfRiaSlot(cx, cz, h);
 }
 `;
 
