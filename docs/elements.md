@@ -122,21 +122,46 @@ metals and saltwater.
 `node tools/elements-core-check.mjs` runs test rows of each mechanism through the CPU twin and compiles the GPU
 passes with them.
 
-## The fan-out (2026-10-10)
+## The fan-out (2026-10-10): shipped
 
-Every branch starts from main 9624a75. Its worktree is `../tpt-el-<name>`.
+Seven branches (`../tpt-el-<name>` worktrees, from main dfede10) built this page's batches and projects in parallel.
+They were merged and deployed in the order below, which set the element ids. Main went from 31 elements to 73.
 
-| Branch | Port | Builds |
-| --- | --- | --- |
-| `el-core` | 5411 | Batch 0: the three mechanisms, gunpowder moved onto `blast`, the id-width audit |
-| `el-chem` | 5413 | Batch 2: liquid nitrogen, salt, saltwater, CO₂, dry ice, hydrogen, oxygen, caustic gas, lithium |
-| `el-boom` | 5412 | Batch 1: C-4, nitroglycerin, TNT, thermite, propane, fuse; an Explosives palette group |
-| `el-mat` | 5414 | Batch 3: void, brick, titanium, tungsten, plasma, gold, mercury, diamond; the Lightning tool |
-| `el-fun` | 5415 | Batch 4: dust, antimatter, singularity, clay (and the mud and ceramic it makes) |
-| `el-elec` | 5416 | Electricity project, v1 (docs/electricity.md) |
-| `el-rays` | 5417 | Fast-particle project, v1 (docs/particles.md) |
+| Order | Branch | Built | Main |
+| --- | --- | --- | --- |
+| 1 | `el-elec` | Electricity v1 (docs/electricity.md): spark, battery, P/N silicon, switch, insulator, temperature sensor, powered clone | 2e5ea95 |
+| 1 | `el-rays` | Fast particles v1 (docs/particles.md): photon and neutron list, uranium, plutonium | 2e5ea95 |
+| 2 | `el-core` | Batch 0: the three mechanisms, gunpowder on `blast`, ids up to 255 everywhere | b103ead |
+| 3 | `el-mat` | Batch 3: void, brick, titanium, tungsten, plasma, gold, mercury, diamond; Lightning tool, storms | 728ae84 |
+| 4 | `el-chem` | Batch 2: liquid nitrogen, salt, saltwater, CO₂, dry ice, hydrogen, oxygen, caustic gas, lithium | 979791d |
+| 5 | `el-fun` | Batch 4: dust, antimatter, singularity, clay, mud, ceramic | 31c458f |
+| 6 | `el-boom` | Batch 1: C-4, nitroglycerin, TNT, thermite, propane, fuse; Explosives group | 77f1a16 |
 
-Merge order sets element ids: core, chem, boom, mat, fun, then elec and rays as they verify.
+Each batch has a CPU check through the dock tiles' twin (`tools/{chem,boom,mat,fun,elec,rays}-check.mjs`).
+`tools/elements-gpu-check.mjs` runs one small Lab scene per batch on the GPU, then loads World. On main 71079bf
+(85 elements, with the Noita batch), 11 of its 12 checks passed with no console errors. The one that fails is
+liquid nitrogen freezing water, the first follow-up below.
+
+### Follow-ups
+
+- **Liquid nitrogen doesn't freeze a pool.** On the GPU, 1,600 cells of it on a 6,400-cell pool boil off in about
+  100 steps, cooling the whole pool from 20 to 11 °C, and no ice forms. The energy is right: its latent heat is
+  spent on the water. The rate is not. Liquid nitrogen on water film-boils (the Leidenfrost effect), and the vapour
+  layer limits the heat flux to roughly 10⁴–10⁵ W/m². Here it conducts liquid to liquid, so it boils about 100× too
+  fast, and the water spreads the cold through the pool before any cell reaches 0 °C. Real liquid nitrogen leaves a
+  crust of ice. The fix is a film-boiling limit on the conductance between a cryogen and anything far above its
+  boiling point.
+- **Reaction heat stacks past real flame temperatures.** Products keep their temperature and then add the
+  reaction's ΔT, so a hydrogen–oxygen flame peaks near 5,300 °C. Product temperatures should come from energy.
+- **Reactions are capped at 1/6 per step,** so hydrogen–oxygen burns slower than its real flame speed.
+- **Storms never start without help,** because air is 20 °C at every height. They need a colder upper atmosphere.
+- **Plasma lasts only about 7 steps,** so a bolt may show for a frame or two.
+- **Tungsten, titanium and gold glow dim:** the hot-skin glow treats only METAL as a metal.
+- **No buoyancy or drag for matter sinking through a liquid,** so nitroglycerin poured into a pool can go off.
+- **Dust clouds ignore oxygen and CO₂ beside them.**
+- **Not built yet:** shooting a charge (needs a hook in the weapons code); polonium, refraction, and particles for
+  multiplayer guests; spark glow on liquids, in GI and in the far field; the rest of the Electronics, Powered and
+  Sensors groups (docs/electricity.md).
 
 ## Projects
 
