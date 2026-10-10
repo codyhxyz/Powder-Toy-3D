@@ -1,9 +1,15 @@
 import { ELEMENTS, E } from '../elements.js';
+import { SAVING_GRACE_HEALTH } from './perks.js';
 
 // Health, breath and everything that hurts the first-person body. The player
 // (player.js) measures the cells around the body every frame and hands them
 // here; this module turns them into damage, a cause of death and the 0..1
 // "feel" intensities the screen effects draw. Health and breath run 0..1.
+//
+// The body's perks (perks.js) change what it can take: Fire Immunity (no
+// burns), Explosion Immunity (no blast or slam damage), Breathless (breath
+// never drains), Extra Health (every hurt is divided by the larger maximum, so
+// health stays 0..1), Saving Grace and Extra Life. Death takes the perks.
 
 // One cell is about this many metres (pov/constants.js: the body is 5.5 cells ≈ 1.7 m).
 export const CELL_METERS = 0.3;
@@ -66,7 +72,8 @@ function heatCause(id, T) {
   return `Burned by ${lower(id)}, ${fmtT(T)}`;
 }
 
-export function createVitals(emit) {
+export function createVitals(emit, perks = null) {
+  const has = (key) => !!perks?.has(key);
   const v = {
     health: 1, breath: 1, skinT: BODY_T,
     feel: { heat: 0, cold: 0, acid: 0, hurt: 0 },
@@ -89,15 +96,26 @@ export function createVitals(emit) {
   // Take `amount` health. `burst` (an impact or a blast) is reported at once.
   function hurt(amount, cause, burst = false) {
     if (v.dead || !(amount > 0)) return;
+    amount /= perks?.maxHealth ?? 1;
+    const before = v.health;
     v.health = Math.max(0, v.health - amount);
+    // Saving Grace: a blow that would kill from above the last sliver leaves the sliver
+    if (v.health <= 0 && before > SAVING_GRACE_HEALTH && has('SAVING_GRACE')) v.health = SAVING_GRACE_HEALTH;
     v.feel.hurt = Math.min(1, v.feel.hurt + amount * HURT_FEEL_GAIN);
     pending += amount;
     pendingCause = cause;
     if (burst || pending >= HURT_EVENT_MIN) flushHurt();
     if (v.health <= 0) {
       flushHurt();
+      // Extra Life: back on your feet where you fell, with your perks
+      if (perks?.take('EXTRA_LIFE')) {
+        v.health = 1; v.breath = 1; v.skinT = BODY_T;
+        emit('revive', { cause });
+        return;
+      }
       v.dead = true;
       v.cause = cause;
+      perks?.clear();
       emit('death', { cause });
     }
   }
@@ -107,7 +125,7 @@ export function createVitals(emit) {
   // surface; safe/lethal: impact speeds (cells/s) for SAFE_FALL_M and
   // LETHAL_FALL_M; fallCells: height fallen (vertical impacts), else 0.
   v.impact = (speed, safe, lethal, fallCells, surfaceId) => {
-    if (speed <= safe) return;
+    if (speed <= safe || has('EXPLOSION_IMMUNITY')) return;   // slams only come from blasts (landings never hurt)
     const dmg = (speed * speed - safe * safe) / (lethal * lethal - safe * safe);
     const m = Math.round(fallCells * CELL_METERS);
     const cause = fallCells > 0 && m >= 1 ? `Fell ${m} m` : `Slammed into ${surfaceId >= 0 ? lower(surfaceId) : 'the wall'}`;
@@ -150,13 +168,13 @@ export function createVitals(emit) {
 
     if (v.dead) return;
 
-    if (v.skinT > SKIN_BURN_T) hurt((v.skinT - SKIN_BURN_T) * HEAT_DAMAGE * dt, heatCause(worstId, worstT));
+    if (v.skinT > SKIN_BURN_T && !has('FIRE_IMMUNITY')) hurt((v.skinT - SKIN_BURN_T) * HEAT_DAMAGE * dt, heatCause(worstId, worstT));
     if (v.skinT < SKIN_COLD_T) hurt((SKIN_COLD_T - v.skinT) * COLD_DAMAGE * dt, 'Froze');
     if (acid) hurt(ACID_DAMAGE * acidShare * dt, 'Dissolved by acid');
-    if (env.pressure > BLAST_HURT_P) hurt((env.pressure - BLAST_HURT_P) * BLAST_DAMAGE * dt, 'Blown up');
+    if (env.pressure > BLAST_HURT_P && !has('EXPLOSION_IMMUNITY')) hurt((env.pressure - BLAST_HURT_P) * BLAST_DAMAGE * dt, 'Blown up');
 
     // breath
-    const choking = env.headInLiquid || env.buriedId >= 0;
+    const choking = (env.headInLiquid || env.buriedId >= 0) && !has('BREATHLESS');
     if (choking) {
       v.breath = Math.max(0, v.breath - dt / BREATH_TIME);
       if (v.breath <= 0) {

@@ -5,7 +5,7 @@ import { toolPass } from '../../shaders/povTools.js';
 import { povEvents } from '../events.js';
 import { attachModel } from '../models.js';
 import { viewmodelRig } from '../viewmodel.js';
-import { trigger, swing } from './action.js';
+import { trigger, swing, toolDt } from './action.js';
 import { faceNormal } from './transfer.js';
 import { rayTarget, PLAYER } from '../targets.js';
 
@@ -92,7 +92,7 @@ export function meleeTool({ key, name, slot, model: modelKey, desc, blow, frag, 
             povEvents.emit('tool:action', { tool: source, action: 'swing' });
             pose.start(strike(ctx));
           }
-          model.pivot.rotation.set(pose.angle(ctx.dt), 0, POSE.roll);
+          model.pivot.rotation.set(pose.angle(toolDt(ctx)), 0, POSE.roll);
         },
         deselect() { model.hand.visible = false; button.reset(); pose.stop(); },
         status: () => null,

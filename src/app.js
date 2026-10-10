@@ -3,8 +3,9 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import './ui/styles.css';
 import { Simulation } from './sim.js';
 import { volumeVert, volumeFrag, pickFrag, shadowFrag } from './shaders/render.js';
-import { ELEMENTS, E, toolById, isBuild, isSpawnerTool } from './elements.js';
+import { ELEMENTS, E, toolById, isBuild, isSpawnerTool, isPerkTool, isShrineTool } from './elements.js';
 import { Spawners, SPAWNER, feetOnHit } from './spawners.js';
+import { PerkOrbs } from './perkOrbs.js';
 import { buildPreset } from './presets.js';
 import { loadIsland, releaseGenerator } from './world/gpu.js';
 import { WorldWindow, WIN_STEP } from './world/window.js';
@@ -65,6 +66,7 @@ const SIGN_TOOL = -5;
 const SPAWNER_KIND = { [-6]: SPAWNER.ENEMY, [-7]: SPAWNER.PLAYER };   // the Spawners tools' kinds
 // the lab's own enemy spawner: its open south floor, as shares of the grid (the old lab NPC's arena)
 const LAB_ENEMY_AT = [0.555, 0.86];
+const LEVEL_EPS = 1e-6;   // squared length under which the view's right, flattened, counts as none
 
 // ---------------------------------------------------------------- settings
 // the box the Scene row goes back to from World, and phones' grid
@@ -157,6 +159,7 @@ document.getElementById('app').appendChild(renderer.domElement);
 const post = createPost(renderer, { pixScale: gfxUniforms.uPixScale });
 
 const scene = new THREE.Scene();
+let perkOrbs = null;   // perk orbs (perkOrbs.js), made with the spawners
 let spawners = null;   // enemy and player spawners (spawners.js), made once the volume is
 const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.05, 200);
 const controls = new OrbitControls(camera, renderer.domElement);
@@ -445,6 +448,7 @@ function loadPreset(name, undoable = true) {
 
 // A new scene clears the spawners; the lab comes with an enemy spawner of its own.
 function resetSpawners(name) {
+  perkOrbs?.clear();
   if (!spawners) return;
   spawners.clear();
   if (name === 'lab' && !win) spawners.add(SPAWNER.ENEMY, new THREE.Vector3(Math.round(sim.g.nx * LAB_ENEMY_AT[0]), 0, Math.round(sim.g.nz * LAB_ENEMY_AT[1])));
@@ -547,7 +551,7 @@ function updateBrush() {
     builds?.update({ hover, active: false });
     return;
   }
-  if (settings.tool !== SIGN_TOOL && !isBuild(settings.tool) && !isSpawnerTool(settings.tool)) {
+  if (settings.tool !== SIGN_TOOL && !isBuild(settings.tool) && !isSpawnerTool(settings.tool) && !isPerkTool(settings.tool)) {
     if (painting) {
       // a box's brush stops at its walls; a world's window has none, so beyond it there's no brush
       plane.constant = -dragY;
@@ -893,6 +897,23 @@ function press(e) {
     pacer.wake();
     if (r === 'full') hud.toast('That many is the limit');
     else hud.toast(r === 'removed' ? 'Spawner removed' : kind === SPAWNER.ENEMY ? 'Enemy spawner set: press F to fight' : 'Player spawn set: F drops you in here');
+    return;
+  }
+  if (isPerkTool(settings.tool)) {
+    if (mp.guard()) return;
+    if (!hover.valid) { hud.toast('Click a surface to set it on'); return; }
+    const feet = feetOnHit(hover);
+    if (isShrineTool(settings.tool)) {
+      // the shrine's orbs run across the view
+      const across = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion).setY(0);
+      if (across.lengthSq() < LEVEL_EPS) across.set(1, 0, 0);   // looking straight down
+      const set = perkOrbs.shrine(feet, across.normalize());
+      hud.toast(set ? 'Shrine set: in first person (F), take one perk and the others vanish' : 'That many orbs is the limit');
+    } else {
+      const r = perkOrbs.toggle(toolById(settings.tool).perk, feet);
+      hud.toast(r === 'full' ? 'That many orbs is the limit' : r === 'removed' ? 'Perk orb removed' : 'Perk orb set: walk into it in first person (F)');
+    }
+    pacer.wake();
     return;
   }
   if (isBuild(settings.tool)) {
@@ -1268,6 +1289,7 @@ function frame(now) {
     requestPick();
   } else if (pov?.active) requestPick();
   if (spawners) { spawners.setGhosts(!pov?.active); spawners.update(); }   // the crosshair cell stays fresh for the tools
+  perkOrbs?.update();
 
   const povReadout = pov?.active ? pov.readout : null;   // the held tool's (the scanner's, the trowel's)
   if (povReadout) {
@@ -1302,6 +1324,7 @@ try {
     });
   }
   spawners = new Spawners({ scene, getSim: () => sim, getVolume: () => volume, getScale: () => scale });   // seeded by build()'s loadPreset, once there is a grid
+  perkOrbs = new PerkOrbs({ scene, getSim: () => sim, getVolume: () => volume, getScale: () => scale });
   if (BuildsClass) {
     builds = new BuildsClass({
       scene, camera, settings, getSim: () => sim, getVolume: () => volume, getScale: () => scale, onClose: leaveBuild,
@@ -1321,6 +1344,7 @@ try {
     getSim: () => sim, getVolume: () => volume, getScale: () => scale,
     hover, pointerHover: () => pointerInside && !uiHover, pickRay,
     getSpawners: () => spawners,
+    getPerkOrbs: () => perkOrbs,
     requestRender: () => pacer.wake(),
     inWorld: () => !!win,
   });
@@ -1328,6 +1352,7 @@ try {
     get sim() { return sim; }, get volume() { return volume; }, get scale() { return scale; }, get signs() { return signs; }, get builds() { return builds; },
     get pov() { return pov; },
     get spawners() { return spawners; },
+    get perkOrbs() { return perkOrbs; },
     get win() { return win; },
     // world mode: start the world over with the window at `origin` (world cells)
     worldLoad(origin) { win.load(origin); placeVolume(); post.reset(); pov?.worldReplaced(); },

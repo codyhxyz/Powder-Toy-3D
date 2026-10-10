@@ -233,7 +233,7 @@ export function createNpc({ env, ai, home = () => null }) {
       // the hands: the tool the brain wants, with its buttons, as this NPC
       if (alive && it.tool) {
         pick();
-        ctx.sim = sim; ctx.dt = dt; ctx.stepsPerFrame = w.stepsPerFrame;
+        ctx.sim = sim; ctx.dt = dt; ctx.stepsPerFrame = w.stepsPerFrame; ctx.toolRate = body.perks.toolRate;
         ctx.primary = it.primary; ctx.secondary = it.secondary;
         ctx.primaryPressed = it.primaryPressed; ctx.secondaryPressed = it.secondaryPressed;
         // its tools' hands at its eye, turned along its aim (the physgun's beam leaves from there)

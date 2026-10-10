@@ -23,13 +23,20 @@ import * as THREE from 'three';
 
 const TIME_EPS = 1e-6;   // s: a wait this close to done counts as done (frame times don't sum exactly)
 
+// The tools' clock: the frame's time sped up by the body's tool speed
+// (ctx.toolRate, the Faster Tools perk, pov/perks.js). Everything a tool does
+// over time (refire waits, swings, digging, pouring, heating) runs on it, so
+// one perk speeds up every tool, a new one included.
+export const toolDt = (ctx) => ctx.dt * (ctx.toolRate ?? 1);
+
 export function trigger(interval, { hold = true, button = 'primary' } = {}) {
   let wait = 0, queued = 0;
   return {
     // true when the tool should act this frame (call once a frame while selected)
     ready(ctx) {
-      wait = Math.max(0, wait - ctx.dt);
-      queued = Math.max(0, queued - ctx.dt);
+      const dt = toolDt(ctx);
+      wait = Math.max(0, wait - dt);
+      queued = Math.max(0, queued - dt);
       if (ctx[`${button}Pressed`]) queued = interval;
       return wait <= TIME_EPS && (queued > 0 || (hold && ctx[button]));
     },

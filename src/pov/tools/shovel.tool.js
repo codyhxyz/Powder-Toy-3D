@@ -5,7 +5,7 @@ import {
   pack, cellsNear, outsideBody, bodyExit, toStepVelocity, aimInReach, faceNormal, ballRadius, recolor, pinned,
 } from './transfer.js';
 import { povEvents } from '../events.js';
-import { trigger } from './action.js';
+import { trigger, toolDt } from './action.js';
 import { attachModel, MODELS } from '../models.js';
 import { viewmodelRig, heldMaterial } from '../viewmodel.js';
 
@@ -90,7 +90,7 @@ export default {
         if (!el.breakInto) { energy = 0; refuse(`${el.name} won't break`, aim.id); return; }
         const key = `${aim.id}`;
         if (key !== energyKey) { energy = 0; energyKey = key; }
-        energy = Math.min(energy + DIG_POWER * ctx.dt, el.hard * BREAK_MAX);
+        energy = Math.min(energy + DIG_POWER * toolDt(ctx), el.hard * BREAK_MAX);
         const n = Math.min(Math.floor(energy / el.hard), load.free);
         if (n < 1) { if (load.free <= 0 && !load.busy) refuse('Your pack is full: build with the trowel or right-click to throw', aim.id); return; }
         const p = transfer.take(load, {

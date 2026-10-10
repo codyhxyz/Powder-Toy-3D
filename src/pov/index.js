@@ -9,6 +9,7 @@ import { createVfx } from './vfx.js';
 import { povEvents } from './events.js';
 import './pov.css';
 import { addTarget, PLAYER } from './targets.js';
+import { grant, PERK } from './perks.js';
 
 // First-person (POV) mode: drop into the world with F, walk around in it,
 // pop back out with F. This module is the shell: input, the camera, the
@@ -24,6 +25,7 @@ const ENEMY = 'enemy';
 const PLAYER_KNOCKBACK = 18;   // cells/s a blow from an NPC throws the player
 const PLAYER_KNOCK_UP = 0.4;   // its upward share
 const PLAYER_DAMAGE_TAKEN = 0.5;   // share of a weapon's damage the player takes from NPCs (the hero is tougher)
+const perkName = (key) => `${PERK[key].icon} ${PERK[key].name}`;
 
 const PREWARM_DELAY_MS = 2000;          // ms after start-up before the figure's shader compiles in the background
 const RESPAWN_DELAY = 3.5;              // s from death to respawning at the drop point on its own
@@ -189,6 +191,8 @@ export function createPov(app) {
     if (!player) {
       player = createPlayer({ renderer, getSim: app.getSim });
       player.on('land', ({ speed }) => povCam.land(speed));
+      player.on('revive', () => { hud.toast(`${perkName('EXTRA_LIFE')}: back on your feet`); povEvents.emit('perk:revive', { point: player.pos.clone() }); });
+      player.on('revenge', ({ point }) => povEvents.emit('blast', { point }));
       player.on('splash', ({ speed }) => vfx?.splash(player.pos, speed, player.liquidId));
       feel.bindPlayer(player);
     }
@@ -348,6 +352,7 @@ export function createPov(app) {
   // ---- per frame
   const ctx = {
     sim: null, dt: 0, stepsPerFrame: 0,
+    toolRate: 1,                    // tool speed (the Faster Tools perk; tools/action.js toolDt)
     eye: new THREE.Vector3(), dir: new THREE.Vector3(),
     primary: false, secondary: false, primaryPressed: false, secondaryPressed: false, wheel: 0,
     viewBobbing: true,              // the View Bobbing setting (the viewmodel rig's hand bob reads it)
@@ -430,6 +435,7 @@ export function createPov(app) {
           home: () => sp.feet(s),   // it appears, and comes back, on its spawner
         });
         scene.add(n.root);
+        n.body.on('revenge', ({ point }) => povEvents.emit('blast', { point }));
         n.bind(app.getVolume(), g);
         n.compile(renderer, camera, scene);
         npcs.set(s.id, n);
@@ -445,6 +451,8 @@ export function createPov(app) {
         for (const n of npcs.values()) { n.bind(app.getVolume(), g); n.update(dt, w); }
       } else for (const n of npcs.values()) n.reset();
     }
+
+    takePerks();
 
     // the camera, with the kick and shake on top of the look
     vA.copy(player.pos).setY(player.pos.y + EYE_HEIGHT);
@@ -496,6 +504,7 @@ export function createPov(app) {
     if (live() && toolbelt) {
       ctx.sim = sim;
       ctx.dt = dt;
+      ctx.toolRate = player.perks.toolRate;
       ctx.stepsPerFrame = app.settings.paused ? 0 : app.settings.steps;
       const use = isLocked();
       ctx.primary = use && buttons.primary;
@@ -519,11 +528,36 @@ export function createPov(app) {
     // the HUD
     povHud.update({
       dt, health: player.health, breath: player.breath, feel: player.feel,
-      jetFuel: player.jetFuel, jetting: player.jetting,
+      jetFuel: player.jetFuel, jetting: player.jetting, perks: player.perks,
       dead: deadSeen, cause: player.cause, respawnIn: RESPAWN_DELAY - deadTime,
       locked: isLocked(), swooping: mode !== 'on',
       aimValid: aim.valid, aimInReach: aim.valid && aim.dist <= HAND_REACH, third: povCam.third,
     });
+  }
+
+  // Perk orbs (perkOrbs.js): a body that walks into one gains its perk, the
+  // player's and the NPCs' alike.
+  function takePerks() {
+    const orbs = app.getPerkOrbs?.();
+    if (!orbs?.list.length) return;
+    if (mode === 'on' && !player.dead) {
+      const got = orbs.takeAt(player.pos);
+      if (got) gainPerk(player, got);
+    }
+    for (const n of npcs.values()) {
+      if (n.body.dead) continue;
+      const got = orbs.takeAt(n.body.pos);
+      if (got) gainPerk(n.body, got, n.id);
+    }
+  }
+  function gainPerk(body, { key, at }, by) {
+    app.requestRender();   // the orb is gone
+    const keys = grant(body.perks, key);
+    const names = keys.map(perkName).join(' + ');
+    povEvents.emit('perk:take', { key, keys, point: at, by });
+    if (by) hud.toast(`The enemy took ${names}`);
+    else if (keys.length === 1 && keys[0] === key) hud.toast(`${names}${body.perks.count(key) > 1 ? ` ×${body.perks.count(key)}` : ''}: ${PERK[key].desc}`);
+    else hud.toast(`${perkName(key)}: ${names}`);
   }
 
   // The pick ray in grid space (for app's requestPick): the screen centre.

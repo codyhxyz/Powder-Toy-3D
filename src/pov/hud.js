@@ -1,7 +1,7 @@
 import { h } from '../ui/dom.js';
 
-// The POV HUD: crosshair (with its bloom) and hitmarker, health and breath, screen effects for what the body
-// feels, the pointer-lock prompt, the death screen and the entry hint. Styles
+// The POV HUD: crosshair (with its bloom) and hitmarker, health and breath, the perks held (Noita's row of
+// icons), screen effects for what the body feels, the pointer-lock prompt, the death screen and the entry hint. Styles
 // in pov.css. update() runs every frame and only touches the DOM when a
 // (rounded) value changes.
 
@@ -42,7 +42,8 @@ export function createPovHud() {
   const jetRow = h('div.pov-bar.pov-jet', { 'aria-label': 'Jetpack' },
     h('span.pov-ic', { html: '<svg viewBox="0 0 16 16"><path d="M8 1.5c.6 2.4 4 4.2 4 8a4 4 0 0 1-8 0c0-1.7.9-2.7 1.6-3.4.2 1.2.8 2 1.6 2.3C6.8 6 7.3 3.6 8 1.5z"/></svg>' }),
     h('div.pov-track', {}, jetFill));
-  const vitals = h('div.pov-vitals.panel', {}, healthRow, breathRow, jetRow);
+  const perkRow = h('div.pov-perks');   // above health, in the same panel
+  const vitals = h('div.pov-vitals.panel', {}, perkRow, healthRow, breathRow, jetRow);
 
   const lock = h('div.pov-lock.panel', {}, h('b', { text: 'Click' }), ' to look around', h('span.pov-dot', { text: '·' }), key('F'), ' to leave');
 
@@ -80,6 +81,7 @@ export function createPovHud() {
   };
 
   let trail = 1, trailHold = 0, lastHealth = 1;
+  let perkVersion = -1, perkSet = null;
   let hintTimer = 0;
 
   return {
@@ -92,7 +94,7 @@ export function createPovHud() {
       clearTimeout(hintTimer);
       hintTimer = setTimeout(() => set(hint, '.show', false), HINT_S * 1000);
     },
-    // s = { dt, health, breath, jetFuel (0..1), jetting, feel {heat, cold, acid, hurt}, 
+    // s = { dt, health, breath, jetFuel (0..1), jetting, perks (pov/perks.js set), feel {heat, cold, acid, hurt}, 
     //       dead, cause, respawnIn (s), locked, swooping, aimInReach, aimValid, third }
     update(s) {
       const live = !s.dead && !s.swooping;
@@ -100,6 +102,12 @@ export function createPovHud() {
       set(cross, '.reach', !!s.aimInReach);
       set(cross, '.third', !!s.third);
       set(vitals, '.show', live);
+      // perks: an icon each, with its stacks, redrawn when the set changes
+      if (s.perks && (s.perks !== perkSet || s.perks.version !== perkVersion)) {
+        perkSet = s.perks; perkVersion = s.perks.version;
+        perkRow.replaceChildren(...s.perks.list().map(({ perk, n }) => h('span.pov-perk', { title: `${perk.name}: ${perk.desc}`, style: { '--c': perk.color } },
+          h('i', { text: perk.icon }), n > 1 ? h('b', { text: `×${n}` }) : null)));
+      }
       set(lock, '.show', live && !s.locked);
 
       // health, with a trail that shows what the last hit took

@@ -5,7 +5,7 @@ import {
   persistentLoad, ownedKey, cellsNear, outsideBody, bodyExit, toStepVelocity, aimInReach, faceNormal, recolor, pinned,
 } from './transfer.js';
 import { povEvents } from '../events.js';
-import { trigger } from './action.js';
+import { trigger, toolDt } from './action.js';
 import { attachModel, BUCKET_SIDES } from '../models.js';
 import { viewmodelRig, heldMaterial } from '../viewmodel.js';
 
@@ -95,7 +95,7 @@ export default {
     }
 
     function pourOut(ctx) {
-      pour = Math.min(pour + POUR_RATE * ctx.dt, POUR_BACKLOG);
+      pour = Math.min(pour + POUR_RATE * toolDt(ctx), POUR_BACKLOG);
       const n = Math.min(Math.floor(pour), load.cells.length);
       if (n < 1) return;
       const feet = ctx.player?.pos;

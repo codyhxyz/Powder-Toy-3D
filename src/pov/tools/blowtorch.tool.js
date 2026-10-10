@@ -5,6 +5,7 @@ import { povEvents } from '../events.js';
 import { attachModel } from '../models.js';
 import { viewmodelRig } from '../viewmodel.js';
 import { bodyExit } from './transfer.js';
+import { toolDt } from './action.js';
 
 // Blowtorch (slot 8): hold left-click for a roofing torch's flame
 // (shaders/povTools.js torchFrag and TORCH). The flame is engine FIRE at a
@@ -64,7 +65,7 @@ export default {
       u.uNozzle.value.copy(nozzle);
       u.uDir.value.copy(dir);
       u.uReach.value = THREE.MathUtils.clamp(toFace, 0, TORCH.LENGTH);
-      u.uDt.value = ctx.dt;
+      u.uDt.value = toolDt(ctx);
       u.uFrame.value = ++frame;
       sim.pass(mat);
     }

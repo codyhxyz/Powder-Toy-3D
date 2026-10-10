@@ -4,6 +4,7 @@ import { physgunFrag, physgunComFrag, blastFrag, toolPass, PHYS, PHYS_MODE, BLAS
 import { povEvents } from '../events.js';
 import { attachModel } from '../models.js';
 import { viewmodelRig, HIT } from '../viewmodel.js';
+import { toolDt } from './action.js';
 
 // Physgun: a force beam on loose matter (powders, liquids, gases). Press and
 // hold left-click to grab what's around the aim point: every frame one pass
@@ -225,7 +226,7 @@ export default {
     return {
       update(ctx) {
         time += ctx.dt;
-        blastWait = Math.max(blastWait - ctx.dt, 0);
+        blastWait = Math.max(blastWait - toolDt(ctx), 0);
         flash = Math.max(flash - ctx.dt, 0);
         model.hand.visible = true;
         model.rig.update(ctx);

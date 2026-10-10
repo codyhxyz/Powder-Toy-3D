@@ -5,7 +5,7 @@ import { pack, packContents, aimInReach, faceNormal, outsideBody } from './trans
 import { povEvents } from '../events.js';
 import { attachModel } from '../models.js';
 import { viewmodelRig, HIT } from '../viewmodel.js';
-import { trigger, swing } from './action.js';
+import { trigger, swing, toolDt } from './action.js';
 
 // Trowel (slot 6): builds with what the shovel dug up. Left-click sets a block
 // of the chosen material from the pack (transfer.js) against the face you aim
@@ -108,7 +108,7 @@ export default {
           const cur = have.findIndex(([id]) => id === material()?.[0]);
           if (have.length) chosen = have[(cur + 1) % have.length][0];
         }
-        pivot.rotation.x = pose.angle(ctx.dt);
+        pivot.rotation.x = pose.angle(toolDt(ctx));
       },
       deselect() { hand.visible = false; button.reset(); next.reset(); pose.stop(); },
       status() {

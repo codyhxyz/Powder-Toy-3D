@@ -2,10 +2,11 @@ import * as THREE from 'three';
 import { ELEMENTS, E, K } from '../elements.js';
 import { PHYS } from '../physics.js';
 import { quadVert, stateUniforms } from '../shaders/common.js';
-import { povProbeFrag, povCouplingFrag, PROBE, PROBE_OUTSIDE } from '../shaders/povBody.js';
+import { povProbeFrag, povCouplingFrag, povFieldFrag, PROBE, PROBE_OUTSIDE } from '../shaders/povBody.js';
 import { BODY_HEIGHT, BODY_WIDTH, EYE_HEIGHT, BODY_DENS } from './constants.js';
 import { createVitals, CELL_METERS, SAFE_FALL_M, LETHAL_FALL_M } from './vitals.js';
 import { povEvents } from './events.js';
+import { createPerkSet } from './perks.js';
 
 // The first-person body: an upright AABB (BODY_WIDTH × BODY_HEIGHT × BODY_WIDTH
 // cells) moving through the voxel grid in real time.
@@ -17,6 +18,8 @@ import { povEvents } from './events.js';
 // by Archimedes, feels drag in liquids the way move.js does, gets thrown by
 // pressure gradients with the sim's own a = −∇P·P_ACCEL/ρ, and hands what it
 // touches to vitals.js. A second pass pushes loose matter out of the body's way.
+// The body's perks (perks.js) change its moves here (Lukki, Sand Swimmer) and
+// reach into the world through a third pass (Freeze Field, Revenge Explosion).
 //
 // Units: positions in grid cells (feet = bottom centre of the box), velocities
 // in cells/s, time in s. The sim runs on its own, much faster clock: about 240
@@ -104,6 +107,15 @@ const UNKNOWN = -2;                    // id of a cell outside the probed box
 // ---- events ----
 const LAND_EVENT_SPEED = 3;            // cells/s: softer touchdowns aren't reported as 'land'
 
+// ---- perks (perks.js holds their sizes) ----
+const LUKKI_REACH = 0.5;               // cells beyond the body's sides and top a wall or ceiling still holds a Lukki
+const FREEZE_RATE = 600;               // °C/s the Freeze Field draws out of liquids and fire (the Cool brush: 30 °C a frame)...
+const FREEZE_T = -20;                  // ...down to this, as cold as fresh ice
+const FREEZE_CLEAR = 1;                // cells around the body, from the feet up, it leaves liquid (you stand on the ice it makes, not in it)
+const REVENGE_INNER = BODY_HEIGHT / 2 + 1;   // cells from the body's middle where the blast's shell starts: the body sits in its eye
+const REVENGE_SHELL_MIN = 1;           // cells: the shell is at least this thick
+const REVENGE_COOLDOWN = 1;            // s between Revenge Explosions
+
 // share of a gap closed over dt by an ease of `share` per Noita frame (frame-rate independent)
 const ease = (share, dt) => 1 - (1 - share) ** (NOITA_FPS * dt);
 
@@ -115,7 +127,8 @@ const SAFE_IMPACT = fallSpeed(SAFE_FALL_M);
 const LETHAL_IMPACT = fallSpeed(LETHAL_FALL_M);
 
 const solidId = (id) => id === PROBE_OUTSIDE || id === UNKNOWN || (id >= 0 && KIND[id] === K.SOLID);
-const blocks = (id) => solidId(id) || (id >= 0 && KIND[id] === K.POWDER);
+const isPowder = (id) => id >= 0 && KIND[id] === K.POWDER;
+const buries = (id) => solidId(id) || isPowder(id);   // what fills the head and chokes it, swimming through it or not
 const isLiquid = (id) => id >= 0 && KIND[id] === K.LIQUID;
 
 function rawMat(frag, uniforms) {
@@ -125,11 +138,20 @@ function rawMat(frag, uniforms) {
   });
 }
 
-// quiet: a body that isn't the player's (an NPC, npc.js) doesn't announce its jet on povEvents
-export function createPlayer({ renderer, getSim, quiet = false }) {
+// quiet: a body that isn't the player's (an NPC, npc.js) doesn't announce its jet on povEvents.
+// perks: its perk set (perks.js).
+export function createPlayer({ renderer, getSim, quiet = false, perks = createPerkSet() }) {
   const listeners = {};
-  const emit = (name, data) => (listeners[name] || []).forEach((fn) => fn(data));
-  const vitals = createVitals(emit);
+  let revengeWait = 0, revengeDue = false;
+  const emit = (name, data) => {
+    // Revenge Explosion: a hurt sets one off at the next update (it needs the sim), once a cooldown at most
+    if (name === 'hurt' && perks.has('REVENGE_EXPLOSION') && revengeWait <= 0) { revengeDue = true; revengeWait = REVENGE_COOLDOWN; }
+    (listeners[name] || []).forEach((fn) => fn(data));
+  };
+  const vitals = createVitals(emit, perks);
+  // Sand Swimmer: powders don't block the body; it swims through them as through a liquid
+  let sandSwim = false;
+  const blocks = (id) => solidId(id) || (!sandSwim && isPowder(id));
 
   const PN = PROBE.X * PROBE.Y * PROBE.Z;
   // Readbacks in flight, one requested per frame, so a fresh probe lands every
@@ -161,6 +183,7 @@ export function createPlayer({ renderer, getSim, quiet = false }) {
     jetting: false,               // the jetpack is firing this frame
     jetBurnS: 0,                  // s the current press has fired
     jetIdleS: 0,                  // s since the jet last fired
+    perks,                        // its perks (perks.js)
     get health() { return vitals.health; },
     get breath() { return vitals.breath; },
     get feel() { return vitals.feel; },
@@ -178,12 +201,19 @@ export function createPlayer({ renderer, getSim, quiet = false }) {
     if (key === matKey) return;
     mats?.probe.dispose();
     mats?.couple.dispose();
+    mats?.field.dispose();
     mats = {
       probe: rawMat(povProbeFrag(g), { tA: { value: null }, tB: { value: null }, uBoxLo: { value: new THREE.Vector3() } }),
       couple: rawMat(povCouplingFrag(g), {
         ...stateUniforms(), uFrame: { value: 0 },
         uMin: { value: new THREE.Vector3() }, uMax: { value: new THREE.Vector3() }, uVel: { value: new THREE.Vector3() },
         uPushFluid: { value: 0 }, uPushPowder: { value: 0 }, uLift: { value: 0 }, uAhead: { value: new THREE.Vector2() },
+      }),
+      field: rawMat(povFieldFrag(g), {
+        ...stateUniforms(),
+        uCenter: { value: new THREE.Vector3() }, uInner: { value: 0 }, uOuter: { value: 0 },
+        uFeet: { value: new THREE.Vector3() }, uClear: { value: 0 },
+        uCool: { value: 0 }, uFloor: { value: FREEZE_T }, uPressure: { value: 0 },
       }),
     };
     matKey = key;
@@ -351,7 +381,10 @@ export function createPlayer({ renderer, getSim, quiet = false }) {
           const id = idAt(x, y, z);
           if (solidId(id)) continue;
           open++;
-          if (isLiquid(id)) { liq++; dens += DENS[id]; dragSum += DRAG[id]; liqCount[id]++; }
+          if (isLiquid(id) || (sandSwim && isPowder(id))) {
+            // a swimmer in sand floats in it as in water of its own density: neither bobbing up nor sinking
+            liq++; dens += isPowder(id) ? BODY_DENS : DENS[id]; dragSum += DRAG[id]; liqCount[id]++;
+          }
         }
       if (!open) continue;
       sub += h * liq / open;
@@ -377,7 +410,7 @@ export function createPlayer({ renderer, getSim, quiet = false }) {
         if (!solidId(id)) { open++; if (isLiquid(id)) liq++; }
         if (x >= bx0 && x <= bx1 && z >= bz0 && z <= bz1) {
           n++;
-          if (blocks(id) && id !== PROBE_OUTSIDE) { buried++; buriedCount[id] = (buriedCount[id] || 0) + 1; }
+          if (buries(id) && id !== PROBE_OUTSIDE) { buried++; buriedCount[id] = (buriedCount[id] || 0) + 1; }
         }
       }
     env.headInLiquid = open > 0 && liq / open >= HEAD_LIQUID_SHARE && p.liquidId >= 0;
@@ -442,12 +475,54 @@ export function createPlayer({ renderer, getSim, quiet = false }) {
     sim.pass(mats.couple);
   }
 
+  // ---------------------------------------------------------------- perk fields
+  // Lukki: a wall or ceiling within reach of the body's sides or top
+  function clinging() {
+    bounds();
+    for (let y = c0(lo[1]); y <= c1(hi[1] + LUKKI_REACH); y++)
+      for (let x = c0(lo[0] - LUKKI_REACH); x <= c1(hi[0] + LUKKI_REACH); x++)
+        for (let z = c0(lo[2] - LUKKI_REACH); z <= c1(hi[2] + LUKKI_REACH); z++) {
+          const id = idAt(x, y, z);
+          if (id !== UNKNOWN && blocks(id)) return true;
+        }
+    return false;
+  }
+
+  // One pass of shaders/povBody.js povFieldFrag over a shell around the body's middle.
+  function perkField(sim, { inner, outer, cool = 0, pressure = 0, clear = 0 }) {
+    const u = mats.field.uniforms;
+    u.uCenter.value.set(p.pos.x, p.pos.y + H / 2, p.pos.z);
+    u.uInner.value = inner;
+    u.uOuter.value = outer;
+    u.uFeet.value.copy(p.pos);
+    u.uClear.value = clear;
+    u.uCool.value = cool;
+    u.uPressure.value = pressure;
+    const c = u.uCenter.value;
+    sim.touchCentres([c.x - outer, c.y - outer, c.z - outer], [c.x + outer, c.y + outer, c.z + outer]);
+    sim.pass(mats.field);
+  }
+
+  // Freeze Field every frame; a Revenge Explosion when one is due
+  function fields(sim, dt) {
+    const r = vitals.dead ? 0 : perks.freezeRadius;
+    if (r > 0 && dt > 0) perkField(sim, { inner: 0, outer: r, cool: FREEZE_RATE * dt, clear: HW + FREEZE_CLEAR });
+    if (!revengeDue) return;
+    revengeDue = false;
+    const pressure = perks.revengePressure;
+    if (!(pressure > 0)) return;
+    perkField(sim, { inner: REVENGE_INNER, outer: Math.max(perks.revengeRadius, REVENGE_INNER + REVENGE_SHELL_MIN), pressure });
+    emit('revenge', { point: p.pos.clone().setY(p.pos.y + H / 2) });
+  }
+
   // ---------------------------------------------------------------- update
   const wish = new THREE.Vector2();
   function update(dtIn, input = {}) {
     const sim = getSim();
     if (!sim) return;
     const dt = Math.min(Math.max(dtIn, 0), MAX_DT);
+    revengeWait = Math.max(0, revengeWait - dt);
+    sandSwim = perks.has('SAND_SWIMMER') && !vitals.dead;
     if (sim !== lastSim) {
       lastSim = sim; lastFrame = sim.frame;
       g = sim.g;
@@ -504,14 +579,16 @@ export function createPlayer({ renderer, getSim, quiet = false }) {
     }
 
     // jetpack: thrust while jump is held in the air (swimming strokes instead)
-    const jet = alive && !!input.jump && !p.onGround && !jumpedNow && !swimming && p.jetFuel > 0;
+    // Lukki: while a limb touches a wall or ceiling the jet fires on an empty tank, and the tank holds
+    const clings = alive && !!input.jump && !p.onGround && !swimming && perks.has('LUKKI') && clinging();
+    const jet = alive && !!input.jump && !p.onGround && !jumpedNow && !swimming && (p.jetFuel > 0 || clings);
     if (jet) {
-      p.jetFuel = Math.max(0, p.jetFuel - dt / JET_FUEL_S);
+      if (!clings) p.jetFuel = Math.max(0, p.jetFuel - dt / JET_FUEL_S);
       p.jetBurnS += dt;
       p.jetIdleS = 0;
       if (v.y < JET_RISE) v.y += (JET_RISE - v.y) * ease(JET_EASE, dt);
     } else {
-      if (p.jetting && p.jetBurnS < JET_TAP_S) p.jetFuel = Math.max(0, p.jetFuel - (JET_TAP_S - p.jetBurnS) / JET_FUEL_S);
+      if (p.jetting && p.jetBurnS < JET_TAP_S && !clings) p.jetFuel = Math.max(0, p.jetFuel - (JET_TAP_S - p.jetBurnS) / JET_FUEL_S);
       p.jetBurnS = 0;
       p.jetIdleS += dt;
     }
@@ -585,6 +662,7 @@ export function createPlayer({ renderer, getSim, quiet = false }) {
 
     vitals.update(dt, env);
     couple(sim, stepRate);
+    fields(sim, dt);
   }
 
   function spawn(feet) {
@@ -603,6 +681,7 @@ export function createPlayer({ renderer, getSim, quiet = false }) {
     slots.forEach((s) => s.target.dispose());
     mats?.probe.dispose();
     mats?.couple.dispose();
+    mats?.field.dispose();
     mats = null; matKey = '';
     for (const k in listeners) delete listeners[k];
   }

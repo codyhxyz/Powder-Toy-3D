@@ -92,6 +92,9 @@ const LOG_SIZE = 16;                    // recent plays kept for stats()
 // shape: 0 sine, 1 triangle, 2 saw, 3 tan, 4 noise, 5 square. slide is Hz/s ÷ 500.
 // filter: > 0 high-pass, < 0 low-pass (cutoff ≈ 2 × |value| Hz). Empty slots are ZzFX defaults.
 const PRESETS = {
+  // -- perks
+  // a perk taken: a bright sine arpeggio climbing in steps (pitch jumps every 70 ms), Noita's pickup sparkle
+  perk: [.7, .05, 520, .01, .16, .4, 0, 1.5, , , 260, .07, .07, , , , , .7, .05],
   // -- the gun
   // a hard crack-boom: a noise burst sliding down with a crushed, 0.3 s tail
   shot: [1.6, .05, 140, .003, .03, .28, 4, 2.4, -0.6, , , , , 1.8, , .25, , .55, .07],
@@ -425,6 +428,10 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
     play('boom', { at: point ?? null });
     play('shotEcho', { at: point ?? null, delay: ECHO_DELAY_S });
   });
+
+  // a perk taken (pov/index.js), yours up close, an NPC's where it stands; an Extra Life spent sounds the same
+  povEvents.on('perk:take', ({ point, by }) => { if (live()) play('perk', { at: by ? point ?? null : null }); });
+  povEvents.on('perk:revive', () => { if (live()) play('perk'); });
 
   povEvents.on('impact', ({ source, point, id, energy, broke }) => {
     if (!live()) return;

@@ -62,7 +62,9 @@
 
 ## Physics rules (non-negotiable, see feedback in project memory)
 
-- Everything obeys the engine. No visual fakes, no scripted immunities. Matter is conserved: a tool that
+- Everything obeys the engine. No visual fakes. The world never gets scripted exceptions: a perk (see
+  "Perks") may change only what a body can take and do (its tolerances, moves and hands), and when it reaches
+  into the world it does so through the engine (cooling cells, adding air pressure). Matter is conserved: a tool that
   takes cells puts the same cells (element, temperature, life, ctype) back when it dumps them, or it keeps
   them.
 - **No magic numbers.** Every threshold, rate or size is a named constant with a unit comment. GLSL gets
@@ -230,8 +232,10 @@ say world. Emitters own their event names. Listeners never mutate payloads.
 | `tool:action` | shovel, bucket, axe, pickaxe, physgun, trowel, blowtorch, bomb | `{ tool, action, id?, point?, amount? }`. tool is 'shovel'\|'bucket'\|'axe'\|'pickaxe'\|'physgun'\|'trowel'\|'blowtorch'\|'bomb'; action is 'dig'\|'place'\|'on'\|'off'\|'throw'\|'dump'\|'scoop'\|'pour'\|'swing'\|'refuse'\|'grab'\|'fling'\|'release'\|'blast'. Physgun 'hold' state is read from the tool, not an event. |
 | `player:step` | shell (camera bob cycle) | `{ speed, inLiquid }`. A footfall. |
 | `player:jet` | player | `{ on }`. The jetpack lit or went out. |
+| `perk:take` | shell | `{ key, keys, point, by? }`. A body took a perk orb: key is the orb's, keys what it gained (Gamble's two). |
+| `perk:revive` | shell | `{ point }`. Extra Life brought the player back. |
 
-The player's own events (`player.on('hurt'|'death'|'land'|'splash')`) stay as they are; listeners subscribe there too.
+The player's own events (`player.on('hurt'|'death'|'land'|'splash'|'revive'|'revenge')`) stay as they are; listeners subscribe there too.
 
 ### Ownership (v2)
 
@@ -300,6 +304,37 @@ Playtest: `node tools/npc-playtest.mjs [--url …] [--styles afk,gunner,brawler,
 Scripted players fight it with real input; it reports wins, time to kill both ways, damage by cause and the
 worst second. Targets: an AFK player lasts 20–60 s; a fighting player wins most duels but loses some health;
 no second takes more than half your health; a runner gets away.
+
+## Perks (2026-10-10): Noita's, in a falling-sand world
+
+The palette's Perks group sets perk orbs on surfaces (`src/perkOrbs.js`): markers pinned to world cells, like
+the spawners, each the perk's icon floating at chest height over a pad. A body (the player's or an NPC's) that
+walks into one gains the perk (`pov/index.js` `takePerks`). The Perk shrine sets three random ones in a row
+across the view, Noita's Holy Mountain: take one and the others vanish. A new scene clears the orbs.
+
+Every perk stacks. The list and its sizes are in `pov/perks.js`; a body's set is `player.perks`
+(`createPerkSet`: `count`, `has`, `add`, `take`, `list`, and what the stacks add up to). Death takes them, unless
+Extra Life brings the body back where it fell.
+
+| Perk (Noita's) | Here | Where | Another stack |
+|---|---|---|---|
+| Breathless | breath never drains | vitals.js | — |
+| Fire Immunity | the skin never burns (you float on lava: 9.8 < 25) | vitals.js | — |
+| Explosion Immunity | no blast or slam damage; blasts still throw you | vitals.js | — |
+| Freeze Field | liquids and fire within reach lose 600 °C/s down to −20 °C; the engine freezes water, sets lava, puts fire out. A column from your feet up is left alone, so you stand on the ice | player.js + povBody.js `povFieldFrag` | reaches further |
+| Lukki Mutation | while a wall or ceiling is within reach, the jet fires on an empty tank and the tank holds | player.js `clinging` | — |
+| Sand Swimmer (Dissolve Powders) | powders don't block the body; it swims in them at neutral buoyancy (matter stays conserved: the grains are pushed aside, not deleted). Still chokes: take Breathless | player.js | — |
+| Revenge Explosion | a hurt adds air pressure in a shell around the body (it sits in the eye), once a second | player.js + `povFieldFrag` | harder, wider |
+| Saving Grace | a blow that would kill from above 1% leaves 1% | vitals.js | — |
+| Extra Life | death brings you back where you fell, full health, perks kept | vitals.js (`revive`) | one more life |
+| Extra Health | every hurt is divided by 1 + 0.5 per stack (health stays 0..1) | vitals.js | +50% |
+| Faster Tools (Faster Wands) | every tool's clock runs 2× (`tools/action.js` `toolDt`: refire waits, swings, digging, pouring, the torch's heat, the physgun's blast cooldown), via `ctx.toolRate` | action.js | 2× again, up to 16× |
+| Gamble | two random other perks, not kept itself | perks.js `grant` | — |
+
+A new tool gets Faster Tools for free by timing its actions with `trigger` and `toolDt(ctx)` instead of `ctx.dt`.
+NPC bodies carry perks too (npc.js passes `toolRate` into its kit's ctx).
+
+Check: `node tools/perks-check.mjs [--port …] [--shot file.jpg]` (a dev server; AC power).
 
 ## Verifying (headless GPU)
 
