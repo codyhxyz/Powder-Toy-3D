@@ -1353,7 +1353,7 @@ function tick(now, renderOnly = false) {
   if (birds) {
     prof.phase('other');   // (their probe pass, birdProbe, counts here)
     birds.update(settings.paused ? 0 : dt);   // they hold still with the world
-    if (!settings.paused && birds.count) pacer.wake();
+    if (!renderOnly && !settings.paused && birds.count) pacer.wake();
   }
   if (settings.time !== timeShown) {
     timeShown = settings.time;
