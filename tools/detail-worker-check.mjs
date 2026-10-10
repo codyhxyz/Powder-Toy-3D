@@ -41,4 +41,4 @@ assert(mesh.ids.includes(E.BRICK));
 assert(!mesh.ids.includes(E.GOLD), 'live cells win over stale store');
 d = base(); cell(d, 1, 4, 1, E.WATER);
 assert.equal(run(d).liquid, true, 'wet chunks must keep the existing volume path');
-console.log('PASS: real tree IDs, planted columns, stored edits, live precedence, liquid fallback');
+console.log('PASS: real tree IDs, planted columns, stored edits, live precedence, liquid tagging');

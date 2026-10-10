@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+// Cache ownership, limits and checks: docs/world-lod.md.
 import { rawMat, makeFieldTarget } from '../sim.js';
 import { BRICK } from '../shaders/common.js';
 import { farSceneLayout, farSceneCellsFrag, farFrag, farMeshVert } from '../shaders/far.js';

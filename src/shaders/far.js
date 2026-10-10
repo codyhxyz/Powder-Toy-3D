@@ -996,7 +996,6 @@ void main() {
 const FAR_HAZE_VISIBILITY_M = 12000;   // m: meteorological range of the air (a clear day with some haze)
 const KOSCHMIEDER = 3.912;             // ln(1/0.02): the 2 % contrast threshold of the visibility definition
 export const FAR_VIEW = {
-  MAX_STEPS: WORLD_SIZE.reduce((n, side) => n + side / BRICK, 16), // enough brick exits for a world diagonal
   NUDGE: 0.01,             // a ray restarts this far past a node's exit
   NEAR: 0.2,               // a brick segment whose ends both read below this gets no middle sample
   ROOT_STEPS: 4,           // regula falsi steps on a crossing
@@ -1382,10 +1381,6 @@ void main() {
   }
   bool cut = false;
   float tHit = t0 < t1 ? farMarch(ro, rd, t0, t1, tw.x, tw.y, cut) : NO_HIT;
-  // The opaque mesh will fill this pixel. Do not shade an ocean or sky
-  // behind it only to overwrite that work in the next draw.
-  if (cached > 0.0 && tHit == NO_HIT) discard;
-
   // the open sea beyond the world (and a march that ran out of steps over it).
   // A world without one (uSea 0: world/scenes) has an open plain beyond it at
   // uFloor, and inside it a ray that met nothing reaches the world's bottom
@@ -1401,7 +1396,11 @@ void main() {
     seaOut = any(lessThan(ps.xz, vec2(0.0))) || any(greaterThan(ps.xz, vec2(WORLD.xz)));
   }
   bool seaWin = tSea >= tw.x && tSea <= tw.y;
-  bool ocean = tSea < NO_HIT && tSea < tHit && (seaOut || (tHit == NO_HIT && !seaWin));
+  bool ocean = tSea < NO_HIT && tSea < tHit && (cached <= 0.0 || tSea < cached)
+    && (seaOut || (cached <= 0.0 && tHit == NO_HIT && !seaWin));
+  // A nearer exterior ocean/plain still occludes the cached mesh. Inside
+  // cached chunks, do not refill dry edits with the coarse sea fallback.
+  if (cached > 0.0 && tHit == NO_HIT && !ocean) discard;
 
   vec3 col;
   float depth = 1.0;
