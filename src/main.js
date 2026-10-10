@@ -6,6 +6,7 @@
 import './ui/menu.css';
 import { createMenu } from './ui/menu.js';
 import { launch } from './launch.js';
+import { preloadGame } from './preload.js';
 import { GAMEMODES, mapOf, DEFAULT_MAP, MOBILE_MAP } from './maps.js';
 
 // The team gamemodes exist only in builds that have them (src/game: the Big Team Battle modes).
@@ -65,4 +66,7 @@ async function boot() {
 }
 
 if (location.search) boot();
-else menu.open();
+else {
+  menu.open();
+  preloadGame();   // the game downloads while the menu is up
+}
