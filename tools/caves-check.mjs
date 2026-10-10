@@ -5,7 +5,7 @@
 //   - stability: the element at every cell after --steps steps vs right after
 //     loading (cells whose element changed, by from → to);
 //   - the JS twin against the GPU: every cell of a fill without trees against
-//     islandCellAt;
+//     islandCellAt with the World's structures in (structureCellAt);
 //   - seams: a fill at an origin shifted by a window step matches the
 //     overlapping cells (all of state A), and a slab fill (a window move's)
 //     leaves the rest of the window as the full fill made it;
@@ -93,6 +93,8 @@ for (const name of ['hill', 'shaft', 'lake', 'crystal', 'tunnel']) {
   results[name] = await p.evaluate(async ([at, steps, runs, STEP, WIN]) => {
     const a = window.__app, H = window.__cc, sim = a.sim, g = sim.g, w = a.win, P = w.P;
     const { islandCellAt } = await import('/src/world/generator.js');
+    const { structureCellAt } = await import('/src/world/structures.js');
+    const cellAt = (x, y, z) => structureCellAt(P, x, y, z, islandCellAt(x, y, z, P), (yy) => islandCellAt(x, yy, z, P));
     const { ELEMENTS } = await import('/src/elements.js');
     const name = (id) => ELEMENTS[id]?.key ?? id;
     const O = H.origin(at[0], at[2], STEP, WIN);
@@ -108,7 +110,7 @@ for (const name of ['hill', 'shaft', 'lake', 'crystal', 'tunnel']) {
     const gpu = H.ids(), kinds = {}, where = [];
     let differ = 0;
     for (let y = 0; y < g.ny; y++) for (let z = 0; z < g.nz; z++) for (let x = 0; x < g.nx; x++) {
-      const cpu = islandCellAt(O[0] + x, y, O[1] + z, P), gid = gpu[(y * g.nz + z) * g.nx + x];
+      const cpu = cellAt(O[0] + x, y, O[1] + z), gid = gpu[(y * g.nz + z) * g.nx + x];
       if (cpu === gid) continue;
       differ++;
       const k = `${name(cpu)}/${name(gid)}`;
