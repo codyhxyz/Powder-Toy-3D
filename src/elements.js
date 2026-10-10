@@ -35,18 +35,89 @@
 //   sound  what it sounds like struck, in first person (pov/audio.js
 //          families); omitted = by kind (solids crack, powders puff,
 //          liquids splash)
+//   conducts  an electrical conductor (src/electricity.js; see elec)
 //   elec   electrical conductivity σ, S/m (real values): it carries sparks
 //          (src/electricity.js, docs/electricity.md), losing SPARK_DROP / σ
 //          of a spark's levels per cell. conducts: true without elec means a
 //          metal (ELEC_METAL); a poor conductor (water, saltwater) gives its σ.
 //          A conductor's ctype holds its spark: give it no other use.
 //
+// The shared mechanisms (docs/elements.md; react.js runs them, ui/tiles/
+// engine.js mirrors them, activity.js and common.js inertSelf let them rest)
+//   An `into` below is an element key ('EMPTY' = plain air) or a weighted
+//   list [['STEAM', 0.97], ['SAND', 0.03]], from which each cell draws one.
+//   `of`: what a LAVA product sets back into as it cools (its ctype);
+//   omitted = the element it came from. Gas set free (`puff`, as `fizz`) is
+//   volumes at ambient per volume, a pressure puff of
+//   STEAM_BOIL_PUFF·puff/STEAM_EXPANSION.
+//   cold   { T, into, of, latent, puff }: at or below T °C it becomes into
+//   hot    { T, into, of, latent, puff }: at or above T °C it becomes into.
+//          A hot change into LAVA is a melt: lava sets back at T less
+//          LAVA_FREEZE_BELOW (and an element can't have both melt and hot).
+//          latent: the latent heat in cap·°C per cell (water's L_FUSE = 80:
+//          334 J/g / 4.18 J/(g·K); per volume, J/cm³ / 4.18). With it the
+//          cell holds at T and the heat crossing T goes into the change:
+//          - an element whose life holds nothing else (no spawn life, no
+//            burnRate) banks it in life, signed as water's (+ toward hot,
+//            − toward cold), and changes once it has banked latent;
+//          - one whose life is taken (acid's strength, a fuel) keeps no
+//            bank: each step the heat crossing T over latent is the chance it
+//            changes, so on average it takes the same latent heat (stochastic
+//            rounding of the bank), and its life is left alone.
+//          Omitted: instant. The product takes T and its own spawn life.
+//   crush  { P, into, of }: when the air pressure on it (the highest of its
+//          own, none for a solid, and its open neighbours') exceeds P it
+//          becomes into (TPT's high-pressure transition)
+//   blast  { P, T, into, of, flame, air, shock, crushP }: an explosive.
+//          Going off it becomes into (FIRE if omitted) at T °C and adds P of
+//          air pressure (gunpowder: P 60, T 2200, flame 0.7). P and T are
+//          required; each trigger is optional. It goes off:
+//          - at its ignite temperature, or touching matter (not gas) that hot;
+//          - beside a flame, with chance `flame` per step (default 0: only
+//            heat sets it off, so a plain fire's heat must reach ignite);
+//          - hit with at least `shock` kinetic energy (the units of hard):
+//            matter and it closing at speed u carry ½·μ·u², μ the reduced mass
+//            (against a solid, the mover's). That counts a neighbour running
+//            into it and it landing on or running into anything; the move pass
+//            leaves both speeds as they were so the react pass sees the hit.
+//            Cells of its own element never count (a pool's flow isn't a hit),
+//            but a liquid flowing at FLOW into a solid carries ½·dens·FLOW²,
+//            and one falling h cells lands with about ½·dens·2·g·h (g = 0.025
+//            cells/step²), so set shock above what it does to itself;
+//          - under more than `crushP` air pressure: its own, and its open
+//            neighbours' (a solid holds none, so it reads theirs);
+//          - only where it touches air (an EMPTY neighbour), all of the
+//            above, when `air: true` (a fuel that needs oxygen: propane).
+//          A blast row never takes the ordinary burn path (burnRate, flames
+//          licking into the air), and a hit or pressure that sets it off
+//          wins over breaking it.
+//   REACTIONS (below the table): Noita materials.xml-style rows
+//          { a, b, into: [a's, b's], chance, minT, maxT, heat, puff, except }
+//          a, b    element keys. b '*' = any matter but air, a itself and
+//                  `except: [...]`. Explicit pairs win over '*' rows, then
+//                  earlier rows; one reaction per pair of elements.
+//          into    what a and b become: 'SAME' keeps one, weighted lists ok.
+//                  A row with a = b needs the same into for both.
+//          chance  probability per step that a touching pair reacts (default
+//                  1). A pair is partners one step in RX_PAIRINGS (6, react.js),
+//                  so past 1/6 the rate is that.
+//          minT, maxT  °C gate on the pair's hotter cell (a hot spot lights it)
+//          heat    energy released (+) or absorbed (−), cap·°C, shared so both
+//                  products warm alike: ΔT = heat / (cap_a' + cap_b')
+//          puff    gas set free, split between the two cells
+//          Each cell reacts with at most one partner per step, and the
+//          reaction takes precedence over anything else it would do then.
+//
 // Adding an element
 //   Data only, nothing else to touch:
 //   1. Append a row to defs below (at the end: ids are saved in scenes and
-//      presets). Everything above is data: phase changes by melt/meltInto,
+//      presets). Everything above is data: phase changes by melt/meltInto and
+//      cold/hot/crush, reactions by a REACTIONS row, explosions by blast,
 //      burning by ignite/burnRate/burnHeat/flameT/life, breaking by
 //      hard/breakInto, acid by acidProof/fizz, the struck sound by sound.
+//      Cite the published numbers in a comment above the row (as COAL and
+//      LIMESTONE do); node tools/elements-core-check.mjs checks the
+//      mechanisms, and the table's own checks throw on a bad row.
 //   2. Add it to a PALETTE group below.
 //   3. Give it a LOOKS row in gfx/materials.js: albedo, roughness, smooth
 //      channel, and surf for a shared texture (surf 'CRAG': natural rock,
@@ -57,7 +128,8 @@
 //   a render R.LIQUID element is a far liquid with its own optics) all follow
 //   from those rows.
 //   Still needs code:
-//   - A behaviour no field covers (a new reaction, like plant growth or clone)
+//   - A behaviour no field covers (one a reaction row can't say, like plant
+//     growth or clone)
 //     goes in shaders/react.js, mirrored in ui/tiles/engine.js
 //     (scripts/check-tile-engine.mjs lists elements the port misses) and, if
 //     it keeps a cell from resting, in shaders/activity.js inertNear.
@@ -92,7 +164,7 @@ const defs = [
     dens: 9, cond: 0.005, cap: 0.2, drag: 0.08, slide: 0.35, temp: -10, spawn: 0.3,
     desc: 'Light powder that floats on water. Melts at 0 °C, soaking up heat as it goes.' },
   { key: 'GUNPOWDER', abbr: 'GUNP', name: 'Gunpowder', kind: K.POWDER, render: R.OPAQUE, color: '#3d3d47', var: 0.35,
-    dens: 15, cond: 0.01, cap: 0.35, drag: 0.04, slide: 0.8, ignite: 200, spawn: 0.3,
+    dens: 15, cond: 0.01, cap: 0.35, drag: 0.04, slide: 0.8, ignite: 200, spawn: 0.3, blast: { P: 60, T: 2200, flame: 0.7 },
     desc: 'Explodes when it touches fire or gets hotter than 200 °C.' },
   { key: 'ASH', abbr: 'ASH', name: 'Ash', kind: K.POWDER, render: R.OPAQUE, color: '#9b968d', var: 0.2,
     dens: 4, cond: 0.003, cap: 0.2, drag: 0.1, slide: 0.5, spawn: 0.3,
@@ -295,14 +367,18 @@ const defs = [
 // σ (S/m) of a conductor given as conducts: true with no elec: a metal. The
 // poorest common one, mercury (1.04·10⁶), already loses nothing to speak of.
 const ELEC_METAL = 1e6;
-export const ELEMENTS = defs.map((d, id) => ({
+// A row of defs with every field filled in (the check scripts add test rows
+// the same way: tools/elements-core-check.mjs).
+export const elementRow = (d, id) => ({
   id, var: 0, dens: 1000, grav: 0, drag: 0, friction: d.kind === K.POWDER ? 0.25 : 0, jitter: 0, flow: 0, slide: 0, melt: 0, ignite: 0,
   burnRate: 0, burnHeat: 0, flameT: 0, temp: 20, life: 0, rad: 0, spawn: 1, sigma: [0, 0, 0], desc: '',
   hard: 0, breakInto: null, meltInto: null, acidProof: false, fizz: 0, ash: true, sound: null,
+  cold: null, hot: null, crush: null, blast: null, conducts: false,
   ...d,
   grav: d.grav ?? (d.kind === K.POWDER || d.kind === K.LIQUID ? 1 : 0),
   elec: d.elec ?? (d.conducts ? ELEC_METAL : 0),
-}));
+});
+export const ELEMENTS = defs.map(elementRow);
 
 export const E = Object.fromEntries(ELEMENTS.map((e) => [e.key, e.id]));
 // What a broken cell becomes: the debris element's id, or -1 when it can't break.
@@ -433,6 +509,148 @@ const vec3Arr = (name, fn) =>
 // crystal, the rest as themselves.
 export const meltInto = (e) => (e.meltInto ? E[e.meltInto] : e.id);
 
+// ---- the shared mechanisms: phase changes, reactions, explosives ----
+// (fields in the header; docs/elements.md "Shared mechanisms")
+
+// Reactions between two touching cells, in the style of Noita's materials.xml
+// <Reaction> rows (see the header). New rows go at the end.
+export const REACTIONS = [];
+
+// `into` 'SAME' (reactions): the cell stays as it is.
+export const SAME = 'SAME';
+const SAME_ID = -1;
+// Field defaults: a reaction with no temperature gate, a phase change with no
+// latent heat (instant) and no gas set free.
+const RX_DEFAULTS = { chance: 1, minT: -Infinity, maxT: Infinity, heat: 0, puff: 0, except: [] };
+
+// The temperature at which an element's melt (LAVA) sets back into it: its
+// melt point, or the T of a hot phase change into LAVA.
+export const meltPoint = (e) => e.melt || (e.hot && [].concat(intoList(e.hot.into)).every(([k]) => k === 'LAVA') ? e.hot.T : 0);
+// An `into` as a weighted list [[key, weight], ...].
+function intoList(into) {
+  if (typeof into === 'string') return [[into, 1]];
+  if (Array.isArray(into) && into.length && into.every((o) => Array.isArray(o) && typeof o[0] === 'string' && o[1] > 0)) return into;
+  throw new Error(`into ${JSON.stringify(into)}: an element key, or a weighted list [[key, weight], ...]`);
+}
+
+// Everything the shared mechanisms need, baked from ELEMENTS and REACTIONS
+// into flat tables that the GLSL arrays (elementsGLSL) and the dock tiles' CPU
+// twin (ui/tiles/engine.js) both read:
+//   outs   every product of every `into`: [id (-1 = SAME), cumulative weight]
+//   specs  each `into` as [first out, count]: a cell draws one in proportion
+//          to its weight (no draw when there is only one)
+//   into   per element, the spec of its cold, hot, crush and blast products
+//          (-1 = none), in PH order
+//   of     per element, what a LAVA product of each sets back into (-1: the element itself)
+//   lifeBank  per element: its latent heat banks in life (life holds nothing
+//          else: no spawn life, no fuel); else it changes stochastically
+//   cold, hot  per element [T, latent, puff]; crushP the crush pressure;
+//          blast [P, T, shock, crushP]; blastLit [flame, air (1 or 0)]
+//   rx     per reaction [chance, minT, maxT, heat, puff, spec a, spec b]
+//   lookup NE × NE: entry a·NE + b is 0 when a cell of a has no reaction
+//          with a neighbour of b, else 2·r + role + 1 (reaction r, role 0 =
+//          the cell is the row's a, 1 = its b). Explicit pairs take
+//          precedence over wildcards, then earlier rows over later ones.
+export const PH = { COLD: 0, HOT: 1, CRUSH: 2, BLAST: 3 };
+let baked = null, bakedFor = [];
+export function mechanisms() {
+  // (baked once per table: the rows themselves, compared by identity)
+  const rows = [...ELEMENTS, ...REACTIONS];
+  if (baked && rows.length === bakedFor.length && rows.every((r, i) => r === bakedFor[i])) return baked;
+  const NE = ELEMENTS.length;
+  const outs = [], specs = [];
+  const id = (k, ctx) => {
+    if (k === SAME) return SAME_ID;
+    if (!(k in E)) throw new Error(`${ctx}: unknown element '${k}'`);
+    return E[k];
+  };
+  const spec = (into, ctx) => {
+    const list = intoList(into), total = list.reduce((s, [, w]) => s + w, 0);
+    specs.push([outs.length, list.length]);
+    let cum = 0;
+    for (const [k, w] of list) { cum += w / total; outs.push([id(k, ctx), cum]); }
+    outs[outs.length - 1][1] = 1;   // the last product closes the draw exactly
+    return specs.length - 1;
+  };
+  const into = [], of = [], cold = [], hot = [], crushP = [], blast = [], blastLit = [], lifeBank = [];
+  for (const e of ELEMENTS) {
+    const ctx = (f) => `${e.key}.${f}`;
+    if (e.melt && e.hot) throw new Error(`${e.key}: melt and hot both set (a hot phase change into LAVA is a melt)`);
+    const ph = (p, f) => [p?.into ? spec(p.into, ctx(f)) : -1, p?.of ? id(p.of, ctx(f)) : -1];
+    const rows = [ph(e.cold, 'cold'), ph(e.hot, 'hot'), ph(e.crush, 'crush'), ph(e.blast ? { into: 'FIRE', ...e.blast } : null, 'blast')];
+    into.push(rows.map((r) => r[0]));
+    of.push(rows.map((r) => r[1]));
+    const phase = (p) => (p ? [p.T, p.latent ?? 0, p.puff ?? 0] : [0, 0, 0]);
+    cold.push(phase(e.cold));
+    hot.push(phase(e.hot));
+    crushP.push(e.crush ? e.crush.P : 0);
+    lifeBank.push(!(e.life || e.burnRate));
+    if (e.blast && !(e.blast.P >= 0 && Number.isFinite(e.blast.T))) throw new Error(`${e.key}.blast: P and T are required`);
+    blast.push(e.blast ? [e.blast.P, e.blast.T, e.blast.shock ?? 0, e.blast.crushP ?? 0] : [0, 0, 0, 0]);
+    blastLit.push(e.blast ? [e.blast.flame ?? 0, e.blast.air ? 1 : 0] : [0, 0]);
+  }
+  const rx = [];
+  const lookup = new Uint16Array(NE * NE);
+  const claim = (a, b, r, wild) => {
+    if (lookup[a * NE + b]) {
+      if (wild) return;
+      throw new Error(`REACTIONS[${r}]: ${ELEMENTS[a].key} and ${ELEMENTS[b].key} already react (one reaction per pair)`);
+    }
+    lookup[a * NE + b] = 2 * r + 1;
+    lookup[b * NE + a] = 2 * r + (a === b ? 1 : 2);
+  };
+  const order = [...REACTIONS.keys()].sort((i, j) => (REACTIONS[i].b === '*') - (REACTIONS[j].b === '*'));
+  REACTIONS.forEach((row, r) => {
+    const x = { ...RX_DEFAULTS, ...row }, ctx = `REACTIONS[${r}] (${x.a} + ${x.b})`;
+    if (!Array.isArray(x.into) || x.into.length !== 2) throw new Error(`${ctx}: into is [what a becomes, what b becomes]`);
+    if (!(x.chance > 0 && x.chance <= 1)) throw new Error(`${ctx}: chance is a probability per step, in (0, 1]`);
+    if (x.a === x.b && JSON.stringify(x.into[0]) !== JSON.stringify(x.into[1]))
+      throw new Error(`${ctx}: a cell reacting with its own element can't tell a from b: give both the same into`);
+    rx.push([x.chance, x.minT, x.maxT, x.heat, x.puff, spec(x.into[0], ctx), spec(x.into[1], ctx)]);
+  });
+  for (const r of order) {
+    const x = { ...RX_DEFAULTS, ...REACTIONS[r] }, ctx = `REACTIONS[${r}]`;
+    const a = id(x.a, ctx);
+    if (x.b !== '*') { claim(a, id(x.b, ctx), r, false); continue; }
+    // '*': any matter (not air) but itself and the exceptions
+    const except = new Set([E.EMPTY, a, ...x.except.map((k) => id(k, ctx))]);
+    for (let b = 0; b < NE; b++) if (!except.has(b)) claim(a, b, r, true);
+  }
+  baked = { outs, specs, into, of, cold, hot, crushP, blast, blastLit, lifeBank, rx, lookup };
+  bakedFor = rows;
+  return baked;
+}
+
+const fl = (x) => (x === Infinity ? '1e30' : x === -Infinity ? '-1e30' : f(x));
+// The mechanisms' tables as GLSL arrays (each at least one entry long: GLSL
+// has no empty arrays).
+function mechanismsGLSL() {
+  const m = mechanisms();
+  const pad = (arr, empty) => (arr.length ? arr : [empty]);
+  const outs = pad(m.outs, [SAME_ID, 1]), specs = pad(m.specs, [0, 1]), rx = pad(m.rx, [0, 0, 0, 0, 0, 0, 0]);
+  const ivec4s = (rows) => rows.map((r) => `ivec4(${r.join(', ')})`).join(', ');
+  return [
+    ...Object.entries(PH).map(([k, v]) => `#define PH_${k} ${v}`),
+    `#define NOUT ${outs.length}`,
+    `#define NSPEC ${specs.length}`,
+    `#define NRX ${rx.length}`,
+    `#define RX_ANY ${m.rx.length > 0}`,
+    `const vec2 OUT[NOUT] = vec2[NOUT](${outs.map(([i, c]) => `vec2(${f(i)}, ${fl(c)})`).join(', ')});`,
+    `const ivec2 SPEC[NSPEC] = ivec2[NSPEC](${specs.map(([a, n]) => `ivec2(${a}, ${n})`).join(', ')});`,
+    `const ivec4 INTO[NE] = ivec4[NE](${ivec4s(m.into)});`,
+    `const ivec4 OF[NE] = ivec4[NE](${ivec4s(m.of)});`,
+    `const vec3 COLD[NE] = vec3[NE](${m.cold.map((c) => `vec3(${c.map(fl).join(', ')})`).join(', ')});`,
+    `const vec3 HOT[NE] = vec3[NE](${m.hot.map((c) => `vec3(${c.map(fl).join(', ')})`).join(', ')});`,
+    `const float CRUSH_P[NE] = float[NE](${m.crushP.map(fl).join(', ')});`,
+    `const vec4 BLAST[NE] = vec4[NE](${m.blast.map((c) => `vec4(${c.map(fl).join(', ')})`).join(', ')});`,
+    `const bool LIFE_BANK[NE] = bool[NE](${m.lifeBank.join(', ')});`,
+    `const vec2 BLAST_LIT[NE] = vec2[NE](${m.blastLit.map((c) => `vec2(${c.map(fl).join(', ')})`).join(', ')});`,
+    `const vec4 RX[NRX] = vec4[NRX](${rx.map((r) => `vec4(${r.slice(0, 4).map(fl).join(', ')})`).join(', ')});`,
+    `const float RX_PUFF[NRX] = float[NRX](${rx.map((r) => fl(r[4])).join(', ')});`,
+    `const ivec2 RX_INTO[NRX] = ivec2[NRX](${rx.map((r) => `ivec2(${r[5]}, ${r[6]})`).join(', ')});`,
+  ];
+}
+
 export function elementsGLSL() {
   return [
     `#define NE ${ELEMENTS.length}`,
@@ -451,7 +669,7 @@ export function elementsGLSL() {
     floatArr('JITTER', 'jitter'),
     floatArr('FLOW', 'flow'),
     floatArr('SLIDE', 'slide'),
-    floatArr('MELT', 'melt'),
+    `const float MELT[NE] = float[NE](${ELEMENTS.map((e) => f(meltPoint(e))).join(', ')});`,
     floatArr('IGNITE', 'ignite'),
     floatArr('BURNRATE', 'burnRate'),
     floatArr('BURNHEAT', 'burnHeat'),
@@ -469,5 +687,6 @@ export function elementsGLSL() {
     boolArr('LEAVES_ASH', 'ash'),
     vec3Arr('COLOR', (e) => hexToLinear(e.color).map((v) => +v.toFixed(4))),
     vec3Arr('SIGMA', (e) => e.sigma),
+    ...mechanismsGLSL(),
   ].join('\n');
 }
