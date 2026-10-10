@@ -20,8 +20,8 @@ const p = await b.newPage({ viewport: { width: W, height: H } });
 const errs = [];
 p.on('console', (m) => { if (m.type() === 'error') errs.push(m.text().slice(0, 300)); });
 p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 500)));
-await p.goto(`http://localhost:${port}/?preset=empty`);
-await p.waitForFunction(() => window.__app?.pov, null, { timeout: 60000 });
+await p.goto(`http://localhost:${port}/?preset=empty`, { timeout: 120000 });   // patient: the GPU is shared (keys-check)
+await p.waitForFunction(() => window.__app?.pov, null, { timeout: 120000 });
 await p.waitForTimeout(1500);
 // no UI over the canvas: in play, pointer lock sends every click to it, but here the hotbar's
 // slot stack (which can sit over the middle of a small window) would take them
@@ -71,6 +71,23 @@ const torchLit = await brightness();
 await shot('night-torch');
 check('the torch lights the wall', torchLit > dark * 1.3, `brightness ${dark.toFixed(1)} → ${torchLit.toFixed(1)}`);
 
+// lantern: brighter than the torch (measured before the wall burns: its fire lights every view after)
+await ev(async () => (await import('/src/pov/tools/inventory.js')).inventory.give('LANTERN'));
+await wait(800);
+check('the lantern given goes in hand', (await ev(() => window.__app.pov.toolbelt.selectedKey)) === 'LANTERN');
+await ev(() => window.__app.pov.setLook(Math.PI / 2, -0.15));   // away from the wall
+await wait(800);
+await hold('SHOVEL'); await wait(500);
+const dark2 = await brightness();
+await hold('LANTERN'); await wait(800);
+const lanternLit = await brightness();
+await shot('night-lantern');
+await hold('TORCH'); await wait(800);
+const torchLit2 = await brightness();
+check('the lantern is brighter than the torch', lanternLit > torchLit2 && torchLit2 > dark2, `dark ${dark2.toFixed(1)}, torch ${torchLit2.toFixed(1)}, lantern ${lanternLit.toFixed(1)}`);
+await ev(() => window.__app.pov.setLook(-Math.PI / 2, -0.15));   // back to the wall
+await hold('TORCH'); await wait(800);
+
 // a torch thrown at the wood lands lit and sets it alight
 let c0 = await census();
 await p.mouse.down({ button: 'right' }); await wait(40); await p.mouse.up({ button: 'right' });
@@ -83,20 +100,8 @@ let c1 = await census();
 check('the thrown torch sets the wood alight', (c1.FIRE ?? 0) > 0 || (c1.WOOD ?? 0) < (c0.WOOD ?? 0), `WOOD ${c0.WOOD}→${c1.WOOD}, FIRE ${c0.FIRE ?? 0}→${c1.FIRE ?? 0}, ASH ${c1.ASH ?? 0}`);
 await shot('torch-thrown');
 
-// lantern: brighter, white, switches, lands lit
-await ev(async () => (await import('/src/pov/tools/inventory.js')).inventory.give('LANTERN'));
-await wait(800);
-check('the lantern given goes in hand', (await ev(() => window.__app.pov.toolbelt.selectedKey)) === 'LANTERN');
-await ev(() => window.__app.pov.setLook(Math.PI / 2, -0.15));   // away from the burning wall
-await wait(800);
-await hold('SHOVEL'); await wait(500);
-const dark2 = await brightness();
-await hold('LANTERN'); await wait(800);
-const lanternLit = await brightness();
-await shot('night-lantern');
-await hold('TORCH'); await wait(800);
-const torchLit2 = await brightness();
-check('the lantern is brighter than the torch', lanternLit > torchLit2 && torchLit2 > dark2, `dark ${dark2.toFixed(1)}, torch ${torchLit2.toFixed(1)}, lantern ${lanternLit.toFixed(1)}`);
+// the lantern switches and lands lit (thrown away from the burning wall)
+await ev(() => window.__app.pov.setLook(Math.PI / 2, -0.15));
 await hold('LANTERN'); await wait(300);
 await p.mouse.down(); await wait(40); await p.mouse.up();
 await wait(300);

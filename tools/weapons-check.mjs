@@ -16,8 +16,8 @@ const errs = [];
 p.on('console', (m) => { if (m.type() === 'error') errs.push(m.text().slice(0, 300)); });
 p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 500)));
 await p.addInitScript(() => { try { localStorage.removeItem('tpt3d.pov.given'); } catch { /* */ } });
-await p.goto(`http://localhost:${port}/?preset=empty`);
-await p.waitForFunction(() => window.__app?.pov, null, { timeout: 60000 });
+await p.goto(`http://localhost:${port}/?preset=empty`, { timeout: 120000 });   // patient: the GPU is shared (keys-check)
+await p.waitForFunction(() => window.__app?.pov, null, { timeout: 120000 });
 await p.waitForTimeout(1500);
 
 let fails = 0;
