@@ -1083,7 +1083,7 @@ float farTraceMatter(vec3 p) {
 ${mesh ? 'in vec3 vWorld, vNormal;\nflat in float vElement;' : ''}
 ${cloudsGLSL}
 
-#define FAR_MAX_STEPS ${FAR_VIEW.MAX_STEPS}
+#define FAR_MAX_STEPS ${L.size.reduce((n, side) => n + side / BRICK, 16)}
 #define FAR_NUDGE ${glf(FAR_VIEW.NUDGE)}
 #define FAR_NEAR ${glf(FAR_VIEW.NEAR)}
 #define FAR_ROOT_STEPS ${FAR_VIEW.ROOT_STEPS}

@@ -1,7 +1,7 @@
 import { DataUtils, BufferGeometry, BufferAttribute } from 'three';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
-import { E, ELEMENTS, R } from '../elements.js';
-import { runGenerator, bake } from '../constructions/runtime.js';
+import { E, ELEMENTS, K, R } from '../elements.js';
+import { runGenerator, bake, MAX_FOOT } from '../constructions/runtime.js';
 import { BUILTINS } from '../constructions/builtins.js';
 import { decodeBrick, BRICK_FLOATS } from './store.js';
 import { buildSurfaceMesh } from './surfaceMesh.js';
@@ -39,6 +39,22 @@ self.onmessage = ({ data: d }) => {
         if (wx < origin[0] || wz < origin[2] || wx >= volume[3] || wz >= volume[5]) continue;
         if (wx < 0 || wz < 0 || wx >= wb[0] * 4 || wz >= wb[2] * 4) continue;
         if (planted[Math.floor(wx / 4) + wb[0] * Math.floor(wz / 4)]) continue;
+        const base = (x + s.w * s.h * z) * 4;
+        if (s.data[base] && s.data[base + 3] >= 0.5) {
+          // Match stampMany's footing: fill air/liquid only when support is
+          // reached within the construction's declared footing depth.
+          const depth = Math.min(MAX_FOOT, s.foot), fill = [];
+          for (let down = 1; down <= depth; down++) {
+            const p = [wx, at[1] - down, wz];
+            if (!inside(p, volume) || inside(p, live)) break;
+            const kind = ELEMENTS[ids[localIndex(p)]].kind;
+            if (kind !== K.EMPTY && kind !== K.GAS && kind !== K.LIQUID) {
+              for (const at of fill) ids[at] = s.data[base] - 1;
+              break;
+            }
+            fill.push(localIndex(p));
+          }
+        }
         for (let y = 0; y < s.h; y++) {
           // Baked stamps encode id + 1; zero means "do not overwrite".
           const p = [wx, at[1] + y, wz], encoded = s.data[(x + s.w * (y + s.h * z)) * 4];

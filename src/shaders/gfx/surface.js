@@ -807,9 +807,15 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
     const vec3 DEEP_TINT = vec3(0.85, 1.15, 0.55);   // light that scattered through leaves
     const float LEAF_LOD = 1.5;                // fade leaves at this multiple of LEAF_F
     const float TILT_SALT = 0.37, TILT_HASH_SCALE = 157.0;   // hash input for a leaf's tilt
+    float lw = lodFade(LEAF_F * LEAF_LOD, fp);
+    if (lw <= 0.0) {
+      // Exactly the averaged result below. Do not search 27 cellular
+      // neighbours for leaves that are already smaller than a pixel.
+      m.alb *= MEAN;
+      m.cav = MEAN;
+    } else {
     vec3 ge, r1;
     vec4 c = mCell(p * LEAF_F, ge, r1);
-    float lw = lodFade(LEAF_F * LEAF_LOD, fp);
     vec3 tilt = hash33(vec3(c.z, c.w, TILT_SALT) * TILT_HASH_SCALE) - 0.5;
     vec3 rt = r1 - n * dot(r1, n);             // to the seed, within the surface
     vec3 ax = normalize(tilt - n * dot(tilt, n) + 1e-4);
@@ -824,6 +830,7 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
     m.cav = mix(MEAN, mix(DEPTH_CAV, 1.0, pm), lw);
     m.alb *= mix(vec3(MEAN), mix(DEPTH_ALB * hue, leaf, pm), lw);
     m.rough += WAX_VAR * (c.z - 0.5) * lw;     // some leaves waxier than others
+    }
     m.sssCol = DEEP_TINT;
     m.trans = 1.0;
   } else if (id == E_METAL) {

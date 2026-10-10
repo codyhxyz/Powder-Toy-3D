@@ -36,6 +36,21 @@ try {
   assert(cache.bytes <= 96 * 1024 * 1024);
   await page.waitForTimeout(2000); // TAA settles before each still
   await page.screenshot({ path: `${out}/detail.png` });
+  const edit = await page.evaluate(async () => {
+    const a = __app, o = a.sim.origin, g = a.sim.g;
+    const { E } = await import('/src/elements.js');
+    const world = [o.x + 8, g.ny - 12, o.z + g.nz / 2];
+    const d = a.win.far.detail;
+    const key = Math.floor(world[0] / 32) + d.nx * Math.floor(world[2] / 32);
+    a.sim.paint({ center: new a.THREE.Vector3(8, world[1], g.nz / 2), radius: 3, shape: 1, tool: E.GOLD, rate: 1, replace: true });
+    a.worldFocus = [o.x + g.nx / 2 + 21, o.z + g.nz / 2];
+    return { key, world, gold: E.GOLD, beforeX: o.x };
+  });
+  await page.waitForFunction(({ key, gold, beforeX }) => {
+    const a = __app, d = a.win.far.detail;
+    return a.sim.origin.x > beforeX && !a.win.pending &&
+      d.entries.get(key)?.mesh.geometry.attributes.element.array.includes(gold);
+  }, edit, { timeout: 120000 });
   const result = await page.evaluate(async () => {
     const a = __app, d = a.win.far.detail, r = a.renderer, T = a.THREE;
     // Park only this page's loop; all following draws are controlled A/B.
@@ -82,7 +97,7 @@ try {
   });
   assert.deepEqual(ownership, { validBefore: true, validAfter: false, mask: 0, mesh: false });
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ cache, timings: result, ownership, screenshots: out }, null, 2));
+  console.log(JSON.stringify({ cache, timings: result, ownership, editedSlabPreserved: edit.world, screenshots: out }, null, 2));
 } finally {
   await browser.close();
 }
