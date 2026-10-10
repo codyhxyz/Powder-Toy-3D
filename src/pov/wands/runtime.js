@@ -11,7 +11,7 @@ import { BODY_WIDTH, BODY_HEIGHT } from '../constants.js';
 export const WAND_LIMITS = Object.freeze({
   casts: 4, nodes: 128, events: 512, projectiles: 256, fields: 64,
   rays: 128, traceBatches: 2, commands: 64, transfers: 2, transferQueue: 128,
-  lights: 8, beamSamples: 16, inventory: 4096, dt: 0.1, flightStep: 0.25,
+  lights: 8, beamSamples: 16, inventory: 4096, dt: 0.1, flightStep: 0.25, traceFailures: 8,
 });
 const stores = new WeakMap();
 const finite = (x, fallback = 0) => Number.isFinite(x) ? x : fallback;
@@ -172,7 +172,7 @@ export function createWandRuntime(env) {
       if (cargo && !cargo.load.cells.length) { error('Stored material depleted'); return; }
       projectiles.push({ node, at: at.clone(), velocity: dir.clone().multiplyScalar(clamp(finite(p.speed, 60), 0, 1200)),
         cast, cargo, age: 0, started: time - clamp(finite(ctx.dt), 0, WAND_LIMITS.dt),
-        pending: false, triggered: false, alive: true,
+        pending: false, triggered: false, alive: true, traceFailures: 0,
         bounces: Math.max(0, finite(p.bounces)), pierce: Math.max(0, finite(p.pierce)), ignored: new Set() });
       return;
     }
@@ -208,6 +208,7 @@ export function createWandRuntime(env) {
     if (job.flight) {
       const r = job.flight;
       if (!r.alive) return;
+      r.traceFailures = 0;
       r.pending = false;
       r.age += job.dt;
       r.velocity.copy(job.velocity);
@@ -283,7 +284,15 @@ export function createWandRuntime(env) {
       if (!valid(g, s)) return;
       totals.traceErrors++; error('Collision query unavailable');
       // Fail closed: a failed ray never advances a flight or fires its payload.
-      for (const job of jobs) if (job.flight) job.flight.pending = false;
+      for (const job of jobs) if (job.flight) {
+        const r = job.flight;
+        r.pending = false;
+        if (++r.traceFailures >= WAND_LIMITS.traceFailures) {
+          r.alive = false;
+          refund(r.cargo); r.cargo = null;
+          totals.dropped++;
+        }
+      }
     }).finally(() => { if (g === generation) tracePending--; });
   }
   function runTransfers() {

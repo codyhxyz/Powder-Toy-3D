@@ -1,6 +1,6 @@
 import { h } from '../../ui/dom.js';
 import { SPELLS, SPELL_BY_ID, PRESETS, DEFAULT_CONFIG } from './catalog.js';
-import { compileWand } from './compiler.js';
+import { compileWand, CONFIG_BOUNDS } from './compiler.js';
 import './editor.css';
 
 const STORAGE_KEY = 'tpt3d.wand.v1';
@@ -16,9 +16,10 @@ export function createWandEditor({ runtime, onSave, onOpenChange, toast }) {
       const def = JSON.parse(raw);
       if (def && typeof def.name === 'string' && def.name.length <= 80 && Array.isArray(def.cards)
           && def.cards.length <= 256 && def.cards.every((id) => typeof id === 'string')
+          && (def.slot === undefined || (Number.isInteger(def.slot) && def.slot >= 1 && def.slot <= 10))
           && def.config && typeof def.config === 'object' && !Array.isArray(def.config)
           && Object.values(def.config).every((v) => typeof v === 'number' && Number.isFinite(v))) {
-        if (!compileWand(def.cards, def.config).errors.length) saved = { id: 'custom', name: def.name, cards: def.cards, config: def.config };
+        if (!compileWand(def.cards, def.config).errors.length) saved = { id: 'custom', name: def.name, slot: def.slot ?? 1, cards: def.cards, config: def.config };
       }
     }
   } catch { /* Storage can be unavailable or contain an obsolete deck. */ }
@@ -43,7 +44,7 @@ export function createWandEditor({ runtime, onSave, onOpenChange, toast }) {
     ['manaMax', 'Max mana', 1], ['manaRegen', 'Mana / second', 1],
     ['castDelay', 'Cast delay (s)', 0.01], ['recharge', 'Recharge (s)', 0.01], ['capacity', 'Card capacity', 1],
   ].map(([key, label, step]) => {
-    const input = h('input', { type: 'number', min: 0, step, 'aria-label': label, on: { input: () => {
+    const input = h('input', { type: 'number', min: CONFIG_BOUNDS[key][0], max: CONFIG_BOUNDS[key][1], step, 'aria-label': label, on: { input: () => {
       draft.config[key] = input.value === '' ? NaN : Number(input.value); renderPreview();
     } } });
     configInputs[key] = input;
@@ -54,7 +55,7 @@ export function createWandEditor({ runtime, onSave, onOpenChange, toast }) {
     draft.name = draft.name.trim() || 'Custom wand';
     const result = runtime.setDefinition(copy(draft));
     if (result.errors.length) { errors.textContent = result.errors.map(errorText).join('\n'); return; }
-    saved = { id: 'custom', name: draft.name.trim() || 'Custom wand', cards: [...draft.cards], config: { ...result.config } };
+    saved = { id: 'custom', name: draft.name.trim() || 'Custom wand', slot: draft.slot ?? 1, cards: [...draft.cards], config: { ...result.config } };
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(saved)); }
     catch { toast?.('Wand equipped. Browser storage is unavailable; changes will not survive reload.'); }
     onSave?.(draft);
@@ -122,6 +123,11 @@ export function createWandEditor({ runtime, onSave, onOpenChange, toast }) {
     const invalid = Object.values(draft.config).some((v) => !Number.isFinite(v));
     const messages = result.errors.map(errorText);
     if (invalid) messages.unshift('Enter a finite number for every wand setting.');
+    for (const [key, input] of Object.entries(configInputs)) {
+      if (Number.isFinite(draft.config[key]) && draft.config[key] !== result.config[key]) {
+        messages.push(`${input.getAttribute('aria-label')}: enter ${key === 'capacity' ? 'a whole number' : 'a number'} from ${input.min} to ${input.max}.`);
+      }
+    }
     errors.replaceChildren(...messages.map((message) => h('p', { text: message })));
     save.disabled = messages.length > 0 || !result.casts.length;
     stats.textContent = `${draft.cards.length} cards · ${s.castCount} casts · ${s.totalMana} mana / cycle · ${Number(s.recharge).toFixed(2)}s recharge`;

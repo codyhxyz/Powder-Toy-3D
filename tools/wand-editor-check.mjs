@@ -122,16 +122,23 @@ try {
   assert.deepEqual(stateAfter, stateBefore, 'modal must block global game hotkeys');
   assert.equal(await page.evaluate(() => window.__app.pov.ctx.primary), false);
   await page.getByLabel('Wand recipe').selectOption(data.presets[0].id);
+  await page.getByLabel('Card capacity').fill('128');
+  assert.equal(await page.getByRole('button', { name: 'Save & equip' }).isDisabled(), true);
+  assert.match(await page.locator('.we-errors').innerText(), /64/);
+  await page.getByLabel('Card capacity').fill('32');
   await page.getByLabel('Wand name').fill('UI check wand');
   await page.screenshot({ path: `${shots}/desktop.png` });
   await page.setViewportSize({ width: 390, height: 844 });
   assert(await dialog.evaluate((el) => el.scrollWidth <= el.clientWidth + 1), 'mobile dialog has no horizontal overflow');
   await page.screenshot({ path: `${shots}/mobile.png` });
+  await page.getByLabel('Wand recipe').selectOption('teleport');
+  await page.getByLabel('Wand name').fill('UI check wand');
   await page.getByRole('button', { name: 'Save & equip' }).click();
   assert.equal(await page.evaluate(() => window.__app.pov.wandRuntime.definition.name), 'UI check wand');
   assert.equal(await page.evaluate(() => window.__app.pov.ctx.primary), false, 'closing must not shoot');
   const persisted = await page.evaluate(() => JSON.parse(localStorage.getItem('tpt3d.wand.v1')));
   assert.equal(persisted.name, 'UI check wand');
+  assert.equal(persisted.slot, 7, 'saved utility wand keeps its category');
   await page.keyboard.press('b');
   await dialog.waitFor();
   await page.getByLabel('Wand name').fill('Cancelled change');
@@ -144,6 +151,8 @@ try {
     return { fired: p.wandRuntime.stats.casts > before, held: !!hand?.visible };
   });
   assert.deepEqual(afterEditorCast, { fired: true, held: true }, 'closing the editor must resume a visible, usable wand');
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.screenshot({ path: `${shots}/held-wand.png` });
   const teleport = await page.evaluate(() => {
     const p = window.__app.pov.player;
     p.hurt(0.2, 'check'); p.jetFuel = 0.37;
@@ -161,7 +170,8 @@ try {
   await page.evaluate(() => window.__app.pov.openWandEditor());
   await page.getByLabel('Wand recipe').selectOption('saved');
   assert.equal(await page.getByLabel('Wand name').inputValue(), 'UI check wand');
-  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: 'Save & equip' }).click();
+  assert.equal(await page.evaluate(() => window.__app.pov.toolbelt.selected), 6, 'saved wand returns to utility slot');
   assert.deepEqual(errors, [], 'browser errors (includes GPU shader errors)');
   console.log(`PASS: ${data.presets.length} recipes, ${data.spellCount} spells, ten old slots, modal guards, editing/persistence, runtime ticking, teleport vitals, desktop/mobile layout. Screenshots: ${shots}`);
   }

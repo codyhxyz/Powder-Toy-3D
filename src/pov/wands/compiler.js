@@ -1,10 +1,10 @@
 import { DEFAULT_CONFIG, SPELL_BY_ID } from './catalog.js';
 
 export const LIMITS = Object.freeze({ cards: 64, depth: 16, nodes: 256, minCooldown: 0.02 });
-const CONFIG_BOUNDS = {
+export const CONFIG_BOUNDS = Object.freeze({
   manaMax: [1, 10000], manaRegen: [0, 10000], castDelay: [0.02, 30],
   recharge: [0.02, 60], capacity: [1, LIMITS.cards],
-};
+});
 const PARAM_BOUNDS = {
   radius: [0.25, 24], power: [0, 10000], damage: [0, 1000], speed: [1, 240],
   lifetime: [0.05, 30], gravity: [-120, 120], spread: [0, Math.PI], recoil: [0, 80],

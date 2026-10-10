@@ -1,26 +1,11 @@
 import assert from 'node:assert/strict';
-import { registerHooks } from 'node:module';
-import { existsSync } from 'node:fs';
 import { setImmediate as turn } from 'node:timers/promises';
 import * as THREE from 'three';
 import { E, K } from '../src/elements.js';
 import { addTarget } from '../src/pov/targets.js';
 import { BODY_WIDTH, BODY_HEIGHT } from '../src/pov/constants.js';
 
-// Inject factory dependencies even when the GPU/compiler lanes have not landed.
-// Production imports remain unchanged; real compiler recipes run below if present.
-const runtimeURL = new URL('../src/pov/wands/runtime.js', import.meta.url).href;
-const hooks = registerHooks({
-  resolve(specifier, context, next) {
-    if (context.parentURL === runtimeURL && ['./compiler.js', './world.js'].includes(specifier)) {
-      const name = specifier === './compiler.js' ? 'compileWand' : 'createWandWorld';
-      return { url: `data:text/javascript,export function ${name}(){throw Error('Test dependency not injected')}`, shortCircuit: true };
-    }
-    return next(specifier, context);
-  },
-});
-const { createWandRuntime, WAND_LIMITS } = await import(runtimeURL);
-hooks.deregister();
+import { createWandRuntime, WAND_LIMITS } from '../src/pov/wands/runtime.js';
 const v = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
 const leaf = (effect, params = {}, op = 'self') => ({ op, id: effect, effect,
   params: { mana: 1, radius: 1, power: 10, lifetime: 0.3, speed: 30, ...params } });
@@ -241,7 +226,7 @@ function delayedHarness(latency = 0.15) {
   const carrier = leaf('spark', { lifetime: 0.1, delay: 0.02 }, 'projectile');
   carrier.payload = leaf('pressure'); carrier.trigger = 'timer';
   h.equip([carrier]); await h.step({ fire: true });
-  for (let i = 0; i < 8; i++) await h.step();
+  for (let i = 0; i < WAND_LIMITS.traceFailures - 2; i++) await h.step();
   assert.equal(h.calls.length, 0); assert.equal(h.runtime.stats.projectiles, 1);
   assert(h.runtime.stats.traceErrors > 0);
   assert.equal(h.visual.items[0].position.x, 20);
@@ -419,7 +404,19 @@ function delayedHarness(latency = 0.15) {
 }
 
 let recipes = 0;
-if (existsSync(new URL('../src/pov/wands/compiler.js', import.meta.url))) {
+{
+  const h = harness({ trace: () => Promise.reject(new Error('GPU unavailable')) });
+  h.equip([leaf('emit', { stored: true, radius: 1, lifetime: 30 }, 'projectile')], {},
+    { sandboxReservoir: { material: 'SCRAP', count: 5 } });
+  await h.step({ fire: true });
+  for (let i = 0; i < WAND_LIMITS.traceFailures + 2; i++) await h.step();
+  assert.equal(h.runtime.stats.projectiles, 0, 'permanent trace failures cancel rather than retry forever');
+  assert.equal(h.runtime.stats.inventory, 5, 'cancelled unverified flights refund their cargo');
+  assert.equal(h.calls.length, 0, 'failed traces never apply effects');
+  assert.equal(h.runtime.active, false);
+  h.runtime.dispose();
+}
+{
   const { compileWand } = await import('../src/pov/wands/compiler.js');
   const { PRESETS } = await import('../src/pov/wands/catalog.js');
   const overlapsCaster = (command, feet) => {
@@ -510,7 +507,7 @@ if (existsSync(new URL('../src/pov/wands/compiler.js', import.meta.url))) {
   assert(effects('water-extinguisher', 'emit').some((c) => c.material === 'WATER') && effects('water-extinguisher', 'cool').length);
   assert(evidence.get('liquid-sponge').takes.some((c) => c.spec.kinds.includes(K.LIQUID)));
   assert(evidence.get('stored-lava-mortar').puts.length);
-  assert(effects('remote-black-hole', 'erase').length || effects('remote-black-hole', 'attract').length);
+  assert(effects('remote-black-hole', 'erase').length);
   assert(effects('double-explosion', 'pressure').length >= 2);
   assert(effects('delayed-second-explosion', 'pressure').length >= 2);
   assert(effects('ice-bridge', 'cool').length && effects('ice-bridge', 'place').length);

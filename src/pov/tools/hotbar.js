@@ -40,9 +40,8 @@ export function createHotbar({ onSelect, onChoose, onEdit } = {}) {
         ? h('img', { src: modelIcon(def.model), alt: '', draggable: 'false' })
         : h('b', { text: def.key?.slice(0, 4) ?? '' }));
     },
-    select(i) {
+    select(i, name = slots[i].el.dataset.name) {
       slots.forEach((s, j) => { s.el.classList.toggle('on', j === i); s.el.setAttribute('aria-pressed', String(j === i)); });
-      const name = slots[i].el.dataset.name;
       nameEl.textContent = name ?? '';
       nameEl.classList.toggle('show', !!name);
       clearTimeout(nameTimer);

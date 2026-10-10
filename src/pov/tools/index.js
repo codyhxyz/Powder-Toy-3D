@@ -55,7 +55,7 @@ export function createToolbelt(env) {
       custom = { ...def, slot: def.slot ?? selected + 1, name: def.name.trim() || 'Custom wand' };
       selected = Math.max(0, Math.min(HOTBAR_SLOTS - 1, (def.slot ?? selected + 1) - 1));
       wandSelected = true;
-      syncChoices(); hotbar.select(selected); hotbar.choose('custom');
+      syncChoices(); hotbar.select(selected, custom.name); hotbar.choose('custom');
       env.requestRender?.();
     },
   });
@@ -133,7 +133,7 @@ export function createToolbelt(env) {
     selected = Math.max(0, Math.min(HOTBAR_SLOTS - 1, (def.slot ?? selected + 1) - 1));
     wandSelected = true;
     if (!PRESETS.some((p) => p.id === def.id)) custom = { ...def, slot: selected + 1 };
-    syncChoices(); hotbar.select(selected);
+    syncChoices(); hotbar.select(selected, def.name);
     hotbar.choose(PRESETS.some((p) => p.id === def.id) ? `wand:${def.id}` : 'custom');
     env.releaseInput?.(); env.requestRender?.();
     return true;

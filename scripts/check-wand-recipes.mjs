@@ -48,6 +48,7 @@ try {
     try {
       for (const preset of PRESETS) {
         let commands = [], lights = [], impulses = [], teleports = [], health = 1, checks = [];
+        let cpuMs = 0, framesRun = 0, maxCpuMs = 0;
         const check = (ok, label) => checks.push({ ok: !!ok, label });
         runtime?.dispose(); removeTarget();
         const [a, b] = sim.blankState();
@@ -86,7 +87,11 @@ try {
         if (id === 'spark-machinegun') removeTarget = addTarget({ id: 'wand-test-target', alive: true,
           box(lo, hi) { lo.set(22, 10, 12); hi.set(25, 20, 20); }, hurt(amount) { health -= amount; } });
         const frame = async (fire = false) => {
-          ctx.primary = fire; runtime.update(ctx);
+          ctx.primary = fire;
+          const start = performance.now();
+          runtime.update(ctx);
+          const elapsed = performance.now() - start;
+          cpuMs += elapsed; maxCpuMs = Math.max(maxCpuMs, elapsed); framesRun++;
           check(runtime.stats.frameCommands <= 64 && runtime.stats.frameTransfers <= 2, 'bounded per-frame work');
           await new Promise(requestAnimationFrame);
         };
@@ -144,11 +149,13 @@ try {
         check(runtime.stats.mana >= 0 && Number.isFinite(runtime.stats.mana), 'finite nonnegative mana');
         check(renderer.getContext().getError() === 0, 'no WebGL errors');
         results.push({ recipe: id, ok: checks.every((c) => c.ok), failed: checks.filter((c) => !c.ok), commands: commands.length,
+          cpuSubmissionMs: { mean: +(cpuMs / framesRun).toFixed(3), max: +maxCpuMs.toFixed(3) },
           stats: { casts: runtime.stats.casts, traces: runtime.stats.traceErrors, storage: runtime.stats.inventory, lastError: runtime.stats.lastError } });
       }
       return results;
     } finally { runtime?.dispose(); removeTarget(); sim.dispose(); renderer.dispose(); }
   });
+  console.log('CPU timings include scheduling and GPU submission, not GPU execution or full-game rendering. Grid: 64×32×32.');
   console.log(JSON.stringify(report, null, 2));
   assert.deepEqual(errors, [], errors.join('\n'));
   assert.ok(report.every((r) => r.ok), 'Every recipe must pass physical-world assertions');
