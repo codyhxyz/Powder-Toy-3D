@@ -68,6 +68,11 @@
 import { SHRINE_OFFERS } from './pov/perks.js';
 import { GEAR, SLOTS } from './pov/tools/catalog.js';
 
+// Photon reflectance of steel at normal incidence: F0 from its measured
+// complex refractive index, 0.56-0.58 across the visible (gfx/materials.js
+// METAL). What a metal doesn't reflect it absorbs as heat (rays.js, reflect).
+const METAL_REFLECT = 0.58;
+
 export const K = { EMPTY: 0, SOLID: 1, POWDER: 2, LIQUID: 3, GAS: 4 };
 export const R = { NONE: 0, OPAQUE: 1, LIQUID: 2, GLASS: 3, GAS: 4, FIRE: 5 };
 
@@ -128,7 +133,7 @@ const defs = [
     hard: 6, breakInto: 'SAWDUST', sound: 'thunk', desc: 'Grows into neighbouring water. Burns easily.' },
   // Steel: carbon steel's resistivity ~1.43·10⁻⁷ Ω·m, σ ≈ 7·10⁶ S/m (CRC Handbook).
   { key: 'METAL', abbr: 'METL', name: 'Metal', kind: K.SOLID, render: R.OPAQUE, color: '#a9afba', var: 0.04,
-    cond: 0.1, cap: 0.85, melt: 1500, hard: 60, breakInto: 'SCRAP', sound: 'ping', conducts: true, elec: 7e6,
+    cond: 0.1, cap: 0.85, melt: 1500, hard: 60, breakInto: 'SCRAP', sound: 'ping', conducts: true, elec: 7e6, reflect: METAL_REFLECT,
     desc: 'Conducts heat fast and glows when hot. Carries electricity. Melts at 1500 °C.' },
   { key: 'GLASS', abbr: 'GLAS', name: 'Glass', kind: K.SOLID, render: R.GLASS, color: '#d2ecf2',
     cond: 0.015, cap: 0.5, melt: 1400, sigma: [0.05, 0.025, 0.03], hard: 8, breakInto: 'SHARDS', acidProof: true, sound: 'shatter',
@@ -149,7 +154,7 @@ const defs = [
     dens: 4, cond: 0.006, cap: 0.3, drag: 0.1, slide: 0.45, ignite: 250, burnRate: 0.006, burnHeat: 3, flameT: 900,
     life: 1, spawn: 0.3, sound: 'thunk', desc: 'Chips and splinters of wood or plant. Floats on water and burns faster than a log.' },
   { key: 'SCRAP', abbr: 'BRMT', name: 'Scrap metal', kind: K.POWDER, render: R.OPAQUE, color: '#8e939c', var: 0.1,
-    dens: 78, cond: 0.1, cap: 0.85, drag: 0.01, slide: 0.5, melt: 1500, meltInto: 'METAL', spawn: 0.3, sound: 'ping',
+    dens: 78, cond: 0.1, cap: 0.85, drag: 0.01, slide: 0.5, melt: 1500, meltInto: 'METAL', spawn: 0.3, sound: 'ping', reflect: METAL_REFLECT,
     conducts: true, elec: 7e6,   // the same steel (TPT's BRMT conducts as METL does)
     desc: 'Heavy bits of metal: what metal breaks into, and the slugs the gun fires. Carries electricity. Melts and recasts as solid metal.' },
   // Cloud: condensed water droplets riding in air. It moves as air does (buoyant
@@ -267,6 +272,24 @@ const defs = [
   { key: 'PCLN', abbr: 'PCLN', name: 'Powered clone', kind: K.SOLID, render: R.OPAQUE, color: '#3b3b0a', var: 0.05,
     cond: 0.001, cap: 1.0,
     desc: 'A clone you switch: it copies the first element that touches it, but only while it is on. A spark from P-type silicon turns it on, one from N-type off.' },
+  // Radioactive (docs/particles.md; neutron data in rays.js NUCLEAR). Both
+  // are metals painted as heavy powders, as TPT has them, so a runaway's
+  // pressure can throw a lump apart.
+  // Uranium: natural uranium metal, 19.1 g/cm³; 0.116 J/(g·K) → cap 0.53;
+  // 27.5 W/(m·K), a poor metal (cond between crystal's and metal's); melts at
+  // 1132 °C. Barely radioactive (U-238's half-life is 4.5 billion years), so
+  // unlike TPT's it doesn't heat by itself: neutrons scatter off it, it
+  // captures some and fissions a few.
+  { key: 'URANIUM', abbr: 'URAN', name: 'Uranium', kind: K.POWDER, render: R.OPAQUE, color: '#707a5c', var: 0.1,
+    dens: 191, cond: 0.08, cap: 0.53, drag: 0.01, slide: 0.5, melt: 1132, spawn: 0.3, sound: 'ping',
+    desc: 'Natural uranium: the heaviest powder, sinking through anything. Barely radioactive by itself; neutrons bounce off it, and it fissions a little when they hit.' },
+  // Plutonium: Pu-239 metal, 19.8 g/cm³; 0.132 J/(g·K) → cap 0.62; 6.7
+  // W/(m·K), the worst-conducting metal (cond near crystal's); melts at only
+  // 640 °C, into lava that stays fissile. A neutron splits it (rays.js
+  // NUCLEAR), freeing 2-3 more, so a lump past critical size runs away.
+  { key: 'PLUTONIUM', abbr: 'PLUT', name: 'Plutonium', kind: K.POWDER, render: R.OPAQUE, color: '#55703c', var: 0.1,
+    dens: 198, cond: 0.045, cap: 0.62, drag: 0.01, slide: 0.5, melt: 640, spawn: 0.3, sound: 'ping',
+    desc: 'Fissile Pu-239. A neutron splits it into heat and 2-3 more neutrons, so a big enough heap runs away and blows itself apart. Water around it makes it go critical sooner.' },
 ];
 
 // σ (S/m) of a conductor given as conducts: true with no elec: a metal. The
@@ -307,6 +330,12 @@ export const TOOLS = [
   // sparkCell). -8 is left for the Lightning tool (branch el-mat).
   { id: -9, key: 'SPARK', abbr: 'SPRK', name: 'Spark', color: '#ffff80',
     desc: 'Sparks the conductors inside the brush: metal, silicon, water, and switches that are on. Everything else ignores it.' },
+  // Fast particles (rays.js RAY_TOOLS): painted into the particle list, not the grid.
+  // (Ids from -40: the spawner pads hold -20 and -21.)
+  { id: -40, key: 'PHOTON', abbr: 'PHOT', name: 'Photon', color: '#fff6c8',
+    desc: 'Packets of light flying straight. Glass, water and ice let them through, metal reflects them, and anything else soaks them up as heat: enough to light wood.' },
+  { id: -41, key: 'NEUTRON', abbr: 'NEUT', name: 'Neutron', color: '#20e0ff',
+    desc: 'Fast neutrons. They pass through most things; water slows them, and slow ones split plutonium far more readily.' },
 ];
 export const isSpawnerTool = (id) => id === -6 || id === -7 || id === -20 || id === -21;
 
@@ -373,6 +402,7 @@ export const PALETTE = [
   { name: 'Gases', items: ['STEAM', 'CLOUD', 'SMOKE', 'FIRE'] },
   { name: 'Solids', items: ['WALL', 'COAL', 'ROCK', 'LIMESTONE', 'SANDSTONE', 'METAL', 'GLASS', 'ICE', 'CRYSTAL', 'WOOD', 'PLANT', 'CLONE'] },
   { name: 'Electronics', items: ['SPARK', 'BATTERY', 'METAL', 'PSCN', 'NSCN', 'SWITCH', 'INSULATOR', 'TSNS', 'PCLN'] },
+  { name: 'Radioactive', items: ['PHOTON', 'NEUTRON', 'URANIUM', 'PLUTONIUM'] },
   { name: 'Tools', items: ['HEAT', 'COOL', 'ERASE', 'BLAST', 'SIGN', ...GEAR_ITEMS.map((g) => g.key)] },
   { name: 'Entities', items: ['ENEMY', 'SPAWN', 'JEEPPAD', 'BIKEPAD'] },
   { name: 'Constructions', items: ['HOUSE', 'TREE', 'CAMPFIRE', 'IGLOO', 'BARREL', 'AQUARIUM', 'FOUNTAIN', 'SHRINE', 'DOCK', 'TOWER', 'STONES', 'WELL', 'MINE', 'WRECK', 'PROMPT'] },

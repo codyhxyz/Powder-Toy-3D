@@ -170,6 +170,12 @@ const LOOKS = {
   INSULATOR: { rough: 0.95, alb: '#a7aec2', sss: 0.3 },
   TSNS: { rough: 0.5, alb: '#c21aa6' },
   PCLN: { rough: 0.35, metal: 1, alb: [0.45, 0.36, 0.14] },   // Clone's gold, tarnished: TPT draws it dark olive
+  // Radioactive metals as powders: a metal powder is dark, since light is
+  // trapped between the grains, with bright glints off the facets. Uranium
+  // tarnishes to a dark grey-black oxide (UO₂ is black); plutonium's oxide
+  // skin is dull olive-grey.
+  URANIUM: { ch: 'GRANULAR', rough: 0.55, alb: '#3f413b', glint: 0.5 },
+  PLUTONIUM: { ch: 'GRANULAR', rough: 0.6, alb: '#45493a', glint: 0.4 },
 };
 
 // Shared texture families (LOOKS surf). NONE: an element's own (or none).

@@ -53,6 +53,10 @@ export const reactFrag = (g) => /* glsl */ `
 ${prelude(g)}
 uniform uint uFrame;
 uniform float uGravity;
+// What fast particles left in each cell this step (raysLayer.js, docs/particles.md):
+// heat (energy) and air pressure, in a target laid out like the state.
+uniform sampler2D tRayDep;
+uniform bool uRays;
 ${stateOutGLSL}
 ${quietGLSL}
 ${inertNearGLSL}
@@ -115,7 +119,8 @@ void main() {
   // quiet brick (shaders/activity.js): nothing here can change, keep it as is.
   // Its cells were inert when the activity map was built, so their neighbour
   // tests passed then, and still do unless something around them is dirty.
-  if (quietCell(p)) { writeState(a, b, ownFlags(a, b) | FLAG_NEAR | dirty); return; }
+  vec2 rayDep = uRays ? texelFetch(tRayDep, atlas(p), 0).xy : vec2(0.0);
+  if (quietCell(p) && rayDep == vec2(0.0)) { writeState(a, b, ownFlags(a, b) | FLAG_NEAR | dirty); return; }
   int id = eid(a);
   float T = a.y, life = a.z;
   float ctype = floor(a.w), seed = fract(a.w);
@@ -181,7 +186,7 @@ void main() {
   float C = CAP[id];
   float dE = 0.0;
   for (int i = 0; i < 6; i++) dE += condFlux(id, T, nid[i], na[i].y);
-  T += dE / C;
+  T += (dE + rayDep.x) / C;   // (and what particles left: photons absorbed, fissions)
   // the open world above the box slowly pulls air back to ambient; gases radiate
   T += (AMBIENT - T) * (id == E_EMPTY ? AIR_AMBIENT_PULL : RAD[id]);
 
@@ -198,7 +203,7 @@ void main() {
       lap += pn[i] - P0;
       front = max(front, pn[i]);
     }
-    P = max(P0 + P_DIFFUSE * lap, front * P_FRONT) * P_DECAY;
+    P = max(P0 + P_DIFFUSE * lap, front * P_FRONT) * P_DECAY + rayDep.y;
     gradP = 0.5 * vec3(pn[0] - pn[1], pn[2] - pn[3], pn[4] - pn[5]);
   } else {
     P = 0.0;

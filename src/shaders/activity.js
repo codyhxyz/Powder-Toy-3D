@@ -233,10 +233,15 @@ void main() {
 
 // Brick resolution: 1 if the brick and its 26 neighbours are inert (outside
 // the box counts as inert: the box walls are). uEnabled = false clears the map.
+// A brick holding a fast particle (raysLayer.js: tRays, when uRays) counts as
+// not inert: a particle flies at most a brick in the steps a map lives
+// (rays.js RAY_V_MAX), so every cell it can heat stays awake.
 export const quietFrag = (g) => /* glsl */ `
 ${prelude(g)}
 uniform sampler2D tInert;
 uniform bool uEnabled;
+uniform sampler2D tRays;
+uniform bool uRays;
 out vec4 oC;
 void main() {
   ivec3 bc = brickFromFrag(ivec2(gl_FragCoord.xy));
@@ -248,6 +253,7 @@ void main() {
     ivec3 b = bc + ivec3(x, y, z);
     if (any(lessThan(b, ivec3(0))) || any(greaterThanEqual(b, ivec3(BX, BY, BZ)))) continue;
     if (texelFetch(tInert, brickAtlas(b), 0).x < 0.5) return;
+    if (uRays && texelFetch(tRays, brickAtlas(b), 0).x > 0.5) return;
   }
   oC = vec4(1.0);
 }
