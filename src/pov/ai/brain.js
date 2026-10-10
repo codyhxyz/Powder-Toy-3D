@@ -6,7 +6,7 @@ import {
 } from 'yuka';
 import { ELEMENTS, E, K } from '../../elements.js';
 import { HAND_REACH, BODY_HEIGHT, EYE_HEIGHT } from '../constants.js';
-import { AXE, TORCH, PHYS } from '../../shaders/povTools.js';
+import { AXE, PICK, TORCH, PHYS } from '../../shaders/povTools.js';
 import { ROUND_GRAVITY, gravityScale } from '../ballistics.js';
 import { THROW_SPEED } from '../tools/bomb.tool.js';
 
@@ -57,6 +57,7 @@ const TORCH_REST_S = 1.6;            // ...then it rests
 const GUN_INTERVAL = 1.1;            // s between its shots
 const AXE_WINDUP = 0.6;              // s it faces the target, axe up, before a blow (the tell)
 const AXE_COOLDOWN = 0.5;            // s after a blow
+const PICK_COOLDOWN = 0.7;           // s after a pickaxe blow (its refire is 0.6)
 const AXE_RANGE = Math.min(HAND_REACH, 6);   // cells: it swings from closer than the hand's reach
 const TORCH_RANGE = 1.5 + TORCH.LENGTH;      // cells: nozzle reach + flame
 const BOMB_MIN = 10;                 // cells: closer than this a bomb would hurt itself
@@ -95,6 +96,7 @@ const KIND = ELEMENTS.map((e) => e.kind);
 const LOOSE = (i) => i !== E.EMPTY && i >= 0 && (KIND[i] === K.POWDER || KIND[i] === K.LIQUID);
 const DIGGABLE = (i) => i >= 0 && i !== E.EMPTY && (KIND[i] === K.POWDER || (KIND[i] === K.SOLID && ELEMENTS[i].breakInto && ELEMENTS[i].hard <= 40));
 const AXEABLE = (i) => i >= 0 && KIND[i] === K.SOLID && ELEMENTS[i].breakInto && ELEMENTS[i].hard <= AXE.ENERGY;
+const PICKABLE = (i) => i >= 0 && KIND[i] === K.SOLID && ELEMENTS[i].breakInto && ELEMENTS[i].hard <= PICK.ENERGY;
 const BOMBABLE = (i) => i >= 0 && KIND[i] === K.SOLID && ELEMENTS[i].breakInto;
 
 const hdist = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
@@ -386,7 +388,7 @@ class HuntGoal extends CompositeGoal {
 }
 
 // Break through what's between it and the target: shovel (powder), axe (wood,
-// glass, plants, ice), bomb from a distance (rock).
+// glass, plants, ice), pickaxe (rock), bomb from a distance (what's left).
 function breachPlan(a) {
   const e = a.eye(), c = a.chest(a.lastSeen);
   const d = Math.hypot(c.x - e.x, c.y - e.y, c.z - e.z);
@@ -396,6 +398,7 @@ function breachPlan(a) {
   const id = hit.id;
   if (KIND[id] === K.POWDER) return { tool: 'SHOVEL', hit };
   if (AXEABLE(id)) return { tool: 'AXE', hit };
+  if (PICKABLE(id)) return { tool: 'PICKAXE', hit };
   if (BOMBABLE(id)) return { tool: 'BOMB', hit };
   return null;
 }
@@ -661,13 +664,15 @@ function reachable(a, c, want) {
   return { x: hit.cell.x, y: hit.cell.y, z: hit.cell.z, id: hit.id };
 }
 
-// Work at a cell with a hand tool (shovel or axe) until it's gone: true then.
+// Work at a cell with a hand tool (shovel, axe or pickaxe) until it's gone: true then.
+const WORKS = { SHOVEL: DIGGABLE, AXE: AXEABLE, PICKAXE: PICKABLE };   // what each can take away
+const BLOW_COOLDOWN = { AXE: AXE_COOLDOWN, PICKAXE: PICK_COOLDOWN };   // the swung ones, a click a blow
 function workCell(a, tool, c) {
   const id = a.npc.world.id(c.x, c.y, c.z);
-  if (id === E.EMPTY || (tool === 'SHOVEL' ? !DIGGABLE(id) : !AXEABLE(id))) return true;
+  if (id === E.EMPTY || !WORKS[tool](id)) return true;
   a.hold(tool);
   a.lookAt(c);
-  if (tool === 'AXE') a.intent.primaryPressed = a.ready('AXE') && (a.cooldown('AXE', AXE_COOLDOWN), true);
+  if (tool in BLOW_COOLDOWN) a.intent.primaryPressed = a.ready(tool) && (a.cooldown(tool, BLOW_COOLDOWN[tool]), true);
   else a.intent.primary = true;
   return undefined;
 }

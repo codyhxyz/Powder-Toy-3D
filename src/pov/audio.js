@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { ELEMENTS, E, K } from '../elements.js';
 import { povEvents } from './events.js';
 import { CELL_METERS } from './vitals.js';
+import { MELEE_SOURCES } from './constants.js';
 
 // POV sound. Every noise in first person comes from an event (docs/pov.md,
 // "Gunplay v2"): the gun, the tools and the shell announce what happened on
@@ -135,7 +136,7 @@ const PRESETS = {
   bucketScoop: [.6, .15, 180, .02, .08, .2, 0, 1, 6, , , , , 2, , , .04, .6, , , -1500],
   // bucket pouring (loops while pouring): a steady burbling stream of low-passed noise
   pourLoop: [.45, 0, 300, , 1, 0, 4, 1, , , , , .07, 6, , , , .7, , .25, -1600],
-  // axe swing: an airy whoosh that rises through the swing
+  // axe or pickaxe swing: an airy whoosh that rises through the swing
   swoosh: [.5, .1, 140, .06, .04, .14, 4, 1, 4, , , , , 6, , , , .7, , , -900],
   // blowtorch burning (loops): a steady high-passed roar of noise with a slight flutter
   torchLoop: [.35, 0, 200, , 1, 0, 4, 1, , , , , , 12, , , , .9, , .08, 900],
@@ -434,7 +435,7 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
     if (family === 'splash' && energy != null && energy < SPLASH_ENERGY) name = 'plop';
     play(name, { at, gain, rate });
     if (broke === true) play('crunch', { at, gain: gain * CRUNCH_GAIN, rate });
-    if (broke === false && family === 'ping' && source !== 'axe') play('ricochet', { at, gain: gain * RICOCHET_GAIN });
+    if (broke === false && family === 'ping' && !MELEE_SOURCES.has(source)) play('ricochet', { at, gain: gain * RICOCHET_GAIN });
   });
 
   // an NPC's tool sounds that are held loops for the player: a one-shot each where it is
@@ -472,7 +473,7 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
         if (id === E.LAVA && clock() - lastSizzle > POUR_SIZZLE_GAP_S) { lastSizzle = clock(); play('sizzle', { at, gain: TOOL_HIT_GAIN }); }
         break;
       }
-      case 'axe:swing': play('swoosh', { at }); break;
+      case 'axe:swing': case 'pickaxe:swing': play('swoosh', { at }); break;
       case 'bomb:throw': play('swoosh', { at }); break;
       case 'blowtorch:on': loop('torchLoop', true); break;
       case 'blowtorch:off': loop('torchLoop', false); break;

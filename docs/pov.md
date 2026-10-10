@@ -26,7 +26,7 @@
   mannequin dressed as a wizard, a pointed hat and a robe skinned to its skeleton (garb.js: the robe's
   weights are transferred from the nearest body vertices and eased toward the pelvis below the hips).
   Stickman stands in while it loads. The jet exhaust leaves from the small of the back (`JET_NOZZLES`).
-- **Physical, finite tools on a Minecraft-style hotbar** (keys `1`–`9` and the scroll wheel in POV). God powers
+- **Physical, finite tools on a Minecraft-style hotbar** (keys `1`–`9` and `0`, and the scroll wheel in POV). God powers
   (infinite painting) stay in god view, one `F` away.
   1. **Shovel**: digs powder, or breaks solids into their debris (slower the harder they are; WALL
      refuses), into the **pack** (the inventory, `transfer.js` `pack()`, 1,000 cells). Right-click throws a
@@ -51,6 +51,9 @@
   9. **Bomb**: a thrown pipe bomb (18 m/s plus yours, 1 g, on the shared projectiles) that becomes a 5³
      charge of gunpowder where it lands, lit by one detonator cell so the burn runs through it as a wave
      and the blasts stack; the blast is the engine's.
+  10. **Pickaxe** (key `0`): the axe's swing with a heavier, pointed head (melee.js, shaders/povTools.js
+      `PICK`): a slower blow with more energy in a narrower, deeper patch. It mines rock, a 3×3 face two
+      cells deep a swing, into STONE in place for the shovel to pick up. Metal still turns it away.
 - Mouse look with pointer lock. `V` toggles first and third person. A crosshair, health and breath bars, and
   screen effects for what the body feels: heat glow at the edges, frost, a red flash
   when hurt.
@@ -143,7 +146,7 @@ toolbelt = createToolbelt(env) → { update(ctx), select(index), setVisible(bool
 // The shell calls setVisible(true/false) on entering/leaving POV, and update(ctx) every POV frame.
 // In World the grid is a window that moves over the world (docs/scaling.md D11): the shell calls
 // windowShifted when it does, and the toolbelt passes it to every tool.
-// The toolbelt listens for keys 1–9 itself (only while env.isActive()). The wheel comes in ctx.wheel:
+// The toolbelt listens for the number keys itself (1–9, 0 for slot 10) (only while env.isActive()). The wheel comes in ctx.wheel:
 // it switches slots unless the selected tool's wantsWheel?.() returns true, then it goes to the tool.
 ```
 
@@ -175,6 +178,9 @@ export default {
   the frame the button goes down, then every `interval` while held (`hold: false` for one per click), and
   a click during the wait is buffered. `swing(spec)`: a melee blow's eased pose, stopping short on a hit and
   following through on a miss.
+- `tools/melee.js` `meleeTool(spec)`: a whole swung tool (the axe, the pickaxe) from its blow's tuning, pass,
+  `HIT` row, refire, body damage and held pose. A new swung tool is a config file; add its impact source to
+  `constants.js` `MELEE_SOURCES` so sparks and ricochets treat it as a blow, not a round.
 - `viewmodel.js` `HIT` and `rig.hit(HIT.X)`: a tool's shot, blow or fling, as the hand's spring kick plus
   the view punch (feel.js, Source's ViewPunch spring). Add a row to `HIT` for a new tool.
 - `env.feedback.notice(text)` / `refuse(text, { id, point })`: the throttled "can't" toast, slot shake and
@@ -220,8 +226,8 @@ say world. Emitters own their event names. Listeners never mutate payloads.
 | `gun:dry` | gun | `{}`. The trigger clicked but nothing fired (muzzle blocked). |
 | `round:move` | gun, bomb | `{ id, kind, from, to }` (kind 'round' or 'bomb'). A round in flight moved this frame (grid), for tracers. |
 | `round:end` | gun, bomb | `{ id, kind }`. The round is gone (impact or out of the box). |
-| `impact` | gun, axe | `{ source: 'gun'\|'axe', point, normal, id, energy, broke, body? }` (body: a target, not a cell, was hit; id −1). Something was struck. id is the element hit, energy is ½·DENS·v² in sim units, and broke is true/false when the striker knows, else null. |
-| `tool:action` | shovel, bucket, axe, physgun, trowel, blowtorch, bomb | `{ tool, action, id?, point?, amount? }`. tool is 'shovel'\|'bucket'\|'axe'\|'physgun'\|'trowel'\|'blowtorch'\|'bomb'; action is 'dig'\|'place'\|'on'\|'off'\|'throw'\|'dump'\|'scoop'\|'pour'\|'swing'\|'refuse'\|'grab'\|'fling'\|'release'\|'blast'. Physgun 'hold' state is read from the tool, not an event. |
+| `impact` | gun, axe, pickaxe | `{ source: 'gun'\|'axe'\|'pickaxe', point, normal, id, energy, broke, body? }` (body: a target, not a cell, was hit; id −1). Something was struck. id is the element hit, energy is ½·DENS·v² in sim units, and broke is true/false when the striker knows, else null. |
+| `tool:action` | shovel, bucket, axe, pickaxe, physgun, trowel, blowtorch, bomb | `{ tool, action, id?, point?, amount? }`. tool is 'shovel'\|'bucket'\|'axe'\|'pickaxe'\|'physgun'\|'trowel'\|'blowtorch'\|'bomb'; action is 'dig'\|'place'\|'on'\|'off'\|'throw'\|'dump'\|'scoop'\|'pour'\|'swing'\|'refuse'\|'grab'\|'fling'\|'release'\|'blast'. Physgun 'hold' state is read from the tool, not an event. |
 | `player:step` | shell (camera bob cycle) | `{ speed, inLiquid }`. A footfall. |
 | `player:jet` | player | `{ on }`. The jetpack lit or went out. |
 
@@ -262,7 +268,7 @@ player's body, the player's tools and a mind built from textbook game AI, each a
 Strategies (evaluators → goals): **Attack** (fuzzy weapon: axe and blowtorch close, gun at any range, bomb at
 mid range with the low-arc launch-angle formula, physgun flinging nearby loose matter, a bucket of lava poured
 from close), **Hunt** (A* to where it last saw you), **Breach** (no path and a wall between: shovel through
-powder, axe through wood/glass/plants/ice, bomb rock), **Climb** (you're up out of reach: dig material, walk
+powder, axe through wood/glass/plants/ice, pickaxe through rock, bomb what's left), **Climb** (you're up out of reach: dig material, walk
 to your column, pillar up by jumping and setting a trowel block under its feet), **Cover** (hurt and under
 fire: two trowel blocks between you), **Extinguish** (on fire: run to water), **Gather** (idle: dig sand for
 building), **Wander**. A strategy that fails is put on a 4 s cooldown. Reflexes in `npc.js`: jump when blocked,
