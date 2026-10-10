@@ -12,7 +12,10 @@ import { viewmodelRig, HIT } from '../viewmodel.js';
 // the hold point, plus the gravity they lose over the frame
 // (shaders/povTools.js PHYS), so the matter gathers into a floating ball that
 // follows the aim. The wheel moves the hold point nearer
-// or farther. Right-click flings the ball along the aim; letting go drops it.
+// or farther. The hold point chases the aim along an arc around the eye no
+// faster than the matter can move (CHASE · V_MAX), so whipping the view
+// round swings the ball after it instead of leaving it out of the beam's
+// reach. Right-click flings the ball along the aim; letting go drops it.
 // Right-click with nothing held blasts: one shove into the loose matter in a
 // cone along the aim (shaders/povTools.js BLAST). It can't lift or knock over
 // solids: there are no rigid bodies.
@@ -39,6 +42,7 @@ const RIM_CLEAR = 2;              // cells: the ball fades out as the eye comes 
 const TIP_SIZE = 0.35;            // cells, the glow at the tip
 const TIP_IDLE = 0.35;            // tip glow opacity while not holding
 const BLAST_FLASH_S = 0.15;       // s the beam flashes along a blast
+const CHASE = 0.8;                // share of V_MAX the hold point chases the aim at, so the ball keeps up
 
 const ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
 <path d="M3 15h8l2-3h3"/><circle cx="19" cy="9" r="3"/><path d="M5 15v4h4"/></svg>`;
@@ -123,7 +127,26 @@ export default {
     });
     const prevHold = new THREE.Vector3(), carry = new THREE.Vector3();
     let time = 0, holding = false, dist = PHYS.HOLD_MIN, blastWait = 0, flash = 0;
-    const hold = new THREE.Vector3();
+    const hold = new THREE.Vector3();   // where the beam holds the ball: chases `aimPt`
+    const aimPt = new THREE.Vector3(), fromEye = new THREE.Vector3(), toAim = new THREE.Vector3();
+    const turn = new THREE.Quaternion(), full = new THREE.Quaternion(), still = new THREE.Quaternion(), prevEye = new THREE.Vector3();
+
+    // Move the hold point toward the aim point by at most `reach` cells: along
+    // the arc around the eye (a straight chord would cut through the body),
+    // then in or out along the aim.
+    function chase(eye, reach) {
+      fromEye.subVectors(hold, eye);
+      toAim.subVectors(aimPt, eye);
+      const r0 = fromEye.length(), r1 = toAim.length();
+      if (r0 < 1e-6) { hold.copy(aimPt); return; }
+      fromEye.divideScalar(r0);
+      toAim.divideScalar(r1);
+      const arc = fromEye.angleTo(toAim) * r0;
+      full.setFromUnitVectors(fromEye, toAim);
+      turn.slerpQuaternions(still, full, arc > reach ? reach / arc : 1);
+      const left = Math.max(reach - arc, 0);
+      hold.copy(eye).addScaledVector(fromEye.applyQuaternion(turn), r0 + THREE.MathUtils.clamp(r1 - r0, -left, left));
+    }
     const tmpA = new THREE.Vector3(), tmpB = new THREE.Vector3();
 
     function run(ctx, mode) {
@@ -205,6 +228,8 @@ export default {
           holding = true;
           dist = THREE.MathUtils.clamp(ctx.aim?.valid ? ctx.aim.dist - PHYS.GRAB_STANDOFF : PHYS.HOLD_MAX, PHYS.HOLD_MIN, PHYS.HOLD_MAX);
           const point = hold.copy(ctx.eye).addScaledVector(ctx.dir, dist).clone();
+          aimPt.copy(hold);
+          prevEye.copy(ctx.eye);
           povEvents.emit('tool:action', { tool: 'physgun', action: 'grab', point, id: ctx.aim?.valid ? ctx.aim.id : undefined });
         }
         if (holding && !ctx.primary) release();
@@ -214,7 +239,11 @@ export default {
         }
         if (holding) {
           prevHold.copy(hold);
-          hold.copy(ctx.eye).addScaledVector(ctx.dir, dist);
+          aimPt.copy(ctx.eye).addScaledVector(ctx.dir, dist);
+          // the hold point rides along with the eye, then chases the aim
+          hold.add(tmpA.subVectors(ctx.eye, prevEye));
+          prevEye.copy(ctx.eye);
+          chase(ctx.eye, CHASE * ENGINE.V_MAX * ctx.stepsPerFrame);
           if (ctx.primaryPressed) prevHold.copy(hold);
           if (ctx.secondaryPressed) {
             run(ctx, PHYS_MODE.FLING);
@@ -247,7 +276,7 @@ export default {
       wantsWheel: () => holding,
       // the hold point stays put in the world, so the carried ball doesn't get yanked (docs/scaling.md D11)
       windowShifted(dx, dz) {
-        for (const v of [hold, prevHold]) { v.x -= dx; v.z -= dz; }
+        for (const v of [hold, prevHold, aimPt, prevEye]) { v.x -= dx; v.z -= dz; }
       },
       get hold() { return holding ? hold.clone() : null; },   // for checks
       readCom() {   // for checks: [com x, y, z, cells] of the last frame (a synchronous readback)
