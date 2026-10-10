@@ -1,14 +1,23 @@
 // End-to-end check of the perks (src/pov/perks.js, src/perkOrbs.js) through the
 // real shell, body and toolbelt: the Shrine construction, walking into orbs,
 // stacking, the HUD row, Faster Tools on a real tool, the Freeze Field, Lukki,
-// Sand Swimmer, Revenge Explosion, and the shrine every world gets.
-// usage: node tools/perks-check.mjs [--port 5291] [--shot file.jpg] [--worldshot file.jpg]   (needs a dev server)
+// Sand Swimmer, Revenge Explosion, Slow Fall, Shrink, Night Vision, Rain Cloud (the CLOUD element on
+// the GPU), and the shrine every world gets.
+// usage: node tools/perks-check.mjs [--port 5291] [--shot file.jpg] [--worldshot file.jpg]
+//        [--nvshot prefix] [--rainshot file.jpg]   (needs a dev server; the night-vision shots are
+//        prefix-off.jpg and prefix-on.jpg; ImageMagick measures their brightness)
 import { chromium } from 'playwright';
+import { execFileSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
 const port = opt('port', '5291');
 const shotPath = opt('shot', null);
 const worldShot = opt('worldshot', null);
+const nvShot = opt('nvshot', join(tmpdir(), 'perks-nv'));
+const rainShot = opt('rainshot', null);
+const meanGray = (f) => +execFileSync('magick', [f, '-colorspace', 'Gray', '-format', '%[fx:mean]', 'info:']).toString();
 const W = 960, H = 600;
 
 const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
@@ -43,6 +52,118 @@ try {
   const stand = (x, z, y = 0) => ev(([x, y, z]) => { const a = window.__app; a.pov.player.spawn(a.pov.player.pos.clone().set(x, y, z)); }, [x, y, z]);
   const orb = (key, x, z, y = 0) => ev(([key, x, y, z]) => { const a = window.__app; a.perkOrbs.add(key, a.pov.player.pos.clone().set(x, y, z)); }, [key, x, y, z]);
   const perks = () => ev(() => Object.fromEntries(window.__app.pov.player.perks.list().map(({ perk, n }) => [perk.key, n])));
+
+  const setPerks = (keys) => ev((keys) => { const pl = window.__app.pov.player; pl.perks.clear(); keys.forEach((k) => pl.perks.add(k)); }, keys);
+  // cells set straight into the state: [x0, x1, y0, y1, z0, z1, element key] boxes, inclusive
+  const build = (boxes) => ev(async (boxes) => {
+    const { E } = await import('/src/elements.js');
+    const sim = window.__app.sim;
+    const [a, b] = sim.readState();
+    for (const [x0, x1, y0, y1, z0, z1, key] of boxes)
+      for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) for (let z = z0; z <= z1; z++) {
+        const i = sim.cellTexel(x, y, z) * 4;
+        a[i] = E[key]; a[i + 1] = 20; a[i + 2] = 0; b[i] = b[i + 1] = b[i + 2] = 0;
+      }
+    sim.load(a, b);
+  }, boxes);
+  // cells of each element key in a box (inclusive)
+  const countIn = (box, keys) => ev(async ([[x0, x1, y0, y1, z0, z1], keys]) => {
+    const { E } = await import('/src/elements.js');
+    const sim = window.__app.sim;
+    const [a] = sim.readState();
+    const out = Object.fromEntries(keys.map((k) => [k, 0]));
+    for (let x = Math.max(0, x0); x <= Math.min(sim.g.nx - 1, x1); x++)
+      for (let y = Math.max(0, y0); y <= Math.min(sim.g.ny - 1, y1); y++)
+        for (let z = Math.max(0, z0); z <= Math.min(sim.g.nz - 1, z1); z++) {
+          const id = Math.round(a[sim.cellTexel(x, y, z) * 4]);
+          for (const k of keys) if (id === E[k]) out[k]++;
+        }
+    return out;
+  }, [box, keys]);
+  const where = () => ev(() => { const pl = window.__app.pov.player; return { x: pl.pos.x, y: pl.pos.y, z: pl.pos.z, h: pl.height }; });
+
+  // ---- Slow Fall: a long drop lands at a parachute's pace (landings never hurt; 'land' reports the speed)
+  await ev(() => { window.__land = null; window.__app.pov.player.on('land', (e) => { window.__land = e.speed; }); });
+  const dropLand = async (keys) => {
+    await setPerks(keys);
+    await ev(() => { window.__land = null; });
+    await stand(100, 20, 110);
+    await p.waitForFunction(() => window.__land !== null, null, { timeout: 30000 }).catch(() => {});
+    return ev(() => window.__land);
+  };
+  const landPlain = await dropLand([]);
+  const landSlow = await dropLand(['SLOW_FALL']);
+  check('Slow Fall: lands at a parachute\'s 19 cells/s (5.8 m/s), not Noita\'s 175', landSlow > 15 && landSlow < 21 && landPlain > 100,
+    `landing speed ${landPlain?.toFixed(1)} plain, ${landSlow?.toFixed(1)} with Slow Fall (cells/s)`);
+
+  // ---- Shrink: a crack 2 cells wide and 3 tall in a wall; the plain body stops, the shrunk one goes through
+  await build([[110, 110, 0, 24, 44, 84, 'WALL'], [110, 110, 0, 2, 64, 65, 'EMPTY']]);
+  const throughCrack = async (keys) => {
+    await setPerks(keys);
+    await stand(105, 65, 0);
+    await ev(() => window.__app.pov.setLook(-Math.PI / 2, 0));   // facing +x
+    await settle(500);
+    await p.keyboard.down('KeyW');
+    await settle(3000);
+    await p.keyboard.up('KeyW');
+    return where();
+  };
+  const crackPlain = await throughCrack([]);
+  const crackSmall = await throughCrack(['SHRINK']);
+  check('Shrink: the body is half the size', Math.abs(crackSmall.h - 2.75) < 1e-6, `height ${crackSmall.h} cells`);
+  check('Shrink: the plain body stops at the crack, the shrunk one gets through', crackPlain.x < 110 && crackSmall.x > 111.5,
+    `x ${crackPlain.x.toFixed(2)} plain, ${crackSmall.x.toFixed(2)} shrunk (wall at 110)`);
+  await setPerks([]);
+
+  // ---- Night Vision: a walled cave lit only through a small hole in its roof
+  await build([[4, 26, 0, 12, 40, 62, 'WALL'], [6, 24, 0, 10, 42, 60, 'EMPTY'], [22, 23, 11, 12, 58, 59, 'EMPTY']]);
+  await stand(10, 46, 0);
+  await ev(() => window.__app.pov.setLook(-Math.PI * 0.75, 0.1));   // toward the far corner, where the light comes in
+  await settle(2500);
+  const nvOff = await ev(() => ({ luma: window.__app.post.sceneLuma, night: window.__app.post.settings.night }));
+  await p.screenshot({ path: `${nvShot}-off.jpg`, type: 'jpeg', quality: 80 });
+  await setPerks(['NIGHT_VISION']);
+  await settle(2500);
+  const nvOn = await ev(() => { const s = window.__app.post.settings; return { luma: window.__app.post.sceneLuma, night: s.night, gain: s.nightGain }; });
+  await p.screenshot({ path: `${nvShot}-on.jpg`, type: 'jpeg', quality: 80 });
+  const gOff = meanGray(`${nvShot}-off.jpg`), gOn = meanGray(`${nvShot}-on.jpg`);
+  check('Night Vision: switches itself on in the dark cave', nvOn.night > 0.9 && nvOn.gain > 4 && nvOff.night === 0, `${JSON.stringify(nvOff)} → ${JSON.stringify(nvOn)}`);
+  check('Night Vision: the frame is brighter', gOn > gOff * 2, `mean grey ${gOff.toFixed(3)} → ${gOn.toFixed(3)} (${nvShot}-off/on.jpg)`);
+  await stand(64, 20, 0);   // back out in daylight
+  await settle(2500);
+  const nvDay = await ev(() => window.__app.post.settings.night);
+  check('Night Vision: off again in daylight', nvDay < 0.05, `night ${nvDay.toFixed(3)}`);
+  await setPerks([]);
+
+  // ---- Rain Cloud: real CLOUD over the head that rains on the ground around you, and follows you
+  await ev(() => window.__app.pov.player.perks.add('RAIN_CLOUD'));
+  await stand(90, 64, 0);
+  await ev(() => window.__app.pov.setLook(0, 0.35));
+  await settle(8000);
+  const at0 = await where();
+  const box0 = [Math.floor(at0.x) - 7, Math.floor(at0.x) + 7, 0, 30, Math.floor(at0.z) - 7, Math.floor(at0.z) + 7];
+  const rain0 = await countIn(box0, ['CLOUD', 'WATER']);
+  const ground0 = await countIn([box0[0], box0[1], 0, 3, box0[4], box0[5]], ['WATER']);
+  if (rainShot) {   // over the shoulder (V), the cloud over the body
+    await ev(() => { window.__app.pov.camera.third = true; });
+    await settle(1500);
+    await p.screenshot({ path: rainShot, type: 'jpeg', quality: 80 });
+    await ev(() => { window.__app.pov.camera.third = false; });
+  }
+  check('Rain Cloud: CLOUD over your head, and its rain on the ground', rain0.CLOUD > 100 && ground0.WATER > 0, `${JSON.stringify(rain0)} within 7 cells; ${ground0.WATER} water on the ground`);
+  // walk away along −x for 3 s: the cloud comes along
+  await ev(() => window.__app.pov.setLook(Math.PI / 2, 0));
+  await p.keyboard.down('KeyW');
+  await settle(3000);
+  await p.keyboard.up('KeyW');
+  await settle(1500);
+  const at1 = await where();
+  const near = await countIn([Math.floor(at1.x) - 7, Math.floor(at1.x) + 7, 0, 30, Math.floor(at1.z) - 7, Math.floor(at1.z) + 7], ['CLOUD']);
+  const left = await countIn(box0, ['CLOUD']);
+  check('Rain Cloud: it follows you', near.CLOUD > 100 && at0.x - at1.x > 10, `walked ${(at0.x - at1.x).toFixed(1)} cells: ${near.CLOUD} cloud over you, ${left.CLOUD} left behind`);
+  await setPerks([]);
+  const whole = await ev(async () => { const { E } = await import('/src/elements.js'); const c = window.__app.sim.census(); return { cloud: c[E.CLOUD]?.n ?? 0, water: c[E.WATER]?.n ?? 0 }; });
+  console.log('     (whole box:', JSON.stringify(whole), ')');
 
   // ---- walking into orbs, stacking
   await stand(20, 20);
