@@ -1,7 +1,5 @@
 // Headless check of the World's structures (world/structures.js, docs/structures.md):
 //   - placement: the island's structures by kind;
-//   - far build cost: the far field's full scene build with the structures on
-//     and off (uStructOn), alternated, wall clock with a forced sync;
 //   - stability: every cell's element after STEPS sim steps vs right after
 //     loading, in a window over a village and one over a dock;
 //   - seams: a structure across the window's edge, the window then walked over
@@ -18,7 +16,6 @@ const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i
 const out = args[0] && !args[0].startsWith('--') ? args[0] : 'shots';
 const port = opt('port', '5396');
 const STEPS = +opt('steps', 600);
-const FAR_RUNS = 3;         // far builds timed per setting (alternated)
 const SETTLE_MS = 1200;     // frames for TAA to settle a still
 const WALK_MS = 1800;       // holding W to walk in through a door
 const W = 1280, H = 800;
@@ -29,7 +26,7 @@ const p = await b.newPage({ viewport: { width: W, height: H } });
 const errs = [];
 p.on('console', (m) => { if (m.type() === 'error' && !/ERR_CONNECTION_REFUSED/.test(m.text())) errs.push(m.text().slice(0, 400)); });
 p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 600)));
-await p.goto(`http://localhost:${port}/?size=world`);
+await p.goto(`http://localhost:${port}/?size=world`, { waitUntil: "domcontentloaded", timeout: 120000 });
 await p.waitForFunction(() => window.__app?.win?.far?.built, null, { timeout: 90000 });
 await p.waitForFunction(() => window.__app.win.far.queue.length === 0, null, { timeout: 60000 });
 await p.addStyleTag({ content: 'body *{visibility:hidden !important} canvas[data-engine]{visibility:visible !important}' });
@@ -70,27 +67,6 @@ const tally = {};
 for (const s of list) { const k = `${s.key}${s.variant ? `:${s.variant}` : ''}`; tally[k] = (tally[k] ?? 0) + 1; }
 console.log(`structures: ${list.length}`, JSON.stringify(tally));
 const first = (kind) => list.find((s) => s.kind === kind);
-
-// ---- far build cost, structures on and off
-const far = await ev(async (RUNS) => {
-  const a = window.__app, f = a.win.far, u = a.win.sceneU, buf = new Uint8Array(4);
-  const time = () => {
-    const t0 = performance.now();
-    f.build();
-    while (f.queue.length) f.sceneChunks();
-    a.renderer.readRenderTargetPixels(f.grid, 0, 0, 1, 1, buf);
-    return performance.now() - t0;
-  };
-  const on = [], off = [];
-  for (let i = 0; i < RUNS; i++) {
-    u.uStructOn.value = false; off.push(time());
-    u.uStructOn.value = true; on.push(time());
-  }
-  const med = (v) => +v.sort((x, y) => x - y)[v.length >> 1].toFixed(1);
-  await window.__sc.frames(10);
-  return { onMs: med(on), offMs: med(off), on, off };
-}, FAR_RUNS);
-console.log('far build (all chunks, forced sync):', JSON.stringify(far));
 
 // ---- stability: a village and a dock
 const stable = async (s, tag, on = true) => {

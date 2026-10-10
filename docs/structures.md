@@ -133,6 +133,32 @@ They live in `structures.js`, not `builtins.js`, because `builtins.js` is pasted
 - Still to do: a reward shrine in a deep dry cavern (a `shrine` site from a caves' cavern list, if they export one), and
   placement's cost: 1.3–1.7 s of CPU per world load (the lighthouse and mouth lattice scans and the site rules' noise).
 
+### Load cost: the build-time bake (phase 4)
+
+Placing the island's landform sites (`island.params`, ~0.3 s) and its structures (`structuresOf`, ~1.1 s) blocked the
+main thread for ~1.4 s at every World load. Now the default World's are baked at build time and shipped:
+
+- `scripts/world-bake.mjs` runs the client's own modules in node (`island.params`, `structuresOf`) and prints the bake:
+  the landform sites, the start column and ~30 structure records (`structureRecord`), ~6 KB of JSON.
+- `scripts/world-bake-plugin.mjs` (in `vite.config.js`) runs it in a child process when `vite build` or the dev server
+  starts, and ships it as `virtual:world-bake`. Its key hashes the world's size and seed and the text of every file in
+  the import closure of the island scene and the structures layer (55 files: the generator, the island hooks, the
+  twin's helpers, the constructions, the element table, and, over-inclusively, the renderer files `island.js` imports).
+  On every load of the module the plugin recomputes the key from the files as they are and serves the bake only on an
+  exact match; in dev an edit to any of them starts a new bake, and the module waits for it. So a page can't get a
+  stale bake.
+- `src/world/bakeClient.js` (the app imports it first) hands the bake to `src/world/bake.js`. `island.params` takes
+  the baked sites and start (0 ms); `structuresOf` rebuilds the structures from the records (their constructions,
+  ~40–70 ms) in a worker (`src/world/structuresWorker.js`) while `island.prepare` compiles and bakes its columns, behind
+  empty placeholder textures that the window replaces after `prepare`.
+- Anything not baked (`?seed=`, another size, an edit before the next bake lands) computes as before: `params` on the
+  main thread, the structures in the worker. Node tools never import the client, so they compute everything; the bake
+  is checked against them (identical placements and textures for seeds 20261008, 1, 2, 3).
+- The JS twin's gradient noise caches lattice gradients (`themedShared.js`, bit for bit the same), a third off the
+  cost of anything that evaluates the terrain on the CPU.
+- House doors now open onto ground level with their slab or a cell above (`doorSite`): a village house facing its
+  well across a slope had stood on a plinth the first-person body couldn't step up.
+
 ### Where each one goes
 
 | Structure | Where | How many, how far apart | Max rise under it | What it adds for the player |

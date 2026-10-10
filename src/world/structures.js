@@ -5,6 +5,7 @@ import { runGenerator, bake, turnPoint, MAX_FOOT } from '../constructions/runtim
 import { BUILTINS, SHRINE_ALTARS } from '../constructions/builtins.js';
 import { islandTwin, layersAt, pcg, TREE } from './generator.js';
 import { LANDFORMS } from './island/landforms.js';
+import { bakeFor, structureWorker } from './bake.js';
 
 // The world's structures (docs/structures.md): houses, villages, docks, wrecks,
 // towers, standing stones and mines, placed by a scene from its seed as it
@@ -102,6 +103,8 @@ export const STRUCT = {
   RIM_DIFF: 6,          // ...whose heights differ by at most this (the lower abutment's footing makes it up)
   RIM_FLAT: 1,          // a rim: where the ground rises no more than this over RIM_RUN cells further out
   RIM_RUN: 3,
+  DOOR_OUT: 2,          // a door opens onto ground this far out from its wall at the slab's level or a cell above
+                        // (the body steps up one cell: a taller plinth there would shut it out)
   // the world's shrine (constructions/builtins.js shrine; the app sets its orbs: shrineAltars):
   // flat dry ground near P.structures.start, the middle of the window the world starts in
   SHRINE_SEARCH: 40,    // cells from there it looks within...
@@ -188,8 +191,8 @@ const RULES = {
     if (!L.plant) return null;
     const [dx, dz] = downhill(T, x, z);
     const variant = L.ground >= P.sea + STRUCT.CABIN_ABOVE * P.relief ? 'cabin' : 'cottage';
-    const st = site(T, 'HOUSE', variant, quarterFacing(-dx, -dz), seedOf(h), x, z);   // the door faces uphill
-    return fits(P, st, STRUCT.HOUSE_RISE) ? { score: -st.rise, parts: [st] } : null;
+    const st = doorSite(T, P, variant, seedOf(h), x, z, quarterFacing(-dx, -dz));   // the door faces uphill if it can
+    return st ? { score: -st.rise, parts: [st] } : null;
   },
 
   village(T, P, x, z, h) {
@@ -210,8 +213,8 @@ const RULES = {
       const d = STRUCT.VILLAGE_R[0] + next() * (STRUCT.VILLAGE_R[1] - STRUCT.VILLAGE_R[0]);
       const hx = Math.round(x + Math.cos(a) * d), hz = Math.round(z + Math.sin(a) * d);
       const variant = next() < STRUCT.BRICK_SHARE ? 'brick' : L.ground >= P.sea + STRUCT.CABIN_ABOVE * P.relief ? 'cabin' : 'cottage';
-      const st = site(T, 'HOUSE', variant, quarterFacing(x - hx, z - hz), seedOf(r), hx, hz);   // the door faces the well
-      if (fits(P, st, STRUCT.HOUSE_RISE) && !parts.some((o) => overlaps(o, st))) parts.push(st);
+      const st = doorSite(T, P, variant, seedOf(r), hx, hz, quarterFacing(x - hx, z - hz));   // the door faces the well if it can
+      if (st && !parts.some((o) => overlaps(o, st))) parts.push(st);
     }
     if (parts.length - 1 < STRUCT.VILLAGE_MIN) return null;
     const camp = site(T, 'CAMPFIRE', 'unlit', 0, seedOf(r ^ 1), x + STRUCT.CAMP_OFF, z, 'min');
@@ -272,8 +275,8 @@ const RULES = {
   hermit(T, P, x, z, h) {
     const lake = (P.landforms?.lakes ?? []).reduce((b, l) => (!b || Math.hypot(l.x - x, l.z - z) < Math.hypot(b.x - x, b.z - z) ? l : b), null);
     if (!lake) return null;
-    const st = site(T, 'HOUSE', 'cabin', quarterFacing(lake.x - x, lake.z - z), seedOf(h), x, z);
-    if (!fits(P, st, STRUCT.HOUSE_RISE)) return null;
+    const st = doorSite(T, P, 'cabin', seedOf(h), x, z, quarterFacing(lake.x - x, lake.z - z));   // the door to the water if it can
+    if (!st) return null;
     const g = STRUCT.HERMIT_GAP;
     for (let k = -g; k <= st.s.d + g; k += SAMPLE / 2)
       for (let i = -g; i <= st.s.w + g; i += SAMPLE / 2) if (T.islandLakeClearance(st.x0 + i, st.z0 + k)) return null;
@@ -428,6 +431,19 @@ function gorgeCrossings(T, P) {
   return out;
 }
 
+// A house's site with its door on walkable ground: the preferred quarter
+// first, then the others; null if no side will do.
+function doorSite(T, P, variant, seed, x, z, prefer) {
+  for (const q of [prefer, (prefer + 1) & 3, (prefer + 3) & 3, (prefer + 2) & 3]) {
+    const st = site(T, 'HOUSE', variant, q, seed, x, z);
+    if (!fits(P, st, STRUCT.HOUSE_RISE)) continue;
+    const [fx, fz] = FRONT[q], reach = (fx ? st.s.w : st.s.d) / 2 + STRUCT.DOOR_OUT;
+    const g = T.genTop(Math.round(x + fx * reach), Math.round(z + fz * reach));
+    if (g >= st.y && g <= st.y + 1) return st;
+  }
+  return null;
+}
+
 // Do two sites' boxes come within GAP of each other?
 function overlaps(a, b) {
   return a.x0 - GAP < b.x0 + b.s.w && b.x0 - GAP < a.x0 + a.s.w && a.z0 - GAP < b.z0 + b.s.d && b.z0 - GAP < a.z0 + a.s.d;
@@ -437,11 +453,28 @@ function overlaps(a, b) {
 const placed = new Map();   // JSON(P) → the world's structures
 const PLACED_KEEP = 4;
 
+// A placed structure as a record (world/bake.js ships them): what placement
+// chose, without its baked construction, which fromRecord bakes again.
+export const structureRecord = ({ kind, key, variant, quarter, seed, x, y, z, lo, hi, rise, wet }) =>
+  ({ kind, key, variant, quarter, seed, x, y, z, lo, hi, rise, wet });
+function fromRecord(r) {
+  const s = bakeOf(r.key, r.variant, r.quarter, r.seed);
+  return { ...r, s, x0: r.x - s.base.x, z0: r.z - s.base.z };
+}
+
 // World P's structures: [{ key, variant, quarter, seed, x, y, z, s (baked), x0, z0, kind }].
+// From the build's bake when it is of this very world (world/bake.js), else placed here.
 export function structuresOf(P) {
   if (!P.structures) return [];
   const k = JSON.stringify(P);
   if (placed.has(k)) return placed.get(k);
+  const b = bakeFor(P.size, P.seed);
+  if (b && JSON.stringify(b.landforms) === JSON.stringify(P.landforms) && JSON.stringify(b.start) === JSON.stringify(P.structures.start)) {
+    const list = b.records.map(fromRecord);
+    if (placed.size >= PLACED_KEEP) placed.clear();
+    placed.set(k, list);
+    return list;
+  }
   const T = islandTwin(P), [wx, , wz] = P.size, stream = pcg((P.seed + SALT) >>> 0);
   const cands = [];
   // kinds with sites of their own try those (hashed per point), the rest the squares'
@@ -481,6 +514,28 @@ export function structuresOf(P) {
   return list;
 }
 
+// World P's structures, off the main thread where the app gave a worker
+// (world/bakeClient.js): its list lands in structuresOf's cache, so the calls
+// after it are instant. (island.prepare awaits it while its columns compile.)
+export async function structuresReady(P) {
+  if (!P.structures) return;
+  const k = JSON.stringify(P), work = structureWorker();
+  if (placed.has(k)) return;
+  if (work) {
+    try {
+      const list = await work(P);
+      if (placed.size >= PLACED_KEEP) placed.clear();
+      placed.set(k, list);
+      return;
+    } catch (err) {
+      console.error('structures: the worker failed, placing them here', err);
+    }
+  }
+  structuresOf(P);
+}
+// Is world P's placement known yet (or will asking compute it here)?
+const placedYet = (P) => !P.structures || placed.has(JSON.stringify(P)) || !structureWorker();
+
 // ---------------------------------------------------------------- the textures
 // index: RGBA8UI per world brick column: r = slot + 1 of the structure whose box
 // covers it (0: none), g = 1 within TREE.REACH of any structure's box (no trees).
@@ -492,10 +547,10 @@ const FOOT_BIT = 128;
 const INFO_W = 3;
 
 const textures = new Map();
-export function structureData(P) {
+export function structureData(P, list = structuresOf(P)) {
   const k = JSON.stringify(P);
   if (textures.has(k)) return textures.get(k);
-  const list = structuresOf(P), BX = P.size[0] / BRICK, BZ = P.size[2] / BRICK;
+  const BX = P.size[0] / BRICK, BZ = P.size[2] / BRICK;
   const index = new Uint8Array(BX * BZ * 4);
   const info = new Int32Array(Math.max(1, list.length) * INFO_W * 4);
   // shelf-pack the boxes along x, rows along z
@@ -530,8 +585,10 @@ export function structureData(P) {
       }
   });
   const data = { list, index, cells, info, size: [AW, AH, AD], BX, BZ };
-  if (textures.size >= PLACED_KEEP) textures.clear();
-  textures.set(k, data);
+  if (!list.pending) {
+    if (textures.size >= PLACED_KEEP) textures.clear();
+    textures.set(k, data);
+  }
   return data;
 }
 
@@ -569,10 +626,11 @@ const bears = (id) => id !== E.EMPTY && ELEMENTS[id].kind !== K.GAS && ELEMENTS[
 // The textures for world P (one set per world, kept), and the uniforms that bind them.
 const gpu = new Map();
 export function structureUniforms(P) {
-  const k = JSON.stringify(P);
+  // until a worker has placed them (structuresReady), empty textures: the window asks again after prepare
+  const ready = placedYet(P), k = ready ? JSON.stringify(P) : `pending:${P.size}`;
   let t = gpu.get(k);
   if (!t) {
-    const d = structureData(P);
+    const d = ready ? structureData(P) : structureData(P, Object.assign([], { pending: true }));
     const index = new THREE.DataTexture(d.index, d.BX, d.BZ, THREE.RGBAIntegerFormat, THREE.UnsignedByteType);
     index.internalFormat = 'RGBA8UI';
     const info = new THREE.DataTexture(d.info, INFO_W, Math.max(1, d.list.length), THREE.RGBAIntegerFormat, THREE.IntType);
