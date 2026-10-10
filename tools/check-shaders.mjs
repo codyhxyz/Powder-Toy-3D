@@ -21,6 +21,7 @@ import * as gi from '../src/shaders/gi.js';
 import * as povBody from '../src/shaders/povBody.js';
 import * as transfer from '../src/shaders/transfer.js';
 import * as povTools from '../src/shaders/povTools.js';
+import * as lightning from '../src/shaders/lightning.js';
 import * as povTrace from '../src/shaders/povTrace.js';
 import * as povKick from '../src/shaders/povKick.js';
 import * as povBore from '../src/shaders/povBore.js';
@@ -30,6 +31,8 @@ import * as windowPasses from '../src/shaders/window.js';
 import { regionVert } from '../src/gfx/regions.js';
 import * as far from '../src/shaders/far.js';
 import { figureFrag, figureSkinnedVert } from '../src/pov/figure.js';
+import { probeFrag as birdProbeFrag } from '../src/birds/probe.js';
+import { birdVert, birdFrag } from '../src/birds/render.js';
 import { ShaderChunk } from 'three';
 
 // three.js prefixes: ShaderMaterial (GLSL1-style source upgraded to 300 es)
@@ -81,6 +84,7 @@ for (const [label, dims] of Object.entries(grids)) {
   check(`shadow-${label}`, raw + appShadow(g), 'frag');
   check(`giGather-far-${label}`, raw + appGather(g), 'frag');
   check(`povFigure-${label}`, shaderMatFrag + figureFrag(g), 'frag');
+  check(`birdProbe-${label}`, raw + birdProbeFrag(g), 'frag');
   // the same with every close-up detail feature compiled in (gfx/detail.js)
   const defs = Object.entries(allDetailDefines()).map(([k, v]) => `#define ${k} ${v}\n`).join('');
   if (defs) {
@@ -106,8 +110,8 @@ for (const [label, dims] of Object.entries(grids)) {
   for (let stage = 0; stage < fields.BOOST_STAGES; stage++) check(`fieldBoost${stage}-${label}`, raw + fields.fieldBoostFrag(g, stage), 'frag');
   check(`fieldCopy-${label}`, raw + fields.fieldCopyFrag(g), 'frag');
   for (const set of Object.values(fields.DIRTY)) check(`fieldRegionVert${set}-${label}`, raw + regionVert(fields.fieldRegionsGLSL(g, set)), 'vert');
-  for (const [k, v] of Object.entries({ ...move, ...react, ...probe, ...stamp, ...gi, ...povBody, ...transfer, ...windowPasses })) if (typeof v === 'function') check(`${k}-${label}`, raw + v(g), 'frag');
-  for (const k of ['axeFrag', 'pickaxeFrag', 'knifeFrag', 'physgunComFrag', 'physgunFrag', 'blastFrag', 'flamerFrag', 'torchFireFrag', 'bodyFireFrag', 'rocketFrag']) check(`${k}-${label}`, raw + povTools[k](g), 'frag');
+  for (const [k, v] of Object.entries({ ...move, ...react, ...probe, ...stamp, ...gi, ...povBody, ...transfer, ...windowPasses, ...lightning })) if (typeof v === 'function') check(`${k}-${label}`, raw + v(g), 'frag');
+  for (const k of ['axeFrag', 'pickaxeFrag', 'knifeFrag', 'wormFrag', 'wormGiantFrag', 'physgunComFrag', 'physgunFrag', 'blastFrag', 'flamerFrag', 'torchFireFrag', 'bodyFireFrag', 'rocketFrag']) check(`${k}-${label}`, raw + povTools[k](g), 'frag');
   for (const k of ['traceFrag', 'strikeFrag']) check(`${k}-${label}`, raw + povTrace[k](g), 'frag');
   for (const k of ['kickFrag', 'hookCellFrag']) check(`${k}-${label}`, raw + povKick[k](g), 'frag');
   for (const k of ['burrowProbeFrag', 'burrowFrag', 'laserReachFrag', 'laserFrag']) check(`${k}-${label}`, raw + povBore[k](g), 'frag');
@@ -134,6 +138,9 @@ for (const [label, dims] of Object.entries(grids)) {
   for (const k of ['farBoostFrag', 'farMip1Frag', 'farMip2Frag', 'farTopFrag', 'farShadowFrag']) check(k, raw + far[k](L), 'frag');
 }
 check('volumeVert', shaderMatVert + render.volumeVert, 'vert');
+// the birds' InstancedMesh material (birds/render.js), as three builds a ShaderMaterial with instancing
+check('birdVert', `${shaderMatVert}#define attribute in\n#define varying out\nin vec3 normal;\nin mat4 instanceMatrix;\n${birdVert}`, 'vert');
+check('birdFrag', shaderMatFrag + birdFrag, 'frag');
 check('quadVert', raw + quadVert, 'vert');
 // the realistic body's skinned vertex shader, as three builds it for a SkinnedMesh
 const includes = (src) => src.replace(/^[ \t]*#include +<(\w+)>/gm, (_, k) => includes(ShaderChunk[k]));

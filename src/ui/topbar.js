@@ -14,30 +14,34 @@ const legendCSS = (legend) =>
 // Top-right toolbar plus the views popover.
 export function createToolbar({ views, settings, actions }) {
   const swatch = h('span.swatch');
-  const viewName = h('span');
+  const viewName = h('span.view-name');
   const viewBtn = h('button.view-btn', { type: 'button', title: 'Change view', 'aria-haspopup': 'dialog' },
-    swatch, viewName, h('kbd'), h('span', { html: ICON.chevDown }));
-  const kbd = viewBtn.querySelector('kbd');
+    swatch, viewName, h('span', { html: ICON.chevDown }));
 
   const btn = (icon, title, fn) => h('button.icon-btn', { type: 'button', title, 'aria-label': title, html: ICON[icon], on: { click: fn } });
   const pause = btn('pause', 'Pause (Space)', actions.togglePause);
+  pause.classList.add('pause-btn');
+  const pauseIcon = h('span', { 'aria-hidden': 'true' });
+  const pauseLabel = h('span.pause-label');
+  pause.replaceChildren(pauseIcon, pauseLabel);
   const undo = btn('undo', 'Undo (⌘Z)', actions.undo);
   const recenter = btn('recenter', 'Reset camera (R)', actions.resetCamera);
-  // Camera: god view, or walking in first or third person; one click each (F and V do the same)
+  // Camera: god view, or walking in first or third person; one click each (V and F5 do the same)
   const camOpt = (id, label, title) => h('button', { type: 'button', title, 'data-cam': id, on: { click: () => actions.setCamera(id) } }, label);
-  const walk = h('div.seg.cam-seg', { role: 'group', 'aria-label': 'Camera' },
-    h('span.ico', { html: ICON.person }),
-    camOpt('god', 'God', 'God view: build and pour (F)'),
-    camOpt('first', '1st', 'Walk in first person (F, then V)'),
-    camOpt('third', '3rd', 'Walk in third person (V)'));
+  const walk = h('div.cam-seg', { role: 'group', 'aria-label': 'Camera' },
+    camOpt('god', 'God', 'God view: build and pour (V)'),
+    camOpt('first', '1st', 'Walk in first person (V)'),
+    camOpt('third', '3rd', 'Walk in third person (F5 swaps)'));
   const shot = btn('camera', 'Save screenshot (P)', actions.screenshot);
+  const maps = btn('maps', 'Maps and gamemodes (Esc)', actions.openMenu);
   const gear = btn('gear', 'Settings (,)', actions.toggleSettings);
   const help = btn('help', 'Keyboard shortcuts (?)', actions.toggleHelp);
   // first person and the shortcut sheet need a keyboard: touch-first devices hide them (styles.css)
   walk.classList.add('keys-only');
   help.classList.add('keys-only');
 
-  const bar = h('div.toolbar.panel', {}, viewBtn, h('span.sep'), pause, undo, recenter, walk, shot, h('span.sep'), gear, help);
+  const bar = h('div.toolbar.panel', { role: 'group', 'aria-label': 'Simulation controls' },
+    pause, h('span.sep'), viewBtn, walk, h('span.sep'), undo, recenter, shot, maps, gear, help);
 
   // ---- views popover ----
   const cards = views.map((v) => {
@@ -62,6 +66,7 @@ export function createToolbar({ views, settings, actions }) {
   let isOpen = false;
   function open() {
     isOpen = true;
+    viewBtn.setAttribute('aria-expanded', 'true');
     pop.classList.add('open');
     sync();
     // render live thumbnails of the current scene, one per frame so it stays smooth
@@ -74,20 +79,24 @@ export function createToolbar({ views, settings, actions }) {
     };
     requestAnimationFrame(next);
   }
-  function close() { isOpen = false; pop.classList.remove('open'); }
+  function close() { isOpen = false; pop.classList.remove('open'); viewBtn.setAttribute('aria-expanded', 'false'); }
   viewBtn.addEventListener('click', (e) => { e.stopPropagation(); isOpen ? close() : open(); });
   addEventListener('pointerdown', (e) => { if (isOpen && !pop.contains(e.target) && !viewBtn.contains(e.target)) close(); });
 
   function sync() {
     const v = views.find((x) => x.id === settings.view) ?? views[0];
     viewName.textContent = v.name;
-    kbd.textContent = v.hotkey;
+    viewBtn.title = `Change view: ${v.name} (${v.hotkey})`;
+    viewBtn.setAttribute('aria-label', viewBtn.title);
+    viewBtn.setAttribute('aria-expanded', String(isOpen));
     const thumb = cards.find((c) => c.v.id === v.id)?.canvas;
     swatch.style.background = legendCSS(v.legend) ?? 'linear-gradient(135deg, #dcbc74, #2a78d4)';
     if (thumb?.dataset.rendered) swatch.style.background = `center / cover url(${thumb.toDataURL()})`;
     for (const c of cards) c.card.classList.toggle('on', c.v.id === v.id);
-    pause.innerHTML = settings.paused ? ICON.play : ICON.pause;
+    pauseIcon.innerHTML = settings.paused ? ICON.play : ICON.pause;
+    pauseLabel.textContent = settings.paused ? 'Paused' : 'Running';
     pause.title = settings.paused ? 'Resume (Space)' : 'Pause (Space)';
+    pause.setAttribute('aria-label', pause.title);
     pause.classList.toggle('on', settings.paused);
   }
 
@@ -97,7 +106,10 @@ export function createToolbar({ views, settings, actions }) {
     get isOpen() { return isOpen; },
     // 'god' | 'first' | 'third'
     setCamera(id) {
-      for (const b of walk.querySelectorAll('button')) b.classList.toggle('on', b.dataset.cam === id);
+      for (const b of walk.querySelectorAll('button')) {
+        b.classList.toggle('on', b.dataset.cam === id);
+        b.setAttribute('aria-pressed', String(b.dataset.cam === id));
+      }
     },
     setSettingsOpen: (v) => gear.classList.toggle('on', v),
     setUndoEnabled: (v) => { undo.disabled = !v; undo.style.opacity = v ? 1 : 0.4; },

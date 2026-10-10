@@ -41,7 +41,7 @@ import { swing } from './tools/action.js';
 // on every kick (dv your Δv in cells/s, mass the struck kg or Infinity), and an
 // impact (source 'kick') when it meets something.
 
-export const KICK_KEY = 'KeyX';      // X: free in first person (F drop-in, V view, Q tools, C swim down, E vehicles, digits slots)
+export const KICK_KEY = 'KeyF';      // F: free in the body (V god view, F5 first/third, Z zoom, C crouch, Q tools, E vehicles, digits slots)
 
 const KICK_SPEED = 14 / CELL_M;      // cells/s (47, a Noita jump's speed): a martial artist's front kick, ≈ 14 m/s at the foot
 const KICK_HIP = 2.6;                // cells above the feet the leg swings from (figure.js HIP_Y)

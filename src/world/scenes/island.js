@@ -3,10 +3,11 @@ import { rawMat, makeFieldTarget, gridLayout } from '../../sim.js';
 import { prelude, SUPER_CELLS } from '../../shaders/common.js';
 import { helpersGLSL, groundScan } from './themedShared.js';
 import {
-  worldParams, heightAt, islandTwin, islandParamValues, islandDefinesGLSL, treesIn,
+  worldParams, heightAt, islandTwin, WORLD_SEED, islandParamValues, islandDefinesGLSL, treesIn,
   ISLAND_COLUMN_SRC, ISLAND_CELL_SRC, ISLAND_HEAD_GLSL, COLUMN_MARGIN,
 } from '../generator.js';
-import { STRUCT_GLSL, structureUniforms, disposeStructureTextures } from '../structures.js';
+import { STRUCT_GLSL, structureUniforms, disposeStructureTextures, structuresReady } from '../structures.js';
+import { bakeFor } from '../bake.js';
 
 // The island: the generator's own world (world/generator.js), an ordinary
 // scene. Its source is written once (generator.js ISLAND_COLUMN_SRC and
@@ -31,6 +32,7 @@ import { STRUCT_GLSL, structureUniforms, disposeStructureTextures } from '../str
 export const ISLAND_VIEW_XZ = [11, 13];   // the god view's direction across the ground (app.js WORLD_VIEW_DIR's x, z)
 const START_STEP = 16;                    // cells per step of the walk (a window step, world/window.js WIN_STEP)
 const START_INLAND = 0.25;                // share of the window's width inland from the waterline
+const START_WIN = [128, 128];             // the World's window, x and z (app.js WORLDS.world.win): its shrine is placed near its start
 // Far field chunks a frame while it builds (world/far.js): the island's cells
 // cost a texel fetch or a few, so its 256 chunks (~0.3–0.6 ms of GPU each, M5)
 // go in 4 frames, the far field complete about as soon after load as when it
@@ -193,13 +195,20 @@ let worldColumns = null;
 export const island = {
   key: 'island',
   label: 'Island',
-  params: ({ size, seed }) => ({ ...worldParams({ size, seed, snow: false }), structures: true }),
+  // structures (world/structures.js), the shrine among them near where the world starts
+  // (the default World's sites and start come from the build's bake: world/bake.js)
+  params({ size, seed = WORLD_SEED }) {
+    const b = bakeFor(size, seed);
+    const P = worldParams({ size, seed, snow: false, sites: b?.landforms });
+    return { ...P, structures: { start: b?.start ?? island.start(P, START_WIN) } };
+  },
   glsl: () => islandGLSL(),
   uniforms: (P) => islandUniforms(P, worldColumns?.textureFor(P) ?? null),
   prepare: async (renderer, P) => {
     worldColumns ??= new IslandColumns(P);
     const cols = worldColumns;
-    await cols.compile(renderer);
+    // the structures, off the main thread where there's a worker, while the columns' program compiles
+    await Promise.all([cols.compile(renderer), structuresReady(P)]);
     if (cols === worldColumns) cols.bake(renderer, P);   // (not if disposed meanwhile)
   },
   dispose() {

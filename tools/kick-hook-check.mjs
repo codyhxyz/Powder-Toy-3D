@@ -43,7 +43,7 @@ const scene = (cubes, feet, yaw, pitch) => ev(async ({ cubes, feet, yaw, pitch }
   a.pov.setLook(yaw, pitch);
 }, { cubes, feet, yaw, pitch });
 const player = () => ev(() => { const pl = window.__app.pov.player; return { pos: pl.pos.toArray(), vel: pl.vel.toArray(), onGround: pl.onGround }; });
-const kick = async () => { await p.keyboard.press('x'); await wait(60); return ev(() => window.__kicks.at(-1) ?? null); };
+const kick = async () => { await p.keyboard.press('f'); await wait(60); return ev(() => window.__kicks.at(-1) ?? null); };
 // the SAND cells' mean x (a full readback)
 const sandX = () => ev(async () => {
   const a = window.__app, { E } = await import('/src/elements.js');

@@ -107,23 +107,57 @@ They live in `structures.js`, not `builtins.js`, because `builtins.js` is pasted
 - The box's Island preset (structures off): `tools/gen-check.mjs` stability 0 changed, twin 0 cells differing, seams 0.
 - First person: spawned 6 cells outside a village house's door and walking in for 1.8 s ends inside it.
 
-### Wiring after landforms and caves merge
+### On the landforms (phase 3)
 
-The rules that depend on them are keyed to twin functions; when the twin has them, the rules follow:
+- **Lighthouse on a cliff headland**, derived in `structures.js` from the twin (`cliffHeadland`; landforms' file is
+  untouched): ground 8+ cells above the sea with the sea within 16 cells in some direction (a cliff, not a beach) and on
+  at least 15% of a 36-cell ring. Found by an 8-cell lattice scan (they are few), it outranks any fallback site, and its
+  box may stand over a 12-cell rise (a plinth on the seaward side; the door faces inland). On today's island the cliffs
+  are the ria's drowned walls at its mouth, so the lighthouse marks the inlet. If landforms ever export
+  `islandHeadland(x, z)`, `headland` uses it instead.
+- **Gorge bridge** (`BRIDGE`, new construction: a plank deck between timber pony trusses on stepped stone abutments;
+  only the abutments reach the base row, so only they grow footings): `gorgeCrossings` walks the ria's dry gorge
+  (`P.landforms.ria`, its meander from the twin's `lfMeander`) every 4 cells, crosses it along the axis nearest its
+  local perpendicular, finds each rim (where the wall tops out), and keeps crossings 10–56 cells wide, 8+ deep, with rims
+  within 6 of each other; the narrowest wins. Seeds 20261008, 1, 2: spans 28, 27, 24 over a ~30-cell-deep gorge.
+- **Hermit's cabins** by tarns (`P.landforms.lakes`): 16 places on a ring round each tarn past its `islandLakeClearance`
+  (rim + cave margin + 3), the cabin's box (and 3 cells round it) clear of that clearance and of standing water, its
+  door to the water; two per world.
+- **Mine at a cave mouth**: with caves' `islandCaveMouth(x, z)` in the twin (caves branch 2c13012, merged here), the
+  mine scans an 8-cell lattice for mouths and faces out of them (a 4-cell scan finds no more and costs ~1.3 s); without
+  it the slope fallback stands. Seeds 20261008, 1, 2: every mine at a mouth (mouth values 1–6). CPU-checked; not yet
+  on the GPU.
+- **The start shrine** is now the layer's first kind (cap 1): the flattest dry spot within 40 cells of where the world
+  starts (`P.structures.start`, from the island's `start`), drawn in its cells like every structure; the app sets its
+  three perk orbs from the record (`shrineAltars`). Scenes without structures keep the app's own search.
+- Still to do: a reward shrine in a deep dry cavern (a `shrine` site from a caves' cavern list, if they export one), and
+  placement's cost: 1.3–1.7 s of CPU per world load (the lighthouse and mouth lattice scans and the site rules' noise).
 
-- **Headlands (landforms):** export a column function `islandHeadland(x, z)` (> 0 on a cliff headland) in the
-  landforms source; the twin then has `T.islandHeadland`, and `structures.js headland` uses it in place of today's
-  fallback (sea on 20% of a 36-cell ring, the most seaward high ground winning).
-- **Cave mouths (caves):** export `islandCaveMouth(x, z)` (> 0 at a mouth on a steep bare-rock slope); `caveMouth`
-  then places the mine there, facing out of the slope, instead of on today's fallback (a 0.45–2.6 slope with the
-  gallery's back half under 9 cells of ground). The mine's gallery then carves into the cave or toward a coal seam.
-- **Tarns (landforms):** `islandLakeClearance(x, z)` and lake water levels: the `site()` wet check already rejects
-  boxes over standing water (`column(x, z)[3] > genTop`). Add a `hermit` kind (a cabin within 24 cells of a lake,
-  `islandLakeClearance` small but positive) ranked after `watch`, cap 2.
-- **Ria and gorge (landforms):** a dock rule for an inlet's sheltered shore works as is (sand at sea + 1..2 with
-  water ahead). A bridge over the gorge needs a new construction (a timber span with a footing at each end) and a rule
-  that finds the gorge's narrowest crossing between two rims of equal height.
-- **Strata and coal (rocks, landforms):** nothing to wire: structures are drawn over whatever the island's cells hold.
+### Load cost: the build-time bake (phase 4)
+
+Placing the island's landform sites (`island.params`, ~0.3 s) and its structures (`structuresOf`, ~1.1 s) blocked the
+main thread for ~1.4 s at every World load. Now the default World's are baked at build time and shipped:
+
+- `scripts/world-bake.mjs` runs the client's own modules in node (`island.params`, `structuresOf`) and prints the bake:
+  the landform sites, the start column and ~30 structure records (`structureRecord`), ~6 KB of JSON.
+- `scripts/world-bake-plugin.mjs` (in `vite.config.js`) runs it in a child process when `vite build` or the dev server
+  starts, and ships it as `virtual:world-bake`. Its key hashes the world's size and seed and the text of every file in
+  the import closure of the island scene and the structures layer (55 files: the generator, the island hooks, the
+  twin's helpers, the constructions, the element table, and, over-inclusively, the renderer files `island.js` imports).
+  On every load of the module the plugin recomputes the key from the files as they are and serves the bake only on an
+  exact match; in dev an edit to any of them starts a new bake, and the module waits for it. So a page can't get a
+  stale bake.
+- `src/world/bakeClient.js` (the app imports it first) hands the bake to `src/world/bake.js`. `island.params` takes
+  the baked sites and start (0 ms); `structuresOf` rebuilds the structures from the records (their constructions,
+  ~40–70 ms) in a worker (`src/world/structuresWorker.js`) while `island.prepare` compiles and bakes its columns, behind
+  empty placeholder textures that the window replaces after `prepare`.
+- Anything not baked (`?seed=`, another size, an edit before the next bake lands) computes as before: `params` on the
+  main thread, the structures in the worker. Node tools never import the client, so they compute everything; the bake
+  is checked against them (identical placements and textures for seeds 20261008, 1, 2, 3).
+- The JS twin's gradient noise caches lattice gradients (`themedShared.js`, bit for bit the same), a third off the
+  cost of anything that evaluates the terrain on the CPU.
+- House doors now open onto ground level with their slab or a cell above (`doorSite`): a village house facing its
+  well across a slope had stood on a plinth the first-person body couldn't step up.
 
 ### Where each one goes
 

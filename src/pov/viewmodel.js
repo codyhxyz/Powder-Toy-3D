@@ -37,6 +37,10 @@ import { NV_PHOSPHOR } from '../gfx/post.js';
 // render-on-demand) still notices when a hand moves.
 
 export const VIEWMODEL_LAYER = 5;     // three.js layer the viewmodels draw on (the main camera sees layer 0 only)
+// Light the hands give off (a torch's flame: flame.js 'overlay'), drawn after the hands straight onto
+// the finished frame, added and tone mapped by itself: the hands' pass has no bloom, and light with no
+// coverage can't go through its straight-colour composite. A mesh goes on it with userData.vmLayer.
+export const VIEWMODEL_GLOW_LAYER = 6;
 
 // spring recoil
 const SPRING_OMEGA = Math.sqrt(260);  // rad/s natural frequency (Feel Lab SPRING.k = 260 /s²)
@@ -234,8 +238,15 @@ export function heldMaterial(color) {
   return new THREE.MeshLambertMaterial({ color, flatShading: true });
 }
 
+// every viewmodel object on its layer; true if any is on the glow layer
 function setLayers(obj) {
-  obj.traverse((o) => o.layers.set(VIEWMODEL_LAYER));
+  let glow = false;
+  obj.traverse((o) => {
+    const layer = o.userData.vmLayer ?? VIEWMODEL_LAYER;
+    o.layers.set(layer);
+    if (layer === VIEWMODEL_GLOW_LAYER) glow = true;
+  });
+  return glow;
 }
 
 // ---------------------------------------------------------------- the overlay pass
@@ -291,7 +302,7 @@ export function renderViewmodels(renderer, scene, camera, post) {
   pass ??= createPass(renderer);
   const { cam, sun, sky, target, quadScene, quadCam, size, clear } = pass;
   if (pass.attached !== scene) { scene.add(sun, sky); pass.attached = scene; }
-  setLayers(vm);
+  const glow = setLayers(vm);
 
   // the main camera's pose and lens, a near plane just in front of the eye
   const scale = vm.getObjectByName('viewmodel-rig')?.scale.x ?? 1;
@@ -332,6 +343,11 @@ export function renderViewmodels(renderer, scene, camera, post) {
   renderer.toneMappingExposure = 2 ** (post?.settings.exposure ?? 0);
   quadScene.children[0].material.uniforms.uNight.value = post?.settings.raw ? 0 : post?.settings.night ?? 0;
   renderer.render(quadScene, quadCam);
+  if (glow) {   // the hands' light, added over it all (its materials tone map themselves)
+    cam.layers.set(VIEWMODEL_GLOW_LAYER);
+    renderer.render(scene, cam);
+    cam.layers.set(VIEWMODEL_LAYER);
+  }
   renderer.toneMapping = prev.toneMapping;
   renderer.toneMappingExposure = prev.exposure;
   renderer.autoClear = prev.autoClear;

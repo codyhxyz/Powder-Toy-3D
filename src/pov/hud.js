@@ -58,23 +58,24 @@ export function createPovHud() {
   const statusRow = h('div.pov-statuses');   // above the perks
   const vitals = h('div.pov-vitals.panel', {}, statusRow, perkRow, shieldRow, healthRow, breathRow, jetRow);
 
-  const lock = h('div.pov-lock.panel', {}, h('b', { text: 'Click' }), ' to look around', h('span.pov-dot', { text: '·' }), key('F'), ' to leave');
+  const lock = h('div.pov-lock.panel', {}, h('b', { text: 'Click' }), ' to look around', h('span.pov-dot', { text: '·' }), key('V'), ' to leave');
 
   const deathCause = h('div.pov-cause');
   const deathCount = h('b');
   const death = h('div.pov-death', {},
     h('div.pov-died', { text: 'You died' }),
     deathCause,
-    h('div.pov-respawn', {}, 'Back at the drop point in ', deathCount, h('span.pov-dot', { text: '·' }), 'click or ', key('Space'), ' now', h('span.pov-dot', { text: '·' }), key('F'), ' for god view'));
+    h('div.pov-respawn', {}, 'Back at the drop point in ', deathCount, h('span.pov-dot', { text: '·' }), 'click or ', key('Space'), ' now', h('span.pov-dot', { text: '·' }), key('V'), ' for god view'));
 
   const hint = h('div.pov-hint.panel', {},
     h('span', {}, key('W'), key('A'), key('S'), key('D'), ' move'),
     h('span', {}, key('Space'), ' jump, hold to fly'),
     h('span', {}, key('Shift'), ' sprint'),
     h('span', {}, key('C'), ' swim down'),
-    h('span', {}, key('X'), ' kick'),
-    h('span', {}, key('V'), ' third person'),
-    h('span', {}, key('F'), ' leave'));
+    h('span', {}, key('F'), ' kick'),
+    h('span', {}, key('Z'), ' zoom'),
+    h('span', {}, key('F5'), ' third person'),
+    h('span', {}, key('V'), ' god view'));
 
   const root = h('div.pov-hud', { 'aria-hidden': 'true' },
     fx.heat, fx.frost, fx.acid, fx.stain, fx.hurt, cross, hitmark, vitals, lock, death, hint);

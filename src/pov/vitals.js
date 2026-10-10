@@ -256,7 +256,7 @@ export function createVitals(emit, perks = null) {
       kSum += k; kT += k * T;
       const flux = k * Math.abs(T - v.skinT);
       if (flux > worst) { worst = flux; worstId = id; worstT = T; }
-      if (id === E.ACID) acid++;
+      if (ELEMENTS[id]?.acid) acid++;   // acid, caustic gas
     }
     // a smaller body (Shrink: env.size) has more skin per mass, so it trades heat 1/size as fast
     const exchange = SKIN_EXCHANGE / (env.size ?? 1);
