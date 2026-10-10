@@ -167,6 +167,21 @@ export const BUILDS = [
     desc: 'A stone basin with a spout fed by an endless water clone. It will overflow eventually.' },
   { id: -107, key: 'PROMPT', abbr: 'AI', name: 'Prompt', color: '#9b86e8',
     desc: 'Describe a construction and a model writes it, checked for leaks and loose powder before you place it. Or paste code from any chatbot.' },
+  // The World's structures (constructions/structures.js, docs/structures.md): built to walk into at the default size.
+  { id: -108, key: 'DOCK', abbr: 'DOCK', name: 'Dock', color: '#9a7046',
+    variants: [['pier', 'Pier'], ['hut', 'Fishing hut']],
+    desc: 'A wooden pier on stilts that reach down to the sea floor. Place it on a shore facing the water; the fishing hut sits on its head.' },
+  { id: -109, key: 'TOWER', abbr: 'TOWR', name: 'Tower', color: '#c9ccd3',
+    variants: [['lighthouse', 'Lighthouse'], ['watch', 'Watchtower'], ['ruin', 'Ruined keep']],
+    desc: 'Climb the spiral stair inside for the view: a striped lighthouse with a glass lantern, a timber watchtower, or a broken stone keep.' },
+  { id: -110, key: 'STONES', abbr: 'STNS', name: 'Standing stones', color: '#7d776f',
+    desc: 'A ring of rock monoliths round a low altar. Natural rock: the pickaxe can quarry it.' },
+  { id: -111, key: 'WELL', abbr: 'WELL', name: 'Well', color: '#6f7f99',
+    desc: 'A stone well with water in it, a windlass and a little roof.' },
+  { id: -112, key: 'MINE', abbr: 'MINE', name: 'Mine entrance', color: '#8a6a44',
+    desc: 'A timber portal and a gallery it carves into the hillside behind it, with rails and a cart of rubble. Place it facing out of a slope.' },
+  { id: -113, key: 'WRECK', abbr: 'WRCK', name: 'Shipwreck', color: '#6b4a2e',
+    desc: 'A wooden hull heeled over and half sunk into the sand, her stern stove in, her mast and anchor beside her.' },
 ];
 export const isBuild = (id) => id <= -100 && id > PERK_ID0;
 
@@ -194,7 +209,7 @@ export const PALETTE = [
   { name: 'Solids', items: ['WALL', 'ROCK', 'METAL', 'GLASS', 'ICE', 'WOOD', 'PLANT', 'CLONE'] },
   { name: 'Tools', items: ['HEAT', 'COOL', 'ERASE', 'BLAST', 'SIGN'] },
   { name: 'Entities', items: ['ENEMY', 'SPAWN'] },
-  { name: 'Constructions', items: ['HOUSE', 'TREE', 'CAMPFIRE', 'IGLOO', 'BARREL', 'AQUARIUM', 'FOUNTAIN', 'PROMPT'] },
+  { name: 'Constructions', items: ['HOUSE', 'TREE', 'CAMPFIRE', 'IGLOO', 'BARREL', 'AQUARIUM', 'FOUNTAIN', 'DOCK', 'TOWER', 'STONES', 'WELL', 'MINE', 'WRECK', 'PROMPT'] },
   { name: 'Perks', items: ['SHRINE', ...PERKS.map((p) => p.key)] },
 ];
 
