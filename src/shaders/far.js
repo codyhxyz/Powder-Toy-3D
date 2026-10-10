@@ -665,7 +665,7 @@ void main() {
 //     the window's state wins wherever it has been (tWinMask).
 // Each cell is evaluated once rather than once per cube that holds it (8×).
 export const FAR_SCENE = {
-  CHUNK: 16,   // brick columns along a chunk's edge (64 cells: 256 chunks over the world, each a few ms at most)
+  CHUNK: 16,   // brick columns along a chunk's edge (64 cells: 256 chunks over the world, each a small draw)
 };
 // The scene cells' target: the chunk's columns with their margin, side ×
 // side, each z row of them (side × world height texels) side by side along
