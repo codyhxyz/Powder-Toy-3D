@@ -160,11 +160,13 @@ try {
     window.__game.after = (dt) => {
       const g = window.__pogo;
       g.top = Math.max(g.top, pl.pos.y);
-      if (g.pressFrames >= 0 && --g.pressFrames < 0) key(false);   // a tap: released a few frames on
+      // a tap: held for the one frame that reads it (longer, a slow frame could carry it past the
+      // pogo's window, and a held jump flies the jetpack, which holds gravity off)
+      if (g.pressFrames >= 0 && --g.pressFrames < 0) key(false);
       // timed: press when the body will reach the floor (y = 0) within about the next frame, so the
       // press is read on the landing frame or the one before, whatever the frame rate
       g.frames++; g.dtSum += Math.min(dt, 0.1);
-      if (g.timed && g.armed && pl.vel.y < 0 && pl.pos.y < -pl.vel.y * Math.min(dt, 0.1)) { g.armed = false; key(true); g.pressFrames = 3; }
+      if (g.timed && g.armed && pl.vel.y < 0 && pl.pos.y < -pl.vel.y * Math.min(dt, 0.1)) { g.armed = false; key(true); g.pressFrames = 1; }
     };
   });
   await waitGame(3);   // untimed bounces settle at the rest height
