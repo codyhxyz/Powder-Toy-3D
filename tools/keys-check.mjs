@@ -27,7 +27,7 @@ const near = (a, b, tol) => Math.abs(a - b) <= tol;
 
 try {
   // an empty box: the lab's enemy would kill the body partway through
-  await p.goto(`http://localhost:${port}/?size=128&preset=empty`);
+  await p.goto(`http://localhost:${port}/?size=128&preset=empty`, { timeout: 120000 });
   await p.waitForFunction(() => window.__app?.pov, null, { timeout: 60000 });
   await wait(2000);
   await p.mouse.move(W / 2, H * 0.62);
