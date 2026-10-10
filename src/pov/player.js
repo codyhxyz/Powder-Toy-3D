@@ -328,7 +328,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
   const bodyWorld = createBodyWorld({ renderer, getSim });
   const statusCtx = { world: bodyWorld, renderer, getSim, hurt: (amount, cause, opts) => vitals.hurt(amount, cause, false, opts) };
   p.status = createStatusSet(p, statusCtx);
-  kicker = createKick({ body: p, getSim, cellAt: (x, y, z) => (probe.valid && g ? idAt(x, y, z) : UNKNOWN), unknown: UNKNOWN });
+  kicker = createKick({ body: p, owner: id, renderer, getSim, cellAt: (x, y, z) => (probe.valid && g ? idAt(x, y, z) : UNKNOWN), unknown: UNKNOWN });
   const impulse = new THREE.Vector3();
   const vB = new THREE.Vector3();
 

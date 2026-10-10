@@ -7,9 +7,11 @@ import { toolPass } from '../shaders/povTools.js';
 import { PROBE_OUTSIDE } from '../shaders/povBody.js';
 import { povEvents } from './events.js';
 import { rayTarget, PLAYER } from './targets.js';
+import { gravityScale } from './ballistics.js';
 import { BODY_MASS_KG, cellKg, split, brace } from './tug.js';
 import { viewmodelRig, heldMaterial } from './viewmodel.js';
 import { swing } from './tools/action.js';
+import { sharedTransfer, cellsNear, outsideBody, persistentLoad, ownedKey } from './tools/transfer.js';
 
 // The kick: Cruelty Squad's, always on its own key, no hotbar slot. A body
 // ability (player.js body.kick(dir)), so an NPC's body has it too.
@@ -20,15 +22,16 @@ import { swing } from './tools/action.js';
 // - a cell, read from the body's own probe (the cells it already reads back
 //   around itself): over Noita's kick radius (shaders/povKick.js KICK) the
 //   boot breaks the weak solids (glass, ice, plants: the axe's energy rule,
-//   povTools.js blowFrag) and shoves the loose matter (powder, liquid) and the
-//   fresh debris;
+//   povTools.js blowFrag) and shoves the fresh debris; loose matter (powder,
+//   liquid) under the sole is carried off (below);
 // - nothing within reach: a miss.
 // How hard each side moves is momentum conservation (pov/tug.js): the foot
 // drives the pair apart at KICK_SPEED, split by inverse mass. A body weighs
-// BODY_MASS_KG, the struck lump what its cells weigh, and a solid the boot
-// doesn't break (or the floor) is anchored: infinite. So kicking a wall, the
-// floor at an angle, or a heap heavier than you throws YOU back along the
-// kick: Cruelty Squad's kick-jump falls out of Newton's third law. Standing,
+// BODY_MASS_KG, the struck lump what its cells weigh (for sand or water, the
+// cell under the boot: loose grains don't drag the heap along), and a solid
+// the boot doesn't break (or the floor) is anchored: infinite. So kicking a
+// wall or the floor at an angle throws YOU back along the kick: Cruelty
+// Squad's kick-jump falls out of Newton's third law, while kicked sand flies. Standing,
 // the ground takes the sideways and downward part (tug.js brace), as it takes
 // the gun's recoil; in the air you get all of it.
 //
@@ -52,16 +55,59 @@ const KICK_CAUSE = 'Kicked';
 const KICK_POSE_S = KICK_REFIRE;     // s the figure's kick runs (chamber, extend, retract)
 const MARCH_MAX = Math.ceil(KICK_REACH * 3) + 3;   // safety: most cells a reach ray can cross
 
+// Loose matter has no cohesion: the boot carries off only the grains under its
+// sole, never the heap behind them. They leave it at their share of the boot's
+// speed, thrown up at the angle sand splashes out of a bed (a boot driven into
+// a heap throws it up and forward, not into the ground), and fly as a
+// projectile (ballistics.js: real speed, real 1 g) until they land, where
+// they go back into the sim at the speed they arrive with. On the sim's own
+// fast clock (≈ 44 g in real time) a real kick's few m/s would stop within a
+// cell. They're taken out and put back through the cell transfer, as the
+// shovel and the hook move matter, so none is lost or made. Without a
+// projectile engine (an NPC's body) they're set down at the end of the boot's
+// reach instead.
+const SOLE_CELLS = 1;                       // cells the boot carries: the one under the sole (a 30 cm cell is a boot's length)
+const SOLE_RADIUS = 0.5;                    // cells around the struck cell's centre: that cell alone (its neighbours are 1 away)
+const CARRY_MIN = 1;                        // cells: the least it carries them (struck at full reach, the boot still follows through)
+const SPLASH_ANGLE = 50 * Math.PI / 180;    // rad above level: splashed sand leaves its bed at 40-60° (aeolian saltation measurements)
+const PUT_RADIUS = 1.5;                     // cells around the landing spot to find room in (the hook's set-down)
+const PUT_TRIES = 6;                        // tries there before setting them down where they were taken from
+const SURFACE_REACH = 3;                    // cells up the struck column the boot's lift reaches (shin and boot, ≈ 1 m): the grains on it rise, the top one flies
+const LAUNCH_CLEAR = 0.5;                   // cells back along its flight from what a landing clump hit: the open cell before it
+const BOOT_GAP = 0.05;                      // cells short of the struck face: where the boot is when the clump leaves it (in air the
+                                            // reach ray crossed; the taken cell itself may already have been filled by the heap slumping)
+const GRAIN_KIND = 'grain';                 // ballistics.js kind of a kicked clump (vfx.js draws its dust off kick:grain)
+const EPS = 1e-6;
+
 const isLoose = (id) => id >= 0 && (ELEMENTS[id].kind === K.POWDER || ELEMENTS[id].kind === K.LIQUID);
 const isSolid = (id) => id === PROBE_OUTSIDE || (id >= 0 && ELEMENTS[id].kind === K.SOLID);
 const breaksAt = (id, w) => id >= 0 && ELEMENTS[id].kind === K.SOLID && !!ELEMENTS[id].breakInto && KICK.ENERGY * w >= ELEMENTS[id].hard;
 const debrisOf = (id) => E[ELEMENTS[id].breakInto];
 
-// body: the player.js body (pos, onGround, dead, stepRate, applyImpulse).
+// body: the player.js body (pos, onGround, dead, stepRate, applyImpulse); owner:
+// its id (an NPC's), which keeps its boot's load apart from the player's.
 // cellAt(x, y, z): the element id the body's probe holds there, `unknown`
 // outside it, PROBE_OUTSIDE for the box's floor and walls.
-export function createKick({ body, getSim, cellAt, unknown }) {
+export function createKick({ body, owner = null, renderer, getSim, cellAt, unknown }) {
   const pass = toolPass(kickFrag, () => ({ uCenter: { value: new THREE.Vector3() }, uShove: { value: new THREE.Vector3() } }));
+  const transfer = () => sharedTransfer({ renderer, getSim });
+  const load = persistentLoad(ownedKey('KICK', owner), SOLE_CELLS);   // grains on the boot (kept if a mode or scene change comes mid-kick)
+  let carried = null;   // { from, splash, speed, at, vel, tries, flying, flew, round } while grains are on their way
+  let flight = null;    // the projectile engine kicked grains fly in (ballistics.js), set by the shell
+  const lastCarry = { from: null, took: -1, round: 0, landedAt: null, putTries: 0 };   // for checks: how the last kicked clump went
+  const offs = [
+    povEvents.on('round:move', ({ id, to }) => {
+      if (!carried || id !== carried.round) return;
+      carried.last = to.clone();
+      povEvents.emit('kick:grain', { to: to.clone(), id: load.cells[0]?.[0] ?? -1 });
+    }),
+    // it left the box or the engine was cleared mid-flight: set it down where it was last seen
+    povEvents.on('round:end', ({ id }) => {
+      if (!carried || id !== carried.round || !carried.flying) return;
+      carried.flying = false;
+      carried.at = carried.last ?? carried.from;
+    }),
+  ];
   let wait = 0, poseT = Infinity;
   const walked = [];   // for checks: the cells the last reach ray crossed, [x, y, z, id]
   const hip = new THREE.Vector3(), dir = new THREE.Vector3(), center = new THREE.Vector3();
@@ -93,12 +139,16 @@ export function createKick({ body, getSim, cellAt, unknown }) {
     return null;
   }
 
-  // The struck lump around a cell: its mass (kg, each cell weighted by the
-  // patch's w, Infinity when anchored) and what the boot does there.
+  // The struck lump around a cell: its mass (kg, Infinity when anchored) and
+  // what the boot does there. Breakable solids break over the patch and their
+  // debris goes with the boot (each cell weighted by the patch's w). Loose
+  // matter has no cohesion, so only the grains under the sole move
+  // (KICK.SOLE_RADIUS: the struck cell): you kick the bit of the heap in front
+  // of your foot, never the whole heap.
   function lump(cell) {
     center.copy(cell).addScalar(0.5);
     const span = Math.ceil(KICK.RADIUS);
-    let kg = 0, breaks = false, loose = false;
+    let kg = 0, breaks = false;
     for (let z = -span; z <= span; z++)
       for (let y = -span; y <= span; y++)
         for (let x = -span; x <= span; x++) {
@@ -106,9 +156,10 @@ export function createKick({ body, getSim, cellAt, unknown }) {
           if (w <= 0) continue;
           const id = cellAt(cell.x + x, cell.y + y, cell.z + z);
           if (breaksAt(id, w)) { breaks = true; kg += w * cellKg(debrisOf(id)); }
-          else if (isLoose(id)) { loose = true; kg += w * cellKg(id); }
         }
     const id = cellAt(cell.x, cell.y, cell.z);
+    const loose = isLoose(id);
+    if (loose) kg += cellKg(id);
     const anchored = isSolid(id) && !breaksAt(id, 1);
     return { kg: anchored ? Infinity : kg, breaks, loose, broke: isSolid(id) ? !anchored : null };
   }
@@ -133,7 +184,8 @@ export function createKick({ body, getSim, cellAt, unknown }) {
     } else if (struck) {
       const l = lump(struck.cell);
       const [, share] = split(BODY_MASS_KG, l.kg);
-      if (l.breaks || (l.loose && share > 0)) {
+      if (l.loose && share > 0) carry(struck, share);
+      if (l.breaks) {
         const mat = pass(sim);
         mat.uniforms.uCenter.value.copy(center);
         // the lump's speed on the sim's clock (cells/step, as player.js's coupling converts)
@@ -155,16 +207,70 @@ export function createKick({ body, getSim, cellAt, unknown }) {
     return res;
   }
 
+  // Take the grains under the sole onto the boot; they're set down in update().
+  function carry(struck, share) {
+    const sim = getSim();
+    if (!sim || carried || load.busy || load.cells.length) return;
+    // a boot driven under a heap lifts what rests on it: the clump that flies is the column's top one,
+    // with open air above it (one cell either way, so the mass is the same)
+    const top = struck.cell.clone();
+    for (let i = 0; i < SURFACE_REACH && isLoose(cellAt(top.x, top.y + 1, top.z)); i++) top.y++;
+    const from = top.addScalar(0.5);
+    const splash = new THREE.Vector3();
+    const flat = Math.hypot(dir.x, dir.z);
+    if (flat < EPS) splash.set(0, 1, 0);   // kicked straight down: they can only come up
+    else if (Math.atan2(dir.y, flat) >= SPLASH_ANGLE) splash.copy(dir);
+    else splash.set(dir.x / flat * Math.cos(SPLASH_ANGLE), Math.sin(SPLASH_ANGLE), dir.z / flat * Math.cos(SPLASH_ANGLE));
+    const speed = KICK_SPEED * share;   // cells/s
+    const at = from.clone().addScaledVector(splash, Math.max(KICK_REACH - struck.t, CARRY_MIN));
+    const p = transfer().take(load, { cells: cellsNear(from, SOLE_RADIUS, sim.g), kinds: [K.POWDER, K.LIQUID], limit: SOLE_CELLS });
+    Object.assign(lastCarry, { from: from.toArray(), took: p ? -1 : -2, round: 0, landedAt: null, putTries: 0 });
+    p?.then((got) => { lastCarry.took = got.length; });
+    const boot = hip.clone().addScaledVector(dir, Math.max(struck.t - BOOT_GAP, 0));
+    if (p) carried = { from, boot, splash, speed, at, vel: stepVel(splash, speed), tries: 0, flying: false, flew: false, round: 0, last: null };
+  }
+
+  // a velocity (unit dir × cells/s) on the sim's clock, cells/step (as player.js's coupling converts)
+  const stepVel = (d, speed) => d.clone().multiplyScalar(body.stepRate > 0 ? Math.min(speed / body.stepRate, PHYS.V_MAX) : 0);
+
+  // the clump lands: back into the sim in the open cell before what it hit, at the speed it arrives with
+  function land({ hit, dir }) {
+    if (!carried) return;
+    carried.flying = false;
+    carried.at = hit.point.clone().addScaledVector(dir, -LAUNCH_CLEAR);
+    lastCarry.landedAt = carried.at.toArray().map((v) => +v.toFixed(2));
+    carried.vel = stepVel(dir, carried.speed);
+  }
+
+  function setDown() {
+    const sim = getSim();
+    if (!carried || !sim || load.busy || carried.flying) return;
+    if (!load.cells.length) { carried = null; return; }   // landed (or the load was emptied: a scene change)
+    if (flight && !carried.flew) {
+      carried.flew = true;
+      carried.round = flight.fire(carried.boot, carried.splash, gravityScale(sim), { speed: carried.speed, kind: GRAIN_KIND, onStrike: land });
+      lastCarry.round = carried.round;
+      if (carried.round) { carried.flying = true; return; }
+    }
+    const spot = carried.tries < PUT_TRIES ? carried.at : carried.from;
+    const p = transfer().put(load, { cells: cellsNear(spot, PUT_RADIUS, sim.g, outsideBody(body.pos)), vel: carried.vel });
+    if (p) { carried.tries++; lastCarry.putTries = carried.tries; }
+  }
+
   return {
     kick,
     update(dt) {
       wait = Math.max(0, wait - dt);
       poseT += dt;
+      setDown();
     },
     get pose() { return poseT < KICK_POSE_S ? poseT / KICK_POSE_S : null; },
     get ready() { return wait === 0; },
     get walked() { return walked.map((c) => [...c]); },   // for checks
-    dispose() { pass.dispose(); },
+    get carrying() { return { on: !!carried, load: load.count, busy: load.busy, tries: carried?.tries ?? 0, flying: !!carried?.flying }; },   // for checks
+    get lastCarry() { return { ...lastCarry, engine: !!flight }; },   // for checks
+    set ballistics(b) { flight = b; },   // the shell hands over the toolbelt's projectile engine
+    dispose() { pass.dispose(); offs.forEach((off) => off()); },   // (grains still on the boot stay in its load: tool loads persist)
   };
 }
 
