@@ -83,7 +83,7 @@ export function createToolbelt(env) {
     env.requestRender?.();
   }
 
-  // the number keys (1–9, 0 for slot 10) pick a slot while in POV (and don't reach the god view's hotkeys)
+  // the number row (1–9, then 0, - and = for slots 10–12) picks a slot while in POV (and doesn't reach the god view's hotkeys)
   function onKey(e) {
     if (!env.isActive?.() || e.metaKey || e.ctrlKey || e.altKey) return;
     const t = e.target;

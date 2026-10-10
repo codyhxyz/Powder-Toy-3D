@@ -3,11 +3,12 @@ import { modelIcon } from '../models.js';
 import './hotbar.css';
 
 // Minecraft-style hotbar, bottom centre: HOTBAR_SLOTS slots, each with its key
-// (slotKey: 1–9, then 0 for the tenth, as on the keyboard's number row), the tool's icon (an OSRS-style sprite of its model) and its status (e.g. 'SAND ×37'). The selected
+// (slotKey: 1–9, then 0, - and = for the tenth to twelfth, as on the keyboard's number row), the tool's icon (an OSRS-style sprite of its model) and its status (e.g. 'SAND ×37'). The selected
 // tool's name shows above the bar for a moment after switching.
 
-export const HOTBAR_SLOTS = 10;
-export const slotKey = (i) => String((i + 1) % 10);   // slot i's number key
+const SLOT_KEYS = '1234567890-=';   // the keyboard's number row, left to right
+export const HOTBAR_SLOTS = SLOT_KEYS.length;
+export const slotKey = (i) => SLOT_KEYS[i];   // slot i's key
 const NAME_SHOW_MS = 1800;        // how long the tool name stays up after a switch
 const SHAKE_MS = 360;             // .shake animation length (hotbar.css)
 
