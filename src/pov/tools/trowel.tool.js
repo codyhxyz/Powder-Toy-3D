@@ -6,8 +6,9 @@ import { povEvents } from '../events.js';
 import { attachModel } from '../models.js';
 import { viewmodelRig, HIT } from '../viewmodel.js';
 import { trigger, swing, toolDt } from './action.js';
+import { gear } from './catalog.js';
 
-// Trowel (slot 6): builds with what the shovel dug up. Left-click sets a block
+// Trowel: builds with what the shovel dug up. Left-click sets a block
 // of the chosen material from the pack (transfer.js) against the face you aim
 // at; hold to keep building. Right-click picks the next material in the pack.
 //
@@ -33,8 +34,7 @@ const REST_PITCH = 0.15;     // rad, blade tipped up toward the crosshair
 const REST_YAW = 0.25;       // rad, in toward the crosshair
 
 export default {
-  key: 'TROWEL', name: 'Trowel', slot: 6, model: 'trowel',
-  desc: 'Builds 1 m blocks out of what the shovel dug up. Right-click picks the material.',
+  ...gear('TROWEL'),
   create(env) {
     const load = pack(env.owner);
     const transfer = env.transfer;

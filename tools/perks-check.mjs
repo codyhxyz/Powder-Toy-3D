@@ -62,7 +62,7 @@ try {
   // ---- Faster Tools on a real tool: axe swings in 2 s held, with 4x vs none
   await ev(() => { window.__swings = 0; window.__app.pov.events.on('tool:action', (e) => { if (e.action === 'swing' && !e.by) window.__swings++; }); });
   const swings = async () => {
-    await p.keyboard.press('3');
+    await ev(() => window.__app.pov.toolbelt.select('AXE'));
     await settle(200);
     await ev(() => { window.__swings = 0; });
     await p.mouse.down();

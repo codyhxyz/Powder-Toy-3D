@@ -3,8 +3,9 @@ import { ELEMENTS } from '../../elements.js';
 import { CELL_M } from '../../scale.js';
 import { attachModel } from '../models.js';
 import { viewmodelRig } from '../viewmodel.js';
+import { gear } from './catalog.js';
 
-// Scanner (slot 7): reads out what's under the crosshair at any distance, the
+// Scanner: reads out what's under the crosshair at any distance, the
 // god view's hover readout (ui/hud.js showReadout) beside the crosshair: the
 // material, its temperature and the air pressure there, and how far away it is.
 // Gases don't stop the pick, so it reads the first liquid or solid or powder.
@@ -15,8 +16,7 @@ const HELD_PITCH = 0.3;      // rad, screen tipped up toward the eye
 const DIST_DECIMALS = 1;     // m shown to this many decimals
 
 export default {
-  key: 'SCANNER', name: 'Scanner', slot: 7, model: 'scanner',
-  desc: 'Reads the material, temperature and pressure of whatever you point it at.',
+  ...gear('SCANNER'),
   create(env) {
     const rig = viewmodelRig(env);
     const hand = rig.hand(HELD_POS);

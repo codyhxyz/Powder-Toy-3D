@@ -702,6 +702,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
   return Object.assign(p, {
     spawn, update, dispose, windowShifted,
     applyImpulse(dv) { impulse.add(dv); },
+    ownBlast() { vitals.ownBlast(); },   // a blast it set off (a rocket, a bomb): it hurts this body less (vitals.js)
     hurt(amount, cause) { vitals.hurt(amount, cause, true); },   // a blow from outside the sim (an NPC's axe)
     on(name, fn) {
       (listeners[name] ??= []).push(fn);

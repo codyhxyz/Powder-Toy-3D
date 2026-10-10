@@ -8,8 +8,9 @@ import { attachModel } from '../models.js';
 import { viewmodelRig, HIT } from '../viewmodel.js';
 import { trigger } from './action.js';
 import { Load, cellsNear, ballRadius, muzzleCell } from './transfer.js';
+import { gear } from './catalog.js';
 
-// Bomb (slot 9): left-click throws a pipe bomb. It flies on the shared
+// Bomb: left-click throws a pipe bomb. It flies on the shared
 // projectiles (ballistics.js) at a real overhand throw's speed, plus yours, and
 // falls at 1 g; where it strikes it becomes its charge: CHARGE cells of
 // GUNPOWDER packed into the air in front of the struck face, with its detonator
@@ -38,8 +39,7 @@ const HELD_POS = [0.6, -0.55, -1.3];
 const HELD_YAW = 0.5;                   // rad, turned across the view
 
 export default {
-  key: 'BOMB', name: 'Bomb', slot: 9, model: 'bomb',
-  desc: 'Throws a pipe bomb that goes off where it lands: breaks wood and glass, shoves and burns.',
+  ...gear('BOMB'),
   create(env) {
     const rig = viewmodelRig(env);
     const hand = rig.hand(HELD_POS);

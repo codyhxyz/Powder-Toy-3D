@@ -3,7 +3,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import './ui/styles.css';
 import { Simulation } from './sim.js';
 import { volumeVert, volumeFrag, pickFrag, shadowFrag } from './shaders/render.js';
-import { ELEMENTS, E, toolById, isBuild, isSpawnerTool, isPerkTool, isShrineTool } from './elements.js';
+import { ELEMENTS, E, toolById, isBuild, isSpawnerTool, isPerkTool, isShrineTool, isGearTool } from './elements.js';
 import { Spawners, SPAWNER, feetOnHit } from './spawners.js';
 import { PerkOrbs } from './perkOrbs.js';
 import { buildPreset } from './presets.js';
@@ -34,6 +34,8 @@ import { createMultiplayer } from './net/multiplayer.js';
 import { createProfiler } from './gfx/profiler.js';
 import { createProfilerPanel } from './ui/profiler.js';
 import { createPov } from './pov/index.js';
+import { inventory } from './pov/tools/inventory.js';
+import { gearByKey, SLOTS } from './pov/tools/catalog.js';
 import { renderViewmodels } from './pov/viewmodel.js';
 import { POV_FOV, POV_FOV_RANGE, SENSITIVITY_RANGE } from './pov/camera.js';
 import { finishSignIn, account, accountsEnabled } from './account.js';
@@ -608,12 +610,25 @@ function selectTool(id) {
   save();
 }
 
+// A first-person tool from the palette's Tools group (GMod's spawn menu): it
+// goes into the inventory and in hand, now in first person or at the next drop-in.
+function giveGear(id) {
+  const it = toolById(id);
+  const g = gearByKey(it.gear);
+  const fresh = inventory.give(g.key);
+  const slot = `key ${g.slot + 1} (${SLOTS[g.slot]})`;
+  if (pov?.active) {
+    pov.closeMenu();
+    hud.toast(fresh ? `${it.name} added: ${slot}` : `${it.name}: ${slot}`);
+  } else hud.toast(`${it.name} ${fresh ? 'added to your tools' : 'is in your tools'}: press F, then ${slot}`);
+}
+
 // Closing a construction's options goes back to the last element or tool.
 function leaveBuild() { if (isBuild(settings.tool)) selectTool(lastPaintTool); }
 
 const dock = createDock({
   settings,
-  onSelect: selectTool,
+  onSelect: (id) => (isGearTool(id) ? giveGear(id) : selectTool(id)),
   onBrushChange: (patch) => { Object.assign(settings, patch); dock.sync(); save(); },
   onHover: (id) => card.show(id ?? settings.tool),
   onEyedropper: () => setEyedropper(!eyedropper),
@@ -1347,6 +1362,7 @@ try {
     getPerkOrbs: () => perkOrbs,
     requestRender: () => pacer.wake(),
     inWorld: () => !!win,
+    showToolsMenu: () => dock.reveal((it) => isGearTool(it.id)),   // Q in first person: the palette at its first-person tools
   });
   window.__app = {
     get sim() { return sim; }, get volume() { return volume; }, get scale() { return scale; }, get signs() { return signs; }, get builds() { return builds; },

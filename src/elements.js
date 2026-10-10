@@ -25,6 +25,7 @@
 //          omitted = unbreakable (WALL, CLONE). Only solids break.
 
 import { PERKS, SHRINE_OFFERS } from './pov/perks.js';
+import { GEAR, SLOTS } from './pov/tools/catalog.js';
 
 export const K = { EMPTY: 0, SOLID: 1, POWDER: 2, LIQUID: 3, GAS: 4 };
 export const R = { NONE: 0, OPAQUE: 1, LIQUID: 2, GLASS: 3, GAS: 4, FIRE: 5 };
@@ -185,6 +186,16 @@ export const PERK_ITEMS = [
 export const isPerkTool = (id) => id <= PERK_ID0 && id > PERK_ID0 - 100;
 export const isShrineTool = (id) => id === PERK_ID0;
 
+// First-person tools (src/pov/tools/catalog.js), listed in the palette's Tools
+// group: Garry's Mod's spawn menu. A click gives the tool to the player (the
+// inventory, pov/tools/inventory.js) and puts it in hand; nothing is painted.
+const GEAR_ID0 = -300;
+export const GEAR_ITEMS = GEAR.map((g, i) => ({
+  id: GEAR_ID0 - i, key: `GEAR_${g.key}`, abbr: g.abbr, name: g.name, color: g.color, gear: g.key, model: g.model,
+  desc: `${g.desc} First person, key ${g.slot + 1} (${SLOTS[g.slot]}).${g.start ? '' : ' Click to add it to your tools.'}`,
+}));
+export const isGearTool = (id) => id <= GEAR_ID0 && id > GEAR_ID0 - 100;
+
 // How the palette is laid out in the UI. Within each group, elements are
 // ordered so related materials sit together and the colours run smoothly.
 export const PALETTE = [
@@ -192,13 +203,13 @@ export const PALETTE = [
   { name: 'Liquids', items: ['WATER', 'ACID', 'OIL', 'LAVA'] },
   { name: 'Gases', items: ['STEAM', 'CLOUD', 'SMOKE', 'FIRE'] },
   { name: 'Solids', items: ['WALL', 'ROCK', 'METAL', 'GLASS', 'ICE', 'WOOD', 'PLANT', 'CLONE'] },
-  { name: 'Tools', items: ['HEAT', 'COOL', 'ERASE', 'BLAST', 'SIGN'] },
+  { name: 'Tools', items: ['HEAT', 'COOL', 'ERASE', 'BLAST', 'SIGN', ...GEAR_ITEMS.map((g) => g.key)] },
   { name: 'Entities', items: ['ENEMY', 'SPAWN'] },
   { name: 'Constructions', items: ['HOUSE', 'TREE', 'CAMPFIRE', 'IGLOO', 'BARREL', 'AQUARIUM', 'FOUNTAIN', 'PROMPT'] },
   { name: 'Perks', items: ['SHRINE', ...PERKS.map((p) => p.key)] },
 ];
 
-const NON_ELEMENTS = [...TOOLS, ...BUILDS, ...PERK_ITEMS];
+const NON_ELEMENTS = [...TOOLS, ...BUILDS, ...PERK_ITEMS, ...GEAR_ITEMS];
 export const toolById = (id) => (id < 0 ? NON_ELEMENTS.find((t) => t.id === id) : ELEMENTS[id]);
 export const itemByKey = (key) => (key in E ? ELEMENTS[E[key]] : NON_ELEMENTS.find((t) => t.key === key));
 
