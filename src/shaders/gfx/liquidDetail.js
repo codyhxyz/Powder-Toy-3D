@@ -188,23 +188,26 @@ vec3 liquidMeniscus(vec3 p, vec3 n, int id) {
 // Whitewater, drawn from the aeration field (aerationFrag below, stepped with
 // the simulation by gfx/foam.js): per liquid cell, the share of its surface
 // white with entrained air, which rides with the liquid, bursts at the free
-// surface and rises out of the bulk. tAer holds (aeration, 1) in liquid cells
-// and 0 elsewhere, laid out like the state, so it is read trilinearly by hand
-// (8 taps) and x / y is the aeration averaged over the liquid cells around a
-// point only: the air beside a surface doesn't thin it.
+// surface and rises out of the bulk. tAer holds (aeration, 1, fall, grounded)
+// in liquid cells and 0 elsewhere, laid out like the state, so it is read
+// trilinearly by hand (8 taps), and x / y is the aeration averaged over the
+// liquid cells around a point only (the air beside a surface doesn't thin
+// it), w / y the share of them that rest on the ground (a pool, not liquid
+// in the air or riding on falling liquid).
 uniform sampler2D tAer;
 #define AER_PROBE 0.25         // cells into the liquid (against n) where the aeration is read
 #define AER_LIQ_MIN 0.02       // liquid weight below which the read is no liquid's
-vec2 aerTap(ivec3 c) { return outside(c) ? vec2(0.0) : texelFetch(tAer, atlas(c), 0).xy; }
-float aerationAt(vec3 p) {
+vec3 aerTap(ivec3 c) { return outside(c) ? vec3(0.0) : texelFetch(tAer, atlas(c), 0).xyw; }
+vec2 aerationAt(vec3 p) {   // (aeration, grounded share), 0..1
+
   vec3 q = p - 0.5;
   ivec3 c = ivec3(floor(q));
   vec3 f = q - vec3(c);
-  vec2 s = mix(mix(mix(aerTap(c), aerTap(c + ivec3(1, 0, 0)), f.x),
+  vec3 s = mix(mix(mix(aerTap(c), aerTap(c + ivec3(1, 0, 0)), f.x),
                    mix(aerTap(c + ivec3(0, 1, 0)), aerTap(c + ivec3(1, 1, 0)), f.x), f.y),
                mix(mix(aerTap(c + ivec3(0, 0, 1)), aerTap(c + ivec3(1, 0, 1)), f.x),
                    mix(aerTap(c + ivec3(0, 1, 1)), aerTap(c + ivec3(1, 1, 1)), f.x), f.y), f.z);
-  return s.y > AER_LIQ_MIN ? clamp(s.x / s.y, 0.0, 1.0) : 0.0;
+  return s.y > AER_LIQ_MIN ? clamp(s.xz / s.y, 0.0, 1.0) : vec2(0.0);
 }
 
 // Noise in the plane the surface faces most (x, y or z), evolving in time:
@@ -236,7 +239,10 @@ vec4 triNoiseD(vec3 p, vec3 n, float f, float t) {
 // the aeration decays the covered fraction shrinks, so patches thin into the
 // lace and streaks of old foam instead of fading as a whole. The pattern
 // reshapes as its bubbles burst: one noise unit per foam lifetime.
-#define FOAM_COVER_MAX 0.7     // covered fraction at full aeration (open water still shows between)
+// Aerated liquid in the air is not a raft but a spray of torn drops and
+// sheets: white streaks with clear water between, so it covers less.
+#define FOAM_COVER_MAX 0.7     // covered fraction at full aeration on resting liquid (open water still shows between)
+#define SPRAY_COVER_MAX 0.3    // ... and on liquid in the air or falling with it
 #define FOAM_PATCH_M 0.12      // m, foam patches between open water
 #define FOAM_CLUSTER_M 0.04    // m, bubble clusters within them (second octave)
 #define FOAM_FREQ (CELL_M / FOAM_PATCH_M)      // cycles/cell
@@ -248,14 +254,15 @@ vec4 triNoiseD(vec3 p, vec3 n, float f, float t) {
 #define FOAM_WRAP 0.5          // diffuse wrap (0 = Lambert)
 #define FOAM_SHIFT 29.3        // lattice offset of the foam noise from the roughness noise
 void liquidFoam(vec3 p, inout vec3 n, int id, inout vec3 col, inout vec3 trans) {
-  float ag = aerationAt(p - n * AER_PROBE);
+  vec2 aer = aerationAt(p - n * AER_PROBE);
+  float ag = aer.x;
   if (ag <= 0.0) return;
   float fp = footprint(p);
   vec3 wp = worldPos(p);   // the churn and foam are anchored in the world
   vec4 r = triNoiseD(wp, n, ROUGH_FREQ, uSimClock * ROUGH_EVOLVE);
   n = tiltNormal(n, r.yzw * (ROUGH_SLOPE * ag * lodFade(ROUGH_FREQ, fp) / ROUGH_FREQ));
   // covered fraction: the pattern where pixels resolve it, its mean beyond
-  float cover = FOAM_COVER_MAX * ag;
+  float cover = mix(SPRAY_COVER_MAX, FOAM_COVER_MAX, aer.y) * ag;
   float pw = lodFade(FOAM_FREQ, fp);
   float c = cover;
   if (pw > 0.0) {
