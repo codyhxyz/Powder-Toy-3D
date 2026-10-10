@@ -80,7 +80,13 @@ vec3 skyAmbient(vec3 n) {
 // between get a proportional share.
 uniform sampler2D tShadow;
 uniform int uShadowRes;
-const float SHADOW_TINT_ID_SCALE = 1000.0; // w packing: id * this + optical depth (< this); written by render.js's shadow pass
+// w packing: id * this + optical depth (< this); written by render.js's shadow
+// pass. The map is 32-bit float, so with element ids up to 255 (docs/elements.md)
+// w stays below 2^16 and keeps the optical depth to 2^-8 (0.4% in the light
+// let through). Depth past SCALE - 1 lets no light through anyway (e^-255); it
+// only flattens the proportional share inside a medium that thick (~270 cells
+// of oil along the sun, 10,000 of water).
+const float SHADOW_TINT_ID_SCALE = 256.0;
 const float SHADOW_PAD = 1.0;              // voxels the map's disc reaches past the box's bounding sphere
 const float SHADOW_NORMAL_OFFSET = 0.002;  // voxels a surface lookup moves off the surface along its normal
 // Hard-map depth bias (voxels), see sunShadow: at least SHADOW_BIAS_MIN, else the

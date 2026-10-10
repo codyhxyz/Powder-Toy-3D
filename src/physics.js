@@ -11,7 +11,7 @@ export const PHYS = {
   L_FUSE: 80,                // latent heat of melting/freezing, cap·°C
   L_BOIL: 540,               // latent heat of boiling/condensing, cap·°C
   CELL_TEMP_MIN: -273.15,
-  CELL_TEMP_MAX: 6000,
+  CELL_TEMP_MAX: 10000,      // plasma's 10,000 °C (elements.js PLASMA, TPT's MAX_TEMP)
   // Each face moves at most this share of the energy that would bring the
   // smaller-capacity cell of the pair to the other's temperature, per step:
   // |flux| ≤ |ΔT|·min(Ca, Cb)·COND_FLUX_SHARE. With one share per face (1/6),
@@ -108,6 +108,24 @@ export const PHYS = {
   MAGNUS_B: 243.04,          // (°C; Alduchov & Eskridge 1996): warm mist vanishes fast, cold fog lingers
   CLOUD_EVAP_NB: 3,          // air neighbours a cell can have and stay (air inside and along a cloud is saturated: wisps and protrusions go)
   CLOUD_EVAP_COOL: 1,        // °C the evaporating cell's air cools by (the latent heat of a real cloud's ~0.5 g/m³)
+  // Storm charge (react.js; strikes: src/bolt.js STORM). A thundercloud
+  // charges where graupel falls through supercooled droplets held up by the
+  // updraft: each rebounding collision moves ~10-100 fC between them
+  // (non-inductive charging: Takahashi 1978, J. Atmos. Sci. 35; Saunders et
+  // al. 1991), so the charging rate goes as the collision rate, the closing
+  // speed of ice and droplet. Here: SNOW (the graupel) next to freezing CLOUD
+  // (a cloud cell at 0 °C banking its latent heat toward snow: the mixed-phase
+  // region), counted along each face as their closing speed, the cloud's own
+  // updraft included. A cloud cell's charge is a whole count in its ctype.
+  CHARGE_T_MAX: 0,           // °C: only cloud this cold charges (freezing cloud is held at 0 °C)
+  CHARGE_RATE: 0.5,          // units of charge per step per cell/step of closing speed with a snow neighbour (as a chance)
+  // Charge at which a cell's field breaks the air down and it strikes. Air
+  // breaks down at ~3 MV/m dry, but a cloud's field reaches only ~0.1-0.4
+  // MV/m: lightning starts where ice crystals bring it down locally
+  // (Rakov & Uman, Lightning, 2003). A count that ~100 grains of snow
+  // falling past one cloud cell build.
+  CHARGE_BREAKDOWN: 40,
+  CHARGE_MAX: 60,            // ctype cap (the id-width audit gives ctype 8 bits)
   PLANT_GROW: 0.006,         // chance per step per neighbouring plant that water becomes plant
   LAVA_FREEZE_BELOW: 150,    // °C under the melting point where lava sets
   FIRE_BURN: 0.02,           // flame life lost per step: BURN + BURN_SPREAD·rnd
@@ -124,12 +142,97 @@ export const PHYS = {
   FLAME_T_SPREAD: 0.15,
   CLONE_RATE: 0.06,          // chance per step Clone fills a neighbouring empty cell
   SPAWN_DROP_V: -0.3,        // cells/step: spawned powders and liquids start falling
-  GUNPOWDER_FIRE: 0.7,       // chance per step a flame next to gunpowder sets it off
-  GUNPOWDER_T: 2200,         // °C of the blast
-  GUNPOWDER_P: 60,           // pressure of the blast
+  // (Explosives' numbers, the chance a flame sets one off included, are their elements.js blast rows.)
   BURN_P: 0.02,              // pressure per step from burning
+  // Oxygen (elements.js OXYGEN). Air is 20.95 % oxygen, so a cell of pure
+  // oxygen holds O2_PER_AIR times the oxygen of a cell of air. A fuel burns as
+  // fast as oxygen reaches it: its rate goes as the oxygen in the gas around
+  // it, from 1 (air) to O2_PER_AIR (all oxygen), and its flame, in kelvin,
+  // runs hotter by up to OXY_FLAME_GAIN: the mean ratio of adiabatic flame
+  // temperatures in oxygen and in air of hydrogen (2800 / 2254 °C),
+  // acetylene (3480 / 2500) and methylacetylene (2927 / 2010): 1.22, 1.35, 1.40.
+  O2_PER_AIR: 1 / 0.2095,
+  OXY_FLAME_GAIN: 1.32,
+  // Carbon dioxide (elements.js CO2) smothers fire: where it is at least this
+  // share of the gas around a flame or a burning fuel, the flame goes out and
+  // the fuel stops burning. The theoretical least that puts fires out (NFPA 12:
+  // methane 25 %, propane 30 %, ethane 33 %; it designs for 34 %).
+  CO2_SMOTHER: 0.3,
   ASH_SHARE: 0.5,            // share of burnt-out cells that leave ash
   BURNT_MIN_T: 600,          // °C, a burnt-out cell is at least this hot
+
+  // Dust clouds (react.js; elements.js DUST). Settled dust smoulders through
+  // the ordinary burning fields; suspended in air it goes off as one, as a
+  // grain-silo or coal-mine explosion does. A dust cloud explodes between its
+  // lean and rich limits: the minimum explosible concentration (MEC, ~50 g/m³
+  // for flour and ~60-100 for coal; Eckhoff, Dust Explosions in the Process
+  // Industries, 2003) below which a burning grain can't heat the next one to
+  // ignition, and a rich limit past which there isn't the air to burn it. A
+  // cell holds ~15 kg of flour (0.027 m³ at 0.55 g/cm³), hundreds of times the
+  // MEC over its own volume, so concentration can't be read cell by cell: a
+  // dust cell stands for a puff, its dust faces for the fuel beside it (lean
+  // side), its air faces for the air it mixes with (rich side).
+  //   suspended  blown or falling faster than DUST_LIFT_V (dust's own fall
+  //              settles faster: elements.js DUST drag), not sliding down a
+  //              heap or toppling off its edge
+  //   lean       fewer than DUST_MEC_NB dust faces: a lone mote just burns
+  //              (ignite/burnRate)
+  //   rich       fewer than DUST_RICH_AIR air faces: a heap's flat top, or a
+  //              falling clump's core, which smoulders until a blast breaks
+  //              it up
+  // The flame runs from dust cell to touching dust cell, so a cloud carries it
+  // only while its cells touch in one network: in a random cloud that needs
+  // ~31% of the cells (site percolation on a cubic lattice, 0.3116), the
+  // MEC in cells. (A side-on slice, the dock tiles, needs 59%: a square lattice.)
+  // cells/step: ~7 m/s at 72 m/s per cell/step, a gust that lifts deposited
+  // dust (fine powders are entrained by winds of ~5-15 m/s), well over a grain
+  // sliding down a heap or landing on it, and under dust's falling speed
+  DUST_LIFT_V: 0.1,
+  DUST_MEC_NB: 1,            // dust faces a suspended dust cell needs to go off with the cloud
+  DUST_RICH_AIR: 2,          // air faces it needs
+  // Chance per step a flame touching suspended dust sets it off: the flame
+  // front. Turbulent dust flames run at ~10-100 m/s and accelerate down a
+  // gallery to hundreds (Eckhoff 2003); one cell per step is ~72 m/s. Any
+  // less and the blast scatters the cloud ahead of its flame.
+  DUST_FIRE: 1,
+  // Pressure a dust cell adds as it goes off: half a gunpowder cell's
+  // (GUNPOWDER_P). A cloud burns its fuel with the oxygen in the air between
+  // the grains, so per volume it is far weaker than a powder carrying its own
+  // oxidizer (a confined cloud tops out at 7-10 bar; Eckhoff 2003); its
+  // violence is in the size of the cloud. Half lets a cloud of a few dozen
+  // cells break glass and wood.
+  DUST_P: 30,
+  // °C of its flame: the adiabatic flame temperature of a grain or coal dust
+  // cloud near stoichiometric, ~2000 K (Cashdollar, J. Loss Prev. 13, 2000).
+  DUST_FLAME_T: 1700,
+
+  // Singularity (react.js; elements.js SINGULARITY), TPT's SING: a tiny black
+  // hole. Its mass is its life, in cells of water (DENS[E_WATER]). It holds a
+  // vacuum of −SING_P_PER_MASS·mass (to P_MIN), and the open cells touching it
+  // hold SING_RING of that, so the pull reaches two cells: air rushes in and
+  // matter is drawn after it (a = −∇P/ρ). It swallows each cell touching it
+  // with chance SING_EAT per step, gaining its mass, and merges with a lighter
+  // singularity. TPT's swallows with 1 in 3; a pair here is partners once in
+  // RX_PAIRINGS steps (react.js: reactions' pairing, so a cell is swallowed or
+  // reacts, never both), which caps it at 1/6. Limits, so it can't eat the world:
+  //   - it bursts once it reaches SING_MASS_MAX, its pressure
+  //     SING_BURST_P_PER_MASS per unit of mass (at most P_MAX);
+  //   - starved, it evaporates (Hawking: dm/dt ∝ −1/m², so it goes faster
+  //     as it shrinks, SING_EVAP / m² per step) and winks out below
+  //     SING_MASS_MIN;
+  //   - it never seeds new singularities (TPT's full SING turns 1 in 1000 of
+  //     its neighbours into new ones: a world-eater), and the wall holds.
+  // Real micro black holes evaporate within ~1e-12 s at this mass; ours lives
+  // ~SING_MASS0³ / (3·SING_EVAP) steps starving.
+  SING_MASS0: 12,            // spawn mass (elements.js SINGULARITY life): ~1000 steps starving
+  SING_MASS_MIN: 1,
+  SING_MASS_MAX: 200,        // ~200 cells of water, or 125 of sand, 25 of metal
+  SING_EAT: 1 / 6,
+  SING_P_PER_MASS: 2.5,      // so P_MIN from a mass of 20
+  SING_RING: 0.6,
+  SING_EVAP: 0.6,
+  SING_BURST_P_PER_MASS: 1,  // a full one: P_MAX
+  SING_BURST_T: 3000,        // °C of the flash it leaves (TPT sprays photons, neutrons and electrons at half its maximum)
 
   // impacts and breaking (react.js, move.js). Hardness (elements.js hard) is in
   // the sim's kinetic-energy units, ½·dens·|v|² with v in cells/step.
@@ -148,7 +251,7 @@ export const PHYS = {
   // A solid breaks when the air pressure difference across it, along any axis,
   // exceeds hard·P_BREAK_PER_HARD (pressure per unit of hardness; a solid
   // neighbour holds no air and counts as 0). One gunpowder cell's blast is
-  // GUNPOWDER_P (60) and loses ~15% per cell, but a pile lit by a flame goes off
+  // blast P (elements.js, 60) and loses ~15% per cell, but a pile lit by a flame goes off
   // in a wave that stacks its blasts: ~140 at the edge of a 3³ pile, ~200 at a
   // 5³ one, still ~100 four cells out. So glass (8 → 40) and ice and plants
   // (6 → 30) smash a few cells from even one cell's blast, wood (20 → 100) a few

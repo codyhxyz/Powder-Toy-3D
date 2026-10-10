@@ -18,7 +18,7 @@ export const GEAR = [
   { key: 'SHOVEL', slot: 0, name: 'Shovel', model: 'shovel', abbr: 'SHVL', color: '#8a7a5c',
     desc: 'Hold left-click to dig powder or break solids into debris. Right-click throws the load.' },
   { key: 'PICKAXE', slot: 0, name: 'Pickaxe', model: 'pickaxe', abbr: 'PICK', color: '#8f969c',
-    desc: 'Mines rock into stone and breaks anything the axe can. Too weak for metal.' },
+    desc: 'Mines rock into stone for your pack and breaks anything the axe can. Too weak for metal.' },
   { key: 'AXE', slot: 0, name: 'Axe', model: 'axe', abbr: 'AXE', color: '#9a6a3c',
     desc: 'Chops wood, smashes glass and ice, clears plants. Too weak for rock or metal.' },
   { key: 'KNIFE', slot: 0, name: 'Knife', model: 'knife', abbr: 'KNIF', color: '#c9ccd1',

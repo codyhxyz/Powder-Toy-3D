@@ -37,7 +37,7 @@ await ev(async ([steps, spawn, pillars, cellM]) => {
   a.sim.paint({ center: new V(spawn[0] + 11 / cellM, 6, spawn[2]), radius: 6, shape: 1, tool: E.ROCK, rate: 1, replace: true });
 }, [MIDNIGHT_STEPS, SPAWN, PILLARS_M, CELL_M]);
 await p.mouse.move(W / 2, H / 2);
-await p.keyboard.press('f');
+await p.keyboard.press('v');   // V drops in (keys-check)
 await p.waitForFunction(() => window.__app.pov.mode === 'on', null, { timeout: 20000 }).catch(() => {});
 await ev((spawn) => { const a = window.__app, V = a.camera.position.constructor; a.pov.test.assumeLocked = true; a.pov.player.spawn(new V(...spawn)); a.pov.setLook(-Math.PI / 2, -0.12); }, SPAWN);
 await wait(1500);

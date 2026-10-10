@@ -55,7 +55,7 @@ await ev(async ([steps]) => {
   a.sim.paint({ center: new V(40, 4, 64.5), radius: 4, shape: 1, tool: E.WOOD, rate: 1, replace: true });
 }, [MIDNIGHT_STEPS]);
 await p.mouse.move(W / 2, H / 2);
-await p.keyboard.press('f');
+await p.keyboard.press('v');   // V drops in (keys-check)
 await p.waitForFunction(() => window.__app.pov.mode === 'on', null, { timeout: 20000 }).catch(() => {});
 await ev(() => { const a = window.__app, V = a.camera.position.constructor; a.pov.test.assumeLocked = true; a.pov.player.spawn(new V(30, 0, 64.5)); a.pov.setLook(-Math.PI / 2, -0.15); });
 await wait(1500);

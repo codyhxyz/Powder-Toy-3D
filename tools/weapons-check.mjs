@@ -53,7 +53,7 @@ await ev(async () => {
   povEvents.on('blast', (x) => window.__blasts.push(x.point));
 });
 await p.mouse.move(W / 2, H / 2);
-await p.keyboard.press('f');
+await p.keyboard.press('v');   // V drops in (keys-check)
 await p.waitForFunction(() => window.__app.pov.mode === 'on', null, { timeout: 20000 }).catch(() => {});
 check('dropped in', (await ev(() => window.__app.pov.mode)) === 'on');
 await ev(() => { window.__app.pov.test.assumeLocked = true; });
