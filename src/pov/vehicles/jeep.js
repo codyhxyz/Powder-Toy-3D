@@ -92,8 +92,7 @@ export function buildJeep(R, phys, look, { at, yaw, team }) {
     .setMassProperties(JEEP.MASS, { x: 0, y: -JEEP.COM_DROP, z: 0 }, { x: I(hgt, l), y: I(w, l), z: I(w, hgt) }, { x: 0, y: 0, z: 0, w: 1 })
     .setFriction(0.6), body);
   const ctrl = world.createVehicleController(body);
-  ctrl.indexUpAxis = 1;
-  ctrl.indexForwardAxis = 2;
+  // (the controller's axes are +y up and +z forward by default: our chassis frame)
   WHEELS.forEach((wh, i) => {
     ctrl.addWheel({ x: wh.x, y: WHEEL_Y, z: wh.z }, { x: 0, y: -1, z: 0 }, { x: -1, y: 0, z: 0 }, REST, WHEEL_R);
     ctrl.setWheelMaxSuspensionTravel(i, TRAVEL);
