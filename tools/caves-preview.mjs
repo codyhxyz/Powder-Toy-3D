@@ -16,6 +16,9 @@
 //   entrances.png       the terrain from above (hillshade), where caves lie under
 //                       it (purple tint) and their mouths: hillside (red), sea
 //                       (cyan), shafts (yellow)
+//   spots.json          places worth a look, world cells (tools/caves-check.mjs):
+//                       a hillside mouth, a shaft, a sea cave, an underground
+//                       lake, a crystal cavern and a long tunnel
 // Census:
 //   - cave volume, as a share of the ground and of the cells caves may take;
 //   - how much of it connects to a mouth (the player can walk or swim in);
@@ -46,6 +49,14 @@ const MOUTH_DOT = 1;              // entrance map: mouths drawn this many pixels
 const SEA_GAP = 6;                // sea openings of one cave this far apart count as separate (arches)
 const CLEAR_BINS = [0, 5.5, 8, 10, 12, 15, 21, 41];   // floor clearance histogram edges, cells
 const CAVERN_MIN = 200;           // caverns smaller than this many cells aren't counted (slivers where a cavern grazes a tunnel)
+const SPOT_TRIES = 30;            // lakes and crystal blocks tried for a viewpoint, biggest first
+const SPOT_BLOCK = 8;             // crystal cavern: crystals are counted per this many cells cube
+const VIEW_REACH = 24;            // a spot's viewpoint is a dry cave floor at most this far from what it looks at
+const EYE = 5;                    // the POV eye's height over its feet, cells (pov/constants.js EYE_HEIGHT)
+const RUN_SAMPLES = 4000;
+const VIEW_NEAR = 8;              // ...and at least this far
+const SIGHT_STEP = 0.5;           // line-of-sight march step, cells
+const DOWNHILL_RUN = 6;           // a mouth open only upward faces downhill, measured over this many columns either side         // tunnel crests tried for the longest straight view
 const SLICES = [-8, -3, 4, 12, 22, 32, 42, 52];        // slice heights, cells above the water table
 
 const CLIFF_STANDIN = { CLIFF_EXP: 0.3, CLIFF_EDGE_LO: 0.0, CLIFF_EDGE_HI: 0.3 };   // --cliffs: GEN's cliff shores, steeper and more of them
@@ -383,14 +394,17 @@ const zoom = (label, i, j) => section(`zoom-${label}-x${X0 + i}-z${Z0 + j}.png`,
 zoom('peak', ...peak);
 // a mouth of each kind: the one whose column is carved deepest (through a shaft's middle, a tunnel's)
 const caveDepth = (i, j) => { let n = 0; for (let y = 0; y < NY; y++) if (carved[col(i, j) + y] === CARVED) n++; return n; };
+// (a mouth cell open to the side, if any: a portal in the hillside rather than a skylight)
+const sideOpen = (i, y, j) => FACES.some(([dx, , dz]) => (dx || dz) && outside(i + dx, y, j + dz));
+const bestMouth = {};
 for (const kind of ['hill', 'sea', 'shaft']) {
   let best = null, most = 0;
   for (const [k, m] of mouthKind) {
     if (m !== kind) continue;
-    const [i, , j] = decode(k), n = caveDepth(i, j);
-    if (n > most) { most = n; best = [i, j]; }
+    const [i, y, j] = decode(k), n = caveDepth(i, j) + (kind === 'hill' && sideOpen(i, y, j) ? NY : 0);
+    if (n > most || (n === most && best && y < best[1])) { most = n; best = [i, y, j, k]; }
   }
-  if (best) zoom(`${kind}-mouth`, ...best);
+  if (best) { zoom(`${kind}-mouth`, best[0], best[2]); bestMouth[kind] = best; }
 }
 const bigLake = [...lakes].sort((a, b) => b[1] - a[1])[0];
 if (bigLake) {
@@ -422,6 +436,91 @@ if (archAt.length) zoom('arch', archAt[0][0], archAt[0][2]);
   }
   png('entrances.png', NX, NZ, img);
 }
+
+// ---- spots worth a look (tools/caves-check.mjs), world cells
+const spots = { sea: WATER };
+const toWorld = ([i, y, j]) => [X0 + i, y, Z0 + j];
+const isFloor = (k) => passable(k) && vol[k] === E.EMPTY && !passable(k - 1);
+// whether cave air runs from cell a to cell b (region cells) but for b's own last cell
+function inSight(a, b) {
+  const n = Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]) / SIGHT_STEP);
+  for (let s = 0; s < n - 1 / SIGHT_STEP; s++) {
+    const t = s / n, k = at(Math.round(a[0] + (b[0] - a[0]) * t), Math.round(a[1] + (b[1] - a[1]) * t), Math.round(a[2] + (b[2] - a[2]) * t));
+    if (!passable(k) || vol[k] !== E.EMPTY) return false;
+  }
+  return true;
+}
+// a dry cave floor whose eye sees the cell look (region cells), at least VIEW_NEAR and at most
+// VIEW_REACH away: the farthest such
+function floorSeeing(look) {
+  let best = null, bd = -1;
+  const [ci, cy, cj] = look;
+  for (let j = Math.max(0, cj - VIEW_REACH); j < Math.min(NZ, cj + VIEW_REACH); j++)
+    for (let i = Math.max(0, ci - VIEW_REACH); i < Math.min(NX, ci + VIEW_REACH); i++)
+      for (let y = Math.max(1, cy - VIEW_REACH); y < Math.min(NY - EYE, cy + VIEW_REACH); y++) {
+        const k = col(i, j) + y;
+        if (!isFloor(k) || !passable(k + EYE)) continue;
+        const d = (i - ci) ** 2 + (y - cy) ** 2 + (j - cj) ** 2;
+        if (d < VIEW_NEAR ** 2 || d > VIEW_REACH ** 2 || d <= bd || !inSight([i, y + EYE, j], look)) continue;
+        bd = d; best = [i, y, j];
+      }
+  return best;
+}
+for (const [kind, m] of Object.entries(bestMouth)) {
+  // the mouth's outside: the direction its open faces point
+  const [i, y, j] = m;
+  let ox = 0, oz = 0;
+  for (const [dx, , dz] of FACES) if ((dx || dz) && outside(i + dx, y, j + dz)) { ox += dx; oz += dz; }
+  // (open only upward: downhill, over DOWNHILL_RUN columns)
+  const hw = (di, dj) => T.column(X0 + i + di, Z0 + j + dj)[0];
+  if (!ox && !oz) { ox = hw(-DOWNHILL_RUN, 0) - hw(DOWNHILL_RUN, 0); oz = hw(0, -DOWNHILL_RUN) - hw(0, DOWNHILL_RUN); }
+  spots[kind] = { at: toWorld(m.slice(0, 3)), ground: groundOf(i, j), out: [ox, oz] };
+}
+// a lake: the largest whose open surface a dry floor sees
+for (const [lake] of [...lakes].sort((a, b) => b[1] - a[1]).slice(0, SPOT_TRIES)) {
+  let n = 0, si = 0, sj = 0;
+  for (let j = 0; j < NZ; j++) for (let i = 0; i < NX; i++) if (comp[col(i, j) + WATER - 1] === lake && carved[col(i, j) + WATER] === CARVED) { n++; si += i; sj += j; }
+  const c = [Math.round(si / n), WATER - 1, Math.round(sj / n)];
+  if (carved[col(c[0], c[2]) + WATER] !== CARVED) continue;   // (a ring-shaped lake: its middle isn't open water)
+  const f = floorSeeing(c);
+  if (f) { spots.lake = { look: toWorld(c), feet: toWorld(f), surface: lakes.get(lake) }; break; }
+}
+{
+  // crystal cavern: the block with the most crystal cells that a dry floor looks at
+  const blocks = new Map();
+  for (let k = 0; k < vol.length; k++) if (carved[k] === CRYSTAL) {
+    const [i, y, j] = decode(k), key = `${Math.floor(i / SPOT_BLOCK)},${Math.floor(y / SPOT_BLOCK)},${Math.floor(j / SPOT_BLOCK)}`;
+    blocks.set(key, (blocks.get(key) ?? 0) + 1);
+  }
+  for (const [key] of [...blocks].sort((a, b) => b[1] - a[1]).slice(0, SPOT_TRIES)) {
+    // the block's crystal cells with cave air beside them, and a floor that sees one
+    const [bi, by, bj] = key.split(',').map((v) => +v * SPOT_BLOCK);
+    let f = null, c = null;
+    for (let j = bj; j < bj + SPOT_BLOCK && !f; j++) for (let i = bi; i < bi + SPOT_BLOCK && !f; i++) for (let y = by; y < by + SPOT_BLOCK && !f; y++) {
+      const k = at(i, y, j);
+      if (k < 0 || carved[k] !== CRYSTAL || !FACES.some(([dx, dy, dz]) => passable(at(i + dx, y + dy, j + dz)))) continue;
+      c = [i, y, j]; f = floorSeeing(c);
+    }
+    if (f) { spots.crystal = { look: toWorld(c), feet: toWorld(f), cells: blocks.get(key) }; break; }
+  }
+}
+{
+  // a long tunnel: the dry tunnel crest with the longest straight run at eye height, and that run's direction
+  const crestList = [...clearAt].filter(([, [h, kind]]) => kind === 'tunnel' && h >= CLEAR_BINS[3]);
+  const stride = Math.max(1, Math.floor(crestList.length / RUN_SAMPLES));
+  let best = null;
+  for (let s = 0; s < crestList.length; s += stride) {
+    const [i, y, j] = decode(crestList[s][0]);
+    for (const [dx, , dz] of FACES) {
+      if (!dx && !dz) continue;
+      let n = 0;
+      while (passable(at(i + dx * (n + 1), y + EYE, j + dz * (n + 1))) && passable(at(i + dx * (n + 1), y, j + dz * (n + 1)))) n++;
+      if (!best || n > best.run) best = { feet: toWorld([i, y, j]), dir: [dx, dz], run: n };
+    }
+  }
+  if (best) spots.tunnel = best;
+}
+writeFileSync(join(outDir, 'spots.json'), JSON.stringify(spots, null, 1));
 
 // ---- report
 const pct = (a, b) => `${((100 * a) / Math.max(1, b)).toFixed(2)}%`;

@@ -324,6 +324,14 @@ The world is much larger than what lives on the GPU. Its size is `WORLD` cells, 
     `int islandCave(int x, int y, int z, float ground, float water, int id)` last, on every cell. The trees'
     ground check (`genTreeZone`) asks `islandCell` for the trunk's footing, so carving reaches tree placement
     and `ground()` too.
+  - **Caves** (`world/island/caves.js`): Minecraft 1.18's noise caves sized for the player (level tunnels 8–14
+    cells tall, 3D tunnels, caverns 20–60 across), mouths on bare rock, a few cenote shafts, the sea level as
+    their water table, speleothems and crystal clusters. The hook reads the column's slope and cover itself
+    (`genSlope`, `genCover`), only near the surface or a shaft; trees keep `CAVE_TREE_CLEAR` columns from where a
+    cave may open (`caveOpenNear` in `genTreeZone`). Over the world: 5.9% of the ground is cave, two thirds of it
+    reachable from a mouth; 0.54 noise evaluations per world cell. `tools/caves-preview.mjs` (CPU: images,
+    census, stability audit, `spots.json`) and `tools/caves-check.mjs` (GPU: stability, twin, seams, fill time,
+    stills at those spots).
   - **Same world.** Against the two-path generator it replaced (origin/main 1e72afa), headless on the GPU: the
     box's Island preset (128³, with snow and frozen rock), the world's window at load and after 8 moves (slab
     fills and planted trees) and the complete far grid (2,097,152 texels) are bit-identical (0 cells differ in
