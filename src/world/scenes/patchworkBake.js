@@ -45,22 +45,30 @@ export const PATCH_TILE_BITS = Math.log2(PATCH_TILE);
 // ---------------------------------------------------------------- tile map
 // Which preset each tile holds: a random proper colouring of the tile grid,
 // so no tile is the same preset as the one beside it on any side (every seam
-// joins two different scenes, and there are no runs). Tiles are chosen in
-// rows, each from the presets its left and lower neighbours aren't, by a hash
-// of the tile and the world seed; with three presets there is always one left.
+// joins two different scenes, and there are no runs). Tiles are chosen row by
+// row (x fastest), each from the presets the tiles before it in its row and
+// its column aren't (with three presets there is always one left): by a hash
+// of the tile and the world seed, unless one of them is already more than
+// PATCH_BALANCE_SLACK tiles behind the other, which then gets it, so each
+// preset holds about a third of the world.
+export const PATCH_BALANCE_SLACK = 2;   // tiles
 const mapCache = new Map();
 export function tileMap(seed) {
   if (mapCache.has(seed)) return mapCache.get(seed);
   const [mx, mz] = PATCH_MAP, n = PATCH_PRESETS.length;
-  const map = new Int32Array(mx * mz);
+  const map = new Int32Array(mx * mz), count = new Array(n).fill(0);
   const stream = pcg((seed + PATCH_SALT_MAP) >>> 0);
   for (let tz = 0; tz < mz; tz++)
     for (let tx = 0; tx < mx; tx++) {
       const i = tx + mx * tz;
-      const left = tx > 0 ? map[i - 1] : -1, below = tz > 0 ? map[i - mx] : -1;
-      const options = [];
-      for (let k = 0; k < n; k++) if (k !== left && k !== below) options.push(k);
-      map[i] = options[pcg((tx + pcg((tz + stream) >>> 0)) >>> 0) % options.length];
+      const left = tx > 0 ? map[i - 1] : -1, before = tz > 0 ? map[i - mx] : -1;
+      let options = [];
+      for (let k = 0; k < n; k++) if (k !== left && k !== before) options.push(k);
+      const least = Math.min(...options.map((k) => count[k]));
+      if (options.some((k) => count[k] > least + PATCH_BALANCE_SLACK)) options = options.filter((k) => count[k] === least);
+      const k = options[pcg((tx + pcg((tz + stream) >>> 0)) >>> 0) % options.length];
+      map[i] = k;
+      count[k]++;
     }
   mapCache.set(seed, map);
   return map;
