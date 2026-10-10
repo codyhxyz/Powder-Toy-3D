@@ -3,13 +3,15 @@
 //   1. switch: the row lists the world scenes; clicking one starts the world
 //      over with it, and its passes compile in the background (programs held
 //      after each switch, console errors);
-//   2. fill vs diff: right after a fresh load (sim paused) the diff pass flags
-//      no brick of the window: what sceneFillFrag writes is what
-//      sceneDiffFrag expects (the island plants trees: tools/world-check.mjs);
+//   2. fill vs diff: right after a fresh load (sim paused; a scene with trees,
+//      the island, filled again without them) the diff pass flags no brick of
+//      the window: what sceneFillFrag writes is what sceneDiffFrag expects;
 //   3. far build: it finishes (frames, wall time), and the bricks it draws
 //      over the window's region from sceneCell equal the window's own summary
 //      of the same freshly generated cells (farSceneFrag ≡ farWinFrag; glow
-//      within a step: the scene cells hold °C in half floats);
+//      within a step: the scene cells hold °C in half floats; trees left out:
+//      the window's are constructions, the far field's their brick-scale
+//      shapes, tools/far-check.mjs);
 //   4. stills: a god view of each scene once its far field is built, in one
 //      montage.
 // usage: node tools/scene-check.mjs [outDir] [--port 5411] [--scenes labWorld,patchwork]
@@ -69,8 +71,8 @@ for (const key of keys.filter((k) => !only || only.includes(k))) {
   // 2. fill vs diff, on a fresh load with the sim paused
   r.diff = await p.evaluate(async () => {
     const a = window.__app, w = a.win, g = a.sim.g, o = a.sim.origin;
-    if (w.scene.island) return 'island: tools/world-check.mjs';
     a.worldLoad([o.x, 0, o.z]);
+    if (w.scene.trees) w.gen.fill(w.P, [o.x, 0, o.z]);   // (without the trees the load planted)
     let flagged = 0;
     for (let x0 = 0; x0 < g.nx; x0 += 16) {
       const bricks = [4, g.ny / 4, g.nz / 4], n = bricks[0] * bricks[1] * bricks[2];
@@ -88,7 +90,7 @@ for (const key of keys.filter((k) => !only || only.includes(k))) {
     for (let i = 0; i < BUILD_FRAMES && far.queue.length; i++) await H.frames(1);
     if (far.queue.length) return { ok: false, left: far.queue.length };
     const built = { ...far.last };
-    if (w.scene.island) return { built };
+    if (w.scene.trees) far.summarizeWindow();   // (the window filled again without its trees: step 2)
     const fromWindow = H.farWindow();
     const { makeFieldTarget } = await import('/src/sim.js');
     const { farSceneLayout, FAR_SCENE } = await import('/src/shaders/far.js');
