@@ -184,6 +184,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     jetBurnS: 0,                  // s the current press has fired
     jetIdleS: 0,                  // s since the jet last fired
     perks,                        // its perks (perks.js)
+    speedScale: 1,                // × walking and running speed: a class's (classes.js; the Bulwark is slow)
     get health() { return vitals.health; },
     get breath() { return vitals.breath; },
     get feel() { return vitals.feel; },
@@ -192,7 +193,6 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     get skinT() { return vitals.skinT; },
     stepRate: 0,                  // sim steps/s, as measured
     team: null,                   // a team game's side ('red' | 'blue' | 'infected', src/game), or null
-    speedScale: 1,                // × its run and walk speeds (a game's: an infected runs faster)
   };
   const impulse = new THREE.Vector3();
 
@@ -562,7 +562,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     if (wish.length() > 1) wish.normalize();
     const vh = new THREE.Vector2(v.x, v.z);
     let jumpedNow = false;
-    const runSpeed = (p.jetting ? JET_FLY_SPEED : alive && input.sprint ? SPRINT_SPEED : WALK_SPEED) * p.speedScale;
+    const runSpeed = p.jetting ? JET_FLY_SPEED : (alive && input.sprint ? SPRINT_SPEED : WALK_SPEED) * p.speedScale;
     if (!swimming && (p.onGround || wish.lengthSq() > 0 || vh.length() <= runSpeed)) {
       // Noita: ease toward the wished speed, on the ground and in the air alike.
       // With no input in the air faster than a run (a blast), keep the momentum.
@@ -704,6 +704,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
   return Object.assign(p, {
     spawn, update, dispose, windowShifted,
     applyImpulse(dv) { impulse.add(dv); },
+    ownBlast() { vitals.ownBlast(); },   // a blast it set off (a rocket, a bomb): it hurts this body less (vitals.js)
     hurt(amount, cause) { vitals.hurt(amount, cause, true); },   // a blow from outside the sim (an NPC's axe)
     on(name, fn) {
       (listeners[name] ??= []).push(fn);

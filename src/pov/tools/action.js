@@ -7,8 +7,10 @@ import * as THREE from 'three';
 // Half-Life 2's weapons (source-sdk-2013 basebludgeonweapon.cpp ItemPostFrame):
 // the action happens on the frame the button goes down, then no sooner than
 // `interval` after the last one. With hold (the default), holding the button
-// repeats it; without, it acts once per click (the gun). A click during the
-// wait isn't lost: it's kept and acts as soon as the wait ends (input
+// repeats it; without, it acts once per click. hold can also be a number: the
+// seconds between repeats while held, slower than clicking can go (HL2's
+// pistol, weapon_pistol.cpp: 0.1 s between clicks, 0.5 s held). A click during
+// the wait isn't lost: it's kept and acts as soon as the wait ends (input
 // buffering), for up to `interval`.
 //
 //   const t = trigger(REFIRE);                    // button: 'primary' (default) or 'secondary'
@@ -30,19 +32,29 @@ const TIME_EPS = 1e-6;   // s: a wait this close to done counts as done (frame t
 export const toolDt = (ctx) => ctx.dt * (ctx.toolRate ?? 1);
 
 export function trigger(interval, { hold = true, button = 'primary' } = {}) {
-  let wait = 0, queued = 0;
+  const holdWait = typeof hold === 'number' ? Math.max(0, hold - interval) : 0;   // s held repeats wait beyond `interval`
+  // The waits run below zero by the part of a frame they overshot, and the next
+  // one starts that much early (HL2: m_flNextPrimaryAttack += fire rate), so a
+  // held SMG keeps its 13 a second at 30 fps instead of rounding up to every
+  // third frame. At most one frame's worth carries over: no burst after a pause.
+  // Only an overshoot carries: a click that fires before the held repeat was
+  // due restarts that wait rather than adding to it.
+  let wait = 0, queued = 0, heldWait = 0, frame = 0;
+  const carry = (w) => Math.min(0, Math.max(w, -frame));
   return {
     // true when the tool should act this frame (call once a frame while selected)
     ready(ctx) {
       const dt = toolDt(ctx);
-      wait = Math.max(0, wait - dt);
+      frame = dt;
+      wait -= dt;
+      heldWait -= dt;
       queued = Math.max(0, queued - dt);
       if (ctx[`${button}Pressed`]) queued = interval;
-      return wait <= TIME_EPS && (queued > 0 || (hold && ctx[button]));
+      return wait <= TIME_EPS && (queued > 0 || (hold !== false && ctx[button] && heldWait <= TIME_EPS));
     },
-    fire() { wait = interval; queued = 0; },
-    reset() { wait = 0; queued = 0; },
-    get waiting() { return wait; },
+    fire() { wait = carry(wait) + interval; heldWait = carry(heldWait) + interval + holdWait; queued = 0; },
+    reset() { wait = 0; heldWait = 0; queued = 0; },
+    get waiting() { return Math.max(0, wait); },
   };
 }
 

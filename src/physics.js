@@ -94,6 +94,10 @@ export const PHYS = {
 
   // reactions (react.js)
   STEAM_BOIL_PUFF: 1.5,      // pressure from water flashing to steam
+  // ...which is STEAM_EXPANSION volumes of steam (at 100 °C, 1 atm) per volume
+  // of water. Gas set free by other reactions (elements.js fizz: acid on
+  // limestone) puffs in proportion to its volume: STEAM_BOIL_PUFF·fizz/STEAM_EXPANSION.
+  STEAM_EXPANSION: 1700,
   // Cloud (react.js): droplets of condensed water riding in air. Steam that
   // condenses in open air becomes cloud; onto a surface (a solid, powder or
   // liquid, or the floor), water.

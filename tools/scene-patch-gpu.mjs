@@ -22,7 +22,7 @@ const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '-
 const p = await b.newPage({ viewport: { width: 640, height: 400 } });
 await p.addInitScript(() => localStorage.setItem('powder-toy-3d:settings', JSON.stringify({ paused: true })));
 const errs = [];
-p.on('console', (m) => { if (m.type() === 'error') errs.push(m.text().slice(0, 600)); });
+p.on('console', (m) => { if (m.type() === 'error' && !/ERR_CONNECTION_REFUSED/.test(m.text())) errs.push(m.text().slice(0, 600)); });
 p.on('pageerror', (e) => errs.push(`PAGEERROR ${String(e).slice(0, 600)}`));
 await p.goto(`http://localhost:${port}/?preset=island&size=128`);
 await p.waitForFunction(() => window.__app?.sim, null, { timeout: 30000 });

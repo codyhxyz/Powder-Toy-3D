@@ -74,6 +74,9 @@ vec3 plainGlow(float tC) {
   float k = (tC + 273.15) / PLAIN_GLOW_TK;
   return blackbody(tC) * smoothstep(PLAIN_GLOW_FROM, PLAIN_GLOW_TO, tC) * (k * k * k * k * PLAIN_GLOW_GAIN + PLAIN_GLOW_BASE);
 }
+// what element id at tC gives off: this view's own thermal glow, plus the
+// element's luminescence as the realistic view has it (gfx/materials.js emission)
+vec3 plainEmit(int id, float tC) { return plainGlow(tC) + EMIT[id]; }
 
 float plainOccupied(ivec3 c) {
   if (c.y < 0) return 1.0;
@@ -99,7 +102,7 @@ vec3 plainOpaque(ivec3 cell, int id, vec4 a, vec3 hp, vec3 n, vec3 rd) {
     emit = plainGlow(T) * (1.0 - PLAIN_LAVA_FLICKER + PLAIN_LAVA_FLICKER * sin(uTime * PLAIN_LAVA_HZ + seed * 40.0));
   } else {
     // hot surfaces read as glowing: the emission takes over from reflected light
-    emit = plainGlow(T);
+    emit = plainEmit(id, T);
     alb *= mix(1.0, PLAIN_HOT_ALBEDO, smoothstep(PLAIN_HOT_FROM, PLAIN_HOT_TO, T));
   }
   if (id == E_PLANT) alb *= 1.0 - PLAIN_PLANT_VAR * 0.5 + PLAIN_PLANT_VAR * fract(seed * 7.3);
@@ -108,7 +111,8 @@ vec3 plainOpaque(ivec3 cell, int id, vec4 a, vec3 hp, vec3 n, vec3 rd) {
   float ao = faceAO(cell, ivec3(n), hp);
   vec3 sky = mix(PLAIN_AMB_DOWN, PLAIN_AMB_UP, n.y * 0.5 + 0.5);
   vec3 local = sampleLight(hp + n * 0.75) * uLightGain;
-  vec3 c = alb * (PLAIN_SUN * ndl * sh + sky * ao + local * (PLAIN_LOCAL_MIN + (1.0 - PLAIN_LOCAL_MIN) * ao));
+  vec3 lamps = uLampCount > 0 ? lampLight(hp, n, n) : vec3(0.0);   // a torch or lantern
+  vec3 c = alb * (PLAIN_SUN * ndl * sh + sky * ao + local * (PLAIN_LOCAL_MIN + (1.0 - PLAIN_LOCAL_MIN) * ao) + lamps);
   if (id == E_METAL || id == E_WALL) {
     vec3 hv = normalize(uSun - rd);
     bool metal = id == E_METAL;
@@ -126,7 +130,8 @@ vec3 plainFloor(vec3 hp) {
   vec3 sh = uShadows ? sunShadow(hp, n) : vec3(1.0);
   float ao = faceAO(ivec3(floor(hp.x), -1, floor(hp.z)), ivec3(0, 1, 0), hp);
   vec3 local = sampleLight(vec3(hp.x, 0.5, hp.z)) * uLightGain;
-  return alb * (PLAIN_SUN * max(uSun.y, 0.0) * sh + PLAIN_FLOOR_AMB * ao + local * (PLAIN_LOCAL_MIN + (1.0 - PLAIN_LOCAL_MIN) * ao));
+  vec3 lamps = uLampCount > 0 ? lampLight(vec3(hp.x, 0.0, hp.z), n, n) : vec3(0.0);
+  return alb * (PLAIN_SUN * max(uSun.y, 0.0) * sh + PLAIN_FLOOR_AMB * ao + local * (PLAIN_LOCAL_MIN + (1.0 - PLAIN_LOCAL_MIN) * ao) + lamps);
 }
 
 void plainView(vec3 ro, vec3 rd, float t0, vec3 bh) {
@@ -184,7 +189,7 @@ void plainView(vec3 ro, vec3 rd, float t0, vec3 bh) {
         }
         vec3 att = exp(-PLAIN_SIGMA[id] * seg);
         vec3 amb = PLAIN_MEDIUM_AMB + PLAIN_SUN * mediumLight * max(uSun.y, 0.0) * PLAIN_MEDIUM_SUN + sampleLight(hp) * uLightGain;
-        vec3 sc = COLOR[id] * amb * (rc == R_LIQUID ? PLAIN_SCATTER_LIQUID : PLAIN_SCATTER_GLASS) + plainGlow(a.y);
+        vec3 sc = COLOR[id] * amb * (rc == R_LIQUID ? PLAIN_SCATTER_LIQUID : PLAIN_SCATTER_GLASS) + plainEmit(id, a.y);
         col += trans * (1.0 - att) * sc;
         trans *= att;
       } else if (rc == R_GAS) {

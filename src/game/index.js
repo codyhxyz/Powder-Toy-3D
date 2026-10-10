@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { povEvents } from '../pov/events.js';
 import { setHitRules, targetById, PLAYER } from '../pov/targets.js';
+import { CLASS } from '../pov/classes.js';
 import * as R from './rules.js';
 import { labLayout, fitLayout } from './layout.js';
 import { ObjectiveEvaluator, WANT, NEAR } from './bots.js';
@@ -82,9 +83,15 @@ export function createGame(shell) {
   function setTeam(e, team) {
     e.team = team;
     const b = bodyOf(e);
-    if (b) { b.team = team; b.speedScale = team === R.INFECTED ? R.INFECTED_SPEED : 1; }
+    if (b) { b.team = team; pace(e, b); }
     if (e.bot && team) e.bot.tint(R.TEAM_LOOK[team]);
     povEvents.emit('game:team', { id: e.id, team });
+  }
+  // an infected runs faster than its class (classes.js sets body.speedScale on every spawn)
+  const classSpeed = (b) => CLASS[b.cls]?.body?.speed ?? 1;
+  function pace(e, b) {
+    const want = classSpeed(b) * (e.team === R.INFECTED ? R.INFECTED_SPEED : 1);
+    if (b.speedScale !== want) b.speedScale = want;
   }
   function loadout(e) {
     if (!e.bot) return;
@@ -249,7 +256,7 @@ export function createGame(shell) {
     removeBots();
     const p = me();
     roster.clear();
-    if (shell.player) { shell.player.team = null; shell.player.speedScale = 1; }
+    if (shell.player) { shell.player.team = null; shell.player.speedScale = classSpeed(shell.player); }
     setHitRules(null);
     markers.clear();
     flags = hill = siege = null;
@@ -483,6 +490,7 @@ export function createGame(shell) {
         const b = bodyOf(e);
         if (!b || !e.team) continue;
         e.protect = Math.max(0, e.protect - dt);
+        pace(e, b);
         if (b.dead && !e.wasDead) died(e);
         else if (!b.dead && e.wasDead) e.protect = R.SPAWN_PROTECT_S;   // back: a moment's protection
         e.wasDead = b.dead;

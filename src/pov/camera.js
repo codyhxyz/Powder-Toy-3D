@@ -14,6 +14,7 @@ export const POV_FOV_RANGE = [55, 110]; // degrees, the setting's slider
 const SPRINT_FOV_BOOST = 7;             // degrees wider while sprinting
 const SPRINT_FOV_SPEED = 8;             // cells/s of ground speed from which the sprint FOV shows
 const FOV_RATE = 5;                     // 1/s: how fast the FOV follows its target
+const ZOOM_RATE = 25;                   // 1/s: ...while zooming a scope in or out (HL2's crossbow zooms in about 0.1 s)
 
 // Mouse look
 // rad per pixel of mouse movement at Mouse Sensitivity 100%. Pointer lock reports raw,
@@ -100,6 +101,7 @@ export function createPovCamera({ fov: fovSetting = () => POV_FOV, sensitivity =
   let stepIndex = 0;                        // footfalls so far in the stride (bob low points crossed)
   let dip = 0, dipVel = 0;                  // cells, cells/s
   let fov = fovSetting();
+  let zoom = 1;                             // a scope's: the FOV is divided by it (the toolbelt's zoom)
   let death = 0, deathAngle = 0;            // death camera blend 0..1, its orbit angle
   let swoop = null;
   const pose = { pos: new THREE.Vector3(), quat: new THREE.Quaternion(), fov: fovSetting(), eyeDist: 0 };
@@ -132,6 +134,8 @@ export function createPovCamera({ fov: fovSetting = () => POV_FOV, sensitivity =
     get third() { return third; },
     set third(v) { third = !!v; },
     get swooping() { return !!swoop; },
+    get zoom() { return zoom; },
+    set zoom(v) { zoom = v > 1 ? v : 1; },
     get swoopKind() { return swoop?.kind ?? null; },
     pose,
     dir,
@@ -141,7 +145,8 @@ export function createPovCamera({ fov: fovSetting = () => POV_FOV, sensitivity =
     turn(dx, dy) {
       const cx = THREE.MathUtils.clamp(dx, -LOOK_MAX_PX, LOOK_MAX_PX);
       const cy = THREE.MathUtils.clamp(dy, -LOOK_MAX_PX, LOOK_MAX_PX);
-      const k = LOOK_SENSITIVITY * sensitivity();
+      // zoomed in, the look slows with the view (HL2's zoom_sensitivity_ratio 1)
+      const k = LOOK_SENSITIVITY * sensitivity() * Math.min(1, fov / fovSetting());
       look.yaw -= cx * k;
       look.pitch = THREE.MathUtils.clamp(look.pitch - cy * k, -PITCH_LIMIT, PITCH_LIMIT);
     },
@@ -231,9 +236,10 @@ export function createPovCamera({ fov: fovSetting = () => POV_FOV, sensitivity =
         live.quat.slerp(qa, k);
       }
 
-      // FOV: a little wider at a sprint
-      const fovTarget = fovSetting() + (s.sprinting && s.onGround && s.speedH > SPRINT_FOV_SPEED ? SPRINT_FOV_BOOST : 0);
-      fov += (fovTarget - fov) * approach(FOV_RATE, dt);
+      // FOV: a little wider at a sprint, narrower through a scope
+      const sprintBoost = zoom === 1 && s.sprinting && s.onGround && s.speedH > SPRINT_FOV_SPEED ? SPRINT_FOV_BOOST : 0;
+      const fovTarget = (fovSetting() + sprintBoost) / zoom;
+      fov += (fovTarget - fov) * approach(zoom > 1 || fov < fovSetting() - 1 ? ZOOM_RATE : FOV_RATE, dt);
 
       if (!swoop) {
         pose.pos.copy(live.pos);

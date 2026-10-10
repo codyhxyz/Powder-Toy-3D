@@ -23,6 +23,7 @@ import * as transfer from '../src/shaders/transfer.js';
 import * as povTools from '../src/shaders/povTools.js';
 import * as povTrace from '../src/shaders/povTrace.js';
 import * as generate from '../src/shaders/generate.js';
+import { island, islandGLSL, islandColumnFrag } from '../src/world/scenes/island.js';
 import * as windowPasses from '../src/shaders/window.js';
 import { regionVert } from '../src/gfx/regions.js';
 import * as far from '../src/shaders/far.js';
@@ -104,9 +105,10 @@ for (const [label, dims] of Object.entries(grids)) {
   check(`fieldCopy-${label}`, raw + fields.fieldCopyFrag(g), 'frag');
   for (const set of Object.values(fields.DIRTY)) check(`fieldRegionVert${set}-${label}`, raw + regionVert(fields.fieldRegionsGLSL(g, set)), 'vert');
   for (const [k, v] of Object.entries({ ...move, ...react, ...probe, ...stamp, ...gi, ...povBody, ...transfer, ...windowPasses })) if (typeof v === 'function') check(`${k}-${label}`, raw + v(g), 'frag');
-  for (const k of ['axeFrag', 'pickaxeFrag', 'physgunComFrag', 'physgunFrag']) check(`${k}-${label}`, raw + povTools[k](g), 'frag');
-  for (const k of ['traceFrag', 'handoffFrag']) check(`${k}-${label}`, raw + povTrace[k](g), 'frag');
-  for (const k of ['columnFrag', 'fillFrag', 'diffFrag']) check(`${k}-${label}`, raw + generate[k](g), 'frag');
+  for (const k of ['axeFrag', 'pickaxeFrag', 'physgunComFrag', 'physgunFrag', 'blastFrag', 'flamerFrag', 'torchFireFrag', 'rocketFrag']) check(`${k}-${label}`, raw + povTools[k](g), 'frag');
+  for (const k of ['traceFrag', 'strikeFrag']) check(`${k}-${label}`, raw + povTrace[k](g), 'frag');
+  // the window's fill and diff through a world scene's sceneCell: the island's (every scene's: tools/check-scenes.mjs)
+  for (const k of ['sceneFillFrag', 'sceneDiffFrag']) check(`${k}-island-${label}`, raw + generate[k](g, islandGLSL()), 'frag');
 }
 // the far field (world mode: ?size=world, a 1024×128×1024 world through a 128³ window)
 {
@@ -119,8 +121,12 @@ for (const [label, dims] of Object.entries(grids)) {
   check('farView', shaderMatFrag + far.farFrag(g, L), 'frag');
   check('farViewVert', shaderMatVert + far.farVert, 'vert');
   check('farRegionVert', raw + far.farRegionVert(L), 'vert');
-  for (const k of ['farLayersFrag']) check(k, raw + far[k](g), 'frag');
-  for (const k of ['farTreeCandFrag', 'farTreeThinFrag', 'farTreeBandFrag', 'farGenFrag', 'farWinFrag']) check(k, raw + far[k](g, L), 'frag');
+  for (const k of ['farTreeBandFrag', 'farWinFrag']) check(k, raw + far[k](g, L), 'frag');
+  // a scene's far build (the island's: it has trees; every scene's: tools/check-scenes.mjs)
+  check('farSceneCells-island', raw + far.farSceneCellsFrag(g, L, islandGLSL()), 'frag');
+  check('farScene-trees', raw + far.farSceneFrag(g, L, true), 'frag');
+  for (const k of ['farTreeCandFrag', 'farTreeThinFrag']) check(`${k}-island`, raw + far[k](g, L, islandGLSL(), island.trees.glsl), 'frag');
+  check('islandColumns', raw + islandColumnFrag(), 'frag');
   for (const k of ['farBoostFrag', 'farMip1Frag', 'farMip2Frag', 'farTopFrag', 'farShadowFrag']) check(k, raw + far[k](L), 'frag');
 }
 check('volumeVert', shaderMatVert + render.volumeVert, 'vert');
