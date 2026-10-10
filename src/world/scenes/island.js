@@ -4,8 +4,9 @@ import { prelude, SUPER_CELLS } from '../../shaders/common.js';
 import { helpersGLSL, groundScan } from './themedShared.js';
 import {
   worldParams, heightAt, islandTwin, islandParamValues, islandDefinesGLSL, treesIn,
-  ISLAND_COLUMN_SRC, ISLAND_CELL_SRC, COLUMN_MARGIN,
+  ISLAND_COLUMN_SRC, ISLAND_CELL_SRC, ISLAND_HEAD_GLSL, COLUMN_MARGIN,
 } from '../generator.js';
+import { STRUCT_GLSL, structureUniforms, disposeStructureTextures } from '../structures.js';
 
 // The island: the generator's own world (world/generator.js), an ordinary
 // scene. Its source is written once (generator.js ISLAND_COLUMN_SRC and
@@ -15,7 +16,10 @@ import {
 //     meadow noise, water level), once per world, in prepare;
 //   - sceneCell: the cell stage reading that texture, then the cell's state;
 //   - its trees (scene.trees): treesIn on the CPU, which the window stamps as
-//     constructions, and the far field's GPU twin of its candidates.
+//     constructions, and the far field's GPU twin of its candidates;
+//   - its structures (world/structures.js): houses, villages, docks, towers,
+//     placed from the seed and drawn by sceneCell over its own cells (the
+//     World's island has them, P.structures; the box's Island preset doesn't).
 // The box's Island preset is the same scene over a world the size of the box,
 // with snow (world/gpu.js IslandGenerator).
 
@@ -27,6 +31,7 @@ import {
 export const ISLAND_VIEW_XZ = [11, 13];   // the god view's direction across the ground (app.js WORLD_VIEW_DIR's x, z)
 const START_STEP = 16;                    // cells per step of the walk (a window step, world/window.js WIN_STEP)
 const START_INLAND = 0.25;                // share of the window's width inland from the waterline
+const START_WIN = [128, 128];             // the World's window, x and z (app.js WORLDS.world.win): its shrine is placed near its start
 // Far field chunks a frame while it builds (world/far.js): the island's cells
 // cost a texel fetch or a few, so its 256 chunks (~0.3–0.6 ms of GPU each, M5)
 // go in 4 frames, the far field complete about as soon after load as when it
@@ -49,8 +54,8 @@ uniform float uGenFeature;   // cells per feature length: the unit of every nois
 uniform bool uGenSnow;       // snow caps on frozen rock (false: bare rock peaks, nothing frozen)
 #define GEN_COLUMN_MARGIN ${COLUMN_MARGIN}   // the baked columns reach this far past the world's edge
 `;
-// (helpersGLSL declares uSceneSeed, the world seed)
-const sourceHead = () => `${islandDefinesGLSL()}\n${helpersGLSL}\n${paramsGLSL}`;
+// (helpersGLSL declares uSceneSeed, the world seed; ISLAND_HEAD_GLSL the hooks' uniforms)
+const sourceHead = () => `${islandDefinesGLSL()}\n${helpersGLSL}\n${paramsGLSL}\n${ISLAND_HEAD_GLSL}`;
 
 // The column bake: texel (i, j) is world column (i, j) less the margin. Its
 // program needs no grid; the prelude's constants are a supertile's.
@@ -63,7 +68,7 @@ out vec4 oC;
 void main() {
   ivec2 c = ivec2(gl_FragCoord.xy) - GEN_COLUMN_MARGIN;
   float x = float(c.x), z = float(c.y), h = genColumnHeight(x, z);
-  oC = vec4(h, genBand(x, z), genMeadow(x, z), genWater(x, z, h));
+  oC = vec4(h, genBand(x, z), genMeadow(x, z, h), genWater(x, z, h));
 }
 `;
 
@@ -79,11 +84,13 @@ float genColBand(int x, int z) { return genCol(x, z).y; }
 float genColMeadow(int x, int z) { return genCol(x, z).z; }
 float genColWater(int x, int z) { return genCol(x, z).w; }
 ${ISLAND_CELL_SRC}
+${STRUCT_GLSL}
+int structureGround(ivec3 w) { return islandCell(w.x, w.y, w.z); }
 // World cell w's element at its spawn temperature and life, at rest, with a
 // colour seed hashed from its world position. Under snow the ground's solids
 // (but plant cover) are frozen near the snow line (genFrost).
 void sceneCell(ivec3 w, out vec4 A, out vec4 B) {
-  int id = islandCell(w.x, w.y, w.z);
+  int id = structureCell(w, islandCell(w.x, w.y, w.z));
   float T = uGenSnow && KIND[id] == K_SOLID && id != E_PLANT ? mix(SPAWNT[id], SPAWNT[E_SNOW], genFrost(w.y)) : SPAWNT[id];
   float seed = float(seedWorld(w, uSceneSeed, GEN_SALT_CELL)) * UINT_TO_UNIT * SEED_MAX;
   A = vec4(float(id), T, SPAWNLIFE[id], seed);
@@ -99,6 +106,7 @@ uint islandTreeHash(ivec2 bc) { return pcg(uint(bc.x) + pcg(uint(bc.y) + pcg(uSc
 vec4 sceneTreeCandidate(ivec2 bc) {
   uint h = islandTreeHash(bc);
   if (float(h & 0xffffu) * TREE_UNIT16 >= TREE_CHANCE) return vec4(0.0);
+  if (structureClears(bc)) return vec4(0.0);   // trees give way to structures (generator.js treeCandidate)
   uint h2 = pcg(h), h3 = pcg(h2);
   ivec2 o = ivec2(int(h2 & uint(BS - 1)), int((h2 >> 2u) & uint(BS - 1)));
   ivec2 col = bc * BS + o;
@@ -115,7 +123,7 @@ uint sceneTreeKey(ivec2 bc) { return pcg(pcg(islandTreeHash(bc))); }
 // ---------------------------------------------------------------- uniforms
 // The island's uniforms for world P, its columns' texture tex (null until baked).
 export function islandUniforms(P, tex = null) {
-  const u = { uSceneSeed: { value: 0 }, tIslandCol: { value: null } };
+  const u = { uSceneSeed: { value: 0 }, tIslandCol: { value: null }, ...structureUniforms(P) };
   for (const k of Object.keys(islandParamValues(P))) u[k] = { value: 0 };
   return setIslandUniforms(u, P, tex);
 }
@@ -123,6 +131,7 @@ export function setIslandUniforms(u, P, tex) {
   u.uSceneSeed.value = P.seed;
   for (const [k, v] of Object.entries(islandParamValues(P))) u[k].value = v;
   u.tIslandCol.value = tex;
+  for (const [k, v] of Object.entries(structureUniforms(P))) u[k].value = v.value;
   return u;
 }
 
@@ -185,7 +194,11 @@ let worldColumns = null;
 export const island = {
   key: 'island',
   label: 'Island',
-  params: ({ size, seed }) => worldParams({ size, seed, snow: false }),
+  // structures (world/structures.js), the shrine among them near where the world starts
+  params({ size, seed }) {
+    const P = worldParams({ size, seed, snow: false });
+    return { ...P, structures: { start: island.start(P, START_WIN) } };
+  },
   glsl: () => islandGLSL(),
   uniforms: (P) => islandUniforms(P, worldColumns?.textureFor(P) ?? null),
   prepare: async (renderer, P) => {
@@ -197,6 +210,7 @@ export const island = {
   dispose() {
     worldColumns?.dispose();
     worldColumns = null;
+    disposeStructureTextures();
   },
   start(P, win) {
     const len = Math.hypot(...ISLAND_VIEW_XZ), d = ISLAND_VIEW_XZ.map((v) => v / len);

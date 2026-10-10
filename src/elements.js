@@ -35,33 +35,115 @@
 //   sound  what it sounds like struck, in first person (pov/audio.js
 //          families); omitted = by kind (solids crack, powders puff,
 //          liquids splash)
+//   conducts  an electrical conductor (src/electricity.js; see elec)
+//   elec   electrical conductivity σ, S/m (real values): it carries sparks
+//          (src/electricity.js, docs/electricity.md), losing SPARK_DROP / σ
+//          of a spark's levels per cell. conducts: true without elec means a
+//          metal (ELEC_METAL); a poor conductor (water, saltwater) gives its σ.
+//          A conductor's ctype holds its spark: give it no other use.
+//
+// The shared mechanisms (docs/elements.md; react.js runs them, ui/tiles/
+// engine.js mirrors them, activity.js and common.js inertSelf let them rest)
+//   An `into` below is an element key ('EMPTY' = plain air) or a weighted
+//   list [['STEAM', 0.97], ['SAND', 0.03]], from which each cell draws one.
+//   `of`: what a LAVA product sets back into as it cools (its ctype);
+//   omitted = the element it came from. Gas set free (`puff`, as `fizz`) is
+//   volumes at ambient per volume, a pressure puff of
+//   STEAM_BOIL_PUFF·puff/STEAM_EXPANSION.
+//   cold   { T, into, of, latent, puff }: at or below T °C it becomes into
+//   hot    { T, into, of, latent, puff }: at or above T °C it becomes into.
+//          A hot change into LAVA is a melt: lava sets back at T less
+//          LAVA_FREEZE_BELOW (and an element can't have both melt and hot).
+//          latent: the latent heat in cap·°C per cell (water's L_FUSE = 80:
+//          334 J/g / 4.18 J/(g·K); per volume, J/cm³ / 4.18). With it the
+//          cell holds at T and the heat crossing T goes into the change:
+//          - an element whose life holds nothing else (no spawn life, no
+//            burnRate) banks it in life, signed as water's (+ toward hot,
+//            − toward cold), and changes once it has banked latent;
+//          - one whose life is taken (acid's strength, a fuel) keeps no
+//            bank: each step the heat crossing T over latent is the chance it
+//            changes, so on average it takes the same latent heat (stochastic
+//            rounding of the bank), and its life is left alone.
+//          Omitted: instant. The product takes T and its own spawn life.
+//   crush  { P, into, of }: when the air pressure on it (the highest of its
+//          own, none for a solid, and its open neighbours') exceeds P it
+//          becomes into (TPT's high-pressure transition)
+//   blast  { P, T, into, of, flame, air, shock, crushP }: an explosive.
+//          Going off it becomes into (FIRE if omitted) at T °C and adds P of
+//          air pressure (gunpowder: P 60, T 2200, flame 0.7). P and T are
+//          required; each trigger is optional. It goes off:
+//          - at its ignite temperature, or touching matter (not gas) that hot;
+//          - beside a flame, with chance `flame` per step (default 0: only
+//            heat sets it off, so a plain fire's heat must reach ignite);
+//          - hit with at least `shock` kinetic energy (the units of hard):
+//            matter and it closing at speed u carry ½·μ·u², μ the reduced mass
+//            (against a solid, the mover's). That counts a neighbour running
+//            into it and it landing on or running into anything; the move pass
+//            leaves both speeds as they were so the react pass sees the hit.
+//            Cells of its own element never count (a pool's flow isn't a hit),
+//            but a liquid flowing at FLOW into a solid carries ½·dens·FLOW²,
+//            and one falling h cells lands with about ½·dens·2·g·h (g = 0.025
+//            cells/step²), so set shock above what it does to itself;
+//          - under more than `crushP` air pressure: its own, and its open
+//            neighbours' (a solid holds none, so it reads theirs);
+//          - only where it touches air (an EMPTY neighbour), all of the
+//            above, when `air: true` (a fuel that needs oxygen: propane).
+//          A blast row never takes the ordinary burn path (burnRate, flames
+//          licking into the air), and a hit or pressure that sets it off
+//          wins over breaking it.
+//   REACTIONS (below the table): Noita materials.xml-style rows
+//          { a, b, into: [a's, b's], chance, minT, maxT, heat, puff, except }
+//          a, b    element keys. b '*' = any matter but air, a itself and
+//                  `except: [...]`. Explicit pairs win over '*' rows, then
+//                  earlier rows; one reaction per pair of elements.
+//          into    what a and b become: 'SAME' keeps one, weighted lists ok.
+//                  A row with a = b needs the same into for both.
+//          chance  probability per step that a touching pair reacts (default
+//                  1). A pair is partners one step in RX_PAIRINGS (6, react.js),
+//                  so past 1/6 the rate is that.
+//          minT, maxT  °C gate on the pair's hotter cell (a hot spot lights it)
+//          heat    energy released (+) or absorbed (−), cap·°C, shared so both
+//                  products warm alike: ΔT = heat / (cap_a' + cap_b')
+//          puff    gas set free, split between the two cells
+//          Each cell reacts with at most one partner per step, and the
+//          reaction takes precedence over anything else it would do then.
 //
 // Adding an element
 //   Data only, nothing else to touch:
 //   1. Append a row to defs below (at the end: ids are saved in scenes and
-//      presets). Everything above is data: phase changes by melt/meltInto,
+//      presets). Everything above is data: phase changes by melt/meltInto and
+//      cold/hot/crush, reactions by a REACTIONS row, explosions by blast,
 //      burning by ignite/burnRate/burnHeat/flameT/life, breaking by
 //      hard/breakInto, acid by acidProof/fizz, the struck sound by sound.
+//      Cite the published numbers in a comment above the row (as COAL and
+//      LIMESTONE do); node tools/elements-core-check.mjs checks the
+//      mechanisms, and the table's own checks throw on a bad row.
 //   2. Add it to a PALETTE group below.
 //   3. Give it a LOOKS row in gfx/materials.js: albedo, roughness, smooth
 //      channel, and surf for a shared texture (surf 'CRAG': natural rock,
 //      with per-element crag parameters).
 //   The GLSL arrays, the dock tile (ui/tiles/engine.js reads the same table),
-//   the first-person tools (hardness), the AI's prompt (ai/prompt.js) and the
-//   info card all follow from those rows.
+//   the first-person tools (hardness), the AI's prompt (ai/prompt.js), the
+//   info card and the World's far field (shaders/far.js: up to 256 elements;
+//   a render R.LIQUID element is a far liquid with its own optics) all follow
+//   from those rows.
 //   Still needs code:
-//   - A behaviour no field covers (a new reaction, like plant growth or clone)
+//   - A behaviour no field covers (one a reaction row can't say, like plant
+//     growth or clone)
 //     goes in shaders/react.js, mirrored in ui/tiles/engine.js
 //     (scripts/check-tile-engine.mjs lists elements the port misses) and, if
 //     it keeps a cell from resting, in shaders/activity.js inertNear.
 //   - A texture of its own, beyond its albedo and the shared surf textures, is
 //     a branch of shaders/gfx/surface.js matOf (and reliefHeight, plus
 //     gfx/relief.js, for relief up close).
-//   - A liquid that the world's far field (past the box) should draw goes in
-//     shaders/far.js FAR_LIQUIDS.
 
 import { SHRINE_OFFERS } from './pov/perks.js';
 import { GEAR, SLOTS } from './pov/tools/catalog.js';
+
+// Photon reflectance of steel at normal incidence: F0 from its measured
+// complex refractive index, 0.56-0.58 across the visible (gfx/materials.js
+// METAL). What a metal doesn't reflect it absorbs as heat (rays.js, reflect).
+const METAL_REFLECT = 0.58;
 
 export const K = { EMPTY: 0, SOLID: 1, POWDER: 2, LIQUID: 3, GAS: 4 };
 export const R = { NONE: 0, OPAQUE: 1, LIQUID: 2, GLASS: 3, GAS: 4, FIRE: 5 };
@@ -82,7 +164,7 @@ const defs = [
     dens: 9, cond: 0.005, cap: 0.2, drag: 0.08, slide: 0.35, temp: -10, spawn: 0.3,
     desc: 'Light powder that floats on water. Melts at 0 °C, soaking up heat as it goes.' },
   { key: 'GUNPOWDER', abbr: 'GUNP', name: 'Gunpowder', kind: K.POWDER, render: R.OPAQUE, color: '#3d3d47', var: 0.35,
-    dens: 15, cond: 0.01, cap: 0.35, drag: 0.04, slide: 0.8, ignite: 200, spawn: 0.3,
+    dens: 15, cond: 0.01, cap: 0.35, drag: 0.04, slide: 0.8, ignite: 200, spawn: 0.3, blast: { P: 60, T: 2200, flame: 0.7 },
     desc: 'Explodes when it touches fire or gets hotter than 200 °C.' },
   { key: 'ASH', abbr: 'ASH', name: 'Ash', kind: K.POWDER, render: R.OPAQUE, color: '#9b968d', var: 0.2,
     dens: 4, cond: 0.003, cap: 0.2, drag: 0.1, slide: 0.5, spawn: 0.3,
@@ -90,6 +172,9 @@ const defs = [
 
   { key: 'WATER', abbr: 'WATR', name: 'Water', kind: K.LIQUID, render: R.LIQUID, color: '#2a78d4',
     dens: 10, cond: 0.03, cap: 1.0, drag: 0.01, flow: 0.9, spawn: 0.35, acidProof: true,   // dilutes acid, isn't eaten
+    // fresh water conducts, weakly: ~0.005-0.05 S/m from its dissolved ions
+    // (USGS, Specific conductance; pure water 5.5·10⁻⁶), 10⁸ times less than steel
+    elec: 0.05,
     sigma: [0.052, 0.014, 0.01], desc: 'Flows and levels out. Freezes at 0 °C and boils at 100 °C, with real latent heat.' },
   { key: 'OIL', abbr: 'OIL', name: 'Oil', kind: K.LIQUID, render: R.LIQUID, color: '#5a3c12',
     dens: 8, cond: 0.008, cap: 0.45, drag: 0.03, flow: 0.55, ignite: 220, burnRate: 0.008,
@@ -118,8 +203,10 @@ const defs = [
   { key: 'PLANT', abbr: 'PLNT', name: 'Plant', kind: K.SOLID, render: R.OPAQUE, color: '#3da236', var: 0.25,
     cond: 0.008, cap: 0.5, ignite: 250, burnRate: 0.004, burnHeat: 2, flameT: 800, life: 1,
     hard: 6, breakInto: 'SAWDUST', sound: 'thunk', desc: 'Grows into neighbouring water. Burns easily.' },
+  // Steel: carbon steel's resistivity ~1.43·10⁻⁷ Ω·m, σ ≈ 7·10⁶ S/m (CRC Handbook).
   { key: 'METAL', abbr: 'METL', name: 'Metal', kind: K.SOLID, render: R.OPAQUE, color: '#a9afba', var: 0.04,
-    cond: 0.1, cap: 0.85, melt: 1500, hard: 60, breakInto: 'SCRAP', sound: 'ping', desc: 'Conducts heat fast and glows when hot. Melts at 1500 °C.' },
+    cond: 0.1, cap: 0.85, melt: 1500, hard: 60, breakInto: 'SCRAP', sound: 'ping', conducts: true, elec: 7e6, reflect: METAL_REFLECT,
+    desc: 'Conducts heat fast and glows when hot. Carries electricity. Melts at 1500 °C.' },
   { key: 'GLASS', abbr: 'GLAS', name: 'Glass', kind: K.SOLID, render: R.GLASS, color: '#d2ecf2',
     cond: 0.015, cap: 0.5, melt: 1400, sigma: [0.05, 0.025, 0.03], hard: 8, breakInto: 'SHARDS', acidProof: true, sound: 'shatter',
     desc: 'Clear and acid-proof. Melts at 1400 °C.' },
@@ -139,8 +226,9 @@ const defs = [
     dens: 4, cond: 0.006, cap: 0.3, drag: 0.1, slide: 0.45, ignite: 250, burnRate: 0.006, burnHeat: 3, flameT: 900,
     life: 1, spawn: 0.3, sound: 'thunk', desc: 'Chips and splinters of wood or plant. Floats on water and burns faster than a log.' },
   { key: 'SCRAP', abbr: 'BRMT', name: 'Scrap metal', kind: K.POWDER, render: R.OPAQUE, color: '#8e939c', var: 0.1,
-    dens: 78, cond: 0.1, cap: 0.85, drag: 0.01, slide: 0.5, melt: 1500, meltInto: 'METAL', spawn: 0.3, sound: 'ping',
-    desc: 'Heavy bits of metal: what metal breaks into, and the slugs the gun fires. Melts and recasts as solid metal.' },
+    dens: 78, cond: 0.1, cap: 0.85, drag: 0.01, slide: 0.5, melt: 1500, meltInto: 'METAL', spawn: 0.3, sound: 'ping', reflect: METAL_REFLECT,
+    conducts: true, elec: 7e6,   // the same steel (TPT's BRMT conducts as METL does)
+    desc: 'Heavy bits of metal: what metal breaks into, and the slugs the gun fires. Carries electricity. Melts and recasts as solid metal.' },
   // Cloud: condensed water droplets riding in air. It moves as air does (buoyant
   // when warm; droplets this small barely settle), holds the water and heat
   // capacity of the steam it condensed from, and mixes its heat into the air
@@ -211,6 +299,69 @@ const defs = [
     dens: 13.5, cond: 0.01, cap: 0.4, drag: 0.04, slide: 0.7, ignite: 450, burnRate: 0.0017, burnHeat: 6, flameT: 1100,
     life: 1, spawn: 0.3, sound: 'crack',
     desc: 'Lumps of coal, as the pickaxe breaks them from a seam. Sinks in water and burns faster than the seam.' },
+  // ---- Electronics (src/electricity.js, docs/electricity.md): TPT's BTRY,
+  // PSCN, NSCN, SWCH, INSL and TSNS. ----
+  // Battery: a sealed lithium-ion cell, a source that sparks every conductor
+  // touching it whenever that conductor is ready. Its can is steel. Thermal
+  // runaway: past ~150-200 °C the separator melts and the cathode gives up
+  // oxygen, so it burns on its own at ~700-900 °C (Feng et al. 2018, Energy
+  // Storage Materials 10, 246). Through its jelly roll it conducts heat like
+  // rock (~1-3 W/m·K); ρ·c ≈ 2.5 g/cm³ × 1.0 J/g·K → cap 0.6.
+  { key: 'BATTERY', abbr: 'BTRY', name: 'Battery', kind: K.SOLID, render: R.OPAQUE, color: '#858505', var: 0.04,
+    cond: 0.03, cap: 0.6, ignite: 200, burnRate: 0.01, burnHeat: 4, flameT: 900, life: 1, ash: false,
+    hard: 20, breakInto: 'SCRAP', sound: 'ping',
+    desc: 'Endless electricity: it sparks every conductor it touches. A lithium cell: past 200 °C it bursts into flame.' },
+  // P- and N-type silicon: doped silicon, the two halves of a diode. Heavily
+  // doped (~10¹⁹ cm⁻³) it conducts ~10⁴ S/m, losslessly here. Silicon melts
+  // at 1414 °C (TPT's 1687 K too), 2.33 g/cm³ × 0.71 J/g·K → cap 0.4, and
+  // 150 W/m·K, more than steel: cond 0.06, the most 6·cond/cap < 1 allows.
+  // The junction: N never sparks P (a p-n junction conducts from P to N).
+  { key: 'PSCN', abbr: 'PSCN', name: 'P-type silicon', kind: K.SOLID, render: R.OPAQUE, color: '#805050', var: 0.04,
+    cond: 0.06, cap: 0.4, melt: 1414, elec: 1e4,
+    desc: 'Carries sparks to any conductor, but takes none from N-type silicon: together they make a diode. A spark from it turns a switch on.' },
+  { key: 'NSCN', abbr: 'NSCN', name: 'N-type silicon', kind: K.SOLID, render: R.OPAQUE, color: '#505080', var: 0.04,
+    cond: 0.06, cap: 0.4, melt: 1414, elec: 1e4,
+    desc: 'Carries sparks to any conductor except P-type silicon. A spark from it turns a switch off.' },
+  // Switch: a relay. Copper contacts (σ 5.96·10⁷ S/m, CRC) in a steel frame
+  // (steel's heat numbers and melting point). life: SWITCH_ON while on.
+  { key: 'SWITCH', abbr: 'SWCH', name: 'Switch', kind: K.SOLID, render: R.OPAQUE, color: '#103b11', var: 0.04,
+    cond: 0.1, cap: 0.85, melt: 1500, meltInto: 'METAL', hard: 60, breakInto: 'SCRAP', sound: 'ping', elec: 5.96e7,
+    desc: 'Passes sparks only while it is on. A spark from P-type silicon turns it on, one from N-type turns it off; touching switches go together.' },
+  // Insulator: TPT's INSL, which blocks heat and electricity, with silica
+  // aerogel's numbers: 0.015 W/m·K, about half still air's 0.026 (cond 0.0003
+  // to air's 0.0005); 0.1 g/cm³ × 1 J/g·K → cap 0.03; a dielectric. It is
+  // silica, so acid can't touch it and it sinters into glass at ~1200 °C.
+  { key: 'INSULATOR', abbr: 'INSL', name: 'Insulator', kind: K.SOLID, render: R.OPAQUE, color: '#9ea3b6', var: 0.03,
+    cond: 0.0003, cap: 0.03, melt: 1200, meltInto: 'GLASS', acidProof: true,
+    desc: 'Blocks electricity and almost all heat. Put it between wires that must not touch. Melts into glass at 1200 °C.' },
+  // Temperature sensor: TPT's TSNS. It holds no heat (cond 0, as TPT's), so
+  // its own temperature is the threshold: set it with Heat and Cool.
+  { key: 'TSNS', abbr: 'TSNS', name: 'Temperature sensor', kind: K.SOLID, render: R.OPAQUE, color: '#fd00d5', var: 0.03,
+    cond: 0, cap: 1.0,
+    desc: 'Sparks the conductors it touches while anything beside it is hotter than itself. Heat or cool it to set its temperature.' },
+  // Powered clone: TPT's PCLN, Clone switched on by P and off by N (life:
+  // SWITCH_ON while on). Clone's numbers: a game block, not a material.
+  { key: 'PCLN', abbr: 'PCLN', name: 'Powered clone', kind: K.SOLID, render: R.OPAQUE, color: '#3b3b0a', var: 0.05,
+    cond: 0.001, cap: 1.0,
+    desc: 'A clone you switch: it copies the first element that touches it, but only while it is on. A spark from P-type silicon turns it on, one from N-type off.' },
+  // Radioactive (docs/particles.md; neutron data in rays.js NUCLEAR). Both
+  // are metals painted as heavy powders, as TPT has them, so a runaway's
+  // pressure can throw a lump apart.
+  // Uranium: natural uranium metal, 19.1 g/cm³; 0.116 J/(g·K) → cap 0.53;
+  // 27.5 W/(m·K), a poor metal (cond between crystal's and metal's); melts at
+  // 1132 °C. Barely radioactive (U-238's half-life is 4.5 billion years), so
+  // unlike TPT's it doesn't heat by itself: neutrons scatter off it, it
+  // captures some and fissions a few.
+  { key: 'URANIUM', abbr: 'URAN', name: 'Uranium', kind: K.POWDER, render: R.OPAQUE, color: '#707a5c', var: 0.1,
+    dens: 191, cond: 0.08, cap: 0.53, drag: 0.01, slide: 0.5, melt: 1132, spawn: 0.3, sound: 'ping',
+    desc: 'Natural uranium: the heaviest powder, sinking through anything. Barely radioactive by itself; neutrons bounce off it, and it fissions a little when they hit.' },
+  // Plutonium: Pu-239 metal, 19.8 g/cm³; 0.132 J/(g·K) → cap 0.62; 6.7
+  // W/(m·K), the worst-conducting metal (cond near crystal's); melts at only
+  // 640 °C, into lava that stays fissile. A neutron splits it (rays.js
+  // NUCLEAR), freeing 2-3 more, so a lump past critical size runs away.
+  { key: 'PLUTONIUM', abbr: 'PLUT', name: 'Plutonium', kind: K.POWDER, render: R.OPAQUE, color: '#55703c', var: 0.1,
+    dens: 198, cond: 0.045, cap: 0.62, drag: 0.01, slide: 0.5, melt: 640, spawn: 0.3, sound: 'ping',
+    desc: 'Fissile Pu-239. A neutron splits it into heat and 2-3 more neutrons, so a big enough heap runs away and blows itself apart. Water around it makes it go critical sooner.' },
 
   // ---- Batch 3 (el-mat): materials and weather. docs/elements.md.
   // Electrical conductivity (elec, S/m, at 20 °C; CRC Handbook): titanium
@@ -339,13 +490,21 @@ const defs = [
     desc: 'Clear, brilliant and harder than anything: nothing breaks it and acid can\'t touch it. But it is carbon: above 780 °C it burns away.' },
 ];
 
-export const ELEMENTS = defs.map((d, id) => ({
+// σ (S/m) of a conductor given as conducts: true with no elec: a metal. The
+// poorest common one, mercury (1.04·10⁶), already loses nothing to speak of.
+const ELEC_METAL = 1e6;
+// A row of defs with every field filled in (the check scripts add test rows
+// the same way: tools/elements-core-check.mjs).
+export const elementRow = (d, id) => ({
   id, var: 0, dens: 1000, grav: 0, drag: 0, friction: d.kind === K.POWDER ? 0.25 : 0, jitter: 0, flow: 0, slide: 0, melt: 0, ignite: 0,
   burnRate: 0, burnHeat: 0, flameT: 0, temp: 20, life: 0, rad: 0, spawn: 1, sigma: [0, 0, 0], desc: '',
   hard: 0, breakInto: null, meltInto: null, acidProof: false, fizz: 0, ash: true, sound: null,
+  cold: null, hot: null, crush: null, blast: null, conducts: false,
   ...d,
   grav: d.grav ?? (d.kind === K.POWDER || d.kind === K.LIQUID ? 1 : 0),
-}));
+  elec: d.elec ?? (d.conducts ? ELEC_METAL : 0),
+});
+export const ELEMENTS = defs.map(elementRow);
 
 export const E = Object.fromEntries(ELEMENTS.map((e) => [e.key, e.id]));
 // What a broken cell becomes: the debris element's id, or -1 when it can't break.
@@ -362,16 +521,30 @@ export const TOOLS = [
     desc: 'Click a surface to pin a label. {t}, {p} and {e} show live temperature, pressure and element.' },
   // Spawners are handled by the app too (src/spawners.js): markers, not cells.
   { id: -6, key: 'ENEMY', abbr: 'NPC', name: 'Enemy spawner', color: '#e0453a',
-    desc: 'Click a surface: in first person (F) an enemy with every tool appears here, and comes back after it dies. Click it again to remove it.' },
+    desc: 'Click a surface: in first person (V) an enemy with every tool appears here, and comes back after it dies. Click it again to remove it.' },
   { id: -7, key: 'SPAWN', abbr: 'SPWN', name: 'Player spawn', color: '#3fa7ff',
-    desc: 'Click a surface: F drops you in at the spawn nearest the cursor, and you respawn there. Click it again to remove it.' },
+    desc: 'Click a surface: V drops you in at the spawn nearest the cursor, and you respawn there. Click it again to remove it.' },
+  { id: -20, key: 'JEEPPAD', abbr: 'JEEP', name: 'Jeep pad', color: '#8fa04a',
+    desc: 'Click open ground: in first person (V) a jeep waits here (E to drive it), and a new one comes a few seconds after it is destroyed. Click it again to remove it.' },
+  { id: -21, key: 'BIKEPAD', abbr: 'HOVR', name: 'Hoverbike pad', color: '#5fd0e0',
+    desc: 'Click open ground: in first person (V) a hoverbike waits here (E to ride it; it skims water), and comes back after it is destroyed. Click it again to remove it.' },
+  // TPT's SPRK brush: sparks the conductors inside it (src/electricity.js
+  // sparkCell). -8 is left for the Lightning tool (branch el-mat).
+  { id: -9, key: 'SPARK', abbr: 'SPRK', name: 'Spark', color: '#ffff80',
+    desc: 'Sparks the conductors inside the brush: metal, silicon, water, and switches that are on. Everything else ignores it.' },
+  // Fast particles (rays.js RAY_TOOLS): painted into the particle list, not the grid.
+  // (Ids from -40: the spawner pads hold -20 and -21.)
+  { id: -40, key: 'PHOTON', abbr: 'PHOT', name: 'Photon', color: '#fff6c8',
+    desc: 'Packets of light flying straight. Glass, water and ice let them through, metal reflects them, and anything else soaks them up as heat: enough to light wood.' },
+  { id: -41, key: 'NEUTRON', abbr: 'NEUT', name: 'Neutron', color: '#20e0ff',
+    desc: 'Fast neutrons. They pass through most things; water slows them, and slow ones split plutonium far more readily.' },
   // Lightning is handled by the app too (src/lightning.js): a click strikes a
   // bolt from the top of the box down to the surface under the cursor.
   { id: -8, key: 'LIGHTNING', abbr: 'LIGH', name: 'Lightning', color: '#fff6b0',
     desc: 'Click a surface: a branching bolt strikes it from above, leaving a column of plasma, scorching heat and a pressure crack where it lands. Brush size sets how wide the strike is.' },
 ];
 export const LIGHTNING_TOOL = -8;
-export const isSpawnerTool = (id) => id === -6 || id === -7;
+export const isSpawnerTool = (id) => id === -6 || id === -7 || id === -20 || id === -21;
 
 // Constructions: whole structures placed with one click (src/constructions.js
 // builds and stamps them; they never reach the paint shader). Each one is
@@ -397,7 +570,7 @@ export const BUILDS = [
   { id: -106, key: 'FOUNTAIN', abbr: 'FNTN', name: 'Fountain', color: '#93a6bd',
     desc: 'A stone basin with a spout fed by an endless water clone. It will overflow eventually.' },
   { id: -108, key: 'SHRINE', abbr: 'SHRN', name: 'Shrine', color: '#e9c46a',
-    desc: `Noita's Holy Mountain: a stone pavilion with ${SHRINE_OFFERS} random perks floating over its plinths. In first person (F), walk into one to take it, and the others vanish. Every world has one near where you start.` },
+    desc: `Noita's Holy Mountain: a stone pavilion with ${SHRINE_OFFERS} random perks floating over its plinths. In first person (V), walk into one to take it, and the others vanish. Every world has one near where you start.` },
   { id: -107, key: 'PROMPT', abbr: 'AI', name: 'Prompt', color: '#9b86e8',
     desc: 'Describe a construction and a model writes it, checked for leaks and loose powder before you place it. Or paste code from any chatbot.' },
   // The World's structures (constructions/structures.js, docs/structures.md): built to walk into at the default size.
@@ -415,6 +588,9 @@ export const BUILDS = [
     desc: 'A timber portal and a gallery it carves into the hillside behind it, with rails and a cart of rubble. Place it facing out of a slope.' },
   { id: -114, key: 'WRECK', abbr: 'WRCK', name: 'Shipwreck', color: '#6b4a2e',
     desc: 'A wooden hull heeled over and half sunk into the sand, her stern stove in, her mast and anchor beside her.' },
+  { id: -115, key: 'BRIDGE', abbr: 'BRDG', name: 'Bridge', color: '#8f6a43',
+    variants: [['short', 'Short'], ['long', 'Long']],
+    desc: 'A timber footbridge on stone abutments, its trusses for railings. Place it across a gap: only the abutments reach down.' },
 ];
 const GEAR_ID0 = -300;   // the first-person tools' ids (GEAR_ITEMS below), past the constructions'
 export const isBuild = (id) => id <= -100 && id > GEAR_ID0;
@@ -435,9 +611,11 @@ export const PALETTE = [
   { name: 'Liquids', items: ['WATER', 'ACID', 'OIL', 'LAVA', 'MERCURY'] },
   { name: 'Gases', items: ['STEAM', 'CLOUD', 'SMOKE', 'FIRE', 'PLASMA', 'MERCURY_VAPOR'] },
   { name: 'Solids', items: ['WALL', 'COAL', 'ROCK', 'LIMESTONE', 'SANDSTONE', 'METAL', 'GLASS', 'ICE', 'CRYSTAL', 'WOOD', 'PLANT', 'CLONE', 'BRICK', 'TITANIUM', 'TUNGSTEN', 'GOLD', 'SOLID_MERCURY', 'DIAMOND', 'VOID'] },
+  { name: 'Electronics', items: ['SPARK', 'BATTERY', 'METAL', 'PSCN', 'NSCN', 'SWITCH', 'INSULATOR', 'TSNS', 'PCLN'] },
+  { name: 'Radioactive', items: ['PHOTON', 'NEUTRON', 'URANIUM', 'PLUTONIUM'] },
   { name: 'Tools', items: ['HEAT', 'COOL', 'ERASE', 'BLAST', 'LIGHTNING', 'SIGN', ...GEAR_ITEMS.map((g) => g.key)] },
-  { name: 'Entities', items: ['ENEMY', 'SPAWN'] },
-  { name: 'Constructions', items: ['HOUSE', 'TREE', 'CAMPFIRE', 'IGLOO', 'BARREL', 'AQUARIUM', 'FOUNTAIN', 'SHRINE', 'DOCK', 'TOWER', 'STONES', 'WELL', 'MINE', 'WRECK', 'PROMPT'] },
+  { name: 'Entities', items: ['ENEMY', 'SPAWN', 'JEEPPAD', 'BIKEPAD'] },
+  { name: 'Constructions', items: ['HOUSE', 'TREE', 'CAMPFIRE', 'IGLOO', 'BARREL', 'AQUARIUM', 'FOUNTAIN', 'SHRINE', 'DOCK', 'TOWER', 'STONES', 'WELL', 'MINE', 'WRECK', 'BRIDGE', 'PROMPT'] },
 ];
 
 const NON_ELEMENTS = [...TOOLS, ...BUILDS, ...GEAR_ITEMS];
@@ -465,6 +643,148 @@ const vec3Arr = (name, fn) =>
 // crystal, the rest as themselves.
 export const meltInto = (e) => (e.meltInto ? E[e.meltInto] : e.id);
 
+// ---- the shared mechanisms: phase changes, reactions, explosives ----
+// (fields in the header; docs/elements.md "Shared mechanisms")
+
+// Reactions between two touching cells, in the style of Noita's materials.xml
+// <Reaction> rows (see the header). New rows go at the end.
+export const REACTIONS = [];
+
+// `into` 'SAME' (reactions): the cell stays as it is.
+export const SAME = 'SAME';
+const SAME_ID = -1;
+// Field defaults: a reaction with no temperature gate, a phase change with no
+// latent heat (instant) and no gas set free.
+const RX_DEFAULTS = { chance: 1, minT: -Infinity, maxT: Infinity, heat: 0, puff: 0, except: [] };
+
+// The temperature at which an element's melt (LAVA) sets back into it: its
+// melt point, or the T of a hot phase change into LAVA.
+export const meltPoint = (e) => e.melt || (e.hot && [].concat(intoList(e.hot.into)).every(([k]) => k === 'LAVA') ? e.hot.T : 0);
+// An `into` as a weighted list [[key, weight], ...].
+function intoList(into) {
+  if (typeof into === 'string') return [[into, 1]];
+  if (Array.isArray(into) && into.length && into.every((o) => Array.isArray(o) && typeof o[0] === 'string' && o[1] > 0)) return into;
+  throw new Error(`into ${JSON.stringify(into)}: an element key, or a weighted list [[key, weight], ...]`);
+}
+
+// Everything the shared mechanisms need, baked from ELEMENTS and REACTIONS
+// into flat tables that the GLSL arrays (elementsGLSL) and the dock tiles' CPU
+// twin (ui/tiles/engine.js) both read:
+//   outs   every product of every `into`: [id (-1 = SAME), cumulative weight]
+//   specs  each `into` as [first out, count]: a cell draws one in proportion
+//          to its weight (no draw when there is only one)
+//   into   per element, the spec of its cold, hot, crush and blast products
+//          (-1 = none), in PH order
+//   of     per element, what a LAVA product of each sets back into (-1: the element itself)
+//   lifeBank  per element: its latent heat banks in life (life holds nothing
+//          else: no spawn life, no fuel); else it changes stochastically
+//   cold, hot  per element [T, latent, puff]; crushP the crush pressure;
+//          blast [P, T, shock, crushP]; blastLit [flame, air (1 or 0)]
+//   rx     per reaction [chance, minT, maxT, heat, puff, spec a, spec b]
+//   lookup NE × NE: entry a·NE + b is 0 when a cell of a has no reaction
+//          with a neighbour of b, else 2·r + role + 1 (reaction r, role 0 =
+//          the cell is the row's a, 1 = its b). Explicit pairs take
+//          precedence over wildcards, then earlier rows over later ones.
+export const PH = { COLD: 0, HOT: 1, CRUSH: 2, BLAST: 3 };
+let baked = null, bakedFor = [];
+export function mechanisms() {
+  // (baked once per table: the rows themselves, compared by identity)
+  const rows = [...ELEMENTS, ...REACTIONS];
+  if (baked && rows.length === bakedFor.length && rows.every((r, i) => r === bakedFor[i])) return baked;
+  const NE = ELEMENTS.length;
+  const outs = [], specs = [];
+  const id = (k, ctx) => {
+    if (k === SAME) return SAME_ID;
+    if (!(k in E)) throw new Error(`${ctx}: unknown element '${k}'`);
+    return E[k];
+  };
+  const spec = (into, ctx) => {
+    const list = intoList(into), total = list.reduce((s, [, w]) => s + w, 0);
+    specs.push([outs.length, list.length]);
+    let cum = 0;
+    for (const [k, w] of list) { cum += w / total; outs.push([id(k, ctx), cum]); }
+    outs[outs.length - 1][1] = 1;   // the last product closes the draw exactly
+    return specs.length - 1;
+  };
+  const into = [], of = [], cold = [], hot = [], crushP = [], blast = [], blastLit = [], lifeBank = [];
+  for (const e of ELEMENTS) {
+    const ctx = (f) => `${e.key}.${f}`;
+    if (e.melt && e.hot) throw new Error(`${e.key}: melt and hot both set (a hot phase change into LAVA is a melt)`);
+    const ph = (p, f) => [p?.into ? spec(p.into, ctx(f)) : -1, p?.of ? id(p.of, ctx(f)) : -1];
+    const rows = [ph(e.cold, 'cold'), ph(e.hot, 'hot'), ph(e.crush, 'crush'), ph(e.blast ? { into: 'FIRE', ...e.blast } : null, 'blast')];
+    into.push(rows.map((r) => r[0]));
+    of.push(rows.map((r) => r[1]));
+    const phase = (p) => (p ? [p.T, p.latent ?? 0, p.puff ?? 0] : [0, 0, 0]);
+    cold.push(phase(e.cold));
+    hot.push(phase(e.hot));
+    crushP.push(e.crush ? e.crush.P : 0);
+    lifeBank.push(!(e.life || e.burnRate));
+    if (e.blast && !(e.blast.P >= 0 && Number.isFinite(e.blast.T))) throw new Error(`${e.key}.blast: P and T are required`);
+    blast.push(e.blast ? [e.blast.P, e.blast.T, e.blast.shock ?? 0, e.blast.crushP ?? 0] : [0, 0, 0, 0]);
+    blastLit.push(e.blast ? [e.blast.flame ?? 0, e.blast.air ? 1 : 0] : [0, 0]);
+  }
+  const rx = [];
+  const lookup = new Uint16Array(NE * NE);
+  const claim = (a, b, r, wild) => {
+    if (lookup[a * NE + b]) {
+      if (wild) return;
+      throw new Error(`REACTIONS[${r}]: ${ELEMENTS[a].key} and ${ELEMENTS[b].key} already react (one reaction per pair)`);
+    }
+    lookup[a * NE + b] = 2 * r + 1;
+    lookup[b * NE + a] = 2 * r + (a === b ? 1 : 2);
+  };
+  const order = [...REACTIONS.keys()].sort((i, j) => (REACTIONS[i].b === '*') - (REACTIONS[j].b === '*'));
+  REACTIONS.forEach((row, r) => {
+    const x = { ...RX_DEFAULTS, ...row }, ctx = `REACTIONS[${r}] (${x.a} + ${x.b})`;
+    if (!Array.isArray(x.into) || x.into.length !== 2) throw new Error(`${ctx}: into is [what a becomes, what b becomes]`);
+    if (!(x.chance > 0 && x.chance <= 1)) throw new Error(`${ctx}: chance is a probability per step, in (0, 1]`);
+    if (x.a === x.b && JSON.stringify(x.into[0]) !== JSON.stringify(x.into[1]))
+      throw new Error(`${ctx}: a cell reacting with its own element can't tell a from b: give both the same into`);
+    rx.push([x.chance, x.minT, x.maxT, x.heat, x.puff, spec(x.into[0], ctx), spec(x.into[1], ctx)]);
+  });
+  for (const r of order) {
+    const x = { ...RX_DEFAULTS, ...REACTIONS[r] }, ctx = `REACTIONS[${r}]`;
+    const a = id(x.a, ctx);
+    if (x.b !== '*') { claim(a, id(x.b, ctx), r, false); continue; }
+    // '*': any matter (not air) but itself and the exceptions
+    const except = new Set([E.EMPTY, a, ...x.except.map((k) => id(k, ctx))]);
+    for (let b = 0; b < NE; b++) if (!except.has(b)) claim(a, b, r, true);
+  }
+  baked = { outs, specs, into, of, cold, hot, crushP, blast, blastLit, lifeBank, rx, lookup };
+  bakedFor = rows;
+  return baked;
+}
+
+const fl = (x) => (x === Infinity ? '1e30' : x === -Infinity ? '-1e30' : f(x));
+// The mechanisms' tables as GLSL arrays (each at least one entry long: GLSL
+// has no empty arrays).
+function mechanismsGLSL() {
+  const m = mechanisms();
+  const pad = (arr, empty) => (arr.length ? arr : [empty]);
+  const outs = pad(m.outs, [SAME_ID, 1]), specs = pad(m.specs, [0, 1]), rx = pad(m.rx, [0, 0, 0, 0, 0, 0, 0]);
+  const ivec4s = (rows) => rows.map((r) => `ivec4(${r.join(', ')})`).join(', ');
+  return [
+    ...Object.entries(PH).map(([k, v]) => `#define PH_${k} ${v}`),
+    `#define NOUT ${outs.length}`,
+    `#define NSPEC ${specs.length}`,
+    `#define NRX ${rx.length}`,
+    `#define RX_ANY ${m.rx.length > 0}`,
+    `const vec2 OUT[NOUT] = vec2[NOUT](${outs.map(([i, c]) => `vec2(${f(i)}, ${fl(c)})`).join(', ')});`,
+    `const ivec2 SPEC[NSPEC] = ivec2[NSPEC](${specs.map(([a, n]) => `ivec2(${a}, ${n})`).join(', ')});`,
+    `const ivec4 INTO[NE] = ivec4[NE](${ivec4s(m.into)});`,
+    `const ivec4 OF[NE] = ivec4[NE](${ivec4s(m.of)});`,
+    `const vec3 COLD[NE] = vec3[NE](${m.cold.map((c) => `vec3(${c.map(fl).join(', ')})`).join(', ')});`,
+    `const vec3 HOT[NE] = vec3[NE](${m.hot.map((c) => `vec3(${c.map(fl).join(', ')})`).join(', ')});`,
+    `const float CRUSH_P[NE] = float[NE](${m.crushP.map(fl).join(', ')});`,
+    `const vec4 BLAST[NE] = vec4[NE](${m.blast.map((c) => `vec4(${c.map(fl).join(', ')})`).join(', ')});`,
+    `const bool LIFE_BANK[NE] = bool[NE](${m.lifeBank.join(', ')});`,
+    `const vec2 BLAST_LIT[NE] = vec2[NE](${m.blastLit.map((c) => `vec2(${c.map(fl).join(', ')})`).join(', ')});`,
+    `const vec4 RX[NRX] = vec4[NRX](${rx.map((r) => `vec4(${r.slice(0, 4).map(fl).join(', ')})`).join(', ')});`,
+    `const float RX_PUFF[NRX] = float[NRX](${rx.map((r) => fl(r[4])).join(', ')});`,
+    `const ivec2 RX_INTO[NRX] = ivec2[NRX](${rx.map((r) => `ivec2(${r[5]}, ${r[6]})`).join(', ')});`,
+  ];
+}
+
 export function elementsGLSL() {
   return [
     `#define NE ${ELEMENTS.length}`,
@@ -483,7 +803,7 @@ export function elementsGLSL() {
     floatArr('JITTER', 'jitter'),
     floatArr('FLOW', 'flow'),
     floatArr('SLIDE', 'slide'),
-    floatArr('MELT', 'melt'),
+    `const float MELT[NE] = float[NE](${ELEMENTS.map((e) => f(meltPoint(e))).join(', ')});`,
     floatArr('IGNITE', 'ignite'),
     floatArr('BURNRATE', 'burnRate'),
     floatArr('BURNHEAT', 'burnHeat'),
@@ -501,5 +821,6 @@ export function elementsGLSL() {
     boolArr('LEAVES_ASH', 'ash'),
     vec3Arr('COLOR', (e) => hexToLinear(e.color).map((v) => +v.toFixed(4))),
     vec3Arr('SIGMA', (e) => e.sigma),
+    ...mechanismsGLSL(),
   ].join('\n');
 }

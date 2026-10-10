@@ -80,7 +80,13 @@ vec3 skyAmbient(vec3 n) {
 // between get a proportional share.
 uniform sampler2D tShadow;
 uniform int uShadowRes;
-const float SHADOW_TINT_ID_SCALE = 1000.0; // w packing: id * this + optical depth (< this); written by render.js's shadow pass
+// w packing: id * this + optical depth (< this); written by render.js's shadow
+// pass. The map is 32-bit float, so with element ids up to 255 (docs/elements.md)
+// w stays below 2^16 and keeps the optical depth to 2^-8 (0.4% in the light
+// let through). Depth past SCALE - 1 lets no light through anyway (e^-255); it
+// only flattens the proportional share inside a medium that thick (~270 cells
+// of oil along the sun, 10,000 of water).
+const float SHADOW_TINT_ID_SCALE = 256.0;
 const float SHADOW_PAD = 1.0;              // voxels the map's disc reaches past the box's bounding sphere
 const float SHADOW_NORMAL_OFFSET = 0.002;  // voxels a surface lookup moves off the surface along its normal
 // Hard-map depth bias (voxels), see sunShadow: at least SHADOW_BIAS_MIN, else the
@@ -529,7 +535,8 @@ vec2 pixRand(int k) {
 // Voxel AO and nearby bounce light (Teardown style). NEAR_RAYS cosine-
 // distributed rays per pixel and frame (TAA averages them) walk the grid up to
 // NEAR_RANGE cells. A ray that hits matter sees that matter's own light: its
-// albedo times the sun (shadow-mapped), the probes' light and the glow there.
+// albedo times the sun (shadow-mapped), the probes' light and the glow there,
+// plus what it gives off (emission).
 // A ray that escapes sees what the probes say (irr). Probes already hold
 // occlusion at brick scale, so a hit's weight fades with its distance, handing
 // far hits back to them. Returns the indirect irradiance / pi to use instead
@@ -556,10 +563,13 @@ vec3 nearField(vec3 p, vec3 ng, vec3 n, vec3 irr, out float vis) {
     if (t < 0.0) { sum += irr; vis += 1.0; continue; }
     float w = 1.0 - t / NEAR_RANGE;
     vec3 hp = ro + d * t + hn * NEAR_HIT_LIFT;
-    vec3 alb = hc.y < 0 ? GROUND_ALB : ALBEDO[eid(fetchA(hc))];
+    vec4 ah = hc.y < 0 ? vec4(0.0) : fetchA(hc);
+    int hid = eid(ah);
+    vec3 alb = hc.y < 0 ? GROUND_ALB : ALBEDO[hid];
     float ndl = max(dot(hn, uSun), 0.0);
     vec3 sun = ndl > 0.0 ? SUN_COL * ndl * (uShadows ? sunShadow(hp) : vec3(1.0)) : vec3(0.0);
-    vec3 Lhit = alb * (sun + giIrradiance(probeAt(hp + hn * GI_OFFSET), hn) + sampleLight(hp) * uLightGain);
+    vec3 Lhit = alb * (sun + giIrradiance(probeAt(hp + hn * GI_OFFSET), hn) + sampleLight(hp) * uLightGain)
+              + (hc.y < 0 ? vec3(0.0) : cellEmission(hid, ah.y));
     sum += mix(irr, Lhit, w);
     vis += 1.0 - w;
   }

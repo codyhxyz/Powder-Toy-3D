@@ -19,4 +19,4 @@ export const BODY_DENS = 9.8;
 
 // The melee tools (tools/melee.js): impact sources that are a hand-held blow,
 // not a round, for the effects that tell the two apart (sparks, ricochets).
-export const MELEE_SOURCES = new Set(['axe', 'pickaxe']);
+export const MELEE_SOURCES = new Set(['axe', 'pickaxe', 'knife']);

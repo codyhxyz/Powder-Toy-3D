@@ -12,13 +12,16 @@ import { addTarget, PLAYER } from './targets.js';
 import { grant, PERK } from './perks.js';
 import { CLASSES_ENABLED } from './classes.js';
 import { createClassPicker } from './classPicker.js';
+import { createVehicles } from './vehicles/index.js';
+import { createZoom, ZOOM_KEY } from './zoom.js';
 
-// First-person (POV) mode: drop into the world with F, walk around in it,
-// pop back out with F. This module is the shell: input, the camera, the
+// First-person (POV) mode: drop into the world with V (noclip off, Garry's
+// Mod's key; F drops in too), walk around in it, pop back out to the god
+// view's free camera with V. This module is the shell: input, the camera, the
 // figure, the HUD and the per-frame wiring between the body (player.js) and
 // the toolbelt (tools/index.js), plus the gunplay feedback that listens to
 // povEvents: feel (kick, shake, hitmarker), effects and sound. Both are optional at build time: without the
-// body, F explains; without the toolbelt you just walk.
+// body, V explains; without the toolbelt you just walk.
 
 const playerModule = import.meta.glob('./player.js', { eager: true })['./player.js'];
 const toolsModule = import.meta.glob('./tools/index.js', { eager: true })['./tools/index.js'];
@@ -41,7 +44,18 @@ const WHEEL_GESTURE_GAP_MS = 180;       // ms without wheel events that ends a g
 const WHEEL_LINE_PX = 40;               // px per line, for wheels that report lines
 const WHEEL_PAGE_PX = 800;              // px per page
 
-const MOVE_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ShiftLeft', 'ShiftRight', 'KeyC']);
+// Keys held down: movement, swim down and the zoom. Swim down is Ctrl, the
+// Source games' duck key (Shift is their sprint, as here); C is the zoom key
+// of Minecraft's zoom mods (zoom.js).
+const DOWN_KEYS = ['ControlLeft', 'ControlRight'];
+const MOVE_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ShiftLeft', 'ShiftRight', ...DOWN_KEYS, ZOOM_KEY]);
+// First or third person: Skyrim's and Fallout's F, and Minecraft's F5 (its reload is held back)
+const VIEW_KEYS = new Set(['KeyF', 'F5']);
+const VEHICLE_KEY = 'KeyE';             // get in, get out, or right a vehicle (vehicles/index.js; Halo's and most shooters' use key)
+// Driving, the chase camera swings back behind the vehicle once the mouse rests (GTA's and most driving games')
+const CHASE_PITCH = -0.22;              // rad, the look on getting in: a little down onto the vehicle
+const CHASE_IDLE_S = 1.2;               // s without mouse look before it swings back behind
+const CHASE_FOLLOW_RATE = 2.5;          // 1/s, how fast it swings
 // god-mode keys that stay live in POV: help, settings, screenshot, closing menus.
 // With classes on, comma is TF2's class key in POV (classPicker.js), not settings.
 const PASS_KEYS = new Set(['Escape', '?', ...(CLASSES_ENABLED ? [] : [',']), 'p', 'P']);
@@ -58,6 +72,7 @@ export function createPov(app) {
   const povCam = createPovCamera({
     fov: () => app.settings.povFov, sensitivity: () => app.settings.sensitivity, bobbing: () => app.settings.viewBobbing,
   });
+  const zoom = createZoom();   // C (zoom.js)
   const povHud = createPovHud();
   // feedback: everything here hears povEvents (events.js) and the body's events
   const feel = createFeel({ hud: povHud });
@@ -73,11 +88,17 @@ export function createPov(app) {
       min.set(player.pos.x - BODY_WIDTH / 2, player.pos.y, player.pos.z - BODY_WIDTH / 2);
       max.set(player.pos.x + BODY_WIDTH / 2, player.pos.y + BODY_HEIGHT, player.pos.z + BODY_WIDTH / 2);
     },
-    hurt(amount, cause, d) {
+    facing: (out) => povCam.dir(out),   // where the player looks (the knife's backstab test)
+    hurt(amount, cause, d, opts) {
       povEvents.emit('player:hit', { amount });   // inside the attacker's povEvents.as(): carries its id
-      player.hurt(amount * PLAYER_DAMAGE_TAKEN, cause);
+      player.hurt(amount * PLAYER_DAMAGE_TAKEN, cause, opts);
       player.applyImpulse(d.clone().setY(Math.max(d.y, 0) + PLAYER_KNOCK_UP).normalize().multiplyScalar(PLAYER_KNOCKBACK));
     },
+  });
+  // the jeep and the hoverbike (vehicles/index.js): Rapier loads on the first one
+  const vehicles = createVehicles({
+    renderer, scene, hud, getSim: app.getSim, getVolume: app.getVolume, getScale: app.getScale,
+    getSpawners: app.getSpawners, requestRender: app.requestRender,
   });
   const viewmodel = new THREE.Group();
   viewmodel.name = 'pov-viewmodel';
@@ -143,9 +164,16 @@ export function createPov(app) {
   const setHudHidden = (v) => { hudHidden = v; document.body.classList.toggle('pov-nohud', v); app.requestRender(); };
 
   addEventListener('keydown', (e) => {
-    if (!active() || app.isTyping() || e.metaKey || e.ctrlKey || e.altKey) return;
-    if (MOVE_KEYS.has(e.code)) { keys.add(e.code); if (e.code === 'Space') e.preventDefault(); }
-    if (e.code === 'KeyV' && !e.repeat && mode !== 'exiting') povCam.third = !povCam.third;
+    if (!active() || app.isTyping() || e.metaKey || e.altKey) return;
+    // Ctrl swims down, so movement still counts while it's held, and the
+    // browser's own Ctrl shortcuts on those keys (save, bookmark) are held back
+    if (MOVE_KEYS.has(e.code)) { keys.add(e.code); if (e.code === 'Space' || e.ctrlKey) e.preventDefault(); }
+    if (e.ctrlKey) return;
+    if (VIEW_KEYS.has(e.code)) {
+      e.preventDefault();
+      if (!e.repeat && mode !== 'exiting') povCam.third = !povCam.third;
+    }
+    if (e.code === VEHICLE_KEY && !e.repeat && live() && vehicles.use(player) === 'enter') povCam.setLook(vehicles.headingYaw(), CHASE_PITCH);
     // Sprint: Toggle (the setting): Shift flips sprinting on and off instead of being held
     if ((e.code === 'ShiftLeft' || e.code === 'ShiftRight') && !e.repeat && app.settings.sprintMode === 'toggle') sprintOn = !sprintOn;
     // F1, as in Minecraft: hide the HUD and the hand, for a clean view or a screenshot
@@ -158,6 +186,13 @@ export function createPov(app) {
   });
   addEventListener('keyup', (e) => keys.delete(e.code));
   addEventListener('blur', releaseInput);
+  // Ctrl+W closes the tab, and no page can stop it (outside full screen's
+  // keyboard lock): while Ctrl swims down, leaving asks first
+  addEventListener('beforeunload', (e) => {
+    if (!active() || !DOWN_KEYS.some((k) => keys.has(k))) return;
+    e.preventDefault();
+    e.returnValue = true;
+  });
 
   // TF2's class picker on its key, comma (classPicker.js, docs/classes.md). Made
   // now, so its keys are heard before the toolbelt's digits.
@@ -184,6 +219,7 @@ export function createPov(app) {
   document.addEventListener('mousemove', (e) => {
     if (!active() || !locked || mode === 'exiting') return;
     povCam.turn(e.movementX, e.movementY);
+    lookMovedAt = performance.now();
   });
   canvas.addEventListener('wheel', (e) => {
     if (!active()) return;
@@ -323,6 +359,7 @@ export function createPov(app) {
     const fwd = camera.getWorldDirection(new THREE.Vector3());
     povCam.setLook(Math.atan2(-fwd.x, -fwd.z), ENTRY_PITCH);
     povCam.reset();
+    zoom.reset();
     feel.reset();
     player.spawn(dropPoint.clone());
     classes?.spawned(player);
@@ -341,6 +378,7 @@ export function createPov(app) {
 
   function exit(instant = false) {
     if (!active()) return;
+    vehicles.reset(player);
     setMenu(false);
     toolbelt?.setVisible(false);
     viewmodel.visible = false;
@@ -365,6 +403,7 @@ export function createPov(app) {
 
   function finishExit() {
     mode = 'off';
+    zoom.reset();
     camera.position.copy(saved.pos);
     camera.quaternion.copy(saved.quat);
     camera.fov = saved.fov;
@@ -375,6 +414,7 @@ export function createPov(app) {
     controls.update();
     figure?.setVisible(false);
     for (const n of npcs.values()) n.reset();
+    vehicles.reset(player);
     viewmodel.visible = false;
     povHud.show(false);
     feel.reset();
@@ -393,18 +433,28 @@ export function createPov(app) {
     primary: false, secondary: false, primaryPressed: false, secondaryPressed: false, wheel: 0,
     viewBobbing: true,              // the View Bobbing setting (the viewmodel rig's hand bob reads it)
     aim: { valid: false, cell: new THREE.Vector3(), face: 0, id: -1, T: 0, P: 0, dist: Infinity },
-    player: { pos: null, vel: null, onGround: false, inLiquid: false, applyImpulse: (dv) => player?.applyImpulse(dv) },
+    player: { pos: null, vel: null, onGround: false, inLiquid: false, applyImpulse: (dv) => player?.applyImpulse(dv), holdPogo: () => player?.holdPogo() },
   };
   const input = { move: { x: 0, z: 0 }, jump: false, sprint: false, down: false };
   let sprintOn = false;     // Sprint: Toggle's state
   const vEye = new THREE.Vector3(), vFeet = new THREE.Vector3(), vA = new THREE.Vector3(), vB = new THREE.Vector3();
   const closest = new THREE.Vector3();
   let speedH = 0;
+  let wasDriving = false, lookMovedAt = 0;
 
   function readInput() {
     input.move.x = input.move.z = 0;
     input.jump = input.sprint = input.down = false;
+    const d = vehicles.drive;
+    d.throttle = d.steer = 0; d.brake = d.boost = false;
     if (mode !== 'on' || player.dead || app.isTyping()) return;
+    if (vehicles.seated) {   // the keys drive: W/S throttle, A/D steer (+ is left), Space brake or hop, Shift boost
+      d.throttle = (keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 1 : 0);
+      d.steer = (keys.has('KeyA') ? 1 : 0) - (keys.has('KeyD') ? 1 : 0);
+      d.brake = keys.has('Space');
+      d.boost = keys.has('ShiftLeft') || keys.has('ShiftRight');
+      return;
+    }
     const f = (keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 1 : 0);
     const r = (keys.has('KeyD') ? 1 : 0) - (keys.has('KeyA') ? 1 : 0);
     if (f || r) {
@@ -416,7 +466,7 @@ export function createPov(app) {
     }
     input.jump = keys.has('Space');
     input.sprint = app.settings.sprintMode === 'toggle' ? sprintOn : keys.has('ShiftLeft') || keys.has('ShiftRight');
-    input.down = keys.has('KeyC');
+    input.down = DOWN_KEYS.some((k) => keys.has(k));
   }
 
   function update(dt) {
@@ -431,7 +481,15 @@ export function createPov(app) {
 
     // the body
     readInput();
+    vehicles.beforeBody(player);
     player.update(dt, input);
+    vehicles.update(dt, { player, live: live() && mode === 'on', worldToGrid });
+    vehicles.afterBody(player);
+    const driving = !!vehicles.seated;
+    if (driving !== wasDriving) {   // in a vehicle the hands are on the wheel; out of it (E, or it blew up) they're back
+      wasDriving = driving;
+      if (live() && mode === 'on') toolbelt?.setVisible(!driving);
+    }
     if (player.dead && !deadSeen) {
       deadSeen = true; deadTime = 0;
       toolbelt?.setVisible(false);
@@ -495,6 +553,10 @@ export function createPov(app) {
     vA.copy(player.pos).setY(player.pos.y + EYE_HEIGHT);
     const shake = feel.update({ dt, live: mode === 'on' && !deadSeen, eye: vA });
     povCam.zoom = mode === 'on' && !deadSeen && toolbelt ? toolbelt.zoom : 1;   // a scope (the sniper's)
+    // the zoom key: while it's held the wheel zooms, as in Zoomify, instead of picking a tool
+    const zooming = mode === 'on' && !deadSeen && keys.has(ZOOM_KEY);
+    povCam.keyZoom = zoom.update(dt, zooming, zooming ? wheelNotches : 0);
+    if (zooming) wheelNotches = 0;
     toWorld(vEye.copy(vA), vEye);
     toWorld(player.pos, vFeet);
     const pose = povCam.update({
@@ -505,6 +567,13 @@ export function createPov(app) {
     if (pose.footfall && mode === 'on' && !deadSeen) povEvents.emit('player:step', { speed: speedH, inLiquid: player.inLiquid });
     camera.position.copy(pose.pos);
     camera.quaternion.copy(pose.quat);
+    if (driving && mode === 'on') {   // Halo's third-person chase camera, swinging back behind when the mouse rests
+      if (performance.now() - lookMovedAt > CHASE_IDLE_S * 1000) {
+        const yaw = povCam.look.yaw, d = Math.atan2(Math.sin(vehicles.headingYaw() - yaw), Math.cos(vehicles.headingYaw() - yaw));
+        povCam.setLook(yaw + d * (1 - Math.exp(-CHASE_FOLLOW_RATE * dt)), povCam.look.pitch);
+      }
+      vehicles.chase(camera, povCam.dir(vB));
+    }
     if (Math.abs(camera.fov - pose.fov) > 1e-4) { camera.fov = pose.fov; camera.updateProjectionMatrix(); }
     camera.updateMatrixWorld();
     if (pose.done === 'in') {
@@ -516,14 +585,17 @@ export function createPov(app) {
     }
 
     // the figure: shown once the camera is out of the head
-    figure.setVisible(pose.eyeDist > FIGURE_HIDE_DIST);
+    figure.setVisible(pose.eyeDist > FIGURE_HIDE_DIST && !driving);   // the vehicle draws its driver
     figure.update(dt, {
       feet: vFeet, scale, yaw: povCam.look.yaw, worldToGrid,
       speedH, velY: player.vel.y, onGround: player.onGround, inLiquid: player.inLiquid, headInLiquid: player.headInLiquid,
-      dead: deadSeen, deadTime, heat: player.feel?.heat ?? 0, jetting: player.jetting,
+      dead: deadSeen, deadTime, heat: player.feel?.heat ?? 0, jetting: player.jetting, status: player.status,
     });
     if (player.jetting && mode === 'on') vfx?.jet(player.pos, povCam.look.yaw, dt, figure.nozzles);
-    viewmodel.visible = mode === 'on' && !deadSeen && pose.eyeDist <= FIGURE_HIDE_DIST && !hudHidden;
+    // flames licking off burning bodies (status.js BURNING), the player's and the NPCs'
+    if (player.status.has('BURNING') && !player.dead) vfx?.burn(player.pos, dt);
+    for (const n of npcs.values()) if (n.body.status?.has('BURNING') && !n.body.dead) vfx?.burn(n.body.pos, dt);
+    viewmodel.visible = mode === 'on' && !deadSeen && pose.eyeDist <= FIGURE_HIDE_DIST && !hudHidden && !driving;
 
     // the toolbelt
     const aim = ctx.aim, hv = app.hover;
@@ -539,7 +611,7 @@ export function createPov(app) {
         THREE.MathUtils.clamp(ctx.eye.z, hv.cell.z, hv.cell.z + 1));
       aim.dist = closest.distanceTo(ctx.eye);
     } else aim.dist = Infinity;
-    if (live() && toolbelt) {
+    if (live() && toolbelt && !driving) {
       ctx.sim = sim;
       ctx.dt = dt;
       ctx.toolRate = player.perks.toolRate;
@@ -566,7 +638,8 @@ export function createPov(app) {
     // the HUD
     povHud.update({
       dt, health: player.health, breath: player.breath, feel: player.feel,
-      jetFuel: player.jetFuel, jetting: player.jetting, perks: player.perks,
+      shield: player.shield, shieldMax: player.shieldMax, shieldCharging: player.shieldCharging,
+      jetFuel: player.jetFuel, jetting: player.jetting, perks: player.perks, status: player.status,
       dead: deadSeen, cause: player.cause, respawnIn: RESPAWN_DELAY - deadTime,
       locked: isLocked(), swooping: mode !== 'on',
       aimValid: aim.valid, aimInReach: aim.valid && aim.dist <= HAND_REACH, third: povCam.third,
@@ -623,6 +696,7 @@ export function createPov(app) {
     get locked() { return isLocked(); },
     get player() { return player; },
     get toolbelt() { return toolbelt; },
+    vehicles,                    // the jeep and the hoverbike (vehicles/index.js): spawnLayout(layout), list, seated
     get classes() { return classes; },   // the class picker (classPicker.js), or null with CLASSES_ENABLED off
     // what the held tool shows next to the crosshair ({ name, color, T?, P?, note? } for ui/hud.js showReadout), or null
     get readout() { return live() && mode === 'on' && toolbelt ? toolbelt.readout : null; },

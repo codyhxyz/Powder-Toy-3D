@@ -10,6 +10,7 @@ import { PerkOrbs } from './perkOrbs.js';
 import { buildPreset, ARENA_PRESETS } from './presets.js';
 import { ArenaMarkers } from './arenas/markers.js';
 import { DAM_VALLEY_BANNERS, shrineAltars } from './arenas/damValley.js';
+import { structureClear, shrineAltars as worldShrineAltars } from './world/structures.js';
 import { loadIsland, releaseGenerator } from './world/gpu.js';
 import { WorldWindow, WIN_STEP } from './world/window.js';
 import { bakedAir } from './constructions/runtime.js';
@@ -77,7 +78,11 @@ const WORLD_VIEW_DIST = 21;
 // (one WIN_STEP move every few frames), in scene units per second
 const WORLD_CAM_SPEED_MAX = 9;
 const SIGN_TOOL = -5;
-const SPAWNER_KIND = { [-6]: SPAWNER.ENEMY, [-7]: SPAWNER.PLAYER };   // the Spawners tools' kinds
+const SPAWNER_KIND = { [-6]: SPAWNER.ENEMY, [-7]: SPAWNER.PLAYER, [-20]: SPAWNER.JEEP, [-21]: SPAWNER.HOVERBIKE };   // the Spawners tools' kinds
+const SPAWNER_SET = {
+  [SPAWNER.ENEMY]: 'Enemy spawner set: press V to fight', [SPAWNER.PLAYER]: 'Player spawn set: V drops you in here',
+  [SPAWNER.JEEP]: 'Jeep pad set: press V, walk up to it and press E', [SPAWNER.HOVERBIKE]: 'Hoverbike pad set: press V, walk up to it and press E',
+};
 // the lab's own enemy spawner: its open south floor, as shares of the grid (the old lab NPC's arena)
 const LAB_ENEMY_AT = [0.555, 0.86];
 
@@ -296,6 +301,7 @@ function build() {
   volume.scale.setScalar(scale);
   volume.frustumCulled = false;
   scene.add(volume);
+  volume.add(sim.rays.view);   // photons and neutrons as points, in grid cells (raysLayer.js)
   // world mode: the world outside the window (world/far.js), drawn before everything else
   if (win) scene.add((win.far = new FarField(renderer, win, { sun: SUN, time: volume.material.uniforms.uTime })).mesh);
 
@@ -389,6 +395,9 @@ const SHRINE_FAR_COST = 0.05;      // ...plus this per cell from the window's mi
 function worldShrine() {
   if (!win || !builds) return;
   const P = win.P, g = sim.g, o = sim.origin, [hx, hz] = SHRINE_HALF;
+  // a scene with structures places its own (world/structures.js: generated, in a clearing): set its orbs
+  const altars = worldShrineAltars(P);
+  if (altars) { perkOrbs?.shrineAt(altars.map((a) => a.sub(o))); return; }
   const sea = P.sea ?? 0;
   const fits = (x, z) => x - hx >= 0 && z - hz >= 0 && x + hx < g.nx && z + hz < g.nz;
   // the ground's lowest and highest under a footprint centred on grid column (x, z)
@@ -396,6 +405,7 @@ function worldShrine() {
     let lo = Infinity, hi = -Infinity;
     for (let i = -hx; i <= hx; i += SHRINE_SAMPLE)
       for (let k = -hz; k <= hz; k += SHRINE_SAMPLE) {
+        if (structureClear(P, o.x + x + i, o.z + z + k)) return [0, Infinity];   // not on the world's structures (world/structures.js)
         const h = win.scene.ground(o.x + x + i, o.z + z + k, P);
         lo = Math.min(lo, h); hi = Math.max(hi, h);
       }
@@ -536,10 +546,11 @@ function loadPreset(name, undoable = true) {
 
 // A new scene clears the spawners; the lab comes with an enemy spawner of its
 // own. An arena sets its shrines' perk orbs, its team banners, and player
-// spawners at red's spawn points (F drops you into the red base).
+// spawners at red's spawn points (V drops you into the red base).
 function resetSpawners(name) {
   perkOrbs?.clear();
   arenaMarkers?.clear();
+  pov?.vehicles.spawnLayout(arenaLayout);   // an arena's jeeps and hoverbikes (null clears the last arena's)
   if (!spawners) return;
   spawners.clear();
   if (name === 'lab' && !win) spawners.add(SPAWNER.ENEMY, new THREE.Vector3(Math.round(sim.g.nx * LAB_ENEMY_AT[0]), 0, Math.round(sim.g.nz * LAB_ENEMY_AT[1])));
@@ -717,7 +728,7 @@ function giveGear(id) {
   if (pov?.active) {
     pov.closeMenu();
     hud.toast(fresh ? `${it.name} added: ${slot}` : `${it.name}: ${slot}`);
-  } else hud.toast(`${it.name} ${fresh ? 'added to your tools' : 'is in your tools'}: press F, then ${slot}`);
+  } else hud.toast(`${it.name} ${fresh ? 'added to your tools' : 'is in your tools'}: press V, then ${slot}`);
 }
 
 // Closing a construction's options goes back to the last element or tool.
@@ -1019,7 +1030,7 @@ function press(e) {
     const r = spawners.toggle(kind, feetOnHit(hover));
     pacer.wake();
     if (r === 'full') hud.toast('That many is the limit');
-    else hud.toast(r === 'removed' ? 'Spawner removed' : kind === SPAWNER.ENEMY ? 'Enemy spawner set: press F to fight' : 'Player spawn set: F drops you in here');
+    else hud.toast(r === 'removed' ? 'Spawner removed' : SPAWNER_SET[kind]);
     return;
   }
   if (isBuild(settings.tool)) {
@@ -1031,7 +1042,7 @@ function press(e) {
       lastShrine = 0;
       builds.place();
       // a shrine's orbs go with its snapshot: undoing it takes them away (undo)
-      if (lastShrine) { sim.history.at(-1).note = { shrine: lastShrine }; hud.toast('Shrine set: in first person (F), take one perk and the others vanish'); }
+      if (lastShrine) { sim.history.at(-1).note = { shrine: lastShrine }; hud.toast('Shrine set: in first person (V), take one perk and the others vanish'); }
       hud.dismissHint();
     }
     return;
@@ -1107,7 +1118,9 @@ addEventListener('keydown', (e) => {
   if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); return; }
   if (mod) return;
   const k = e.key;
-  if (k === 'f' || k === 'F') { if (!e.repeat) actions.firstPerson(); return; }
+  // V is noclip, Garry's Mod's: out of the body to the god view's free camera, and back in.
+  // F drops in too (in the body it swaps first and third person: pov/index.js).
+  if (k === 'v' || k === 'V' || ((k === 'f' || k === 'F') && !pov?.active)) { if (!e.repeat) actions.firstPerson(); return; }
   if ((k === 't' || k === 'T') && mp.chatAvailable) { e.preventDefault(); mp.openChat(); return; } // Minecraft's chat key, POV included
   if (pov?.blocksKey(e)) return;   // POV owns movement, Space and the digits while active
   if (e.code === 'Space') { e.preventDefault(); setPaused(!settings.paused); }
@@ -1350,7 +1363,7 @@ function frame(now) {
     `${camera.matrixWorld.elements}|${camera.projectionMatrix.elements}|${pixelRatio}|${innerWidth}x${innerHeight}`
     + `|${JSON.stringify(settings)}|${JSON.stringify(gfx)}|${JSON.stringify(post.settings)}|${sceneKey(scene)}`
     + `|${win?.far?.chunksDrawn}`,   // a world scene's far field filling in (world/far.js)
-    runDerived || wantShot);
+    runDerived || wantShot || post.adapting);   // (eyes adjusting to the dark: gfx/post.js ADAPT)
   // a frame's dt measures the drawing rate only when the frame before it drew too
   if (runView && renderedLast) { frames++; fpsTime += dt; }
   if (fpsTime > FPS_WINDOW) { fps = frames / fpsTime; frames = 0; fpsTime = 0; }
@@ -1391,9 +1404,10 @@ function frame(now) {
     gfxUniforms.uNearGI.value = settings.nearGI;
     gfxUniforms.uGlowLights.value = settings.glowLights;
     gfxUniforms.uCaustics.value = settings.caustics;
+    sim.rays.updateView(camera, renderer.domElement.height * post.renderScale);
     floorGrid.material.opacity = post.renderScale;
     edges.material.opacity = EDGE_OPACITY * post.renderScale;
-    post.render(scene, camera);   // its passes after the scene count as 'post' (postPass)
+    post.render(scene, camera, null, dt);   // its passes after the scene count as 'post' (postPass)
     prof.phase('other');
     // POV: the held tool, drawn over the finished frame in its own pass (no TAA, its
     // own depth, so it never clips into walls); before the screenshot reads the canvas
@@ -1468,6 +1482,7 @@ try {
     inWorld: () => !!win,
     showToolsMenu: () => dock.reveal((it) => isGearTool(it.id)),   // Q in first person: the palette at its first-person tools
   });
+  pov.vehicles.spawnLayout(arenaLayout);   // the scene loaded before the POV shell existed
   window.__app = {
     get sim() { return sim; }, get volume() { return volume; }, get scale() { return scale; }, get signs() { return signs; }, get builds() { return builds; },
     get pov() { return pov; },
