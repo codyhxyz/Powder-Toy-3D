@@ -47,7 +47,7 @@ try {
     // Deliberately reproduce the existing tests' attempted paused boot.
     localStorage.setItem('powder-toy-3d:settings', JSON.stringify({ paused: true }));
   });
-  await page.goto(`http://127.0.0.1:${port}/?size=${size}&preset=lab`);
+  await page.goto(`http://localhost:${port}/?size=${size}&preset=lab`);
   await page.waitForFunction(() => window.__app?.sim, null, { polling: 100 });
   console.log(JSON.stringify({ boot: await page.evaluate(() => ({
     pausedDespiteSavedTrue: window.__app.settings.paused,
