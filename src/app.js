@@ -711,17 +711,17 @@ function selectTool(id) {
   save();
 }
 
-// A first-person tool from the palette's Tools group (GMod's spawn menu): it
-// goes into the inventory and in hand, now in first person or at the next drop-in.
+// A first-person tool from the palette's Tools group (GMod's spawn menu): every
+// tool is carried (inventory.js), so it goes in hand, now in first person or at the next drop-in.
 function giveGear(id) {
   const it = toolById(id);
   const g = gearByKey(it.gear);
-  const fresh = inventory.give(g.key);
+  inventory.give(g.key);
   const slot = `key ${g.slot + 1} (${SLOTS[g.slot]})`;
   if (pov?.active) {
     pov.closeMenu();
-    hud.toast(fresh ? `${it.name} added: ${slot}` : `${it.name}: ${slot}`);
-  } else hud.toast(`${it.name} ${fresh ? 'added to your tools' : 'is in your tools'}: press F, then ${slot}`);
+    hud.toast(`${it.name}: ${slot}`);
+  } else hud.toast(`${it.name} is in your tools: press F, then ${slot}`);
 }
 
 // Closing a construction's options goes back to the last element or tool.

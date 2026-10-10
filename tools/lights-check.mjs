@@ -23,6 +23,9 @@ p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 500)));
 await p.goto(`http://localhost:${port}/?preset=empty`);
 await p.waitForFunction(() => window.__app?.pov, null, { timeout: 60000 });
 await p.waitForTimeout(1500);
+// no UI over the canvas: in play, pointer lock sends every click to it, but here the hotbar's
+// slot stack (which can sit over the middle of a small window) would take them
+await p.addStyleTag({ content: 'body *{visibility:hidden !important} canvas[data-engine]{visibility:visible !important}' });
 
 let fails = 0;
 const check = (name, ok, info = '') => { if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${info ? `  ${info}` : ''}`); };
@@ -35,16 +38,19 @@ const census = () => ev(async () => {
 });
 const hold = (key) => ev((k) => window.__app.pov.toolbelt.select(k), key);
 const lampCount = () => ev(async () => (await import('/src/gfx/uniforms.js')).gfxUniforms.uLampCount.value);
-// mean brightness (0–255) of the middle of the frame: a screenshot, measured by ImageMagick
+// mean brightness (0–255) of the world left of the middle of the frame, clear of the tool in hand
+// (its flame and glow are bright themselves): a screenshot, measured by ImageMagick
 const SHOT_TMP = join(mkdtempSync(join(tmpdir(), 'lights-')), 'frame.png');
 const brightness = async () => {
-  await p.screenshot({ path: SHOT_TMP, clip: { x: W / 4, y: H / 4, width: W / 2, height: H / 2 } });
+  await p.screenshot({ path: SHOT_TMP, clip: { x: W / 8, y: H / 4, width: W * 3 / 8, height: H / 2 } });
   return +execFileSync('magick', [SHOT_TMP, '-colorspace', 'gray', '-format', '%[fx:mean*255]', 'info:']).toString();
 };
 
-// night, a wooden wall ahead
+// night, a wooden wall ahead; the eyes don't adjust (gfx/post.js ADAPT would brighten the dark
+// views to meet the lit ones, and the comparisons are of the light itself)
 await ev(async ([steps]) => {
   const a = window.__app, { E } = await import('/src/elements.js'), V = a.camera.position.constructor;
+  a.post.settings.adapt = false;
   a.day.clock = steps;
   a.sim.paint({ center: new V(40, 4, 64.5), radius: 4, shape: 1, tool: E.WOOD, rate: 1, replace: true });
 }, [MIDNIGHT_STEPS]);

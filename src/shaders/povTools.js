@@ -198,16 +198,21 @@ export const FLAMER = {
   HEAT_RATE: 0.15,   // 1/s × CAP: share of the gap to FLAME_T closed per second (see above)
   BITE: 1.5,         // cells past the struck face the flame heats into
 };
-// A burning torch lying where it was thrown (lamp.js): a small flame licking
-// up off its head, hot enough to light wood and paper that touch it.
+// A burning torch lying where it was thrown, or touched to something (lamp.js):
+// its flame's heat, hot enough to light wood and paper that touch it. It puts
+// no FIRE in the air: the flame you see is its own (pov/flame.js), and engine
+// fire round it drew as a red cloud beside it. Without that fire's heat, its
+// own has to win against what the cell conducts away (at the flamer's rate the
+// wood under it sat near 90 °C), so its contact heats ten times as fast: wood
+// it lies on or is held to catches in about a second. What it lights burns as usual.
 export const TORCH_FIRE = {
   FLAME_T: 900,      // °C, a pitch torch's flame
   LENGTH: 1.5,       // cells
   RADIUS0: 0.4,
   SPREAD: 0.3,
-  SPAWN: 0.3,
+  SPAWN: 0,
   SPEED: 0.15,
-  HEAT_RATE: 0.15,
+  HEAT_RATE: 1.5,
   BITE: 1,
 };
 

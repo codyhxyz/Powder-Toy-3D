@@ -1,6 +1,6 @@
 import { skyGLSL } from '../../gfx/sky.js';
 import { cloudDeckGLSL } from './clouds.js';
-import { LAMP_MAX, LAMP_UNIT } from '../../gfx/lamps.js';
+import { LAMP_MAX, LAMP_UNIT, LAMP_SOFT } from '../../gfx/lamps.js';
 
 // Soft-shadow taps per pass (blocker search, then filter).
 const PCSS_TAPS = 8;
@@ -628,10 +628,14 @@ float glowLightScale(vec3 p, vec3 ng, vec3 n) {
 
 // ---- hand lamps ----
 // The light of the lamps at surface point p (normal n, geometric normal ng),
-// to be multiplied by the albedo: each an inverse-square point light,
-// (LAMP_UNIT / d)² × its colour, faded smoothly to nothing at its reach, and
-// shadowed by a traced ray to it (opaque matter only, as the glow lights').
+// to be multiplied by the albedo: each an inverse-square point light with a
+// soft core and Unreal's window to its reach (Karis 2013, "Real Shading in
+// Unreal Engine 4"): (U² + s²) / (d² + s²) × (1 − (d/R)⁴)₊² × its colour, so
+// its colour is the irradiance at U = LAMP_UNIT, close up it doesn't blow out
+// and it carries out to most of its reach before fading; shadowed by a traced
+// ray to it (opaque matter only, as the glow lights').
 const float LAMP_UNIT = ${LAMP_UNIT.toFixed(1)};        // cells at which a lamp's colour is its irradiance
+const float LAMP_SOFT = ${LAMP_SOFT.toFixed(1)};        // cells: the soft core's radius
 const float LAMP_START = 0.55;      // cells off the surface a shadow ray starts
 const float LAMP_SELF_SKIP = 1.0;   // smooth-surface cells ignored this close to its start
 const float LAMP_PAD = 0.3;         // cells short of the lamp the shadow ray stops (it hangs in air)
@@ -647,8 +651,9 @@ vec3 lampLight(vec3 p, vec3 ng, vec3 n) {
     vec3 l = dv / max(d, 1e-4);
     float nl = dot(n, l);
     if (nl <= 0.0) continue;
-    float fade = 1.0 - d2 / (R * R);
-    float fall = LAMP_UNIT * LAMP_UNIT / max(d2, LAMP_UNIT) * fade * fade;
+    float x2 = d2 / (R * R);
+    float fade = 1.0 - x2 * x2;
+    float fall = (LAMP_UNIT * LAMP_UNIT + LAMP_SOFT * LAMP_SOFT) / (d2 + LAMP_SOFT * LAMP_SOFT) * fade * fade;
     ivec3 hc; vec3 hn;
     if (traceNear(ro, l, max(d - LAMP_PAD, 0.0), true, LAMP_SELF_SKIP, hc, hn) >= 0.0) continue;
     sum += uLampCol[i].rgb * nl * fall;

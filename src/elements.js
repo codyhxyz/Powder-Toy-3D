@@ -293,11 +293,11 @@ const GEAR_ID0 = -300;   // the first-person tools' ids (GEAR_ITEMS below), past
 export const isBuild = (id) => id <= -100 && id > GEAR_ID0;
 
 // First-person tools (src/pov/tools/catalog.js), listed in the palette's Tools
-// group: Garry's Mod's spawn menu. A click gives the tool to the player (the
-// inventory, pov/tools/inventory.js) and puts it in hand; nothing is painted.
+// group: Garry's Mod's spawn menu. Every tool is carried (pov/tools/inventory.js);
+// a click puts it in hand; nothing is painted.
 export const GEAR_ITEMS = GEAR.map((g, i) => ({
   id: GEAR_ID0 - i, key: `GEAR_${g.key}`, abbr: g.abbr, name: g.name, color: g.color, gear: g.key, model: g.model,
-  desc: `${g.desc} First person, key ${g.slot + 1} (${SLOTS[g.slot]}).${g.start ? '' : ' Click to add it to your tools.'}`,
+  desc: `${g.desc} First person, key ${g.slot + 1} (${SLOTS[g.slot]}).`,
 }));
 export const isGearTool = (id) => id <= GEAR_ID0 && id > GEAR_ID0 - 100;
 
