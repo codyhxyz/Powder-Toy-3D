@@ -84,6 +84,8 @@ try {
   check('worm tunnels through the rock toward you', under.length > 10 && Math.max(...xs) - xs[0] > 40, `${under.length} samples underground, head x ${xs[0]?.toFixed(0)} → ${Math.max(...xs).toFixed(0)}, ${run.at(-1).digs} bites of rock`);
   const maxY = Math.max(...run.map((s) => s.head.y));
   check('it breaches out of the ground in an arc', run.at(-1).breaches > 0 && maxY > GROUND + 5.5, `${run.at(-1).breaches} breaches, head up to ${(maxY - GROUND).toFixed(1)} cells over the ground`);
+  // from here the player is not hurt (it would die and respawn mid-check, and a dead player isn't hunted)
+  await ev(() => { const pl = window.__app.pov.player; pl.hurt = () => {}; });
   const bites = await ev(() => window.__ev.hits.filter((h) => h.by?.startsWith('worm')).length);
   const hurt = run.find((s) => s.player.health < 1);
   check('it bites', bites > 0 && !!hurt, `${bites} bites, health ${run.at(-1).player.health.toFixed(2)}${run.find((s) => s.player.dead) ? `, died: ${run.find((s) => s.player.dead).player.cause}` : ''}`);
@@ -91,10 +93,7 @@ try {
   const c1 = await census();
   const dRock = c1.ROCK - c0.ROCK, dStone = (c1.STONE ?? 0) - (c0.STONE ?? 0);
   check('its tunnel leaves rubble: rock breaks into stone, none lost', dRock < -200 && dStone > 200 && Math.abs(dRock + dStone) <= 2, `rock ${dRock}, stone +${dStone}`);
-  const deaths = await ev(() => { const pl = window.__app.pov.player; window.__cause = pl.cause; return pl.dead; });
-  if (deaths) await settle(4000);   // the player respawns
-  // from here the player is not hurt (it would respawn mid-check)
-  await ev(() => { const pl = window.__app.pov.player; pl.hurt = () => {}; });
+  await p.waitForFunction(() => window.__app.pov.mode === 'on' && !window.__app.pov.player.dead, null, { timeout: 20000 });   // respawned, if it died
 
   // ---- 2. WALL stops it
   await fill('WALL', [WALL_X, 0, 0], [WALL_X + 4, GROUND + 24, ROCK_Z]);
@@ -103,7 +102,9 @@ try {
   await ev(([g]) => { const n = window.__app.pov.npcs.find((x) => x.kind === 'worm'); n.placeAt({ x: 24, y: g - 12, z: 40 }); }, [GROUND]);
   const walled = await sample('worm', 8);
   const past = Math.max(...walled.map((s) => s.head.x));
-  check('WALL stops it', past < WALL_X && walled.at(-1).blocked > 0, `head x at most ${past.toFixed(1)} (WALL at ${WALL_X}), ${walled.at(-1).blocked} blocked moves`);
+  const hunted = walled.filter((s) => s.mode === 'hunt').length;
+  check('WALL stops it', hunted > walled.length / 2 && past < WALL_X && past > WALL_X - 6 && walled.at(-1).blocked > 0,
+    `hunting ${hunted}/${walled.length} samples, head x at most ${past.toFixed(1)} (WALL at ${WALL_X}), ${walled.at(-1).blocked} blocked moves`);
 
   // ---- 3. it dies to gunfire: stranded on the bare floor, you shoot it with the pistol
   await stand(64, 0, 100);

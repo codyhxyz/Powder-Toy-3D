@@ -253,6 +253,7 @@ export function createWorm({ env, ai, home = () => null, size: sizeKey = 'small'
     placeSegments();
     health = size.hp; dead = false; deadTime = 0; cause = null;
     digAt = null; biteWait = 0; jaw = 0; noise = null; roamTo = null; quarry = null;
+    for (const k in stats) stats[k] = 0;   // the debug counts are this life's
     setPhase('stalk');
     spawned = true;
   }
