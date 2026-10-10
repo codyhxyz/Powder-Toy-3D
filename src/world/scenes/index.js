@@ -54,6 +54,10 @@
 //                        uint sceneTreeKey(ivec2 bc): its key (seed = pcg(key),
 //                          quarter = (key >> 20) & 3)
 //                  The far field draws them at brick scale into the bricks it builds.
+//   structures     (no hook: part of the cells) a scene with structures (world/structures.js:
+//                  the island's) includes STRUCT_GLSL, defines int structureGround(ivec3 w) (its
+//                  own cell), applies structureCell in its sceneCell, adds structureUniforms(P)
+//                  to its uniforms, and drops tree candidates where structureClears
 //   farChunksPerFrame
 //                  optional: far field chunks it builds a frame (world/far.js; cheap
 //                  cells can go faster than the default one)

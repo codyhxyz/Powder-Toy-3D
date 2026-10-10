@@ -7,6 +7,7 @@ import { ELEMENTS, E, toolById, isBuild, isSpawnerTool, isGearTool } from './ele
 import { Spawners, SPAWNER, feetOnHit } from './spawners.js';
 import { PerkOrbs } from './perkOrbs.js';
 import { buildPreset } from './presets.js';
+import { structureClear } from './world/structures.js';
 import { loadIsland, releaseGenerator } from './world/gpu.js';
 import { WorldWindow, WIN_STEP } from './world/window.js';
 import { bakedAir } from './constructions/runtime.js';
@@ -379,6 +380,7 @@ function worldShrine() {
     let lo = Infinity, hi = -Infinity;
     for (let i = -hx; i <= hx; i += SHRINE_SAMPLE)
       for (let k = -hz; k <= hz; k += SHRINE_SAMPLE) {
+        if (structureClear(P, o.x + x + i, o.z + z + k)) return [0, Infinity];   // not on the world's structures (world/structures.js)
         const h = win.scene.ground(o.x + x + i, o.z + z + k, P);
         lo = Math.min(lo, h); hi = Math.max(hi, h);
       }
