@@ -71,7 +71,7 @@ export const DETAIL = [
     desc: 'Sand, snow, ash, gunpowder, rock and wood get real relief when you are close: crags, clumps and bark furrows with true outlines and parallax' },
   // high: volcano eyeSummit +17, eyeFlank +12 ms
   { key: 'grains', define: 'DETAIL_GRAINS', label: 'Pebbles and grains up close', cost: 'high', fadeM: GRAINS_FADE_M,
-    desc: 'Up close, gravel is a pile of real pebbles (~5 cm): outlines, gaps and contact shadows instead of a texture' },
+    desc: 'Up close, rubble is a pile of real broken-rock chips (~5 cm): faces, edges, gaps and contact shadows instead of a texture' },
   // high: volcano eyeFlank +14, lab +9 ms
   { key: 'grainClusters', define: 'DETAIL_GRAIN_CLUSTERS', label: 'Loose clumps up close', cost: 'high', fadeM: CLODS_FADE_M,
     desc: 'Up close, a lone cell of sand, snow, powder or ash is a lumpy 30 cm clod instead of a round blob' },

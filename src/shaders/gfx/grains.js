@@ -1,9 +1,11 @@
 // Close-up detail (gfx/detail.js): grains drawn as real geometry inside their cells.
 //
-// "grains" (DETAIL_GRAINS): up close, each gravel (STONE) cell is the pile
-// of pebbles it holds. A cell is CELL_M across and a pebble ~PEBBLE_M
-// (gfx/surface.js), so a cell holds a sub-lattice of PEB_N³ pebble sites; most
-// sites hold a pebble, an ellipsoid of its own size, flattening and turn. A
+// "grains" (DETAIL_GRAINS): up close, each rubble (STONE) cell is the pile
+// of broken rock it holds. A cell is CELL_M across and a chip ~PEBBLE_M
+// (gfx/surface.js), so a cell holds a sub-lattice of PEB_N³ chip sites; most
+// sites hold a chip: a box of its own size, flattening and turn with its
+// corners knocked off (cut by an ellipsoid PEB_CORNER times its size), so
+// flat faces meet at sharp edges like freshly broken rock. A
 // pebble belongs to its cell (its seed) and the sub-lattice runs on unbroken
 // across cells: a pebble near a face may straddle it into the gravel next
 // door, so a heap shows no seams at the cell faces. The heap
@@ -57,13 +59,14 @@ const int PEB_N = int(PEBBLE_F + 0.5);    // pebble sites per cell along a line
 const float PEB_Q = 1.0 / float(PEB_N);   // site pitch, cells
 // in site pitches:
 const float PEB_P = 0.88;                 // share of sites holding a pebble
-const float PEB_R_MIN = 0.4, PEB_R_VAR = 0.25;   // longest semi-axis
-const float PEB_JITTER = 0.3;             // centre's reach from the site's middle (each axis)
-// (a pebble's longest semi-axis is at most PEB_R_MIN + PEB_R_VAR <= 1 -
-// PEB_JITTER, so any point of it lies in the 2×2×2 sites nearest that point:
-// the walk only tests those)
-// semi-axes as shares of the longest (water-worn: flattish)
-const float PEB_MID_MIN = 0.7, PEB_FLAT_MIN = 0.45, PEB_FLAT_MAX = 0.8;
+const float PEB_R_MIN = 0.4, PEB_R_VAR = 0.2;    // longest semi-axis of the box
+const float PEB_CORNER = 1.3;             // the corner-cutting ellipsoid, as a multiple of the box's semi-axes
+const float PEB_JITTER = 0.2;             // centre's reach from the site's middle (each axis)
+// (a chip reaches at most PEB_CORNER · (PEB_R_MIN + PEB_R_VAR) <= 1 -
+// PEB_JITTER from its centre, so any point of it lies in the 2×2×2 sites
+// nearest that point: the walk only tests those)
+// semi-axes as shares of the longest (broken rock: blocky to slabby)
+const float PEB_MID_MIN = 0.6, PEB_FLAT_MIN = 0.35, PEB_FLAT_MAX = 0.85;
 const float PEB_CLUMP_R = 0.45;           // a lone gravel cell: pebbles within this of its middle (cells)
 // An empty cell inside the smooth surface holds pebbles of the gravel cell
 // next to it, looked for in this order (below first: they slumped there).
@@ -175,15 +178,36 @@ mat3 randomTurn(inout uint h) {
               2.0 * (x * z + w * y), 2.0 * (y * z - w * x), 1.0 - 2.0 * (x * x + y * y));
 }
 
-// Ray vs ellipsoid (centre c, semi-axes s along the columns of R): entry t, NO_HIT on a miss.
-float ellHit(vec3 ro, vec3 rd, vec3 c, vec3 s, mat3 R) {
-  mat3 Rt = transpose(R);
-  vec3 o = (Rt * (ro - c)) / s, d = (Rt * rd) / s;
-  float a = dot(d, d), b = dot(o, d), k = dot(o, o) - 1.0;
-  float h = b * b - a * k;
-  return h < 0.0 ? NO_HIT : (-b - sqrt(h)) / a;
-}
+// Normal of the ellipsoid (centre c, semi-axes s along the columns of R) at p.
 vec3 ellNormal(vec3 p, vec3 c, vec3 s, mat3 R) { return normalize(R * ((transpose(R) * (p - c)) / (s * s))); }
+// Ray vs a chip: the box of semi-axes s (turned by R) cut by the ellipsoid of
+// semi-axes PEB_CORNER · s. Both are convex, so the ray is inside the chip from
+// the later of the two entries to the earlier of the two exits.
+float chipHit(vec3 ro, vec3 rd, vec3 c, vec3 s, mat3 R) {
+  mat3 Rt = transpose(R);
+  vec3 o = Rt * (ro - c), d = Rt * rd;
+  vec3 inv = 1.0 / d;
+  vec3 ta = (-s - o) * inv, tb = (s - o) * inv;
+  vec3 tn = min(ta, tb), tf = max(ta, tb);
+  float t0 = max(max(tn.x, tn.y), tn.z), t1 = min(min(tf.x, tf.y), tf.z);
+  vec3 se = s * PEB_CORNER;
+  vec3 oe = o / se, de = d / se;
+  float a = dot(de, de), b = dot(oe, de), k = dot(oe, oe) - 1.0;
+  float h = b * b - a * k;
+  if (h < 0.0) return NO_HIT;
+  h = sqrt(h);
+  t0 = max(t0, (-b - h) / a); t1 = min(t1, (-b + h) / a);
+  return t0 <= t1 ? t0 : NO_HIT;
+}
+// Normal of a chip at p on its surface: the box face it is on, or the cut corner.
+vec3 chipNormal(vec3 p, vec3 c, vec3 s, mat3 R) {
+  vec3 q = transpose(R) * (p - c);
+  vec3 b = abs(q) / s;
+  float box = max(max(b.x, b.y), b.z);
+  if (length(q / (s * PEB_CORNER)) > box) return ellNormal(p, c, s * PEB_CORNER, R);
+  vec3 f = b.x >= box ? vec3(sign(q.x), 0.0, 0.0) : (b.y >= box ? vec3(0.0, sign(q.y), 0.0) : vec3(0.0, 0.0, sign(q.z)));
+  return R * f;
+}
 // does the ray (rd unit length) come within r of c somewhere in [tMin, tBest)?
 bool ballNear(vec3 ro, vec3 rd, vec3 c, float r, float tMin, float tBest) {
   vec3 oc = ro - c;
@@ -274,10 +298,10 @@ float pebblesHit(ivec3 cell, vec4 a, bool lone, int fill, vec3 ro, vec3 rd, floa
           if (fl == 0 || !pebbleAt(s, own, af, false, fl, c, r, h)) continue;
         } else continue;
       }
-      if (!ballNear(ro, rd, c, r, t0, best)) continue;
+      if (!ballNear(ro, rd, c, PEB_CORNER * r, t0, best)) continue;
       vec3 sa; mat3 R;
       pebbleShape(r, h, sa, R);
-      float t = ellHit(ro, rd, c, sa, R);
+      float t = chipHit(ro, rd, c, sa, R);
       if (t >= t0 && t < best) { best = t; sHit = s; }
     }
     if (best <= tb || tb >= t1) break;   // nothing nearer can come later
@@ -519,10 +543,10 @@ float pebbleSunVis(ivec3 sSelf, vec3 p) {
       if (s == sSelf) continue;
       ivec3 cell; vec4 a; vec3 c; float r; uint h;
       if (!pebbleOf(s, cell, a, c, r, h)) continue;
-      if (!ballNear(p, rd, c, r, 0.0, NO_HIT)) continue;
+      if (!ballNear(p, rd, c, PEB_CORNER * r, 0.0, NO_HIT)) continue;
       vec3 sa; mat3 R;
       pebbleShape(r, h, sa, R);
-      float t = ellHit(p, rd, c, sa, R);
+      float t = chipHit(p, rd, c, sa, R);
       if (t >= 0.0 && t < NO_HIT) return 0.0;
     }
     int ax = argmin3(tMax);
@@ -557,7 +581,7 @@ Surf grainSurf(ivec3 aH, int k, vec3 p, vec3 rd) {
     pebbleOf(aH, cell, a, c, r, h);
     vec3 sa; mat3 R;
     pebbleShape(r, h, sa, R);
-    vec3 n = ellNormal(p, c, sa, R);
+    vec3 n = chipNormal(p, c, sa, R);
     s.n = n; s.ng = n; s.id = E_STONE; s.cell = cell; s.seed = fract(a.w); s.T = a.y;
     m = baseMat(E_STONE);
     if (uMatDetail > 0.5) {
