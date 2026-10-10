@@ -104,3 +104,32 @@ export function sceneKey(scene) {
   scene.traverseVisible((o) => { parts.push(o.id, ...o.matrixWorld.elements); });
   return parts.join(',');
 }
+
+// A browser that holds the page at 30 Hz (Chrome's Energy Saver throttles every
+// page to 30 Hz, Safari's Low Power Mode does the same) looks like slow
+// rendering. Idle frames draw nothing and cost almost no CPU, so when the rAF
+// callbacks after them still come at that rate the cap is the browser's, not
+// the app's. feed() takes each rAF time and whether the frame before it was
+// idle (drew nothing, ran under CAP_IDLE_MS); it returns true once, when
+// CAP_SAMPLES idle gaps in a row average CAPPED_HZ.
+const CAPPED_HZ = 30;
+const CAP_TOLERANCE_HZ = 2;
+const CAP_SAMPLES = 60;          // 2 s at the cap
+export const CAP_IDLE_MS = 5;    // a frame slower than this could be holding the rate down itself
+export function createCapCheck() {
+  let prev = null, sum = 0, n = 0, told = false;
+  return {
+    feed(now, prevIdle) {
+      const gap = prev == null ? null : now - prev;
+      prev = now;
+      if (told || gap == null) return false;
+      if (!prevIdle) { sum = 0; n = 0; return false; }
+      sum += gap; n++;
+      if (n < CAP_SAMPLES) return false;
+      const hz = n * MS_PER_S / sum;
+      sum = 0; n = 0;
+      told = Math.abs(hz - CAPPED_HZ) <= CAP_TOLERANCE_HZ;
+      return told;
+    },
+  };
+}

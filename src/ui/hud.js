@@ -1,6 +1,9 @@
 import { h } from './dom.js';
 import { ICON } from './icons.js';
 
+const TOAST_MS = 2300;        // on screen
+const TOAST_FADE_LEAD = 100;  // ms: its fade-out animation ends this long before it is removed
+
 export function createHud() {
   // stats (bottom right)
   const fps = h('b'), cells = h('b'), steps = h('b'), res = h('b');
@@ -51,10 +54,10 @@ export function createHud() {
       setText(pres, info.P != null && Math.abs(info.P) >= PRESSURE_SHOWN ? `pressure ${info.P.toFixed(1)}` : '');
     },
     setPaused: (p) => pill.classList.toggle('show', p),
-    toast(text) {
-      const t = h('div.toast.panel', { text });
+    toast(text, ms = TOAST_MS) {
+      const t = h('div.toast.panel', { text, style: { animationDuration: `${ms - TOAST_FADE_LEAD}ms` } });
       toasts.append(t);
-      setTimeout(() => t.remove(), 2300);
+      setTimeout(() => t.remove(), ms);
     },
     dismissHint() { clearTimeout(hintTimer); hint.classList.add('gone'); },
     setLegend(view) {

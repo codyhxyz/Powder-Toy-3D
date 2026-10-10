@@ -422,7 +422,7 @@ body.eyedropper canvas { cursor: crosshair; }
 .pill .dot { width: 8px; height: 8px; border-radius: 2px; background: var(--accent); }
 
 .toasts { position: fixed; left: 50%; top: 56px; z-index: 40; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 6px; pointer-events: none; }
-.toast { padding: 7px 12px; border-radius: 8px; font-size: 12.5px; animation: toast 2.2s var(--ease) forwards; }
+.toast { padding: 7px 12px; border-radius: 8px; font-size: 12.5px; max-width: min(460px, calc(100vw - 32px)); text-align: center; animation: toast 2.2s var(--ease) forwards; }
 @keyframes toast {
   0% { opacity: 0; transform: translateY(-6px); }
   10%, 80% { opacity: 1; transform: none; }

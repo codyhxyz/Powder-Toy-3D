@@ -22,7 +22,7 @@ import { gfx, gfxUniforms, updateGfxUniforms } from './gfx/uniforms.js';
 import { DETAIL, settingKey, detailDefaults, detailDefines, detailRows } from './gfx/detail.js';
 import { createDetailGate } from './gfx/detailGate.js';
 import { createPost, UPSCALE } from './gfx/post.js';
-import { createPacer, settleFrames, sceneKey } from './gfx/pacing.js';
+import { createPacer, settleFrames, sceneKey, createCapCheck, CAP_IDLE_MS } from './gfx/pacing.js';
 import { CHANNELS, MEDIA } from './gfx/materials.js';
 import { DAY, dayPhase, phaseSteps, keyLight } from './gfx/daylight.js';
 import { GI_BLEND } from './sim.js';
@@ -987,6 +987,11 @@ for (const type of ['pointermove', 'pointerdown', 'pointerup', 'wheel', 'keydown
   addEventListener(type, () => pacer.wake(), { capture: true, passive: true });
 }
 let lastVersion = -1, renderedLast = false;
+// the browser capping the page at 30 Hz (gfx/pacing.js createCapCheck): say so once
+const capCheck = createCapCheck();
+let lastIdle = false;
+const CAP_NOTICE = 'Your browser is holding this page at 30 fps. In Chrome, turn off Energy Saver (Settings → Performance); on a Mac, Low Power Mode does the same.';
+const CAP_NOTICE_MS = 9000;
 const DT_MAX = 0.1;      // s: longer gaps (a hidden tab) count as this, so animations don't jump
 const FPS_WINDOW = 0.5;  // s over which the fps readout averages
 let resTime = 0, resFrames = 0, resDt = 0;
@@ -1086,7 +1091,10 @@ function saveScreenshot() {
 
 function frame(now) {
   requestAnimationFrame(frame);
-  if (!pacer.due(now)) return;
+  if (capCheck.feed(now, lastIdle)) hud.toast(CAP_NOTICE, CAP_NOTICE_MS);
+  const t0 = performance.now();
+  lastIdle = false;
+  if (!pacer.due(now)) { lastIdle = performance.now() - t0 < CAP_IDLE_MS; return; }
   if (prof.on !== settings.profiler) applyProfiler();
   prof.beginFrame(now);
   clock.update(now);
@@ -1211,6 +1219,7 @@ function frame(now) {
     resV: autoRes.enabled ? `${Math.round(pixelRatio * 100)}% res` : '',
   });
   prof.endFrame(stepping ? settings.steps : 0);
+  lastIdle = !runView && !stepping && performance.now() - t0 < CAP_IDLE_MS;
 }
 
 // ---------------------------------------------------------------- boot
