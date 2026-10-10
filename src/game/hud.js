@@ -103,7 +103,7 @@ export function createGameHud({ onStart, onEnd, onSide, onClose }) {
       toggle(chip, 'on', !st.running && !menuOpen && now >= endUntil);
       toggle(end, 'on', now < endUntil);
       toggle(menu, 'on', menuOpen);
-      toggle(board, 'on', (boardHeld || menuOpen) && (st.running || st.roster.length));
+      toggle(board, 'on', boardHeld && !menuOpen && st.running);
       toggle(endBtn, 'off', !st.running);
       startBtn.textContent = st.running ? 'Restart' : 'Start match';
       if (st.running) {
@@ -120,7 +120,7 @@ export function createGameHud({ onStart, onEnd, onSide, onClose }) {
           barFill.style.background = TEAM_CSS[st.progressTeam] ?? '#e8e2d0';
         }
       }
-      if ((boardHeld || menuOpen)) drawBoard(st);
+      if (boardHeld && st.running) drawBoard(st);
     },
   };
 }

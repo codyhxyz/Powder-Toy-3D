@@ -25,6 +25,7 @@ const TEAM_SIZE = +opt('teamSize', '4');
 const SHOT = opt('shot', null);
 const SWEEP = opt('sweep', null);   // e.g. 0,2,4,6,8: just the frame rate with that many bots (Slayer, watching), SWEEP_S each
 const SWEEP_S = 12;
+const TOUR = opt('tour', null);     // a path prefix: screenshots of a CTF match on red (HUD, Tab, M, the result), then exit
 const W = 960, H = 600;
 const POLL_MS = 1000;
 
@@ -63,6 +64,29 @@ try {
     const tick = () => { r.frames++; requestAnimationFrame(tick); };
     requestAnimationFrame(tick);
   });
+
+  if (TOUR) {
+    await p.evaluate(() => window.__app.pov.game.start('ctf', { side: 'red', timeLimit: 30 }));
+    await p.waitForTimeout(8000);
+    // stand on the red base, look across at the enemy
+    await p.evaluate(() => {
+      const pov = window.__app.pov, q = pov.player.pos, f = pov.game.layout.flags.blue;
+      pov.setLook(Math.atan2(-(f[0] - q.x), -(f[2] - q.z)), -0.08);
+    });
+    await p.waitForTimeout(1500);
+    await p.screenshot({ path: `${TOUR}-hud.jpg`, type: 'jpeg', quality: 70 });
+    await p.keyboard.down('Tab'); await p.waitForTimeout(300);
+    await p.screenshot({ path: `${TOUR}-tab.jpg`, type: 'jpeg', quality: 70 });
+    await p.keyboard.up('Tab');
+    await p.keyboard.press('m'); await p.waitForTimeout(300);
+    await p.screenshot({ path: `${TOUR}-menu.jpg`, type: 'jpeg', quality: 70 });
+    await p.keyboard.press('m');
+    const r = await p.evaluate(() => new Promise((res) => { const off = window.__app.pov.events.on('game:end', (e) => { off(); res({ winner: e.winner, score: e.score, why: e.why }); }); }));
+    await p.waitForTimeout(500);
+    await p.screenshot({ path: `${TOUR}-end.jpg`, type: 'jpeg', quality: 70 });
+    console.log('tour result', JSON.stringify(r));
+    MODES.length = 0;
+  }
 
   if (SWEEP) {
     for (const n of SWEEP.split(',').map(Number)) {

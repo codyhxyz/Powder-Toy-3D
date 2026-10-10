@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import { povEvents } from '../pov/events.js';
 import { setHitRules, targetById, PLAYER } from '../pov/targets.js';
 import { CLASS } from '../pov/classes.js';
+import { BODY_HEIGHT } from '../pov/constants.js';
+import { ELEMENTS, E, K } from '../elements.js';
 import * as R from './rules.js';
 import { labLayout, fitLayout } from './layout.js';
 import { ObjectiveEvaluator, WANT, NEAR } from './bots.js';
@@ -33,6 +35,7 @@ const ESCORT_R = 6;                  // cells: escorts keep this near the carrie
 const DEFEND_R = 8;                  // cells: defenders keep this near their stand
 const ROLES = ['attack', 'defend'];  // CTF roles, dealt in turn (Raven's / Quake III's team orders)
 const FLAG_LIFT = 2;                 // cells above a carrier's feet the flag rides
+const SPAWN_LIFT_MAX = 40;           // cells a spawn rises at most to clear what has fallen on its point (a heap of sand)
 const BOT_MS_EASE = 0.05;            // the bots' CPU time per frame is shown as this running average (checks)
 const ROAM_S = 30;                   // s a Slayer bot heads for one stretch of open ground before the next
 const other = (t) => (t === 'red' ? 'blue' : 'red');
@@ -132,9 +135,22 @@ export function createGame(shell) {
       if (d > bd) { bd = d; best = p; }
     }
     const g = sim().g, a = Math.random() * Math.PI * 2, r = Math.random() * R.SPAWN_JITTER;
-    return new THREE.Vector3(
-      THREE.MathUtils.clamp(best[0] + Math.cos(a) * r, 2, g.nx - 2), best[1],
-      THREE.MathUtils.clamp(best[2] + Math.sin(a) * r, 2, g.nz - 2));
+    const x = THREE.MathUtils.clamp(best[0] + Math.cos(a) * r, 2, g.nx - 2), z = THREE.MathUtils.clamp(best[2] + Math.sin(a) * r, 2, g.nz - 2);
+    return new THREE.Vector3(x, clearAt(x, best[1], z), z);
+  }
+  // the lowest height from y up where a body fits (the world model's copy of the cells), so
+  // nobody spawns inside a heap; a roof over the point stays a roof
+  const open = (i) => i === E.EMPTY || ELEMENTS[i]?.kind === K.GAS || ELEMENTS[i]?.kind === K.LIQUID;
+  function clearAt(x, y, z) {
+    const w = npc?.ai?.world;
+    if (!w?.ready) return y;
+    const fx = Math.floor(x), fz = Math.floor(z), top = sim().g.ny - BODY_HEIGHT - 1;
+    for (let yy = Math.floor(y); yy <= Math.min(y + SPAWN_LIFT_MAX, top); yy++) {
+      let free = true;
+      for (let k = 0; k < Math.ceil(BODY_HEIGHT) && free; k++) free = open(w.id(fx, yy + k, fz));
+      if (free) return yy;
+    }
+    return y;
   }
 
   function addBot(team, name) {
@@ -239,6 +255,7 @@ export function createGame(shell) {
       count();
       povEvents.emit('game:start', { mode: m, layout: layout.name, teams: Object.fromEntries(teams.map((t) => [t, members(t).map((e) => e.id)])) });
       hud.announce(`${rules.name}${pe.team ? `: you're on ${label(pe.team)}` : ''}`, now());
+      hud.choose(m);
       return true;
     })();
     try { return await starting; } finally { starting = null; }
@@ -268,7 +285,7 @@ export function createGame(shell) {
     const p = me();
     const result = { mode, winner: winner ?? null, score: { ...teamScore }, why, roster: board() };
     if (winner !== undefined) {
-      const title = winner ? `${label(winner)} ${winner === R.INFECTED ? 'win' : 'wins'}` : 'Draw';
+      const title = winner ? `${label(winner)} ${winner === R.INFECTED ? 'win' : 'wins'}` : 'Draw';   // (the Infected win)
       const you = p?.team ? (winner === p.team ? 'You win. ' : winner ? 'You lose. ' : '') : '';
       hud.result(title, `${you}${why}`, now(), R.END_SCREEN_S);
     } else hud.result('Match ended', '', now(), R.END_SCREEN_S / 2);
@@ -506,7 +523,7 @@ export function createGame(shell) {
         else if (mode === 'infection' && teamScore[R.HUMANS] === 0) end(R.INFECTED, 'No one survived');
         else if (time >= ends) {
           if (mode === 'infection') end(R.HUMANS, `${teamScore[R.HUMANS]} survived the clock`);
-          else { const w = leader(); end(w, `Time: ${Math.floor(teamScore[R.TEAMS[0]])} to ${Math.floor(teamScore[R.TEAMS[1]])}`); }
+          else { const w = leader(); end(w, `Time's up: ${Math.floor(teamScore[R.TEAMS[0]])} to ${Math.floor(teamScore[R.TEAMS[1]])}`); }
         }
       }
       markers.update({

@@ -14,7 +14,7 @@
 // The lab at 128³; scaled to the box (presets.js scales the lab by nx / 128).
 const LAB = {
   spawns: {
-    red: [[118, 0, 8], [108, 0, 8], [118, 0, 18], [98, 0, 10], [110, 0, 16]],
+    red: [[118, 0, 8], [108, 0, 8], [118, 0, 18], [122, 0, 30], [110, 0, 16]],   // clear of the sand pile's heap (centre 85, 35)
     blue: [[8, 0, 118], [18, 0, 118], [8, 0, 108], [28, 0, 116], [16, 0, 108]],
   },
   flags: { red: [114, 0, 12], blue: [12, 0, 114] },

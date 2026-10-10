@@ -51,7 +51,7 @@
 
 /* ---- scoreboard */
 .game-board {
-  position: absolute; left: 50%; top: 18%; transform: translateX(-50%);
+  position: absolute; left: 50%; top: 150px; transform: translateX(-50%);
   width: min(640px, calc(100vw - 32px)); padding: 14px 16px; display: none;
 }
 .game-board.on { display: block; }
@@ -69,11 +69,10 @@
 
 /* ---- match menu (M): pointer events on, the mouse is free while it's open */
 .game-menu {
-  position: absolute; left: 50%; bottom: 7%; transform: translateX(-50%);
+  position: absolute; left: 50%; bottom: 96px; transform: translateX(-50%);   /* above the hotbar */
   width: min(640px, calc(100vw - 32px)); padding: 12px 14px; display: none; pointer-events: auto;
 }
 .game-menu.on { display: block; }
-.game-menu.on ~ .game-board.on { top: 6%; }
 .game-menu-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 15px; }
 .game-x { background: none; border: 0; color: var(--muted); font-size: 22px; cursor: pointer; line-height: 1; }
 .game-picks { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 6px; }
