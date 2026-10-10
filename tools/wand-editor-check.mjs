@@ -1,5 +1,6 @@
 // Own strict-port server, real app, native dialog and keyboard checks.
 // node tools/wand-editor-check.mjs [--port 5297] [--shots /tmp/wand-editor]
+// --editor-only checks the real editor/compiler with an in-memory runtime test double.
 import assert from 'node:assert/strict';
 import { access, mkdir } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
@@ -11,7 +12,8 @@ const option = (key, fallback) => {
 };
 const port = option('port', '5297');
 const shots = option('shots', '/tmp/wand-editor');
-for (const file of ['catalog', 'compiler', 'runtime', 'world']) {
+const editorOnly = process.argv.includes('--editor-only');
+for (const file of (editorOnly ? ['catalog', 'compiler'] : ['catalog', 'compiler', 'runtime', 'world'])) {
   await access(`src/pov/wands/${file}.js`).catch(() => { throw new Error(`Integration pending: src/pov/wands/${file}.js is not present. No mocks substitute for the app.`); });
 }
 await mkdir(shots, { recursive: true });
@@ -29,11 +31,15 @@ try {
     await new Promise((r) => setTimeout(r, 100));
   }
   if (!serverLog.includes(url)) throw new Error(`Dev server did not start: ${serverLog}`);
-  browser = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
+  browser = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist', '--disable-features=LocalNetworkAccessChecks'] });
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
   const errors = [];
   page.on('pageerror', (error) => errors.push(String(error)));
   page.on('console', (msg) => { if (msg.type() === 'error') errors.push(msg.text()); });
+  if (editorOnly) {
+    await checkEditorOnly(page);
+    assert.deepEqual(errors, []);
+  } else {
   await page.addInitScript(() => {
     localStorage.setItem('powder-toy-3d:settings', JSON.stringify({ autoRes: false, res: 0.5, liveTiles: false }));
     if (!localStorage.getItem('tpt3d.wand.v1')) localStorage.setItem('tpt3d.wand.v1', '{broken JSON');
@@ -146,8 +152,69 @@ try {
   await page.keyboard.press('Escape');
   assert.deepEqual(errors, [], 'browser errors (includes GPU shader errors)');
   console.log(`PASS: ${data.presets.length} recipes, ${data.spellCount} spells, ten old slots, modal guards, editing/persistence, runtime ticking, teleport vitals, desktop/mobile layout. Screenshots: ${shots}`);
+  }
 } finally {
   await browser?.close();
   server.kill('SIGTERM');
   if (server.exitCode === null) await new Promise((resolve) => server.once('exit', resolve));
+}
+
+async function checkEditorOnly(page) {
+  await page.route('**/wand-editor-unit', (route) => route.fulfill({ contentType: 'text/html',
+    body: '<!doctype html><html><head><script type="module">import "/src/ui/styles.css";</script></head><body></body></html>' }));
+  await page.goto(`${url}/wand-editor-unit`);
+  // Only the compile/apply boundary is doubled; no scheduler or GPU claim.
+  const handle = await page.evaluateHandle(async () => {
+    const { createWandEditor } = await import('/src/pov/wands/editor.js');
+    const { compileWand } = await import('/src/pov/wands/compiler.js');
+    const { PRESETS, SPELLS } = await import('/src/pov/wands/catalog.js');
+    const runtime = { definition: PRESETS[0], setDefinition(def) {
+      const result = compileWand(def.cards, def.config);
+      if (!result.errors.length) this.definition = def;
+      return result;
+    } };
+    const editor = createWandEditor({ runtime });
+    editor.show();
+    return { runtime, editor, presets: PRESETS, spellCount: SPELLS.length };
+  });
+  assert.equal(await page.locator('.we-library li').count(), await handle.evaluate((h) => h.spellCount));
+  const presets = await handle.evaluate((h) => h.presets);
+  for (const preset of presets) {
+    await page.getByLabel('Wand recipe').selectOption(preset.id);
+    assert.equal(await page.locator('.we-deck > li').count(), preset.cards.length);
+    assert.equal(await page.getByRole('button', { name: 'Save & equip' }).isDisabled(), false, preset.id);
+  }
+  await page.getByLabel('Search spells').fill('no spell has this name');
+  assert.match(await page.locator('.we-library').innerText(), /No spells match/);
+  await page.getByLabel('Search spells').fill('');
+  await page.getByRole('button', { name: 'Clear deck' }).click();
+  assert(await page.getByRole('button', { name: 'Save & equip' }).isDisabled());
+  await page.getByLabel('Wand recipe').selectOption(presets[0].id);
+  await page.locator('.we-library button').first().click();
+  assert.equal(await page.locator('.we-deck > li').count(), presets[0].cards.length + 1);
+  await page.locator('.we-deck > li').last().getByRole('button', { name: /Remove/ }).click();
+  if (presets[0].cards.length > 1) {
+    const first = await page.locator('.we-deck > li > span').first().innerText();
+    await page.locator('.we-deck > li').first().getByRole('button', { name: /down/ }).click();
+    assert.equal(await page.locator('.we-deck > li > span').nth(1).innerText(), first);
+    await page.locator('.we-deck > li').nth(1).getByRole('button', { name: /up/ }).click();
+  }
+  await page.getByLabel('Max mana', { exact: true }).fill('');
+  assert(await page.getByRole('button', { name: 'Save & equip' }).isDisabled());
+  await page.getByLabel('Wand recipe').selectOption(presets[0].id);
+  await page.screenshot({ path: `${shots}/desktop.png` });
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert(await page.locator('dialog').evaluate((el) => el.scrollWidth <= el.clientWidth + 1));
+  await page.screenshot({ path: `${shots}/mobile.png` });
+  await page.getByLabel('Wand name').fill('Checked editor');
+  await page.getByRole('button', { name: 'Save & equip' }).click();
+  assert.equal(await handle.evaluate((h) => h.runtime.definition.name), 'Checked editor');
+  assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('tpt3d.wand.v1')).name), 'Checked editor');
+  await handle.evaluate((h) => h.editor.show());
+  await page.getByLabel('Wand name').fill('Cancelled');
+  await page.keyboard.press('Escape');
+  assert.equal(await handle.evaluate((h) => h.runtime.definition.name), 'Checked editor');
+  await handle.evaluate((h) => h.editor.dispose());
+  await handle.dispose();
+  console.log(`PASS editor-only: ${presets.length} recipes, library/search, add/remove/move, validation, Save/Cancel/persistence, desktop/mobile layout. Runtime doubled; full integration pending. Screenshots: ${shots}`);
 }

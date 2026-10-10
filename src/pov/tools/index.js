@@ -37,7 +37,7 @@ export function createToolbelt(env) {
     runtime: wandRuntime, toast: (text) => env.hud?.toast?.(text),
     onOpenChange(open) { env.onEditorOpenChange?.(open); if (open) deselect(); },
     onSave(def) {
-      custom = { ...def, name: def.name.trim() || 'Custom wand' };
+      custom = { ...def, slot: def.slot ?? selected + 1, name: def.name.trim() || 'Custom wand' };
       selected = Math.max(0, Math.min(HOTBAR_SLOTS - 1, (def.slot ?? selected + 1) - 1));
       wandSelected = true;
       syncChoices(); hotbar.select(selected); hotbar.choose('custom');
@@ -101,7 +101,7 @@ export function createToolbelt(env) {
       items: [
         { value: `tool:${i}`, label: tool?.def.name ?? 'Empty slot' },
         ...PRESETS.filter((p) => p.slot === i + 1).map((p) => ({ value: `wand:${p.id}`, label: `Wand: ${p.name}` })),
-        ...(custom && i === selected ? [{ value: 'custom', label: `Wand: ${custom.name}` }] : []),
+        ...(custom?.slot === i + 1 ? [{ value: 'custom', label: `Wand: ${custom.name}` }] : []),
       ],
     })));
   }
@@ -116,7 +116,7 @@ export function createToolbelt(env) {
     wandRuntime.equip(def);
     selected = Math.max(0, Math.min(HOTBAR_SLOTS - 1, (def.slot ?? selected + 1) - 1));
     wandSelected = true;
-    if (!PRESETS.some((p) => p.id === def.id)) custom = def;
+    if (!PRESETS.some((p) => p.id === def.id)) custom = { ...def, slot: selected + 1 };
     syncChoices(); hotbar.select(selected);
     hotbar.choose(PRESETS.some((p) => p.id === def.id) ? `wand:${def.id}` : 'custom');
     env.releaseInput?.(); env.requestRender?.();
