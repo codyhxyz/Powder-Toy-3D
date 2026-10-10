@@ -1195,7 +1195,7 @@ const pacer = createPacer({
 });
 // input of any kind may change what the view shows
 for (const type of ['pointermove', 'pointerdown', 'pointerup', 'wheel', 'keydown', 'keyup', 'input', 'change', 'resize']) {
-  addEventListener(type, () => pacer.wake(), { capture: true, passive: true });
+  addEventListener(type, () => { autoRes.wake(); pacer.wake(); }, { capture: true, passive: true });
 }
 let lastVersion = -1, renderedLast = false;
 // the browser capping the page at 30 Hz (gfx/pacing.js createCapCheck): say so once
@@ -1326,14 +1326,20 @@ function frame(now) {
     radius: settings.radius, shape: settings.shape, tool: settings.tool,
   });
   const worldChanged = sim.version !== lastVersion;
+  if (worldChanged) autoRes.wake();
   lastVersion = sim.version;
   const runDerived = pacer.derived(
     `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${KEY_LIGHT}|${settings.view}|${gfx.smoothing}|${detailVersion}`);
-  const runView = pacer.view(
+  let runView = pacer.view(
     `${camera.matrixWorld.elements}|${camera.projectionMatrix.elements}|${pixelRatio}|${innerWidth}x${innerHeight}`
     + `|${JSON.stringify(settings)}|${JSON.stringify(gfx)}|${JSON.stringify(post.settings)}|${sceneKey(scene)}`
     + `|${win?.far?.chunksDrawn}`,   // a world scene's far field filling in (world/far.js)
     runDerived || wantShot || post.adapting);   // (eyes adjusting to the dark: gfx/post.js ADAPT)
+  if (!runView && autoRes.recover(clock.getElapsed())) {
+    post.settings.resolutionScale = autoRes.scale;
+    pacer.wake();   // settle the final full-quality still; don't wake auto resolution
+    runView = true;
+  }
   // a frame's dt measures the drawing rate only when the frame before it drew too
   if (runView && renderedLast) { frames++; fpsTime += dt; }
   if (fpsTime > FPS_WINDOW) { fps = frames / fpsTime; frames = 0; fpsTime = 0; }

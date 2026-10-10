@@ -79,13 +79,25 @@ export const ADAPT = {
 // regain detail too. Failed trials back off so CPU-bound scenes don't keep cycling.
 export function createAutoResolution() {
   const WINDOW = 1.2, MIN = 0.6, HOLD = 15, MAX_HOLD = 120;
-  let time = 0, frames = 0, trial = null;
+  let time = 0, frames = 0, trial = null, resting = false;
   let downAt = 0, upAt = HOLD, downHold = HOLD, upHold = HOLD;
   const auto = {
     enabled: true, // tools disable adaptation for stable timings (freeze current scale)
     scale: 1,
+    // Finish a still at selected quality, without measuring its settling frames
+    // and degrading again. Only outside input/state changes release this lock.
+    recover(now) {
+      if (!auto.enabled || resting) return false;
+      resting = true;
+      time = frames = 0; trial = null;
+      upAt = now + HOLD;
+      const changed = auto.scale !== 1;
+      auto.scale = 1;
+      return changed;
+    },
+    wake() { resting = false; },
     update(dt, now) {
-      if (!auto.enabled) { time = frames = 0; trial = null; return; }
+      if (!auto.enabled || resting) { time = frames = 0; trial = null; return; }
       time += dt; frames++;
       if (time < WINDOW) return;
       const avg = time / frames;

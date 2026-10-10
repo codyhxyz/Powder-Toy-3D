@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
 import { createAutoResolution, createPost, UPSCALE } from '../src/gfx/post.js';
+import { createPacer, settleFrames } from '../src/gfx/pacing.js';
 
 // Exercise the real post target sizing and scene uniform, without issuing GL calls.
 let target = null, width = 1200, height = 800, sceneFootprint;
@@ -102,3 +103,57 @@ assert.ok(rises[2].now - rises[1].now >= 30);
 probes.advance(90, () => 1 / 30);
 assert.equal(limited.scale, 1, 'rejected probes do not prevent later recovery');
 console.log('PASS: rejected down/up trials roll back, cooldowns grow, later recovery remains possible');
+
+// Match app ordering: only drawn frames feed timing; post scale is part of the
+// view key, but must not unlock adaptation while the final still settles.
+const idleAuto = createAutoResolution();
+idleAuto.scale = 0.6;
+const pacer = createPacer({ derivedSettle: 2, viewSettle: settleFrames(0.05) });
+let now = 0, renderedLast = false, draws = 0, restores = 0, restoredAt = 0;
+let version = 0, postKey = 0;
+function tick(worldChanged = false) {
+  const dt = 1 / 30;
+  now += dt;
+  assert.ok(pacer.due(now * 1000));
+  if (renderedLast) idleAuto.update(dt, now);
+  if (worldChanged) { idleAuto.wake(); version++; }
+  const derived = pacer.derived(version);
+  let render = pacer.view(`${version}|${postKey}|${idleAuto.scale}`, derived);
+  if (!render && idleAuto.recover(now)) {
+    pacer.wake();
+    render = true;
+    restores++; restoredAt = now;
+  }
+  renderedLast = render;
+  if (render) draws++;
+}
+for (let i = 0; i < 1200; i++) tick();
+assert.equal(idleAuto.scale, 1, 'still recovers before render-idle');
+assert.equal(restores, 1, 'one restoration, no degrade/restore loop');
+assert.ok(restoredAt < 15, 'recovery does not wait for an upward probe');
+assert.equal(renderedLast, false, 'full-quality TAA finishes settling');
+const settledDraws = draws;
+for (let i = 0; i < 1200; i++) tick();
+assert.equal(draws, settledDraws, 'idle really stops rendering');
+postKey++; // its own post/settings change must not unlock adaptation
+for (let i = 0; i < 240; i++) { tick(); assert.equal(idleAuto.scale, 1); }
+assert.equal(renderedLast, false);
+idleAuto.wake(); pacer.wake(); // existing input handler
+for (let i = 0; i < 40; i++) tick();
+assert.ok(idleAuto.scale < 1, 'input resumes adaptation');
+for (let i = 0; i < 1200; i++) tick();
+assert.equal(renderedLast, false);
+assert.equal(idleAuto.scale, 1);
+tick(true); // worldChanged without an input event
+for (let i = 0; i < 40; i++) tick();
+assert.ok(idleAuto.scale < 1, 'world state changes resume adaptation');
+
+idleAuto.enabled = false;
+idleAuto.scale = 0.6;
+const manualRestores = restores;
+idleAuto.wake(); pacer.wake();
+for (let i = 0; i < 1200; i++) tick();
+assert.equal(idleAuto.scale, 0.6, 'disabled tools keep their manual scale even at idle');
+assert.equal(restores, manualRestores);
+assert.equal(renderedLast, false);
+console.log('PASS: pacer idle restores once, settles without cycling, input/state wake resumes adaptation, disabled tools stay stable');
