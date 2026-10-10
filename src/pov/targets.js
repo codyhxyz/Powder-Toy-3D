@@ -7,7 +7,11 @@ import { povEvents } from './events.js';
 // weapon never hits its own wielder: `owner` is the target's id ('player', or
 // the NPC's), and every test skips the target whose id is `exclude`.
 //
-//   const remove = addTarget({ id, box(min, max), alive, hurt(amount, cause, dir) });
+//   const remove = addTarget({ id, box(min, max), alive, hurt(amount, cause, dir, opts?), facing?(out) });
+//
+// hurt's opts: { lethal } (a backstab: all the health it has, through any shield).
+// facing(out): the unit direction the target looks along (its eyes), for the
+// knife's backstab test; a target without it can't be backstabbed.
 //
 // A team game (src/game) sets hit rules: rules.passes(byId, target) lets a
 // weapon go through a body (a teammate: no friendly fire, TF2's way, so a round
@@ -27,12 +31,12 @@ export function setHitRules(r) { rules = r; }
 
 export function addTarget(t) {
   const hurt = t.hurt;
-  t.hurt = function (amount, cause, dir) {
+  t.hurt = function (amount, cause, dir, opts) {
     const by = povEvents.actor?.id ?? PLAYER;
     const share = rules ? rules.share(by, t) : 1;
     if (!(share > 0)) return;
     povEvents.emit('body:hit', { id: t.id, amount: amount * share, cause });
-    hurt.call(t, amount * share, cause, dir);
+    hurt.call(t, amount * share, cause, dir, opts);
   };
   targets.add(t);
   return () => targets.delete(t);

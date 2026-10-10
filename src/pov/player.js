@@ -18,8 +18,10 @@ import { createPerkSet } from './perks.js';
 // by Archimedes, feels drag in liquids the way move.js does, gets thrown by
 // pressure gradients with the sim's own a = −∇P·P_ACCEL/ρ, and hands what it
 // touches to vitals.js. A second pass pushes loose matter out of the body's way.
-// The body's perks (perks.js) change its moves here (Lukki, Sand Swimmer) and
-// reach into the world through a third pass (Freeze Field, Revenge Explosion).
+// The body's perks (perks.js) change its moves here (Lukki, Sand Swimmer,
+// Fleet Foot, Rocket Boots, Big Tank) and reach into the world through a third
+// pass (Freeze Field, Revenge Explosion). A held pogo stick (tools/pogo.tool.js
+// calls holdPogo() every frame) turns its landings into bounces.
 //
 // Units: positions in grid cells (feet = bottom centre of the box), velocities
 // in cells/s, time in s. The sim runs on its own, much faster clock: about 240
@@ -115,6 +117,26 @@ const FREEZE_CLEAR = 1;                // cells around the body, from the feet u
 const REVENGE_INNER = BODY_HEIGHT / 2 + 1;   // cells from the body's middle where the blast's shell starts: the body sits in its eye
 const REVENGE_SHELL_MIN = 1;           // cells: the shell is at least this thick
 const REVENGE_COOLDOWN = 1;            // s between Revenge Explosions
+// The movement perks (Fleet Foot, Rocket Boots) multiply speeds; these caps keep the body inside
+// its probe (PROBE: 16 cells across, 32 tall; the probe leads the body by its velocity × the
+// readback latency) at low frame rates. Both are speeds the body already reaches without perks.
+const PERK_SPEED_H = PRESSURE_MAX_SPEED; // cells/s sideways at most: what a blast throws the body
+const PERK_SPEED_V = MAX_SPEED;        // cells/s upward at most: Noita's fastest fall
+
+// ---- pogo stick: Commander Keen 4's (Omnispeak ck_keen.c and ck_phys.c, 70 tics/s). Keen's
+// pogo bounces on every landing; holding jump through a bounce keeps gravity low for its 24-tic
+// timer, so it goes higher. Simulated tic by tic, Keen's full jump (−40 for 18 tics) rises 1124
+// units, a bounce with jump released 750 and one with it held 1518. Here a press of jump timed
+// to the landing takes the next bounce one Keen step higher (held − released), and a run of
+// timed presses climbs, as Super Mario 64's triple jump climbs with three timed presses; a
+// landing without one drops back to the released bounce. Heights are shares of this body's
+// own jump (JUMP_SPEED), so they hold whatever the gravity setting.
+const POGO_REST = 750 / 1124;          // × jump height: a bounce with no timed press (Keen, jump released)
+const POGO_STEP = (1518 - 750) / 1124; // × jump height each timed press adds (Keen's held bounce over its released one)
+const POGO_STEPS = 3;                  // timed presses in a row to the top bounce (SM64's triple jump)
+const KEEN_TICS = 70;                  // Keen's clock, tics/s
+const POGO_WINDOW_S = (24 - 9) / KEEN_TICS;   // s: a press this close to a landing (before or after) is timed: Keen's
+                                       // bounce heeds the button until its timer's last 9 tics (0.21 s)
 
 // share of a gap closed over dt by an ease of `share` per Noita frame (frame-rate independent)
 const ease = (share, dt) => 1 - (1 - share) ** (NOITA_FPS * dt);
@@ -143,6 +165,9 @@ function rawMat(frag, uniforms) {
 export function createPlayer({ renderer, getSim, quiet = false, perks = createPerkSet() }) {
   const listeners = {};
   let revengeWait = 0, revengeDue = false;
+  // pogo: the tool's hold (renewed every frame), the climb, and the jump button's timing
+  let pogoHold = false, pogoStep = 0, bounceTimed = false;
+  let prevJump = false, jumpHeldS = 0, sinceJumpPress = Infinity, sinceBounce = Infinity;
   const emit = (name, data) => {
     // Revenge Explosion: a hurt sets one off at the next update (it needs the sim), once a cooldown at most
     if (name === 'hurt' && perks.has('REVENGE_EXPLOSION') && revengeWait <= 0) { revengeDue = true; revengeWait = REVENGE_COOLDOWN; }
@@ -183,9 +208,14 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     jetting: false,               // the jetpack is firing this frame
     jetBurnS: 0,                  // s the current press has fired
     jetIdleS: 0,                  // s since the jet last fired
+    pogoing: false,               // bouncing on a held pogo stick this frame
+    get pogoStep() { return pogoStep; },   // timed presses in a row (0..POGO_STEPS): how high it bounces
     perks,                        // its perks (perks.js)
     speedScale: 1,                // × walking and running speed: a class's (classes.js; the Bulwark is slow)
     get health() { return vitals.health; },
+    get shield() { return vitals.shield; },             // Energy Shield left (base lives, 0..shieldMax)
+    get shieldMax() { return vitals.shieldMax; },
+    get shieldCharging() { return vitals.shieldCharging; },
     get breath() { return vitals.breath; },
     get feel() { return vitals.feel; },
     get dead() { return vitals.dead; },
@@ -557,17 +587,32 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     const grav = GRAVITY * sim.gravity / SIM_GRAVITY_REF;
     const swimming = sub >= SWIM_SHARE;
 
+    // the jump button's timing (the pogo's timed presses)
+    const jumpDown = alive && !!input.jump;
+    const pressed = jumpDown && !prevJump;
+    prevJump = jumpDown;
+    jumpHeldS = jumpDown ? jumpHeldS + dt : 0;
+    sinceJumpPress = pressed ? 0 : sinceJumpPress + dt;
+    sinceBounce += dt;
+    const pogoing = alive && pogoHold && !swimming;   // it doesn't bounce off liquid: it sinks in
+    pogoHold = false;
+    p.pogoing = pogoing;
+    if (!pogoing) pogoStep = 0;
+
     // controls
     wish.set(alive ? input.move?.x ?? 0 : 0, alive ? input.move?.z ?? 0 : 0);
     if (wish.length() > 1) wish.normalize();
     const vh = new THREE.Vector2(v.x, v.z);
     let jumpedNow = false;
-    const runSpeed = p.jetting ? JET_FLY_SPEED : (alive && input.sprint ? SPRINT_SPEED : WALK_SPEED) * p.speedScale;
+    // Fleet Foot and Rocket Boots: ×2 a stack, up to what the probe keeps up with; a class's speedScale on foot
+    const footSpeed = (alive && input.sprint ? SPRINT_SPEED : WALK_SPEED) * p.speedScale;
+    const runSpeed = p.jetting ? Math.min(JET_FLY_SPEED * perks.jetRate, Math.max(JET_FLY_SPEED, PERK_SPEED_H))
+      : alive && input.sprint ? Math.min(footSpeed * perks.sprintRate, Math.max(footSpeed, PERK_SPEED_H)) : footSpeed;
     if (!swimming && (p.onGround || wish.lengthSq() > 0 || vh.length() <= runSpeed)) {
       // Noita: ease toward the wished speed, on the ground and in the air alike.
       // With no input in the air faster than a run (a blast), keep the momentum.
       vh.lerp(wish.clone().multiplyScalar(runSpeed), ease(MOVE_EASE, dt));
-      if (p.onGround && alive && input.jump) { v.y = JUMP_SPEED; p.onGround = false; jumpedNow = true; }
+      if (p.onGround && alive && input.jump && !pogoing) { v.y = JUMP_SPEED; p.onGround = false; jumpedNow = true; }
     } else if (swimming && wish.lengthSq() > 0) {
       // strokes: accelerate toward the wished speed, never brake
       const dir = wish.clone().normalize();
@@ -580,17 +625,43 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
       if (input.down) v.y -= SWIM_DOWN * GRAVITY * dt;
     }
 
-    // jetpack: thrust while jump is held in the air (swimming strokes instead)
+    // pogo: every landing bounces; a press timed to it climbs a step, a landing without one drops back
+    const bounceSpeed = (step) => Math.sqrt(2 * grav * (POGO_REST + POGO_STEP * step) * JUMP_SPEED * JUMP_SPEED / (2 * GRAVITY));
+    if (pogoing && p.onGround) {
+      bounceTimed = sinceJumpPress <= POGO_WINDOW_S;
+      pogoStep = bounceTimed ? Math.min(POGO_STEPS, pogoStep + 1) : 0;
+      if (bounceTimed) sinceJumpPress = Infinity;   // the press is used up
+      // + half a frame of gravity: each step below takes a whole frame's off before moving
+      // (semi-implicit Euler), which would cost the apex v·dt/2 and make it hang on the frame
+      // rate. The typical frame (dtSmooth), not this one, so one slow frame doesn't skew it.
+      v.y = bounceSpeed(pogoStep) + grav * dtSmooth / 2;
+      p.onGround = false; jumpedNow = true; sinceBounce = 0;
+      emit('pogo', { step: pogoStep, timed: bounceTimed, speed: v.y });
+    } else if (pogoing && pressed && !bounceTimed && sinceBounce <= POGO_WINDOW_S && v.y > 0 && pogoStep < POGO_STEPS) {
+      // pressed just after the bounce: this one still climbs (same apex as if it had been on time)
+      const before = bounceSpeed(pogoStep);
+      pogoStep++;
+      v.y = Math.sqrt(Math.max(0, v.y * v.y + bounceSpeed(pogoStep) ** 2 - before * before));
+      bounceTimed = true; sinceJumpPress = Infinity;
+      emit('pogo', { step: pogoStep, timed: true, late: true, speed: v.y });
+    }
+
+    // jetpack: thrust while jump is held in the air (swimming strokes instead). On a pogo a tap is
+    // a bounce, so the jet waits until jump has been held past the bounce's window.
     // Lukki: while a limb touches a wall or ceiling the jet fires on an empty tank, and the tank holds
-    const clings = alive && !!input.jump && !p.onGround && !swimming && perks.has('LUKKI') && clinging();
-    const jet = alive && !!input.jump && !p.onGround && !jumpedNow && !swimming && (p.jetFuel > 0 || clings);
+    // Rocket Boots: climbs faster; Big Tank: a bigger tank (the same refill rates fill it slower, as in Noita)
+    const tankS = JET_FUEL_S * perks.fuelRate;
+    const jetRise = Math.min(JET_RISE * perks.jetRate, Math.max(JET_RISE, PERK_SPEED_V));
+    const jetWants = alive && !!input.jump && (!pogoing || jumpHeldS > POGO_WINDOW_S);
+    const clings = jetWants && !p.onGround && !swimming && perks.has('LUKKI') && clinging();
+    const jet = jetWants && !p.onGround && !jumpedNow && !swimming && (p.jetFuel > 0 || clings);
     if (jet) {
-      if (!clings) p.jetFuel = Math.max(0, p.jetFuel - dt / JET_FUEL_S);
+      if (!clings) p.jetFuel = Math.max(0, p.jetFuel - dt / tankS);
       p.jetBurnS += dt;
       p.jetIdleS = 0;
-      if (v.y < JET_RISE) v.y += (JET_RISE - v.y) * ease(JET_EASE, dt);
+      if (v.y < jetRise) v.y += (jetRise - v.y) * ease(JET_EASE, dt);
     } else {
-      if (p.jetting && p.jetBurnS < JET_TAP_S && !clings) p.jetFuel = Math.max(0, p.jetFuel - (JET_TAP_S - p.jetBurnS) / JET_FUEL_S);
+      if (p.jetting && p.jetBurnS < JET_TAP_S && !clings) p.jetFuel = Math.max(0, p.jetFuel - (JET_TAP_S - p.jetBurnS) / tankS);
       p.jetBurnS = 0;
       p.jetIdleS += dt;
     }
@@ -654,13 +725,16 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
       if (r.id !== null && r.id !== UNKNOWN) { p.pos.y += r.d; p.onGround = true; v.y = Math.min(v.y, 0); }
     }
 
-    if (p.onGround) p.jetFuel = Math.min(1, p.jetFuel + dt * JET_REFILL_GROUND / JET_FUEL_S);
-    else if (p.jetIdleS > JET_AIR_WAIT_S) p.jetFuel = Math.min(1, p.jetFuel + dt * JET_REFILL_AIR / JET_FUEL_S);
+    if (p.onGround) p.jetFuel = Math.min(1, p.jetFuel + dt * JET_REFILL_GROUND / tankS);
+    else if (p.jetIdleS > JET_AIR_WAIT_S) p.jetFuel = Math.min(1, p.jetFuel + dt * JET_REFILL_AIR / tankS);
 
     // landing and impacts. Landings never hurt, as in Noita (no fall damage);
-    // being thrown into a wall or ceiling (a blast) still does.
-    if (p.onGround && !wasGround && landSpeed > LAND_EVENT_SPEED) emit('land', { speed: landSpeed });
-    if (slam > 0) vitals.impact(slam, SAFE_IMPACT, LETHAL_IMPACT, 0, slamId >= 0 ? slamId : -1);
+    // being thrown into a wall or ceiling (a blast) still does. On a pogo the
+    // spring takes landings and head bonks up to the top bounce's own speed:
+    // those are bounces ('pogo'), not landings.
+    const pogoSafe = pogoing ? bounceSpeed(POGO_STEPS) + grav * MAX_DT : 0;   // (+ what a longest frame's step adds)
+    if (p.onGround && !wasGround && landSpeed > Math.max(LAND_EVENT_SPEED, pogoSafe)) emit('land', { speed: landSpeed });
+    if (slam > 0) vitals.impact(slam, Math.max(SAFE_IMPACT, pogoSafe), LETHAL_IMPACT, 0, slamId >= 0 ? slamId : -1);
 
     vitals.update(dt, env);
     couple(sim, stepRate);
@@ -673,6 +747,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     impulse.set(0, 0, 0);
     p.onGround = false; p.inLiquid = false; p.headInLiquid = false; p.liquidId = -1; p.submerged = 0;
     p.jetFuel = 1; p.jetBurnS = 0; p.jetIdleS = 0;
+    p.pogoing = false; pogoStep = 0; bounceTimed = false; prevJump = false; jumpHeldS = 0; sinceJumpPress = Infinity; sinceBounce = Infinity;
     if (p.jetting) { p.jetting = false; if (!quiet) povEvents.emit('player:jet', { on: false }); }
     generation++; probe.valid = false;   // wait for cells around the new spot
     vitals.reset();
@@ -705,7 +780,10 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     spawn, update, dispose, windowShifted,
     applyImpulse(dv) { impulse.add(dv); },
     ownBlast() { vitals.ownBlast(); },   // a blast it set off (a rocket, a bomb): it hurts this body less (vitals.js)
-    hurt(amount, cause) { vitals.hurt(amount, cause, true); },   // a blow from outside the sim (an NPC's axe)
+    // a blow from outside the sim (an NPC's axe): the Energy Shield takes it first;
+    // { lethal: true } takes all the health there is, through the shield (a backstab)
+    hurt(amount, cause, { lethal = false } = {}) { vitals.hurt(amount, cause, true, { shielded: true, lethal }); },
+    holdPogo() { pogoHold = true; },   // a pogo stick in hand: call every frame it's held (tools/pogo.tool.js)
     on(name, fn) {
       (listeners[name] ??= []).push(fn);
       return () => { listeners[name] = listeners[name].filter((f) => f !== fn); };

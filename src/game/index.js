@@ -206,7 +206,7 @@ export function createGame(shell) {
       if (running) stop();
       npc ??= await shell.loadNpcs();
       const g = sim().g;
-      layout = fitLayout(userLayout, g) ?? labLayout(g);
+      layout = fitLayout(userLayout ?? app.getArena?.(), g) ?? labLayout(g);   // useLayout's, the loaded arena's (Dam Valley), else the lab's
       mode = m;
       rules = { ...R.MODES[m], ...opts };
       side = opts.side ?? side;
@@ -630,7 +630,7 @@ export function createGame(shell) {
     start, end: () => end(), useLayout(l) { userLayout = l ?? null; },
     get running() { return running; },
     get mode() { return mode; },
-    get layout() { return layout ?? (sim() ? fitLayout(userLayout, sim().g) ?? labLayout(sim().g) : null); },
+    get layout() { return layout ?? (sim() ? fitLayout(userLayout ?? app.getArena?.(), sim().g) ?? labLayout(sim().g) : null); },
     get state() { return state(); },
     get lastResult() { return lastResult; },
     get roster() { return [...roster.values()]; },

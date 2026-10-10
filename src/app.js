@@ -6,7 +6,10 @@ import { volumeVert, volumeFrag, pickFrag, shadowFrag } from './shaders/render.j
 import { ELEMENTS, E, toolById, isBuild, isSpawnerTool, isGearTool } from './elements.js';
 import { Spawners, SPAWNER, feetOnHit } from './spawners.js';
 import { PerkOrbs } from './perkOrbs.js';
-import { buildPreset } from './presets.js';
+import { buildPreset, ARENA_PRESETS } from './presets.js';
+import { ArenaMarkers } from './arenas/markers.js';
+import { DAM_VALLEY_BANNERS, shrineAltars } from './arenas/damValley.js';
+import { structureClear } from './world/structures.js';
 import { loadIsland, releaseGenerator } from './world/gpu.js';
 import { WorldWindow, WIN_STEP } from './world/window.js';
 import { bakedAir } from './constructions/runtime.js';
@@ -51,7 +54,15 @@ const VIEWS = optional['./views.js']?.VIEWS ?? [
 const SignsClass = optional['./signs.js']?.Signs;
 const BuildsClass = optional['./constructions.js']?.Constructions;
 
-const SIZES = { '64': [64, 64, 64], '96': [96, 96, 96], '128': [128, 128, 128], wide: [160, 96, 160] };
+const SIZES = { '64': [64, 64, 64], '96': [96, 96, 96], '128': [128, 128, 128], wide: [160, 96, 160],
+  valley: ARENA_PRESETS.damValley.size };
+// Arena scenes (presets.js ARENA_PRESETS) are built for one grid each: picking
+// one switches the grid to it, and any other box scene switches back. Their
+// grids aren't in the Grid size row.
+const ARENA_GRID = { damValley: 'valley' };
+const ARENA_GRIDS = new Set(Object.values(ARENA_GRID));
+// an arena's team banners (arenas/markers.js), by preset
+const ARENA_BANNERS = { damValley: DAM_VALLEY_BANNERS };
 // Massive worlds (docs/scaling.md D11): a world scene (world/scenes,
 // settings.scene: the island by default), `size` cells, simulated and drawn
 // through a window of `win` cells that follows the focus (the POV body, else
@@ -130,9 +141,11 @@ settings.scene = sceneByKey(settings.scene).key;   // (a scene no longer listed:
 const worldSeed = params.has('seed') ? Number(params.get('seed')) >>> 0 : undefined;
 if (!knownSize(settings.size)) settings.size = DEFAULTS.size;
 // the box size the Scene row goes back to from World
-let boxSize = settings.size in SIZES ? settings.size : BOX_DEFAULT;
+let boxSize = settings.size in SIZES && !ARENA_GRIDS.has(settings.size) ? settings.size : BOX_DEFAULT;
 // a scene named in the URL is a box scene (World has its own), as in the Scene row
 if (params.get('preset') && !params.get('size') && settings.size in WORLDS) settings.size = boxSize;
+// an arena named in the URL brings its grid
+if (params.get('preset') in ARENA_GRID && !params.get('size')) settings.size = ARENA_GRID[params.get('preset')];
 if (!toolById(settings.tool)) settings.tool = DEFAULTS.tool;
 if (!VIEWS.some((v) => v.id === settings.view)) settings.view = 0;
 if (!['wizard', 'real', 'stick'].includes(settings.character)) settings.character = DEFAULTS.character;
@@ -336,6 +349,8 @@ function build() {
   if (signs) { signs.clear(); signs.rebuild(); }
   claimPrograms(renderer, [...sim.materials(), pickMat, shadowMat], { lights: scene });
   claimPrograms(renderer, [volume.material], { geometry: volume.geometry, lights: scene });
+  // an arena only fits its own grid: in another, the lab
+  if (!win && settings.preset in ARENA_GRID && ARENA_GRID[settings.preset] !== settings.size) settings.preset = 'lab';
   loadPreset(settings.preset, false);   // (the Island's generator claims its programs as it runs; a world's start compiling)
   retired.forEach((m) => m.dispose());
 }
@@ -379,6 +394,7 @@ function worldShrine() {
     let lo = Infinity, hi = -Infinity;
     for (let i = -hx; i <= hx; i += SHRINE_SAMPLE)
       for (let k = -hz; k <= hz; k += SHRINE_SAMPLE) {
+        if (structureClear(P, o.x + x + i, o.z + z + k)) return [0, Infinity];   // not on the world's structures (world/structures.js)
         const h = win.scene.ground(o.x + x + i, o.z + z + k, P);
         lo = Math.min(lo, h); hi = Math.max(hi, h);
       }
@@ -467,9 +483,20 @@ function setGrid(dims) {
 // Switch the grid to `size` (SIZES or WORLDS) and rebuild.
 function setSize(size) {
   settings.size = size;
-  if (size in SIZES) boxSize = size;
+  if (size in SIZES && !ARENA_GRIDS.has(size)) boxSize = size;
   build();
   save();
+}
+
+// The Scene row's box scenes: an arena brings its own grid, any other goes
+// back to the box size from before (build() loads settings.preset).
+function pickBoxScene(name) {
+  const grid = ARENA_GRID[name] ?? boxSize;
+  if (settings.size === grid) return loadPreset(name);
+  if (mp.guard()) return false;
+  settings.preset = name;
+  setSize(grid);
+  return true;
 }
 // cells [nx, ny, nz] for a toast: '128³', '160 × 96 × 160'; for the HUD: '2.1M'
 const dimsName = (d) => (d.every((n) => n === d[0]) ? `${d[0]}³` : d.join(' × '));
@@ -496,7 +523,8 @@ function loadPreset(name, undoable = true) {
     toolbar.setUndoEnabled(false);
   } else if (name === 'empty') sim.clear();
   else if (name === 'island') loadIsland(sim, { seed: worldSeed });
-  else buildPreset(name, sim);
+  else arenaLayout = buildPreset(name, sim);
+  if (win || !(name in ARENA_GRID)) arenaLayout = null;
   post.reset();
   signs?.clear();
   resetSpawners(name);
@@ -505,13 +533,24 @@ function loadPreset(name, undoable = true) {
   return true;
 }
 
-// A new scene clears the spawners; the lab comes with an enemy spawner of its own.
+// A new scene clears the spawners; the lab comes with an enemy spawner of its
+// own. An arena sets its shrines' perk orbs, its team banners, and player
+// spawners at red's spawn points (F drops you into the red base).
 function resetSpawners(name) {
   perkOrbs?.clear();
+  arenaMarkers?.clear();
   if (!spawners) return;
   spawners.clear();
   if (name === 'lab' && !win) spawners.add(SPAWNER.ENEMY, new THREE.Vector3(Math.round(sim.g.nx * LAB_ENEMY_AT[0]), 0, Math.round(sim.g.nz * LAB_ENEMY_AT[1])));
+  const a = arenaLayout;
+  if (!a) return;
+  for (const p of a.spawns.red) spawners.add(SPAWNER.PLAYER, new THREE.Vector3(p[0] + 0.5, p[1], p[2] + 0.5));
+  for (const s of a.shrines) perkOrbs?.shrineAt(shrineAltars(s).map((p) => new THREE.Vector3(...p)));
+  arenaMarkers?.set(ARENA_BANNERS[name] ?? []);
 }
+// the loaded arena's layout (arenas/damValley.js DAM_VALLEY_LAYOUT), else null: __app.arena
+let arenaLayout = null;
+let arenaMarkers = null;   // its team banners (arenas/markers.js)
 
 // ---------------------------------------------------------------- signs (optional module)
 const signLayer = Object.assign(document.createElement('div'), { className: 'sign-layer' });
@@ -731,7 +770,7 @@ const toolbar = createToolbar({ views: VIEWS, settings, actions });
 const mp = createMultiplayer({ renderer, scene, camera, hud, getSim: () => sim, getVolume: () => volume, setGrid, inWorld: () => !!win });
 
 const fmtSpeed = (v) => `${v}×`;
-const SCENE_COLS = 3;   // world scenes per row of the Scene row (six don't fit the drawer's width in one)
+const SCENE_COLS = 3;   // scenes per row of the Scene row (five or six don't fit the drawer's width in one)
 const fmtTime = (v) => `${Math.floor(v)}:${String(Math.round((v % 1) * 60)).padStart(2, '0')}`;
 const settingsPanel = createSettings({
   settings,
@@ -740,10 +779,10 @@ const settingsPanel = createSettings({
   sections: [
     { title: 'Scene', rows: [
       // a box's scenes: clicking the current one reloads it; Empty clears
-      { type: 'seg', key: 'preset', hidden: () => !!win,
-        options: [['empty', 'Empty'], ['lab', 'Lab'], ['volcano', 'Volcano'], ['island', 'Island']],
+      { type: 'seg', key: 'preset', hidden: () => !!win, cols: SCENE_COLS,
+        options: [['empty', 'Empty'], ['lab', 'Lab'], ['volcano', 'Volcano'], ['island', 'Island'], ['damValley', 'Dam Valley']],
         onChange: (v) => {
-          if (loadPreset(v)) hud.toast(`Loaded ${v === 'empty' ? 'an empty box' : `the ${v}`}`);
+          if (pickBoxScene(v)) hud.toast(`Loaded ${v === 'empty' ? 'an empty box' : v in ARENA_GRID ? arenaLayout?.name ?? v : `the ${v}`}`);
         } },
       // a world's (world/scenes), in rows of three: clicking one starts the world over with it
       { type: 'seg', key: 'scene', hidden: () => !win, cols: SCENE_COLS,
@@ -1299,7 +1338,7 @@ function frame(now) {
     `${camera.matrixWorld.elements}|${camera.projectionMatrix.elements}|${pixelRatio}|${innerWidth}x${innerHeight}`
     + `|${JSON.stringify(settings)}|${JSON.stringify(gfx)}|${JSON.stringify(post.settings)}|${sceneKey(scene)}`
     + `|${win?.far?.chunksDrawn}`,   // a world scene's far field filling in (world/far.js)
-    runDerived || wantShot);
+    runDerived || wantShot || post.adapting);   // (eyes adjusting to the dark: gfx/post.js ADAPT)
   // a frame's dt measures the drawing rate only when the frame before it drew too
   if (runView && renderedLast) { frames++; fpsTime += dt; }
   if (fpsTime > FPS_WINDOW) { fps = frames / fpsTime; frames = 0; fpsTime = 0; }
@@ -1342,7 +1381,7 @@ function frame(now) {
     gfxUniforms.uCaustics.value = settings.caustics;
     floorGrid.material.opacity = post.renderScale;
     edges.material.opacity = EDGE_OPACITY * post.renderScale;
-    post.render(scene, camera);   // its passes after the scene count as 'post' (postPass)
+    post.render(scene, camera, null, dt);   // its passes after the scene count as 'post' (postPass)
     prof.phase('other');
     // POV: the held tool, drawn over the finished frame in its own pass (no TAA, its
     // own depth, so it never clips into walls); before the screenshot reads the canvas
@@ -1354,6 +1393,7 @@ function frame(now) {
   } else if (pov?.active) requestPick();
   if (spawners) { spawners.setGhosts(!pov?.active); spawners.update(); }   // the crosshair cell stays fresh for the tools
   perkOrbs?.update();
+  arenaMarkers?.update();
 
   const povReadout = pov?.active ? pov.readout : null;   // the held tool's (the scanner's, the trowel's)
   if (povReadout) {
@@ -1389,6 +1429,7 @@ try {
   }
   spawners = new Spawners({ scene, getSim: () => sim, getVolume: () => volume, getScale: () => scale });   // seeded by build()'s loadPreset, once there is a grid
   perkOrbs = new PerkOrbs({ scene, getSim: () => sim, getVolume: () => volume, getScale: () => scale });
+  arenaMarkers = new ArenaMarkers({ scene, getSim: () => sim, getVolume: () => volume, getScale: () => scale });
   if (BuildsClass) {
     builds = new BuildsClass({
       scene, camera, settings, getSim: () => sim, getVolume: () => volume, getScale: () => scale, onClose: leaveBuild,
@@ -1412,6 +1453,7 @@ try {
     getSpawners: () => spawners,
     getPerkOrbs: () => perkOrbs,
     loadPreset: (name) => loadPreset(name, false),   // a team game's new round (src/game)
+    getArena: () => arenaLayout,                      // the loaded arena's layout, for the team games (src/game)
     requestRender: () => pacer.wake(),
     inWorld: () => !!win,
     showToolsMenu: () => dock.reveal((it) => isGearTool(it.id)),   // Q in first person: the palette at its first-person tools
@@ -1421,6 +1463,8 @@ try {
     get pov() { return pov; },
     get spawners() { return spawners; },
     get perkOrbs() { return perkOrbs; },
+    // the loaded arena's layout (spawns, flags, hills, siege core, shrines, vehicles: arenas/damValley.js), else null
+    get arena() { return arenaLayout; },
     get win() { return win; },
     // world mode: start the world over with the window at `origin` (world cells)
     worldLoad(origin) { win.load(origin); placeVolume(); post.reset(); pov?.worldReplaced(); },

@@ -56,14 +56,16 @@ await p.evaluate(() => {
     return all;
   };
 });
-const keys = await p.evaluate(() => [...document.querySelectorAll('.seg.rows button')].map((e) => e.dataset.value));
+// The world's Scene row: the seg row holding a world-only scene (the box's preset row shares the section).
+const WORLD_ROW = `[...document.querySelectorAll('.seg.rows')].find((r) => r.querySelector('button[data-value="labWorld"]'))`;
+const keys = await p.evaluate((row) => [...eval(row).querySelectorAll('button')].map((e) => e.dataset.value), WORLD_ROW);
 const res = { scenes: {}, rowLists: keys };
 const stills = [];
 
 for (const key of keys.filter((k) => !only || only.includes(k))) {
   const t0 = Date.now();
   // 1. pick it from the Scene row
-  await p.evaluate((k) => { window.__app.settings.paused = true; document.querySelector(`.seg.rows button[data-value="${k}"]`).click(); }, key);
+  await p.evaluate(([k, row]) => { window.__app.settings.paused = true; eval(row).querySelector(`button[data-value="${k}"]`).click(); }, [key, WORLD_ROW]);
   await p.waitForFunction((k) => window.__app.win?.scene.key === k && window.__app.win.loaded && window.__app.win.far.ready, key, { timeout: LOAD_TIMEOUT });
   const r = { loadMs: Date.now() - t0 };
   r.picked = await p.evaluate((k) => window.__app.settings.scene === k, key);

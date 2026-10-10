@@ -23,6 +23,7 @@ const MODES = opt('modes', 'slayer,ctf,koth,infection,siege').split(',');
 const SIDE = opt('side', 'spectate');
 const TEAM_SIZE = +opt('teamSize', '4');
 const SHOT = opt('shot', null);
+const PRESET = opt('preset', 'lab');   // lab, or an arena (damValley: its own layout)
 const STRICT = args.includes('--strict');   // CTF must capture, Siege must play both halves to a result
 const SWEEP = opt('sweep', null);   // e.g. 0,2,4,6,8: just the frame rate with that many bots (Slayer, watching), SWEEP_S each
 const SWEEP_S = 12;
@@ -48,7 +49,7 @@ try {
   p.on('pageerror', (e) => errs.push(String(e).slice(0, 300)));
   // (a dev server without the multiplayer relay refuses its connection: not ours)
   p.on('console', (m) => { if (m.type() === 'error' && !/ERR_CONNECTION_REFUSED/.test(m.text())) errs.push(m.text().slice(0, 300)); });
-  await p.goto(`${URL}/?preset=lab`);
+  await p.goto(`${URL}/?preset=${PRESET}`);
   await p.waitForFunction(() => window.__app?.pov, null, { timeout: 60000 });
   await p.waitForTimeout(2500);
   await p.mouse.move(W * 0.5, H * 0.62);
