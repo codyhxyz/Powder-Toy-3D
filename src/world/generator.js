@@ -384,7 +384,7 @@ int islandCell(int x, int y, int z) {
 // Can a tree's trunk stand on world column (x, z) (treesIn's ground check),
 // and in which zone: GEN_ZONE_PALM (a beach), _MID, _HIGH or _NONE. Its
 // footing, the column's top ground cell as islandCell makes it, must be plant
-// cover or sand.
+// cover or sand, with no open cave near (caves.js caveOpenNear).
 int genTreeZone(int x, int z) {
   int top = genTop(x, z);
   float above = float(top) - genColWater(x, z);
@@ -392,8 +392,8 @@ int genTreeZone(int x, int z) {
   if (genColMeadow(x, z) == GEN_MEADOW_BARE) return GEN_ZONE_NONE;   // bare ground (islandBare): no trees, not even on sand
   if (float(top) > genFrostLine() - GEN_TREE_SNOW_GAP) return GEN_ZONE_NONE;
   int foot = islandCell(x, top - 1, z);
+  if ((foot != E_SAND && foot != E_PLANT) || caveOpenNear(x, z)) return GEN_ZONE_NONE;
   if (foot == E_SAND) return above <= GEN_TREE_PALM_BELOW ? GEN_ZONE_PALM : GEN_ZONE_NONE;
-  if (foot != E_PLANT) return GEN_ZONE_NONE;
   return float(top) - uGenSea >= GEN_TREE_PINE_ABOVE * uGenRelief ? GEN_ZONE_HIGH : GEN_ZONE_MID;
 }
 `;
@@ -425,7 +425,15 @@ export function islandTwin(P) {
   const key = JSON.stringify(P);
   let twin = twins.get(key);
   if (twin) return twin;
-  const consts = { ...islandConstants(), ...islandParamValues(P), ...landforms.scope(P) };
+  twin = buildIslandTwin(P);
+  if (twins.size >= TWINS_KEEP) twins.clear();
+  twins.set(key, twin);
+  return twin;
+}
+// A twin of world P, not kept: from cellSrc (tools: the cell stage with a hook
+// instrumented) and with some constants changed (change: { NAME: value }).
+export function buildIslandTwin(P, { cellSrc = ISLAND_CELL_SRC, change = {} } = {}) {
+  const consts = { ...islandConstants(), ...islandParamValues(P), ...landforms.scope(P), ...change };
   const col = compileShared(ISLAND_COLUMN_SRC, P.seed, consts);
   const cache = new Map();
   const column = (x, z) => {
@@ -439,15 +447,12 @@ export function islandTwin(P) {
     }
     return c;
   };
-  const cell = compileShared(ISLAND_CELL_SRC, P.seed, {
+  const cell = compileShared(cellSrc, P.seed, {
     ...consts,
     genColHeight: (x, z) => column(x, z)[0], genColBand: (x, z) => column(x, z)[1],
     genColMeadow: (x, z) => column(x, z)[2], genColWater: (x, z) => column(x, z)[3],
   });
-  if (twins.size >= TWINS_KEEP) twins.clear();
-  twin = { ...col, ...cell, column };
-  twins.set(key, twin);
-  return twin;
+  return { ...col, ...cell, column };
 }
 
 // The terrain's height at world column (x, z), in cells (after landforms: the
