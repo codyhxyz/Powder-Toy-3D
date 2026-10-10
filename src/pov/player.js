@@ -184,6 +184,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     jetBurnS: 0,                  // s the current press has fired
     jetIdleS: 0,                  // s since the jet last fired
     perks,                        // its perks (perks.js)
+    speedScale: 1,                // × walking and running speed: a class's (classes.js; the Bulwark is slow)
     get health() { return vitals.health; },
     get breath() { return vitals.breath; },
     get feel() { return vitals.feel; },
@@ -560,7 +561,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     if (wish.length() > 1) wish.normalize();
     const vh = new THREE.Vector2(v.x, v.z);
     let jumpedNow = false;
-    const runSpeed = p.jetting ? JET_FLY_SPEED : alive && input.sprint ? SPRINT_SPEED : WALK_SPEED;
+    const runSpeed = p.jetting ? JET_FLY_SPEED : (alive && input.sprint ? SPRINT_SPEED : WALK_SPEED) * p.speedScale;
     if (!swimming && (p.onGround || wish.lengthSq() > 0 || vh.length() <= runSpeed)) {
       // Noita: ease toward the wished speed, on the ground and in the air alike.
       // With no input in the air faster than a run (a blast), keep the momentum.
