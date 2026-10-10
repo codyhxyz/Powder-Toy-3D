@@ -611,6 +611,13 @@ const actions = {
   },
   screenshot: () => { wantShot = true; },
   firstPerson: () => { painting = false; pov?.toggle(); },
+  // 'god' leaves the walking body; 'first' / 'third' drops in, or switches the camera if already in
+  setCamera: (id) => {
+    if (!pov) { hud.toast('First person is still loading'); return; }
+    if (id === 'god') { if (camState() !== 'god') pov.exit(); return; }
+    pov.camera.third = id === 'third';
+    if (camState() === 'god') { painting = false; pov.enter(); }
+  },
   toggleSettings: () => setSettingsOpen(!settingsPanel.isOpen),
   toggleHelp: () => help.setOpen(!help.isOpen),
   setView,
@@ -1102,6 +1109,9 @@ function saveScreenshot() {
   });
 }
 
+// the camera the toolbar shows: god view, or the body's first / third person
+const camState = () => (!pov?.active || pov.mode === 'exiting' ? 'god' : pov.camera.third ? 'third' : 'first');
+let camShown = '';
 function frame(now) {
   requestAnimationFrame(frame);
   if (capCheck.feed(now, lastIdle)) hud.toast(CAP_NOTICE, CAP_NOTICE_MS);
@@ -1115,6 +1125,8 @@ function frame(now) {
   // only frames that rendered measure how expensive rendering is
   if (renderedLast) autoResolution(dt, clock.getElapsed());
 
+  const cam = camState();
+  if (cam !== camShown) toolbar.setCamera(camShown = cam);
   if (pov?.active) pov.update(dt);
   else {
     rig.update(dt);
