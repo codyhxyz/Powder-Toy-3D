@@ -7,8 +7,8 @@ import { yawQuat } from './jeep.js';
 // The hoverbike: a rigid body held up by ray springs, Halo's Ghost by way of
 // every hover racer (WipEout, F-Zero GX): four rays straight down from its
 // corners, each a spring–damper (Hooke's law with a damping ratio) toward the
-// hover height. The rays stop at anything the crosshair would, solids, powders
-// and liquids alike, so it skims a lake as it does a road.
+// hover height. The rays see a smoothed ground (physics.js) whose tops are
+// solids', powders' and liquids' alike, so it skims a lake as it does a road.
 //
 // Steering sets the yaw rate (eased), thrust pushes along the nose, and the
 // grip across it is low: sideways velocity bleeds off at only LATERAL_GRIP per
@@ -25,6 +25,7 @@ export const HOVERBIKE = {
   MASS: 280,                             // kg: a motorbike's ~200 kg and its fans' housings
   HALF: [0.45, 0.3, 1.2],                // m, collider half-extents
   BELOW: 0,                              // m below the hull it reaches (nothing: it floats)
+  GROUND: { r: 0.6, liquid: true },      // the fans' ground: smoothed over ~0.6 m (their wash), and liquid tops count
   HEALTH: 3,                             // body-healths: six gun rounds
   SEAT: [0, 0.3, -0.25],                 // m, the rider's hips
   CHASE: { dist: 6, lift: 2 },           // m, the third-person camera behind and above it
@@ -59,6 +60,7 @@ const AIR_DRAG = 0.5 * 1.2 * 0.5 * 0.9;  // ½ ρ_air C_d A (N per (m/s)²): a r
 const BANK = 0.35;                       // rad of lean (drawn) at full yaw rate
 const PITCH_SHOW = 0.6;                  // share of the ground's slope under it the model takes on (drawn)
 const SHOW_EASE = 8;                     // 1/s, how fast the drawn lean follows
+const LIQUID_PROBE = 0.5;                // cells under a ray's hit where it looks for liquid (is it skimming?)
 const HULL_VOLUME = 0.25;                // m³ it displaces if it ever sinks (it floats on its fans)
 const HULL_SAMPLES = [2, 1, 3];
 
@@ -67,8 +69,9 @@ const COLOR = {
   glow: [1.2, 4.5, 7], robe: '#5a3d8a', face: '#121014', eyes: [4, 7, 8],
 };
 
-export function buildHoverbike(R, phys, look, { at, yaw, team }) {
+export function buildHoverbike(R, phys, look, { at, yaw, team, key }) {
   const { world } = phys;
+  const ground = phys.groundFilter(key);
   const [hx, hy, hz] = HOVERBIKE.HALF;
   const body = world.createRigidBody(R.RigidBodyDesc.dynamic()
     .setTranslation(at.x, at.y + HOVERBIKE.SPAWN_LIFT, at.z)
@@ -76,7 +79,9 @@ export function buildHoverbike(R, phys, look, { at, yaw, team }) {
     .enabledRotations(false, true, false)
     .setCanSleep(false)
     .setCcdEnabled(true));
-  const collider = world.createCollider(R.ColliderDesc.cuboid(hx, hy, hz)
+  // a capsule along its length: the rounded nose rides up a step's edge instead of stopping on it
+  const collider = world.createCollider(R.ColliderDesc.capsule(hz - hy, hy)
+    .setRotation({ x: Math.SQRT1_2, y: 0, z: 0, w: Math.SQRT1_2 })   // its axis from +y to +z
     .setMass(HOVERBIKE.MASS).setFriction(0.3), body);
 
   const { root, driver, show, pads } = bikeModel(look, team);
@@ -84,7 +89,7 @@ export function buildHoverbike(R, phys, look, { at, yaw, team }) {
   const state = { speed: 0, slip: 0, grounded: 0, overLiquid: false, boost: 1, wet: 0, hot: false };
   let yawRate = 0, hopWait = 0, boostIdle = 0, slope = 0, lean = 0, pitch = 0;
   const q = new THREE.Quaternion(), fwd = new THREE.Vector3(), right = new THREE.Vector3(), o = new THREE.Vector3();
-  const down = { x: 0, y: -1, z: 0 }, hit = {};
+  const ray = new R.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: -1, z: 0 });
 
   return {
     spec: HOVERBIKE, body, collider, root, driver, samples, state,
@@ -98,12 +103,12 @@ export function buildHoverbike(R, phys, look, { at, yaw, team }) {
       let grounded = 0, liquid = 0, front = 0, back = 0, nf = 0, nb = 0, Fy = 0;
       if (!input.dead) RAYS.forEach(([x, z]) => {   // a wreck's fans are dead
         o.set(x, 0, z).applyQuaternion(q).add(t);
-        cells.raycast({ x: o.x / CELL_M, y: o.y / CELL_M, z: o.z / CELL_M }, down, RAY_MAX / CELL_M, undefined, hit);
-        if (!hit.valid) return;
-        const d = hit.dist * CELL_M;
-        if (d > RAY_MAX) return;
+        ray.origin = { x: o.x, y: o.y, z: o.z };
+        const hit = world.castRay(ray, RAY_MAX, true, undefined, undefined, undefined, undefined, ground);
+        if (!hit) return;
+        const d = hit.timeOfImpact;
         grounded++;
-        if (cells.isLiquid(hit.cell.x, hit.cell.y, hit.cell.z)) liquid++;
+        if (cells.isLiquid(o.x / CELL_M, (o.y - d) / CELL_M - LIQUID_PROBE, o.z / CELL_M)) liquid++;
         if (z > 0) { front += d; nf++; } else { back += d; nb++; }
         const f = K_RAY * (HOVER_HEIGHT - d) - C_RAY * lv.y;
         Fy += THREE.MathUtils.clamp(f, 0, MAX_RAY_FORCE);

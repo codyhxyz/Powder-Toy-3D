@@ -70,7 +70,7 @@ try {
   const V = () => ev(() => window.__app.pov.vehicles.list.map((v) => {
     const t = v.impl.body.translation(), l = v.impl.body.linvel(), r = v.impl.body.rotation();
     const fx = 2 * (r.x * r.z + r.w * r.y), fz = 1 - 2 * (r.x * r.x + r.y * r.y);   // the nose (+z turned)
-    return { kind: v.kind, alive: v.alive, health: v.health, x: t.x, y: t.y, z: t.z, vx: l.x, vy: l.y, vz: l.z, speed: Math.hypot(l.x, l.y, l.z), fx, fz, state: { ...v.impl.state, surface: undefined } };
+    return { clock: window.__app.pov.vehicles.physics.clock, kind: v.kind, alive: v.alive, health: v.health, x: t.x, y: t.y, z: t.z, vx: l.x, vy: l.y, vz: l.z, speed: Math.hypot(l.x, l.y, l.z), fx, fz, state: { ...v.impl.state, surface: undefined } };
   }));
   const jeep = async () => (await V()).find((v) => v.kind === 'jeep');
   const bike = async () => (await V()).find((v) => v.kind === 'hoverbike');
@@ -107,7 +107,9 @@ try {
   const j0 = await jeep();
   await hold(['KeyW'], 2500);
   const j1 = await jeep();
-  check('W drives it forward on the flat', j1.z - j0.z > 8 && j1.speed > 7, `${(j1.z - j0.z).toFixed(1)} m in 2.5 s, ${j1.speed.toFixed(1)} m/s`);
+  const fps = await ev(() => new Promise((res) => { let n = 0; const t0 = performance.now(); const f = () => { n++; if (performance.now() - t0 < 1000) requestAnimationFrame(f); else res(n); }; requestAnimationFrame(f); }));
+  const tW = j1.clock - j0.clock;   // simulated seconds (a slow headless frame rate slows the physics, not its rates)
+  check('W drives it forward on the flat', (j1.z - j0.z) / tW > 3 && j1.speed > 2.5 * tW, `${(j1.z - j0.z).toFixed(1)} m in ${tW.toFixed(2)} s simulated (2.5 s real, ${fps} fps), ${j1.speed.toFixed(1)} m/s`);
   if (shotPath) await p.screenshot({ path: shotPath, type: 'jpeg', quality: 60 });
   // steering: D turns it right (its right is −x while it faces +z)
   await hold(['KeyW', 'KeyD'], 800);
@@ -124,17 +126,19 @@ try {
 
   // ---- coasting: sand stops it faster than stone
   const coast = async (x, y) => {
-    await place('jeep', x, y, 2.4, 10);   // from the south wall, clear of the ramp at z 64 cells (19 m)
+    await place('jeep', x, y, 4.2, 10);   // all four wheels on the lane (it starts 4 cells from the wall), clear of the ramp at z 64 cells (19 m)
     await settle(150);
     const a = await jeep();
-    await settle(1200);
+    let powder = 0;
+    for (let i = 0; i < 4; i++) { await settle(300); powder = Math.max(powder, (await jeep()).state.onPowder); }
     const c = await jeep();
-    return { lost: a.speed - c.speed, powder: c.state.onPowder, from: a.speed };
+    const t = c.clock - a.clock;
+    return { lost: (a.speed - c.speed) / t, powder, from: a.speed };
   };
   const stone = await coast(64 * 0.3, 1.2);
   const sand = await coast(20 * 0.3, 0.9 + 1.2);
   check('coasting, sand slows it more than stone', sand.lost > 2 * stone.lost && sand.powder > 0.5,
-    `lost ${sand.lost.toFixed(1)} m/s on sand (on powder ${sand.powder}) vs ${stone.lost.toFixed(1)} on stone in 1.2 s, from ~10`);
+    `slowed ${sand.lost.toFixed(1)} m/s² on sand (on powder ${sand.powder}) vs ${stone.lost.toFixed(1)} on stone, from ~10 m/s`);
 
   // ---- running a body over, team damage off
   const runOver = async (team) => {
@@ -201,12 +205,12 @@ try {
   const wreck = await ev(() => window.__app.pov.vehicles.list.filter((v) => v.kind === 'jeep').map((v) => v.alive));
   check('0 health: it explodes into a wreck', !!(await ev(() => window.__destroyed)) && wreck.includes(false), JSON.stringify(wreck));
   check('the wreck burns (fire in the sim)', fire1.fire > fire0 + 3, `fire cells ${fire0} → ${fire1.fire}, gunpowder left ${fire1.powder}`);
-  await settle(8000);
+  await p.waitForFunction(() => window.__app.pov.vehicles.list.some((v) => v.kind === 'jeep' && v.alive), null, { timeout: 30000 }).catch(() => {});
   const back = await ev(() => window.__app.pov.vehicles.list.filter((v) => v.kind === 'jeep').map((v) => v.alive));
   check('a new jeep comes back on its spot', back.includes(true), JSON.stringify(back));
 
-  const perf = await ev(() => { const ph = window.__app.pov.vehicles.physics; return { toggled: ph.toggled }; });
-  console.log('last terrain sync toggled', perf.toggled, 'voxels');
+  const perf = await ev(() => { const vs = window.__app.pov.vehicles; return { toggled: vs.physics.toggled, ms: vs.stats.ms }; });
+  console.log(`vehicles.update ${perf.ms.toFixed(2)} ms a frame (eased); last terrain sync toggled ${perf.toggled} voxels`);
 } catch (err) {
   fails++;
   console.log('FAIL threw', err.message);

@@ -70,9 +70,16 @@ export function hullMatter(body, samples, volume, cells, h) {
 // What a wheel stands on at its contact point (metres) on a surface with
 // normal n: the cell just under the contact's surface, as an element id (or
 // the copy's OUTSIDE for the box's floor and walls).
+// The wheels ride a smoothed ground (physics.js), so the contact may be over
+// air in front of a step: look down a few cells for what's there.
+const SURFACE_SEARCH = 3;                // cells
 export function surfaceId(cells, point, normal) {
   const x = point.x / CELL_M - normal.x * 0.5, y = point.y / CELL_M - normal.y * 0.5, z = point.z / CELL_M - normal.z * 0.5;
-  return cells.id(x, y, z);
+  for (let d = 0; d < SURFACE_SEARCH; d++) {
+    const id = cells.id(x, y - d, z);
+    if (id !== E.EMPTY && (id < 0 || KIND[id] !== K.GAS)) return id;
+  }
+  return E.EMPTY;
 }
 export const isPowder = (id) => id >= 0 && KIND[id] === K.POWDER;
 export const AIR = E.EMPTY;

@@ -44,6 +44,10 @@ const WHEEL_PAGE_PX = 800;              // px per page
 
 const MOVE_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ShiftLeft', 'ShiftRight', 'KeyC']);
 const VEHICLE_KEY = 'KeyE';             // get in, get out, or right a vehicle (vehicles/index.js; Halo's and most shooters' use key)
+// Driving, the chase camera swings back behind the vehicle once the mouse rests (GTA's and most driving games')
+const CHASE_PITCH = -0.22;              // rad, the look on getting in: a little down onto the vehicle
+const CHASE_IDLE_S = 1.2;               // s without mouse look before it swings back behind
+const CHASE_FOLLOW_RATE = 2.5;          // 1/s, how fast it swings
 // god-mode keys that stay live in POV: help, settings, screenshot, closing menus.
 // With classes on, comma is TF2's class key in POV (classPicker.js), not settings.
 const PASS_KEYS = new Set(['Escape', '?', ...(CLASSES_ENABLED ? [] : [',']), 'p', 'P']);
@@ -153,7 +157,7 @@ export function createPov(app) {
     if (!active() || app.isTyping() || e.metaKey || e.ctrlKey || e.altKey) return;
     if (MOVE_KEYS.has(e.code)) { keys.add(e.code); if (e.code === 'Space') e.preventDefault(); }
     if (e.code === 'KeyV' && !e.repeat && mode !== 'exiting') povCam.third = !povCam.third;
-    if (e.code === VEHICLE_KEY && !e.repeat && live()) vehicles.use(player);
+    if (e.code === VEHICLE_KEY && !e.repeat && live() && vehicles.use(player) === 'enter') povCam.setLook(vehicles.headingYaw(), CHASE_PITCH);
     // Sprint: Toggle (the setting): Shift flips sprinting on and off instead of being held
     if ((e.code === 'ShiftLeft' || e.code === 'ShiftRight') && !e.repeat && app.settings.sprintMode === 'toggle') sprintOn = !sprintOn;
     // F1, as in Minecraft: hide the HUD and the hand, for a clean view or a screenshot
@@ -192,6 +196,7 @@ export function createPov(app) {
   document.addEventListener('mousemove', (e) => {
     if (!active() || !locked || mode === 'exiting') return;
     povCam.turn(e.movementX, e.movementY);
+    lookMovedAt = performance.now();
   });
   canvas.addEventListener('wheel', (e) => {
     if (!active()) return;
@@ -410,7 +415,7 @@ export function createPov(app) {
   const vEye = new THREE.Vector3(), vFeet = new THREE.Vector3(), vA = new THREE.Vector3(), vB = new THREE.Vector3();
   const closest = new THREE.Vector3();
   let speedH = 0;
-  let wasDriving = false;
+  let wasDriving = false, lookMovedAt = 0;
 
   function readInput() {
     input.move.x = input.move.z = 0;
@@ -533,7 +538,13 @@ export function createPov(app) {
     if (pose.footfall && mode === 'on' && !deadSeen) povEvents.emit('player:step', { speed: speedH, inLiquid: player.inLiquid });
     camera.position.copy(pose.pos);
     camera.quaternion.copy(pose.quat);
-    if (driving && mode === 'on') vehicles.chase(camera, povCam.dir(vB));   // Halo's third-person chase camera
+    if (driving && mode === 'on') {   // Halo's third-person chase camera, swinging back behind when the mouse rests
+      if (performance.now() - lookMovedAt > CHASE_IDLE_S * 1000) {
+        const yaw = povCam.look.yaw, d = Math.atan2(Math.sin(vehicles.headingYaw() - yaw), Math.cos(vehicles.headingYaw() - yaw));
+        povCam.setLook(yaw + d * (1 - Math.exp(-CHASE_FOLLOW_RATE * dt)), povCam.look.pitch);
+      }
+      vehicles.chase(camera, povCam.dir(vB));
+    }
     if (Math.abs(camera.fov - pose.fov) > 1e-4) { camera.fov = pose.fov; camera.updateProjectionMatrix(); }
     camera.updateMatrixWorld();
     if (pose.done === 'in') {

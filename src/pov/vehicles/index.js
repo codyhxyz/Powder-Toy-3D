@@ -68,6 +68,7 @@ const WRECK_FIRE_CELLS = 5;              // ...this many cells of it...
 const WRECK_FIRE_R = 2.5;                // ...in the air within this many cells of its top
 const WRECK_KEEP_S = 24;                 // s before the wreck is cleared away
 const MS = 3.6;                          // km/h per m/s (the speedometer)
+const STATS_EASE = 0.05;                 // share of each frame in the eased update time
 
 const IDLE = { throttle: 0, steer: 0, brake: false, boost: false, parked: true, dead: false };
 const DEAD = { ...IDLE, dead: true };
@@ -127,9 +128,10 @@ export function createVehicles(env) {
     const k = KINDS[home.kind];
     const look = createLook();
     const at = home.at.clone().multiplyScalar(CELL_M);
-    const impl = k.build(R, phys, look, { at, yaw: home.yaw, team: home.team });
+    const id = `vehicle:${nextId++}`;
+    const impl = k.build(R, phys, look, { at, yaw: home.yaw, team: home.team, key: id });
     const v = {
-      id: `vehicle:${nextId++}`, kind: home.kind, spec: k.spec, team: home.team, home: home.key,
+      id, kind: home.kind, spec: k.spec, team: home.team, home: home.key,
       impl, look, health: k.spec.HEALTH, alive: true, driver: null, wreckT: 0, fireWait: 0,
       lastHit: new Map(), removeTarget: null,
     };
@@ -259,26 +261,31 @@ export function createVehicles(env) {
     }
   }
 
-  const bmin = new THREE.Vector3(), bmax = new THREE.Vector3(), tmin = new THREE.Vector3(), tmax = new THREE.Vector3();
+  const bmin = new THREE.Vector3(), bmax = new THREE.Vector3(), tmin = new THREE.Vector3(), tmax = new THREE.Vector3(), sweep = new THREE.Vector3();
+  // Nothing parked on the pad: a live vehicle there makes it wait; a wreck there is cleared away.
   function padClear(home) {
-    // nothing (a vehicle or a wreck) parked on the pad
     const r = KINDS[home.kind].spec.LENGTH / CELL_M / 2;
-    for (const v of vehicles) {
+    for (const v of [...vehicles]) {
       boxGrid(v, bmin, bmax);
-      if (bmax.x > home.at.x - r && bmin.x < home.at.x + r && bmax.z > home.at.z - r && bmin.z < home.at.z + r && bmin.y < home.at.y + r) return false;
+      if (!(bmax.x > home.at.x - r && bmin.x < home.at.x + r && bmax.z > home.at.z - r && bmin.z < home.at.z + r && bmin.y < home.at.y + r)) continue;
+      if (v.alive) return false;
+      remove(v);
     }
     return true;
   }
 
   // ---- running bodies over
   const hits = [];
-  function runOver(v, now, player) {
+  function runOver(v, now, player, dt) {
     const vel = velM(v);
     const speed = vel.length();
     if (speed < SPLAT_MIN) return;
     boxGrid(v, bmin, bmax, SPLAT_REACH);
+    // and what it swept through since the last frame (a slow frame mustn't let it pass through a body)
+    const back = sweep.copy(vel).multiplyScalar(-dt / CELL_M);
+    bmin.min(tmin.copy(bmin).add(back)); bmax.max(tmax.copy(bmax).add(back));
     const driverTeam = v.driver ? (player?.team ?? v.team) : v.team;
-    const center = toGrid(posM(v));
+    const center = toGrid(posM(v)).add(back);   // where it was: what it's driving into is ahead of that
     for (const t of targetsInBox(bmin, bmax, v.id, hits)) {
       if (String(t.id).startsWith('vehicle:')) continue;            // hulls meet in Rapier
       if (t.id === PLAYER && seated) continue;                      // the driver sits inside it
@@ -379,7 +386,12 @@ export function createVehicles(env) {
   // ---- the frame
   const centers = [];
   const worldPos = new THREE.Vector3();
+  const stats = { ms: 0 };                // the update's CPU time, eased (checks)
   function update(dt, f) {
+    const t0 = performance.now();
+    try { frame(dt, f); } finally { stats.ms += (performance.now() - t0 - stats.ms) * STATS_EASE; }
+  }
+  function frame(dt, f) {
     frameInfo = f;
     const sim = env.getSim();
     if (!sim) return;
@@ -399,7 +411,7 @@ export function createVehicles(env) {
       if (h.wait <= 0 && padClear(h)) spawn(h);
     }
     centers.length = 0;
-    for (const v of vehicles) centers.push(toGrid(posM(v)));
+    for (const v of vehicles) centers.push(Object.assign(toGrid(posM(v)), { key: v.id, ...v.spec.GROUND }));
     phys.syncTerrain(centers);
     phys.step(dt, (h) => {
       for (const v of vehicles) v.impl.step(h, !v.alive ? DEAD : v === seated ? drive : IDLE, cells);
@@ -409,7 +421,7 @@ export function createVehicles(env) {
     for (const v of [...vehicles]) {
       if (v.alive && v.impl.state.hot) damage(v, HEAT_DAMAGE * dt, 'Burned');
       if (posM(v).y < FALL_OUT) { if (v.alive) explode(v); remove(v); continue; }
-      if (v.alive) runOver(v, now, f.player);
+      if (v.alive) runOver(v, now, f.player, dt);
       else if (burn(v, dt)) continue;   // cleared away
       if (velM(v).lengthSq() > 1e-4) moving = true;
     }
@@ -447,6 +459,7 @@ export function createVehicles(env) {
     get seated() { return seated; },
     get ready() { return !!phys && !!cells?.ready; },
     get physics() { return phys; },
+    stats,
     get cells() { return cells; },
     drive,
     update,
@@ -462,6 +475,12 @@ export function createVehicles(env) {
       return 'enter';
     },
     dismount,
+    // the seated vehicle's heading as the POV camera's yaw (camera.js: yaw 0 looks down −z)
+    headingYaw() {
+      if (!seated) return 0;
+      const f = tmp.set(0, 0, 1).applyQuaternion(rotQ(seated));
+      return Math.atan2(-f.x, -f.z);
+    },
     beforeBody(player) {
       if (!seated) return;
       seatFeet(seated, player.pos);

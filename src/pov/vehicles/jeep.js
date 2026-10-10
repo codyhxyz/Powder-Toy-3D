@@ -18,6 +18,8 @@ import { hullSamples, hullMatter, surfaceId, isPowder } from './matter.js';
 //
 // Forward is +z in the chassis frame, up +y; all in metres, kg, s.
 
+export const WHEEL_R = 0.55;             // m, tyre radius (the Warthog's are ~1.1 m across)
+
 export const JEEP = {
   key: 'jeep', name: 'Jeep',
   // M12 Warthog: 4.5 m long, about 2.3 m wide, ~3 t (Halo Encyclopedia)
@@ -25,6 +27,7 @@ export const JEEP = {
   MASS: 3000,                            // kg
   HALF: [0.95, 0.35, 2.15],              // m, chassis collider half-extents (the tub; the wheels are rays)
   BELOW: 0.7,                            // m the wheels reach below the tub at rest (for its hit box)
+  GROUND: { r: WHEEL_R, liquid: false }, // the wheel rays' ground: dilated by the tyre's radius; liquids aren't ground
   COM_DROP: 0.45,                        // m the centre of mass sits below the tub's middle (engine, axles, wheels): resists rolling over
   HEALTH: 6,                             // body-healths: twelve gun rounds (a round takes 0.5), or one bomb close by
   SEAT: [0.45, 0.25, -0.1],              // m, the driver's hips in the chassis frame (left seat: +x is left, facing +z)
@@ -32,10 +35,9 @@ export const JEEP = {
   SPAWN_LIFT: 1.3,                       // m above the pad the chassis appears (it drops onto its springs)
 };
 
-// wheels: Warthog track ~1.9 m, wheelbase ~2.9 m, tyres ~1.1 m across
+// wheels: Warthog track ~1.9 m, wheelbase ~2.9 m
 const WHEEL_X = 0.95, WHEEL_Z = 1.45;    // m, hard points either side of the middle
 const WHEEL_Y = -0.15;                   // m, hard point height (inside the tub, above its floor)
-const WHEEL_R = 0.55;                    // m, tyre radius
 const WHEEL_W = 0.45;                    // m, tyre width (drawn only)
 const REST = 0.6;                        // m, suspension rest length: long travel
 const TRAVEL = 0.5;                      // m, how far it compresses at most
@@ -69,6 +71,9 @@ const WHEELS = [
   { x: WHEEL_X, z: WHEEL_Z, front: true }, { x: -WHEEL_X, z: WHEEL_Z, front: true },
   { x: WHEEL_X, z: -WHEEL_Z, front: false }, { x: -WHEEL_X, z: -WHEEL_Z, front: false },
 ];
+const CHAMFER_Y = 0.5;                   // m up the nose and tail the skid plate rises...
+const CHAMFER_Z = 0.8;                   // ...over this much of the floor: 32°, steeper than any ramp it's meant to climb
+const TUB_FRICTION = 0.25;               // steel skid plate on rock and sand (μ ≈ 0.2–0.4): it slides up an edge rather than snagging
 const HULL_VOLUME = 3.2;                 // m³ the tub, frame and tyres displace when wading (an open tub floods)
 const HULL_SAMPLES = [3, 2, 5];
 
@@ -77,8 +82,9 @@ const COLOR = {
   glass: '#a8c8d8', red: '#c8352b', blue: '#2f6fd0', light: [6, 5.4, 3.6], robe: '#5a3d8a', face: '#121014', eyes: [4, 7, 8],
 };
 
-export function buildJeep(R, phys, look, { at, yaw, team }) {
+export function buildJeep(R, phys, look, { at, yaw, team, key }) {
   const { world } = phys;
+  const ground = phys.groundFilter(key);   // the wheels ride the dilated ground (physics.js)
   const [hx, hy, hz] = JEEP.HALF;
   const body = world.createRigidBody(R.RigidBodyDesc.dynamic()
     .setTranslation(at.x, at.y + JEEP.SPAWN_LIFT, at.z)
@@ -88,9 +94,9 @@ export function buildJeep(R, phys, look, { at, yaw, team }) {
   // the tub, with the mass and inertia of the whole jeep, its centre of mass low
   const I = (a, b) => JEEP.MASS / 12 * (a * a + b * b);
   const w = 2 * hx, hgt = 2 * (hy + WHEEL_R), l = 2 * hz;
-  const collider = world.createCollider(R.ColliderDesc.cuboid(hx, hy, hz)
+  const collider = world.createCollider(R.ColliderDesc.convexHull(tubHull(hx, hy, hz))
     .setMassProperties(JEEP.MASS, { x: 0, y: -JEEP.COM_DROP, z: 0 }, { x: I(hgt, l), y: I(w, l), z: I(w, hgt) }, { x: 0, y: 0, z: 0, w: 1 })
-    .setFriction(0.6), body);
+    .setFriction(TUB_FRICTION), body);
   const ctrl = world.createVehicleController(body);
   // (the controller's axes are +y up and +z forward by default: our chassis frame)
   WHEELS.forEach((wh, i) => {
@@ -174,7 +180,7 @@ export function buildJeep(R, phys, look, { at, yaw, team }) {
 
       const m = hullMatter(body, samples, HULL_VOLUME, cells, h);
       state.wet = m.wet; state.hot = m.hot;
-      ctrl.updateVehicle(h);
+      ctrl.updateVehicle(h, undefined, undefined, ground);
     },
     // the wheels drawn where the rays put them, turning with the ground
     pose() {
@@ -186,10 +192,25 @@ export function buildJeep(R, phys, look, { at, yaw, team }) {
         wm.children[0].rotation.x = ctrl.wheelRotation(i) ?? 0;
       }
     },
+    ctrl,
     get steer() { return steer; },
     get speed() { return state.speed; },
     dispose() { world.removeVehicleController(ctrl); world.removeRigidBody(body); },
   };
+}
+
+// The tub as a convex hull with its nose and tail chamfered underneath (a skid
+// plate). Raycast wheels only see the ground straight under their axles, so on
+// the grid's 0.3 m stairs at speed the springs lag the slope; the chamfer lets
+// the nose ride up a step's edge instead of stopping dead against it.
+function tubHull(hx, hy, hz) {
+  const pts = [];
+  for (const x of [-hx, hx]) {
+    pts.push(x, hy, hz, x, hy, -hz);                                    // the top
+    pts.push(x, -hy + CHAMFER_Y, hz, x, -hy + CHAMFER_Y, -hz);          // the lower edges of the nose and the tail
+    pts.push(x, -hy, hz - CHAMFER_Z, x, -hy, -hz + CHAMFER_Z);          // the floor
+  }
+  return new Float32Array(pts);
 }
 
 export const yawQuat = (yaw) => { const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw); return { x: q.x, y: q.y, z: q.z, w: q.w }; };
