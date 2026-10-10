@@ -1,5 +1,6 @@
 import { h } from './dom.js';
 import { ICON } from './icons.js';
+import { CLASSES_ENABLED } from '../pov/classes.js';
 
 const TOAST_MS = 2300;        // on screen
 const TOAST_FADE_LEAD = 100;  // ms: its fade-out animation ends this long before it is removed
@@ -109,6 +110,7 @@ export function createHelp(onClose) {
         row('Pick a tool slot; again for the next in it', '1', '–', '5'),
         row('Tools menu: get more tools', 'Q'),
         row('First or third person', 'V'),
+        CLASSES_ENABLED ? row('Choose a class (Team Fortress 2\'s key)', ',') : null,
         row('Hide the HUD and hand', 'F1'),
         row('Free the mouse', 'Esc'),
         h('h3', { text: 'Simulation and interface' }),
@@ -117,7 +119,7 @@ export function createHelp(onClose) {
         row('Switch view', '1', '–', '5'),
         row('Show or hide elements', 'T'),
         row('Chat, when playing together', 'T'),
-        row('Settings', ','),
+        row(CLASSES_ENABLED ? 'Settings (in first person, the gear)' : 'Settings', ','),
         row('Screenshot', 'P'),
         row('Close menus', 'Esc'),
       ),
