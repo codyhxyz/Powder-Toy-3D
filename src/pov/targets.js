@@ -6,7 +6,11 @@ import * as THREE from 'three';
 // weapon never hits its own wielder: `owner` is the target's id ('player', or
 // the NPC's), and every test skips the target whose id is `exclude`.
 //
-//   const remove = addTarget({ id, box(min, max), alive, hurt(amount, cause, dir) });
+//   const remove = addTarget({ id, box(min, max), alive, hurt(amount, cause, dir, opts?), facing?(out) });
+//
+// hurt's opts: { lethal } (a backstab: all the health it has, through any shield).
+// facing(out): the unit direction the target looks along (its eyes), for the
+// knife's backstab test; a target without it can't be backstabbed.
 
 export const PLAYER = 'player';   // the player's target id (and the shooter of rounds no actor fired)
 

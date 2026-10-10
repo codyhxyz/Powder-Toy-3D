@@ -28,6 +28,15 @@ const REVENGE_RADIUS = 6;           // cells its shell reaches with one stack...
 const REVENGE_RADIUS_STACK = 2;     // ...and this much more per further stack...
 const REVENGE_RADIUS_MAX = 14;      // ...up to this
 const GAMBLE_PICKS = 2;             // perks Gamble hands out (Noita's)
+// Energy Shield: Halo 3's (Halopedia, "Energy shielding"): 70 shield points over 45 health
+// points. Health here is 1 (one base life), so a stack is 70/45 of it; another stack adds as much.
+const SHIELD_STACK = 70 / 45;       // base lives of shield per Energy Shield stack
+// The movement perks double their quantity per stack (Faster Tools' rule). Speeds are capped
+// where the body's GPU probe (shaders/povBody.js PROBE, 16×32×16) still keeps up at low frame
+// rates: player.js caps them at what it already allows (a blast's throw sideways, Noita's
+// fastest fall upward), so a deep stack stops growing there.
+const MOVE_PERK_STACK = 2;          // × sprint speed per Fleet Foot stack, × jet speed per Rocket Boots stack
+const TANK_STACK = 2;               // × jetpack fuel (time aloft) per Big Tank stack
 
 // key: the palette item's key too (elements.js PERK_ITEMS). icon: an emoji, on
 // the orb, its palette tile and the HUD. noita: the Noita perk it comes from.
@@ -55,6 +64,15 @@ export const PERKS = [
     desc: '50% more health. Stacks add up.' },
   { key: 'FASTER_TOOLS', name: 'Faster Tools', noita: 'Faster Wands', icon: '⚡', color: '#ffe14d',
     desc: 'Every tool works twice as fast: swings, shots, digging, pouring. Each stack doubles it again.' },
+  // Big Team Battle (Halo, TF2): not Noita's, but kept to the same rules
+  { key: 'ENERGY_SHIELD', name: 'Energy Shield', halo: 'Energy shielding', icon: '🛡️', color: '#5fd3ff',
+    desc: 'A Halo shield over your health: it takes blows, blasts and slams first and refills 5 s after the last hit. Not heat, cold, acid or drowning. Each stack holds more.' },
+  { key: 'FLEET_FOOT', name: 'Fleet Foot', icon: '👟', color: '#9cff6e',
+    desc: 'You sprint twice as fast. Each stack doubles it again, up to the speed of a blast.' },
+  { key: 'ROCKET_BOOTS', name: 'Rocket Boots', icon: '🚀', color: '#ff9f43',
+    desc: 'Your jetpack climbs and flies twice as fast. Each stack doubles it again.' },
+  { key: 'BIG_TANK', name: 'Big Tank', icon: '⛽', color: '#ffd166',
+    desc: 'Your jetpack holds twice the fuel: twice the time aloft. Each stack doubles it again.' },
   { key: 'GAMBLE', name: 'Gamble', noita: 'Gamble', icon: '🎲', color: '#7dffa8', oneOff: true,
     desc: 'Two random perks at once.' },
 ];
@@ -91,6 +109,10 @@ export function createPerkSet() {
     get freezeRadius() { return grow(count('FREEZE_FIELD'), FREEZE_RADIUS, FREEZE_RADIUS_STACK, FREEZE_RADIUS_MAX); },
     get revengeRadius() { return grow(count('REVENGE_EXPLOSION'), REVENGE_RADIUS, REVENGE_RADIUS_STACK, REVENGE_RADIUS_MAX); },
     get revengePressure() { return REVENGE_PRESSURE * count('REVENGE_EXPLOSION'); },
+    get shieldMax() { return SHIELD_STACK * count('ENERGY_SHIELD'); },   // base lives (vitals.js)
+    get sprintRate() { return MOVE_PERK_STACK ** count('FLEET_FOOT'); },   // × sprint speed (player.js caps it)
+    get jetRate() { return MOVE_PERK_STACK ** count('ROCKET_BOOTS'); },    // × jet climb and fly speed (player.js caps it)
+    get fuelRate() { return TANK_STACK ** count('BIG_TANK'); },            // × jet fuel time
   };
 }
 
