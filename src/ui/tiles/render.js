@@ -1,9 +1,11 @@
 // Draws a tile's box in the dock's flat style: each cell takes its element's
 // colour and the tile textures (powder specks, the liquid's surface highlight,
 // the solid sheen, soft gas puffs) are applied per cell. Anything hot glows with
-// the game's incandescence table. Styling is per kind, never per element.
+// the game's incandescence table, anything luminous with its own light
+// (gfx/materials.js emit). Styling is per kind, never per element.
 import { ELEMENTS, E, K } from '../../elements.js';
 import { INCAND, INCAND_TABLE } from '../../gfx/incandescence.js';
+import { LOOK as MATERIAL } from '../../gfx/materials.js';
 import { KIND } from './engine.js';
 import { TILE, CELL, COLS, ROWS, GAS_FILL } from './scenes.js';
 
@@ -63,14 +65,24 @@ const PAL = ELEMENTS.map((e) => {
   };
 });
 
-// incandescence (gfx/incandescence.js), scaled for the dock
-function glow(tC, out) {
+// luminescence (gfx/materials.js emit) at the dock's exposure, scaled down to
+// fit rather than clipped per channel, so its hue survives
+const LUMIN = MATERIAL.map((m) => {
+  const e = m.emit.map((v) => v * LOOK.GLOW_EXPOSURE);
+  return e.map((v) => v / Math.max(1, ...e));
+});
+// What a cell at tC gives off, scaled for the dock: incandescence
+// (gfx/incandescence.js) and luminescence, as emission() has them in the game.
+function glow(id, tC, out) {
+  out.fill(0);
   const x = (tC - INCAND.T0) / INCAND.STEP;
-  if (x <= 0) return false;
-  const xc = Math.min(x, INCAND.N - 1), i = Math.min(xc | 0, INCAND.N - 2), u = xc - i;
-  const a = INCAND_TABLE[i], b = INCAND_TABLE[i + 1];
-  const lum = 2 ** (a[3] + (b[3] - a[3]) * u) * LOOK.GLOW_EXPOSURE;
-  for (let c = 0; c < 3; c++) out[c] = (a[c] + (b[c] - a[c]) * u) * lum;
+  if (x > 0) {
+    const xc = Math.min(x, INCAND.N - 1), i = Math.min(xc | 0, INCAND.N - 2), u = xc - i;
+    const a = INCAND_TABLE[i], b = INCAND_TABLE[i + 1];
+    const lum = 2 ** (a[3] + (b[3] - a[3]) * u) * LOOK.GLOW_EXPOSURE;
+    for (let c = 0; c < 3; c++) out[c] = (a[c] + (b[c] - a[c]) * u) * lum;
+  }
+  for (let c = 0; c < 3; c++) out[c] += LUMIN[id][c];
   return out[0] + out[1] + out[2] > 1 / 255;
 }
 
@@ -239,7 +251,8 @@ export function drawScene(ctx, scene, activity = 0) {
     blit(ctx, soft, 'source-over');
   }
 
-  // incandescence: hot cells, and flames as soft blobs (lava's own colour already is its glow)
+  // incandescence and luminescence: glowing cells, and flames as soft blobs
+  // (lava's own colour already is its glow)
   const c = [0, 0, 0];
   for (const flames of [false, true]) {
     const L = LAYER[0];
@@ -250,7 +263,7 @@ export function drawScene(ctx, scene, activity = 0) {
         const i = at(x, r), id = w.id[i];
         if (id === E.LAVA || id === E.EMPTY || id === item.id && KIND[id] === K.GAS || (id === E.FIRE) !== flames) continue;
         // a hot non-metal's open skin runs cooler than its bulk (passes.js glow)
-        if (!glow(w.T[i] - (id === E.METAL ? 0 : INCAND.SKIN_DROP), c)) continue;
+        if (!glow(id, w.T[i] - (id === E.METAL ? 0 : INCAND.SKIN_DROP), c)) continue;
         const o = (r * COLS + x) * 4;
         L[o] = Math.min(1, c[0]); L[o + 1] = Math.min(1, c[1]); L[o + 2] = Math.min(1, c[2]);
         L[o + 3] = Math.min(1, Math.max(c[0], c[1], c[2]));

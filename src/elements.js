@@ -111,6 +111,22 @@ const defs = [
     dens: 1, cond: 0.02, cap: 0.5, grav: 0, drag: 0.05, jitter: 0.01, rad: 0.03, spawn: 0.3,
     sigma: [0.16, 0.16, 0.16],
     desc: 'Droplets of water in the air: what steam becomes as it cools. Floats when warm, rains where it is thick, thins away at its edges, boils back to steam at 100 °C and snows below 0 °C.' },
+  // Crystal: purple fluorite (CaF₂), the mineral fluorescence is named after.
+  // Real: n = 1.434, its colour, Mohs hardness 4 (the scale's reference),
+  // melting point 1418 °C, 3.18 g/cm³, 0.85 J/(g·K) (cap: 2.7 J/(cm³·K) over
+  // water's 4.18) and 9.7 W/(m·K), high for a mineral (~4× rock's: cond between
+  // rock's and metal's). It is brittle, with perfect octahedral cleavage: its
+  // fracture toughness, ~0.5 MPa·√m, lies between ice's (~0.1) and glass's
+  // (~0.75), and so does hard. The glow is a game liberty: real fluorite
+  // fluoresces only under ultraviolet light (gfx/materials.js FLUORITE_BAND).
+  { key: 'CRYSTAL', abbr: 'CRYS', name: 'Crystal', kind: K.SOLID, render: R.OPAQUE, color: '#9466cf', var: 0.08,
+    cond: 0.05, cap: 0.65, melt: 1418, hard: 7, breakInto: 'CRYSTAL_DUST',
+    desc: 'Fluorite. Glows blue-violet by itself, enough to light a dark cave. Brittle: it shatters into glowing dust. Melts at 1418 °C.' },
+  // Its debris. Crushed, it keeps the crystal's glow (as powdered phosphors do)
+  // and its grains' density; molten and cooled it grows back into crystal.
+  { key: 'CRYSTAL_DUST', abbr: 'CDST', name: 'Crystal dust', kind: K.POWDER, render: R.OPAQUE, color: '#c3aee0', var: 0.15,
+    dens: 32, cond: 0.05, cap: 0.65, drag: 0.04, slide: 0.6, melt: 1418, spawn: 0.3,
+    desc: 'Crushed fluorite crystal. It still glows, so pour it wherever you need light. Melts back into crystal at 1418 °C.' },
 ];
 
 export const ELEMENTS = defs.map((d, id) => ({
@@ -188,10 +204,10 @@ export const isShrineTool = (id) => id === PERK_ID0;
 // How the palette is laid out in the UI. Within each group, elements are
 // ordered so related materials sit together and the colours run smoothly.
 export const PALETTE = [
-  { name: 'Powders', items: ['SAND', 'STONE', 'GUNPOWDER', 'ASH', 'SNOW', 'SHARDS', 'SAWDUST', 'SCRAP'] },
+  { name: 'Powders', items: ['SAND', 'STONE', 'GUNPOWDER', 'ASH', 'SNOW', 'SHARDS', 'CRYSTAL_DUST', 'SAWDUST', 'SCRAP'] },
   { name: 'Liquids', items: ['WATER', 'ACID', 'OIL', 'LAVA'] },
   { name: 'Gases', items: ['STEAM', 'CLOUD', 'SMOKE', 'FIRE'] },
-  { name: 'Solids', items: ['WALL', 'ROCK', 'METAL', 'GLASS', 'ICE', 'WOOD', 'PLANT', 'CLONE'] },
+  { name: 'Solids', items: ['WALL', 'ROCK', 'METAL', 'GLASS', 'ICE', 'CRYSTAL', 'WOOD', 'PLANT', 'CLONE'] },
   { name: 'Tools', items: ['HEAT', 'COOL', 'ERASE', 'BLAST', 'SIGN'] },
   { name: 'Entities', items: ['ENEMY', 'SPAWN'] },
   { name: 'Constructions', items: ['HOUSE', 'TREE', 'CAMPFIRE', 'IGLOO', 'BARREL', 'AQUARIUM', 'FOUNTAIN', 'PROMPT'] },
@@ -217,8 +233,8 @@ const vec3Arr = (name, fn) =>
   `const vec3 ${name}[NE] = vec3[NE](${ELEMENTS.map((e) => `vec3(${fn(e).map(f).join(', ')})`).join(', ')});`;
 
 // Melting product: sand and broken glass turn into glass when they re-solidify,
-// scrap recasts as solid metal.
-const MELT_INTO = { SAND: 'GLASS', SHARDS: 'GLASS', SCRAP: 'METAL' };
+// scrap recasts as solid metal, crystal dust regrows as crystal.
+const MELT_INTO = { SAND: 'GLASS', SHARDS: 'GLASS', SCRAP: 'METAL', CRYSTAL_DUST: 'CRYSTAL' };
 export const meltInto = (e) => (e.key in MELT_INTO ? E[MELT_INTO[e.key]] : e.id);
 
 export function elementsGLSL() {

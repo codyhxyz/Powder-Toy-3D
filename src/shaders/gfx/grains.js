@@ -580,7 +580,7 @@ Surf grainSurf(ivec3 aH, int k, vec3 p, vec3 rd) {
       if (pebbleOf(sn, cn, an, cc, rn, hn)) occ += ballOcc(p, n, cc, PEB_AO_R * rn);
     }
     m.cav *= 1.0 - min(PEB_AO_GAIN * occ, PEB_AO_MAX);
-    m.emit = hotEmit(m, s.T);
+    m.emit = hotEmit(m, s.id, s.T);
     if (dot(n, uSun) > 0.0) gGrainSun = pebbleSunVis(aH, p + n * GRAIN_NUDGE);
   } else if (k == GK_VOID) {
     ivec3 cell = clamp(ivec3(floor(p)), ivec3(0), GRID - 1);
@@ -588,7 +588,7 @@ Surf grainSurf(ivec3 aH, int k, vec3 p, vec3 rd) {
     s.n = -normalize(rd); s.ng = s.n; s.id = E_STONE; s.cell = cell; s.seed = fract(a.w); s.T = a.y;
     m = baseMat(E_STONE);
     m.alb *= PEB_VOID_ALB; m.cav = PEB_VOID_CAV;
-    m.emit = hotEmit(m, s.T);
+    m.emit = hotEmit(m, s.id, s.T);
     gGrainSun = 0.0;
   } else {
     // a clod: the element's own texture, from a spot of texture space of the clod's own
