@@ -44,6 +44,11 @@ async function start(map, mode) {
   await boot();
 }
 
+const WEBGL_OFF = `Your browser won't start WebGL 2 right now, so the game can't draw.
+This usually means its graphics process crashed or was reset (low memory, or a GPU hang),
+and it has switched 3D off until it restarts. Quit the browser completely and reopen it.
+If it keeps happening, chrome://gpu shows whether WebGL 2 is available.`;
+
 async function boot() {
   try {
     app = await import('./app.js');
@@ -51,7 +56,10 @@ async function boot() {
     menu.close();
     const el = document.getElementById('error');
     el.style.display = 'flex';
-    el.textContent = String(err.stack || err);
+    // three.js says this only when the browser won't make any WebGL 2 context at all
+    // (it retries without our attributes first): the browser's state, not the page
+    const noWebgl = /Error creating WebGL context\.$/m.test(String(err.message));
+    el.textContent = (noWebgl ? WEBGL_OFF + '\n\n' : '') + String(err.stack || err);
     throw err;
   }
 }
