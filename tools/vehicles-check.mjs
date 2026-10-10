@@ -187,10 +187,12 @@ try {
   await p.keyboard.press('KeyE');
   await settle(200);
   check('E gets on the hoverbike', (await ev(() => window.__app.pov.vehicles.seated?.kind)) === 'hoverbike');
+  const b0 = await bike();
   await hold(['KeyW', 'ShiftLeft'], 1600);
   const fast = await bike();
+  const tB = fast.clock - b0.clock;
   if (shotPath) await p.screenshot({ path: `${shotPath}-bike.jpg`, type: 'jpeg', quality: 60 });
-  check('it skims the lake at speed', fast.y > 2 && fast.speed > 12 && fast.state.overLiquid, `y ${fast.y.toFixed(2)} m, ${fast.speed.toFixed(1)} m/s`);
+  check('it skims the lake at speed', fast.y > 2 && fast.speed / tB > 7 && fast.state.overLiquid, `y ${fast.y.toFixed(2)} m, ${fast.speed.toFixed(1)} m/s after ${tB.toFixed(2)} s simulated of boost`);
   // a hard turn: sample the slip angle while A is held
   await p.keyboard.down('KeyW'); await p.keyboard.down('KeyA');
   let slip = 0;
@@ -218,6 +220,16 @@ try {
   await p.waitForFunction(() => window.__app.pov.vehicles.list.some((v) => v.kind === 'jeep' && v.alive), null, { timeout: 30000 }).catch(() => {});
   const back = await ev(() => window.__app.pov.vehicles.list.filter((v) => v.kind === 'jeep').map((v) => v.alive));
   check('a new jeep comes back on its spot', back.includes(true), JSON.stringify(back));
+
+  // ---- the palette's pads: a Hoverbike pad keeps one hoverbike on it
+  const tiles = await ev(() => [...document.querySelectorAll('.tile')].map((t) => t.getAttribute('aria-label')));
+  check('the palette has Jeep pad and Hoverbike pad', tiles.includes('Jeep pad') && tiles.includes('Hoverbike pad'));
+  await ev(() => { const a = window.__app; window.__pad = a.spawners.add('hoverbike', a.pov.player.pos.clone().set(64, 0, 40)); });
+  await p.waitForFunction(() => window.__app.pov.vehicles.list.filter((v) => v.kind === 'hoverbike').length === 2, null, { timeout: 10000 }).catch(() => {});
+  check('a Hoverbike pad spawns a hoverbike', (await ev(() => window.__app.pov.vehicles.list.filter((v) => v.kind === 'hoverbike').length)) === 2);
+  await ev(() => window.__app.spawners.remove(window.__pad));
+  await settle(300);
+  check('removing the pad takes its hoverbike', (await ev(() => window.__app.pov.vehicles.list.filter((v) => v.kind === 'hoverbike').length)) === 1);
 
   const perf = await ev(() => { const vs = window.__app.pov.vehicles; return { toggled: vs.physics.toggled, ms: vs.stats.ms }; });
   console.log(`vehicles.update ${perf.ms.toFixed(2)} ms a frame (eased); last terrain sync toggled ${perf.toggled} voxels`);

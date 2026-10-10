@@ -393,9 +393,14 @@ export function createVehicles(env) {
   const centers = [];
   const worldPos = new THREE.Vector3();
   const stats = { ms: 0 };                // the update's CPU time, eased (checks)
+  let failedOnce = false;
   function update(dt, f) {
     const t0 = performance.now();
-    try { frame(dt, f); } finally { stats.ms += (performance.now() - t0 - stats.ms) * STATS_EASE; }
+    try { frame(dt, f); } catch (err) {
+      // a fault here mustn't take first person down with it
+      if (!failedOnce) console.error('Vehicles: update failed', err);
+      failedOnce = true;
+    } finally { stats.ms += (performance.now() - t0 - stats.ms) * STATS_EASE; }
   }
   function frame(dt, f) {
     frameInfo = f;
