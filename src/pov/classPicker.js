@@ -236,7 +236,7 @@ export function createClassPicker(env) {
 
   // keys: before the toolbelt's digits (it listens in the capture phase too, and is made later)
   const OWN = new Set(['Escape', 'Enter', ' ', ',', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Tab']);
-  const MOVE = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ShiftLeft', 'ShiftRight', 'KeyC', 'KeyF', 'F5', 'F1']);
+  const MOVE = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ShiftLeft', 'ShiftRight', 'KeyC', 'KeyZ', 'KeyF', 'F5', 'F1']);
   addEventListener('keydown', (e) => {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     const t = e.target;

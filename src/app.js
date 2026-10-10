@@ -98,7 +98,7 @@ const DEFAULTS = {
   tool: E.SAND, radius: 5, shape: 0, rate: 1, replace: false,
   steps: 4, gravity: 0.025, paused: false,
   view: 0, camSpeed: 1, upscale: 'quality', dockCollapsed: false,
-  character: 'wizard', povFov: POV_FOV, sensitivity: 1, viewBobbing: true, sprintMode: 'hold',
+  character: 'real', povFov: POV_FOV, sensitivity: 1, viewBobbing: true, sprintMode: 'hold',
   nearGI: true, glowLights: true, caustics: true,
   ...detailDefaults(),
   profiler: false,
@@ -157,7 +157,8 @@ if (params.get('preset') && !params.get('size') && settings.size in WORLDS) sett
 if (params.get('preset') in ARENA_GRID && !params.get('size')) settings.size = ARENA_GRID[params.get('preset')];
 if (!toolById(settings.tool)) settings.tool = DEFAULTS.tool;
 if (!VIEWS.some((v) => v.id === settings.view)) settings.view = 0;
-if (!['wizard', 'real', 'stick'].includes(settings.character)) settings.character = DEFAULTS.character;
+// (a saved 'wizard', the Castle Crashers body that was the default, falls back to it too)
+if (!['real', 'stick'].includes(settings.character)) settings.character = DEFAULTS.character;
 settings.paused = false;
 
 let saveTimer = 0;
@@ -851,13 +852,11 @@ const settingsPanel = createSettings({
       { type: 'slider', key: 'camSpeed', label: 'Move speed (WASD)', min: 0.25, max: 3, step: 0.05, def: DEFAULTS.camSpeed,
         fmt: (v) => `${v.toFixed(2)}×`, onChange: (v) => { rig.setSpeed(v); save(); } },
     ] },
-    // The body you see in third person and when you die: Wizard (Castle
-    // Crashers-style, the default), Realistic (a skinned, animated mannequin
-    // in a wizard's hat and robe) or Stickman (the TPT homage). It switches
-    // live, in POV too. The key was 'body' before Wizard; the new key starts
-    // everyone on the default.
+    // The body you see in third person and when you die: Realistic (a
+    // skinned, animated mannequin in a wizard's hat and robe, the default) or
+    // Stickman (the TPT homage). It switches live, in POV too.
     { title: 'First person', rows: [
-      { type: 'seg', key: 'character', options: [['wizard', 'Wizard'], ['real', 'Realistic'], ['stick', 'Stickman']],
+      { type: 'seg', key: 'character', options: [['real', 'Realistic'], ['stick', 'Stickman']],
         onChange: (v) => { settings.character = v; save(); pacer.wake(); } },
       // named as Minecraft names them
       { type: 'slider', key: 'sensitivity', label: 'Mouse Sensitivity', min: SENSITIVITY_RANGE[0], max: SENSITIVITY_RANGE[1], step: 0.05,
@@ -1125,8 +1124,8 @@ addEventListener('keydown', (e) => {
   if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); return; }
   if (mod) return;
   const k = e.key;
-  // V is noclip, Garry's Mod's: out of the body to the god view's free camera, and back in.
-  // F drops in too (in the body it swaps first and third person: pov/index.js).
+  // V switches between the god view and the body (Garry's Mod's noclip key). F drops
+  // in too, from the god view only: in the body F is the kick.
   if (k === 'v' || k === 'V' || ((k === 'f' || k === 'F') && !pov?.active)) { if (!e.repeat) actions.firstPerson(); return; }
   if ((k === 't' || k === 'T') && mp.chatAvailable) { e.preventDefault(); mp.openChat(); return; } // Minecraft's chat key, POV included
   if (pov?.blocksKey(e)) return;   // POV owns movement, Space and the digits while active

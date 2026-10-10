@@ -8,30 +8,18 @@
   From the god view, `V` drops a body onto the surface under the cursor (or the middle of the box); `F` does
   too, for habit. The camera swoops from orbit into the eyes. `V` again swoops back out to the orbit pose you
   left. The sim keeps running in both modes.
-- **Keys speak other games' language**: `V` noclip (Garry's Mod), `F` first or third person (Skyrim and
-  Fallout; Minecraft's `F5` works too), `C` held zooms (Minecraft's zoom mods, `zoom.js`, with Zoomify's
-  defaults: ÷4 eased in over 1 s and out over 0.5 s, the wheel ×1.5 a notch while held, the look slowed with
-  the view, a scope's zoom multiplied in), `Ctrl` swims down (the Source games' duck; `Shift` is their
-  sprint, as here). While `Ctrl` is held, leaving the page asks first, since `Ctrl+W` can't be held back.
-- **You are small**: about 5.5 cells tall in a 128-cell world (one cell ≈ 30 cm). Lava flows are rivers and
-  houses are buildings.
-- **A real, mortal body**. You walk, sprint, jump and swim, and you float or sink by density. Blasts shove you
-  (the same a = −∇P/ρ the sim uses). Heat, cold, acid, lava, drowning, being buried and being thrown into walls hurt; landings never do (Noita has no fall damage).
-  You die, the camera pulls back with the cause ("Killed by lava, 1,140 °C"), and you respawn at the drop-in
-  point.
-- **Jetpack** (Noita's levitation): hold `Space` in the air to fly. Movement is Noita's player (player.xml values scaled by body height: 5.4 g, a 1.9 m jump, an 8.6 m/s run): velocity eases a fixed share per frame toward the wished speed instead of being pushed by forces. The jet eases the climb toward 14 m/s with gravity off while it fires,
-  the tank holds 3 s of thrust and recharges as Noita's does (its player.xml values): full in 0.5 s on the ground, and in the air at 0.4 s per s once the jet has been off for 0.63 s; every tap burns at least 8 frames. The fuel bar
-  shows under health while it isn't full. Swimming strokes take over in deep liquid. The exhaust is cosmetic
-  (vfx.js `jet`), with a roar loop (audio.js `jetLoop`).
-- **The body** (setting: Wizard | Realistic | Stickman, key `character`): Wizard is the default, drawn the
-  way Castle Crashers draws its people (figureCrasher.js): a huge round head lost in a floppy pointed hood,
-  the face a black shadow with two glowing eyes (the game's Evil Wizard), a stubby robed body with mittens,
-  a brass jetpack that flames while it fires, inverted-hull outlines and two-tone cel shading. It is the
-  stickman's rig and animation with another look (`createFigure(build)`; a look can ask for `outline`,
-  `toon`, glowing parts, `flames` and its own `nozzles` for the exhaust). Realistic is the skinned
+- **Keys speak other games' language**: `V` god view or the body (Garry's Mod's noclip key; from the god
+  view `F` drops in too), `F5` first or third person (Minecraft), `Z` held zooms (Minecraft's zoom mods,
+  `zoom.js`, with Zoomify's defaults: ÷4 eased in over 1 s and out over 0.5 s, the wheel ×1.5 a notch while
+  held, the look slowed with the view, a scope's zoom multiplied in), `C` is the crouch key (PUBG, Apex; so
+  far it swims down). `F` in the body is kept for the kick.
+- **The body** (setting: Realistic | Stickman, key `character`): Realistic is the default, the skinned
   mannequin dressed as a wizard, a pointed hat and a robe skinned to its skeleton (garb.js: the robe's
   weights are transferred from the nearest body vertices and eased toward the pelvis below the hips).
   Stickman stands in while it loads. The jet exhaust leaves from the small of the back (`JET_NOZZLES`).
+  The Castle Crashers wizard (figureCrasher.js: the stickman's rig with a huge hooded head, glowing eyes,
+  outlines and cel shading) was a choice and the default until 2026-10-10; now it only draws the NPCs and
+  the class portraits.
 - **Physical, finite tools in Half-Life 2 / Garry's Mod weapon slots** (see "Inventory" below): keys `1`–`5`
   are slots (Dig, Build, Guns, Explosives, Gadgets); pressing one again steps to the next tool in it, and the
   wheel steps through everything carried. God powers (infinite painting) stay in god view, one `V` away. The
@@ -60,7 +48,7 @@
       `PICK`): a slower blow with more energy in a narrower, deeper patch. It mines rock, a 3×3 face two
       cells deep a swing, into STONE that each swing gathers into the pack (so the rubble never plugs the
       hole; with the pack full it stays put). Metal still turns it away.
-- Mouse look with pointer lock. `F` toggles first and third person. A crosshair, health and breath bars, and
+- Mouse look with pointer lock. `F5` toggles first and third person. A crosshair, health and breath bars, and
   screen effects for what the body feels: heat glow at the edges, frost, a red flash
   when hurt.
 - Cut for now: crafting, ammo, multiplayer POV (guests get a toast), physgun on solids.

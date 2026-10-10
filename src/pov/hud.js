@@ -71,10 +71,10 @@ export function createPovHud() {
     h('span', {}, key('W'), key('A'), key('S'), key('D'), ' move'),
     h('span', {}, key('Space'), ' jump, hold to fly'),
     h('span', {}, key('Shift'), ' sprint'),
-    h('span', {}, key('Ctrl'), ' swim down'),
-    h('span', {}, key('C'), ' zoom'),
-    h('span', {}, key('F'), ' third person'),
-    h('span', {}, key('V'), ' noclip out'));
+    h('span', {}, key('C'), ' swim down'),
+    h('span', {}, key('Z'), ' zoom'),
+    h('span', {}, key('F5'), ' third person'),
+    h('span', {}, key('V'), ' god view'));
 
   const root = h('div.pov-hud', { 'aria-hidden': 'true' },
     fx.heat, fx.frost, fx.acid, fx.stain, fx.hurt, cross, hitmark, vitals, lock, death, hint);

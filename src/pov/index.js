@@ -16,9 +16,9 @@ import { createVehicles } from './vehicles/index.js';
 import { SPAWNER, ENEMY_KINDS } from '../spawners.js';
 import { createZoom, ZOOM_KEY } from './zoom.js';
 
-// First-person (POV) mode: drop into the world with V (noclip off, Garry's
-// Mod's key; F drops in too), walk around in it, pop back out to the god
-// view's free camera with V. This module is the shell: input, the camera, the
+// First-person (POV) mode: drop into the world with V (Garry's Mod's noclip
+// key; F drops in too), walk around in it, pop back out to the god view's
+// free camera with V. This module is the shell: input, the camera, the
 // figure, the HUD and the per-frame wiring between the body (player.js) and
 // the toolbelt (tools/index.js), plus the gunplay feedback that listens to
 // povEvents: feel (kick, shake, hitmarker), effects and sound. Both are optional at build time: without the
@@ -45,13 +45,12 @@ const WHEEL_GESTURE_GAP_MS = 180;       // ms without wheel events that ends a g
 const WHEEL_LINE_PX = 40;               // px per line, for wheels that report lines
 const WHEEL_PAGE_PX = 800;              // px per page
 
-// Keys held down: movement, swim down and the zoom. Swim down is Ctrl, the
-// Source games' duck key (Shift is their sprint, as here); C is the zoom key
-// of Minecraft's zoom mods (zoom.js).
-const DOWN_KEYS = ['ControlLeft', 'ControlRight'];
-const MOVE_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ShiftLeft', 'ShiftRight', ...DOWN_KEYS, ZOOM_KEY]);
-// First or third person: Skyrim's and Fallout's F, and Minecraft's F5 (its reload is held back)
-const VIEW_KEYS = new Set(['KeyF', 'F5']);
+// Keys held down: movement, the crouch key (C, PUBG's and Apex's; so far it
+// swims down in liquid) and the zoom (Z, zoom.js).
+const CROUCH_KEY = 'KeyC';
+const MOVE_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ShiftLeft', 'ShiftRight', CROUCH_KEY, ZOOM_KEY]);
+// First or third person: Minecraft's F5 (its page reload is held back)
+const VIEW_KEY = 'F5';
 const VEHICLE_KEY = 'KeyE';             // get in, get out, or right a vehicle (vehicles/index.js; Halo's and most shooters' use key)
 // Driving, the chase camera swings back behind the vehicle once the mouse rests (GTA's and most driving games')
 const CHASE_PITCH = -0.22;              // rad, the look on getting in: a little down onto the vehicle
@@ -165,12 +164,9 @@ export function createPov(app) {
   const setHudHidden = (v) => { hudHidden = v; document.body.classList.toggle('pov-nohud', v); app.requestRender(); };
 
   addEventListener('keydown', (e) => {
-    if (!active() || app.isTyping() || e.metaKey || e.altKey) return;
-    // Ctrl swims down, so movement still counts while it's held, and the
-    // browser's own Ctrl shortcuts on those keys (save, bookmark) are held back
-    if (MOVE_KEYS.has(e.code)) { keys.add(e.code); if (e.code === 'Space' || e.ctrlKey) e.preventDefault(); }
-    if (e.ctrlKey) return;
-    if (VIEW_KEYS.has(e.code)) {
+    if (!active() || app.isTyping() || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (MOVE_KEYS.has(e.code)) { keys.add(e.code); if (e.code === 'Space') e.preventDefault(); }
+    if (e.code === VIEW_KEY) {
       e.preventDefault();
       if (!e.repeat && mode !== 'exiting') povCam.third = !povCam.third;
     }
@@ -187,13 +183,6 @@ export function createPov(app) {
   });
   addEventListener('keyup', (e) => keys.delete(e.code));
   addEventListener('blur', releaseInput);
-  // Ctrl+W closes the tab, and no page can stop it (outside full screen's
-  // keyboard lock): while Ctrl swims down, leaving asks first
-  addEventListener('beforeunload', (e) => {
-    if (!active() || !DOWN_KEYS.some((k) => keys.has(k))) return;
-    e.preventDefault();
-    e.returnValue = true;
-  });
 
   // TF2's class picker on its key, comma (classPicker.js, docs/classes.md). Made
   // now, so its keys are heard before the toolbelt's digits.
@@ -467,7 +456,7 @@ export function createPov(app) {
     }
     input.jump = keys.has('Space');
     input.sprint = app.settings.sprintMode === 'toggle' ? sprintOn : keys.has('ShiftLeft') || keys.has('ShiftRight');
-    input.down = DOWN_KEYS.some((k) => keys.has(k));
+    input.down = keys.has(CROUCH_KEY);
   }
 
   function update(dt) {
