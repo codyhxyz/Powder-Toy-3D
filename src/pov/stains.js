@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { E } from '../elements.js';
-import { torchFireFrag, toolPass, TORCH_FIRE } from '../shaders/povTools.js';
+import { bodyFireFrag, toolPass, BODY_FIRE } from '../shaders/povTools.js';
 import { SEED_MAX } from '../shaders/common.js';
 import { BODY_WIDTH, BODY_HEIGHT } from './constants.js';
 import { VITALS } from './vitals.js';
@@ -10,7 +10,7 @@ import { Load, sharedTransfer, cellsNear, outsideBody } from './tools/transfer.j
 // The built-in statuses (status.js holds the machinery): Noita's stains on a
 // first-person body, sourced from the cells it touches, and Bleeding. What a
 // status does to the world goes through the engine: a burning body lights the
-// air around it with a lying torch's flame (shaders/povTools.js TORCH_FIRE),
+// air around it with the tools' flame pass (shaders/povTools.js BODY_FIRE),
 // and a wound spills real cells (tools/transfer.js put). Table: docs/pov.md,
 // "Status effects".
 //
@@ -40,10 +40,12 @@ const LAVA_IGNITE_RATE = 200;   // ...in lava
 const IGNITE_T = 255;           // °C of skin that sets it alight by itself: cotton fabric's ignition temperature
 const OILY_IGNITE_T = 150;      // ...oil-soaked: a mineral oil's flash point
 const BURN_DAMAGE = 0.06;       // health/s while burning (Fire Immunity: none). Game tuning: the burns a 30 cm cell can't resolve
-const BURN_FIRE_INTERVAL = 0.15;  // s between the flame passes off a burning body (lamp.js's lying torch's)
-// the flame starts beyond the cells vitals counts as touching (player.js CONTACT_REACH 0.5 + the
-// flame's own radius + a cell), so the body's own fire lights the world, not itself again
-const BURN_FIRE_OUT = BODY_WIDTH / 2 + 0.5 + TORCH_FIRE.RADIUS0 + 1;   // cells from the body's axis
+const BURN_FIRE_INTERVAL = 0.1;   // s between the flame passes off a burning body (a lying torch's is 0.15: lamp.js)
+// each pass is a column of flame up one side, from the feet: just beyond the cells vitals counts as
+// touching (player.js CONTACT_REACH 0.5 + the flame's own radius), so the body's own fire lights
+// what's beside it, not the body again; the side steps round by the golden angle (even coverage)
+const BURN_FIRE_OUT = BODY_WIDTH / 2 + 0.5 + BODY_FIRE.RADIUS0;   // cells from the body's axis
+const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));                 // rad
 // ---- Frozen: numb with cold
 const FROZEN_S = 4;             // s
 const FROZEN_SKIN_T = 10;       // °C: skin colder than this is numb (hands lose their dexterity below ~15 °C, numbness ~10 °C)
@@ -153,29 +155,29 @@ export function wound(body, amount, ctx) {
 // A body's reach into the grid for its statuses: fire off a burning body, cells
 // spilled from a wound. One per body (player.js), sharing the GPU passes.
 export function createBodyWorld({ renderer, getSim }) {
-  let fire = null, fireWait = 0, frame = 0;
+  let fire = null, fireWait = 0, frame = 0, side = Math.random() * 2 * Math.PI;
   const nozzle = new THREE.Vector3(), up = new THREE.Vector3(0, 1, 0), mid = new THREE.Vector3();
   const env = { renderer, getSim };
   return {
-    // a burning body: every BURN_FIRE_INTERVAL a lying torch's flame licks up beside it, at a
-    // random side and height, as engine FIRE (it lights grass and wood the engine's way)
+    // a burning body: every BURN_FIRE_INTERVAL a column of flame up one side of it, as engine
+    // FIRE and heat (it lights grass and wood the engine's way)
     burn(body, dt) {
       fireWait -= dt;
       if (fireWait > 0) return;
       fireWait = BURN_FIRE_INTERVAL;
       const sim = getSim();
       if (!sim) return;
-      fire ??= toolPass(torchFireFrag, () => ({
+      fire ??= toolPass(bodyFireFrag, () => ({
         uNozzle: { value: new THREE.Vector3() }, uDir: { value: new THREE.Vector3() },
         uReach: { value: 0 }, uDt: { value: 0 }, uFrame: { value: 0 },
       }));
-      const a = Math.random() * 2 * Math.PI;
-      nozzle.set(body.pos.x + Math.cos(a) * BURN_FIRE_OUT, body.pos.y + Math.random() * BODY_HEIGHT, body.pos.z + Math.sin(a) * BURN_FIRE_OUT);
+      side += GOLDEN_ANGLE;
+      nozzle.set(body.pos.x + Math.cos(side) * BURN_FIRE_OUT, body.pos.y, body.pos.z + Math.sin(side) * BURN_FIRE_OUT);
       const mat = fire(sim);
       const u = mat.uniforms;
       u.uNozzle.value.copy(nozzle);
       u.uDir.value.copy(up);
-      u.uReach.value = TORCH_FIRE.LENGTH;
+      u.uReach.value = BODY_HEIGHT;
       u.uDt.value = BURN_FIRE_INTERVAL;
       u.uFrame.value = ++frame;
       sim.pass(mat);

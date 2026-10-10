@@ -328,7 +328,7 @@ async function gpu(port, shotPath) {
 
     // ---- a burning body lights the world: FIRE cells around it, the wood beside it heats
     await stand(64, 64);
-    await paint('WOOD', [67.5, 1.5, 64.5], 1.5, true);
+    await paint('WOOD', [66.8, 1.5, 64.5], 1.5, true);   // touching the body's side
     await settle(600);
     const w0 = await count('WOOD');
     await ev(() => window.__app.pov.player.status.add('BURNING', 4));
@@ -343,11 +343,20 @@ async function gpu(port, shotPath) {
     check('gpu: the body is tinted', tint[3] > 0, JSON.stringify(tint.map((x) => +x.toFixed(2))));
     const burnOut = await until(() => !window.__app.pov.player.status.has('BURNING'), null, 6000);
     check('gpu: it burns out', burnOut);
+    // oily, it burns long enough to set the wood alight (wood ignites at 300 °C)
+    await ev(() => { const q = window.__app.pov.player; q.status.add('OILY', 15); q.status.add('BURNING', 10); });
+    const caught = await until(async () => {
+      const { E } = await import('/src/elements.js');
+      return (window.__app.sim.census()[E.WOOD]?.Tmax ?? 0) > 300;
+    }, null, 10000);
+    const w2 = await count('WOOD');
+    check('gpu: a burning oily body sets the wood beside it alight', caught, `wood Tmax ${w2.Tmax} °C, ${w2.n} cells left`);
+    await ev(() => window.__app.pov.player.status.clearAll());
 
     // ---- touching fire sets it alight; jumping in water puts it out
     await stand(30, 90);
     await settle(500);
-    await paint('FIRE', [30.5, 2.5, 92.5], 1.2);
+    for (let i = 0; i < 3; i++) { await paint('FIRE', [30, 3, 90], 2.5); await settle(100); }   // a gout of flame over the body
     const lit = await until(() => window.__app.pov.player.status.has('BURNING'), null, 3000);
     check('gpu: touching fire sets the body alight', lit, JSON.stringify(await st()));
     await paint('WATER', [90, 1.5, 90], 6); await paint('WATER', [90, 1.5, 90], 6); await paint('WATER', [90, 1.5, 90], 6);
@@ -384,7 +393,7 @@ async function gpu(port, shotPath) {
       const at = await ev(() => { const q = window.__app.pov.npc.body.pos; return [q.x, q.y, q.z]; });
       for (let i = 0; i < 3; i++) await paint('WATER', [at[0], at[1] + 2, at[2]], 3);
       const wet = await until(() => window.__app.pov.npc.body.status.has('WET'), null, 4000);
-      check('gpu: an NPC body gets Wet from water', wet, JSON.stringify(window.__app ? await ev(() => window.__app.pov.npc.body.status.list().map((s) => s.key)) : []));
+      check('gpu: an NPC body gets Wet from water', wet, JSON.stringify(await ev(() => window.__app.pov.npc.body.status.list().map((s) => s.key))));
     }
   } finally {
     if (errs.length) { console.log('page errors:'); errs.slice(0, 8).forEach((e) => console.log('  ' + e)); }
