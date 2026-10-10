@@ -8,7 +8,7 @@ import { Spawners, SPAWNER, feetOnHit } from './spawners.js';
 import { buildPreset } from './presets.js';
 import { loadIsland, releaseGenerator } from './world/gpu.js';
 import { WorldWindow, WIN_STEP } from './world/window.js';
-import { heightAt } from './world/generator.js';
+import { WORLD_SCENES, sceneByKey } from './world/scenes/index.js';
 import { FarField } from './world/far.js';
 import { farHazeGLSL, farCastersGLSL, farLayout, WORLD_SIZE } from './shaders/far.js';
 import { quadVert } from './shaders/common.js';
@@ -48,20 +48,16 @@ const SignsClass = optional['./signs.js']?.Signs;
 const BuildsClass = optional['./constructions.js']?.Constructions;
 
 const SIZES = { '64': [64, 64, 64], '96': [96, 96, 96], '128': [128, 128, 128], wide: [160, 96, 160] };
-// Massive worlds (docs/scaling.md D11): the generator's world, `size` cells,
-// simulated and drawn through a window of `win` cells that follows the focus
-// (the POV body, else the orbit target). The Grid size row's World. Its peaks
-// are bare rock (snow: false): the air is 20 °C everywhere, so snow caps would
-// melt, and the window keeps every brick that leaves it changed.
-const WORLDS = { world: { win: [128, 128, 128], size: WORLD_SIZE, snow: false } };
+// Massive worlds (docs/scaling.md D11): a world scene (world/scenes,
+// settings.scene: the island by default), `size` cells, simulated and drawn
+// through a window of `win` cells that follows the focus (the POV body, else
+// the orbit target). The Grid size row's World.
+const WORLDS = { world: { win: [128, 128, 128], size: WORLD_SIZE } };
 // God view over a world: the orbit target on the ground, the camera this far
 // off it along the box view's direction (scene units), so the window fills
 // about as much of the view as a box does
 const WORLD_VIEW_DIR = [11, 9.5, 13];
 const WORLD_VIEW_DIST = 21;
-// A world starts with the window on the island's shore, seen from the sea
-// (worldStart): its centre this share of its width inland from the waterline
-const WORLD_START_INLAND = 0.25;
 // WASD in a world: no faster than the window can follow the orbit target
 // (one WIN_STEP move every few frames), in scene units per second
 const WORLD_CAM_SPEED_MAX = 9;
@@ -74,7 +70,7 @@ const LAB_ENEMY_AT = [0.555, 0.86];
 // the box the Scene row goes back to from World, and phones' grid
 const BOX_DEFAULT = '128';
 const DEFAULTS = {
-  size: 'world', preset: 'lab',
+  size: 'world', preset: 'lab', scene: 'island',
   tool: E.SAND, radius: 5, shape: 0, rate: 1, replace: false,
   steps: 4, gravity: 0.025, paused: false,
   view: 0, camSpeed: 1, upscale: 'quality', dockCollapsed: false,
@@ -103,7 +99,7 @@ const DEFAULT_CHANGES = [
 ];
 const REV_KEY = 'rev';
 const LEGACY_MOBILE_KEY = 'mobileLite';   // rev 1's flag before REV_KEY
-const PERSIST = ['size', 'preset', 'tool', 'radius', 'shape', 'rate', 'replace', 'steps', 'gravity', 'view',
+const PERSIST = ['size', 'preset', 'scene', 'tool', 'radius', 'shape', 'rate', 'replace', 'steps', 'gravity', 'view',
   'camSpeed', 'upscale', 'dockCollapsed', 'character', 'povFov', 'sensitivity', 'viewBobbing', 'sprintMode',
   'nearGI', 'glowLights', 'caustics', ...DETAIL.map(settingKey), 'profiler'];
 const STORE = 'powder-toy-3d:settings';
@@ -124,6 +120,8 @@ const params = new URLSearchParams(location.search);
 const knownSize = (s) => s in SIZES || s in WORLDS;
 if (knownSize(params.get('size'))) settings.size = params.get('size');
 if (params.get('preset')) settings.preset = params.get('preset');
+if (params.get('scene')) settings.scene = params.get('scene');
+settings.scene = sceneByKey(settings.scene).key;   // (a scene no longer listed: the island)
 // the Island scene's world seed (world/generator.js), and World's; its default world without one
 const worldSeed = params.has('seed') ? Number(params.get('seed')) >>> 0 : undefined;
 if (!knownSize(settings.size)) settings.size = DEFAULTS.size;
@@ -232,14 +230,14 @@ function build() {
   }
   worldMode = WORLDS[settings.size] ?? null;
   const [nx, ny, nz] = worldMode?.win ?? SIZES[settings.size];
-  win?.dispose();
+  win?.dispose(retired);   // (a new window over the world shares most of its passes' programs)
   win = null;
   sim = new Simulation(renderer, nx, ny, nz, { windowed: !!worldMode });
   sim.gravity = settings.gravity;
   sim.onPass = prof.on ? simPass : null;
   scale = 10 / Math.max(nx, nz);
   if (worldMode) {
-    win = new WorldWindow(renderer, sim, { size: worldMode.size, seed: worldSeed, snow: worldMode.snow });
+    win = new WorldWindow(renderer, sim, { size: worldMode.size, seed: worldSeed, scene: sceneByKey(settings.scene) });
     sim.origin.fromArray(worldStart());
   }
   // the grid starts centred on the scene's origin
@@ -336,18 +334,12 @@ function build() {
   retired.forEach((m) => m.dispose());
 }
 
-// World: the window's first origin (world cells). The island's middle is bare
-// rock, so it starts where the most is going on: on the shore the god view
-// looks from, the sea in front, then beach, meadows and trees, and the hills
-// behind. Found by walking from the island's centre toward the camera to the
-// waterline, a WIN_STEP at a time.
+// World: the window's first origin (world cells): centred on the column its
+// scene starts at (where the most is going on: the island's shore, seen from
+// the sea), snapped to WIN_STEP and inside the world.
 function worldStart() {
   const P = win.P, g = sim.g, n = [g.nx, g.nz];
-  const d = new THREE.Vector2(WORLD_VIEW_DIR[0], WORLD_VIEW_DIR[2]).normalize();
-  const at = (r) => [P.center[0] + d.x * r, P.center[1] + d.y * r];
-  let r = 0;
-  while (r < Math.max(P.size[0], P.size[2]) / 2 && heightAt(...at(r), P) >= P.sea) r += WIN_STEP;
-  const c = at(r - WORLD_START_INLAND * Math.max(...n));
+  const c = win.scene.start(P, n);
   const origin = [0, 1].map((k) => {
     const o = Math.round((c[k] - n[k] / 2) / WIN_STEP) * WIN_STEP;
     return THREE.MathUtils.clamp(o, 0, P.size[2 * k] - n[k]);
@@ -356,9 +348,9 @@ function worldStart() {
 }
 
 // World: the god view's home over world column (x, z), the orbit target on
-// the ground there (on the sea where the sea floor is lower).
+// the ground there (the scene's: on the sea where the sea floor is lower).
 function homeOver(x, z) {
-  const ground = Math.max(heightAt(x, z, win.P), win.P.sea);
+  const ground = win.scene.ground(x, z, win.P);
   const target = new THREE.Vector3((x - anchor.x) * scale, ground * scale, (z - anchor.y) * scale);
   rig.setHome(new THREE.Vector3(...WORLD_VIEW_DIR).setLength(WORLD_VIEW_DIST).add(target), target);
 }
@@ -663,6 +655,7 @@ const toolbar = createToolbar({ views: VIEWS, settings, actions });
 const mp = createMultiplayer({ renderer, scene, camera, hud, getSim: () => sim, getVolume: () => volume, setGrid, inWorld: () => !!win });
 
 const fmtSpeed = (v) => `${v}×`;
+const SCENE_COLS = 3;   // world scenes per row of the Scene row (six don't fit the drawer's width in one)
 const fmtTime = (v) => `${Math.floor(v)}:${String(Math.round((v % 1) * 60)).padStart(2, '0')}`;
 const settingsPanel = createSettings({
   settings,
@@ -670,17 +663,20 @@ const settingsPanel = createSettings({
   // Sections and their rows run from most to least reached-for; keep that order when adding settings.
   sections: [
     { title: 'Scene', rows: [
-      // clicking the current scene reloads it; Empty clears. World is its own
-      // scene (none is lit): picking one goes back to the last box size with it.
-      { type: 'seg', key: 'preset', value: () => (win ? '' : settings.preset),
+      // a box's scenes: clicking the current one reloads it; Empty clears
+      { type: 'seg', key: 'preset', hidden: () => !!win,
         options: [['empty', 'Empty'], ['lab', 'Lab'], ['volcano', 'Volcano'], ['island', 'Island']],
         onChange: (v) => {
-          const name = v === 'empty' ? 'an empty box' : `the ${v}`;
-          if (!win) { if (loadPreset(v)) hud.toast(`Loaded ${name}`); return; }
+          if (loadPreset(v)) hud.toast(`Loaded ${v === 'empty' ? 'an empty box' : `the ${v}`}`);
+        } },
+      // a world's (world/scenes), in rows of three: clicking one starts the world over with it
+      { type: 'seg', key: 'scene', hidden: () => !win, cols: SCENE_COLS,
+        options: WORLD_SCENES.map((s) => [s.key, s.label]),
+        onChange: (v) => {
           if (mp.guard()) return;
-          settings.preset = v;
-          setSize(boxSize);
-          hud.toast(`Loaded ${name}, in a ${dimsName(SIZES[boxSize])} box`);
+          settings.scene = v;
+          setSize('world');
+          hud.toast(`Loaded ${sceneByKey(v).label}`);
         } },
     ] },
     { title: 'Simulation', rows: [
@@ -768,7 +764,7 @@ if (signInResult.error) hud.toast(signInResult.error);
 account().then((user) => { if (signInResult.signedIn && user) hud.toast(`Signed in as ${user.name}`); });
 
 function resetSettings() {
-  const keep = { size: settings.size, preset: settings.preset, tool: settings.tool, paused: settings.paused, dockCollapsed: settings.dockCollapsed };
+  const keep = { size: settings.size, preset: settings.preset, scene: settings.scene, tool: settings.tool, paused: settings.paused, dockCollapsed: settings.dockCollapsed };
   Object.assign(settings, DEFAULTS, keep);
   sim.gravity = settings.gravity;
   rig.setSpeed(settings.camSpeed);
@@ -1216,7 +1212,8 @@ function frame(now) {
     `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${KEY_LIGHT}|${settings.view}|${gfx.smoothing}|${detailVersion}`);
   const runView = pacer.view(
     `${camera.matrixWorld.elements}|${camera.projectionMatrix.elements}|${pixelRatio}|${innerWidth}x${innerHeight}`
-    + `|${JSON.stringify(settings)}|${JSON.stringify(gfx)}|${JSON.stringify(post.settings)}|${sceneKey(scene)}`,
+    + `|${JSON.stringify(settings)}|${JSON.stringify(gfx)}|${JSON.stringify(post.settings)}|${sceneKey(scene)}`
+    + `|${win?.far?.chunksDrawn}`,   // a world scene's far field filling in (world/far.js)
     runDerived || wantShot);
   // a frame's dt measures the drawing rate only when the frame before it drew too
   if (runView && renderedLast) { frames++; fpsTime += dt; }

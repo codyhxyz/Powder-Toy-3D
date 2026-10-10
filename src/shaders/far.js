@@ -650,6 +650,97 @@ void main() {
 }
 `;
 
+// ---------------------------------------------------------------- scenes
+// A world scene other than the island (world/scenes/index.js) has no columns,
+// layers or trees to build from: its far grid is summarized from its
+// sceneCell, a chunk of FAR_SCENE.CHUNK² brick columns at a time
+// (world/far.js spreads the chunks over frames, nearest the window first):
+//   - farSceneCellsFrag evaluates sceneCell once per cell of the chunk's
+//     columns and the FAR_CUBE_LO columns around them that its bricks' cubes
+//     reach (past the world's edge the edge repeats, as farGenFrag's columns),
+//     every slice, into a target of (id, °C) texels (scene cells);
+//   - farSceneFrag summarizes the chunk's bricks from those cells exactly as
+//     farWinFrag does from the window's state (below the world rock, above it
+//     air), leaving out the brick columns the window has already summarized:
+//     the window's state wins wherever it has been (tWinMask).
+// Each cell is evaluated once rather than once per cube that holds it (8×).
+export const FAR_SCENE = {
+  CHUNK: 16,   // brick columns along a chunk's edge (64 cells: 256 chunks over the world, each a few ms at most)
+};
+// The scene cells' target: the chunk's columns with their margin, side ×
+// side, each z row of them (side × world height texels) side by side along
+// x, `cols` to a row of the atlas (near square).
+export function farSceneLayout(L) {
+  const side = FAR_SCENE.CHUNK * BRICK + FAR.CUBE - BRICK;   // cells: the chunk's columns plus FAR_CUBE_LO on each side
+  const cols = Math.ceil(Math.sqrt(L.size[1]));   // cols · side wide ≈ (side / cols) · height tall
+  return { side, cols, width: cols * side, height: Math.ceil(side / cols) * L.size[1] };
+}
+const sceneCellsLayoutGLSL = (L) => {
+  const S = farSceneLayout(L);
+  return /* glsl */ `
+#define FSC_SIDE ${S.side}      // cells along the chunk's columns, margin included
+#define FSC_COLS ${S.cols}      // z rows of them per atlas row
+#define FSC_WORLD_X ${L.size[0]}
+#define FSC_WORLD_Y ${L.size[1]}
+#define FSC_WORLD_Z ${L.size[2]}
+uniform ivec2 uChunkLo;   // world cell (x, z) of the chunk's column (0, 0): its first brick column's less FAR_CUBE_LO
+ivec2 fscTexel(ivec3 c) { return ivec2(c.x + FSC_SIDE * (c.z % FSC_COLS), c.y + FSC_WORLD_Y * (c.z / FSC_COLS)); }
+`;
+};
+// sceneGLSL: the scene's glsl(g). Only the prelude comes before it, so its
+// names can't meet the far field's.
+export const farSceneCellsFrag = (g, L, sceneGLSL) => /* glsl */ `
+${prelude(g)}
+${sceneGLSL}
+${sceneCellsLayoutGLSL(L)}
+out vec4 oC;
+void main() {
+  ivec2 f = ivec2(gl_FragCoord.xy);
+  int zc = f.x / FSC_SIDE, zr = f.y / FSC_WORLD_Y;
+  ivec3 c = ivec3(f.x - zc * FSC_SIDE, f.y - zr * FSC_WORLD_Y, zr * FSC_COLS + zc);
+  oC = vec4(0.0);
+  if (c.z >= FSC_SIDE) return;   // the atlas's last row may have unused slots
+  ivec2 col = clamp(uChunkLo + c.xz, ivec2(0), ivec2(FSC_WORLD_X, FSC_WORLD_Z) - 1);
+  vec4 A, B;
+  sceneCell(ivec3(col.x, c.y, col.y), A, B);
+  oC = vec4(A.xy, 0.0, 1.0);
+}
+`;
+export const farSceneFrag = (g, L) => /* glsl */ `
+${prelude(g)}
+${farLayoutGLSL(L)}
+${countGLSL}
+${sceneCellsLayoutGLSL(L)}
+uniform sampler2D tCells;     // the chunk's scene cells (farSceneCellsFrag): id, °C
+uniform sampler2D tWinMask;   // per world brick column: set where the window's state has been summarized
+out vec4 oC;
+void main() {
+  ivec3 b = farBrickFromFrag(ivec2(gl_FragCoord.xy));
+  if (texelFetch(tWinMask, b.xz, 0).r > 0.5) discard;
+  FarCount c = farCountInit();
+  ivec3 o = b * BS;
+  ivec2 lo = o.xz - uChunkLo;   // the brick's first column among the chunk's
+  for (int dz = -FAR_CUBE_LO; dz < BS + FAR_CUBE_LO; dz++)
+  for (int dx = -FAR_CUBE_LO; dx < BS + FAR_CUBE_LO; dx++) {
+    ivec2 col = lo + ivec2(dx, dz);
+    bool own = dx >= 0 && dz >= 0 && dx < BS && dz < BS;
+    int above = E_EMPTY;
+    // top down through the cube [-lo, BS + lo)
+    for (int dy = BS + FAR_CUBE_LO - 1; dy >= -FAR_CUBE_LO; dy--) {
+      int y = o.y + dy;
+      vec2 a = y >= WORLD_Y ? vec2(float(E_EMPTY), AMBIENT)
+             : (y < 0 ? vec2(float(E_ROCK), AMBIENT) : texelFetch(tCells, fscTexel(ivec3(col.x, y, col.y)), 0).xy);
+      int id = eid(vec4(a, 0.0, 0.0));
+      if (farOpaque(id)) c.s += 1.0;
+      else if (farLiquid(id)) c.l += 1.0;
+      if (own && dy >= 0 && dy < BS) farCell(c, id, above, a.y);
+      above = id;
+    }
+  }
+  oC = farPack(c);
+}
+`;
+
 // The field the view draws, per brick of the region being drawn, from the
 // grid's raw shares: a brick keeps its share where it or one of its 26
 // neighbours reaches FAR.ISO (opaque; for the liquid, opaque + liquid), where
@@ -919,6 +1010,8 @@ vec3 farSea(vec3 d) {
   float F = FAR_SEA_F0 + (1.0 - FAR_SEA_F0) * pow(1.0 - clamp(-d.y, 0.0, 1.0), 5.0);
   return F * skyColor(reflect(d, vec3(0.0, 1.0, 0.0))) + (1.0 - F) * SCATALB[E_WATER] * uSkyUp;
 }
+// a world without a sea (uSea 0: world/scenes) has a rock plain past its edge (the far view's)
+vec3 farPlain() { return ALBEDO[E_ROCK] * (SUN_COL * max(uSun.y, 0.0) + uSkyUp); }
 vec3 farBeyond(vec3 P, vec3 Q, vec3 d, inout float open) {
   vec3 w = Q + vec3(uOrigin);
   float s = FAR_GI_STEP0;
@@ -932,7 +1025,7 @@ vec3 farBeyond(vec3 P, vec3 Q, vec3 d, inout float open) {
     }
     s *= 2.0;
   }
-  return d.y >= 0.0 ? skyColor(d) : farSea(d);
+  return d.y >= 0.0 ? skyColor(d) : (uSea > 0.0 ? farSea(d) : farPlain());
 }
 `;
 
@@ -1019,8 +1112,8 @@ uniform mat4 projectionMatrix;
 uniform mat4 uWorldToScene;   // world cells → scene units
 uniform mat4 uSceneToWorld;
 uniform ivec3 uWinLo;         // the window's low corner (world cells): the volume draws [uWinLo, uWinLo + GRID)
-uniform float uSea;           // sea level (cells): the open sea beyond the world
-uniform float uFloor;         // the sea floor beyond the world (cells)
+uniform float uSea;           // sea level (cells): the open sea beyond the world (0: none, a plain instead)
+uniform float uFloor;         // the sea floor beyond the world, or the plain (cells)
 in vec4 vFar;
 ${cloudsGLSL}
 
@@ -1297,8 +1390,11 @@ void main() {
   bool cut = false;
   float tHit = t0 < t1 ? farMarch(ro, rd, t0, t1, tw.x, tw.y, cut) : NO_HIT;
 
-  // the open sea beyond the world (and a march that ran out of steps over it)
-  float tSea = rd.y < 0.0 && ro.y > uSea ? (uSea - ro.y) / rd.y : NO_HIT;
+  // the open sea beyond the world (and a march that ran out of steps over it);
+  // a world without one (uSea 0: world/scenes) has an open plain there, at its floor
+  bool plain = uSea <= 0.0;
+  float level = plain ? uFloor : uSea;
+  float tSea = rd.y < 0.0 && ro.y > level ? (level - ro.y) / rd.y : NO_HIT;
   vec3 ps = ro + rd * tSea;
   bool seaOut = any(lessThan(ps.xz, vec2(0.0))) || any(greaterThan(ps.xz, vec2(WORLD.xz)));
   bool seaWin = tSea >= tw.x && tSea <= tw.y;
@@ -1307,7 +1403,8 @@ void main() {
   vec3 col;
   float depth = 1.0;
   if (ocean) {
-    col = farLiquid(ps, rd, 0, farSunLit(ps, 0), seaOut ? uFloor : -1.0);
+    col = plain ? farShadeBed(FAR_OCEAN_BED, ps, vec3(0.0, 1.0, 0.0), 0.0, farLiquidId(0), farSunLit(ps, 0))
+                : farLiquid(ps, rd, 0, farSunLit(ps, 0), seaOut ? uFloor : -1.0);
     col = farHaze(col, rd, tSea);
     depth = farDepth(ps);
   } else if (tHit < NO_HIT) {

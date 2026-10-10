@@ -4,6 +4,7 @@ import { columnFrag, COLUMN_MARGIN } from '../shaders/generate.js';
 import {
   farLayout, farRegionVert, farLayersFrag, farTreeCandFrag, farTreeThinFrag, farTreeBandFrag, farGenFrag,
   farWinFrag, farBoostFrag, farMip1Frag, farMip2Frag, farTopFrag, farShadowFrag, farVert, farFrag, WORLD_SIZE,
+  farSceneCellsFrag, farSceneFrag, farSceneLayout, FAR_SCENE, FAR,
 } from '../shaders/far.js';
 import { rawMat, makeFieldTarget } from '../sim.js';
 import { genUniforms, setWorld } from './gpu.js';
@@ -30,6 +31,16 @@ import { gfxUniforms } from '../gfx/uniforms.js';
 //     view marches it; after a sweep, at its end), and the shadow heights
 //     again when the sun or the window moves.
 //
+// Any other world scene (world/scenes) is built from its sceneCell instead
+// (shaders/far.js farSceneCellsFrag, farSceneFrag): the window's region from
+// its state at once, then the rest a chunk at a time, SCENE_CHUNKS_PER_FRAME
+// chunks a frame (tick), nearest the window first, so no draw is long and the
+// far field fills in around you; the view draws what is built so far (the
+// rest is the plain or sea beyond: unbuilt bricks are empty). A brick column
+// the window has summarized (on load, a leaving slab, a sweep) is left as it
+// is (winMask): the window's state wins there. The levels, tops and shadows
+// follow every SCENE_REFRESH_FRAMES frames of it, and at its end.
+//
 // The window takes three things from the far field (attach): its shadow map
 // the far field's shadows (a mountain outside shades the window, and its GI),
 // its GI the far field past where its rays end (distant hills block the low
@@ -44,6 +55,9 @@ import { gfxUniforms } from '../gfx/uniforms.js';
 const SWEEP_FRAMES = 120;        // frames between sweeps over the window's own region while the sim changes it (its copy only casts the far shadows and feeds the window's GI)
 const SWEEP_CELLS = 16;          // ...summarizing this many cells of it along x per frame
 const VIEW_ORDER = -10;          // renderOrder of the view: first of the scene's opaque objects
+const SCENE_CHUNKS_PER_FRAME = 2;   // a scene's far build: chunks a frame (each one sceneCell per cell of its columns, ~0.6M cells)
+const SCENE_REFRESH_FRAMES = 8;     // ...and frames between rebuilding the levels, tops and shadows while it runs
+const MASK_SET = 255;               // a set byte of the window mask (the shader reads it as 1)
 
 // A full-screen triangle (clip space): the view's geometry.
 function screenTriangle() {
@@ -87,6 +101,9 @@ export class FarField {
     this.version = -1;           // the simulation's version then
     this.sweep = -1;             // the next slab of the sweep under way (-1: none)
     this.last = null;            // what the last build or refresh cost (tools)
+    this.scene = win.scene;
+    this.queue = [];             // a scene's far build: the chunks still to draw (world brick column [x, z] of each), nearest last
+    this.chunksDrawn = 0;        // ...and how many it has drawn (the app redraws the view as it grows)
 
     // region draws into the far grid (farRegionVert): their own scene
     const region = (frag, uniforms) => new THREE.RawShaderMaterial({
@@ -99,7 +116,8 @@ export class FarField {
     this.regionScene = new THREE.Scene();
     this.regionScene.add(this.regionMesh);
     this.regionCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-    this.mats = {
+    // the build: the island's from its columns, layers and trees; any other scene's from its sceneCell
+    const build = this.scene.island ? {
       farColumn: rawMat(columnFrag(g), { ...genUniforms(), uColOrigin: { value: new THREE.Vector2(-COLUMN_MARGIN, -COLUMN_MARGIN) } }),
       farLayers: rawMat(farLayersFrag(g), { ...genUniforms(), tCol: { value: null } }),
       farTreeCand: rawMat(farTreeCandFrag(g, L), { ...genUniforms(), tCol: { value: null } }),
@@ -108,6 +126,9 @@ export class FarField {
       farGen: region(farGenFrag(g, L), {
         ...genUniforms(), tLayers: { value: null }, tTrees: { value: null }, tTreeBand: { value: null },
       }),
+    } : this.sceneMats(region);
+    this.mats = {
+      ...build,
       farWin: region(farWinFrag(g, L), { tA: { value: null }, uOrigin: this.sim.originUniform }),
       farBoost: region(farBoostFrag(L), { tFar: { value: this.grid.texture } }),
       farMip1: rawMat(farMip1Frag(L), { tFar: { value: this.field.texture } }),
@@ -153,6 +174,23 @@ export class FarField {
     this.compile();
   }
 
+  // A scene's build passes, its window mask (one byte per world brick column)
+  // and its cells' target, made at build (sceneBuild).
+  sceneMats(region) {
+    const g = this.sim.g, L = this.L, [bx, , bz] = L.bricks.n;
+    this.winMask = new Uint8Array(bx * bz);
+    this.winMaskTex = new THREE.DataTexture(this.winMask, bx, bz, THREE.RedFormat, THREE.UnsignedByteType);
+    this.winMaskTex.minFilter = this.winMaskTex.magFilter = THREE.NearestFilter;
+    this.winMaskTex.unpackAlignment = 1;
+    this.winMaskTex.needsUpdate = true;
+    this.cells = null;
+    const chunkLo = { value: new THREE.Vector2() };   // (both passes': the chunk being drawn)
+    return {
+      farSceneCells: rawMat(farSceneCellsFrag(g, L, this.scene.glsl(g)), { ...this.win.sceneU, uChunkLo: chunkLo }),
+      farScene: region(farSceneFrag(g, L), { tCells: { value: null }, tWinMask: { value: this.winMaskTex }, uChunkLo: chunkLo }),
+    };
+  }
+
   compile() {
     // post.js's scene target formats, so the program compiled is the one the view uses
     const target = new THREE.WebGLRenderTarget(1, 1, {
@@ -190,6 +228,7 @@ export class FarField {
   // The whole far grid from the generator, then the window's own region from
   // its state (world/window.js load: the window has just been generated).
   build() {
+    if (!this.scene.island) { this.sceneBuild(); return; }
     const t0 = performance.now();
     const sim = this.sim, L = this.L, [wx, , wz] = L.size, P = this.win.P;
     const { farColumn, farLayers, farTreeBand, farGen } = this.mats;
@@ -217,6 +256,62 @@ export class FarField {
     this.summarizeWindow();
     this.refresh(true);
     this.last = { buildMs: performance.now() - t0 };
+  }
+
+  // A scene's build: the far grid starts empty but for the window's region,
+  // summarized from its state, and the chunks are queued nearest the window
+  // last (tick draws them from the end).
+  sceneBuild() {
+    const t0 = performance.now();
+    const L = this.L, [bx, , bz] = L.bricks.n, C = FAR_SCENE.CHUNK;
+    const r = this.renderer, prev = r.getRenderTarget(), color = r.getClearColor(new THREE.Color()), alpha = r.getClearAlpha();
+    r.setClearColor(0x000000, 0);
+    for (const t of [this.grid, this.field]) { r.setRenderTarget(t); r.clear(true, false, false); }
+    r.setClearColor(color, alpha);
+    r.setRenderTarget(prev);
+    this.winMask.fill(0);
+    this.winMaskTex.needsUpdate = true;
+    this.built = true;
+    this.summarizeWindow();
+    const o = this.sim.origin, g = this.sim.g;
+    const mid = [(o.x + g.nx / 2) / BRICK, (o.z + g.nz / 2) / BRICK];   // the window's centre, brick columns
+    const dist = ([x, z]) => Math.hypot(x + C / 2 - mid[0], z + C / 2 - mid[1]);
+    this.queue = [];
+    for (let z = 0; z < bz; z += C) for (let x = 0; x < bx; x += C) this.queue.push([x, z]);
+    this.queue.sort((a, b) => dist(b) - dist(a));
+    this.chunksDrawn = 0;
+    this.buildFrames = 0;
+    this.buildStart = t0;
+    if (!this.cells) {
+      const S = farSceneLayout(L);
+      this.cells = makeFieldTarget(S.width, S.height, 1, THREE.HalfFloatType, THREE.NearestFilter);
+      this.mats.farScene.uniforms.tCells.value = this.cells.texture;
+    }
+    this.refresh(true);
+    this.last = { buildMs: null, chunks: this.queue.length };
+  }
+
+  // Draw the next chunks of a scene's build (tick, every frame while there are any).
+  sceneChunks() {
+    const sim = this.sim, L = this.L, [bx, , bz] = L.bricks.n, C = FAR_SCENE.CHUNK;
+    const lo = (FAR.CUBE - BRICK) / 2;   // the cells a brick's cube reaches past it (FAR_CUBE_LO)
+    const { farSceneCells, farScene } = this.mats;
+    for (let k = 0; k < SCENE_CHUNKS_PER_FRAME && this.queue.length; k++) {
+      const [x, z] = this.queue.pop(), size = [Math.min(C, bx - x), Math.min(C, bz - z)];
+      farSceneCells.uniforms.uChunkLo.value.set(x * BRICK - lo, z * BRICK - lo);
+      sim.run(farSceneCells, this.cells);
+      this.drawRegion(farScene, [x, z], size);
+      this.boost([x, z], size);
+      this.chunksDrawn++;
+    }
+    this.buildFrames++;
+    if (!this.queue.length) {
+      this.cells.dispose();
+      this.cells = null;
+      this.mats.farScene.uniforms.tCells.value = null;
+      this.dirty = true;
+      this.last = { ...this.last, buildMs: performance.now() - this.buildStart, frames: this.buildFrames };
+    } else if (this.buildFrames % SCENE_REFRESH_FRAMES === 0) this.dirty = true;
   }
 
   // The world's trees, as treesIn places them: a target with one texel per
@@ -255,6 +350,10 @@ export class FarField {
     this.drawRegion(m, at, size);
     this.boost(at, size);
     if (derive) this.dirty = true;
+    if (this.winMask) {
+      for (let z = at[1]; z < at[1] + size[1]; z++) this.winMask.fill(MASK_SET, z * this.L.bricks.n[0] + at[0], z * this.L.bricks.n[0] + at[0] + size[0]);
+      this.winMaskTex.needsUpdate = true;
+    }
   }
 
   summarizeWindow() {
@@ -269,6 +368,7 @@ export class FarField {
   // a slab a frame, while the simulation changes it.
   tick() {
     if (!this.built) return;
+    if (this.queue.length) this.sceneChunks();
     const g = this.sim.g;
     this.age++;
     if (this.sweep < 0) {
@@ -343,12 +443,18 @@ export class FarField {
     this.refresh();
   }
 
-  dispose() {
+  // retire: as Simulation.dispose's (the view's program and the passes' carry
+  // over to a new far field that claims them before they're disposed of)
+  dispose(retire = null) {
+    this.queue = [];
     this.mesh.removeFromParent();
     this.mesh.geometry.dispose();
-    this.mesh.material.dispose();
     this.regionMesh.geometry.dispose();
     for (const t of [this.grid, this.field, this.l1, this.l2, this.top, this.shadow]) t.dispose();
-    Object.values(this.mats).forEach((m) => m.dispose());
+    this.cells?.dispose();
+    this.winMaskTex?.dispose();
+    const mats = [this.mesh.material, ...Object.values(this.mats)];
+    if (retire) retire.push(...mats);
+    else mats.forEach((m) => m.dispose());
   }
 }

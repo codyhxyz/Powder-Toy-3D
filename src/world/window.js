@@ -4,7 +4,8 @@ import { stageFrag, editFrag, gatherFrag, STAGE_W, BRICK_CELLS, SLOT_W } from '.
 import { DIFF_W } from '../shaders/generate.js';
 import { rawMat, makeFieldTarget, brickTexel } from '../sim.js';
 import { WorldGenerator } from './gpu.js';
-import { worldParams, treesIn, TREE } from './generator.js';
+import { treesIn, TREE, WORLD_SEED } from './generator.js';
+import { island } from './scenes/island.js';
 import { runGenerator, bake } from '../constructions/runtime.js';
 import { BUILTINS } from '../constructions/builtins.js';
 import { BrickStore, encodeBrick, decodeBrick, BRICK_FLOATS } from './store.js';
@@ -41,6 +42,14 @@ import { compileInBackground } from '../gfx/programs.js';
 // built on load, summarizes the slab about to leave in step 1, and sweeps over
 // the window's region while it changes (update).
 //
+// What the world holds is its scene (world/scenes): P = scene.params. The
+// island fills through the generator's column pass and plants its trees
+// (steps 3 and 4); any other scene fills and diffs through its sceneCell
+// (world/gpu.js) and plants nothing, its uniforms shared by every pass that
+// includes its GLSL (sceneU: the fill, the diff, the far field's build). A
+// scene's prepare (GPU work before its first fill) runs with the background
+// compile (whenReady), and its dispose with the window's.
+//
 // The window's own passes and the far field's are compiled in the background
 // (whenReady); the app loads the world once they are ready, so switching to a
 // world never stalls the page on a compile: the window fills in, then the
@@ -55,17 +64,21 @@ const MASK_SET = 255;                // a set byte of the column mask (the shade
 
 export class WorldWindow {
   // sim: the window's Simulation (its grid spans the world's height);
-  // size: the world in cells [x, y, z]; seed: its generator seed; snow: its
-  // snow caps (world/generator.js worldParams)
-  constructor(renderer, sim, { size, seed, snow }) {
+  // size: the world in cells [x, y, z]; seed: its seed (the generator's
+  // default world's without one); scene: what it holds (world/scenes)
+  constructor(renderer, sim, { size, seed = WORLD_SEED, scene = island }) {
     const g = sim.g;
     if (g.ny !== size[1]) throw new Error(`window ${g.ny} cells tall in a world ${size[1]} tall: it spans the world's height`);
     if (size.some((n, i) => n % WIN_STEP && i !== 1)) throw new Error(`world ${size}: x and z must be multiples of ${WIN_STEP}`);
     this.renderer = renderer;
     this.sim = sim;
     this.size = size;
-    this.P = worldParams({ size, seed, snow });
-    this.gen = new WorldGenerator(sim);   // its own, not generatorFor's shared one: tools run two windows
+    this.scene = scene;
+    this.P = scene.params({ size, seed });
+    // a scene's uniforms, the same objects in every pass that includes its GLSL (whenReady refreshes their values)
+    this.sceneU = scene.island ? null : scene.uniforms(this.P);
+    // its own generator, not generatorFor's shared one: tools run two windows
+    this.gen = new WorldGenerator(sim, scene.island ? null : { glsl: scene.glsl(g), uniforms: this.sceneU });
     this.wb = size.map((n) => n / BRICK);                          // the world in bricks
     this.store = new BrickStore(this.wb);
     this.planted = new Uint8Array(this.wb[0] * this.wb[2]);       // brick columns whose trees are in
@@ -117,11 +130,20 @@ export class WorldWindow {
     return [...Object.values(this.mats), ...Object.values(this.gen.mats), ...Object.values(this.far?.mats ?? {})];
   }
 
-  // Resolves once every pass of the window and its far field is compiled
-  // (started in the background on the first call; give the window its far
-  // field first): load and the moves then run without a compile stall.
+  // Resolves once every pass of the window and its far field is compiled and
+  // the scene has prepared (both started in the background on the first call;
+  // give the window its far field first): load and the moves then run without
+  // a compile stall.
   whenReady() {
-    return (this.ready ??= compileInBackground(this.renderer, this.materials()));
+    return (this.ready ??= Promise.all([
+      compileInBackground(this.renderer, this.materials()),
+      this.scene.prepare?.(this.renderer, this.P),
+    ]).then(() => {
+      // what prepare made (its textures) into the passes' shared uniform objects
+      if (!this.sceneU) return;
+      const fresh = this.scene.uniforms(this.P);
+      for (const [k, u] of Object.entries(fresh)) if (this.sceneU[k]) this.sceneU[k].value = u.value;
+    }));
   }
 
   // The origin that centres the window in the world.
@@ -138,7 +160,7 @@ export class WorldWindow {
     this.planted.fill(0);
     sim.origin.set(origin[0], 0, origin[2]);
     this.gen.fill(this.P, [origin[0], 0, origin[2]]);
-    this.plant([0, 0, 0], [g.nx, g.ny, g.nz]);
+    if (this.scene.island) this.plant([0, 0, 0], [g.nx, g.ny, g.nz]);
     sim.syncCopies();
     this.far?.build();
     sim.dropHistory();   // undo would bring back a window of the old world
@@ -197,7 +219,7 @@ export class WorldWindow {
     const restored = this.restore(enterLo, bricks);
     // 4.
     this.plantCost = { placeMs: 0, bakeMs: 0 };
-    const trees = this.plant(enterLo, enterHi);
+    const trees = this.scene.island ? this.plant(enterLo, enterHi) : 0;
     // 5.
     sim.syncCopies();
     this.last = { dx, dz, ms: performance.now() - t0, restored, trees, ...this.plantCost, readbackMs: null, kept: null };
@@ -323,17 +345,21 @@ export class WorldWindow {
     return { bricks: this.store.size, bytes: this.store.bytes, planted: this.planted.reduce((n, v) => n + v, 0) };
   }
 
-  dispose() {
+  // retire: as Simulation.dispose's (the materials go into it, to be disposed
+  // of once a new window's have claimed the programs they share)
+  dispose(retire = null) {
     this.epoch++;
-    this.far?.dispose();
-    this.gen.dispose();
+    this.far?.dispose(retire);
+    this.gen.dispose(retire);
     this.stage.dispose();
     this.packed.dispose();
     this.slotsTex.dispose();
     this.diffTarget.dispose();
     this.editIdxTex.dispose();
     this.colMaskTex.dispose();
-    Object.values(this.mats).forEach((m) => m.dispose());
+    if (retire) retire.push(...Object.values(this.mats));
+    else Object.values(this.mats).forEach((m) => m.dispose());
+    this.scene.dispose?.();
   }
 }
 

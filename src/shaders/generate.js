@@ -294,11 +294,8 @@ void main() {
 export const STORE_MATTER_T = 0.5;   // °C: drift a regenerated brick may lose (it is still quiet: well under AIR_REST_T)
 export const STORE_LIFE_TOL = 1e-4;  // life/latent/fuel units: float slop only (life changes by reactions)
 export const DIFF_W = 64;            // texels per row of the diff target
-export const diffFrag = (g) => /* glsl */ `
-${prelude(g)}
-${generatorGLSL}
-${layersGLSL}
-uniform ivec3 uLo;       // the slab's low corner, grid cells (brick-aligned)
+// the diff's uniforms, output and cell test (diffFrag and sceneDiffFrag)
+const diffHeadGLSL = /* glsl */ `uniform ivec3 uLo;       // the slab's low corner, grid cells (brick-aligned)
 uniform ivec3 uBricks;   // the slab's size in bricks
 out vec4 oC;
 #define DIFF_W ${DIFF_W}
@@ -309,7 +306,12 @@ bool cellDiffers(vec4 a, vec4 gen) {
   if (id != eid(gen)) return true;
   if (id == E_EMPTY) return abs(a.y - gen.y) > AIR_REST_T;
   return a.w != gen.w || abs(a.y - gen.y) > STORE_MATTER_T || abs(a.z - gen.z) > STORE_LIFE_TOL;
-}
+}`;
+export const diffFrag = (g) => /* glsl */ `
+${prelude(g)}
+${generatorGLSL}
+${layersGLSL}
+${diffHeadGLSL}
 void main() {
   ivec2 f = ivec2(gl_FragCoord.xy);
   int i = f.x + DIFF_W * f.y;
@@ -327,6 +329,58 @@ void main() {
       genCell(L, uOrigin + p, gA, gB);
       if (cellDiffers(fetchA(p), gA)) { diff = true; break; }
     }
+  }
+  oC = vec4(diff ? 1.0 : 0.0, 0.0, 0.0, 1.0);
+}
+`;
+
+// ---------------------------------------------------------------- scenes
+// Every world scene but the island (world/scenes/index.js) generates through
+// its sceneCell(world cell, A, B) instead of the column pass: these are
+// fillFrag and diffFrag for it, with the same contracts (the diff's
+// tolerances too). sceneGLSL: the scene's glsl(g), included after the prelude
+// and nothing else of the generator's, so a scene may bring its own (or this
+// file's generatorGLSL).
+
+// Fill pass through sceneCell (fillFrag's contract).
+export const sceneFillFrag = (g, sceneGLSL) => /* glsl */ `
+${prelude(g)}
+${sceneGLSL}
+uniform ivec3 uFillMin;
+uniform ivec3 uFillMax;
+${stateOutGLSL}
+
+void main() {
+  ivec3 p = cellFromFrag(ivec2(gl_FragCoord.xy));
+  vec4 a = fetchA(p), b = fetchB(p);
+  uint f = fetchF(p);
+  if (!inGrid(p) || any(lessThan(p, uFillMin)) || any(greaterThanEqual(p, uFillMax))) { writeState(a, b, f); return; }
+  vec4 A, B;
+  sceneCell(uOrigin + p, A, B);
+  writeState(A, B, writtenFlags(f, a, b, A, B));
+}
+`;
+
+// Diff pass through sceneCell (diffFrag's contract).
+export const sceneDiffFrag = (g, sceneGLSL) => /* glsl */ `
+${prelude(g)}
+${sceneGLSL}
+${diffHeadGLSL}
+void main() {
+  ivec2 f = ivec2(gl_FragCoord.xy);
+  int i = f.x + DIFF_W * f.y;
+  ivec3 b = ivec3(i % uBricks.x, (i / uBricks.x) % uBricks.y, i / (uBricks.x * uBricks.y));
+  oC = vec4(0.0);
+  if (b.z >= uBricks.z) return;
+  ivec3 o = uLo + b * BS;
+  bool diff = false;
+  for (int z = 0; z < BS && !diff; z++)
+  for (int x = 0; x < BS && !diff; x++)
+  for (int y = 0; y < BS; y++) {
+    ivec3 p = o + ivec3(x, y, z);
+    vec4 gA, gB;
+    sceneCell(uOrigin + p, gA, gB);
+    if (cellDiffers(fetchA(p), gA)) { diff = true; break; }
   }
   oC = vec4(diff ? 1.0 : 0.0, 0.0, 0.0, 1.0);
 }
