@@ -75,6 +75,9 @@ body.pov-locked canvas { cursor: none; }
   transition: opacity 220ms, transform 260ms var(--ease);
 }
 .pov-vitals.show { opacity: 1; transform: none; }
+/* Where the centred hotbar (tools/hotbar.css: 10 slots, 568px) would reach the
+   vitals (16px + 210px from the left), the vitals sit above it instead. */
+@media (max-width: 1040px) { .pov-vitals { bottom: 88px; } }
 .pov-bar { display: flex; align-items: center; gap: 8px; }
 .pov-bar .pov-ic { flex: 0 0 auto; width: 14px; height: 14px; display: grid; place-items: center; }
 .pov-bar .pov-ic svg { width: 14px; height: 14px; }
