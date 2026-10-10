@@ -1,10 +1,12 @@
 // Headless check of the POV keys that speak other games' language: V in and
 // out of the body (Garry's Mod's noclip key; F drops in too, from the god
 // view), F5 first or third person (Minecraft), Z held zooms with the wheel
-// (Minecraft's zoom mods, pov/zoom.js), C swims down (the crouch key), F in
-// the body is left for the kick; and the body choice is Realistic | Stickman.
+// (Minecraft's zoom mods, pov/zoom.js), C held crouches (Source's duck:
+// half height, a third of the speed, stays down under a low ceiling; swims
+// down in liquid), F kicks; and the body choice is Realistic | Stickman.
 // usage: node tools/keys-check.mjs [--port 5193] [--shots dir]   (needs a dev server)
 import { chromium } from 'playwright';
+import { E, ELEMENTS } from '../src/elements.js';
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
 const port = opt('port', '5193');
@@ -113,9 +115,48 @@ try {
   await p.keyboard.up('c');
   await wait(200);
   const inp2 = await ev(() => window.__input);
-  check('C swims down, D still moves while it is held', inp.down && Math.hypot(inp.x, inp.z) > 0.5, JSON.stringify(inp));
+  check('C swims down (in liquid), D still moves while it is held', inp.down && Math.hypot(inp.x, inp.z) > 0.5, JSON.stringify(inp));
   check('let go, no more swimming down', !inp2.down, JSON.stringify(inp2));
   check('Z does not swim down', await (async () => { await p.keyboard.down('z'); await wait(150); const d = await ev(() => window.__input.down); await p.keyboard.up('z'); return !d; })());
+  // ---- C held crouches: half the height, the eye down, a third of the speed
+  const body = () => ev(() => { const a = window.__app, pl = a.pov.player; return { h: pl.height, eye: pl.eyeHeight, crouch: pl.crouch, camY: a.camera.position.y / a.scale, x: pl.pos.x, z: pl.pos.z, y: pl.pos.y, speed: Math.hypot(pl.vel.x, pl.vel.z), ground: pl.onGround }; });
+  await wait(400);
+  const stand = await body();
+  await p.keyboard.down('c'); await wait(700);
+  const low = await body();
+  check('C crouches to half height, the eye and camera down', near(low.h, stand.h / 2, 0.15) && near(low.eye, stand.eye * 28 / 64, 0.15) && stand.camY - low.camY > 2,
+    `height ${stand.h.toFixed(2)} → ${low.h.toFixed(2)}, eye ${stand.eye.toFixed(2)} → ${low.eye.toFixed(2)}, camera −${(stand.camY - low.camY).toFixed(2)} cells`);
+  await p.keyboard.down('w'); await wait(1200);
+  const slow = (await body()).speed;
+  await p.keyboard.up('c'); await wait(1200);
+  const walk = (await body()).speed;
+  await p.keyboard.up('w'); await wait(400);
+  check('crouched walking is a third of the speed', walk > 1 && near(slow / walk, 1 / 3, 0.08), `${slow.toFixed(2)} vs ${walk.toFixed(2)} cells/s (×${(slow / walk).toFixed(2)})`);
+  // under a slab of wall between the crouched and the standing height: stays down until out of it
+  await p.keyboard.down('c'); await wait(700);
+  const at = await body();
+  await ev(([wall, T, life, x0, z0, y0, y1, half]) => {
+    const sim = window.__app.sim, g = sim.g, [A, B] = sim.blankState();
+    for (let y = y0; y < y1; y++) for (let z = z0 - half; z <= z0 + half; z++) for (let x = x0 - half; x <= x0 + half; x++) {
+      if (x < 0 || z < 0 || x >= g.nx || z >= g.nz) continue;
+      const i = sim.cellTexel(x, y, z) * 4;
+      A[i] = wall; A[i + 1] = T; A[i + 2] = life; A[i + 3] = 0.5;
+    }
+    sim.load(A, B);
+  }, [E.WALL, ELEMENTS[E.WALL].temp, ELEMENTS[E.WALL].life, Math.floor(at.x), Math.floor(at.z), 3, 6, 4]);
+  await wait(500);
+  await p.keyboard.up('c'); await wait(700);
+  const roofed = await body();
+  check('under a low ceiling, letting go of C stays crouched', roofed.h < 3, `height ${roofed.h.toFixed(2)} (ceiling at 3)`);
+  await p.keyboard.down('d'); await wait(3500); await p.keyboard.up('d'); await wait(700);
+  const out = await body();
+  check('...and stands once out from under it', near(out.h, stand.h, 0.1), `height ${out.h.toFixed(2)}, moved ${Math.hypot(out.x - at.x, out.z - at.z).toFixed(1)} cells`);
+
+  // ---- F kicks (pov/kick.js: the 'kick' event)
+  await ev(() => { window.__kicks = 0; window.__app.pov.events.on('kick', () => { window.__kicks++; }); });
+  await p.keyboard.press('f'); await wait(800);
+  check('F kicks', (await ev(() => window.__kicks)) > 0, `${await ev(() => window.__kicks)} kick event(s)`);
+
   check('the body lived through the checks', await ev(() => !window.__app.pov.player.dead), await ev(() => window.__app.pov.player.cause ?? ''));
 
   // ---- V out; F from the god view drops in too
@@ -136,9 +177,9 @@ try {
     help: [...document.querySelectorAll('.help .key')].map((r) => r.textContent).join(' | '),
     hint: document.querySelector('.pov-hint')?.textContent ?? '',
   }));
-  check('shortcut sheet: V god view, F5 view, Z zoom, C swim down',
-    /God view[^|]*V/.test(texts.help) && /First or third person\s*F5/.test(texts.help) && /Zoom[^|]*Z/.test(texts.help) && /Swim down\s*C/.test(texts.help), texts.help.slice(0, 0));
-  check('POV hint: Z zoom, F5 third person, V god view, C swim down', /Z zoom/.test(texts.hint) && /F5 third person/.test(texts.hint) && /V god view/.test(texts.hint) && /C swim down/.test(texts.hint), texts.hint);
+  check('shortcut sheet: V god view, F5 view, Z zoom, C crouch',
+    /God view[^|]*V/.test(texts.help) && /First or third person\s*F5/.test(texts.help) && /Zoom[^|]*Z/.test(texts.help) && /Crouch[^|]*C/.test(texts.help), texts.help.slice(0, 0));
+  check('POV hint: Z zoom, F5 third person, V god view, C crouch, F kick', /Z zoom/.test(texts.hint) && /F5 third person/.test(texts.hint) && /V god view/.test(texts.hint) && /C crouch/.test(texts.hint) && /F kick/.test(texts.hint), texts.hint);
   check('settings offer Realistic and Stickman only', await ev(() => !document.querySelector('.drawer button[data-value="wizard"]') && !!document.querySelector('.drawer button[data-value="real"]')));
 } finally {
   if (errs.length) { console.log('page errors:'); errs.slice(0, 8).forEach((e) => console.log('  ' + e)); }

@@ -46,7 +46,11 @@ export const MODELS = {
   lantern: { fit: 'y', size: 0.85, anchor: [0.5, 1, 0.5], arm: ARM_UP, icon: { yaw: 0, tilt: 0.3, roll: 0 } },                    // a lantern hanging from its bail
   bomb: { fit: 'z', size: 0.8, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.35, roll: Q } },         // a capped pipe with a lit fuse
   knife: { fit: 'z', size: 0.95, anchor: [0.5, 0.5, 0.79], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.3, roll: Q } },       // blade forward, edge down, held by the handle
+  laser: { fit: 'z', size: 2.1, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.3, roll: 0.45 } },      // a Spartan-laser-style cannon, its charge strip glowing, centred
+  burrower: { fit: 'z', size: 1.5, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.3, roll: 0.45 } },   // a stubby launcher with a drill bit in its mouth, centred
+  drill: { fit: 'x', size: 1, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.3, roll: Q } },           // the burrower's drill in flight, a cell across (the tool scales it to its bore)
   pogo: { fit: 'y', size: 3.5, anchor: [0.5, 0.98, 0.5], arm: ARM_DOWN, icon: { yaw: 0, tilt: 0.3, roll: Q / 2 } },              // upright, held by the handlebar, the stick down out of view
+  hook: { fit: 'z', size: 1.15, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.3, roll: 0.35 } },      // a grapple launcher, the claw in its mouth
 };
 
 // RS2 stores a colour as 16-bit HSL: 6 bits of hue, 3 of saturation, 7 of lightness.
@@ -66,9 +70,9 @@ const COLORS = {
   grip: '#3a3530', orange: '#d87a22', white: '#d6dbe0', glow: '#5ff0ff', skin: '#c48a5c', sleeve: '#8a3a2a',
   screen: '#7dff9a', red: '#b8322a', flame: '#6fa8ff', spark: '#ffb347', olive: '#5a6b2e', oliveDark: '#3d4a1f',
   fire: '#ff8a2a', lamp: '#f4f8ff', cloth: '#5b4630', pitch: '#2a211b', leather: '#4e3322', leatherDark: '#2f1f15',
-  glass: '#cdeef6', cork: '#a87b4f',
+  glass: '#cdeef6', cork: '#a87b4f', laser: '#ff3a30',
 };
-const UNLIT = new Set(['glow', 'screen', 'flame', 'spark', 'fire', 'lamp']);
+const UNLIT = new Set(['glow', 'screen', 'flame', 'spark', 'fire', 'lamp', 'laser']);
 // unlit parts that are light sources, drawn this many times brighter than white so they glow (HDR, before the tone curve)
 const GLOW_GAIN = { fire: 1.4, lamp: 5 };
 // see-through parts: their opacity (the flask's glass shows what it holds)
@@ -261,6 +265,31 @@ const PARTS = {
     ...FINS.map((a) => ({ geo: 'box', s: [0.02, 0.12, 0.16], p: [Math.sin(a) * 0.1, Math.cos(a) * 0.1, 0.28], rot: [0, 0, -a], m: 'oliveDark' })),
     { geo: 'sphere', r: 0.07, p: [0, 0, 0.4], m: 'spark' },
   ],
+  laser: [
+    { geo: 'box', s: [0.22, 0.26, 1.3], p: [0, 0.22, -0.35], m: 'metalDark' },
+    { geo: 'box', s: [0.14, 0.1, 0.5], p: [0, 0.4, -0.15], m: 'metal' },
+    { geo: 'cyl', r: 0.06, h: 0.06, p: [0, 0.4, -0.42], rot: [H, 0, 0], m: 'laser' },
+    { geo: 'cyl', r: 0.08, h: 0.45, p: [0, 0.22, -1.2], rot: [H, 0, 0], m: 'metal' },
+    { geo: 'cyl', r: 0.12, h: 0.1, p: [0, 0.22, -1.45], rot: [H, 0, 0], m: 'metalDark' },
+    { geo: 'box', s: [0.235, 0.05, 0.9], p: [0, 0.22, -0.4], m: 'laser', name: 'charge' },
+    { geo: 'box', s: [0.1, 0.22, 0.12], p: [0, 0.0, -0.6], rot: [0.15, 0, 0], m: 'grip' },
+    STOCK_GRIP,
+  ],
+  burrower: [
+    { geo: 'cyl', r: 0.15, h: 1.0, p: [0, 0.3, -0.25], rot: [H, 0, 0], m: 'orange' },
+    { geo: 'cyl', r: 0.18, h: 0.12, p: [0, 0.3, -0.76], rot: [H, 0, 0], m: 'metalDark' },
+    { geo: 'cyl', r: 0.18, h: 0.12, p: [0, 0.3, 0.25], rot: [H, 0, 0], m: 'metalDark' },
+    { geo: 'cyl', rt: 0, rb: 0.14, h: 0.4, p: [0, 0.3, -1.02], rot: [-H, 0, 0], m: 'iron', name: 'bit' },
+    { geo: 'box', s: [0.1, 0.22, 0.12], p: [0, 0.1, -0.45], rot: [0.15, 0, 0], m: 'grip' },
+    STOCK_GRIP,
+  ],
+  drill: [
+    { geo: 'cyl', rt: 0, rb: 0.5, h: 0.7, p: [0, 0, -0.55], rot: [-H, 0, 0], m: 'iron', name: 'bit' },
+    ...FINS.map((a) => ({ geo: 'box', s: [0.05, 0.36, 0.45], p: [Math.sin(a) * 0.22, Math.cos(a) * 0.22, -0.48], rot: [0.5, 0, -a], m: 'ironDark' })),
+    { geo: 'cyl', r: 0.44, h: 0.4, p: [0, 0, 0], rot: [H, 0, 0], m: 'orange' },
+    { geo: 'cyl', r: 0.36, h: 0.12, p: [0, 0, 0.26], rot: [H, 0, 0], m: 'metalDark' },
+    { geo: 'sphere', r: 0.15, p: [0, 0, 0.36], m: 'spark' },
+  ],
   physgun: [
     { geo: 'cyl', r: 0.13, h: 0.62, p: [0, 0.22, -0.2], rot: [H, 0, 0], m: 'white' },
     { geo: 'cyl', rt: 0.13, rb: 0.1, h: 0.1, p: [0, 0.22, 0.16], rot: [-H, 0, 0], m: 'metalDark' },
@@ -269,6 +298,18 @@ const PARTS = {
     { geo: 'cyl', rt: 0.09, rb: 0.13, h: 0.1, p: [0, 0.22, -0.56], rot: [-H, 0, 0], m: 'metalDark' },
     ...FINS.map((a) => ({ geo: 'cyl', rt: 0.012, rb: 0.03, h: 0.24, p: [Math.sin(a) * 0.08, 0.22 + Math.cos(a) * 0.08, -0.72], rot: [-H, 0, 0], m: 'metalDark' })),
     { geo: 'sphere', r: 0.05, p: [0, 0.22, -0.7], m: 'glow' },
+    STOCK_GRIP,
+  ],
+  // the hook (hook.tool.js): a stubby launcher with a spool of rope under it and a three-pronged
+  // claw in its mouth; the claw's parts are named, so the tool hides them while the claw is out
+  hook: [
+    { geo: 'cyl', r: 0.09, h: 0.62, p: [0, 0.16, -0.25], rot: [H, 0, 0], m: 'metal' },
+    { geo: 'cyl', r: 0.12, h: 0.14, p: [0, 0.16, 0.08], rot: [H, 0, 0], m: 'metalDark' },
+    { geo: 'cyl', r: 0.11, h: 0.18, p: [0, -0.02, -0.28], rot: [0, 0, H], m: 'cloth' },
+    { geo: 'cyl', r: 0.13, h: 0.04, p: [0.1, -0.02, -0.28], rot: [0, 0, H], m: 'metalDark' },
+    { geo: 'cyl', r: 0.13, h: 0.04, p: [-0.1, -0.02, -0.28], rot: [0, 0, H], m: 'metalDark' },
+    { geo: 'cyl', r: 0.03, h: 0.3, p: [0, 0.16, -0.66], rot: [H, 0, 0], m: 'iron', name: 'claw' },
+    ...FINS.map((a) => ({ geo: 'box', s: [0.03, 0.03, 0.2], p: [Math.sin(a) * 0.07, 0.16 + Math.cos(a) * 0.07, -0.76], rot: [Math.cos(a) * 0.7, -Math.sin(a) * 0.7, 0], m: 'iron', name: 'claw' })),
     STOCK_GRIP,
   ],
 };

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { BODY_HEIGHT, BODY_WIDTH, EYE_HEIGHT, HAND_REACH } from './constants.js';
+import { BODY_HEIGHT, BODY_WIDTH, HAND_REACH } from './constants.js';
 import { createPovCamera, ENTRY_PITCH, FIGURE_HIDE_DIST, RESPAWN_SWOOP_S, SWOOP_S } from './camera.js';
 import { createBody } from './figureReal.js';
 import { createPovHud } from './hud.js';
@@ -14,6 +14,9 @@ import { grant, PERK } from './perks.js';
 import { CLASSES_ENABLED } from './classes.js';
 import { createClassPicker } from './classPicker.js';
 import { createVehicles } from './vehicles/index.js';
+import { createNightVision } from './nightVision.js';
+import { KICK_KEY, createKickLeg } from './kick.js';
+import { viewmodelRig, HIT } from './viewmodel.js';
 import { createGame } from '../game/index.js';
 import { SPAWNER, ENEMY_KINDS } from '../spawners.js';
 import { createZoom, ZOOM_KEY } from './zoom.js';
@@ -47,8 +50,8 @@ const WHEEL_GESTURE_GAP_MS = 180;       // ms without wheel events that ends a g
 const WHEEL_LINE_PX = 40;               // px per line, for wheels that report lines
 const WHEEL_PAGE_PX = 800;              // px per page
 
-// Keys held down: movement, the crouch key (C, PUBG's and Apex's; so far it
-// swims down in liquid) and the zoom (Z, zoom.js).
+// Keys held down: movement, the crouch (C held, PUBG's and Apex's key: Source's
+// duck in player.js; in liquid it swims down) and the zoom (Z, zoom.js).
 const CROUCH_KEY = 'KeyC';
 const MOVE_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ShiftLeft', 'ShiftRight', CROUCH_KEY, ZOOM_KEY]);
 // First or third person: Minecraft's F5 (its page reload is held back)
@@ -62,7 +65,7 @@ const CHASE_FOLLOW_RATE = 2.5;          // 1/s, how fast it swings
 // With classes on, comma is TF2's class key in POV (classPicker.js), not settings.
 const PASS_KEYS = new Set(['Escape', '?', ...(CLASSES_ENABLED ? [] : [',']), 'p', 'P']);
 
-// app = { renderer, scene, camera, controls, canvas, hud, settings, mp, isTyping,
+// app = { renderer, scene, camera, controls, canvas, hud, settings, mp, isTyping, post (gfx/post.js: night vision),
 //         getSim, getVolume, getScale, hover, pointerHover (() => bool), pickRay (ro, rd → Promise<hit>),
 //         requestRender, inWorld (() => bool: the grid is a window of a larger world, docs/scaling.md D11),
 //         showToolsMenu (the palette's first-person tools brought into view: Q) }
@@ -78,6 +81,7 @@ export function createPov(app) {
   const povHud = createPovHud();
   // feedback: everything here hears povEvents (events.js) and the body's events
   const feel = createFeel({ hud: povHud });
+  const nightVision = app.post ? createNightVision(app.post) : null;   // the Night Vision perk's goggles (the local player's view)
   let vfx = null;                        // three.quarks effects, built on the first drop-in
   let figure = null, player = null, toolbelt = null;
   const npcs = new Map();   // enemy spawner id → its NPC (npc.js)
@@ -89,16 +93,20 @@ export function createPov(app) {
     id: PLAYER,
     get alive() { return !!player && !player.dead && mode === 'on'; },
     box(min, max) {
-      min.set(player.pos.x - BODY_WIDTH / 2, player.pos.y, player.pos.z - BODY_WIDTH / 2);
-      max.set(player.pos.x + BODY_WIDTH / 2, player.pos.y + BODY_HEIGHT, player.pos.z + BODY_WIDTH / 2);
+      const hw = player.width / 2;   // (its own size: Shrink)
+      min.set(player.pos.x - hw, player.pos.y, player.pos.z - hw);
+      max.set(player.pos.x + hw, player.pos.y + player.height, player.pos.z + hw);
     },
     facing: (out) => povCam.dir(out),   // where the player looks (the knife's backstab test)
     get body() { return player; },      // its statuses scale its weapons (targets.js dealtScale)
     hurt(amount, cause, d, opts) {
       povEvents.emit('player:hit', { amount });   // inside the attacker's povEvents.as(): carries its id
       player.hurt(amount * PLAYER_DAMAGE_TAKEN, cause, opts);
-      player.applyImpulse(d.clone().setY(Math.max(d.y, 0) + PLAYER_KNOCK_UP).normalize().multiplyScalar(PLAYER_KNOCKBACK));
+      // d null: the weapon shoves by momentum itself (the kick: shove below)
+      if (d) player.applyImpulse(d.clone().setY(Math.max(d.y, 0) + PLAYER_KNOCK_UP).normalize().multiplyScalar(PLAYER_KNOCKBACK));
     },
+    shove(dv) { player.applyImpulse(dv); },   // a momentum shove (an NPC's kick, cells/s)
+    get body() { return player; },            // the body (a hook pulls on it: player.js tether)
   });
   // the jeep and the hoverbike (vehicles/index.js): Rapier loads on the first one
   const vehicles = createVehicles({
@@ -121,6 +129,7 @@ export function createPov(app) {
 
   // input
   const keys = new Set();
+  let kickQueued = false, kickLeg = null;   // the kick key went down; the kicking leg in the viewmodel (kick.js)
   const buttons = { primary: false, secondary: false, primaryPressed: false, secondaryPressed: false };
   let wheelAcc = 0, wheelNotches = 0, wheelLast = -Infinity, wheelDir = 0;
   const test = { assumeLocked: false };   // headless tests can't lock the pointer
@@ -176,6 +185,7 @@ export function createPov(app) {
       if (!e.repeat && mode !== 'exiting') povCam.third = !povCam.third;
     }
     if (e.code === VEHICLE_KEY && !e.repeat && live() && vehicles.use(player) === 'enter') povCam.setLook(vehicles.headingYaw(), CHASE_PITCH);
+    if (e.code === KICK_KEY && !e.repeat && mode === 'on') kickQueued = true;   // the kick (kick.js): always to hand, no slot
     // Sprint: Toggle (the setting): Shift flips sprinting on and off instead of being held
     if ((e.code === 'ShiftLeft' || e.code === 'ShiftRight') && !e.repeat && app.settings.sprintMode === 'toggle') sprintOn = !sprintOn;
     // F1, as in Minecraft: hide the HUD and the hand, for a clean view or a screenshot
@@ -414,6 +424,7 @@ export function createPov(app) {
     viewmodel.visible = false;
     povHud.show(false);
     feel.reset();
+    nightVision?.reset();
     vfx?.clear();
     document.body.classList.remove('pov-on');
     setHudHidden(false);
@@ -431,7 +442,7 @@ export function createPov(app) {
     aim: { valid: false, cell: new THREE.Vector3(), face: 0, id: -1, T: 0, P: 0, dist: Infinity },
     player: { pos: null, vel: null, onGround: false, inLiquid: false, applyImpulse: (dv) => player?.applyImpulse(dv), holdPogo: () => player?.holdPogo(), body: null },   // body: the player itself (a drink acts on it: ingest.js)
   };
-  const input = { move: { x: 0, z: 0 }, jump: false, sprint: false, down: false };
+  const input = { move: { x: 0, z: 0 }, jump: false, sprint: false, down: false, crouch: false };
   let sprintOn = false;     // Sprint: Toggle's state
   const vEye = new THREE.Vector3(), vFeet = new THREE.Vector3(), vA = new THREE.Vector3(), vB = new THREE.Vector3();
   const closest = new THREE.Vector3();
@@ -440,7 +451,7 @@ export function createPov(app) {
 
   function readInput() {
     input.move.x = input.move.z = 0;
-    input.jump = input.sprint = input.down = false;
+    input.jump = input.sprint = input.down = input.crouch = false;
     const d = vehicles.drive;
     d.throttle = d.steer = 0; d.brake = d.boost = false;
     if (mode !== 'on' || player.dead || app.isTyping()) return;
@@ -462,7 +473,7 @@ export function createPov(app) {
     }
     input.jump = keys.has('Space');
     input.sprint = app.settings.sprintMode === 'toggle' ? sprintOn : keys.has('ShiftLeft') || keys.has('ShiftRight');
-    input.down = keys.has(CROUCH_KEY);
+    input.crouch = input.down = keys.has(CROUCH_KEY);   // crouched on land, swimming down in liquid
   }
 
   function update(dt) {
@@ -547,7 +558,7 @@ export function createPov(app) {
     takePerks();
 
     // the camera, with the kick and shake on top of the look
-    vA.copy(player.pos).setY(player.pos.y + EYE_HEIGHT);
+    vA.copy(player.pos).setY(player.pos.y + player.eyeHeight);
     const shake = feel.update({ dt, live: mode === 'on' && !deadSeen, eye: vA });
     povCam.zoom = mode === 'on' && !deadSeen && toolbelt ? toolbelt.zoom : 1;   // a scope (the sniper's)
     // the zoom key: while it's held the wheel zooms, as in Zoomify, instead of picking a tool
@@ -558,7 +569,7 @@ export function createPov(app) {
     toWorld(player.pos, vFeet);
     const pose = povCam.update({
       dt, eye: vEye, feet: vFeet, scale, speedH,
-      onGround: player.onGround, inLiquid: player.inLiquid, sprinting: input.sprint,
+      onGround: player.onGround, inLiquid: player.inLiquid, sprinting: input.sprint && !player.crouch,
       dead: deadSeen, deadTime, box, shake,
     });
     if (pose.footfall && mode === 'on' && !deadSeen) povEvents.emit('player:step', { speed: speedH, inLiquid: player.inLiquid });
@@ -582,11 +593,12 @@ export function createPov(app) {
     }
 
     // the figure: shown once the camera is out of the head
-    figure.setVisible(pose.eyeDist > FIGURE_HIDE_DIST && !driving);   // the vehicle draws its driver
+    figure.setVisible(pose.eyeDist > FIGURE_HIDE_DIST && !driving && !player.gibbed);   // the vehicle draws its driver; a body burst into meat has nothing left to draw
     figure.update(dt, {
-      feet: vFeet, scale, yaw: povCam.look.yaw, worldToGrid,
-      speedH, velY: player.vel.y, onGround: player.onGround, inLiquid: player.inLiquid, headInLiquid: player.headInLiquid,
-      dead: deadSeen, deadTime, heat: player.feel?.heat ?? 0, jetting: player.jetting, status: player.status,
+      // Shrink: the figure at the body's size, its gait timed at the plain figure's speed for the size
+      feet: vFeet, scale: scale * player.size, yaw: povCam.look.yaw, worldToGrid,
+      speedH: speedH / player.size, velY: player.vel.y, onGround: player.onGround, inLiquid: player.inLiquid, headInLiquid: player.headInLiquid,
+      dead: deadSeen, deadTime, heat: player.feel?.heat ?? 0, jetting: player.jetting, status: player.status, kick: player.kickPose, crouch: player.crouch,
     });
     if (player.jetting && mode === 'on') vfx?.jet(player.pos, povCam.look.yaw, dt, figure.nozzles);
     // flames licking off burning bodies (status.js BURNING), the player's and the NPCs'
@@ -596,7 +608,7 @@ export function createPov(app) {
 
     // the toolbelt
     const aim = ctx.aim, hv = app.hover;
-    ctx.eye.copy(player.pos).setY(player.pos.y + EYE_HEIGHT);
+    ctx.eye.copy(player.pos).setY(player.pos.y + player.eyeHeight);
     povCam.dir(ctx.dir);
     aim.valid = hv.valid;
     if (hv.valid) {
@@ -625,10 +637,26 @@ export function createPov(app) {
       ctx.player.vel = player.vel;
       ctx.player.onGround = player.onGround;
       ctx.player.inLiquid = player.inLiquid;
+      ctx.player.body = player;   // the body itself, for a tool that hangs it on a rope (the hook: player.tether)
       try { toolbelt.update(ctx); } catch (err) { console.error('POV toolbelt update failed', err); }
     }
+    // the kick: the body's (player.kick), along the aim; the leg and the view's jolt are the shell's
+    if (kickQueued) {
+      kickQueued = false;
+      const r = live() && isLocked() ? player.kick(ctx.dir) : null;
+      if (r) {
+        kickLeg ??= createKickLeg({ viewmodel, getScale: app.getScale });
+        kickLeg.start(!!r.hit);
+        if (r.hit) viewmodelRig({ viewmodel, getScale: app.getScale }).hit(HIT.KICK);
+      }
+    }
+    kickLeg?.update(dt);
     buttons.primaryPressed = buttons.secondaryPressed = false;
     wheelNotches = 0;
+
+    // Night Vision: the goggles follow the scene's measured light (nightVision.js)
+    nightVision?.update(dt, mode === 'on' && !deadSeen ? player.perks.nightGain : 0);
+    if (nightVision?.on > 0) app.requestRender();   // (the grain moves)
 
     // effects: keep drawing while any are in flight (rendering is on demand)
     if (vfx?.update(dt)) app.requestRender();
@@ -679,7 +707,7 @@ export function createPov(app) {
     // the aim, not the shaken view: kick and shake are only felt
     if (mode === 'on' && !deadSeen) povCam.dir(rd);
     else camera.getWorldDirection(rd);
-    const eye = vA.copy(player.pos).setY(player.pos.y + EYE_HEIGHT);
+    const eye = vA.copy(player.pos).setY(player.pos.y + player.eyeHeight);
     const skip = Math.max(0, vB.subVectors(eye, ro).dot(rd));
     ro.addScaledVector(rd, skip);
     return true;

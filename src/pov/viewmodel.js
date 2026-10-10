@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { gfxUniforms } from '../gfx/uniforms.js';
 import { povEvents } from './events.js';
+import { NV_PHOSPHOR } from '../gfx/post.js';
 
 // The viewmodel: the tool in your hands, its motion, and the pass that draws it.
 //
@@ -73,6 +74,10 @@ export const HIT = {
   KNIFE: { kick: 0.3, punch: { pitch: [-1 * DEG, -0.5 * DEG] } },                     // a stab: half the axe's punch, straight in
   BACKSTAB: { kick: 0.8, punch: { pitch: [-3 * DEG, -2 * DEG], yaw: [-1 * DEG, 1 * DEG] } },   // a backstab: the blade driven in, the pickaxe's weight
   POGO: { kick: 0.2 },                                                                 // a pogo bounce: the stick's jolt in the hands
+  HOOK: { kick: 0.5, punch: { pitch: [0.5 * DEG, 1 * DEG] } },                       // the hook's claw fired
+  KICK: { punch: { pitch: [-1.5 * DEG, -0.5 * DEG], yaw: [-0.5 * DEG, 0.5 * DEG] } },   // the boot landed (kick.js): the view jolts, the hands stay put
+  LASER: { kick: 2.6, punch: { pitch: [5 * DEG, 6 * DEG], yaw: [-1 * DEG, 1 * DEG] } },        // the laser cannon's beam: the sniper's shove, harder
+  BURROWER: { kick: 1.2, punch: { pitch: [1.5 * DEG, 2.5 * DEG] } },                   // the burrower's drill leaving the tube
 };
 const randIn = ([lo, hi] = [0, 0]) => lo + Math.random() * (hi - lo);
 
@@ -263,17 +268,19 @@ function createPass(renderer) {
   // Tone mapping and the sRGB curve are nonlinear, so they run on straight colour: applied to premultiplied
   // colour they brighten every partly covered (anti-aliased) edge pixel into a pale outline.
   const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.ShaderMaterial({
-    uniforms: { tColor: { value: target.texture } },
+    uniforms: { tColor: { value: target.texture }, uNight: { value: 0 } },
     vertexShader: /* glsl */ `
       varying vec2 vUv;
       void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`,
     fragmentShader: /* glsl */ `
       uniform sampler2D tColor;
+      uniform float uNight;   // the Night Vision goggles' share of the picture (post.js): the tool seen through them too
       varying vec2 vUv;
       void main() {
         vec4 c = texture2D(tColor, vUv);
         if (c.a <= 0.0) discard;
         gl_FragColor = vec4(c.rgb / c.a, c.a);
+        gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(${NV_PHOSPHOR.join(', ')}) * dot(gl_FragColor.rgb, vec3(0.2126, 0.7152, 0.0722) /* Rec.709 luminance */), uNight);
         #include <tonemapping_fragment>
         #include <colorspace_fragment>
         gl_FragColor.rgb *= gl_FragColor.a;
@@ -335,6 +342,7 @@ export function renderViewmodels(renderer, scene, camera, post) {
   renderer.setRenderTarget(null);
   renderer.toneMapping = post?.settings.raw ? THREE.NoToneMapping : THREE.AgXToneMapping;
   renderer.toneMappingExposure = 2 ** (post?.settings.exposure ?? 0);
+  quadScene.children[0].material.uniforms.uNight.value = post?.settings.raw ? 0 : post?.settings.night ?? 0;
   renderer.render(quadScene, quadCam);
   if (glow) {   // the hands' light, added over it all (its materials tone map themselves)
     cam.layers.set(VIEWMODEL_GLOW_LAYER);

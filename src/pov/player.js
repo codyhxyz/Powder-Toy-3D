@@ -9,6 +9,8 @@ import { povEvents } from './events.js';
 import { createPerkSet } from './perks.js';
 import { createStatusSet } from './status.js';
 import { wound, createBodyWorld } from './stains.js';
+import { createKick } from './kick.js';
+import { createMeat, EAT_CELLS_MAX } from './meat.js';
 
 // The first-person body: an upright AABB (BODY_WIDTH × BODY_HEIGHT × BODY_WIDTH
 // cells) moving through the voxel grid in real time.
@@ -21,9 +23,10 @@ import { wound, createBodyWorld } from './stains.js';
 // pressure gradients with the sim's own a = −∇P·P_ACCEL/ρ, and hands what it
 // touches to vitals.js. A second pass pushes loose matter out of the body's way.
 // The body's perks (perks.js) change its moves here (Lukki, Sand Swimmer,
-// Fleet Foot, Rocket Boots, Big Tank) and reach into the world through a third
-// pass (Freeze Field, Revenge Explosion). A held pogo stick (tools/pogo.tool.js
-// calls holdPogo() every frame) turns its landings into bounces.
+// Fleet Foot, Rocket Boots, Big Tank, Slow Fall, Shrink) and reach into the
+// world through a third pass (Freeze Field, Revenge Explosion), and through the
+// engine's own brush and the coupling pass (Rain Cloud). A held pogo stick
+// (tools/pogo.tool.js calls holdPogo() every frame) turns its landings into bounces.
 //
 // Units: positions in grid cells (feet = bottom centre of the box), velocities
 // in cells/s, time in s. The sim runs on its own, much faster clock: about 240
@@ -32,8 +35,9 @@ import { wound, createBodyWorld } from './stains.js';
 // the coupling pass) it converts with the measured step rate.
 
 // ---- body ----
-const HW = BODY_WIDTH / 2;             // cells, half the footprint
-const H = BODY_HEIGHT;
+// Its size is the body's own (the Shrink perk scales it): createPlayer keeps H (height), HW (half
+// the footprint) and EYE (eye height) from BODY_HEIGHT, BODY_WIDTH and EYE_HEIGHT × perks.size.
+// What changes with size is what physics says does (Shrink, below).
 const EPS = 1e-4;                      // cells: faces this close to a cell boundary don't overlap it
 
 // ---- gravity and moving: Noita's player ----
@@ -52,6 +56,16 @@ const WALK_SPEED = SPRINT_SPEED / 3;   // cells/s (2.9 m/s): Noita has no walk; 
 const MOVE_EASE = 0.15;                // share of the gap to the wished speed closed per Noita frame, ground and air (accel_x)
 const JUMP_SPEED = 95 * PX;            // cells/s: a 1.9 m jump (jump_velocity_y)
 const STEP_HEIGHT = 1.1;               // cells: ledges up to this are stepped onto (1 cell + slack)
+// Crouch (input.crouch, held): Source's duck (gamemovement.cpp). The hull goes
+// from 72 units to 36 and the eye from 64 to 28; it takes TIME_TO_DUCK 0.4 s
+// down and TIME_TO_UNDUCK 0.2 s back up; a ducked player on the ground moves
+// at PLAYER_DUCKING_MULTIPLIER a third of the speed and doesn't sprint.
+// Standing back up needs the room for it. Not while swimming.
+const CROUCH_HEIGHT = 36 / 72;          // × the body's height, crouched
+const CROUCH_EYE = 28 / 64;             // × the eye's height, crouched
+const CROUCH_DOWN_S = 0.4;              // s to crouch
+const CROUCH_UP_S = 0.2;                // s to stand back up
+const CROUCH_SPEED = 1 / 3;             // × the speed on the ground, crouched
 const STEP_DOWN = 1.1;                 // cells: walking off a ledge this low follows the ground down
 const MAX_SPEED = 350 * PX;            // cells/s (52 m/s): Noita's fastest fall (velocity_max_y), past a lethal one
 const SUBSTEP = 0.4;                   // cells: longest move per collision substep
@@ -72,6 +86,46 @@ const JET_RISE = 95 * PX;              // cells/s (14 m/s): the climb the jet ea
 const LEVITATE_RISE = 1.75;            // × the jet's climb while Levitating (Noita's Faster Levitation: 75% faster)
 const JET_EASE = 0.25;                 // share of the gap to JET_RISE closed per Noita frame, gravity off while it fires (fly_speed_change_spd)
 const JET_FLY_SPEED = 52 * PX;         // cells/s: horizontal speed while the jet fires (fly_velocity_x)
+
+// ---- Slow Fall: a canopy's quadratic air drag on the way down, a = k·v², so the body comes down at
+// most at the terminal speed √(g/k). One stack lands it at a round parachute's rate (the US Army
+// T-11's 19 ft/s) at the default gravity; each further stack multiplies the drag area (perks.js
+// slowFallArea). Drag goes with area over mass, so a smaller body (Shrink) drifts down slower
+// still. It acts only while descending in air, so a jump still rises and the jetpack still climbs
+// (Noita's ease is untouched): it just makes the way down a glide.
+const SLOW_FALL_DESCENT = 5.8 / CELL_METERS;            // cells/s (5.8 m/s): terminal descent with one stack
+const SLOW_FALL_K = GRAVITY / SLOW_FALL_DESCENT ** 2;   // 1/cell: the canopy's drag constant at one stack and the default gravity
+
+// ---- Shrink: a body s times the size (perks.js size). Gravity is the world's, not the body's, so
+// the moves follow dynamic similarity (Alexander's: bodies of different sizes move alike at equal
+// Froude numbers v²/gL): run, walk, jump, swim and jet speeds scale by √s, and a jump still clears
+// the same number of body heights. Mass goes with volume (s³) and surfaces with area (s²), so:
+// an impulse (a blow, a gun's recoil) throws it 1/s³ as fast; liquid form drag (area/mass) is 1/s
+// and viscous drag (Stokes: size/mass) 1/s² as strong, so lava traps it worse; a canopy's drag is
+// 1/s; its skin warms and cools 1/s as fast (vitals.js). Blasts already scale: the pressure push is
+// the mean gradient over the body's own cells, about ΔP across the body over its length.
+// STEP_HEIGHT stays a cell (the grid's grain), so a small body still climbs a 1-cell ledge.
+
+// ---- rope (tools/hook.tool.js sets one with tether()): a one-sided distance
+// constraint to an anchor, Box2D's rope joint (Erin Catto's b2RopeJoint, the
+// max-distance joint; Jakobsen 2001, "Advanced Character Physics", the same
+// rope as a projection): past its length the body can't move away from the
+// anchor (the outward part of its velocity is taken away: a rope doesn't
+// bounce) and a Baumgarte term pulls it back to length. Gravity and the
+// constraint make the pendulum: a swing comes for free. Reeling, the winch
+// takes up the slack and the closing speed eases toward the reel speed the
+// Noita way, a share per frame (Titanfall 2's grapple: the line retracts and
+// draws the pilot to the hook) and the speed across the rope is damped by the
+// same share Noita settles a run with, so the reel zips you in instead of
+// winding you into an orbit (angular momentum would spin a body up as the rope
+// shortens). Let go of the reel and the speed across the rope is yours again:
+// the swing.
+export const ROPE_REEL_SPEED = JET_RISE;   // cells/s (14 m/s): the fastest the body moves itself, the jet's climb
+const ROPE_EASE = JET_EASE;            // share of the gap to the reel speed closed per Noita frame (fly_speed_change_spd)
+const ROPE_SWAY_EASE = MOVE_EASE;      // share of the speed across the rope taken per Noita frame while reeling (accel_x)
+const ROPE_HAND_BELOW_EYE = 1;         // cells under the eye the rope pulls at (× size): the hand holding it, shoulder high
+const ROPE_SLACK = 0.05;               // cells short of its length at which the rope counts as taut
+const ROPE_BAUMGARTE = 0.2;            // share of the overshoot past the length corrected per s·(1/dt): Box2D's b2_baumgarte
 
 // ---- liquids ----
 const WADE_SHARE = 0.15;               // submerged share of the body that counts as "in" liquid
@@ -120,6 +174,18 @@ const FREEZE_CLEAR = 1;                // cells around the body, from the feet u
 const REVENGE_INNER = BODY_HEIGHT / 2 + 1;   // cells from the body's middle where the blast's shell starts: the body sits in its eye
 const REVENGE_SHELL_MIN = 1;           // cells: the shell is at least this thick
 const REVENGE_COOLDOWN = 1;            // s between Revenge Explosions
+// Rain Cloud: real CLOUD cells (the engine rains them where they're thick, CLOUD_RAIN_NB, and thins
+// them at their edges) kept over the head. A breeze carries the cloud with the body (the coupling
+// pass on CLOUD only), and the brush tops its sphere up to CLOUD_FILL where rain and evaporation
+// took it. So no body can flood the world: new cloud comes at CLOUD_SEED_RATE at most, and a body
+// stops seeding while CLOUD_BUDGET cells of its own cloud may still be alive (counted down with
+// the cloud's measured life).
+const CLOUD_GAP = 2;                   // cells between the crown and the cloud's underside
+const CLOUD_FILL = 0.85;               // share of the air in its sphere it keeps cloud: thick enough to rain (5 of 6 neighbours on average)
+const CLOUD_SEED_RATE = 150;           // cells/s of new cloud at most, per body: a radius-4 cloud gathers in about 2 s
+const CLOUD_LIFE_S = 67;               // s: e-folding life of painted cloud, measured on the GPU (41% left after 60 s: 60 / ln(1/0.41))
+const CLOUD_BUDGET = 6000;             // cells: the most of its own cloud a body keeps alive at once (a trail it outran included)
+const CLOUD_SPAWN = ELEMENTS[E.CLOUD].spawn;   // the brush's chance per air cell at rate 1 (elements.js spawn)
 // The movement perks (Fleet Foot, Rocket Boots) multiply speeds; these caps keep the body inside
 // its probe (PROBE: 16 cells across, 32 tall; the probe leads the body by its velocity × the
 // readback latency) at low frame rates. Both are speeds the body already reaches without perks.
@@ -164,20 +230,40 @@ function rawMat(frag, uniforms) {
 }
 
 // quiet: a body that isn't the player's (an NPC, npc.js) doesn't announce its jet on povEvents.
-// perks: its perk set (perks.js).
-export function createPlayer({ renderer, getSim, quiet = false, perks = createPerkSet() }) {
+// perks: its perk set (perks.js). id: an NPC's id (npc.js), carried as `by` on
+// the povEvents its body sends (gibs, eating); the player's has none.
+export function createPlayer({ renderer, getSim, quiet = false, perks = createPerkSet(), id = null }) {
   const listeners = {};
+  let kicker = null;   // the kick (kick.js), made once the body is
+  let rope = null;     // { anchor (Vector3, grid; the setter keeps it current), length, reel (cells/s, 0 holds), hard, brace }
   let revengeWait = 0, revengeDue = false;
   // pogo: the tool's hold (renewed every frame), the climb, and the jump button's timing
   let pogoHold = false, pogoStep = 0, bounceTimed = false;
   let prevJump = false, jumpHeldS = 0, sinceJumpPress = Infinity, sinceBounce = Infinity;
+  let gibDue = false;   // vitals.js GIB_HEALTH: the body bursts into meat at the next update (it needs the sim)
+  const meat = createMeat({ renderer, getSim });
+  const by = id ? { by: id } : {};
   const emit = (name, data) => {
     // Revenge Explosion: a hurt sets one off at the next update (it needs the sim), once a cooldown at most
     if (name === 'hurt' && perks.has('REVENGE_EXPLOSION') && revengeWait <= 0) { revengeDue = true; revengeWait = REVENGE_COOLDOWN; }
     if (name === 'wound') wound(p, data.amount, statusCtx);   // a blow, fall or blast bleeds (stains.js)
+    if (name === 'gib') gibDue = true;
     (listeners[name] || []).forEach((fn) => fn(data));
   };
   const vitals = createVitals(emit, perks);
+  // the body's size (Shrink): resize() sets these from perks.size every frame,
+  // and from the crouch (0 standing … 1 crouched: crouchStep)
+  let size = 1, gait = 1, H = BODY_HEIGHT, HW = BODY_WIDTH / 2, EYE = EYE_HEIGHT;
+  let crouch = 0;
+  const crouchShare = (c, share) => 1 + c * (share - 1);
+  const ropeHandY = () => EYE - ROPE_HAND_BELOW_EYE * size;   // cells above the feet the rope pulls at
+  function resize() {
+    size = perks.size;
+    gait = Math.sqrt(size);             // × speeds: Froude similarity
+    H = BODY_HEIGHT * size * crouchShare(crouch, CROUCH_HEIGHT);
+    HW = BODY_WIDTH / 2 * size;
+    EYE = EYE_HEIGHT * size * crouchShare(crouch, CROUCH_EYE);
+  }
   // Sand Swimmer: powders don't block the body; it swims through them as through a liquid
   let sandSwim = false;
   const blocks = (id) => solidId(id) || (!sandSwim && isPowder(id));
@@ -202,6 +288,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
   let lastSim = null, lastFrame = 0, dtSmooth = 1 / 60;
 
   const contactId = new Int32Array(PN), contactT = new Float32Array(PN), contactSpark = new Float32Array(PN);
+  const eatCells = [];   // cooked meat touching the body this frame ([x, y, z]), to eat (meat.js)
   const env = { contactId, contactT, contactSpark, contactN: 0, headInLiquid: false, liquidId: E.WATER, buriedId: -1, pressure: 0 };
 
   const p = {
@@ -215,6 +302,11 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     pogoing: false,               // bouncing on a held pogo stick this frame
     get pogoStep() { return pogoStep; },   // timed presses in a row (0..POGO_STEPS): how high it bounces
     perks,                        // its perks (perks.js)
+    get size() { return size; },  // × the plain body's size (Shrink)
+    get height() { return H; },   // cells, feet to crown
+    get width() { return 2 * HW; },   // cells, the square footprint's side
+    get eyeHeight() { return EYE; },  // cells above the feet
+    get crouch() { return crouch; },  // 0 standing … 1 crouched
     speedScale: 1,                // × walking and running speed: a class's (classes.js; the Bulwark is slow)
     get health() { return vitals.health; },
     get shield() { return vitals.shield; },             // Energy Shield left (base lives, 0..shieldMax)
@@ -225,15 +317,20 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     get dead() { return vitals.dead; },
     get cause() { return vitals.cause; },
     get skinT() { return vitals.skinT; },
+    get gibbed() { return vitals.gibbed; },   // burst into meat (vitals.js GIB_HEALTH): the body is gone
     set skinT(T) { vitals.skinT = T; },   // a drink trades heat with it (ingest.js)
     stepRate: 0,                  // sim steps/s, as measured
+    get kickPose() { return kicker.pose; },   // the kick's progress 0..1 while it shows (figure.js s.kick), else null
+    get rope() { return rope; },  // the rope it hangs on (tether), or null
     team: null,                   // a team game's side ('red' | 'blue' | 'infected', src/game), or null
   };
   // statuses (status.js; the built-in ones, Burning's fire and Bleeding: stains.js)
   const bodyWorld = createBodyWorld({ renderer, getSim });
   const statusCtx = { world: bodyWorld, renderer, getSim, hurt: (amount, cause, opts) => vitals.hurt(amount, cause, false, opts) };
   p.status = createStatusSet(p, statusCtx);
+  kicker = createKick({ body: p, getSim, cellAt: (x, y, z) => (probe.valid && g ? idAt(x, y, z) : UNKNOWN), unknown: UNKNOWN });
   const impulse = new THREE.Vector3();
+  const vB = new THREE.Vector3();
 
   // ---------------------------------------------------------------- probe
   function ensureMats(sim) {
@@ -249,6 +346,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
         ...stateUniforms(), uFrame: { value: 0 },
         uMin: { value: new THREE.Vector3() }, uMax: { value: new THREE.Vector3() }, uVel: { value: new THREE.Vector3() },
         uPushFluid: { value: 0 }, uPushPowder: { value: 0 }, uLift: { value: 0 }, uAhead: { value: new THREE.Vector2() },
+        uOnly: { value: -1 },
       }),
       field: rawMat(povFieldFrag(g), {
         ...stateUniforms(),
@@ -371,6 +469,24 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
   }
   const comp = ['x', 'y', 'z'];
 
+  // Crouch toward `want`. On the ground the body shrinks from the top; in the
+  // air the feet tuck up to the head (Source's crouch-jump). It stands back up
+  // only into room: on the ground the head needs the space above, in the air
+  // the feet drop back if they can, else the head rises.
+  function crouchStep(dt, want) {
+    if (crouch === (want ? 1 : 0)) return;
+    const next = want ? Math.min(1, crouch + dt / CROUCH_DOWN_S) : Math.max(0, crouch - dt / CROUCH_UP_S);
+    const dh = BODY_HEIGHT * size * crouchShare(next, CROUCH_HEIGHT) - H;
+    if (dh < 0) {
+      if (!p.onGround) p.pos.y -= dh;
+    } else if (p.onGround) {
+      if (sweep(1, dh).id !== null) return;   // no room to stand: stay down
+    } else if (sweep(1, -dh).id === null) p.pos.y -= dh;
+    else if (sweep(1, dh).id !== null) return;
+    crouch = next;
+    resize();
+  }
+
   // A blocked horizontal move: step up onto a ledge up to STEP_HEIGHT high
   // if the body fits there. Returns true if it stepped.
   function tryStep(axis, d) {
@@ -442,7 +558,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     p.liquidId = best;
 
     // head: liquid around the eye, or powder/solid in the eye's own cells
-    const ye = Math.floor(p.pos.y + EYE_HEIGHT);
+    const ye = Math.floor(p.pos.y + EYE);
     let open = 0, liq = 0, n = 0, buried = 0;
     const buriedCount = {};
     for (let x = bx0 - 1; x <= bx1 + 1; x++)
@@ -485,6 +601,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
 
     // contact: cells touching or inside the body
     let cn = 0;
+    eatCells.length = 0;
     for (let y = c0(lo[1] - CONTACT_REACH); y <= c1(hi[1] + CONTACT_REACH); y++)
       for (let x = c0(lo[0] - CONTACT_REACH); x <= c1(hi[0] + CONTACT_REACH); x++)
         for (let z = c0(lo[2] - CONTACT_REACH); z <= c1(hi[2] + CONTACT_REACH); z++) {
@@ -494,6 +611,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
           contactT[cn] = tAt(x, y, z);
           contactSpark[cn] = sparkAt(x, y, z);   // status.js shock
           cn++;
+          if (id === E.COOKED_MEAT && eatCells.length < EAT_CELLS_MAX) eatCells.push([x, y, z]);
         }
     env.contactN = cn;
   }
@@ -512,6 +630,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     u.uLift.value = speed > EPS ? DISPLACE_LIFT * Math.max(0, -p.vel.y) / speed : 0;
     u.uAhead.value.set(p.vel.x, p.vel.z).multiplyScalar(speed > EPS ? DISPLACE_AHEAD / speed : 0);
     u.uFrame.value = sim.frame;
+    u.uOnly.value = -1;
     // it changes only cells whose centres are in the body's box (shaders/povBody.js),
     // so only those are rebuilt and woken (Simulation.touch)
     sim.touchCentres(lo, hi);
@@ -546,10 +665,53 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     sim.pass(mats.field);
   }
 
-  // Freeze Field every frame; a Revenge Explosion when one is due
-  function fields(sim, dt) {
+  // Rain Cloud: its sphere over the head, as the probe saw it; the breeze; the brush
+  const cloudAt = new THREE.Vector3();
+  let cloudOwed = 0;   // cells of its own cloud that may still be alive
+  const cloud = { air: 0, cloud: 0, cells: 0, known: 0 };
+  function rainCloud(sim, dt, r, stepRate) {
+    const c = cloudAt.set(p.pos.x, p.pos.y + H + CLOUD_GAP + r, p.pos.z);
+    cloud.air = 0; cloud.cloud = 0; cloud.cells = 0; cloud.known = 0;
+    for (let y = Math.floor(c.y - r); y <= Math.floor(c.y + r) && y < g.ny; y++)
+      for (let x = Math.floor(c.x - r); x <= Math.floor(c.x + r); x++)
+        for (let z = Math.floor(c.z - r); z <= Math.floor(c.z + r); z++) {
+          if ((x + 0.5 - c.x) ** 2 + (y + 0.5 - c.y) ** 2 + (z + 0.5 - c.z) ** 2 > r * r) continue;
+          cloud.cells++;
+          const id = idAt(x, y, z);
+          if (id === UNKNOWN) continue;   // (a big cloud reaches past the probe's top)
+          cloud.known++;
+          if (id === E.EMPTY) cloud.air++; else if (id === E.CLOUD) cloud.cloud++;
+        }
+    if (!cloud.known) return;
+    // the sphere's cells past the probe are taken to hold what the probed ones do
+    const whole = cloud.cells / cloud.known;
+    cloud.air *= whole; cloud.cloud *= whole;
+    // the breeze: what's there moves with the body (cloud only: rain falls out of it freely)
+    if (cloud.cloud && stepRate > 0) {
+      const u = mats.couple.uniforms;
+      u.uMin.value.set(c.x - r, c.y - r, c.z - r);
+      u.uMax.value.set(c.x + r, c.y + r, c.z + r);
+      u.uVel.value.copy(p.vel).divideScalar(stepRate).clampScalar(-PHYS.V_MAX, PHYS.V_MAX);
+      u.uPushFluid.value = 0; u.uPushPowder.value = 0; u.uLift.value = 0; u.uAhead.value.set(0, 0);
+      u.uFrame.value = sim.frame;
+      u.uOnly.value = E.CLOUD;
+      sim.touchCentres([c.x - r, c.y - r, c.z - r], [c.x + r, c.y + r, c.z + r]);
+      sim.pass(mats.couple);
+    }
+    // the brush: top the air up to CLOUD_FILL, at the seed rate at most, within the budget
+    const want = Math.min(CLOUD_FILL * (cloud.air + cloud.cloud) - cloud.cloud, CLOUD_SEED_RATE * dt, CLOUD_BUDGET - cloudOwed);
+    if (!(want > 0) || !cloud.air) return;
+    sim.paint({ center: c, radius: r, shape: 0, tool: E.CLOUD, rate: want / (cloud.air * CLOUD_SPAWN), replace: false });
+    cloudOwed += Math.min(want, cloud.air);
+  }
+
+  // Freeze Field and Rain Cloud every frame; a Revenge Explosion when one is due
+  function fields(sim, dt, stepRate) {
     const r = vitals.dead ? 0 : perks.freezeRadius;
     if (r > 0 && dt > 0) perkField(sim, { inner: 0, outer: r, cool: FREEZE_RATE * dt, clear: HW + FREEZE_CLEAR });
+    cloudOwed *= Math.exp(-dt / CLOUD_LIFE_S);
+    const cr = vitals.dead ? 0 : perks.cloudRadius;
+    if (cr > 0 && dt > 0) rainCloud(sim, dt, cr, stepRate);
     if (!revengeDue) return;
     revengeDue = false;
     const pressure = perks.revengePressure;
@@ -565,7 +727,9 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     if (!sim) return;
     const dt = Math.min(Math.max(dtIn, 0), MAX_DT);
     revengeWait = Math.max(0, revengeWait - dt);
+    kicker.update(dt);
     sandSwim = perks.has('SAND_SWIMMER') && !vitals.dead;
+    resize();
     if (sim !== lastSim) {
       lastSim = sim; lastFrame = sim.frame;
       g = sim.g;
@@ -581,6 +745,13 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
 
     const ready = covered() && inGrid();
     requestProbe(sim);
+    if (gibDue) {
+      gibDue = false;
+      const point = p.pos.clone().setY(p.pos.y + H / 2);
+      meat.gib(p.pos, p.vel, stepRate, (placed, lost) => povEvents.emit('body:gib', { point, cells: placed, lost, ...by }));
+    }
+    meat.update();
+    if (vitals.gibbed) return;   // nothing left of the body to move, feel or push
     if (!ready || dt === 0) return;
 
     sense();
@@ -610,24 +781,40 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     p.pogoing = pogoing;
     if (!pogoing) pogoStep = 0;
 
+    crouchStep(dt, alive && !!input.crouch && !swimming);
+
     // controls
     wish.set(alive ? input.move?.x ?? 0 : 0, alive ? input.move?.z ?? 0 : 0);
     if (wish.length() > 1) wish.normalize();
     const vh = new THREE.Vector2(v.x, v.z);
     let jumpedNow = false;
     // Fleet Foot and Rocket Boots: ×2 a stack, up to what the probe keeps up with; a class's speedScale on foot
-    const footSpeed = (alive && input.sprint ? SPRINT_SPEED : WALK_SPEED) * p.speedScale * p.status.moveScale;
-    const runSpeed = p.jetting ? Math.min(JET_FLY_SPEED * perks.jetRate, Math.max(JET_FLY_SPEED, PERK_SPEED_H))
-      : alive && input.sprint ? Math.min(footSpeed * perks.sprintRate, Math.max(footSpeed, PERK_SPEED_H)) : footSpeed;
-    if (!swimming && (p.onGround || wish.lengthSq() > 0 || vh.length() <= runSpeed)) {
+    // Shrink: × gait (√size); the jet's own speeds too
+    // Crouched: no sprint, and a third of the speed on the ground
+    const sprinting = alive && input.sprint && crouch === 0;
+    const footSpeed = (sprinting ? SPRINT_SPEED : WALK_SPEED) * p.speedScale * p.status.moveScale * gait
+      * (p.onGround ? crouchShare(crouch, CROUCH_SPEED) : 1);
+    const jetFly = JET_FLY_SPEED * gait;
+    const runSpeed = p.jetting ? Math.min(jetFly * perks.jetRate, Math.max(jetFly, PERK_SPEED_H))
+      : sprinting ? Math.min(footSpeed * perks.sprintRate, Math.max(footSpeed, PERK_SPEED_H)) : footSpeed;
+    const swingingOnRope = !!rope?.hard && !p.onGround && !swimming;
+    if (swingingOnRope) {
+      // on a rope in the air: Noita's ease only ever adds speed toward the wished
+      // direction (it never brakes), so a swing keeps its momentum and can be pumped
+      if (wish.lengthSq() > 0) {
+        const dir = wish.clone().normalize();
+        const want = runSpeed * wish.length(), along = vh.dot(dir);
+        if (along < want) vh.addScaledVector(dir, (want - along) * ease(MOVE_EASE, dt));
+      }
+    } else if (!swimming && (p.onGround || wish.lengthSq() > 0 || vh.length() <= runSpeed)) {
       // Noita: ease toward the wished speed, on the ground and in the air alike.
       // With no input in the air faster than a run (a blast), keep the momentum.
       vh.lerp(wish.clone().multiplyScalar(runSpeed), ease(MOVE_EASE, dt));
-      if (p.onGround && alive && input.jump && !pogoing) { v.y = JUMP_SPEED; p.onGround = false; jumpedNow = true; }
+      if (p.onGround && alive && input.jump && !pogoing) { v.y = JUMP_SPEED * gait; p.onGround = false; jumpedNow = true; }
     } else if (swimming && wish.lengthSq() > 0) {
       // strokes: accelerate toward the wished speed, never brake
       const dir = wish.clone().normalize();
-      const add = Math.min(Math.max(SWIM_SPEED * wish.length() - vh.dot(dir), 0), SWIM_ACCEL * dt);
+      const add = Math.min(Math.max(SWIM_SPEED * gait * wish.length() - vh.dot(dir), 0), SWIM_ACCEL * dt);
       vh.addScaledVector(dir, add);
     }
     v.x = vh.x; v.z = vh.y;
@@ -664,7 +851,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     const tankS = JET_FUEL_S * perks.fuelRate;
     // Levitating (Levitatium, potions.js): Noita's Faster Levitation, 75% faster, and here the tank holds
     const levitating = p.status.has('LEVITATING');
-    const jetRise = Math.min(JET_RISE * perks.jetRate * (levitating ? LEVITATE_RISE : 1), Math.max(JET_RISE, PERK_SPEED_V));
+    const jetRise = Math.min(JET_RISE * gait * perks.jetRate * (levitating ? LEVITATE_RISE : 1), Math.max(JET_RISE * gait, PERK_SPEED_V));
     const jetWants = alive && !!input.jump && (!pogoing || jumpHeldS > POGO_WINDOW_S);
     const clings = jetWants && !p.onGround && !swimming && ((perks.has('LUKKI') && clinging()) || levitating);
     const jet = jetWants && !p.onGround && !jumpedNow && !swimming && (p.jetFuel > 0 || clings);
@@ -682,9 +869,16 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
 
     // gravity and buoyancy (Archimedes over the submerged share)
     v.y += (env2.buoy - (jet ? 0 : 1)) * grav * dt;   // the jet holds you up as Noita's does
+    // Slow Fall: the canopy's drag on the way down, taken implicitly (v' = v − k·v'·|v'|·dt, solved
+    // for v'), so it settles on √(g/k) exactly at any frame rate
+    const canopy = perks.slowFallArea;
+    if (canopy > 0 && v.y < 0 && !p.inLiquid) {
+      const kd = SLOW_FALL_K * canopy / size * dt;   // drag ∝ area/mass: 1/size (Shrink)
+      v.y = (1 - Math.sqrt(1 - 4 * kd * v.y)) / (2 * kd);
+    }
     // drag in liquid, scaled by how much of the body is in it
     if (sub > 0 && env2.densL > 0) {
-      const k = (VISCOUS_DRAG * env2.dragL + FORM_DRAG * env2.densL / BODY_DENS * v.length()) * sub;
+      const k = (VISCOUS_DRAG * env2.dragL / (size * size) + FORM_DRAG * env2.densL / BODY_DENS * v.length() / size) * sub;   // (Shrink: Stokes 1/s², form 1/s)
       v.multiplyScalar(Math.exp(-k * dt));
     }
 
@@ -696,7 +890,17 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
       const after = v.length();
       if (after > PRESSURE_MAX_SPEED && after > before) v.setLength(Math.max(PRESSURE_MAX_SPEED, before));
     }
-    v.add(impulse); impulse.set(0, 0, 0);
+    // an impulse is a plain body's change of velocity: momentum over its mass. A smaller body
+    // (Shrink, mass ∝ size³) takes the same momentum, so it's thrown 1/size³ as fast; what the
+    // smaller mass adds stops at a blast's throw (PRESSURE_MAX_SPEED: the probe keeps up)
+    if (size < 1 && impulse.lengthSq() > 0) {
+      const plain = vB.copy(v).add(impulse).length();
+      v.addScaledVector(impulse, 1 / size ** 3);
+      const cap = Math.max(PRESSURE_MAX_SPEED, plain);
+      if (v.length() > cap) v.setLength(cap);
+    } else v.add(impulse);
+    impulse.set(0, 0, 0);
+    if (rope && alive) pullRope(v, dt);
     if (v.length() > MAX_SPEED) v.setLength(MAX_SPEED);
 
     // move, with collisions
@@ -749,13 +953,54 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     if (p.onGround && !wasGround && landSpeed > Math.max(LAND_EVENT_SPEED, pogoSafe)) emit('land', { speed: landSpeed });
     if (slam > 0) vitals.impact(slam, Math.max(SAFE_IMPACT, pogoSafe), LETHAL_IMPACT, 0, slamId >= 0 ? slamId : -1);
 
+    env.size = size;   // (a smaller body's skin warms and cools faster)
     vitals.update(dt, env);
     p.status.update(dt, env);
+    eat();
     couple(sim, stepRate);
-    fields(sim, dt);
+    fields(sim, dt, stepRate);
+  }
+
+  // The rope's pull on velocity v this frame (see ROPE_*).
+  const ropeDir = new THREE.Vector3(), ropeCross = new THREE.Vector3();
+  function pullRope(v, dt) {
+    ropeDir.set(rope.anchor.x - p.pos.x, rope.anchor.y - p.pos.y - ropeHandY(), rope.anchor.z - p.pos.z);
+    const dist = ropeDir.length();
+    if (dist < EPS) return;
+    ropeDir.divideScalar(dist);   // toward the anchor
+    const braced = rope.brace && p.onGround;   // a light catch: the ground holds the body (tug.js brace)
+    if (rope.reel > 0 && !braced) {
+      rope.length = Math.min(rope.length, dist);   // the winch takes up the slack
+      const closing = v.dot(ropeDir);
+      // across the rope: damped toward still; along it: eased toward the reel speed
+      const across = ropeCross.copy(v).addScaledVector(ropeDir, -closing);
+      v.addScaledVector(across, -ease(ROPE_SWAY_EASE, dt));
+      if (closing < rope.reel) v.addScaledVector(ropeDir, (rope.reel - closing) * ease(ROPE_EASE, dt));
+    }
+    if (!rope.hard) return;
+    const closing = v.dot(ropeDir);
+    if (dist >= rope.length - ROPE_SLACK && closing < 0) v.addScaledVector(ropeDir, -closing);
+    if (dist > rope.length) v.addScaledVector(ropeDir, (dist - rope.length) * ROPE_BAUMGARTE / dt);
+  }
+
+  // Cooked meat touching the body is eaten, as a pickup, while it isn't at
+  // full health (Quake's T_Heal, items.qc: a full body leaves a health box
+  // where it is); raw meat isn't.
+  function eat() {
+    const want = vitals.eatWant();
+    if (!want || !eatCells.length) return;
+    const point = p.pos.clone().setY(p.pos.y + H / 2);
+    meat.eat(eatCells, want, (n) => {
+      vitals.eat(n);
+      emit('eat', { cells: n });
+      povEvents.emit('body:eat', { point, cells: n, ...by });
+    });
   }
 
   function spawn(feet) {
+    rope = null;
+    crouch = 0;
+    resize();
     p.pos.copy(feet);
     p.vel.set(0, 0, 0);
     impulse.set(0, 0, 0);
@@ -766,6 +1011,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     generation++; probe.valid = false;   // wait for cells around the new spot
     vitals.reset();
     p.status.clearAll('spawn');
+    gibDue = false;
   }
 
   function dispose() {
@@ -787,6 +1033,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
   function windowShifted(dx, dz) {
     p.pos.x -= dx;
     p.pos.z -= dz;
+    meat.windowShifted(dx, dz);
     probe.origin = [probe.origin[0] - dx, probe.origin[1], probe.origin[2] - dz];
     shifted[0] += dx;
     shifted[1] += dz;
@@ -807,6 +1054,13 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     // { shielded: false } passes the shield (a drink hurts from inside: ingest.js)
     hurt(amount, cause, { lethal = false, shielded = true } = {}) { vitals.hurt(amount, cause, true, { shielded, lethal }); },
     holdPogo() { pogoHold = true; },   // a pogo stick in hand: call every frame it's held (tools/pogo.tool.js)
+    // Kick along unit dir (kick.js): a body ability, the player's key and an NPC alike. The result, or null while it recovers.
+    kick(dir) { return kicker.kick(dir); },
+    get kicker() { return kicker; },   // for checks (kicker.walked: the cells the last kick's ray crossed)
+    // Hang on a rope (see ROPE_*): { anchor, length, reel, hard, brace }, kept by reference (the setter
+    // moves anchor and changes reel); null lets go. The point it pulls at: ropeHand().
+    tether(r) { rope = r; },
+    ropeHand(out = new THREE.Vector3()) { return out.set(p.pos.x, p.pos.y + ropeHandY(), p.pos.z); },
     on(name, fn) {
       (listeners[name] ??= []).push(fn);
       return () => { listeners[name] = listeners[name].filter((f) => f !== fn); };

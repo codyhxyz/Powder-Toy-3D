@@ -19,7 +19,7 @@ const PCT = 100;
 const ms = (v) => (v == null ? '–' : v.toFixed(2));
 const pct = (v) => `${v * PCT}%`;
 const share = (v) => `${Math.round(v * PCT)}%`;
-const gridText = ([nx, ny, nz]) => (nx === ny && ny === nz ? `${nx}³` : `${nx}×${ny}×${nz}`);
+const gridText = ([nx, ny, nz]) => (nx === ny && ny === nz ? `${nx}^3` : `${nx}×${ny}×${nz}`);
 const sceneSize = (s) => s.canvas.map((n) => Math.max(1, Math.round(n * s.renderScale))).join('×');
 const perStep = (s, v) => (s.steps && v != null ? v / s.steps : null);
 const simPhase = (s) => s.phases.find((p) => p.id === 'sim');

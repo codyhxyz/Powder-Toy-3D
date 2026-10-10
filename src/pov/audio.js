@@ -88,6 +88,7 @@ const SHIELD_HIT_GAP_S = 0.12;          // s between shield-hit crackles (a blas
 const SHIELD_BEEP_S = 0.5;              // s between beeps of the empty-shield alarm (Halo's), by ear
 const POGO_PITCH_STEP = 0.12;           // × playback rate per timed step up: each climb boings higher
 const KNIFE_SWING_RATE = 1.35;          // the knife's swing is the axe's whoosh, quicker and thinner
+const LASER_CHARGE_RATE = [0.6, 2.2];     // the laser's charge whine plays at this playback rate empty → full: it climbs as it fills
 
 // ---- presets
 // ZzFX parameter order (paste any of these into https://killedbyapixel.github.io/ZzFX/ to retune):
@@ -176,6 +177,12 @@ const PRESETS = {
   boing: [.6, .05, 300, , .06, .2, 0, 1, 6, , , , , , 12, , , .6],
   // the knife going into a body: a short, wet, low-passed thud
   stab: [.8, .1, 140, , .01, .08, 4, 1, -4, , , , , 3, , , , .5, , , -1200],
+  // the burrower's drill cutting: a gritty, rattling noise burst (repeat and bit-crush give the chatter of the bit)
+  drillGrind: [.5, .2, 260, , .06, .08, 4, 1.5, , , , , .02, 3, , .2, , .5, , .5],
+  // the laser charging (loops, its rate climbing with the charge): a buzzing saw with a fast tremolo under a low-pass
+  laserCharge: [.35, 0, 240, , 1, 0, 2, 1, , , , , , , 6, , , .8, , .4, -2500],
+  // the laser's shot: a bright saw zap diving from 1.2 kHz, FM'd, crushed, with a slapback (the Spartan Laser's crack)
+  laserFire: [1.6, .05, 1200, .01, .2, .7, 2, 1.5, -6, , , , , 2, 20, .3, .05, .6, .1, , -3000],
   // a backstab: a hard metallic ring over the stab (TF2's crit), FM'd like the metal ping
   backstab: [1, .02, 1600, , .03, .45, 0, 1, , , -400, .05, , , 22, , .06, .6],
 
@@ -200,9 +207,13 @@ const PRESETS = {
   hurtDrown: [.45, .3, 260, , .2, .1, 0, 1, 10, , , , .05, , , , , .7],
   // death: a long, falling, crushed tone
   death: [.8, 0, 220, .02, .3, .6, 2, 1, -2, , , , , , , .2, , .6, , , -1200],
+  // eating cooked meat (meat.js): two quick, wet, low-passed bites (the repeat makes the second)
+  eat: [.6, .2, 260, , .03, .07, 4, 1.5, -1, , , , .09, 3, , , , .55, , , -1100],
+  // a body bursting into meat: a heavy, wet splat sliding down
+  gib: [1.2, .15, 110, , .05, .35, 4, 1.8, -2, , , , , 4, , .15, .03, .5, .05, , -900],
 };
 // presets that play as seamless loops (one render each)
-const LOOPS = new Set(['pourLoop', 'physHum', 'torchLoop', 'jetLoop']);
+const LOOPS = new Set(['pourLoop', 'physHum', 'torchLoop', 'jetLoop', 'laserCharge']);
 
 // ---- material families: which sound a struck element makes. An element's
 // own (elements.js sound: glass shatters, wood thunks, metal pings), else its
@@ -451,6 +462,9 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
 
   // a perk taken (pov/index.js), yours up close, an NPC's where it stands; an Extra Life spent sounds the same
   povEvents.on('perk:take', ({ point, by }) => { if (live()) play('perk', { at: by ? point ?? null : null }); });
+  // gibs and eating (meat.js): the player's own bite is close, an NPC's (by) and every burst at the body
+  povEvents.on('body:eat', ({ point, by }) => { if (live()) play('eat', { at: by ? point ?? null : null }); });
+  povEvents.on('body:gib', ({ point }) => { if (live()) play('gib', { at: point ?? null }); });
   povEvents.on('perk:revive', () => { if (live()) play('perk'); });
 
   povEvents.on('impact', ({ source, point, id, energy, broke, body, backstab }) => {
@@ -465,6 +479,16 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
     play(name, { at, gain, rate });
     if (broke === true) play('crunch', { at, gain: gain * CRUNCH_GAIN, rate });
     if (broke === false && family === 'ping' && !MELEE_SOURCES.has(source)) play('ricochet', { at, gain: gain * RICOCHET_GAIN });
+  });
+
+  // the kick (kick.js): the leg's whoosh every time, and a boot's thud when it lands on a body or on
+  // something it can't move (a wall: the kick-off); the struck material's own sound comes with the impact
+  povEvents.on('kick', ({ hit, point, mass, by, from }) => {
+    if (!live()) return;
+    const at = by ? point ?? from ?? null : null;
+    play('swoosh', { at });
+    if (hit === 'body') play('hurtThud', { at: point ?? at });
+    else if (hit && !Number.isFinite(mass)) play('land', { at: by ? point : null });
   });
 
   // an NPC's tool sounds that are held loops for the player: a one-shot each where it is
@@ -514,11 +538,26 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
       case 'physgun:fling': play('physFling'); loop('physHum', false); break;
       case 'physgun:release': play('physRelease'); loop('physHum', false); break;
       case 'physgun:blast': play('physFling'); break;
+      case 'hook:fire': play('swoosh', { at }); break;   // the claw leaves (hook.tool.js)
+      case 'hook:catch': play(family ?? 'thunk', { at, gain: TOOL_HIT_GAIN, rate }); break;   // it bit: what it bit into
+      case 'hook:tear': play('crunch', { at }); break;   // the anchor gave way
+      case 'hook:release': play('physRelease', { at: by ? at : null }); break;
+      case 'hook:dump': play('shovelDump', { at, gain }); break;   // a carried bite set down
+      case 'burrower:grind': play('drillGrind', { at, rate }); break;
+      case 'laser:charge': if (!by) loop('laserCharge', true); break;
+      case 'laser:cancel': case 'laser:fire': if (!by) loop('laserCharge', false); break;
       default: break;
     }
   });
 
   povEvents.on('player:jet', ({ on }) => loop('jetLoop', !!on && live()));
+
+  // the laser's charge whine climbs as it fills (tool:action 'laser' 'charge' started the loop)
+  povEvents.on('laser:charge', ({ amount = 0, by }) => {
+    const l = S.loops.laserCharge;
+    if (!live() || by || !l?.on) return;
+    l.audio.setPlaybackRate(LASER_CHARGE_RATE[0] + (LASER_CHARGE_RATE[1] - LASER_CHARGE_RATE[0]) * amount);
+  });
 
   povEvents.on('player:step', ({ speed = STEP_LOUD_SPEED, inLiquid } = {}) => {
     if (!live()) return;

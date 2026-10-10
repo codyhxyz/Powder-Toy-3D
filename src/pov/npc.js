@@ -12,7 +12,7 @@ import { Agent } from './ai/brain.js';
 import { GunnerAgent } from './ai/gunner.js';
 import { createWorldModel } from './ai/world.js';
 import { createNav } from './ai/nav.js';
-import { BODY_HEIGHT, BODY_WIDTH, EYE_HEIGHT } from './constants.js';
+import { BODY_HEIGHT } from './constants.js';
 
 export { createWorm } from './worm.js';
 
@@ -75,7 +75,6 @@ const CHOP_S = 0.25;              // s the chop's follow-through shows after a b
 // the tool's model for each tool the brain uses (models.js, by the catalog)
 const MODEL_OF = Object.fromEntries(['SHOVEL', 'BUCKET', 'AXE', 'GUN', 'SMG', 'SNIPER', 'PHYSGUN', 'TROWEL', 'SCANNER', 'BLOWTORCH', 'BOMB', 'PICKAXE'].map((k) => [k, gearByKey(k).model]));
 
-const HW = BODY_WIDTH / 2;
 const AIM_REACH = 256;            // cells the tools' pick looks along
 let nextId = 1;
 
@@ -121,7 +120,7 @@ export function createAi({ renderer, getSim }) {
 // (s dead before it comes back) and name.
 export function createNpc({ env, ai, home = () => null, style = 'axeman', team = null, opponents = null, respawnS = RESPAWN_S, name = null }) {
   const id = `npc${nextId++}`;
-  const body = createPlayer({ renderer: env.renderer, getSim: env.getSim, quiet: true });
+  const body = createPlayer({ renderer: env.renderer, getSim: env.getSim, quiet: true, id });
   body.team = team;
   const held = {};
   const styleLook = LOOK[style] ?? LOOK.axeman;
@@ -160,17 +159,21 @@ export function createNpc({ env, ai, home = () => null, style = 'axeman', team =
     id,
     get alive() { return spawned && !body.dead; },
     box(min, max) {
-      min.set(body.pos.x - HW, body.pos.y, body.pos.z - HW);
-      max.set(body.pos.x + HW, body.pos.y + BODY_HEIGHT, body.pos.z + HW);
+      const hw = body.width / 2;   // (its own size: Shrink)
+      min.set(body.pos.x - hw, body.pos.y, body.pos.z - hw);
+      max.set(body.pos.x + hw, body.pos.y + body.height, body.pos.z + hw);
     },
     facing: (out) => out.copy(dir),   // where it looks (the knife's backstab test)
     body,                             // its statuses scale its weapons (targets.js dealtScale)
     hurt(amount, cause, d, opts) {
       body.hurt(amount * DAMAGE_TAKEN, cause, opts);
       agent.stagger();   // a hit stops its wind-up
-      body.applyImpulse(tmp.set(d.x, Math.max(d.y, 0) + KNOCK_UP, d.z).normalize().multiplyScalar(HIT_KNOCKBACK));
+      // d null: the weapon shoves it itself (the kick, by momentum: shove below)
+      if (d) body.applyImpulse(tmp.set(d.x, Math.max(d.y, 0) + KNOCK_UP, d.z).normalize().multiplyScalar(HIT_KNOCKBACK));
       agent.alert(povEvents.actor?.id ?? PLAYER);   // it knows where its attacker is now
     },
+    shove(dv) { body.applyImpulse(dv); },   // a momentum shove (the kick, cells/s)
+    get body() { return body; },            // its body (the hook pulls on it: player.js tether)
   });
 
   // drop in at SPAWN_DIST from the player, on a random bearing, inside the box (or at `at`)
@@ -275,7 +278,7 @@ export function createNpc({ env, ai, home = () => null, style = 'axeman', team =
       body.update(dt, input);
 
       // its eye and aim: toward what the brain looks at, else where it's going
-      eye.copy(body.pos).setY(body.pos.y + EYE_HEIGHT);
+      eye.copy(body.pos).setY(body.pos.y + body.eyeHeight);
       if (it.look) dir.set(it.look.x - eye.x, it.look.y - eye.y, it.look.z - eye.z);
       else if (got > 1) dir.set(body.vel.x, 0, body.vel.z);
       if (dir.lengthSq() < 1e-9) dir.set(0, 0, -1);
@@ -301,15 +304,15 @@ export function createNpc({ env, ai, home = () => null, style = 'axeman', team =
       chopT = Math.max(0, chopT - dt);
       for (const [k, obj] of Object.entries(held)) obj.visible = alive && k === it.tool;
       w.toWorld(body.pos, vFeet);
-      figure.setVisible(spawned);
+      figure.setVisible(spawned && !body.gibbed);   // burst into meat: nothing left to draw
       figure.update(dt, {
-        feet: vFeet, scale: w.scale, yaw, worldToGrid: w.worldToGrid,
-        speedH: got, velY: body.vel.y, onGround: body.onGround, inLiquid: body.inLiquid, headInLiquid: body.headInLiquid,
+        feet: vFeet, scale: w.scale * body.size, yaw, worldToGrid: w.worldToGrid,   // (Shrink: as the player's figure)
+        speedH: got / body.size, velY: body.vel.y, onGround: body.onGround, inLiquid: body.inLiquid, headInLiquid: body.headInLiquid,
         dead: body.dead, deadTime, heat: body.feel?.heat ?? 0, jetting: body.jetting, status: body.status,
-        chop: chopT > 0 ? 1 : it.chop,
+        chop: chopT > 0 ? 1 : it.chop, kick: body.kickPose,
       });
     },
-    setVisible(v) { figure.setVisible(v && spawned); },
+    setVisible(v) { figure.setVisible(v && spawned && !body.gibbed); },
     reset() { spawned = false; kit.putAway(); figure.setVisible(false); },
     // a fresh NPC at `at` (grid cells): health, memory and cooldowns reset (playtests)
     placeAt(at) { const sim = env.getSim(); if (sim && world) spawn(sim, at); },

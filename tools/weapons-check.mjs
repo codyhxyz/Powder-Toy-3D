@@ -18,6 +18,8 @@ p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 500)));
 await p.addInitScript(() => { try { localStorage.removeItem('tpt3d.pov.given'); } catch { /* */ } });
 await p.goto(`http://localhost:${port}/?preset=empty`, { timeout: 120000 });   // patient: the GPU is shared (keys-check)
 await p.waitForFunction(() => window.__app?.pov, null, { timeout: 120000 });
+// (headless has no real pointer lock, so the hotbar's tool stack, which opens over the crosshair on a switch, would take the clicks meant for the tool)
+await p.addStyleTag({ content: '.hb-stack { pointer-events: none !important; }' });
 await p.waitForTimeout(1500);
 
 let fails = 0;
