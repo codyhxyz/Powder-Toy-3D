@@ -83,6 +83,10 @@ const HURT_GAP_S = 0.3;                 // s between hurt sounds (continuous dam
 const HURT_FULL = 0.15;                 // health lost (0..1) in one report for a full-volume hurt sound
 const HURT_GAIN_MIN = 0.35;
 const LOG_SIZE = 16;                    // recent plays kept for stats()
+const SHIELD_HIT_GAP_S = 0.12;          // s between shield-hit crackles (a blast hits it every frame)
+const SHIELD_BEEP_S = 0.5;              // s between beeps of the empty-shield alarm (Halo's), by ear
+const POGO_PITCH_STEP = 0.12;           // × playback rate per timed step up: each climb boings higher
+const KNIFE_SWING_RATE = 1.35;          // the knife's swing is the axe's whoosh, quicker and thinner
 
 // ---- presets
 // ZzFX parameter order (paste any of these into https://killedbyapixel.github.io/ZzFX/ to retune):
@@ -157,6 +161,22 @@ const PRESETS = {
   physFling: [.6, .05, 900, , .05, .25, 2, 1, -12, , , , , 1, , , , .6, , , -3000],
   // physgun let go: a small, soft blip down
   physRelease: [.25, .05, 400, , .02, .08, 0, 1, -8],
+
+  // -- combat (Big Team Battle)
+  // a hit on the Energy Shield: a short electric crackle, a buzzing tan wave sliding down with FM grit
+  shieldHit: [.5, .1, 1100, , .02, .12, 3, 1, -8, , , , , 1.5, 30, .2, , .6],
+  // the shield breaking: Halo's pop, a bright noise burst with a pitch jump and a crushed fizzle
+  shieldBreak: [.9, .05, 600, , .03, .3, 4, 1.5, -2, , 300, .03, , 3, , .4, .05, .5, .04],
+  // the recharge starting: the rising hum, a saw sweeping up under a low-pass
+  shieldCharge: [.45, 0, 220, .05, .5, .3, 2, 1, 1.5, , , , , , , , , .6, , .15, -1500],
+  // the empty-shield alarm: a short square beep
+  shieldBeep: [.25, 0, 1800, , .05, .03, 5, 1, , , , , , , , , , .8],
+  // a pogo bounce: a sprung "boing", a sine sliding up with a fast vibrato
+  boing: [.6, .05, 300, , .06, .2, 0, 1, 6, , , , , , 12, , , .6],
+  // the knife going into a body: a short, wet, low-passed thud
+  stab: [.8, .1, 140, , .01, .08, 4, 1, -4, , , , , 3, , , , .5, , , -1200],
+  // a backstab: a hard metallic ring over the stab (TF2's crit), FM'd like the metal ping
+  backstab: [1, .02, 1600, , .03, .45, 0, 1, , , -400, .05, , , 22, , .06, .6],
 
   // -- the body
   // a footfall on dry ground: a short, low, padded thud
@@ -259,6 +279,7 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
   let zz = null;
   let boundPlayer = null, unbindPlayer = [];
   let lastPour = -Infinity, frameDt = 0, lastTick = 0, lastSizzle = -Infinity, humSince = 0, lastHurt = -Infinity;
+  let lastShieldHit = -Infinity, lastBeep = -Infinity;
   const lastStart = new Map();   // preset → { t, at }
   const vWorld = new THREE.Vector3(), vEar = new THREE.Vector3();
 
@@ -431,8 +452,10 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
   povEvents.on('perk:take', ({ point, by }) => { if (live()) play('perk', { at: by ? point ?? null : null }); });
   povEvents.on('perk:revive', () => { if (live()) play('perk'); });
 
-  povEvents.on('impact', ({ source, point, id, energy, broke }) => {
+  povEvents.on('impact', ({ source, point, id, energy, broke, body, backstab }) => {
     if (!live()) return;
+    // the knife in a body: a stab, and a ring on top for a backstab
+    if (source === 'knife' && body) { play('stab', { at: point ?? null }); if (backstab) play('backstab', { at: point ?? null }); return; }
     const family = familyOf(id);
     if (!family) return;
     const gain = energyGain(energy), rate = materialRate(id, family), at = point ?? null;
@@ -479,6 +502,7 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
         break;
       }
       case 'axe:swing': case 'pickaxe:swing': play('swoosh', { at }); break;
+      case 'knife:swing': play('swoosh', { at, rate: KNIFE_SWING_RATE }); break;
       case 'bomb:throw': case 'torch:throw': case 'lantern:throw': play('swoosh', { at }); break;
       case 'torch:land': case 'lantern:land': play('thunk', { at, gain: TOOL_HIT_GAIN }); break;
       case 'lantern:toggle': play('dryClick', { at }); break;
@@ -525,6 +549,14 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
         stopLoops();
         play('death');
       }),
+      // the Energy Shield (vitals.js): a crackle per hit, the pop when it breaks, the hum as it refills
+      player.on('shield', ({ state: st }) => {
+        if (!live()) return;
+        if (st === 'hit' && clock() - lastShieldHit >= SHIELD_HIT_GAP_S) { lastShieldHit = clock(); play('shieldHit'); }
+        else if (st === 'break') play('shieldBreak');
+        else if (st === 'recharge') play('shieldCharge');
+      }),
+      player.on('pogo', ({ step = 0 }) => { if (live()) play('boing', { rate: 1 + POGO_PITCH_STEP * step }); }),
     );
   }
 
@@ -562,6 +594,9 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
       if (!s.active || s.player?.dead) stopLoops();
       if (S.loops.pourLoop.on && clock() - lastPour > Math.max(POUR_TAIL_S, POUR_TAIL_FRAMES * frameDt)) loop('pourLoop', false);
       if (S.loops.physHum.on && clock() - humSince > HUM_GRACE_S && !physgunHolds(s.toolbelt)) loop('physHum', false);
+      // Halo's alarm while the shield is down and not yet refilling
+      const pl = s.player;
+      if (s.active && pl && !pl.dead && pl.shieldMax > 0 && pl.shield <= 0 && !pl.shieldCharging && t - lastBeep >= SHIELD_BEEP_S) { lastBeep = t; play('shieldBeep'); }
     }
     if (s.active && !document.hidden) requestAnimationFrame(tick);
     else setTimeout(tick, IDLE_POLL_MS);

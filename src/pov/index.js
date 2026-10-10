@@ -73,9 +73,10 @@ export function createPov(app) {
       min.set(player.pos.x - BODY_WIDTH / 2, player.pos.y, player.pos.z - BODY_WIDTH / 2);
       max.set(player.pos.x + BODY_WIDTH / 2, player.pos.y + BODY_HEIGHT, player.pos.z + BODY_WIDTH / 2);
     },
-    hurt(amount, cause, d) {
+    facing: (out) => povCam.dir(out),   // where the player looks (the knife's backstab test)
+    hurt(amount, cause, d, opts) {
       povEvents.emit('player:hit', { amount });   // inside the attacker's povEvents.as(): carries its id
-      player.hurt(amount * PLAYER_DAMAGE_TAKEN, cause);
+      player.hurt(amount * PLAYER_DAMAGE_TAKEN, cause, opts);
       player.applyImpulse(d.clone().setY(Math.max(d.y, 0) + PLAYER_KNOCK_UP).normalize().multiplyScalar(PLAYER_KNOCKBACK));
     },
   });
@@ -393,7 +394,7 @@ export function createPov(app) {
     primary: false, secondary: false, primaryPressed: false, secondaryPressed: false, wheel: 0,
     viewBobbing: true,              // the View Bobbing setting (the viewmodel rig's hand bob reads it)
     aim: { valid: false, cell: new THREE.Vector3(), face: 0, id: -1, T: 0, P: 0, dist: Infinity },
-    player: { pos: null, vel: null, onGround: false, inLiquid: false, applyImpulse: (dv) => player?.applyImpulse(dv) },
+    player: { pos: null, vel: null, onGround: false, inLiquid: false, applyImpulse: (dv) => player?.applyImpulse(dv), holdPogo: () => player?.holdPogo() },
   };
   const input = { move: { x: 0, z: 0 }, jump: false, sprint: false, down: false };
   let sprintOn = false;     // Sprint: Toggle's state
@@ -566,6 +567,7 @@ export function createPov(app) {
     // the HUD
     povHud.update({
       dt, health: player.health, breath: player.breath, feel: player.feel,
+      shield: player.shield, shieldMax: player.shieldMax, shieldCharging: player.shieldCharging,
       jetFuel: player.jetFuel, jetting: player.jetting, perks: player.perks,
       dead: deadSeen, cause: player.cause, respawnIn: RESPAWN_DELAY - deadTime,
       locked: isLocked(), swooping: mode !== 'on',
