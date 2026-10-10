@@ -111,6 +111,7 @@ export function createHelp(onClose) {
         row('Tools menu: get more tools', 'Q'),
         row('Drink from the flask', 'H'),
         row('First or third person', 'V'),
+        row('Get in or out of a vehicle (drive: W A S D, Space, Shift)', 'E'),
         CLASSES_ENABLED ? row('Choose a class (Team Fortress 2\'s key)', ',') : null,
         row('Hide the HUD and hand', 'F1'),
         row('Free the mouse', 'Esc'),

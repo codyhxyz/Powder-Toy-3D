@@ -1,10 +1,11 @@
 // Element tiles as live scenes: each draws its box with the engine port, and
 // dock tiles run it while hovered. The cursor applies the game's own tools at
 // the game's rates: Pressure on powders and liquids, the element's brush on
-// gases, Heat on solids. Gravity, speed (steps per frame) and flow come from the
+// gases, Heat on solids, and the Spark tool on conductors too. Gravity, speed (steps per frame) and flow come from the
 // app's settings. When the cursor leaves, the scene keeps going for a moment,
 // then fades back to its resting frame. Only awake tiles tick.
 import { K } from '../../elements.js';
+import { CONDUCTS } from '../../electricity.js';
 import { makeScene, TILE, CELL } from './scenes.js';
 import { drawScene } from './render.js';
 
@@ -73,6 +74,7 @@ class LiveTile {
     if (this.item.kind === K.SOLID) w.heat(cx, cy, RUN.CURSOR_RADIUS);
     else if (this.item.kind === K.GAS) w.paint(cx, cy, RUN.GAS_BRUSH_RADIUS, this.item.id, settings.rate);
     else w.pressure(cx, cy, RUN.CURSOR_RADIUS, Math.min(1, RUN.PRESS_HOLD + p.speed / RUN.CURSOR_FULL_SPEED));
+    if (CONDUCTS[this.item.id]) w.sparkBrush(cx, cy, RUN.CURSOR_RADIUS);
   }
   // one frame; false once the tile is back at rest
   frame() {

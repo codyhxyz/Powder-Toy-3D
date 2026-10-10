@@ -5,7 +5,8 @@
 // (gfx/materials.js emit). Styling is per kind, never per element.
 import { ELEMENTS, E, K } from '../../elements.js';
 import { INCAND, INCAND_TABLE } from '../../gfx/incandescence.js';
-import { LOOK as MATERIAL } from '../../gfx/materials.js';
+import { LOOK as MATERIAL, SPARK_GLOW } from '../../gfx/materials.js';
+import { isLive } from '../../electricity.js';
 import { KIND } from './engine.js';
 import { TILE, CELL, COLS, ROWS, GAS_FILL } from './scenes.js';
 
@@ -71,9 +72,15 @@ const LUMIN = MATERIAL.map((m) => {
   const e = m.emit.map((v) => v * LOOK.GLOW_EXPOSURE);
   return e.map((v) => v / Math.max(1, ...e));
 });
+// a live conductor's spark (gfx/materials.js sparkEmit), the same way
+const SPARK_LUMIN = (() => {
+  const e = SPARK_GLOW.map((v) => v * LOOK.GLOW_EXPOSURE);
+  return e.map((v) => v / Math.max(1, ...e));
+})();
 // What a cell at tC gives off, scaled for the dock: incandescence
-// (gfx/incandescence.js) and luminescence, as emission() has them in the game.
-function glow(id, tC, out) {
+// (gfx/incandescence.js) and luminescence, as emission() has them in the game,
+// and a spark if it is live (ctype: its ctype).
+function glow(id, tC, out, ctype = 0) {
   out.fill(0);
   const x = (tC - INCAND.T0) / INCAND.STEP;
   if (x > 0) {
@@ -83,6 +90,7 @@ function glow(id, tC, out) {
     for (let c = 0; c < 3; c++) out[c] = (a[c] + (b[c] - a[c]) * u) * lum;
   }
   for (let c = 0; c < 3; c++) out[c] += LUMIN[id][c];
+  if (isLive(id, ctype)) for (let c = 0; c < 3; c++) out[c] += SPARK_LUMIN[c];
   return out[0] + out[1] + out[2] > 1 / 255;
 }
 
@@ -263,7 +271,7 @@ export function drawScene(ctx, scene, activity = 0) {
         const i = at(x, r), id = w.id[i];
         if (id === E.LAVA || id === E.EMPTY || id === item.id && KIND[id] === K.GAS || (id === E.FIRE) !== flames) continue;
         // a hot non-metal's open skin runs cooler than its bulk (passes.js glow)
-        if (!glow(id, w.T[i] - (id === E.METAL ? 0 : INCAND.SKIN_DROP), c)) continue;
+        if (!glow(id, w.T[i] - (id === E.METAL ? 0 : INCAND.SKIN_DROP), c, w.ctype[i])) continue;
         const o = (r * COLS + x) * 4;
         L[o] = Math.min(1, c[0]); L[o + 1] = Math.min(1, c[1]); L[o + 2] = Math.min(1, c[2]);
         L[o + 3] = Math.min(1, Math.max(c[0], c[1], c[2]));

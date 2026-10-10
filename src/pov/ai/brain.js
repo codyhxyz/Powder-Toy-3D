@@ -282,7 +282,7 @@ class CoverEvaluator extends GoalEvaluator {
 }
 // On fire: get into water.
 class ExtinguishEvaluator extends GoalEvaluator {
-  calculateDesirability(a) { const h = a.npc.body.feel?.heat ?? 0; return h > BURNING && !a.npc.body.inLiquid && a.ready('EXTINGUISH') ? 0.95 : 0; }
+  calculateDesirability(a) { const b = a.npc.body; return ((b.feel?.heat ?? 0) > BURNING || b.status?.has('BURNING')) && !b.inLiquid && a.ready('EXTINGUISH') ? 0.95 : 0; }
   setGoal(a) { if (!(a.brain.currentSubgoal() instanceof ExtinguishGoal)) { a.brain.clearSubgoals(); a.brain.addSubgoal(new ExtinguishGoal(a)); } }
 }
 // Nothing to fight and an empty pack: dig some material for building.
