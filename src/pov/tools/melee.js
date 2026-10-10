@@ -7,7 +7,7 @@ import { attachModel } from '../models.js';
 import { viewmodelRig } from '../viewmodel.js';
 import { trigger, swing, toolDt } from './action.js';
 import { faceNormal, pack, cellsNear } from './transfer.js';
-import { rayTarget, PLAYER } from '../targets.js';
+import { rayTarget, PLAYER, dealtScale } from '../targets.js';
 
 // A melee tool (the axe, the pickaxe): a short-range swing that breaks
 // breakable solids in a patch around the struck cell into their debris
@@ -104,7 +104,7 @@ export function meleeTool({ key, name, model: modelKey, desc, blow, frag, hit: H
         if (target) {
           const b = bodyBlow?.(ctx, target) ?? null;
           const lethal = !!b?.lethal;
-          target.target.hurt(b?.damage ?? BODY.damage, b?.cause ?? BODY.cause, ctx.dir.clone().normalize(), lethal ? { lethal } : undefined);
+          target.target.hurt((b?.damage ?? BODY.damage) * dealtScale(povEvents.actor?.id), b?.cause ?? BODY.cause, ctx.dir.clone().normalize(), lethal ? { lethal } : undefined);
           povEvents.emit('impact', { source, point: target.point, normal: ctx.dir.clone().negate(), id: -1, energy: b?.energy ?? BODY.energy, broke: null, body: true, backstab: lethal });
           model.rig.hit(b?.hit ?? HIT_ROW);
           return { landed: true, lethal };

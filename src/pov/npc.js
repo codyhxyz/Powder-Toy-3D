@@ -106,11 +106,13 @@ export function createNpc({ env, ai, home = () => null }) {
   const viewmodel = new THREE.Group();   // its tools' hands hang here; never drawn (the figure holds the models)
   const kit = createKit({ ...env, viewmodel, owner: id });
   let world = null;   // the frame's: { player, holding, toWorld, worldToGrid, scale, stepsPerFrame }
+  const charmed = () => !!(body.status?.has('CHARMED') || world.player.status?.has('CHARMED'));
   const agent = new Agent({
     body, world: ai.world, nav: ai.nav, kit, getSim: env.getSim,
     packCells: () => pack(id).cells.length,
     bucket: () => { const l = persistentLoad(ownedKey('BUCKET', id), Infinity); return { id: l.cells[0]?.[0] ?? -1, n: l.cells.length }; },
-    target: () => ({ pos: world.player.pos, vel: world.player.vel, alive: !world.player.dead, holding: world.holding }),
+    // Charmed (pheromone, potions.js): a charmed NPC, or a charmed player, isn't hunted: it reads as gone
+    target: () => ({ pos: world.player.pos, vel: world.player.vel, alive: !world.player.dead && !charmed(), holding: world.holding }),
   });
 
   let deadTime = 0, stuckT = 0, jumpWait = 0, spawned = false, yaw = 0, chopT = 0;
@@ -136,6 +138,7 @@ export function createNpc({ env, ai, home = () => null }) {
       max.set(body.pos.x + HW, body.pos.y + BODY_HEIGHT, body.pos.z + HW);
     },
     facing: (out) => out.copy(dir),   // where it looks (the knife's backstab test)
+    body,                             // its statuses scale its weapons (targets.js dealtScale)
     hurt(amount, cause, d, opts) {
       body.hurt(amount * DAMAGE_TAKEN, cause, opts);
       agent.stagger();   // a hit stops its wind-up

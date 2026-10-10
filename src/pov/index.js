@@ -8,6 +8,7 @@ import { createFeel } from './feel.js';
 import { createVfx } from './vfx.js';
 import { povEvents } from './events.js';
 import './pov.css';
+import './potions.js';   // Noita's potion statuses: stains and drinks (registers them)
 import { addTarget, PLAYER } from './targets.js';
 import { grant, PERK } from './perks.js';
 import { CLASSES_ENABLED } from './classes.js';
@@ -80,6 +81,7 @@ export function createPov(app) {
       max.set(player.pos.x + BODY_WIDTH / 2, player.pos.y + BODY_HEIGHT, player.pos.z + BODY_WIDTH / 2);
     },
     facing: (out) => povCam.dir(out),   // where the player looks (the knife's backstab test)
+    get body() { return player; },      // its statuses scale its weapons (targets.js dealtScale)
     hurt(amount, cause, d, opts) {
       povEvents.emit('player:hit', { amount });   // inside the attacker's povEvents.as(): carries its id
       player.hurt(amount * PLAYER_DAMAGE_TAKEN, cause, opts);

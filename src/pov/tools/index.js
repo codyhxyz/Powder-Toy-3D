@@ -38,6 +38,9 @@ const toolDefs = () => Object.entries(modules).map(([path, mod]) => ({ path, def
 const DEFAULT_TOOL = GEAR.find((g) => g.start).key;   // in hand first (the shovel)
 const NOTICE_INTERVAL = 1.5;   // s between repeats of a tool's notice and refuse toasts
 const MS_PER_S = 1000;
+// the body holding the tools has a status that takes its hands (status.js noTools: Polymorph);
+// the player's ctx carries its body as ctx.player.body, an NPC's ctx.player is its body
+const noHands = (ctx) => !!(ctx.player?.body?.status ?? ctx.player?.status)?.noTools;
 
 export function createToolbelt(env) {
   const hotbar = createHotbar((i) => pressSlot(i), (key) => select(key));
@@ -144,6 +147,7 @@ export function createToolbelt(env) {
   addEventListener('keydown', onKey, { capture: true });
 
   const held = () => tools.get(selected)?.inst;
+  let wasHelpless = false;
   return {
     get selected() { return selected; },
     get selectedKey() { return selected; },   // the held tool's key ('GUN', ...)
@@ -159,8 +163,12 @@ export function createToolbelt(env) {
     pressSlot,
     update(ctx) {
       const cur = held();
+      // a status that leaves no hands (Polymorph, potions.js): the tool in hand is put away while it lasts
+      const helpless = noHands(ctx);
+      if (helpless && !wasHelpless) cur?.deselect?.();
+      wasHelpless = helpless;
       if (ctx.wheel && !cur?.wantsWheel?.()) step(Math.sign(ctx.wheel));
-      held()?.update(ctx);
+      if (!helpless) held()?.update(ctx);
       tools.forEach((t) => t.inst.tick?.(ctx));   // what every tool keeps doing, held or not (a torch lying lit)
       readout = held()?.readout?.(ctx) ?? null;
       lastSteps = ctx.stepsPerFrame;
@@ -220,6 +228,7 @@ export function createKit(env) {
     get lastRefusal() { return lastRefusal; },
     // run tool `key` this frame with ctx (the one held before is put away first)
     use(key, ctx) {
+      if (noHands(ctx)) { tools.get(held)?.deselect?.(); held = null; return; }
       if (held !== key) { tools.get(held)?.deselect?.(); held = key; }
       tools.get(key)?.update(ctx);
     },
