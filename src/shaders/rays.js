@@ -31,6 +31,7 @@ ${raysGLSL()}
 #define RAY_PAINT_SALT 0x5c3u
 #define TWO_PI 6.2831853
 #define THIRD (1.0 / 3.0)
+#define GRID_INSET 0.001              // keeps a painted particle's position inside the grid's last cell
 uniform sampler2D tL0;
 uniform sampler2D tL1;
 uniform sampler2D tL2;
@@ -234,7 +235,7 @@ void main() {
   uint rs = pcg(uint(j) + pcg(uFrame * LCG_MUL + RAY_PAINT_SALT));
   vec3 d = uShape == 0 ? randDir(rs) * uRadius * pow(rnd(rs), THIRD)
                        : (vec3(rnd(rs), rnd(rs), rnd(rs)) * 2.0 - 1.0) * uRadius;
-  vec3 p = clamp(uCenter + d, vec3(0.0), vec3(NX, NY, NZ) - 0.001);
+  vec3 p = clamp(uCenter + d, vec3(0.0), vec3(NX, NY, NZ) - GRID_INSET);
   bool photon = uKind == RAY_PHOTON;
   o0 = vec4(p, float(uKind));
   o1 = vec4(randDir(rs) * (photon ? min(PHOTON_V, RAY_V_MAX) : neutSpeed(NEUT_E_FAST)), photon ? PHOTON_LIFE : NEUT_LIFE);
@@ -329,6 +330,7 @@ export const raysDrawVert = /* glsl */ `
 ${raysGLSL().split('\n').filter((l) => l.startsWith('#define')).join('\n')}
 ${lookGLSL}
 #define RTEX int(RAY_TEX)
+#define VIEW_Z_MIN 1e-3   // view depth floor for the point size (world units)
 uniform sampler2D tL0;
 uniform sampler2D tL2;
 uniform float uPointPx;   // px per (cell · 1/view distance): the projection's scale
@@ -340,7 +342,7 @@ void main() {
   if (kind == RAY_NONE) { gl_Position = ${OFF_CLIP}; gl_PointSize = 0.0; return; }
   vec4 mv = modelViewMatrix * vec4(l0.xyz, 1.0);
   gl_Position = projectionMatrix * mv;
-  gl_PointSize = clamp(uPointPx * RAY_POINT_CELLS / max(-mv.z, 1e-3), RAY_POINT_MIN_PX, RAY_POINT_MAX_PX);
+  gl_PointSize = clamp(uPointPx * RAY_POINT_CELLS / max(-mv.z, VIEW_Z_MIN), RAY_POINT_MIN_PX, RAY_POINT_MAX_PX);
   vec4 l2 = texelFetch(tL2, f, 0);
   float fast = clamp(log(l2.x / NEUT_E_THERMAL) / log(NEUT_E_FAST / NEUT_E_THERMAL), 0.0, 1.0);
   vCol = kind == RAY_PHOTON ? l2.rgb * RAY_PHOTON_GLOW
