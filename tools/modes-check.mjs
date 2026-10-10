@@ -49,7 +49,7 @@ try {
   p.on('pageerror', (e) => errs.push(String(e).slice(0, 300)));
   // (a dev server without the multiplayer relay refuses its connection: not ours)
   p.on('console', (m) => { if (m.type() === 'error' && !/ERR_CONNECTION_REFUSED/.test(m.text())) errs.push(m.text().slice(0, 300)); });
-  await p.goto(`${URL}/?preset=${PRESET}`);
+  await p.goto(`${URL}/?preset=${PRESET}`, { timeout: 180000 });   // patient: the GPU is often shared (an arena took 66 s)
   await p.waitForFunction(() => window.__app?.pov, null, { timeout: 60000 });
   await p.waitForTimeout(2500);
   await p.mouse.move(W * 0.5, H * 0.62);

@@ -36,7 +36,7 @@ const state = () => ev(() => {
 });
 
 try {
-  await p.goto(`http://localhost:${port}/?size=128&preset=empty`);
+  await p.goto(`http://localhost:${port}/?size=128&preset=empty`, { timeout: 120000 });   // patient: the GPU is often shared
   await p.waitForFunction(() => window.__app?.pov && window.__app?.perkOrbs, null, { timeout: 30000 });
   await settle(1500);
 
@@ -65,7 +65,8 @@ try {
   check('seven class cards', ui.cards === 7, ui.names.join(', '));
   check('four bars a card', ui.bars === 28);
   check('tool sprites on the cards', ui.icons >= 7, `${ui.icons}`);
-  check('missing tools and perks shown as coming soon', ui.soon.length > 0, ui.soon.join(', '));
+  // every class's tools and perks have shipped (combat, weapons): none is dimmed as coming soon
+  check('every tool and perk a class names exists (none coming soon)', ui.soon.length === 0, ui.soon.join(', ') || 'none');
   await p.waitForFunction(() => document.querySelectorAll('.cp-card.drawn').length === 7, null, { timeout: 15000 }).catch(() => {});
   check('all seven portraits drawn', (await ev(() => document.querySelectorAll('.cp-card.drawn').length)) === 7);
   // the digits are the picker's while it's open, not the hotbar's
