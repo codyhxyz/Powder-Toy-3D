@@ -3,7 +3,8 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import './ui/styles.css';
 import { Simulation } from './sim.js';
 import { volumeVert, volumeFrag, pickFrag, shadowFrag } from './shaders/render.js';
-import { ELEMENTS, E, toolById, isBuild } from './elements.js';
+import { ELEMENTS, E, toolById, isBuild, isSpawnerTool } from './elements.js';
+import { Spawners, SPAWNER, feetOnHit } from './spawners.js';
 import { buildPreset } from './presets.js';
 import { loadIsland, releaseGenerator } from './world/gpu.js';
 import { WorldWindow, WIN_STEP } from './world/window.js';
@@ -63,6 +64,9 @@ const WORLD_START_INLAND = 0.25;
 // (one WIN_STEP move every few frames), in scene units per second
 const WORLD_CAM_SPEED_MAX = 9;
 const SIGN_TOOL = -5;
+const SPAWNER_KIND = { [-6]: SPAWNER.ENEMY, [-7]: SPAWNER.PLAYER };   // the Spawners tools' kinds
+// the lab's own enemy spawner: its open south floor, as shares of the grid (the old lab NPC's arena)
+const LAB_ENEMY_AT = [0.555, 0.86];
 
 // ---------------------------------------------------------------- settings
 // the box the Scene row goes back to from World, and phones' grid
@@ -153,6 +157,7 @@ document.getElementById('app').appendChild(renderer.domElement);
 const post = createPost(renderer, { pixScale: gfxUniforms.uPixScale });
 
 const scene = new THREE.Scene();
+let spawners = null;   // enemy and player spawners (spawners.js), made once the volume is
 const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.05, 200);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
@@ -417,9 +422,17 @@ function loadPreset(name, undoable = true) {
   else buildPreset(name, sim);
   post.reset();
   signs?.clear();
+  resetSpawners(name);
   pov?.worldReplaced();
   save();
   return true;
+}
+
+// A new scene clears the spawners; the lab comes with an enemy spawner of its own.
+function resetSpawners(name) {
+  if (!spawners) return;
+  spawners.clear();
+  if (name === 'lab' && !win) spawners.add(SPAWNER.ENEMY, new THREE.Vector3(Math.round(sim.g.nx * LAB_ENEMY_AT[0]), 0, Math.round(sim.g.nz * LAB_ENEMY_AT[1])));
 }
 
 // ---------------------------------------------------------------- signs (optional module)
@@ -519,7 +532,7 @@ function updateBrush() {
     builds?.update({ hover, active: false });
     return;
   }
-  if (settings.tool !== SIGN_TOOL && !isBuild(settings.tool)) {
+  if (settings.tool !== SIGN_TOOL && !isBuild(settings.tool) && !isSpawnerTool(settings.tool)) {
     if (painting) {
       // a box's brush stops at its walls; a world's window has none, so beyond it there's no brush
       plane.constant = -dragY;
@@ -851,6 +864,16 @@ function press(e) {
   if (settings.tool === SIGN_TOOL) {
     if (signs && hover.valid) signs.add({ cell: hover.cell.clone(), normal: faceNormal(hover.face) });
     else if (!signs) hud.toast('Signs are still loading');
+    return;
+  }
+  if (isSpawnerTool(settings.tool)) {
+    if (mp.guard()) return;
+    if (!hover.valid) { hud.toast('Click a surface to set it on'); return; }
+    const kind = SPAWNER_KIND[settings.tool];
+    const r = spawners.toggle(kind, feetOnHit(hover));
+    pacer.wake();
+    if (r === 'full') hud.toast('That many is the limit');
+    else hud.toast(r === 'removed' ? 'Spawner removed' : kind === SPAWNER.ENEMY ? 'Enemy spawner set: press F to fight' : 'Player spawn set: F drops you in here');
     return;
   }
   if (isBuild(settings.tool)) {
@@ -1223,7 +1246,8 @@ function frame(now) {
 
     signs?.update();
     requestPick();
-  } else if (pov?.active) requestPick();   // the crosshair cell stays fresh for the tools
+  } else if (pov?.active) requestPick();
+  if (spawners) { spawners.setGhosts(!pov?.active); spawners.update(); }   // the crosshair cell stays fresh for the tools
 
   const povReadout = pov?.active ? pov.readout : null;   // the held tool's (the scanner's, the trowel's)
   if (povReadout) {
@@ -1257,6 +1281,8 @@ try {
       onChange: () => {},
     });
   }
+  spawners = new Spawners({ scene, getSim: () => sim, getVolume: () => volume, getScale: () => scale });
+  resetSpawners(settings.preset);
   if (BuildsClass) {
     builds = new BuildsClass({
       scene, camera, settings, getSim: () => sim, getVolume: () => volume, getScale: () => scale, onClose: leaveBuild,
@@ -1275,12 +1301,14 @@ try {
     renderer, scene, camera, controls, canvas: renderer.domElement, hud, settings, mp, isTyping,
     getSim: () => sim, getVolume: () => volume, getScale: () => scale,
     hover, pointerHover: () => pointerInside && !uiHover, pickRay,
+    getSpawners: () => spawners,
     requestRender: () => pacer.wake(),
     inWorld: () => !!win,
   });
   window.__app = {
     get sim() { return sim; }, get volume() { return volume; }, get scale() { return scale; }, get signs() { return signs; }, get builds() { return builds; },
     get pov() { return pov; },
+    get spawners() { return spawners; },
     get win() { return win; },
     // world mode: start the world over with the window at `origin` (world cells)
     worldLoad(origin) { win.load(origin); placeVolume(); post.reset(); pov?.worldReplaced(); },

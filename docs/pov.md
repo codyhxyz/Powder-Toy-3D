@@ -239,7 +239,12 @@ The player's own events (`player.on('hurt'|'death'|'land'|'splash')`) stay as th
 
 ## NPCs (2026-10-09): enemies that use every tool
 
-One NPC hunts the player in the lab preset while in POV (`src/pov/npc.js`, loaded on first use). It has the
+NPCs come from **spawners** (`src/spawners.js`), the palette's Spawners group: an **Enemy spawner** keeps one
+NPC alive on its spot while in POV (it appears there and comes back 8 s after dying; up to 8), and a **Player
+spawn** is where F drops you in (the one nearest the cursor) and where you respawn. Click a spawner again with
+its tool to remove it. Spawners stand on world cells like signs; a new scene clears them, and the lab comes
+with one enemy spawner on its open south floor. Not in worlds (the window): NPCs don't follow it yet.
+Each NPC (`src/pov/npc.js`, loaded on first use) hunts the player. It has the
 player's body, the player's tools and a mind built from textbook game AI, each a solved problem:
 
 | Sub-problem | How | Where |

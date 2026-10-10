@@ -95,7 +95,9 @@ export function createAi({ renderer, getSim }) {
 
 // One NPC. ai: { world, nav } shared by all of them. env: the toolbelt's env
 // (renderer, scene, getSim, getVolume, getScale) plus ballistics (the player's).
-export function createNpc({ env, ai }) {
+// home(): where it appears and comes back (grid cells, feet: its spawner), or
+// null for a random spot near the player.
+export function createNpc({ env, ai, home = () => null }) {
   const id = `npc${nextId++}`;
   const body = createPlayer({ renderer: env.renderer, getSim: env.getSim, quiet: true });
   const held = {};
@@ -140,7 +142,7 @@ export function createNpc({ env, ai }) {
   });
 
   // drop in at SPAWN_DIST from the player, on a random bearing, inside the box (or at `at`)
-  function spawn(sim, at = null) {
+  function spawn(sim, at = home()) {
     const g = sim.g, p = world.player.pos;
     const a = Math.random() * 2 * Math.PI;
     const x = THREE.MathUtils.clamp(p.x + Math.cos(a) * SPAWN_DIST, EDGE, g.nx - EDGE);
