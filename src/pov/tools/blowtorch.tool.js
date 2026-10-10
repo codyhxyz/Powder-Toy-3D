@@ -6,8 +6,9 @@ import { attachModel } from '../models.js';
 import { viewmodelRig } from '../viewmodel.js';
 import { bodyExit } from './transfer.js';
 import { toolDt } from './action.js';
+import { gear } from './catalog.js';
 
-// Blowtorch (slot 8): hold left-click for a roofing torch's flame
+// Blowtorch: hold left-click for a roofing torch's flame
 // (shaders/povTools.js torchFrag and TORCH). The flame is engine FIRE at a
 // propane flame's 1,900 °C, blown along the aim, and what it touches heats up
 // toward that; the engine decides what happens: wood and plants catch,
@@ -24,8 +25,7 @@ const FLICKER = 0.25;        // the held flame's length varies by this share, fr
 const HELD_POS = [0.55, -0.6, -1.3];
 
 export default {
-  key: 'BLOWTORCH', name: 'Blowtorch', slot: 8, model: 'torch',
-  desc: 'Hold to burn: lights wood, sets off gunpowder, melts ice and, slowly, metal.',
+  ...gear('BLOWTORCH'),
   create(env) {
     const rig = viewmodelRig(env);
     const hand = rig.hand(HELD_POS);

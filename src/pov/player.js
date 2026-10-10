@@ -211,6 +211,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     pogoing: false,               // bouncing on a held pogo stick this frame
     get pogoStep() { return pogoStep; },   // timed presses in a row (0..POGO_STEPS): how high it bounces
     perks,                        // its perks (perks.js)
+    speedScale: 1,                // × walking and running speed: a class's (classes.js; the Bulwark is slow)
     get health() { return vitals.health; },
     get shield() { return vitals.shield; },             // Energy Shield left (base lives, 0..shieldMax)
     get shieldMax() { return vitals.shieldMax; },
@@ -602,9 +603,10 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     if (wish.length() > 1) wish.normalize();
     const vh = new THREE.Vector2(v.x, v.z);
     let jumpedNow = false;
-    // Fleet Foot and Rocket Boots: ×2 a stack, up to what the probe keeps up with
+    // Fleet Foot and Rocket Boots: ×2 a stack, up to what the probe keeps up with; a class's speedScale on foot
+    const footSpeed = (alive && input.sprint ? SPRINT_SPEED : WALK_SPEED) * p.speedScale;
     const runSpeed = p.jetting ? Math.min(JET_FLY_SPEED * perks.jetRate, Math.max(JET_FLY_SPEED, PERK_SPEED_H))
-      : alive && input.sprint ? Math.min(SPRINT_SPEED * perks.sprintRate, Math.max(SPRINT_SPEED, PERK_SPEED_H)) : WALK_SPEED;
+      : alive && input.sprint ? Math.min(footSpeed * perks.sprintRate, Math.max(footSpeed, PERK_SPEED_H)) : footSpeed;
     if (!swimming && (p.onGround || wish.lengthSq() > 0 || vh.length() <= runSpeed)) {
       // Noita: ease toward the wished speed, on the ground and in the air alike.
       // With no input in the air faster than a run (a blast), keep the momentum.
@@ -776,6 +778,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
   return Object.assign(p, {
     spawn, update, dispose, windowShifted,
     applyImpulse(dv) { impulse.add(dv); },
+    ownBlast() { vitals.ownBlast(); },   // a blast it set off (a rocket, a bomb): it hurts this body less (vitals.js)
     // a blow from outside the sim (an NPC's axe): the Energy Shield takes it first;
     // { lethal: true } takes all the health there is, through the shield (a backstab)
     hurt(amount, cause, { lethal = false } = {}) { vitals.hurt(amount, cause, true, { shielded: true, lethal }); },

@@ -22,6 +22,13 @@ const check = (name, ok, info = '') => { if (!ok) fails++; console.log(`${ok ? '
 const ev = (fn, arg) => p.evaluate(fn, arg);
 const settle = (ms) => p.waitForTimeout(ms);
 const near = (a, b, tol) => Math.abs(a / b - 1) <= tol;
+// give a catalog tool (inventory.js, as the palette's Tools group does) and put it in hand
+const hold = (key) => ev(async (key) => {
+  const { inventory } = await import('/src/pov/tools/inventory.js');
+  inventory.give(key);
+  window.__app.pov.toolbelt.select(key);
+  return window.__app.pov.toolbelt.selectedKey;
+}, key);
 
 async function dropIn(url) {
   await p.goto(url);
@@ -101,40 +108,46 @@ try {
   const run1 = await sprint(null), run2 = await sprint('FLEET_FOOT');
   check('Fleet Foot doubles sprint speed', near(run2 / run1, 2, 0.08), `${run1.toFixed(1)} → ${run2.toFixed(1)} cells/s`);
 
-  // the jet: climb speed (Rocket Boots) and fuel burned per second of thrust (Big Tank)
+  // the jet: climb speed (Rocket Boots: the body's own vertical speed once eased in, so a frame
+  // that waits on a late probe readback doesn't count as slow) and fuel burned per second of
+  // thrust (Big Tank)
   const jet = async (perk) => {
     await perksTo(perk ? [perk] : []);
     await stand(64, 64);
     await waitGame(0.4);
     await ev(() => {
-      window.__m = { t: 0, fuel: 0, y0: null, yT: 0, climbT: 0 };
+      window.__m = { t: 0, fuel: 0, vy: [], frames: 0, stalls: 0 };
       window.__game.before = () => { window.__m.f0 = window.__app.pov.player.jetFuel; window.__m.j0 = window.__app.pov.player.jetting; };
       window.__game.after = (dt) => {
         const pl = window.__app.pov.player, m = window.__m;
         if (pl.jetting && m.j0) {
           m.t += Math.min(dt, 0.1); m.fuel += m.f0 - pl.jetFuel;
-          // the climb once the jet has eased in (after 0.25 s of thrust)
-          if (m.t > 0.25) { if (m.y0 === null) { m.y0 = pl.pos.y; m.climbT = 0; } else { m.yT = pl.pos.y; m.climbT += Math.min(dt, 0.1); } }
+          // the climb once the jet has eased in (after 0.25 s of thrust); a frame the body didn't move is a probe stall
+          if (m.t > 0.25) { m.vy.push(pl.vel.y); m.frames++; if (pl.pos.y === m.y) m.stalls++; }
+          m.y = pl.pos.y;
         }
       };
     });
     await p.keyboard.down('Space');
     await waitGame(0.75);
     await p.keyboard.up('Space');
-    const r = await ev(() => { const m = window.__m; window.__game.before = window.__game.after = null; return { burn: m.fuel / m.t, climb: (m.yT - m.y0) / m.climbT }; });
+    const r = await ev(() => {
+      const m = window.__m; window.__game.before = window.__game.after = null;
+      const vy = [...m.vy].sort((a, b) => a - b);
+      return { burn: m.fuel / m.t, climb: vy[vy.length >> 1], stalls: `${m.stalls}/${m.frames}` };
+    });
     await waitGame(2.5);   // fall back down
     return r;
   };
   const j0 = await jet(null), jBoots = await jet('ROCKET_BOOTS'), jTank = await jet('BIG_TANK');
-  check('Rocket Boots double the jet climb', near(jBoots.climb / j0.climb, 2, 0.1), `${j0.climb.toFixed(1)} → ${jBoots.climb.toFixed(1)} cells/s`);
+  check('Rocket Boots double the jet climb', near(jBoots.climb / j0.climb, 2, 0.05), `${j0.climb.toFixed(1)} → ${jBoots.climb.toFixed(1)} cells/s (probe stalls: ${j0.stalls} plain, ${jBoots.stalls} boots)`);
   check('Big Tank doubles time aloft (half the fuel per second)', near(j0.burn / jTank.burn, 2, 0.05), `${(1 / j0.burn).toFixed(2)} s → ${(1 / jTank.burn).toFixed(2)} s on a tank`);
 
   // ---- pogo stick: heights grow with presses timed to the landing
   await perksTo([]);
   await stand(64, 64);
-  await p.keyboard.press('=');   // slot 12
+  check('the pogo stick is a catalog tool in hand', (await hold('POGO')) === 'POGO');
   await settle(200);
-  check('the pogo stick is in slot 12', (await ev(() => window.__app.pov.toolbelt.selectedKey)) === 'POGO');
   await ev(() => {
     const pov = window.__app.pov, pl = pov.player;
     const key = (down) => dispatchEvent(new KeyboardEvent(down ? 'keydown' : 'keyup', { code: 'Space', key: ' ', bubbles: true }));
@@ -178,14 +191,14 @@ try {
   check('no timed press: back to the rest bounce', afterSteps.length >= 1 && afterSteps.every(([st, a]) => st === 0 && near(a, want[0], 0.2)), JSON.stringify(afterSteps));
   console.log(`     (pogo run at ${(pg.frames / pg.dtSum).toFixed(0)} fps; apex scatter is the frame-time jitter)`);
   check('pogoing never hurt', (await ev(() => window.__app.pov.player.health)) === 1);
-  await p.keyboard.press('1');
+  await hold('SHOVEL');
 
   if (shotPath) {
     // the shield bar and the held knife, from the front of an empty box
     await perksTo(['ENERGY_SHIELD', 'FLEET_FOOT', 'ROCKET_BOOTS', 'BIG_TANK']);
     await stand(64, 40);
     await ev(() => window.__app.pov.setLook(0, -0.1));
-    await p.keyboard.press('-');
+    await hold('KNIFE');
     await waitGame(1);
     await ev(() => window.__app.pov.player.hurt(0.4, 'test'));
     await settle(80);
@@ -196,16 +209,14 @@ try {
   await dropIn(`http://localhost:${port}/?preset=lab`);
   await p.waitForFunction(() => window.__app.pov.npc?.placeAt, null, { timeout: 30000 });
   await settle(1500);
-  await p.keyboard.press('-');
-  await settle(200);
-  check('the knife is in slot 11', (await ev(() => window.__app.pov.toolbelt.selectedKey)) === 'KNIFE');
-  await p.keyboard.press('1');
+  check('the knife is a catalog tool in hand', (await hold('KNIFE')) === 'KNIFE');
+  await hold('SHOVEL');
   // One stab, synchronously, so nothing moves between the setup and the blow: from `side`
   // ('behind' or 'front') of the NPC, 2.6 cells from its middle, aimed at its chest.
   const stab = (side) => ev(async (side) => {
     const { targetById } = await import('/src/pov/targets.js');
     const V3 = window.__app.camera.position.constructor;
-    const pov = window.__app.pov, npc = pov.npc, t = targetById(npc.id), knife = pov.toolbelt.tool(10);
+    const pov = window.__app.pov, npc = pov.npc, t = targetById(npc.id), knife = pov.toolbelt.tool('KNIFE');
     const f = t.facing(new V3()).setY(0).normalize();
     const c = npc.body.pos.clone().setY(npc.body.pos.y + 2.75);
     const feet = npc.body.pos.clone().addScaledVector(f, side === 'behind' ? -2.6 : 2.6);

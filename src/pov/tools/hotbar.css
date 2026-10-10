@@ -16,6 +16,10 @@
   transition: opacity 260ms var(--ease), transform 260ms var(--ease);
 }
 .hb-name.show { opacity: 1; transform: none; }
+/* the slot's tools: the one in hand lit, the rest dim (press the key again for the next) */
+.hb-name span { color: var(--muted); }
+.hb-name span + span::before { content: '·'; margin: 0 6px; color: var(--muted); }
+.hb-name span.on { color: var(--text); }
 
 .hb-row {
   display: flex; gap: 4px; padding: 5px;
@@ -30,6 +34,7 @@
 .hb-slot {
   position: relative;
   width: 52px; height: 52px;
+  padding: 0; border: 0; font: inherit; color: inherit; cursor: pointer;
   display: grid; place-items: center;
   border-radius: 8px;
   background: var(--raise);
@@ -60,6 +65,15 @@
 .hb-icon img { width: 100%; height: 100%; image-rendering: pixelated; user-select: none; }
 .hb-slot.on .hb-icon { transform: translateY(-2px); }
 .hb-slot[data-empty] .hb-icon { visibility: hidden; }
+.hb-slot:disabled { cursor: default; }
+
+/* a pip per tool carried in the slot, the one in hand lit */
+.hb-pips {
+  position: absolute; right: 4px; top: 4px;
+  display: flex; gap: 2px;
+}
+.hb-pips i { width: 4px; height: 4px; border-radius: 1px; background: var(--muted); opacity: 0.6; }
+.hb-pips i.on { background: var(--text); opacity: 1; }
 
 .hb-status {
   position: absolute; left: 0; right: 0; bottom: 1px;

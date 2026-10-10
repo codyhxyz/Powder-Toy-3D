@@ -75,9 +75,9 @@ body.pov-locked canvas { cursor: none; }
   transition: opacity 220ms, transform 260ms var(--ease);
 }
 .pov-vitals.show { opacity: 1; transform: none; }
-/* Where the centred hotbar (tools/hotbar.css: 12 slots, 680px) would reach the
+/* Where the centred hotbar (tools/hotbar.css: 10 slots, 568px) would reach the
    vitals (16px + 210px from the left), the vitals sit above it instead. */
-@media (max-width: 1140px) { .pov-vitals { bottom: 88px; } }
+@media (max-width: 1040px) { .pov-vitals { bottom: 88px; } }
 .pov-bar { display: flex; align-items: center; gap: 8px; }
 /* perks held (pov/perks.js): Noita's row of icons, each with its stacks */
 .pov-perks { display: flex; flex-wrap: wrap; gap: 4px; }
@@ -222,3 +222,10 @@ body.pov-on.pov-nohud .toolbar,
 body.pov-on.pov-nohud .stats,
 body.pov-on.pov-nohud .toasts,
 body.pov-on.pov-nohud .legend-box { visibility: hidden !important; }
+
+/* Q in first person: the tools menu (pov/index.js setMenu). The palette comes
+   back so its Tools group can give tools, GMod's spawn menu; the hotbar steps aside. */
+body.pov-on.pov-menu .dock { opacity: 1 !important; pointer-events: auto !important; transform: translateX(-50%); }
+body.pov-on.pov-menu .card { opacity: 1 !important; }
+body.pov-on.pov-menu .hotbar { opacity: 0; pointer-events: none; }
+body.pov-on.pov-menu .pov-lock { display: none; }

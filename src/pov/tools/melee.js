@@ -26,7 +26,7 @@ import { rayTarget, PLAYER } from '../targets.js';
 // when the head lands on something, impact (source = tool) and the rig's kick,
 // plus tool:action 'refuse' if the struck cell is a solid the blow can't break.
 //
-//   export default meleeTool({ key, name, slot, model, desc,   // the tool definition (docs/pov.md)
+//   export default meleeTool({ ...gear(KEY),   // the tool definition (catalog.js, docs/pov.md)
 //     blow, frag,              // the blow's tuning (ENERGY ...) and its pass
 //     hit,                     // viewmodel.js HIT row for a landed blow
 //     refire,                  // s between swings
@@ -43,7 +43,7 @@ import { rayTarget, PLAYER } from '../targets.js';
 
 const TELL_RATE = 12;   // 1/s: the tell (pose.ready) eases in and out this fast, about 0.1 s (by eye, TF2's knife raise is a few frames)
 
-export function meleeTool({ key, name, slot, model: modelKey, desc, blow, frag, hit: HIT_ROW, refire, reach = HAND_REACH, body: BODY, bodyBlow, tell, pose: POSE }) {
+export function meleeTool({ key, name, model: modelKey, desc, blow, frag, hit: HIT_ROW, refire, reach = HAND_REACH, body: BODY, bodyBlow, tell, pose: POSE }) {
   const source = key.toLowerCase();
 
   // The held tool: the model (models.js) on a hand of the viewmodel rig, turned about the hand by the swing.
@@ -57,7 +57,7 @@ export function meleeTool({ key, name, slot, model: modelKey, desc, blow, frag, 
   }
 
   return {
-    key, name, slot, model: modelKey, desc,
+    key, name, model: modelKey, desc,
     create(env) {
       const model = buildModel(env);
       const pass = toolPass(frag, () => ({ uCenter: { value: new THREE.Vector3() }, uDir: { value: new THREE.Vector3() } }));

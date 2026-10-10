@@ -63,6 +63,12 @@ const SHIELD_FULL_EPS = 1e-6;   // a shield this close to full counts as full
 // ---- blasts ----
 const BLAST_HURT_P = 8;         // air pressure (sim units) the body shrugs off...
 const BLAST_DAMAGE = 0.4;       // ...health/s per unit above it
+// Your own blast (a rocket or bomb you set off: ownBlast) hurts you less, the
+// shooter games' rule (Quake III halves self-splash, G_Damage), so a rocket
+// jump is a price, not a death: one at your feet costs about a quarter of your
+// health (its full pressure would take ~2.4, measured by tools/weapons-check.mjs).
+const SELF_BLAST_SHARE = 0.1;   // share of blast damage taken...
+const SELF_BLAST_TIME = 1;      // ...for this many s after your own blast goes off
 
 // ---- feel (0..1 screen-effect intensities) ----
 const FEEL_HEAT_SPAN = 40;      // °C of skin above BODY_T for full heat glow
@@ -101,6 +107,7 @@ export function createVitals(emit, perks = null) {
     get shieldMax() { return shieldMax(); },
   };
   let pending = 0, pendingCause = '', pendingAge = 0;
+  let selfBlastT = 0;   // s left of your own blast's reduced damage
 
   v.reset = () => {
     v.health = 1; v.breath = 1; v.skinT = BODY_T;
@@ -156,6 +163,8 @@ export function createVitals(emit, perks = null) {
     }
   }
   v.hurt = hurt;
+  // a blast of your own just went off (see SELF_BLAST_SHARE)
+  v.ownBlast = () => { selfBlastT = SELF_BLAST_TIME; };
 
   // The shield: Halo's refill after the delay; a smaller maximum (death took the perk) clips it.
   function shieldUpdate(dt) {
@@ -220,7 +229,9 @@ export function createVitals(emit, perks = null) {
     if (v.skinT > SKIN_BURN_T && !has('FIRE_IMMUNITY')) hurt((v.skinT - SKIN_BURN_T) * HEAT_DAMAGE * dt, heatCause(worstId, worstT));
     if (v.skinT < SKIN_COLD_T) hurt((SKIN_COLD_T - v.skinT) * COLD_DAMAGE * dt, 'Froze');
     if (acid) hurt(ACID_DAMAGE * acidShare * dt, 'Dissolved by acid');
-    if (env.pressure > BLAST_HURT_P && !has('EXPLOSION_IMMUNITY')) hurt((env.pressure - BLAST_HURT_P) * BLAST_DAMAGE * dt, 'Blown up', false, { shielded: true });
+    const blastShare = selfBlastT > 0 ? SELF_BLAST_SHARE : 1;
+    selfBlastT = Math.max(0, selfBlastT - dt);
+    if (env.pressure > BLAST_HURT_P && !has('EXPLOSION_IMMUNITY')) hurt((env.pressure - BLAST_HURT_P) * BLAST_DAMAGE * blastShare * dt, 'Blown up', false, { shielded: true });
 
     // breath
     const choking = (env.headInLiquid || env.buriedId >= 0) && !has('BREATHLESS');

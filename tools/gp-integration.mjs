@@ -1,5 +1,5 @@
 // Gunplay v2 end-to-end check: every piece together through the real shell.
-// A long-range shot through glass (ballistics + handoff), the sound, effects,
+// A long-range shot through glass (ballistics + strike), the sound, effects,
 // feedback and viewmodel it sets off, and the realistic body in third person.
 // usage: node tools/gp-integration.mjs [--port 5296] [--shots dir]   (needs a dev server)
 import { chromium } from 'playwright';
@@ -53,7 +53,7 @@ await ev(async ([range]) => {
   a.pov.setLook(-Math.PI / 2, 0);
 }, [RANGE]);
 await wait(1200);
-await p.keyboard.press('4');
+await p.keyboard.press('3');   // the Guns slot: the pistol (a key press also starts the audio)
 await wait(1500);   // models load
 const vm = await ev(() => {
   const rig = window.__app.pov.viewmodel.userData.rig;
@@ -76,7 +76,7 @@ check('gun:fire emitted', count('gun:fire') === 1, `${count('gun:fire')}`);
 check('round flew and ended', count('round:move') > 0 && count('round:end') === 1, `moves ${count('round:move')}`);
 check('impact at range', count('impact') >= 1);
 check(`glass broke at ${RANGE} cells`, (c1.SHARDS ?? 0) > (c0.SHARDS ?? 0), `GLASS ${c0.GLASS}→${c1.GLASS}, SHARDS ${c0.SHARDS ?? 0}→${c1.SHARDS ?? 0}, SCRAP ${c0.SCRAP ?? 0}→${c1.SCRAP ?? 0}`);
-check('exactly one slug handed to the sim', (c1.SCRAP ?? 0) - (c0.SCRAP ?? 0) === 1);
+check('the round adds no matter (no SCRAP slug)', (c1.SCRAP ?? 0) === (c0.SCRAP ?? 0));
 const audio = await ev(async () => { const m = await import('/src/pov/audio.js'); const s = m.stats(); return { ctx: s.context, played: s.played, last: s.last.map((l) => l.name ?? l[0] ?? l).slice(-6) }; });
 check('sound played', audio.played > 0, JSON.stringify(audio));
 const vfx = await ev(() => window.__app.pov.vfx?.counts?.());

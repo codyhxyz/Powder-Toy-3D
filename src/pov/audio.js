@@ -205,7 +205,7 @@ const LOOPS = new Set(['pourLoop', 'physHum', 'torchLoop', 'jetLoop']);
 
 // ---- material families: which sound a struck element makes
 const FAMILY_BY_KEY = {
-  GLASS: 'shatter', SHARDS: 'shatter',
+  GLASS: 'shatter', SHARDS: 'shatter', CRYSTAL: 'shatter', CRYSTAL_DUST: 'shatter',
   WOOD: 'thunk', SAWDUST: 'thunk', PLANT: 'thunk',
   METAL: 'ping', SCRAP: 'ping',
   ROCK: 'crack', STONE: 'crack', WALL: 'crack', CLONE: 'crack', ICE: 'crack',
@@ -435,12 +435,14 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
   // ---- events
   const live = () => S.started && state().active;
 
-  povEvents.on('gun:fire', ({ by, origin }) => {
+  // each gun's shot is the pistol's, pitched and scaled by its sound ({ rate, gain, thump, voice }: tools/firearm.js)
+  povEvents.on('gun:fire', ({ by, origin, sound }) => {
     if (!live()) return;
-    if (by) { play('shot', { at: origin ?? null }); play('shotEcho', { at: origin ?? null, gain: ECHO_GAIN, delay: ECHO_DELAY_S }); return; }   // an NPC's: where it is
-    play('shot');
-    play('shotThump');
-    play('shotEcho', { gain: ECHO_GAIN, delay: ECHO_DELAY_S });
+    const { rate = 1, gain = 1, thump = 1, voice = 'shot' } = sound ?? {};
+    if (by) { play(voice, { at: origin ?? null, rate, gain }); play('shotEcho', { at: origin ?? null, gain: ECHO_GAIN * gain, delay: ECHO_DELAY_S, rate }); return; }   // an NPC's: where it is
+    play(voice, { rate, gain });
+    play('shotThump', { rate, gain: thump });
+    play('shotEcho', { gain: ECHO_GAIN * gain, delay: ECHO_DELAY_S, rate });
   });
   povEvents.on('gun:dry', ({ by }) => { if (live() && !by) play('dryClick'); });
   // a bomb's charge went off: the boom where it is, and its echo off the far walls

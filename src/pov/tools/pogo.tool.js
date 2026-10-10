@@ -1,5 +1,6 @@
 import { HIT, viewmodelRig } from '../viewmodel.js';
 import { attachModel } from '../models.js';
+import { gear } from './catalog.js';
 
 // Pogo stick: a movement tool. While it's in hand the body bounces on every
 // landing, and a press of jump timed to the landing bounces it a step higher,
@@ -13,8 +14,7 @@ import { attachModel } from '../models.js';
 // pogoes by the same rules. The hands jolt with each bounce (viewmodel.js HIT.POGO).
 
 export default {
-  key: 'POGO', name: 'Pogo stick', slot: 12, model: 'pogo',
-  desc: 'Hold it to bounce. Press jump just as you land to bounce higher, three times in a row to the top. Hold jump to fly.',
+  ...gear('POGO'),
   create(env) {
     const rig = viewmodelRig(env);
     // the held stick, in cells (camera space): the handlebar low in front, the stick down out of view

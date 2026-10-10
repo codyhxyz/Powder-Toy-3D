@@ -1,6 +1,7 @@
 import { axeFrag, AXE } from '../../shaders/povTools.js';
 import { HIT } from '../viewmodel.js';
 import { meleeTool } from './melee.js';
+import { gear } from './catalog.js';
 
 // Axe: a short-range swing that breaks breakable solids in a wide, shallow
 // patch around the struck cell into their debris (shaders/povTools.js AXE for
@@ -11,8 +12,7 @@ import { meleeTool } from './melee.js';
 const REFIRE = 0.4;          // s between swings (HL2 CROWBAR_REFIRE)
 
 export default meleeTool({
-  key: 'AXE', name: 'Axe', slot: 3, model: 'axe',
-  desc: 'Chops wood, smashes glass and ice, clears plants. Too weak for rock or metal.',
+  ...gear('AXE'),
   blow: AXE, frag: axeFrag, hit: HIT.AXE, refire: REFIRE,
   body: {
     damage: 0.34,            // health a blow takes from a body (an NPC): three blows kill

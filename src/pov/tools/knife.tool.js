@@ -3,6 +3,7 @@ import { knifeFrag, KNIFE as KNIFE_BLOW } from '../../shaders/povTools.js';
 import { HIT } from '../viewmodel.js';
 import { BODY_HEIGHT } from '../constants.js';
 import { meleeTool } from './melee.js';
+import { gear } from './catalog.js';
 
 // Knife: Team Fortress 2's Spy knife. A stab in reach (melee.js, the axe's
 // swing, here a thrust) from behind a body kills it outright, through any
@@ -54,8 +55,7 @@ export function behind(ctx, target) {
 }
 
 export default meleeTool({
-  key: 'KNIFE', name: 'Knife', slot: 11, model: 'knife',
-  desc: 'Stab a body from behind to kill it in one blow, shield or not; from the front it is a weak stab. Useless on rock.',
+  ...gear('KNIFE'),
   blow: KNIFE_BLOW, frag: knifeFrag, hit: HIT.KNIFE, refire: TF2_KNIFE_REFIRE, reach: REACH,
   body: {
     damage: AXE_BODY_DAMAGE * STAB_SHARE,   // ≈ 0.21: weaker than the axe's 0.34

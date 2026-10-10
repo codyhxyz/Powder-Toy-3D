@@ -104,8 +104,9 @@ export function createPerkSet() {
     // [{ perk, n }] in PERKS order
     list() { return PERKS.filter((p) => stacks.has(p.key)).map((p) => ({ perk: p, n: stacks.get(p.key) })); },
 
+    healthScale: 1,   // × max health, under the stacks: a class's (classes.js; the Runner is frail). clear() keeps it
     get toolRate() { return Math.min(TOOL_RATE_MAX, TOOL_RATE_STACK ** count('FASTER_TOOLS')); },
-    get maxHealth() { return 1 + EXTRA_HEALTH_STACK * count('EXTRA_HEALTH'); },
+    get maxHealth() { return this.healthScale * (1 + EXTRA_HEALTH_STACK * count('EXTRA_HEALTH')); },
     get freezeRadius() { return grow(count('FREEZE_FIELD'), FREEZE_RADIUS, FREEZE_RADIUS_STACK, FREEZE_RADIUS_MAX); },
     get revengeRadius() { return grow(count('REVENGE_EXPLOSION'), REVENGE_RADIUS, REVENGE_RADIUS_STACK, REVENGE_RADIUS_MAX); },
     get revengePressure() { return REVENGE_PRESSURE * count('REVENGE_EXPLOSION'); },

@@ -29,6 +29,10 @@ const Q = Math.PI / 4;
 const POINT_RIGHT = -Math.PI / 2;   // yaw that turns −z (forward) to +x (right)
 export const MODELS = {
   gun: { fit: 'z', size: 1.25, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.3, roll: 0.35 } },        // an SMG, centred
+  pistol: { fit: 'z', size: 0.8, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.3, roll: 0.35 } },     // a service pistol, centred
+  sniper: { fit: 'z', size: 2.4, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.3, roll: 0.45 } },     // a scoped bolt-action rifle, centred
+  rpg: { fit: 'z', size: 1.7, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.3, roll: 0.45 } },        // a launcher tube with a rocket in its mouth, centred
+  rocket: { fit: 'z', size: 0.9, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.3, roll: Q } },         // a rocket in flight (drawn without the arm)
   physgun: { fit: 'z', size: 1.3, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.3, roll: 0.35 } },     // finned, glowing core, centred
   axe: { fit: 'y', size: 1.25, anchor: [0.5, 0, 0.5], arm: ARM_DOWN, icon: { yaw: -POINT_RIGHT, tilt: 0.2, roll: -Q } },           // handle up from the hand, blade forward
   pickaxe: { fit: 'y', size: 1.3, anchor: [0.5, 0, 0.5], arm: ARM_DOWN, icon: { yaw: -POINT_RIGHT, tilt: 0.2, roll: -Q } },      // handle up from the hand, point forward
@@ -57,7 +61,7 @@ export function jagexColor(color) {
 const COLORS = {
   wood: '#7a5230', iron: '#9aa0a6', ironDark: '#585d62', metal: '#4a4f55', metalDark: '#2c2f33',
   grip: '#3a3530', orange: '#d87a22', white: '#d6dbe0', glow: '#5ff0ff', skin: '#c48a5c', sleeve: '#8a3a2a',
-  screen: '#7dff9a', red: '#b8322a', flame: '#6fa8ff', spark: '#ffb347',
+  screen: '#7dff9a', red: '#b8322a', flame: '#6fa8ff', spark: '#ffb347', olive: '#5a6b2e', oliveDark: '#3d4a1f',
 };
 const UNLIT = new Set(['glow', 'screen', 'flame', 'spark']);
 
@@ -169,6 +173,45 @@ const PARTS = {
     { geo: 'box', s: [0.1, 0.3, 0.13], p: [0, -0.02, -0.32], rot: [0.12, 0, 0], m: 'metalDark' },
     { geo: 'box', s: [0.11, 0.13, 0.28], p: [0, 0.2, 0.3], m: 'grip' },
     { geo: 'box', s: [0.186, 0.04, 0.42], p: [0, 0.21, -0.24], m: 'orange' },
+  ],
+  pistol: [
+    { geo: 'box', s: [0.14, 0.13, 0.62], p: [0, 0.2, -0.2], m: 'metalDark' },
+    { geo: 'box', s: [0.13, 0.08, 0.5], p: [0, 0.11, -0.16], m: 'metal' },
+    { geo: 'cyl', r: 0.035, h: 0.06, p: [0, 0.2, -0.53], rot: [H, 0, 0], m: 'metal' },
+    { geo: 'box', s: [0.03, 0.04, 0.03], p: [0, 0.285, -0.47], m: 'metalDark' },
+    { geo: 'box', s: [0.06, 0.04, 0.03], p: [0, 0.285, 0.06], m: 'metalDark' },
+    { geo: 'box', s: [0.02, 0.06, 0.12], p: [0, 0.03, -0.13], m: 'metalDark' },
+    { geo: 'box', s: [0.12, 0.3, 0.15], p: [0, -0.04, 0.04], rot: [-0.25, 0, 0], m: 'grip' },
+  ],
+  sniper: [
+    { geo: 'box', s: [0.12, 0.2, 0.5], p: [0, 0.12, 0.45], m: 'wood' },
+    { geo: 'box', s: [0.14, 0.15, 0.6], p: [0, 0.2, -0.15], m: 'metal' },
+    { geo: 'box', s: [0.13, 0.12, 0.5], p: [0, 0.13, -0.6], m: 'wood' },
+    { geo: 'cyl', r: 0.035, h: 1.2, p: [0, 0.22, -1.05], rot: [H, 0, 0], m: 'metalDark' },
+    { geo: 'cyl', r: 0.055, h: 0.1, p: [0, 0.22, -1.68], rot: [H, 0, 0], m: 'metal' },
+    { geo: 'cyl', r: 0.06, h: 0.55, p: [0, 0.36, -0.15], rot: [H, 0, 0], m: 'metalDark' },
+    { geo: 'cyl', r: 0.075, h: 0.06, p: [0, 0.36, -0.45], rot: [H, 0, 0], m: 'glow' },
+    { geo: 'cyl', r: 0.07, h: 0.05, p: [0, 0.36, 0.13], rot: [H, 0, 0], m: 'metal' },
+    { geo: 'box', s: [0.04, 0.08, 0.04], p: [0, 0.29, -0.02], m: 'metalDark' },
+    { geo: 'box', s: [0.04, 0.08, 0.04], p: [0, 0.29, -0.3], m: 'metalDark' },
+    { geo: 'cyl', r: 0.02, h: 0.12, p: [0.1, 0.22, 0.05], rot: [0, 0, H], m: 'metal' },
+    { geo: 'sphere', r: 0.035, p: [0.16, 0.22, 0.05], m: 'metalDark' },
+    STOCK_GRIP,
+  ],
+  rpg: [
+    { geo: 'cyl', r: 0.11, h: 1.5, p: [0, 0.3, -0.3], rot: [H, 0, 0], m: 'olive' },
+    { geo: 'cyl', r: 0.14, h: 0.1, p: [0, 0.3, -1.02], rot: [H, 0, 0], m: 'oliveDark' },
+    { geo: 'cyl', r: 0.14, h: 0.1, p: [0, 0.3, 0.42], rot: [H, 0, 0], m: 'oliveDark' },
+    { geo: 'cyl', rt: 0, rb: 0.09, h: 0.24, p: [0, 0.3, -1.18], rot: [-H, 0, 0], m: 'red' },
+    { geo: 'box', s: [0.05, 0.12, 0.08], p: [0.13, 0.42, -0.2], m: 'metalDark' },
+    { geo: 'box', s: [0.1, 0.22, 0.12], p: [0, 0.1, -0.55], rot: [0.15, 0, 0], m: 'grip' },
+    STOCK_GRIP,
+  ],
+  rocket: [
+    { geo: 'cyl', r: 0.08, h: 0.7, p: [0, 0, 0], rot: [H, 0, 0], m: 'olive' },
+    { geo: 'cyl', rt: 0, rb: 0.08, h: 0.22, p: [0, 0, -0.46], rot: [-H, 0, 0], m: 'red' },
+    ...FINS.map((a) => ({ geo: 'box', s: [0.02, 0.12, 0.16], p: [Math.sin(a) * 0.1, Math.cos(a) * 0.1, 0.28], rot: [0, 0, -a], m: 'oliveDark' })),
+    { geo: 'sphere', r: 0.07, p: [0, 0, 0.4], m: 'spark' },
   ],
   physgun: [
     { geo: 'cyl', r: 0.13, h: 0.62, p: [0, 0.22, -0.2], rot: [H, 0, 0], m: 'white' },

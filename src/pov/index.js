@@ -10,6 +10,8 @@ import { povEvents } from './events.js';
 import './pov.css';
 import { addTarget, PLAYER } from './targets.js';
 import { grant, PERK } from './perks.js';
+import { CLASSES_ENABLED } from './classes.js';
+import { createClassPicker } from './classPicker.js';
 
 // First-person (POV) mode: drop into the world with F, walk around in it,
 // pop back out with F. This module is the shell: input, the camera, the
@@ -40,12 +42,14 @@ const WHEEL_LINE_PX = 40;               // px per line, for wheels that report l
 const WHEEL_PAGE_PX = 800;              // px per page
 
 const MOVE_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ShiftLeft', 'ShiftRight', 'KeyC']);
-// god-mode keys that stay live in POV: help, settings, screenshot, closing menus
-const PASS_KEYS = new Set(['Escape', '?', ',', 'p', 'P']);
+// god-mode keys that stay live in POV: help, settings, screenshot, closing menus.
+// With classes on, comma is TF2's class key in POV (classPicker.js), not settings.
+const PASS_KEYS = new Set(['Escape', '?', ...(CLASSES_ENABLED ? [] : [',']), 'p', 'P']);
 
 // app = { renderer, scene, camera, controls, canvas, hud, settings, mp, isTyping,
 //         getSim, getVolume, getScale, hover, pointerHover (() => bool), pickRay (ro, rd → Promise<hit>),
-//         requestRender, inWorld (() => bool: the grid is a window of a larger world, docs/scaling.md D11) }
+//         requestRender, inWorld (() => bool: the grid is a window of a larger world, docs/scaling.md D11),
+//         showToolsMenu (the palette's first-person tools brought into view: Q) }
 export function createPov(app) {
   const { renderer, scene, camera, controls, canvas, hud } = app;
   const createPlayer = playerModule?.createPlayer;
@@ -114,12 +118,25 @@ export function createPov(app) {
   document.addEventListener('pointerlockchange', () => {
     locked = document.pointerLockElement === canvas;
     document.body.classList.toggle('pov-locked', locked);
+    if (locked) setMenu(false);
     if (!locked) releaseInput();
     app.requestRender();
   });
   function releaseInput() {
     keys.clear();
     buttons.primary = buttons.secondary = false;
+  }
+
+  // Q: the tools menu, Garry's Mod's spawn menu: the mouse is freed and the
+  // palette shows, its Tools group giving tools (app.js giveGear). Q again, a
+  // click on the world or a tool given closes it.
+  let menuOpen = false;
+  function setMenu(v) {
+    menuOpen = !!v && active();
+    document.body.classList.toggle('pov-menu', menuOpen);
+    if (menuOpen) app.showToolsMenu?.();
+    if (menuOpen && document.pointerLockElement === canvas) document.exitPointerLock();
+    app.requestRender();
   }
 
   // F1: the HUD and the hand hidden (death and the mouse prompt still show)
@@ -134,11 +151,26 @@ export function createPov(app) {
     if ((e.code === 'ShiftLeft' || e.code === 'ShiftRight') && !e.repeat && app.settings.sprintMode === 'toggle') sprintOn = !sprintOn;
     // F1, as in Minecraft: hide the HUD and the hand, for a clean view or a screenshot
     if (e.code === 'F1') { e.preventDefault(); if (!e.repeat) setHudHidden(!hudHidden); }
+    if (e.code === 'KeyQ' && !e.repeat && mode === 'on') {
+      if (menuOpen) { setMenu(false); requestLock(); } else setMenu(true);
+    }
     // settings and help need the mouse
-    if ((e.key === ',' || e.key === '?') && document.pointerLockElement === canvas) document.exitPointerLock();
+    if (((e.key === ',' && !classes) || e.key === '?') && document.pointerLockElement === canvas) document.exitPointerLock();
   });
   addEventListener('keyup', (e) => keys.delete(e.code));
   addEventListener('blur', releaseInput);
+
+  // TF2's class picker on its key, comma (classPicker.js, docs/classes.md). Made
+  // now, so its keys are heard before the toolbelt's digits.
+  const classes = CLASSES_ENABLED ? createClassPicker({
+    isActive: () => active() && mode !== 'exiting',
+    getBody: () => player,
+    getToolbelt: () => toolbelt,
+    lock: requestLock,
+    unlock: () => { if (document.pointerLockElement === canvas) document.exitPointerLock(); },
+    isLocked: () => locked,
+    toast: (text) => hud.toast(text),
+  }) : null;
 
   canvas.addEventListener('mousedown', (e) => {
     if (!active()) return;
@@ -194,6 +226,7 @@ export function createPov(app) {
       player.on('land', ({ speed }) => povCam.land(speed));
       player.on('revive', () => { hud.toast(`${perkName('EXTRA_LIFE')}: back on your feet`); povEvents.emit('perk:revive', { point: player.pos.clone() }); });
       player.on('revenge', ({ point }) => povEvents.emit('blast', { point }));
+      povEvents.on('blast', ({ by }) => { if (!by) player.ownBlast(); });   // the player's own rocket or bomb
       player.on('splash', ({ speed }) => vfx?.splash(player.pos, speed, player.liquidId));
       feel.bindPlayer(player);
     }
@@ -293,6 +326,7 @@ export function createPov(app) {
     povCam.reset();
     feel.reset();
     player.spawn(dropPoint.clone());
+    classes?.spawned(player);
     enteredAt.copy(dropPoint).add(app.getSim().origin);
     deadSeen = false;
     povCam.startSwoop('in', camPose(), { duration: SWOOP_S });
@@ -308,8 +342,10 @@ export function createPov(app) {
 
   function exit(instant = false) {
     if (!active()) return;
+    setMenu(false);
     toolbelt?.setVisible(false);
     viewmodel.visible = false;
+    classes?.close({ relock: false });
     if (document.pointerLockElement === canvas) document.exitPointerLock();
     releaseInput();
     // In a world larger than the grid, the god view comes back over where the
@@ -408,6 +444,7 @@ export function createPov(app) {
       if ((deadTime >= RESPAWN_DELAY || asked) && mode === 'on') {
         keys.delete('Space');   // the key that respawned doesn't also jump
         player.spawn(dropPoint.clone());
+        classes?.spawned(player);
         deadSeen = false;
         povCam.reset();
         feel.reset();
@@ -458,6 +495,7 @@ export function createPov(app) {
     // the camera, with the kick and shake on top of the look
     vA.copy(player.pos).setY(player.pos.y + EYE_HEIGHT);
     const shake = feel.update({ dt, live: mode === 'on' && !deadSeen, eye: vA });
+    povCam.zoom = mode === 'on' && !deadSeen && toolbelt ? toolbelt.zoom : 1;   // a scope (the sniper's)
     toWorld(vEye.copy(vA), vEye);
     toWorld(player.pos, vFeet);
     const pose = povCam.update({
@@ -587,6 +625,7 @@ export function createPov(app) {
     get locked() { return isLocked(); },
     get player() { return player; },
     get toolbelt() { return toolbelt; },
+    get classes() { return classes; },   // the class picker (classPicker.js), or null with CLASSES_ENABLED off
     // what the held tool shows next to the crosshair ({ name, color, T?, P?, note? } for ui/hud.js showReadout), or null
     get readout() { return live() && mode === 'on' && toolbelt ? toolbelt.readout : null; },
     get figure() { return figure; },
@@ -617,6 +656,8 @@ export function createPov(app) {
     },
     aimRay,
     blocksKey,
+    // close the tools menu and take the mouse back (a tool was given from it: a click, so the lock is allowed)
+    closeMenu() { if (!menuOpen) return; setMenu(false); requestLock(); },
     // tests: look around without pointer lock (radians)
     setLook: (yaw, pitch) => povCam.setLook(yaw, pitch),
   };
