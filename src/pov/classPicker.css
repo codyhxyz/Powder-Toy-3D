@@ -1,0 +1,233 @@
+/* ------------------------------------------------------------------ class picker (pov/classPicker.js)
+   TF2's class-select screen: the focused class's name set huge behind a row of
+   portrait cards, lit in the class colour; the team's colour comes up from the
+   floor. --c: the focused class's colour (on .cp) or the card's own (on .cp-card). */
+.cp {
+  --team: #dcbc74;                       /* no team: the app's gold */
+  --c: #dcbc74;
+  --card: #12151d;
+  position: fixed; inset: 0; z-index: 40;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
+  padding: 64px 24px 22px;
+  overflow: hidden;
+  background:
+    radial-gradient(75% 45% at 50% 108%, color-mix(in srgb, var(--team) 26%, transparent), transparent 72%),
+    radial-gradient(55% 45% at 50% 30%, color-mix(in srgb, var(--c) 13%, transparent), transparent 70%),
+    rgba(8, 10, 15, 0.8);
+  backdrop-filter: blur(12px) saturate(0.7);
+  -webkit-backdrop-filter: blur(12px) saturate(0.7);
+  opacity: 0;
+  transition: opacity 160ms var(--ease), background-color 300ms;
+}
+.cp[hidden] { display: none; }
+.cp.open { opacity: 1; }
+.cp[data-team='red'] { --team: #d4503c; }
+.cp[data-team='blue'] { --team: #4a8fd4; }
+.cp[data-team='infected'] { --team: #7fbf45; }
+
+/* the focused class's name, poster-size, outlined, fading into the dark */
+.cp-word {
+  --len: 6;
+  position: absolute; left: 50%; top: 5vh;
+  transform: translateX(-50%);
+  font: 900 min(30vh, calc(150vw / var(--len))) / 0.86 var(--ui);
+  font-variation-settings: 'wdth' 125;
+  letter-spacing: -0.05em;
+  white-space: nowrap;
+  color: transparent;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--c) 30%, transparent) 10%, transparent 88%);
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-stroke: 1.5px color-mix(in srgb, var(--c) 38%, transparent);
+  pointer-events: none;
+}
+.cp-word.swap { animation: cp-swap 260ms var(--ease) both; }
+@keyframes cp-swap { from { opacity: 0; transform: translateX(-50%) translateY(14px); } }
+
+.cp-head {
+  position: absolute; left: 24px; right: 24px; top: 18px;
+  display: flex; align-items: center; gap: 12px;
+}
+.cp-head h2 {
+  margin: 0;
+  font: 760 15px/1 var(--ui); font-variation-settings: 'wdth' 116;
+  color: var(--text);
+}
+.cp-team {
+  padding: 4px 9px; border-radius: 999px;
+  font: 650 11.5px/1 var(--ui);
+  color: color-mix(in srgb, var(--team) 55%, #fff);
+  background: color-mix(in srgb, var(--team) 24%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--team) 60%, transparent);
+}
+.cp-team[hidden] { display: none; }
+.cp-close {
+  margin-left: auto; padding: 0; border: 0; background: none; cursor: pointer;
+}
+.cp-close kbd { height: 24px; padding: 0 8px; font-size: 11px; }
+.cp-close:hover kbd { background: rgba(255, 255, 255, 0.14); }
+
+/* ---- the row of cards */
+.cp-row {
+  position: relative;
+  display: flex; gap: 10px; align-items: stretch;
+  width: min(1240px, 100%);
+}
+.cp-card {
+  position: relative;
+  flex: 1 1 0; min-width: 0; max-width: 210px;
+  display: flex; flex-direction: column; gap: 7px;
+  margin: 0; padding: 0 0 13px; border: 0;
+  border-radius: 16px;
+  overflow: hidden;
+  text-align: left; cursor: pointer;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--c) 14%, var(--card)) 0%, var(--card) 62%);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06), 0 14px 30px rgba(0, 0, 0, 0.35);
+  opacity: 0.72; filter: saturate(0.7);
+  transition: transform 240ms var(--ease), flex-grow 280ms var(--ease), opacity 160ms, filter 160ms, box-shadow 200ms;
+}
+.cp-card::before {                       /* the class colour along the top */
+  content: ''; position: absolute; left: 0; right: 0; top: 0; height: 3px; z-index: 1;
+  background: var(--c); opacity: 0.7;
+}
+.cp-card.focus {
+  flex-grow: 1.24;
+  opacity: 1; filter: none;
+  transform: translateY(-10px);
+  box-shadow:
+    inset 0 0 0 1.5px color-mix(in srgb, var(--c) 75%, transparent),
+    0 24px 54px -12px color-mix(in srgb, var(--c) 50%, transparent),
+    0 14px 30px rgba(0, 0, 0, 0.45);
+}
+.cp-card.focus::before { opacity: 1; }
+.cp-card:focus-visible { outline: none; }
+.cp.open .cp-card { animation: cp-rise 420ms var(--ease) backwards; }
+.cp.open .cp-card:nth-child(2) { animation-delay: 25ms; }
+.cp.open .cp-card:nth-child(3) { animation-delay: 50ms; }
+.cp.open .cp-card:nth-child(4) { animation-delay: 75ms; }
+.cp.open .cp-card:nth-child(5) { animation-delay: 100ms; }
+.cp.open .cp-card:nth-child(6) { animation-delay: 125ms; }
+.cp.open .cp-card:nth-child(7) { animation-delay: 150ms; }
+@keyframes cp-rise { from { opacity: 0; transform: translateY(26px); } }
+
+.cp-num {
+  position: absolute; left: 10px; top: 11px; z-index: 1;
+  min-width: 21px; height: 21px; padding: 0 4px;
+  display: grid; place-items: center;
+  border-radius: 6px;
+  font: 400 11px/1 var(--pixel);
+  color: var(--muted);
+  background: rgba(0, 0, 0, 0.45);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+}
+.cp-card.focus .cp-num { color: var(--text); }
+.cp-card.chosen .cp-num { color: #140e08; background: var(--c); box-shadow: none; }
+
+/* the portrait on its little stage: a spotlight in the class colour, a shadow on the floor */
+.cp-stage {
+  position: relative; display: block;
+  aspect-ratio: 4 / 5;
+  background:
+    radial-gradient(34% 6% at 50% 91%, rgba(0, 0, 0, 0.6), transparent 100%),
+    radial-gradient(62% 48% at 50% 46%, color-mix(in srgb, var(--c) 40%, transparent), transparent 72%);
+}
+.cp-portrait {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  object-fit: contain;
+  opacity: 0; transform: translateY(8px);
+  transition: opacity 320ms var(--ease), transform 420ms var(--ease);
+}
+.cp-card.drawn .cp-portrait { opacity: 1; transform: none; }
+.cp-card.drawn.focus .cp-portrait { transform: scale(1.05) translateY(-2px); }
+
+.cp-name {
+  padding: 0 12px;
+  font: 800 17px/1.05 var(--ui); font-variation-settings: 'wdth' 120;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.cp-tag {
+  padding: 0 12px;
+  min-height: 2.6em;
+  font-size: 11.5px; line-height: 1.3;
+  color: var(--muted);
+}
+.cp-card.focus .cp-tag { color: #c3c9d4; }
+
+/* loadout: the hotbar's tool sprites, then the perks' icons; what this build lacks is dimmed */
+.cp-kit { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 10px; }
+.cp-item {
+  position: relative;
+  width: 30px; height: 30px;
+  display: grid; place-items: center;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.05);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.09);
+}
+.cp-item img { width: 28px; height: 28px; }
+.cp-item i { font-style: normal; font-size: 15px; line-height: 1; }
+.cp-item b { font: 400 8px/1 var(--pixel); color: var(--muted); }
+.cp-item em {
+  position: absolute; right: -3px; bottom: -4px;
+  padding: 1px 2px; border-radius: 3px;
+  font: 700 9px/1 var(--ui); font-style: normal;
+  color: #fff; background: rgba(0, 0, 0, 0.8);
+}
+.cp-perk {
+  background: color-mix(in srgb, var(--pc, #888) 20%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pc, #888) 55%, transparent);
+}
+.cp-item.soon {
+  background: transparent; box-shadow: none;
+  outline: 1px dashed rgba(255, 255, 255, 0.28); outline-offset: -1px;
+  opacity: 0.5; filter: grayscale(1);
+}
+
+/* bars: five pips each, filled in the class colour */
+.cp-stats { display: grid; gap: 4px; padding: 3px 12px 0; margin-top: auto; }
+.cp-stat {
+  display: grid; grid-template-columns: 4.7em 1fr; align-items: center; gap: 6px;
+  font-size: 10.5px; line-height: 1; color: var(--muted);
+}
+.cp-stat i {
+  height: 6px;
+  background: linear-gradient(90deg, var(--c) calc(var(--v) * 100%), rgba(255, 255, 255, 0.1) 0);
+  -webkit-mask: repeating-linear-gradient(90deg, #000 0 calc(20% - 2px), transparent 0 20%);
+  mask: repeating-linear-gradient(90deg, #000 0 calc(20% - 2px), transparent 0 20%);
+}
+
+/* ---- under the row */
+.cp-role {
+  max-width: 62ch; min-height: 2.7em; margin: 6px 0 0;
+  text-align: center;
+  font-size: 14px; line-height: 1.35;
+  color: #c4cad5;
+}
+.cp-foot { display: flex; flex-direction: column; align-items: center; gap: 9px; }
+.cp-spawn {
+  margin: 0;
+  font: 600 15px/1.2 var(--ui); font-variation-settings: 'wdth' 108;
+  color: var(--text);
+}
+.cp-spawn b { font-weight: 800; color: color-mix(in srgb, var(--cc, var(--c)) 70%, #fff); }
+.cp-keys { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px 18px; margin: 0; font-size: 11.5px; color: var(--muted); }
+.cp-keys span { display: inline-flex; align-items: center; gap: 3px; }
+
+/* laptops: tighter cards */
+@media (max-width: 1120px) {
+  .cp-row { gap: 8px; }
+  .cp-name { font-size: 15px; }
+  .cp-tag { font-size: 11px; }
+  .cp-item { width: 27px; height: 27px; }
+  .cp-item img { width: 25px; height: 25px; }
+}
+/* short windows: a squarer stage, no tagline */
+@media (max-height: 660px) {
+  .cp { padding-top: 52px; gap: 10px; }
+  .cp-stage { aspect-ratio: 1 / 1; }
+  .cp-tag { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cp, .cp-card, .cp-portrait { transition: none; }
+  .cp-word.swap, .cp.open .cp-card { animation: none; }
+}
