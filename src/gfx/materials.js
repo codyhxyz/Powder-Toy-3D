@@ -147,6 +147,12 @@ const LOOKS = {
   // faces swamps the absorption), and keeps the glow (powdered phosphors do).
   CRYSTAL: { rough: 0.15, ior: 1.434, alb: '#5c3f8a', sss: 0.4, emit: FLUORITE_GLOW },
   CRYSTAL_DUST: { ch: 'GRANULAR', rough: 0.6, ior: 1.434, alb: '#b7a2d2', sss: 0.3, glint: 0.4, emit: FLUORITE_GLOW },
+  // Radioactive metals as powders: a metal powder is dark, since light is
+  // trapped between the grains, with bright glints off the facets. Uranium
+  // tarnishes to a dark grey-black oxide (UO₂ is black); plutonium's oxide
+  // skin is dull olive-grey.
+  URANIUM: { ch: 'GRANULAR', rough: 0.55, alb: '#3f413b', glint: 0.5 },
+  PLUTONIUM: { ch: 'GRANULAR', rough: 0.6, alb: '#45493a', glint: 0.4 },
 };
 
 // Shared texture families (LOOKS surf). NONE: an element's own (or none).
