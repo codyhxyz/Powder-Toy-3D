@@ -2,7 +2,7 @@
 // it doesn't clip into a wall you stand against, the spring recoil overshoots
 // and settles, and the tools announce their actions on the POV event bus.
 // usage: node tools/pov-viewmodels.mjs [--port 5242] [--sheet out.jpg]   (needs a dev server)
-import { chromium } from 'playwright';
+import { launchBrowser, newTestPage } from './browser.mjs';
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
 const port = opt('port', '5242');
@@ -10,8 +10,8 @@ const sheet = opt('sheet', null);
 const W = 960, H = 600;
 const THUMB = 0.4;   // contact-sheet frames, as a share of the viewport
 
-const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
-const p = await b.newPage({ viewport: { width: W, height: H } });
+const b = await launchBrowser();
+const p = await newTestPage(b, { mode: 'visual', viewport: { width: W, height: H } });
 const errs = [];
 p.on('console', (m) => { if (m.type() === 'error') errs.push(m.text().slice(0, 400)); });
 p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 600)));

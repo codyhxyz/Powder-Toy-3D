@@ -4,7 +4,7 @@
 // stepped by hand 4 steps per frame), and prints what each shot did: the
 // impact event, the census change, recoil and the events seen.
 // usage: node tools/gp-gun.mjs [--port 5201] [--only glass,metal,keg,pool,open,floor,away,recoil,dry,pause | e2e] [--shot out.png]
-import { chromium } from 'playwright';
+import { launchBrowser, newTestPage } from './browser.mjs';
 
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
@@ -12,8 +12,8 @@ const port = opt('port', '5201');
 const only = opt('only', 'glass,metal,keg,pool,open,floor,away,recoil,dry,pause').split(',');
 const shot = opt('shot');
 
-const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
-const p = await b.newPage({ viewport: { width: 960, height: 600 } });
+const b = await launchBrowser();
+const p = await newTestPage(b, { mode: shot ? 'visual' : 'preview', viewport: { width: 960, height: 600 } });
 const errs = [];
 p.on('console', (m) => { if (m.type() === 'error') errs.push(m.text().slice(0, 2000)); });
 p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 2000)));

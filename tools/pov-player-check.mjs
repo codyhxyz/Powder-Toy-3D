@@ -1,15 +1,15 @@
 // Headless check of the first-person body (src/pov/player.js) on a real GPU.
 // Builds small scenes, drops a body into them and prints numbers.
 // usage: node tools/pov-player-check.mjs [--port 5192] [--only name,name]
-import { chromium } from 'playwright';
+import { launchBrowser, newTestPage } from './browser.mjs';
 
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
 const port = opt('port', '5192');
 const only = opt('only', '')?.split(',').filter(Boolean);
 
-const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
-const page = await b.newPage({ viewport: { width: 640, height: 400 } });
+const b = await launchBrowser();
+const page = await newTestPage(b, { viewport: { width: 640, height: 400 } });
 const errs = [];
 page.on('console', (m) => { if (m.type() === 'error') errs.push(m.text().slice(0, 2000)); });
 page.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 2000)));

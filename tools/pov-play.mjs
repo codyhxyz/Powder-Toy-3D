@@ -1,15 +1,15 @@
 // End-to-end POV check on the merged build: drop in, walk, then use every tool
 // on a scene built for it, through the real shell, body and toolbelt.
 // usage: node tools/pov-play.mjs [--port 5196] [--shots dir]   (needs a dev server)
-import { chromium } from 'playwright';
+import { launchBrowser, newTestPage } from './browser.mjs';
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
 const port = opt('port', '5196');
 const shots = opt('shots', null);
 const W = 960, H = 600;
 
-const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
-const p = await b.newPage({ viewport: { width: W, height: H } });
+const b = await launchBrowser();
+const p = await newTestPage(b, { mode: shots ? 'visual' : 'preview', viewport: { width: W, height: H } });
 const errs = [];
 p.on('console', (m) => { if (m.type() === 'error') errs.push(m.text().slice(0, 400)); });
 p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 600)));

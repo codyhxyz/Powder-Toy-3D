@@ -1,7 +1,7 @@
 // Headless check of World's scenes (docs/scaling.md D11, "Scenes"), each
-// picked from the Scene row (?size=world):
-//   1. switch: the row lists the world scenes; clicking one starts the world
-//      over with it, and its passes compile in the background (programs held
+// opened as its map (maps.js, as the start menu's Start does; ?size=world):
+//   1. switch: opening a world map starts the world over with its scene, and
+//      its passes compile in the background (programs held
 //      after each switch, console errors);
 //   2. fill vs diff: right after a fresh load (sim paused; a scene with trees,
 //      the island, filled again without them) the diff pass flags no brick of
@@ -60,16 +60,17 @@ await p.evaluate(() => {
     return all;
   };
 });
-// The world's Scene row: the seg row holding a world-only scene (the box's preset row shares the section).
-const WORLD_ROW = `[...document.querySelectorAll('.seg.rows')].find((r) => r.querySelector('button[data-value="labWorld"]'))`;
-const keys = await p.evaluate((row) => [...eval(row).querySelectorAll('button')].map((e) => e.dataset.value), WORLD_ROW);
+// The world's scenes, as the start menu's maps list them (maps.js: a world map's scene).
+const { MAPS } = await import('../src/maps.js');
+const keys = MAPS.filter((m) => m.size === 'world').map((m) => m.scene);
+const mapOfScene = Object.fromEntries(MAPS.filter((m) => m.size === 'world').map((m) => [m.scene, m.key]));
 const res = { scenes: {}, rowLists: keys };
 const stills = [];
 
 for (const key of keys.filter((k) => !only || only.includes(k))) {
   const t0 = Date.now();
-  // 1. pick it from the Scene row
-  await p.evaluate(([k, row]) => { window.__app.settings.paused = true; eval(row).querySelector(`button[data-value="${k}"]`).click(); }, [key, WORLD_ROW]);
+  // 1. pick its map, as the start menu's Start does
+  await p.evaluate((m) => { window.__app.settings.paused = true; window.__app.openMap(m); }, mapOfScene[key]);
   await p.waitForFunction((k) => window.__app.win?.scene.key === k && window.__app.win.loaded && window.__app.win.far.ready, key, { timeout: LOAD_TIMEOUT });
   const r = { loadMs: Date.now() - t0 };
   r.picked = await p.evaluate((k) => window.__app.settings.scene === k, key);

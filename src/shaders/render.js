@@ -1009,14 +1009,11 @@ void main() {
   vec3 tMax = (vec3(cell) + step(0.0, rd) - ro) / rd;
   float tEnter = t0;
   int ax = int(bh.z);
-  ivec3 lastB = ivec3(-1);
-  int flags = 0;
 
+  // Just two pixels: exact cell traversal is cheap and must not depend on the
+  // presentation's brick map (a preview or a one-off pick can precede its rebuild).
   for (int i = 0; i < ${g.maxSteps}; i++) {
     if (outside(cell)) break;
-    ivec3 bc = cell / BS;
-    if (bc != lastB) { lastB = bc; flags = brickInfo(bc); }
-    if (flags == 0) { ax = skipEmpty(bc, ro, rd, istp, cell, tMax, tEnter); continue; }
     vec4 a = fetchA(cell);
     int id = eid(a);
     if (id != E_EMPTY && KIND[id] != K_GAS) {
