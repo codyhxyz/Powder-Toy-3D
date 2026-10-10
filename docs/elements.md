@@ -237,5 +237,33 @@ shared mechanism; anything else names its own code.
 - **Saltwater** freezes at the NaCl eutectic, −21.1 °C, and boiling it leaves the salt behind.
 - **Lithium** fizzes off hydrogen and heat in water, so any bang comes from the hydrogen. In TPT, lithium itself
   explodes.
-- **Propane** is 1.5 times as dense as air, so it pools. TPT's GAS just diffuses.
+- **Propane** is 1.5 times as dense as air, so it pools. TPT's GAS just diffuses. It goes off only beside air or a
+  flame (the flame front is where fuel and air mix), and its front crosses a pool at the real propane-air flame speed.
+- **Fuse** burns at a real safety fuse's 1 cm/s on the sim's clock (about 4.5 s a cell), with or without air. TPT's
+  is much faster.
+- **Thermite** lights at ~1,220 °C, so a wood fire won't do it, and leaves molten iron at 2,500 °C holding about the
+  reaction's real heat. It eats through wood, glass and stone floors; a cell of metal floor (30 cm of steel) takes a
+  pile about 6 cells deep. TPT's holds 3,500 K and goes through anything.
+- **C-4, nitroglycerin and TNT** blast in proportion to their detonation pressure (C-4 the most). C-4 going off from
+  heat or a hit is a game choice: real C-4 only burns without a detonator.
 - **Caustic gas** is hydrogen chloride: denser than air, and it dissolves back into water as acid.
+- **Diamond** burns in air above ~780 °C (thermogravimetric onset of oxidation), leaving no ash, but only while
+  something keeps it hot: in air the burning doesn't sustain itself. Nothing in the sim can break it. In TPT it is
+  indestructible.
+- **Brick** breaks into brick rubble (TPT: stone) and melts at ~1,300 °C, the refractoriness of a common red-brick
+  clay (TPT: 950 °C, below its own firing temperature).
+- **Tungsten** is unbreakable, like titanium: its ~1,000 MPa strength is past anything the sim carries. TPT makes it
+  shatter at pressure jumps.
+- **Lightning** steers its main channel to the surface under the cursor (or, from a storm, to the nearest point below
+  the charged cloud, conductors first) and fuses sand where it lands, as real fulgurites form. TPT's falls along
+  gravity.
+- **Storms**: cloud charges where snow falls through freezing cloud (non-inductive graupel-ice charging). TPT has no
+  storms.
+- **Dust** explodes when suspended in air: a flame runs through the cloud, and its blast lifts settled dust for a
+  second explosion. A settled heap only smoulders. In TPT, dust is just flammable.
+- **Antimatter** makes a blast and heat (E = mc², capped at the engine's limits). TPT's lowers the pressure. Ours is a
+  powder that rests on air; TPT's is a sinking gas.
+- **Singularity** evaporates when starved (Hawking: faster as it shrinks), bursts when full, and never seeds new
+  singularities. TPT's full singularity turns its neighbours into new ones, which can eat a whole save.
+- **Mud** (TPT's paste) doesn't harden under pressure: that is cornstarch. A clay slurry thins as it is worked.
+  Fired clay sinters into ceramic at ~1000 °C instead of melting.

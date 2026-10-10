@@ -11,6 +11,7 @@
 // flags any that are missing.
 import { ELEMENTS, E, K, meltInto, breakInto, meltPoint, mechanisms, PH } from '../../elements.js';
 import { PHYS } from '../../physics.js';
+import { BOLT, STORM, boltPath, stormColumns, pickStrike } from '../../bolt.js';
 import { ELEC, SPARK_BORN, CONDUCTS, SPARK_COST, sparkPhase, sparkLevel, packSpark, takesSpark, conductsInto, tsnsSenses, powered, cloneable } from '../../electricity.js';
 
 // ---- element table, as the GLSL arrays (elements.js elementsGLSL) ----
@@ -40,6 +41,7 @@ export const MELTINTO = Int16Array.from(ELEMENTS, meltInto);
 export const HARD = col('hard');
 export const BREAKINTO = Int16Array.from(ELEMENTS, breakInto);
 export const ACIDPROOF = ELEMENTS.map((e) => e.acidProof);
+export const ACIDIC = ELEMENTS.map((e) => e.acid);
 export const FIZZ = col('fizz');
 export const LEAVES_ASH = ELEMENTS.map((e) => e.ash);
 // the shared mechanisms' tables (elements.js mechanisms; the GLSL arrays of
@@ -63,6 +65,7 @@ const RX_LOOKUP = M.lookup, RX_ANY = M.rx.length > 0;
 const RX_AXES = 2, RX_PARITIES = 2;
 const RX_PAIRINGS = RX_AXES * RX_PARITIES;
 const RX_SALT = 0x52;   // (react.js)
+const SING_SALT = 0x5a;   // a singularity's stream (react.js)
 // the softest breakable solid (react.js HARD_MIN)
 const HARD_MIN = Math.min(...ELEMENTS.filter((e) => e.breakInto).map((e) => e.hard));
 
@@ -91,7 +94,7 @@ const pcg = (v) => {
 const LCG_MUL = 1664525;   // (shaders/common.js)
 const UINT_TO_UNIT = 1 / 4294967296;
 const pairStream = { s: 0 };
-const pairSeed = (cell, frame) => { pairStream.s = pcg(cell + pcg(Math.imul(frame, LCG_MUL) + RX_SALT)); };
+const pairSeed = (cell, frame, salt = RX_SALT) => { pairStream.s = pcg(cell + pcg(Math.imul(frame, LCG_MUL) + salt)); };
 const pairRnd = () => { pairStream.s = pcg(pairStream.s); return pairStream.s * UINT_TO_UNIT; };
 // the product of spec sp (react.js pickOut): one draw from `draw` for a weighted list, -1 = SAME
 function pickOut(sp, draw) {
@@ -113,6 +116,9 @@ const hitKE = (mi, mj, jSolid, u) => 0.5 * (jSolid ? mi : mi * mj / (mi + mj)) *
 const shockActs = (i, j, ke) => i !== j && ((BLAST[i * 4 + 2] > 0 && ke >= BLAST[i * 4 + 2]) || (BLAST[j * 4 + 2] > 0 && ke >= BLAST[j * 4 + 2]));
 const impactActs = (i, j, ke) => (BREAKINTO[j] >= 0 && ke >= HARD[j]) || shockActs(i, j, ke);
 const randDir = () => Math.cos(rnd() * Math.PI * 2); // x part of a random xz direction
+// the oxygen in the gas around a cell over air's, and how hot a flame burns with it (react.js oxyShare, oxyFlameT)
+const oxyShare = (nAir, nOxy) => (nAir + nOxy > 0 ? (nAir + PHYS.O2_PER_AIR * nOxy) / (nAir + nOxy) : 1);
+const oxyFlameT = (T, oxy) => (T + PHYS.KELVIN) * (1 + (PHYS.OXY_FLAME_GAIN - 1) * (oxy - 1) / (PHYS.O2_PER_AIR - 1)) - PHYS.KELVIN;
 const smoothstep = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
 
 function canMove(a, b, da, db, dir) {
@@ -165,6 +171,11 @@ function latentChance(T, Tp, C, L, rising) {
   lat.T = Tp;
   return rnd() * L < e;
 }
+// singularity (react.js singEats, singVacuum, singTakes)
+const singEats = (j) => j !== E.EMPTY && j !== E.WALL && j !== E.VOID && j !== E.SINGULARITY;
+const singVacuum = (m) => Math.max(PHYS.P_MIN, -PHYS.SING_P_PER_MASS * m);
+const singTakes = (ma, a, mb, b) => ma > mb || (ma === mb && a < b);
+
 // latent heat bookkeeping (react.js latent): returns true when the transition completes
 const lat = { T: 0, acc: 0 };
 function latent(T, acc, Tp, C, L, rising) {
@@ -246,6 +257,8 @@ export class World {
     this.T.fill(AMBIENT);
     this.frame = 0;
     this.gravity = 0; // set from the game's gravity setting before stepping
+    this.lastStrike = -Infinity; // storms (src/lightning.js): the last natural strike's frame
+    this.strikes = 0;
     this.sinkRow = -1; // a row the Erase tool is held over (gas tiles)
     // scratch for one block
     this.bk = new Int32Array(4); this.bn = new Int32Array(4); this.bsrc = new Int32Array(4);
@@ -306,7 +319,62 @@ export class World {
     this.frame++;
     this.move();
     this.react();
+    if (this.frame % STORM.POLL_STEPS === 0) this.storm();
     if (this.sinkRow >= 0) for (let x = 0; x < this.nx; x++) this.erase(this.idx(x, this.sinkRow));
+  }
+
+  // ---- lightning (src/lightning.js, shaders/lightning.js boltFrag; one bolt: src/bolt.js) ----
+  // A bolt from `from` to `to` ([x, y] cells, continuous), in the slice.
+  strike(from, to, { strikeR = STORM.STRIKE_R, dischargeR = 0, rng = rnd } = {}) {
+    const size = [this.nx, this.ny, 1];
+    const segs = boltPath([from[0], from[1], 0.5], [to[0], to[1], 0.5], rng, size, true);
+    for (let y = 0; y < this.ny; y++)
+      for (let x = 0; x < this.nx; x++) {
+        const i = this.idx(x, y), cx = x + 0.5, cy = y + 0.5;
+        const id = this.id[i], open = isGasLike(id);
+        let channel = false;
+        for (const sg of segs) {
+          const ax = sg.a[0], ay = sg.a[1], bx = sg.b[0] - ax, by = sg.b[1] - ay;
+          const t = Math.min(1, Math.max(0, ((cx - ax) * bx + (cy - ay) * by) / Math.max(bx * bx + by * by, 1e-6)));
+          if (Math.hypot(cx - ax - bx * t, cy - ay - by * t) < sg.r) { channel = true; break; }
+        }
+        if (channel) {
+          if (open) {
+            const P = this.P[i];
+            this.put(x, y, E.PLASMA);
+            this.P[i] = Math.min(P + BOLT.P, PHYS.P_MAX);
+          } else this.T[i] = Math.min(this.T[i] + BOLT.E / CAP[id], PHYS.CELL_TEMP_MAX);
+        }
+        const r = Math.hypot(cx - to[0], cy - to[1]);
+        if (!open && r < strikeR) {
+          const f = 1 - smoothstep(strikeR * BOLT.STRIKE_CORE, strikeR, r);
+          this.T[i] = Math.min(this.T[i] + BOLT.STRIKE_E * f / CAP[id], PHYS.CELL_TEMP_MAX);
+          this.spark(i);   // the bolt lands: a ready conductor takes a full spark (shaders/lightning.js)
+        }
+        if (open && r < strikeR + BOLT.STRIKE_P_REACH) this.P[i] = Math.min(Math.max(this.P[i], BOLT.STRIKE_P), PHYS.P_MAX);
+        if (this.id[i] === E.CLOUD && Math.hypot(cx - from[0], cy - from[1]) < dischargeR) this.ctype[i] = 0;
+      }
+    return segs;
+  }
+  // a storm (src/lightning.js update): the most charged cloud cell at
+  // breakdown strikes the nearest of the columns below it, rate-limited
+  storm() {
+    if (this.frame - this.lastStrike < STORM.MIN_STEPS) return;
+    let best = -1, q = 0;
+    for (let i = 0; i < this.id.length; i++)
+      if (this.id[i] === E.CLOUD && this.ctype[i] >= PHYS.CHARGE_BREAKDOWN && this.ctype[i] > q) { q = this.ctype[i]; best = i; }
+    if (best < 0) return;
+    const by = (best / this.nx) | 0, origin = [best - by * this.nx + 0.5, by + 0.5, 0.5];
+    const hits = stormColumns(origin, [this.nx, this.ny, 1], STORM.CANDIDATES, true).map(([x]) => {
+      let top = -1, id = -1;
+      for (let y = by - 1; y >= 0; y--) { const j = this.id[this.idx(x, y)]; if (!isGasLike(j)) { top = y; id = j; break; } }
+      return { x, z: 0, top, id };
+    });
+    const pick = pickStrike(origin, hits);
+    if (!pick) return;
+    this.lastStrike = this.frame;
+    this.strikes++;
+    this.strike([origin[0], origin[1]], [pick.to[0], pick.to[1]], { dischargeR: STORM.DISCHARGE_R });
   }
 
   // ---- movement: Margolus 2×2 blocks, partition shifts every step (move.js) ----
@@ -476,7 +544,7 @@ export class World {
     const ID = this.id, TT = this.T, LIFE = this.life, CT = this.ctype, VX = this.vx, VY = this.vy, PP = this.P;
     const oID = this._id, oT = this._T, oLife = this._life, oCT = this._ctype, oVX = this._vx, oVY = this._vy, oP = this._P;
     const nid = [0, 0, 0, 0], nT = [0, 0, 0, 0], nW = [0, 0, 0, 0], nP = [0, 0, 0, 0], pn = [0, 0, 0, 0], nL = [0, 0, 0, 0];
-    const nVX = [0, 0, 0, 0], nVY = [0, 0, 0, 0];
+    const nVX = [0, 0, 0, 0], nVY = [0, 0, 0, 0], nJ = [0, 0, 0, 0];
     const g = this.gravity;
     for (let y = 0; y < ny; y++)
       for (let x = 0; x < nx; x++) {
@@ -488,8 +556,8 @@ export class World {
           const qx = x + DX[q], qy = y + DY[q];
           if (qx >= 0 && qy >= 0 && qx < nx && qy < ny) {
             const j = qy * nx + qx;
-            nid[q] = ID[j]; nT[q] = TT[j]; nW[q] = CT[j]; nP[q] = PP[j]; nVX[q] = VX[j]; nVY[q] = VY[j]; nL[q] = LIFE[j];
-          } else { nid[q] = E.WALL; nT[q] = T; nW[q] = 0; nP[q] = P0; nVX[q] = 0; nVY[q] = 0; nL[q] = 0; } // insulating, pressure-reflecting box
+            nid[q] = ID[j]; nT[q] = TT[j]; nW[q] = CT[j]; nP[q] = PP[j]; nVX[q] = VX[j]; nVY[q] = VY[j]; nL[q] = LIFE[j]; nJ[q] = j;
+          } else { nid[q] = E.WALL; nT[q] = T; nW[q] = 0; nP[q] = P0; nVX[q] = 0; nVY[q] = 0; nL[q] = 0; nJ[q] = -1; } // insulating, pressure-reflecting box
         }
 
         // breaking (impacts and blasts), from the input state
@@ -540,7 +608,7 @@ export class World {
         let pOn = KIND[id] === K.SOLID ? PHYS.P_MIN : P0, touchAir = false;
         for (let q = 0; q < 4; q++) {
           if (KIND[nid[q]] !== K.SOLID) pOn = Math.max(pOn, nP[q]);
-          if (nid[q] === E.EMPTY) touchAir = true;
+          if (nid[q] === E.EMPTY || nid[q] === E.OXYGEN || nid[q] === E.FIRE) touchAir = true;   // oxygen, or a flame drawing air in (react.js)
         }
         // an explosive that needs air goes off only touching it; set off by a hit or a
         // blast's pressure, it goes off rather than break
@@ -552,11 +620,18 @@ export class World {
         // every cell's partner is its neighbour along axis frame % 2, toward +
         // where its coordinate plus the parity is even, else toward − (react.js)
         let reacted = false, rxOut = id, rxT = 0, rxP = 0;
+        const ax = this.frame % RX_AXES, par = ((this.frame / RX_AXES) | 0) % RX_PARITIES;
+        const base = (((ax === 0 ? x : y) + par) & 1) === 0;
+        const q = 2 * ax + (base ? 0 : 1);
+        const qx = x + DX[q], qy = y + DY[q];
+        // a singularity swallows its partner, on the pair's own stream (react.js swallow)
+        const partnerIn = qx >= 0 && qy >= 0 && qx < nx && qy < ny;
+        let swallow = false;
+        if (partnerIn && (id === E.SINGULARITY ? singEats(nid[q]) : nid[q] === E.SINGULARITY && singEats(id)) && !RX_LOOKUP[id * NE + nid[q]]) {
+          pairSeed(base ? i : qy * nx + qx, this.frame, SING_SALT);
+          swallow = pairRnd() < PHYS.SING_EAT * RX_PAIRINGS;
+        }
         if (RX_ANY) {
-          const ax = this.frame % RX_AXES, par = ((this.frame / RX_AXES) | 0) % RX_PARITIES;
-          const base = (((ax === 0 ? x : y) + par) & 1) === 0;
-          const q = 2 * ax + (base ? 0 : 1);
-          const qx = x + DX[q], qy = y + DY[q];
           const v = RX_LOOKUP[id * NE + nid[q]];
           if (v > 0 && qx >= 0 && qy >= 0 && qx < nx && qy < ny) {
             const r = (v - 1) >> 1, isA = ((v - 1) & 1) === 0;
@@ -595,6 +670,9 @@ export class World {
           gx = 0.5 * (pn[0] - pn[1]);
           gy = 0.5 * (pn[2] - pn[3]);
         } else P = 0;
+        // a singularity holds its vacuum, and the open cells touching it SING_RING of it (react.js)
+        if (id === E.SINGULARITY) P = singVacuum(life);
+        else if (!solid) for (let q = 0; q < 4; q++) if (nid[q] === E.SINGULARITY) P = Math.min(P, PHYS.SING_RING * singVacuum(nL[q]));
 
         // forces
         if (!solid) {
@@ -643,7 +721,8 @@ export class World {
 
         // reactions and phase changes
         let out = id, reset = false;
-        let nAir = 0, nFire = 0, nAcid = 0, nPlant = 0, nBurning = 0, flame = 0, cloneOf = 0, nCloud = 0;
+        let nAir = 0, nFire = 0, nAcid = 0, nPlant = 0, nBurning = 0, flame = 0, cloneOf = 0, nCloud = 0, nVoid = 0, nOxy = 0, nOxyFire = 0, nCO2 = 0, nGas = 0;
+        let closing = 0;   // snow neighbours' closing speed on me (storm charge)
         let surface = false;   // a non-gas neighbour to condense onto (the floor counts, the sides and lid don't)
         for (let q = 0; q < 4; q++) {
           const j = nid[q];
@@ -652,11 +731,19 @@ export class World {
           const qx = x + DX[q], qy = y + DY[q];
           if (!isGasLike(j) && ((qx >= 0 && qy >= 0 && qx < nx && qy < ny) || q === 3)) surface = true;
           if (j === E.FIRE) nFire++;
-          if (j === E.ACID) nAcid++;
+          if (j === E.OXYGEN) nOxy++;
+          if (j === E.FIRE && nW[q] === E.OXYGEN) nOxyFire++;   // a flame burning in oxygen (react.js)
+          if (j === E.CO2) nCO2++;
+          if (isGasLike(j)) nGas++;
+          if (ACIDIC[j]) nAcid++;
           if (j === E.PLANT) nPlant++;
+          if (j === E.VOID) nVoid++;
+          if (j === E.SNOW) closing += Math.max((VX[i] - nVX[q]) * DX[q] + (VY[i] - nVY[q]) * DY[q], 0);
           if ((j === E.CLONE || (j === E.PCLN && nL[q] === ELEC.SWITCH_ON)) && nW[q] >= 1) cloneOf = nW[q];   // a powered clone only while on
           if (IGNITE[j] > 0 && INTO[j * 4 + PH.BLAST] < 0 && nT[q] >= IGNITE[j]) { nBurning++; flame = Math.max(flame, FLAMET[j]); }   // (explosives go off instead)
         }
+        const oxy = oxyShare(nAir + nFire - nOxyFire, nOxy + nOxyFire);
+        const smothered = nCO2 > 0 && nCO2 >= PHYS.CO2_SMOTHER * nGas;   // carbon dioxide puts flames out (react.js)
 
         if (reacted) {
           T += rxT;
@@ -696,33 +783,72 @@ export class World {
             if (r < rain) { out = E.WATER; life = 0; }
             else if (r < rain + PHYS.CLOUD_EVAP * Math.max(nAir - PHYS.CLOUD_EVAP_NB, 0) * es) { out = E.EMPTY; reset = true; T -= PHYS.CLOUD_EVAP_COOL; }
           }
+          // storm charge (physics.js CHARGE_*): freezing cloud struck by falling snow
+          if (out === E.CLOUD && T <= PHYS.CHARGE_T_MAX && rnd() < PHYS.CHARGE_RATE * closing) ctype = Math.min(ctype + 1, PHYS.CHARGE_MAX);
+          if (out !== E.CLOUD) ctype = 0;
         } else if (id === E.LAVA) {
           let ct = ctype;
           if (ct <= 0 || ct >= NE) ct = E.STONE;
           if (T < MELT[ct] - PHYS.LAVA_FREEZE_BELOW) { out = ct; reset = true; ctype = 0; }
         } else if (id === E.FIRE) {
           life -= PHYS.FIRE_BURN + PHYS.FIRE_BURN_SPREAD * rnd();
-          if (life <= 0 || T < PHYS.FIRE_MIN_T) { out = rnd() < PHYS.FIRE_TO_SMOKE ? E.SMOKE : E.EMPTY; reset = true; }
+          if (life <= 0 || T < PHYS.FIRE_MIN_T || smothered) { out = rnd() < PHYS.FIRE_TO_SMOKE ? E.SMOKE : E.EMPTY; reset = true; ctype = 0; }
         } else if (id === E.SMOKE) {
           life -= PHYS.SMOKE_FADE;
           if (life <= 0) { out = E.EMPTY; reset = true; }
-        } else if (id === E.ACID) {
+        } else if (ACIDIC[id]) {   // acid, and caustic gas
           let victims = 0;
           for (let q = 0; q < 4; q++) if (acidEats(nid[q])) victims++;
           life -= PHYS.ACID_USE * victims;
           if (life <= 0) { out = rnd() < PHYS.ACID_TO_SMOKE ? E.SMOKE : E.EMPTY; reset = true; }
         } else if (id === E.EMPTY) {
-          if (nBurning > 0 && rnd() < PHYS.FLAME_SPREAD * nBurning) {
-            out = E.FIRE; reset = true; T = Math.max(T, flame * (PHYS.FLAME_T_MIN + PHYS.FLAME_T_SPREAD * rnd()));
+          if (nBurning > 0 && !smothered && rnd() < PHYS.FLAME_SPREAD * nBurning) {
+            out = E.FIRE; reset = true; ctype = 0; T = Math.max(T, flame * (PHYS.FLAME_T_MIN + PHYS.FLAME_T_SPREAD * rnd()));
           } else if (cloneOf > 0 && rnd() < PHYS.CLONE_RATE) {
             out = cloneOf; reset = true; T = SPAWNT[cloneOf];
             ctype = cloneOf === E.LAVA ? E.STONE : 0;
             vx = 0; vy = KIND[cloneOf] === K.GAS ? 0 : PHYS.SPAWN_DROP_V;
           }
+        } else if (id === E.FUSE) {
+          // safety fuse: burns with or without air at a steady speed; a flame lights it as gunpowder (react.js)
+          if (life >= 1) {
+            let light = T >= IGNITE[id] || (nFire > 0 && rnd() < BLAST_LIT[E.GUNPOWDER * 2]);
+            for (let q = 0; q < 4; q++)
+              light ||= (nid[q] === E.FUSE && nL[q] <= PHYS.FUSE_HANDOFF) || (!isGasLike(nid[q]) && nT[q] >= IGNITE[id]);
+            if (light) life = 1 - PHYS.FUSE_BURN;
+          } else {
+            // at the fuse's end, once the front reaches it, it spits burning
+            // powder as hot as gunpowder burns; burnt out, smoke (at the end, flame)
+            let end = true;
+            for (let q = 0; q < 4; q++) end &&= !(nid[q] === E.FUSE && nL[q] > life);
+            life -= PHYS.FUSE_BURN;
+            if (end && life <= PHYS.FUSE_HANDOFF) T = Math.max(T, BLAST[E.GUNPOWDER * 4 + 1]);
+            if (life <= 0) { out = end ? E.FIRE : E.SMOKE; reset = true; }
+          }
+        } else if (id === E.OXYGEN) {
+          // flames lick into oxygen as into air, more often and hotter (react.js)
+          if (nBurning > 0 && !smothered && rnd() < PHYS.FLAME_SPREAD * PHYS.O2_PER_AIR * nBurning) {
+            out = E.FIRE; reset = true; ctype = E.OXYGEN;
+            T = Math.max(T, oxyFlameT(flame, PHYS.O2_PER_AIR) * (PHYS.FLAME_T_MIN + PHYS.FLAME_T_SPREAD * rnd()));
+          }
         } else if ((id === E.CLONE || id === E.PCLN) && ctype < 1) {
           for (let q = 0; q < 4; q++) {
             const j = nid[q];
             if (cloneable(j)) { ctype = j; break; }
+          }
+        } else if (id === E.SINGULARITY) {
+          // its mass is its life: it gains what it swallows (its partner, on the same draw) and a
+          // lighter singularity, evaporates as 1/m², bursts full and winks out starved (react.js)
+          let m = life, taken = false;
+          for (let n = 0; n < 4; n++)
+            if (nid[n] === E.SINGULARITY) { if (singTakes(life, i, nL[n], nJ[n])) m += nL[n]; else taken = true; }
+          if (swallow) m += densityOf(nid[q], nT[q]) / DENS[E.WATER];
+          m -= PHYS.SING_EVAP / Math.max(m * m, PHYS.SING_MASS_MIN);
+          life = m;
+          if (taken) { out = E.EMPTY; reset = true; }
+          else if (m < PHYS.SING_MASS_MIN || m >= PHYS.SING_MASS_MAX) {
+            out = E.FIRE; reset = true; T = PHYS.SING_BURST_T;
+            P = PHYS.SING_BURST_P_PER_MASS * Math.max(m, 0);
           }
         }
 
@@ -761,6 +887,20 @@ export class World {
         // melting (stone, sand, metal, glass → lava that remembers what it was)
         if (!reacted && out === id && MELT[id] > 0 && T > MELT[id]) { out = E.LAVA; ctype = MELTINTO[id]; life = 0; }
 
+        // dust clouds: suspended dust between its lean and rich limits goes off as one when lit (react.js)
+        if (!reacted && out === id && id === E.DUST) {
+          let nFuel = 0, hotTouch = false;
+          for (let q = 0; q < 4; q++) {
+            if (nid[q] === E.DUST) nFuel++;
+            hotTouch ||= !isGasLike(nid[q]) && nT[q] >= IGNITE[id];
+          }
+          const suspended = Math.hypot(VX[i], VY[i]) > PHYS.DUST_LIFT_V;
+          const cloud = suspended && nFuel >= PHYS.DUST_MEC_NB && nAir >= PHYS.DUST_RICH_AIR;
+          if (cloud && (T >= IGNITE[id] || hotTouch || (nFire > 0 && rnd() < PHYS.DUST_FIRE))) {
+            out = E.FIRE; reset = true; T = Math.max(T, PHYS.DUST_FLAME_T); P += PHYS.DUST_P;
+          }
+        }
+
         // explosives (elements.js blast) and combustion
         if (!reacted && out === id && INTO[id * 4 + PH.BLAST] >= 0) {
           // at its ignition point, or touching something that hot (not a gas: a flame only might),
@@ -780,10 +920,11 @@ export class World {
             ctype = ctypeOf(out, OF[id * 4 + PH.BLAST], id);
             reset = true; T = BLAST[id * 4 + 1]; P += BLAST[id * 4];
           }
-        } else if (!reacted && out === id && IGNITE[id] > 0) {
-          if (T >= IGNITE[id] && (nAir > 0 || nFire > 0)) {
-            life -= BURNRATE[id];
-            T = Math.max(T, Math.min(T + BURNHEAT[id] / C, FLAMET[id]));
+        } else if (!reacted && out === id && IGNITE[id] > 0 && id !== E.FUSE) {   // a fuse burns by its own rule
+          if (T >= IGNITE[id] && (nAir > 0 || nFire > 0 || nOxy > 0) && !smothered) {
+            // as fast as oxygen reaches it, and hotter with more (react.js)
+            life -= BURNRATE[id] * oxy;
+            T = Math.max(T, Math.min(T + BURNHEAT[id] * oxy / C, oxyFlameT(FLAMET[id], oxy)));
             P += PHYS.BURN_P;
             if (life <= 0) {
               out = LEAVES_ASH[id] && rnd() < PHYS.ASH_SHARE ? E.ASH : E.FIRE;
@@ -800,6 +941,12 @@ export class World {
             P += puffP(FIZZ[id]);
           }
         }
+
+        // swallowed by the singularity it is partnered with (the draw above); its heat goes in with it
+        if (swallow && id !== E.SINGULARITY) { out = E.EMPTY; reset = true; T = AMBIENT; ctype = 0; }
+
+        // void drains whatever can move the step it touches it
+        if (nVoid > 0 && id !== E.EMPTY && KIND[id] !== K.SOLID) { out = E.EMPTY; reset = true; T = AMBIENT; vx = 0; vy = 0; ctype = 0; }
 
         if (out !== id) {
           if (CONDUCTS[id] && !CONDUCTS[out] && out !== E.LAVA) ctype = 0;   // its spark goes with it
