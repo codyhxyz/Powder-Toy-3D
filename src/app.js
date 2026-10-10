@@ -298,6 +298,7 @@ function build() {
   volume.scale.setScalar(scale);
   volume.frustumCulled = false;
   scene.add(volume);
+  volume.add(sim.rays.view);   // photons and neutrons as points, in grid cells (raysLayer.js)
   // world mode: the world outside the window (world/far.js), drawn before everything else
   if (win) scene.add((win.far = new FarField(renderer, win, { sun: SUN, time: volume.material.uniforms.uTime })).mesh);
 
@@ -1386,6 +1387,7 @@ function frame(now) {
     gfxUniforms.uNearGI.value = settings.nearGI;
     gfxUniforms.uGlowLights.value = settings.glowLights;
     gfxUniforms.uCaustics.value = settings.caustics;
+    sim.rays.updateView(camera, renderer.domElement.height * post.renderScale);
     floorGrid.material.opacity = post.renderScale;
     edges.material.opacity = EDGE_OPACITY * post.renderScale;
     post.render(scene, camera, null, dt);   // its passes after the scene count as 'post' (postPass)

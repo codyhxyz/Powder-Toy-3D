@@ -32,6 +32,14 @@ import { bandGlow } from './incandescence.js';
 // dark cave the eyes adjust to it (gfx/post.js ADAPT).
 const FLUORITE_BAND = { peak: 424, fwhm: 25, lum: 0.05 };
 const FLUORITE_GLOW = bandGlow(FLUORITE_BAND.peak, FLUORITE_BAND.fwhm, FLUORITE_BAND.lum);
+// A live conductor's light (src/electricity.js): an electric discharge in
+// air glows blue-violet-white, from nitrogen's second positive bands
+// (337-400 nm, running into the violet) and atomic lines across the visible.
+// Drawn as one band centred in the blue, broad enough to read blue-white
+// (linear ≈ 0.39, 0.65, 0.77), and twelve times fluorite's glow: it reads in
+// daylight and lights a dark room.
+const SPARK_BAND = { peak: 460, fwhm: 300, lum: 0.6 };
+export const SPARK_GLOW = bandGlow(SPARK_BAND.peak, SPARK_BAND.fwhm, SPARK_BAND.lum);
 
 // Smooth-surface channels. sigma = blur radius in cells (how much the
 // blockiness is smoothed away), ema = per-frame blend toward the new state
@@ -151,6 +159,23 @@ const LOOKS = {
   // faces swamps the absorption), and keeps the glow (powdered phosphors do).
   CRYSTAL: { rough: 0.04, ior: 1.434, alb: '#4a3478', sss: 0.3, bevel: 0.2, emit: FLUORITE_GLOW },
   CRYSTAL_DUST: { ch: 'GRANULAR', rough: 0.6, ior: 1.434, alb: '#b7a2d2', sss: 0.3, glint: 0.4, emit: FLUORITE_GLOW },
+  // Electronics (elements.js). A battery's printed steel can; silicon is
+  // grey and mirror-like (n ≈ 3.9 in the visible: F0 ≈ 0.35), tinted as TPT
+  // draws P and N; the switch a dark green relay; the insulator a pale,
+  // chalky aerogel blue; the sensor TPT's magenta.
+  BATTERY: { rough: 0.45, alb: '#6f6d1c' },
+  PSCN: { rough: 0.15, ior: 3.9, alb: '#5c4646' },
+  NSCN: { rough: 0.15, ior: 3.9, alb: '#46465c' },
+  SWITCH: { rough: 0.4, alb: '#1d4a1f' },
+  INSULATOR: { rough: 0.95, alb: '#a7aec2', sss: 0.3 },
+  TSNS: { rough: 0.5, alb: '#c21aa6' },
+  PCLN: { rough: 0.35, metal: 1, alb: [0.45, 0.36, 0.14] },   // Clone's gold, tarnished: TPT draws it dark olive
+  // Radioactive metals as powders: a metal powder is dark, since light is
+  // trapped between the grains, with bright glints off the facets. Uranium
+  // tarnishes to a dark grey-black oxide (UO₂ is black); plutonium's oxide
+  // skin is dull olive-grey.
+  URANIUM: { ch: 'GRANULAR', rough: 0.55, alb: '#3f413b', glint: 0.5 },
+  PLUTONIUM: { ch: 'GRANULAR', rough: 0.6, alb: '#45493a', glint: 0.4 },
 };
 
 // Shared texture families (LOOKS surf). NONE: an element's own (or none).
@@ -271,7 +296,9 @@ vec3 emission(int id, float Ts) { return emission(id, Ts, 1.0); }
 // The open skin of hot matter runs INCAND_SKIN_DROP below its bulk T (metals,
 // conducting well, keep none): what an exposed cell of it gives off.
 float skinT(int id, float T) { return T - (id == E_METAL ? 0.0 : INCAND_SKIN_DROP); }
-vec3 cellEmission(int id, float T) { return emission(id, skinT(id, T)); }`;
+vec3 cellEmission(int id, float T) { return emission(id, skinT(id, T)); }
+// a live conductor's spark (ctype: the cell's, floor of state A's w)
+vec3 sparkEmit(int id, float ctype) { return sparkLive(id, ctype) ? SPARK_GLOW : vec3(0.0); }`;
 
 export function materialsGLSL() {
   const ints = (name, key) => `const int ${name}[NE] = int[NE](${LOOK.map((l) => l[key]).join(', ')});`;
@@ -301,6 +328,7 @@ export function materialsGLSL() {
     `const vec3 ALBEDO[NE] = vec3[NE](${LOOK.map((l) => `vec3(${l.alb.map(f).join(', ')})`).join(', ')});`,
     `const vec3 SCATALB[NE] = vec3[NE](${LOOK.map((l) => `vec3(${l.scatAlb.map(f).join(', ')})`).join(', ')});`,
     `const vec3 EMIT[NE] = vec3[NE](${LOOK.map((l) => `vec3(${l.emit.map(f).join(', ')})`).join(', ')});`,
+    `const vec3 SPARK_GLOW = vec3(${SPARK_GLOW.map((v) => f(+v.toFixed(GLSL_DIGITS))).join(', ')});`,
     `bool luminous(int id) { return ${LUMINOUS.map((e) => `id == E_${e.key}`).join(' || ') || 'false'}; }`,
     EMISSION_GLSL,
     ints('SURF', 'surf'),

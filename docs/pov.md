@@ -58,7 +58,8 @@
      and the blasts stack; the blast is the engine's.
   10. **Pickaxe** (key `0`): the axe's swing with a heavier, pointed head (melee.js, shaders/povTools.js
       `PICK`): a slower blow with more energy in a narrower, deeper patch. It mines rock, a 3×3 face two
-      cells deep a swing, into STONE in place for the shovel to pick up. Metal still turns it away.
+      cells deep a swing, into STONE that each swing gathers into the pack (so the rubble never plugs the
+      hole; with the pack full it stays put). Metal still turns it away.
 - Mouse look with pointer lock. `F` toggles first and third person. A crosshair, health and breath bars, and
   screen effects for what the body feels: heat glow at the edges, frost, a red flash
   when hurt.
