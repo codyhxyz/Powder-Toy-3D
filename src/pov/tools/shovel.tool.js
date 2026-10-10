@@ -49,7 +49,7 @@ export default {
   key: 'SHOVEL', name: 'Shovel', slot: 1, icon: ICON, color: '#b08454',
   desc: 'Hold left-click to dig powder or break solids into debris. Right-click throws the load.',
   create(env) {
-    const load = pack();
+    const load = pack(env.owner);
     const transfer = env.transfer;
     const scoop = trigger(SCOOP_INTERVAL);   // powder scoops, hold to repeat
     let energy = 0, energyKey = '';

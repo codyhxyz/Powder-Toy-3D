@@ -95,6 +95,9 @@ export function accountState() {
   return { enabled: accountsEnabled, signedIn: !!token, checking: !!pending.me, offline, user, quota, error: lastError };
 }
 
+// The raw session token (multiplayer sends it as a WebSocket subprotocol), or null.
+export const sessionToken = () => token;
+
 export function authHeaders() {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }

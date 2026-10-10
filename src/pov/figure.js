@@ -71,6 +71,11 @@ const TREAD_HZ = 0.9;
  const FALL_S = 0.7;                      // s to topple over when dead
 const FALL_BOUNCE = 0.08;                // rad of bounce as it hits the ground
 const FALL_BOUNCE_HZ = 3;
+// A held weapon's chop (an NPC's axe): s.chop is the swing's progress 0..1.
+// The right arm rises over the head for the wind-up (the tell), then comes down fast.
+const CHOP_WINDUP = 0.7;                 // share of the swing spent winding up
+const CHOP_UP = [2.8, 0.7];              // rad: shoulder, elbow raised over the head
+const CHOP_DOWN = [0.45, 0.1];           // rad: arm down in front, the blow landed
 
 const smooth01 = (x) => { const t = Math.min(Math.max(x, 0), 1); return t * t * (3 - 2 * t); };
 const approach = (rate, dt) => 1 - Math.exp(-rate * dt);
@@ -383,6 +388,12 @@ export function createFigure(build = buildStick) {
         root.rotation.x = (Math.PI / 2) * t * t - bounce;   // accelerates like a falling plank
         root.position.y += rig.lieLift * s.scale * t;       // lying on its back, not half in the ground
         body.rotation.x = pitch * (1 - t);
+      }
+      if (s.chop != null && !s.dead) {
+        const p = Math.min(Math.max(s.chop, 0), 1);
+        const up = smooth01(p / CHOP_WINDUP), down = 1 - (1 - Math.max(0, (p - CHOP_WINDUP) / (1 - CHOP_WINDUP))) ** 3;
+        shR.rotation.x = THREE.MathUtils.lerp(THREE.MathUtils.lerp(J.shR, CHOP_UP[0], up), CHOP_DOWN[0], down);
+        elR.rotation.x = THREE.MathUtils.lerp(THREE.MathUtils.lerp(J.elR, CHOP_UP[1], up), CHOP_DOWN[1], down);
       }
       contact.visible = s.onGround && !s.dead;
       for (const f of flames) {

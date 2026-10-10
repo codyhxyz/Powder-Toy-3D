@@ -40,6 +40,7 @@ const base64Chars = (bytes) => Math.ceil((bytes * BITS_PER_BYTE) / BITS_PER_BASE
 
 const FLOW_PATH = /^\/auth\/(start|callback)\/([a-z]+)$/;
 const STATE_FORMAT = new RegExp(`^[A-Za-z0-9_-]{${base64Chars(AUTH.STATE_BYTES)}}$`);
+const TOKEN_FORMAT = new RegExp(`^[A-Za-z0-9_-]{${base64Chars(AUTH.TOKEN_BYTES)}}$`);
 const BEARER = new RegExp(`^Bearer ([A-Za-z0-9_-]{${base64Chars(AUTH.TOKEN_BYTES)}})$`, 'i');
 const USER_AGENT = 'tpt3d-relay'; // some provider APIs refuse requests without one
 const DEFAULT_NAME = 'Player';    // when a provider gives neither a name nor an email
@@ -100,9 +101,13 @@ const pkceChallenge = async (verifier) => base64url(await sha256(verifier));
 const bearer = (request) => request.headers.get('Authorization')?.match(BEARER)?.[1] ?? null;
 
 // The signed-in player for this request, or null. Never throws.
-export async function getUser(request, env) {
-  const token = bearer(request);
-  if (!token || !env.DB) return null;
+export const getUser = (request, env) => userForToken(bearer(request), env);
+
+// The signed-in user for a session token, or null. Multiplayer rooms get the
+// token through the WebSocket subprotocol (worker.js), since a browser
+// WebSocket can't set an Authorization header.
+export async function userForToken(token, env) {
+  if (!token || !TOKEN_FORMAT.test(token) || !env.DB) return null;
   try {
     const row = await env.DB.prepare(
       `SELECT u.id, u.name, u.email, u.avatar, u.plan FROM sessions s JOIN users u ON u.id = s.user_id

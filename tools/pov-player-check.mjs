@@ -83,7 +83,7 @@ const tests = {
       p.spawn(new t.THREE.Vector3(64, 8, 64));
       await t.run(p, 1.5);
       const low = t.state(p);
-      p.spawn(new t.THREE.Vector3(64, 40, 64));   // 12 m: hurts, not lethal
+      p.spawn(new t.THREE.Vector3(64, 40, 64));   // 12 m: lands unhurt (no fall damage, as in Noita)
       await t.run(p, 2.5);
       return { from8: low, from40: t.state(p), events: p.events.slice(0, 6) };
     });

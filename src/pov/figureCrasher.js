@@ -49,8 +49,9 @@ const FLAME_COLOR = [6, 2.6, 0.7];       // HDR, like the exhaust particles
 
 const blob = (r, [sx, sy, sz], x, y, z) => new THREE.SphereGeometry(r, 20, 14).scale(sx, sy, sz).translate(x, y, z);
 
-function buildCrasher() {
-  const C = COLOR;
+// palette: COLOR's keys, to recolour it (an NPC); pack: false leaves the jetpack off
+export function buildCrasher({ palette = COLOR, eyeGlow = EYE_GLOW, pack = true } = {}) {
+  const C = palette;
   const body = new THREE.Group(), torso = new THREE.Group(), neck = new THREE.Group();
   body.add(torso);
   part(torso, new THREE.LatheGeometry(ROBE.map(([r, y]) => new THREE.Vector2(r, y)), 24), C.robe);
@@ -68,7 +69,7 @@ function buildCrasher() {
   const fz = -R * FACE_IN, fy = -R * FACE_DOWN;
   part(head, blob(R, FACE, 0, fy, fz), C.face, { outline: false });
   const eyeZ = fz - R * FACE[2] * 0.92;
-  for (const side of [-1, 1]) part(head, blob(EYE_R, EYE_SQUASH, side * R * EYE[0], fy + R * EYE[1], eyeZ), C.face, { glow: EYE_GLOW, outline: false });
+  for (const side of [-1, 1]) part(head, blob(EYE_R, EYE_SQUASH, side * R * EYE[0], fy + R * EYE[1], eyeZ), C.face, { glow: eyeGlow, outline: false });
   let seat = head;
   let y = R * TIP_SEAT;
   for (const [r, h, bend] of TIP) {
@@ -81,21 +82,23 @@ function buildCrasher() {
     y = h * 0.8;                         // the next segment starts a little below this one's tip
   }
 
-  // jetpack
-  part(torso, new THREE.CapsuleGeometry(PACK_R, PACK_LEN - 2 * PACK_R, 4, 16).rotateZ(Math.PI / 2).translate(0, PACK_Y, PACK_Z), C.brass);
-  const flameMat = new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
-  flameMat.color.setRGB(...FLAME_COLOR);
-  const [nozR, nozH] = NOZZLE, [flR, flLen] = FLAME;
-  const nozY = PACK_Y - PACK_R * 0.8;
   const flames = [];
-  for (const side of [-1, 1]) {
-    part(torso, new THREE.ConeGeometry(nozR, nozH, 12, 1, true).translate(side * PACK_SIDE, nozY - nozH / 2, PACK_Z), C.nozzle);
-    const flame = new THREE.Mesh(new THREE.ConeGeometry(flR, flLen, 12).rotateX(Math.PI).translate(0, -flLen / 2, 0), flameMat);
-    flame.position.set(side * PACK_SIDE, nozY - nozH, PACK_Z);
-    flame.renderOrder = 1;               // after the volume
-    flame.visible = false;
-    torso.add(flame);
-    flames.push(flame);
+  const nozY = PACK_Y - PACK_R * 0.8, nozH = NOZZLE[1];
+  if (pack) {
+    // jetpack
+    part(torso, new THREE.CapsuleGeometry(PACK_R, PACK_LEN - 2 * PACK_R, 4, 16).rotateZ(Math.PI / 2).translate(0, PACK_Y, PACK_Z), C.brass);
+    const flameMat = new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
+    flameMat.color.setRGB(...FLAME_COLOR);
+    const [nozR] = NOZZLE, [flR, flLen] = FLAME;
+    for (const side of [-1, 1]) {
+      part(torso, new THREE.ConeGeometry(nozR, nozH, 12, 1, true).translate(side * PACK_SIDE, nozY - nozH / 2, PACK_Z), C.nozzle);
+      const flame = new THREE.Mesh(new THREE.ConeGeometry(flR, flLen, 12).rotateX(Math.PI).translate(0, -flLen / 2, 0), flameMat);
+      flame.position.set(side * PACK_SIDE, nozY - nozH, PACK_Z);
+      flame.renderOrder = 1;               // after the volume
+      flame.visible = false;
+      torso.add(flame);
+      flames.push(flame);
+    }
   }
 
   // stubby sleeved arms with big mittens, short legs in boots
@@ -116,7 +119,9 @@ function buildCrasher() {
     hipY: HIP_Y, lieLift: HEAD_R * 0.6, outline: OUTLINE, toon: true, flames,
     nozzles: { back: PACK_Z, up: HIP_Y + nozY - nozH, side: PACK_SIDE },
     body, torso, neck, shL, shR, elL, elR, hipL, hipR, knL, knR,
+    handY: -FOREARM - ARM_R * 0.6,       // the mittens' centre below the elbows (something held goes here)
   };
 }
 
-export const createCrasher = () => createFigure(buildCrasher);
+export const createCrasher = () => createFigure(() => buildCrasher());
+export { COLOR as CRASHER_COLORS };

@@ -109,6 +109,7 @@ export function createHelp(onClose) {
         row('Step one frame', '.'),
         row('Switch view', '1', '–', '5'),
         row('Show or hide elements', 'T'),
+        row('Chat, when playing together', 'T'),
         row('Settings', ','),
         row('Screenshot', 'P'),
         row('Close menus', 'Esc'),

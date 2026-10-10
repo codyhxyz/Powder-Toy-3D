@@ -15,7 +15,7 @@ import { prelude, quadVert, stateOutGLSL } from '../shaders/common.js';
 // cell position on the guest.
 
 const BYTE_MAX = 255;
-const TEXEL_BYTES = 4; // RGBA8
+export const TEXEL_BYTES = 4; // RGBA8
 
 // Temperature in one byte: linear steps up to LOG_START, then equal ratios up
 // to MAX so glowing material (whose brightness rises steeply with temperature)
@@ -88,6 +88,13 @@ void main() {
   writeState(a, b, freshFlags(a, b));
 }
 `;
+
+// decodeTemp, on the CPU: a packed temperature code (byte G) back to °C (the NPCs' world model reads it)
+export function decodeTempCode(code) {
+  return code <= TEMP_LINEAR_CODES
+    ? TEMP.MIN + code * TEMP.LINEAR_STEP
+    : TEMP.LOG_START * (TEMP.MAX / TEMP.LOG_START) ** ((code - TEMP_LINEAR_CODES) / TEMP_LOG_CODES);
+}
 
 const passMaterial = (fragmentShader, uniforms) => new THREE.RawShaderMaterial({
   glslVersion: THREE.GLSL3, vertexShader: quadVert, fragmentShader, uniforms, depthTest: false, depthWrite: false,

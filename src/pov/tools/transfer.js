@@ -133,7 +133,9 @@ export class Load {
 // trowel builds from it and the shovel throws from it. Liquids go in the bucket.
 export const PACK_KEY = 'PACK';
 export const PACK_CAPACITY = 1000;   // cells (≈ 27 m³ at 30 cm cells: about 37 trowel blocks)
-export const pack = () => persistentLoad(PACK_KEY, PACK_CAPACITY);
+// owner: whose pack (env.owner, an NPC's id); the player's when absent
+export const ownedKey = (key, owner) => (owner ? `${owner}:${key}` : key);
+export const pack = (owner) => persistentLoad(ownedKey(PACK_KEY, owner), PACK_CAPACITY);
 // what the pack holds, by element: [[id, count], ...], most first
 export function packContents(load = pack()) {
   return Object.entries(load.totals()).map(([id, n]) => [+id, n]).sort((a, b) => b[1] - a[1]);

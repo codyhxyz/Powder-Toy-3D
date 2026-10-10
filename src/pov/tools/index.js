@@ -19,6 +19,8 @@ export { emptyLoads };
 //                    refuse(text, extra) a notice, a shake and tool:action 'refuse' (extra: { id, point })
 
 const modules = import.meta.glob('./*.tool.js', { eager: true });
+// every tool's definition, with where it came from
+const toolDefs = () => Object.entries(modules).map(([path, mod]) => ({ path, def: mod.default })).filter(({ def }) => def?.create);
 const DEFAULT_SLOT = 0;   // slot 1 (the shovel) is selected first
 const NOTICE_INTERVAL = 1.5;   // s between repeats of a tool's notice and refuse toasts
 const MS_PER_S = 1000;
@@ -41,9 +43,7 @@ export function createToolbelt(env) {
   }
   const tools = Array(HOTBAR_SLOTS).fill(null);   // { def, inst } per slot
 
-  for (const [path, mod] of Object.entries(modules)) {
-    const def = mod.default;
-    if (!def?.create) continue;
+  for (const { path, def } of toolDefs()) {
     const i = (def.slot ?? 0) - 1;
     if (i < 0 || i >= HOTBAR_SLOTS || tools[i]) {
       console.warn(`toolbelt: ${path} wants slot ${def.slot}, which is ${tools[i] ? 'taken' : 'out of range'}`);
@@ -98,6 +98,7 @@ export function createToolbelt(env) {
 
   return {
     get selected() { return selected; },
+    get selectedKey() { return tools[selected]?.def.key ?? null; },   // the held tool's key ('GUN', ...)
     get transfer() { return transfer; },
     get ballistics() { return ballistics; },
     get readout() { return readout; },
@@ -127,6 +128,48 @@ export function createToolbelt(env) {
       ballistics.dispose();
       tools.forEach((t) => { t?.inst.deselect?.(); t?.inst.dispose?.(); });
       hotbar.dispose();
+    },
+  };
+}
+
+// An NPC's tools (npc.js): every tool the player has, headless. The same tool
+// code, so the same physics and rules; its own pack and bucket (env.owner); the
+// shared projectiles (env.ballistics, the player's toolbelt's, which flies them);
+// no hotbar and no toasts. Held models hang on env.viewmodel, a group nobody
+// draws. A refusal (no room to throw, nothing to build with) is kept as
+// lastRefusal, so the brain can tell a tool failed and try something else.
+//
+// Run tools inside povEvents.as(actor, ...) (npc.js does), so what they emit is
+// the NPC's.
+export function createKit(env) {
+  const transfer = sharedTransfer(env);
+  let lastRefusal = null;
+  const feedback = {
+    toast() {}, shake() {},
+    notice() { return false; },
+    refuse(text) { lastRefusal = { text, at: performance.now() / MS_PER_S }; },
+  };
+  const tools = new Map();
+  for (const { path, def } of toolDefs()) {
+    try {
+      tools.set(def.key, def.create({ ...env, transfer, feedback, hud: null, isActive: () => false }));
+    } catch (err) { console.error(`kit: ${path} failed to start`, err); }
+  }
+  let held = null;
+  return {
+    get keys() { return [...tools.keys()]; },
+    tool: (key) => tools.get(key) ?? null,
+    get held() { return held; },
+    get lastRefusal() { return lastRefusal; },
+    // run tool `key` this frame with ctx (the one held before is put away first)
+    use(key, ctx) {
+      if (held !== key) { tools.get(held)?.deselect?.(); held = key; }
+      tools.get(key)?.update(ctx);
+    },
+    putAway() { tools.get(held)?.deselect?.(); held = null; },
+    dispose() {
+      tools.forEach((t) => { t.deselect?.(); t.dispose?.(); });
+      tools.clear();
     },
   };
 }

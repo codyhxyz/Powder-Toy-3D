@@ -861,6 +861,7 @@ addEventListener('keydown', (e) => {
   if (mod) return;
   const k = e.key;
   if (k === 'f' || k === 'F') { if (!e.repeat) actions.firstPerson(); return; }
+  if ((k === 't' || k === 'T') && mp.chatAvailable) { e.preventDefault(); mp.openChat(); return; } // Minecraft's chat key, POV included
   if (pov?.blocksKey(e)) return;   // POV owns movement, Space and the digits while active
   if (e.code === 'Space') { e.preventDefault(); setPaused(!settings.paused); }
   else if (k === '.') stepOnce = true;

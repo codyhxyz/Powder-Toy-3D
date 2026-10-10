@@ -39,7 +39,7 @@ export default {
   key: 'TROWEL', name: 'Trowel', slot: 6, icon: ICON, color: '#a88f6a',
   desc: 'Builds 1 m blocks out of what the shovel dug up. Right-click picks the material.',
   create(env) {
-    const load = pack();
+    const load = pack(env.owner);
     const transfer = env.transfer;
     const button = trigger(REFIRE);
     const next = trigger(REFIRE, { hold: false, button: 'secondary' });

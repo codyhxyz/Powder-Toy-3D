@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { ELEMENTS, K } from '../../elements.js';
 import { HAND_REACH } from '../constants.js';
 import {
-  persistentLoad, cellsNear, outsideBody, bodyExit, toStepVelocity, aimInReach, faceNormal, recolor, pinned,
+  persistentLoad, ownedKey, cellsNear, outsideBody, bodyExit, toStepVelocity, aimInReach, faceNormal, recolor, pinned,
 } from './transfer.js';
 import { povEvents } from '../events.js';
 import { trigger } from './action.js';
@@ -47,7 +47,7 @@ export default {
   key: 'BUCKET', name: 'Bucket', slot: 2, icon: ICON, color: '#7f8ea3',
   desc: 'Left-click scoops up liquid, hold right-click to pour it out. Lava is fine.',
   create(env) {
-    const load = persistentLoad('BUCKET', BUCKET_CAPACITY);
+    const load = persistentLoad(ownedKey('BUCKET', env.owner), BUCKET_CAPACITY);
     const transfer = env.transfer;
     const dip = trigger(SCOOP_INTERVAL);   // dips, hold to repeat
     let pour = 0;
