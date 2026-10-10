@@ -144,14 +144,16 @@ vec3 liquidMeniscus(vec3 p, vec3 n, int id) {
 #endif
 
 #ifdef DETAIL_LIQ_FOAM
-// Whitewater. Agitation is how fast unsupported liquid (nothing solid or
-// liquid under it: falling, spraying, splashing) moves near the surface: the
-// sim accelerates it by gravity and turns impacts into sideways splash
-// (move.js land), so its speed is real. Liquid resting on liquid carries the
-// automaton's flow impulses instead (pool cells hold ±1 sideways at rest), so
-// it doesn't count, nor do curl or divergence of those.
+// Whitewater. Agitation is how fast free liquid (falling, spraying,
+// splashing) moves near the surface: the sim accelerates it by gravity and
+// turns impacts into sideways splash (move.js land), so its speed is real.
+// Free means moving down (a jet: every cell rides on the falling one below
+// it, which the react pass's normal force doesn't hold up, so v.y < 0) or
+// with nothing under it (spray). Liquid resting on liquid is held (v.y = 0)
+// and carries the automaton's flow impulses instead (pool cells hold ±1
+// sideways at rest), so it doesn't count, nor do curl or divergence of those.
 // Measured as the flux of it coming down onto the surface point: the mean,
-// over the AGIT_REACH cells above it, of unsupported liquid's speed (a
+// over the AGIT_REACH cells above it, of free liquid's speed (a
 // solid jet at speed v gives v; a sparse spray, its volume fraction of v),
 // bilinear across the four columns around the point. Over a pool that is
 // what lands there; on a stream's side, the stream above.
@@ -163,6 +165,11 @@ vec3 liquidMeniscus(vec3 p, vec3 n, int id) {
 #define FOAM_V_ONSET 1.0       // m/s
 #define FOAM_V_FULL 4.0        // m/s
 bool supports(int id) { return id != E_EMPTY && KIND[id] != K_GAS; }
+// speed of liquid in cell c with below under it, if it is free (else 0); cells/step
+float freeSpeed(ivec3 c, int below) {
+  vec3 v = fetchB(c).xyz;
+  return v.y < 0.0 || !supports(below) ? length(v) : 0.0;
+}
 float columnFlux(ivec3 c) {   // c = lowest cell; cells/step
   if (c.x < 0 || c.z < 0 || c.x >= NX || c.z >= NZ) return 0.0;
   int below = c.y > 0 ? eid(fetchA(c - ivec3(0, 1, 0))) : E_WALL;
@@ -170,7 +177,7 @@ float columnFlux(ivec3 c) {   // c = lowest cell; cells/step
   for (int k = 0; k < AGIT_REACH; k++) {
     if (c.y >= NY) break;
     int id = eid(fetchA(c));
-    if (liqDetailOn(id) && !supports(below)) s += length(fetchB(c).xyz);
+    if (liqDetailOn(id)) s += freeSpeed(c, below);
     below = id;
     c.y++;
   }
@@ -201,8 +208,8 @@ float agitation(vec3 p) {   // 0..1
 #define BREAKUP_PROBE 0.5      // cells into the liquid (against n) where its cell is read
 float breakup(vec3 p, vec3 n, int id) {   // 0..1
   ivec3 c = ivec3(floor(p - n * BREAKUP_PROBE));
-  if (outside(c) || c.y == 0 || eid(fetchA(c)) != id || supports(eid(fetchA(c - ivec3(0, 1, 0))))) return 0.0;
-  float v = length(fetchB(c).xyz) * MS_PER_CELL_STEP;
+  if (outside(c) || c.y == 0 || eid(fetchA(c)) != id) return 0.0;
+  float v = freeSpeed(c, eid(fetchA(c - ivec3(0, 1, 0)))) * MS_PER_CELL_STEP;
   return smoothstep(WE_ONSET, WE_FULL, AIR_RHO * v * v * CELL_M / LIQ_SIGMA[id]);
 }
 
