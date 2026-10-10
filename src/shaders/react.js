@@ -1,6 +1,7 @@
 import { prelude, stateOutGLSL } from './common.js';
 import { quietGLSL, inertNearGLSL } from './activity.js';
 import { ELEMENTS } from '../elements.js';
+import { electricReactGLSL } from '../electricity.js';
 
 // The softest breakable solid: a cell carrying less kinetic energy than this
 // can't break anything, which lets almost every cell skip the impact check.
@@ -43,6 +44,9 @@ const HARD_MIN = Math.min(...ELEMENTS.filter((e) => e.breakInto).map((e) => e.ha
 //     momentum and the fracture work as heat. The move pass that runs before
 //     this one leaves a projectile that can break what it's touching unbounced
 //     (move.js), so it reaches this check with its velocity intact.
+//   - Electricity (src/electricity.js): sparks hop between conductors, one
+//     face a step, losing what each cell's resistance costs and heating it;
+//     batteries and sensors start them, switches gate them.
 //   - The activity flags (shaders/common.js FLAG): the rest test on the cell's
 //     new state, its neighbours as this pass saw them (activity.js).
 export const reactFrag = (g) => /* glsl */ `
@@ -52,6 +56,7 @@ uniform float uGravity;
 ${stateOutGLSL}
 ${quietGLSL}
 ${inertNearGLSL}
+${electricReactGLSL}
 
 const ivec3 DIRS[6] = ivec3[6](ivec3(1,0,0), ivec3(-1,0,0), ivec3(0,1,0), ivec3(0,-1,0), ivec3(0,0,1), ivec3(0,0,-1));
 
@@ -267,6 +272,9 @@ void main() {
     v = vec3(0.0);
   }
 
+  // ---- electricity: sparks, switches, sensors (src/electricity.js) ----
+  electric(id, T, life, ctype, na, nid, rs);
+
   // ---- reactions & phase changes ----
   int nidOut = id;
   bool reset = false;   // new element: take its spawn life
@@ -392,6 +400,7 @@ void main() {
   }
 
   if (nidOut != id) {
+    if (CONDUCTS[id] && !CONDUCTS[nidOut] && nidOut != E_LAVA) ctype = 0.0;   // its spark goes with it
     if (reset) life = SPAWNLIFE[nidOut];
     if (KIND[nidOut] == K_SOLID) v = vec3(0.0);
     if (nidOut == E_FIRE) life = FIRE_LIFE_MIN + FIRE_LIFE_SPREAD * rnd(rs);

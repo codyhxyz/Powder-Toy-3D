@@ -35,6 +35,11 @@
 //   sound  what it sounds like struck, in first person (pov/audio.js
 //          families); omitted = by kind (solids crack, powders puff,
 //          liquids splash)
+//   elec   electrical conductivity σ, S/m (real values): it carries sparks
+//          (src/electricity.js, docs/electricity.md), losing SPARK_DROP / σ
+//          of a spark's levels per cell. conducts: true without elec means a
+//          metal (ELEC_METAL); a poor conductor (water, saltwater) gives its σ.
+//          A conductor's ctype holds its spark: give it no other use.
 //
 // Adding an element
 //   Data only, nothing else to touch:
@@ -90,6 +95,9 @@ const defs = [
 
   { key: 'WATER', abbr: 'WATR', name: 'Water', kind: K.LIQUID, render: R.LIQUID, color: '#2a78d4',
     dens: 10, cond: 0.03, cap: 1.0, drag: 0.01, flow: 0.9, spawn: 0.35, acidProof: true,   // dilutes acid, isn't eaten
+    // fresh water conducts, weakly: ~0.005-0.05 S/m from its dissolved ions
+    // (USGS, Specific conductance; pure water 5.5·10⁻⁶), 10⁸ times less than steel
+    elec: 0.05,
     sigma: [0.052, 0.014, 0.01], desc: 'Flows and levels out. Freezes at 0 °C and boils at 100 °C, with real latent heat.' },
   { key: 'OIL', abbr: 'OIL', name: 'Oil', kind: K.LIQUID, render: R.LIQUID, color: '#5a3c12',
     dens: 8, cond: 0.008, cap: 0.45, drag: 0.03, flow: 0.55, ignite: 220, burnRate: 0.008,
@@ -118,8 +126,10 @@ const defs = [
   { key: 'PLANT', abbr: 'PLNT', name: 'Plant', kind: K.SOLID, render: R.OPAQUE, color: '#3da236', var: 0.25,
     cond: 0.008, cap: 0.5, ignite: 250, burnRate: 0.004, burnHeat: 2, flameT: 800, life: 1,
     hard: 6, breakInto: 'SAWDUST', sound: 'thunk', desc: 'Grows into neighbouring water. Burns easily.' },
+  // Steel: carbon steel's resistivity ~1.43·10⁻⁷ Ω·m, σ ≈ 7·10⁶ S/m (CRC Handbook).
   { key: 'METAL', abbr: 'METL', name: 'Metal', kind: K.SOLID, render: R.OPAQUE, color: '#a9afba', var: 0.04,
-    cond: 0.1, cap: 0.85, melt: 1500, hard: 60, breakInto: 'SCRAP', sound: 'ping', desc: 'Conducts heat fast and glows when hot. Melts at 1500 °C.' },
+    cond: 0.1, cap: 0.85, melt: 1500, hard: 60, breakInto: 'SCRAP', sound: 'ping', conducts: true, elec: 7e6,
+    desc: 'Conducts heat fast and glows when hot. Carries electricity. Melts at 1500 °C.' },
   { key: 'GLASS', abbr: 'GLAS', name: 'Glass', kind: K.SOLID, render: R.GLASS, color: '#d2ecf2',
     cond: 0.015, cap: 0.5, melt: 1400, sigma: [0.05, 0.025, 0.03], hard: 8, breakInto: 'SHARDS', acidProof: true, sound: 'shatter',
     desc: 'Clear and acid-proof. Melts at 1400 °C.' },
@@ -140,7 +150,8 @@ const defs = [
     life: 1, spawn: 0.3, sound: 'thunk', desc: 'Chips and splinters of wood or plant. Floats on water and burns faster than a log.' },
   { key: 'SCRAP', abbr: 'BRMT', name: 'Scrap metal', kind: K.POWDER, render: R.OPAQUE, color: '#8e939c', var: 0.1,
     dens: 78, cond: 0.1, cap: 0.85, drag: 0.01, slide: 0.5, melt: 1500, meltInto: 'METAL', spawn: 0.3, sound: 'ping',
-    desc: 'Heavy bits of metal: what metal breaks into, and the slugs the gun fires. Melts and recasts as solid metal.' },
+    conducts: true, elec: 7e6,   // the same steel (TPT's BRMT conducts as METL does)
+    desc: 'Heavy bits of metal: what metal breaks into, and the slugs the gun fires. Carries electricity. Melts and recasts as solid metal.' },
   // Cloud: condensed water droplets riding in air. It moves as air does (buoyant
   // when warm; droplets this small barely settle), holds the water and heat
   // capacity of the steam it condensed from, and mixes its heat into the air
@@ -211,14 +222,58 @@ const defs = [
     dens: 13.5, cond: 0.01, cap: 0.4, drag: 0.04, slide: 0.7, ignite: 450, burnRate: 0.0017, burnHeat: 6, flameT: 1100,
     life: 1, spawn: 0.3, sound: 'crack',
     desc: 'Lumps of coal, as the pickaxe breaks them from a seam. Sinks in water and burns faster than the seam.' },
+  // ---- Electronics (src/electricity.js, docs/electricity.md): TPT's BTRY,
+  // PSCN, NSCN, SWCH, INSL and TSNS. ----
+  // Battery: a sealed lithium-ion cell, a source that sparks every conductor
+  // touching it whenever that conductor is ready. Its can is steel. Thermal
+  // runaway: past ~150-200 °C the separator melts and the cathode gives up
+  // oxygen, so it burns on its own at ~700-900 °C (Feng et al. 2018, Energy
+  // Storage Materials 10, 246). Through its jelly roll it conducts heat like
+  // rock (~1-3 W/m·K); ρ·c ≈ 2.5 g/cm³ × 1.0 J/g·K → cap 0.6.
+  { key: 'BATTERY', abbr: 'BTRY', name: 'Battery', kind: K.SOLID, render: R.OPAQUE, color: '#858505', var: 0.04,
+    cond: 0.03, cap: 0.6, ignite: 200, burnRate: 0.01, burnHeat: 4, flameT: 900, life: 1, ash: false,
+    hard: 20, breakInto: 'SCRAP', sound: 'ping',
+    desc: 'Endless electricity: it sparks every conductor it touches. A lithium cell: past 200 °C it bursts into flame.' },
+  // P- and N-type silicon: doped silicon, the two halves of a diode. Heavily
+  // doped (~10¹⁹ cm⁻³) it conducts ~10⁴ S/m, losslessly here. Silicon melts
+  // at 1414 °C (TPT's 1687 K too), 2.33 g/cm³ × 0.71 J/g·K → cap 0.4, and
+  // 150 W/m·K, more than steel: cond 0.06, the most 6·cond/cap < 1 allows.
+  // The junction: N never sparks P (a p-n junction conducts from P to N).
+  { key: 'PSCN', abbr: 'PSCN', name: 'P-type silicon', kind: K.SOLID, render: R.OPAQUE, color: '#805050', var: 0.04,
+    cond: 0.06, cap: 0.4, melt: 1414, elec: 1e4,
+    desc: 'Carries sparks to any conductor, but takes none from N-type silicon: together they make a diode. A spark from it turns a switch on.' },
+  { key: 'NSCN', abbr: 'NSCN', name: 'N-type silicon', kind: K.SOLID, render: R.OPAQUE, color: '#505080', var: 0.04,
+    cond: 0.06, cap: 0.4, melt: 1414, elec: 1e4,
+    desc: 'Carries sparks to any conductor except P-type silicon. A spark from it turns a switch off.' },
+  // Switch: a relay. Copper contacts (σ 5.96·10⁷ S/m, CRC) in a steel frame
+  // (steel's heat numbers and melting point). life: SWITCH_ON while on.
+  { key: 'SWITCH', abbr: 'SWCH', name: 'Switch', kind: K.SOLID, render: R.OPAQUE, color: '#103b11', var: 0.04,
+    cond: 0.1, cap: 0.85, melt: 1500, meltInto: 'METAL', hard: 60, breakInto: 'SCRAP', sound: 'ping', elec: 5.96e7,
+    desc: 'Passes sparks only while it is on. A spark from P-type silicon turns it on, one from N-type turns it off; touching switches go together.' },
+  // Insulator: TPT's INSL, which blocks heat and electricity, with silica
+  // aerogel's numbers: 0.015 W/m·K, about half still air's 0.026 (cond 0.0003
+  // to air's 0.0005); 0.1 g/cm³ × 1 J/g·K → cap 0.03; a dielectric. It is
+  // silica, so acid can't touch it and it sinters into glass at ~1200 °C.
+  { key: 'INSULATOR', abbr: 'INSL', name: 'Insulator', kind: K.SOLID, render: R.OPAQUE, color: '#9ea3b6', var: 0.03,
+    cond: 0.0003, cap: 0.03, melt: 1200, meltInto: 'GLASS', acidProof: true,
+    desc: 'Blocks electricity and almost all heat. Put it between wires that must not touch. Melts into glass at 1200 °C.' },
+  // Temperature sensor: TPT's TSNS. It holds no heat (cond 0, as TPT's), so
+  // its own temperature is the threshold: set it with Heat and Cool.
+  { key: 'TSNS', abbr: 'TSNS', name: 'Temperature sensor', kind: K.SOLID, render: R.OPAQUE, color: '#fd00d5', var: 0.03,
+    cond: 0, cap: 1.0,
+    desc: 'Sparks the conductors it touches while anything beside it is hotter than itself. Heat or cool it to set its temperature.' },
 ];
 
+// σ (S/m) of a conductor given as conducts: true with no elec: a metal. The
+// poorest common one, mercury (1.04·10⁶), already loses nothing to speak of.
+const ELEC_METAL = 1e6;
 export const ELEMENTS = defs.map((d, id) => ({
   id, var: 0, dens: 1000, grav: 0, drag: 0, friction: d.kind === K.POWDER ? 0.25 : 0, jitter: 0, flow: 0, slide: 0, melt: 0, ignite: 0,
   burnRate: 0, burnHeat: 0, flameT: 0, temp: 20, life: 0, rad: 0, spawn: 1, sigma: [0, 0, 0], desc: '',
   hard: 0, breakInto: null, meltInto: null, acidProof: false, fizz: 0, ash: true, sound: null,
   ...d,
   grav: d.grav ?? (d.kind === K.POWDER || d.kind === K.LIQUID ? 1 : 0),
+  elec: d.elec ?? (d.conducts ? ELEC_METAL : 0),
 }));
 
 export const E = Object.fromEntries(ELEMENTS.map((e) => [e.key, e.id]));
@@ -239,6 +294,10 @@ export const TOOLS = [
     desc: 'Click a surface: in first person (F) an enemy with every tool appears here, and comes back after it dies. Click it again to remove it.' },
   { id: -7, key: 'SPAWN', abbr: 'SPWN', name: 'Player spawn', color: '#3fa7ff',
     desc: 'Click a surface: F drops you in at the spawn nearest the cursor, and you respawn there. Click it again to remove it.' },
+  // TPT's SPRK brush: sparks the conductors inside it (src/electricity.js
+  // sparkCell). -8 is left for the Lightning tool (branch el-mat).
+  { id: -9, key: 'SPARK', abbr: 'SPRK', name: 'Spark', color: '#ffff80',
+    desc: 'Sparks the conductors inside the brush: metal, silicon, water, and switches that are on. Everything else ignores it.' },
 ];
 export const isSpawnerTool = (id) => id === -6 || id === -7;
 
@@ -304,6 +363,7 @@ export const PALETTE = [
   { name: 'Liquids', items: ['WATER', 'ACID', 'OIL', 'LAVA'] },
   { name: 'Gases', items: ['STEAM', 'CLOUD', 'SMOKE', 'FIRE'] },
   { name: 'Solids', items: ['WALL', 'COAL', 'ROCK', 'LIMESTONE', 'SANDSTONE', 'METAL', 'GLASS', 'ICE', 'CRYSTAL', 'WOOD', 'PLANT', 'CLONE'] },
+  { name: 'Electronics', items: ['SPARK', 'BATTERY', 'METAL', 'PSCN', 'NSCN', 'SWITCH', 'INSULATOR', 'TSNS'] },
   { name: 'Tools', items: ['HEAT', 'COOL', 'ERASE', 'BLAST', 'SIGN', ...GEAR_ITEMS.map((g) => g.key)] },
   { name: 'Entities', items: ['ENEMY', 'SPAWN'] },
   { name: 'Constructions', items: ['HOUSE', 'TREE', 'CAMPFIRE', 'IGLOO', 'BARREL', 'AQUARIUM', 'FOUNTAIN', 'SHRINE', 'DOCK', 'TOWER', 'STONES', 'WELL', 'MINE', 'WRECK', 'PROMPT'] },
