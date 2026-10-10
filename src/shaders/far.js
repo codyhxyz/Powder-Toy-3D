@@ -11,21 +11,27 @@ import { E } from '../elements.js';
 // The far field (docs/scaling.md D11, "Far field"; phase W4): everything of a
 // massive world outside the simulated window, at brick resolution.
 //
-// The far grid. One RGBA8 texel per 4³ world brick, in a 2D atlas of
+// The far grid. One RGBA16F texel per 4³ world brick, in a 2D atlas of
 // horizontal brick slices (farTexel, like the render fields' Y-slices), so a
 // region of it is rewritten in one draw and its channels filter bilinearly
-// inside a slice (farSample finishes the trilinear lerp between two slices):
-//   r  opaque share: the share of the cube of FAR.CUBE cells centred on the
-//      brick that stops light (solids, powders, lava, glass)
+// inside a slice (farSample finishes the trilinear lerp between two slices).
+// It holds whole numbers (a half float holds them exactly up to
+// FAR.HALF_EXACT), read with texelFetch:
+//   r  opaque share, in FAR.LEVELS steps: the share of the cube of FAR.CUBE
+//      cells centred on the brick that stops light (solids, powders, lava, glass)
 //   g  liquid share: the same for transparent liquids (water, oil, acid)
-//   b  ids (texelFetch only), of the brick's own cells: its dominant opaque
-//      element, a cell open above counting FAR.SURFACE_W times (a brick reads
-//      as its surface: grass on rock reads as grass), plus FAR.LIQ_STRIDE × its
-//      liquid's kind (FAR_LIQUIDS; one past them: none), plus FAR.OPEN if it
-//      holds open opaque cells (the view reads a surface's element from such
-//      a brick)
-//   a  glow: how hot its open opaque cells are, from the incandescence's first
-//      knot up over FAR.GLOW_SPAN °C
+//   b  ids, of the brick's own cells: its dominant opaque element, a cell open
+//      above counting FAR.SURFACE_W times (a brick reads as its surface: grass
+//      on rock reads as grass), plus FAR.LIQ_STRIDE × its liquid's kind
+//      (FAR_LIQUIDS; one past them: none), plus FAR.OPEN if it holds open
+//      opaque cells (the view reads a surface's element from such a brick)
+//   a  glow, in FAR.LEVELS steps: how hot its open opaque cells are, from the
+//      incandescence's first knot up over FAR.GLOW_SPAN °C
+// (The shares and glow keep the 8-bit steps of the RGBA8 grid this was, so
+// the field and the view are what they were; the half floats are for the
+// ids, which outgrew 8 bits: 16 MB at the world's 256×32×256 bricks, against
+// 8 MB, where a second R8 target would cost 2 MB but a second output and a
+// second texture in every pass that writes or reads the grid.)
 // Values sit at brick centres. The drawn surface is where the trilinear field
 // crosses FAR.ISO, as for the window's smooth surfaces. The cube is twice the
 // brick: a box filter as wide as two sample spacings makes the field linear in
@@ -64,19 +70,24 @@ export const FAR = {
                        // trunk: 8/512, safely over it in 8 bits), with no brick next to it at ISO, reads as THIN_V...
   THIN_V: 1.0,         // ...so it stands as a blob, rod or slab instead of vanishing
   SURFACE_W: 8,        // a cell open above counts this many times toward the dominant element
-  LIQ_STRIDE: 32,      // the id channel: opaque id + LIQ_STRIDE × liquid kind (element ids stay below it)...
-  OPEN: 128,           // ...+ OPEN if the brick holds opaque cells open above (liquid kinds stay below OPEN / LIQ_STRIDE)
-  ID_SCALE: 255,       // an id channel value in an 8-bit channel
+  LIQ_STRIDE: 256,     // the id channel: opaque id + LIQ_STRIDE × liquid kind (element ids stay below it)...
+  OPEN: 1024,          // ...+ OPEN if the brick holds opaque cells open above (liquid kinds stay below OPEN / LIQ_STRIDE)
+  HALF_EXACT: 2048,    // whole numbers up to this are exact in a half float (11-bit significand): the id channel's room
+  LEVELS: 255,         // steps of the shares and the glow (an 8-bit channel's)
   GLOW_SPAN: 2000,     // °C the glow channel spans above the incandescence table's first knot
 };
-// Every element id must fit below LIQ_STRIDE: past it the far view misreads
-// ids, so say so at once (a wider id channel is the fix).
-if (Object.keys(E).length > FAR.LIQ_STRIDE) {
-  throw new Error(`far.js: ${Object.keys(E).length} elements, but the far grid's id channel holds ids below FAR.LIQ_STRIDE (${FAR.LIQ_STRIDE})`);
-}
 // Liquid kinds of the id channel (index → element key; the first is the
 // default); one more says the brick's own cells hold none.
 export const FAR_LIQUIDS = ['WATER', 'OIL', 'ACID'];
+// Every element id must fit below LIQ_STRIDE, every liquid kind (and none)
+// below OPEN / LIQ_STRIDE, and the whole channel within HALF_EXACT: past them
+// the far view misreads ids, so say so at once.
+if (Object.keys(E).length > FAR.LIQ_STRIDE) {
+  throw new Error(`far.js: ${Object.keys(E).length} elements, but the far grid's id channel holds ids below FAR.LIQ_STRIDE (${FAR.LIQ_STRIDE})`);
+}
+if ((FAR_LIQUIDS.length + 1) * FAR.LIQ_STRIDE > FAR.OPEN || 2 * FAR.OPEN > FAR.HALF_EXACT) {
+  throw new Error(`far.js: the far grid's id channel (FAR.LIQ_STRIDE, FAR.OPEN) outgrew FAR.HALF_EXACT (${FAR.HALF_EXACT})`);
+}
 const liquidKindGLSL = () => /* glsl */ `
 #define FAR_KINDS ${FAR_LIQUIDS.length}
 #define FAR_KIND_NONE ${FAR_LIQUIDS.length}
@@ -153,7 +164,7 @@ export const farLayoutGLSL = (L) => /* glsl */ `
 #define FAR_SURFACE_W ${glf(FAR.SURFACE_W)}
 #define FAR_LIQ_STRIDE ${FAR.LIQ_STRIDE}
 #define FAR_OPEN ${FAR.OPEN}
-#define FAR_ID_SCALE ${glf(FAR.ID_SCALE)}
+#define FAR_LEVELS ${glf(FAR.LEVELS)}
 #define FAR_GLOW_SPAN ${glf(FAR.GLOW_SPAN)}
 const ivec3 WORLD = ivec3(WORLD_X, WORLD_Y, WORLD_Z);
 const ivec3 WB = ivec3(WBX, WBY, WBZ);
@@ -228,7 +239,9 @@ vec4 farPack(FarCount c) {
   if (c.wl[lk] == 0.0) lk = FAR_KIND_NONE;
   float glow = c.open > 0.0 ? c.heat / c.open / FAR_GLOW_SPAN : 0.0;
   int open = c.open > 0.0 ? FAR_OPEN : 0;
-  return vec4(c.s / n, c.l / n, float(best + FAR_LIQ_STRIDE * lk + open) / FAR_ID_SCALE, clamp(glow, 0.0, 1.0));
+  // (the shares and glow round as the 8-bit channel they were did: to nearest, ties to even)
+  return vec4(roundEven(c.s / n * FAR_LEVELS), roundEven(c.l / n * FAR_LEVELS), float(best + FAR_LIQ_STRIDE * lk + open),
+              roundEven(clamp(glow, 0.0, 1.0) * FAR_LEVELS));
 }
 `;
 
@@ -692,8 +705,8 @@ out vec4 oC;
 void main() {
   ivec3 b = farBrickFromFrag(ivec2(gl_FragCoord.xy));
   vec4 t = texelFetch(tFar, farTexel(b), 0);
-  vec2 raw = t.rg;
-  int ids = int(t.b * FAR_ID_SCALE + 0.5) % FAR_OPEN;
+  vec2 raw = t.rg / FAR_LEVELS;
+  int ids = int(t.b + 0.5) % FAR_OPEN;
   bool ownS = ids % FAR_LIQ_STRIDE != E_EMPTY, ownL = ids / FAR_LIQ_STRIDE != FAR_KIND_NONE;
   float ns = raw.r, nm = raw.r + raw.g;   // the most opaque, and most matter, here and next to it
   if (b.y == 0) ns = nm = 1.0;
@@ -702,7 +715,7 @@ void main() {
   for (int dx = -1; dx <= 1; dx++) {
     ivec3 q = b + ivec3(dx, dy, dz);
     if (any(lessThan(q, ivec3(0))) || any(greaterThanEqual(q, WB))) continue;
-    vec2 v = texelFetch(tFar, farTexel(q), 0).rg;
+    vec2 v = texelFetch(tFar, farTexel(q), 0).rg / FAR_LEVELS;
     ns = max(ns, v.r);
     nm = max(nm, v.r + v.g);
   }
@@ -862,14 +875,14 @@ float farMatter(vec3 p) { vec4 v = farSample(p); return v.r + v.g; }
 // kind, z = 1 if it holds opaque cells open above
 ivec3 farIds(vec3 p) {
   ivec3 b = clamp(ivec3(floor(p * (1.0 / float(BS)))), ivec3(0), WB - 1);
-  int v = int(texelFetch(tFar, farTexel(b), 0).b * FAR_ID_SCALE + 0.5);
+  int v = int(texelFetch(tFar, farTexel(b), 0).b + 0.5);
   int open = v / FAR_OPEN;
   v -= open * FAR_OPEN;
   return ivec3(v % FAR_LIQ_STRIDE, v / FAR_LIQ_STRIDE, open);
 }
 float farGlow(vec3 p) {
   ivec3 b = clamp(ivec3(floor(p * (1.0 / float(BS)))), ivec3(0), WB - 1);
-  return texelFetch(tFar, farTexel(b), 0).a;
+  return texelFetch(tFar, farTexel(b), 0).a / FAR_LEVELS;
 }
 bool farNear(ivec3 b) { return texelFetch(tFarField, farTexel(b), 0).b > 0.5; }
 bool farOcc1(ivec3 n) { return texelFetch(tFar1, far1Texel(n), 0).r > 0.5; }
@@ -936,7 +949,7 @@ uniform float uSea;
 #define FAR_SEA_F0 0.02   // water's reflectance face on ((1.333 - 1) / (1.333 + 1))²
 vec3 farGround(vec3 r, float top) {
   ivec3 b = clamp(ivec3(floor(vec3(r.x, top - 1.0, r.z) / float(FAR_BRICK))), ivec3(0), WB - 1);   // the brick under the top
-  int v = int(texelFetch(tFar, farTexel(b), 0).b * FAR_ID_SCALE + 0.5);
+  int v = int(texelFetch(tFar, farTexel(b), 0).b + 0.5);
   int id = (v % FAR_OPEN) % FAR_LIQ_STRIDE;
   float s = texture(tFarShadow, r.xz / vec2(WORLD.xz)).x;
   float sun = smoothstep(-FAR_SHADOW_SOFT, FAR_SHADOW_SOFT, top + FAR_SHADOW_BIAS - s) * cloudShadow(vec3(r.x, top, r.z));
