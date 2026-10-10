@@ -13,6 +13,10 @@
 // A scene is an object:
 //   key            its settings value (settings.scene)
 //   label          its name in the Scene row
+//   size           optional: its world's size in cells [x, y, z], when not
+//                  shaders/far.js WORLD_SIZE (the giant volcano's is taller).
+//                  The window spans its height (app.js worldOf), so it builds
+//                  its own programs instead of sharing the box's
 //   params({ size, seed })
 //                  its world parameters P: at least { size, seed, sea, floor }.
 //                  sea: the open water's level for the far view and GI (cells; 0
@@ -38,6 +42,11 @@
 //                  fill (baking textures its GLSL samples: the island bakes its
 //                  columns); the world waits for it, then takes uniforms(P) again
 //   dispose()      optional: textures the scene made
+//   view           optional: the god view's home, when not app.js
+//                  WORLD_VIEW_DIR and WORLD_VIEW_DIST: { dir, dist, lift },
+//                  the camera dist cells from the orbit target along dir, the
+//                  target lift cells over the ground (the window follows only
+//                  its column)
 //   trees          optional: trees it plants, as TREE constructions
 //                  (constructions/builtins.js), the island's:
 //                    treesIn(x0, z0, x1, z1, P, cache)
@@ -67,9 +76,7 @@
 import { island } from './island.js';
 import { labWorld } from './labWorld.js';
 import { volcanoWorld } from './volcanoWorld.js';
-import { giantLab } from './giantLab.js';
 import { giantVolcano } from './giantVolcano.js';
-import { patchwork } from './patchwork.js';
 
-export const WORLD_SCENES = [island, labWorld, volcanoWorld, giantLab, giantVolcano, patchwork];
+export const WORLD_SCENES = [island, labWorld, volcanoWorld, giantVolcano];
 export const sceneByKey = (key) => WORLD_SCENES.find((s) => s.key === key) ?? island;

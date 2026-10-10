@@ -1,31 +1,26 @@
-// CPU previews and checks of the giant scenes (src/world/scenes/giantLab.js,
-// giantVolcano.js) from their JS twins: no GPU, fine on battery.
+// CPU previews and checks of the giant volcano (src/world/scenes/giantVolcano.js)
+// from its JS twin: no GPU, fine on battery.
 //
 //   node tools/scene-giant-preview.mjs [out dir]
 //
-// Writes, per scene, a top-down map (each column's topmost matter in its
-// element's colour, darker the lower it stands) and cross-sections (x across,
-// y up) through its features: the lab's tank and sand pile, its tower and
-// pit; the volcano's summit. It also checks that
-// the volcano's O(1) tree lookup finds every cell of every tree (each tree's
-// shape, painted on its own, against what the scene says is there) and that
-// each scene's ground() is the top of its column.
+// Writes a top-down map (each column's topmost matter in its element's
+// colour, darker the lower it stands) and a cross-section (x across, y up)
+// through the summit. It also checks that the O(1) tree lookup finds every
+// cell of every tree (each tree's shape, painted on its own, against what the
+// scene says is there) and that ground() is the top of its column.
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { deflateSync, crc32 } from 'node:zlib';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { ELEMENTS, E } from '../src/elements.js';
-import { WORLD_SIZE } from '../src/shaders/far.js';
-import { giantLab, labCell } from '../src/world/scenes/giantLab.js';
-import { giantVolcano, volcCell, volcTrees, volcTreePart, VOLC_TREE_BOX } from '../src/world/scenes/giantVolcano.js';
+import { giantVolcano, volcCell, volcTrees, volcTreePart, VOLC_TREE_BOX, VOLC_SIZE } from '../src/world/scenes/giantVolcano.js';
 
 const OUT = process.argv[2] ?? join(tmpdir(), 'scene-giant');
 const SEED = 20261008;            // a world seed (world/generator.js WORLD_SEED)
 const SHADE_MIN = 0.35;           // a column at the bottom of the world is drawn this bright (1 at the top)
-const SECTION_V = 4;              // the cross-section's pixels per cell up (the world is flat)
-const LAB_SECTIONS = [184, 720];  // z of the lab's sections: through the tank's ice and the sand; the tower and the pit's snow
+const SECTION_V = 1;              // the cross-section's pixels per cell up (as across: true to its shape)
 const AIR = [235, 240, 248];      // the cross-section's air
-const [WX, WY, WZ] = WORLD_SIZE;
+const [WX, WY, WZ] = VOLC_SIZE;
 mkdirSync(OUT, { recursive: true });
 
 const rgb = (id) => { const n = parseInt(ELEMENTS[id].color.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; };
@@ -50,7 +45,7 @@ let failures = 0;
 const fail = (msg) => { failures++; console.log(`FAIL ${msg}`); };
 
 function preview(scene, cellId, sections) {
-  const P = scene.params({ size: WORLD_SIZE, seed: SEED });
+  const P = scene.params({ size: VOLC_SIZE, seed: SEED });
   const t0 = Date.now();
   const top = Buffer.alloc(WX * WZ * 3);
   const census = new Map();
@@ -79,7 +74,6 @@ function preview(scene, cellId, sections) {
     `(${((Date.now() - t0) / 1000).toFixed(1)} s)`);
 }
 
-preview(giantLab, (x, y, z) => labCell(x, y, z).id, LAB_SECTIONS);
 preview(giantVolcano, (x, y, z) => volcCell(x, y, z, SEED), [WZ / 2]);
 
 // every cell of every tree, as the scene sees it

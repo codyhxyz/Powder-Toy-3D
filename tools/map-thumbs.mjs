@@ -23,7 +23,7 @@ const STEPS = 90;            // simulation steps before the shot: lava glows, sa
 const TAA_FRAMES = 60;       // paused frames before the shot (TAA converges)
 const LOAD_TIMEOUT = 180000; // ms: a cold shader compile plus a world's far field
 // per map: the home view pulled in or out (× its distance to the target)
-const ZOOM = { damValley: 0.72, giantLab: 3, giantVolcano: 2.5 };
+const ZOOM = { damValley: 0.72 };
 
 mkdirSync(OUT, { recursive: true });
 const browser = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
@@ -40,7 +40,8 @@ for (const m of MAPS.filter((x) => !only.length || only.includes(x.key))) {
   const t0 = Date.now();
   await p.goto(`http://localhost:${port}/?map=${m.key}`, { timeout: LOAD_TIMEOUT });
   await p.waitForFunction(() => window.__app?.sim, null, { timeout: LOAD_TIMEOUT });
-  if (isWorld(m)) await p.waitForFunction(() => window.__app.win?.loaded && window.__app.win.far.ready, null, { timeout: LOAD_TIMEOUT, polling: 500 });
+  // (a world: its far field built all the way out, not just started: it fills in nearest first)
+  if (isWorld(m)) await p.waitForFunction(() => window.__app.win?.loaded && window.__app.win.far.ready && !window.__app.win.far.queue.length, null, { timeout: LOAD_TIMEOUT, polling: 500 });
   await p.evaluate(async ([sun, steps, frames, zoom]) => {
     const a = window.__app;
     a.autoRes.enabled = false;
