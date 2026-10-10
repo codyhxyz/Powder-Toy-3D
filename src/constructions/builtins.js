@@ -458,6 +458,33 @@ export function fountain({ put, box, disc, rod, vec, footing, T }) {
   put(0, ph + 2, 0, 'CLONE', { ctype: 'WATER' }); // the spout
 }
 
+// ---------------------------------------------------------------- shrine
+
+// A shrine: Noita's Holy Mountain altar, a stone pavilion over three plinths.
+// Its size is fixed, not scaled by T: it is built for the first-person body
+// (5.5 cells tall), which never changes size. The app floats a perk orb over
+// each plinth (src/perkOrbs.js) at SHRINE_ALTARS: take one and the others vanish.
+export const SHRINE_ALTARS = [[-4, 2, 0], [0, 2, 0], [4, 2, 0]];   // each orb's foot: the top of its plinth
+export function shrine({ box, footing }) {
+  const HW = 8, HD = 5;      // half the floor's width (x) and depth (z)
+  const H = 8;               // pillar height above the floor: headroom for the body and a hop
+  const P = 2;               // pillars are P × P
+  footing();
+  box(-HW, 0, -HD, HW, 0, HD, MASONRY);          // the floor (it grows a plinth on uneven ground)
+  box(-HW, 1, -HD, HW, H, HD, 'AIR');            // nothing grows or stands inside
+  for (const sx of [-1, 1])
+    for (const sz of [-1, 1]) box(sx * (HW - 1), 1, sz * (HD - 1), sx * (HW - P), H, sz * (HD - P), MASONRY);
+  // a stepped roof, with a steel ridge
+  box(-HW, H + 1, -HD, HW, H + 1, HD, MASONRY);
+  box(-HW + 2, H + 2, -HD + 2, HW - 2, H + 2, HD - 2, MASONRY);
+  box(-HW + 4, H + 3, 0, HW - 4, H + 3, 0, 'METAL');
+  // the plinths: stone with a steel top where the orb floats
+  for (const [x, y, z] of SHRINE_ALTARS) {
+    box(x - 1, 1, z - 1, x + 1, y - 1, z + 1, MASONRY);
+    box(x, y - 1, z, x, y - 1, z, 'METAL');
+  }
+}
+
 export const BUILTINS = {
   HOUSE: house,
   TREE: (api, variant) => TREES[variant](api),
@@ -466,5 +493,6 @@ export const BUILTINS = {
   BARREL: barrel,
   AQUARIUM: aquarium,
   FOUNTAIN: fountain,
+  SHRINE: shrine,
   ...STRUCTURES,   // the World's structures (structures.js)
 };

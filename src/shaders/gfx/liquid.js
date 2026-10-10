@@ -31,7 +31,7 @@ vec3 envReflect(vec3 p, vec3 r, vec3 sunVis) {
 vec3 interiorScatter(int id, vec3 p, vec3 sunVis, float T) {
   vec3 L = skyAmbient(vec3(0.0, 1.0, 0.0)) * mix(vec3(SKY_IN_FLOOR), vec3(1.0), sunVis)
          + SUN_COL * sunVis * max(uSun.y, 0.0) * SUN_IN_GAIN + sampleLight(p) * uLightGain;
-  return SCATALB[id] * L + incandescence(T);
+  return SCATALB[id] * L + emission(id, T);
 }
 
 // Beer–Lambert through a segment of length seg inside element id.
@@ -92,12 +92,12 @@ vec3 liquidRipple(vec3 p, vec3 n) {
 #define REFL_PROBE 0.5      // a smooth hit's element is looked up this far inside it, then twice that
 #define REFL_NORMAL_STEP 0.5   // forward-difference step of a reflected smooth hit's normal, cells
 // What the reflection shows of a hit: the element's albedo lit by the sun
-// (facing only, no cast shadows) and the sky, plus its own glow when hot.
+// (facing only, no cast shadows) and the sky, plus its own glow (emission).
 // Reflections are dimmed by Fresnel and wobbled by ripples, so texture
 // detail, shadows, AO and the glow it receives wouldn't show for the cost.
 vec3 reflShade(vec4 a, vec3 n) {
   int id = eid(a);
-  return ALBEDO[id] * (SUN_COL * max(dot(n, uSun), 0.0) + skyAmbient(n)) + incandescence(a.y);
+  return ALBEDO[id] * (SUN_COL * max(dot(n, uSun), 0.0) + skyAmbient(n)) + emission(id, a.y);
 }
 vec3 reflectTrace(vec3 ro, vec3 rd, vec3 sunVis) {
   rd = safeDir(rd);

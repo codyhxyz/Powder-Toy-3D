@@ -45,7 +45,8 @@ const PASS_KEYS = new Set(['Escape', '?', ',', 'p', 'P']);
 
 // app = { renderer, scene, camera, controls, canvas, hud, settings, mp, isTyping,
 //         getSim, getVolume, getScale, hover, pointerHover (() => bool), pickRay (ro, rd → Promise<hit>),
-//         requestRender, inWorld (() => bool: the grid is a window of a larger world, docs/scaling.md D11) }
+//         requestRender, inWorld (() => bool: the grid is a window of a larger world, docs/scaling.md D11),
+//         showToolsMenu (the palette's first-person tools brought into view: Q) }
 export function createPov(app) {
   const { renderer, scene, camera, controls, canvas, hud } = app;
   const createPlayer = playerModule?.createPlayer;
@@ -113,12 +114,25 @@ export function createPov(app) {
   document.addEventListener('pointerlockchange', () => {
     locked = document.pointerLockElement === canvas;
     document.body.classList.toggle('pov-locked', locked);
+    if (locked) setMenu(false);
     if (!locked) releaseInput();
     app.requestRender();
   });
   function releaseInput() {
     keys.clear();
     buttons.primary = buttons.secondary = false;
+  }
+
+  // Q: the tools menu, Garry's Mod's spawn menu: the mouse is freed and the
+  // palette shows, its Tools group giving tools (app.js giveGear). Q again, a
+  // click on the world or a tool given closes it.
+  let menuOpen = false;
+  function setMenu(v) {
+    menuOpen = !!v && active();
+    document.body.classList.toggle('pov-menu', menuOpen);
+    if (menuOpen) app.showToolsMenu?.();
+    if (menuOpen && document.pointerLockElement === canvas) document.exitPointerLock();
+    app.requestRender();
   }
 
   // F1: the HUD and the hand hidden (death and the mouse prompt still show)
@@ -133,6 +147,9 @@ export function createPov(app) {
     if ((e.code === 'ShiftLeft' || e.code === 'ShiftRight') && !e.repeat && app.settings.sprintMode === 'toggle') sprintOn = !sprintOn;
     // F1, as in Minecraft: hide the HUD and the hand, for a clean view or a screenshot
     if (e.code === 'F1') { e.preventDefault(); if (!e.repeat) setHudHidden(!hudHidden); }
+    if (e.code === 'KeyQ' && !e.repeat && mode === 'on') {
+      if (menuOpen) { setMenu(false); requestLock(); } else setMenu(true);
+    }
     // settings and help need the mouse
     if ((e.key === ',' || e.key === '?') && document.pointerLockElement === canvas) document.exitPointerLock();
   });
@@ -193,6 +210,7 @@ export function createPov(app) {
       player.on('land', ({ speed }) => povCam.land(speed));
       player.on('revive', () => { hud.toast(`${perkName('EXTRA_LIFE')}: back on your feet`); povEvents.emit('perk:revive', { point: player.pos.clone() }); });
       player.on('revenge', ({ point }) => povEvents.emit('blast', { point }));
+      povEvents.on('blast', ({ by }) => { if (!by) player.ownBlast(); });   // the player's own rocket or bomb
       player.on('splash', ({ speed }) => vfx?.splash(player.pos, speed, player.liquidId));
       feel.bindPlayer(player);
     }
@@ -307,6 +325,7 @@ export function createPov(app) {
 
   function exit(instant = false) {
     if (!active()) return;
+    setMenu(false);
     toolbelt?.setVisible(false);
     viewmodel.visible = false;
     if (document.pointerLockElement === canvas) document.exitPointerLock();
@@ -457,6 +476,7 @@ export function createPov(app) {
     // the camera, with the kick and shake on top of the look
     vA.copy(player.pos).setY(player.pos.y + EYE_HEIGHT);
     const shake = feel.update({ dt, live: mode === 'on' && !deadSeen, eye: vA });
+    povCam.zoom = mode === 'on' && !deadSeen && toolbelt ? toolbelt.zoom : 1;   // a scope (the sniper's)
     toWorld(vEye.copy(vA), vEye);
     toWorld(player.pos, vFeet);
     const pose = povCam.update({
@@ -615,6 +635,8 @@ export function createPov(app) {
     },
     aimRay,
     blocksKey,
+    // close the tools menu and take the mouse back (a tool was given from it: a click, so the lock is allowed)
+    closeMenu() { if (!menuOpen) return; setMenu(false); requestLock(); },
     // tests: look around without pointer lock (radians)
     setLook: (yaw, pitch) => povCam.setLook(yaw, pitch),
   };

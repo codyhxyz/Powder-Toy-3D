@@ -4,8 +4,8 @@ import { stampFrag } from './shaders/stamp.js';
 import { ELEMENTS, BUILDS, isBuild } from './elements.js';
 import { h } from './ui/dom.js';
 import { ICON } from './ui/icons.js';
-import { runGenerator, bake, newSeed, makeRng, MAX_FOOT } from './constructions/runtime.js';
-import { BUILTINS } from './constructions/builtins.js';
+import { runGenerator, bake, newSeed, makeRng, turnPoint, MAX_FOOT } from './constructions/runtime.js';
+import { BUILTINS, SHRINE_ALTARS } from './constructions/builtins.js';
 import sharedSource from './constructions/shared.js?raw';
 import builtinsOnlySource from './constructions/builtins.js?raw';
 import { renderIso, hexBytes, cellNoise, PREVIEW_VIEWS } from './constructions/preview.js';
@@ -61,6 +61,9 @@ const HOLD_PX = 6;                 // pointer travel that brings the ghost back 
 const DOCK_MARGIN_PX = 14;         // the dock's gap to the bottom of the window
 const BAR_GAP_PX = 8;              // gap between the dock and the construction bar
 const IMPORT_NAME_CHARS = 60;
+// Points of a built-in construction the app hangs things on once it's placed
+// (local cells: y up, base on y = 0, front +z): the shrine's perk orbs.
+const ANCHORS = { SHRINE: SHRINE_ALTARS };
 const DRAFT_STORE = 'powder-toy-3d:ai-draft'; // sessionStorage: the prompt being typed, across a sign-in
 
 const loadJSON = (key, fallback) => { try { return JSON.parse(localStorage.getItem(key) || 'null') ?? fallback; } catch { return fallback; } };
@@ -116,8 +119,10 @@ const ICON_SPARK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5
 export class Constructions {
   // onClose: the player dismissed the construction options (× or Esc)
   // requestRender: redraw for a change the view can't see (the ghost's instances)
-  constructor({ scene, camera, settings, getSim, getVolume, getScale, onClose, requestRender }) {
+  // onPlaced({ key, anchors }): a construction with ANCHORS was stamped; anchors in grid cells
+  constructor({ scene, camera, settings, getSim, getVolume, getScale, onClose, requestRender, onPlaced }) {
     this.onClose = onClose;
+    this.onPlaced = onPlaced;
     this.requestRender = requestRender;
     this.camera = camera;
     this.settings = settings;
@@ -236,6 +241,7 @@ export class Constructions {
     const f = this.camera.getWorldDirection(this._tmp);
     const quarter = Math.abs(f.x) > Math.abs(f.z) ? (f.x > 0 ? 3 : 1) : (f.z > 0 ? 2 : 0);
     const bk = `${key}|${quarter}`;
+    this.quarter = quarter;
     if (bk !== this.bakeKey) {
       this.baked = bake(this.cells, quarter);
       this.bakeKey = bk;
@@ -267,6 +273,46 @@ export class Constructions {
   // Stamp the previewed construction into the grid. The caller snapshots for undo first.
   place() {
     if (!this.valid) return false;
+    const key = BUILDS.find((b) => b.id === this.settings.tool)?.key;
+    this._stamp(this.baked, this.origin);
+    this._anchored(key, this.baked, this.origin, this.quarter);
+    this.reroll();
+    this.hold = [...this.pointer];
+    this.valid = false;
+    this.group.visible = false;
+    return true;
+  }
+
+  // Stamp built-in construction `key` with its local origin (the middle of a
+  // built-in's base) on grid cell `feet`, turned by `quarter`, without the
+  // ghost (the world's own shrine). Returns its anchors in grid cells ([] if it has none).
+  stampAt(key, feet, { quarter = 0, seed = newSeed(), size = this.settings.radius, variant } = {}) {
+    const cells = runGenerator(BUILTINS[key], { size, seed, variant });
+    const baked = bake(cells, quarter);
+    if (!baked) return [];
+    const origin = new THREE.Vector3(Math.round(feet.x), Math.round(feet.y), Math.round(feet.z)).sub(baked.base);
+    this._stamp(baked, origin);
+    return this._anchored(key, baked, origin, quarter);
+  }
+
+  // The anchors of construction `key` stamped as `baked` at `origin`, in grid
+  // cells (each the centre of its cell's floor), handed to onPlaced.
+  _anchored(key, baked, origin, quarter) {
+    const local = ANCHORS[key];
+    if (!local) return [];
+    const anchors = local.map(([x, y, z]) => {
+      const [X, Z] = turnPoint(x, z, quarter);
+      return new THREE.Vector3(origin.x + baked.base.x + X + 0.5, origin.y + baked.base.y + y, origin.z + baked.base.z + Z + 0.5);
+    });
+    this.onPlaced?.({ key, anchors });
+    return anchors;
+  }
+
+  // Stamp already baked cells (runtime.js bake) with their low corner at grid cell origin.
+  stampBaked(s, origin) { this._stamp(s, origin); }
+
+  // One GPU pass (shaders/stamp.js) writing baked cells into the grid at origin.
+  _stamp(s, origin) {
     const sim = this.getSim(), g = sim.g;
     const gk = `${g.nx}x${g.ny}x${g.nz}`;
     if (gk !== this.gridKey) {
@@ -285,7 +331,6 @@ export class Constructions {
       });
       this.gridKey = gk;
     }
-    const s = this.baked;
     const tex = new THREE.Data3DTexture(s.data, s.w, s.h, s.d);
     tex.format = THREE.RGBAFormat;
     tex.type = THREE.FloatType;
@@ -294,18 +339,12 @@ export class Constructions {
     tex.needsUpdate = true;
     const u = this.mat.uniforms;
     u.tStamp.value = tex;
-    u.uAt.value.copy(this.origin);
+    u.uAt.value.copy(origin);
     u.uSize.value.set(s.w, s.h, s.d);
     u.uFoot.value = Math.min(s.foot, MAX_FOOT);
     u.uSeed.value = newSeed();
     sim.pass(this.mat);
     tex.dispose();
-
-    this.reroll();
-    this.hold = [...this.pointer];
-    this.valid = false;
-    this.group.visible = false;
-    return true;
   }
 
   // New seed (and, when shuffling, maybe a new variant) for the next placement.
