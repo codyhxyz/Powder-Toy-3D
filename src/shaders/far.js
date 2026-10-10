@@ -945,7 +945,11 @@ bool farNear(ivec3 b) { return texelFetch(tFarField, farTexel(b), 0).b > 0.5; }
 bool farOcc1(ivec3 n) { return texelFetch(tFar1, far1Texel(n), 0).r > 0.5; }
 bool farOcc2(ivec3 n) { return texelFetch(tFar2, far2Texel(n), 0).r > 0.5; }
 // Sun visibility at world point p from the shadow heights: ch 0 every caster, 1 those outside the window.
+// Past the world's edge it's lit: the heights hold only the world's columns, and
+// reading them clamped to the edge stretched an edge wall's shadow to the horizon.
+bool farInWorld(vec2 xz) { return all(greaterThanEqual(xz, vec2(0.0))) && all(lessThan(xz, vec2(WORLD.xz))); }
 float farSunVis(vec3 p, int ch) {
+  if (!farInWorld(p.xz)) return 1.0;
   float s = texture(tFarShadow, p.xz / vec2(WORLD.xz))[ch];
   return smoothstep(-FAR_SHADOW_SOFT, FAR_SHADOW_SOFT, p.y + FAR_SHADOW_BIAS - s);
 }
@@ -964,6 +968,8 @@ uniform sampler2D tFarShadow;
 #define FAR_SHADOW_BIAS ${glf(FAR_SHADOW_BIAS)}
 bool farUnder(vec3 p) {
   vec3 w = p + vec3(uOrigin);
+  // past the world's edge nothing casts (the heights hold only its columns: clamped, an edge wall's shade ran on forever)
+  if (any(lessThan(w.xz, vec2(0.0))) || any(greaterThanEqual(w.xz, vec2(WORLD.xz)))) return false;
   return w.y + FAR_SHADOW_BIAS < texture(tFarShadow, w.xz / vec2(WORLD.xz)).y;
 }
 float farCasterDepth(vec3 ro, vec3 rd, float t0, float t1) {

@@ -97,12 +97,13 @@ for (const b of LAB_BOXES) {
   if (b.hi[1] > WY - LAB_HEADROOM) throw new Error(`giant lab: ${b.name} reaches ${b.hi[1]}, into the headroom`);
 }
 
-// It starts on the snow's corner nearest the tank: the window holds a quarter
-// of the snow on the plate, which the lava under it heats until the snow melts
-// and boils off, and the god view (looking from +x +z, island.js
-// ISLAND_VIEW_XZ) sees the rest of the lab ahead of it in the far field: the
-// tank straight on, the sand pile to the right, the tower to the left.
-const LAB_START = [xz(PIT_SNOW.lo), xz(PIT_SNOW.lo)];
+// It starts on the tank's corner nearest the god view (which looks from +x +z,
+// island.js ISLAND_VIEW_XZ): the window holds the corner of the glass, a
+// quarter of it water under the oil slick and the rest the floor outside, so
+// the first view reads as a giant aquarium; the rest of the lab lies around it
+// in the far field. (A corner of the hanging sand would fall while the rest of
+// it, outside the window, stays hanging until the window comes.)
+const LAB_START = [xz(TANK.hi), xz(TANK.hi)];
 
 // The element at world cell (x, y, z), and its ctype: the JS twin of sceneCell.
 export function labCell(x, y, z) {
