@@ -97,14 +97,16 @@ work inside the window. Multiplayer doesn't work in World yet. Picking a scene g
 
 The dock groups elements like a periodic-table strip, each tile in the element's colour with a TPT-style abbreviation:
 
-- **Powders:** SAND, STNE, GUNP, ASH, SNOW, BGLA (broken glass), SAWD (sawdust), BRMT (scrap metal)
+- **Powders:** SAND, STNE, BCOL (broken coal), GUNP, ASH, SNOW, BGLA (broken glass), SAWD (sawdust), BRMT (scrap metal)
 - **Liquids:** WATR, ACID, OIL, LAVA
 - **Gases:** WTRV (steam), CLOD (cloud), SMKE, FIRE
-- **Solids:** WALL, METL, GLAS, ICE, WOOD, PLNT, CLNE
+- **Solids:** WALL, COAL, ROCK, LMST (limestone), SDST (sandstone), METL, GLAS, ICE, WOOD, PLNT, CLNE
 - **Tools:** HEAT, COOL, ERAS, PRES (pressure), SIGN
 - **Constructions:** HOUS (cottage, log cabin, brick, greenhouse), TREE (oak, pine, birch, palm, willow, dead), CAMP, IGLO, BRRL (oil drum, powder keg), AQUA, FNTN, AI (your own, written by a model or pasted)
 
-All element properties live in one table (`src/elements.js`) that is baked into the shaders as GLSL constants.
+All element properties live in one table (`src/elements.js`) that is baked into the shaders as GLSL constants,
+and how each one is drawn in another (`LOOKS` in `src/gfx/materials.js`). Adding an element is a row in each plus a palette
+entry; the checklist at the top of `src/elements.js` lists what is data and what still needs code.
 The rules around them (latent heats, pressure diffusion, collision restitution, tool strengths...) live in `src/physics.js`,
 which reaches the shaders as `#define`s.
 

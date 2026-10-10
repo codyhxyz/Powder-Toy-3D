@@ -36,6 +36,9 @@ export const RAD = col('rad');
 export const MELTINTO = Int8Array.from(ELEMENTS, meltInto);
 export const HARD = col('hard');
 export const BREAKINTO = Int8Array.from(ELEMENTS, breakInto);
+export const ACIDPROOF = ELEMENTS.map((e) => e.acidProof);
+export const FIZZ = col('fizz');
+export const LEAVES_ASH = ELEMENTS.map((e) => e.ash);
 // the softest breakable solid (react.js HARD_MIN)
 const HARD_MIN = Math.min(...ELEMENTS.filter((e) => e.breakInto).map((e) => e.hard));
 
@@ -44,6 +47,8 @@ export const AMBIENT = PHYS.AMBIENT;
 const isGasLike = (id) => KIND[id] === K.GAS || id === E.EMPTY;
 const isFluid = (id) => KIND[id] === K.LIQUID || isGasLike(id);
 const movable = (id) => KIND[id] !== K.SOLID;
+// what acid eats: matter that isn't acid-proof (activity.js acidEats)
+const acidEats = (id) => KIND[id] !== K.EMPTY && KIND[id] !== K.GAS && !ACIDPROOF[id];
 const airDensity = (T) => 1 - Math.min(PHYS.AIR_DENS_HI, Math.max(PHYS.AIR_DENS_LO, (T - AMBIENT) / PHYS.AIR_DENS_SPAN));
 // gases thin with heat the way air does; DENS is a gas's density at its spawn temperature (common.js)
 export const densityOf = (id, T) => {
@@ -516,11 +521,7 @@ export class World {
           if (life <= 0) { out = E.EMPTY; reset = true; }
         } else if (id === E.ACID) {
           let victims = 0;
-          for (let q = 0; q < 4; q++) {
-            const j = nid[q];
-            if (j !== E.EMPTY && j !== E.ACID && j !== E.WALL && j !== E.GLASS && j !== E.SHARDS && j !== E.WATER
-              && KIND[j] !== K.GAS) victims++;
-          }
+          for (let q = 0; q < 4; q++) if (acidEats(nid[q])) victims++;
           life -= PHYS.ACID_USE * victims;
           if (life <= 0) { out = rnd() < PHYS.ACID_TO_SMOKE ? E.SMOKE : E.EMPTY; reset = true; }
         } else if (id === E.EMPTY) {
@@ -553,17 +554,19 @@ export class World {
             T = Math.max(T, Math.min(T + BURNHEAT[id] / C, FLAMET[id]));
             P += PHYS.BURN_P;
             if (life <= 0) {
-              out = id !== E.OIL && rnd() < PHYS.ASH_SHARE ? E.ASH : E.FIRE;
+              out = LEAVES_ASH[id] && rnd() < PHYS.ASH_SHARE ? E.ASH : E.FIRE;
               reset = true;
               T = Math.max(T, PHYS.BURNT_MIN_T);
             }
           }
         }
 
-        // acid eats its neighbours
-        if (out === id && nAcid > 0 && id !== E.EMPTY && id !== E.ACID && id !== E.WALL && id !== E.GLASS
-          && id !== E.SHARDS && id !== E.WATER && KIND[id] !== K.GAS) {
-          if (rnd() < PHYS.ACID_USE * nAcid) { out = rnd() < PHYS.ACID_TO_SMOKE ? E.SMOKE : E.EMPTY; reset = true; }
+        // acid eats its neighbours; what fizzes (limestone) sets its gas free as a puff
+        if (out === id && nAcid > 0 && acidEats(id)) {
+          if (rnd() < PHYS.ACID_USE * nAcid) {
+            out = rnd() < PHYS.ACID_TO_SMOKE ? E.SMOKE : E.EMPTY; reset = true;
+            P += PHYS.STEAM_BOIL_PUFF * FIZZ[id] / PHYS.STEAM_EXPANSION;
+          }
         }
 
         if (out !== id) {
