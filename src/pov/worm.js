@@ -99,6 +99,7 @@ const CAUSE = 'Eaten by a worm';
 // life
 const RESPAWN_S = 8;                    // s dead before another comes (npc.js)
 const CORPSE_S = 4;                     // s the corpse stays
+const STRANDED_SPEED = 2;               // cells/s: out of matter and slower than this, it's stranded and its body slumps
 const SPAWN_DIST = 40;                  // cells from the player it comes up, with no spawner
 
 // look (linear albedo, lit like the volume: figure.js)
@@ -197,7 +198,7 @@ export function createWorm({ env, ai, home = () => null, size: sizeKey = 'small'
   const radii = segs.map((_, i) => R * (1 - (1 - TAIL_SHARE) * (i / (size.segments - 1))));
 
   let spawned = false, dead = false, deadTime = 0, health = size.hp, cause = null;
-  let digAt = null, digWait = 0, biteWait = 0, jaw = 0, anchored = false, buried = 0, mode = 'roam';
+  let digAt = null, digWait = 0, biteWait = 0, jaw = 0, anchored = false, buried = 0, mode = 'roam', strandedT = 0;
   let roamTo = null, noise = null, noiseT = 0, quarry = null;
   let phase = 'stalk', phaseT = 0, flew = false, committed = false, diveTo = null;
   const lungeDir = new YVector3();
@@ -419,6 +420,9 @@ export function createWorm({ env, ai, home = () => null, size: sizeKey = 'small'
     const mat = pass(sim);
     mat.uniforms.uCenter.value.set(cx, cy, cz);
     mat.uniforms.uDir.value.copy(d);
+    // it changes cells within the bite's ball only: the derived passes and the activity map redo just those (sim.js)
+    const reach = Math.max(WORM_BITE.RADIUS, WORM_BITE.DEPTH);
+    sim.touchCentres([cx - reach, cy - reach, cz - reach], [cx + reach, cy + reach, cz + reach]);
     sim.pass(mat);
     digAt = { x: p.x, y: p.y, z: p.z };
     digWait = DIG_MIN_S;
@@ -473,14 +477,17 @@ export function createWorm({ env, ai, home = () => null, size: sizeKey = 'small'
     look.lower.rotation.x = JAW_OPEN * jaw;
   }
 
-  // a dead worm's body drops where it's in the open
-  function sag(dt) {
+  // a dead or stranded worm's body drops where it's in the open (falling t s so far; the head stays put while it lives)
+  function sag(dt, t, head) {
     const g = ROUND_GRAVITY * gravityScale(env.getSim());
-    const fall = g * Math.min(deadTime, CORPSE_S) * dt;
-    for (const p of [...trail]) if (!isMatter(world.id(p.x, p.y - 1, p.z))) p.y -= fall;
-    const h = trail[trail.length - 1];
-    v.position.set(h.x, h.y, h.z);
-    v.velocity.set(0, 0, 0);
+    const fall = g * Math.min(t, CORPSE_S) * dt;
+    const last = head ? trail.length : trail.length - 1;
+    for (let k = 0; k < last; k++) { const p = trail[k]; if (!isMatter(world.id(p.x, p.y - 1, p.z))) p.y -= fall; }
+    if (head) {
+      const h = trail[trail.length - 1];
+      v.position.set(h.x, h.y, h.z);
+      v.velocity.set(0, 0, 0);
+    }
     placeSegments();
   }
 
@@ -534,13 +541,15 @@ export function createWorm({ env, ai, home = () => null, size: sizeKey = 'small'
       if (!spawned) spawn(home());
       if (dead) {
         deadTime += dt;
-        if (deadTime < CORPSE_S) sag(dt);
+        if (deadTime < CORPSE_S) sag(dt, deadTime, true);
         if (deadTime >= RESPAWN_S) spawn(home());
       } else {
         if (world.T(v.position.x, v.position.y, v.position.z) > HOT_T) hurt(BURN_RATE * dt, 'Burned', headV.set(v.position.x, v.position.y, v.position.z));
         decide(dt, w);
         move(dt);
         dig(dt);
+        strandedT = !anchored && v.velocity.length() < STRANDED_SPEED ? strandedT + dt : 0;
+        if (strandedT > 0) sag(dt, strandedT, false);
       }
       const near = !dead && bite(dt);
       look.root.visible = spawned && !(dead && deadTime >= CORPSE_S);

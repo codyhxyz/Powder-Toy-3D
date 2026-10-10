@@ -316,11 +316,13 @@ The player's own events (`player.on('hurt'|'death'|'land'|'splash'|'revive'|'rev
 
 ## NPCs (2026-10-09): enemies that use every tool
 
-NPCs come from **spawners** (`src/spawners.js`), the palette's Entities group: an **Enemy spawner** keeps one
-NPC alive on its spot while in POV (it appears there and comes back 8 s after dying; up to 8), and a **Player
-spawn** is where F drops you in (the one nearest the cursor) and where you respawn. Click a spawner again with
-its tool to remove it. Spawners stand on world cells like signs; a new scene clears them, and the lab comes
-with one enemy spawner on its open south floor. Not in worlds (the window): NPCs don't follow it yet.
+NPCs come from **spawners** (`src/spawners.js`), the palette's Entities group: an **Axeman**, **Gunner** or
+**Worm spawner** (kinds `enemy`, `gunner`, `worm`; an old `enemy` spawner is an axeman) keeps one creature of
+its kind alive on its spot while in POV (it appears there and comes back 8 s after dying; up to 8 of each), and
+a **Player spawn** is where F drops you in (the one nearest the cursor) and where you respawn. Click a spawner
+again with its tool to remove it. Spawners stand on world cells like signs; a new scene clears them, and the lab
+comes with one axeman spawner on its open south floor. Gunners and worms are spawnable only: no scene or world
+places them. Not in worlds (the window): NPCs don't follow it yet.
 Each NPC (`src/pov/npc.js`, loaded on first use) hunts the player. It has the
 player's body, the player's tools and a mind built from textbook game AI, each a solved problem:
 
@@ -371,6 +373,39 @@ Playtest: `node tools/npc-playtest.mjs [--url …] [--styles afk,gunner,brawler,
 Scripted players fight it with real input; it reports wins, time to kill both ways, damage by cause and the
 worst second. Targets: an AFK player lasts 20–60 s; a fighting player wins most duels but loses some health;
 no second takes more than half your health; a runner gets away.
+
+### Creatures (2026-10-10): Noita's worms and jetpack gunners
+
+**Worm** (`src/pov/worm.js`, Noita's Mato, `data/entities/animals/worm.xml`). Noita's numbers scaled as the
+player's are (Mina's 11 px = the body's 5.5 cells): hit radius 5 px = 2.5 cells, parts 10 px apart, hp 10 =
+2.5 of the player's lives, hunt box 256 px = 128 cells, hunting at Mina's run (Noita's speed 2 : speed_hunt 4).
+A giant size (`WORM_SIZE.giant`, worm_big.xml's 16 px parts) is in the table but has no spawner yet.
+
+| Sub-problem | How |
+|---|---|
+| Body | a chain of segments a fixed arc length apart along the head's trail (the classic snake), so the body follows the head into its hole and out of its breach; one `InstancedMesh` plus a head with hinged jaws, lit like the volume (`figure.js` `figureFrag`) |
+| Steering | the head is a Yuka `Vehicle`: seek, pursuit and wander in 3D, its turn bounded by the steering force (`maxForce` = 4 rad/s × speed) |
+| In matter or not | the CPU world model (`ai/world.js`) at the head and every segment: while the head or ¾ of the body is in matter it steers (the buried body is what it pushes off); past that it flies ballistic at the world's gravity (`ROUND_GRAVITY`), so it breaches in an arc and falls back in |
+| The hunt | Noita's pass: stalk under the body (deep enough to turn up), lunge up at it (pursuit until level, then straight on through, fast enough for a 3-body-height leap), dive on ahead and down, come round again |
+| Digging | every 2 cells the head moves (at most 30 a second), the pickaxe's GPU blow (`shaders/povTools.js` `blowFrag` with `WORM_BITE`: energy 45 in a 4-cell ball) breaks what its energy beats into its debris in place (rock → stone, wood → sawdust) and, with `PART`, pushes powder and liquid out from its axis. Nothing is deleted: it leaves a tunnel of rubble. WALL, CLONE, METAL and the box stop the head (it slides along them, axis by axis) |
+| Senses | the nearest live body (the player or an NPC: `targets.js` `allTargets`) within 128 cells, through the ground; else the last gunshot (`gun:fire`, 256 cells) or blast (`blast`, 384 cells) for 4 s; else it roams 8 cells under the surface near home |
+| Bite | a body's box within 1.2 head radii: `target.hurt(0.5, 'Eaten by a worm', heading)` (the player takes half: Noita's 25 of Mina's 100), once a second, inside `povEvents.as` so `player:hit` carries the worm's id; an `impact` with source `worm` |
+| Hurt | every segment is a target (`creature: 'worm'`), so the axe, guns, knife and blasts hit it where it is; heat over 300 °C at the head burns it. Its own `on('hurt')` gives `{ amount, cause, point }` (where bleeding plugs in), and `on('death')` |
+| Stranded | out of matter and nearly still (on a WALL floor), its body slumps under gravity; dead, it drops and stays 4 s |
+
+**Jetpack gunner** (`npc.js` with `style: 'gunner'`, mind `ai/gunner.js`, Noita's jetpack Hiisi): the axeman's
+body, kit and `Agent` with another set of strategies: **Engage** (it sees you), then brain.js's Hunt, Extinguish
+and Wander. Engage keeps its range (backs off inside 16 cells, closes beyond 40, strafes in between, switching
+side every 1.2–2.8 s), flies (jumps, then holds the jet under a vantage two body heights over your feet and lets
+it go above, so it hovers) and lands when the tank is under 20% until it's 95% full again (the tank refills in
+0.5 s on the ground: player.js), and shoots: the pistol, SMG (0.6 s bursts) or sniper rifle, by Raven's fuzzy
+distance rules, with the axeman's reaction delay, warning shot and aim ramp. It wears olive with amber eyes.
+`npc.debug` adds `style`, `range` (strafe, back off, close in), `flight` (take off, hover, refuel, ground), `fuel`.
+
+Check: `node tools/creatures-check.mjs [--port …] [--shot file.jpg]` (a dev server; AC power): a worm spawned on
+rock tunnels toward you, breaches and bites, its tunnel is stone rubble (rock + stone conserved), WALL stops it,
+the pistol kills it; the gunner flies, refuels, shoots and backs off when you close in. The worm's movement also
+runs on the CPU against a fake world model, no GPU or browser: `node tools/worm-cpu-check.mjs [wall]`.
 
 ## Perks (2026-10-10): Noita's, in a falling-sand world
 
