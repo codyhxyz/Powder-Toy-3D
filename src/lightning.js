@@ -34,7 +34,7 @@ const floatTarget = (w, h) => new THREE.WebGLRenderTarget(w, h, {
 
 export function createLightning({ renderer }) {
   let mats = null, targets = null, simId = -1;
-  let nextPoll = 0, lastStrike = -Infinity, busy = false;
+  let nextPoll = 0, lastStrike = -Infinity, busy = false, ready = false;
   const rng = Math.random;
   const api = {
     onConductorHit: null,   // (sim, cell [x, y, z], id) => void: el-elec wires its spark here
@@ -73,6 +73,16 @@ export function createLightning({ renderer }) {
     nextPoll = sim.frame + STORM.POLL_STEPS;
     lastStrike = -Infinity;
     busy = false;
+    // compile in the background (KHR_parallel_shader_compile, as pov/ballistics.js
+    // does), so storms never stall a frame; a tool strike before then compiles
+    // its pass on the spot
+    ready = false;
+    const built = mats, keep = sim.quad.material;
+    Promise.all(Object.values(mats).map((m) => {
+      sim.quad.material = m;
+      return renderer.compileAsync(sim.scene, sim.camera);
+    })).then(() => { if (mats === built) ready = true; }).catch(() => {});
+    sim.quad.material = keep;
   }
   function dispose() {
     if (mats) Object.values(mats).forEach((m) => m.dispose());
@@ -125,7 +135,7 @@ export function createLightning({ renderer }) {
   // Storms: call once per frame after the steps (host only).
   function update(sim) {
     ensure(sim);
-    if (busy || sim.frame < nextPoll) return;
+    if (!ready || busy || sim.frame < nextPoll) return;
     nextPoll = sim.frame + STORM.POLL_STEPS;
     if (sim.frame - lastStrike < STORM.MIN_STEPS) return;
     busy = true;
