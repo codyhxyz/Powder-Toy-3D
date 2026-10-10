@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { CELL_M } from '../../scale.js';
+import { ELEMENTS, E, K } from '../../elements.js';
 import { GRAVITY } from './physics.js';
 import { hullSamples, hullMatter } from './matter.js';
 import { yawQuat } from './jeep.js';
@@ -60,7 +61,7 @@ const AIR_DRAG = 0.5 * 1.2 * 0.5 * 0.9;  // ½ ρ_air C_d A (N per (m/s)²): a r
 const BANK = 0.35;                       // rad of lean (drawn) at full yaw rate
 const PITCH_SHOW = 0.6;                  // share of the ground's slope under it the model takes on (drawn)
 const SHOW_EASE = 8;                     // 1/s, how fast the drawn lean follows
-const LIQUID_PROBE = 0.5;                // cells under a ray's hit where it looks for liquid (is it skimming?)
+const LIQUID_PROBE = 3;                  // cells under a ray's hit (on the smoothed ground) it looks for the surface: is it skimming?
 const HULL_VOLUME = 0.25;                // m³ it displaces if it ever sinks (it floats on its fans)
 const HULL_SAMPLES = [2, 1, 3];
 
@@ -68,6 +69,16 @@ const COLOR = {
   body: '#5c6670', trim: '#2c3036', seat: '#2a2320', red: '#c8352b', blue: '#2f6fd0', neutral: '#d0a030',
   glow: [1.2, 4.5, 7], robe: '#5a3d8a', face: '#121014', eyes: [4, 7, 8],
 };
+
+// the first thing under (x, y, z) (cells), within LIQUID_PROBE: is it a liquid?
+function overLiquid(cells, x, y, z) {
+  for (let d = 0; d < LIQUID_PROBE; d++) {
+    const id = cells.id(x, y - d - 0.5, z);
+    if (id === E.EMPTY || (id >= 0 && ELEMENTS[id].kind === K.GAS)) continue;
+    return id >= 0 && ELEMENTS[id].kind === K.LIQUID;
+  }
+  return false;
+}
 
 export function buildHoverbike(R, phys, look, { at, yaw, team, key }) {
   const { world } = phys;
@@ -108,7 +119,7 @@ export function buildHoverbike(R, phys, look, { at, yaw, team, key }) {
         if (!hit) return;
         const d = hit.timeOfImpact;
         grounded++;
-        if (cells.isLiquid(o.x / CELL_M, (o.y - d) / CELL_M - LIQUID_PROBE, o.z / CELL_M)) liquid++;
+        if (overLiquid(cells, o.x / CELL_M, (o.y - d) / CELL_M, o.z / CELL_M)) liquid++;
         if (z > 0) { front += d; nf++; } else { back += d; nb++; }
         const f = K_RAY * (HOVER_HEIGHT - d) - C_RAY * lv.y;
         Fy += THREE.MathUtils.clamp(f, 0, MAX_RAY_FORCE);

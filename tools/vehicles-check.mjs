@@ -155,7 +155,9 @@ try {
     await place('jeep', 64 * 0.3, 1.2, 10 * 0.3, 0);
     await settle(300);
     await ev(async (team) => {
-      const { addTarget } = await import('/src/pov/targets.js');
+      // the app's own instance of targets.js (after an edit, Vite serves it as targets.js?t=…)
+      const url = performance.getEntriesByType('resource').map((e) => e.name).filter((n) => n.includes('/src/pov/targets.js')).pop() ?? '/src/pov/targets.js';
+      const { addTarget } = await import(url);
       window.__hurt = [];
       const z0 = 40;
       window.__dummyOff = addTarget({ id: 'dummy', team, alive: true,
