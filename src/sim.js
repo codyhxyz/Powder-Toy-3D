@@ -197,11 +197,15 @@ const simOrigins = new WeakSet();
 // GPU simulation driver: owns the state ping-pong targets and runs passes.
 export class Simulation {
   // windowed: the grid is a window of a larger world (docs/scaling.md D11; app.js World)
-  constructor(renderer, nx, ny, nz, { windowed = false } = {}) {
+  // windowed: a window of a larger world; world: that world's size (its far
+  // layout goes into the GI, shaders/far.js WORLD_SIZE: a box's is the default
+  // world's, so a box and that world share the program)
+  constructor(renderer, nx, ny, nz, { windowed = false, world = WORLD_SIZE } = {}) {
     this.renderer = renderer;
     this.id = nextSimId++;   // tells a rebuilt simulation from the old one
     this.g = gridLayout(nx, ny, nz);
     this.g.windowed = windowed;   // a window of a larger world (for the app: every shader compiles the same either way)
+    this.world = world;           // the world size whose far layout the GI and the app's shadow pass hold
     const g = this.g;
     this.frame = 0;
     this.paints = 0;   // brush strokes applied (the paint pass's random stream)
@@ -385,7 +389,7 @@ export class Simulation {
       brickDist: [0, 1, 2].map((axis) => rawMat(brickDistFrag(g, axis), { tSrc: { value: null } })),
       giSource: rawMat(giSourceFrag(g), { ...giUniforms(), ...giProbeUniforms() }),
       // the far field's part is in for a box too, off (shaders/far.js WORLD_SIZE; world/far.js attach turns it on)
-      giGather: rawMat(giGatherFrag(g, farGIGLSL(farLayout(WORLD_SIZE))), {
+      giGather: rawMat(giGatherFrag(g, farGIGLSL(farLayout(world))), {
         ...giUniforms(), tGIRad: { value: null }, tGICov: { value: null }, tGIDir: { value: null },
         uParity: { value: -1 },
         uFar: { value: false }, tFar: { value: null }, tFarTop: { value: null }, tFarShadow: { value: null }, uSea: { value: 0 },

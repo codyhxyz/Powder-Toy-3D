@@ -14,7 +14,7 @@
 //      shapes, tools/far-check.mjs);
 //   4. stills: a god view of each scene once its far field is built, in one
 //      montage.
-// usage: node tools/scene-check.mjs [outDir] [--port 5411] [--scenes labWorld,patchwork]
+// usage: node tools/scene-check.mjs [outDir] [--port 5411] [--scenes labWorld,giantVolcano]
 //   (a vite server on that port: ./node_modules/.bin/vite --port 5411 --strictPort)
 import { chromium } from 'playwright';
 import { mkdirSync, writeFileSync } from 'fs';
