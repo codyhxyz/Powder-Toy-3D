@@ -4,7 +4,9 @@ import { prelude, stateOutGLSL, copyThroughMain } from './common.js';
 //
 // 1. Probe: copies a small box of cells around the body into an RGBA32F target
 //    the player reads back asynchronously, one texel per cell:
-//    (element id, temperature °C, air pressure, life). Cells outside the grid
+//    (element id, temperature °C, air pressure, spark). spark is the cell's
+//    electricity (src/electricity.js cellSpark): 0 unless it is live, else the
+//    spark's strength as a share of a full one, (0, 1]. Cells outside the grid
 //    read as PROBE_OUTSIDE.
 // 2. Coupling: a full-grid pass that gives loose matter inside the body's box
 //    the body's velocity plus a push outward and ahead, so wading leaves a wake, a body
@@ -39,7 +41,7 @@ void main() {
   ivec3 q = uBoxLo + ivec3(f.x, f.y / PROBE_Z, f.y % PROBE_Z);
   if (!inGrid(q)) { oC = vec4(PROBE_OUTSIDE, AMBIENT, 0.0, 0.0); return; }
   vec4 a = fetchA(q);
-  oC = vec4(float(eid(a)), a.y, fetchB(q).w, a.z);
+  oC = vec4(float(eid(a)), a.y, fetchB(q).w, cellSpark(a));
 }
 `;
 
