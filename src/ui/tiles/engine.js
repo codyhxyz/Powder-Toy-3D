@@ -460,6 +460,9 @@ export class World {
         // the highest air pressure on me: my own, and my open neighbours' (a solid holds none)
         let pOn = KIND[id] === K.SOLID ? PHYS.P_MIN : P0;
         for (let q = 0; q < 4; q++) if (KIND[nid[q]] !== K.SOLID) pOn = Math.max(pOn, nP[q]);
+        // set off by a hit or a blast's pressure: an explosive goes off rather than break
+        const crushP = BLAST[id * 4 + 3];
+        const setOff = shocked || (crushP > 0 && pOn > crushP);
 
         // reactions (elements.js REACTIONS), decided from the input: this step
         // every cell's partner is its neighbour along axis frame % 2, toward +
@@ -571,7 +574,7 @@ export class World {
           T += rxT;
           P += rxP;
           if (rxOut !== id) { out = rxOut; reset = true; ctype = 0; }
-        } else if (broke) {
+        } else if (broke && !setOff) {
           // debris keeps temperature, life and ctype, takes the fracture work as heat and the hits' momentum
           out = BREAKINTO[id];
           T += fractureE * PHYS.KE_TO_HEAT / CAP[out];
@@ -676,8 +679,7 @@ export class World {
             for (let q = 0; q < 4; q++) hotTouch ||= !isGasLike(nid[q]) && nT[q] >= IGNITE[id];
             lit = T >= IGNITE[id] || hotTouch || (nFire > 0 && rnd() < PHYS.BLAST_FIRE);
           }
-          const crushP = BLAST[id * 4 + 3];
-          if (lit || shocked || (crushP > 0 && pOn > crushP)) {
+          if (lit || setOff) {
             out = pickOut(INTO[id * 4 + PH.BLAST], rnd);
             ctype = ctypeOf(out, OF[id * 4 + PH.BLAST], id);
             reset = true; T = BLAST[id * 4 + 1]; P += BLAST[id * 4];

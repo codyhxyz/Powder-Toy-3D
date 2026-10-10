@@ -218,6 +218,8 @@ void main() {
   // the highest air pressure on me: my own, and my open neighbours' (a solid holds none)
   float pOn = KIND[id] == K_SOLID ? P_MIN : P0;
   for (int i = 0; i < 6; i++) if (KIND[nid[i]] != K_SOLID) pOn = max(pOn, nb[i].w);
+  // set off by a hit or a blast's pressure: an explosive goes off rather than break
+  bool setOff = shocked || (BLAST[id].w > 0.0 && pOn > BLAST[id].w);
 
   // ---- reactions (elements.js REACTIONS), decided from this pass's input ----
   // This step every cell's partner is its face neighbour along axis
@@ -374,7 +376,7 @@ void main() {
     T += rxT;
     P += rxP;
     if (rxOut != id) { nidOut = rxOut; reset = true; ctype = 0.0; }
-  } else if (broke) {
+  } else if (broke && !setOff) {
     // debris keeps my temperature, life (fuel, banked latent heat) and ctype,
     // takes the fracture work as heat and flies off with the hits' momentum;
     // it reacts as itself from the next step
@@ -482,7 +484,7 @@ void main() {
       for (int i = 0; i < 6; i++) hotTouch = hotTouch || (!isGasLike(nid[i]) && na[i].y >= IGNITE[id]);
       lit = T >= IGNITE[id] || hotTouch || (nFire > 0 && rnd(rs) < BLAST_FIRE);
     }
-    if (lit || shocked || (BLAST[id].w > 0.0 && pOn > BLAST[id].w)) {
+    if (lit || setOff) {
       nidOut = pickOut(INTO[id][PH_BLAST], rs);
       ctype = ctypeOf(nidOut, OF[id][PH_BLAST], id);
       reset = true; T = BLAST[id].y; P += BLAST[id].x;

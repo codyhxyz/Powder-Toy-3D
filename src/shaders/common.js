@@ -1,4 +1,4 @@
-import { elementsGLSL, ELEMENTS, K } from '../elements.js';
+import { elementsGLSL, ELEMENTS, K, REACTIONS } from '../elements.js';
 import { incandescenceGLSL } from '../gfx/incandescence.js';
 import { physicsGLSL, PHYS } from '../physics.js';
 import { CELL_M } from '../scale.js';
@@ -65,7 +65,9 @@ export const FLAG = { SELF: 1, NEAR: 2, MATTER: 4, DIRTY: 8 };
 // is that light, an air cell counts only as air there, and air that warms,
 // cools or swaps with other air changes no neighbour's test.
 const AIR_DENS_MAX = 1 - PHYS.AIR_DENS_LO;
-const AIR_T_IN_NEAR = ELEMENTS.some((e) => (e.kind === K.POWDER || e.kind === K.LIQUID) && e.dens <= AIR_DENS_MAX);
+// A reaction with air (elements.js REACTIONS naming EMPTY) reads its temperature too (its gate).
+const AIR_T_IN_NEAR = ELEMENTS.some((e) => (e.kind === K.POWDER || e.kind === K.LIQUID) && e.dens <= AIR_DENS_MAX)
+  || REACTIONS.some((r) => r.a === 'EMPTY' || r.b === 'EMPTY');
 
 export function prelude(g) {
   return /* glsl */ `
