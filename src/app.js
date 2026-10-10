@@ -188,6 +188,35 @@ function save() {
 // does the antialiasing upstream), so it gets neither MSAA nor a depth buffer:
 // both would only cost memory and bandwidth (~165 MB at 2880×1800).
 const renderer = new THREE.WebGLRenderer({ antialias: false, depth: false, alpha: true, powerPreference: 'high-performance' });
+let graphicsFailure = null;
+let invalidateGpuWork = () => {};
+function stopGraphics(error) {
+  if (!graphicsFailure) {
+    error.name = 'GraphicsFailure';
+    graphicsFailure = error;
+    // Also stop direct tool/async draws outside the frame loop. A failed
+    // state pass must throw before its caller swaps state histories.
+    renderer.render = () => { throw graphicsFailure; };
+    invalidateGpuWork();
+    const el = document.getElementById('error');
+    el.style.display = 'flex';
+    el.textContent = `${error.message}\n\nRendering and simulation stopped. Reload to restart.\nUnsaved simulation changes may be lost.`;
+    console.error('Graphics stopped:', error);
+  }
+  return graphicsFailure;
+}
+renderer.domElement.addEventListener('webglcontextlost', () => {
+  // Three restores its renderer, not our GPU-only state, undo history, or
+  // manually attached array layers. Never resume those as an intact world.
+  stopGraphics(new Error('The browser lost the WebGL context. The cause is not available from this event.'));
+});
+renderer.debug.onShaderError = (gl, program, vertex, fragment) => {
+  const name = renderer.info.programs.find(p => p.program === program)?.name || 'unnamed';
+  const logs = [
+    gl.getProgramInfoLog(program), gl.getShaderInfoLog(vertex), gl.getShaderInfoLog(fragment),
+  ].filter(Boolean).join('\n');
+  throw stopGraphics(new Error(`GPU shader failed: ${name}.\n${logs || 'The graphics driver returned no diagnostic text.'}`));
+};
 renderer.setClearColor(0x000000, 0);
 // Keep the existing CSS-native output; adaptation only changes scene pixels.
 const pixelRatio = Math.min(devicePixelRatio, 1);
@@ -252,12 +281,21 @@ const rig = createCameraRig(camera, controls, isTyping);
 let sim, volume, edges, pickMat, shadowMat, shadowTarget, scale;
 // world mode (a WORLDS size): the world, the window over it, and the world cell (x, z) at the scene's origin
 let worldMode = null, win = null;
+invalidateGpuWork = () => {
+  sim?.wake(); // reject an outstanding idle certification
+  birds?.probe.suspend();
+  if (win) {
+    win.epoch++; // reject readbacks without clearing surviving CPU edits
+    if (win.far?.detail) win.far.detail.epoch++;
+  }
+};
 const anchor = new THREE.Vector2();
 const pickTarget = new THREE.WebGLRenderTarget(2, 1, { type: THREE.FloatType, depthBuffer: false });
 const pickBuf = new Float32Array(8);
 let pickPending = false;
 
 function build() {
+  if (graphicsFailure) throw graphicsFailure;
   pov?.exit(true);   // the body lives in the old grid
   pov?.worldReplaced();
   // The old grid's materials, disposed of only once the new grid's have
@@ -516,6 +554,7 @@ function setGrid(dims) {
 
 // Switch the grid to `size` (SIZES or WORLDS) and rebuild.
 function setSize(size) {
+  if (graphicsFailure) throw graphicsFailure;
   settings.size = size;
   if (size in SIZES && !ARENA_GRIDS.has(size)) boxSize = size;
   build();
@@ -531,6 +570,7 @@ function useMap(m) {
 // The start menu's Start over a running game (src/main.js): the map, loaded
 // fresh (the current one starts over), then its gamemode.
 function openMap(key, mode = 'sandbox') {
+  if (graphicsFailure) throw graphicsFailure;
   const m = mapByKey(key);
   if (!m || mp.guard() || (isWorld(m) && mp.guardWorld())) return false;
   if (!isWorld(m) && settings.size === m.size) loadPreset(m.preset);   // (undoable, as any box scene)
@@ -564,6 +604,7 @@ const dimsName = (d) => (d.every((n) => n === d[0]) ? `${d[0]}^3` : d.join(' × 
 const millions = (d) => `${(d[0] * d[1] * d[2] / 1e6).toFixed(1)}M`;
 
 function loadPreset(name, undoable = true) {
+  if (graphicsFailure) throw graphicsFailure;
   if (undoable && mp.guard()) return false;
   if (undoable && !win) sim.snapshot();
   settings.preset = name;
@@ -1300,11 +1341,14 @@ function saveScreenshot() {
 const camState = () => (!pov?.active || pov.mode === 'exiting' ? 'god' : pov.camera.third ? 'third' : 'first');
 let camShown = '';
 function frame(now) {
+  if (graphicsFailure) return;
   requestAnimationFrame(frame);
   if (testParked) return;   // leave browser/UI rAF alone (Playwright actionability needs it)
-  tick(now);
+  try { tick(now); }
+  catch (error) { if (error !== graphicsFailure) throw error; }
 }
 function tick(now, renderOnly = false) {
+  if (graphicsFailure) throw graphicsFailure;
   if (!renderOnly && capCheck.feed(now, lastIdle)) hud.toast(CAP_NOTICE, CAP_NOTICE_MS);
   const t0 = performance.now();
   lastIdle = false;
@@ -1549,7 +1593,7 @@ try {
     get arena() { return arenaLayout; },
     get win() { return win; },
     // world mode: start the world over with the window at `origin` (world cells)
-    worldLoad(origin) { win.load(origin); placeVolume(); post.reset(); pov?.worldReplaced(); },
+    worldLoad(origin) { if (graphicsFailure) throw graphicsFailure; win.load(origin); placeVolume(); post.reset(); pov?.worldReplaced(); },
     setSize,         // switch the grid (a SIZES or WORLDS key), keeping the scene settings
     openMap,         // as the start menu's Start does (a maps.js key, a gamemode)
     undo,            // as ⌘Z does
@@ -1566,6 +1610,7 @@ try {
       park() { testParked = true; },
       resume() { clock.reset(); testParked = false; },
       step(count = 1) {
+        if (graphicsFailure) throw graphicsFailure;
         if (!testParked || mp.isGuest) throw new Error('Park a local test page before stepping');
         if (!Number.isSafeInteger(count) || count < 0 || count > 10000) throw new RangeError('steps must be an integer from 0 to 10000');
         for (let i = 0; i < count; i++) sim.step();
@@ -1586,9 +1631,11 @@ try {
   requestAnimationFrame(frame);
   bootReady();
 } catch (err) {
-  const el = document.getElementById('error');
-  el.style.display = 'flex';
-  el.textContent = String(err.stack || err);
+  if (err !== graphicsFailure) {
+    const el = document.getElementById('error');
+    el.style.display = 'flex';
+    el.textContent = String(err.stack || err);
+  }
   throw err;
 }
 

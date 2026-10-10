@@ -18,6 +18,15 @@ Before render-idle, the controller restores the selected quality once.
 The simulation stops GPU passes only after an asynchronous read confirms that all activity channels are zero.
 External writes and relevant settings invalidate that confirmation.
 
+## GPU failures
+
+A context loss or shader link failure stops rendering and simulation.
+Browser context restoration does not restore GPU simulation contents or custom framebuffer attachments.
+The app therefore requires an explicit reload instead of continuing with invalid state.
+Pending results cannot overwrite surviving CPU edits, and failed uploads retain their stored edits.
+An optional bird probe stops after one readback failure instead of retrying indefinitely.
+These safeguards do not identify the cause of a driver reset.
+
 ## Checks
 
 Run the CPU checks:
@@ -29,6 +38,7 @@ node tools/far-lod-check.mjs
 node tools/material-lod-check.mjs
 node tools/resolution-check.mjs
 node tools/check-shaders.mjs
+node tools/gpu-readback-check.mjs
 ```
 
 Start a dedicated server:
@@ -42,6 +52,7 @@ Run the browser checks:
 ```sh
 node tools/idle-check.mjs 5493
 node tools/world-detail-check.mjs 5493 /tmp/world-detail
+node tools/gpu-failure-check.mjs 5493
 ```
 
 The detail check measures coarse versus cached rendering, saves screenshots, and checks edit preservation after a window shift.

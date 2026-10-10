@@ -67,6 +67,7 @@ const KIND = ELEMENTS.map((e) => e.kind);
 export function createBirdWorld({ renderer, getSim, getWin }) {
   let g = null, mat = null, target = null, buf = null, spare = null;
   let busy = false, age = Infinity;
+  let generation = 0, disabled = false, disposed = false;
   // the last probe: its grid, origin and columns
   let data = null, nx = 0, nz = 0, ox = 0, oz = 0, perchCols = [];
   const groundCache = new Map();
@@ -166,21 +167,26 @@ export function createBirdWorld({ renderer, getSim, getWin }) {
     update(dt) {
       age += dt;
       const sim = getSim();
-      if (!sim || busy || age < PROBE_S) return;
+      if (!sim || busy || disabled || disposed || age < PROBE_S || renderer.getContext().isContextLost()) return;
       ensure(sim);
       mat.uniforms.tA.value = sim.stateA;
       sim.run(mat, target);
       renderer.setRenderTarget(null);
       busy = true;
       age = 0;
-      const o = sim.origin.clone(), from = sim;
+      const o = sim.origin.clone(), from = sim, token = generation;
       renderer.readRenderTargetPixelsAsync(target, 0, 0, target.width, target.height, buf)
-        .then(() => { if (from === getSim()) ingest(from, o); })
-        .catch((err) => console.error('bird probe readback failed', err))
+        .then(() => { if (token === generation && from === getSim()) ingest(from, o); })
+        .catch((err) => {
+          if (token !== generation) return;
+          disabled = true; generation++;
+          console.error('Bird probe disabled after GPU readback failure', err ?? 'The GPU fence failed without diagnostic text.');
+        })
         .finally(() => { busy = false; });
     },
     // a new grid or scene: forget the old one's columns
-    reset() { data = null; perchCols = []; groundCache.clear(); groundScene = null; age = Infinity; },
-    dispose() { mat?.dispose(); target?.dispose(); },
+    suspend() { generation++; disabled = true; },
+    reset() { generation++; disabled = false; data = null; perchCols = []; groundCache.clear(); groundScene = null; age = Infinity; },
+    dispose() { generation++; disposed = true; mat?.dispose(); target?.dispose(); },
   };
 }

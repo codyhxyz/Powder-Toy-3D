@@ -279,7 +279,7 @@ export class WorldWindow {
     const A = new Float32Array(STAGE_W * rows * 4), B = new Float32Array(STAGE_W * rows * 4);
     this.editIdx.fill(0);
     slots.forEach(([bx, by, bz, key], s) => {
-      decodeBrick(this.store.take(key), A, s * BRICK_FLOATS, B, s * BRICK_FLOATS);
+      decodeBrick(this.store.map.get(key), A, s * BRICK_FLOATS, B, s * BRICK_FLOATS);
       this.editIdx[brickTexel(g, bx, by, bz)] = s + 1;
     });
     this.editIdxTex.needsUpdate = true;
@@ -288,9 +288,13 @@ export class WorldWindow {
     const u = this.mats.edit.uniforms;
     u.tEditA.value = texA;
     u.tEditB.value = texB;
-    sim.pass(this.mats.edit);
-    texA.dispose();
-    texB.dispose();
+    try {
+      sim.pass(this.mats.edit);
+      if (!this.renderer.getContext().isContextLost()) for (const [, , , key] of slots) this.store.drop(key);
+    } finally {
+      texA.dispose();
+      texB.dispose();
+    }
     return slots.length;
   }
 
