@@ -996,9 +996,7 @@ void main() {
 const FAR_HAZE_VISIBILITY_M = 12000;   // m: meteorological range of the air (a clear day with some haze)
 const KOSCHMIEDER = 3.912;             // ln(1/0.02): the 2 % contrast threshold of the visibility definition
 export const FAR_VIEW = {
-  MAX_STEPS: 400,          // march iterations per ray (node skips and brick segments)
-  COARSE_T: 400,           // cells: past this a set node is walked two bricks at a time (a brick is a pixel or
-                           // two there, and the field has no feature narrower than its cube but thin matter)
+  MAX_STEPS: WORLD_SIZE.reduce((n, side) => n + side / BRICK, 16), // enough brick exits for a world diagonal
   NUDGE: 0.01,             // a ray restarts this far past a node's exit
   NEAR: 0.2,               // a brick segment whose ends both read below this gets no middle sample
   ROOT_STEPS: 4,           // regula falsi steps on a crossing
@@ -1068,8 +1066,9 @@ uniform float uSea;           // sea level (cells): the open sea beyond the worl
 uniform float uFloor;         // the sea floor beyond the world, or the plain (cells)
 in vec4 vFar;
 uniform sampler2D tDetailMask;
-// Render chunks are independent of simulation bricks: 0 coarse, 1 opaque
-// mesh without liquids, 2 mesh plus the far liquid renderer.
+uniform sampler2D tDetailDepth;
+uniform bool uDetailHasDepth;
+// Render chunks are independent of simulation bricks: 1 dry, 2 with liquids.
 #define DETAIL_CHUNK 32
 int detailAt(vec3 p) {
   if (any(lessThan(p.xz, vec2(0.0))) || any(greaterThanEqual(p.xz, vec2(WORLD.xz)))) return 0;
@@ -1077,7 +1076,9 @@ int detailAt(vec3 p) {
 }
 float farTraceMatter(vec3 p) {
   vec4 v = farSample(p);
-  return detailAt(p) > 0 ? v.g : v.r + v.g;
+  // Keep the existing combined-field liquid surface, including shallow
+  // water (e.g. opaque .3 + liquid .4). Only its opaque hits are replaced.
+  return detailAt(p) > 0 && v.r >= v.g ? 0.0 : v.r + v.g;
 }
 ${mesh ? 'in vec3 vWorld, vNormal;\nflat in float vElement;' : ''}
 ${cloudsGLSL}
@@ -1279,7 +1280,7 @@ vec3 farShadeMaterial(vec3 p, vec3 n, vec3 rd, float sunVis, int id) {
   vec3 dSun = kD * mix(vec3(lam), wrap * m.sssCol, m.sss);
   float cav = clamp(m.cav, 0.0, 1.0);
   vec3 c = SUN_COL * sunVis * (dSun * (SUN_CAV_MIN + SUN_CAV_GAIN * cav) + PI_S * ggxSpec(ns, v, uSun, rough, F0));
-  vec3 ambient = skyAmbient(ns) * farAO(p, n) * cav;
+  vec3 ambient = skyAmbient(ns) * ${mesh ? '1.0' : 'farAO(p, n)'} * cav;
   return c + kD * ambient + m.emit;
 }
 
@@ -1359,7 +1360,9 @@ void main() {
   if (all(greaterThanEqual(p.xz, vec2(uWinLo.xz))) && all(lessThan(p.xz, vec2((uWinLo + GRID).xz)))) discard;
   vec3 n = normalize(vNormal);
   float sunVis = farSunLit(p, 0);
-  vec3 col = farShadeMaterial(p, n, rd, sunVis * (sunVis > 0.0 && dot(n, uSun) > 0.0 ? farSunRay(p, n) : 1.0), int(vElement + 0.5));
+  // The coarse crown's density is not this leaf's shadow: sampling it here
+  // would turn detailed branches black inside the old, inflated silhouette.
+  vec3 col = farShadeMaterial(p, n, rd, sunVis, int(vElement + 0.5));
   gl_FragColor = vec4(farHaze(col, rd, length(p - ro)), 1.0);
 }
 ` : `
@@ -1372,8 +1375,16 @@ void main() {
   if (tw.x > tw.y || tw.y < 0.0) tw = vec2(NO_HIT);
   vec2 tb = farSlab(ro, inv, vec3(0.0), vec3(WORLD));
   float t0 = max(tb.x, 0.0), t1 = tb.y;
+  float cached = 0.0;
+  if (uDetailHasDepth) {
+    cached = texelFetch(tDetailDepth, ivec2(gl_FragCoord.xy), 0).r;
+    if (cached > 0.0) t1 = min(t1, cached);
+  }
   bool cut = false;
   float tHit = t0 < t1 ? farMarch(ro, rd, t0, t1, tw.x, tw.y, cut) : NO_HIT;
+  // The opaque mesh will fill this pixel. Do not shade an ocean or sky
+  // behind it only to overwrite that work in the next draw.
+  if (cached > 0.0 && tHit == NO_HIT) discard;
 
   // the open sea beyond the world (and a march that ran out of steps over it).
   // A world without one (uSea 0: world/scenes) has an open plain beyond it at
@@ -1407,11 +1418,11 @@ void main() {
       // which the volume draws see-through: the water body's own light, as
       // deep water shows, so the window's water carries on past its side.
       vec4 v = farSample(p);
-      col = detailAt(p) == 0 && v.r >= v.g ? ALBEDO[farIds(p).x] * skyAmbient(-rd) : farInScatter(farLiquidOf(farIds(p).y), farSunLit(p, 0));
+      col = v.r >= v.g ? ALBEDO[farIds(p).x] * skyAmbient(-rd) : farInScatter(farLiquidOf(farIds(p).y), farSunLit(p, 0));
     } else {
       vec4 v = farSample(p);
       float sunVis = farSunLit(p, 0);
-      if (detailAt(p) > 0 || v.g > v.r) col = farLiquid(p, rd, farLiquidOf(farIds(p - vec3(0.0, FAR_ID_INSET, 0.0)).y), sunVis, -1.0);
+      if (v.g > v.r) col = farLiquid(p, rd, farLiquidOf(farIds(p - vec3(0.0, FAR_ID_INSET, 0.0)).y), sunVis, -1.0);
       else {
       vec3 n = farNormal(p, 0);
       col = farShadeMaterial(p, n, rd, sunVis * (sunVis > 0.0 && dot(n, uSun) > 0.0 ? farSunRay(p, n) : 1.0), farElement(p, n));
