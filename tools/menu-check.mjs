@@ -3,7 +3,7 @@
 // its size; Esc brings the menu back over the game; Load map switches to a
 // world; the drawer's Map row names it. Screenshots go to --out.
 // Needs a dev server: `npx vite --port 5733 --strictPort`, then
-// usage: node tools/menu-check.mjs [--port 5733] [--out dir]
+// usage: node tools/menu-check.mjs [--port 5733] [--base https://tpt3d.codyh.xyz] [--out dir]
 import { chromium } from 'playwright';
 import { mkdirSync } from 'fs';
 import { join } from 'path';
@@ -12,6 +12,7 @@ const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
 const port = opt('port', '5733');
 const out = opt('out', 'menu-shots');
+const base = opt('base', `http://localhost:${port}`);   // the live site too
 const LOAD_TIMEOUT = 180000;   // ms: a cold shader compile
 const MENU_MS = 1500;          // ms: the most the bare page may take to show the menu (dev server, unbundled)
 mkdirSync(out, { recursive: true });
@@ -25,7 +26,7 @@ const results = [];
 const check = (name, ok, detail = '') => { results.push(ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `: ${detail}` : ''}`); };
 
 const t0 = Date.now();
-await p.goto(`http://localhost:${port}/`);
+await p.goto(`${base}/`);
 await p.waitForSelector('.mm.open .mm-card img');
 const menuMs = Date.now() - t0;
 check('menu up', menuMs < MENU_MS, `${menuMs} ms`);
@@ -71,7 +72,7 @@ await p.click('.mm-resume');
 check('Resume closes it', await p.$eval('.mm', (e) => !e.classList.contains('open')));
 
 // a direct link skips the menu, as the test tools and invites need
-await p.goto(`http://localhost:${port}/?map=damValley`);
+await p.goto(`${base}/?map=damValley`);
 await p.waitForFunction(() => window.__app?.sim, null, { timeout: LOAD_TIMEOUT });
 const s2 = await p.evaluate(() => ({ size: window.__app.settings.size, preset: window.__app.settings.preset, menu: !!document.querySelector('.mm.open') }));
 check('?map=damValley boots straight into it', s2.size === 'valley' && s2.preset === 'damValley' && !s2.menu, JSON.stringify(s2));

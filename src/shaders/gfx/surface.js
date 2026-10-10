@@ -413,29 +413,30 @@ vec4 reliefHeight(int id, vec3 p, vec3 n, float fp) {
   return vec4(0.0);
 }
 
-// Gravel (E_STONE): its pebbles' rock types and look, shared by the pebble
-// texture (matOf) and the pebbles drawn as geometry up close (gfx/grains.js),
-// so the hand-off between them keeps the same stones.
-// rock types (relative albedo; their mean is ~1)
-const vec3 PEB_GRANITE = vec3(1.0, 1.02, 1.05), PEB_BASALT = vec3(0.6, 0.6, 0.63);
-const vec3 PEB_SANDSTONE = vec3(1.22, 1.08, 0.92), PEB_QUARTZ = vec3(1.3), PEB_RUST = vec3(1.15, 0.92, 0.8);
-// cumulative shares of the rock types (the rest is rust)
-const float PEB_GRANITE_UPTO = 0.35, PEB_BASALT_UPTO = 0.6, PEB_SANDSTONE_UPTO = 0.8, PEB_QUARTZ_UPTO = 0.9;
-const float PEB_SHADE_MIN = 0.8, PEB_SHADE_RANGE = 0.4;   // pebble-to-pebble shade
-const float PEB_ROUGH_VAR = 0.3;               // pebble-to-pebble roughness spread
-const float PEB_POLISH = 0.15;                 // pebbles are smoother than the gravel's overall roughness
-const float PEBBLE_M = 0.05;                   // m: a typical pebble (gravel runs ~2-6 cm)
-const float PEBBLE_F = CELL_M / PEBBLE_M;      // pebbles per cell along a line
+// Rubble (E_STONE): rock broken by a pick, a blast or a fall (ROCK breaks
+// into it). Its chips' tones and look, shared by the texture (matOf) and the
+// chips drawn as geometry up close (gfx/grains.js), so the hand-off between
+// them keeps the same stones. One parent rock, so the tones are its faces:
+// fresh fractures paler than the weathered skin, a few dark or rusty chips
+// (relative albedo; their mean is ~1).
+const vec3 PEB_FRESH = vec3(1.12, 1.1, 1.07), PEB_SKIN = vec3(0.92, 0.9, 0.88);
+const vec3 PEB_DARK = vec3(0.68, 0.68, 0.7), PEB_RUST = vec3(1.12, 0.94, 0.82);
+// cumulative shares of the tones (the rest is rust)
+const float PEB_FRESH_UPTO = 0.45, PEB_SKIN_UPTO = 0.8, PEB_DARK_UPTO = 0.93;
+const float PEB_SHADE_MIN = 0.8, PEB_SHADE_RANGE = 0.4;   // chip-to-chip shade
+const float PEB_ROUGH_VAR = 0.3;               // chip-to-chip roughness spread
+const float PEB_POLISH = 0.0;                  // broken faces are as rough as the rubble overall
+const float PEBBLE_M = 0.05;                   // m: a small chip (the fill between the big ones)
+const float PEBBLE_F = CELL_M / PEBBLE_M;      // small chips per cell along a line
 // texture within a pebble: wavelength and relief (m), as frequency (per cell) and height (cells)
 const float PEB_MOTTLE_M = 0.017, PEB_MOTTLE_H_M = 0.0024;
 const float PEB_MOTTLE_F = CELL_M / PEB_MOTTLE_M, PEB_MOTTLE_H = PEB_MOTTLE_H_M / CELL_M;
 const float PEB_MOTTLE_ALB = 0.35;             // albedo swing per unit of the mottle
 const int PEB_MOTTLE_OCT = 2;                  // fBm octaves of the mottle
 const float PEB_VOID_ALB = 0.1, PEB_VOID_CAV = 0.15;   // the voids between pebbles: crevices in deep shade
-// rock type of a pebble from a uniform hash
+// tone of a chip from a uniform hash
 vec3 pebbleRock(float h) {
-  return h < PEB_GRANITE_UPTO ? PEB_GRANITE : (h < PEB_BASALT_UPTO ? PEB_BASALT
-       : (h < PEB_SANDSTONE_UPTO ? PEB_SANDSTONE : (h < PEB_QUARTZ_UPTO ? PEB_QUARTZ : PEB_RUST)));
+  return h < PEB_FRESH_UPTO ? PEB_FRESH : (h < PEB_SKIN_UPTO ? PEB_SKIN : (h < PEB_DARK_UPTO ? PEB_DARK : PEB_RUST));
 }
 
 // Fluorite (E_CRYSTAL), on the crystals gfx/crystal.js draws for it: a
@@ -582,41 +583,77 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
     m.g = SAND_SLUMP_H * lo.yzw + SAND_CLUMP_H * gr.yzw + GRAIN_H * fg.yzw;
     m.cav = 1.0 + CLUMP_CAV * gr.x;
   } else if (id == E_STONE) {
-    // Gravel: rounded pebbles of mixed rock. Each pebble is a disc of its own
-    // size around a cellular seed (measured within the surface, so every
-    // cell the surface cuts shows a whole pebble), cut by its cell where it
-    // would touch a neighbour, so outlines run from round to polygonal. It is
-    // shaded as a dome steepening toward its outline; between pebbles are
-    // dark voids with grit in them. Each has its own rock type, shade and polish.
-    // (pebble size: PEBBLE_M above, shared with gfx/grains.js)
-    const float R_MIN = 0.42, R_VAR = 0.35;    // pebble radius range, lattice units
-    const float GAP = 0.04;                    // gap where two pebbles meet, lattice units
-    const float RIM = 0.05;                    // pebble edge softness, lattice units
-    const float ROUND = 0.25;                  // rounds off the corners where the cell cuts a pebble
-    const float RIM_CAV = 0.35;                // occlusion toward a pebble's outline (it curves away)
-    const float U_MAX = 0.95;                  // caps the dome's slope at the outline
-    const float MEAN = 0.82;                   // area-average shade of pebbles and voids (the far look)
+    // Rubble: angular chips of broken rock in two sizes, big CHUNK_M blocks
+    // with small PEBBLE_M chips packed into the gaps between them, and dark
+    // voids where neither reaches. Each chip is a cellular cell (measured
+    // within the surface): its outline is the cell's polygon, sharp-cornered,
+    // and its top two flat faces meeting at a ridge, the whole tilted its own
+    // way, so each face catches the light differently. Chips sit at different
+    // depths in the heap (the lower, the darker), and the gaps between them
+    // are contact shadow fading into dark voids, not an even grout line. No
+    // domes and no even tiling: those read as cobbled paving, a solid.
+    // (small-chip size and tones: PEBBLE_M, PEB_* above, shared with gfx/grains.js)
+    const float CHUNK_M = 0.11;                // m: a big chip
+    const float CHUNK_F = CELL_M / CHUNK_M;
+    const float CHUNK_P = 0.6;                 // share of big-chip cells holding one (the rest is small chips)
+    const float CHUNK_R_MIN = 0.3, CHUNK_R_VAR = 0.4;   // big-chip radius range, lattice units (cuts the polygon)
+    const float SMALL_R_MIN = 0.35, SMALL_R_VAR = 0.35; // small-chip radius range, lattice units
+    const float GAP = 0.05;                    // gap where two chips meet, lattice units
+    const float RIM = 0.03;                    // edge sharpness, lattice units
+    const float SHADOW_W = 0.18;               // contact shadow in from a chip's edge, lattice units
+    const float SHADOW = 0.55;                 // darkening at the edge
+    const float RIDGE = 0.7;                   // slope of the two faces either side of a chip's ridge
+    const float DEPTH_MIN = 0.5;               // albedo of the deepest chips (the top ones 1)
+    const float RIDGE_SALT = 5.37;             // decorrelates the ridge's direction from the tilt
+    const float BEVEL = 0.12;                  // edge bevel width, lattice units
+    const float BEVEL_SLOPE = 1.2;             // the bevel's slope (it rolls off into the gap)
+    const float TILT = 0.5;                    // slope of a chip's tilt, at most
+    const float EDGE_CAV = 0.5;                // occlusion at a chip's edge
+    const float MEAN = 0.8;                    // area-average shade of chips and voids (the far look)
     const float GRIT_M = 0.0073, GRIT_H_M = 0.0008;   // grit in the voids: wavelength, relief (m)
     const float GRIT_F = CELL_M / GRIT_M, GRIT_H = GRIT_H_M / CELL_M;
     const float GRIT_ALB = 0.8;                // albedo swing per unit of the grit
-    const float PEBBLE_LOD = 2.0;              // outlines are sharp: fade them at this multiple of the pebble frequency
+    const float CHIP_LOD = 2.0;                // outlines are sharp: fade them at this multiple of the chip frequency
+    const float SMALL_SALT = 17.3;             // decorrelates the small chips' lattice from the big ones'
     const int GRIT_OCT = 2;                    // fBm octaves
-    // (rock types, shade, polish, mottle and voids: PEB_* above, shared with gfx/grains.js)
-    vec3 ge, r1;
-    vec4 c = mCell(p * PEBBLE_F, ge, r1);
-    float lw = lodFade(PEBBLE_F * PEBBLE_LOD, fp);
+    vec3 geB, r1B, geS, r1S;
+    vec4 cb = mCell(p * CHUNK_F, geB, r1B);
+    vec4 cs = mCell(p * PEBBLE_F + SMALL_SALT, geS, r1S);
+    float lwB = lodFade(CHUNK_F * CHIP_LOD, fp), lwS = lodFade(PEBBLE_F * CHIP_LOD, fp);
+    // distance in from each chip's outline (lattice units; < 0 outside it)
+    float dB = length(r1B - n * dot(r1B, n)), dS = length(r1S - n * dot(r1S, n));
+    float eB = cb.z < CHUNK_P ? min(CHUNK_R_MIN + CHUNK_R_VAR * cb.w - dB, cb.y - GAP) : -1.0;
+    float eS = min(SMALL_R_MIN + SMALL_R_VAR * cs.w - dS, cs.y - GAP);
+    float onB = smoothstep(0.0, RIM, eB) * lwB;
+    float onS = smoothstep(0.0, RIM, eS) * lwS * (1.0 - onB);
+    // the chip there: its hashes, edge distance, edge gradient
+    vec4 c = onB > 0.0 ? cb : cs;
+    float e = onB > 0.0 ? eB : eS;
+    vec3 ge = onB > 0.0 ? geB : geS;
+    float pm = onB + onS;                      // 1 on a chip, 0 in a void
+    // a flat face tilted its own way, rolled off at the bevel
+    vec3 tilt = TILT * (2.0 * vec3(c.z, c.w, fract(c.z * 7.31 + c.w * 3.17)) - 1.0);
+    tilt -= n * dot(tilt, n);
+    // the ridge: a line through the chip's seed; each side rises toward it
+    vec3 r1 = onB > 0.0 ? r1B : r1S;
     vec3 rt = r1 - n * dot(r1, n);             // to the seed, within the surface
-    float d = length(rt);
-    float e = sminP(R_MIN + R_VAR * c.w - d, c.y - GAP, ROUND);   // distance in from the pebble's outline
-    float u = clamp(d / max(d + e, 1e-3), 0.0, U_MAX);    // 0 at the pebble's middle, 1 at its outline
-    float sh = sqrt(1.0 - u * u);
-    float pm = smoothstep(0.0, RIM, e);        // 1 on a pebble, 0 in a void
+    vec3 ax = hash33(vec3(c.zw, RIDGE_SALT)) - 0.5;
+    ax -= n * dot(ax, n);
+    ax /= max(length(ax), 1e-4);
+    tilt += RIDGE * sign(dot(rt, ax)) * ax;
+    float bev = 1.0 - smoothstep(0.0, BEVEL, e);
+    vec3 gEdge = BEVEL_SLOPE * bev * ge;       // ge: gradient of the edge distance (points into the chip)
+    gEdge -= n * dot(gEdge, n);
     vec4 gr = mFbmD(p, PEB_MOTTLE_F, PEB_MOTTLE_OCT, fp);
     vec4 gt = mFbmD(p, GRIT_F, GRIT_OCT, fp);
-    vec3 peb = pebbleRock(c.z) * (PEB_SHADE_MIN + PEB_SHADE_RANGE * c.w) * (1.0 + PEB_MOTTLE_ALB * gr.x);
-    m.alb *= mix(vec3(MEAN), mix(PEB_VOID_ALB * (1.0 + GRIT_ALB * gt.x) * vec3(1.0), peb, pm), lw);
-    m.g = lw * (pm * (u / sh) * rt / max(d, 1e-4) + (1.0 - pm) * GRIT_H * gt.yzw) + PEB_MOTTLE_H * gr.yzw;
-    m.cav = mix(MEAN, mix(PEB_VOID_CAV, mix(RIM_CAV, 1.0, sh), pm), lw);
+    float depth = mix(DEPTH_MIN, 1.0, fract(c.z * 3.91 + c.w * 11.3));
+    float shadow = 1.0 - SHADOW * (1.0 - smoothstep(0.0, SHADOW_W, e));
+    vec3 chip = pebbleRock(fract(c.z * 13.7 + c.w)) * (PEB_SHADE_MIN + PEB_SHADE_RANGE * c.w) * (1.0 + PEB_MOTTLE_ALB * gr.x) * depth * shadow;
+    vec3 voids = PEB_VOID_ALB * (1.0 + GRIT_ALB * gt.x) * vec3(1.0);
+    float lw = max(lwB, lwS);
+    m.alb *= mix(vec3(MEAN), mix(voids, chip, pm), lw);
+    m.g = pm * (tilt + gEdge) + (1.0 - pm) * lw * GRIT_H * gt.yzw + PEB_MOTTLE_H * gr.yzw;
+    m.cav = mix(MEAN, mix(PEB_VOID_CAV, (1.0 - EDGE_CAV * bev) * depth, pm), lw);
     m.rough += (PEB_ROUGH_VAR * (c.w - 0.5) - PEB_POLISH * pm) * lw;
   } else if (id == E_SNOW) {
     // Old powder snow: soft drifts, clumps and (up close) a sugary crust of
