@@ -192,7 +192,8 @@ export function createVehicles(env) {
       sharedTransfer(env).put(charge, { cells: cellsNear(center, ballRadius(n * CHARGE_SLACK), sim.g), vel: new THREE.Vector3() });
     }
     povEvents.emit('vehicle:destroyed', { id: v.id, kind: v.kind, team: v.team, point: center.clone(), cause: v.lastCause ?? null });
-    povEvents.emit('blast', { point: center.clone() });
+    // the vehicle's own blast (by: its id): not one the player set off, so it hurts them in full
+    povEvents.as({ id: v.id, at: center.clone() }, () => povEvents.emit('blast', { point: center.clone() }));
   }
 
   // a wreck burns: FIRE cells in the air over it

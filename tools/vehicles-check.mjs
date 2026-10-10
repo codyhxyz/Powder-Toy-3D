@@ -4,7 +4,8 @@
 // driving with the keys, a ramp climb, sand vs stone coasting, a run-over with
 // team damage off, a blast shove, the hoverbike skimming water and drifting,
 // and the jeep blowing up into a burning wreck and coming back.
-// usage: node tools/vehicles-check.mjs [--port 5402] [--shot file.jpg]   (needs a dev server; AC power)
+// usage: node tools/vehicles-check.mjs [--port 5402] [--shot prefix]   (needs a dev server; AC power)
+//   --shot writes prefix-jeep.jpg, prefix-bike.jpg and prefix-wreck.jpg
 import { chromium } from 'playwright';
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
@@ -110,7 +111,7 @@ try {
   const fps = await ev(() => new Promise((res) => { let n = 0; const t0 = performance.now(); const f = () => { n++; if (performance.now() - t0 < 1000) requestAnimationFrame(f); else res(n); }; requestAnimationFrame(f); }));
   const tW = j1.clock - j0.clock;   // simulated seconds (a slow headless frame rate slows the physics, not its rates)
   check('W drives it forward on the flat', (j1.z - j0.z) / tW > 3 && j1.speed > 2.5 * tW, `${(j1.z - j0.z).toFixed(1)} m in ${tW.toFixed(2)} s simulated (2.5 s real, ${fps} fps), ${j1.speed.toFixed(1)} m/s`);
-  if (shotPath) await p.screenshot({ path: shotPath, type: 'jpeg', quality: 60 });
+  if (shotPath) await p.screenshot({ path: `${shotPath}-jeep.jpg`, type: 'jpeg', quality: 60 });
   // steering: D turns it right (its right is −x while it faces +z)
   await hold(['KeyW', 'KeyD'], 800);
   const j2 = await jeep();
@@ -185,6 +186,7 @@ try {
   check('E gets on the hoverbike', (await ev(() => window.__app.pov.vehicles.seated?.kind)) === 'hoverbike');
   await hold(['KeyW', 'ShiftLeft'], 1600);
   const fast = await bike();
+  if (shotPath) await p.screenshot({ path: `${shotPath}-bike.jpg`, type: 'jpeg', quality: 60 });
   check('it skims the lake at speed', fast.y > 2 && fast.speed > 12 && fast.state.overLiquid, `y ${fast.y.toFixed(2)} m, ${fast.speed.toFixed(1)} m/s`);
   // a hard turn: sample the slip angle while A is held
   await p.keyboard.down('KeyW'); await p.keyboard.down('KeyA');
@@ -202,6 +204,11 @@ try {
   await ev(() => { const vs = window.__app.pov.vehicles; const v = vs.list.find((v) => v.kind === 'jeep' && v.alive); vs.damage(v, 100, 'Test'); });
   await settle(1200);
   const fire1 = await ev(async () => { const { E } = await import('/src/elements.js'); const c = window.__app.sim.census(); return { fire: c[E.FIRE]?.n ?? 0, powder: c[E.GUNPOWDER]?.n ?? 0 }; });
+  if (shotPath) {
+    await ev(() => { const a = window.__app.pov; const v = a.vehicles.list.find((v) => v.kind === 'jeep'); const t = v.impl.body.translation(); a.player.spawn(a.player.pos.clone().set(t.x / 0.3 - 16, 0, t.z / 0.3 - 16)); a.setLook(Math.atan2(16, 16) + Math.PI, -0.2); a.camera.third = true; });
+    await settle(700);
+    await p.screenshot({ path: `${shotPath}-wreck.jpg`, type: 'jpeg', quality: 60 });
+  }
   const wreck = await ev(() => window.__app.pov.vehicles.list.filter((v) => v.kind === 'jeep').map((v) => v.alive));
   check('0 health: it explodes into a wreck', !!(await ev(() => window.__destroyed)) && wreck.includes(false), JSON.stringify(wreck));
   check('the wreck burns (fire in the sim)', fire1.fire > fire0 + 3, `fire cells ${fire0} → ${fire1.fire}, gunpowder left ${fire1.powder}`);
