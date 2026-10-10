@@ -7,6 +7,8 @@ import { BODY_HEIGHT, BODY_WIDTH, EYE_HEIGHT, BODY_DENS } from './constants.js';
 import { createVitals, CELL_METERS, SAFE_FALL_M, LETHAL_FALL_M } from './vitals.js';
 import { povEvents } from './events.js';
 import { createPerkSet } from './perks.js';
+import { createStatusSet } from './status.js';
+import { wound, createBodyWorld } from './stains.js';
 
 // The first-person body: an upright AABB (BODY_WIDTH × BODY_HEIGHT × BODY_WIDTH
 // cells) moving through the voxel grid in real time.
@@ -171,6 +173,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
   const emit = (name, data) => {
     // Revenge Explosion: a hurt sets one off at the next update (it needs the sim), once a cooldown at most
     if (name === 'hurt' && perks.has('REVENGE_EXPLOSION') && revengeWait <= 0) { revengeDue = true; revengeWait = REVENGE_COOLDOWN; }
+    if (name === 'wound') wound(p, data.amount, statusCtx);   // a blow, fall or blast bleeds (stains.js)
     (listeners[name] || []).forEach((fn) => fn(data));
   };
   const vitals = createVitals(emit, perks);
@@ -197,8 +200,8 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
   let mats = null, matKey = '';
   let lastSim = null, lastFrame = 0, dtSmooth = 1 / 60;
 
-  const contactId = new Int32Array(PN), contactT = new Float32Array(PN);
-  const env = { contactId, contactT, contactN: 0, headInLiquid: false, liquidId: E.WATER, buriedId: -1, pressure: 0 };
+  const contactId = new Int32Array(PN), contactT = new Float32Array(PN), contactSpark = new Float32Array(PN);
+  const env = { contactId, contactT, contactSpark, contactN: 0, headInLiquid: false, liquidId: E.WATER, buriedId: -1, pressure: 0 };
 
   const p = {
     pos: new THREE.Vector3(), vel: new THREE.Vector3(),
@@ -223,6 +226,10 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     get skinT() { return vitals.skinT; },
     stepRate: 0,                  // sim steps/s, as measured
   };
+  // statuses (status.js; the built-in ones, Burning's fire and Bleeding: stains.js)
+  const bodyWorld = createBodyWorld({ renderer, getSim });
+  const statusCtx = { world: bodyWorld, hurt: (amount, cause, opts) => vitals.hurt(amount, cause, false, opts) };
+  p.status = createStatusSet(p, statusCtx);
   const impulse = new THREE.Vector3();
 
   // ---------------------------------------------------------------- probe
@@ -481,6 +488,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
           if (id < 0) continue;
           contactId[cn] = id;
           contactT[cn] = tAt(x, y, z);
+          contactSpark[cn] = 0;   // a live cell's spark, 0..1 (status.js shock): field(x, y, z, 3, 0) once el-elec's probe carries it
           cn++;
         }
     env.contactN = cn;
@@ -604,7 +612,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     const vh = new THREE.Vector2(v.x, v.z);
     let jumpedNow = false;
     // Fleet Foot and Rocket Boots: ×2 a stack, up to what the probe keeps up with; a class's speedScale on foot
-    const footSpeed = (alive && input.sprint ? SPRINT_SPEED : WALK_SPEED) * p.speedScale;
+    const footSpeed = (alive && input.sprint ? SPRINT_SPEED : WALK_SPEED) * p.speedScale * p.status.moveScale;
     const runSpeed = p.jetting ? Math.min(JET_FLY_SPEED * perks.jetRate, Math.max(JET_FLY_SPEED, PERK_SPEED_H))
       : alive && input.sprint ? Math.min(footSpeed * perks.sprintRate, Math.max(footSpeed, PERK_SPEED_H)) : footSpeed;
     if (!swimming && (p.onGround || wish.lengthSq() > 0 || vh.length() <= runSpeed)) {
@@ -736,6 +744,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     if (slam > 0) vitals.impact(slam, Math.max(SAFE_IMPACT, pogoSafe), LETHAL_IMPACT, 0, slamId >= 0 ? slamId : -1);
 
     vitals.update(dt, env);
+    p.status.update(dt, env);
     couple(sim, stepRate);
     fields(sim, dt);
   }
@@ -750,10 +759,12 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     if (p.jetting) { p.jetting = false; if (!quiet) povEvents.emit('player:jet', { on: false }); }
     generation++; probe.valid = false;   // wait for cells around the new spot
     vitals.reset();
+    p.status.clearAll('spawn');
   }
 
   function dispose() {
     generation++;
+    bodyWorld.dispose();
     slots.forEach((s) => s.target.dispose());
     mats?.probe.dispose();
     mats?.couple.dispose();
