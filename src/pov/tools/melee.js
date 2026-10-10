@@ -6,7 +6,7 @@ import { povEvents } from '../events.js';
 import { attachModel } from '../models.js';
 import { viewmodelRig } from '../viewmodel.js';
 import { trigger, swing } from './action.js';
-import { faceNormal } from './transfer.js';
+import { faceNormal, pack, cellsNear } from './transfer.js';
 import { rayTarget, PLAYER } from '../targets.js';
 
 // A melee tool (the axe, the pickaxe): a short-range swing that breaks
@@ -31,9 +31,19 @@ import { rayTarget, PLAYER } from '../targets.js';
 //     hit,                     // viewmodel.js HIT row for a landed blow
 //     refire,                  // s between swings
 //     body: { damage, energy, cause },   // a blow on a body (an NPC): health taken, impact energy, cause of death
-//     pose: { pos, rest, hit, miss, roll, strike } });   // the held model, in cells and rad (camera space)
+//     pose: { pos, rest, hit, miss, roll, strike },   // the held model, in cells and rad (camera space)
+//     collect });              // true: the debris in the patch goes into the pack (the pickaxe)
+//
+// collect: a mine's rubble stays where the rock was, so the next swing lands on
+// loose debris instead of the face behind it. A collecting tool takes the struck
+// element's debris (and any of it already lying in the patch) into the pack
+// (transfer.js) right after the blow, exactly as the shovel would, so the
+// matter is conserved and the hole stays open. With the pack full it stays put.
 
-export function meleeTool({ key, name, slot, model: modelKey, desc, blow, frag, hit: HIT_ROW, refire, body: BODY, pose: POSE }) {
+// debris elements: what some breakable solid breaks into
+const DEBRIS = new Set(ELEMENTS.filter((e) => e.breakInto).map((e) => ELEMENTS.findIndex((d) => d.key === e.breakInto)));
+
+export function meleeTool({ key, name, slot, model: modelKey, desc, blow, frag, hit: HIT_ROW, refire, body: BODY, pose: POSE, collect = false }) {
   const source = key.toLowerCase();
 
   // The held tool: the model (models.js) on a hand of the viewmodel rig, turned about the hand by the swing.
@@ -53,7 +63,21 @@ export function meleeTool({ key, name, slot, model: modelKey, desc, blow, frag, 
       const pass = toolPass(frag, () => ({ uCenter: { value: new THREE.Vector3() }, uDir: { value: new THREE.Vector3() } }));
       const button = trigger(refire);
       const pose = swing({ rest: POSE.rest, hit: POSE.hit, miss: POSE.miss, strike: POSE.strike, settle: refire });
+      const load = collect ? pack(env.owner) : null;
       let lastHit = null;
+
+      // Take the debris `id` inside the blow's patch (the same ellipsoid as blowFrag) into the pack.
+      function gather(sim, center, dir, id) {
+        if (!(load.free > 0)) { if (!load.busy) env.feedback?.refuse('Your pack is full: build with the trowel or throw some with the shovel', { id }); return; }
+        const d = new THREE.Vector3();
+        const inPatch = (x, y, z) => {
+          d.set(x + 0.5, y + 0.5, z + 0.5).sub(center);
+          const along = d.dot(dir);
+          const across2 = d.lengthSq() - along * along;
+          return across2 / (blow.RADIUS * blow.RADIUS) + (along * along) / (blow.DEPTH * blow.DEPTH) < 1;
+        };
+        env.transfer?.take(load, { cells: cellsNear(center, Math.max(blow.RADIUS, blow.DEPTH), sim.g, inPatch), kinds: [K.POWDER], want: id });
+      }
 
       function strike(ctx) {
         const aim = ctx.aim;
@@ -77,6 +101,10 @@ export function meleeTool({ key, name, slot, model: modelKey, desc, blow, frag, 
         const solid = el?.kind === K.SOLID;
         const broke = solid ? Boolean(el.breakInto) && blow.ENERGY >= el.hard : null;
         const point = aim.cell.clone().addScalar(0.5);
+        if (load) {
+          const debris = broke ? ELEMENTS.findIndex((d) => d.key === el.breakInto) : DEBRIS.has(aim.id) ? aim.id : -1;
+          if (debris >= 0) gather(sim, point, mat.uniforms.uDir.value, debris);
+        }
         povEvents.emit('impact', { source, point, normal: faceNormal(aim.face), id: aim.id, energy: blow.ENERGY, broke });
         model.rig.hit(HIT_ROW);
         if (broke === false) povEvents.emit('tool:action', { tool: source, action: 'refuse', id: aim.id, point });

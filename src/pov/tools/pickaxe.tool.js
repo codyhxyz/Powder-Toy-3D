@@ -5,15 +5,15 @@ import { meleeTool } from './melee.js';
 // Pickaxe: the axe's swing (melee.js) with a heavier, pointed head: a slower
 // blow with more energy in a narrower, deeper patch (shaders/povTools.js PICK),
 // so it bites into rock, about a 3×3 face two cells deep a swing, where the
-// axe bounces off. Still bounces off metal. The rock breaks into STONE in
-// place; the shovel picks it up.
+// axe bounces off. Still bounces off metal. The rock breaks into STONE and
+// the swing gathers it into the pack (melee.js collect), so the hole stays open.
 
 const REFIRE = 0.6;          // s between swings: a heavier head than the axe's
 
 export default meleeTool({
   key: 'PICKAXE', name: 'Pickaxe', slot: 10, model: 'pickaxe',
-  desc: 'Mines rock into stone and breaks anything the axe can. Too weak for metal.',
-  blow: PICK, frag: pickaxeFrag, hit: HIT.PICK, refire: REFIRE,
+  desc: 'Mines rock into stone for your pack and breaks anything the axe can. Too weak for metal.',
+  blow: PICK, frag: pickaxeFrag, hit: HIT.PICK, refire: REFIRE, collect: true,
   body: {
     damage: 0.4,             // health a blow takes from a body (an NPC): three blows kill
     energy: 50,              // the impact's energy for the shake and hitmarker
