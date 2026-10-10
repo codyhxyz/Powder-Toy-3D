@@ -58,6 +58,8 @@ void brush(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
     oA.y = max(a.y - TOOL_HEAT * falloff, CELL_TEMP_MIN);
   } else if (uTool == T_BLAST) {
     oB.w = b.w + TOOL_PRESSURE * falloff;
+  } else if (uTool == T_SPARK) {
+    sparkCell(oA);   // conductors only, and only when ready (src/electricity.js)
   }
 }
 ${copyThroughMain('brush')}`;
@@ -165,9 +167,9 @@ void main() {
       else if (id != liq0) mixed = true;
     }
     media = max(media, max(m.x, max(m.y, m.z)));
-    if (id == E_FIRE) em += blackbody(a.y) * (FIRE_GLOW_BASE + a.y / FIRE_GLOW_T) * FIRE_GLOW_GAIN;
-    else if (id != E_EMPTY && KIND[id] != K_GAS && (a.y > INCAND_T0 || luminous(id))) {
-      vec3 e = cellEmission(id, a.y);
+    if (id == E_FIRE || id == E_PLASMA) em += blackbody(a.y) * (FIRE_GLOW_BASE + a.y / FIRE_GLOW_T) * FIRE_GLOW_GAIN;
+    else if (id != E_EMPTY && KIND[id] != K_GAS && (a.y > INCAND_T0 || luminous(id) || sparkLive(id, floor(a.w)))) {
+      vec3 e = cellEmission(id, a.y) + sparkEmit(id, floor(a.w));   // a live conductor too (src/electricity.js)
       if (dot(e, e) > 0.0) em += e * (RCLASS[id] == R_OPAQUE ? openFaces(c) * GLOW_FACE_GAIN : 1.0);
     }
   }

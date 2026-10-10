@@ -789,4 +789,9 @@ function coverWall() {
 for (const [G, label] of [[AttackGoal, 'Attack'], [HuntGoal, 'Hunt'], [BreachGoal, 'Breach'], [ClimbGoal, 'Climb'], [CoverGoal, 'Cover'],
   [ExtinguishGoal, 'Extinguish'], [GatherGoal, 'Gather'], [WanderGoal, 'Wander'], [GoToGoal, 'GoTo'], [ToolGoal, 'Tool']]) G.prototype.label = label;
 
-export { WEAPONS, BLOCK_CELLS, BODY_HEIGHT, GoToGoal, WanderGoal, hdist };
+export { WEAPONS, BLOCK_CELLS, BODY_HEIGHT, GoToGoal, WanderGoal };
+// for other minds on this one (ai/gunner.js): Raven's fuzzy distance module, the aim's error, the shared strategies
+export {
+  distanceModule, aimWith, hdist, HuntEvaluator, ExtinguishEvaluator, WanderEvaluator,
+  REACTION_S, AIM_ERROR_START, AIM_ERROR, AIM_RAMP_S, AIM_ERROR_MOVING, WARNING_MISS,
+};

@@ -16,7 +16,7 @@ size row. Rounds reset the map with `__app.loadPreset('damValley', false)`:
 the build is seeded, so every rebuild is the same, cell for cell.
 
 While an arena is loaded, `__app.arena` is its layout (else `null`). The app also:
-- puts **player spawners** at red's spawns, so F drops you into the red base;
+- puts **player spawners** at red's spawns, so V drops you into the red base;
 - floats **perk orbs** over each shrine's plinths (`shrineAltars`);
 - flies **team banners** (`src/arenas/markers.js`; no element is red or blue).
 

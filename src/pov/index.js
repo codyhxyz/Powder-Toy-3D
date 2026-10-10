@@ -14,18 +14,21 @@ import { CLASSES_ENABLED } from './classes.js';
 import { createClassPicker } from './classPicker.js';
 import { createVehicles } from './vehicles/index.js';
 import { createGame } from '../game/index.js';
+import { SPAWNER, ENEMY_KINDS } from '../spawners.js';
+import { createZoom, ZOOM_KEY } from './zoom.js';
 
-// First-person (POV) mode: drop into the world with F, walk around in it,
-// pop back out with F. This module is the shell: input, the camera, the
+// First-person (POV) mode: drop into the world with V (noclip off, Garry's
+// Mod's key; F drops in too), walk around in it, pop back out to the god
+// view's free camera with V. This module is the shell: input, the camera, the
 // figure, the HUD and the per-frame wiring between the body (player.js) and
 // the toolbelt (tools/index.js), plus the gunplay feedback that listens to
 // povEvents: feel (kick, shake, hitmarker), effects and sound. Both are optional at build time: without the
-// body, F explains; without the toolbelt you just walk.
+// body, V explains; without the toolbelt you just walk.
 
 const playerModule = import.meta.glob('./player.js', { eager: true })['./player.js'];
 const toolsModule = import.meta.glob('./tools/index.js', { eager: true })['./tools/index.js'];
-// The NPCs (npc.js: Yuka, the world model, the tools headless) load on first use: one per enemy spawner (spawners.js).
-const ENEMY = 'enemy';
+// The NPCs (npc.js: Yuka, the world model, the tools headless) load on first use: one per enemy spawner
+// (spawners.js): an axeman, a jetpack gunner (npc.js style 'gunner') or a worm (worm.js).
 const PLAYER_KNOCKBACK = 18;   // cells/s a blow from an NPC throws the player
 const PLAYER_KNOCK_UP = 0.4;   // its upward share
 const PLAYER_DAMAGE_TAKEN = 0.5;   // share of a weapon's damage the player takes from NPCs (the hero is tougher)
@@ -43,7 +46,13 @@ const WHEEL_GESTURE_GAP_MS = 180;       // ms without wheel events that ends a g
 const WHEEL_LINE_PX = 40;               // px per line, for wheels that report lines
 const WHEEL_PAGE_PX = 800;              // px per page
 
-const MOVE_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ShiftLeft', 'ShiftRight', 'KeyC']);
+// Keys held down: movement, swim down and the zoom. Swim down is Ctrl, the
+// Source games' duck key (Shift is their sprint, as here); C is the zoom key
+// of Minecraft's zoom mods (zoom.js).
+const DOWN_KEYS = ['ControlLeft', 'ControlRight'];
+const MOVE_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ShiftLeft', 'ShiftRight', ...DOWN_KEYS, ZOOM_KEY]);
+// First or third person: Skyrim's and Fallout's F, and Minecraft's F5 (its reload is held back)
+const VIEW_KEYS = new Set(['KeyF', 'F5']);
 const VEHICLE_KEY = 'KeyE';             // get in, get out, or right a vehicle (vehicles/index.js; Halo's and most shooters' use key)
 // Driving, the chase camera swings back behind the vehicle once the mouse rests (GTA's and most driving games')
 const CHASE_PITCH = -0.22;              // rad, the look on getting in: a little down onto the vehicle
@@ -65,6 +74,7 @@ export function createPov(app) {
   const povCam = createPovCamera({
     fov: () => app.settings.povFov, sensitivity: () => app.settings.sensitivity, bobbing: () => app.settings.viewBobbing,
   });
+  const zoom = createZoom();   // C (zoom.js)
   const povHud = createPovHud();
   // feedback: everything here hears povEvents (events.js) and the body's events
   const feel = createFeel({ hud: povHud });
@@ -158,9 +168,15 @@ export function createPov(app) {
   const setHudHidden = (v) => { hudHidden = v; document.body.classList.toggle('pov-nohud', v); app.requestRender(); };
 
   addEventListener('keydown', (e) => {
-    if (!active() || app.isTyping() || e.metaKey || e.ctrlKey || e.altKey) return;
-    if (MOVE_KEYS.has(e.code)) { keys.add(e.code); if (e.code === 'Space') e.preventDefault(); }
-    if (e.code === 'KeyV' && !e.repeat && mode !== 'exiting') povCam.third = !povCam.third;
+    if (!active() || app.isTyping() || e.metaKey || e.altKey) return;
+    // Ctrl swims down, so movement still counts while it's held, and the
+    // browser's own Ctrl shortcuts on those keys (save, bookmark) are held back
+    if (MOVE_KEYS.has(e.code)) { keys.add(e.code); if (e.code === 'Space' || e.ctrlKey) e.preventDefault(); }
+    if (e.ctrlKey) return;
+    if (VIEW_KEYS.has(e.code)) {
+      e.preventDefault();
+      if (!e.repeat && mode !== 'exiting') povCam.third = !povCam.third;
+    }
     if (e.code === VEHICLE_KEY && !e.repeat && live() && vehicles.use(player) === 'enter') povCam.setLook(vehicles.headingYaw(), CHASE_PITCH);
     // Sprint: Toggle (the setting): Shift flips sprinting on and off instead of being held
     if ((e.code === 'ShiftLeft' || e.code === 'ShiftRight') && !e.repeat && app.settings.sprintMode === 'toggle') sprintOn = !sprintOn;
@@ -174,6 +190,13 @@ export function createPov(app) {
   });
   addEventListener('keyup', (e) => keys.delete(e.code));
   addEventListener('blur', releaseInput);
+  // Ctrl+W closes the tab, and no page can stop it (outside full screen's
+  // keyboard lock): while Ctrl swims down, leaving asks first
+  addEventListener('beforeunload', (e) => {
+    if (!active() || !DOWN_KEYS.some((k) => keys.has(k))) return;
+    e.preventDefault();
+    e.returnValue = true;
+  });
 
   // TF2's class picker on its key, comma (classPicker.js, docs/classes.md). Made
   // now, so its keys are heard before the toolbelt's digits.
@@ -340,6 +363,7 @@ export function createPov(app) {
     const fwd = camera.getWorldDirection(new THREE.Vector3());
     povCam.setLook(Math.atan2(-fwd.x, -fwd.z), ENTRY_PITCH);
     povCam.reset();
+    zoom.reset();
     feel.reset();
     player.spawn(dropPoint.clone());
     classes?.spawned(player);
@@ -383,6 +407,7 @@ export function createPov(app) {
 
   function finishExit() {
     mode = 'off';
+    zoom.reset();
     camera.position.copy(saved.pos);
     camera.quaternion.copy(saved.quat);
     camera.fov = saved.fov;
@@ -446,7 +471,7 @@ export function createPov(app) {
     }
     input.jump = keys.has('Space');
     input.sprint = app.settings.sprintMode === 'toggle' ? sprintOn : keys.has('ShiftLeft') || keys.has('ShiftRight');
-    input.down = keys.has('KeyC');
+    input.down = DOWN_KEYS.some((k) => keys.has(k));
   }
 
   function update(dt) {
@@ -497,16 +522,19 @@ export function createPov(app) {
     const sp = app.getSpawners?.();
     const npcFrame = { player, holding: toolbelt?.selectedKey ?? null, toWorld, worldToGrid, scale, stepsPerFrame: app.settings.paused ? 0 : app.settings.steps };
     const npcsWanted = !!sp && !g.windowed && (mode === 'on' || mode === 'entering') && !!toolbelt;
-    const homes = npcsWanted && !game.running ? sp.of(ENEMY) : [];   // a team game (src/game) has its own bots
+    const homes = npcsWanted && !game.running ? ENEMY_KINDS.flatMap((k) => sp.of(k)) : [];   // a team game (src/game) has its own bots
     if (homes.length && !npcMod) loadNpcs().catch(() => {});
     if (npcMod) {
       for (const s of homes) {
         if (npcs.has(s.id)) continue;
-        const n = npcMod.createNpc({
+        const spec = {
           env: { renderer, scene, getSim: app.getSim, getVolume: app.getVolume, getScale: app.getScale, ballistics: toolbelt.ballistics },
           ai: npcAi,
           home: () => sp.feet(s),   // it appears, and comes back, on its spawner
-        });
+        };
+        const worm = s.kind === SPAWNER.WORM || s.kind === SPAWNER.GIANT_WORM;
+        const n = worm ? npcMod.createWorm({ ...spec, size: s.kind === SPAWNER.GIANT_WORM ? 'giant' : 'small' })
+          : npcMod.createNpc({ ...spec, style: s.kind === SPAWNER.GUNNER ? 'gunner' : 'axeman' });
         scene.add(n.root);
         n.body.on('revenge', ({ point }) => povEvents.emit('blast', { point }));
         n.bind(app.getVolume(), g);
@@ -531,6 +559,10 @@ export function createPov(app) {
     vA.copy(player.pos).setY(player.pos.y + EYE_HEIGHT);
     const shake = feel.update({ dt, live: mode === 'on' && !deadSeen, eye: vA });
     povCam.zoom = mode === 'on' && !deadSeen && toolbelt ? toolbelt.zoom : 1;   // a scope (the sniper's)
+    // the zoom key: while it's held the wheel zooms, as in Zoomify, instead of picking a tool
+    const zooming = mode === 'on' && !deadSeen && keys.has(ZOOM_KEY);
+    povCam.keyZoom = zoom.update(dt, zooming, zooming ? wheelNotches : 0);
+    if (zooming) wheelNotches = 0;
     toWorld(vEye.copy(vA), vEye);
     toWorld(player.pos, vFeet);
     const pose = povCam.update({
@@ -630,7 +662,7 @@ export function createPov(app) {
       if (got) gainPerk(player, got);
     }
     for (const n of npcs.values()) {
-      if (n.body.dead) continue;
+      if (n.body.dead || !n.body.perks) continue;   // a worm takes no perks
       const got = orbs.takeAt(n.body.pos);
       if (got) gainPerk(n.body, got, n.id);
     }

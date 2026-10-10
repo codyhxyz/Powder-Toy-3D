@@ -211,7 +211,7 @@ export function createVitals(emit, perks = null) {
       kSum += k; kT += k * T;
       const flux = k * Math.abs(T - v.skinT);
       if (flux > worst) { worst = flux; worstId = id; worstT = T; }
-      if (id === E.ACID) acid++;
+      if (ELEMENTS[id]?.acid) acid++;   // acid, caustic gas
     }
     const kEnv = n ? SKIN_EXCHANGE * kSum / n : 0;
     const k = kEnv + SKIN_RECOVER;

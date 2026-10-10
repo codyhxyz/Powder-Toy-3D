@@ -1,10 +1,11 @@
 import * as THREE from 'three';
 import { prelude, quadVert, stateOutGLSL, copyThroughMain, stateUniforms } from './common.js';
 import { BODY_WIDTH, BODY_HEIGHT } from '../pov/constants.js';
-import { ELEMENTS } from '../elements.js';
+import { ELEMENTS, E } from '../elements.js';
 import { PHYS as ENGINE } from '../physics.js';
 
-// GPU passes for the POV axe, pickaxe, physgun, flamethrower, torch and rocket (src/pov/tools/*.tool.js).
+// GPU passes for the POV axe, pickaxe, physgun, flamethrower, torch and rocket (src/pov/tools/*.tool.js),
+// and the worm's head (src/pov/worm.js).
 //
 // Each is a full-grid ping-pong pass run through sim.pass(mat), like the
 // brush (paintFrag in passes.js): every texel copies its cell, and only the
@@ -56,6 +57,30 @@ export const KNIFE = {
   CHIP_MAX: 0.3,     // cells/step, fastest a chip leaves the cut
   SHOVE: 0.1,        // cells/step pushed into loose powder: a blade parts it, it doesn't shovel
 };
+
+// Worm (pov/worm.js): the same blow from a burrower's round head as it chews
+// through, every couple of cells it moves. RADIUS = DEPTH: the patch is a ball
+// (Noita's worms eat a disc, CellEaterComponent radius 6 px = 3 cells, a bit
+// under their 5 px hit radius; ours is that ball at the head's 2.5 cells plus a
+// rim that only chips the weaker solids). With ENERGY 45:
+//   ROCK  (30)  r² ≤ 0.33: a ball 2.3 cells in radius, the head's own size
+//   WOOD, LIMESTONE (20) r² ≤ 0.56, GLASS (8) r² ≤ 0.82: wider
+//   METAL (60), WALL, CLONE: never. The worm can't go through them (worm.js).
+// PART: where the axe nudges powder along its swing, the head parts loose matter,
+// powder and liquid alike, out from its axis (and its chips fly the same way),
+// so it swims through sand and water and leaves its rubble behind it.
+export const WORM_BITE = {
+  ENERGY: 45,        // sim KE units at the head's centre (above ROCK's 30, below METAL's 60)
+  RADIUS: 4,         // cells, the ball's radius
+  DEPTH: 4,          // cells, the same along the way it goes
+  CHIP_MAX: 0.3,     // cells/step, fastest a chip leaves the cut
+  SHOVE: 0.6,        // cells/step outward on loose matter at the centre (the body coupling's push, player.js, at a run)
+  PART: 1,           // part loose matter (powder and liquid) out from the axis, not along it
+  AXIS_EPS: 0.001,   // cells: a cell this near the axis is parted to one fixed side
+};
+// The giant worm's (Noita's worm_big.xml: it eats a 9 px disc, 4.5 cells, its hit radius): the same
+// bite in a wider ball, so rock breaks within 7.5·√0.33 ≈ 4.3 cells of its head's centre.
+export const WORM_GIANT_BITE = { ...WORM_BITE, RADIUS: 7.5, DEPTH: 7.5 };
 
 // Physgun: a spring on the centre of mass of the loose matter near a hold
 // point (powders, liquids, gases within RADIUS of it, fading toward RADIUS).
@@ -140,9 +165,10 @@ ${prelude(g)}
 ${stateOutGLSL}
 `;
 
-// A melee blow (the axe, the pickaxe; P is AXE or PICK): break breakable
-// solids in its patch into their debris, 1:1 (same cell, temperature, life and
-// ctype: only the element changes), and nudge loose powder along the swing.
+// A melee blow (the axe, the pickaxe, the knife, a worm's head; P is AXE, PICK,
+// KNIFE or WORM_BITE): break breakable solids in its patch into their debris,
+// 1:1 (same cell, temperature, life and ctype: only the element changes), and
+// nudge loose powder along the swing (P.PART: part powder and liquid out from it).
 const blowFrag = (P) => (g) => /* glsl */ `
 ${head(g)}
 ${defines('BLOW', P)}
@@ -160,19 +186,30 @@ void blow(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
   float E = BLOW_ENERGY * (1.0 - r2);
   int id = eid(a);
   int into = BREAKINTO[id];
+#ifdef BLOW_PART
+  // a burrower's head: out from its axis (a cell on the axis goes to one fixed side)
+  float off = length(across);
+  vec3 push = off > BLOW_AXIS_EPS ? across / off : normalize(cross(uDir, abs(uDir.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)));
+  bool loose = KIND[id] == K_POWDER || KIND[id] == K_LIQUID;
+#else
+  vec3 push = uDir;
+  bool loose = KIND[id] == K_POWDER;
+#endif
   if (KIND[id] == K_SOLID && into >= 0 && E >= HARD[id]) {
     oA.x = float(into);
     // what the cut doesn't use flies off with the chip: ½·DENS·v² = E − hard
     float v = min(sqrt(2.0 * (E - HARD[id]) / DENS[into]), BLOW_CHIP_MAX);
-    oB.xyz = uDir * v;
-  } else if (KIND[id] == K_POWDER) {
-    oB.xyz = clamp(b.xyz + uDir * BLOW_SHOVE * (1.0 - r2), -V_MAX, V_MAX);
+    oB.xyz = push * v;
+  } else if (loose) {
+    oB.xyz = clamp(b.xyz + push * BLOW_SHOVE * (1.0 - r2), -V_MAX, V_MAX);
   }
 }
 ${copyThroughMain('blow')}`;
 export const axeFrag = blowFrag(AXE);
 export const pickaxeFrag = blowFrag(PICK);
 export const knifeFrag = blowFrag(KNIFE);
+export const wormFrag = blowFrag(WORM_BITE);
+export const wormGiantFrag = blowFrag(WORM_GIANT_BITE);
 
 // A flame: a cone from a nozzle along a direction (P: FLAMER, the
 // flamethrower's, or TORCH_FIRE, a thrown torch's). Air in the cone becomes
@@ -392,7 +429,7 @@ export const ROCKET = {
   IMPULSE: 20,       // DENS · cells/step given to loose matter at full strength
   EDGE: 0.4,         // share of a radius held at full strength before fading
 };
-ROCKET.FIRE_T = ENGINE.GUNPOWDER_T;   // °C, the gunpowder blast's (physics.js)
+ROCKET.FIRE_T = ELEMENTS[E.GUNPOWDER].blast.T;   // °C, the gunpowder blast's (elements.js)
 
 export const rocketFrag = (g) => /* glsl */ `
 ${head(g)}

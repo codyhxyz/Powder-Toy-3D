@@ -307,6 +307,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
   const field = (x, y, z, c, dflt) => { const i = local(x, y, z); return i < 0 ? dflt : probe.buf[i + c]; };
   const tAt = (x, y, z) => field(x, y, z, 1, PHYS.AMBIENT);
   const pAt = (x, y, z) => field(x, y, z, 2, 0);
+  const sparkAt = (x, y, z) => field(x, y, z, 3, 0);   // a live cell's spark, 0..1 (povBody.js cellSpark)
 
   // Cell index range a span [lo, hi] overlaps.
   const c0 = (lo) => Math.floor(lo + EPS);
@@ -489,7 +490,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
           if (id < 0) continue;
           contactId[cn] = id;
           contactT[cn] = tAt(x, y, z);
-          contactSpark[cn] = 0;   // a live cell's spark, 0..1 (status.js shock): field(x, y, z, 3, 0) once el-elec's probe carries it
+          contactSpark[cn] = sparkAt(x, y, z);   // status.js shock
           cn++;
         }
     env.contactN = cn;
