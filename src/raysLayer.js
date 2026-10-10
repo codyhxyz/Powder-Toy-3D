@@ -105,7 +105,7 @@ export class Rays {
 
   // Something may make particles: start running (and keep the activity map honest).
   wake() {
-    if (!this.active) this.sim.actDirty = true;   // the next map sees the particles' bricks
+    this.sim.wake();   // invalidate idle readbacks too: particles live outside the state targets
     this.active = true;
     this.wokeSince = true;
   }
