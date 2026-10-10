@@ -49,6 +49,7 @@ try {
   check('the picker exists', await ev(() => !!window.__app.pov.classes));
 
   // ---- comma opens the picker (not settings) in first person
+  await p.mouse.move(W - 20, H - 20);   // the cursor off the cards (it would focus one)
   await p.keyboard.press(',');
   await settle(300);
   let s = await state();
@@ -74,15 +75,6 @@ try {
   await p.keyboard.press('ArrowRight');
   await settle(450);
   check('arrows move the focus', await ev(() => document.querySelector('.cp-card.focus')?.dataset.key === 'BULWARK'));
-  if (shotPath) {
-    const raw = shotPath.replace(/\.jpg$/, '.raw.png');
-    await p.mouse.move(W - 20, H - 20);   // off the cards: the focus stays where the arrows put it
-    await settle(300);
-    await p.screenshot({ path: raw });
-    execFileSync('sips', ['-Z', String(SHOT_W), '-s', 'format', 'jpeg', '-s', 'formatOptions', '72', raw, '--out', shotPath], { stdio: 'ignore' });
-    execFileSync('rm', [raw]);
-    console.log(`     screenshot: ${shotPath}`);
-  }
   await p.keyboard.press('Escape');
   await settle(200);
   s = await state();
@@ -147,6 +139,24 @@ try {
   check('Bulwark: Extra Health on, slow, sturdier', !odd.threw && odd.bulwark.granted.EXTRA_HEALTH === 1 && odd.bulwark.speed < 1 && odd.bulwark.maxHealth > 1, JSON.stringify(odd.bulwark));
   check('an unknown class changes nothing', !odd.threw && odd.unknown === null && odd.after.cls === 'SPY', JSON.stringify(odd.after));
   check('shrine perk survives every change', !odd.threw && odd.after.perks.LUKKI === 1 && odd.after.perks.FIRE_IMMUNITY === 1 && !odd.after.perks.EXTRA_HEALTH, JSON.stringify(odd.after.perks));
+
+  // ---- a team tints it (body.team: the game modes' 'red' | 'blue' | 'infected')
+  await ev(() => { window.__app.pov.player.team = 'red'; });
+  await p.keyboard.press(',');
+  await settle(400);
+  await p.keyboard.press('ArrowLeft');   // from the chosen Rocketeer round to Pyro
+  await settle(500);
+  const tint = await ev(() => ({ team: document.querySelector('.cp').dataset.team, chip: document.querySelector('.cp-team').textContent, focus: document.querySelector('.cp-card.focus')?.dataset.key }));
+  check('the team tints the picker', tint.team === 'red' && tint.chip === 'Red team', JSON.stringify(tint));
+  if (shotPath) {
+    const raw = shotPath.replace(/\.jpg$/, '.raw.png');
+    await p.screenshot({ path: raw });
+    execFileSync('sips', ['-Z', String(SHOT_W), '-s', 'format', 'jpeg', '-s', 'formatOptions', '72', raw, '--out', shotPath], { stdio: 'ignore' });
+    execFileSync('rm', [raw]);
+    console.log(`     screenshot: ${shotPath}`);
+  }
+  await p.keyboard.press('Escape');
+  await settle(200);
 
   // ---- the god view keeps comma for settings
   await p.keyboard.press('f');

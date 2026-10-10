@@ -212,6 +212,7 @@
 .cp-spawn b { font-weight: 800; color: color-mix(in srgb, var(--cc, var(--c)) 70%, #fff); }
 .cp-keys { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px 18px; margin: 0; font-size: 11.5px; color: var(--muted); }
 .cp-keys span { display: inline-flex; align-items: center; gap: 3px; }
+.cp-soon-key i { width: 13px; height: 13px; border-radius: 3px; outline: 1px dashed rgba(255, 255, 255, 0.4); outline-offset: -1px; }
 
 /* laptops: tighter cards */
 @media (max-width: 1120px) {

@@ -23,6 +23,12 @@ const STORE_KEY = 'tpt3d.pov.class';    // the last class picked, kept in this b
 const MS_PER_S = 1000;
 const STAT_PIPS = 5;                    // segments in a bar
 const TEAM_NAMES = { red: 'Red team', blue: 'Blue team', infected: 'Infected' };
+// Stand-in icons for loadout keys other branches are adding, shown dimmed as
+// "coming soon" until the real tool or perk (with its own icon) arrives.
+const SOON_ICONS = {
+  ROCKET: '🚀', SMG: '🔫', SNIPER: '🎯', KNIFE: '🔪', POGO: '🦘',
+  FLEET_FOOT: '👟', ROCKET_BOOTS: '🥾', BIG_TANK: '⛽', ENERGY_SHIELD: '🛡️',
+};
 
 // every *.tool.js this build has, by key (the toolbelt loads the same modules)
 const toolDefs = new Map(Object.values(import.meta.glob('./tools/*.tool.js', { eager: true }))
@@ -67,6 +73,7 @@ function kitItem(kind, key, n = 1) {
   let face;
   if (kind === 'tool' && def?.model && MODELS[def.model]) face = h('img', { src: modelIcon(def.model), alt: '', draggable: 'false' });
   else if (kind === 'perk' && def) face = h('i', { text: def.icon });
+  else if (SOON_ICONS[key]) face = h('i', { text: SOON_ICONS[key] });
   else face = h('b', { text: key.replaceAll('_', '').slice(0, 4) });
   const el = h(`span.cp-item.cp-${kind}`, {
     title: known ? `${name}${def?.desc ? `: ${def.desc}` : ''}` : `${name}: coming soon`,
@@ -119,7 +126,8 @@ export function createClassPicker(env) {
       h('p.cp-keys', {},
         h('span', {}, h('kbd', { text: '1' }), '–', h('kbd', { text: String(CLASSES.length) }), ' pick'),
         h('span', {}, h('kbd', { text: '←' }), h('kbd', { text: '→' }), ' ', h('kbd', { text: 'Enter' }), ' choose'),
-        h('span', {}, h('kbd', { text: ',' }), ' or ', h('kbd', { text: 'Esc' }), ' close'))));
+        h('span', {}, h('kbd', { text: ',' }), ' or ', h('kbd', { text: 'Esc' }), ' close'),
+        row.querySelector('.cp-item.soon') ? h('span.cp-soon-key', {}, h('i'), ' coming soon') : null)));
   closeBtn.addEventListener('click', () => close());
   root.addEventListener('mousedown', (e) => { if (e.target === root) close(); });
   document.body.append(root);
