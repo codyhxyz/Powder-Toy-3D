@@ -16,6 +16,8 @@ export const ICON = {
   radioactive: svg('<circle cx="12" cy="12" r="1.5"/><path d="M10.25 8.97L7.5 4.21A9 9 0 0 1 16.5 4.21L13.75 8.97A3.5 3.5 0 0 0 10.25 8.97z'
     + 'M15.5 12H21A9 9 0 0 1 16.5 19.79L13.75 15.03A3.5 3.5 0 0 0 15.5 12z'
     + 'M10.25 15.03L7.5 19.79A9 9 0 0 1 3 12H8.5A3.5 3.5 0 0 0 10.25 15.03z"/>'),
+  // a black hole and its tilted accretion disk (Exotic: antimatter, singularity)
+  exotic: svg('<circle cx="12" cy="12" r="3.5"/><ellipse cx="12" cy="12" rx="9.5" ry="3.5" transform="rotate(-25 12 12)"/>'),
   close: svg('<path d="M6 6l12 12M18 6L6 18"/>'),
   chevDown: '<svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>',
   chevUp: svg('<path d="M6 15l6-6 6 6"/>'),
