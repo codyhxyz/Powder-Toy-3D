@@ -32,6 +32,7 @@ const ESCORT_R = 6;                  // cells: escorts keep this near the carrie
 const DEFEND_R = 8;                  // cells: defenders keep this near their stand
 const ROLES = ['attack', 'defend'];  // CTF roles, dealt in turn (Raven's / Quake III's team orders)
 const FLAG_LIFT = 2;                 // cells above a carrier's feet the flag rides
+const BOT_MS_EASE = 0.05;            // the bots' CPU time per frame is shown as this running average (checks)
 const ROAM_S = 30;                   // s a Slayer bot heads for one stretch of open ground before the next
 const other = (t) => (t === 'red' ? 'blue' : 'red');
 const hdist = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
@@ -51,6 +52,7 @@ export function createGame(shell) {
   let npc = null;
   let starting = null;
   let visible = true;
+  let botMs = 0;
   const markers = createMarkers({ scene: shell.scene, getVolume: app.getVolume, getScale: app.getScale });
   const hud = createGameHud({
     onStart: (m, s) => { side = s; menu(false); start(m, { side: s }); },
@@ -474,7 +476,9 @@ export function createGame(shell) {
     if (!visible) setVisible(true);
     if (running) {
       time += dt;
+      const t0 = performance.now();
       if (frame) for (const e of bots()) { loadout(e); e.bot.bind(app.getVolume(), sim().g); e.bot.update(dt, frame); }
+      botMs += (performance.now() - t0 - botMs) * BOT_MS_EASE;
       for (const e of roster.values()) {
         const b = bodyOf(e);
         if (!b || !e.team) continue;
@@ -552,6 +556,7 @@ export function createGame(shell) {
       hill: hill ? { index: hill.i, owner: hill.owner, contested: hill.contested } : null,
       siege: siege ? { half: siege.half, attackers: siege.attackers, held: siege.held, results: siege.results } : null,
       bots: bots().length,
+      botMs,
     };
   }
 

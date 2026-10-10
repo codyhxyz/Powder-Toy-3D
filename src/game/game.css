@@ -10,7 +10,7 @@
 
 /* ---- top centre: Halo's score, clock and objective */
 .game-top {
-  position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+  position: absolute; top: 64px; left: 50%; transform: translateX(-50%);
   display: none; flex-direction: column; align-items: center; gap: 4px;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
 }
@@ -36,7 +36,7 @@
 .game-bar i { display: block; height: 100%; width: 0; transition: width 200ms linear; }
 
 /* ---- killfeed, top right */
-.game-feed { position: absolute; top: 14px; right: 16px; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; max-width: min(46vw, 420px); }
+.game-feed { position: absolute; top: 96px; right: 16px; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; max-width: min(46vw, 420px); }
 .game-kill {
   padding: 3px 9px; border-radius: 5px; font: 500 13px var(--ui);
   background: rgba(15, 17, 24, 0.62); text-shadow: 0 1px 1px rgba(0, 0, 0, 0.7);
@@ -46,7 +46,7 @@
 @keyframes game-in { from { opacity: 0; transform: translateX(12px); } }
 
 /* ---- "M Match" when no match is on */
-.game-chip { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); padding: 4px 10px; font: 500 12px var(--ui); display: none; opacity: 0.8; }
+.game-chip { position: absolute; top: 64px; left: 50%; transform: translateX(-50%); padding: 4px 10px; font: 500 12px var(--ui); display: none; opacity: 0.8; }
 .game-chip.on { display: block; }
 
 /* ---- scoreboard */
@@ -102,5 +102,5 @@
 
 @media (max-width: 560px) {
   .game-cols { grid-template-columns: 1fr; }
-  .game-feed { top: 64px; }
+  .game-feed { top: 150px; }
 }
