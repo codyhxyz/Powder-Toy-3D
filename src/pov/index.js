@@ -20,6 +20,7 @@ import { viewmodelRig, HIT } from './viewmodel.js';
 import { createGame } from '../game/index.js';
 import { SPAWNER, ENEMY_KINDS } from '../spawners.js';
 import { createZoom, ZOOM_KEY } from './zoom.js';
+import { createTouchControls } from './touch.js';
 
 // First-person (POV) mode: drop into the world with V (Garry's Mod's noclip
 // key; F drops in too), walk around in it, pop back out to the god view's
@@ -138,6 +139,20 @@ export function createPov(app) {
   const active = () => mode !== 'off';
   const live = () => mode === 'on' && !player?.dead;
   const isLocked = () => locked || test.assumeLocked;
+  // Phones and tablets (touch.js): no pointer lock; the thumbs fill the same inputs instead
+  const touch = createTouchControls({
+    canvas, active: live,
+    turn(dx, dy) { povCam.turn(dx, dy); lookMovedAt = performance.now(); },
+    button(name, down, cancelled) {
+      buttons[name] = down;
+      if (down) buttons[`${name}Pressed`] = true;
+      if (cancelled) buttons[`${name}Pressed`] = false;
+    },
+    wheel: (notches) => { wheelNotches += notches; },
+    kick: () => { if (mode === 'on') kickQueued = true; },
+    useVehicle,
+  });
+  const canUse = () => isLocked() || touch.enabled;   // the tools and the kick take input
   createPovAudio({ camera, getVolume: app.getVolume, getScale: app.getScale, state: () => ({ active: active(), player, toolbelt }) });
 
   // ---- grid ↔ world
@@ -147,7 +162,7 @@ export function createPov(app) {
 
   // ---- pointer lock
   function requestLock() {
-    if (editing || document.pointerLockElement === canvas) return;
+    if (editing || touch.enabled || document.pointerLockElement === canvas) return;   // touch has no pointer lock
     try { canvas.requestPointerLock()?.catch?.(() => {}); } catch { /* not allowed here */ }
   }
   document.addEventListener('pointerlockchange', () => {
@@ -161,6 +176,7 @@ export function createPov(app) {
     keys.clear();
     buttons.primary = buttons.secondary = buttons.primaryPressed = buttons.secondaryPressed = false;
     wheelNotches = wheelAcc = 0;
+    touch.reset();
   }
 
   // Q: the tools menu, Garry's Mod's spawn menu: the mouse is freed and the
@@ -186,7 +202,7 @@ export function createPov(app) {
       e.preventDefault();
       if (!e.repeat && mode !== 'exiting') povCam.third = !povCam.third;
     }
-    if (e.code === VEHICLE_KEY && !e.repeat && live() && vehicles.use(player) === 'enter') povCam.setLook(vehicles.headingYaw(), CHASE_PITCH);
+    if (e.code === VEHICLE_KEY && !e.repeat) useVehicle();
     if (e.code === KICK_KEY && !e.repeat && mode === 'on') kickQueued = true;   // the kick (kick.js): always to hand, no slot
     // Sprint: Toggle (the setting): Shift flips sprinting on and off instead of being held
     if ((e.code === 'ShiftLeft' || e.code === 'ShiftRight') && !e.repeat && app.settings.sprintMode === 'toggle') sprintOn = !sprintOn;
@@ -200,6 +216,11 @@ export function createPov(app) {
   });
   addEventListener('keyup', (e) => keys.delete(e.code));
   addEventListener('blur', releaseInput);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) releaseInput(); });   // (a phone's app switch)
+  // E (or the touch Vehicle button): get in, out, or right one
+  function useVehicle() {
+    if (live() && vehicles.use(player) === 'enter') povCam.setLook(vehicles.headingYaw(), CHASE_PITCH);
+  }
 
   // TF2's class picker on its key, comma (classPicker.js, docs/classes.md). Made
   // now, so its keys are heard before the toolbelt's digits.
@@ -415,6 +436,7 @@ export function createPov(app) {
 
   function finishExit() {
     mode = 'off';
+    touch.update({ live: false });
     zoom.reset();
     camera.position.copy(saved.pos);
     camera.quaternion.copy(saved.quat);
@@ -463,14 +485,16 @@ export function createPov(app) {
     d.throttle = d.steer = 0; d.brake = d.boost = false;
     if (editing || mode !== 'on' || player.dead || app.isTyping()) return;
     if (vehicles.seated) {   // the keys drive: W/S throttle, A/D steer (+ is left), Space brake or hop, Shift boost
-      d.throttle = (keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 1 : 0);
-      d.steer = (keys.has('KeyA') ? 1 : 0) - (keys.has('KeyD') ? 1 : 0);
-      d.brake = keys.has('Space');
-      d.boost = keys.has('ShiftLeft') || keys.has('ShiftRight');
+      const t = touch.state;   // (the touch stick drives too: forward throttles, sideways steers)
+      d.throttle = THREE.MathUtils.clamp((keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 1 : 0) + t.z, -1, 1);
+      d.steer = THREE.MathUtils.clamp((keys.has('KeyA') ? 1 : 0) - (keys.has('KeyD') ? 1 : 0) - t.x, -1, 1);
+      d.brake = keys.has('Space') || t.jump;
+      d.boost = keys.has('ShiftLeft') || keys.has('ShiftRight') || t.sprint;
       return;
     }
-    const f = (keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 1 : 0);
-    const r = (keys.has('KeyD') ? 1 : 0) - (keys.has('KeyA') ? 1 : 0);
+    const t = touch.state;   // the touch stick adds in, analog (touch.js)
+    const f = (keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 1 : 0) + t.z;
+    const r = (keys.has('KeyD') ? 1 : 0) - (keys.has('KeyA') ? 1 : 0) + t.x;
     if (f || r) {
       const fw = povCam.forwardH(vA), rt = povCam.rightH(vB);
       let x = fw.x * f + rt.x * r, z = fw.z * f + rt.z * r;
@@ -478,12 +502,16 @@ export function createPov(app) {
       if (len > 1) { x /= len; z /= len; }
       input.move.x = x; input.move.z = z;
     }
-    input.jump = keys.has('Space');
-    input.sprint = app.settings.sprintMode === 'toggle' ? sprintOn : keys.has('ShiftLeft') || keys.has('ShiftRight');
-    input.crouch = input.down = keys.has(CROUCH_KEY);   // crouched on land, swimming down in liquid
+    input.jump = keys.has('Space') || t.jump;
+    input.sprint = t.sprint || (app.settings.sprintMode === 'toggle' ? sprintOn : keys.has('ShiftLeft') || keys.has('ShiftRight'));
+    input.crouch = input.down = keys.has(CROUCH_KEY) || t.down;   // crouched on land, swimming down in liquid
   }
 
   function update(dt) {
+    touch.update({
+      live: live(), tool: toolbelt?.selectedKey, inLiquid: !!player?.inLiquid,
+      wantsWheel: !!toolbelt?.wantsWheel, driving: !!vehicles.seated, vehicles: vehicles.list.length > 0,
+    });
     if (!active()) return;
     const sim = app.getSim(), vol = app.getVolume(), scale = app.getScale();
     const g = sim.g;
@@ -632,9 +660,11 @@ export function createPov(app) {
       ctx.dt = dt;
       ctx.toolRate = player.perks.toolRate;
       ctx.stepsPerFrame = app.settings.paused ? 0 : app.settings.steps;
-      const use = !editing && isLocked();
-      ctx.primary = use && buttons.primary;
-      ctx.secondary = use && buttons.secondary;
+      const use = !editing && canUse();
+      // a touch tap can start and end between frames: it still holds for one (on desktop the mouse can't)
+      const tapped = touch.enabled;
+      ctx.primary = use && (buttons.primary || (tapped && buttons.primaryPressed));
+      ctx.secondary = use && (buttons.secondary || (tapped && buttons.secondaryPressed));
       ctx.primaryPressed = use && buttons.primaryPressed;
       ctx.secondaryPressed = use && buttons.secondaryPressed;
       ctx.wheel = wheelNotches;
@@ -650,7 +680,7 @@ export function createPov(app) {
     // the kick: the body's (player.kick), along the aim; the leg and the view's jolt are the shell's
     if (kickQueued) {
       kickQueued = false;
-      const r = live() && isLocked() ? player.kick(ctx.dir) : null;
+      const r = live() && canUse() ? player.kick(ctx.dir) : null;
       if (r) {
         kickLeg ??= createKickLeg({ viewmodel, getScale: app.getScale });
         kickLeg.start(!!r.hit);
@@ -674,7 +704,7 @@ export function createPov(app) {
       shield: player.shield, shieldMax: player.shieldMax, shieldCharging: player.shieldCharging,
       jetFuel: player.jetFuel, jetting: player.jetting, perks: player.perks, status: player.status,
       dead: deadSeen, cause: player.cause, respawnIn: (match?.delay ?? RESPAWN_DELAY) - deadTime,
-      locked: isLocked(), swooping: mode !== 'on',
+      locked: canUse(), swooping: mode !== 'on',
       aimValid: aim.valid, aimInReach: aim.valid && aim.dist <= HAND_REACH, third: povCam.third,
     });
   }

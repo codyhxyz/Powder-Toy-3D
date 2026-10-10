@@ -1,4 +1,5 @@
 import { h } from '../ui/dom.js';
+import { TOUCH_MEDIA } from './touch.js';
 
 // The POV HUD: crosshair (with its bloom) and hitmarker, the Energy Shield (Halo's bar over health), health and breath, the perks held (Noita's row of
 // icons), screen effects for what the body feels, the pointer-lock prompt, the death screen and the entry hint. Styles
@@ -28,6 +29,7 @@ const round = (x) => Math.round(x * FX_STEPS) / FX_STEPS;
 const key = (k) => h('kbd', { text: k });
 
 export function createPovHud() {
+  const touch = matchMedia(TOUCH_MEDIA).matches;   // a phone: the hints name the thumbs' controls (touch.js), not keys
   const fx = {
     heat: h('div.pov-fx.pov-heat'),
     frost: h('div.pov-fx.pov-frost'),
@@ -65,7 +67,9 @@ export function createPovHud() {
   const death = h('div.pov-death', {},
     h('div.pov-died', { text: 'You died' }),
     deathCause,
-    h('div.pov-respawn', {}, 'Back at the drop point in ', deathCount, h('span.pov-dot', { text: '·' }), 'click or ', key('Space'), ' now', h('span.pov-dot', { text: '·' }), key('V'), ' for god view'));
+    h('div.pov-respawn', {}, 'Back at the drop point in ', deathCount, ...(touch
+      ? [h('span.pov-dot', { text: '·' }), 'God to leave']
+      : [h('span.pov-dot', { text: '·' }), 'click or ', key('Space'), ' now', h('span.pov-dot', { text: '·' }), key('V'), ' for god view'])));
 
   const hint = h('div.pov-hint.panel', {},
     h('span', {}, key('W'), key('A'), key('S'), key('D'), ' move'),
@@ -76,6 +80,11 @@ export function createPovHud() {
     h('span', {}, key('Z'), ' zoom'),
     h('span', {}, key('F5'), ' third person'),
     h('span', {}, key('V'), ' god view'));
+  if (touch) hint.replaceChildren(
+    h('span', { text: 'Drag the scene to look' }),
+    h('span', { text: 'Push the pad to its edge to run' }),
+    h('span', { text: 'Hold Jump to fly' }),
+    h('span', { text: 'God leaves' }));
 
   const root = h('div.pov-hud', { 'aria-hidden': 'true' },
     fx.heat, fx.frost, fx.acid, fx.stain, fx.hurt, cross, hitmark, vitals, lock, death, hint);

@@ -634,7 +634,8 @@ button { touch-action: manipulation; }   /* no double-tap zoom on fast taps */
   .icon-btn { width: 32px; }
 }
 
-@media (max-width: 760px) and (hover: hover) {
+/* narrow: the camera choices take a second row under the bar (touch screens too: pov/touch.js) */
+@media (max-width: 760px) {
   .toolbar { left: max(8px, env(safe-area-inset-left)); right: max(8px, env(safe-area-inset-right)); justify-content: space-between; }
   .toolbar .sep { display: none; }
   .toolbar .cam-seg {
@@ -662,6 +663,17 @@ button { touch-action: manipulation; }   /* no double-tap zoom on fast taps */
   .stats { top: calc(max(12px, env(safe-area-inset-top)) + 60px); }
   .drawer, .views { top: calc(max(12px, env(safe-area-inset-top)) + 60px); }
   .legend-box { top: calc(max(12px, env(safe-area-inset-top)) + 90px); }
+}
+/* The camera choices on touch are thumb-sized; on a narrow screen their second
+   row (above) pushes what's below further down than the touch rule above */
+@media (hover: none) and (pointer: coarse) {
+  .cam-seg > button { min-width: 44px; min-height: 44px; }
+}
+@media (hover: none) and (pointer: coarse) and (max-width: 760px) {
+  .stats { top: calc(max(12px, env(safe-area-inset-top)) + 128px); }
+  .toasts { top: calc(max(12px, env(safe-area-inset-top)) + 156px); }
+  .drawer, .views { top: calc(max(12px, env(safe-area-inset-top)) + 126px); }
+  .legend-box { top: calc(max(12px, env(safe-area-inset-top)) + 152px); }
 }
 @media (hover: none) and (pointer: coarse) and (max-width: 640px) {
   .view-btn .view-name { display: none; }

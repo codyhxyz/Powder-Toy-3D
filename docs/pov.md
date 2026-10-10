@@ -60,6 +60,25 @@
   when hurt.
 - Cut for now: crafting, ammo, multiplayer POV (guests get a toast), physgun on solids.
 
+## Touch controls (2026-10-10)
+
+Phones and tablets (`(hover: none) and (pointer: coarse)`, `touch.js` `TOUCH_MEDIA`) get thumb controls in
+first person; nothing changes on desktop. The topbar's God / 1st / 3rd camera choices stay visible on touch
+(a second row under the bar when narrow), so a phone can drop in and leave.
+
+- **Left thumb**: a move stick, analog; pushed to its rim it sprints. Driving, it throttles and steers.
+- **Right thumb**: the held tool's two buttons, named by its catalog entry (`catalog.js` `touch`: [left-click,
+  right-click]; a tool with none, like the scanner, shows none), Nearer / Farther while the tool takes the
+  wheel (the physgun holding), Kick, Vehicle (when there are any: get in or out), Crouch (Dive in liquid) and
+  Jump (hold to fly; Brake when driving). Tools are picked by tapping the hotbar.
+- **Look**: a one-finger drag anywhere else on the scene, as mouse movement (the Sensitivity setting applies).
+  A look drag never fires a tool.
+- One input path: `touch.js` only fills the inputs the keyboard and mouse fill in `index.js` (`readInput`'s
+  keys, `buttons`, `wheelNotches`, `kickQueued`, `useVehicle`), so the body, vehicles and tools can't tell
+  them apart. There's no pointer lock on touch (`canUse()` stands in for `isLocked()`), and a tap that starts
+  and ends between two frames still holds its button for one.
+- Not on touch yet: Z zoom, Q tools menu, H drink (the flask), F5 (use the 3rd camera button), early respawn.
+
 ## Inventory (2026-10-10): Garry's Mod's slots and spawn menu
 
 - `src/pov/tools/catalog.js` is the list of tools (plain data: key, slot, start, name, model, desc), so the
