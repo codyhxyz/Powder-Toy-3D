@@ -33,8 +33,9 @@ import { E } from '../../elements.js';
 // evaluations and a few noise lookups. Powder (snow, sand) also asks its eight
 // neighbouring columns whether it is walled in, and an air cell near the
 // ground asks the trees of its own and the eight neighbouring tree cells
-// (whose crowns could reach it) for their columns. The geometry is written once (SRC) in the shared GLSL
-// subset (themedShared.js): the GPU runs it, the CPU its JS twin.
+// (whose crowns could reach it) for their columns. The geometry is written
+// once (SRC) in the shared GLSL subset (themedShared.js): the GPU runs it, the
+// CPU its JS twin.
 //
 // Stability, as the island's: snow and sand lie only where every neighbouring
 // column stands at most a cell lower (the cellular automaton's angle of
@@ -79,7 +80,8 @@ const V = {
     TREE_MARGIN: 1,         // a trunk keeps this far inside its tree cell (trunks stand at least 2 × this apart)
     TRUNK_MIN: 5,
     TRUNK_MAX: 9,
-    TREE_REACH: 16,         // cells above a column's ground that a neighbouring tree may reach (crown top, uphill)
+    TREE_REACH: 20,         // cells above a column's ground that a tree may reach (its crown's top, 12 up, from ground
+                            // up to 8 higher three cells away)
     TREE_ABOVE_SEA: 5,      // trunks stand this far above the sea: off the beach (BEACH_ABOVE), leaves clear of the water
     TREE_SNOW_GAP: 3,       // ...and this far below the lowest snow (whose meltwater their leaves would grow into)
     ISLET_ABOVE_MIN: 4,     // an islet's top, above sea level
@@ -99,7 +101,7 @@ const V = {
     ISLET_R_MAX: 44.0,
     SLOPE_LO: 0.6,          // a volcano's apex rises this much per cell of its radius (crater cut off)
     SLOPE_HI: 0.95,
-    EXP: 1.35,               // the profile, (1 - d / R)^this: concave, steepest at the top
+    EXP: 1.35,              // the profile, (1 - d / R)^this: concave, steepest at the top
     ISLET_EXP: 0.6,         // an islet's: convex, a dome
     CRATER_SHARE: 0.14,     // the crater's rim radius, share of the volcano's...
     CRATER_MIN: 6.0,        // ...within these
@@ -110,7 +112,7 @@ const V = {
     WOBBLE_FINE: 0.3,       // ...this share of it by a finer octave...
     WOBBLE_FINE_WAVE: 13.0, // ...over this many
     ROUGH_AMP: 2.0,         // surface roughness, cells...
-    ROUGH_WAVE: 11.0,        // ...over this many cells
+    ROUGH_WAVE: 11.0,       // ...over this many cells
     ROUGH_CLEAR: 1.6,       // ...fading in from this many crater radii out (the crater stays clean)
     BREACH_HALF: 2.5,       // the rim's breach: half its width...
     BREACH_LEN: 30.0,       // ...how far past the rim its channel runs...
@@ -133,17 +135,17 @@ const V = {
   },
   salts: {
     SITE: 0x7a10,           // sites
+    TREE: 0x7a60,           // tree candidates
+    CELL: 0x7a70,           // cells' colour seeds
     WOBBLE: 0x7a20,         // noise fields
+    WOBBLE_FINE: 0x7a80,
     ROUGH: 0x7a30,
     SEABED: 0x7a40,
     SNOW: 0x7a50,
-    TREE: 0x7a60,           // tree candidates
-    WOBBLE_FINE: 0x7a80,
     FOREST: 0x7a90,
-    CELL: 0x7a70,           // cells' colour seeds
   },
   picks: {
-    KIND: [['NONE', 0.08], ['ISLET', 0.2], ['DORMANT', 0.2], ['ACTIVE', 0.52]],
+    KIND: [['NONE', 0.08], ['ISLET', 0.2], ['DORMANT', 0.2], ['ACTIVE', 0.52]],   // what a site holds
     TREE: [['YES', 0.8], ['NO', 0.2]],     // a tree cell has a tree (in the thick of a forest)
   },
 };
@@ -422,7 +424,9 @@ function twin(P) {
 
 export const VOL = { ...V.ints, ...V.floats };
 export const VOL_KINDS = V.picks.KIND.map(([k]) => k);   // site kinds by index (volSiteKind)
-export const volcanoTwin = twin;   // (tools/scene-themed-preview.mjs)
+export const volcanoTwin = twin;   // (tools/scene-themed-preview.mjs, tools/scene-themed-check.mjs)
+// a twin with some constants changed (tools/scene-themed-check.mjs)
+export const volcanoTwinWith = (P, change) => compileShared(SRC, P.seed, { ...jsConstants(P_, V), ...change });
 
 export const volcanoWorld = {
   key: 'volcanoWorld',

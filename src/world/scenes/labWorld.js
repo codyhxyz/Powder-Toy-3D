@@ -104,8 +104,7 @@ const L = {
     HANG_MAX: 30,
     HANG_H_MIN: 6,
     HANG_H_MAX: 20,
-    HANG_LO: 62,            // its bottom: above the tallest tower...
-    // ...and its top at most SKY
+    HANG_LO: 62,            // its bottom: above the tallest tower (TOWER_H_MAX), and its top at most SKY
 
     // parameter streams of a room's and a slot's hash (thKey)
     K_LAYOUT: 1, K_AXIS: 2, K_DOOR: 3, K_WINDOW: 5, K_SLOT: 7,
@@ -121,11 +120,11 @@ const L = {
     CELL: 0x1ab1,           // cells' colour seeds
   },
   picks: {
-    LAYOUT: [['QUAD', 0.5], ['HALVES', 0.3], ['WHOLE', 0.2]],
-    STATION: [['TANK', 0.27], ['PIT', 0.27], ['TOWERS', 0.24], ['BLOCK', 0.08], ['NONE', 0.14]],
-    TANK: [['SLICK', 0.5], ['AQUARIUM', 0.2], ['ACID', 0.15], ['OIL', 0.15]],
-    TOP: [['SNOW', 0.35], ['ICE', 0.15], ['WATER', 0.15], ['GUNPOWDER', 0.1], ['WOOD', 0.1], ['NONE', 0.15]],
-    HANG: [['SAND', 0.6], ['STONE', 0.15], ['SNOW', 0.15], ['GUNPOWDER', 0.1]],
+    LAYOUT: [['QUAD', 0.5], ['HALVES', 0.3], ['WHOLE', 0.2]],                                // a room's slots
+    STATION: [['TANK', 0.27], ['PIT', 0.27], ['TOWERS', 0.24], ['BLOCK', 0.08], ['NONE', 0.14]], // a slot's station
+    TANK: [['SLICK', 0.5], ['AQUARIUM', 0.2], ['ACID', 0.15], ['OIL', 0.15]],                 // what a tank holds
+    TOP: [['SNOW', 0.35], ['ICE', 0.15], ['WATER', 0.15], ['GUNPOWDER', 0.1], ['WOOD', 0.1], ['NONE', 0.15]],   // on a pit's plate
+    HANG: [['SAND', 0.6], ['STONE', 0.15], ['SNOW', 0.15], ['GUNPOWDER', 0.1]],               // a hanging block's powder
     PLATE: [['YES', 0.8], ['NO', 0.2]],          // a pit's metal plate (or an open pool)
     SLOT_HANG: [['YES', 0.4], ['NO', 0.6]],      // a block hangs over the slot
     WINDOWS: [['YES', 0.5], ['NO', 0.5]],        // a wall has glass windows
