@@ -283,6 +283,7 @@ bool inertSelf(vec4 a, vec4 b) {
   // latent heat: water and ice at rest have nothing banked and sit within their phase
   if (id == E_WATER) return a.z == 0.0 && T >= 0.0 && T <= 100.0;
   if (id == E_ICE || id == E_SNOW) return a.z == 0.0 && T <= 0.0;
+  if (id == E_FUSE) return a.z >= 1.0;   // lit: burning down (react.js)
   if (id == E_LAVA) {
     int ct = int(floor(a.w));
     if (ct <= 0 || ct >= NE) ct = E_STONE;
@@ -296,10 +297,12 @@ uint ownFlags(vec4 a, vec4 b) {
 }
 // Does a cell going from state A a0 to a1 change what its neighbours' tests
 // (activity.js inertNear) read of it? Its element, and its temperature unless
-// it is air (AIR_T_IN_NEAR). Its life and ctype + seed they don't read.
+// it is air (AIR_T_IN_NEAR). Its ctype + seed they don't read, nor its life,
+// save whether a fuse is lit (a fuse beside it reads that).
 bool nearChange(vec4 a0, vec4 a1) {
   int i1 = eid(a1);
-  return eid(a0) != i1 || (a0.y != a1.y && (i1 != E_EMPTY || AIR_T_IN_NEAR));
+  return eid(a0) != i1 || (a0.y != a1.y && (i1 != E_EMPTY || AIR_T_IN_NEAR))
+    || (i1 == E_FUSE && (a0.z < 1.0) != (a1.z < 1.0));
 }
 `;
 

@@ -348,7 +348,7 @@ export class World {
     const ID = this.id, TT = this.T, LIFE = this.life, CT = this.ctype, VX = this.vx, VY = this.vy, PP = this.P;
     const oID = this._id, oT = this._T, oLife = this._life, oCT = this._ctype, oVX = this._vx, oVY = this._vy, oP = this._P;
     const nid = [0, 0, 0, 0], nT = [0, 0, 0, 0], nW = [0, 0, 0, 0], nP = [0, 0, 0, 0], pn = [0, 0, 0, 0];
-    const nVX = [0, 0, 0, 0], nVY = [0, 0, 0, 0];
+    const nVX = [0, 0, 0, 0], nVY = [0, 0, 0, 0], nIdx = [0, 0, 0, 0];
     const g = this.gravity;
     for (let y = 0; y < ny; y++)
       for (let x = 0; x < nx; x++) {
@@ -360,8 +360,8 @@ export class World {
           const qx = x + DX[q], qy = y + DY[q];
           if (qx >= 0 && qy >= 0 && qx < nx && qy < ny) {
             const j = qy * nx + qx;
-            nid[q] = ID[j]; nT[q] = TT[j]; nW[q] = CT[j]; nP[q] = PP[j]; nVX[q] = VX[j]; nVY[q] = VY[j];
-          } else { nid[q] = E.WALL; nT[q] = T; nW[q] = 0; nP[q] = P0; nVX[q] = 0; nVY[q] = 0; } // insulating, pressure-reflecting box
+            nid[q] = ID[j]; nT[q] = TT[j]; nW[q] = CT[j]; nP[q] = PP[j]; nVX[q] = VX[j]; nVY[q] = VY[j]; nIdx[q] = j;
+          } else { nIdx[q] = i; nid[q] = E.WALL; nT[q] = T; nW[q] = 0; nP[q] = P0; nVX[q] = 0; nVY[q] = 0; } // insulating, pressure-reflecting box
         }
 
         // breaking (impacts and blasts), from the input state
@@ -532,6 +532,23 @@ export class World {
             ctype = cloneOf === E.LAVA ? E.STONE : 0;
             vx = 0; vy = KIND[cloneOf] === K.GAS ? 0 : PHYS.SPAWN_DROP_V;
           }
+        } else if (id === E.FUSE) {
+          // safety fuse: burns with or without air at a steady speed (react.js)
+          if (life >= 1) {
+            let light = T >= IGNITE[id] || (nFire > 0 && rnd() < PHYS.FUSE_FIRE);
+            for (let q = 0; q < 4; q++)
+              light ||= (nid[q] === E.FUSE && LIFE[nIdx[q]] <= PHYS.FUSE_HANDOFF) || (!isGasLike(nid[q]) && nT[q] >= IGNITE[id]);
+            if (light) life = 1 - PHYS.FUSE_BURN;
+          } else {
+            // burnt out: smoke, or at the fuse's end the spit of burning powder
+            let end = true;
+            for (let q = 0; q < 4; q++) end &&= !(nid[q] === E.FUSE && LIFE[nIdx[q]] > life);
+            life -= PHYS.FUSE_BURN;
+            if (life <= 0) {
+              out = end ? E.FIRE : E.SMOKE; reset = true;
+              if (end) T = Math.max(T, PHYS.GUNPOWDER_T);
+            }
+          }
         } else if (id === E.CLONE && ctype < 1) {
           for (let q = 0; q < 4; q++) {
             const j = nid[q];
@@ -543,7 +560,7 @@ export class World {
         if (out === id && MELT[id] > 0 && T > MELT[id]) { out = E.LAVA; ctype = MELTINTO[id]; life = 0; }
 
         // combustion
-        if (out === id && IGNITE[id] > 0) {
+        if (out === id && IGNITE[id] > 0 && id !== E.FUSE) {   // a fuse burns by its own rule
           if (id === E.GUNPOWDER) {
             // at its ignition point, or touching something that hot (not a gas: a flame only might)
             let hotTouch = false;

@@ -147,6 +147,18 @@ const LOOKS = {
   // faces swamps the absorption), and keeps the glow (powdered phosphors do).
   CRYSTAL: { rough: 0.15, ior: 1.434, alb: '#5c3f8a', sss: 0.4, emit: FLUORITE_GLOW },
   CRYSTAL_DUST: { ch: 'GRANULAR', rough: 0.6, ior: 1.434, alb: '#b7a2d2', sss: 0.3, glint: 0.4, emit: FLUORITE_GLOW },
+  // Explosives (elements.js). C-4 is an off-white putty, moulded smooth, a
+  // little waxy (light wraps into its edges). Nitroglycerin is a clear, pale
+  // yellow oil, n = 1.479. Cast TNT is pale yellow-brown, dull and crystalline.
+  // Thermite is rust-red iron oxide with flecks of aluminium that glint. A
+  // safety fuse is a tarred cord. Propane is invisible: it borrows steam's
+  // haze so you can see where it pools (a liberty).
+  C4: { ch: 'ORGANIC', rough: 0.55, alb: '#d6d0bf', sss: 0.2 },
+  NITRO: { ch: 'LIQUID', ior: 1.479, rough: 0.03, scatter: [0.004, 0.004, 0.004] },
+  TNT: { rough: 0.7, alb: '#b9975a' },
+  THERMITE: { ch: 'GRANULAR', rough: 0.8, alb: '#6f4436', glint: 0.35 },
+  PROPANE: { media: 'STEAM' },
+  FUSE: { ch: 'ORGANIC', rough: 0.6, alb: '#2a4424' },
 };
 
 // Shared texture families (LOOKS surf). NONE: an element's own (or none).

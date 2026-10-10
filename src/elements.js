@@ -62,9 +62,47 @@
 
 import { SHRINE_OFFERS } from './pov/perks.js';
 import { GEAR, SLOTS } from './pov/tools/catalog.js';
+import { PHYS, SIM_GRAVITY, simSteps } from './physics.js';
+import { CELL_M } from './scale.js';
 
 export const K = { EMPTY: 0, SOLID: 1, POWDER: 2, LIQUID: 3, GAS: 4 };
 export const R = { NONE: 0, OPAQUE: 1, LIQUID: 2, GLASS: 3, GAS: 4, FIRE: 5 };
+
+// ---- explosives' numbers (rows at the end of defs; sources there) ----
+// Chapman–Jouguet detonation pressure, GPa, from density (g/cm³) and
+// detonation velocity (km/s): P_CJ ≈ ρD²/4.
+const detonationP = (rho, D) => (rho * D * D) / 4;
+const PCJ = { C4: detonationP(1.59, 8.04), NITRO: detonationP(1.59, 7.7), TNT: detonationP(1.6, 6.9) };
+// blast.P: C-4, the most brisant, fills the pressure field (P_MAX); the others by P_CJ
+const EXPLOSIVE_P = Object.fromEntries(Object.entries(PCJ).map(([k, p]) => [k, Math.round((PHYS.P_MAX * p) / PCJ.C4)]));
+const HE_BLAST_T = 3000;        // °C: high explosives' detonation products (~3,000-4,500 K)
+// Kinetic energy (hard's units) of a cell of density dens landing after
+// falling h metres from rest in the sim's gravity, drag aside: ½·dens·2gh.
+const fallKE = (dens, h) => +(dens * SIM_GRAVITY * (h / CELL_M)).toFixed(2);
+const NITRO_DENS = 15.9;        // 1.593 g/cm³
+const NITRO_FALL_M = 3;         // m: a fall that sets nitroglycerin off (game scale)
+// Thermite's puff: its iron vapour, 78.4 g per kg (Wikipedia), at ~1.8 g/cm³
+// poured: 0.141 g = 2.5 mmol of Fe per cm³, ~62 cm³ of gas at ambient. Puffs
+// go as steam's (physics.js STEAM_BOIL_PUFF per STEAM_EXPANSION volumes).
+const THERMITE_VAPOUR = 62;     // volumes of gas per volume
+const THERMITE_P = +((PHYS.STEAM_BOIL_PUFF * THERMITE_VAPOUR) / PHYS.STEAM_EXPANSION).toFixed(3);
+// Propane: 1.808 kg/m³ against air's 1.184 at 25 °C.
+const PROPANE_DENS = 1.53;
+// Its blast pressure: heat of combustion per volume against gunpowder's.
+// Propane 50.33 MJ/kg × 1.808 kg/m³ = 91 J/cm³ of gas; black powder ~3 MJ/kg
+// (Wikipedia) × 1.5 g/cm³ (GUNPOWDER dens) = 4,500 J/cm³.
+const PROPANE_HEAT = 91;        // J/cm³
+const GUNPOWDER_HEAT = 4500;    // J/cm³
+const PROPANE_P = +((PHYS.GUNPOWDER_P * PROPANE_HEAT) / GUNPOWDER_HEAT).toFixed(2);
+// The flame front: propane-air burns at S_L ≈ 0.43 m/s (stoichiometric;
+// Law, Combustion Physics, 2006), and its burnt gas expands ~7.5× (2,250 K
+// over 300 K), so the front crosses the unburnt mix at ~3.2 m/s. On the sim's
+// clock (physics.js simSteps) that is one cell per PROPANE_FRONT_STEPS steps,
+// so a touching flame lights a cell with this chance per step.
+const PROPANE_S_L = 0.43;       // m/s
+const PROPANE_EXPANSION = 7.5;
+const PROPANE_FRONT_STEPS = simSteps(CELL_M / (PROPANE_S_L * PROPANE_EXPANSION));
+const PROPANE_FLAME = +Math.min(1, 1 / PROPANE_FRONT_STEPS).toFixed(3);
 
 const defs = [
   { key: 'EMPTY', abbr: 'AIR', name: 'Air', kind: K.EMPTY, render: R.NONE, color: '#000000',
@@ -211,6 +249,105 @@ const defs = [
     dens: 13.5, cond: 0.01, cap: 0.4, drag: 0.04, slide: 0.7, ignite: 450, burnRate: 0.0017, burnHeat: 6, flameT: 1100,
     life: 1, spawn: 0.3, sound: 'crack',
     desc: 'Lumps of coal, as the pickaxe breaks them from a seam. Sinks in water and burns faster than the seam.' },
+
+  // ---- Explosives (batch 1, docs/elements.md): blast rows read by the shared
+  // blast mechanism (el-core); the fuse has its own case in react.js.
+  // Data: Wikipedia's TNT-equivalent table (density, detonation velocity D,
+  // RE factor): TNT 1.60 g/cm³, 6,900 m/s, 1.00; C-4 1.59, 8,040, 1.34;
+  // nitroglycerin 1.59, 7,700, 1.54; black powder 1.65, 400 (it deflagrates).
+  // blast.P: what shatters walls is the detonation pressure, P_CJ ≈ ρD²/4
+  // (C-4 25.7 GPa, NG 23.6, TNT 19.0). The sim's pressure field tops out at
+  // P_MAX, which C-4 takes; the others scale by P_CJ (EXPLOSIVE_P below).
+  // blast.T: detonation products of military high explosives come out at
+  // ~3,000-4,500 K by thermochemical codes; what matters here is that they
+  // are far hotter than any flame (HE_BLAST_T).
+  // blast.crushP is a game scale, in multiples of a gunpowder cell's blast
+  // (physics.js GUNPOWDER_P): a gunpowder cell stands in for the blasting cap
+  // real high explosives need, and the order follows their gap-test
+  // sensitivity: nitroglycerin < C-4 < TNT.
+  // blast.shock is in hard's units (½·dens·|v|², v in cells/step).
+  //
+  // C-4: 91% RDX in a plastic binder (Wikipedia). Real C-4 only burns when
+  // lit: just a detonator's shock sets it off (0.2 g of lead azide), and it
+  // shrugged off the US Army's rifle-bullet test (20% burned, none exploded).
+  // Game choice: heat past its 5-second explosion temperature (263-290 °C,
+  // same source), a nearby blast or a hit that would smash wood (shock = WOOD's
+  // hard) set it off. A putty, it sticks where it is painted (a solid). It has
+  // no debris: blasts set it off rather than break it.
+  // Heat: ~0.25 W/m·K like other plastics (cond, on water's 0.6 → 0.03 scale);
+  // 1.72 g/cm³ × ~1.1 J/g·K over water's 4.18 → cap 0.45.
+  { key: 'C4', abbr: 'C-4', name: 'C-4', kind: K.SOLID, render: R.OPAQUE, color: '#e3ddcb', var: 0.04,
+    cond: 0.012, cap: 0.45, ignite: 263,
+    blast: { P: EXPLOSIVE_P.C4, T: HE_BLAST_T, shock: 20, crushP: PHYS.GUNPOWDER_P },
+    desc: 'Plastic explosive: paint it on and it stays put. The biggest blast here. Goes off at 263 °C, from a nearby blast or a hard hit.' },
+  // Nitroglycerin: a pale yellow oily liquid, 1.593 g/cm³ (it sinks in water,
+  // which it hardly mixes with), refractive index 1.479. It explodes above
+  // 218 °C (Wikipedia). Very shock-sensitive: 0.2 J in the BAM fall-hammer
+  // test against TNT's 15 J (Meyer, Köhler & Homburg, Explosives). Here a fall
+  // of NITRO_FALL_M sets it off (shock = the kinetic energy of that fall in
+  // the sim's gravity, drag aside), so poured gently it is safe. Freezing
+  // (13 °C) isn't modelled: it would take a second element.
+  // Viscosity ~36 mPa·s, oil-like (flow); ~0.2 W/m·K; 1.6 g/cm³ × 1.36 J/g·K → cap 0.52.
+  { key: 'NITRO', abbr: 'NITR', name: 'Nitroglycerin', kind: K.LIQUID, render: R.LIQUID, color: '#e8dc8e',
+    dens: NITRO_DENS, cond: 0.01, cap: 0.52, drag: 0.02, flow: 0.5, ignite: 218, spawn: 0.35,
+    blast: { P: EXPLOSIVE_P.NITRO, T: HE_BLAST_T, shock: fallKE(NITRO_DENS, NITRO_FALL_M), crushP: PHYS.GUNPOWDER_P / 3 },
+    sigma: [0.012, 0.016, 0.07],
+    desc: 'Nitroglycerin: an oily liquid that sinks in water. A fall, a hit or 218 °C sets it off, so pour it gently.' },
+  // TNT, as cast blocks: 1.654 g/cm³, "insensitive" to shock and friction; it
+  // decomposes at 240 °C (Wikipedia), where it goes off here. It needs a
+  // booster's pressure wave: a lit pile of gunpowder or another high
+  // explosive, not one gunpowder cell. Flames set it off only by heating it.
+  // It melts at 80 °C (melt-cast TNT is poured at ~85 °C); that isn't
+  // modelled, as molten TNT would be a second element that explodes the same.
+  // ~0.26 W/m·K; 1.65 g/cm³ × 1.37 J/g·K → cap 0.54.
+  { key: 'TNT', abbr: 'TNT', name: 'TNT', kind: K.SOLID, render: R.OPAQUE, color: '#c9a24e', var: 0.06,
+    cond: 0.013, cap: 0.54, ignite: 240,
+    blast: { P: EXPLOSIVE_P.TNT, T: HE_BLAST_T, crushP: 2 * PHYS.GUNPOWDER_P },
+    desc: 'Cast TNT blocks: shrug off hits and sparks. Go off at 240 °C or when a big blast goes off next to them.' },
+  // Thermite: iron oxide and aluminium powders, 2Al + Fe₂O₃ → 2Fe + Al₂O₃.
+  // Hard to light: Al–Fe₂O₃ ignites at ~1,220 °C in thermal analysis (1,130 °C
+  // heated slowly; ~1,600 K in a furnace), so a wood fire won't do it but
+  // lava, a gunpowder blast or burning magnesium (~3,100 °C) will. It burns
+  // at up to 2,500 °C (adiabatic 2,862 °C, capped by iron boiling) into
+  // molten iron and alumina, with almost no gas (Wikipedia: 3,956 J/g;
+  // 78 g of iron vapour per kg). So it leaves LAVA that sets into METAL, and
+  // its puff is that vapour (THERMITE_VAPOUR, below). Energy check: poured
+  // at ~1.8 g/cm³ it holds 3,956 × 1.8 / 4.18 ≈ 1,700 cap·°C per volume; lava
+  // (cap 0.6) at 2,500 °C holds ~1,500, close to all of it.
+  // Loose powder from 0.7 to 4.2 g/cm³ (pressed); ~1.8 poured. Fe₂O₃ and Al
+  // average ~0.72 J/g·K → cap 0.31; a powder conducts like sand.
+  { key: 'THERMITE', abbr: 'THRM', name: 'Thermite', kind: K.POWDER, render: R.OPAQUE, color: '#8a5546', var: 0.25,
+    dens: 18, cond: 0.01, cap: 0.31, drag: 0.04, slide: 0.75, ignite: 1220, spawn: 0.3,
+    blast: { P: THERMITE_P, T: 2500, into: 'LAVA', of: 'METAL' },
+    desc: 'Rust and aluminium powder. Hard to light (1220 °C: lava or a blast, not a wood fire), then burns at 2500 °C into molten iron that eats through floors.' },
+  // Propane: 1.808 kg/m³ at 25 °C, ~1.5 times air (Wikipedia), so it pools
+  // in low spots: grav (ρ - ρ_air)/ρ, as steam's and smoke's buoyancy. It
+  // diffuses half as fast as steam (0.11 against 0.25 cm²/s), so it jitters
+  // less. Autoignition 470 °C. Burning: a deflagration. It goes off only
+  // where it meets air (the real limits are 2.1-9.5% propane in air, and a
+  // cell is all propane or all air, so the mixing zone is the face between
+  // them: blast.air), and a flame front crosses the pool at the propane-air
+  // flame speed (PROPANE_FLAME, below). Its pressure is its heat of
+  // combustion against gunpowder's (PROPANE_P). The flame, ~1,980 °C, is
+  // propane's adiabatic flame temperature in air (2,250 K).
+  // A gas has air's tiny conductance; ρ·c 1.81 kg/m³ × 1.67 kJ/kg·K is 2.5×
+  // air's → cap 0.05. Real propane is invisible; it is drawn as a faint haze.
+  { key: 'PROPANE', abbr: 'PROP', name: 'Propane', kind: K.GAS, render: R.GAS, color: '#cfd8b0',
+    dens: PROPANE_DENS, cond: 0.0005, cap: 0.05, grav: (PROPANE_DENS - 1) / PROPANE_DENS, drag: 0.05, jitter: 0.06,
+    ignite: 470, spawn: 0.3, sigma: [0.04, 0.04, 0.05],
+    blast: { P: PROPANE_P, T: 1980, flame: PROPANE_FLAME, air: true },
+    desc: 'Heavier than air, so it pools in low spots. A flame sends the whole pool up in a rolling fireball.' },
+  // Safety fuse: a black-powder core in tarred jute (Bickford's, 1831). The
+  // powder carries its own oxidiser (potassium nitrate), so it burns
+  // underwater and sealed in, at a steady ~1 cm/s ("30 seconds per foot",
+  // Wikipedia). That is physics.js FUSE_BURN: one cell (CELL_M) per ~1,100
+  // steps, on the sim's clock (react.js FUSE case). It lights from a flame, a
+  // lit fuse beside it or 300 °C (its sheath chars like wood), and the burnt
+  // end spits a gunpowder flame that sets off whatever it touches. Jute and
+  // tar: low conductance; it breaks into fibre (sawdust) like a plant stem.
+  { key: 'FUSE', abbr: 'FUSE', name: 'Fuse', kind: K.SOLID, render: R.OPAQUE, color: '#2f5a26', var: 0.08,
+    cond: 0.005, cap: 0.4, ignite: 300, life: 1, hard: 6, breakInto: 'SAWDUST', sound: 'thunk',
+    desc: 'A slow wick that carries its own oxidiser: it burns about a cell every 4.5 s, even underwater, then spits a flame at its end.' },
 ];
 
 export const ELEMENTS = defs.map((d, id) => ({
@@ -300,10 +437,12 @@ export const isGearTool = (id) => id <= GEAR_ID0 && id > GEAR_ID0 - 100;
 // How the palette is laid out in the UI. Within each group, elements are
 // ordered so related materials sit together and the colours run smoothly.
 export const PALETTE = [
-  { name: 'Powders', items: ['SAND', 'STONE', 'BROKENCOAL', 'GUNPOWDER', 'ASH', 'SNOW', 'SHARDS', 'CRYSTAL_DUST', 'SAWDUST', 'SCRAP'] },
+  { name: 'Powders', items: ['SAND', 'STONE', 'BROKENCOAL', 'ASH', 'SNOW', 'SHARDS', 'CRYSTAL_DUST', 'SAWDUST', 'SCRAP'] },
   { name: 'Liquids', items: ['WATER', 'ACID', 'OIL', 'LAVA'] },
-  { name: 'Gases', items: ['STEAM', 'CLOUD', 'SMOKE', 'FIRE'] },
+  { name: 'Gases', items: ['STEAM', 'CLOUD', 'SMOKE', 'PROPANE', 'FIRE'] },
   { name: 'Solids', items: ['WALL', 'COAL', 'ROCK', 'LIMESTONE', 'SANDSTONE', 'METAL', 'GLASS', 'ICE', 'CRYSTAL', 'WOOD', 'PLANT', 'CLONE'] },
+  // TPT's Explosives menu (propane stays a gas)
+  { name: 'Explosives', items: ['GUNPOWDER', 'FUSE', 'THERMITE', 'NITRO', 'TNT', 'C4'] },
   { name: 'Tools', items: ['HEAT', 'COOL', 'ERASE', 'BLAST', 'SIGN', ...GEAR_ITEMS.map((g) => g.key)] },
   { name: 'Entities', items: ['ENEMY', 'SPAWN'] },
   { name: 'Constructions', items: ['HOUSE', 'TREE', 'CAMPFIRE', 'IGLOO', 'BARREL', 'AQUARIUM', 'FOUNTAIN', 'SHRINE', 'DOCK', 'TOWER', 'STONES', 'WELL', 'MINE', 'WRECK', 'PROMPT'] },

@@ -348,6 +348,29 @@ void main() {
       ctype = cloneOf == E_LAVA ? float(E_STONE) : 0.0;
       v = vec3(0.0, KIND[cloneOf] == K_GAS ? 0.0 : SPAWN_DROP_V, 0.0);
     }
+  } else if (id == E_FUSE) {
+    // Safety fuse: a black-powder core in a tarred jute sheath. The powder
+    // carries its own oxidiser, so it burns with or without air, at a steady
+    // speed (physics.js FUSE_*). life is 1 unlit; lit, it runs down by
+    // FUSE_BURN a step, and the front passes into each fuse neighbour once
+    // it is down to FUSE_HANDOFF. The sheath doesn't heat up as it burns.
+    if (life >= 1.0) {
+      bool light = T >= IGNITE[id] || (nFire > 0 && rnd(rs) < FUSE_FIRE);
+      for (int i = 0; i < 6; i++)
+        light = light || (nid[i] == E_FUSE && na[i].z <= FUSE_HANDOFF) || (!isGasLike(nid[i]) && na[i].y >= IGNITE[id]);
+      if (light) life = 1.0 - FUSE_BURN;
+    } else {
+      // burnt out: a puff of smoke from the sheath, or, at the fuse's end (no
+      // fuse beside it that burns out later), the spit of burning powder that
+      // lights the charge
+      bool end = true;
+      for (int i = 0; i < 6; i++) end = end && !(nid[i] == E_FUSE && na[i].z > life);
+      life -= FUSE_BURN;
+      if (life <= 0.0) {
+        nidOut = end ? E_FIRE : E_SMOKE; reset = true;
+        if (end) T = max(T, GUNPOWDER_T);
+      }
+    }
   } else if (id == E_CLONE && ctype < 1.0) {
     for (int i = 0; i < 6; i++) {
       int j = nid[i];
@@ -361,7 +384,7 @@ void main() {
   }
 
   // combustion
-  if (nidOut == id && IGNITE[id] > 0.0) {
+  if (nidOut == id && IGNITE[id] > 0.0 && id != E_FUSE) {   // a fuse burns by its own rule (above)
     if (id == E_GUNPOWDER) {
       // It goes off at its ignition point, or the moment it touches something
       // that hot (an ember, hot metal, lava, a splinter heated by a shot); a
