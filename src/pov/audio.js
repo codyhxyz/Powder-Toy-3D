@@ -206,6 +206,10 @@ const PRESETS = {
   hurtDrown: [.45, .3, 260, , .2, .1, 0, 1, 10, , , , .05, , , , , .7],
   // death: a long, falling, crushed tone
   death: [.8, 0, 220, .02, .3, .6, 2, 1, -2, , , , , , , .2, , .6, , , -1200],
+  // eating cooked meat (meat.js): two quick, wet, low-passed bites (the repeat makes the second)
+  eat: [.6, .2, 260, , .03, .07, 4, 1.5, -1, , , , .09, 3, , , , .55, , , -1100],
+  // a body bursting into meat: a heavy, wet splat sliding down
+  gib: [1.2, .15, 110, , .05, .35, 4, 1.8, -2, , , , , 4, , .15, .03, .5, .05, , -900],
 };
 // presets that play as seamless loops (one render each)
 const LOOPS = new Set(['pourLoop', 'physHum', 'torchLoop', 'jetLoop', 'laserCharge']);
@@ -457,6 +461,9 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
 
   // a perk taken (pov/index.js), yours up close, an NPC's where it stands; an Extra Life spent sounds the same
   povEvents.on('perk:take', ({ point, by }) => { if (live()) play('perk', { at: by ? point ?? null : null }); });
+  // gibs and eating (meat.js): the player's own bite is close, an NPC's (by) and every burst at the body
+  povEvents.on('body:eat', ({ point, by }) => { if (live()) play('eat', { at: by ? point ?? null : null }); });
+  povEvents.on('body:gib', ({ point }) => { if (live()) play('gib', { at: point ?? null }); });
   povEvents.on('perk:revive', () => { if (live()) play('perk'); });
 
   povEvents.on('impact', ({ source, point, id, energy, broke, body, backstab }) => {

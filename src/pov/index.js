@@ -568,7 +568,7 @@ export function createPov(app) {
     }
 
     // the figure: shown once the camera is out of the head
-    figure.setVisible(pose.eyeDist > FIGURE_HIDE_DIST && !driving);   // the vehicle draws its driver
+    figure.setVisible(pose.eyeDist > FIGURE_HIDE_DIST && !driving && !player.gibbed);   // the vehicle draws its driver; a body burst into meat has nothing left to draw
     figure.update(dt, {
       // Shrink: the figure at the body's size, its gait timed at the plain figure's speed for the size
       feet: vFeet, scale: scale * player.size, yaw: povCam.look.yaw, worldToGrid,

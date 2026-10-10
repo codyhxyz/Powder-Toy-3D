@@ -267,7 +267,9 @@ player.jetFuel, player.jetting            // jetpack tank 0..1, firing this fram
 player.feel = { heat, cold, acid, hurt }  // 0..1 intensities for screen effects (hurt decays after a hit)
 player.dead, player.cause                 // cause: 'Killed by lava, 1,140 °C'
 player.applyImpulse(dv /* cells/s */)
-player.on(name, fn)                       // 'hurt' {amount, cause}, 'death' {cause}, 'land' {speed}, 'splash' {speed}
+player.on(name, fn)                       // 'hurt' {amount, cause}, 'death' {cause}, 'land' {speed}, 'splash' {speed},
+                                          // 'gib' {cause}, 'eat' {cells}
+player.gibbed                             // burst into meat (Quake's gib rule): the body is gone, its figure isn't drawn
 player.dispose()
 ```
 
@@ -394,6 +396,8 @@ say world. Emitters own their event names. Listeners never mutate payloads.
 | `laser:charge` | laser cannon | `{ amount, dt }` every frame it charges (0..1; audio.js's rising whine). The tool also emits `tool:action` 'laser' 'charge' / 'cancel' / 'fire'. |
 | `laser` | laser cannon | `{ from, to, dir, radius }`, from/to/radius in **world** units. The beam, for vfx.js. |
 | `shake` | laser cannon | `{ trauma }` 0..1. Adds to the player's screen shake (feel.js), a shared hook for any tool. |
+| `body:gib` | player.js (any body) | `{ point, cells, lost, by? }`. A body burst into meat: `cells` MEAT cells laid, `lost` that found no room (buried). `by` is the NPC's id. |
+| `body:eat` | player.js (any body) | `{ point, cells, by? }`. A body ate `cells` cooked meat cells. |
 
 The player's own events (`player.on('hurt'|'death'|'land'|'splash'|'revive'|'revenge')`) stay as they are; listeners subscribe there too.
 
@@ -565,6 +569,32 @@ licks off a burning body (vfx.js `burn`). NPCs run to water when Burning (brain.
 
 Check: `node tools/status-check.mjs` (CPU: the rules through real vitals.js) and `--gpu [--port …] [--shot
 file.jpg]` (the real body: a pool, fire on and off the body, snow, a wound's spill, the HUD row, the lab NPC).
+
+## Gibs and eating (2026-10-10): Cruelty Squad's healing
+
+There is no regeneration: a body heals by eating meat cooked with fire, and meat comes from bodies killed by overkill.
+
+- **Meat** (elements.js `MEAT`, `COOKED_MEAT`, in Powders): lean muscle's real numbers (1.05 g/cm³, ASHRAE food
+  thermal properties). Raw meat is too wet to burn; at 71 °C (USDA, ground meat) it cooks, after banking the
+  proteins' denaturation heat (~3.5 J/g). Cooked meat chars and burns like wood past its fat's flash point (~320 °C),
+  leaving ash. Fire, the flamethrower, lava and steam (in a closed steamer; in open air it rises away) cook it
+  through the engine's own heat. The phase change is elements.js `hot` (docs/elements.md, el-core's shape).
+- **Gibs** (vitals.js `GIB_HEALTH`, meat.js): Quake's rule. A killing blow that drives health to −40% or below
+  (Quake III `GIB_HEALTH` −40 of 100; Quake's `PlayerDie`) bursts the body. As in Quake III the corpse can still be
+  gibbed: blasts, slams and blows keep taking its health down, so a blast spread over frames is one blow at any frame
+  rate. Burns, cold, acid and drowning never gib. Other deaths keep the old flow. A rocket's direct blast gibs; its
+  edge, or an axe, leaves a body. Landings never hurt (Noita), so falls don't gib.
+- The burst lays the body's sim mass as meat: its box (1.6² × 5.5 cells) at `BODY_DENS` 9.8, the box Archimedes
+  floats, is 13 cells of meat (`GIB_CELLS`). They go in through the exact cell transfer (`transfer.put`), nearest the
+  body's middle, at its core temperature (37 °C) and its velocity, and the blast's own pressure throws them. A
+  gibbed figure isn't drawn.
+- **Eating**: cooked meat touching a body (the contact cells player.js measures) is taken out of the sim
+  (`transfer.take`, exact) and heals `EAT_HEAL` (8%) a cell, only while hurt and only as many as fill the body
+  (Quake's `T_Heal`: a full body leaves a health box). Raw meat isn't eaten. NPCs eat the same way.
+- Sound: `eat` (two wet bites) and `gib` (a splat) in audio.js, on `body:eat` / `body:gib`.
+- Check: `node tools/gibs-check.mjs` (cooking on the tile engine and the gib rule, in node);
+  `--port …` adds the GPU run (cooked and charred in the sim, a rocket gibs the lab's NPC into 13 cells, cooked
+  meat eaten and raw not, matter counted).
 
 ## Verifying (headless GPU)
 

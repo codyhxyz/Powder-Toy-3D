@@ -78,6 +78,24 @@ const FEEL_RATE = 6;            // 1/s, heat/cold/acid feel follows its target a
 const HURT_FEEL_GAIN = 4;       // hurt flash per unit of health lost...
 const HURT_FEEL_FADE = 1.5;     // ...fading at this much per second
 
+// ---- gibs: Quake's rule ----
+// The blow that kills a body bursts it into meat (elements.js MEAT; player.js
+// lays the cells) when it drives health to GIB_HEALTH or below: Quake III's
+// GIB_HEALTH, -40 of 100 (bg_public.h; g_combat.c player_die), as Quake's
+// PlayerDie (health < -40). Health is kept below zero for it. As in Quake III
+// the corpse can still be gibbed (player_die keeps takedamage, "can still be
+// gibbed"; body_die): violent damage (blasts, slams, blows) keeps taking its
+// health down after death, so a blast that lasts several frames is one blow
+// at any frame rate. Burns, cold, acid and drowning don't: a corpse left in a
+// fire doesn't burst.
+export const GIB_HEALTH = -0.4;
+
+// ---- eating (Cruelty Squad: no regeneration; you heal by eating cooked gibs) ----
+// Each COOKED_MEAT cell eaten heals this much (of the base 1, so Extra Health
+// stretches it as it stretches hurts): a body's gibs, ~13 cells (player.js
+// GIB_CELLS), heal a body from nothing about once over. Raw MEAT heals nothing.
+export const EAT_HEAL = 0.08;
+
 // 'hurt' events: continuous damage is batched until it adds up to this much
 // health, or HURT_EVENT_INTERVAL passes, so the shell isn't flooded every frame.
 const HURT_EVENT_MIN = 0.02;
@@ -105,6 +123,8 @@ export function createVitals(emit, perks = null) {
     feel: { heat: 0, cold: 0, acid: 0, hurt: 0 },
     dead: false, cause: '',
     get shieldMax() { return shieldMax(); },
+    gibbed: false,
+    under: 0,          // health below zero (≤ 0): the overkill Quake's gib rule reads
   };
   let pending = 0, pendingCause = '', pendingAge = 0;
   let selfBlastT = 0;   // s left of your own blast's reduced damage
@@ -114,6 +134,7 @@ export function createVitals(emit, perks = null) {
     v.shield = shieldMax(); v.shieldWait = 0; v.shieldCharging = false;
     Object.assign(v.feel, { heat: 0, cold: 0, acid: 0, hurt: 0 });
     v.dead = false; v.cause = '';
+    v.gibbed = false; v.under = 0;
     pending = 0; pendingCause = ''; pendingAge = 0;
   };
 
@@ -122,12 +143,27 @@ export function createVitals(emit, perks = null) {
     pending = 0; pendingAge = 0;
   }
 
+  // Health below zero: the killing blow's overkill, and violent damage to the
+  // corpse after it (GIB_HEALTH). Past GIB_HEALTH the body bursts: 'gib'.
+  function overkill(amount, cause) {
+    v.under -= amount;
+    if (v.gibbed || v.under > GIB_HEALTH) return;
+    v.gibbed = true;
+    emit('gib', { cause });
+  }
+
   // Take `amount` health. `burst` (an impact or a blast) is reported at once.
   // shielded: the Energy Shield takes it first (blows, blasts, slams);
-  // lethal: it takes all the health there is, shield or not (a backstab).
-  function hurt(amount, cause, burst = false, { shielded = false, lethal = false } = {}) {
-    if (v.dead || !(amount > 0)) return;
+  // lethal: it takes all the health there is, shield or not (a backstab);
+  // violent: a blast, slam or blow (what the shield takes), which can gib the
+  // body and keeps hitting its corpse (GIB_HEALTH).
+  function hurt(amount, cause, burst = false, { shielded = false, lethal = false, violent = shielded } = {}) {
+    if (!(amount > 0)) return;
     const maxHealth = perks?.maxHealth ?? 1;
+    if (v.dead) {
+      if (violent) overkill(amount / maxHealth, cause);
+      return;
+    }
     // any hurt holds the shield's refill off (Halo)
     v.shieldWait = SHIELD_DELAY;
     v.shieldCharging = false;
@@ -161,9 +197,18 @@ export function createVitals(emit, perks = null) {
       v.cause = cause;
       perks?.clear();
       emit('death', { cause });
+      if (violent) overkill(amount - before, cause);
     }
   }
   v.hurt = hurt;
+
+  // Heal by eating `cells` cells of cooked meat (EAT_HEAL each), up to full
+  // health. How many cells would fill this body: eatWant().
+  v.eat = (cells) => {
+    if (v.dead || !(cells > 0)) return;
+    v.health = Math.min(1, v.health + cells * EAT_HEAL / (perks?.maxHealth ?? 1));
+  };
+  v.eatWant = () => (v.dead ? 0 : Math.ceil((1 - v.health) * (perks?.maxHealth ?? 1) / EAT_HEAL - 1e-9));
   // a blast of your own just went off (see SELF_BLAST_SHARE)
   v.ownBlast = () => { selfBlastT = SELF_BLAST_TIME; };
 
@@ -227,14 +272,19 @@ export function createVitals(emit, perks = null) {
     f.acid += (clamp01(acidShare / FEEL_ACID_SHARE) - f.acid) * ease;
 
     shieldUpdate(dt);
-    if (v.dead) return;
+    const blastShare = selfBlastT > 0 ? SELF_BLAST_SHARE : 1;
+    selfBlastT = Math.max(0, selfBlastT - dt);
+    const blast = env.pressure > BLAST_HURT_P && !has('EXPLOSION_IMMUNITY');
+    const blown = () => hurt((env.pressure - BLAST_HURT_P) * BLAST_DAMAGE * blastShare * dt, 'Blown up', false, { shielded: true });
+    if (v.dead) {
+      if (blast) blown();   // the corpse can still be gibbed (GIB_HEALTH)
+      return;
+    }
 
     if (v.skinT > SKIN_BURN_T && !has('FIRE_IMMUNITY')) hurt((v.skinT - SKIN_BURN_T) * HEAT_DAMAGE * dt, heatCause(worstId, worstT));
     if (v.skinT < SKIN_COLD_T) hurt((SKIN_COLD_T - v.skinT) * COLD_DAMAGE * dt, 'Froze');
     if (acid) hurt(ACID_DAMAGE * acidShare * dt, 'Dissolved by acid');
-    const blastShare = selfBlastT > 0 ? SELF_BLAST_SHARE : 1;
-    selfBlastT = Math.max(0, selfBlastT - dt);
-    if (env.pressure > BLAST_HURT_P && !has('EXPLOSION_IMMUNITY')) hurt((env.pressure - BLAST_HURT_P) * BLAST_DAMAGE * blastShare * dt, 'Blown up', false, { shielded: true });
+    if (blast) blown();
 
     // breath
     const choking = (env.headInLiquid || env.buriedId >= 0) && !has('BREATHLESS');
@@ -252,4 +302,4 @@ export function createVitals(emit, perks = null) {
 }
 
 // Exposed for tests and tuning.
-export const VITALS = { BODY_T, SKIN_BURN_T, SKIN_COLD_T, BREATH_TIME, BLAST_HURT_P, SHIELD_DELAY, SHIELD_REFILL };
+export const VITALS = { BODY_T, SKIN_BURN_T, SKIN_COLD_T, BREATH_TIME, BLAST_HURT_P, BLAST_DAMAGE, SHIELD_DELAY, SHIELD_REFILL };

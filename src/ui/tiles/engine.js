@@ -8,7 +8,7 @@
 // elements.js. Only an element with its own special case in react.js (water,
 // fire, clone...) needs the same case added below; scripts/check-tile-engine.mjs
 // flags any that are missing.
-import { ELEMENTS, E, K, meltInto, breakInto } from '../../elements.js';
+import { ELEMENTS, E, K, meltInto, breakInto, hotInto, hotOf, hotNum } from '../../elements.js';
 import { PHYS } from '../../physics.js';
 
 // ---- element table, as the GLSL arrays (elements.js elementsGLSL) ----
@@ -39,6 +39,11 @@ export const BREAKINTO = Int8Array.from(ELEMENTS, breakInto);
 export const ACIDPROOF = ELEMENTS.map((e) => e.acidProof);
 export const FIZZ = col('fizz');
 export const LEAVES_ASH = ELEMENTS.map((e) => e.ash);
+export const HOT_T = Float32Array.from(ELEMENTS, hotNum('T'));
+export const HOT_INTO = Int8Array.from(ELEMENTS, hotInto);
+export const HOT_OF = Int8Array.from(ELEMENTS, hotOf);
+export const HOT_LATENT = Float32Array.from(ELEMENTS, hotNum('latent'));
+export const HOT_PUFF = Float32Array.from(ELEMENTS, hotNum('puff'));
 // the softest breakable solid (react.js HARD_MIN)
 const HARD_MIN = Math.min(...ELEMENTS.filter((e) => e.breakInto).map((e) => e.hard));
 
@@ -536,6 +541,17 @@ export class World {
           for (let q = 0; q < 4; q++) {
             const j = nid[q];
             if (j !== E.EMPTY && j !== E.WALL && j !== E.CLONE) { ctype = j; break; }
+          }
+        }
+
+        // the phase change on heating (elements.js hot), its latent heat banked in life (react.js)
+        if (out === id && HOT_INTO[id] >= 0) {
+          let done = T >= HOT_T[id];
+          if (HOT_LATENT[id] > 0) { done = latent(T, life, HOT_T[id], C, HOT_LATENT[id], true); T = lat.T; life = lat.acc; }
+          if (done) {
+            out = HOT_INTO[id]; reset = true;
+            if (HOT_OF[id] > 0) ctype = HOT_OF[id];
+            P += PHYS.STEAM_BOIL_PUFF * HOT_PUFF[id] / PHYS.STEAM_EXPANSION;
           }
         }
 

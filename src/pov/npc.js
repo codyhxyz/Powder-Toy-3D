@@ -99,7 +99,7 @@ export function createAi({ renderer, getSim }) {
 // null for a random spot near the player.
 export function createNpc({ env, ai, home = () => null }) {
   const id = `npc${nextId++}`;
-  const body = createPlayer({ renderer: env.renderer, getSim: env.getSim, quiet: true });
+  const body = createPlayer({ renderer: env.renderer, getSim: env.getSim, quiet: true, id });
   const held = {};
   const figure = createFigure(buildWizard(held));
   const viewmodel = new THREE.Group();   // its tools' hands hang here; never drawn (the figure holds the models)
@@ -255,7 +255,7 @@ export function createNpc({ env, ai, home = () => null }) {
       chopT = Math.max(0, chopT - dt);
       for (const [k, obj] of Object.entries(held)) obj.visible = alive && k === it.tool;
       w.toWorld(body.pos, vFeet);
-      figure.setVisible(spawned);
+      figure.setVisible(spawned && !body.gibbed);   // burst into meat: nothing left to draw
       figure.update(dt, {
         feet: vFeet, scale: w.scale * body.size, yaw, worldToGrid: w.worldToGrid,   // (Shrink: as the player's figure)
         speedH: got / body.size, velY: body.vel.y, onGround: body.onGround, inLiquid: body.inLiquid, headInLiquid: body.headInLiquid,
@@ -263,7 +263,7 @@ export function createNpc({ env, ai, home = () => null }) {
         chop: chopT > 0 ? 1 : it.chop, kick: body.kickPose,
       });
     },
-    setVisible(v) { figure.setVisible(v && spawned); },
+    setVisible(v) { figure.setVisible(v && spawned && !body.gibbed); },
     reset() { spawned = false; kit.putAway(); figure.setVisible(false); },
     // a fresh NPC at `at` (grid cells): health, memory and cooldowns reset (playtests)
     placeAt(at) { const sim = env.getSim(); if (sim && world) spawn(sim, at); },
