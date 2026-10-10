@@ -16,8 +16,8 @@ const errs = [];
 p.on('console', (m) => { if (m.type() === 'error') errs.push(m.text().slice(0, 300)); });
 p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 500)));
 await p.addInitScript(() => { try { localStorage.removeItem('tpt3d.pov.given'); } catch { /* */ } });
-await p.goto(`http://localhost:${port}/?preset=empty`);
-await p.waitForFunction(() => window.__app?.pov, null, { timeout: 60000 });
+await p.goto(`http://localhost:${port}/?preset=empty`, { timeout: 120000 });   // patient: the GPU is shared (keys-check)
+await p.waitForFunction(() => window.__app?.pov, null, { timeout: 120000 });
 await p.waitForTimeout(1500);
 
 let fails = 0;
@@ -36,9 +36,13 @@ const fires = () => ev(() => window.__fires.length);
 
 // the palette's Tools group lists every first-person tool
 const tiles = await ev(() => [...document.querySelectorAll('.dock .tile')].filter((t) => +t.dataset.id <= -300).length);
-check('palette Tools group lists the tools', tiles === 15, `${tiles} tiles`);
+const gearCount = await ev(async () => (await import('/src/pov/tools/catalog.js')).GEAR.length);
+check('palette Tools group lists the tools', tiles === gearCount, `${tiles} tiles of ${gearCount}`);
 // given from the god view: it waits in the inventory
-await ev(() => document.querySelector('.dock .tile[data-id="-306"]').click());   // SMG
+await ev(async () => {   // SMG (elements.js GEAR_ITEMS: id −300 − its catalog index)
+  const { GEAR } = await import('/src/pov/tools/catalog.js');
+  document.querySelector(`.dock .tile[data-id="${-300 - GEAR.findIndex((g) => g.key === 'SMG')}"]`).click();
+});
 const given = await ev(async () => (await import('/src/pov/tools/inventory.js')).inventory.owned);
 check('SMG given from the palette', given.includes('SMG'), given.join(' '));
 
@@ -49,7 +53,7 @@ await ev(async () => {
   povEvents.on('blast', (x) => window.__blasts.push(x.point));
 });
 await p.mouse.move(W / 2, H / 2);
-await p.keyboard.press('f');
+await p.keyboard.press('v');   // V drops in (keys-check)
 await p.waitForFunction(() => window.__app.pov.mode === 'on', null, { timeout: 20000 }).catch(() => {});
 check('dropped in', (await ev(() => window.__app.pov.mode)) === 'on');
 await ev(() => { window.__app.pov.test.assumeLocked = true; });
@@ -57,6 +61,9 @@ const held = () => ev(() => window.__app.pov.toolbelt.selectedKey);
 check('SMG given before the drop-in is in hand', (await held()) === 'SMG', await held());
 const slots = await ev(() => document.querySelectorAll('.hotbar .hb-slot').length);
 check('six slots on the bar', slots === 6, `${slots}`);
+// no UI over the canvas from here: in play, pointer lock sends every click to it, but here the
+// hotbar's slot stack (which can sit over the middle of the window) would take them
+await p.addStyleTag({ content: 'body *{visibility:hidden !important} canvas[data-engine]{visibility:visible !important}' });
 
 // slot keys: 1 then 1 again steps through Dig; 3 cycles the guns
 await p.keyboard.press('1'); const k1 = await held();

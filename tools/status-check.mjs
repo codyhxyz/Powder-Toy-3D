@@ -378,10 +378,10 @@ async function gpu(port, shotPath) {
       await ev(() => { const q = window.__app.pov.player; q.status.clearAll(); q.spawn(q.pos.clone().set(64, 0, 40)); });
       await settle(600);
       await ev(() => { const q = window.__app.pov.player; q.status.add('OILY', 30); q.status.add('BURNING', 30); });
-      await p.keyboard.press('f');
+      await p.keyboard.press('F5');
       await settle(1200);
       await p.screenshot({ path: shotPath, type: 'jpeg', quality: 60, scale: 'css' });
-      await p.keyboard.press('f');
+      await p.keyboard.press('F5');
     }
 
     // ---- the lab's NPC: the same body, so the same stains

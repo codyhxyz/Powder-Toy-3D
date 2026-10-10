@@ -20,9 +20,12 @@ const p = await b.newPage({ viewport: { width: W, height: H } });
 const errs = [];
 p.on('console', (m) => { if (m.type() === 'error') errs.push(m.text().slice(0, 300)); });
 p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 500)));
-await p.goto(`http://localhost:${port}/?preset=empty`);
-await p.waitForFunction(() => window.__app?.pov, null, { timeout: 60000 });
+await p.goto(`http://localhost:${port}/?preset=empty`, { timeout: 120000 });   // patient: the GPU is shared (keys-check)
+await p.waitForFunction(() => window.__app?.pov, null, { timeout: 120000 });
 await p.waitForTimeout(1500);
+// no UI over the canvas: in play, pointer lock sends every click to it, but here the hotbar's
+// slot stack (which can sit over the middle of a small window) would take them
+await p.addStyleTag({ content: 'body *{visibility:hidden !important} canvas[data-engine]{visibility:visible !important}' });
 
 let fails = 0;
 const check = (name, ok, info = '') => { if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${info ? `  ${info}` : ''}`); };
@@ -35,21 +38,24 @@ const census = () => ev(async () => {
 });
 const hold = (key) => ev((k) => window.__app.pov.toolbelt.select(k), key);
 const lampCount = () => ev(async () => (await import('/src/gfx/uniforms.js')).gfxUniforms.uLampCount.value);
-// mean brightness (0–255) of the middle of the frame: a screenshot, measured by ImageMagick
+// mean brightness (0–255) of the world left of the middle of the frame, clear of the tool in hand
+// (its flame and glow are bright themselves): a screenshot, measured by ImageMagick
 const SHOT_TMP = join(mkdtempSync(join(tmpdir(), 'lights-')), 'frame.png');
 const brightness = async () => {
-  await p.screenshot({ path: SHOT_TMP, clip: { x: W / 4, y: H / 4, width: W / 2, height: H / 2 } });
+  await p.screenshot({ path: SHOT_TMP, clip: { x: W / 8, y: H / 4, width: W * 3 / 8, height: H / 2 } });
   return +execFileSync('magick', [SHOT_TMP, '-colorspace', 'gray', '-format', '%[fx:mean*255]', 'info:']).toString();
 };
 
-// night, a wooden wall ahead
+// night, a wooden wall ahead; the eyes don't adjust (gfx/post.js ADAPT would brighten the dark
+// views to meet the lit ones, and the comparisons are of the light itself)
 await ev(async ([steps]) => {
   const a = window.__app, { E } = await import('/src/elements.js'), V = a.camera.position.constructor;
+  a.post.settings.adapt = false;
   a.day.clock = steps;
   a.sim.paint({ center: new V(40, 4, 64.5), radius: 4, shape: 1, tool: E.WOOD, rate: 1, replace: true });
 }, [MIDNIGHT_STEPS]);
 await p.mouse.move(W / 2, H / 2);
-await p.keyboard.press('f');
+await p.keyboard.press('v');   // V drops in (keys-check)
 await p.waitForFunction(() => window.__app.pov.mode === 'on', null, { timeout: 20000 }).catch(() => {});
 await ev(() => { const a = window.__app, V = a.camera.position.constructor; a.pov.test.assumeLocked = true; a.pov.player.spawn(new V(30, 0, 64.5)); a.pov.setLook(-Math.PI / 2, -0.15); });
 await wait(1500);
@@ -65,6 +71,23 @@ const torchLit = await brightness();
 await shot('night-torch');
 check('the torch lights the wall', torchLit > dark * 1.3, `brightness ${dark.toFixed(1)} → ${torchLit.toFixed(1)}`);
 
+// lantern: brighter than the torch (measured before the wall burns: its fire lights every view after)
+await ev(async () => (await import('/src/pov/tools/inventory.js')).inventory.give('LANTERN'));
+await wait(800);
+check('the lantern given goes in hand', (await ev(() => window.__app.pov.toolbelt.selectedKey)) === 'LANTERN');
+await ev(() => window.__app.pov.setLook(Math.PI / 2, -0.15));   // away from the wall
+await wait(800);
+await hold('SHOVEL'); await wait(500);
+const dark2 = await brightness();
+await hold('LANTERN'); await wait(800);
+const lanternLit = await brightness();
+await shot('night-lantern');
+await hold('TORCH'); await wait(800);
+const torchLit2 = await brightness();
+check('the lantern is brighter than the torch', lanternLit > torchLit2 && torchLit2 > dark2, `dark ${dark2.toFixed(1)}, torch ${torchLit2.toFixed(1)}, lantern ${lanternLit.toFixed(1)}`);
+await ev(() => window.__app.pov.setLook(-Math.PI / 2, -0.15));   // back to the wall
+await hold('TORCH'); await wait(800);
+
 // a torch thrown at the wood lands lit and sets it alight
 let c0 = await census();
 await p.mouse.down({ button: 'right' }); await wait(40); await p.mouse.up({ button: 'right' });
@@ -77,20 +100,8 @@ let c1 = await census();
 check('the thrown torch sets the wood alight', (c1.FIRE ?? 0) > 0 || (c1.WOOD ?? 0) < (c0.WOOD ?? 0), `WOOD ${c0.WOOD}→${c1.WOOD}, FIRE ${c0.FIRE ?? 0}→${c1.FIRE ?? 0}, ASH ${c1.ASH ?? 0}`);
 await shot('torch-thrown');
 
-// lantern: brighter, white, switches, lands lit
-await ev(async () => (await import('/src/pov/tools/inventory.js')).inventory.give('LANTERN'));
-await wait(800);
-check('the lantern given goes in hand', (await ev(() => window.__app.pov.toolbelt.selectedKey)) === 'LANTERN');
-await ev(() => window.__app.pov.setLook(Math.PI / 2, -0.15));   // away from the burning wall
-await wait(800);
-await hold('SHOVEL'); await wait(500);
-const dark2 = await brightness();
-await hold('LANTERN'); await wait(800);
-const lanternLit = await brightness();
-await shot('night-lantern');
-await hold('TORCH'); await wait(800);
-const torchLit2 = await brightness();
-check('the lantern is brighter than the torch', lanternLit > torchLit2 && torchLit2 > dark2, `dark ${dark2.toFixed(1)}, torch ${torchLit2.toFixed(1)}, lantern ${lanternLit.toFixed(1)}`);
+// the lantern switches and lands lit (thrown away from the burning wall)
+await ev(() => window.__app.pov.setLook(Math.PI / 2, -0.15));
 await hold('LANTERN'); await wait(300);
 await p.mouse.down(); await wait(40); await p.mouse.up();
 await wait(300);

@@ -19,7 +19,7 @@
 //          (elements.js sigma) per cell, RGB; the rest is absorbed. Ratios to
 //          sigma give the colour a deep body of it glows with.
 //   bevel  crisp voxels: share of the global edge radius (gfx.bevel) its
-//          edges are rounded by (default 1; crystal's cleavage edges are sharp)
+//          edges are rounded by (default 1)
 //   emit   light it gives off by itself at any temperature (luminescence), as
 //          linear RGB radiance in the incandescence's scene units (sunlit
 //          white ≈ 1.2): what a body of it shows. It adds to the thermal glow
@@ -27,6 +27,19 @@
 
 import { ELEMENTS } from '../elements.js';
 import { bandGlow } from './incandescence.js';
+
+// sRGB decoding (IEC 61966-2-1)
+const SRGB_LINEAR_MAX = 0.04045;   // encoded value where the linear segment ends
+const SRGB_LINEAR_SLOPE = 12.92;   // slope of that segment
+const SRGB_OFFSET = 0.055;         // offset of the power segment
+const SRGB_GAMMA = 2.4;            // its exponent
+const srgbToLinear = (c) => (c <= SRGB_LINEAR_MAX ? c / SRGB_LINEAR_SLOPE
+  : Math.pow((c + SRGB_OFFSET) / (1 + SRGB_OFFSET), SRGB_GAMMA));
+const linearOf = (c) => {
+  if (Array.isArray(c)) return c;
+  const n = parseInt(c.slice(1), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((v) => srgbToLinear(v / 255));
+};
 
 // Fluorite's blue-violet fluorescence: the Eu²⁺ band at 424 nm, ~25 nm wide
 // (CaF₂:Eu²⁺; "fluorescence" is named after fluorite). Under a UV lamp it is
@@ -44,6 +57,25 @@ const FLUORITE_GLOW = bandGlow(FLUORITE_BAND.peak, FLUORITE_BAND.fwhm, FLUORITE_
 // daylight and lights a dark room.
 const SPARK_BAND = { peak: 460, fwhm: 300, lum: 0.6 };
 export const SPARK_GLOW = bandGlow(SPARK_BAND.peak, SPARK_BAND.fwhm, SPARK_BAND.lum);
+// Foxfire (elements.js FUNGUS): fungal luciferin's green band, peaking at
+// 520-530 nm and ~80 nm wide (Kotlobay et al. 2018, PNAS; Oliveira et al.
+// 2015). Real foxfire is faint, ~10⁻³ cd/m², seen only by dark-adapted eyes;
+// drawn at half fluorite's glow, so a patch reads in a dark cave (the eyes
+// adjust: gfx/post.js ADAPT) and fades into its pale body in daylight. A game
+// liberty, like fluorite's.
+const FOXFIRE_BAND = { peak: 525, fwhm: 80, lum: 0.025 };
+const FOXFIRE_GLOW = bandGlow(FOXFIRE_BAND.peak, FOXFIRE_BAND.fwhm, FOXFIRE_BAND.lum);
+// Noita's glowing liquids (the magical ones and toxic sludge) shine faintly
+// in their own colour: game magic. Luminance in the incandescence's scene
+// units: a fifth of fluorite's, enough to pick a pool out of a dark cave.
+const MAGIC_GLOW_LUM = 0.01;
+const TOXIC_GLOW_LUM = 0.01;
+const REC709_LUMA = [0.2126, 0.7152, 0.0722];   // luminance weights of linear sRGB
+// A glow with the chromaticity of colour hex at luminance lum.
+const tintGlow = (hex, lum) => {
+  const c = linearOf(hex), y = c.reduce((t, v, i) => t + v * REC709_LUMA[i], 0);
+  return c.map((v) => (v / y) * lum);
+};
 
 // Smooth-surface channels. sigma = blur radius in cells (how much the
 // blockiness is smoothed away), ema = per-frame blend toward the new state
@@ -156,12 +188,13 @@ const LOOKS = {
     crag: { relief: 0.5, pits: 0, bands: 2, stain: 0 } },       // blocky cleat, bright and dull bands
   BROKENCOAL: { ch: 'GRANULAR', rough: 0.75, alb: '#3c3c3d', glint: 0.5 },
   // Fluorite (elements.js CRYSTAL): n = 1.434, a vitreous luster from flat
-  // growth and cleavage faces (polished glass-smooth: GGX roughness at the
-  // floor), sharp cleavage edges. Its body colour and glow are worked out per
-  // crystal in shaders/gfx/surface.js (crystalLook); alb is the mean. Its
+  // growth faces (polished glass-smooth: GGX roughness at the floor). A cell
+  // is drawn as a cluster of pointed prisms (shaders/gfx/crystal.js); their
+  // body colour and glow are worked out per prism in shaders/gfx/surface.js
+  // (crystalLook); alb is the mean. Its
   // dust is pale, as any crushed coloured crystal is (scattering at the grain
   // faces swamps the absorption), and keeps the glow (powdered phosphors do).
-  CRYSTAL: { rough: 0.04, ior: 1.434, alb: '#4a3478', sss: 0.3, bevel: 0.2, emit: FLUORITE_GLOW },
+  CRYSTAL: { rough: 0.04, ior: 1.434, alb: '#4a3478', sss: 0.3, emit: FLUORITE_GLOW },
   CRYSTAL_DUST: { ch: 'GRANULAR', rough: 0.6, ior: 1.434, alb: '#b7a2d2', sss: 0.3, glint: 0.4, emit: FLUORITE_GLOW },
   // Electronics (elements.js). A battery's printed steel can; silicon is
   // grey and mirror-like (n ≈ 3.9 in the visible: F0 ≈ 0.35), tinted as TPT
@@ -239,6 +272,39 @@ const LOOKS = {
   CERAMIC: { rough: 0.6, alb: '#efeae0' },
   ANTIMATTER: { ch: 'GRANULAR', rough: 0.4, alb: '#b9b0d9', glint: 0.6 },
   SINGULARITY: { rough: 1, alb: '#000000' },
+  // Explosives (elements.js). C-4 is an off-white putty, moulded smooth, a
+  // little waxy (light wraps into its edges). Nitroglycerin is a clear, pale
+  // yellow oil, n = 1.479. Cast TNT is pale yellow-brown, dull and crystalline.
+  // Thermite is rust-red iron oxide with flecks of aluminium that glint. A
+  // safety fuse is a tarred cord. Propane is invisible: it borrows steam's
+  // haze so you can see where it pools (a liberty).
+  C4: { ch: 'ORGANIC', rough: 0.55, alb: '#d6d0bf', sss: 0.2 },
+  NITRO: { ch: 'LIQUID', ior: 1.479, rough: 0.03, scatter: [0.004, 0.004, 0.004] },
+  TNT: { rough: 0.7, alb: '#b9975a' },
+  THERMITE: { ch: 'GRANULAR', rough: 0.8, alb: '#6f4436', glint: 0.35 },
+  PROPANE: { media: 'STEAM' },
+  FUSE: { ch: 'ORGANIC', rough: 0.6, alb: '#2a4424' },
+  // Noita's liquids (elements.js), each tinted by its sigma and scatter: the
+  // scattered share sets the colour a deep body shows. Blood is near opaque
+  // (haemoglobin absorbs blue and green within a millimetre; red cells
+  // scatter red): n ~1.35 (plasma). Sludge is a murky lime suspension; slime a
+  // pink-purple gel, glossy but not mirror-smooth; whiskey a clear amber
+  // (n = 1.356 for 40 % ethanol). The potions are clear tinctures (n ~1.34).
+  BLOOD: { ch: 'LIQUID', ior: 1.35, rough: 0.04, scatter: [0.7, 0.04, 0.04] },
+  TOXIC: { ch: 'LIQUID', ior: 1.36, rough: 0.08, scatter: [0.25, 0.4, 0.05], emit: tintGlow('#3fb52c', TOXIC_GLOW_LUM) },
+  SLIME: { ch: 'LIQUID', ior: 1.34, rough: 0.12, scatter: [0.12, 0.05, 0.12] },
+  WHISKEY: { ch: 'LIQUID', ior: 1.356, rough: 0.02, scatter: [0.002, 0.002, 0.002] },
+  TELEPORTATIUM: { ch: 'LIQUID', ior: 1.34, rough: 0.02, scatter: [0.004, 0.012, 0.014], emit: tintGlow('#3cc6e8', MAGIC_GLOW_LUM) },
+  LEVITATIUM: { ch: 'LIQUID', ior: 1.34, rough: 0.02, scatter: [0.02, 0.025, 0.012], emit: tintGlow('#a7ad7a', MAGIC_GLOW_LUM) },
+  HEALTHIUM: { ch: 'LIQUID', ior: 1.34, rough: 0.02, scatter: [0.02, 0.04, 0.008], emit: tintGlow('#c8f26a', MAGIC_GLOW_LUM) },
+  BERSERKIUM: { ch: 'LIQUID', ior: 1.34, rough: 0.02, scatter: [0.012, 0.006, 0.002], emit: tintGlow('#ef5a26', MAGIC_GLOW_LUM) },
+  POLYMORPHINE: { ch: 'LIQUID', ior: 1.34, rough: 0.02, scatter: [0.015, 0.006, 0.012], emit: tintGlow('#ee6fcf', MAGIC_GLOW_LUM) },
+  PHEROMONE: { ch: 'LIQUID', ior: 1.34, rough: 0.02, scatter: [0.015, 0.004, 0.006], emit: tintGlow('#ff3d62', MAGIC_GLOW_LUM) },
+  // Moss: a dark, matte green mat (moss reflects ~0.05-0.1 in the visible,
+  // greenest near 550 nm); light wraps into its leaves. Fungus: pale buff
+  // mycelium over the wood, glowing green (foxfire).
+  MOSS: { ch: 'ORGANIC', rough: 0.95, alb: '#3e5a24', sss: 0.3 },
+  FUNGUS: { ch: 'ORGANIC', rough: 0.75, alb: '#c9c3a0', sss: 0.35, emit: FOXFIRE_GLOW },
 };
 
 // Shared texture families (LOOKS surf). NONE: an element's own (or none).
@@ -256,19 +322,6 @@ const DEFAULT_ROUGH = 0.7;
 const DEFAULT_IOR = 1.5;
 // Decimal places the baked material values are rounded to.
 const GLSL_DIGITS = 4;
-
-// sRGB decoding (IEC 61966-2-1)
-const SRGB_LINEAR_MAX = 0.04045;   // encoded value where the linear segment ends
-const SRGB_LINEAR_SLOPE = 12.92;   // slope of that segment
-const SRGB_OFFSET = 0.055;         // offset of the power segment
-const SRGB_GAMMA = 2.4;            // its exponent
-const srgbToLinear = (c) => (c <= SRGB_LINEAR_MAX ? c / SRGB_LINEAR_SLOPE
-  : Math.pow((c + SRGB_OFFSET) / (1 + SRGB_OFFSET), SRGB_GAMMA));
-const linearOf = (c) => {
-  if (Array.isArray(c)) return c;
-  const n = parseInt(c.slice(1), 16);
-  return [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((v) => srgbToLinear(v / 255));
-};
 
 const chIndex = (k) => (k ? CHANNELS.findIndex((c) => c.key === k) : -1);
 const mediaIndex = (k) => (k ? MEDIA.findIndex((m) => m.key === k) : -1);

@@ -87,12 +87,12 @@ await p.keyboard.down('w'); await wait(1500); await p.keyboard.up('w');
 check('footsteps', (await ev(() => window.__evs.filter((e) => e[0] === 'player:step').length)) > 0);
 
 // third person: the realistic body
-await p.keyboard.press('f');
+await p.keyboard.press('F5');
 await wait(1200);
 const body = await ev(() => { const f = window.__app.pov.figure; return { choice: f?.choice ?? window.__app.settings.figure, real: !!(f?.real ?? f?.isReal ?? f?.loaded) }; });
 console.log('     body:', JSON.stringify(body));
 await shot('third');
-await p.keyboard.press('f');
+await p.keyboard.press('F5');
 await p.keyboard.press('v');
 await p.waitForFunction(() => window.__app.pov.mode === 'off', null, { timeout: 15000 }).catch(() => {});
 check('popped out', (await ev(() => window.__app.pov.mode)) === 'off');

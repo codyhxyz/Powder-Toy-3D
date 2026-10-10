@@ -8,30 +8,18 @@
   From the god view, `V` drops a body onto the surface under the cursor (or the middle of the box); `F` does
   too, for habit. The camera swoops from orbit into the eyes. `V` again swoops back out to the orbit pose you
   left. The sim keeps running in both modes.
-- **Keys speak other games' language**: `V` noclip (Garry's Mod), `F` first or third person (Skyrim and
-  Fallout; Minecraft's `F5` works too), `C` held zooms (Minecraft's zoom mods, `zoom.js`, with Zoomify's
-  defaults: ÷4 eased in over 1 s and out over 0.5 s, the wheel ×1.5 a notch while held, the look slowed with
-  the view, a scope's zoom multiplied in), `Ctrl` swims down (the Source games' duck; `Shift` is their
-  sprint, as here). While `Ctrl` is held, leaving the page asks first, since `Ctrl+W` can't be held back.
-- **You are small**: about 5.5 cells tall in a 128-cell world (one cell ≈ 30 cm). Lava flows are rivers and
-  houses are buildings.
-- **A real, mortal body**. You walk, sprint, jump and swim, and you float or sink by density. Blasts shove you
-  (the same a = −∇P/ρ the sim uses). Heat, cold, acid, lava, drowning, being buried and being thrown into walls hurt; landings never do (Noita has no fall damage).
-  You die, the camera pulls back with the cause ("Killed by lava, 1,140 °C"), and you respawn at the drop-in
-  point.
-- **Jetpack** (Noita's levitation): hold `Space` in the air to fly. Movement is Noita's player (player.xml values scaled by body height: 5.4 g, a 1.9 m jump, an 8.6 m/s run): velocity eases a fixed share per frame toward the wished speed instead of being pushed by forces. The jet eases the climb toward 14 m/s with gravity off while it fires,
-  the tank holds 3 s of thrust and recharges as Noita's does (its player.xml values): full in 0.5 s on the ground, and in the air at 0.4 s per s once the jet has been off for 0.63 s; every tap burns at least 8 frames. The fuel bar
-  shows under health while it isn't full. Swimming strokes take over in deep liquid. The exhaust is cosmetic
-  (vfx.js `jet`), with a roar loop (audio.js `jetLoop`).
-- **The body** (setting: Wizard | Realistic | Stickman, key `character`): Wizard is the default, drawn the
-  way Castle Crashers draws its people (figureCrasher.js): a huge round head lost in a floppy pointed hood,
-  the face a black shadow with two glowing eyes (the game's Evil Wizard), a stubby robed body with mittens,
-  a brass jetpack that flames while it fires, inverted-hull outlines and two-tone cel shading. It is the
-  stickman's rig and animation with another look (`createFigure(build)`; a look can ask for `outline`,
-  `toon`, glowing parts, `flames` and its own `nozzles` for the exhaust). Realistic is the skinned
+- **Keys speak other games' language**: `V` god view or the body (Garry's Mod's noclip key; from the god
+  view `F` drops in too), `F5` first or third person (Minecraft), `Z` held zooms (Minecraft's zoom mods,
+  `zoom.js`, with Zoomify's defaults: ÷4 eased in over 1 s and out over 0.5 s, the wheel ×1.5 a notch while
+  held, the look slowed with the view, a scope's zoom multiplied in), `C` is the crouch key (PUBG, Apex; so
+  far it swims down). `F` in the body is kept for the kick.
+- **The body** (setting: Realistic | Stickman, key `character`): Realistic is the default, the skinned
   mannequin dressed as a wizard, a pointed hat and a robe skinned to its skeleton (garb.js: the robe's
   weights are transferred from the nearest body vertices and eased toward the pelvis below the hips).
   Stickman stands in while it loads. The jet exhaust leaves from the small of the back (`JET_NOZZLES`).
+  The Castle Crashers wizard (figureCrasher.js: the stickman's rig with a huge hooded head, glowing eyes,
+  outlines and cel shading) was a choice and the default until 2026-10-10; now it only draws the NPCs and
+  the class portraits.
 - **Physical, finite tools in Half-Life 2 / Garry's Mod weapon slots** (see "Inventory" below): keys `1`–`5`
   are slots (Dig, Build, Guns, Explosives, Gadgets); pressing one again steps to the next tool in it, and the
   wheel steps through everything carried. God powers (infinite painting) stay in god view, one `V` away. The
@@ -60,7 +48,7 @@
       `PICK`): a slower blow with more energy in a narrower, deeper patch. It mines rock, a 3×3 face two
       cells deep a swing, into STONE that each swing gathers into the pack (so the rubble never plugs the
       hole; with the pack full it stays put). Metal still turns it away.
-- Mouse look with pointer lock. `F` toggles first and third person. A crosshair, health and breath bars, and
+- Mouse look with pointer lock. `F5` toggles first and third person. A crosshair, health and breath bars, and
   screen effects for what the body feels: heat glow at the edges, frost, a red flash
   when hurt.
 - Cut for now: crafting, ammo, multiplayer POV (guests get a toast), physgun on solids.
@@ -75,13 +63,13 @@
   Switching shows a vertical list with icons, names, an Equipped marker, and a cycling hint.
   The list closes after four seconds of inactivity; the equipped name stays visible.
   With the pointer unlocked, clicking a row equips that tool. Holding a number key does not cycle repeatedly.
-- `src/pov/tools/inventory.js` is what the player carries: the catalog's `start` tools plus every tool given
-  since, kept in localStorage (`tpt3d.pov.given`). It lives outside the toolbelt, so a tool given in the god
-  view is in hand at the next drop-in.
-- Giving: the palette's Tools group lists every tool (elements.js `GEAR_ITEMS`, ids −300…). A click gives it
-  (app.js `giveGear`). In first person, `Q` frees the mouse and shows the palette at those tiles: GMod's
-  spawn menu. The pistol, SMG, and sniper rifle are available in slot 3 from the first drop-in.
-  The rocket launcher and other non-start tools still come from the spawn menu.
+- `src/pov/tools/inventory.js` is what the player carries: every tool in the catalog, in its slot, from the
+  first drop-in, as GMod gives you every weapon (2026-10-10; before, only `start` tools were carried and the
+  rest waited in the spawn menu). A new tool needs only its catalog entry. It lives outside the toolbelt, so
+  a tool picked in the god view is in hand at the next drop-in.
+- Picking from the palette: the Tools group lists every tool (elements.js `GEAR_ITEMS`, ids −300…). A click
+  puts it in hand (app.js `giveGear`). In first person, `Q` frees the mouse and shows the palette at those
+  tiles: GMod's spawn menu.
 
 ## Guns (2026-10-10)
 
@@ -113,12 +101,22 @@ break stops it). Nothing is added: struck cells become their own debris or are s
   the aim, and vfx.js draws it as one stream (the `flame` event). The flame pass is a factory
   (`flameFrag(P)`) shared with a lying torch's `TORCH_FIRE`.
 - **Hand lamps** (`tools/lamp.js`, the torch and the lantern, slot 6 'Light'): a point light in the world shader
-  (`shaders/gfx/lighting.js lampLight`: inverse-square from LAMP_UNIT, faded to its reach, a traced shadow ray,
-  so light doesn't leak through walls). `src/pov/lamps.js` keeps the lit ones and writes `gfxUniforms`
-  (`uLampCount`, `uLampPos`, `uLampCol`); at most `gfx/lamps.js LAMP_MAX` at once, a held lamp first. No lamps,
-  no cost.
-  - Torch: warm and flickering, 18 cells. Left-click touches its flame to what you aim at; right-click throws
-    it, and it lies lit where it lands for two minutes, licking a small flame that lights what burns.
+  (`shaders/gfx/lighting.js lampLight`: Unreal's soft inverse-square, (U² + s²)/(d² + s²) with s =
+  `gfx/lamps.js LAMP_SOFT`, windowed by (1 − (d/R)⁴)², so it carries out to most of its reach; a traced
+  shadow ray, so light doesn't leak through walls). In hand the light hangs at your right side (lamp.js
+  `HELD_LIGHT`, inside the body's box so never in a wall), not at the eye, so what it lights has shadows.
+  `src/pov/lamps.js` keeps the lit ones and writes `gfxUniforms` (`uLampCount`, `uLampPos`, `uLampCol`); at
+  most `gfx/lamps.js LAMP_MAX` at once, a held lamp first. No lamps, no cost.
+  - Torch: warm and flickering (value noise with now and then a gutter), 34 cells. Its flame is `pov/flame.js`:
+    a noise flame on a card that faces the eye and stands along the world's up (in the hand, partly the
+    screen's), with a wider torn outer flame and a glow card; it trails when you swing or run (the air past
+    it), flickers with the light, lights the hand and torch in the viewmodel pass (a point light), and throws
+    embers (vfx.js, `torch:burn`). In the hand it is drawn on `viewmodel.js VIEWMODEL_GLOW_LAYER`: added over
+    the finished frame and tone mapped by itself. The model is a stave with a leather grip, an iron cup and a
+    tarred, corded head with glowing coals on top (models.js `ember` material). Left-click touches its heat
+    to what you aim at; right-click throws it, and it lies lit where it lands for two minutes, its heat
+    (`TORCH_FIRE`, no FIRE in the air) lighting what it lies on or touches in about a second.
+    `tools/torch-look.mjs` takes stills of it held, thrown, turning and by day.
   - Lantern: white and much brighter, 40 cells. Left-click switches it; right-click throws it, and it lands
     unbroken and shines until it's one too many (PROPS_MAX per tool).
 - Tools may have `tick(ctx)` (every frame in first person, held or not) and `worldReplaced()` (a scene load,
@@ -283,8 +281,8 @@ ctx = {
 | Knife (`KNIFE`, Dig slot with the axe) | `knife.tool.js` | `meleeTool` with a thrust. From behind a body it kills outright, through any shield (`hurt(..., { lethal: true })`); anywhere else a stab of 0.34 × 40/65 ≈ 0.21 (the axe's blow × TF2's knife over its Fire Axe). While a backstab is lined up the knife comes up (the tell), and a backstab plunges with its own motion. Reach 4.4 cells (TF2's 48 HU trace + 18 HU hull, scaled from an 82 HU player to this body); 0.8 s refire. Its cell blow (`povTools.js` `KNIFE`, energy 7) cuts a plant or chips ice where it lands, nothing harder. | TF2: `CTFKnife::IsBehindAndFacingTarget` on the ground plane: `dot(myFwd, toTarget) > 0.5`, `dot(itsFwd, toTarget) > 0`, `dot(myFwd, itsFwd) > −0.3`. A target needs `facing(out)` (targets.js; the player and NPCs have it) to be backstabbed. |
 | Pogo stick (`POGO`, Gadgets slot) | `pogo.tool.js` + player.js | While held (`ctx.player.holdPogo()` every frame) every landing bounces. A press of jump within 0.21 s of a landing (before or after) climbs a step; a landing without one drops back. Heights, as shares of the body's 1.9 m jump: 0.67, then +0.68 a step, three steps (≈ 1.3, 2.6, 3.9, 5.3 m). Not off liquid (swimming stops it). The spring takes landings and head bonks up to the top bounce's speed (no 'land', no slam). A tap is a bounce, holding jump past the window flies the jetpack. Body event `pogo` `{ step, timed, late?, speed }` (late: a press just after the bounce stepped the same bounce up). | Commander Keen 4 (Omnispeak `ck_keen.c`, `ck_phys.c`, 70 tics/s): a bounce leaves at −48 against a jump's −40 and heeds the button for its timer's first 15 of 24 tics; simulated, Keen's jump rises 1124 units, a released bounce 750, a held one 1518. Super Mario 64's triple jump for the three timed steps. |
 
-Both are catalog `GEAR` entries (`...gear('KNIFE')`, `...gear('POGO')`), not start tools: the palette's Tools
-group, Q in first person, or a class (classes.js: the Scout's pogo, the Spy's knife) gives them.
+Both are catalog `GEAR` entries (`...gear('KNIFE')`, `...gear('POGO')`), carried like every tool; the palette's
+Tools group, Q in first person, or a class (classes.js: the Scout's pogo, the Spy's knife) puts them in hand.
 
 ## Gunplay v2 (2026-10-08): events and ownership
 

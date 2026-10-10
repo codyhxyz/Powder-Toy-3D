@@ -2,6 +2,31 @@
 // the shared prelude) and the CPU port that runs the dock tiles
 // (src/ui/tiles/engine.js) imports the same object, so the two can't drift.
 // Per-element numbers live in elements.js; these are the rules around them.
+import { CELL_M } from './scale.js';
+
+// The sim's clock (scale.js). It steps ~240 times a second (4 steps a frame at
+// 60 fps), and its default gravity (sim.js GRAVITY_DEFAULT) at that rate is
+// real gravity for cells far smaller than CELL_M, so falls play out
+// SIM_TIME_SCALE (~6.6) times faster than real ones. Real rates (a burning
+// fuse, a flame front) go onto the same clock: simSteps.
+export const NOMINAL_STEP_RATE = 240;   // steps/s
+export const SIM_GRAVITY = 0.025;       // cells/step²
+const G_EARTH = 9.81;                   // m/s²
+export const SIM_TIME_SCALE = Math.sqrt((SIM_GRAVITY * NOMINAL_STEP_RATE ** 2 * CELL_M) / G_EARTH);
+// sim steps that a process lasting this many real seconds takes
+export const simSteps = (s) => (s / SIM_TIME_SCALE) * NOMINAL_STEP_RATE;
+
+// Safety fuse (elements.js FUSE, react.js): ~1 cm/s, "30 seconds per foot"
+// (Bickford; Wikipedia, Safety fuse). One cell takes CELL_M / FUSE_SPEED = 30
+// real seconds: ~1,090 steps, ~4.5 s at 240 steps/s.
+const FUSE_SPEED = 0.01;                // m/s
+const FUSE_STEPS_PER_CELL = Math.round(simSteps(CELL_M / FUSE_SPEED));
+// A lit fuse cell's life runs down from 1 by FUSE_BURN a step; the front
+// passes into its fuse neighbours when it is down to FUSE_HANDOFF, and it
+// burns out at 0. The handoff comes late, so the smoke of a burnt cell trails
+// the front closely; FUSE_BURN is set so the handoff is FUSE_STEPS_PER_CELL steps in.
+const FUSE_HANDOFF = 0.05;
+
 export const PHYS = {
   AMBIENT: 20,               // °C, room temperature
   KELVIN: 273.15,            // °C to K
@@ -127,6 +152,21 @@ export const PHYS = {
   CHARGE_BREAKDOWN: 40,
   CHARGE_MAX: 60,            // ctype cap (the id-width audit gives ctype 8 bits)
   PLANT_GROW: 0.006,         // chance per step per neighbouring plant that water becomes plant
+  // Moss and fungus (react.js, activity.js): living mats that grow only where
+  // they are damp. Each moss or fungus cell keeps its damp, a whole number, in
+  // its ctype: DAMP_REACH beside liquid water, else one less than the dampest
+  // moss or fungus beside it (water wicks along a mat), 0 at or above
+  // DAMP_DRY_T (its water boils off). So damp means water within DAMP_REACH
+  // cells along the mat: a game choice of 1.2 m, a cave's wet zone round a
+  // pool. The damp settles in at most DAMP_REACH steps and then holds still.
+  DAMP_REACH: 4,
+  DAMP_DRY_T: 100,           // °C
+  // Chance per step per damp neighbour: an air cell on bare rock (a rock face
+  // across from the moss, so the mat follows the surface) becomes moss, and
+  // wood, sawdust or plant rots into fungus. Game time: real moss creeps
+  // ~1 cm a year, these a cell (30 cm) in about a minute.
+  MOSS_GROW: 1e-4,
+  FUNGUS_GROW: 1e-4,
   LAVA_FREEZE_BELOW: 150,    // °C under the melting point where lava sets
   FIRE_BURN: 0.02,           // flame life lost per step: BURN + BURN_SPREAD·rnd
   FIRE_BURN_SPREAD: 0.02,
@@ -143,6 +183,9 @@ export const PHYS = {
   CLONE_RATE: 0.06,          // chance per step Clone fills a neighbouring empty cell
   SPAWN_DROP_V: -0.3,        // cells/step: spawned powders and liquids start falling
   // (Explosives' numbers, the chance a flame sets one off included, are their elements.js blast rows.)
+  FUSE_STEPS_PER_CELL,       // steps for a fuse's flame front to cross a cell (see above)
+  FUSE_HANDOFF,              // a lit fuse cell's life when the front passes on
+  FUSE_BURN: (1 - FUSE_HANDOFF) / FUSE_STEPS_PER_CELL,   // a lit fuse cell's life per step
   BURN_P: 0.02,              // pressure per step from burning
   // Oxygen (elements.js OXYGEN). Air is 20.95 % oxygen, so a cell of pure
   // oxygen holds O2_PER_AIR times the oxygen of a cell of air. A fuel burns as

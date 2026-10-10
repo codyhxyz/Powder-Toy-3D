@@ -37,7 +37,7 @@ function iconLater(t, model) {
 
 // by palette group name (elements.js PALETTE), so a new group can't shift the others' icons
 const CATEGORY_ICONS = {
-  Powders: ICON.powders, Liquids: ICON.liquids, Gases: ICON.gases, Solids: ICON.cube, Electronics: ICON.bolt, Radioactive: ICON.radioactive,
+  Powders: ICON.powders, Liquids: ICON.liquids, Potions: ICON.flask, Gases: ICON.gases, Solids: ICON.cube, Explosives: ICON.explosives, Electronics: ICON.bolt, Radioactive: ICON.radioactive,
   Exotic: ICON.exotic, Tools: ICON.tools, Entities: ICON.person, Constructions: ICON.constructions,
 };
 
