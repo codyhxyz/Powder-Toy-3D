@@ -267,3 +267,58 @@ shared mechanism; anything else names its own code.
   singularities. TPT's full singularity turns its neighbours into new ones, which can eat a whole save.
 - **Mud** (TPT's paste) doesn't harden under pressure: that is cornstarch. A clay slurry thins as it is worked.
   Fired clay sinters into ceramic at ~1000 °C instead of melting.
+
+## Noita materials (branch `nt-mat`)
+
+Noita's materials as simulation elements, appended after the TPT fan-out's rows: blood, toxic sludge, slime, whiskey,
+moss, fungus, and six magical liquids (Teleportatium, Levitatium, Healthium, Berserkium, Polymorphine, Pheromone) in a
+Potions palette group. Their sources are in each row's comment in `src/elements.js`. What they do to bodies is other
+branches' work (`nt-status` stains, `nt-flask` drinking). Two mechanisms came with them:
+
+- **`flash`** (an element field; el-core's combustion has no flash point of its own): the flash point. With a flame touching it, a fuel burns from this temperature, and air
+  touching both a flame and a fuel past its flash point catches, so a flame runs across warm whiskey. On its own, a
+  fuel lights only at `ignite`. Whiskey at room temperature (20 °C, under its 26 °C flash point) often fails to take a
+  small flame, as cold spirit does; warmed, it always takes it.
+- **Growers** (`react.js`, `activity.js`; constants in `physics.js`): moss and fungus keep their damp in their ctype.
+  It is `DAMP_REACH` (4) beside liquid water, else one less than the dampest moss or fungus beside it, and 0 at or above
+  100 °C. Moss creeps into an air cell that touches damp moss and bare rock (ROCK, STONE, LIMESTONE, SANDSTONE) on a
+  face across from the moss's axis, so it makes a one-cell mat on the rock and never grows out into open air. Damp
+  fungus rots WOOD, SAWDUST and PLANT into fungus. Both are rare random events (`MOSS_GROW`, `FUNGUS_GROW`). They stop
+  for good once there's nowhere left to grow, and the activity map lets them sleep.
+  Electricity keeps a conductor's spark in its ctype too (src/electricity.js), so a grower must never conduct (no
+  `elec`): `tools/nt-mat-check.mjs` checks it. Damp is read only off moss and fungus cells, never a conductor's.
+
+**Placing growers at rest** (for world generation; `tools/gen-check.mjs` wants 0 changed cells):
+- Moss is at rest when no air cell touches both damp moss (ctype ≥ 1) and bare rock on a face off the moss's axis. That
+  means the mat covers the damp rock, or the moss is dry (more than `DAMP_REACH` cells from water along the mat).
+  Fungus is at rest when no WOOD, SAWDUST or PLANT touches damp fungus.
+- The simplest layouts are these: moss more than `DAMP_REACH` mat-cells from any water; or a mat that covers every
+  rock-faced air cell within `DAMP_REACH` of the water along the mat; and fungus that has no wood beside it where it is
+  damp. A whole rotted log made of fungus is at rest.
+- Set ctype to the settled damp: `max(DAMP_REACH - distance to water along the mat, 0)`. Otherwise it settles in the
+  first `DAMP_REACH` steps. Only ctype changes then, never the element, but a mat placed dry beside water may then grow.
+- Moss can't round an outside corner (a ridge's edge) using only face neighbours. It climbs inside corners and stops at
+  the edge.
+
+### Phase rows and reactions
+
+They are rows in el-core's tables now (`src/elements.js`):
+- **Phase rows** (`cold`/`hot`, built from what each liquid holds per cm³ by `freezeOf`/`boilOf`):
+  - Blood freezes at −0.54 °C and boils at 100.15 °C. Its 0.86 g of water goes to ice or steam, and its solids dry
+    to ash (`BLOOD_MIX`).
+  - Whiskey freezes at −23 °C and boils at 84 °C, taking ethanol's and water's latent heats (`WHISKEY_MIX`).
+  - Sludge freezes at −0.5 °C and boils at 100 °C, leaving its fines as sand (`SLUDGE_MIX`).
+  - Slime and the potions take water's.
+- **REACTIONS**, at Noita's rates (`NT_RATE`). These are game rules:
+  - water washes sludge away;
+  - whiskey dissolves slime to smoke;
+  - Levitatium flashes slime to fire and steam.
+
+Still not modelled:
+- Blood's coagulation at ~60–70 °C needs a cooked-blood element.
+- Frozen blood and frozen whiskey are plain ice, and thaw to water.
+- Whiskey's vapour is steam; an ethanol-vapour gas would be truer.
+- A burnt-out whiskey cell should leave its 60 % water. That needs a burn-residue field.
+- Noita's reactions that make elements we don't have (chaotic polymorphine, unstable teleportatium, mystery
+  fungus) aren't rows.
+- Blood on lava needs no row: lava's heat boils it.

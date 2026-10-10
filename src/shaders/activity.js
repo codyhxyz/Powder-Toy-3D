@@ -18,7 +18,8 @@ import { prelude, inertSelfGLSL, SUPER, SUPER_TEX, BLOCK_TILE } from './common.j
 //     ignition point, no cell beside a reaction partner (elements.js
 //     REACTIONS) whose temperature gate the pair passes, nothing that can
 //     move touching void, nothing a singularity touches (it never rests
-//     itself: it holds a vacuum);
+//     itself: it holds a vacuum), no moss or fungus whose damp is settling or
+//     that can grow (growers, below);
 //   - thermally quiet: within MATTER_REST_T of each matter face neighbour,
 //     and within AIR_REST_T of ambient where it touches air.
 // A change a neighbour sets off on its own (a flame catching in the air by
@@ -74,11 +75,52 @@ bool rxGate(int r, float Ta, float Tb) {
   return Th >= RX[r].y && Th <= RX[r].z;
 }
 
+// Growers (react.js; physics.js DAMP_REACH): moss and fungus keep their damp
+// in their ctype. A grower's damp, given its temperature and face neighbours.
+bool grower(int j) { return j == E_MOSS || j == E_FUNGUS; }
+bool mossBed(int j) { return j == E_ROCK || j == E_STONE || j == E_LIMESTONE || j == E_SANDSTONE; }   // the rock moss creeps over
+bool fungusFood(int j) { return j == E_WOOD || j == E_SAWDUST || j == E_PLANT; }                     // what fungus rots
+float dampOf(float T, vec4 nA[6]) {
+  if (T >= DAMP_DRY_T) return 0.0;
+  float h = 0.0;
+  for (int i = 0; i < 6; i++) {
+    int j = eid(nA[i]);
+    if (j == E_WATER) return DAMP_REACH;
+    if (grower(j)) h = max(h, floor(nA[i].w) - 1.0);
+  }
+  return h;
+}
+// Moss creeps into an air cell that touches damp moss and bare rock on faces
+// across from each other's axis (so the mat follows the rock's surface).
+// wet and bed: which axes (x, y, z) hold them.
+bool mossSite(bvec3 wet, bvec3 bed) {
+  return (wet.x && (bed.y || bed.z)) || (wet.y && (bed.x || bed.z)) || (wet.z && (bed.x || bed.y));
+}
+
 bool inertNear(ivec3 c, vec4 a, vec4 nA[6]) {
   int id = eid(a);
   if (id == E_EMPTY) return true;   // what changes air is a neighbour that isn't inert
   int k = KIND[id];
   float T = a.y, d = densityOf(id, T);
+  // a grower: its damp still settling, or damp with somewhere to grow (for
+  // moss, an air face whose other faces, across its axis, touch bare rock:
+  // cells along the edges of this one, read from the pass's input state)
+  if (grower(id)) {
+    float h = floor(a.w);
+    if (dampOf(T, nA) != h) return false;
+    if (h >= 1.0) for (int i = 0; i < 6; i++) {
+      ivec3 q = c + FACES[i];
+      if (!inGrid(q)) continue;
+      int j = eid(nA[i]);
+      if (id == E_FUNGUS && fungusFood(j)) return false;
+      if (id == E_MOSS && j == E_EMPTY) {
+        for (int m = 0; m < 6; m++) {
+          ivec3 r = q + FACES[m];
+          if ((m >> 1) != (i >> 1) && inGrid(r) && mossBed(eid(fetchA(r)))) return false;
+        }
+      }
+    }
+  }
   for (int i = 0; i < 6; i++) {
     if (!inGrid(c + FACES[i])) continue;
     vec4 n = nA[i];
@@ -89,6 +131,7 @@ bool inertNear(ivec3 c, vec4 a, vec4 nA[6]) {
     if (!electricQuietNear(id, a, j, n)) return false;   // src/electricity.js
     if (ACIDIC[j] ? acidEats(id) : ACIDIC[id] && acidEats(j)) return false;   // acid, caustic gas (elements.js acid)
     if ((id == E_WATER && j == E_PLANT) || (id == E_PLANT && j == E_WATER)) return false;
+    if (fungusFood(id) && j == E_FUNGUS && floor(n.w) >= 1.0 && T < DAMP_DRY_T) return false;   // damp fungus rots it
     if (id == E_CLONE && (j == E_EMPTY || (a.w < 1.0 && cloneable(j)))) return false;   // (cloneable: src/electricity.js)
     // an explosive with an ignition point: a hot touch sets it off
     if (INTO[id][PH_BLAST] >= 0 && IGNITE[id] > 0.0 && !isGasLike(j) && n.y >= IGNITE[id]) return false;
