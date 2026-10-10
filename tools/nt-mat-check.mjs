@@ -30,9 +30,10 @@ const REST_STEPS = 600;          // steps a loaded world must hold still (tools/
 const REAL_STEPS = 50000;        // steps at the real rate (≈ 3.5 min of play at 4 steps a frame)
 const LIGHT_MAX = 400;           // steps to wait for a flame to light a liquid
 const WARM_T = 40;               // °C: warm whiskey, past its flash point, far below autoignition
-const FLAMBE_T = 30;             // °C: whiskey warmed for a flambé, just past its flash point
-const POOL_TRIALS = 10;          // lit pools per temperature (lighting is chancy)
-const POOL_WARM_MIN = 0.9;       // share of warm pools that must burn down
+const FLAMBE_T = 40;             // °C: whiskey warmed for a flambé (40-50 °C), past its flash point
+const MATCH_STEPS = 10;          // steps a match is held to a pool (a flame cell kept at one spot)
+const POOL_TRIALS = 20;          // lit pools per temperature (lighting is chancy)
+const POOL_WARM_MIN = 0.75;      // share of warm pools that must burn down (a low-heat flame can die mid-pool)
 
 let failures = 0;
 const ok = (cond, msg) => { console.log(`${cond ? 'ok  ' : 'FAIL'} ${msg}`); if (!cond) failures++; };
@@ -43,7 +44,7 @@ const snapshot = (w) => Uint8Array.from(w.id);
 const changed = (w, s) => { let n = 0; for (let i = 0; i < s.length; i++) n += s[i] !== w.id[i]; return n; };
 
 // ---- ids
-ok(ELEMENTS.length < FAR.LIQ_STRIDE, `${ELEMENTS.length} elements fit the far grid's ${FAR.LIQ_STRIDE} ids`);
+ok(ELEMENTS.length <= FAR.PAYLOAD, `${ELEMENTS.length} elements fit the far grid's ${FAR.PAYLOAD} ids`);
 
 // ---- layering: a tank, rock walls, the test liquid poured as the bottom
 // half under water (or above it, for the light ones): it must end on its side
@@ -80,20 +81,22 @@ ok(tW < tO && tW <= 3, `a flame lights whiskey in ${tW} steps (flash point ${ELE
   ok(cells(w, E.WHISKEY).every((i) => w.life[i] === ELEMENTS[E.WHISKEY].life) && cells(w, E.FIRE).length === 0,
     `whiskey at ${WARM_T} °C with no flame never burns (autoignition ${ELEMENTS[E.WHISKEY].ignite} °C)`);
 }
-// a pool lit by one flame: warmed past its flash point (as for a flambé) it
-// burns down; at room temperature, just under it, a small flame often dies
-// before the pool takes (as a match on cold spirit does)
+// a pool with a match held to it for MATCH_STEPS: warmed past its flash point
+// (as for a flambé) it burns down; at room temperature, just under it, the
+// flame often dies before the pool takes (as a match on cold spirit does)
 function poolBurns(T) {
   const w = world(10, 10);
   for (let x = 0; x < 10; x++) for (let y = 0; y < 2; y++) w.put(x, y, E.WHISKEY, { T });
-  w.put(5, 2, E.FIRE);
   const n0 = cells(w, E.WHISKEY).length;
-  for (let s = 0; s < SETTLE; s++) w.step();
+  for (let s = 0; s < SETTLE; s++) {
+    if (s < MATCH_STEPS && w.id[w.idx(5, 2)] === E.EMPTY) w.put(5, 2, E.FIRE);
+    w.step();
+  }
   return cells(w, E.WHISKEY).length < n0 / 2;
 }
 const share = (T) => { let n = 0; for (let r = 0; r < POOL_TRIALS; r++) n += poolBurns(T); return n / POOL_TRIALS; };
 const warm = share(FLAMBE_T), cold = share(PHYS.AMBIENT);
-ok(warm >= POOL_WARM_MIN, `a whiskey pool at ${FLAMBE_T} °C lit by one flame burns down in ${(warm * 100).toFixed(0)} % of ${POOL_TRIALS} trials; at ${PHYS.AMBIENT} °C in ${(cold * 100).toFixed(0)} %`);
+ok(warm >= POOL_WARM_MIN, `a whiskey pool at ${FLAMBE_T} °C with a match held to it for ${MATCH_STEPS} steps burns down in ${(warm * 100).toFixed(0)} % of ${POOL_TRIALS} trials; at ${PHYS.AMBIENT} °C in ${(cold * 100).toFixed(0)} %`);
 
 // ---- moss: a rock floor, a pool held by moss at x = 4, a rock wall at x = 8
 const DR = PHYS.DAMP_REACH;

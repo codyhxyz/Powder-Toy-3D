@@ -48,15 +48,16 @@ const FLUORITE_GLOW = bandGlow(FLUORITE_BAND.peak, FLUORITE_BAND.fwhm, FLUORITE_
 // Foxfire (elements.js FUNGUS): fungal luciferin's green band, peaking at
 // 520-530 nm and ~80 nm wide (Kotlobay et al. 2018, PNAS; Oliveira et al.
 // 2015). Real foxfire is faint, ~10⁻³ cd/m², seen only by dark-adapted eyes;
-// drawn at half fluorite's glow, so a patch reads in a dark cave and dims to
-// nothing in daylight. A game liberty, like fluorite's.
-const FOXFIRE_BAND = { peak: 525, fwhm: 80, lum: 0.075 };
+// drawn at half fluorite's glow, so a patch reads in a dark cave (the eyes
+// adjust: gfx/post.js ADAPT) and fades into its pale body in daylight. A game
+// liberty, like fluorite's.
+const FOXFIRE_BAND = { peak: 525, fwhm: 80, lum: 0.025 };
 const FOXFIRE_GLOW = bandGlow(FOXFIRE_BAND.peak, FOXFIRE_BAND.fwhm, FOXFIRE_BAND.lum);
 // Noita's glowing liquids (the magical ones and toxic sludge) shine faintly
 // in their own colour: game magic. Luminance in the incandescence's scene
 // units: a fifth of fluorite's, enough to pick a pool out of a dark cave.
-const MAGIC_GLOW_LUM = 0.03;
-const TOXIC_GLOW_LUM = 0.03;
+const MAGIC_GLOW_LUM = 0.01;
+const TOXIC_GLOW_LUM = 0.01;
 const REC709_LUMA = [0.2126, 0.7152, 0.0722];   // luminance weights of linear sRGB
 // A glow with the chromaticity of colour hex at luminance lum.
 const tintGlow = (hex, lum) => {
