@@ -91,8 +91,11 @@
 //            cells/step²), so set shock above what it does to itself;
 //          - under more than `crushP` air pressure: its own, and its open
 //            neighbours' (a solid holds none, so it reads theirs);
-//          - only where it touches air (an EMPTY neighbour), all of the
-//            above, when `air: true` (a fuel that needs oxygen: propane).
+//          - only where it touches air (an EMPTY or OXYGEN neighbour) or a flame, all
+//            of the above, when `air: true` (a fuel that needs oxygen:
+//            propane). A flame counts because the flame front is where fuel
+//            and air mix (a fireball draws air in), so a front can sweep
+//            through a pool of it; heat alone lights it only beside air.
 //          A blast row never takes the ordinary burn path (burnRate, flames
 //          licking into the air), and a hit or pressure that sets it off
 //          wins over breaking it.
@@ -144,7 +147,7 @@
 
 import { SHRINE_OFFERS } from './pov/perks.js';
 import { GEAR, SLOTS } from './pov/tools/catalog.js';
-import { PHYS } from './physics.js';
+import { PHYS, SIM_GRAVITY, simSteps } from './physics.js';
 import { CELL_M } from './scale.js';
 
 // Photon reflectance of steel at normal incidence: F0 from its measured
@@ -154,6 +157,10 @@ const METAL_REFLECT = 0.58;
 
 export const K = { EMPTY: 0, SOLID: 1, POWDER: 2, LIQUID: 3, GAS: 4 };
 export const R = { NONE: 0, OPAQUE: 1, LIQUID: 2, GLASS: 3, GAS: 4, FIRE: 5 };
+
+// Clay's porosity: the share of a dry heap's volume that water fills when it
+// makes mud (elements CLAY, MUD), 1 − bulk/grain density = 1 − 1.2/2.6.
+const CLAY_WATER = 0.54;
 
 // ---- Real material data in the sim's units (the chemistry rows) ----
 // Heat capacity per volume over water's 4.18 J/(cm³·K): cap = ρ·c_p / 4.18.
@@ -255,6 +262,48 @@ const CO2_SUBLIME = latentOf(571, DRY_ICE_RHO);
 // −195.8 °C taking 199 J/g; 0.807 g/cm³ and 28.01 g/mol.
 const LN2 = { rho: 0.807, M: 28.013, cp: 2.04, k: 0.14, bp: -195.8, L: 199 };
 const LN2_SPAWN_BELOW = 0.2;                 // °C under its boiling point it is poured at
+// ---- explosives' numbers (rows at the end of defs; sources there) ----
+// Gunpowder's blast, the reference the others scale from (its row's).
+const GUNPOWDER_BLAST = { P: 60, T: 2200, flame: 0.7 };
+// Chapman–Jouguet detonation pressure, GPa, from density (g/cm³) and
+// detonation velocity (km/s): P_CJ ≈ ρD²/4.
+const detonationP = (rho, D) => (rho * D * D) / 4;
+const PCJ = { C4: detonationP(1.59, 8.04), NITRO: detonationP(1.59, 7.7), TNT: detonationP(1.6, 6.9) };
+// blast.P: C-4, the most brisant, fills the pressure field (P_MAX); the others by P_CJ
+const EXPLOSIVE_P = Object.fromEntries(Object.entries(PCJ).map(([k, p]) => [k, Math.round((PHYS.P_MAX * p) / PCJ.C4)]));
+const HE_BLAST_T = 3000;        // °C: high explosives' detonation products (~3,000-4,500 K)
+// Kinetic energy (hard's units) of a cell of density dens landing after
+// falling h metres from rest, stepped as react.js does: v ← (v + g)·(1 − drag).
+function fallKE(dens, drag, h) {
+  let v = 0, y = 0;
+  while (y < h / CELL_M) { v = (v + SIM_GRAVITY) * (1 - drag); y += v; }
+  return +(0.5 * dens * v * v).toFixed(2);
+}
+const NITRO_DENS = 15.9;        // 1.593 g/cm³
+const NITRO_DRAG = 0.02;
+const NITRO_FALL_M = 5;         // m: a fall that sets nitroglycerin off (game scale)
+// Thermite's puff: its iron vapour, 78.4 g per kg (Wikipedia), at ~1.8 g/cm³
+// poured: 0.141 g = 2.5 mmol of Fe per cm³, ~62 cm³ of gas at ambient. Puffs
+// go as steam's (physics.js STEAM_BOIL_PUFF per STEAM_EXPANSION volumes).
+const THERMITE_VAPOUR = 62;     // volumes of gas per volume
+const THERMITE_P = +((PHYS.STEAM_BOIL_PUFF * THERMITE_VAPOUR) / PHYS.STEAM_EXPANSION).toFixed(3);
+// Propane: 1.808 kg/m³ against air's 1.184 at 25 °C.
+const PROPANE_DENS = 1.53;
+// Its blast pressure: heat of combustion per volume against gunpowder's.
+// Propane 50.33 MJ/kg × 1.808 kg/m³ = 91 J/cm³ of gas; black powder ~3 MJ/kg
+// (Wikipedia) × 1.5 g/cm³ (GUNPOWDER dens) = 4,500 J/cm³.
+const PROPANE_HEAT = 91;        // J/cm³
+const GUNPOWDER_HEAT = 4500;    // J/cm³
+const PROPANE_P = +((GUNPOWDER_BLAST.P * PROPANE_HEAT) / GUNPOWDER_HEAT).toFixed(2);
+// The flame front: propane-air burns at S_L ≈ 0.43 m/s (stoichiometric;
+// Law, Combustion Physics, 2006), and its burnt gas expands ~7.5× (2,250 K
+// over 300 K), so the front crosses the unburnt mix at ~3.2 m/s. On the sim's
+// clock (physics.js simSteps) that is one cell per PROPANE_FRONT_STEPS steps,
+// so a touching flame lights a cell with this chance per step.
+const PROPANE_S_L = 0.43;       // m/s
+const PROPANE_EXPANSION = 7.5;
+const PROPANE_FRONT_STEPS = simSteps(CELL_M / (PROPANE_S_L * PROPANE_EXPANSION));
+const PROPANE_FLAME = +Math.min(1, 1 / PROPANE_FRONT_STEPS).toFixed(3);
 
 // A liquid's flow and drag from its viscosity in mPa·s, on a log scale
 // through two rows: water (1 mPa·s: flow 0.9, drag 0.01) and lava (basaltic,
@@ -313,14 +362,14 @@ const defs = [
   { key: 'SAND', abbr: 'SAND', name: 'Sand', kind: K.POWDER, render: R.OPAQUE, color: '#dcbc74', var: 0.22,
     dens: 16, cond: 0.01, cap: 0.35, drag: 0.04, slide: 0.9, melt: 1700, meltInto: 'GLASS', spawn: 0.3,
     desc: 'Grains that pile into slopes and sink in water. Melts into glass above 1700 °C.' },
-  { key: 'STONE', abbr: 'STNE', name: 'Stone', kind: K.POWDER, render: R.OPAQUE, color: '#868a92', var: 0.18,
+  { key: 'STONE', abbr: 'STNE', name: 'Stone', kind: K.POWDER, render: R.OPAQUE, color: '#78726c', var: 0.18,
     dens: 26, cond: 0.03, cap: 0.5, drag: 0.04, slide: 0.55, melt: 1200, spawn: 0.3, sound: 'crack',
     desc: 'Heavy rubble that sinks through anything lighter. Melts into lava at 1200 °C.' },
   { key: 'SNOW', abbr: 'SNOW', name: 'Snow', kind: K.POWDER, render: R.OPAQUE, color: '#eef4ff', var: 0.06,
     dens: 9, cond: 0.005, cap: 0.2, drag: 0.08, slide: 0.35, temp: -10, spawn: 0.3,
     desc: 'Light powder that floats on water. Melts at 0 °C, soaking up heat as it goes.' },
   { key: 'GUNPOWDER', abbr: 'GUNP', name: 'Gunpowder', kind: K.POWDER, render: R.OPAQUE, color: '#3d3d47', var: 0.35,
-    dens: 15, cond: 0.01, cap: 0.35, drag: 0.04, slide: 0.8, ignite: 200, spawn: 0.3, blast: { P: 60, T: 2200, flame: 0.7 },
+    dens: 15, cond: 0.01, cap: 0.35, drag: 0.04, slide: 0.8, ignite: 200, spawn: 0.3, blast: GUNPOWDER_BLAST,
     desc: 'Explodes when it touches fire or gets hotter than 200 °C.' },
   { key: 'ASH', abbr: 'ASH', name: 'Ash', kind: K.POWDER, render: R.OPAQUE, color: '#9b968d', var: 0.2,
     dens: 4, cond: 0.003, cap: 0.2, drag: 0.1, slide: 0.5, spawn: 0.3,
@@ -727,6 +776,177 @@ const defs = [
     dens: LI.rho * 10, cond: stableCond(METAL_COND, capOf(LI.rho, LI.cp)), cap: capOf(LI.rho, LI.cp), drag: 0.02,
     slide: 0.5, melt: LI.melt, spawn: 0.3, fizz: LI_H2_VOLUMES, conducts: true, elec: LI.elec,
     desc: 'A metal so light it floats on water. In water it fizzes out hydrogen and heat, enough to set the hydrogen alight. Melts at 180 °C.' },
+  // ---- Batch 4 (docs/elements.md): dust, antimatter, singularity, clay, mud, ceramic ----
+  // Dust: grain dust (wheat flour), TPT's DUST. A loose heap is 0.5-0.6 g/cm³
+  // (dens 5.5: it floats on water), c ≈ 1.7 J/(g·K) (cap 0.55·1.7/4.18 ≈ 0.22),
+  // and conducts like ash. A 50 µm grain settles at ~0.1 m/s in still air
+  // (Stokes): far under a cell per step, but a cell of it is a puff, not a
+  // grain, so it falls slowly (drag: ~0.14 cells/step at the default gravity,
+  // a quarter of sand's) yet faster than physics.js DUST_LIFT_V, so a falling
+  // cloud counts as suspended. Flour is cohesive (repose ~45°+).
+  // Heat of combustion ~15.5 MJ/kg, 8.5 MJ per litre of heap: burnHeat /
+  // burnRate ≈ 1330 on the scale where wood's 11 MJ/L is 1670. Settled, it
+  // smoulders: a dust layer glows at 450-700 °C rather than flaming (flameT).
+  // Its cloud lights at 380-440 °C (minimum ignition temperature, wheat
+  // flour; Eckhoff 2003): ignite 400. Suspended in air it goes off as one
+  // (react.js dust clouds, physics.js DUST_*).
+  { key: 'DUST', abbr: 'DUST', name: 'Dust', kind: K.POWDER, render: R.OPAQUE, color: '#efdcae', var: 0.12,
+    dens: 5.5, cond: 0.004, cap: 0.22, drag: 0.15, slide: 0.3, ignite: 400, burnRate: 0.0015, burnHeat: 2, flameT: 600,
+    life: 1, spawn: 0.3,
+    desc: 'Fine flour dust. A heap only smoulders, but blown into the air it explodes: a flame runs through the cloud and its blast stirs up more dust.' },
+  // Antimatter (TPT's AMTR): annihilates any matter it touches, both cells
+  // gone in a flash (REACTIONS). E = mc²: a cell of water (27 kg at a
+  // 0.30 m cell) and as much antimatter give 2·27 kg·c² ≈ 4.9e18 J, about a
+  // gigaton of TNT, and even a cell of air ~1e16 J. Nothing in the engine
+  // holds that, so each annihilation is capped at its limits: the pressure
+  // and temperature clamps (physics.js P_MAX, CELL_TEMP_MAX). TPT's AMTR is a
+  // gas that sinks and spreads; ours is a powder, so it can be poured where
+  // it's wanted, and it spares air (a game liberty: real antimatter would
+  // annihilate air too, more slowly by its density, ~1/800 of water's).
+  { key: 'ANTIMATTER', abbr: 'AMTR', name: 'Antimatter', kind: K.POWDER, render: R.OPAQUE, color: '#c4bce4', var: 0.1,
+    dens: 15, cond: 0.01, cap: 0.35, drag: 0.04, slide: 0.8, spawn: 0.3, acidProof: true,   // it annihilates acid instead
+    desc: 'Annihilates whatever matter it touches into a blast of pressure and heat. Only walls, clone and singularities are safe; it rests on air.' },
+  // Singularity (TPT's SING): a tiny black hole (react.js, physics.js SING_*).
+  // It holds a deep vacuum, so air and matter rush in, swallows what touches
+  // it, gaining its mass (life, in cells of water), and bursts when it is
+  // full; starved, it evaporates and winks out. Denser than anything, it
+  // sinks through every liquid. Nothing gets out: it conducts no heat.
+  { key: 'SINGULARITY', abbr: 'SING', name: 'Singularity', kind: K.POWDER, render: R.OPAQUE, color: '#1c1c20',
+    dens: 1000, cond: 0, cap: 1, drag: 0.04, life: PHYS.SING_MASS0, spawn: 0.02, acidProof: true,   // it swallows acid instead
+    desc: 'A tiny black hole. It sucks in the air around it, swallows everything it touches and grows; full, it bursts. Starved, it evaporates.' },
+  // Clay: kaolin, white china clay. Grains of kaolinite are 2.6 g/cm³; a dry
+  // heap ~1.2 (dens 12, porosity 1 − 1.2/2.6 ≈ 0.54: CLAY_WATER), with
+  // c ≈ 0.92 J/(g·K) (cap 1.2·0.92/4.18 ≈ 0.26), conducting like dry sand.
+  // Water soaks into its pores and makes mud (REACTIONS). Fired, it turns
+  // to ceramic: kaolinite loses its water at 450-600 °C and sinters into
+  // spinel and then mullite from ~980 °C (Brindley & Nakahira, J. Am. Ceram.
+  // Soc. 42, 1959); earthenware is fired at 1000-1150 °C. It never slakes again.
+  { key: 'CLAY', abbr: 'CLST', name: 'Clay', kind: K.POWDER, render: R.OPAQUE, color: '#d9d2c3', var: 0.1,
+    dens: 12, cond: 0.01, cap: 0.26, drag: 0.06, slide: 0.35, spawn: 0.3,
+    hot: { T: 1000, into: 'CERAMIC' },
+    desc: 'Kaolin powder. Water soaks into it and makes mud; fired past 1000 °C it bakes into ceramic.' },
+  // Mud: clay with its pores full of water (CLAY_WATER of its volume):
+  // 1.2 + 0.54 = 1.74 g/cm³ (dens 17.4: it sinks in water), cap
+  // (1.2·0.92 + 0.54·4.18)/4.18 ≈ 0.8, conducting like wet soil (~1.2 W/(m·K),
+  // water's 0.03). A clay slurry this thick is a Bingham plastic, viscous like
+  // lava (Coussot, Mudflow Rheology and Dynamics, 1997); its yield stress
+  // holds only a few cm, under a cell, so here it creeps level. TPT's paste
+  // hardens under pressure, as cornstarch in water does (shear thickening); a
+  // clay slurry thins as it's worked instead, so ours doesn't. Past 100 °C its
+  // water boils off, taking that share of water's latent heat and setting the
+  // steam free as a puff, and it dries back into clay.
+  { key: 'MUD', abbr: 'MUD', name: 'Mud', kind: K.LIQUID, render: R.OPAQUE, color: '#9a8f7b', var: 0.08,
+    dens: 17.4, cond: 0.03, cap: 0.8, drag: 0.2, flow: 0.2, spawn: 0.35,
+    hot: { T: 100, into: 'CLAY', latent: CLAY_WATER * PHYS.L_BOIL, puff: CLAY_WATER * PHYS.STEAM_EXPANSION },
+    desc: 'Wet clay. Thick and slow, it sinks in water. Heated past 100 °C its water boils off and it dries back into clay.' },
+  // Ceramic: fired kaolin, unglazed porcelain. ~2.3 g/cm³, c ≈ 0.85 J/(g·K)
+  // (cap 2.3·0.85/4.18 ≈ 0.47), ~1.5 W/(m·K), a little over glass (cond 0.02).
+  // Hard to scratch (Mohs ~7) but brittle: its fracture toughness, ~1-1.5
+  // MPa·√m, is a little over glass's (0.75, hard 8), so hard 9. It breaks
+  // into sharp, acid-proof fragments much as glass does (SHARDS), and shrugs
+  // off acid (HF aside: lab ware is porcelain). Kaolin fuses at ~1750-1785 °C
+  // (pyrometric cone 35), and its melt cools into a glass.
+  { key: 'CERAMIC', abbr: 'CRMC', name: 'Ceramic', kind: K.SOLID, render: R.OPAQUE, color: '#ece7dd', var: 0.04,
+    cond: 0.02, cap: 0.47, melt: 1750, meltInto: 'GLASS', hard: 9, breakInto: 'SHARDS', acidProof: true, sound: 'shatter',
+    desc: 'Fired clay: hard, acid-proof and brittle. A hard knock or a blast shatters it into sharp fragments. Melts into glass at 1750 °C.' },
+  // ---- Explosives (batch 1, docs/elements.md): blast rows read by the shared
+  // blast mechanism (el-core); the fuse has its own case in react.js.
+  // Data: Wikipedia's TNT-equivalent table (density, detonation velocity D,
+  // RE factor): TNT 1.60 g/cm³, 6,900 m/s, 1.00; C-4 1.59, 8,040, 1.34;
+  // nitroglycerin 1.59, 7,700, 1.54; black powder 1.65, 400 (it deflagrates).
+  // blast.P: what shatters walls is the detonation pressure, P_CJ ≈ ρD²/4
+  // (C-4 25.7 GPa, NG 23.6, TNT 19.0). The sim's pressure field tops out at
+  // P_MAX, which C-4 takes; the others scale by P_CJ (EXPLOSIVE_P below).
+  // blast.T: detonation products of military high explosives come out at
+  // ~3,000-4,500 K by thermochemical codes; what matters here is that they
+  // are far hotter than any flame (HE_BLAST_T).
+  // blast.crushP is a game scale, in multiples of a gunpowder cell's blast
+  // (GUNPOWDER_BLAST.P): a gunpowder cell stands in for the blasting cap
+  // real high explosives need, and the order follows their gap-test
+  // sensitivity: nitroglycerin < C-4 < TNT.
+  // blast.shock is in hard's units (½·dens·|v|², v in cells/step).
+  //
+  // C-4: 91% RDX in a plastic binder (Wikipedia). Real C-4 only burns when
+  // lit: just a detonator's shock sets it off (0.2 g of lead azide), and it
+  // shrugged off the US Army's rifle-bullet test (20% burned, none exploded).
+  // Game choice: heat past its 5-second explosion temperature (263-290 °C,
+  // same source), a nearby blast or a hit that would smash wood (shock = WOOD's
+  // hard) set it off. A putty, it sticks where it is painted (a solid). It has
+  // no debris: blasts set it off rather than break it.
+  // Heat: ~0.25 W/m·K like other plastics (cond, on water's 0.6 → 0.03 scale);
+  // 1.72 g/cm³ × ~1.1 J/g·K over water's 4.18 → cap 0.45.
+  { key: 'C4', abbr: 'C-4', name: 'C-4', kind: K.SOLID, render: R.OPAQUE, color: '#e3ddcb', var: 0.04,
+    cond: 0.012, cap: 0.45, ignite: 263,
+    blast: { P: EXPLOSIVE_P.C4, T: HE_BLAST_T, shock: 20, crushP: GUNPOWDER_BLAST.P },
+    desc: 'Plastic explosive: paint it on and it stays put. The biggest blast here. Goes off at 263 °C, from a nearby blast or a hard hit.' },
+  // Nitroglycerin: a pale yellow oily liquid, 1.593 g/cm³ (it sinks in water,
+  // which it hardly mixes with), refractive index 1.479. It explodes above
+  // 218 °C (Wikipedia). Very shock-sensitive: 0.2 J in the BAM fall-hammer
+  // test against TNT's 15 J (Meyer, Köhler & Homburg, Explosives). Here a fall
+  // of NITRO_FALL_M sets it off (shock = the kinetic energy of that fall in
+  // the sim's gravity and its drag), so poured gently it is safe. Freezing
+  // (13 °C) isn't modelled: it would take a second element.
+  // Viscosity ~36 mPa·s, oil-like (flow); ~0.2 W/m·K; 1.6 g/cm³ × 1.36 J/g·K → cap 0.52.
+  { key: 'NITRO', abbr: 'NITR', name: 'Nitroglycerin', kind: K.LIQUID, render: R.LIQUID, color: '#e8dc8e',
+    dens: NITRO_DENS, cond: 0.01, cap: 0.52, drag: NITRO_DRAG, flow: 0.5, ignite: 218, spawn: 0.35,
+    blast: { P: EXPLOSIVE_P.NITRO, T: HE_BLAST_T, shock: fallKE(NITRO_DENS, NITRO_DRAG, NITRO_FALL_M), crushP: GUNPOWDER_BLAST.P / 3 },
+    sigma: [0.012, 0.016, 0.07],
+    desc: 'Nitroglycerin: an oily liquid that sinks in water. A fall, a hit or 218 °C sets it off, so pour it gently.' },
+  // TNT, as cast blocks: 1.654 g/cm³, "insensitive" to shock and friction; it
+  // decomposes at 240 °C (Wikipedia), where it goes off here. It needs a
+  // booster's pressure wave: a lit pile of gunpowder or another high
+  // explosive, not one gunpowder cell. Flames set it off only by heating it.
+  // It melts at 80 °C (melt-cast TNT is poured at ~85 °C); that isn't
+  // modelled, as molten TNT would be a second element that explodes the same.
+  // ~0.26 W/m·K; 1.65 g/cm³ × 1.37 J/g·K → cap 0.54.
+  { key: 'TNT', abbr: 'TNT', name: 'TNT', kind: K.SOLID, render: R.OPAQUE, color: '#c9a24e', var: 0.06,
+    cond: 0.013, cap: 0.54, ignite: 240,
+    blast: { P: EXPLOSIVE_P.TNT, T: HE_BLAST_T, crushP: 2 * GUNPOWDER_BLAST.P },
+    desc: 'Cast TNT blocks: shrug off hits and sparks. Go off at 240 °C or when a big blast goes off next to them.' },
+  // Thermite: iron oxide and aluminium powders, 2Al + Fe₂O₃ → 2Fe + Al₂O₃.
+  // Hard to light: Al–Fe₂O₃ ignites at ~1,220 °C in thermal analysis (1,130 °C
+  // heated slowly; ~1,600 K in a furnace), so a wood fire won't do it but
+  // lava, a gunpowder blast or burning magnesium (~3,100 °C) will. It burns
+  // at up to 2,500 °C (adiabatic 2,862 °C, capped by iron boiling) into
+  // molten iron and alumina, with almost no gas (Wikipedia: 3,956 J/g;
+  // 78 g of iron vapour per kg). So it leaves LAVA that sets into METAL, and
+  // its puff is that vapour (THERMITE_VAPOUR, below). Energy check: poured
+  // at ~1.8 g/cm³ it holds 3,956 × 1.8 / 4.18 ≈ 1,700 cap·°C per volume; lava
+  // (cap 0.6) at 2,500 °C holds ~1,500, close to all of it.
+  // Loose powder from 0.7 to 4.2 g/cm³ (pressed); ~1.8 poured. Fe₂O₃ and Al
+  // average ~0.72 J/g·K → cap 0.31; a powder conducts like sand.
+  { key: 'THERMITE', abbr: 'THRM', name: 'Thermite', kind: K.POWDER, render: R.OPAQUE, color: '#8a5546', var: 0.25,
+    dens: 18, cond: 0.01, cap: 0.31, drag: 0.04, slide: 0.75, ignite: 1220, spawn: 0.3,
+    blast: { P: THERMITE_P, T: 2500, into: 'LAVA', of: 'METAL' },
+    desc: 'Rust and aluminium powder. Hard to light (1220 °C: lava or a blast, not a wood fire), then burns at 2500 °C into molten iron that eats through floors.' },
+  // Propane: 1.808 kg/m³ at 25 °C, ~1.5 times air (Wikipedia), so it pools
+  // in low spots: grav (ρ - ρ_air)/ρ, as steam's and smoke's buoyancy. It
+  // diffuses half as fast as steam (0.11 against 0.25 cm²/s), so it jitters
+  // less. Autoignition 470 °C. Burning: a deflagration. It goes off only
+  // where it meets air (the real limits are 2.1-9.5% propane in air, and a
+  // cell is all propane or all air, so the mixing zone is the face between
+  // them, or a flame, which draws air in: blast.air), and a flame front crosses the pool at the propane-air
+  // flame speed (PROPANE_FLAME, below). Its pressure is its heat of
+  // combustion against gunpowder's (PROPANE_P). The flame, ~1,980 °C, is
+  // propane's adiabatic flame temperature in air (2,250 K).
+  // A gas has air's tiny conductance; ρ·c 1.81 kg/m³ × 1.67 kJ/kg·K is 2.5×
+  // air's → cap 0.05. Real propane is invisible; it is drawn as a faint haze.
+  { key: 'PROPANE', abbr: 'PROP', name: 'Propane', kind: K.GAS, render: R.GAS, color: '#cfd8b0',
+    dens: PROPANE_DENS, cond: 0.0005, cap: 0.05, grav: (PROPANE_DENS - 1) / PROPANE_DENS, drag: 0.05, jitter: 0.06,
+    ignite: 470, spawn: 0.3, sigma: [0.04, 0.04, 0.05],
+    blast: { P: PROPANE_P, T: 1980, flame: PROPANE_FLAME, air: true },
+    desc: 'Heavier than air, so it pools in low spots. A flame sends the whole pool up in a rolling fireball.' },
+  // Safety fuse: a black-powder core in tarred jute (Bickford's, 1831). The
+  // powder carries its own oxidiser (potassium nitrate), so it burns
+  // underwater and sealed in, at a steady ~1 cm/s ("30 seconds per foot",
+  // Wikipedia). That is physics.js FUSE_BURN: one cell (CELL_M) per ~1,100
+  // steps, on the sim's clock (react.js FUSE case). It lights from a flame, a
+  // lit fuse beside it or 300 °C (its sheath chars like wood), and the burnt
+  // end spits a gunpowder flame that sets off whatever it touches. Jute and
+  // tar: low conductance; it breaks into fibre (sawdust) like a plant stem.
+  { key: 'FUSE', abbr: 'FUSE', name: 'Fuse', kind: K.SOLID, render: R.OPAQUE, color: '#2f5a26', var: 0.08,
+    cond: 0.005, cap: 0.4, ignite: 300, life: 1, hard: 6, breakInto: 'SAWDUST', sound: 'thunk',
+    desc: 'A slow wick that carries its own oxidiser: it burns about a cell every 4.5 s, even underwater, then spits a flame at its end.' },
   // ---- Noita's materials (docs/elements.md, "Noita materials") ----
   // Names and colours are Noita's (materials.xml ids and the wiki's
   // descriptions, noita.wiki.gg, read 2026-10-10); flow, density and heat are
@@ -866,8 +1086,14 @@ export const TOOLS = [
   { id: -5, key: 'SIGN', abbr: 'SIGN', name: 'Sign', color: '#efe7d2',
     desc: 'Click a surface to pin a label. {t}, {p} and {e} show live temperature, pressure and element.' },
   // Spawners are handled by the app too (src/spawners.js): markers, not cells.
-  { id: -6, key: 'ENEMY', abbr: 'NPC', name: 'Enemy spawner', color: '#e0453a',
+  { id: -6, key: 'ENEMY', abbr: 'NPC', name: 'Axeman spawner', color: '#e0453a',
     desc: 'Click a surface: in first person (V) an enemy with every tool appears here, and comes back after it dies. Click it again to remove it.' },
+  { id: -30, key: 'GUNNER', abbr: 'GUNR', name: 'Gunner spawner', color: '#e08a2a',
+    desc: 'Click a surface: in first person (V) a jetpack gunner appears here. It keeps its distance, flies to high ground and shoots. Click it again to remove it.' },
+  { id: -31, key: 'WORM', abbr: 'WORM', name: 'Worm spawner', color: '#b0607a',
+    desc: 'Click a surface: in first person (V) a worm burrows in here. It tunnels through rock, bursts out under you and bites; loud noises draw it. WALL and metal stop it. Click it again to remove it.' },
+  { id: -32, key: 'GIANTWORM', abbr: 'GWRM', name: 'Giant worm spawner', color: '#7a3550',
+    desc: 'Click a surface: in first person (V) a giant worm burrows in here, Noita\'s Jättimato: twenty metres long, seven times as tough as the worm and faster. Click it again to remove it.' },
   { id: -7, key: 'SPAWN', abbr: 'SPWN', name: 'Player spawn', color: '#3fa7ff',
     desc: 'Click a surface: V drops you in at the spawn nearest the cursor, and you respawn there. Click it again to remove it.' },
   { id: -20, key: 'JEEPPAD', abbr: 'JEEP', name: 'Jeep pad', color: '#8fa04a',
@@ -888,9 +1114,12 @@ export const TOOLS = [
   // bolt from the top of the box down to the surface under the cursor.
   { id: -8, key: 'LIGHTNING', abbr: 'LIGH', name: 'Lightning', color: '#fff6b0',
     desc: 'Click a surface: a branching bolt strikes it from above, leaving a column of plasma, scorching heat and a pressure crack where it lands. Brush size sets how wide the strike is.' },
+  // Magical birds (src/birds/): a flock that lives on this spot. (-30 to -32 are the creature spawners.)
+  { id: -33, key: 'FLOCK', abbr: 'BIRD', name: 'Bird flock', color: '#b58cff',
+    desc: 'Click a surface: a flock of magical birds lives here. They perch in trees and on roofs, take off when you come near or fire, roost and glow at night, and burn and fall like anything else. Click it again to remove it.' },
 ];
 export const LIGHTNING_TOOL = -8;
-export const isSpawnerTool = (id) => id === -6 || id === -7 || id === -20 || id === -21;
+export const isSpawnerTool = (id) => id === -6 || id === -7 || id === -20 || id === -21 || id === -30 || id === -31 || id === -32 || id === -33;
 
 // Constructions: whole structures placed with one click (src/constructions.js
 // builds and stamps them; they never reach the paint shader). Each one is
@@ -942,27 +1171,30 @@ const GEAR_ID0 = -300;   // the first-person tools' ids (GEAR_ITEMS below), past
 export const isBuild = (id) => id <= -100 && id > GEAR_ID0;
 
 // First-person tools (src/pov/tools/catalog.js), listed in the palette's Tools
-// group: Garry's Mod's spawn menu. A click gives the tool to the player (the
-// inventory, pov/tools/inventory.js) and puts it in hand; nothing is painted.
+// group: Garry's Mod's spawn menu. Every tool is carried (pov/tools/inventory.js);
+// a click puts it in hand; nothing is painted.
 export const GEAR_ITEMS = GEAR.map((g, i) => ({
   id: GEAR_ID0 - i, key: `GEAR_${g.key}`, abbr: g.abbr, name: g.name, color: g.color, gear: g.key, model: g.model,
-  desc: `${g.desc} First person, key ${g.slot + 1} (${SLOTS[g.slot]}).${g.start ? '' : ' Click to add it to your tools.'}`,
+  desc: `${g.desc} First person, key ${g.slot + 1} (${SLOTS[g.slot]}).`,
 }));
 export const isGearTool = (id) => id <= GEAR_ID0 && id > GEAR_ID0 - 100;
 
 // How the palette is laid out in the UI. Within each group, elements are
 // ordered so related materials sit together and the colours run smoothly.
 export const PALETTE = [
-  { name: 'Powders', items: ['SAND', 'STONE', 'BROKENCOAL', 'GUNPOWDER', 'ASH', 'SNOW', 'SALT', 'SHARDS', 'CRYSTAL_DUST', 'SAWDUST', 'SCRAP', 'RUBBLE', 'NUGGETS', 'LITHIUM'] },
-  { name: 'Liquids', items: ['WATER', 'SALTWATER', 'WHISKEY', 'LIQUID_NITROGEN', 'ACID', 'TOXIC', 'OIL', 'SLIME', 'BLOOD', 'LAVA', 'MERCURY'] },
+  { name: 'Powders', items: ['SAND', 'CLAY', 'STONE', 'BROKENCOAL', 'DUST', 'ASH', 'SNOW', 'SALT', 'SHARDS', 'CRYSTAL_DUST', 'SAWDUST', 'SCRAP', 'RUBBLE', 'NUGGETS', 'LITHIUM'] },
+  { name: 'Liquids', items: ['WATER', 'SALTWATER', 'WHISKEY', 'LIQUID_NITROGEN', 'ACID', 'TOXIC', 'OIL', 'SLIME', 'BLOOD', 'MUD', 'LAVA', 'MERCURY'] },
   // Noita's magical liquids
   { name: 'Potions', items: ['TELEPORTATIUM', 'LEVITATIUM', 'HEALTHIUM', 'BERSERKIUM', 'POLYMORPHINE', 'PHEROMONE'] },
-  { name: 'Gases', items: ['STEAM', 'CLOUD', 'HYDROGEN', 'OXYGEN', 'CO2', 'CAUSTIC_GAS', 'SMOKE', 'FIRE', 'PLASMA', 'MERCURY_VAPOR'] },
-  { name: 'Solids', items: ['WALL', 'COAL', 'ROCK', 'LIMESTONE', 'SANDSTONE', 'METAL', 'GLASS', 'ICE', 'DRY_ICE', 'CRYSTAL', 'WOOD', 'FUNGUS', 'PLANT', 'MOSS', 'CLONE', 'BRICK', 'TITANIUM', 'TUNGSTEN', 'GOLD', 'SOLID_MERCURY', 'DIAMOND', 'VOID'] },
+  { name: 'Gases', items: ['STEAM', 'CLOUD', 'HYDROGEN', 'OXYGEN', 'CO2', 'PROPANE', 'CAUSTIC_GAS', 'SMOKE', 'FIRE', 'PLASMA', 'MERCURY_VAPOR'] },
+  { name: 'Solids', items: ['WALL', 'COAL', 'ROCK', 'LIMESTONE', 'SANDSTONE', 'METAL', 'GLASS', 'CERAMIC', 'ICE', 'DRY_ICE', 'CRYSTAL', 'WOOD', 'FUNGUS', 'PLANT', 'MOSS', 'CLONE', 'BRICK', 'TITANIUM', 'TUNGSTEN', 'GOLD', 'SOLID_MERCURY', 'DIAMOND', 'VOID'] },
+  // TPT's Explosives menu (propane stays a gas)
+  { name: 'Explosives', items: ['GUNPOWDER', 'FUSE', 'THERMITE', 'NITRO', 'TNT', 'C4'] },
   { name: 'Electronics', items: ['SPARK', 'BATTERY', 'METAL', 'PSCN', 'NSCN', 'SWITCH', 'INSULATOR', 'TSNS', 'PCLN'] },
   { name: 'Radioactive', items: ['PHOTON', 'NEUTRON', 'URANIUM', 'PLUTONIUM'] },
+  { name: 'Exotic', items: ['ANTIMATTER', 'SINGULARITY'] },
   { name: 'Tools', items: ['HEAT', 'COOL', 'ERASE', 'BLAST', 'LIGHTNING', 'SIGN', ...GEAR_ITEMS.map((g) => g.key)] },
-  { name: 'Entities', items: ['ENEMY', 'SPAWN', 'JEEPPAD', 'BIKEPAD'] },
+  { name: 'Entities', items: ['ENEMY', 'GUNNER', 'WORM', 'GIANTWORM', 'SPAWN', 'JEEPPAD', 'BIKEPAD', 'FLOCK'] },
   { name: 'Constructions', items: ['HOUSE', 'TREE', 'CAMPFIRE', 'IGLOO', 'BARREL', 'AQUARIUM', 'FOUNTAIN', 'SHRINE', 'DOCK', 'TOWER', 'STONES', 'WELL', 'MINE', 'WRECK', 'BRIDGE', 'PROMPT'] },
 ];
 
@@ -996,14 +1228,33 @@ export const meltInto = (e) => (e.meltInto ? E[e.meltInto] : e.id);
 
 // Reactions between two touching cells, in the style of Noita's materials.xml
 // <Reaction> rows (see the header). New rows go at the end.
-// Real speeds go through the sim's clock: a cell is CELL_M, a step
-// 1/STEPS_PER_S s, and the sim runs SIM_SPEEDUP× faster than real time
-// (scale.js: its gravity is real for ~7 mm cells).
-const STEPS_PER_S = 240;                     // app.js: 4 steps a frame at 60 fps
-const SIM_GRAVITY = 0.025, G = 9.81;         // cells/step² (sim.js default), m/s²
-const SIM_SPEEDUP = Math.sqrt(SIM_GRAVITY * STEPS_PER_S ** 2 * CELL_M / G);
+// Clay draws water into its pores by capillary suction: a clay cell and a
+// water cell make one of mud and leave air (the water fills CLAY_WATER of the
+// clay's volume, the rest of the cell is lost to the pores' slack). A cell's
+// worth soaks in over a few seconds (TPT's CLST: 1 in 1500 per frame per
+// water cell within two).
+const CLAY_SOAK = 0.005;   // chance per step per touching pair
+// Antimatter annihilates both cells, each capped at the engine's limits
+// (elements ANTIMATTER: E = mc²): enough heat to take the pair, left as air,
+// to the temperature clamp (ΔT = heat / (cap_a' + cap_b')), and gas enough
+// that each cell's half reaches the pressure clamp by itself.
+const ANNIHILATION_HEAT = 2 * ELEMENTS[E.EMPTY].cap * (PHYS.CELL_TEMP_MAX - PHYS.AMBIENT);
+const ANNIHILATION_PUFF = 2 * PHYS.P_MAX * PHYS.STEAM_EXPANSION / PHYS.STEAM_BOIL_PUFF;
+// On contact (a pair is partners once every RX_PAIRINGS steps: chance 1
+// takes it at the first pairing).
+const ANNIHILATION_CHANCE = 1;
+// What it spares: the wall (the box itself), clone (a device: it copies
+// antimatter instead), void (a device: it drains antimatter quietly, as it
+// drains anything that moves), itself (a '*' row never pairs an element with
+// itself) and a singularity, which swallows it. Diamond is carbon, matter
+// like any other: it annihilates (TPT's AMTR spares it).
+const ANTIMATTER_SPARES = ['WALL', 'CLONE', 'VOID', 'SINGULARITY'];
+
+// Real speeds go through the sim's clock (physics.js simSteps: a cell is
+// CELL_M, and the sim runs SIM_TIME_SCALE× faster than real time, as its
+// gravity is real only for ~7 mm cells).
 // chance per step that a flame front moving at S (m/s) crosses a cell
-const frontChance = (S) => +Math.min(1, S / CELL_M / STEPS_PER_S * SIM_SPEEDUP).toFixed(3);
+const frontChance = (S) => +Math.min(1, 1 / simSteps(CELL_M / S)).toFixed(3);
 const capAfter = (into) => (Array.isArray(into) ? into.reduce((s, [k, w]) => s + w * capAfter(k), 0) : ELEMENTS[E[into]].cap);
 // heat that brings the products (expected, over a weighted into) from ambient to T
 const flameHeat = (T, a, b, into) => {
@@ -1079,6 +1330,9 @@ export const REACTIONS = [
   { a: 'LITHIUM', b: 'WATER', into: ['HYDROGEN', 'SAME'], chance: LI_WATER_RATE, heat: LI_WATER_HEAT, puff: LI_H2_VOLUMES },
   { a: 'LITHIUM', b: 'SALTWATER', into: ['HYDROGEN', 'SAME'], chance: LI_WATER_RATE, heat: LI_WATER_HEAT, puff: LI_H2_VOLUMES },
   { a: 'CAUSTIC_GAS', b: 'WATER', into: ['EMPTY', 'ACID'], chance: HCL_ABSORB, heat: heatOf(HCL_SOLUTION, 1 / MOLAR_VOLUME) },
+  { a: 'CLAY', b: 'WATER', into: ['MUD', 'EMPTY'], chance: CLAY_SOAK },
+  { a: 'ANTIMATTER', b: '*', except: ANTIMATTER_SPARES, into: ['EMPTY', 'EMPTY'], chance: ANNIHILATION_CHANCE,
+    heat: ANNIHILATION_HEAT, puff: ANNIHILATION_PUFF },
   // Noita's materials.xml reactions between its materials (nt-mat), at Noita's
   // rates (NT_RATE). Game rules, not chemistry: water washes sludge away
   // (Noita's purification; really it would only dilute it), whiskey dissolves

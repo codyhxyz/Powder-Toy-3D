@@ -37,6 +37,12 @@ import { blendFixedFrames } from '../gfx/pacing.js';
 export const fieldEmaFrag = (g) => /* glsl */ `
 ${prelude(g)}
 ${materialsGLSL()}
+// Rubble (STONE) is a heap of chips up to ~11 cm, so its surface is lumpy at
+// the cell's scale, not smooth like sand: each cell fills its channel by a
+// share of its own (from its seed, so it moves with the cell), and the blurred
+// surface bulges over the full cells and dips over the sparse ones.
+#define RUBBLE_LUMP 0.45        // most a rubble cell's occupancy falls short of 1
+#define RUBBLE_LUMP_HASH 7.13   // spreads the seed (a.w) into a fresh uniform
 uniform sampler2D tP0;
 uniform sampler2D tP1;
 uniform vec4 uEmaS;
@@ -56,7 +62,7 @@ void main() {
   vec4 s = vec4(0.0), m = vec4(0.0);
   int ch = SURFCH[id], md = MEDIACH[id];
   bool crisp = id != E_EMPTY && ch < 0 && md < 0;
-  if (ch >= 0) s[ch] = 1.0;
+  if (ch >= 0) s[ch] = id == E_STONE ? 1.0 - RUBBLE_LUMP * fract(fract(a.w) * RUBBLE_LUMP_HASH) : 1.0;
   if (md == MD_SMOKE) m.x = clamp(a.z, 0.0, 1.0);
   else if (md == MD_STEAM) m.y = HAZE[id];   // droplets 1, a clear gas a faint haze (gfx/materials.js)
   else if (md == MD_FIRE) {
