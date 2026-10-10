@@ -154,6 +154,7 @@ export function createBirdWorld({ renderer, getSim, getWin }) {
     world,
     get ready() { return !!data; },
     get perchCount() { return perchCols.length; },
+    get pass() { return { mat, target }; },   // (checks time it: tools/birds-shots.mjs)
     // every frame: starts a probe when the last is PROBE_S old
     update(dt) {
       age += dt;

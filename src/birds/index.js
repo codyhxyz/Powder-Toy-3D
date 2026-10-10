@@ -230,6 +230,7 @@ export function createBirdLife(env) {
     // a new grid, scene or preset: every flock goes (the spawners' come back with them)
     worldReplaced() {
       for (const key of [...flocks.keys()]) dropFlock(key);
+      nextAmbient = 1;   // the new world's first flocks are already about
       probe.reset();
       view.clear();
     },
