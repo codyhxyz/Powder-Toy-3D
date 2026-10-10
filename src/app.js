@@ -51,6 +51,18 @@ const DEFAULTS = {
   nearGI: true, glowLights: true, caustics: true,
   ...detailDefaults(),
 };
+// Phones and tablets (touch-first, no hover) start on the plain look: no extra
+// lighting passes, no close-up detail, and the cheapest upscaling. Only the
+// defaults change; anything the player picks in Settings still sticks.
+const MOBILE = matchMedia('(hover: none) and (pointer: coarse)').matches;
+const MOBILE_DEFAULTS = {
+  nearGI: false, glowLights: false, caustics: false, upscale: 'performance',
+  ...Object.fromEntries(DETAIL.map((f) => [settingKey(f), false])),
+};
+if (MOBILE) Object.assign(DEFAULTS, MOBILE_DEFAULTS);
+// Saved settings predating the mobile defaults would keep the full look, so
+// those are switched to the plain look once (marked by MOBILE_LITE in the store).
+const MOBILE_LITE = 'mobileLite';
 const PERSIST = ['size', 'preset', 'tool', 'radius', 'shape', 'rate', 'replace', 'steps', 'gravity', 'view',
   'camSpeed', 'upscale', 'dockCollapsed', 'character', 'povFov', 'sensitivity', 'viewBobbing', 'sprintMode',
   'nearGI', 'glowLights', 'caustics', ...DETAIL.map(settingKey)];
@@ -65,6 +77,7 @@ try {
   // only keys still in use: values of removed settings must not linger
   const saved = JSON.parse(localStorage.getItem(STORE) || '{}');
   for (const k of PERSIST) if (k in saved) settings[k] = saved[k];
+  if (MOBILE && !saved[MOBILE_LITE]) Object.assign(settings, MOBILE_DEFAULTS);
 } catch { /* storage unavailable */ }
 const params = new URLSearchParams(location.search);
 if (params.get('size') in SIZES) settings.size = params.get('size');
@@ -79,7 +92,7 @@ let saveTimer = 0;
 function save() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
-    try { localStorage.setItem(STORE, JSON.stringify(Object.fromEntries(PERSIST.map((k) => [k, settings[k]])))); } catch { /* ignore */ }
+    try { localStorage.setItem(STORE, JSON.stringify({ ...Object.fromEntries(PERSIST.map((k) => [k, settings[k]])), [MOBILE_LITE]: MOBILE })); } catch { /* ignore */ }
   }, 300);
 }
 
@@ -982,7 +995,7 @@ try {
   window.__app = {
     get sim() { return sim; }, get volume() { return volume; }, get scale() { return scale; }, get signs() { return signs; }, get builds() { return builds; },
     get pov() { return pov; },
-    SUN, day, scene, settings, camera, controls, loadPreset, selectTool, setView, hover, renderer, rig, renderThumb, gfx, post, mp, autoRes,
+    MOBILE, SUN, day, scene, settings, camera, controls, loadPreset, selectTool, setView, hover, renderer, rig, renderThumb, gfx, post, mp, autoRes,
     applyDetail,   // after changing settings.detail_* by hand
     detailGate,    // .level / .shown: which close-up features the view has compiled in
     THREE,         // for tools (tools/detail-bench.mjs makes its own targets)
