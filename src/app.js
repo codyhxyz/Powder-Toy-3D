@@ -12,6 +12,7 @@ import { PerkOrbs } from './perkOrbs.js';
 import { buildPreset, ARENA_PRESETS } from './presets.js';
 import { ArenaMarkers } from './arenas/markers.js';
 import { DAM_VALLEY_BANNERS, shrineAltars } from './arenas/damValley.js';
+import './world/bakeClient.js';   // the World's build-time bake (world/bake.js), before any world is made
 import { structureClear, shrineAltars as worldShrineAltars } from './world/structures.js';
 import { loadIsland, releaseGenerator } from './world/gpu.js';
 import { WorldWindow, WIN_STEP } from './world/window.js';
