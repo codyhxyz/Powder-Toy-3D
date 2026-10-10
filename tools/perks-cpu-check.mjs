@@ -20,7 +20,7 @@ function makeSim(cell, n = [64, 160, 64]) {
     g: { nx: n[0], ny: n[1], nz: n[2] }, frame: 0, gravity: 0.025, stateA: null, stateB: null,
     run(mat, target) { if (mat.uniforms.uBoxLo) target.box = mat.uniforms.uBoxLo.value.clone(); },
     touchCentres() {}, pass() {},
-    paint(o) { paints.push({ ...o, center: o.center.clone() }); },
+    paint(o) { paints.push({ ...o, center: o.center.clone(), frame: sim.frame }); },
     paints,
   };
   const renderer = {
@@ -125,6 +125,34 @@ async function knock(keys) {
 }
 const kb = await knock([]), ks = await knock(['SHRINK']);
 check('Shrink: a blow throws it size⁻³ = 8× as fast', Math.abs(ks / kb - 8) < 0.2, `Δv ${kb.toFixed(2)} vs ${ks.toFixed(2)} cells/s`);
+
+// ---- Rain Cloud: CLOUD painted over the head, the sphere topped up, never past the seed rate
+{
+  const { body, sim } = makeBody(open, ['RAIN_CLOUD']);
+  body.spawn(new THREE.Vector3(32, 0, 32));
+  await run(body, sim, 60);
+  const ps = sim.paints;
+  const above = ps.every((q) => q.tool === E.CLOUD && !q.replace && q.center.y > body.pos.y + body.height && Math.abs(q.center.x - body.pos.x) < 1e-6);
+  const perFrame = Math.max(...ps.map((q) => q.rate * 0.3 * (4 / 3) * Math.PI * q.radius ** 3));
+  check('Rain Cloud: CLOUD painted over the head every frame', ps.length >= 50 && above, `${ps.length} paints, radius ${ps[0]?.radius}, centre ${ps[0]?.center.y.toFixed(1)} over feet ${body.pos.y.toFixed(1)}`);
+  check('Rain Cloud: no more than the seed rate a frame', perFrame <= 150 / 60 * 1.1, `≈${perFrame.toFixed(2)} cells a frame at most`);
+  // where the sphere is already thick with cloud, it seeds nothing
+  const full = makeBody((x, y) => (y >= 8 ? E.CLOUD : E.EMPTY), ['RAIN_CLOUD']);
+  full.body.spawn(new THREE.Vector3(32, 0, 32));
+  await run(full.body, full.sim, 60);
+  check('Rain Cloud: a thick cloud overhead is left alone', full.sim.paints.length === 0, `${full.sim.paints.length} paints`);
+  // the brush stops at the budget: a body under a sky that never fills (the mock world doesn't
+  // keep what's painted) seeds as fast as it may, and what it seeded, decaying with the cloud's
+  // measured life, never passes CLOUD_BUDGET
+  const run2 = makeBody(open, ['RAIN_CLOUD', 'RAIN_CLOUD', 'RAIN_CLOUD', 'RAIN_CLOUD']);
+  run2.body.spawn(new THREE.Vector3(32, 0, 32));
+  await run(run2.body, run2.sim, 60 * 240);   // four minutes
+  const n = run2.sim.paints.length, end = run2.sim.frame;
+  const vol = (q) => { let k = 0; const r = q.radius; for (let x = -r; x <= r; x++) for (let y = -r; y <= r; y++) for (let z = -r; z <= r; z++) if (x * x + y * y + z * z <= r * r) k++; return k; };
+  const v0 = vol(run2.sim.paints[0]);
+  const alive = run2.sim.paints.reduce((s, q) => s + Math.min(q.rate * 0.3, 1) * v0 * Math.exp(-(end - q.frame) / (STEPS / DT) / 67), 0);
+  check('Rain Cloud: what it seeded and may still be alive stays under the budget', alive < 6000 * 1.1 && alive > 4000, `≈${Math.round(alive)} cells alive after 4 min, ${n} paints`);
+}
 
 console.log(fails ? `${fails} failed` : 'all ok');
 process.exit(fails ? 1 : 0);
