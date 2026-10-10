@@ -1,4 +1,4 @@
-import { createHotbar, HOTBAR_SLOTS } from './hotbar.js';
+import { createHotbar, HOTBAR_SLOTS, slotKey } from './hotbar.js';
 import { sharedTransfer, emptyLoads } from './transfer.js';
 import { povEvents } from '../events.js';
 import { createBallistics } from '../ballistics.js';
@@ -83,16 +83,16 @@ export function createToolbelt(env) {
     env.requestRender?.();
   }
 
-  // keys 1–9 pick a slot while in POV (and don't reach the god view's hotkeys)
+  // the number keys (1–9, 0 for slot 10) pick a slot while in POV (and don't reach the god view's hotkeys)
   function onKey(e) {
     if (!env.isActive?.() || e.metaKey || e.ctrlKey || e.altKey) return;
     const t = e.target;
     if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
-    const n = e.key >= '1' && e.key <= '9' && e.key.length === 1 ? +e.key : 0;
-    if (!n || n > HOTBAR_SLOTS) return;
+    const i = e.key.length === 1 ? [...Array(HOTBAR_SLOTS).keys()].find((j) => slotKey(j) === e.key) : undefined;
+    if (i === undefined) return;
     e.preventDefault();
     e.stopImmediatePropagation();
-    select(n - 1);
+    select(i);
   }
   addEventListener('keydown', onKey, { capture: true });
 

@@ -94,6 +94,16 @@ export const PHYS = {
 
   // reactions (react.js)
   STEAM_BOIL_PUFF: 1.5,      // pressure from water flashing to steam
+  // Cloud (react.js): droplets of condensed water riding in air. Steam that
+  // condenses in open air becomes cloud; onto a surface (a solid, powder or
+  // liquid, or the floor), water.
+  CLOUD_RAIN: 4e-5,          // chance per step per cloud neighbour past CLOUD_RAIN_NB that it coalesces into a raindrop
+  CLOUD_RAIN_NB: 3,          // cloud neighbours a cell needs before it can rain (a dense core, not a wisp)
+  CLOUD_EVAP: 1e-4,          // chance per step per air neighbour past CLOUD_EVAP_NB that it evaporates, at ambient...
+  MAGNUS_A: 17.625,          // ...scaled by the saturation vapour pressure e_s(T) / e_s(ambient), Magnus form
+  MAGNUS_B: 243.04,          // (°C; Alduchov & Eskridge 1996): warm mist vanishes fast, cold fog lingers
+  CLOUD_EVAP_NB: 2,          // air neighbours a cell can have and stay (air inside and along a cloud is saturated: corners and wisps go)
+  CLOUD_EVAP_COOL: 1,        // °C the evaporating cell's air cools by (the latent heat of a real cloud's ~0.5 g/m³)
   PLANT_GROW: 0.006,         // chance per step per neighbouring plant that water becomes plant
   LAVA_FREEZE_BELOW: 150,    // °C under the melting point where lava sets
   FIRE_BURN: 0.02,           // flame life lost per step: BURN + BURN_SPREAD·rnd

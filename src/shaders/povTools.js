@@ -4,7 +4,7 @@ import { BODY_WIDTH } from '../pov/constants.js';
 import { ELEMENTS } from '../elements.js';
 import { PHYS as ENGINE } from '../physics.js';
 
-// GPU passes for the POV axe, gun, physgun and blowtorch (src/pov/tools/*.tool.js).
+// GPU passes for the POV axe, pickaxe, gun, physgun and blowtorch (src/pov/tools/*.tool.js).
 //
 // Each is a full-grid ping-pong pass run through sim.pass(mat), like the
 // brush (paintFrag in passes.js): every texel copies its cell, and only the
@@ -28,6 +28,21 @@ export const AXE = {
   RADIUS: 3,         // cells, half-width of the patch across the swing
   DEPTH: 1.5,        // cells, half-depth of the patch along the swing
   CHIP_MAX: 0.3,     // cells/step, fastest a chip leaves the cut (more energy goes into the fracture)
+  SHOVE: 0.25,       // cells/step pushed into loose powder at the patch centre
+};
+
+// Pickaxe: the same blow (blowFrag below) from a heavier, pointed head, so
+// more energy in a patch that is narrower for its depth: it bites into rock
+// where the axe bounces off. With ENERGY 52, RADIUS 2.2, DEPTH 2.5:
+//   ROCK  (30)  r² ≤ 0.42: the hit cell's 3×3 face, and the cell behind it and
+//                its four side neighbours behind (14 cells a swing)
+//   WOOD  (20)  r² ≤ 0.62, GLASS (8) r² ≤ 0.85: a little more than that
+//   METAL (60): never.
+export const PICK = {
+  ENERGY: 52,        // sim KE units at the patch centre (above ROCK's 30, below METAL's 60)
+  RADIUS: 2.2,       // cells, half-width of the patch across the swing
+  DEPTH: 2.5,        // cells, half-depth of the patch along the swing
+  CHIP_MAX: 0.3,     // cells/step, fastest a chip leaves the cut
   SHOVE: 0.25,       // cells/step pushed into loose powder at the patch centre
 };
 
@@ -117,36 +132,38 @@ ${prelude(g)}
 ${stateOutGLSL}
 `;
 
-// Break breakable solids in the axe's patch into their debris, 1:1 (same
-// cell, temperature, life and ctype: only the element changes), and nudge
-// loose powder along the swing.
-export const axeFrag = (g) => /* glsl */ `
+// A melee blow (the axe, the pickaxe; P is AXE or PICK): break breakable
+// solids in its patch into their debris, 1:1 (same cell, temperature, life and
+// ctype: only the element changes), and nudge loose powder along the swing.
+const blowFrag = (P) => (g) => /* glsl */ `
 ${head(g)}
-${defines('AXE', AXE)}
-#define AXE_REACH max(AXE_RADIUS, AXE_DEPTH)
+${defines('BLOW', P)}
+#define BLOW_REACH max(BLOW_RADIUS, BLOW_DEPTH)
 uniform vec3 uCenter;   // grid cells: the centre of the struck cell
 uniform vec3 uDir;      // unit swing direction
 
-void axe(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
+void blow(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
   vec3 d = vec3(p) + 0.5 - uCenter;
-  if (dot(d, d) >= AXE_REACH * AXE_REACH) return;
+  if (dot(d, d) >= BLOW_REACH * BLOW_REACH) return;
   float along = dot(d, uDir);
   vec3 across = d - along * uDir;
-  float r2 = dot(across, across) / (AXE_RADIUS * AXE_RADIUS) + along * along / (AXE_DEPTH * AXE_DEPTH);
+  float r2 = dot(across, across) / (BLOW_RADIUS * BLOW_RADIUS) + along * along / (BLOW_DEPTH * BLOW_DEPTH);
   if (r2 >= 1.0) return;
-  float E = AXE_ENERGY * (1.0 - r2);
+  float E = BLOW_ENERGY * (1.0 - r2);
   int id = eid(a);
   int into = BREAKINTO[id];
   if (KIND[id] == K_SOLID && into >= 0 && E >= HARD[id]) {
     oA.x = float(into);
     // what the cut doesn't use flies off with the chip: ½·DENS·v² = E − hard
-    float v = min(sqrt(2.0 * (E - HARD[id]) / DENS[into]), AXE_CHIP_MAX);
+    float v = min(sqrt(2.0 * (E - HARD[id]) / DENS[into]), BLOW_CHIP_MAX);
     oB.xyz = uDir * v;
   } else if (KIND[id] == K_POWDER) {
-    oB.xyz = clamp(b.xyz + uDir * AXE_SHOVE * (1.0 - r2), -V_MAX, V_MAX);
+    oB.xyz = clamp(b.xyz + uDir * BLOW_SHOVE * (1.0 - r2), -V_MAX, V_MAX);
   }
 }
-${copyThroughMain('axe')}`;
+${copyThroughMain('blow')}`;
+export const axeFrag = blowFrag(AXE);
+export const pickaxeFrag = blowFrag(PICK);
 
 // Blowtorch: a roofing torch's flame (propane in air), a cone from the nozzle
 // along the aim. Air in the cone becomes engine FIRE at the flame's

@@ -12,7 +12,10 @@ import { viewmodelRig, heldMaterial } from '../viewmodel.js';
 // Bucket (slot 2). Left-click dips it into the liquid you aim at; hold to keep
 // dipping until it's full. Hold right-click to pour a stream out in front of
 // you. A bucket holds one liquid at a time, at the temperature it was scooped
-// (a bucket of lava stays at 1,600 °C).
+// (a bucket of lava stays at 1,600 °C). The player's is bottomless (an NPC's
+// isn't, so the lava-pouring enemy runs dry): what it pours is copied, not
+// spent, so one scoop pours forever, and dipping it into a different liquid
+// tips out what it had and takes the new one.
 //
 // Events: tool:action 'scoop' (cells came up), 'pour' (once per press, when
 // the stream first lands) and 'refuse' (wrong liquid, or full), with the
@@ -42,9 +45,10 @@ const SEGMENTS = BUCKET_SIDES;       // the pail's sides, so the disc's edge lie
 
 export default {
   key: 'BUCKET', name: 'Bucket', slot: 2, model: 'bucket',
-  desc: 'Left-click scoops up liquid, hold right-click to pour it out. Lava is fine.',
+  desc: 'Left-click scoops up liquid, hold right-click to pour it out forever: it never runs dry. Lava is fine.',
   create(env) {
     const load = persistentLoad(ownedKey('BUCKET', env.owner), BUCKET_CAPACITY);
+    const bottomless = !env.owner;
     const transfer = env.transfer;
     const dip = trigger(SCOOP_INTERVAL);   // dips, hold to repeat
     let pour = 0;
@@ -74,7 +78,12 @@ export default {
     function scoop(ctx, aim) {
       if (!aim || aim.id < 0 || ELEMENTS[aim.id].kind !== K.LIQUID) return;
       const holds = load.cells.length ? load.mainId : -1;
-      if (holds >= 0 && holds !== aim.id) { refuse(`The bucket holds ${ELEMENTS[holds].name.toLowerCase()}`, aim.id); return; }
+      if (holds >= 0 && holds !== aim.id) {   // a new liquid: a bottomless bucket tips out the old one
+        if (!bottomless) { refuse(`The bucket holds ${ELEMENTS[holds].name.toLowerCase()}`, aim.id); return; }
+        if (load.busy) return;
+        load.cells.length = 0;
+        load.version++;
+      }
       if (load.free <= 0) { if (!load.busy && ctx.primaryPressed) refuse('The bucket is full', aim.id); return; }
       const center = aim.cell.clone().addScalar(0.5).addScaledVector(faceNormal(aim.face), -DIP_SINK);
       const p = transfer.take(load, { cells: cellsNear(center, SCOOP_RADIUS, ctx.sim.g), kinds: [K.LIQUID], want: aim.id });
@@ -96,11 +105,16 @@ export default {
       const v = ctx.dir.clone().multiplyScalar(POUR_SPEED);
       if (ctx.player?.vel) v.add(ctx.player.vel);
       const id = load.mainId;
+      const source = [...load.cells.at(-1)];   // what the bottomless bucket refills with
       const p = transfer.put(load, { cells, max: n, vel: toStepVelocity(v, ctx) });
       if (p) {
         pour -= n;
         const press = pourPress, at = pinned(spout, ctx.sim);
         p.then((landed) => {   // may land after the button is up: announce each press once
+          if (bottomless && landed) {
+            for (let i = 0; i < landed; i++) load.cells.push([...source]);
+            load.version++;
+          }
           if (!landed || pourHeard === press) return;
           pourHeard = press;
           act('pour', { id, point: at(), amount: landed });
@@ -127,7 +141,7 @@ export default {
         else pour = 0;
       },
       deselect() { hand.visible = false; pour = 0; },
-      status: () => load.status(),
+      status: () => (bottomless && load.cells.length ? `${ELEMENTS[load.mainId].abbr} ∞` : load.status()),
       dispose() {
         mesh.dispose();
         hand.removeFromParent();

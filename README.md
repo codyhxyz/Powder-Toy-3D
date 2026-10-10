@@ -99,7 +99,7 @@ The dock groups elements like a periodic-table strip, each tile in the element's
 
 - **Powders:** SAND, STNE, GUNP, ASH, SNOW, BGLA (broken glass), SAWD (sawdust), BRMT (scrap metal)
 - **Liquids:** WATR, ACID, OIL, LAVA
-- **Gases:** WTRV (steam), SMKE, FIRE
+- **Gases:** WTRV (steam), CLOD (cloud), SMKE, FIRE
 - **Solids:** WALL, METL, GLAS, ICE, WOOD, PLNT, CLNE
 - **Tools:** HEAT, COOL, ERAS, PRES (pressure), SIGN
 - **Constructions:** HOUS (cottage, log cabin, brick, greenhouse), TREE (oak, pine, birch, palm, willow, dead), CAMP, IGLO, BRRL (oil drum, powder keg), AQUA, FNTN, AI (your own, written by a model or pasted)
@@ -173,6 +173,10 @@ Density decides whether it can displace its neighbour, so sand sinks through wat
 - **Latent heat.** Water, ice, snow and steam pin their temperature at 0 °C or 100 °C while banking energy until a full latent heat
   (80 for fusion, 540 for vaporisation, in water-heat-capacity units) has been absorbed or released.
   That's why ice keeps water at 0 °C, why boiling takes a while, and why lava hitting the sea makes a burst of steam and a rock crust.
+- **Clouds.** Steam that condenses in open air becomes cloud (droplets riding in air; onto a surface it becomes water). Cloud
+  moves with the air, buoyant only by its temperature. Its thick cores coalesce into raindrops; cells mostly exposed to air
+  evaporate, faster the warmer they are (Magnus saturation vapour pressure), so kettle mist vanishes and cold fog lingers.
+  It boils back to steam at 100 °C and freezes into snow below 0 °C, with the same latent heats as water.
 - **Convection.** Air and gases thin with temperature the way an ideal gas does, so hot air rises and carries heat,
   and smoke from a fire rises with it.
 - **Combustion.** Flammables above their ignition temperature that touch air burn their fuel, release heat and spawn flames into
