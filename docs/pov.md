@@ -514,6 +514,21 @@ licks off a burning body (vfx.js `burn`). NPCs run to water when Burning (brain.
 Check: `node tools/status-check.mjs` (CPU: the rules through real vitals.js) and `--gpu [--port …] [--shot
 file.jpg]` (the real body: a pool, fire on and off the body, snow, a wound's spill, the HUD row, the lab NPC).
 
+## Birds (2026-10-10): life in the world
+
+`src/birds/`: flocks of magical birds, in the god view and first person, World and boxes. Not synced in
+multiplayer (every client flies its own).
+
+| Part | How | Where |
+|---|---|---|
+| Flocking | Reynolds' boids with Yuka's own behaviours on Vehicles (Separation, from the birds within 2 m only; Alignment, Cohesion, Wander, Arrive to land, Flee from a scare, Seek home and back to the flock), one EntityManager per flock; plus terrain following (a height band over the ground, looking 0.9 s ahead), which Yuka has no twin for | `flock.js` |
+| What they know | one GPU pass, twice a second: per probed column (one in each 2×2 of the window) the surface, its id, its rise over the next surface across open air (a perch: a tree crown, a roof) and the band of cells over 300 °C; read back async (256 KB). Outside the window a World's `scene.ground` (+ its trees' height) | `probe.js` |
+| Drawing | one InstancedMesh, wings beating in the vertex shader; lit by `gfxUniforms` sun and sky; an iridescent sheen, and at dusk and night an emissive glow and three.quarks light motes behind them (no lights) | `render.js` |
+| Life | a World keeps 3 ambient flocks of 7–12 near the window; the palette's Bird flock spawner (Entities, `SPAWNER.BIRDS`) keeps one on its spot; they perch for a while, roost below −3° sun, flush from a body within 8 m, a shot (60 m), a strike (12 m) or a blast (120 m; it kills within 9 cells), burn in hot cells and fall; weapons hit them through `targets.js` (`bird:<id>`) | `index.js` |
+
+Checks: `node tools/birds-check.mjs` (CPU: cohesion, clearance, perching, flushing, roosting, fire, a kill, cost) and
+`node tools/birds-shots.mjs --port … --shots dir` (GPU, AC power).
+
 ## Verifying (headless GPU)
 
 - Use playwright's Chromium with `--use-angle=metal --enable-gpu --ignore-gpu-blocklist` against your own

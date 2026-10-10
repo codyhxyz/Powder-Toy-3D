@@ -6,6 +6,8 @@ import { volumeVert, volumeFrag, pickFrag, shadowFrag } from './shaders/render.j
 import { ELEMENTS, E, toolById, isBuild, isSpawnerTool, isGearTool, LIGHTNING_TOOL } from './elements.js';
 import { createLightning } from './lightning.js';
 import { Spawners, SPAWNER, ENEMY_KINDS, feetOnHit } from './spawners.js';
+import { createBirdLife } from './birds/index.js';
+import { BODY_HEIGHT } from './pov/constants.js';
 import { PerkOrbs } from './perkOrbs.js';
 import { buildPreset, ARENA_PRESETS } from './presets.js';
 import { ArenaMarkers } from './arenas/markers.js';
@@ -33,7 +35,7 @@ import { claimPrograms } from './gfx/programs.js';
 import { createPost, UPSCALE } from './gfx/post.js';
 import { createPacer, settleFrames, sceneKey, createCapCheck, CAP_IDLE_MS } from './gfx/pacing.js';
 import { CHANNELS, MEDIA } from './gfx/materials.js';
-import { DAY, dayPhase, phaseSteps, keyLight } from './gfx/daylight.js';
+import { DAY, dayPhase, phaseSteps, keyLight, sunElevation } from './gfx/daylight.js';
 import { GI_BLEND } from './sim.js';
 import { createMultiplayer } from './net/multiplayer.js';
 import { createProfiler } from './gfx/profiler.js';
@@ -79,10 +81,11 @@ const WORLD_VIEW_DIST = 21;
 const WORLD_CAM_SPEED_MAX = 9;
 const SIGN_TOOL = -5;
 const SPAWNER_KIND = { [-6]: SPAWNER.ENEMY, [-7]: SPAWNER.PLAYER, [-20]: SPAWNER.JEEP, [-21]: SPAWNER.HOVERBIKE,
-  [-30]: SPAWNER.GUNNER, [-31]: SPAWNER.WORM, [-32]: SPAWNER.GIANT_WORM };   // the Spawners tools' kinds
+  [-30]: SPAWNER.GUNNER, [-31]: SPAWNER.WORM, [-32]: SPAWNER.GIANT_WORM, [-33]: SPAWNER.BIRDS };   // the Spawners tools' kinds
 const SPAWNER_SET = {
   [SPAWNER.ENEMY]: 'Enemy spawner set: press V to fight', [SPAWNER.PLAYER]: 'Player spawn set: V drops you in here',
   [SPAWNER.JEEP]: 'Jeep pad set: press V, walk up to it and press E', [SPAWNER.HOVERBIKE]: 'Hoverbike pad set: press V, walk up to it and press E',
+  [SPAWNER.BIRDS]: 'Bird flock set: they live here now',
 };
 // the lab's own enemy spawner: its open south floor, as shares of the grid (the old lab NPC's arena)
 const LAB_ENEMY_AT = [0.555, 0.86];
@@ -185,6 +188,7 @@ const scene = new THREE.Scene();
 let perkOrbs = null;   // perk orbs (perkOrbs.js), made with the spawners
 let lastShrine = 0;    // the shrine id the last placement's orbs got (0: it set none)
 let spawners = null;   // enemy and player spawners (spawners.js), made once the volume is
+let birds = null;      // the birds (birds/index.js): a World's ambient flocks and the Bird flock spawners'
 const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.05, 200);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
@@ -530,6 +534,7 @@ function loadPreset(name, undoable = true) {
       placeVolume();
       post.reset();
       pov?.worldReplaced();
+      birds?.worldReplaced();
       worldShrine();
     }, (err) => console.error('world: its passes failed to compile, or its scene to prepare', err));
     toolbar.setUndoEnabled(false);
@@ -549,6 +554,7 @@ function loadPreset(name, undoable = true) {
 // own. An arena sets its shrines' perk orbs, its team banners, and player
 // spawners at red's spawn points (V drops you into the red base).
 function resetSpawners(name) {
+  birds?.worldReplaced();
   perkOrbs?.clear();
   arenaMarkers?.clear();
   pov?.vehicles.spawnLayout(arenaLayout);   // an arena's jeeps and hoverbikes (null clears the last arena's)
@@ -1347,6 +1353,11 @@ function frame(now) {
     stepOnce = false;
   } else if (mp.isGuest && DAY.running) day.clock += settings.steps;   // guests don't step: keep the day going at their own rate
   updateSun();
+  if (birds) {
+    prof.phase('other');   // (their probe pass, birdProbe, counts here)
+    birds.update(settings.paused ? 0 : dt);   // they hold still with the world
+    if (!settings.paused && birds.count) pacer.wake();
+  }
   if (settings.time !== timeShown) {
     timeShown = settings.time;
     if (settingsPanel.isOpen) settingsPanel.sync();
@@ -1456,6 +1467,14 @@ try {
   }
   spawners = new Spawners({ scene, getSim: () => sim, getVolume: () => volume, getScale: () => scale });   // seeded by build()'s loadPreset, once there is a grid
   perkOrbs = new PerkOrbs({ scene, getSim: () => sim, getVolume: () => volume, getScale: () => scale });
+  birds = createBirdLife({
+    renderer, scene, camera, sun: SUN,
+    getSim: () => sim, getVolume: () => volume, getScale: () => scale, getWin: () => win, getSpawners: () => spawners,
+    sunEl: () => sunElevation(dayPhase(day.clock), day.fixed),
+    // the body in first person, at its middle (world cells): it flushes birds near it
+    player: () => (pov?.active && pov.player && !pov.player.dead
+      ? { x: pov.player.pos.x + sim.origin.x, y: pov.player.pos.y + BODY_HEIGHT / 2, z: pov.player.pos.z + sim.origin.z } : null),
+  });
   arenaMarkers = new ArenaMarkers({ scene, getSim: () => sim, getVolume: () => volume, getScale: () => scale });
   if (BuildsClass) {
     builds = new BuildsClass({
@@ -1488,6 +1507,7 @@ try {
     get sim() { return sim; }, get volume() { return volume; }, get scale() { return scale; }, get signs() { return signs; }, get builds() { return builds; },
     get pov() { return pov; },
     get spawners() { return spawners; },
+    get birds() { return birds; },
     get perkOrbs() { return perkOrbs; },
     lightning,     // the Lightning tool's and storms' bolts (src/lightning.js)
     // the loaded arena's layout (spawns, flags, hills, siege core, shrines, vehicles: arenas/damValley.js), else null

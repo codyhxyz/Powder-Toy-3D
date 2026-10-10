@@ -737,9 +737,12 @@ export const TOOLS = [
   // bolt from the top of the box down to the surface under the cursor.
   { id: -8, key: 'LIGHTNING', abbr: 'LIGH', name: 'Lightning', color: '#fff6b0',
     desc: 'Click a surface: a branching bolt strikes it from above, leaving a column of plasma, scorching heat and a pressure crack where it lands. Brush size sets how wide the strike is.' },
+  // Magical birds (src/birds/): a flock that lives on this spot. (-30 to -32 are the creature spawners.)
+  { id: -33, key: 'FLOCK', abbr: 'BIRD', name: 'Bird flock', color: '#b58cff',
+    desc: 'Click a surface: a flock of magical birds lives here. They perch in trees and on roofs, take off when you come near or fire, roost and glow at night, and burn and fall like anything else. Click it again to remove it.' },
 ];
 export const LIGHTNING_TOOL = -8;
-export const isSpawnerTool = (id) => id === -6 || id === -7 || id === -20 || id === -21 || id === -30 || id === -31 || id === -32;
+export const isSpawnerTool = (id) => id === -6 || id === -7 || id === -20 || id === -21 || id === -30 || id === -31 || id === -32 || id === -33;
 
 // Constructions: whole structures placed with one click (src/constructions.js
 // builds and stamps them; they never reach the paint shader). Each one is
@@ -809,7 +812,7 @@ export const PALETTE = [
   { name: 'Electronics', items: ['SPARK', 'BATTERY', 'METAL', 'PSCN', 'NSCN', 'SWITCH', 'INSULATOR', 'TSNS', 'PCLN'] },
   { name: 'Radioactive', items: ['PHOTON', 'NEUTRON', 'URANIUM', 'PLUTONIUM'] },
   { name: 'Tools', items: ['HEAT', 'COOL', 'ERASE', 'BLAST', 'LIGHTNING', 'SIGN', ...GEAR_ITEMS.map((g) => g.key)] },
-  { name: 'Entities', items: ['ENEMY', 'GUNNER', 'WORM', 'GIANTWORM', 'SPAWN', 'JEEPPAD', 'BIKEPAD'] },
+  { name: 'Entities', items: ['ENEMY', 'GUNNER', 'WORM', 'GIANTWORM', 'SPAWN', 'JEEPPAD', 'BIKEPAD', 'FLOCK'] },
   { name: 'Constructions', items: ['HOUSE', 'TREE', 'CAMPFIRE', 'IGLOO', 'BARREL', 'AQUARIUM', 'FOUNTAIN', 'SHRINE', 'DOCK', 'TOWER', 'STONES', 'WELL', 'MINE', 'WRECK', 'BRIDGE', 'PROMPT'] },
 ];
 
