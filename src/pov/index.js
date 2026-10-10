@@ -13,6 +13,7 @@ import { grant, PERK } from './perks.js';
 import { CLASSES_ENABLED } from './classes.js';
 import { createClassPicker } from './classPicker.js';
 import { createVehicles } from './vehicles/index.js';
+import { SPAWNER, ENEMY_KINDS } from '../spawners.js';
 
 // First-person (POV) mode: drop into the world with F, walk around in it,
 // pop back out with F. This module is the shell: input, the camera, the
@@ -23,8 +24,8 @@ import { createVehicles } from './vehicles/index.js';
 
 const playerModule = import.meta.glob('./player.js', { eager: true })['./player.js'];
 const toolsModule = import.meta.glob('./tools/index.js', { eager: true })['./tools/index.js'];
-// The NPCs (npc.js: Yuka, the world model, the tools headless) load on first use: one per enemy spawner (spawners.js).
-const ENEMY = 'enemy';
+// The NPCs (npc.js: Yuka, the world model, the tools headless) load on first use: one per enemy spawner
+// (spawners.js): an axeman, a jetpack gunner (npc.js style 'gunner') or a worm (worm.js).
 const PLAYER_KNOCKBACK = 18;   // cells/s a blow from an NPC throws the player
 const PLAYER_KNOCK_UP = 0.4;   // its upward share
 const PLAYER_DAMAGE_TAKEN = 0.5;   // share of a weapon's damage the player takes from NPCs (the hero is tougher)
@@ -491,7 +492,7 @@ export function createPov(app) {
     // (g.windowed): the NPCs don't move with the window (windowShifted).
     const sp = app.getSpawners?.();
     const npcsWanted = !!sp && !g.windowed && (mode === 'on' || mode === 'entering') && !!toolbelt;
-    const homes = npcsWanted ? sp.of(ENEMY) : [];
+    const homes = npcsWanted ? ENEMY_KINDS.flatMap((k) => sp.of(k)) : [];
     if (homes.length && !npcMod && !npcLoading) {
       npcLoading = true;
       import('./npc.js').then((m) => { npcAi = m.createAi({ renderer, getSim: app.getSim }); npcMod = m; })
@@ -500,11 +501,14 @@ export function createPov(app) {
     if (npcMod) {
       for (const s of homes) {
         if (npcs.has(s.id)) continue;
-        const n = npcMod.createNpc({
+        const spec = {
           env: { renderer, scene, getSim: app.getSim, getVolume: app.getVolume, getScale: app.getScale, ballistics: toolbelt.ballistics },
           ai: npcAi,
           home: () => sp.feet(s),   // it appears, and comes back, on its spawner
-        });
+        };
+        const worm = s.kind === SPAWNER.WORM || s.kind === SPAWNER.GIANT_WORM;
+        const n = worm ? npcMod.createWorm({ ...spec, size: s.kind === SPAWNER.GIANT_WORM ? 'giant' : 'small' })
+          : npcMod.createNpc({ ...spec, style: s.kind === SPAWNER.GUNNER ? 'gunner' : 'axeman' });
         scene.add(n.root);
         n.body.on('revenge', ({ point }) => povEvents.emit('blast', { point }));
         n.bind(app.getVolume(), g);
@@ -628,7 +632,7 @@ export function createPov(app) {
       if (got) gainPerk(player, got);
     }
     for (const n of npcs.values()) {
-      if (n.body.dead) continue;
+      if (n.body.dead || !n.body.perks) continue;   // a worm takes no perks
       const got = orbs.takeAt(n.body.pos);
       if (got) gainPerk(n.body, got, n.id);
     }

@@ -235,8 +235,14 @@ export const TOOLS = [
   { id: -5, key: 'SIGN', abbr: 'SIGN', name: 'Sign', color: '#efe7d2',
     desc: 'Click a surface to pin a label. {t}, {p} and {e} show live temperature, pressure and element.' },
   // Spawners are handled by the app too (src/spawners.js): markers, not cells.
-  { id: -6, key: 'ENEMY', abbr: 'NPC', name: 'Enemy spawner', color: '#e0453a',
+  { id: -6, key: 'ENEMY', abbr: 'NPC', name: 'Axeman spawner', color: '#e0453a',
     desc: 'Click a surface: in first person (F) an enemy with every tool appears here, and comes back after it dies. Click it again to remove it.' },
+  { id: -30, key: 'GUNNER', abbr: 'GUNR', name: 'Gunner spawner', color: '#e08a2a',
+    desc: 'Click a surface: in first person (F) a jetpack gunner appears here. It keeps its distance, flies to high ground and shoots. Click it again to remove it.' },
+  { id: -31, key: 'WORM', abbr: 'WORM', name: 'Worm spawner', color: '#b0607a',
+    desc: 'Click a surface: in first person (F) a worm burrows in here. It tunnels through rock, bursts out under you and bites; loud noises draw it. WALL and metal stop it. Click it again to remove it.' },
+  { id: -32, key: 'GIANTWORM', abbr: 'GWRM', name: 'Giant worm spawner', color: '#7a3550',
+    desc: 'Click a surface: in first person (F) a giant worm burrows in here, Noita\'s Jättimato: twenty metres long, seven times as tough as the worm and faster. Click it again to remove it.' },
   { id: -7, key: 'SPAWN', abbr: 'SPWN', name: 'Player spawn', color: '#3fa7ff',
     desc: 'Click a surface: F drops you in at the spawn nearest the cursor, and you respawn there. Click it again to remove it.' },
   { id: -20, key: 'JEEPPAD', abbr: 'JEEP', name: 'Jeep pad', color: '#8fa04a',
@@ -244,7 +250,7 @@ export const TOOLS = [
   { id: -21, key: 'BIKEPAD', abbr: 'HOVR', name: 'Hoverbike pad', color: '#5fd0e0',
     desc: 'Click open ground: in first person (F) a hoverbike waits here (E to ride it; it skims water), and comes back after it is destroyed. Click it again to remove it.' },
 ];
-export const isSpawnerTool = (id) => id === -6 || id === -7 || id === -20 || id === -21;
+export const isSpawnerTool = (id) => id === -6 || id === -7 || id === -20 || id === -21 || id === -30 || id === -31 || id === -32;
 
 // Constructions: whole structures placed with one click (src/constructions.js
 // builds and stamps them; they never reach the paint shader). Each one is
@@ -309,7 +315,7 @@ export const PALETTE = [
   { name: 'Gases', items: ['STEAM', 'CLOUD', 'SMOKE', 'FIRE'] },
   { name: 'Solids', items: ['WALL', 'COAL', 'ROCK', 'LIMESTONE', 'SANDSTONE', 'METAL', 'GLASS', 'ICE', 'CRYSTAL', 'WOOD', 'PLANT', 'CLONE'] },
   { name: 'Tools', items: ['HEAT', 'COOL', 'ERASE', 'BLAST', 'SIGN', ...GEAR_ITEMS.map((g) => g.key)] },
-  { name: 'Entities', items: ['ENEMY', 'SPAWN', 'JEEPPAD', 'BIKEPAD'] },
+  { name: 'Entities', items: ['ENEMY', 'GUNNER', 'WORM', 'GIANTWORM', 'SPAWN', 'JEEPPAD', 'BIKEPAD'] },
   { name: 'Constructions', items: ['HOUSE', 'TREE', 'CAMPFIRE', 'IGLOO', 'BARREL', 'AQUARIUM', 'FOUNTAIN', 'SHRINE', 'DOCK', 'TOWER', 'STONES', 'WELL', 'MINE', 'WRECK', 'PROMPT'] },
 ];
 

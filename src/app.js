@@ -4,7 +4,7 @@ import './ui/styles.css';
 import { Simulation } from './sim.js';
 import { volumeVert, volumeFrag, pickFrag, shadowFrag } from './shaders/render.js';
 import { ELEMENTS, E, toolById, isBuild, isSpawnerTool, isGearTool } from './elements.js';
-import { Spawners, SPAWNER, feetOnHit } from './spawners.js';
+import { Spawners, SPAWNER, ENEMY_KINDS, feetOnHit } from './spawners.js';
 import { PerkOrbs } from './perkOrbs.js';
 import { buildPreset, ARENA_PRESETS } from './presets.js';
 import { ArenaMarkers } from './arenas/markers.js';
@@ -77,7 +77,8 @@ const WORLD_VIEW_DIST = 21;
 // (one WIN_STEP move every few frames), in scene units per second
 const WORLD_CAM_SPEED_MAX = 9;
 const SIGN_TOOL = -5;
-const SPAWNER_KIND = { [-6]: SPAWNER.ENEMY, [-7]: SPAWNER.PLAYER, [-20]: SPAWNER.JEEP, [-21]: SPAWNER.HOVERBIKE };   // the Spawners tools' kinds
+const SPAWNER_KIND = { [-6]: SPAWNER.ENEMY, [-7]: SPAWNER.PLAYER, [-20]: SPAWNER.JEEP, [-21]: SPAWNER.HOVERBIKE,
+  [-30]: SPAWNER.GUNNER, [-31]: SPAWNER.WORM, [-32]: SPAWNER.GIANT_WORM };   // the Spawners tools' kinds
 const SPAWNER_SET = {
   [SPAWNER.ENEMY]: 'Enemy spawner set: press F to fight', [SPAWNER.PLAYER]: 'Player spawn set: F drops you in here',
   [SPAWNER.JEEP]: 'Jeep pad set: press F, walk up to it and press E', [SPAWNER.HOVERBIKE]: 'Hoverbike pad set: press F, walk up to it and press E',
@@ -1013,7 +1014,7 @@ function press(e) {
     const r = spawners.toggle(kind, feetOnHit(hover));
     pacer.wake();
     if (r === 'full') hud.toast('That many is the limit');
-    else hud.toast(r === 'removed' ? 'Spawner removed' : SPAWNER_SET[kind]);
+    else hud.toast(r === 'removed' ? 'Spawner removed' : SPAWNER_SET[ENEMY_KINDS.includes(kind) ? SPAWNER.ENEMY : kind]);
     return;
   }
   if (isBuild(settings.tool)) {

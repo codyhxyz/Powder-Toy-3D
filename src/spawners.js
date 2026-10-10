@@ -4,11 +4,16 @@ import { BODY_HEIGHT, BODY_WIDTH } from './pov/constants.js';
 // Spawners: markers the god view sets on surfaces (the palette's Entities group).
 //
 //   enemy   in first person, keeps one NPC (pov/npc.js) alive here: it appears
-//           here, and comes back here a few seconds after it dies
+//           here, and comes back here a few seconds after it dies (an axeman)
+//   gunner  the same, a jetpack gunner (npc.js, style 'gunner'): Noita's jetpack Hiisi
+//   worm    the same, a worm (pov/worm.js) that comes up here and burrows in
+//   giantworm  the same, the giant worm (worm.js size 'giant')
 //   player  where F drops you in (the one nearest the cursor) and where you respawn
 //   jeep, hoverbike
 //           in first person, keeps one vehicle (pov/vehicles/) parked here: it
 //           comes back here a few seconds after it's destroyed
+//
+// None is placed in any world by default; the lab's own axeman is the only one a scene brings.
 //
 // Clicking a surface with a spawner tool sets one; clicking at an existing one
 // of that kind takes it away. A spawner stands on a world cell, like a sign, so
@@ -17,8 +22,10 @@ import { BODY_HEIGHT, BODY_WIDTH } from './pov/constants.js';
 // Each shows as a glowing pad with a ghost of a body standing on it; in first
 // person the ghost hides and the pad stays.
 
-export const SPAWNER = { ENEMY: 'enemy', PLAYER: 'player', JEEP: 'jeep', HOVERBIKE: 'hoverbike' };
-const COLOR = { enemy: 0xe0453a, player: 0x3fa7ff, jeep: 0x8fa04a, hoverbike: 0x5fd0e0 };
+export const SPAWNER = { ENEMY: 'enemy', GUNNER: 'gunner', WORM: 'worm', GIANT_WORM: 'giantworm', PLAYER: 'player', JEEP: 'jeep', HOVERBIKE: 'hoverbike' };
+// the kinds that keep a creature alive (pov/index.js); old spawners are 'enemy': axemen
+export const ENEMY_KINDS = [SPAWNER.ENEMY, SPAWNER.GUNNER, SPAWNER.WORM, SPAWNER.GIANT_WORM];
+const COLOR = { enemy: 0xe0453a, gunner: 0xe08a2a, worm: 0xb0607a, giantworm: 0x7a3550, player: 0x3fa7ff, jeep: 0x8fa04a, hoverbike: 0x5fd0e0 };
 // A vehicle pad's ghost: the vehicle's footprint (cells, 0.3 m each: a 4.5 × 2.2 × 1.8 m jeep, a 2.5 × 1 × 1.2 m hoverbike)
 const VEHICLE_GHOST = { jeep: [7.3, 6, 15], hoverbike: [3.3, 4, 8.3] };
 const VEHICLE_PAD_R = { jeep: 8, hoverbike: 4.5 };   // cells, the pad's radius under it
