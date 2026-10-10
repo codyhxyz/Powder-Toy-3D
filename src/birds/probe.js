@@ -24,7 +24,7 @@ export const BIRD_IGNITE_T = 300;   // °C: feathers burn in anything this hot (
 const PERCH_RISE = 5;              // cells of open air under a top for it to count as a perch (1.5 m)
 const PROBE_S = 0.25;              // s between probes
 const HOT_PACK = 256;              // the hot band's packing (grids are under this tall)
-const TREE_ALLOWANCE = 18;         // cells over a world's generated ground outside the window: its trees' crowns
+const TREE_ALLOWANCE = 18;         // cells over a world's generated ground outside the window: its trees' crowns (a scene that plants them)
 const GROUND_CACHE = 1 << 14;      // world columns whose scene ground is kept
 const GROUND_QUANT = 2;            // cells: scene ground looked up on this lattice outside the window
 const PERCHES_MAX = 4096;          // perch columns kept per probe
@@ -109,7 +109,7 @@ export function createBirdWorld({ renderer, getSim, getWin }) {
     let h = groundCache.get(key);
     if (h === undefined) {
       if (groundCache.size >= GROUND_CACHE) groundCache.clear();
-      h = win.scene.ground(qx * GROUND_QUANT, qz * GROUND_QUANT, win.P) + TREE_ALLOWANCE;
+      h = win.scene.ground(qx * GROUND_QUANT, qz * GROUND_QUANT, win.P) + (win.scene.trees ? TREE_ALLOWANCE : 0);
       groundCache.set(key, h);
     }
     return h;
