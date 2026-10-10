@@ -16,7 +16,9 @@ const HARD_MIN = Math.min(...ELEMENTS.filter((e) => e.breakInto).map((e) => e.ha
 //   - Phase changes with latent heat. Water/ice/steam pin their temperature
 //     at the transition point and bank the excess energy in an accumulator
 //     until a full latent heat has been absorbed (or released). Ice in water
-//     holds it at 0°C, a pot boils at 100°C, steam rains back out.
+//     holds it at 0°C, a pot boils at 100°C. Steam condenses into water on a
+//     surface and into cloud in open air; cloud boils back to steam, freezes
+//     into snow, rains where it is thick and evaporates at its edges.
 //   - Combustion: flammables above their ignition temperature that touch air
 //     burn fuel, release heat and spawn flames into adjacent air.
 //   - Air pressure: diffuses through non-solid cells, and a shock front also
@@ -201,8 +203,9 @@ void main() {
   if (!solid) {
     float rho = max(densityOf(id, T) * RHO_SCALE, RHO_MIN);
     v -= gradP * P_ACCEL / rho;
-    if (id == E_EMPTY) v.y += uGravity * clamp((T - AMBIENT) / (AMBIENT + KELVIN), AIR_BUOY_LO, AIR_BUOY_HI);
-    else v.y -= uGravity * GRAV[id];
+    // air, and cloud (air carrying droplets), is buoyant by its temperature
+    if (id == E_EMPTY || id == E_CLOUD) v.y += uGravity * clamp((T - AMBIENT) / (AMBIENT + KELVIN), AIR_BUOY_LO, AIR_BUOY_HI);
+    if (id != E_EMPTY) v.y -= uGravity * GRAV[id];
     v *= 1.0 - DRAG[id];
     // Normal force: a powder or liquid at rest on what it can't push aside
     // (the floor, a solid, or a grain or liquid that isn't falling itself) is
@@ -268,12 +271,15 @@ void main() {
   int nidOut = id;
   bool reset = false;   // new element: take its spawn life
 
-  int nAir = 0, nFire = 0, nAcid = 0, nPlant = 0, nBurning = 0;
+  int nAir = 0, nFire = 0, nAcid = 0, nPlant = 0, nBurning = 0, nCloud = 0;
   float flame = 0.0;
   int cloneOf = 0;
+  bool surface = false;   // a non-gas neighbour to condense onto (the box's floor counts, its sides and lid don't)
   for (int i = 0; i < 6; i++) {
     int j = nid[i];
     if (j == E_EMPTY) nAir++;
+    if (j == E_CLOUD) nCloud++;
+    if (!isGasLike(j) && (inGrid(p + DIRS[i]) || i == 3)) surface = true;
     if (j == E_FIRE) nFire++;
     if (j == E_ACID) nAcid++;
     if (j == E_PLANT) nPlant++;
@@ -300,7 +306,24 @@ void main() {
   } else if (id == E_ICE || id == E_SNOW) {
     if (latent(T, life, 0.0, C, L_FUSE, true)) { nidOut = E_WATER; life = 0.0; }
   } else if (id == E_STEAM) {
-    if (latent(T, life, 100.0, C, L_BOIL, false)) { nidOut = E_WATER; life = 0.0; }
+    if (latent(T, life, 100.0, C, L_BOIL, false)) { nidOut = surface ? E_WATER : E_CLOUD; life = 0.0; }
+  } else if (id == E_CLOUD) {
+    // liquid water, as droplets: the same latent heats as a pool (signed accumulator)
+    float up = max(life, 0.0), dn = max(-life, 0.0);
+    bool boil = latent(T, up, 100.0, C, L_BOIL, true);
+    bool freeze = latent(T, dn, 0.0, C, L_FUSE, false);
+    life = up - dn;
+    if (boil) { nidOut = E_STEAM; life = 0.0; }
+    else if (freeze) { nidOut = E_SNOW; life = 0.0; }
+    else {
+      // thick cloud coalesces into raindrops; the edges evaporate into the
+      // unsaturated air, the faster the warmer (saturation vapour pressure)
+      float rain = CLOUD_RAIN * max(float(nCloud) - CLOUD_RAIN_NB, 0.0);
+      float es = exp(MAGNUS_A * (T / (T + MAGNUS_B) - AMBIENT / (AMBIENT + MAGNUS_B)));
+      float r = rnd(rs);
+      if (r < rain) { nidOut = E_WATER; life = 0.0; }
+      else if (r < rain + CLOUD_EVAP * max(float(nAir) - CLOUD_EVAP_NB, 0.0) * es) { nidOut = E_EMPTY; reset = true; T -= CLOUD_EVAP_COOL; }
+    }
   } else if (id == E_LAVA) {
     int ct = int(ctype);
     if (ct <= 0 || ct >= NE) ct = E_STONE;

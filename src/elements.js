@@ -65,7 +65,7 @@ const defs = [
 
   { key: 'STEAM', abbr: 'WTRV', name: 'Steam', kind: K.GAS, render: R.GAS, color: '#e6edf5',
     dens: 0.6, cond: 0.02, cap: 0.5, grav: -0.6, drag: 0.05, jitter: 0.15, temp: 110, rad: 0.03,
-    spawn: 0.3, sigma: [0.16, 0.16, 0.16], desc: 'Water vapour. Rises and spreads, then condenses into water below 100 °C.' },
+    spawn: 0.3, sigma: [0.16, 0.16, 0.16], desc: 'Water vapour. Rises and spreads. Below 100 °C it condenses: into cloud in open air, into water on a surface.' },
   { key: 'SMOKE', abbr: 'SMKE', name: 'Smoke', kind: K.GAS, render: R.GAS, color: '#38383d',
     dens: 0.85, cond: 0.0005, cap: 0.02, grav: -0.25, drag: 0.05, jitter: 0.12, life: 1, rad: 0.01,
     spawn: 0.3, sigma: [0.3, 0.3, 0.3], desc: 'Drifts upward and slowly fades away.' },
@@ -101,6 +101,14 @@ const defs = [
   { key: 'SCRAP', abbr: 'BRMT', name: 'Scrap metal', kind: K.POWDER, render: R.OPAQUE, color: '#8e939c', var: 0.1,
     dens: 78, cond: 0.1, cap: 0.85, drag: 0.01, slide: 0.5, melt: 1500, spawn: 0.3,
     desc: 'Heavy bits of metal: what metal breaks into, and the slugs the gun fires. Melts and recasts as solid metal.' },
+  // Cloud: condensed water droplets riding in air. It moves as air does (buoyant
+  // when warm; droplets this small barely settle), holds the water and heat
+  // capacity of the steam it condensed from, and mixes its heat into the air
+  // around it as steam does (rad).
+  { key: 'CLOUD', abbr: 'CLOD', name: 'Cloud', kind: K.GAS, render: R.GAS, color: '#f2f5f9',
+    dens: 1, cond: 0.02, cap: 0.5, grav: 0, drag: 0.05, jitter: 0.04, rad: 0.03, spawn: 0.3,
+    sigma: [0.16, 0.16, 0.16],
+    desc: 'Droplets of water in the air: what steam becomes as it cools. Floats when warm, rains where it is thick, thins away at its edges, boils back to steam at 100 °C and snows below 0 °C.' },
 ];
 
 export const ELEMENTS = defs.map((d, id) => ({
@@ -165,7 +173,7 @@ export const isBuild = (id) => id <= -100;
 export const PALETTE = [
   { name: 'Powders', items: ['SAND', 'STONE', 'GUNPOWDER', 'ASH', 'SNOW', 'SHARDS', 'SAWDUST', 'SCRAP'] },
   { name: 'Liquids', items: ['WATER', 'ACID', 'OIL', 'LAVA'] },
-  { name: 'Gases', items: ['STEAM', 'SMOKE', 'FIRE'] },
+  { name: 'Gases', items: ['STEAM', 'CLOUD', 'SMOKE', 'FIRE'] },
   { name: 'Solids', items: ['WALL', 'ROCK', 'METAL', 'GLASS', 'ICE', 'WOOD', 'PLANT', 'CLONE'] },
   { name: 'Tools', items: ['HEAT', 'COOL', 'ERASE', 'BLAST', 'SIGN'] },
   { name: 'Entities', items: ['ENEMY', 'SPAWN'] },

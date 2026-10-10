@@ -90,6 +90,7 @@ const LOOKS = {
   ACID: { ch: 'LIQUID', ior: 1.36, rough: 0.03, scatter: [0.02, 0.03, 0.02] },
   LAVA: { ch: 'MOLTEN', rough: 0.35, alb: '#2a2522' },
   STEAM: { media: 'STEAM' },
+  CLOUD: { media: 'STEAM' },   // the same water droplets (what you see of steam is condensed mist)
   SMOKE: { media: 'SMOKE' },
   FIRE: { media: 'FIRE' },
   WOOD: { ch: 'ORGANIC', rough: 0.8, alb: '#5a4637' },

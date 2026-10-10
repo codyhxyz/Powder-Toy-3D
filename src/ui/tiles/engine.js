@@ -305,12 +305,12 @@ export class World {
       }
     } else if (held && !canMove(k[t], k[b], d[t], d[b], 0)) s[t] = 1;
   }
-  // 2. a blocked top cell topples diagonally (powders, liquids); a blocked bottom gas cell rises diagonally
+  // 2. a blocked top cell topples diagonally (powders, liquids); a blocked bottom buoyant gas cell rises diagonally
   diagonal(i) {
     const { bk: k, bd: d, bm: m, bs: s } = this;
     if (!s[i] || m[i]) return;
     const top = (i & 2) !== 0, xi = i & 1, kd = KIND[k[i]];
-    if (top ? !(kd === K.POWDER || kd === K.LIQUID) : kd !== K.GAS) return;
+    if (top ? !(kd === K.POWDER || kd === K.LIQUID) : !(kd === K.GAS && GRAV[k[i]] < 0)) return;   // buoyant gases (not cloud)
     if (kd === K.POWDER && rnd() > SLIDE[k[i]]) return;
     const c = 1 - xi, target = c + (top ? 0 : 2), path = c + (top ? 2 : 0);
     const passable = top ? isFluid(k[path]) && d[path] < d[i] : isFluid(k[path]);
@@ -417,8 +417,8 @@ export class World {
           const rho = Math.max(densityOf(id, T) * PHYS.RHO_SCALE, PHYS.RHO_MIN);
           vx -= gx * PHYS.P_ACCEL / rho;
           vy -= gy * PHYS.P_ACCEL / rho;
-          if (id === E.EMPTY) vy += g * Math.min(PHYS.AIR_BUOY_HI, Math.max(PHYS.AIR_BUOY_LO, (T - AMBIENT) / (AMBIENT + PHYS.KELVIN)));
-          else vy -= g * GRAV[id];
+          if (id === E.EMPTY || id === E.CLOUD) vy += g * Math.min(PHYS.AIR_BUOY_HI, Math.max(PHYS.AIR_BUOY_LO, (T - AMBIENT) / (AMBIENT + PHYS.KELVIN)));
+          if (id !== E.EMPTY) vy -= g * GRAV[id];
           vx *= 1 - DRAG[id];
           vy *= 1 - DRAG[id];
           // normal force: at rest on what can hold it up, gravity can't start it moving down (react.js)
@@ -455,10 +455,14 @@ export class World {
 
         // reactions and phase changes
         let out = id, reset = false;
-        let nAir = 0, nFire = 0, nAcid = 0, nPlant = 0, nBurning = 0, flame = 0, cloneOf = 0;
+        let nAir = 0, nFire = 0, nAcid = 0, nPlant = 0, nBurning = 0, flame = 0, cloneOf = 0, nCloud = 0;
+        let surface = false;   // a non-gas neighbour to condense onto (the floor counts, the sides and lid don't)
         for (let q = 0; q < 4; q++) {
           const j = nid[q];
           if (j === E.EMPTY) nAir++;
+          if (j === E.CLOUD) nCloud++;
+          const qx = x + DX[q], qy = y + DY[q];
+          if (!isGasLike(j) && ((qx >= 0 && qy >= 0 && qx < nx && qy < ny) || q === 3)) surface = true;
           if (j === E.FIRE) nFire++;
           if (j === E.ACID) nAcid++;
           if (j === E.PLANT) nPlant++;
@@ -485,7 +489,21 @@ export class World {
           if (melt) { out = E.WATER; life = 0; }
         } else if (id === E.STEAM) {
           const cond = latent(T, life, 100, C, PHYS.L_BOIL, false); T = lat.T; life = lat.acc;
-          if (cond) { out = E.WATER; life = 0; }
+          if (cond) { out = surface ? E.WATER : E.CLOUD; life = 0; }
+        } else if (id === E.CLOUD) {
+          let up = Math.max(life, 0), dn = Math.max(-life, 0);
+          const boil = latent(T, up, 100, C, PHYS.L_BOIL, true); T = lat.T; up = lat.acc;
+          const freeze = latent(T, dn, 0, C, PHYS.L_FUSE, false); T = lat.T; dn = lat.acc;
+          life = up - dn;
+          if (boil) { out = E.STEAM; life = 0; }
+          else if (freeze) { out = E.SNOW; life = 0; }
+          else {
+            const rain = PHYS.CLOUD_RAIN * Math.max(nCloud - PHYS.CLOUD_RAIN_NB, 0);
+            const es = Math.exp(PHYS.MAGNUS_A * (T / (T + PHYS.MAGNUS_B) - AMBIENT / (AMBIENT + PHYS.MAGNUS_B)));
+            const r = rnd();
+            if (r < rain) { out = E.WATER; life = 0; }
+            else if (r < rain + PHYS.CLOUD_EVAP * Math.max(nAir - PHYS.CLOUD_EVAP_NB, 0) * es) { out = E.EMPTY; reset = true; T -= PHYS.CLOUD_EVAP_COOL; }
+          }
         } else if (id === E.LAVA) {
           let ct = ctype;
           if (ct <= 0 || ct >= NE) ct = E.STONE;
