@@ -34,7 +34,7 @@ import { DETAIL, settingKey, detailDefaults, detailDefines, detailRows } from '.
 import { createDetailGate } from './gfx/detailGate.js';
 import { claimPrograms } from './gfx/programs.js';
 import { createPost, UPSCALE } from './gfx/post.js';
-import { createPacer, settleFrames, sceneKey, createCapCheck, CAP_IDLE_MS } from './gfx/pacing.js';
+import { createPacer, settleFrames, sceneKey, createCapCheck, CAP_IDLE_MS, MAX_FPS } from './gfx/pacing.js';
 import { CHANNELS, MEDIA } from './gfx/materials.js';
 import { DAY, dayPhase, phaseSteps, keyLight, sunElevation } from './gfx/daylight.js';
 import { GI_BLEND } from './sim.js';
@@ -147,6 +147,12 @@ try {
   for (const change of DEFAULT_CHANGES.slice(rev)) Object.assign(settings, change);
 } catch { /* storage unavailable */ }
 const params = new URLSearchParams(location.search);
+// Explicit opt-in only: visual tests also use automation, so never infer this
+// from navigator.webdriver. tools/browser.mjs supplies the same flag before boot.
+const testMode = params.get('test') ?? window.__TPT_TEST_MODE__;
+if (testMode != null && !['manual', 'preview', 'ui', 'visual'].includes(testMode)) throw new Error(`Unknown test mode: ${testMode}`);
+let testParked = testMode === 'manual';
+const PREVIEW_HZ = 10;
 const knownSize = (s) => s in SIZES || s in WORLDS;
 if (knownSize(params.get('size'))) settings.size = params.get('size');
 if (params.get('preset')) settings.preset = params.get('preset');
@@ -168,7 +174,7 @@ if (!toolById(settings.tool)) settings.tool = DEFAULTS.tool;
 if (!VIEWS.some((v) => v.id === settings.view)) settings.view = 0;
 // (a saved 'wizard', the Castle Crashers body that was the default, falls back to it too)
 if (!['real', 'stick'].includes(settings.character)) settings.character = DEFAULTS.character;
-settings.paused = false;
+settings.paused = params.get('paused') === '1' || testMode === 'manual' || testMode === 'ui';
 
 let saveTimer = 0;
 function save() {
@@ -1215,7 +1221,8 @@ function applyProfiler() {
 const clock = new THREE.Timer();
 // The fps readout is the rate frames are drawn while drawing: a paused, still
 // scene draws nothing (render on demand) and reads as idle, not as a low rate.
-let frames = 0, fpsTime = 0, fps = 60, idleTime = 0;
+let frames = 0, fpsTime = 0, fps = 60, idleTime = 0, lastDrawAt = null;
+let stepTime = 0, stepCount = 0, stepRate = 0;
 // Render on demand (gfx/pacing.js). The derived passes settle once the slowest
 // field EMA and the GI blend (each probe is traced every other frame) have
 // converged; the view once TAA's history has (upscaled, it accumulates for longer).
@@ -1223,6 +1230,7 @@ const GI_PROBE_EVERY = 2;
 const pacer = createPacer({
   derivedSettle: Math.max(...[...CHANNELS, ...MEDIA].map((c) => settleFrames(c.ema)), settleFrames(GI_BLEND, GI_PROBE_EVERY)),
   viewSettle: () => settleFrames(post.settleWeight),
+  presentHz: testMode === 'preview' ? PREVIEW_HZ : MAX_FPS,
 });
 // input of any kind may change what the view shows
 for (const type of ['pointermove', 'pointerdown', 'pointerup', 'wheel', 'keydown', 'keyup', 'input', 'change', 'resize']) {
@@ -1254,7 +1262,7 @@ const AUTO_RES_DOWN = 0.85;
 const AUTO_RES_UP = 1.08;
 const AUTO_RES_MIN_GAIN = 0.93;   // frame time must fall below this × the old one
 const AUTO_RES_HOLD = 15;         // s
-const autoRes = { enabled: true, lastDt: 0, tried: 0, holdUntil: 0 };   // tools turn it off for stable timings
+const autoRes = { enabled: !testMode || testMode === 'visual', lastDt: 0, tried: 0, holdUntil: 0 };   // a deliberate preview cap is not GPU slowness
 function autoResolution(dt, now) {
   if (!autoRes.enabled) return;
   resTime += dt; resFrames++; resDt += dt;
@@ -1336,47 +1344,52 @@ const camState = () => (!pov?.active || pov.mode === 'exiting' ? 'god' : pov.cam
 let camShown = '';
 function frame(now) {
   requestAnimationFrame(frame);
-  if (capCheck.feed(now, lastIdle)) hud.toast(CAP_NOTICE, CAP_NOTICE_MS);
+  if (testParked) return;   // leave browser/UI rAF alone (Playwright actionability needs it)
+  tick(now);
+}
+function tick(now, renderOnly = false) {
+  if (!renderOnly && capCheck.feed(now, lastIdle)) hud.toast(CAP_NOTICE, CAP_NOTICE_MS);
   const t0 = performance.now();
   lastIdle = false;
-  if (!pacer.due(now)) { lastIdle = performance.now() - t0 < CAP_IDLE_MS; return; }
+  if (!renderOnly && !pacer.due(now)) { lastIdle = performance.now() - t0 < CAP_IDLE_MS; return; }
   if (prof.on !== settings.profiler) applyProfiler();
   prof.beginFrame(now);
-  clock.update(now);
-  const dt = Math.min(clock.getDelta(), DT_MAX);
+  if (!renderOnly) clock.update(now);
+  const dt = renderOnly ? 0 : Math.min(clock.getDelta(), DT_MAX);
   // only frames that rendered measure how expensive rendering is
-  if (renderedLast) autoResolution(dt, clock.getElapsed());
+  if (!renderOnly && renderedLast) autoResolution(dt, clock.getElapsed());
 
-  const cam = camState();
-  if (cam !== camShown) toolbar.setCamera(camShown = cam);
-  if (pov?.active) pov.update(dt);
-  else {
-    rig.update(dt);
-    controls.update();
+  if (!renderOnly) {
+    const cam = camState();
+    if (cam !== camShown) toolbar.setCamera(camShown = cam);
+    if (pov?.active) pov.update(dt);
+    else {
+      rig.update(dt);
+      controls.update();
+    }
+    if (win) moveWindow();
+    updateBrush();
+
+    prof.phase('paint');
+    if (painting && brushValid) {
+      const stroke = {
+        center: brushCenter, radius: settings.radius, shape: settings.shape,
+        tool: settings.tool, rate: settings.rate, replace: settings.replace,
+      };
+      if (mp.isGuest) mp.paint(stroke); // the host paints it
+      else sim.paint(stroke);
+    }
   }
-  if (win) moveWindow();
-  // In World the far field carries on past the window, so its outline would only be lines in the sky
-  // and the landscape; where the god view can paint shows by the brush, which stops at the window's edge.
+  // The world continues beyond its simulation window: don't outline the window.
   edges.visible = !win;
-  updateBrush();
-
-  prof.phase('paint');
-  if (painting && brushValid) {
-    const stroke = {
-      center: brushCenter, radius: settings.radius, shape: settings.shape,
-      tool: settings.tool, rate: settings.rate, replace: settings.replace,
-    };
-    if (mp.isGuest) mp.paint(stroke); // the host paints it
-    else sim.paint(stroke);
-  }
   prof.phase('sim');
-  const stepping = !mp.isGuest && (!settings.paused || stepOnce);
+  const stepping = !renderOnly && !mp.isGuest && (!settings.paused || stepOnce);
   if (stepping) {
     for (let i = 0; i < settings.steps; i++) sim.step();
     lightning.update(sim);   // storms: charged cloud strikes by itself (src/lightning.js)
     if (DAY.running) day.clock += settings.steps;
     stepOnce = false;
-  } else if (mp.isGuest && DAY.running) day.clock += settings.steps;   // guests don't step: keep the day going at their own rate
+  } else if (!renderOnly && mp.isGuest && DAY.running) day.clock += settings.steps;   // guests don't step: keep the day going at their own rate
   updateSun();
   if (birds) {
     prof.phase('other');   // (their probe pass, birdProbe, counts here)
@@ -1388,24 +1401,36 @@ function frame(now) {
     if (settingsPanel.isOpen) settingsPanel.sync();
   }
   prof.phase('other');
-  mp.update(dt, {
+  if (!renderOnly) mp.update(dt, {
     visible: brushValid && pointerInside && !uiHover, center: brushCenter, painting,
     radius: settings.radius, shape: settings.shape, tool: settings.tool,
   });
   const worldChanged = sim.version !== lastVersion;
   lastVersion = sim.version;
-  const runDerived = pacer.derived(
+  // Keep animation time tied to simulation, not the test preview's draw rate.
+  if (worldChanged) volume.material.uniforms.uTime.value += dt;
+  const present = renderOnly || pacer.present(now, wantShot);
+  const runDerived = present && pacer.derived(
     `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${KEY_LIGHT}|${settings.view}|${gfx.smoothing}|${detailVersion}`);
-  const runView = pacer.view(
+  const runView = present && pacer.view(
     `${camera.matrixWorld.elements}|${camera.projectionMatrix.elements}|${pixelRatio}|${innerWidth}x${innerHeight}`
     + `|${JSON.stringify(settings)}|${JSON.stringify(gfx)}|${JSON.stringify(post.settings)}|${sceneKey(scene)}`
     + `|${win?.far?.chunksDrawn}`,   // a world scene's far field filling in (world/far.js)
     runDerived || wantShot || post.adapting);   // (eyes adjusting to the dark: gfx/post.js ADAPT)
-  // a frame's dt measures the drawing rate only when the frame before it drew too
-  if (runView && renderedLast) { frames++; fpsTime += dt; }
-  if (fpsTime > FPS_WINDOW) { fps = frames / fpsTime; frames = 0; fpsTime = 0; }
-  idleTime = runView ? 0 : idleTime + dt;
-  renderedLast = runView;
+  if (!renderOnly) {
+    // Preview draws are not adjacent app ticks; report draw and step rates separately.
+    if (runView) {
+      if (lastDrawAt != null && now - lastDrawAt <= FPS_WINDOW * 1000) { frames++; fpsTime += (now - lastDrawAt) / 1000; }
+      else { frames = 0; fpsTime = 0; }
+      lastDrawAt = now;
+    }
+    if (fpsTime > FPS_WINDOW) { fps = frames / fpsTime; frames = 0; fpsTime = 0; }
+    stepTime += dt;
+    if (stepping) stepCount += settings.steps;
+    if (stepTime > FPS_WINDOW) { stepRate = stepCount / stepTime; stepTime = stepCount = 0; }
+    idleTime = runView ? 0 : idleTime + dt;
+    renderedLast = runView;
+  }
   if (runView) updateGfxUniforms(sim, SUN, KEY_LIGHT);   // (runDerived implies runView)
   if (runDerived) {
     prof.phase('derived');
@@ -1434,7 +1459,6 @@ function frame(now) {
     detailGate.update(camera, u.uCam.value, [sim.g.nx, sim.g.ny, sim.g.nz], scene);
     win?.far.view(volume, settings.view === 0);
     u.uView.value = settings.view;
-    if (worldChanged) u.uTime.value += dt;   // animated looks (lava, ripples) hold still while the world does
 
     post.settings.raw = settings.view !== 0;
     post.settings.upscale = UPSCALE[settings.upscale] ?? UPSCALE.native;
@@ -1452,11 +1476,13 @@ function frame(now) {
     if (wantShot) { wantShot = false; saveScreenshot(); }
 
     signs?.update();
-    requestPick();
-  } else if (pov?.active) requestPick();
+  }
+  // Picking is input work, not presentation: a preview must keep it responsive.
+  if (!renderOnly && (runView || pov?.active || testMode === 'preview')) requestPick();
   if (spawners) { spawners.setGhosts(!pov?.active); spawners.update(); }   // the crosshair cell stays fresh for the tools
   perkOrbs?.update();
   arenaMarkers?.update();
+  if (renderOnly) { prof.endFrame(0); return; }
 
   const povReadout = pov?.active ? pov.readout : null;   // the held tool's (the scanner's, the trowel's)
   if (povReadout) {
@@ -1471,7 +1497,7 @@ function frame(now) {
   const g = sim.g;
   hud.setStats({
     fpsV: idleTime > FPS_WINDOW ? null : fps,   // null: idle
-    stepsV: settings.paused || mp.isGuest ? 0 : settings.steps * fps, // guests don't simulate
+    stepsV: settings.paused || mp.isGuest ? 0 : stepRate, // preview fps is not the simulation rate
     // the cells simulated (a world's window), and the world's
     cellsV: `${millions([g.nx, g.ny, g.nz])}${win ? ` of ${millions(win.size)}` : ''}`,
     resV: autoRes.enabled ? `${Math.round(pixelRatio * 100)}% res` : '',
@@ -1531,7 +1557,7 @@ try {
   rig.setSpeed(settings.camSpeed);
   selectTool(settings.tool);
   setView(settings.view);
-  setPaused(false);
+  setPaused(settings.paused);
   toolbar.setUndoEnabled(false);
   pov = createPov({
     renderer, scene, camera, controls, canvas: renderer.domElement, hud, settings, mp, isTyping, post,
@@ -1568,6 +1594,29 @@ try {
     detailGate,    // .level / .shown: which close-up features the view has compiled in
     THREE,         // for tools (tools/detail-bench.mjs makes its own targets)
     requestRender: () => pacer.wake(),   // for changes the frame loop can't see (async results)
+    // Manual mode parks only this app loop. Browser/UI callbacks remain live.
+    test: testMode ? {
+      mode: testMode,
+      get parked() { return testParked; },
+      park() { testParked = true; },
+      resume() { clock.reset(); testParked = false; },
+      step(count = 1) {
+        if (!testParked || mp.isGuest) throw new Error('Park a local test page before stepping');
+        if (!Number.isSafeInteger(count) || count < 0 || count > 10000) throw new RangeError('steps must be an integer from 0 to 10000');
+        for (let i = 0; i < count; i++) sim.step();
+        if (DAY.running) day.clock += count;
+      },
+      render() {
+        // No physics, input, player, or multiplayer updates while converging a snapshot.
+        // Two initial frames observe post-setting and spawner-transform changes.
+        pacer.wake(); // also covers direct uniform edits that aren't in the scene key
+        let n = 0;
+        // The first render applies the requested upscale, which changes the limit.
+        do { tick(performance.now(), true); n++; } while ((n < 2 || !pacer.settled) && n < pacer.settleLimit);
+        if (!pacer.settled) throw new Error('Test render did not converge');
+        return n;
+      },
+    } : null,
   };
   requestAnimationFrame(frame);
   bootReady();

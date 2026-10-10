@@ -2,14 +2,14 @@
 // Drives createToolbelt directly with a hand-built ctx and proves matter is
 // conserved exactly with sim.census() (grid + loads) while the sim runs.
 // usage: node tools/pov-tools-a.mjs [--port 5194] [--shot out.png]
-import { chromium } from 'playwright';
+import { launchBrowser, newTestPage } from './browser.mjs';
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
 const port = opt('port', '5194');
 const shot = opt('shot');
 
-const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
-const p = await b.newPage({ viewport: { width: 1100, height: 700 } });
+const b = await launchBrowser();
+const p = await newTestPage(b, { mode: shot ? 'visual' : 'preview', viewport: { width: 1100, height: 700 } });
 const errs = [];
 p.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warning') errs.push(m.text().slice(0, 2000)); });
 p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 2000)));

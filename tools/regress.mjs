@@ -12,7 +12,7 @@
 //   fields, bricks and GI are caught mid-change (docs/scaling.md D9). Frames
 //   then run one at a time through __tick(), never on the browser's timing.
 // Compare two runs with: compare -metric AE -fuzz 1% a.png b.png null:
-import { chromium } from 'playwright';
+import { launchBrowser, newTestPage } from './browser.mjs';
 import { mkdirSync } from 'fs';
 import { DETAIL, settingKey, detailDefaults } from '../src/gfx/detail.js';
 const args = process.argv.slice(2);
@@ -25,14 +25,14 @@ mkdirSync(out, { recursive: true });
 const detailMode = opt('detail', 'off');
 const detail = detailMode === 'default' ? detailDefaults()
   : Object.fromEntries(DETAIL.map((f) => [settingKey(f), detailMode === 'on']));
-const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
-const p = await b.newPage({ viewport: { width: 1280, height: 800 } });
+const b = await launchBrowser();
+const p = await newTestPage(b, { mode: 'visual', viewport: { width: 1280, height: 800 } });
 await p.addInitScript((detail) => {
   // mulberry32: same scene every run
   const seeded = (seed) => { let s = seed; return () => { s |= 0; s = (s + 0x6d2b79f5) | 0; let t = Math.imul(s ^ (s >>> 15), 1 | s); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; };
   const SEED = 12345;
   Math.random = seeded(SEED);
-  localStorage.setItem('powder-toy-3d:settings', JSON.stringify({ paused: true, ...detail }));
+  localStorage.setItem('powder-toy-3d:settings', JSON.stringify(detail));
   // the UI (hint toast, sliders) animates on wall-clock timers: hide it
   addEventListener('DOMContentLoaded', () => {
     const st = document.createElement('style');
@@ -82,7 +82,7 @@ await p.addInitScript((detail) => {
 const errs = [];
 p.on('console', (m) => { if (m.type() === 'error') errs.push(m.text().slice(0, 500)); });
 p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 500)));
-await p.goto(`http://localhost:${port}/?preset=lab`);
+await p.goto(`http://localhost:${port}/?preset=lab&paused=1`);
 await p.waitForTimeout(2500);
 const views = {
   lab: { steps: 300, cams: { lab: [[11, 12.5, 13], [0, 2.5, 0]], labLava: [[3.6, 1.5, 3.6], [2.6, 0.9, 2.6]], labTank: [[0.6, 2.9, 1.6], [-2.2, 1.4, -2.2]] } },

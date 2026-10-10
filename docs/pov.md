@@ -11,8 +11,15 @@
 - **Keys speak other games' language**: `V` god view or the body (Garry's Mod's noclip key; from the god
   view `F` drops in too), `F5` first or third person (Minecraft), `Z` held zooms (Minecraft's zoom mods,
   `zoom.js`, with Zoomify's defaults: ÷4 eased in over 1 s and out over 0.5 s, the wheel ×1.5 a notch while
-  held, the look slowed with the view, a scope's zoom multiplied in), `C` is the crouch key (PUBG, Apex; so
-  far it swims down). `F` in the body is kept for the kick.
+  held, the look slowed with the view, a scope's zoom multiplied in), `C` held crouches (PUBG's and Apex's key,
+  Source's duck: below), `F` kicks.
+- **Crouch** (`C` held, player.js `crouchStep`, Source's gamemovement.cpp numbers): the body goes to half its
+  height (hull 36 of 72) and the eye to 28/64 of its height, in 0.4 s down and 0.2 s up; on the ground it
+  moves at a third of the speed and can't sprint. On the ground it shrinks from the top; in the air the feet
+  tuck up to the head (Source's crouch-jump: the head and the rope's hand stay put). Standing back up needs
+  the room: under a low ceiling it stays crouched until it's out. In liquid `C` swims down instead. The
+  stickman squats (figure.js `CROUCH_POSE`, the pelvis dropped so the feet stay down); the realistic body has
+  no crouch clip, so figureReal.js bends its pelvis, spine, thighs, calves and feet on top of the clips.
 - **The body** (setting: Realistic | Stickman, key `character`): Realistic is the default, the skinned
   mannequin dressed as a wizard, a pointed hat and a robe skinned to its skeleton (garb.js: the robe's
   weights are transferred from the nearest body vertices and eased toward the pelvis below the hips).

@@ -3,7 +3,7 @@
 // death plays, the Body setting switches live, no T-pose, and it is lit like
 // the stickman standing in the same spot.
 // usage: node tools/pov-character.mjs [--port 5205] [--shots dir]   (needs a dev server)
-import { chromium } from 'playwright';
+import { launchBrowser, newTestPage } from './browser.mjs';
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
 const port = opt('port', '5205');
@@ -22,8 +22,8 @@ const DEAD_HEAD_MAX = 2.5;                // cells: lying down, the head is this
 const POOL_R = 9;                         // cells, radius of the water ball
 const LAVA_R = 4;                         // cells, radius of the lava ball
 
-const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
-const p = await b.newPage({ viewport: { width: W, height: H } });
+const b = await launchBrowser();
+const p = await newTestPage(b, { mode: 'visual', viewport: { width: W, height: H } });
 const errs = [];
 p.on('console', (m) => { if (m.type() === 'error') errs.push(m.text().slice(0, 600)); });
 p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 1000)));

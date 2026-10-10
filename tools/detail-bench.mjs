@@ -8,7 +8,7 @@
 // Noise: identical shaders differ by up to ~0.4 ms per camera; rerun a tier
 // that sits near a COST_*_MS boundary.
 //        --all  also times every feature on at once against all off
-import { chromium } from 'playwright';
+import { launchBrowser, newTestPage } from './browser.mjs';
 import { mkdirSync } from 'fs';
 import { BENCH_W, BENCH_H, DETAIL, settingKey, costTier } from '../src/gfx/detail.js';
 import { ELEMENTS, K } from '../src/elements.js';
@@ -71,12 +71,11 @@ const loadName = preset === 'plume' ? PLUME.base : preset;
 const camSel = opt('cams', '');
 const cams = Object.fromEntries(Object.entries(CAMS[preset]).filter(([k]) => !camSel || camSel.split(',').includes(k)));
 
-const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
-const p = await b.newPage({ viewport: { width: BENCH_W, height: BENCH_H } });
+const b = await launchBrowser();
+const p = await newTestPage(b, { mode: 'visual', viewport: { width: BENCH_W, height: BENCH_H } });
 await p.addInitScript(() => {
   let s = 12345;   // mulberry32: same scene every run
   Math.random = () => { s |= 0; s = (s + 0x6d2b79f5) | 0; let t = Math.imul(s ^ (s >>> 15), 1 | s); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
-  localStorage.setItem('powder-toy-3d:settings', JSON.stringify({ paused: true }));
   addEventListener('DOMContentLoaded', () => {
     const st = document.createElement('style');
     st.textContent = 'body > *:not(canvas):not(:has(canvas)), .dock, .card, .topbar, .hud { visibility: hidden !important; }';
@@ -86,7 +85,7 @@ await p.addInitScript(() => {
 const errs = [];
 p.on('console', (m) => { if (m.type() === 'error') errs.push(m.text().slice(0, 500)); });
 p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 500)));
-await p.goto(`http://localhost:${port}/?preset=${loadName}`);
+await p.goto(`http://localhost:${port}/?preset=${loadName}&paused=1`);
 await p.waitForFunction(() => window.__app?.sim, null, { timeout: APP_TIMEOUT_MS });
 await p.waitForTimeout(APP_SETTLE_MS);
 const ids = Object.fromEntries(['WOOD', 'FIRE', 'SMOKE', 'STEAM'].map((k) => [k, ELEMENTS.findIndex((e) => e.key === k)]));

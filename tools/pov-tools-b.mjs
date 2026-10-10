@@ -3,7 +3,7 @@
 // a hand-built ctx and steps the sim by hand (the app's own stepping paused),
 // and prints the numbers: slug path and recoil, axe census, physgun hold.
 // usage: node tools/pov-tools-b.mjs [--port 5195] [--only gun,axe,phys] [--shot out.png]
-import { chromium } from 'playwright';
+import { launchBrowser, newTestPage, ready } from './browser.mjs';
 
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
@@ -11,14 +11,13 @@ const port = opt('port', '5195');
 const only = opt('only', 'axe,phys').split(',');   // the gun's check is tools/gp-gun.mjs (ballistic rounds)
 const shot = opt('shot');
 
-const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
-const p = await b.newPage({ viewport: { width: 960, height: 600 } });
+const b = await launchBrowser();
+const p = await newTestPage(b, { mode: shot ? 'visual' : 'manual', viewport: { width: 960, height: 600 } });
 const errs = [];
 p.on('console', (m) => { if (m.type() === 'error') errs.push(m.text().slice(0, 2000)); });
 p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 2000)));
 await p.goto(`http://localhost:${port}/?preset=empty&size=128`);
-await p.waitForFunction(() => window.__app?.sim, null, { timeout: 30000 });
-await p.waitForTimeout(1500);
+await ready(p);
 
 // Shared page helpers.
 await p.evaluate(() => {

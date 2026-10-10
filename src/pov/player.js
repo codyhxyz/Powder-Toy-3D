@@ -56,6 +56,16 @@ const WALK_SPEED = SPRINT_SPEED / 3;   // cells/s (2.9 m/s): Noita has no walk; 
 const MOVE_EASE = 0.15;                // share of the gap to the wished speed closed per Noita frame, ground and air (accel_x)
 const JUMP_SPEED = 95 * PX;            // cells/s: a 1.9 m jump (jump_velocity_y)
 const STEP_HEIGHT = 1.1;               // cells: ledges up to this are stepped onto (1 cell + slack)
+// Crouch (input.crouch, held): Source's duck (gamemovement.cpp). The hull goes
+// from 72 units to 36 and the eye from 64 to 28; it takes TIME_TO_DUCK 0.4 s
+// down and TIME_TO_UNDUCK 0.2 s back up; a ducked player on the ground moves
+// at PLAYER_DUCKING_MULTIPLIER a third of the speed and doesn't sprint.
+// Standing back up needs the room for it. Not while swimming.
+const CROUCH_HEIGHT = 36 / 72;          // × the body's height, crouched
+const CROUCH_EYE = 28 / 64;             // × the eye's height, crouched
+const CROUCH_DOWN_S = 0.4;              // s to crouch
+const CROUCH_UP_S = 0.2;                // s to stand back up
+const CROUCH_SPEED = 1 / 3;             // × the speed on the ground, crouched
 const STEP_DOWN = 1.1;                 // cells: walking off a ledge this low follows the ground down
 const MAX_SPEED = 350 * PX;            // cells/s (52 m/s): Noita's fastest fall (velocity_max_y), past a lethal one
 const SUBSTEP = 0.4;                   // cells: longest move per collision substep
@@ -241,13 +251,18 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     (listeners[name] || []).forEach((fn) => fn(data));
   };
   const vitals = createVitals(emit, perks);
-  // the body's size (Shrink): resize() sets these from perks.size every frame
+  // the body's size (Shrink): resize() sets these from perks.size every frame,
+  // and from the crouch (0 standing … 1 crouched: crouchStep)
   let size = 1, gait = 1, H = BODY_HEIGHT, HW = BODY_WIDTH / 2, EYE = EYE_HEIGHT;
+  let crouch = 0;
+  const crouchShare = (c, share) => 1 + c * (share - 1);
   const ropeHandY = () => EYE - ROPE_HAND_BELOW_EYE * size;   // cells above the feet the rope pulls at
   function resize() {
     size = perks.size;
     gait = Math.sqrt(size);             // × speeds: Froude similarity
-    H = BODY_HEIGHT * size; HW = BODY_WIDTH / 2 * size; EYE = EYE_HEIGHT * size;
+    H = BODY_HEIGHT * size * crouchShare(crouch, CROUCH_HEIGHT);
+    HW = BODY_WIDTH / 2 * size;
+    EYE = EYE_HEIGHT * size * crouchShare(crouch, CROUCH_EYE);
   }
   // Sand Swimmer: powders don't block the body; it swims through them as through a liquid
   let sandSwim = false;
@@ -291,6 +306,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     get height() { return H; },   // cells, feet to crown
     get width() { return 2 * HW; },   // cells, the square footprint's side
     get eyeHeight() { return EYE; },  // cells above the feet
+    get crouch() { return crouch; },  // 0 standing … 1 crouched
     speedScale: 1,                // × walking and running speed: a class's (classes.js; the Bulwark is slow)
     get health() { return vitals.health; },
     get shield() { return vitals.shield; },             // Energy Shield left (base lives, 0..shieldMax)
@@ -452,6 +468,24 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     return hit;
   }
   const comp = ['x', 'y', 'z'];
+
+  // Crouch toward `want`. On the ground the body shrinks from the top; in the
+  // air the feet tuck up to the head (Source's crouch-jump). It stands back up
+  // only into room: on the ground the head needs the space above, in the air
+  // the feet drop back if they can, else the head rises.
+  function crouchStep(dt, want) {
+    if (crouch === (want ? 1 : 0)) return;
+    const next = want ? Math.min(1, crouch + dt / CROUCH_DOWN_S) : Math.max(0, crouch - dt / CROUCH_UP_S);
+    const dh = BODY_HEIGHT * size * crouchShare(next, CROUCH_HEIGHT) - H;
+    if (dh < 0) {
+      if (!p.onGround) p.pos.y -= dh;
+    } else if (p.onGround) {
+      if (sweep(1, dh).id !== null) return;   // no room to stand: stay down
+    } else if (sweep(1, -dh).id === null) p.pos.y -= dh;
+    else if (sweep(1, dh).id !== null) return;
+    crouch = next;
+    resize();
+  }
 
   // A blocked horizontal move: step up onto a ledge up to STEP_HEIGHT high
   // if the body fits there. Returns true if it stepped.
@@ -747,6 +781,8 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     p.pogoing = pogoing;
     if (!pogoing) pogoStep = 0;
 
+    crouchStep(dt, alive && !!input.crouch && !swimming);
+
     // controls
     wish.set(alive ? input.move?.x ?? 0 : 0, alive ? input.move?.z ?? 0 : 0);
     if (wish.length() > 1) wish.normalize();
@@ -754,10 +790,13 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     let jumpedNow = false;
     // Fleet Foot and Rocket Boots: ×2 a stack, up to what the probe keeps up with; a class's speedScale on foot
     // Shrink: × gait (√size); the jet's own speeds too
-    const footSpeed = (alive && input.sprint ? SPRINT_SPEED : WALK_SPEED) * p.speedScale * p.status.moveScale * gait;
+    // Crouched: no sprint, and a third of the speed on the ground
+    const sprinting = alive && input.sprint && crouch === 0;
+    const footSpeed = (sprinting ? SPRINT_SPEED : WALK_SPEED) * p.speedScale * p.status.moveScale * gait
+      * (p.onGround ? crouchShare(crouch, CROUCH_SPEED) : 1);
     const jetFly = JET_FLY_SPEED * gait;
     const runSpeed = p.jetting ? Math.min(jetFly * perks.jetRate, Math.max(jetFly, PERK_SPEED_H))
-      : alive && input.sprint ? Math.min(footSpeed * perks.sprintRate, Math.max(footSpeed, PERK_SPEED_H)) : footSpeed;
+      : sprinting ? Math.min(footSpeed * perks.sprintRate, Math.max(footSpeed, PERK_SPEED_H)) : footSpeed;
     const swingingOnRope = !!rope?.hard && !p.onGround && !swimming;
     if (swingingOnRope) {
       // on a rope in the air: Noita's ease only ever adds speed toward the wished
@@ -960,6 +999,8 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
 
   function spawn(feet) {
     rope = null;
+    crouch = 0;
+    resize();
     p.pos.copy(feet);
     p.vel.set(0, 0, 0);
     impulse.set(0, 0, 0);

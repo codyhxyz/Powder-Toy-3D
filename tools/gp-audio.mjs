@@ -5,18 +5,18 @@
 // (OfflineAudioContext) neither silent nor clipped. The body's own events
 // (land, splash, hurt, death) come from real falls in a small test world.
 // usage: node tools/gp-audio.mjs [--port 5204]   (needs a dev server)
-import { chromium } from 'playwright';
+import { launchBrowser, newTestPage } from './browser.mjs';
 
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
 const port = opt('port', '5204');
 const W = 960, H = 600;
 
-const b = await chromium.launch({
+const b = await launchBrowser({
   headless: true,
   args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist', '--autoplay-policy=no-user-gesture-required'],
 });
-const p = await b.newPage({ viewport: { width: W, height: H } });
+const p = await newTestPage(b, { viewport: { width: W, height: H } });
 const errs = [], warns = [];
 p.on('console', (m) => {
   if (m.type() === 'error') errs.push(m.text().slice(0, 600));
