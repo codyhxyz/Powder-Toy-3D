@@ -54,9 +54,15 @@ for (const scene of WORLD_SCENES) {
   }
   if (scene.island) continue;   // the island's GLSL is the generator's (tools/check-shaders.mjs)
   const glsl = scene.glsl(g);
-  for (const name of Object.keys(scene.uniforms(P))) {
+  const uniforms = scene.uniforms(P);
+  for (const name of Object.keys(uniforms)) {
     if (!new RegExp(`uniform\\s+\\w+\\s+${name}\\b`).test(glsl)) fail(scene, `uniform ${name} isn't declared in its GLSL`);
   }
+  // ...and every uniform its GLSL declares has a value (an unset one reads 0), but the prelude's
+  const declared = (src) => [...src.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '')
+    .matchAll(/\buniform\s+(?:(?:lowp|mediump|highp)\s+)?\w+\s+(\w+)/g)].map((m) => m[1]);
+  const fromPrelude = new Set(declared(prelude(g)));
+  for (const name of declared(glsl)) if (!fromPrelude.has(name) && !(name in uniforms)) fail(scene, `its GLSL declares uniform ${name}, but uniforms(P) gives it no value`);
   const passes = {
     sceneCell: `${prelude(g)}\n${glsl}\nout vec4 oC;\nvoid main() {\n  vec4 A, B;\n  sceneCell(ivec3(gl_FragCoord.x, gl_FragCoord.y, int(gl_FragCoord.x) ^ int(gl_FragCoord.y)), A, B);\n  oC = A + B;\n}\n`,
     sceneFill: sceneFillFrag(g, glsl),
