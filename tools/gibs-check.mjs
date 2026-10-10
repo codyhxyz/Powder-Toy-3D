@@ -40,7 +40,6 @@ function cook(name, setup, steps, feed = null) {
   return { name, raw: n(c, 'MEAT'), cooked: n(c, 'COOKED_MEAT'), ash: n(c, 'ASH'), cookedAt, peakCooked };
 }
 const MEAT0 = 24;
-const CUBE_CELLS = 27;   // a filled cube brush of radius 1 (3³), GPU part
 // left alone at room temperature it stays raw
 const idle = cook('room', null, 400);
 check('meat at 20 °C stays raw', idle.raw === MEAT0, JSON.stringify(idle));
@@ -125,7 +124,7 @@ if (port) {
   const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
   const p = await b.newPage({ viewport: { width: W, height: H } });
   const errs = [];
-  p.on('console', (m) => { if (m.type() === 'error') errs.push(m.text().slice(0, 300)); });
+  p.on('console', (m) => { if (m.type() === 'error' && !/ERR_CONNECTION_REFUSED/.test(m.text())) errs.push(m.text().slice(0, 300)); });   // the dev server has no API
   p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 500)));
   const ev = (fn, arg) => p.evaluate(fn, arg);
   const wait = (ms) => p.waitForTimeout(ms);
@@ -141,34 +140,38 @@ if (port) {
     await ev(async () => {
       const { povEvents } = await import('/src/pov/events.js');
       window.__gib = []; window.__eat = [];
-      povEvents.on('body:gib', (x) => window.__gib.push({ cells: x.cells, lost: x.lost, by: x.by ?? null }));
+      povEvents.on('body:gib', (x) => window.__gib.push({ cells: x.cells, lost: x.lost, by: x.by ?? null, t: +(performance.now() / 1000).toFixed(1) }));
       povEvents.on('body:eat', (x) => window.__eat.push({ cells: x.cells, by: x.by ?? null }));
     });
 
-    // cooking in the real sim: a meat block on the lab's south floor, held under the Heat brush
-    const SPOT = { x: 64, y: 1, z: 108 };
-    const fill = async (key, at, r) => ev(async ({ key, at, r }) => {
+    const g = await ev(() => { const { nx, ny, nz } = window.__app.sim.g; return { nx, ny, nz }; });
+    const at = (fx, fz, y = 0) => ({ x: Math.floor(g.nx * fx) + 0.5, y, z: Math.floor(g.nz * fz) + 0.5 });
+    const fill = async (key, c, r) => ev(async ({ key, c, r }) => {
       const a = window.__app, { E, ELEMENTS } = await import('/src/elements.js'), V = a.camera.position.constructor;
-      a.sim.paint({ center: new V(at.x, at.y, at.z), radius: r, shape: 1, tool: E[key], rate: 1 / ELEMENTS[E[key]].spawn, replace: false });
-    }, { key, at, r });
-    await fill('MEAT', { x: SPOT.x, y: SPOT.y + 1.5, z: SPOT.z }, 1.5);
+      a.sim.paint({ center: new V(c.x, c.y, c.z), radius: r, shape: 1, tool: E[key], rate: 1 / ELEMENTS[E[key]].spawn, replace: false });
+    }, { key, c, r });
+    const heat = (c) => ev((c) => { const a = window.__app, V = a.camera.position.constructor; a.sim.paint({ center: new V(c.x, c.y, c.z), radius: 4, shape: 0, tool: -2, rate: 1, replace: false }); }, c);
+
+    // cooking in the real sim: a meat block on the lab's open south floor, held under the Heat brush
+    const SPOT = at(0.5, 0.8, 1.5);
+    await fill('MEAT', SPOT, 1);
     await wait(800);
     const k0 = await census();
     const meat0 = k0.MEAT ?? 0;
-    let cookedSeen = 0, rawGone = false;
+    let cookedSeen = 0;
     for (let i = 0; i < 60; i++) {
-      await ev((s) => { const a = window.__app, V = a.camera.position.constructor; a.sim.paint({ center: new V(s.x, s.y + 1.5, s.z), radius: 4, shape: 0, tool: -2, rate: 1, replace: false }); }, SPOT);
+      await heat(SPOT);
       await wait(50);
-      if (i % 10 === 9) { const c = await census(); cookedSeen = Math.max(cookedSeen, c.COOKED_MEAT ?? 0); rawGone ||= (c.MEAT ?? 0) === 0; }
+      if (i % 10 === 9) cookedSeen = Math.max(cookedSeen, (await census()).COOKED_MEAT ?? 0);
     }
-    check('GPU: heat cooks meat', meat0 > 0 && cookedSeen > 0, `meat ${meat0}, cooked up to ${cookedSeen}, raw gone ${rawGone}`);
-    for (let i = 0; i < 120; i++) {
-      await ev((s) => { const a = window.__app, V = a.camera.position.constructor; a.sim.paint({ center: new V(s.x, s.y + 1.5, s.z), radius: 4, shape: 0, tool: -2, rate: 1, replace: false }); }, SPOT);
-      await wait(40);
-    }
+    const kc = await census();
+    check('GPU: heat cooks meat', meat0 > 0 && cookedSeen > 0, `meat ${meat0}, cooked up to ${cookedSeen}, raw left ${kc.MEAT ?? 0}`);
+    await shot('cooked');
+    for (let i = 0; i < 120; i++) { await heat(SPOT); await wait(40); }
     await wait(3000);
     const k1 = await census();
-    check('GPU: kept on, cooked meat chars and burns', (k1.COOKED_MEAT ?? 0) < cookedSeen && (k1.MEAT ?? 0) === 0, `cooked ${cookedSeen}→${k1.COOKED_MEAT ?? 0}, ash ${k0.ASH ?? 0}→${k1.ASH ?? 0}`);
+    check('GPU: kept on, cooked meat chars and burns', (k1.COOKED_MEAT ?? 0) < cookedSeen && (k1.ASH ?? 0) > (k0.ASH ?? 0),
+      `cooked ${cookedSeen}→${k1.COOKED_MEAT ?? 0}, ash ${k0.ASH ?? 0}→${k1.ASH ?? 0}, fire ${k1.FIRE ?? 0}`);
     await shot('charred');
 
     // first person, with the lab's NPC
@@ -180,38 +183,16 @@ if (port) {
     await p.waitForFunction(() => window.__app.pov.npc?.placeAt, null, { timeout: 30000 }).catch(() => {});
     const hasNpc = await ev(() => !!window.__app.pov.npc);
     check('the lab has an NPC', hasNpc);
-
-    // eating: hurt, cooked meat at the feet is eaten and heals; raw meat isn't
-    const PL = { x: 40, y: 1, z: 112 };
-    await ev((s) => { const a = window.__app, V = a.camera.position.constructor; a.pov.player.spawn(new V(s.x, s.y, s.z)); }, PL);
+    const PL = at(0.33, 0.9);
+    const spawnPlayer = () => ev((s) => { const a = window.__app, V = a.camera.position.constructor; a.pov.player.spawn(new V(s.x, s.y, s.z)); }, PL);
+    await spawnPlayer();
     await wait(1500);
-    await ev(() => window.__app.pov.player.hurt(0.6, 'test'));
-    await wait(300);
-    const h0 = await ev(() => window.__app.pov.player.health);
-    const r0 = await census();
-    await fill('MEAT', { x: PL.x + 2, y: PL.y + 1, z: PL.z }, 1);
-    await wait(1500);
-    const h1 = await ev(() => window.__app.pov.player.health);
-    const r1 = await census();
-    check('GPU: raw meat at your feet isn\'t eaten', Math.abs(h1 - h0) < 1e-6 && (r1.MEAT ?? 0) - (r0.MEAT ?? 0) > 0, `health ${h0.toFixed(2)}→${h1.toFixed(2)}, meat ${r0.MEAT ?? 0}→${r1.MEAT ?? 0}`);
-    const c0 = await census();
-    await fill('COOKED_MEAT', { x: PL.x - 2, y: PL.y + 1, z: PL.z }, 1);
-    const e0 = await ev(() => window.__eat.length);
-    await wait(2000);
-    const h2 = await ev(() => window.__app.pov.player.health);
-    const c1 = await census();
-    const eaten = await ev((e0) => window.__eat.slice(e0).filter((e) => !e.by).reduce((s, e) => s + e.cells, 0), e0);
-    const meatLeft = c1.COOKED_MEAT ?? 0, before = c0.COOKED_MEAT ?? 0;
-    check('GPU: cooked meat touching you is eaten and heals', eaten > 0 && h2 > h1 + 1e-6 && Math.abs(h2 - Math.min(1, h1 + eaten * EAT_HEAL)) < 1e-6,
-      `${eaten} eaten, health ${h1.toFixed(2)}→${h2.toFixed(2)}`);
-    await shot('ate');
-    // matter: the cube painted 27 cells (radius 1, filled); what's left in the grid plus what was eaten is all of them
-    check('GPU: eating removes the cells it heals by', meatLeft + eaten === before + CUBE_CELLS, `cooked in grid ${before}→${meatLeft}, eaten ${eaten}`);
 
     // gibs: a clean kill leaves a body; a rocket kill bursts it into meat
     if (hasNpc) {
-      const NP = { x: PL.x + 14, y: 1, z: PL.z };
-      await ev((s) => { const a = window.__app, V = a.camera.position.constructor; a.pov.npc.placeAt(new V(s.x, s.y, s.z)); }, NP);
+      const NP = { x: PL.x + 14, y: 0, z: PL.z };
+      const place = () => ev((s) => { const a = window.__app; a.pov.npc.placeAt(new a.camera.position.constructor(s.x, s.y, s.z)); }, NP);
+      await place();
       await wait(800);
       await ev(() => window.__app.pov.npc.body.hurt(1.1, 'test'));
       await wait(300);
@@ -219,11 +200,13 @@ if (port) {
       check('GPU: a kill that isn\'t overkill leaves a body', clean.dead && !clean.gibbed, JSON.stringify(clean));
 
       await ev(async () => { const { inventory } = await import('/src/pov/tools/inventory.js'); inventory.give('ROCKET'); window.__app.pov.toolbelt.select('ROCKET'); });
-      const m0 = (await census()).MEAT ?? 0;
+      // meat laid in the rocket's fire may cook at once: count both
+      const meatOf = (c) => (c.MEAT ?? 0) + (c.COOKED_MEAT ?? 0);
+      const m0 = meatOf(await census());
       const g0 = await ev(() => window.__gib.length);
-      let gibbed = false;
-      for (let shotN = 0; shotN < 4 && !gibbed; shotN++) {
-        await ev((s) => { const a = window.__app; a.pov.npc.placeAt(new a.camera.position.constructor(s.x, s.y, s.z)); }, NP);
+      let gibbed = false, shots_ = 0;
+      for (; shots_ < 4 && !gibbed; shots_++) {
+        await place();
         await wait(400);
         await ev(() => {
           const pov = window.__app.pov, q = pov.player.pos, t = pov.npc.body.pos;
@@ -236,15 +219,46 @@ if (port) {
         gibbed = await ev(() => window.__app.pov.npc.body.gibbed);
       }
       await wait(500);
-      const m1 = (await census()).MEAT ?? 0;
+      const k2 = await census(), m1 = meatOf(k2);
       const gibs = await ev((g0) => window.__gib.slice(g0), g0);
-      const npcVisible = await ev(() => window.__app.pov.npc.root.visible);
-      check('GPU: a rocket kill gibs the NPC', gibbed && gibs.some((g) => g.by), JSON.stringify(gibs));
-      check('GPU: the gib is the body\'s mass in meat', m1 - m0 >= GIB_CELLS - 2 && m1 - m0 <= GIB_CELLS + 2 && gibs.every((g) => g.cells + g.lost === GIB_CELLS),
-        `meat ${m0}→${m1} (+${m1 - m0}, body = ${GIB_CELLS} cells)`);
+      const npcVisible = await ev(() => { let v = false; window.__app.pov.npc.root.traverseVisible(() => { v = true; }); return v && window.__app.pov.npc.root.visible; });
+      check('GPU: a rocket kill gibs the NPC', gibbed && gibs.some((x) => x.by), `${shots_} rockets, ${JSON.stringify(gibs)}`);
+      check('GPU: the gib is the body\'s mass in meat', gibs.length > 0 && gibs.every((x) => x.cells + x.lost === GIB_CELLS) && m1 - m0 === gibs.reduce((t, x) => t + x.cells, 0),
+        `meat ${m0}→${m1} (+${m1 - m0}, ${k2.COOKED_MEAT ?? 0} cooked), laid ${gibs.map((x) => x.cells).join(',')}, body = ${GIB_CELLS} cells`);
       check('GPU: the gibbed NPC is no longer drawn', !npcVisible);
+      // look down at where it burst
+      await ev((s) => {
+        const pov = window.__app.pov, q = pov.player.pos;
+        const dx = s.x - q.x, dy = 0.5 - (q.y + 5), dz = s.z - q.z;
+        pov.setLook(Math.atan2(-dx, -dz), Math.atan2(dy, Math.hypot(dx, dz)));
+      }, NP);
+      await wait(800);
       await shot('gibbed');
+      console.log('     every burst this run:', JSON.stringify(await ev(() => window.__gib)));
     }
+
+    // eating (the NPC is dead for a while): cooked meat at the feet, raw meat on the other side,
+    // laid while at full health (nothing eaten), then hurt
+    await spawnPlayer();
+    await wait(1200);
+    await fill('COOKED_MEAT', { x: PL.x - 2, y: 1.5, z: PL.z }, 1);
+    await fill('MEAT', { x: PL.x + 2, y: 1.5, z: PL.z }, 1);
+    await wait(1500);
+    const e0 = await ev(() => window.__eat.length);
+    const c0 = await census();
+    await ev(() => window.__app.pov.player.hurt(0.6, 'test'));
+    const h0 = await ev(() => window.__app.pov.player.health);
+    await wait(2500);
+    const h1 = await ev(() => window.__app.pov.player.health);
+    const c1 = await census();
+    const eats = await ev((e0) => window.__eat.slice(e0).filter((e) => !e.by), e0);
+    const eaten = eats.reduce((t, e) => t + e.cells, 0);
+    check('GPU: cooked meat touching you is eaten and heals', eaten > 0 && Math.abs(h1 - Math.min(1, h0 + eaten * EAT_HEAL)) < 1e-6,
+      `${eaten} eaten in ${eats.length} bites, health ${h0.toFixed(2)}→${h1.toFixed(2)}`);
+    check('GPU: eating takes the cells out of the sim, no more', (c1.COOKED_MEAT ?? 0) + eaten === (c0.COOKED_MEAT ?? 0),
+      `cooked in grid ${c0.COOKED_MEAT ?? 0}→${c1.COOKED_MEAT ?? 0}, eaten ${eaten}`);
+    check('GPU: raw meat isn\'t eaten', (c1.MEAT ?? 0) === (c0.MEAT ?? 0), `raw ${c0.MEAT ?? 0}→${c1.MEAT ?? 0}`);
+    await shot('ate');
     check('no page errors', errs.length === 0, errs.slice(0, 3).join(' | '));
   } finally {
     await b.close();

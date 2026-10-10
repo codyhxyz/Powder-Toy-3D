@@ -98,6 +98,11 @@ Every branch starts from main 9624a75. Its worktree is `../tpt-el-<name>`.
 
 Merge order sets element ids: core, chem, boom, mat, fun, then elec and rays as they verify.
 
+Outside the fan-out, branch `cs-gibs` adds **Meat** and **Cooked meat** (first person's gibs, docs/pov.md "Gibs and
+eating"): meat cooks at 71 °C through `hot: { T, into, latent }`, read by react.js, the activity test and the tile
+engine in the shape above (one `into` key, no weighted lists), so el-core's reader can replace it as is. Cooked meat
+burns through the existing `ignite` fields.
+
 ## Projects
 
 **Electricity.** TPT's electronics are a cellular automaton, which suits the GPU. A spark is a short-lived state on a
