@@ -225,6 +225,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     get cause() { return vitals.cause; },
     get skinT() { return vitals.skinT; },
     stepRate: 0,                  // sim steps/s, as measured
+    team: null,                   // a team game's side ('red' | 'blue' | 'infected', src/game), or null
   };
   // statuses (status.js; the built-in ones, Burning's fire and Bleeding: stains.js)
   const bodyWorld = createBodyWorld({ renderer, getSim });

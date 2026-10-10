@@ -544,6 +544,7 @@ function resetSpawners(name) {
   perkOrbs?.clear();
   arenaMarkers?.clear();
   pov?.vehicles.spawnLayout(arenaLayout);   // an arena's jeeps and hoverbikes (null clears the last arena's)
+  pov?.game.useLayout(arenaLayout);          // its spawns, flags, hills and core for the team games (null: the lab's)
   if (!spawners) return;
   spawners.clear();
   if (name === 'lab' && !win) spawners.add(SPAWNER.ENEMY, new THREE.Vector3(Math.round(sim.g.nx * LAB_ENEMY_AT[0]), 0, Math.round(sim.g.nz * LAB_ENEMY_AT[1])));
@@ -1457,11 +1458,14 @@ try {
     hover, pointerHover: () => pointerInside && !uiHover, pickRay,
     getSpawners: () => spawners,
     getPerkOrbs: () => perkOrbs,
+    loadPreset: (name) => loadPreset(name, false),   // a team game's new round (src/game)
+    getArena: () => arenaLayout,                      // the loaded arena's layout, for the team games (src/game)
     requestRender: () => pacer.wake(),
     inWorld: () => !!win,
     showToolsMenu: () => dock.reveal((it) => isGearTool(it.id)),   // Q in first person: the palette at its first-person tools
   });
   pov.vehicles.spawnLayout(arenaLayout);   // the scene loaded before the POV shell existed
+  pov.game.useLayout(arenaLayout);
   window.__app = {
     get sim() { return sim; }, get volume() { return volume; }, get scale() { return scale; }, get signs() { return signs; }, get builds() { return builds; },
     get pov() { return pov; },

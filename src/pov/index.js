@@ -13,6 +13,7 @@ import { grant, PERK } from './perks.js';
 import { CLASSES_ENABLED } from './classes.js';
 import { createClassPicker } from './classPicker.js';
 import { createVehicles } from './vehicles/index.js';
+import { createGame } from '../game/index.js';
 
 // First-person (POV) mode: drop into the world with F, walk around in it,
 // pop back out with F. This module is the shell: input, the camera, the
@@ -70,7 +71,9 @@ export function createPov(app) {
   let vfx = null;                        // three.quarks effects, built on the first drop-in
   let figure = null, player = null, toolbelt = null;
   const npcs = new Map();   // enemy spawner id → its NPC (npc.js)
-  let npcMod = null, npcAi = null, npcLoading = false;   // npc.js and what NPCs share, loaded on first use
+  let npcMod = null, npcAi = null, npcLoading = null;   // npc.js and what NPCs share, loaded on first use
+  const loadNpcs = () => (npcLoading ??= import('./npc.js').then((m) => { npcAi = m.createAi({ renderer, getSim: app.getSim }); npcMod = m; return { mod: m, ai: npcAi }; })
+    .catch((err) => { console.error('NPCs failed to load', err); npcLoading = null; throw err; }));
   // the player as something weapons hit (an NPC's axe and gun; the player's own never hit it)
   addTarget({
     id: PLAYER,
@@ -391,6 +394,7 @@ export function createPov(app) {
     figure?.setVisible(false);
     for (const n of npcs.values()) n.reset();
     vehicles.reset(player);
+    game.setVisible(false);
     viewmodel.visible = false;
     povHud.show(false);
     feel.reset();
@@ -471,12 +475,13 @@ export function createPov(app) {
       toolbelt?.setVisible(false);
       releaseInput();
     }
+    const match = game.playerRespawn;   // in a team game: Halo's delay, at a spawn of your side
     if (deadSeen) {
       deadTime += dt;
-      const asked = deadTime >= RESPAWN_MIN && (buttons.primaryPressed || keys.has('Space'));
-      if ((deadTime >= RESPAWN_DELAY || asked) && mode === 'on') {
+      const asked = !match && deadTime >= RESPAWN_MIN && (buttons.primaryPressed || keys.has('Space'));
+      if ((deadTime >= (match?.delay ?? RESPAWN_DELAY) || asked) && mode === 'on') {
         keys.delete('Space');   // the key that respawned doesn't also jump
-        player.spawn(dropPoint.clone());
+        player.spawn(match ? match.at() : dropPoint.clone());
         classes?.spawned(player);
         deadSeen = false;
         povCam.reset();
@@ -490,13 +495,10 @@ export function createPov(app) {
     // the NPCs: one per enemy spawner, with every tool you have. Not in a world
     // (g.windowed): the NPCs don't move with the window (windowShifted).
     const sp = app.getSpawners?.();
+    const npcFrame = { player, holding: toolbelt?.selectedKey ?? null, toWorld, worldToGrid, scale, stepsPerFrame: app.settings.paused ? 0 : app.settings.steps };
     const npcsWanted = !!sp && !g.windowed && (mode === 'on' || mode === 'entering') && !!toolbelt;
-    const homes = npcsWanted ? sp.of(ENEMY) : [];
-    if (homes.length && !npcMod && !npcLoading) {
-      npcLoading = true;
-      import('./npc.js').then((m) => { npcAi = m.createAi({ renderer, getSim: app.getSim }); npcMod = m; })
-        .catch((err) => console.error('NPCs failed to load', err));
-    }
+    const homes = npcsWanted && !game.running ? sp.of(ENEMY) : [];   // a team game (src/game) has its own bots
+    if (homes.length && !npcMod) loadNpcs().catch(() => {});
     if (npcMod) {
       for (const s of homes) {
         if (npcs.has(s.id)) continue;
@@ -516,12 +518,12 @@ export function createPov(app) {
         if (homes.some((s) => s.id === id) || (npcsWanted === false && sp?.list.some((s) => s.id === id))) continue;
         scene.remove(n.root); n.dispose(); npcs.delete(id);
       }
+      if (npcsWanted && (npcs.size || game.botCount)) npcAi.world.update(dt);
       if (npcsWanted && npcs.size) {
-        npcAi.world.update(dt);
-        const w = { player, holding: toolbelt?.selectedKey ?? null, toWorld, worldToGrid, scale, stepsPerFrame: app.settings.paused ? 0 : app.settings.steps };
-        for (const n of npcs.values()) { n.bind(app.getVolume(), g); n.update(dt, w); }
+        for (const n of npcs.values()) { n.bind(app.getVolume(), g); n.update(dt, npcFrame); }
       } else for (const n of npcs.values()) n.reset();
     }
+    game.update(dt, npcMod && npcsWanted ? npcFrame : null);   // the bots, the objectives, the HUD
 
     takePerks();
 
@@ -612,7 +614,7 @@ export function createPov(app) {
       dt, health: player.health, breath: player.breath, feel: player.feel,
       shield: player.shield, shieldMax: player.shieldMax, shieldCharging: player.shieldCharging,
       jetFuel: player.jetFuel, jetting: player.jetting, perks: player.perks, status: player.status,
-      dead: deadSeen, cause: player.cause, respawnIn: RESPAWN_DELAY - deadTime,
+      dead: deadSeen, cause: player.cause, respawnIn: (match?.delay ?? RESPAWN_DELAY) - deadTime,
       locked: isLocked(), swooping: mode !== 'on',
       aimValid: aim.valid, aimInReach: aim.valid && aim.dist <= HAND_REACH, third: povCam.third,
     });
@@ -659,6 +661,25 @@ export function createPov(app) {
     return true;
   }
 
+  // Team games (src/game): teams of bots, the modes, their HUD
+  const game = createGame({
+    app, scene, renderer, camera,
+    get player() { return player; },
+    get toolbelt() { return toolbelt; },
+    active,
+    loadNpcs,
+    env: () => ({ renderer, scene, getSim: app.getSim, getVolume: app.getVolume, getScale: app.getScale, ballistics: toolbelt.ballistics }),
+    loadPreset: () => app.loadPreset?.(app.settings.preset),
+    // a respawn at `at` now (a new round, a team switch)
+    respawnPlayer(at) {
+      if (!player) return;
+      player.spawn(at.clone());
+      if (deadSeen) { deadSeen = false; toolbelt?.setVisible(mode === 'on'); }
+      feel.reset();
+    },
+    freeMouse: () => { if (document.pointerLockElement === canvas) document.exitPointerLock(); },
+  });
+
   // god-mode keys POV takes over (app.js skips them while active)
   const blocksKey = (e) => active() && !PASS_KEYS.has(e.key) && !(e.metaKey || e.ctrlKey);
 
@@ -676,6 +697,7 @@ export function createPov(app) {
     get npc() { return npcs.values().next().value ?? null; },   // the first NPC, once loaded (checks)
     get npcs() { return [...npcs.values()]; },
     events: povEvents,           // the POV event bus (checks)
+    game,                        // team games (src/game): start(mode), end(), useLayout(layout), state
     get vfx() { return vfx; },
     feel,
     get ctx() { return ctx; },
