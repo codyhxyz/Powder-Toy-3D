@@ -11,7 +11,7 @@ import { pack, persistentLoad, ownedKey } from './tools/transfer.js';
 import { Agent } from './ai/brain.js';
 import { createWorldModel } from './ai/world.js';
 import { createNav } from './ai/nav.js';
-import { BODY_HEIGHT, BODY_WIDTH, EYE_HEIGHT } from './constants.js';
+import { BODY_HEIGHT } from './constants.js';
 
 // An NPC that hunts the player with every tool the player has (the lab world,
 // in POV). Three parts, each a solved problem done by the book:
@@ -60,7 +60,6 @@ const CHOP_S = 0.25;              // s the chop's follow-through shows after a b
 // the tool's model for each tool the brain uses (models.js, by the catalog)
 const MODEL_OF = Object.fromEntries(['SHOVEL', 'BUCKET', 'AXE', 'GUN', 'PHYSGUN', 'TROWEL', 'SCANNER', 'BLOWTORCH', 'BOMB', 'PICKAXE'].map((k) => [k, gearByKey(k).model]));
 
-const HW = BODY_WIDTH / 2;
 const AIM_REACH = 256;            // cells the tools' pick looks along
 let nextId = 1;
 
@@ -131,8 +130,9 @@ export function createNpc({ env, ai, home = () => null }) {
     id,
     get alive() { return spawned && !body.dead; },
     box(min, max) {
-      min.set(body.pos.x - HW, body.pos.y, body.pos.z - HW);
-      max.set(body.pos.x + HW, body.pos.y + BODY_HEIGHT, body.pos.z + HW);
+      const hw = body.width / 2;   // (its own size: Shrink)
+      min.set(body.pos.x - hw, body.pos.y, body.pos.z - hw);
+      max.set(body.pos.x + hw, body.pos.y + body.height, body.pos.z + hw);
     },
     facing: (out) => out.copy(dir),   // where it looks (the knife's backstab test)
     hurt(amount, cause, d, opts) {
@@ -225,7 +225,7 @@ export function createNpc({ env, ai, home = () => null }) {
       body.update(dt, input);
 
       // its eye and aim: toward what the brain looks at, else where it's going
-      eye.copy(body.pos).setY(body.pos.y + EYE_HEIGHT);
+      eye.copy(body.pos).setY(body.pos.y + body.eyeHeight);
       if (it.look) dir.set(it.look.x - eye.x, it.look.y - eye.y, it.look.z - eye.z);
       else if (got > 1) dir.set(body.vel.x, 0, body.vel.z);
       if (dir.lengthSq() < 1e-9) dir.set(0, 0, -1);
@@ -253,8 +253,8 @@ export function createNpc({ env, ai, home = () => null }) {
       w.toWorld(body.pos, vFeet);
       figure.setVisible(spawned);
       figure.update(dt, {
-        feet: vFeet, scale: w.scale, yaw, worldToGrid: w.worldToGrid,
-        speedH: got, velY: body.vel.y, onGround: body.onGround, inLiquid: body.inLiquid, headInLiquid: body.headInLiquid,
+        feet: vFeet, scale: w.scale * body.size, yaw, worldToGrid: w.worldToGrid,   // (Shrink: as the player's figure)
+        speedH: got / body.size, velY: body.vel.y, onGround: body.onGround, inLiquid: body.inLiquid, headInLiquid: body.headInLiquid,
         dead: body.dead, deadTime, heat: body.feel?.heat ?? 0, jetting: body.jetting,
         chop: chopT > 0 ? 1 : it.chop,
       });

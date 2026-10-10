@@ -30,8 +30,9 @@ import { createPerkSet } from './perks.js';
 // the coupling pass) it converts with the measured step rate.
 
 // ---- body ----
-const HW = BODY_WIDTH / 2;             // cells, half the footprint
-const H = BODY_HEIGHT;
+// Its size is the body's own (the Shrink perk scales it): createPlayer keeps H (height), HW (half
+// the footprint) and EYE (eye height) from BODY_HEIGHT, BODY_WIDTH and EYE_HEIGHT × perks.size.
+// What changes with size is what physics says does (Shrink, below).
 const EPS = 1e-4;                      // cells: faces this close to a cell boundary don't overlap it
 
 // ---- gravity and moving: Noita's player ----
@@ -78,6 +79,16 @@ const JET_FLY_SPEED = 52 * PX;         // cells/s: horizontal speed while the je
 // (Noita's ease is untouched): it just makes the way down a glide.
 const SLOW_FALL_DESCENT = 5.8 / CELL_METERS;            // cells/s (5.8 m/s): terminal descent with one stack
 const SLOW_FALL_K = GRAVITY / SLOW_FALL_DESCENT ** 2;   // 1/cell: the canopy's drag constant at one stack and the default gravity
+
+// ---- Shrink: a body s times the size (perks.js size). Gravity is the world's, not the body's, so
+// the moves follow dynamic similarity (Alexander's: bodies of different sizes move alike at equal
+// Froude numbers v²/gL): run, walk, jump, swim and jet speeds scale by √s, and a jump still clears
+// the same number of body heights. Mass goes with volume (s³) and surfaces with area (s²), so:
+// an impulse (a blow, a gun's recoil) throws it 1/s³ as fast; liquid form drag (area/mass) is 1/s
+// and viscous drag (Stokes: size/mass) 1/s² as strong, so lava traps it worse; a canopy's drag is
+// 1/s; its skin warms and cools 1/s as fast (vitals.js). Blasts already scale: the pressure push is
+// the mean gradient over the body's own cells, about ΔP across the body over its length.
+// STEP_HEIGHT stays a cell (the grid's grain), so a small body still climbs a 1-cell ledge.
 
 // ---- liquids ----
 const WADE_SHARE = 0.15;               // submerged share of the body that counts as "in" liquid
@@ -183,6 +194,13 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     (listeners[name] || []).forEach((fn) => fn(data));
   };
   const vitals = createVitals(emit, perks);
+  // the body's size (Shrink): resize() sets these from perks.size every frame
+  let size = 1, gait = 1, H = BODY_HEIGHT, HW = BODY_WIDTH / 2, EYE = EYE_HEIGHT;
+  function resize() {
+    size = perks.size;
+    gait = Math.sqrt(size);             // × speeds: Froude similarity
+    H = BODY_HEIGHT * size; HW = BODY_WIDTH / 2 * size; EYE = EYE_HEIGHT * size;
+  }
   // Sand Swimmer: powders don't block the body; it swims through them as through a liquid
   let sandSwim = false;
   const blocks = (id) => solidId(id) || (!sandSwim && isPowder(id));
@@ -220,6 +238,10 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     pogoing: false,               // bouncing on a held pogo stick this frame
     get pogoStep() { return pogoStep; },   // timed presses in a row (0..POGO_STEPS): how high it bounces
     perks,                        // its perks (perks.js)
+    get size() { return size; },  // × the plain body's size (Shrink)
+    get height() { return H; },   // cells, feet to crown
+    get width() { return 2 * HW; },   // cells, the square footprint's side
+    get eyeHeight() { return EYE; },  // cells above the feet
     speedScale: 1,                // × walking and running speed: a class's (classes.js; the Bulwark is slow)
     get health() { return vitals.health; },
     get shield() { return vitals.shield; },             // Energy Shield left (base lives, 0..shieldMax)
@@ -233,6 +255,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     stepRate: 0,                  // sim steps/s, as measured
   };
   const impulse = new THREE.Vector3();
+  const vB = new THREE.Vector3();
 
   // ---------------------------------------------------------------- probe
   function ensureMats(sim) {
@@ -440,7 +463,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     p.liquidId = best;
 
     // head: liquid around the eye, or powder/solid in the eye's own cells
-    const ye = Math.floor(p.pos.y + EYE_HEIGHT);
+    const ye = Math.floor(p.pos.y + EYE);
     let open = 0, liq = 0, n = 0, buried = 0;
     const buriedCount = {};
     for (let x = bx0 - 1; x <= bx1 + 1; x++)
@@ -563,6 +586,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     const dt = Math.min(Math.max(dtIn, 0), MAX_DT);
     revengeWait = Math.max(0, revengeWait - dt);
     sandSwim = perks.has('SAND_SWIMMER') && !vitals.dead;
+    resize();
     if (sim !== lastSim) {
       lastSim = sim; lastFrame = sim.frame;
       g = sim.g;
@@ -613,18 +637,20 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     const vh = new THREE.Vector2(v.x, v.z);
     let jumpedNow = false;
     // Fleet Foot and Rocket Boots: ×2 a stack, up to what the probe keeps up with; a class's speedScale on foot
-    const footSpeed = (alive && input.sprint ? SPRINT_SPEED : WALK_SPEED) * p.speedScale;
-    const runSpeed = p.jetting ? Math.min(JET_FLY_SPEED * perks.jetRate, Math.max(JET_FLY_SPEED, PERK_SPEED_H))
+    // Shrink: × gait (√size); the jet's own speeds too
+    const footSpeed = (alive && input.sprint ? SPRINT_SPEED : WALK_SPEED) * p.speedScale * gait;
+    const jetFly = JET_FLY_SPEED * gait;
+    const runSpeed = p.jetting ? Math.min(jetFly * perks.jetRate, Math.max(jetFly, PERK_SPEED_H))
       : alive && input.sprint ? Math.min(footSpeed * perks.sprintRate, Math.max(footSpeed, PERK_SPEED_H)) : footSpeed;
     if (!swimming && (p.onGround || wish.lengthSq() > 0 || vh.length() <= runSpeed)) {
       // Noita: ease toward the wished speed, on the ground and in the air alike.
       // With no input in the air faster than a run (a blast), keep the momentum.
       vh.lerp(wish.clone().multiplyScalar(runSpeed), ease(MOVE_EASE, dt));
-      if (p.onGround && alive && input.jump && !pogoing) { v.y = JUMP_SPEED; p.onGround = false; jumpedNow = true; }
+      if (p.onGround && alive && input.jump && !pogoing) { v.y = JUMP_SPEED * gait; p.onGround = false; jumpedNow = true; }
     } else if (swimming && wish.lengthSq() > 0) {
       // strokes: accelerate toward the wished speed, never brake
       const dir = wish.clone().normalize();
-      const add = Math.min(Math.max(SWIM_SPEED * wish.length() - vh.dot(dir), 0), SWIM_ACCEL * dt);
+      const add = Math.min(Math.max(SWIM_SPEED * gait * wish.length() - vh.dot(dir), 0), SWIM_ACCEL * dt);
       vh.addScaledVector(dir, add);
     }
     v.x = vh.x; v.z = vh.y;
@@ -659,7 +685,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     // Lukki: while a limb touches a wall or ceiling the jet fires on an empty tank, and the tank holds
     // Rocket Boots: climbs faster; Big Tank: a bigger tank (the same refill rates fill it slower, as in Noita)
     const tankS = JET_FUEL_S * perks.fuelRate;
-    const jetRise = Math.min(JET_RISE * perks.jetRate, Math.max(JET_RISE, PERK_SPEED_V));
+    const jetRise = Math.min(JET_RISE * gait * perks.jetRate, Math.max(JET_RISE * gait, PERK_SPEED_V));
     const jetWants = alive && !!input.jump && (!pogoing || jumpHeldS > POGO_WINDOW_S);
     const clings = jetWants && !p.onGround && !swimming && perks.has('LUKKI') && clinging();
     const jet = jetWants && !p.onGround && !jumpedNow && !swimming && (p.jetFuel > 0 || clings);
@@ -681,12 +707,12 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     // for v'), so it settles on √(g/k) exactly at any frame rate
     const canopy = perks.slowFallArea;
     if (canopy > 0 && v.y < 0 && !p.inLiquid) {
-      const kd = SLOW_FALL_K * canopy * dt;
+      const kd = SLOW_FALL_K * canopy / size * dt;   // drag ∝ area/mass: 1/size (Shrink)
       v.y = (1 - Math.sqrt(1 - 4 * kd * v.y)) / (2 * kd);
     }
     // drag in liquid, scaled by how much of the body is in it
     if (sub > 0 && env2.densL > 0) {
-      const k = (VISCOUS_DRAG * env2.dragL + FORM_DRAG * env2.densL / BODY_DENS * v.length()) * sub;
+      const k = (VISCOUS_DRAG * env2.dragL / (size * size) + FORM_DRAG * env2.densL / BODY_DENS * v.length() / size) * sub;   // (Shrink: Stokes 1/s², form 1/s)
       v.multiplyScalar(Math.exp(-k * dt));
     }
 
@@ -698,7 +724,16 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
       const after = v.length();
       if (after > PRESSURE_MAX_SPEED && after > before) v.setLength(Math.max(PRESSURE_MAX_SPEED, before));
     }
-    v.add(impulse); impulse.set(0, 0, 0);
+    // an impulse is a plain body's change of velocity: momentum over its mass. A smaller body
+    // (Shrink, mass ∝ size³) takes the same momentum, so it's thrown 1/size³ as fast; what the
+    // smaller mass adds stops at a blast's throw (PRESSURE_MAX_SPEED: the probe keeps up)
+    if (size < 1 && impulse.lengthSq() > 0) {
+      const plain = vB.copy(v).add(impulse).length();
+      v.addScaledVector(impulse, 1 / size ** 3);
+      const cap = Math.max(PRESSURE_MAX_SPEED, plain);
+      if (v.length() > cap) v.setLength(cap);
+    } else v.add(impulse);
+    impulse.set(0, 0, 0);
     if (v.length() > MAX_SPEED) v.setLength(MAX_SPEED);
 
     // move, with collisions
@@ -751,6 +786,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     if (p.onGround && !wasGround && landSpeed > Math.max(LAND_EVENT_SPEED, pogoSafe)) emit('land', { speed: landSpeed });
     if (slam > 0) vitals.impact(slam, Math.max(SAFE_IMPACT, pogoSafe), LETHAL_IMPACT, 0, slamId >= 0 ? slamId : -1);
 
+    env.size = size;   // (a smaller body's skin warms and cools faster)
     vitals.update(dt, env);
     couple(sim, stepRate);
     fields(sim, dt);
