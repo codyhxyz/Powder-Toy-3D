@@ -108,7 +108,7 @@ const defs = [
   // capacity of the steam it condensed from, and mixes its heat into the air
   // around it as steam does (rad).
   { key: 'CLOUD', abbr: 'CLOD', name: 'Cloud', kind: K.GAS, render: R.GAS, color: '#f2f5f9',
-    dens: 1, cond: 0.02, cap: 0.5, grav: 0, drag: 0.05, jitter: 0.04, rad: 0.03, spawn: 0.3,
+    dens: 1, cond: 0.02, cap: 0.5, grav: 0, drag: 0.05, jitter: 0.01, rad: 0.03, spawn: 0.3,
     sigma: [0.16, 0.16, 0.16],
     desc: 'Droplets of water in the air: what steam becomes as it cools. Floats when warm, rains where it is thick, thins away at its edges, boils back to steam at 100 °C and snows below 0 °C.' },
 ];
