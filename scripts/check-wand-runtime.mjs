@@ -5,6 +5,7 @@ import { setImmediate as turn } from 'node:timers/promises';
 import * as THREE from 'three';
 import { E, K } from '../src/elements.js';
 import { addTarget } from '../src/pov/targets.js';
+import { BODY_WIDTH, BODY_HEIGHT } from '../src/pov/constants.js';
 
 // Inject factory dependencies even when the GPU/compiler lanes have not landed.
 // Production imports remain unchanged; real compiler recipes run below if present.
@@ -74,12 +75,30 @@ function harness(options = {}) {
     assert(s.projectiles <= WAND_LIMITS.projectiles);
     assert(s.events <= WAND_LIMITS.events);
     assert(s.fields <= WAND_LIMITS.fields);
+    assert(s.tracePending <= WAND_LIMITS.traceBatches);
+    assert(s.queuedRays <= WAND_LIMITS.rays);
+    assert(s.queuedTransfers <= WAND_LIMITS.transferQueue);
     assert(rays.every((batch) => batch.length <= 128));
     assert(lights.every((batch) => batch.length <= 8));
     await turn();
   }
   return { runtime, ctx, equip, step, calls, batches, rays, transferCalls, lights, impulses, teleports, visual, pool,
     setTrace(fn) { traceFn = fn; }, replace() { sim = { ...sim, origin: v() }; ctx.sim = sim; } };
+}
+
+// Deterministic wall-clock readback latency, independent of paused sim time.
+function delayedHarness(latency = 0.15) {
+  let clock = 0;
+  const pending = [];
+  const h = harness({ trace: (segments) => new Promise((resolve) => {
+    pending.push({ due: clock + latency, resolve: () => resolve(segments.map(() => null)) });
+  }) });
+  return { ...h, async step(options = {}) {
+    clock += options.dt ?? 0.05;
+    while (pending.length && pending[0].due <= clock + 1e-9) pending.shift().resolve();
+    await turn();
+    await h.step(options);
+  } };
 }
 
 // Root mana is prepaid once, deck delays/recharge are respected, and pause is inert.
@@ -129,6 +148,93 @@ function harness(options = {}) {
   h.runtime.dispose();
 }
 
+// 150ms readbacks retain 50ms-tick flight time, with only readback-sized lag.
+{
+  const h = delayedHarness(), speed = 65, lifetime = 2, latency = 0.15, dt = 0.05;
+  const shot = leaf('spark', { speed, lifetime, mana: 2 }, 'projectile');
+  shot.trigger = 'expiry'; shot.payload = leaf('pressure');
+  h.equip([shot]); await h.step({ fire: true });
+  assert.equal(h.visual.items[0].position.x, 20, 'unverified flight remains at origin');
+  let expiredAt = null;
+  for (let i = 0; i < 44; i++) {
+    const batches = h.rays.length;
+    await h.step();
+    const age = h.runtime.stats.time;
+    if (h.rays.length > batches) {
+      assert(Math.abs(h.rays.at(-1)[0].to.x - (20 + speed * Math.min(age, lifetime))) < 1e-6,
+        'each submitted catch-up ray reaches the current simulation-clock position');
+    }
+    if (h.runtime.stats.projectiles) {
+      const x = h.visual.items[0].position.x;
+      assert(x <= 20 + speed * Math.min(age, lifetime) + 1e-6);
+      // Until the next read completes, the last verified endpoint can lag by
+      // two readback intervals. Never predict movement into unverified space.
+      assert(x >= 20 + speed * Math.min(Math.max(0, age - 2 * latency), lifetime) - 1e-6,
+        `readbacks must not slow flight: time=${age}, x=${x}`);
+    } else { expiredAt = age; break; }
+  }
+  assert(expiredAt !== null && expiredAt <= lifetime + latency + dt + 1e-6, `late expiry: ${expiredAt}`);
+  assert.equal(h.runtime.stats.mana, 98, 'catch-up does not recast or spend mana');
+  const blast = h.calls.filter((c) => c.effect === 'pressure');
+  assert.equal(blast.length, 1);
+  assert(Math.abs(blast[0].center.x - (20 + speed * lifetime)) < 1e-6);
+  h.runtime.dispose();
+}
+
+// Catch-up splits exactly at a timer; completed reads cannot advance a pause.
+{
+  const h = delayedHarness();
+  const shot = leaf('spark', { speed: 65, lifetime: 0.4, delay: 0.125 }, 'projectile');
+  shot.trigger = 'timer'; shot.payload = leaf('pressure');
+  h.equip([shot]); await h.step({ fire: true });
+  const before = h.runtime.stats.time;
+  for (let i = 0; i < 6; i++) await h.step({ paused: true });
+  assert.equal(h.runtime.stats.time, before);
+  assert.equal(h.visual.items[0].position.x, 20);
+  assert.equal(h.calls.length, 0);
+  for (let i = 0; i < 14; i++) await h.step();
+  const blasts = h.calls.filter((c) => c.effect === 'pressure');
+  assert.equal(blasts.length, 1);
+  assert(Math.abs(blasts[0].center.x - (20 + 65 * 0.125)) < 1e-6, 'timer must split catch-up ray');
+  assert.equal(h.runtime.stats.projectiles, 0);
+  h.runtime.dispose();
+}
+
+// A long readback backlog cannot create unbounded ray/command/queue work.
+{
+  const h = delayedHarness(0.6), speed = 65;
+  h.equip([{ op: 'multi', params: { mana: 1 }, children:
+    Array.from({ length: 300 }, () => leaf('spark', { speed, lifetime: 2 }, 'projectile')) }]);
+  await h.step({ fire: true });
+  for (let i = 0; i < 35; i++) await h.step();
+  assert(h.runtime.stats.dropped > 0);
+  assert(h.rays.flat().some((ray) => Math.abs(ray.to.distanceTo(ray.from) - speed * WAND_LIMITS.flightStep) < 1e-6));
+  assert(h.rays.flat().every((ray) => ray.to.distanceTo(ray.from) <= speed * WAND_LIMITS.flightStep + 1e-6));
+  h.runtime.dispose();
+}
+
+// Even a backlogged catch-up segment must wait for terrain verification.
+{
+  let resolve;
+  const h = harness({ trace: () => new Promise((r) => { resolve = r; }) });
+  const shot = leaf('spark', { speed: 65, lifetime: 2 }, 'projectile');
+  shot.trigger = 'impact'; shot.payload = leaf('pressure');
+  h.equip([shot]); await h.step({ fire: true });
+  for (let i = 0; i < 12; i++) await h.step();
+  assert.equal(h.visual.items[0].position.x, 20);
+  resolve([null]); await turn(); await h.step();
+  assert.equal(h.visual.items[0].position.x, 23.25);
+  assert(h.rays.at(-1)[0].to.x > 30, 'catch-up ray crosses the wall');
+  for (let i = 0; i < 3; i++) await h.step();
+  assert.equal(h.visual.items[0].position.x, 23.25, 'pending catch-up cannot move through wall');
+  assert.equal(h.calls.length, 0);
+  resolve([{ point: v(30, 20, 20), normal: v(-1), id: E.WALL }]); await turn(); await h.step();
+  assert.equal(h.runtime.stats.projectiles, 0);
+  assert(h.calls.every((c) => c.center.x === 30));
+  assert.equal(h.calls.filter((c) => c.effect === 'pressure').length, 1);
+  h.runtime.dispose();
+}
+
 // Errors are not clear space: no advance, damage or payload on a rejected trace.
 {
   const h = harness({ trace: () => Promise.reject(new Error('busy')) });
@@ -169,6 +275,21 @@ function harness(options = {}) {
   assert.equal(damage, 0.5);
   assert.equal(h.calls.at(-1).center.x, 21);
   h.runtime.dispose(); remove();
+}
+
+// Piercing starts inside A on the next ray: ignored A must not mask inline B.
+{
+  const hits = [];
+  const remove = [['player', 20, 30], ['actor-a', 21, 23], ['actor-b', 24, 25]].map(([id, x0, x1]) =>
+    addTarget({ id, alive: true, box(lo, hi) { lo.set(x0, 19, 19); hi.set(x1, 22, 21); },
+      hurt() { hits.push(id); } }));
+  const h = harness();
+  h.equip([leaf('spark', { speed: 100, damage: 50, pierce: 1 }, 'projectile')]);
+  await h.step({ fire: true });
+  for (let i = 0; i < 4; i++) await h.step();
+  assert.deepEqual(hits, ['actor-a', 'actor-b']);
+  assert.deepEqual(h.calls.map((c) => c.center.x), [21, 24]);
+  h.runtime.dispose(); remove.forEach((fn) => fn());
 }
 
 // Bounce, pierce, trail and expiry branches stay on the shared collision scheduler.
@@ -301,6 +422,61 @@ let recipes = 0;
 if (existsSync(new URL('../src/pov/wands/compiler.js', import.meta.url))) {
   const { compileWand } = await import('../src/pov/wands/compiler.js');
   const { PRESETS } = await import('../src/pov/wands/catalog.js');
+  const overlapsCaster = (command, feet) => {
+    const closest = command.center.clone().clamp(
+      v(feet.x - BODY_WIDTH / 2, feet.y, feet.z - BODY_WIDTH / 2),
+      v(feet.x + BODY_WIDTH / 2, feet.y + BODY_HEIGHT, feet.z + BODY_WIDTH / 2));
+    return closest.distanceTo(command.center) <= command.radius;
+  };
+  // The actual bridge recipe keeps a connected span without encasing the caster.
+  for (const dir of [v(1), v(0, 1), v(0, -1), v(1, -1, 1).normalize()]) {
+    const h = harness({ compile: compileWand });
+    h.ctx.dir.copy(dir);
+    h.runtime.equip(PRESETS.find((p) => p.id === 'ice-bridge'));
+    await h.step({ fire: true }); await h.step();
+    const ice = h.calls.filter((c) => c.material === 'ICE');
+    assert(ice.length >= 2, 'bridge retains a span');
+    assert(ice.every((c) => !overlapsCaster(c, h.ctx.player.pos)), 'ice spheres must clear the entire caster AABB');
+    for (let i = 1; i < ice.length; i++) {
+      assert(ice[i].center.distanceTo(ice[i - 1].center) <= ice[i].radius + ice[i - 1].radius,
+        'trimmed bridge remains connected');
+    }
+    assert(ice.at(-1).center.distanceTo(h.ctx.eye.clone().addScaledVector(dir, 12)) < 1e-6);
+    assert(h.rays.every((batch) => batch.every((ray) => ray.from.equals(h.ctx.eye))), 'traces still start at eye');
+    if (dir.x === 1 && dir.y === 0) {
+      assert(ice.every((c) => c.center.distanceTo(v(20.5, 19.5, 20.5)) > c.radius), 'reported body cell stays empty');
+    }
+    h.runtime.dispose();
+  }
+  // Material emission shares placement clearance, including wall-clipped touch.
+  for (const op of ['beam', 'touch']) for (const effect of ['place', 'emit']) {
+    const h = harness({ trace: (segments) => Promise.resolve(segments.map(() => ({
+      point: v(21, 20, 20), normal: v(-1), id: E.WALL,
+    }))) });
+    h.equip([leaf(effect, { radius: 2, material: 'ICE', speed: 24, lifetime: 0.5 }, op)]);
+    await h.step({ fire: true }); await h.step();
+    assert.equal(h.calls.length, 0, 'near wall prevents creation; never shift past the wall to clear caster');
+    assert(h.rays[0][0].from.equals(h.ctx.eye));
+    h.runtime.dispose();
+  }
+  {
+    const h = harness();
+    h.equip([leaf('emit', { radius: 2, material: 'WATER', speed: 24, lifetime: 0.5 }, 'beam')]);
+    await h.step({ fire: true }); await h.step();
+    assert(h.calls.length > 0);
+    assert(h.calls.every((c) => !overlapsCaster(c, h.ctx.player.pos)));
+    h.runtime.dispose();
+  }
+  {
+    const h = harness();
+    const shot = leaf('spark', { speed: 20, lifetime: 0.2, delay: 0.05 }, 'projectile');
+    shot.trigger = 'timer'; shot.payload = leaf('place', { radius: 2, material: 'ICE' }, 'touch');
+    h.equip([shot]); await h.step({ fire: true }); await h.step();
+    const ice = h.calls.find((c) => c.material === 'ICE');
+    assert(ice && ice.center.distanceTo(v(21, 20, 20)) < 1e-6, 'payload intentionally retains remote origin');
+    assert(overlapsCaster(ice, h.ctx.player.pos), 'payload is not subject to initial-cast clearance');
+    h.runtime.dispose();
+  }
   const evidence = new Map();
   for (const preset of PRESETS) {
     const observed = { calls: [], puts: [], takes: [], impulses: [], lights: [], teleports: [] };
@@ -343,4 +519,4 @@ if (existsSync(new URL('../src/pov/wands/compiler.js', import.meta.url))) {
   assert(evidence.get('teleport').teleports.length);
 
 }
-console.log(`wand runtime checks passed: scheduling, prepaid mana, pause, async triggers, collision, shifts, inventory, effects; ${recipes} catalog recipes`);
+console.log(`wand runtime checks passed: scheduling, prepaid mana, pause, delayed catch-up, exact timers, bounded queues, caster clearance, piercing, collision, shifts, inventory, effects; ${recipes} catalog recipes`);

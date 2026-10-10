@@ -6,12 +6,12 @@ import { E, ELEMENTS, K } from '../../elements.js';
 import { Load, sharedTransfer, cellsNear, outsideBody, toStepVelocity, TRANSFER_SLOTS } from '../tools/transfer.js';
 import { areaTargets, segmentTarget, PLAYER } from '../targets.js';
 import { povEvents } from '../events.js';
-import { BODY_WIDTH } from '../constants.js';
+import { BODY_WIDTH, BODY_HEIGHT } from '../constants.js';
 
 export const WAND_LIMITS = Object.freeze({
   casts: 4, nodes: 128, events: 512, projectiles: 256, fields: 64,
   rays: 128, traceBatches: 2, commands: 64, transfers: 2, transferQueue: 128,
-  lights: 8, beamSamples: 16, inventory: 4096, dt: 0.1,
+  lights: 8, beamSamples: 16, inventory: 4096, dt: 0.1, flightStep: 0.25,
 });
 const stores = new WeakMap();
 const finite = (x, fallback = 0) => Number.isFinite(x) ? x : fallback;
@@ -87,6 +87,16 @@ export function createWandRuntime(env) {
   }
   function leaf(node, at, dir, cast, { hit = null, cargo = null, field = false, dt = 1 } = {}) {
     const p = node.params;
+    if (!cast.payloadOrigin && (node.op === 'beam' || node.op === 'touch')
+        && (node.effect === 'place' || node.effect === 'emit') && cast.player?.pos) {
+      // Trim creation samples, not the eye-origin ray: nearby walls still block
+      // the spell, while remote payloads deliberately keep their impact origin.
+      const relative = grid(at).sub(cast.player.pos), hw = BODY_WIDTH / 2;
+      const dx = Math.max(0, Math.abs(relative.x) - hw);
+      const dy = Math.max(0, -relative.y, relative.y - BODY_HEIGHT);
+      const dz = Math.max(0, Math.abs(relative.z) - hw);
+      if (dx * dx + dy * dy + dz * dz <= clamp(finite(p.radius, 1), 0.5, 24) ** 2) return;
+    }
     if (node.effect === 'teleport') {
       if (clearancePending || !cast.player?.teleport) return;
       const feet = at.clone();
@@ -161,7 +171,8 @@ export function createWandRuntime(env) {
       const cargo = p.stored && (node.effect === 'emit' || node.effect === 'place') ? reserveMatter(node, cast.load) : null;
       if (cargo && !cargo.load.cells.length) { error('Stored material depleted'); return; }
       projectiles.push({ node, at: at.clone(), velocity: dir.clone().multiplyScalar(clamp(finite(p.speed, 60), 0, 1200)),
-        cast, cargo, age: 0, pending: false, triggered: false, alive: true,
+        cast, cargo, age: 0, started: time - clamp(finite(ctx.dt), 0, WAND_LIMITS.dt),
+        pending: false, triggered: false, alive: true,
         bounces: Math.max(0, finite(p.bounces)), pierce: Math.max(0, finite(p.pierce)), ignored: new Set() });
       return;
     }
@@ -189,10 +200,10 @@ export function createWandRuntime(env) {
   }
   function consumeRay(job, terrain) {
     const from = grid(job.from), to = terrain ? grid(terrain.point) : grid(job.to);
-    const body = segmentTarget(from, to, job.cast.owner);
-    // Test actors against the terrain-clipped segment, so a wall still shields
-    // actors and an actor in front of a wall receives the first impact.
-    const actor = body && !job.flight?.ignored.has(body.target.id) ? body : null;
+    // Exclude pierced actors during the nearest-hit search, not afterward: an
+    // overlapping previous hit must not hide the next actor along the segment.
+    // The terrain-clipped segment still lets walls shield actors.
+    const actor = segmentTarget(from, to, job.cast.owner, job.flight?.ignored);
     const hit = actor ? { target: actor.target, point: absolute(actor.point), normal: job.dir.clone().negate(), id: -1 } : terrain;
     if (job.flight) {
       const r = job.flight;
@@ -228,14 +239,19 @@ export function createWandRuntime(env) {
       }
     } else leaf(job.node, end, job.dir, job.cast, { hit });
   }
-  function trace(dt) {
+  function trace() {
     if (tracePending >= WAND_LIMITS.traceBatches) return;
     const jobs = rayJobs.splice(0, WAND_LIMITS.rays);
     for (const r of projectiles) {
       if (jobs.length >= WAND_LIMITS.rays) break;
       if (r.pending || !r.alive) continue;
       const p = r.node.params;
-      let step = Math.min(dt, Math.max(0, finite(p.lifetime, 2) - r.age));
+      // Readback latency leaves simulation time owed, not discarded. Advance
+      // only after a verified segment; cap catch-up work and split at timers.
+      // ponytail: sustained reads slower than flightStep still lag; batched
+      // substeps are the upgrade if that latency becomes common.
+      let step = Math.min(WAND_LIMITS.flightStep, Math.max(0, time - r.started - r.age),
+        Math.max(0, finite(p.lifetime, 2) - r.age));
       if (r.node.trigger === 'timer' && !r.triggered) step = Math.min(step, Math.max(0, finite(p.delay, 0.5) - r.age));
       const velocity = r.velocity.clone();
       if (p.homing) {
@@ -371,7 +387,7 @@ export function createWandRuntime(env) {
       f.next = time + 0.1;
     }
     fields = fields.filter((f) => f.until > time);
-    trace(dt);
+    trace();
     world.flush(); // dig first, then exact collection reads the resulting debris
     runTransfers();
     draw(dt);
