@@ -36,6 +36,7 @@ const PATCH_PALETTE_W = PATCH_PALETTE_MAX;
 // preset's ground (per column, for ground()). The island's slice is for one
 // world seed at a time (islandSeed; null till prepare() bakes it).
 let bake = null;
+let bakes = 0;   // bakes disposed so far: an island bake that outlives its bake is dropped
 function baked() {
   if (bake) return bake;
   const T = PATCH_TILE;
@@ -72,11 +73,11 @@ function islandGround(lx, lz, seed) {
   return b.islandSeed === seed ? b.ground[PATCH_ISLAND][lx + PATCH_TILE * lz] : islandGroundTwin(lx, lz, seed);
 }
 
-// Bake the island for world seed `seed` into the island slice (replacing the
-// one there), on the GPU.
-async function bakeIsland(renderer, seed) {
+// Bake the island for world seed `seed` into bake b's island slice
+// (replacing the one there), on the GPU. n: bakes disposed when it was asked for.
+async function bakeIsland(renderer, seed, b, n) {
   const { g, A } = await bakeIslandState(renderer, seed);
-  const b = baked();   // (the one there now: dispose() may have come meanwhile)
+  if (n !== bakes) return;   // disposed meanwhile: the next world's prepare() bakes it again
   b.palette.truncate(b.shared);
   b.ground[PATCH_ISLAND] = bakePreset(PATCH_ISLAND, A, g, b.cells, b.palette);
   b.islandSeed = seed;
@@ -144,8 +145,9 @@ void sceneCell(ivec3 w, out vec4 A, out vec4 B) {
   // The island tiles' bake (patchworkIsland.js): GPU passes and a readback.
   // Bakes queue, so a world asked for later never gets an earlier one's island.
   prepare(renderer, P) {
-    const b = baked();
-    b.queue = b.queue.catch(() => {}).then(() => (baked().islandSeed === P.seed ? null : bakeIsland(renderer, P.seed)));
+    const b = baked(), n = bakes;
+    b.queue = b.queue.catch(() => {})
+      .then(() => (n !== bakes || b.islandSeed === P.seed ? null : bakeIsland(renderer, P.seed, b, n)));
     return b.queue;
   },
   dispose() {
@@ -153,5 +155,6 @@ void sceneCell(ivec3 w, out vec4 A, out vec4 B) {
     bake.tex.dispose();
     bake.palTex.dispose();
     bake = null;
+    bakes++;
   },
 };
