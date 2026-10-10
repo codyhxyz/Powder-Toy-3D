@@ -13,6 +13,7 @@ import { figureFrag } from '../figure.js';
 //   look.bind(volume, g)                   // build the materials for this grid
 //   look.update(worldToGrid)               // every frame
 //   look.char(k)                           // burnt: albedo × (1 − k)
+//   look.ember(r, g, b)                    // a glow over it all (a burning wreck)
 
 const OUTLINE_M = 0.045;                 // m, the outline's thickness (figure.js draws the wizard's at ~0.05 m)
 const CHAR_ALBEDO = 0.12;                // share of its colour a burnt-out wreck keeps
@@ -90,6 +91,8 @@ export function createLook() {
       const keep = 1 - k * (1 - CHAR_ALBEDO);
       for (const m of mats) m.uniforms.uAlbedo.value.set(...m.userData.albedo).multiplyScalar(keep);
     },
+    // a glow over every lit part (linear HDR rgb): a burning wreck's embers
+    ember(r, g, b) { shared.uEmit.value.set(r, g, b); },
     dispose() { for (const m of mats) m.dispose(); },
   };
 }

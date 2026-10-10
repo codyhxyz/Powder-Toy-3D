@@ -64,9 +64,11 @@ const CHARGE_SLACK = 2.5;                // candidate cells per charge cell (som
 const EJECT_DAMAGE = 0.7;                // body-healths the driver takes when it goes up under them
 const WRECK_BURN_S = 14;                 // s the wreck keeps burning...
 const WRECK_FIRE_EVERY = 0.35;           // ...a puff of FIRE every this many seconds...
-const WRECK_FIRE_CELLS = 5;              // ...this many cells of it...
+const WRECK_FIRE_CELLS = 10;             // ...this many cells of it...
 const WRECK_FIRE_R = 2.5;                // ...in the air within this many cells of its top
 const WRECK_KEEP_S = 24;                 // s before the wreck is cleared away
+const EMBER = [0.12, 0.035, 0.008];      // linear HDR glow of a freshly burning wreck: a dull orange under the char (the sun-lit hull is ~1)
+const EMBER_FLICKER = 0.35;              // share of it that flickers frame to frame
 const MS = 3.6;                          // km/h per m/s (the speedometer)
 const STATS_EASE = 0.05;                 // share of each frame in the eased update time
 
@@ -200,6 +202,9 @@ export function createVehicles(env) {
   function burn(v, dt) {
     v.wreckT += dt;
     if (v.wreckT > WRECK_KEEP_S) { remove(v); return true; }
+    // embers: a flickering glow that dies down as it burns out
+    const k = Math.max(0, 1 - v.wreckT / WRECK_BURN_S) * (1 - EMBER_FLICKER + EMBER_FLICKER * Math.random());
+    v.look.ember(EMBER[0] * k, EMBER[1] * k, EMBER[2] * k);
     if (v.wreckT > WRECK_BURN_S) return false;
     v.fireWait -= dt;
     if (v.fireWait > 0) return false;

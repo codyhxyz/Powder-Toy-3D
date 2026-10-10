@@ -145,7 +145,7 @@ try {
   const runOver = async (team) => {
     await place('jeep', 64 * 0.3, 1.2, 10 * 0.3, 0);
     await settle(300);
-    const hurt = await ev(async (team) => {
+    await ev(async (team) => {
       const { addTarget } = await import('/src/pov/targets.js');
       window.__hurt = [];
       const z0 = 40;
@@ -154,11 +154,14 @@ try {
         hurt(amount, cause) { window.__hurt.push({ amount, cause }); } });
     }, team);
     await hold(['KeyW'], 2200);
+    const at = await jeep();
     await hold(['KeyS'], 1200);
-    return ev(() => { window.__dummyOff(); return window.__hurt; });
+    const hurt = await ev(() => { window.__dummyOff(); return window.__hurt; });
+    hurt.at = `jeep at x ${(at.x / 0.3).toFixed(1)}, z ${(at.z / 0.3).toFixed(1)} cells, ${at.speed.toFixed(1)} m/s after W`;
+    return hurt;
   };
   const enemy = await runOver('blue');
-  check('running over an enemy hurts it', enemy.length > 0 && enemy[0].amount > 0.3, JSON.stringify(enemy));
+  check('running over an enemy hurts it', enemy.length > 0 && enemy[0].amount > 0.3, `${JSON.stringify(enemy)} (${enemy.at})`);
   const friend = await runOver('red');
   check('running over a teammate does not', friend.length === 0, JSON.stringify(friend));
 
