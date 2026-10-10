@@ -36,7 +36,8 @@ const fires = () => ev(() => window.__fires.length);
 
 // the palette's Tools group lists every first-person tool
 const tiles = await ev(() => [...document.querySelectorAll('.dock .tile')].filter((t) => +t.dataset.id <= -300).length);
-check('palette Tools group lists the tools', tiles === 15, `${tiles} tiles`);
+const gearN = await ev(async () => (await import('/src/pov/tools/catalog.js')).GEAR.length);
+check('palette Tools group lists the tools', tiles === gearN, `${tiles} tiles of ${gearN}`);
 // given from the god view: it waits in the inventory
 await ev(() => document.querySelector('.dock .tile[data-id="-306"]').click());   // SMG
 const given = await ev(async () => (await import('/src/pov/tools/inventory.js')).inventory.owned);

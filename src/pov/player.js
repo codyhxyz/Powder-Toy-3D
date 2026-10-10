@@ -767,6 +767,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     ownBlast() { vitals.ownBlast(); },
     // Kick along unit dir (kick.js): a body ability, the player's key and an NPC alike. The result, or null while it recovers.
     kick(dir) { return kicker.kick(dir); },
+    get kicker() { return kicker; },   // for checks (kicker.walked: the cells the last kick's ray crossed)
     // Hang on a rope (see ROPE_*): { anchor, length, reel, hard, brace }, kept by reference (the setter
     // moves anchor and changes reel); null lets go. The point it pulls at: ropeHand().
     tether(r) { rope = r; },

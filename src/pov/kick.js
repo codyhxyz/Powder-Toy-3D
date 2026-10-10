@@ -63,6 +63,7 @@ const debrisOf = (id) => E[ELEMENTS[id].breakInto];
 export function createKick({ body, getSim, cellAt, unknown }) {
   const pass = toolPass(kickFrag, () => ({ uCenter: { value: new THREE.Vector3() }, uShove: { value: new THREE.Vector3() } }));
   let wait = 0, poseT = Infinity;
+  const walked = [];   // for checks: the cells the last reach ray crossed, [x, y, z, id]
   const hip = new THREE.Vector3(), dir = new THREE.Vector3(), center = new THREE.Vector3();
 
   // The first cell along hip + t·dir that isn't air or gas, within reach
@@ -74,8 +75,10 @@ export function createKick({ body, getSim, cellAt, unknown }) {
     const tDelta = d.map((v) => (v === 0 ? Infinity : Math.abs(1 / v)));
     const tMax = d.map((v, k) => (v === 0 ? Infinity : ((v > 0 ? c[k] + 1 : c[k]) - o[k]) / v));
     let t = 0, axis = -1;
+    walked.length = 0;
     for (let i = 0; i < MARCH_MAX && t <= KICK_REACH; i++) {
       const id = cellAt(c[0], c[1], c[2]);
+      walked.push([...c, id]);
       if (id === unknown) return null;
       if (axis >= 0 && (isSolid(id) || isLoose(id))) {
         const normal = new THREE.Vector3();
@@ -160,6 +163,7 @@ export function createKick({ body, getSim, cellAt, unknown }) {
     },
     get pose() { return poseT < KICK_POSE_S ? poseT / KICK_POSE_S : null; },
     get ready() { return wait === 0; },
+    get walked() { return walked.map((c) => [...c]); },   // for checks
     dispose() { pass.dispose(); },
   };
 }
@@ -171,7 +175,7 @@ export function createKick({ body, getSim, cellAt, unknown }) {
 // swing): it stops short where the boot lands and follows through on a miss.
 // Camera space, cells (+x right, +y up, −z forward). Drawn higher than a real
 // hip so the boot comes into the frame, as first-person legs are.
-const LEG_HIP = [0.45, -1.5, 0.6];   // cells: the pivot, below and just behind the eye
+const LEG_HIP = [0.4, -0.9, 0.3];    // cells: the pivot, below and just behind the eye
 const LEG_LENGTH = 2.0;              // cells, hip to sole
 const LEG_WIDTH = 0.34;              // cells
 const BOOT = [0.42, 0.3, 0.8];       // cells: width, height, length (toward −z)
