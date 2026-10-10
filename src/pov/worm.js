@@ -248,9 +248,8 @@ export function createWorm({ env, ai, home = () => null, size: sizeKey = 'small'
     }
     v.position.set(p.x, p.y, p.z);
     v.velocity.set(0, -CRUISE_SPEED, 0);   // it goes in head first
-    // the body trails straight up behind it, out of the hole it makes
-    trail = [];
-    for (let k = TRAIL_MAX - 1; k >= 0; k--) trail.push(new THREE.Vector3(p.x, p.y + k * TRAIL_STEP, p.z));
+    // the body starts coiled where it appears and pays out behind the head
+    trail = [new THREE.Vector3(p.x, p.y, p.z)];
     placeSegments();
     health = size.hp; dead = false; deadTime = 0; cause = null;
     digAt = null; biteWait = 0; jaw = 0; noise = null; roamTo = null; quarry = null;
