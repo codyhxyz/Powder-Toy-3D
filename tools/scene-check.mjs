@@ -34,7 +34,10 @@ const MONTAGE_COLS = 3;
 const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
 const p = await b.newPage({ viewport: STILL });
 const errs = [];
-p.on('console', (m) => { if (m.type() === 'error' && !/ERR_CONNECTION_REFUSED/.test(m.text())) errs.push(m.text().slice(0, 600)); });
+// console errors, and WebGL's own complaints (warnings): a draw GL refuses, e.g. an unbound sampler, draws nothing
+p.on('console', (m) => {
+  if ((m.type() === 'error' && !/ERR_CONNECTION_REFUSED/.test(m.text())) || /GL_INVALID/.test(m.text())) errs.push(m.text().slice(0, 600));
+});
 p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 600)));
 p.on('crash', () => errs.push('PAGE CRASHED'));
 await p.goto(`http://localhost:${port}/?size=world`);
@@ -45,25 +48,28 @@ await p.evaluate(() => {
   a.autoRes.enabled = false;
   const H = window.__sc = {};
   H.frames = (n) => new Promise((res) => { let k = 0; const f = () => (++k >= n ? res() : requestAnimationFrame(f)); requestAnimationFrame(f); });
-  // the far grid's texels over the window's brick columns, every slice (RGBA8)
+  // the far grid's texels over the window's brick columns, every slice (RGBA16F
+  // holding whole numbers: shaders/far.js), as numbers
   H.farWindow = () => {
     const w = a.win, far = w.far, L = far.L, o = a.sim.origin, g = a.sim.g, r = a.renderer;
-    const [bx0, bz0, n, m] = [o.x / 4, o.z / 4, g.nx / 4, g.nz / 4], buf = new Uint8Array(n * m * 4), all = [];
+    const [bx0, bz0, n, m] = [o.x / 4, o.z / 4, g.nx / 4, g.nz / 4], buf = new Uint16Array(n * m * 4), all = [];
     for (let s = 0; s < L.bricks.n[1]; s++) {
       r.readRenderTargetPixels(far.grid, (s % L.bricks.cols) * L.bricks.n[0] + bx0, Math.floor(s / L.bricks.cols) * L.bricks.n[2] + bz0, n, m, buf);
-      all.push(...buf);
+      for (const h of buf) all.push(a.THREE.DataUtils.fromHalfFloat(h));
     }
     return all;
   };
 });
-const keys = await p.evaluate(() => [...document.querySelectorAll('.seg.rows button')].map((e) => e.dataset.value));
+// The world's Scene row: the seg row holding a world-only scene (the box's preset row shares the section).
+const WORLD_ROW = `[...document.querySelectorAll('.seg.rows')].find((r) => r.querySelector('button[data-value="labWorld"]'))`;
+const keys = await p.evaluate((row) => [...eval(row).querySelectorAll('button')].map((e) => e.dataset.value), WORLD_ROW);
 const res = { scenes: {}, rowLists: keys };
 const stills = [];
 
 for (const key of keys.filter((k) => !only || only.includes(k))) {
   const t0 = Date.now();
   // 1. pick it from the Scene row
-  await p.evaluate((k) => { window.__app.settings.paused = true; document.querySelector(`.seg.rows button[data-value="${k}"]`).click(); }, key);
+  await p.evaluate(([k, row]) => { window.__app.settings.paused = true; eval(row).querySelector(`button[data-value="${k}"]`).click(); }, [key, WORLD_ROW]);
   await p.waitForFunction((k) => window.__app.win?.scene.key === k && window.__app.win.loaded && window.__app.win.far.ready, key, { timeout: LOAD_TIMEOUT });
   const r = { loadMs: Date.now() - t0 };
   r.picked = await p.evaluate((k) => window.__app.settings.scene === k, key);

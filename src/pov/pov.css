@@ -40,6 +40,11 @@ body.pov-locked canvas { cursor: none; }
   background: radial-gradient(120% 95% at 50% 55%, transparent 50%, rgba(120, 230, 60, 0.3) 78%, rgba(90, 210, 40, 0.6) 100%);
   mix-blend-mode: screen;
 }
+.pov-stain {
+  --c: transparent;
+  background: radial-gradient(120% 95% at 50% 55%, transparent 52%, var(--c) 100%);
+  transition: opacity 400ms linear;
+}
 .pov-hurt {
   background: radial-gradient(115% 90% at 50% 50%, transparent 38%, rgba(200, 20, 30, 0.45) 75%, rgba(150, 0, 10, 0.85) 100%);
   transition: opacity 60ms linear;
@@ -78,7 +83,27 @@ body.pov-locked canvas { cursor: none; }
 /* Where the centred hotbar (tools/hotbar.css: 10 slots, 568px) would reach the
    vitals (16px + 210px from the left), the vitals sit above it instead. */
 @media (max-width: 1040px) { .pov-vitals { bottom: 88px; } }
+/* On narrow screens the tool stack and equipped name fill the bottom. */
+@media (max-width: 560px) {
+  .pov-vitals { top: 76px; bottom: auto; left: 12px; width: 160px; }
+}
 .pov-bar { display: flex; align-items: center; gap: 8px; }
+/* statuses (pov/status.js): Noita's row, each icon with its seconds left and a bar that runs down */
+.pov-statuses { display: flex; flex-wrap: wrap; gap: 4px; }
+.pov-statuses:empty { display: none; }
+.pov-st {
+  position: relative; width: 24px; height: 24px; display: grid; place-items: center; overflow: hidden;
+  border-radius: 6px; background: color-mix(in srgb, var(--c) 30%, rgba(0, 0, 0, 0.4));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 75%, transparent);
+}
+.pov-st i { font-style: normal; font-size: 14px; line-height: 1; }
+.pov-st b {
+  position: absolute; right: 1px; top: 0; font-size: 9px; font-weight: 700; line-height: 1;
+  color: #fff; text-shadow: 0 0 2px #000, 0 0 2px #000;
+}
+.pov-st u { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: var(--c); transform-origin: left center; }
+.pov-st.ending { animation: pov-st-blink 0.4s steps(2) infinite; }
+@keyframes pov-st-blink { 50% { opacity: 0.35; } }
 /* perks held (pov/perks.js): Noita's row of icons, each with its stacks */
 .pov-perks { display: flex; flex-wrap: wrap; gap: 4px; }
 .pov-perks:empty { display: none; }
@@ -112,6 +137,24 @@ body.pov-locked canvas { cursor: none; }
 .pov-jet .pov-ic svg { fill: #ffa94d; }
 .pov-jet .pov-fill { background: linear-gradient(90deg, #e8590c, #ffc078); transition: transform 90ms linear; }
 .pov-jet.low .pov-fill { background: linear-gradient(90deg, #c92a2a, #ff8787); }
+/* the Energy Shield (Halo's): cyan over health; a hit flashes it white, a break pops the bar and
+   the empty track blinks red until the refill sweeps back up */
+.pov-shield { display: none; }
+.pov-shield.show { display: flex; animation: pov-in 200ms var(--ease); }
+.pov-shield .pov-ic svg { fill: #5fd3ff; }
+.pov-shield .pov-fill { background: linear-gradient(90deg, #2f9fe0, #8fe6ff); transition: transform 90ms linear; }
+.pov-shield.hit .pov-fill { background: linear-gradient(90deg, #bff0ff, #ffffff); }
+.pov-shield.hit .pov-track { box-shadow: inset 0 0 0 1px #bff0ff, 0 0 8px #5fd3ff; }
+.pov-shield.pop .pov-track { animation: pov-shield-pop 420ms var(--ease); }
+.pov-shield.empty .pov-track { animation: pov-shield-blink 0.5s steps(1) infinite; }
+.pov-shield.empty .pov-ic svg { fill: #ff5d5d; }
+.pov-shield.charging .pov-fill {
+  background: linear-gradient(90deg, #2f9fe0, #8fe6ff 40%, #ffffff 50%, #8fe6ff 60%, #2f9fe0);
+  background-size: 200% 100%; animation: pov-shield-sweep 0.6s linear infinite;
+}
+@keyframes pov-shield-pop { 0% { transform: scale(1); } 30% { transform: scale(1.12, 1.6); box-shadow: inset 0 0 0 1px #fff, 0 0 12px #5fd3ff; } 100% { transform: scale(1); } }
+@keyframes pov-shield-blink { 50% { background: rgba(255, 70, 70, 0.35); } }
+@keyframes pov-shield-sweep { from { background-position: 100% 0; } to { background-position: -100% 0; } }
 @keyframes pov-in { from { opacity: 0; transform: translateY(4px); } }
 
 /* ---- pointer-lock prompt */

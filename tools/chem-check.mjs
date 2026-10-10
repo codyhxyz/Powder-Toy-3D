@@ -192,11 +192,13 @@ check('salt dissolves into water; brine takes no more', () => {
   return [count(w, 'SALTWATER') > 0 && count(w, 'SALT') < s0 && count(sat, 'SALT') === s0,
     `brine ${count(w, 'SALTWATER')}, salt ${s0} → ${count(w, 'SALT')}; in brine salt stays ${count(sat, 'SALT')}`];
 });
+// brine poured on a metal plate held at T (air carries too little heat to freeze it soon)
+const COLD_STEPS = 1500;
 const coldBrine = (T) => {
   const w = box(NX, 24);
-  fill(w, 0, NX, 0, 24, 'EMPTY', { T });
-  fill(w, 0, NX, 0, 6, 'SALTWATER', { T });
-  steps(w, 300, (w) => { for (let i = 0; i < w.T.length; i++) if (w.id[i] === E.EMPTY) w.T[i] = T; });
+  fill(w, 0, NX, 0, 1, 'METAL', { T });
+  fill(w, 0, NX, 1, 5, 'SALTWATER', { T: PHYS.AMBIENT });
+  steps(w, COLD_STEPS, (w) => { for (let x = 0; x < NX; x++) w.T[w.idx(x, 0)] = T; });
   return w;
 };
 check('saltwater stays liquid at −15 °C, freezes into ice and salt below −21.1 °C', () => {
@@ -226,18 +228,22 @@ check('dry ice on a hot plate sublimes into CO₂', () => {
   steps(w, 2000, (w) => { for (let x = 0; x < NX; x++) w.T[w.idx(x, 0)] = 200; });
   return [count(w, 'CO2') > 0, `CO₂ ${count(w, 'CO2')}, dry ice left ${count(w, 'DRY_ICE')}`];
 });
+// A cell holds one gas, so a mix of hydrogen and oxygen cells unmixes (the
+// hydrogen rises out) within ~15 steps; a line of flame along its bottom, as a
+// spark along it would, lights it before it does.
+const H2_STEPS = 60;
 const h2o2 = (lit) => {
   const w = box(NX, 24);
   for (let y = 2; y < 10; y++) for (let x = 4; x < 18; x++) w.put(x, y, (x + y) % 2 ? E.HYDROGEN : E.OXYGEN);
-  if (lit) w.put(10, 1, E.FIRE);
+  if (lit) for (let x = 4; x < 18; x++) w.put(x, 1, E.FIRE);
   return w;
 };
 check('hydrogen and oxygen sit together cold; a flame sets them off into hot steam', () => {
   const cold = h2o2(false), lit = h2o2(true);
   const h0 = count(cold, 'HYDROGEN');
   let hottest = 0;
-  steps(cold, 60);
-  steps(lit, 60, (w) => { hottest = Math.max(hottest, maxT(w)); });
+  steps(cold, H2_STEPS);
+  steps(lit, H2_STEPS, (w) => { hottest = Math.max(hottest, maxT(w)); });
   const left = count(cold, 'HYDROGEN') + count(cold, 'OXYGEN');
   return [left === 2 * h0 && count(lit, 'HYDROGEN') < h0 / 4 && count(lit, 'STEAM') > h0 / 2 && hottest > 1500,
     `cold: ${left}/${2 * h0} left; lit: hydrogen ${h0} → ${count(lit, 'HYDROGEN')}, steam ${count(lit, 'STEAM')}, hottest ${hottest.toFixed(0)} °C`];
