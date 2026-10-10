@@ -35,13 +35,66 @@
 //   sound  what it sounds like struck, in first person (pov/audio.js
 //          families); omitted = by kind (solids crack, powders puff,
 //          liquids splash)
+//   conducts  an electrical conductor (the electricity project defines what
+//          that does)
+//
+// The shared mechanisms (docs/elements.md; react.js runs them, ui/tiles/
+// engine.js mirrors them, activity.js and common.js inertSelf let them rest)
+//   An `into` below is an element key ('EMPTY' = plain air) or a weighted
+//   list [['STEAM', 0.97], ['SAND', 0.03]], from which each cell draws one.
+//   `of`: what a LAVA product sets back into as it cools (its ctype);
+//   omitted = the element it came from. Gas set free (`puff`, as `fizz`) is
+//   volumes at ambient per volume, a pressure puff of
+//   STEAM_BOIL_PUFF·puff/STEAM_EXPANSION.
+//   cold   { T, into, of, latent, puff }: at or below T °C it becomes into
+//   hot    { T, into, of, latent, puff }: at or above T °C it becomes into.
+//          A hot change into LAVA is a melt: lava sets back at T less
+//          LAVA_FREEZE_BELOW (and an element can't have both melt and hot).
+//          latent: the latent heat in cap·°C per cell (water's L_FUSE = 80:
+//          334 J/g / 4.18 J/(g·K); per volume, J/cm³ / 4.18). With it the
+//          cell holds at T and banks the heat crossing T in life, signed as
+//          water's (+ toward hot, − toward cold), and changes once it has
+//          banked latent; so it can't also be a fuel (life, burnRate).
+//          Omitted: instant. The product takes T and its own spawn life.
+//   crush  { P, into, of }: when the air pressure on it (the highest of its
+//          own, none for a solid, and its open neighbours') exceeds P it
+//          becomes into (TPT's high-pressure transition)
+//   blast  { P, T, into, of, shock, crushP }: an explosive. It goes off at
+//          its ignite temperature, touching matter that hot, beside a flame
+//          (BLAST_FIRE per step), hit with at least `shock` kinetic energy
+//          (the units of hard: a neighbour running into it, or it into a
+//          solid; a falling or flowing cell carries ½·dens·v², so set shock
+//          above what it does to itself), or under more than `crushP` air
+//          pressure (a nearby blast). Going off it becomes into (FIRE if
+//          omitted) at T °C and adds P of air pressure (gunpowder: P 60,
+//          T 2200). P and T are required; the triggers are each optional.
+//   REACTIONS (below the table): Noita materials.xml-style rows
+//          { a, b, into: [a's, b's], chance, minT, maxT, heat, puff, except }
+//          a, b    element keys. b '*' = any matter but air, a itself and
+//                  `except: [...]`. Explicit pairs win over '*' rows, then
+//                  earlier rows; one reaction per pair of elements.
+//          into    what a and b become: 'SAME' keeps one, weighted lists ok.
+//                  A row with a = b needs the same into for both.
+//          chance  probability per step that a touching pair reacts (default
+//                  1). A pair is partners one step in RX_PAIRINGS (6, react.js),
+//                  so past 1/6 the rate is that.
+//          minT, maxT  °C gate on the pair's hotter cell (a hot spot lights it)
+//          heat    energy released (+) or absorbed (−), cap·°C, shared so both
+//                  products warm alike: ΔT = heat / (cap_a' + cap_b')
+//          puff    gas set free, split between the two cells
+//          Each cell reacts with at most one partner per step, and the
+//          reaction takes precedence over anything else it would do then.
 //
 // Adding an element
 //   Data only, nothing else to touch:
 //   1. Append a row to defs below (at the end: ids are saved in scenes and
-//      presets). Everything above is data: phase changes by melt/meltInto,
+//      presets). Everything above is data: phase changes by melt/meltInto and
+//      cold/hot/crush, reactions by a REACTIONS row, explosions by blast,
 //      burning by ignite/burnRate/burnHeat/flameT/life, breaking by
 //      hard/breakInto, acid by acidProof/fizz, the struck sound by sound.
+//      Cite the published numbers in a comment above the row (as COAL and
+//      LIMESTONE do); node tools/elements-core-check.mjs checks the
+//      mechanisms, and the table's own checks throw on a bad row.
 //   2. Add it to a PALETTE group below.
 //   3. Give it a LOOKS row in gfx/materials.js: albedo, roughness, smooth
 //      channel, and surf for a shared texture (surf 'CRAG': natural rock,
@@ -50,7 +103,8 @@
 //   the first-person tools (hardness), the AI's prompt (ai/prompt.js) and the
 //   info card all follow from those rows.
 //   Still needs code:
-//   - A behaviour no field covers (a new reaction, like plant growth or clone)
+//   - A behaviour no field covers (one a reaction row can't say, like plant
+//     growth or clone)
 //     goes in shaders/react.js, mirrored in ui/tiles/engine.js
 //     (scripts/check-tile-engine.mjs lists elements the port misses) and, if
 //     it keeps a cell from resting, in shaders/activity.js inertNear.
