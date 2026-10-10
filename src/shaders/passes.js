@@ -165,7 +165,7 @@ void main() {
       else if (id != liq0) mixed = true;
     }
     media = max(media, max(m.x, max(m.y, m.z)));
-    if (id == E_FIRE) em += blackbody(a.y) * (FIRE_GLOW_BASE + a.y / FIRE_GLOW_T) * FIRE_GLOW_GAIN;
+    if (id == E_FIRE || id == E_PLASMA) em += blackbody(a.y) * (FIRE_GLOW_BASE + a.y / FIRE_GLOW_T) * FIRE_GLOW_GAIN;
     else if (id != E_EMPTY && KIND[id] != K_GAS && (a.y > INCAND_T0 || luminous(id))) {
       // the light of the visible skin (metals have none to speak of)
       vec3 e = emission(id, a.y - (id == E_METAL ? 0.0 : INCAND_SKIN_DROP));

@@ -271,8 +271,9 @@ void main() {
   int nidOut = id;
   bool reset = false;   // new element: take its spawn life
 
-  int nAir = 0, nFire = 0, nAcid = 0, nPlant = 0, nBurning = 0, nCloud = 0;
+  int nAir = 0, nFire = 0, nAcid = 0, nPlant = 0, nBurning = 0, nCloud = 0, nVoid = 0;
   float flame = 0.0;
+  float closing = 0.0;   // snow neighbours' closing speed on me, summed (storm charge)
   int cloneOf = 0;
   bool surface = false;   // a non-gas neighbour to condense onto (the box's floor counts, its sides and lid don't)
   for (int i = 0; i < 6; i++) {
@@ -283,6 +284,8 @@ void main() {
     if (j == E_FIRE) nFire++;
     if (j == E_ACID) nAcid++;
     if (j == E_PLANT) nPlant++;
+    if (j == E_VOID) nVoid++;
+    if (j == E_SNOW) closing += max(dot(b.xyz - nb[i].xyz, vec3(DIRS[i])), 0.0);
     if (j == E_CLONE && na[i].w >= 1.0) cloneOf = int(floor(na[i].w));
     if (IGNITE[j] > 0.0 && j != E_GUNPOWDER && na[i].y >= IGNITE[j]) { nBurning++; flame = max(flame, FLAMET[j]); }
   }
@@ -324,6 +327,10 @@ void main() {
       if (r < rain) { nidOut = E_WATER; life = 0.0; }
       else if (r < rain + CLOUD_EVAP * max(float(nAir) - CLOUD_EVAP_NB, 0.0) * es) { nidOut = E_EMPTY; reset = true; T -= CLOUD_EVAP_COOL; }
     }
+    // storm charge (physics.js CHARGE_*): freezing cloud struck by falling
+    // snow; the strike that spends it is src/lightning.js's
+    if (nidOut == E_CLOUD && T <= CHARGE_T_MAX && rnd(rs) < CHARGE_RATE * closing) ctype = min(ctype + 1.0, CHARGE_MAX);
+    if (nidOut != E_CLOUD) ctype = 0.0;   // the charge goes with the droplets
   } else if (id == E_LAVA) {
     int ct = int(ctype);
     if (ct <= 0 || ct >= NE) ct = E_STONE;
@@ -389,6 +396,11 @@ void main() {
       nidOut = rnd(rs) < ACID_TO_SMOKE ? E_SMOKE : E_EMPTY; reset = true;
       P += STEAM_BOIL_PUFF * FIZZ[id] / STEAM_EXPANSION;
     }
+  }
+
+  // Void (elements.js VOID) drains whatever can move the step it touches it
+  if (nVoid > 0 && id != E_EMPTY && KIND[id] != K_SOLID) {
+    nidOut = E_EMPTY; reset = true; T = AMBIENT; v = vec3(0.0); ctype = 0.0;
   }
 
   if (nidOut != id) {

@@ -10,6 +10,7 @@
 // flags any that are missing.
 import { ELEMENTS, E, K, meltInto, breakInto } from '../../elements.js';
 import { PHYS } from '../../physics.js';
+import { BOLT, STORM, boltPath, stormColumns, pickStrike } from '../../bolt.js';
 
 // ---- element table, as the GLSL arrays (elements.js elementsGLSL) ----
 const col = (key) => Float32Array.from(ELEMENTS, (e) => e[key]);
@@ -128,6 +129,8 @@ export class World {
     this.T.fill(AMBIENT);
     this.frame = 0;
     this.gravity = 0; // set from the game's gravity setting before stepping
+    this.lastStrike = -Infinity; // storms (src/lightning.js): the last natural strike's frame
+    this.strikes = 0;
     this.sinkRow = -1; // a row the Erase tool is held over (gas tiles)
     // scratch for one block
     this.bk = new Int32Array(4); this.bn = new Int32Array(4); this.bsrc = new Int32Array(4);
@@ -179,7 +182,61 @@ export class World {
     this.frame++;
     this.move();
     this.react();
+    if (this.frame % STORM.POLL_STEPS === 0) this.storm();
     if (this.sinkRow >= 0) for (let x = 0; x < this.nx; x++) this.erase(this.idx(x, this.sinkRow));
+  }
+
+  // ---- lightning (src/lightning.js, shaders/lightning.js boltFrag; one bolt: src/bolt.js) ----
+  // A bolt from `from` to `to` ([x, y] cells, continuous), in the slice.
+  strike(from, to, { strikeR = STORM.STRIKE_R, dischargeR = 0, rng = rnd } = {}) {
+    const size = [this.nx, this.ny, 1];
+    const segs = boltPath([from[0], from[1], 0.5], [to[0], to[1], 0.5], rng, size, true);
+    for (let y = 0; y < this.ny; y++)
+      for (let x = 0; x < this.nx; x++) {
+        const i = this.idx(x, y), cx = x + 0.5, cy = y + 0.5;
+        const id = this.id[i], open = isGasLike(id);
+        let channel = false;
+        for (const sg of segs) {
+          const ax = sg.a[0], ay = sg.a[1], bx = sg.b[0] - ax, by = sg.b[1] - ay;
+          const t = Math.min(1, Math.max(0, ((cx - ax) * bx + (cy - ay) * by) / Math.max(bx * bx + by * by, 1e-6)));
+          if (Math.hypot(cx - ax - bx * t, cy - ay - by * t) < sg.r) { channel = true; break; }
+        }
+        if (channel) {
+          if (open) {
+            const P = this.P[i];
+            this.put(x, y, E.PLASMA);
+            this.P[i] = Math.min(P + BOLT.P, PHYS.P_MAX);
+          } else this.T[i] = Math.min(this.T[i] + BOLT.E / CAP[id], PHYS.CELL_TEMP_MAX);
+        }
+        const r = Math.hypot(cx - to[0], cy - to[1]);
+        if (!open && r < strikeR) {
+          const f = 1 - smoothstep(strikeR * BOLT.STRIKE_CORE, strikeR, r);
+          this.T[i] = Math.min(this.T[i] + BOLT.STRIKE_E * f / CAP[id], PHYS.CELL_TEMP_MAX);
+        }
+        if (open && r < strikeR + BOLT.STRIKE_P_REACH) this.P[i] = Math.min(Math.max(this.P[i], BOLT.STRIKE_P), PHYS.P_MAX);
+        if (this.id[i] === E.CLOUD && Math.hypot(cx - from[0], cy - from[1]) < dischargeR) this.ctype[i] = 0;
+      }
+    return segs;
+  }
+  // a storm (src/lightning.js update): the most charged cloud cell at
+  // breakdown strikes the nearest of the columns below it, rate-limited
+  storm() {
+    if (this.frame - this.lastStrike < STORM.MIN_STEPS) return;
+    let best = -1, q = 0;
+    for (let i = 0; i < this.id.length; i++)
+      if (this.id[i] === E.CLOUD && this.ctype[i] >= PHYS.CHARGE_BREAKDOWN && this.ctype[i] > q) { q = this.ctype[i]; best = i; }
+    if (best < 0) return;
+    const by = (best / this.nx) | 0, origin = [best - by * this.nx + 0.5, by + 0.5, 0.5];
+    const hits = stormColumns(origin, [this.nx, this.ny, 1], STORM.CANDIDATES, true).map(([x]) => {
+      let top = -1, id = -1;
+      for (let y = by - 1; y >= 0; y--) { const j = this.id[this.idx(x, y)]; if (!isGasLike(j)) { top = y; id = j; break; } }
+      return { x, z: 0, top, id };
+    });
+    const pick = pickStrike(origin, hits);
+    if (!pick) return;
+    this.lastStrike = this.frame;
+    this.strikes++;
+    this.strike([origin[0], origin[1]], [pick.to[0], pick.to[1]], { dischargeR: STORM.DISCHARGE_R });
   }
 
   // ---- movement: Margolus 2×2 blocks, partition shifts every step (move.js) ----
@@ -460,7 +517,8 @@ export class World {
 
         // reactions and phase changes
         let out = id, reset = false;
-        let nAir = 0, nFire = 0, nAcid = 0, nPlant = 0, nBurning = 0, flame = 0, cloneOf = 0, nCloud = 0;
+        let nAir = 0, nFire = 0, nAcid = 0, nPlant = 0, nBurning = 0, flame = 0, cloneOf = 0, nCloud = 0, nVoid = 0;
+        let closing = 0;   // snow neighbours' closing speed on me (storm charge)
         let surface = false;   // a non-gas neighbour to condense onto (the floor counts, the sides and lid don't)
         for (let q = 0; q < 4; q++) {
           const j = nid[q];
@@ -471,6 +529,8 @@ export class World {
           if (j === E.FIRE) nFire++;
           if (j === E.ACID) nAcid++;
           if (j === E.PLANT) nPlant++;
+          if (j === E.VOID) nVoid++;
+          if (j === E.SNOW) closing += Math.max((VX[i] - nVX[q]) * DX[q] + (VY[i] - nVY[q]) * DY[q], 0);
           if (j === E.CLONE && nW[q] >= 1) cloneOf = nW[q];
           if (IGNITE[j] > 0 && j !== E.GUNPOWDER && nT[q] >= IGNITE[j]) { nBurning++; flame = Math.max(flame, FLAMET[j]); }
         }
@@ -509,6 +569,9 @@ export class World {
             if (r < rain) { out = E.WATER; life = 0; }
             else if (r < rain + PHYS.CLOUD_EVAP * Math.max(nAir - PHYS.CLOUD_EVAP_NB, 0) * es) { out = E.EMPTY; reset = true; T -= PHYS.CLOUD_EVAP_COOL; }
           }
+          // storm charge (physics.js CHARGE_*): freezing cloud struck by falling snow
+          if (out === E.CLOUD && T <= PHYS.CHARGE_T_MAX && rnd() < PHYS.CHARGE_RATE * closing) ctype = Math.min(ctype + 1, PHYS.CHARGE_MAX);
+          if (out !== E.CLOUD) ctype = 0;
         } else if (id === E.LAVA) {
           let ct = ctype;
           if (ct <= 0 || ct >= NE) ct = E.STONE;
@@ -568,6 +631,9 @@ export class World {
             P += PHYS.STEAM_BOIL_PUFF * FIZZ[id] / PHYS.STEAM_EXPANSION;
           }
         }
+
+        // void drains whatever can move the step it touches it
+        if (nVoid > 0 && id !== E.EMPTY && KIND[id] !== K.SOLID) { out = E.EMPTY; reset = true; T = AMBIENT; vx = 0; vy = 0; ctype = 0; }
 
         if (out !== id) {
           if (reset) life = SPAWNLIFE[out];
