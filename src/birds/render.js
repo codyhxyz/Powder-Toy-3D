@@ -34,8 +34,8 @@ const FOLD_SWEEP = 0.35;                     // wingspans a folded tip lies back
 const FOLD_DROP = 0.02;                      // wingspans a folded wing sits below the back
 
 // ---- the look (linear)
-const BODY_ALBEDO = [0.05, 0.05, 0.07];      // slate, nearly black: a starling's
-const WING_ALBEDO = [0.11, 0.1, 0.14];
+const BODY_ALBEDO = [0.12, 0.12, 0.15];      // slate: a rock dove's
+const WING_ALBEDO = [0.3, 0.3, 0.35];        // its paler wings (they read against the trees)
 const SHEEN = 1.4;                           // iridescent sheen at grazing angles, by day (times the light on it)
 const SHEEN_POW = 2;                         // Fresnel-like falloff of the sheen toward face-on
 const IRID_SPREAD = 0.35;                    // hue turns this far (of a full turn) from face-on to grazing, root to tip
