@@ -14,7 +14,7 @@
 // usage: node tools/rays-gpu.mjs <outDir> [--port 5417]
 //   (serve with: npx vite --config tools/rays-vite.config.mjs --port 5417 --strictPort)
 import { chromium } from 'playwright';
-import { mkdirSync } from 'fs';
+import { mkdirSync, writeFileSync } from 'fs';
 
 const args = process.argv.slice(2);
 const out = args[0] ?? '/tmp/rays-gpu';
@@ -50,7 +50,6 @@ const ev = (fn, arg) => p.evaluate(fn, arg);
 await ev(async () => {
   const { E, ELEMENTS, itemByKey } = await import('/src/elements.js');
   const { RAYS } = await import('/src/rays.js');
-  const THREE = await import('three');
   const a = window.__app, r = a.renderer;
   a.settings.paused = true;
   window.__hold();
@@ -91,7 +90,7 @@ await ev(async () => {
   H.shell = (x, y, z, lo, hi) => inBox(x, y, z, lo, hi) && !inBox(x, y, z, lo.map((v) => v + 1), hi.map((v) => v - 1));
   H.inBox = inBox;
   H.paint = (tool, c, radius, times, rate = 1) => {
-    for (let i = 0; i < times; i++) a.sim.paint({ center: new THREE.Vector3(...c), radius, shape: 0, tool, rate, replace: false });
+    for (let i = 0; i < times; i++) a.sim.paint({ center: { x: c[0], y: c[1], z: c[2] }, radius, shape: 0, tool, rate, replace: false });
   };
   // per-element census inside a box: count and max °C
   H.census = (lo, hi) => {
@@ -171,6 +170,9 @@ await ev(() => {
   window.__pump(6);
 });
 await p.screenshot({ path: `${out}/particles.png` });
+// the dock's Radioactive group
+await ev(() => { document.querySelector('button.material-category[title="Radioactive"]')?.click(); window.__pump(2); });
+await p.screenshot({ path: `${out}/dock.png` });
 
 // ---- timing ----
 results.timing = await ev(() => {
@@ -202,6 +204,7 @@ results.timing = await ev(() => {
   return o;
 });
 
-console.log(JSON.stringify(results, null, 1));
+writeFileSync(`${out}/results.json`, JSON.stringify(results, null, 1));
+console.log(JSON.stringify(results));
 console.log(errs.length ? `console errors:\n${errs.slice(0, 8).join('\n')}` : 'no console errors');
 await b.close();

@@ -97,6 +97,29 @@ the pressure throws the powder apart, and the spreading lump goes subcritical. T
 on a runaway. Water around a lump returns slowed neutrons that fission 400× more readily, so a moderated lump goes
 critical far smaller: a real hazard (criticality accidents happened in plutonium solutions).
 
+## Measured (v1, `tools/rays-gpu.mjs`, headless M5, ANGLE Metal, 128³, 2026-10-10)
+
+- **Photons**, 171 white packets painted inside each of three closed 14-cell boxes: the wood box soaked them all up
+  within 10 steps (wood to 753 °C, 61 cells of fire; 233 by step 60); the metal box still held all 171 at step 10
+  (metal to 86 °C) and none by step 60 (faded below `PHOTON_E_MIN` after ~7 bounces); the glass box let them all
+  out by step 10 (glass to 35 °C).
+- **Neutrons**, 228 painted in a water block and 228 in a stone block: mean energy in water 2 → 0.36 MeV after 10
+  steps, 0.006 after 40, all 202 left thermal after 120 (still diffusing in the water); in stone they kept 2 MeV and
+  flew straight out (3 of 228 left in its region at step 40).
+- **Fission**: a 4³ plutonium block (64 cells) with 18 neutrons: 4 left at step 50, none at 100, the block 37 °C at
+  most. A 16³ block (4,096 cells) with 58: 3,151 neutrons at step 25, 23,342 at 50, 30,751 at 75 (the list's cap
+  is 65,536); it melted (3,144 cells of molten plutonium at step 50, all 4,096 by 100, at the 6,000 °C cap) under
+  the pressure cap (200), then spread and went subcritical: 20,214 neutrons at 100, 607 at 400.
+- **Cost per step** of the particle passes (GPU-synced, best of 4, with other sessions holding the GPU at 93–99%, so
+  high): asleep **0**; awake with no particles 0.5–1.1 ms (the sweep after a load or paint, and all the time while
+  plutonium is in the box); 65,536 neutrons 1.0–1.6 ms. A whole step with those 65,536 in a million cells of water:
+  12–14 ms against 2.2–3.1 asleep, nearly all of it the water they keep awake.
+
+Not yet: multiplayer guests don't see particles (the list isn't streamed); a World window move lets them go (their
+positions are grid cells); a supertile asleep when a particle is born inside it may miss that particle's deposits
+for one step (the quiet map is rebuilt every second step); the passes' fixed cost while awake (above) could be cut
+by skipping the point draws when the last count found none.
+
 ## The rest of the Radioactive group, in order
 
 1. **Polonium**: Po-210, 138-day half-life, 140 W/g of alpha decay: it glows red-hot by itself (a heat source in

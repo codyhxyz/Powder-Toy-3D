@@ -35,7 +35,11 @@ function iconLater(t, model) {
   });
 }
 
-const CATEGORY_ICONS = [ICON.powders, ICON.liquids, ICON.gases, ICON.cube, ICON.tools, ICON.person, ICON.constructions];
+// by palette group name (elements.js PALETTE), so a new group can't shift the others' icons
+const CATEGORY_ICONS = {
+  Powders: ICON.powders, Liquids: ICON.liquids, Gases: ICON.gases, Solids: ICON.cube, Radioactive: ICON.radioactive,
+  Tools: ICON.tools, Entities: ICON.person, Constructions: ICON.constructions,
+};
 
 // A material drawer: categories above, swatches in the middle, brush below.
 export function createDock({ settings, onSelect, onBrushChange, onHover, onEyedropper }) {
@@ -75,7 +79,7 @@ export function createDock({ settings, onSelect, onBrushChange, onHover, onEyedr
       filter();
       preview();
     } },
-  }, h('span', { html: CATEGORY_ICONS[i] }), h('span.category-tip', { text: g.name })));
+  }, h('span', { html: CATEGORY_ICONS[g.name] ?? ICON.cube }), h('span.category-tip', { text: g.name })));
   const rail = h('div.material-categories', { role: 'group', 'aria-label': 'Material categories' }, categories);
   rail.addEventListener('keydown', (e) => {
     const i = categories.indexOf(document.activeElement);
