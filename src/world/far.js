@@ -55,7 +55,8 @@ import { gfxUniforms } from '../gfx/uniforms.js';
 const SWEEP_FRAMES = 120;        // frames between sweeps over the window's own region while the sim changes it (its copy only casts the far shadows and feeds the window's GI)
 const SWEEP_CELLS = 16;          // ...summarizing this many cells of it along x per frame
 const VIEW_ORDER = -10;          // renderOrder of the view: first of the scene's opaque objects
-const SCENE_CHUNKS_PER_FRAME = 2;   // a scene's far build: chunks a frame (each one sceneCell per cell of its columns, ~0.6M cells)
+const SCENE_CHUNKS_PER_FRAME = 1;   // a scene's far build: chunks a frame (each ~0.6M sceneCells, then twice a leaving slab's summary;
+                                    // 256 chunks: ~4 s at 60 fps, the chunks around the window in the first few frames)
 const SCENE_REFRESH_FRAMES = 8;     // ...and frames between rebuilding the levels, tops and shadows while it runs
 const MASK_SET = 255;               // a set byte of the window mask (the shader reads it as 1)
 const EDGE_SAMPLES = 256;           // columns along the world's edge whose ground a sea-less world's plain beyond it is the median of

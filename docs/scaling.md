@@ -476,8 +476,9 @@ The world is much larger than what lives on the GPU. Its size is `WORLD` cells, 
     world loads once both are done. `dispose` runs with the window's; the old window's materials are retired
     until the new one has claimed their programs, so a scene switch compiles only the new scene's passes.
   - Its far field is built from `sceneCell` progressively (`world/far.js sceneBuild`): the window's region from
-    its state at once, then the rest in chunks of 16×16 brick columns, two a frame, nearest the window first (about
-    two seconds for the whole world at 60 fps; each draw is small). A chunk is two passes: `farSceneCellsFrag`
+    its state at once, then the rest in chunks of 16×16 brick columns, one a frame, nearest the window first (about
+    four seconds for the whole world at 60 fps, the ground around the window in the first few frames; each draw is
+    small). A chunk is two passes: `farSceneCellsFrag`
     evaluates `sceneCell` once per cell of its columns and the two around them that its bricks' cubes reach (an
     816×768 half-float atlas of (id, °C)), and `farSceneFrag` summarizes its bricks from those cells exactly as
     `farWinFrag` does from the window's state. Brick columns the window has summarized (on load, leaving slabs,
