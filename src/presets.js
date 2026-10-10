@@ -1,8 +1,14 @@
 import { E, ELEMENTS } from './elements.js';
 import { SEED_MAX } from './shaders/common.js';
+import { ARENA_SIZE, buildDamValley } from './arenas/damValley.js';
+
+// Arena presets (src/arenas): handmade maps for team games, each built for one
+// grid size (app.js switches to it). Their layouts (spawns, flags, zones...)
+// are what buildPreset returns for them.
+export const ARENA_PRESETS = { damValley: { size: ARENA_SIZE, build: buildDamValley } };
 
 // CPU-side scene builders. They produce the atlas-layout state arrays that
-// Simulation.load() uploads.
+// Simulation.load() uploads. Returns an arena's layout, else null.
 export function buildPreset(name, sim) {
   const g = sim.g;
   const [A, B] = sim.blankState();
@@ -25,8 +31,22 @@ export function buildPreset(name, sim) {
   const { nx, ny, nz } = g;
   const cx = nx / 2, cz = nz / 2;
   const s = nx / 128;
+  let layout = null;
 
-  if (name === 'lab') {
+  if (name in ARENA_PRESETS) {
+    // an arena builds into an id grid of its own size; it lands in the grid's low corner
+    const arena = ARENA_PRESETS[name];
+    const [ax, ay, az] = arena.size;
+    const built = arena.build();
+    const ids = built.ids;
+    for (let y = 0; y < ay; y++)
+      for (let z = 0; z < az; z++)
+        for (let x = 0; x < ax; x++) {
+          const id = ids[(y * az + z) * ax + x];
+          if (id !== E.EMPTY) set(x, y, z, id);
+        }
+    layout = built.layout;
+  } else if (name === 'lab') {
     // Glass tank of water with an oil slick, a sand pile and a metal plate over a lava pit.
     const t0 = Math.round(10 * s), t1 = Math.round(62 * s), th = Math.round(40 * s);
     box(t0, 0, t0, t1, th, t1, E.GLASS);
@@ -101,4 +121,5 @@ export function buildPreset(name, sim) {
       }
   }
   sim.load(A, B);
+  return layout;
 }
