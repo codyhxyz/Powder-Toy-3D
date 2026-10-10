@@ -1,4 +1,5 @@
 import { elementsGLSL, ELEMENTS, K } from '../elements.js';
+import { electricityGLSL } from '../electricity.js';
 import { incandescenceGLSL } from '../gfx/incandescence.js';
 import { physicsGLSL, PHYS } from '../physics.js';
 import { CELL_M } from '../scale.js';
@@ -194,6 +195,7 @@ vec4 fetchA(ivec3 c) { return texelFetch(tA, atlas(c), 0); }
 vec4 fetchB(ivec3 c) { return texelFetch(tB, atlas(c), 0); }
 uint fetchF(ivec3 c) { return texelFetch(tF, atlas(c), 0).r; }
 int eid(vec4 a) { return int(floor(a.x + 0.5)); }
+${electricityGLSL()}
 
 // PCG hash (Jarzynski & Olano 2020, "Hash Functions for GPU Rendering"); the
 // numbers are the published constants.
@@ -276,6 +278,7 @@ bool inertSelf(vec4 a, vec4 b) {
   }
   int k = KIND[id];
   if (k == K_GAS) return false;   // smoke, steam and flames rise, fade and burn
+  if (!electricQuiet(id, a)) return false;   // a spark, a switch turning off, a firing sensor (src/electricity.js)
   // moving, or pressure still settling (solids hold none)
   if (k != K_SOLID && (b.xyz != vec3(0.0) || abs(b.w) > REST_P)) return false;
   if (MELT[id] > 0.0 && T > MELT[id]) return false;
@@ -296,12 +299,15 @@ uint ownFlags(vec4 a, vec4 b) {
 }
 // Does a cell going from state A a0 to a1 change what its neighbours' tests
 // (activity.js inertNear) read of it? Its element, and its temperature unless
-// it is air (AIR_T_IN_NEAR). Its life and seed they don't read, nor its ctype,
-// except a moss or fungus cell's (its damp).
+// it is air (AIR_T_IN_NEAR). Its ctype + seed they don't read, nor its life,
+// but for a switch or powered clone going on or off (electricQuietNear, and
+// the air beside a powered clone, which copies it while it is on), and a moss
+// or fungus cell's ctype (its damp).
 bool nearChange(vec4 a0, vec4 a1) {
   int i1 = eid(a1);
   return eid(a0) != i1 || (a0.y != a1.y && (i1 != E_EMPTY || AIR_T_IN_NEAR))
-    || ((i1 == E_MOSS || i1 == E_FUNGUS) && floor(a0.w) != floor(a1.w));
+      || (powered(i1) && (a0.z >= SWITCH_ON) != (a1.z >= SWITCH_ON))
+      || ((i1 == E_MOSS || i1 == E_FUNGUS) && floor(a0.w) != floor(a1.w));
 }
 `;
 

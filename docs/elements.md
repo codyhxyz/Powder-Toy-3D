@@ -217,6 +217,8 @@ branches' work (`nt-status` stains, `nt-flask` drinking). Two mechanisms came wi
   face across from the moss's axis, so it makes a one-cell mat on the rock and never grows out into open air. Damp
   fungus rots WOOD, SAWDUST and PLANT into fungus. Both are rare random events (`MOSS_GROW`, `FUNGUS_GROW`). They stop
   for good once there's nowhere left to grow, and the activity map lets them sleep.
+  Electricity keeps a conductor's spark in its ctype too (src/electricity.js), so a grower must never conduct (no
+  `elec`): `tools/nt-mat-check.mjs` checks it. Damp is read only off moss and fungus cells, never a conductor's.
 
 **Placing growers at rest** (for world generation; `tools/gen-check.mjs` wants 0 changed cells):
 - Moss is at rest when no air cell touches both damp moss (ctype ≥ 1) and bare rock on a face off the moss's axis. That

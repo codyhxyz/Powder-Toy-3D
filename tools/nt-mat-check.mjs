@@ -21,6 +21,7 @@ import { World } from '../src/ui/tiles/engine.js';
 import { E, ELEMENTS } from '../src/elements.js';
 import { PHYS } from '../src/physics.js';
 import { FAR } from '../src/shaders/far.js';
+import { CONDUCTS } from '../src/electricity.js';
 
 const GRAVITY = 0.025;           // the app's default gravity (app.js DEFAULTS)
 const SETTLE = 6000;             // steps for liquids to layer
@@ -45,6 +46,9 @@ const changed = (w, s) => { let n = 0; for (let i = 0; i < s.length; i++) n += s
 
 // ---- ids
 ok(ELEMENTS.length <= FAR.PAYLOAD, `${ELEMENTS.length} elements fit the far grid's ${FAR.PAYLOAD} ids`);
+// moss and fungus keep their damp in ctype, where a conductor keeps its spark
+// (src/electricity.js): no grower may conduct
+ok(!CONDUCTS[E.MOSS] && !CONDUCTS[E.FUNGUS], 'moss and fungus are not conductors: their damp and a spark never share a ctype');
 
 // ---- layering: a tank, rock walls, the test liquid poured as the bottom
 // half under water (or above it, for the light ones): it must end on its side

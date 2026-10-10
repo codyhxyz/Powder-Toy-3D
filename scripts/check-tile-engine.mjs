@@ -6,8 +6,8 @@
 import { readFileSync } from 'node:fs';
 
 const read = (f) => readFileSync(new URL(`../src/${f}`, import.meta.url), 'utf8');
-const gpu = ['shaders/react.js', 'shaders/move.js', 'shaders/passes.js'].map(read).join('\n');
-const port = ['ui/tiles/engine.js', 'ui/tiles/render.js'].map(read).join('\n');
+const gpu = ['shaders/react.js', 'shaders/move.js', 'shaders/passes.js', 'electricity.js'].map(read).join('\n');
+const port = ['ui/tiles/engine.js', 'ui/tiles/render.js', 'electricity.js'].map(read).join('\n');
 const named = (src, re) => new Set([...src.matchAll(re)].map((m) => m[1]));
 const inGpu = named(gpu, /\bE_([A-Z]+)\b/g);
 const inPort = named(port, /\bE\.([A-Z]+)\b/g);
