@@ -45,13 +45,14 @@ await p.evaluate(() => {
   a.autoRes.enabled = false;
   const H = window.__sc = {};
   H.frames = (n) => new Promise((res) => { let k = 0; const f = () => (++k >= n ? res() : requestAnimationFrame(f)); requestAnimationFrame(f); });
-  // the far grid's texels over the window's brick columns, every slice (RGBA8)
+  // the far grid's texels over the window's brick columns, every slice (RGBA16F
+  // holding whole numbers: shaders/far.js), as numbers
   H.farWindow = () => {
     const w = a.win, far = w.far, L = far.L, o = a.sim.origin, g = a.sim.g, r = a.renderer;
-    const [bx0, bz0, n, m] = [o.x / 4, o.z / 4, g.nx / 4, g.nz / 4], buf = new Uint8Array(n * m * 4), all = [];
+    const [bx0, bz0, n, m] = [o.x / 4, o.z / 4, g.nx / 4, g.nz / 4], buf = new Uint16Array(n * m * 4), all = [];
     for (let s = 0; s < L.bricks.n[1]; s++) {
       r.readRenderTargetPixels(far.grid, (s % L.bricks.cols) * L.bricks.n[0] + bx0, Math.floor(s / L.bricks.cols) * L.bricks.n[2] + bz0, n, m, buf);
-      all.push(...buf);
+      for (const h of buf) all.push(a.THREE.DataUtils.fromHalfFloat(h));
     }
     return all;
   };

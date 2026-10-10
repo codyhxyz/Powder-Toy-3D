@@ -102,7 +102,7 @@ export class FarField {
     // the view, shadow and GI programs have WORLD_SIZE's far layout compiled in (attach)
     if (win.size.some((n, i) => n !== WORLD_SIZE[i])) throw new Error(`far field: world ${win.size}, but the programs are built for ${WORLD_SIZE}`);
     const U8 = THREE.UnsignedByteType, HALF = THREE.HalfFloatType, NEAR = THREE.NearestFilter, LIN = THREE.LinearFilter;
-    this.grid = makeFieldTarget(L.bricks.width, L.bricks.height, 1, U8, NEAR);   // raw shares, ids, glow
+    this.grid = makeFieldTarget(L.bricks.width, L.bricks.height, 1, HALF, NEAR);   // raw shares, ids, glow (whole numbers: shaders/far.js)
     this.field = makeFieldTarget(L.bricks.width, L.bricks.height, 1, U8, LIN);   // what the view draws (farBoostFrag)
     this.l1 = makeFieldTarget(L.l1.width, L.l1.height, 1, U8, NEAR);
     this.l2 = makeFieldTarget(L.l2.width, L.l2.height, 1, U8, NEAR);
