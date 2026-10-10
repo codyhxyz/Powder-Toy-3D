@@ -206,7 +206,7 @@ const onWall = (x, z) => {
 };
 const inTarn = (x, z) => S.lakes.some((l, i) => T.lfLakeDist(i, x + LF.CENTRE, z + LF.CENTRE) < l.r + LF.LAKE_RIM);
 const C = { SAND: 1, PLANT: 3 };   // generator.js GEN_CODE's covers
-let leaks = 0, plantsWet = 0, sandUnstable = 0, water = 0, tarnWater = 0, wallTrees = 0, tarnTrees = 0, tarnPlants = 0;
+let leaks = 0, plantsWet = 0, sandUnstable = 0, water = 0, tarnWater = 0, wallTrees = 0, rimTrees = 0, tarnTrees = 0, tarnPlants = 0;
 for (let z = 1; z < NZ - 1; z++)
   for (let x = 1; x < NX - 1; x++) {
     const g = ground(x, z), lv = level(x, z), i = at(x, z);
@@ -232,6 +232,8 @@ for (let z = 1; z < NZ - 1; z++)
     if ((onWall(x, z) || (inTarn(x, z) && g - lv < TREE.ABOVE_SEA)) && T.genTreeZone(x, z) !== 0) {
       if (onWall(x, z)) wallTrees++; else tarnTrees++;
     }
+    // ...and within a root flare's reach of the gorge's rim (its footing would hang down the wall)
+    if (S.ria && T.lfRiaRim(x + LF.CENTRE, z + LF.CENTRE, G[i]) && T.genTreeZone(x, z) !== 0) rimTrees++;
   }
 // walkability: the steepest ground of each landform's walkable parts, where it changed the ground
 const steepest = (pred) => {
@@ -265,5 +267,5 @@ report.push(`stacks: ${S.stacks.map((s) => `(${s.x.toFixed(0)}, ${s.z.toFixed(0)
 console.log(`seed ${SEED}: columns ${((tGrid - t0) / 1000).toFixed(1)} s, images ${((tImages - tGrid) / 1000).toFixed(1)} s`);
 console.log(report.join('\n'));
 console.log(`checks: water columns ${water} (tarns ${tarnWater}); leaks ${leaks}; plants touching water ${plantsWet}; `
-  + `plant cover under tarns ${tarnPlants}; sand off its repose ${sandUnstable}; tree ground on gorge walls ${wallTrees}, in or by tarns ${tarnTrees}`);
+  + `plant cover under tarns ${tarnPlants}; sand off its repose ${sandUnstable}; tree ground on gorge walls ${wallTrees}, at its rim ${rimTrees}, in or by tarns ${tarnTrees}`);
 console.log(`wrote ${files.length} images to ${outDir}/`);

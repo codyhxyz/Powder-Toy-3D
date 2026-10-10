@@ -62,7 +62,10 @@ import { STRATA_BEDS_SRC } from './strata.js';
 //   - Powders, plant cover and trees follow from the layers, which take a
 //     column's water level (islandWaterLevel: the tarn's within its rim) as
 //     their sea (generator.js genCover, genTreeZone): beaches around it, plant
-//     cover only above it, trees two cells above it. Gorge walls and mesa risers are rock and too steep for sand,
+//     cover only above it, trees two cells above it.
+//   - No trees on the gorge's walls or within RIA_RIM_BARE of its rim: the
+//     rim is bare (islandBare), so a tree's footing (its root flare grows
+//     wood down to the ground, constructions/runtime.js) never hangs down a wall. Gorge walls and mesa risers are rock and too steep for sand,
 //     plants or trees (the layers' slope limits).
 //   - Slopes stay walkable outside the gorge's walls, the mesas' risers, the
 //     stacks and tarn headwalls: tarn shores rise LAKE_SHORE per cell, the
@@ -92,6 +95,8 @@ const L = {
     RIA_ROUGH_WAVE: 6.0,        // ...over this many
     RIA_OFFSHORE: 30.0,         // seaward of the mouth the channel shoals to sea level over this many cells
     RIA_DU: 1.0,                // cells: the meander's slope is read over this step either side
+    RIA_RIM_BARE: 4.0,          // cells past the gorge's rim kept bare: a tree's root flare (≤ 2.7) would grow footings down its wall...
+    RIA_RIM_DROP: 3.0,          // ...where it drops more than this (a tree on the steepest ground it may stand on, 0.8, drops ~2 across its flare)
     MEANDER_AMP: 22.0,          // the centreline swings this far either side of the axis...
     MEANDER_WAVE: 110.0,        // ...over this many cells along it...
     MEANDER_FINE: 0.3,          // ...with a finer octave of this share...
@@ -188,18 +193,25 @@ float lfRiaDist(float u, float v) {
   float across = thFdiv(abs(v - lfMeander(uc)), sqrt(1.0 + slope * slope));
   return sqrt(across * across + (u - uc) * (u - uc));
 }
-// The ria cut into ground h at column (x, z).
-float lfRia(float x, float z, float h) {
+// The ria's surface at column (x, z): its floor and walls, the walls set
+// inset cells further out (LAND_FAR out of its reach).
+float lfRiaWall(float x, float z, float inset) {
   float len = lfRiaLen();
-  if (len <= 0.0) return h;
+  if (len <= 0.0) return LAND_FAR;
   float rx = x - lfRiaX(), rz = z - lfRiaZ();
   float u = rx * lfRiaDx() + rz * lfRiaDz(), v = rz * lfRiaDx() - rx * lfRiaDz();
-  if (u < -LAND_RIA_OFFSHORE || u > len + LAND_RIA_REACH || abs(v) > LAND_MEANDER_AMP * (1.0 + LAND_MEANDER_FINE) + LAND_RIA_REACH) return h;
+  if (u < -LAND_RIA_OFFSHORE || u > len + LAND_RIA_REACH || abs(v) > LAND_MEANDER_AMP * (1.0 + LAND_MEANDER_FINE) + LAND_RIA_REACH) return LAND_FAR;
   float uc = min(u, len);
   float dist = lfRiaDist(u, v)
              + LAND_RIA_ROUGH * thNoised(thFdiv(x, LAND_RIA_ROUGH_WAVE), thFdiv(z, LAND_RIA_ROUGH_WAVE), thStream(LAND_SALT_RIA_ROUGH, 0));
-  return min(h, lfRiaFloor(uc) + max(dist - lfRiaHalf(uc), 0.0) * LAND_RIA_WALL);
+  return lfRiaFloor(uc) + max(dist - inset - lfRiaHalf(uc), 0.0) * LAND_RIA_WALL;
 }
+// The ria cut into ground h at column (x, z).
+float lfRia(float x, float z, float h) { return min(h, lfRiaWall(x, z, 0.0)); }
+// Is column (x, z), its ground h high, within RIA_RIM_BARE cells of a
+// gorge wall more than RIA_RIM_DROP tall (or on one)? (The walls that much
+// further out would cut it that deep.)
+bool lfRiaRim(float x, float z, float h) { return lfRiaWall(x, z, LAND_RIA_RIM_BARE) < h - LAND_RIA_RIM_DROP; }
 
 // ---- the mesas
 // libnoise's Terrace (see the top) on stratigraphic height s, its control
@@ -286,9 +298,14 @@ float islandWaterLevel(float x, float z, float h) {
   }
   return uGenSea;
 }
-// Does column (x, z) stay bare (no plant cover, so no trees)? The badlands.
-// (The bake gives it no meadow: generator.js genMeadow.)
-bool islandBare(float x, float z) { return lfMesaR() > 0.0 && lfMesaBare(x + LAND_CENTRE, z + LAND_CENTRE); }
+// Does column (x, z), its ground h high (after landforms), stay bare (no
+// plant cover, so no trees)? The badlands, and the gorge's rims and walls,
+// where a tree's footing would hang down the wall. (The bake gives it no
+// meadow: generator.js genMeadow.)
+bool islandBare(float x, float z, float h) {
+  float cx = x + LAND_CENTRE, cz = z + LAND_CENTRE;
+  return (lfMesaR() > 0.0 && lfMesaBare(cx, cz)) || lfRiaRim(cx, cz, h);
+}
 `;
 
 // The cell stage's: where caves keep clear.

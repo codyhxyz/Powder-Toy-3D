@@ -291,8 +291,8 @@ float genColumnHeight(float x, float z) { return islandLandform(x, z, genHeight(
 float genBand(float x, float z) {
   return genFbm(thFdiv(x + 0.5, uGenFeature) * GEN_BAND_FREQ, thFdiv(z + 0.5, uGenFeature) * GEN_BAND_FREQ, GEN_SALT_BAND, GEN_BAND_OCT);
 }
-float genMeadow(float x, float z) {
-  if (islandBare(x, z)) return GEN_MEADOW_BARE;
+float genMeadow(float x, float z, float h) {
+  if (islandBare(x, z, h)) return GEN_MEADOW_BARE;
   return genFbm(thFdiv(x + 0.5, uGenFeature) * GEN_PLANT_PATCH_FREQ, thFdiv(z + 0.5, uGenFeature) * GEN_PLANT_PATCH_FREQ,
                 GEN_SALT_PATCH, GEN_PATCH_OCT);
 }
@@ -388,6 +388,7 @@ int genTreeZone(int x, int z) {
   int top = genTop(x, z);
   float above = float(top) - genColWater(x, z);
   if (above < GEN_TREE_ABOVE_SEA || genSlope(x, z) >= GEN_TREE_SLOPE_MAX) return GEN_ZONE_NONE;
+  if (genColMeadow(x, z) == GEN_MEADOW_BARE) return GEN_ZONE_NONE;   // bare ground (islandBare): no trees, not even on sand
   if (float(top) > genFrostLine() - GEN_TREE_SNOW_GAP) return GEN_ZONE_NONE;
   int foot = islandCell(x, top - 1, z);
   if (foot == E_SAND) return above <= GEN_TREE_PALM_BELOW ? GEN_ZONE_PALM : GEN_ZONE_NONE;
@@ -432,7 +433,7 @@ export function islandTwin(P) {
     if (!c) {
       if (cache.size >= COLUMNS_KEEP) cache.clear();
       const h = col.genColumnHeight(x, z);
-      c = [h, col.genBand(x, z), col.genMeadow(x, z), col.genWater(x, z, h)];
+      c = [h, col.genBand(x, z), col.genMeadow(x, z, h), col.genWater(x, z, h)];
       cache.set(k, c);
     }
     return c;

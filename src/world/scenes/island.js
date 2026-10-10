@@ -63,7 +63,7 @@ out vec4 oC;
 void main() {
   ivec2 c = ivec2(gl_FragCoord.xy) - GEN_COLUMN_MARGIN;
   float x = float(c.x), z = float(c.y), h = genColumnHeight(x, z);
-  oC = vec4(h, genBand(x, z), genMeadow(x, z), genWater(x, z, h));
+  oC = vec4(h, genBand(x, z), genMeadow(x, z, h), genWater(x, z, h));
 }
 `;
 
