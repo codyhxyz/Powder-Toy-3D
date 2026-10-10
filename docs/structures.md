@@ -123,14 +123,15 @@ They live in `structures.js`, not `builtins.js`, because `builtins.js` is pasted
 - **Hermit's cabins** by tarns (`P.landforms.lakes`): 16 places on a ring round each tarn past its `islandLakeClearance`
   (rim + cave margin + 3), the cabin's box (and 3 cells round it) clear of that clearance and of standing water, its
   door to the water; two per world.
-- **Mine at a cave mouth**: when the twin has `islandCaveMouth(x, z)` (caves' export, pending on their branch), the mine
-  scans a 4-cell lattice for mouths and faces out of them; until then the slope fallback stands. The default seed's
-  mines include one on the gorge's floor, driven into its strata wall.
+- **Mine at a cave mouth**: with caves' `islandCaveMouth(x, z)` in the twin (caves branch 2c13012, merged here), the
+  mine scans an 8-cell lattice for mouths and faces out of them (a 4-cell scan finds no more and costs ~1.3 s); without
+  it the slope fallback stands. Seeds 20261008, 1, 2: every mine at a mouth (mouth values 1–6). CPU-checked; not yet
+  on the GPU.
 - **The start shrine** is now the layer's first kind (cap 1): the flattest dry spot within 40 cells of where the world
   starts (`P.structures.start`, from the island's `start`), drawn in its cells like every structure; the app sets its
   three perk orbs from the record (`shrineAltars`). Scenes without structures keep the app's own search.
-- Still to wire: `islandCaveMouth` (just merge caves; nothing else changes), and a reward shrine in a deep dry cavern
-  (a `shrine` site from the caves' cavern list, if they export one).
+- Still to do: a reward shrine in a deep dry cavern (a `shrine` site from a caves' cavern list, if they export one), and
+  placement's cost: 1.3–1.7 s of CPU per world load (the lighthouse and mouth lattice scans and the site rules' noise).
 
 ### Where each one goes
 

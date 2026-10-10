@@ -90,7 +90,7 @@ export const STRUCT = {
   HEAD_BONUS: 1,        // (by this much in score)
   LIGHT_RISE: 12,       // ground rise a lighthouse's box may stand over (a cliff top: its footing builds a plinth on the seaward side)
   LATTICE: 8,           // cells between the points a lattice scan tries (headlands)
-  MOUTH_LATTICE: 4,     // ...and cave mouths (a few cells wide)
+  MOUTH_LATTICE: 8,     // ...and cave mouths (most are wider than this: a finer scan costs ~1 s a world)
   // a hermit's cabin by a tarn: on a ring round it, out of islandLakeClearance
   HERMIT_GAP: 3,        // cells between the lake's clearance and the cabin's box
   HERMIT_ANGLES: 16,    // places tried round each tarn
