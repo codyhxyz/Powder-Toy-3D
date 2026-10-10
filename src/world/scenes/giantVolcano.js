@@ -151,7 +151,11 @@ function treeAt(ox, oz, d, seed) {
   const n = TREE_SECTORS[k];
   let a = Math.atan2(oz, ox);
   if (a < 0) a += TAU;
-  const j = Math.min(Math.floor((a * n) / TAU), n - 1);
+  return treeSite(k, Math.min(Math.floor((a * n) / TAU), n - 1), seed);
+}
+// the tree at site j of ring k, or null
+function treeSite(k, j, seed) {
+  const n = TREE_SECTORS[k];
   const h = pcg((j + pcg((k + pcg((seed + SALT_TREE) >>> 0)) >>> 0)) >>> 0);
   if ((h & (U16 - 1)) / U16 >= TREE_CHANCE) return null;
   const h2 = pcg(h);
@@ -162,6 +166,22 @@ function treeAt(ox, oz, d, seed) {
   return { x, z, base: coneTop(x, z) };
 }
 
+// Every tree for world seed `seed`, and whether world cell (x, y, z) is part
+// of tree t by its shape alone (no site lookup): for tools/scene-giant-preview.mjs,
+// which checks the lookup finds every cell of every tree.
+export function volcTrees(seed) {
+  const trees = [];
+  TREE_SECTORS.forEach((n, k) => { for (let j = 0; j < n; j++) { const t = treeSite(k, j, seed); if (t) trees.push(t); } });
+  return trees;
+}
+export function volcTreePart(t, x, y, z) {
+  const rx = x + 0.5 - (t.x + TRUNK_W / 2), ry = y + 0.5 - (t.base + CROWN_LIFT), rz = z + 0.5 - (t.z + TRUNK_W / 2);
+  if (Math.abs(ry) < CROWN_HALF && rx * rx + ry * ry + rz * rz < CROWN_R * CROWN_R) return E.PLANT;
+  if (x >= t.x && x < t.x + TRUNK_W && z >= t.z && z < t.z + TRUNK_W && y >= t.base - TRUNK_ROOT && y < t.base + TRUNK_H) return E.WOOD;
+  return E.EMPTY;
+}
+export const VOLC_TREE_BOX = { reach: Math.ceil(CROWN_R + TRUNK_W), below: TRUNK_ROOT, above: Math.ceil(CROWN_LIFT + CROWN_HALF) };
+
 // The element at world cell (x, y, z) for world seed `seed`.
 export function volcCell(x, y, z, seed) {
   const ox = x + 0.5 - CENTER[0], oz = z + 0.5 - CENTER[1], d = Math.hypot(ox, oz);
@@ -170,11 +190,8 @@ export function volcCell(x, y, z, seed) {
   if (d < conduitR(y)) id = E.LAVA;
   if (x >= CLONE_LO[0] && y >= CLONE_LO[1] && z >= CLONE_LO[2] && x < CLONE_HI[0] && y < CLONE_HI[1] && z < CLONE_HI[2]) id = E.CLONE;
   const t = treeAt(ox, oz, d, seed);
-  if (t) {
-    const rx = x + 0.5 - (t.x + TRUNK_W / 2), ry = y + 0.5 - (t.base + CROWN_LIFT), rz = z + 0.5 - (t.z + TRUNK_W / 2);
-    if (Math.abs(ry) < CROWN_HALF && rx * rx + ry * ry + rz * rz < CROWN_R * CROWN_R) id = E.PLANT;
-    else if (x >= t.x && x < t.x + TRUNK_W && z >= t.z && z < t.z + TRUNK_W && y >= t.base - TRUNK_ROOT && y < t.base + TRUNK_H) id = E.WOOD;
-  }
+  const part = t ? volcTreePart(t, x, y, z) : E.EMPTY;
+  if (part !== E.EMPTY) id = part;
   if (d > SNOW_IN && d < SNOW_OUT && y >= top && y < top + SNOW_DEPTH) id = E.SNOW;
   return id;
 }
