@@ -148,7 +148,7 @@ toolbelt = createToolbelt(env) → { update(ctx), select(index), setVisible(bool
 // The shell calls setVisible(true/false) on entering/leaving POV, and update(ctx) every POV frame.
 // In World the grid is a window that moves over the world (docs/scaling.md D11): the shell calls
 // windowShifted when it does, and the toolbelt passes it to every tool.
-// The toolbelt listens for the number keys itself (1–9, 0 for slot 10) (only while env.isActive()). The wheel comes in ctx.wheel:
+// The toolbelt listens for the number row itself (1–9, then 0, - and = for slots 10–12) (only while env.isActive()). The wheel comes in ctx.wheel:
 // it switches slots unless the selected tool's wantsWheel?.() returns true, then it goes to the tool.
 ```
 
@@ -180,9 +180,12 @@ export default {
   the frame the button goes down, then every `interval` while held (`hold: false` for one per click), and
   a click during the wait is buffered. `swing(spec)`: a melee blow's eased pose, stopping short on a hit and
   following through on a miss.
-- `tools/melee.js` `meleeTool(spec)`: a whole swung tool (the axe, the pickaxe) from its blow's tuning, pass,
+- `tools/melee.js` `meleeTool(spec)`: a whole swung tool (the axe, the pickaxe, the knife) from its blow's tuning, pass,
   `HIT` row, refire, body damage and held pose. A new swung tool is a config file; add its impact source to
-  `constants.js` `MELEE_SOURCES` so sparks and ricochets treat it as a blow, not a round.
+  `constants.js` `MELEE_SOURCES` so sparks and ricochets treat it as a blow, not a round. Optional: `reach`,
+  `bodyBlow(ctx, target)` (this blow on this body: damage, cause, `HIT` row, `lethal`), `tell(ctx, target)`
+  (the held model eases to `pose.ready`/`readyPos` while it holds: a lined-up special blow), `pose.thrust`
+  (a stab drives forward instead of only turning) and `pose.lethal` (a lethal blow's own motion).
 - `viewmodel.js` `HIT` and `rig.hit(HIT.X)`: a tool's shot, blow or fling, as the hand's spring kick plus
   the view punch (feel.js, Source's ViewPunch spring). Add a row to `HIT` for a new tool.
 - `env.feedback.notice(text)` / `refuse(text, { id, point })`: the throttled "can't" toast, slot shake and
@@ -205,9 +208,20 @@ ctx = {
   primaryPressed, secondaryPressed, // went down this frame
   wheel,                          // wheel notches this frame (+1 = scrolled down/away), 0 if none
   aim: { valid, cell: Vector3, face, id, T, P, dist },   // the cell under the crosshair (pick pass)
-  player: { pos, vel, onGround, inLiquid, applyImpulse(dv /* cells/s */) },
+  player: { pos, vel, onGround, inLiquid, applyImpulse(dv /* cells/s */), holdPogo() },
 }
 ```
+
+### Knife and pogo stick (2026-10-10, Big Team Battle)
+
+| Tool | Key | What | Where the rules come from |
+|---|---|---|---|
+| Knife (`KNIFE`, slot 11, `-`) | `knife.tool.js` | `meleeTool` with a thrust. From behind a body it kills outright, through any shield (`hurt(..., { lethal: true })`); anywhere else a stab of 0.34 × 40/65 ≈ 0.21 (the axe's blow × TF2's knife over its Fire Axe). While a backstab is lined up the knife comes up (the tell), and a backstab plunges with its own motion. Reach 4.4 cells (TF2's 48 HU trace + 18 HU hull, scaled from an 82 HU player to this body); 0.8 s refire. Its cell blow (`povTools.js` `KNIFE`, energy 7) cuts a plant or chips ice where it lands, nothing harder. | TF2: `CTFKnife::IsBehindAndFacingTarget` on the ground plane: `dot(myFwd, toTarget) > 0.5`, `dot(itsFwd, toTarget) > 0`, `dot(myFwd, itsFwd) > −0.3`. A target needs `facing(out)` (targets.js; the player and NPCs have it) to be backstabbed. |
+| Pogo stick (`POGO`, slot 12, `=`) | `pogo.tool.js` + player.js | While held (`ctx.player.holdPogo()` every frame) every landing bounces. A press of jump within 0.21 s of a landing (before or after) climbs a step; a landing without one drops back. Heights, as shares of the body's 1.9 m jump: 0.67, then +0.68 a step, three steps (≈ 1.3, 2.6, 3.9, 5.3 m). Not off liquid (swimming stops it). The spring takes landings and head bonks up to the top bounce's speed (no 'land', no slam). A tap is a bounce, holding jump past the window flies the jetpack. Body event `pogo` `{ step, timed, speed }`. | Commander Keen 4 (Omnispeak `ck_keen.c`, `ck_phys.c`, 70 tics/s): a bounce leaves at −48 against a jump's −40 and heeds the button for its timer's first 15 of 24 tics; simulated, Keen's jump rises 1124 units, a released bounce 750, a held one 1518. Super Mario 64's triple jump for the three timed steps. |
+
+Porting onto the GMod inventory (`catalog.js`): each tool is self-contained; give each a `GEAR` entry with the
+`desc` above (Knife in the Dig slot with the axe, Pogo stick in Gadgets) and replace `key, name, slot, model, desc`
+with `...gear('KNIFE')` / `...gear('POGO')`. Nothing else in either file depends on the hotbar.
 
 ## Gunplay v2 (2026-10-08): events and ownership
 
@@ -228,8 +242,8 @@ say world. Emitters own their event names. Listeners never mutate payloads.
 | `gun:dry` | gun | `{}`. The trigger clicked but nothing fired (muzzle blocked). |
 | `round:move` | gun, bomb | `{ id, kind, from, to }` (kind 'round' or 'bomb'). A round in flight moved this frame (grid), for tracers. |
 | `round:end` | gun, bomb | `{ id, kind }`. The round is gone (impact or out of the box). |
-| `impact` | gun, axe, pickaxe | `{ source: 'gun'\|'axe'\|'pickaxe', point, normal, id, energy, broke, body? }` (body: a target, not a cell, was hit; id −1). Something was struck. id is the element hit, energy is ½·DENS·v² in sim units, and broke is true/false when the striker knows, else null. |
-| `tool:action` | shovel, bucket, axe, pickaxe, physgun, trowel, blowtorch, bomb | `{ tool, action, id?, point?, amount? }`. tool is 'shovel'\|'bucket'\|'axe'\|'pickaxe'\|'physgun'\|'trowel'\|'blowtorch'\|'bomb'; action is 'dig'\|'place'\|'on'\|'off'\|'throw'\|'dump'\|'scoop'\|'pour'\|'swing'\|'refuse'\|'grab'\|'fling'\|'release'\|'blast'. Physgun 'hold' state is read from the tool, not an event. |
+| `impact` | gun, axe, pickaxe, knife | `{ source: 'gun'\|'axe'\|'pickaxe'\|'knife', point, normal, id, energy, broke, body?, backstab? }` (body: a target, not a cell, was hit; id −1; backstab: the knife's lethal blow). Something was struck. id is the element hit, energy is ½·DENS·v² in sim units, and broke is true/false when the striker knows, else null. |
+| `tool:action` | shovel, bucket, axe, pickaxe, knife, physgun, trowel, blowtorch, bomb | `{ tool, action, id?, point?, amount? }`. tool is 'shovel'\|'bucket'\|'axe'\|'pickaxe'\|'knife'\|'physgun'\|'trowel'\|'blowtorch'\|'bomb'; action is 'dig'\|'place'\|'on'\|'off'\|'throw'\|'dump'\|'scoop'\|'pour'\|'swing'\|'refuse'\|'grab'\|'fling'\|'release'\|'blast'. Physgun 'hold' state is read from the tool, not an event. |
 | `player:step` | shell (camera bob cycle) | `{ speed, inLiquid }`. A footfall. |
 | `player:jet` | player | `{ on }`. The jetpack lit or went out. |
 | `perk:take` | shell | `{ key, keys, point, by? }`. A body took a perk orb: key is the orb's, keys what it gained (Gamble's two). |
@@ -338,11 +352,16 @@ Extra Life brings the body back where it fell.
 | Extra Health | every hurt is divided by 1 + 0.5 per stack (health stays 0..1) | vitals.js | +50% |
 | Faster Tools (Faster Wands) | every tool's clock runs 2× (`tools/action.js` `toolDt`: refire waits, swings, digging, pouring, the torch's heat, the physgun's blast cooldown), via `ctx.toolRate` | action.js | 2× again, up to 16× |
 | Gamble | two random other perks, not kept itself | perks.js `grant` | — |
+| Energy Shield (Halo 3's) | a shield of 70/45 of a life over health. Blows, blasts and slams hit it first and what's left goes on to health; heat, cold, acid and choking get past it; a lethal blow (a backstab) ignores it. Any hurt holds the refill off 5 s, then it fills in 2 s. Body event `shield` `{ state: 'hit'\|'break'\|'recharge'\|'full' }`; the HUD's bar above health flashes, pops, blinks red while empty and sweeps as it refills; sounds for each and an empty alarm | vitals.js, hud.js, audio.js | +70/45 of a life |
+| Fleet Foot | sprint ×2 | player.js | ×2 again, capped at 60 cells/s (a blast's throw: the probe keeps up) |
+| Rocket Boots | jet climb and fly speed ×2 | player.js | ×2 again, capped at 60 cells/s sideways and 175 up (Noita's fastest fall) |
+| Big Tank | jet fuel ×2: twice the time aloft (the refill rates are Noita's, so it fills slower too) | player.js | ×2 again |
 
 A new tool gets Faster Tools for free by timing its actions with `trigger` and `toolDt(ctx)` instead of `ctx.dt`.
 NPC bodies carry perks too (npc.js passes `toolRate` into its kit's ctx).
 
 Check: `node tools/perks-check.mjs [--port …] [--shot file.jpg] [--worldshot file.jpg]` (a dev server; AC power).
+Combat (shield, movement perks, knife, pogo): `node tools/combat-check.mjs [--port …] [--shot file.jpg]`.
 
 ## Verifying (headless GPU)
 
