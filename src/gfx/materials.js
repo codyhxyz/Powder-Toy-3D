@@ -19,7 +19,7 @@
 //          (elements.js sigma) per cell, RGB; the rest is absorbed. Ratios to
 //          sigma give the colour a deep body of it glows with.
 //   bevel  crisp voxels: share of the global edge radius (gfx.bevel) its
-//          edges are rounded by (default 1; crystal's cleavage edges are sharp)
+//          edges are rounded by (default 1)
 //   emit   light it gives off by itself at any temperature (luminescence), as
 //          linear RGB radiance in the incandescence's scene units (sunlit
 //          white ≈ 1.2): what a body of it shows. It adds to the thermal glow
@@ -156,12 +156,13 @@ const LOOKS = {
     crag: { relief: 0.5, pits: 0, bands: 2, stain: 0 } },       // blocky cleat, bright and dull bands
   BROKENCOAL: { ch: 'GRANULAR', rough: 0.75, alb: '#3c3c3d', glint: 0.5 },
   // Fluorite (elements.js CRYSTAL): n = 1.434, a vitreous luster from flat
-  // growth and cleavage faces (polished glass-smooth: GGX roughness at the
-  // floor), sharp cleavage edges. Its body colour and glow are worked out per
-  // crystal in shaders/gfx/surface.js (crystalLook); alb is the mean. Its
+  // growth faces (polished glass-smooth: GGX roughness at the floor). A cell
+  // is drawn as a cluster of pointed prisms (shaders/gfx/crystal.js); their
+  // body colour and glow are worked out per prism in shaders/gfx/surface.js
+  // (crystalLook); alb is the mean. Its
   // dust is pale, as any crushed coloured crystal is (scattering at the grain
   // faces swamps the absorption), and keeps the glow (powdered phosphors do).
-  CRYSTAL: { rough: 0.04, ior: 1.434, alb: '#4a3478', sss: 0.3, bevel: 0.2, emit: FLUORITE_GLOW },
+  CRYSTAL: { rough: 0.04, ior: 1.434, alb: '#4a3478', sss: 0.3, emit: FLUORITE_GLOW },
   CRYSTAL_DUST: { ch: 'GRANULAR', rough: 0.6, ior: 1.434, alb: '#b7a2d2', sss: 0.3, glint: 0.4, emit: FLUORITE_GLOW },
   // Electronics (elements.js). A battery's printed steel can; silicon is
   // grey and mirror-like (n ≈ 3.9 in the visible: F0 ≈ 0.35), tinted as TPT

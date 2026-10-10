@@ -41,7 +41,7 @@ export const MODELS = {
   trowel: { fit: 'z', size: 1.3, anchor: [0.5, 1, 1], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 1.0, roll: Q } },             // blade flat and forward, held at the end of the handle
   scanner: { fit: 'z', size: 0.6, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.7, roll: 0.25 } },    // a handheld box, screen up toward the eye
   flamer: { fit: 'z', size: 1.6, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.3, roll: 0.35 } },     // a flamethrower: wand, fuel tank under it, pilot light at the nozzle
-  torch: { fit: 'y', size: 1.2, anchor: [0.5, 0, 0.5], arm: ARM_DOWN, icon: { yaw: 0, tilt: 0.2, roll: -Q } },                    // a burning torch, held at the foot of its stick
+  torch: { fit: 'y', size: 1.45, anchor: [0.5, 0.115, 0.5], arm: ARM_DOWN, icon: { yaw: 0, tilt: 0.2, roll: -Q } },                 // a burning torch, held by its grip
   lantern: { fit: 'y', size: 0.85, anchor: [0.5, 1, 0.5], arm: ARM_UP, icon: { yaw: 0, tilt: 0.3, roll: 0 } },                    // a lantern hanging from its bail
   bomb: { fit: 'z', size: 0.8, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.35, roll: Q } },         // a capped pipe with a lit fuse
   knife: { fit: 'z', size: 0.95, anchor: [0.5, 0.5, 0.79], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.3, roll: Q } },       // blade forward, edge down, held by the handle
@@ -64,7 +64,7 @@ const COLORS = {
   wood: '#7a5230', iron: '#9aa0a6', ironDark: '#585d62', metal: '#4a4f55', metalDark: '#2c2f33',
   grip: '#3a3530', orange: '#d87a22', white: '#d6dbe0', glow: '#5ff0ff', skin: '#c48a5c', sleeve: '#8a3a2a',
   screen: '#7dff9a', red: '#b8322a', flame: '#6fa8ff', spark: '#ffb347', olive: '#5a6b2e', oliveDark: '#3d4a1f',
-  fire: '#ff8a2a', lamp: '#f4f8ff', cloth: '#5b4630',
+  fire: '#ff8a2a', lamp: '#f4f8ff', cloth: '#5b4630', pitch: '#2a211b', leather: '#4e3322', leatherDark: '#2f1f15',
 };
 const UNLIT = new Set(['glow', 'screen', 'flame', 'spark', 'fire', 'lamp']);
 // unlit parts that are light sources, drawn this many times brighter than white so they glow (HDR, before the tone curve)
@@ -125,11 +125,23 @@ const PARTS = {
     { geo: 'cyl', rt: 0, rb: 0.07, h: 0.4, p: [0, 0.22, -1.32], rot: [-H, 0, 0], m: 'fire', name: 'flame' },
     STOCK_GRIP,
   ],
+  // a pitch torch: a tapered stave with a leather grip and an iron pommel, an iron cup at
+  // its head holding a tarred rag bound with cord, burning down into glowing coals on top.
+  // (The cone is the flame in the icon; in the world, lamp.js puts flame.js's live one at its foot.)
   torch: [
-    { geo: 'cyl', rt: 0.05, rb: 0.035, h: 1.0, p: [0, 0.5, 0], m: 'wood' },
-    { geo: 'cyl', r: 0.08, h: 0.22, p: [0, 1.0, 0], m: 'cloth' },
-    { geo: 'sphere', r: 0.08, p: [0, 1.14, 0], m: 'spark' },
-    { geo: 'cyl', rt: 0, rb: 0.1, h: 0.36, p: [0, 1.3, 0], m: 'fire', name: 'flame' },
+    { geo: 'cyl', rt: 0.05, rb: 0.038, h: 1.02, p: [0, 0.45, 0], m: 'wood' },
+    { geo: 'cyl', r: 0.05, h: 0.05, p: [0, -0.08, 0], m: 'ironDark' },
+    { geo: 'cyl', r: 0.047, h: 0.3, p: [0, 0.1, 0], m: 'leather' },
+    { geo: 'torus', R: 0.048, tube: 0.012, p: [0, 0.26, 0], rot: [H, 0, 0], m: 'leatherDark' },
+    { geo: 'torus', R: 0.048, tube: 0.012, p: [0, -0.04, 0], rot: [H, 0, 0], m: 'leatherDark' },
+    { geo: 'cyl', r: 0.058, h: 0.05, p: [0, 0.82, 0], m: 'metalDark' },
+    { geo: 'cyl', rt: 0.112, rb: 0.06, h: 0.15, p: [0, 0.93, 0], sides: 8, m: 'metalDark' },
+    { geo: 'torus', R: 0.11, tube: 0.014, ring: 8, p: [0, 1.005, 0], rot: [H, 0, 0], m: 'iron' },
+    { geo: 'cyl', rt: 0.09, rb: 0.1, h: 0.2, p: [0, 1.1, 0], sides: 8, m: 'pitch' },
+    { geo: 'torus', R: 0.1, tube: 0.016, ring: 8, p: [0, 1.06, 0], rot: [H + 0.12, 0, 0.08], m: 'cloth' },
+    { geo: 'torus', R: 0.096, tube: 0.016, ring: 8, p: [0, 1.15, 0], rot: [H - 0.1, 0, -0.06], m: 'cloth' },
+    { geo: 'cyl', rt: 0.06, rb: 0.091, h: 0.07, p: [0, 1.235, 0], sides: 8, m: 'ember', name: 'coals' },
+    { geo: 'cyl', rt: 0, rb: 0.1, h: 0.4, p: [0, 1.47, 0], m: 'fire', name: 'flame' },
   ],
   lantern: [
     { geo: 'torus', R: 0.1, tube: 0.02, p: [0, -0.06, 0], m: 'metalDark' },
@@ -249,8 +261,47 @@ const PARTS = {
   ],
 };
 
+// Glowing coals (the torch's head): charred black, its cracks glowing orange and slowly
+// shifting, in linear HDR like the other light sources. Unlit; one material, one clock.
+const EMBER_SCALE = 34;               // noise cells per model unit
+const EMBER_DRIFT = [0.25, 0.4];      // the cracks' drift, noise cells/s (up, through)
+const EMBER_HOT = [4.2, 1.1, 0.16];   // linear HDR, the hottest crack
+const EMBER_CHAR = [0.035, 0.022, 0.016];
+const emberTime = { value: 0 };
+function emberMaterial() {
+  const v3 = (c) => `vec3(${c.map((x) => x.toFixed(3)).join(', ')})`;
+  return new THREE.ShaderMaterial({
+    uniforms: { uTime: emberTime },
+    vertexShader: /* glsl */ `
+      varying vec3 vPos;
+      void main() { vPos = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+    fragmentShader: /* glsl */ `
+      uniform float uTime;
+      varying vec3 vPos;
+      float h3(vec3 p) { p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
+      float n3(vec3 x) {
+        vec3 i = floor(x), f = fract(x); f = f * f * (3.0 - 2.0 * f);
+        return mix(mix(mix(h3(i), h3(i + vec3(1, 0, 0)), f.x), mix(h3(i + vec3(0, 1, 0)), h3(i + vec3(1, 1, 0)), f.x), f.y),
+                   mix(mix(h3(i + vec3(0, 0, 1)), h3(i + vec3(1, 0, 1)), f.x), mix(h3(i + vec3(0, 1, 1)), h3(i + vec3(1, 1, 1)), f.x), f.y), f.z);
+      }
+      void main() {
+        vec3 q = vPos * ${EMBER_SCALE.toFixed(1)} + vec3(0.0, -uTime * ${EMBER_DRIFT[0].toFixed(2)}, uTime * ${EMBER_DRIFT[1].toFixed(2)});
+        float n = 0.65 * n3(q) + 0.35 * n3(q * 2.3 + 5.0);
+        float crack = smoothstep(0.5, 0.78, n);
+        float pulse = 0.75 + 0.25 * n3(vec3(uTime * 2.0, 3.0, 1.0));
+        gl_FragColor = vec4(mix(${v3(EMBER_CHAR)}, ${v3(EMBER_HOT)} * pulse, crack * crack), 1.0);
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+      }`,
+  });
+}
+
 const materials = new Map();   // COLORS key → material, shared by every model
 function material(key) {
+  if (key === 'ember') {
+    if (!materials.has(key)) materials.set(key, emberMaterial());
+    return materials.get(key);
+  }
   if (!materials.has(key)) {
     const color = jagexColor(COLORS[key]).multiplyScalar(GLOW_GAIN[key] ?? 1);
     materials.set(key, UNLIT.has(key)
@@ -283,6 +334,7 @@ function build(key) {
     m.position.set(...p.p);
     if (p.rot) m.rotation.set(...p.rot);
     if (p.name) m.name = p.name;
+    if (p.m === 'ember') m.onBeforeRender = () => { emberTime.value = performance.now() / 1000; };
     g.add(m);
   }
   return g;

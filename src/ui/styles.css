@@ -256,6 +256,11 @@ input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border-radius: 
 .btn.grow { flex: 1; }
 .btn.danger:hover { color: #fff; background: color-mix(in srgb, var(--danger) 60%, transparent); border-color: transparent; }
 .btn-row { display: flex; gap: 6px; margin-top: 8px; }
+/* settings → map: its name, its size, Change map */
+.map-row { display: flex; align-items: center; gap: 8px; }
+.map-row .map-name { font-weight: 650; font-size: 13.5px; }
+.map-row .map-tag { padding: 3px 5px 2px; border-radius: 4px; background: var(--raise-hi); color: var(--muted); font: 400 10px/1 var(--pixel); }
+.map-row .btn { margin-left: auto; }
 
 /* settings → account */
 .account-who { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }

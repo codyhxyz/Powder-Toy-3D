@@ -9,10 +9,8 @@ Each one exports a **layout**: the points the modes and vehicles build against.
 | --- | --- | --- | --- |
 | Dam Valley | `damValley` | `valley`: 256 × 96 × 128 | `src/arenas/damValley.js` |
 
-Load one from the drawer's Scene row (**Dam Valley**), or `?preset=damValley`.
-Picking it switches the grid to its own size; picking any other box scene
-switches back to the box size from before. The arena grid isn't in the Grid
-size row. Rounds reset the map with `__app.loadPreset('damValley', false)`:
+Load one from the map menu (**Dam Valley**: `src/maps.js`), or `?map=damValley` /
+`?preset=damValley`. Like every map, it comes at its own grid size. Rounds reset the map with `__app.loadPreset('damValley', false)`:
 the build is seeded, so every rebuild is the same, cell for cell.
 
 While an arena is loaded, `__app.arena` is its layout (else `null`). The app also:
@@ -146,6 +144,5 @@ finished map sleeps.
 - The tunnel is dark between the window slits. Light sources would help.
 - Vehicles: the abutment slopes (grade 0.8) are walkable but steep for a
   jeep. The jeep's route is the valley floor and the basin.
-- The arena's grid isn't offered in the Grid size row, by design. A
-  multiplayer guest gets it from the host's dims (`SIZES.valley`), but not
+- A multiplayer guest gets it from the host's dims (`SIZES.valley`), but not
   `__app.arena`.
