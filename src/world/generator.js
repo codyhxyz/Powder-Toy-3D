@@ -1,4 +1,5 @@
 import { BRICK } from '../shaders/common.js';
+import { structureClear } from './structures.js';
 import { pcg, definesGLSL, jsConstants, compileShared } from './scenes/themedShared.js';
 import { landforms } from './island/landforms.js';
 import { strata } from './island/strata.js';
@@ -497,6 +498,7 @@ function treeCandidate(bx, bz, P, T) {
   if ((h & 0xffff) / UNIT16 >= TREE.CHANCE) return null;
   const h2 = pcg(h), h3 = pcg(h2);
   const x = bx * BRICK + (h2 & (BRICK - 1)), z = bz * BRICK + ((h2 >>> 2) & (BRICK - 1));
+  if (structureClear(P, x, z)) return null;   // trees give way to the world's structures (world/structures.js)
   const zone = T.genTreeZone(x, z), C = GEN_CODE;
   if (zone === C.ZONE_NONE) return null;
   const pick = (h3 & 0xffff) / UNIT16;
