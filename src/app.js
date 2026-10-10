@@ -553,8 +553,8 @@ for (const m of MAPS) {
   if (!ok) console.error(`maps.js: map '${m.key}' doesn't match app.js (size '${m.size}', ${m.dims.join('×')})`);
 }
 if (WORLD_DIMS.some((n, i) => n !== WORLD_SIZE[i])) console.error('maps.js: WORLD_DIMS is not shaders/far.js WORLD_SIZE');
-// cells [nx, ny, nz] for a toast: '128³', '160 × 96 × 160'; for the HUD: '2.1M'
-const dimsName = (d) => (d.every((n) => n === d[0]) ? `${d[0]}³` : d.join(' × '));
+// cells [nx, ny, nz] for a toast: '128^3' (as maps.js sizeTag), '160 × 96 × 160'; for the HUD: '2.1M'
+const dimsName = (d) => (d.every((n) => n === d[0]) ? `${d[0]}^3` : d.join(' × '));
 const millions = (d) => `${(d[0] * d[1] * d[2] / 1e6).toFixed(1)}M`;
 
 function loadPreset(name, undoable = true) {
