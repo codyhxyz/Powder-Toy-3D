@@ -12,7 +12,7 @@ const cross = (a, b, c) => [
   (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]),
 ];
 
-// Binary crossings are always edge midpoints: cache topology and outward normals.
+// Binary crossings are always edge midpoints: cache topology and fallback face normals.
 const triangles = Array.from({ length: 256 }, (_, mask) => {
   const result = [];
   for (const tet of tetrahedra) {
@@ -76,12 +76,14 @@ function clip(points, bounds) {
  * size: positive integer [sx,sy,sz]; bounds: finite [loX,loY,loZ,hiX,hiY,hiZ].
  * step: 1 (default), 2 or 4. Coarse blocks are aligned to WORLD multiples of step;
  * any opaque cell keeps a block occupied, with its first x-fast opaque ID as material.
- * Supply complete blocks from floor((lo-step/2)/step)*step through
- * (ceil((hi-step/2)/step)+1)*step EXCLUSIVE on each axis (or more padding).
+ * Supply complete blocks from (floor((lo-step/2)/step)-1)*step through
+ * (ceil((hi-step/2)/step)+2)*step EXCLUSIVE on each axis (or more padding).
+ * The extra block on each side supplies central-difference occupancy gradients.
  * Missing padding throws, rather than creating artificial chunk-border surfaces.
  *
  * Returns NONINDEXED {positions: Float32Array, normals: Float32Array, ids: Uint8Array}.
- * Positions are world coordinates; normals are outward unit face normals; ids has
+ * Positions are world coordinates; normals are outward unit occupancy gradients
+ * (face normals where the gradient vanishes); ids has
  * one unnormalized material ID per vertex, constant across each triangle.
  * Geometry is clipped to half-open ownership bounds (shared boundary vertices are
  * retained; faces entirely on a high boundary are excluded). Same-step chunks with
@@ -97,8 +99,8 @@ export function buildSurfaceMesh(ids, { size, origin, bounds, step = 1 }) {
       ids.length !== size[0] * size[1] * size[2]) {
     throw new RangeError('Invalid surface mesh volume, bounds or step');
   }
-  const start = origin.map((_, a) => Math.floor((bounds[a] - step / 2) / step) * step);
-  const count = start.map((v, a) => Math.ceil((bounds[a + 3] - step / 2) / step) - v / step + 1);
+  const start = origin.map((_, a) => (Math.floor((bounds[a] - step / 2) / step) - 1) * step);
+  const count = start.map((v, a) => Math.ceil((bounds[a + 3] - step / 2) / step) - v / step + 2);
   if (start.some((v, a) => v < origin[a] || v + count[a] * step > origin[a] + size[a])) {
     throw new RangeError('Surface mesh volume needs complete padded sample blocks');
   }
@@ -120,9 +122,19 @@ export function buildSurfaceMesh(ids, { size, origin, bounds, step = 1 }) {
     }
     samples[x + nx * (y + ny * z)] = material;
   }
+  // Negative occupancy gradient points from solid to empty. Leave it unnormalized
+  // until interpolation, so empty/flat samples don't bias the direction.
+  const gradients = new Int8Array(samples.length * 3);
+  const strides = [1, nx, nx * ny];
+  for (let z = 1; z < nz - 1; z++) for (let y = 1; y < ny - 1; y++) for (let x = 1; x < nx - 1; x++) {
+    const index = x + nx * (y + ny * z);
+    for (let a = 0; a < 3; a++) {
+      gradients[index * 3 + a] = +!!samples[index - strides[a]] - +!!samples[index + strides[a]];
+    }
+  }
   const positions = [], normals = [], materials = [];
   const offsets = corners.map(([x, y, z]) => x + nx * (y + ny * z));
-  for (let z = 0; z < nz - 1; z++) for (let y = 0; y < ny - 1; y++) for (let x = 0; x < nx - 1; x++) {
+  for (let z = 1; z < nz - 2; z++) for (let y = 1; y < ny - 2; y++) for (let x = 1; x < nx - 2; x++) {
     const index = x + nx * (y + ny * z);
     let mask = 0;
     for (let i = 0; i < 8; i++) if (samples[index + offsets[i]]) mask |= 1 << i;
@@ -138,7 +150,16 @@ export function buildSurfaceMesh(ids, { size, origin, bounds, step = 1 }) {
         if (Math.hypot(...cross(...face)) === 0) continue;
         for (const p of face) {
           positions.push(...p);
-          normals.push(...normal);
+          // Trilinear sampling also covers diagonals and clipped vertices; the
+          // same world point sees the same gradient in neighbouring chunks.
+          const t = p.map((v, a) => (v - base[a]) / step);
+          const gradient = [0, 0, 0];
+          for (let c = 0; c < 8; c++) {
+            const weight = corners[c].reduce((w, v, a) => w * (v ? t[a] : 1 - t[a]), 1);
+            for (let a = 0; a < 3; a++) gradient[a] += weight * gradients[(index + offsets[c]) * 3 + a];
+          }
+          const length = Math.hypot(...gradient);
+          normals.push(...(length > 1e-12 ? gradient.map(v => v / length) : normal));
           materials.push(samples[index + offsets[materialCorner]]);
         }
       }

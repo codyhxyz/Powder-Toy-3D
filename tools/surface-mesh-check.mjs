@@ -5,8 +5,8 @@ import { ELEMENTS, E, K, R } from '../src/elements.js';
 
 function volume(bounds, at, step = 1) {
   // Deliberately different origins for neighbouring chunks: alignment must be global.
-  const origin = bounds.slice(0, 3).map(v => Math.floor(v / step) * step - 2 * step);
-  const size = origin.map((v, a) => Math.ceil(bounds[a + 3] / step) * step + 2 * step - v);
+  const origin = bounds.slice(0, 3).map(v => (Math.floor((v - step / 2) / step) - 1) * step);
+  const size = origin.map((v, a) => (Math.ceil((bounds[a + 3] - step / 2) / step) + 2) * step - v);
   const ids = new Uint8Array(size[0] * size[1] * size[2]);
   for (let z = 0; z < size[2]; z++) for (let y = 0; y < size[1]; y++) for (let x = 0; x < size[0]; x++) {
     ids[x + size[0] * (y + size[1] * z)] = at(x + origin[0], y + origin[1], z + origin[2]);
@@ -24,15 +24,14 @@ function mesh(bounds, at, step = 1) {
   assert.equal(m.positions.length % 9, 0);
   for (let i = 0; i < m.positions.length; i += 9) {
     const p = Array.from({ length: 3 }, (_, j) => Array.from(m.positions.slice(i + 3 * j, i + 3 * j + 3)));
-    const normal = Array.from(m.normals.slice(i, i + 3));
     const u = p[1].map((v, a) => v - p[0][a]), v = p[2].map((v, a) => v - p[0][a]);
     const cross = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
     assert(Math.hypot(...cross) > 0, 'no degenerate triangles');
-    assert(Math.abs(Math.hypot(...normal) - 1) < 1e-6, 'unit normals');
-    assert(cross.reduce((sum, n, a) => sum + n * normal[a], 0) > 0, 'normal follows winding');
     assert([0, 1, 2].every(a => p.some(point => point[a] < bounds[a + 3])), 'no high-boundary-only face');
     for (let j = 0; j < 3; j++) {
-      assert.deepEqual(Array.from(m.normals.slice(i + 3 * j, i + 3 * j + 3)), normal);
+      const n = Array.from(m.normals.slice(i + 3 * j, i + 3 * j + 3));
+      assert(n.every(Number.isFinite), 'finite normals');
+      assert(Math.abs(Math.hypot(...n) - 1) < 1e-6, 'unit normals');
       assert.equal(m.ids[i / 3 + j], m.ids[i / 3]);
       assert.notEqual(m.ids[i / 3 + j], 0);
       p[j].forEach((n, a) => assert(Number.isFinite(n) && n >= bounds[a] && n <= bounds[a + 3]));
@@ -41,6 +40,17 @@ function mesh(bounds, at, step = 1) {
   return m;
 }
 const key = p => p.join(',');
+function vertexNormals(m, include = () => true) {
+  const normals = new Map();
+  for (let i = 0; i < m.positions.length; i += 3) {
+    const p = Array.from(m.positions.slice(i, i + 3));
+    if (!include(p)) continue;
+    const k = key(p), n = Array.from(m.normals.slice(i, i + 3));
+    if (normals.has(k)) assert.deepEqual(n, normals.get(k), 'shared vertices have smooth normals');
+    normals.set(k, n);
+  }
+  return normals;
+}
 function faces(m) {
   return Array.from({ length: m.positions.length / 9 }, (_, i) =>
     Array.from({ length: 3 }, (_, j) => Array.from(m.positions.slice(9 * i + 3 * j, 9 * i + 3 * j + 3))));
@@ -72,14 +82,22 @@ function area(m) {
   }
   return sum;
 }
-function adjacent(at, step = 1, split = 0) {
+function adjacent(at, step = 1, split = 0, axis = 0) {
   const bounds = [-4, -4, -4, 4, 4, 4];
-  const left = mesh([...bounds.slice(0, 3), split, 4, 4], at, step);
-  const right = mesh([split, -4, -4, 4, 4, 4], at, step);
+  const leftBounds = bounds.slice(), rightBounds = bounds.slice();
+  leftBounds[axis + 3] = rightBounds[axis] = split;
+  const left = mesh(leftBounds, at, step);
+  const right = mesh(rightBounds, at, step);
   const whole = mesh(bounds, at, step);
-  const seam = m => [...edges(m)].filter(([, e]) => e.count === 1 && e.points.every(p => p[0] === split) &&
-    ![1, 2].some(a => [bounds[a], bounds[a + 3]].some(v => e.points.every(p => p[a] === v)))).map(([k]) => k).sort();
+  const seam = m => [...edges(m)].filter(([, e]) => e.count === 1 && e.points.every(p => p[axis] === split) &&
+    ![0, 1, 2].some(a => a !== axis && [bounds[a], bounds[a + 3]].some(v => e.points.every(p => p[a] === v)))).map(([k]) => k).sort();
   assert.deepEqual(seam(left), seam(right), 'exact boundary edges from different halos');
+  const leftNormals = vertexNormals(left, p => p[axis] === split);
+  const rightNormals = vertexNormals(right, p => p[axis] === split);
+  for (const [p, n] of leftNormals) {
+    assert.deepEqual(rightNormals.get(p), n, 'exact shared-boundary normals from different halos');
+  }
+  if (seam(left).length) assert(leftNormals.size > 0, 'seam normal check is nonempty');
   assert(Math.abs(area(left) + area(right) - area(whole)) < 1e-6, 'no missing/overlapping owned area');
   const faceKeys = [...faces(left), ...faces(right)].map(f => f.map(key).sort().join('|'));
   assert.equal(new Set(faceKeys).size, faceKeys.length, 'no duplicate triangles');
@@ -90,6 +108,8 @@ const box = [-2, -2, -2, 3, 3, 3];
 const single = (x, y, z) => x === 0 && y === 0 && z === 0 ? E.ROCK : 0;
 const isolated = mesh(box, single);
 closed(isolated);
+assert(vertexNormals(isolated).size < isolated.ids.length, 'smooth normals checked at duplicate vertices');
+assert(isolated.normals.some((v, i) => i >= 3 && i < 9 && v !== isolated.normals[i % 3]), 'normals vary within a triangle');
 for (let i = 0; i < isolated.positions.length; i += 3) {
   const dot = [0, 1, 2].reduce((sum, a) => sum + (isolated.positions[i + a] - 0.5) * isolated.normals[i + a], 0);
   assert(dot > 0, 'isolated cell normals point away from its centre');
@@ -118,6 +138,22 @@ assert.equal(unowned.positions.length, 0, 'face on high plane not owned');
 assert(owned.positions.length > 0, 'face on low plane owned');
 adjacent((x, y, z) => y < x + z ? E.ROCK : 0, 2, -1);
 adjacent((x, y, z) => y < x + z ? E.ROCK : 0, 4, -1);
+for (const step of [1, 2, 4]) for (const axis of [0, 1, 2]) {
+  // Fractional ownership planes create clipped vertices, not just crossings.
+  adjacent((x, y, z) => y < x + z ? E.ROCK : 0, step, 0.25, axis);
+}
+const crown = mesh([-5, -5, -5, 5, 5, 5], (x, y, z) => x * x + y * y + z * z < 12 ? E.WOOD : 0);
+closed(crown);
+vertexNormals(crown);
+
+// A checkerboard has zero central differences everywhere: retain face fallback.
+const fallback = mesh(box, (x, y, z) => (x + y + z) & 1 ? E.ROCK : 0);
+for (const [i, [a, b, c]] of faces(fallback).entries()) {
+  const u = b.map((v, k) => v - a[k]), v = c.map((v, k) => v - a[k]);
+  const cross = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+  const length = Math.hypot(...cross);
+  for (let j = 0; j < 9; j++) assert(Math.abs(fallback.normals[i * 9 + j] - cross[j % 3] / length) < 1e-6, 'degenerate gradients use outward face normal');
+}
 
 // Sparse features in a block survive even when they miss the coarse sample centre.
 for (const step of [2, 4]) {
@@ -140,4 +176,6 @@ assert.deepEqual(input.ids, before, 'input is not mutated');
 assert.throws(() => buildSurfaceMesh(input.ids, { ...input.options, step: 3 }), RangeError);
 assert.throws(() => buildSurfaceMesh(input.ids.subarray(1), input.options), RangeError);
 assert.throws(() => buildSurfaceMesh(new Uint8Array(8), { size: [2, 2, 2], origin: [0, 0, 0], bounds: [0, 0, 0, 2, 2, 2] }), /padded/);
-console.log('surface-mesh-check: PASS (isolated/manifold/winding, all elements/high IDs, plane/chunk ownership/seams, thin branch, step 2/4, 255 sign cases, validation)');
+// Topology-only padding is insufficient for chunk-independent gradients.
+assert.throws(() => buildSurfaceMesh(new Uint8Array(27), { size: [3, 3, 3], origin: [-1, -1, -1], bounds: [0, 0, 0, 1, 1, 1] }), /padded/);
+console.log('surface-mesh-check: PASS (smooth/finite/unit/outward normals, gradient fallback, normal/geometry seams, isolated/manifold/winding, all elements/high IDs, thin branch, steps 1/2/4, 255 sign cases, validation)');
