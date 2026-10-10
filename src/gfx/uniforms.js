@@ -4,6 +4,7 @@
 // graphics features only need to touch this file, not the app wiring.
 import { mediaNoiseUniform } from './mediaNoise.js';
 import { skyState } from './sky.js';
+import { cloudShift } from '../shaders/gfx/clouds.js';
 
 // The media detail clock (simulation steps) wraps here, seamlessly for the
 // drift speeds allowed in gfx/materials.js (MEDIA rise).
@@ -29,6 +30,7 @@ export const gfxUniforms = {
   uFrame: { value: 0 },       // frame counter (for temporal jitter)
   uPixScale: { value: 1 },    // output pixel in rendered pixels (set by gfx/post.js per render)
   uSimClock: { value: 0 },    // simulation steps (wrapped): media detail drifts with it, frozen when paused
+  uCloudShift: { value: [0, 0] }, // cells: the wind's drift of World's cumulus deck (shaders/gfx/clouds.js)
   tFlowV: { value: null },    // flow field: how fast matter moves through each cell (Simulation.flowTexture)
   tMediaNoise: mediaNoiseUniform(),   // tileable detail noise for smoke, steam and fire
   tGI0: { value: null },      // GI probe volume (shaders/gi.js): L1 SH bands 0, 1x, 1y, 1z
@@ -72,6 +74,7 @@ export function updateGfxUniforms(sim, sun, light) {
   sim.giTextures.forEach((t, i) => { gfxUniforms[`tGI${i}`].value = t; });
   gfxUniforms.uFrame.value = (gfxUniforms.uFrame.value + 1) % FRAME_WRAP;
   gfxUniforms.uSimClock.value = sim.frame % SIM_CLOCK_WRAP;
+  cloudShift(sim.frame, gfxUniforms.uCloudShift.value);
   gfxUniforms.uMatDetail.value = gfx.materials;
   gfxUniforms.uBevel.value = Math.min(Math.max(gfx.bevel, 0), BEVEL_MAX);
   gfxUniforms.uGlints.value = gfx.glints;
