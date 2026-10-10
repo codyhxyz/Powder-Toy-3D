@@ -146,7 +146,7 @@ await stand(33, 110.5, -Math.PI / 2, -0.1);
 await settle(600);
 await slot(3);
 await click(); await settle(600);
-console.log('     axe lastHit', await ev(() => JSON.stringify(window.__app.pov.toolbelt.tool(2).lastHit)));
+console.log('     axe lastHit', await ev(() => JSON.stringify(window.__app.pov.toolbelt.tool('AXE').lastHit)));
 await grab('axe swing');
 await stand(33, 116.5, -Math.PI / 2, -0.1);
 await settle(600);

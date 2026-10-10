@@ -3,13 +3,12 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import './ui/styles.css';
 import { Simulation } from './sim.js';
 import { volumeVert, volumeFrag, pickFrag, shadowFrag } from './shaders/render.js';
-import { ELEMENTS, E, toolById, isBuild, isSpawnerTool } from './elements.js';
+import { ELEMENTS, E, toolById, isBuild, isSpawnerTool, isGearTool } from './elements.js';
 import { Spawners, SPAWNER, feetOnHit } from './spawners.js';
 import { PerkOrbs } from './perkOrbs.js';
 import { buildPreset } from './presets.js';
 import { loadIsland, releaseGenerator } from './world/gpu.js';
 import { WorldWindow, WIN_STEP } from './world/window.js';
-import { treesIn } from './world/generator.js';
 import { bakedAir } from './constructions/runtime.js';
 import { WORLD_SCENES, sceneByKey } from './world/scenes/index.js';
 import { FarField } from './world/far.js';
@@ -36,6 +35,8 @@ import { createMultiplayer } from './net/multiplayer.js';
 import { createProfiler } from './gfx/profiler.js';
 import { createProfilerPanel } from './ui/profiler.js';
 import { createPov } from './pov/index.js';
+import { inventory } from './pov/tools/inventory.js';
+import { gearByKey, SLOTS } from './pov/tools/catalog.js';
 import { renderViewmodels } from './pov/viewmodel.js';
 import { POV_FOV, POV_FOV_RANGE, SENSITIVITY_RANGE } from './pov/camera.js';
 import { finishSignIn, account, accountsEnabled } from './account.js';
@@ -387,9 +388,9 @@ function worldShrine() {
       }
     return [lo, hi];
   };
-  // the trees whose trunks stand in its glade (only the island plants trees)
-  const glade = (x, z) => (win.scene.island
-    ? treesIn(o.x + x - hx - SHRINE_GLADE, o.z + z - hz - SHRINE_GLADE, o.x + x + hx + SHRINE_GLADE + 1, o.z + z + hz + SHRINE_GLADE + 1, P, win.candidates)
+  // the trees whose trunks stand in its glade (the scene's, if it plants any: the island's)
+  const glade = (x, z) => (win.scene.trees
+    ? win.scene.trees.treesIn(o.x + x - hx - SHRINE_GLADE, o.z + z - hz - SHRINE_GLADE, o.x + x + hx + SHRINE_GLADE + 1, o.z + z + hz + SHRINE_GLADE + 1, P, win.candidates)
     : []);
   const cx = Math.round(g.nx / 2), cz = Math.round(g.nz / 2);
   let best = null;
@@ -670,12 +671,25 @@ function selectTool(id) {
   save();
 }
 
+// A first-person tool from the palette's Tools group (GMod's spawn menu): it
+// goes into the inventory and in hand, now in first person or at the next drop-in.
+function giveGear(id) {
+  const it = toolById(id);
+  const g = gearByKey(it.gear);
+  const fresh = inventory.give(g.key);
+  const slot = `key ${g.slot + 1} (${SLOTS[g.slot]})`;
+  if (pov?.active) {
+    pov.closeMenu();
+    hud.toast(fresh ? `${it.name} added: ${slot}` : `${it.name}: ${slot}`);
+  } else hud.toast(`${it.name} ${fresh ? 'added to your tools' : 'is in your tools'}: press F, then ${slot}`);
+}
+
 // Closing a construction's options goes back to the last element or tool.
 function leaveBuild() { if (isBuild(settings.tool)) selectTool(lastPaintTool); }
 
 const dock = createDock({
   settings,
-  onSelect: selectTool,
+  onSelect: (id) => (isGearTool(id) ? giveGear(id) : selectTool(id)),
   onBrushChange: (patch) => { Object.assign(settings, patch); dock.sync(); save(); },
   onHover: (id) => card.show(id ?? settings.tool),
   onEyedropper: () => setEyedropper(!eyedropper),
@@ -1403,6 +1417,7 @@ try {
     getPerkOrbs: () => perkOrbs,
     requestRender: () => pacer.wake(),
     inWorld: () => !!win,
+    showToolsMenu: () => dock.reveal((it) => isGearTool(it.id)),   // Q in first person: the palette at its first-person tools
   });
   window.__app = {
     get sim() { return sim; }, get volume() { return volume; }, get scale() { return scale; }, get signs() { return signs; }, get builds() { return builds; },

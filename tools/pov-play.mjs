@@ -42,7 +42,8 @@ const stand = (x, z, pitch = 0) => ev(([x, z, pitch]) => {
   a.pov.player.spawn(a.pov.player.pos.clone().set(x, 0, z));
   a.pov.setLook(-Math.PI / 2, pitch);
 }, [x, z, pitch]);
-const slot = async (n) => { await p.keyboard.press(String(n)); await settle(150); };
+const TOOL_AT = { 1: 'SHOVEL', 2: 'BUCKET', 3: 'AXE', 4: 'GUN', 5: 'PHYSGUN' };   // the numbers of the old ten-slot bar
+const slot = async (n) => { await ev((k) => window.__app.pov.toolbelt.select(k), TOOL_AT[n]); await settle(150); };
 const click = async (button = 'left', hold = 80) => { await p.mouse.down({ button }); await settle(hold); await p.mouse.up({ button }); };
 const status = () => ev(() => [...document.querySelectorAll('.hotbar-slot, [class*=hotbar] [class*=status]')].map((e) => e.textContent.trim()).filter(Boolean).join(' | '));
 
@@ -107,8 +108,8 @@ const recoil = await ev(() => window.__app.pov.player.vel.toArray());
 await shot('gun-fire');
 await settle(1500);
 const g1 = await named(await census());
-check('gun slug in the world', (g1.SCRAP ?? 0) - (g0.SCRAP ?? 0) === 1, JSON.stringify(diff(g0, g1)));
-check('slug breaks glass into shards', (g1.SHARDS ?? 0) > (g0.SHARDS ?? 0), `shards ${g0.SHARDS ?? 0} → ${g1.SHARDS ?? 0}`);
+check('gun round adds no matter (no SCRAP slug)', (g1.SCRAP ?? 0) === (g0.SCRAP ?? 0), JSON.stringify(diff(g0, g1)));
+check('round breaks glass into shards', (g1.SHARDS ?? 0) > (g0.SHARDS ?? 0), `shards ${g0.SHARDS ?? 0} → ${g1.SHARDS ?? 0}`);
 console.log('     recoil: vel before', v0.map((v) => v.toFixed(1)).join(','), 'after', recoil.map((v) => v.toFixed(1)).join(','));
 await shot('gun-after');
 

@@ -1,14 +1,15 @@
-// Headless check of the world generator (src/world, src/shaders/generate.js):
+// Headless check of the world generator, the box's Island preset (src/world/
+// generator.js, scenes/island.js, world/gpu.js IslandGenerator):
 //   - the Island scene loads without console errors;
-//   - fill time: the column + fill passes on the grid, wall clock with a forced
+//   - fill time: the column bake + fill pass on the grid, wall clock with a forced
 //     sync (a 1-texel readback of the written target), median and minimum of
 //     FILL_RUNS (other sessions share the GPU: the minimum is the uncontended cost);
 //   - stability: the element at every cell after --steps steps vs right after
 //     loading (cells whose element changed, by from → to);
-//   - the JS twin (heightAt) against the GPU's column heights;
+//   - the JS twin against the GPU: the baked column heights against heightAt,
+//     and every cell's element (the fill, no trees) against islandCellAt;
 //   - seams: the grid generated at a shifted world origin matches the
 //     overlapping cells exactly, and a slab fill keeps the cells outside it;
-//   - the far-field brick summary against a CPU tally of the generated cells;
 //   - stills: god view, three-quarter, eye level on a meadow and on a beach.
 // usage: node tools/gen-check.mjs [outDir] [--port 5371] [--size 128|wide|64|96]
 //          [--seed N] [--steps 600] [--no-shots] [--verbose: list the changed cells]
@@ -50,7 +51,7 @@ const res = await p.evaluate(async ([steps, FILL_RUNS, seed, verbose]) => {
   a.settings.paused = true;
   a.autoRes.enabled = false;
   const { generatorFor, loadIsland } = await import('/src/world/gpu.js');
-  const { worldParams, treesIn, heightAt } = await import('/src/world/generator.js');
+  const { worldParams, treesIn, heightAt, islandCellAt, COLUMN_MARGIN: M } = await import('/src/world/generator.js');
   const { ELEMENTS } = await import('/src/elements.js');
   const sim = a.sim, g = sim.g, r = a.renderer;
   const P = worldParams({ size: [g.nx, g.ny, g.nz], seed: seed == null ? undefined : +seed });
@@ -64,9 +65,9 @@ const res = await p.evaluate(async ([steps, FILL_RUNS, seed, verbose]) => {
   time(() => loadIsland(sim, { seed: P.seed }));
   const fill = [], column = [], fillOnly = [], trees = [];
   for (let i = 0; i < FILL_RUNS; i++) {
-    gen.columnsKey = '';
-    fill.push(time(() => gen.fill(P)));
-    column.push(time(() => { gen.columnsKey = ''; gen.updateColumns(P, [0, 0, 0]); }));
+    gen.columns.key = '';
+    fill.push(time(() => { gen.prepare(P); gen.fill(P); }));
+    column.push(time(() => { gen.columns.key = ''; gen.prepare(P); }));
     fillOnly.push(time(() => gen.fill(P)));
     trees.push(time(() => gen.plantTrees(P)));
   }
@@ -122,12 +123,11 @@ const res = await p.evaluate(async ([steps, FILL_RUNS, seed, verbose]) => {
     melting.push(`(${x}, ${y}, ${z}) ${s1.T[j].toFixed(1)}: ${nb.join(' ')}`);
   }
 
-  // JS twin vs GPU: the column heights (columnFrag) against heightAt
-  gen.columnsKey = '';
-  gen.updateColumns(P, [0, 0, 0]);
-  const { COLUMN_MARGIN: M } = await import('/src/shaders/generate.js');
+  // JS twin vs GPU: the baked column heights against heightAt
+  gen.columns.key = '';
+  gen.prepare(P);
   const cw = g.nx + 2 * M, ch = g.nz + 2 * M, cols = new Float32Array(cw * ch * 4);
-  r.readRenderTargetPixels(gen.columns, 0, 0, cw, ch, cols);
+  r.readRenderTargetPixels(gen.columns.target, 0, 0, cw, ch, cols);
   let twinMax = 0, twinGround = 0;
   for (let j = 0; j < ch; j++)
     for (let i = 0; i < cw; i++) {
@@ -137,12 +137,15 @@ const res = await p.evaluate(async ([steps, FILL_RUNS, seed, verbose]) => {
     }
 
   // seams: generate at origin 0, then at a shifted origin, and compare where they overlap
+  // (the shifted grid reaches past the box's world: its columns baked over a wider one, the same island)
   const SHIFT = 16;   // cells (D11's window step)
+  const wide = { ...P, size: [g.nx + SHIFT, g.ny, g.nz + SHIFT] };
   const readRaw = () => sim.readState()[0];
   const at = (x, y, z) => sim.cellTexel(x, y, z) * 4;
-  gen.fill(P, [0, 0, 0]);
+  gen.prepare(wide);
+  gen.fill(wide, [0, 0, 0]);
   const base = readRaw();
-  gen.fill(P, [SHIFT, 0, SHIFT]);
+  gen.fill(wide, [SHIFT, 0, SHIFT]);
   const shifted = readRaw();
   let seamDiff = 0;
   for (let y = 0; y < g.ny; y++)
@@ -151,38 +154,22 @@ const res = await p.evaluate(async ([steps, FILL_RUNS, seed, verbose]) => {
         const i = at(x, y, z), k = at(x + SHIFT, y, z + SHIFT);
         for (let c = 0; c < 4; c++) if (shifted[i + c] !== base[k + c]) { seamDiff++; break; }
       }
-  // the pure single-cell path (generate(), no column pass) against the fill, on a few slices
-  const { rawMat, makeFieldTarget } = await import('/src/sim.js');
-  const { prelude } = await import('/src/shaders/common.js');
-  const { generatorGLSL } = await import('/src/shaders/generate.js');
-  const fu = gen.mats.fill.uniforms;
-  const probe = rawMat(`${prelude(g)}\n${generatorGLSL}\nuniform int uY;\nout vec4 oC;\n`
-    + 'void main() { ivec2 f = ivec2(gl_FragCoord.xy); vec4 A, B; generate(ivec3(f.x, uY, f.y), A, B); oC = A; }',
-    { ...Object.fromEntries(Object.keys(fu).filter((k) => k.startsWith('uGen')).map((k) => [k, fu[k]])), uY: { value: 0 } });
-  const colTex = gen.columns.texture;   // a float, nearest-filtered target: the probe's matches it
-  const probeT = makeFieldTarget(g.nx, g.nz, 1, colTex.type, colTex.minFilter);
-  const slice = new Float32Array(g.nx * g.nz * 4);
-  let pureDiff = 0, pureCells = 0;
-  const PURE_T_TOL = 1e-3;   // °C
-  for (const y of [P.sea - 3, P.sea, P.sea + 6, P.sea + 14, Math.round(P.sea + P.relief * 0.75)]) {
-    probe.uniforms.uY.value = y;
-    sim.run(probe, probeT);
-    r.readRenderTargetPixels(probeT, 0, 0, g.nx, g.nz, slice);
+  // every cell of the fill (origin 0, no trees) against the twin's islandCell
+  let twinCells = 0;
+  const twinKinds = {};
+  for (let y = 0; y < g.ny; y++)
     for (let z = 0; z < g.nz; z++)
       for (let x = 0; x < g.nx; x++) {
-        const i = (z * g.nx + x) * 4, k = at(x, y, z);
-        pureCells++;
-        // id, life and seed exactly; temperature to float rounding (two programs fold the frost differently)
-        const off = slice[i] !== base[k] || slice[i + 2] !== base[k + 2] || slice[i + 3] !== base[k + 3]
-          || Math.abs(slice[i + 1] - base[k + 1]) > PURE_T_TOL;
-        if (off && verbose && pureDiff < 8) list.push(`pure ${[...slice.slice(i, i + 4)]} fill ${[...base.slice(k, k + 4)]} at (${x}, ${y}, ${z})`);
-        if (off) pureDiff++;
+        const gpu = Math.round(base[at(x, y, z)]), cpu = islandCellAt(x, y, z, P);
+        if (gpu === cpu) continue;
+        twinCells++;
+        const k = `${name(gpu)}/${name(cpu)}`;
+        twinKinds[k] = (twinKinds[k] ?? 0) + 1;
+        if (verbose && list.length < 40) list.push(`twin: GPU ${name(gpu)}, CPU ${name(cpu)} at (${x}, ${y}, ${z})`);
       }
-  }
-  probe.dispose(); probeT.dispose();
   // a slab fill: x < SHIFT from the shifted world, the rest kept
-  gen.fill(P, [0, 0, 0]);
-  gen.fill(P, [SHIFT, 0, SHIFT], [0, 0, 0], [SHIFT, g.ny, g.nz]);
+  gen.fill(wide, [0, 0, 0]);
+  gen.fill(wide, [SHIFT, 0, SHIFT], [0, 0, 0], [SHIFT, g.ny, g.nz]);
   const slab = readRaw();
   let slabDiff = 0;
   for (let y = 0; y < g.ny; y++)
@@ -191,38 +178,8 @@ const res = await p.evaluate(async ([steps, FILL_RUNS, seed, verbose]) => {
         const i = at(x, y, z), want = x < SHIFT ? shifted : base;
         for (let c = 0; c < 4; c++) if (slab[i + c] !== want[i + c]) { slabDiff++; break; }
       }
+  gen.prepare(P);
 
-  // far-field summary: dominant ids over the grid's bricks
-  const sum = gen.summarize(P);
-  const sbuf = new Uint8Array(g.bwidth * g.bheight * 4);
-  r.readRenderTargetPixels(sum, 0, 0, g.bwidth, g.bheight, sbuf);
-  const dominant = {};
-  let solidSum = 0, bricks = 0, summaryDiff = 0;
-  const { SUMMARY_SURFACE_W } = await import('/src/shaders/generate.js');
-  const B = 4, kind = (id) => ELEMENTS[id].kind, K = { SOLID: 1, POWDER: 2, LIQUID: 3, GAS: 4 };
-  for (let by = 0; by < g.ny / B; by++)
-    for (let bz = 0; bz < g.nz / B; bz++)
-      for (let bx = 0; bx < g.nx / B; bx++) {
-        // the CPU tally of the generated cells (base: origin 0, no trees), as summaryFrag counts them
-        const w = new Float64Array(ELEMENTS.length);
-        let solid = 0;
-        for (let z = 0; z < B; z++)
-          for (let x = 0; x < B; x++)
-            for (let y = 0; y < B; y++) {
-              const X = bx * B + x, Y = by * B + y, Z = bz * B + z;
-              const id = Math.round(base[at(X, Y, Z)]);
-              const above = Y + 1 < g.ny ? Math.round(base[at(X, Y + 1, Z)]) : 0;
-              if (kind(id) === K.SOLID || kind(id) === K.POWDER) solid++;
-              if (id !== 0 && kind(id) !== K.GAS) w[id] += above === 0 ? SUMMARY_SURFACE_W : 1;
-            }
-        let best = 0;
-        for (let i = 0; i < w.length; i++) if (w[i] > w[best]) best = i;
-        const bt = ((Math.floor(by / g.btx) * (g.nz / B) + bz) * g.bwidth + (by % g.btx) * (g.nx / B) + bx) * 4;
-        if (sbuf[bt] !== best || Math.abs(sbuf[bt + 1] - Math.round(solid / 64 * 255)) > 1) summaryDiff++;
-        if (!sbuf[bt] && !sbuf[bt + 1] && !sbuf[bt + 2]) continue;
-        dominant[name(sbuf[bt])] = (dominant[name(sbuf[bt])] ?? 0) + 1;
-        solidSum += sbuf[bt + 1] / 255; bricks++;
-      }
   return {
     world: { seed: P.seed, sea: P.sea, relief: +P.relief.toFixed(1), radius: P.radius },
     timingMs: { columnAndFill: stat(fill), columnPass: stat(column), fillPass: stat(fillOnly),
@@ -230,10 +187,9 @@ const res = await p.evaluate(async ([steps, FILL_RUNS, seed, verbose]) => {
     trees: treeList.map((t) => t.variant).join(' '),
     census, matter,
     stability: { steps, changed, shareOfMatter: +(changed / matter).toExponential(2), changes, snowMaxT: +snowMaxT.toFixed(2), list, melting },
-    twin: { maxHeightDiff: +twinMax.toExponential(2), groundDiffColumns: twinGround, columns: cw * ch },
+    twin: { maxHeightDiff: +twinMax.toExponential(2), groundDiffColumns: twinGround, columns: cw * ch,
+      cellsDiffering: twinCells, kinds: twinKinds, cells: g.nx * g.ny * g.nz },
     seams: { shift: SHIFT, cellsDiffering: seamDiff, slabFillCellsDiffering: slabDiff },
-    pureGenerate: { cells: pureCells, differingFromFill: pureDiff },
-    summary: { bricksWithMatter: bricks, meanSolid: +(solidSum / Math.max(bricks, 1)).toFixed(3), dominant, bricksDisagreeingWithCpu: summaryDiff },
   };
 }, [steps, FILL_RUNS, seed, verbose]);
 console.log(JSON.stringify(res, null, 1));

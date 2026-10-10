@@ -29,7 +29,7 @@ const CHIP_MAX = 48;
 const MIST_MAX = 96;
 const TRACER_MAX = 48;
 const JET_MAX = 90;
-const JET_SMOKE_MAX = 60;
+const JET_SMOKE_MAX = 120;            // the jetpack's and the rockets' smoke
 
 // ---- muzzle flash
 const FLASH_LIFE = 0.055;               // s
@@ -117,6 +117,23 @@ const JET_SMOKE_SIZE = [0.4, 0.7];      // cells across at birth
 const JET_SMOKE_GROW = 3;
 const JET_SMOKE_LIFE = [0.5, 0.9];      // s
 const JET_SMOKE_ALPHA = 0.4;
+
+// ---- rockets (kind 'rocket' round:move): a smoke trail and a flame at the tail
+const ROCKET_TRAIL_STEP = 1.5;          // cells of flight between smoke puffs
+const ROCKET_TRAIL_SIZE = [0.5, 0.8];   // cells across at birth (the jet smoke's growth)
+const ROCKET_TRAIL_LIFE = [0.6, 1.1];   // s
+const ROCKET_TRAIL_DRIFT = 1.5;         // cells/s, a puff's random drift
+const ROCKET_FLAME_SIZE = [0.5, 0.8];   // cells across
+
+// ---- blasts ('blast' event: a rocket's or a bomb's): a fireball, embers and smoke
+const BLAST_FLASH_SIZE = 6;             // cells across
+const BLAST_FLASH_LIFE = 0.12;          // s
+const BLAST_EMBERS = 36;
+const BLAST_EMBER_SPEED = [20, 45];     // cells/s, every way
+const BLAST_SMOKE = 14;
+const BLAST_SMOKE_SPEED = [3, 9];       // cells/s, every way
+const BLAST_SMOKE_SIZE = [1.2, 2];      // cells across at birth
+const BLAST_LIGHT = 4;                  // times the muzzle light's strength
 
 // ---- textures
 const TEX_SIZE = 64;                    // px square
@@ -367,6 +384,42 @@ export function createVfx(env) {
     });
   }
 
+  // a rocket flew from a to b (world): smoke puffs along the way, a flame at b
+  let trailAcc = 0;
+  function rocketTrail(a, b) {
+    const s = env.getScale();
+    const len = vD.subVectors(b, a).length();
+    if (len <= 0) return;
+    trailAcc += len / (ROCKET_TRAIL_STEP * s);
+    const n = Math.floor(trailAcc);
+    trailAcc -= n;
+    let i = 0;
+    burst(fx.jetSmoke, n, (p) => {
+      vP.copy(a).addScaledVector(vD, (++i / n));
+      vV.randomDirection().multiplyScalar(ROCKET_TRAIL_DRIFT * s);
+      setP(p, vP, vV, randIn(ROCKET_TRAIL_SIZE) * s, JET_SMOKE_COLOR, JET_SMOKE_ALPHA, randIn(ROCKET_TRAIL_LIFE), JET_SMOKE_GRAVITY, JET_SMOKE_DRAG);
+    });
+    burst(fx.jet, 1, (p) => setP(p, b, vV.set(0, 0, 0), randIn(ROCKET_FLAME_SIZE) * s, JET_COLOR, 1, JET_LIFE[1]));
+  }
+
+  // a blast at `at` (world): a fireball, embers every way and a smoke cloud
+  function blast(at) {
+    const s = env.getScale();
+    burst(fx.flash, 1, (p) => setP(p, at, vT.set(0, 0, 0), BLAST_FLASH_SIZE * s, FLASH_COLOR, 1, BLAST_FLASH_LIFE));
+    fx.spark.sys.rendererEmitterSettings.speedFactor = SPARK_STREAK_S / (SPARK_WIDTH * s);
+    burst(fx.spark, BLAST_EMBERS, (p) => {
+      vV.randomDirection().multiplyScalar(randIn(BLAST_EMBER_SPEED) * s);
+      setP(p, at, vV, SPARK_WIDTH * s, SPARK_COLOR, 1, randIn(SPARK_LIFE), SPARK_GRAVITY, SPARK_DRAG);
+    });
+    burst(fx.jetSmoke, BLAST_SMOKE, (p) => {
+      vV.randomDirection().multiplyScalar(randIn(BLAST_SMOKE_SPEED) * s);
+      setP(p, at, vV, randIn(BLAST_SMOKE_SIZE) * s, JET_SMOKE_COLOR, JET_SMOKE_ALPHA, randIn(ROCKET_TRAIL_LIFE) * 2, JET_SMOKE_GRAVITY, JET_SMOKE_DRAG);
+    });
+    light.position.copy(at);
+    light.distance = FLASH_LIGHT_RANGE * BLAST_LIGHT * s;
+    lightT = FLASH_LIGHT_TIME * BLAST_LIGHT;
+  }
+
   // jetpack exhaust for dt seconds, out of the nozzles of a body at feet (grid) facing yaw
   let jetAcc = 0, smokeAcc = 0;
   const vN = new THREE.Vector3();
@@ -419,8 +472,13 @@ export function createVfx(env) {
       }
     }),
     povEvents.on('round:move', (e) => {
-      if (!live() || !e.from || !e.to || e.kind !== 'round') return;   // bullets streak; a thrown bomb is drawn by its tool
-      tracer(toWorld(e.from, vA), toWorld(e.to, vB));
+      if (!live() || !e.from || !e.to) return;
+      // bullets streak, rockets smoke; a thrown bomb (and a rocket's body) is drawn by its tool
+      if (e.kind === 'round') tracer(toWorld(e.from, vA), toWorld(e.to, vB));
+      else if (e.kind === 'rocket') rocketTrail(toWorld(e.from, vA), toWorld(e.to, vB));
+    }),
+    povEvents.on('blast', (e) => {
+      if (live() && e.point) blast(toWorld(e.point, vA));
     }),
   ];
 

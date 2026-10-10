@@ -44,7 +44,7 @@ async function e2e() {
     a.pov.setLook(-Math.PI / 2, 0);
   });
   await p.waitForTimeout(1200);
-  await p.keyboard.press('4');
+  await ev(() => window.__app.pov.toolbelt.select('GUN'));
   await p.waitForTimeout(300);
   const c0 = await ev(() => Object.fromEntries(Object.entries(window.__app.sim.census()).map(([k, v]) => [k, v.n])));
   await ev(() => { GP.log.length = 0; });
@@ -52,7 +52,7 @@ async function e2e() {
   await p.waitForTimeout(3000);
   const evs = await ev(() => GP.log);
   const c1 = await ev(() => Object.fromEntries(Object.entries(window.__app.sim.census()).map(([k, v]) => [k, v.n])));
-  const lat = await ev(() => window.__app.pov.toolbelt.tool(3)?.ballistics?.latency);
+  const lat = await ev(() => window.__app.pov.toolbelt.tool('GUN')?.ballistics?.latency);
   const t0 = evs.find((x) => x.n === 'gun:fire')?.t;
   const imp = evs.find((x) => x.n === 'impact');
   return {

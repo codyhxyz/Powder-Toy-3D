@@ -1,14 +1,13 @@
 import * as THREE from 'three';
 import { quadVert, stateUniforms } from '../shaders/common.js';
-import { traceFrag, handoffFrag, TRACE, TRACE_MISS } from '../shaders/povTrace.js';
-import { ELEMENTS, E, K } from '../elements.js';
-import { PHYS as ENGINE } from '../physics.js';
+import { traceFrag, strikeFrag, TRACE, TRACE_MISS, STRIKE } from '../shaders/povTrace.js';
+import { ELEMENTS, K } from '../elements.js';
 import { CELL_METERS } from './vitals.js';
 import { povEvents } from './events.js';
 import { segmentTarget, PLAYER } from './targets.js';
 
-// Ballistic rounds: the gun's shots fly outside the sim, with real ballistics,
-// and become sim matter only where they strike.
+// Ballistic rounds: the guns' shots fly outside the sim, with real ballistics,
+// and touch the sim only where they strike, adding nothing to it.
 //
 // Why: on the sim's clock a cell can't outrun V_MAX = 1 cell/step (≈ 240
 // cells/s, 72 m/s), and its gravity is 0.025 cells/step² (≈ 44 g in real
@@ -27,38 +26,37 @@ import { segmentTarget, PLAYER } from './targets.js';
 //      on it. Several readbacks stay in flight, like the player's probe, so an
 //      answer lands every frame. The world keeps moving for the frame or two
 //      an answer takes; that's the price of not stalling the GPU.
-//   3. Impact. When a round reaches a reported hit it hands off: handoffFrag
-//      writes one SCRAP cell into the air just in front of the struck face, at
-//      the fastest velocity along the round's heading the sim can hold, and the
-//      engine's impact rules (react.js, move.js) do the rest: glass shatters,
-//      metal holds, a keg's wood breaks into hot sawdust and the powder goes
-//      off, water slows it down.
-//      The sim caps that slug's energy along any axis, which is what the
-//      impact rules test, at ½·DENS[SCRAP]·V_MAX² = ½·78·1² = 39 (ROUND.ENERGY):
-//      a real 360 m/s round carries far more. That is deliberate. It is the
-//      honest limit of the sim, not a fake: the energy a cell can carry is all
-//      the engine can break things with.
+//   3. Impact. When a round reaches a reported hit, strikeFrag spends the
+//      round's energy along its path from the struck face, by the engine's own
+//      projectile rule (react.js: each solid it breaks costs it that solid's
+//      hardness): glass shatters, wood breaks into sawdust, a pool or a pile
+//      is shoved and slows it, metal stops it unless it carries more than
+//      metal's hardness. Debris is the struck cells' own matter; no cell is
+//      added. (Rounds used to become a SCRAP slug at the face, and the slugs
+//      piled up and plugged the holes they made.)
+//      A round's energy is in the sim's units (½·DENS·v², cells/step), the
+//      gun's choice: the pistol's ROUND_ENERGY is what the old slug could
+//      carry, ½·DENS[SCRAP]·V_MAX² = 39, and a sniper's is several times it.
 //      A round that runs out through the sides or top of the box is gone.
 //
 // Units: grid cells, seconds, cells/s (cells/step for the sim's velocities).
 //
-// Other projectiles fly the same way: fire()'s options give a throw speed and
-// an onStrike that hands something else to the sim (the bomb's charge) instead
-// of the slug.
+// Other projectiles fly the same way: fire()'s options give a speed and an
+// onStrike that does something else where it lands (the bomb's charge, the
+// rocket's blast) instead of the strike.
 //
 // Events (docs/pov.md): round:move every frame per round, round:end (both with
-// the projectile's kind), impact (slugs only).
+// the projectile's kind), impact (rounds only, not onStrike projectiles).
 
 const G_EARTH = 9.8;                    // m/s²
 const MUZZLE_SPEED_MS = 360;            // m/s, a subsonic pistol round
 const SIM_GRAVITY_REF = 0.025;          // cells/step², the sim's default gravity (sim.js GRAVITY_DEFAULT)
 export const ROUND_SPEED = MUZZLE_SPEED_MS / CELL_METERS;   // cells/s (1200)
-const BODY_ROUND_DAMAGE = 0.5;          // health a round takes from a body (an NPC): two kill
+const BODY_ROUND_DAMAGE = 0.5;          // health a round takes from a body (an NPC) unless fire() says: two kill
 const BODY_ROUND_ENERGY = 39;           // the impact's energy for the shake and hitmarker
 export const ROUND_GRAVITY = G_EARTH / CELL_METERS;        // cells/s² (≈ 33) at the default sim gravity; the setting scales it
-export const ROUND_SLUG = E.SCRAP;                         // what a round becomes at impact
-// ½·DENS·V_MAX²: the most kinetic energy the slug carries along one axis in the sim
-export const ROUND_ENERGY = 0.5 * ELEMENTS[ROUND_SLUG].dens * ENGINE.V_MAX * ENGINE.V_MAX;
+export const ROUND_ENERGY = 39;         // a round's energy at the face unless fire() says (sim KE units: breaks rock's 30, not metal's 60)
+const ROUND_DEPTH = 8;                  // cells a round's strike walks on past the face unless fire() says
 export const MAX_ROUNDS = TRACE.ROUNDS;
 // fire()'s gravityScale for the sim's gravity setting: projectiles fall at 1 g at the default
 export const gravityScale = (sim) => sim.gravity / SIM_GRAVITY_REF;                    // rounds the trace pass can follow at once
@@ -83,15 +81,6 @@ function rawMat(frag, uniforms) {
   });
 }
 
-// The fastest velocity along unit heading d the sim can hold: the engine caps
-// each component at V_MAX (react.js clamps per axis), so the largest one is
-// set to V_MAX. Along the main axis, which a face struck head on lies across,
-// the slug then carries ROUND_ENERGY.
-export function slugVelocity(d, out = new THREE.Vector3()) {
-  const m = Math.max(Math.abs(d.x), Math.abs(d.y), Math.abs(d.z));
-  return out.copy(d).multiplyScalar(m > 0 ? ENGINE.V_MAX / m : 0);
-}
-
 export function createBallistics({ renderer }) {
   const rounds = [];                     // in flight, oldest first
   let nextId = 1;
@@ -113,7 +102,7 @@ export function createBallistics({ renderer }) {
 
   function ensureMats(sim) {
     if (sim.id === simId) return;
-    mats?.trace.dispose(); mats?.handoff.dispose();
+    mats?.trace.dispose(); mats?.strike.dispose();
     const from = [...Array(TRACE.ROUNDS)].map(() => new THREE.Vector4());
     const to = [...Array(TRACE.ROUNDS)].map(() => new THREE.Vector3());
     mats = {
@@ -121,10 +110,10 @@ export function createBallistics({ renderer }) {
         tA: { value: null }, tB: { value: null }, tBrick: { value: null }, tBrickDist: { value: null }, tLight: { value: null },
         uFrom: { value: from }, uTo: { value: to },
       }),
-      handoff: rawMat(handoffFrag(sim.g), {
+      strike: rawMat(strikeFrag(sim.g), {
         ...stateUniforms(),
-        uEntry: { value: new THREE.Vector3() }, uDir: { value: new THREE.Vector3() }, uVel: { value: new THREE.Vector3() },
-        uReach: { value: 0 }, uLo: { value: new THREE.Vector3() }, uHi: { value: new THREE.Vector3() },
+        uEntry: { value: new THREE.Vector3() }, uDir: { value: new THREE.Vector3() },
+        uEnergy: { value: 0 }, uDepth: { value: 0 }, uLo: { value: new THREE.Vector3() }, uHi: { value: new THREE.Vector3() },
       }),
     };
     simId = sim.id;
@@ -133,7 +122,7 @@ export function createBallistics({ renderer }) {
     // compile in the background (KHR_parallel_shader_compile), then draw once
     const built = mats;
     const keep = sim.quad.material;
-    Promise.all([mats.trace, mats.handoff].map((m) => {
+    Promise.all([mats.trace, mats.strike].map((m) => {
       sim.quad.material = m;
       return renderer.compileAsync(sim.scene, sim.camera);
     })).then(() => { if (mats === built && sim.id === simId) warm(sim); }).catch(() => {});
@@ -142,7 +131,7 @@ export function createBallistics({ renderer }) {
 
   // Draw both passes once, doing nothing, so the pipelines a first draw builds
   // (on Metal) are ready before the first shot rather than stalling it: an
-  // idle trace into a trace target, and a handoff with an empty walk box into
+  // idle trace into a trace target, and a strike with an empty walk box into
   // a one-texel target shaped like the state.
   function warm(sim) {
     const tu = mats.trace.uniforms;
@@ -151,10 +140,10 @@ export function createBallistics({ renderer }) {
     tu.tBrick.value = sim.brick.texture; tu.tBrickDist.value = sim.brickDistTexture;
     sim.run(mats.trace, slots[0].target);
     const scratch = sim.makeStateTarget(1, 1);
-    const hu = mats.handoff.uniforms;
+    const hu = mats.strike.uniforms;
     hu.tA.value = sim.stateA; hu.tB.value = sim.stateB; hu.tF.value = sim.stateF;
     hu.uLo.value.setScalar(Infinity); hu.uHi.value.setScalar(-Infinity);
-    sim.run(mats.handoff, scratch);
+    sim.run(mats.strike, scratch);
     scratch.dispose();
   }
 
@@ -172,15 +161,21 @@ export function createBallistics({ renderer }) {
 
   // origin, dir: grid cells and unit heading. gravityScale: sim.gravity / default.
   // opts: speed (cells/s, default the round's), carry (cells/s added: the
-  // thrower's own velocity), kind (named in the events), onStrike({ sim, hit,
-  // dir }) to hand over something other than the slug.
+  // thrower's own velocity), kind (named in the events; 'round' draws a
+  // tracer), energy and depth (the strike's, see strikeFrag), damage (health
+  // taken from a body it hits), onStrike({ sim, hit, dir, normal }) to do
+  // something else where it lands, bodies (an onStrike projectile strikes
+  // bodies too, hit.id −1 and hit.body the target; otherwise it flies through them).
   // Returns the round's id, or 0 if MAX_ROUNDS are already in flight.
-  function fire(origin, dir, gravityScale = 1, { speed = ROUND_SPEED, carry = null, kind = 'round', onStrike = null } = {}) {
+  function fire(origin, dir, gravityScale = 1, {
+    speed = ROUND_SPEED, carry = null, kind = 'round', onStrike = null,
+    energy = ROUND_ENERGY, depth = ROUND_DEPTH, damage = BODY_ROUND_DAMAGE, bodies = false,
+  } = {}) {
     if (rounds.length >= MAX_ROUNDS) return 0;
     const v0 = dir.clone().normalize().multiplyScalar(speed);
     if (carry) v0.add(carry);
     const r = {
-      id: nextId++, alive: true, kind, onStrike,
+      id: nextId++, alive: true, kind, onStrike, bodies: !onStrike || bodies, energy, depth: Math.min(depth, STRIKE.DEPTH_MAX), damage,
       actor: povEvents.actor,   // who fired it (null: the player): its events carry that, and it never hits them
       p0: origin.clone(), v0,
       g: new THREE.Vector3(0, -ROUND_GRAVITY * gravityScale, 0),
@@ -269,39 +264,33 @@ export function createBallistics({ renderer }) {
     };
   }
 
-  // The round strikes: announce it and hand it to the sim.
+  // The round strikes: announce it and spend it on the cells (strikeFrag).
   function strike(sim, r) {
     const h = r.hit;
     // (an answer that came late finds the round already past the hit: nothing left to show)
     if (h.t > r.tShown) povEvents.emit('round:move', { id: r.id, kind: r.kind, from: r.shown.clone(), to: h.point.clone() });
     const dir = velAt(r, h.t).normalize();
-    if (r.onStrike) { r.onStrike({ sim, hit: h, dir, normal: new THREE.Vector3(...NORMALS[h.face]) }); end(r); return; }
-    const vel = slugVelocity(dir);
     const normal = new THREE.Vector3(...NORMALS[h.face]);
-    // what the engine will test: ½·DENS·vn², vn the slug's speed into the face
-    const vn = Math.abs(vel.dot(normal));
-    const energy = 0.5 * ELEMENTS[ROUND_SLUG].dens * vn * vn;
-    const id = h.id;
+    if (r.onStrike) { r.onStrike({ sim, hit: h, dir, normal }); end(r); return; }
+    const id = h.id, energy = r.energy;
     const broke = KIND[id] === K.SOLID ? BREAKS[id] && energy >= HARD[id] : null;
     povEvents.emit('impact', { source: 'gun', point: h.point.clone(), normal, id, energy, broke });
-    handoff(sim, r, h, dir, vel);
+    pass(sim, r, h, dir);
     lastImpact = { id: r.id, point: h.point.clone(), normal, hitId: id, cell: h.cell.clone(), prev: h.prev?.clone() ?? null,
-      energy, broke, vel: vel.clone(), flight: h.t };
+      energy, broke, dir: dir.clone(), flight: h.t };
     end(r);
   }
 
-  function handoff(sim, r, h, dir, vel) {
-    // never walk back past the muzzle: the cells behind it are the shooter's
-    const reach = h.point.distanceTo(r.p0);
-    const u = mats.handoff.uniforms;
+  function pass(sim, r, h, dir) {
+    const u = mats.strike.uniforms;
     u.uEntry.value.copy(h.point);
     u.uDir.value.copy(dir);
-    u.uVel.value.copy(vel);
-    u.uReach.value = reach;
-    const back = h.point.clone().addScaledVector(dir, -Math.min(reach, TRACE.HANDOFF_WALK + 1));
-    u.uLo.value.copy(h.point).min(back).floor().subScalar(1);
-    u.uHi.value.copy(h.point).max(back).floor().addScalar(1);
-    sim.pass(mats.handoff);
+    u.uEnergy.value = r.energy;
+    u.uDepth.value = r.depth;
+    const far = h.point.clone().addScaledVector(dir, r.depth + 1);
+    u.uLo.value.copy(h.point).min(far).floor().subScalar(1);
+    u.uHi.value.copy(h.point).max(far).floor().addScalar(1);
+    sim.pass(mats.strike);
   }
 
   // one round's frame: strike, or fly on (and hit a body on the way)
@@ -312,13 +301,18 @@ export function createBallistics({ renderer }) {
     const tAt = striking ? r.hit.t : Math.min(r.t, r.tClear, r.hit ? r.hit.t : Infinity);
     const at = striking ? r.hit.point : posAt(r, tAt);
     // a body (the player, an NPC) on this frame's stretch of the path takes the round before the cells do
-    const body = r.onStrike ? null : segmentTarget(r.shown, at, r.actor?.id ?? PLAYER);
+    const body = r.bodies ? segmentTarget(r.shown, at, r.actor?.id ?? PLAYER) : null;
     // it strikes once it has flown that far and every stretch before the hit is back clear
     if (striking && !body) { strike(sim, r); return; }
     if (body) {
       povEvents.emit('round:move', { id: r.id, kind: r.kind, from: r.shown.clone(), to: body.point.clone() });
       const dir = velAt(r, tAt).normalize();
-      body.target.hurt(BODY_ROUND_DAMAGE, 'Shot', dir);
+      if (r.onStrike) {
+        r.onStrike({ sim, hit: { point: body.point.clone(), id: -1, body: body.target }, dir, normal: dir.clone().negate() });
+        end(r);
+        return;
+      }
+      body.target.hurt(r.damage, 'Shot', dir);
       povEvents.emit('impact', { source: 'gun', point: body.point, normal: dir.clone().negate(), id: -1, energy: BODY_ROUND_ENERGY, broke: null, body: true });
       end(r);
       return;
@@ -366,7 +360,7 @@ export function createBallistics({ renderer }) {
     dispose() {
       while (rounds.length) end(rounds[0]);
       slots.forEach((s) => s.target.dispose());
-      mats?.trace.dispose(); mats?.handoff.dispose();
+      mats?.trace.dispose(); mats?.strike.dispose();
       mats = null; simId = -1;
     },
   };
