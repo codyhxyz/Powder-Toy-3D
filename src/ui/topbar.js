@@ -27,6 +27,9 @@ export function createToolbar({ views, settings, actions }) {
   const shot = btn('camera', 'Save screenshot (P)', actions.screenshot);
   const gear = btn('gear', 'Settings (,)', actions.toggleSettings);
   const help = btn('help', 'Keyboard shortcuts (?)', actions.toggleHelp);
+  // first person and the shortcut sheet need a keyboard: touch-first devices hide them (styles.css)
+  walk.classList.add('keys-only');
+  help.classList.add('keys-only');
 
   const bar = h('div.toolbar.panel', {}, viewBtn, h('span.sep'), pause, undo, recenter, walk, shot, h('span.sep'), gear, help);
 

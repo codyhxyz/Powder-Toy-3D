@@ -14,7 +14,10 @@ export function createHud() {
   // paused pill
   const pill = h('div.pill.panel', {}, h('span.dot'), 'Paused', h('kbd', { text: 'Space' }));
   const toasts = h('div.toasts');
-  const hint = h('div.hint.panel', { html: '<b>Drag</b> on the floor to pour. <b>Right-drag</b> to look around. Press <b>?</b> for shortcuts.' });
+  const TOUCH_FIRST = matchMedia('(hover: none) and (pointer: coarse)').matches;
+  const hint = h('div.hint.panel', { html: TOUCH_FIRST
+    ? '<b>Drag</b> to pour. <b>Two fingers</b> to turn and zoom.'
+    : '<b>Drag</b> on the floor to pour. <b>Right-drag</b> to look around. Press <b>?</b> for shortcuts.' });
 
   // colour key for data views (heat, pressure, ...); hidden in the realistic view
   const legendBox = h('div.legend-box.panel', { 'aria-live': 'polite' });

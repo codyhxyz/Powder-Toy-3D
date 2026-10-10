@@ -146,6 +146,7 @@ controls.enableDamping = true;
 controls.dampingFactor = 0.12;
 controls.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE };
 controls.zoomToCursor = true;
+controls.touches = { ONE: null, TWO: THREE.TOUCH.DOLLY_ROTATE };   // one finger paints (touchDown)
 
 const FLOOR_SPAN = 80;   // scene units the floor grid spans, a line every unit (a world's is stretched over it)
 const floorGrid = new THREE.GridHelper(FLOOR_SPAN, FLOOR_SPAN, 0x2b3240, 0x1b2029);
@@ -815,6 +816,10 @@ canvasEl.addEventListener('pointerleave', () => { pointerInside = false; });
 canvasEl.addEventListener('pointerdown', (e) => {
   toolbar.close();
   if (pov?.active) return;   // POV handles its own mouse buttons
+  if (e.pointerType === 'touch') touchDown(e);
+  else press(e);
+});
+function press(e) {
   const wasEditing = !!signs?.editing;
   if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
   if (e.button !== 0 || e.altKey || wasEditing) return; // a click that just finishes editing a sign doesn't paint
@@ -841,9 +846,41 @@ canvasEl.addEventListener('pointerdown', (e) => {
   }
   painting = true;
   hud.dismissHint();
-  canvasEl.setPointerCapture(e.pointerId);
-});
+  if (e.pointerType !== 'touch') canvasEl.setPointerCapture(e.pointerId);   // (a touch is captured already)
+}
 addEventListener('pointerup', (e) => { if (e.button === 0) painting = false; });
+
+// Touch: one finger paints, two fingers turn and zoom (controls.touches). A finger
+// that lands has no hover pick yet, so it picks where it touched first; and it waits
+// TOUCH_PRESS_DELAY_MS, so a second finger starting a turn cancels it before it pours.
+const TOUCH_PRESS_DELAY_MS = 90;
+const TOUCH_TAP_MS = 120;   // a tap that lifted before the press started still pours this long
+const touchesDown = new Set();
+let touchPress = 0;          // the pending press's id (0: none)
+function touchDown(e) {
+  touchesDown.add(e.pointerId);
+  if (touchesDown.size > 1) { touchPress = 0; painting = false; return; }
+  pointer.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+  pointerClient = [e.clientX, e.clientY];
+  pointerInside = true;
+  uiHover = false;
+  const id = ++touchPress, ray = gridRay();
+  Promise.all([pickRay(ray.origin, ray.direction), new Promise((r) => setTimeout(r, TOUCH_PRESS_DELAY_MS))]).then(([hit]) => {
+    if (touchPress !== id) return;
+    touchPress = 0;
+    Object.assign(hover, { valid: hit.valid, face: hit.face, id: hit.id, T: hit.T, P: hit.P });
+    hover.cell.copy(hit.cell);
+    press(e);
+    if (painting && !touchesDown.size) setTimeout(() => { if (!touchesDown.size) painting = false; }, TOUCH_TAP_MS);
+  }).catch(() => { if (touchPress === id) touchPress = 0; });
+}
+const touchUp = (e) => {
+  if (e.pointerType !== 'touch') return;
+  touchesDown.delete(e.pointerId);
+  if (e.type === 'pointercancel') { touchPress = 0; painting = false; }
+};
+addEventListener('pointerup', touchUp);
+addEventListener('pointercancel', touchUp);
 canvasEl.addEventListener('contextmenu', (e) => e.preventDefault());
 
 // Shift + scroll changes the brush size instead of zooming.
