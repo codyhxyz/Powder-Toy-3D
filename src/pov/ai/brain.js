@@ -72,6 +72,14 @@ const POUR_S = 1.2;
 const BUCKET_WANT = 60;              // cells of lava before it goes to pour
 const WEAPON_NOISE = 6;              // ± desirability points of whim, so it doesn't use one tool forever
 const WEAPON_SWITCH_S = 2.5;         // s it keeps a weapon before re-choosing
+// Several opponents (team games, src/game): Raven's target selection, the
+// nearest one it can see, else the one it sensed last; the current one is kept
+// unless another is clearly nearer, so it doesn't flick between two.
+const KEEP_TARGET = 8;               // cells nearer another must be before it switches
+const UNSEEN_PENALTY = 40;           // cells added to a remembered (not seen) one's distance
+// Halo's motion tracker: an enemy within its range (agent.radar, set by the
+// game: src/game/rules.js) that moves faster than a crouch-walk shows up, seen or not.
+const RADAR_SPEED = 3;               // cells/s: slower than this (crouched, still) it doesn't show
 
 const BLOCK = 3;                     // cells: the trowel's block (trowel.tool.js BLOCK)
 const BLOCK_CELLS = BLOCK ** 3;
@@ -164,12 +172,18 @@ export class Agent extends Vehicle {
     this.cool = {};                                // tool → time it's ready again
     this.weapon = null; this.weaponAt = -Infinity;
     this.lastGoal = '';
+    // team games (src/game): npc.opponents() → [{ id, pos, vel, alive, holding, reveal?, priority? }]
+    this.nobody = this.prey;                      // the record of "no one": never sensed
+    this.foes = new Map();                        // opponent id → its mirrored entity (one memory record each)
+    this.foe = null; this.foeId = null;           // the one it's after
+    this.radar = 0;                               // cells: the motion tracker's range (0: none)
+    this.weapons = null;                          // a Set of the tools it may fight with (null: all)
   }
 
   // ---- senses
   get feet() { return this.npc.body.pos; }
   eye(out = {}) { const p = this.npc.body.pos; out.x = p.x; out.y = p.y + TOOL_EYE; out.z = p.z; return out; }
-  get target() { return this.npc.target(); }
+  get target() { return this.foe ?? this.npc.target(); }
   chest(p = this.target.pos) { return { x: p.x, y: p.y + CHEST, z: p.z }; }
   get record() { return this.memory.getRecord(this.prey); }
   get sees() { return this.record.visible; }
@@ -181,6 +195,7 @@ export class Agent extends Vehicle {
   cooldown(tool, s) { this.cool[tool] = this.now + s; }
 
   sense() {
+    if (this.npc.opponents) { this.senseAll(this.npc.opponents()); return; }
     const t = this.target, rec = this.record;
     this.prey.position.set(t.pos.x, 0, t.pos.z);
     this.prey.velocity.set(t.vel.x, 0, t.vel.z);
@@ -194,6 +209,38 @@ export class Agent extends Vehicle {
     rec.visible = visible;
   }
 
+  // Every opponent: seen (sight or touch), shown on the motion tracker, or
+  // revealed by the game (a flag carrier); then the one to go after.
+  senseAll(foes) {
+    const e = this.eye(), f0 = this.feet;
+    let best = null, bestScore = Infinity;
+    for (const f of foes) {
+      let ent = this.foes.get(f.id);
+      if (!ent) {
+        ent = new MovingEntity();
+        this.foes.set(f.id, ent);
+        this.memory.createRecord(ent);
+        this.memory.getRecord(ent).timeLastSensed = -Infinity;
+      }
+      ent.position.set(f.pos.x, 0, f.pos.z);
+      ent.velocity.set(f.vel.x, 0, f.vel.z);
+      const rec = this.memory.getRecord(ent);
+      const d3 = Math.hypot(f.pos.x - f0.x, f.pos.y - f0.y, f.pos.z - f0.z);
+      const visible = f.alive && (d3 < TOUCH || (d3 < SIGHT && this.npc.world.sees(e, this.chest(f.pos))));
+      const shown = f.alive && (f.reveal || (d3 < this.radar && Math.hypot(f.vel.x, f.vel.z) > RADAR_SPEED));
+      if (visible && !rec.visible) rec.timeBecameVisible = this.now;
+      if (visible || shown) { rec.timeLastSensed = this.now; rec.lastSensedPosition.set(f.pos.x, f.pos.y, f.pos.z); }
+      rec.visible = visible;
+      if (!f.alive || this.now - rec.timeLastSensed >= MEMORY_S) continue;
+      const score = d3 + (visible ? 0 : UNSEEN_PENALTY) - (f.id === this.foeId ? KEEP_TARGET : 0) - (f.priority ?? 0);
+      if (score < bestScore) { bestScore = score; best = f; }
+    }
+    const ent = best ? this.foes.get(best.id) : this.nobody;
+    if (ent !== this.prey) { this.prey = ent; this.pursuit.evader = ent; }
+    this.foeId = best?.id ?? null;
+    this.foe = best ?? { id: null, pos: f0, vel: { x: 0, y: 0, z: 0 }, alive: false, holding: null };
+  }
+
   // a hit: stagger out of whatever it was winding up
   stagger() {
     this.cooldown('ATTACK', STAGGER_S);
@@ -204,9 +251,11 @@ export class Agent extends Vehicle {
   // s it has had the target in sight, this time
   get inSight() { return this.sees ? this.now - this.record.timeBecameVisible : 0; }
 
-  // it was hurt by the target, or heard it: it knows where the target is now
-  alert() {
-    const t = this.target, rec = this.record;
+  // it was hurt by the target (or by opponent `id`), or heard it: it knows where it is now
+  alert(id = null) {
+    const ent = id != null ? this.foes.get(id) : null;
+    const f = ent ? this.npc.opponents?.().find((o) => o.id === id) : null;
+    const t = f ?? this.target, rec = ent && f ? this.memory.getRecord(ent) : this.record;
     if (!t.alive) return;
     rec.timeLastSensed = this.now;
     rec.lastSensedPosition.set(t.pos.x, t.pos.y, t.pos.z);
@@ -497,9 +546,10 @@ class GatherGoal extends CompositeGoal {
 
 function chooseWeapon(a) {
   // keep the current weapon a while unless it can't be used any more
-  if (a.weapon && a.now - a.weaponAt < WEAPON_SWITCH_S && usable(a, a.weapon)) return a.weapon;
+  if (a.weapon && a.now - a.weaponAt < WEAPON_SWITCH_S && usable(a, a.weapon) && (!a.weapons || a.weapons.has(a.weapon))) return a.weapon;
   let best = null, bw = 0;
   for (const [key, w] of Object.entries(WEAPONS)) {
+    if (a.weapons && !a.weapons.has(key)) continue;   // a game's limits (an infected: melee only)
     if (!usable(a, key)) continue;
     const d = w.rate(a.dist3) + (Math.random() * 2 - 1) * WEAPON_NOISE;
     if (d > bw) { bw = d; best = key; }
@@ -636,6 +686,21 @@ const USE = {
   },
 };
 
+// Raven's weapon system runs beside the goals (TakeAimAndShoot): a bot busy
+// with something else (a team game's objective: holding a hill, guarding a
+// stand) still shoots what it sees, with the gun and the same fairness rules
+// (the reaction delay, the warning miss, the accuracy ramp, the breather), and
+// keeps moving where its goal steers it. False when it has nothing to shoot.
+export function takeAimAndShoot(a) {
+  if (!a.knows || !a.sees || (a.weapons && !a.weapons.has('GUN'))) return false;
+  if (a.inSight < REACTION_S || !a.ready('ATTACK')) { a.hold('GUN'); a.lookAt(a.chest()); return true; }
+  const { share, sprint } = a.intent, steer = [a.pursuit.active, a.seek.active, a.wander.active];
+  USE.GUN(a);
+  a.intent.share = share; a.intent.sprint = sprint;
+  [a.pursuit.active, a.seek.active, a.wander.active] = steer;
+  return true;
+}
+
 // Throw a bomb to land at p: the low arc of the projectile's launch angle
 // θ = atan((v² − √(v⁴ − g(g·x² + 2·y·v²))) / (g·x)). False if out of range.
 function throwBombAt(a, p, breach) {
@@ -724,7 +789,7 @@ function coverWall() {
 for (const [G, label] of [[AttackGoal, 'Attack'], [HuntGoal, 'Hunt'], [BreachGoal, 'Breach'], [ClimbGoal, 'Climb'], [CoverGoal, 'Cover'],
   [ExtinguishGoal, 'Extinguish'], [GatherGoal, 'Gather'], [WanderGoal, 'Wander'], [GoToGoal, 'GoTo'], [ToolGoal, 'Tool']]) G.prototype.label = label;
 
-export { WEAPONS, BLOCK_CELLS, BODY_HEIGHT };
+export { WEAPONS, BLOCK_CELLS, BODY_HEIGHT, GoToGoal, WanderGoal };
 // for other minds on this one (ai/gunner.js): Raven's fuzzy distance module, the aim's error, the shared strategies
 export {
   distanceModule, aimWith, hdist, HuntEvaluator, ExtinguishEvaluator, WanderEvaluator,

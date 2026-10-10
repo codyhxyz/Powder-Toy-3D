@@ -12,6 +12,19 @@ npm install
 npm run dev        # http://localhost:5173  (?preset=lab|volcano|empty&size=64|96|128|wide|world)
 ```
 
+## Inspirations
+
+The games this one borrows from. When a feature needs a rule or a number, we take it from one of these first.
+
+- **Cruelty Squad**: a level you can solve any way you like, absurd movement and tools, and a strange, unpolished charm.
+- **Minecraft**: building in 1 m blocks, the hotbar and hand reach, noise caves, and a world with life in it (structures, villages).
+- **Noita**: every pixel simulated. Our first-person movement and jetpack are Noita's player, our perks and shrines are Noita's, and our reactions use its materials format.
+- **The Powder Toy**: the falling-sand sandbox itself (elements, heat, pressure, reactions), in 3D. The name says it.
+- **Team Fortress 2**: classes and the `,` class picker, the Spy's backstab, the Soldier's rocket launcher and rocket jumps.
+- **Rust**: survival-sandbox multiplayer: gather, build a base, and raid someone else's.
+- **Garry's Mod**: the physgun, weapon slots, and a spawn menu (`Q`) for a sandbox you play in.
+- **Halo 3**: the recharging shield, a Warthog-style jeep, Big Team Battle, and its modes (CTF, King of the Hill, Infection).
+
 ## Controls
 
 Press `?` in the app for the full list.

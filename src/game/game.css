@@ -1,0 +1,105 @@
+/* ------------------------------------------------------------------ team games (src/game) */
+
+.game-hud { position: fixed; inset: 0; z-index: 5; pointer-events: none; display: none; font-family: var(--ui); color: var(--text); }
+.game-hud.on { display: block; }
+.game-hud kbd {
+  font: 600 11px var(--ui); padding: 1px 5px; border-radius: 4px;
+  background: rgba(255, 255, 255, 0.1); border: 1px solid var(--line-hi);
+}
+.game-dot { opacity: 0.5; margin: 0 6px; }
+
+/* ---- top centre: Halo's score, clock and objective */
+.game-top {
+  position: absolute; top: 64px; left: 50%; transform: translateX(-50%);
+  display: none; flex-direction: column; align-items: center; gap: 4px;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+}
+.game-top.on { display: flex; }
+.game-mode { font: 600 11px var(--ui); letter-spacing: 0.12em; text-transform: uppercase; opacity: 0.75; }
+.game-row { display: flex; align-items: stretch; gap: 6px; }
+.game-score {
+  min-width: 52px; padding: 3px 10px; border-radius: 6px; text-align: center;
+  font: 700 22px var(--ui); font-variant-numeric: tabular-nums;
+  background: rgba(20, 22, 30, 0.6); border: 2px solid var(--line-hi);
+}
+.game-score.red { border-color: #e8483d; color: #ffb3ad; }
+.game-score.blue { border-color: #3d8bff; color: #b1d0ff; }
+.game-score.infected { border-color: #86d64a; color: #d2f5b8; }
+.game-timer {
+  padding: 3px 12px; border-radius: 6px; align-self: center;
+  font: 600 18px var(--ui); font-variant-numeric: tabular-nums;
+  background: rgba(20, 22, 30, 0.6);
+}
+.game-obj { font: 500 13px var(--ui); opacity: 0.95; }
+.game-bar { display: none; width: 180px; height: 5px; border-radius: 3px; background: rgba(255, 255, 255, 0.15); overflow: hidden; }
+.game-bar.on { display: block; }
+.game-bar i { display: block; height: 100%; width: 0; transition: width 200ms linear; }
+
+/* ---- killfeed, top right */
+.game-feed { position: absolute; top: 96px; right: 16px; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; max-width: min(46vw, 420px); }
+.game-kill {
+  padding: 3px 9px; border-radius: 5px; font: 500 13px var(--ui);
+  background: rgba(15, 17, 24, 0.62); text-shadow: 0 1px 1px rgba(0, 0, 0, 0.7);
+  animation: game-in 180ms var(--ease);
+}
+.game-kill.note { color: #f2e2b0; }
+@keyframes game-in { from { opacity: 0; transform: translateX(12px); } }
+
+/* ---- "M Match" when no match is on */
+.game-chip { position: absolute; top: 64px; left: 50%; transform: translateX(-50%); padding: 4px 10px; font: 500 12px var(--ui); display: none; opacity: 0.8; }
+.game-chip.on { display: block; }
+
+/* ---- scoreboard */
+.game-board {
+  position: absolute; left: 50%; top: 150px; transform: translateX(-50%);
+  width: min(640px, calc(100vw - 32px)); padding: 14px 16px; display: none;
+}
+.game-board.on { display: block; }
+.game-board-title { font: 600 13px var(--ui); margin-bottom: 10px; text-align: center; opacity: 0.85; }
+.game-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.game-col-head { display: flex; justify-content: space-between; font: 700 15px var(--ui); padding-bottom: 6px; margin-bottom: 4px; border-bottom: 2px solid currentColor; }
+.game-col.red .game-col-head { color: #ff8a80; }
+.game-col.blue .game-col-head { color: #8bb8ff; }
+.game-col.infected .game-col-head { color: #a8e57b; }
+.game-line { display: grid; grid-template-columns: 1fr 52px 28px 28px; gap: 4px; font: 500 13px var(--ui); padding: 2px 0; font-variant-numeric: tabular-nums; }
+.game-line span:not(:first-child) { text-align: right; }
+.game-line.head { opacity: 0.55; font-size: 11px; }
+.game-line.me { color: var(--accent); font-weight: 700; }
+.game-keys { margin-top: 12px; text-align: center; font: 500 12px var(--ui); opacity: 0.7; }
+
+/* ---- match menu (M): pointer events on, the mouse is free while it's open */
+.game-menu {
+  position: absolute; left: 50%; bottom: 96px; transform: translateX(-50%);   /* above the hotbar */
+  width: min(640px, calc(100vw - 32px)); padding: 12px 14px; display: none; pointer-events: auto;
+}
+.game-menu.on { display: block; }
+.game-menu-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 15px; }
+.game-x { background: none; border: 0; color: var(--muted); font-size: 22px; cursor: pointer; line-height: 1; }
+.game-picks { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 6px; }
+.game-pick {
+  display: flex; flex-direction: column; gap: 2px; text-align: left; cursor: pointer;
+  padding: 7px 9px; border-radius: var(--r-ctl); color: var(--text);
+  background: var(--raise); border: 1px solid var(--line);
+}
+.game-pick b { font: 600 13px var(--ui); }
+.game-pick span { font: 400 11px var(--ui); color: var(--muted); }
+.game-pick.on { border-color: var(--accent); background: var(--raise-hi); }
+.game-sides { display: flex; align-items: center; gap: 6px; margin: 10px 0; font: 500 12px var(--ui); color: var(--muted); }
+.game-side { padding: 4px 10px; border-radius: var(--r-ctl); cursor: pointer; color: var(--text); background: var(--raise); border: 1px solid var(--line); font: 500 12px var(--ui); }
+.game-side.on { border-color: var(--accent); }
+.game-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.game-go, .game-stop { padding: 6px 14px; border-radius: var(--r-ctl); cursor: pointer; font: 600 13px var(--ui); border: 1px solid var(--line-hi); }
+.game-go { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+.game-stop { background: var(--raise); color: var(--text); }
+.game-stop.off { display: none; }
+
+/* ---- the result */
+.game-end { position: absolute; left: 50%; top: 30%; transform: translateX(-50%); text-align: center; display: none; text-shadow: 0 2px 6px rgba(0, 0, 0, 0.85); }
+.game-end.on { display: block; animation: game-in 300ms var(--ease); }
+.game-end-title { font: 800 44px var(--ui); letter-spacing: 0.02em; }
+.game-end-sub { font: 500 16px var(--ui); opacity: 0.9; margin-top: 6px; }
+
+@media (max-width: 560px) {
+  .game-cols { grid-template-columns: 1fr; }
+  .game-feed { top: 150px; }
+}
