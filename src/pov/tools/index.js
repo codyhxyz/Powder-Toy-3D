@@ -2,6 +2,9 @@ import { createHotbar, HOTBAR_SLOTS, slotKey } from './hotbar.js';
 import { sharedTransfer, emptyLoads } from './transfer.js';
 import { povEvents } from '../events.js';
 import { createBallistics } from '../ballistics.js';
+import { PRESETS } from '../wands/catalog.js';
+import { createWandRuntime } from '../wands/runtime.js';
+import { createWandEditor } from '../wands/editor.js';
 
 export { emptyLoads };
 
@@ -26,20 +29,37 @@ const NOTICE_INTERVAL = 1.5;   // s between repeats of a tool's notice and refus
 const MS_PER_S = 1000;
 
 export function createToolbelt(env) {
-  const hotbar = createHotbar();
+  const hotbar = createHotbar({ onSelect: select, onChoose: choose, onEdit: () => editor.show() });
   const transfer = sharedTransfer(env);
+  const wandRuntime = createWandRuntime({ ...env, transfer });
+  let wandSelected = false, custom = null;
+  const editor = createWandEditor({
+    runtime: wandRuntime, toast: (text) => env.hud?.toast?.(text),
+    onOpenChange(open) { env.onEditorOpenChange?.(open); if (open) deselect(); },
+    onSave(def) {
+      custom = { ...def, name: def.name.trim() || 'Custom wand' };
+      selected = Math.max(0, Math.min(HOTBAR_SLOTS - 1, (def.slot ?? selected + 1) - 1));
+      wandSelected = true;
+      syncChoices(); hotbar.select(selected); hotbar.choose('custom');
+      env.requestRender?.();
+    },
+  });
   const ballistics = createBallistics({ renderer: env.renderer });
   ballistics.prepare(env.getSim());
   // Hidden (out of POV, dead) the toolbelt isn't updated, but what's in the air
   // keeps flying until it lands, at the last frame's step rate.
-  let shown = false, lastSteps = 0, raf = 0, rafAt = 0;
+  let shown = false, lastSteps = 0, raf = 0, rafAt = 0, lastCtx = null;
   function drive(now) {
     raf = 0;
-    if (shown || !ballistics.count) return;
+    if (shown || (!ballistics.count && !wandRuntime.active)) return;
     const dt = rafAt ? (now - rafAt) / MS_PER_S : 0;
     rafAt = now;
-    ballistics.update({ sim: env.getSim(), dt, stepsPerFrame: lastSteps });
-    raf = requestAnimationFrame(drive);
+    const ctx = { ...lastCtx, sim: env.getSim(), dt, stepsPerFrame: env.getStepsPerFrame?.() ?? lastSteps,
+      primary: false, secondary: false, primaryPressed: false, secondaryPressed: false, wheel: 0 };
+    ballistics.update(ctx);
+    if (lastCtx) wandRuntime.tick(ctx);
+    env.requestRender?.();
+    if (ballistics.count || wandRuntime.active) raf = requestAnimationFrame(drive);
   }
   const tools = Array(HOTBAR_SLOTS).fill(null);   // { def, inst } per slot
 
@@ -73,21 +93,59 @@ export function createToolbelt(env) {
   let selected = DEFAULT_SLOT;
   let readout = null;   // the selected tool's readout?.(ctx) from the last update
   hotbar.select(selected);
+  syncChoices(); hotbar.choose(`tool:${selected}`);
 
+  function syncChoices() {
+    hotbar.setChoices(tools.map((tool, i) => ({
+      name: `${slotKey(i)} · ${tool?.def.name ?? 'Tools'}`,
+      items: [
+        { value: `tool:${i}`, label: tool?.def.name ?? 'Empty slot' },
+        ...PRESETS.filter((p) => p.slot === i + 1).map((p) => ({ value: `wand:${p.id}`, label: `Wand: ${p.name}` })),
+        ...(custom && i === selected ? [{ value: 'custom', label: `Wand: ${custom.name}` }] : []),
+      ],
+    })));
+  }
+  function deselect() {
+    if (wandSelected) wandRuntime.deselect();
+    else tools[selected]?.inst.deselect?.();
+  }
+  function equipWand(definition) {
+    const def = typeof definition === 'string' ? PRESETS.find((p) => p.id === definition) : definition;
+    if (!def) return false;
+    deselect();
+    wandRuntime.equip(def);
+    selected = Math.max(0, Math.min(HOTBAR_SLOTS - 1, (def.slot ?? selected + 1) - 1));
+    wandSelected = true;
+    if (!PRESETS.some((p) => p.id === def.id)) custom = def;
+    syncChoices(); hotbar.select(selected);
+    hotbar.choose(PRESETS.some((p) => p.id === def.id) ? `wand:${def.id}` : 'custom');
+    env.releaseInput?.(); env.requestRender?.();
+    return true;
+  }
+  function choose(value) {
+    if (value.startsWith('tool:')) select(Number(value.slice(5)));
+    else if (value === 'custom') equipWand(custom);
+    else equipWand(value.slice(5));
+  }
   function select(i) {
     i = ((i % HOTBAR_SLOTS) + HOTBAR_SLOTS) % HOTBAR_SLOTS;
-    if (i === selected) return;
-    tools[selected]?.inst.deselect?.();
+    if (i === selected && !wandSelected) return;
+    deselect();
+    wandSelected = false;
     selected = i;
-    hotbar.select(i);
+    hotbar.select(i); hotbar.choose(`tool:${i}`);
+    env.releaseInput?.();
     env.requestRender?.();
   }
 
   // the number keys (1–9, 0 for slot 10) pick a slot while in POV (and don't reach the god view's hotkeys)
   function onKey(e) {
-    if (!env.isActive?.() || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (editor.open || !env.isActive?.() || e.metaKey || e.ctrlKey || e.altKey) return;
     const t = e.target;
     if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    if (e.code === 'KeyB') {
+      e.preventDefault(); e.stopImmediatePropagation(); if (!e.repeat) editor.show(); return;
+    }
     const i = e.key.length === 1 ? [...Array(HOTBAR_SLOTS).keys()].find((j) => slotKey(j) === e.key) : undefined;
     if (i === undefined) return;
     e.preventDefault();
@@ -98,17 +156,25 @@ export function createToolbelt(env) {
 
   return {
     get selected() { return selected; },
-    get selectedKey() { return tools[selected]?.def.key ?? null; },   // the held tool's key ('GUN', ...)
+    get selectedKey() { return wandSelected ? 'WAND' : tools[selected]?.def.key ?? null; },   // the held tool's key ('GUN', ...)
     get transfer() { return transfer; },
+    wandRuntime, editor, equipWand,
+    openEditor: () => editor.show(),
     get ballistics() { return ballistics; },
     get readout() { return readout; },
     tool: (i) => tools[i]?.inst ?? null,
     select,
     update(ctx) {
-      const cur = tools[selected]?.inst;
-      if (ctx.wheel && !cur?.wantsWheel?.()) select(selected + Math.sign(ctx.wheel));
-      tools[selected]?.inst.update(ctx);
-      readout = tools[selected]?.inst.readout?.(ctx) ?? null;
+      lastCtx = ctx;
+      const cur = wandSelected ? null : tools[selected]?.inst;
+      if (!editor.open && ctx.wheel && !cur?.wantsWheel?.()) select(selected + Math.sign(ctx.wheel));
+      if (wandSelected && !editor.open) wandRuntime.update(ctx);
+      else {
+        wandRuntime.tick(ctx);
+        if (!editor.open) tools[selected]?.inst.update(ctx);
+      }
+      readout = wandSelected ? { name: wandRuntime.definition?.name ?? 'Wand', color: '#b994ff', note: String(wandRuntime.status() ?? '') }
+        : tools[selected]?.inst.readout?.(ctx) ?? null;
       lastSteps = ctx.stepsPerFrame;
       ballistics.update(ctx);
       tools.forEach((t, i) => hotbar.setStatus(i, t?.inst.status?.() ?? ''));
@@ -116,16 +182,18 @@ export function createToolbelt(env) {
     setVisible(v) {
       hotbar.setVisible(v);
       shown = v;
-      if (!v && ballistics.count && !raf) { rafAt = 0; raf = requestAnimationFrame(drive); }
-      if (!v) { tools[selected]?.inst.deselect?.(); readout = null; }
+      if (v && raf) { cancelAnimationFrame(raf); raf = 0; }
+      if (!v && (ballistics.count || wandRuntime.active) && !raf) { rafAt = 0; raf = requestAnimationFrame(drive); }
+      if (!v) { editor.close(); deselect(); readout = null; }
     },
     // The window moved over the world by (dx, 0, dz) cells (docs/scaling.md
     // D11): every tool, selected or not, moves the grid positions it keeps.
-    windowShifted(dx, dz) { tools.forEach((t) => t?.inst.windowShifted?.(dx, dz)); },
+    windowShifted(dx, dz) { tools.forEach((t) => t?.inst.windowShifted?.(dx, dz)); wandRuntime.windowShifted(dx, dz); },
     dispose() {
       removeEventListener('keydown', onKey, { capture: true });
       if (raf) cancelAnimationFrame(raf);
       ballistics.dispose();
+      editor.dispose(); wandRuntime.dispose();
       tools.forEach((t) => { t?.inst.deselect?.(); t?.inst.dispose?.(); });
       hotbar.dispose();
     },

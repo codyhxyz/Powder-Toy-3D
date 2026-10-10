@@ -82,3 +82,23 @@
   .hb-slot { width: 38px; height: 38px; }
   .hb-icon { width: 30px; height: 30px; }
 }
+
+.hb-chooser {
+  display: flex; align-items: center; gap: 8px; max-width: calc(100vw - 24px);
+  padding: 6px 8px; border-radius: 8px; background: var(--panel-solid);
+  border: 1px solid var(--line); font: 12px/1.4 var(--ui); color: var(--text);
+  pointer-events: auto;
+}
+.hb-chooser label { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.hb-chooser select, .hb-chooser button {
+  min-height: 34px; padding: 5px 8px; border: 1px solid var(--line-hi); border-radius: 5px;
+  font: inherit; background: var(--panel-solid); color: var(--text); cursor: pointer;
+}
+.hb-chooser select { min-width: 0; max-width: 260px; }
+.hb-chooser button { white-space: nowrap; }
+.hb-slot { border: 0; padding: 0; cursor: pointer; pointer-events: auto; }
+.hb-slot:hover, .hb-chooser button:hover { background: var(--raise-hi); }
+.hotbar :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.hb-row { max-width: calc(100vw - 16px); overflow-x: auto; }
+.hb-slot { flex-shrink: 0; }
+@media (max-width: 560px) { .hb-chooser select { max-width: 200px; } }

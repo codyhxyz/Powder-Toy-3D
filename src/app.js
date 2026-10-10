@@ -3,7 +3,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import './ui/styles.css';
 import { Simulation } from './sim.js';
 import { volumeVert, volumeFrag, pickFrag, shadowFrag } from './shaders/render.js';
-import { ELEMENTS, E, toolById, isBuild, isSpawnerTool } from './elements.js';
+import { ELEMENTS, E, toolById, isBuild, isSpawnerTool, wandPresetForTool } from './elements.js';
 import { Spawners, SPAWNER, feetOnHit } from './spawners.js';
 import { buildPreset } from './presets.js';
 import { loadIsland, releaseGenerator } from './world/gpu.js';
@@ -600,6 +600,11 @@ function accentFor(hex) {
 let lastPaintTool = E.SAND;
 function selectTool(id) {
   setEyedropper(false);
+  const wand = wandPresetForTool(id);
+  if (wand) {
+    pov?.equipWand(wand).catch((err) => { console.error('Wand equip failed', err); hud.toast('Could not equip this wand. Try entering first person with F.'); });
+    return;   // Never save or send starter IDs to the paint shader.
+  }
   if (!isBuild(id)) lastPaintTool = id;
   settings.tool = id;
   const it = toolById(id);
@@ -968,6 +973,7 @@ let timeShown = NaN;   // the time of day the drawer last showed
 let wantShot = false;
 
 addEventListener('keydown', (e) => {
+  if (pov?.editingWand) return;
   if (e.key === 'Alt') controls.mouseButtons.LEFT = THREE.MOUSE.ROTATE;
   if (e.key === 'Shift') controls.mouseButtons.RIGHT = THREE.MOUSE.PAN;
   if (isTyping()) return;

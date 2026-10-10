@@ -11,15 +11,18 @@ export const slotKey = (i) => String((i + 1) % 10);   // slot i's number key
 const NAME_SHOW_MS = 1800;        // how long the tool name stays up after a switch
 const SHAKE_MS = 360;             // .shake animation length (hotbar.css)
 
-export function createHotbar() {
+export function createHotbar({ onSelect, onChoose, onEdit } = {}) {
   const nameEl = h('div.hb-name');
   const slots = [...Array(HOTBAR_SLOTS)].map((_, i) => {
     const icon = h('span.hb-icon');
     const status = h('span.hb-status');
-    const el = h('div.hb-slot', { 'data-empty': '' }, h('span.hb-num', { text: slotKey(i) }), icon, status);
+    const el = h('button.hb-slot', { type: 'button', 'data-empty': '', 'aria-label': `Tool slot ${slotKey(i)}`, on: { click: () => onSelect?.(i) } }, h('span.hb-num', { text: slotKey(i) }), icon, status);
     return { el, icon, status, text: '' };
   });
-  const bar = h('div.hotbar', { role: 'toolbar', 'aria-label': 'Tools' }, nameEl, h('div.hb-row', {}, slots.map((s) => s.el)));
+  const chooser = h('select', { 'aria-label': 'Equipped tool or wand', on: { change: () => onChoose?.(chooser.value) } });
+  const edit = h('button', { type: 'button', text: 'Edit wand', title: 'Edit wand (B)', 'aria-keyshortcuts': 'B', on: { click: () => onEdit?.() } });
+  const bar = h('div.hotbar', { role: 'toolbar', 'aria-label': 'Tools' }, nameEl,
+    h('div.hb-chooser', {}, h('label', {}, 'Equip', chooser), edit), h('div.hb-row', {}, slots.map((s) => s.el)));
   document.body.append(bar);
   let nameTimer = 0;
 
@@ -32,18 +35,24 @@ export function createHotbar() {
       s.el.removeAttribute('data-empty');
       s.el.title = def.desc ? `${def.name}: ${def.desc}` : def.name;
       s.el.dataset.name = def.name;
+      s.el.setAttribute('aria-label', `${slotKey(i)}: ${def.name}`);
       s.icon.replaceChildren(def.model
         ? h('img', { src: modelIcon(def.model), alt: '', draggable: 'false' })
         : h('b', { text: def.key?.slice(0, 4) ?? '' }));
     },
     select(i) {
-      slots.forEach((s, j) => s.el.classList.toggle('on', j === i));
+      slots.forEach((s, j) => { s.el.classList.toggle('on', j === i); s.el.setAttribute('aria-pressed', String(j === i)); });
       const name = slots[i].el.dataset.name;
       nameEl.textContent = name ?? '';
       nameEl.classList.toggle('show', !!name);
       clearTimeout(nameTimer);
       nameTimer = setTimeout(() => nameEl.classList.remove('show'), NAME_SHOW_MS);
     },
+    setChoices(groups) {
+      chooser.replaceChildren(...groups.map(({ name, items }) => h('optgroup', { label: name },
+        items.map(({ value, label }) => h('option', { value, text: label })))));
+    },
+    choose(value) { chooser.value = value; },
     setStatus(i, text) {
       const s = slots[i];
       text = text ?? '';

@@ -1,3 +1,5 @@
+import { PRESETS as WAND_PRESETS } from './pov/wands/catalog.js';
+
 // Element definitions. This table is the single source of truth: it drives the
 // UI palette and is baked into every shader as GLSL const arrays.
 //
@@ -117,6 +119,12 @@ export const breakInto = (e) => (e.breakInto ? E[e.breakInto] : -1);
 
 // Brush tools that are not elements (negative ids in the paint shader).
 // SIGN is handled by the app (it pins a text label), not by the paint shader.
+// Fixed starter tiles live in Tools; selection equips POV, never paints a negative ID.
+export const WAND_STARTERS = WAND_PRESETS.slice(0, 20).map((preset, i) => ({
+  id: -20 - i, key: `WAND_${preset.id}`, abbr: 'WAND', name: preset.name,
+  color: '#b994ff', desc: `${preset.description} Equip in first person; B edits the wand.`, preset,
+}));
+export const wandPresetForTool = (id) => WAND_STARTERS.find((item) => item.id === id)?.preset;
 export const TOOLS = [
   { id: -1, key: 'ERASE', abbr: 'ERAS', name: 'Erase', color: '#e5536a', desc: 'Removes everything inside the brush.' },
   { id: -2, key: 'HEAT', abbr: 'HEAT', name: 'Heat', color: '#ff7a2f', desc: 'Warms everything inside the brush.' },
@@ -129,6 +137,7 @@ export const TOOLS = [
     desc: 'Click a surface: in first person (F) an enemy with every tool appears here, and comes back after it dies. Click it again to remove it.' },
   { id: -7, key: 'SPAWN', abbr: 'SPWN', name: 'Player spawn', color: '#3fa7ff',
     desc: 'Click a surface: F drops you in at the spawn nearest the cursor, and you respawn there. Click it again to remove it.' },
+  ...WAND_STARTERS,
 ];
 export const isSpawnerTool = (id) => id === -6 || id === -7;
 
@@ -167,7 +176,7 @@ export const PALETTE = [
   { name: 'Liquids', items: ['WATER', 'ACID', 'OIL', 'LAVA'] },
   { name: 'Gases', items: ['STEAM', 'SMOKE', 'FIRE'] },
   { name: 'Solids', items: ['WALL', 'ROCK', 'METAL', 'GLASS', 'ICE', 'WOOD', 'PLANT', 'CLONE'] },
-  { name: 'Tools', items: ['HEAT', 'COOL', 'ERASE', 'BLAST', 'SIGN'] },
+  { name: 'Tools', items: ['HEAT', 'COOL', 'ERASE', 'BLAST', 'SIGN', ...WAND_STARTERS.map((item) => item.key)] },
   { name: 'Entities', items: ['ENEMY', 'SPAWN'] },
   { name: 'Constructions', items: ['HOUSE', 'TREE', 'CAMPFIRE', 'IGLOO', 'BARREL', 'AQUARIUM', 'FOUNTAIN', 'PROMPT'] },
 ];
