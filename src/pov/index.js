@@ -394,7 +394,7 @@ export function createPov(app) {
     primary: false, secondary: false, primaryPressed: false, secondaryPressed: false, wheel: 0,
     viewBobbing: true,              // the View Bobbing setting (the viewmodel rig's hand bob reads it)
     aim: { valid: false, cell: new THREE.Vector3(), face: 0, id: -1, T: 0, P: 0, dist: Infinity },
-    player: { pos: null, vel: null, onGround: false, inLiquid: false, applyImpulse: (dv) => player?.applyImpulse(dv), holdPogo: () => player?.holdPogo() },
+    player: { pos: null, vel: null, onGround: false, inLiquid: false, applyImpulse: (dv) => player?.applyImpulse(dv), holdPogo: () => player?.holdPogo(), body: null },   // body: the player itself (a drink acts on it: ingest.js)
   };
   const input = { move: { x: 0, z: 0 }, jump: false, sprint: false, down: false };
   let sprintOn = false;     // Sprint: Toggle's state
@@ -553,6 +553,7 @@ export function createPov(app) {
       ctx.wheel = wheelNotches;
       ctx.viewBobbing = app.settings.viewBobbing;
       ctx.player.pos = player.pos;
+    ctx.player.body = player;
       ctx.player.vel = player.vel;
       ctx.player.onGround = player.onGround;
       ctx.player.inLiquid = player.inLiquid;

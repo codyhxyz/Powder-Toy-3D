@@ -42,7 +42,7 @@ const EPS = 1e-4;                      // cells: faces this close to a cell boun
 // speed you ask for, which is what makes Noita's movement feel fluid.
 const NOITA_FPS = 60;
 const NOITA_BODY_PX = 11;              // px, Mina head to feet
-const PX = BODY_HEIGHT / NOITA_BODY_PX; // cells per Noita pixel
+export const PX = BODY_HEIGHT / NOITA_BODY_PX; // cells per Noita pixel (the flask scales Noita's units by it)
 const GRAVITY = 350 * PX;              // cells/s² (175, 5.4 g) at the default sim gravity (pixel_gravity)...
 const SIM_GRAVITY_REF = 0.025;         // ...which is this many cells/step² (sim.js GRAVITY_DEFAULT); the setting scales it
 const SPRINT_SPEED = 57 * PX;          // cells/s (8.6 m/s): Mina's run (velocity_max_x)
@@ -221,6 +221,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     get dead() { return vitals.dead; },
     get cause() { return vitals.cause; },
     get skinT() { return vitals.skinT; },
+    set skinT(T) { vitals.skinT = T; },   // a drink trades heat with it (ingest.js)
     stepRate: 0,                  // sim steps/s, as measured
   };
   const impulse = new THREE.Vector3();
@@ -780,8 +781,9 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     applyImpulse(dv) { impulse.add(dv); },
     ownBlast() { vitals.ownBlast(); },   // a blast it set off (a rocket, a bomb): it hurts this body less (vitals.js)
     // a blow from outside the sim (an NPC's axe): the Energy Shield takes it first;
-    // { lethal: true } takes all the health there is, through the shield (a backstab)
-    hurt(amount, cause, { lethal = false } = {}) { vitals.hurt(amount, cause, true, { shielded: true, lethal }); },
+    // { lethal: true } takes all the health there is, through the shield (a backstab);
+    // { shielded: false } passes the shield (a drink hurts from inside: ingest.js)
+    hurt(amount, cause, { lethal = false, shielded = true } = {}) { vitals.hurt(amount, cause, true, { shielded, lethal }); },
     holdPogo() { pogoHold = true; },   // a pogo stick in hand: call every frame it's held (tools/pogo.tool.js)
     on(name, fn) {
       (listeners[name] ??= []).push(fn);
