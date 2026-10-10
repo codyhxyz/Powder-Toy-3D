@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { prelude, quadVert, stateOutGLSL, copyThroughMain, stateUniforms } from './common.js';
 import { BODY_WIDTH, BODY_HEIGHT } from '../pov/constants.js';
-import { ELEMENTS } from '../elements.js';
+import { ELEMENTS, E } from '../elements.js';
 import { PHYS as ENGINE } from '../physics.js';
 
 // GPU passes for the POV axe, pickaxe, physgun, flamethrower, torch and rocket (src/pov/tools/*.tool.js),
@@ -429,7 +429,7 @@ export const ROCKET = {
   IMPULSE: 20,       // DENS · cells/step given to loose matter at full strength
   EDGE: 0.4,         // share of a radius held at full strength before fading
 };
-ROCKET.FIRE_T = ENGINE.GUNPOWDER_T;   // °C, the gunpowder blast's (physics.js)
+ROCKET.FIRE_T = ELEMENTS[E.GUNPOWDER].blast.T;   // °C, the gunpowder blast's (elements.js)
 
 export const rocketFrag = (g) => /* glsl */ `
 ${head(g)}

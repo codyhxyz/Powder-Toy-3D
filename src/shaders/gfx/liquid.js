@@ -10,8 +10,19 @@ float fresnelSchlick(float cosi, float ior) {
 // plus the sun's highlight (a tight lobe standing in for the sun's disc).
 #define SUN_GLINT_EXP 400.0   // sharpness of the highlight lobe
 #define SUN_GLINT_GAIN 6.0    // its peak, relative to the sun's colour
+vec3 sunGlint(vec3 r, vec3 sunVis) {
+  return SUN_COL * sunVis * pow(max(dot(r, uSun), 0.0), SUN_GLINT_EXP) * SUN_GLINT_GAIN;
+}
 vec3 envReflect(vec3 p, vec3 r, vec3 sunVis) {
-  return skyColor(r) + SUN_COL * sunVis * pow(max(dot(r, uSun), 0.0), SUN_GLINT_EXP) * SUN_GLINT_GAIN;
+  return skyColor(r) + sunGlint(r, sunVis);
+}
+// The same inside the grid, where the GI probes know what's overhead: the sky
+// only as far as they say it is open toward r, their light (bounce, the rock
+// around) for the rest, as surface.js's sharp environment does. So a pool in a
+// cave mirrors the cave, not a sky it can't see. gi: the interface's probe,
+// surfProbe(p, n) with n its normal on the side r leaves from.
+vec3 envReflectGI(Probe gi, vec3 r, vec3 sunVis) {
+  return mix(giRadiance(gi, r, 0.0), skyColor(r), giSkyVis(gi, r)) + sunGlint(r, sunVis);
 }
 
 // Offsets off a transparent interface (cells): a ray restarts IFACE_NUDGE past
@@ -25,11 +36,18 @@ vec3 envReflect(vec3 p, vec3 r, vec3 sunVis) {
 // light arriving at p. sunVis is the sun's visibility there, including its
 // fade through the liquid above (the tracer refreshes it with depth); sky
 // light fades the same way, but never below a floor, so shaded liquid
-// still shows its body colour.
+// still shows its body colour. Only as much sky light gets in as the sky is
+// open above where the ray got in (gSkyIn), so a pool in a cave is lit by the
+// cave alone.
 #define SKY_IN_FLOOR 0.25   // share of the sky light that reaches liquid in shade
 #define SUN_IN_GAIN 0.6     // sunlight scattered per unit of sun elevation
+// The GI probes' sky visibility facing up where the ray last got into liquid
+// or glass (skyInAt); the tracer sets it at each way in. 1 (open sky) for
+// code without the probes: the far field's open sea.
+float gSkyIn = 1.0;
+float skyInAt(Probe gi) { return giSkyVis(gi, vec3(0.0, 1.0, 0.0)); }
 vec3 interiorScatter(int id, vec3 p, vec3 sunVis, float T) {
-  vec3 L = skyAmbient(vec3(0.0, 1.0, 0.0)) * mix(vec3(SKY_IN_FLOOR), vec3(1.0), sunVis)
+  vec3 L = skyAmbient(vec3(0.0, 1.0, 0.0)) * gSkyIn * mix(vec3(SKY_IN_FLOOR), vec3(1.0), sunVis)
          + SUN_COL * sunVis * max(uSun.y, 0.0) * SUN_IN_GAIN + sampleLight(p) * uLightGain;
   return SCATALB[id] * L + emission(id, T);
 }
@@ -91,15 +109,21 @@ vec3 liquidRipple(vec3 p, vec3 n) {
 #define REFL_START 0.05     // start offset off the surface, cells
 #define REFL_PROBE 0.5      // a smooth hit's element is looked up this far inside it, then twice that
 #define REFL_NORMAL_STEP 0.5   // forward-difference step of a reflected smooth hit's normal, cells
-// What the reflection shows of a hit: the element's albedo lit by the sun
-// (facing only, no cast shadows) and the sky, plus its own glow (emission).
-// Reflections are dimmed by Fresnel and wobbled by ripples, so texture
-// detail, shadows, AO and the glow it receives wouldn't show for the cost.
-vec3 reflShade(vec4 a, vec3 n) {
+// What the reflection shows of a hit at hp: the element's albedo lit as the
+// near field lights its hits (gfx/lighting.js nearField): the sun
+// (shadow-mapped), the probes' light and the glow there, plus its own glow
+// (emission). Shadows and the probes' occlusion keep a cave's walls dark in its
+// pool. Reflections are dimmed by Fresnel and wobbled by ripples, so texture
+// detail and AO wouldn't show for the cost.
+vec3 reflShade(vec4 a, vec3 hp, vec3 n) {
   int id = eid(a);
-  return ALBEDO[id] * (SUN_COL * max(dot(n, uSun), 0.0) + skyAmbient(n)) + emission(id, a.y);
+  vec3 q = hp + n * IFACE_PROBE;
+  float ndl = max(dot(n, uSun), 0.0);
+  vec3 sun = ndl > 0.0 ? SUN_COL * ndl * (uShadows ? sunShadow(q) : vec3(1.0)) : vec3(0.0);
+  return ALBEDO[id] * (sun + giIrradiance(surfProbe(hp, n), n) + sampleLight(q) * uLightGain) + emission(id, a.y);
 }
-vec3 reflectTrace(vec3 ro, vec3 rd, vec3 sunVis) {
+// env: what the ray sees if it meets nothing (envReflectGI at the interface).
+vec3 reflectTrace(vec3 ro, vec3 rd, vec3 env) {
   rd = safeDir(rd);
   ivec3 istp = ivec3(sign(rd));
   vec3 tDelta = abs(1.0 / rd);
@@ -130,7 +154,7 @@ vec3 reflectTrace(vec3 ro, vec3 rd, vec3 sunVis) {
         vec3 nh = vec3(0.0);
         nh[ax] = -float(istp[ax]);
         float th = tEnter;
-        if (crispHit(cell, id, ro, rd, tEnter, tExit, th, nh)) return reflShade(a, nh);
+        if (crispHit(cell, id, ro, rd, tEnter, tExit, th, nh)) return reflShade(a, ro + rd * th, nh);
       }
       stale = true;
     } else if (brickSurf(flags)) {
@@ -151,7 +175,7 @@ vec3 reflectTrace(vec3 ro, vec3 rd, vec3 sunVis) {
         ivec3 c1 = clamp(ivec3(floor(hp - n * REFL_PROBE)), ivec3(0), GRID - 1);
         vec4 ah = fetchA(c1);
         if (SURFCH[eid(ah)] != ch) ah = fetchA(clamp(ivec3(floor(hp - n * (2.0 * REFL_PROBE))), ivec3(0), GRID - 1));
-        return reflShade(ah, n);
+        return reflShade(ah, hp, n);
       }
       phiA = phiB;
       stale = false;
@@ -164,7 +188,7 @@ vec3 reflectTrace(vec3 ro, vec3 rd, vec3 sunVis) {
     tMax[ax] += tDelta[ax];
   }
   if (cell.y < 0 && rd.y < 0.0) return shadeFloor(ro - rd * (ro.y / rd.y), rd);
-  return envReflect(ro, rd, sunVis);
+  return env;
 }
 
 // Refraction at a smooth liquid surface. n = outward normal of the liquid.
@@ -179,9 +203,11 @@ bool liquidInterface(vec3 hp, vec3 n, bool entering, int id, bool mirror, inout 
     float F = fresnelSchlick(-dot(n, rd), ior);
     mediumLight = uShadows ? sunShadow(hp + n * IFACE_PROBE) : vec3(1.0);
     vec3 r = reflect(rd, n);
-    vec3 env = envReflect(hp, r, mediumLight);
+    Probe gi = surfProbe(hp, n);
+    gSkyIn = skyInAt(gi);
+    vec3 env = envReflectGI(gi, r, mediumLight);
     float wr = mirror ? smoothstep(REFL_F_LO, REFL_F_HI, F) : 0.0;
-    if (wr > 0.0) env = mix(env, reflectTrace(hp + n * REFL_START, r, mediumLight), wr);
+    if (wr > 0.0) env = mix(env, reflectTrace(hp + n * REFL_START, r, env), wr);
     col += trans * F * env;
     trans *= 1.0 - F;
     rd = refract(rd, n, 1.0 / ior);

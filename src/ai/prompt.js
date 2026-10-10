@@ -15,7 +15,7 @@ function elementTable() {
     const notes = [];
     if (e.kind !== K.SOLID && e.kind !== K.GAS) notes.push(`density ${+(e.dens / WATER_DENSITY).toFixed(2)}× water`);
     if (e.melt) notes.push(`melts at ${e.melt} °C`);
-    if (e.ignite) notes.push(`${e.key === 'GUNPOWDER' ? 'explodes' : 'ignites'} at ${e.ignite} °C`);
+    if (e.ignite) notes.push(`${e.blast ? 'explodes' : 'ignites'} at ${e.ignite} °C`);
     if (e.temp !== 20) notes.push(`placed at ${e.temp} °C`);
     return `| ${e.key} | ${KIND[e.kind]} | ${notes.join('; ')} | ${e.desc} |`;
   });

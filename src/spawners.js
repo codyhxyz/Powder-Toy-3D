@@ -8,7 +8,7 @@ import { BODY_HEIGHT, BODY_WIDTH } from './pov/constants.js';
 //   gunner  the same, a jetpack gunner (npc.js, style 'gunner'): Noita's jetpack Hiisi
 //   worm    the same, a worm (pov/worm.js) that comes up here and burrows in
 //   giantworm  the same, the giant worm (worm.js size 'giant')
-//   player  where F drops you in (the one nearest the cursor) and where you respawn
+//   player  where V drops you in (the one nearest the cursor) and where you respawn
 //   jeep, hoverbike
 //           in first person, keeps one vehicle (pov/vehicles/) parked here: it
 //           comes back here a few seconds after it's destroyed

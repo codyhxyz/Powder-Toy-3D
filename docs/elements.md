@@ -10,12 +10,19 @@ Physics comes first, as everywhere in this project. Where TPT bends physics for 
 
 ## Element ids are not scarce
 
-Element ids must hold at least 256 elements everywhere: there are about 100 on this page alone.
-- The live state stores the id as a float, so it has no cap.
-- The far field's id channel was 8 bits (32 ids). Branch `farids` widens it to 256.
-- The parked 16-byte state layout (docs/scaling.md D7) gave the id 6 bits. It must give id and ctype 8 bits each
-  before it is built.
-- Anything else that packs an id (shadow tint, network stream, saves, tile engine) gets checked by `el-core`.
+Element ids must hold at least 256 elements everywhere: there are about 100 on this page alone. Audited
+2026-10-10 (`el-core`):
+- The live state stores the id and ctype as floats (RGBA32F), so they have no cap. Saves and the off-window world
+  store (`world/store.js`) keep those floats; constructions keep ids in Uint8 or Int16 grids, and bake id + 1
+  into a float texture.
+- The far field's id channel was 8 bits (32 ids), and `shaders/far.js` throws past 32 elements. Branch `farids`
+  widens it to 256.
+- The shadow map packs tint id × SHADOW_TINT_ID_SCALE + optical depth into a float32. The scale went from 1000
+  to 256, so at id 255 the depth keeps 2^−8 (gfx/lighting.js).
+- The network stream (`net/codec.js`) sends id and ctype as one byte each: 0–255.
+- The dock tiles' CPU twin keeps id and ctype in Uint8 arrays (0–255). Its MELTINTO and BREAKINTO tables were
+  Int8 and wrapped at 128; they are Int16 now.
+- The parked 16-byte state layout (docs/scaling.md D7) now gives id and ctype 8 bits each.
 
 ## Categories, ranked
 
@@ -40,47 +47,80 @@ Element ids must hold at least 256 elements everywhere: there are about 100 on t
 
 Most of TPT is a few generic rules applied with different numbers. Three shared mechanisms turn most of this page into
 rows in `src/elements.js`, read by both `shaders/react.js` and the dock tiles' CPU twin (`ui/tiles/engine.js`). The
-shader stops growing per element, which matters because a cold compile already takes 9–13 s. Field names (el-core owns
-the final semantics and writes them into the elements.js header):
+shader stops growing per element, which matters because a cold compile already takes 9–13 s. The elements.js header
+has the full semantics; in short:
 
 **Phase changes**: TPT's low- and high-temperature transitions, with our latent heat.
 ```js
 cold:  { T, into, of, latent, puff }   // at or below T °C it becomes `into`
 hot:   { T, into, of, latent, puff }   // at or above T °C it becomes `into`
-crush: { P, into }                     // above this air pressure it becomes `into` (TPT's high-pressure transition)
+crush: { P, into, of }                 // above this air pressure it becomes `into` (TPT's high-pressure transition)
 //  into    an element key ('EMPTY' = plain air), or a weighted list: [['STEAM', 0.97], ['SALT', 0.03]]
-//  of      when into is 'LAVA': what the melt sets back into (its ctype)
-//  latent  latent heat, banked through react.js latent() (omitted: instant)
+//  of      when into is 'LAVA': what the melt sets back into (its ctype); omitted = the element itself
+//  latent  latent heat in cap·°C per cell (water's L_FUSE is 80); omitted: instant. The cell holds at T while
+//          the heat crossing T goes into the change. Where life holds nothing else it banks there (signed,
+//          as water's, through react.js latent()). Where life is taken (acid's strength, a fuel) there is no
+//          bank: each step the heat crossing T over latent is the chance it changes (react.js latentChance),
+//          the same on average, and life is left alone.
 //  puff    volumes of gas set free per volume (a pressure puff, as `fizz` does)
 ```
-`melt`/`meltInto` stay as they are for rock and metal (melting into LAVA that remembers what it was).
+`melt`/`meltInto` stay as they are for rock and metal (melting into LAVA that remembers what it was). A `hot` change
+into LAVA is a melt too: lava sets back at its T, less LAVA_FREEZE_BELOW. An element can't have both. Water, ice,
+steam and cloud keep their own code for now.
 
 **Reactions**: Noita's `materials.xml` reaction format, as a table `REACTIONS` next to the elements.
 ```js
 { a: 'SALT', b: 'WATER', into: ['EMPTY', 'SALTWATER'], chance, minT, maxT, heat, puff }
-//  a, b     element keys; b '*' = any matter (not air), less `except: [...]`
-//  into     what a and b each become ('SAME' keeps it; weighted lists allowed)
-//  chance   probability per step that a touching pair reacts
-//  minT, maxT  temperature gate (°C)
-//  heat     energy released (+) or absorbed (−), shared between the pair
-//  puff     gas set free
+//  a, b     element keys; b 'EMPTY' is air (hydrogen burning in air); b '*' = any matter (not air, not a
+//           itself), less `except: [...]`
+//  into     what a and b each become ('SAME' keeps it). Either side may be a weighted list, SAME included:
+//           [[['SALTWATER', 0.28], ['SAME', 0.72]], 'SALTWATER']
+//  chance   probability per step that a touching pair reacts (at most 1/6: see below)
+//  minT, maxT  temperature gate (°C) on the pair's hotter cell: either cell hot enough lights it
+//  heat     energy released (+) or absorbed (−), cap·°C, split in proportion to the products' heat
+//           capacities, so both warm alike: ΔT = heat / (cap_a' + cap_b')
+//  puff     gas set free, half in each cell
 ```
-Both cells of a pair must agree in the same step without a race, and a cell reacts with at most one partner per step,
-so matter is conserved.
+How a pair agrees: every step each cell's partner is one face neighbour, along axis `frame % 3`, toward + or − by
+the parity of its world coordinate plus `(frame / 3) % 2`. Partners are mutual, the pairs tile the grid like the
+move pass's Margolus blocks, and both cells evaluate the same predicate on the pass's input state with a random
+stream seeded at the pair's base cell. So both cells change in the same step, without a race, and each reacts
+with at most one partner: matter is conserved. A pair is partners one step in six, so `chance` is applied as
+6·chance per pairing. A reaction takes precedence over anything else the two cells would do that step. The table
+is baked into an NE × NE lookup texture (2 bytes per pair), so a reaction costs one texel fetch whatever the
+number of rows. Explicit pairs win over `'*'` rows; each pair of elements has one reaction.
 
-**Explosives**: gunpowder's code, generalized.
+**Explosives**: gunpowder's code, generalized. Gunpowder is `blast: { P: 60, T: 2200, flame: 0.7 }`.
 ```js
-blast: { P, T, into, of, shock, crushP }
-//  P       air pressure added when it goes off (gunpowder is the reference)
-//  T       temperature of what it leaves
+blast: { P, T, into, of, flame, air, shock, crushP }
+//  P       air pressure added when it goes off (required)
+//  T       temperature of what it leaves (required)
 //  into    what it leaves (default FIRE); `of` as above
-//  set off by its `ignite` temperature or touching fire (as now), plus
-//  shock   kinetic energy of a hit that sets it off (the units of `hard`)
-//  crushP  air pressure that sets it off (a nearby blast)
+//  set off by its `ignite` temperature, or touching matter (not gas) that hot, plus
+//  flame   chance per step that a touching flame sets it off (default 0: only heat does)
+//  shock   kinetic energy of a hit that sets it off (the units of `hard`): matter and it closing at speed u,
+//          ½·μ·u² with μ the reduced mass (against a solid, the mover's). A neighbour running into it, and it
+//          landing on or running into anything, both count; cells of its own element don't. A liquid flowing
+//          at FLOW into a wall carries ½·dens·FLOW², one falling h cells about dens·g·h (g = 0.025), so set
+//          shock above what it does to itself.
+//  crushP  air pressure on it that sets it off (a nearby blast): its own and its open neighbours' (a solid
+//          holds none, so it reads theirs)
+//  air     true: it goes off only where it touches air (an EMPTY neighbour), by any trigger (propane)
 ```
+The move pass leaves a hit that would set off an explosive as it was (no bounce, no collision), as it does for
+breaking, so the react pass sees it. A blast row never takes the ordinary burn path, and a hit or pressure that
+sets it off wins over breaking it. (`el-boom`'s fuse keeps its own rule with `&& id != E_FUSE` on react.js's
+combustion line, the `else if` after the blast block.)
+
+**Resting.** A cell stays awake (shaders/activity.js inertNear, common.js inertSelf) while a reaction partner beside
+it passes the gate, while it is past a phase point or has latent heat banked, and while an explosive touches matter
+past its ignition point. A cell whose only partner is below the gate can rest.
 
 `conducts: true` marks electrical conductors (the electricity project defines what it does). Batch rows set it on
 metals and saltwater.
+
+`node tools/elements-core-check.mjs` runs test rows of each mechanism through the CPU twin and compiles the GPU
+passes with them.
 
 ## The fan-out (2026-10-10)
 
@@ -199,3 +239,15 @@ shared mechanism; anything else names its own code.
   explodes.
 - **Propane** is 1.5 times as dense as air, so it pools. TPT's GAS just diffuses.
 - **Caustic gas** is hydrogen chloride: denser than air, and it dissolves back into water as acid.
+- **Diamond** burns in air above ~780 °C (thermogravimetric onset of oxidation), leaving no ash, but only while
+  something keeps it hot: in air the burning doesn't sustain itself. Nothing in the sim can break it. In TPT it is
+  indestructible.
+- **Brick** breaks into brick rubble (TPT: stone) and melts at ~1,300 °C, the refractoriness of a common red-brick
+  clay (TPT: 950 °C, below its own firing temperature).
+- **Tungsten** is unbreakable, like titanium: its ~1,000 MPa strength is past anything the sim carries. TPT makes it
+  shatter at pressure jumps.
+- **Lightning** steers its main channel to the surface under the cursor (or, from a storm, to the nearest point below
+  the charged cloud, conductors first) and fuses sand where it lands, as real fulgurites form. TPT's falls along
+  gravity.
+- **Storms**: cloud charges where snow falls through freezing cloud (non-inductive graupel-ice charging). TPT has no
+  storms.

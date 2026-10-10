@@ -4,9 +4,15 @@
 
 "I made this world, now I'm standing in it, and it can kill me." TPT's stickman in 3D.
 
-- **Drop in / pop out** (`F`). From the god view, `F` drops a body onto the surface under the cursor (or the
-  middle of the box). The camera swoops from orbit into the eyes. `F` again swoops back out to the orbit pose
-  you left. The sim keeps running in both modes.
+- **Drop in / pop out** (`V`, Garry's Mod's noclip: the god view is the noclip camera, the body is clipped).
+  From the god view, `V` drops a body onto the surface under the cursor (or the middle of the box); `F` does
+  too, for habit. The camera swoops from orbit into the eyes. `V` again swoops back out to the orbit pose you
+  left. The sim keeps running in both modes.
+- **Keys speak other games' language**: `V` noclip (Garry's Mod), `F` first or third person (Skyrim and
+  Fallout; Minecraft's `F5` works too), `C` held zooms (Minecraft's zoom mods, `zoom.js`, with Zoomify's
+  defaults: ÷4 eased in over 1 s and out over 0.5 s, the wheel ×1.5 a notch while held, the look slowed with
+  the view, a scope's zoom multiplied in), `Ctrl` swims down (the Source games' duck; `Shift` is their
+  sprint, as here). While `Ctrl` is held, leaving the page asks first, since `Ctrl+W` can't be held back.
 - **You are small**: about 5.5 cells tall in a 128-cell world (one cell ≈ 30 cm). Lava flows are rivers and
   houses are buildings.
 - **A real, mortal body**. You walk, sprint, jump and swim, and you float or sink by density. Blasts shove you
@@ -28,7 +34,7 @@
   Stickman stands in while it loads. The jet exhaust leaves from the small of the back (`JET_NOZZLES`).
 - **Physical, finite tools in Half-Life 2 / Garry's Mod weapon slots** (see "Inventory" below): keys `1`–`5`
   are slots (Dig, Build, Guns, Explosives, Gadgets); pressing one again steps to the next tool in it, and the
-  wheel steps through everything carried. God powers (infinite painting) stay in god view, one `F` away. The
+  wheel steps through everything carried. God powers (infinite painting) stay in god view, one `V` away. The
   list below is the original ten; the guns and the rocket launcher are under "Guns" below.
   1. **Shovel**: digs powder, or breaks solids into their debris (slower the harder they are; WALL
      refuses), into the **pack** (the inventory, `transfer.js` `pack()`, 1,000 cells). Right-click throws a
@@ -52,8 +58,9 @@
      and the blasts stack; the blast is the engine's.
   10. **Pickaxe** (key `0`): the axe's swing with a heavier, pointed head (melee.js, shaders/povTools.js
       `PICK`): a slower blow with more energy in a narrower, deeper patch. It mines rock, a 3×3 face two
-      cells deep a swing, into STONE in place for the shovel to pick up. Metal still turns it away.
-- Mouse look with pointer lock. `V` toggles first and third person. A crosshair, health and breath bars, and
+      cells deep a swing, into STONE that each swing gathers into the pack (so the rubble never plugs the
+      hole; with the pack full it stays put). Metal still turns it away.
+- Mouse look with pointer lock. `F` toggles first and third person. A crosshair, health and breath bars, and
   screen effects for what the body feels: heat glow at the edges, frost, a red flash
   when hurt.
 - Cut for now: crafting, ammo, multiplayer POV (guests get a toast), physgun on solids.
@@ -323,7 +330,7 @@ The player's own events (`player.on('hurt'|'death'|'land'|'splash'|'revive'|'rev
 NPCs come from **spawners** (`src/spawners.js`), the palette's Entities group: an **Axeman**, **Gunner** or
 **Worm** or **Giant worm spawner** (kinds `enemy`, `gunner`, `worm`, `giantworm`; an old `enemy` spawner is an axeman) keeps one creature of
 its kind alive on its spot while in POV (it appears there and comes back 8 s after dying; up to 8 of each), and
-a **Player spawn** is where F drops you in (the one nearest the cursor) and where you respawn. Click a spawner
+a **Player spawn** is where V drops you in (the one nearest the cursor) and where you respawn. Click a spawner
 again with its tool to remove it. Spawners stand on world cells like signs; a new scene clears them, and the lab
 comes with one axeman spawner on its open south floor. Gunners and worms are spawnable only: no scene or world
 places them. Not in worlds (the window): NPCs don't follow it yet.

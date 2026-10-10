@@ -18,7 +18,7 @@ import { gear } from './catalog.js';
 // the engine's blast (react.js): the detonator goes off, its neighbours catch
 // from it, and the burn runs through the charge as a wave whose blasts stack.
 // That wave is what makes it strong: set every cell off in the same step and
-// each adds only its own GUNPOWDER_P (60), less than wood's 100 (the CPU port,
+// each adds only its own blast P (60, elements.js), less than wood's 100 (the CPU port,
 // ui/tiles/engine.js, shows no wood breaking that way and the wave breaking
 // it). A 5³ charge peaks near 200 at its edge and is still ~100 four cells out
 // (physics.js, P_BREAK_PER_HARD): it smashes wood and glass around it, chips
