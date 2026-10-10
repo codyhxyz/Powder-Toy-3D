@@ -204,3 +204,10 @@ body.pov-on.pov-nohud .toolbar,
 body.pov-on.pov-nohud .stats,
 body.pov-on.pov-nohud .toasts,
 body.pov-on.pov-nohud .legend-box { visibility: hidden !important; }
+
+/* Q in first person: the tools menu (pov/index.js setMenu). The palette comes
+   back so its Tools group can give tools, GMod's spawn menu; the hotbar steps aside. */
+body.pov-on.pov-menu .dock { opacity: 1 !important; pointer-events: auto !important; transform: translateX(-50%); }
+body.pov-on.pov-menu .card { opacity: 1 !important; }
+body.pov-on.pov-menu .hotbar { opacity: 0; pointer-events: none; }
+body.pov-on.pov-menu .pov-lock { display: none; }

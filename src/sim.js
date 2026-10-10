@@ -893,6 +893,7 @@ export class Simulation {
     u.tB.value = this.stateB;
     this.run(this.mats.copy, t);
     t.origin = this.origin.clone();
+    t.note = null;   // the app's tag for what undoing this takes back besides cells (app.js: a shrine's orbs)
     this.history.push(t);
   }
 

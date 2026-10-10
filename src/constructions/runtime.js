@@ -262,6 +262,9 @@ export function execConstruction(code, { size = 5, seed = 1 } = {}, run = runWit
 
 const TURN = [(x, z) => [x, z], (x, z) => [z, -x], (x, z) => [-x, -z], (x, z) => [-z, x]];
 
+// A point (x, z) of a construction turned by `quarter` quarter turns, as bake turns its cells.
+export const turnPoint = (x, z, quarter) => TURN[quarter](x, z);
+
 // Cells turned by quarter turns about y (the front, +z, ends up facing +z, +x,
 // -z or -x), with their bounding box.
 export function turnCells(cells, quarter) {
@@ -296,6 +299,18 @@ export function bake(cells, quarter) {
     data[j * 4 + 3] = cells.foot && cells.y[i] === 0 && ELEMENTS[id].kind === K.SOLID ? 1 : 0;
   }
   return { w, h, d, data, ghost: ghostCells(ids, w, h, d), foot: cells.foot, base: { x: -min[0], y: -min[1], z: -min[2] } };
+}
+
+// A baked construction's cells all turned to air, to stamp over it and take it
+// away again (app.js fells the trees around the world's shrine).
+export function bakedAir(s) {
+  const data = new Float32Array(s.data.length);
+  for (let j = 0; j < data.length; j += 4) {
+    if (s.data[j] <= 0) continue;
+    data[j] = E.EMPTY + 1;
+    data[j + 1] = ELEMENTS[E.EMPTY].temp;
+  }
+  return { ...s, data, foot: 0 };
 }
 
 // The ghost preview draws every non-air cell that isn't buried inside the model:

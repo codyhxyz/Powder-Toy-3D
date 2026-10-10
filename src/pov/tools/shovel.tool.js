@@ -8,8 +8,9 @@ import { povEvents } from '../events.js';
 import { trigger, toolDt } from './action.js';
 import { attachModel, MODELS } from '../models.js';
 import { viewmodelRig, heldMaterial } from '../viewmodel.js';
+import { gear } from './catalog.js';
 
-// Shovel (slot 1). Hold left-click on a powder to scoop it up, a small blob at a
+// Shovel. Hold left-click on a powder to scoop it up, a small blob at a
 // time; on a breakable solid, the dig energy builds up until it beats the
 // cell's hardness and the cell comes up as its debris (ROCK → STONE, WOOD →
 // SAWDUST). WALL and CLONE don't break, and liquids run off the blade.
@@ -43,8 +44,7 @@ const HEAP_ALONG = 0.18;             // the heap's centre, as a share of the mod
 const HEAP_SEGMENTS = [6, 3];        // around, down the dome (low-poly, like the models)
 
 export default {
-  key: 'SHOVEL', name: 'Shovel', slot: 1, model: 'shovel',
-  desc: 'Hold left-click to dig powder or break solids into debris. Right-click throws the load.',
+  ...gear('SHOVEL'),
   create(env) {
     const load = pack(env.owner);
     const transfer = env.transfer;

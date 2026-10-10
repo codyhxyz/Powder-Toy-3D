@@ -166,7 +166,7 @@ for (const size of sizes) {
       const { stateUniforms } = await import('/src/shaders/common.js');
       const { povCouplingFrag } = await import('/src/shaders/povBody.js');
       const { axeFrag, physgunFrag, physgunComFrag, toolPass, PHYS: GUN, PHYS_MODE } = await import('/src/shaders/povTools.js');
-      const { handoffFrag } = await import('/src/shaders/povTrace.js');
+      const { strikeFrag } = await import('/src/shaders/povTrace.js');
       const { createTransfer, Load } = await import('/src/pov/tools/transfer.js');
       const { generatorFor } = await import('/src/world/gpu.js');
       const { runGenerator, bake } = await import('/src/constructions/runtime.js');
@@ -230,11 +230,11 @@ for (const size of sizes) {
       }
       const axe = toolPass(axeFrag, () => ({ uCenter: { value: new V3(c[0] - 20.5, 4.5, c[2] + 10.5) }, uDir: { value: new V3(1, 0, 0) } }))(sim);
       sim.pass(axe);
-      const handoff = rawMat(handoffFrag(g), {
+      const strike = rawMat(strikeFrag(g), {
         ...stateUniforms(), uEntry: { value: new V3(c[0] + 0.5, 5.2, c[2] - 6) }, uDir: { value: new V3(0, -0.6, 0.8).normalize() },
-        uVel: { value: new V3(0, -0.3, 0.4) }, uReach: { value: 12 }, uLo: { value: new V3(c[0] - 1, 4, c[2] - 13) }, uHi: { value: new V3(c[0] + 1, 14, c[2] - 5) },
+        uEnergy: { value: 39 }, uDepth: { value: 8 }, uLo: { value: new V3(c[0] - 1, -2, c[2] - 7) }, uHi: { value: new V3(c[0] + 2, 6, c[2] + 2) },
       });
-      sim.pass(handoff);
+      sim.pass(strike);
       hash('pov');
       // the pack and trowel: take loose matter and solids out of a patch, put it back higher up
       const transfer = createTransfer({ renderer: R, getSim: () => sim });

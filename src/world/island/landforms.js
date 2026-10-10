@@ -1,12 +1,23 @@
-import { definesGLSL, jsConstants, compileShared } from '../scenes/themedShared.js';
-import { pcg } from '../generator.js';
-import { NOISE_SRC, noiseDefinesGLSL, noiseConstants } from './noise.js';
-import { STRATA_SRC, strataDefinesGLSL, strataConstants } from './strata.js';
+import { pcg } from '../scenes/themedShared.js';
+import { STRATA_BEDS_SRC } from './strata.js';
 
-// The island's landforms: what the heightfield gets on top of its hills and
-// coast, as a pure function of the world column and a few sites the CPU
-// picks per world (landformSites). Written once in the shared GLSL subset
-// (scenes/themedShared.js): the GPU runs it, the CPU its JS twin.
+// The island's landforms (docs/scaling.md D11, "Island hooks"): what shapes its
+// terrain past the generator's heightfield, and where water stands on it, as a
+// pure function of the world column and a few sites the CPU picks per world
+// (landforms.sites, from world/generator.js worldParams: P.landforms).
+//
+// Written once in the shared GLSL subset (scenes/themedShared.js): the GPU runs
+// it in the island's column bake (scenes/island.js), the CPU its JS twin
+// (world/generator.js islandTwin), so both see the same island. islandLandform,
+// islandWaterLevel and islandBare run once per world column, in the bake: the
+// layers (beaches, plant cover, snow), the trees and every cell then follow
+// what they return. islandLakeClearance runs in the cell stage, for the caves.
+// The sites reach the GPU as uniforms (landforms.head, .values) and the twin
+// as the same accessors (landforms.scope).
+//
+// In scope: the island's world parameters (uGenSea, uGenRelief, uGenCenterX/Z,
+// ...), its noise (genHeight, ...: world/generator.js), the subset's helpers
+// (thNoised, thStream, ...) and the strata's beds (strata.js STRATA_BEDS_SRC).
 //
 //   - A RIA, a drowned river valley (the rias of Galicia and south-west
 //     England: valleys cut at the low sea levels of the ice ages, flooded by
@@ -47,11 +58,11 @@ import { STRATA_SRC, strataDefinesGLSL, strataConstants } from './strata.js';
 //     picks a level that makes it a no-op on the ground already there, so no
 //     dam stands out of the ground.
 //   - Tarns come last, so nothing carves their rims; other landforms keep
-//     clear of them (landformSites).
+//     clear of them (landforms.sites), and so do caves (islandLakeClearance).
 //   - Powders, plant cover and trees follow from the layers, which take a
 //     column's water level (islandWaterLevel: the tarn's within its rim) as
-//     their sea: beaches around it, plant cover only above it, trees two cells
-//     above it. Gorge walls and mesa risers are rock and too steep for sand,
+//     their sea (generator.js genCover, genTreeZone): beaches around it, plant
+//     cover only above it, trees two cells above it. Gorge walls and mesa risers are rock and too steep for sand,
 //     plants or trees (the layers' slope limits).
 //   - Slopes stay walkable outside the gorge's walls, the mesas' risers, the
 //     stacks and tarn headwalls: tarn shores rise LAKE_SHORE per cell, the
@@ -59,13 +70,14 @@ import { STRATA_SRC, strataDefinesGLSL, strataConstants } from './strata.js';
 //     cover, so no trees on the buttes.
 
 // ---------------------------------------------------------------- constants
-// The geometry's, shared by the GLSL and the JS twin (as LF_* #defines).
+// The geometry's, shared by the GLSL and the JS twin (as LAND_* #defines).
 const L = {
   ints: {
     LAKES_MAX: 4,               // uniform slots for tarns...
     STACKS_MAX: 8,              // ...and sea stacks
     LAKE_FREEBOARD: 1,          // cells: a tarn's rim stands at least this far above its water (a splash's margin)
     LAKE_RIM: 3,                // cells past the shore over which the rim holds: a diagonal step plus the wobble's spread
+    LAKE_CAVE_MARGIN: 4,        // cells past the rim that caves keep clear of (islandLakeClearance)
   },
   floats: {
     WOBBLE_AMP: 0.18,           // tarn outlines: distances stretched by up to this share...
@@ -107,6 +119,7 @@ const L = {
     LAKE_HEADWALL: 2.5,         // ...then as a headwall, this steep, where the ground is higher still
     LAKE_REACH: 24.0,           // cells past the shore (wobbled) that its carve reaches: the headwall is above any ground there
     FAR: 1.0e6,                 // farther than anything (lfLakeDist: out of reach)
+    CENTRE: 0.5,                // a column's centre, cells past its index (the hooks get the index, the sites are centres)
   },
   salts: {
     WOBBLE: 0x5810,
@@ -121,43 +134,57 @@ const L = {
 const WALL_TOP = 128;
 L.floats.RIA_REACH = L.floats.RIA_MOUTH_HALF + L.floats.RIA_ROUGH + WALL_TOP / L.floats.RIA_WALL;
 
-export const LANDFORM_PREFIX = 'LF';
 export const LANDFORMS = { ...L.ints, ...L.floats };
 
-// ---------------------------------------------------------------- shared source
-// Needs the noise and strata sources before it, and the site accessors
-// (landformUniformsGLSL on the GPU, the twin's scope on the CPU). (x, z): a
-// column's centre, world cells; h: its ground height before the landforms.
-export const LANDFORM_SRC = /* glsl */ `
+// ---------------------------------------------------------------- the source
+// (x, z) below: a column's centre, world cells, but in the hooks; h: its
+// ground height before the landforms. The site accessors (lfRiaX(), ...) are
+// landforms.head's on the GPU, landforms.scope's in the twin.
+
+// Both stages: outlines' wobble and the tarns' reach.
+const COMMON_SRC = /* glsl */ `
 // An outline's wobble at column (x, z): distances are stretched by up to amp over wave cells.
 float lfWobble(float x, float z, float amp, float wave) {
-  return 1.0 + amp * lfNoise2(thFdiv(x, wave), thFdiv(z, wave), LF_SALT_WOBBLE);
+  return 1.0 + amp * thNoised(thFdiv(x, wave), thFdiv(z, wave), thStream(LAND_SALT_WOBBLE, 0));
 }
 
+// ---- tarns
+// Tarn i's wobbled distance from column (x, z), cells (LAND_FAR where even the
+// shortest wobble leaves it past the tarn's reach).
+float lfLakeDist(int i, float x, float z) {
+  float dx = x - lfLakeX(i), dz = z - lfLakeZ(i);
+  float reach = thFdiv(lfLakeR(i) + LAND_LAKE_REACH, 1.0 - LAND_WOBBLE_AMP);
+  if (dx * dx + dz * dz >= reach * reach) return LAND_FAR;
+  return sqrt(dx * dx + dz * dz) * lfWobble(x, z, LAND_WOBBLE_AMP, LAND_WOBBLE_WAVE);
+}
+`;
+
+// The column bake's: the landforms and their hooks.
+const COLUMN_SRC = /* glsl */ `
 // ---- the ria. u: cells along its axis from the mouth; v: across it.
-// The centreline's offset across the axis at u: two octaves of 1D noise,
-// growing in from the mouth.
+// The centreline's offset across the axis at u: two octaves of 1D gradient
+// noise (thNoised along a lattice line, z = 0), growing in from the mouth.
 float lfMeander(float u) {
-  float n = lfNoise1(thFdiv(u, LF_MEANDER_WAVE), LF_SALT_MEANDER)
-          + LF_MEANDER_FINE * lfNoise1(thFdiv(u, LF_MEANDER_FINE_WAVE), LF_SALT_MEANDER_FINE);
-  return LF_MEANDER_AMP * n * lfSmooth(0.0, LF_MEANDER_RAMP, u);
+  float n = thNoised(thFdiv(u, LAND_MEANDER_WAVE), 0.0, thStream(LAND_SALT_MEANDER, 0))
+          + LAND_MEANDER_FINE * thNoised(thFdiv(u, LAND_MEANDER_FINE_WAVE), 0.0, thStream(LAND_SALT_MEANDER_FINE, 0));
+  return LAND_MEANDER_AMP * n * smoothstep(0.0, LAND_MEANDER_RAMP, u);
 }
 // Its floor at u: RIA_DEPTH under the sea at the mouth (shoaling to sea level
 // RIA_OFFSHORE seaward of it, where the sea floor is lower anyway), rising to
 // sea level over the drowned part, then a gorge rising RIA_GRADIENT per cell.
 float lfRiaFloor(float u) {
   float drown = lfRiaDrown();
-  if (u < 0.0) return uIslandSea - LF_RIA_DEPTH * clamp(1.0 + thFdiv(u, LF_RIA_OFFSHORE), 0.0, 1.0);
-  if (u < drown) return uIslandSea - LF_RIA_DEPTH * (1.0 - thFdiv(u, drown));
-  return uIslandSea + LF_RIA_GRADIENT * (u - drown);
+  if (u < 0.0) return uGenSea - LAND_RIA_DEPTH * clamp(1.0 + thFdiv(u, LAND_RIA_OFFSHORE), 0.0, 1.0);
+  if (u < drown) return uGenSea - LAND_RIA_DEPTH * (1.0 - thFdiv(u, drown));
+  return uGenSea + LAND_RIA_GRADIENT * (u - drown);
 }
 // Its floor's half width at u.
-float lfRiaHalf(float u) { return mix(LF_RIA_MOUTH_HALF, LF_RIA_GORGE_HALF, lfSmooth(0.0, lfRiaDrown(), u)); }
+float lfRiaHalf(float u) { return mix(LAND_RIA_MOUTH_HALF, LAND_RIA_GORGE_HALF, smoothstep(0.0, lfRiaDrown(), u)); }
 // Column (x, z)'s distance from the ria's centreline (its rounded head past
 // the end), cells, before the walls' roughness.
 float lfRiaDist(float u, float v) {
   float uc = min(u, lfRiaLen());
-  float slope = thFdiv(lfMeander(uc + LF_RIA_DU) - lfMeander(uc - LF_RIA_DU), 2.0 * LF_RIA_DU);
+  float slope = thFdiv(lfMeander(uc + LAND_RIA_DU) - lfMeander(uc - LAND_RIA_DU), 2.0 * LAND_RIA_DU);
   float across = thFdiv(abs(v - lfMeander(uc)), sqrt(1.0 + slope * slope));
   return sqrt(across * across + (u - uc) * (u - uc));
 }
@@ -167,11 +194,11 @@ float lfRia(float x, float z, float h) {
   if (len <= 0.0) return h;
   float rx = x - lfRiaX(), rz = z - lfRiaZ();
   float u = rx * lfRiaDx() + rz * lfRiaDz(), v = rz * lfRiaDx() - rx * lfRiaDz();
-  if (u < -LF_RIA_OFFSHORE || u > len + LF_RIA_REACH || abs(v) > LF_MEANDER_AMP * (1.0 + LF_MEANDER_FINE) + LF_RIA_REACH) return h;
+  if (u < -LAND_RIA_OFFSHORE || u > len + LAND_RIA_REACH || abs(v) > LAND_MEANDER_AMP * (1.0 + LAND_MEANDER_FINE) + LAND_RIA_REACH) return h;
   float uc = min(u, len);
   float dist = lfRiaDist(u, v)
-             + LF_RIA_ROUGH * lfNoise2(thFdiv(x, LF_RIA_ROUGH_WAVE), thFdiv(z, LF_RIA_ROUGH_WAVE), LF_SALT_RIA_ROUGH);
-  return min(h, lfRiaFloor(uc) + max(dist - lfRiaHalf(uc), 0.0) * LF_RIA_WALL);
+             + LAND_RIA_ROUGH * thNoised(thFdiv(x, LAND_RIA_ROUGH_WAVE), thFdiv(z, LAND_RIA_ROUGH_WAVE), thStream(LAND_SALT_RIA_ROUGH, 0));
+  return min(h, lfRiaFloor(uc) + max(dist - lfRiaHalf(uc), 0.0) * LAND_RIA_WALL);
 }
 
 // ---- the mesas
@@ -180,7 +207,7 @@ float lfRia(float x, float z, float h) {
 float lfTerrace(float s) {
   float c0 = stBench(s, false), c1 = stBench(s, true);
   float a = clamp(thFdiv(s - c0, c1 - c0), 0.0, 1.0);
-  return c0 + (c1 - c0) * pow(a, LF_TERRACE_EXP);
+  return c0 + (c1 - c0) * pow(a, LAND_TERRACE_EXP);
 }
 // The mesa region's buttes and terraces on ground h at column (x, z).
 float lfMesa(float x, float z, float h) {
@@ -189,181 +216,103 @@ float lfMesa(float x, float z, float h) {
   float dx = x - lfMesaX(), dz = z - lfMesaZ();
   float d = sqrt(dx * dx + dz * dz);
   if (d >= R) return h;
-  float w = 1.0 - lfSmooth(R * LF_MESA_CORE, R, d);
-  float n = lfNoise2(thFdiv(x, LF_BUTTE_WAVE), thFdiv(z, LF_BUTTE_WAVE), LF_SALT_BUTTE);
-  float raw = h + w * (LF_BUTTE_H * lfSmooth(LF_BUTTE_CUT, LF_BUTTE_CUT + LF_BUTTE_SOFT, n) - LF_MESA_SINK);
-  float datum = uIslandSea + stRaise(x, z);   // where stratigraphic height 0 is in this column
+  float w = 1.0 - smoothstep(R * LAND_MESA_CORE, R, d);
+  float n = thNoised(thFdiv(x, LAND_BUTTE_WAVE), thFdiv(z, LAND_BUTTE_WAVE), thStream(LAND_SALT_BUTTE, 0));
+  float raw = h + w * (LAND_BUTTE_H * smoothstep(LAND_BUTTE_CUT, LAND_BUTTE_CUT + LAND_BUTTE_SOFT, n) - LAND_MESA_SINK);
+  float datum = uGenSea + stRaise(x, z);   // where stratigraphic height 0 is in this column
   return mix(raw, datum + lfTerrace(raw - datum), w);
 }
 // Is column (x, z) in the badlands (bare rock, no plant cover)?
 bool lfMesaBare(float x, float z) {
   float dx = x - lfMesaX(), dz = z - lfMesaZ();
-  return sqrt(dx * dx + dz * dz) * lfWobble(x, z, LF_WOBBLE_AMP, LF_WOBBLE_WAVE) < lfMesaR() * LF_MESA_BARE;
+  return sqrt(dx * dx + dz * dz) * lfWobble(x, z, LAND_WOBBLE_AMP, LAND_WOBBLE_WAVE) < lfMesaR() * LAND_MESA_BARE;
 }
 
 // ---- sea stacks: flat-topped pillars, their sides STACK_WALL steep
 float lfStacks(float x, float z, float h) {
   float g = h;
-  for (int i = 0; i < LF_STACKS_MAX; i++) {
+  for (int i = 0; i < LAND_STACKS_MAX; i++) {
     if (i >= lfStackCount()) return g;
     float dx = x - lfStackX(i), dz = z - lfStackZ(i);
-    float reach = lfStackR(i) + LF_STACK_REACH;
+    float reach = lfStackR(i) + LAND_STACK_REACH;
     if (dx * dx + dz * dz >= reach * reach) continue;
-    float d = sqrt(dx * dx + dz * dz) * lfWobble(x, z, LF_STACK_WOBBLE_AMP, LF_STACK_WOBBLE_WAVE);
-    g = max(g, lfStackTop(i) - LF_STACK_WALL * max(d - lfStackR(i), 0.0));
+    float d = sqrt(dx * dx + dz * dz) * lfWobble(x, z, LAND_STACK_WOBBLE_AMP, LAND_STACK_WOBBLE_WAVE);
+    g = max(g, lfStackTop(i) - LAND_STACK_WALL * max(d - lfStackR(i), 0.0));
   }
   return g;
 }
 
 // ---- tarns
-// Tarn i's wobbled distance from column (x, z), cells (LF_FAR where even the
-// shortest wobble leaves it past the tarn's reach).
-float lfLakeDist(int i, float x, float z) {
-  float dx = x - lfLakeX(i), dz = z - lfLakeZ(i);
-  float reach = thFdiv(lfLakeR(i) + LF_LAKE_REACH, 1.0 - LF_WOBBLE_AMP);
-  if (dx * dx + dz * dz >= reach * reach) return LF_FAR;
-  return sqrt(dx * dx + dz * dz) * lfWobble(x, z, LF_WOBBLE_AMP, LF_WOBBLE_WAVE);
-}
 // The ground tarn i leaves at wobbled distance d, on ground g: carved (the
 // bowl under the water, the shore, the headwall), and the rim enforced: at
 // least rim height for LAKE_RIM cells past the shore.
 float lfLakeGround(int i, float d, float g) {
-  float R = lfLakeR(i), rim = lfLakeLevel(i) + float(LF_LAKE_FREEBOARD);
+  float R = lfLakeR(i), rim = lfLakeLevel(i) + float(LAND_LAKE_FREEBOARD);
   float past = d - R;
-  float carve = d < R ? lfLakeLevel(i) - LF_LAKE_DEPTH * (1.0 - pow(thFdiv(d, R), LF_LAKE_BOWL_EXP))
-              : rim + LF_LAKE_SHORE * min(past, LF_LAKE_SHORE_W) + LF_LAKE_HEADWALL * max(past - LF_LAKE_SHORE_W, 0.0);
+  float carve = d < R ? lfLakeLevel(i) - LAND_LAKE_DEPTH * (1.0 - pow(thFdiv(d, R), LAND_LAKE_BOWL_EXP))
+              : rim + LAND_LAKE_SHORE * min(past, LAND_LAKE_SHORE_W) + LAND_LAKE_HEADWALL * max(past - LAND_LAKE_SHORE_W, 0.0);
   float ground = min(g, carve);
-  if (d >= R && past < float(LF_LAKE_RIM)) ground = max(ground, rim);
+  if (d >= R && past < float(LAND_LAKE_RIM)) ground = max(ground, rim);
   return ground;
 }
 float lfLakes(float x, float z, float h) {
   float g = h;
-  for (int i = 0; i < LF_LAKES_MAX; i++) {
+  for (int i = 0; i < LAND_LAKES_MAX; i++) {
     if (i >= lfLakeCount()) return g;
     float d = lfLakeDist(i, x, z);
-    if (d < LF_FAR) g = lfLakeGround(i, d, g);
+    if (d < LAND_FAR) g = lfLakeGround(i, d, g);
   }
   return g;
 }
 
-// ---- the foundation's hooks
-// The ground height of column (x, z) after the landforms, its height before them h.
+// ---- the hooks. (x, z): a world column (its index, as floats); the sites
+// and everything above work at its centre.
+// The terrain height of world column (x, z) after landforms, in cells, from
+// h, the generator's height there.
 float islandLandform(float x, float z, float h) {
-  float g = lfMesa(x, z, h);
-  g = lfRia(x, z, g);
-  g = lfStacks(x, z, g);
-  return lfLakes(x, z, g);
+  float cx = x + LAND_CENTRE, cz = z + LAND_CENTRE;
+  float g = lfMesa(cx, cz, h);
+  g = lfRia(cx, cz, g);
+  g = lfStacks(cx, cz, g);
+  return lfLakes(cx, cz, g);
 }
 // Column (x, z)'s standing-water surface: a tarn's level within its rim, else
 // the sea's. Its cells below it are water where they aren't ground. (The
 // layers take it as the column's sea.)
 float islandWaterLevel(float x, float z, float h) {
-  for (int i = 0; i < LF_LAKES_MAX; i++) {
-    if (i >= lfLakeCount()) return uIslandSea;
-    if (lfLakeDist(i, x, z) < lfLakeR(i) + float(LF_LAKE_RIM)) return lfLakeLevel(i);
+  for (int i = 0; i < LAND_LAKES_MAX; i++) {
+    if (i >= lfLakeCount()) return uGenSea;
+    if (lfLakeDist(i, x + LAND_CENTRE, z + LAND_CENTRE) < lfLakeR(i) + float(LAND_LAKE_RIM)) return lfLakeLevel(i);
   }
-  return uIslandSea;
+  return uGenSea;
 }
 // Does column (x, z) stay bare (no plant cover, so no trees)? The badlands.
-// (A hint for the layers, beside their own rules.)
-bool islandBare(float x, float z) { return lfMesaR() > 0.0 && lfMesaBare(x, z); }
-// How far column (x, z) is outside the tarns' rims, cells (negative within
-// one): 3D carving (caves) keeps clear of the water they hold, which would
-// drain into it.
-float islandLakeClearance(float x, float z) {
-  float best = LF_FAR;
-  for (int i = 0; i < LF_LAKES_MAX; i++) {
-    if (i >= lfLakeCount()) return best;
-    float d = lfLakeDist(i, x, z);
-    if (d < LF_FAR) best = min(best, d - lfLakeR(i) - float(LF_LAKE_RIM));
+// (The bake gives it no meadow: generator.js genMeadow.)
+bool islandBare(float x, float z) { return lfMesaR() > 0.0 && lfMesaBare(x + LAND_CENTRE, z + LAND_CENTRE); }
+`;
+
+// The cell stage's: where caves keep clear.
+const CELL_SRC = /* glsl */ `
+// Must 3D carving (caves) keep clear of world column (x, z)? Within
+// LAKE_CAVE_MARGIN of a tarn's rim, over its water and under it: a cave beside
+// the water would drain it (its bed lies LAKE_DEPTH below its level).
+bool islandLakeClearance(float x, float z) {
+  for (int i = 0; i < LAND_LAKES_MAX; i++) {
+    if (i >= lfLakeCount()) return false;
+    float d = lfLakeDist(i, x + LAND_CENTRE, z + LAND_CENTRE);
+    if (d < lfLakeR(i) + float(LAND_LAKE_RIM + LAND_LAKE_CAVE_MARGIN)) return true;
   }
-  return best;
+  return false;
 }
 `;
-
-// ---------------------------------------------------------------- uniforms
-// The world scalars the sources read (uIslandSea, uIslandCx, uIslandCz: the
-// foundation's sea level and island centre) and the sites, with the
-// accessors LANDFORM_SRC calls. The JS twin binds the same names (twinScope).
-export const landformUniformsGLSL = /* glsl */ `
-uniform float uIslandSea;              // sea level, cells
-uniform float uIslandCx;               // the island's centre, world cells
-uniform float uIslandCz;
-uniform vec4 uLfRia;                   // the ria's mouth (x, z) and inland direction (unit x, z)
-uniform vec2 uLfRiaLen;                // its length and its drowned part's, cells (0: no ria)
-uniform vec3 uLfMesa;                  // the mesa region's centre (x, z) and radius, cells (0: none)
-uniform int uLfLakes;                  // tarns: how many, and each one's centre (x, z), radius and water level
-uniform vec4 uLfLake[LF_LAKES_MAX];
-uniform int uLfStacks;                 // sea stacks: how many, and each one's centre (x, z), radius and top
-uniform vec4 uLfStack[LF_STACKS_MAX];
-float lfRiaX() { return uLfRia.x; }
-float lfRiaZ() { return uLfRia.y; }
-float lfRiaDx() { return uLfRia.z; }
-float lfRiaDz() { return uLfRia.w; }
-float lfRiaLen() { return uLfRiaLen.x; }
-float lfRiaDrown() { return uLfRiaLen.y; }
-float lfMesaX() { return uLfMesa.x; }
-float lfMesaZ() { return uLfMesa.y; }
-float lfMesaR() { return uLfMesa.z; }
-int lfLakeCount() { return uLfLakes; }
-float lfLakeX(int i) { return uLfLake[i].x; }
-float lfLakeZ(int i) { return uLfLake[i].y; }
-float lfLakeR(int i) { return uLfLake[i].z; }
-float lfLakeLevel(int i) { return uLfLake[i].w; }
-int lfStackCount() { return uLfStacks; }
-float lfStackX(int i) { return uLfStack[i].x; }
-float lfStackZ(int i) { return uLfStack[i].y; }
-float lfStackR(int i) { return uLfStack[i].z; }
-float lfStackTop(int i) { return uLfStack[i].w; }
-`;
-
-// Everything the GPU needs, after the prelude and themedShared's helpersGLSL.
-export const landformGLSL = () => [
-  noiseDefinesGLSL(), strataDefinesGLSL(), definesGLSL(LANDFORM_PREFIX, L),
-  landformUniformsGLSL, NOISE_SRC, STRATA_SRC, LANDFORM_SRC,
-].join('\n');
-
-// The uniforms' values for world P with sites S (landformSites).
-export function landformUniforms(P, S) {
-  const pad = (list, max) => Array.from({ length: max * 4 }, (_, k) => list[Math.floor(k / 4)]?.[k % 4] ?? 0);
-  return {
-    uIslandSea: { value: P.sea },
-    uIslandCx: { value: P.center[0] },
-    uIslandCz: { value: P.center[1] },
-    uLfRia: { value: S.ria ? [S.ria.x, S.ria.z, S.ria.dx, S.ria.dz] : [0, 0, 1, 0] },
-    uLfRiaLen: { value: S.ria ? [S.ria.len, S.ria.drown] : [0, 0] },
-    uLfMesa: { value: S.mesa ? [S.mesa.x, S.mesa.z, S.mesa.r] : [0, 0, 0] },
-    uLfLakes: { value: S.lakes.length },
-    uLfLake: { value: pad(S.lakes.map((l) => [l.x, l.z, l.r, l.level]), L.ints.LAKES_MAX) },
-    uLfStacks: { value: S.stacks.length },
-    uLfStack: { value: pad(S.stacks.map((s) => [s.x, s.z, s.r, s.top]), L.ints.STACKS_MAX) },
-  };
-}
-
-// The JS twin's bindings of the same names, reading sites box.sites.
-function twinScope(P, box) {
-  const s = () => box.sites;
-  return {
-    uIslandSea: P.sea, uIslandCx: P.center[0], uIslandCz: P.center[1],
-    lfRiaX: () => s().ria?.x ?? 0, lfRiaZ: () => s().ria?.z ?? 0,
-    lfRiaDx: () => s().ria?.dx ?? 1, lfRiaDz: () => s().ria?.dz ?? 0,
-    lfRiaLen: () => s().ria?.len ?? 0, lfRiaDrown: () => s().ria?.drown ?? 0,
-    lfMesaX: () => s().mesa?.x ?? 0, lfMesaZ: () => s().mesa?.z ?? 0, lfMesaR: () => s().mesa?.r ?? 0,
-    lfLakeCount: () => s().lakes.length,
-    lfLakeX: (i) => s().lakes[i].x, lfLakeZ: (i) => s().lakes[i].z,
-    lfLakeR: (i) => s().lakes[i].r, lfLakeLevel: (i) => s().lakes[i].level,
-    lfStackCount: () => s().stacks.length,
-    lfStackX: (i) => s().stacks[i].x, lfStackZ: (i) => s().stacks[i].z,
-    lfStackR: (i) => s().stacks[i].r, lfStackTop: (i) => s().stacks[i].top,
-  };
-}
 
 // ---------------------------------------------------------------- sites
 // Where the landforms go, per world: picked on the CPU from the terrain
-// before them (height(x, z): the ground height at a column's centre), the
+// before them (height(x, z): the generator's height at a column's centre), the
 // seed breaking ties, so another seed gives another island. Ints are cells
 // unless said otherwise; shares of the relief are above the sea.
 export const SITE = {
+  RADIUS_MIN: 200,            // islands smaller than this (the box's Island preset, patchwork tiles) get none
   STEP: 8,                    // cells between the samples a search reads
   RAY_FAR: 1.6,               // coast searches march in from this many island radii out...
   RAY_STEP: 2,                // ...this many cells at a time
@@ -545,7 +494,7 @@ function pickLakes(P, height, T, S) {
       }
       if (hi - lo > SITE.LAKE_RELIEF - L.ints.LAKE_FREEBOARD) continue;
       // flatter sites first, the seed shuffling near-ties
-      cands.push({ x: x + 0.5, z: z + 0.5, r: R, score: (hi - lo) / SITE.LAKE_RELIEF + unit(P.seed, SITE_SALT.LAKE, k + 1) });
+      cands.push({ x: x + L.floats.CENTRE, z: z + L.floats.CENTRE, r: R, score: (hi - lo) / SITE.LAKE_RELIEF + unit(P.seed, SITE_SALT.LAKE, k + 1) });
     }
   cands.sort((a, b) => a.score - b.score);
   const lakes = [];
@@ -595,21 +544,112 @@ function pickStacks(P, height, S) {
 }
 
 // The landform sites of world P (worldParams' sea, relief, centre, radius,
-// size, seed) over terrain height(x, z): { ria, mesa, lakes, stacks }. The
-// ria comes first and the others keep clear of it, the mesa of the tarns.
-export function landformSites(P, height, T = landformTwin(P, null)) {
+// size, seed): { ria, mesa, lakes, stacks }, from T, the twin of P without
+// sites (its genHeight is the terrain before landforms). The ria comes first
+// and the others keep clear of it, the mesa of the tarns.
+function pickSites(P, T) {
   const S = { ria: null, mesa: null, lakes: [], stacks: [] };
+  if (P.radius < SITE.RADIUS_MIN) return S;
+  const height = (x, z) => T.genHeight(x - L.floats.CENTRE, z - L.floats.CENTRE);
   S.ria = pickRia(P, height);
   S.mesa = pickMesa(P, height, T, S);
   S.lakes = pickLakes(P, height, T, S);
   S.stacks = pickStacks(P, height, S);
+  // (without the picks' scores: P carries them, and is a cache key)
+  if (S.ria) delete S.ria.score;
+  if (S.mesa) delete S.mesa.score;
   return S;
 }
+const SITES_KEEP = 8;                 // worlds whose sites are kept (picking one takes a few hundred ms)
+const siteCache = new Map();
 
-// The JS twin of the sources for world P with sites S (null: only the parts
-// that need none, for picking them).
-export function landformTwin(P, S) {
-  const box = { sites: S };
-  const consts = { ...noiseConstants(), ...strataConstants(), ...jsConstants(LANDFORM_PREFIX, L), ...twinScope(P, box) };
-  return compileShared(`${NOISE_SRC}\n${STRATA_SRC}\n${LANDFORM_SRC}`, P.seed, consts);
+// ---------------------------------------------------------------- uniforms
+// The sites on the GPU: uniforms, read through the accessors the source calls.
+const HEAD_GLSL = /* glsl */ `
+uniform vec4 uLandRia;                     // the ria's mouth (x, z) and inland direction (unit x, z)
+uniform vec2 uLandRiaLen;                  // its length and its drowned part's, cells (0: no ria)
+uniform vec3 uLandMesa;                    // the mesa region's centre (x, z) and radius, cells (0: none)
+uniform int uLandLakes;                    // tarns: how many, and each one's centre (x, z), radius and water level
+uniform vec4 uLandLake[LAND_LAKES_MAX];
+uniform int uLandStacks;                   // sea stacks: how many, and each one's centre (x, z), radius and top
+uniform vec4 uLandStack[LAND_STACKS_MAX];
+float lfRiaX() { return uLandRia.x; }
+float lfRiaZ() { return uLandRia.y; }
+float lfRiaDx() { return uLandRia.z; }
+float lfRiaDz() { return uLandRia.w; }
+float lfRiaLen() { return uLandRiaLen.x; }
+float lfRiaDrown() { return uLandRiaLen.y; }
+float lfMesaX() { return uLandMesa.x; }
+float lfMesaZ() { return uLandMesa.y; }
+float lfMesaR() { return uLandMesa.z; }
+int lfLakeCount() { return uLandLakes; }
+float lfLakeX(int i) { return uLandLake[i].x; }
+float lfLakeZ(int i) { return uLandLake[i].y; }
+float lfLakeR(int i) { return uLandLake[i].z; }
+float lfLakeLevel(int i) { return uLandLake[i].w; }
+int lfStackCount() { return uLandStacks; }
+float lfStackX(int i) { return uLandStack[i].x; }
+float lfStackZ(int i) { return uLandStack[i].y; }
+float lfStackR(int i) { return uLandStack[i].z; }
+float lfStackTop(int i) { return uLandStack[i].w; }
+`;
+const NO_SITES = { ria: null, mesa: null, lakes: [], stacks: [] };
+// the uniforms' values for world P's sites (P.landforms)
+function values(P) {
+  const S = P.landforms ?? NO_SITES;
+  const pad = (list, max) => Array.from({ length: max * 4 }, (_, k) => list[Math.floor(k / 4)]?.[k % 4] ?? 0);
+  return {
+    uLandRia: S.ria ? [S.ria.x, S.ria.z, S.ria.dx, S.ria.dz] : [0, 0, 1, 0],
+    uLandRiaLen: S.ria ? [S.ria.len, S.ria.drown] : [0, 0],
+    uLandMesa: S.mesa ? [S.mesa.x, S.mesa.z, S.mesa.r] : [0, 0, 0],
+    uLandLakes: S.lakes.length,
+    uLandLake: pad(S.lakes.map((l) => [l.x, l.z, l.r, l.level]), L.ints.LAKES_MAX),
+    uLandStacks: S.stacks.length,
+    uLandStack: pad(S.stacks.map((s) => [s.x, s.z, s.r, s.top]), L.ints.STACKS_MAX),
+  };
 }
+// the twin's accessors for world P's sites
+function scope(P) {
+  const S = P.landforms ?? NO_SITES;
+  return {
+    lfRiaX: () => S.ria?.x ?? 0, lfRiaZ: () => S.ria?.z ?? 0,
+    lfRiaDx: () => S.ria?.dx ?? 1, lfRiaDz: () => S.ria?.dz ?? 0,
+    lfRiaLen: () => S.ria?.len ?? 0, lfRiaDrown: () => S.ria?.drown ?? 0,
+    lfMesaX: () => S.mesa?.x ?? 0, lfMesaZ: () => S.mesa?.z ?? 0, lfMesaR: () => S.mesa?.r ?? 0,
+    lfLakeCount: () => S.lakes.length,
+    lfLakeX: (i) => S.lakes[i].x, lfLakeZ: (i) => S.lakes[i].z,
+    lfLakeR: (i) => S.lakes[i].r, lfLakeLevel: (i) => S.lakes[i].level,
+    lfStackCount: () => S.stacks.length,
+    lfStackX: (i) => S.stacks[i].x, lfStackZ: (i) => S.stacks[i].z,
+    lfStackR: (i) => S.stacks[i].r, lfStackTop: (i) => S.stacks[i].top,
+  };
+}
+
+// The landforms hook (world/generator.js):
+//   prefix, tables  its constants (#defines LAND_*, the same names in the twin)
+//   src             the column bake's source (with the strata's beds, which the terraces read)
+//   cellSrc         the cell stage's (islandLakeClearance, for the caves)
+//   head            GLSL before both stages' sources: the sites' uniforms and accessors
+//   values(P)       those uniforms' values for world P
+//   scope(P)        the twin's accessors for world P
+//   sites(P, T)     world P's sites (P.landforms), T the twin of P without them
+export const landforms = {
+  prefix: 'LAND',
+  tables: L,
+  src: `${STRATA_BEDS_SRC}
+${COMMON_SRC}
+${COLUMN_SRC}`,
+  cellSrc: `${COMMON_SRC}
+${CELL_SRC}`,
+  head: HEAD_GLSL,
+  values,
+  scope,
+  sites(P, T) {
+    const key = JSON.stringify(P);
+    if (!siteCache.has(key)) {
+      if (siteCache.size >= SITES_KEEP) siteCache.clear();
+      siteCache.set(key, pickSites(P, T));
+    }
+    return siteCache.get(key);
+  },
+};

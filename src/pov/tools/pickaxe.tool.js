@@ -1,6 +1,7 @@
 import { pickaxeFrag, PICK } from '../../shaders/povTools.js';
 import { HIT } from '../viewmodel.js';
 import { meleeTool } from './melee.js';
+import { gear } from './catalog.js';
 
 // Pickaxe: the axe's swing (melee.js) with a heavier, pointed head: a slower
 // blow with more energy in a narrower, deeper patch (shaders/povTools.js PICK),
@@ -11,8 +12,7 @@ import { meleeTool } from './melee.js';
 const REFIRE = 0.6;          // s between swings: a heavier head than the axe's
 
 export default meleeTool({
-  key: 'PICKAXE', name: 'Pickaxe', slot: 10, model: 'pickaxe',
-  desc: 'Mines rock into stone and breaks anything the axe can. Too weak for metal.',
+  ...gear('PICKAXE'),
   blow: PICK, frag: pickaxeFrag, hit: HIT.PICK, refire: REFIRE,
   body: {
     damage: 0.4,             // health a blow takes from a body (an NPC): three blows kill

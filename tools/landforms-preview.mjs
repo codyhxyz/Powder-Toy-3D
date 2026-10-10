@@ -1,24 +1,20 @@
 // CPU previews of the island's landforms and strata (src/world/island/
-// landforms.js, strata.js) from their JS twins, applied to the generator's
-// heightAt: a shaded top-down map of the whole island, close-ups of each
-// landform, and cross-sections through each one coloured by rock, as PNGs,
-// plus the stability checks the landforms promise. No GPU: fine on battery.
+// landforms.js, strata.js) from the island's JS twin (world/generator.js
+// islandTwin: the cells the GPU makes, but for trees): a shaded top-down map of
+// the whole island, close-ups of each landform, and cross-sections through
+// each one with the rock coloured by stratum, as PNGs, plus the stability
+// checks the landforms promise. No GPU: fine on battery.
 //
 //   node tools/landforms-preview.mjs [outDir] [seed]
 // (default: ./landform-previews, the default world seed)
-//
-// The layers (sand, plant cover) are emulated from world/generator.js's rules
-// with each column's water level (islandWaterLevel) as its sea, without the
-// band and meadow noises (so plant cover is where it may be, not where it is):
-// what the layers will do once they follow the tarns.
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { deflateSync } from 'node:zlib';
 import { join } from 'node:path';
 import { ELEMENTS, E } from '../src/elements.js';
 import { WORLD_SIZE } from '../src/shaders/far.js';
-import { worldParams, heightAt, GEN, GEN_INT, TREE, plantLine } from '../src/world/generator.js';
-import { landformSites, landformTwin, LANDFORMS } from '../src/world/island/landforms.js';
-import { STRATA_UNITS } from '../src/world/island/strata.js';
+import { worldParams, islandTwin, GEN_INT, TREE } from '../src/world/generator.js';
+import { LANDFORMS as LF } from '../src/world/island/landforms.js';
+import { STRATA_UNITS, STRATA_ELEMENTS } from '../src/world/island/strata.js';
 
 const [outDir = 'landform-previews', seedArg] = process.argv.slice(2);
 const SEED = seedArg ? Number(seedArg) : 20261008;   // world/generator.js WORLD_SEED
@@ -35,6 +31,7 @@ const RIA_SECTIONS = [0.15, 0.5, 0.85];   // across the ria at these shares of i
 const RIA_ALONG_PAD = 30;        // cells before its mouth and past its head in the section along it
 const WALK = 1.0;                // cells per cell: the steepest slope counted as walkable in the report
 const CHANGED = 0.5;             // cells: ground counts as changed by a landform past this
+const BAND_IN = 2;               // cells inside a band's edges where its slopes are read (a slope reads two columns)
 
 // ---------------------------------------------------------------- PNG
 const crcTable = new Uint32Array(256).map((_, n) => {
@@ -64,76 +61,57 @@ function png(name, w0, h0, rgb0) {
 }
 const hex = (s) => { const n = parseInt(s.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; };
 const element = (id) => hex(ELEMENTS[id].color);
-// rock colours by stratum (the new rock elements' colours aren't in yet)
-const UNIT_RGB = { BASEMENT: element(E.ROCK), LIMESTONE: hex('#c9c4b5'), SANDSTONE: hex('#b9875a'), COAL: hex('#24211f') };
-const UNIT_COLOURS = STRATA_UNITS.map((u) => UNIT_RGB[u]);
-const SKY = [200, 225, 245], SAND = element(E.SAND), PLANT = element(E.PLANT);
+// rock by stratum, in the new rock elements' colours where they have landed
+const UNIT_FALLBACK = { BASEMENT: element(E.ROCK), LIMESTONE: hex('#c9c4b5'), SANDSTONE: hex('#b9875a'), COAL: hex('#24211f') };
+const UNIT_COLOURS = STRATA_UNITS.map((u) => (STRATA_ELEMENTS[u] !== E.ROCK || u === 'BASEMENT' ? element(STRATA_ELEMENTS[u]) : UNIT_FALLBACK[u]));
+const ROCKS = new Set(Object.values(STRATA_ELEMENTS));
+const SKY = [200, 225, 245];
 const WATER_SHALLOW = [110, 175, 230], WATER_DEEP = [22, 70, 150];
 
 // ---------------------------------------------------------------- the world
 const t0 = performance.now();
 const P = worldParams({ size: WORLD_SIZE, seed: SEED, snow: false });   // the island scene's (scenes/island.js)
-const [NX, , NZ] = P.size, NY = P.size[1];
-const height = (x, z) => heightAt(x - 0.5, z - 0.5, P);   // at a column's centre
-const S = landformSites(P, height);
-const T = landformTwin(P, S);
-const tSites = performance.now();
+const S = P.landforms, T = islandTwin(P);
+const [NX, NY, NZ] = P.size;
 const at = (x, z) => z * NX + x;
 const H = new Float32Array(NX * NZ), G = new Float32Array(NX * NZ), W = new Float32Array(NX * NZ);
+const top = new Int16Array(NX * NZ), cover = new Uint8Array(NX * NZ);
 for (let z = 0; z < NZ; z++)
   for (let x = 0; x < NX; x++) {
-    const h = heightAt(x, z, P), i = at(x, z);
-    H[i] = h;
-    G[i] = T.islandLandform(x + 0.5, z + 0.5, h);
-    W[i] = T.islandWaterLevel(x + 0.5, z + 0.5, h);
+    const i = at(x, z), c = T.column(x, z);
+    H[i] = T.genHeight(x, z);
+    G[i] = c[0];
+    W[i] = c[3];
+    top[i] = T.genTop(x, z);
+    cover[i] = T.genCover(x, z);
   }
 const tGrid = performance.now();
-const ground = (x, z) => Math.floor(G[at(Math.min(NX - 1, Math.max(0, x)), Math.min(NZ - 1, Math.max(0, z)))] + 0.5);
-const level = (x, z) => W[at(Math.min(NX - 1, Math.max(0, x)), Math.min(NZ - 1, Math.max(0, z)))];
+const clampX = (x) => Math.min(NX - 1, Math.max(0, x)), clampZ = (z) => Math.min(NZ - 1, Math.max(0, z));
+const ground = (x, z) => top[at(clampX(x), clampZ(z))];
+const level = (x, z) => W[at(clampX(x), clampZ(z))];
+const slopeAt = (x, z) => 0.5 * Math.hypot(G[at(clampX(x + 1), z)] - G[at(clampX(x - 1), z)], G[at(x, clampZ(z + 1))] - G[at(x, clampZ(z - 1))]);
 
-// ---------------------------------------------------------------- the layers (generator.js layersAt, the column's level as its sea)
-const SAND_L = 1, PLANT_L = 2;
-const layer = new Uint8Array(NX * NZ), slopeOf = new Float32Array(NX * NZ);
-const plantTop = plantLine(P, 0);
-for (let z = 0; z < NZ; z++)
-  for (let x = 0; x < NX; x++) {
-    const g = ground(x, z), sea = level(x, z), i = at(x, z);
-    let drop = 0;
-    for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) drop = Math.max(drop, g - ground(x + dx, z + dz));
-    const low = (dx, dz) => ground(x + dx, z + dz) < g;
-    const knocked = g <= sea && ((low(-1, 0) && (low(1, 0) || low(2, 0))) || (low(1, 0) && low(-2, 0))
-      || (low(0, -1) && (low(0, 1) || low(0, 2))) || (low(0, 1) && low(0, -2)));
-    const slope = 0.5 * Math.hypot(G[at(Math.min(NX - 1, x + 1), z)] - G[at(Math.max(0, x - 1), z)],
-      G[at(x, Math.min(NZ - 1, z + 1))] - G[at(x, Math.max(0, z - 1))]);
-    slopeOf[i] = slope;
-    const beach = g >= sea - GEN.BEACH_BELOW && g <= sea + GEN.BEACH_ABOVE && slope < GEN.BEACH_SLOPE_MAX && !knocked;
-    if (drop <= GEN_INT.POWDER_STEP_MAX && beach) layer[i] = SAND_L;
-    else if (g >= sea + GEN.PLANT_ABOVE && g <= plantTop && slope < GEN.PLANT_SLOPE_MAX && !T.islandBare(x + 0.5, z + 0.5)) layer[i] = PLANT_L;
-  }
-
-// The element-ish colour of cell (x, y, z): sky, water, sand, plant or its stratum.
+// The colour of cell (x, y, z) as the twin makes it, its rock by stratum.
 function cellRGB(x, y, z) {
-  const g = ground(x, z), i = at(x, z);
-  if (y >= g) return y < level(x, z) ? WATER_SHALLOW : SKY;
-  const depth = g - 1 - y;
-  if (layer[i] === SAND_L && depth < GEN_INT.SAND_DEPTH) return SAND;
-  if (layer[i] === PLANT_L && depth === 0) return PLANT;
-  return UNIT_COLOURS[T.stUnit(x + 0.5, y + 0.5, z + 0.5)];
+  const id = T.islandCell(x, y, z);
+  if (id === E.EMPTY) return SKY;
+  if (id === E.WATER) return WATER_SHALLOW;
+  if (ROCKS.has(id)) return UNIT_COLOURS[T.stUnit(x + 0.5, y + 0.5, z + 0.5)];
+  return element(id);
 }
 
 // ---------------------------------------------------------------- map and close-ups
 const sunLen = Math.hypot(...SUN), sun = SUN.map((v) => v / sunLen);
 function surfaceRGB(x, z) {
-  const g = ground(x, z), lv = level(x, z), i = at(x, z);
+  const g = ground(x, z), lv = level(x, z);
   if (g < lv) {
     const t = Math.min(1, (lv - g) / DEEP);
     return WATER_SHALLOW.map((c, k) => c + (WATER_DEEP[k] - c) * t);
   }
-  const base = layer[i] === SAND_L ? SAND : layer[i] === PLANT_L ? PLANT : UNIT_COLOURS[T.stUnit(x + 0.5, g - 0.5, z + 0.5)];
+  const base = cellRGB(x, g - 1, z);
   // Lambert on the ground's normal (-dG/dx, 1, -dG/dz)
   const gx = 0.5 * (ground(x + 1, z) - ground(x - 1, z)), gz = 0.5 * (ground(x, z + 1) - ground(x, z - 1));
-  const n = Math.hypot(gx, 1, gz);
-  const lambert = Math.max(0, (-gx * sun[0] + sun[1] - gz * sun[2]) / n);
+  const lambert = Math.max(0, (-gx * sun[0] + sun[1] - gz * sun[2]) / Math.hypot(gx, 1, gz));
   return base.map((c) => Math.min(255, c * (SHADE_AMBIENT + (1 - SHADE_AMBIENT) * lambert)));
 }
 function mapImage(name, x0, z0, w, h) {
@@ -157,7 +135,7 @@ const closeUp = (name, cx, cz, half) => {
 function section(name, points) {
   const cols = points.map(([x, z]) => [Math.floor(x), Math.floor(z)]).filter(([x, z]) => x >= 0 && z >= 0 && x < NX && z < NZ);
   let lo = NY, hi = 0;
-  for (const [x, z] of cols) { lo = Math.min(lo, ground(x, z)); hi = Math.max(hi, ground(x, z), level(x, z)); }
+  for (const [x, z] of cols) { lo = Math.min(lo, ground(x, z)); hi = Math.max(hi, ground(x, z), Math.ceil(level(x, z))); }
   lo = Math.max(0, lo - SECTION_PAD_LO); hi = Math.min(NY, hi + SECTION_PAD_HI);
   const w = cols.length, h = hi - lo;
   const rgb = Buffer.alloc(w * h * 3);
@@ -175,13 +153,12 @@ const line = (x0, z0, x1, z1) => {
 };
 
 mapImage('island-map', 0, 0, NX, NZ);
-const LF = LANDFORMS;
 const files = ['island-map'];
 if (S.ria) {
   const r = S.ria, ex = r.x + r.dx * r.len, ez = r.z + r.dz * r.len;
   const half = Math.hypot(ex - r.x, ez - r.z) / 2 + LF.MEANDER_AMP + LF.RIA_MOUTH_HALF;
   closeUp('ria', (r.x + ex) / 2, (r.z + ez) / 2, half);
-  // the centreline's point at u along the axis, and the across direction (unit, x and z)
+  // the centreline's point at u along the axis (sites are column centres)
   const centre = (u) => { const m = T.lfMeander(u); return [r.x + r.dx * u - r.dz * m, r.z + r.dz * u + r.dx * m]; };
   for (const f of RIA_SECTIONS) {
     const [cx, cz] = centre(f * r.len), w = LF.RIA_GORGE_HALF + LF.RIA_MOUTH_HALF + 3 * LF.MEANDER_AMP;
@@ -189,7 +166,10 @@ if (S.ria) {
     files.push(`ria-across-${Math.round(f * 100)}`);
   }
   const along = [];
-  for (let u = -RIA_ALONG_PAD; u < r.len + RIA_ALONG_PAD; u++) along.push(centre(Math.min(u, r.len)).map((v, k) => v + (u > r.len ? (k ? r.dz : r.dx) * (u - r.len) : 0)));
+  for (let u = -RIA_ALONG_PAD; u < r.len + RIA_ALONG_PAD; u++) {
+    const [cx, cz] = centre(Math.min(u, r.len)), past = Math.max(0, u - r.len);
+    along.push([cx + r.dx * past, cz + r.dz * past]);
+  }
   section('ria-along', along);
   files.push('ria', 'ria-along');
 }
@@ -218,76 +198,73 @@ S.stacks.forEach((s, i) => {
 const tImages = performance.now();
 
 // ---------------------------------------------------------------- checks
-let leaks = 0, plantsWet = 0, sandUnstable = 0, water = 0, seaRulePlants = 0, seaRuleTrees = 0, wallTrees = 0;
-// on the gorge's walls: carved, standing above its floor's edge
+// on the gorge's walls: carved by the ria, standing past its floor's edge
 const onWall = (x, z) => {
-  const r = S.ria, cx = x + 0.5, cz = z + 0.5, h = H[at(x, z)];
+  const r = S.ria, cx = x + LF.CENTRE, cz = z + LF.CENTRE, h = H[at(x, z)];
   if (!r || T.lfRia(cx, cz, h) >= h - CHANGED) return false;
   const u = (cx - r.x) * r.dx + (cz - r.z) * r.dz, v = (cz - r.z) * r.dx - (cx - r.x) * r.dz;
   return T.lfRiaDist(u, v) > T.lfRiaHalf(Math.min(u, r.len)) + LF.RIA_ROUGH;
 };
+const inTarn = (x, z) => S.lakes.some((l, i) => T.lfLakeDist(i, x + LF.CENTRE, z + LF.CENTRE) < l.r + LF.LAKE_RIM);
+const C = { SAND: 1, PLANT: 3 };   // generator.js GEN_CODE's covers
+let leaks = 0, plantsWet = 0, sandUnstable = 0, water = 0, tarnWater = 0, wallTrees = 0, tarnTrees = 0, tarnPlants = 0;
 for (let z = 1; z < NZ - 1; z++)
   for (let x = 1; x < NX - 1; x++) {
     const g = ground(x, z), lv = level(x, z), i = at(x, z);
     if (g < lv) {
       water++;
+      if (lv > P.sea) tarnWater++;
       // water at its surface (y = lv - 1) escapes to a neighbour whose ground and water are both lower
       for (let dz = -1; dz <= 1; dz++)
         for (let dx = -1; dx <= 1; dx++) if ((dx || dz) && ground(x + dx, z + dz) < lv && level(x + dx, z + dz) < lv) leaks++;
     }
-    if (layer[i] === PLANT_L) {
+    if (cover[i] === C.PLANT) {
       // the plant cell (y = g - 1) touches water in a face neighbour
       const y = g - 1;
       for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) if (ground(x + dx, z + dz) <= y && y < level(x + dx, z + dz)) plantsWet++;
+      if (inTarn(x, z) && g < lv) tarnPlants++;
     }
-    if (layer[i] === SAND_L) {
+    if (cover[i] === C.SAND) {
       let drop = 0;
       for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) drop = Math.max(drop, g - ground(x + dx, z + dz));
       if (drop > GEN_INT.POWDER_STEP_MAX) sandUnstable++;
     }
-    // a tree may stand here (generator.js treeCandidate's ground rules, the level as the sea) on a gorge wall
-    if ((layer[i] === PLANT_L || layer[i] === SAND_L) && g - lv >= TREE.ABOVE_SEA && slopeOf[i] < TREE.SLOPE_MAX && onWall(x, z)) wallTrees++;
-    // what the layers and trees would do under a tarn if they kept the sea as their level
-    if (g < lv && g >= P.sea + GEN.PLANT_ABOVE && g <= plantTop && slopeOf[i] < GEN.PLANT_SLOPE_MAX) {
-      seaRulePlants++;
-      if (g - P.sea >= TREE.ABOVE_SEA && slopeOf[i] < TREE.SLOPE_MAX) seaRuleTrees++;
+    // trees: generator.js genTreeZone, the GPU's and treesIn's ground check
+    if ((onWall(x, z) || (inTarn(x, z) && g - lv < TREE.ABOVE_SEA)) && T.genTreeZone(x, z) !== 0) {
+      if (onWall(x, z)) wallTrees++; else tarnTrees++;
     }
   }
-// walkability: the steepest ground of each landform's walkable parts, where
-// it changed the ground (elsewhere the slopes are the hills')
+// walkability: the steepest ground of each landform's walkable parts, where it changed the ground
 const steepest = (pred) => {
   let m = 0;
   for (let z = 1; z < NZ - 1; z++)
     for (let x = 1; x < NX - 1; x++) {
       const i = at(x, z);
-      if (Math.abs(G[i] - H[i]) > CHANGED && pred(x + 0.5, z + 0.5, x, z)) m = Math.max(m, slopeOf[i]);
+      if (Math.abs(G[i] - H[i]) > CHANGED && pred(x + LF.CENTRE, z + LF.CENTRE, x, z)) m = Math.max(m, slopeAt(x, z));
     }
   return m;
 };
-const L1 = 2;   // cells inside a band's edges (the slope reads two columns: one may be across the crease)
 const walk = (m) => `${m.toFixed(2)}${m > WALK ? ' (NOT walkable)' : ''}`;
 const report = [];
 S.lakes.forEach((l, i) => {
   const shore = steepest((cx, cz, x, z) => {
     const d = T.lfLakeDist(i, cx, cz) - l.r;
-    return d >= L1 && d < LF.LAKE_SHORE_W - L1 && ground(x, z) <= l.level + LF.LAKE_FREEBOARD + LF.LAKE_SHORE * LF.LAKE_SHORE_W;
+    return d >= BAND_IN && d < LF.LAKE_SHORE_W - BAND_IN && ground(x, z) <= l.level + LF.LAKE_FREEBOARD + LF.LAKE_SHORE * LF.LAKE_SHORE_W;
   });
-  report.push(`tarn ${i}: level ${l.level} (${l.level - P.sea} cells above the sea), radius ${l.r}, steepest shore ${walk(shore)}`);
+  report.push(`tarn ${i}: level ${l.level} (${l.level - P.sea} cells above the sea), radius ${l.r}, steepest carved shore ${walk(shore)}`);
 });
 if (S.ria) {
   const r = S.ria;
   const floorSlope = steepest((cx, cz, x, z) => {
     const u = (cx - r.x) * r.dx + (cz - r.z) * r.dz, v = (cz - r.z) * r.dx - (cx - r.x) * r.dz;
-    return u > 0 && u < r.len && T.lfRiaDist(u, v) < T.lfRiaHalf(u) - LF.RIA_ROUGH - L1 && ground(x, z) >= P.sea;
+    return u > 0 && u < r.len && T.lfRiaDist(u, v) < T.lfRiaHalf(u) - LF.RIA_ROUGH - BAND_IN && ground(x, z) >= P.sea;
   });
   report.push(`ria: mouth (${r.x.toFixed(0)}, ${r.z.toFixed(0)}), length ${r.len}, drowned ${r.drown.toFixed(0)}, steepest dry floor ${walk(floorSlope)}`);
 }
 if (S.mesa) report.push(`mesa: centre (${S.mesa.x}, ${S.mesa.z}), radius ${S.mesa.r}`);
 report.push(`stacks: ${S.stacks.map((s) => `(${s.x.toFixed(0)}, ${s.z.toFixed(0)}) r ${s.r} top +${s.top - P.sea}`).join(', ')}`);
-console.log(`seed ${SEED}: sites ${((tSites - t0) / 1000).toFixed(2)} s, grid ${((tGrid - tSites) / 1000).toFixed(1)} s, images ${((tImages - tGrid) / 1000).toFixed(1)} s`);
+console.log(`seed ${SEED}: columns ${((tGrid - t0) / 1000).toFixed(1)} s, images ${((tImages - tGrid) / 1000).toFixed(1)} s`);
 console.log(report.join('\n'));
-console.log(`checks: water columns ${water}; leaks ${leaks}; plants touching water ${plantsWet}; sand off its repose ${sandUnstable}; `
-  + `tree ground on gorge walls ${wallTrees}`);
-console.log(`under the tarns, the sea-level rules would put plant cover on ${seaRulePlants} columns and allow trees on ${seaRuleTrees}`
-  + ' (the layers and trees must take islandWaterLevel as their sea)');
+console.log(`checks: water columns ${water} (tarns ${tarnWater}); leaks ${leaks}; plants touching water ${plantsWet}; `
+  + `plant cover under tarns ${tarnPlants}; sand off its repose ${sandUnstable}; tree ground on gorge walls ${wallTrees}, in or by tarns ${tarnTrees}`);
 console.log(`wrote ${files.length} images to ${outDir}/`);

@@ -303,6 +303,8 @@ input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border-radius: 
 }
 .tile.dim { opacity: 0.22; transform: none; }
 .tile.big { width: 56px; height: 56px; font-size: 13px; cursor: default; }
+/* a first-person tool's tile: its OSRS-style hotbar sprite, hard-edged */
+.tile .tile-icon { width: 36px; height: 36px; image-rendering: pixelated; pointer-events: none; }
 .tile.big:hover { transform: none; }
 
 /* ------------------------------------------------------------------ dock */

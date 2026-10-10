@@ -1,9 +1,10 @@
 // CPU checks of the world scenes (src/world/scenes): every scene's GLSL
 // compiles (glslangValidator, GLSL ES 3.00) in a pass that calls sceneCell and
 // in the world's own passes that include it (the window's fill and diff,
-// shaders/generate.js; the far field's build, shaders/far.js), its uniforms
-// are declared, and its params, start and ground make sense for the world
-// size. No GPU: fine on battery.
+// shaders/generate.js; the far field's build, shaders/far.js, with its tree
+// passes for a scene with trees), its uniforms are declared, and its params,
+// start and ground make sense for the world size; the island's column bake
+// compiles too. No GPU: fine on battery.
 //
 //   node tools/check-scenes.mjs
 import { execFileSync } from 'node:child_process';
@@ -12,7 +13,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gridLayout } from '../src/sim.js';
 import { prelude } from '../src/shaders/common.js';
-import { WORLD_SIZE, farLayout, farSceneCellsFrag, farSceneFrag } from '../src/shaders/far.js';
+import { WORLD_SIZE, farLayout, farSceneCellsFrag, farSceneFrag, farTreeCandFrag, farTreeThinFrag, farTreeBandFrag } from '../src/shaders/far.js';
+import { islandColumnFrag } from '../src/world/scenes/island.js';
 import { sceneFillFrag, sceneDiffFrag } from '../src/shaders/generate.js';
 import { WORLD_SCENES } from '../src/world/scenes/index.js';
 
@@ -36,10 +38,14 @@ function compile(name, src) {
     return String(e.stdout).split('\n').filter((l) => /ERROR/.test(l)).slice(0, 12).join('\n');
   }
 }
-// the far build's summary pass holds no scene GLSL: once
-{
-  const err = compile('farScene', `#version 300 es\n${farSceneFrag(g, L)}`);
-  if (err) { failures++; console.log(`FAIL farSceneFrag\n${err}`); }
+// the far build's summary and tree band passes hold no scene GLSL: once (with and without trees);
+// the island's column bake holds its column stage
+for (const [name, src] of Object.entries({
+  farScene: farSceneFrag(g, L), farSceneTrees: farSceneFrag(g, L, true), farTreeBand: farTreeBandFrag(g, L),
+  islandColumns: islandColumnFrag(),
+})) {
+  const err = compile(name, `#version 300 es\n${src}`);
+  if (err) { failures++; console.log(`FAIL ${name}\n${err}`); }
 }
 
 for (const scene of WORLD_SCENES) {
@@ -52,7 +58,6 @@ for (const scene of WORLD_SCENES) {
     const y = scene.ground(x, z, P);
     if (!(y >= 0 && y <= WORLD_SIZE[1])) { fail(scene, `ground(${x}, ${z}) = ${y}`); break; }
   }
-  if (scene.island) continue;   // the island's GLSL is the generator's (tools/check-shaders.mjs)
   const glsl = scene.glsl(g);
   const uniforms = scene.uniforms(P);
   for (const name of Object.keys(uniforms)) {
@@ -68,6 +73,10 @@ for (const scene of WORLD_SCENES) {
     sceneFill: sceneFillFrag(g, glsl),
     sceneDiff: sceneDiffFrag(g, glsl),
     farSceneCells: farSceneCellsFrag(g, L, glsl),
+    ...(scene.trees ? {
+      farTreeCand: farTreeCandFrag(g, L, glsl, scene.trees.glsl),
+      farTreeThin: farTreeThinFrag(g, L, glsl, scene.trees.glsl),
+    } : {}),
   };
   for (const [name, src] of Object.entries(passes)) {
     const err = compile(`${scene.key}-${name}`, `#version 300 es\n${src}`);
