@@ -40,7 +40,12 @@ revealed to everyone (Halo's waypoints) and a carrier counts as 30 cells nearer.
 
 Objectives are one more `GoalEvaluator` (`src/game/bots.js`) beside the fight ones: the game says what this bot's
 objective is (`objective(bot)` → `{ kind, at, r, want }`), the bot walks there (A*) and holds a zone or arrives at a
-point; a point that moves (a carrier) is followed without re-running A* every frame. On the way and in a zone it
+point; a point that moves (a carrier) is followed without re-running A* every frame. The walk's map (`ai/nav.js`)
+is one layer, the top of every column, so a point under a roof or on a shrine's roof can have no path: a zone is
+walked to at a point on its ring toward the bot, a walk that finds no way is tried from three more bearings, then
+the bot walks to the spot 40 cells short of it on the straight line and steers straight in (Dam Valley's flags
+stand in roofed halls, reached through the front doorway); after 10 s of that it gives up and (roaming) picks
+another spot. On the way and in a zone it
 still shoots what it sees (Raven's weapon system runs beside the goals: `takeAimAndShoot` in `ai/brain.js`, the gun
 under the same fairness rules); a carrier only runs. Desirabilities on the brain's
 scale (Attack 0.6 when an enemy is in sight, Hunt 0.45):
@@ -123,7 +128,10 @@ machine, so absolute frame rates are noisy): the bots' brains and bodies cost 1�
 (`state.botMs`); the frame rate showed no consistent drop from 0 to 8 bots (sweeps: 12 → 9 fps and 14 → 20 fps, the
 machine's load setting both), so 4v4 counting the player (7 bots) is the default. Results of the bots-only run:
 Slayer scored in 8–27 s, CTF took and returned a flag in 15–40 s and captured one in 181 s (`--strict`), KOTH's hill
-scored 5 points in 14–40 s, Infection spread in 12–31 s, Siege swapped sides at 50 s and played both halves to a result.
+scored 5 points in 12–40 s, Infection spread in 5–31 s, Siege swapped sides at 50 s and played both halves to a result.
+On Dam Valley (`--preset damValley`): Slayer scored by 88–105 s, CTF took and returned a flag at 153 s, KOTH scored
+in 29 s, Infection spread in 5 s, Siege swapped at 50 s. Paths that don't exist cost: the bots' CPU spikes to ~20 ms
+a frame for a moment at a Dam Valley start, while every bot tries its bearings to unreachable spots.
 
 ## Not yet
 
@@ -135,3 +143,6 @@ scored 5 points in 14–40 s, Infection spread in 12–31 s, Siege swapped sides
   second or two and halves end on the clock. TF2 balances this with respawn waves; ours are equal.
 - The POV entry hint (the first 7 s in first person) sits over the objective line.
 - Not in worlds (the window): NPCs don't follow it, so team games are box presets only.
+- The NPC nav is one height-map layer: roofed halls, tunnels (Dam Valley's pump room) and the crest shrine's hill are
+  reached by the straight-in fallback or not at all. A layered nav (a voxel navmesh, Recast-style) is the real fix;
+  remembering unreachable spots per bot would remove the start-up spike.
