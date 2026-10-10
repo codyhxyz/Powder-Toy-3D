@@ -351,10 +351,10 @@ bool quietCell(ivec3 c) {
 //          cells, so it draws these supertiles
 //   BLOCKS a brick in it is not quiet, or one just above it along x, y or z:
 //          the block pass draws these. It solves the blocks based in bricks
-//          that aren't quiet (the gather reads them), and gives a block based
+//          that aren't quiet (react reads them), and gives a block based
 //          in a quiet brick its identity slots, which the flow pass reads for
 //          that block's cells in a brick that isn't quiet (shaders/move.js)
-//   DRAWN  the gather and react passes draw it: AWAKE under this map or the
+//   DRAWN  the react pass draws it: AWAKE under this map or the
 //          last one, or written since the last map by something other than a
 //          step (Simulation.noteWrite)
 // The two-map rule. Under a map that leaves a supertile asleep (not AWAKE),

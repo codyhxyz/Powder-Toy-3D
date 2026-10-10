@@ -1,4 +1,4 @@
-import { prelude, stateOutGLSL } from './common.js';
+import { prelude, packGLSL, PACK } from './common.js';
 import { quietGLSL } from './activity.js';
 
 // Movement pass: Margolus block cellular automaton.
@@ -19,12 +19,12 @@ import { quietGLSL } from './activity.js';
 //
 // To avoid solving every block 8 times (once per cell), the block pass runs
 // at block resolution and writes, for each of the 8 destination slots, which
-// source cell lands there plus its new velocity (8 MRT attachments). A cheap
-// gather pass then rebuilds the state at cell resolution, each cell reading
-// its slot (slotGLSL postMove). (Folding the gather into the react pass, which
-// would read the moved state of the cell and its 6 neighbours through the
-// slots, was measured slower: 7 slot lookups of 3 fetches each per cell cost
-// more than writing the moved state once and reading it back.)
+// cell that lands there, packed as the state is (8 MRT attachments, the
+// layers of one array texture). The react pass after it reads each cell's
+// moved state, and its 6 neighbours', straight from those slots (slotGLSL
+// postMove), one fetch each, so the moved state is never written out on its
+// own. (While a slot held only the source index and velocity, so that a
+// moved cell cost 3 fetches, a separate gather pass was faster.)
 //
 // Impacts on solids. A grain that slams into a solid (faster than COLLIDE_V,
 // the line between an impact and resting contact) stops, and the kinetic
@@ -32,8 +32,8 @@ import { quietGLSL } from './activity.js';
 // the solid so both warm by the same amount. Liquids splash and flow on and
 // gases bounce, so their motion isn't counted. A grain whose impact would
 // break the solid isn't stopped at all: the react pass after this one breaks
-// the solid and charges the grain for it (react.js). The heat rides out of the
-// block pass packed into each slot's source index (see packSlot).
+// the solid and charges the grain for it (react.js). The block pass adds the
+// heat to each slot's temperature (see SLOTS).
 //
 // The block update is generated in JS with every cell index baked in as a
 // literal, and the 8 cells live in plain named variables (a0..a7 etc). GPU
@@ -44,17 +44,20 @@ import { quietGLSL } from './activity.js';
 // Cell i lives at local (x, y, z) = (i & 1, (i >> 1) & 1, (i >> 2) & 1).
 const CELLS = [0, 1, 2, 3, 4, 5, 6, 7];
 
-// Impact heat leaves the block pass in each slot's first channel next to the
-// source index: n + SLOTS·round(q·HEAT_QUANTA), q in kinetic-energy units.
-// A float holds integers exactly up to 2^24, so with this resolution q tops
-// out at 2^24 / 8 / 1024 ≈ 2048, far above anything a step can deposit.
+// A slot holds its destination cell as the move leaves it, packed like the
+// state (shaders/common.js PACK), the impact heat it took already in its
+// temperature and the destination's own pressure in its pressure (pressure
+// stays with the position), and its source index (0..7) in x's spare bits.
 export const SLOTS = 8;   // a block's cells, and so its slots
-const HEAT_QUANTA = 1024;   // quanta per unit of kinetic energy (resolution ≈ 0.001)
-const HEAT_Q_MAX = Math.floor((2 ** 24 / SLOTS - 1) / HEAT_QUANTA);
-const heatGLSL = /* glsl */ `
+const SRC_SHIFT = PACK.ID_BITS + PACK.CTYPE_BITS;   // x's spare bits (between ctype and seed)
+if (SLOTS > 2 ** PACK.SPARE_BITS) throw new Error("a slot's source index no longer fits the spare bits");
+const slotPackGLSL = /* glsl */ `
 #define SLOTS ${SLOTS}
-#define HEAT_QUANTA ${HEAT_QUANTA}.0
-#define HEAT_Q_MAX ${HEAT_Q_MAX}.0
+#define SRC_SHIFT ${SRC_SHIFT}u
+#define SRC_MASK ${2 ** PACK.SPARE_BITS - 1}u   // the spare bits
+uvec4 stashSource(uvec4 s, int n) { return s | uvec4(uint(n) << SRC_SHIFT, 0u, 0u, 0u); }
+int slotSource(uvec4 m) { return int((m.x >> SRC_SHIFT) & SRC_MASK); }
+uvec4 unstash(uvec4 m) { return m & uvec4(~(SRC_MASK << SRC_SHIFT), ~0u, ~0u, ~0u); }
 `;
 
 const swap = (i, j) => `{
@@ -196,9 +199,11 @@ ${prelude(g)}
 uniform int uParity;
 uniform uint uFrame;
 uniform float uGravity;
-${CELLS.map((i) => `layout(location = ${i}) out vec4 o${i};`).join('\n')}
+${CELLS.map((i) => `layout(location = ${i}) out uvec4 o${i};`).join('\n')}
 ${quietGLSL}
-${heatGLSL}
+${packGLSL}
+${slotPackGLSL}
+#define SLOT_ROUND_SALT 0x5bu   // the slots' rounding stream's salt (one stream per pass)
 uint rs;
 
 // Moving through a liquid is slower than through air.
@@ -237,17 +242,13 @@ float bounceR(int id) {
   return k == K_LIQUID ? BOUNCE_LIQUID : (k == K_POWDER ? 0.0 : BOUNCE_GAS);
 }
 
-// A slot's source index (0..7) and the impact heat its cell picked up, in one float.
-float packSlot(int n, float q) {
-  return float(n + SLOTS * int(clamp(q, 0.0, HEAT_Q_MAX) * HEAT_QUANTA + 0.5));
-}
 
 void main() {
   bool valid;
   ivec3 j = blockFromFrag(ivec2(gl_FragCoord.xy), valid);
   // a texel holding no block (the low margin's blocks exist at offset 1 only)
   if (!valid || (uParity == 0 && any(lessThan(j, ivec3(0))))) {
-    ${CELLS.map((i) => `o${i} = vec4(0.0);`).join(' ')}
+    ${CELLS.map((i) => `o${i} = uvec4(0u);`).join(' ')}
     return;
   }
   ivec3 base = 2 * j + ivec3(uParity);
@@ -256,16 +257,18 @@ void main() {
   if (quietCell(base)) {
     ${CELLS.map((i) => `{
     ivec3 q = base + ivec3(${i & 1}, ${(i >> 1) & 1}, ${(i >> 2) & 1});
-    o${i} = vec4(float(${i}), inGrid(q) ? fetchB(q).xyz : vec3(0.0));
+    o${i} = inGrid(q) ? stashSource(fetchRaw(q), ${i}) : uvec4(0u);
     }`).join('\n    ')}
     return;
   }
 
-  ${CELLS.map((i) => `vec4 a${i}; vec3 v${i}; int k${i}; float d${i}; int n${i} = ${i}; float q${i} = 0.0; bool m${i} = false, s${i} = false;`).join('\n  ')}
+  // per cell: state A, velocity, element, density, source index, impact heat,
+  // moved, blocked; and the pressure at its place, which stays there (w)
+  ${CELLS.map((i) => `vec4 a${i}; vec3 v${i}; int k${i}; float d${i}; int n${i} = ${i}; float q${i} = 0.0; bool m${i} = false, s${i} = false; float w${i};`).join('\n  ')}
   ${CELLS.map((i) => `{
     ivec3 q = base + ivec3(${i & 1}, ${(i >> 1) & 1}, ${(i >> 2) & 1});
-    if (inGrid(q)) { a${i} = fetchA(q); v${i} = fetchB(q).xyz; }
-    else { a${i} = vec4(float(E_WALL), AMBIENT, 0.0, 0.0); v${i} = vec3(0.0); }
+    if (inGrid(q)) { uvec4 r = fetchRaw(q); a${i} = unpackA(r); vec4 b = unpackB(r); v${i} = b.xyz; w${i} = b.w; }
+    else { a${i} = vec4(float(E_WALL), AMBIENT, 0.0, 0.0); v${i} = vec3(0.0); w${i} = 0.0; }
     k${i} = eid(a${i}); d${i} = densityOf(k${i}, a${i}.y);
   }`).join('\n  ')}
   rs = seed3(base, uFrame, 0x51u);
@@ -286,76 +289,55 @@ void main() {
     ${horizontalZ()}${horizontalX()}
   }
 
-  ${CELLS.map((i) => `o${i} = vec4(packSlot(n${i}, q${i}), v${i});`).join('\n  ')}
+  // each slot: the cell that landed there, warmed by the impact energy it took
+  // (KE_TO_HEAT per unit of kinetic energy, over its heat capacity), packed,
+  // every slot of every block rounding with the same random numbers (see
+  // shaders/common.js PACK: cells in the same state stay in the same state)
+  ${CELLS.map((i) => `{
+    vec4 A = a${i};
+    if (q${i} > 0.0) A.y = min(A.y + q${i} * KE_TO_HEAT / CAP[k${i}], CELL_TEMP_MAX);
+    uint srs = pcg(uFrame * LCG_MUL + SLOT_ROUND_SALT);
+    o${i} = stashSource(packState(A, vec4(v${i}, w${i}), srs), n${i});
+  }`).join('\n  ')}
 }
 `;
 
-// The block pass's results, read per cell (the gather pass, the flow pass):
+// The block pass's results, read per cell (the react pass, the flow pass):
 // uniforms tSlots and uParity, and
-//   slotOf(c, q)     cell c's slot texel (its packed source and new velocity),
-//                    and q, the cell its content comes from
-//   postMove(c, a, b)  cell c's state after the move
+//   movedRaw(c)       cell c after the move, packed like the state
+//   postMove(c, a, b) the same, decoded
+//   slotSourceCell(c) the cell c's content came from
 // The slots are the layers of one array texture, layer i holding slot i of
 // every block (Simulation.slots), so a cell's slot is one fetch whatever its
 // place in its block: picking among 8 textures per cell costs a fetch from
 // each, since the cells of a SIMD group sit at all 8 places.
 // The block pass draws only the supertiles whose slots a step reads (sleeping
 // supertiles, shaders/activity.js SUPER_MAP BLOCKS): those of blocks based in
-// a brick that isn't quiet (the gather and the flow pass), and those of quiet
+// a brick that isn't quiet (react and the flow pass), and those of quiet
 // blocks reaching into one (the flow pass reads their identity slots). The
-// rest hold an older step's slots, which nothing reads.
+// rest hold an older step's slots, which nothing reads: movedRaw reads a
+// quiet-based block's cells from the state.
 export const slotGLSL = /* glsl */ `
-uniform highp sampler2DArray tSlots;
+uniform highp usampler2DArray tSlots;
 uniform int uParity;
-${heatGLSL}
+${slotPackGLSL}
 // the base (lowest) cell of the block holding cell c
 ivec3 blockBase(ivec3 c) { ivec3 off = ivec3(uParity); return ((c + off) / 2) * 2 - off; }
-vec4 slotOf(ivec3 c, out ivec3 q) {
-  ivec3 off = ivec3(uParity);
-  ivec3 base = blockBase(c);
-  ivec3 lp = c - base;
-  int me = lp.x + 2 * lp.y + 4 * lp.z;
-  vec4 m = texelFetch(tSlots, ivec3(blockAtlas((base + off) / 2 - off), me), 0);
-  int src = int(m.x + 0.5) % SLOTS;
-  q = base + ivec3(src & 1, (src >> 1) & 1, (src >> 2) & 1);
-  return m;
+ivec3 offsetOf(int n) { return ivec3(n & 1, (n >> 1) & 1, (n >> 2) & 1); }   // cell n of a block
+uvec4 slotRaw(ivec3 c) {
+  ivec3 off = ivec3(uParity), base = blockBase(c), lp = c - base;
+  return texelFetch(tSlots, ivec3(blockAtlas((base + off) / 2 - off), lp.x + 2 * lp.y + 4 * lp.z), 0);
 }
-// Cell c's state after this step's move: its source cell's state A, warmed by
-// the impact energy the slot carries (packSlot), and the slot's new velocity
-// with the pressure of c itself (pressure stays with the position). (A block
-// whose base is in a quiet brick stayed put: its slots give each cell its own
-// state, as fetchA and fetchB would.)
+// (A block whose base is in a quiet brick stayed put, and the block pass may
+// not have drawn it this step (its supertile asleep): its cells are read from
+// the state, which holds them as they are. Needs quietGLSL.)
+uvec4 movedRaw(ivec3 c) { return quietCell(blockBase(c)) ? fetchRaw(c) : unstash(slotRaw(c)); }
 void postMove(ivec3 c, out vec4 a, out vec4 b) {
-  ivec3 q;
-  vec4 m = slotOf(c, q);
-  a = fetchA(q);
-  float heat = float(int(m.x + 0.5) / SLOTS) / HEAT_QUANTA;   // impact energy this cell took
-  if (heat > 0.0) a.y = min(a.y + heat * KE_TO_HEAT / CAP[eid(a)], CELL_TEMP_MAX);
-  b = vec4(m.yzw, fetchB(c).w);
+  uvec4 m = movedRaw(c);
+  a = unpackA(m);
+  b = unpackB(m);
 }
-`;
-
-// Gather: every cell's state after the move. A block whose base is in a quiet
-// brick stayed put, so its cells copy themselves (as their slots would say).
-export const moveGatherFrag = (g) => /* glsl */ `
-${prelude(g)}
-${quietGLSL}
-${slotGLSL}
-uniform bool uFresh;   // the first step since the activity map was built: dirty marks start over
-${stateOutGLSL}
-void main() {
-  ivec3 p = cellFromFrag(ivec2(gl_FragCoord.xy));
-  if (!inGrid(p)) { writeState(vec4(0.0), vec4(0.0), 0u); return; }   // a texel holding no cell
-  vec4 a, b;
-  if (quietCell(blockBase(p))) { a = fetchA(p); b = fetchB(p); }
-  else postMove(p, a, b);
-  // activity flags: the react pass after this one re-tests the cell; mark it
-  // dirty if the move changed what its neighbours' tests read (shaders/common.js FLAG)
-  uint f = fetchF(p);
-  if (uFresh) f &= ~FLAG_DIRTY;
-  if (nearChange(fetchA(p), a)) f |= FLAG_DIRTY;
-  writeState(a, b, f);
-}
+ivec3 slotSourceCell(ivec3 c) { return blockBase(c) + offsetOf(slotSource(slotRaw(c))); }
 `;
 
 // Flow field for the renderer (gfx/surface.js, flowing grains): how far each
@@ -373,8 +355,6 @@ ${slotGLSL}
 void main() {
   ivec3 p = cellFromFrag(ivec2(gl_FragCoord.xy));
   if (!inGrid(p) || quietCell(p)) discard;
-  ivec3 q;
-  slotOf(p, q);
-  oV = vec4(vec3(p - q), 0.0);
+  oV = vec4(vec3(p - slotSourceCell(p)), 0.0);
 }
 `;

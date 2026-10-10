@@ -1,5 +1,6 @@
 import { prelude, stateOutGLSL } from './common.js';
 import { quietGLSL, inertNearGLSL } from './activity.js';
+import { slotGLSL } from './move.js';
 import { ELEMENTS } from '../elements.js';
 import { electricReactGLSL } from '../electricity.js';
 
@@ -15,7 +16,10 @@ export const RX_PAIRINGS = 3 * 2;
 const RX_SALT = 0x52;   // keeps a pair's random stream apart from the cells' own (seed3 salt)
 
 // React pass: everything that only changes a cell in place, using its six
-// face neighbours.
+// face neighbours. It runs right after the move's block pass and reads the
+// cell and its neighbours as the move left them straight from the block
+// results (move.js slotGLSL: each slot is a packed cell), so the moved state
+// is never written out on its own.
 //   - Heat conduction. Flux between two cells uses min(cond_a, cond_b), so it
 //     is symmetric and total energy (Σ cap·T) is conserved; dividing by the
 //     cell's own heat capacity gives the temperature change. Each face's flux
@@ -89,6 +93,8 @@ ${stateOutGLSL}
 ${quietGLSL}
 ${inertNearGLSL}
 ${electricReactGLSL}
+${slotGLSL}
+uniform bool uFresh;   // the first step since the activity map was built: dirty marks start over
 
 const ivec3 DIRS[6] = ivec3[6](ivec3(1,0,0), ivec3(-1,0,0), ivec3(0,1,0), ivec3(0,-1,0), ivec3(0,0,1), ivec3(0,0,-1));
 
@@ -191,16 +197,18 @@ bool latent(inout float T, inout float acc, float Tp, float C, float L, bool ris
 
 void main() {
   ivec3 p = cellFromFrag(ivec2(gl_FragCoord.xy));
-  if (!inGrid(p)) { writeState(vec4(0.0), vec4(0.0), 0u); return; }   // a texel holding no cell
+  if (!inGrid(p)) { writeStateRaw(uvec4(0u), 0u); return; }   // a texel holding no cell
 
-  vec4 a = fetchA(p);
-  vec4 b = fetchB(p);
-  uint dirty = fetchF(p) & FLAG_DIRTY;   // the move pass's mark (shaders/common.js nearChange)
+  // this cell after the move; it is dirty if the move changed what its
+  // neighbours' tests read (shaders/common.js nearChange), or if it was already
+  uvec4 m = movedRaw(p);
+  vec4 a = unpackA(m), b = unpackB(m);
+  uint dirty = (uFresh ? 0u : fetchF(p) & FLAG_DIRTY) | (nearChange(fetchA(p), a) ? FLAG_DIRTY : 0u);
   // quiet brick (shaders/activity.js): nothing here can change, keep it as is.
   // Its cells were inert when the activity map was built, so their neighbour
   // tests passed then, and still do unless something around them is dirty.
   vec2 rayDep = uRays ? texelFetch(tRayDep, atlas(p), 0).xy : vec2(0.0);
-  if (quietCell(p) && rayDep == vec2(0.0)) { writeState(a, b, ownFlags(a, b) | FLAG_NEAR | dirty); return; }
+  if (quietCell(p) && rayDep == vec2(0.0)) { writeStateRaw(m, ownFlags(a, b) | FLAG_NEAR | dirty); return; }
   int id = eid(a);
   float T = a.y, life = a.z;
   float ctype = floor(a.w), seed = fract(a.w);
@@ -214,8 +222,7 @@ void main() {
   for (int i = 0; i < 6; i++) {
     ivec3 q = p + DIRS[i];
     if (inGrid(q)) {
-      na[i] = fetchA(q);
-      nb[i] = fetchB(q);
+      postMove(q, na[i], nb[i]);
     } else {
       na[i] = vec4(float(E_WALL), T, 0.0, 0.0); // insulating, pressure-reflecting box
       nb[i] = vec4(0.0, 0.0, 0.0, P0);
@@ -720,11 +727,13 @@ void main() {
 
   T = clamp(T, CELL_TEMP_MIN, CELL_TEMP_MAX);
   vec4 outA = vec4(float(nidOut), T, life, ctype + seed), outB = vec4(v, clamp(P, P_MIN, P_MAX));
-  // the rest test on what this cell becomes, its neighbours as this pass saw
-  // them (the activity map redoes the neighbour test where one has changed: dirty)
-  uint flags = ownFlags(outA, outB) | dirty;
+  // the rest test on what this cell becomes as stored (packed, rounded), its
+  // neighbours as this pass saw them (the activity map redoes the neighbour
+  // test where one has changed: dirty)
+  uvec4 s = packHere(outA, outB);
+  uint flags = ownFlags(unpackA(s), unpackB(s)) | dirty;
   if ((flags & FLAG_SELF) != 0u && inertNear(p, outA, na)) flags |= FLAG_NEAR;
   if (nearChange(a, outA)) flags |= FLAG_DIRTY;
-  writeState(outA, outB, flags);
+  writeStateRaw(s, flags);
 }
 `;

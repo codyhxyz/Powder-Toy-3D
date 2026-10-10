@@ -64,17 +64,47 @@ void brush(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
 }
 ${copyThroughMain('brush')}`;
 
-// Copy a state (uploaded data textures, an undo snapshot) into a target.
+// Copy a state (an undo snapshot, either way) into a target, bit for bit.
 // Padding texels copy too: cellFromFrag and atlas() round-trip them. Every
 // cell is new to the activity map (freshFlags); a target with no flags
-// attachment (an undo snapshot) drops them.
+// attachment (the snapshot) drops them.
 export const copyFrag = (g) => /* glsl */ `
 ${prelude(g)}
 ${stateOutGLSL}
 void main() {
   ivec3 p = cellFromFrag(ivec2(gl_FragCoord.xy));
-  vec4 a = fetchA(p), b = fetchB(p);
+  uvec4 s = fetchRaw(p);
+  writeStateRaw(s, freshFlags(unpackA(s), unpackB(s)));
+}
+`;
+
+// Load a state built on the CPU (Simulation.load): tLoadA and tLoadB hold A
+// and B as floats in the state atlas, which this packs (writeState).
+export const loadFrag = (g) => /* glsl */ `
+${prelude(g)}
+${stateOutGLSL}
+uniform sampler2D tLoadA;
+uniform sampler2D tLoadB;
+void main() {
+  ivec2 f = ivec2(gl_FragCoord.xy);
+  vec4 a = texelFetch(tLoadA, f, 0), b = texelFetch(tLoadB, f, 0);
   writeState(a, b, freshFlags(a, b));
+}
+`;
+
+// The state decoded to floats, A and B (MRT 0 and 1), for reading back
+// (Simulation.readState): the whole atlas, or with uOne the single cell uCell
+// into a one-texel target (Simulation.readCell).
+export const decodeFrag = (g) => /* glsl */ `
+${prelude(g)}
+uniform bool uOne;
+uniform ivec3 uCell;
+layout(location = 0) out vec4 decodedA;
+layout(location = 1) out vec4 decodedB;
+void main() {
+  ivec3 p = uOne ? uCell : cellFromFrag(ivec2(gl_FragCoord.xy));
+  decodedA = fetchA(p);
+  decodedB = fetchB(p);
 }
 `;
 

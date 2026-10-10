@@ -150,7 +150,7 @@ export const PHYS = {
   // (Rakov & Uman, Lightning, 2003). A count that ~100 grains of snow
   // falling past one cloud cell build.
   CHARGE_BREAKDOWN: 40,
-  CHARGE_MAX: 60,            // ctype cap (the id-width audit gives ctype 8 bits)
+  CHARGE_MAX: 60,            // ctype cap (the packed state gives a ctype 12 bits: shaders/common.js PACK)
   PLANT_GROW: 0.006,         // chance per step per neighbouring plant that water becomes plant
   // Moss and fungus (react.js, activity.js): living mats that grow only where
   // they are damp. Each moss or fungus cell keeps its damp, a whole number, in

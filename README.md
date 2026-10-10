@@ -177,13 +177,17 @@ Every construction is a small program written against one API (`src/construction
 
 ## How the physics works
 
-Per simulation step there are three GPU passes over the state (two RGBA32F textures in a brick-major 2D atlas: each 4×4×4 brick is an 8×8-texel tile, see `src/shaders/common.js`):
+Per simulation step there are two GPU passes over the state, plus the brush while painting. The state is one RGBA32UI
+texture, 16 bytes per cell, in a brick-major 2D atlas: each 4×4×4 brick is an 8×8-texel tile. Temperature is stored as
+a full float. Life, pressure and velocity are packed small and rounded stochastically, so on average nothing drifts.
+Every cell of a pass rounds the same way, so grains moving together stay together. See `src/shaders/common.js`.
 
 **1. Movement: a Margolus block cellular automaton** (`src/shaders/move.js`).
 The grid is split into 2×2×2 blocks whose partition shifts by one cell every step.
-Each block is solved once (one fragment per block, written to 8 MRT attachments as "which cell lands here and with what velocity").
-A gather pass then rebuilds the grid. Blocks only permute their cells, so mass is conserved exactly
-and two particles can never race for the same cell, which is the usual problem with GPU falling sand.
+Each block is solved once (one fragment per block). It writes 8 results, one per cell of the block: the cell that lands
+there, packed like the state. The react pass reads each cell's new state straight from those results. Blocks only
+permute their cells, so mass is conserved exactly and two particles can never race for the same cell, which is the
+usual problem with GPU falling sand.
 
 Movement is velocity-driven. Each particle carries a velocity (cells/step) and tries to move along each axis with probability |v|.
 Density decides whether it can displace its neighbour, so sand sinks through water, oil floats, steam bubbles up, and snow and ash float.

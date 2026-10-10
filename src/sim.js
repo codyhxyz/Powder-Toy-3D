@@ -4,10 +4,10 @@ import {
   inertFrag, inertRowsFrag, inertJoinFrag, quietFrag, activityPeriod, superMapFrag, superRowsFrag, superShareFrag, stepRegionsGLSL,
   SUPER_MAP, SUPER_SETTLE_STEPS, STEP_FULL_SHARE,
 } from './shaders/activity.js';
-import { moveBlockFrag, moveFlowFrag, moveGatherFrag, SLOTS } from './shaders/move.js';
+import { moveBlockFrag, moveFlowFrag, SLOTS } from './shaders/move.js';
 import { reactFrag } from './shaders/react.js';
 import {
-  paintFrag, copyFrag, brickFrag, blurFrag, brickDistFrag,
+  paintFrag, copyFrag, loadFrag, decodeFrag, brickFrag, blurFrag, brickDistFrag,
   awakeFrag, ageFrag, dirtyFrag, fieldRegionMapFrag, regionShareFrag,
 } from './shaders/passes.js';
 import {
@@ -133,13 +133,18 @@ function makeTarget(w, h, count = 2) {
   });
 }
 
-// A copy of the state: A and B (RGBA32F), and the activity flags (R8UI, one
-// byte per cell: shaders/common.js FLAG).
-const STATE_FLAGS = 2;   // attachment index of the flags
-function makeStateTarget(w, h) {
-  const t = makeTarget(w, h, STATE_FLAGS + 1);
-  t.textures[STATE_FLAGS].format = THREE.RedIntegerFormat;
-  t.textures[STATE_FLAGS].type = THREE.UnsignedByteType;
+// A copy of the state: the packed state (RGBA32UI, shaders/common.js PACK)
+// and the activity flags (R8UI, one byte per cell: FLAG). With flags = false,
+// the packed state alone (an undo snapshot).
+const STATE_FLAGS = 1;   // attachment index of the flags
+function makeStateTarget(w, h, flags = true) {
+  const t = makeTarget(w, h, flags ? STATE_FLAGS + 1 : 1);
+  t.textures[0].format = THREE.RGBAIntegerFormat;
+  t.textures[0].type = THREE.UnsignedIntType;
+  if (flags) {
+    t.textures[STATE_FLAGS].format = THREE.RedIntegerFormat;
+    t.textures[STATE_FLAGS].type = THREE.UnsignedByteType;
+  }
   return t;
 }
 
@@ -220,6 +225,7 @@ export class Simulation {
     this.world = world;           // the world size whose far layout the GI and the app's shadow pass hold
     const g = this.g;
     this.frame = 0;
+    this.rounds = 0;   // passes that wrote the state (each rounds from its own stream)
     this.paints = 0;   // brush strokes applied (the paint pass's random stream)
     this.idleEpoch = 0;
     this.idleCertified = false;
@@ -232,14 +238,16 @@ export class Simulation {
     this.targets = [makeStateTarget(g.width, g.height), makeStateTarget(g.width, g.height)];
     this.cur = 0;
     // The block pass's results: slot i of every block in layer i of one array
-    // texture (shaders/move.js slotGLSL). three.js gives a multi-target its own
-    // textures, so the block pass draws into this.blocks, whose colour
-    // attachments are pointed at the slot layers (attachSlots).
+    // texture (shaders/move.js slotGLSL), a slot being a packed cell (RGBA32UI).
+    // three.js gives a multi-target its own textures, so the block pass draws
+    // into this.blocks, whose colour attachments are pointed at the slot
+    // layers (attachSlots).
     this.slots = new THREE.WebGLArrayRenderTarget(g.mwidth, g.mheight, SLOTS, {
-      type: THREE.FloatType, format: THREE.RGBAFormat, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter,
+      type: THREE.UnsignedIntType, format: THREE.RGBAIntegerFormat, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter,
       depthBuffer: false, stencilBuffer: false, generateMipmaps: false,
     });
     this.blocks = makeTarget(g.mwidth, g.mheight, SLOTS);
+    for (const t of this.blocks.textures) { t.format = THREE.RGBAIntegerFormat; t.type = THREE.UnsignedIntType; }
     this.attachSlots();
     this.brick = makeTarget(g.bwidth, g.bheight, 1);
     this.light = [makeTarget(g.bwidth, g.bheight, 1), makeTarget(g.bwidth, g.bheight, 1)];
@@ -356,10 +364,9 @@ export class Simulation {
       moveBlock: stepMat(moveBlockFrag(g), {
         ...state(), uParity: { value: 0 }, uFrame: { value: 0 }, uGravity: { value: this.gravity }, tQuiet: { value: null },
       }, SUPER_MAP.BLOCKS, true),
-      moveGather: stepMat(moveGatherFrag(g), { ...state(), ...slots(), tQuiet: { value: null }, uFresh: { value: false } }, SUPER_MAP.DRAWN),
       react: stepMat(reactFrag(g), {
-        ...state(), uFrame: { value: 0 }, uGravity: { value: this.gravity }, tQuiet: { value: null }, tRx: { value: this.reactionTable },
-        tRayDep: { value: null }, uRays: { value: false },
+        ...state(), ...slots(), uFrame: { value: 0 }, uGravity: { value: this.gravity }, tQuiet: { value: null }, tRx: { value: this.reactionTable },
+        tRayDep: { value: null }, uRays: { value: false }, uFresh: { value: false },
       }, SUPER_MAP.DRAWN),
       inert: rawMat(inertFrag(g), { tF: { value: null } }),
       inertRows: rawMat(inertRowsFrag(g), { tA: { value: null }, tF: { value: null }, tClass: { value: null }, tRx: { value: this.reactionTable } }),
@@ -376,6 +383,8 @@ export class Simulation {
         uShape: { value: 0 }, uTool: { value: 2 }, uRate: { value: 1 }, uReplace: { value: false },
       }),
       copy: rawMat(copyFrag(g), state()),
+      load: rawMat(loadFrag(g), { ...state(), tLoadA: { value: null }, tLoadB: { value: null } }),
+      decode: rawMat(decodeFrag(g), { ...state(), uOne: { value: false }, uCell: { value: new THREE.Vector3() } }),
       moveFlow: stepMat(moveFlowFrag(g), { ...slots(), tQuiet: { value: null } }, SUPER_MAP.STEPS),
       brick: rawMat(brickFrag(g), {
         tA: { value: null }, tB: { value: null }, tFS: { value: null }, tFM: { value: null }, tFT: { value: null },
@@ -448,7 +457,7 @@ export class Simulation {
     if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) throw new Error('block pass: slot layers not attachable');
     for (const t of this.blocks.textures) {
       r.state.bindTexture(gl.TEXTURE_2D, r.properties.get(t).__webglTexture);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, 1, 1, 0, gl.RGBA, gl.FLOAT, null);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32UI, 1, 1, 0, gl.RGBA_INTEGER, gl.UNSIGNED_INT, null);
     }
     r.state.unbindTexture();
     r.setRenderTarget(keep);
@@ -484,8 +493,11 @@ export class Simulation {
       .finally(() => { this.idleRead = null; });
   }
 
+
+  // the packed state (shaders/common.js: shaders read it through fetchA/fetchB
+  // as uniform tA; stateB is the same texture, for callers that still set tB)
   get stateA() { return this.targets[this.cur].textures[0]; }
-  get stateB() { return this.targets[this.cur].textures[1]; }
+  get stateB() { return this.stateA; }
   get stateF() { return this.targets[this.cur].textures[STATE_FLAGS]; }
   // A target shaped like the state (its attachments and formats), for code
   // that draws a state pass somewhere else (e.g. once, to build its pipeline).
@@ -495,12 +507,13 @@ export class Simulation {
   cellTexel(x, y, z) { return cellTexel(this.g, x, y, z); }
   texelCell(i) { return texelCell(this.g, i); }
 
-  // The current state read back, as float RGBA per atlas texel in the
-  // fetchA/fetchB layout (what load() takes): [A, B]. For CPU checks and
-  // tools; cellTexel finds a cell in it.
+  // The current state decoded (shaders/passes.js decodeFrag) and read back,
+  // as float RGBA per atlas texel in the fetchA/fetchB layout (what load()
+  // takes): [A, B]. For CPU checks and tools; cellTexel finds a cell in it.
   readState() {
     const { width, height } = this.g;
-    const t = this.targets[this.cur];
+    const t = (this.decodeTarget ??= makeTarget(width, height));   // (made on first use: tools only)
+    this.decodeInto(t, false);
     const a = new Float32Array(width * height * 4), b = new Float32Array(width * height * 4);
     this.renderer.readRenderTargetPixels(t, 0, 0, width, height, a, undefined, 0);
     this.renderer.readRenderTargetPixels(t, 0, 0, width, height, b, undefined, 1);
@@ -510,18 +523,28 @@ export class Simulation {
   // One cell of the current state, read back: [a, b] in the fetchA/fetchB
   // layout (two RGBA float arrays). Synchronous; for tests and tools.
   readCell(x, y, z) {
-    const i = this.cellTexel(x, y, z), w = this.g.width;
-    const t = this.targets[this.cur];
+    this.cellTarget ??= makeTarget(1, 1);
+    this.mats.decode.uniforms.uCell.value.set(x, y, z);
+    this.decodeInto(this.cellTarget, true);
     const a = new Float32Array(4), b = new Float32Array(4);
-    this.renderer.readRenderTargetPixels(t, i % w, Math.floor(i / w), 1, 1, a, undefined, 0);
-    this.renderer.readRenderTargetPixels(t, i % w, Math.floor(i / w), 1, 1, b, undefined, 1);
+    this.renderer.readRenderTargetPixels(this.cellTarget, 0, 0, 1, 1, a, undefined, 0);
+    this.renderer.readRenderTargetPixels(this.cellTarget, 0, 0, 1, 1, b, undefined, 1);
     return [a, b];
+  }
+
+  // Decode the state into a float target (A and B): all of it, or with one
+  // the cell set in the decode pass's uCell into a one-texel target.
+  decodeInto(target, one) {
+    const u = this.mats.decode.uniforms;
+    u.tA.value = this.stateA;
+    u.uOne.value = one;
+    this.run(this.mats.decode, target);
   }
 
   // Block until the GPU has done everything queued so far, by reading one
   // texel of the current state back (wall-clock timing of GPU work).
   gpuSync() {
-    this.syncTexel ??= new Float32Array(4);
+    this.syncTexel ??= new Uint32Array(4);
     this.renderer.readRenderTargetPixels(this.targets[this.cur], 0, 0, 1, 1, this.syncTexel, undefined, 0);
   }
 
@@ -530,6 +553,9 @@ export class Simulation {
   // window's origin (shaders/common.js uOrigin), unless it brings its own; a
   // pass kept across grids takes the current simulation's (simOrigins).
   run(mat, target, quads = null) {
+    const toState = target === this.targets[0] || target === this.targets[1];
+    // each pass writing the state rounds from a stream of its own (shaders/common.js stateOutGLSL)
+    if (toState && mat.uniforms.uRound) mat.uniforms.uRound.value = ++this.rounds;
     const o = mat.uniforms.uOrigin;
     if (!o || simOrigins.has(o)) mat.uniforms.uOrigin = this.originUniform;
     const mesh = quads ? quads.mesh : this.quad;
@@ -539,7 +565,7 @@ export class Simulation {
     this.onPass?.(mat.name, target);
     const touched = this.touchNext;   // (for this pass only)
     this.touchNext = null;
-    if (target === this.targets[0] || target === this.targets[1]) {
+    if (toState) {
       this.version++;
       if (!this.stepping) this.noteWrite(touched);
     }
@@ -664,33 +690,32 @@ export class Simulation {
     this.actSteps++;
     this.wroteSinceStep = false;
     this.stepping = true;
-    const { moveBlock, moveFlow, moveGather, react } = this.mats;
+    const { moveBlock, moveFlow, react } = this.mats;
     const parity = this.frame & 1;
     // each pass draws only the supertiles the map's steps can change (the
     // supertile map), or one full-screen quad
     const quads = this.stepQuads;
     quads.fullOnly = !this.skipSleeping;
-    // movement: solve each 2×2×2 block once (moveBlock), then every cell
-    // gathers its result (moveGather) and the flow field takes its move
-    for (const m of [moveBlock, moveGather, moveFlow, react]) m.uniforms.tQuiet.value = this.actQuiet.texture;
+    // movement: solve each 2×2×2 block once (moveBlock); the flow field and
+    // react read every cell's result from the block results
+    for (const m of [moveBlock, moveFlow, react]) m.uniforms.tQuiet.value = this.actQuiet.texture;
     moveBlock.uniforms.uParity.value = parity;
     moveBlock.uniforms.uFrame.value = this.frame;
     moveBlock.uniforms.uGravity.value = this.gravity;
     moveBlock.uniforms.tA.value = this.stateA;
     moveBlock.uniforms.tB.value = this.stateB;
     this.run(moveBlock, this.blocks, quads);
-    for (const m of [moveGather, moveFlow]) {
+    for (const m of [moveFlow, react]) {
       m.uniforms.uParity.value = parity;
       m.uniforms.tSlots.value = this.slots.texture;
     }
-    moveGather.uniforms.uFresh.value = this.actFresh;
-    this.actFresh = false;
-    this.pass(moveGather, quads);
     this.run(moveFlow, this.flowV, quads);
     react.uniforms.uFrame.value = this.frame;
     react.uniforms.uGravity.value = this.gravity;
     react.uniforms.uRays.value = this.rays.stepped;   // the particles' deposits (heat, pressure)
     react.uniforms.tRayDep.value = this.rays.deposit.texture;
+    react.uniforms.uFresh.value = this.actFresh;
+    this.actFresh = false;
     this.pass(react, quads);
     this.rays.settle();
     this.stepping = false;
@@ -933,16 +958,20 @@ export class Simulation {
     this.run(this.mats.copy, this.targets[1 - this.cur]);
   }
 
-  // Upload CPU-built state (Float32Array RGBA per atlas texel).
+  // Upload CPU-built state (Float32Array RGBA per atlas texel, the
+  // fetchA/fetchB layout), packed on the way in (shaders/passes.js loadFrag).
   load(dataA, dataB) {
     const { width, height } = this.g;
     const texA = new THREE.DataTexture(dataA, width, height, THREE.RGBAFormat, THREE.FloatType);
     const texB = new THREE.DataTexture(dataB, width, height, THREE.RGBAFormat, THREE.FloatType);
     texA.needsUpdate = texB.needsUpdate = true;
-    const u = this.mats.copy.uniforms;
-    u.tA.value = texA;
-    u.tB.value = texB;
-    this.run(this.mats.copy, this.targets[this.cur]);
+    const u = this.mats.load.uniforms;
+    u.tLoadA.value = texA;
+    u.tLoadB.value = texB;
+    // the rounding streams start over, so a loaded scene evolves the same from
+    // the same frame every time (as it did before the state was packed)
+    this.rounds = 0;
+    this.run(this.mats.load, this.targets[this.cur]);
     this.fieldReset = true;
     this.giReset = true;
     this.stillFlow();
@@ -956,15 +985,13 @@ export class Simulation {
   }
 
   // ---- undo history: full GPU copies of the state, newest last ----
-  // Each snapshot is two RGBA32F atlases (~70 MB at 128³), so keep only a few.
+  // Each snapshot is the packed state (~34 MB at 128³), so keep only a few.
   // Each remembers the window's origin it was taken at (t.origin): after the
   // window moves (docs/scaling.md D11) it still holds the cells where they were.
   snapshot(limit = 3) {
     this.history ??= [];
-    const t = this.history.length >= limit ? this.history.shift() : makeTarget(this.g.width, this.g.height);
-    const u = this.mats.copy.uniforms;
-    u.tA.value = this.stateA;
-    u.tB.value = this.stateB;
+    const t = this.history.length >= limit ? this.history.shift() : makeStateTarget(this.g.width, this.g.height, false);
+    this.mats.copy.uniforms.tA.value = this.stateA;
     this.run(this.mats.copy, t);
     t.origin = this.origin.clone();
     t.note = null;   // the app's tag for what undoing this takes back besides cells (app.js: a shrine's orbs)
@@ -1001,7 +1028,6 @@ export class Simulation {
       mat.uniforms.uShift.value.set(dx, 0, dz);
     }
     mat.uniforms.tA.value = t.textures[0];
-    mat.uniforms.tB.value = t.textures[1];
     this.run(mat, this.targets[this.cur]);
     this.stillFlow();
     this.rays.wake();   // it may bring plutonium back
@@ -1097,6 +1123,8 @@ export class Simulation {
     if (retire) retire.push(...this.materials());
     else this.materials().forEach((m) => m.dispose());
     this.rays.dispose([]);   // (its materials went with materials() above)
+    this.cellTarget?.dispose();
+    this.decodeTarget?.dispose();
     this.quad.geometry.dispose();
   }
 }

@@ -43,7 +43,7 @@ const MS_PER_S = 1000;
 // Frame phases in display order; a pass belongs to the phase marked last (app.js frame()).
 export const PHASES = [
   { id: 'paint', label: 'Paint' },       // the brush
-  { id: 'sim', label: 'Sim' },           // the steps: activity map (inert, inertRows, inertJoin, quiet, awake, superMap, superRows, superShare), moveBlock, moveGather, moveFlow, react
+  { id: 'sim', label: 'Sim' },           // the steps: activity map (inert, inertRows, inertJoin, quiet, awake, superMap, superRows, superShare), moveBlock, moveFlow, react
   { id: 'derived', label: 'Derived' },   // render fields, bricks, empty-space distance, glow volume
   { id: 'shadow', label: 'Shadow' },     // the sun's shadow map
   { id: 'gi', label: 'GI' },             // GI probes
@@ -55,8 +55,10 @@ const PHASE_INDEX = Object.fromEntries(PHASES.map((p, i) => [p.id, i]));
 const OTHER = PHASE_INDEX.other;
 
 // GPU memory estimate: bytes per channel by texture type, channels by format.
-const TYPE_BYTES = { [THREE.FloatType]: 4, [THREE.HalfFloatType]: 2, [THREE.UnsignedByteType]: 1 };
-const FORMAT_CHANNELS = { [THREE.RGBAFormat]: 4, [THREE.RGFormat]: 2, [THREE.RedFormat]: 1, [THREE.RedIntegerFormat]: 1 };
+const TYPE_BYTES = { [THREE.FloatType]: 4, [THREE.HalfFloatType]: 2, [THREE.UnsignedByteType]: 1, [THREE.UnsignedIntType]: 4 };
+const FORMAT_CHANNELS = {
+  [THREE.RGBAFormat]: 4, [THREE.RGFormat]: 2, [THREE.RedFormat]: 1, [THREE.RedIntegerFormat]: 1, [THREE.RGBAIntegerFormat]: 4,
+};
 const RGBA = 4;
 const DEPTH_BYTES = 4;    // per pixel of a depth buffer: 24-bit depth padded to 32, or a float depth texture
 const CANVAS_BYTES = 4;   // per drawing-buffer pixel: RGBA8, no depth, no MSAA (see app.js)
@@ -94,8 +96,9 @@ function collectTargets(roots) {
  */
 export function createProfiler(renderer, { describe, onSample }) {
   const gl = renderer.getContext();
-  const f32 = new Float32Array(RGBA), f16 = new Uint16Array(RGBA), u8 = new Uint8Array(RGBA);
-  const readBuf = (t) => (t.texture.type === THREE.FloatType ? f32 : t.texture.type === THREE.HalfFloatType ? f16 : u8);
+  const f32 = new Float32Array(RGBA), f16 = new Uint16Array(RGBA), u8 = new Uint8Array(RGBA), u32 = new Uint32Array(RGBA);
+  const READ_BUFS = { [THREE.FloatType]: f32, [THREE.HalfFloatType]: f16, [THREE.UnsignedIntType]: u32 };
+  const readBuf = (t) => READ_BUFS[t.texture.type] ?? u8;
   const calTimes = new Float64Array(CAL_SYNCS);
   const cpuFrame = new Float64Array(PHASES.length);   // ms per phase, this frame
   const cpuSum = new Float64Array(PHASES.length);     // …summed over this window's unmeasured frames

@@ -153,7 +153,7 @@ export function createUnpacker() {
         tex?.dispose(); mat?.dispose();
         g = sim.g;
         tex = new THREE.DataTexture(bytes, g.width, g.height, THREE.RGBAFormat, THREE.UnsignedByteType);
-        mat = passMaterial(unpackFrag(g), { tPacked: { value: tex } });
+        mat = passMaterial(unpackFrag(g), { tPacked: { value: tex }, uRound: { value: 0 } });   // (sim.run sets uRound)
       }
       tex.image.data = bytes;
       tex.needsUpdate = true;

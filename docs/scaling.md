@@ -101,43 +101,136 @@ fetch outside common.js, so code merged from main can't bypass the accessors.
 ### D7. Packed state
 Cost follows bytes per cell (see Measured), so the target is one RGBA32UI texture per copy, 16 bytes per cell
 instead of 32:
-- x: id 8 | ctype 8 | seed bits 0–15
-  - Id and ctype (which holds an element id too: what lava melted from, what a clone copies) get 8 bits each,
-    so both hold 256 elements (docs/elements.md: there are about 100 to come).
+- x: id 8 | ctype 12 | spare 3 | seed 9 (as implemented, below)
+  - Ids get 8 bits: 256 elements (docs/elements.md: there are about 100 to come). The ctype is an element id
+    (what lava melted from, what a clone copies), a cloud's charge, a moss's damp, or a conductor's spark
+    (electricity.js: phase + SPARK_CYCLE · level, up to 3608), so it gets 12 bits.
   - The inert flag lives in its own R8 target written by react and every other state writer (D8), so the
     activity reduction reads 1 byte per cell.
-  - Another session (`../tpt-rest-pos`, not yet on main) turns the seed into a grain's rest position: three
-    6-bit axes plus a free-fall flag, scrambled, in 19 bits (`src/shaders/rest.js`). Bits 0–15 are here, bit 16
-    in z and bits 17–18 in w.
+  - Another session (`../tpt-rest-pos`, not on main) turns the seed into a grain's rest position: three 6-bit
+    axes plus a free-fall flag, scrambled, in 19 bits (`src/shaders/rest.js`). With 12-bit ctypes those 19 bits
+    no longer fit: it would need the 2 bits below plus a smaller rest position (or a second texture).
 - y: temperature as f32 bits. Conduction fluxes are tiny and must not round away.
-- z: life f16 | pressure f15 | seed bit 16
-  - Pressure is a 15-bit float: sign, 4-bit exponent (bias 7), 10-bit mantissa. Normals run from 2^−6 to 511,
-    past P_MAX − P_MIN; subnormals reach down to 2^−16, so REST_P (0.001) still has 6 significant bits, and
-    stochastic rounding keeps the geometric decay toward 0 unbiased.
-- w: velocity, 3 × 10-bit signed fixed point over [−V_MAX, V_MAX] | seed bits 17–18
+- z: life f16 | pressure f16
+- w: velocity, three 8-bit magnitudes sharing one 5-bit exponent, and their signs (below).
   - Stochastic rounding, using the cell's hash random stream, keeps the expected value exact, so gravity, drag
     and friction integrate without bias.
   - Exact zero stays exact zero, which rest states need.
 
-Where the 4 extra id and ctype bits come from (the first draft gave each 6 bits, 64 elements): x's spare bit,
-w's 2 spare flag bits, and 1 bit of pressure's exponent (f16 to f15 above).
+As implemented (`shaders/common.js` PACK, packGLSL):
+- **x** is id 8 | ctype 12 | spare 3 | seed 9. The 3 spare bits carry a block-pass slot's source index (D8). The
+  seed only varies the look (grain shapes and shades, hashed from it), so 9 bits (512 kinds) do; main's float A.w
+  kept 11 of them on a sparked wire (ctype ≥ 2048). `common.js` throws if an element id or a rule's ctype stops
+  fitting (`SPARK_CTYPE_MAX`, `CHARGE_MAX`). If the seed ever needs more, pressure as f15 (sign, 4-bit exponent,
+  10-bit mantissa: P_MAX − P_MIN fits) and a 4-bit velocity exponent (finest step 2^−22, still 30× under REST_V)
+  free 2 bits.
+- **w is velocity with one exponent for its three components** (like RGB9E5): an 8-bit magnitude per component,
+  3 sign bits and a 5-bit exponent, a component being worth ±m·2^(e − 38). The exponent is the smallest whose
+  steps hold the largest component within 255 of them, so that component keeps 8 significant bits (steps of
+  0.4–0.8% of it) at any speed from V_MAX = 1 cell/step down to 1e-9, and the smaller ones take its step.
+  Two 10-bit codes per component were tried first and measurably changed behaviour (see Velocity below).
+- Life, pressure and velocity round stochastically: unbiased, so gravity, drag, friction, heat banked as latent
+  heat and pressure decay integrate without drift. Round-to-nearest in f16 stalls small increments: latent heat
+  banked toward 540 in steps of 0.1, against an f16 step of 0.25 there, would never boil.
+- **Every cell of a pass rounds with the same random numbers.** Cells in the same state stay in the same state,
+  as in f32: grains falling together keep exactly equal velocities. Rounding each cell from its own stream broke
+  that, and the move pass's collision rule stops a follower closing in at any speed up to COLLIDE_V, so every
+  rounding difference stopped one: stone sinking in columns through the volcano's lava ran 4% slow (census,
+  z −11). Each cell's rounding stays unbiased over time; `Simulation.load` restarts the streams, so a loaded scene
+  evolves the same from the same frame (`uRound` counts the passes that wrote the state since).
+- A value already on the grid packs back to itself, zero included: every finite half, and every velocity (as a
+  value; a velocity whose largest magnitude code rounded to half the range or less re-packs exactly at a finer
+  exponent). `tools/pack-check.mjs` proves it for every half and 9.4M velocity codes, that the exponent is
+  minimal and that rounding is unbiased.
+- The seed is A.w's fraction in steps of 2^-9 (exact while ctype + seed fit a float's 24 significant bits), so a
+  code stored as code / 2^9 survives whole. A cell computed in floats compares with a stored one through
+  `storedW` (the world store's diff: `generate.js` cellDiffers, which also allows life a half's step).
+- FLAG_SELF is taken on the stored state. Untouched cells are copied bit for bit (`fetchRaw`/`writeStateRaw`).
+- The CPU side keeps floats: `load()` uploads A and B and a pass packs them, and `readState()`/`readCell()`
+  decode on the GPU. Undo snapshots are the packed state alone (half the memory).
 
-The accessors decode to the D5 floats, so readers don't change. This is a precision change: prove it
-statistically, not pixel-wise:
+The accessors decode to the D5 floats, so readers don't change. This is a precision change, proven statistically
+(`tools/physics-stats.mjs`, Part A's floats against the packed state, ensembles that start k·7919 steps apart; z
+is the difference over its standard error, and |z| < 3 counts as noise):
 - census and conservation;
 - fall times;
 - pile angle;
 - splash and flow;
 - settling.
 
-**Fallback.** If 10-bit velocity measurably changes behaviour, use f16 velocity: w = vx | vy, plus a second
-R32UI texture for vz f16 and seed bits 17–18 (20 bytes per cell).
+**Velocity.** Each candidate was isolated by adding only its velocity rounding to Part A's float state:
+- 10 bits a component, evenly spaced over [−V_MAX, V_MAX] (the plan): the first step, 0.002, is coarser than
+  REST_V (0.001), so a held cell's creep (stopped dead below REST_V) could no longer stop, and water spread
+  measurably further (splash radius z 3.2, slope front z 4.0, lab liquid speed z 3.2).
+- 10 bits a component with a magnitude quadratic in the code (fine steps near rest, 12% of the speed around
+  REST_V): the lab's falling sand pile settled measurably sooner, about 100 fewer of 15 000 grains moving through
+  steps 180–300 (z −5.7 averaged over 300 steps). Rounding noise that size at REST_V stops a creeping grain
+  early: once below REST_V it stops for good, and noise only ever has to dip it under once.
+- The shared exponent (implemented): steps under 1% of the speed at any speed above 1e-9 cells/step, 16× finer
+  than the quadratic code's around REST_V, in the same 32 bits.
+- f16 (the planned fallback) would not fit: 48 bits of velocity leave a cell 18 bytes and a slot (D8) no room for
+  the moved cell.
+
+**Port onto main and GPU validation (2026-10-10, branch `steward-pack`; A = origin/main 913943f, B = the port; M5,
+ANGLE Metal, the GPU shared with other sessions).** Status: **not shippable yet** (World round trip below).
+- Changed in porting: x became id 8 | ctype 12 | spare 3 | seed 9 (main's sparks reach ctype 3608; 87 elements);
+  react reads a block's cells from the state when its base brick is quiet (`movedRaw`: the block pass skips
+  sleeping supertiles, so their slots are stale); the world generator packs from a stream of the world cell
+  (`writeStateFrom`), so a regenerated brick is bit for bit the fresh one; the store's diff compares on the packed
+  grid (`storedW`, life within a half's step).
+- **Creeping velocities keep their side of REST_V.** With unbiased rounding everywhere, a collapsing sand heap's
+  last movers stopped early (`physics-stats.mjs heap`, 64³, 8 runs: moving grains at step 200 862 → 832, z −3.0;
+  lab census sand speed −0.3%, z −2.5 to −4.6). A guard at every speed fixed the heap but sped the volcano's water
+  1.4% (z 2.9): at speeds over 0.25 cells/step the step exceeds REST_V. So the guard holds only while the steps are
+  at most REST_V/16 (`VEL_GUARD_KMAX`). With it (fresh ensembles, 12 runs at 64³, 8 at 128³) no metric reaches
+  |z| 3: heap settle 270 vs 270 steps, angle of repose 40.06° vs 40.13° (z 1.5), splash, slope, levelling, fall
+  time, census energy and cell counts all |z| < 2.5. Lab sand speed stays 0.2% low (z −2.4, the same sign in all
+  three ensembles): small, but likely real.
+- Exact: conservation (closed box: 0 cells drift in 300 steps), lockstep (a read-back state loaded twice evolves
+  bit for bit the same, A and B), `activity-check` (0 bricks differ from the full-state rule, lab, volcano,
+  island), `elec-gpu-check` (spark fronts, levels and circuits identical to A), `gen-check` (identical output),
+  `elements-gpu-check` (same results as A; both report the same dev-server worker error), `pov-engine-check`
+  (third-digit differences in single chaotic runs).
+- **Open: World round trip.** `tools/world-check.mjs` 2 (walk the window away and back): B brings back 10 065
+  bricks different (A: 0): underground ROCK, LIMESTONE and SANDSTONE come back as air (id 0, temperature and seed
+  intact). A keeps 18 433 bricks in the store on the first leg, B 8 380: B's leaving-slab diff calls those ground
+  bricks unchanged, and they don't regenerate as ground. The diff at the start position flags the same 2408
+  bricks in A and B, so the split happens during the walk. Not found yet.
+- Speed (128³, 4 interleaved rounds, medians, the GPU 77–92% busy with other work): a step is slower, lab
+  2.02 → 2.19 ms (1.08×), volcano 2.41 → 2.65 (1.10×), island 1.79 → 1.95 (1.09×). The gather pass is gone
+  (0.36–0.57 ms) but react costs 0.25–0.56 ms more (7 slot reads, each behind a quiet-map read) and the block pass
+  7–10% more. Rendering is unchanged within noise (0.99–1.03×). Memory: the state copies take 17 bytes a cell
+  instead of 33 (128³: 71 MB instead of 138 MB for both) and undo snapshots 16 instead of 32 (3 × 34 MB instead of
+  3 × 67 MB).
 
 ### D8. Two passes per step, and skipping sleeping bricks
 - **Gather fused into react.** A step is a block pass (one fragment per Margolus block, 8 slot results), then a
   react pass that reads each cell's post-move state through the block results for itself and its 6 neighbours.
-  Slot result = RG32UI: source 3 bits + impact heat 13 bits + vx f16, then vy f16 + vz f16.
-- **Activity comes from react's inert bit.** A brick reduction reads 4 bytes per cell, not 32.
+  - Measured with 32-byte cells, whose slots held the source index and velocity: react rebuilds each moved cell
+    7 times (for itself and each neighbour), 3 fetches each (slot, source's state, own pressure), and that was
+    slower than a gather pass writing the moved state once (gather version 0.83–0.87× the fused one, nothing
+    skipped; 0.93–1.02× with skipping). So Part A keeps the gather.
+  - With D7 a slot holds the whole moved cell (16 bytes), one fetch per moved cell, and fusing wins: the step
+    with react reading the slots took 0.85× (lab), 0.93× (volcano) and 0.97× (island) the step with a gather
+    pass, 0.94×, 0.98× and 0.87× with nothing skipped (`tools/bench.mjs`, medians of 5 interleaved rounds, the
+    GPU busy with other work). Part B has no gather pass.
+- **Activity comes from flags the state writers leave** (implemented, `shaders/common.js` FLAG,
+  `shaders/activity.js`). One R8UI byte per cell beside the state: SELF (the rest test on the cell's own state,
+  taken on what was stored), NEAR (the neighbour test as react saw the neighbours), MATTER, and DIRTY (changed
+  since the last map in a way neighbour tests read: element, or temperature unless air).
+  - A flag from react alone can't reproduce the D2 rule: react doesn't see its neighbours' new states, flags in a
+    skipped brick go stale, and other writers can't run the neighbour test. The difference is unsafe, not just
+    inexact (a grain whose lower ring empties this step freezes perched). So NEAR is trusted only where nothing a
+    brick's neighbour tests read is DIRTY; elsewhere inertNear reruns from the state. The map is the D2 rule
+    exactly: `tools/activity-check.mjs` runs the full-state pass beside it at every map build.
+  - The map takes three passes: decide each brick from its 64 flag bytes (or mark it stale), re-test stale bricks
+    16 fragments each (a row of 4 cells), join. One fragment testing a stale brick's 64 cells in a row cost
+    0.5–1.8 ms per map in cooling scenes.
+- **Block results** (implemented). The 8 slots are the 8 layers of one array texture, so a cell's slot is one
+  fetch (picking among 8 textures made a SIMD group fetch from all 8). The block atlas follows the state's
+  brick-major order: a block's home brick holds its base cell; at parity 1 the low-margin blocks follow in rows
+  below. With D7 a slot is the moved cell, packed (impact heat in its temperature, the destination's pressure,
+  the source index in the packing's 3 spare bits).
 - **Sleeping supertiles are not touched.** The sim passes draw one instanced quad per supertile (32×32 texels,
   4×2×2 bricks), culled in the vertex shader by a supertile activity map. Inside a drawn supertile, quiet bricks
   take today's early-out and copy themselves.
