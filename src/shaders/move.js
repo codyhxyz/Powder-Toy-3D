@@ -92,9 +92,10 @@ const impactHeat = (i, j, vOld, speed) => `
         float share = CAP[k${i}] / (CAP[k${i}] + CAP[k${j}]);
         q${i} += lost * share; q${j} += lost * (1.0 - share);
       }`;
-// Would particle i, moving at vn along the axis toward solid j, break it?
-// Then leave it be: the react pass breaks j and charges i for it.
-const breaks = (i, j, vn) => `(BREAKINTO[k${j}] >= 0 && 0.5 * d${i} * ${vn} * ${vn} >= HARD[k${j}])`;
+// Would particle i, moving at vn along the axis toward solid j, break it or
+// set off an explosive (common.js impactActs)? Then leave it be: the react
+// pass breaks j and charges i for it, or sets the explosive off.
+const breaks = (i, j, vn) => `impactActs(k${i}, k${j}, 0.5 * d${i} * ${vn} * ${vn})`;
 
 const can = (i, j, dir) => `canMove(k${i}, k${j}, d${i}, d${j}, ${dir})`;
 const drag = (i, j) => `dragF(k${i}, k${j}, d${i}, d${j})`;

@@ -12,8 +12,11 @@ import { prelude, inertSelfGLSL, SUPER, SUPER_TEX, BLOCK_TILE } from './common.j
 //     canMove, neither the cell below nor the lower ring it could topple
 //     into, nor for a liquid its four sides;
 //   - nothing that reacts: no gas, nothing burning or hot enough to light
-//     the air, melting, setting, freezing, boiling or banking latent heat,
-//     nothing next to acid, no plant by water, no clone by air;
+//     the air, melting, setting, freezing, boiling or banking latent heat
+//     (elements.js cold/hot included), nothing next to acid, no plant by
+//     water, no clone by air, no explosive touching something past its
+//     ignition point, no cell beside a reaction partner (elements.js
+//     REACTIONS) whose temperature gate the pair passes;
 //   - thermally quiet: within MATTER_REST_T of each matter face neighbour,
 //     and within AIR_REST_T of ambient where it touches air.
 // A change a neighbour sets off on its own (a flame catching in the air by
@@ -57,6 +60,18 @@ const ivec3 FACES[6] = ivec3[6](ivec3(1,0,0), ivec3(-1,0,0), ivec3(0,1,0), ivec3
 // acidProof: acid itself, walls, glass, water). Never air or gases.
 bool acidEats(int j) { return KIND[j] != K_EMPTY && KIND[j] != K_GAS && !ACIDPROOF[j]; }
 
+// Reactions (elements.js REACTIONS, mechanisms().lookup): texel (b, a) of
+// tRx is 0 when a cell of element a has no reaction with a neighbour of b,
+// else 2·r + role + 1 (reaction r; role 0: the cell is the row's a).
+uniform highp usampler2D tRx;
+int rxAt(int a, int b) { return RX_ANY ? int(texelFetch(tRx, ivec2(b, a), 0).r) : 0; }
+// Does reaction r's temperature gate pass for a pair at Ta and Tb? It reads
+// the hotter cell: a hot spot lights a mixture, and too hot a cell stops it.
+bool rxGate(int r, float Ta, float Tb) {
+  float Th = max(Ta, Tb);
+  return Th >= RX[r].y && Th <= RX[r].z;
+}
+
 bool inertNear(ivec3 c, vec4 a, vec4 nA[6]) {
   int id = eid(a);
   if (id == E_EMPTY) return true;   // what changes air is a neighbour that isn't inert
@@ -71,7 +86,11 @@ bool inertNear(ivec3 c, vec4 a, vec4 nA[6]) {
     if (j == E_ACID ? acidEats(id) : id == E_ACID && acidEats(j)) return false;
     if ((id == E_WATER && j == E_PLANT) || (id == E_PLANT && j == E_WATER)) return false;
     if (id == E_CLONE && (j == E_EMPTY || (a.w < 1.0 && j != E_WALL && j != E_CLONE))) return false;
-    if (id == E_GUNPOWDER && !isGasLike(j) && n.y >= IGNITE[id]) return false;   // a hot touch sets it off
+    // an explosive with an ignition point: a hot touch sets it off
+    if (INTO[id][PH_BLAST] >= 0 && IGNITE[id] > 0.0 && !isGasLike(j) && n.y >= IGNITE[id]) return false;
+    // a reaction partner past its temperature gate (one below it lets both rest)
+    int rx = rxAt(id, j);
+    if (rx > 0 && rxGate((rx - 1) >> 1, T, n.y)) return false;
     // a powder or liquid: nowhere to fall, nor for a liquid to flow sideways
     bool way = FACES[i].y < 0 || (k == K_LIQUID && FACES[i].y == 0);
     if (k != K_SOLID && way && canMove(id, j, d, densityOf(j, n.y), FACES[i].y < 0 ? 0 : 2)) return false;

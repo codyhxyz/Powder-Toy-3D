@@ -225,6 +225,13 @@ float densityOf(int id, float T) {
 bool isGasLike(int id) { return KIND[id] == K_GAS || id == E_EMPTY; }
 bool isFluid(int id) { return KIND[id] == K_LIQUID || isGasLike(id); }
 bool movable(int id) { return KIND[id] != K_SOLID; }
+// Does a hit carrying kinetic energy ke, by a cell of element i on a solid
+// of element j, do anything: break j (elements.js hard, breakInto) or set off
+// an explosive on either side (blast.shock)? The move pass leaves such a
+// projectile unbounced, so the react pass sees the hit (react.js).
+bool impactActs(int i, int j, float ke) {
+  return (BREAKINTO[j] >= 0 && ke >= HARD[j]) || (BLAST[j].z > 0.0 && ke >= BLAST[j].z) || (BLAST[i].z > 0.0 && ke >= BLAST[i].z);
+}
 
 // Can a particle (id a, density da) move into the place of (b, db), travelling
 // in direction dir (0 = down, 1 = up, 2 = sideways)? The move pass's rule;
@@ -280,6 +287,11 @@ bool inertSelf(vec4 a, vec4 b) {
   if (k != K_SOLID && (b.xyz != vec3(0.0) || abs(b.w) > REST_P)) return false;
   if (MELT[id] > 0.0 && T > MELT[id]) return false;
   if (IGNITE[id] > 0.0 && T >= IGNITE[id]) return false;   // burning, or hot enough to light the air
+  // a phase change from the table (elements.js cold/hot): past its point, at
+  // it with no latent heat to bank (instant), or with some banked
+  if (INTO[id][PH_HOT] >= 0 && (T > HOT[id].x || (T == HOT[id].x && HOT[id].y == 0.0))) return false;
+  if (INTO[id][PH_COLD] >= 0 && (T < COLD[id].x || (T == COLD[id].x && COLD[id].y == 0.0))) return false;
+  if ((HOT[id].y > 0.0 || COLD[id].y > 0.0) && a.z != 0.0) return false;
   // latent heat: water and ice at rest have nothing banked and sit within their phase
   if (id == E_WATER) return a.z == 0.0 && T >= 0.0 && T <= 100.0;
   if (id == E_ICE || id == E_SNOW) return a.z == 0.0 && T <= 0.0;

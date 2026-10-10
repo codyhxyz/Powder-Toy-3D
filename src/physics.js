@@ -124,9 +124,8 @@ export const PHYS = {
   FLAME_T_SPREAD: 0.15,
   CLONE_RATE: 0.06,          // chance per step Clone fills a neighbouring empty cell
   SPAWN_DROP_V: -0.3,        // cells/step: spawned powders and liquids start falling
-  GUNPOWDER_FIRE: 0.7,       // chance per step a flame next to gunpowder sets it off
-  GUNPOWDER_T: 2200,         // °C of the blast
-  GUNPOWDER_P: 60,           // pressure of the blast
+  // Explosives' own numbers are their elements.js blast rows (gunpowder: P 60, T 2200 °C).
+  BLAST_FIRE: 0.7,           // chance per step a flame next to an explosive with an ignition point sets it off
   BURN_P: 0.02,              // pressure per step from burning
   ASH_SHARE: 0.5,            // share of burnt-out cells that leave ash
   BURNT_MIN_T: 600,          // °C, a burnt-out cell is at least this hot
@@ -148,7 +147,7 @@ export const PHYS = {
   // A solid breaks when the air pressure difference across it, along any axis,
   // exceeds hard·P_BREAK_PER_HARD (pressure per unit of hardness; a solid
   // neighbour holds no air and counts as 0). One gunpowder cell's blast is
-  // GUNPOWDER_P (60) and loses ~15% per cell, but a pile lit by a flame goes off
+  // blast P (elements.js, 60) and loses ~15% per cell, but a pile lit by a flame goes off
   // in a wave that stacks its blasts: ~140 at the edge of a 3³ pile, ~200 at a
   // 5³ one, still ~100 four cells out. So glass (8 → 40) and ice and plants
   // (6 → 30) smash a few cells from even one cell's blast, wood (20 → 100) a few

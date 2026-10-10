@@ -19,6 +19,7 @@ import { shiftFrag, giShiftFrag, flowShiftFrag, undoShiftFrag } from './shaders/
 import { CHANNELS, MEDIA, gauss5, bulkPeak, bulkPeakCubic, CUBIC_LATTICE } from './gfx/materials.js';
 import { gfxUniforms } from './gfx/uniforms.js';
 import { RegionQuads, regionMaterial } from './gfx/regions.js';
+import { ELEMENTS, mechanisms } from './elements.js';
 
 // cells/step² downward (the app's gravity setting overrides it)
 const GRAVITY_DEFAULT = 0.025;
@@ -148,6 +149,17 @@ export function makeFieldTarget(w, h, count, type, filter) {
   });
 }
 
+// The reaction lookup (elements.js mechanisms().lookup) as an NE × NE
+// integer texture: texel (b, a) is what a cell of a does with a neighbour of b
+// (shaders/activity.js rxAt). The react pass and the activity map read it.
+export function reactionTexture() {
+  const n = ELEMENTS.length;
+  const t = new THREE.DataTexture(mechanisms().lookup, n, n, THREE.RedIntegerFormat, THREE.UnsignedShortType);
+  t.internalFormat = 'R16UI';
+  t.needsUpdate = true;
+  return t;
+}
+
 export function rawMat(frag, uniforms) {
   return new THREE.RawShaderMaterial({
     glslVersion: THREE.GLSL3,
@@ -254,6 +266,7 @@ export class Simulation {
     this.actRows = makeFieldTarget(g.bwidth * BRICK, g.bheight * BRICK, 1, U8, NEAR);
     this.actInert = makeFieldTarget(g.bwidth, g.bheight, 1, U8, NEAR);
     this.actQuiet = makeFieldTarget(g.bwidth, g.bheight, 1, U8, NEAR);
+    this.reactionTable = reactionTexture();   // what the react pass and activity map read of elements.js REACTIONS
     this.actAge = ACTIVITY_PERIOD;
     this.actDirty = true;
     this.actFresh = false;   // the next step is the first since a map was built (its dirty marks start over)
@@ -336,9 +349,11 @@ export class Simulation {
         ...state(), uParity: { value: 0 }, uFrame: { value: 0 }, uGravity: { value: this.gravity }, tQuiet: { value: null },
       }, SUPER_MAP.BLOCKS, true),
       moveGather: stepMat(moveGatherFrag(g), { ...state(), ...slots(), tQuiet: { value: null }, uFresh: { value: false } }, SUPER_MAP.DRAWN),
-      react: stepMat(reactFrag(g), { ...state(), uFrame: { value: 0 }, uGravity: { value: this.gravity }, tQuiet: { value: null } }, SUPER_MAP.DRAWN),
+      react: stepMat(reactFrag(g), {
+        ...state(), uFrame: { value: 0 }, uGravity: { value: this.gravity }, tQuiet: { value: null }, tRx: { value: this.reactionTable },
+      }, SUPER_MAP.DRAWN),
       inert: rawMat(inertFrag(g), { tF: { value: null } }),
-      inertRows: rawMat(inertRowsFrag(g), { tA: { value: null }, tF: { value: null }, tClass: { value: null } }),
+      inertRows: rawMat(inertRowsFrag(g), { tA: { value: null }, tF: { value: null }, tClass: { value: null }, tRx: { value: this.reactionTable } }),
       inertJoin: rawMat(inertJoinFrag(g), { tClass: { value: null }, tRows: { value: null } }),
       quiet: rawMat(quietFrag(g), { tInert: { value: null }, uEnabled: { value: true } }),
       superMap: rawMat(superMapFrag(g), {
@@ -1002,6 +1017,7 @@ export class Simulation {
     this.actRows.dispose();
     this.actInert.dispose();
     this.actQuiet.dispose();
+    this.reactionTable.dispose();
     this.superMap.forEach((t) => t.dispose());
     this.superRows.dispose();
     this.superShare.dispose();
