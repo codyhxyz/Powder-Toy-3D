@@ -12,8 +12,9 @@
 //     are solid or nuggets (move.js: nothing to topple into);
 //   - a census per element (and how many are in sight: a face open to air),
 //     and spots for stills (spots.json): for each, the 16³ block holding the
-//     most in sight, its cell nearest the
-//     block's middle (look), and a dry cave floor in sight of it to stand on
+//     most in sight with a view, its cell nearest the
+//     block's middle (look), and a dry cave floor in sight of it to stand on,
+//     under the ground
 //     (feet), as tools/caves-preview.mjs finds them.
 // usage: node tools/nature-check.mjs [outDir] [--box x0 z0 nx nz]
 import { writeFileSync, mkdirSync } from 'node:fs';
@@ -29,6 +30,7 @@ const bi = args.indexOf('--box');
 const NY = WORLD_SIZE[1];
 const box = bi >= 0 ? args.slice(bi + 1, bi + 5).map(Number) : [0, 0, WORLD_SIZE[0], WORLD_SIZE[2]];
 const BLOCK = 16;              // spots: elements counted per this many cells cube
+const SPOT_TRIES = 40;         // ...the fullest this many blocks tried for a view
 const VIEW_NEAR = 4;           // a spot's feet stand at least this far from what they look at...
 const VIEW_FAR = 16;           // ...and at most this far
 const HEADROOM = 6;            // ...under this many cells of air (the POV body is 5.5 tall)
@@ -122,10 +124,18 @@ function sight(a, b) {
   }
   return true;
 }
+// the fullest blocks first, until one has feet in sight in a cave
 function spotFor(id) {
-  let best = null;
-  for (const [k, n] of blocks) if (k.startsWith(`${id}:`) && (!best || n > best[1])) best = [k, n];
-  if (!best) return null;
+  const tries = [...blocks].filter(([k]) => k.startsWith(`${id}:`)).sort((a, b) => b[1] - a[1]).slice(0, SPOT_TRIES);
+  let first = null;
+  for (const best of tries) {
+    const s = spotIn(id, best);
+    first ??= s;
+    if (s.feet) return s;
+  }
+  return first;
+}
+function spotIn(id, best) {
   const [bx, by, bz] = best[0].split(':')[1].split(',').map(Number);
   const mid = [bx, by, bz].map((v) => v * BLOCK + BLOCK / 2);
   let look = null;
@@ -145,6 +155,7 @@ function spotFor(id) {
       if (!inWorld(fy - 1) || fy >= T.genTop(fx, fz) || !solid(cell(fx, fy - 1, fz)) || cell(fx, fy - 1, fz) === E.WATER) continue;
       let clear = true;
       for (let h = 0; h < HEADROOM && clear; h++) clear = cell(fx, fy + h, fz) === E.EMPTY;
+      if (fy + HEADROOM >= T.genTop(fx, fz)) continue;   // in a cave: under its column's ground
       if (!clear || !sight([fx + 0.5, fy + EYE, fz + 0.5], [lx + 0.5, ly + 0.5, lz + 0.5])) continue;
       const score = Math.abs(r - (VIEW_NEAR + VIEW_FAR) / 2);
       if (!feet || score < feet[1]) feet = [[fx, fy, fz], score];
