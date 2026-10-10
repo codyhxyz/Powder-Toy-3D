@@ -7,6 +7,7 @@
 import { chromium } from 'playwright';
 import { mkdirSync } from 'fs';
 import { join } from 'path';
+import { MAPS } from '../src/maps.js';
 
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
@@ -32,7 +33,7 @@ const menuMs = Date.now() - t0;
 check('menu up', menuMs < MENU_MS, `${menuMs} ms`);
 check('the game is not loaded behind it', await p.evaluate(() => !window.__app));
 const cards = await p.$$eval('.mm-card', (els) => els.map((e) => [e.dataset.map, e.querySelector('.mm-tag').textContent]));
-check('every map listed with a size tag', cards.length === 11 && cards.every(([, t]) => t), JSON.stringify(cards));
+check('every map listed with a size tag', cards.length === MAPS.length && cards.every(([, t]) => t), JSON.stringify(cards));
 await p.evaluate(() => Promise.all([...document.images].map((i) => i.complete || new Promise((r) => { i.onload = i.onerror = r; }))));
 check('every preview loads', await p.$$eval('.mm-card .mm-thumb', (els) => els.every((e) => e.querySelector('img')?.naturalWidth > 0)));
 await p.screenshot({ path: join(out, '1-menu.png') });

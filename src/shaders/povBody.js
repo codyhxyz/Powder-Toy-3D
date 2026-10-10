@@ -61,6 +61,7 @@ uniform float uPushFluid;   // outward push on liquids and gases, cells/step
 uniform float uPushPowder;  // outward push on grains, cells/step
 uniform float uLift;        // upward share of the push (a body moving down throws liquid up)
 uniform vec2 uAhead;        // forward share of the push, along the body's horizontal heading (xz)
+uniform int uOnly;          // the one element it moves (the Rain Cloud's breeze carries only CLOUD), or −1 for all loose matter
 ${stateOutGLSL}
 
 void couple(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
@@ -68,6 +69,7 @@ void couple(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
   if (any(lessThan(c, uMin)) || any(greaterThan(c, uMax))) return;
   int id = eid(a);
   if (id == E_EMPTY || KIND[id] == K_SOLID) return;
+  if (uOnly >= 0 && id != uOnly) return;
 
   vec2 r = c.xz - 0.5 * (uMin.xz + uMax.xz);
   vec2 out2;

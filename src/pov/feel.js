@@ -126,6 +126,8 @@ export function createFeel({ hud }) {
       const d = Math.hypot(point.x - eye.x, point.y - eye.y, point.z - eye.z);
       addTrauma(TRAUMA_BOMB * (1 - smooth01((d - IMPACT_NEAR) / (BOMB_FAR - IMPACT_NEAR))));
     }),
+    // a tool's own screen shake (the laser cannon's beam): trauma 0..1, the player's only
+    povEvents.on('shake', ({ trauma: x = 0, by }) => { if (live && !by) addTrauma(x); }),
     povEvents.on('drunk', ({ seconds = 0, by }) => {
       if (!live || by) return;   // an NPC's drink isn't the player's head
       drunk = Math.min(DRUNK_MAX_S, drunk + seconds);

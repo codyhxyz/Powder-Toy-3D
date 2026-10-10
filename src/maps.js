@@ -63,11 +63,11 @@ export function mapOf({ size, preset, scene }) {
   return MAPS.find((m) => m.preset === preset) ?? null;
 }
 
-// '128³', '256×96×128', '1024×1024' (a world: its footprint, when its height is a box's), '1024×384×1024'
+// '128^3' (a caret, not a superscript ³: too small to read on a tag), '256×96×128', '1024×1024' (a world: its footprint, when its height is a box's), '1024×384×1024'
 export function sizeTag(m) {
   const [x, y, z] = m.dims;
   if (isWorld(m) && y === WORLD_DIMS[1]) return `${x}×${z}`;
-  return x === y && y === z ? `${x}³` : `${x}×${y}×${z}`;
+  return x === y && y === z ? `${x}^3` : `${x}×${y}×${z}`;
 }
 
 // where a new player starts: laptops on the Island world, phones in the Lab box (app.js MOBILE_DEFAULTS)

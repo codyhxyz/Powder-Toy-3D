@@ -76,6 +76,15 @@ const FALL_BOUNCE_HZ = 3;
 const CHOP_WINDUP = 0.7;                 // share of the swing spent winding up
 const CHOP_UP = [2.8, 0.7];              // rad: shoulder, elbow raised over the head
 const CHOP_DOWN = [0.45, 0.1];           // rad: arm down in front, the blow landed
+// The kick (kick.js): s.kick is its progress 0..1. A front kick's three phases,
+// as martial arts teach it: chamber (knee up, shin folded), extend (the leg
+// snaps straight out ahead), retract (back along the same line), with a lean
+// back to balance it. Right leg.
+const KICK_CHAMBER_END = 0.25;           // share of the kick spent chambering...
+const KICK_EXTEND_END = 0.45;            // ...then extending; the rest retracts
+const KICK_CHAMBER = [1.35, -1.9];       // rad: hip forward, knee folded
+const KICK_EXTEND = [1.5, -0.05];        // rad: leg straight out, about level
+const KICK_LEAN = -0.25;                 // rad: torso back, against the kick
 
 const smooth01 = (x) => { const t = Math.min(Math.max(x, 0), 1); return t * t * (3 - 2 * t); };
 const approach = (rate, dt) => 1 - Math.exp(-rate * dt);
@@ -399,6 +408,16 @@ export function createFigure(build = buildStick) {
         const up = smooth01(p / CHOP_WINDUP), down = 1 - (1 - Math.max(0, (p - CHOP_WINDUP) / (1 - CHOP_WINDUP))) ** 3;
         shR.rotation.x = THREE.MathUtils.lerp(THREE.MathUtils.lerp(J.shR, CHOP_UP[0], up), CHOP_DOWN[0], down);
         elR.rotation.x = THREE.MathUtils.lerp(THREE.MathUtils.lerp(J.elR, CHOP_UP[1], up), CHOP_DOWN[1], down);
+      }
+      if (s.kick != null && !s.dead) {
+        const p = Math.min(Math.max(s.kick, 0), 1);
+        const chamber = smooth01(p / KICK_CHAMBER_END);
+        const extend = smooth01((p - KICK_CHAMBER_END) / (KICK_EXTEND_END - KICK_CHAMBER_END));
+        const back = smooth01((p - KICK_EXTEND_END) / (1 - KICK_EXTEND_END));
+        const at = (rest, i) => THREE.MathUtils.lerp(THREE.MathUtils.lerp(THREE.MathUtils.lerp(rest, KICK_CHAMBER[i], chamber), KICK_EXTEND[i], extend), rest, back);
+        hipR.rotation.x = at(J.hipR, 0);
+        knR.rotation.x = at(J.knR, 1);
+        torso.rotation.x = -J.lean - KICK_LEAN * (chamber - back);
       }
       contact.visible = s.onGround && !s.dead;
       for (const f of flames) {

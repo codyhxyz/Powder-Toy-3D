@@ -46,6 +46,14 @@
 //          of a spark's levels per cell. conducts: true without elec means a
 //          metal (ELEC_METAL); a poor conductor (water, saltwater) gives its σ.
 //          A conductor's ctype holds its spark: give it no other use.
+//   hot    { T, into, of, latent, puff }: at or above T °C it becomes `into`
+//          (an element key; 'EMPTY' = air), TPT's high-temperature
+//          transition. of: when into is 'LAVA', what it sets back into
+//          (ctype). latent: heat banked first, in life, as ice banks its
+//          melting (cap·°C, physics.js L_FUSE's units; omitted: instant).
+//          puff: volumes of gas set free per volume, a pressure puff as fizz.
+//          el-core's documented shape (docs/elements.md); read here, ahead of
+//          el-core, with a single `into` key (no weighted lists yet).
 //
 // The shared mechanisms (docs/elements.md; react.js runs them, ui/tiles/
 // engine.js mirrors them, activity.js and common.js inertSelf let them rest)
@@ -1053,6 +1061,33 @@ const defs = [
     dens: 9.6, cond: 0.03, cap: 1.0, ...viscous(1.5), spawn: 0.35,
     cold: freezeOf(0, TINCTURE_WATER), hot: boilOf(100, TINCTURE_WATER),
     sigma: [0.03, 0.6, 0.35], desc: 'A sparkling red potion from Noita. Creatures soaked in it become your friends.' },
+  // Meat: what a body bursts into when it's killed by overkill (pov/vitals.js
+  // GIB_HEALTH): chunks of lean muscle, ~75% water. Thermal properties of lean
+  // beef above freezing (ASHRAE Handbook, Refrigeration, "Thermal Properties
+  // of Foods"): 1.05 g/cm³ (it sinks, barely), ~0.48 W/(m·K), 4/5 of water's
+  // 0.6 (cond: water's 0.03 × 0.8), 3.5 J/(g·K) (cap: 3.5 × 1.05 / 4.18).
+  // Raw, it's too wet to burn. It cooks at 71 °C, USDA's safe minimum for
+  // ground meat (160 °F; whole cuts 63 °C), past actin's denaturation (DSC,
+  // Wright, Leach & Wilding 1977), taking the proteins' denaturation heat
+  // first: ~3.5 J/g in beef (3.0-3.8, Oklahoma State beef DSC, 1992),
+  // 3.5 × 1.05 / 4.18 ≈ 0.9 cap·°C, about a degree's worth of heating. Chunks
+  // pile steeply (slide like snow's).
+  { key: 'MEAT', abbr: 'MEAT', name: 'Meat', kind: K.POWDER, render: R.OPAQUE, color: '#d65a64', var: 0.15,
+    dens: 10.5, cond: 0.024, cap: 0.88, drag: 0.04, slide: 0.35, spawn: 0.3, sound: 'thunk',
+    hot: { T: 71, into: 'COOKED_MEAT', latent: 0.9 },
+    desc: 'Raw chunks of a body. Too wet to burn: heat it past 71 °C (fire, lava, steam, the flamethrower) and it cooks. Raw meat does nothing for you.' },
+  // Cooked meat: the same chunks, cooked through. Cooking drives out some
+  // water: ~3.0 J/(g·K) and ~0.4 W/(m·K) cooked (ASHRAE, as above). Its fat
+  // flashes at ~320 °C (beef tallow's flash point, 319 °C, Sigma-Aldrich), so
+  // overheated in air it chars and burns, through the same fields as wood,
+  // leaving ash. Heat per volume goes as burnHeat / burnRate: cooked beef
+  // holds ~10.5 kJ/g (food energy, ~250 kcal/100 g) × 1.05 g/cm³ ≈ 11 MJ/L,
+  // dry wood's (0.6 × 18), so it burns at wood's pace; its water keeps the
+  // flame cooler than wood's.
+  { key: 'COOKED_MEAT', abbr: 'CMET', name: 'Cooked meat', kind: K.POWDER, render: R.OPAQUE, color: '#8a5530', var: 0.15,
+    dens: 10.5, cond: 0.02, cap: 0.75, drag: 0.04, slide: 0.35, ignite: 320, burnRate: 0.0018, burnHeat: 3, flameT: 800,
+    life: 1, spawn: 0.3, sound: 'thunk',
+    desc: 'Meat cooked through. In first person, walk into it to eat it: every chunk heals you. Past 320 °C it chars and burns to ash.' },
 ];
 
 // σ (S/m) of a conductor given as conducts: true with no elec: a metal. The
@@ -1182,7 +1217,7 @@ export const isGearTool = (id) => id <= GEAR_ID0 && id > GEAR_ID0 - 100;
 // How the palette is laid out in the UI. Within each group, elements are
 // ordered so related materials sit together and the colours run smoothly.
 export const PALETTE = [
-  { name: 'Powders', items: ['SAND', 'CLAY', 'STONE', 'BROKENCOAL', 'DUST', 'ASH', 'SNOW', 'SALT', 'SHARDS', 'CRYSTAL_DUST', 'SAWDUST', 'SCRAP', 'RUBBLE', 'NUGGETS', 'LITHIUM'] },
+  { name: 'Powders', items: ['SAND', 'CLAY', 'STONE', 'BROKENCOAL', 'DUST', 'ASH', 'SNOW', 'SALT', 'SHARDS', 'CRYSTAL_DUST', 'SAWDUST', 'COOKED_MEAT', 'MEAT', 'SCRAP', 'RUBBLE', 'NUGGETS', 'LITHIUM'] },
   { name: 'Liquids', items: ['WATER', 'SALTWATER', 'WHISKEY', 'LIQUID_NITROGEN', 'ACID', 'TOXIC', 'OIL', 'SLIME', 'BLOOD', 'MUD', 'LAVA', 'MERCURY'] },
   // Noita's magical liquids
   { name: 'Potions', items: ['TELEPORTATIUM', 'LEVITATIUM', 'HEALTHIUM', 'BERSERKIUM', 'POLYMORPHINE', 'PHEROMONE'] },
