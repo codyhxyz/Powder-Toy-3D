@@ -449,6 +449,7 @@ export function createVehicles(env) {
     get physics() { return phys; },
     get cells() { return cells; },
     drive,
+    update,
     // E: get in the nearest vehicle in reach, out of the one you're in, or right an overturned one
     use(player) {
       if (seated) { dismount(player); return 'exit'; }
