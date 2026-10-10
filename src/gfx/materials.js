@@ -114,17 +114,19 @@ const LOOKS = {
   // The other rocks share it (and its texture: surf CRAG, crag below).
   // Sandstone: quartz grains (n = 1.54, they glint like sand's) in a tan,
   // iron-stained cement, linear albedo ~0.45/0.33/0.2. Limestone: calcite
-  // (n ~1.6), pale grey-buff ~0.5/0.48/0.43. Coal: albedo ~0.045, but its
-  // vitrinite has n ~1.8 (F0 ~0.08, twice a rock's) and its bright bands are
-  // glassy: a dark surface with a sheen. Broken coal shows the same faces
-  // fresh, glinting where they catch the sun.
+  // (n ~1.6), pale grey-buff ~0.5/0.48/0.43. Coal: albedo ~0.045 with a
+  // sheen. Polished vitrinite has n ~1.7-1.8, but a natural face reflects only
+  // the measured 0.04-0.05 in all, so its specular is no more than any
+  // rock's (n 1.5, the default): its sheen is a smoother face than rock's.
+  // (Glossier, it outshone the basalt beside it under a low sun.) Broken coal
+  // shows the same faces fresh, glinting where they catch the sun.
   SANDSTONE: { ch: 'ORGANIC', rough: 0.9, ior: 1.54, alb: '#b39c7c', glint: 0.25, surf: 'CRAG',
     crag: { relief: 0.6, pits: 0, bands: 2.5, stain: 1.5 } },   // rounded by weathering, bedded, iron-stained
   LIMESTONE: { ch: 'ORGANIC', rough: 0.8, ior: 1.6, alb: '#bcb8af', surf: 'CRAG',
     crag: { relief: 1, pits: 0.4, bands: 1.5, stain: 0.4 } },   // sharp solution runnels and pits, bedded
-  COAL: { ch: 'ORGANIC', rough: 0.45, ior: 1.8, alb: '#3c3c3d', surf: 'CRAG',
+  COAL: { ch: 'ORGANIC', rough: 0.75, alb: '#3c3c3d', surf: 'CRAG',
     crag: { relief: 0.5, pits: 0, bands: 2, stain: 0 } },       // blocky cleat, bright and dull bands
-  BROKENCOAL: { ch: 'GRANULAR', rough: 0.45, ior: 1.8, alb: '#3c3c3d', glint: 0.6 },
+  BROKENCOAL: { ch: 'GRANULAR', rough: 0.75, alb: '#3c3c3d', glint: 0.5 },
 };
 
 // Shared texture families (LOOKS surf). NONE: an element's own (or none).
