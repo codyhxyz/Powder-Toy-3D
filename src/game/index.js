@@ -528,7 +528,7 @@ export function createGame(shell) {
       }
       markers.update({
         time,
-        flagAt: (t) => flags?.[t]?.pos,
+        flagAt: (t) => (flags?.[t] && flags[t].carrier !== PLAYER ? flags[t].pos : null),   // the player's own carry would be in their eye
         zoneOwner: hill?.owner ?? siege?.owner ?? (siege ? other(siege.attackers) : null),
         zoneContested: hill?.contested ?? siege?.contested ?? false,
         bots: bots().map((e) => ({ id: e.id, team: e.team, alive: alive(e), pos: e.bot.body.pos })),
