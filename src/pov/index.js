@@ -12,6 +12,7 @@ import { addTarget, PLAYER } from './targets.js';
 import { grant, PERK } from './perks.js';
 import { CLASSES_ENABLED } from './classes.js';
 import { createClassPicker } from './classPicker.js';
+import { createNightVision } from './nightVision.js';
 
 // First-person (POV) mode: drop into the world with F, walk around in it,
 // pop back out with F. This module is the shell: input, the camera, the
@@ -46,7 +47,7 @@ const MOVE_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ShiftLeft',
 // With classes on, comma is TF2's class key in POV (classPicker.js), not settings.
 const PASS_KEYS = new Set(['Escape', '?', ...(CLASSES_ENABLED ? [] : [',']), 'p', 'P']);
 
-// app = { renderer, scene, camera, controls, canvas, hud, settings, mp, isTyping,
+// app = { renderer, scene, camera, controls, canvas, hud, settings, mp, isTyping, post (gfx/post.js: night vision),
 //         getSim, getVolume, getScale, hover, pointerHover (() => bool), pickRay (ro, rd → Promise<hit>),
 //         requestRender, inWorld (() => bool: the grid is a window of a larger world, docs/scaling.md D11),
 //         showToolsMenu (the palette's first-person tools brought into view: Q) }
@@ -61,6 +62,7 @@ export function createPov(app) {
   const povHud = createPovHud();
   // feedback: everything here hears povEvents (events.js) and the body's events
   const feel = createFeel({ hud: povHud });
+  const nightVision = app.post ? createNightVision(app.post) : null;   // the Night Vision perk's goggles (the local player's view)
   let vfx = null;                        // three.quarks effects, built on the first drop-in
   let figure = null, player = null, toolbelt = null;
   const npcs = new Map();   // enemy spawner id → its NPC (npc.js)
@@ -380,6 +382,7 @@ export function createPov(app) {
     viewmodel.visible = false;
     povHud.show(false);
     feel.reset();
+    nightVision?.reset();
     vfx?.clear();
     document.body.classList.remove('pov-on');
     setHudHidden(false);
@@ -562,6 +565,10 @@ export function createPov(app) {
     }
     buttons.primaryPressed = buttons.secondaryPressed = false;
     wheelNotches = 0;
+
+    // Night Vision: the goggles follow the scene's measured light (nightVision.js)
+    nightVision?.update(dt, mode === 'on' && !deadSeen ? player.perks.nightGain : 0);
+    if (nightVision?.on > 0) app.requestRender();   // (the grain moves)
 
     // effects: keep drawing while any are in flight (rendering is on demand)
     if (vfx?.update(dt)) app.requestRender();

@@ -1445,7 +1445,7 @@ try {
   setPaused(false);
   toolbar.setUndoEnabled(false);
   pov = createPov({
-    renderer, scene, camera, controls, canvas: renderer.domElement, hud, settings, mp, isTyping,
+    renderer, scene, camera, controls, canvas: renderer.domElement, hud, settings, mp, isTyping, post,
     getSim: () => sim, getVolume: () => volume, getScale: () => scale,
     hover, pointerHover: () => pointerInside && !uiHover, pickRay,
     getSpawners: () => spawners,
