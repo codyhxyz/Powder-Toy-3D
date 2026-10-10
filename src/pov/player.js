@@ -19,7 +19,7 @@ import { createPerkSet } from './perks.js';
 // pressure gradients with the sim's own a = −∇P·P_ACCEL/ρ, and hands what it
 // touches to vitals.js. A second pass pushes loose matter out of the body's way.
 // The body's perks (perks.js) change its moves here (Lukki, Sand Swimmer,
-// Fleet Foot, Rocket Boots, Big Tank) and reach into the world through a third
+// Fleet Foot, Rocket Boots, Big Tank, Slow Fall) and reach into the world through a third
 // pass (Freeze Field, Revenge Explosion). A held pogo stick (tools/pogo.tool.js
 // calls holdPogo() every frame) turns its landings into bounces.
 //
@@ -69,6 +69,15 @@ const JET_TAP_S = 8 / NOITA_FPS;       // s of fuel every press burns at least, 
 const JET_RISE = 95 * PX;              // cells/s (14 m/s): the climb the jet eases toward (fly_speed_max_up)
 const JET_EASE = 0.25;                 // share of the gap to JET_RISE closed per Noita frame, gravity off while it fires (fly_speed_change_spd)
 const JET_FLY_SPEED = 52 * PX;         // cells/s: horizontal speed while the jet fires (fly_velocity_x)
+
+// ---- Slow Fall: a canopy's quadratic air drag on the way down, a = k·v², so the body comes down at
+// most at the terminal speed √(g/k). One stack lands it at a round parachute's rate (the US Army
+// T-11's 19 ft/s) at the default gravity; each further stack multiplies the drag area (perks.js
+// slowFallArea). Drag goes with area over mass, so a smaller body (Shrink) drifts down slower
+// still. It acts only while descending in air, so a jump still rises and the jetpack still climbs
+// (Noita's ease is untouched): it just makes the way down a glide.
+const SLOW_FALL_DESCENT = 5.8 / CELL_METERS;            // cells/s (5.8 m/s): terminal descent with one stack
+const SLOW_FALL_K = GRAVITY / SLOW_FALL_DESCENT ** 2;   // 1/cell: the canopy's drag constant at one stack and the default gravity
 
 // ---- liquids ----
 const WADE_SHARE = 0.15;               // submerged share of the body that counts as "in" liquid
@@ -668,6 +677,13 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
 
     // gravity and buoyancy (Archimedes over the submerged share)
     v.y += (env2.buoy - (jet ? 0 : 1)) * grav * dt;   // the jet holds you up as Noita's does
+    // Slow Fall: the canopy's drag on the way down, taken implicitly (v' = v − k·v'·|v'|·dt, solved
+    // for v'), so it settles on √(g/k) exactly at any frame rate
+    const canopy = perks.slowFallArea;
+    if (canopy > 0 && v.y < 0 && !p.inLiquid) {
+      const kd = SLOW_FALL_K * canopy * dt;
+      v.y = (1 - Math.sqrt(1 - 4 * kd * v.y)) / (2 * kd);
+    }
     // drag in liquid, scaled by how much of the body is in it
     if (sub > 0 && env2.densL > 0) {
       const k = (VISCOUS_DRAG * env2.dragL + FORM_DRAG * env2.densL / BODY_DENS * v.length()) * sub;
