@@ -485,8 +485,9 @@ The world is much larger than what lives on the GPU. Its size is `WORLD` cells, 
     sweeps) are left alone (a per-column mask), so its edits win. The view draws what is built so far (the rest
     reads as empty), and redraws as chunks land; the levels, tops and shadows follow every 8 frames and at the end.
   - Sea level 0 means no open sea: the far view draws a rock plain beyond the world instead, at the median ground
-    height along the world's edge (the scene's `ground`), so it meets the edge; the GI's rays past the edge read
-    the same plain, and the cloud deck counts its height from it.
+    height along the world's edge (the scene's `ground`), so it meets the edge, and inside the world a ray that
+    meets nothing (an empty column down to the world's bottom) ends on the bottom, not on a sea; the GI's rays read
+    rock past the edge instead of sea, and the cloud deck counts its height from the plain.
   - Not yet: two live windows over the same scene (only tools make them) share its `prepare`d textures, so the
     first one's `dispose` takes them from the second.
 

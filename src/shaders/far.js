@@ -1390,13 +1390,20 @@ void main() {
   bool cut = false;
   float tHit = t0 < t1 ? farMarch(ro, rd, t0, t1, tw.x, tw.y, cut) : NO_HIT;
 
-  // the open sea beyond the world (and a march that ran out of steps over it);
-  // a world without one (uSea 0: world/scenes) has an open plain there, at its floor
+  // the open sea beyond the world (and a march that ran out of steps over it).
+  // A world without one (uSea 0: world/scenes) has an open plain beyond it at
+  // uFloor, and inside it a ray that met nothing reaches the world's bottom
+  // (rock below it: the summaries' floor), not a sea.
   bool plain = uSea <= 0.0;
   float level = plain ? uFloor : uSea;
   float tSea = rd.y < 0.0 && ro.y > level ? (level - ro.y) / rd.y : NO_HIT;
   vec3 ps = ro + rd * tSea;
   bool seaOut = any(lessThan(ps.xz, vec2(0.0))) || any(greaterThan(ps.xz, vec2(WORLD.xz)));
+  if (plain && !seaOut) {
+    tSea = rd.y < 0.0 && ro.y > 0.0 ? -ro.y / rd.y : NO_HIT;
+    ps = ro + rd * tSea;
+    seaOut = any(lessThan(ps.xz, vec2(0.0))) || any(greaterThan(ps.xz, vec2(WORLD.xz)));
+  }
   bool seaWin = tSea >= tw.x && tSea <= tw.y;
   bool ocean = tSea < NO_HIT && tSea < tHit && (seaOut || (tHit == NO_HIT && !seaWin));
 
