@@ -88,13 +88,14 @@ ${ISLAND_CELL_SRC}
 ${STRUCT_GLSL}
 int structureGround(ivec3 w) { return islandCell(w.x, w.y, w.z); }
 // World cell w's element at its spawn temperature and life, at rest, with a
-// colour seed hashed from its world position. Under snow the ground's solids
-// (but plant cover) are frozen near the snow line (genFrost).
+// colour seed hashed from its world position and, for moss and fungus, their
+// settled damp in the ctype (world/island/nature.js islandDamp). Under snow the
+// ground's solids (but plant cover) are frozen near the snow line (genFrost).
 void sceneCell(ivec3 w, out vec4 A, out vec4 B) {
   int id = structureCell(w, islandCell(w.x, w.y, w.z));
   float T = uGenSnow && KIND[id] == K_SOLID && id != E_PLANT ? mix(SPAWNT[id], SPAWNT[E_SNOW], genFrost(w.y)) : SPAWNT[id];
   float seed = float(seedWorld(w, uSceneSeed, GEN_SALT_CELL)) * UINT_TO_UNIT * SEED_MAX;
-  A = vec4(float(id), T, SPAWNLIFE[id], seed);
+  A = vec4(float(id), T, SPAWNLIFE[id], islandDamp(w.y, id) + seed);
   B = vec4(0.0);
 }
 `;

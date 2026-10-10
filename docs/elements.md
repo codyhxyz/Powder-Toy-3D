@@ -299,6 +299,10 @@ branches' work (`nt-status` stains, `nt-flask` drinking). Two mechanisms came wi
   first `DAMP_REACH` steps. Only ctype changes then, never the element, but a mat placed dry beside water may then grow.
 - Moss can't round an outside corner (a ridge's edge) using only face neighbours. It climbs inside corners and stops at
   the edge.
+- The island's generator (`src/world/island/nature.js`) can't see distances along a mat from one cell, so it keeps
+  every grower's settled damp a function of height: growers in the water table's top water row touch water, those up
+  to `DAMP_REACH - 2` above it stand on growers and touch no water, higher ones are dry; and damp moss only where no
+  air cell beside it touches bare rock across its axis. `tools/nature-check.mjs` checks every grower in the World.
 
 ### Phase rows and reactions
 

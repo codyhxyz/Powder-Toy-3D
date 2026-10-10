@@ -4,6 +4,7 @@ import { pcg, definesGLSL, jsConstants, compileShared } from './scenes/themedSha
 import { landforms } from './island/landforms.js';
 import { strata } from './island/strata.js';
 import { caves } from './island/caves.js';
+import { nature } from './island/nature.js';
 
 export { pcg };
 
@@ -303,7 +304,7 @@ float genWater(float x, float z, float h) { return islandWaterLevel(x, z, h); }
 
 // Per cell, from the baked columns: genColHeight, genColBand, genColMeadow and
 // genColWater (x, z) read world column (x, z)'s (texel fetches on the GPU, the
-// twin's cache on the CPU). Hooks: strata and caves (world/island), and the
+// twin's cache on the CPU). Hooks: strata, caves and nature (world/island), and the
 // landforms' cell-stage part (islandLakeClearance, which caves read).
 export const ISLAND_CELL_SRC = /* glsl */ `
 // The top of world column (x, z)'s ground: cells y < it are ground.
@@ -363,9 +364,10 @@ ${strata.src}
 
 ${caves.src}
 
-// The element at world cell (x, y, z): water below the column's water level,
-// its cover over its bedrock (strata), then carved (caves).
-int islandCell(int x, int y, int z) {
+// The element at world cell (x, y, z) before what lives and lies in the
+// caves: water below the column's water level, its cover over its bedrock
+// (strata), then carved (caves).
+int islandCellBare(int x, int y, int z) {
   float h = genColHeight(x, z), water = genColWater(x, z);
   int top = thRound(h);
   int id = E_EMPTY;
@@ -381,6 +383,12 @@ int islandCell(int x, int y, int z) {
   }
   return islandCave(x, y, z, h, water, id);
 }
+
+${nature.src}
+
+// The element at world cell (x, y, z): the island's (islandCellBare), then
+// gold, moss and fungus (world/island/nature.js).
+int islandCell(int x, int y, int z) { return islandNature(x, y, z, islandCellBare(x, y, z)); }
 
 // Can a tree's trunk stand on world column (x, z) (treesIn's ground check),
 // and in which zone: GEN_ZONE_PALM (a beach), _MID, _HIGH or _NONE. Its
@@ -408,7 +416,7 @@ export const COLUMN_MARGIN = GEN_INT.KNOCK_REACH;
 const tables = () => [
   ['GEN', { floats: GEN, ints: { ...GEN_INT, ...GEN_CODE, COVER_DEPTH }, salts: GEN_SALT }],
   ['GEN_TREE', { floats: treeGround() }],
-  ...[landforms, strata, caves].map((h) => [h.prefix, h.tables]),
+  ...[landforms, strata, caves, nature].map((h) => [h.prefix, h.tables]),
 ];
 // Every #define the source needs (scenes/island.js puts it before the source).
 export const islandDefinesGLSL = () => tables().map(([prefix, t]) => definesGLSL(prefix, t)).join('\n');

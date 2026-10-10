@@ -341,6 +341,16 @@ The world is much larger than what lives on the GPU. Its size is `WORLD` cells, 
     reachable from a mouth; 0.54 noise evaluations per world cell. `tools/caves-preview.mjs` (CPU: images,
     census, stability audit, `spots.json`) and `tools/caves-check.mjs` (GPU: stability, twin, seams, fill time,
     stills at those spots).
+  - **Nature** (`world/island/nature.js`, `int islandNature(int x, int y, int z, int id)` after the caves, on every
+    cell: `islandCell` is `islandNature` of `islandCellBare`, the island before it). Gold veins: rare steep lenses in
+    the basement (ROCK), patchy within. Placer nuggets: in the basement floor of cave lakes, each in a socket of
+    solid rock (four sides, 3 × 3 under). Moss: on cave walls near the water table where daylight gets in (open
+    ground at or below the cell within 8 columns, or a cenote's wall). Fungus: patches in the dark, at least 12 cells
+    under the ground. Growers carry their settled damp in the ctype as a function of height alone (`islandDamp`,
+    which sceneCell writes): a grower in the water table's top water row touches water; one up to `WET_RISE` above
+    it touches no water and stands on a grower; higher ones are dry. Damp moss goes only where no air cell beside it
+    touches bare rock across its axis. `tools/nature-check.mjs` (CPU) audits the whole world against the engine's
+    rules and finds spots for stills.
   - **Same world.** Against the two-path generator it replaced (origin/main 1e72afa), headless on the GPU: the
     box's Island preset (128³, with snow and frozen rock), the world's window at load and after 8 moves (slab
     fills and planted trees) and the complete far grid (2,097,152 texels) are bit-identical (0 cells differ in
