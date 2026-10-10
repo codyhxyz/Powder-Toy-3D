@@ -78,10 +78,14 @@ const JET_FLY_SPEED = 52 * PX;         // cells/s: horizontal speed while the je
 // constraint make the pendulum: a swing comes for free. Reeling, the winch
 // takes up the slack and the closing speed eases toward the reel speed the
 // Noita way, a share per frame (Titanfall 2's grapple: the line retracts and
-// draws the pilot to the hook), while the speed across the rope is kept, so
-// you swing as you're reeled in.
+// draws the pilot to the hook) and the speed across the rope is damped by the
+// same share Noita settles a run with, so the reel zips you in instead of
+// winding you into an orbit (angular momentum would spin a body up as the rope
+// shortens). Let go of the reel and the speed across the rope is yours again:
+// the swing.
 export const ROPE_REEL_SPEED = JET_RISE;   // cells/s (14 m/s): the fastest the body moves itself, the jet's climb
 const ROPE_EASE = JET_EASE;            // share of the gap to the reel speed closed per Noita frame (fly_speed_change_spd)
+const ROPE_SWAY_EASE = MOVE_EASE;      // share of the speed across the rope taken per Noita frame while reeling (accel_x)
 const ROPE_HAND = EYE_HEIGHT - 1;      // cells above the feet the rope pulls at: the hand holding it, shoulder high
 const ROPE_SLACK = 0.05;               // cells short of its length at which the rope counts as taut
 const ROPE_BAUMGARTE = 0.2;            // share of the overshoot past the length corrected per s·(1/dt): Box2D's b2_baumgarte
@@ -701,7 +705,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
   }
 
   // The rope's pull on velocity v this frame (see ROPE_*).
-  const ropeDir = new THREE.Vector3();
+  const ropeDir = new THREE.Vector3(), ropeCross = new THREE.Vector3();
   function pullRope(v, dt) {
     ropeDir.set(rope.anchor.x - p.pos.x, rope.anchor.y - p.pos.y - ROPE_HAND, rope.anchor.z - p.pos.z);
     const dist = ropeDir.length();
@@ -711,6 +715,9 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     if (rope.reel > 0 && !braced) {
       rope.length = Math.min(rope.length, dist);   // the winch takes up the slack
       const closing = v.dot(ropeDir);
+      // across the rope: damped toward still; along it: eased toward the reel speed
+      const across = ropeCross.copy(v).addScaledVector(ropeDir, -closing);
+      v.addScaledVector(across, -ease(ROPE_SWAY_EASE, dt));
       if (closing < rope.reel) v.addScaledVector(ropeDir, (rope.reel - closing) * ease(ROPE_EASE, dt));
     }
     if (!rope.hard) return;

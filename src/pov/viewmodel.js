@@ -65,6 +65,7 @@ export const HIT = {
   FLING: { kick: 0.6 },                                                                // a physgun fling
   PLACE: { kick: 0.3 },                                                                // a trowel block set down
   THROW: { kick: 0.4 },                                                                // a bomb thrown
+  HOOK: { kick: 0.5, punch: { pitch: [0.5 * DEG, 1 * DEG] } },                       // the hook's claw fired
   KICK: { punch: { pitch: [-1.5 * DEG, -0.5 * DEG], yaw: [-0.5 * DEG, 0.5 * DEG] } },   // the boot landed (kick.js): the view jolts, the hands stay put
 };
 const randIn = ([lo, hi] = [0, 0]) => lo + Math.random() * (hi - lo);

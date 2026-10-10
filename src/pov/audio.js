@@ -498,6 +498,11 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
       case 'physgun:fling': play('physFling'); loop('physHum', false); break;
       case 'physgun:release': play('physRelease'); loop('physHum', false); break;
       case 'physgun:blast': play('physFling'); break;
+      case 'hook:fire': play('swoosh', { at }); break;   // the claw leaves (hook.tool.js)
+      case 'hook:catch': play(family ?? 'thunk', { at, gain: TOOL_HIT_GAIN, rate }); break;   // it bit: what it bit into
+      case 'hook:tear': play('crunch', { at }); break;   // the anchor gave way
+      case 'hook:release': play('physRelease', { at: by ? at : null }); break;
+      case 'hook:dump': play('shovelDump', { at, gain }); break;   // a carried bite set down
       default: break;
     }
   });
