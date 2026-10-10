@@ -2,6 +2,31 @@
 // the shared prelude) and the CPU port that runs the dock tiles
 // (src/ui/tiles/engine.js) imports the same object, so the two can't drift.
 // Per-element numbers live in elements.js; these are the rules around them.
+import { CELL_M } from './scale.js';
+
+// The sim's clock (scale.js). It steps ~240 times a second (4 steps a frame at
+// 60 fps), and its default gravity (sim.js GRAVITY_DEFAULT) at that rate is
+// real gravity for cells far smaller than CELL_M, so falls play out
+// SIM_TIME_SCALE (~6.6) times faster than real ones. Real rates (a burning
+// fuse, a flame front) go onto the same clock: simSteps.
+export const NOMINAL_STEP_RATE = 240;   // steps/s
+export const SIM_GRAVITY = 0.025;       // cells/step²
+const G_EARTH = 9.81;                   // m/s²
+export const SIM_TIME_SCALE = Math.sqrt((SIM_GRAVITY * NOMINAL_STEP_RATE ** 2 * CELL_M) / G_EARTH);
+// sim steps that a process lasting this many real seconds takes
+export const simSteps = (s) => (s / SIM_TIME_SCALE) * NOMINAL_STEP_RATE;
+
+// Safety fuse (elements.js FUSE, react.js): ~1 cm/s, "30 seconds per foot"
+// (Bickford; Wikipedia, Safety fuse). One cell takes CELL_M / FUSE_SPEED = 30
+// real seconds: ~1,090 steps, ~4.5 s at 240 steps/s.
+const FUSE_SPEED = 0.01;                // m/s
+const FUSE_STEPS_PER_CELL = Math.round(simSteps(CELL_M / FUSE_SPEED));
+// A lit fuse cell's life runs down from 1 by FUSE_BURN a step; the front
+// passes into its fuse neighbours when it is down to FUSE_HANDOFF, and it
+// burns out at 0. The handoff comes late, so the smoke of a burnt cell trails
+// the front closely; FUSE_BURN is set so the handoff is FUSE_STEPS_PER_CELL steps in.
+const FUSE_HANDOFF = 0.05;
+
 export const PHYS = {
   AMBIENT: 20,               // °C, room temperature
   KELVIN: 273.15,            // °C to K
@@ -143,6 +168,9 @@ export const PHYS = {
   CLONE_RATE: 0.06,          // chance per step Clone fills a neighbouring empty cell
   SPAWN_DROP_V: -0.3,        // cells/step: spawned powders and liquids start falling
   // (Explosives' numbers, the chance a flame sets one off included, are their elements.js blast rows.)
+  FUSE_STEPS_PER_CELL,       // steps for a fuse's flame front to cross a cell (see above)
+  FUSE_HANDOFF,              // a lit fuse cell's life when the front passes on
+  FUSE_BURN: (1 - FUSE_HANDOFF) / FUSE_STEPS_PER_CELL,   // a lit fuse cell's life per step
   BURN_P: 0.02,              // pressure per step from burning
   // Oxygen (elements.js OXYGEN). Air is 20.95 % oxygen, so a cell of pure
   // oxygen holds O2_PER_AIR times the oxygen of a cell of air. A fuel burns as

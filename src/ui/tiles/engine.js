@@ -608,7 +608,7 @@ export class World {
         let pOn = KIND[id] === K.SOLID ? PHYS.P_MIN : P0, touchAir = false;
         for (let q = 0; q < 4; q++) {
           if (KIND[nid[q]] !== K.SOLID) pOn = Math.max(pOn, nP[q]);
-          if (nid[q] === E.EMPTY) touchAir = true;
+          if (nid[q] === E.EMPTY || nid[q] === E.OXYGEN || nid[q] === E.FIRE) touchAir = true;   // oxygen, or a flame drawing air in (react.js)
         }
         // an explosive that needs air goes off only touching it; set off by a hit or a
         // blast's pressure, it goes off rather than break
@@ -809,6 +809,22 @@ export class World {
             ctype = cloneOf === E.LAVA ? E.STONE : 0;
             vx = 0; vy = KIND[cloneOf] === K.GAS ? 0 : PHYS.SPAWN_DROP_V;
           }
+        } else if (id === E.FUSE) {
+          // safety fuse: burns with or without air at a steady speed; a flame lights it as gunpowder (react.js)
+          if (life >= 1) {
+            let light = T >= IGNITE[id] || (nFire > 0 && rnd() < BLAST_LIT[E.GUNPOWDER * 2]);
+            for (let q = 0; q < 4; q++)
+              light ||= (nid[q] === E.FUSE && nL[q] <= PHYS.FUSE_HANDOFF) || (!isGasLike(nid[q]) && nT[q] >= IGNITE[id]);
+            if (light) life = 1 - PHYS.FUSE_BURN;
+          } else {
+            // at the fuse's end, once the front reaches it, it spits burning
+            // powder as hot as gunpowder burns; burnt out, smoke (at the end, flame)
+            let end = true;
+            for (let q = 0; q < 4; q++) end &&= !(nid[q] === E.FUSE && nL[q] > life);
+            life -= PHYS.FUSE_BURN;
+            if (end && life <= PHYS.FUSE_HANDOFF) T = Math.max(T, BLAST[E.GUNPOWDER * 4 + 1]);
+            if (life <= 0) { out = end ? E.FIRE : E.SMOKE; reset = true; }
+          }
         } else if (id === E.OXYGEN) {
           // flames lick into oxygen as into air, more often and hotter (react.js)
           if (nBurning > 0 && !smothered && rnd() < PHYS.FLAME_SPREAD * PHYS.O2_PER_AIR * nBurning) {
@@ -904,7 +920,7 @@ export class World {
             ctype = ctypeOf(out, OF[id * 4 + PH.BLAST], id);
             reset = true; T = BLAST[id * 4 + 1]; P += BLAST[id * 4];
           }
-        } else if (!reacted && out === id && IGNITE[id] > 0) {
+        } else if (!reacted && out === id && IGNITE[id] > 0 && id !== E.FUSE) {   // a fuse burns by its own rule
           if (T >= IGNITE[id] && (nAir > 0 || nFire > 0 || nOxy > 0) && !smothered) {
             // as fast as oxygen reaches it, and hotter with more (react.js)
             life -= BURNRATE[id] * oxy;

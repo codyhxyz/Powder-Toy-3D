@@ -97,6 +97,8 @@ bool inertNear(ivec3 c, vec4 a, vec4 nA[6]) {
     if (rx > 0 && rxGate((rx - 1) >> 1, T, n.y)) return false;
     if (j == E_VOID && k != K_SOLID) return false;   // void drains it (react.js)
     if (j == E_SINGULARITY && id != E_WALL && id != E_VOID) return false;   // it may be swallowed (react.js singEats)
+    // a fuse lights from a lit fuse beside it, or a hot touch (react.js)
+    if (id == E_FUSE && ((j == E_FUSE && n.z < 1.0) || (!isGasLike(j) && n.y >= IGNITE[id]))) return false;
     // a powder or liquid: nowhere to fall, nor for a liquid to flow sideways
     bool way = FACES[i].y < 0 || (k == K_LIQUID && FACES[i].y == 0);
     if (k != K_SOLID && way && canMove(id, j, d, densityOf(j, n.y), FACES[i].y < 0 ? 0 : 2)) return false;
