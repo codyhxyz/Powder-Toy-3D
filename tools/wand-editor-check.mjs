@@ -33,6 +33,11 @@ try {
   if (!serverLog.includes(url)) throw new Error(`Dev server did not start: ${serverLog}`);
   browser = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist', '--disable-features=LocalNetworkAccessChecks'] });
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  // Account quota is unrelated to local wand gameplay; no relay is started.
+  await page.route('http://127.0.0.1:8787/ai/quota', (route) => route.fulfill({
+    contentType: 'application/json', headers: { 'access-control-allow-origin': '*' },
+    body: JSON.stringify({ tier: 'anonymous', limit: 0, used: 0, remaining: 0, providers: [] }),
+  }));
   const errors = [];
   page.on('pageerror', (error) => errors.push(String(error)));
   page.on('console', (msg) => { if (msg.type() === 'error') errors.push(msg.text()); });
@@ -132,9 +137,16 @@ try {
   await page.getByLabel('Wand name').fill('Cancelled change');
   await page.keyboard.press('Escape');
   assert.equal(await page.evaluate(() => window.__app.pov.wandRuntime.definition.name), 'UI check wand');
+  const afterEditorCast = await page.evaluate(() => {
+    const p = window.__app.pov, before = p.wandRuntime.stats.casts;
+    p.toolbelt.update({ ...p.ctx, dt: 0.05, stepsPerFrame: 1, primary: true, wheel: 0 });
+    const hand = window.__app.scene.getObjectByName('held-wand');
+    return { fired: p.wandRuntime.stats.casts > before, held: !!hand?.visible };
+  });
+  assert.deepEqual(afterEditorCast, { fired: true, held: true }, 'closing the editor must resume a visible, usable wand');
   const teleport = await page.evaluate(() => {
     const p = window.__app.pov.player;
-    p.hurt(10, 'check'); p.jetFuel = 0.37;
+    p.hurt(0.2, 'check'); p.jetFuel = 0.37;
     const health = p.health, breath = p.breath;
     const feet = p.pos.clone().addScalar(1);
     const ok = p.teleport(feet);

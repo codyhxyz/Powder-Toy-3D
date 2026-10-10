@@ -5,6 +5,8 @@ import { createBallistics } from '../ballistics.js';
 import { PRESETS } from '../wands/catalog.js';
 import { createWandRuntime } from '../wands/runtime.js';
 import { createWandEditor } from '../wands/editor.js';
+import * as THREE from 'three';
+import { viewmodelRig, heldMaterial } from '../viewmodel.js';
 
 export { emptyLoads };
 
@@ -32,10 +34,23 @@ export function createToolbelt(env) {
   const hotbar = createHotbar({ onSelect: select, onChoose: choose, onEdit: () => editor.show() });
   const transfer = sharedTransfer(env);
   const wandRuntime = createWandRuntime({ ...env, transfer });
+  const wandRig = viewmodelRig(env);
+  const wandHand = wandRig.hand([0.5, -0.4, -1.2]);
+  wandHand.name = 'held-wand';
+  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.075, 1.2, 8), heldMaterial('#674426'));
+  shaft.rotation.x = Math.PI / 2;
+  shaft.position.z = -0.25;
+  const tip = new THREE.Mesh(new THREE.IcosahedronGeometry(0.14, 0), new THREE.MeshBasicMaterial({ color: '#efcf79' }));
+  tip.position.z = -0.9;
+  wandHand.add(shaft, tip);
   let wandSelected = false, custom = null;
   const editor = createWandEditor({
     runtime: wandRuntime, toast: (text) => env.hud?.toast?.(text),
-    onOpenChange(open) { env.onEditorOpenChange?.(open); if (open) deselect(); },
+    onOpenChange(open) {
+      env.onEditorOpenChange?.(open);
+      if (open) deselect();
+      else if (wandSelected && wandRuntime.definition) wandRuntime.equip(wandRuntime.definition);
+    },
     onSave(def) {
       custom = { ...def, slot: def.slot ?? selected + 1, name: def.name.trim() || 'Custom wand' };
       selected = Math.max(0, Math.min(HOTBAR_SLOTS - 1, (def.slot ?? selected + 1) - 1));
@@ -106,6 +121,7 @@ export function createToolbelt(env) {
     })));
   }
   function deselect() {
+    wandHand.visible = false;
     if (wandSelected) wandRuntime.deselect();
     else tools[selected]?.inst.deselect?.();
   }
@@ -168,7 +184,13 @@ export function createToolbelt(env) {
       lastCtx = ctx;
       const cur = wandSelected ? null : tools[selected]?.inst;
       if (!editor.open && ctx.wheel && !cur?.wantsWheel?.()) select(selected + Math.sign(ctx.wheel));
-      if (wandSelected && !editor.open) wandRuntime.update(ctx);
+      if (wandSelected && !editor.open) {
+        wandHand.visible = true;
+        wandRig.update(ctx);
+        const casts = wandRuntime.stats.casts;
+        wandRuntime.update(ctx);
+        if (wandRuntime.stats.casts > casts) wandRig.kick(0.4);
+      }
       else {
         wandRuntime.tick(ctx);
         if (!editor.open) tools[selected]?.inst.update(ctx);
@@ -182,6 +204,7 @@ export function createToolbelt(env) {
     setVisible(v) {
       hotbar.setVisible(v);
       shown = v;
+      if (v && wandSelected && wandRuntime.definition) wandRuntime.equip(wandRuntime.definition);
       if (v && raf) { cancelAnimationFrame(raf); raf = 0; }
       if (!v && (ballistics.count || wandRuntime.active) && !raf) { rafAt = 0; raf = requestAnimationFrame(drive); }
       if (!v) { editor.close(); deselect(); readout = null; }
@@ -194,6 +217,8 @@ export function createToolbelt(env) {
       if (raf) cancelAnimationFrame(raf);
       ballistics.dispose();
       editor.dispose(); wandRuntime.dispose();
+      wandHand.removeFromParent();
+      for (const mesh of [shaft, tip]) { mesh.geometry.dispose(); mesh.material.dispose(); }
       tools.forEach((t) => { t?.inst.deselect?.(); t?.inst.dispose?.(); });
       hotbar.dispose();
     },
