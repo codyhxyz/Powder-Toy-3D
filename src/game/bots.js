@@ -38,9 +38,16 @@ const FAIL_COOLDOWN_S = 4;           // s an objective that failed (no way there
 const ROAM_STEER = 0.3;              // move share wandering inside a zone
 const ZONE_RETURN = 0.6;             // share of the radius it wanders out to before it steers back in
 const ARRIVE = 2;                    // cells: near enough to a point (not a zone)
+// The walk's map (ai/nav.js) is one layer, the top of every column: a point
+// under a roof or on a shrine's roof can have no path to it. A zone is walked to
+// at a point on its ring toward the bot (open ground more often than its middle),
+// and a walk that finds no way is tried again from other bearings before it fails.
+const APPROACH_TRIES = 4;            // bearings tried round a point
+const APPROACH_R = 6;                // cells: how far round a point (not a zone) the other bearings are
 
 export class ObjectiveEvaluator extends GoalEvaluator {
-  constructor(objective) { super(); this.objective = objective; }
+  // objective(bot) → plan; failed(plan): no way there from any bearing (the game picks something else)
+  constructor(objective, failed = () => {}) { super(); this.objective = objective; this.failed = failed; }
   calculateDesirability(a) {
     if (!a.ready('OBJECTIVE')) return 0;
     const p = this.objective(a);
@@ -51,14 +58,14 @@ export class ObjectiveEvaluator extends GoalEvaluator {
     const cur = a.brain.currentSubgoal();
     if (cur instanceof ObjectiveGoal && cur.same(a.plan)) return;
     a.brain.clearSubgoals();
-    a.brain.addSubgoal(new ObjectiveGoal(a, a.plan, this.objective));
+    a.brain.addSubgoal(new ObjectiveGoal(a, a.plan, this.objective, this.failed));
   }
 }
 
 // Go to the objective's point and stay there (a zone) or arrive (a point). It
 // follows the point when it moves (a carrier, a dropped flag).
 export class ObjectiveGoal extends CompositeGoal {
-  constructor(a, plan, objective) { super(a); this.plan = plan; this.objective = objective; this.label = `Objective:${plan.kind}`; }
+  constructor(a, plan, objective, failed) { super(a); this.plan = plan; this.objective = objective; this.onFail = failed; this.label = `Objective:${plan.kind}`; this.tries = 0; }
   same(p) { return p && p.kind === this.plan.kind && hdist(p.at, this.anchor ?? this.plan.at) < REPLAN; }
   activate() {
     const a = this.owner;
@@ -67,7 +74,15 @@ export class ObjectiveGoal extends CompositeGoal {
     const { at, r } = this.plan;
     this.anchor = { x: at.x, y: at.y, z: at.z };   // where the point was when it set off
     this.goTo = null;
-    if (hdist(a.feet, at) > (r || ARRIVE)) this.addSubgoal(this.goTo = new GoToGoal(a, { x: at.x, y: at.y, z: at.z }, r ? r * ZONE_RETURN : ARRIVE));
+    if (hdist(a.feet, at) > (r || ARRIVE)) this.addSubgoal(this.goTo = new GoToGoal(a, this.approach(a), r ? r * ZONE_RETURN / 2 : ARRIVE));
+  }
+  // where to walk: a zone's ring toward the bot (turned further round on each retry), a point itself (then round it)
+  approach(a) {
+    const { at, r } = this.plan;
+    if (!r && !this.tries) return { x: at.x, y: at.y, z: at.z };
+    const rad = r ? r * ZONE_RETURN : APPROACH_R;
+    const toward = Math.atan2(a.feet.z - at.z, a.feet.x - at.x) + (this.tries * 2 * Math.PI) / APPROACH_TRIES;
+    return { x: at.x + Math.cos(toward) * rad, y: at.y, z: at.z + Math.sin(toward) * rad };
   }
   execute() {
     const a = this.owner;
@@ -80,7 +95,7 @@ export class ObjectiveGoal extends CompositeGoal {
       this.plan = p;
       this.anchor = { x: p.at.x, y: p.at.y, z: p.at.z };
       if (this.goTo && this.hasSubgoals()) {
-        Object.assign(this.goTo.dest, this.anchor);
+        Object.assign(this.goTo.dest, this.approach(a));
         this.goTo.best = Infinity; this.goTo.bestAt = this.goTo.t;   // progress counts toward the new spot
       }
       else { this.status = Goal.STATUS.INACTIVE; return; }
@@ -88,7 +103,12 @@ export class ObjectiveGoal extends CompositeGoal {
     this.plan = p;
     if (this.hasSubgoals()) {
       const s = this.executeSubgoals();
-      if (s === Goal.STATUS.FAILED) { a.cooldown('OBJECTIVE', FAIL_COOLDOWN_S); this.status = Goal.STATUS.FAILED; }
+      if (s === Goal.STATUS.FAILED) {
+        if (++this.tries < APPROACH_TRIES) { this.status = Goal.STATUS.INACTIVE; return; }   // another bearing
+        a.cooldown('OBJECTIVE', FAIL_COOLDOWN_S);
+        this.status = Goal.STATUS.FAILED;
+        this.onFail?.(this.plan);
+      }
       else if (p.kind !== 'carry') takeAimAndShoot(a);   // shooting on the way (a carrier only runs: Halo's flag melee)
       return;
     }

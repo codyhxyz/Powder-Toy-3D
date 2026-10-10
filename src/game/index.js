@@ -37,6 +37,7 @@ const ROLES = ['attack', 'defend'];  // CTF roles, dealt in turn (Raven's / Quak
 const FLAG_LIFT = 2;                 // cells above a carrier's feet the flag rides
 const SPAWN_LIFT_MAX = 40;           // cells a spawn rises at most to clear what has fallen on its point (a heap of sand)
 const BOT_MS_EASE = 0.05;            // the bots' CPU time per frame is shown as this running average (checks)
+const ROAM_SPAWN_R = 10;             // cells: an enemy spawn, as somewhere to roam to, is a zone this wide
 const ROAM_S = 30;                   // s a Slayer bot heads for one stretch of open ground before the next
 const other = (t) => (t === 'red' ? 'blue' : 'red');
 const hdist = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
@@ -76,7 +77,7 @@ export function createGame(shell) {
   const carrying = (e) => !!flags && Object.values(flags).some((f) => f.carrier === e.id);
 
   function entry(id, name, team, bot = null) {
-    const e = { id, name, team, bot, kills: 0, deaths: 0, score: 0, role: null, wasDead: false, protect: 0, lastHit: null };
+    const e = { id, name, team, bot, kills: 0, deaths: 0, score: 0, role: null, wasDead: false, protect: 0, lastHit: null, roam: 0 };
     roster.set(id, e);
     return e;
   }
@@ -162,7 +163,7 @@ export function createGame(shell) {
     });
     e = entry(n.id, name, team, n);
     n.agent.radar = R.RADAR;
-    n.agent.brain.addEvaluator(new ObjectiveEvaluator(() => objectiveFor(e)));
+    n.agent.brain.addEvaluator(new ObjectiveEvaluator(() => objectiveFor(e), (plan) => { if (plan.kind === 'roam') e.roam++; }));
     shell.scene.add(n.root);
     n.bind(app.getVolume(), sim().g);
     n.compile(shell.renderer, shell.camera, shell.scene);
@@ -454,8 +455,10 @@ export function createGame(shell) {
     if (!running || !e.team) return null;
     const b = bodyOf(e);
     if (mode === 'slayer' || (mode === 'infection' && e.team === R.HUMANS)) {
-      // go looking: the hills in turn (the map's open ground), a new one every so often
-      const h = layout.hills[(Math.floor(time / ROAM_S) + e.kills) % layout.hills.length];
+      // go looking: the hills in turn (the map's open ground) and the enemy's spawns, a new one every
+      // so often, or as soon as there's no way to the last
+      const spots = [...layout.hills, ...(layout.spawns[other(e.team)] ?? []).slice(0, 1).map(([x, y, z]) => [x, y, z, ROAM_SPAWN_R])];
+      const h = spots[(Math.floor(time / ROAM_S) + e.kills + e.roam) % spots.length];
       return { kind: 'roam', at: { x: h[0], y: h[1], z: h[2] }, r: h[3], want: WANT.roam };
     }
     if (mode === 'koth') {
