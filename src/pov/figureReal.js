@@ -5,6 +5,7 @@ import { BODY_HEIGHT } from './constants.js';
 import { buildGarb, GARB_COLORS } from './garb.js';
 import {
   createFigure, createContactShadow, JET_NOZZLES, figureFrag, figureSkinnedVert, FIGURE_ALBEDO, FIGURE_HEAT_GLOW,
+  CROUCH_POSE,
 } from './figure.js';
 
 // The realistic body: Quaternius's mannequin (Universal Animation Library,
@@ -38,6 +39,12 @@ const TREAD_SPEED = 1;                   // cells/s: in deep liquid, slower than
 const SWIM_FULL_SPEED = 2.5;             // ...faster than this swims (horizontal); blended between
 const SWIM_RATE_MIN = 0.6;               // the swim clip plays at least this fast (arms keep stroking at a crawl)
 const SWIM_RATE_MAX = 1.5;               // and at most this fast
+// Crouching: the file has no crouch clip, so the legs fold on top of whatever
+// plays (figure.js CROUCH_POSE), each bone turned about the body's right axis
+// in world space (its own axes don't matter), and the pelvis comes down by what
+// the bend takes off the legs, so the feet stay on the ground.
+const CROUCH_BONES = ['pelvis', 'spine_01', 'neck_01', 'thigh_l', 'thigh_r', 'calf_l', 'calf_r', 'foot_l', 'foot_r'];
+const CROUCH_RATE = 14;                  // 1/s: the bend follows the body's crouch (figure.js POSE_RATE)
 
 const smooth01 = (x) => { const t = Math.min(Math.max(x, 0), 1); return t * t * (3 - 2 * t); };
 const approach = (rate, dt) => 1 - Math.exp(-rate * dt);
@@ -126,6 +133,46 @@ function createRealFigure(gltf) {
   let mats = [], boundTo = null, compiled = null;
   let facing = 0, gaitPhase = 0, wasDead = false;
 
+  // the crouch's bend, on top of the clips
+  const bones = Object.fromEntries(CROUCH_BONES.map((n) => [n, model.getObjectByName(n)]));
+  const canCrouch = CROUCH_BONES.every((n) => bones[n]);
+  const clipPose = CROUCH_BONES.map(() => ({ q: new THREE.Quaternion(), p: new THREE.Vector3() }));
+  let bent = false, bend = 0;
+  const qa = new THREE.Quaternion(), qb = new THREE.Quaternion(), right = new THREE.Vector3();
+  const va = new THREE.Vector3(), vb = new THREE.Vector3();
+  // turn a bone by `angle` about the body's right axis, in world space
+  function turn(bone, angle) {
+    bone.parent.getWorldQuaternion(qa);
+    qb.setFromAxisAngle(right, angle);
+    bone.quaternion.premultiply(qa.clone().invert().multiply(qb).multiply(qa));
+  }
+  const length = (a, b) => a.getWorldPosition(va).distanceTo(b.getWorldPosition(vb));
+  function crouchBend(c) {
+    // the clip pose back first: a bone without a track would keep last frame's bend
+    if (bent) CROUCH_BONES.forEach((n, i) => { bones[n].quaternion.copy(clipPose[i].q); bones[n].position.copy(clipPose[i].p); });
+    bent = false;
+    if (!canCrouch || c < 1e-3) return;
+    CROUCH_BONES.forEach((n, i) => { clipPose[i].q.copy(bones[n].quaternion); clipPose[i].p.copy(bones[n].position); });
+    bent = true;
+    root.updateWorldMatrix(true, true);
+    right.set(1, 0, 0).applyQuaternion(root.getWorldQuaternion(qa));   // the body faces −z
+    const hip = CROUCH_POSE.hip * c, knee = CROUCH_POSE.knee * c;
+    // the pelvis down by what the bend takes off a straight leg
+    const thigh = length(bones.thigh_l, bones.calf_l), shin = length(bones.calf_l, bones.foot_l);
+    const drop = thigh * (1 - Math.cos(hip)) + shin * (1 - Math.cos(hip + knee));
+    const pelvis = bones.pelvis;
+    pelvis.getWorldPosition(va).y -= drop;
+    pelvis.parent.updateWorldMatrix(true, false);
+    pelvis.position.copy(pelvis.parent.worldToLocal(va));
+    turn(bones.spine_01, -CROUCH_POSE.lean * c);   // forward is a negative turn for a bone pointing up
+    turn(bones.neck_01, CROUCH_POSE.head * c);
+    for (const side of ['l', 'r']) {
+      turn(bones[`thigh_${side}`], hip);           // and a positive one for a bone pointing down
+      turn(bones[`calf_${side}`], knee);
+      turn(bones[`foot_${side}`], -(hip + knee));  // the sole stays flat
+    }
+  }
+
   // weights over the gait clips for a ground speed: linear between neighbours
   function gaitWeights(speed) {
     for (const k of GAIT) gaitW[k] = 0;
@@ -201,7 +248,10 @@ function createRealFigure(gltf) {
       actions.swim.timeScale = THREE.MathUtils.clamp(s.speedH / clipSpeed.swim, SWIM_RATE_MIN, SWIM_RATE_MAX);
       actions.tread.setEffectiveWeight(w.tread);
       death.setEffectiveWeight(w.death);
+      crouchBend(0);   // the clips' pose, for the mixer to write over
       mixer.update(dt);
+      bend += ((s.dead ? 0 : (s.crouch ?? 0) * w.ground) - bend) * approach(CROUCH_RATE, dt);
+      crouchBend(bend);
       contact.visible = s.onGround && !s.dead;
     },
     setVisible(v) { root.visible = v; },

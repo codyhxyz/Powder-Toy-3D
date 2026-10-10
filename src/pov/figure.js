@@ -61,6 +61,20 @@ const WALK_KNEE = 0.7, RUN_KNEE = 1.5;   // knee bend on the forward swing
 const ARM_SWING = 0.75;                  // shoulder swing per unit hip swing (opposite leg)
 const RUN_LEAN = 0.22;                   // forward lean at a run
 const STEP_BOB = 0.12;                   // cells the pelvis drops at mid-stance
+// Crouched (the body's crouch share, s.crouch: player.js): a deep squat with
+// the torso over the knees and the head up, low enough that the stickman fits
+// the crouched body's half height. The pelvis drops by what the bend takes off
+// the legs, so the feet stay down. The realistic body bends the same.
+export const CROUCH_POSE = {
+  hip: 1.45,                             // rad, thighs forward
+  knee: -2.6,                            // rad, knees bent back
+  lean: 0.8,                             // rad, torso forward
+  head: 0.6,                             // rad, the head tipped back up to look ahead
+};
+const CROUCH_WALK = 0.4;                 // share of the walk's leg swing kept, crouched
+// how far the hips come down for a bend, with thigh and shin each half of hipY
+export const crouchDrop = (hipY, c) =>
+  hipY * (1 - (Math.cos(CROUCH_POSE.hip * c) + Math.cos((CROUCH_POSE.hip + CROUCH_POSE.knee) * c)) / 2);
 const IDLE_BREATH = 0.035;               // shoulder sway at rest
 const BREATH_HZ = 0.3;
 const SWIM_SPEED = 2;                    // cells/s: faster than this in liquid swims (horizontal), slower treads water
@@ -283,7 +297,8 @@ export function createFigure(build = buildStick) {
       return renderer.compileAsync(root, camera, scene).catch(() => {});
     },
     // s = { feet (world), scale, yaw, worldToGrid (Matrix4), speedH (cells/s), velY (cells/s),
-    //       onGround, inLiquid, dead, deadTime (s), heat (0..1), jetting, status (status.js set: its stains tint the body) }
+    //       onGround, inLiquid, dead, deadTime (s), heat (0..1), jetting, status (status.js set: its stains tint the body),
+    //       crouch (0 standing … 1 crouched) }
     update(dt, s) {
       clock += dt;
       root.position.copy(s.feet);
@@ -314,17 +329,27 @@ export function createFigure(build = buildStick) {
       const swing = Math.sin(phase) * amt * (WALK_HIP + (RUN_HIP - WALK_HIP) * run);
       const knee = WALK_KNEE + (RUN_KNEE - WALK_KNEE) * run;
       const breath = Math.sin(clock * 2 * Math.PI * BREATH_HZ) * IDLE_BREATH * (1 - amt);
-      setTarget('hipL', swing, w.walk);
-      setTarget('hipR', -swing, w.walk);
-      setTarget('knL', -knee * amt * Math.max(0, Math.cos(phase)), w.walk);
-      setTarget('knR', -knee * amt * Math.max(0, -Math.cos(phase)), w.walk);
+      // crouched (on the ground): the squat, with a shorter stride on top of it
+      const crouched = s.dead ? 0 : (s.crouch ?? 0) * w.walk;
+      const legs = w.walk * (1 - crouched * (1 - CROUCH_WALK));
+      setTarget('hipL', CROUCH_POSE.hip, crouched);
+      setTarget('hipR', CROUCH_POSE.hip, crouched);
+      setTarget('knL', CROUCH_POSE.knee, crouched);
+      setTarget('knR', CROUCH_POSE.knee, crouched);
+      setTarget('lean', CROUCH_POSE.lean, crouched);
+      setTarget('headPitch', CROUCH_POSE.head, crouched);
+      setTarget('drop', crouchDrop(HIP, 1), crouched);
+      setTarget('hipL', swing, legs);
+      setTarget('hipR', -swing, legs);
+      setTarget('knL', -knee * amt * Math.max(0, Math.cos(phase)), legs);
+      setTarget('knR', -knee * amt * Math.max(0, -Math.cos(phase)), legs);
       setTarget('shL', -swing * ARM_SWING + breath, w.walk);
       setTarget('shR', swing * ARM_SWING + breath, w.walk);
       setTarget('elL', 0.25 + 0.9 * run, w.walk);
       setTarget('elR', 0.25 + 0.9 * run, w.walk);
       setTarget('armOut', 0.08, w.walk);
       setTarget('lean', RUN_LEAN * run, w.walk);
-      setTarget('drop', STEP_BOB * amt * Math.abs(Math.cos(phase)), w.walk);
+      setTarget('drop', STEP_BOB * amt * Math.abs(Math.cos(phase)), legs);
       // airborne: knees tucked, arms out, more so falling
       const falling = smooth01(-s.velY / RUN_SPEED);
       setTarget('hipL', 0.7 - 0.4 * falling, w.air);

@@ -50,8 +50,8 @@ const WHEEL_GESTURE_GAP_MS = 180;       // ms without wheel events that ends a g
 const WHEEL_LINE_PX = 40;               // px per line, for wheels that report lines
 const WHEEL_PAGE_PX = 800;              // px per page
 
-// Keys held down: movement, the crouch key (C, PUBG's and Apex's; so far it
-// swims down in liquid) and the zoom (Z, zoom.js).
+// Keys held down: movement, the crouch (C held, PUBG's and Apex's key: Source's
+// duck in player.js; in liquid it swims down) and the zoom (Z, zoom.js).
 const CROUCH_KEY = 'KeyC';
 const MOVE_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ShiftLeft', 'ShiftRight', CROUCH_KEY, ZOOM_KEY]);
 // First or third person: Minecraft's F5 (its page reload is held back)
@@ -442,7 +442,7 @@ export function createPov(app) {
     aim: { valid: false, cell: new THREE.Vector3(), face: 0, id: -1, T: 0, P: 0, dist: Infinity },
     player: { pos: null, vel: null, onGround: false, inLiquid: false, applyImpulse: (dv) => player?.applyImpulse(dv), holdPogo: () => player?.holdPogo(), body: null },   // body: the player itself (a drink acts on it: ingest.js)
   };
-  const input = { move: { x: 0, z: 0 }, jump: false, sprint: false, down: false };
+  const input = { move: { x: 0, z: 0 }, jump: false, sprint: false, down: false, crouch: false };
   let sprintOn = false;     // Sprint: Toggle's state
   const vEye = new THREE.Vector3(), vFeet = new THREE.Vector3(), vA = new THREE.Vector3(), vB = new THREE.Vector3();
   const closest = new THREE.Vector3();
@@ -451,7 +451,7 @@ export function createPov(app) {
 
   function readInput() {
     input.move.x = input.move.z = 0;
-    input.jump = input.sprint = input.down = false;
+    input.jump = input.sprint = input.down = input.crouch = false;
     const d = vehicles.drive;
     d.throttle = d.steer = 0; d.brake = d.boost = false;
     if (mode !== 'on' || player.dead || app.isTyping()) return;
@@ -473,7 +473,7 @@ export function createPov(app) {
     }
     input.jump = keys.has('Space');
     input.sprint = app.settings.sprintMode === 'toggle' ? sprintOn : keys.has('ShiftLeft') || keys.has('ShiftRight');
-    input.down = keys.has(CROUCH_KEY);
+    input.crouch = input.down = keys.has(CROUCH_KEY);   // crouched on land, swimming down in liquid
   }
 
   function update(dt) {
@@ -569,7 +569,7 @@ export function createPov(app) {
     toWorld(player.pos, vFeet);
     const pose = povCam.update({
       dt, eye: vEye, feet: vFeet, scale, speedH,
-      onGround: player.onGround, inLiquid: player.inLiquid, sprinting: input.sprint,
+      onGround: player.onGround, inLiquid: player.inLiquid, sprinting: input.sprint && !player.crouch,
       dead: deadSeen, deadTime, box, shake,
     });
     if (pose.footfall && mode === 'on' && !deadSeen) povEvents.emit('player:step', { speed: speedH, inLiquid: player.inLiquid });
@@ -598,7 +598,7 @@ export function createPov(app) {
       // Shrink: the figure at the body's size, its gait timed at the plain figure's speed for the size
       feet: vFeet, scale: scale * player.size, yaw: povCam.look.yaw, worldToGrid,
       speedH: speedH / player.size, velY: player.vel.y, onGround: player.onGround, inLiquid: player.inLiquid, headInLiquid: player.headInLiquid,
-      dead: deadSeen, deadTime, heat: player.feel?.heat ?? 0, jetting: player.jetting, status: player.status, kick: player.kickPose,
+      dead: deadSeen, deadTime, heat: player.feel?.heat ?? 0, jetting: player.jetting, status: player.status, kick: player.kickPose, crouch: player.crouch,
     });
     if (player.jetting && mode === 'on') vfx?.jet(player.pos, povCam.look.yaw, dt, figure.nozzles);
     // flames licking off burning bodies (status.js BURNING), the player's and the NPCs'
