@@ -497,7 +497,9 @@ vec3 crystalLook(inout Mat m, int id, vec3 p, vec3 n, float T, float fp) {
     int ax = (k + 1 + (j >> 1)) % 3;
     ivec3 nb = cell;
     nb[ax] += (j & 1) == 0 ? -1 : 1;
+#ifndef LOOK_NO_STATE
     if (!outside(nb) && eid(fetchA(nb)) == id) continue;   // the crystal carries on that way: no edge
+#endif
     float d = (j & 1) == 0 ? f[ax] : 1.0 - f[ax];
     edge += exp(-max(d, 0.0) / CRYSTAL_EDGE_W);
     nEdge += 1.0;

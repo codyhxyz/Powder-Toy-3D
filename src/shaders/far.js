@@ -1038,6 +1038,7 @@ vec3 farHazePremul(vec3 col, float alpha, vec3 eye, vec3 p) {
 
 export const farFrag = (g, L) => /* glsl */ `
 ${lib(g)}
+#define LOOK_NO_STATE   // no window state here (tA is the volume's): looks skip their neighbour lookups
 ${surfaceGLSL}
 ${liquidGLSL}
 ${farLayoutGLSL(L)}
