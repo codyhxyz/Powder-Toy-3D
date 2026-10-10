@@ -131,6 +131,77 @@ export const PHYS = {
   ASH_SHARE: 0.5,            // share of burnt-out cells that leave ash
   BURNT_MIN_T: 600,          // °C, a burnt-out cell is at least this hot
 
+  // Dust clouds (react.js; elements.js DUST). Settled dust smoulders through
+  // the ordinary burning fields; suspended in air it goes off as one, as a
+  // grain-silo or coal-mine explosion does. A dust cloud explodes between its
+  // lean and rich limits: the minimum explosible concentration (MEC, ~50 g/m³
+  // for flour and ~60-100 for coal; Eckhoff, Dust Explosions in the Process
+  // Industries, 2003) below which a burning grain can't heat the next one to
+  // ignition, and a rich limit past which there isn't the air to burn it. A
+  // cell holds ~15 kg of flour (0.027 m³ at 0.55 g/cm³), hundreds of times the
+  // MEC over its own volume, so concentration can't be read cell by cell: a
+  // dust cell stands for a puff, its dust faces for the fuel beside it (lean
+  // side), its air faces for the air it mixes with (rich side).
+  //   suspended  blown or falling faster than DUST_LIFT_V (dust's own fall
+  //              settles faster: elements.js DUST drag), not sliding down a
+  //              heap or toppling off its edge
+  //   lean       fewer than DUST_MEC_NB dust faces: a lone mote just burns
+  //              (ignite/burnRate)
+  //   rich       fewer than DUST_RICH_AIR air faces: a heap's flat top, or a
+  //              falling clump's core, which smoulders until a blast breaks
+  //              it up
+  // The flame runs from dust cell to touching dust cell, so a cloud carries it
+  // only while its cells touch in one network: in a random cloud that needs
+  // ~31% of the cells (site percolation on a cubic lattice, 0.3116), the
+  // MEC in cells. (A side-on slice, the dock tiles, needs 59%: a square lattice.)
+  // cells/step: ~7 m/s at 72 m/s per cell/step, a gust that lifts deposited
+  // dust (fine powders are entrained by winds of ~5-15 m/s), well over a grain
+  // sliding down a heap or landing on it, and under dust's falling speed
+  DUST_LIFT_V: 0.1,
+  DUST_MEC_NB: 1,            // dust faces a suspended dust cell needs to go off with the cloud
+  DUST_RICH_AIR: 2,          // air faces it needs
+  // Chance per step a flame touching suspended dust sets it off: the flame
+  // front. Turbulent dust flames run at ~10-100 m/s and accelerate down a
+  // gallery to hundreds (Eckhoff 2003); one cell per step is ~72 m/s. Any
+  // less and the blast scatters the cloud ahead of its flame.
+  DUST_FIRE: 1,
+  // Pressure a dust cell adds as it goes off: half a gunpowder cell's
+  // (GUNPOWDER_P). A cloud burns its fuel with the oxygen in the air between
+  // the grains, so per volume it is far weaker than a powder carrying its own
+  // oxidizer (a confined cloud tops out at 7-10 bar; Eckhoff 2003); its
+  // violence is in the size of the cloud. Half lets a cloud of a few dozen
+  // cells break glass and wood.
+  DUST_P: 30,
+  // °C of its flame: the adiabatic flame temperature of a grain or coal dust
+  // cloud near stoichiometric, ~2000 K (Cashdollar, J. Loss Prev. 13, 2000).
+  DUST_FLAME_T: 1700,
+
+  // Singularity (react.js; elements.js SINGULARITY), TPT's SING: a tiny black
+  // hole. Its mass is its life, in cells of water (DENS[E_WATER]). It holds a
+  // vacuum of −SING_P_PER_MASS·mass (to P_MIN), and the open cells touching it
+  // hold SING_RING of that, so the pull reaches two cells: air rushes in and
+  // matter is drawn after it (a = −∇P/ρ). It swallows each cell touching it
+  // with chance SING_EAT per step (TPT: 1 in 3), gaining its mass, and merges
+  // with a lighter singularity. Limits, so it can't eat the world:
+  //   - it bursts once it reaches SING_MASS_MAX, its pressure
+  //     SING_BURST_P_PER_MASS per unit of mass (at most P_MAX);
+  //   - starved, it evaporates (Hawking: dm/dt ∝ −1/m², so it goes faster
+  //     as it shrinks, SING_EVAP / m² per step) and winks out below
+  //     SING_MASS_MIN;
+  //   - it never seeds new singularities (TPT's full SING turns 1 in 1000 of
+  //     its neighbours into new ones: a world-eater), and the wall holds.
+  // Real micro black holes evaporate within ~1e-12 s at this mass; ours lives
+  // ~SING_MASS0³ / (3·SING_EVAP) steps starving.
+  SING_MASS0: 12,            // spawn mass (elements.js SINGULARITY life): ~1000 steps starving
+  SING_MASS_MIN: 1,
+  SING_MASS_MAX: 200,        // ~200 cells of water, or 125 of sand, 25 of metal
+  SING_EAT: 0.333,
+  SING_P_PER_MASS: 2.5,      // so P_MIN from a mass of 20
+  SING_RING: 0.6,
+  SING_EVAP: 0.6,
+  SING_BURST_P_PER_MASS: 1,  // a full one: P_MAX
+  SING_BURST_T: 3000,        // °C of the flash it leaves (TPT sprays photons, neutrons and electrons at half its maximum)
+
   // impacts and breaking (react.js, move.js). Hardness (elements.js hard) is in
   // the sim's kinetic-energy units, ½·dens·|v|² with v in cells/step.
   // Kinetic energy an impact dissipates becomes heat: ΔT = E·KE_TO_HEAT / cap

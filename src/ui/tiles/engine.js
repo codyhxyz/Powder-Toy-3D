@@ -101,6 +101,21 @@ function shatter(m, u, H, M) {
   return shat;
 }
 
+// One shared draw for the face pair of cells i and j (j = i + 1 or i + nx)
+// this step, the same from either side (react.js pairRoll): keyed by the
+// lower cell, the axis and the frame, hashed with the GPU's PCG.
+const pcg = (v) => {
+  const s = (Math.imul(v >>> 0, 747796405) + 2891336453) >>> 0;
+  const w = Math.imul(((s >>> ((s >>> 28) + 4)) ^ s) >>> 0, 277803737) >>> 0;
+  return ((w >>> 22) ^ w) >>> 0;
+};
+const PAIR_AXES = 2;   // a slice's pairs: along x, along y
+const pairRoll = (i, j, frame) => pcg(Math.min(i, j) * PAIR_AXES + (Math.abs(i - j) === 1 ? 0 : 1) + pcg(frame)) / 4294967296;
+// singularity (react.js singEats, singVacuum, singTakes)
+const singEats = (j) => j !== E.EMPTY && j !== E.WALL && j !== E.SINGULARITY;
+const singVacuum = (m) => Math.max(PHYS.P_MIN, -PHYS.SING_P_PER_MASS * m);
+const singTakes = (ma, a, mb, b) => ma > mb || (ma === mb && a < b);
+
 // latent heat bookkeeping (react.js latent): returns true when the transition completes
 const lat = { T: 0, acc: 0 };
 function latent(T, acc, Tp, C, L, rising) {
@@ -348,7 +363,8 @@ export class World {
     const ID = this.id, TT = this.T, LIFE = this.life, CT = this.ctype, VX = this.vx, VY = this.vy, PP = this.P;
     const oID = this._id, oT = this._T, oLife = this._life, oCT = this._ctype, oVX = this._vx, oVY = this._vy, oP = this._P;
     const nid = [0, 0, 0, 0], nT = [0, 0, 0, 0], nW = [0, 0, 0, 0], nP = [0, 0, 0, 0], pn = [0, 0, 0, 0];
-    const nVX = [0, 0, 0, 0], nVY = [0, 0, 0, 0];
+    const nVX = [0, 0, 0, 0], nVY = [0, 0, 0, 0], nL = [0, 0, 0, 0], nJ = [0, 0, 0, 0];
+    const frame = this.frame;
     const g = this.gravity;
     for (let y = 0; y < ny; y++)
       for (let x = 0; x < nx; x++) {
@@ -360,8 +376,8 @@ export class World {
           const qx = x + DX[q], qy = y + DY[q];
           if (qx >= 0 && qy >= 0 && qx < nx && qy < ny) {
             const j = qy * nx + qx;
-            nid[q] = ID[j]; nT[q] = TT[j]; nW[q] = CT[j]; nP[q] = PP[j]; nVX[q] = VX[j]; nVY[q] = VY[j];
-          } else { nid[q] = E.WALL; nT[q] = T; nW[q] = 0; nP[q] = P0; nVX[q] = 0; nVY[q] = 0; } // insulating, pressure-reflecting box
+            nid[q] = ID[j]; nT[q] = TT[j]; nW[q] = CT[j]; nP[q] = PP[j]; nVX[q] = VX[j]; nVY[q] = VY[j]; nL[q] = LIFE[j]; nJ[q] = j;
+          } else { nid[q] = E.WALL; nT[q] = T; nW[q] = 0; nP[q] = P0; nVX[q] = 0; nVY[q] = 0; nL[q] = 0; nJ[q] = -1; } // insulating, pressure-reflecting box
         }
 
         // breaking (impacts and blasts), from the input state
@@ -416,6 +432,9 @@ export class World {
           gx = 0.5 * (pn[0] - pn[1]);
           gy = 0.5 * (pn[2] - pn[3]);
         } else P = 0;
+        // a singularity holds its vacuum, and the open cells touching it SING_RING of it (react.js)
+        if (id === E.SINGULARITY) P = singVacuum(life);
+        else if (!solid) for (let q = 0; q < 4; q++) if (nid[q] === E.SINGULARITY) P = Math.min(P, PHYS.SING_RING * singVacuum(nL[q]));
 
         // forces
         if (!solid) {
@@ -537,10 +556,41 @@ export class World {
             const j = nid[q];
             if (j !== E.EMPTY && j !== E.WALL && j !== E.CLONE) { ctype = j; break; }
           }
+        } else if (id === E.SINGULARITY) {
+          // its mass is its life: it gains what it swallows (on the draw the swallowed cell rolls too)
+          // and a lighter singularity, evaporates as 1/m², bursts full and winks out starved (react.js)
+          let m = life, taken = false;
+          for (let q = 0; q < 4; q++) {
+            const j = nid[q];
+            if (j === E.SINGULARITY) {
+              if (singTakes(life, i, nL[q], nJ[q])) m += nL[q]; else taken = true;
+            } else if (singEats(j) && pairRoll(i, nJ[q], frame) < PHYS.SING_EAT) m += densityOf(j, nT[q]) / DENS[E.WATER];
+          }
+          m -= PHYS.SING_EVAP / Math.max(m * m, PHYS.SING_MASS_MIN);
+          life = m;
+          if (taken) { out = E.EMPTY; reset = true; }
+          else if (m < PHYS.SING_MASS_MIN || m >= PHYS.SING_MASS_MAX) {
+            out = E.FIRE; reset = true; T = PHYS.SING_BURST_T;
+            P = PHYS.SING_BURST_P_PER_MASS * Math.max(m, 0);
+          }
         }
 
         // melting (stone, sand, metal, glass → lava that remembers what it was)
         if (out === id && MELT[id] > 0 && T > MELT[id]) { out = E.LAVA; ctype = MELTINTO[id]; life = 0; }
+
+        // dust clouds: suspended dust between its lean and rich limits goes off as one when lit (react.js)
+        if (out === id && id === E.DUST) {
+          let nFuel = 0, hotTouch = false;
+          for (let q = 0; q < 4; q++) {
+            if (nid[q] === E.DUST) nFuel++;
+            hotTouch ||= !isGasLike(nid[q]) && nT[q] >= IGNITE[id];
+          }
+          const suspended = Math.hypot(VX[i], VY[i]) > PHYS.DUST_LIFT_V;
+          const cloud = suspended && nFuel >= PHYS.DUST_MEC_NB && nAir >= PHYS.DUST_RICH_AIR;
+          if (cloud && (T >= IGNITE[id] || hotTouch || (nFire > 0 && rnd() < PHYS.DUST_FIRE))) {
+            out = E.FIRE; reset = true; T = Math.max(T, PHYS.DUST_FLAME_T); P += PHYS.DUST_P;
+          }
+        }
 
         // combustion
         if (out === id && IGNITE[id] > 0) {
@@ -568,6 +618,10 @@ export class World {
             P += PHYS.STEAM_BOIL_PUFF * FIZZ[id] / PHYS.STEAM_EXPANSION;
           }
         }
+
+        // swallowed by a singularity touching it, on the draw it rolled too; its heat goes in with it
+        if (singEats(id)) for (let q = 0; q < 4; q++)
+          if (nid[q] === E.SINGULARITY && pairRoll(i, nJ[q], frame) < PHYS.SING_EAT) { out = E.EMPTY; reset = true; T = AMBIENT; ctype = 0; }
 
         if (out !== id) {
           if (reset) life = SPAWNLIFE[out];

@@ -147,6 +147,19 @@ const LOOKS = {
   // faces swamps the absorption), and keeps the glow (powdered phosphors do).
   CRYSTAL: { rough: 0.15, ior: 1.434, alb: '#5c3f8a', sss: 0.4, emit: FLUORITE_GLOW },
   CRYSTAL_DUST: { ch: 'GRANULAR', rough: 0.6, ior: 1.434, alb: '#b7a2d2', sss: 0.3, glint: 0.4, emit: FLUORITE_GLOW },
+  // Batch 4. Flour reflects ~0.8, matte, and light bleeds into a loose heap.
+  // Kaolin is as white (ISO brightness 80-90%); mud is darker, as any wet
+  // soil is (water in the pores cuts the scattering: about half the
+  // reflectance; Lekner & Dorf, Appl. Opt. 27, 1988) and wet-glossy, drawn
+  // with lava's opaque-liquid surface. Ceramic is matte white bisque.
+  // Antimatter is a game substance: a pale lilac powder with a sheen, so it
+  // reads apart from the other powders. The singularity reflects nothing.
+  DUST: { ch: 'GRANULAR', rough: 0.95, alb: '#ebe2cc', sss: 0.35 },
+  CLAY: { ch: 'GRANULAR', rough: 0.95, alb: '#e2dccf', sss: 0.2 },
+  MUD: { ch: 'MOLTEN', rough: 0.3, alb: '#a49b8a' },
+  CERAMIC: { rough: 0.6, alb: '#efeae0' },
+  ANTIMATTER: { ch: 'GRANULAR', rough: 0.4, alb: '#b9b0d9', glint: 0.6 },
+  SINGULARITY: { rough: 1, alb: '#000000' },
 };
 
 // Shared texture families (LOOKS surf). NONE: an element's own (or none).
