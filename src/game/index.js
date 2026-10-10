@@ -461,7 +461,7 @@ export function createGame(shell) {
         return { kind: 'getFlag', at: theirs.pos.clone(), r: 0, want: hdist(b.pos, theirs.pos) < NEAR ? WANT.getFlagNear : WANT.getFlag };
       }
       if (e.role === 'defend' && mine.state === 'home') return { kind: 'defend', at: mine.home, r: DEFEND_R, want: WANT.defend };
-      if (theirs.state !== 'carried') return { kind: 'getFlag', at: theirs.pos.clone(), r: 0, want: WANT.getFlag };
+      if (theirs.state !== 'carried') return { kind: 'getFlag', at: theirs.pos.clone(), r: 0, want: WANT.getFlagIdle };
     }
     return null;   // the infected: hunt (they see every survivor nearby on the tracker)
   }

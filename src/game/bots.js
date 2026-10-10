@@ -24,7 +24,8 @@ export const WANT = {
   return: 0.7,         // our flag on the ground: over fighting
   getFlagNear: 0.65,   // their flag within reach (NEAR): over fighting
   inZone: 0.65,        // already on the hill or core: stay rather than chase
-  getFlag: 0.55,
+  getFlag: 0.62,       // an attacker runs for their flag through the fight (Halo's flag runner)
+  getFlagIdle: 0.55,   // a defender with nothing to guard goes for it too, but fights first
   zone: 0.55,          // go to the hill or the core
   escort: 0.5,
   defend: 0.5,
@@ -58,20 +59,32 @@ export class ObjectiveEvaluator extends GoalEvaluator {
 // follows the point when it moves (a carrier, a dropped flag).
 export class ObjectiveGoal extends CompositeGoal {
   constructor(a, plan, objective) { super(a); this.plan = plan; this.objective = objective; this.label = `Objective:${plan.kind}`; }
-  same(p) { return p && p.kind === this.plan.kind && hdist(p.at, this.plan.at) < REPLAN; }
+  same(p) { return p && p.kind === this.plan.kind && hdist(p.at, this.anchor ?? this.plan.at) < REPLAN; }
   activate() {
     const a = this.owner;
     this.clearSubgoals();
     this.t = 0;
     const { at, r } = this.plan;
-    if (hdist(a.feet, at) > (r || ARRIVE)) this.addSubgoal(new GoToGoal(a, at, r ? r * ZONE_RETURN : ARRIVE));
+    this.anchor = { x: at.x, y: at.y, z: at.z };   // where the point was when it set off
+    this.goTo = null;
+    if (hdist(a.feet, at) > (r || ARRIVE)) this.addSubgoal(this.goTo = new GoToGoal(a, { x: at.x, y: at.y, z: at.z }, r ? r * ZONE_RETURN : ARRIVE));
   }
   execute() {
     const a = this.owner;
     this.activateIfInactive();
     const p = this.objective(a);
     if (!p || p.kind !== this.plan.kind) { this.status = Goal.STATUS.COMPLETED; return; }
-    if (hdist(p.at, this.plan.at) >= REPLAN) { this.plan = p; this.status = Goal.STATUS.INACTIVE; return; }   // it moved: plan again
+    if (hdist(p.at, this.anchor) >= REPLAN) {
+      // it moved (a carrier, a dropped flag): on the way, the walk heads for the new spot at its
+      // next re-plan (GoTo re-plans every 1.5 s, so a moving point doesn't run A* every frame); there, go again
+      this.plan = p;
+      this.anchor = { x: p.at.x, y: p.at.y, z: p.at.z };
+      if (this.goTo && this.hasSubgoals()) {
+        Object.assign(this.goTo.dest, this.anchor);
+        this.goTo.best = Infinity; this.goTo.bestAt = this.goTo.t;   // progress counts toward the new spot
+      }
+      else { this.status = Goal.STATUS.INACTIVE; return; }
+    }
     this.plan = p;
     if (this.hasSubgoals()) {
       const s = this.executeSubgoals();
