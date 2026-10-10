@@ -99,7 +99,7 @@ them), as it resets the NPCs.
   climbs 27° stairs, the hoverbike 18°, sand slows the jeep ≥ 3× harder than stone.
 - `node tools/vehicles-check.mjs --port <yours> [--shot prefix]`: the real app on the GPU (a dev server; AC
   power). A test yard (a stone run into a rock ramp, a sand lane, a walled lake); E in and out; W drives;
-  D steers right; the ramp; sand vs stone; a run-over hurts an enemy and not a teammate; a blast shoves it;
+  a body walked into a hull is pushed out; D steers right; the ramp; sand vs stone; a run-over hurts an enemy and not a teammate; a blast shoves it;
   the hoverbike skims the lake at speed and drifts; 0 health explodes into a burning wreck (FIRE in the sim)
   and a new jeep comes back; the palette's pads. Rates are per simulated second (`physics.clock`), so a slow
   headless frame rate doesn't fail them.
@@ -108,8 +108,8 @@ them), as it resets the NPCs.
 
 - The gunner seat and turret on the jeep (the model has the turret), passengers, multiplayer sync, NPC drivers.
 - World mode: the window moves under the vehicles (needs `windowShifted` to move the bodies and the voxels).
-- The player's body doesn't collide with hulls (it walks through a parked jeep); vehicles don't push cells
-  (sand isn't ploughed, water isn't splashed by them).
+- The body only meets a hull by being pushed back out sideways (`shoveOut`): you can't stand on a jeep's
+  roof. Vehicles don't push cells (sand isn't ploughed, water isn't splashed by them).
 - Vehicle-on-vehicle crashes don't hurt; the hoverbike's fans don't blow dust.
 - Rapier's `-compat` build inlines its WASM as base64 (a 4.3 MB chunk, 1.65 MB gzipped, loaded on the first
   vehicle). The plain `@dimforge/rapier3d` package ships a binary .wasm (~1 MB gzipped) but needs a Vite

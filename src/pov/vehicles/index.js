@@ -377,6 +377,23 @@ export function createVehicles(env) {
     }
     return true;
   }
+  // The body collides with cells only (player.js): out of a vehicle, a hull it
+  // walks into pushes it back out sideways, along the hull's shallower side.
+  const lp = new THREE.Vector3(), iq = new THREE.Quaternion();
+  function shoveOut(player) {
+    if (!player || player.dead) return;
+    const hw = BODY_WIDTH / 2 * CELL_M, hh = BODY_HEIGHT / 2 * CELL_M;
+    for (const v of vehicles) {
+      const [hx, hy, hz] = v.spec.HALF;
+      iq.copy(rotQ(v)).invert();
+      lp.copy(player.pos).setY(player.pos.y + BODY_HEIGHT / 2).multiplyScalar(CELL_M).sub(posM(v)).applyQuaternion(iq);
+      const ox = hx + hw - Math.abs(lp.x), oz = hz + hw - Math.abs(lp.z), oy = hy + v.spec.BELOW / 2 + hh - Math.abs(lp.y + v.spec.BELOW / 2);
+      if (ox <= 0 || oz <= 0 || oy <= 0) continue;
+      if (ox < oz) lp.x += Math.sign(lp.x || 1) * ox; else lp.z += Math.sign(lp.z || 1) * oz;
+      lp.applyQuaternion(rotQ(v)).add(posM(v)).divideScalar(CELL_M);
+      player.pos.x = lp.x; player.pos.z = lp.z;
+    }
+  }
   function rightUp(v) {
     const body = v.impl.body;
     const t = body.translation();
@@ -498,7 +515,7 @@ export function createVehicles(env) {
       player.vel.set(0, 0, 0);
     },
     afterBody(player) {
-      if (!seated) return;
+      if (!seated) { shoveOut(player); return; }
       if (player.dead) { dismount(player); return; }
       seatFeet(seated, player.pos);
       player.vel.copy(velM(seated)).divideScalar(CELL_M);

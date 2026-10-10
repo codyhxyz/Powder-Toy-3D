@@ -102,6 +102,15 @@ try {
   const outside = Math.abs(out.pos[0] - j.x / 0.3) > 3.5 || Math.abs(out.pos[2] - j.z / 0.3) > 7.5;
   check('E gets out, beside it', !out.seated && outside, `feet ${out.pos.map((v) => v.toFixed(1))} vs jeep ${(j.x / 0.3).toFixed(1)}, ${(j.z / 0.3).toFixed(1)}`);
 
+  // ---- the body doesn't walk through a parked hull
+  j = await jeep();
+  await stand(j.x / 0.3 + 1, 0, j.z / 0.3);
+  await settle(300);
+  const shoved = await ev(() => window.__app.pov.player.pos.toArray());
+  check('a body inside a hull is pushed out', Math.abs(shoved[0] - j.x / 0.3) > 3.5, `feet x ${shoved[0].toFixed(1)} vs jeep ${(j.x / 0.3).toFixed(1)}`);
+  await stand(64 + 6, 0, 10);
+  await settle(300);
+
   // ---- drive on the flat
   await p.keyboard.press('KeyE');
   await settle(200);
@@ -153,7 +162,10 @@ try {
         box(min, max) { min.set(63, 0, z0); max.set(64.6, 5.5, z0 + 1.6); },
         hurt(amount, cause) { window.__hurt.push({ amount, cause }); } });
     }, team);
-    await hold(['KeyW'], 2200);
+    // drive through it: hold W till the jeep's middle is past it (however slow the frames)
+    await p.keyboard.down('KeyW');
+    await p.waitForFunction(() => window.__app.pov.vehicles.list.some((v) => v.kind === 'jeep' && v.alive && v.impl.body.translation().z / 0.3 > 44), null, { timeout: 15000 }).catch(() => {});
+    await p.keyboard.up('KeyW');
     const at = await jeep();
     await hold(['KeyS'], 1200);
     const hurt = await ev(() => { window.__dummyOff(); return window.__hurt; });
