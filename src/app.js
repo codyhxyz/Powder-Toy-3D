@@ -77,7 +77,11 @@ const WORLD_VIEW_DIST = 21;
 // (one WIN_STEP move every few frames), in scene units per second
 const WORLD_CAM_SPEED_MAX = 9;
 const SIGN_TOOL = -5;
-const SPAWNER_KIND = { [-6]: SPAWNER.ENEMY, [-7]: SPAWNER.PLAYER };   // the Spawners tools' kinds
+const SPAWNER_KIND = { [-6]: SPAWNER.ENEMY, [-7]: SPAWNER.PLAYER, [-20]: SPAWNER.JEEP, [-21]: SPAWNER.HOVERBIKE };   // the Spawners tools' kinds
+const SPAWNER_SET = {
+  [SPAWNER.ENEMY]: 'Enemy spawner set: press F to fight', [SPAWNER.PLAYER]: 'Player spawn set: F drops you in here',
+  [SPAWNER.JEEP]: 'Jeep pad set: press F, walk up to it and press E', [SPAWNER.HOVERBIKE]: 'Hoverbike pad set: press F, walk up to it and press E',
+};
 // the lab's own enemy spawner: its open south floor, as shares of the grid (the old lab NPC's arena)
 const LAB_ENEMY_AT = [0.555, 0.86];
 
@@ -1008,7 +1012,7 @@ function press(e) {
     const r = spawners.toggle(kind, feetOnHit(hover));
     pacer.wake();
     if (r === 'full') hud.toast('That many is the limit');
-    else hud.toast(r === 'removed' ? 'Spawner removed' : kind === SPAWNER.ENEMY ? 'Enemy spawner set: press F to fight' : 'Player spawn set: F drops you in here');
+    else hud.toast(r === 'removed' ? 'Spawner removed' : SPAWNER_SET[kind]);
     return;
   }
   if (isBuild(settings.tool)) {
