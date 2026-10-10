@@ -24,112 +24,198 @@ export function tile(it, cls = '', { live = false } = {}) {
   return t;
 }
 
-// Bottom dock: brush controls, the element groups, search and collapse.
+const CATEGORY_ICONS = [ICON.powders, ICON.liquids, ICON.gases, ICON.cube, ICON.tools, ICON.person, ICON.constructions];
+
+// A material drawer: categories above, swatches in the middle, brush below.
 export function createDock({ settings, onSelect, onBrushChange, onHover, onEyedropper }) {
-  setTileSettings(settings); // tiles run with the game's gravity, speed and flow
+  setTileSettings(settings);
+  let category = Math.max(0, PALETTE.findIndex((g) => g.items.some((key) => itemByKey(key).id === settings.tool)));
+  let lastTool = settings.tool;
   const tiles = [];
-  const groups = PALETTE.map((g) => {
-    const items = g.items.map(itemByKey);
-    const els = items.map((it) => {
-      const t = tile(it, '', { live: true });
-      t.addEventListener('click', () => onSelect(it.id));
-      t.addEventListener('pointerenter', () => onHover?.(it.id));
-      t.addEventListener('pointerleave', () => onHover?.(null));
-      tiles.push({ el: t, it });
-      return t;
-    });
-    return h('div.group', {}, h('h4', { text: g.name }), h('div.tiles', {}, els));
+  const categoryName = h('h4');
+  const count = h('span.material-count');
+  const detailName = h('b');
+  const detailText = h('span');
+  const detail = h('div.material-detail', {}, detailName, detailText);
+  const empty = h('p.material-empty', { text: 'No matches. Try a name like water or glass.', hidden: true });
+  const collection = h('div.material-swatches', { role: 'group', 'aria-label': 'Elements' });
+  PALETTE.forEach((g, group) => {
+    for (const key of g.items) {
+      const it = itemByKey(key);
+      const t = tile(it, '.material-swatch', { live: true });
+      t.style.setProperty('--ink', luminance(it.color) > 0.179 ? '#000' : '#fff');
+      t.title = `${it.name} — ${it.desc}`;
+      t.addEventListener('click', () => select(it));
+      t.addEventListener('pointerenter', () => preview(it));
+      t.addEventListener('pointerleave', () => preview());
+      t.addEventListener('focus', () => preview(it));
+      t.addEventListener('blur', () => preview());
+      tiles.push({ el: t, it, group });
+      collection.append(t);
+    }
   });
 
-  // brush controls
+  const categories = PALETTE.map((g, i) => h('button.material-category', {
+    type: 'button', title: g.name, 'aria-label': g.name, 'aria-controls': 'material-collection',
+    style: { '--category-color': itemByKey(g.items[0]).color },
+    on: { click: () => {
+      category = i;
+      search.value = '';
+      filter();
+      preview();
+    } },
+  }, h('span', { html: CATEGORY_ICONS[i] }), h('span.category-tip', { text: g.name })));
+  const rail = h('div.material-categories', { role: 'group', 'aria-label': 'Material categories' }, categories);
+  rail.addEventListener('keydown', (e) => {
+    const i = categories.indexOf(document.activeElement);
+    if (i < 0 || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+    e.preventDefault();
+    const next = e.key === 'Home' ? 0 : e.key === 'End' ? categories.length - 1
+      : (i + (e.key === 'ArrowRight' ? 1 : -1) + categories.length) % categories.length;
+    categories[next].focus();
+    categories[next].click();
+  });
+
+  // Native sliders keep precise keyboard control; color belongs to the materials.
   const sizeOut = h('output');
   const size = h('input', { type: 'range', min: 1, max: 24, step: 1, 'aria-label': 'Brush size' });
   const flowOut = h('output');
   const flow = h('input', { type: 'range', min: 0.05, max: 1, step: 0.05, 'aria-label': 'Flow' });
-  const shapeSphere = h('button.mini-btn', { type: 'button', title: 'Sphere brush (B)', html: ICON.sphere });
-  const shapeCube = h('button.mini-btn', { type: 'button', title: 'Cube brush (B)', html: ICON.cube });
-  const replace = h('button.mini-btn', { type: 'button', title: 'Replace mode: paint over existing material (X)', html: ICON.replace });
+  const iconButton = (icon, label, title, onClick) => h('button.material-control', {
+    type: 'button', title, 'aria-label': label, on: { click: onClick },
+  }, h('span', { html: icon }));
+  const shapeSphere = iconButton(ICON.sphere, 'Sphere brush', 'Sphere brush (B)', () => onBrushChange({ shape: 0 }));
+  const shapeCube = iconButton(ICON.cube, 'Cube brush', 'Cube brush (B)', () => onBrushChange({ shape: 1 }));
+  const replace = iconButton(ICON.replace, 'Replace mode', 'Paint over existing material (X)',
+    () => onBrushChange({ replace: !settings.replace }));
+  replace.append(h('span', { text: 'Replace' }));
   const fill = (input) => input.style.setProperty('--fill', `${((input.value - input.min) / (input.max - input.min)) * 100}%`);
   size.addEventListener('input', () => onBrushChange({ radius: +size.value }));
   flow.addEventListener('input', () => onBrushChange({ rate: +flow.value }));
-  shapeSphere.addEventListener('click', () => onBrushChange({ shape: 0 }));
-  shapeCube.addEventListener('click', () => onBrushChange({ shape: 1 }));
-  replace.addEventListener('click', () => onBrushChange({ replace: !settings.replace }));
+  const sizeLabel = h('span', { text: 'Size' });
+  const dropper = iconButton(ICON.eyedropper, 'Eyedropper', 'Pick an element from the world (I)', () => onEyedropper?.());
+  const brush = h('div.material-brush', { role: 'group', 'aria-label': 'Brush controls' },
+    h('label.material-range', {}, sizeLabel, size, sizeOut),
+    h('label.material-range.paint-only', {}, h('span', { text: 'Flow' }), flow, flowOut),
+    h('div.material-shapes.paint-only', { role: 'group', 'aria-label': 'Brush shape' }, shapeSphere, shapeCube),
+    h('div.paint-only', {}, replace),
+    h('p.build-only', { text: 'Click a surface to place. Faces the camera.' }),
+    dropper);
 
-  // constructions only use the size; the rest of the panel explains how to place them
-  const sizeLabel = h('span', { text: 'Brush size' });
-  const brush = h('div.brush', {},
-    h('h4', {}, sizeLabel, sizeOut), size,
-    h('h4.paint-only', {}, 'Flow', flowOut), h('div.paint-only', {}, flow),
-    h('div.row.paint-only', {}, shapeSphere, shapeCube, replace),
-    h('p.build-only', { text: 'Click a surface to place it. It turns to face the camera.' }));
-
-  // Utilities: each one a full-width row that shows its hotkey.
-  const toolRow = (icon, label, key, title, on) => h('button.tool-btn', { type: 'button', title, on },
-    h('span.ico', { html: icon }), h('span', { text: label }), h('kbd', { text: key }));
-  const dropper = toolRow(ICON.eyedropper, 'Eyedropper', 'I', 'Eyedropper: click the scene to pick that element (I)',
-    { click: () => onEyedropper?.() });
-  const search = h('input.search', { type: 'search', placeholder: 'Find', 'aria-label': 'Find element', spellcheck: false });
-  search.addEventListener('input', () => filter(search.value));
-  search.addEventListener('blur', () => { if (!search.value) filter(''); });
+  const search = h('input.search', { type: 'search', placeholder: 'Find an element', 'aria-label': 'Find element', spellcheck: false });
+  search.addEventListener('input', () => filter());
   search.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
-      const first = tiles.find((t) => !t.el.classList.contains('dim'));
-      if (first) onSelect(first.it.id);
-      search.value = '';
-      filter('');
-      search.blur();
+      const first = tiles.find((t) => !t.el.hidden);
+      if (first) {
+        search.value = '';
+        category = first.group;
+        select(first.it);
+        filter();
+        if (!settings.dockCollapsed) first.el.focus();
+      }
     }
-    if (e.key === 'Escape') { search.value = ''; filter(''); search.blur(); }
+    if (e.key === 'Escape') {
+      search.value = '';
+      filter();
+      categories[category].focus();
+    }
     e.stopPropagation();
   });
-  const find = h('label.find', {}, search, h('kbd', { text: '/' }));
-  const collapse = toolRow(ICON.chevDown, 'Hide', 'T', 'Hide elements (T)', { click: () => setCollapsed(true) });
-  const side = h('div.side', {}, h('h4', { text: 'Utilities' }), dropper, find, collapse);
+  const find = h('label.material-find', {}, h('span', { html: ICON.search }), search, h('kbd', { text: '/' }));
+  const collapse = iconButton(ICON.chevDown, 'Hide elements', 'Hide elements (T)', () => setCollapsed(true));
+  const dock = h('section.dock.panel', { 'aria-label': 'Element picker' },
+    h('div.material-top', {}, rail, find, collapse),
+    h('div.material-library#material-collection', {},
+      h('div.material-heading', { 'aria-live': 'polite', 'aria-atomic': 'true' }, categoryName, count),
+      collection, empty, detail),
+    brush);
 
-  const dock = h('div.dock.panel', { role: 'toolbar', 'aria-label': 'Elements' }, brush, h('div.groups', {}, groups), side);
-
-  let tabTile = h('span.tile');
+  const tabTile = h('span.dock-tab-swatch', { 'aria-hidden': 'true' });
   const tabName = h('b');
   const tab = h('button.dock-tab.panel', { type: 'button', title: 'Show elements (T)', on: { click: () => setCollapsed(false) } },
-    tabTile, h('span', {}, tabName), h('kbd', { text: 'T' }));
-
+    tabTile, tabName, h('span', { html: ICON.chevUp }), h('kbd', { text: 'T' }));
+  // Space activates a focused control, not the simulation's global pause shortcut.
+  for (const el of [dock, tab]) el.addEventListener('keydown', (e) => {
+    if (e.code === 'Space') e.stopPropagation();
+  });
   document.body.append(dock, tab);
 
-  function filter(q) {
-    q = q.trim().toLowerCase();
-    for (const { el, it } of tiles) {
-      const hit = !q || it.name.toLowerCase().includes(q) || it.abbr.toLowerCase().includes(q);
-      el.classList.toggle('dim', !hit);
+  function select(it) {
+    onSelect(it.id);
+    if (matchMedia('(hover: none) and (pointer: coarse)').matches) setCollapsed(true);
+  }
+
+  function preview(it = toolById(settings.tool)) {
+    detailName.textContent = it.name;
+    detailText.textContent = it.desc;
+    detail.title = `${it.name} — ${it.desc}`;
+    detail.style.setProperty('--material-color', it.color);
+    onHover?.(it.id);
+  }
+
+  function filter() {
+    const q = search.value.trim().toLowerCase();
+    let visible = 0;
+    for (const { el, it, group } of tiles) {
+      const hit = q ? it.name.toLowerCase().includes(q) || it.abbr.toLowerCase().includes(q) : group === category;
+      el.hidden = !hit;
+      if (hit) visible++;
     }
+    categories.forEach((button, i) => button.setAttribute('aria-pressed', String(!q && i === category)));
+    categoryName.textContent = q ? 'Search results' : PALETTE[category].name;
+    count.textContent = String(visible).padStart(2, '0');
+    collection.setAttribute('aria-label', categoryName.textContent);
+    empty.hidden = visible > 0;
+    collection.hidden = visible === 0;
+    collection.scrollTop = 0;
   }
 
   function setCollapsed(c) {
+    const moveFocus = (c ? dock : tab).contains(document.activeElement);
     settings.dockCollapsed = c;
     dock.classList.toggle('collapsed', c);
     tab.classList.toggle('show', c);
+    dock.inert = c;
+    tab.inert = !c;
+    tab.setAttribute('aria-expanded', String(!c));
+    if (moveFocus) (c ? tab : categories[category]).focus({ preventScroll: true });
+    if (c) preview();
   }
 
   function sync() {
-    for (const { el, it } of tiles) el.classList.toggle('on', it.id === settings.tool);
+    for (const { el, it } of tiles) {
+      el.classList.toggle('on', it.id === settings.tool);
+      el.setAttribute('aria-pressed', String(it.id === settings.tool));
+    }
     const it = toolById(settings.tool);
-    const t = Object.assign(tile(it), { tabIndex: -1 });
-    tabTile.replaceWith(t);
-    tabTile = t;
+    if (settings.tool !== lastTool) {
+      lastTool = settings.tool;
+      category = tiles.find((t) => t.it.id === settings.tool)?.group ?? category;
+      filter();
+    }
+    tabTile.style.background = it.color;
+    tabTile.textContent = it.abbr;
+    tabTile.style.color = inkFor(it.color);
     tabName.textContent = it.name;
+    tab.setAttribute('aria-label', `Show elements, ${it.name} selected`);
     const build = isBuild(settings.tool);
     brush.classList.toggle('build', build);
-    sizeLabel.textContent = build ? 'Size' : 'Brush size';
+    sizeLabel.textContent = build ? 'Scale' : 'Size';
+    size.setAttribute('aria-label', build ? 'Construction size' : 'Brush size');
     size.value = settings.radius; sizeOut.textContent = settings.radius; fill(size);
     flow.value = settings.rate; flowOut.textContent = `${Math.round(settings.rate * 100)}%`; fill(flow);
-    shapeSphere.classList.toggle('on', settings.shape === 0);
-    shapeCube.classList.toggle('on', settings.shape === 1);
-    replace.classList.toggle('on', settings.replace);
+    shapeSphere.setAttribute('aria-pressed', String(settings.shape === 0));
+    shapeCube.setAttribute('aria-pressed', String(settings.shape === 1));
+    replace.setAttribute('aria-pressed', String(settings.replace));
+    preview();
   }
   function setEyedropper(on) {
-    dropper.classList.toggle('on', on);
-    dropper.setAttribute('aria-pressed', on);
+    dropper.setAttribute('aria-pressed', String(on));
   }
+  filter();
+  sync();
+  setEyedropper(false);
   setCollapsed(!!settings.dockCollapsed);
   return {
     sync,
