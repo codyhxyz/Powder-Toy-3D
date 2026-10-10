@@ -123,10 +123,14 @@ export function createWandWorld({ renderer, getSim }) {
     commands.length = 0;
   }
   // Each busy target is held until its async read completes, even on disposal.
-  // No synchronous fallback: context loss is a miss/failed clearance.
+  // Failed traces reject: unavailable GPU evidence must never mean empty space.
+  // Clearance alone has a fail-closed false result.
   async function probe(s, mat, width, height, decode, fallback) {
     const slot = slots.find((x) => !x.busy);
-    if (!slot || stats.readbacks >= READBACKS) return fallback;
+    if (!slot || stats.readbacks >= READBACKS) {
+      if (fallback !== undefined) return fallback;
+      throw new Error('Wand trace capacity reached');
+    }
     const mine = generation, id = s.id, origin = shifted.clone();
     slot.busy = true;
     stats.pending++; stats.maxPending = Math.max(stats.maxPending, stats.pending);
@@ -140,12 +144,15 @@ export function createWandWorld({ renderer, getSim }) {
       stats.readbacks++; stats.totalReadbacks++;
       await renderer.readRenderTargetPixelsAsync(slot.target, 0, 0, width, height, buf);
       if (disposed || generation !== mine || getSim() !== s || s.id !== id) {
-        stats.staleResults++; return fallback;
+        stats.staleResults++;
+        if (fallback !== undefined) return fallback;
+        throw new Error('Wand trace belongs to an inactive world');
       }
       return decode(buf, origin.sub(shifted));
-    } catch {
+    } catch (error) {
       stats.failedReadbacks++;
-      return fallback;
+      if (fallback !== undefined) return fallback;
+      throw error;
     } finally {
       // Do not restore render state after awaiting: another frame owns it now.
       if (renderer.getRenderTarget() === slot.target) renderer.setRenderTarget(previous);
@@ -155,11 +162,14 @@ export function createWandWorld({ renderer, getSim }) {
   }
   function trace(segments) {
     if (!Array.isArray(segments) || segments.length > WAND_RAYS) return Promise.reject(new RangeError(`trace accepts at most ${WAND_RAYS} segments`));
-    const count = segments.length, miss = Array(count).fill(null), s = current();
-    if (!s || !segments.length || stats.readbacks >= READBACKS || slots.every((x) => x.busy)) return Promise.resolve(miss);
+    const count = segments.length, s = current();
+    if (!count) return Promise.resolve([]);
+    if (!s || stats.readbacks >= READBACKS || slots.every((x) => x.busy))
+      return Promise.reject(new Error('Wand trace unavailable'));
+    if (segments.some((seg) => !finiteVec(seg?.from) || !finiteVec(seg?.to)))
+      return Promise.reject(new TypeError('Wand trace needs finite endpoints'));
     segmentData.fill(0);
     segments.forEach((seg, i) => {
-      if (!finiteVec(seg?.from) || !finiteVec(seg?.to)) return;
       segmentData.set([seg.from.x, seg.from.y, seg.from.z, 1], i * 4);
       segmentData.set([seg.to.x, seg.to.y, seg.to.z, 0], (WAND_RAYS + i) * 4);
     });
@@ -173,7 +183,7 @@ export function createWandWorld({ renderer, getSim }) {
       return { cell: new THREE.Vector3().fromArray(buf, i * 4).add(back), normal,
         point: new THREE.Vector3().fromArray(buf, p).add(back), fraction: buf[p + 3],
         id: buf[(2 * count + i) * 4 + 3] };
-    }), miss);
+    }));
   }
   function clearance(feet) {
     const s = current();

@@ -119,9 +119,11 @@ try {
       check(!await movingClearance, 'shift invalidates clearance'); world.windowShifted(-4, 0);
       begin(); check(!await world.clearance(v(0, 2, 0)), 'out-of-grid body rejected');
       begin(); const stale = world.trace([segment]); active = null;
-      check((await stale)[0] === null, 'replacement invalidates pending trace'); active = sim;
+      check(await stale.then(() => false, () => true), 'replacement rejects pending trace'); active = sim;
       begin();
-      const reads = Array.from({ length: 4 }, () => world.trace([segment])); await Promise.all(reads);
+      const reads = Array.from({ length: 4 }, () => world.trace([segment]));
+      const outcomes = await Promise.allSettled(reads);
+      check(outcomes[3].status === 'rejected', 'capacity failure is not reported as clear space');
       check(world.stats.readbacks === 3 && world.stats.maxPending <= 3, 'bounded in-flight/readbacks');
       // Queue and lights already captured before a window shift move exactly once.
       scene(); check(world.queue(cmd('place', { center: v(12.5, 8.5, 8.5), material: 'ICE' })), 'shift queue');
@@ -158,7 +160,8 @@ try {
       world.setLights([]); const off = pixel(); check(Math.abs(off[2] - dark[2]) < 1e-5, 'light removal');
       renderer.setRenderTarget(null); target.dispose(); geometry.dispose(); mat.dispose();
       begin(); const disposedTrace = world.trace([segment]); world.dispose();
-      check((await disposedTrace)[0] === null && gfxUniforms.uWandLightCount.value === 0, 'disposal invalidates probes/lights');
+      check(await disposedTrace.then(() => false, () => true), 'disposal rejects pending trace');
+      check(gfxUniforms.uWandLightCount.value === 0, 'disposal clears lights');
       const glError = renderer.getContext().getError();
       check(glError === 0, `no WebGL errors: ${glError}`);
       return { checks: 'all effects, bounds, 128 traces, full-body clearance, generations, shifts, cold voxel surfaces', stats: world.stats, surface: { dark, lit, off } };
