@@ -438,7 +438,7 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
   });
 
   // an NPC's tool sounds that are held loops for the player: a one-shot each where it is
-  const NPC_ONE_SHOT = { 'bucket:pour': 'shovelPatter', 'blowtorch:on': 'swoosh', 'physgun:grab': 'physGrab', 'physgun:fling': 'physFling', 'physgun:release': 'physRelease' };
+  const NPC_ONE_SHOT = { 'bucket:pour': 'shovelPatter', 'blowtorch:on': 'swoosh', 'physgun:grab': 'physGrab', 'physgun:fling': 'physFling', 'physgun:release': 'physRelease', 'physgun:blast': 'physFling' };
   povEvents.on('tool:action', ({ tool, action, id, point, amount, by, from }) => {
     if (!live()) return;
     const at = point ?? (by ? from : null), family = id != null && id >= 0 ? familyOf(id) : null;
@@ -479,6 +479,7 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
       case 'physgun:grab': play('physGrab'); loop('physHum', true); humSince = clock(); break;
       case 'physgun:fling': play('physFling'); loop('physHum', false); break;
       case 'physgun:release': play('physRelease'); loop('physHum', false); break;
+      case 'physgun:blast': play('physFling'); break;
       default: break;
     }
   });

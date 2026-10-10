@@ -74,6 +74,24 @@ export const PHYS = {
 PHYS.HOLD_MIN = PHYS.RADIUS + BODY_WIDTH;
 export const PHYS_MODE = { HOLD: 0, FLING: 1 };
 
+// Physgun blast (right-click with nothing held, the gravity gun's punt): one
+// impulse into the loose matter in a cone from the muzzle along the aim. Every
+// cell gets the same momentum, so it leaves at
+//   Δv = IMPULSE / DENS · falloff
+// (water 0.8 cells/step, sand 0.5, metal dust 0.1, gases capped at V_MAX),
+// pointing away from the muzzle. falloff fades toward the cone's end and its
+// rim. The cone stops BITE cells past the aimed face, so walls shield what's
+// behind them. Solids don't move: there are no rigid bodies.
+export const BLAST = {
+  IMPULSE: 8,        // DENS · cells/step given to each cell at full strength
+  RANGE: 16,         // cells from the muzzle
+  RADIUS0: 1,        // cells, the cone's radius at the muzzle
+  SPREAD: 0.35,      // cells of radius gained per cell along it
+  BITE: 1.5,         // cells past the aimed face it still pushes
+  EDGE: 0.6,         // share of the radius / range held at full strength before fading
+  COOLDOWN: 0.4,     // s between blasts
+};
+
 const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
 const defines = (prefix, obj) =>
   Object.entries(obj).map(([k, v]) => `#define ${prefix}_${k} ${v < 0 ? `(${f(v)})` : f(v)}`).join('\n');
@@ -242,6 +260,30 @@ void physgun(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
   oB.xyz = clamp(v, -V_MAX, V_MAX);
 }
 ${copyThroughMain('physgun')}`;
+
+// Blast the loose matter in the cone (see BLAST).
+export const blastFrag = (g) => /* glsl */ `
+${head(g)}
+${defines('BLAST', BLAST)}
+uniform vec3 uMuzzle;   // grid cells
+uniform vec3 uDir;      // unit aim
+uniform float uReach;   // cells along the aim it pushes, ≤ BLAST_RANGE
+
+void blast(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
+  vec3 d = vec3(p) + 0.5 - uMuzzle;
+  float along = dot(d, uDir);
+  if (along < 0.0 || along > uReach) return;
+  float radius = BLAST_RADIUS0 + BLAST_SPREAD * along;
+  float r = length(d - along * uDir);
+  if (r > radius) return;
+  int id = eid(a);
+  int k = KIND[id];
+  if (k != K_POWDER && k != K_LIQUID && k != K_GAS) return;
+  float w = (1.0 - smoothstep(BLAST_EDGE, 1.0, along / BLAST_RANGE)) * (1.0 - smoothstep(BLAST_EDGE, 1.0, r / radius));
+  vec3 away = d / max(length(d), 1.0);
+  oB.xyz = clamp(b.xyz + away * min(BLAST_IMPULSE / DENS[id], V_MAX) * w, -V_MAX, V_MAX);
+}
+${copyThroughMain('blast')}`;
 
 // A pass material for the current simulation. Grids can be rebuilt (a size
 // change makes a new sim), so callers keep one per sim: see toolPass.

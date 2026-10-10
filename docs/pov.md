@@ -38,8 +38,9 @@
      in water, and breaks what it hits if its kinetic energy beats the target's hardness. The impact turns
      kinetic energy into heat, so shooting a powder keg sets it off. Recoil conserves momentum.
   5. **Physgun**: a force beam on loose matter (powders, liquids, gases). Hold left-click to grab a ball of
-     stuff at the aim point and carry it around floating, right-click to fling it, release to drop it. It
-     can't lift solids (no rigid bodies).
+     stuff at the aim point and carry it around floating, right-click to fling it, release to drop it.
+     Right-click with nothing held blasts the loose matter in a cone along the aim (one impulse, so light
+     stuff flies farther). It can't lift or knock over solids (no rigid bodies).
   6. **Trowel**: builds Minecraft-style 1 m blocks (3³ cells on a fixed lattice) from the pack against the
      face you aim at; right-click picks the material. The cells are the pack's own, so a sand block slumps.
   7. **Scanner**: the god view's hover readout at the crosshair, at any range: material, temperature,
@@ -220,7 +221,7 @@ say world. Emitters own their event names. Listeners never mutate payloads.
 | `round:move` | gun, bomb | `{ id, kind, from, to }` (kind 'round' or 'bomb'). A round in flight moved this frame (grid), for tracers. |
 | `round:end` | gun, bomb | `{ id, kind }`. The round is gone (impact or out of the box). |
 | `impact` | gun, axe | `{ source: 'gun'\|'axe', point, normal, id, energy, broke, body? }` (body: a target, not a cell, was hit; id −1). Something was struck. id is the element hit, energy is ½·DENS·v² in sim units, and broke is true/false when the striker knows, else null. |
-| `tool:action` | shovel, bucket, axe, physgun, trowel, blowtorch, bomb | `{ tool, action, id?, point?, amount? }`. tool is 'shovel'\|'bucket'\|'axe'\|'physgun'\|'trowel'\|'blowtorch'\|'bomb'; action is 'dig'\|'place'\|'on'\|'off'\|'throw'\|'dump'\|'scoop'\|'pour'\|'swing'\|'refuse'\|'grab'\|'fling'\|'release'. Physgun 'hold' state is read from the tool, not an event. |
+| `tool:action` | shovel, bucket, axe, physgun, trowel, blowtorch, bomb | `{ tool, action, id?, point?, amount? }`. tool is 'shovel'\|'bucket'\|'axe'\|'physgun'\|'trowel'\|'blowtorch'\|'bomb'; action is 'dig'\|'place'\|'on'\|'off'\|'throw'\|'dump'\|'scoop'\|'pour'\|'swing'\|'refuse'\|'grab'\|'fling'\|'release'\|'blast'. Physgun 'hold' state is read from the tool, not an event. |
 | `player:step` | shell (camera bob cycle) | `{ speed, inLiquid }`. A footfall. |
 | `player:jet` | player | `{ on }`. The jetpack lit or went out. |
 

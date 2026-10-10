@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { PHYS as ENGINE } from '../../physics.js';
-import { physgunFrag, physgunComFrag, toolPass, PHYS, PHYS_MODE, glowTexture, disposeTree } from '../../shaders/povTools.js';
+import { physgunFrag, physgunComFrag, blastFrag, toolPass, PHYS, PHYS_MODE, BLAST, glowTexture, disposeTree } from '../../shaders/povTools.js';
 import { povEvents } from '../events.js';
 import { attachModel } from '../models.js';
 import { viewmodelRig, HIT } from '../viewmodel.js';
@@ -13,14 +13,16 @@ import { viewmodelRig, HIT } from '../viewmodel.js';
 // (shaders/povTools.js PHYS), so the matter gathers into a floating ball that
 // follows the aim. The wheel moves the hold point nearer
 // or farther. Right-click flings the ball along the aim; letting go drops it.
-// It can't lift solids: there are no rigid bodies.
+// Right-click with nothing held blasts: one shove into the loose matter in a
+// cone along the aim (shaders/povTools.js BLAST). It can't lift or knock over
+// solids: there are no rigid bodies.
 //
 // The beam's reaction force on the player is left out (the body doesn't feel
 // the weight it carries).
 //
 // The gun is a viewmodel (drawn over the frame, viewmodel.js); the beam and
 // the reach ball live in the world, so walls hide them like anything else.
-// Events: tool:action 'grab', 'fling' and 'release'.
+// Events: tool:action 'grab', 'fling', 'release' and 'blast'.
 
 // viewmodel, in cells (camera space: +x right, +y up, −z forward)
 const GUN_POS = [0.6, -0.42, -1.45];
@@ -36,6 +38,7 @@ const RIM_POWER = 3;              // ...falling off this steeply toward its midd
 const RIM_CLEAR = 2;              // cells: the ball fades out as the eye comes within this of its surface, so it never wraps the view
 const TIP_SIZE = 0.35;            // cells, the glow at the tip
 const TIP_IDLE = 0.35;            // tip glow opacity while not holding
+const BLAST_FLASH_S = 0.15;       // s the beam flashes along a blast
 
 const ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
 <path d="M3 15h8l2-3h3"/><circle cx="19" cy="9" r="3"/><path d="M5 15v4h4"/></svg>`;
@@ -104,7 +107,7 @@ const Y_AXIS = new THREE.Vector3(0, 1, 0);
 
 export default {
   key: 'PHYSGUN', name: 'Physgun', slot: 5, icon: ICON,
-  desc: 'Hold to lift loose powder, liquid or gas; wheel for distance, right-click to fling.',
+  desc: 'Hold to lift loose powder, liquid or gas; wheel for distance, right-click to fling. Right-click empty-handed to blast.',
   create(env) {
     const model = buildModel(env);
     const pass = toolPass(physgunFrag, () => ({
@@ -112,11 +115,14 @@ export default {
       uSteps: { value: 0 }, uGravity: { value: 0 }, uMode: { value: PHYS_MODE.HOLD }, uFling: { value: new THREE.Vector3() },
     }));
     const comPass = toolPass(physgunComFrag, () => ({ uHold: { value: new THREE.Vector3() } }));
+    const blastPass = toolPass(blastFrag, () => ({
+      uMuzzle: { value: new THREE.Vector3() }, uDir: { value: new THREE.Vector3() }, uReach: { value: 0 },
+    }));
     const comTarget = new THREE.WebGLRenderTarget(1, 1, {
       type: THREE.FloatType, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, depthBuffer: false,
     });
     const prevHold = new THREE.Vector3(), carry = new THREE.Vector3();
-    let time = 0, holding = false, dist = PHYS.HOLD_MIN;
+    let time = 0, holding = false, dist = PHYS.HOLD_MIN, blastWait = 0, flash = 0;
     const hold = new THREE.Vector3();
     const tmpA = new THREE.Vector3(), tmpB = new THREE.Vector3();
 
@@ -144,6 +150,28 @@ export default {
       sim.pass(mat);
     }
 
+    // One shove along the aim, stopping just past the aimed face. The beam
+    // flashes to where it stops (drawn from `hold`).
+    function blast(ctx) {
+      const sim = ctx.sim ?? env.getSim();
+      const reach = Math.min(ctx.aim?.valid && Number.isFinite(ctx.aim.dist) ? ctx.aim.dist + BLAST.BITE : BLAST.RANGE, BLAST.RANGE);
+      const mat = blastPass(sim);
+      const u = mat.uniforms;
+      u.uMuzzle.value.copy(ctx.eye);
+      u.uDir.value.copy(ctx.dir).normalize();
+      u.uReach.value = reach;
+      hold.copy(ctx.eye).addScaledVector(u.uDir.value, reach);
+      // the cone's bounding box: both ends, padded by the radius at the far end
+      const pad = BLAST.RADIUS0 + BLAST.SPREAD * reach;
+      const a = ctx.eye.toArray(), b = hold.toArray();
+      sim.touchCentres(a.map((x, i) => Math.min(x, b[i]) - pad), a.map((x, i) => Math.max(x, b[i]) + pad));
+      sim.pass(mat);
+      model.rig.hit(HIT.FLING);
+      povEvents.emit('tool:action', { tool: 'physgun', action: 'blast', point: hold.clone() });
+      blastWait = BLAST.COOLDOWN;
+      flash = BLAST_FLASH_S;
+    }
+
     const release = () => {
       if (holding) povEvents.emit('tool:action', { tool: 'physgun', action: 'release', point: hold.clone() });
       holding = false;
@@ -169,6 +197,8 @@ export default {
     return {
       update(ctx) {
         time += ctx.dt;
+        blastWait = Math.max(blastWait - ctx.dt, 0);
+        flash = Math.max(flash - ctx.dt, 0);
         model.hand.visible = true;
         model.rig.update(ctx);
         if (ctx.primaryPressed && !holding) {
@@ -192,10 +222,15 @@ export default {
             povEvents.emit('tool:action', { tool: 'physgun', action: 'fling', point: hold.clone() });
             holding = false;
           } else if (ctx.stepsPerFrame > 0) run(ctx, PHYS_MODE.HOLD);
-        }
-        model.tip.material.opacity = holding ? 1 : TIP_IDLE;
+        } else if (ctx.secondaryPressed && blastWait === 0) blast(ctx);
+        model.tip.material.opacity = holding || flash > 0 ? 1 : TIP_IDLE;
         // the beam shows with the gun (not in third person, where the viewmodel is hidden)
-        model.beam.visible = model.sphere.visible = holding && env.viewmodel.visible;
+        model.beam.visible = (holding || flash > 0) && env.viewmodel.visible;
+        model.sphere.visible = holding && env.viewmodel.visible;
+        if (!holding && flash > 0) {
+          drawBeam();
+          model.beam.material.opacity = BEAM_OPACITY * flash / BLAST_FLASH_S;
+        }
         if (holding) {
           drawBeam();
           const clear = ctx.eye.distanceTo(hold) - PHYS.RADIUS;
@@ -204,6 +239,7 @@ export default {
       },
       deselect() {
         release();
+        flash = 0;
         model.hand.visible = false;
         model.beam.visible = model.sphere.visible = false;
       },
@@ -219,7 +255,7 @@ export default {
         env.renderer.readRenderTargetPixels(comTarget, 0, 0, 1, 1, buf);
         return [...buf];
       },
-      dispose() { pass.dispose(); comPass.dispose(); comTarget.dispose(); model.dispose(); },
+      dispose() { pass.dispose(); comPass.dispose(); blastPass.dispose(); comTarget.dispose(); model.dispose(); },
     };
   },
 };
