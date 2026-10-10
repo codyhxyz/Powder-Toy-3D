@@ -27,6 +27,7 @@ export const FLOW = col('flow');
 export const SLIDE = col('slide');
 export const MELT = col('melt');
 export const IGNITE = col('ignite');
+export const FLASH = col('flash');
 export const BURNRATE = col('burnRate');
 export const BURNHEAT = col('burnHeat');
 export const FLAMET = col('flameT');
@@ -50,6 +51,19 @@ const isFluid = (id) => KIND[id] === K.LIQUID || isGasLike(id);
 const movable = (id) => KIND[id] !== K.SOLID;
 // what acid eats: matter that isn't acid-proof (activity.js acidEats)
 const acidEats = (id) => KIND[id] !== K.EMPTY && KIND[id] !== K.GAS && !ACIDPROOF[id];
+// growers: moss and fungus keep their damp in their ctype (activity.js grower, mossBed, fungusFood, dampOf)
+const grower = (id) => id === E.MOSS || id === E.FUNGUS;
+const mossBed = (id) => id === E.ROCK || id === E.STONE || id === E.LIMESTONE || id === E.SANDSTONE;
+const fungusFood = (id) => id === E.WOOD || id === E.SAWDUST || id === E.PLANT;
+function dampOf(T, nid, nW) {
+  if (T >= PHYS.DAMP_DRY_T) return 0;
+  let h = 0;
+  for (let q = 0; q < 4; q++) {
+    if (nid[q] === E.WATER) return PHYS.DAMP_REACH;
+    if (grower(nid[q])) h = Math.max(h, nW[q] - 1);
+  }
+  return h;
+}
 const airDensity = (T) => 1 - Math.min(PHYS.AIR_DENS_HI, Math.max(PHYS.AIR_DENS_LO, (T - AMBIENT) / PHYS.AIR_DENS_SPAN));
 // gases thin with heat the way air does; DENS is a gas's density at its spawn temperature (common.js)
 export const densityOf = (id, T) => {
@@ -529,9 +543,14 @@ export class World {
         // reactions and phase changes
         let out = id, reset = false;
         let nAir = 0, nFire = 0, nAcid = 0, nPlant = 0, nBurning = 0, flame = 0, cloneOf = 0, nCloud = 0;
+        let nFlash = 0, flashFlame = 0;
+        let nWetMoss = 0, nWetFungus = 0, wetX = false, wetY = false, bedX = false, bedY = false;   // axes holding damp moss, bare rock
         let surface = false;   // a non-gas neighbour to condense onto (the floor counts, the sides and lid don't)
         for (let q = 0; q < 4; q++) {
-          const j = nid[q];
+          const j = nid[q], wet = nW[q] >= 1, xAxis = q < 2;
+          if (j === E.MOSS && wet) { nWetMoss++; if (xAxis) wetX = true; else wetY = true; }
+          if (j === E.FUNGUS && wet) nWetFungus++;
+          if (mossBed(j)) { if (xAxis) bedX = true; else bedY = true; }
           if (j === E.EMPTY) nAir++;
           if (j === E.CLOUD) nCloud++;
           const qx = x + DX[q], qy = y + DY[q];
@@ -541,7 +560,10 @@ export class World {
           if (j === E.PLANT) nPlant++;
           if ((j === E.CLONE || (j === E.PCLN && nL[q] === ELEC.SWITCH_ON)) && nW[q] >= 1) cloneOf = nW[q];   // a powered clone only while on
           if (IGNITE[j] > 0 && j !== E.GUNPOWDER && nT[q] >= IGNITE[j]) { nBurning++; flame = Math.max(flame, FLAMET[j]); }
+          else if (FLASH[j] < IGNITE[j] && nT[q] >= FLASH[j]) { nFlash++; flashFlame = Math.max(flashFlame, FLAMET[j]); }
         }
+        // past its flash point a fuel's vapour carries a flame along it (react.js)
+        if (nFire > 0 && nFlash > 0) { nBurning += nFlash; flame = Math.max(flame, flashFlame); }
 
         if (broke) {
           // debris keeps temperature, life and ctype, takes the fracture work as heat and the hits' momentum
@@ -599,7 +621,11 @@ export class World {
             out = cloneOf; reset = true; T = SPAWNT[cloneOf];
             ctype = cloneOf === E.LAVA ? E.STONE : 0;
             vx = 0; vy = KIND[cloneOf] === K.GAS ? 0 : PHYS.SPAWN_DROP_V;
+          } else if (nWetMoss > 0 && ((wetX && bedY) || (wetY && bedX)) && rnd() < PHYS.MOSS_GROW * nWetMoss) {
+            out = E.MOSS; reset = true; ctype = 0;   // moss creeps over damp bare rock (react.js)
           }
+        } else if (id === E.MOSS || id === E.FUNGUS) {
+          ctype = dampOf(T, nid, nW);
         } else if ((id === E.CLONE || id === E.PCLN) && ctype < 1) {
           for (let q = 0; q < 4; q++) {
             const j = nid[q];
@@ -617,7 +643,7 @@ export class World {
             let hotTouch = false;
             for (let q = 0; q < 4; q++) hotTouch ||= !isGasLike(nid[q]) && nT[q] >= IGNITE[id];
             if (T >= IGNITE[id] || hotTouch || (nFire > 0 && rnd() < PHYS.GUNPOWDER_FIRE)) { out = E.FIRE; reset = true; T = PHYS.GUNPOWDER_T; P += PHYS.GUNPOWDER_P; }
-          } else if (T >= IGNITE[id] && (nAir > 0 || nFire > 0)) {
+          } else if ((T >= IGNITE[id] || (nFire > 0 && T >= FLASH[id])) && (nAir > 0 || nFire > 0)) {
             life -= BURNRATE[id];
             T = Math.max(T, Math.min(T + BURNHEAT[id] / C, FLAMET[id]));
             P += PHYS.BURN_P;
@@ -627,6 +653,11 @@ export class World {
               T = Math.max(T, PHYS.BURNT_MIN_T);
             }
           }
+        }
+
+        // damp fungus rots wood, sawdust and plant into more fungus
+        if (out === id && nWetFungus > 0 && fungusFood(id) && T < PHYS.DAMP_DRY_T && rnd() < PHYS.FUNGUS_GROW * nWetFungus) {
+          out = E.FUNGUS; reset = true;
         }
 
         // acid eats its neighbours; what fizzes (limestone) sets its gas free as a puff
@@ -640,6 +671,7 @@ export class World {
         if (out !== id) {
           if (CONDUCTS[id] && !CONDUCTS[out] && out !== E.LAVA) ctype = 0;   // its spark goes with it
           if (reset) life = SPAWNLIFE[out];
+          if (grower(out) || grower(id)) ctype = 0;   // a new grower's damp comes in next step
           if (KIND[out] === K.SOLID) { vx = 0; vy = 0; }
           if (out === E.FIRE) life = PHYS.FIRE_LIFE_MIN + PHYS.FIRE_LIFE_SPREAD * rnd();
         }
