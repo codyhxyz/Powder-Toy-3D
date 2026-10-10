@@ -3,45 +3,24 @@ import { ELEMENTS, K, R } from '../elements.js';
 const opaque = Uint8Array.from({ length: 256 }, (_, id) =>
   +(id !== 0 && !!ELEMENTS[id] && ELEMENTS[id].kind !== K.GAS && ELEMENTS[id].render !== R.LIQUID));
 const corners = Array.from({ length: 8 }, (_, i) => [i & 1, (i >> 1) & 1, i >> 2]);
-// The same body diagonal in every cube gives matching diagonals on shared faces.
-const tetrahedra = [[0, 1, 3, 7], [0, 3, 2, 7], [0, 2, 6, 7],
-  [0, 6, 4, 7], [0, 4, 5, 7], [0, 5, 1, 7]];
 const cross = (a, b, c) => [
   (b[1] - a[1]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[1] - a[1]),
   (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]),
   (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]),
 ];
 
-// Binary crossings are always edge midpoints: cache topology and fallback face normals.
-const triangles = Array.from({ length: 256 }, (_, mask) => {
-  const result = [];
-  for (const tet of tetrahedra) {
-    const inside = tet.filter(i => mask & (1 << i));
-    const outside = tet.filter(i => !(mask & (1 << i)));
-    if (!inside.length || !outside.length) continue;
-    const midpoint = (a, b) => corners[a].map((v, axis) => (v + corners[b][axis]) / 2);
-    let faces;
-    if (inside.length === 2) {
-      const [a, b] = inside, [c, d] = outside;
-      const ac = midpoint(a, c), ad = midpoint(a, d), bc = midpoint(b, c), bd = midpoint(b, d);
-      faces = [[ac, ad, bc], [ad, bd, bc]];
-    } else {
-      const lone = inside.length === 1 ? inside : outside;
-      const others = inside.length === 1 ? outside : inside;
-      faces = [others.map(i => midpoint(lone[0], i))];
-    }
-    const direction = corners[outside[0]].map((v, axis) => v - corners[inside[0]][axis]);
-    for (const points of faces) {
-      let normal = cross(...points);
-      if (normal.reduce((sum, v, axis) => sum + v * direction[axis], 0) < 0) {
-        [points[1], points[2]] = [points[2], points[1]];
-        normal = normal.map(v => -v);
-      }
-      const length = Math.hypot(...normal);
-      result.push({ points, normal: normal.map(v => v / length), materialCorner: inside[0] });
-    }
+// Surface nets: one vertex per mixed cube, the mean of its crossed edge midpoints.
+// Binary occupancy makes these 256 positions independent of the input volume.
+const vertices = Array.from({ length: 256 }, (_, mask) => {
+  const point = [0, 0, 0];
+  let crossings = 0;
+  for (let i = 0; i < 8; i++) for (let axis = 0; axis < 3; axis++) {
+    const j = i ^ (1 << axis);
+    if (i > j || !!(mask & (1 << i)) === !!(mask & (1 << j))) continue;
+    for (let a = 0; a < 3; a++) point[a] += (corners[i][a] + corners[j][a]) / 2;
+    crossings++;
   }
-  return result;
+  return crossings ? point.map(v => v / crossings) : null;
 });
 
 function clip(points, bounds) {
@@ -57,8 +36,10 @@ function clip(points, bounds) {
         const bIn = side ? b[axis] <= plane : b[axis] >= plane;
         if (aIn) output.push(a);
         if (aIn !== bIn) {
-          const t = (plane - a[axis]) / (b[axis] - a[axis]);
-          const p = a.map((v, k) => v + t * (b[k] - v));
+          // Identical arithmetic on either traversal of a shared triangle edge.
+          const [lo, hi] = a[axis] < b[axis] ? [a, b] : [b, a];
+          const t = (plane - lo[axis]) / (hi[axis] - lo[axis]);
+          const p = lo.map((v, k) => v + t * (hi[k] - v));
           p[axis] = plane;
           output.push(p);
         }
@@ -71,7 +52,7 @@ function clip(points, bounds) {
 }
 
 /**
- * Binary marching tetrahedra over cell-centred opaque occupancy.
+ * Binary surface nets over cell-centred opaque occupancy.
  * ids: Uint8Array, x fastest, then y, then z. origin: integer world cell corner.
  * size: positive integer [sx,sy,sz]; bounds: finite [loX,loY,loZ,hiX,hiY,hiZ].
  * step: 1 (default), 2 or 4. Coarse blocks are aligned to WORLD multiples of step;
@@ -88,6 +69,8 @@ function clip(points, bounds) {
  * Geometry is clipped to half-open ownership bounds (shared boundary vertices are
  * retained; faces entirely on a high boundary are excluded). Same-step chunks with
  * identical halo data meet exactly. Mixed-step seams need caller-side transitions.
+ * One vertex per mixed cube preserves thin features, but ambiguous diagonal
+ * contacts may be non-manifold (several sheets sharing a vertex or edge).
  * Pure synchronous builder: caller owns mesh caching and invalidation.
  */
 export function buildSurfaceMesh(ids, { size, origin, bounds, step = 1 }) {
@@ -134,35 +117,58 @@ export function buildSurfaceMesh(ids, { size, origin, bounds, step = 1 }) {
   }
   const positions = [], normals = [], materials = [];
   const offsets = corners.map(([x, y, z]) => x + nx * (y + ny * z));
-  for (let z = 1; z < nz - 2; z++) for (let y = 1; y < ny - 2; y++) for (let x = 1; x < nx - 2; x++) {
+  const points = new Array(samples.length);
+  // The outer cubes supply the other side of quads crossing ownership bounds.
+  // Their gradients are not needed: normals are sampled only after clipping.
+  for (let z = 0; z < nz - 1; z++) for (let y = 0; y < ny - 1; y++) for (let x = 0; x < nx - 1; x++) {
     const index = x + nx * (y + ny * z);
     let mask = 0;
     for (let i = 0; i < 8; i++) if (samples[index + offsets[i]]) mask |= 1 << i;
-    if (!mask || mask === 255) continue;
-    const base = start.map((v, a) => v + ([x, y, z][a] + 0.5) * step);
-    for (const { points, normal, materialCorner } of triangles[mask]) {
-      let polygon = points.map(p => p.map((v, a) => base[a] + v * step));
-      if (polygon.some(p => p.some((v, a) => v < bounds[a] || v >= bounds[a + 3]))) {
-        polygon = clip(polygon, bounds);
-      }
-      for (let i = 1; i + 1 < polygon.length; i++) {
-        const face = [polygon[0], polygon[i], polygon[i + 1]];
-        if (Math.hypot(...cross(...face)) === 0) continue;
-        for (const p of face) {
-          positions.push(...p);
-          // Trilinear sampling also covers diagonals and clipped vertices; the
-          // same world point sees the same gradient in neighbouring chunks.
-          const t = p.map((v, a) => (v - base[a]) / step);
-          const gradient = [0, 0, 0];
-          for (let c = 0; c < 8; c++) {
-            const weight = corners[c].reduce((w, v, a) => w * (v ? t[a] : 1 - t[a]), 1);
-            for (let a = 0; a < 3; a++) gradient[a] += weight * gradients[(index + offsets[c]) * 3 + a];
-          }
-          const length = Math.hypot(...gradient);
-          normals.push(...(length > 1e-12 ? gradient.map(v => v / length) : normal));
-          materials.push(samples[index + offsets[materialCorner]]);
+    const point = vertices[mask];
+    if (point) points[index] = point.map((v, a) => (start[a] / step + [x, y, z][a] + 0.5 + v) * step);
+  }
+  function emit(face, material) {
+    const normal = cross(...face);
+    const length = Math.hypot(...normal);
+    if (!length) return;
+    for (let a = 0; a < 3; a++) normal[a] /= length;
+    let polygon = face;
+    if (face.some(p => p.some((v, a) => v < bounds[a] || v >= bounds[a + 3]))) polygon = clip(face, bounds);
+    // Cull triangles that collapse in the public Float32 representation, too.
+    polygon = polygon.map(p => p.map(Math.fround));
+    for (let i = 1; i + 1 < polygon.length; i++) {
+      const triangle = [polygon[0], polygon[i], polygon[i + 1]];
+      if (Math.hypot(...cross(...triangle)) === 0) continue;
+      for (const p of triangle) {
+        positions.push(...p);
+        // Sample the WORLD-aligned gradient field, not the quad's originating
+        // cube: a net triangle spans several cubes, as can its clipped vertices.
+        const cell = p.map(v => Math.floor(v / step - 0.5));
+        const t = p.map((v, a) => v / step - 0.5 - cell[a]);
+        const index = cell.reduce((sum, v, a) => sum + (v - start[a] / step) * strides[a], 0);
+        const gradient = [0, 0, 0];
+        for (let c = 0; c < 8; c++) {
+          const weight = corners[c].reduce((w, v, a) => w * (v ? t[a] : 1 - t[a]), 1);
+          for (let a = 0; a < 3; a++) gradient[a] += weight * gradients[(index + offsets[c]) * 3 + a];
         }
+        const length = Math.hypot(...gradient);
+        normals.push(...(length > 1e-12 ? gradient.map(v => v / length) : normal));
+        materials.push(material);
       }
+    }
+  }
+  // Each sign-changing sample edge owns a quad of its four incident cube vertices.
+  // Cyclic perpendicular axes give +axis winding; solid at the far end reverses it.
+  for (let z = 1; z < nz - 1; z++) for (let y = 1; y < ny - 1; y++) for (let x = 1; x < nx - 1; x++) {
+    const index = x + nx * (y + ny * z);
+    for (let a = 0; a < 3; a++) {
+      const near = samples[index], far = samples[index + strides[a]];
+      if (!!near === !!far) continue;
+      const b = strides[(a + 1) % 3], c = strides[(a + 2) % 3];
+      const quad = [points[index - b - c], points[index - c], points[index], points[index - b]];
+      if (!near) [quad[1], quad[3]] = [quad[3], quad[1]];
+      emit([quad[0], quad[1], quad[2]], near || far);
+      emit([quad[0], quad[2], quad[3]], near || far);
     }
   }
   return { positions: new Float32Array(positions), normals: new Float32Array(normals), ids: new Uint8Array(materials) };

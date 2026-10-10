@@ -73,6 +73,9 @@ function closed(m) {
     assert.equal(e.count, 2, 'closed manifold edge');
     assert.equal(e.winding, 0, 'opposite shared-edge winding');
   }
+  const volume6 = faces(m).reduce((sum, [a, b, c]) => sum +
+    a[0] * (b[1] * c[2] - b[2] * c[1]) + a[1] * (b[2] * c[0] - b[0] * c[2]) + a[2] * (b[0] * c[1] - b[1] * c[0]), 0);
+  assert(volume6 > 0, 'closed surface winding encloses positive volume');
 }
 function area(m) {
   let sum = 0;
@@ -141,6 +144,7 @@ adjacent((x, y, z) => y < x + z ? E.ROCK : 0, 4, -1);
 for (const step of [1, 2, 4]) for (const axis of [0, 1, 2]) {
   // Fractional ownership planes create clipped vertices, not just crossings.
   adjacent((x, y, z) => y < x + z ? E.ROCK : 0, step, 0.25, axis);
+  adjacent((x, y, z) => x * x + y * y + z * z < 12 ? E.WOOD : 0, step, -0.25, axis);
 }
 const crown = mesh([-5, -5, -5, 5, 5, 5], (x, y, z) => x * x + y * y + z * z < 12 ? E.WOOD : 0);
 closed(crown);
@@ -165,10 +169,43 @@ const mixed = mesh(box, (x, y, z) => y === 0 && z === 0 && (x === 0 || x === 1) 
 assert(mixed.ids.includes(E.WOOD) && mixed.ids.includes(E.GOLD), 'both triangle materials preserved');
 closed(mixed);
 
-// Exercise all tetrahedral sign configurations through complete closed volumes.
+// One vertex per cube cannot separate every ambiguous diagonal contact: surface
+// nets can have four faces sharing an edge. Still require NO open/unbalanced edges
+// in every binary sign configuration, rather than incorrectly requiring manifolds.
 for (let mask = 1; mask < 256; mask++) {
-  closed(mesh([-2, -2, -2, 4, 4, 4], (x, y, z) =>
-    x >= 0 && x < 2 && y >= 0 && y < 2 && z >= 0 && z < 2 && (mask & (1 << (x + 2 * y + 4 * z))) ? E.ROCK : 0));
+  const m = mesh([-2, -2, -2, 4, 4, 4], (x, y, z) =>
+    x >= 0 && x < 2 && y >= 0 && y < 2 && z >= 0 && z < 2 && (mask & (1 << (x + 2 * y + 4 * z))) ? E.ROCK : 0);
+  assert(m.positions.length > 0);
+  for (const e of edges(m).values()) {
+    assert(e.count >= 2 && e.count % 2 === 0, `no open edge in mask ${mask}`);
+    assert.equal(e.winding, 0, `balanced edge winding in mask ${mask}`);
+  }
+}
+// A one-cell-wide tunnel stays open, including its inward-facing wall winding.
+const tunnel = mesh([-3, -3, -3, 4, 4, 4], (x, y, z) =>
+  x >= -1 && x <= 1 && y >= -1 && y <= 1 && z >= -1 && z <= 1 && (x !== 0 || z !== 0) ? E.ROCK : 0);
+closed(tunnel);
+for (const face of faces(tunnel)) {
+  const sides = face.map((a, i) => {
+    const b = face[(i + 1) % 3];
+    return (b[0] - a[0]) * (0.5 - a[2]) - (b[2] - a[2]) * (0.5 - a[0]);
+  });
+  assert(!(sides.every(v => v >= 0) || sides.every(v => v <= 0)), 'vertical centre ray misses all tunnel faces');
+}
+
+// Away from clipped borders, a plane is exactly two triangles per sample edge,
+// versus marching tetrahedra's eight. Verify every axis and both outward signs.
+for (const axis of [0, 1, 2]) for (const sign of [-1, 1]) {
+  const bounds = [0, 0, 0, 32, 32, 32];
+  bounds[axis] = -2; bounds[axis + 3] = 2;
+  const m = mesh(bounds, (...p) => (sign > 0 ? p[axis] < 0 : p[axis] >= 0) ? E.ROCK : 0);
+  assert.equal(m.positions.length / 9, 2 * 32 * 32, 'plane: 75% fewer triangles than tetrahedra');
+  assert.equal(area(m), 32 * 32, 'plane has complete owned area');
+  for (const [a, b, c] of faces(m)) {
+    const u = b.map((v, i) => v - a[i]), v = c.map((v, i) => v - a[i]);
+    const cross = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+    assert(cross[axis] * sign > 0, 'plane winding is outward');
+  }
 }
 const input = volume(box, single), before = input.ids.slice();
 buildSurfaceMesh(input.ids, input.options);
@@ -178,4 +215,4 @@ assert.throws(() => buildSurfaceMesh(input.ids.subarray(1), input.options), Rang
 assert.throws(() => buildSurfaceMesh(new Uint8Array(8), { size: [2, 2, 2], origin: [0, 0, 0], bounds: [0, 0, 0, 2, 2, 2] }), /padded/);
 // Topology-only padding is insufficient for chunk-independent gradients.
 assert.throws(() => buildSurfaceMesh(new Uint8Array(27), { size: [3, 3, 3], origin: [-1, -1, -1], bounds: [0, 0, 0, 1, 1, 1] }), /padded/);
-console.log('surface-mesh-check: PASS (smooth/finite/unit/outward normals, gradient fallback, normal/geometry seams, isolated/manifold/winding, all elements/high IDs, thin branch, steps 1/2/4, 255 sign cases, validation)');
+console.log('surface-mesh-check: PASS (smooth/unit/outward normals, fallback, exact seams, isolated/manifold/winding, high IDs, thin branch/tunnel, steps 1/2/4, 255 closed sign cases, validation; 32x32 plane: 2048 triangles vs 8192 tetrahedra, 75% reduction)');
