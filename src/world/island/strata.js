@@ -50,15 +50,8 @@ import { E } from '../../elements.js';
 const cells = (m) => m / CELL_M;
 const DEG = Math.PI / 180;
 
-// The rock elements. SANDSTONE, LIMESTONE and COAL come with the new rock
-// elements; until they land, each is a named placeholder for ROCK: the strata
-// compute and preview the same, the game just shows them all as rock.
-export const STRATA_ELEMENTS = {
-  BASEMENT: E.ROCK,
-  LIMESTONE: E.LIMESTONE ?? E.ROCK,
-  SANDSTONE: E.SANDSTONE ?? E.ROCK,
-  COAL: E.COAL ?? E.ROCK,
-};
+// Each unit's element (the source's stElement says the same with E_* names).
+export const STRATA_ELEMENTS = { BASEMENT: E.ROCK, LIMESTONE: E.LIMESTONE, SANDSTONE: E.SANDSTONE, COAL: E.COAL };
 // stUnit's units, in the order they were laid down
 export const STRATA_UNITS = ['BASEMENT', 'LIMESTONE', 'SANDSTONE', 'COAL'];
 
@@ -67,7 +60,6 @@ const S = {
     LIME_BEDS: 3,               // the limestone's massive beds (each forms a bench where it is terraced)
     CYCLES: 9,                  // cyclothems over the limestone (enough to reach past the highest ground, dip and folds included)
     ...Object.fromEntries(STRATA_UNITS.map((u, i) => [`UNIT_${u}`, i])),
-    ...Object.fromEntries(Object.entries(STRATA_ELEMENTS).map(([u, id]) => [`E_${u}`, id])),
   },
   floats: {
     BASEMENT_TOP: cells(-1.5),  // the unconformity, metres above the datum: just under the sea at the island's centre
@@ -157,10 +149,10 @@ int stUnitAt(float x, float z, float s) {
 }
 int stUnit(float x, float y, float z) { return stUnitAt(x, z, stHeight(x, y, z)); }
 int stElement(int unit) {
-  if (unit == STRATA_UNIT_LIMESTONE) return STRATA_E_LIMESTONE;
-  if (unit == STRATA_UNIT_SANDSTONE) return STRATA_E_SANDSTONE;
-  if (unit == STRATA_UNIT_COAL) return STRATA_E_COAL;
-  return STRATA_E_BASEMENT;
+  if (unit == STRATA_UNIT_LIMESTONE) return E_LIMESTONE;
+  if (unit == STRATA_UNIT_SANDSTONE) return E_SANDSTONE;
+  if (unit == STRATA_UNIT_COAL) return E_COAL;
+  return E_ROCK;
 }
 
 // The bedrock element at world cell (x, y, z) of a column whose terrain height

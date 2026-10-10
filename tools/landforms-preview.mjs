@@ -61,9 +61,8 @@ function png(name, w0, h0, rgb0) {
 }
 const hex = (s) => { const n = parseInt(s.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; };
 const element = (id) => hex(ELEMENTS[id].color);
-// rock by stratum, in the new rock elements' colours where they have landed
-const UNIT_FALLBACK = { BASEMENT: element(E.ROCK), LIMESTONE: hex('#c9c4b5'), SANDSTONE: hex('#b9875a'), COAL: hex('#24211f') };
-const UNIT_COLOURS = STRATA_UNITS.map((u) => (STRATA_ELEMENTS[u] !== E.ROCK || u === 'BASEMENT' ? element(STRATA_ELEMENTS[u]) : UNIT_FALLBACK[u]));
+// rock by stratum (the basement is ROCK, which other things are too)
+const UNIT_COLOURS = STRATA_UNITS.map((u) => element(STRATA_ELEMENTS[u]));
 const ROCKS = new Set(Object.values(STRATA_ELEMENTS));
 const SKY = [200, 225, 245];
 const WATER_SHALLOW = [110, 175, 230], WATER_DEEP = [22, 70, 150];
