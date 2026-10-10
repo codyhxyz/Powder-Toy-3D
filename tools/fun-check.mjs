@@ -217,6 +217,16 @@ const runDust = (w) => { let p = 0; for (let s = 0; s < STEPS_DUST; s++) { w.ste
   ok(count(w, E.SAND) < s0 - 4 && p > 0.5 * PHYS.P_MAX, 'antimatter annihilates sand in a blast', `sand ${count(w, E.SAND)}/${s0}, max P ${fmt(p)}, max T ${fmt(t)}`);
   ok(count(w, E.WALL) === wall0, 'antimatter spares the wall');
 }
+{
+  // void drains antimatter quietly: no annihilation, the void stays
+  const w = world();
+  fill(w, 0, N, 0, 1, E.VOID);
+  fill(w, 12, 20, 1, 3, E.ANTIMATTER);
+  const v0 = count(w, E.VOID);
+  let p = 0;
+  for (let s = 0; s < 60; s++) { w.step(); p = Math.max(p, maxP(w)); }
+  ok(count(w, E.VOID) === v0 && count(w, E.ANTIMATTER) === 0 && p < PHYS.DUST_P, 'void drains antimatter without a blast', `max P ${fmt(p)}`);
+}
 
 console.log(`\n${fails ? `${fails} FAILED` : 'all passed'}`);
 process.exit(fails ? 1 : 0);
