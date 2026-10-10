@@ -54,7 +54,9 @@ const ABUT_GRADE = 0.8;              // ...falling off at this grade (walkable: 
 const LAKE_X0 = 100;                 // the reservoir and dam span x in [LAKE_X0, NX - LAKE_X0)
 const DAM_Z0 = 52, DAM_Z1 = 68;      // the dam's footprint across the valley (z)
 const LAKE_Z1 = 104;                 // the reservoir runs from the dam's back to here
-const LAKE_BANK = 1.2;               // fall per cell of the reservoir's bed away from its shore
+const LAKE_BANK = 1.6;               // fall per cell of the reservoir's bed away from its shore
+const LAKE_CORNER = 16;              // cells: the radius its far corners are rounded to
+const SHORE_NOISE = 3;               // cells its shoreline wanders in by
 const BASIN_X0 = 108;                // the spillway basin's flat floor spans x in [BASIN_X0, NX - BASIN_X0)...
 const BASIN_Z0 = 30;                 // ...and z in [BASIN_Z0, DAM_Z0)
 const BASIN_BANK = 0.8;              // rise per cell of the basin's banks (walkable)
@@ -95,6 +97,8 @@ const SIDE_DOOR_X = [20, 28];        // the side doorways' span (x)
 const INNER_DOOR_Z = [[52, 57], [71, 76]];   // the spawn room's two doorways into the hall (z)
 const WIN_Y0 = 4, WIN_H = 3;         // window bands: sill above the floor, height
 const MERLON_EVERY = 3;              // a merlon on the roof's edge every this many cells
+const TOWER = 7;                     // the front corners' towers: this many cells square...
+const TOWER_RISE = 7;                // ...rising this far over the roof, open on top behind merlons
 const STAND_X = 26, STAND_Z = 64;    // the flag stand's middle
 const STAND_R = 1;                   // its half-width (a 3×3 steel plinth, one cell high)
 const PAD_H = 1;                     // vehicle pads are this thick (flush with the plateau)
@@ -102,11 +106,11 @@ const PAD_H = 1;                     // vehicle pads are this thick (flush with 
 // ---- the forest
 const FOREST_X0 = 44, FOREST_X1 = 92;   // trees stand in x in [FOREST_X0, FOREST_X1) (red's)...
 const FOREST_Z0 = 28, FOREST_Z1 = 100;  // ...and z in [FOREST_Z0, FOREST_Z1)
-const TREE_GAP = 10;                 // cells between trunks at least
+const TREE_GAP = 11;                 // cells between trunks at least
 const TREE_TRIES = 400;              // candidate spots tried
-const TREE_MAX = 18;                 // trees per side
-const TREE_SIZE = [3, 5];            // construction sizes (T scales the tree) they're drawn from
-const TREE_KINDS = ['oak', 'oak', 'pine', 'birch'];
+const TREE_MAX = 16;                 // trees per side
+const TREE_SIZE = [2, 4];            // construction sizes (T scales the tree) they're drawn from
+const TREE_KINDS = ['oak', 'oak', 'birch', 'birch', 'pine'];   // (a pine's skirt of needles reaches the ground: a few)
 const ROAD_Z = [30, 44];             // the open road along the south of the valley: no trees
 const TRENCH_CLEAR = 6;              // cells either side of the tunnel's approach kept clear
 const LAKE_CLEAR = 4;                // cells from the reservoir's water no leaf may reach
@@ -167,7 +171,11 @@ export function groundAt(x, z) {
   h = Math.max(h, hill(xr, z, ABUT_X0, MID_X, DAM_Z0, NZ, CREST_Y, ABUT_GRADE) + (xr < ABUT_X0 ? FLOOR_NOISE * n : 0));
   // the reservoir's bed, banked up from the middle (the dam closes its south side)
   if (inLake(x, z)) {
-    const d = Math.min(xr - LAKE_X0, LAKE_Z1 - 1 - z);   // cells from the shore (the dam's side has none)
+    // cells from the shore (the dam's side has none), round in the far corners, wandering
+    const dx = xr - LAKE_X0, dz = LAKE_Z1 - 1 - z;
+    let d = Math.min(dx, dz);
+    if (dx < LAKE_CORNER && dz < LAKE_CORNER) d = LAKE_CORNER - Math.hypot(LAKE_CORNER - dx, LAKE_CORNER - dz);
+    d -= SHORE_NOISE * (1 + noise(xr, z, 4));
     h = Math.min(h, Math.max(LAKE_BED_Y, CREST_Y - LAKE_BANK * (d + 1)));
   }
   // the spillway basin under the dam (downstream only: upstream, the abutments hold the reservoir)
@@ -221,10 +229,10 @@ export const shrineAltars = (s) => SHRINE_ALTARS.map(([x, y, z]) => [s[0] + x + 
 
 // Team banners (src/arenas/markers.js draws them; no element is red or blue):
 // a pole's foot in grid cells, and its team. Two on the fortress's front
-// corners up on the roof, two flanking its front door.
-const ROOF_Y = BASE_Y + FORT_H + 1;
+// towers, two flanking its front door.
+const TOWER_TOP = BASE_Y + FORT_H + TOWER_RISE + 1;
 export const DAM_VALLEY_BANNERS = ['red', 'blue'].flatMap((side) => [
-  [FORT_X1 - 1, ROOF_Y, FORT_Z0], [FORT_X1 - 1, ROOF_Y, FORT_Z1 - 1],
+  [FORT_X1 - 2, TOWER_TOP, FORT_Z0 + 1], [FORT_X1 - 2, TOWER_TOP, FORT_Z1 - 2],
   [FORT_X1 + 1, BASE_Y, FRONT_DOOR_Z[0] - 2], [FORT_X1 + 1, BASE_Y, FRONT_DOOR_Z[1] + 1],
 ].map(([x, y, z]) => ({ team: side, at: [team(x, side), y, z] })));
 
@@ -328,6 +336,17 @@ export function buildDamValley() {
     for (let z = FORT_Z0; z < FORT_Z1; z += MERLON_EVERY) {
       B(FORT_X0, top + 1, z, FORT_X0 + 1, top + 3, z + 1, E.ROCK);
       B(FORT_X1 - 1, top + 1, z, FORT_X1, top + 3, z + 1, E.ROCK);
+    }
+    // towers on the front corners, over the roof (a lookout down the valley)
+    for (const [z0, z1] of [[FORT_Z0, FORT_Z0 + TOWER], [FORT_Z1 - TOWER, FORT_Z1]]) {
+      B(FORT_X1 - TOWER, top, z0, FORT_X1, top + TOWER_RISE, z1, E.ROCK);
+      B(FORT_X1 - TOWER, top + TOWER_RISE, z0, FORT_X1, top + TOWER_RISE + 1, z1, E.WOOD);
+      for (let k = 0; k < TOWER; k += 2) {
+        B(FORT_X1 - TOWER + k, top + TOWER_RISE + 1, z0, FORT_X1 - TOWER + k + 1, top + TOWER_RISE + 3, z0 + 1, E.ROCK);
+        B(FORT_X1 - TOWER + k, top + TOWER_RISE + 1, z1 - 1, FORT_X1 - TOWER + k + 1, top + TOWER_RISE + 3, z1, E.ROCK);
+        B(FORT_X1 - 1, top + TOWER_RISE + 1, z0 + k, FORT_X1, top + TOWER_RISE + 3, z0 + k + 1, E.ROCK);
+        B(FORT_X1 - TOWER, top + TOWER_RISE + 1, z0 + k, FORT_X1 - TOWER + 1, top + TOWER_RISE + 3, z0 + k + 1, E.ROCK);
+      }
     }
     // the spawn room's wall, with two doorways into the hall
     B(SPAWN_X1, BASE_Y, FORT_Z0 + FORT_WALL, SPAWN_X1 + FORT_WALL, top, FORT_Z1 - FORT_WALL, E.ROCK);

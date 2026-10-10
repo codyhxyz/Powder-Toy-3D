@@ -116,6 +116,36 @@ for (let y = 0; y < NY; y++) for (let z = 0; z < NZ; z++) for (let x = 0; x < NX
   if (id(x, y, z) !== id(NX - 1 - x, y, z) && !inShrine(x, y, z) && !inShrine(NX - 1 - x, y, z)) asym++;
 check('the halves mirror each other (but the shrines)', asym === 0, `${asym} cells differ`);
 
+// on foot from red's first spawn: steps up a cell at most (the body's STEP_HEIGHT),
+// drops any height; the ridges' shrines are for jetpacks, the rest must be reachable
+const STEP_UP = 1;
+const stands = (x, y, z) => footing(id(x, y - 1, z)) && [0, 1, 2, 3, 4, 5].every((k) => id(x, y + k, z) === E.EMPTY);
+const key = (x, y, z) => (y * NZ + z) * NX + x;
+const seen = new Uint8Array(NX * NY * NZ);
+const queue = [layout.spawns.red[0]];
+seen[key(...layout.spawns.red[0])] = 1;
+while (queue.length) {
+  const [x, y, z] = queue.pop();
+  for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+    const nx = x + dx, nz = z + dz;
+    if (nx < 0 || nz < 0 || nx >= NX || nz >= NZ) continue;
+    for (let ny = Math.min(NY - 6, y + STEP_UP); ny >= 1; ny--) {
+      if (ny < y && id(nx, ny + BODY_CELLS - 1, nz) !== E.EMPTY) break;   // (falling: down the open column only)
+      if (!stands(nx, ny, nz)) continue;
+      if (!seen[key(nx, ny, nz)]) { seen[key(nx, ny, nz)] = 1; queue.push([nx, ny, nz]); }
+      break;
+    }
+  }
+}
+const reach = ([x, y, z]) => seen[key(Math.floor(x), y, Math.floor(z))] === 1;
+const walk = [['blue flag', layout.flags.blue], ['siege core', layout.siege.core], ...layout.hills.map((h, i) => [`hill ${i}`, h]),
+  ['crest shrine', [layout.shrines[0][0], layout.shrines[0][1], layout.shrines[0][2] + 3]],
+  ['pump room shrine', [layout.shrines[1][0], layout.shrines[1][1], layout.shrines[1][2] + 3]], ['blue spawn', layout.spawns.blue[0]]];
+const cut = walk.filter(([, p]) => !reach(p));
+check('on foot from red spawn: the flags, hills, core, crest and tunnel', !cut.length, cut.map(([n]) => n).join(', '));
+const ridges = layout.shrines.slice(2).filter((s) => reach([s[0], s[1], s[2] + 3])).length;
+console.log(`     (ridge shrines reachable on foot: ${ridges} of 2; they're meant for jetpacks)`);
+
 // ---------------------------------------------------------------- GPU
 if (port) {
   const { chromium } = await import('playwright');
@@ -194,9 +224,10 @@ if (port) {
 
     // ---- step cost: Dam Valley's grid vs 'wide' (160×96×160) with the Lab
     const stepMs = () => ev(([iters, chunks]) => {
-      const a = window.__app, sim = a.sim, out = { sleep: [], noSleep: [] };
-      for (const [k, skip] of [['sleep', true], ['noSleep', false]]) {
-        sim.skipSleeping = skip;
+      const a = window.__app, sim = a.sim, out = { sleep: [], noSleep: [], awake: [] };
+      for (const [k, sleep, quiet] of [['sleep', true, true], ['noSleep', false, true], ['awake', false, false]]) {
+        sim.skipSleeping = sleep;
+        sim.skipQuiet = quiet;
         for (let i = 0; i < 5; i++) sim.step();
         sim.gpuSync();
         for (let c = 0; c < chunks; c++) {
@@ -208,7 +239,7 @@ if (port) {
         out[k].sort((u, v) => u - v);
         out[k] = +out[k][Math.floor(chunks / 2)].toFixed(3);
       }
-      sim.skipSleeping = true;
+      sim.skipSleeping = sim.skipQuiet = true;
       return out;
     }, [STEP_ITERS, STEP_CHUNKS]);
     const holdLoop = () => ev(() => { const a = window.__app; a.settings.paused = true; });
@@ -232,11 +263,12 @@ if (port) {
         await frames(30);
       };
       const shot = (name) => p.screenshot({ path: `${shots}/${name}.png` });
-      await cam([-24, 92, 22], [140, 18, 70]); await shot('1-aerial-red-end');
-      await cam([NX + 24, 92, NZ - 22], [116, 18, 58]); await shot('2-aerial-blue-end');
+      await cam([-40, 104, 26], [150, 12, 70]); await shot('1-aerial-red-end');
+      await cam([NX + 40, 104, NZ - 26], [106, 12, 58]); await shot('2-aerial-blue-end');
       await cam([128, 230, -90], [128, 0, 66]); await shot('3-overview');
       await cam([150, 44, 22], [124, 24, 62]); await shot('4-dam-face');
       await cam([70, 58, 118], [128, 30, 70]); await shot('5-reservoir');
+      await cam([66, 52, 30], [16, 26, 64]); await shot('6-red-base');
       // first person: the red base's door, its roof, the crest, the pump room
       await p.keyboard.press('f');
       await p.waitForFunction(() => window.__app.pov.mode === 'on', null, { timeout: 15000 }).catch(() => {});
@@ -246,10 +278,9 @@ if (port) {
         await frames(40);
         await shot(name);
       };
-      await fp([36, 22, 64], -Math.PI / 2, -0.04, '6-fp-red-door');
-      await fp([28.5, 35, 50], -Math.PI / 2 + 0.25, -0.12, '7-fp-red-roof');
+      await fp([28.5, 42, 52], -Math.PI / 2 + 0.2, -0.1, '7-fp-red-tower');
       await fp([102, 34, 60.5], -Math.PI / 2, -0.03, '8-fp-crest');
-      await fp([106, 14, 60], -Math.PI / 2, 0.02, '9-fp-tunnel');
+      await fp([108, 14, 60], -Math.PI / 2, 0.02, '9-fp-tunnel');
       await ev(() => window.__app.pov.exit(true));
       try {
         execFileSync('montage', [`${shots}/[1-9]-*.png`, '-resize', `${SHEET_TILE}x`, '-tile', '3x', '-geometry', '+4+4', '-background', '#111', `${shots}/sheet.jpg`]);
@@ -265,7 +296,7 @@ if (port) {
     await holdLoop();
     const wide = await stepMs();
     console.log(`step ms (median of ${STEP_CHUNKS}×${STEP_ITERS}): valley ${JSON.stringify(valley)}, wide+lab ${JSON.stringify(wide)}`);
-    console.log(`ratio valley/wide: sleeping ${(valley.sleep / wide.sleep).toFixed(2)}, every supertile ${(valley.noSleep / wide.noSleep).toFixed(2)}`);
+    console.log(`ratio valley/wide: as run ${(valley.sleep / wide.sleep).toFixed(2)}, every supertile ${(valley.noSleep / wide.noSleep).toFixed(2)}, every brick awake ${(valley.awake / wide.awake).toFixed(2)}`);
   } catch (err) {
     fails++;
     console.log('FAIL threw', String(err).slice(0, 600));
