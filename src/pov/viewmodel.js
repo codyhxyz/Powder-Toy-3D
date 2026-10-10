@@ -71,6 +71,8 @@ export const HIT = {
   POGO: { kick: 0.2 },                                                                 // a pogo bounce: the stick's jolt in the hands
   HOOK: { kick: 0.5, punch: { pitch: [0.5 * DEG, 1 * DEG] } },                       // the hook's claw fired
   KICK: { punch: { pitch: [-1.5 * DEG, -0.5 * DEG], yaw: [-0.5 * DEG, 0.5 * DEG] } },   // the boot landed (kick.js): the view jolts, the hands stay put
+  LASER: { kick: 2.6, punch: { pitch: [5 * DEG, 6 * DEG], yaw: [-1 * DEG, 1 * DEG] } },        // the laser cannon's beam: the sniper's shove, harder
+  BURROWER: { kick: 1.2, punch: { pitch: [1.5 * DEG, 2.5 * DEG] } },                   // the burrower's drill leaving the tube
 };
 const randIn = ([lo, hi] = [0, 0]) => lo + Math.random() * (hi - lo);
 

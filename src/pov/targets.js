@@ -55,6 +55,48 @@ export function segmentTarget(a, b, exclude = null) {
   return len > 0 ? rayTarget(a, d.divideScalar(len), len, exclude) : null;
 }
 
+// The nearest live target to `point` within maxDist of its box: { target, dist
+// (to the box, 0 inside it), center (the box's middle) }, or null. The
+// burrower's drill homes on it.
+export function nearestTarget(point, maxDist = Infinity, exclude = null) {
+  let best = null;
+  for (const t of targets) {
+    if (!t.alive || t.id === exclude) continue;
+    t.box(lo, hi);
+    const dx = Math.max(lo.x - point.x, 0, point.x - hi.x);
+    const dy = Math.max(lo.y - point.y, 0, point.y - hi.y);
+    const dz = Math.max(lo.z - point.z, 0, point.z - hi.z);
+    const dist = Math.hypot(dx, dy, dz);
+    if (dist <= maxDist && dist < (best?.dist ?? Infinity)) {
+      best = { target: t, dist, center: lo.clone().add(hi).multiplyScalar(0.5) };
+    }
+  }
+  return best;
+}
+
+// Every live target a beam from `origin` along unit `dir`, `len` long and
+// `radius` thick, passes through: [{ target, dist (along it), point }], nearest
+// first. Each box, grown by the radius, against the beam's axis (the laser).
+export function beamTargets(origin, dir, len, radius, exclude = null) {
+  const hits = [];
+  for (const t of targets) {
+    if (!t.alive || t.id === exclude) continue;
+    t.box(lo, hi);
+    lo.subScalar(radius); hi.addScalar(radius);
+    let t0 = 0, t1 = len;
+    for (const a of ['x', 'y', 'z']) {
+      const o = origin[a], d = dir[a];
+      if (Math.abs(d) < 1e-9) { if (o < lo[a] || o > hi[a]) { t0 = Infinity; break; } continue; }
+      let n = (lo[a] - o) / d, f = (hi[a] - o) / d;
+      if (n > f) [n, f] = [f, n];
+      t0 = Math.max(t0, n); t1 = Math.min(t1, f);
+      if (t0 > t1) break;
+    }
+    if (t0 <= t1) hits.push({ target: t, dist: t0, point: origin.clone().addScaledVector(dir, t0) });
+  }
+  return hits.sort((a, b) => a.dist - b.dist);
+}
+
 // The target with this id, or null (an NPC finding the player's).
 export function targetById(id) {
   for (const t of targets) if (t.id === id) return t;
