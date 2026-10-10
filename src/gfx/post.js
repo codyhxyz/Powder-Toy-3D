@@ -6,6 +6,7 @@ import * as THREE from 'three';
 //   post.render(scene, camera);          // instead of renderer.render(scene, camera)
 //   post.reset();                        // after anything that invalidates history
 //   post.settings.taa / .upscale / .bloom / .exposure (EV) / .sharpen / .look / .raw / .hotStart / .hotFull
+//   post.settings.night / .nightGain / .meter, post.sceneLuma: night-vision goggles (below)
 //
 // The scene is rendered as linear, premultiplied HDR radiance. The canvas stays
 // transparent: tone mapping is applied to the premultiplied colour ("over black"),
@@ -34,6 +35,13 @@ import * as THREE from 'three';
 // the exposure rises by what brings it back there, up to ADAPT.MAX_EV, with the
 // exponential time course of visual adaptation (Pattanaik et al. 2000, as in
 // Krawczyk et al. 2005): slow into the dark, quick back into the light.
+// Night vision (the Night Vision perk, pov/nightVision.js): an image intensifier's picture, mixed in
+// by settings.night: the scene's luminance × settings.nightGain, tone-mapped as a grey and shown on a
+// green P43 phosphor, with the tube's shot-noise grain (σ ∝ √(signal·gain): it counts photons) and
+// its round field's vignette. With settings.meter on, the pipeline also measures the scene's
+// log-average luminance (Reinhard et al. 2002, the auto-exposure key) every METER_INTERVAL frames
+// from a METER_SIZE² downsample read back asynchronously: post.sceneLuma (linear, before exposure;
+// over covered pixels only: the page behind a transparent canvas isn't the scene).
 
 export const POST_DEFAULTS = {
   taa: true,
@@ -53,6 +61,9 @@ export const POST_DEFAULTS = {
   hotStart: 1.0,
   hotFull: 4.0, // …and is complete here
   adapt: true, // eyes adjusting to the dark (ADAPT); false holds the gain at 1 (A/B checks)
+  night: 0, // night-vision goggles' share of the picture (0 = off)
+  nightGain: 1, // × light they add
+  meter: false, // measure post.sceneLuma
 };
 
 // Eye adaptation (see the header). Luminances are log2 of scene radiance, where
@@ -94,6 +105,16 @@ const CONF_GRID = 64;
 // distance from the origin (at least 1 world unit) in one frame…
 const JUMP_MOVE_FRAC = 0.25;
 const JUMP_TURN = 0.5; // …or turns more than this (radians)
+// The luminance meter (night vision's automatic brightness control): a METER_SIZE² grid of tiles,
+// METER_TAPS² samples each, read back every METER_INTERVAL frames.
+const METER_SIZE = 16;
+const METER_TAPS = 4;
+const METER_INTERVAL = 4;
+const METER_LOG_FLOOR = 1e-4; // radiance added before the log, so black pixels don't send it to −∞ (Reinhard's δ)
+const METER_COVERED = 0.5;    // alpha at which a pixel counts as scene, not the page behind the canvas
+// Night vision's screen: a Gen-3 image intensifier's P43 phosphor (green, peak 545 nm), linear sRGB, max
+// channel 1 (also tints the held tool, pov/viewmodel.js, drawn over the finished frame).
+export const NV_PHOSPHOR = [0.30, 1.0, 0.25];
 
 const VERT = /* glsl */ `
 in vec3 position;
@@ -463,6 +484,9 @@ uniform float uSharpen;
 uniform float uLook;
 uniform float uRaw;      // 1 = no tone curve/exposure (false-colour data views)
 uniform sampler2D tAdapt; // eye adaptation: r = exposure gain (1 in daylight)
+uniform float uNight;     // night-vision goggles' share of the picture (0 = off)
+uniform float uNightGain; // × light they add
+uniform uint uNightSeed;  // frame number: the grain changes every frame
 
 const mat3 SRGB_TO_REC2020 = mat3(
   vec3(0.6274, 0.0691, 0.0164), vec3(0.3293, 0.9195, 0.0880), vec3(0.0433, 0.0113, 0.8956));
@@ -545,6 +569,28 @@ const float CAS_LOBE_HARD = 5.0;
 const vec3 IGN = vec3(0.06711056, 0.00583715, 52.9829189);
 const float DITHER_LEVELS = 255.0;  // output code values above 0
 const float DITHER_BLACK = 1e-5;    // max channel at or below which a pixel counts as exact black (no dither)
+const vec3 NV_PHOSPHOR = vec3(${NV_PHOSPHOR.join(', ')});   // night vision's screen (NV_PHOSPHOR in JS)
+const float NV_GRAIN = 0.08;        // grain σ (display units) on a mid-grey picture at NV_GRAIN_GAIN...
+const float NV_GRAIN_GAIN = 16.0;   // ...this gain (one stack); σ ∝ √(picture·gain), shot noise
+const float NV_VIGNETTE = 0.6;      // darkening at the corners: the tube's round field of view...
+const float NV_VIGNETTE_START = 0.45; // ...starting this far out (share of the half-diagonal)
+const float UNIFORM_SIGMA = 3.4641016; // √12: a uniform variable in [−½, ½] scaled to σ 1
+// PCG hash (Jarzynski & Olano 2020, "Hash Functions for GPU Rendering"): white noise for the grain.
+uint pcg(uint v) {
+  uint s = v * 747796405u + 2891336453u;
+  uint w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u;
+  return (w >> 22u) ^ w;
+}
+const float U32_TO_UNIT = 1.0 / 4294967296.0;
+vec3 nightVision(vec3 rad, ivec2 p) {
+  float t = tonemap(vec3(luma(rad) * uExposure * uNightGain)).g;   // AgX on a grey: the screen's brightness
+  float u = float(pcg(uint(p.x) + pcg(uint(p.y) + pcg(uNightSeed)))) * U32_TO_UNIT - 0.5;
+  t += u * UNIFORM_SIGMA * NV_GRAIN * sqrt(max(t, 0.0) * uNightGain / NV_GRAIN_GAIN);
+  vec2 q = (vec2(p) + 0.5) / uSize - 0.5;
+  float r = length(q * vec2(uSize.x / uSize.y, 1.0)) / length(vec2(0.5 * uSize.x / uSize.y, 0.5));
+  t *= 1.0 - NV_VIGNETTE * smoothstep(NV_VIGNETTE_START, 1.0, r);
+  return NV_PHOSPHOR * clamp(t, 0.0, 1.0);
+}
 
 void main() {
   ivec2 p = ivec2(gl_FragCoord.xy);
@@ -574,10 +620,33 @@ void main() {
 
   float gain = texelFetch(tAdapt, ivec2(0), 0).r;
   vec3 o = uRaw > 0.5 ? srgbEncode(clamp(rad, 0.0, 1.0)) : srgbEncode(tonemap(max(rad, 0.0) * (uExposure * gain)));
+  if (uNight > 0.0 && uRaw < 0.5) o = mix(o, srgbEncode(nightVision(max(rad, 0.0), p)), uNight);
   // ±½ LSB dither against 8-bit banding; keep exact zeros exact
   float ign = fract(IGN.z * fract(dot(vec2(p), IGN.xy)));
   o += (ign - 0.5) / DITHER_LEVELS * step(DITHER_BLACK, max(o.r, max(o.g, o.b)));
   oColor = vec4(clamp(o, 0.0, 1.0), c.a);
+}
+`;
+
+const METER_FRAG = /* glsl */ `
+${COMMON}
+uniform sampler2D tSrc;
+const int TAPS = ${METER_TAPS};
+const float SIZE = ${METER_SIZE}.0;
+const float LOG_FLOOR = ${METER_LOG_FLOOR};
+const float COVERED = ${METER_COVERED};
+// r: Σ log luminance over covered taps, g: their count
+void main() {
+  vec2 tile = gl_FragCoord.xy - 0.5;
+  float s = 0.0, n = 0.0;
+  for (int j = 0; j < TAPS; j++)
+    for (int i = 0; i < TAPS; i++) {
+      vec4 c = sanitize(texture(tSrc, (tile + (vec2(i, j) + 0.5) / float(TAPS)) / SIZE));
+      float w = step(COVERED, c.a);
+      s += w * log(LOG_FLOOR + luma(c.rgb) / max(c.a, 1e-3));
+      n += w;
+    }
+  oColor = vec4(s, n, 0.0, 1.0);
 }
 `;
 
@@ -650,7 +719,11 @@ export function createPost(renderer, { pixScale } = {}) {
     uSize: { value: new THREE.Vector2() }, uBloom: { value: 0 }, uExposure: { value: 1 },
     uSharpen: { value: 0 }, uLook: { value: 0 }, uRaw: { value: 0 }, uThresh: thresh,
     uHot: { value: new THREE.Vector2() }, tAdapt: { value: unitGain },
+    uNight: { value: 0 }, uNightGain: { value: 1 }, uNightSeed: { value: 0 },
   });
+  const meterMat = mat(METER_FRAG, { tSrc: { value: null }, uThresh: thresh });
+  let meterRT = null, meterBusy = false;
+  const meterBuf = new Float32Array(METER_SIZE * METER_SIZE * 4);
 
   // full-screen triangle
   const tri = new THREE.BufferGeometry();
@@ -676,6 +749,8 @@ export function createPost(renderer, { pixScale } = {}) {
 
   const post = {
     settings: { ...POST_DEFAULTS },
+    /** Log-average scene luminance (linear, before exposure) while settings.meter is on; null before the first reading or with no scene in view. */
+    sceneLuma: null,
     /** Optional profiling hook: called as onPass(name, renderTarget) after each pass (null: the canvas). */
     onPass: null,
     get size() { return size.clone(); },
@@ -795,6 +870,7 @@ export function createPost(renderer, { pixScale } = {}) {
       }
       prevVP.copy(curVP);
       frame++;
+      if (s.meter && !s.raw) meter(color);
 
       // 2b. eye adaptation
       adaptOn = s.adapt && !s.raw;   // (the data views and the plain view keep their exact colours)
@@ -839,6 +915,9 @@ export function createPost(renderer, { pixScale } = {}) {
       u.uRaw.value = s.raw ? 1 : 0;
       u.uHot.value.set(s.hotStart, s.hotFull);
       u.tAdapt.value = adaptTex;
+      u.uNight.value = s.raw ? 0 : s.night;
+      u.uNightGain.value = s.nightGain;
+      u.uNightSeed.value = frame;
       pass(compMat, target);
       post.onPass?.('composite', target);
 
@@ -873,15 +952,16 @@ export function createPost(renderer, { pixScale } = {}) {
       u.uRaw.value = s.raw ? 1 : 0;
       u.uHot.value.set(s.hotStart, s.hotFull);
       u.tAdapt.value = s.adapt && !s.raw ? adaptRT[adaptCur].texture : unitGain;
+      u.uNight.value = 0;   // (thumbnails and captures: not through the goggles)
       pass(compMat, target);
       renderer.setRenderTarget(prevTarget);
       renderer.setClearColor(savedClear, savedAlpha);
     },
 
     dispose() {
-      [sceneRT, still, ...history, ...down, ...up].forEach((t) => t?.dispose());
+      [sceneRT, still, meterRT, ...history, ...down, ...up].forEach((t) => t?.dispose());
       sceneRT?.depthTexture?.dispose();
-      [taaMat, taauMat, prefilterMat, downMat, upMat, compMat, lumMat, adaptMat, histMat].forEach((m) => m.dispose());
+      [taaMat, taauMat, prefilterMat, downMat, upMat, compMat, meterMat, lumMat, adaptMat, histMat].forEach((m) => m.dispose());
       [lumRT, histRT, ...adaptRT].forEach((t) => t.dispose());
       unitGain.dispose();
       histGeo.dispose();
@@ -911,6 +991,24 @@ export function createPost(renderer, { pixScale } = {}) {
         .finally(() => { adaptReading = false; });
     }
     return adaptRT[adaptCur].texture;
+  }
+
+  // The luminance meter: every METER_INTERVAL frames, the tile grid's log luminance, read back
+  // without waiting (the goggles follow the light over a fraction of a second anyway)
+  function meter(color) {
+    if (meterBusy || frame % METER_INTERVAL) return;
+    meterRT ??= new THREE.WebGLRenderTarget(METER_SIZE, METER_SIZE, {
+      type: THREE.FloatType, format: THREE.RGBAFormat, depthBuffer: false, stencilBuffer: false,
+      minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, generateMipmaps: false,
+    });
+    meterMat.uniforms.tSrc.value = color;
+    pass(meterMat, meterRT);
+    meterBusy = true;
+    renderer.readRenderTargetPixelsAsync(meterRT, 0, 0, METER_SIZE, METER_SIZE, meterBuf).then(() => {
+      let s = 0, n = 0;
+      for (let i = 0; i < meterBuf.length; i += 4) { s += meterBuf[i]; n += meterBuf[i + 1]; }
+      post.sceneLuma = n > 0 ? Math.max(0, Math.exp(s / n) - METER_LOG_FLOOR) : null;
+    }).catch(() => {}).finally(() => { meterBusy = false; });
   }
 
   // Is the scene rendering below output size (TAAU)?

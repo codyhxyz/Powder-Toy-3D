@@ -19,9 +19,10 @@ import { createPerkSet } from './perks.js';
 // pressure gradients with the sim's own a = −∇P·P_ACCEL/ρ, and hands what it
 // touches to vitals.js. A second pass pushes loose matter out of the body's way.
 // The body's perks (perks.js) change its moves here (Lukki, Sand Swimmer,
-// Fleet Foot, Rocket Boots, Big Tank) and reach into the world through a third
-// pass (Freeze Field, Revenge Explosion). A held pogo stick (tools/pogo.tool.js
-// calls holdPogo() every frame) turns its landings into bounces.
+// Fleet Foot, Rocket Boots, Big Tank, Slow Fall, Shrink) and reach into the
+// world through a third pass (Freeze Field, Revenge Explosion), and through the
+// engine's own brush and the coupling pass (Rain Cloud). A held pogo stick
+// (tools/pogo.tool.js calls holdPogo() every frame) turns its landings into bounces.
 //
 // Units: positions in grid cells (feet = bottom centre of the box), velocities
 // in cells/s, time in s. The sim runs on its own, much faster clock: about 240
@@ -30,8 +31,9 @@ import { createPerkSet } from './perks.js';
 // the coupling pass) it converts with the measured step rate.
 
 // ---- body ----
-const HW = BODY_WIDTH / 2;             // cells, half the footprint
-const H = BODY_HEIGHT;
+// Its size is the body's own (the Shrink perk scales it): createPlayer keeps H (height), HW (half
+// the footprint) and EYE (eye height) from BODY_HEIGHT, BODY_WIDTH and EYE_HEIGHT × perks.size.
+// What changes with size is what physics says does (Shrink, below).
 const EPS = 1e-4;                      // cells: faces this close to a cell boundary don't overlap it
 
 // ---- gravity and moving: Noita's player ----
@@ -69,6 +71,25 @@ const JET_TAP_S = 8 / NOITA_FPS;       // s of fuel every press burns at least, 
 const JET_RISE = 95 * PX;              // cells/s (14 m/s): the climb the jet eases toward (fly_speed_max_up)
 const JET_EASE = 0.25;                 // share of the gap to JET_RISE closed per Noita frame, gravity off while it fires (fly_speed_change_spd)
 const JET_FLY_SPEED = 52 * PX;         // cells/s: horizontal speed while the jet fires (fly_velocity_x)
+
+// ---- Slow Fall: a canopy's quadratic air drag on the way down, a = k·v², so the body comes down at
+// most at the terminal speed √(g/k). One stack lands it at a round parachute's rate (the US Army
+// T-11's 19 ft/s) at the default gravity; each further stack multiplies the drag area (perks.js
+// slowFallArea). Drag goes with area over mass, so a smaller body (Shrink) drifts down slower
+// still. It acts only while descending in air, so a jump still rises and the jetpack still climbs
+// (Noita's ease is untouched): it just makes the way down a glide.
+const SLOW_FALL_DESCENT = 5.8 / CELL_METERS;            // cells/s (5.8 m/s): terminal descent with one stack
+const SLOW_FALL_K = GRAVITY / SLOW_FALL_DESCENT ** 2;   // 1/cell: the canopy's drag constant at one stack and the default gravity
+
+// ---- Shrink: a body s times the size (perks.js size). Gravity is the world's, not the body's, so
+// the moves follow dynamic similarity (Alexander's: bodies of different sizes move alike at equal
+// Froude numbers v²/gL): run, walk, jump, swim and jet speeds scale by √s, and a jump still clears
+// the same number of body heights. Mass goes with volume (s³) and surfaces with area (s²), so:
+// an impulse (a blow, a gun's recoil) throws it 1/s³ as fast; liquid form drag (area/mass) is 1/s
+// and viscous drag (Stokes: size/mass) 1/s² as strong, so lava traps it worse; a canopy's drag is
+// 1/s; its skin warms and cools 1/s as fast (vitals.js). Blasts already scale: the pressure push is
+// the mean gradient over the body's own cells, about ΔP across the body over its length.
+// STEP_HEIGHT stays a cell (the grid's grain), so a small body still climbs a 1-cell ledge.
 
 // ---- liquids ----
 const WADE_SHARE = 0.15;               // submerged share of the body that counts as "in" liquid
@@ -117,6 +138,18 @@ const FREEZE_CLEAR = 1;                // cells around the body, from the feet u
 const REVENGE_INNER = BODY_HEIGHT / 2 + 1;   // cells from the body's middle where the blast's shell starts: the body sits in its eye
 const REVENGE_SHELL_MIN = 1;           // cells: the shell is at least this thick
 const REVENGE_COOLDOWN = 1;            // s between Revenge Explosions
+// Rain Cloud: real CLOUD cells (the engine rains them where they're thick, CLOUD_RAIN_NB, and thins
+// them at their edges) kept over the head. A breeze carries the cloud with the body (the coupling
+// pass on CLOUD only), and the brush tops its sphere up to CLOUD_FILL where rain and evaporation
+// took it. So no body can flood the world: new cloud comes at CLOUD_SEED_RATE at most, and a body
+// stops seeding while CLOUD_BUDGET cells of its own cloud may still be alive (counted down with
+// the cloud's measured life).
+const CLOUD_GAP = 2;                   // cells between the crown and the cloud's underside
+const CLOUD_FILL = 0.85;               // share of the air in its sphere it keeps cloud: thick enough to rain (5 of 6 neighbours on average)
+const CLOUD_SEED_RATE = 150;           // cells/s of new cloud at most, per body: a radius-4 cloud gathers in about 2 s
+const CLOUD_LIFE_S = 67;               // s: e-folding life of painted cloud, measured on the GPU (41% left after 60 s: 60 / ln(1/0.41))
+const CLOUD_BUDGET = 6000;             // cells: the most of its own cloud a body keeps alive at once (a trail it outran included)
+const CLOUD_SPAWN = ELEMENTS[E.CLOUD].spawn;   // the brush's chance per air cell at rate 1 (elements.js spawn)
 // The movement perks (Fleet Foot, Rocket Boots) multiply speeds; these caps keep the body inside
 // its probe (PROBE: 16 cells across, 32 tall; the probe leads the body by its velocity × the
 // readback latency) at low frame rates. Both are speeds the body already reaches without perks.
@@ -174,6 +207,13 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     (listeners[name] || []).forEach((fn) => fn(data));
   };
   const vitals = createVitals(emit, perks);
+  // the body's size (Shrink): resize() sets these from perks.size every frame
+  let size = 1, gait = 1, H = BODY_HEIGHT, HW = BODY_WIDTH / 2, EYE = EYE_HEIGHT;
+  function resize() {
+    size = perks.size;
+    gait = Math.sqrt(size);             // × speeds: Froude similarity
+    H = BODY_HEIGHT * size; HW = BODY_WIDTH / 2 * size; EYE = EYE_HEIGHT * size;
+  }
   // Sand Swimmer: powders don't block the body; it swims through them as through a liquid
   let sandSwim = false;
   const blocks = (id) => solidId(id) || (!sandSwim && isPowder(id));
@@ -211,6 +251,10 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     pogoing: false,               // bouncing on a held pogo stick this frame
     get pogoStep() { return pogoStep; },   // timed presses in a row (0..POGO_STEPS): how high it bounces
     perks,                        // its perks (perks.js)
+    get size() { return size; },  // × the plain body's size (Shrink)
+    get height() { return H; },   // cells, feet to crown
+    get width() { return 2 * HW; },   // cells, the square footprint's side
+    get eyeHeight() { return EYE; },  // cells above the feet
     speedScale: 1,                // × walking and running speed: a class's (classes.js; the Bulwark is slow)
     get health() { return vitals.health; },
     get shield() { return vitals.shield; },             // Energy Shield left (base lives, 0..shieldMax)
@@ -224,6 +268,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     stepRate: 0,                  // sim steps/s, as measured
   };
   const impulse = new THREE.Vector3();
+  const vB = new THREE.Vector3();
 
   // ---------------------------------------------------------------- probe
   function ensureMats(sim) {
@@ -239,6 +284,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
         ...stateUniforms(), uFrame: { value: 0 },
         uMin: { value: new THREE.Vector3() }, uMax: { value: new THREE.Vector3() }, uVel: { value: new THREE.Vector3() },
         uPushFluid: { value: 0 }, uPushPowder: { value: 0 }, uLift: { value: 0 }, uAhead: { value: new THREE.Vector2() },
+        uOnly: { value: -1 },
       }),
       field: rawMat(povFieldFrag(g), {
         ...stateUniforms(),
@@ -431,7 +477,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     p.liquidId = best;
 
     // head: liquid around the eye, or powder/solid in the eye's own cells
-    const ye = Math.floor(p.pos.y + EYE_HEIGHT);
+    const ye = Math.floor(p.pos.y + EYE);
     let open = 0, liq = 0, n = 0, buried = 0;
     const buriedCount = {};
     for (let x = bx0 - 1; x <= bx1 + 1; x++)
@@ -500,6 +546,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     u.uLift.value = speed > EPS ? DISPLACE_LIFT * Math.max(0, -p.vel.y) / speed : 0;
     u.uAhead.value.set(p.vel.x, p.vel.z).multiplyScalar(speed > EPS ? DISPLACE_AHEAD / speed : 0);
     u.uFrame.value = sim.frame;
+    u.uOnly.value = -1;
     // it changes only cells whose centres are in the body's box (shaders/povBody.js),
     // so only those are rebuilt and woken (Simulation.touch)
     sim.touchCentres(lo, hi);
@@ -534,10 +581,53 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     sim.pass(mats.field);
   }
 
-  // Freeze Field every frame; a Revenge Explosion when one is due
-  function fields(sim, dt) {
+  // Rain Cloud: its sphere over the head, as the probe saw it; the breeze; the brush
+  const cloudAt = new THREE.Vector3();
+  let cloudOwed = 0;   // cells of its own cloud that may still be alive
+  const cloud = { air: 0, cloud: 0, cells: 0, known: 0 };
+  function rainCloud(sim, dt, r, stepRate) {
+    const c = cloudAt.set(p.pos.x, p.pos.y + H + CLOUD_GAP + r, p.pos.z);
+    cloud.air = 0; cloud.cloud = 0; cloud.cells = 0; cloud.known = 0;
+    for (let y = Math.floor(c.y - r); y <= Math.floor(c.y + r) && y < g.ny; y++)
+      for (let x = Math.floor(c.x - r); x <= Math.floor(c.x + r); x++)
+        for (let z = Math.floor(c.z - r); z <= Math.floor(c.z + r); z++) {
+          if ((x + 0.5 - c.x) ** 2 + (y + 0.5 - c.y) ** 2 + (z + 0.5 - c.z) ** 2 > r * r) continue;
+          cloud.cells++;
+          const id = idAt(x, y, z);
+          if (id === UNKNOWN) continue;   // (a big cloud reaches past the probe's top)
+          cloud.known++;
+          if (id === E.EMPTY) cloud.air++; else if (id === E.CLOUD) cloud.cloud++;
+        }
+    if (!cloud.known) return;
+    // the sphere's cells past the probe are taken to hold what the probed ones do
+    const whole = cloud.cells / cloud.known;
+    cloud.air *= whole; cloud.cloud *= whole;
+    // the breeze: what's there moves with the body (cloud only: rain falls out of it freely)
+    if (cloud.cloud && stepRate > 0) {
+      const u = mats.couple.uniforms;
+      u.uMin.value.set(c.x - r, c.y - r, c.z - r);
+      u.uMax.value.set(c.x + r, c.y + r, c.z + r);
+      u.uVel.value.copy(p.vel).divideScalar(stepRate).clampScalar(-PHYS.V_MAX, PHYS.V_MAX);
+      u.uPushFluid.value = 0; u.uPushPowder.value = 0; u.uLift.value = 0; u.uAhead.value.set(0, 0);
+      u.uFrame.value = sim.frame;
+      u.uOnly.value = E.CLOUD;
+      sim.touchCentres([c.x - r, c.y - r, c.z - r], [c.x + r, c.y + r, c.z + r]);
+      sim.pass(mats.couple);
+    }
+    // the brush: top the air up to CLOUD_FILL, at the seed rate at most, within the budget
+    const want = Math.min(CLOUD_FILL * (cloud.air + cloud.cloud) - cloud.cloud, CLOUD_SEED_RATE * dt, CLOUD_BUDGET - cloudOwed);
+    if (!(want > 0) || !cloud.air) return;
+    sim.paint({ center: c, radius: r, shape: 0, tool: E.CLOUD, rate: want / (cloud.air * CLOUD_SPAWN), replace: false });
+    cloudOwed += Math.min(want, cloud.air);
+  }
+
+  // Freeze Field and Rain Cloud every frame; a Revenge Explosion when one is due
+  function fields(sim, dt, stepRate) {
     const r = vitals.dead ? 0 : perks.freezeRadius;
     if (r > 0 && dt > 0) perkField(sim, { inner: 0, outer: r, cool: FREEZE_RATE * dt, clear: HW + FREEZE_CLEAR });
+    cloudOwed *= Math.exp(-dt / CLOUD_LIFE_S);
+    const cr = vitals.dead ? 0 : perks.cloudRadius;
+    if (cr > 0 && dt > 0) rainCloud(sim, dt, cr, stepRate);
     if (!revengeDue) return;
     revengeDue = false;
     const pressure = perks.revengePressure;
@@ -554,6 +644,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     const dt = Math.min(Math.max(dtIn, 0), MAX_DT);
     revengeWait = Math.max(0, revengeWait - dt);
     sandSwim = perks.has('SAND_SWIMMER') && !vitals.dead;
+    resize();
     if (sim !== lastSim) {
       lastSim = sim; lastFrame = sim.frame;
       g = sim.g;
@@ -604,18 +695,20 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     const vh = new THREE.Vector2(v.x, v.z);
     let jumpedNow = false;
     // Fleet Foot and Rocket Boots: ×2 a stack, up to what the probe keeps up with; a class's speedScale on foot
-    const footSpeed = (alive && input.sprint ? SPRINT_SPEED : WALK_SPEED) * p.speedScale;
-    const runSpeed = p.jetting ? Math.min(JET_FLY_SPEED * perks.jetRate, Math.max(JET_FLY_SPEED, PERK_SPEED_H))
+    // Shrink: × gait (√size); the jet's own speeds too
+    const footSpeed = (alive && input.sprint ? SPRINT_SPEED : WALK_SPEED) * p.speedScale * gait;
+    const jetFly = JET_FLY_SPEED * gait;
+    const runSpeed = p.jetting ? Math.min(jetFly * perks.jetRate, Math.max(jetFly, PERK_SPEED_H))
       : alive && input.sprint ? Math.min(footSpeed * perks.sprintRate, Math.max(footSpeed, PERK_SPEED_H)) : footSpeed;
     if (!swimming && (p.onGround || wish.lengthSq() > 0 || vh.length() <= runSpeed)) {
       // Noita: ease toward the wished speed, on the ground and in the air alike.
       // With no input in the air faster than a run (a blast), keep the momentum.
       vh.lerp(wish.clone().multiplyScalar(runSpeed), ease(MOVE_EASE, dt));
-      if (p.onGround && alive && input.jump && !pogoing) { v.y = JUMP_SPEED; p.onGround = false; jumpedNow = true; }
+      if (p.onGround && alive && input.jump && !pogoing) { v.y = JUMP_SPEED * gait; p.onGround = false; jumpedNow = true; }
     } else if (swimming && wish.lengthSq() > 0) {
       // strokes: accelerate toward the wished speed, never brake
       const dir = wish.clone().normalize();
-      const add = Math.min(Math.max(SWIM_SPEED * wish.length() - vh.dot(dir), 0), SWIM_ACCEL * dt);
+      const add = Math.min(Math.max(SWIM_SPEED * gait * wish.length() - vh.dot(dir), 0), SWIM_ACCEL * dt);
       vh.addScaledVector(dir, add);
     }
     v.x = vh.x; v.z = vh.y;
@@ -650,7 +743,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     // Lukki: while a limb touches a wall or ceiling the jet fires on an empty tank, and the tank holds
     // Rocket Boots: climbs faster; Big Tank: a bigger tank (the same refill rates fill it slower, as in Noita)
     const tankS = JET_FUEL_S * perks.fuelRate;
-    const jetRise = Math.min(JET_RISE * perks.jetRate, Math.max(JET_RISE, PERK_SPEED_V));
+    const jetRise = Math.min(JET_RISE * gait * perks.jetRate, Math.max(JET_RISE * gait, PERK_SPEED_V));
     const jetWants = alive && !!input.jump && (!pogoing || jumpHeldS > POGO_WINDOW_S);
     const clings = jetWants && !p.onGround && !swimming && perks.has('LUKKI') && clinging();
     const jet = jetWants && !p.onGround && !jumpedNow && !swimming && (p.jetFuel > 0 || clings);
@@ -668,9 +761,16 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
 
     // gravity and buoyancy (Archimedes over the submerged share)
     v.y += (env2.buoy - (jet ? 0 : 1)) * grav * dt;   // the jet holds you up as Noita's does
+    // Slow Fall: the canopy's drag on the way down, taken implicitly (v' = v − k·v'·|v'|·dt, solved
+    // for v'), so it settles on √(g/k) exactly at any frame rate
+    const canopy = perks.slowFallArea;
+    if (canopy > 0 && v.y < 0 && !p.inLiquid) {
+      const kd = SLOW_FALL_K * canopy / size * dt;   // drag ∝ area/mass: 1/size (Shrink)
+      v.y = (1 - Math.sqrt(1 - 4 * kd * v.y)) / (2 * kd);
+    }
     // drag in liquid, scaled by how much of the body is in it
     if (sub > 0 && env2.densL > 0) {
-      const k = (VISCOUS_DRAG * env2.dragL + FORM_DRAG * env2.densL / BODY_DENS * v.length()) * sub;
+      const k = (VISCOUS_DRAG * env2.dragL / (size * size) + FORM_DRAG * env2.densL / BODY_DENS * v.length() / size) * sub;   // (Shrink: Stokes 1/s², form 1/s)
       v.multiplyScalar(Math.exp(-k * dt));
     }
 
@@ -682,7 +782,16 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
       const after = v.length();
       if (after > PRESSURE_MAX_SPEED && after > before) v.setLength(Math.max(PRESSURE_MAX_SPEED, before));
     }
-    v.add(impulse); impulse.set(0, 0, 0);
+    // an impulse is a plain body's change of velocity: momentum over its mass. A smaller body
+    // (Shrink, mass ∝ size³) takes the same momentum, so it's thrown 1/size³ as fast; what the
+    // smaller mass adds stops at a blast's throw (PRESSURE_MAX_SPEED: the probe keeps up)
+    if (size < 1 && impulse.lengthSq() > 0) {
+      const plain = vB.copy(v).add(impulse).length();
+      v.addScaledVector(impulse, 1 / size ** 3);
+      const cap = Math.max(PRESSURE_MAX_SPEED, plain);
+      if (v.length() > cap) v.setLength(cap);
+    } else v.add(impulse);
+    impulse.set(0, 0, 0);
     if (v.length() > MAX_SPEED) v.setLength(MAX_SPEED);
 
     // move, with collisions
@@ -735,9 +844,10 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     if (p.onGround && !wasGround && landSpeed > Math.max(LAND_EVENT_SPEED, pogoSafe)) emit('land', { speed: landSpeed });
     if (slam > 0) vitals.impact(slam, Math.max(SAFE_IMPACT, pogoSafe), LETHAL_IMPACT, 0, slamId >= 0 ? slamId : -1);
 
+    env.size = size;   // (a smaller body's skin warms and cools faster)
     vitals.update(dt, env);
     couple(sim, stepRate);
-    fields(sim, dt);
+    fields(sim, dt, stepRate);
   }
 
   function spawn(feet) {

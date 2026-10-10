@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { BODY_HEIGHT, BODY_WIDTH, EYE_HEIGHT, HAND_REACH } from './constants.js';
+import { BODY_HEIGHT, BODY_WIDTH, HAND_REACH } from './constants.js';
 import { createPovCamera, ENTRY_PITCH, FIGURE_HIDE_DIST, RESPAWN_SWOOP_S, SWOOP_S } from './camera.js';
 import { createBody } from './figureReal.js';
 import { createPovHud } from './hud.js';
@@ -13,6 +13,7 @@ import { grant, PERK } from './perks.js';
 import { CLASSES_ENABLED } from './classes.js';
 import { createClassPicker } from './classPicker.js';
 import { createVehicles } from './vehicles/index.js';
+import { createNightVision } from './nightVision.js';
 
 // First-person (POV) mode: drop into the world with F, walk around in it,
 // pop back out with F. This module is the shell: input, the camera, the
@@ -52,7 +53,7 @@ const CHASE_FOLLOW_RATE = 2.5;          // 1/s, how fast it swings
 // With classes on, comma is TF2's class key in POV (classPicker.js), not settings.
 const PASS_KEYS = new Set(['Escape', '?', ...(CLASSES_ENABLED ? [] : [',']), 'p', 'P']);
 
-// app = { renderer, scene, camera, controls, canvas, hud, settings, mp, isTyping,
+// app = { renderer, scene, camera, controls, canvas, hud, settings, mp, isTyping, post (gfx/post.js: night vision),
 //         getSim, getVolume, getScale, hover, pointerHover (() => bool), pickRay (ro, rd → Promise<hit>),
 //         requestRender, inWorld (() => bool: the grid is a window of a larger world, docs/scaling.md D11),
 //         showToolsMenu (the palette's first-person tools brought into view: Q) }
@@ -67,6 +68,7 @@ export function createPov(app) {
   const povHud = createPovHud();
   // feedback: everything here hears povEvents (events.js) and the body's events
   const feel = createFeel({ hud: povHud });
+  const nightVision = app.post ? createNightVision(app.post) : null;   // the Night Vision perk's goggles (the local player's view)
   let vfx = null;                        // three.quarks effects, built on the first drop-in
   let figure = null, player = null, toolbelt = null;
   const npcs = new Map();   // enemy spawner id → its NPC (npc.js)
@@ -76,8 +78,9 @@ export function createPov(app) {
     id: PLAYER,
     get alive() { return !!player && !player.dead && mode === 'on'; },
     box(min, max) {
-      min.set(player.pos.x - BODY_WIDTH / 2, player.pos.y, player.pos.z - BODY_WIDTH / 2);
-      max.set(player.pos.x + BODY_WIDTH / 2, player.pos.y + BODY_HEIGHT, player.pos.z + BODY_WIDTH / 2);
+      const hw = player.width / 2;   // (its own size: Shrink)
+      min.set(player.pos.x - hw, player.pos.y, player.pos.z - hw);
+      max.set(player.pos.x + hw, player.pos.y + player.height, player.pos.z + hw);
     },
     facing: (out) => povCam.dir(out),   // where the player looks (the knife's backstab test)
     hurt(amount, cause, d, opts) {
@@ -394,6 +397,7 @@ export function createPov(app) {
     viewmodel.visible = false;
     povHud.show(false);
     feel.reset();
+    nightVision?.reset();
     vfx?.clear();
     document.body.classList.remove('pov-on');
     setHudHidden(false);
@@ -526,7 +530,7 @@ export function createPov(app) {
     takePerks();
 
     // the camera, with the kick and shake on top of the look
-    vA.copy(player.pos).setY(player.pos.y + EYE_HEIGHT);
+    vA.copy(player.pos).setY(player.pos.y + player.eyeHeight);
     const shake = feel.update({ dt, live: mode === 'on' && !deadSeen, eye: vA });
     povCam.zoom = mode === 'on' && !deadSeen && toolbelt ? toolbelt.zoom : 1;   // a scope (the sniper's)
     toWorld(vEye.copy(vA), vEye);
@@ -559,8 +563,9 @@ export function createPov(app) {
     // the figure: shown once the camera is out of the head
     figure.setVisible(pose.eyeDist > FIGURE_HIDE_DIST && !driving);   // the vehicle draws its driver
     figure.update(dt, {
-      feet: vFeet, scale, yaw: povCam.look.yaw, worldToGrid,
-      speedH, velY: player.vel.y, onGround: player.onGround, inLiquid: player.inLiquid, headInLiquid: player.headInLiquid,
+      // Shrink: the figure at the body's size, its gait timed at the plain figure's speed for the size
+      feet: vFeet, scale: scale * player.size, yaw: povCam.look.yaw, worldToGrid,
+      speedH: speedH / player.size, velY: player.vel.y, onGround: player.onGround, inLiquid: player.inLiquid, headInLiquid: player.headInLiquid,
       dead: deadSeen, deadTime, heat: player.feel?.heat ?? 0, jetting: player.jetting,
     });
     if (player.jetting && mode === 'on') vfx?.jet(player.pos, povCam.look.yaw, dt, figure.nozzles);
@@ -568,7 +573,7 @@ export function createPov(app) {
 
     // the toolbelt
     const aim = ctx.aim, hv = app.hover;
-    ctx.eye.copy(player.pos).setY(player.pos.y + EYE_HEIGHT);
+    ctx.eye.copy(player.pos).setY(player.pos.y + player.eyeHeight);
     povCam.dir(ctx.dir);
     aim.valid = hv.valid;
     if (hv.valid) {
@@ -600,6 +605,10 @@ export function createPov(app) {
     }
     buttons.primaryPressed = buttons.secondaryPressed = false;
     wheelNotches = 0;
+
+    // Night Vision: the goggles follow the scene's measured light (nightVision.js)
+    nightVision?.update(dt, mode === 'on' && !deadSeen ? player.perks.nightGain : 0);
+    if (nightVision?.on > 0) app.requestRender();   // (the grain moves)
 
     // effects: keep drawing while any are in flight (rendering is on demand)
     if (vfx?.update(dt)) app.requestRender();
@@ -650,7 +659,7 @@ export function createPov(app) {
     // the aim, not the shaken view: kick and shake are only felt
     if (mode === 'on' && !deadSeen) povCam.dir(rd);
     else camera.getWorldDirection(rd);
-    const eye = vA.copy(player.pos).setY(player.pos.y + EYE_HEIGHT);
+    const eye = vA.copy(player.pos).setY(player.pos.y + player.eyeHeight);
     const skip = Math.max(0, vB.subVectors(eye, ro).dot(rd));
     ro.addScaledVector(rd, skip);
     return true;

@@ -409,11 +409,18 @@ Extra Life brings the body back where it fell.
 | Fleet Foot | sprint ×2 | player.js | ×2 again, capped at 60 cells/s (a blast's throw: the probe keeps up) |
 | Rocket Boots | jet climb and fly speed ×2 | player.js | ×2 again, capped at 60 cells/s sideways and 175 up (Noita's fastest fall) |
 | Big Tank | jet fuel ×2: twice the time aloft (the refill rates are Noita's, so it fills slower too) | player.js | ×2 again |
+| Slow Fall | a canopy's quadratic drag on the way down (a = k·v², terminal √(g/k)): you land at a T-11 parachute's 5.8 m/s (19 cells/s, against Noita's 175) at the default gravity. Implicit, so exact at any frame rate. Only while descending in air: jumps rise and the jetpack climbs as before. Landings never hurt here (Noita), so what it saves is the slam and the shake; drag ∝ area/mass, so Shrink slows it further | player.js | drag area ×2 (terminal ÷ √2) |
+| Shrink | the body ×0.5: height, footprint, eye, collision box, probe use, figure and hit box (`player.size`, `.height`, `.width`, `.eyeHeight`). Gravity is the world's, so moves follow Froude similarity (Alexander): speeds ×√size, a jump clears the same body heights. Mass ∝ size³: an impulse (a blow, recoil) throws it size⁻³ as fast (capped at a blast's 60 cells/s for the probe); liquid form drag ×1/size, viscous (Stokes) ×1/size², a canopy's ×1/size; the skin trades heat ×1/size as fast (vitals.js). Blasts already scale: the push is the mean gradient over the body's own cells, ≈ ΔP over its length. Never under one cell tall | player.js, vitals.js, index.js, npc.js | ×0.5 again, down to 1 cell |
+| Night Vision | goggles that switch themselves on in the dark, the local player's view only (`pov/nightVision.js`): an image intensifier's automatic brightness control, raising the scene's measured log-average luminance (post.js meter: a 16² downsample of covered pixels, read back every 4 frames while the perk is held) to middle grey, at most 16× light; on from 1 to 3 stops under middle grey over 0.4 s, off again in daylight. The picture (post.js composite): luminance × gain, AgX on a grey, P43 green phosphor, shot-noise grain (σ ∝ √(signal·gain)) and the tube's round vignette. No key, no setting | nightVision.js, gfx/post.js | ×4 more light |
+| Rain Cloud | real CLOUD (id 24) kept over the head: each frame the body reads its sphere (radius 4, 2 cells over the crown) from the probe, a breeze (the coupling pass, `uOnly` = CLOUD) carries what's there with it, and the engine's brush tops its air up to 85% cloud, thick enough for the engine's own rain rule. New cloud comes at 150 cells/s at most per body; a body stops seeding while 6000 cells of its own may still be alive (counted down with the cloud's measured 67 s life), so it can't flood the world. The rain puts out fires and fills holes by the engine's rules. NPC bodies seed their own | player.js + povBody.js | radius +2, up to 10 (rain grows with its thick core) |
 
 A new tool gets Faster Tools for free by timing its actions with `trigger` and `toolDt(ctx)` instead of `ctx.dt`.
 NPC bodies carry perks too (npc.js passes `toolRate` into its kit's ctx).
 
-Check: `node tools/perks-check.mjs [--port …] [--shot file.jpg] [--worldshot file.jpg]` (a dev server; AC power).
+Check: `node tools/perks-check.mjs [--port …] [--shot file.jpg] [--worldshot file.jpg] [--nvshot prefix] [--rainshot file.jpg]`
+(a dev server; AC power). Without a server: `node tools/perks-cpu-check.mjs` runs the real body over a mock probe in
+node (Slow Fall's landing speed and stacks, the jetpack under it, Shrink through a crack, jump height in body heights, a
+blow's throw, the Rain Cloud's seeding, rate and budget).
 Combat (shield, movement perks, knife, pogo): `node tools/combat-check.mjs [--port …] [--shot file.jpg]`.
 
 ## Verifying (headless GPU)

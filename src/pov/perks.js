@@ -15,6 +15,8 @@
 //
 // Pure data and bookkeeping: no three.js, so elements.js (the palette) can import it.
 
+import { BODY_HEIGHT } from './constants.js';
+
 // ---- tuning (each a named value; Noita's where it has one)
 const TOOL_RATE_STACK = 2;          // × tool speed per Faster Tools stack
 const TOOL_RATE_MAX = 16;           // × at most: by then every tool already acts every frame
@@ -37,6 +39,16 @@ const SHIELD_STACK = 70 / 45;       // base lives of shield per Energy Shield st
 // fastest fall upward), so a deep stack stops growing there.
 const MOVE_PERK_STACK = 2;          // × sprint speed per Fleet Foot stack, × jet speed per Rocket Boots stack
 const TANK_STACK = 2;               // × jetpack fuel (time aloft) per Big Tank stack
+// Slow Fall, Shrink, Night Vision, Rain Cloud (the user's own). player.js and pov/nightVision.js
+// turn these sizes into physics; each is explained where it's used.
+const SLOW_FALL_STACK = 2;          // × the canopy's drag area per further Slow Fall stack (terminal speed ÷ √2)
+const SHRINK_STACK = 0.5;           // × body size (height, width, eye) per Shrink stack...
+const SHRINK_MIN_CELLS = 1;         // ...but never shorter than one cell, the grid's own grain
+const NIGHT_GAIN = 16;              // × light the goggles can add with one stack (4 stops)...
+const NIGHT_GAIN_STACK = 4;         // ...and this much more per further stack (2 stops)
+const CLOUD_RADIUS = 4;             // cells (1.2 m) the cloud over your head reaches with one stack...
+const CLOUD_RADIUS_STACK = 2;       // ...and this much more per further stack (more of it thick enough to rain)...
+const CLOUD_RADIUS_MAX = 10;        // ...up to this
 
 // key: the palette item's key too (elements.js PERK_ITEMS). icon: an emoji, on
 // the orb, its palette tile and the HUD. noita: the Noita perk it comes from.
@@ -73,6 +85,15 @@ export const PERKS = [
     desc: 'Your jetpack climbs and flies twice as fast. Each stack doubles it again.' },
   { key: 'BIG_TANK', name: 'Big Tank', icon: '⛽', color: '#ffd166',
     desc: 'Your jetpack holds twice the fuel: twice the time aloft. Each stack doubles it again.' },
+  // the user's own, kept to the same rules
+  { key: 'SLOW_FALL', name: 'Slow Fall', icon: '🪂', color: '#c8e6ff',
+    desc: 'You come down slowly, as under a parachute: 6 m/s at most. Jumps float; the jetpack still climbs. Each stack slows you further.' },
+  { key: 'SHRINK', name: 'Shrink', icon: '🐜', color: '#a3e635',
+    desc: 'Your body is half the size: slip through cracks and tunnels. You weigh an eighth, so blasts, blows and currents throw you much farther. Each stack halves you again.' },
+  { key: 'NIGHT_VISION', name: 'Night Vision', icon: '🥽', color: '#5cff7a',
+    desc: 'Goggles that switch on by themselves in the dark: caves and nights in green. Each stack amplifies the light more.' },
+  { key: 'RAIN_CLOUD', name: 'Rain Cloud', icon: '🌧️', color: '#8fb8de',
+    desc: 'A storm cloud of your own follows you and rains: it puts out fires and fills holes. Each stack makes it bigger and wetter.' },
   { key: 'GAMBLE', name: 'Gamble', noita: 'Gamble', icon: '🎲', color: '#7dffa8', oneOff: true,
     desc: 'Two random perks at once.' },
 ];
@@ -114,6 +135,10 @@ export function createPerkSet() {
     get sprintRate() { return MOVE_PERK_STACK ** count('FLEET_FOOT'); },   // × sprint speed (player.js caps it)
     get jetRate() { return MOVE_PERK_STACK ** count('ROCKET_BOOTS'); },    // × jet climb and fly speed (player.js caps it)
     get fuelRate() { return TANK_STACK ** count('BIG_TANK'); },            // × jet fuel time
+    get slowFallArea() { const n = count('SLOW_FALL'); return n ? SLOW_FALL_STACK ** (n - 1) : 0; },   // × canopy drag area (0: none)
+    get size() { return Math.max(SHRINK_MIN_CELLS / BODY_HEIGHT, SHRINK_STACK ** count('SHRINK')); },  // × body size
+    get nightGain() { const n = count('NIGHT_VISION'); return n ? NIGHT_GAIN * NIGHT_GAIN_STACK ** (n - 1) : 0; },   // × light at most (0: none)
+    get cloudRadius() { return grow(count('RAIN_CLOUD'), CLOUD_RADIUS, CLOUD_RADIUS_STACK, CLOUD_RADIUS_MAX); },     // cells (0: none)
   };
 }
 

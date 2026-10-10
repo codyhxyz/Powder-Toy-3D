@@ -212,9 +212,11 @@ export function createVitals(emit, perks = null) {
       if (flux > worst) { worst = flux; worstId = id; worstT = T; }
       if (id === E.ACID) acid++;
     }
-    const kEnv = n ? SKIN_EXCHANGE * kSum / n : 0;
+    // a smaller body (Shrink: env.size) has more skin per mass, so it trades heat 1/size as fast
+    const exchange = SKIN_EXCHANGE / (env.size ?? 1);
+    const kEnv = n ? exchange * kSum / n : 0;
     const k = kEnv + SKIN_RECOVER;
-    const target = ((n ? SKIN_EXCHANGE * kT / n : 0) + SKIN_RECOVER * BODY_T) / k;
+    const target = ((n ? exchange * kT / n : 0) + SKIN_RECOVER * BODY_T) / k;
     v.skinT = target + (v.skinT - target) * Math.exp(-k * dt);
 
     const acidShare = n ? acid / n : 0;
