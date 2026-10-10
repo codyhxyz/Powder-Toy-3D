@@ -14,6 +14,8 @@
 //   scatter  transparent elements: the scattering part of their extinction
 //          (elements.js sigma) per cell, RGB; the rest is absorbed. Ratios to
 //          sigma give the colour a deep body of it glows with.
+//   bevel  crisp voxels: share of the global edge radius (gfx.bevel) its
+//          edges are rounded by (default 1; crystal's cleavage edges are sharp)
 //   emit   light it gives off by itself at any temperature (luminescence), as
 //          linear RGB radiance in the incandescence's scene units (sunlit
 //          white ≈ 1.2): what a body of it shows. It adds to the thermal glow
@@ -25,10 +27,10 @@ import { bandGlow } from './incandescence.js';
 // Fluorite's blue-violet fluorescence: the Eu²⁺ band at 424 nm, ~25 nm wide
 // (CaF₂:Eu²⁺; "fluorescence" is named after fluorite). Under a UV lamp it is
 // a few cd/m², which the incandescence's brightness curve would put near 0.03.
-// A game liberty: it glows without the lamp, as bright as steel at ~1050 °C.
-// That lights the rock around it, and is about the brightest the film-like
-// roll-off of saturated light (gfx/post.js tonemap) still shows violet, not pink.
-const FLUORITE_BAND = { peak: 424, fwhm: 25, lum: 0.15 };
+// A game liberty: it glows without the lamp, as bright as steel at ~850 °C:
+// in daylight its own colour and luster still show through the glow, and in a
+// dark cave the eyes adjust to it (gfx/post.js ADAPT).
+const FLUORITE_BAND = { peak: 424, fwhm: 25, lum: 0.05 };
 const FLUORITE_GLOW = bandGlow(FLUORITE_BAND.peak, FLUORITE_BAND.fwhm, FLUORITE_BAND.lum);
 
 // Smooth-surface channels. sigma = blur radius in cells (how much the
@@ -141,11 +143,13 @@ const LOOKS = {
   COAL: { ch: 'ORGANIC', rough: 0.75, alb: '#3c3c3d', surf: 'CRAG',
     crag: { relief: 0.5, pits: 0, bands: 2, stain: 0 } },       // blocky cleat, bright and dull bands
   BROKENCOAL: { ch: 'GRANULAR', rough: 0.75, alb: '#3c3c3d', glint: 0.5 },
-  // Purple fluorite (elements.js CRYSTAL): n = 1.434, polished cleavage faces;
-  // massive fluorite is translucent and cloudy, so light wraps into it. Its
+  // Fluorite (elements.js CRYSTAL): n = 1.434, a vitreous luster from flat
+  // growth and cleavage faces (polished glass-smooth: GGX roughness at the
+  // floor), sharp cleavage edges. Its body colour and glow are worked out per
+  // crystal in shaders/gfx/surface.js (crystalLook); alb is the mean. Its
   // dust is pale, as any crushed coloured crystal is (scattering at the grain
   // faces swamps the absorption), and keeps the glow (powdered phosphors do).
-  CRYSTAL: { rough: 0.15, ior: 1.434, alb: '#5c3f8a', sss: 0.4, emit: FLUORITE_GLOW },
+  CRYSTAL: { rough: 0.04, ior: 1.434, alb: '#4a3478', sss: 0.3, bevel: 0.2, emit: FLUORITE_GLOW },
   CRYSTAL_DUST: { ch: 'GRANULAR', rough: 0.6, ior: 1.434, alb: '#b7a2d2', sss: 0.3, glint: 0.4, emit: FLUORITE_GLOW },
   // Radioactive metals as powders: a metal powder is dark, since light is
   // trapped between the grains, with bright glints off the facets. Uranium
@@ -192,6 +196,7 @@ export const LOOK = ELEMENTS.map((e) => {
   return {
     ch: chIndex(l.ch), media: mediaIndex(l.media), rough: l.rough ?? DEFAULT_ROUGH, metal: l.metal ?? 0, ior: l.ior ?? DEFAULT_IOR,
     alb: linearOf(l.alb ?? e.color).map((v) => +v.toFixed(GLSL_DIGITS)), sss: l.sss ?? 0, glint: l.glint ?? 0,
+    bevel: l.bevel ?? 1,
     emit: (l.emit ?? [0, 0, 0]).map((v) => +v.toFixed(GLSL_DIGITS)),
     surf: SURFS.indexOf(l.surf ?? 'NONE'),
     crag: l.surf === 'CRAG' ? CRAG_PARAMS.map((k) => (l.crag ?? CRAG_DEFAULT)[k] ?? CRAG_DEFAULT[k]) : CRAG_PARAMS.map(() => 0),
@@ -268,7 +273,11 @@ const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
 const LUMINOUS = ELEMENTS.filter((e) => LOOK[e.id].emit.some((v) => v > 0));
 const EMISSION_GLSL = /* glsl */ `
 vec3 emission(int id, float Ts, float emissivity) { return emissivity * incandescence(Ts) + EMIT[id]; }
-vec3 emission(int id, float Ts) { return emission(id, Ts, 1.0); }`;
+vec3 emission(int id, float Ts) { return emission(id, Ts, 1.0); }
+// The open skin of hot matter runs INCAND_SKIN_DROP below its bulk T (metals,
+// conducting well, keep none): what an exposed cell of it gives off.
+float skinT(int id, float T) { return T - (id == E_METAL ? 0.0 : INCAND_SKIN_DROP); }
+vec3 cellEmission(int id, float T) { return emission(id, skinT(id, T)); }`;
 
 export function materialsGLSL() {
   const ints = (name, key) => `const int ${name}[NE] = int[NE](${LOOK.map((l) => l[key]).join(', ')});`;
@@ -294,6 +303,7 @@ export function materialsGLSL() {
     floats('IOR', 'ior'),
     floats('SSS', 'sss'),
     floats('GLINT', 'glint'),
+    floats('BEVEL', 'bevel'),
     `const vec3 ALBEDO[NE] = vec3[NE](${LOOK.map((l) => `vec3(${l.alb.map(f).join(', ')})`).join(', ')});`,
     `const vec3 SCATALB[NE] = vec3[NE](${LOOK.map((l) => `vec3(${l.scatAlb.map(f).join(', ')})`).join(', ')});`,
     `const vec3 EMIT[NE] = vec3[NE](${LOOK.map((l) => `vec3(${l.emit.map(f).join(', ')})`).join(', ')});`,
