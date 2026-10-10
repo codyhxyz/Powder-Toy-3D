@@ -33,6 +33,7 @@ const THROW_REFIRE = 0.8;      // s between throws (the bomb's)
 const TOUCH_REFIRE = 0;        // s: holding left-click keeps the torch's flame on what it touches
 const PROPS_MAX = 6;           // lamps lying about per tool
 const PROP_LIFT = 0.5;         // cells off the struck face a landed lamp sits (in the air in front of it)
+const PROP_EMBED = 1.5;        // cells back from a lying torch, into what it's stuck in, its flame starts
 const LIGHT_LIFT = 0.6;        // cells above a landed lamp its light hangs (its head, not its foot)
 const FIRE_INTERVAL = 0.15;    // s between a lying torch's flame passes
 const TUMBLE = 0.4;            // rad a thrown lamp turns per frame it's drawn
@@ -181,7 +182,8 @@ export function lampTool({ key, name, model: modelKey, desc, light, burn = null,
           if (fireWait > 0) return;
           fireWait = FIRE_INTERVAL;
           const sim = ctx.sim ?? env.getSim();
-          for (const p of props) flame(sim, p.pos, p.normal, TORCH_FIRE.LENGTH, FIRE_INTERVAL);
+          // from inside what it's stuck in, so the flame heats that as well as licking out of it
+          for (const p of props) flame(sim, scratch.copy(p.pos).addScaledVector(p.normal, -PROP_EMBED), p.normal, TORCH_FIRE.LENGTH + PROP_EMBED, FIRE_INTERVAL);
         },
         deselect() { hand.visible = false; thrower.reset(); lamps.remove(heldKey); },
         status: () => null,
