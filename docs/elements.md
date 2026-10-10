@@ -251,3 +251,11 @@ shared mechanism; anything else names its own code.
   gravity.
 - **Storms**: cloud charges where snow falls through freezing cloud (non-inductive graupel-ice charging). TPT has no
   storms.
+- **Dust** explodes when suspended in air: a flame runs through the cloud, and its blast lifts settled dust for a
+  second explosion. A settled heap only smoulders. In TPT, dust is just flammable.
+- **Antimatter** makes a blast and heat (E = mc², capped at the engine's limits). TPT's lowers the pressure. Ours is a
+  powder that rests on air; TPT's is a sinking gas.
+- **Singularity** evaporates when starved (Hawking: faster as it shrinks), bursts when full, and never seeds new
+  singularities. TPT's full singularity turns its neighbours into new ones, which can eat a whole save.
+- **Mud** (TPT's paste) doesn't harden under pressure: that is cornstarch. A clay slurry thins as it is worked.
+  Fired clay sinters into ceramic at ~1000 °C instead of melting.

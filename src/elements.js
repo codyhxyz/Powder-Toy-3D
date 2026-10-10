@@ -152,6 +152,10 @@ const METAL_REFLECT = 0.58;
 export const K = { EMPTY: 0, SOLID: 1, POWDER: 2, LIQUID: 3, GAS: 4 };
 export const R = { NONE: 0, OPAQUE: 1, LIQUID: 2, GLASS: 3, GAS: 4, FIRE: 5 };
 
+// Clay's porosity: the share of a dry heap's volume that water fills when it
+// makes mud (elements CLAY, MUD), 1 − bulk/grain density = 1 − 1.2/2.6.
+const CLAY_WATER = 0.54;
+
 // ---- Real material data in the sim's units (the chemistry rows) ----
 // Heat capacity per volume over water's 4.18 J/(cm³·K): cap = ρ·c_p / 4.18.
 // Latent heats and heats of reaction per volume the same way, in cap·°C:
@@ -676,6 +680,79 @@ const defs = [
     dens: LI.rho * 10, cond: stableCond(METAL_COND, capOf(LI.rho, LI.cp)), cap: capOf(LI.rho, LI.cp), drag: 0.02,
     slide: 0.5, melt: LI.melt, spawn: 0.3, fizz: LI_H2_VOLUMES, conducts: true, elec: LI.elec,
     desc: 'A metal so light it floats on water. In water it fizzes out hydrogen and heat, enough to set the hydrogen alight. Melts at 180 °C.' },
+  // ---- Batch 4 (docs/elements.md): dust, antimatter, singularity, clay, mud, ceramic ----
+  // Dust: grain dust (wheat flour), TPT's DUST. A loose heap is 0.5-0.6 g/cm³
+  // (dens 5.5: it floats on water), c ≈ 1.7 J/(g·K) (cap 0.55·1.7/4.18 ≈ 0.22),
+  // and conducts like ash. A 50 µm grain settles at ~0.1 m/s in still air
+  // (Stokes): far under a cell per step, but a cell of it is a puff, not a
+  // grain, so it falls slowly (drag: ~0.14 cells/step at the default gravity,
+  // a quarter of sand's) yet faster than physics.js DUST_LIFT_V, so a falling
+  // cloud counts as suspended. Flour is cohesive (repose ~45°+).
+  // Heat of combustion ~15.5 MJ/kg, 8.5 MJ per litre of heap: burnHeat /
+  // burnRate ≈ 1330 on the scale where wood's 11 MJ/L is 1670. Settled, it
+  // smoulders: a dust layer glows at 450-700 °C rather than flaming (flameT).
+  // Its cloud lights at 380-440 °C (minimum ignition temperature, wheat
+  // flour; Eckhoff 2003): ignite 400. Suspended in air it goes off as one
+  // (react.js dust clouds, physics.js DUST_*).
+  { key: 'DUST', abbr: 'DUST', name: 'Dust', kind: K.POWDER, render: R.OPAQUE, color: '#efdcae', var: 0.12,
+    dens: 5.5, cond: 0.004, cap: 0.22, drag: 0.15, slide: 0.3, ignite: 400, burnRate: 0.0015, burnHeat: 2, flameT: 600,
+    life: 1, spawn: 0.3,
+    desc: 'Fine flour dust. A heap only smoulders, but blown into the air it explodes: a flame runs through the cloud and its blast stirs up more dust.' },
+  // Antimatter (TPT's AMTR): annihilates any matter it touches, both cells
+  // gone in a flash (REACTIONS). E = mc²: a cell of water (27 kg at a
+  // 0.30 m cell) and as much antimatter give 2·27 kg·c² ≈ 4.9e18 J, about a
+  // gigaton of TNT, and even a cell of air ~1e16 J. Nothing in the engine
+  // holds that, so each annihilation is capped at its limits: the pressure
+  // and temperature clamps (physics.js P_MAX, CELL_TEMP_MAX). TPT's AMTR is a
+  // gas that sinks and spreads; ours is a powder, so it can be poured where
+  // it's wanted, and it spares air (a game liberty: real antimatter would
+  // annihilate air too, more slowly by its density, ~1/800 of water's).
+  { key: 'ANTIMATTER', abbr: 'AMTR', name: 'Antimatter', kind: K.POWDER, render: R.OPAQUE, color: '#c4bce4', var: 0.1,
+    dens: 15, cond: 0.01, cap: 0.35, drag: 0.04, slide: 0.8, spawn: 0.3, acidProof: true,   // it annihilates acid instead
+    desc: 'Annihilates whatever matter it touches into a blast of pressure and heat. Only walls, clone and singularities are safe; it rests on air.' },
+  // Singularity (TPT's SING): a tiny black hole (react.js, physics.js SING_*).
+  // It holds a deep vacuum, so air and matter rush in, swallows what touches
+  // it, gaining its mass (life, in cells of water), and bursts when it is
+  // full; starved, it evaporates and winks out. Denser than anything, it
+  // sinks through every liquid. Nothing gets out: it conducts no heat.
+  { key: 'SINGULARITY', abbr: 'SING', name: 'Singularity', kind: K.POWDER, render: R.OPAQUE, color: '#1c1c20',
+    dens: 1000, cond: 0, cap: 1, drag: 0.04, life: PHYS.SING_MASS0, spawn: 0.02, acidProof: true,   // it swallows acid instead
+    desc: 'A tiny black hole. It sucks in the air around it, swallows everything it touches and grows; full, it bursts. Starved, it evaporates.' },
+  // Clay: kaolin, white china clay. Grains of kaolinite are 2.6 g/cm³; a dry
+  // heap ~1.2 (dens 12, porosity 1 − 1.2/2.6 ≈ 0.54: CLAY_WATER), with
+  // c ≈ 0.92 J/(g·K) (cap 1.2·0.92/4.18 ≈ 0.26), conducting like dry sand.
+  // Water soaks into its pores and makes mud (REACTIONS). Fired, it turns
+  // to ceramic: kaolinite loses its water at 450-600 °C and sinters into
+  // spinel and then mullite from ~980 °C (Brindley & Nakahira, J. Am. Ceram.
+  // Soc. 42, 1959); earthenware is fired at 1000-1150 °C. It never slakes again.
+  { key: 'CLAY', abbr: 'CLST', name: 'Clay', kind: K.POWDER, render: R.OPAQUE, color: '#d9d2c3', var: 0.1,
+    dens: 12, cond: 0.01, cap: 0.26, drag: 0.06, slide: 0.35, spawn: 0.3,
+    hot: { T: 1000, into: 'CERAMIC' },
+    desc: 'Kaolin powder. Water soaks into it and makes mud; fired past 1000 °C it bakes into ceramic.' },
+  // Mud: clay with its pores full of water (CLAY_WATER of its volume):
+  // 1.2 + 0.54 = 1.74 g/cm³ (dens 17.4: it sinks in water), cap
+  // (1.2·0.92 + 0.54·4.18)/4.18 ≈ 0.8, conducting like wet soil (~1.2 W/(m·K),
+  // water's 0.03). A clay slurry this thick is a Bingham plastic, viscous like
+  // lava (Coussot, Mudflow Rheology and Dynamics, 1997); its yield stress
+  // holds only a few cm, under a cell, so here it creeps level. TPT's paste
+  // hardens under pressure, as cornstarch in water does (shear thickening); a
+  // clay slurry thins as it's worked instead, so ours doesn't. Past 100 °C its
+  // water boils off, taking that share of water's latent heat and setting the
+  // steam free as a puff, and it dries back into clay.
+  { key: 'MUD', abbr: 'MUD', name: 'Mud', kind: K.LIQUID, render: R.OPAQUE, color: '#9a8f7b', var: 0.08,
+    dens: 17.4, cond: 0.03, cap: 0.8, drag: 0.2, flow: 0.2, spawn: 0.35,
+    hot: { T: 100, into: 'CLAY', latent: CLAY_WATER * PHYS.L_BOIL, puff: CLAY_WATER * PHYS.STEAM_EXPANSION },
+    desc: 'Wet clay. Thick and slow, it sinks in water. Heated past 100 °C its water boils off and it dries back into clay.' },
+  // Ceramic: fired kaolin, unglazed porcelain. ~2.3 g/cm³, c ≈ 0.85 J/(g·K)
+  // (cap 2.3·0.85/4.18 ≈ 0.47), ~1.5 W/(m·K), a little over glass (cond 0.02).
+  // Hard to scratch (Mohs ~7) but brittle: its fracture toughness, ~1-1.5
+  // MPa·√m, is a little over glass's (0.75, hard 8), so hard 9. It breaks
+  // into sharp, acid-proof fragments much as glass does (SHARDS), and shrugs
+  // off acid (HF aside: lab ware is porcelain). Kaolin fuses at ~1750-1785 °C
+  // (pyrometric cone 35), and its melt cools into a glass.
+  { key: 'CERAMIC', abbr: 'CRMC', name: 'Ceramic', kind: K.SOLID, render: R.OPAQUE, color: '#ece7dd', var: 0.04,
+    cond: 0.02, cap: 0.47, melt: 1750, meltInto: 'GLASS', hard: 9, breakInto: 'SHARDS', acidProof: true, sound: 'shatter',
+    desc: 'Fired clay: hard, acid-proof and brittle. A hard knock or a blast shatters it into sharp fragments. Melts into glass at 1750 °C.' },
 ];
 
 // σ (S/m) of a conductor given as conducts: true with no elec: a metal. The
@@ -805,12 +882,13 @@ export const isGearTool = (id) => id <= GEAR_ID0 && id > GEAR_ID0 - 100;
 // How the palette is laid out in the UI. Within each group, elements are
 // ordered so related materials sit together and the colours run smoothly.
 export const PALETTE = [
-  { name: 'Powders', items: ['SAND', 'STONE', 'BROKENCOAL', 'GUNPOWDER', 'ASH', 'SNOW', 'SALT', 'SHARDS', 'CRYSTAL_DUST', 'SAWDUST', 'SCRAP', 'RUBBLE', 'NUGGETS', 'LITHIUM'] },
-  { name: 'Liquids', items: ['WATER', 'SALTWATER', 'LIQUID_NITROGEN', 'ACID', 'OIL', 'LAVA', 'MERCURY'] },
+  { name: 'Powders', items: ['SAND', 'CLAY', 'STONE', 'BROKENCOAL', 'GUNPOWDER', 'DUST', 'ASH', 'SNOW', 'SALT', 'SHARDS', 'CRYSTAL_DUST', 'SAWDUST', 'SCRAP', 'RUBBLE', 'NUGGETS', 'LITHIUM'] },
+  { name: 'Liquids', items: ['WATER', 'SALTWATER', 'LIQUID_NITROGEN', 'ACID', 'OIL', 'MUD', 'LAVA', 'MERCURY'] },
   { name: 'Gases', items: ['STEAM', 'CLOUD', 'HYDROGEN', 'OXYGEN', 'CO2', 'CAUSTIC_GAS', 'SMOKE', 'FIRE', 'PLASMA', 'MERCURY_VAPOR'] },
-  { name: 'Solids', items: ['WALL', 'COAL', 'ROCK', 'LIMESTONE', 'SANDSTONE', 'METAL', 'GLASS', 'ICE', 'DRY_ICE', 'CRYSTAL', 'WOOD', 'PLANT', 'CLONE', 'BRICK', 'TITANIUM', 'TUNGSTEN', 'GOLD', 'SOLID_MERCURY', 'DIAMOND', 'VOID'] },
+  { name: 'Solids', items: ['WALL', 'COAL', 'ROCK', 'LIMESTONE', 'SANDSTONE', 'METAL', 'GLASS', 'CERAMIC', 'ICE', 'DRY_ICE', 'CRYSTAL', 'WOOD', 'PLANT', 'CLONE', 'BRICK', 'TITANIUM', 'TUNGSTEN', 'GOLD', 'SOLID_MERCURY', 'DIAMOND', 'VOID'] },
   { name: 'Electronics', items: ['SPARK', 'BATTERY', 'METAL', 'PSCN', 'NSCN', 'SWITCH', 'INSULATOR', 'TSNS', 'PCLN'] },
   { name: 'Radioactive', items: ['PHOTON', 'NEUTRON', 'URANIUM', 'PLUTONIUM'] },
+  { name: 'Exotic', items: ['ANTIMATTER', 'SINGULARITY'] },
   { name: 'Tools', items: ['HEAT', 'COOL', 'ERASE', 'BLAST', 'LIGHTNING', 'SIGN', ...GEAR_ITEMS.map((g) => g.key)] },
   { name: 'Entities', items: ['ENEMY', 'GUNNER', 'WORM', 'GIANTWORM', 'SPAWN', 'JEEPPAD', 'BIKEPAD', 'FLOCK'] },
   { name: 'Constructions', items: ['HOUSE', 'TREE', 'CAMPFIRE', 'IGLOO', 'BARREL', 'AQUARIUM', 'FOUNTAIN', 'SHRINE', 'DOCK', 'TOWER', 'STONES', 'WELL', 'MINE', 'WRECK', 'BRIDGE', 'PROMPT'] },
@@ -846,6 +924,28 @@ export const meltInto = (e) => (e.meltInto ? E[e.meltInto] : e.id);
 
 // Reactions between two touching cells, in the style of Noita's materials.xml
 // <Reaction> rows (see the header). New rows go at the end.
+// Clay draws water into its pores by capillary suction: a clay cell and a
+// water cell make one of mud and leave air (the water fills CLAY_WATER of the
+// clay's volume, the rest of the cell is lost to the pores' slack). A cell's
+// worth soaks in over a few seconds (TPT's CLST: 1 in 1500 per frame per
+// water cell within two).
+const CLAY_SOAK = 0.005;   // chance per step per touching pair
+// Antimatter annihilates both cells, each capped at the engine's limits
+// (elements ANTIMATTER: E = mc²): enough heat to take the pair, left as air,
+// to the temperature clamp (ΔT = heat / (cap_a' + cap_b')), and gas enough
+// that each cell's half reaches the pressure clamp by itself.
+const ANNIHILATION_HEAT = 2 * ELEMENTS[E.EMPTY].cap * (PHYS.CELL_TEMP_MAX - PHYS.AMBIENT);
+const ANNIHILATION_PUFF = 2 * PHYS.P_MAX * PHYS.STEAM_EXPANSION / PHYS.STEAM_BOIL_PUFF;
+// On contact (a pair is partners once every RX_PAIRINGS steps: chance 1
+// takes it at the first pairing).
+const ANNIHILATION_CHANCE = 1;
+// What it spares: the wall (the box itself), clone (a device: it copies
+// antimatter instead), void (a device: it drains antimatter quietly, as it
+// drains anything that moves), itself (a '*' row never pairs an element with
+// itself) and a singularity, which swallows it. Diamond is carbon, matter
+// like any other: it annihilates (TPT's AMTR spares it).
+const ANTIMATTER_SPARES = ['WALL', 'CLONE', 'VOID', 'SINGULARITY'];
+
 // Real speeds go through the sim's clock: a cell is CELL_M, a step
 // 1/STEPS_PER_S s, and the sim runs SIM_SPEEDUP× faster than real time
 // (scale.js: its gravity is real for ~7 mm cells).
@@ -925,6 +1025,9 @@ export const REACTIONS = [
   { a: 'LITHIUM', b: 'WATER', into: ['HYDROGEN', 'SAME'], chance: LI_WATER_RATE, heat: LI_WATER_HEAT, puff: LI_H2_VOLUMES },
   { a: 'LITHIUM', b: 'SALTWATER', into: ['HYDROGEN', 'SAME'], chance: LI_WATER_RATE, heat: LI_WATER_HEAT, puff: LI_H2_VOLUMES },
   { a: 'CAUSTIC_GAS', b: 'WATER', into: ['EMPTY', 'ACID'], chance: HCL_ABSORB, heat: heatOf(HCL_SOLUTION, 1 / MOLAR_VOLUME) },
+  { a: 'CLAY', b: 'WATER', into: ['MUD', 'EMPTY'], chance: CLAY_SOAK },
+  { a: 'ANTIMATTER', b: '*', except: ANTIMATTER_SPARES, into: ['EMPTY', 'EMPTY'], chance: ANNIHILATION_CHANCE,
+    heat: ANNIHILATION_HEAT, puff: ANNIHILATION_PUFF },
 ];
 
 // `into` 'SAME' (reactions): the cell stays as it is.

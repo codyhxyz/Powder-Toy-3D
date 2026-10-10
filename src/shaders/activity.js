@@ -17,7 +17,8 @@ import { prelude, inertSelfGLSL, SUPER, SUPER_TEX, BLOCK_TILE } from './common.j
 //     water, no clone by air, no explosive touching something past its
 //     ignition point, no cell beside a reaction partner (elements.js
 //     REACTIONS) whose temperature gate the pair passes, nothing that can
-//     move touching void;
+//     move touching void, nothing a singularity touches (it never rests
+//     itself: it holds a vacuum);
 //   - thermally quiet: within MATTER_REST_T of each matter face neighbour,
 //     and within AIR_REST_T of ambient where it touches air.
 // A change a neighbour sets off on its own (a flame catching in the air by
@@ -95,6 +96,7 @@ bool inertNear(ivec3 c, vec4 a, vec4 nA[6]) {
     int rx = rxAt(id, j);
     if (rx > 0 && rxGate((rx - 1) >> 1, T, n.y)) return false;
     if (j == E_VOID && k != K_SOLID) return false;   // void drains it (react.js)
+    if (j == E_SINGULARITY && id != E_WALL && id != E_VOID) return false;   // it may be swallowed (react.js singEats)
     // a powder or liquid: nowhere to fall, nor for a liquid to flow sideways
     bool way = FACES[i].y < 0 || (k == K_LIQUID && FACES[i].y == 0);
     if (k != K_SOLID && way && canMove(id, j, d, densityOf(j, n.y), FACES[i].y < 0 ? 0 : 2)) return false;
