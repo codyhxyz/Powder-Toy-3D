@@ -23,7 +23,9 @@ export const runCode = (code, { size = DEFAULT_SIZE, seed = DEFAULT_SEED } = {})
 
 export const pngOf = (cells, quarter = 0) => Buffer.from(encodePNG(renderIso(cells, { quarter }), zlib.deflateSync));
 
-export const builtinsSource = () => fs.readFileSync(new URL('../src/constructions/builtins.js', import.meta.url), 'utf8');
+// the built-ins' source for the prompt: the human scale they share (shared.js), then the built-ins
+const source = (name) => fs.readFileSync(new URL(`../src/constructions/${name}`, import.meta.url), 'utf8');
+export const builtinsSource = () => `${source('shared.js')}\n${source('builtins.js')}`;
 
 export const BUILT_IN_KEYS = BUILDS.filter((b) => BUILTINS[b.key]).map((b) => b.key);
 

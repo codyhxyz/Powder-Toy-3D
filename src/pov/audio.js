@@ -185,7 +185,7 @@ const LOOPS = new Set(['pourLoop', 'physHum', 'torchLoop', 'jetLoop']);
 
 // ---- material families: which sound a struck element makes
 const FAMILY_BY_KEY = {
-  GLASS: 'shatter', SHARDS: 'shatter',
+  GLASS: 'shatter', SHARDS: 'shatter', CRYSTAL: 'shatter', CRYSTAL_DUST: 'shatter',
   WOOD: 'thunk', SAWDUST: 'thunk', PLANT: 'thunk',
   METAL: 'ping', SCRAP: 'ping',
   ROCK: 'crack', STONE: 'crack', WALL: 'crack', CLONE: 'crack', ICE: 'crack',

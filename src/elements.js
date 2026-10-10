@@ -112,6 +112,22 @@ const defs = [
     dens: 1, cond: 0.02, cap: 0.5, grav: 0, drag: 0.05, jitter: 0.01, rad: 0.03, spawn: 0.3,
     sigma: [0.16, 0.16, 0.16],
     desc: 'Droplets of water in the air: what steam becomes as it cools. Floats when warm, rains where it is thick, thins away at its edges, boils back to steam at 100 °C and snows below 0 °C.' },
+  // Crystal: purple fluorite (CaF₂), the mineral fluorescence is named after.
+  // Real: n = 1.434, its colour, Mohs hardness 4 (the scale's reference),
+  // melting point 1418 °C, 3.18 g/cm³, 0.85 J/(g·K) (cap: 2.7 J/(cm³·K) over
+  // water's 4.18) and 9.7 W/(m·K), high for a mineral (~4× rock's: cond between
+  // rock's and metal's). It is brittle, with perfect octahedral cleavage: its
+  // fracture toughness, ~0.5 MPa·√m, lies between ice's (~0.1) and glass's
+  // (~0.75), and so does hard. The glow is a game liberty: real fluorite
+  // fluoresces only under ultraviolet light (gfx/materials.js FLUORITE_BAND).
+  { key: 'CRYSTAL', abbr: 'CRYS', name: 'Crystal', kind: K.SOLID, render: R.OPAQUE, color: '#9466cf', var: 0.08,
+    cond: 0.05, cap: 0.65, melt: 1418, hard: 7, breakInto: 'CRYSTAL_DUST',
+    desc: 'Fluorite. Glows blue-violet by itself, enough to light a dark cave. Brittle: it shatters into glowing dust. Melts at 1418 °C.' },
+  // Its debris. Crushed, it keeps the crystal's glow (as powdered phosphors do)
+  // and its grains' density; molten and cooled it grows back into crystal.
+  { key: 'CRYSTAL_DUST', abbr: 'CDST', name: 'Crystal dust', kind: K.POWDER, render: R.OPAQUE, color: '#c3aee0', var: 0.15,
+    dens: 32, cond: 0.05, cap: 0.65, drag: 0.04, slide: 0.6, melt: 1418, spawn: 0.3,
+    desc: 'Crushed fluorite crystal. It still glows, so pour it wherever you need light. Melts back into crystal at 1418 °C.' },
 ];
 
 export const ELEMENTS = defs.map((d, id) => ({
@@ -170,6 +186,21 @@ export const BUILDS = [
     desc: `Noita's Holy Mountain: a stone pavilion with ${SHRINE_OFFERS} random perks floating over its plinths. In first person (F), walk into one to take it, and the others vanish. Every world has one near where you start.` },
   { id: -107, key: 'PROMPT', abbr: 'AI', name: 'Prompt', color: '#9b86e8',
     desc: 'Describe a construction and a model writes it, checked for leaks and loose powder before you place it. Or paste code from any chatbot.' },
+  // The World's structures (constructions/structures.js, docs/structures.md): built to walk into at the default size.
+  { id: -109, key: 'DOCK', abbr: 'DOCK', name: 'Dock', color: '#9a7046',
+    variants: [['pier', 'Pier'], ['hut', 'Fishing hut']],
+    desc: 'A wooden pier on stilts that reach down to the sea floor. Place it on a shore facing the water; the fishing hut sits on its head.' },
+  { id: -110, key: 'TOWER', abbr: 'TOWR', name: 'Tower', color: '#c9ccd3',
+    variants: [['lighthouse', 'Lighthouse'], ['watch', 'Watchtower'], ['ruin', 'Ruined keep']],
+    desc: 'Climb the spiral stair inside for the view: a striped lighthouse with a glass lantern, a timber watchtower, or a broken stone keep.' },
+  { id: -111, key: 'STONES', abbr: 'STNS', name: 'Standing stones', color: '#7d776f',
+    desc: 'A ring of rock monoliths round a low altar. Natural rock: the pickaxe can quarry it.' },
+  { id: -112, key: 'WELL', abbr: 'WELL', name: 'Well', color: '#6f7f99',
+    desc: 'A stone well with water in it, a windlass and a little roof.' },
+  { id: -113, key: 'MINE', abbr: 'MINE', name: 'Mine entrance', color: '#8a6a44',
+    desc: 'A timber portal and a gallery it carves into the hillside behind it, with rails and a cart of rubble. Place it facing out of a slope.' },
+  { id: -114, key: 'WRECK', abbr: 'WRCK', name: 'Shipwreck', color: '#6b4a2e',
+    desc: 'A wooden hull heeled over and half sunk into the sand, her stern stove in, her mast and anchor beside her.' },
 ];
 const GEAR_ID0 = -300;   // the first-person tools' ids (GEAR_ITEMS below), past the constructions'
 export const isBuild = (id) => id <= -100 && id > GEAR_ID0;
@@ -186,13 +217,13 @@ export const isGearTool = (id) => id <= GEAR_ID0 && id > GEAR_ID0 - 100;
 // How the palette is laid out in the UI. Within each group, elements are
 // ordered so related materials sit together and the colours run smoothly.
 export const PALETTE = [
-  { name: 'Powders', items: ['SAND', 'STONE', 'GUNPOWDER', 'ASH', 'SNOW', 'SHARDS', 'SAWDUST', 'SCRAP'] },
+  { name: 'Powders', items: ['SAND', 'STONE', 'GUNPOWDER', 'ASH', 'SNOW', 'SHARDS', 'CRYSTAL_DUST', 'SAWDUST', 'SCRAP'] },
   { name: 'Liquids', items: ['WATER', 'ACID', 'OIL', 'LAVA'] },
   { name: 'Gases', items: ['STEAM', 'CLOUD', 'SMOKE', 'FIRE'] },
-  { name: 'Solids', items: ['WALL', 'ROCK', 'METAL', 'GLASS', 'ICE', 'WOOD', 'PLANT', 'CLONE'] },
+  { name: 'Solids', items: ['WALL', 'ROCK', 'METAL', 'GLASS', 'ICE', 'CRYSTAL', 'WOOD', 'PLANT', 'CLONE'] },
   { name: 'Tools', items: ['HEAT', 'COOL', 'ERASE', 'BLAST', 'SIGN', ...GEAR_ITEMS.map((g) => g.key)] },
   { name: 'Entities', items: ['ENEMY', 'SPAWN'] },
-  { name: 'Constructions', items: ['HOUSE', 'TREE', 'CAMPFIRE', 'IGLOO', 'BARREL', 'AQUARIUM', 'FOUNTAIN', 'SHRINE', 'PROMPT'] },
+  { name: 'Constructions', items: ['HOUSE', 'TREE', 'CAMPFIRE', 'IGLOO', 'BARREL', 'AQUARIUM', 'FOUNTAIN', 'SHRINE', 'DOCK', 'TOWER', 'STONES', 'WELL', 'MINE', 'WRECK', 'PROMPT'] },
 ];
 
 const NON_ELEMENTS = [...TOOLS, ...BUILDS, ...GEAR_ITEMS];
@@ -214,8 +245,8 @@ const vec3Arr = (name, fn) =>
   `const vec3 ${name}[NE] = vec3[NE](${ELEMENTS.map((e) => `vec3(${fn(e).map(f).join(', ')})`).join(', ')});`;
 
 // Melting product: sand and broken glass turn into glass when they re-solidify,
-// scrap recasts as solid metal.
-const MELT_INTO = { SAND: 'GLASS', SHARDS: 'GLASS', SCRAP: 'METAL' };
+// scrap recasts as solid metal, crystal dust regrows as crystal.
+const MELT_INTO = { SAND: 'GLASS', SHARDS: 'GLASS', SCRAP: 'METAL', CRYSTAL_DUST: 'CRYSTAL' };
 export const meltInto = (e) => (e.key in MELT_INTO ? E[MELT_INTO[e.key]] : e.id);
 
 export function elementsGLSL() {

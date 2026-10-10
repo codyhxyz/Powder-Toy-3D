@@ -1,7 +1,8 @@
-import { pcg } from '../generator.js';
 import { E } from '../../elements.js';
 
-// Shared machinery of the themed world scenes (labWorld.js, volcanoWorld.js).
+// Shared machinery of the world scenes written once for GPU and CPU: the
+// themed ones (labWorld.js, volcanoWorld.js) and the island's generator
+// (world/generator.js and its hooks, world/island).
 //
 // One source of truth. A scene's geometry is written once, in a small subset
 // of GLSL that also reads as JavaScript once its type names are dropped. The
@@ -19,18 +20,42 @@ import { E } from '../../elements.js';
 //   - no `u` literals and no bit operations: hash values (uint) are made and
 //     read only through the th* helpers;
 //   - constants are #defines from constant tables (defines / jsConstants), so
-//     they too have one source.
-// Hash helpers. The GPU halves are in helpersGLSL, the CPU halves in helpersJs,
-// line for line the same arithmetic (uint32 wrap-around: >>> 0 in JS).
+//     they too have one source;
+//   - names a source doesn't define come from its scope: on the GPU what is
+//     declared before it (uniforms, texel fetches), in the JS twin compileShared's
+//     consts (the island's world parameters and baked columns, world/generator.js).
+// Hash and noise helpers. The GPU halves are in helpersGLSL, the CPU halves in
+// helpersJs, line for line the same arithmetic (uint32 wrap-around: >>> 0 in
+// JS; the CPU's floats are doubles, so float results agree to rounding).
+//
+// Extensions for the island's generator (its noise is fBm of gradient noise
+// with derivatives, which the subset's scalars can't return):
+//   - thStream(salt, k): a noise field's hash stream, k further on (its octave);
+//   - thNoised(x, z, s): 2D gradient noise, its value, leaving its derivatives
+//     for thNoiseDx() and thNoiseDz() to read until the next thNoised;
+//   - smoothstep, a GLSL built-in, in the twin's scope.
 
 // A 16-bit hash field, as a share out of this many (shares are compared as
 // integers, so a pick never depends on float rounding).
 export const SHARE_ONE = 0x10000;
 const LATTICE_ONE = 0x1000000;   // 24-bit hash field to [0, 1): exact in a float32 and a double
+const UINT_RANGE = 4294967296;   // 2^32: a 32-bit hash to [0, 1) (the prelude's UINT_TO_UNIT)
+const TAU = Math.PI * 2;
+// 2D gradient noise peaks near ±1/√2: this scales it to about ±1
+const NOISE_NORM = 1.4142;
+
+// PCG hash, as common.js's pcg (uint32 arithmetic)
+export function pcg(v) {
+  const s = (Math.imul(v, 747796405) + 2891336453) >>> 0;
+  const w = Math.imul((s >>> ((s >>> 28) + 4)) ^ s, 277803737) >>> 0;
+  return ((w >>> 22) ^ w) >>> 0;
+}
 
 export const helpersGLSL = /* glsl */ `
 #define TH_SHARE_ONE ${SHARE_ONE}
 #define TH_LATTICE_ONE ${LATTICE_ONE}.0
+#define TH_TAU ${TAU}
+#define TH_NOISE_NORM ${NOISE_NORM}
 uniform uint uSceneSeed;
 // a hash of integer coordinates (a, b) in the world seed's stream salt
 uint thHash2(int a, int b, uint salt) { return pcg(uint(a) + pcg(uint(b) + pcg(uSceneSeed + salt))); }
@@ -50,12 +75,70 @@ int thMod(int a, int b) { return a - b * thDiv(a, b); }
 float thFdiv(float a, float b) { return a / b; }
 int thFloor(float x) { return int(floor(x)); }
 int thRound(float x) { return int(floor(x + 0.5)); }
+// a noise field's hash stream: the world seed's stream salt, k further on (octave k gets its own)
+uint thStream(uint salt, int k) { return pcg(uSceneSeed + salt) + uint(k); }
+// Gradient noise at (x, z) in stream s, about ±1, with its derivatives, which
+// thNoiseDx() and thNoiseDz() read until the next call. Gradients are unit
+// vectors at a hashed angle per lattice point; the fade is Perlin's quintic
+// 6t⁵ - 15t⁴ + 10t³ (its published coefficients, and its derivative's: 30t²(t - 1)²).
+float thNoiseDxLast, thNoiseDzLast;
+vec2 thGrad(ivec2 c, uint s) {
+  float a = float(pcg(uint(c.x) + pcg(uint(c.y) + s))) * UINT_TO_UNIT * TH_TAU;
+  return vec2(cos(a), sin(a));
+}
+float thNoised(float x, float z, uint s) {
+  vec2 p = vec2(x, z);
+  vec2 i = floor(p), f = p - i;
+  ivec2 c = ivec2(i);
+  vec2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+  vec2 du = 30.0 * f * f * (f * (f - 2.0) + 1.0);
+  vec2 ga = thGrad(c, s), gb = thGrad(c + ivec2(1, 0), s);
+  vec2 gc = thGrad(c + ivec2(0, 1), s), gd = thGrad(c + ivec2(1, 1), s);
+  float va = dot(ga, f), vb = dot(gb, f - vec2(1.0, 0.0));
+  float vc = dot(gc, f - vec2(0.0, 1.0)), vd = dot(gd, f - vec2(1.0));
+  float k = va - vb - vc + vd;
+  float v = va + u.x * (vb - va) + u.y * (vc - va) + u.x * u.y * k;
+  vec2 d = ga + u.x * (gb - ga) + u.y * (gc - ga) + u.x * u.y * (ga - gb - gc + gd)
+         + du * (u.yx * k + vec2(vb, vc) - va);
+  vec3 n = vec3(v, d) * TH_NOISE_NORM;
+  thNoiseDxLast = n.y;
+  thNoiseDzLast = n.z;
+  return n.x;
+}
+float thNoiseDx() { return thNoiseDxLast; }
+float thNoiseDz() { return thNoiseDzLast; }
 `;
 
 // The CPU halves, for world seed `seed`.
 function helpersJs(seed) {
   const stream = (salt) => pcg((seed + salt) >>> 0);
   const thHash2 = (a, b, salt) => pcg(((a >>> 0) + pcg(((b >>> 0) + stream(salt)) >>> 0)) >>> 0);
+  // thNoised's derivatives, till the next call
+  let dxLast = 0, dzLast = 0;
+  const grad = (ix, iz, s) => {
+    const a = (pcg(((ix >>> 0) + pcg(((iz >>> 0) + s) >>> 0)) >>> 0) / UINT_RANGE) * TAU;
+    return [Math.cos(a), Math.sin(a)];
+  };
+  const thNoised = (x, z, s) => {
+    const ix = Math.floor(x), iz = Math.floor(z);
+    const fx = x - ix, fz = z - iz;
+    const ux = fx * fx * fx * (fx * (fx * 6 - 15) + 10), uz = fz * fz * fz * (fz * (fz * 6 - 15) + 10);
+    const dux = 30 * fx * fx * (fx * (fx - 2) + 1), duz = 30 * fz * fz * (fz * (fz - 2) + 1);
+    const ga = grad(ix, iz, s), gb = grad(ix + 1, iz, s), gc = grad(ix, iz + 1, s), gd = grad(ix + 1, iz + 1, s);
+    const va = ga[0] * fx + ga[1] * fz;
+    const vb = gb[0] * (fx - 1) + gb[1] * fz;
+    const vc = gc[0] * fx + gc[1] * (fz - 1);
+    const vd = gd[0] * (fx - 1) + gd[1] * (fz - 1);
+    const k = va - vb - vc + vd;
+    const v = va + ux * (vb - va) + uz * (vc - va) + ux * uz * k;
+    const dx = ga[0] + ux * (gb[0] - ga[0]) + uz * (gc[0] - ga[0]) + ux * uz * (ga[0] - gb[0] - gc[0] + gd[0])
+      + dux * (uz * k + vb - va);
+    const dz = ga[1] + ux * (gb[1] - ga[1]) + uz * (gc[1] - ga[1]) + ux * uz * (ga[1] - gb[1] - gc[1] + gd[1])
+      + duz * (ux * k + vc - va);
+    dxLast = dx * NOISE_NORM;
+    dzLast = dz * NOISE_NORM;
+    return v * NOISE_NORM;
+  };
   return {
     thHash2,
     thKey: (h, k) => pcg((h + k) >>> 0),
@@ -68,11 +151,16 @@ function helpersJs(seed) {
     thFdiv: (a, b) => a / b,
     thFloor: Math.floor,
     thRound: (x) => Math.floor(x + 0.5),
+    thStream: (salt, k) => (stream(salt) + k) >>> 0,
+    thNoised,
+    thNoiseDx: () => dxLast,
+    thNoiseDz: () => dzLast,
     // the GLSL built-ins the subset may use
     abs: Math.abs, min: Math.min, max: Math.max, floor: Math.floor, sqrt: Math.sqrt, pow: Math.pow,
     cos: Math.cos, sin: Math.sin,
     clamp: (x, a, b) => Math.min(Math.max(x, a), b),
     mix: (a, b, t) => a + (b - a) * t,
+    smoothstep: (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); },
     float: (x) => x,
     int: Math.trunc,
   };

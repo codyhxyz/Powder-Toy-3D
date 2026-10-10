@@ -208,20 +208,20 @@ float solidusOf(float ctype) {
   return MELT[ct] - LAVA_FREEZE_BELOW;
 }
 
-// Thermal glow of an opaque surface whose bulk is at T (°C). Kirchhoff: a
-// surface emits what it doesn't reflect (emissivity = 1 - reflectance), so pale
-// rock glows less than black crust and gold hardly at all. The open skin
-// radiates its heat away and runs INCAND_SKIN_DROP below the bulk, while
-// crevices and pores (low cavity term) show the hot interior: heat reads as
-// glowing cracks rather than a tint over the whole surface.
+// Glow of an opaque surface whose bulk is at T (°C): its thermal glow plus
+// any luminescence of element id (emission). Kirchhoff: a surface emits what
+// it doesn't reflect (emissivity = 1 - reflectance), so pale rock glows less
+// than black crust and gold hardly at all. The open skin radiates its heat
+// away and runs INCAND_SKIN_DROP below the bulk, while crevices and pores (low
+// cavity term) show the hot interior: heat reads as glowing cracks rather than
+// a tint over the whole surface.
 const vec3 LUMA_W = vec3(0.2126, 0.7152, 0.0722);
-// glow of material m with its visible surface at Ts (°C)
-vec3 glowAt(Mat m, float Ts) {
-  if (Ts <= INCAND_T0) return vec3(0.0);
+// glow of material m of element id with its visible surface at Ts (°C)
+vec3 glowAt(Mat m, int id, float Ts) {
   vec3 refl = mix(m.f0 + (1.0 - m.f0) * m.alb, m.alb, m.metal);
-  return (1.0 - clamp(dot(refl, LUMA_W), 0.0, 1.0)) * incandescence(Ts);
+  return emission(id, Ts, 1.0 - clamp(dot(refl, LUMA_W), 0.0, 1.0));
 }
-vec3 hotEmit(Mat m, float T) { return glowAt(m, T - INCAND_SKIN_DROP * clamp(m.cav, 0.0, 1.0)); }
+vec3 hotEmit(Mat m, int id, float T) { return glowAt(m, id, T - INCAND_SKIN_DROP * clamp(m.cav, 0.0, 1.0)); }
 
 // Hot steel's mill scale (E_METAL)
 const float OXIDE_T0 = 400.0;     // °C: scale starts to darken the steel…
@@ -446,7 +446,7 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
   m.sss = SSS[id]; m.glint = GLINT[id]; m.glintDens = 1.0; m.cav = 1.0; m.aniso = 0.0; m.trans = 0.0;
   m.emit = vec3(0.0);
   // anything hot glows (hotEmit, once the texture is known); lava does its own thing
-  if (uMatDetail < 0.5) { m.emit = id == E_METAL ? glowAt(m, T) : hotEmit(m, T); return m; }
+  if (uMatDetail < 0.5) { m.emit = id == E_METAL ? glowAt(m, id, T) : hotEmit(m, id, T); return m; }
 
   // Scale: a cell is CELL_M (src/scale.js). Frequencies below are cycles (or
   // lattice cells) per cell; the *_H / *_DEPTH bump amplitudes are heights in
@@ -730,7 +730,7 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
       flakeT = T - ox * SCALE_DROP * smoothstep(-SCALE_SPLIT, SCALE_SPLIT, th.x + SCALE_COVER);
     }
     // steel conducts: no skin of its own, only the insulating flakes run cooler
-    m.emit = glowAt(m, flakeT);
+    m.emit = glowAt(m, id, flakeT);
   } else if (id == E_CLONE) {
     // Polished gold: a faint waviness left by the polishing and a fine haze
     // in the gloss. No blotches: gold doesn't tarnish.
@@ -841,8 +841,8 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
     float Tmelt = T + LAVA_SKIN_DT * sk.x;
     // young crust is thin and still glows; old crust is cold on top
     float Tcrust = mix(T, min(T, LAVA_CRUST_T + LAVA_CRUST_K * (T - Ts)), crust);
-    vec3 eNear = incandescence(mix(Tcrust, Tmelt, rim * rim));
-    vec3 eFar = mix(incandescence(Tcrust), incandescence(Tmelt), crk);
+    vec3 eNear = emission(id, mix(Tcrust, Tmelt, rim * rim));
+    vec3 eFar = mix(emission(id, Tcrust), emission(id, Tmelt), crk);
     m.emit = mix(eFar, eNear, lwc);
     float solid = 1.0 - crk;
     m.alb = mix(LAVA_MELT_ALB, ALBEDO[id] * (1.0 + LAVA_CRUST_VAR * (c.z - 0.5)), solid);
@@ -851,7 +851,7 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
         + (1.0 - solid) * LAVA_SKIN_BUMP * sk.yzw;
     m.cav = mix(1.0, mix(LAVA_CRACK_CAV, 1.0, smoothstep(0.0, LAVA_PLATE_EDGE, c.y)), solid * lwc);
   }
-  if (id != E_LAVA && id != E_METAL) m.emit = hotEmit(m, T);
+  if (id != E_LAVA && id != E_METAL) m.emit = hotEmit(m, id, T);
   return m;
 }
 

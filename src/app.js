@@ -9,7 +9,6 @@ import { PerkOrbs } from './perkOrbs.js';
 import { buildPreset } from './presets.js';
 import { loadIsland, releaseGenerator } from './world/gpu.js';
 import { WorldWindow, WIN_STEP } from './world/window.js';
-import { treesIn } from './world/generator.js';
 import { bakedAir } from './constructions/runtime.js';
 import { WORLD_SCENES, sceneByKey } from './world/scenes/index.js';
 import { FarField } from './world/far.js';
@@ -385,9 +384,9 @@ function worldShrine() {
       }
     return [lo, hi];
   };
-  // the trees whose trunks stand in its glade (only the island plants trees)
-  const glade = (x, z) => (win.scene.island
-    ? treesIn(o.x + x - hx - SHRINE_GLADE, o.z + z - hz - SHRINE_GLADE, o.x + x + hx + SHRINE_GLADE + 1, o.z + z + hz + SHRINE_GLADE + 1, P, win.candidates)
+  // the trees whose trunks stand in its glade (the scene's, if it plants any: the island's)
+  const glade = (x, z) => (win.scene.trees
+    ? win.scene.trees.treesIn(o.x + x - hx - SHRINE_GLADE, o.z + z - hz - SHRINE_GLADE, o.x + x + hx + SHRINE_GLADE + 1, o.z + z + hz + SHRINE_GLADE + 1, P, win.candidates)
     : []);
   const cx = Math.round(g.nx / 2), cz = Math.round(g.nz / 2);
   let best = null;
