@@ -25,7 +25,7 @@ const HEAVY = 0.82;                    // × walking and running speed: the Bulw
 export const CLASSES = [
   {
     key: 'ROCKETEER', name: 'Rocketeer', color: '#e0783a',
-    tagline: 'Rides his own blasts.',
+    tagline: 'Rides their own blasts.',
     role: 'Rocket-jumps onto the high ground and shells the choke points nobody else can hold.',
     signature: 'ROCKET', tools: ['ROCKET', 'BOMB'], perks: { EXPLOSION_IMMUNITY: 1 },
     pose: 'shoulder',
@@ -46,7 +46,7 @@ export const CLASSES = [
   },
   {
     key: 'BULWARK', name: 'Bulwark', color: '#8f9cb3',
-    tagline: 'Plants his feet and stays.',
+    tagline: 'Plants their feet and stays.',
     role: 'Two shields and a deep well of health. Slow to arrive, slower to leave the hill.',
     signature: 'SMG', tools: ['SMG', 'GUN'], perks: { ENERGY_SHIELD: 2, EXTRA_HEALTH: 1 }, body: { speed: HEAVY },
     pose: 'brace',
