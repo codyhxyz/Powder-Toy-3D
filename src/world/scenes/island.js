@@ -4,7 +4,7 @@ import { prelude, SUPER_CELLS } from '../../shaders/common.js';
 import { helpersGLSL, groundScan } from './themedShared.js';
 import {
   worldParams, heightAt, islandTwin, islandParamValues, islandDefinesGLSL, treesIn,
-  ISLAND_COLUMN_SRC, ISLAND_CELL_SRC, COLUMN_MARGIN,
+  ISLAND_COLUMN_SRC, ISLAND_CELL_SRC, ISLAND_HEAD_GLSL, COLUMN_MARGIN,
 } from '../generator.js';
 import { STRUCT_GLSL, structureUniforms, disposeStructureTextures } from '../structures.js';
 
@@ -53,8 +53,8 @@ uniform float uGenFeature;   // cells per feature length: the unit of every nois
 uniform bool uGenSnow;       // snow caps on frozen rock (false: bare rock peaks, nothing frozen)
 #define GEN_COLUMN_MARGIN ${COLUMN_MARGIN}   // the baked columns reach this far past the world's edge
 `;
-// (helpersGLSL declares uSceneSeed, the world seed)
-const sourceHead = () => `${islandDefinesGLSL()}\n${helpersGLSL}\n${paramsGLSL}`;
+// (helpersGLSL declares uSceneSeed, the world seed; ISLAND_HEAD_GLSL the hooks' uniforms)
+const sourceHead = () => `${islandDefinesGLSL()}\n${helpersGLSL}\n${paramsGLSL}\n${ISLAND_HEAD_GLSL}`;
 
 // The column bake: texel (i, j) is world column (i, j) less the margin. Its
 // program needs no grid; the prelude's constants are a supertile's.
@@ -67,7 +67,7 @@ out vec4 oC;
 void main() {
   ivec2 c = ivec2(gl_FragCoord.xy) - GEN_COLUMN_MARGIN;
   float x = float(c.x), z = float(c.y), h = genColumnHeight(x, z);
-  oC = vec4(h, genBand(x, z), genMeadow(x, z), genWater(x, z, h));
+  oC = vec4(h, genBand(x, z), genMeadow(x, z, h), genWater(x, z, h));
 }
 `;
 

@@ -107,6 +107,7 @@ export const GEN = {
   PLANT_SLOPE_MAX: 1.3,      // ...on terrain gentler than this (cells per cell)
   PLANT_PATCH_FREQ: 2.6,     // meadow patchiness
   PLANT_PATCH_CUT: -0.5,     // ground cover where the patch noise (-1..1) is above this
+  MEADOW_BARE: -2.0,         // a bare column's meadow noise (islandBare): under the cut, so no ground cover
   PLANT_JITTER: 3,           // the ground cover's upper edge comes down by up to this many cells (band noise)
   PLANT_SNOW_GAP: 2,         // ...and stays this many cells below the lowest snow, so it never touches snow
   SNOW_LINE: 0.72,           // snow from here up, share of the relief above sea level...
@@ -176,7 +177,7 @@ export function worldParams({ size, seed = WORLD_SEED, snow = true } = {}) {
   // the island's long axis and how much longer than wide it is, from the seed
   const shape = pcg((seed + GEN_SALT.SHAPE) >>> 0);
   const angle = ((shape & 0xffff) / 0x10000) * TAU;
-  return {
+  const P = {
     seed: seed >>> 0,
     size: [wx, wy, wz],
     sea,                              // cells below this height (y < sea) are sea where not ground
@@ -189,6 +190,8 @@ export function worldParams({ size, seed = WORLD_SEED, snow = true } = {}) {
     feature: FEATURE_SHARE * side,    // cells per feature length (noise frequency unit)
     snow,                             // snow on gentle high ground, on frozen rock
   };
+  // where the landforms go, picked from the terrain before them (the twin of P without them)
+  return { ...P, landforms: landforms.sites(P, islandTwin(P)) };
 }
 
 // The world's parameters by the names the source reads them by: uniforms on
@@ -198,11 +201,15 @@ export const islandParamValues = (P) => ({
   uGenCenterX: P.center[0], uGenCenterZ: P.center[1], uGenRadius: P.radius,
   uGenAxisX: P.axis[0], uGenAxisZ: P.axis[1], uGenStretch: P.stretch, uGenFeature: P.feature,
   uGenSnow: P.snow,
+  ...landforms.values(P),
 });
+// GLSL before both stages' sources, after the world's parameters: the hooks' uniforms (scenes/island.js)
+export const ISLAND_HEAD_GLSL = landforms.head;
 
 // ---------------------------------------------------------------- the source
 // Per world column. (x, z): the column, as floats (the twin's heightAt also
-// asks between columns). Hooks: landforms (world/island/landforms.js).
+// asks between columns). Hooks: landforms (world/island/landforms.js; its
+// islandBare leaves a column without meadow, so without ground cover).
 export const ISLAND_COLUMN_SRC = /* glsl */ `
 // fBm, normalised to about ±1 (each octave its own stream). Each octave's
 // point is the last one turned (so the lattices never line up) and scaled.
@@ -285,7 +292,8 @@ float genColumnHeight(float x, float z) { return islandLandform(x, z, genHeight(
 float genBand(float x, float z) {
   return genFbm(thFdiv(x + 0.5, uGenFeature) * GEN_BAND_FREQ, thFdiv(z + 0.5, uGenFeature) * GEN_BAND_FREQ, GEN_SALT_BAND, GEN_BAND_OCT);
 }
-float genMeadow(float x, float z) {
+float genMeadow(float x, float z, float h) {
+  if (islandBare(x, z, h)) return GEN_MEADOW_BARE;
   return genFbm(thFdiv(x + 0.5, uGenFeature) * GEN_PLANT_PATCH_FREQ, thFdiv(z + 0.5, uGenFeature) * GEN_PLANT_PATCH_FREQ,
                 GEN_SALT_PATCH, GEN_PATCH_OCT);
 }
@@ -294,7 +302,8 @@ float genWater(float x, float z, float h) { return islandWaterLevel(x, z, h); }
 
 // Per cell, from the baked columns: genColHeight, genColBand, genColMeadow and
 // genColWater (x, z) read world column (x, z)'s (texel fetches on the GPU, the
-// twin's cache on the CPU). Hooks: strata and caves (world/island).
+// twin's cache on the CPU). Hooks: strata and caves (world/island), and the
+// landforms' cell-stage part (islandLakeClearance, which caves read).
 export const ISLAND_CELL_SRC = /* glsl */ `
 // The top of world column (x, z)'s ground: cells y < it are ground.
 int genTop(int x, int z) { return thRound(genColHeight(x, z)); }
@@ -347,6 +356,8 @@ int genCover(int x, int z) {
   return GEN_COVER_NONE;
 }
 
+${landforms.cellSrc}
+
 ${strata.src}
 
 ${caves.src}
@@ -373,15 +384,16 @@ int islandCell(int x, int y, int z) {
 // Can a tree's trunk stand on world column (x, z) (treesIn's ground check),
 // and in which zone: GEN_ZONE_PALM (a beach), _MID, _HIGH or _NONE. Its
 // footing, the column's top ground cell as islandCell makes it, must be plant
-// cover or sand.
+// cover or sand, with no open cave near (caves.js caveOpenNear).
 int genTreeZone(int x, int z) {
   int top = genTop(x, z);
   float above = float(top) - genColWater(x, z);
   if (above < GEN_TREE_ABOVE_SEA || genSlope(x, z) >= GEN_TREE_SLOPE_MAX) return GEN_ZONE_NONE;
+  if (genColMeadow(x, z) == GEN_MEADOW_BARE) return GEN_ZONE_NONE;   // bare ground (islandBare): no trees, not even on sand
   if (float(top) > genFrostLine() - GEN_TREE_SNOW_GAP) return GEN_ZONE_NONE;
   int foot = islandCell(x, top - 1, z);
+  if ((foot != E_SAND && foot != E_PLANT) || caveOpenNear(x, z)) return GEN_ZONE_NONE;
   if (foot == E_SAND) return above <= GEN_TREE_PALM_BELOW ? GEN_ZONE_PALM : GEN_ZONE_NONE;
-  if (foot != E_PLANT) return GEN_ZONE_NONE;
   return float(top) - uGenSea >= GEN_TREE_PINE_ABOVE * uGenRelief ? GEN_ZONE_HIGH : GEN_ZONE_MID;
 }
 `;
@@ -413,7 +425,15 @@ export function islandTwin(P) {
   const key = JSON.stringify(P);
   let twin = twins.get(key);
   if (twin) return twin;
-  const consts = { ...islandConstants(), ...islandParamValues(P) };
+  twin = buildIslandTwin(P);
+  if (twins.size >= TWINS_KEEP) twins.clear();
+  twins.set(key, twin);
+  return twin;
+}
+// A twin of world P, not kept: from cellSrc (tools: the cell stage with a hook
+// instrumented) and with some constants changed (change: { NAME: value }).
+export function buildIslandTwin(P, { cellSrc = ISLAND_CELL_SRC, change = {} } = {}) {
+  const consts = { ...islandConstants(), ...islandParamValues(P), ...landforms.scope(P), ...change };
   const col = compileShared(ISLAND_COLUMN_SRC, P.seed, consts);
   const cache = new Map();
   const column = (x, z) => {
@@ -422,20 +442,17 @@ export function islandTwin(P) {
     if (!c) {
       if (cache.size >= COLUMNS_KEEP) cache.clear();
       const h = col.genColumnHeight(x, z);
-      c = [h, col.genBand(x, z), col.genMeadow(x, z), col.genWater(x, z, h)];
+      c = [h, col.genBand(x, z), col.genMeadow(x, z, h), col.genWater(x, z, h)];
       cache.set(k, c);
     }
     return c;
   };
-  const cell = compileShared(ISLAND_CELL_SRC, P.seed, {
+  const cell = compileShared(cellSrc, P.seed, {
     ...consts,
     genColHeight: (x, z) => column(x, z)[0], genColBand: (x, z) => column(x, z)[1],
     genColMeadow: (x, z) => column(x, z)[2], genColWater: (x, z) => column(x, z)[3],
   });
-  if (twins.size >= TWINS_KEEP) twins.clear();
-  twin = { ...col, ...cell, column };
-  twins.set(key, twin);
-  return twin;
+  return { ...col, ...cell, column };
 }
 
 // The terrain's height at world column (x, z), in cells (after landforms: the
