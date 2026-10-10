@@ -7,6 +7,7 @@ import { BODY_HEIGHT, BODY_WIDTH, EYE_HEIGHT, BODY_DENS } from './constants.js';
 import { createVitals, CELL_METERS, SAFE_FALL_M, LETHAL_FALL_M } from './vitals.js';
 import { povEvents } from './events.js';
 import { createPerkSet } from './perks.js';
+import { createMeat, EAT_CELLS_MAX } from './meat.js';
 
 // The first-person body: an upright AABB (BODY_WIDTH × BODY_HEIGHT × BODY_WIDTH
 // cells) moving through the voxel grid in real time.
@@ -139,13 +140,18 @@ function rawMat(frag, uniforms) {
 }
 
 // quiet: a body that isn't the player's (an NPC, npc.js) doesn't announce its jet on povEvents.
-// perks: its perk set (perks.js).
-export function createPlayer({ renderer, getSim, quiet = false, perks = createPerkSet() }) {
+// perks: its perk set (perks.js). id: an NPC's id (npc.js), carried as `by` on
+// the povEvents its body sends (gibs, eating); the player's has none.
+export function createPlayer({ renderer, getSim, quiet = false, perks = createPerkSet(), id = null }) {
   const listeners = {};
   let revengeWait = 0, revengeDue = false;
+  let gibDue = false;   // vitals.js GIB_HEALTH: the body bursts into meat at the next update (it needs the sim)
+  const meat = createMeat({ renderer, getSim });
+  const by = id ? { by: id } : {};
   const emit = (name, data) => {
     // Revenge Explosion: a hurt sets one off at the next update (it needs the sim), once a cooldown at most
     if (name === 'hurt' && perks.has('REVENGE_EXPLOSION') && revengeWait <= 0) { revengeDue = true; revengeWait = REVENGE_COOLDOWN; }
+    if (name === 'gib') gibDue = true;
     (listeners[name] || []).forEach((fn) => fn(data));
   };
   const vitals = createVitals(emit, perks);
@@ -173,6 +179,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
   let lastSim = null, lastFrame = 0, dtSmooth = 1 / 60;
 
   const contactId = new Int32Array(PN), contactT = new Float32Array(PN);
+  const eatCells = [];   // cooked meat touching the body this frame ([x, y, z]), to eat (meat.js)
   const env = { contactId, contactT, contactN: 0, headInLiquid: false, liquidId: E.WATER, buriedId: -1, pressure: 0 };
 
   const p = {
@@ -191,6 +198,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     get dead() { return vitals.dead; },
     get cause() { return vitals.cause; },
     get skinT() { return vitals.skinT; },
+    get gibbed() { return vitals.gibbed; },   // burst into meat (vitals.js GIB_HEALTH): the body is gone
     stepRate: 0,                  // sim steps/s, as measured
   };
   const impulse = new THREE.Vector3();
@@ -444,6 +452,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
 
     // contact: cells touching or inside the body
     let cn = 0;
+    eatCells.length = 0;
     for (let y = c0(lo[1] - CONTACT_REACH); y <= c1(hi[1] + CONTACT_REACH); y++)
       for (let x = c0(lo[0] - CONTACT_REACH); x <= c1(hi[0] + CONTACT_REACH); x++)
         for (let z = c0(lo[2] - CONTACT_REACH); z <= c1(hi[2] + CONTACT_REACH); z++) {
@@ -452,6 +461,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
           contactId[cn] = id;
           contactT[cn] = tAt(x, y, z);
           cn++;
+          if (id === E.COOKED_MEAT && eatCells.length < EAT_CELLS_MAX) eatCells.push([x, y, z]);
         }
     env.contactN = cn;
   }
@@ -539,6 +549,13 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
 
     const ready = covered() && inGrid();
     requestProbe(sim);
+    if (gibDue) {
+      gibDue = false;
+      const point = p.pos.clone().setY(p.pos.y + H / 2);
+      meat.gib(p.pos, p.vel, stepRate, (placed, lost) => povEvents.emit('body:gib', { point, cells: placed, lost, ...by }));
+    }
+    meat.update();
+    if (vitals.gibbed) return;   // nothing left of the body to move, feel or push
     if (!ready || dt === 0) return;
 
     sense();
@@ -662,8 +679,23 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     if (slam > 0) vitals.impact(slam, SAFE_IMPACT, LETHAL_IMPACT, 0, slamId >= 0 ? slamId : -1);
 
     vitals.update(dt, env);
+    eat();
     couple(sim, stepRate);
     fields(sim, dt);
+  }
+
+  // Cooked meat touching the body is eaten, as a pickup, while it isn't at
+  // full health (Quake's T_Heal, items.qc: a full body leaves a health box
+  // where it is); raw meat isn't.
+  function eat() {
+    const want = vitals.eatWant();
+    if (!want || !eatCells.length) return;
+    const point = p.pos.clone().setY(p.pos.y + H / 2);
+    meat.eat(eatCells, want, (n) => {
+      vitals.eat(n);
+      emit('eat', { cells: n });
+      povEvents.emit('body:eat', { point, cells: n, ...by });
+    });
   }
 
   function spawn(feet) {
@@ -675,6 +707,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     if (p.jetting) { p.jetting = false; if (!quiet) povEvents.emit('player:jet', { on: false }); }
     generation++; probe.valid = false;   // wait for cells around the new spot
     vitals.reset();
+    gibDue = false;
   }
 
   function dispose() {
@@ -695,6 +728,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
   function windowShifted(dx, dz) {
     p.pos.x -= dx;
     p.pos.z -= dz;
+    meat.windowShifted(dx, dz);
     probe.origin = [probe.origin[0] - dx, probe.origin[1], probe.origin[2] - dz];
     shifted[0] += dx;
     shifted[1] += dz;

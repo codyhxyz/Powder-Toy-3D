@@ -516,7 +516,7 @@ export function createPov(app) {
     }
 
     // the figure: shown once the camera is out of the head
-    figure.setVisible(pose.eyeDist > FIGURE_HIDE_DIST);
+    figure.setVisible(pose.eyeDist > FIGURE_HIDE_DIST && !player.gibbed);   // burst into meat: nothing left to draw
     figure.update(dt, {
       feet: vFeet, scale, yaw: povCam.look.yaw, worldToGrid,
       speedH, velY: player.vel.y, onGround: player.onGround, inLiquid: player.inLiquid, headInLiquid: player.headInLiquid,
