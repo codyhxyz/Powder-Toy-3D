@@ -42,8 +42,13 @@ const ARRIVE = 2;                    // cells: near enough to a point (not a zon
 // under a roof or on a shrine's roof can have no path to it. A zone is walked to
 // at a point on its ring toward the bot (open ground more often than its middle),
 // and a walk that finds no way is tried again from other bearings before it fails.
+// Then the last stretch: walk to the spot DIRECT_R short of it on the straight
+// line, and steer straight in from there (through a doorway the map can't see:
+// Dam Valley's flags stand in roofed halls).
 const APPROACH_TRIES = 4;            // bearings tried round a point
 const APPROACH_R = 6;                // cells: how far round a point (not a zone) the other bearings are
+const DIRECT_R = 40;                 // cells: the straight last stretch, at most
+const DIRECT_S = 10;                 // s it steers straight at the point before it gives up
 
 export class ObjectiveEvaluator extends GoalEvaluator {
   // objective(bot) → plan; failed(plan): no way there from any bearing (the game picks something else)
@@ -79,6 +84,10 @@ export class ObjectiveGoal extends CompositeGoal {
   // where to walk: a zone's ring toward the bot (turned further round on each retry), a point itself (then round it)
   approach(a) {
     const { at, r } = this.plan;
+    if (this.tries >= APPROACH_TRIES) {   // the straight line's last stretch
+      const d = hdist(a.feet, at) || 1, k = Math.min(DIRECT_R, d) / d;
+      return { x: at.x + (a.feet.x - at.x) * k, y: a.feet.y, z: at.z + (a.feet.z - at.z) * k };
+    }
     if (!r && !this.tries) return { x: at.x, y: at.y, z: at.z };
     const rad = r ? r * ZONE_RETURN : APPROACH_R;
     const toward = Math.atan2(a.feet.z - at.z, a.feet.x - at.x) + (this.tries * 2 * Math.PI) / APPROACH_TRIES;
@@ -104,7 +113,7 @@ export class ObjectiveGoal extends CompositeGoal {
     if (this.hasSubgoals()) {
       const s = this.executeSubgoals();
       if (s === Goal.STATUS.FAILED) {
-        if (++this.tries < APPROACH_TRIES) { this.status = Goal.STATUS.INACTIVE; return; }   // another bearing
+        if (++this.tries <= APPROACH_TRIES) { this.status = Goal.STATUS.INACTIVE; return; }   // another bearing, then the last stretch
         a.cooldown('OBJECTIVE', FAIL_COOLDOWN_S);
         this.status = Goal.STATUS.FAILED;
         this.onFail?.(this.plan);
@@ -112,8 +121,22 @@ export class ObjectiveGoal extends CompositeGoal {
       else if (p.kind !== 'carry') takeAimAndShoot(a);   // shooting on the way (a carrier only runs: Halo's flag melee)
       return;
     }
-    // there: hold a zone (wander in it, steer back when it strays), or done
+    // as near as the paths go: the rest straight at it (a point), or into the zone
+    const d = hdist(a.feet, p.at);
+    if (d > (p.r || ARRIVE)) {
+      this.direct = (this.direct ?? 0) + a.dt;
+      if (this.direct > DIRECT_S) {
+        a.cooldown('OBJECTIVE', FAIL_COOLDOWN_S);
+        this.status = Goal.STATUS.FAILED;
+        this.onFail?.(this.plan);
+        return;
+      }
+      a.steerTo(p.at, 1);
+      if (p.kind !== 'carry') takeAimAndShoot(a);
+      return;
+    }
     if (!p.r) { this.status = Goal.STATUS.COMPLETED; return; }
+    // there: hold the zone (wander in it, steer back when it strays)
     this.t += a.dt;
     if (hdist(a.feet, p.at) > p.r * ZONE_RETURN) a.steerTo(p.at, ROAM_STEER * 2);
     else a.roam(ROAM_STEER);
