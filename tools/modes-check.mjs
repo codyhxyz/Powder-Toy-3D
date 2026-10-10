@@ -23,6 +23,7 @@ const MODES = opt('modes', 'slayer,ctf,koth,infection,siege').split(',');
 const SIDE = opt('side', 'spectate');
 const TEAM_SIZE = +opt('teamSize', '4');
 const SHOT = opt('shot', null);
+const STRICT = args.includes('--strict');   // CTF must capture, Siege must play both halves to a result
 const SWEEP = opt('sweep', null);   // e.g. 0,2,4,6,8: just the frame rate with that many bots (Slayer, watching), SWEEP_S each
 const SWEEP_S = 12;
 const TOUR = opt('tour', null);     // a path prefix: screenshots of a CTF match on red (HUD, Tab, M, the result), then exit
@@ -32,10 +33,10 @@ const POLL_MS = 1000;
 // per mode: the rule overrides that make a check fit a few minutes, the game-time box, and what counts as working
 const PLAN = {
   slayer: { opts: {}, box: 120, ok: (s) => s.kills >= 3 && s.scored },
-  ctf: { opts: {}, box: 180, ok: (s) => s.flag.taken > 0 && (s.flag.captured > 0 || s.flag.returned > 0) },
+  ctf: STRICT ? { opts: {}, box: 360, ok: (s) => s.flag.captured > 0 } : { opts: {}, box: 180, ok: (s) => s.flag.taken > 0 && (s.flag.captured > 0 || s.flag.returned > 0) },
   koth: { opts: { hillMoveS: 40 }, box: 120, ok: (s) => s.hillScore >= 5 },
   infection: { opts: { timeLimit: 150 }, box: 150, ok: (s) => s.infected >= 2 },
-  siege: { opts: { holdToWin: 10, timeLimit: 50 }, box: 130, ok: (s) => s.halves >= 1 },
+  siege: { opts: { holdToWin: 10, timeLimit: 50 }, box: 130, ok: (s) => (STRICT ? s.ended > 0 : s.halves >= 1) },
 };
 
 const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
@@ -122,7 +123,7 @@ try {
           flag: { taken: count('game:flag', (e) => e.action === 'taken'), captured: count('game:flag', (e) => e.action === 'captured'), returned: count('game:flag', (e) => e.action === 'returned'), dropped: count('game:flag', (e) => e.action === 'dropped') },
           hillScore: st.mode === 'koth' ? Math.max(...Object.values(st.teamScore)) : 0,
           infected: st.mode === 'infection' ? st.teamScore.infected : 0,
-          halves: count('game:half'), ended: count('game:end'),
+          halves: count('game:half'), ended: count('game:end'), result: ev.find((x) => x.n === 'game:end')?.e ?? null,
           frames: window.__mc.frames, botMs: st.botMs,
           goals: g.bots.map((n) => n.debug.goal).reduce((m, k) => ((m[k] = (m[k] ?? 0) + 1), m), {}),
           ev: ev.slice(-3).map((x) => `${x.n} ${x.e.action ?? x.e.victim ?? ''}`),
@@ -132,6 +133,7 @@ try {
       fpsList.push((s.frames - f0) / ((now - w0) / 1000));
       f0 = s.frames; w0 = now;
       if (plan.ok(s) || !s.running || s.time > plan.box || now - t0 > plan.box * 4000) break;
+      if (STRICT && mode === 'ctf' && Math.round(s.time) % 30 === 0) console.log(JSON.stringify({ t: Math.round(s.time), flag: s.flag, goals: s.goals }));
     }
     const ok = plan.ok(s);
     if (!ok) failed = true;
@@ -139,7 +141,7 @@ try {
     const fps = { median: fpsList[Math.floor(fpsList.length / 2)]?.toFixed(1), low: fpsList[0]?.toFixed(1) };
     if (SHOT && mode === MODES[0]) await p.screenshot({ path: SHOT, type: 'jpeg', quality: 70 });
     await p.evaluate(() => window.__app.pov.game.end());
-    const line = { mode, ok, gameS: Math.round(s.time), wallS: Math.round((Date.now() - t0) / 1000), bots: s.bots, fps, botMs: +s.botMs.toFixed(2), score: Object.fromEntries(Object.entries(s.score).map(([k, v]) => [k, Math.round(v * 10) / 10])), kills: s.kills, deaths: s.deaths, flag: mode === 'ctf' ? s.flag : undefined, infected: mode === 'infection' ? s.infected : undefined, halves: mode === 'siege' ? s.halves : undefined, goals: s.goals };
+    const line = { mode, ok, gameS: Math.round(s.time), wallS: Math.round((Date.now() - t0) / 1000), bots: s.bots, fps, botMs: +s.botMs.toFixed(2), score: Object.fromEntries(Object.entries(s.score).map(([k, v]) => [k, Math.round(v * 10) / 10])), kills: s.kills, deaths: s.deaths, flag: mode === 'ctf' ? s.flag : undefined, infected: mode === 'infection' ? s.infected : undefined, halves: mode === 'siege' ? s.halves : undefined, result: s.result ? { winner: s.result.winner, why: s.result.why } : undefined, goals: s.goals };
     report.push(line);
     console.log(JSON.stringify(line));
   }

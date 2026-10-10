@@ -1,5 +1,5 @@
 import { Goal, CompositeGoal, GoalEvaluator } from 'yuka';
-import { GoToGoal, hdist } from '../pov/ai/brain.js';
+import { GoToGoal, hdist, takeAimAndShoot } from '../pov/ai/brain.js';
 
 // A bot's objectives in a team game, as Buckland's goal-driven agent wants
 // them (ai/brain.js): one more GoalEvaluator in its Think, beside the fight
@@ -89,6 +89,7 @@ export class ObjectiveGoal extends CompositeGoal {
     if (this.hasSubgoals()) {
       const s = this.executeSubgoals();
       if (s === Goal.STATUS.FAILED) { a.cooldown('OBJECTIVE', FAIL_COOLDOWN_S); this.status = Goal.STATUS.FAILED; }
+      else if (p.kind !== 'carry') takeAimAndShoot(a);   // shooting on the way (a carrier only runs: Halo's flag melee)
       return;
     }
     // there: hold a zone (wander in it, steer back when it strays), or done
@@ -96,6 +97,7 @@ export class ObjectiveGoal extends CompositeGoal {
     this.t += a.dt;
     if (hdist(a.feet, p.at) > p.r * ZONE_RETURN) a.steerTo(p.at, ROAM_STEER * 2);
     else a.roam(ROAM_STEER);
+    takeAimAndShoot(a);   // holding the zone, it fights from it
     if (this.t > HOLD_S) this.status = Goal.STATUS.COMPLETED;
   }
 }

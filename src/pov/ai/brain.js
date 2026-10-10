@@ -686,6 +686,21 @@ const USE = {
   },
 };
 
+// Raven's weapon system runs beside the goals (TakeAimAndShoot): a bot busy
+// with something else (a team game's objective: holding a hill, guarding a
+// stand) still shoots what it sees, with the gun and the same fairness rules
+// (the reaction delay, the warning miss, the accuracy ramp, the breather), and
+// keeps moving where its goal steers it. False when it has nothing to shoot.
+export function takeAimAndShoot(a) {
+  if (!a.knows || !a.sees || (a.weapons && !a.weapons.has('GUN'))) return false;
+  if (a.inSight < REACTION_S || !a.ready('ATTACK')) { a.hold('GUN'); a.lookAt(a.chest()); return true; }
+  const { share, sprint } = a.intent, steer = [a.pursuit.active, a.seek.active, a.wander.active];
+  USE.GUN(a);
+  a.intent.share = share; a.intent.sprint = sprint;
+  [a.pursuit.active, a.seek.active, a.wander.active] = steer;
+  return true;
+}
+
 // Throw a bomb to land at p: the low arc of the projectile's launch angle
 // θ = atan((v² − √(v⁴ − g(g·x² + 2·y·v²))) / (g·x)). False if out of range.
 function throwBombAt(a, p, breach) {
