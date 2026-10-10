@@ -967,7 +967,7 @@ const DETAIL_FOAM = DETAIL.find((f) => f.key === 'liquidFoam');   // whitewater 
 const detailGate = createDetailGate(renderer, () => pacer.wake(), () => hud.toast('Preparing close-up detail… the first time after an update this can take several seconds'));
 // The view program's first draw after an update freezes the page while the
 // GPU driver builds it: say so first (gfx/coldShader.js).
-const coldShader = createColdShaderGuard(() => hud.toast('Preparing the renderer… the first time after an update this takes a few seconds'));
+const coldShader = createColdShaderGuard(() => hud.toast('Making something cool, please be patient'));
 function applyDetail() {
   shadowMat.defines = detailDefines(settings);
   shadowMat.needsUpdate = true;

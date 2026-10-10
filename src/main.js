@@ -40,7 +40,7 @@ async function start(map, mode) {
   launch.map = map;
   launch.mode = mode;
   // (one message: the main thread is busy compiling until the map is up, so a second would never paint)
-  menu.loading('Loading… the first time after an update this can take a few seconds');
+  menu.loading('Making something cool, please be patient');
   launch.ready = () => menu.close();
   await boot();
 }

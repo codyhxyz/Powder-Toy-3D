@@ -178,7 +178,7 @@ void electric(int id, inout float T, inout float life, inout float ctype, vec4 n
     // switches it on, a live N off
     if (life > 0.0 && life != SWITCH_ON) life -= 1.0;
     bool offNb = false, onNb = false, pOn = false, nOff = false;
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < uFaces; i++) {
       int j = nid[i];
       if (j == id) {
         if (na[i].z > 0.0 && na[i].z < SWITCH_ON) offNb = true;
@@ -192,7 +192,7 @@ void electric(int id, inout float T, inout float life, inout float ctype, vec4 n
     if (nOff) life = SWITCH_ON - 1.0;
   } else if (id == E_TSNS) {
     bool hot = false;
-    for (int i = 0; i < 6; i++) hot = hot || (tsnsSenses(nid[i]) && na[i].y > T + MATTER_REST_T);
+    for (int i = 0; i < uFaces; i++) hot = hot || (tsnsSenses(nid[i]) && na[i].y > T + MATTER_REST_T);
     life = hot ? TSNS_FIRE : 0.0;
   }
   if (!CONDUCTS[id]) return;
@@ -202,7 +202,7 @@ void electric(int id, inout float T, inout float life, inout float ctype, vec4 n
     if (ph <= SPARK_REST) lv = 0;   // the level only matters while live
   } else if (takesSpark(id, life0)) {
     int best = 0;   // the strongest spark offered
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < uFaces; i++) {
       int j = nid[i];
       if (j == E_BATTERY || (j == E_TSNS && na[i].z >= TSNS_FIRE)) best = SPARK_V;
       else if (sparkLive(j, floor(na[i].w)) && conductsInto(j, id)) best = max(best, sparkLevel(floor(na[i].w)));

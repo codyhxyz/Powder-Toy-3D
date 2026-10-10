@@ -12,6 +12,7 @@ const HARD_MIN = Math.min(...ELEMENTS.filter((e) => e.breakInto).map((e) => e.ha
 // touching pair is partners once every RX_PAIRINGS steps, and a reaction's
 // chance per step becomes chance·RX_PAIRINGS per pairing.
 export const RX_PAIRINGS = 3 * 2;
+export const FACES = 6;   // a cell's face neighbours: the react pass's uFaces
 const RX_SALT = 0x52;   // keeps a pair's random stream apart from the cells' own (seed3 salt)
 
 // React pass: everything that only changes a cell in place, using its six
@@ -81,6 +82,10 @@ export const reactFrag = (g) => /* glsl */ `
 ${prelude(g)}
 uniform uint uFrame;
 uniform float uGravity;
+// FACES as a uniform: a loop to it can't be unrolled. Unrolled, the GPU compiler
+// inlines every call in every loop body six times over, and ANGLE/Metal took
+// a minute to build this pass cold (tools/program-bench.mjs).
+uniform int uFaces;
 // What fast particles left in each cell this step (raysLayer.js, docs/particles.md):
 // heat (energy) and air pressure, in a target laid out like the state.
 uniform sampler2D tRayDep;
@@ -211,7 +216,7 @@ void main() {
   vec4 na[6];
   vec4 nb[6];
   int nid[6];
-  for (int i = 0; i < 6; i++) {
+  for (int i = 0; i < uFaces; i++) {
     ivec3 q = p + DIRS[i];
     if (inGrid(q)) {
       na[i] = fetchA(q);
@@ -229,7 +234,7 @@ void main() {
   vec3 dvBreak = vec3(0.0);
   if (movable(id) && 0.5 * densityOf(id, a.y) * dot(b.xyz, b.xyz) >= HARD_MIN) {
     float m = densityOf(id, a.y);
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < uFaces; i++) {
       int s = nid[i];
       if (BREAKINTO[s] < 0) continue;
       vec3 n = vec3(DIRS[i]);
@@ -246,7 +251,7 @@ void main() {
   vec3 vDebris = vec3(0.0);
   if (BREAKINTO[id] >= 0) {
     float M = densityOf(BREAKINTO[id], a.y);
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < uFaces; i++) {
       vec3 n = -vec3(DIRS[i]);   // from the neighbour toward me
       if (impactKE(nid[i], na[i].y, nb[i].xyz, n) < HARD[id]) continue;
       float u = dot(nb[i].xyz, n);
@@ -257,7 +262,7 @@ void main() {
     // a blast: the pressure difference across me along any axis (solid
     // neighbours hold no air: 0)
     float pa[6];
-    for (int i = 0; i < 6; i++) pa[i] = KIND[nid[i]] != K_SOLID ? nb[i].w : 0.0;
+    for (int i = 0; i < uFaces; i++) pa[i] = KIND[nid[i]] != K_SOLID ? nb[i].w : 0.0;
     float dP = max(abs(pa[0] - pa[1]), max(abs(pa[2] - pa[3]), abs(pa[4] - pa[5])));
     if (dP > HARD[id] * P_BREAK_PER_HARD) broke = true;
   }
@@ -271,7 +276,7 @@ void main() {
   if (BLAST[id].z > 0.0) {
     float m = densityOf(id, a.y);
     bool meSolid = KIND[id] == K_SOLID;
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < uFaces; i++) {
       int j = nid[i];
       float u = dot(b.xyz - nb[i].xyz, vec3(DIRS[i]));
       if (j == id || isGasLike(j) || u <= 0.0) continue;
@@ -283,7 +288,7 @@ void main() {
   // the highest air pressure on me: my own, and my open neighbours' (a solid holds none)
   float pOn = KIND[id] == K_SOLID ? P_MIN : P0;
   bool touchAir = false;
-  for (int i = 0; i < 6; i++) {
+  for (int i = 0; i < uFaces; i++) {
     if (KIND[nid[i]] != K_SOLID) pOn = max(pOn, nb[i].w);
     touchAir = touchAir || nid[i] == E_EMPTY || nid[i] == E_OXYGEN || nid[i] == E_FIRE;
   }
@@ -337,7 +342,7 @@ void main() {
   // ---- heat conduction (energy conserving) ----
   float C = CAP[id];
   float dE = 0.0;
-  for (int i = 0; i < 6; i++) dE += condFlux(id, T, nid[i], na[i].y);
+  for (int i = 0; i < uFaces; i++) dE += condFlux(id, T, nid[i], na[i].y);
   T += (dE + rayDep.x) / C;   // (and what particles left: photons absorbed, fissions)
   // the open world above the box slowly pulls air back to ambient; gases radiate
   T += (AMBIENT - T) * (id == E_EMPTY ? AIR_AMBIENT_PULL : RAD[id]);
@@ -349,7 +354,7 @@ void main() {
   if (!solid) {
     float lap = 0.0, front = 0.0;
     float pn[6];
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < uFaces; i++) {
       bool open = KIND[nid[i]] != K_SOLID;
       pn[i] = open ? nb[i].w : P0;   // walls reflect pressure
       lap += pn[i] - P0;
@@ -363,7 +368,7 @@ void main() {
   // a singularity holds its vacuum, and the open cells touching it SING_RING
   // of it (the front rule spreads only positive pressure, so this is its reach)
   if (id == E_SINGULARITY) P = singVacuum(life);
-  else if (!solid) for (int i = 0; i < 6; i++) if (nid[i] == E_SINGULARITY) P = min(P, SING_RING * singVacuum(na[i].z));
+  else if (!solid) for (int i = 0; i < uFaces; i++) if (nid[i] == E_SINGULARITY) P = min(P, SING_RING * singVacuum(na[i].z));
 
   // ---- forces ----
   if (!solid) {
@@ -392,7 +397,7 @@ void main() {
     // diagonal needs no push: the move pass topples into it regardless.)
     if (KIND[id] == K_LIQUID && (supported || KIND[nid[3]] == K_LIQUID)) {
       bool open = false;
-      for (int i = 0; i < 6; i++)
+      for (int i = 0; i < uFaces; i++)
         if (DIRS[i].y == 0) open = open || canMove(id, nid[i], d, densityOf(nid[i], na[i].y), 2);
       int up = nid[2];
       bool head = KIND[up] == K_LIQUID || KIND[up] == K_POWDER;   // weight above us
@@ -448,7 +453,7 @@ void main() {
   float closing = 0.0;   // snow neighbours' closing speed on me, summed (storm charge)
   int cloneOf = 0;
   bool surface = false;   // a non-gas neighbour to condense onto (the box's floor counts, its sides and lid don't)
-  for (int i = 0; i < 6; i++) {
+  for (int i = 0; i < uFaces; i++) {
     int j = nid[i];
     bool wet = floor(na[i].w) >= 1.0;
     if (j == E_MOSS && wet) { nWetMoss++; wetMoss[i >> 1] = true; }
@@ -534,7 +539,7 @@ void main() {
   } else if (ACIDIC[id]) {
     // acid, and caustic gas: used up by what they eat
     int victims = 0;
-    for (int i = 0; i < 6; i++) if (acidEats(nid[i])) victims++;
+    for (int i = 0; i < uFaces; i++) if (acidEats(nid[i])) victims++;
     life -= ACID_USE * float(victims);
     if (life <= 0.0) { nidOut = rnd(rs) < ACID_TO_SMOKE ? E_SMOKE : E_EMPTY; reset = true; }
   } else if (id == E_EMPTY) {
@@ -559,7 +564,7 @@ void main() {
     // flame lights the core as it does gunpowder (its blast.flame).
     if (life >= 1.0) {
       bool light = T >= IGNITE[id] || (nFire > 0 && rnd(rs) < BLAST_LIT[E_GUNPOWDER].x);
-      for (int i = 0; i < 6; i++)
+      for (int i = 0; i < uFaces; i++)
         light = light || (nid[i] == E_FUSE && na[i].z <= FUSE_HANDOFF) || (!isGasLike(nid[i]) && na[i].y >= IGNITE[id]);
       if (light) life = 1.0 - FUSE_BURN;
     } else {
@@ -568,7 +573,7 @@ void main() {
       // gunpowder burns: that lights the charge by touch. Burnt out, it leaves
       // a puff of smoke from the sheath, or at the end, flame.
       bool end = true;
-      for (int i = 0; i < 6; i++) end = end && !(nid[i] == E_FUSE && na[i].z > life);
+      for (int i = 0; i < uFaces; i++) end = end && !(nid[i] == E_FUSE && na[i].z > life);
       life -= FUSE_BURN;
       if (end && life <= FUSE_HANDOFF) T = max(T, BLAST[E_GUNPOWDER].y);
       if (life <= 0.0) { nidOut = end ? E_FIRE : E_SMOKE; reset = true; }
@@ -581,7 +586,7 @@ void main() {
       T = max(T, oxyFlameT(flame, O2_PER_AIR) * (FLAME_T_MIN + FLAME_T_SPREAD * rnd(rs)));
     }
   } else if ((id == E_CLONE || id == E_PCLN) && ctype < 1.0) {
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < uFaces; i++) {
       int j = nid[i];
       if (cloneable(j)) { ctype = float(j); break; }
     }
@@ -592,7 +597,7 @@ void main() {
     // starved, it winks out with what little is left.
     float m = life;
     bool taken = false;
-    for (int i = 0; i < 6; i++)
+    for (int i = 0; i < uFaces; i++)
       if (nid[i] == E_SINGULARITY) {
         if (singTakes(life, p, na[i].z, p + DIRS[i])) m += na[i].z; else taken = true;
       }
@@ -643,7 +648,7 @@ void main() {
   if (!reacted && nidOut == id && id == E_DUST) {
     int nFuel = 0;
     bool hotTouch = false;
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < uFaces; i++) {
       if (nid[i] == E_DUST) nFuel++;
       hotTouch = hotTouch || (!isGasLike(nid[i]) && na[i].y >= IGNITE[id]);
     }
@@ -664,7 +669,7 @@ void main() {
     if (blastAir) {
       if (IGNITE[id] > 0.0) {
         bool hotTouch = false;
-        for (int i = 0; i < 6; i++) hotTouch = hotTouch || (!isGasLike(nid[i]) && na[i].y >= IGNITE[id]);
+        for (int i = 0; i < uFaces; i++) hotTouch = hotTouch || (!isGasLike(nid[i]) && na[i].y >= IGNITE[id]);
         lit = T >= IGNITE[id] || hotTouch;
       }
       lit = lit || setOff || (nFire > 0 && BLAST_LIT[id].x > 0.0 && rnd(rs) < BLAST_LIT[id].x);

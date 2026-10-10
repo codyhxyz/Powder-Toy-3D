@@ -5,7 +5,7 @@ import {
   SUPER_MAP, SUPER_SETTLE_STEPS, STEP_FULL_SHARE,
 } from './shaders/activity.js';
 import { moveBlockFrag, moveFlowFrag, moveGatherFrag, SLOTS } from './shaders/move.js';
-import { reactFrag } from './shaders/react.js';
+import { reactFrag, FACES } from './shaders/react.js';
 import {
   paintFrag, copyFrag, brickFrag, blurFrag, brickDistFrag,
   awakeFrag, ageFrag, dirtyFrag, fieldRegionMapFrag, regionShareFrag,
@@ -361,7 +361,7 @@ export class Simulation {
       moveGather: stepMat(moveGatherFrag(g), { ...state(), ...slots(), tQuiet: { value: null }, uFresh: { value: false } }, SUPER_MAP.DRAWN),
       react: stepMat(reactFrag(g), {
         ...state(), uFrame: { value: 0 }, uGravity: { value: this.gravity }, tQuiet: { value: null }, tRx: { value: this.reactionTable },
-        tRayDep: { value: null }, uRays: { value: false },
+        tRayDep: { value: null }, uRays: { value: false }, uFaces: { value: FACES },
       }, SUPER_MAP.DRAWN),
       inert: rawMat(inertFrag(g), { tF: { value: null } }),
       inertRows: rawMat(inertRowsFrag(g), { tA: { value: null }, tF: { value: null }, tClass: { value: null }, tRx: { value: this.reactionTable } }),
