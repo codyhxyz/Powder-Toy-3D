@@ -152,6 +152,21 @@ export const PHYS = {
   CHARGE_BREAKDOWN: 40,
   CHARGE_MAX: 60,            // ctype cap (the id-width audit gives ctype 8 bits)
   PLANT_GROW: 0.006,         // chance per step per neighbouring plant that water becomes plant
+  // Moss and fungus (react.js, activity.js): living mats that grow only where
+  // they are damp. Each moss or fungus cell keeps its damp, a whole number, in
+  // its ctype: DAMP_REACH beside liquid water, else one less than the dampest
+  // moss or fungus beside it (water wicks along a mat), 0 at or above
+  // DAMP_DRY_T (its water boils off). So damp means water within DAMP_REACH
+  // cells along the mat: a game choice of 1.2 m, a cave's wet zone round a
+  // pool. The damp settles in at most DAMP_REACH steps and then holds still.
+  DAMP_REACH: 4,
+  DAMP_DRY_T: 100,           // °C
+  // Chance per step per damp neighbour: an air cell on bare rock (a rock face
+  // across from the moss, so the mat follows the surface) becomes moss, and
+  // wood, sawdust or plant rots into fungus. Game time: real moss creeps
+  // ~1 cm a year, these a cell (30 cm) in about a minute.
+  MOSS_GROW: 1e-4,
+  FUNGUS_GROW: 1e-4,
   LAVA_FREEZE_BELOW: 150,    // °C under the melting point where lava sets
   FIRE_BURN: 0.02,           // flame life lost per step: BURN + BURN_SPREAD·rnd
   FIRE_BURN_SPREAD: 0.02,

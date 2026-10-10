@@ -6,3 +6,7 @@ Many Claude sessions and their subagents work here at the same time, some in thi
 - Use your own port. Start servers on an unusual port with `--strictPort` (not 5173 or 8787), so you never attach to someone else's server or collide with theirs.
 - Commit only your own changes. This checkout often holds other sessions' uncommitted work. Don't stage, revert or reformat files you didn't touch.
 - Deploying means pushing `main` to GitHub: a GitHub Action builds it and ships it to https://tpt3d.codyh.xyz. Never run `wrangler pages deploy` yourself. `git fetch` first, and if `origin/main` has commits you don't (PRs merged on GitHub), merge them in before you push. Then watch the run (`gh run watch`) and check the live site.
+
+# Design touchstones
+
+The game's major inspirations are Cruelty Squad, Minecraft, Noita, The Powder Toy, Team Fortress 2, Rust, Garry's Mod and Halo 3 (README, "Inspirations"). When a feature needs a rule, a number or a feel, borrow it from one of these first and cite it in a comment.

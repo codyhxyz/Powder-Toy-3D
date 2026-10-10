@@ -339,7 +339,7 @@ bool islandLakeClearance(float x, float z) {
 // seed breaking ties, so another seed gives another island. Ints are cells
 // unless said otherwise; shares of the relief are above the sea.
 export const SITE = {
-  RADIUS_MIN: 200,            // islands smaller than this (the box's Island preset, patchwork tiles) get none
+  RADIUS_MIN: 200,            // islands smaller than this (the box's Island preset) get none
   STEP: 8,                    // cells between the samples a search reads
   RAY_FAR: 1.6,               // coast searches march in from this many island radii out...
   RAY_STEP: 2,                // ...this many cells at a time

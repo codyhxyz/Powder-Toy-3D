@@ -26,12 +26,9 @@ export const MAPS = [
     desc: 'An archipelago of live volcanoes in open sea, lava pouring down to the water.' },
   { key: 'labWorld', name: 'Lab Complex', size: 'world', scene: 'labWorld', dims: WORLD_DIMS,
     desc: 'An endless research facility: room after room of tanks, lava pits, towers and hanging sand.' },
-  { key: 'giantLab', name: 'Giant Lab', size: 'world', scene: 'giantLab', dims: WORLD_DIMS,
-    desc: 'The Lab blown up eight times. Walk under the tank and watch the sand pile fall.' },
-  { key: 'giantVolcano', name: 'Giant Volcano', size: 'world', scene: 'giantVolcano', dims: WORLD_DIMS,
-    desc: 'The Volcano blown up eight times: one cone in the sea, snow on top, forest on the flanks.' },
-  { key: 'patchwork', name: 'Patchwork', size: 'world', scene: 'patchwork', dims: WORLD_DIMS,
-    desc: 'A grid of Lab, Volcano and Islet tiles. Walk out of one into the next.' },
+  // (a world three times as tall: world/scenes/giantVolcano.js VOLC_SIZE, app.js checks)
+  { key: 'giantVolcano', name: 'Giant Volcano', size: 'world', scene: 'giantVolcano', dims: [1024, 384, 1024],
+    desc: 'The Volcano blown up: one cone 105 m tall in the sea, lava pouring from its summit, snow on top, forest below.' },
   { key: 'damValley', name: 'Dam Valley', size: 'valley', preset: 'damValley', dims: [256, 96, 128], modes: TEAM_MODES,
     desc: 'Two bases across a dammed river, with vehicles and shrines. Blow the sluice gate to flood the tunnel.' },
   { key: 'lab', name: 'Lab', size: '128', preset: 'lab', dims: [128, 128, 128], modes: TEAM_MODES,
@@ -66,10 +63,10 @@ export function mapOf({ size, preset, scene }) {
   return MAPS.find((m) => m.preset === preset) ?? null;
 }
 
-// '128³', '256×96×128', '1024×1024' (a world: its footprint; its height is a box's)
+// '128³', '256×96×128', '1024×1024' (a world: its footprint, when its height is a box's), '1024×384×1024'
 export function sizeTag(m) {
   const [x, y, z] = m.dims;
-  if (isWorld(m)) return `${x}×${z}`;
+  if (isWorld(m) && y === WORLD_DIMS[1]) return `${x}×${z}`;
   return x === y && y === z ? `${x}³` : `${x}×${y}×${z}`;
 }
 

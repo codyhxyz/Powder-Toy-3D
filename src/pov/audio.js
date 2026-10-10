@@ -70,6 +70,7 @@ const LOAD_REF_CELLS = 16;              // cells moved in one tool action that p
 const LOAD_GAIN_MIN = 0.4, LOAD_GAIN_MAX = 1.2;
 const POUR_TAIL_S = 0.2;                // s: the pour loop fades once no 'pour' came for this long...
 const POUR_TAIL_FRAMES = 3;             // ...or for this many frames, on a slow machine
+const GULP_RATE = 0.55;                 // a drink from the flask: the liquid plop, pitched down to a gulp
 const POUR_SIZZLE_GAP_S = 0.35;         // s between sizzles while pouring lava
 const HUM_GRACE_S = 0.25;               // s after a grab before the hum checks that the physgun really holds
 const STEP_LOUD_SPEED = 9;              // cells/s: a footfall at sprinting speed plays at gain 1
@@ -491,7 +492,7 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
   });
 
   // an NPC's tool sounds that are held loops for the player: a one-shot each where it is
-  const NPC_ONE_SHOT = { 'bucket:pour': 'shovelPatter', 'blowtorch:on': 'swoosh', 'physgun:grab': 'physGrab', 'physgun:fling': 'physFling', 'physgun:release': 'physRelease', 'physgun:blast': 'physFling' };
+  const NPC_ONE_SHOT = { 'bucket:pour': 'shovelPatter', 'flask:pour': 'shovelPatter', 'blowtorch:on': 'swoosh', 'physgun:grab': 'physGrab', 'physgun:fling': 'physFling', 'physgun:release': 'physRelease', 'physgun:blast': 'physFling' };
   povEvents.on('tool:action', ({ tool, action, id, point, amount, by, from }) => {
     if (!live()) return;
     const at = point ?? (by ? from : null), family = id != null && id >= 0 ? familyOf(id) : null;
@@ -515,11 +516,11 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
         play('shovelDump', { at, gain });
         if (family && ELEMENTS[id].kind === K.SOLID) play(family, { at, gain: TOOL_HIT_GAIN, rate });
         break;
-      case 'bucket:scoop':
+      case 'bucket:scoop': case 'flask:scoop':
         play('bucketScoop', { at, gain, rate });
         if (id === E.LAVA) play('sizzle', { at, gain: TOOL_HIT_GAIN });
         break;
-      case 'bucket:pour': {
+      case 'bucket:pour': case 'flask:pour': {
         lastPour = clock();
         loop('pourLoop', true, { rate });
         if (id === E.LAVA && clock() - lastSizzle > POUR_SIZZLE_GAP_S) { lastSizzle = clock(); play('sizzle', { at, gain: TOOL_HIT_GAIN }); }
@@ -527,7 +528,8 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
       }
       case 'axe:swing': case 'pickaxe:swing': play('swoosh', { at }); break;
       case 'knife:swing': play('swoosh', { at, rate: KNIFE_SWING_RATE }); break;
-      case 'bomb:throw': case 'torch:throw': case 'lantern:throw': play('swoosh', { at }); break;
+      case 'bomb:throw': case 'torch:throw': case 'lantern:throw': case 'flask:throw': play('swoosh', { at }); break;
+      case 'flask:drink': play('plop', { at, rate: GULP_RATE }); break;   // a gulp (the shatter is its 'impact')
       case 'torch:land': case 'lantern:land': play('thunk', { at, gain: TOOL_HIT_GAIN }); break;
       case 'lantern:toggle': play('dryClick', { at }); break;
       case 'blowtorch:on': loop('torchLoop', true); break;

@@ -60,6 +60,20 @@ const HURT_SHAKE_MIN = 0.05;            // smaller hits (and steady burning, bat
 const TRAUMA_PER_HEALTH = 1.5;          // trauma per unit of health lost
 const TRAUMA_HURT_MAX = 0.6;            // most trauma from one hurt event
 
+// ---- drunk (a 'drunk' event, ingest.js: whiskey): a slow sway of the view, as Noita's
+// Drunk blurs and spreads. Noita's levels: mildly boozed under 15 s of Drunkenness,
+// drunk to 45 s, wasted past it; the sway grows to its full size at wasted.
+const DRUNK_WASTED_S = 45;              // s of Drunkenness for the full sway (Noita's "Wasted")
+const DRUNK_MAX_S = 120;                // s of Drunkenness kept at most (Noita poisons you past 60)
+const DRUNK_EASE = 0.5;                 // 1/s: the sway follows the Drunkenness this fast (it comes on and wears off gently)
+const DRUNK_ROLL = 4 * DEG;             // rad of roll at full sway...
+const DRUNK_YAW = 2.5 * DEG;            // ...of yaw...
+const DRUNK_PITCH = 1.5 * DEG;          // ...and of pitch
+const DRUNK_FREQ = 2 * Math.PI * 0.25;  // rad/s: a sway every 4 s
+const DRUNK_YAW_RATE = 0.5;             // the yaw sways at this share of the roll's rate, the pitch at twice it: a lazy figure eight
+const DRUNK_PITCH_RATE = 2;
+const DRUNK_SWAY_EPS = 1e-3;            // a sway this small, sober, is over (stops the redraws)
+
 // ---- HUD feedback
 const HIT_TIME = 0.18;                  // s the hitmarker shows
 const HIT_FADE = 0.08;                  // s at the end of HIT_TIME over which it fades out
@@ -82,6 +96,7 @@ export function createFeel({ hud }) {
   let trauma = 0, time = 0;
   const punch = { pitch: 0, yaw: 0, vp: 0, vy: 0 };   // rad and rad/s
   let bloom = 0, hitT = 0, hitBroke = false;
+  let drunk = 0, drunkSway = 0, drunkTime = 0;   // s of Drunkenness left; the sway's size (0..1); its clock
   let player = null, unbindPlayer = [];
   let live = false;                      // in the eyes and alive (events outside it are ignored)
   const eye = { x: 0, y: 0, z: 0 };      // grid, for impact distances
@@ -113,6 +128,10 @@ export function createFeel({ hud }) {
     }),
     // a tool's own screen shake (the laser cannon's beam): trauma 0..1, the player's only
     povEvents.on('shake', ({ trauma: x = 0, by }) => { if (live && !by) addTrauma(x); }),
+    povEvents.on('drunk', ({ seconds = 0, by }) => {
+      if (!live || by) return;   // an NPC's drink isn't the player's head
+      drunk = Math.min(DRUNK_MAX_S, drunk + seconds);
+    }),
     povEvents.on('punch', ({ pitch = 0, yaw = 0 }) => {
       if (!live) return;
       punch.vp += pitch * PUNCH_VEL_GAIN;
@@ -138,6 +157,8 @@ export function createFeel({ hud }) {
     get kick() { return punch.pitch; },   // the view punch's pitch (rad), for checks
     get punch() { return { pitch: punch.pitch, yaw: punch.yaw }; },
     get bloom() { return bloom; },
+    get drunk() { return drunk; },       // s of Drunkenness left
+    get drunkSway() { return drunkSway; },   // the drunk sway's size now, 0..1
     get hit() { return hitT; },
     addTrauma,
     // the body whose hurt and land events shake the view
@@ -150,6 +171,7 @@ export function createFeel({ hud }) {
     // a fresh body (drop in, respawn): nothing carried over
     reset() {
       trauma = bloom = hitT = 0;
+      drunk = drunkSway = 0;
       punch.pitch = punch.yaw = punch.vp = punch.vy = 0;
       prevValid = false;
       offsets.pitch = offsets.yaw = offsets.roll = 0;
@@ -193,6 +215,18 @@ export function createFeel({ hud }) {
       offsets.pitch = punch.pitch * m + shake * noise(t, SEED_PITCH);
       offsets.yaw = punch.yaw * m + shake * noise(t, SEED_YAW);
       offsets.roll = shake * SHAKE_ROLL * noise(t, SEED_ROLL);
+
+      drunk = Math.max(0, drunk - dt);
+      drunkSway += (clamp01(drunk / DRUNK_WASTED_S) - drunkSway) * (1 - Math.exp(-DRUNK_EASE * dt));
+      if (drunk <= 0 && drunkSway < DRUNK_SWAY_EPS) drunkSway = 0;
+      if (drunkSway > 0) {
+        drunkTime += dt;
+        const a = drunkTime * DRUNK_FREQ, k = drunkSway * m;
+        offsets.roll += k * DRUNK_ROLL * Math.sin(a);
+        offsets.yaw += k * DRUNK_YAW * Math.sin(a * DRUNK_YAW_RATE);
+        offsets.pitch += k * DRUNK_PITCH * Math.sin(a * DRUNK_PITCH_RATE);
+        globalThis.__app?.requestRender?.();
+      }
 
       bloom = Math.max(0, bloom - BLOOM_DECAY * dt);
       hitT = Math.max(0, hitT - dt);

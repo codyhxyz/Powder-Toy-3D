@@ -371,6 +371,40 @@ ctx = {
 Both are catalog `GEAR` entries (`...gear('KNIFE')`, `...gear('POGO')`), carried like every tool; the palette's
 Tools group, Q in first person, or a class (classes.js: the Scout's pogo, the Spy's knife) puts them in hand.
 
+## Flask (2026-10-10): Noita's potion flask
+
+`tools/flask.tool.js` (Build slot, after the bucket) and `src/pov/ingest.js`. One flask at a time: you
+start with one full of water (Noita's runs do), and once it's thrown Q (the palette) gives another, full of water.
+
+| Input | What |
+|---|---|
+| Left | Chosen on the press: pointed at a liquid or powder within reach with room in the flask, or the flask empty → **scoop** (a quarter flask a dip, the aimed element only, mixed contents allowed); otherwise **pour** a stream where you aim. Finite: what it pours is spent (the bucket stays bottomless). |
+| Right | **Throw** it on the shared projectiles at the bomb's speed plus yours (it hits bodies too). Where it strikes the glass shatters: `FLASK_GLASS` (4) cells of SHARDS plus every cell it held, placed in the air in front of the struck face (`transfer.put`, retried a cell higher each time until all have landed). A flask that leaves the box is gone with what it held. |
+| `H` | **Drink** (Grim Dawn's potion key; V, F5, Z, E, Q, Tab, C, T, M, `,` and `.` are taken): Noita's drink, the same share of every material, `DRINK_CELLS` a gulp, handed to `ingest(body, doses)`. Hold to keep drinking. Tools and NPCs can pass `ctx.drink` / `ctx.drinkPressed`; the player's body is `ctx.player.body`. |
+
+- **Capacity** `FLASK_CAP` = Noita's 1000 units as voxels of Noita's pixel (player.js `PX`, 0.5 cells): 1000 × 0.5³ = 125
+  cells. A full drink is Noita's 10%: 13 cells.
+- **Ingestion** (`ingest.js`): every dose first trades heat with the skin (it moves toward the drink's temperature by
+  half the gap per full drink; above 65 °C it burns inside), after its element's row, `registerIngestion(key, effect)`:
+  water quenches (a burning skin is put out), acid hurts (0.5 a full drink), lava kills ("Drank lava, 1,600 °C"),
+  oil sickens (0.08), whiskey (nt-mat's element) adds 30 s of Drunk per full drink (Noita's number): the `drunk`
+  event, which feel.js turns into a slow sway of the view, full at Noita's "Wasted" (45 s). A drink's hurt passes the
+  Energy Shield (`player.hurt(..., { shielded: false })`). Phase 2 (statuses) is more rows.
+- **Noita's potions** (`src/pov/potions.js`, phase 2): each magical liquid (nt-mat's elements) gives its status by
+  touch (`registerStain`, 20 s/s with the whole skin in it, up to its submerge time) and by drink (a full drink gives the
+  submerge time and drinks add up). Times are the Noita wiki's submerge times.
+
+  | Status | Element | Time | Effect | Where |
+  |---|---|---|---|---|
+  | Levitating 🪶 | LEVITATIUM | 20 s | the jet flies on no fuel, climbing 75% faster (Noita's Faster Levitation) | player.js `LEVITATE_RISE` |
+  | Teleportitis 🌀 | TELEPORTATIUM | 5 s | every 1.5–3.5 s a jump of 16–64 cells (Noita's shortest, 128 px) to a safe open spot: the top of a column, on solid or powder, the body's box clear of matter and nothing hot near; none found, no jump. Event `teleport` `{ from, to }` | potions.js `safeSpot` (the NPCs' world readback, ai/world.js), player.js `teleport()` |
+  | Regeneration 💚 | HEALTHIUM | 7.5 s | heals 10% of a life a second | player.js `heal()` |
+  | Berserk 💢 | BERSERKIUM | 15 s | the body's weapons hurt bodies 2× (status `damage` → `status.damageScale` → targets.js `dealtScale`, used by melee.js and ballistics.js) | — |
+  | Charmed 💕 | PHEROMONE | 20 s | NPCs don't hunt the player while the NPC or the player is charmed (npc.js `charmed`) | Noita charms creatures; the player's own charm is our call |
+  | Polymorph 🐑 | POLYMORPHINE | 20 s | helpless: no tools (status `noTools` → tools/index.js puts the tool away). Becoming a sheep is a follow-up | — |
+  | Toxic ☣️ | TOXIC (drink) | 6 s a drink | nt-status's Toxic (touching sludge already gives it) | — |
+- Check: `node tools/flask-check.mjs [--port …] [--shot file.png]` (a dev server; AC power).
+
 ## Gunplay v2 (2026-10-08): events and ownership
 
 Gunplay v2 follows the Gunplay Feel Lab's recommendations: ballistic rounds handed to the sim at impact,
@@ -390,8 +424,9 @@ say world. Emitters own their event names. Listeners never mutate payloads.
 | `gun:dry` | gun | `{}`. The trigger clicked but nothing fired (muzzle blocked). |
 | `round:move` | guns, bomb, rocket | `{ id, kind, from, to }` (kind 'round', 'bomb' or 'rocket'). A round in flight moved this frame (grid), for tracers and the rocket's smoke. |
 | `round:end` | guns, bomb, rocket | `{ id, kind }`. The round is gone (impact or out of the box). |
-| `impact` | gun, axe, pickaxe, knife | `{ source: 'gun'\|'axe'\|'pickaxe'\|'knife', point, normal, id, energy, broke, body?, backstab? }` (body: a target, not a cell, was hit; id −1; backstab: the knife's lethal blow). Something was struck. id is the element hit, energy is ½·DENS·v² in sim units, and broke is true/false when the striker knows, else null. |
-| `tool:action` | shovel, bucket, axe, pickaxe, knife, physgun, trowel, blowtorch, bomb | `{ tool, action, id?, point?, amount? }`. tool is 'shovel'\|'bucket'\|'axe'\|'pickaxe'\|'knife'\|'physgun'\|'trowel'\|'blowtorch'\|'bomb'; action is 'dig'\|'place'\|'on'\|'off'\|'throw'\|'dump'\|'scoop'\|'pour'\|'swing'\|'refuse'\|'grab'\|'fling'\|'release'\|'blast'. Physgun 'hold' state is read from the tool, not an event. |
+| `impact` | gun, axe, pickaxe, knife, flask | `{ source: 'gun'\|'axe'\|'pickaxe'\|'knife'\|'flask', point, normal, id, energy, broke, body?, backstab? }` (body: a target, not a cell, was hit; id −1; backstab: the knife's lethal blow). Something was struck. id is the element hit, energy is ½·DENS·v² in sim units, and broke is true/false when the striker knows, else null. |
+| `tool:action` | shovel, bucket, axe, pickaxe, knife, physgun, trowel, blowtorch, bomb, flask | `{ tool, action, id?, point?, amount? }`. tool is 'shovel'\|'bucket'\|'axe'\|'pickaxe'\|'knife'\|'physgun'\|'trowel'\|'blowtorch'\|'bomb'\|'flask'; action is 'dig'\|'place'\|'on'\|'off'\|'throw'\|'dump'\|'scoop'\|'pour'\|'swing'\|'refuse'\|'grab'\|'fling'\|'release'\|'blast'\|'shatter'\|'drink'. Physgun 'hold' state is read from the tool, not an event. |
+| `drunk` | ingest.js (whiskey) | `{ seconds }`. Seconds of Drunk added to the player (feel.js sways the view; an NPC's has `by`). |
 | `player:step` | shell (camera bob cycle) | `{ speed, inLiquid }`. A footfall. |
 | `player:jet` | player | `{ on }`. The jetpack lit or went out. |
 | `kick` | a body's kick (kick.js) | `{ hit: 'cell'\|'body'\|null, point, normal, dir, id, broke, mass, dv }`. A kick, landed or not: mass is what it met (kg, Infinity when anchored), dv the kicker's own Δv (cells/s). |

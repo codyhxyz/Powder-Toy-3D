@@ -72,8 +72,11 @@ const ARENA_BANNERS = { damValley: DAM_VALLEY_BANNERS };
 // Massive worlds (docs/scaling.md D11): a world scene (world/scenes,
 // settings.scene: the island by default), `size` cells, simulated and drawn
 // through a window of `win` cells that follows the focus (the POV body, else
-// the orbit target). The Grid size row's World.
+// the orbit target). The Grid size row's World. A scene with a size of its own
+// (the giant volcano's taller world) gets a window as tall as it (worldOf).
 const WORLDS = { world: { win: [128, 128, 128], size: WORLD_SIZE } };
+// the world and window a WORLDS entry holds with scene s: the window spans the world's height
+const worldOf = (w, s) => (s.size ? { size: s.size, win: [w.win[0], s.size[1], w.win[2]] } : w);
 // God view over a world: the orbit target on the ground, the camera this far
 // off it along the box view's direction (scene units), so the window fills
 // about as much of the view as a box does
@@ -266,11 +269,11 @@ function build() {
     edges.material.dispose();
     shadowTarget.dispose();
   }
-  worldMode = WORLDS[settings.size] ?? null;
+  worldMode = settings.size in WORLDS ? worldOf(WORLDS[settings.size], sceneByKey(settings.scene)) : null;
   const [nx, ny, nz] = worldMode?.win ?? SIZES[settings.size];
   win?.dispose(retired);   // (a new window over the world shares most of its passes' programs)
   win = null;
-  sim = new Simulation(renderer, nx, ny, nz, { windowed: !!worldMode });
+  sim = new Simulation(renderer, nx, ny, nz, { windowed: !!worldMode, world: worldMode?.size });
   sim.gravity = settings.gravity;
   sim.onPass = prof.on ? simPass : null;
   scale = 10 / Math.max(nx, nz);
@@ -345,7 +348,7 @@ function build() {
     name: 'shadow',
     glslVersion: THREE.GLSL3,
     vertexShader: quadVert,
-    fragmentShader: shadowFrag(sim.g, farCastersGLSL(farLayout(WORLD_SIZE))),
+    fragmentShader: shadowFrag(sim.g, farCastersGLSL(farLayout(sim.world))),
     uniforms: {
       tA: { value: null }, tBrick: { value: null }, tLight: { value: null },
       uSun: { value: SUN }, tShadow: { value: null }, uShadowRes: { value: shadowRes },
@@ -448,11 +451,13 @@ function worldShrine() {
 }
 
 // World: the god view's home over world column (x, z), the orbit target on
-// the ground there (the scene's: on the sea where the sea floor is lower).
+// the ground there (the scene's: on the sea where the sea floor is lower), or
+// as the scene's view has it (world/scenes/index.js)
 function homeOver(x, z) {
-  const ground = win.scene.ground(x, z, win.P);
+  const v = win.scene.view;
+  const ground = win.scene.ground(x, z, win.P) + (v?.lift ?? 0);
   const target = new THREE.Vector3((x - anchor.x) * scale, ground * scale, (z - anchor.y) * scale);
-  rig.setHome(new THREE.Vector3(...WORLD_VIEW_DIR).setLength(WORLD_VIEW_DIST).add(target), target);
+  rig.setHome(new THREE.Vector3(...(v?.dir ?? WORLD_VIEW_DIR)).setLength(v ? v.dist * scale : WORLD_VIEW_DIST).add(target), target);
 }
 
 // The grid's box in the scene: at its world origin, so a window moving over
@@ -543,7 +548,7 @@ function startMode(mode) {
 }
 // maps.js is plain data the menu loads on its own: it must agree with the tables here
 for (const m of MAPS) {
-  const dims = WORLDS[m.size]?.size ?? SIZES[m.size];
+  const dims = m.size in WORLDS ? worldOf(WORLDS[m.size], sceneByKey(m.scene)).size : SIZES[m.size];
   const ok = dims && dims.every((n, i) => n === m.dims[i]) && (isWorld(m) ? m.size in WORLDS && sceneByKey(m.scene).key === m.scene : m.size in SIZES);
   if (!ok) console.error(`maps.js: map '${m.key}' doesn't match app.js (size '${m.size}', ${m.dims.join('×')})`);
 }
@@ -592,6 +597,7 @@ function resetSpawners(name) {
   perkOrbs?.clear();
   arenaMarkers?.clear();
   pov?.vehicles.spawnLayout(arenaLayout);   // an arena's jeeps and hoverbikes (null clears the last arena's)
+  pov?.game.useLayout(arenaLayout);          // its spawns, flags, hills and core for the team games (null: the lab's)
   if (!spawners) return;
   spawners.clear();
   if (name === 'lab' && !win) spawners.add(SPAWNER.ENEMY, new THREE.Vector3(Math.round(sim.g.nx * LAB_ENEMY_AT[0]), 0, Math.round(sim.g.nz * LAB_ENEMY_AT[1])));
@@ -1533,11 +1539,14 @@ try {
     hover, pointerHover: () => pointerInside && !uiHover, pickRay,
     getSpawners: () => spawners,
     getPerkOrbs: () => perkOrbs,
+    loadPreset: (name) => loadPreset(name, false),   // a team game's new round (src/game)
+    getArena: () => arenaLayout,                      // the loaded arena's layout, for the team games (src/game)
     requestRender: () => pacer.wake(),
     inWorld: () => !!win,
     showToolsMenu: () => dock.reveal((it) => isGearTool(it.id)),   // Q in first person: the palette at its first-person tools
   });
   pov.vehicles.spawnLayout(arenaLayout);   // the scene loaded before the POV shell existed
+  pov.game.useLayout(arenaLayout);
   window.__app = {
     get sim() { return sim; }, get volume() { return volume; }, get scale() { return scale; }, get signs() { return signs; }, get builds() { return builds; },
     get pov() { return pov; },

@@ -27,6 +27,8 @@ export const GEAR = [
     desc: 'Builds 1 m blocks out of what the shovel dug up. Right-click picks the material.' },
   { key: 'BUCKET', slot: 1, name: 'Bucket', model: 'bucket', abbr: 'BCKT', color: '#7f8b95',
     desc: 'Left-click scoops up liquid, hold right-click to pour it out forever: it never runs dry. Lava is fine.' },
+  { key: 'FLASK', slot: 1, name: 'Flask', model: 'flask', abbr: 'FLSK', color: '#9fd6e8',
+    desc: 'Noita\'s potion flask, full of water. Left-click scoops up the liquid or powder you point at, or pours. Right-click throws it to shatter; H drinks.' },
   { key: 'GUN', slot: 2, name: 'Pistol', model: 'pistol', abbr: 'PSTL', color: '#5d6168',
     desc: 'Fires as fast as you click; holding fires slower. Each round breaks what it hits and adds nothing to the world.' },
   { key: 'SMG', slot: 2, name: 'SMG', model: 'gun', abbr: 'SMG', color: '#d87a22',
