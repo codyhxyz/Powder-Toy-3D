@@ -7,7 +7,7 @@ import { launchBrowser, newTestPage, ready, render } from './browser.mjs';
 
 const args = process.argv.slice(2);
 const port = args.includes('--port') ? args[args.indexOf('--port') + 1] : '54873';
-const url = `http://127.0.0.1:${port}/?size=64&preset=lab`;
+const url = `http://localhost:${port}/?size=64&preset=lab`;
 const pace = createPacer({ derivedSettle: 2, viewSettle: 2, presentHz: 10 });
 let ticks = 0, presentations = 0;
 for (let i = 0; i < 60; i++) {
