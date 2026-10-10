@@ -4,7 +4,7 @@
 // held the main thread longer than SLOW_MS, plus the longest main-thread
 // stalls and when the first realistic frame was drawn.
 // usage: node tools/app-compile-probe.mjs --port 5311 [--detail off|full] [--warm] [--wait 40000]
-import { chromium } from 'playwright';
+import { launchBrowser, newTestPage } from './browser.mjs';
 import { DETAIL, settingKey } from '../src/gfx/detail.js';
 
 const args = process.argv.slice(2);
@@ -15,8 +15,8 @@ const detail = Object.fromEntries(DETAIL.map((f) => [settingKey(f), opt('detail'
 const WAIT_MS = +opt('wait', '40000');
 const SLOW_MS = 30;    // WebGL calls slower than this are logged
 
-const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
-const p = await b.newPage({ viewport: { width: 1280, height: 800 } });
+const b = await launchBrowser();
+const p = await newTestPage(b, { mode: 'visual', viewport: { width: 1280, height: 800 } });   // (timing: full cadence)
 await p.addInitScript(([warm, SLOW_MS, detail]) => {
   localStorage.setItem('powder-toy-3d:settings', JSON.stringify({ ...detail }));
   const t0 = performance.now();

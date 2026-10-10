@@ -12,7 +12,7 @@
 //   frames the page got meanwhile.
 // usage: node tools/compile-bench.mjs [--variants base,full,base+VIEW=0,alt:base] [--alt dir] [--runs 3] [--parallel] [--warm] [--bust-steps N]
 //        [--define NAME=1,...] (extra defines on every variant, for bisecting)
-import { chromium } from 'playwright';
+import { launchBrowser, newTestPage } from './browser.mjs';
 import { gridLayout } from '../src/sim.js';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -69,8 +69,8 @@ const source = (spec) => {
   return src;
 };
 
-const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
-const p = await b.newPage();
+const b = await launchBrowser();
+const p = await newTestPage(b, { mode: 'visual' });   // (raw WebGL2, no app: the mode is moot)
 await p.setContent('<canvas width=1 height=1></canvas>');
 const renderer = await p.evaluate(() => {
   const gl = document.querySelector('canvas').getContext('webgl2');
