@@ -69,13 +69,14 @@ const DRINK_INTERVAL = 0.6;                      // s between gulps while H is h
 const DRINK_KEY = 'KeyH';                        // drink (Grim Dawn's potion key; E, Q, Tab, C, V, F, T, M are taken)
 const SHATTER_ENERGY = 20;                       // sim KE units the shatter's impact sounds and shakes like
 const SPILL_SLACK = 2.5;                         // candidate cells per spilled cell (some are full)
-const SPILL_RISE = 1;                            // cells: each retry looks this much higher (no room spills over the top)
+const SPILL_RISE = 1;                            // cells: each retry looks this much higher (no room spills over the top)...
+const SPILL_TRIES_MAX = 600;                     // ...for this many tries (~10 s); what still finds no room is lost, counted in `lost`
 const KIND = 'flask';
 const TUMBLE = 0.35;                             // rad the flying flask turns per frame it's drawn
 
 // ---- held item, in cells (camera space; the rig scales by the cell size)
 const HELD_POS = [0.7, -0.6, -1.4];              // right, down, ahead of the eye
-const HELD_TILT = 0.2;                           // rad, the neck tips away from the eye
+const HELD_TILT = 0.2;                           // rad, the neck tips toward the eye
 const DRINK_TIP = 1.1;                           // rad the flask tips toward the mouth on a gulp...
 const DRINK_TIP_S = 0.35;                        // ...over this long
 const FLASK_INNER = 0.8;                         // the contents' radius as a share of the bulb's (inside the glass's flat faces)
@@ -263,20 +264,22 @@ export default {
     // ---- throwing and shattering
     // Put a broken flask's cells into the empty cells around `at` (a pinned point), and
     // keep at it, a little higher each time, until every one has landed.
-    function spill(cells, at, epoch = spillEpoch, tries = 0) {
-      if (epoch !== spillEpoch) { spills.delete(cells); return; }
-      if (!cells.cells.length) { spills.delete(cells); return; }
-      spills.add(cells);
+    function spill(heap, at, epoch = spillEpoch, tries = 0) {
+      if (epoch !== spillEpoch || !heap.cells.length) { spills.delete(heap); return; }
+      if (tries > SPILL_TRIES_MAX) { lost += heap.cells.length; heap.cells.length = 0; heap.version++; spills.delete(heap); return; }
+      spills.add(heap);
       const sim = env.getSim();
-      const center = at().add(new THREE.Vector3(0, tries * SPILL_RISE, 0));
-      const p = transfer.put(cells, { cells: cellsNear(center, ballRadius(cells.cells.length * SPILL_SLACK), sim.g), vel: new THREE.Vector3() });
-      const again = () => spill(cells, at, epoch, tries + 1);
+      const center = at();
+      center.y = Math.min(center.y + tries * SPILL_RISE, sim.g.ny - 1);
+      const p = transfer.put(heap, { cells: cellsNear(center, ballRadius(heap.cells.length * SPILL_SLACK), sim.g), vel: new THREE.Vector3() });
+      const again = () => spill(heap, at, epoch, tries + 1);
       if (!p) { requestAnimationFrame(again); return; }
-      p.then(() => (cells.cells.length ? requestAnimationFrame(again) : spills.delete(cells)));
+      p.then(() => (heap.cells.length ? requestAnimationFrame(again) : spills.delete(heap)));
     }
 
     function shatter(roundId, { sim, hit, normal }) {
       const f = flying.get(roundId);
+      if (!f) return;
       flying.delete(roundId);   // struck: round:end isn't a loss
       f.model?.dispose();
       const spilt = f.load;
