@@ -1407,7 +1407,7 @@ function frame(now) {
     u.tLight.value = sim.lightTexture;
     u.uCam.value.copy(camera.position).applyMatrix4(invVol.copy(volume.matrixWorld).invert());
     detailGate.update(camera, u.uCam.value, [sim.g.nx, sim.g.ny, sim.g.nz], scene);
-    win?.far.view(volume, settings.view === 0);
+    win?.far.view(volume, settings.view === 0, camera);
     u.uView.value = settings.view;
     if (worldChanged) u.uTime.value += dt;   // animated looks (lava, ripples) hold still while the world does
 

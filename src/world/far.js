@@ -7,6 +7,7 @@ import {
 } from '../shaders/far.js';
 import { rawMat, makeFieldTarget } from '../sim.js';
 import { gfxUniforms } from '../gfx/uniforms.js';
+import { WorldDetail } from './detail.js';
 
 // The far field of a massive world (docs/scaling.md D11, phase W4; the GLSL
 // and the far grid's layout are in shaders/far.js): a brick-resolution grid of
@@ -173,6 +174,7 @@ export class FarField {
     this.mesh.frustumCulled = false;
     this.mesh.renderOrder = VIEW_ORDER;
     this.mesh.visible = false;
+    this.detail = new WorldDetail(this);
     // the view's program is as big as the volume's: compiled in the background
     // (parallel compile), the far field showing once it's ready, instead of
     // stalling the first frame
@@ -250,6 +252,7 @@ export class FarField {
   // summarized from its state, and the chunks are queued nearest the window
   // last (tick draws them from the end).
   sceneBuild() {
+    this.detail.reset();
     const t0 = performance.now();
     const L = this.L, [bx, , bz] = L.bricks.n, C = FAR_SCENE.CHUNK;
     const r = this.renderer, prev = r.getRenderTarget(), color = r.getClearColor(new THREE.Color()), alpha = r.getClearAlpha();
@@ -346,6 +349,7 @@ export class FarField {
   summarize(lo, bricks, derive = true) {
     if (!this.built) return;
     const o = this.sim.origin, m = this.mats.farWin;
+    this.detail.invalidate([o.x + lo[0], o.y + lo[1], o.z + lo[2]], bricks.map((n) => n * BRICK));
     const at = [(o.x + lo[0]) / BRICK, (o.z + lo[2]) / BRICK], size = [bricks[0], bricks[2]];
     m.uniforms.tA.value = this.sim.stateA;
     this.drawRegion(m, at, size);
@@ -369,6 +373,7 @@ export class FarField {
   // a slab a frame, while the simulation changes it.
   tick() {
     if (!this.built) return;
+    this.detail.tick();
     if (this.queue.length) this.sceneChunks();
     const g = this.sim.g;
     this.age++;
@@ -434,19 +439,22 @@ export class FarField {
   // Before the scene renders: the view's transforms for this frame (the
   // volume's matrix maps grid cells into the scene; world = grid + origin).
   // visible: the realistic view (the data views draw the window alone).
-  view(volume, visible) {
+  view(volume, visible, camera) {
     this.mesh.visible = visible && this.built && this.ready;
+    this.detail.group.visible = this.mesh.visible;
     if (!this.mesh.visible) return;
     const o = this.sim.origin;
     this.worldToScene.copy(volume.matrixWorld).multiply(new THREE.Matrix4().makeTranslation(-o.x, -o.y, -o.z));
     this.sceneToWorld.copy(this.worldToScene).invert();
     this.mesh.material.uniforms.uWinLo.value.copy(o);
+    if (camera) this.detail.view(camera, this.mesh.visible);
     this.refresh();
   }
 
   // retire: as Simulation.dispose's (the view's program and the passes' carry
   // over to a new far field that claims them before they're disposed of)
   dispose(retire = null) {
+    this.detail.dispose();
     this.queue = [];
     this.mesh.removeFromParent();
     this.mesh.geometry.dispose();

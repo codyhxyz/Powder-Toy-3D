@@ -612,13 +612,11 @@ export const FAR_SCENE = {
 // The scene cells' target: the chunk's columns with their margin, side ×
 // side, each z row of them (side × world height texels) side by side along
 // x, `cols` to a row of the atlas (near square).
-export function farSceneLayout(L) {
-  const side = FAR_SCENE.CHUNK * BRICK + FAR.CUBE - BRICK;   // cells: the chunk's columns plus FAR_CUBE_LO on each side
+export function farSceneLayout(L, side = FAR_SCENE.CHUNK * BRICK + FAR.CUBE - BRICK) {
   const cols = Math.ceil(Math.sqrt(L.size[1]));   // cols · side wide ≈ (side / cols) · height tall
   return { side, cols, width: cols * side, height: Math.ceil(side / cols) * L.size[1] };
 }
-const sceneCellsLayoutGLSL = (L) => {
-  const S = farSceneLayout(L);
+const sceneCellsLayoutGLSL = (L, S = farSceneLayout(L)) => {
   return /* glsl */ `
 #define FSC_SIDE ${S.side}      // cells along the chunk's columns, margin included
 #define FSC_COLS ${S.cols}      // z rows of them per atlas row
@@ -631,10 +629,11 @@ ivec2 fscTexel(ivec3 c) { return ivec2(c.x + FSC_SIDE * (c.z % FSC_COLS), c.y + 
 };
 // sceneGLSL: the scene's glsl(g). Only the prelude comes before it, so its
 // names can't meet the far field's.
-export const farSceneCellsFrag = (g, L, sceneGLSL) => /* glsl */ `
+export const farSceneCellsFrag = (g, L, sceneGLSL, S, live = false) => /* glsl */ `
 ${prelude(g)}
 ${sceneGLSL}
-${sceneCellsLayoutGLSL(L)}
+${sceneCellsLayoutGLSL(L, S)}
+${live ? 'uniform ivec3 uLiveOrigin;' : ''}
 out vec4 oC;
 void main() {
   ivec2 f = ivec2(gl_FragCoord.xy);
@@ -645,6 +644,8 @@ void main() {
   ivec2 col = clamp(uChunkLo + c.xz, ivec2(0), ivec2(FSC_WORLD_X, FSC_WORLD_Z) - 1);
   vec4 A, B;
   sceneCell(ivec3(col.x, c.y, col.y), A, B);
+  ${live ? `ivec3 local = ivec3(col.x, c.y, col.y) - uLiveOrigin;
+  if (all(greaterThanEqual(local, ivec3(0))) && all(lessThan(local, ivec3(NX, NY, NZ)))) A = fetchA(local);` : ''}
   oC = vec4(A.xy, 0.0, 1.0);
 }
 `;
@@ -1051,7 +1052,7 @@ vec3 farHazePremul(vec3 col, float alpha, vec3 eye, vec3 p) {
 }
 `;
 
-export const farFrag = (g, L) => /* glsl */ `
+export const farFrag = (g, L, mesh = false) => /* glsl */ `
 ${lib(g)}
 #define LOOK_NO_STATE   // no window state here (tA is the volume's): looks skip their neighbour lookups
 ${surfaceGLSL}
@@ -1066,10 +1067,22 @@ uniform ivec3 uWinLo;         // the window's low corner (world cells): the volu
 uniform float uSea;           // sea level (cells): the open sea beyond the world (0: none, a plain instead)
 uniform float uFloor;         // the sea floor beyond the world, or the plain (cells)
 in vec4 vFar;
+uniform sampler2D tDetailMask;
+// Render chunks are independent of simulation bricks: 0 coarse, 1 opaque
+// mesh without liquids, 2 mesh plus the far liquid renderer.
+#define DETAIL_CHUNK 32
+int detailAt(vec3 p) {
+  if (any(lessThan(p.xz, vec2(0.0))) || any(greaterThanEqual(p.xz, vec2(WORLD.xz)))) return 0;
+  return int(texelFetch(tDetailMask, ivec2(p.xz) / DETAIL_CHUNK, 0).r * 255.0 + 0.5);
+}
+float farTraceMatter(vec3 p) {
+  vec4 v = farSample(p);
+  return detailAt(p) > 0 ? v.g : v.r + v.g;
+}
+${mesh ? 'in vec3 vWorld, vNormal;\nflat in float vElement;' : ''}
 ${cloudsGLSL}
 
 #define FAR_MAX_STEPS ${FAR_VIEW.MAX_STEPS}
-#define FAR_COARSE_T ${glf(FAR_VIEW.COARSE_T)}
 #define FAR_NUDGE ${glf(FAR_VIEW.NUDGE)}
 #define FAR_NEAR ${glf(FAR_VIEW.NEAR)}
 #define FAR_ROOT_STEPS ${FAR_VIEW.ROOT_STEPS}
@@ -1121,7 +1134,7 @@ float farExit(vec3 ro, vec3 inv, vec3 lo, float size) {
 float farRoot(vec3 ro, vec3 rd, float ta, float tb, float fa, float fb) {
   for (int k = 0; k < FAR_ROOT_STEPS; k++) {
     float tm = mix(ta, tb, clamp((FAR_ISO - fa) / max(fb - fa, FAR_FLAT_EPS), FAR_ROOT_SPLIT_LO, FAR_ROOT_SPLIT_HI));
-    float fm = farMatter(ro + rd * tm);
+    float fm = farTraceMatter(ro + rd * tm);
     if (fm < FAR_ISO) { ta = tm; fa = fm; } else { tb = tm; fb = fm; }
   }
   return mix(ta, tb, clamp((FAR_ISO - fa) / max(fb - fa, FAR_FLAT_EPS), 0.0, 1.0));
@@ -1130,7 +1143,7 @@ float farRoot(vec3 ro, vec3 rd, float ta, float tb, float fa, float fb) {
 // The first point along ro + rd t, t in [t0, t1], where the matter field
 // reaches FAR_ISO, the window's stretch (w0, w1) left out; NO_HIT if none.
 // Unset L2 and L1 nodes are crossed whole; a set one is walked brick by brick
-// (two at a time past FAR_COARSE_T), the field sampled at each segment's ends
+// with the field sampled at each segment's ends
 // (and its middle when either end is near the level); a brick with no matter
 // around it (farNear) is crossed in one step. cut: the ray was already inside matter where it
 // came out of the window (it went through the window's ground, which the
@@ -1141,10 +1154,20 @@ float farMarch(vec3 ro, vec3 rd, float t0, float t1, float w0, float w1, out boo
   float t = t0, f = -1.0;   // f: the field at t (-1: not read since the last jump)
   ivec3 n2Last = ivec3(-1), n1Last = ivec3(-1);
   bool o2 = false, o1 = false;
+  int lastDetail = -1;
   for (int i = 0; i < FAR_MAX_STEPS; i++) {
     if (t >= t1) break;
     if (t >= w0 && t < w1) { t = w1 + FAR_NUDGE; f = -1.0; continue; }
     vec3 p = ro + rd * t;
+    int detail = detailAt(p);
+    if (detail != lastDetail) { f = -1.0; lastDetail = detail; }
+    if (detail == 1) {
+      vec2 lo = floor(p.xz / float(DETAIL_CHUNK)) * float(DETAIL_CHUNK);
+      vec2 tf = (lo + step(0.0, inv.xz) * float(DETAIL_CHUNK) - ro.xz) * inv.xz;
+      t = min(tf.x, tf.y) + FAR_NUDGE;
+      f = -1.0;
+      continue;
+    }
     ivec3 c = clamp(ivec3(floor(p)), ivec3(0), WORLD - 1);
     ivec3 n2 = c / FAR_L2_CELLS;
     if (n2 != n2Last) { n2Last = n2; o2 = farOcc2(n2); }
@@ -1153,17 +1176,17 @@ float farMarch(vec3 ro, vec3 rd, float t0, float t1, float w0, float w1, out boo
     if (n1 != n1Last) { n1Last = n1; o1 = farOcc1(n1); }
     if (!o1) { t = farExit(ro, inv, vec3(n1 * FAR_L1_CELLS), float(FAR_L1_CELLS)) + FAR_NUDGE; f = -1.0; continue; }
     if (!farNear(c / BS)) { t = farExit(ro, inv, vec3(c / BS * BS), float(BS)) + FAR_NUDGE; f = -1.0; continue; }
-    int seg = t > FAR_COARSE_T ? 2 * BS : BS;   // the segment: a brick, or a pair far off
+    int seg = BS;   // Distance alone must not erase surviving thin matter.
     float te = min(farExit(ro, inv, vec3(c / seg * seg), float(seg)), t1);
     if (t < w0 && te > w0) te = w0;   // the window starts inside this brick
     if (f < 0.0) {
-      f = farMatter(p);
+      f = farTraceMatter(p);
       if (f >= FAR_ISO) { cut = true; return t; }   // (started inside matter: past the window, or at the camera)
     }
-    float fe = farMatter(ro + rd * te);
+    float fe = farTraceMatter(ro + rd * max(t, te - FAR_NUDGE));
     if (max(f, fe) > FAR_NEAR) {
       float tm = 0.5 * (t + te);
-      float fm = farMatter(ro + rd * tm);
+      float fm = farTraceMatter(ro + rd * tm);
       if (fm >= FAR_ISO) return farRoot(ro, rd, t, tm, f, fm);
       if (fe >= FAR_ISO) return farRoot(ro, rd, tm, te, fm, fe);
     }
@@ -1231,11 +1254,10 @@ float farGlowT(vec3 p, vec3 n) {
 // A lit opaque far surface: its material (matOf, at the pixel's footprint, so
 // texture fades to its far look), the sun through the shadow heights, the sky
 // over its open share, its own glow.
-vec3 farShadeOpaque(vec3 p, vec3 n, vec3 rd, float sunVis) {
-  int id = farElement(p, n);
+vec3 farShadeMaterial(vec3 p, vec3 n, vec3 rd, float sunVis, int id) {
   float fp = footprint(p);
   Mat m = matOf(id, p, n, farGlowT(p, n), 0.0, fp);
-  if (id == E_PLANT) {
+  if (id == E_PLANT ${mesh ? '&& false' : ''}) {
     // foliage: its leaves have faded into the far look; clumps of them still show (fading in turn)
     vec4 cl = mFbmD(p, FAR_CLUMP_F, FAR_CLUMP_OCT, fp);
     m.g += FAR_CLUMP_H * cl.yzw;
@@ -1328,6 +1350,19 @@ float farDepth(vec3 p) {
   return clamp(clip.z / clip.w * 0.5 + 0.5, 0.0, 1.0);
 }
 
+${mesh ? `
+void main() {
+  vec3 p = vWorld;
+  vec3 ro = (uSceneToWorld * vec4(cameraPosition, 1.0)).xyz;
+  vec3 rd = normalize(p - ro);
+  surfView(ro, rd);
+  if (all(greaterThanEqual(p.xz, vec2(uWinLo.xz))) && all(lessThan(p.xz, vec2((uWinLo + GRID).xz)))) discard;
+  vec3 n = normalize(vNormal);
+  float sunVis = farSunLit(p, 0);
+  vec3 col = farShadeMaterial(p, n, rd, sunVis * (sunVis > 0.0 && dot(n, uSun) > 0.0 ? farSunRay(p, n) : 1.0), int(vElement + 0.5));
+  gl_FragColor = vec4(farHaze(col, rd, length(p - ro)), 1.0);
+}
+` : `
 void main() {
   vec3 ro = (uSceneToWorld * vec4(cameraPosition, 1.0)).xyz;
   vec3 rd = safeDir(normalize(vFar.xyz / vFar.w - ro));
@@ -1372,14 +1407,14 @@ void main() {
       // which the volume draws see-through: the water body's own light, as
       // deep water shows, so the window's water carries on past its side.
       vec4 v = farSample(p);
-      col = v.r >= v.g ? ALBEDO[farIds(p).x] * skyAmbient(-rd) : farInScatter(farLiquidOf(farIds(p).y), farSunLit(p, 0));
+      col = detailAt(p) == 0 && v.r >= v.g ? ALBEDO[farIds(p).x] * skyAmbient(-rd) : farInScatter(farLiquidOf(farIds(p).y), farSunLit(p, 0));
     } else {
       vec4 v = farSample(p);
       float sunVis = farSunLit(p, 0);
-      if (v.g > v.r) col = farLiquid(p, rd, farLiquidOf(farIds(p - vec3(0.0, FAR_ID_INSET, 0.0)).y), sunVis, -1.0);
+      if (detailAt(p) > 0 || v.g > v.r) col = farLiquid(p, rd, farLiquidOf(farIds(p - vec3(0.0, FAR_ID_INSET, 0.0)).y), sunVis, -1.0);
       else {
       vec3 n = farNormal(p, 0);
-      col = farShadeOpaque(p, n, rd, sunVis * (sunVis > 0.0 && dot(n, uSun) > 0.0 ? farSunRay(p, n) : 1.0));
+      col = farShadeMaterial(p, n, rd, sunVis * (sunVis > 0.0 && dot(n, uSun) > 0.0 ? farSunRay(p, n) : 1.0), farElement(p, n));
     }
     }
     col = farHaze(col, rd, tHit);
@@ -1389,5 +1424,18 @@ void main() {
   }
   gl_FragColor = vec4(col, 1.0);
   gl_FragDepth = depth;
+}
+`}
+`;
+
+export const farMeshVert = /* glsl */ `
+attribute float element;
+varying vec3 vWorld, vNormal;
+flat out float vElement;
+void main() {
+  vWorld = position;
+  vNormal = normal;
+  vElement = element;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
 }
 `;

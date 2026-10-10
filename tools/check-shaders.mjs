@@ -123,6 +123,9 @@ for (const [label, dims] of Object.entries(grids)) {
     if (fn(g) !== fn(box)) { failures++; console.log(`FAIL ${name}: a world's window compiles a different program from a box's`); }
   }
   check('farView', shaderMatFrag + far.farFrag(g, L), 'frag');
+  check('farMesh', shaderMatFrag + far.farFrag(g, L, true), 'frag');
+  check('farMeshVert', `${shaderMatVert}#define attribute in\n#define varying out\nin vec3 normal;\n${far.farMeshVert}`, 'vert');
+  check('detailCells', raw + far.farSceneCellsFrag(g, L, islandGLSL(), far.farSceneLayout(L, 40), true), 'frag');
   check('farViewVert', shaderMatVert + far.farVert, 'vert');
   check('farRegionVert', raw + far.farRegionVert(L), 'vert');
   for (const k of ['farTreeBandFrag', 'farWinFrag']) check(k, raw + far[k](g, L), 'frag');
