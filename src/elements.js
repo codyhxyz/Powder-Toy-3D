@@ -52,22 +52,41 @@
 //          LAVA_FREEZE_BELOW (and an element can't have both melt and hot).
 //          latent: the latent heat in cap·°C per cell (water's L_FUSE = 80:
 //          334 J/g / 4.18 J/(g·K); per volume, J/cm³ / 4.18). With it the
-//          cell holds at T and banks the heat crossing T in life, signed as
-//          water's (+ toward hot, − toward cold), and changes once it has
-//          banked latent; so it can't also be a fuel (life, burnRate).
+//          cell holds at T and the heat crossing T goes into the change:
+//          - an element whose life holds nothing else (no spawn life, no
+//            burnRate) banks it in life, signed as water's (+ toward hot,
+//            − toward cold), and changes once it has banked latent;
+//          - one whose life is taken (acid's strength, a fuel) keeps no
+//            bank: each step the heat crossing T over latent is the chance it
+//            changes, so on average it takes the same latent heat (stochastic
+//            rounding of the bank), and its life is left alone.
 //          Omitted: instant. The product takes T and its own spawn life.
 //   crush  { P, into, of }: when the air pressure on it (the highest of its
 //          own, none for a solid, and its open neighbours') exceeds P it
 //          becomes into (TPT's high-pressure transition)
-//   blast  { P, T, into, of, shock, crushP }: an explosive. It goes off at
-//          its ignite temperature, touching matter that hot, beside a flame
-//          (BLAST_FIRE per step), hit with at least `shock` kinetic energy
-//          (the units of hard: a neighbour running into it, or it into a
-//          solid; a falling or flowing cell carries ½·dens·v², so set shock
-//          above what it does to itself), or under more than `crushP` air
-//          pressure (a nearby blast). Going off it becomes into (FIRE if
-//          omitted) at T °C and adds P of air pressure (gunpowder: P 60,
-//          T 2200). P and T are required; the triggers are each optional.
+//   blast  { P, T, into, of, flame, air, shock, crushP }: an explosive.
+//          Going off it becomes into (FIRE if omitted) at T °C and adds P of
+//          air pressure (gunpowder: P 60, T 2200, flame 0.7). P and T are
+//          required; each trigger is optional. It goes off:
+//          - at its ignite temperature, or touching matter (not gas) that hot;
+//          - beside a flame, with chance `flame` per step (default 0: only
+//            heat sets it off, so a plain fire's heat must reach ignite);
+//          - hit with at least `shock` kinetic energy (the units of hard):
+//            matter and it closing at speed u carry ½·μ·u², μ the reduced mass
+//            (against a solid, the mover's). That counts a neighbour running
+//            into it and it landing on or running into anything; the move pass
+//            leaves both speeds as they were so the react pass sees the hit.
+//            Cells of its own element never count (a pool's flow isn't a hit),
+//            but a liquid flowing at FLOW into a solid carries ½·dens·FLOW²,
+//            and one falling h cells lands with about ½·dens·2·g·h (g = 0.025
+//            cells/step²), so set shock above what it does to itself;
+//          - under more than `crushP` air pressure: its own, and its open
+//            neighbours' (a solid holds none, so it reads theirs);
+//          - only where it touches air (an EMPTY neighbour), all of the
+//            above, when `air: true` (a fuel that needs oxygen: propane).
+//          A blast row never takes the ordinary burn path (burnRate, flames
+//          licking into the air), and a hit or pressure that sets it off
+//          wins over breaking it.
 //   REACTIONS (below the table): Noita materials.xml-style rows
 //          { a, b, into: [a's, b's], chance, minT, maxT, heat, puff, except }
 //          a, b    element keys. b '*' = any matter but air, a itself and
@@ -136,7 +155,7 @@ const defs = [
     dens: 9, cond: 0.005, cap: 0.2, drag: 0.08, slide: 0.35, temp: -10, spawn: 0.3,
     desc: 'Light powder that floats on water. Melts at 0 °C, soaking up heat as it goes.' },
   { key: 'GUNPOWDER', abbr: 'GUNP', name: 'Gunpowder', kind: K.POWDER, render: R.OPAQUE, color: '#3d3d47', var: 0.35,
-    dens: 15, cond: 0.01, cap: 0.35, drag: 0.04, slide: 0.8, ignite: 200, spawn: 0.3, blast: { P: 60, T: 2200 },
+    dens: 15, cond: 0.01, cap: 0.35, drag: 0.04, slide: 0.8, ignite: 200, spawn: 0.3, blast: { P: 60, T: 2200, flame: 0.7 },
     desc: 'Explodes when it touches fire or gets hotter than 200 °C.' },
   { key: 'ASH', abbr: 'ASH', name: 'Ash', kind: K.POWDER, render: R.OPAQUE, color: '#9b968d', var: 0.2,
     dens: 4, cond: 0.003, cap: 0.2, drag: 0.1, slide: 0.5, spawn: 0.3,
@@ -425,18 +444,21 @@ function intoList(into) {
 //   into   per element, the spec of its cold, hot, crush and blast products
 //          (-1 = none), in PH order
 //   of     per element, what a LAVA product of each sets back into (-1: the element itself)
+//   lifeBank  per element: its latent heat banks in life (life holds nothing
+//          else: no spawn life, no fuel); else it changes stochastically
 //   cold, hot  per element [T, latent, puff]; crushP the crush pressure;
-//          blast [P, T, shock, crushP]
+//          blast [P, T, shock, crushP]; blastLit [flame, air (1 or 0)]
 //   rx     per reaction [chance, minT, maxT, heat, puff, spec a, spec b]
 //   lookup NE × NE: entry a·NE + b is 0 when a cell of a has no reaction
 //          with a neighbour of b, else 2·r + role + 1 (reaction r, role 0 =
 //          the cell is the row's a, 1 = its b). Explicit pairs take
 //          precedence over wildcards, then earlier rows over later ones.
 export const PH = { COLD: 0, HOT: 1, CRUSH: 2, BLAST: 3 };
-let baked = null, bakedFor = '';
+let baked = null, bakedFor = [];
 export function mechanisms() {
-  const key = `${ELEMENTS.length}/${REACTIONS.length}`;
-  if (baked && bakedFor === key) return baked;
+  // (baked once per table: the rows themselves, compared by identity)
+  const rows = [...ELEMENTS, ...REACTIONS];
+  if (baked && rows.length === bakedFor.length && rows.every((r, i) => r === bakedFor[i])) return baked;
   const NE = ELEMENTS.length;
   const outs = [], specs = [];
   const id = (k, ctx) => {
@@ -452,12 +474,10 @@ export function mechanisms() {
     outs[outs.length - 1][1] = 1;   // the last product closes the draw exactly
     return specs.length - 1;
   };
-  const into = [], of = [], cold = [], hot = [], crushP = [], blast = [];
+  const into = [], of = [], cold = [], hot = [], crushP = [], blast = [], blastLit = [], lifeBank = [];
   for (const e of ELEMENTS) {
     const ctx = (f) => `${e.key}.${f}`;
     if (e.melt && e.hot) throw new Error(`${e.key}: melt and hot both set (a hot phase change into LAVA is a melt)`);
-    if ((e.cold?.latent || e.hot?.latent) && (e.life || e.burnRate))
-      throw new Error(`${e.key}: a latent phase change banks its heat in life, so it can't also hold fuel (life, burnRate)`);
     const ph = (p, f) => [p?.into ? spec(p.into, ctx(f)) : -1, p?.of ? id(p.of, ctx(f)) : -1];
     const rows = [ph(e.cold, 'cold'), ph(e.hot, 'hot'), ph(e.crush, 'crush'), ph(e.blast ? { into: 'FIRE', ...e.blast } : null, 'blast')];
     into.push(rows.map((r) => r[0]));
@@ -466,8 +486,10 @@ export function mechanisms() {
     cold.push(phase(e.cold));
     hot.push(phase(e.hot));
     crushP.push(e.crush ? e.crush.P : 0);
+    lifeBank.push(!(e.life || e.burnRate));
     if (e.blast && !(e.blast.P >= 0 && Number.isFinite(e.blast.T))) throw new Error(`${e.key}.blast: P and T are required`);
     blast.push(e.blast ? [e.blast.P, e.blast.T, e.blast.shock ?? 0, e.blast.crushP ?? 0] : [0, 0, 0, 0]);
+    blastLit.push(e.blast ? [e.blast.flame ?? 0, e.blast.air ? 1 : 0] : [0, 0]);
   }
   const rx = [];
   const lookup = new Uint16Array(NE * NE);
@@ -496,8 +518,8 @@ export function mechanisms() {
     const except = new Set([E.EMPTY, a, ...x.except.map((k) => id(k, ctx))]);
     for (let b = 0; b < NE; b++) if (!except.has(b)) claim(a, b, r, true);
   }
-  baked = { outs, specs, into, of, cold, hot, crushP, blast, rx, lookup };
-  bakedFor = key;
+  baked = { outs, specs, into, of, cold, hot, crushP, blast, blastLit, lifeBank, rx, lookup };
+  bakedFor = rows;
   return baked;
 }
 
@@ -523,6 +545,8 @@ function mechanismsGLSL() {
     `const vec3 HOT[NE] = vec3[NE](${m.hot.map((c) => `vec3(${c.map(fl).join(', ')})`).join(', ')});`,
     `const float CRUSH_P[NE] = float[NE](${m.crushP.map(fl).join(', ')});`,
     `const vec4 BLAST[NE] = vec4[NE](${m.blast.map((c) => `vec4(${c.map(fl).join(', ')})`).join(', ')});`,
+    `const bool LIFE_BANK[NE] = bool[NE](${m.lifeBank.join(', ')});`,
+    `const vec2 BLAST_LIT[NE] = vec2[NE](${m.blastLit.map((c) => `vec2(${c.map(fl).join(', ')})`).join(', ')});`,
     `const vec4 RX[NRX] = vec4[NRX](${rx.map((r) => `vec4(${r.slice(0, 4).map(fl).join(', ')})`).join(', ')});`,
     `const float RX_PUFF[NRX] = float[NRX](${rx.map((r) => fl(r[4])).join(', ')});`,
     `const ivec2 RX_INTO[NRX] = ivec2[NRX](${rx.map((r) => `ivec2(${r[5]}, ${r[6]})`).join(', ')});`,

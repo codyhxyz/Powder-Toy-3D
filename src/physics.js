@@ -124,8 +124,7 @@ export const PHYS = {
   FLAME_T_SPREAD: 0.15,
   CLONE_RATE: 0.06,          // chance per step Clone fills a neighbouring empty cell
   SPAWN_DROP_V: -0.3,        // cells/step: spawned powders and liquids start falling
-  // Explosives' own numbers are their elements.js blast rows (gunpowder: P 60, T 2200 °C).
-  BLAST_FIRE: 0.7,           // chance per step a flame next to an explosive with an ignition point sets it off
+  // (Explosives' numbers, the chance a flame sets one off included, are their elements.js blast rows.)
   BURN_P: 0.02,              // pressure per step from burning
   ASH_SHARE: 0.5,            // share of burnt-out cells that leave ash
   BURNT_MIN_T: 600,          // °C, a burnt-out cell is at least this hot

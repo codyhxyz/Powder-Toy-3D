@@ -57,8 +57,11 @@ hot:   { T, into, of, latent, puff }   // at or above T °C it becomes `into`
 crush: { P, into, of }                 // above this air pressure it becomes `into` (TPT's high-pressure transition)
 //  into    an element key ('EMPTY' = plain air), or a weighted list: [['STEAM', 0.97], ['SALT', 0.03]]
 //  of      when into is 'LAVA': what the melt sets back into (its ctype); omitted = the element itself
-//  latent  latent heat in cap·°C per cell (water's L_FUSE is 80), banked in life through react.js latent();
-//          omitted: instant. An element with latent heat can't also be a fuel (life holds the bank).
+//  latent  latent heat in cap·°C per cell (water's L_FUSE is 80); omitted: instant. The cell holds at T while
+//          the heat crossing T goes into the change. Where life holds nothing else it banks there (signed,
+//          as water's, through react.js latent()). Where life is taken (acid's strength, a fuel) there is no
+//          bank: each step the heat crossing T over latent is the chance it changes (react.js latentChance),
+//          the same on average, and life is left alone.
 //  puff    volumes of gas set free per volume (a pressure puff, as `fizz` does)
 ```
 `melt`/`meltInto` stay as they are for rock and metal (melting into LAVA that remembers what it was). A `hot` change
@@ -68,11 +71,14 @@ steam and cloud keep their own code for now.
 **Reactions**: Noita's `materials.xml` reaction format, as a table `REACTIONS` next to the elements.
 ```js
 { a: 'SALT', b: 'WATER', into: ['EMPTY', 'SALTWATER'], chance, minT, maxT, heat, puff }
-//  a, b     element keys; b '*' = any matter (not air, not a itself), less `except: [...]`
-//  into     what a and b each become ('SAME' keeps it; weighted lists allowed)
+//  a, b     element keys; b 'EMPTY' is air (hydrogen burning in air); b '*' = any matter (not air, not a
+//           itself), less `except: [...]`
+//  into     what a and b each become ('SAME' keeps it). Either side may be a weighted list, SAME included:
+//           [[['SALTWATER', 0.28], ['SAME', 0.72]], 'SALTWATER']
 //  chance   probability per step that a touching pair reacts (at most 1/6: see below)
-//  minT, maxT  temperature gate (°C), on the pair's hotter cell
-//  heat     energy released (+) or absorbed (−), cap·°C, shared so both products warm alike
+//  minT, maxT  temperature gate (°C) on the pair's hotter cell: either cell hot enough lights it
+//  heat     energy released (+) or absorbed (−), cap·°C, split in proportion to the products' heat
+//           capacities, so both warm alike: ΔT = heat / (cap_a' + cap_b')
 //  puff     gas set free, half in each cell
 ```
 How a pair agrees: every step each cell's partner is one face neighbour, along axis `frame % 3`, toward + or − by
@@ -84,20 +90,31 @@ with at most one partner: matter is conserved. A pair is partners one step in si
 is baked into an NE × NE lookup texture (2 bytes per pair), so a reaction costs one texel fetch whatever the
 number of rows. Explicit pairs win over `'*'` rows; each pair of elements has one reaction.
 
-**Explosives**: gunpowder's code, generalized. Gunpowder is `blast: { P: 60, T: 2200 }`.
+**Explosives**: gunpowder's code, generalized. Gunpowder is `blast: { P: 60, T: 2200, flame: 0.7 }`.
 ```js
-blast: { P, T, into, of, shock, crushP }
+blast: { P, T, into, of, flame, air, shock, crushP }
 //  P       air pressure added when it goes off (required)
 //  T       temperature of what it leaves (required)
 //  into    what it leaves (default FIRE); `of` as above
-//  set off by its `ignite` temperature or touching fire (as before), plus
-//  shock   kinetic energy of a hit that sets it off (the units of `hard`): a neighbour running into it, or it
-//          into a solid. A falling or flowing cell carries ½·dens·v² (v up to 1), so a liquid explosive needs
-//          shock above what its own flow and falls give it, or it goes off by itself.
-//  crushP  air pressure on it that sets it off (a nearby blast)
+//  set off by its `ignite` temperature, or touching matter (not gas) that hot, plus
+//  flame   chance per step that a touching flame sets it off (default 0: only heat does)
+//  shock   kinetic energy of a hit that sets it off (the units of `hard`): matter and it closing at speed u,
+//          ½·μ·u² with μ the reduced mass (against a solid, the mover's). A neighbour running into it, and it
+//          landing on or running into anything, both count; cells of its own element don't. A liquid flowing
+//          at FLOW into a wall carries ½·dens·FLOW², one falling h cells about dens·g·h (g = 0.025), so set
+//          shock above what it does to itself.
+//  crushP  air pressure on it that sets it off (a nearby blast): its own and its open neighbours' (a solid
+//          holds none, so it reads theirs)
+//  air     true: it goes off only where it touches air (an EMPTY neighbour), by any trigger (propane)
 ```
-The move pass leaves a projectile unbounced when its hit would set off an explosive (as it does for breaking), so
-the react pass sees the hit.
+The move pass leaves a hit that would set off an explosive as it was (no bounce, no collision), as it does for
+breaking, so the react pass sees it. A blast row never takes the ordinary burn path, and a hit or pressure that
+sets it off wins over breaking it. (`el-boom`'s fuse keeps its own rule with `&& id != E_FUSE` on react.js's
+combustion line, the `else if` after the blast block.)
+
+**Resting.** A cell stays awake (shaders/activity.js inertNear, common.js inertSelf) while a reaction partner beside
+it passes the gate, while it is past a phase point or has latent heat banked, and while an explosive touches matter
+past its ignition point. A cell whose only partner is below the gate can rest.
 
 `conducts: true` marks electrical conductors (the electricity project defines what it does). Batch rows set it on
 metals and saltwater.

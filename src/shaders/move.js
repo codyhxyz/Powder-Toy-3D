@@ -124,8 +124,9 @@ const vertical = (b, t) => `
       if (okDown || okUp) {
         float pr = max(okDown ? -v${t}.y : 0.0, okUp ? v${b}.y : 0.0) * ${drag(t, b)};
         if (rnd(rs) < pr) ${swap(t, b)}
-      } else {
-        // blocked by another particle: collide (bottom is on the -y side)
+      } else if (!(v${b}.y > v${t}.y && shockActs(k${t}, k${b}, hitKE(d${t}, d${b}, false, v${b}.y - v${t}.y)))) {
+        // blocked by another particle: collide (bottom is on the -y side).
+        // (A hit that sets off an explosive is left as it is: react.js sees it.)
         float vt = v${t}.y;
         ${collide(b, t, 'y')}
         if (down) { if (KIND[k${t}] == K_LIQUID) v${t} = land(vec3(v${t}.x, vt, v${t}.z), k${t}) + vec3(0.0, v${t}.y, 0.0); s${t} = true; }
@@ -179,7 +180,8 @@ const horizontal = (i, j, c) => `
         float pr = max(ok0 ? h0 : 0.0, ok1 ? -h1 : 0.0) * ${drag(i, j)};
         if (rnd(rs) < pr) ${swap(i, j)}
       } else if (movable(k${i}) && movable(k${j})) {
-        ${collide(i, j, c)}
+        if (!(h0 > h1 && shockActs(k${i}, k${j}, hitKE(d${i}, d${j}, false, h0 - h1)))) {${collide(i, j, c)}
+        }
       } else {
         if (w0 && !${breaks(i, j, 'h0')}) { vec3 v0 = v${i}; v${i}.${c} *= bounceR(k${i});${impactHeat(i, j, 'v0', 'h0')} }
         if (w1 && !${breaks(j, i, 'h1')}) { vec3 v0 = v${j}; v${j}.${c} *= bounceR(k${j});${impactHeat(j, i, 'v0', '-h1')} }

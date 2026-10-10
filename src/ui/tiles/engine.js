@@ -49,6 +49,8 @@ const M = mechanisms();
 const flat = (A, rows) => A.from(rows.flat());
 export const INTO = flat(Int16Array, M.into), OF = flat(Int16Array, M.of);
 export const COLD = flat(Float32Array, M.cold), HOT = flat(Float32Array, M.hot), BLAST = flat(Float32Array, M.blast);
+export const BLAST_LIT = flat(Float32Array, M.blastLit);   // [flame, air]
+const LIFE_BANK = M.lifeBank;   // latent heat banks in life (else the change is stochastic: latentChance)
 export const CRUSH_P = Float32Array.from(M.crushP);
 const OUT_ID = Int16Array.from(M.outs, (o) => o[0]), OUT_CUM = Float32Array.from(M.outs, (o) => o[1]);
 const SPEC_AT = Int32Array.from(M.specs, (sp) => sp[0]), SPEC_N = Int32Array.from(M.specs, (sp) => sp[1]);
@@ -104,9 +106,11 @@ const ctypeOf = (prod, of, self) => (prod === E.LAVA ? (of >= 0 ? of : self) : 0
 const puffP = (puff) => PHYS.STEAM_BOIL_PUFF * puff / PHYS.STEAM_EXPANSION;
 // a reaction's temperature gate, on the pair's hotter cell (activity.js rxGate)
 const rxGate = (r, Ta, Tb) => { const Th = Math.max(Ta, Tb); return Th >= RX[r * 5 + 1] && Th <= RX[r * 5 + 2]; };
-// a hit with kinetic energy ke by i on solid j breaks j or sets off an explosive (common.js impactActs)
-const impactActs = (i, j, ke) => (BREAKINTO[j] >= 0 && ke >= HARD[j]) || (BLAST[j * 4 + 2] > 0 && ke >= BLAST[j * 4 + 2])
-  || (BLAST[i * 4 + 2] > 0 && ke >= BLAST[i * 4 + 2]);
+// a hit's kinetic energy, ½·μ·u² (common.js hitKE); would it set off an explosive on either side (shockActs);
+// does a hit by i on solid j break j or set one off (impactActs)
+const hitKE = (mi, mj, jSolid, u) => 0.5 * (jSolid ? mi : mi * mj / (mi + mj)) * u * u;
+const shockActs = (i, j, ke) => i !== j && ((BLAST[i * 4 + 2] > 0 && ke >= BLAST[i * 4 + 2]) || (BLAST[j * 4 + 2] > 0 && ke >= BLAST[j * 4 + 2]));
+const impactActs = (i, j, ke) => (BREAKINTO[j] >= 0 && ke >= HARD[j]) || shockActs(i, j, ke);
 const randDir = () => Math.cos(rnd() * Math.PI * 2); // x part of a random xz direction
 const smoothstep = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
 
@@ -152,6 +156,14 @@ function shatter(m, u, H, M) {
   return shat;
 }
 
+// latent heat with no bank (react.js latentChance): the heat crossing Tp is the chance, over L, of the change
+function latentChance(T, Tp, C, L, rising) {
+  const e = rising ? (T - Tp) * C : (Tp - T) * C;
+  lat.T = T;
+  if (e <= 0) return false;
+  lat.T = Tp;
+  return rnd() * L < e;
+}
 // latent heat bookkeeping (react.js latent): returns true when the transition completes
 const lat = { T: 0, acc: 0 };
 function latent(T, acc, Tp, C, L, rising) {
@@ -350,7 +362,8 @@ export class World {
       if (okDown || okUp) {
         const pr = Math.max(okDown ? -vy[t] : 0, okUp ? vy[b] : 0) * dragF(k[t], k[b], d[t], d[b]);
         if (rnd() < pr) this.swap(t, b);
-      } else {
+      } else if (!(vy[b] > vy[t] && shockActs(k[t], k[b], hitKE(d[t], d[b], false, vy[b] - vy[t])))) {
+        // (a hit that sets off an explosive is left as it is: react sees it)
         const vt = vy[t];
         this.collide(b, t, vy);
         if (down) {
@@ -385,7 +398,7 @@ export class World {
       const pr = Math.max(ok0 ? h0 : 0, ok1 ? -h1 : 0) * dragF(k[i], k[j], d[i], d[j]);
       if (rnd() < pr) this.swap(i, j);
     } else if (movable(k[i]) && movable(k[j])) {
-      this.collide(i, j, vx);
+      if (!(h0 > h1 && shockActs(k[i], k[j], hitKE(d[i], d[j], false, h0 - h1)))) this.collide(i, j, vx);
     } else {
       const vy = this.bvy;
       if (w0 && !this.breaks(i, j, h0)) { const v0y = vy[i]; vx[i] *= bounceR(k[i]); this.impactHeat(i, j, h0, v0y, h0); }
@@ -447,22 +460,29 @@ export class World {
         }
 
         // what sets off an explosive or crushes a cell, from the input (react.js)
-        // a hit: a neighbour running into me, or me into a solid (the move left both unbounced)
+        // a hit: matter and I closing at speed u (landing included), ½·μ·u², not my own element
         let shocked = false;
         const shock = BLAST[id * 4 + 2];
         if (shock > 0) {
+          const m = densityOf(id, T0), meSolid = KIND[id] === K.SOLID;
           for (let q = 0; q < 4; q++) {
-            const hitMe = impactKE(nid[q], nT[q], -(DX[q] * nVX[q] + DY[q] * nVY[q]));
-            const hitIt = KIND[nid[q]] === K.SOLID ? impactKE(id, T0, DX[q] * VX[i] + DY[q] * VY[i]) : 0;
-            if (Math.max(hitMe, hitIt) >= shock) shocked = true;
+            const j = nid[q], u = DX[q] * (VX[i] - nVX[q]) + DY[q] * (VY[i] - nVY[q]);
+            if (j === id || isGasLike(j) || u <= 0) continue;
+            const mj = densityOf(j, nT[q]);
+            if ((meSolid ? hitKE(mj, m, true, u) : hitKE(m, mj, KIND[j] === K.SOLID, u)) >= shock) shocked = true;
           }
         }
         // the highest air pressure on me: my own, and my open neighbours' (a solid holds none)
-        let pOn = KIND[id] === K.SOLID ? PHYS.P_MIN : P0;
-        for (let q = 0; q < 4; q++) if (KIND[nid[q]] !== K.SOLID) pOn = Math.max(pOn, nP[q]);
-        // set off by a hit or a blast's pressure: an explosive goes off rather than break
+        let pOn = KIND[id] === K.SOLID ? PHYS.P_MIN : P0, touchAir = false;
+        for (let q = 0; q < 4; q++) {
+          if (KIND[nid[q]] !== K.SOLID) pOn = Math.max(pOn, nP[q]);
+          if (nid[q] === E.EMPTY) touchAir = true;
+        }
+        // an explosive that needs air goes off only touching it; set off by a hit or a
+        // blast's pressure, it goes off rather than break
+        const blastAir = BLAST_LIT[id * 2 + 1] === 0 || touchAir;
         const crushP = BLAST[id * 4 + 3];
-        const setOff = shocked || (crushP > 0 && pOn > crushP);
+        const setOff = blastAir && (shocked || (crushP > 0 && pOn > crushP));
 
         // reactions (elements.js REACTIONS), decided from the input: this step
         // every cell's partner is its neighbour along axis frame % 2, toward +
@@ -642,15 +662,19 @@ export class World {
         // heat, life is a signed accumulator as water's is
         const hotSp = INTO[id * 4 + PH.HOT], coldSp = INTO[id * 4 + PH.COLD];
         if (!reacted && out === id && (hotSp >= 0 || coldSp >= 0)) {
-          const hL = HOT[id * 3 + 1], cL = COLD[id * 3 + 1];
+          const hL = HOT[id * 3 + 1], cL = COLD[id * 3 + 1], bank = LIFE_BANK[id];
           let up = Math.max(life, 0), dn = Math.max(-life, 0), goHot = false, goCold = false;
           if (hotSp >= 0) {
-            if (hL > 0) { goHot = latent(T, up, HOT[id * 3], C, hL, true); T = lat.T; up = lat.acc; } else goHot = T >= HOT[id * 3];
+            if (hL === 0) goHot = T >= HOT[id * 3];
+            else if (bank) { goHot = latent(T, up, HOT[id * 3], C, hL, true); T = lat.T; up = lat.acc; }
+            else { goHot = latentChance(T, HOT[id * 3], C, hL, true); T = lat.T; }
           }
-          if (coldSp >= 0) {
-            if (cL > 0) { goCold = latent(T, dn, COLD[id * 3], C, cL, false); T = lat.T; dn = lat.acc; } else goCold = T <= COLD[id * 3];
+          if (coldSp >= 0 && !goHot) {
+            if (cL === 0) goCold = T <= COLD[id * 3];
+            else if (bank) { goCold = latent(T, dn, COLD[id * 3], C, cL, false); T = lat.T; dn = lat.acc; }
+            else { goCold = latentChance(T, COLD[id * 3], C, cL, false); T = lat.T; }
           }
-          if (hL > 0 || cL > 0) life = up - dn;
+          if (bank && (hL > 0 || cL > 0)) life = up - dn;
           if (goHot || goCold) {
             const ph = goHot ? PH.HOT : PH.COLD;
             out = pickOut(INTO[id * 4 + ph], rnd);
@@ -674,12 +698,16 @@ export class World {
           // at its ignition point, or touching something that hot (not a gas: a flame only might),
           // or by a hard enough hit, or a blast's pressure
           let lit = false;
-          if (IGNITE[id] > 0) {
-            let hotTouch = false;
-            for (let q = 0; q < 4; q++) hotTouch ||= !isGasLike(nid[q]) && nT[q] >= IGNITE[id];
-            lit = T >= IGNITE[id] || hotTouch || (nFire > 0 && rnd() < PHYS.BLAST_FIRE);
+          if (blastAir) {
+            if (IGNITE[id] > 0) {
+              let hotTouch = false;
+              for (let q = 0; q < 4; q++) hotTouch ||= !isGasLike(nid[q]) && nT[q] >= IGNITE[id];
+              lit = T >= IGNITE[id] || hotTouch;
+            }
+            const flame = BLAST_LIT[id * 2];
+            lit = lit || setOff || (nFire > 0 && flame > 0 && rnd() < flame);
           }
-          if (lit || setOff) {
+          if (lit) {
             out = pickOut(INTO[id * 4 + PH.BLAST], rnd);
             ctype = ctypeOf(out, OF[id * 4 + PH.BLAST], id);
             reset = true; T = BLAST[id * 4 + 1]; P += BLAST[id * 4];

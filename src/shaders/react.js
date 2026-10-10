@@ -121,6 +121,16 @@ float condFlux(int a, float Ta, int b, float Tb) {
   return clamp(min(COND[a], COND[b]) * dT, -lim, lim);
 }
 
+// Latent heat with no bank (elements.js LIFE_BANK false: the cell's life holds
+// something else): the heat crossing Tp this step goes into the change, which
+// happens with that heat over L as its chance. On average that is the bank.
+bool latentChance(inout float T, float Tp, float C, float L, bool rising, inout uint s) {
+  float e = rising ? (T - Tp) * C : (Tp - T) * C;
+  if (e <= 0.0) return false;
+  T = Tp;
+  return rnd(s) * L < e;
+}
+
 bool latent(inout float T, inout float acc, float Tp, float C, float L, bool rising) {
   if (rising) {
     if (T > Tp) { acc += (T - Tp) * C; T = Tp; }
@@ -205,21 +215,34 @@ void main() {
   }
 
   // ---- what sets off an explosive or crushes a cell, from this pass's input ----
-  // a hit (elements.js blast.shock): a neighbour running into me, or me into
-  // a solid (the move pass left both unbounced: common.js impactActs)
+  // a hit (elements.js blast.shock): matter and I closing at speed u, a
+  // neighbour running into me or me into it, landing included (the move pass
+  // left it as it was: common.js impactActs, shockActs), with ½·μ·u² of
+  // kinetic energy. Cells of my own element don't count.
   bool shocked = false;
   if (BLAST[id].z > 0.0) {
+    float m = densityOf(id, a.y);
+    bool meSolid = KIND[id] == K_SOLID;
     for (int i = 0; i < 6; i++) {
-      vec3 n = vec3(DIRS[i]);
-      float hit = max(impactKE(nid[i], na[i].y, nb[i].xyz, -n), KIND[nid[i]] == K_SOLID ? impactKE(id, a.y, b.xyz, n) : 0.0);
-      shocked = shocked || hit >= BLAST[id].z;
+      int j = nid[i];
+      float u = dot(b.xyz - nb[i].xyz, vec3(DIRS[i]));
+      if (j == id || isGasLike(j) || u <= 0.0) continue;
+      float mj = densityOf(j, na[i].y);
+      float ke = meSolid ? hitKE(mj, m, true, u) : hitKE(m, mj, KIND[j] == K_SOLID, u);
+      shocked = shocked || ke >= BLAST[id].z;
     }
   }
   // the highest air pressure on me: my own, and my open neighbours' (a solid holds none)
   float pOn = KIND[id] == K_SOLID ? P_MIN : P0;
-  for (int i = 0; i < 6; i++) if (KIND[nid[i]] != K_SOLID) pOn = max(pOn, nb[i].w);
+  bool touchAir = false;
+  for (int i = 0; i < 6; i++) {
+    if (KIND[nid[i]] != K_SOLID) pOn = max(pOn, nb[i].w);
+    touchAir = touchAir || nid[i] == E_EMPTY;
+  }
+  // an explosive that needs air (blast.air) goes off only touching it
+  bool blastAir = BLAST_LIT[id].y == 0.0 || touchAir;
   // set off by a hit or a blast's pressure: an explosive goes off rather than break
-  bool setOff = shocked || (BLAST[id].w > 0.0 && pOn > BLAST[id].w);
+  bool setOff = blastAir && (shocked || (BLAST[id].w > 0.0 && pOn > BLAST[id].w));
 
   // ---- reactions (elements.js REACTIONS), decided from this pass's input ----
   // This step every cell's partner is its face neighbour along axis
@@ -445,13 +468,16 @@ void main() {
   }
 
   // phase changes from the table (elements.js cold, hot). With latent heat,
-  // life is a signed accumulator as water's is (+ toward hot, − toward cold).
+  // life is a signed bank as water's is (+ toward hot, − toward cold), or, if
+  // life holds something else, the change is stochastic (latentChance).
   if (!reacted && nidOut == id && (INTO[id][PH_HOT] >= 0 || INTO[id][PH_COLD] >= 0)) {
     float up = max(life, 0.0), dn = max(-life, 0.0);
-    bool goHot = false, goCold = false;
-    if (INTO[id][PH_HOT] >= 0) goHot = HOT[id].y > 0.0 ? latent(T, up, HOT[id].x, C, HOT[id].y, true) : T >= HOT[id].x;
-    if (INTO[id][PH_COLD] >= 0) goCold = COLD[id].y > 0.0 ? latent(T, dn, COLD[id].x, C, COLD[id].y, false) : T <= COLD[id].x;
-    if (HOT[id].y > 0.0 || COLD[id].y > 0.0) life = up - dn;
+    bool goHot = false, goCold = false, bank = LIFE_BANK[id];
+    if (INTO[id][PH_HOT] >= 0) goHot = HOT[id].y == 0.0 ? T >= HOT[id].x
+      : bank ? latent(T, up, HOT[id].x, C, HOT[id].y, true) : latentChance(T, HOT[id].x, C, HOT[id].y, true, rs);
+    if (INTO[id][PH_COLD] >= 0 && !goHot) goCold = COLD[id].y == 0.0 ? T <= COLD[id].x
+      : bank ? latent(T, dn, COLD[id].x, C, COLD[id].y, false) : latentChance(T, COLD[id].x, C, COLD[id].y, false, rs);
+    if (bank && (HOT[id].y > 0.0 || COLD[id].y > 0.0)) life = up - dn;
     if (goHot || goCold) {
       int ph = goHot ? PH_HOT : PH_COLD;
       nidOut = pickOut(INTO[id][ph], rs);
@@ -476,15 +502,18 @@ void main() {
   if (!reacted && nidOut == id && INTO[id][PH_BLAST] >= 0) {
     // It goes off at its ignition point, or the moment it touches something
     // that hot (an ember, hot metal, lava, a splinter heated by a shot); a
-    // flame's touch flickers, so a flame next to it only might. Or by a hard
-    // enough hit, or a blast's pressure.
+    // flame's touch flickers, so a flame next to it only might (blast.flame
+    // per step). Or by a hard enough hit, or a blast's pressure (setOff).
     bool lit = false;
-    if (IGNITE[id] > 0.0) {
-      bool hotTouch = false;
-      for (int i = 0; i < 6; i++) hotTouch = hotTouch || (!isGasLike(nid[i]) && na[i].y >= IGNITE[id]);
-      lit = T >= IGNITE[id] || hotTouch || (nFire > 0 && rnd(rs) < BLAST_FIRE);
+    if (blastAir) {
+      if (IGNITE[id] > 0.0) {
+        bool hotTouch = false;
+        for (int i = 0; i < 6; i++) hotTouch = hotTouch || (!isGasLike(nid[i]) && na[i].y >= IGNITE[id]);
+        lit = T >= IGNITE[id] || hotTouch;
+      }
+      lit = lit || setOff || (nFire > 0 && BLAST_LIT[id].x > 0.0 && rnd(rs) < BLAST_LIT[id].x);
     }
-    if (lit || setOff) {
+    if (lit) {
       nidOut = pickOut(INTO[id][PH_BLAST], rs);
       ctype = ctypeOf(nidOut, OF[id][PH_BLAST], id);
       reset = true; T = BLAST[id].y; P += BLAST[id].x;

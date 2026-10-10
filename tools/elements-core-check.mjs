@@ -39,16 +39,32 @@ add({ key: 'T_SALT', kind: K.POWDER, dens: 20, slide: 0.5 });
 add({ key: 'T_FUEL', kind: K.SOLID });
 add({ key: 'T_OX', kind: K.SOLID });
 add({ key: 'T_ANTI', kind: K.SOLID });
+add({ key: 'T_S1', kind: K.SOLID });
+add({ key: 'T_S2', kind: K.SOLID });
+add({ key: 'T_H2', kind: K.SOLID });
+// latent heat in an element whose life is taken (acid's strength): no bank, a stochastic change
+const SOUR_BOIL = 100, SOUR_L = 50, SOUR_OVER = 10, SOUR_CAP = 0.5;
+add({ key: 'T_SOUR', kind: K.LIQUID, dens: 11, life: 1, cap: SOUR_CAP, hot: { T: SOUR_BOIL, into: 'STEAM', latent: SOUR_L } });
+const ONE_SIDE_W = 0.28, AIR_GATE_T = 500;
 const DISSOLVE_HEAT = -0.5, GATE_T = 500;
 REACTIONS.push(
   { a: 'T_SALT', b: 'WATER', into: ['EMPTY', 'T_BRINE'], chance: 0.02, heat: DISSOLVE_HEAT },
   { a: 'T_FUEL', b: 'T_OX', into: ['FIRE', 'SAME'], chance: 0.1, minT: GATE_T, heat: 50 },
   { a: 'T_ANTI', b: '*', except: ['WALL'], into: ['EMPTY', 'EMPTY'], chance: 0.05, heat: 10 },
+  { a: 'T_S1', b: 'T_S2', into: [[['T_ORE', ONE_SIDE_W], ['SAME', 1 - ONE_SIDE_W]], 'ROCK'], chance: 0.1 },
+  { a: 'T_H2', b: 'EMPTY', into: ['STEAM', 'SAME'], chance: 0.2, minT: AIR_GATE_T, heat: 20 },
 );
 // explosives: a shock-sensitive liquid that also goes off under pressure, and a solid charge
 const NITRO_SHOCK = 4, NITRO_CRUSH_P = 30, C4_SHOCK = 20;
 add({ key: 'T_NITRO', kind: K.LIQUID, dens: 16, blast: { P: 80, T: 3000, shock: NITRO_SHOCK, crushP: NITRO_CRUSH_P } });
 add({ key: 'T_C4', kind: K.SOLID, blast: { P: 100, T: 3000, shock: C4_SHOCK } });
+// one that lands on loose matter: falling 57 cells at ~1 cell/step onto sand, ½·μ·u² = ½·8·1 = 4 > 2
+const TOUCHY_SHOCK = 2;
+add({ key: 'T_TOUCHY', kind: K.LIQUID, dens: 16, blast: { P: 40, T: 2000, shock: TOUCHY_SHOCK } });
+// heat sets it off, a flame's touch doesn't (flame 0); one that needs air
+const THERM_IGNITE = 1500;
+add({ key: 'T_THERM', kind: K.POWDER, dens: 30, ignite: THERM_IGNITE, blast: { P: 20, T: 2500, into: 'LAVA', of: 'METAL' } });
+add({ key: 'T_AIRBOMB', kind: K.SOLID, ignite: 300, blast: { P: 20, T: 1500, air: true } });
 
 // ---- the CPU twin (imported after the rows exist: it bakes its tables on load) ----
 const { World } = await import('../src/ui/tiles/engine.js');
@@ -172,6 +188,40 @@ const puffP = (v) => PHYS.STEAM_BOIL_PUFF * v / PHYS.STEAM_EXPANSION;
   for (let t = 0; t < 30; t++) { shot.step(); soft.step(); }
   check('C-4 goes off when a slug hits it', count(shot, E.T_C4) === 0);
   check('C-4 shrugs off falling sand', count(soft, E.T_C4) === 1);
+  // landing on loose matter counts; falling alongside it doesn't
+  const pile = world(8, 60);
+  fill(pile, 0, 0, 8, 1, E.ROCK);
+  fill(pile, 0, 1, 8, 3, E.SAND);
+  pile.put(4, 58, E.T_TOUCHY);
+  let landed = false, y = 58;
+  for (let t = 0; t < 400 && !landed; t++) {
+    pile.step();
+    const i = where(pile, E.T_TOUCHY);
+    landed = i < 0;
+    if (!landed) y = Math.floor(i / 8);
+  }
+  check('a touchy liquid goes off landing on sand', landed && y <= 6, `last seen at y ${y}`);
+  const pair = world(8, 90);
+  fill(pair, 0, 0, 8, 1, E.ROCK);
+  pair.put(4, 80, E.SAND); pair.put(4, 81, E.T_TOUCHY);
+  pair.vy[pair.idx(4, 80)] = -0.5; pair.vy[pair.idx(4, 81)] = -0.5;
+  for (let t = 0; t < 40; t++) pair.step();
+  check('falling on falling sand at its speed is no hit', count(pair, E.T_TOUCHY) === 1);
+  // flame 0: fire beside it does nothing until its heat reaches ignite
+  const th = world();
+  fill(th, 0, 0, 24, 1, E.ROCK);
+  th.put(12, 1, E.T_THERM);
+  for (let t = 0; t < 60; t++) { if (th.id[th.idx(13, 1)] !== E.FIRE) th.put(13, 1, E.FIRE, { T: 900 }); th.step(); }
+  check('a fire\'s touch alone doesn\'t set off a flame-0 explosive', count(th, E.T_THERM) === 1);
+  th.T[where(th, E.T_THERM)] = THERM_IGNITE + 200;   // (conduction takes some before it reacts)
+  th.step();
+  const lava = where(th, E.LAVA);
+  check('...its ignition point does, into molten metal (into, of)', count(th, E.T_THERM) === 0 && lava >= 0 && th.ctype[lava] === E.METAL);
+  // air: true: a block at its ignition point goes off only where it touches air
+  const ab = world();
+  fill(ab, 10, 10, 13, 13, E.T_AIRBOMB, { T: 400 });
+  ab.step();
+  check('an air-needing charge goes off at its surface, not inside', count(ab, E.T_AIRBOMB) === 1 && ab.id[ab.idx(11, 11)] === E.T_AIRBOMB);
 }
 // 8. gunpowder runs on blast: fire sets it off, and it leaves its blast's heat and pressure
 {
@@ -186,7 +236,33 @@ const puffP = (v) => PHYS.STEAM_BOIL_PUFF * v / PHYS.STEAM_EXPANSION;
   }
   check('gunpowder still goes off from a flame, at its blast T', seen && count(w, E.GUNPOWDER) < 8);
 }
-// 9. the table's checks catch mistakes
+// 9. latent heat with life taken: pinned at its point, life untouched, and on
+// average the bank: SOUR_OVER °C over it is SOUR_OVER·cap / latent of a change
+{
+  const w = world(40, 40);
+  fill(w, 0, 0, 40, 40, E.T_SOUR, { T: SOUR_BOIL + SOUR_OVER });
+  w.step();
+  const n = 40 * 40, boiled = count(w, E.STEAM), want = SOUR_OVER * SOUR_CAP / SOUR_L;
+  let pinned = true, life = true;
+  for (let i = 0; i < n; i++) if (w.id[i] === E.T_SOUR) { pinned &&= w.T[i] === SOUR_BOIL; life &&= w.life[i] === 1; }
+  check('a liquid whose life is taken boils stochastically, as its bank would on average', Math.abs(boiled / n - want) < 0.03 && pinned && life,
+    `${(boiled / n).toFixed(3)} boiled (want ${want}), pinned ${pinned}, life kept ${life}`);
+}
+// 10. a weighted into with SAME on one side; air as a partner, gated on the hotter cell
+{
+  const w = world(40, 40);
+  for (let x = 0; x < 40; x++) fill(w, x, 0, x + 1, 40, x % 2 ? E.T_S2 : E.T_S1);
+  for (let t = 0; t < 600; t++) w.step();
+  const rock = count(w, E.ROCK), ore = count(w, E.T_ORE);
+  check('one side draws from a weighted list with SAME', rock > 400 && Math.abs(ore / rock - ONE_SIDE_W) < 0.05
+    && count(w, E.T_S1) + ore === 800 && count(w, E.T_S2) + rock === 800, `${ore} ore / ${rock} rock = ${(ore / rock).toFixed(3)}`);
+  const h = world();
+  h.put(5, 12, E.T_H2, { T: AIR_GATE_T + 300 });
+  h.put(15, 12, E.T_H2);
+  for (let t = 0; t < 30; t++) h.step();
+  check('air reacts as a partner, gated on the hotter cell', count(h, E.T_H2) === 1 && h.id[h.idx(15, 12)] === E.T_H2);
+}
+// 11. the table's checks catch mistakes
 {
   const bad = (name, fn) => {
     let threw = false;
@@ -196,7 +272,6 @@ const puffP = (v) => PHYS.STEAM_BOIL_PUFF * v / PHYS.STEAM_EXPANSION;
   const tryRow = (d) => () => { add(d); };
   const undo = () => { const e = ELEMENTS.pop(); delete E[e.key]; };
   bad('melt with hot', tryRow({ key: 'T_BAD', kind: K.SOLID, melt: 900, hot: { T: 900, into: 'LAVA' } })); undo();
-  bad('latent heat on a fuel', tryRow({ key: 'T_BAD', kind: K.SOLID, life: 1, burnRate: 0.01, ignite: 300, hot: { T: 60, into: 'WATER', latent: 10 } })); undo();
   bad('an unknown product', tryRow({ key: 'T_BAD', kind: K.SOLID, cold: { T: 0, into: 'NOPE' } })); undo();
   bad('a blast without T', tryRow({ key: 'T_BAD', kind: K.SOLID, blast: { P: 10 } })); undo();
   bad('a second reaction for a pair', () => REACTIONS.push({ a: 'WATER', b: 'T_SALT', into: ['SAME', 'SAME'] })); REACTIONS.pop();
