@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { prelude, quadVert, stateOutGLSL, copyThroughMain, stateUniforms } from './common.js';
-import { BODY_WIDTH } from '../pov/constants.js';
+import { BODY_WIDTH, BODY_HEIGHT } from '../pov/constants.js';
 import { ELEMENTS, E } from '../elements.js';
 import { PHYS as ENGINE } from '../physics.js';
 
@@ -211,6 +211,19 @@ export const TORCH_FIRE = {
   BITE: 1,
 };
 
+// A burning body (pov/stains.js, status Burning): a column of flame up one side of it, from the
+// feet to the head, at burning clothing's flame temperature. The body turns it round its sides.
+export const BODY_FIRE = {
+  FLAME_T: 900,      // °C, burning cloth (cotton's flame, like a torch's pitch)
+  LENGTH: BODY_HEIGHT,   // cells: feet to head
+  RADIUS0: 0.6,
+  SPREAD: 0.1,
+  SPAWN: 0.2,
+  SPEED: 0.15,
+  HEAT_RATE: 0.15,
+  BITE: 0,
+};
+
 const flameFrag = (P) => (g) => /* glsl */ `
 ${head(g)}
 ${defines('FLM', P)}   // (FLM_: FLAME_ is the renderer's)
@@ -242,6 +255,7 @@ void flame(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
 ${copyThroughMain('flame')}`;
 export const flamerFrag = flameFrag(FLAMER);
 export const torchFireFrag = flameFrag(TORCH_FIRE);
+export const bodyFireFrag = flameFrag(BODY_FIRE);
 
 const physGLSL = /* glsl */ `
 ${defines('PHYS', PHYS)}

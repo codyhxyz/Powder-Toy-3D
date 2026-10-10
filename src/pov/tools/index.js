@@ -40,7 +40,7 @@ const NOTICE_INTERVAL = 1.5;   // s between repeats of a tool's notice and refus
 const MS_PER_S = 1000;
 
 export function createToolbelt(env) {
-  const hotbar = createHotbar((i) => pressSlot(i));
+  const hotbar = createHotbar((i) => pressSlot(i), (key) => select(key));
   const transfer = sharedTransfer(env);
   const ballistics = createBallistics({ renderer: env.renderer });
   ballistics.prepare(env.getSim());
@@ -139,7 +139,7 @@ export function createToolbelt(env) {
     if (i === undefined) return;
     e.preventDefault();
     e.stopImmediatePropagation();
-    pressSlot(i);
+    if (!e.repeat) pressSlot(i);
   }
   addEventListener('keydown', onKey, { capture: true });
 

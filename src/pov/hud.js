@@ -20,6 +20,9 @@ const GAP_STEPS = 2;                    // the gap is rounded to 1/this px (fewe
 // broken, and sweeps back up as it refills (pov.css animates each state).
 const SHIELD_HIT_MS = 160;              // ms a hit's flash lasts (pov.css .pov-shield.hit)
 const SHIELD_POP_MS = 420;              // ms the break's pop lasts (pov.css .pov-shield.pop)
+// Statuses (status.js): Noita's row of icons, each with its seconds left and a bar that runs down.
+const STATUS_ENDING_S = 1.5;            // s left from which an icon blinks (about to wear off)
+const STATUS_TINT = 0.4;                // opacity of the first-person tint while a stain with a screen colour is on
 
 const round = (x) => Math.round(x * FX_STEPS) / FX_STEPS;
 const key = (k) => h('kbd', { text: k });
@@ -29,6 +32,7 @@ export function createPovHud() {
     heat: h('div.pov-fx.pov-heat'),
     frost: h('div.pov-fx.pov-frost'),
     acid: h('div.pov-fx.pov-acid'),
+    stain: h('div.pov-fx.pov-stain'),
     hurt: h('div.pov-fx.pov-hurt'),
   };
   const cross = h('div.pov-cross', {}, h('i'), h('i'), h('i'), h('i'), h('b'));
@@ -51,7 +55,8 @@ export function createPovHud() {
     h('span.pov-ic', { html: '<svg viewBox="0 0 16 16"><path d="M8 1.5 13.5 3.6v4.1c0 3.3-2.3 5.6-5.5 6.8-3.2-1.2-5.5-3.5-5.5-6.8V3.6z"/></svg>' }),
     h('div.pov-track', {}, shieldFill));
   const perkRow = h('div.pov-perks');   // above health, in the same panel
-  const vitals = h('div.pov-vitals.panel', {}, perkRow, shieldRow, healthRow, breathRow, jetRow);
+  const statusRow = h('div.pov-statuses');   // above the perks
+  const vitals = h('div.pov-vitals.panel', {}, statusRow, perkRow, shieldRow, healthRow, breathRow, jetRow);
 
   const lock = h('div.pov-lock.panel', {}, h('b', { text: 'Click' }), ' to look around', h('span.pov-dot', { text: '·' }), key('F'), ' to leave');
 
@@ -71,7 +76,7 @@ export function createPovHud() {
     h('span', {}, key('F'), ' leave'));
 
   const root = h('div.pov-hud', { 'aria-hidden': 'true' },
-    fx.heat, fx.frost, fx.acid, fx.hurt, cross, hitmark, vitals, lock, death, hint);
+    fx.heat, fx.frost, fx.acid, fx.stain, fx.hurt, cross, hitmark, vitals, lock, death, hint);
   document.body.append(root);
 
   // DOM writes only on change
@@ -91,6 +96,8 @@ export function createPovHud() {
   let trail = 1, trailHold = 0, lastHealth = 1;
   let lastShield = 0, shieldHitT = 0, shieldPopT = 0;
   let perkVersion = -1, perkSet = null;
+  let statusVersion = -1, statusSet = null, statusIcons = [];
+  const statusPeak = new Map();   // key → the most seconds it had left while on (its bar's full length)
   let hintTimer = 0;
 
   return {
@@ -103,7 +110,7 @@ export function createPovHud() {
       clearTimeout(hintTimer);
       hintTimer = setTimeout(() => set(hint, '.show', false), HINT_S * 1000);
     },
-    // s = { dt, health, breath, jetFuel (0..1), jetting, perks (pov/perks.js set), feel {heat, cold, acid, hurt},
+    // s = { dt, health, breath, jetFuel (0..1), jetting, perks (pov/perks.js set), status (pov/status.js set), feel {heat, cold, acid, hurt},
     //       shield, shieldMax (base lives; no bar while shieldMax is 0), shieldCharging,
     //       dead, cause, respawnIn (s), locked, swooping, aimInReach, aimValid, third }
     update(s) {
@@ -118,6 +125,29 @@ export function createPovHud() {
         perkRow.replaceChildren(...s.perks.list().map(({ perk, n }) => h('span.pov-perk', { title: `${perk.name}: ${perk.desc}`, style: { '--c': perk.color } },
           h('i', { text: perk.icon }), n > 1 ? h('b', { text: `×${n}` }) : null)));
       }
+      // statuses: an icon each, its seconds left and a bar running down; redrawn when one comes or goes
+      const st = s.status;
+      if (st && (st !== statusSet || st.version !== statusVersion)) {
+        statusSet = st; statusVersion = st.version;
+        statusIcons = st.list().map(({ key, def }) => {
+          const time = h('b'), bar = h('u');
+          const el = h('span.pov-st', { title: def.name, style: { '--c': def.color } }, h('i', { text: def.icon }), time, bar);
+          return { key, el, time, bar };
+        });
+        for (const k of [...statusPeak.keys()]) if (!st.has(k)) statusPeak.delete(k);
+        statusRow.replaceChildren(...statusIcons.map((x) => x.el));
+      }
+      for (const x of statusIcons) {
+        const left = st?.time(x.key) ?? 0;
+        const peak = Math.max(statusPeak.get(x.key) ?? 0, left);
+        statusPeak.set(x.key, peak);
+        set(x.time, 'text', String(Math.ceil(left)));
+        set(x.bar, 'transform', `scaleX(${peak > 0 ? round(left / peak) : 0})`);
+        set(x.el, '.ending', left < STATUS_ENDING_S);
+      }
+      const screen = live ? st?.screen : null;
+      if (screen) set(fx.stain, '--c', screen);
+      set(fx.stain, 'opacity', screen ? String(STATUS_TINT) : '0');
       set(lock, '.show', live && !s.locked);
 
       // health, with a trail that shows what the last hit took

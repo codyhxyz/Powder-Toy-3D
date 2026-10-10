@@ -118,9 +118,10 @@ result.world = await p.evaluate(async () => {
   w.load([o0[0], 0, o0[1]]);
   while (w.far.queue?.length) await window.__frames(1);
   window.__keep('far', (() => {
-    const t = w.far.grid, buf = new Uint8Array(t.width * t.height * 4);
+    // RGBA16F holding whole numbers (shaders/far.js): as float32s
+    const t = w.far.grid, buf = new Uint16Array(t.width * t.height * 4);
     a.renderer.readRenderTargetPixels(t, 0, 0, t.width, t.height, buf);
-    return buf;
+    return Float32Array.from(buf, (h) => a.THREE.DataUtils.fromHalfFloat(h));
   })());
   window.__keep('win0', window.__cells(sim));
   return { origin: o0 };
@@ -206,7 +207,7 @@ function compare(A, B) {
     report[name] = { cells: n, idDiffer: id, kinds, where, TDiffer: T, TmaxDiff: Tmax, lifeDiffer: life, ctypeSeedDiffer: w };
   }
   if (existsSync(`${A}/far.bin`) && existsSync(`${B}/far.bin`)) {
-    const a = readFileSync(`${A}/far.bin`), bb = readFileSync(`${B}/far.bin`);
+    const a = new Float32Array(readFileSync(`${A}/far.bin`).buffer.slice(0)), bb = new Float32Array(readFileSync(`${B}/far.bin`).buffer.slice(0));
     let texels = 0, maxCh = 0;
     for (let i = 0; i < a.length; i += 4) {
       let d = 0;

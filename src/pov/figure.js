@@ -98,6 +98,7 @@ ${lib(g)}
 #define FIG_TOON_EDGE ${TOON_EDGE.toFixed(3)}
 uniform vec3 uAlbedo;
 uniform vec3 uEmit;
+uniform vec4 uTint;   // a stain over the albedo (status.js tint): rgb, share
 in vec3 vGrid;
 in vec3 vN;
 void main() {
@@ -111,7 +112,8 @@ void main() {
 #ifdef FIG_TOON
   ndl = smoothstep(0.0, FIG_TOON_EDGE, ndl);   // cel shading: lit or not, with a thin soft edge
 #endif
-  gl_FragColor = vec4(uAlbedo * (SUN_COL * ndl * sh + irr + local) + uEmit, 1.0);
+  vec3 albedo = mix(uAlbedo, uTint.rgb, uTint.a);
+  gl_FragColor = vec4(albedo * (SUN_COL * ndl * sh + irr + local) + uEmit, 1.0);
 }`;
 
 // Outlines: the mesh again, pushed out along its normals and drawn back faces
@@ -188,8 +190,10 @@ export function buildStick() {
 export function createFigure(build = buildStick) {
   const uniforms = {
     uEmit: { value: new THREE.Vector3() },
+    uTint: { value: new THREE.Vector4() },
     uWorldToGrid: { value: new THREE.Matrix4() },
   };
+  const tint = [0, 0, 0, 0];
   // materials are compiled per grid (their GLSL bakes the grid size in), one per albedo
   let mats = [];
   let boundTo = null, compiled = null;
@@ -270,13 +274,14 @@ export function createFigure(build = buildStick) {
       return renderer.compileAsync(root, camera, scene).catch(() => {});
     },
     // s = { feet (world), scale, yaw, worldToGrid (Matrix4), speedH (cells/s), velY (cells/s),
-    //       onGround, inLiquid, dead, deadTime (s), heat (0..1), jetting }
+    //       onGround, inLiquid, dead, deadTime (s), heat (0..1), jetting, status (status.js set: its stains tint the body) }
     update(dt, s) {
       clock += dt;
       root.position.copy(s.feet);
       root.scale.setScalar(s.scale);
       uniforms.uWorldToGrid.value.copy(s.worldToGrid);
       uniforms.uEmit.value.set(...HEAT_GLOW).multiplyScalar(s.heat ?? 0);
+      uniforms.uTint.value.set(...(s.status ? s.status.tint(tint) : tint.fill(0)));
       if (!s.dead) facing = s.yaw;
       root.rotation.set(0, facing, 0);
 

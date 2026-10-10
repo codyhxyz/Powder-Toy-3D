@@ -64,14 +64,17 @@
   palette lists them without loading the tools. Each `*.tool.js` spreads `...gear('KEY')` into its definition.
 - Slots are Half-Life 2's weapon buckets: `SLOTS = ['Dig', 'Build', 'Guns', 'Explosives', 'Gadgets', 'Light']`,
   one number key each. A key picks the tool last held in its slot; pressed again with that slot in hand it steps
-  to the next (HL2's `hud_fastswitch`). The bar stays six wide however many tools there are, with a pip per
-  tool in a slot and the slot's names shown after a switch.
+  to the next (HL2's `hud_fastswitch`). The bar has six labeled slots, each with a tool-position counter.
+  Switching shows a vertical list with icons, names, an Equipped marker, and a cycling hint.
+  The list closes after four seconds of inactivity; the equipped name stays visible.
+  With the pointer unlocked, clicking a row equips that tool. Holding a number key does not cycle repeatedly.
 - `src/pov/tools/inventory.js` is what the player carries: the catalog's `start` tools plus every tool given
   since, kept in localStorage (`tpt3d.pov.given`). It lives outside the toolbelt, so a tool given in the god
   view is in hand at the next drop-in.
 - Giving: the palette's Tools group lists every tool (elements.js `GEAR_ITEMS`, ids −300…). A click gives it
   (app.js `giveGear`). In first person, `Q` frees the mouse and shows the palette at those tiles: GMod's
-  spawn menu. The SMG, sniper rifle and rocket launcher start out there.
+  spawn menu. The pistol, SMG, and sniper rifle are available in slot 3 from the first drop-in.
+  The rocket launcher and other non-start tools still come from the spawn menu.
 
 ## Guns (2026-10-10)
 
@@ -301,6 +304,7 @@ say world. Emitters own their event names. Listeners never mutate payloads.
 | `player:jet` | player | `{ on }`. The jetpack lit or went out. |
 | `perk:take` | shell | `{ key, keys, point, by? }`. A body took a perk orb: key is the orb's, keys what it gained (Gamble's two). |
 | `perk:revive` | shell | `{ point }`. Extra Life brought the player back. |
+| `status:on` / `status:off` | a body's status set (`status.js`) | `{ key, cause }`. A status came on or went off (cause: an element key, the status that cancelled it, `'add'`, `'faded'`, `'died'`; an NPC's carry `by`). See "Status effects". |
 
 The player's own events (`player.on('hurt'|'death'|'land'|'splash'|'revive'|'revenge')`) stay as they are; listeners subscribe there too.
 
@@ -415,6 +419,56 @@ NPC bodies carry perks too (npc.js passes `toolRate` into its kit's ctx).
 
 Check: `node tools/perks-check.mjs [--port …] [--shot file.jpg] [--worldshot file.jpg]` (a dev server; AC power).
 Combat (shield, movement perks, knife, pogo): `node tools/combat-check.mjs [--port …] [--shot file.jpg]`.
+
+## Status effects (2026-10-10): Noita's stains
+
+Every body (the player's and each NPC's: `createPlayer` builds the set) has `body.status`
+(`src/pov/status.js`). A stain builds from the share of the body's contact cells holding its element (the
+cells vitals.js reads), × time, and wears off at 1 s/s, so it only ever shows where rate × share > 1 and
+only after 0.5 s of build (a splash on a boot isn't Wet). Every status fades once its source is gone.
+The built-in ones are in `src/pov/stains.js`; elements from other branches (SALTWATER, TOXIC, SLIME, BLOOD,
+liquid nitrogen) are looked up by key and are no source while they don't exist.
+
+```js
+registerStatus({ key, name, icon, color, cancels: [], blocks: [], wash, move, full, refresh, show, tint, screen,
+  buildRate(set), duration(set), fade(body, set), when(body, env, set), onStart(body, ctx), onTick(body, dt, ctx), onEnd(body, ctx) })
+registerStain(elementKey, statusKey, { rate /* s per s, whole skin */, seconds /* at most */ })
+body.status.add(key, seconds, strength = 1)   // false if unknown or blocked
+body.status.has(key), .clear(key), .clearAll(), .list() /* [{ key, def, left, strength }] */, .time(key), .moveScale, .version
+```
+
+`cancels` is symmetric (either coming on clears the other); `blocks` is one way (while on, those can't build
+or be added); `wash` is × fade while Wet; `move` is × speed on foot, the one movement hook (player.js
+multiplies foot speed by `status.moveScale`, the product over what's on). Hook ctx: `{ set, env, hurt(amount,
+cause), world }` (`hurt` is damage that isn't a blow: no shield, no bleeding).
+
+| Status | Source | Effect | Cancels / blocks | Constants (stains.js) |
+|---|---|---|---|---|
+| Wet 💧 | WATER, SALTWATER (25 s/s), CLOUD fog (3), SNOW melting (4) | can't catch fire; puts Burning out; washes stains off (× their `wash`); × 3 electric shock (`WET_SHOCK`); dries faster with hot skin | cancels and blocks Burning | `WET_S` 10 s, `WET_DRY_SPAN` 20 °C |
+| Oily 🛢️ | OIL (20) | fire catches × 4 faster, burns × 2.5 longer, ignites from skin at 150 °C | — (washes × 2) | `OILY_S` 15, `OILY_IGNITE`, `OILY_BURN`, `OILY_IGNITE_T` |
+| Burning 🔥 | FIRE (100), LAVA (200) contact (1% of the contact cells is the least that lights it); skin past 255 °C (cotton's ignition) | 0.06 health/s (Fire Immunity: none); every 0.1 s a column of engine FIRE up one side (povTools.js `BODY_FIRE`, the tools' flame pass) that lights grass and wood beside it; vfx flame licks; burns its budget down (`full`, `refresh: false`) | cancels Frozen | `BURN_S` 4 s, `BURN_DAMAGE`, `IGNITE_T`, `BURN_FIRE_INTERVAL` |
+| Frozen 🧊 | skin under 10 °C (numbness); ICE, SNOW (3: buried, not standing on it), liquid nitrogen (40) | × 0.3 speed on foot; skin over 40 °C thaws it × 6 | cancels Burning | `FROZEN_S` 4, `FROZEN_SKIN_T`, `THAW_SKIN_T`, `FROZEN_MOVE` |
+| Toxic ☣️ | TOXIC sludge (20) | 0.05 health/s 'Poisoned', past the shield | — (washes × 3) | `TOXIC_S` 6, `TOXIC_DAMAGE` |
+| Slimy 🫠 | SLIME (20) | × 0.6 speed on foot | — (washes × 3) | `SLIMY_S` 8, `SLIMY_MOVE` |
+| Bloody 🩸 | BLOOD (15); any wound | cosmetic | — (washes × 8) | `BLOODY_S` 8 |
+
+**Bleeding.** A hurt the Energy Shield would take (blows, bullets, slams, blasts: vitals.js emits `wound` on the
+body for what gets past the shield) stains Bloody and spills 12 BLOOD cells per unit of health (16 at most per
+wound, fractions carried) into the air around the chest (`transfer.js` put). Heat, cold, acid, toxin and
+drowning don't bleed. A cell is 27 L, so any spill is Noita's exaggeration: game magic, said so in the code.
+
+**Electricity.** `shock(env, wet, sparkAt)`: SHOCK_DAMAGE (0.5 health/s) × the strongest spark touching the
+body (0..1) × `WET_SHOCK` while Wet. el-elec's probe puts a live cell's spark in the probe's 4th channel;
+player.js `sense()` fills `env.contactSpark` with 0 until it lands. Wiring it is one line there:
+`contactSpark[cn] = field(x, y, z, 3, 0);`.
+
+**Look.** The HUD's row above the perks (icon, seconds left, a bar that runs down, a blink at the end); a
+first-person edge tint in the latest stain's `screen` colour (hud.js, pov.css: heat, frost and acid live there
+too); the figure's albedo mixed toward the stains' `tint` (figure.js `uTint`, also the realistic body); flame
+licks off a burning body (vfx.js `burn`). NPCs run to water when Burning (brain.js Extinguish).
+
+Check: `node tools/status-check.mjs` (CPU: the rules through real vitals.js) and `--gpu [--port …] [--shot
+file.jpg]` (the real body: a pool, fire on and off the body, snow, a wound's spill, the HUD row, the lab NPC).
 
 ## Verifying (headless GPU)
 
