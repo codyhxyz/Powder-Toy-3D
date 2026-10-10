@@ -217,10 +217,10 @@ int natGrower(int x, int y, int z, int id) {
   int sea = natSea();
   if (!natBed(id) || y < sea - 1) return NAT_NONE;
   bool mossRow = y < sea + NAT_MOSS_RISE;
-  bool patch = genTop(x, z) - y >= NAT_FUNGUS_DEPTH && natFungusPatch(x, y, z);
-  if (!mossRow && !patch) return NAT_NONE;
+  bool inPatch = genTop(x, z) - y >= NAT_FUNGUS_DEPTH && natFungusPatch(x, y, z);
+  if (!mossRow && !inPatch) return NAT_NONE;
   bool lit = natLit(x, y, z);
-  int kind = lit ? (mossRow ? NAT_MOSS : NAT_NONE) : (patch ? NAT_FUNGUS : NAT_NONE);
+  int kind = lit ? (mossRow ? NAT_MOSS : NAT_NONE) : (inPatch ? NAT_FUNGUS : NAT_NONE);
   if (kind == NAT_NONE) return NAT_NONE;
   int air = 0, water = 0, cave = 0;   // faces on cave air, on water, on the caves (cave air or water)
   for (int i = 0; i < 6; i++) {
