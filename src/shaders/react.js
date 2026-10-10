@@ -280,9 +280,10 @@ void main() {
   bool touchAir = false;
   for (int i = 0; i < 6; i++) {
     if (KIND[nid[i]] != K_SOLID) pOn = max(pOn, nb[i].w);
-    touchAir = touchAir || nid[i] == E_EMPTY;
+    touchAir = touchAir || nid[i] == E_EMPTY || nid[i] == E_OXYGEN || nid[i] == E_FIRE;
   }
-  // an explosive that needs air (blast.air) goes off only touching it
+  // an explosive that needs air (blast.air) goes off only touching it, or a
+  // flame: the flame front is where fuel and air mix (a fireball draws air in)
   bool blastAir = BLAST_LIT[id].y == 0.0 || touchAir;
   // set off by a hit or a blast's pressure: an explosive goes off rather than break
   bool setOff = blastAir && (shocked || (BLAST[id].w > 0.0 && pOn > BLAST[id].w));
@@ -529,6 +530,29 @@ void main() {
       ctype = cloneOf == E_LAVA ? float(E_STONE) : 0.0;
       v = vec3(0.0, KIND[cloneOf] == K_GAS ? 0.0 : SPAWN_DROP_V, 0.0);
     }
+  } else if (id == E_FUSE) {
+    // Safety fuse: a black-powder core in a tarred jute sheath. The powder
+    // carries its own oxidiser, so it burns with or without air, at a steady
+    // speed (physics.js FUSE_*). life is 1 unlit; lit, it runs down by
+    // FUSE_BURN a step, and the front passes into each fuse neighbour once
+    // it is down to FUSE_HANDOFF. The sheath doesn't heat up as it burns; a
+    // flame lights the core as it does gunpowder (its blast.flame).
+    if (life >= 1.0) {
+      bool light = T >= IGNITE[id] || (nFire > 0 && rnd(rs) < BLAST_LIT[E_GUNPOWDER].x);
+      for (int i = 0; i < 6; i++)
+        light = light || (nid[i] == E_FUSE && na[i].z <= FUSE_HANDOFF) || (!isGasLike(nid[i]) && na[i].y >= IGNITE[id]);
+      if (light) life = 1.0 - FUSE_BURN;
+    } else {
+      // At the fuse's end (no fuse beside it that burns out later), once the
+      // front reaches it, the burning powder spits out of it as hot as
+      // gunpowder burns: that lights the charge by touch. Burnt out, it leaves
+      // a puff of smoke from the sheath, or at the end, flame.
+      bool end = true;
+      for (int i = 0; i < 6; i++) end = end && !(nid[i] == E_FUSE && na[i].z > life);
+      life -= FUSE_BURN;
+      if (end && life <= FUSE_HANDOFF) T = max(T, BLAST[E_GUNPOWDER].y);
+      if (life <= 0.0) { nidOut = end ? E_FIRE : E_SMOKE; reset = true; }
+    }
   } else if (id == E_OXYGEN) {
     // flames lick into oxygen as into air, as much more often as it holds more
     // oxygen, and hotter
@@ -630,7 +654,7 @@ void main() {
       ctype = ctypeOf(nidOut, OF[id][PH_BLAST], id);
       reset = true; T = BLAST[id].y; P += BLAST[id].x;
     }
-  } else if (!reacted && nidOut == id && IGNITE[id] > 0.0) {
+  } else if (!reacted && nidOut == id && IGNITE[id] > 0.0 && id != E_FUSE) {   // a fuse burns by its own rule
     if (T >= IGNITE[id] && (nAir > 0 || nFire > 0 || nOxy > 0) && !smothered) {
       // as fast as oxygen reaches it, so its heat comes out as much faster
       life -= BURNRATE[id] * oxy;
