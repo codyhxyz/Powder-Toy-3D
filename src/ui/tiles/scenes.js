@@ -7,7 +7,8 @@
 //     so the air gap is what lets anything happen.
 //   gases: two soft blobs, sampled as gas cells. The Erase tool is held
 //     over a hidden row above the box, so gas rises out instead of filling it.
-import { K } from '../../elements.js';
+//   a battery: under a plate of metal (BATTERY_PLATE rows), which it sparks.
+import { K, E } from '../../elements.js';
 import { World } from './engine.js';
 
 export const TILE = 44;               // tile edge, CSS px
@@ -20,6 +21,7 @@ export const HEADSPACE = {             // rows of air above the material
   [K.SOLID]: 3,                       // air for burning surfaces
 };
 const GAS_HIDDEN_ABOVE = 1;           // erased row
+const BATTERY_PLATE = 3;              // rows of metal on top of a battery tile's battery
 
 // the flat tile textures (formerly CSS), used to lay out the starting cells
 export const SPECKS = [               // powder dots: background cell size (px), dot centre in it
@@ -69,7 +71,8 @@ export function makeScene(item, seed) {
         const p = blobAlpha((x + 0.5) * CELL, (r + 0.5) * CELL) * GAS_FILL;
         if (rand() < p) w.put(x, y, item.id, { seed: rand() });
       } else if (r >= HEADSPACE[item.kind]) {
-        w.put(x, y, item.id, { seed: rand() });
+        const plate = item.id === E.BATTERY && r < HEADSPACE[item.kind] + BATTERY_PLATE;
+        w.put(x, y, plate ? E.METAL : item.id, { seed: rand() });
       }
     }
   if (item.kind === K.POWDER) {

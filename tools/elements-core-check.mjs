@@ -9,12 +9,6 @@ import { writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ELEMENTS, E, K, R, REACTIONS, elementRow, mechanisms } from '../src/elements.js';
-// The GPU passes' modules load before the test rows exist (shaders/far.js
-// checks the element count as it loads); their GLSL reads the table when built.
-import { gridLayout } from '../src/sim.js';
-import { reactFrag } from '../src/shaders/react.js';
-import * as activity from '../src/shaders/activity.js';
-import * as move from '../src/shaders/move.js';
 
 // ---- test rows ----
 const add = (d) => {
@@ -280,6 +274,11 @@ const puffP = (v) => PHYS.STEAM_BOIL_PUFF * v / PHYS.STEAM_EXPANSION;
 
 // ---- the GPU passes compile with the same rows ----
 {
+  // (loaded after the rows exist, as the twin is: some modules bake tables of the elements as they load)
+  const { gridLayout } = await import('../src/sim.js');
+  const { reactFrag } = await import('../src/shaders/react.js');
+  const activity = await import('../src/shaders/activity.js');
+  const move = await import('../src/shaders/move.js');
   const g = gridLayout(64, 64, 64);
   const dir = mkdtempSync(join(tmpdir(), 'elcore-'));
   const raw = '#version 300 es\n';

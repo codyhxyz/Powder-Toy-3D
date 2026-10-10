@@ -82,10 +82,12 @@ bool inertNear(ivec3 c, vec4 a, vec4 nA[6]) {
     vec4 n = nA[i];
     int j = eid(n);
     // thermally quiet; a face touching air carries heat at air's conductance, so it takes air's tolerance
-    if (j == E_EMPTY ? abs(T - AMBIENT) > AIR_REST_T : abs(T - n.y) > MATTER_REST_T) return false;
+    // (a face with no conductance, a temperature sensor's, carries none)
+    if (min(COND[id], COND[j]) > 0.0 && (j == E_EMPTY ? abs(T - AMBIENT) > AIR_REST_T : abs(T - n.y) > MATTER_REST_T)) return false;
+    if (!electricQuietNear(id, a, j, n)) return false;   // src/electricity.js
     if (j == E_ACID ? acidEats(id) : id == E_ACID && acidEats(j)) return false;
     if ((id == E_WATER && j == E_PLANT) || (id == E_PLANT && j == E_WATER)) return false;
-    if (id == E_CLONE && (j == E_EMPTY || (a.w < 1.0 && j != E_WALL && j != E_CLONE))) return false;
+    if (id == E_CLONE && (j == E_EMPTY || (a.w < 1.0 && cloneable(j)))) return false;   // (cloneable: src/electricity.js)
     // an explosive with an ignition point: a hot touch sets it off
     if (INTO[id][PH_BLAST] >= 0 && IGNITE[id] > 0.0 && !isGasLike(j) && n.y >= IGNITE[id]) return false;
     // a reaction partner past its temperature gate (one below it lets both rest)
@@ -250,10 +252,15 @@ void main() {
 
 // Brick resolution: 1 if the brick and its 26 neighbours are inert (outside
 // the box counts as inert: the box walls are). uEnabled = false clears the map.
+// A brick holding a fast particle (raysLayer.js: tRays, when uRays) counts as
+// not inert: a particle flies at most a brick in the steps a map lives
+// (rays.js RAY_V_MAX), so every cell it can heat stays awake.
 export const quietFrag = (g) => /* glsl */ `
 ${prelude(g)}
 uniform sampler2D tInert;
 uniform bool uEnabled;
+uniform sampler2D tRays;
+uniform bool uRays;
 out vec4 oC;
 void main() {
   ivec3 bc = brickFromFrag(ivec2(gl_FragCoord.xy));
@@ -265,6 +272,7 @@ void main() {
     ivec3 b = bc + ivec3(x, y, z);
     if (any(lessThan(b, ivec3(0))) || any(greaterThanEqual(b, ivec3(BX, BY, BZ)))) continue;
     if (texelFetch(tInert, brickAtlas(b), 0).x < 0.5) return;
+    if (uRays && texelFetch(tRays, brickAtlas(b), 0).x > 0.5) return;
   }
   oC = vec4(1.0);
 }

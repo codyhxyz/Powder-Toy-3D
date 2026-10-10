@@ -5,16 +5,18 @@
 //   - stability: the element at every cell after --steps steps vs right after
 //     loading (cells whose element changed, by from → to);
 //   - the JS twin against the GPU: every cell of a fill without trees against
-//     islandCellAt;
+//     islandCellAt with the World's structures in (structureCellAt);
 //   - seams: a fill at an origin shifted by a window step matches the
 //     overlapping cells (all of state A), and a slab fill (a window move's)
 //     leaves the rest of the window as the full fill made it;
 //   - fill time: a full window fill and a slab fill, GPU-synced, the minimum of
 //     --runs (other sessions share the GPU: the minimum is the uncontended cost).
-// Then the far field's build (frames, wall time), and stills: the mouth from
-// outside, the shaft from above, the mouth from far off (far field), and first
-// person in the tunnel, the crystal cavern and by the lake (their exposure
-// raised CAVE_EV stops, named -ev<N>), in one contact sheet.
+// Then islandCaveMouth (the structures layer's mouth query) on the GPU against
+// its twin over the windows at the mouth and the shaft, the far field's build
+// (frames, wall time), and stills: the mouth from outside, the shaft from
+// above, the mouth from far off (far field), and first person in the tunnel,
+// the crystal cavern and by the lake (as the player sees them: the eyes adapt
+// to the dark), in one contact sheet.
 // usage: node tools/caves-check.mjs spots.json [outDir] [--port 5394] [--steps 600] [--runs 15] [--no-shots]
 //   (a vite server on that port: ./node_modules/.bin/vite --port 5394 --strictPort)
 import { chromium } from 'playwright';
@@ -38,14 +40,12 @@ const LOAD_FRAMES = 30;                // frames after a load for the fields and
 const BUILD_FRAMES = 2000;             // frames the far build may take
 const FAR_RUNS = 7;                    // far builds timed (the minimum is the uncontended cost)
 const SHOT_MS = 1500;                  // a still's settle time (TAA, GI)
-const POV_SETTLE_MS = 2500;            // first person: the body lands and the view settles
+const POV_SETTLE_MS = 4000;            // first person: the body lands, the view settles and the eyes adapt to the dark
 const FAR_AWAY = 300;                  // cells the window sits from the mouth for the far field's still
 const OUTSIDE = [30, 14];              // the mouth's still: this far out from it and up
 const ABOVE = [14, 34];                // the shaft's still: this far off its axis and up over the ground
 const MONTAGE_TILE = '480x300';
 const EYE = 5;                         // the POV eye over its feet, cells (pov/constants.js EYE_HEIGHT)
-const CAVE_EV = 6;                     // underground stills: exposure raised this many stops (EV), so the
-                                       // rock shows before crystal light reaches the bounce lighting
 
 const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
 const p = await b.newPage({ viewport: { width: W, height: H } });
@@ -93,6 +93,8 @@ for (const name of ['hill', 'shaft', 'lake', 'crystal', 'tunnel']) {
   results[name] = await p.evaluate(async ([at, steps, runs, STEP, WIN]) => {
     const a = window.__app, H = window.__cc, sim = a.sim, g = sim.g, w = a.win, P = w.P;
     const { islandCellAt } = await import('/src/world/generator.js');
+    const { structureCellAt } = await import('/src/world/structures.js');
+    const cellAt = (x, y, z) => structureCellAt(P, x, y, z, islandCellAt(x, y, z, P), (yy) => islandCellAt(x, yy, z, P));
     const { ELEMENTS } = await import('/src/elements.js');
     const name = (id) => ELEMENTS[id]?.key ?? id;
     const O = H.origin(at[0], at[2], STEP, WIN);
@@ -108,7 +110,7 @@ for (const name of ['hill', 'shaft', 'lake', 'crystal', 'tunnel']) {
     const gpu = H.ids(), kinds = {}, where = [];
     let differ = 0;
     for (let y = 0; y < g.ny; y++) for (let z = 0; z < g.nz; z++) for (let x = 0; x < g.nx; x++) {
-      const cpu = islandCellAt(O[0] + x, y, O[1] + z, P), gid = gpu[(y * g.nz + z) * g.nx + x];
+      const cpu = cellAt(O[0] + x, y, O[1] + z), gid = gpu[(y * g.nz + z) * g.nx + x];
       if (cpu === gid) continue;
       differ++;
       const k = `${name(cpu)}/${name(gid)}`;
@@ -141,6 +143,37 @@ for (const name of ['hill', 'shaft', 'lake', 'crystal', 'tunnel']) {
   }, [at, steps, runs, STEP, WIN]);
   console.log(name, JSON.stringify(results[name]));
 }
+
+// islandCaveMouth on the GPU (a pass over the window's columns) against the twin
+results.mouth = {};
+for (const name of ['hill', 'shaft']) {
+  if (!spots[name]) continue;
+  results.mouth[name] = await p.evaluate(async ([at, STEP, WIN]) => {
+    const a = window.__app, H = window.__cc, THREE = a.THREE, sim = a.sim, g = sim.g, w = a.win;
+    const { prelude } = await import('/src/shaders/common.js');
+    const { rawMat, makeFieldTarget } = await import('/src/sim.js');
+    const { islandTwin } = await import('/src/world/generator.js');
+    const O = H.origin(at[0], at[2], STEP, WIN);
+    const frag = `${prelude(g)}\n${w.scene.glsl(g)}\nuniform ivec2 uMouthLo;\nout vec4 oC;\nvoid main() {\n`
+      + `  ivec2 c = uMouthLo + ivec2(gl_FragCoord.xy);\n  oC = vec4(islandCaveMouth(c.x, c.y), 0.0, 0.0, 1.0);\n}\n`;
+    const mat = rawMat(frag, { ...w.sceneU, uMouthLo: { value: new THREE.Vector2(O[0], O[1]) } });
+    const target = makeFieldTarget(g.nx, g.nz, 1, THREE.FloatType, THREE.NearestFilter);
+    sim.run(mat, target);
+    const px = new Float32Array(g.nx * g.nz * 4);
+    a.renderer.readRenderTargetPixels(target, 0, 0, g.nx, g.nz, px);
+    const T = islandTwin(w.P);
+    let open = 0, differ = 0;
+    for (let j = 0; j < g.nz; j++) for (let i = 0; i < g.nx; i++) {
+      const cpu = T.islandCaveMouth(O[0] + i, O[1] + j);
+      if (cpu > 0) open++;
+      if (px[(j * g.nx + i) * 4] !== cpu) differ++;
+    }
+    target.dispose();
+    mat.dispose();
+    return { origin: O, columns: g.nx * g.nz, mouthColumns: open, differ };
+  }, [spots[name].at, STEP, WIN]);
+}
+console.log('islandCaveMouth', JSON.stringify(results.mouth));
 
 // the far build: from fresh loads at the hill mouth, its wall time the minimum of FAR_RUNS
 results.far = await p.evaluate(async ([at, STEP, WIN, BUILD_FRAMES, FAR_RUNS]) => {
@@ -190,8 +223,8 @@ if (shots) {
     await god(at, [at[0] + ABOVE[0], ground + ABOVE[1], at[2] + ABOVE[0]], [at[0], ground - ABOVE[0], at[2]]);
     await shot('shaft-above');
   }
-  // first person: feet at a world cell, looking toward another, the exposure raised
-  await ev(async (ev) => { const a = window.__app; a.post.settings.exposure += ev; a.pov.test.assumeLocked = true; await a.pov.enter(); }, CAVE_EV);
+  // first person: feet at a world cell, looking toward another
+  await ev(async () => { const a = window.__app; a.pov.test.assumeLocked = true; await a.pov.enter(); });
   await p.waitForFunction(() => window.__app.pov.mode === 'on', null, { timeout: 15000 }).catch(() => console.log('POV did not come on'));
   const pov = (name, feet, dir, pitch) => ev(async ([feet, dir, pitch, STEP, WIN, LOAD_FRAMES]) => {
     const a = window.__app, H = window.__cc, V = a.camera.position.constructor;
@@ -204,11 +237,10 @@ if (shots) {
     const d = [look[0] - feet[0], look[1] + 0.5 - feet[1] - EYE, look[2] - feet[2]];
     return { dir: [d[0], d[2]], pitch: Math.atan2(d[1], Math.hypot(d[0], d[2])) };
   };
-  const ev6 = `-ev${CAVE_EV}`;
-  if (spots.tunnel) await pov(`pov-tunnel${ev6}`, spots.tunnel.feet, spots.tunnel.dir, -0.05);
-  if (spots.crystal) { const t = toward(spots.crystal.feet, spots.crystal.look); await pov(`pov-crystal-cavern${ev6}`, spots.crystal.feet, t.dir, t.pitch); }
-  if (spots.lake) { const t = toward(spots.lake.feet, spots.lake.look); await pov(`pov-lake${ev6}`, spots.lake.feet, t.dir, t.pitch); }
-  await ev((ev) => { const a = window.__app; a.pov.exit(); a.post.settings.exposure -= ev; }, CAVE_EV);
+  if (spots.tunnel) await pov('pov-tunnel', spots.tunnel.feet, spots.tunnel.dir, -0.05);
+  if (spots.crystal) { const t = toward(spots.crystal.feet, spots.crystal.look); await pov('pov-crystal-cavern', spots.crystal.feet, t.dir, t.pitch); }
+  if (spots.lake) { const t = toward(spots.lake.feet, spots.lake.look); await pov('pov-lake', spots.lake.feet, t.dir, t.pitch); }
+  await ev(() => window.__app.pov.exit());
   execFileSync('montage', [...files, '-tile', '3x', '-geometry', `${MONTAGE_TILE}+4+4`, `${out}/contact.png`]);
   console.log(`contact sheet ${out}/contact.png`);
 }
