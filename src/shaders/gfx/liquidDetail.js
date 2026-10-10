@@ -97,12 +97,13 @@ vec3 liquidCapillary(vec3 p, vec3 n) {
   float up = smoothstep(RIPPLE_UP_LO, RIPPLE_UP_HI, n.y);
   if (up <= 0.0) return n;
   float fp = footprint(p);
+  vec2 wq = worldPos(p).xz;   // anchored in the world, like the wind ripples
   vec3 gr = vec3(0.0);
   for (int i = 0; i < CAP_OCTAVES; i++) {
     float w = lodFade(CAP_FREQ[i], fp);
     if (w <= 0.0) break;
     // d/d(noise xz) is the slope per unit noise gradient, as RIPPLE_SLOPE
-    vec4 h = mNoiseD(vec3(p.xz * CAP_FREQ[i] + CAP_SHIFT * float(i + 1), uTime * CAP_DRIFT[i]));
+    vec4 h = mNoiseD(vec3(wq * CAP_FREQ[i] + CAP_SHIFT * float(i + 1), uTime * CAP_DRIFT[i]));
     gr.xz += h.yz * w;
   }
   return tiltNormal(n, gr * RIPPLE_SLOPE * up);
@@ -132,7 +133,7 @@ vec3 liquidMeniscus(vec3 p, vec3 n, int id) {
     int ax = k < 2 ? 0 : 2;
     float s = (k & 1) == 0 ? -1.0 : 1.0;   // side the wall is on
     q[ax] += int(s);
-    if (outside(q) || !isCrisp(eid(cellA(q)))) continue;
+    if (outside(q) || !isCrisp(eid(fetchA(q)))) continue;
     float d = s < 0.0 ? f[ax >> 1] : 1.0 - f[ax >> 1];   // to the wall's face
     float a = d - half_, b = d + half_;
     float slope = (menHeight(a, lc, h0) - menHeight(b, lc, h0)) / max(b - max(a, 0.0), 1e-6);
@@ -164,12 +165,12 @@ vec3 liquidMeniscus(vec3 p, vec3 n, int id) {
 bool supports(int id) { return id != E_EMPTY && KIND[id] != K_GAS; }
 float columnFlux(ivec3 c) {   // c = lowest cell; cells/step
   if (c.x < 0 || c.z < 0 || c.x >= NX || c.z >= NZ) return 0.0;
-  int below = c.y > 0 ? eid(cellA(c - ivec3(0, 1, 0))) : E_WALL;
+  int below = c.y > 0 ? eid(fetchA(c - ivec3(0, 1, 0))) : E_WALL;
   float s = 0.0;
   for (int k = 0; k < AGIT_REACH; k++) {
     if (c.y >= NY) break;
-    int id = eid(cellA(c));
-    if (liqDetailOn(id) && !supports(below)) s += length(cellB(c).xyz);
+    int id = eid(fetchA(c));
+    if (liqDetailOn(id) && !supports(below)) s += length(fetchB(c).xyz);
     below = id;
     c.y++;
   }
@@ -200,8 +201,8 @@ float agitation(vec3 p) {   // 0..1
 #define BREAKUP_PROBE 0.5      // cells into the liquid (against n) where its cell is read
 float breakup(vec3 p, vec3 n, int id) {   // 0..1
   ivec3 c = ivec3(floor(p - n * BREAKUP_PROBE));
-  if (outside(c) || c.y == 0 || eid(cellA(c)) != id || supports(eid(cellA(c - ivec3(0, 1, 0))))) return 0.0;
-  float v = length(cellB(c).xyz) * MS_PER_CELL_STEP;
+  if (outside(c) || c.y == 0 || eid(fetchA(c)) != id || supports(eid(fetchA(c - ivec3(0, 1, 0))))) return 0.0;
+  float v = length(fetchB(c).xyz) * MS_PER_CELL_STEP;
   return smoothstep(WE_ONSET, WE_FULL, AIR_RHO * v * v * CELL_M / LIQ_SIGMA[id]);
 }
 
@@ -249,14 +250,15 @@ void liquidFoam(vec3 p, inout vec3 n, int id, inout vec3 col, inout vec3 trans) 
   if (ag <= 0.0) return;
   float fp = footprint(p);
   float t = uTime;
-  vec4 r = triNoiseD(p, n, ROUGH_FREQ, t * ROUGH_RATE);
+  vec3 wp = worldPos(p);   // the churn and foam are anchored in the world
+  vec4 r = triNoiseD(wp, n, ROUGH_FREQ, t * ROUGH_RATE);
   n = tiltNormal(n, r.yzw * (ROUGH_SLOPE * ag * lodFade(ROUGH_FREQ, fp) / ROUGH_FREQ));
   // covered fraction: the pattern where pixels resolve it, its mean beyond
   float cover = max(FOAM_COVER_MAX * agI, SPRAY_COVER_MAX * agB);
   float pw = lodFade(FOAM_FREQ, fp);
   float c = cover;
   if (pw > 0.0) {
-    vec3 q = p + FOAM_SHIFT;
+    vec3 q = wp + FOAM_SHIFT;
     float v = mix(triNoiseD(q, n, FOAM_FREQ, t * FOAM_RATE).x, triNoiseD(q, n, FOAM_FREQ2, t * FOAM_RATE).x,
                   FOAM_OCT2_W * lodFade(FOAM_FREQ2, fp));
     c = mix(cover, smoothstep(1.0 - cover - FOAM_EDGE, 1.0 - cover + FOAM_EDGE, v), pw);

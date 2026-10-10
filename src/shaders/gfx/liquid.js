@@ -49,7 +49,7 @@ int liquidIdAt(vec3 p, int fallback) {
     ivec3 q = c;
     if (i > 0) q[(i - 1) >> 1] += ((i & 1) == 1) ? -1 : 1;
     if (outside(q)) continue;
-    int id = eid(cellA(q));
+    int id = eid(fetchA(q));
     if (SURFCH[id] == CH_LIQUID) return id;
   }
   return fallback;
@@ -71,7 +71,7 @@ vec3 liquidRipple(vec3 p, vec3 n) {
   float k = smoothstep(RIPPLE_UP_LO, RIPPLE_UP_HI, n.y)
           * (1.0 - smoothstep(RIPPLE_LOD_LO, RIPPLE_LOD_HI, footprint(p) * RIPPLE_FREQ * RIPPLE_OCT2));
   if (k <= 0.0) return n;
-  vec2 q = p.xz * RIPPLE_FREQ;
+  vec2 q = worldPos(p).xz * RIPPLE_FREQ;   // anchored in the world
   float t = uTime * RIPPLE_DRIFT;
   float h = rippleH(q, t);
   vec2 g = vec2(rippleH(q + vec2(RIPPLE_EPS, 0.0), t) - h, rippleH(q + vec2(0.0, RIPPLE_EPS), t) - h) / RIPPLE_EPS;
@@ -123,7 +123,7 @@ vec3 reflectTrace(vec3 ro, vec3 rd, vec3 sunVis) {
       continue;
     }
     float tExit = min(tMax.x, min(tMax.y, tMax.z));
-    vec4 a = cellA(cell);
+    vec4 a = fetchA(cell);
     int id = eid(a);
     if (isCrisp(id)) {
       if (RCLASS[id] != R_GLASS) {
@@ -149,8 +149,8 @@ vec3 reflectTrace(vec3 ro, vec3 rd, vec3 sunVis) {
         vec3 gr = vec3(surfField(hp + e.xyy)[ch], surfField(hp + e.yxy)[ch], surfField(hp + e.yyx)[ch]) - SURF_ISO;
         vec3 n = dot(gr, gr) > 1e-10 ? -normalize(gr) : -rd;
         ivec3 c1 = clamp(ivec3(floor(hp - n * REFL_PROBE)), ivec3(0), GRID - 1);
-        vec4 ah = cellA(c1);
-        if (SURFCH[eid(ah)] != ch) ah = cellA(clamp(ivec3(floor(hp - n * (2.0 * REFL_PROBE))), ivec3(0), GRID - 1));
+        vec4 ah = fetchA(c1);
+        if (SURFCH[eid(ah)] != ch) ah = fetchA(clamp(ivec3(floor(hp - n * (2.0 * REFL_PROBE))), ivec3(0), GRID - 1));
         return reflShade(ah, n);
       }
       phiA = phiB;

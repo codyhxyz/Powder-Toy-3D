@@ -127,12 +127,11 @@ async function setCam(cam) {
       a.camera.position.copy(g(cam[0])); a.controls.target.copy(g(cam[1])); a.controls.update();
       return;
     }
-    const { width, height, nx, ny, nz, tx } = a.sim.g;
-    const st = new Float32Array(width * height * 4);
-    a.renderer.readRenderTargetPixels(a.sim.targets[a.sim.cur], 0, 0, width, height, st, undefined, 0);
+    const { ny } = a.sim.g;
+    const [st] = a.sim.readState();
     const ground = ([x, z]) => {
       for (let y = ny - 1; y >= 0; y--) {
-        const id = Math.round(st[((Math.floor(y / tx) * nz + z) * width + (y % tx) * nx + x) * 4]);
+        const id = Math.round(st[a.sim.cellTexel(x, y, z) * 4]);
         if (id && !gasIds.includes(id)) return y + 1;
       }
       return 0;

@@ -29,7 +29,7 @@ await p.evaluate(() => {
     const sim = a.sim, g = sim.g;
     const [A, B] = sim.blankState();
     const set = (x, y, z, id, temp = 20, life = 0) => {
-      const i = ((Math.floor(y / g.tx) * g.nz + z) * g.width + (y % g.tx) * g.nx + x) * 4;
+      const i = sim.cellTexel(x, y, z) * 4;
       A[i] = id; A[i + 1] = temp; A[i + 2] = life;
     };
     fill(set, g);
@@ -37,15 +37,11 @@ await p.evaluate(() => {
   };
   T.read = () => {
     const sim = a.sim, g = sim.g;
-    const n = g.width * g.height * 4;
-    const A = new Float32Array(n), B = new Float32Array(n);
-    const t = sim.targets[sim.cur];
-    a.renderer.readRenderTargetPixels(t, 0, 0, g.width, g.height, A, undefined, 0);
-    a.renderer.readRenderTargetPixels(t, 0, 0, g.width, g.height, B, undefined, 1);
+    const [A, B] = sim.readState();
     const cells = (id) => {
       const out = [];
       for (let y = 0; y < g.ny; y++) for (let z = 0; z < g.nz; z++) for (let x = 0; x < g.nx; x++) {
-        const i = ((Math.floor(y / g.tx) * g.nz + z) * g.width + (y % g.tx) * g.nx + x) * 4;
+        const i = sim.cellTexel(x, y, z) * 4;
         if (Math.round(A[i]) === id) out.push({ x, y, z, T: A[i + 1], life: A[i + 2], v: [B[i], B[i + 1], B[i + 2]] });
       }
       return out;

@@ -5,6 +5,10 @@ import { Simulation } from './sim.js';
 import { volumeVert, volumeFrag, pickFrag, shadowFrag } from './shaders/render.js';
 import { ELEMENTS, E, toolById, isBuild } from './elements.js';
 import { buildPreset } from './presets.js';
+import { loadIsland, releaseGenerator } from './world/gpu.js';
+import { WorldWindow, WIN_STEP } from './world/window.js';
+import { heightAt } from './world/generator.js';
+import { FarField } from './world/far.js';
 import { quadVert } from './shaders/common.js';
 import { createBrushCursor } from './brush.js';
 import { createCameraRig } from './camera.js';
@@ -23,6 +27,8 @@ import { CHANNELS, MEDIA } from './gfx/materials.js';
 import { DAY, dayPhase, phaseSteps, keyLight } from './gfx/daylight.js';
 import { GI_BLEND } from './sim.js';
 import { createMultiplayer } from './net/multiplayer.js';
+import { createProfiler } from './gfx/profiler.js';
+import { createProfilerPanel } from './ui/profiler.js';
 import { createPov } from './pov/index.js';
 import { renderViewmodels } from './pov/viewmodel.js';
 import { POV_FOV, POV_FOV_RANGE, SENSITIVITY_RANGE } from './pov/camera.js';
@@ -39,6 +45,23 @@ const SignsClass = optional['./signs.js']?.Signs;
 const BuildsClass = optional['./constructions.js']?.Constructions;
 
 const SIZES = { '64': [64, 64, 64], '96': [96, 96, 96], '128': [128, 128, 128], wide: [160, 96, 160] };
+// Massive worlds (docs/scaling.md D11): the generator's world, `size` cells,
+// simulated and drawn through a window of `win` cells that follows the focus
+// (the POV body, else the orbit target). The Grid size row's World. Its peaks
+// are bare rock (snow: false): the air is 20 °C everywhere, so snow caps would
+// melt, and the window keeps every brick that leaves it changed.
+const WORLDS = { world: { win: [128, 128, 128], size: [1024, 128, 1024], snow: false } };
+// God view over a world: the orbit target on the ground, the camera this far
+// off it along the box view's direction (scene units), so the window fills
+// about as much of the view as a box does
+const WORLD_VIEW_DIR = [11, 9.5, 13];
+const WORLD_VIEW_DIST = 21;
+// A world starts with the window on the island's shore, seen from the sea
+// (worldStart): its centre this share of its width inland from the waterline
+const WORLD_START_INLAND = 0.25;
+// WASD in a world: no faster than the window can follow the orbit target
+// (one WIN_STEP move every few frames), in scene units per second
+const WORLD_CAM_SPEED_MAX = 9;
 const SIGN_TOOL = -5;
 
 // ---------------------------------------------------------------- settings
@@ -50,6 +73,7 @@ const DEFAULTS = {
   character: 'wizard', povFov: POV_FOV, sensitivity: 1, viewBobbing: true, sprintMode: 'hold',
   nearGI: true, glowLights: true, caustics: true,
   ...detailDefaults(),
+  profiler: false,
 };
 // Phones and tablets (touch-first, no hover) start on the plain look: no extra
 // lighting passes, no close-up detail, and the cheapest upscaling. Only the
@@ -65,7 +89,7 @@ if (MOBILE) Object.assign(DEFAULTS, MOBILE_DEFAULTS);
 const MOBILE_LITE = 'mobileLite';
 const PERSIST = ['size', 'preset', 'tool', 'radius', 'shape', 'rate', 'replace', 'steps', 'gravity', 'view',
   'camSpeed', 'upscale', 'dockCollapsed', 'character', 'povFov', 'sensitivity', 'viewBobbing', 'sprintMode',
-  'nearGI', 'glowLights', 'caustics', ...DETAIL.map(settingKey)];
+  'nearGI', 'glowLights', 'caustics', ...DETAIL.map(settingKey), 'profiler'];
 const STORE = 'powder-toy-3d:settings';
 // Fixed look: glow is heat-driven light (×uLightGain); smoothing, TAA, bloom and
 // exposure keep their defaults in gfx/uniforms.js and gfx/post.js.
@@ -80,9 +104,14 @@ try {
   if (MOBILE && !saved[MOBILE_LITE]) Object.assign(settings, MOBILE_DEFAULTS);
 } catch { /* storage unavailable */ }
 const params = new URLSearchParams(location.search);
-if (params.get('size') in SIZES) settings.size = params.get('size');
+const knownSize = (s) => s in SIZES || s in WORLDS;
+if (knownSize(params.get('size'))) settings.size = params.get('size');
 if (params.get('preset')) settings.preset = params.get('preset');
-if (!(settings.size in SIZES)) settings.size = DEFAULTS.size;
+// the Island scene's world seed (world/generator.js), and World's; its default world without one
+const worldSeed = params.has('seed') ? Number(params.get('seed')) >>> 0 : undefined;
+if (!knownSize(settings.size)) settings.size = DEFAULTS.size;
+// the box size the Scene row goes back to from World
+let boxSize = settings.size in SIZES ? settings.size : DEFAULTS.size;
 if (!toolById(settings.tool)) settings.tool = DEFAULTS.tool;
 if (!VIEWS.some((v) => v.id === settings.view)) settings.view = 0;
 if (!['wizard', 'real', 'stick'].includes(settings.character)) settings.character = DEFAULTS.character;
@@ -118,7 +147,8 @@ controls.dampingFactor = 0.12;
 controls.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE };
 controls.zoomToCursor = true;
 
-const floorGrid = new THREE.GridHelper(80, 80, 0x2b3240, 0x1b2029);
+const FLOOR_SPAN = 80;   // scene units the floor grid spans, a line every unit (a world's is stretched over it)
+const floorGrid = new THREE.GridHelper(FLOOR_SPAN, FLOOR_SPAN, 0x2b3240, 0x1b2029);
 floorGrid.position.y = -0.002;
 // GL lines are one rendered pixel wide: under TAAU that is 1/scale output pixels,
 // so the grid and the box outline fade by the render scale to keep their weight.
@@ -154,6 +184,9 @@ const isTyping = () => {
 const rig = createCameraRig(camera, controls, isTyping);
 
 let sim, volume, edges, pickMat, shadowMat, shadowTarget, scale;
+// world mode (a WORLDS size): the world, the window over it, and the world cell (x, z) at the scene's origin
+let worldMode = null, win = null;
+const anchor = new THREE.Vector2();
 const pickTarget = new THREE.WebGLRenderTarget(2, 1, { type: THREE.FloatType, depthBuffer: false });
 const pickBuf = new Float32Array(8);
 let pickPending = false;
@@ -162,19 +195,36 @@ function build() {
   pov?.exit(true);   // the body lives in the old grid
   pov?.worldReplaced();
   if (sim) {
+    releaseGenerator(sim);   // the Island scene's, made for this grid
     sim.dispose();
     scene.remove(volume, edges);
     volume.geometry.dispose();
     volume.material.dispose();
     edges.geometry.dispose();
+    edges.material.dispose();
     pickMat.dispose();
     shadowMat.dispose();
     shadowTarget.dispose();
   }
-  const [nx, ny, nz] = SIZES[settings.size];
-  sim = new Simulation(renderer, nx, ny, nz);
+  worldMode = WORLDS[settings.size] ?? null;
+  const [nx, ny, nz] = worldMode?.win ?? SIZES[settings.size];
+  win?.dispose();
+  win = null;
+  sim = new Simulation(renderer, nx, ny, nz, { windowed: !!worldMode });
   sim.gravity = settings.gravity;
+  sim.onPass = prof.on ? simPass : null;
   scale = 10 / Math.max(nx, nz);
+  if (worldMode) {
+    win = new WorldWindow(renderer, sim, { size: worldMode.size, seed: worldSeed, snow: worldMode.snow });
+    sim.origin.fromArray(worldStart());
+  }
+  // the grid starts centred on the scene's origin
+  anchor.set(sim.origin.x + nx / 2, sim.origin.z + nz / 2);
+  // the floor grid: under a box, or across a world's whole footprint
+  const span = win ? [win.size[0] * scale, win.size[2] * scale] : [FLOOR_SPAN, FLOOR_SPAN];
+  floorGrid.scale.set(span[0] / FLOOR_SPAN, 1, span[1] / FLOOR_SPAN);
+  floorGrid.position.x = win ? (win.size[0] / 2 - anchor.x) * scale : 0;
+  floorGrid.position.z = win ? (win.size[2] / 2 - anchor.y) * scale : 0;
 
   const geo = new THREE.BoxGeometry(nx, ny, nz);
   geo.translate(nx / 2, ny / 2, nz / 2);
@@ -186,6 +236,7 @@ function build() {
       uCam: { value: new THREE.Vector3() },
       uSun: { value: SUN }, tShadow: { value: null }, uShadowRes: { value: 0 },
       uView: { value: 0 }, uShadows: { value: true }, uTime: { value: 0 }, uLightGain: { value: GLOW_GAIN },
+      uOrigin: sim.originUniform,   // the window's place in the world (the sim passes get it from sim.run)
       ...gfxUniforms,
     },
     side: THREE.BackSide,
@@ -196,18 +247,19 @@ function build() {
     blendDst: THREE.OneMinusSrcAlphaFactor,
   }));
   volume.scale.setScalar(scale);
-  volume.position.set(-nx / 2 * scale, 0, -nz / 2 * scale);
   volume.frustumCulled = false;
   scene.add(volume);
-  volume.updateMatrixWorld();
+  // world mode: the world outside the window (world/far.js), drawn before everything else
+  if (win) scene.add((win.far = new FarField(renderer, win, { sun: SUN, time: volume.material.uniforms.uTime })).mesh);
 
   edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo),
     new THREE.LineBasicMaterial({ color: 0x56607a, transparent: true, opacity: EDGE_OPACITY }));
   edges.scale.copy(volume.scale);
-  edges.position.copy(volume.position);
   scene.add(edges);
+  placeVolume();
 
   pickMat = new THREE.RawShaderMaterial({
+    name: 'pick',
     glslVersion: THREE.GLSL3,
     vertexShader: quadVert,
     fragmentShader: pickFrag(sim.g),
@@ -225,6 +277,7 @@ function build() {
     type: THREE.FloatType, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, depthBuffer: false,
   });
   shadowMat = new THREE.RawShaderMaterial({
+    name: 'shadow',
     glslVersion: THREE.GLSL3,
     vertexShader: quadVert,
     fragmentShader: shadowFrag(sim.g),
@@ -236,31 +289,117 @@ function build() {
     depthTest: false,
     depthWrite: false,
   });
+  win?.far.attach(volume.material, shadowMat);   // world mode: the far field's haze and shadows on the window
   applyDetail();
   volume.material.uniforms.tShadow.value = shadowTarget.texture;
   volume.material.uniforms.uShadowRes.value = shadowRes;
 
   const h = ny * scale;
-  rig.setHome(new THREE.Vector3(11, h * 0.9 + 3, 13), new THREE.Vector3(0, h * 0.25, 0));
+  if (win) homeOver(anchor.x, anchor.y);
+  else rig.setHome(new THREE.Vector3(11, h * 0.9 + 3, 13), new THREE.Vector3(0, h * 0.25, 0));
+  rig.setMaxSpeed(win ? WORLD_CAM_SPEED_MAX : Infinity);
   rig.reset(true);
   if (signs) { signs.clear(); signs.rebuild(); }
   loadPreset(settings.preset, false);
 }
 
-// Multiplayer guests follow the host's grid size.
+// World: the window's first origin (world cells). The island's middle is bare
+// rock, so it starts where the most is going on: on the shore the god view
+// looks from, the sea in front, then beach, meadows and trees, and the hills
+// behind. Found by walking from the island's centre toward the camera to the
+// waterline, a WIN_STEP at a time.
+function worldStart() {
+  const P = win.P, g = sim.g, n = [g.nx, g.nz];
+  const d = new THREE.Vector2(WORLD_VIEW_DIR[0], WORLD_VIEW_DIR[2]).normalize();
+  const at = (r) => [P.center[0] + d.x * r, P.center[1] + d.y * r];
+  let r = 0;
+  while (r < Math.max(P.size[0], P.size[2]) / 2 && heightAt(...at(r), P) >= P.sea) r += WIN_STEP;
+  const c = at(r - WORLD_START_INLAND * Math.max(...n));
+  const origin = [0, 1].map((k) => {
+    const o = Math.round((c[k] - n[k] / 2) / WIN_STEP) * WIN_STEP;
+    return THREE.MathUtils.clamp(o, 0, P.size[2 * k] - n[k]);
+  });
+  return [origin[0], 0, origin[1]];
+}
+
+// World: the god view's home over world column (x, z), the orbit target on
+// the ground there (on the sea where the sea floor is lower).
+function homeOver(x, z) {
+  const ground = Math.max(heightAt(x, z, win.P), win.P.sea);
+  const target = new THREE.Vector3((x - anchor.x) * scale, ground * scale, (z - anchor.y) * scale);
+  rig.setHome(new THREE.Vector3(...WORLD_VIEW_DIR).setLength(WORLD_VIEW_DIST).add(target), target);
+}
+
+// The grid's box in the scene: at its world origin, so a window moving over
+// the world leaves the camera and everything already drawn where they are.
+function placeVolume() {
+  volume.position.set((sim.origin.x - anchor.x) * scale, 0, (sim.origin.z - anchor.y) * scale);
+  edges.position.copy(volume.position);
+  volume.updateMatrixWorld();
+  edges.updateMatrixWorld();
+}
+
+// World mode: keep the window on the focus, the POV body or else the orbit
+// target (a tool may pin it: __app.worldFocus = [x, z] in world cells).
+function moveWindow() {
+  let fx, fz;
+  if (worldFocus) [fx, fz] = worldFocus;
+  else if (pov?.active && pov.player) { fx = pov.player.pos.x + sim.origin.x; fz = pov.player.pos.z + sim.origin.z; }
+  else { fx = controls.target.x / scale + anchor.x; fz = controls.target.z / scale + anchor.y; }
+  const move = win.update(fx, fz);
+  if (!move) return;
+  const [dx, dz] = move;
+  placeVolume();
+  pov?.windowShifted(dx, dz);
+  hover.cell.x -= dx;   // the last pick, in the moved grid (signs follow sim.origin themselves)
+  hover.cell.z -= dz;
+  if (hover.valid && !inWindow(hover.cell)) hover.valid = false;
+}
+let worldFocus = null;
+
+// Is grid point p inside the window's columns (x and z)? Painting and tools
+// act only there: beyond it, in a world, is ground the window doesn't hold.
+const inWindow = (p) => p.x >= 0 && p.x < sim.g.nx && p.z >= 0 && p.z < sim.g.nz;
+
+// A grid cell found by a pick asked for with the window at origin o: where
+// it is in the window now (it may have moved since), in place.
+function pickedNow(cell, o) {
+  cell.x += o.x - sim.origin.x;
+  cell.z += o.z - sim.origin.z;
+  return cell;
+}
+
+// Multiplayer guests follow the host's grid size (a box: never World).
 function setGrid(dims) {
   const size = Object.keys(SIZES).find((k) => SIZES[k].every((n, i) => n === dims[i]));
   if (!size) return false;
-  settings.size = size;
+  settings.size = boxSize = size;
   build();
   return true;
 }
 
+// Switch the grid to `size` (SIZES or WORLDS) and rebuild.
+function setSize(size) {
+  settings.size = size;
+  if (size in SIZES) boxSize = size;
+  build();
+  save();
+}
+// cells [nx, ny, nz] for a toast: '128³', '160 × 96 × 160'; for the HUD: '2.1M'
+const dimsName = (d) => (d.every((n) => n === d[0]) ? `${d[0]}³` : d.join(' × '));
+const millions = (d) => `${(d[0] * d[1] * d[2] / 1e6).toFixed(1)}M`;
+
 function loadPreset(name, undoable = true) {
   if (undoable && mp.guard()) return false;
-  if (undoable) sim.snapshot();
+  if (undoable && !win) sim.snapshot();
   settings.preset = name;
-  if (name === 'empty') sim.clear();
+  if (win) {
+    // a world has one scene, its own: loading starts it over (and can't be undone)
+    win.load(worldStart());
+    placeVolume();
+    toolbar.setUndoEnabled(false);
+  } else if (name === 'empty') sim.clear();
+  else if (name === 'island') loadIsland(sim, { seed: worldSeed });
   else buildPreset(name, sim);
   post.reset();
   signs?.clear();
@@ -307,11 +446,14 @@ function requestPick() {
   pickMat.uniforms.tBrick.value = sim.brick.texture;
   sim.run(pickMat, pickTarget);
   pickPending = true;
+  const from = sim, o = sim.origin.clone();
   renderer.readRenderTargetPixelsAsync(pickTarget, 0, 0, 2, 1, pickBuf).then(() => {
     pickPending = false;
+    if (from !== sim) return;   // a new grid since
     hover.valid = pickBuf[3] >= 0;
     if (hover.valid) {
-      hover.cell.set(pickBuf[0], pickBuf[1], pickBuf[2]);
+      pickedNow(hover.cell.set(pickBuf[0], pickBuf[1], pickBuf[2]), o);
+      hover.valid = inWindow(hover.cell);
       hover.face = pickBuf[3];
       hover.id = Math.round(pickBuf[4]);
       hover.T = pickBuf[5];
@@ -331,10 +473,11 @@ function pickRay(ro, rd) {
   pickMat.uniforms.tBrick.value = sim.brick.texture;
   sim.run(pickMat, rayTarget);
   const buf = new Float32Array(8);
-  return renderer.readRenderTargetPixelsAsync(rayTarget, 0, 0, 2, 1, buf).then(() => ({
-    valid: buf[3] >= 0, cell: new THREE.Vector3(buf[0], buf[1], buf[2]), face: buf[3],
-    id: Math.round(buf[4]), T: buf[5], P: buf[6],
-  }));
+  const o = sim.origin.clone();
+  return renderer.readRenderTargetPixelsAsync(rayTarget, 0, 0, 2, 1, buf).then(() => {
+    const cell = pickedNow(new THREE.Vector3(buf[0], buf[1], buf[2]), o);
+    return { valid: buf[3] >= 0 && inWindow(cell), cell, face: buf[3], id: Math.round(buf[4]), T: buf[5], P: buf[6] };
+  });
 }
 
 const isTool = () => settings.tool < 0;
@@ -364,8 +507,9 @@ function updateBrush() {
   }
   if (settings.tool !== SIGN_TOOL && !isBuild(settings.tool)) {
     if (painting) {
+      // a box's brush stops at its walls; a world's window has none, so beyond it there's no brush
       plane.constant = -dragY;
-      if (gridRay().intersectPlane(plane, tmpV)) { brushCenter.copy(tmpV); brushValid = true; }
+      if (gridRay().intersectPlane(plane, tmpV) && (!win || inWindow(tmpV))) { brushCenter.copy(tmpV); brushValid = true; }
     } else if (hover.valid) {
       hoverBrushCenter(brushCenter);
       brushValid = true;
@@ -445,7 +589,12 @@ function pickHovered() {
 const actions = {
   togglePause: () => setPaused(!settings.paused),
   undo,
-  resetCamera: () => { rig.reset(); hud.toast('Camera reset'); },
+  // (in a world, over where the camera is looking: home is wherever you are)
+  resetCamera: () => {
+    if (win) homeOver(controls.target.x / scale + anchor.x, controls.target.z / scale + anchor.y);
+    rig.reset();
+    hud.toast('Camera reset');
+  },
   screenshot: () => { wantShot = true; },
   firstPerson: () => { painting = false; pov?.toggle(); },
   toggleSettings: () => setSettingsOpen(!settingsPanel.isOpen),
@@ -454,7 +603,7 @@ const actions = {
   renderThumb,
 };
 const toolbar = createToolbar({ views: VIEWS, settings, actions });
-const mp = createMultiplayer({ renderer, scene, camera, hud, getSim: () => sim, getVolume: () => volume, setGrid });
+const mp = createMultiplayer({ renderer, scene, camera, hud, getSim: () => sim, getVolume: () => volume, setGrid, inWorld: () => !!win });
 
 const fmtSpeed = (v) => `${v}×`;
 const fmtTime = (v) => `${Math.floor(v)}:${String(Math.round((v % 1) * 60)).padStart(2, '0')}`;
@@ -464,9 +613,18 @@ const settingsPanel = createSettings({
   // Sections and their rows run from most to least reached-for; keep that order when adding settings.
   sections: [
     { title: 'Scene', rows: [
-      // clicking the current scene reloads it; Empty clears
-      { type: 'seg', key: 'preset', options: [['empty', 'Empty'], ['lab', 'Lab'], ['volcano', 'Volcano']],
-        onChange: (v) => { if (loadPreset(v)) hud.toast(`Loaded ${v === 'empty' ? 'an empty box' : `the ${v}`}`); } },
+      // clicking the current scene reloads it; Empty clears. World is its own
+      // scene (none is lit): picking one goes back to the last box size with it.
+      { type: 'seg', key: 'preset', value: () => (win ? '' : settings.preset),
+        options: [['empty', 'Empty'], ['lab', 'Lab'], ['volcano', 'Volcano'], ['island', 'Island']],
+        onChange: (v) => {
+          const name = v === 'empty' ? 'an empty box' : `the ${v}`;
+          if (!win) { if (loadPreset(v)) hud.toast(`Loaded ${name}`); return; }
+          if (mp.guard()) return;
+          settings.preset = v;
+          setSize(boxSize);
+          hud.toast(`Loaded ${name}, in a ${dimsName(SIZES[boxSize])} box`);
+        } },
     ] },
     { title: 'Simulation', rows: [
       { type: 'slider', key: 'steps', label: 'Speed (steps per frame)', min: 1, max: 12, step: 1, def: DEFAULTS.steps, fmt: fmtSpeed, onChange: save },
@@ -484,8 +642,15 @@ const settingsPanel = createSettings({
           onChange: (v) => { settings[key] = v; save(); } })),
     ] },
     { title: 'Grid size', rows: [
-      { type: 'seg', key: 'size', options: [['64', '64³'], ['96', '96³'], ['128', '128³'], ['wide', '160×96']],
-        onChange: (v) => { if (mp.guard()) return; settings.size = v; build(); save(); hud.toast(`Grid is now ${v === 'wide' ? '160 × 96 × 160' : `${v}³`}`); } },
+      // World: the generator's island, simulated through a window that follows you
+      // (clicking it again starts the world over)
+      { type: 'seg', key: 'size', options: [['64', '64³'], ['96', '96³'], ['128', '128³'], ['wide', '160×96'], ['world', 'World']],
+        onChange: (v) => {
+          if (mp.guard() || (v in WORLDS && mp.guardWorld())) return;
+          setSize(v);
+          const w = WORLDS[v];
+          hud.toast(w ? `World: ${w.size.join(' × ')} cells, simulated ${dimsName(w.win)} around you` : `Grid is now ${dimsName(SIZES[v])}`);
+        } },
     ] },
     // the scene renders at a share of the screen's pixels and TAA rebuilds full detail over frames
     { title: 'Upscaling', rows: [
@@ -518,6 +683,11 @@ const settingsPanel = createSettings({
         onChange: (v) => { settings.sprintMode = v; save(); } },
     ] },
     ...(accountsEnabled ? [accountSection({ toast: (text) => hud.toast(text) })] : []),
+    // for working on the app itself (the frame loop applies it)
+    { title: 'Developer', rows: [
+      { type: 'seg', key: 'profiler', options: [[false, 'Profiler off'], [true, 'Profiler on']],
+        onChange: (v) => { settings.profiler = v; save(); } },
+    ] },
   ],
   footer: [['Reset all settings', resetSettings]],
 });
@@ -583,7 +753,8 @@ function setPixelRatio(r) {
 function undo() {
   if (mp.guard()) return;
   if (sim.undo()) { pov?.worldReplaced(); hud.toast('Undone'); }
-  else hud.toast('Nothing to undo');
+  // (a world's window moved off all of it: it's kept for when the window comes back)
+  else hud.toast(sim.canUndo ? 'Too far away to undo that: go back to it first' : 'Nothing to undo');
   toolbar.setUndoEnabled(sim.canUndo);
 }
 
@@ -740,6 +911,27 @@ addEventListener('resize', () => {
   renderer.setSize(innerWidth, innerHeight);
 });
 
+// ---------------------------------------------------------------- profiler (Settings → Developer)
+// gfx/profiler.js measures and ui/profiler.js shows. Off, the pass hooks are unset.
+const profPanel = createProfilerPanel();
+const prof = createProfiler(renderer, {
+  describe: () => ({
+    sim, renderScale: post.renderScale,
+    targets: [sim, post.allTargets, shadowTarget, pickTarget, rayTarget, thumbTarget],
+  }),
+  onSample: profPanel.update,
+});
+const simPass = (name, target) => prof.pass(name, target);
+// post's passes after the scene (the view's raymarch) are a phase of their own
+const postPass = (name, target) => { prof.pass(name, target); if (name === 'scene') prof.phase('post'); };
+function applyProfiler() {
+  const on = settings.profiler;
+  prof.enable(on);
+  profPanel.show(on);
+  sim.onPass = on ? simPass : null;
+  post.onPass = on ? postPass : null;
+}
+
 // ---------------------------------------------------------------- loop
 const clock = new THREE.Timer();
 // The fps readout is the rate frames are drawn while drawing: a paused, still
@@ -858,6 +1050,8 @@ function saveScreenshot() {
 function frame(now) {
   requestAnimationFrame(frame);
   if (!pacer.due(now)) return;
+  if (prof.on !== settings.profiler) applyProfiler();
+  prof.beginFrame(now);
   clock.update(now);
   const dt = Math.min(clock.getDelta(), DT_MAX);
   // only frames that rendered measure how expensive rendering is
@@ -868,8 +1062,13 @@ function frame(now) {
     rig.update(dt);
     controls.update();
   }
+  if (win) moveWindow();
+  // In World the far field carries on past the window, so its outline would only be lines in the sky
+  // and the landscape; where the god view can paint shows by the brush, which stops at the window's edge.
+  edges.visible = !win;
   updateBrush();
 
+  prof.phase('paint');
   if (painting && brushValid) {
     const stroke = {
       center: brushCenter, radius: settings.radius, shape: settings.shape,
@@ -878,7 +1077,9 @@ function frame(now) {
     if (mp.isGuest) mp.paint(stroke); // the host paints it
     else sim.paint(stroke);
   }
-  if (!mp.isGuest && (!settings.paused || stepOnce)) {
+  prof.phase('sim');
+  const stepping = !mp.isGuest && (!settings.paused || stepOnce);
+  if (stepping) {
     for (let i = 0; i < settings.steps; i++) sim.step();
     if (DAY.running) day.clock += settings.steps;
     stepOnce = false;
@@ -888,6 +1089,7 @@ function frame(now) {
     timeShown = settings.time;
     if (settingsPanel.isOpen) settingsPanel.sync();
   }
+  prof.phase('other');
   mp.update(dt, {
     visible: brushValid && pointerInside && !uiHover, center: brushCenter, painting,
     radius: settings.radius, shape: settings.shape, tool: settings.tool,
@@ -907,16 +1109,22 @@ function frame(now) {
   renderedLast = runView;
   if (runView) updateGfxUniforms(sim, SUN, KEY_LIGHT);   // (runDerived implies runView)
   if (runDerived) {
+    prof.phase('derived');
     sim.updateBricks();
     if (VIEWS.find((v) => v.id === settings.view)?.shadows) {
+      prof.phase('shadow');
       shadowMat.uniforms.tA.value = sim.stateA;
       shadowMat.uniforms.tBrick.value = sim.brick.texture;
       sim.run(shadowMat, shadowTarget);
     }
-    if (settings.view === 0) sim.updateGI(SUN, shadowTarget.texture, shadowMat.uniforms.uShadowRes.value, true);
+    if (settings.view === 0) {
+      prof.phase('gi');
+      sim.updateGI(SUN, shadowTarget.texture, shadowMat.uniforms.uShadowRes.value, true);
+    }
   }
 
   if (runView) {
+    prof.phase('view');
     volume.updateMatrixWorld();
     const u = volume.material.uniforms;
     u.tA.value = sim.stateA;
@@ -925,6 +1133,7 @@ function frame(now) {
     u.tLight.value = sim.lightTexture;
     u.uCam.value.copy(camera.position).applyMatrix4(invVol.copy(volume.matrixWorld).invert());
     detailGate.update(camera, u.uCam.value, [sim.g.nx, sim.g.ny, sim.g.nz], scene);
+    win?.far.view(volume, settings.view === 0);
     u.uView.value = settings.view;
     if (worldChanged) u.uTime.value += dt;   // animated looks (lava, ripples) hold still while the world does
 
@@ -935,7 +1144,8 @@ function frame(now) {
     gfxUniforms.uCaustics.value = settings.caustics;
     floorGrid.material.opacity = post.renderScale;
     edges.material.opacity = EDGE_OPACITY * post.renderScale;
-    post.render(scene, camera);
+    post.render(scene, camera);   // its passes after the scene count as 'post' (postPass)
+    prof.phase('other');
     // POV: the held tool, drawn over the finished frame in its own pass (no TAA, its
     // own depth, so it never clips into walls); before the screenshot reads the canvas
     renderViewmodels(renderer, scene, camera, post);
@@ -959,9 +1169,11 @@ function frame(now) {
   hud.setStats({
     fpsV: idleTime > FPS_WINDOW ? null : fps,   // null: idle
     stepsV: settings.paused || mp.isGuest ? 0 : settings.steps * fps, // guests don't simulate
-    cellsV: `${(g.nx * g.ny * g.nz / 1e6).toFixed(1)}M`,
+    // the cells simulated (a world's window), and the world's
+    cellsV: `${millions([g.nx, g.ny, g.nz])}${win ? ` of ${millions(win.size)}` : ''}`,
     resV: autoRes.enabled ? `${Math.round(pixelRatio * 100)}% res` : '',
   });
+  prof.endFrame(stepping ? settings.steps : 0);
 }
 
 // ---------------------------------------------------------------- boot
@@ -980,6 +1192,8 @@ try {
       requestRender: () => pacer.wake(),
     });
   }
+  // a guest gets the host's box (multiplayer.js): opening an invite in World starts in a box, not the world
+  if (mp.joining && settings.size in WORLDS) settings.size = boxSize;
   build();
   rig.setSpeed(settings.camSpeed);
   selectTool(settings.tool);
@@ -991,11 +1205,18 @@ try {
     getSim: () => sim, getVolume: () => volume, getScale: () => scale,
     hover, pointerHover: () => pointerInside && !uiHover, pickRay,
     requestRender: () => pacer.wake(),
+    inWorld: () => !!win,
   });
   window.__app = {
     get sim() { return sim; }, get volume() { return volume; }, get scale() { return scale; }, get signs() { return signs; }, get builds() { return builds; },
     get pov() { return pov; },
-    MOBILE, SUN, day, scene, settings, camera, controls, loadPreset, selectTool, setView, hover, renderer, rig, renderThumb, gfx, post, mp, autoRes,
+    get win() { return win; },
+    // world mode: start the world over with the window at `origin` (world cells)
+    worldLoad(origin) { win.load(origin); placeVolume(); post.reset(); pov?.worldReplaced(); },
+    setSize,         // switch the grid as the Grid size row does, without its toast (a SIZES or WORLDS key)
+    undo,            // as ⌘Z does
+    get worldFocus() { return worldFocus; }, set worldFocus(v) { worldFocus = v; },
+    MOBILE, SUN, day, scene, settings, camera, controls, loadPreset, selectTool, setView, hover, renderer, rig, renderThumb, gfx, post, mp, autoRes, prof,
     applyDetail,   // after changing settings.detail_* by hand
     detailGate,    // .level / .shown: which close-up features the view has compiled in
     THREE,         // for tools (tools/detail-bench.mjs makes its own targets)

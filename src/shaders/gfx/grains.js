@@ -135,7 +135,7 @@ bool grainElement(int id) {
 #endif
   return false;
 }
-bool granularAt(ivec3 c) { return !outside(c) && SURFCH[eid(cellA(c))] == CH_GRANULAR; }
+bool granularAt(ivec3 c) { return !outside(c) && SURFCH[eid(fetchA(c))] == CH_GRANULAR; }
 // no granular face neighbour
 bool loneCell(ivec3 c) {
   return !granularAt(c + ivec3(1, 0, 0)) && !granularAt(c - ivec3(1, 0, 0)) && !granularAt(c + ivec3(0, 1, 0))
@@ -146,7 +146,7 @@ bool grainCellOk(ivec3 c, int id) { return isPebbles(id) || loneCell(c); }
 // a lone cell resting on something
 bool grainResting(ivec3 c) {
   if (c.y == 0) return true;
-  int b = eid(cellA(c - ivec3(0, 1, 0)));
+  int b = eid(fetchA(c - ivec3(0, 1, 0)));
   return b != E_EMPTY && KIND[b] != K_GAS;
 }
 
@@ -227,7 +227,7 @@ int pebbleFill(ivec3 cell, out vec4 a) {
   for (int i = 0; i < 6; i++) {
     ivec3 c = cell + PEB_FILL_DIRS[i];
     if (outside(c)) continue;
-    a = cellA(c);
+    a = fetchA(c);
     if (eid(a) == E_STONE) return i + 1;
   }
   return 0;
@@ -263,7 +263,7 @@ float pebblesHit(ivec3 cell, vec4 a, bool lone, int fill, vec3 ro, vec3 rd, floa
       } else {
         // a neighbour's pebble reaching in: gravel's own, or one an empty cell borrowed
         if (outside(own)) continue;
-        vec4 an = cellA(own);
+        vec4 an = fetchA(own);
         int idn = eid(an);
         if (idn == E_STONE) {
           if (!pebbleAt(s, own, an, false, 0, c, r, h)) continue;
@@ -388,7 +388,7 @@ bool grainSuppress(vec3 hp, out float w) {
   for (int i = 0; i < 8; i++) {
     ivec3 c = c0 + ivec3(i & 1, (i >> 1) & 1, (i >> 2) & 1);
     if (outside(c)) continue;
-    int id = eid(cellA(c));
+    int id = eid(fetchA(c));
     if (SURFCH[id] != CH_GRANULAR) continue;
     if (!grainElement(id) || !grainCellOk(c, id)) return false;
     wMin = min(wMin, grainW(id, fp));
@@ -495,7 +495,7 @@ bool pebbleOf(ivec3 s, out ivec3 cell, out vec4 a, out vec3 c, out float r, out 
   cell = ivec3(floor((vec3(s) + 0.5) * PEB_Q));
   a = vec4(0.0); c = vec3(0.0); r = 0.0; h = 0u;
   if (outside(cell)) return false;
-  a = cellA(cell);
+  a = fetchA(cell);
   int id = eid(a);
   if (id == E_STONE) return pebbleAt(s, cell, a, loneCell(cell), 0, c, r, h);
   if (id != E_EMPTY) return false;
@@ -547,7 +547,8 @@ Mat baseMat(int id) {
 // ray along rd; sets gGrainSun for its shadeSurf.
 Surf grainSurf(ivec3 aH, int k, vec3 p, vec3 rd) {
   Surf s;
-  s.p = p; s.ch = CH_GRANULAR; s.face = ivec3(0, 1, 0);
+  s.p = p; s.tp = p; s.tp1 = p; s.flowW = 0.0;   // glints sample at tp (shadeSurf); grains have one layer
+  s.ch = CH_GRANULAR; s.face = ivec3(0, 1, 0);
   float fp = footprint(p);
   gGrainSun = 1.0;
   Mat m;
@@ -583,7 +584,7 @@ Surf grainSurf(ivec3 aH, int k, vec3 p, vec3 rd) {
     if (dot(n, uSun) > 0.0) gGrainSun = pebbleSunVis(aH, p + n * GRAIN_NUDGE);
   } else if (k == GK_VOID) {
     ivec3 cell = clamp(ivec3(floor(p)), ivec3(0), GRID - 1);
-    vec4 a = cellA(cell);
+    vec4 a = fetchA(cell);
     s.n = -normalize(rd); s.ng = s.n; s.id = E_STONE; s.cell = cell; s.seed = fract(a.w); s.T = a.y;
     m = baseMat(E_STONE);
     m.alb *= PEB_VOID_ALB; m.cav = PEB_VOID_CAV;
@@ -591,7 +592,7 @@ Surf grainSurf(ivec3 aH, int k, vec3 p, vec3 rd) {
     gGrainSun = 0.0;
   } else {
     // a clod: the element's own texture, from a spot of texture space of the clod's own
-    vec4 a = cellA(aH);
+    vec4 a = fetchA(aH);
     int id = eid(a);
     vec3 n = clodNormal(p, aH, id, a);
     s.n = n; s.ng = n; s.id = id; s.cell = aH; s.seed = fract(a.w); s.T = a.y;

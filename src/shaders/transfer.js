@@ -1,4 +1,4 @@
-import { prelude } from './common.js';
+import { prelude, stateOutGLSL, copyThroughMain } from './common.js';
 
 // Exact cell transfer (src/pov/tools/transfer.js): taking cells out of the grid
 // and putting them back with nothing lost or duplicated.
@@ -30,8 +30,6 @@ ${prelude(g)}
 #define TRANSFER_SLOTS ${TRANSFER_SLOTS}
 #define MODE_TAKE ${TRANSFER_TAKE}
 #define MODE_PUT ${TRANSFER_PUT}
-uniform sampler2D tA;
-uniform sampler2D tB;
 uniform sampler2D tSlots;
 uniform int uCount;     // slots in use
 uniform int uLimit;     // at most this many qualifying slots act (in slot order)
@@ -45,7 +43,7 @@ bool qualifies(int i) {
   vec4 s = texelFetch(tSlots, ivec2(i, 0), 0);
   ivec3 c = ivec3(floor(s.xyz + 0.5));
   if (!inGrid(c)) return false;
-  int id = eid(texelFetch(tA, atlas(c), 0));
+  int id = eid(fetchA(c));
   if (uMode == MODE_PUT) return id == E_EMPTY;
   int want = int(floor(s.w + 0.5));
   if (id == E_EMPTY || (want >= 0 && id != want)) return false;
@@ -72,7 +70,7 @@ void main() {
   int r = actingRank(i);
   if (r < 0) return;
   if (uMode == MODE_PUT) { oC = vec4(float(r), 0.0, 0.0, 0.0); return; }
-  vec4 a = texelFetch(tA, atlas(slotCell(i)), 0);
+  vec4 a = fetchA(slotCell(i));
   int id = eid(a);
   oC = vec4(float(uBreak ? BREAKINTO[id] : id), a.yzw);
 }
@@ -83,15 +81,9 @@ ${slotLib(g)}
 uniform ivec3 uBoxMin;   // bounds of the slots' cells (inclusive): every other cell copies through
 uniform ivec3 uBoxMax;
 uniform vec3 uVel;       // put: velocity of the placed cells, cells/step
-layout(location = 0) out vec4 oA;
-layout(location = 1) out vec4 oB;
-void main() {
-  ivec2 f = ivec2(gl_FragCoord.xy);
-  vec4 a = texelFetch(tA, f, 0);
-  vec4 b = texelFetch(tB, f, 0);
-  oA = a; oB = b;
-  ivec3 p = cellFromFrag(f);
-  if (p.y >= NY || any(lessThan(p, uBoxMin)) || any(greaterThan(p, uBoxMax))) return;
+${stateOutGLSL}
+void transfer(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
+  if (any(lessThan(p, uBoxMin)) || any(greaterThan(p, uBoxMax))) return;
   int slot = -1;
   for (int i = 0; i < uCount; i++) if (slotCell(i) == p) { slot = i; break; }
   if (slot < 0) return;
@@ -106,4 +98,4 @@ void main() {
     oB = vec4(0.0, 0.0, 0.0, b.w);
   }
 }
-`;
+${copyThroughMain('transfer')}`;

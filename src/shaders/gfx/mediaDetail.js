@@ -95,7 +95,7 @@ vec3 flowVel(vec3 p) {
   for (int c = 0; c < 8; c++) {
     ivec3 o = ivec3(c & 1, (c >> 1) & 1, c >> 2);
     vec3 w = mix(1.0 - fr, fr, vec3(o));
-    v += texelFetch(tB, atlas(min(i0 + o, GRID - 1)), 0).xyz * (w.x * w.y * w.z);
+    v += fetchB(min(i0 + o, GRID - 1)).xyz * (w.x * w.y * w.z);
   }
   float s = length(v);
   return s > FLOW_MAX ? v * (FLOW_MAX / s) : v;
@@ -109,7 +109,7 @@ vec4 flowNoise(vec3 p, float scale, vec3 off, float stretch) {
   float w2 = 0.0;
   for (int i = 0; i < FLOW_PHASES; i++) {
     float ph = c + float(i) / float(FLOW_PHASES), cyc = floor(ph), fr = ph - cyc;
-    vec3 q = p - gFlowV * (fr * FLOW_PERIOD);
+    vec3 q = worldPos(p) - gFlowV * (fr * FLOW_PERIOD);   // anchored in the world (the noise tiles)
     q.y /= stretch;
     float w = 1.0 - abs(2.0 * fr - 1.0);   // 0 at the restart, 1 mid-cycle; the copies' weights sum to 1
     n += w * texture(tMediaNoise, q * (scale / MEDIA_NOISE_CELLS) + off + fract(cyc * FLOW_CYCLE_OFFSET));
@@ -125,6 +125,7 @@ vec4 flowNoise(vec3 p, float scale, vec3 off, float stretch) {
 // rides the flow (gasNoise): the fine octaves are many times smaller, so the
 // same velocity differences over a cycle would shear them into streaks.
 vec4 detailNoise(vec3 p, float scale, vec3 off, float rise, float stretch) {
+  p = worldPos(p);   // anchored in the world (the noise tiles)
   p.y = (p.y - mod(uSimClock * rise, MEDIA_NOISE_CELLS * stretch)) / stretch;
   return texture(tMediaNoise, p * (scale / MEDIA_NOISE_CELLS) + off);
 }

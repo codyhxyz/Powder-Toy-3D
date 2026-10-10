@@ -119,6 +119,9 @@ export function createToolbelt(env) {
       if (!v && ballistics.count && !raf) { rafAt = 0; raf = requestAnimationFrame(drive); }
       if (!v) { tools[selected]?.inst.deselect?.(); readout = null; }
     },
+    // The window moved over the world by (dx, 0, dz) cells (docs/scaling.md
+    // D11): every tool, selected or not, moves the grid positions it keeps.
+    windowShifted(dx, dz) { tools.forEach((t) => t?.inst.windowShifted?.(dx, dz)); },
     dispose() {
       removeEventListener('keydown', onKey, { capture: true });
       if (raf) cancelAnimationFrame(raf);

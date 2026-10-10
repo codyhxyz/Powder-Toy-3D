@@ -22,6 +22,10 @@ import * as povBody from '../src/shaders/povBody.js';
 import * as transfer from '../src/shaders/transfer.js';
 import * as povTools from '../src/shaders/povTools.js';
 import * as povTrace from '../src/shaders/povTrace.js';
+import * as generate from '../src/shaders/generate.js';
+import * as windowPasses from '../src/shaders/window.js';
+import { regionVert } from '../src/gfx/regions.js';
+import * as far from '../src/shaders/far.js';
 import { figureFrag, figureSkinnedVert } from '../src/pov/figure.js';
 import { ShaderChunk } from 'three';
 
@@ -77,14 +81,42 @@ for (const [label, dims] of Object.entries(grids)) {
   for (const [k, v] of Object.entries(passes)) if (typeof v === 'function') check(`${k}-${label}`, raw + v(g), 'frag');
   for (const axis of [0, 1, 2]) check(`brickDist${axis}-${label}`, raw + passes.brickDistFrag(g, axis), 'frag');
   check(`inert-${label}`, raw + activity.inertFrag(g), 'frag');
+  check(`inertRows-${label}`, raw + activity.inertRowsFrag(g), 'frag');
+  check(`inertJoin-${label}`, raw + activity.inertJoinFrag(g), 'frag');
+  check(`inertRef-${label}`, raw + activity.inertRefFrag(g), 'frag');
   check(`quiet-${label}`, raw + activity.quietFrag(g), 'frag');
+  check(`superMap-${label}`, raw + activity.superMapFrag(g), 'frag');
+  check(`superRows-${label}`, raw + activity.superRowsFrag(g), 'frag');
+  check(`superShare-${label}`, raw + activity.superShareFrag(g), 'frag');
+  for (const ch of Object.values(activity.SUPER_MAP)) {
+    for (const block of [false, true]) check(`stepRegionVert${ch}${block ? 'block' : ''}-${label}`, raw + regionVert(activity.stepRegionsGLSL(g, ch, block)), 'vert');
+  }
   check(`fieldEma-${label}`, raw + fields.fieldEmaFrag(g), 'frag');
   check(`fieldBlur-${label}`, raw + fields.fieldBlurFrag(g, false), 'frag');
   check(`fieldFinal-${label}`, raw + fields.fieldBlurFrag(g, true), 'frag');
   for (let stage = 0; stage < fields.BOOST_STAGES; stage++) check(`fieldBoost${stage}-${label}`, raw + fields.fieldBoostFrag(g, stage), 'frag');
-  for (const [k, v] of Object.entries({ ...move, ...react, ...probe, ...stamp, ...gi, ...povBody, ...transfer })) if (typeof v === 'function') check(`${k}-${label}`, raw + v(g), 'frag');
+  check(`fieldCopy-${label}`, raw + fields.fieldCopyFrag(g), 'frag');
+  for (const set of Object.values(fields.DIRTY)) check(`fieldRegionVert${set}-${label}`, raw + regionVert(fields.fieldRegionsGLSL(g, set)), 'vert');
+  for (const [k, v] of Object.entries({ ...move, ...react, ...probe, ...stamp, ...gi, ...povBody, ...transfer, ...windowPasses })) if (typeof v === 'function') check(`${k}-${label}`, raw + v(g), 'frag');
   for (const k of ['axeFrag', 'physgunComFrag', 'physgunFrag']) check(`${k}-${label}`, raw + povTools[k](g), 'frag');
   for (const k of ['traceFrag', 'handoffFrag']) check(`${k}-${label}`, raw + povTrace[k](g), 'frag');
+  for (const k of ['columnFrag', 'fillFrag', 'diffFrag']) check(`${k}-${label}`, raw + generate[k](g), 'frag');
+}
+// the far field (world mode: ?size=world, a 1024×128×1024 world through a 128³ window)
+{
+  // a window of a larger world: the look's world offset compiles in (common.js WINDOWED)
+  const g = { ...gridLayout(128, 128, 128), windowed: true }, L = far.farLayout([1024, 128, 1024]);
+  check('farView', shaderMatFrag + far.farFrag(g, L), 'frag');
+  check('shadow-farCasters', raw + render.shadowFrag(g, far.farCastersGLSL(L)), 'frag');
+  check('volume-farHaze', shaderMatFrag + render.volumeFrag(g, far.farHazeGLSL), 'frag');
+  check('giGather-far', raw + gi.giGatherFrag(g, far.farGIGLSL(L)), 'frag');
+  const defs = Object.entries(allDetailDefines()).map(([k, v]) => `#define ${k} ${v}\n`).join('');
+  check('volume-farHaze-detail', shaderMatFrag + defs + render.volumeFrag(g, far.farHazeGLSL), 'frag');
+  check('farViewVert', shaderMatVert + far.farVert, 'vert');
+  check('farRegionVert', raw + far.farRegionVert(L), 'vert');
+  for (const k of ['farLayersFrag']) check(k, raw + far[k](g), 'frag');
+  for (const k of ['farTreeCandFrag', 'farTreeThinFrag', 'farTreeBandFrag', 'farGenFrag', 'farWinFrag']) check(k, raw + far[k](g, L), 'frag');
+  for (const k of ['farBoostFrag', 'farMip1Frag', 'farMip2Frag', 'farTopFrag', 'farShadowFrag']) check(k, raw + far[k](L), 'frag');
 }
 check('volumeVert', shaderMatVert + render.volumeVert, 'vert');
 check('quadVert', raw + quadVert, 'vert');

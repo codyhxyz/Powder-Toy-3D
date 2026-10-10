@@ -892,7 +892,7 @@ const float FLOW_PERIOD = 32.0;      // sim steps per cycle of a texture layer
 const float FLOW_PHASE_F = 0.37;     // frequency of the noise offsetting the phase, per cell
 const float FLOW_MIN_TRAVEL = 0.01;  // cells a layer must travel in a cycle to count as moving
 // phase of the first layer at p, in [0, 1); the second is half a cycle on
-float flowPhase(vec3 p) { return fract(uSimClock / FLOW_PERIOD + vnoise(M_ROT * p * FLOW_PHASE_F)); }
+float flowPhase(vec3 p) { return fract(uSimClock / FLOW_PERIOD + vnoise(M_ROT * worldPos(p) * FLOW_PHASE_F)); }
 
 Surf gatherSurf(vec3 hp, vec3 n, int ch) {
   Surf s;
@@ -909,7 +909,7 @@ Surf gatherSurf(vec3 hp, vec3 n, int ch) {
     ivec3 o = ivec3(i & 1, (i >> 1) & 1, (i >> 2) & 1);
     ivec3 c = c0 + o;
     if (outside(c)) continue;
-    vec4 a = cellA(c);
+    vec4 a = fetchA(c);
     int id = eid(a);
     if (SURFCH[id] != ch) continue;
     vec3 wv = mix(1.0 - f, f, vec3(o));
@@ -931,7 +931,7 @@ Surf gatherSurf(vec3 hp, vec3 n, int ch) {
     for (int i = 0; i < 27 && wsum == 0.0; i++) {
       ivec3 c = cc + ivec3(i % 3, (i / 3) % 3, i / 9) - 1;
       if (outside(c)) continue;
-      vec4 a = cellA(c);
+      vec4 a = fetchA(c);
       int id = eid(a);
       if (SURFCH[id] != ch) continue;
       id1 = id; w1 = 1.0; T = a.y; wsum = 1.0; s.cell = c; s.seed = fract(a.w); ct1 = floor(a.w);
@@ -954,8 +954,9 @@ Surf gatherSurf(vec3 hp, vec3 n, int ch) {
     s.tp1 = hp - travel * (ph1 - 0.5);
     s.flowW = abs(2.0 * ph - 1.0);   // 0 while the second layer resets, 1 while the first does
   }
-  Mat m = gatherMat(id1, id2, ct1, ct2, r, s.tp, n, s.T, fp);
-  if (s.flowW > 0.0) m = mixMat(m, gatherMat(id1, id2, ct1, ct2, r, s.tp1, n, s.T, fp), s.flowW);
+  // the texture is anchored in the world (tp, tp1 stay grid points: footprints and glints take them)
+  Mat m = gatherMat(id1, id2, ct1, ct2, r, worldPos(s.tp), n, s.T, fp);
+  if (s.flowW > 0.0) m = mixMat(m, gatherMat(id1, id2, ct1, ct2, r, worldPos(s.tp1), n, s.T, fp), s.flowW);
   applyMat(s, m);
 #ifdef DETAIL_RELIEF
   s.cav *= reliefSkyVis(hp);   // down a carved crevice (gfx/relief.js)
@@ -968,7 +969,7 @@ Surf gatherSurf(vec3 hp, vec3 n, int ch) {
 bool flushNb(ivec3 c) {
   if (c.y < 0) return true;
   if (outside(c)) return false;
-  int id = eid(cellA(c));
+  int id = eid(fetchA(c));
   return isCrisp(id) && RCLASS[id] != R_GLASS;
 }
 
@@ -1048,9 +1049,10 @@ Surf crispSurf(ivec3 cell, int id, vec4 a, vec3 hp, vec3 n) {
   vec3 an = abs(n);
   s.face = an.x >= an.y && an.x >= an.z ? ivec3(int(sign(n.x)), 0, 0)
          : (an.y >= an.z ? ivec3(0, int(sign(n.y)), 0) : ivec3(0, 0, int(sign(n.z))));
-  // an isolated grain carries its texture with it (its seed moves with the grain)
+  // an isolated grain carries its texture with it (its seed moves with the grain);
+  // a voxel's is anchored in the world
   const float GRAIN_TEX_SPREAD = 61.0;   // cells of texture space the seed spreads grains over
-  vec3 tp = SURFCH[id] >= 0 ? hp - vec3(cell) + s.seed * GRAIN_TEX_SPREAD : hp;
+  vec3 tp = SURFCH[id] >= 0 ? hp - vec3(cell) + s.seed * GRAIN_TEX_SPREAD : worldPos(hp);
   applyMat(s, matOf(id, tp, n, a.y, floor(a.w), footprint(hp)));
   return s;
 }
@@ -1160,7 +1162,7 @@ vec3 glintSpec(vec3 p, vec3 n, vec3 v, vec3 l, float rough, vec3 F0, float dens)
   vec3 h = normalize(v + l);
   vec3 t1 = normalize(cross(n, abs(n.y) < GLINT_FRAME_UP_MAX ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)));
   vec3 t2 = cross(n, t1);
-  vec3 q = M_ROT * p;
+  vec3 q = M_ROT * worldPos(p);   // the lattice is anchored in the world (footprint() takes the grid point)
   float k = (1.0 - t) * glintFacet(q * exp2(L0), n, t1, t2, h, a * a, L0 * GLINT_LEVEL_SALT)
           + t * glintFacet(q * exp2(L0 + 1.0), n, t1, t2, h, a * a, (L0 + 1.0) * GLINT_LEVEL_SALT);
   if (k <= 0.0) return vec3(0.0);
@@ -1288,7 +1290,7 @@ vec3 shadeSurf(Surf s, vec3 rd) {
 const vec3 FLOOR_LINE_ALB = vec3(0.075, 0.078, 0.085);   // the grid's seams, darker than the floor
 const float FLOOR_LINE_CELLS = 8.0;   // cells between the floor's grid lines
 vec3 shadeFloor(vec3 hp, vec3 rd) {
-  vec2 q = hp.xz / FLOOR_LINE_CELLS;
+  vec2 q = worldPos(hp).xz / FLOOR_LINE_CELLS;
   vec2 gq = abs(fract(q - 0.5) - 0.5) / max(fwidth(q) * uPixScale, vec2(1e-4));
   float line = 1.0 - min(min(gq.x, gq.y), 1.0);
   vec3 alb = mix(GROUND_ALB, FLOOR_LINE_ALB, line);

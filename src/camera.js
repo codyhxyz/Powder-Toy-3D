@@ -10,6 +10,7 @@ export function createCameraRig(camera, controls, isTyping) {
   const home = { pos: new THREE.Vector3(), target: new THREE.Vector3() };
   let anim = null;
   let speed = 1;
+  let maxSpeed = Infinity;   // world units/s WASD never exceeds (a world's window has to keep up)
 
   const MOVE = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyQ', 'KeyE', 'ShiftLeft', 'ShiftRight']);
   addEventListener('keydown', (e) => {
@@ -25,6 +26,7 @@ export function createCameraRig(camera, controls, isTyping) {
   return {
     setHome(pos, target) { home.pos.copy(pos); home.target.copy(target); },
     setSpeed(s) { speed = s; },
+    setMaxSpeed(v) { maxSpeed = v; },
     reset(instant = false) {
       if (instant) {
         camera.position.copy(home.pos);
@@ -65,7 +67,7 @@ export function createCameraRig(camera, controls, isTyping) {
       if (move.lengthSq() === 0) return;
       // scale with how far we are from what we're looking at, so close-ups stay controllable
       const dist = camera.position.distanceTo(controls.target);
-      move.normalize().multiplyScalar(THREE.MathUtils.clamp(dist * 0.6, 1.2, 14) * speed * fast * dt);
+      move.normalize().multiplyScalar(Math.min(THREE.MathUtils.clamp(dist * 0.6, 1.2, 14) * speed * fast, maxSpeed) * dt);
       camera.position.add(move);
       controls.target.add(move);
       anim = null;

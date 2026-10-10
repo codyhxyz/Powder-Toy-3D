@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { quadVert } from '../shaders/common.js';
+import { quadVert, stateUniforms } from '../shaders/common.js';
 import { traceFrag, handoffFrag, TRACE, TRACE_MISS } from '../shaders/povTrace.js';
 import { ELEMENTS, E, K } from '../elements.js';
 import { PHYS as ENGINE } from '../physics.js';
@@ -95,6 +95,9 @@ export function slugVelocity(d, out = new THREE.Vector3()) {
 export function createBallistics({ renderer }) {
   const rounds = [];                     // in flight, oldest first
   let nextId = 1;
+  // grid cells the window has moved over the world in all (docs/scaling.md
+  // D11): a trace answers in the grid it was asked in, this much back
+  const shifted = new THREE.Vector3();
   // readback latency in frames (what matters is how far a round flies before
   // an answer lands), and the last frame's length
   let latency = LATENCY_INIT, frameTime = FRAME_INIT, frameNo = 0;
@@ -119,7 +122,7 @@ export function createBallistics({ renderer }) {
         uFrom: { value: from }, uTo: { value: to },
       }),
       handoff: rawMat(handoffFrag(sim.g), {
-        tA: { value: null }, tB: { value: null },
+        ...stateUniforms(),
         uEntry: { value: new THREE.Vector3() }, uDir: { value: new THREE.Vector3() }, uVel: { value: new THREE.Vector3() },
         uReach: { value: 0 }, uLo: { value: new THREE.Vector3() }, uHi: { value: new THREE.Vector3() },
       }),
@@ -147,9 +150,9 @@ export function createBallistics({ renderer }) {
     tu.tA.value = sim.stateA; tu.tB.value = sim.stateB;
     tu.tBrick.value = sim.brick.texture; tu.tBrickDist.value = sim.brickDistTexture;
     sim.run(mats.trace, slots[0].target);
-    const scratch = new THREE.WebGLRenderTarget(1, 1, { count: 2, type: THREE.FloatType, format: THREE.RGBAFormat, depthBuffer: false });
+    const scratch = sim.makeStateTarget(1, 1);
     const hu = mats.handoff.uniforms;
-    hu.tA.value = sim.stateA; hu.tB.value = sim.stateB;
+    hu.tA.value = sim.stateA; hu.tB.value = sim.stateB; hu.tF.value = sim.stateF;
     hu.uLo.value.setScalar(Infinity); hu.uHi.value.setScalar(-Infinity);
     sim.run(mats.handoff, scratch);
     scratch.dispose();
@@ -225,12 +228,13 @@ export function createBallistics({ renderer }) {
     u.tBrickDist.value = sim.brickDistTexture;
     sim.run(mats.trace, slot.target);
     slot.busy = true;
-    const f0 = frameNo, mySim = simId;
+    const f0 = frameNo, mySim = simId, asked = shifted.clone();
     renderer.readRenderTargetPixelsAsync(slot.target, 0, 0, TRACE.ROUNDS, TRACE.ROWS, slot.buf).then(() => {
       slot.busy = false;
       latency += (frameNo - f0 - latency) * LATENCY_EASE;
       if (mySim !== simId) return;
-      for (const j of jobs) land(j, slot.buf);
+      const back = asked.sub(shifted);   // its grid → today's
+      for (const j of jobs) land(j, slot.buf, back);
     }).catch(() => {
       slot.busy = false;
       for (const j of jobs) settle(j);   // lost: its stretch counts as clear rather than stall the round
@@ -244,8 +248,8 @@ export function createBallistics({ renderer }) {
     while (r.pending[0]?.done) r.tClear = r.pending.shift().tTo;
   }
 
-  // a trace's answer for one round
-  function land(job, buf) {
+  // a trace's answer for one round; back: from the grid it was asked in to today's
+  function land(job, buf, back) {
     const { r, slot, tFrom, tTo } = job;
     settle(job);
     if (!r.alive) return;
@@ -257,11 +261,11 @@ export function createBallistics({ renderer }) {
     if (r.hit && r.hit.t <= tHit) return;
     r.hit = {
       t: tHit,
-      cell: new THREE.Vector3(buf[a], buf[a + 1], buf[a + 2]),
+      cell: new THREE.Vector3(buf[a], buf[a + 1], buf[a + 2]).add(back),
       face,
-      prev: buf[b] >= 0 ? new THREE.Vector3(buf[b], buf[b + 1], buf[b + 2]) : null,
+      prev: buf[b] >= 0 ? new THREE.Vector3(buf[b], buf[b + 1], buf[b + 2]).add(back) : null,
       id: Math.round(buf[b + 3]),
-      point: new THREE.Vector3(buf[c], buf[c + 1], buf[c + 2]),
+      point: new THREE.Vector3(buf[c], buf[c + 1], buf[c + 2]).add(back),
     };
   }
 
@@ -340,6 +344,19 @@ export function createBallistics({ renderer }) {
       // each round's events are its shooter's (an NPC's carry by, events.js)
       for (const r of [...rounds]) povEvents.as(r.actor, () => fly(sim, r));
       if (rounds.length) requestTrace(sim);
+    },
+    // The window moved over the world by (dx, 0, dz) cells (docs/scaling.md
+    // D11): the rounds keep flying where they are in the world.
+    windowShifted(dx, dz) {
+      shifted.x += dx;
+      shifted.z += dz;
+      const back = (v) => { if (v) { v.x -= dx; v.z -= dz; } };
+      for (const r of rounds) {
+        back(r.p0);
+        back(r.shown);
+        if (r.hit) { back(r.hit.cell); back(r.hit.prev); back(r.hit.point); }
+      }
+      if (lastImpact) { back(lastImpact.point); back(lastImpact.cell); back(lastImpact.prev); }
     },
     get count() { return rounds.length; },
     get rounds() { return rounds; },

@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { ELEMENTS, K } from '../../elements.js';
 import { HAND_REACH } from '../constants.js';
 import {
-  persistentLoad, ownedKey, cellsNear, outsideBody, bodyExit, toStepVelocity, aimInReach, faceNormal, recolor,
+  persistentLoad, ownedKey, cellsNear, outsideBody, bodyExit, toStepVelocity, aimInReach, faceNormal, recolor, pinned,
 } from './transfer.js';
 import { povEvents } from '../events.js';
 import { trigger } from './action.js';
@@ -83,8 +83,8 @@ export default {
       const p = transfer.take(load, { cells: cellsNear(center, SCOOP_RADIUS, ctx.sim.g), kinds: [K.LIQUID], want: aim.id });
       if (p) {
         dip.fire();
-        const id = aim.id;
-        p.then((got) => { if (got.length) act('scoop', { id, point: center, amount: got.length }); });
+        const id = aim.id, at = pinned(center, ctx.sim);
+        p.then((got) => { if (got.length) act('scoop', { id, point: at(), amount: got.length }); });
       }
     }
 
@@ -102,11 +102,11 @@ export default {
       const p = transfer.put(load, { cells, max: n, vel: toStepVelocity(v, ctx) });
       if (p) {
         pour -= n;
-        const press = pourPress;
+        const press = pourPress, at = pinned(spout, ctx.sim);
         p.then((landed) => {   // may land after the button is up: announce each press once
           if (!landed || pourHeard === press) return;
           pourHeard = press;
-          act('pour', { id, point: spout, amount: landed });
+          act('pour', { id, point: at(), amount: landed });
         });
       }
     }

@@ -29,7 +29,7 @@ await page.evaluate(async () => {
     scene(build) {
       const sim = a.sim, g = sim.g;
       const [A, B] = sim.blankState();
-      const idx = (x, y, z) => ((Math.floor(y / g.tx) * g.nz + z) * g.width + (y % g.tx) * g.nx + x) * 4;
+      const idx = (x, y, z) => sim.cellTexel(x, y, z) * 4;
       const box = (x0, y0, z0, x1, y1, z1, id, T) => {
         for (let y = y0; y < y1; y++) for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) {
           if (x < 0 || y < 0 || z < 0 || x >= g.nx || y >= g.ny || z >= g.nz) continue;
@@ -258,13 +258,10 @@ const tests = {
       // Velocity of water cells whose centres are inside a body-sized box at
       // (x, z), read right after the frame's coupling pass: mean speed along
       // +x (the walking direction) and outward from the box's axis.
-      const g = a.sim.g;
-      const W = g.width, Hh = g.height, A = new Float32Array(W * Hh * 4), B = new Float32Array(W * Hh * 4);
-      const idx = (x, y, z) => ((Math.floor(y / g.tx) * g.nz + z) * g.width + (y % g.tx) * g.nx + x) * 4;
       const readV = (cx, cz) => {
         const sim = a.sim;
-        a.renderer.readRenderTargetPixels(sim.targets[sim.cur], 0, 0, W, Hh, A, undefined, 0);
-        a.renderer.readRenderTargetPixels(sim.targets[sim.cur], 0, 0, W, Hh, B, undefined, 1);
+        const [A, B] = sim.readState();
+        const idx = (x, y, z) => sim.cellTexel(x, y, z) * 4;
         let n = 0, fwd = 0, out = 0;
         for (let y = 1; y < 4; y++) for (let z = Math.floor(cz - 1); z <= cz + 1; z++) for (let x = Math.floor(cx - 1); x <= cx + 1; x++) {
           if (Math.abs(x + 0.5 - cx) > 0.8 || Math.abs(z + 0.5 - cz) > 0.8) continue;

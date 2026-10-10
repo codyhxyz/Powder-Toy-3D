@@ -6,7 +6,7 @@ import { SEED_MAX } from './shaders/common.js';
 export function buildPreset(name, sim) {
   const g = sim.g;
   const [A, B] = sim.blankState();
-  const idx = (x, y, z) => ((Math.floor(y / g.tx) * g.nz + z) * g.width + (y % g.tx) * g.nx + x) * 4;
+  const idx = (x, y, z) => sim.cellTexel(x, y, z) * 4;
   const inside = (x, y, z) => x >= 0 && y >= 0 && z >= 0 && x < g.nx && y < g.ny && z < g.nz;
   const set = (x, y, z, id, extra = {}) => {
     if (!inside(x, y, z)) return;

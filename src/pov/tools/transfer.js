@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { quadVert } from '../../shaders/common.js';
+import { quadVert, stateUniforms } from '../../shaders/common.js';
 import {
   transferProbeFrag, transferApplyFrag, TRANSFER_SLOTS, TRANSFER_TAKE, TRANSFER_PUT,
 } from '../../shaders/transfer.js';
@@ -179,7 +179,7 @@ export function createTransfer({ renderer, getSim }) {
   let inFlight = 0;
 
   const uniforms = () => ({
-    tA: { value: null }, tB: { value: null }, tSlots: { value: slotTex },
+    ...stateUniforms(), tSlots: { value: slotTex },
     uCount: { value: 0 }, uLimit: { value: 0 }, uMode: { value: 0 }, uKinds: { value: 0 }, uBreak: { value: false },
   });
   function materials(sim) {
@@ -332,6 +332,14 @@ export function aimInReach(ctx, reach) {
   const dist = Number.isFinite(a.dist) ? a.dist
     : Math.hypot(a.cell.x + 0.5 - ctx.eye.x, a.cell.y + 0.5 - ctx.eye.y, a.cell.z + 0.5 - ctx.eye.z);
   return dist <= reach ? a : null;
+}
+
+// A grid point kept on its world cell while the window moves over a larger
+// world (docs/scaling.md D11): pinned(point, sim)() is that point in the grid
+// as it is then, for a result that lands a few frames after it was asked for.
+export function pinned(point, sim) {
+  const p = point.clone().add(sim.origin);
+  return () => p.clone().sub(sim.origin);
 }
 
 // The outward normal of a pick face (shaders/render.js pickFrag: axis * 2, +1

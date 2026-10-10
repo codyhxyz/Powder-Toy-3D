@@ -136,7 +136,7 @@ bool underPool(vec4 sm, float d, int tid) {
 }
 float causticGain(vec3 p, float D) {
   vec3 s = p + uSun * D;   // where the light entered the liquid
-  vec2 q = s.xz * RIPPLE_FREQ;
+  vec2 q = worldPos(s).xz * RIPPLE_FREQ;   // the ripples are anchored in the world (gfx/liquid.js)
   float t = uTime * RIPPLE_DRIFT;
   float h0 = rippleH(q, t);
   float lapQ = (rippleH(q + vec2(CAUSTIC_EPS, 0.0), t) + rippleH(q - vec2(CAUSTIC_EPS, 0.0), t)
@@ -153,6 +153,17 @@ void sunBasis(out vec3 c, out float R, out vec3 u, out vec3 v) {
   R = 0.5 * length(vec3(GRID)) + SHADOW_PAD;
   u = normalize(cross(vec3(0.0, 1.0, 0.0), uSun));
   v = cross(uSun, u);
+  // The map's texel lattice stays put in the world as the window moves
+  // (docs/scaling.md D11): the centre takes the window's offset rounded to
+  // whole texels across the sun (along it, depths only shift). Within half a
+  // texel, which SHADOW_PAD covers.
+#if WINDOWED
+  vec3 o = vec3(uOrigin);
+  float T = 2.0 * R / float(max(uShadowRes, 1));   // texel size (a pass without a map: anything finite)
+  vec2 ot = vec2(dot(o, u), dot(o, v)) / T;
+  vec2 snap = (round(ot) - ot) * T;
+  c += snap.x * u + snap.y * v;
+#endif
 }
 
 // 1 if the ray from ro toward the sun gets tLim voxels without entering an
@@ -176,7 +187,7 @@ float sunRayClear(vec3 ro, float tLim) {
     ivec3 bc = cell / BS;
     if (bc != lastB) { lastB = bc; occ = brickOcc(bc); }
     if (occ < 0.5) { skipEmpty(bc, ro, rd, istp, cell, tMax, tEnter); continue; }
-    int id = eid(cellA(cell));
+    int id = eid(fetchA(cell));
     if (id != E_EMPTY && RCLASS[id] == R_OPAQUE && (isCrisp(id) || tEnter - t > SUN_RAY_SELF_SKIP)) return 0.0;
     int ax = argmin3(tMax);
     tEnter = tMax[ax];
@@ -380,7 +391,7 @@ vec3 sampleLight(vec3 gp) {
 bool occluder(ivec3 c) {
   if (c.y < 0) return true;
   if (outside(c)) return false;
-  int id = eid(cellA(c));
+  int id = eid(fetchA(c));
   return id != E_EMPTY && KIND[id] != K_GAS;
 }
 
@@ -411,7 +422,7 @@ float solidity(vec3 p) {
   vec4 s = surfField(p);
   float o = max(max(s.y, s.z), max(s.w, s.x * AO_LIQUID_SOLIDITY));
   ivec3 c = ivec3(floor(p));
-  if (!outside(c) && isCrisp(eid(cellA(c)))) o = 1.0;
+  if (!outside(c) && isCrisp(eid(fetchA(c)))) o = 1.0;
   return clamp(o, 0.0, 1.0);
 }
 
@@ -452,7 +463,7 @@ float traceNear(vec3 ro, vec3 rd, float tLim, bool opaqueOnly, float selfSkip, o
     ivec3 bc = cell / BS;
     if (bc != lastB) { lastB = bc; occ = brickOcc(bc); }
     if (occ < 0.5) { ax = skipEmpty(bc, ro, rd, istp, cell, tMax, tEnter); continue; }
-    int id = eid(cellA(cell));
+    int id = eid(fetchA(cell));
     if (id != E_EMPTY && KIND[id] != K_GAS && (!opaqueOnly || RCLASS[id] == R_OPAQUE)
         && (isCrisp(id) || tEnter > selfSkip)) {
       hc = cell;
@@ -503,7 +514,7 @@ vec3 nearField(vec3 p, vec3 ng, vec3 n, vec3 irr, out float vis) {
     if (t < 0.0) { sum += irr; vis += 1.0; continue; }
     float w = 1.0 - t / NEAR_RANGE;
     vec3 hp = ro + d * t + hn * NEAR_HIT_LIFT;
-    vec3 alb = hc.y < 0 ? GROUND_ALB : ALBEDO[eid(cellA(hc))];
+    vec3 alb = hc.y < 0 ? GROUND_ALB : ALBEDO[eid(fetchA(hc))];
     float ndl = max(dot(hn, uSun), 0.0);
     vec3 sun = ndl > 0.0 ? SUN_COL * ndl * (uShadows ? sunShadow(hp) : vec3(1.0)) : vec3(0.0);
     vec3 Lhit = alb * (sun + giIrradiance(probeAt(hp + hn * GI_OFFSET), hn) + sampleLight(hp) * uLightGain);

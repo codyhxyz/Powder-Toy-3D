@@ -1,5 +1,7 @@
-import { createPacker, decodeTempCode } from '../../net/codec.js';
+import { createPacker, decodeTempCode, TEXEL_BYTES } from '../../net/codec.js';
 import { ELEMENTS, E, K } from '../../elements.js';
+import { cellTexel } from '../../sim.js';
+import { BRICK } from '../../shaders/common.js';
 import { BODY_HEIGHT } from '../constants.js';
 
 // The NPCs' picture of the world: the sim's cells read back to the CPU a few
@@ -18,6 +20,16 @@ const REFRESH_S = 0.5;                 // s between readbacks
 export const OUTSIDE = -1;             // id of the box walls and floor
 const KIND = ELEMENTS.map((e) => e.kind);
 const HOT_T = 300;                     // °C: hotter than this burns a body that touches it (lava, fire, a torch's mark)
+const ID_BYTE = 0, TEMP_BYTE = 1;      // in a packed texel (net/codec.js packFrag)
+
+// Texel offset of each cell of a brick from the brick's first cell, in (y, z, x)
+// order. The state atlas lays every brick out alike (sim.js cellTexel).
+function brickOffsets(g) {
+  const off = new Int32Array(BRICK ** 3), t0 = cellTexel(g, 0, 0, 0);
+  let k = 0;
+  for (let y = 0; y < BRICK; y++) for (let z = 0; z < BRICK; z++) for (let x = 0; x < BRICK; x++) off[k++] = cellTexel(g, x, y, z) - t0;
+  return off;
+}
 
 export function createWorldModel({ renderer, getSim }) {
   const packer = createPacker(renderer);
@@ -28,15 +40,18 @@ export function createWorldModel({ renderer, getSim }) {
     [nx, ny, nz] = dims;
     const n = nx * ny * nz;
     if (!ids || ids.length !== n) { ids = new Uint8Array(n); temps = new Uint8Array(n); }
-    // the atlas layout (shaders/common.js atlas()): layer y is tile (y % tx, y / tx), x across, z down
-    for (let y = 0; y < ny; y++) {
-      const tx0 = (y % g.tx) * nx, tz0 = Math.floor(y / g.tx) * nz;
-      for (let z = 0; z < nz; z++) {
-        const row = ((tz0 + z) * g.width + tx0) * 4;
-        const out = (y * nz + z) * nx;
-        for (let x = 0; x < nx; x++) {
-          ids[out + x] = bytes[row + x * 4];
-          temps[out + x] = bytes[row + x * 4 + 1];
+    // the bytes are in the state's atlas layout (brick-major, sim.js cellTexel):
+    // a brick at a time, its first cell's texel plus each cell's offset in it
+    const off = brickOffsets(g);
+    for (let y = 0; y < ny; y += BRICK) for (let z = 0; z < nz; z += BRICK) for (let x = 0; x < nx; x += BRICK) {
+      const t0 = cellTexel(g, x, y, z);
+      let k = 0;
+      for (let ly = 0; ly < BRICK; ly++) for (let lz = 0; lz < BRICK; lz++) {
+        const out = ((y + ly) * nz + z + lz) * nx + x;
+        for (let lx = 0; lx < BRICK; lx++) {
+          const t = (t0 + off[k++]) * TEXEL_BYTES;
+          ids[out + lx] = bytes[t + ID_BYTE];
+          temps[out + lx] = bytes[t + TEMP_BYTE];
         }
       }
     }

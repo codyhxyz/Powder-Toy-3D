@@ -82,7 +82,7 @@ vec3 gRelN;
 
 // How deep the relief is carved below the envelope at p (cells)
 float reliefCarve(vec3 p) {
-  float h = reliefHeight(gRelId, p, gRelN, gRelFp).x;
+  float h = reliefHeight(gRelId, worldPos(p), gRelN, gRelFp).x;   // the texture's height, anchored in the world
   return gRelW * clamp(gRelTop - h, 0.0, RELIEF_SPAN * gRelTop);
 }
 // How far p, where the field is phi, is inside the carved surface (cells; >= 0: solid).
@@ -106,7 +106,7 @@ bool reliefHit(vec3 ro, vec3 rd, int ch, inout float t) {
     ivec3 o = ivec3(i & 1, (i >> 1) & 1, (i >> 2) & 1);
     ivec3 c = c0 + o;
     if (outside(c)) continue;
-    int id = eid(cellA(c));
+    int id = eid(fetchA(c));
     if (SURFCH[id] != ch) continue;
     vec3 wv = mix(1.0 - f, f, vec3(o));
     float w = wv.x * wv.y * wv.z;

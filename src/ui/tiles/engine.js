@@ -74,6 +74,12 @@ function dragF(a, b, da, db) {
   return 1;
 }
 const bounceR = (id) => (KIND[id] === K.LIQUID ? PHYS.BOUNCE_LIQUID : KIND[id] === K.POWDER ? 0 : PHYS.BOUNCE_GAS);
+// heat a cell (id a at Ta) takes from a face neighbour per step, capped so it can't overshoot (react.js condFlux)
+function condFlux(a, Ta, b, Tb) {
+  const dT = Tb - Ta;
+  const lim = Math.abs(dT) * Math.min(CAP[a], CAP[b]) * PHYS.COND_FLUX_SHARE;
+  return Math.max(-lim, Math.min(lim, Math.min(COND[a], COND[b]) * dT));
+}
 
 // ---- breaking (react.js impactKE, shatter) ----
 // kinetic energy a cell carries along an axis toward a neighbour, vn > 0 toward it
@@ -269,12 +275,14 @@ export class World {
     const { bk: k, bvy: vy, bd: d, bs: s } = this;
     const mt = movable(k[t]), mb = movable(k[b]);
     const down = vy[t] < 0, up = vy[b] > 0;
+    // held at rest by the normal force, it still presses on what's below, so it may topple (move.js)
+    const held = vy[t] === 0 && GRAV[k[t]] * this.gravity > 0;
     if (!mt || !mb) {
       if (mt && down && !this.breaks(t, b, vy[t])) {
         const v0x = this.bvx[t], v0y = vy[t];
         this.land(t, vy[t]); s[t] = 1;
         this.impactHeat(t, b, v0x, v0y, -v0y);
-      }
+      } else if (mt && held) s[t] = 1;
       if (mb && up && !this.breaks(b, t, vy[b])) {
         const v0x = this.bvx[b], v0y = vy[b];
         vy[b] = 0; s[b] = 1;
@@ -292,10 +300,10 @@ export class World {
         if (down) {
           if (KIND[k[t]] === K.LIQUID) { const after = vy[t]; this.land(t, vt); vy[t] += after; }
           s[t] = 1;
-        }
+        } else if (held) s[t] = 1;
         if (up) s[b] = 1;
       }
-    }
+    } else if (held && !canMove(k[t], k[b], d[t], d[b], 0)) s[t] = 1;
   }
   // 2. a blocked top cell topples diagonally (powders, liquids); a blocked bottom gas cell rises diagonally
   diagonal(i) {
@@ -382,10 +390,10 @@ export class World {
           if (Math.max(Math.abs(pn[0] - pn[1]), Math.abs(pn[2] - pn[3])) > HARD[id] * PHYS.P_BREAK_PER_HARD) broke = true;
         }
 
-        // heat conduction (energy conserving)
+        // heat conduction (energy conserving, each face capped)
         const C = CAP[id];
         let dE = 0;
-        for (let q = 0; q < 4; q++) dE += Math.min(COND[id], COND[nid[q]]) * (nT[q] - T);
+        for (let q = 0; q < 4; q++) dE += condFlux(id, T, nid[q], nT[q]);
         T += dE / C;
         T += (AMBIENT - T) * (id === E.EMPTY ? PHYS.AIR_AMBIENT_PULL : RAD[id]);
 
@@ -413,27 +421,36 @@ export class World {
           else vy -= g * GRAV[id];
           vx *= 1 - DRAG[id];
           vy *= 1 - DRAG[id];
+          // normal force: at rest on what can hold it up, gravity can't start it moving down (react.js)
+          const d = densityOf(id, T0);
+          const held = (KIND[id] === K.POWDER || KIND[id] === K.LIQUID) && VY[i] >= 0 && (y === 0 || KIND[nid[3]] === K.SOLID
+            || (!canMove(id, nid[3], d, densityOf(nid[3], nT[3]), 0) && nVY[3] >= 0));
+          if (held) vy = Math.max(vy, 0);
           const below = KIND[nid[3]];
           const supported = y === 0 || below === K.SOLID || below === K.POWDER;
           if (supported) vx *= 1 - FRICTION[id];
           if (KIND[id] === K.LIQUID && (supported || below === K.LIQUID)) {
+            // pushed sideways only where it can go (react.js)
+            const open = canMove(id, nid[0], d, densityOf(nid[0], nT[0]), 2) || canMove(id, nid[1], d, densityOf(nid[1], nT[1]), 2);
             const up = KIND[nid[2]];
             const head = up === K.LIQUID || up === K.POWDER;
             const onLiquid = !supported;
             const f = FLOW[id];
             if (head || onLiquid) {
               const want = head ? f : f * PHYS.FLOW_SURFACE;
-              if (Math.abs(vx) < want * PHYS.FLOW_KICK) vx = randDir() * want;
+              if (open && Math.abs(vx) < want * PHYS.FLOW_KICK) vx = randDir() * want;
             } else {
               const l = KIND[nid[0]] === K.LIQUID, r = KIND[nid[1]] === K.LIQUID;
-              vx = vx * PHYS.FILM_KEEP + ((l ? 1 : 0) - (r ? 1 : 0)) * f * PHYS.FILM_COHESION;
-              if (!l && !r && rnd() < PHYS.DROPLET_WANDER) vx = randDir() * f * PHYS.DROPLET_SPEED;
+              vx = vx * PHYS.FILM_KEEP + (open ? ((l ? 1 : 0) - (r ? 1 : 0)) * f * PHYS.FILM_COHESION : 0);
+              if (open && !l && !r && rnd() < PHYS.DROPLET_WANDER) vx = randDir() * f * PHYS.DROPLET_SPEED;
             }
           }
           if (JITTER[id] > 0) { vx += (rnd() - 0.5) * JITTER[id]; vy += (rnd() - 0.5) * JITTER[id]; }
           vx += dvx; vy += dvy;
           vx = Math.max(-PHYS.V_MAX, Math.min(PHYS.V_MAX, vx));
           vy = Math.max(-PHYS.V_MAX, Math.min(PHYS.V_MAX, vy));
+          // a held cell's leftover creep stops dead (physics.js REST_V)
+          if (held) { if (Math.abs(vx) < PHYS.REST_V) vx = 0; if (Math.abs(vy) < PHYS.REST_V) vy = 0; }
         } else { vx = 0; vy = 0; }
 
         // reactions and phase changes

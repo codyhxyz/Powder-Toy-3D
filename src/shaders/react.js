@@ -1,5 +1,5 @@
-import { prelude } from './common.js';
-import { quietGLSL } from './activity.js';
+import { prelude, stateOutGLSL } from './common.js';
+import { quietGLSL, inertNearGLSL } from './activity.js';
 import { ELEMENTS } from '../elements.js';
 
 // The softest breakable solid: a cell carrying less kinetic energy than this
@@ -10,7 +10,9 @@ const HARD_MIN = Math.min(...ELEMENTS.filter((e) => e.breakInto).map((e) => e.ha
 // face neighbours.
 //   - Heat conduction. Flux between two cells uses min(cond_a, cond_b), so it
 //     is symmetric and total energy (Σ cap·T) is conserved; dividing by the
-//     cell's own heat capacity gives the temperature change.
+//     cell's own heat capacity gives the temperature change. Each face's flux
+//     is capped (physics.js COND_FLUX_SHARE), so whatever an element's
+//     cond/cap, a cell never overshoots its neighbours' temperatures.
 //   - Phase changes with latent heat. Water/ice/steam pin their temperature
 //     at the transition point and bank the excess energy in an accumulator
 //     until a full latent heat has been absorbed (or released). Ice in water
@@ -23,7 +25,11 @@ const HARD_MIN = Math.min(...ELEMENTS.filter((e) => e.breakInto).map((e) => e.ha
 //     diffusion would need ~L² steps to get through a sand pile; the front
 //     gets there in L steps. Walls block it. The gradient accelerates matter
 //     (a = -∇P / ρ), so explosions throw things outward.
-//   - Forces: gravity, buoyancy (hot air rises), drag, brownian jitter.
+//   - Forces: gravity, buoyancy (hot air rises), drag, brownian jitter. A
+//     powder or liquid at rest on what's below it feels a normal force that
+//     cancels gravity, and liquids are only pushed sideways where they can
+//     go, so resting matter comes to a full stop: a fixed point the activity
+//     map can skip (activity.js).
 //   - Breaking. A breakable solid (elements.js hard/breakInto) turns into its
 //     debris when a neighbour runs into it carrying at least `hard` kinetic
 //     energy along that axis (½·ρ·vn², vn its velocity toward the solid), or
@@ -35,15 +41,15 @@ const HARD_MIN = Math.min(...ELEMENTS.filter((e) => e.breakInto).map((e) => e.ha
 //     momentum and the fracture work as heat. The move pass that runs before
 //     this one leaves a projectile that can break what it's touching unbounced
 //     (move.js), so it reaches this check with its velocity intact.
+//   - The activity flags (shaders/common.js FLAG): the rest test on the cell's
+//     new state, its neighbours as this pass saw them (activity.js).
 export const reactFrag = (g) => /* glsl */ `
 ${prelude(g)}
-uniform sampler2D tA;
-uniform sampler2D tB;
 uniform uint uFrame;
 uniform float uGravity;
-layout(location = 0) out vec4 oA;
-layout(location = 1) out vec4 oB;
+${stateOutGLSL}
 ${quietGLSL}
+${inertNearGLSL}
 
 const ivec3 DIRS[6] = ivec3[6](ivec3(1,0,0), ivec3(-1,0,0), ivec3(0,1,0), ivec3(0,-1,0), ivec3(0,0,1), ivec3(0,0,-1));
 
@@ -70,6 +76,17 @@ vec2 shatter(float m, float u, float H, float M) {
   return vec2(vc - RESTITUTION * M * inv * u1, min(vc + RESTITUTION * m * inv * u1, V_MAX));
 }
 
+// Heat flowing into a cell (id a at Ta) from a face neighbour (b at Tb) per
+// step: min(cond_a, cond_b)·ΔT, capped at a share of the energy that would
+// bring the smaller-capacity cell to the other's temperature (physics.js
+// COND_FLUX_SHARE). Flux and cap are symmetric in the pair, so what one cell
+// gains the other loses.
+float condFlux(int a, float Ta, int b, float Tb) {
+  float dT = Tb - Ta;
+  float lim = abs(dT) * min(CAP[a], CAP[b]) * COND_FLUX_SHARE;
+  return clamp(min(COND[a], COND[b]) * dT, -lim, lim);
+}
+
 bool latent(inout float T, inout float acc, float Tp, float C, float L, bool rising) {
   if (rising) {
     if (T > Tp) { acc += (T - Tp) * C; T = Tp; }
@@ -83,12 +100,15 @@ bool latent(inout float T, inout float acc, float Tp, float C, float L, bool ris
 
 void main() {
   ivec3 p = cellFromFrag(ivec2(gl_FragCoord.xy));
-  if (p.y >= NY) { oA = vec4(0.0); oB = vec4(0.0); return; }
+  if (!inGrid(p)) { writeState(vec4(0.0), vec4(0.0), 0u); return; }   // a texel holding no cell
 
-  vec4 a = texelFetch(tA, atlas(p), 0);
-  vec4 b = texelFetch(tB, atlas(p), 0);
-  // quiet brick (shaders/activity.js): nothing here can change, keep it as is
-  if (quietCell(p)) { oA = a; oB = b; return; }
+  vec4 a = fetchA(p);
+  vec4 b = fetchB(p);
+  uint dirty = fetchF(p) & FLAG_DIRTY;   // the move pass's mark (shaders/common.js nearChange)
+  // quiet brick (shaders/activity.js): nothing here can change, keep it as is.
+  // Its cells were inert when the activity map was built, so their neighbour
+  // tests passed then, and still do unless something around them is dirty.
+  if (quietCell(p)) { writeState(a, b, ownFlags(a, b) | FLAG_NEAR | dirty); return; }
   int id = eid(a);
   float T = a.y, life = a.z;
   float ctype = floor(a.w), seed = fract(a.w);
@@ -102,8 +122,8 @@ void main() {
   for (int i = 0; i < 6; i++) {
     ivec3 q = p + DIRS[i];
     if (inGrid(q)) {
-      na[i] = texelFetch(tA, atlas(q), 0);
-      nb[i] = texelFetch(tB, atlas(q), 0);
+      na[i] = fetchA(q);
+      nb[i] = fetchB(q);
     } else {
       na[i] = vec4(float(E_WALL), T, 0.0, 0.0); // insulating, pressure-reflecting box
       nb[i] = vec4(0.0, 0.0, 0.0, P0);
@@ -153,7 +173,7 @@ void main() {
   // ---- heat conduction (energy conserving) ----
   float C = CAP[id];
   float dE = 0.0;
-  for (int i = 0; i < 6; i++) dE += min(COND[id], COND[nid[i]]) * (na[i].y - T);
+  for (int i = 0; i < 6; i++) dE += condFlux(id, T, nid[i], na[i].y);
   T += dE / C;
   // the open world above the box slowly pulls air back to ambient; gases radiate
   T += (AMBIENT - T) * (id == E_EMPTY ? AIR_AMBIENT_PULL : RAD[id]);
@@ -184,12 +204,27 @@ void main() {
     if (id == E_EMPTY) v.y += uGravity * clamp((T - AMBIENT) / (AMBIENT + KELVIN), AIR_BUOY_LO, AIR_BUOY_HI);
     else v.y -= uGravity * GRAV[id];
     v *= 1.0 - DRAG[id];
+    // Normal force: a powder or liquid at rest on what it can't push aside
+    // (the floor, a solid, or a grain or liquid that isn't falling itself) is
+    // held up, so gravity can't start it moving down. One already moving down
+    // (falling, landing, knocked from above) isn't at rest: it keeps feeling
+    // gravity, and the move pass lands it with its splash, scatter and heat.
+    float d = densityOf(id, a.y);
+    bool held = (KIND[id] == K_POWDER || KIND[id] == K_LIQUID) && b.y >= 0.0 && (p.y == 0 || KIND[nid[3]] == K_SOLID
+      || (!canMove(id, nid[3], d, densityOf(nid[3], na[3].y), 0) && nb[3].y >= 0.0));
+    if (held) v.y = max(v.y, 0.0);
     // grains only feel friction while resting on something
     bool supported = p.y == 0 || KIND[nid[3]] == K_SOLID || KIND[nid[3]] == K_POWDER;
     if (supported) v.xz *= 1.0 - FRICTION[id];
 
     // Liquids: hydrostatic head drives spreading, surface tension stops it.
+    // Both push only a liquid that has somewhere to go, a side neighbour it
+    // can move into; boxed in, its speed just decays to a stop. (A lower
+    // diagonal needs no push: the move pass topples into it regardless.)
     if (KIND[id] == K_LIQUID && (supported || KIND[nid[3]] == K_LIQUID)) {
+      bool open = false;
+      for (int i = 0; i < 6; i++)
+        if (DIRS[i].y == 0) open = open || canMove(id, nid[i], d, densityOf(nid[i], na[i].y), 2);
       int up = nid[2];
       bool head = KIND[up] == K_LIQUID || KIND[up] == K_POWDER;   // weight above us
       bool onLiquid = !supported;                                  // surface of a pool
@@ -198,7 +233,7 @@ void main() {
       if (head || onLiquid) {
         // keep flowing in some direction until the level evens out
         float want = head ? f : f * FLOW_SURFACE;
-        if (hv < want * FLOW_KICK) {
+        if (open && hv < want * FLOW_KICK) {
           float ang = rnd(rs) * 6.2831853;
           v.xz = vec2(cos(ang), sin(ang)) * want;
         }
@@ -212,8 +247,8 @@ void main() {
         if (KIND[nid[5]] == K_LIQUID) coh.y -= 1.0;
         bool alone = KIND[nid[0]] != K_LIQUID && KIND[nid[1]] != K_LIQUID
                   && KIND[nid[4]] != K_LIQUID && KIND[nid[5]] != K_LIQUID;
-        v.xz = v.xz * FILM_KEEP + coh * f * FILM_COHESION;
-        if (alone && rnd(rs) < DROPLET_WANDER) {
+        v.xz = v.xz * FILM_KEEP + (open ? coh * f * FILM_COHESION : vec2(0.0));
+        if (open && alone && rnd(rs) < DROPLET_WANDER) {
           // isolated droplets wander until they meet others
           float ang = rnd(rs) * 6.2831853;
           v.xz = vec2(cos(ang), sin(ang)) * f * DROPLET_SPEED;
@@ -223,6 +258,8 @@ void main() {
     if (JITTER[id] > 0.0) v += (vec3(rnd(rs), rnd(rs), rnd(rs)) - 0.5) * JITTER[id];
     v += dvBreak;
     v = clamp(v, -V_MAX, V_MAX);
+    // a held cell's leftover creep stops dead (physics.js REST_V)
+    if (held) v *= step(REST_V, abs(v));
   } else {
     v = vec3(0.0);
   }
@@ -340,7 +377,12 @@ void main() {
   }
 
   T = clamp(T, CELL_TEMP_MIN, CELL_TEMP_MAX);
-  oA = vec4(float(nidOut), T, life, ctype + seed);
-  oB = vec4(v, clamp(P, P_MIN, P_MAX));
+  vec4 outA = vec4(float(nidOut), T, life, ctype + seed), outB = vec4(v, clamp(P, P_MIN, P_MAX));
+  // the rest test on what this cell becomes, its neighbours as this pass saw
+  // them (the activity map redoes the neighbour test where one has changed: dirty)
+  uint flags = ownFlags(outA, outB) | dirty;
+  if ((flags & FLAG_SELF) != 0u && inertNear(p, outA, na)) flags |= FLAG_NEAR;
+  if (nearChange(a, outA)) flags |= FLAG_DIRTY;
+  writeState(outA, outB, flags);
 }
 `;

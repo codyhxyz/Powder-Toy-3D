@@ -28,6 +28,42 @@ const SETTLE_TOLERANCE = 1 / 255;
 // w, applied every `every` frames) is within SETTLE_TOLERANCE of it.
 export const settleFrames = (w, every = 1) => every * Math.ceil(Math.log(SETTLE_TOLERANCE) / Math.log(1 - w));
 
+// Frames until a blend stored in 8 bits (the field EMA's RGBA8 targets) stops
+// changing: within this many blends toward a fixed target, from any stored
+// value, it reaches a value the next blend rounds back to, so skipping the
+// blend from then on changes nothing. Rounding can stall it a step short of
+// settleFrames' tolerance (w = 0.5 takes 9 frames, not 8). Found by running the
+// blend in float32 from both ends (the slowest starts: a blend that rounds is
+// still monotone, so a start nearer the target never takes longer) toward
+// every target on a half-step grid, with GLSL mix in either of its usual forms
+// and float→unorm ties rounded up or to even.
+const U8_MAX = 255;
+const HALF_STEPS = 2 * U8_MAX;   // target grid: every half step of 8 bits
+const BLEND_ITER_MAX = 4096;     // a blend that hasn't stopped by then is a bug (w <= 0)
+export function blendFixedFrames(w) {
+  const f = Math.fround;
+  const wf = f(w), keep = f(1 - wf);
+  const toU8 = [
+    (x) => Math.floor(f(Math.min(Math.max(x, 0), 1) * U8_MAX) + 0.5),
+    (x) => { const v = f(Math.min(Math.max(x, 0), 1) * U8_MAX); return v - Math.floor(v) === 0.5 ? 2 * Math.round(v / 2) : Math.round(v); },
+  ];
+  const mixes = [(x, y) => f(f(x * keep) + f(y * wf)), (x, y) => f(x + f(wf * f(y - x)))];
+  let frames = 0;
+  for (let k = 0; k <= HALF_STEPS; k++) {
+    const target = f(k / HALF_STEPS);
+    for (const q of toU8) for (const mix of mixes) for (const start of [0, U8_MAX]) {
+      let v = start;
+      for (let n = 1; ; n++) {
+        const next = q(mix(f(v / U8_MAX), target));
+        if (n > 1 && next === v) { frames = Math.max(frames, n - 1); break; }
+        if (n > BLEND_ITER_MAX) throw new Error(`blend weight ${w} never settles`);
+        v = next;
+      }
+    }
+  }
+  return frames;
+}
+
 // viewSettle: a frame count, or a function returning one (it may change at run time).
 export function createPacer({ derivedSettle, viewSettle }) {
   const viewFrames = typeof viewSettle === 'function' ? viewSettle : () => viewSettle;

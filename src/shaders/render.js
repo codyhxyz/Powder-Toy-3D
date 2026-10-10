@@ -90,7 +90,10 @@ const viewIdsGLSL = () => VIEWS.map((v) => `#define VIEW_${v.key.toUpperCase()} 
 // restarts the ray, so its path can be longer than one crossing of the box.
 const BEND_EXTRA_STEPS = 128;
 
-export const volumeFrag = (g) => {
+// haze: GLSL defining farHazePremul(col, alpha, eye, p), the air between the
+// eye and the hit (a massive world: shaders/far.js, the same as its far
+// field's, so the window and what lies past it fade alike); none otherwise.
+export const volumeFrag = (g, haze = '') => {
   // DDA shared by the data views. `body` runs for every voxel the ray visits
   // inside a brick holding matter, with cell, a (state A), id, n (entry face
   // normal), hp (entry point), seg, tEnter, tExit, occ, prevId and airOn (the
@@ -140,7 +143,7 @@ ${airBrick}
     }
     float tExit = min(tMax.x, min(tMax.y, tMax.z));
     float seg = tExit - tEnter;
-    vec4 a = cellA(cell);
+    vec4 a = fetchA(cell);
     int id = eid(a);
     vec3 n = vec3(0.0);
     n[ax] = -float(istp[ax]);
@@ -179,7 +182,7 @@ ${lib(g)}
 ${surfaceGLSL}
 ${liquidGLSL}
 ${liquidDetailGLSL}
-${mediaGLSL}
+${mediaGLSL}${haze}
 uniform vec3 uCam;
 uniform mat4 projectionMatrix;
 uniform mat4 modelMatrix;
@@ -267,7 +270,7 @@ float clay(ivec3 cell, vec3 hp, vec3 n) {
 #define DATA_FLOOR_GRID 8.0     // grid line spacing, cells
 #define DATA_FLOOR_AO_MIN 0.5   // floor brightness where fully occluded
 vec3 dataFloor(vec3 hp, vec3 lo, vec3 hi) {
-  vec2 q = hp.xz / DATA_FLOOR_GRID;
+  vec2 q = worldPos(hp).xz / DATA_FLOOR_GRID;
   vec2 gq = abs(fract(q - 0.5) - 0.5) / max(fwidth(q) * uPixScale, vec2(1e-4));
   float line = 1.0 - min(min(gq.x, gq.y), 1.0);
   float ao = faceAO(ivec3(floor(hp.x), -1, floor(hp.z)), ivec3(0, 1, 0), hp);
@@ -337,7 +340,7 @@ ${march('marchHeat', AIR_FLAGS.HOT, /* glsl */ `
       for (int j = 0; j < HEAT_AIR_SAMPLES; j++) {
         if (j >= ns) break;
         vec3 p = ro + rd * (tB0 + (float(j) + 0.5) * ds);
-        heatAir(cellA(clamp(ivec3(floor(p)), ivec3(0), GRID - 1)).y, ds, col, trans);
+        heatAir(fetchA(clamp(ivec3(floor(p)), ivec3(0), GRID - 1)).y, ds, col, trans);
       }`,
 })}
 
@@ -353,7 +356,7 @@ float pressureAt(vec3 p) {
   for (int k = 0; k < 8; k++) {
     ivec3 o = ivec3(k & 1, (k >> 1) & 1, (k >> 2) & 1);
     vec3 w = mix(1.0 - f, f, vec3(o));
-    s += texelFetch(tB, atlas(clamp(i0 + o, ivec3(0), GRID - 1)), 0).w * w.x * w.y * w.z;
+    s += fetchB(clamp(i0 + o, ivec3(0), GRID - 1)).w * w.x * w.y * w.z;
   }
   return s;
 }
@@ -400,8 +403,8 @@ ${march('marchPressure', AIR_FLAGS.PRESSURE, /* glsl */ `
         // pressure-sensitive paint: the face takes the colour of the
         // pressure pushing on it from the cell in front
         ivec3 f = cell + ivec3(n);
-        float Pf = outside(f) ? 0.0 : texelFetch(tB, atlas(f), 0).w;
-        float Pc = k == K_SOLID ? 0.0 : texelFetch(tB, atlas(cell), 0).w;
+        float Pf = outside(f) ? 0.0 : fetchB(f).w;
+        float Pc = k == K_SOLID ? 0.0 : fetchB(cell).w;
         float Pm = abs(Pf) > abs(Pc) ? Pf : Pc;
         float sm = abs(pressurePos(Pm) - 0.5) * 2.0;
         vec3 c = mix(neutral(id), pressureColor(Pm), smoothstep(PRESSURE_PAINT_LO, PRESSURE_PAINT_HI, sm));${solidHit('c * clay(cell, hp, n)')}
@@ -418,7 +421,7 @@ ${march('marchPressure', AIR_FLAGS.PRESSURE, /* glsl */ `
 
 // ---- flow ----
 // Can particle a displace b moving down (0), up (1) or sideways (2)? Mirrors
-// canMove() in move.js.
+// canMove() in common.js.
 bool canDisplace(int a, int b, int dir) {
   if (KIND[a] == K_SOLID || KIND[b] == K_SOLID || a == b) return false;
   if (isGasLike(a) && isGasLike(b)) return true;
@@ -426,22 +429,22 @@ bool canDisplace(int a, int b, int dir) {
   float da = DENS[a], db = DENS[b];
   return dir == 0 ? da > db : (dir == 1 ? da != db : db < da);
 }
-// The part of a particle's velocity that actually moves it. Liquid under a
-// head keeps a random sideways velocity even in a still pool, and resting
-// grains keep one tick of gravity; components pointing into something the
-// particle can't displace (a wall, the same material, a denser grain) are
-// dropped. A liquid's free surface also churns sideways at random as the
-// automaton levels it, so sideways motion only counts for liquid that isn't
-// resting on more of itself (a film spreading, a stream crossing ground).
+// The part of a particle's velocity that actually moves it: components
+// pointing into something the particle can't displace (a wall, the same
+// material, a denser grain), like a flowing liquid's push against the side
+// of its basin, are dropped. A liquid's free surface also churns sideways at
+// random as the automaton levels it, so sideways motion only counts for
+// liquid that isn't resting on more of itself (a film spreading, a stream
+// crossing ground).
 #define FLOW_MIN_VEL 0.01   // velocity components below this (cells/step) don't move it
 vec3 mobileVel(ivec3 c, int id, vec3 v) {
-  if (KIND[id] == K_LIQUID && c.y > 0 && eid(cellA(c - ivec3(0, 1, 0))) == id) v.xz = vec2(0.0);
+  if (KIND[id] == K_LIQUID && c.y > 0 && eid(fetchA(c - ivec3(0, 1, 0))) == id) v.xz = vec2(0.0);
   vec3 r = vec3(0.0);
   for (int k = 0; k < 3; k++) {
     if (abs(v[k]) < FLOW_MIN_VEL) continue;
     ivec3 q = c;
     q[k] += v[k] > 0.0 ? 1 : -1;
-    int nb = outside(q) ? E_WALL : eid(cellA(q));
+    int nb = outside(q) ? E_WALL : eid(fetchA(q));
     if (canDisplace(id, nb, k != 1 ? 2 : (v.y < 0.0 ? 0 : 1))) r[k] = v[k];
   }
   return r;
@@ -470,13 +473,14 @@ vec3 flowTint(vec3 still, vec3 v, float w) {
 #define FLOW_STROKE_TAIL 0.2       // brightness at the tail ...
 #define FLOW_STROKE_HEAD_GAIN 0.8  // ... plus this at the head
 float brickStroke(ivec3 bc, vec3 ro, vec3 rd, float ta, float tb, bool check, out vec3 v, out float gt) {
-  uint hs = pcg(uint(bc.x) | uint(bc.y) << 10 | uint(bc.z) << 20);
+  ivec3 wb = WINDOWED != 0 ? bc + uOrigin / BS : bc;   // the jitter is the world brick's
+  uint hs = pcg(uint(wb.x) | uint(wb.y) << 10 | uint(wb.z) << 20);
   vec3 cc = vec3(bc * BS) + 0.5 * float(BS) + (vec3(uvec3(hs, hs >> 8, hs >> 16) & 255u) * (1.0 / 255.0) - 0.5);
   ivec3 c = ivec3(floor(cc));
   v = vec3(0.0);
   gt = ta;
-  if (check && eid(cellA(c)) != E_EMPTY) return 0.0;
-  v = texelFetch(tB, atlas(c), 0).xyz;
+  if (check && eid(fetchA(c)) != E_EMPTY) return 0.0;
+  v = fetchB(c).xyz;
   float sp = length(v);
   if (sp < FLOW_MIN_SPEED) return 0.0;
   float w = flowSpeedPos(sp);
@@ -512,7 +516,7 @@ ${march('marchFlow', AIR_FLAGS.FLOW, /* glsl */ `
         trans *= 1.0 - FLOW_ABSORB * al;
       }
     } else if (KIND[id] == K_GAS) {
-      vec3 v = texelFetch(tB, atlas(cell), 0).xyz;
+      vec3 v = fetchB(cell).xyz;
       float local = brickGas(occ);
       float dens = softBlob(cell, ro, rd, tEnter, tExit) * (GAS_VIEW_DENS + GAS_VIEW_DENS_LOCAL * local)
                  * (id == E_SMOKE ? clamp(a.z, 0.0, 1.0) : 1.0);
@@ -524,7 +528,7 @@ ${march('marchFlow', AIR_FLAGS.FLOW, /* glsl */ `
       col += trans * al * FLOW_GLASS_GREY;
       trans *= 1.0 - al;
     } else {
-      vec3 v = mobileVel(cell, id, texelFetch(tB, atlas(cell), 0).xyz);
+      vec3 v = mobileVel(cell, id, fetchB(cell).xyz);
       float w = flowSpeedPos(length(v));
       vec3 still = mix(vec3(luma(COLOR[id])), COLOR[id], FLOW_STILL_SAT) * FLOW_STILL_GAIN;${solidHit('flowTint(still, v, w) * clay(cell, hp, n)')}
     }`, 'dataFloor(hp, FLOW_FLOOR_LO, FLOW_FLOOR_HI)', {
@@ -733,7 +737,7 @@ void main() {
       continue;
     }
     float tExit = min(tMax.x, min(tMax.y, tMax.z));
-    vec4 a = cellA(cell);
+    vec4 a = fetchA(cell);
     int id = eid(a);
 
     if (isCrisp(id)) {
@@ -832,7 +836,7 @@ void main() {
         int lj = id;
         if (brickMixed(flags)) {
           ivec3 cj = clamp(ivec3(floor(pm + liqDither)), ivec3(0), GRID - 1);
-          if (cj != cell) lj = eid(cellA(cj));
+          if (cj != cell) lj = eid(fetchA(cj));
         }
         if (SURFCH[lj] == CH_LIQUID) liq = lj;
         else if (SURFCH[id] == CH_LIQUID) liq = id;
@@ -933,7 +937,8 @@ void main() {
   if (!anyHit) discard;
   float alpha = 1.0 - dot(trans, vec3(1.0 / 3.0));
   // linear HDR radiance, premultiplied; tone mapping happens in post (src/gfx/post.js)
-  gl_FragColor = vec4(col * (alpha > 0.0 ? 1.0 : 0.0), alpha);
+  gl_FragColor = vec4(col * (alpha > 0.0 ? 1.0 : 0.0), alpha);${haze && `
+  gl_FragColor.rgb = farHazePremul(gl_FragColor.rgb, alpha, uCam, hitPos);`}
 
   vec4 clip = projectionMatrix * viewMatrix * modelMatrix * vec4(hitPos, 1.0);
   gl_FragDepth = clamp(clip.z / clip.w * 0.5 + 0.5, 0.0, 1.0);
@@ -974,12 +979,12 @@ void main() {
     ivec3 bc = cell / BS;
     if (bc != lastB) { lastB = bc; flags = brickInfo(bc); }
     if (flags == 0) { ax = skipEmpty(bc, ro, rd, istp, cell, tMax, tEnter); continue; }
-    vec4 a = cellA(cell);
+    vec4 a = fetchA(cell);
     int id = eid(a);
     if (id != E_EMPTY && KIND[id] != K_GAS) {
       int face = ax * 2 + (istp[ax] > 0 ? 1 : 0); // normal = -step
       if (gl_FragCoord.x < 1.0) oC = vec4(vec3(cell), float(face));
-      else oC = vec4(float(id), a.y, texelFetch(tB, atlas(cell), 0).w, a.z);
+      else oC = vec4(float(id), a.y, fetchB(cell).w, a.z);
       return;
     }
     ax = argmin3(tMax);
@@ -1000,9 +1005,12 @@ void main() {
 // Shadow map pass: one ray per texel, marching from the sun toward the box.
 // Opaque = crisp voxels and the smooth opaque surfaces (same root finding as
 // the camera rays, so shadows line up with what is drawn). Liquids, glass and
-// media add optical depth.
-export const shadowFrag = (g) => /* glsl */ `
-${lib(g)}
+// media add optical depth. casters: GLSL defining farCasterDepth(ro, rd, t0,
+// t1), the depth along the texel's ray where the world outside the window
+// starts to shade it (a massive world's far field: shaders/far.js); none for
+// a grid that is its whole world.
+export const shadowFrag = (g, casters = '') => /* glsl */ `
+${lib(g)}${casters}
 // Texel encoding, decoded by sunShadow (gfx/lighting.js, which defines
 // SHADOW_TINT_ID_SCALE): w = tint element id * SHADOW_TINT_ID_SCALE + optical
 // depth (capped below it).
@@ -1041,7 +1049,7 @@ void main() {
     if (flags == 0) { skipEmpty(bc, ro, rd, istp, cell, tMax, tEnter); phiStale = true; continue; }
     int ax = argmin3(tMax);
     float tExit = tMax[ax];
-    int id = eid(cellA(cell));
+    int id = eid(fetchA(cell));
     if (isCrisp(id)) {
       if (RCLASS[id] != R_GLASS) { oC.x = tEnter; hit = true; break; }
       if (tid == 0 || RCLASS[tid] == R_GAS) { if (tid == 0) oC.y = tEnter; tid = id; }
@@ -1089,7 +1097,8 @@ void main() {
     cell[ax] += istp[ax];
     tMax[ax] += tDelta[ax];
   }
-  if (!hit && rd.y < 0.0) oC.x = ro.y / -rd.y; // floor
+  if (!hit && rd.y < 0.0) oC.x = ro.y / -rd.y; // floor${casters && `
+  oC.x = min(oC.x, farCasterDepth(ro, rd, t, bh.y));   // shaded from outside the window`}
   oC.w = float(tid) * SHADOW_TINT_ID_SCALE + min(tau, SHADOW_TAU_MAX);
 }
 `;

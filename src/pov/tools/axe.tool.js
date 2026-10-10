@@ -105,6 +105,7 @@ export default {
       },
       deselect() { model.hand.visible = false; button.reset(); pose.stop(); },
       status: () => null,
+      windowShifted(dx, dz) { if (lastHit) { lastHit.cell.x -= dx; lastHit.cell.z -= dz; } },   // (docs/scaling.md D11)
       get lastHit() { return lastHit; },   // for checks: the cell the last swing struck
       dispose() { pass.dispose(); model.dispose(); },
     };

@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { ELEMENTS, E, K } from '../elements.js';
 import { PHYS } from '../physics.js';
-import { quadVert } from '../shaders/common.js';
+import { quadVert, stateUniforms } from '../shaders/common.js';
 import { povProbeFrag, povCouplingFrag, PROBE, PROBE_OUTSIDE } from '../shaders/povBody.js';
 import { BODY_HEIGHT, BODY_WIDTH, EYE_HEIGHT, BODY_DENS } from './constants.js';
 import { createVitals, CELL_METERS, SAFE_FALL_M, LETHAL_FALL_M } from './vitals.js';
@@ -145,6 +145,7 @@ export function createPlayer({ renderer, getSim, quiet = false }) {
   let probe = { buf: new Float32Array(PN * 4), origin: [0, 0, 0], valid: false, seq: -1 };
   let generation = 0, seq = 0;
   let latency = LATENCY_INIT;
+  const shifted = [0, 0];   // grid cells (x, z) the window has moved over the world in all (windowShifted)
 
   let mats = null, matKey = '';
   let lastSim = null, lastFrame = 0, dtSmooth = 1 / 60;
@@ -178,9 +179,9 @@ export function createPlayer({ renderer, getSim, quiet = false }) {
     mats?.probe.dispose();
     mats?.couple.dispose();
     mats = {
-      probe: rawMat(povProbeFrag(g), { tA: { value: null }, tB: { value: null }, uOrigin: { value: new THREE.Vector3() } }),
+      probe: rawMat(povProbeFrag(g), { tA: { value: null }, tB: { value: null }, uBoxLo: { value: new THREE.Vector3() } }),
       couple: rawMat(povCouplingFrag(g), {
-        tA: { value: null }, tB: { value: null }, uFrame: { value: 0 },
+        ...stateUniforms(), uFrame: { value: 0 },
         uMin: { value: new THREE.Vector3() }, uMax: { value: new THREE.Vector3() }, uVel: { value: new THREE.Vector3() },
         uPushFluid: { value: 0 }, uPushPowder: { value: 0 }, uLift: { value: 0 }, uAhead: { value: new THREE.Vector2() },
       }),
@@ -204,16 +205,18 @@ export function createPlayer({ renderer, getSim, quiet = false }) {
     const u = mats.probe.uniforms;
     u.tA.value = sim.stateA;
     u.tB.value = sim.stateB;
-    u.uOrigin.value.set(...origin);
+    u.uBoxLo.value.set(...origin);
     sim.run(mats.probe, slot.target);
     slot.busy = true;
-    const gen = generation, mySeq = seq++, t0 = performance.now();
+    const gen = generation, mySeq = seq++, t0 = performance.now(), asked = [...shifted];
     renderer.readRenderTargetPixelsAsync(slot.target, 0, 0, PROBE.X, PROBE.Y * PROBE.Z, slot.buf).then(() => {
       slot.busy = false;
       if (gen !== generation || mySeq < probe.seq) return;
       latency += ((performance.now() - t0) / 1000 - latency) * LATENCY_EASE;
       const old = probe.buf;
-      probe = { buf: slot.buf, origin, valid: true, seq: mySeq };
+      // the cells it read, in the grid as it is now (the window may have moved since)
+      const at = [origin[0] + asked[0] - shifted[0], origin[1], origin[2] + asked[1] - shifted[1]];
+      probe = { buf: slot.buf, origin: at, valid: true, seq: mySeq };
       slot.buf = old;
     }).catch(() => { slot.busy = false; });
   }
@@ -239,6 +242,13 @@ export function createPlayer({ renderer, getSim, quiet = false }) {
   // Cell index range a span [lo, hi] overlaps.
   const c0 = (lo) => Math.floor(lo + EPS);
   const c1 = (hi) => Math.ceil(hi - EPS) - 1;
+
+  // Is the body's footprint inside the grid? In a world larger than the grid
+  // (docs/scaling.md D11) the cells beyond it aren't loaded yet: a body there
+  // (respawned far away) waits for the window to come to it.
+  function inGrid() {
+    return p.pos.x - HW >= -EPS && p.pos.x + HW <= g.nx + EPS && p.pos.z - HW >= -EPS && p.pos.z + HW <= g.nz + EPS;
+  }
 
   // Is the body's box (and a cell around it) inside the probed box?
   function covered() {
@@ -426,6 +436,9 @@ export function createPlayer({ renderer, getSim, quiet = false }) {
     u.uLift.value = speed > EPS ? DISPLACE_LIFT * Math.max(0, -p.vel.y) / speed : 0;
     u.uAhead.value.set(p.vel.x, p.vel.z).multiplyScalar(speed > EPS ? DISPLACE_AHEAD / speed : 0);
     u.uFrame.value = sim.frame;
+    // it changes only cells whose centres are in the body's box (shaders/povBody.js),
+    // so only those are rebuilt and woken (Simulation.touch)
+    sim.touchCentres(lo, hi);
     sim.pass(mats.couple);
   }
 
@@ -448,7 +461,7 @@ export function createPlayer({ renderer, getSim, quiet = false }) {
     const stepRate = steps / dtSmooth;
     p.stepRate = stepRate;
 
-    const ready = covered();
+    const ready = covered() && inGrid();
     requestProbe(sim);
     if (!ready || dt === 0) return;
 
@@ -594,8 +607,21 @@ export function createPlayer({ renderer, getSim, quiet = false }) {
     for (const k in listeners) delete listeners[k];
   }
 
+  // The window moved over the world by (dx, 0, dz) cells (docs/scaling.md D11):
+  // the grid moved the other way under the body, which stays put in the world.
+  // Every probe holds the cells it read: the last one moves back with the
+  // grid, and the ones in flight do when they land (requestProbe), so the
+  // body never waits for a fresh one.
+  function windowShifted(dx, dz) {
+    p.pos.x -= dx;
+    p.pos.z -= dz;
+    probe.origin = [probe.origin[0] - dx, probe.origin[1], probe.origin[2] - dz];
+    shifted[0] += dx;
+    shifted[1] += dz;
+  }
+
   return Object.assign(p, {
-    spawn, update, dispose,
+    spawn, update, dispose, windowShifted,
     applyImpulse(dv) { impulse.add(dv); },
     hurt(amount, cause) { vitals.hurt(amount, cause, true); },   // a blow from outside the sim (an NPC's axe)
     on(name, fn) {

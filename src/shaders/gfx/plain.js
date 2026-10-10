@@ -78,7 +78,7 @@ vec3 plainGlow(float tC) {
 float plainOccupied(ivec3 c) {
   if (c.y < 0) return 1.0;
   if (outside(c)) return 0.0;
-  int id = eid(cellA(c));
+  int id = eid(fetchA(c));
   return (id == E_EMPTY || KIND[id] == K_GAS) ? 0.0 : 1.0;
 }
 // smooth-ish normal for liquid surfaces from the occupancy gradient
@@ -118,7 +118,7 @@ vec3 plainOpaque(ivec3 cell, int id, vec4 a, vec3 hp, vec3 n, vec3 rd) {
 }
 
 vec3 plainFloor(vec3 hp) {
-  vec2 q = hp.xz / PLAIN_FLOOR_GRID;
+  vec2 q = worldPos(hp).xz / PLAIN_FLOOR_GRID;
   vec2 gq = abs(fract(q - 0.5) - 0.5) / max(fwidth(q) * uPixScale, vec2(1e-4));
   float line = 1.0 - min(min(gq.x, gq.y), 1.0);
   vec3 alb = mix(PLAIN_FLOOR_LO, PLAIN_FLOOR_HI, line);
@@ -155,7 +155,7 @@ void plainView(vec3 ro, vec3 rd, float t0, vec3 bh) {
     }
     float tExit = min(tMax.x, min(tMax.y, tMax.z));
     float seg = tExit - tEnter;
-    vec4 a = cellA(cell);
+    vec4 a = fetchA(cell);
     int id = eid(a);
     vec3 n = vec3(0.0);
     n[ax] = -float(istp[ax]);

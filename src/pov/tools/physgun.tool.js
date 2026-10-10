@@ -137,6 +137,10 @@ export default {
       u.uGravity.value = sim.gravity;
       u.uMode.value = mode;
       u.uFling.value.copy(ctx.dir).normalize().multiplyScalar(PHYS.FLING);
+      // it changes only cells whose centres are within the beam's reach of the
+      // hold point (shaders/povTools.js), so only those are rebuilt and woken (Simulation.touch)
+      const at = hold.toArray();
+      sim.touchCentres(at.map((x) => x - PHYS.RADIUS), at.map((x) => x + PHYS.RADIUS));
       sim.pass(mat);
     }
 
@@ -205,6 +209,10 @@ export default {
       },
       status: () => (holding ? `${Math.round(dist)} cells` : null),
       wantsWheel: () => holding,
+      // the hold point stays put in the world, so the carried ball doesn't get yanked (docs/scaling.md D11)
+      windowShifted(dx, dz) {
+        for (const v of [hold, prevHold]) { v.x -= dx; v.z -= dz; }
+      },
       get hold() { return holding ? hold.clone() : null; },   // for checks
       readCom() {   // for checks: [com x, y, z, cells] of the last frame (a synchronous readback)
         const buf = new Float32Array(4);

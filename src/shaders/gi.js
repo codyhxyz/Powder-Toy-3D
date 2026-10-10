@@ -52,7 +52,7 @@ const float GI_SUN_LIFT = ${glf(GI_SUN_LIFT)};
 bool giOpaque(ivec3 c) {
   if (c.y < 0) return true;
   if (outside(c)) return false;
-  return RCLASS[eid(cellA(c))] == R_OPAQUE;
+  return RCLASS[eid(fetchA(c))] == R_OPAQUE;
 }
 
 // Set bits in a 16-bit mask (no bitCount in GLSL ES 3.00).
@@ -78,7 +78,7 @@ void main() {
   float tau = 0.0;
   for (int i = 0; i < BRICK_CELLS; i++) {
     ivec3 l = ivec3(i % BS, (i / BS) % BS, i / FACE_CELLS);
-    vec4 a = cellA(o + l);
+    vec4 a = fetchA(o + l);
     int id = eid(a);
     if (id == E_EMPTY) continue;
     if (RCLASS[id] != R_OPAQUE) {
@@ -114,7 +114,7 @@ void main() {
       bool inBrick = all(greaterThanEqual(ln, ivec3(0))) && all(lessThan(ln, ivec3(BS)));
       if (inBrick ? maskHas(m, cellBit(ln)) : giOpaque(c + fn)) continue;
       if (alb.x < 0.0) {
-        int id = eid(cellA(c));
+        int id = eid(fetchA(c));
         alb = ALBEDO[id] * (1.0 - METAL[id] * (1.0 - GI_METAL_DIFFUSE));
       }
       vec3 nrm = vec3(fn);
@@ -138,8 +138,12 @@ void main() {
 }
 `;
 
-export const giGatherFrag = (g) => /* glsl */ `
-${lib(g)}
+// far: GLSL defining farBeyond(P, Q, d, open), what a ray from P that ended
+// at Q sees past it toward d (a massive world's far field: shaders/far.js),
+// where open says whether the sky is open that way; none for a grid that is
+// its whole world (then: beyond, the sky or the floor around the box).
+export const giGatherFrag = (g, far = '') => /* glsl */ `
+${lib(g)}${far}
 uniform sampler2D tGIRad;
 uniform sampler2D tGICov;
 uniform sampler2D tGIDir;
@@ -216,8 +220,9 @@ void main() {
       T *= 1.0 - a;
       if (T < GI_T_MIN) break;
     }
-    if (T >= GI_T_MIN) L += T * beyond(pc * float(BS), d);
-    float vis = d.y > 0.0 ? T : 0.0;
+${far && `    float open = 1.0;
+`}    if (T >= GI_T_MIN) L += T * ${far ? 'farBeyond(pc * float(BS), q * float(BS), d, open)' : 'beyond(pc * float(BS), d)'};
+    float vis = d.y > 0.0 ? T${far && ' * open'} : 0.0;
     vec4 y = vec4(SH_Y0, SH_Y1 * d);
     s0 += L * y.x; sx += L * y.y; sy += L * y.z; sz += L * y.w;
     sv += vis * y;

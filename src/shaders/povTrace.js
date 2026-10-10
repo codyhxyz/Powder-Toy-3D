@@ -1,4 +1,4 @@
-import { prelude } from './common.js';
+import { prelude, stateOutGLSL, copyThroughMain } from './common.js';
 import { materialsGLSL } from '../gfx/materials.js';
 import { coreGLSL } from './gfx/core.js';
 
@@ -88,7 +88,7 @@ void main() {
     ivec3 bc = cell / BS;
     if (bc != lastB) { lastB = bc; flags = brickInfo(bc); }
     if (flags == 0) { ax = skipEmpty(bc, ro, rd, istp, cell, tMax, tEnter); continue; }
-    vec4 a = cellA(cell);
+    vec4 a = fetchA(cell);
     int id = eid(a);
     if (id != E_EMPTY && KIND[id] != K_GAS) {
       // entered from outside the box, or from an unknown side: no cell before it
@@ -129,10 +129,7 @@ export const handoffFrag = (g) => /* glsl */ `
 ${prelude(g)}
 #define HANDOFF_WALK ${TRACE.HANDOFF_WALK}
 #define HANDOFF_NUDGE 1e-3   // cells: the walk starts this far back from the entry point, in the cell before the face
-uniform sampler2D tA;
-uniform sampler2D tB;
-layout(location = 0) out vec4 oA;
-layout(location = 1) out vec4 oB;
+${stateOutGLSL}
 uniform vec3 uEntry;   // grid cells
 uniform vec3 uDir;     // unit heading of the round
 uniform vec3 uVel;     // cells/step, the slug's velocity
@@ -140,15 +137,9 @@ uniform float uReach;  // cells back from uEntry the walk may enter a cell at
 uniform vec3 uLo;      // the walk's bounding box, in cells
 uniform vec3 uHi;
 
-int idAt(ivec3 c) { return eid(texelFetch(tA, atlas(c), 0)); }
+int idAt(ivec3 c) { return eid(fetchA(c)); }
 
-void main() {
-  ivec2 t = ivec2(gl_FragCoord.xy);
-  vec4 a = texelFetch(tA, t, 0);
-  vec4 b = texelFetch(tB, t, 0);
-  oA = a; oB = b;
-  ivec3 p = cellFromFrag(t);
-  if (p.y >= NY) return;
+void handoff(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
   vec3 pc = vec3(p);
   if (any(lessThan(pc, uLo)) || any(greaterThan(pc, uHi))) return;
 
@@ -177,4 +168,4 @@ void main() {
   oA = vec4(float(E_SCRAP), AMBIENT, SPAWNLIFE[E_SCRAP], fract(a.w));
   oB = vec4(uVel, b.w);
 }
-`;
+${copyThroughMain('handoff')}`;

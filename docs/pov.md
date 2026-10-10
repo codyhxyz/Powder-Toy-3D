@@ -69,12 +69,17 @@
 
 ## Engine facts you need
 
-- The grid is NX×NY×NZ cells, stored as a 2D atlas (`atlas(ivec3)` in shaders/common.js).
+- The grid is NX×NY×NZ cells, stored as a 2D atlas that only shaders/common.js knows the layout of.
+  Shaders read a cell with `fetchA(cell)` / `fetchB(cell)` and never sample `tA`/`tB` directly
+  (`node tools/check-state-access.mjs` checks):
   - State A = (element id, temperature °C, life, ctype + seed fraction).
   - State B = (velocity xyz in cells/step, air pressure).
-- `sim.pass(mat)` ping-pongs a full-grid RawShaderMaterial with uniforms `tA`/`tB` that writes `oA`/`oB`
-  (location 0/1). Every brush and tool change goes through a pass like this; see `paintFrag` in
+- `sim.pass(mat)` ping-pongs a full-grid RawShaderMaterial (uniforms `tA`/`tB`) that writes the state with
+  `writeState(a, b)` from `stateOutGLSL`. A pass that changes a few cells and copies the rest supplies an
+  update function to `copyThroughMain`; every brush and tool change goes through one, see `paintFrag` in
   shaders/passes.js. `sim.run(mat, target)` renders into any target, e.g. a small readback target.
+- CPU side: `sim.cellTexel(x, y, z)` indexes the arrays `sim.blankState()` / `sim.readState()` use;
+  `sim.readCell(x, y, z)` reads one cell back (tests only).
 - GPU→CPU: `renderer.readRenderTargetPixelsAsync(target, ...)` (see `requestPick` in app.js). Keep readbacks
   small (a few hundred texels).
 - Grid ↔ world: `world = volume.position + grid * scale` (`window.__app.volume`, `.scale`). Grid y is up,
@@ -133,8 +138,10 @@ env = {
   viewmodel,           // THREE.Group attached to the POV camera; tools may add meshes (held item)
   isActive: () => bool // true while in POV (gate your own key/wheel listeners on it)
 }
-toolbelt = createToolbelt(env) → { update(ctx), select(index), setVisible(bool), dispose() }
+toolbelt = createToolbelt(env) → { update(ctx), select(index), setVisible(bool), windowShifted(dx, dz), dispose() }
 // The shell calls setVisible(true/false) on entering/leaving POV, and update(ctx) every POV frame.
+// In World the grid is a window that moves over the world (docs/scaling.md D11): the shell calls
+// windowShifted when it does, and the toolbelt passes it to every tool.
 // The toolbelt listens for keys 1–9 itself (only while env.isActive()). The wheel comes in ctx.wheel:
 // it switches slots unless the selected tool's wantsWheel?.() returns true, then it goes to the tool.
 ```
@@ -151,6 +158,10 @@ export default {
     deselect?(),          // when switching away (drop what the physgun holds, etc.)
     status?(),            // short text for the hotbar slot, e.g. 'SAND ×37' (or null)
     wantsWheel?(),        // true while the tool uses the wheel (physgun distance)
+    windowShifted?(dx, dz), // the window moved (dx, 0, dz) cells over the world: move every grid position
+                          // the tool keeps by (-dx, 0, -dz), so it stays put in the world (the gun's rounds
+                          // in the air, the physgun's hold point). A point an async result reports later
+                          // is pinned at the time with transfer.js pinned(point, sim).
     readout?(ctx),        // { name, color, T?, P?, note? } shown beside the crosshair (ui/hud.js showReadout), or null
     dispose?(),
   }

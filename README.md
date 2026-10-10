@@ -9,7 +9,7 @@ Every cell of a 128³ grid (2.1M cells, up to 160×96×160) is simulated and ray
 
 ```sh
 npm install
-npm run dev        # http://localhost:5173  (?preset=lab|volcano|empty&size=64|96|128|wide)
+npm run dev        # http://localhost:5173  (?preset=lab|volcano|empty&size=64|96|128|wide|world)
 ```
 
 ## Controls
@@ -84,6 +84,15 @@ draws the muzzle flash, sparks, dust and tracers. The held tools are low-poly an
 **Settings → First person** picks the body: the stickman, or a realistic one animated with
 [Quaternius](https://quaternius.com)'s CC0 animation library.
 
+## World
+
+**Settings → Grid size → World** swaps the box for a whole island: 1024 × 128 × 1024 cells (about 300 m across),
+generated from a seed with hills, cliffs, beaches, meadows, forests and rock peaks. Only a 128³ window around you
+is simulated (the orbit target in the god view, your body in first person), and it slides along 16 cells at a time
+as you move. Whatever you change stays changed: the bricks you leave behind are compressed and kept, and they come
+back when you return, so a house you built or a crater you blew is still there. Painting, tools, signs and undo
+work inside the window. Multiplayer doesn't work in World yet. Picking a scene goes back to a box.
+
 ## Elements
 
 The dock groups elements like a periodic-table strip, each tile in the element's colour with a TPT-style abbreviation:
@@ -141,7 +150,7 @@ Every construction is a small program written against one API (`src/construction
 
 ## How the physics works
 
-Per simulation step there are three GPU passes over the state (two RGBA32F textures packed as a 2D atlas of Y-slices):
+Per simulation step there are three GPU passes over the state (two RGBA32F textures in a brick-major 2D atlas: each 4×4×4 brick is an 8×8-texel tile, see `src/shaders/common.js`):
 
 **1. Movement: a Margolus block cellular automaton** (`src/shaders/move.js`).
 The grid is split into 2×2×2 blocks whose partition shifts by one cell every step.
@@ -183,11 +192,15 @@ Density decides whether it can displace its neighbour, so sand sinks through wat
 
 **3. Brush** (only while painting).
 
-**Quiet bricks** (`src/shaders/activity.js`). Most of the box is still air or resting solid, and stepping it only
-reshuffles the air's jitter. Every couple of steps a pass marks 4×4×4 bricks whose cells are all air at ambient with no
-wind or pressure (or a solid at ambient that spawns nothing); a brick whose 26 neighbours are inert too is skipped by the
-move and react passes. A change travels at most two cells per step, so nothing can reach a skipped brick before the
-next map. Typical scenes skip about half the box, which makes a step 1.6–1.7× cheaper.
+**Quiet bricks** (`src/shaders/activity.js`). Most of the box is still air or resting matter, and stepping it only
+reshuffles the air's jitter. A cell is inert when stepping it could change nothing beyond the rest tolerances: air near
+ambient with no wind or pressure, or matter at rest with nowhere to fall, flow or topple, nothing that reacts, and no
+neighbour off its temperature by more than the tolerance. Every pass that writes the state leaves a byte of activity
+flags beside each cell (its own rest test, its neighbour test as the react pass saw it, and whether it changed in a way
+its neighbours' tests read), so every couple of steps the activity map decides most 4×4×4 bricks from those 64 bytes
+and re-tests from the state only where something nearby changed. A brick whose 26 neighbours are inert too is skipped
+by the move and react passes. A change travels at most two cells per step, so nothing can reach a skipped brick before
+the next map.
 
 ## Rendering
 
@@ -258,6 +271,12 @@ costs no GPU work at all. Code that changes the picture in ways the frame loop c
 AgX tone mapping. Bright saturated light (lava, flames) blends toward the same curve per channel, so it runs through
 amber and gold to white like film instead of fading to pale peach. The data views skip the tone curve so their legend
 colours stay exact.
+
+**Profiler** (Settings → Developer; `src/gfx/profiler.js`, `src/ui/profiler.js`). An overlay with a GPU waterfall of one
+frame per second, CPU time per phase, fps, steps/s, the share of bricks the simulation steps, a GPU memory estimate, and
+Copy for a plain-text report. GPU timer queries misread on Apple GPUs, so in the sampled frame the CPU waits for the GPU
+after every pass (a one-texel read of the target it wrote) and subtracts the calibrated cost of that wait. Other frames
+run unsynced, and a still scene stays idle. When the profiler is off, it costs nothing.
 
 ### Views
 

@@ -97,6 +97,7 @@ vec4 gasNoise(vec3 p, float rise, float stretch) {
 #ifdef DETAIL_MEDIA_FLOW
   return flowNoise(p, 1.0, vec3(0.0), stretch);   // riding the flow instead
 #endif
+  p = worldPos(p);   // anchored in the world
   p.y = (p.y - mod(uSimClock * rise, MEDIA_NOISE_CELLS * stretch)) / stretch;
   return texture(tMediaNoise, p * (1.0 / MEDIA_NOISE_CELLS));
 }

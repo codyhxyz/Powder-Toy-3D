@@ -28,7 +28,7 @@ await p.evaluate(async () => {
   a.settings.paused = true;
   const sim = a.sim;
   const g = sim.g;
-  const idx = (x, y, z) => ((Math.floor(y / g.tx) * g.nz + z) * g.width + (y % g.tx) * g.nx + x) * 4;
+  const idx = (x, y, z) => sim.cellTexel(x, y, z) * 4;
   const t = {
     E, ELEMENTS, g,
     fresh() { [t.A, t.B] = sim.blankState(); },
@@ -42,13 +42,7 @@ await p.evaluate(async () => {
     },
     load() { sim.frame = 0; sim.load(t.A, t.B); },
     step(n = 1) { for (let i = 0; i < n; i++) sim.step(); },
-    read() {
-      const n = g.width * g.height * 4;
-      t.rA = new Float32Array(n); t.rB = new Float32Array(n);
-      const tgt = sim.targets[sim.cur];
-      a.renderer.readRenderTargetPixels(tgt, 0, 0, g.width, g.height, t.rA, undefined, 0);
-      a.renderer.readRenderTargetPixels(tgt, 0, 0, g.width, g.height, t.rB, undefined, 1);
-    },
+    read() { [t.rA, t.rB] = sim.readState(); },
     cell(x, y, z) {
       const i = idx(x, y, z);
       return { id: Math.round(t.rA[i]), key: ELEMENTS[Math.round(t.rA[i])].key, T: +t.rA[i + 1].toFixed(1),

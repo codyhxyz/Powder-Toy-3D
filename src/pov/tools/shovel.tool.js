@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { ELEMENTS, K } from '../../elements.js';
 import { HAND_REACH } from '../constants.js';
 import {
-  pack, cellsNear, outsideBody, bodyExit, toStepVelocity, aimInReach, faceNormal, ballRadius, recolor,
+  pack, cellsNear, outsideBody, bodyExit, toStepVelocity, aimInReach, faceNormal, ballRadius, recolor, pinned,
 } from './transfer.js';
 import { povEvents } from '../events.js';
 import { trigger } from './action.js';
@@ -86,8 +86,8 @@ export default {
         const p = transfer.take(load, { cells: cellsNear(center, SCOOP_RADIUS, g), kinds: [K.POWDER] });
         if (p) {
           scoop.fire();
-          const point = center.clone();
-          p.then((got) => { if (got.length) act('dig', { id: aim.id, point, amount: got.length }); });
+          const at = pinned(center, ctx.sim), id = aim.id;
+          p.then((got) => { if (got.length) act('dig', { id, point: at(), amount: got.length }); });
         }
       } else if (el.kind === K.SOLID) {
         if (!el.breakInto) { energy = 0; refuse(`${el.name} won't break`, aim.id); return; }
@@ -101,8 +101,8 @@ export default {
         });
         if (p) {
           energy -= n * el.hard;
-          const point = center.clone();
-          p.then((got) => { if (got.length) act('dig', { id: aim.id, point, amount: got.length }); });
+          const at = pinned(center, ctx.sim), id = aim.id;
+          p.then((got) => { if (got.length) act('dig', { id, point: at(), amount: got.length }); });
         }
       } else {
         energy = 0;   // liquids run off the blade
@@ -129,9 +129,9 @@ export default {
       const cells = cellsNear(center, ballRadius(n * DUMP_SLACK), ctx.sim.g, keep);
       const v = ctx.dir.clone().multiplyScalar(THROW_SPEED);
       if (ctx.player?.vel) v.add(ctx.player.vel);
-      const id = load.cells.at(-1)[0];
+      const id = load.cells.at(-1)[0], at = pinned(center, ctx.sim);   // the dump's sound stays where it happened (D11)
       transfer.put(load, { cells, max: n, vel: toStepVelocity(v, ctx) })
-        ?.then((landed) => { if (landed) act('dump', { id, point: center, amount: landed }); });
+        ?.then((landed) => { if (landed) act('dump', { id, point: at(), amount: landed }); });
     }
 
     return {
