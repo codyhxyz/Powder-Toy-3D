@@ -6,7 +6,8 @@ import { h } from './ui/dom.js';
 import { ICON } from './ui/icons.js';
 import { runGenerator, bake, newSeed, makeRng, turnPoint, MAX_FOOT } from './constructions/runtime.js';
 import { BUILTINS, SHRINE_ALTARS } from './constructions/builtins.js';
-import builtinsSource from './constructions/builtins.js?raw';
+import sharedSource from './constructions/shared.js?raw';
+import builtinsOnlySource from './constructions/builtins.js?raw';
 import { renderIso, hexBytes, cellNoise, PREVIEW_VIEWS } from './constructions/preview.js';
 import { summarizeReport } from './constructions/lint.js';
 import { execSandboxed } from './constructions/sandbox.js';
@@ -20,6 +21,9 @@ import {
   signInOptions, freeDaily, PRIVACY_URL,
 } from './account.js';
 import './constructions.css';
+
+// the prompt's worked examples: the human scale the built-ins share, then the built-ins (scripts/construct-lib.mjs too)
+const builtinsSource = `${sharedSource}\n${builtinsOnlySource}`;
 
 // Constructions: whole structures (houses, trees, ...) placed with one click.
 //

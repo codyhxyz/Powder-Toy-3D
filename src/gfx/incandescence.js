@@ -63,16 +63,28 @@ function planck(lnm, tK) {
   const l = lnm * M_PER_NM;
   return (2 * H * C * C) / l ** 5 / (Math.exp((H * C) / (l * KB * tK)) - 1) * M_PER_NM;
 }
-// blackbody at tC (°C): linear sRGB with unit luminance, and luminance in cd/m²
-function blackbody(tC) {
+// The colour of light with spectral radiance spd(nm) (W / (m² sr nm)): linear
+// sRGB with unit luminance, clipped to the gamut's edge, and luminance in cd/m²
+function colourOf(spd) {
   const xyz = [0, 0, 0];
   for (let l = LAMBDA[0]; l <= LAMBDA[1]; l += LAMBDA[2]) {
-    const p = planck(l, tC + KELVIN) * LAMBDA[2];
+    const p = spd(l) * LAMBDA[2];
     cmf(l).forEach((v, k) => { xyz[k] += KM * p * v; });
   }
   const rgb = XYZ_TO_SRGB.map((row) => Math.max(0, row[0] * xyz[0] + row[1] * xyz[1] + row[2] * xyz[2]));
   const y = rgb.reduce((s, v, k) => s + v * LUMA[k], 0);
   return { chroma: rgb.map((v) => v / y), lum: xyz[1] };
+}
+// blackbody at tC (°C)
+const blackbody = (tC) => colourOf((l) => planck(l, tC + KELVIN));
+
+// Luminescence (gfx/materials.js emit): a mineral's emission band, a Gaussian
+// peaking at peak nm, fwhm nm wide, through the same colour matching. Returns
+// linear sRGB of luminance lum (scene units, as the incandescence's REF_LUM).
+const FWHM_PER_SIGMA = 2 * Math.sqrt(2 * Math.LN2);
+export function bandGlow(peak, fwhm, lum) {
+  const s = fwhm / FWHM_PER_SIGMA;
+  return colourOf((l) => Math.exp(-0.5 * ((l - peak) / s) ** 2)).chroma.map((v) => v * lum);
 }
 
 const smoothstep = (a, b, x) => {

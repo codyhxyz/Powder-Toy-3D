@@ -259,8 +259,10 @@ distance², and traces a shadow ray to it, so the glow gets a direction and cast
 **Glow.** Anything above ~500 °C glows (`src/gfx/incandescence.js`): the colour is Planck's law through the CIE colour matching functions, the brightness is the
 physical luminance compressed by a power law, so steel reads dull red at 600–700 °C, cherry to orange at 800–1000 °C and
 molten rock outshines daylight. Surfaces emit what they don't reflect (Kirchhoff), and the open skin of hot rock runs cooler
-than its cracks; hot steel grows a patchy black scale. Exposed hot faces feed a coarse light volume that lights the
-surroundings. The raymarcher writes depth, so three.js lines and the brush composite correctly.
+than its cracks; hot steel grows a patchy black scale. Some matter also glows by itself at any temperature (a material's
+`emit` in `src/gfx/materials.js`): crystal is fluorite, lit by the blue-violet band its europium gives off under ultraviolet
+light, here without the lamp. One function, `emission()`, adds that to the thermal glow for every path that draws matter's
+light. Exposed glowing faces feed a coarse light volume that lights the surroundings. The raymarcher writes depth, so three.js lines and the brush composite correctly.
 
 **Empty space** is crossed in jumps: a distance map over the bricks (`brickDistFrag` in `src/shaders/passes.js`) says
 how far each empty brick is from anything, and camera, shadow, sun and reflection rays leap that whole empty cube at once.

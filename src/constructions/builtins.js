@@ -7,23 +7,35 @@
 // +z, sizes scale with T (1 at the default brush size), and all variety comes
 // from rnd so the same seed always builds the same thing.
 
-const TAU = Math.PI * 2;
-// Built stonework (slabs, chimneys, brick, basins) is WALL: it renders as crisp
-// voxels, whereas ROCK is drawn as smoothed natural terrain.
-const MASONRY = 'WALL';
-const odd = (x) => Math.round(x) | 1;
+import { HUMAN, MASONRY, TAU, odd } from './shared.js';
+import { STRUCTURES } from './structures.js';
 
 // ---------------------------------------------------------------- houses
 
+// A house's sizes in cells at T = 1, on top of the human scale (shared.js).
+const HOUSE = {
+  W: 17, W_JITTER: 0.08,          // width along the ridge (5.1 m), give or take this share
+  DEPTH: [0.68, 0.8],             // depth, share of the width
+  WINDOW_W: 3, CABIN_WINDOW_W: 2, // window widths (a log cabin's are smaller)
+  WINDOW_OFF: 0.55,               // windows sit this share of the half-width from the middle
+  FIRE_H: 3,                      // the fireplace's mouth: 0.9 m tall, as wide as the chimney's inside
+  CHIMNEY_Z: 0.35,                // the chimney sits this share of the half-depth toward the back
+  CHIMNEY_TOP: 2,                 // ...and rises this far above the roof
+  BED: [7, 3], BED_HEAD: 2,       // a bed: 2.1 × 0.9 m, its headboard 0.6 m above the frame
+  TABLE: [4, 3], TABLE_H: 3,      // a table: 1.2 × 0.9 m, its top 0.9 m up
+  PLANT_EVERY: 3,                 // greenhouse beds: a plant over every third trough cell
+};
+
 export function house({ put, box, footing, rnd, T }, variant) {
-  const W = odd(17 * T * rnd.range(0.92, 1.08));
-  const D = odd(W * rnd.range(0.62, 0.74));
+  const W = odd(HOUSE.W * T * rnd.range(1 - HOUSE.W_JITTER, 1 + HOUSE.W_JITTER));
+  const D = odd(W * rnd.range(...HOUSE.DEPTH));
   const hw = (W - 1) / 2, hd = (D - 1) / 2;
-  const H = Math.max(4, Math.round(W * 0.4)); // wall height above the slab
+  const H = Math.max(4, Math.round(HUMAN.ROOM_H * T)); // wall height above the slab
   const green = variant === 'greenhouse', cabin = variant === 'cabin';
   const wall = variant === 'brick' ? MASONRY : green ? 'GLASS' : 'WOOD';
   const roof = green ? 'GLASS' : 'WOOD';
-  const dw = odd(1.6 * T); // door width
+  const dw = odd(HUMAN.DOOR_W * T), dh = Math.min(H - 1, Math.max(3, Math.round(HUMAN.DOOR_H * T)));
+  const cz = -Math.round(hd * HOUSE.CHIMNEY_Z);
   footing();
 
   // stone slab, one cell wider than the walls (it grows a plinth on uneven ground)
@@ -32,7 +44,7 @@ export function house({ put, box, footing, rnd, T }, variant) {
   if (cabin) logEnds();
   gableRoof();
   openings();
-  if (green) { if (hd >= 3) beds(); } else chimney();
+  if (green) { if (hd >= 3) beds(); } else { chimney(); furnish(); }
 
   // walls around an empty room; a greenhouse is glass on a steel frame over a low stone wall
   function walls() {
@@ -81,31 +93,45 @@ export function house({ put, box, footing, rnd, T }, variant) {
       }
   }
 
-  // the door, and glass windows on every side but the chimney's
+  // the door, and glass windows at eye height on every side but the chimney's
   function openings() {
-    const dh = Math.min(H - 1, Math.max(3, Math.round(H * 0.72)));
     cut('front', -(dw - 1) / 2, (dw - 1) / 2, 1, dh, 'AIR');
     if (green) return;
-    const ww = Math.max(1, Math.round((cabin ? 1.4 : 2) * T));
-    const wy0 = Math.max(2, Math.round(H * (cabin ? 0.42 : 0.32))), wy1 = Math.max(wy0 + 1, Math.round(H * 0.72));
+    const ww = Math.max(1, Math.round((cabin ? HOUSE.CABIN_WINDOW_W : HOUSE.WINDOW_W) * T));
+    const wy0 = 1 + Math.round(HUMAN.SILL_H * T), wy1 = Math.min(H - 1, wy0 + Math.round(HUMAN.WINDOW_H * T) - 1);
     const win = (face, c) => cut(face, c - Math.floor(ww / 2), c - Math.floor(ww / 2) + ww - 1, wy0, wy1, 'GLASS');
-    const off = Math.round(hw * 0.55);
+    const off = Math.round(hw * HOUSE.WINDOW_OFF);
     if (off - ww / 2 > (dw - 1) / 2 + 1) { win('front', -off); win('front', off); }
     win('back', -off); win('back', off);
     if (hd >= 3) win('left', 0);
   }
 
-  // stone chimney on the right gable with an open fireplace and a log in the hearth
+  // stone chimney on the right gable: an open fireplace, a log in the hearth
+  // and a one-cell flue in the wall's plane
   function chimney() {
-    const cz = -Math.round(hd * 0.35);
-    const top = H + 1 + (hd + 1 - Math.max(0, Math.abs(cz) - 1)) + 2;
+    const top = H + 1 + (hd + 1 - Math.max(0, Math.abs(cz) - 1)) + HOUSE.CHIMNEY_TOP;
     for (let y = 1; y <= top; y++)
       for (let z = cz - 1; z <= cz + 1; z++)
         for (let x = hw - 1; x <= hw + 1; x++) {
           const flue = x === hw && z === cz;
           put(x, y, z, flue ? (y === 1 ? 'WOOD' : 'AIR') : MASONRY);
         }
-    box(hw - 1, 1, cz, hw - 1, 2, cz, 'AIR'); // fireplace mouth
+    box(hw - 1, 1, cz - 1, hw - 1, Math.round(HOUSE.FIRE_H * T), cz + 1, 'AIR'); // fireplace mouth
+  }
+
+  // a bed in the back-left corner under its window, a table by the front-left
+  // one, and the right side left clear from the door to the hearth
+  function furnish() {
+    const [bl, bw] = HOUSE.BED.map((n) => Math.round(n * T)), [tl, tw] = HOUSE.TABLE.map((n) => Math.round(n * T));
+    const x0 = -hw + 1, bz = -hd + 1, th = 1 + Math.round(HOUSE.TABLE_H * T) - 1;
+    if (bl > hw || bw + tw + 2 > 2 * hd - 1) return; // too small a room to furnish
+    box(x0, 1, bz, x0 + bl - 1, 1, bz + bw - 1, 'WOOD');                // frame
+    box(x0, 2, bz, x0, 1 + Math.round(HOUSE.BED_HEAD * T), bz + bw - 1, 'WOOD'); // headboard
+    box(x0 + 1, 2, bz, x0 + bl - 1, 2, bz + bw - 1, 'PLANT');           // a straw tick under a green quilt
+    const tz = hd - 1 - tw;                                             // a step clear of the front wall
+    box(x0 + 1, th, tz, x0 + tl, th, tz + tw - 1, 'WOOD');
+    for (const [lx, lz] of [[x0 + 1, tz], [x0 + tl, tz], [x0 + 1, tz + tw - 1], [x0 + tl, tz + tw - 1]])
+      box(lx, 1, lz, lx, th - 1, lz, 'WOOD');
   }
 
   // greenhouse beds: water troughs along both long walls, seeded with plants
@@ -115,7 +141,7 @@ export function house({ put, box, footing, rnd, T }, variant) {
         if (s > 0 && Math.abs(x) <= (dw + 1) / 2) { put(x, 1, s * (hd - 1), MASONRY); continue; } // doorstep
         put(x, 1, s * (hd - 1), 'WATER');
         put(x, 1, s * (hd - 2), MASONRY);
-        if ((x + hw) % 3 === 1) put(x, 2, s * (hd - 1), 'PLANT');
+        if ((x + hw) % HOUSE.PLANT_EVERY === 1) put(x, 2, s * (hd - 1), 'PLANT');
       }
   }
 }
@@ -266,32 +292,58 @@ export const TREES = {
 
 // ---------------------------------------------------------------- the rest
 
+// A camp fire ring 1.8 m across, as wide as one you'd sit around, and a
+// teepee of logs knee to waist high.
+const CAMPFIRE = {
+  R: 3,              // the stone ring's radius, cells at T = 1
+  LOGS: [4, 5],      // logs in the teepee
+  TOP: 1.3,          // the teepee's apex, share of the ring's radius...
+  LEAN: 0.85,        // ...which each log reaches this share of the way to
+  FIRE_R: 0.35,      // a lit fire's ball, share of the ring's radius
+  IGNITE_T: 450,     // a lit fire's logs start above wood's 300 °C ignition point
+};
+
 export function campfire({ put, ball, rod, vec, rnd, T }, variant) {
   const lit = variant === 'lit';
-  const R = Math.max(3, Math.round(4 * T));
+  const R = Math.max(2, Math.round(CAMPFIRE.R * T));
   for (let z = -R - 1; z <= R + 1; z++)
     for (let x = -R - 1; x <= R + 1; x++) {
       const d = Math.hypot(x, z);
       if (Math.abs(d - R) < 0.6) put(x, 0, z, 'STONE');
       else if (lit && d < R - 0.4) put(x, 0, z, 'ASH');
     }
-  // logs leaning together; a lit fire starts above wood's 300 °C ignition point
-  const n = rnd.int(4, 5), a0 = rnd() * TAU, top = Math.round(R * 1.4);
-  const o = { temp: lit ? 450 : undefined };
+  // logs leaning together; a lit fire starts above its ignition point
+  const n = rnd.int(...CAMPFIRE.LOGS), a0 = rnd() * TAU, top = Math.round(R * CAMPFIRE.TOP);
+  const o = { temp: lit ? CAMPFIRE.IGNITE_T : undefined };
   for (let i = 0; i < n; i++) {
     const a = a0 + (i / n) * TAU;
     const foot = vec(Math.cos(a) * (R - 1), 0, Math.sin(a) * (R - 1));
-    rod(foot, foot.clone().lerp(vec(0, top, 0), 0.85), T > 1.6 ? 1 : 0.5, 'WOOD', o);
+    rod(foot, foot.clone().lerp(vec(0, top, 0), CAMPFIRE.LEAN), T > 1.6 ? 1 : 0.5, 'WOOD', o);
   }
-  if (lit) ball(0, 1, 0, Math.max(1, R * 0.35), 'FIRE', { soft: true });
+  if (lit) ball(0, 1, 0, Math.max(1, R * CAMPFIRE.FIRE_R), 'FIRE', { soft: true });
 }
 
 // Ice is the only static frozen solid, and it renders clear like glass, so the
 // dome is a thick ice shell with snow lying on the gentle upper part (snow on
-// the steep sides would just slide off: it's a powder).
+// the steep sides would just slide off: it's a powder). The dome is a big
+// igloo, 2.4 m high inside, and the entrance an arch you walk through: the
+// first-person body can't crouch through a real igloo's crawl tunnel.
+const IGLOO = {
+  R: 10,             // outer radius, cells at T = 1 (3 m)
+  SHELL: 2,          // ice thickness
+  DRIFT: 3,          // snow banked against the wall, cells high
+  CAP: 0.78,         // snow lies where y > CAP · d (the gentle upper part of the dome)...
+  CAP_REACH: 1.3,    // ...out to this many cells past the ice
+  CAP_GAPS: 0.12,    // share of cells left bare on the cap, and in the drift
+  DRIFT_GAPS: 0.08,
+  ARCH_W: 2,         // the entrance arch's inside: half-width and height above the floor
+  ARCH_LEN: 0.45,    // ...and how far it reaches past the dome, share of R
+};
+
 export function igloo({ put, get, footing, rnd, T }) {
-  const R = Math.max(5, Math.round(7.5 * T)), th = Math.max(2, Math.round(2.2 * T));
-  const ri = R - th, drift = Math.max(2, Math.round(3 * T));
+  const R = Math.max(5, Math.round(IGLOO.R * T)), th = Math.max(2, Math.round(IGLOO.SHELL * T));
+  const ri = R - th, drift = Math.max(2, Math.round(IGLOO.DRIFT * T));
+  const aw = Math.max(1, Math.round(IGLOO.ARCH_W * T)), ah = Math.max(3, Math.round(HUMAN.DOOR_H * T));
   footing(8);
   dome();
   tunnel();
@@ -312,34 +364,49 @@ export function igloo({ put, get, footing, rnd, T }) {
   function settles(x, y, z, d) {
     const below = y === 0 ? 'GROUND' : get(x, y - 1, z);
     if (below !== 'GROUND' && below !== 'ICE' && below !== 'SNOW') return false;
-    if (d <= R + 1.3 && y > 0.78 * d && rnd() > 0.12) return true; // the gentle upper part of the dome
+    if (d <= R + IGLOO.CAP_REACH && y > IGLOO.CAP * d && rnd() > IGLOO.CAP_GAPS) return true;
     // a drift banked against the wall, no steeper than snow's angle of repose
-    return y < drift - (Math.hypot(x, z) - R) && rnd() > 0.08;
+    return y < drift - (Math.hypot(x, z) - R) && rnd() > IGLOO.DRIFT_GAPS;
   }
 
-  // entrance tunnel toward the front
+  // the entrance toward the front: an elliptical arch of ice, walked through upright
   function tunnel() {
-    const tr = Math.max(3, Math.round(R * 0.45));
-    for (let z = 0; z <= R + Math.round(R * 0.45); z++)
-      for (let y = 0; y <= tr + 1; y++)
-        for (let x = -tr - 1; x <= tr + 1; x++) {
-          const e = Math.hypot(x, y);
-          if (e > tr + 0.3) continue;
-          if (e <= tr - 1.5) put(x, y, z, 'AIR');
+    const ow = aw + th, oh = ah + th;
+    for (let z = 0; z <= R + Math.round(R * IGLOO.ARCH_LEN); z++)
+      for (let y = 0; y <= oh; y++)
+        for (let x = -ow; x <= ow; x++) {
+          const inner = (x / (aw + 0.5)) ** 2 + (y / (ah + 0.5)) ** 2, outer = (x / (ow + 0.5)) ** 2 + (y / (oh + 0.5)) ** 2;
+          if (outer > 1) continue;
+          if (inner <= 1) put(x, y, z, 'AIR');
           else if (Math.hypot(x, y, z) >= ri - 0.5) put(x, y, z, 'ICE');
         }
   }
 }
 
+// An oil drum or a powder keg as small as a sealed one can be at 0.3 m cells:
+// 1.5 m across (a liquid-tight round shell is 1.5 cells thick, so anything
+// narrower is all shell) and about as tall as the body. Real drums are 2 × 3
+// cells, too small to hold anything here.
+const BARREL = {
+  R: 2.5,            // radius, cells at T = 1 (no rounding: 2.5 gives a 5-cell drum with a 5-cell core)
+  R_MIN: 2,
+  KEG_H: 2.4,        // height, shares of the radius
+  DRUM_H: 2.8,
+  BULGE: 0.14,       // a keg's bulge at mid-height, share of its radius
+  SHELL: 1.15,       // shell band inside the radius: with the 0.35 outside it, 1.5 cells, face-connected
+  KEG_HOOPS: [0.3, 0.7], // steel hoops on a keg (besides one by each end), shares of its height
+  DRUM_RIMS: [1 / 3, 2 / 3], // rolling rims on a drum
+};
+
 export function barrel({ put, T }, variant) {
   const keg = variant === 'keg';
-  const R0 = Math.max(2, Math.round(3.6 * T)), H = Math.round(R0 * (keg ? 2.4 : 2.8));
+  const R0 = Math.max(BARREL.R_MIN, BARREL.R * T), H = Math.round(R0 * (keg ? BARREL.KEG_H : BARREL.DRUM_H));
   const shell = keg ? 'WOOD' : 'METAL', fill = keg ? 'GUNPOWDER' : 'OIL';
   // steel hoops on the keg, rolling rims on the drum (flush with the shell)
-  const hoops = keg ? [1, Math.round(H * 0.3), Math.round(H * 0.7), H - 2] : [Math.round(H / 3), Math.round((2 * H) / 3)];
-  const B = Math.ceil(R0 * 1.15) + 1;
+  const hoops = keg ? [1, ...BARREL.KEG_HOOPS.map((f) => Math.round(H * f)), H - 2] : BARREL.DRUM_RIMS.map((f) => Math.round(H * f));
+  const B = Math.ceil(R0 * (1 + BARREL.BULGE)) + 1;
   for (let y = 0; y < H; y++) {
-    const R = keg ? R0 * (1 + 0.14 * Math.sin((Math.PI * (y + 0.5)) / H)) : R0; // kegs bulge
+    const R = keg ? R0 * (1 + BARREL.BULGE * Math.sin((Math.PI * (y + 0.5)) / H)) : R0; // kegs bulge
     const band = hoops.includes(y) ? 'METAL' : shell;
     for (let z = -B; z <= B; z++)
       for (let x = -B; x <= B; x++) {
@@ -347,7 +414,7 @@ export function barrel({ put, T }, variant) {
         if (d > R + 0.35) continue;
         // a shell band 1.5 cells wide is face-connected, so nothing seeps out diagonally
         if (y === 0 || y === H - 1) put(x, y, z, shell);
-        else put(x, y, z, d > R - 1.15 ? band : fill);
+        else put(x, y, z, d > R - BARREL.SHELL ? band : fill);
       }
   }
 }
@@ -427,4 +494,5 @@ export const BUILTINS = {
   AQUARIUM: aquarium,
   FOUNTAIN: fountain,
   SHRINE: shrine,
+  ...STRUCTURES,   // the World's structures (structures.js)
 };

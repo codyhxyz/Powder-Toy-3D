@@ -61,7 +61,8 @@ p.on('crash', () => errs.push('PAGE CRASHED'));
 process.on('exit', () => { if (errs.length) console.log(errs.join('\n')); });
 const t0 = Date.now();
 await p.goto(`http://localhost:${port}/?size=world`);
-await p.waitForFunction(() => window.__app?.win?.far?.built, null, { timeout: 90000 });
+// (built: the window's region is in; the rest comes in chunks over the next frames)
+await p.waitForFunction(() => window.__app?.win?.far?.built && !window.__app.win.far.queue.length, null, { timeout: 90000 });
 const bootMs = Date.now() - t0;
 await p.waitForTimeout(1000);
 
@@ -316,11 +317,11 @@ if (!skip.has(5)) {
         out[`${name}@${w}x${h}`] = { withFar: +median(t.on).toFixed(2), without: +median(t.off).toFixed(2), far: +(median(t.on) - median(t.off)).toFixed(2) };
       }
     }
-    // the build and a refresh, GPU-synced
+    // the build (all its chunks back to back, not a few a frame) and a refresh, GPU-synced
     const syncSim = () => a.sim.gpuSync();
     const builds = [], refreshes = [], summaries = [];
     for (let i = 0; i < 5; i++) {
-      syncSim(); let t0 = performance.now(); far.build(); syncSim(); builds.push(performance.now() - t0);
+      syncSim(); let t0 = performance.now(); far.build(); while (far.queue.length) far.sceneChunks(); far.refresh(); syncSim(); builds.push(performance.now() - t0);
       syncSim(); t0 = performance.now(); far.summarizeWindow(); far.refresh(true); syncSim(); summaries.push(performance.now() - t0);
       syncSim(); t0 = performance.now(); far.shadowKey = ''; far.refresh(); syncSim(); refreshes.push(performance.now() - t0);
     }
