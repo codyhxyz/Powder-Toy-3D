@@ -237,7 +237,15 @@ shared mechanism; anything else names its own code.
 - **Saltwater** freezes at the NaCl eutectic, −21.1 °C, and boiling it leaves the salt behind.
 - **Lithium** fizzes off hydrogen and heat in water, so any bang comes from the hydrogen. In TPT, lithium itself
   explodes.
-- **Propane** is 1.5 times as dense as air, so it pools. TPT's GAS just diffuses.
+- **Propane** is 1.5 times as dense as air, so it pools. TPT's GAS just diffuses. It goes off only beside air or a
+  flame (the flame front is where fuel and air mix), and its front crosses a pool at the real propane-air flame speed.
+- **Fuse** burns at a real safety fuse's 1 cm/s on the sim's clock (about 4.5 s a cell), with or without air. TPT's
+  is much faster.
+- **Thermite** lights at ~1,220 °C, so a wood fire won't do it, and leaves molten iron at 2,500 °C holding about the
+  reaction's real heat. It eats through wood, glass and stone floors; a cell of metal floor (30 cm of steel) takes a
+  pile about 6 cells deep. TPT's holds 3,500 K and goes through anything.
+- **C-4, nitroglycerin and TNT** blast in proportion to their detonation pressure (C-4 the most). C-4 going off from
+  heat or a hit is a game choice: real C-4 only burns without a detonator.
 - **Caustic gas** is hydrogen chloride: denser than air, and it dissolves back into water as acid.
 - **Diamond** burns in air above ~780 °C (thermogravimetric onset of oxidation), leaving no ash, but only while
   something keeps it hot: in air the burning doesn't sustain itself. Nothing in the sim can break it. In TPT it is

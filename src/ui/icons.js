@@ -27,6 +27,9 @@ export const ICON = {
   replace: svg('<path d="M5 9h11l-3-3M19 15H8l3 3"/>'),
   eyedropper: svg('<path d="M13.5 6.5l4 4"/><path d="M15 5l1.8-1.8a2.1 2.1 0 0 1 3 3L18 8z"/><path d="M15.5 8.5L7 17l-3.5 1 1-3.5L13 6"/>'),
   minus: svg('<path d="M6 12h12"/>'),
+  // a round bomb: its body, a neck, a curling fuse and a spark at its tip
+  explosives: svg('<circle cx="10" cy="14" r="6.5"/><path d="M14.6 9.4l1.8-1.8M16.4 7.6c1-1 1.4-2.6 2.9-3"/>'
+    + '<path d="M20.5 1.8v1.4M22.2 3.6h-1.4M21.7 2.3l-.8.8"/>'),
   plus: svg('<path d="M12 6v12M6 12h12"/>'),
   powders: svg('<circle cx="12" cy="5" r="1"/><circle cx="8" cy="11" r="1"/><circle cx="16" cy="11" r="1"/><circle cx="4" cy="18" r="1"/><circle cx="12" cy="18" r="1"/><circle cx="20" cy="18" r="1"/>'),
   liquids: svg('<path d="M12 3C10 7 5 11 5 15a7 7 0 0 0 14 0c0-4-5-8-7-12Z"/><path d="M8 15a4 4 0 0 0 4 4"/>'),
