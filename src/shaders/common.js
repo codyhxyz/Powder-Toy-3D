@@ -300,11 +300,12 @@ uint ownFlags(vec4 a, vec4 b) {
 // Does a cell going from state A a0 to a1 change what its neighbours' tests
 // (activity.js inertNear) read of it? Its element, and its temperature unless
 // it is air (AIR_T_IN_NEAR). Its ctype + seed they don't read, nor its life,
-// but for a switch going on or off (electricQuietNear).
+// but for a switch or powered clone going on or off (electricQuietNear, and
+// the air beside a powered clone, which copies it while it is on).
 bool nearChange(vec4 a0, vec4 a1) {
   int i1 = eid(a1);
   return eid(a0) != i1 || (a0.y != a1.y && (i1 != E_EMPTY || AIR_T_IN_NEAR))
-      || (i1 == E_SWITCH && (a0.z >= SWITCH_ON) != (a1.z >= SWITCH_ON));
+      || (powered(i1) && (a0.z >= SWITCH_ON) != (a1.z >= SWITCH_ON));
 }
 `;
 

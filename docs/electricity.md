@@ -8,8 +8,8 @@ idle conductors around it. That suits the GPU, so we borrow it, with real conduc
 `Simulation.cpp`.
 
 v1 has the spark, conduction through every element with an electrical conductivity, the battery, P- and N-type
-silicon, the switch, the insulator, the temperature sensor, Joule heating, the Spark tool and an Electronics palette
-group.
+silicon, the switch, the insulator, the temperature sensor, the powered clone, Joule heating, the Spark tool and an
+Electronics palette group.
 
 ## Telling a live cell
 
@@ -77,7 +77,8 @@ The integer stays under 2¹², so the seed in the fraction keeps 12 bits. A cond
 doesn't conduct loses its spark (react.js); one that melts takes lava's ctype as before.
 
 The switch keeps its on/off state in its life, as TPT's SWCH does (`SWITCH_ON` = 10 on; 9..1 turning off, one a
-step; 0 off), and the temperature sensor keeps its firing flag in its life (1 while firing).
+step; 0 off), and so does the powered clone, whose ctype is what it copies, as Clone's is. The temperature sensor
+keeps its firing flag in its life (1 while firing).
 
 Multiplayer guests get only the phase of a conductor's ctype (`net/codec.js`), which is all the renderer needs.
 
@@ -104,6 +105,9 @@ It takes the strongest offer, less its own crossing cost (below), and sparks if 
 - A switch takes and passes sparks only while on. A live P beside it switches it on, a live N switches it off, and
   neither sparks it. A switch doesn't spark P, N or water.
 - On and off spread through touching switches, one cell a step; off wins where they meet.
+- The powered clone (TPT PCLN) is switched the same way and spreads on and off the same way. While on it is our
+  Clone: it copies what it holds into the air beside it. It takes the first thing that touches it, but not air,
+  walls, clones or the silicon that powers it. It doesn't conduct.
 - Everything else conducts into every conductor, itself included.
 
 **Crossing cost.** Each element's row gives its electrical conductivity σ in S/m (`elec`). Crossing a cell costs
@@ -169,9 +173,10 @@ Nothing about electricity runs where nothing is sparking:
   sensor (`electricQuiet`). A battery, an idle wire, an on or off switch and a sensor that sees nothing hotter are
   inert, so circuits that are off sleep like any solid.
 - `inertNear` (`shaders/activity.js`) fails for a ready conductor touching a battery (it is about to spark), an off
-  switch touching an on one, and a sensor touching something hotter (`electricQuietNear`). A ready conductor beside a
+  switch or powered clone touching an on one, a powered clone that is on and touches air, and a sensor touching
+  something hotter (`electricQuietNear`). A ready conductor beside a
   live one needs no rule: the live cell isn't inert, so its brick's neighbours stay awake.
-- `nearChange` marks a switch dirty when it turns on or off, since its neighbours' tests read that.
+- `nearChange` marks a switch or powered clone dirty when it turns on or off, since its neighbours' tests read that.
 - A sensor's faces carry no heat (cond 0), so the thermal-quiet test skips them.
 - A spark moves one cell a step, inside the activity map's budget of two.
 The spark itself adds about 30 ALU operations to the react pass and no texture fetches. A battery keeps its wires
@@ -197,7 +202,7 @@ The three TPT groups, in the order to build them. Everything slots into `electri
 
 **Powered (10).** All take TPT's "PSCN turns on, NSCN turns off" through the life field, as the switch does
 (`SWITCH_ON`, spreading through touching cells), then do their thing while on:
-1. Powered clone (PCLN) and powered void (PVOD): our CLONE's and el-mat's VOID's rules, gated on life.
+1. Powered void (PVOD): el-mat's VOID gated on life, as the powered clone (done in v1) gates Clone.
 2. Heat switch (HSWC): conducts heat only while on. condFlux reads both cells' life.
 3. Pump (PUMP) and gravity pump (GPMP): push air pressure toward their temperature while on.
 4. Delay (DLAY): a conductor whose rest is its temperature in steps. A per-cell phase length.

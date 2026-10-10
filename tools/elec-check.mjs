@@ -8,6 +8,7 @@
 //   4. water: a spark reaches 3 cells into fresh water from a live wire, and Joule heating warms it, not the metal
 //   5. temperature sensor: fires while something hotter touches it, and sparks its wire
 //   6. the Spark tool sparks conductors only, and only ready ones
+//   7. the powered clone copies only while on, switched by P and N
 // usage: node tools/elec-check.mjs
 import { E } from '../src/elements.js';
 import { ELEC, SPARK_CYCLE, SPARK_COST, isLive, sparkOf } from '../src/electricity.js';
@@ -146,6 +147,27 @@ function firstLive(w, cells, steps) {
   check('Spark tool: metal and water spark; stone, an off switch and insulator don\'t', got.join() === 'true,true,false,false,false', `${got}`);
   const again = w.spark(w.idx(0, 1));
   check('Spark tool: a live cell can\'t be sparked again', !again);
+}
+
+// 7. powered clone: copies only while on; P turns it on, N off; touching ones go together
+{
+  const w = world(8, 4);
+  w.put(1, 1, E.PSCN); w.put(3, 2, E.NSCN);   // apart: P sparks N where they touch
+  w.put(2, 1, E.PCLN, { ctype: E.SAND }); w.put(2, 2, E.PCLN, { ctype: E.SAND });
+  const sandNow = () => { let n = 0; for (let i = 0; i < w.id.length; i++) n += w.id[i] === E.SAND ? 1 : 0; return n; };
+  for (let s = 0; s < 30; s++) w.step();
+  const off = sandNow();
+  w.spark(w.idx(1, 1));
+  for (let s = 0; s < 30; s++) w.step();
+  const lives = [w.life[w.idx(2, 1)], w.life[w.idx(2, 2)]];
+  const on = sandNow();
+  check('powered clone: copies nothing while off; a live P turns both cells on, and they copy', off === 0 && on > 0 && lives.every((l) => l === ELEC.SWITCH_ON),
+    `sand off: ${off}, after P: ${on}, lives ${lives}`);
+  w.spark(w.idx(3, 2));
+  for (let s = 0; s < 2 * ELEC.SWITCH_ON; s++) w.step();
+  for (let i = 0; i < w.id.length; i++) if (w.id[i] === E.SAND) w.erase(i);
+  for (let s = 0; s < 30; s++) w.step();
+  check('powered clone: a live N turns it off, and it stops', sandNow() === 0, `sand after N: ${sandNow()}, lives ${[w.life[w.idx(2, 1)], w.life[w.idx(2, 2)]]}`);
 }
 
 const failed = results.filter((r) => !r.ok).length;

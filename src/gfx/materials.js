@@ -169,6 +169,7 @@ const LOOKS = {
   SWITCH: { rough: 0.4, alb: '#1d4a1f' },
   INSULATOR: { rough: 0.95, alb: '#a7aec2', sss: 0.3 },
   TSNS: { rough: 0.5, alb: '#c21aa6' },
+  PCLN: { rough: 0.35, metal: 1, alb: [0.45, 0.36, 0.14] },   // Clone's gold, tarnished: TPT draws it dark olive
 };
 
 // Shared texture families (LOOKS surf). NONE: an element's own (or none).

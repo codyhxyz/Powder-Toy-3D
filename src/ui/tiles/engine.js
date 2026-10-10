@@ -10,7 +10,7 @@
 // flags any that are missing.
 import { ELEMENTS, E, K, meltInto, breakInto } from '../../elements.js';
 import { PHYS } from '../../physics.js';
-import { ELEC, SPARK_BORN, CONDUCTS, SPARK_COST, sparkPhase, sparkLevel, packSpark, takesSpark, conductsInto, tsnsSenses } from '../../electricity.js';
+import { ELEC, SPARK_BORN, CONDUCTS, SPARK_COST, sparkPhase, sparkLevel, packSpark, takesSpark, conductsInto, tsnsSenses, powered, cloneable } from '../../electricity.js';
 
 // ---- element table, as the GLSL arrays (elements.js elementsGLSL) ----
 const col = (key) => Float32Array.from(ELEMENTS, (e) => e[key]);
@@ -128,14 +128,15 @@ const DY = [0, 0, 1, -1]; // +x, -x, up, down
 const elecOut = { T: 0, life: 0, ctype: 0 };
 function electric(id, T, life, ctype, nid, nT, nL, nW) {
   const life0 = life;
-  if (id === E.SWITCH) {
-    // turning off counts down; on and off spread through touching switches (off
-    // wins); a live P beside it switches it on, a live N off
+  if (powered(id)) {
+    // switch, powered clone: turning off counts down; on and off spread through
+    // touching cells of the same element (off wins); a live P beside it
+    // switches it on, a live N off
     if (life > 0 && life !== ELEC.SWITCH_ON) life -= 1;
     let offNb = false, onNb = false, pOn = false, nOff = false;
     for (let q = 0; q < 4; q++) {
       const j = nid[q];
-      if (j === E.SWITCH) {
+      if (j === id) {
         if (nL[q] > 0 && nL[q] < ELEC.SWITCH_ON) offNb = true;
         if (nL[q] >= ELEC.SWITCH_ON) onNb = true;
       }
@@ -538,7 +539,7 @@ export class World {
           if (j === E.FIRE) nFire++;
           if (j === E.ACID) nAcid++;
           if (j === E.PLANT) nPlant++;
-          if (j === E.CLONE && nW[q] >= 1) cloneOf = nW[q];
+          if ((j === E.CLONE || (j === E.PCLN && nL[q] === ELEC.SWITCH_ON)) && nW[q] >= 1) cloneOf = nW[q];   // a powered clone only while on
           if (IGNITE[j] > 0 && j !== E.GUNPOWDER && nT[q] >= IGNITE[j]) { nBurning++; flame = Math.max(flame, FLAMET[j]); }
         }
 
@@ -599,10 +600,10 @@ export class World {
             ctype = cloneOf === E.LAVA ? E.STONE : 0;
             vx = 0; vy = KIND[cloneOf] === K.GAS ? 0 : PHYS.SPAWN_DROP_V;
           }
-        } else if (id === E.CLONE && ctype < 1) {
+        } else if ((id === E.CLONE || id === E.PCLN) && ctype < 1) {
           for (let q = 0; q < 4; q++) {
             const j = nid[q];
-            if (j !== E.EMPTY && j !== E.WALL && j !== E.CLONE) { ctype = j; break; }
+            if (cloneable(j)) { ctype = j; break; }
           }
         }
 

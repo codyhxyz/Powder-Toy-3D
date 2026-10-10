@@ -28,6 +28,8 @@
 //     SWITCH_ON). A live P beside it switches it on, a live N off; on and off
 //     spread through touching switches. P and N control it rather than spark it,
 //     and it doesn't spark them (or water) back.
+//   - A powered clone (TPT PCLN) goes on and off as a switch does, and while
+//     on copies what it holds (its ctype, as CLONE's) into the air beside it.
 //   - A temperature sensor (TPT TSNS) fires (life 1) while a neighbour other
 //     than air, a wire or another sensor is hotter than itself, and a firing
 //     sensor sparks its conductors like a battery. It holds no heat of its own
@@ -56,7 +58,7 @@ export const ELEC = {
   // σ (S/m) at or above which a conductor is a wire (metals, doped silicon):
   // a temperature sensor ignores its wires, as TPT's ignores METL.
   WIRE_SIGMA: 1e3,
-  SWITCH_ON: 10,         // a switch's life while on (TPT SWCH's); below it, it is turning off, one a step, to 0
+  SWITCH_ON: 10,         // a switch's (or powered clone's) life while on (TPT SWCH's); below it, it is turning off, one a step, to 0
   TSNS_FIRE: 1,          // a temperature sensor's life while firing (TPT TSNS's)
 };
 // A conductor's phase when sparked, and the number of phases (ready = 0).
@@ -87,6 +89,10 @@ export function conductsInto(from, to) {
 }
 // Does a temperature sensor read a neighbour of element j? Not air, wires or sensors.
 export const tsnsSenses = (j) => j !== E.EMPTY && j !== E.TSNS && !WIRE[j];
+// Elements switched on by P and off by N, with life SWITCH_ON while on (TPT's PROP_PTOGGLE family).
+export const powered = (id) => id === E.SWITCH || id === E.PCLN;
+// What a clone (CLONE, PCLN) takes as its ctype from a neighbour: not air, walls, clones or the silicon that powers them.
+export const cloneable = (j) => j !== E.EMPTY && j !== E.WALL && j !== E.CLONE && j !== E.PCLN && j !== E.PSCN && j !== E.NSCN;
 
 const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
 const boolArr = (name, a) => `const bool ${name}[NE] = bool[NE](${a.join(', ')});`;
@@ -125,6 +131,8 @@ bool conductsInto(int from, int to) {
   return true;
 }
 bool tsnsSenses(int j) { return j != E_EMPTY && j != E_TSNS && !WIRE[j]; }
+bool powered(int id) { return id == E_SWITCH || id == E_PCLN; }
+bool cloneable(int j) { return j != E_EMPTY && j != E_WALL && j != E_CLONE && j != E_PCLN && j != E_PSCN && j != E_NSCN; }
 // Spark cell state a (in place) with a full spark, if it conducts, can take a
 // spark and is ready. For a pass that writes the state through copyThroughMain:
 // call it on oA (the activity flags follow).
@@ -139,16 +147,19 @@ bool sparkCell(inout vec4 a) {
 // sparking or resting, a switch turning off and a firing sensor all change.
 bool electricQuiet(int id, vec4 a) {
   if (CONDUCTS[id] && sparkPhase(floor(a.w)) != 0) return false;
-  if (id == E_SWITCH && a.z > 0.0 && a.z != SWITCH_ON) return false;
+  if (powered(id) && a.z > 0.0 && a.z != SWITCH_ON) return false;
   if (id == E_TSNS && a.z > 0.0) return false;
   return true;
 }
 // ...and per face neighbour (j holding n; shaders/activity.js inertNear): a
 // ready conductor by a battery sparks, an off switch by an on one turns on, a
-// sensor by something hotter fires. (A live neighbour isn't inert itself.)
+// powered clone that is on copies into air (and one with nothing to copy yet
+// takes what touches it), a sensor by something hotter fires. (A live
+// neighbour isn't inert itself.)
 bool electricQuietNear(int id, vec4 a, int j, vec4 n) {
   if (j == E_BATTERY && takesSpark(id, a.z) && sparkPhase(floor(a.w)) == 0) return false;
-  if (id == E_SWITCH && a.z == 0.0 && j == E_SWITCH && n.z >= SWITCH_ON) return false;
+  if (powered(id) && a.z == 0.0 && j == id && n.z >= SWITCH_ON) return false;
+  if (id == E_PCLN && ((a.z == SWITCH_ON && j == E_EMPTY) || (a.w < 1.0 && cloneable(j)))) return false;
   if (id == E_TSNS && tsnsSenses(j) && n.y > a.y + MATTER_REST_T) return false;
   return true;
 }
@@ -161,14 +172,15 @@ bool electricQuietNear(int id, vec4 a, int j, vec4 n) {
 export const electricReactGLSL = /* glsl */ `
 void electric(int id, inout float T, inout float life, inout float ctype, vec4 na[6], int nid[6], inout uint rs) {
   float life0 = life;
-  if (id == E_SWITCH) {
-    // TPT SWCH: turning off counts down; on and off spread through touching
-    // switches (off wins); a live P beside it switches it on, a live N off
+  if (powered(id)) {
+    // TPT SWCH and PCLN: turning off counts down; on and off spread through
+    // touching cells of the same element (off wins); a live P beside it
+    // switches it on, a live N off
     if (life > 0.0 && life != SWITCH_ON) life -= 1.0;
     bool offNb = false, onNb = false, pOn = false, nOff = false;
     for (int i = 0; i < 6; i++) {
       int j = nid[i];
-      if (j == E_SWITCH) {
+      if (j == id) {
         if (na[i].z > 0.0 && na[i].z < SWITCH_ON) offNb = true;
         if (na[i].z >= SWITCH_ON) onNb = true;
       }

@@ -291,7 +291,7 @@ void main() {
     if (j == E_FIRE) nFire++;
     if (j == E_ACID) nAcid++;
     if (j == E_PLANT) nPlant++;
-    if (j == E_CLONE && na[i].w >= 1.0) cloneOf = int(floor(na[i].w));
+    if ((j == E_CLONE || (j == E_PCLN && na[i].z == SWITCH_ON)) && na[i].w >= 1.0) cloneOf = int(floor(na[i].w));   // a powered clone only while on
     if (IGNITE[j] > 0.0 && j != E_GUNPOWDER && na[i].y >= IGNITE[j]) { nBurning++; flame = max(flame, FLAMET[j]); }
   }
 
@@ -356,10 +356,10 @@ void main() {
       ctype = cloneOf == E_LAVA ? float(E_STONE) : 0.0;
       v = vec3(0.0, KIND[cloneOf] == K_GAS ? 0.0 : SPAWN_DROP_V, 0.0);
     }
-  } else if (id == E_CLONE && ctype < 1.0) {
+  } else if ((id == E_CLONE || id == E_PCLN) && ctype < 1.0) {
     for (int i = 0; i < 6; i++) {
       int j = nid[i];
-      if (j != E_EMPTY && j != E_WALL && j != E_CLONE) { ctype = float(j); break; }
+      if (cloneable(j)) { ctype = float(j); break; }
     }
   }
 

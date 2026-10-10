@@ -72,7 +72,7 @@ bool inertNear(ivec3 c, vec4 a, vec4 nA[6]) {
     if (!electricQuietNear(id, a, j, n)) return false;   // src/electricity.js
     if (j == E_ACID ? acidEats(id) : id == E_ACID && acidEats(j)) return false;
     if ((id == E_WATER && j == E_PLANT) || (id == E_PLANT && j == E_WATER)) return false;
-    if (id == E_CLONE && (j == E_EMPTY || (a.w < 1.0 && j != E_WALL && j != E_CLONE))) return false;
+    if (id == E_CLONE && (j == E_EMPTY || (a.w < 1.0 && cloneable(j)))) return false;   // (cloneable: src/electricity.js)
     if (id == E_GUNPOWDER && !isGasLike(j) && n.y >= IGNITE[id]) return false;   // a hot touch sets it off
     // a powder or liquid: nowhere to fall, nor for a liquid to flow sideways
     bool way = FACES[i].y < 0 || (k == K_LIQUID && FACES[i].y == 0);
