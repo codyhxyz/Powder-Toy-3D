@@ -78,7 +78,9 @@ water). Ours does real transport, one group of cross-sections joined to a therma
 - The length scale is a liberty, stated. At 0.3 m cells a real cell of plutonium is 535 kg, about 50 critical
   masses: one painted cell would go off. `NEUT_CM_PER_CELL` = 1 makes a cell 1 cm of matter to a neutron, so the
   cross-sections keep their real ratios and a bare plutonium ball goes critical at about the radius one-group
-  diffusion gives in mean free paths (R ≈ 1.9 λ_t ≈ 5.5 cells, measured by `tools/rays-check.mjs`).
+  diffusion gives in mean free paths (R ≈ 1.9 λ_t = 5.6 cells for λ_t = 2.95 cells). The Monte Carlo of these rules
+  in `tools/rays-check.mjs` measures k_eff 0.95 at R = 6 and 1.17 at R = 7 bare, so about 6.3 cells (~1,000 cells
+  of powder); in a 6-cell water jacket, 0.91 at R = 4 and 1.11 at R = 5, so about 4.6 (~400 cells).
 
 **Uranium**: natural uranium metal as a heavy powder, 19.1 g/cm³. TPT heats it under pressure; real uranium barely
 does anything by itself (U-238's half-life is 4.5 × 10⁹ years, so its decay heat is ~10⁻⁸ W/g, and its spontaneous
