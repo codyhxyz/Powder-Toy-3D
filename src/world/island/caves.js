@@ -62,10 +62,8 @@
 // Stability. A loaded world must not churn (world/generator.js "Stability").
 //   - Only bedrock (any stratum) is carved, and plant cover by shafts: never
 //     sand or snow, nor the water of the sea or a lake.
-//   - Every cave keeps ROOF cells of rock between it and its column's surface.
-//     The island's powders lie at most 3 deep, on gentle columns whose
-//     neighbours stand within 2 cells of them, so with ROOF at least 3 + 3 no
-//     powder cell has a void below it, beside it or diagonally below it.
+//   - Every cave keeps ROOF cells of rock between it and its column's surface,
+//     so no powder (at most 3 deep) has a void under it.
 //   - Mouths thin the roof only on bare rock, which never moves, and only well
 //     above the beaches (MOUTH_ABOVE_SEA) or on cliffs too steep for sand.
 //   - No mouths or shafts under standing water (the sea, a lake) or within a
@@ -73,6 +71,9 @@
 //     lake's water to drain it.
 //   - Trees keep TREE_CLEAR columns from any open cave (caveOpenNear, which
 //     genTreeZone asks), so no tree's footing hangs over a mouth or a shaft.
+//   - Whatever the terrain, no cell beside or diagonally below a powder cell
+//     of its own or a neighbouring column is carved (cavePowderNear): the
+//     roof alone kept powder clear only while powder lay on gentle ground.
 //   - Shafts open only on rock or plant cover well above the beaches
 //     (SHAFT_ABOVE_SEA), on gentle ground (SHAFT_SLOPE_MAX); they carve whole
 //     columns from their floor up, wider toward the top (a funnel), so nothing
@@ -427,6 +428,25 @@ bool caveLakeClear(int x, int z) { return islandLakeClearance(float(x), float(z)
 // standing water at water: on dry land only (not under the sea or a lake).
 bool caveOpenable(float G, float water) { return water <= G; }
 
+// Whether a powder cell (sand, snow: the layers' cover, genCover) of column
+// (x, z) or one of its 8 neighbours could topple into cell (x, y, z): the cell
+// beside one, or diagonally below it (move.js). Such a cell is never carved,
+// however the terrain stands: landforms put sand floors and beaches at the
+// foot of walls a cave runs behind. Only a neighbour whose cover reaches down
+// to this cell is asked for its cover.
+bool cavePowderNear(int x, int y, int z) {
+  int deepest = max(GEN_SAND_DEPTH, GEN_SNOW_DEPTH);
+  for (int dz = -1; dz <= 1; dz++)
+    for (int dx = -1; dx <= 1; dx++) {
+      int g = genTop(x + dx, z + dz);
+      if (y >= g || y < g - deepest - 1) continue;
+      int cover = genCover(x + dx, z + dz);
+      int depth = cover == GEN_COVER_SAND ? GEN_SAND_DEPTH : (cover == GEN_COVER_SNOW ? GEN_SNOW_DEPTH : 0);
+      if (depth > 0 && y >= g - depth - 1) return true;
+    }
+  return false;
+}
+
 // The element at world cell (x, y, z) after carving, given id, what the island
 // put there: id where nothing is carved. ground: the column's terrain height
 // (cells, after landforms: its ground cells are y < thRound(ground)); water:
@@ -454,8 +474,25 @@ int islandCave(int x, int y, int z, float ground, float water, int id) {
     if (f < 0.0 && cavern < 0.0 && tunnels >= 0.0 && shaft >= 0.0 && caveSpeleo(x, z, py, G, sea, top)) return id;   // a speleothem: the stratum's rock
     if (caveCrystal(x, y, z, f, sea)) return E_CRYSTAL;
   }
-  if (f >= 0.0) return id;
+  if (f >= 0.0 || cavePowderNear(x, y, z)) return id;
   return float(y) < sea ? E_WATER : E_EMPTY;
+}
+
+// How open a hillside cave mouth is at world column (x, z): how many of its
+// top ROOF ground cells the caves carve where the roof thins for a mouth (0:
+// no mouth; a shaft's funnel doesn't count). The structures layer
+// (world/structures.js) reads it to set mines at cave mouths.
+float islandCaveMouth(int x, int z) {
+  float ground = genColHeight(x, z), water = genColWater(x, z);
+  float G = float(thRound(ground));
+  if (!caveOpenable(G, water) || caveLakeClear(x, z) || caveRoof(x, z, G, uGenSea) >= float(CAVE_ROOF)
+      || caveShaft(x, z, G - 0.5, G, uGenSea) < 0.0) return 0.0;
+  float open = 0.0;
+  for (int d = 1; d <= CAVE_ROOF; d++) {
+    int c = islandCave(x, int(G) - d, z, ground, water, E_ROCK);
+    if (c == E_EMPTY || c == E_WATER) open += 1.0;
+  }
+  return open;
 }
 
 // Whether a cave may open within TREE_CLEAR columns of column (x, z): a
