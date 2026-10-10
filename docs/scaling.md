@@ -101,17 +101,26 @@ fetch outside common.js, so code merged from main can't bypass the accessors.
 ### D7. Packed state
 Cost follows bytes per cell (see Measured), so the target is one RGBA32UI texture per copy, 16 bytes per cell
 instead of 32:
-- x: id 6 | ctype 6 | spare 1 | seed 19
+- x: id 8 | ctype 8 | seed bits 0–15
+  - Id and ctype (which holds an element id too: what lava melted from, what a clone copies) get 8 bits each,
+    so both hold 256 elements (docs/elements.md: there are about 100 to come).
   - The inert flag lives in its own R8 target written by react and every other state writer (D8), so the
     activity reduction reads 1 byte per cell.
   - Another session (`../tpt-rest-pos`, not yet on main) turns the seed into a grain's rest position: three
-    6-bit axes plus a free-fall flag, scrambled, in 19 bits (`src/shaders/rest.js`). The seed field holds all 19.
+    6-bit axes plus a free-fall flag, scrambled, in 19 bits (`src/shaders/rest.js`). Bits 0–15 are here, bit 16
+    in z and bits 17–18 in w.
 - y: temperature as f32 bits. Conduction fluxes are tiny and must not round away.
-- z: life f16 | pressure f16
-- w: velocity, 3 × 10-bit signed fixed point over [−V_MAX, V_MAX], with 2 spare flag bits.
+- z: life f16 | pressure f15 | seed bit 16
+  - Pressure is a 15-bit float: sign, 4-bit exponent (bias 7), 10-bit mantissa. Normals run from 2^−6 to 511,
+    past P_MAX − P_MIN; subnormals reach down to 2^−16, so REST_P (0.001) still has 6 significant bits, and
+    stochastic rounding keeps the geometric decay toward 0 unbiased.
+- w: velocity, 3 × 10-bit signed fixed point over [−V_MAX, V_MAX] | seed bits 17–18
   - Stochastic rounding, using the cell's hash random stream, keeps the expected value exact, so gravity, drag
     and friction integrate without bias.
   - Exact zero stays exact zero, which rest states need.
+
+Where the 4 extra id and ctype bits come from (the first draft gave each 6 bits, 64 elements): x's spare bit,
+w's 2 spare flag bits, and 1 bit of pressure's exponent (f16 to f15 above).
 
 The accessors decode to the D5 floats, so readers don't change. This is a precision change: prove it
 statistically, not pixel-wise:
@@ -122,7 +131,7 @@ statistically, not pixel-wise:
 - settling.
 
 **Fallback.** If 10-bit velocity measurably changes behaviour, use f16 velocity: w = vx | vy, plus a second
-R16UI texture for vz and the flags (18 bytes per cell).
+R32UI texture for vz f16 and seed bits 17–18 (20 bytes per cell).
 
 ### D8. Two passes per step, and skipping sleeping bricks
 - **Gather fused into react.** A step is a block pass (one fragment per Margolus block, 8 slot results), then a
@@ -500,8 +509,8 @@ The world is much larger than what lives on the GPU. Its size is `WORLD` cells, 
     edits outside the window (W5).
 
 - **Scenes** (`src/world/scenes`; checked on the CPU by `tools/check-scenes.mjs`). What a world holds is a scene:
-  the island and five more, picked in Settings → Scene while the grid is World (`settings.scene`, saved; `?scene=`
-  too). Picking one starts the world over with it (`build`, as clicking World again does).
+  the island and five more, each a map in the start menu (`src/maps.js`; `settings.scene`, saved; `?scene=` and
+  `?map=` too). Picking one starts the world over with it (`build`).
   - A scene is an object (`scenes/index.js` documents it): `params({ size, seed })` → P with at least `sea` and
     `floor`; `glsl(g)` defining `sceneCell(world cell, A, B)`, the generated state of any cell, a pure function of
     the cell and the scene's `uniforms(P)`; `start(P, win)` and `ground(x, z, P)` on the CPU (the window's first

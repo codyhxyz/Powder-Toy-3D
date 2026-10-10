@@ -17,7 +17,7 @@ function facts(it) {
   if (it.key === 'STEAM') out.push(['Condenses ', deg(100), '']);
   if (it.key === 'CLOUD') out.push(['Rains where thick', '', ''], ['Snows ', deg(0), ''], ['Boils ', deg(100), '']);
   if (it.melt) out.push(['Melts ', deg(it.melt), '']);
-  if (it.ignite) out.push([it.key === 'GUNPOWDER' ? 'Explodes ' : 'Ignites ', deg(it.ignite), '']);
+  if (it.ignite) out.push([it.blast ? 'Explodes ' : 'Ignites ', deg(it.ignite), '']);
   if (it.temp !== 20) out.push(['Starts at ', deg(it.temp), '']);
   if (it.cond >= 0.05) out.push(['Conducts heat well', '', '']);
   else if (it.cond <= 0.002 && it.kind !== 4) out.push(['Insulates', '', '']);

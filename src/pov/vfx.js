@@ -31,6 +31,7 @@ const TRACER_MAX = 48;
 const JET_MAX = 90;
 const JET_SMOKE_MAX = 120;
 const FLAME_MAX = 200;            // the jetpack's and the rockets' smoke
+const EMBER_MAX = 90;             // a torch's embers (held and lying)
 
 // ---- muzzle flash
 const FLASH_LIFE = 0.055;               // s
@@ -145,6 +146,19 @@ const FLAME_GROW = 5;                   // ...growing to this many times that
 const FLAME_SPREAD = 0.08;              // share of the speed thrown sideways at most
 const FLAME_COLOR = [7, 3.2, 0.8];      // HDR, orange-yellow
 const FLAME_LIGHT = 2;                  // the nozzle light, times the muzzle flash's (kept lit while it burns)
+
+// ---- a burning torch ('torch:burn' event, every frame per flame): embers that rise off it,
+// drift and wink out, left behind as it moves (it gives them only a share of its own speed)
+const EMBER_RATE = 7;                   // embers/s per flame
+const EMBER_RISE = [2.5, 5];            // cells/s, up
+const EMBER_DRIFT = 1.2;                // cells/s sideways at most
+const EMBER_CARRY = 0.3;                // share of the torch's velocity an ember leaves with
+const EMBER_LIFE = [0.5, 1.3];          // s
+const EMBER_SIZE = [0.035, 0.07];       // cells across
+const EMBER_SPREAD = 0.12;              // cells: how far round the flame's heart they start
+const EMBER_GRAVITY = -1.5;             // cells/s²: hot, they keep rising
+const EMBER_DRAG = 1.2;                 // 1/s
+const EMBER_COLOR = [7, 2.4, 0.4];      // HDR: orange-hot, they bloom to points of light
 
 // ---- blasts ('blast' event: a rocket's or a bomb's): a fireball, embers and smoke
 const BLAST_FLASH_SIZE = 6;             // cells across
@@ -261,6 +275,7 @@ export function createVfx(env) {
   system('jet', { max: JET_MAX, material: dotAdd, behaviors: [FADE_SHARP()] });
   system('jetSmoke', { max: JET_SMOKE_MAX, material: dotNormal, behaviors: [FADE_OUT()] });
   system('flame', { max: FLAME_MAX, material: dotAdd, behaviors: [FADE_OUT()] });
+  system('ember', { max: EMBER_MAX, material: dotAdd, behaviors: [FADE_OUT()] });
   // dust and mist puffs grow (from each particle's own start size); chips don't.
   // Systems with the same material and mode share one batch (one draw call).
   fx.debris.sys.addBehavior(GROW(DUST_GROW));
@@ -444,6 +459,20 @@ export function createVfx(env) {
     lightT = Math.max(lightT, FLASH_LIGHT_TIME);
   }
 
+  // a torch's flame burning for dt seconds at `at` (world), moving at vel (world units/s)
+  let emberOwed = 0;   // embers due, over every flame (each adds its own dt)
+  function torchEmbers(at, vel, dt) {
+    const s = env.getScale();
+    emberOwed += EMBER_RATE * dt;
+    const n = Math.floor(emberOwed);
+    emberOwed -= n;
+    burst(fx.ember, n, (p) => {
+      vP.randomDirection().multiplyScalar(EMBER_SPREAD * s * Math.random()).add(at);
+      vV.set(rand(-1, 1) * EMBER_DRIFT, randIn(EMBER_RISE), rand(-1, 1) * EMBER_DRIFT).multiplyScalar(s).addScaledVector(vel, EMBER_CARRY);
+      setP(p, vP, vV, randIn(EMBER_SIZE) * s, EMBER_COLOR, 1, randIn(EMBER_LIFE), EMBER_GRAVITY, EMBER_DRAG);
+    });
+  }
+
   // a blast at `at` (world): a fireball, embers every way and a smoke cloud
   function blast(at) {
     const s = env.getScale();
@@ -546,6 +575,9 @@ export function createVfx(env) {
     }),
     povEvents.on('flame', (e) => {
       if (live() && !e.by) flameStream(e.muzzleWorld, e.dir, e.length, e.dt);
+    }),
+    povEvents.on('torch:burn', (e) => {
+      if (live()) torchEmbers(e.at, e.vel, e.dt);
     }),
   ];
 

@@ -84,14 +84,26 @@ draws the muzzle flash, sparks, dust and tracers. The held tools are low-poly an
 **Settings → First person** picks the body: the stickman, or a realistic one animated with
 [Quaternius](https://quaternius.com)'s CC0 animation library.
 
+## Maps
+
+The site opens on a map menu, Garry's Mod's New Game screen: gamemodes down the left, a square preview of each
+map built for the chosen one, its size tagged in the corner, and Start. Sandbox lists every map. A map is one
+place at one size: the boxes (Lab, Volcano, Islet and Empty at 128³, Dam Valley at 256 × 96 × 128) and the
+worlds (Island, Volcano Isles, Lab Complex, Giant Volcano). The game itself only loads once
+you pick one. **Esc** (with nothing else open), the toolbar's map button or **Settings → Map → Change map**
+brings the menu back over the game. The maps are in `src/maps.js`. `tools/map-thumbs.mjs` renders their previews
+into `public/maps`, and `tools/menu-check.mjs` checks the menu on the GPU. A link with a query (`?map=lab`,
+`?preset=…`, an invite) skips the menu.
+
 ## World
 
-**Settings → Grid size → World** swaps the box for a whole island: 1024 × 128 × 1024 cells (about 300 m across),
+A world map swaps the box for a whole island: 1024 × 128 × 1024 cells (about 300 m across),
 generated from a seed with hills, cliffs, beaches, meadows, forests and rock peaks. Only a 128³ window around you
 is simulated (the orbit target in the god view, your body in first person), and it slides along 16 cells at a time
 as you move. Whatever you change stays changed: the bricks you leave behind are compressed and kept, and they come
 back when you return, so a house you built or a crater you blew is still there. Painting, tools, signs and undo
-work inside the window. Multiplayer doesn't work in World yet. Picking a scene goes back to a box.
+work inside the window. Multiplayer doesn't work in World yet. The Giant Volcano's world is three times as tall
+(1024 × 384 × 1024, the window as tall), so its cone rises 350 cells (105 m) at the box volcano's steepness.
 
 ## Elements
 
