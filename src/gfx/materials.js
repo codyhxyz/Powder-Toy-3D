@@ -147,6 +147,13 @@ const LOOKS = {
   // faces swamps the absorption), and keeps the glow (powdered phosphors do).
   CRYSTAL: { rough: 0.15, ior: 1.434, alb: '#5c3f8a', sss: 0.4, emit: FLUORITE_GLOW },
   CRYSTAL_DUST: { ch: 'GRANULAR', rough: 0.6, ior: 1.434, alb: '#b7a2d2', sss: 0.3, glint: 0.4, emit: FLUORITE_GLOW },
+  // Meat (elements.js MEAT, COOKED_MEAT): raw lean muscle is wet (a glossy
+  // surface, water's n = 1.33) and translucent, red with myoglobin (light
+  // wraps into it as into skin); cooking browns and dries it (the Maillard
+  // crust) and denatures the proteins, which scatter: matte, opaque, brown.
+  // Saturated past the measured values, as the Castle Crashers look wants.
+  MEAT: { ch: 'GRANULAR', rough: 0.35, ior: 1.33, alb: '#b8424a', sss: 0.5 },
+  COOKED_MEAT: { ch: 'GRANULAR', rough: 0.7, alb: '#6e4126', sss: 0.15 },
 };
 
 // Shared texture families (LOOKS surf). NONE: an element's own (or none).

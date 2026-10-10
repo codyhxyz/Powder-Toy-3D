@@ -280,6 +280,8 @@ bool inertSelf(vec4 a, vec4 b) {
   if (k != K_SOLID && (b.xyz != vec3(0.0) || abs(b.w) > REST_P)) return false;
   if (MELT[id] > 0.0 && T > MELT[id]) return false;
   if (IGNITE[id] > 0.0 && T >= IGNITE[id]) return false;   // burning, or hot enough to light the air
+  // a phase change on heating (elements.js hot): at its point, or heat banked toward it
+  if (HOT_INTO[id] >= 0 && (T >= HOT_T[id] || (HOT_LATENT[id] > 0.0 && a.z > 0.0))) return false;
   // latent heat: water and ice at rest have nothing banked and sit within their phase
   if (id == E_WATER) return a.z == 0.0 && T >= 0.0 && T <= 100.0;
   if (id == E_ICE || id == E_SNOW) return a.z == 0.0 && T <= 0.0;

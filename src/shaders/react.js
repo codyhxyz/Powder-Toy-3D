@@ -355,6 +355,16 @@ void main() {
     }
   }
 
+  // the phase change on heating (elements.js hot): at or above HOT_T it
+  // becomes HOT_INTO, once HOT_LATENT is banked (in life, as ice banks its
+  // melting), setting free HOT_PUFF volumes of gas as a puff (as fizz does)
+  if (nidOut == id && HOT_INTO[id] >= 0
+      && (HOT_LATENT[id] > 0.0 ? latent(T, life, HOT_T[id], C, HOT_LATENT[id], true) : T >= HOT_T[id])) {
+    nidOut = HOT_INTO[id]; reset = true;
+    if (HOT_OF[id] > 0) ctype = float(HOT_OF[id]);
+    P += STEAM_BOIL_PUFF * HOT_PUFF[id] / STEAM_EXPANSION;
+  }
+
   // melting (stone, sand, metal, glass → lava that remembers what it was)
   if (nidOut == id && MELT[id] > 0.0 && T > MELT[id]) {
     nidOut = E_LAVA; ctype = float(MELTINTO[id]); life = 0.0;

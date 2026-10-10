@@ -35,6 +35,14 @@
 //   sound  what it sounds like struck, in first person (pov/audio.js
 //          families); omitted = by kind (solids crack, powders puff,
 //          liquids splash)
+//   hot    { T, into, of, latent, puff }: at or above T °C it becomes `into`
+//          (an element key; 'EMPTY' = air), TPT's high-temperature
+//          transition. of: when into is 'LAVA', what it sets back into
+//          (ctype). latent: heat banked first, in life, as ice banks its
+//          melting (cap·°C, physics.js L_FUSE's units; omitted: instant).
+//          puff: volumes of gas set free per volume, a pressure puff as fizz.
+//          el-core's documented shape (docs/elements.md); read here, ahead of
+//          el-core, with a single `into` key (no weighted lists yet).
 //
 // Adding an element
 //   Data only, nothing else to touch:
@@ -211,12 +219,39 @@ const defs = [
     dens: 13.5, cond: 0.01, cap: 0.4, drag: 0.04, slide: 0.7, ignite: 450, burnRate: 0.0017, burnHeat: 6, flameT: 1100,
     life: 1, spawn: 0.3, sound: 'crack',
     desc: 'Lumps of coal, as the pickaxe breaks them from a seam. Sinks in water and burns faster than the seam.' },
+  // Meat: what a body bursts into when it's killed by overkill (pov/vitals.js
+  // GIB_HEALTH): chunks of lean muscle, ~75% water. Thermal properties of lean
+  // beef above freezing (ASHRAE Handbook, Refrigeration, "Thermal Properties
+  // of Foods"): 1.05 g/cm³ (it sinks, barely), ~0.48 W/(m·K), 4/5 of water's
+  // 0.6 (cond: water's 0.03 × 0.8), 3.5 J/(g·K) (cap: 3.5 × 1.05 / 4.18).
+  // Raw, it's too wet to burn. It cooks at 71 °C, USDA's safe minimum for
+  // ground meat (160 °F; whole cuts 63 °C), past actin's denaturation (DSC,
+  // Wright, Leach & Wilding 1977), taking the proteins' denaturation heat
+  // first: ~3.5 J/g in beef (3.0-3.8, Oklahoma State beef DSC, 1992),
+  // 3.5 × 1.05 / 4.18 ≈ 0.9 cap·°C, about a degree's worth of heating. Chunks
+  // pile steeply (slide like snow's).
+  { key: 'MEAT', abbr: 'MEAT', name: 'Meat', kind: K.POWDER, render: R.OPAQUE, color: '#d65a64', var: 0.15,
+    dens: 10.5, cond: 0.024, cap: 0.88, drag: 0.04, slide: 0.35, spawn: 0.3, sound: 'thunk',
+    hot: { T: 71, into: 'COOKED_MEAT', latent: 0.9 },
+    desc: 'Raw chunks of a body. Too wet to burn: heat it past 71 °C (fire, lava, steam, the flamethrower) and it cooks. Raw meat does nothing for you.' },
+  // Cooked meat: the same chunks, cooked through. Cooking drives out some
+  // water: ~3.0 J/(g·K) and ~0.4 W/(m·K) cooked (ASHRAE, as above). Its fat
+  // flashes at ~320 °C (beef tallow's flash point, 319 °C, Sigma-Aldrich), so
+  // overheated in air it chars and burns, through the same fields as wood,
+  // leaving ash. Heat per volume goes as burnHeat / burnRate: cooked beef
+  // holds ~10.5 kJ/g (food energy, ~250 kcal/100 g) × 1.05 g/cm³ ≈ 11 MJ/L,
+  // dry wood's (0.6 × 18), so it burns at wood's pace; its water keeps the
+  // flame cooler than wood's.
+  { key: 'COOKED_MEAT', abbr: 'CMET', name: 'Cooked meat', kind: K.POWDER, render: R.OPAQUE, color: '#8a5530', var: 0.15,
+    dens: 10.5, cond: 0.02, cap: 0.75, drag: 0.04, slide: 0.35, ignite: 320, burnRate: 0.0018, burnHeat: 3, flameT: 800,
+    life: 1, spawn: 0.3, sound: 'thunk',
+    desc: 'Meat cooked through. In first person, walk into it to eat it: every chunk heals you. Past 320 °C it chars and burns to ash.' },
 ];
 
 export const ELEMENTS = defs.map((d, id) => ({
   id, var: 0, dens: 1000, grav: 0, drag: 0, friction: d.kind === K.POWDER ? 0.25 : 0, jitter: 0, flow: 0, slide: 0, melt: 0, ignite: 0,
   burnRate: 0, burnHeat: 0, flameT: 0, temp: 20, life: 0, rad: 0, spawn: 1, sigma: [0, 0, 0], desc: '',
-  hard: 0, breakInto: null, meltInto: null, acidProof: false, fizz: 0, ash: true, sound: null,
+  hard: 0, breakInto: null, meltInto: null, acidProof: false, fizz: 0, ash: true, sound: null, hot: null,
   ...d,
   grav: d.grav ?? (d.kind === K.POWDER || d.kind === K.LIQUID ? 1 : 0),
 }));
@@ -300,7 +335,7 @@ export const isGearTool = (id) => id <= GEAR_ID0 && id > GEAR_ID0 - 100;
 // How the palette is laid out in the UI. Within each group, elements are
 // ordered so related materials sit together and the colours run smoothly.
 export const PALETTE = [
-  { name: 'Powders', items: ['SAND', 'STONE', 'BROKENCOAL', 'GUNPOWDER', 'ASH', 'SNOW', 'SHARDS', 'CRYSTAL_DUST', 'SAWDUST', 'SCRAP'] },
+  { name: 'Powders', items: ['SAND', 'STONE', 'BROKENCOAL', 'GUNPOWDER', 'ASH', 'SNOW', 'SHARDS', 'CRYSTAL_DUST', 'SAWDUST', 'COOKED_MEAT', 'MEAT', 'SCRAP'] },
   { name: 'Liquids', items: ['WATER', 'ACID', 'OIL', 'LAVA'] },
   { name: 'Gases', items: ['STEAM', 'CLOUD', 'SMOKE', 'FIRE'] },
   { name: 'Solids', items: ['WALL', 'COAL', 'ROCK', 'LIMESTONE', 'SANDSTONE', 'METAL', 'GLASS', 'ICE', 'CRYSTAL', 'WOOD', 'PLANT', 'CLONE'] },
@@ -333,6 +368,13 @@ const vec3Arr = (name, fn) =>
 // glass turn into glass, scrap recasts as solid metal, crystal dust regrows as
 // crystal, the rest as themselves.
 export const meltInto = (e) => (e.meltInto ? E[e.meltInto] : e.id);
+
+// The phase change on heating (hot), as columns: what it becomes (-1: none),
+// what a melt it becomes sets into (0: none), and its point, latent heat and
+// puff (0 when it has none).
+export const hotInto = (e) => (e.hot ? E[e.hot.into] : -1);
+export const hotOf = (e) => (e.hot?.of ? E[e.hot.of] : 0);
+export const hotNum = (key) => (e) => e.hot?.[key] ?? 0;
 
 export function elementsGLSL() {
   return [
@@ -368,6 +410,11 @@ export function elementsGLSL() {
     boolArr('ACIDPROOF', 'acidProof'),
     floatArr('FIZZ', 'fizz'),
     boolArr('LEAVES_ASH', 'ash'),
+    `const float HOT_T[NE] = float[NE](${ELEMENTS.map(hotNum('T')).map(f).join(', ')});`,
+    `const int HOT_INTO[NE] = int[NE](${ELEMENTS.map(hotInto).join(', ')});`,
+    `const int HOT_OF[NE] = int[NE](${ELEMENTS.map(hotOf).join(', ')});`,
+    `const float HOT_LATENT[NE] = float[NE](${ELEMENTS.map(hotNum('latent')).map(f).join(', ')});`,
+    `const float HOT_PUFF[NE] = float[NE](${ELEMENTS.map(hotNum('puff')).map(f).join(', ')});`,
     vec3Arr('COLOR', (e) => hexToLinear(e.color).map((v) => +v.toFixed(4))),
     vec3Arr('SIGMA', (e) => e.sigma),
   ].join('\n');
