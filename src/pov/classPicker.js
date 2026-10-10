@@ -236,7 +236,7 @@ export function createClassPicker(env) {
 
   // keys: before the toolbelt's digits (it listens in the capture phase too, and is made later)
   const OWN = new Set(['Escape', 'Enter', ' ', ',', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Tab']);
-  const MOVE = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ShiftLeft', 'ShiftRight', 'KeyC', 'KeyV', 'F1']);
+  const MOVE = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ShiftLeft', 'ShiftRight', 'KeyC', 'KeyF', 'F5', 'F1']);
   addEventListener('keydown', (e) => {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     const t = e.target;
@@ -246,7 +246,7 @@ export function createClassPicker(env) {
       return;
     }
     const digit = /^[1-9]$/.test(e.key) ? Number(e.key) - 1 : -1;
-    if (!OWN.has(e.key) && digit < 0 && !MOVE.has(e.code)) return;   // the rest (F, P, T, ?) work as ever
+    if (!OWN.has(e.key) && digit < 0 && !MOVE.has(e.code)) return;   // the rest (V, P, T, ?) work as ever
     e.preventDefault();
     e.stopImmediatePropagation();
     if (e.repeat && !e.key.startsWith('Arrow')) return;
