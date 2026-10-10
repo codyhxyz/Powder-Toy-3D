@@ -519,4 +519,44 @@ export function wreck({ put, rod, vec, footing, rnd, T: size }) {
   put(0, 1, az + al, 'METAL');
 }
 
-export const STRUCTURES = { DOCK: dock, TOWER: tower, STONES: stones, WELL: well, MINE: mine, WRECK: wreck };
+// ---------------------------------------------------------------- bridge
+
+// A timber footbridge across a gorge: a plank deck a step above its stone
+// abutments, between two pony trusses that are its railings (posts, a top
+// chord at hand height, a diagonal brace in every panel). Only the abutments
+// touch the base row, so only they grow footings down to the rims; the deck
+// spans the gap on its own. It runs along z; the variant is its span between
+// the rims, in cells at T = 1 ('short', 'long', or a number: the World passes
+// the gorge's).
+const BRIDGE = {
+  SPANS: { short: 20, long: 36 },
+  W: 5,             // the deck's width (1.5 m)
+  ABUT: 4,          // each abutment's length on the rim: the outer half a step, the inner half two
+  PANEL: 6,         // truss panel length: a post every this many cells
+};
+
+export function bridge({ put, box, rod, vec, footing, T }, variant) {
+  const n = Number(variant), span = Math.round((BRIDGE.SPANS[variant] ?? (Number.isFinite(n) ? n : BRIDGE.SPANS.short)) * T);
+  const hw = (odd(BRIDGE.W * T) - 1) / 2, a = Math.max(2, Math.round(BRIDGE.ABUT * T)), half = Math.ceil(span / 2);
+  const deck = 1, top = deck + HUMAN.RAIL_H, panel = Math.max(2, Math.round(BRIDGE.PANEL * T)), xs = hw + 1;
+  footing();
+  // the abutments: masonry on each rim, a step and then the deck's height
+  for (const s of [-1, 1]) {
+    const z0 = s * half, z1 = s * (half + a), zm = s * (half + Math.floor(a / 2));
+    box(-xs, 0, z0, xs, 0, z1, MASONRY);
+    box(-xs, deck, z0, xs, deck, zm, MASONRY);
+  }
+  // the deck, and the trusses along its sides
+  box(-hw, deck, -half, hw, deck, half, 'WOOD');
+  for (const x of [-xs, xs]) {
+    box(x, deck, -half, x, deck, half, 'WOOD');   // bottom chord
+    box(x, top, -half, x, top, half, 'WOOD');     // top chord: the handrail
+    for (let z = -half; z <= half; z += panel) {
+      box(x, deck + 1, z, x, top - 1, z, 'WOOD'); // posts
+      const z2 = Math.min(half, z + panel);
+      if (z2 > z) rod(vec(x, deck + 1, z < 0 ? z : z2), vec(x, top - 1, z < 0 ? z2 : z), 0.5, 'WOOD'); // braces lean toward the middle
+    }
+  }
+}
+
+export const STRUCTURES = { DOCK: dock, TOWER: tower, STONES: stones, WELL: well, MINE: mine, WRECK: wreck, BRIDGE: bridge };

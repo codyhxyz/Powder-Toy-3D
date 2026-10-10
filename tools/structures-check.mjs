@@ -7,7 +7,9 @@
 //   - seams: a structure across the window's edge, the window then walked over
 //     it a WIN_STEP at a time, against a fresh load at the same origin;
 //   - stills: a village, walking into one of its houses in first person, the
-//     lighthouse, a dock, a wreck, and the far field's structures from afar.
+//     lighthouse on its headland, the bridge across the gorge (and on its
+//     deck), a hermit's cabin at its tarn, a mine, a dock, a wreck, and the far
+//     field's structures from afar.
 // usage: node tools/structures-check.mjs [outDir] [--port 5396] [--steps 600]   (needs a dev server)
 import { chromium } from 'playwright';
 import { mkdirSync } from 'fs';
@@ -38,6 +40,7 @@ await ev(async () => {
   const a = window.__app, H = window.__sc = {};
   const { structuresOf } = await import('/src/world/structures.js');
   H.list = structuresOf(a.win.P).map(({ kind, key, variant, quarter, x, y, z, x0, z0, s }) => ({ kind, key, variant, quarter, x, y, z, x0, z0, w: s.w, h: s.h, d: s.d }));
+  H.lakes = a.win.P.landforms?.lakes ?? [];
   H.frames = (n) => new Promise((res) => { let k = 0; const f = () => (++k >= n ? res() : requestAnimationFrame(f)); requestAnimationFrame(f); });
   const clamp16 = (v, n) => Math.max(0, Math.min(a.win.P.size[0] - n, Math.round(v / 16) * 16));
   // the window over world column (x, z), and the god view looking at it from `from` (grid cells, relative to the window)
@@ -105,8 +108,7 @@ const stable = async (s, tag) => {
   }, [s, STEPS]);
   console.log(`stability at ${tag}: ${JSON.stringify(r)}`);
 };
-if (first('village')) await stable(first('village'), 'village');
-if (first('dock')) await stable(first('dock'), 'dock');
+for (const k of ['village', 'dock', 'bridge', 'hermit']) if (first(k)) await stable(first(k), k);
 
 // ---- seams: a structure across the window's +x edge, walked over, against a fresh load
 const seam = await ev(async (s) => {
@@ -186,6 +188,46 @@ if (Wr) {
   await at(Wr, (s, o) => [s.x - o[0] + 30, s.y + 20, s.z - o[1] - 30], (s, o) => [s.x - o[0], s.y, s.z - o[1]]);
   await shot('wreck');
 }
+// the landform sites: front = the record's front (+z turned by its quarter)
+const FRONTS = [[0, 1], [1, 0], [0, -1], [-1, 0]];
+const lakes = await ev(() => window.__sc.lakes);
+const Lh = first('lighthouse');
+if (Lh) {   // from the sea: behind its door, which faces inland
+  const [fx, fz] = FRONTS[Lh.quarter];
+  await at(Lh, (s, o) => [s.x - o[0] - fx * 70, s.y + 18, s.z - o[1] - fz * 70], (s, o) => [s.x - o[0], s.y + 14, s.z - o[1]]);
+  await shot('landform-lighthouse');
+}
+const B = first('bridge');
+if (B) {   // down the gorge: across the span's axis
+  const [fx, fz] = FRONTS[B.quarter];
+  await at(B, (s, o) => [s.x - o[0] - fz * 45, s.y + 10, s.z - o[1] + fx * 45], (s, o) => [s.x - o[0], s.y - 6, s.z - o[1]]);
+  await shot('landform-bridge');
+  await ev(async (b) => {
+    const a = window.__app, V3 = a.camera.position.constructor, o = a.sim.origin, [fx, fz] = [[0, 1], [1, 0], [0, -1], [-1, 0]][b.quarter];
+    a.pov.test.assumeLocked = true;
+    await a.pov.enter();
+    for (let k = 0; k < 200 && a.pov.mode !== 'on'; k++) await window.__sc.frames(1);
+    a.pov.player.spawn(new V3(b.x - o.x + 0.5 - fx * 10, b.y + 2, b.z - o.z + 0.5 - fz * 10));
+    a.pov.setLook(Math.atan2(-fx, -fz) + Math.PI, -0.1);
+  }, B);
+  await shot('landform-bridge-deck');
+  await ev(() => window.__app.pov.exit());
+  await p.waitForTimeout(1200);
+}
+const He = first('hermit');
+if (He && lakes.length) {   // from over its tarn
+  const l = lakes.reduce((b, k) => (Math.hypot(k.x - He.x, k.z - He.z) < Math.hypot(b.x - He.x, b.z - He.z) ? k : b));
+  const d = Math.hypot(He.x - l.x, He.z - l.z), ux = (He.x - l.x) / d, uz = (He.z - l.z) / d;
+  await at(He, (s, o) => [l.x - o[0] - ux * (l.r + 6), l.level + 14, l.z - o[1] - uz * (l.r + 6)], (s, o) => [s.x - o[0], s.y + 4, s.z - o[1]]);
+  await shot('landform-hermit');
+}
+const Mi = first('mine');
+if (Mi) {   // in front of its portal, which faces down the slope
+  const [fx, fz] = FRONTS[Mi.quarter];
+  await at(Mi, (s, o) => [s.x - o[0] + fx * 34, s.y + 12, s.z - o[1] + fz * 34], (s, o) => [s.x - o[0], s.y + 5, s.z - o[1]]);
+  await shot('landform-mine');
+}
+
 // from afar: the window at the village, the camera high over it looking toward the lighthouse
 if (V && L) {
   const o = await ev((s) => window.__sc.goto(s.x, s.z), V);
