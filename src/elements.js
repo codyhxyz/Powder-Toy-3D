@@ -50,8 +50,10 @@
 //      channel, and surf for a shared texture (surf 'CRAG': natural rock,
 //      with per-element crag parameters).
 //   The GLSL arrays, the dock tile (ui/tiles/engine.js reads the same table),
-//   the first-person tools (hardness), the AI's prompt (ai/prompt.js) and the
-//   info card all follow from those rows.
+//   the first-person tools (hardness), the AI's prompt (ai/prompt.js), the
+//   info card and the World's far field (shaders/far.js: up to 256 elements;
+//   a render R.LIQUID element is a far liquid with its own optics) all follow
+//   from those rows.
 //   Still needs code:
 //   - A behaviour no field covers (a new reaction, like plant growth or clone)
 //     goes in shaders/react.js, mirrored in ui/tiles/engine.js
@@ -60,8 +62,6 @@
 //   - A texture of its own, beyond its albedo and the shared surf textures, is
 //     a branch of shaders/gfx/surface.js matOf (and reliefHeight, plus
 //     gfx/relief.js, for relief up close).
-//   - A liquid that the world's far field (past the box) should draw goes in
-//     shaders/far.js FAR_LIQUIDS.
 
 import { SHRINE_OFFERS } from './pov/perks.js';
 import { GEAR, SLOTS } from './pov/tools/catalog.js';
@@ -349,8 +349,12 @@ export const TOOLS = [
     desc: 'Click a surface: in first person (F) an enemy with every tool appears here, and comes back after it dies. Click it again to remove it.' },
   { id: -7, key: 'SPAWN', abbr: 'SPWN', name: 'Player spawn', color: '#3fa7ff',
     desc: 'Click a surface: F drops you in at the spawn nearest the cursor, and you respawn there. Click it again to remove it.' },
+  { id: -20, key: 'JEEPPAD', abbr: 'JEEP', name: 'Jeep pad', color: '#8fa04a',
+    desc: 'Click open ground: in first person (F) a jeep waits here (E to drive it), and a new one comes a few seconds after it is destroyed. Click it again to remove it.' },
+  { id: -21, key: 'BIKEPAD', abbr: 'HOVR', name: 'Hoverbike pad', color: '#5fd0e0',
+    desc: 'Click open ground: in first person (F) a hoverbike waits here (E to ride it; it skims water), and comes back after it is destroyed. Click it again to remove it.' },
 ];
-export const isSpawnerTool = (id) => id === -6 || id === -7;
+export const isSpawnerTool = (id) => id === -6 || id === -7 || id === -20 || id === -21;
 
 // Constructions: whole structures placed with one click (src/constructions.js
 // builds and stamps them; they never reach the paint shader). Each one is
@@ -417,7 +421,7 @@ export const PALETTE = [
   { name: 'Gases', items: ['STEAM', 'CLOUD', 'SMOKE', 'FIRE'] },
   { name: 'Solids', items: ['WALL', 'COAL', 'ROCK', 'LIMESTONE', 'SANDSTONE', 'METAL', 'GLASS', 'ICE', 'CRYSTAL', 'WOOD', 'FUNGUS', 'PLANT', 'MOSS', 'CLONE'] },
   { name: 'Tools', items: ['HEAT', 'COOL', 'ERASE', 'BLAST', 'SIGN', ...GEAR_ITEMS.map((g) => g.key)] },
-  { name: 'Entities', items: ['ENEMY', 'SPAWN'] },
+  { name: 'Entities', items: ['ENEMY', 'SPAWN', 'JEEPPAD', 'BIKEPAD'] },
   { name: 'Constructions', items: ['HOUSE', 'TREE', 'CAMPFIRE', 'IGLOO', 'BARREL', 'AQUARIUM', 'FOUNTAIN', 'SHRINE', 'DOCK', 'TOWER', 'STONES', 'WELL', 'MINE', 'WRECK', 'PROMPT'] },
 ];
 

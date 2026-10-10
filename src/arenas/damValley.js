@@ -201,8 +201,8 @@ const SHRINE_HALF = [8, 5];          // the shrine's floor's half-extents (const
 const SHRINE_HEIGHT = 12;            // cells from its floor to the top of its roof
 
 // What the round modes and vehicles build against (grid cells; feet positions;
-// yaw as the POV camera's: 0 faces -z, π/2 faces -x).
-const FACE_BLUE = -Math.PI / 2, FACE_RED = Math.PI / 2;
+// a vehicle's yaw as vehicles/index.js reads it: 0 faces +z, π/2 faces +x).
+const FACE_BLUE = Math.PI / 2, FACE_RED = -Math.PI / 2;
 const RED_FOREST = [68, 84], BLUE_FOREST = [NX - 1 - 68, 84];
 export const DAM_VALLEY_LAYOUT = {
   name: 'Dam Valley',

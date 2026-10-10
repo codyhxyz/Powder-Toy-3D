@@ -19,6 +19,7 @@
     "@ai-sdk/google": "^4.0.88",
     "@ai-sdk/openai": "^4.0.84",
     "@ai-sdk/openai-compatible": "^3.0.63",
+    "@dimforge/rapier3d-compat": "0.21.0",
     "@openrouter/ai-sdk-provider": "^3.1.0",
     "ai": "^7.0.128",
     "ai-sdk-ollama": "^4.4.0",

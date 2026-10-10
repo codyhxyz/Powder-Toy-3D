@@ -123,6 +123,7 @@ export function createNpc({ env, ai, home = () => null }) {
     primary: false, secondary: false, primaryPressed: false, secondaryPressed: false, player: body, viewBobbing: false,
   };
   const actor = { id, at: eye };
+  body.status.actor = actor;   // its statuses' events say whose (status.js)
   // it hurt the player: a breather before its next attack
   const offLanded = povEvents.on('player:hit', (e) => { if (e.by === id) agent.landed(); });
   const hit = {};
@@ -255,7 +256,7 @@ export function createNpc({ env, ai, home = () => null }) {
       figure.update(dt, {
         feet: vFeet, scale: w.scale, yaw, worldToGrid: w.worldToGrid,
         speedH: got, velY: body.vel.y, onGround: body.onGround, inLiquid: body.inLiquid, headInLiquid: body.headInLiquid,
-        dead: body.dead, deadTime, heat: body.feel?.heat ?? 0, jetting: body.jetting,
+        dead: body.dead, deadTime, heat: body.feel?.heat ?? 0, jetting: body.jetting, status: body.status,
         chop: chopT > 0 ? 1 : it.chop,
       });
     },

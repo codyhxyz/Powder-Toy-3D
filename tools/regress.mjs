@@ -5,6 +5,8 @@
 //   --detail: close-up detail features (gfx/detail.js) all off (the default,
 //   so a feature switched off can be proven pixel-identical), all on, or as
 //   their cost tiers set them.
+//   --adapt off: eye adaptation (gfx/post.js ADAPT) held at gain 1, to prove
+//   it leaves daylight views alone (compare against a run without it).
 //   --motion: the views mid-motion instead: the frame loop keeps the sim
 //   running (and some views keep painting) right up to the screenshot, so the
 //   fields, bricks and GI are caught mid-change (docs/scaling.md D9). Frames
@@ -18,6 +20,7 @@ const out = args[0];
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
 const port = opt('port', '5191');
 const motion = args.includes('--motion');
+const adapt = opt('adapt', 'on') !== 'off';
 mkdirSync(out, { recursive: true });
 const detailMode = opt('detail', 'off');
 const detail = detailMode === 'default' ? detailDefaults()
@@ -105,11 +108,12 @@ if (motion) {
   await p.evaluate(() => window.__hold());
   while (!(await p.evaluate(() => window.__parked()))) await p.evaluate(() => window.__rawFrame());
   for (const [name, [preset, steps, pos, tgt, stroke]] of Object.entries(motionViews)) {
-    await p.evaluate(([preset, steps, pos, tgt, frames, stroke]) => {
+    await p.evaluate(([preset, steps, pos, tgt, frames, stroke, adapt]) => {
       const a = window.__app;
       a.settings.paused = true;
       a.autoRes.enabled = false;
       a.post.settings.taa = false;
+      a.post.settings.adapt = adapt;
       a.day.clock = 0;
       window.__load(preset);
       for (let i = 0; i < steps; i++) a.sim.step();
@@ -128,17 +132,18 @@ if (motion) {
         window.__tick();
       }
       a.settings.paused = true;
-    }, [preset, steps, pos, tgt, MOTION_FRAMES, stroke]);
+    }, [preset, steps, pos, tgt, MOTION_FRAMES, stroke, adapt]);
     for (let i = 0; i < 2; i++) await p.evaluate(() => window.__rawFrame());
     await p.screenshot({ path: `${out}/${name}.png` });
   }
 }
 for (const [preset, v] of Object.entries(motion ? {} : views)) {
-  await p.evaluate(async ([preset, steps]) => {
+  await p.evaluate(async ([preset, steps, adapt]) => {
     const a = window.__app;
     a.settings.paused = true;
     a.autoRes.enabled = false;
     a.post.settings.taa = false;   // TAA's jitter index isn't resettable: compare un-jittered frames
+    a.post.settings.adapt = adapt;
     // The app boots running, so the day clock (the sun) has advanced by however
     // many frames the page managed before this: put it back to the start of the day.
     a.day.clock = 0;
@@ -146,7 +151,7 @@ for (const [preset, v] of Object.entries(motion ? {} : views)) {
     for (let i = 0; i < steps; i++) a.sim.step();
     // let the frame loop see the world change now, not after the cameras reset uTime
     for (let i = 0; i < 2; i++) await new Promise((r) => requestAnimationFrame(r));
-  }, [preset, v.steps]);
+  }, [preset, v.steps, adapt]);
   for (const [name, [pos, tgt]] of Object.entries(v.cams)) {
     await p.evaluate(async ([pos, tgt]) => {
       const a = window.__app;

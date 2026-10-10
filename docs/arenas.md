@@ -82,8 +82,8 @@ room. No water rose to the plateaus.
 ### The layout (`DAM_VALLEY_LAYOUT`)
 
 Grid cells. Points are **feet**: the first air cell over the ground or floor.
-`yaw` follows the POV camera: 0 faces −z, π/2 faces −x, so red faces +x
-(−π/2) and blue faces −x (π/2).
+A vehicle's `yaw` is as `pov/vehicles` reads it: 0 faces +z, π/2 faces +x, so red's
+face +x (π/2) and blue's face −x (−π/2), into the valley.
 
 ```js
 { name: 'Dam Valley', size: [256, 96, 128],
