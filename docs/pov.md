@@ -118,6 +118,48 @@ break stops it). Nothing is added: struck cells become their own debris or are s
   undo or new grid: what they left in the world goes).
 - `tools/lights-check.mjs` checks it at midnight on the GPU.
 
+## Kick (2026-10-10): Cruelty Squad's, on `X`
+
+- Always to hand, no hotbar slot: `X` (`kick.js KICK_KEY`; F, V, Q, C, E, Tab, `,` `.` and the digits are taken).
+  It is a body ability, `player.kick(dir)`, so an NPC's body has it too (the brain doesn't use it yet).
+- A blow from the hip (2.6 cells up) along the aim, reaching 1.2 m. What it meets first: a body (`targets.js`)
+  takes Noita's kick damage (0.04) and a shove (`target.shove(dv)`; `hurt(..., null)` adds no knockback of its
+  own); a cell, read from the body's own probe, takes the boot over Noita's kick radius (3 px = 1.5 cells,
+  `shaders/povKick.js KICK`): weak solids break into debris by the melee energy rule (ENERGY 16: glass, ice,
+  plants; not wood, rock or metal) and loose matter and the debris are shoved.
+- **Momentum, `pov/tug.js`:** the foot drives the pair apart at 14 m/s (a martial artist's front kick; it is
+  also a Noita jump's speed), split by inverse mass. A body is 70 kg, the struck lump what its cells weigh
+  (falloff-weighted over the patch: a 30 cm cell of sand is 43 kg), and a solid the boot doesn't break, or
+  the floor, is anchored (infinite). So kicking a wall in the air throws you off it at 14 m/s, kicking the
+  floor lifts you about a jump's height, and a heap heavier than you barely gives while you bounce off it;
+  a lone clump or a body (half each) moves. Standing, the ground braces you (sideways and downward
+  absorbed), as with the gun's recoil. The reaction is one `applyImpulse`, which the Noita ease then treats
+  like a rocket's push.
+- Shows: the figure's front kick (`figure.js s.kick`: chamber, extend, retract), a boot swung up into the
+  viewmodel (`createKickLeg`), `HIT.KICK`'s view jolt, `kick` event and sounds (whoosh, a thud on a body or
+  an anchored kick-off; the material's own through `impact` with source `kick`, a `MELEE_SOURCES` member).
+- Not done: a touch button (`touch.js` isn't on main yet); the NPC brain kicking; a pose for the Realistic body.
+
+## Hook (2026-10-10): one rope, mass decides which way things move
+
+`tools/hook.tool.js`, slot 5 (Gadgets), in hand from the start. Left-click fires the claw along the crosshair
+(100 m/s); past 30 m it comes back empty, as Cruelty Squad's grapple fails out of range.
+
+| It catches | What happens |
+|---|---|
+| A solid cell or the floor (anchored) | The rope hangs you on it (`player.tether`). **Hold left-click to reel in**: Titanfall 2's grapple, the closing speed eased toward 14 m/s (the jet's climb, the body's own top speed) the Noita way, the speed across the rope damped so it zips instead of orbiting; it ends at the claw with your momentum kept. **Let go to hang**: the rope keeps its length and you swing (Box2D's rope joint: past the length the outward speed is removed and a Baumgarte term pulls you back; gravity makes the pendulum; in the air your keys only ever add speed, so a swing keeps its momentum). The anchor cell is read back every frame (`hookCellFrag`): it tears out if it stops being solid. |
+| Loose matter | It can't hold you: the claw bites one cell out (exact cell transfer, as the shovel) and the rope draws it and you together by inverse mass (`tug.js`): sand (43 kg) comes most of the way, standing you don't budge (braced), a cell of metal dust (210 kg) drags you to it. At your hand the cell is set down in front of you, moving as the claw was. |
+| A body (an NPC) | Both are reeled toward each other, each by the other's share of the mass (equal bodies meet in the middle). |
+
+- **Right-click lets go** (and drops a carried bite where the claw is). Works with the jetpack: the rope only
+  stops you moving away from the anchor, so jetting up while hanging climbs toward it.
+- Body rope API (`player.js`): `tether({ anchor, length, reel, hard, brace })` (kept by reference: the tool moves
+  `anchor` and sets `reel`), `tether(null)`, `ropeHand()` (where it pulls: shoulder height), `rope`.
+- Events: `tool:action` tool `hook`: `fire`, `catch` (id), `miss`, `tear`, `release`, `dump`.
+- Cut: a verlet rope (it's a straight line; it doesn't wrap corners or sag), yanking an NPC's tool from its hand.
+
+Check: `node tools/kick-hook-check.mjs [--port …] [--shots dir]` (a dev server; AC power).
+
 ## Physics rules (non-negotiable, see feedback in project memory)
 
 - Everything obeys the engine. No visual fakes. The world never gets scripted exceptions: a perk (see
@@ -302,6 +344,7 @@ say world. Emitters own their event names. Listeners never mutate payloads.
 | `tool:action` | shovel, bucket, axe, pickaxe, knife, physgun, trowel, blowtorch, bomb | `{ tool, action, id?, point?, amount? }`. tool is 'shovel'\|'bucket'\|'axe'\|'pickaxe'\|'knife'\|'physgun'\|'trowel'\|'blowtorch'\|'bomb'; action is 'dig'\|'place'\|'on'\|'off'\|'throw'\|'dump'\|'scoop'\|'pour'\|'swing'\|'refuse'\|'grab'\|'fling'\|'release'\|'blast'. Physgun 'hold' state is read from the tool, not an event. |
 | `player:step` | shell (camera bob cycle) | `{ speed, inLiquid }`. A footfall. |
 | `player:jet` | player | `{ on }`. The jetpack lit or went out. |
+| `kick` | a body's kick (kick.js) | `{ hit: 'cell'\|'body'\|null, point, normal, dir, id, broke, mass, dv }`. A kick, landed or not: mass is what it met (kg, Infinity when anchored), dv the kicker's own Δv (cells/s). |
 | `perk:take` | shell | `{ key, keys, point, by? }`. A body took a perk orb: key is the orb's, keys what it gained (Gamble's two). |
 | `perk:revive` | shell | `{ point }`. Extra Life brought the player back. |
 | `status:on` / `status:off` | a body's status set (`status.js`) | `{ key, cause }`. A status came on or went off (cause: an element key, the status that cancelled it, `'add'`, `'faded'`, `'died'`; an NPC's carry `by`). See "Status effects". |

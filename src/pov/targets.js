@@ -11,6 +11,10 @@ import * as THREE from 'three';
 // hurt's opts: { lethal } (a backstab: all the health it has, through any shield).
 // facing(out): the unit direction the target looks along (its eyes), for the
 // knife's backstab test; a target without it can't be backstabbed.
+//
+// Optional: shove(dv) gives it a velocity (cells/s) by momentum (the kick; hurt's
+// dir is then null, so it adds no knockback of its own), body is its player.js
+// body (the hook hangs it on a rope), mass its kg (pov/tug.js BODY_MASS_KG if not given).
 
 export const PLAYER = 'player';   // the player's target id (and the shooter of rounds no actor fired)
 

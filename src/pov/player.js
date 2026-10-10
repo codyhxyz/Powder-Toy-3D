@@ -9,6 +9,7 @@ import { povEvents } from './events.js';
 import { createPerkSet } from './perks.js';
 import { createStatusSet } from './status.js';
 import { wound, createBodyWorld } from './stains.js';
+import { createKick } from './kick.js';
 
 // The first-person body: an upright AABB (BODY_WIDTH × BODY_HEIGHT × BODY_WIDTH
 // cells) moving through the voxel grid in real time.
@@ -92,6 +93,27 @@ const SLOW_FALL_K = GRAVITY / SLOW_FALL_DESCENT ** 2;   // 1/cell: the canopy's 
 // 1/s; its skin warms and cools 1/s as fast (vitals.js). Blasts already scale: the pressure push is
 // the mean gradient over the body's own cells, about ΔP across the body over its length.
 // STEP_HEIGHT stays a cell (the grid's grain), so a small body still climbs a 1-cell ledge.
+
+// ---- rope (tools/hook.tool.js sets one with tether()): a one-sided distance
+// constraint to an anchor, Box2D's rope joint (Erin Catto's b2RopeJoint, the
+// max-distance joint; Jakobsen 2001, "Advanced Character Physics", the same
+// rope as a projection): past its length the body can't move away from the
+// anchor (the outward part of its velocity is taken away: a rope doesn't
+// bounce) and a Baumgarte term pulls it back to length. Gravity and the
+// constraint make the pendulum: a swing comes for free. Reeling, the winch
+// takes up the slack and the closing speed eases toward the reel speed the
+// Noita way, a share per frame (Titanfall 2's grapple: the line retracts and
+// draws the pilot to the hook) and the speed across the rope is damped by the
+// same share Noita settles a run with, so the reel zips you in instead of
+// winding you into an orbit (angular momentum would spin a body up as the rope
+// shortens). Let go of the reel and the speed across the rope is yours again:
+// the swing.
+export const ROPE_REEL_SPEED = JET_RISE;   // cells/s (14 m/s): the fastest the body moves itself, the jet's climb
+const ROPE_EASE = JET_EASE;            // share of the gap to the reel speed closed per Noita frame (fly_speed_change_spd)
+const ROPE_SWAY_EASE = MOVE_EASE;      // share of the speed across the rope taken per Noita frame while reeling (accel_x)
+const ROPE_HAND_BELOW_EYE = 1;         // cells under the eye the rope pulls at (× size): the hand holding it, shoulder high
+const ROPE_SLACK = 0.05;               // cells short of its length at which the rope counts as taut
+const ROPE_BAUMGARTE = 0.2;            // share of the overshoot past the length corrected per s·(1/dt): Box2D's b2_baumgarte
 
 // ---- liquids ----
 const WADE_SHARE = 0.15;               // submerged share of the body that counts as "in" liquid
@@ -199,6 +221,8 @@ function rawMat(frag, uniforms) {
 // perks: its perk set (perks.js).
 export function createPlayer({ renderer, getSim, quiet = false, perks = createPerkSet() }) {
   const listeners = {};
+  let kicker = null;   // the kick (kick.js), made once the body is
+  let rope = null;     // { anchor (Vector3, grid; the setter keeps it current), length, reel (cells/s, 0 holds), hard, brace }
   let revengeWait = 0, revengeDue = false;
   // pogo: the tool's hold (renewed every frame), the climb, and the jump button's timing
   let pogoHold = false, pogoStep = 0, bounceTimed = false;
@@ -212,6 +236,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
   const vitals = createVitals(emit, perks);
   // the body's size (Shrink): resize() sets these from perks.size every frame
   let size = 1, gait = 1, H = BODY_HEIGHT, HW = BODY_WIDTH / 2, EYE = EYE_HEIGHT;
+  const ropeHandY = () => EYE - ROPE_HAND_BELOW_EYE * size;   // cells above the feet the rope pulls at
   function resize() {
     size = perks.size;
     gait = Math.sqrt(size);             // × speeds: Froude similarity
@@ -269,11 +294,14 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     get cause() { return vitals.cause; },
     get skinT() { return vitals.skinT; },
     stepRate: 0,                  // sim steps/s, as measured
+    get kickPose() { return kicker.pose; },   // the kick's progress 0..1 while it shows (figure.js s.kick), else null
+    get rope() { return rope; },  // the rope it hangs on (tether), or null
   };
   // statuses (status.js; the built-in ones, Burning's fire and Bleeding: stains.js)
   const bodyWorld = createBodyWorld({ renderer, getSim });
   const statusCtx = { world: bodyWorld, hurt: (amount, cause, opts) => vitals.hurt(amount, cause, false, opts) };
   p.status = createStatusSet(p, statusCtx);
+  kicker = createKick({ body: p, getSim, cellAt: (x, y, z) => (probe.valid && g ? idAt(x, y, z) : UNKNOWN), unknown: UNKNOWN });
   const impulse = new THREE.Vector3();
   const vB = new THREE.Vector3();
 
@@ -651,6 +679,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     if (!sim) return;
     const dt = Math.min(Math.max(dtIn, 0), MAX_DT);
     revengeWait = Math.max(0, revengeWait - dt);
+    kicker.update(dt);
     sandSwim = perks.has('SAND_SWIMMER') && !vitals.dead;
     resize();
     if (sim !== lastSim) {
@@ -708,7 +737,16 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     const jetFly = JET_FLY_SPEED * gait;
     const runSpeed = p.jetting ? Math.min(jetFly * perks.jetRate, Math.max(jetFly, PERK_SPEED_H))
       : alive && input.sprint ? Math.min(footSpeed * perks.sprintRate, Math.max(footSpeed, PERK_SPEED_H)) : footSpeed;
-    if (!swimming && (p.onGround || wish.lengthSq() > 0 || vh.length() <= runSpeed)) {
+    const swingingOnRope = !!rope?.hard && !p.onGround && !swimming;
+    if (swingingOnRope) {
+      // on a rope in the air: Noita's ease only ever adds speed toward the wished
+      // direction (it never brakes), so a swing keeps its momentum and can be pumped
+      if (wish.lengthSq() > 0) {
+        const dir = wish.clone().normalize();
+        const want = runSpeed * wish.length(), along = vh.dot(dir);
+        if (along < want) vh.addScaledVector(dir, (want - along) * ease(MOVE_EASE, dt));
+      }
+    } else if (!swimming && (p.onGround || wish.lengthSq() > 0 || vh.length() <= runSpeed)) {
       // Noita: ease toward the wished speed, on the ground and in the air alike.
       // With no input in the air faster than a run (a blast), keep the momentum.
       vh.lerp(wish.clone().multiplyScalar(runSpeed), ease(MOVE_EASE, dt));
@@ -800,6 +838,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
       if (v.length() > cap) v.setLength(cap);
     } else v.add(impulse);
     impulse.set(0, 0, 0);
+    if (rope && alive) pullRope(v, dt);
     if (v.length() > MAX_SPEED) v.setLength(MAX_SPEED);
 
     // move, with collisions
@@ -859,7 +898,30 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     fields(sim, dt, stepRate);
   }
 
+  // The rope's pull on velocity v this frame (see ROPE_*).
+  const ropeDir = new THREE.Vector3(), ropeCross = new THREE.Vector3();
+  function pullRope(v, dt) {
+    ropeDir.set(rope.anchor.x - p.pos.x, rope.anchor.y - p.pos.y - ropeHandY(), rope.anchor.z - p.pos.z);
+    const dist = ropeDir.length();
+    if (dist < EPS) return;
+    ropeDir.divideScalar(dist);   // toward the anchor
+    const braced = rope.brace && p.onGround;   // a light catch: the ground holds the body (tug.js brace)
+    if (rope.reel > 0 && !braced) {
+      rope.length = Math.min(rope.length, dist);   // the winch takes up the slack
+      const closing = v.dot(ropeDir);
+      // across the rope: damped toward still; along it: eased toward the reel speed
+      const across = ropeCross.copy(v).addScaledVector(ropeDir, -closing);
+      v.addScaledVector(across, -ease(ROPE_SWAY_EASE, dt));
+      if (closing < rope.reel) v.addScaledVector(ropeDir, (rope.reel - closing) * ease(ROPE_EASE, dt));
+    }
+    if (!rope.hard) return;
+    const closing = v.dot(ropeDir);
+    if (dist >= rope.length - ROPE_SLACK && closing < 0) v.addScaledVector(ropeDir, -closing);
+    if (dist > rope.length) v.addScaledVector(ropeDir, (dist - rope.length) * ROPE_BAUMGARTE / dt);
+  }
+
   function spawn(feet) {
+    rope = null;
     p.pos.copy(feet);
     p.vel.set(0, 0, 0);
     impulse.set(0, 0, 0);
@@ -904,6 +966,13 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     // { lethal: true } takes all the health there is, through the shield (a backstab)
     hurt(amount, cause, { lethal = false } = {}) { vitals.hurt(amount, cause, true, { shielded: true, lethal }); },
     holdPogo() { pogoHold = true; },   // a pogo stick in hand: call every frame it's held (tools/pogo.tool.js)
+    // Kick along unit dir (kick.js): a body ability, the player's key and an NPC alike. The result, or null while it recovers.
+    kick(dir) { return kicker.kick(dir); },
+    get kicker() { return kicker; },   // for checks (kicker.walked: the cells the last kick's ray crossed)
+    // Hang on a rope (see ROPE_*): { anchor, length, reel, hard, brace }, kept by reference (the setter
+    // moves anchor and changes reel); null lets go. The point it pulls at: ropeHand().
+    tether(r) { rope = r; },
+    ropeHand(out = new THREE.Vector3()) { return out.set(p.pos.x, p.pos.y + ropeHandY(), p.pos.z); },
     on(name, fn) {
       (listeners[name] ??= []).push(fn);
       return () => { listeners[name] = listeners[name].filter((f) => f !== fn); };

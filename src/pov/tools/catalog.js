@@ -48,6 +48,8 @@ export const GEAR = [
     desc: 'A warm, flickering light. Left-click touches its flame to things; right-click throws it, and it burns where it lands, setting fire to what burns.' },
   { key: 'LANTERN', slot: 5, name: 'Lantern', model: 'lantern', abbr: 'LNTN', color: '#e8f0ff',
     desc: 'A very bright white light. Left-click switches it off and on; right-click throws it, and it lands unbroken and keeps shining.' },
+  { key: 'HOOK', slot: 4, start: true, name: 'Hook', model: 'hook', abbr: 'HOOK', color: '#b0884a',
+    desc: 'Fires a grappling hook up to 30 m. Hold left-click to reel in: a wall pulls you to it, loose matter comes to you, an enemy and you meet in the middle. Let go to hang and swing; right-click lets go.' },
 ];
 
 const BY_KEY = new Map(GEAR.map((g) => [g.key, g]));

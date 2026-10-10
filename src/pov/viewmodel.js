@@ -69,6 +69,8 @@ export const HIT = {
   KNIFE: { kick: 0.3, punch: { pitch: [-1 * DEG, -0.5 * DEG] } },                     // a stab: half the axe's punch, straight in
   BACKSTAB: { kick: 0.8, punch: { pitch: [-3 * DEG, -2 * DEG], yaw: [-1 * DEG, 1 * DEG] } },   // a backstab: the blade driven in, the pickaxe's weight
   POGO: { kick: 0.2 },                                                                 // a pogo bounce: the stick's jolt in the hands
+  HOOK: { kick: 0.5, punch: { pitch: [0.5 * DEG, 1 * DEG] } },                       // the hook's claw fired
+  KICK: { punch: { pitch: [-1.5 * DEG, -0.5 * DEG], yaw: [-0.5 * DEG, 0.5 * DEG] } },   // the boot landed (kick.js): the view jolts, the hands stay put
 };
 const randIn = ([lo, hi] = [0, 0]) => lo + Math.random() * (hi - lo);
 
