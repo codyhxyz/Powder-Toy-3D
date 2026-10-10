@@ -24,10 +24,11 @@ import { bandGlow } from './incandescence.js';
 
 // Fluorite's blue-violet fluorescence: the Eu²⁺ band at 424 nm, ~25 nm wide
 // (CaF₂:Eu²⁺; "fluorescence" is named after fluorite). Under a UV lamp it is
-// a few cd/m², which the incandescence's brightness curve would put near 0.03:
-// a game liberty, it glows without the lamp and as bright as steel at ~1130 °C,
-// enough to light a cave.
-const FLUORITE_BAND = { peak: 424, fwhm: 25, lum: 0.25 };
+// a few cd/m², which the incandescence's brightness curve would put near 0.03.
+// A game liberty: it glows without the lamp, as bright as steel at ~1050 °C.
+// That lights the rock around it, and is about the brightest the film-like
+// roll-off of saturated light (gfx/post.js tonemap) still shows violet, not pink.
+const FLUORITE_BAND = { peak: 424, fwhm: 25, lum: 0.15 };
 const FLUORITE_GLOW = bandGlow(FLUORITE_BAND.peak, FLUORITE_BAND.fwhm, FLUORITE_BAND.lum);
 
 // Smooth-surface channels. sigma = blur radius in cells (how much the
