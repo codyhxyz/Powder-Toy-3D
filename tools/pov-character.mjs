@@ -52,7 +52,7 @@ await p.keyboard.press('f');
 await p.waitForFunction(() => window.__app.pov.mode === 'on', null, { timeout: 10000 }).catch(() => {});
 await ev(() => { window.__app.pov.test.assumeLocked = true; });
 await p.waitForFunction(() => window.__app.pov.figure.loaded, null, { timeout: 15000 }).catch(() => {});
-await p.keyboard.press('v');
+await p.keyboard.press('f');
 await settle(1000);
 const st = await ev(() => ({ mode: window.__app.pov.mode, loaded: window.__app.pov.figure.loaded, showing: window.__app.pov.figure.showing, vis: window.__app.pov.figure.root.visible }));
 check('model loaded and showing', st.mode === 'on' && st.loaded && st.showing === 'real' && st.vis, JSON.stringify(st));

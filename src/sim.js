@@ -19,6 +19,8 @@ import { shiftFrag, giShiftFrag, flowShiftFrag, undoShiftFrag } from './shaders/
 import { CHANNELS, MEDIA, gauss5, bulkPeak, bulkPeakCubic, CUBIC_LATTICE } from './gfx/materials.js';
 import { gfxUniforms } from './gfx/uniforms.js';
 import { RegionQuads, regionMaterial } from './gfx/regions.js';
+import { ELEMENTS, mechanisms } from './elements.js';
+import { Rays } from './raysLayer.js';
 
 // cells/step² downward (the app's gravity setting overrides it)
 const GRAVITY_DEFAULT = 0.025;
@@ -148,6 +150,17 @@ export function makeFieldTarget(w, h, count, type, filter) {
   });
 }
 
+// The reaction lookup (elements.js mechanisms().lookup) as an NE × NE
+// integer texture: texel (b, a) is what a cell of a does with a neighbour of b
+// (shaders/activity.js rxAt). The react pass and the activity map read it.
+export function reactionTexture() {
+  const n = ELEMENTS.length;
+  const t = new THREE.DataTexture(mechanisms().lookup, n, n, THREE.RedIntegerFormat, THREE.UnsignedShortType);
+  t.internalFormat = 'R16UI';
+  t.needsUpdate = true;
+  return t;
+}
+
 export function rawMat(frag, uniforms) {
   return new THREE.RawShaderMaterial({
     glslVersion: THREE.GLSL3,
@@ -254,6 +267,7 @@ export class Simulation {
     this.actRows = makeFieldTarget(g.bwidth * BRICK, g.bheight * BRICK, 1, U8, NEAR);
     this.actInert = makeFieldTarget(g.bwidth, g.bheight, 1, U8, NEAR);
     this.actQuiet = makeFieldTarget(g.bwidth, g.bheight, 1, U8, NEAR);
+    this.reactionTable = reactionTexture();   // what the react pass and activity map read of elements.js REACTIONS
     this.actAge = ACTIVITY_PERIOD;
     this.actDirty = true;
     this.actFresh = false;   // the next step is the first since a map was built (its dirty marks start over)
@@ -336,11 +350,14 @@ export class Simulation {
         ...state(), uParity: { value: 0 }, uFrame: { value: 0 }, uGravity: { value: this.gravity }, tQuiet: { value: null },
       }, SUPER_MAP.BLOCKS, true),
       moveGather: stepMat(moveGatherFrag(g), { ...state(), ...slots(), tQuiet: { value: null }, uFresh: { value: false } }, SUPER_MAP.DRAWN),
-      react: stepMat(reactFrag(g), { ...state(), uFrame: { value: 0 }, uGravity: { value: this.gravity }, tQuiet: { value: null } }, SUPER_MAP.DRAWN),
+      react: stepMat(reactFrag(g), {
+        ...state(), uFrame: { value: 0 }, uGravity: { value: this.gravity }, tQuiet: { value: null }, tRx: { value: this.reactionTable },
+        tRayDep: { value: null }, uRays: { value: false },
+      }, SUPER_MAP.DRAWN),
       inert: rawMat(inertFrag(g), { tF: { value: null } }),
-      inertRows: rawMat(inertRowsFrag(g), { tA: { value: null }, tF: { value: null }, tClass: { value: null } }),
+      inertRows: rawMat(inertRowsFrag(g), { tA: { value: null }, tF: { value: null }, tClass: { value: null }, tRx: { value: this.reactionTable } }),
       inertJoin: rawMat(inertJoinFrag(g), { tClass: { value: null }, tRows: { value: null } }),
-      quiet: rawMat(quietFrag(g), { tInert: { value: null }, uEnabled: { value: true } }),
+      quiet: rawMat(quietFrag(g), { tInert: { value: null }, uEnabled: { value: true }, tRays: { value: null }, uRays: { value: false } }),
       superMap: rawMat(superMapFrag(g), {
         tQuiet: { value: this.actQuiet.texture }, tPrev: { value: null }, uPrevSettled: { value: false },
         uForceAll: { value: true }, uForceLo: { value: new THREE.Vector3() }, uForceHi: { value: new THREE.Vector3() },
@@ -406,6 +423,8 @@ export class Simulation {
     }
     // profiling hook (gfx/profiler.js): onPass(name, target) after every pass
     this.onPass = null;
+    // fast particles (docs/particles.md): photons and neutrons in a list beside the grid
+    this.rays = new Rays(this, quadVert);
     this.clear();
   }
 
@@ -555,6 +574,9 @@ export class Simulation {
     this.run(inertJoin, this.actInert);
     quiet.uniforms.tInert.value = this.actInert.texture;
     quiet.uniforms.uEnabled.value = this.skipQuiet;
+    // bricks holding a particle stay awake, and their neighbours (raysLayer.js)
+    quiet.uniforms.uRays.value = this.rays.active;
+    quiet.uniforms.tRays.value = this.rays.bricks.texture;
     this.run(quiet, this.actQuiet);
     this.actAge = 0;
     this.actDirty = false;
@@ -593,6 +615,10 @@ export class Simulation {
 
   step() {
     this.frame++;
+    // particles fly first: the map below keeps the bricks they're in awake
+    this.stepping = true;
+    this.rays.step();
+    this.stepping = false;
     if (this.actDirty || this.actAge >= ACTIVITY_PERIOD) this.updateActivity();
     this.actAge++;
     this.actSteps++;
@@ -623,11 +649,17 @@ export class Simulation {
     this.run(moveFlow, this.flowV, quads);
     react.uniforms.uFrame.value = this.frame;
     react.uniforms.uGravity.value = this.gravity;
+    react.uniforms.uRays.value = this.rays.stepped;   // the particles' deposits (heat, pressure)
+    react.uniforms.tRayDep.value = this.rays.deposit.texture;
     this.pass(react, quads);
+    this.rays.settle();
     this.stepping = false;
   }
 
   paint({ center, radius, shape, tool, rate, replace }) {
+    // particle tools paint into the particle list, not the grid
+    if (this.rays.paint({ center, radius, shape, tool, rate })) return;
+    this.rays.noteElement(tool);   // plutonium emits neutrons: the layer wakes
     const u = this.mats.paint.uniforms;
     // Its own random stream: this.frame counts steps only. The move pass
     // alternates its block partition by the step count's parity, so a paint
@@ -817,6 +849,7 @@ export class Simulation {
     const m = this.mats.shift;
     m.uniforms.uShift.value.set(dx, 0, dz);
     this.pass(m);
+    this.rays.reset();   // particles are in grid cells: v1 lets them go (docs/particles.md)
     this.origin.x += dx;
     this.origin.z += dz;
     if (!this.shiftKeepsHistory) {
@@ -873,6 +906,7 @@ export class Simulation {
     this.fieldReset = true;
     this.giReset = true;
     this.stillFlow();
+    this.rays.reset();   // a new state: the old particles go, and it may hold plutonium
     texA.dispose();
     texB.dispose();
   }
@@ -930,6 +964,7 @@ export class Simulation {
     mat.uniforms.tB.value = t.textures[1];
     this.run(mat, this.targets[this.cur]);
     this.stillFlow();
+    this.rays.wake();   // it may bring plutonium back
     t.dispose();
     return true;
   }
@@ -980,7 +1015,7 @@ export class Simulation {
   }
 
   // Every pass's material (the profiler's and the app's program bookkeeping).
-  materials() { return Object.values(this.mats).flat(); }   // (fieldBoost, brickDist are arrays)
+  materials() { return Object.values(this.mats).flat().concat(this.rays.materials()); }   // (fieldBoost, brickDist are arrays)
 
   // retire: an array to put the materials in instead of disposing of them (the
   // app disposes of them once the next grid's have claimed their programs, so
@@ -1002,6 +1037,7 @@ export class Simulation {
     this.actRows.dispose();
     this.actInert.dispose();
     this.actQuiet.dispose();
+    this.reactionTable.dispose();
     this.superMap.forEach((t) => t.dispose());
     this.superRows.dispose();
     this.superShare.dispose();
@@ -1018,6 +1054,7 @@ export class Simulation {
     this.history?.forEach((t) => t.dispose());
     if (retire) retire.push(...this.materials());
     else this.materials().forEach((m) => m.dispose());
+    this.rays.dispose([]);   // (its materials went with materials() above)
     this.quad.geometry.dispose();
   }
 }

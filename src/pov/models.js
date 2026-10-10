@@ -44,6 +44,8 @@ export const MODELS = {
   torch: { fit: 'y', size: 1.2, anchor: [0.5, 0, 0.5], arm: ARM_DOWN, icon: { yaw: 0, tilt: 0.2, roll: -Q } },                    // a burning torch, held at the foot of its stick
   lantern: { fit: 'y', size: 0.85, anchor: [0.5, 1, 0.5], arm: ARM_UP, icon: { yaw: 0, tilt: 0.3, roll: 0 } },                    // a lantern hanging from its bail
   bomb: { fit: 'z', size: 0.8, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.35, roll: Q } },         // a capped pipe with a lit fuse
+  knife: { fit: 'z', size: 0.95, anchor: [0.5, 0.5, 0.79], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.3, roll: Q } },       // blade forward, edge down, held by the handle
+  pogo: { fit: 'y', size: 3.5, anchor: [0.5, 0.98, 0.5], arm: ARM_DOWN, icon: { yaw: 0, tilt: 0.3, roll: Q / 2 } },              // upright, held by the handlebar, the stick down out of view
 };
 
 // RS2 stores a colour as 16-bit HSL: 6 bits of hue, 3 of saturation, 7 of lightness.
@@ -168,6 +170,21 @@ const PARTS = {
     // the crescent head: a long point forward and a shorter one back, both curving down
     { geo: 'cyl', rt: 0, rb: 0.06, h: 0.55, p: [0, 1.0, -0.32], rot: [-H - 0.28, 0, 0], m: 'iron' },
     { geo: 'cyl', rt: 0, rb: 0.055, h: 0.4, p: [0, 1.02, 0.25], rot: [H + 0.28, 0, 0], m: 'iron' },
+  ],
+  knife: [
+    { geo: 'cyl', r: 0.05, h: 0.36, p: [0, 0, 0.08], rot: [H, 0, 0], m: 'grip' },
+    { geo: 'cyl', r: 0.055, h: 0.03, p: [0, 0, 0.27], rot: [H, 0, 0], m: 'ironDark' },
+    { geo: 'box', s: [0.16, 0.05, 0.04], p: [0, 0.01, -0.11], m: 'ironDark' },
+    // the blade: spine on top, edge curving up to the point
+    { geo: 'plate', pts: [[0, -0.045], [0, 0.05], [0.42, 0.045], [0.55, 0], [0.45, -0.045]], depth: 0.02, p: [0, 0.01, -0.13], rot: [0, H, 0], m: 'iron' },
+  ],
+  pogo: [
+    { geo: 'cyl', r: 0.035, h: 0.7, p: [0, 0, 0], rot: [0, 0, H], m: 'grip' },
+    { geo: 'cyl', r: 0.05, h: 1.5, p: [0, -0.75, 0], m: 'red' },
+    { geo: 'box', s: [0.5, 0.04, 0.12], p: [0, -1.3, 0], m: 'metalDark' },
+    { geo: 'cyl', r: 0.07, h: 0.4, p: [0, -1.55, 0], m: 'ironDark' },
+    { geo: 'cyl', r: 0.03, h: 0.35, p: [0, -1.9, 0], m: 'iron' },
+    { geo: 'cyl', r: 0.06, h: 0.06, p: [0, -2.08, 0], m: 'grip' },
   ],
   gun: [
     { geo: 'box', s: [0.18, 0.2, 0.75], p: [0, 0.2, -0.2], m: 'metal' },
