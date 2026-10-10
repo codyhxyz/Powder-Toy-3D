@@ -61,6 +61,20 @@ const WALK_KNEE = 0.7, RUN_KNEE = 1.5;   // knee bend on the forward swing
 const ARM_SWING = 0.75;                  // shoulder swing per unit hip swing (opposite leg)
 const RUN_LEAN = 0.22;                   // forward lean at a run
 const STEP_BOB = 0.12;                   // cells the pelvis drops at mid-stance
+// Crouched (the body's crouch share, s.crouch: player.js): a deep squat with
+// the torso over the knees and the head up, low enough that the stickman fits
+// the crouched body's half height. The pelvis drops by what the bend takes off
+// the legs, so the feet stay down. The realistic body bends the same.
+export const CROUCH_POSE = {
+  hip: 1.45,                             // rad, thighs forward
+  knee: -2.6,                            // rad, knees bent back
+  lean: 0.8,                             // rad, torso forward
+  head: 0.6,                             // rad, the head tipped back up to look ahead
+};
+const CROUCH_WALK = 0.4;                 // share of the walk's leg swing kept, crouched
+// how far the hips come down for a bend, with thigh and shin each half of hipY
+export const crouchDrop = (hipY, c) =>
+  hipY * (1 - (Math.cos(CROUCH_POSE.hip * c) + Math.cos((CROUCH_POSE.hip + CROUCH_POSE.knee) * c)) / 2);
 const IDLE_BREATH = 0.035;               // shoulder sway at rest
 const BREATH_HZ = 0.3;
 const SWIM_SPEED = 2;                    // cells/s: faster than this in liquid swims (horizontal), slower treads water
@@ -76,6 +90,15 @@ const FALL_BOUNCE_HZ = 3;
 const CHOP_WINDUP = 0.7;                 // share of the swing spent winding up
 const CHOP_UP = [2.8, 0.7];              // rad: shoulder, elbow raised over the head
 const CHOP_DOWN = [0.45, 0.1];           // rad: arm down in front, the blow landed
+// The kick (kick.js): s.kick is its progress 0..1. A front kick's three phases,
+// as martial arts teach it: chamber (knee up, shin folded), extend (the leg
+// snaps straight out ahead), retract (back along the same line), with a lean
+// back to balance it. Right leg.
+const KICK_CHAMBER_END = 0.25;           // share of the kick spent chambering...
+const KICK_EXTEND_END = 0.45;            // ...then extending; the rest retracts
+const KICK_CHAMBER = [1.35, -1.9];       // rad: hip forward, knee folded
+const KICK_EXTEND = [1.5, -0.05];        // rad: leg straight out, about level
+const KICK_LEAN = -0.25;                 // rad: torso back, against the kick
 
 const smooth01 = (x) => { const t = Math.min(Math.max(x, 0), 1); return t * t * (3 - 2 * t); };
 const approach = (rate, dt) => 1 - Math.exp(-rate * dt);
@@ -274,7 +297,8 @@ export function createFigure(build = buildStick) {
       return renderer.compileAsync(root, camera, scene).catch(() => {});
     },
     // s = { feet (world), scale, yaw, worldToGrid (Matrix4), speedH (cells/s), velY (cells/s),
-    //       onGround, inLiquid, dead, deadTime (s), heat (0..1), jetting, status (status.js set: its stains tint the body) }
+    //       onGround, inLiquid, dead, deadTime (s), heat (0..1), jetting, status (status.js set: its stains tint the body),
+    //       crouch (0 standing … 1 crouched) }
     update(dt, s) {
       clock += dt;
       root.position.copy(s.feet);
@@ -305,17 +329,27 @@ export function createFigure(build = buildStick) {
       const swing = Math.sin(phase) * amt * (WALK_HIP + (RUN_HIP - WALK_HIP) * run);
       const knee = WALK_KNEE + (RUN_KNEE - WALK_KNEE) * run;
       const breath = Math.sin(clock * 2 * Math.PI * BREATH_HZ) * IDLE_BREATH * (1 - amt);
-      setTarget('hipL', swing, w.walk);
-      setTarget('hipR', -swing, w.walk);
-      setTarget('knL', -knee * amt * Math.max(0, Math.cos(phase)), w.walk);
-      setTarget('knR', -knee * amt * Math.max(0, -Math.cos(phase)), w.walk);
+      // crouched (on the ground): the squat, with a shorter stride on top of it
+      const crouched = s.dead ? 0 : (s.crouch ?? 0) * w.walk;
+      const legs = w.walk * (1 - crouched * (1 - CROUCH_WALK));
+      setTarget('hipL', CROUCH_POSE.hip, crouched);
+      setTarget('hipR', CROUCH_POSE.hip, crouched);
+      setTarget('knL', CROUCH_POSE.knee, crouched);
+      setTarget('knR', CROUCH_POSE.knee, crouched);
+      setTarget('lean', CROUCH_POSE.lean, crouched);
+      setTarget('headPitch', CROUCH_POSE.head, crouched);
+      setTarget('drop', crouchDrop(HIP, 1), crouched);
+      setTarget('hipL', swing, legs);
+      setTarget('hipR', -swing, legs);
+      setTarget('knL', -knee * amt * Math.max(0, Math.cos(phase)), legs);
+      setTarget('knR', -knee * amt * Math.max(0, -Math.cos(phase)), legs);
       setTarget('shL', -swing * ARM_SWING + breath, w.walk);
       setTarget('shR', swing * ARM_SWING + breath, w.walk);
       setTarget('elL', 0.25 + 0.9 * run, w.walk);
       setTarget('elR', 0.25 + 0.9 * run, w.walk);
       setTarget('armOut', 0.08, w.walk);
       setTarget('lean', RUN_LEAN * run, w.walk);
-      setTarget('drop', STEP_BOB * amt * Math.abs(Math.cos(phase)), w.walk);
+      setTarget('drop', STEP_BOB * amt * Math.abs(Math.cos(phase)), legs);
       // airborne: knees tucked, arms out, more so falling
       const falling = smooth01(-s.velY / RUN_SPEED);
       setTarget('hipL', 0.7 - 0.4 * falling, w.air);
@@ -399,6 +433,16 @@ export function createFigure(build = buildStick) {
         const up = smooth01(p / CHOP_WINDUP), down = 1 - (1 - Math.max(0, (p - CHOP_WINDUP) / (1 - CHOP_WINDUP))) ** 3;
         shR.rotation.x = THREE.MathUtils.lerp(THREE.MathUtils.lerp(J.shR, CHOP_UP[0], up), CHOP_DOWN[0], down);
         elR.rotation.x = THREE.MathUtils.lerp(THREE.MathUtils.lerp(J.elR, CHOP_UP[1], up), CHOP_DOWN[1], down);
+      }
+      if (s.kick != null && !s.dead) {
+        const p = Math.min(Math.max(s.kick, 0), 1);
+        const chamber = smooth01(p / KICK_CHAMBER_END);
+        const extend = smooth01((p - KICK_CHAMBER_END) / (KICK_EXTEND_END - KICK_CHAMBER_END));
+        const back = smooth01((p - KICK_EXTEND_END) / (1 - KICK_EXTEND_END));
+        const at = (rest, i) => THREE.MathUtils.lerp(THREE.MathUtils.lerp(THREE.MathUtils.lerp(rest, KICK_CHAMBER[i], chamber), KICK_EXTEND[i], extend), rest, back);
+        hipR.rotation.x = at(J.hipR, 0);
+        knR.rotation.x = at(J.knR, 1);
+        torso.rotation.x = -J.lean - KICK_LEAN * (chamber - back);
       }
       contact.visible = s.onGround && !s.dead;
       for (const f of flames) {

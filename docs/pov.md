@@ -11,8 +11,15 @@
 - **Keys speak other games' language**: `V` god view or the body (Garry's Mod's noclip key; from the god
   view `F` drops in too), `F5` first or third person (Minecraft), `Z` held zooms (Minecraft's zoom mods,
   `zoom.js`, with Zoomify's defaults: ÷4 eased in over 1 s and out over 0.5 s, the wheel ×1.5 a notch while
-  held, the look slowed with the view, a scope's zoom multiplied in), `C` is the crouch key (PUBG, Apex; so
-  far it swims down). `F` in the body is kept for the kick.
+  held, the look slowed with the view, a scope's zoom multiplied in), `C` held crouches (PUBG's and Apex's key,
+  Source's duck: below), `F` kicks.
+- **Crouch** (`C` held, player.js `crouchStep`, Source's gamemovement.cpp numbers): the body goes to half its
+  height (hull 36 of 72) and the eye to 28/64 of its height, in 0.4 s down and 0.2 s up; on the ground it
+  moves at a third of the speed and can't sprint. On the ground it shrinks from the top; in the air the feet
+  tuck up to the head (Source's crouch-jump: the head and the rope's hand stay put). Standing back up needs
+  the room: under a low ceiling it stays crouched until it's out. In liquid `C` swims down instead. The
+  stickman squats (figure.js `CROUCH_POSE`, the pelvis dropped so the feet stay down); the realistic body has
+  no crouch clip, so figureReal.js bends its pelvis, spine, thighs, calves and feet on top of the clips.
 - **The body** (setting: Realistic | Stickman, key `character`): Realistic is the default, the skinned
   mannequin dressed as a wizard, a pointed hat and a robe skinned to its skeleton (garb.js: the robe's
   weights are transferred from the nearest body vertices and eased toward the pelvis below the hips).
@@ -94,6 +101,48 @@ break stops it). Nothing is added: struck cells become their own debris or are s
   health.
 - `tools/weapons-check.mjs` checks all of it end to end.
 
+## Burrower and laser cannon (2026-10-10)
+
+Two heavy weapons, not `start` tools (palette Tools group or Q). Passes: `shaders/povBore.js`; check:
+`tools/burrower-laser-check.mjs`. Neither adds matter.
+
+**Burrower** (Explosives, `burrower.tool.js`): Cruelty Squad's Cerebral Bore, no health cost.
+- It homes on the nearest live body in `targets.js` (`nearestTarget`), else flies along the crosshair.
+- Guidance is proportional navigation (Zarchan, *Tactical and Strategic Missile Guidance*): the heading
+  turns `NAV_RATIO` (4) times the line-of-sight rate. While the target is more than 90° off, it uses pure
+  pursuit. The turn rate is clamped at `TURN_MAX` 3 rad/s. In the open it flies at 12 m/s.
+- Speed through matter is power over work (Teale 1965: penetration rate = P / (SE·A)): `POWER` / Σ over the
+  3.5-cell face disc of HARD (solids) or DENS·DRAG (powder, liquid). Sand runs at ~15 cells/s, rock ~8 and
+  metal ~4. WALL on its axis stops it. A small readback pass (`burrowProbeFrag`, 12 slices ahead) tells
+  the CPU what is ahead.
+- `burrowFrag` turns the bored solids into their own debris. A muck conveyor along the bore carries loose
+  cuttings to the mouth and throws them out in an arc (`SPOIL_LIFT`, `APRON`), so they heap well clear of
+  the mouth. This is a tunnel-boring machine's belt, a game liberty: the drill acts all along its bore while
+  it runs and for `CONVEY_AFTER` 2.5 s after. Tested: without the arc, the heap at the mouth dams the tunnel.
+  The 2.1 m tunnel is walkable.
+- On reaching a body: `hurt(1, 'Bored')` (one kills), then it stops. There is no blast. Its lifetime is 12 s;
+  stuck for 1.5 s, it gives up.
+
+**Laser cannon** (Guns, `laser.tool.js`): Halo's Spartan Laser. Halopedia gives "approximately three seconds"
+of charge, an abortable charge and "approximately two seconds" of standby between shots. So: hold to charge
+(`CHARGE_S` 3), it fires itself when full, releasing early cancels, and you press again after `REFIRE_S` 2.
+- Energy model: heat, not impact. Every power number is in povBore.js `LASER`, so a nerf is one edit.
+- The reach is the lumped heat balance of laser drilling (Steen & Mazumder, *Laser Material Processing*).
+  Each cell on the axis costs CAP·(VAPOR_T − T)·π·CORE² of the beam's `ENERGY` (1.25 M), so it goes
+  ~119 cells through rock, ~70 through metal and ~59 through water. WALL and the floor stop it.
+- Core (r ≤ 1.5): vaporised. It becomes STEAM (water, ice, snow), FIRE (burnables) or SMOKE (the rest), at
+  3000 °C, blown back.
+- Rim (r ≤ 4): heated from 4500 down to 1600 °C, and the engine melts metal, glass and stone, boils water and
+  lights wood.
+- ROCK can't melt in this engine, so the rim spalls it into STONE first (thermal spallation, Rauenzahn &
+  Tester 1989), which then melts into lava.
+- The rim's heat isn't charged to `ENERGY`.
+- Tested: with the first rim (r 3, 2400→1300 °C), the engine's conduction cooled it below stone's melt in
+  under a second, leaving 21 lava cells. The hotter, thicker rim leaves ~300 that pour out of the tunnel.
+- Bodies anywhere in the beam take 2 (`beamTargets`). The reach comes from `laserReachFrag`, read back
+  synchronously once a shot. There is no recoil (light carries next to no momentum); `HIT.LASER` and a
+  `shake` give the feel.
+
 ## Light and fire (2026-10-10)
 
 - **Flamethrower** (the blowtorch's key, `BLOWTORCH`; `shaders/povTools.js FLAMER`): Team Fortress 2's Pyro's
@@ -122,6 +171,49 @@ break stops it). Nothing is added: struck cells become their own debris or are s
 - Tools may have `tick(ctx)` (every frame in first person, held or not) and `worldReplaced()` (a scene load,
   undo or new grid: what they left in the world goes).
 - `tools/lights-check.mjs` checks it at midnight on the GPU.
+
+## Kick (2026-10-10): Cruelty Squad's, on `F`
+
+- Always to hand, no hotbar slot: `F` (`kick.js KICK_KEY`). In the body F is free since the keys moved (V god view, F5
+  first/third, Z zoom, C crouch); from the god view F still drops in.
+  It is a body ability, `player.kick(dir)`, so an NPC's body has it too (the brain doesn't use it yet).
+- A blow from the hip (2.6 cells up) along the aim, reaching 1.2 m. What it meets first: a body (`targets.js`)
+  takes Noita's kick damage (0.04) and a shove (`target.shove(dv)`; `hurt(..., null)` adds no knockback of its
+  own); a cell, read from the body's own probe, takes the boot over Noita's kick radius (3 px = 1.5 cells,
+  `shaders/povKick.js KICK`): weak solids break into debris by the melee energy rule (ENERGY 16: glass, ice,
+  plants; not wood, rock or metal) and loose matter and the debris are shoved.
+- **Momentum, `pov/tug.js`:** the foot drives the pair apart at 14 m/s (a martial artist's front kick; it is
+  also a Noita jump's speed), split by inverse mass. A body is 70 kg, the struck lump what its cells weigh
+  (falloff-weighted over the patch: a 30 cm cell of sand is 43 kg), and a solid the boot doesn't break, or
+  the floor, is anchored (infinite). So kicking a wall in the air throws you off it at 14 m/s, kicking the
+  floor lifts you about a jump's height, and a heap heavier than you barely gives while you bounce off it;
+  a lone clump or a body (half each) moves. Standing, the ground braces you (sideways and downward
+  absorbed), as with the gun's recoil. The reaction is one `applyImpulse`, which the Noita ease then treats
+  like a rocket's push.
+- Shows: the figure's front kick (`figure.js s.kick`: chamber, extend, retract), a boot swung up into the
+  viewmodel (`createKickLeg`), `HIT.KICK`'s view jolt, `kick` event and sounds (whoosh, a thud on a body or
+  an anchored kick-off; the material's own through `impact` with source `kick`, a `MELEE_SOURCES` member).
+- Not done: a touch button (`touch.js` isn't on main yet); the NPC brain kicking; a pose for the Realistic body.
+
+## Hook (2026-10-10): one rope, mass decides which way things move
+
+`tools/hook.tool.js`, slot 5 (Gadgets), in hand from the start. Left-click fires the claw along the crosshair
+(100 m/s); past 30 m it comes back empty, as Cruelty Squad's grapple fails out of range.
+
+| It catches | What happens |
+|---|---|
+| A solid cell or the floor (anchored) | The rope hangs you on it (`player.tether`). **Hold left-click to reel in**: Titanfall 2's grapple, the closing speed eased toward 14 m/s (the jet's climb, the body's own top speed) the Noita way, the speed across the rope damped so it zips instead of orbiting; it ends at the claw with your momentum kept. **Let go to hang**: the rope keeps its length and you swing (Box2D's rope joint: past the length the outward speed is removed and a Baumgarte term pulls you back; gravity makes the pendulum; in the air your keys only ever add speed, so a swing keeps its momentum). The anchor cell is read back every frame (`hookCellFrag`): it tears out if it stops being solid. |
+| Loose matter | It can't hold you: the claw bites one cell out (exact cell transfer, as the shovel) and the rope draws it and you together by inverse mass (`tug.js`): sand (43 kg) comes most of the way, standing you don't budge (braced), a cell of metal dust (210 kg) drags you to it. At your hand the cell is set down in front of you, moving as the claw was. |
+| A body (an NPC) | Both are reeled toward each other, each by the other's share of the mass (equal bodies meet in the middle). |
+
+- **Right-click lets go** (and drops a carried bite where the claw is). Works with the jetpack: the rope only
+  stops you moving away from the anchor, so jetting up while hanging climbs toward it.
+- Body rope API (`player.js`): `tether({ anchor, length, reel, hard, brace })` (kept by reference: the tool moves
+  `anchor` and sets `reel`), `tether(null)`, `ropeHand()` (where it pulls: shoulder height), `rope`.
+- Events: `tool:action` tool `hook`: `fire`, `catch` (id), `miss`, `tear`, `release`, `dump`.
+- Cut: a verlet rope (it's a straight line; it doesn't wrap corners or sag), yanking an NPC's tool from its hand.
+
+Check: `node tools/kick-hook-check.mjs [--port …] [--shots dir]` (a dev server; AC power).
 
 ## Physics rules (non-negotiable, see feedback in project memory)
 
@@ -188,7 +280,9 @@ player.jetFuel, player.jetting            // jetpack tank 0..1, firing this fram
 player.feel = { heat, cold, acid, hurt }  // 0..1 intensities for screen effects (hurt decays after a hit)
 player.dead, player.cause                 // cause: 'Killed by lava, 1,140 °C'
 player.applyImpulse(dv /* cells/s */)
-player.on(name, fn)                       // 'hurt' {amount, cause}, 'death' {cause}, 'land' {speed}, 'splash' {speed}
+player.on(name, fn)                       // 'hurt' {amount, cause}, 'death' {cause}, 'land' {speed}, 'splash' {speed},
+                                          // 'gib' {cause}, 'eat' {cells}
+player.gibbed                             // burst into meat (Quake's gib rule): the body is gone, its figure isn't drawn
 player.dispose()
 ```
 
@@ -342,9 +436,16 @@ say world. Emitters own their event names. Listeners never mutate payloads.
 | `drunk` | ingest.js (whiskey) | `{ seconds }`. Seconds of Drunk added to the player (feel.js sways the view; an NPC's has `by`). |
 | `player:step` | shell (camera bob cycle) | `{ speed, inLiquid }`. A footfall. |
 | `player:jet` | player | `{ on }`. The jetpack lit or went out. |
+| `kick` | a body's kick (kick.js) | `{ hit: 'cell'\|'body'\|null, point, normal, dir, id, broke, mass, dv }`. A kick, landed or not: mass is what it met (kg, Infinity when anchored), dv the kicker's own Δv (cells/s). |
 | `perk:take` | shell | `{ key, keys, point, by? }`. A body took a perk orb: key is the orb's, keys what it gained (Gamble's two). |
 | `perk:revive` | shell | `{ point }`. Extra Life brought the player back. |
 | `status:on` / `status:off` | a body's status set (`status.js`) | `{ key, cause }`. A status came on or went off (cause: an element key, the status that cancelled it, `'add'`, `'faded'`, `'died'`; an NPC's carry `by`). See "Status effects". |
+| `drill` | burrower | `{ point, dir, id, dt }`. Its drill cut this frame at point (grid), heading dir, mostly matter id (vfx.js's spray). The tool also emits `tool:action` 'burrower' 'fire' / 'grind' `{ point, id }`. |
+| `laser:charge` | laser cannon | `{ amount, dt }` every frame it charges (0..1; audio.js's rising whine). The tool also emits `tool:action` 'laser' 'charge' / 'cancel' / 'fire'. |
+| `laser` | laser cannon | `{ from, to, dir, radius }`, from/to/radius in **world** units. The beam, for vfx.js. |
+| `shake` | laser cannon | `{ trauma }` 0..1. Adds to the player's screen shake (feel.js), a shared hook for any tool. |
+| `body:gib` | player.js (any body) | `{ point, cells, lost, by? }`. A body burst into meat: `cells` MEAT cells laid, `lost` that found no room (buried). `by` is the NPC's id. |
+| `body:eat` | player.js (any body) | `{ point, cells, by? }`. A body ate `cells` cooked meat cells. |
 
 The player's own events (`player.on('hurt'|'death'|'land'|'splash'|'revive'|'revenge')`) stay as they are; listeners subscribe there too.
 
@@ -490,11 +591,18 @@ Extra Life brings the body back where it fell.
 | Fleet Foot | sprint ×2 | player.js | ×2 again, capped at 60 cells/s (a blast's throw: the probe keeps up) |
 | Rocket Boots | jet climb and fly speed ×2 | player.js | ×2 again, capped at 60 cells/s sideways and 175 up (Noita's fastest fall) |
 | Big Tank | jet fuel ×2: twice the time aloft (the refill rates are Noita's, so it fills slower too) | player.js | ×2 again |
+| Slow Fall | a canopy's quadratic drag on the way down (a = k·v², terminal √(g/k)): you land at a T-11 parachute's 5.8 m/s (19 cells/s, against Noita's 175) at the default gravity. Implicit, so exact at any frame rate. Only while descending in air: jumps rise and the jetpack climbs as before. Landings never hurt here (Noita), so what it saves is the slam and the shake; drag ∝ area/mass, so Shrink slows it further | player.js | drag area ×2 (terminal ÷ √2) |
+| Shrink | the body ×0.5: height, footprint, eye, collision box, probe use, figure and hit box (`player.size`, `.height`, `.width`, `.eyeHeight`). Gravity is the world's, so moves follow Froude similarity (Alexander): speeds ×√size, a jump clears the same body heights. Mass ∝ size³: an impulse (a blow, recoil) throws it size⁻³ as fast (capped at a blast's 60 cells/s for the probe); liquid form drag ×1/size, viscous (Stokes) ×1/size², a canopy's ×1/size; the skin trades heat ×1/size as fast (vitals.js). Blasts already scale: the push is the mean gradient over the body's own cells, ≈ ΔP over its length. Never under one cell tall | player.js, vitals.js, index.js, npc.js | ×0.5 again, down to 1 cell |
+| Night Vision | goggles that switch themselves on in the dark, the local player's view only (`pov/nightVision.js`): an image intensifier's automatic brightness control, raising the scene's measured log-average luminance (post.js meter: a 16² downsample of covered pixels, read back every 4 frames while the perk is held) to middle grey, at most 16× light; on from 1 to 3 stops under middle grey over 0.4 s, off again in daylight. The picture (post.js composite): luminance × gain, AgX on a grey, P43 green phosphor, shot-noise grain (σ ∝ √(signal·gain)) and the tube's round vignette. No key, no setting | nightVision.js, gfx/post.js | ×4 more light |
+| Rain Cloud | real CLOUD (id 24) kept over the head: each frame the body reads its sphere (radius 4, 2 cells over the crown) from the probe, a breeze (the coupling pass, `uOnly` = CLOUD) carries what's there with it, and the engine's brush tops its air up to 85% cloud, thick enough for the engine's own rain rule. New cloud comes at 150 cells/s at most per body; a body stops seeding while 6000 cells of its own may still be alive (counted down with the cloud's measured 67 s life), so it can't flood the world. The rain puts out fires and fills holes by the engine's rules. NPC bodies seed their own | player.js + povBody.js | radius +2, up to 10 (rain grows with its thick core) |
 
 A new tool gets Faster Tools for free by timing its actions with `trigger` and `toolDt(ctx)` instead of `ctx.dt`.
 NPC bodies carry perks too (npc.js passes `toolRate` into its kit's ctx).
 
-Check: `node tools/perks-check.mjs [--port …] [--shot file.jpg] [--worldshot file.jpg]` (a dev server; AC power).
+Check: `node tools/perks-check.mjs [--port …] [--shot file.jpg] [--worldshot file.jpg] [--nvshot prefix] [--rainshot file.jpg]`
+(a dev server; AC power). Without a server: `node tools/perks-cpu-check.mjs` runs the real body over a mock probe in
+node (Slow Fall's landing speed and stacks, the jetpack under it, Shrink through a crack, jump height in body heights, a
+blow's throw, the Rain Cloud's seeding, rate and budget).
 Combat (shield, movement perks, knife, pogo): `node tools/combat-check.mjs [--port …] [--shot file.jpg]`.
 
 ## Status effects (2026-10-10): Noita's stains
@@ -546,6 +654,32 @@ licks off a burning body (vfx.js `burn`). NPCs run to water when Burning (brain.
 
 Check: `node tools/status-check.mjs` (CPU: the rules through real vitals.js) and `--gpu [--port …] [--shot
 file.jpg]` (the real body: a pool, fire on and off the body, snow, a wound's spill, the HUD row, the lab NPC).
+
+## Gibs and eating (2026-10-10): Cruelty Squad's healing
+
+There is no regeneration: a body heals by eating meat cooked with fire, and meat comes from bodies killed by overkill.
+
+- **Meat** (elements.js `MEAT`, `COOKED_MEAT`, in Powders): lean muscle's real numbers (1.05 g/cm³, ASHRAE food
+  thermal properties). Raw meat is too wet to burn; at 71 °C (USDA, ground meat) it cooks, after banking the
+  proteins' denaturation heat (~3.5 J/g). Cooked meat chars and burns like wood past its fat's flash point (~320 °C),
+  leaving ash. Fire, the flamethrower, lava and steam (in a closed steamer; in open air it rises away) cook it
+  through the engine's own heat. The phase change is elements.js `hot` (docs/elements.md, el-core's shape).
+- **Gibs** (vitals.js `GIB_HEALTH`, meat.js): Quake's rule. A killing blow that drives health to −40% or below
+  (Quake III `GIB_HEALTH` −40 of 100; Quake's `PlayerDie`) bursts the body. As in Quake III the corpse can still be
+  gibbed: blasts, slams and blows keep taking its health down, so a blast spread over frames is one blow at any frame
+  rate. Burns, cold, acid and drowning never gib. Other deaths keep the old flow. A rocket's direct blast gibs; its
+  edge, or an axe, leaves a body. Landings never hurt (Noita), so falls don't gib.
+- The burst lays the body's sim mass as meat: its box (1.6² × 5.5 cells) at `BODY_DENS` 9.8, the box Archimedes
+  floats, is 13 cells of meat (`GIB_CELLS`). They go in through the exact cell transfer (`transfer.put`), nearest the
+  body's middle, at its core temperature (37 °C) and its velocity, and the blast's own pressure throws them. A
+  gibbed figure isn't drawn.
+- **Eating**: cooked meat touching a body (the contact cells player.js measures) is taken out of the sim
+  (`transfer.take`, exact) and heals `EAT_HEAL` (8%) a cell, only while hurt and only as many as fill the body
+  (Quake's `T_Heal`: a full body leaves a health box). Raw meat isn't eaten. NPCs eat the same way.
+- Sound: `eat` (two wet bites) and `gib` (a splat) in audio.js, on `body:eat` / `body:gib`.
+- Check: `node tools/gibs-check.mjs` (cooking on the tile engine and the gib rule, in node);
+  `--port …` adds the GPU run (cooked and charred in the sim, a rocket gibs the lab's NPC into 13 cells, cooked
+  meat eaten and raw not, matter counted).
 
 ## Birds (2026-10-10): life in the world
 
