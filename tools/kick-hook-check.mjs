@@ -17,6 +17,8 @@ p.on('console', (m) => { if (m.type() === 'error' && !/ERR_CONNECTION_REFUSED/.t
 p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 500)));
 await p.goto(`http://localhost:${port}/?preset=empty`);
 await p.waitForFunction(() => window.__app?.pov, null, { timeout: 60000 });
+// (headless has no real pointer lock, so the hotbar's tool stack, which opens over the crosshair on a switch, would take the clicks meant for the tool)
+await p.addStyleTag({ content: '.hb-stack { pointer-events: none !important; }' });
 await p.waitForTimeout(1500);
 
 let fails = 0;

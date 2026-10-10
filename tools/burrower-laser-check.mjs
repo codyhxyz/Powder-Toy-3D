@@ -31,6 +31,8 @@ try {
   await p.addInitScript(() => { try { localStorage.removeItem('tpt3d.pov.given'); } catch { /* */ } });
   await p.goto(`http://localhost:${port}/?preset=empty`);
   await p.waitForFunction(() => window.__app?.pov, null, { timeout: 60000 });
+  // (headless has no real pointer lock, so the hotbar's tool stack, which opens over the crosshair on a switch, would take the clicks meant for the tool)
+  await p.addStyleTag({ content: '.hb-stack { pointer-events: none !important; }' });
   await p.waitForTimeout(1500);
   const ev = (fn, arg) => p.evaluate(fn, arg);
   const wait = (ms) => p.waitForTimeout(ms);

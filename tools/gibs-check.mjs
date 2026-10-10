@@ -136,6 +136,8 @@ if (port) {
   try {
     await p.goto(`http://localhost:${port}/?preset=lab`);
     await p.waitForFunction(() => window.__app?.pov, null, { timeout: 90000 });
+    // (headless has no real pointer lock, so the hotbar's tool stack, which opens over the crosshair on a switch, would take the clicks meant for the tool)
+    await p.addStyleTag({ content: '.hb-stack { pointer-events: none !important; }' });
     await wait(1500);
     await ev(async () => {
       const { povEvents } = await import('/src/pov/events.js');

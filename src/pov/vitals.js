@@ -155,9 +155,9 @@ export function createVitals(emit, perks = null) {
   // Take `amount` health. `burst` (an impact or a blast) is reported at once.
   // shielded: the Energy Shield takes it first (blows, blasts, slams);
   // lethal: it takes all the health there is, shield or not (a backstab);
-  // violent: a blast, slam or blow (what the shield takes), which can gib the
+  // violent: a blast, slam or blow (what the shield takes, or any burst), which can gib the
   // body and keeps hitting its corpse (GIB_HEALTH).
-  function hurt(amount, cause, burst = false, { shielded = false, lethal = false, violent = shielded } = {}) {
+  function hurt(amount, cause, burst = false, { shielded = false, lethal = false, violent = shielded || burst } = {}) {
     if (!(amount > 0)) return;
     const maxHealth = perks?.maxHealth ?? 1;
     if (v.dead) {
