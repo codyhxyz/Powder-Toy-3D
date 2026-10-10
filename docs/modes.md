@@ -104,7 +104,8 @@ Events on `povEvents`: `game:start`, `game:end` `{ winner, score, why }`, `game:
 
 Without one (or one that doesn't fit the box) the lab's is used (`labLayout`, any box size): red's base in the
 open north-east corner, blue's in the south-west past the wooden tower; hills between the tank and the pit, the tank
-and the tower, and south of the pit; the core near blue's base.
+and the tower, and south of the pit; the core in the open south of the tank, a run from blue's spawns (on top of
+them the defenders contest it forever).
 
 ## Check
 

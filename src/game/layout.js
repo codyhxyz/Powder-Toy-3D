@@ -9,7 +9,8 @@
 //
 // labLayout is the lab preset's (presets.js 'lab', any box size): red holds the
 // open north-east corner, blue the south-west one past the wooden tower. The
-// glass tank, the lava pit and the sand pile are between them.
+// glass tank, the lava pit and the sand pile are between them. Siege's core is
+// blue's: they defend it first, then the sides swap.
 
 // The lab at 128³; scaled to the box (presets.js scales the lab by nx / 128).
 const LAB = {
@@ -20,7 +21,9 @@ const LAB = {
   flags: { red: [114, 0, 12], blue: [12, 0, 114] },
   // between the tank and the pit, between the tank and the tower, south of the pit's west wall
   hills: [[68, 0, 68, 7], [46, 0, 72, 6], [64, 0, 104, 6]],
-  siege: { attackers: 'red', core: [40, 0, 112, 8] },
+  // the core: out in the open south of the tank, a run from blue's spawns (on top of them,
+  // the defenders contest it forever: a capture needs the point cleared, TF2's rule)
+  siege: { attackers: 'red', core: [58, 0, 84, 8] },
 };
 
 export function labLayout(g) {
