@@ -75,7 +75,7 @@ const KIND = 'flask';
 const TUMBLE = 0.35;                             // rad the flying flask turns per frame it's drawn
 
 // ---- held item, in cells (camera space; the rig scales by the cell size)
-const HELD_POS = [0.7, -0.6, -1.4];              // right, down, ahead of the eye
+const HELD_POS = [0.6, -0.42, -1.4];             // right, down, ahead of the eye (the bulb in view above the hotbar)
 const HELD_TILT = 0.2;                           // rad, the neck tips toward the eye
 const DRINK_TIP = 1.1;                           // rad the flask tips toward the mouth on a gulp...
 const DRINK_TIP_S = 0.35;                        // ...over this long

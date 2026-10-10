@@ -132,6 +132,8 @@ try {
     out.mix = { status: flask.status(), totals: named(flask.load.totals()), diff: diff(t3, totals()) };
 
     // ---- a mixed drink: Noita's same share of each material
+    for (let i = 0; i < 45; i++) { belt.update(ctx(null, -1)); await frame(); }   // past the gulp's refire wait
+    await settle();
     const before = named(flask.load.totals());
     belt.update(ctx(null, -1, { drink: true, drinkPressed: true }));
     belt.update(ctx(null, -1));
