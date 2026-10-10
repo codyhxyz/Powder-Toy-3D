@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { BODY_HEIGHT, BODY_WIDTH } from './pov/constants.js';
 
-// Spawners: markers the god view sets on surfaces (the palette's Spawners group).
+// Spawners: markers the god view sets on surfaces (the palette's Entities group).
 //
 //   enemy   in first person, keeps one NPC (pov/npc.js) alive here: it appears
 //           here, and comes back here a few seconds after it dies

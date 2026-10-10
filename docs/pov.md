@@ -239,7 +239,7 @@ The player's own events (`player.on('hurt'|'death'|'land'|'splash')`) stay as th
 
 ## NPCs (2026-10-09): enemies that use every tool
 
-NPCs come from **spawners** (`src/spawners.js`), the palette's Spawners group: an **Enemy spawner** keeps one
+NPCs come from **spawners** (`src/spawners.js`), the palette's Entities group: an **Enemy spawner** keeps one
 NPC alive on its spot while in POV (it appears there and comes back 8 s after dying; up to 8), and a **Player
 spawn** is where F drops you in (the one nearest the cursor) and where you respawn. Click a spawner again with
 its tool to remove it. Spawners stand on world cells like signs; a new scene clears them, and the lab comes

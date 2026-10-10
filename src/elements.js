@@ -168,7 +168,7 @@ export const PALETTE = [
   { name: 'Gases', items: ['STEAM', 'SMOKE', 'FIRE'] },
   { name: 'Solids', items: ['WALL', 'ROCK', 'METAL', 'GLASS', 'ICE', 'WOOD', 'PLANT', 'CLONE'] },
   { name: 'Tools', items: ['HEAT', 'COOL', 'ERASE', 'BLAST', 'SIGN'] },
-  { name: 'Spawners', items: ['ENEMY', 'SPAWN'] },
+  { name: 'Entities', items: ['ENEMY', 'SPAWN'] },
   { name: 'Constructions', items: ['HOUSE', 'TREE', 'CAMPFIRE', 'IGLOO', 'BARREL', 'AQUARIUM', 'FOUNTAIN', 'PROMPT'] },
 ];
 
