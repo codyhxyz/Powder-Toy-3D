@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js';
 import { BODY_HEIGHT } from './constants.js';
+import { BODY_MODEL_URL } from './bodyModel.js';
 import { buildGarb, GARB_COLORS } from './garb.js';
 import {
   createFigure, createContactShadow, JET_NOZZLES, figureFrag, figureSkinnedVert, FIGURE_ALBEDO, FIGURE_HEAT_GLOW,
@@ -21,8 +22,6 @@ import {
 // Lighting: the mannequin's meshes use figure.js's figureFrag, the world's own
 // lighting (sun and its shadow map, GI probes, glow from hot matter), with a
 // skinned version of its vertex shader. It glows when hot like the stickman.
-
-const MODEL_URL = `${import.meta.env.BASE_URL}models/character/mannequin.glb`;
 
 // Materials, by the glTF material name (albedo, linear): the body matches the
 // stickman, the joint bands are a darker grey.
@@ -51,7 +50,7 @@ const approach = (rate, dt) => 1 - Math.exp(-rate * dt);
 
 let gltfPromise = null;   // one download for the page
 function loadModel() {
-  gltfPromise ??= new GLTFLoader().loadAsync(MODEL_URL);
+  gltfPromise ??= new GLTFLoader().loadAsync(BODY_MODEL_URL);
   return gltfPromise;
 }
 const garbByModel = new WeakMap();   // the clothes' geometry, built once per download and shared by every body

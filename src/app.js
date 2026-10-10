@@ -3,7 +3,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import './ui/styles.css';
 import { Simulation } from './sim.js';
 import { volumeVert, volumeFrag, pickFrag, shadowFrag } from './shaders/render.js';
-import { ELEMENTS, E, toolById, isBuild, isSpawnerTool, isGearTool, LIGHTNING_TOOL } from './elements.js';
+import { ELEMENTS, E, toolById, isBuild, isSpawnerTool, isGearTool, LIGHTNING_TOOL, wandPresetForTool } from './elements.js';
 import { createLightning } from './lightning.js';
 import { Spawners, SPAWNER, ENEMY_KINDS, feetOnHit } from './spawners.js';
 import { createBirdLife } from './birds/index.js';
@@ -32,6 +32,7 @@ import { h, inkFor, luminance } from './ui/dom.js';
 import { gfx, gfxUniforms, updateGfxUniforms } from './gfx/uniforms.js';
 import { DETAIL, settingKey, detailDefaults, detailDefines, detailRows } from './gfx/detail.js';
 import { createDetailGate } from './gfx/detailGate.js';
+import { createColdShaderGuard } from './gfx/coldShader.js';
 import { claimPrograms } from './gfx/programs.js';
 import { createPost, createAutoResolution, UPSCALE } from './gfx/post.js';
 import { createPacer, settleFrames, sceneKey, createCapCheck, CAP_IDLE_MS, MAX_FPS } from './gfx/pacing.js';
@@ -405,6 +406,7 @@ function build() {
   gfxUniforms.uClouds.value = false;   // a box has no sky of its own (a world's far field turns its clouds on)
   win?.far.attach(volume.material, shadowMat);   // world mode: the far field's haze and shadows on the window
   applyDetail();
+  coldShader.watch(volume.material);
   volume.material.uniforms.tShadow.value = shadowTarget.texture;
   volume.material.uniforms.uShadowRes.value = shadowRes;
 
@@ -801,6 +803,11 @@ function accentFor(hex) {
 let lastPaintTool = E.SAND;
 function selectTool(id) {
   setEyedropper(false);
+  const wand = wandPresetForTool(id);
+  if (wand) {
+    pov?.equipWand(wand).catch((err) => { console.error('Wand equip failed', err); hud.toast('Could not equip this wand. Try entering first person with V.'); });
+    return;   // Never save or send starter IDs to the paint shader.
+  }
   if (!isBuild(id)) lastPaintTool = id;
   settings.tool = id;
   const it = toolById(id);
@@ -955,7 +962,10 @@ const settingsPanel = createSettings({
 // and into the view only while the camera is near enough for them to show
 // (gfx/detailGate.js). The shadow map sees every switched-on feature.
 let detailVersion = 0;
-const detailGate = createDetailGate(renderer, () => pacer.wake(), () => hud.toast('Preparing close-up detail… the first time after an update this can take half a minute'));
+const detailGate = createDetailGate(renderer, () => pacer.wake(), () => hud.toast('Preparing close-up detail… the first time after an update this can take several seconds'));
+// The view program's first draw after an update freezes the page while the
+// GPU driver builds it: say so first (gfx/coldShader.js).
+const coldShader = createColdShaderGuard(() => hud.toast('Preparing the renderer… the first time after an update this takes a few seconds'));
 function applyDetail() {
   shadowMat.defines = detailDefines(settings);
   shadowMat.needsUpdate = true;
@@ -1183,6 +1193,7 @@ let timeShown = NaN;   // the time of day the drawer last showed
 let wantShot = false;
 
 addEventListener('keydown', (e) => {
+  if (pov?.editingWand) return;
   if (e.key === 'Alt') controls.mouseButtons.LEFT = THREE.MOUSE.ROTATE;
   if (e.key === 'Shift') controls.mouseButtons.RIGHT = THREE.MOUSE.PAN;
   if (isTyping()) return;
@@ -1349,6 +1360,7 @@ function frame(now) {
 }
 function tick(now, renderOnly = false) {
   if (graphicsFailure) throw graphicsFailure;
+  if (!renderOnly && coldShader.hold()) return;   // a cold-compile message is painting
   if (!renderOnly && capCheck.feed(now, lastIdle)) hud.toast(CAP_NOTICE, CAP_NOTICE_MS);
   const t0 = performance.now();
   lastIdle = false;
@@ -1478,6 +1490,7 @@ function tick(now, renderOnly = false) {
     floorGrid.material.opacity = post.renderScale;
     edges.material.opacity = EDGE_OPACITY * post.renderScale;
     post.render(scene, camera, null, dt);   // its passes after the scene count as 'post' (postPass)
+    coldShader.drew();
     prof.phase('other');
     // POV: the held tool, drawn over the finished frame in its own pass (no TAA, its
     // own depth, so it never clips into walls); before the screenshot reads the canvas

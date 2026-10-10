@@ -2,10 +2,13 @@
 // shadow pass). Entry points spread `gfxUniforms` into their materials and
 // call `updateGfxUniforms(sim, sun, light)` once per frame before rendering, so new
 // graphics features only need to touch this file, not the app wiring.
+import { Vector4 } from 'three';
 import { mediaNoiseUniform } from './mediaNoise.js';
 import { skyState } from './sky.js';
 import { cloudShift } from '../shaders/gfx/clouds.js';
 import { LAMP_MAX } from './lamps.js';
+import { WAND_LIGHTS } from '../shaders/gfx/lighting.js';
+export { WAND_LIGHTS };
 
 // The media detail clock (simulation steps) wraps here, seamlessly for the
 // drift speeds allowed in gfx/materials.js (MEDIA rise).
@@ -23,6 +26,9 @@ export const gfx = {
 };
 
 export const gfxUniforms = {
+  uWandLightCount: { value: 0 },
+  uWandLightPosition: { value: Array.from({ length: WAND_LIGHTS }, () => new Vector4()) }, // grid xyz, radius
+  uWandLightColor: { value: Array.from({ length: WAND_LIGHTS }, () => new Vector4()) }, // linear rgb, intensity
   tB: { value: null },        // velocity xyz (cells/step), pressure
   tFS: { value: null },       // smooth-surface fields
   tFM: { value: null },       // media fields

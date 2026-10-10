@@ -215,9 +215,10 @@ float surfRoot(vec3 ro, vec3 rd, int ch, float ta, float tb, float fa, float fb)
 float surfCross(vec3 ro, vec3 rd, int ch, bool into, float ta, float tm, float tb,
                 float phiA, float phiM, float phiB) {
   float a = phiA - SURF_ISO, m = phiM - SURF_ISO, b = phiB - SURF_ISO;
-  if (into ? (a < 0.0 && m >= 0.0) : (a >= 0.0 && m < 0.0)) return surfRoot(ro, rd, ch, ta, tm, a, m);
-  if (tm < tb && (into ? (m < 0.0 && b >= 0.0) : (m >= 0.0 && b < 0.0))) return surfRoot(ro, rd, ch, tm, tb, m, b);
-  return NO_HIT;
+  bool first = into ? (a < 0.0 && m >= 0.0) : (a >= 0.0 && m < 0.0);
+  if (!first && !(tm < tb && (into ? (m < 0.0 && b >= 0.0) : (m >= 0.0 && b < 0.0)))) return NO_HIT;
+  // one surfRoot call on whichever half holds the crossing (each call is inlined)
+  return surfRoot(ro, rd, ch, first ? ta : tm, first ? tm : tb, first ? a : m, first ? m : b);
 }
 
 // Where in [ta, tb] the ray passes closest to the centre of cell c.

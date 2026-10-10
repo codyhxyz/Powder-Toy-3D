@@ -1,3 +1,5 @@
+import { PRESETS as WAND_PRESETS } from './pov/wands/catalog.js';
+
 // Element definitions. This table is the single source of truth: it drives the
 // UI palette and is baked into every shader as GLSL const arrays.
 //
@@ -1214,6 +1216,17 @@ export const GEAR_ITEMS = GEAR.map((g, i) => ({
 }));
 export const isGearTool = (id) => id <= GEAR_ID0 && id > GEAR_ID0 - 100;
 
+// Starter wands (src/pov/wands/catalog.js PRESETS), fixed tiles in the Tools
+// group: selection equips the POV wand, never paints. Ids sit past the gear's.
+const WAND_ID0 = GEAR_ID0 - 100;
+const WAND_STARTER_MAX = 20;
+export const WAND_STARTERS = WAND_PRESETS.slice(0, WAND_STARTER_MAX).map((preset, i) => ({
+  id: WAND_ID0 - i, key: `WAND_${preset.id.replaceAll('-', '_').toUpperCase()}`, abbr: 'WAND', name: preset.name,
+  color: '#b994ff', desc: `${preset.description} Equip in first person; B edits the wand.`, preset,
+}));
+export const isWandTool = (id) => id <= WAND_ID0 && id > WAND_ID0 - WAND_STARTER_MAX;
+export const wandPresetForTool = (id) => WAND_STARTERS.find((item) => item.id === id)?.preset;
+
 // How the palette is laid out in the UI. Within each group, elements are
 // ordered so related materials sit together and the colours run smoothly.
 export const PALETTE = [
@@ -1228,12 +1241,12 @@ export const PALETTE = [
   { name: 'Electronics', items: ['SPARK', 'BATTERY', 'METAL', 'PSCN', 'NSCN', 'SWITCH', 'INSULATOR', 'TSNS', 'PCLN'] },
   { name: 'Radioactive', items: ['PHOTON', 'NEUTRON', 'URANIUM', 'PLUTONIUM'] },
   { name: 'Exotic', items: ['ANTIMATTER', 'SINGULARITY'] },
-  { name: 'Tools', items: ['HEAT', 'COOL', 'ERASE', 'BLAST', 'LIGHTNING', 'SIGN', ...GEAR_ITEMS.map((g) => g.key)] },
+  { name: 'Tools', items: ['HEAT', 'COOL', 'ERASE', 'BLAST', 'LIGHTNING', 'SIGN', ...GEAR_ITEMS.map((g) => g.key), ...WAND_STARTERS.map((item) => item.key)] },
   { name: 'Entities', items: ['ENEMY', 'GUNNER', 'WORM', 'GIANTWORM', 'SPAWN', 'JEEPPAD', 'BIKEPAD', 'FLOCK'] },
   { name: 'Constructions', items: ['HOUSE', 'TREE', 'CAMPFIRE', 'IGLOO', 'BARREL', 'AQUARIUM', 'FOUNTAIN', 'SHRINE', 'DOCK', 'TOWER', 'STONES', 'WELL', 'MINE', 'WRECK', 'BRIDGE', 'PROMPT'] },
 ];
 
-const NON_ELEMENTS = [...TOOLS, ...BUILDS, ...GEAR_ITEMS];
+const NON_ELEMENTS = [...TOOLS, ...BUILDS, ...GEAR_ITEMS, ...WAND_STARTERS];
 export const toolById = (id) => (id < 0 ? NON_ELEMENTS.find((t) => t.id === id) : ELEMENTS[id]);
 export const itemByKey = (key) => (key in E ? ELEMENTS[E[key]] : NON_ELEMENTS.find((t) => t.key === key));
 

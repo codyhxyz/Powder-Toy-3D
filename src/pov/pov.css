@@ -254,3 +254,68 @@ body.pov-on.pov-menu .dock { opacity: 1 !important; pointer-events: auto !import
 body.pov-on.pov-menu .card { opacity: 1 !important; }
 body.pov-on.pov-menu .hotbar { opacity: 0; pointer-events: none; }
 body.pov-on.pov-menu .pov-lock { display: none; }
+
+/* ---- touch controls (touch.js): phones and tablets only. The thumbs sit above
+   the hotbar at the screen's edges, leaving the middle clear for aiming; a drag
+   on the scene only looks, tools fire from their own buttons. */
+.pov-touch { display: none; }
+@media (hover: none) and (pointer: coarse) {
+  .pov-touch {
+    --touch-gap: 8px;
+    --touch-side: max(16px, env(safe-area-inset-left));
+    --touch-lift: calc(max(14px, env(safe-area-inset-bottom)) + 120px);   /* clears the hotbar and its tool name */
+    position: fixed; inset: 0; z-index: 11; pointer-events: none;
+  }
+  .pov-touch.show { display: block; }
+  .pov-touch button, .touch-stick {
+    pointer-events: auto; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+    background: var(--panel); border: 1px solid var(--line-hi); color: var(--text);
+  }
+  .pov-touch button {
+    min-height: 48px; min-width: 64px; padding: 10px 12px; border-radius: var(--r-ctl);
+    font: 600 13px/1 var(--ui);
+  }
+  .pov-touch [hidden] { display: none !important; }
+  .pov-touch button.held { background: var(--raise-hi); border-color: var(--accent); }
+  .touch-stick {
+    position: absolute; left: var(--touch-side); bottom: var(--touch-lift);
+    width: 112px; height: 112px; border-radius: 50%;
+    display: grid; place-items: center;
+  }
+  .touch-knob { width: 42px; height: 42px; border-radius: 50%; background: var(--raise-hi); border: 1px solid var(--line-hi); }
+  .touch-move-label { position: absolute; bottom: 8px; font-size: 12px; color: var(--muted); }
+  .touch-actions {
+    position: absolute; right: max(16px, env(safe-area-inset-right)); bottom: var(--touch-lift);
+    display: flex; flex-direction: column; align-items: flex-end; gap: var(--touch-gap);
+  }
+  .touch-row { display: flex; gap: var(--touch-gap); }
+  .touch-tool-name { padding: 2px 8px; border-radius: 4px; background: var(--panel); font-size: 12px; }
+  .touch-tool-name:empty { display: none; }
+  .pov-touch .touch-primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+  .pov-touch .touch-primary.held { background: var(--accent); filter: brightness(0.85); }
+
+  /* the vitals go top left, out of the thumbs' way (below the bar, and its camera row when narrow) */
+  .pov-vitals { top: calc(max(12px, env(safe-area-inset-top)) + 66px); bottom: auto; left: max(12px, env(safe-area-inset-left)); width: 160px; padding: 8px; }
+  .pov-hint { top: 40%; border-radius: var(--r-panel); font-size: 12px; }
+  .pov-respawn { flex-wrap: wrap; justify-content: center; padding: 0 16px; }
+  body.pov-on.pov-nohud .pov-touch { visibility: hidden; }
+}
+@media (hover: none) and (pointer: coarse) and (max-width: 760px) {
+  .pov-vitals { top: calc(max(12px, env(safe-area-inset-top)) + 128px); }
+}
+@media (hover: none) and (pointer: coarse) and (max-width: 560px) {
+  .pov-touch { --touch-lift: calc(max(8px, env(safe-area-inset-bottom)) + 112px); }   /* the smaller hotbar (hotbar.css) */
+}
+@media (hover: none) and (pointer: coarse) and (max-width: 360px) {
+  .pov-touch { --touch-side: 12px; --touch-gap: 6px; }
+  .touch-stick { width: 96px; height: 96px; }
+  .touch-actions { right: 12px; }
+  .pov-touch button { min-width: 56px; padding: 8px; font-size: 12px; }
+}
+/* landscape phones: the thumbs beside the hotbar (456px, hotbar.css), not above it */
+@media (hover: none) and (pointer: coarse) and (max-height: 500px) and (min-width: 740px) {
+  .pov-touch { --touch-lift: max(14px, env(safe-area-inset-bottom)); }
+}
+@media (hover: none) and (pointer: coarse) and (max-height: 500px) {
+  .pov-hint, .touch-tool-name { display: none; }
+}

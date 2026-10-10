@@ -4,6 +4,11 @@ import { inventory } from './inventory.js';
 import { sharedTransfer, emptyLoads } from './transfer.js';
 import { povEvents } from '../events.js';
 import { createBallistics } from '../ballistics.js';
+import * as THREE from 'three';
+import { PRESETS } from '../wands/catalog.js';
+import { createWandRuntime } from '../wands/runtime.js';
+import { createWandEditor } from '../wands/editor.js';
+import { viewmodelRig, heldMaterial } from '../viewmodel.js';
 
 export { emptyLoads };
 
@@ -14,6 +19,10 @@ export { emptyLoads };
 // Number key k picks slot k: the tool last held in it, or, if a tool of that
 // slot is already in hand, the next one in it. The wheel steps through every
 // tool carried, in catalog order.
+//
+// Wands (src/pov/wands/, docs/wands.md) sit in their slot's stack after its
+// tools: a click on one there (or a starter wand in the palette) puts it in
+// hand; B edits it. Number keys and the wheel still cycle the tools only.
 //
 // Tools get the shell's env plus:
 //   env.transfer   the shared exact cell transfer (transfer.js)
@@ -41,22 +50,57 @@ const MS_PER_S = 1000;
 // the body holding the tools has a status that takes its hands (status.js noTools: Polymorph);
 // the player's ctx carries its body as ctx.player.body, an NPC's ctx.player is its body
 const noHands = (ctx) => !!(ctx.player?.body?.status ?? ctx.player?.status)?.noTools;
+const WAND = 'WAND';              // selectedKey while a wand is in hand
+const WAND_KEY = 'WAND:';         // a wand's row key in the hotbar stack: WAND_KEY + preset id (or 'custom')
+const WAND_COLOR = '#b994ff';
+const WAND_CAST_KICK = 0.4;       // viewmodel kick per cast
 
 export function createToolbelt(env) {
   const hotbar = createHotbar((i) => pressSlot(i), (key) => select(key));
   const transfer = sharedTransfer(env);
+  const wandRuntime = createWandRuntime({ ...env, transfer });
+  const wandRig = viewmodelRig(env);
+  const wandHand = wandRig.hand([0.5, -0.4, -1.2]);
+  wandHand.name = 'held-wand';
+  wandHand.visible = false;
+  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.075, 1.2, 8), heldMaterial('#674426'));
+  shaft.rotation.x = Math.PI / 2;
+  shaft.position.z = -0.25;
+  const tip = new THREE.Mesh(new THREE.IcosahedronGeometry(0.14, 0), new THREE.MeshBasicMaterial({ color: '#efcf79' }));
+  tip.position.z = -0.9;
+  wandHand.add(shaft, tip);
+  let wandSelected = false, wandSlot = 0, wandId = null, custom = null;
+  const editor = createWandEditor({
+    runtime: wandRuntime, toast: (text) => env.hud?.toast?.(text),
+    onOpenChange(open) {
+      env.onEditorOpenChange?.(open);
+      if (open) putAway();
+      else if (wandSelected && wandRuntime.definition) wandRuntime.equip(wandRuntime.definition);
+    },
+    onSave(def) {
+      custom = { ...def, slot: clampSlot(def.slot ?? wandSlot + 1) + 1, name: def.name.trim() || 'Custom wand' };
+      wandSlot = custom.slot - 1;
+      wandSelected = true; wandId = 'custom';
+      refresh(); hotbar.select(wandSlot);
+      env.requestRender?.();
+    },
+  });
   const ballistics = createBallistics({ renderer: env.renderer });
   ballistics.prepare(env.getSim());
   // Hidden (out of POV, dead) the toolbelt isn't updated, but what's in the air
   // keeps flying until it lands, at the last frame's step rate.
-  let shown = false, lastSteps = 0, raf = 0, rafAt = 0;
+  let shown = false, lastSteps = 0, raf = 0, rafAt = 0, lastCtx = null;
   function drive(now) {
     raf = 0;
-    if (shown || !ballistics.count) return;
+    if (shown || (!ballistics.count && !wandRuntime.active)) return;
     const dt = rafAt ? (now - rafAt) / MS_PER_S : 0;
     rafAt = now;
-    ballistics.update({ sim: env.getSim(), dt, stepsPerFrame: lastSteps });
-    raf = requestAnimationFrame(drive);
+    const ctx = { ...lastCtx, sim: env.getSim(), dt, stepsPerFrame: env.getStepsPerFrame?.() ?? lastSteps,
+      primary: false, secondary: false, primaryPressed: false, secondaryPressed: false, wheel: 0 };
+    ballistics.update(ctx);
+    if (lastCtx) wandRuntime.tick(ctx);
+    env.requestRender?.();
+    if (ballistics.count || wandRuntime.active) raf = requestAnimationFrame(drive);
   }
   const tools = new Map();   // key → { def, inst, slot }, every tool (carried or not), in catalog order
 
@@ -90,21 +134,58 @@ export function createToolbelt(env) {
   let selected = null;
   let readout = null;   // the selected tool's readout?.(ctx) from the last update
 
-  // the bar from the inventory: each slot's tools and the one it holds now
+  const clampSlot = (slot) => Math.max(0, Math.min(HOTBAR_SLOTS - 1, (Number.isInteger(slot) ? slot : 1) - 1));
+  // slot i's wand rows: the starter presets for it, then the saved custom wand
+  const wandRows = (i) => [
+    ...PRESETS.filter((p) => clampSlot(p.slot) === i).map((p) => ({ key: WAND_KEY + p.id, name: `Wand: ${p.name}`, desc: p.description, color: WAND_COLOR })),
+    ...(custom && clampSlot(custom.slot) === i ? [{ key: `${WAND_KEY}custom`, name: `Wand: ${custom.name}`, desc: 'Your edited wand (B edits it).', color: WAND_COLOR }] : []),
+  ];
+
+  // the bar from the inventory: each slot's tools (then its wands) and the one it holds now
   function refresh() {
     for (let i = 0; i < HOTBAR_SLOTS; i++) {
       const keys = inSlot(i);
       if (!keys.includes(lastIn[i])) lastIn[i] = keys[0] ?? null;
-      hotbar.setSlot(i, keys.map((k) => tools.get(k).def), keys.indexOf(lastIn[i]));
+      const rows = keys.length ? [...keys.map((k) => tools.get(k).def), ...wandRows(i)] : [];
+      const at = wandSelected && wandSlot === i && keys.length
+        ? rows.findIndex((r) => r.key === WAND_KEY + wandId) : keys.indexOf(lastIn[i]);
+      hotbar.setSlot(i, rows, at);
     }
   }
 
-  // hold tool `key` (or, given a number, the carried tool at that place in catalog order)
+  // put away whatever is in hand (the tool, or the wand: its flights keep going)
+  function putAway() {
+    wandHand.visible = false;
+    if (wandSelected) wandRuntime.deselect();
+    else tools.get(selected)?.inst.deselect?.();
+  }
+
+  // hold wand `definition` (a preset id, or { name, cards, config, slot? })
+  function equipWand(definition) {
+    const def = typeof definition === 'string' ? PRESETS.find((p) => p.id === definition) : definition;
+    if (!def) return false;
+    putAway();
+    wandRuntime.equip(def);
+    wandSlot = clampSlot(def.slot ?? wandSlot + 1);
+    const preset = PRESETS.some((p) => p.id === def.id);
+    if (!preset) custom = { ...def, slot: wandSlot + 1, name: def.name?.trim?.() || 'Custom wand' };
+    wandSelected = true; wandId = preset ? def.id : 'custom';
+    refresh(); hotbar.select(wandSlot);
+    env.releaseInput?.(); env.requestRender?.();
+    return true;
+  }
+
+  // hold tool `key` (or, given a number, the carried tool at that place in catalog order; a wand's row key equips it)
   function select(key) {
+    if (typeof key === 'string' && key.startsWith(WAND_KEY)) {
+      const id = key.slice(WAND_KEY.length);
+      return equipWand(id === 'custom' ? custom : id);
+    }
     if (typeof key === 'number') key = carried()[key];
     const t = tools.get(key);
     if (!t || !inventory.has(key)) return false;
-    if (key !== selected) tools.get(selected)?.inst.deselect?.();
+    if (wandSelected) { putAway(); wandSelected = false; wandId = null; }
+    else if (key !== selected) tools.get(selected)?.inst.deselect?.();
     selected = key;
     lastIn[t.slot] = key;
     refresh();
@@ -117,7 +198,7 @@ export function createToolbelt(env) {
   function pressSlot(i) {
     const keys = inSlot(i);
     if (!keys.length) { hotbar.shake(i); return; }
-    const cur = tools.get(selected)?.slot === i ? keys.indexOf(selected) : -1;
+    const cur = !wandSelected && tools.get(selected)?.slot === i ? keys.indexOf(selected) : -1;
     select(cur >= 0 ? keys[(cur + 1) % keys.length] : (lastIn[i] ?? keys[0]));
   }
 
@@ -135,9 +216,12 @@ export function createToolbelt(env) {
 
   // the number keys (1 to HOTBAR_SLOTS) pick a slot while in POV (and don't reach the god view's hotkeys)
   function onKey(e) {
-    if (!env.isActive?.() || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (editor.open || !env.isActive?.() || e.metaKey || e.ctrlKey || e.altKey) return;
     const t = e.target;
     if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    if (e.code === 'KeyB') {   // edit the wand
+      e.preventDefault(); e.stopImmediatePropagation(); if (!e.repeat) editor.show(); return;
+    }
     const i = e.key.length === 1 ? [...Array(HOTBAR_SLOTS).keys()].find((j) => slotKey(j) === e.key) : undefined;
     if (i === undefined) return;
     e.preventDefault();
@@ -146,31 +230,45 @@ export function createToolbelt(env) {
   }
   addEventListener('keydown', onKey, { capture: true });
 
-  const held = () => tools.get(selected)?.inst;
+  const held = () => (wandSelected ? null : tools.get(selected)?.inst);
   let wasHelpless = false;
   return {
-    get selected() { return selected; },
-    get selectedKey() { return selected; },   // the held tool's key ('GUN', ...)
+    get selected() { return wandSelected ? WAND : selected; },
+    get selectedKey() { return wandSelected ? WAND : selected; },   // the held tool's key ('GUN', ...; 'WAND')
     get wantsWheel() { return !!held()?.wantsWheel?.(); },
     get zoom() { return held()?.zoom?.() ?? 1; },   // the held tool's view zoom (the sniper's scope): FOV ÷ this
     get transfer() { return transfer; },
     get ballistics() { return ballistics; },
     get readout() { return readout; },
     get carried() { return carried(); },
+    wandRuntime, editor, equipWand,
+    openEditor: () => editor.show(),
     // a tool by key (or, given a number, the carried tool at that place), carried or not
     tool: (key) => tools.get(typeof key === 'number' ? carried()[key] : key)?.inst ?? null,
     select,
     pressSlot,
     update(ctx) {
+      lastCtx = ctx;
       const cur = held();
       // a status that leaves no hands (Polymorph, potions.js): the tool in hand is put away while it lasts
       const helpless = noHands(ctx);
-      if (helpless && !wasHelpless) cur?.deselect?.();
+      if (helpless && !wasHelpless) putAway();
       wasHelpless = helpless;
-      if (ctx.wheel && !cur?.wantsWheel?.()) step(Math.sign(ctx.wheel));
-      if (!helpless) held()?.update(ctx);
+      if (!editor.open && ctx.wheel && !cur?.wantsWheel?.()) step(Math.sign(ctx.wheel));
+      const wandInHand = wandSelected && !editor.open && !helpless;
+      wandHand.visible = wandInHand;
+      if (wandInHand) {
+        wandRig.update(ctx);
+        const casts = wandRuntime.stats.casts;
+        wandRuntime.update(ctx);
+        if (wandRuntime.stats.casts > casts) wandRig.kick(WAND_CAST_KICK);
+      } else {
+        wandRuntime.tick(ctx);   // flights and fields keep going while a tool is in hand
+        if (!helpless && !editor.open) held()?.update(ctx);
+      }
       tools.forEach((t) => t.inst.tick?.(ctx));   // what every tool keeps doing, held or not (a torch lying lit)
-      readout = held()?.readout?.(ctx) ?? null;
+      readout = wandSelected ? { name: wandRuntime.definition?.name ?? 'Wand', color: WAND_COLOR, note: String(wandRuntime.status() ?? '') }
+        : held()?.readout?.(ctx) ?? null;
       lastSteps = ctx.stepsPerFrame;
       ballistics.update(ctx);
       for (let i = 0; i < HOTBAR_SLOTS; i++) hotbar.setStatus(i, tools.get(lastIn[i])?.inst.status?.() ?? '');
@@ -178,19 +276,24 @@ export function createToolbelt(env) {
     setVisible(v) {
       hotbar.setVisible(v);
       shown = v;
-      if (!v && ballistics.count && !raf) { rafAt = 0; raf = requestAnimationFrame(drive); }
-      if (!v) { held()?.deselect?.(); readout = null; }
+      if (v && wandSelected && wandRuntime.definition) wandRuntime.equip(wandRuntime.definition);
+      if (v && raf) { cancelAnimationFrame(raf); raf = 0; }
+      if (!v && (ballistics.count || wandRuntime.active) && !raf) { rafAt = 0; raf = requestAnimationFrame(drive); }
+      if (!v) { editor.close(); putAway(); readout = null; }
     },
     // The window moved over the world by (dx, 0, dz) cells (docs/scaling.md
     // D11): every tool, selected or not, moves the grid positions it keeps.
-    windowShifted(dx, dz) { tools.forEach((t) => t.inst.windowShifted?.(dx, dz)); },
+    windowShifted(dx, dz) { tools.forEach((t) => t.inst.windowShifted?.(dx, dz)); wandRuntime.windowShifted(dx, dz); },
     // the world was replaced (a scene load, undo, a new grid): what tools left in it is gone
-    worldReplaced() { tools.forEach((t) => t.inst.worldReplaced?.()); },
+    worldReplaced() { tools.forEach((t) => t.inst.worldReplaced?.()); wandRuntime.resetWorld(); },
     dispose() {
       removeEventListener('keydown', onKey, { capture: true });
       offGive();
       if (raf) cancelAnimationFrame(raf);
       ballistics.dispose();
+      editor.dispose(); wandRuntime.dispose();
+      wandHand.removeFromParent();
+      for (const mesh of [shaft, tip]) { mesh.geometry.dispose(); mesh.material.dispose(); }
       tools.forEach((t) => { t.inst.deselect?.(); t.inst.dispose?.(); });
       hotbar.dispose();
     },

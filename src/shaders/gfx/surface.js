@@ -279,11 +279,13 @@ const mat3 TURN_Y30 = mat3(0.866, 0.0, 0.5, 0.0, 1.0, 0.0, -0.5, 0.0, 0.866);
 // Sand: clumps and dimples.
 // Sizes are in metres (m), converted to cells through CELL_M (src/scale.js):
 // a wavelength X_M becomes X_F = CELL_M / X_M per cell, a height X_H = m / CELL_M cells.
-// Sand: the lumpy slump surface a pile's avalanches leave (lumps 1-3 cm
-// high over ~30 cm), and clumps and dimples on it.
+// Sand: the lumpy slump surface a pile's avalanches leave, and clumps and
+// dimples on it. Each avalanche on a slip face runs down as a grainflow
+// tongue 1-5 cm thick and a few decimetres wide (Hunter 1977,
+// Sedimentology 24): lobes ~2 cm proud over ~30 cm.
 const float SAND_SLUMP_M = 0.27;              // m, slump wavelength
 const float SAND_SLUMP_F = CELL_M / SAND_SLUMP_M;   // per cell
-const float SAND_SLUMP_H = 0.04 / CELL_M;     // 4 cm per unit of noise (±1-2 cm), in cells
+const float SAND_SLUMP_H = 0.06 / CELL_M;     // 6 cm per unit of noise (±2 cm, 3 at most), in cells
 const int SAND_SLUMP_OCT = 2;                 // fBm octaves
 vec4 sandSlumps(vec3 p, float fp) { return mFbmD(p, SAND_SLUMP_F, SAND_SLUMP_OCT, fp); }
 const float SAND_CLUMP_M = 0.025;             // m, clump wavelength
@@ -319,9 +321,14 @@ const float ROCK_LUMP_F = CELL_M / ROCK_LUMP_M, ROCK_LUMP_H = 0.072 / CELL_M;
 const int ROCK_LUMP_OCT = 3;
 vec4 rockLumps(vec3 p, float fp) { return mFbmD(p, ROCK_LUMP_F, ROCK_LUMP_OCT, fp); }
 // Crags, ledges and cracks of weathered lava rock: 25, 12 and 5.5 cm octaves,
-// knobs ~2 cm proud and creases ~3-5 cm deep.
+// knobs ~4 cm proud and creases ~6-9 cm deep. Measured lava surfaces are
+// self-affine (Hurst exponent ~0.6-0.8) with RMS heights at a 1 m baseline
+// of a few cm on smooth pahoehoe to 10-30 cm on aa (Shepard et al. 2001,
+// JGR 106 E12; Morris et al. 2008, JGR 113 E12007); broken, weathered rock
+// between the two, ~8 cm at 1 m, is ~3.5 cm RMS at the crags' 25 cm, which
+// these octaves give.
 const float ROCK_CRAG_M = 0.25;               // m, wavelength of the first crag octave
-const float ROCK_CRAG_F = CELL_M / ROCK_CRAG_M, ROCK_CRAG_H = 0.035 / CELL_M;   // its frequency (per cell), relief (3.5 cm, in cells)
+const float ROCK_CRAG_F = CELL_M / ROCK_CRAG_M, ROCK_CRAG_H = 0.07 / CELL_M;   // its frequency (per cell), relief (7 cm, in cells)
 const float ROCK_CRAG_LAC = 2.13, ROCK_CRAG_GAIN = 0.55;   // per octave: frequency x, relief x
 // The first octave is creases (h = 1 - (1 - c)^2: flat knobs, V valleys),
 // the finer ones sharp ridges (h = (1 - c)^2): broken, angular edges
@@ -366,7 +373,10 @@ const float WOOD_MEANDER_F = CELL_M / WOOD_MEANDER_M, WOOD_MEANDER = 0.024 / CEL
 const float WOOD_WAVE_M = 0.06;              // m, wavelength of the furrow edges' wander
 const float WOOD_WAVE_F = CELL_M / WOOD_WAVE_M, WOOD_WAVE = 0.00051 / (CELL_M * CELL_M);   // its frequency, cells per unit slope
 const float WOOD_FUR_W = 0.3;                            // furrow half-width, lattice units
-const float WOOD_FUR_DEPTH = 0.015 / CELL_M, WOOD_PLATE_DOME = 0.006 / CELL_M;   // furrows 1.5 cm deep, plates domed 6 mm, in cells
+// Furrows run nearly through the outer bark, which on a mature thick-barked
+// trunk is ~4-7% of its diameter (Ryan & Reinhardt 1988, Can. J. For. Res.
+// 18: ponderosa pine 6.3%, Douglas-fir 6.5%; oaks similar): 3 cm on a ~50 cm trunk.
+const float WOOD_FUR_DEPTH = 0.03 / CELL_M, WOOD_PLATE_DOME = 0.006 / CELL_M;   // furrows 3 cm deep, plates domed 6 mm, in cells
 // Narrow furrows alias a little sooner than the plates: fade at this multiple
 // of WOOD_PLATE_FH (plates fully drawn while ~10 px across, ~10 m away).
 const float WOOD_FURROW_LOD = 1.3;
@@ -1046,12 +1056,15 @@ const float MAT_BORDER_F = 1.7;      // frequency of the noise breaking up that 
 const float MAT_BORDER_SALT = 2.9;   // its noise offset
 const float MAT_BORDER_AMP = 0.6;    // how far it shifts the share
 // The material of a two-element mix at texture point p (r: share of id2).
+// matOf is huge and a GPU compiler inlines every call to it: the two
+// materials are one call in a loop, not two calls.
 Mat gatherMat(int id1, int id2, float ct1, float ct2, float r, vec3 p, vec3 n, float T, float fp) {
-  Mat m = matOf(id1, p, n, T, ct1, fp);
-  if (id2 >= 0) {
-    float k = smoothstep(MAT_BORDER_EDGE.x, MAT_BORDER_EDGE.y,
+  float k = id2 < 0 ? 0.0 : smoothstep(MAT_BORDER_EDGE.x, MAT_BORDER_EDGE.y,
                          r + (vnoise(M_ROT * p * MAT_BORDER_F + MAT_BORDER_SALT) - 0.5) * MAT_BORDER_AMP);
-    if (k > 0.0) m = mixMat(m, matOf(id2, p, n, T, ct2, fp), k);
+  Mat m;
+  for (int j = 0; j < (k > 0.0 ? 2 : 1); j++) {
+    Mat mj = matOf(j == 0 ? id1 : id2, p, n, T, j == 0 ? ct1 : ct2, fp);
+    if (j == 0) m = mj; else m = mixMat(m, mj, k);   // (WebGL: no ?: on structs)
   }
   return m;
 }
@@ -1078,6 +1091,9 @@ Surf gatherSurf(vec3 hp, vec3 n, int ch) {
   Surf s;
   s.p = hp; s.tp = hp; s.tp1 = hp; s.flowW = 0.0; s.n = n; s.ng = n; s.ch = ch; s.id = E_EMPTY; s.cell = ivec3(floor(hp - n * 0.5)); s.seed = 0.0;
   s.face = ivec3(0, 1, 0);
+#ifdef DETAIL_RELIEF
+  if (gRelOn) { s.tp = gRelQ; s.tp1 = gRelQ; }   // a carved hit's texture lies over the envelope (gfx/relief.js)
+#endif
   vec3 q = hp - n * GATHER_DEPTH - 0.5;
   ivec3 c0 = ivec3(floor(q));
   vec3 f = q - vec3(c0);
@@ -1130,17 +1146,18 @@ Surf gatherSurf(vec3 hp, vec3 n, int ch) {
   vec3 travel = vel / wsum * FLOW_PERIOD;   // cells a layer moves in a cycle
   if (flow && length(travel) > FLOW_MIN_TRAVEL) {
     float ph = flowPhase(hp), ph1 = fract(ph + 0.5);
-    s.tp = hp - travel * (ph - 0.5);
-    s.tp1 = hp - travel * (ph1 - 0.5);
+    s.tp1 = s.tp - travel * (ph1 - 0.5);
+    s.tp -= travel * (ph - 0.5);
     s.flowW = abs(2.0 * ph - 1.0);   // 0 while the second layer resets, 1 while the first does
   }
-  // the texture is anchored in the world (tp, tp1 stay grid points: footprints and glints take them)
-  Mat m = gatherMat(id1, id2, ct1, ct2, r, worldPos(s.tp), n, s.T, fp);
-  if (s.flowW > 0.0) m = mixMat(m, gatherMat(id1, id2, ct1, ct2, r, worldPos(s.tp1), n, s.T, fp), s.flowW);
+  // the texture is anchored in the world (tp, tp1 stay grid points: footprints and glints take them);
+  // the flow layers: one gatherMat call in a loop (see gatherMat)
+  Mat m;
+  for (int j = 0; j < (s.flowW > 0.0 ? 2 : 1); j++) {
+    Mat mj = gatherMat(id1, id2, ct1, ct2, r, worldPos(j == 0 ? s.tp : s.tp1), n, s.T, fp);
+    if (j == 0) m = mj; else m = mixMat(m, mj, s.flowW);
+  }
   applyMat(s, m);
-#ifdef DETAIL_RELIEF
-  s.cav *= reliefSkyVis(hp);   // down a carved crevice (gfx/relief.js)
-#endif
   return s;
 }
 
@@ -1399,6 +1416,9 @@ vec3 shadeSurf(Surf s, vec3 rd) {
 #ifdef GRAINS_ANY
   sh *= gGrainSun;   // a grain shaded by the grains next to it (gfx/grains.js)
 #endif
+#ifdef DETAIL_RELIEF
+  sh *= reliefSunVis();   // in the shade of the relief (gfx/relief.js)
+#endif
   float aoT = ao * s.cav;
 
   // specular layer (F0) and the energy it takes from the diffuse one
@@ -1428,6 +1448,10 @@ vec3 shadeSurf(Surf s, vec3 rd) {
   }
   // (SUN_COL is irradiance / pi in this renderer's units, hence the pi on the BRDF term)
   vec3 c = SUN_COL * sh * (dSun * (SUN_CAV_MIN + SUN_CAV_GAIN * s.cav) + PI_S * spec);
+#ifdef DETAIL_RELIEF
+  // down a carved crevice: less sky and ambient (the sun had reliefSunVis)
+  { float sky = reliefSkyVis(); s.cav *= sky; aoT *= sky; }
+#endif
 
   // leaves: sunlight through a thin clump (thickness from the natural-solids field)
   if (s.trans > 0.0 && ngl < 0.0) {
