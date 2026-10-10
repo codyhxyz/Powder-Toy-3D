@@ -4,8 +4,12 @@ import { BODY_HEIGHT, BODY_WIDTH } from './pov/constants.js';
 // Spawners: markers the god view sets on surfaces (the palette's Entities group).
 //
 //   enemy   in first person, keeps one NPC (pov/npc.js) alive here: it appears
-//           here, and comes back here a few seconds after it dies
+//           here, and comes back here a few seconds after it dies (an axeman)
+//   gunner  the same, a jetpack gunner (npc.js, style 'gunner'): Noita's jetpack Hiisi
+//   worm    the same, a worm (pov/worm.js) that comes up here and burrows in
 //   player  where F drops you in (the one nearest the cursor) and where you respawn
+//
+// None is placed in any world by default; the lab's own axeman is the only one a scene brings.
 //
 // Clicking a surface with a spawner tool sets one; clicking at an existing one
 // of that kind takes it away. A spawner stands on a world cell, like a sign, so
@@ -14,8 +18,10 @@ import { BODY_HEIGHT, BODY_WIDTH } from './pov/constants.js';
 // Each shows as a glowing pad with a ghost of a body standing on it; in first
 // person the ghost hides and the pad stays.
 
-export const SPAWNER = { ENEMY: 'enemy', PLAYER: 'player' };
-const COLOR = { enemy: 0xe0453a, player: 0x3fa7ff };
+export const SPAWNER = { ENEMY: 'enemy', GUNNER: 'gunner', WORM: 'worm', PLAYER: 'player' };
+// the kinds that keep a creature alive (pov/index.js); old spawners are 'enemy': axemen
+export const ENEMY_KINDS = [SPAWNER.ENEMY, SPAWNER.GUNNER, SPAWNER.WORM];
+const COLOR = { enemy: 0xe0453a, gunner: 0xe08a2a, worm: 0xb0607a, player: 0x3fa7ff };
 const TOGGLE_DIST = 3;        // cells: clicking this near an existing spawner of the kind removes it
 const PAD_R = 1.4;            // cells, the pad's radius
 const PAD_LIFT = 0.05;        // cells above the surface (no z-fighting)

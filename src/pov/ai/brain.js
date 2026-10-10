@@ -725,3 +725,8 @@ for (const [G, label] of [[AttackGoal, 'Attack'], [HuntGoal, 'Hunt'], [BreachGoa
   [ExtinguishGoal, 'Extinguish'], [GatherGoal, 'Gather'], [WanderGoal, 'Wander'], [GoToGoal, 'GoTo'], [ToolGoal, 'Tool']]) G.prototype.label = label;
 
 export { WEAPONS, BLOCK_CELLS, BODY_HEIGHT };
+// for other minds on this one (ai/gunner.js): Raven's fuzzy distance module, the aim's error, the shared strategies
+export {
+  distanceModule, aimWith, hdist, HuntEvaluator, ExtinguishEvaluator, WanderEvaluator,
+  REACTION_S, AIM_ERROR_START, AIM_ERROR, AIM_RAMP_S, AIM_ERROR_MOVING, WARNING_MISS,
+};

@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 
-// Bodies weapons can hit that aren't cells: the player and the NPCs (npc.js).
+// Bodies weapons can hit that aren't cells: the player, the NPCs (npc.js) and
+// each segment of a worm (worm.js; those carry creature: 'worm').
 // Each is a box in grid cells; the axe tests its reach ray against them and
 // the gun each round's flight segment (ballistics.js), before the cells. A
 // weapon never hits its own wielder: `owner` is the target's id ('player', or
@@ -58,3 +59,6 @@ export function targetById(id) {
 }
 
 export const hasTargets = () => targets.size > 0;
+
+// Every target, live or not (a worm choosing what to hunt and what its jaws close on).
+export const allTargets = () => targets;

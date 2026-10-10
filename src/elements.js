@@ -235,12 +235,16 @@ export const TOOLS = [
   { id: -5, key: 'SIGN', abbr: 'SIGN', name: 'Sign', color: '#efe7d2',
     desc: 'Click a surface to pin a label. {t}, {p} and {e} show live temperature, pressure and element.' },
   // Spawners are handled by the app too (src/spawners.js): markers, not cells.
-  { id: -6, key: 'ENEMY', abbr: 'NPC', name: 'Enemy spawner', color: '#e0453a',
+  { id: -6, key: 'ENEMY', abbr: 'NPC', name: 'Axeman spawner', color: '#e0453a',
     desc: 'Click a surface: in first person (F) an enemy with every tool appears here, and comes back after it dies. Click it again to remove it.' },
+  { id: -30, key: 'GUNNER', abbr: 'GUNR', name: 'Gunner spawner', color: '#e08a2a',
+    desc: 'Click a surface: in first person (F) a jetpack gunner appears here. It keeps its distance, flies to high ground and shoots. Click it again to remove it.' },
+  { id: -31, key: 'WORM', abbr: 'WORM', name: 'Worm spawner', color: '#b0607a',
+    desc: 'Click a surface: in first person (F) a worm burrows in here. It tunnels through rock, bursts out under you and bites; loud noises draw it. WALL and metal stop it. Click it again to remove it.' },
   { id: -7, key: 'SPAWN', abbr: 'SPWN', name: 'Player spawn', color: '#3fa7ff',
     desc: 'Click a surface: F drops you in at the spawn nearest the cursor, and you respawn there. Click it again to remove it.' },
 ];
-export const isSpawnerTool = (id) => id === -6 || id === -7;
+export const isSpawnerTool = (id) => id === -6 || id === -7 || id === -30 || id === -31;
 
 // Constructions: whole structures placed with one click (src/constructions.js
 // builds and stamps them; they never reach the paint shader). Each one is
@@ -305,7 +309,7 @@ export const PALETTE = [
   { name: 'Gases', items: ['STEAM', 'CLOUD', 'SMOKE', 'FIRE'] },
   { name: 'Solids', items: ['WALL', 'COAL', 'ROCK', 'LIMESTONE', 'SANDSTONE', 'METAL', 'GLASS', 'ICE', 'CRYSTAL', 'WOOD', 'PLANT', 'CLONE'] },
   { name: 'Tools', items: ['HEAT', 'COOL', 'ERASE', 'BLAST', 'SIGN', ...GEAR_ITEMS.map((g) => g.key)] },
-  { name: 'Entities', items: ['ENEMY', 'SPAWN'] },
+  { name: 'Entities', items: ['ENEMY', 'GUNNER', 'WORM', 'SPAWN'] },
   { name: 'Constructions', items: ['HOUSE', 'TREE', 'CAMPFIRE', 'IGLOO', 'BARREL', 'AQUARIUM', 'FOUNTAIN', 'SHRINE', 'DOCK', 'TOWER', 'STONES', 'WELL', 'MINE', 'WRECK', 'PROMPT'] },
 ];
 

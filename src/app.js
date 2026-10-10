@@ -4,7 +4,7 @@ import './ui/styles.css';
 import { Simulation } from './sim.js';
 import { volumeVert, volumeFrag, pickFrag, shadowFrag } from './shaders/render.js';
 import { ELEMENTS, E, toolById, isBuild, isSpawnerTool, isGearTool } from './elements.js';
-import { Spawners, SPAWNER, feetOnHit } from './spawners.js';
+import { Spawners, SPAWNER, ENEMY_KINDS, feetOnHit } from './spawners.js';
 import { PerkOrbs } from './perkOrbs.js';
 import { buildPreset, ARENA_PRESETS } from './presets.js';
 import { ArenaMarkers } from './arenas/markers.js';
@@ -76,7 +76,7 @@ const WORLD_VIEW_DIST = 21;
 // (one WIN_STEP move every few frames), in scene units per second
 const WORLD_CAM_SPEED_MAX = 9;
 const SIGN_TOOL = -5;
-const SPAWNER_KIND = { [-6]: SPAWNER.ENEMY, [-7]: SPAWNER.PLAYER };   // the Spawners tools' kinds
+const SPAWNER_KIND = { [-6]: SPAWNER.ENEMY, [-7]: SPAWNER.PLAYER, [-30]: SPAWNER.GUNNER, [-31]: SPAWNER.WORM };   // the Spawners tools' kinds
 // the lab's own enemy spawner: its open south floor, as shares of the grid (the old lab NPC's arena)
 const LAB_ENEMY_AT = [0.555, 0.86];
 
@@ -1006,7 +1006,7 @@ function press(e) {
     const r = spawners.toggle(kind, feetOnHit(hover));
     pacer.wake();
     if (r === 'full') hud.toast('That many is the limit');
-    else hud.toast(r === 'removed' ? 'Spawner removed' : kind === SPAWNER.ENEMY ? 'Enemy spawner set: press F to fight' : 'Player spawn set: F drops you in here');
+    else hud.toast(r === 'removed' ? 'Spawner removed' : ENEMY_KINDS.includes(kind) ? 'Enemy spawner set: press F to fight' : 'Player spawn set: F drops you in here');
     return;
   }
   if (isBuild(settings.tool)) {
