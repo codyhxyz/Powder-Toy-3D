@@ -1,5 +1,4 @@
 import { prelude, BRICK } from './common.js';
-import { generatorGLSL, layersGLSL } from './generate.js';
 import { lib } from './render.js';
 import { surfaceGLSL } from './gfx/surface.js';
 import { liquidGLSL } from './gfx/liquid.js';
@@ -229,18 +228,20 @@ vec4 farPack(FarCount c) {
 `;
 
 // ---------------------------------------------------------------- trees
-// The window plants the generator's trees (world/generator.js treesIn) as the
-// TREE constructions (constructions/builtins.js TREES) when their columns are
-// first visited. The far field places the same trees at world load, on the
-// GPU: a candidate per brick column (farTreeCandFrag, treeCandidate's twin),
-// thinned by the same rule (farTreeThinFrag), each drawn into the far grid as
-// its construction's shape at brick scale (farGenFrag). The constructions
-// draw from mulberry32 (runtime.js makeRng), whose i-th draw is a function of
-// the seed and i alone, and every draw before a shape that consumes draws per
-// cell (ball, a frayed disc) is a known count in: so each tree's height, an
-// oak's crowns, a pine's tiers and a palm's lean are its construction's own;
-// what comes after (crown sizes, birch clusters, fronds) takes the range's
-// middle. Keep the numbers below in step with constructions/builtins.js.
+// A scene with trees (scene.trees, world/scenes/index.js: the island's) has the
+// window plant them (its treesIn) as the TREE constructions
+// (constructions/builtins.js TREES) when their columns are first visited. The
+// far field places the same trees when it builds, on the GPU: a candidate per
+// brick column (farTreeCandFrag: the scene's sceneTreeCandidate), thinned by
+// treesIn's rule (farTreeThinFrag), each drawn into the far grid as its
+// construction's shape at brick scale (farSceneFrag's trees). The
+// constructions draw from mulberry32 (runtime.js makeRng), whose i-th draw is
+// a function of the seed and i alone, and every draw before a shape that
+// consumes draws per cell (ball, a frayed disc) is a known count in: so each
+// tree's height, an oak's crowns, a pine's tiers and a palm's lean are its
+// construction's own; what comes after (crown sizes, birch clusters, fronds)
+// takes the range's middle. Keep the numbers below in step with
+// constructions/builtins.js.
 export const TREE_VARIANTS = ['oak', 'birch', 'pine', 'palm', 'dead'];
 // Draw ranges and shares of a tree's height H, from constructions/builtins.js TREES.
 export const TREE_SHAPE = {
@@ -297,11 +298,6 @@ const treeGLSL = () => /* glsl */ `
 #define TREE_CHANCE ${glf(TREE.CHANCE)}
 #define TREE_SPACING ${glf(TREE.SPACING)}
 #define TREE_THIN_R ${Math.ceil(TREE.SPACING / BRICK)}      // brick columns a candidate's rivals stand within
-#define TREE_ABOVE_SEA ${glf(TREE.ABOVE_SEA)}
-#define TREE_SLOPE_MAX ${glf(TREE.SLOPE_MAX)}
-#define TREE_PALM_BELOW ${glf(TREE.PALM_BELOW)}
-#define TREE_PINE_ABOVE ${glf(TREE.PINE_ABOVE)}
-#define TREE_SNOW_GAP ${glf(TREE.SNOW_GAP)}
 #define TREE_REACH_B ${Math.ceil(TREE.REACH / BRICK)}       // brick columns a crown reaches from its trunk
 #define TREE_SIZES ${TREE_SIZES}
 #define TREE_UNIT16 (1.0 / 65536.0)   // a 16-bit hash field to [0, 1)
@@ -334,7 +330,7 @@ int mbInt(uint s, int i, int lo, int hi) { return lo + int(floor(float(hi - lo +
 float jsRound(float x) { return floor(x + 0.5); }   // Math.round (half up)
 
 // A tree map texel: x = 1 + offset x + BS · offset z + BS² · (variant + TREE_VARIANTS · size) (0: none),
-// y = its ground (the trunk's base cell), z, w = the low and high 16 bits of h3 (treeCandidate's third hash).
+// y = its ground (the trunk's base cell), z, w = the low and high 16 bits of its key (sceneTreeKey).
 struct Tree { vec3 base; int variant; int size; float T; float H; uint seed; int quarter; };
 Tree treeOf(vec4 t, ivec2 bc) {
   int k = int(t.x + 0.5) - 1;
@@ -344,9 +340,9 @@ Tree treeOf(vec4 t, ivec2 bc) {
   r.variant = rest % TREE_VARIANTS;
   r.size = rest / TREE_VARIANTS;
   r.T = TREE_T[r.size];
-  uint h3 = uint(t.z + 0.5) | (uint(t.w + 0.5) << 16u);
-  r.seed = pcg(h3);                    // its construction seed (treeCandidate)
-  r.quarter = int((h3 >> 20u) & 3u);   // which way it faces (runtime.js bake)
+  uint key = uint(t.z + 0.5) | (uint(t.w + 0.5) << 16u);
+  r.seed = pcg(key);                    // its construction seed (world/generator.js treeCandidate)
+  r.quarter = int((key >> 20u) & 3u);   // which way it faces (runtime.js bake)
   vec2 hr = r.variant == TV_OAK ? vec2(TS_OAK_H_LO, TS_OAK_H_HI) : r.variant == TV_BIRCH ? vec2(TS_BIRCH_H_LO, TS_BIRCH_H_HI)
           : r.variant == TV_PINE ? vec2(TS_PINE_H_LO, TS_PINE_H_HI) : r.variant == TV_PALM ? vec2(TS_PALM_H_LO, TS_PALM_H_HI)
           : vec2(TS_DEAD_H_LO, TS_DEAD_H_HI);
@@ -429,49 +425,30 @@ vec3 treeFill(Tree t, vec3 p) {
 }
 `;
 
-// Tree candidates, per brick column (treeCandidate's twin): its trunk's
-// column hashed from the brick column, kept on ground it may stand on (the
-// world's columns: tCol, genColumn plus the margin; slope as layersAt has it).
-export const farTreeCandFrag = (g, L) => /* glsl */ `
+// Tree candidates, per brick column: the scene's sceneTreeCandidate (its
+// tree hook's GLSL, treesIn's candidates' twin), after its GLSL and the tree
+// constants. x: the packed tree (treeOf), y: its ground, z: its priority.
+export const farTreeCandFrag = (g, L, sceneGLSL, treesGLSL) => /* glsl */ `
 ${prelude(g)}
-${generatorGLSL}
-${layersGLSL}
+${sceneGLSL}
 ${farLayoutGLSL(L)}
 ${treeGLSL()}
+${treesGLSL}
 out vec4 oC;
 void main() {
-  ivec2 bc = ivec2(gl_FragCoord.xy);
-  oC = vec4(0.0);
-  uint h = pcg(uint(bc.x) + pcg(uint(bc.y) + genStream(GEN_SALT_TREE)));
-  if (float(h & 0xffffu) * TREE_UNIT16 >= TREE_CHANCE) return;
-  uint h2 = pcg(h), h3 = pcg(h2);
-  ivec2 o = ivec2(int(h2 & uint(BS - 1)), int((h2 >> 2u) & uint(BS - 1)));
-  ivec2 col = bc * BS + o;
-  GenLayers Lc = columnLayers(col);
-  float slope = 0.5 * length(vec2(colHeight(col + ivec2(1, 0)) - colHeight(col - ivec2(1, 0)),
-                                  colHeight(col + ivec2(0, 1)) - colHeight(col - ivec2(0, 1))));
-  float above = float(Lc.ground) - uGenSea;
-  bool sand = Lc.sand > 0;
-  if (above < TREE_ABOVE_SEA || slope >= TREE_SLOPE_MAX || !(Lc.plant || sand)) return;
-  if (float(Lc.ground) > genFrostLine() - TREE_SNOW_GAP) return;
-  bool coast = sand && above <= TREE_PALM_BELOW;
-  if (sand && !coast) return;
-  int variant = treeVariant(coast, above >= TREE_PINE_ABOVE * uGenRelief, float(h3 & 0xffffu) * TREE_UNIT16);
-  int size = int((h3 >> 16u) % uint(TREE_SIZES));
-  // (x: the packed tree; y: its ground; z: its priority, h2's top 24 bits)
-  oC = vec4(float(1 + o.x + BS * o.y + BS * BS * (variant + TREE_VARIANTS * size)), float(Lc.ground), float(h2 >> 8u), 0.0);
+  oC = sceneTreeCandidate(ivec2(gl_FragCoord.xy));
 }
 `;
 
 // Thinning (treesIn): a candidate with a rival within TREE.SPACING that has a
 // higher priority (ties: the lower brick index) is dropped. Out: the tree map
-// (treeOf), with the candidate's h3 (hashed again from its brick column) for
-// the shapes.
-export const farTreeThinFrag = (g, L) => /* glsl */ `
+// (treeOf), with the candidate's key (sceneTreeKey) for the shapes.
+export const farTreeThinFrag = (g, L, sceneGLSL, treesGLSL) => /* glsl */ `
 ${prelude(g)}
-${generatorGLSL}
+${sceneGLSL}
 ${farLayoutGLSL(L)}
 ${treeGLSL()}
+${treesGLSL}
 uniform sampler2D tCand;
 out vec4 oC;
 vec2 trunkXZ(ivec2 bc, vec4 c) { int k = int(c.x + 0.5) - 1; return vec2(bc * BS + ivec2(k % BS, (k / BS) % BS)); }
@@ -490,15 +467,14 @@ void main() {
     if (o.x == 0.0 || distance(trunkXZ(nb, o), pc) >= TREE_SPACING) continue;
     if (o.z > c.z || (o.z == c.z && (dz < 0 || (dz == 0 && dx < 0)))) return;
   }
-  // kept: h3 from the brick column's hash chain (as the candidate pass), in 16-bit halves
-  uint h = pcg(uint(bc.x) + pcg(uint(bc.y) + genStream(GEN_SALT_TREE)));
-  uint h3 = pcg(pcg(h));
-  oC = vec4(c.x, c.y, float(h3 & 0xffffu), float(h3 >> 16u));
+  // kept: its key, in 16-bit halves
+  uint key = sceneTreeKey(bc);
+  oC = vec4(c.x, c.y, float(key & 0xffffu), float(key >> 16u));
 }
 `;
 
 // Tree bands, per brick column: the lowest base and highest top (cells) of the
-// trees in reach of it (TREE_NONE_* if none): farGenFrag looks for trees only
+// trees in reach of it (TREE_NONE_* if none): farSceneFrag looks for trees only
 // in bricks inside the band.
 export const farTreeBandFrag = (g, L) => /* glsl */ `
 ${prelude(g)}
@@ -523,96 +499,42 @@ void main() {
 }
 `;
 
-// Generator → layers, per world column: what genLayers says column (x, z)
-// holds, as bytes (ground, sand, snow, plant). tCol: genColumn of the world's
-// columns plus COLUMN_MARGIN (the column pass with uColOrigin = -margin).
-export const LAYER_BYTE = 255;   // a byte in a normalised RGBA8 channel
-export const farLayersFrag = (g) => /* glsl */ `
-${prelude(g)}
-${generatorGLSL}
-${layersGLSL}
-out vec4 oC;
-#define LAYER_BYTE ${glf(LAYER_BYTE)}
-void main() {
-  GenLayers L = columnLayers(ivec2(gl_FragCoord.xy));
-  oC = vec4(float(L.ground), float(L.sand), float(L.snow), L.plant ? 1.0 : 0.0) / LAYER_BYTE;
-}
-`;
-
-// Generator → far grid, at world load: every brick from the world's layers
-// (genId per cell, as the fill pass makes them; the cubes' shares counted per
-// column from its ground and the sea), and the trees in reach (their shapes'
-// shares joined to the ground's, their leaves or trunk the brick's element).
-// Columns past the world's edge repeat its edge.
+// The trees in reach of a brick, where its cube meets their band, joined to
+// what its cells hold: the union of their shares with the cells', their leaves
+// or trunk voting for the brick's element (farSceneFrag, for a scene with trees).
 export const FAR_TREE_W = 512;   // dominant-element weight of a crown in a brick (a brick's 64 cells, open: over the ground's)
-export const farGenFrag = (g, L) => /* glsl */ `
-${prelude(g)}
-${generatorGLSL}
-${farLayoutGLSL(L)}
-${countGLSL}
+const farTreesGLSL = /* glsl */ `
 ${treeGLSL()}
 ${treeShapeGLSL}
-uniform sampler2D tLayers;     // world column (x, z): ground, sand, snow, plant (farLayersFrag)
 uniform sampler2D tTrees;      // the tree map (farTreeThinFrag)
 uniform sampler2D tTreeBand;   // per brick column, the trees' band in reach (farTreeBandFrag)
-out vec4 oC;
 #define FAR_TREE_W ${glf(FAR_TREE_W)}
 #define FAR_TREE_PAD ${glf(Math.SQRT2 * FAR.CUBE / 2)}   // cells: a cube's half diagonal across, past a tree's reach
-#define LAYER_BYTE ${glf(LAYER_BYTE)}
-GenLayers worldLayers(ivec2 col) {
-  ivec4 t = ivec4(texelFetch(tLayers, clamp(col, ivec2(0), WORLD.xz - 1), 0) * LAYER_BYTE + 0.5);
-  GenLayers L;
-  L.ground = t.x; L.sand = t.y; L.snow = t.z; L.plant = t.w > 0;
-  return L;
-}
-// cells of [y0, y0 + FAR_CUBE) under the ground (opaque: genId's layers and the rock below the world), and of the sea
-float groundIn(GenLayers L, int y0) { return float(clamp(L.ground - y0, 0, FAR_CUBE)); }
-float seaIn(GenLayers L, int y0, int top) { return float(clamp(min(top, y0 + FAR_CUBE) - max(L.ground, y0), 0, FAR_CUBE)); }
-void main() {
-  ivec3 b = farBrickFromFrag(ivec2(gl_FragCoord.xy));
-  FarCount c = farCountInit();
-  ivec3 o = b * BS;
-  int sea = int(ceil(uGenSea));   // genId: water in y < uGenSea
-  int y0 = o.y - FAR_CUBE_LO;     // the cube's bottom
-  for (int dz = -FAR_CUBE_LO; dz < BS + FAR_CUBE_LO; dz++)
-  for (int dx = -FAR_CUBE_LO; dx < BS + FAR_CUBE_LO; dx++) {
-    GenLayers L = worldLayers(o.xz + ivec2(dx, dz));
-    c.s += groundIn(L, y0);
-    c.l += seaIn(L, y0, sea);
-    if (dx < 0 || dz < 0 || dx >= BS || dz >= BS) continue;
-    int above = genId(L, o.y + BS);   // (genId: rock below the world, air above it)
-    for (int y = BS - 1; y >= 0; y--) {
-      int id = genId(L, o.y + y);
-      farCell(c, id, above, AMBIENT);
-      above = id;
-    }
-  }
-  // the trees in reach, where the cube meets their band: the union of their shares with the ground's
+// b: the brick; o its low corner, y0 its cube's bottom (cells)
+void farTrees(inout FarCount c, ivec3 b, ivec3 o, int y0) {
   vec2 band = texelFetch(tTreeBand, b.xz, 0).xy;
-  if (float(y0) < band.y && float(y0 + FAR_CUBE) > band.x) {
-    vec3 pc = vec3(o) + 0.5 * float(BS);   // the brick's (and its cube's) centre
-    float ts = 0.0, leaves = 0.0, trunk = 0.0;
-    for (int dz = -TREE_REACH_B; dz <= TREE_REACH_B; dz++)
-    for (int dx = -TREE_REACH_B; dx <= TREE_REACH_B; dx++) {
-      ivec2 nb = b.xz + ivec2(dx, dz);
-      if (any(lessThan(nb, ivec2(0))) || any(greaterThanEqual(nb, WB.xz))) continue;
-      vec4 t = texelFetch(tTrees, nb, 0);
-      if (t.x == 0.0) continue;
-      Tree tr = treeOf(t, nb);
-      // too far from its trunk, above its top or under its base for the cube
-      if (length(pc.xz - tr.base.xz) > TS_REACH[tr.variant] * tr.H + FAR_TREE_PAD
-          || float(y0) > tr.base.y + TS_TOP * tr.H || float(y0 + FAR_CUBE) < tr.base.y) continue;
-      vec3 f = treeFill(tr, pc);
-      ts = max(ts, f.x);
-      leaves = max(leaves, f.y);
-      trunk += f.z;
-    }
-    c.s = max(c.s, ts * float(FAR_CUBE * FAR_CUBE * FAR_CUBE));
-    // their cells vote as open ones (FAR.SURFACE_W): a crown's outweigh the ground's, a thin trunk's don't
-    if (leaves > 0.0) { c.w[E_PLANT] += FAR_TREE_W; c.open += 1.0; }
-    else if (trunk > 0.0) { c.w[E_WOOD] += trunk * FAR_SURFACE_W; c.open += 1.0; }
+  if (float(y0) >= band.y || float(y0 + FAR_CUBE) <= band.x) return;
+  vec3 pc = vec3(o) + 0.5 * float(BS);   // the brick's (and its cube's) centre
+  float ts = 0.0, leaves = 0.0, trunk = 0.0;
+  for (int dz = -TREE_REACH_B; dz <= TREE_REACH_B; dz++)
+  for (int dx = -TREE_REACH_B; dx <= TREE_REACH_B; dx++) {
+    ivec2 nb = b.xz + ivec2(dx, dz);
+    if (any(lessThan(nb, ivec2(0))) || any(greaterThanEqual(nb, WB.xz))) continue;
+    vec4 t = texelFetch(tTrees, nb, 0);
+    if (t.x == 0.0) continue;
+    Tree tr = treeOf(t, nb);
+    // too far from its trunk, above its top or under its base for the cube
+    if (length(pc.xz - tr.base.xz) > TS_REACH[tr.variant] * tr.H + FAR_TREE_PAD
+        || float(y0) > tr.base.y + TS_TOP * tr.H || float(y0 + FAR_CUBE) < tr.base.y) continue;
+    vec3 f = treeFill(tr, pc);
+    ts = max(ts, f.x);
+    leaves = max(leaves, f.y);
+    trunk += f.z;
   }
-  oC = farPack(c);
+  c.s = max(c.s, ts * float(FAR_CUBE * FAR_CUBE * FAR_CUBE));
+  // their cells vote as open ones (FAR.SURFACE_W): a crown's outweigh the ground's, a thin trunk's don't
+  if (leaves > 0.0) { c.w[E_PLANT] += FAR_TREE_W; c.open += 1.0; }
+  else if (trunk > 0.0) { c.w[E_WOOD] += trunk * FAR_SURFACE_W; c.open += 1.0; }
 }
 `;
 
@@ -651,18 +573,18 @@ void main() {
 `;
 
 // ---------------------------------------------------------------- scenes
-// A world scene other than the island (world/scenes/index.js) has no columns,
-// layers or trees to build from: its far grid is summarized from its
+// A world scene's far grid (world/scenes/index.js) is summarized from its
 // sceneCell, a chunk of FAR_SCENE.CHUNK² brick columns at a time
 // (world/far.js spreads the chunks over frames, nearest the window first):
 //   - farSceneCellsFrag evaluates sceneCell once per cell of the chunk's
 //     columns and the FAR_CUBE_LO columns around them that its bricks' cubes
-//     reach (past the world's edge the edge repeats, as farGenFrag's columns),
-//     every slice, into a target of (id, °C) texels (scene cells);
+//     reach (past the world's edge the edge repeats), every slice, into a
+//     target of (id, °C) texels (scene cells);
 //   - farSceneFrag summarizes the chunk's bricks from those cells exactly as
 //     farWinFrag does from the window's state (below the world rock, above it
-//     air), leaving out the brick columns the window has already summarized:
-//     the window's state wins wherever it has been (tWinMask).
+//     air), and for a scene with trees joins the trees in reach (farTrees),
+//     leaving out the brick columns the window has already summarized: the
+//     window's state wins wherever it has been (tWinMask).
 // Each cell is evaluated once rather than once per cube that holds it (8×).
 export const FAR_SCENE = {
   CHUNK: 16,   // brick columns along a chunk's edge (64 cells: 256 chunks over the world, each a small draw)
@@ -706,11 +628,13 @@ void main() {
   oC = vec4(A.xy, 0.0, 1.0);
 }
 `;
-export const farSceneFrag = (g, L) => /* glsl */ `
+// trees: the scene has trees (scene.trees): their tree map and bands join in.
+export const farSceneFrag = (g, L, trees = false) => /* glsl */ `
 ${prelude(g)}
 ${farLayoutGLSL(L)}
 ${countGLSL}
 ${sceneCellsLayoutGLSL(L)}
+${trees ? farTreesGLSL : ''}
 uniform sampler2D tCells;     // the chunk's scene cells (farSceneCellsFrag): id, °C
 uniform sampler2D tWinMask;   // per world brick column: set where the window's state has been summarized
 out vec4 oC;
@@ -737,6 +661,7 @@ void main() {
       above = id;
     }
   }
+  ${trees ? 'farTrees(c, b, o, o.y - FAR_CUBE_LO);' : ''}
   oC = farPack(c);
 }
 `;

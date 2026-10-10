@@ -6,14 +6,13 @@
 // generates seamlessly next to any other: the window fills its slabs from it as
 // it moves, a slab leaving the window is compared with it (only bricks that
 // differ go to the edit store), and the far field summarizes the whole world
-// from it. The island keeps its own faster path (genColumn's column pass,
-// genLayers, its trees: shaders/generate.js); every other scene goes through
-// sceneCell.
+// from it. Every scene, the island too, goes through sceneCell
+// (shaders/generate.js sceneFillFrag, sceneDiffFrag; shaders/far.js
+// farSceneCellsFrag, farSceneFrag).
 //
 // A scene is an object:
 //   key            its settings value (settings.scene)
 //   label          its name in the Scene row
-//   island         true only for the island: the column path above, not sceneCell
 //   params({ size, seed })
 //                  its world parameters P: at least { size, seed, sea, floor }.
 //                  sea: the open water's level for the far view and GI (cells; 0
@@ -36,8 +35,28 @@
 //                  view's home sits over it)
 //   prepare(renderer, P)
 //                  optional: a Promise for GPU work the scene needs before its first
-//                  fill (baking textures its GLSL samples); the world waits for it
+//                  fill (baking textures its GLSL samples: the island bakes its
+//                  columns); the world waits for it, then takes uniforms(P) again
 //   dispose()      optional: textures the scene made
+//   trees          optional: trees it plants, as TREE constructions
+//                  (constructions/builtins.js), the island's:
+//                    treesIn(x0, z0, x1, z1, P, cache)
+//                      the trees whose trunks stand in world columns [x0, x1) ×
+//                      [z0, z1): [{ x, y, z, variant, size, quarter, seed }], at most
+//                      one a brick column, thinned as world/generator.js treesIn
+//                      does; the window stamps them where it goes first
+//                    glsl
+//                      the far field's GPU twin of its candidates, after the scene's
+//                      GLSL and shaders/far.js treeGLSL:
+//                        vec4 sceneTreeCandidate(ivec2 bc): brick column bc's
+//                          candidate (x the packed tree as treeOf reads it, y its
+//                          ground, z its priority; 0: none)
+//                        uint sceneTreeKey(ivec2 bc): its key (seed = pcg(key),
+//                          quarter = (key >> 20) & 3)
+//                  The far field draws them at brick scale into the bricks it builds.
+//   farChunksPerFrame
+//                  optional: far field chunks it builds a frame (world/far.js; cheap
+//                  cells can go faster than the default one)
 //
 // Every number in a scene is a named constant (JS, and a #define in its GLSL).
 // tools/check-scenes.mjs compiles every scene's GLSL and checks start and ground.

@@ -1,11 +1,11 @@
 import * as THREE from 'three';
 import { gridLayout } from '../../sim.js';
-import { WorldGenerator } from '../gpu.js';
+import { IslandGenerator } from '../gpu.js';
 import { PATCH_TILE, islandParams } from './patchworkBake.js';
 
 // The patchwork scene's island tile (scenes/patchwork.js): the island box
 // preset, made the way the Scene row makes it (world/gpu.js loadIsland: the
-// generator's fill pass, then its trees stamped in) on a box-sized grid of its
+// island's columns baked, its fill pass, then its trees stamped in) on a box-sized grid of its
 // own, and read back. Its trees are CPU-built constructions stamped on the GPU
 // and its frozen rock's temperatures are float32 GPU arithmetic, so running
 // the same passes is the one exact route; a CPU port of the generator would
@@ -94,13 +94,14 @@ class BakeGrid {
 // attachment is a GL error: app.js turns autoClear off too).
 export async function bakeIslandState(renderer, seed) {
   const grid = new BakeGrid(renderer, PATCH_TILE);
-  const gen = new WorldGenerator(grid);
+  const gen = new IslandGenerator(grid);
   try {
-    await grid.compile([gen.mats.column, gen.mats.fill, gen.mats.stamp]);
+    await Promise.all([grid.compile([gen.mats.fill, gen.stampMat()]), gen.columns.compile(renderer)]);
     const before = renderer.getRenderTarget(), autoClear = renderer.autoClear;
     renderer.autoClear = false;
     try {
       const P = islandParams(seed);
+      gen.prepare(P);
       gen.fill(P);
       gen.plantTrees(P);
     } finally {
