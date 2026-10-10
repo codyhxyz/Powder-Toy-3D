@@ -41,6 +41,7 @@ await ev(async () => {
   const { structuresOf } = await import('/src/world/structures.js');
   H.list = structuresOf(a.win.P).map(({ kind, key, variant, quarter, x, y, z, x0, z0, s }) => ({ kind, key, variant, quarter, x, y, z, x0, z0, w: s.w, h: s.h, d: s.d }));
   H.lakes = a.win.P.landforms?.lakes ?? [];
+  H.ground = (x, z) => a.win.scene.ground(x, z, a.win.P);   // world column's top
   H.frames = (n) => new Promise((res) => { let k = 0; const f = () => (++k >= n ? res() : requestAnimationFrame(f)); requestAnimationFrame(f); });
   const clamp16 = (v, n) => Math.max(0, Math.min(a.win.P.size[0] - n, Math.round(v / 16) * 16));
   // the window over world column (x, z), and the god view looking at it from `from` (grid cells, relative to the window)
@@ -74,8 +75,8 @@ const first = (kind) => list.find((s) => s.kind === kind);
 const far = await ev(async (RUNS) => {
   const a = window.__app, f = a.win.far, u = a.win.sceneU, buf = new Uint8Array(4);
   const time = () => {
-    f.build();
     const t0 = performance.now();
+    f.build();
     while (f.queue.length) f.sceneChunks();
     a.renderer.readRenderTargetPixels(f.grid, 0, 0, 1, 1, buf);
     return performance.now() - t0;
@@ -92,10 +93,11 @@ const far = await ev(async (RUNS) => {
 console.log('far build (all chunks, forced sync):', JSON.stringify(far));
 
 // ---- stability: a village and a dock
-const stable = async (s, tag) => {
-  const r = await ev(async ([s, STEPS]) => {
+const stable = async (s, tag, on = true) => {
+  const r = await ev(async ([s, STEPS, on]) => {
     const a = window.__app, H = window.__sc;
     a.settings.paused = true;
+    a.win.sceneU.uStructOn.value = on;
     await H.goto(s.x, s.z);
     const before = H.ids(), f0 = a.sim.frame;
     a.settings.paused = false;
@@ -103,10 +105,16 @@ const stable = async (s, tag) => {
     a.settings.paused = true;
     const after = H.ids(), changes = {};
     let n = 0;
-    for (let i = 0; i < before.length; i++) if (before[i] !== after[i]) { n++; const k = `${before[i]}→${after[i]}`; changes[k] = (changes[k] ?? 0) + 1; }
-    return { steps: a.sim.frame - f0, changed: n, changes };
-  }, [s, STEPS]);
-  console.log(`stability at ${tag}: ${JSON.stringify(r)}`);
+    const g = a.sim.g, o = a.sim.origin, where = [];
+    for (let i = 0; i < before.length; i++) if (before[i] !== after[i]) {
+      n++; const k = `${before[i]}→${after[i]}`; changes[k] = (changes[k] ?? 0) + 1;
+      if (where.length < 4) where.push([o.x + (i % g.nx), Math.floor(i / g.nx) % g.ny, o.z + Math.floor(i / (g.nx * g.ny))]);
+    }
+    a.win.sceneU.uStructOn.value = true;
+    return { steps: a.sim.frame - f0, changed: n, changes, where };
+  }, [s, STEPS, on]);
+  console.log(`stability at ${tag}${on ? '' : ' (structures off)'}: ${JSON.stringify(r)} (the structure's box: x ${s.x0}..${s.x0 + s.w}, z ${s.z0}..${s.z0 + s.d})`);
+  if (on && r.changed) await stable(s, tag, false);
 };
 for (const k of ['village', 'dock', 'bridge', 'hermit']) if (first(k)) await stable(first(k), k);
 
@@ -194,7 +202,8 @@ const lakes = await ev(() => window.__sc.lakes);
 const Lh = first('lighthouse');
 if (Lh) {   // from the sea: behind its door, which faces inland
   const [fx, fz] = FRONTS[Lh.quarter];
-  await at(Lh, (s, o) => [s.x - o[0] - fx * 70, s.y + 18, s.z - o[1] - fz * 70], (s, o) => [s.x - o[0], s.y + 14, s.z - o[1]]);
+  const gy = await ev(([x, z]) => window.__sc.ground(x, z), [Lh.x - fx * 70, Lh.z - fz * 70]);
+  await at(Lh, (s, o) => [s.x - o[0] - fx * 70, Math.max(gy, s.y) + 22, s.z - o[1] - fz * 70], (s, o) => [s.x - o[0], s.y + 14, s.z - o[1]]);
   await shot('landform-lighthouse');
 }
 const B = first('bridge');
@@ -224,7 +233,9 @@ if (He && lakes.length) {   // from over its tarn
 const Mi = first('mine');
 if (Mi) {   // in front of its portal, which faces down the slope
   const [fx, fz] = FRONTS[Mi.quarter];
-  await at(Mi, (s, o) => [s.x - o[0] + fx * 34, s.y + 12, s.z - o[1] + fz * 34], (s, o) => [s.x - o[0], s.y + 5, s.z - o[1]]);
+  const gy = await ev(([x, z]) => window.__sc.ground(x, z), [Mi.x + fx * 26, Mi.z + fz * 26]);
+  console.log('mine:', JSON.stringify(Mi), 'ground at the camera', gy);
+  await at(Mi, (s, o) => [s.x - o[0] + fx * 26, Math.max(gy, s.y) + 10, s.z - o[1] + fz * 26], (s, o) => [s.x - o[0], s.y + 5, s.z - o[1]]);
   await shot('landform-mine');
 }
 
