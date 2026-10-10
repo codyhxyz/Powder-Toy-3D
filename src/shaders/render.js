@@ -766,7 +766,9 @@ void main() {
         // glass interface (flat faces: no bending)
         float F = fresnelSchlick(abs(dot(nFace, rd)), IOR[id]) * (liq == E_EMPTY ? 1.0 : GLASS_IN_LIQUID_F);
         mediumLight = uShadows ? sunShadow(hp + nFace * IFACE_PROBE) : vec3(1.0);
-        col += trans * F * envReflectGI(hp, nFace, reflect(rd, nFace), mediumLight);
+        Probe gi = surfProbe(hp, nFace);
+        gSkyIn = skyInAt(gi);
+        col += trans * F * envReflectGI(gi, reflect(rd, nFace), mediumLight);
         trans *= 1.0 - F;
       }
       absorbSegment(id, hp, tExit - tEnter, mediumLight, a.y, col, trans);
@@ -794,6 +796,7 @@ void main() {
               vec3 p0 = ro + rd * tEnter;
               lightRef = uShadows ? sunShadow(p0) : vec3(1.0);   // inside: the map carries the liquid above
               lightY = p0.y;
+              gSkyIn = skyInAt(probeAt(p0));
             }
             else if (ic >= 0) { ev = EV_OPAQUE; evCh = ic; tEv = tEnter; evN = vec3(0.0); evN[ax] = -float(istp[ax]); }
           }
@@ -907,7 +910,7 @@ void main() {
           }
           // out of bends: switch medium, keep straight
           liq = ev == EV_ENTER ? lid : E_EMPTY;
-          if (ev == EV_ENTER) { lightRef = uShadows ? sunShadow(hp + n * IFACE_PROBE) : vec3(1.0); lightY = hp.y; }
+          if (ev == EV_ENTER) { lightRef = uShadows ? sunShadow(hp + n * IFACE_PROBE) : vec3(1.0); lightY = hp.y; gSkyIn = skyInAt(surfProbe(hp, n)); }
         }
       }
       phiA = phiB;
