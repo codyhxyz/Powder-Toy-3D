@@ -78,6 +78,9 @@ export const WORM_BITE = {
   PART: 1,           // part loose matter (powder and liquid) out from the axis, not along it
   AXIS_EPS: 0.001,   // cells: a cell this near the axis is parted to one fixed side
 };
+// The giant worm's (Noita's worm_big.xml: it eats a 9 px disc, 4.5 cells, its hit radius): the same
+// bite in a wider ball, so rock breaks within 7.5·√0.33 ≈ 4.3 cells of its head's centre.
+export const WORM_GIANT_BITE = { ...WORM_BITE, RADIUS: 7.5, DEPTH: 7.5 };
 
 // Physgun: a spring on the centre of mass of the loose matter near a hold
 // point (powders, liquids, gases within RADIUS of it, fading toward RADIUS).
@@ -206,6 +209,7 @@ export const axeFrag = blowFrag(AXE);
 export const pickaxeFrag = blowFrag(PICK);
 export const knifeFrag = blowFrag(KNIFE);
 export const wormFrag = blowFrag(WORM_BITE);
+export const wormGiantFrag = blowFrag(WORM_GIANT_BITE);
 
 // A flame: a cone from a nozzle along a direction (P: FLAMER, the
 // flamethrower's, or TORCH_FIRE, a thrown torch's). Air in the cone becomes

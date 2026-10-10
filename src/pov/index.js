@@ -473,7 +473,8 @@ export function createPov(app) {
           ai: npcAi,
           home: () => sp.feet(s),   // it appears, and comes back, on its spawner
         };
-        const n = s.kind === SPAWNER.WORM ? npcMod.createWorm(spec)
+        const worm = s.kind === SPAWNER.WORM || s.kind === SPAWNER.GIANT_WORM;
+        const n = worm ? npcMod.createWorm({ ...spec, size: s.kind === SPAWNER.GIANT_WORM ? 'giant' : 'small' })
           : npcMod.createNpc({ ...spec, style: s.kind === SPAWNER.GUNNER ? 'gunner' : 'axeman' });
         scene.add(n.root);
         n.body.on('revenge', ({ point }) => povEvents.emit('blast', { point }));

@@ -1,8 +1,9 @@
 // The worm's movement on the CPU (no GPU, no browser): pov/worm.js against a
 // fake world model (rock up to GROUND, open air above) and a still player on
 // the rock. It must tunnel toward the player, breach out of the ground and
-// bite; with a WALL slab in between (`wall`), it must not get through.
-// usage: node tools/worm-cpu-check.mjs [wall]
+// bite; with a WALL slab in between (`wall`), it must not get through. `giant`
+// runs the giant worm (worm_big.xml) instead of the small one.
+// usage: node tools/worm-cpu-check.mjs [wall] [giant]
 import * as THREE from 'three';
 import { createWorm } from '../src/pov/worm.js';
 import { addTarget, PLAYER } from '../src/pov/targets.js';
@@ -10,7 +11,7 @@ import { E, ELEMENTS, K } from '../src/elements.js';
 import { OUTSIDE } from '../src/pov/ai/world.js';
 
 const NX = 128, NY = 96, NZ = 128, GROUND = 40, WALL_X = 70, WALL_W = 3, FPS = 60, SECONDS = 20;
-const wall = process.argv[2] === 'wall';
+const wall = process.argv.includes('wall'), size = process.argv.includes('giant') ? 'giant' : 'small';
 const id = (x, y, z) => {
   x = Math.floor(x); y = Math.floor(y); z = Math.floor(z);
   if (y >= NY) return E.EMPTY;
@@ -27,7 +28,8 @@ addTarget({
   box(min, max) { min.set(player.pos.x - 0.8, player.pos.y, player.pos.z - 0.8); max.set(player.pos.x + 0.8, player.pos.y + 5.5, player.pos.z + 0.8); },
   hurt(a, c) { player.hurt += a; player.cause = c; },
 });
-const worm = createWorm({ env: { getSim: () => sim }, ai: { world }, home: () => ({ x: 30, y: GROUND, z: 64 }) });
+const worm = createWorm({ env: { getSim: () => sim }, ai: { world }, home: () => ({ x: 30, y: GROUND, z: 64 }), size });
+console.log(`${size} worm${wall ? ', a WALL slab in the way' : ''}`);
 const w = { player, toWorld: (g, o) => o.copy(g), worldToGrid: new THREE.Matrix4(), scale: 1 };
 let maxY = -Infinity, maxX = -Infinity;
 for (let f = 0; f < FPS * SECONDS; f++) {

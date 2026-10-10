@@ -317,7 +317,7 @@ The player's own events (`player.on('hurt'|'death'|'land'|'splash'|'revive'|'rev
 ## NPCs (2026-10-09): enemies that use every tool
 
 NPCs come from **spawners** (`src/spawners.js`), the palette's Entities group: an **Axeman**, **Gunner** or
-**Worm spawner** (kinds `enemy`, `gunner`, `worm`; an old `enemy` spawner is an axeman) keeps one creature of
+**Worm** or **Giant worm spawner** (kinds `enemy`, `gunner`, `worm`, `giantworm`; an old `enemy` spawner is an axeman) keeps one creature of
 its kind alive on its spot while in POV (it appears there and comes back 8 s after dying; up to 8 of each), and
 a **Player spawn** is where F drops you in (the one nearest the cursor) and where you respawn. Click a spawner
 again with its tool to remove it. Spawners stand on world cells like signs; a new scene clears them, and the lab
@@ -378,8 +378,10 @@ no second takes more than half your health; a runner gets away.
 
 **Worm** (`src/pov/worm.js`, Noita's Mato, `data/entities/animals/worm.xml`). Noita's numbers scaled as the
 player's are (Mina's 11 px = the body's 5.5 cells): hit radius 5 px = 2.5 cells, parts 10 px apart, hp 10 =
-2.5 of the player's lives, hunt box 256 px = 128 cells, hunting at Mina's run (Noita's speed 2 : speed_hunt 4).
-A giant size (`WORM_SIZE.giant`, worm_big.xml's 16 px parts) is in the table but has no spawner yet.
+2.5 of the player's lives, hunt box 256 px = 128 cells, hunting at Mina's run (Noita's speed 2 : speed_hunt 4, so
+a unit of Noita's worm speed is a quarter of Mina's run). The **giant worm** (`WORM_SIZE.giant`, worm_big.xml,
+Jättimato): hit radius 9 px = 4.5 cells, parts 16 px apart (64 cells, 19 m, long), hp 70 (17.5 lives), speed 4 :
+speed_hunt 5, and a wider bite (`WORM_GIANT_BITE`, its own pass) for its 9 px eating disc.
 
 | Sub-problem | How |
 |---|---|
@@ -405,7 +407,7 @@ distance rules, with the axeman's reaction delay, warning shot and aim ramp. It 
 Check: `node tools/creatures-check.mjs [--port …] [--shot file.jpg]` (a dev server; AC power): a worm spawned on
 rock tunnels toward you, breaches and bites, its tunnel is stone rubble (rock + stone conserved), WALL stops it,
 the pistol kills it; the gunner flies, refuels, shoots and backs off when you close in. The worm's movement also
-runs on the CPU against a fake world model, no GPU or browser: `node tools/worm-cpu-check.mjs [wall]`.
+runs on the CPU against a fake world model, no GPU or browser: `node tools/worm-cpu-check.mjs [wall] [giant]`.
 
 ## Perks (2026-10-10): Noita's, in a falling-sand world
 
