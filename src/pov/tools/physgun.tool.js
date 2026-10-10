@@ -17,7 +17,8 @@ import { viewmodelRig, HIT } from '../viewmodel.js';
 // round swings the ball after it instead of leaving it out of the beam's
 // reach. Right-click flings the ball along the aim; letting go drops it.
 // Right-click with nothing held blasts: one shove into the loose matter in a
-// cone along the aim (shaders/povTools.js BLAST). It can't lift or knock over
+// cone along the aim, and a pressure pulse just past the surface it meets that
+// splashes water and craters piles (shaders/povTools.js BLAST). It can't lift or knock over
 // solids: there are no rigid bodies.
 //
 // The beam's reaction force on the player is left out (the body doesn't feel
@@ -121,6 +122,7 @@ export default {
     const comPass = toolPass(physgunComFrag, () => ({ uHold: { value: new THREE.Vector3() } }));
     const blastPass = toolPass(blastFrag, () => ({
       uMuzzle: { value: new THREE.Vector3() }, uDir: { value: new THREE.Vector3() }, uReach: { value: 0 },
+      uPulse: { value: new THREE.Vector3() }, uPulseP: { value: 0 },
     }));
     const comTarget = new THREE.WebGLRenderTarget(1, 1, {
       type: THREE.FloatType, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, depthBuffer: false,
@@ -173,19 +175,25 @@ export default {
       sim.pass(mat);
     }
 
-    // One shove along the aim, stopping just past the aimed face. The beam
-    // flashes to where it stops (drawn from `hold`).
+    // One shove along the aim, stopping just past the aimed face, and a
+    // pressure pulse just past the face if it's within range (shaders/povTools.js
+    // BLAST). The beam flashes to where it stops (drawn from `hold`).
     function blast(ctx) {
       const sim = ctx.sim ?? env.getSim();
-      const reach = Math.min(ctx.aim?.valid && Number.isFinite(ctx.aim.dist) ? ctx.aim.dist + BLAST.BITE : BLAST.RANGE, BLAST.RANGE);
+      const face = ctx.aim?.valid && ctx.aim.dist + BLAST.PULSE_DEPTH <= BLAST.RANGE ? ctx.aim.dist : Infinity;
+      const reach = Math.min(face + BLAST.BITE, BLAST.RANGE);
       const mat = blastPass(sim);
       const u = mat.uniforms;
       u.uMuzzle.value.copy(ctx.eye);
       u.uDir.value.copy(ctx.dir).normalize();
       u.uReach.value = reach;
+      const pulse = Number.isFinite(face);
+      u.uPulse.value.copy(ctx.eye).addScaledVector(u.uDir.value, pulse ? face + BLAST.PULSE_DEPTH : 0);
+      u.uPulseP.value = pulse ? BLAST.PULSE_P : 0;
       hold.copy(ctx.eye).addScaledVector(u.uDir.value, reach);
       // the cone's bounding box: both ends, padded by the radius at the far end
-      const pad = BLAST.RADIUS0 + BLAST.SPREAD * reach;
+      // (and the pulse's, which sits inside the cone's reach)
+      const pad = Math.max(BLAST.RADIUS0 + BLAST.SPREAD * reach, BLAST.PULSE_RADIUS);
       const a = ctx.eye.toArray(), b = hold.toArray();
       sim.touchCentres(a.map((x, i) => Math.min(x, b[i]) - pad), a.map((x, i) => Math.max(x, b[i]) + pad));
       sim.pass(mat);
