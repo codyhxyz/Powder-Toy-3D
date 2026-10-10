@@ -43,8 +43,9 @@ import { STRATA_SRC, strataDefinesGLSL, strataConstants } from './strata.js';
 //     least LAKE_FREEBOARD above its water, so water at the surface has ground
 //     on every side, diagonals too (move.js: liquids move along an axis or
 //     topple to a lower diagonal cell through an open one at their level). The
-//     rim is enforced (lfLakes takes the max), not hoped for; the CPU picks a
-//     level that makes it a no-op on the ground already there.
+//     rim is enforced (lfLakeGround takes the max), not hoped for; the CPU
+//     picks a level that makes it a no-op on the ground already there, so no
+//     dam stands out of the ground.
 //   - Tarns come last, so nothing carves their rims; other landforms keep
 //     clear of them (landformSites).
 //   - Powders, plant cover and trees follow from the layers, which take a
@@ -54,7 +55,8 @@ import { STRATA_SRC, strataDefinesGLSL, strataConstants } from './strata.js';
 //     plants or trees (the layers' slope limits).
 //   - Slopes stay walkable outside the gorge's walls, the mesas' risers, the
 //     stacks and tarn headwalls: tarn shores rise LAKE_SHORE per cell, the
-//     gorge floor RIA_GRADIENT.
+//     gorge floor RIA_GRADIENT. The badlands are bare (islandBare): no plant
+//     cover, so no trees on the buttes.
 
 // ---------------------------------------------------------------- constants
 // The geometry's, shared by the GLSL and the JS twin (as LF_* #defines).
@@ -66,7 +68,7 @@ const L = {
     LAKE_RIM: 3,                // cells past the shore over which the rim holds: a diagonal step plus the wobble's spread
   },
   floats: {
-    WOBBLE_AMP: 0.18,           // tarn and stack outlines: distances stretched by up to this share...
+    WOBBLE_AMP: 0.18,           // tarn outlines: distances stretched by up to this share...
     WOBBLE_WAVE: 14.0,          // ...over this many cells
     // the ria
     RIA_DEPTH: 6.0,             // its floor at the mouth, cells below the sea
@@ -76,7 +78,7 @@ const L = {
     RIA_WALL: 3.0,              // walls rise this many cells per cell (72°)
     RIA_ROUGH: 1.5,             // walls in and out by up to this many cells...
     RIA_ROUGH_WAVE: 6.0,        // ...over this many
-    RIA_OFFSHORE: 40.0,         // the channel goes on this far seaward of the mouth (the sea floor is lower past it)
+    RIA_OFFSHORE: 30.0,         // seaward of the mouth the channel shoals to sea level over this many cells
     RIA_DU: 1.0,                // cells: the meander's slope is read over this step either side
     MEANDER_AMP: 22.0,          // the centreline swings this far either side of the axis...
     MEANDER_WAVE: 110.0,        // ...over this many cells along it...
@@ -85,14 +87,17 @@ const L = {
     MEANDER_RAMP: 40.0,         // cells from the mouth over which the swing grows in (the mouth stays where it was picked)
     // the mesas
     MESA_CORE: 0.6,             // share of the region's radius at full strength (fading to nothing at its edge)
-    BUTTE_WAVE: 45.0,           // butte noise wavelength, cells
-    BUTTE_CUT: 0.05,            // buttes where the noise (-1..1) is above this...
-    BUTTE_SOFT: 0.35,           // ...rising to full height over this much more
+    BUTTE_WAVE: 32.0,           // butte noise wavelength, cells
+    BUTTE_CUT: -0.1,            // buttes where the noise (-1..1) is above this...
+    BUTTE_SOFT: 0.3,            // ...rising to full height over this much more
     BUTTE_H: 24.0,              // a butte's height over the plain, cells
     MESA_SINK: 4.0,             // the plain between the buttes is worn down this many cells
     TERRACE_EXP: 4.0,           // the terrace's α exponent (libnoise's is 2): the larger, the flatter the treads
+    MESA_BARE: 0.8,             // badlands: no plant cover within this share of the region's radius (wobbled)
     // sea stacks
     STACK_WALL: 4.0,            // their sides rise this many cells per cell (76°)
+    STACK_WOBBLE_AMP: 0.35,     // their outlines: distances stretched by up to this share...
+    STACK_WOBBLE_WAVE: 5.0,     // ...over this many cells
     STACK_REACH: 16.0,          // cells: the most a stack's side reaches past its radius (wobble included)
     // tarns
     LAKE_DEPTH: 6.0,            // cells: its bowl's depth at the centre...
@@ -100,8 +105,7 @@ const L = {
     LAKE_SHORE: 0.5,            // its shore rises this many cells per cell (walkable)...
     LAKE_SHORE_W: 6.0,          // ...for this many cells past the rim's top...
     LAKE_HEADWALL: 2.5,         // ...then as a headwall, this steep, where the ground is higher still
-    LAKE_SKIRT: 0.5,            // outside the rim, ground it had to raise falls away this steeply (a moraine dam)
-    LAKE_REACH: 28.0,           // cells past the shore that a tarn reaches (its carve and its dam)
+    LAKE_REACH: 24.0,           // cells past the shore (wobbled) that its carve reaches: the headwall is above any ground there
     FAR: 1.0e6,                 // farther than anything (lfLakeDist: out of reach)
   },
   salts: {
@@ -125,8 +129,9 @@ export const LANDFORMS = { ...L.ints, ...L.floats };
 // (landformUniformsGLSL on the GPU, the twin's scope on the CPU). (x, z): a
 // column's centre, world cells; h: its ground height before the landforms.
 export const LANDFORM_SRC = /* glsl */ `
-float lfWobble(float x, float z) {
-  return 1.0 + LF_WOBBLE_AMP * lfNoise2(thFdiv(x, LF_WOBBLE_WAVE), thFdiv(z, LF_WOBBLE_WAVE), LF_SALT_WOBBLE);
+// An outline's wobble at column (x, z): distances are stretched by up to amp over wave cells.
+float lfWobble(float x, float z, float amp, float wave) {
+  return 1.0 + amp * lfNoise2(thFdiv(x, wave), thFdiv(z, wave), LF_SALT_WOBBLE);
 }
 
 // ---- the ria. u: cells along its axis from the mouth; v: across it.
@@ -137,11 +142,13 @@ float lfMeander(float u) {
           + LF_MEANDER_FINE * lfNoise1(thFdiv(u, LF_MEANDER_FINE_WAVE), LF_SALT_MEANDER_FINE);
   return LF_MEANDER_AMP * n * lfSmooth(0.0, LF_MEANDER_RAMP, u);
 }
-// Its floor at u: RIA_DEPTH under the sea at the mouth, rising to sea level
-// over the drowned part, then a gorge rising RIA_GRADIENT per cell.
+// Its floor at u: RIA_DEPTH under the sea at the mouth (shoaling to sea level
+// RIA_OFFSHORE seaward of it, where the sea floor is lower anyway), rising to
+// sea level over the drowned part, then a gorge rising RIA_GRADIENT per cell.
 float lfRiaFloor(float u) {
   float drown = lfRiaDrown();
-  if (u < drown) return uIslandSea - LF_RIA_DEPTH * (1.0 - clamp(thFdiv(u, drown), 0.0, 1.0));
+  if (u < 0.0) return uIslandSea - LF_RIA_DEPTH * clamp(1.0 + thFdiv(u, LF_RIA_OFFSHORE), 0.0, 1.0);
+  if (u < drown) return uIslandSea - LF_RIA_DEPTH * (1.0 - thFdiv(u, drown));
   return uIslandSea + LF_RIA_GRADIENT * (u - drown);
 }
 // Its floor's half width at u.
@@ -149,13 +156,10 @@ float lfRiaHalf(float u) { return mix(LF_RIA_MOUTH_HALF, LF_RIA_GORGE_HALF, lfSm
 // Column (x, z)'s distance from the ria's centreline (its rounded head past
 // the end), cells, before the walls' roughness.
 float lfRiaDist(float u, float v) {
-  float len = lfRiaLen();
-  if (u > len) {
-    float dv = v - lfMeander(len);
-    return sqrt(dv * dv + (u - len) * (u - len));
-  }
-  float slope = thFdiv(lfMeander(u + LF_RIA_DU) - lfMeander(u - LF_RIA_DU), 2.0 * LF_RIA_DU);
-  return thFdiv(abs(v - lfMeander(u)), sqrt(1.0 + slope * slope));
+  float uc = min(u, lfRiaLen());
+  float slope = thFdiv(lfMeander(uc + LF_RIA_DU) - lfMeander(uc - LF_RIA_DU), 2.0 * LF_RIA_DU);
+  float across = thFdiv(abs(v - lfMeander(uc)), sqrt(1.0 + slope * slope));
+  return sqrt(across * across + (u - uc) * (u - uc));
 }
 // The ria cut into ground h at column (x, z).
 float lfRia(float x, float z, float h) {
@@ -191,6 +195,11 @@ float lfMesa(float x, float z, float h) {
   float datum = uIslandSea + stRaise(x, z);   // where stratigraphic height 0 is in this column
   return mix(raw, datum + lfTerrace(raw - datum), w);
 }
+// Is column (x, z) in the badlands (bare rock, no plant cover)?
+bool lfMesaBare(float x, float z) {
+  float dx = x - lfMesaX(), dz = z - lfMesaZ();
+  return sqrt(dx * dx + dz * dz) * lfWobble(x, z, LF_WOBBLE_AMP, LF_WOBBLE_WAVE) < lfMesaR() * LF_MESA_BARE;
+}
 
 // ---- sea stacks: flat-topped pillars, their sides STACK_WALL steep
 float lfStacks(float x, float z, float h) {
@@ -200,30 +209,31 @@ float lfStacks(float x, float z, float h) {
     float dx = x - lfStackX(i), dz = z - lfStackZ(i);
     float reach = lfStackR(i) + LF_STACK_REACH;
     if (dx * dx + dz * dz >= reach * reach) continue;
-    float d = sqrt(dx * dx + dz * dz) * lfWobble(x, z);
+    float d = sqrt(dx * dx + dz * dz) * lfWobble(x, z, LF_STACK_WOBBLE_AMP, LF_STACK_WOBBLE_WAVE);
     g = max(g, lfStackTop(i) - LF_STACK_WALL * max(d - lfStackR(i), 0.0));
   }
   return g;
 }
 
 // ---- tarns
-// Tarn i's wobbled distance from column (x, z), cells (LF_FAR out of its reach).
+// Tarn i's wobbled distance from column (x, z), cells (LF_FAR where even the
+// shortest wobble leaves it past the tarn's reach).
 float lfLakeDist(int i, float x, float z) {
   float dx = x - lfLakeX(i), dz = z - lfLakeZ(i);
-  float reach = lfLakeR(i) + LF_LAKE_REACH;
+  float reach = thFdiv(lfLakeR(i) + LF_LAKE_REACH, 1.0 - LF_WOBBLE_AMP);
   if (dx * dx + dz * dz >= reach * reach) return LF_FAR;
-  return sqrt(dx * dx + dz * dz) * lfWobble(x, z);
+  return sqrt(dx * dx + dz * dz) * lfWobble(x, z, LF_WOBBLE_AMP, LF_WOBBLE_WAVE);
 }
-// The ground tarn i leaves at wobbled distance d, on ground g.
+// The ground tarn i leaves at wobbled distance d, on ground g: carved (the
+// bowl under the water, the shore, the headwall), and the rim enforced: at
+// least rim height for LAKE_RIM cells past the shore.
 float lfLakeGround(int i, float d, float g) {
   float R = lfLakeR(i), rim = lfLakeLevel(i) + float(LF_LAKE_FREEBOARD);
-  // carved: the bowl under the water, the shore, the headwall
   float past = d - R;
   float carve = d < R ? lfLakeLevel(i) - LF_LAKE_DEPTH * (1.0 - pow(thFdiv(d, R), LF_LAKE_BOWL_EXP))
               : rim + LF_LAKE_SHORE * min(past, LF_LAKE_SHORE_W) + LF_LAKE_HEADWALL * max(past - LF_LAKE_SHORE_W, 0.0);
   float ground = min(g, carve);
-  // the rim, enforced: at least rim height for LAKE_RIM cells past the shore, then falling away no steeper than SKIRT
-  if (d >= R) ground = max(ground, rim - LF_LAKE_SKIRT * max(past - float(LF_LAKE_RIM), 0.0));
+  if (d >= R && past < float(LF_LAKE_RIM)) ground = max(ground, rim);
   return ground;
 }
 float lfLakes(float x, float z, float h) {
@@ -253,6 +263,21 @@ float islandWaterLevel(float x, float z, float h) {
     if (lfLakeDist(i, x, z) < lfLakeR(i) + float(LF_LAKE_RIM)) return lfLakeLevel(i);
   }
   return uIslandSea;
+}
+// Does column (x, z) stay bare (no plant cover, so no trees)? The badlands.
+// (A hint for the layers, beside their own rules.)
+bool islandBare(float x, float z) { return lfMesaR() > 0.0 && lfMesaBare(x, z); }
+// How far column (x, z) is outside the tarns' rims, cells (negative within
+// one): 3D carving (caves) keeps clear of the water they hold, which would
+// drain into it.
+float islandLakeClearance(float x, float z) {
+  float best = LF_FAR;
+  for (int i = 0; i < LF_LAKES_MAX; i++) {
+    if (i >= lfLakeCount()) return best;
+    float d = lfLakeDist(i, x, z);
+    if (d < LF_FAR) best = min(best, d - lfLakeR(i) - float(LF_LAKE_RIM));
+  }
+  return best;
 }
 `;
 
@@ -346,10 +371,10 @@ export const SITE = {
   RIA_TRIES: 12,              // seeded headings tried for the mouth...
   RIA_TURNS: 7,               // ...and directions inland from each, within RIA_CONE (radians) of straight in;
   RIA_CONE: 0.6,              // the pair whose path averages the highest ground wins (the gorge runs deepest)
-  RIA_HEAD: 0.5,              // the gorge heads where the ground first reaches this share of the relief...
-  RIA_LEN_MIN: 0.4,           // ...but at least this share of the island's radius from the mouth...
+  RIA_HEAD: 0.6,              // the gorge heads where the ground first reaches this share of the relief...
+  RIA_LEN_MIN: 0.5,           // ...but at least this share of the island's radius from the mouth...
   RIA_LEN_MAX: 0.75,          // ...and at most this
-  RIA_DROWN: 0.38,            // the drowned share of its length
+  RIA_DROWN: 0.42,            // the drowned share of its length
   RIA_SEA_MAX: 3,             // samples of its path inland may dip under the sea at most this many times
   CLEAR: 16,                  // cells kept between landforms' reaches
   // the mesas
@@ -387,9 +412,11 @@ export const SITE = {
 };
 const SITE_SALT = { RIA: 0x5910, MESA: 0x5920, LAKE: 0x5930, LAKE_N: 0x5940, STACK: 0x5950, STACK_N: 0x5960 };
 if (SITE.LAKES_MAX > L.ints.LAKES_MAX) throw new Error('landforms: more tarns than uniform slots');
-if (SITE.STACK_R_MAX * L.floats.WOBBLE_AMP + (SITE.STACK_TOP_MAX + SITE.STACK_FLOOR) / L.floats.STACK_WALL > L.floats.STACK_REACH) {
-  throw new Error('landforms: a stack can reach past STACK_REACH');
-}
+// how far past its radius a stack's sides can reach, wobble included
+const stackSpread = (R, top) => (R + (top + SITE.STACK_FLOOR) / L.floats.STACK_WALL) / (1 - L.floats.STACK_WOBBLE_AMP) - R;
+if (stackSpread(SITE.STACK_R_MAX, SITE.STACK_TOP_MAX) > L.floats.STACK_REACH) throw new Error('landforms: a stack can reach past STACK_REACH');
+// how far from its centre a tarn reaches, cells (lfLakeDist)
+const lakeReach = (R) => (R + L.floats.LAKE_REACH) / (1 - L.floats.WOBBLE_AMP);
 
 const TAU = Math.PI * 2;
 const UNIT = 0x100000000;
@@ -472,20 +499,28 @@ function pickMesa(P, height, T, S) {
 
 // Tarn level for a centre and radius: LAKE_FREEBOARD under the lowest ground
 // of its rim (every column within LAKE_RIM past its wobbled shore), so the
-// rim needs no raising; null when the site won't do.
+// rim needs no raising; null when the site won't do: too low, too steep
+// around (the headwall would be taller than LAKE_RELIEF), or with ground
+// above its headwall where its carve ends.
 function lakeLevel(P, height, T, x, z, R) {
-  const reach = R + L.ints.LAKE_RIM + 1, rimOut = R + L.ints.LAKE_RIM;
+  const rimOut = R + L.ints.LAKE_RIM, box = rimOut / (1 - L.floats.WOBBLE_AMP);
   let lo = Infinity, hi = -Infinity;
-  for (let j = Math.floor(z - reach / (1 - L.floats.WOBBLE_AMP)); j <= z + reach / (1 - L.floats.WOBBLE_AMP); j++)
-    for (let i = Math.floor(x - reach / (1 - L.floats.WOBBLE_AMP)); i <= x + reach / (1 - L.floats.WOBBLE_AMP); i++) {
+  for (let j = Math.floor(z - box); j <= z + box; j++)
+    for (let i = Math.floor(x - box); i <= x + box; i++) {
       const cx = i + 0.5, cz = j + 0.5;
-      const d = Math.hypot(cx - x, cz - z) * T.lfWobble(cx, cz);
+      const d = Math.hypot(cx - x, cz - z) * T.lfWobble(cx, cz, L.floats.WOBBLE_AMP, L.floats.WOBBLE_WAVE);
       if (d < R || d >= rimOut) continue;
       const h = Math.floor(height(cx, cz) + 0.5);
       lo = Math.min(lo, h); hi = Math.max(hi, h);
     }
   const level = lo - L.ints.LAKE_FREEBOARD;
   if (level - L.floats.LAKE_DEPTH < P.sea + SITE.LAKE_ABOVE_SEA || hi - level > SITE.LAKE_RELIEF) return null;
+  // where the carve ends, its headwall stands above the ground
+  const F = L.floats, wall = level + L.ints.LAKE_FREEBOARD + F.LAKE_SHORE * F.LAKE_SHORE_W + F.LAKE_HEADWALL * (F.LAKE_REACH - F.LAKE_SHORE_W);
+  for (let k = 0; k < SITE.LAKE_RING; k++) {
+    const a = (k / SITE.LAKE_RING) * TAU, r = lakeReach(R);
+    if (height(x + r * Math.cos(a), z + r * Math.sin(a)) >= wall) return null;
+  }
   return level;
 }
 
@@ -498,7 +533,7 @@ function pickLakes(P, height, T, S) {
       if (h < P.sea + SITE.LAKE_HIGH * P.relief) continue;
       const k = (x * P.size[2] + z) >>> 0;
       const R = SITE.LAKE_R_MIN + Math.floor(unit(P.seed, SITE_SALT.LAKE, k) * (SITE.LAKE_R_MAX - SITE.LAKE_R_MIN + 1));
-      const reach = R + L.floats.LAKE_REACH;
+      const reach = lakeReach(R);
       if (riaClear(S, x, z) < reach + SITE.CLEAR) continue;
       if (S.mesa && Math.hypot(x - S.mesa.x, z - S.mesa.z) < S.mesa.r + reach + SITE.CLEAR) continue;
       // pre-check: the ground around the rim varies no more than the headwall allows
@@ -516,8 +551,7 @@ function pickLakes(P, height, T, S) {
   const lakes = [];
   for (const c of cands) {
     if (lakes.length >= count) break;
-    const reach = c.r + L.floats.LAKE_REACH;
-    if (lakes.some((l) => Math.hypot(l.x - c.x, l.z - c.z) < l.r + L.floats.LAKE_REACH + reach + SITE.CLEAR)) continue;
+    if (lakes.some((l) => Math.hypot(l.x - c.x, l.z - c.z) < lakeReach(l.r) + lakeReach(c.r) + SITE.CLEAR)) continue;
     const level = lakeLevel(P, height, T, c.x, c.z, c.r);
     if (level !== null) lakes.push({ x: c.x, z: c.z, r: c.r, level });
   }
@@ -541,8 +575,8 @@ function pickStacks(P, height, S) {
     if (rise < Math.max(steep, SITE.CLIFF_RISE)) continue;
     const R = SITE.STACK_R_MIN + Math.floor(unit(P.seed, SITE_SALT.STACK, 2 * k) * (SITE.STACK_R_MAX - SITE.STACK_R_MIN + 1));
     const top = P.sea + Math.min(SITE.STACK_TOP_MAX, Math.max(SITE.STACK_TOP_MIN, Math.round(SITE.STACK_TOP * rise)));
-    // the foot: its radius, wobbled, and its sides' spread down to the sea floor, clear of the coast
-    const foot = R * (1 + L.floats.WOBBLE_AMP) + (top - P.sea + SITE.STACK_FLOOR) / L.floats.STACK_WALL;
+    // the foot: its radius and its sides' spread down to the sea floor, wobbled, clear of the coast
+    const foot = R + stackSpread(R, top - P.sea);
     const out = foot + SITE.STACK_GAP + unit(P.seed, SITE_SALT.STACK, 2 * k + 1) * SITE.STACK_OUT;
     const x = P.center[0] + dx * (r0 + out), z = P.center[1] + dz * (r0 + out);
     const depth = P.sea - height(x, z);

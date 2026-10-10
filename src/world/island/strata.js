@@ -68,8 +68,8 @@ const S = {
     LIMESTONE: cells(7.5),      // the limestone's thickness
     CYCLE_MIN: cells(2.4),      // a cyclothem's thickness (sandstone and its coal seam), seeded per cycle
     CYCLE_MAX: cells(3.6),
-    COAL: cells(0.45),          // a coal seam's mean thickness...
-    PINCH_AMP: 1.3,             // ...swelling and thinning by up to this share of it (noise), pinching out below zero...
+    COAL: cells(0.3),           // a coal seam's mean thickness (a thin seam: coal is a few per cent of real Coal Measures)...
+    PINCH_AMP: 1.5,             // ...swelling and thinning by up to this share of it (noise), pinching out below zero...
     PINCH_WAVE: cells(25),      // ...over this length along the seam
     SEAM_SHIFT: 37.0,           // lattice units between successive seams' pinch noise (so each seam pinches in its own places)
     DIP: Math.tan(2.5 * DEG),   // the regional dip, cells per cell (2.5°)
@@ -137,9 +137,10 @@ int stElement(int unit) {
 
 // The benches the beds make where the land is terraced: the stratigraphic
 // heights of the resistant beds' tops (the unconformity, the limestone's
-// bedding planes, each sandstone's top under its mean coal seam), the nearest
-// one at or below s (above: false) or above it (above: true). Past the last
-// cycle they go on a CYCLE_MAX apart.
+// bedding planes, each sandstone's top under its coal seam where the seam is
+// thickest, so a bench is always sandstone), the nearest one at or below s
+// (above: false) or above it (above: true). Past the last cycle they go on a
+// CYCLE_MAX apart.
 float stBench(float s, bool above) {
   float c = ST_BASEMENT_TOP;
   float prev = c - ST_CYCLE_MAX;
@@ -153,7 +154,7 @@ float stBench(float s, bool above) {
   for (int k = 0; k < ST_CYCLES; k++) {
     top += stCycle(k);
     prev = c;
-    c = top - ST_COAL;
+    c = top - ST_COAL * (1.0 + ST_PINCH_AMP);
     if (c > s) return above ? c : prev;
   }
   return above ? c + ST_CYCLE_MAX : c;

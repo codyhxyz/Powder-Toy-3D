@@ -34,6 +34,7 @@ const DEEP = 12;                 // cells of water at which it is drawn darkest
 const RIA_SECTIONS = [0.15, 0.5, 0.85];   // across the ria at these shares of its length
 const RIA_ALONG_PAD = 30;        // cells before its mouth and past its head in the section along it
 const WALK = 1.0;                // cells per cell: the steepest slope counted as walkable in the report
+const CHANGED = 0.5;             // cells: ground counts as changed by a landform past this
 
 // ---------------------------------------------------------------- PNG
 const crcTable = new Uint32Array(256).map((_, n) => {
@@ -107,7 +108,7 @@ for (let z = 0; z < NZ; z++)
     slopeOf[i] = slope;
     const beach = g >= sea - GEN.BEACH_BELOW && g <= sea + GEN.BEACH_ABOVE && slope < GEN.BEACH_SLOPE_MAX && !knocked;
     if (drop <= GEN_INT.POWDER_STEP_MAX && beach) layer[i] = SAND_L;
-    else if (g >= sea + GEN.PLANT_ABOVE && g <= plantTop && slope < GEN.PLANT_SLOPE_MAX) layer[i] = PLANT_L;
+    else if (g >= sea + GEN.PLANT_ABOVE && g <= plantTop && slope < GEN.PLANT_SLOPE_MAX && !T.islandBare(x + 0.5, z + 0.5)) layer[i] = PLANT_L;
   }
 
 // The element-ish colour of cell (x, y, z): sky, water, sand, plant or its stratum.
@@ -217,7 +218,14 @@ S.stacks.forEach((s, i) => {
 const tImages = performance.now();
 
 // ---------------------------------------------------------------- checks
-let leaks = 0, plantsWet = 0, sandUnstable = 0, water = 0, seaRulePlants = 0, seaRuleTrees = 0;
+let leaks = 0, plantsWet = 0, sandUnstable = 0, water = 0, seaRulePlants = 0, seaRuleTrees = 0, wallTrees = 0;
+// on the gorge's walls: carved, standing above its floor's edge
+const onWall = (x, z) => {
+  const r = S.ria, cx = x + 0.5, cz = z + 0.5, h = H[at(x, z)];
+  if (!r || T.lfRia(cx, cz, h) >= h - CHANGED) return false;
+  const u = (cx - r.x) * r.dx + (cz - r.z) * r.dz, v = (cz - r.z) * r.dx - (cx - r.x) * r.dz;
+  return T.lfRiaDist(u, v) > T.lfRiaHalf(Math.min(u, r.len)) + LF.RIA_ROUGH;
+};
 for (let z = 1; z < NZ - 1; z++)
   for (let x = 1; x < NX - 1; x++) {
     const g = ground(x, z), lv = level(x, z), i = at(x, z);
@@ -237,19 +245,26 @@ for (let z = 1; z < NZ - 1; z++)
       for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) drop = Math.max(drop, g - ground(x + dx, z + dz));
       if (drop > GEN_INT.POWDER_STEP_MAX) sandUnstable++;
     }
+    // a tree may stand here (generator.js treeCandidate's ground rules, the level as the sea) on a gorge wall
+    if ((layer[i] === PLANT_L || layer[i] === SAND_L) && g - lv >= TREE.ABOVE_SEA && slopeOf[i] < TREE.SLOPE_MAX && onWall(x, z)) wallTrees++;
     // what the layers and trees would do under a tarn if they kept the sea as their level
     if (g < lv && g >= P.sea + GEN.PLANT_ABOVE && g <= plantTop && slopeOf[i] < GEN.PLANT_SLOPE_MAX) {
       seaRulePlants++;
       if (g - P.sea >= TREE.ABOVE_SEA && slopeOf[i] < TREE.SLOPE_MAX) seaRuleTrees++;
     }
   }
-// walkability: the steepest ground of each landform's walkable parts
+// walkability: the steepest ground of each landform's walkable parts, where
+// it changed the ground (elsewhere the slopes are the hills')
 const steepest = (pred) => {
   let m = 0;
-  for (let z = 1; z < NZ - 1; z++) for (let x = 1; x < NX - 1; x++) if (pred(x + 0.5, z + 0.5, x, z)) m = Math.max(m, slopeOf[at(x, z)]);
+  for (let z = 1; z < NZ - 1; z++)
+    for (let x = 1; x < NX - 1; x++) {
+      const i = at(x, z);
+      if (Math.abs(G[i] - H[i]) > CHANGED && pred(x + 0.5, z + 0.5, x, z)) m = Math.max(m, slopeOf[i]);
+    }
   return m;
 };
-const L1 = 1;   // cells inside a band's edges, where the slope reads both sides of a crease
+const L1 = 2;   // cells inside a band's edges (the slope reads two columns: one may be across the crease)
 const walk = (m) => `${m.toFixed(2)}${m > WALK ? ' (NOT walkable)' : ''}`;
 const report = [];
 S.lakes.forEach((l, i) => {
@@ -271,7 +286,8 @@ if (S.mesa) report.push(`mesa: centre (${S.mesa.x}, ${S.mesa.z}), radius ${S.mes
 report.push(`stacks: ${S.stacks.map((s) => `(${s.x.toFixed(0)}, ${s.z.toFixed(0)}) r ${s.r} top +${s.top - P.sea}`).join(', ')}`);
 console.log(`seed ${SEED}: sites ${((tSites - t0) / 1000).toFixed(2)} s, grid ${((tGrid - tSites) / 1000).toFixed(1)} s, images ${((tImages - tGrid) / 1000).toFixed(1)} s`);
 console.log(report.join('\n'));
-console.log(`checks: water columns ${water}; leaks ${leaks}; plants touching water ${plantsWet}; sand off its repose ${sandUnstable}`);
+console.log(`checks: water columns ${water}; leaks ${leaks}; plants touching water ${plantsWet}; sand off its repose ${sandUnstable}; `
+  + `tree ground on gorge walls ${wallTrees}`);
 console.log(`under the tarns, the sea-level rules would put plant cover on ${seaRulePlants} columns and allow trees on ${seaRuleTrees}`
   + ' (the layers and trees must take islandWaterLevel as their sea)');
 console.log(`wrote ${files.length} images to ${outDir}/`);
