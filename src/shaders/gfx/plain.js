@@ -74,6 +74,9 @@ vec3 plainGlow(float tC) {
   float k = (tC + 273.15) / PLAIN_GLOW_TK;
   return blackbody(tC) * smoothstep(PLAIN_GLOW_FROM, PLAIN_GLOW_TO, tC) * (k * k * k * k * PLAIN_GLOW_GAIN + PLAIN_GLOW_BASE);
 }
+// what element id at tC gives off: this view's own thermal glow, plus the
+// element's luminescence as the realistic view has it (gfx/materials.js emission)
+vec3 plainEmit(int id, float tC) { return plainGlow(tC) + EMIT[id]; }
 
 float plainOccupied(ivec3 c) {
   if (c.y < 0) return 1.0;
@@ -99,7 +102,7 @@ vec3 plainOpaque(ivec3 cell, int id, vec4 a, vec3 hp, vec3 n, vec3 rd) {
     emit = plainGlow(T) * (1.0 - PLAIN_LAVA_FLICKER + PLAIN_LAVA_FLICKER * sin(uTime * PLAIN_LAVA_HZ + seed * 40.0));
   } else {
     // hot surfaces read as glowing: the emission takes over from reflected light
-    emit = plainGlow(T);
+    emit = plainEmit(id, T);
     alb *= mix(1.0, PLAIN_HOT_ALBEDO, smoothstep(PLAIN_HOT_FROM, PLAIN_HOT_TO, T));
   }
   if (id == E_PLANT) alb *= 1.0 - PLAIN_PLANT_VAR * 0.5 + PLAIN_PLANT_VAR * fract(seed * 7.3);
@@ -184,7 +187,7 @@ void plainView(vec3 ro, vec3 rd, float t0, vec3 bh) {
         }
         vec3 att = exp(-PLAIN_SIGMA[id] * seg);
         vec3 amb = PLAIN_MEDIUM_AMB + PLAIN_SUN * mediumLight * max(uSun.y, 0.0) * PLAIN_MEDIUM_SUN + sampleLight(hp) * uLightGain;
-        vec3 sc = COLOR[id] * amb * (rc == R_LIQUID ? PLAIN_SCATTER_LIQUID : PLAIN_SCATTER_GLASS) + plainGlow(a.y);
+        vec3 sc = COLOR[id] * amb * (rc == R_LIQUID ? PLAIN_SCATTER_LIQUID : PLAIN_SCATTER_GLASS) + plainEmit(id, a.y);
         col += trans * (1.0 - att) * sc;
         trans *= att;
       } else if (rc == R_GAS) {

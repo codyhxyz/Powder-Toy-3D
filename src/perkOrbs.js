@@ -2,16 +2,13 @@ import * as THREE from 'three';
 import { PERK, shrineOffer } from './pov/perks.js';
 import { BODY_HEIGHT, BODY_WIDTH } from './pov/constants.js';
 
-// Perk orbs: the palette's Perks group sets them on surfaces, like the
-// spawners (spawners.js), as markers, not cells. Each is the perk's icon
-// floating at chest height over a glowing pad; a body (the player's, or an
-// NPC's) that walks into it gains the perk (pov/index.js, pov/perks.js).
-//
-// Clicking a surface with a perk sets an orb; clicking at an orb of that perk
-// takes it away. A shrine (Noita's Holy Mountain) sets SHRINE_OFFERS random
-// ones in a row across the view: taking one takes the others with it. An orb
-// stands on a world cell, so in a world bigger than the grid it stays put while
-// the window moves.
+// Perk orbs: markers like the spawners (spawners.js), not cells. Each is a
+// perk's icon floating at chest height over a glowing pad; a body (the
+// player's, or an NPC's) that walks into it gains the perk (pov/index.js,
+// pov/perks.js). They come with shrines (the Shrine construction, Noita's Holy
+// Mountain: constructions/builtins.js shrine), one random perk over each of its
+// plinths: taking one takes the others with it. An orb stands on a world cell,
+// so in a world bigger than the grid it stays put while the window moves.
 
 const ORB_LIFT = BODY_HEIGHT * 0.5;   // cells from the surface to the icon's centre: chest height
 const ORB_SIZE = 2.2;                 // cells across the icon sprite
@@ -20,9 +17,7 @@ const PAD_LIFT = 0.05;                // cells above the surface (no z-fighting)
 const PAD_OPACITY = 0.5;
 const BOB = 0.25;                     // cells the icon bobs up and down...
 const BOB_HZ = 0.5;                   // ...this many times a second
-const TAKE_REACH = 0.6;               // cells beyond a body's box that still touch an orb's centre
-const TOGGLE_DIST = 2;                // cells: clicking this near an orb of the same perk removes it
-const SHRINE_SPACING = 4;             // cells between a shrine's orbs (1.2 m)
+const TAKE_REACH = 1.6;               // cells beyond a body's box that still touch an orb's centre (a shrine's plinth is 3 wide: standing against it is close enough)
 const MAX_ORBS = 64;                  // a scene's worth
 const ICON_PX = 128;                  // the icon texture's size
 const ICON_GLOW = 0.5;                // share of the icon's radius the glow fades over
@@ -90,25 +85,13 @@ export class PerkOrbs {
     scene.add(this.root);
   }
 
-  // Set an orb of `key` with its foot at `feet` (grid cells), or take away the
-  // one of that perk already there. Returns 'added', 'removed' or 'full'.
-  toggle(key, feet) {
-    const world = feet.clone().add(this.getSim().origin);
-    const near = this.list.find((o) => o.key === key && o.world.distanceTo(world) < TOGGLE_DIST);
-    if (near) { this.remove(near); return 'removed'; }
-    if (this.list.length >= MAX_ORBS) return 'full';
-    this.add(key, feet);
-    return 'added';
-  }
-
-  // A shrine centred on `feet` (grid cells), its orbs in a row along `across`
-  // (a horizontal unit vector: the view's right). Returns the orbs, or null when full.
-  shrine(feet, across, random = Math.random) {
-    const keys = shrineOffer(undefined, random);
+  // A shrine's orbs, one random perk over each of `altars` (grid cells: each
+  // orb's foot). Returns the orbs, or null when that many would be too many.
+  shrineAt(altars, random = Math.random) {
+    const keys = shrineOffer(altars.length, random);
     if (this.list.length + keys.length > MAX_ORBS) return null;
     const shrine = nextShrine++;
-    const mid = (keys.length - 1) / 2;
-    return keys.map((k, i) => this.add(k, feet.clone().addScaledVector(across, (i - mid) * SHRINE_SPACING), shrine));
+    return keys.map((k, i) => this.add(k, altars[i], shrine));
   }
 
   add(key, feet, shrine = 0) {
@@ -128,6 +111,9 @@ export class PerkOrbs {
   }
 
   clear() { for (const o of [...this.list]) this.remove(o); }
+
+  // take away what's left of shrine `id`'s orbs (its placement was undone)
+  removeShrine(id) { for (const o of this.list.filter((x) => x.shrine === id)) this.remove(o); }
 
   // an orb's foot in grid cells (the window's), or null while it's outside the window
   feet(o, out = new THREE.Vector3()) {

@@ -1,6 +1,7 @@
-// CPU preview of the island's caves (src/world/island/caves.js) from their JS
-// twin, on today's island heightfield (world/generator.js heightAt, layersAt)
-// as `ground`: PNGs and a census. No GPU: fine on battery.
+// CPU preview of the island's caves (src/world/island/caves.js) from the
+// island's JS twin (world/generator.js: islandCell, the cells the GPU makes, its
+// caves hook instrumented to count noise): PNGs and a census. No GPU: fine on
+// battery.
 //
 //   node tools/caves-preview.mjs [--cliffs] [outDir] [x0 z0 nx nz]
 // (default: the whole world, into ./cave-previews). --cliffs steepens the
@@ -23,22 +24,22 @@
 //   - underground lakes, sea caves and through-caves (arches);
 //   - stability: anything loose or growing that a cave touches (powder over or
 //     beside a void, plant cover over one or touching cave water, cave water
-//     beside air, trees over caves);
+//     beside air, standing water (sea, lakes) beside a void, trees near open
+//     caves);
 //   - noise evaluations per cell, by kind (2D or 3D, value or distance).
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { deflateSync } from 'node:zlib';
 import { join } from 'node:path';
 import { E } from '../src/elements.js';
 import { WORLD_SIZE } from '../src/shaders/far.js';
-import { worldParams, heightAt, layersAt, treesIn, WORLD_SEED, GEN } from '../src/world/generator.js';
-import { CAVE, CAVE_SRC, caveConstants } from '../src/world/island/caves.js';
-import { compileShared } from '../src/world/scenes/themedShared.js';
+import { worldParams, treesIn, buildIslandTwin, WORLD_SEED, GEN, ISLAND_CELL_SRC } from '../src/world/generator.js';
+import { caves, CAVE } from '../src/world/island/caves.js';
 
 const NY = WORLD_SIZE[1];
 const SECTION_TOP = 100;          // sections show heights 0..this (the island's peaks are below it)
 const ZOOM_W = 320;               // zoomed section crops: cells across...
 const ZOOM_K = 2;                 // ...blown up this much
-const LAYER_DEPTH = 3;            // the deepest heightfield layer (sand, snow), cells (generator.js GEN_INT)
+const LAYER_DEPTH = 3;            // the deepest cover (sand, snow), cells (generator.js GEN_INT)
 const TREE_FOOT_R = 3;            // the audit looks for open caves (mouths, shafts) this far around a tree's trunk
 const SPELEO_MARK = 255;          // the twin marks speleothems with this id (no element's), so they show apart from rock
 const MOUTH_DOT = 1;              // entrance map: mouths drawn this many pixels around
@@ -58,14 +59,19 @@ const [X0, Z0, NX, NZ] = rest.length === 4 ? rest.map(Number) : [0, 0, WORLD_SIZ
 const P = worldParams({ size: WORLD_SIZE, seed: WORLD_SEED, snow: false });   // the island scene: no snow
 const WATER = P.sea;
 
-// ---- the twin, with its noise calls counted: one tally per kind
+// ---- the island's twin, its caves hook's noise calls counted (one tally per
+// kind) and its speleothems marked
 const tally = new Float64Array(4);       // 2D value, 2D distance, 3D value, 3D distance
 const KIND_NAMES = ['2D value', '2D dist', '3D value', '3D dist'];
-const counted = CAVE_SRC
-  .replace(/(float caveNoise2\([^)]*\) \{)/, '$1\n  caveTally(want);')
+const edit = (src, from, to) => { if (!src.includes(from)) throw new Error(`caves-preview: no "${from}" in the caves source`); return src.replace(from, to); };
+let counted = caves.src.replace(/(float caveNoise2\([^)]*\) \{)/, '$1\n  caveTally(want);')
   .replace(/(float caveNoise3\([^)]*\) \{)/, '$1\n  caveTally(2 + want);');
-if (counted === CAVE_SRC) throw new Error('caves-preview: could not find the noise functions to count');
-const T = compileShared(counted, P.seed, { ...caveConstants(), CAVE_SPELEO: SPELEO_MARK, caveTally: (k) => { tally[k]++; } });
+counted = edit(counted, 'return id;   // a speleothem', 'return CAVE_SPELEO_MARK;   // a speleothem');
+if (!counted.includes('caveTally(want)') || !counted.includes('caveTally(2 + want)')) throw new Error('caves-preview: could not find the noise functions to count');
+const T = buildIslandTwin(P, {
+  cellSrc: edit(ISLAND_CELL_SRC, caves.src, counted),
+  change: { CAVE_SPELEO_MARK: SPELEO_MARK, caveTally: (k) => { tally[k]++; } },
+});
 
 // ---- PNG (8-bit RGB), from rgb rows
 const crcTable = new Uint32Array(256).map((_, n) => {
@@ -97,10 +103,9 @@ function png(name, w, h, rgb, k = 1) {
 const t0 = performance.now();
 const HW = NX + 2;
 const H = new Float64Array(HW * (NZ + 2));
-for (let j = 0; j < NZ + 2; j++) for (let i = 0; i < HW; i++) H[j * HW + i] = heightAt(X0 + i - 1, Z0 + j - 1, P);
+for (let j = 0; j < NZ + 2; j++) for (let i = 0; i < HW; i++) H[j * HW + i] = T.column(X0 + i - 1, Z0 + j - 1)[0];
 const hAt = (i, j) => H[(j + 1) * HW + i + 1];        // region-local column (i, j)
 const groundOf = (i, j) => Math.floor(hAt(i, j) + 0.5);
-const slopeOf = (i, j) => 0.5 * Math.hypot(hAt(i + 1, j) - hAt(i - 1, j), hAt(i, j + 1) - hAt(i, j - 1));
 console.log(`heightfield ${NX}×${NZ} in ${((performance.now() - t0) / 1000).toFixed(1)} s; water table ${WATER}, peak ${H.reduce((a, b) => Math.max(a, b)).toFixed(1)}`);
 
 // ---- the volume: element per cell, and which cells the caves carved
@@ -109,39 +114,30 @@ const vol = new Uint8Array(NX * NY * NZ);
 const carved = new Uint8Array(NX * NY * NZ);   // CARVED, CRYSTAL or SPELEO where the caves changed a cell
 const CARVED = 1, CRYSTAL = 2, SPELEO = 3;
 const cavern = new Uint8Array(NX * NY * NZ);   // 1: carved by the caverns (cheese)
-// the heightfield's element at height y of a column with layers L (genId)
-function baseId(L, y, G) {
-  if (y >= G) return y < WATER ? E.WATER : E.EMPTY;
-  const depth = G - 1 - y;
-  if (depth < L.sand) return E.SAND;
-  if (depth < L.snow) return E.SNOW;
-  if (depth === 0 && L.plant) return E.PLANT;
-  return E.ROCK;
-}
 
-const perCell = new Map();      // noise evaluations (3D-equivalents) → cells
+const perCell = new Map();      // noise evaluations per cell → cells
 let bandCells = 0, groundCells = 0, calls = 0;
-const surface = new Uint8Array(NX * NZ);   // each column's top cell
 const evalTotals = new Float64Array(4);
 const t1 = performance.now();
 for (let j = 0; j < NZ; j++) {
   for (let i = 0; i < NX; i++) {
-    const x = X0 + i, z = Z0 + j, G = groundOf(i, j), slope = slopeOf(i, j), c = col(i, j);
-    const L = layersAt(x, z, P);
-    for (let y = 0; y < NY; y++) vol[c + y] = baseId(L, y, G);
-    surface[j * NX + i] = G > 0 ? vol[c + G - 1] : E.EMPTY;
+    const x = X0 + i, z = Z0 + j, G = groundOf(i, j), c = col(i, j);
+    const top = Math.max(G, Math.ceil(T.column(x, z)[3]));   // ground, then standing water
     groundCells += Math.max(0, G);
-    for (let y = CAVE.BOTTOM; y < G; y++) {
+    for (let y = 0; y < top; y++) {
       tally.fill(0);
-      const id = vol[c + y], out = T.islandCave(x, y, z, hAt(i, j), WATER, slope, surface[j * NX + i], id);
+      const out = T.islandCell(x, y, z);
       let n = 0;
       for (let k = 0; k < 4; k++) { evalTotals[k] += tally[k]; n += tally[k]; }
-      calls++;
+      if (y < G) calls++;
       if (n > 0) { bandCells++; perCell.set(n, (perCell.get(n) ?? 0) + 1); }
-      if (out === id) continue;
       vol[c + y] = out === SPELEO_MARK ? E.ROCK : out;
-      carved[c + y] = out === E.EMPTY || out === E.WATER ? CARVED : out === SPELEO_MARK ? SPELEO : CRYSTAL;
-      if (carved[c + y] === CARVED && T.caveCheese(x + 0.5, y + 0.5, z + 0.5, G, WATER) < 0) cavern[c + y] = 1;
+      if (y >= G) continue;
+      if (out === E.EMPTY || out === E.WATER) {
+        carved[c + y] = CARVED;
+        if (T.caveCheese(x + 0.5, y + 0.5, z + 0.5, G, WATER) < 0) cavern[c + y] = 1;
+      } else if (out === E.CRYSTAL) carved[c + y] = CRYSTAL;
+      else if (out === SPELEO_MARK) carved[c + y] = SPELEO;
     }
   }
   if (j % 128 === 127) process.stdout.write(`  rows ${j + 1}/${NZ}\r`);
@@ -176,7 +172,7 @@ for (let j = 0; j < NZ; j++)
         if (groundOf(i + dx, j + dz) < WATER || y + dy < WATER) sea = true;
       }
       if (!open) continue;
-      const shaft = T.caveShaft(X0 + i, Z0 + j, y + 0.5, G, WATER, slopeOf(i, j), surface[j * NX + i]) < 0;
+      const shaft = T.caveShaft(X0 + i, Z0 + j, y + 0.5, G, WATER) < 0;
       mouthKind.set(c + y, shaft ? 'shaft' : sea ? 'sea' : 'hill');
     }
   }
@@ -293,7 +289,10 @@ for (const [k, [h, kind]] of clearAt) {
 }
 
 // ---- stability audit: anything loose or growing that a cave touches
-const problems = { 'powder over a void': 0, 'powder beside a void': 0, 'plant over a void': 0, 'plant touching cave water': 0, 'cave water beside air': 0 };
+const problems = {
+  'powder over a void': 0, 'powder beside a void': 0, 'plant over a void': 0, 'plant touching cave water': 0,
+  'cave water beside air': 0, 'standing water beside a void': 0,
+};
 const problemAt = {};
 const flag = (what, i, y, j) => { problems[what]++; problemAt[what] ??= [X0 + i, y, Z0 + j]; };
 for (let k = 0; k < NX * NZ; k++) {
@@ -318,12 +317,14 @@ for (let k = 0; k < NX * NZ; k++) {
   }
 }
 for (let k = 0; k < vol.length; k++) {
-  if (carved[k] !== CARVED || vol[k] !== E.WATER) continue;
+  if (vol[k] !== E.WATER) continue;
   const [i, y, j] = decode(k);
   for (const [dx, dy, dz] of FACES) {
     if (dy > 0) continue;
     const n = at(i + dx, y + dy, j + dz);
-    if (n >= 0 && vol[n] === E.EMPTY) flag('cave water beside air', i, y, j);
+    if (n < 0 || vol[n] !== E.EMPTY) continue;
+    if (carved[k] === CARVED) flag('cave water beside air', i, y, j);
+    else if (carved[n] === CARVED) flag('standing water beside a void', i, y, j);
   }
 }
 // trees: the generator's, standing within TREE_FOOT_R of an open cave (a mouth's or a shaft's cells, in a roof's depth)

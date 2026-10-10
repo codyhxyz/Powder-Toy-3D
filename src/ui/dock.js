@@ -2,6 +2,7 @@ import { h, inkFor, luminance } from './dom.js';
 import { ICON } from './icons.js';
 import { PALETTE, itemByKey, toolById, isBuild, K } from '../elements.js';
 import { mountTile, setTileSettings } from './tiles/live.js';
+import { modelIcon } from '../pov/models.js';
 
 const KIND_NAME = { [K.POWDER]: 'powder', [K.LIQUID]: 'liquid', [K.GAS]: 'gas', [K.SOLID]: 'solid' };
 export const kindOf = (it) => (isBuild(it.id) ? 'build' : it.id < 0 ? 'tool' : KIND_NAME[it.kind]);
@@ -21,7 +22,17 @@ export function tile(it, cls = '', { live = false } = {}) {
   }, h('span', { text: it.abbr }));
   if (luminance(it.color) <= 0.28) t.dataset.dark = '';
   if (it.id >= 0) mountTile(t, it, { px: cls.includes('big') ? BIG_TILE_PX : TILE_PX, live });
+  if (it.model) iconLater(t, it.model);
   return t;
+}
+
+// A first-person tool's tile shows its hotbar icon (pov/models.js modelIcon),
+// drawn when the page is idle rather than holding up the first frame.
+const idle = globalThis.requestIdleCallback ?? ((fn) => setTimeout(fn, 1));
+function iconLater(t, model) {
+  idle(() => {
+    try { t.replaceChildren(h('img.tile-icon', { src: modelIcon(model), alt: '', draggable: 'false' })); } catch { /* keep the abbreviation */ }
+  });
 }
 
 // Bottom dock: brush controls, the element groups, search and collapse.
@@ -137,6 +148,8 @@ export function createDock({ settings, onSelect, onBrushChange, onHover, onEyedr
     setEyedropper,
     toggle: () => setCollapsed(!settings.dockCollapsed),
     focusSearch: () => { setCollapsed(false); search.focus(); search.select(); },
+    // scroll the first tile that `pick(item)` accepts into view (the tools menu: the first-person tools)
+    reveal(pick) { tiles.find(({ it }) => pick(it))?.el.scrollIntoView({ block: 'nearest', inline: 'start' }); },
     get collapsed() { return !!settings.dockCollapsed; },
   };
 }

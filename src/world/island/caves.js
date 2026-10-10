@@ -1,11 +1,15 @@
-import { definesGLSL, jsConstants, compileShared } from '../scenes/themedShared.js';
-import { E } from '../../elements.js';
-
-// Caves under the island: the last step of every island cell. The island
-// calls islandCave on each cell with the element its heightfield layers gave
-// it, and gets back the element after carving. Written once in the shared GLSL
-// subset (scenes/themedShared.js): the GPU runs it, the CPU its JS twin
-// (caveTwin; tools/caves-preview.mjs).
+// The island's caves (docs/scaling.md D11, "Island hooks"): 3D carving, the
+// one step that isn't a heightfield. islandCell (world/generator.js) calls
+// islandCave last, on every cell, with the element the layers and strata gave
+// it, and gets back the element after carving.
+//
+// Written once in the shared GLSL subset (scenes/themedShared.js): the GPU runs
+// it in the island's sceneCell (scenes/island.js), the CPU its JS twin
+// (world/generator.js islandTwin: islandCell, which tree placement and the
+// scene's ground() go through; tools/caves-preview.mjs previews and audits it).
+// In scope: the island's world parameters (uGenSea, ...), its baked columns
+// (genColHeight, genColWater, ...), the cell stage's functions declared before
+// the hooks (genTop, genSlope, genCover) and the subset's helpers.
 //
 // The approach is Minecraft 1.18's noise caves (Caves & Cliffs part II; the
 // density functions of its NoiseRouterData, as the Minecraft Wiki's "Cave"
@@ -43,24 +47,32 @@ import { E } from '../../elements.js';
 // test is two more noise lookups: is the ceiling (the floor) within the cone's
 // length above (below) this cell?
 //
-// Water. Carved cells below the water table (the column's `water`: the sea
-// level) are water: deep caverns hold flat underground lakes, sea-level
-// tunnels are flooded to the sea's level. Every carved cell below it is water
-// and every one above it air, so the water lies flat and walled in (rock
-// around it, or the sea, at the same level). That needs one water table under
-// all connected caves: a perched lake's level must not be passed as `water`.
+// Water. Carved cells below the sea level (uGenSea, the caves' one water
+// table, not the column's standing water: a mountain lake's level would put
+// water beside air in the next column's cave) are water: deep caverns hold
+// flat underground lakes, sea-level tunnels are flooded to the sea's level.
+// Every carved cell below it is water and every one above it air, so the water
+// lies flat and walled in (rock around it, or the sea, at the same level).
 //
-// The island passes each column's ground, water table, slope and top cell
-// (surface), which its layers know already.
+// Slope and cover. Mouths and shafts ask for the column's slope and cover
+// (genSlope, genCover: the layers' own), and only cells near the surface or a
+// shaft ask, so the deep cells (most of them) never read the 17 columns cover
+// reads.
 //
 // Stability. A loaded world must not churn (world/generator.js "Stability").
-//   - Only rock is carved (and plant cover, by shafts): never sand or snow.
+//   - Only bedrock (any stratum) is carved, and plant cover by shafts: never
+//     sand or snow, nor the water of the sea or a lake.
 //   - Every cave keeps ROOF cells of rock between it and its column's surface.
 //     The island's powders lie at most 3 deep, on gentle columns whose
 //     neighbours stand within 2 cells of them, so with ROOF at least 3 + 3 no
 //     powder cell has a void below it, beside it or diagonally below it.
 //   - Mouths thin the roof only on bare rock, which never moves, and only well
 //     above the beaches (MOUTH_ABOVE_SEA) or on cliffs too steep for sand.
+//   - No mouths or shafts under standing water (the sea, a lake) or within a
+//     lake's clearance (landforms' islandLakeClearance), so no cave reaches a
+//     lake's water to drain it.
+//   - Trees keep TREE_CLEAR columns from any open cave (caveOpenNear, which
+//     genTreeZone asks), so no tree's footing hangs over a mouth or a shaft.
 //   - Shafts open only on rock or plant cover well above the beaches
 //     (SHAFT_ABOVE_SEA), on gentle ground (SHAFT_SLOPE_MAX); they carve whole
 //     columns from their floor up, wider toward the top (a funnel), so nothing
@@ -84,8 +96,7 @@ const C = {
     SPELEO_MARGIN: 3,       // ...centres this far inside (at least the widest base: SPELEO_R_MAX)
     CRYSTAL_CELL: 14,       // the crystal site grid, cells cube
     CRYSTAL_MARGIN: 5,      // ...centres this far inside (at least the largest cluster: CRYSTAL_R_MAX)
-    CRYSTAL: E.GLASS,       // placeholder for the glowing crystal element until it lands
-    SPELEO: E.ROCK,         // what stalactites and stalagmites are made of
+    TREE_CLEAR: 3,          // trees stand at least this many columns from an open cave (caveOpenNear: the widest root flare)
     VALUE: 0,               // caveNoise2 / caveNoise3: return the noise's value...
     DIST: 1,                // ...or its (value - shift) over its gradient's length: a distance, cells
     // parameter streams of a site's hash (thKey)
@@ -155,16 +166,14 @@ const C = {
     CRYSTAL_IN: 1.6,        // the wall's shell: cells into the cave...
     CRYSTAL_OUT: 1.0,       // ...and into the rock
     CRYSTAL_CHANCE_HIGH: 0.12, // chance a site has a cluster, high up...
-    CRYSTAL_CHANCE_DEEP: 0.65, // ...and deep down
+    CRYSTAL_CHANCE_DEEP: 0.65, // ...and deep down (but above the water: only faces open to air glow)
     CRYSTAL_HIGH: 30.0,     // "high": this many cells above the water table and up...
-    CRYSTAL_DEEP: 0.0,      // ..."deep": this many and down
+    CRYSTAL_DEEP: 2.0,      // ..."deep": this many and down, to the water
     CRYSTAL_R_MIN: 2.2,     // cluster radius, cells
     CRYSTAL_R_MAX: 4.5,
     CRYSTAL_RAGGED: 0.55,   // each cell's reach is this share of the radius and up (a jagged cluster)
 
     // noise
-    NOISE2_NORM: 1.4142,    // 2D gradient noise peaks near ±1/√2: this scales it to about ±1
-    TAU: 6.28318530718,
     EPS: 0.0001,            // the smallest gradient a distance is divided by
     FAR: 1000.0,            // farther than any cave, cells
   },
@@ -180,14 +189,13 @@ const C = {
     CRYSTAL: 0x5c90, CRYSTAL_CELL: 0x5c91,
   },
 };
-const PREFIX = 'CAVE';
 if (C.floats.SPELEO_R_MAX > C.ints.SPELEO_MARGIN) throw new Error('caves: speleothem bases reach past their site cell');
 if (C.floats.CRYSTAL_R_MAX > C.ints.CRYSTAL_MARGIN) throw new Error('caves: crystal clusters reach past their site cell');
 if (C.floats.SHAFT_R + C.floats.FUNNEL_DEPTH * C.floats.FUNNEL_FLARE > C.ints.SHAFT_MARGIN) throw new Error('caves: funnels reach past their site cell');
 
 // The geometry, in the shared GLSL subset. (x, y, z) are cell centres where
-// floats; G is the column's ground (cells y < G are ground), water the water
-// table.
+// floats; G is the column's ground (cells y < G are ground), sea the caves'
+// water table.
 const SRC = /* glsl */ `
 // smoothstep, either way round (a > b falls)
 float caveSmooth(float a, float b, float x) {
@@ -198,27 +206,14 @@ float caveSmooth(float a, float b, float x) {
 float caveFade(float t) { return t * t * t * (t * (t * 6.0 - 15.0) + 10.0); }
 float caveFadeD(float t) { return 30.0 * t * t * (t * (t - 2.0) + 1.0); }
 
-// 2D gradient noise at (x, z), wavelength wave cells, stream salt: its value
-// (about ±1), or with want == CAVE_DIST (value - shift) / |gradient|, the
-// distance in cells to where it equals shift. Gradients at a hashed angle per
-// lattice point (as shaders/generate.js genNoised).
+// 2D gradient noise (thNoised) at (x, z), wavelength wave cells, stream salt:
+// its value (about ±1), or with want == CAVE_DIST (value - shift) / |gradient|,
+// the distance in cells to where it equals shift.
 float caveNoise2(float x, float z, float wave, uint salt, float shift, int want) {
-  float px = thFdiv(x, wave), pz = thFdiv(z, wave);
-  float x0 = floor(px), z0 = floor(pz);
-  int ix = int(x0), iz = int(z0);
-  float fx = px - x0, fz = pz - z0;
-  float a = thLattice(ix, iz, salt) * CAVE_TAU, b = thLattice(ix + 1, iz, salt) * CAVE_TAU;
-  float c = thLattice(ix, iz + 1, salt) * CAVE_TAU, d = thLattice(ix + 1, iz + 1, salt) * CAVE_TAU;
-  float ax = cos(a), az = sin(a), bx = cos(b), bz = sin(b);
-  float cx = cos(c), cz = sin(c), dx = cos(d), dz = sin(d);
-  float va = ax * fx + az * fz, vb = bx * (fx - 1.0) + bz * fz;
-  float vc = cx * fx + cz * (fz - 1.0), vd = dx * (fx - 1.0) + dz * (fz - 1.0);
-  float ux = caveFade(fx), uz = caveFade(fz);
-  float n = mix(mix(va, vb, ux), mix(vc, vd, ux), uz) * CAVE_NOISE2_NORM;
+  float n = thNoised(thFdiv(x, wave), thFdiv(z, wave), thStream(salt, 0));
   if (want == CAVE_VALUE) return n;
-  float gx = mix(mix(ax, bx, ux), mix(cx, dx, ux), uz) + caveFadeD(fx) * mix(vb - va, vd - vc, uz);
-  float gz = mix(mix(az, bz, ux), mix(cz, dz, ux), uz) + caveFadeD(fz) * mix(vc - va, vd - vb, ux);
-  return thFdiv(n - shift, max(thFdiv(sqrt(gx * gx + gz * gz) * CAVE_NOISE2_NORM, wave), CAVE_EPS));
+  float dx = thNoiseDx(), dz = thNoiseDz();
+  return thFdiv(n - shift, max(thFdiv(sqrt(dx * dx + dz * dz), wave), CAVE_EPS));
 }
 
 // Perlin's improved-noise gradients (Perlin 2002, "Improving Noise"; Minecraft's
@@ -299,17 +294,17 @@ float caveLevel(float x, float y, float z, float base, float amp, float room, fl
   float tube = (sqrt(u * u + vv * vv) - 1.0) * min(w, semi);
   return max(max(tube, -inside), max(cap, floorY + 2.0 * semi - room));
 }
-float caveUpper(float x, float y, float z, float water, float room) {
-  return caveLevel(x, y, z, water + CAVE_UPPER_FLOOR, CAVE_UPPER_AMP, room, -CAVE_FAR,
+float caveUpper(float x, float y, float z, float sea, float room) {
+  return caveLevel(x, y, z, sea + CAVE_UPPER_FLOOR, CAVE_UPPER_AMP, room, -CAVE_FAR,
                    CAVE_SALT_UPPER_PATH, CAVE_SALT_UPPER_ELEV, CAVE_SALT_UPPER_STRETCH);
 }
-float caveLower(float x, float y, float z, float water, float room) {
-  return caveLevel(x, y, z, water + CAVE_LOWER_FLOOR, CAVE_LOWER_AMP, room, -CAVE_FAR,
+float caveLower(float x, float y, float z, float sea, float room) {
+  return caveLevel(x, y, z, sea + CAVE_LOWER_FLOOR, CAVE_LOWER_AMP, room, -CAVE_FAR,
                    CAVE_SALT_LOWER_PATH, CAVE_SALT_LOWER_ELEV, CAVE_SALT_LOWER_STRETCH);
 }
 // the sea level: only under the coast, ending under ground higher than SEA_INLAND above the water
-float caveSea(float x, float y, float z, float G, float water, float room) {
-  return caveLevel(x, y, z, water + CAVE_SEA_FLOOR, 0.0, room, G - water - CAVE_SEA_INLAND,
+float caveSea(float x, float y, float z, float G, float sea, float room) {
+  return caveLevel(x, y, z, sea + CAVE_SEA_FLOOR, 0.0, room, G - sea - CAVE_SEA_INLAND,
                    CAVE_SALT_SEA_PATH, CAVE_SALT_SEA_PATH, CAVE_SALT_SEA_STRETCH);
 }
 
@@ -329,23 +324,23 @@ float caveSpaghetti(float x, float y, float z) {
 // the noise's cut at height y in a column with ground G: rising toward the
 // top of the caverns' range and toward the surface (Minecraft's sloped-cheese
 // term does the second)
-float caveCheeseCut(float y, float G, float water) {
-  float top = water + CAVE_CHEESE_TOP, roof = G - float(CAVE_CHEESE_ROOF);
+float caveCheeseCut(float y, float G, float sea) {
+  float top = sea + CAVE_CHEESE_TOP, roof = G - float(CAVE_CHEESE_ROOF);
   float rise = max(caveSmooth(top - CAVE_CHEESE_FADE_SPAN, top, y), caveSmooth(roof - CAVE_CHEESE_FADE_SPAN, roof, y));
   return CAVE_CHEESE_CUT + CAVE_CHEESE_FADE * rise;
 }
-bool caveCheeseRange(float y, float G, float water) {
-  return y < water + CAVE_CHEESE_TOP && y < G - float(CAVE_CHEESE_ROOF);
+bool caveCheeseRange(float y, float G, float sea) {
+  return y < sea + CAVE_CHEESE_TOP && y < G - float(CAVE_CHEESE_ROOF);
 }
-float caveCheese(float x, float y, float z, float G, float water) {
-  if (!caveCheeseRange(y - CAVE_CRYSTAL_OUT, G, water)) return CAVE_FAR;
-  float cut = caveCheeseCut(y, G, water);
+float caveCheese(float x, float y, float z, float G, float sea) {
+  if (!caveCheeseRange(y - CAVE_CRYSTAL_OUT, G, sea)) return CAVE_FAR;
+  float cut = caveCheeseCut(y, G, sea);
   return -caveNoise3(x, y, z, CAVE_CHEESE_WAVE_H, CAVE_CHEESE_WAVE_V, CAVE_SALT_CHEESE, cut, CAVE_DIST);
 }
 // whether cell height y of column (x, z) is cavern rock (not carved by the caverns)
-bool caveCheeseSolid(float x, float y, float z, float G, float water, float top) {
-  if (y >= top || y < float(CAVE_BOTTOM) || !caveCheeseRange(y, G, water)) return true;
-  return caveNoise3(x, y, z, CAVE_CHEESE_WAVE_H, CAVE_CHEESE_WAVE_V, CAVE_SALT_CHEESE, 0.0, CAVE_VALUE) <= caveCheeseCut(y, G, water);
+bool caveCheeseSolid(float x, float y, float z, float G, float sea, float top) {
+  if (y >= top || y < float(CAVE_BOTTOM) || !caveCheeseRange(y, G, sea)) return true;
+  return caveNoise3(x, y, z, CAVE_CHEESE_WAVE_H, CAVE_CHEESE_WAVE_V, CAVE_SALT_CHEESE, 0.0, CAVE_VALUE) <= caveCheeseCut(y, G, sea);
 }
 
 // ---- speleothems: a site per SPELEO_CELL square of columns (some empty)
@@ -353,7 +348,7 @@ bool caveCheeseSolid(float x, float y, float z, float G, float water, float top)
 // A cavern cell d from the site's axis is inside the stalactite when the
 // ceiling is within L (1 - d / R) above it: a cone hanging from the ceiling,
 // whatever its shape. (The stalagmite likewise, from the floor.)
-bool caveSpeleo(int x, int z, float y, float G, float water, float top) {
+bool caveSpeleo(int x, int z, float y, float G, float sea, float top) {
   int sx = thDiv(x, CAVE_SPELEO_CELL), sz = thDiv(z, CAVE_SPELEO_CELL);
   uint h = thHash2(sx, sz, CAVE_SALT_SPELEO);
   if (thUnit(thKey(h, CAVE_K_CHANCE)) >= CAVE_SPELEO_CHANCE) return false;
@@ -365,22 +360,24 @@ bool caveSpeleo(int x, int z, float y, float G, float water, float top) {
   if (share <= 0.0) return false;
   float px = float(x) + 0.5, pz = float(z) + 0.5;
   float up = share * mix(CAVE_TITE_MIN, CAVE_TITE_MAX, thUnit(thKey(h, CAVE_K_TITE)));
-  if (caveCheeseSolid(px, y + up, pz, G, water, top)) return true;
+  if (caveCheeseSolid(px, y + up, pz, G, sea, top)) return true;
   float down = share * mix(CAVE_MITE_MIN, CAVE_MITE_MAX, thUnit(thKey(h, CAVE_K_MITE)));
-  return caveCheeseSolid(px, y - down, pz, G, water, top);
+  return caveCheeseSolid(px, y - down, pz, G, sea, top);
 }
 
 // ---- crystal clusters: a site per CRYSTAL_CELL cube (more of them hold one
-// deeper down); a cluster is the part of a ragged ball around it that lies in
-// the wall's shell, f (the distance to the wall) between -IN and OUT
-bool caveCrystal(int x, int y, int z, float f, float water) {
+// deeper down, none under the water, where no face is open to air to glow); a
+// cluster is the part of a ragged ball around it that lies in the wall's
+// shell, f (the distance to the wall) between -IN and OUT
+bool caveCrystal(int x, int y, int z, float f, float sea) {
   if (f <= -CAVE_CRYSTAL_IN || f >= CAVE_CRYSTAL_OUT) return false;
   int sx = thDiv(x, CAVE_CRYSTAL_CELL), sy = thDiv(y, CAVE_CRYSTAL_CELL), sz = thDiv(z, CAVE_CRYSTAL_CELL);
   uint h = thKey(thHash2(sx, sz, CAVE_SALT_CRYSTAL), sy);
   int lo = CAVE_CRYSTAL_MARGIN, hi = CAVE_CRYSTAL_CELL - 1 - CAVE_CRYSTAL_MARGIN;
   float cy = float(sy * CAVE_CRYSTAL_CELL + thRange(thKey(h, CAVE_K_Y), lo, hi)) + 0.5;
+  if (cy < sea) return false;
   float chance = mix(CAVE_CRYSTAL_CHANCE_HIGH, CAVE_CRYSTAL_CHANCE_DEEP,
-                     caveSmooth(water + CAVE_CRYSTAL_HIGH, water + CAVE_CRYSTAL_DEEP, cy));
+                     caveSmooth(sea + CAVE_CRYSTAL_HIGH, sea + CAVE_CRYSTAL_DEEP, cy));
   if (thUnit(thKey(h, CAVE_K_CHANCE)) >= chance) return false;
   float ox = float(x - sx * CAVE_CRYSTAL_CELL - thRange(thKey(h, CAVE_K_X), lo, hi));
   float oz = float(z - sz * CAVE_CRYSTAL_CELL - thRange(thKey(h, CAVE_K_Z), lo, hi));
@@ -391,68 +388,92 @@ bool caveCrystal(int x, int y, int z, float f, float water) {
 }
 
 // ---- mouths: the rock kept over caves in column (x, z), cells: ROOF, thinning
-// to MOUTH_ROOF where the entrance noise says so, on bare rock (surface: the
-// column's top cell) well above the water, or on cliffs nearer it
-float caveRoof(int x, int z, float G, float water, float slope, int surface) {
-  if (surface != E_ROCK) return float(CAVE_ROOF);
-  float site = G >= water + CAVE_MOUTH_ABOVE_SEA ? 1.0 : caveSmooth(CAVE_CLIFF_LO, CAVE_CLIFF_HI, slope);
+// to MOUTH_ROOF where the entrance noise says so, on bare rock (the layers'
+// cover: none) well above the sea, or on cliffs nearer it. The caller asks only
+// on dry land clear of lakes.
+float caveRoof(int x, int z, float G, float sea) {
+  float site = G >= sea + CAVE_MOUTH_ABOVE_SEA ? 1.0 : caveSmooth(CAVE_CLIFF_LO, CAVE_CLIFF_HI, genSlope(x, z));
   if (site <= 0.0) return float(CAVE_ROOF);
   float gate = caveNoise2(float(x) + 0.5, float(z) + 0.5, CAVE_MOUTH_WAVE, CAVE_SALT_MOUTH, 0.0, CAVE_VALUE);
   float k = site * caveSmooth(CAVE_MOUTH_CUT, CAVE_MOUTH_CUT + CAVE_MOUTH_SOFT, gate);
+  if (k <= 0.0 || genCover(x, z) != GEN_COVER_NONE) return float(CAVE_ROOF);
   return mix(float(CAVE_ROOF), float(CAVE_MOUTH_ROOF), k);
 }
 
 // ---- shafts: a site per SHAFT_CELL square of columns may hold a sinkhole, a
 // shaft of radius SHAFT_R from the surface down past the water table (a
 // cenote: water stands at its bottom, at the sea's level, and any tunnel or
-// cavern it passes opens into it), flaring into a funnel near the top. The
-// distance from cell height y of column (x, z) to its wall, cells.
-float caveShaft(int x, int z, float y, float G, float water, float slope, int surface) {
-  if ((surface != E_ROCK && surface != E_PLANT) || G < water + CAVE_SHAFT_ABOVE_SEA || slope > CAVE_SHAFT_SLOPE_MAX
-      || y < water - CAVE_SHAFT_SUMP) return CAVE_FAR;
+// cavern it passes opens into it), flaring into a funnel near the top, on
+// gentle bare rock or plant cover. The distance from cell height y of column
+// (x, z) to its wall, cells. The caller asks only on dry land clear of lakes.
+float caveShaft(int x, int z, float y, float G, float sea) {
+  if (G < sea + CAVE_SHAFT_ABOVE_SEA || y < sea - CAVE_SHAFT_SUMP) return CAVE_FAR;
   int sx = thDiv(x, CAVE_SHAFT_CELL), sz = thDiv(z, CAVE_SHAFT_CELL);
   uint h = thHash2(sx, sz, CAVE_SALT_SHAFT);
   if (thUnit(thKey(h, CAVE_K_CHANCE)) >= CAVE_SHAFT_CHANCE) return CAVE_FAR;
   float ox = float(x - sx * CAVE_SHAFT_CELL - thRange(thKey(h, CAVE_K_X), CAVE_SHAFT_MARGIN, CAVE_SHAFT_CELL - 1 - CAVE_SHAFT_MARGIN));
   float oz = float(z - sz * CAVE_SHAFT_CELL - thRange(thKey(h, CAVE_K_Z), CAVE_SHAFT_MARGIN, CAVE_SHAFT_CELL - 1 - CAVE_SHAFT_MARGIN));
-  float r = CAVE_SHAFT_R + max(0.0, CAVE_FUNNEL_DEPTH - (G - y)) * CAVE_FUNNEL_FLARE;
-  return sqrt(ox * ox + oz * oz) - r;
+  float d = sqrt(ox * ox + oz * oz) - CAVE_SHAFT_R - max(0.0, CAVE_FUNNEL_DEPTH - (G - y)) * CAVE_FUNNEL_FLARE;
+  if (d >= CAVE_CRYSTAL_OUT || genSlope(x, z) > CAVE_SHAFT_SLOPE_MAX) return CAVE_FAR;
+  int cover = genCover(x, z);
+  return cover == GEN_COVER_NONE || cover == GEN_COVER_PLANT ? d : CAVE_FAR;
 }
 
-// The element of island cell (x, y, z) after carving: id is what the
-// heightfield's layers gave it, ground its column's height (cells y < ground,
-// rounded, are ground), water the water table, slope the column's steepness
-// (cells per cell, as the layers measure it) and surface its top cell's
-// element (E_ROCK: bare).
-int islandCave(int x, int y, int z, float ground, float water, float slope, int surface, int id) {
-  if (y < CAVE_BOTTOM || (id != E_ROCK && id != E_PLANT)) return id;
-  float G = float(thRound(ground));
-  float py = float(y) + 0.5;
-  float shaft = caveShaft(x, z, py, G, water, slope, surface);
-  float roof = caveRoof(x, z, G, water, slope, surface), top = G - roof;
-  float f = shaft;
-  if (id == E_ROCK && float(y) < top) {
+// Whether column (x, z) is within a mountain lake's clearance, where nothing
+// is carved (no cave may reach a lake's water and drain it).
+// TODO(landforms): return islandLakeClearance(float(x), float(z)) once
+// landforms exports it into the cell stage's scope.
+bool caveLakeClear(int x, int z) { return false; }
+// Whether caves may open out of column (x, z), its ground G (cells) and
+// standing water at water: on dry land only (not under the sea or a lake).
+bool caveOpenable(float G, float water) { return water <= G; }
+
+// The element at world cell (x, y, z) after carving, given id, what the island
+// put there: id where nothing is carved. ground: the column's terrain height
+// (cells, after landforms: its ground cells are y < thRound(ground)); water:
+// its standing water's level, which says only where mouths and shafts may open
+// (dry land): the caves' own water table is the sea's (uGenSea), whatever a
+// lake's level.
+int islandCave(int x, int y, int z, float ground, float water, int id) {
+  if (y < CAVE_BOTTOM || id == E_EMPTY || id == E_WATER || id == E_SAND || id == E_SNOW) return id;
+  if (caveLakeClear(x, z)) return id;
+  float G = float(thRound(ground)), sea = uGenSea, py = float(y) + 0.5;
+  bool open = caveOpenable(G, water);   // mouths and shafts
+  float shaft = open ? caveShaft(x, z, py, G, sea) : CAVE_FAR;
+  // the roof: only cells a level tunnel could reach it from ask whether it thins here
+  float roof = float(CAVE_ROOF);
+  if (open && py + CAVE_TUN_H_MAX + CAVE_CRYSTAL_OUT > G - float(CAVE_ROOF)) roof = caveRoof(x, z, G, sea);
+  float top = G - roof, f = shaft;
+  if (id != E_PLANT && float(y) < top) {
     float px = float(x) + 0.5, pz = float(z) + 0.5;
     // level tunnels end where they no longer fit under a full roof; at mouths they run out into the open
     float room = roof < float(CAVE_ROOF) ? CAVE_FAR : top;
-    float tunnels = min(min(caveUpper(px, py, pz, water, room), caveLower(px, py, pz, water, room)),
-                        min(caveSea(px, py, pz, G, water, room), caveSpaghetti(px, py, pz)));
-    float cavern = caveCheese(px, py, pz, G, water);
+    float tunnels = min(min(caveUpper(px, py, pz, sea, room), caveLower(px, py, pz, sea, room)),
+                        min(caveSea(px, py, pz, G, sea, room), caveSpaghetti(px, py, pz)));
+    float cavern = caveCheese(px, py, pz, G, sea);
     f = min(f, min(tunnels, cavern));
-    if (f < 0.0 && cavern < 0.0 && tunnels >= 0.0 && shaft >= 0.0 && caveSpeleo(x, z, py, G, water, top)) return CAVE_SPELEO;
-    if (caveCrystal(x, y, z, f, water)) return CAVE_CRYSTAL;
+    if (f < 0.0 && cavern < 0.0 && tunnels >= 0.0 && shaft >= 0.0 && caveSpeleo(x, z, py, G, sea, top)) return id;   // a speleothem: the stratum's rock
+    if (caveCrystal(x, y, z, f, sea)) return E_CRYSTAL;
   }
   if (f >= 0.0) return id;
-  return float(y) < water ? E_WATER : E_EMPTY;
+  return float(y) < sea ? E_WATER : E_EMPTY;
+}
+
+// Whether a cave may open within TREE_CLEAR columns of column (x, z): a
+// column there whose roof thins (a mouth's) or that a shaft's funnel takes.
+// genTreeZone keeps trees off them, so no tree's footing or root flare hangs
+// over an open cave.
+bool caveOpenNear(int x, int z) {
+  for (int dz = -CAVE_TREE_CLEAR; dz <= CAVE_TREE_CLEAR; dz++)
+    for (int dx = -CAVE_TREE_CLEAR; dx <= CAVE_TREE_CLEAR; dx++) {
+      int cx = x + dx, cz = z + dz;
+      float G = float(genTop(cx, cz));
+      if (!caveOpenable(G, genColWater(cx, cz)) || caveLakeClear(cx, cz)) continue;
+      if (caveRoof(cx, cz, G, uGenSea) < float(CAVE_ROOF) || caveShaft(cx, cz, G - 0.5, G, uGenSea) < 0.0) return true;
+    }
+  return false;
 }
 `;
 
+export const caves = { prefix: 'CAVE', tables: C, src: SRC };
 export const CAVE = { ...C.ints, ...C.floats };
-export const CAVE_SRC = SRC;
-// The #defines SRC needs (after the prelude and themedShared's helpersGLSL).
-export const caveDefinesGLSL = () => definesGLSL(PREFIX, C);
-export const caveGLSL = () => `${caveDefinesGLSL()}\n${SRC}`;
-// Its constants for a JS twin (compileShared's consts).
-export const caveConstants = () => jsConstants(PREFIX, C);
-// The JS twin for world seed `seed`, with some constants changed (change: { CAVE_NAME: value }).
-export const caveTwin = (seed, change = {}) => compileShared(SRC, seed, { ...caveConstants(), ...change });

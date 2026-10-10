@@ -1,108 +1,60 @@
 import * as THREE from 'three';
-import { rawMat, makeFieldTarget } from '../sim.js';
+import { rawMat } from '../sim.js';
 import { stateUniforms } from '../shaders/common.js';
-import { columnFrag, fillFrag, diffFrag, sceneFillFrag, sceneDiffFrag, COLUMN_MARGIN } from '../shaders/generate.js';
+import { sceneFillFrag, sceneDiffFrag } from '../shaders/generate.js';
 import { stampFrag, stampManyFrag, MAX_STAMPS } from '../shaders/stamp.js';
 import { runGenerator, bake, MAX_FOOT } from '../constructions/runtime.js';
 import { BUILTINS } from '../constructions/builtins.js';
-import { worldParams, treesIn, TREE } from './generator.js';
+import { worldParams, TREE } from './generator.js';
+import { island, islandUniforms, setIslandUniforms, IslandColumns } from './scenes/island.js';
 
-// The world generator on the GPU (shaders/generate.js), for one simulation
-// grid: a window of the world (world/generator.js) at a world-cell origin.
-// Today's grid sizes are a world the size of the grid at origin 0 (the Island
-// scene, loadIsland below); the massive world's window (docs/scaling.md D11)
-// fills the slabs a shift uncovers with fill(..., min, max). Its far field
-// (world/far.js) runs the column pass over the whole world.
-//
-// That is the island's generator. A window over any other world scene
-// (world/scenes) gives its generator the scene's GLSL and uniforms instead:
-// its fill and diff then go through sceneCell (shaders/generate.js
-// sceneFillFrag, sceneDiffFrag), with no column pass and no trees.
-
-// The generator's uniforms (shaders/generate.js), set from a world's parameters.
-export const genUniforms = () => ({
-  uGenSeed: { value: 0 }, uGenSea: { value: 0 }, uGenRelief: { value: 0 }, uGenFloor: { value: 0 },
-  uGenCenter: { value: new THREE.Vector2() }, uGenRadius: { value: 1 },
-  uGenAxis: { value: new THREE.Vector2(1, 0) }, uGenStretch: { value: 1 }, uGenFeature: { value: 1 },
-  uGenSnow: { value: true },
-});
-export function setWorld(u, P) {
-  u.uGenSeed.value = P.seed;
-  u.uGenSea.value = P.sea;
-  u.uGenRelief.value = P.relief;
-  u.uGenFloor.value = P.floor;
-  u.uGenCenter.value.set(...P.center);
-  u.uGenRadius.value = P.radius;
-  u.uGenAxis.value.set(...P.axis);
-  u.uGenStretch.value = P.stretch;
-  u.uGenFeature.value = P.feature;
-  u.uGenSnow.value = P.snow;
-}
+// A world scene's generator on the GPU (world/scenes), for one simulation
+// grid: a window of the world at a world-cell origin. It fills cells and
+// diffs slabs through the scene's sceneCell (shaders/generate.js
+// sceneFillFrag, sceneDiffFrag) and stamps the scene's trees, if it has any
+// (scene.trees: the island's). Today's grid sizes are a world the size of the
+// grid at origin 0 (the box's Island preset, loadIsland below); the massive
+// world's window (docs/scaling.md D11) fills the slabs a shift uncovers with
+// fill(..., min, max).
 
 export class WorldGenerator {
-  // scene: a world scene's { glsl: its glsl(g), uniforms: its uniforms(P) }
-  // (world/scenes), or null for the island's generator
-  constructor(sim, scene = null) {
+  // scene: a world scene's { glsl: its glsl(g), uniforms: its uniforms(P),
+  // trees: its tree hook or none } (world/scenes)
+  constructor(sim, scene) {
     this.sim = sim;
     this.scene = scene;
-    const g = sim.g;
     const v3 = () => ({ value: new THREE.Vector3() });
     this.v3 = v3;
-    this.columns = null;
-    if (scene) {
-      // (the scene's uniform objects are shared with its other passes: world/window.js)
-      this.mats = {
-        fill: rawMat(sceneFillFrag(g, scene.glsl), {
-          ...scene.uniforms, ...stateUniforms(), uOrigin: v3(), uFillMin: v3(), uFillMax: v3(),
-        }),
-      };
-      this.mats.fill.name = 'sceneFill';
-      return;
-    }
-    const F32 = THREE.FloatType, NEAR = THREE.NearestFilter;
-    // genColumn for the grid's columns plus a margin (columnFrag)
-    this.columns = makeFieldTarget(g.nx + 2 * COLUMN_MARGIN, g.nz + 2 * COLUMN_MARGIN, 1, F32, NEAR);
-    this.columnsKey = '';
+    // (the scene's uniform objects are shared with its other passes: world/window.js)
     this.mats = {
-      column: rawMat(columnFrag(g), { ...genUniforms(), uColOrigin: { value: new THREE.Vector2() } }),
-      fill: rawMat(fillFrag(g), {
-        ...genUniforms(), ...stateUniforms(), tCol: { value: null },
-        uOrigin: v3(), uFillMin: v3(), uFillMax: v3(),
-      }),
-      // constructions.js places its stamps with the same pass
-      stamp: rawMat(stampFrag(g), {
-        ...stateUniforms(), tStamp: { value: null },
-        uAt: v3(), uSize: v3(), uFoot: { value: 0 }, uSeed: { value: 0 },
+      fill: rawMat(sceneFillFrag(sim.g, scene.glsl), {
+        ...scene.uniforms, ...stateUniforms(), uOrigin: v3(), uFillMin: v3(), uFillMax: v3(),
       }),
     };
-    for (const [k, m] of Object.entries(this.mats)) m.name = k;   // the profiler's labels
-    // the world window's passes (docs/scaling.md D11) are made on first use
+    this.mats.fill.name = 'sceneFill';   // the profiler's label
+    // the stamps and the world window's diff are made on first use
   }
 
   // The world window's diff pass (diff), made on first use.
   diffMat() {
-    const scene = this.scene;
-    return this.mats.diff ??= scene
-      ? Object.assign(rawMat(sceneDiffFrag(this.sim.g, scene.glsl), {
-        ...scene.uniforms, tA: { value: null }, tB: { value: null }, uLo: this.v3(), uBricks: this.v3(),
-      }), { name: 'sceneDiff' })
-      : Object.assign(rawMat(diffFrag(this.sim.g), {
-        ...genUniforms(), tA: { value: null }, tB: { value: null }, tCol: { value: null },
-        uLo: this.v3(), uBricks: this.v3(),
-      }), { name: 'diff' });
+    return this.mats.diff ??= Object.assign(rawMat(sceneDiffFrag(this.sim.g, this.scene.glsl), {
+      ...this.scene.uniforms, tA: { value: null }, tB: { value: null }, uLo: this.v3(), uBricks: this.v3(),
+    }), { name: 'sceneDiff' });
+  }
+
+  // The stamp pass (constructions.js places its stamps with the same pass), made on first use.
+  stampMat() {
+    return this.mats.stamp ??= Object.assign(rawMat(stampFrag(this.sim.g), {
+      ...stateUniforms(), tStamp: { value: null },
+      uAt: this.v3(), uSize: this.v3(), uFoot: { value: 0 }, uSeed: { value: 0 },
+    }), { name: 'stamp' });
   }
 
   // Which bricks of the slab of grid cells [lo, lo + 4·bricks) differ from
-  // world P (shaders/generate.js diffFrag), the grid sitting at the
+  // world P (shaders/generate.js sceneDiffFrag), the grid sitting at the
   // simulation's origin: written to target, one texel per brick.
   diff(P, lo, bricks, target) {
     const u = this.diffMat().uniforms;
-    if (!this.scene) {
-      const o = this.sim.origin;
-      this.updateColumns(P, [o.x, o.y, o.z]);
-      setWorld(u, P);
-      u.tCol.value = this.columns.texture;
-    }
     u.tA.value = this.sim.stateA;
     u.tB.value = this.sim.stateB;
     u.uLo.value.set(...lo);
@@ -156,26 +108,11 @@ export class WorldGenerator {
     }
   }
 
-  // Evaluate genColumn for the grid at world origin [x, y, z] (kept until the world or origin changes).
-  updateColumns(P, origin) {
-    const key = JSON.stringify([P, origin]);
-    if (key === this.columnsKey) return;
-    const { column, fill } = this.mats;
-    for (const m of [column, fill]) setWorld(m.uniforms, P);
-    column.uniforms.uColOrigin.value.set(origin[0] - COLUMN_MARGIN, origin[2] - COLUMN_MARGIN);
-    this.sim.run(column, this.columns);
-    this.columnsKey = key;
-  }
-
   // Generate world P into the grid's cells [min, max) (window-local; the whole
   // grid by default), the grid sitting at world cell `origin`.
   fill(P, origin = [0, 0, 0], min = [0, 0, 0], max = null) {
     const g = this.sim.g;
     const u = this.mats.fill.uniforms;
-    if (!this.scene) {
-      this.updateColumns(P, origin);
-      u.tCol.value = this.columns.texture;
-    }
     u.uOrigin.value.set(...origin);
     u.uFillMin.value.set(...min);
     u.uFillMax.value.set(...(max ?? [g.nx, g.ny, g.nz]));
@@ -185,7 +122,8 @@ export class WorldGenerator {
   // Stamp the trees of world P whose crowns may reach the grid. Returns them.
   plantTrees(P, origin = [0, 0, 0]) {
     const g = this.sim.g, R = TREE.REACH;
-    const trees = treesIn(origin[0] - R, origin[2] - R, origin[0] + g.nx + R, origin[2] + g.nz + R, P);
+    if (!this.scene.trees) return [];
+    const trees = this.scene.trees.treesIn(origin[0] - R, origin[2] - R, origin[0] + g.nx + R, origin[2] + g.nz + R, P);
     for (const t of trees) {
       const cells = runGenerator(BUILTINS.TREE, { size: t.size, seed: t.seed, variant: t.variant });
       const s = bake(cells, t.quarter);
@@ -204,7 +142,7 @@ export class WorldGenerator {
     tex.minFilter = tex.magFilter = THREE.NearestFilter;
     tex.unpackAlignment = 1;
     tex.needsUpdate = true;
-    const u = this.mats.stamp.uniforms;
+    const u = this.stampMat().uniforms;
     u.tStamp.value = tex;
     u.uAt.value.set(...at);
     u.uSize.value.set(s.w, s.h, s.d);
@@ -216,9 +154,29 @@ export class WorldGenerator {
 
   // retire: as Simulation.dispose's
   dispose(retire = null) {
-    this.columns?.dispose();
     if (retire) retire.push(...Object.values(this.mats));
     else Object.values(this.mats).forEach((m) => m.dispose());
+  }
+}
+
+// The box's Island preset: the island scene (scenes/island.js) over a world
+// the size of the grid, at origin 0, with snow and its own baked columns.
+export class IslandGenerator extends WorldGenerator {
+  constructor(sim) {
+    const P = worldParams({ size: [sim.g.nx, sim.g.ny, sim.g.nz] });
+    super(sim, { glsl: island.glsl(sim.g), uniforms: islandUniforms(P), trees: island.trees });
+    this.columns = new IslandColumns(P);
+  }
+
+  // Bake world P's columns (synchronous: the program compiles on first use)
+  // into the passes' uniforms; fill and plantTrees then generate it.
+  prepare(P) {
+    setIslandUniforms(this.scene.uniforms, P, this.columns.bake(this.sim.renderer, P));
+  }
+
+  dispose(retire = null) {
+    super.dispose(retire);
+    this.columns.dispose();
   }
 }
 
@@ -227,7 +185,7 @@ let current = null;
 export function generatorFor(sim) {
   if (current?.sim !== sim) {
     current?.dispose();
-    current = new WorldGenerator(sim);
+    current = new IslandGenerator(sim);
   }
   return current;
 }
@@ -244,6 +202,7 @@ export function loadIsland(sim, { seed } = {}) {
   const { nx, ny, nz } = sim.g;
   const P = worldParams({ size: [nx, ny, nz], seed });
   const gen = generatorFor(sim);
+  gen.prepare(P);
   gen.fill(P);
   gen.plantTrees(P);
   // a new scene: the render fields and GI start over instead of blending in, and nothing is moving

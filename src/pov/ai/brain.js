@@ -270,12 +270,13 @@ class ClimbEvaluator extends GoalEvaluator {
   }
   setGoal(a) { if (!(a.brain.currentSubgoal() instanceof ClimbGoal)) { a.brain.clearSubgoals(); a.brain.addSubgoal(new ClimbGoal(a)); } }
 }
-// Hurt and under fire: wall itself off.
+// Hurt and under fire: wall itself off, the sooner if the target holds something that reaches it.
+const RANGED = new Set(['GUN', 'SMG', 'SNIPER', 'BOMB', 'ROCKET']);
 class CoverEvaluator extends GoalEvaluator {
   calculateDesirability(a) {
     const b = a.npc.body;
     if (!a.sees || b.health > COVER_HEALTH || !a.ready('COVER') || a.npc.packCells() < 2 * BLOCK_CELLS) return 0;
-    return a.target.holding === 'GUN' || a.target.holding === 'BOMB' ? 0.8 : 0.5;
+    return RANGED.has(a.target.holding) ? 0.8 : 0.5;
   }
   setGoal(a) { if (!(a.brain.currentSubgoal() instanceof CoverGoal)) { a.brain.clearSubgoals(); a.brain.addSubgoal(new CoverGoal(a)); } }
 }
