@@ -1,98 +1,115 @@
-/* ------------------------------------------------------------------ POV hotbar (pov/tools/hotbar.js) */
+/* Numbered slots and a Source-style vertical stack for the active category. */
 .hotbar {
-  position: fixed; left: 50%; bottom: 14px; z-index: 12;
+  --hb-active: #ffd477;
+  --hb-ink: #201b10;
+  --hb-muted: #aeb5c1;
+  position: fixed; left: 50%; bottom: max(14px, env(safe-area-inset-bottom)); z-index: 12;
+  width: 456px; max-width: calc(100% - 24px);
   transform: translate(-50%, 12px);
-  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  color: var(--text); font: 400 12px/1.4 var(--ui);
   opacity: 0; visibility: hidden; pointer-events: none;
-  transition: opacity 200ms var(--ease), transform 280ms var(--ease), visibility 0s 280ms;
+  transition: opacity 200ms var(--ease), transform 200ms var(--ease), visibility 0s 200ms;
 }
 .hotbar.show { opacity: 1; visibility: visible; transform: translate(-50%, 0); transition-delay: 0s; }
+.hotbar.show .hb-row, .hotbar.show .hb-stack { pointer-events: auto; }
+.hotbar :focus-visible { outline: 2px solid var(--hb-active); outline-offset: 3px; }
 
 .hb-name {
-  padding: 3px 10px; border-radius: 6px;
-  background: var(--panel); border: 1px solid var(--line);
-  font: 400 11px/1.4 var(--pixel); letter-spacing: 0.04em; color: var(--text);
-  opacity: 0; transform: translateY(4px);
-  transition: opacity 260ms var(--ease), transform 260ms var(--ease);
+  padding: 3px 10px; border-radius: 4px;
+  background: var(--panel-solid); color: var(--text); font-weight: 600;
 }
-.hb-name.show { opacity: 1; transform: none; }
-/* the slot's tools: the one in hand lit, the rest dim (press the key again for the next) */
-.hb-name span { color: var(--muted); }
-.hb-name span + span::before { content: '·'; margin: 0 6px; color: var(--muted); }
-.hb-name span.on { color: var(--text); }
-
+.hb-name:empty { display: none; }
 .hb-row {
-  display: flex; gap: 4px; padding: 5px;
-  background: var(--panel);
-  backdrop-filter: blur(14px) saturate(1.2);
-  -webkit-backdrop-filter: blur(14px) saturate(1.2);
-  border: 1px solid var(--line);
-  border-radius: var(--r-panel);
-  box-shadow: var(--shadow);
+  display: grid; grid-template-columns: repeat(6, minmax(0, 1fr));
+  width: 100%; gap: 4px; padding: 5px;
+  background: var(--panel); border-radius: var(--r-panel); box-shadow: var(--shadow);
 }
-
 .hb-slot {
-  position: relative;
-  width: 52px; height: 52px;
-  padding: 0; border: 0; font: inherit; color: inherit; cursor: pointer;
+  position: relative; min-width: 0; height: 76px;
+  border: 0; padding: 12px 0 21px; color: inherit; cursor: pointer;
   display: grid; place-items: center;
-  border-radius: 8px;
-  background: var(--raise);
+  border-radius: 6px; background: var(--raise);
   box-shadow: inset 0 0 0 1px var(--line);
-  transition: box-shadow 120ms var(--ease), background 120ms var(--ease);
 }
-.hb-slot.on {
-  background: var(--raise-hi);
-  box-shadow: inset 0 0 0 1px var(--line-hi), 0 0 0 2px #f4f6fa;
-}
-
+.hb-slot:hover:not(:disabled) { background: var(--raise-hi); }
+.hb-slot.on { box-shadow: inset 0 0 0 2px var(--hb-active); }
 .hb-num {
-  position: absolute; left: 4px; top: 2px; z-index: 1;
-  font: 400 9px/1 var(--pixel); color: var(--muted);
+  position: absolute; left: 6px; top: 4px;
+  font: 400 10px/1 var(--pixel); color: var(--hb-muted);
 }
-.hb-slot.on .hb-num { color: var(--text); }
-
-/* the tool's icon: an OSRS-style sprite of its model (models.js modelIcon), ICON_PX
-   square, drawn pixelated so its pixels stay hard-edged */
+.hb-slot.on .hb-num, .hb-slot.on .hb-label { color: var(--hb-active); }
+.hb-label {
+  position: absolute; bottom: 5px; left: 0; right: 0;
+  font-size: 10px; font-weight: 600; text-align: center;
+}
+.hb-count {
+  position: absolute; right: 5px; top: 3px;
+  color: var(--hb-muted); font-size: 9px; font-variant-numeric: tabular-nums;
+}
 .hb-icon {
-  width: 36px; height: 36px;
+  width: 38px; height: 38px; flex: 0 0 auto;
   display: grid; place-items: center;
-  color: var(--text);
   font: 400 9px/1 var(--pixel);
-  letter-spacing: 0.02em;
-  transition: transform 120ms var(--ease);
 }
 .hb-icon img { width: 100%; height: 100%; image-rendering: pixelated; user-select: none; }
-.hb-slot.on .hb-icon { transform: translateY(-2px); }
 .hb-slot[data-empty] .hb-icon { visibility: hidden; }
-.hb-slot:disabled { cursor: default; }
-
-/* a pip per tool carried in the slot, the one in hand lit */
-.hb-pips {
-  position: absolute; right: 4px; top: 4px;
-  display: flex; gap: 2px;
-}
-.hb-pips i { width: 4px; height: 4px; border-radius: 1px; background: var(--muted); opacity: 0.6; }
-.hb-pips i.on { background: var(--text); opacity: 1; }
-
+.hb-slot:disabled { cursor: default; opacity: 0.5; }
 .hb-status {
-  position: absolute; left: 0; right: 0; bottom: 1px;
+  position: absolute; left: 2px; right: 2px; bottom: 20px;
   text-align: center; white-space: nowrap; overflow: hidden;
   font: 400 8px/1 var(--pixel); color: var(--text);
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
+  text-shadow: 0 1px 2px #000;
 }
 
-.hb-slot.shake { animation: hb-shake 360ms var(--ease); }
-.hb-slot.shake { background: color-mix(in srgb, var(--raise) 55%, var(--danger)); }
+.hb-stack {
+  position: absolute; bottom: calc(100% + 8px);
+  left: clamp(0px, calc((var(--hb-slot, 0) + 0.5) * 100% / 6 - 144px), calc(100% - 288px));
+  width: 288px; max-width: 100%; max-height: calc(100dvh - 152px);
+  overflow-y: auto; overscroll-behavior: contain;
+  padding: 10px; border-radius: 8px;
+  background: var(--panel-solid); box-shadow: var(--shadow);
+  scrollbar-color: var(--hb-muted) var(--panel-solid); scrollbar-width: thin;
+}
+.hb-stack[hidden] { display: none; }
+.hb-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 2px 4px 10px; }
+.hb-heading { font-size: 16px; font-weight: 650; }
+.hb-position { color: var(--hb-muted); font-variant-numeric: tabular-nums; }
+.hb-tools { display: flex; flex-direction: column; gap: 3px; }
+.hb-tool {
+  display: flex; align-items: center; gap: 10px; width: 100%; min-height: 48px;
+  padding: 4px 8px; border: 0; border-radius: 4px;
+  background: var(--raise); text-align: left; cursor: pointer;
+}
+.hb-tool:hover { background: var(--raise-hi); }
+.hb-tool.on, .hb-tool.on:hover { background: var(--hb-active); color: var(--hb-ink); }
+.hb-tool-name { flex: 1; font-size: 13px; font-weight: 600; }
+.hb-equipped { font-size: 10px; }
+.hb-cycle { padding: 10px 4px 0; font-weight: 600; }
+.hb-help { padding: 3px 4px 2px; color: var(--hb-muted); font-size: 11px; }
+.hb-touch-hint { display: none; }
+
+.hb-slot.shake { animation: hb-shake 360ms var(--ease); background: color-mix(in srgb, var(--raise) 55%, var(--danger)); }
 @keyframes hb-shake {
   0%, 100% { transform: none; }
-  20% { transform: translateX(-4px); }
-  40% { transform: translateX(4px); }
-  60% { transform: translateX(-3px); }
-  80% { transform: translateX(2px); }
+  20%, 60% { transform: translateX(-3px); }
+  40%, 80% { transform: translateX(3px); }
 }
-
 @media (max-width: 560px) {
-  .hb-slot { width: 38px; height: 38px; }
-  .hb-icon { width: 30px; height: 30px; }
+  .hotbar { bottom: max(8px, env(safe-area-inset-bottom)); }
+  .hb-slot { height: 68px; }
+  .hb-icon { width: 32px; height: 32px; }
+  .hb-label { font-size: 9px; }
+}
+@media (max-width: 360px) {
+  .hotbar { max-width: calc(100% - 16px); }
+  .hb-row { gap: 2px; padding: 4px; }
+}
+@media (hover: none) and (pointer: coarse) {
+  .hb-key-hint, .hb-help { display: none; }
+  .hb-touch-hint { display: inline; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hotbar { transition: none; }
+  .hb-slot.shake { animation: none; }
 }

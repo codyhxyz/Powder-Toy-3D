@@ -139,6 +139,7 @@ export function createVitals(emit, perks = null) {
       emit('shield', { state: v.shield > 0 ? 'hit' : 'break', amount: took });
       if (!(amount > 0)) return;
     }
+    if (shielded) emit('wound', { amount, cause });   // a blow, fall or blast (not heat, cold, acid or choking): it bleeds
     amount /= maxHealth;
     const before = v.health;
     v.health = Math.max(0, v.health - amount);
