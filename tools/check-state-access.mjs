@@ -24,7 +24,8 @@ const RULES = [
     re: /\buniform\s+(?:(?:high|medium|low)p\s+)?[iu]?sampler2D\s+t[ABF]\s*;/ },
   { where: ['src'], except: ['src/shaders/common.js'], what: 'declares state outputs (use stateOutGLSL and writeState)',
     re: /\bout\s+(?:(?:high|medium|low)p\s+)?(?:[iu]?vec4|uint)\s+(?:o[ABF]|outState[AB]|outFlags)\s*;|\boutState[AB]\b|\boutFlags\b/ },
-  { where: ['src', 'tools', 'scripts'], except: ['src/sim.js'], what: 'reads a state target back (use sim.readState/readCell)',
+  // (the patchwork scene bakes the island in a stand-in grid of its own, not a Simulation, and reads that back)
+  { where: ['src', 'tools', 'scripts'], except: ['src/sim.js', 'src/world/scenes/patchworkIsland.js'], what: 'reads a state target back (use sim.readState/readCell)',
     re: /readRenderTargetPixels(?:Async)?\s*\(\s*[\w.()]*targets\s*\[/ },
 ];
 
