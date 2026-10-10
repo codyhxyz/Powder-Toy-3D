@@ -12,6 +12,7 @@ import { liquidDetailGLSL } from './gfx/liquidDetail.js';
 import { mediaGLSL } from './gfx/media.js';
 import { plainGLSL } from './gfx/plain.js';
 import { grainsGLSL } from './gfx/grains.js';
+import { crystalGLSL } from './gfx/crystal.js';
 
 
 // Hybrid raymarcher. Rays walk the voxel grid with an Amanatides–Woo DDA
@@ -32,6 +33,7 @@ ${materialsGLSL()}
 ${coreGLSL(g)}
 ${noiseGLSL}
 ${lightingGLSL}
+${crystalGLSL}
 `;
 
 export const volumeVert = /* glsl */ `
@@ -1057,7 +1059,13 @@ void main() {
     int ax = argmin3(tMax);
     float tExit = tMax[ax];
     int id = eid(fetchA(cell));
-    if (isCrisp(id)) {
+    if (id == E_CRYSTAL) {
+      // its prisms (gfx/crystal.js), as the view draws them
+      float th = tEnter;
+      vec3 nh = vec3(0.0);
+      if (crystalHit(cell, ro, rd, tEnter, tExit, th, nh)) { oC.x = th; hit = true; break; }
+      phiStale = true;
+    } else if (isCrisp(id)) {
       if (RCLASS[id] != R_GLASS) { oC.x = tEnter; hit = true; break; }
       if (tid == 0 || RCLASS[tid] == R_GAS) { if (tid == 0) oC.y = tEnter; tid = id; }
       tau += dot(SIGMA[id], vec3(1.0 / 3.0)) * (tExit - tEnter);

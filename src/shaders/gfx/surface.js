@@ -438,76 +438,105 @@ vec3 pebbleRock(float h) {
        : (h < PEB_SANDSTONE_UPTO ? PEB_SANDSTONE : (h < PEB_QUARTZ_UPTO ? PEB_QUARTZ : PEB_RUST)));
 }
 
-// Fluorite (E_CRYSTAL): a translucent crystal drawn as an opaque voxel, so
-// each face works out what it shows of the body behind it. A cell is one
-// crystal, with its own seed.
-// Colour zoning: fluorite grows in bands of colour parallel to its cube faces
-// (rare earths and colour centres taken up as it grew), violet, blue and green
-// (Weardale, Blue John). A crystal's seed picks its colour, the one it bands
-// with and the bands' spacing; a face shows the band the (refracted) view
-// meets CRYSTAL_ZONE_DEPTH into the crystal, so the "phantom" cubes inside
-// shift with the view as through real glass.
+// Fluorite (E_CRYSTAL), on the crystals gfx/crystal.js draws for it: a
+// translucent crystal drawn opaque, so each face works out what it shows of
+// the body behind it. p is a world point; the crystal (gCrys) is in grid units.
+// Colour: violet to blue (Weardale, Blue John), drifting over metres so a
+// cluster is one colour, a little different from crystal to crystal. As in
+// amethyst and fluorite points alike, the colour (and the europium that
+// glows) gathered toward the growing end: a crystal is milky toward its root
+// and takes its colour over its last CRYS_COLOUR_LEN cells.
 const vec3 FLUORITE_VIOLET = vec3(0.105, 0.045, 0.27);   // linear albedo of the body's colours
 const vec3 FLUORITE_BLUE = vec3(0.045, 0.08, 0.3);
-const vec3 FLUORITE_GREEN = vec3(0.05, 0.19, 0.1);
-const float FLUORITE_VIOLET_UPTO = 0.55, FLUORITE_GREEN_UPTO = 0.85;   // cumulative shares (the rest blue)
-const float CRYSTAL_ZONE_DEPTH = 0.3;     // cells into the crystal the view reads its zone at
-const float CRYSTAL_BANDS_MIN = 2.0, CRYSTAL_BANDS_MAX = 5.0;   // bands from core to rim
-const float CRYSTAL_BAND_MIX = 0.45;      // how far a band shifts toward the second colour (subtle)
-// The europium that makes it glow was taken up zone by zone too, so the glow
-// bands with the colour (fluorescence zoning), and crystals differ.
-const float CRYSTAL_ZONE_GLOW = 0.2;      // ± share the glow swings across the bands…
-const float CRYSTAL_SEED_GLOW = 0.25;     // …and from crystal to crystal (both average out)
-// Glow from inside. Luminescence leaves the body through a face only within
-// its escape cone: for n = 1.434, 1 - sqrt(1 - 1/n²) = 28% of it, with the
-// Fresnel transmittance toward the eye (dim at grazing angles). The rest is
-// trapped by total internal reflection; in a cube with n this close to √2 most
-// of it gets out at the next face it meets, spread over the faces, and some is
-// guided on to the crystal's outer edges, which glow (the luminescent-
-// concentrator effect: Weber & Lambe 1976), over a band CRYSTAL_EDGE_W wide
-// along each exposed edge. Averaged over a face it is the element's emission,
-// as the glow volume and the GI count it.
-const float CRYSTAL_EDGE_W = 0.3;         // cells: the edge glow's falloff
-const float CRYSTAL_EDGE_SHARE = 0.5;     // share of the trapped light that reaches the edges
+const vec3 FLUORITE_MILK = vec3(0.3, 0.28, 0.34);        // the colourless root, clouded with inclusions
+const float CRYS_HUE_M = 3.0;               // m: the colour drifts over this
+const float CRYS_HUE_F = CELL_M / CRYS_HUE_M;
+const vec2 CRYS_HUE_EDGE = vec2(0.4, 0.7);  // violet below the drift noise's first edge, blue above the second
+const float CRYS_SHADE_VAR = 0.15;          // ± crystal-to-crystal shade
+const vec2 CRYS_COLOUR_LEN = vec2(0.5, 2.0);   // cells back from the apex: full colour to here, milky past here
+const float CRYS_PALE_MIX = 0.6;            // how milky the root is
+const float CRYS_ROOT_GLOW = 0.4;           // the root's glow, relative to the coloured part
+// Colour zoning: phantoms. A crystal grew as nested crystals, each taking up
+// colour centres (and europium) its own way; a face shows the zone the
+// refracted view meets CRYS_ZONE_DEPTH apothems in, so the phantoms inside
+// shift with the view as through real glass.
+const float CRYS_ZONE_DEPTH = 0.6;
+const float CRYS_BANDS_MIN = 1.5, CRYS_BANDS_MAX = 3.0;   // zones from axis to faces
+const float CRYS_BAND_MIX = 0.25;           // how far a zone shifts toward the other colour (subtle)
+const float CRYS_ZONE_GLOW = 0.1;           // ± share the glow swings across the zones…
+const float CRYS_SEED_GLOW = 0.25;          // …and from crystal to crystal (both average out)
+// Glow from inside. A thin glowing body is as bright as the path the eye
+// looks along through it: a face shows the refracted view's run to the far
+// side, in mean chords (2 apothems for a long prism), so a crystal seen
+// end-on or through its thick middle is bright and its thin rims are dim,
+// times the Fresnel transmittance (dim at grazing angles). Light trapped by
+// total internal reflection is piped along a long crystal and leaves through
+// its point (the luminescent-concentrator effect: Weber & Lambe 1976), whose
+// faces are a few times smaller than its sides: the points glow brightest.
+const float CRYS_PATH_MAX = 3.0;            // most mean chords a view counts (end-on)
+const float CRYS_PIPE = 0.25;               // share of the light piped to the point
+const float CRYS_PIPE_MAX = 2.5;            // most the point is brightened
+// area of the sides per unit length, per apothem: 6 faces 2/√3 apothems wide;
+// area of the point per apothem²: the hexagon (2√3) over the faces' cosine to the axis
+const float CRYS_SIDE_AREA = 6.9282, CRYS_TIP_AREA = 3.4641 * 1.6154;
+// Faces: each face of a crystal grew (and so glows and takes its colour) a
+// little its own way, so its facets read apart; and prism faces carry growth
+// lines across them (quartz's horizontal striations), a few per centimetre
+// at most, drawn as fine bands in the glow until they are smaller than a pixel.
+const float CRYS_FACE_VAR = 0.18;           // ± face-to-face glow
+const float CRYS_STRIA_M = 0.012;           // m: the growth lines' typical spacing
+const float CRYS_STRIA_F = CELL_M / CRYS_STRIA_M;   // per cell
+const float CRYS_STRIA_GLOW = 0.25;         // glow swing across a line
+// Where it grows on into other crystal its cell cuts it: a rough, milky break.
+const float CRYS_CUT_ROUGH = 0.3, CRYS_CUT_GLINT = 0.6, CRYS_CUT_GLOW = 0.5;
+const float CRYS_ZONE_EPS = 1e-3;           // apothems: the zones' scale at the very apex
 vec3 crystalLook(inout Mat m, int id, vec3 p, vec3 n, float T, float fp) {
-  ivec3 cell = ivec3(floor(p - n * 0.5));
-  vec3 c = vec3(cell) + 0.5;
-  vec3 h = hash33(worldPos(c));
-  vec3 v = normalize(gEye - p);
+  vec3 gp = p - vec3(uOrigin);   // grid units, as the crystal and the eye
+  vec3 v = normalize(gEye - gp);
   float ior = IOR[id];
-  // zoning
-  vec3 colA = h.x < FLUORITE_VIOLET_UPTO ? FLUORITE_VIOLET : (h.x < FLUORITE_GREEN_UPTO ? FLUORITE_GREEN : FLUORITE_BLUE);
-  vec3 colB = h.y < FLUORITE_VIOLET_UPTO ? FLUORITE_BLUE : (h.y < FLUORITE_GREEN_UPTO ? FLUORITE_VIOLET : FLUORITE_GREEN);
-  float bands = mix(CRYSTAL_BANDS_MIN, CRYSTAL_BANDS_MAX, h.z);
-  vec3 r = refract(-v, n, 1.0 / ior);
-  vec3 q = p + r * CRYSTAL_ZONE_DEPTH - c;
-  float z = 2.0 * max(abs(q.x), max(abs(q.y), abs(q.z)));   // 0 at the core, 1 at the faces
-  float band = 0.5 + 0.5 * cos(2.0 * PI_S * z * bands);
-  float lz = lodFade(bands, fp);
-  m.alb = mix(colA, mix(colA, colB, CRYSTAL_BAND_MIX * band), lz);
-  // glow: escape cone and Fresnel through the face, the rest along the exposed edges
+  m.alb = mix(FLUORITE_VIOLET, FLUORITE_BLUE, smoothstep(CRYS_HUE_EDGE.x, CRYS_HUE_EDGE.y, vnoise(M_ROT * p * CRYS_HUE_F)));
+  if (!gCrysOn || ivec3(floor(gp - n * CRYS_IN)) != gCrysCell) return hotEmit(m, id, T);   // not from crystalHit (the far view)
   float f0 = m.f0, nv = clamp(dot(n, v), 0.0, 1.0);
   float tr = (1.0 - (f0 + (1.0 - f0) * pow(1.0 - nv, 5.0))) / (1.0 - f0);
-  float esc = 1.0 - sqrt(1.0 - 1.0 / (ior * ior));
-  vec3 an = abs(n);
-  int k = an.x >= an.y && an.x >= an.z ? 0 : (an.y >= an.z ? 1 : 2);
-  vec3 f = p - vec3(cell);
-  float edge = 0.0, nEdge = 0.0;
-  for (int j = 0; j < 4; j++) {
-    int ax = (k + 1 + (j >> 1)) % 3;
-    ivec3 nb = cell;
-    nb[ax] += (j & 1) == 0 ? -1 : 1;
-#ifndef LOOK_NO_STATE
-    if (!outside(nb) && eid(fetchA(nb)) == id) continue;   // the crystal carries on that way: no edge
-#endif
-    float d = (j & 1) == 0 ? f[ax] : 1.0 - f[ax];
-    edge += exp(-max(d, 0.0) / CRYSTAL_EDGE_W);
-    nEdge += 1.0;
+  if (gCrysKind == CRYS_CUT) {
+    m.alb = mix(m.alb, FLUORITE_MILK, CRYS_PALE_MIX);
+    m.rough = CRYS_CUT_ROUGH; m.glint = CRYS_CUT_GLINT;
+    return hotEmit(m, id, T) * tr * CRYS_CUT_GLOW;
   }
-  float perEdge = CRYSTAL_EDGE_W * (1.0 - exp(-1.0 / CRYSTAL_EDGE_W));   // an edge's band, averaged over the face
-  float guided = nEdge > 0.0 ? mix(1.0, edge / (nEdge * perEdge), CRYSTAL_EDGE_SHARE) : 1.0;
-  float glow = mix(1.0, esc * tr + (1.0 - esc) * guided, lodFade(1.0 / CRYSTAL_EDGE_W, fp));
-  glow *= (1.0 + CRYSTAL_ZONE_GLOW * (2.0 * band - 1.0) * lz) * (1.0 + CRYSTAL_SEED_GLOW * (2.0 * hash13(worldPos(c)) - 1.0));
+  Shard s = gCrys;
+  float lp = lodFade(1.0 / s.r, fp);   // the crystal's own detail, gone once it is a pixel
+  // colour: the crystal's shade, milky toward the root, zoned
+  vec3 col = m.alb * (1.0 + CRYS_SHADE_VAR * (2.0 * s.seed - 1.0));
+  float coloured = 1.0 - smoothstep(CRYS_COLOUR_LEN.x, CRYS_COLOUR_LEN.y, s.len - dot(gp - s.o, s.d));
+  vec3 r = refract(-v, n, 1.0 / ior);
+  vec3 q = gp + r * (CRYS_ZONE_DEPTH * s.r) - s.o;
+  float zr = 0.0;
+  for (int i = 0; i < 3; i++) zr = max(zr, abs(dot(q, CRYS_HEX[i].x * s.u + CRYS_HEX[i].y * s.w)));
+  float x = s.len - dot(q, s.d);   // back from the apex: the nested points narrow toward it
+  float z = zr / max(min(s.r, x / CRYS_TIP_K), CRYS_ZONE_EPS);   // 0 on the axis, 1 on the faces
+  float bands = mix(CRYS_BANDS_MIN, CRYS_BANDS_MAX, fract(s.seed * CRYS_SALT));
+  float band = 0.5 + 0.5 * cos(2.0 * PI_S * z * bands);
+  float lz = lodFade(bands / s.r, fp);
+  vec3 zoned = mix(col, mix(col, FLUORITE_BLUE + FLUORITE_VIOLET - col, CRYS_BAND_MIX * band), lz);
+  m.alb = mix(FLUORITE_MILK, zoned, mix(1.0 - CRYS_PALE_MIX, 1.0, coloured));
+  // glow: the view's path through the body, the light piped to the point
+  float chord = min(shardExit(s, gp, r) / (2.0 * s.r), CRYS_PATH_MAX);
+  float body = max(s.len - CRYS_TIP_K * s.r, 0.0);
+  float pipe = gCrysKind == CRYS_TIP ? min(1.0 + CRYS_PIPE * CRYS_SIDE_AREA * body / (CRYS_TIP_AREA * s.r), CRYS_PIPE_MAX)
+                                     : 1.0 - CRYS_PIPE;
+  float glow = tr * mix(1.0, chord * pipe, lp);
+  // which face: the hexagon side (or the face of the point above it) it faces
+  int face = 0;
+  float fb = -2.0;
+  for (int i = 0; i < 6; i++) { float k = dot(n, CRYS_HEX[i].x * s.u + CRYS_HEX[i].y * s.w); if (k > fb) { fb = k; face = i; } }
+  float fh = hash13(vec3(s.seed * CRYS_SALT, float(face), float(gCrysKind)));
+  glow *= 1.0 + CRYS_FACE_VAR * (2.0 * fh - 1.0) * lp;
+  if (gCrysKind == CRYS_SIDE) {
+    float st = vnoise(vec3(dot(gp - s.o, s.a) * CRYS_STRIA_F, fh * CRYS_SALT, s.seed * CRYS_SALT2));
+    glow *= 1.0 + CRYS_STRIA_GLOW * (2.0 * st - 1.0) * lodFade(CRYS_STRIA_F, fp);
+  }
+  glow *= mix(CRYS_ROOT_GLOW, 1.0, coloured);
+  glow *= (1.0 + CRYS_ZONE_GLOW * (2.0 * band - 1.0) * lz) * (1.0 + CRYS_SEED_GLOW * (2.0 * fract(s.seed * CRYS_SALT2) - 1.0));
   return hotEmit(m, id, T) * glow;
 }
 
@@ -1123,6 +1152,7 @@ float rboxHit(vec3 ro, vec3 rd, vec3 b, float r) {
 // edges stay sharp). Returns false if the shape is missed within [tEnter, tExit).
 const float CRISP_EPS = 1e-4;   // tolerance of the entry tests (cells)
 bool crispHit(ivec3 cell, int id, vec3 ro, vec3 rd, float tEnter, float tExit, inout float t, inout vec3 n) {
+  if (id == E_CRYSTAL) return crystalHit(cell, ro, rd, tEnter, tExit, t, n);   // prisms (gfx/crystal.js)
   float R = uBevel * BEVEL[id];
   if (R <= 0.0 || RCLASS[id] == R_GLASS) return true;
   vec3 lo = vec3(0.0), hi = vec3(1.0);
@@ -1153,9 +1183,10 @@ bool crispHit(ivec3 cell, int id, vec3 ro, vec3 rd, float tEnter, float tExit, i
 Surf crispSurf(ivec3 cell, int id, vec4 a, vec3 hp, vec3 n) {
   Surf s;
   s.p = hp; s.tp = hp; s.tp1 = hp; s.flowW = 0.0; s.n = n; s.ng = n; s.ch = -1; s.id = id; s.cell = cell; s.seed = fract(a.w); s.T = a.y;
-  vec3 an = abs(n);
-  s.face = an.x >= an.y && an.x >= an.z ? ivec3(int(sign(n.x)), 0, 0)
-         : (an.y >= an.z ? ivec3(0, int(sign(n.y)), 0) : ivec3(0, 0, int(sign(n.z))));
+  vec3 fn = id == E_CRYSTAL && gCrysOn ? gCrys.d : n;   // a crystal inside its cell: the corner AO of the side it points out of
+  vec3 an = abs(fn);
+  s.face = an.x >= an.y && an.x >= an.z ? ivec3(int(sign(fn.x)), 0, 0)
+         : (an.y >= an.z ? ivec3(0, int(sign(fn.y)), 0) : ivec3(0, 0, int(sign(fn.z))));
   // an isolated grain carries its texture with it (its seed moves with the grain);
   // a voxel's is anchored in the world
   const float GRAIN_TEX_SPREAD = 61.0;   // cells of texture space the seed spreads grains over

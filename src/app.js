@@ -918,7 +918,6 @@ function setSettingsOpen(v) {
 function setPaused(p) {
   if (mp.guard()) return;
   settings.paused = p;
-  hud.setPaused(p);
   toolbar.sync();
 }
 
