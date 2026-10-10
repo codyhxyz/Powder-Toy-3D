@@ -58,6 +58,22 @@ const VIEW_ORDER = -10;          // renderOrder of the view: first of the scene'
 const SCENE_CHUNKS_PER_FRAME = 2;   // a scene's far build: chunks a frame (each one sceneCell per cell of its columns, ~0.6M cells)
 const SCENE_REFRESH_FRAMES = 8;     // ...and frames between rebuilding the levels, tops and shadows while it runs
 const MASK_SET = 255;               // a set byte of the window mask (the shader reads it as 1)
+const EDGE_SAMPLES = 256;           // columns along the world's edge whose ground a sea-less world's plain beyond it is the median of
+
+// The open level beyond a world's edge (cells): its sea, or for a world
+// without one (sea 0: world/scenes) the plain the far view draws there, at the
+// median height of the ground along its edge, so the plain meets it.
+function beyondLevel(scene, P) {
+  if (P.sea > 0) return P.sea;
+  const [wx, , wz] = P.size, per = 2 * (wx + wz), hs = [];
+  for (let i = 0; i < EDGE_SAMPLES; i++) {
+    const d = (i + 0.5) * per / EDGE_SAMPLES;   // distance along the edge, from (0, 0) round by +x
+    const [x, z] = d < wx ? [d, 0] : d < wx + wz ? [wx - 1, d - wx] : d < 2 * wx + wz ? [2 * wx + wz - d, wz - 1] : [0, per - d];
+    hs.push(scene.ground(Math.floor(x), Math.floor(z), P));
+  }
+  hs.sort((a, b) => a - b);
+  return hs[EDGE_SAMPLES >> 1];
+}
 
 // A full-screen triangle (clip space): the view's geometry.
 function screenTriangle() {
@@ -144,6 +160,7 @@ export class FarField {
     this.worldToScene = new THREE.Matrix4();
     this.sceneToWorld = new THREE.Matrix4();
     const P = win.P;
+    this.level = beyondLevel(this.scene, P);
     this.mesh = new THREE.Mesh(screenTriangle(), new THREE.ShaderMaterial({
       name: 'far',
       vertexShader: farVert,
@@ -154,7 +171,8 @@ export class FarField {
         tFar1: { value: this.l1.texture }, tFar2: { value: this.l2.texture }, tFarShadow: { value: this.shadow.texture },
         uWorldToScene: { value: this.worldToScene }, uSceneToWorld: { value: this.sceneToWorld },
         uWinLo: { value: new THREE.Vector3() },
-        uSea: { value: P.sea }, uFloor: { value: P.floor },
+        // the sea beyond the world and its bed, or (sea 0) the plain there
+        uSea: { value: P.sea }, uFloor: { value: P.sea > 0 ? P.floor : this.level },
         uOrigin: { value: new THREE.Vector3() },   // world cells throughout: the look's worldPos() is the identity
         uSun: { value: sun }, uTime: time,
       },
@@ -427,7 +445,7 @@ export class FarField {
     gi.tFarShadow.value = this.shadow.texture;
     gi.uSea.value = this.win.P.sea;
     gfxUniforms.uClouds.value = true;   // the cumulus deck overhead, and its shadows (shaders/gfx/clouds.js)
-    gfxUniforms.uCloudSea.value = this.win.P.sea;
+    gfxUniforms.uCloudSea.value = this.level;   // (the sea's, or a sea-less world's plain's)
   }
 
   // Before the scene renders: the view's transforms for this frame (the

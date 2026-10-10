@@ -459,6 +459,36 @@ The world is much larger than what lives on the GPU. Its size is `WORLD` cells, 
     ambient sees only a two-tap AO, not distant hills; it isn't drawn in the data views; guests don't get the host's
     edits outside the window (W5).
 
+- **Scenes** (`src/world/scenes`; checked on the CPU by `tools/check-scenes.mjs`). What a world holds is a scene:
+  the island and five more, picked in Settings → Scene while the grid is World (`settings.scene`, saved; `?scene=`
+  too). Picking one starts the world over with it (`build`, as clicking World again does).
+  - A scene is an object (`scenes/index.js` documents it): `params({ size, seed })` → P with at least `sea` and
+    `floor`; `glsl(g)` defining `sceneCell(world cell, A, B)`, the generated state of any cell, a pure function of
+    the cell and the scene's `uniforms(P)`; `start(P, win)` and `ground(x, z, P)` on the CPU (the window's first
+    centre, and the god view's home over a column); optional `prepare(renderer, P)` (a Promise for GPU work before
+    the first fill, e.g. baked textures) and `dispose()`. Adding one is its file plus a line in `WORLD_SCENES`.
+  - The island keeps its own path (the column pass, `genLayers`, its trees, the far field from its columns, layers
+    and tree map), unchanged. Every other scene fills and diffs through `sceneFillFrag` and `sceneDiffFrag`
+    (`shaders/generate.js`: `fillFrag`'s and `diffFrag`'s contracts, the same store tolerances) and plants nothing.
+    Its GLSL goes only into the world's own small passes (fill, diff, far build), after the prelude and nothing
+    else, so the window still draws with the box's big programs. Its uniform objects are shared by all of them;
+    `prepare` runs with the window's background compile (`whenReady`), which then refreshes their values, and the
+    world loads once both are done. `dispose` runs with the window's; the old window's materials are retired
+    until the new one has claimed their programs, so a scene switch compiles only the new scene's passes.
+  - Its far field is built from `sceneCell` progressively (`world/far.js sceneBuild`): the window's region from
+    its state at once, then the rest in chunks of 16×16 brick columns, two a frame, nearest the window first (about
+    two seconds for the whole world at 60 fps; each draw is small). A chunk is two passes: `farSceneCellsFrag`
+    evaluates `sceneCell` once per cell of its columns and the two around them that its bricks' cubes reach (an
+    816×768 half-float atlas of (id, °C)), and `farSceneFrag` summarizes its bricks from those cells exactly as
+    `farWinFrag` does from the window's state. Brick columns the window has summarized (on load, leaving slabs,
+    sweeps) are left alone (a per-column mask), so its edits win. The view draws what is built so far (the rest
+    reads as empty), and redraws as chunks land; the levels, tops and shadows follow every 8 frames and at the end.
+  - Sea level 0 means no open sea: the far view draws a rock plain beyond the world instead, at the median ground
+    height along the world's edge (the scene's `ground`), so it meets the edge; the GI's rays past the edge read
+    the same plain, and the cloud deck counts its height from it.
+  - Not yet: two live windows over the same scene (only tools make them) share its `prepare`d textures, so the
+    first one's `dispose` takes them from the second.
+
 ## Measured (M5, headless Chrome, ANGLE Metal, 128³)
 - Lab step: 2.6 ms with 42% of bricks skipped, 3.75 ms with none skipped. An empty box still costs 2.1–2.8 ms.
 - Derived passes: about 3.4 ms per frame.

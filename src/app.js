@@ -695,8 +695,8 @@ const settingsPanel = createSettings({
           onChange: (v) => { settings[key] = v; save(); } })),
     ] },
     { title: 'Grid size', rows: [
-      // World: the generator's island, simulated through a window that follows you
-      // (clicking it again starts the world over)
+      // World: a world scene (the Scene row's; the island by default), simulated
+      // through a window that follows you (clicking it again starts the world over)
       { type: 'seg', key: 'size', options: [['64', '64³'], ['96', '96³'], ['128', '128³'], ['wide', '160×96'], ['world', 'World']],
         onChange: (v) => {
           if (mp.guard() || (v in WORLDS && mp.guardWorld())) return;
