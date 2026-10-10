@@ -96,6 +96,48 @@ break stops it). Nothing is added: struck cells become their own debris or are s
   health.
 - `tools/weapons-check.mjs` checks all of it end to end.
 
+## Burrower and laser cannon (2026-10-10)
+
+Two heavy weapons, not `start` tools (palette Tools group or Q). Passes: `shaders/povBore.js`; check:
+`tools/burrower-laser-check.mjs`. Neither adds matter.
+
+**Burrower** (Explosives, `burrower.tool.js`): Cruelty Squad's Cerebral Bore, no health cost.
+- It homes on the nearest live body in `targets.js` (`nearestTarget`), else flies along the crosshair.
+- Guidance is proportional navigation (Zarchan, *Tactical and Strategic Missile Guidance*): the heading
+  turns `NAV_RATIO` (4) times the line-of-sight rate. While the target is more than 90° off, it uses pure
+  pursuit. The turn rate is clamped at `TURN_MAX` 3 rad/s. In the open it flies at 12 m/s.
+- Speed through matter is power over work (Teale 1965: penetration rate = P / (SE·A)): `POWER` / Σ over the
+  3.5-cell face disc of HARD (solids) or DENS·DRAG (powder, liquid). Sand runs at ~15 cells/s, rock ~8 and
+  metal ~4. WALL on its axis stops it. A small readback pass (`burrowProbeFrag`, 12 slices ahead) tells
+  the CPU what is ahead.
+- `burrowFrag` turns the bored solids into their own debris. A muck conveyor along the bore carries loose
+  cuttings to the mouth and throws them out in an arc (`SPOIL_LIFT`, `APRON`), so they heap well clear of
+  the mouth. This is a tunnel-boring machine's belt, a game liberty: the drill acts all along its bore while
+  it runs and for `CONVEY_AFTER` 2.5 s after. Tested: without the arc, the heap at the mouth dams the tunnel.
+  The 2.1 m tunnel is walkable.
+- On reaching a body: `hurt(1, 'Bored')` (one kills), then it stops. There is no blast. Its lifetime is 12 s;
+  stuck for 1.5 s, it gives up.
+
+**Laser cannon** (Guns, `laser.tool.js`): Halo's Spartan Laser. Halopedia gives "approximately three seconds"
+of charge, an abortable charge and "approximately two seconds" of standby between shots. So: hold to charge
+(`CHARGE_S` 3), it fires itself when full, releasing early cancels, and you press again after `REFIRE_S` 2.
+- Energy model: heat, not impact. Every power number is in povBore.js `LASER`, so a nerf is one edit.
+- The reach is the lumped heat balance of laser drilling (Steen & Mazumder, *Laser Material Processing*).
+  Each cell on the axis costs CAP·(VAPOR_T − T)·π·CORE² of the beam's `ENERGY` (1.25 M), so it goes
+  ~119 cells through rock, ~70 through metal and ~59 through water. WALL and the floor stop it.
+- Core (r ≤ 1.5): vaporised. It becomes STEAM (water, ice, snow), FIRE (burnables) or SMOKE (the rest), at
+  3000 °C, blown back.
+- Rim (r ≤ 4): heated from 4500 down to 1600 °C, and the engine melts metal, glass and stone, boils water and
+  lights wood.
+- ROCK can't melt in this engine, so the rim spalls it into STONE first (thermal spallation, Rauenzahn &
+  Tester 1989), which then melts into lava.
+- The rim's heat isn't charged to `ENERGY`.
+- Tested: with the first rim (r 3, 2400→1300 °C), the engine's conduction cooled it below stone's melt in
+  under a second, leaving 21 lava cells. The hotter, thicker rim leaves ~300 that pour out of the tunnel.
+- Bodies anywhere in the beam take 2 (`beamTargets`). The reach comes from `laserReachFrag`, read back
+  synchronously once a shot. There is no recoil (light carries next to no momentum); `HIT.LASER` and a
+  `shake` give the feel.
+
 ## Light and fire (2026-10-10)
 
 - **Flamethrower** (the blowtorch's key, `BLOWTORCH`; `shaders/povTools.js FLAMER`): Team Fortress 2's Pyro's
@@ -301,6 +343,10 @@ say world. Emitters own their event names. Listeners never mutate payloads.
 | `player:jet` | player | `{ on }`. The jetpack lit or went out. |
 | `perk:take` | shell | `{ key, keys, point, by? }`. A body took a perk orb: key is the orb's, keys what it gained (Gamble's two). |
 | `perk:revive` | shell | `{ point }`. Extra Life brought the player back. |
+| `drill` | burrower | `{ point, dir, id, dt }`. Its drill cut this frame at point (grid), heading dir, mostly matter id (vfx.js's spray). The tool also emits `tool:action` 'burrower' 'fire' / 'grind' `{ point, id }`. |
+| `laser:charge` | laser cannon | `{ amount, dt }` every frame it charges (0..1; audio.js's rising whine). The tool also emits `tool:action` 'laser' 'charge' / 'cancel' / 'fire'. |
+| `laser` | laser cannon | `{ from, to, dir, radius }`, from/to/radius in **world** units. The beam, for vfx.js. |
+| `shake` | laser cannon | `{ trauma }` 0..1. Adds to the player's screen shake (feel.js), a shared hook for any tool. |
 
 The player's own events (`player.on('hurt'|'death'|'land'|'splash'|'revive'|'revenge')`) stay as they are; listeners subscribe there too.
 
