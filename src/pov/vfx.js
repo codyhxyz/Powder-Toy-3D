@@ -6,6 +6,7 @@ import {
 import { ELEMENTS, E, K } from '../elements.js';
 import { povEvents } from './events.js';
 import { JET_NOZZLES } from './figure.js';
+import { MELEE_SOURCES } from './constants.js';
 
 // POV effects, with three.quarks: muzzle flash (and a short light), sparks,
 // dust and chips, splash mist and tracers. Cosmetic only: the real debris,
@@ -404,7 +405,7 @@ export function createVfx(env) {
       if (!live() || !e.point) return;
       const el = ELEMENTS[e.id];
       if (!el) return;
-      const gun = e.source !== 'axe';
+      const gun = !MELEE_SOURCES.has(e.source);
       const at = toWorld(e.point, vA);
       const n = e.normal ? vB.copy(e.normal).normalize() : vB.set(0, 1, 0);
       if (el.kind === K.LIQUID) { mist(at, gun ? MIST_GUN : MIST_AXE, n, e.id); return; }

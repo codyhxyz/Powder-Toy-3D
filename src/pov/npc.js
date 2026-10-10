@@ -57,7 +57,7 @@ const EYE_GLOW = [4, 0.35, 0.15]; // HDR: red eyes
 const HELD_SCALE = 1.8;           // the viewmodels (cells, sized for the camera) grown to read in its big mitten
 const CHOP_S = 0.25;              // s the chop's follow-through shows after a blow
 // the tool's model for each tool key (models.js)
-const MODEL_OF = { SHOVEL: 'shovel', BUCKET: 'bucket', AXE: 'axe', GUN: 'gun', PHYSGUN: 'physgun', TROWEL: 'trowel', SCANNER: 'scanner', BLOWTORCH: 'torch', BOMB: 'bomb' };
+const MODEL_OF = { SHOVEL: 'shovel', BUCKET: 'bucket', AXE: 'axe', GUN: 'gun', PHYSGUN: 'physgun', TROWEL: 'trowel', SCANNER: 'scanner', BLOWTORCH: 'torch', BOMB: 'bomb', PICKAXE: 'pickaxe' };
 
 const HW = BODY_WIDTH / 2;
 const AIM_REACH = 256;            // cells the tools' pick looks along
@@ -242,7 +242,7 @@ export function createNpc({ env, ai, home = () => null }) {
         viewmodel.quaternion.setFromUnitVectors(look.set(0, 0, -1), dir);
         viewmodel.updateMatrixWorld(true);
         povEvents.as(actor, () => kit.use(it.tool, ctx));
-        if (it.tool === 'AXE' && it.primaryPressed) chopT = CHOP_S;
+        if ((it.tool === 'AXE' || it.tool === 'PICKAXE') && it.primaryPressed) chopT = CHOP_S;
       } else if (kit.held) kit.putAway();
 
       // the figure

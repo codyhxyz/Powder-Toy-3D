@@ -31,6 +31,7 @@ export const MODELS = {
   gun: { fit: 'z', size: 1.25, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.3, roll: 0.35 } },        // an SMG, centred
   physgun: { fit: 'z', size: 1.3, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.3, roll: 0.35 } },     // finned, glowing core, centred
   axe: { fit: 'y', size: 1.25, anchor: [0.5, 0, 0.5], arm: ARM_DOWN, icon: { yaw: -POINT_RIGHT, tilt: 0.2, roll: -Q } },           // handle up from the hand, blade forward
+  pickaxe: { fit: 'y', size: 1.3, anchor: [0.5, 0, 0.5], arm: ARM_DOWN, icon: { yaw: -POINT_RIGHT, tilt: 0.2, roll: -Q } },      // handle up from the hand, point forward
   shovel: { fit: 'z', size: 2.2, anchor: [0.5, 0.5, 1], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 1.0, roll: Q } },           // laid flat, blade forward, held at the end of the handle
   bucket: { fit: 'y', size: 0.9, anchor: [0.5, 0.5, 0.5], arm: ARM_UP, icon: { yaw: 0, tilt: 0.4, roll: 0 } },                    // upright, held by the bail
   trowel: { fit: 'z', size: 1.3, anchor: [0.5, 1, 1], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 1.0, roll: Q } },             // blade flat and forward, held at the end of the handle
@@ -131,6 +132,14 @@ const PARTS = {
     { geo: 'box', s: [0.1, 0.24, 0.2], p: [0, 1.0, 0], m: 'ironDark' },
     { geo: 'plate', pts: [[0.08, -0.11], [0.08, 0.11], [0.34, 0.23], [0.42, 0.02], [0.34, -0.25]], depth: 0.055, p: [0, 1.0, 0], rot: [0, H, 0], m: 'iron' },
     { geo: 'box', s: [0.1, 0.13, 0.1], p: [0, 1.0, 0.14], m: 'ironDark' },
+  ],
+  pickaxe: [
+    { geo: 'cyl', r: 0.045, h: 1.3, p: [0, 0.5, 0], m: 'wood' },
+    { geo: 'cyl', r: 0.062, h: 0.07, p: [0, -0.16, 0], m: 'wood' },
+    { geo: 'box', s: [0.11, 0.15, 0.17], p: [0, 1.08, 0], m: 'ironDark' },
+    // the crescent head: a long point forward and a shorter one back, both curving down
+    { geo: 'cyl', rt: 0, rb: 0.06, h: 0.55, p: [0, 1.0, -0.32], rot: [-H - 0.28, 0, 0], m: 'iron' },
+    { geo: 'cyl', rt: 0, rb: 0.055, h: 0.4, p: [0, 1.02, 0.25], rot: [H + 0.28, 0, 0], m: 'iron' },
   ],
   gun: [
     { geo: 'box', s: [0.18, 0.2, 0.75], p: [0, 0.2, -0.2], m: 'metal' },

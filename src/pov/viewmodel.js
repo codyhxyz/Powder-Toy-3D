@@ -58,6 +58,7 @@ export const HIT = {
   GUN: { kick: 1, punch: { pitch: [GUN_PUNCH, GUN_PUNCH] } },                          // a shot
   DRY: { kick: 0.25 },                                                                 // a dry click
   AXE: { kick: 0.5, punch: { pitch: [-2 * DEG, -1 * DEG], yaw: [-2 * DEG, -1 * DEG] } },   // a blow landing
+  PICK: { kick: 0.7, punch: { pitch: [-3 * DEG, -2 * DEG], yaw: [-1.5 * DEG, -0.5 * DEG] } },   // a pickaxe blow: heavier, straight down
   FLING: { kick: 0.6 },                                                                // a physgun fling
   PLACE: { kick: 0.3 },                                                                // a trowel block set down
   THROW: { kick: 0.4 },                                                                // a bomb thrown
