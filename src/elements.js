@@ -239,8 +239,10 @@ export const TOOLS = [
     desc: 'Click a surface: in first person (F) an enemy with every tool appears here, and comes back after it dies. Click it again to remove it.' },
   { id: -7, key: 'SPAWN', abbr: 'SPWN', name: 'Player spawn', color: '#3fa7ff',
     desc: 'Click a surface: F drops you in at the spawn nearest the cursor, and you respawn there. Click it again to remove it.' },
+  { id: -8, key: 'FLOCK', abbr: 'BIRD', name: 'Bird flock', color: '#b58cff',
+    desc: 'Click a surface: a flock of magical birds lives here. They perch in trees and on roofs, take off when you come near or fire, roost and glow at night, and burn and fall like anything else. Click it again to remove it.' },
 ];
-export const isSpawnerTool = (id) => id === -6 || id === -7;
+export const isSpawnerTool = (id) => id === -6 || id === -7 || id === -8;
 
 // Constructions: whole structures placed with one click (src/constructions.js
 // builds and stamps them; they never reach the paint shader). Each one is
@@ -305,7 +307,7 @@ export const PALETTE = [
   { name: 'Gases', items: ['STEAM', 'CLOUD', 'SMOKE', 'FIRE'] },
   { name: 'Solids', items: ['WALL', 'COAL', 'ROCK', 'LIMESTONE', 'SANDSTONE', 'METAL', 'GLASS', 'ICE', 'CRYSTAL', 'WOOD', 'PLANT', 'CLONE'] },
   { name: 'Tools', items: ['HEAT', 'COOL', 'ERASE', 'BLAST', 'SIGN', ...GEAR_ITEMS.map((g) => g.key)] },
-  { name: 'Entities', items: ['ENEMY', 'SPAWN'] },
+  { name: 'Entities', items: ['ENEMY', 'SPAWN', 'FLOCK'] },
   { name: 'Constructions', items: ['HOUSE', 'TREE', 'CAMPFIRE', 'IGLOO', 'BARREL', 'AQUARIUM', 'FOUNTAIN', 'SHRINE', 'DOCK', 'TOWER', 'STONES', 'WELL', 'MINE', 'WRECK', 'PROMPT'] },
 ];
 

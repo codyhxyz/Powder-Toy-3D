@@ -28,6 +28,8 @@ import * as windowPasses from '../src/shaders/window.js';
 import { regionVert } from '../src/gfx/regions.js';
 import * as far from '../src/shaders/far.js';
 import { figureFrag, figureSkinnedVert } from '../src/pov/figure.js';
+import { probeFrag as birdProbeFrag } from '../src/birds/probe.js';
+import { birdVert, birdFrag } from '../src/birds/render.js';
 import { ShaderChunk } from 'three';
 
 // three.js prefixes: ShaderMaterial (GLSL1-style source upgraded to 300 es)
@@ -79,6 +81,7 @@ for (const [label, dims] of Object.entries(grids)) {
   check(`shadow-${label}`, raw + appShadow(g), 'frag');
   check(`giGather-far-${label}`, raw + appGather(g), 'frag');
   check(`povFigure-${label}`, shaderMatFrag + figureFrag(g), 'frag');
+  check(`birdProbe-${label}`, raw + birdProbeFrag(g), 'frag');
   // the same with every close-up detail feature compiled in (gfx/detail.js)
   const defs = Object.entries(allDetailDefines()).map(([k, v]) => `#define ${k} ${v}\n`).join('');
   if (defs) {
@@ -130,6 +133,9 @@ for (const [label, dims] of Object.entries(grids)) {
   for (const k of ['farBoostFrag', 'farMip1Frag', 'farMip2Frag', 'farTopFrag', 'farShadowFrag']) check(k, raw + far[k](L), 'frag');
 }
 check('volumeVert', shaderMatVert + render.volumeVert, 'vert');
+// the birds' InstancedMesh material (birds/render.js), as three builds a ShaderMaterial with instancing
+check('birdVert', `${shaderMatVert}#define attribute in\n#define varying out\nin vec3 normal;\nin mat4 instanceMatrix;\n${birdVert}`, 'vert');
+check('birdFrag', shaderMatFrag + birdFrag, 'frag');
 check('quadVert', raw + quadVert, 'vert');
 // the realistic body's skinned vertex shader, as three builds it for a SkinnedMesh
 const includes = (src) => src.replace(/^[ \t]*#include +<(\w+)>/gm, (_, k) => includes(ShaderChunk[k]));

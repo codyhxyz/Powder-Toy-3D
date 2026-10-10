@@ -6,16 +6,18 @@ import { BODY_HEIGHT, BODY_WIDTH } from './pov/constants.js';
 //   enemy   in first person, keeps one NPC (pov/npc.js) alive here: it appears
 //           here, and comes back here a few seconds after it dies
 //   player  where F drops you in (the one nearest the cursor) and where you respawn
+//   birds   keeps a flock of birds (birds/) homed here, in the god view and first person
 //
 // Clicking a surface with a spawner tool sets one; clicking at an existing one
 // of that kind takes it away. A spawner stands on a world cell, like a sign, so
 // in a world bigger than the grid it stays put while the window moves.
 //
-// Each shows as a glowing pad with a ghost of a body standing on it; in first
-// person the ghost hides and the pad stays.
+// Each shows as a glowing pad with a ghost of a body standing on it (the birds'
+// has no ghost: its flock is on show); in first person the ghost hides and the pad stays.
 
-export const SPAWNER = { ENEMY: 'enemy', PLAYER: 'player' };
-const COLOR = { enemy: 0xe0453a, player: 0x3fa7ff };
+export const SPAWNER = { ENEMY: 'enemy', PLAYER: 'player', BIRDS: 'birds' };
+const COLOR = { enemy: 0xe0453a, player: 0x3fa7ff, birds: 0xb58cff };
+const GHOSTLESS = new Set([SPAWNER.BIRDS]);   // kinds whose marker is only the pad
 const TOGGLE_DIST = 3;        // cells: clicking this near an existing spawner of the kind removes it
 const PAD_R = 1.4;            // cells, the pad's radius
 const PAD_LIFT = 0.05;        // cells above the surface (no z-fighting)
@@ -46,8 +48,9 @@ function marker(kind) {
   const r = BODY_WIDTH / 2;
   const ghost = new THREE.Mesh(new THREE.CapsuleGeometry(r, BODY_HEIGHT - 2 * r, 4, 12).translate(0, BODY_HEIGHT / 2, 0),
     new THREE.MeshBasicMaterial({ color, transparent: true, opacity: GHOST_OPACITY, depthWrite: false }));
-  for (const m of [pad, ring, ghost]) { m.renderOrder = 1; g.add(m); }   // after the volume, tested against its depth
-  g.userData.ghost = ghost;
+  for (const m of GHOSTLESS.has(kind) ? [pad, ring] : [pad, ring, ghost]) { m.renderOrder = 1; g.add(m); }   // after the volume, tested against its depth
+  g.userData.ghost = GHOSTLESS.has(kind) ? null : ghost;
+  if (!g.userData.ghost) { ghost.geometry.dispose(); ghost.material.dispose(); }
   return g;
 }
 
@@ -120,7 +123,7 @@ export class Spawners {
   }
 
   // in first person the ghosts hide (the pads stay)
-  setGhosts(v) { this.ghosts = v; for (const s of this.list) s.obj.userData.ghost.visible = v; }
+  setGhosts(v) { this.ghosts = v; for (const s of this.list) if (s.obj.userData.ghost) s.obj.userData.ghost.visible = v; }
 
   // every frame: markers follow the world's scale, the volume and the window
   update() {
