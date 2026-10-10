@@ -41,6 +41,7 @@ export const gfxUniforms = {
   uCloudShift: { value: [0, 0] }, // ...its wind drift (cells)...
   uCloudSea: { value: 0 },        // ...and the sea level its height counts from (world cells)
   tFlowV: { value: null },    // flow field: how fast matter moves through each cell (Simulation.flowTexture)
+  tAer: { value: null },      // whitewater's aeration field (gfx/foam.js), while it runs
   tMediaNoise: mediaNoiseUniform(),   // tileable detail noise for smoke, steam and fire
   tGI0: { value: null },      // GI probe volume (shaders/gi.js): L1 SH bands 0, 1x, 1y, 1z
   tGI1: { value: null },
@@ -80,6 +81,7 @@ export function updateGfxUniforms(sim, sun, light) {
   gfxUniforms.tB.value = sim.stateB;
   gfxUniforms.tFS.value = sim.fieldSurf;
   gfxUniforms.tFlowV.value = sim.flowTexture;
+  gfxUniforms.tAer.value = sim.aeration?.texture ?? null;
   gfxUniforms.tFM.value = sim.fieldMedia;
   gfxUniforms.tFT.value = sim.fieldThin;
   gfxUniforms.tBrickDist.value = sim.brickDistTexture;

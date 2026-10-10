@@ -33,6 +33,7 @@ import { gfx, gfxUniforms, updateGfxUniforms } from './gfx/uniforms.js';
 import { DETAIL, settingKey, detailDefaults, detailDefines, detailRows } from './gfx/detail.js';
 import { createDetailGate } from './gfx/detailGate.js';
 import { createColdShaderGuard } from './gfx/coldShader.js';
+import { setAeration } from './gfx/foam.js';
 import { claimPrograms } from './gfx/programs.js';
 import { createPost, createAutoResolution, UPSCALE } from './gfx/post.js';
 import { createPacer, settleFrames, sceneKey, createCapCheck, CAP_IDLE_MS, MAX_FPS } from './gfx/pacing.js';
@@ -962,6 +963,7 @@ const settingsPanel = createSettings({
 // and into the view only while the camera is near enough for them to show
 // (gfx/detailGate.js). The shadow map sees every switched-on feature.
 let detailVersion = 0;
+const DETAIL_FOAM = DETAIL.find((f) => f.key === 'liquidFoam');   // whitewater also runs a field with the sim
 const detailGate = createDetailGate(renderer, () => pacer.wake(), () => hud.toast('Preparing close-up detail… the first time after an update this can take several seconds'));
 // The view program's first draw after an update freezes the page while the
 // GPU driver builds it: say so first (gfx/coldShader.js).
@@ -969,6 +971,7 @@ const coldShader = createColdShaderGuard(() => hud.toast('Preparing the renderer
 function applyDetail() {
   shadowMat.defines = detailDefines(settings);
   shadowMat.needsUpdate = true;
+  setAeration(sim, !!settings[settingKey(DETAIL_FOAM)]);   // whitewater's per-step field
   detailGate.configure(volume, settings, camera, scene);
   detailVersion++;   // the shadow map is a derived pass: redo it
   post.reset();

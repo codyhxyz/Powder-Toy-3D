@@ -3,7 +3,11 @@
 // (the god view and eye-level close-ups, the POV-mode worst case) times the
 // view raymarch with the feature off and on, alternating A/B rounds, and
 // prints the median extra GPU ms per frame and the tier that gives.
-// usage: node tools/detail-bench.mjs [--port 5191] [--preset lab|volcano|plume] [--cams eyeSand,god]
+// Features with per-step work (src/sim.js stepping it, e.g. the whitewater's
+// aeration field) also pay per simulation step: that is timed with the world
+// stepping (feature off vs on), times the app's default steps per frame, and
+// added to the worst camera's figure.
+// usage: node tools/detail-bench.mjs [--port 5191] [--preset lab|volcano|plume|pour|pourAfter] [--cams eyeSand,god]
 //        [--features relief,grains] [--shots outDir]
 // Noise: identical shaders differ by up to ~0.4 ms per camera; rerun a tier
 // that sits near a COST_*_MS boundary.
@@ -66,8 +70,21 @@ const PLUME = {
   wood: { at: [57, 2, 88], r: 4 }, fire: { at: [57, 7, 88], r: 4 },
   smoke: { x: 48, z: 112, r: 3 }, steam: { x: 66, z: 112, r: 3 }, columnYs: [4, 14, 24],
 };
+// The pour scene: a jet of water falls ~10 m from POUR.at into the volcano's
+// sea (8 cells deep at that corner) for POUR.steps; pourAfter then lets the
+// world run POUR.after more steps with the jet off (lingering foam).
+const POUR = { base: 'volcano', at: [14, 40, 14], r: 3, steps: 150, after: 90 };
+CAMS.pour = {
+  god: null,
+  pourSide: [[34, 14, 32], [14, 12, 14]],    // the falling jet and where it plunges, from ~7 m
+  plunge: [[24, 11, 22], [14, 7, 14]],       // the plunge pool from ~3.5 m
+};
+CAMS.pourAfter = { pourSide: CAMS.pour.pourSide, plunge: CAMS.pour.plunge };
+const STEP_FRAMES = 30;     // simulation steps per step-cost sample
+const APP_STEPS = 4;        // the app's default steps per frame (src/app.js DEFAULTS.steps)
 const preset = opt('preset', 'lab');
-const loadName = preset === 'plume' ? PLUME.base : preset;
+const isPour = preset === 'pour' || preset === 'pourAfter';
+const loadName = preset === 'plume' ? PLUME.base : isPour ? POUR.base : preset;
 const camSel = opt('cams', '');
 const cams = Object.fromEntries(Object.entries(CAMS[preset]).filter(([k]) => !camSel || camSel.split(',').includes(k)));
 
@@ -88,22 +105,28 @@ p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 500)));
 await p.goto(`http://localhost:${port}/?preset=${loadName}&paused=1`);
 await p.waitForFunction(() => window.__app?.sim, null, { timeout: APP_TIMEOUT_MS });
 await p.waitForTimeout(APP_SETTLE_MS);
-const ids = Object.fromEntries(['WOOD', 'FIRE', 'SMOKE', 'STEAM'].map((k) => [k, ELEMENTS.findIndex((e) => e.key === k)]));
-await p.evaluate(async ([steps, keys, loadName, plume, ids]) => {
+const ids = Object.fromEntries(['WOOD', 'FIRE', 'SMOKE', 'STEAM', 'WATER'].map((k) => [k, ELEMENTS.findIndex((e) => e.key === k)]));
+await p.evaluate(async ([steps, keys, loadName, plume, ids, pour]) => {
   const a = window.__app;
   a.settings.paused = true;
   a.autoRes.enabled = false;   // a fixed resolution: auto resolution would change it mid-run
   a.post.settings.taa = false;
   for (const k of keys) a.settings[k] = false;
+  if (pour) a.settings.detail_liquidFoam = true;   // its aeration field follows the pour as it happens
   a.applyDetail();
   a.loadPreset(loadName, false);
   // screenshots show only the scene
   const cv = a.renderer.domElement;
   document.querySelectorAll('body *').forEach((el) => { if (!el.contains(cv)) el.style.visibility = 'hidden'; });
   a.sim.frame = 0;
-  if (!plume) { for (let i = 0; i < steps; i++) a.sim.step(); return; }
   const V = a.THREE.Vector3;
   const paint = (tool, [x, y, z], radius) => a.sim.paint({ center: new V(x, y, z), radius, shape: 0, tool, rate: 1, replace: false });
+  if (pour) {
+    for (let i = 0; i < pour.steps; i++) { paint(ids.WATER, pour.at, pour.r); a.sim.step(); }
+    for (let i = 0; i < pour.after; i++) a.sim.step();
+    return;
+  }
+  if (!plume) { for (let i = 0; i < steps; i++) a.sim.step(); return; }
   paint(ids.WOOD, plume.wood.at, plume.wood.r);
   for (let i = 0; i < plume.steps; i++) {
     for (const y of plume.columnYs) {
@@ -113,7 +136,8 @@ await p.evaluate(async ([steps, keys, loadName, plume, ids]) => {
     if (i < plume.fireSteps) paint(ids.FIRE, plume.fire.at, plume.fire.r);
     a.sim.step();
   }
-}, [SIM_STEPS, DETAIL.map(settingKey), loadName, preset === 'plume' ? PLUME : null, ids]);
+}, [SIM_STEPS, DETAIL.map(settingKey), loadName, preset === 'plume' ? PLUME : null, ids,
+  isPour ? { ...POUR, after: preset === 'pourAfter' ? POUR.after : 0 } : null]);
 
 const frames = (n) => p.evaluate(async (n) => { for (let i = 0; i < n; i++) await new Promise((r) => requestAnimationFrame(r)); }, n);
 
@@ -200,6 +224,30 @@ async function abCost(on, cam, name) {
   return { base: median(base), on: median(with_), extra: median(with_.map((v, i) => v - base[i])) };
 }
 
+// GPU ms per simulation step: STEP_FRAMES steps from a snapshot of the scene
+// (undone after, so the cameras keep seeing the same world), synced by reading
+// one texel of the state back.
+const timeSteps = () => p.evaluate(async (n) => {
+  const a = window.__app, sim = a.sim, px = new Float32Array(4);
+  sim.snapshot();
+  const sync = () => a.renderer.readRenderTargetPixels(sim.targets[sim.cur], 0, 0, 1, 1, px);
+  sim.step(); sync();
+  const t0 = performance.now();
+  for (let i = 0; i < n; i++) sim.step();
+  sync();
+  const ms = (performance.now() - t0) / n;
+  sim.undo();
+  return ms;
+}, STEP_FRAMES);
+async function stepCost(on) {
+  const base = [], with_ = [];
+  for (let r = 0; r < ROUNDS; r++) {
+    await setDetail(off); base.push(await timeSteps());
+    await setDetail({ ...off, ...on }); with_.push(await timeSteps());
+  }
+  return { base: median(base), on: median(with_), extra: median(with_.map((v, i) => v - base[i])) };
+}
+
 const rows = [];
 const sets = features.map((f) => [f.key, { [settingKey(f)]: true }, f]);
 if (args.includes('--all')) sets.push(['ALL', Object.fromEntries(DETAIL.map((f) => [settingKey(f), true])), null]);
@@ -210,6 +258,10 @@ for (const [key, on, f] of sets) {
     worst = Math.max(worst, r.extra);
     rows.push({ feature: key, cam: camName, 'base ms': r.base.toFixed(2), 'on ms': r.on.toFixed(2), 'extra ms': r.extra.toFixed(2) });
   }
+  const st = await stepCost(on);
+  const perFrame = Math.max(0, st.extra) * APP_STEPS;
+  rows.push({ feature: key, cam: `steps ×${APP_STEPS}`, 'base ms': (st.base * APP_STEPS).toFixed(2), 'on ms': (st.on * APP_STEPS).toFixed(2), 'extra ms': perFrame.toFixed(2) });
+  worst += perFrame;
   rows.push({ feature: key, cam: 'WORST', 'extra ms': worst.toFixed(2), tier: costTier(worst), declared: f?.cost ?? '' });
 }
 console.table(rows);

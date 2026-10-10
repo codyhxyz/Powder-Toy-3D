@@ -15,6 +15,7 @@ import * as move from '../src/shaders/move.js';
 import * as react from '../src/shaders/react.js';
 import { quadVert } from '../src/shaders/common.js';
 import { allDetailDefines } from '../src/gfx/detail.js';
+import { aerationFrag } from '../src/shaders/gfx/liquidDetail.js';
 import * as probe from '../src/shaders/probe.js';
 import * as stamp from '../src/shaders/stamp.js';
 import * as gi from '../src/shaders/gi.js';
@@ -93,6 +94,7 @@ for (const [label, dims] of Object.entries(grids)) {
   }
   for (const [k, v] of Object.entries(passes)) if (typeof v === 'function') check(`${k}-${label}`, raw + v(g), 'frag');
   for (const axis of [0, 1, 2]) check(`brickDist${axis}-${label}`, raw + passes.brickDistFrag(g, axis), 'frag');
+  check(`aeration-${label}`, raw + aerationFrag(g), 'frag');
   check(`inert-${label}`, raw + activity.inertFrag(g), 'frag');
   check(`inertRows-${label}`, raw + activity.inertRowsFrag(g), 'frag');
   check(`inertJoin-${label}`, raw + activity.inertJoinFrag(g), 'frag');

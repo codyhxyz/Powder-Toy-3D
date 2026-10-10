@@ -256,6 +256,8 @@ export class Simulation {
     // how fast matter has been moving through each cell (shaders/move.js moveFlowFrag);
     // read with atlas(), so it shares the state's texel layout and size
     this.flowV = makeFieldTarget(g.width, g.height, 1, HALF, NEAR);
+    // whitewater's aeration field (gfx/foam.js): made and stepped while that switch is on
+    this.aeration = null;
     this.fieldReset = true;
     this.smoothing = 1;
     // GI (shaders/gi.js): per-brick light sources and blockers, and the probe
@@ -654,7 +656,10 @@ export class Simulation {
     // Finish fresh flags and both ping-pong histories before sleeping. A quiet
     // flow pass already discards every cell, so its EMA needs no further work.
     if (this.idleCertified && !this.actDirty && !this.actFresh && this.actSteps >= SUPER_SETTLE_STEPS
-        && this.skipQuiet && this.skipSleeping && !this.rays.active) return;
+        && this.skipQuiet && this.skipSleeping && !this.rays.active) {
+      this.aeration?.idle();   // nothing moves, but the foam left on it still bursts
+      return;
+    }
     // particles fly first: the map below keeps the bricks they're in awake
     this.stepping = true;
     this.rays.step();
@@ -687,6 +692,7 @@ export class Simulation {
     this.actFresh = false;
     this.pass(moveGather, quads);
     this.run(moveFlow, this.flowV, quads);
+    this.aeration?.step();   // whitewater's field follows the move (gfx/foam.js)
     react.uniforms.uFrame.value = this.frame;
     react.uniforms.uGravity.value = this.gravity;
     react.uniforms.uRays.value = this.rays.stepped;   // the particles' deposits (heat, pressure)
@@ -903,6 +909,7 @@ export class Simulation {
       fs.uniforms.tFlowSrc.value = this.flowV.texture;
       this.run(fs, this.flowVTmp);
       [this.flowV, this.flowVTmp] = [this.flowVTmp, this.flowV];
+      this.aeration?.shift(fs);   // laid out like the state too
       this.fieldShift.x += dx;
       this.fieldShift.z += dz;
       if (!this.giReset) {
@@ -1014,6 +1021,7 @@ export class Simulation {
     this.renderer.setRenderTarget(this.flowV);
     this.renderer.setClearColor(0x000000, 0);
     this.renderer.clear(true, false, false);
+    this.aeration?.reset();
   }
 
   blankState() {
@@ -1074,6 +1082,7 @@ export class Simulation {
     this.fields.dispose();
     this.flowV.dispose();
     this.flowVTmp?.dispose();
+    this.aeration?.dispose();
     this.brickDist.forEach((t) => t.dispose());
     this.actClass.dispose();
     this.actRows.dispose();
