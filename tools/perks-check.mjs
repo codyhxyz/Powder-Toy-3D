@@ -1,13 +1,14 @@
 // End-to-end check of the perks (src/pov/perks.js, src/perkOrbs.js) through the
-// real shell, body and toolbelt: the palette's Perks group, walking into orbs,
-// stacking, the HUD row, a shrine, Faster Tools on a real tool, the Freeze
-// Field, Lukki, Sand Swimmer and Revenge Explosion.
-// usage: node tools/perks-check.mjs [--port 5291] [--shot file.jpg]   (needs a dev server)
+// real shell, body and toolbelt: the Shrine construction, walking into orbs,
+// stacking, the HUD row, Faster Tools on a real tool, the Freeze Field, Lukki,
+// Sand Swimmer, Revenge Explosion, and the shrine every world gets.
+// usage: node tools/perks-check.mjs [--port 5291] [--shot file.jpg] [--worldshot file.jpg]   (needs a dev server)
 import { chromium } from 'playwright';
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
 const port = opt('port', '5291');
 const shotPath = opt('shot', null);
+const worldShot = opt('worldshot', null);
 const W = 960, H = 600;
 
 const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
@@ -26,12 +27,10 @@ try {
   await p.waitForFunction(() => window.__app?.pov && window.__app?.perkOrbs, null, { timeout: 30000 });
   await settle(1500);
 
-  // ---- the palette
-  const tiles = await ev(() => {
-    const g = [...document.querySelectorAll('.group')].find((x) => x.querySelector('h4')?.textContent === 'Perks');
-    return g ? [...g.querySelectorAll('.tile')].map((t) => t.getAttribute('aria-label')) : null;
-  });
-  check('palette has a Perks group', !!tiles && tiles.length === 13, tiles?.join(', '));
+  // ---- the palette: a Shrine among the constructions, no loose perks
+  const groups = await ev(() => Object.fromEntries([...document.querySelectorAll('.group')].map((g) =>
+    [g.querySelector('h4')?.textContent, [...g.querySelectorAll('.tile')].map((t) => t.getAttribute('aria-label'))])));
+  check('Shrine is a construction, no Perks group', groups.Constructions?.includes('Shrine') && !groups.Perks, JSON.stringify(groups.Constructions));
 
   // ---- drop in
   await p.mouse.move(W / 2, H / 2);
@@ -78,15 +77,18 @@ try {
   // ---- a shrine: take one, the others vanish
   await stand(60, 20);
   await settle(300);
-  await ev(() => { const a = window.__app; a.perkOrbs.shrine(a.pov.player.pos.clone().set(60, 0, 30), new a.camera.position.constructor(1, 0, 0)); });
-  check('a shrine sets three orbs', (await ev(() => window.__app.perkOrbs.list.length)) === 3);
+  const altars = await ev(() => { const a = window.__app; return a.builds.stampAt('SHRINE', a.pov.player.pos.clone().set(60, 0, 30)).map((v) => v.toArray()); });
+  await settle(300);
+  check('a shrine sets three orbs', (await ev(() => window.__app.perkOrbs.list.length)) === 3, JSON.stringify(altars));
+  const plinths = await ev(async (alt) => { const { ELEMENTS } = await import('/src/elements.js'); return alt.map(([x, y, z]) => ELEMENTS[Math.round(window.__app.sim.readCell(Math.floor(x), y - 1, Math.floor(z))[0][0])]?.key); }, altars);
+  check('each orb floats over a steel-topped plinth', plinths.every((k) => k === 'METAL'), plinths.join(','));
   if (shotPath) {
     await ev(() => { const a = window.__app; a.pov.player.spawn(a.pov.player.pos.clone().set(60, 0, 20)); a.pov.setLook(Math.PI, -0.15); });
     await settle(800);
     await p.screenshot({ path: shotPath, type: 'jpeg', quality: 70 });
   }
   const before = await perks();
-  await stand(60, 30);
+  await stand(60.5, 32.85);   // against the middle plinth's front
   await settle(400);
   const after = await perks();
   check('taking one shrine orb takes one perk, the rest vanish', Object.keys(after).length >= Object.keys(before).length + 1 && (await ev(() => window.__app.perkOrbs.list.length)) === 0, JSON.stringify(after));
@@ -163,6 +165,22 @@ try {
   await ev(() => window.__app.pov.player.hurt(5, 'test'));
   await settle(200);
   check('death takes the perks', (await ev(() => window.__app.pov.player.perks.list().length)) === 0);
+
+  // ---- every world gets a shrine near where the god view starts
+  await ev(() => window.__app.pov.exit(true));
+  await p.goto(`http://localhost:${port}/?size=world&scene=island`);
+  await p.waitForFunction(() => window.__app?.win?.loaded && window.__app.perkOrbs?.list.length, null, { timeout: 90000 }).catch(() => {});
+  await settle(1500);
+  const w = await ev(async () => {
+    const { ELEMENTS } = await import('/src/elements.js');
+    const a = window.__app, o = a.sim.origin;
+    return a.perkOrbs.list.map((orb) => {
+      const f = orb.world.clone().sub(o);
+      return { key: orb.key, at: f.toArray().map((v) => +v.toFixed(1)), under: ELEMENTS[Math.round(a.sim.readCell(Math.floor(f.x), f.y - 1, Math.floor(f.z))[0][0])]?.key };
+    });
+  });
+  check('the world has a shrine with three perks on plinths', w.length === 3 && w.every((o) => o.under === 'METAL'), JSON.stringify(w));
+  if (worldShot) { await settle(3000); await p.screenshot({ path: worldShot, type: 'jpeg', quality: 70 }); }
 } catch (err) {
   fails++;
   console.log('FAIL threw', String(err).slice(0, 500));

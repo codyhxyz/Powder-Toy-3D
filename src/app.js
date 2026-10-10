@@ -3,12 +3,14 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import './ui/styles.css';
 import { Simulation } from './sim.js';
 import { volumeVert, volumeFrag, pickFrag, shadowFrag } from './shaders/render.js';
-import { ELEMENTS, E, toolById, isBuild, isSpawnerTool, isPerkTool, isShrineTool } from './elements.js';
+import { ELEMENTS, E, toolById, isBuild, isSpawnerTool } from './elements.js';
 import { Spawners, SPAWNER, feetOnHit } from './spawners.js';
 import { PerkOrbs } from './perkOrbs.js';
 import { buildPreset } from './presets.js';
 import { loadIsland, releaseGenerator } from './world/gpu.js';
 import { WorldWindow, WIN_STEP } from './world/window.js';
+import { treesIn } from './world/generator.js';
+import { bakedAir } from './constructions/runtime.js';
 import { WORLD_SCENES, sceneByKey } from './world/scenes/index.js';
 import { FarField } from './world/far.js';
 import { farHazeGLSL, farCastersGLSL, farLayout, WORLD_SIZE } from './shaders/far.js';
@@ -66,7 +68,6 @@ const SIGN_TOOL = -5;
 const SPAWNER_KIND = { [-6]: SPAWNER.ENEMY, [-7]: SPAWNER.PLAYER };   // the Spawners tools' kinds
 // the lab's own enemy spawner: its open south floor, as shares of the grid (the old lab NPC's arena)
 const LAB_ENEMY_AT = [0.555, 0.86];
-const LEVEL_EPS = 1e-6;   // squared length under which the view's right, flattened, counts as none
 
 // ---------------------------------------------------------------- settings
 // the box the Scene row goes back to from World, and phones' grid
@@ -160,6 +161,7 @@ const post = createPost(renderer, { pixScale: gfxUniforms.uPixScale });
 
 const scene = new THREE.Scene();
 let perkOrbs = null;   // perk orbs (perkOrbs.js), made with the spawners
+let lastShrine = 0;    // the shrine id the last placement's orbs got (0: it set none)
 let spawners = null;   // enemy and player spawners (spawners.js), made once the volume is
 const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.05, 200);
 const controls = new OrbitControls(camera, renderer.domElement);
@@ -350,6 +352,61 @@ function worldStart() {
   return [origin[0], 0, origin[1]];
 }
 
+// World: every world gets a shrine (constructions/builtins.js shrine, with its
+// perk orbs) near the middle of its first window, where the god view starts:
+// on flat dry ground, with as few trees about as it can find, in a clearing
+// (the island's trees around it are felled: stamped over with air, exactly as
+// they were planted). It's stamped into the window like a placed one, so the
+// window keeps it as an edit when it moves away (world/store.js).
+const SHRINE_HALF = [9, 6];        // cells: half the shrine's footprint (x, z), a cell to spare
+const SHRINE_SEARCH = 40;          // cells from the window's middle it looks within...
+const SHRINE_SEARCH_STEP = 4;      // ...on a lattice this fine
+const SHRINE_SAMPLE = 2;           // cells between the ground samples under a footprint
+const SHRINE_FLAT = 3;             // cells of rise and fall it accepts under its floor
+const SHRINE_DRY = 2;              // cells above the sea its lowest ground must be
+const SHRINE_HEADROOM = 16;        // cells of window it needs above its floor (the roof, and a hop)
+const SHRINE_GLADE = 10;           // cells around its footprint the clearing reaches (trunks within it are felled)
+const SHRINE_TREE_COST = 2;        // a spot's score: cells of rise, plus this per tree to fell...
+const SHRINE_FAR_COST = 0.05;      // ...plus this per cell from the window's middle (lowest wins)
+function worldShrine() {
+  if (!win || !builds) return;
+  const P = win.P, g = sim.g, o = sim.origin, [hx, hz] = SHRINE_HALF;
+  const sea = P.sea ?? 0;
+  const fits = (x, z) => x - hx >= 0 && z - hz >= 0 && x + hx < g.nx && z + hz < g.nz;
+  // the ground's lowest and highest under a footprint centred on grid column (x, z)
+  const span = (x, z) => {
+    let lo = Infinity, hi = -Infinity;
+    for (let i = -hx; i <= hx; i += SHRINE_SAMPLE)
+      for (let k = -hz; k <= hz; k += SHRINE_SAMPLE) {
+        const h = win.scene.ground(o.x + x + i, o.z + z + k, P);
+        lo = Math.min(lo, h); hi = Math.max(hi, h);
+      }
+    return [lo, hi];
+  };
+  // the trees whose trunks stand in its glade (only the island plants trees)
+  const glade = (x, z) => (win.scene.island
+    ? treesIn(o.x + x - hx - SHRINE_GLADE, o.z + z - hz - SHRINE_GLADE, o.x + x + hx + SHRINE_GLADE + 1, o.z + z + hz + SHRINE_GLADE + 1, P, win.candidates)
+    : []);
+  const cx = Math.round(g.nx / 2), cz = Math.round(g.nz / 2);
+  let best = null;
+  for (let dx = -SHRINE_SEARCH; dx <= SHRINE_SEARCH; dx += SHRINE_SEARCH_STEP)
+    for (let dz = -SHRINE_SEARCH; dz <= SHRINE_SEARCH; dz += SHRINE_SEARCH_STEP) {
+      const x = cx + dx, z = cz + dz;
+      if (!fits(x, z)) continue;
+      const [lo, hi] = span(x, z);
+      if (hi - lo > SHRINE_FLAT || lo < sea + SHRINE_DRY || hi + SHRINE_HEADROOM > g.ny) continue;
+      const trees = glade(x, z);
+      const score = hi - lo + SHRINE_TREE_COST * trees.length + SHRINE_FAR_COST * Math.hypot(dx, dz);
+      if (!best || score < best.score) best = { x, z, y: Math.ceil(hi), trees, score };
+    }
+  if (!best) return;
+  for (const t of best.trees) {
+    const baked = win.bakeTree(t);
+    if (baked) builds.stampBaked(bakedAir(baked), new THREE.Vector3(t.x - o.x - baked.base.x, t.y - o.y - baked.base.y, t.z - o.z - baked.base.z));
+  }
+  builds.stampAt('SHRINE', new THREE.Vector3(best.x, best.y, best.z));   // (onPlaced sets its orbs)
+}
+
 // World: the god view's home over world column (x, z), the orbit target on
 // the ground there (the scene's: on the sea where the sea floor is lower).
 function homeOver(x, z) {
@@ -433,6 +490,7 @@ function loadPreset(name, undoable = true) {
       placeVolume();
       post.reset();
       pov?.worldReplaced();
+      worldShrine();
     }, (err) => console.error('world: its passes failed to compile, or its scene to prepare', err));
     toolbar.setUndoEnabled(false);
   } else if (name === 'empty') sim.clear();
@@ -551,7 +609,7 @@ function updateBrush() {
     builds?.update({ hover, active: false });
     return;
   }
-  if (settings.tool !== SIGN_TOOL && !isBuild(settings.tool) && !isSpawnerTool(settings.tool) && !isPerkTool(settings.tool)) {
+  if (settings.tool !== SIGN_TOOL && !isBuild(settings.tool) && !isSpawnerTool(settings.tool)) {
     if (painting) {
       // a box's brush stops at its walls; a world's window has none, so beyond it there's no brush
       plane.constant = -dragY;
@@ -809,7 +867,8 @@ function setPixelRatio(r) {
 
 function undo() {
   if (mp.guard()) return;
-  if (sim.undo()) { pov?.worldReplaced(); hud.toast('Undone'); }
+  const shrine = sim.history?.at(-1)?.note?.shrine;
+  if (sim.undo()) { if (shrine) perkOrbs?.removeShrine(shrine); pov?.worldReplaced(); hud.toast('Undone'); }
   // (a world's window moved off all of it: it's kept for when the window comes back)
   else hud.toast(sim.canUndo ? 'Too far away to undo that: go back to it first' : 'Nothing to undo');
   toolbar.setUndoEnabled(sim.canUndo);
@@ -899,27 +958,18 @@ function press(e) {
     else hud.toast(r === 'removed' ? 'Spawner removed' : kind === SPAWNER.ENEMY ? 'Enemy spawner set: press F to fight' : 'Player spawn set: F drops you in here');
     return;
   }
-  if (isPerkTool(settings.tool)) {
-    if (mp.guard()) return;
-    if (!hover.valid) { hud.toast('Click a surface to set it on'); return; }
-    const feet = feetOnHit(hover);
-    if (isShrineTool(settings.tool)) {
-      // the shrine's orbs run across the view
-      const across = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion).setY(0);
-      if (across.lengthSq() < LEVEL_EPS) across.set(1, 0, 0);   // looking straight down
-      const set = perkOrbs.shrine(feet, across.normalize());
-      hud.toast(set ? 'Shrine set: in first person (F), take one perk and the others vanish' : 'That many orbs is the limit');
-    } else {
-      const r = perkOrbs.toggle(toolById(settings.tool).perk, feet);
-      hud.toast(r === 'full' ? 'That many orbs is the limit' : r === 'removed' ? 'Perk orb removed' : 'Perk orb set: walk into it in first person (F)');
-    }
-    pacer.wake();
-    return;
-  }
   if (isBuild(settings.tool)) {
     if (mp.guard()) return;
     if (!builds) hud.toast('Constructions are still loading');
-    else if (builds.ready) { sim.snapshot(); toolbar.setUndoEnabled(true); builds.place(); hud.dismissHint(); }
+    else if (builds.ready) {
+      sim.snapshot();
+      toolbar.setUndoEnabled(true);
+      lastShrine = 0;
+      builds.place();
+      // a shrine's orbs go with its snapshot: undoing it takes them away (undo)
+      if (lastShrine) { sim.history.at(-1).note = { shrine: lastShrine }; hud.toast('Shrine set: in first person (F), take one perk and the others vanish'); }
+      hud.dismissHint();
+    }
     return;
   }
   dragY = hover.valid ? hoverBrushCenter(tmpV).y : (isTool() ? 0.5 : settings.radius);
@@ -1329,6 +1379,8 @@ try {
     builds = new BuildsClass({
       scene, camera, settings, getSim: () => sim, getVolume: () => volume, getScale: () => scale, onClose: leaveBuild,
       requestRender: () => pacer.wake(),
+      // a shrine: a random perk orb over each plinth
+      onPlaced: ({ key, anchors }) => { if (key === 'SHRINE') lastShrine = perkOrbs?.shrineAt(anchors)?.[0]?.shrine ?? 0; },
     });
   }
   // a guest gets the host's box (multiplayer.js): opening an invite in World starts in a box, not the world

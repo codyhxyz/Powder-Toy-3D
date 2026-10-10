@@ -24,7 +24,7 @@
 //   breakInto  key of the element a broken solid turns into (its debris);
 //          omitted = unbreakable (WALL, CLONE). Only solids break.
 
-import { PERKS, SHRINE_OFFERS } from './pov/perks.js';
+import { SHRINE_OFFERS } from './pov/perks.js';
 
 export const K = { EMPTY: 0, SOLID: 1, POWDER: 2, LIQUID: 3, GAS: 4 };
 export const R = { NONE: 0, OPAQUE: 1, LIQUID: 2, GLASS: 3, GAS: 4, FIRE: 5 };
@@ -165,25 +165,12 @@ export const BUILDS = [
     desc: 'A glass tank of water on a bed of sand and pebbles. Glass shrugs off acid but melts at 1400 °C.' },
   { id: -106, key: 'FOUNTAIN', abbr: 'FNTN', name: 'Fountain', color: '#93a6bd',
     desc: 'A stone basin with a spout fed by an endless water clone. It will overflow eventually.' },
+  { id: -108, key: 'SHRINE', abbr: 'SHRN', name: 'Shrine', color: '#e9c46a',
+    desc: `Noita's Holy Mountain: a stone pavilion with ${SHRINE_OFFERS} random perks floating over its plinths. In first person (F), walk into one to take it, and the others vanish. Every world has one near where you start.` },
   { id: -107, key: 'PROMPT', abbr: 'AI', name: 'Prompt', color: '#9b86e8',
     desc: 'Describe a construction and a model writes it, checked for leaks and loose powder before you place it. Or paste code from any chatbot.' },
 ];
-export const isBuild = (id) => id <= -100 && id > PERK_ID0;
-
-// Perks (src/pov/perks.js): orbs the god view sets on surfaces (src/perkOrbs.js),
-// markers like the spawners, not cells. A body that walks into one in first
-// person gains its perk. The shrine sets SHRINE_OFFERS orbs at once, Noita's
-// Holy Mountain: taking one takes the others away.
-const PERK_ID0 = -200;
-const PERK_TAKE = 'Click a surface to set one; in first person (F), walk into it to take it.';
-export const PERK_ITEMS = [
-  { id: PERK_ID0, key: 'SHRINE', abbr: '⛩️', name: 'Perk shrine', color: '#e9c46a',
-    desc: `${SHRINE_OFFERS} random perks side by side, as in Noita's Holy Mountain: take one and the others vanish. Click a surface to set one.` },
-  ...PERKS.map((p, i) => ({ id: PERK_ID0 - 1 - i, key: p.key, abbr: p.icon, name: p.name, color: p.color,
-    perk: p.key, desc: `${p.desc} Noita's ${p.noita}. ${PERK_TAKE}` })),
-];
-export const isPerkTool = (id) => id <= PERK_ID0 && id > PERK_ID0 - 100;
-export const isShrineTool = (id) => id === PERK_ID0;
+export const isBuild = (id) => id <= -100;
 
 // How the palette is laid out in the UI. Within each group, elements are
 // ordered so related materials sit together and the colours run smoothly.
@@ -194,11 +181,10 @@ export const PALETTE = [
   { name: 'Solids', items: ['WALL', 'ROCK', 'METAL', 'GLASS', 'ICE', 'WOOD', 'PLANT', 'CLONE'] },
   { name: 'Tools', items: ['HEAT', 'COOL', 'ERASE', 'BLAST', 'SIGN'] },
   { name: 'Entities', items: ['ENEMY', 'SPAWN'] },
-  { name: 'Constructions', items: ['HOUSE', 'TREE', 'CAMPFIRE', 'IGLOO', 'BARREL', 'AQUARIUM', 'FOUNTAIN', 'PROMPT'] },
-  { name: 'Perks', items: ['SHRINE', ...PERKS.map((p) => p.key)] },
+  { name: 'Constructions', items: ['HOUSE', 'TREE', 'CAMPFIRE', 'IGLOO', 'BARREL', 'AQUARIUM', 'FOUNTAIN', 'SHRINE', 'PROMPT'] },
 ];
 
-const NON_ELEMENTS = [...TOOLS, ...BUILDS, ...PERK_ITEMS];
+const NON_ELEMENTS = [...TOOLS, ...BUILDS];
 export const toolById = (id) => (id < 0 ? NON_ELEMENTS.find((t) => t.id === id) : ELEMENTS[id]);
 export const itemByKey = (key) => (key in E ? ELEMENTS[E[key]] : NON_ELEMENTS.find((t) => t.key === key));
 
