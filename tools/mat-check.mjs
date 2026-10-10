@@ -8,6 +8,7 @@ import { World } from '../src/ui/tiles/engine.js';
 import { E, ELEMENTS, K } from '../src/elements.js';
 import { PHYS } from '../src/physics.js';
 import { BOLT, STORM, boltPath, pickStrike, prefersStrike } from '../src/bolt.js';
+import { sparkPhase } from '../src/electricity.js';
 
 const GRAVITY = 0.025;     // the app's default gravity setting (app.js settings.gravity)
 let fails = 0, pendings = 0;
@@ -21,7 +22,6 @@ const count = (w, id) => w.id.reduce((n, v) => n + (v === id ? 1 : 0), 0);
 const world = (nx, ny) => { const w = new World(nx, ny); w.gravity = GRAVITY; return w; };
 const fill = (w, x0, x1, y0, y1, id, extra) => { for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) w.put(x, y, id, extra); };
 const steps = (w, n, each) => { for (let i = 0; i < n; i++) { each?.(w, i); w.step(); } };
-const phaseRows = ELEMENTS.some((e) => e.cold || e.hot) && typeof World.prototype.phase === 'function';
 
 // ---- Void ----
 {
@@ -163,7 +163,7 @@ const phaseRows = ELEMENTS.some((e) => e.cold || e.hot) && typeof World.prototyp
   steps(boil, 400, (w) => { for (let i = 0; i < w.id.length; i++) if (w.id[i] === E.MERCURY) w.T[i] = Math.max(w.T[i], 400); });
   const fz = count(freeze, E.SOLID_MERCURY) === 1, bl = count(boil, E.MERCURY_VAPOR) > 0;
   report('mercury freezes at −38.8 °C and boils at 357 °C', fz && bl,
-    `at −60 °C: frozen ${count(freeze, E.SOLID_MERCURY)}/1; at 400 °C: vapour ${count(boil, E.MERCURY_VAPOR)}${phaseRows ? '' : ' (el-core phase rows not here yet)'}`, !(fz && bl));
+    `at −60 °C: frozen ${count(freeze, E.SOLID_MERCURY)}/1; at 400 °C: vapour ${count(boil, E.MERCURY_VAPOR)}`, !(fz && bl));
 }
 
 // ---- lightning (one bolt, src/bolt.js) ----
@@ -209,6 +209,36 @@ const phaseRows = ELEMENTS.some((e) => e.cold || e.hot) && typeof World.prototyp
   const hot = [...w.id].map((id, i) => (id === E.SAND ? w.T[i] : -Infinity)).filter((T) => T > ELEMENTS[E.SAND].melt).length;
   steps(w, 2);
   report('lightning on sand fuses it (a fulgurite)', hot > 0 && count(w, E.LAVA) > 0, `${hot} sand cells past ${ELEMENTS[E.SAND].melt} °C, ${count(w, E.LAVA)} molten`);
+}
+
+{
+  // a strike on metal sparks it (src/electricity.js), and the spark runs along it; one on rock doesn't
+  const strikeOn = (id) => {
+    const w = world(22, 30);
+    fill(w, 0, 22, 0, 3, id);
+    w.strike([11.5, 29.5], [11.5, 3], { strikeR: 1.5 });
+    const live = (ww) => [...ww.id].filter((v, i) => v === id && sparkPhase(ww.ctype[i]) !== 0).length;
+    const now = live(w);
+    let reached = new Set();
+    steps(w, 12, (ww) => { for (let i = 0; i < ww.id.length; i++) if (ww.id[i] === id && sparkPhase(ww.ctype[i]) !== 0) reached.add(i); });
+    return { now, reached: reached.size };
+  };
+  const metal = strikeOn(E.METAL), mercury = strikeOn(E.MERCURY), rock = strikeOn(E.ROCK);
+  report('a strike on metal sparks it, and the spark runs along it', metal.now > 0 && metal.reached > metal.now && rock.now === 0,
+    `metal: ${metal.now} cells sparked by the strike, ${metal.reached} live within 12 steps; mercury: ${mercury.now} → ${mercury.reached}; rock: ${rock.now}`);
+}
+{
+  // conductors keep their spark in ctype: batch 3's conductors use it for nothing else
+  const cond = ['TITANIUM', 'TUNGSTEN', 'GOLD', 'NUGGETS', 'MERCURY', 'SOLID_MERCURY'];
+  const bad = cond.filter((k) => !ELEMENTS[E[k]].conducts);
+  const w = world(10, 10);
+  fill(w, 0, 10, 0, 2, E.WALL);
+  fill(w, 1, 3, 2, 4, E.NUGGETS); fill(w, 4, 9, 2, 4, E.MERCURY); fill(w, 1, 3, 6, 7, E.SOLID_MERCURY);
+  for (let i = 0; i < w.id.length; i++) w.spark(i);
+  let wrong = 0;
+  steps(w, 200, (ww) => { for (let i = 0; i < ww.id.length; i++) if ([E.NUGGETS, E.MERCURY, E.SOLID_MERCURY].includes(ww.id[i]) && ww.ctype[i] !== 0 && sparkPhase(ww.ctype[i]) === 0) wrong++; });
+  report('conductors: ctype holds only their spark', bad.length === 0 && wrong === 0,
+    `${bad.length ? `not conducts: ${bad.join(', ')}; ` : ''}cell-steps with a non-spark ctype on nuggets/mercury/frozen mercury: ${wrong}`);
 }
 
 // ---- storms ----

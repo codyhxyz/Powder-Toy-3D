@@ -15,9 +15,8 @@ import { BOLT, STORM, boltPath, boltStart, toolStrikeR, stormColumns, pickStrike
 // strikes the nearest (conductors counting nearer), spending the charge
 // around its origin.
 //
-// A strike sparks the conductors it lands on: the "BOLT LANDS" spot in
-// shaders/lightning.js boltFrag (and the CPU twin's World.strike) is where
-// el-elec's sparkCell goes.
+// A strike sparks the conductors it lands on (shaders/lightning.js boltFrag
+// calls src/electricity.js sparkCell; the CPU twin's World.strike, spark).
 
 const RGBA = 4;
 

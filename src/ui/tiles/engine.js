@@ -339,7 +339,7 @@ export class World {
         if (!open && r < strikeR) {
           const f = 1 - smoothstep(strikeR * BOLT.STRIKE_CORE, strikeR, r);
           this.T[i] = Math.min(this.T[i] + BOLT.STRIKE_E * f / CAP[id], PHYS.CELL_TEMP_MAX);
-          // BOLT LANDS (shaders/lightning.js boltFrag). TODO(el-elec, at merge): this.spark(i);
+          this.spark(i);   // the bolt lands: a ready conductor takes a full spark (shaders/lightning.js)
         }
         if (open && r < strikeR + BOLT.STRIKE_P_REACH) this.P[i] = Math.min(Math.max(this.P[i], BOLT.STRIKE_P), PHYS.P_MAX);
         if (this.id[i] === E.CLOUD && Math.hypot(cx - from[0], cy - from[1]) < dischargeR) this.ctype[i] = 0;

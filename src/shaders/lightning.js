@@ -7,8 +7,9 @@ import { boltGLSL } from '../bolt.js';
 // inside uLo..uHi (the bolt's bounds; everything else copies through). Along
 // the channel's segments, air and gas become plasma with the channel's
 // overpressure, and matter takes BOLT_E of heat; around the strike point,
-// matter takes STRIKE_E (full inside STRIKE_CORE of the radius) and the air
-// STRIKE_P; cloud within uDischargeR of the origin loses its charge (ctype).
+// matter takes STRIKE_E (full inside STRIKE_CORE of the radius), a conductor
+// there a spark (sparkCell), and the air STRIKE_P; cloud within uDischargeR of
+// the origin loses its charge (ctype).
 export const boltFrag = (g) => /* glsl */ `
 ${prelude(g)}
 ${boltGLSL()}
@@ -53,8 +54,7 @@ void bolt(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
   if (!open && r < uStrikeR) {
     float f = 1.0 - smoothstep(uStrikeR * STRIKE_CORE, uStrikeR, r);
     oA.y = min(oA.y + STRIKE_E * f / CAP[id], CELL_TEMP_MAX);
-    // BOLT LANDS: the spot where a strike sparks what it hits.
-    // TODO(el-elec, at merge): sparkCell(oA);   (the prelude's: a ready conductor takes a full spark)
+    sparkCell(oA);   // the bolt lands: a ready conductor it hits takes a full spark (src/electricity.js)
   }
   if (open && r < uStrikeR + STRIKE_P_REACH) oB.w = min(max(oB.w, STRIKE_P), P_MAX);
   if (eid(oA) == E_CLOUD && length(c - uBoltFrom) < uDischargeR) oA.w = fract(a.w);   // charge spent
