@@ -80,19 +80,39 @@ let c1 = await census();
 check('kick breaks glass', (c1.SHARDS ?? 0) > (c0.SHARDS ?? 0), `GLASS ${c0.GLASS}→${c1.GLASS}, SHARDS ${c0.SHARDS ?? 0}→${c1.SHARDS ?? 0}, kick ${JSON.stringify(k)}`);
 check('kick adds no matter', matter(c1) === matter(c0), `${matter(c0)}→${matter(c1)}`);
 
-// ---- kick: a lone heap of sand is shoved along the kick
-// a heap of sand just past the feet (one paint: many small paints in one frame don't all land)
-await scene([['SAND', [24, 2.5, 64.5], 2.5]], [19.5, 0, 64.5], RIGHT, -0.6);
+// ---- kick: a small heap of sand: the clump the boot meets flies off along the kick
+// a small heap just past the feet (one paint: many small paints in one frame don't all land)
+await scene([['SAND', [22.5, 1.5, 64.5], 1.2]], [20.5, 0, 64.5], RIGHT, -0.35);
 await wait(1500);
 const sx0 = await sandX();
+// aim the boot at the slumped heap's near side, at the floor layer of sand (the hip is kick.js KICK_HIP up)
+const KICK_HIP_CELLS = 2.6, NEAR_SIDE = 0.5, SAND_LAYER = 0.5;
+await ev(([sx, hipUp, near, layer]) => {
+  const pov = window.__app.pov, q = pov.player.pos;
+  pov.setLook(-Math.PI / 2, Math.atan2(q.y + layer - (q.y + hipUp), sx - near - q.x));
+}, [sx0, KICK_HIP_CELLS, NEAR_SIDE, SAND_LAYER]);
 c0 = await census();
 await wait(700);   // the kick recovers
 k = await kick();
-await wait(700);
+// the clump flies (ballistics.js) and lands back in the sim: wait for it
+const FLIGHT_WAIT_MS = 4000, POLL_MS = 100;
+let flew = false;
+for (let t = 0; t < FLIGHT_WAIT_MS; t += POLL_MS) {
+  const c = await ev(() => window.__app.pov.player.kicker.carrying);
+  flew ||= c.flying;
+  if (t > 0 && !c.on) break;
+  await wait(POLL_MS);
+}
+await wait(300);   // settle where it landed
 const sx1 = await sandX();
+console.log('  last kicked clump:', JSON.stringify(await ev(() => window.__app.pov.player.kicker.lastCarry)));
 c1 = await census();
 if (k?.hit !== 'cell') console.log('  kick ray crossed', JSON.stringify(await ev(() => window.__app.pov.player.kicker.walked)), 'feet', (await player()).pos.map((x) => x.toFixed(2)).join(','));
 check('kick shoves loose sand away (mean x)', k?.hit === 'cell' && sx1 > sx0, `x ${sx0.toFixed(2)}→${sx1.toFixed(2)}, kick ${JSON.stringify(k)}`);
+const sandCellKg = await ev(async () => (await import('/src/pov/tug.js')).cellKg((await import('/src/elements.js')).E.SAND));
+check('the kicked sand flies (a projectile) and lands back in the sim', flew, `flew ${flew}`);
+check('the boot moves the grains it meets, not the heap (one cell\'s mass)', k?.hit === 'cell' && Math.abs(k.mass - sandCellKg) < 1e-6,
+  `struck ${typeof k?.mass === 'number' ? k.mass.toFixed(1) : k?.mass} kg, a sand cell ${sandCellKg.toFixed(1)} kg`);
 check('sand conserved', (c0.SAND ?? 0) === (c1.SAND ?? 0), `${c0.SAND}→${c1.SAND}`);
 
 // ---- kick: in the air, a rock wall throws you back (the wall kick)

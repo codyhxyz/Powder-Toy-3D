@@ -176,11 +176,19 @@ of charge, an abortable charge and "approximately two seconds" of standby betwee
   `shaders/povKick.js KICK`): weak solids break into debris by the melee energy rule (ENERGY 16: glass, ice,
   plants; not wood, rock or metal) and loose matter and the debris are shoved.
 - **Momentum, `pov/tug.js`:** the foot drives the pair apart at 14 m/s (a martial artist's front kick; it is
-  also a Noita jump's speed), split by inverse mass. A body is 70 kg, the struck lump what its cells weigh
-  (falloff-weighted over the patch: a 30 cm cell of sand is 43 kg), and a solid the boot doesn't break, or
-  the floor, is anchored (infinite). So kicking a wall in the air throws you off it at 14 m/s, kicking the
-  floor lifts you about a jump's height, and a heap heavier than you barely gives while you bounce off it;
-  a lone clump or a body (half each) moves. Standing, the ground braces you (sideways and downward
+  also a Noita jump's speed), split by inverse mass. A body is 70 kg, the struck lump what its cells weigh,
+  and a solid the boot doesn't break, or the floor, is anchored (infinite). Broken debris counts over the
+  patch (falloff-weighted); loose matter has no cohesion, so only the cell under the sole counts and moves
+  (`SOLE_CELLS`; a 30 cm cell of sand is 43 kg, so it leaves at ~9 m/s): you kick the bit of a heap in front
+  of your foot, never the whole heap. A boot under a heap lifts what rests on it, so the clump that flies
+  is the top of the struck column (`SURFACE_REACH` 3 cells). It's thrown up and forward at `SPLASH_ANGLE` (50°: splashed sand
+  leaves its bed at 40-60°), so a kick into a pile throws sand out of it instead of driving it into the
+  ground, and flies as a projectile (`ballistics.js`, kind `grain`: real speed, real 1 g, a dust trail of
+  its colour off `kick:grain`) until it lands, where it goes back into the sim at its arrival speed. It's
+  taken out and put back through the cell transfer, as the shovel and the hook move matter, so none is
+  lost or made: on the sim's fast clock a real kick's few m/s would stop within a cell. An NPC's body has
+  no projectile engine, so its kicked sand is set down at the end of its reach. So kicking a wall in the air throws you off it at 14 m/s,
+  kicking the floor lifts you about a jump's height, kicked sand or water flies, and a body takes half. Standing, the ground braces you (sideways and downward
   absorbed), as with the gun's recoil. The reaction is one `applyImpulse`, which the Noita ease then treats
   like a rocket's push.
 - Shows: the figure's front kick (`figure.js s.kick`: chamber, extend, retract), a boot swung up into the

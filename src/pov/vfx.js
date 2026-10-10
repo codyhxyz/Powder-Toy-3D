@@ -65,6 +65,7 @@ const SPARK_SPREAD = 0.8;               // how far from the normal the sparks sc
 // ---- dust and chips (powders, broken solids), tinted by the element hit
 const DUST_GUN = 5;
 const DUST_AXE = 3;
+const DUST_GRAIN = 2;   // dust puffs a kicked clump of sand trails per frame of flight (kick:grain)
 const CHIPS_GUN = 6;                    // only when a solid broke
 const CHIPS_AXE = 4;
 const DUST_SIZE = [0.5, 0.9];           // cells across at birth...
@@ -637,6 +638,9 @@ export function createVfx(env) {
       // bullets streak, rockets smoke; a thrown bomb (and a rocket's body) is drawn by its tool
       if (e.kind === 'round') tracer(toWorld(e.from, vA), toWorld(e.to, vB));
       else if (e.kind === 'rocket') rocketTrail(toWorld(e.from, vA), toWorld(e.to, vB));
+    }),
+    povEvents.on('kick:grain', (e) => {
+      if (live() && e.to && e.id >= 0) dust(toWorld(e.to, vA), DUST_GRAIN, vB.set(0, 1, 0), e.id);
     }),
     povEvents.on('blast', (e) => {
       if (live() && e.point) blast(toWorld(e.point, vA));
