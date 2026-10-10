@@ -299,6 +299,19 @@ start with one full of water (Noita's runs do), and once it's thrown Q (the pale
   oil sickens (0.08), whiskey (nt-mat's element) adds 30 s of Drunk per full drink (Noita's number): the `drunk`
   event, which feel.js turns into a slow sway of the view, full at Noita's "Wasted" (45 s). A drink's hurt passes the
   Energy Shield (`player.hurt(..., { shielded: false })`). Phase 2 (statuses) is more rows.
+- **Noita's potions** (`src/pov/potions.js`, phase 2): each magical liquid (nt-mat's elements) gives its status by
+  touch (`registerStain`, 20 s/s with the whole skin in it, up to its submerge time) and by drink (a full drink gives the
+  submerge time and drinks add up). Times are the Noita wiki's submerge times.
+
+  | Status | Element | Time | Effect | Where |
+  |---|---|---|---|---|
+  | Levitating 🪶 | LEVITATIUM | 20 s | the jet flies on no fuel, climbing 75% faster (Noita's Faster Levitation) | player.js `LEVITATE_RISE` |
+  | Teleportitis 🌀 | TELEPORTATIUM | 5 s | every 1.5–3.5 s a jump of 16–64 cells (Noita's shortest, 128 px) to a safe open spot: the top of a column, on solid or powder, the body's box clear of matter and nothing hot near; none found, no jump. Event `teleport` `{ from, to }` | potions.js `safeSpot` (the NPCs' world readback, ai/world.js), player.js `teleport()` |
+  | Regeneration 💚 | HEALTHIUM | 7.5 s | heals 10% of a life a second | player.js `heal()` |
+  | Berserk 💢 | BERSERKIUM | 15 s | the body's weapons hurt bodies 2× (status `damage` → `status.damageScale` → targets.js `dealtScale`, used by melee.js and ballistics.js) | — |
+  | Charmed 💕 | PHEROMONE | 20 s | NPCs don't hunt the player while the NPC or the player is charmed (npc.js `charmed`) | Noita charms creatures; the player's own charm is our call |
+  | Polymorph 🐑 | POLYMORPHINE | 20 s | helpless: no tools (status `noTools` → tools/index.js puts the tool away). Becoming a sheep is a follow-up | — |
+  | Toxic ☣️ | TOXIC (drink) | 6 s a drink | nt-status's Toxic (touching sludge already gives it) | — |
 - Check: `node tools/flask-check.mjs [--port …] [--shot file.png]` (a dev server; AC power).
 
 ## Gunplay v2 (2026-10-08): events and ownership

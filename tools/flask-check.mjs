@@ -4,7 +4,8 @@
 // out, the flask fills from a pool, a drink takes Noita's share of each material,
 // sand mixes in, and a throw shatters it into exactly FLASK_GLASS cells of
 // broken glass plus everything it held. Part 2 goes through the real shell and
-// body: H drinks, lava kills with its cause, whiskey's row sways the view.
+// body: H drinks, lava kills with its cause, whiskey's row sways the view, and each of
+// Noita's potions (potions.js) gives its status by touch and by drink.
 // usage: node tools/flask-check.mjs [--port 5433] [--shot file.png]   (needs a dev server; AC power)
 import { chromium } from 'playwright';
 const args = process.argv.slice(2);
@@ -227,6 +228,107 @@ try {
     return { d0, d1: pov.feel.drunk, sway: pov.feel.drunkSway, roll: pov.feel.offsets.roll };
   });
   check('whiskey: 30 s of Drunk, and the view sways', Math.abs(dr.d0 - 30) < 0.5 && dr.sway > 0.05 && dr.d1 < dr.d0, dr);
+  // ================= Noita's potions (potions.js): each status by touch and by drink, through the real body
+  const POTIONS = [['LEVITATIUM', 'LEVITATING'], ['TELEPORTATIUM', 'TELEPORTITIS'], ['HEALTHIUM', 'REGENERATION'],
+    ['BERSERKIUM', 'BERSERK'], ['PHEROMONE', 'CHARMED'], ['POLYMORPHINE', 'POLYMORPH'], ['TOXIC', 'TOXIC']];
+  const ERASE = -1;   // the Erase brush's id (elements.js TOOLS)
+  const POOL_R = 2;   // cells: the pool painted round the legs
+  const potionRun = (fn, arg) => p.evaluate(fn, arg);
+  // touch: a pool round the legs until the status comes on (or 3 s), then the pool goes and so do the statuses
+  const touch = (key, status) => potionRun(async ([key, status, ERASE, POOL_R]) => {
+    const { E } = await import('/src/elements.js');
+    const a = window.__app, pl = a.pov.player, V3 = a.camera.position.constructor;
+    pl.status.clearAll();
+    const c = new V3(pl.pos.x, pl.pos.y + POOL_R, pl.pos.z);
+    a.sim.paint({ center: c, radius: POOL_R, shape: 1, tool: E[key], rate: 4, replace: true });
+    const t0 = performance.now();
+    while (!pl.status.has(status) && performance.now() - t0 < 3000) await new Promise((r) => setTimeout(r, 50));
+    const on = pl.status.has(status), left = pl.status.time(status), ms = Math.round(performance.now() - t0);
+    a.sim.paint({ center: c, radius: POOL_R + 2, shape: 1, tool: ERASE, rate: 4, replace: true });
+    await new Promise((r) => setTimeout(r, 300));
+    pl.status.clearAll();
+    return { on, left: +left.toFixed(1), ms };
+  }, [key, status, ERASE, POOL_R]);
+  // drink: a flask of it, H through the shell
+  const fill = (key, n = 26) => potionRun(async ([key, n]) => {
+    const { E, ELEMENTS } = await import('/src/elements.js');
+    const pov = window.__app.pov, l = pov.toolbelt.tool('FLASK').load;
+    pov.player.status.clearAll();
+    l.cells.length = 0;
+    for (let i = 0; i < n; i++) l.cells.push([E[key], ELEMENTS[E[key]].temp, 0, 0.5]);
+    l.version++;
+  }, [key, n]);
+  const gulp = async () => { await p.keyboard.down('h'); await p.waitForTimeout(80); await p.keyboard.up('h'); await p.waitForTimeout(250); };
+  const statusOf = (status) => potionRun((s) => { const pl = window.__app.pov.player; return { on: pl.status.has(s), left: +pl.status.time(s).toFixed(1) }; }, status);
+  await p.evaluate(() => { const pl = window.__app.pov.player; pl.spawn(pl.pos.clone()); });   // full health, no drunk carry-over
+  await p.waitForTimeout(700);
+  for (const [key, status] of POTIONS) {
+    const t = await touch(key, status);
+    check(`${status} by touching ${key}`, t.on, t);
+    await fill(key);
+    await gulp();
+    const d = await statusOf(status);
+    check(`${status} by drinking ${key}`, d.on, d);
+    await p.evaluate(() => window.__app.pov.player.status.clearAll());
+    await p.waitForTimeout(650);   // the gulp's refire wait
+  }
+  // what they do
+  const fx = await p.evaluate(async () => {
+    const pov = window.__app.pov, pl = pov.player, belt = pov.toolbelt;
+    const { dealtScale } = await import('/src/pov/targets.js');
+    const out = {};
+    // Regeneration heals 10% of a life a second
+    pl.hurt(0.5, 'test', { shielded: false });
+    const h0 = pl.health;
+    pl.status.add('REGENERATION', 7.5);
+    await new Promise((r) => setTimeout(r, 1500));
+    out.regen = { h0: +h0.toFixed(2), h1: +pl.health.toFixed(2) };
+    pl.status.clearAll();
+    // Berserk doubles what the player's weapons deal
+    out.berserk = { off: dealtScale(null) };
+    pl.status.add('BERSERK', 15);
+    out.berserk.on = dealtScale(null);
+    pl.status.clearAll();
+    // Polymorph: no tools (the flask's gulp does nothing)
+    belt.select('FLASK');
+    const n0 = belt.tool('FLASK').load.count;
+    pl.status.add('POLYMORPH', 20);
+    out.poly = { n0 };
+    return out;
+  });
+  await gulp();
+  fx.poly.n1 = await p.evaluate(() => window.__app.pov.toolbelt.tool('FLASK').load.count);
+  await p.evaluate(() => window.__app.pov.player.status.clearAll());
+  check('Regeneration heals ~10% a second', fx.regen.h1 - fx.regen.h0 > 0.08, fx.regen);
+  check('Berserk: the player\'s weapons deal 2×', fx.berserk.off === 1 && fx.berserk.on === 2, fx.berserk);
+  check('Polymorph: no tools (H does nothing)', fx.poly.n1 === fx.poly.n0, fx.poly);
+  // Levitating: hold jump in the air: the jet climbs and the tank holds
+  const lev = await p.evaluate(async () => {
+    const pl = window.__app.pov.player;
+    pl.status.add('LEVITATING', 20);
+    return { y0: pl.pos.y };
+  });
+  await p.keyboard.down('Space');
+  await p.waitForTimeout(1500);
+  const lev1 = await p.evaluate(() => { const pl = window.__app.pov.player; return { y1: pl.pos.y, fuel: pl.jetFuel, jetting: pl.jetting }; });
+  await p.keyboard.up('Space');
+  await p.evaluate(() => window.__app.pov.player.status.clearAll());
+  await p.waitForTimeout(1200);
+  check('Levitating: flies on a full tank', lev1.y1 - lev.y0 > 5 && lev1.fuel === 1, { ...lev, ...lev1 });
+  // Teleportitis: jumps to a safe open spot within a few seconds
+  const tp = await p.evaluate(async () => {
+    const pov = window.__app.pov, pl = pov.player;
+    const jumps = [];
+    const off = pov.events.on('teleport', (e) => { if (!e.by) jumps.push({ from: e.from.toArray().map(Math.round), to: e.to.toArray().map(Math.round) }); });
+    pl.status.add('TELEPORTITIS', 5);
+    const t0 = performance.now();
+    while (!jumps.length && performance.now() - t0 < 6000) await new Promise((r) => setTimeout(r, 100));
+    off();
+    pl.status.clearAll();
+    await new Promise((r) => setTimeout(r, 800));
+    return { jumps, ms: Math.round(performance.now() - t0), health: +pl.health.toFixed(2), onGround: pl.onGround, dead: pl.dead };
+  });
+  check('Teleportitis: a jump to a safe spot, and the body stands there', tp.jumps.length > 0 && !tp.dead && tp.onGround, tp);
   // a flask of lava: one gulp kills, and says so
   const lava = await p.evaluate(async () => {
     const { E, ELEMENTS } = await import('/src/elements.js');
