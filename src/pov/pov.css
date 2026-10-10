@@ -83,6 +83,10 @@ body.pov-locked canvas { cursor: none; }
 /* Where the centred hotbar (tools/hotbar.css: 10 slots, 568px) would reach the
    vitals (16px + 210px from the left), the vitals sit above it instead. */
 @media (max-width: 1040px) { .pov-vitals { bottom: 88px; } }
+/* On narrow screens the tool stack and equipped name fill the bottom. */
+@media (max-width: 560px) {
+  .pov-vitals { top: 76px; bottom: auto; left: 12px; width: 160px; }
+}
 .pov-bar { display: flex; align-items: center; gap: 8px; }
 /* statuses (pov/status.js): Noita's row, each icon with its seconds left and a bar that runs down */
 .pov-statuses { display: flex; flex-wrap: wrap; gap: 4px; }

@@ -64,14 +64,17 @@
   palette lists them without loading the tools. Each `*.tool.js` spreads `...gear('KEY')` into its definition.
 - Slots are Half-Life 2's weapon buckets: `SLOTS = ['Dig', 'Build', 'Guns', 'Explosives', 'Gadgets', 'Light']`,
   one number key each. A key picks the tool last held in its slot; pressed again with that slot in hand it steps
-  to the next (HL2's `hud_fastswitch`). The bar stays six wide however many tools there are, with a pip per
-  tool in a slot and the slot's names shown after a switch.
+  to the next (HL2's `hud_fastswitch`). The bar has six labeled slots, each with a tool-position counter.
+  Switching shows a vertical list with icons, names, an Equipped marker, and a cycling hint.
+  The list closes after four seconds of inactivity; the equipped name stays visible.
+  With the pointer unlocked, clicking a row equips that tool. Holding a number key does not cycle repeatedly.
 - `src/pov/tools/inventory.js` is what the player carries: the catalog's `start` tools plus every tool given
   since, kept in localStorage (`tpt3d.pov.given`). It lives outside the toolbelt, so a tool given in the god
   view is in hand at the next drop-in.
 - Giving: the palette's Tools group lists every tool (elements.js `GEAR_ITEMS`, ids −300…). A click gives it
   (app.js `giveGear`). In first person, `Q` frees the mouse and shows the palette at those tiles: GMod's
-  spawn menu. The SMG, sniper rifle and rocket launcher start out there.
+  spawn menu. The pistol, SMG, and sniper rifle are available in slot 3 from the first drop-in.
+  The rocket launcher and other non-start tools still come from the spawn menu.
 
 ## Guns (2026-10-10)
 
