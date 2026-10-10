@@ -79,8 +79,8 @@ const WORLD_CAM_SPEED_MAX = 9;
 const SIGN_TOOL = -5;
 const SPAWNER_KIND = { [-6]: SPAWNER.ENEMY, [-7]: SPAWNER.PLAYER, [-20]: SPAWNER.JEEP, [-21]: SPAWNER.HOVERBIKE };   // the Spawners tools' kinds
 const SPAWNER_SET = {
-  [SPAWNER.ENEMY]: 'Enemy spawner set: press F to fight', [SPAWNER.PLAYER]: 'Player spawn set: F drops you in here',
-  [SPAWNER.JEEP]: 'Jeep pad set: press F, walk up to it and press E', [SPAWNER.HOVERBIKE]: 'Hoverbike pad set: press F, walk up to it and press E',
+  [SPAWNER.ENEMY]: 'Enemy spawner set: press V to fight', [SPAWNER.PLAYER]: 'Player spawn set: V drops you in here',
+  [SPAWNER.JEEP]: 'Jeep pad set: press V, walk up to it and press E', [SPAWNER.HOVERBIKE]: 'Hoverbike pad set: press V, walk up to it and press E',
 };
 // the lab's own enemy spawner: its open south floor, as shares of the grid (the old lab NPC's arena)
 const LAB_ENEMY_AT = [0.555, 0.86];
@@ -539,7 +539,7 @@ function loadPreset(name, undoable = true) {
 
 // A new scene clears the spawners; the lab comes with an enemy spawner of its
 // own. An arena sets its shrines' perk orbs, its team banners, and player
-// spawners at red's spawn points (F drops you into the red base).
+// spawners at red's spawn points (V drops you into the red base).
 function resetSpawners(name) {
   perkOrbs?.clear();
   arenaMarkers?.clear();
@@ -721,7 +721,7 @@ function giveGear(id) {
   if (pov?.active) {
     pov.closeMenu();
     hud.toast(fresh ? `${it.name} added: ${slot}` : `${it.name}: ${slot}`);
-  } else hud.toast(`${it.name} ${fresh ? 'added to your tools' : 'is in your tools'}: press F, then ${slot}`);
+  } else hud.toast(`${it.name} ${fresh ? 'added to your tools' : 'is in your tools'}: press V, then ${slot}`);
 }
 
 // Closing a construction's options goes back to the last element or tool.
@@ -1101,7 +1101,9 @@ addEventListener('keydown', (e) => {
   if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); return; }
   if (mod) return;
   const k = e.key;
-  if (k === 'f' || k === 'F') { if (!e.repeat) actions.firstPerson(); return; }
+  // V is noclip, Garry's Mod's: out of the body to the god view's free camera, and back in.
+  // F drops in too (in the body it swaps first and third person: pov/index.js).
+  if (k === 'v' || k === 'V' || ((k === 'f' || k === 'F') && !pov?.active)) { if (!e.repeat) actions.firstPerson(); return; }
   if ((k === 't' || k === 'T') && mp.chatAvailable) { e.preventDefault(); mp.openChat(); return; } // Minecraft's chat key, POV included
   if (pov?.blocksKey(e)) return;   // POV owns movement, Space and the digits while active
   if (e.code === 'Space') { e.preventDefault(); setPaused(!settings.paused); }

@@ -236,13 +236,13 @@ export const TOOLS = [
     desc: 'Click a surface to pin a label. {t}, {p} and {e} show live temperature, pressure and element.' },
   // Spawners are handled by the app too (src/spawners.js): markers, not cells.
   { id: -6, key: 'ENEMY', abbr: 'NPC', name: 'Enemy spawner', color: '#e0453a',
-    desc: 'Click a surface: in first person (F) an enemy with every tool appears here, and comes back after it dies. Click it again to remove it.' },
+    desc: 'Click a surface: in first person (V) an enemy with every tool appears here, and comes back after it dies. Click it again to remove it.' },
   { id: -7, key: 'SPAWN', abbr: 'SPWN', name: 'Player spawn', color: '#3fa7ff',
-    desc: 'Click a surface: F drops you in at the spawn nearest the cursor, and you respawn there. Click it again to remove it.' },
+    desc: 'Click a surface: V drops you in at the spawn nearest the cursor, and you respawn there. Click it again to remove it.' },
   { id: -20, key: 'JEEPPAD', abbr: 'JEEP', name: 'Jeep pad', color: '#8fa04a',
-    desc: 'Click open ground: in first person (F) a jeep waits here (E to drive it), and a new one comes a few seconds after it is destroyed. Click it again to remove it.' },
+    desc: 'Click open ground: in first person (V) a jeep waits here (E to drive it), and a new one comes a few seconds after it is destroyed. Click it again to remove it.' },
   { id: -21, key: 'BIKEPAD', abbr: 'HOVR', name: 'Hoverbike pad', color: '#5fd0e0',
-    desc: 'Click open ground: in first person (F) a hoverbike waits here (E to ride it; it skims water), and comes back after it is destroyed. Click it again to remove it.' },
+    desc: 'Click open ground: in first person (V) a hoverbike waits here (E to ride it; it skims water), and comes back after it is destroyed. Click it again to remove it.' },
 ];
 export const isSpawnerTool = (id) => id === -6 || id === -7 || id === -20 || id === -21;
 
@@ -270,7 +270,7 @@ export const BUILDS = [
   { id: -106, key: 'FOUNTAIN', abbr: 'FNTN', name: 'Fountain', color: '#93a6bd',
     desc: 'A stone basin with a spout fed by an endless water clone. It will overflow eventually.' },
   { id: -108, key: 'SHRINE', abbr: 'SHRN', name: 'Shrine', color: '#e9c46a',
-    desc: `Noita's Holy Mountain: a stone pavilion with ${SHRINE_OFFERS} random perks floating over its plinths. In first person (F), walk into one to take it, and the others vanish. Every world has one near where you start.` },
+    desc: `Noita's Holy Mountain: a stone pavilion with ${SHRINE_OFFERS} random perks floating over its plinths. In first person (V), walk into one to take it, and the others vanish. Every world has one near where you start.` },
   { id: -107, key: 'PROMPT', abbr: 'AI', name: 'Prompt', color: '#9b86e8',
     desc: 'Describe a construction and a model writes it, checked for leaks and loose powder before you place it. Or paste code from any chatbot.' },
   // The World's structures (constructions/structures.js, docs/structures.md): built to walk into at the default size.

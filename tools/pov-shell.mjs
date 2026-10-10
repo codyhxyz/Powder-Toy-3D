@@ -88,7 +88,7 @@ await frames(8);
 await shot('pov-standing');
 
 // third person
-await p.keyboard.press('v');
+await p.keyboard.press('f');
 await p.waitForTimeout(900);
 const tp = await ev(() => {
   const a = window.__app, pl = a.pov.player, s = a.scale;
@@ -99,7 +99,7 @@ check('third person pulls back', tp.d > 6, tp.d.toFixed(2) + ' cells');
 check('figure visible in third person', tp.fig);
 check('viewmodel hidden in third person', !tp.vm);
 await shot('pov-third');
-await p.keyboard.press('v');
+await p.keyboard.press('f');
 await p.waitForTimeout(800);
 
 // HUD: lock prompt (headless can't lock), heat, underwater, hurt
@@ -142,7 +142,7 @@ check('respawned', !resp.dead && !resp.overlay, JSON.stringify(resp));
 await p.waitForTimeout(900);
 
 // pop out
-await p.keyboard.press('f');
+await p.keyboard.press('v');
 const outS = [];
 for (let i = 0; i < 6; i++) {
   await p.waitForTimeout(150);
