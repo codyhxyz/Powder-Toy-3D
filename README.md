@@ -246,8 +246,9 @@ sky, dimmed and shifted blue the way a night-adapted eye sees it. A per-frame vo
 optical depth through liquids, glass and gas, so water casts tinted shadows and smoke casts soft ones. Shadows soften with
 distance from their caster (PCSS: the sun is a disc); at a contact edge within a texel, an exact DDA ray toward the sun
 settles it. Indirect light comes from one probe per 4×4×4 brick: every frame, rays from the probes march the brick map and
-collect the sky, the ground and the light bounced off lit matter (fed back over frames, so bounces add up), stored as L1
-spherical harmonics with the sky's visibility. Surfaces take their ambient light and blurry reflections from the probes,
+collect the sky, the ground, the light bounced off lit matter (fed back over frames, so bounces add up) and the light
+glowing matter gives off, so lava or crystal lights a whole room by bounce, stored as L1 spherical harmonics with the
+sky's visibility. Surfaces take their ambient light and blurry reflections from the probes,
 plus near-field occlusion from the fields; polished ones still see the sky itself where it is open.
 Three upgrades sit on top, each switchable in Settings → Lighting (all on by default). Contact shadows and bounce: two
 short rays per pixel walk the voxel grid; a ray that hits matter within six cells sees that matter's own sunlit, probe-lit
@@ -262,7 +263,13 @@ molten rock outshines daylight. Surfaces emit what they don't reflect (Kirchhoff
 than its cracks; hot steel grows a patchy black scale. Some matter also glows by itself at any temperature (a material's
 `emit` in `src/gfx/materials.js`): crystal is fluorite, lit by the blue-violet band its europium gives off under ultraviolet
 light, here without the lamp. One function, `emission()`, adds that to the thermal glow for every path that draws matter's
-light. Exposed glowing faces feed a coarse light volume that lights the surroundings. The raymarcher writes depth, so three.js lines and the brush composite correctly.
+light. Exposed glowing faces feed a coarse light volume that lights the surroundings. A crystal's face shows the glow
+from inside it: only the share inside its escape cone leaves through a face, the rest is trapped and guided out at its
+edges, and it bands with the fluorite's colour zoning.
+
+**Eyes adjust to the dark** (`src/gfx/post.js`, `ADAPT`): histogram auto exposure as in Unreal and Frostbite, only ever
+upward. A view over a set brightness keeps the fixed exposure untouched; in a cave or at night the exposure rises by up
+to 4 stops, over a few seconds into the dark and faster back into the light (Pattanaik et al. 2000). The raymarcher writes depth, so three.js lines and the brush composite correctly.
 
 **Empty space** is crossed in jumps: a distance map over the bricks (`brickDistFrag` in `src/shaders/passes.js`) says
 how far each empty brick is from anything, and camera, shadow, sun and reflection rays leap that whole empty cube at once.

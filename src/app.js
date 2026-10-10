@@ -1300,7 +1300,7 @@ function frame(now) {
     `${camera.matrixWorld.elements}|${camera.projectionMatrix.elements}|${pixelRatio}|${innerWidth}x${innerHeight}`
     + `|${JSON.stringify(settings)}|${JSON.stringify(gfx)}|${JSON.stringify(post.settings)}|${sceneKey(scene)}`
     + `|${win?.far?.chunksDrawn}`,   // a world scene's far field filling in (world/far.js)
-    runDerived || wantShot);
+    runDerived || wantShot || post.adapting);   // (eyes adjusting to the dark: gfx/post.js ADAPT)
   // a frame's dt measures the drawing rate only when the frame before it drew too
   if (runView && renderedLast) { frames++; fpsTime += dt; }
   if (fpsTime > FPS_WINDOW) { fps = frames / fpsTime; frames = 0; fpsTime = 0; }
@@ -1343,7 +1343,7 @@ function frame(now) {
     gfxUniforms.uCaustics.value = settings.caustics;
     floorGrid.material.opacity = post.renderScale;
     edges.material.opacity = EDGE_OPACITY * post.renderScale;
-    post.render(scene, camera);   // its passes after the scene count as 'post' (postPass)
+    post.render(scene, camera, null, dt);   // its passes after the scene count as 'post' (postPass)
     prof.phase('other');
     // POV: the held tool, drawn over the finished frame in its own pass (no TAA, its
     // own depth, so it never clips into walls); before the screenshot reads the canvas
