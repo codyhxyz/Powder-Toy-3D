@@ -1,0 +1,15 @@
+/* vehicles (src/pov/vehicles/index.js): the E prompt, and health and speed while driving */
+.veh-hud { position: fixed; inset: 0; pointer-events: none; z-index: 5; display: none; font: 600 13px/1.2 system-ui, sans-serif; color: #f3efe6; }
+.veh-hud.on { display: block; }
+body.pov-nohud .veh-hud { display: none; }
+.veh-prompt { position: absolute; left: 50%; top: 58%; transform: translateX(-50%); display: none; padding: 6px 10px; border-radius: 8px; background: rgba(12, 12, 16, 0.55); text-shadow: 0 1px 2px #000; }
+.veh-prompt.on { display: block; }
+.veh-prompt kbd { display: inline-block; min-width: 18px; padding: 1px 5px; border-radius: 4px; background: #f3efe6; color: #15151a; text-align: center; font: 700 12px/16px system-ui, sans-serif; }
+.veh-panel { position: absolute; left: 50%; bottom: 96px; transform: translateX(-50%); display: none; width: 240px; padding: 8px 10px; border-radius: 10px; background: rgba(12, 12, 16, 0.55); }
+.veh-panel.on { display: grid; grid-template-columns: 1fr auto; gap: 6px 10px; align-items: center; }
+.veh-panel b { font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; font-size: 11px; opacity: 0.85; }
+.veh-panel em { font-style: normal; font-variant-numeric: tabular-nums; text-align: right; }
+.veh-panel i, .veh-panel u { grid-column: 1 / -1; height: 6px; border-radius: 3px; background: rgba(255, 255, 255, 0.15); overflow: hidden; }
+.veh-panel i s, .veh-panel u s { display: block; height: 100%; background: #7fd36a; text-decoration: none; transition: width 120ms linear; }
+.veh-panel i s.low { background: #e5533d; }
+.veh-panel u s { background: #5ff0ff; }

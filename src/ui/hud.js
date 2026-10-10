@@ -108,6 +108,7 @@ export function createHelp(onClose) {
         row('Use tool / its other action', 'Left', 'Right'),
         row('Pick a tool', '1', '–', '9'),
         row('First or third person', 'V'),
+        row('Get in or out of a vehicle (drive: W A S D, Space, Shift)', 'E'),
         row('Hide the HUD and hand', 'F1'),
         row('Free the mouse', 'Esc'),
         h('h3', { text: 'Simulation and interface' }),
