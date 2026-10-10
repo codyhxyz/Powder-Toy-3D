@@ -23,7 +23,13 @@ export function createToolbar({ views, settings, actions }) {
   const pause = btn('pause', 'Pause (Space)', actions.togglePause);
   const undo = btn('undo', 'Undo (⌘Z)', actions.undo);
   const recenter = btn('recenter', 'Reset camera (R)', actions.resetCamera);
-  const walk = btn('person', 'First-person mode (F)', actions.firstPerson);
+  // Camera: god view, or walking in first or third person; one click each (F and V do the same)
+  const camOpt = (id, label, title) => h('button', { type: 'button', title, 'data-cam': id, on: { click: () => actions.setCamera(id) } }, label);
+  const walk = h('div.seg.cam-seg', { role: 'group', 'aria-label': 'Camera' },
+    h('span.ico', { html: ICON.person }),
+    camOpt('god', 'God', 'God view: build and pour (F)'),
+    camOpt('first', '1st', 'Walk in first person (F, then V)'),
+    camOpt('third', '3rd', 'Walk in third person (V)'));
   const shot = btn('camera', 'Save screenshot (P)', actions.screenshot);
   const gear = btn('gear', 'Settings (,)', actions.toggleSettings);
   const help = btn('help', 'Keyboard shortcuts (?)', actions.toggleHelp);
@@ -89,6 +95,10 @@ export function createToolbar({ views, settings, actions }) {
     sync,
     open, close,
     get isOpen() { return isOpen; },
+    // 'god' | 'first' | 'third'
+    setCamera(id) {
+      for (const b of walk.querySelectorAll('button')) b.classList.toggle('on', b.dataset.cam === id);
+    },
     setSettingsOpen: (v) => gear.classList.toggle('on', v),
     setUndoEnabled: (v) => { undo.disabled = !v; undo.style.opacity = v ? 1 : 0.4; },
   };

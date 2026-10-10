@@ -3,7 +3,8 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import './ui/styles.css';
 import { Simulation } from './sim.js';
 import { volumeVert, volumeFrag, pickFrag, shadowFrag } from './shaders/render.js';
-import { ELEMENTS, E, toolById, isBuild } from './elements.js';
+import { ELEMENTS, E, toolById, isBuild, isSpawnerTool } from './elements.js';
+import { Spawners, SPAWNER, feetOnHit } from './spawners.js';
 import { buildPreset } from './presets.js';
 import { loadIsland, releaseGenerator } from './world/gpu.js';
 import { WorldWindow, WIN_STEP } from './world/window.js';
@@ -65,10 +66,15 @@ const WORLD_START_INLAND = 0.25;
 // (one WIN_STEP move every few frames), in scene units per second
 const WORLD_CAM_SPEED_MAX = 9;
 const SIGN_TOOL = -5;
+const SPAWNER_KIND = { [-6]: SPAWNER.ENEMY, [-7]: SPAWNER.PLAYER };   // the Spawners tools' kinds
+// the lab's own enemy spawner: its open south floor, as shares of the grid (the old lab NPC's arena)
+const LAB_ENEMY_AT = [0.555, 0.86];
 
 // ---------------------------------------------------------------- settings
+// the box the Scene row goes back to from World, and phones' grid
+const BOX_DEFAULT = '128';
 const DEFAULTS = {
-  size: '128', preset: 'lab',
+  size: 'world', preset: 'lab',
   tool: E.SAND, radius: 5, shape: 0, rate: 1, replace: false,
   steps: 4, gravity: 0.025, paused: false,
   view: 0, camSpeed: 1, upscale: 'quality', dockCollapsed: false,
@@ -77,18 +83,26 @@ const DEFAULTS = {
   ...detailDefaults(),
   profiler: false,
 };
-// Phones and tablets (touch-first, no hover) start on the plain look: no extra
-// lighting passes, no close-up detail, and the cheapest upscaling. Only the
-// defaults change; anything the player picks in Settings still sticks.
+// Phones and tablets (touch-first, no hover) start on the plain look in the
+// Lab box: no World, no extra lighting passes, no close-up detail, and the
+// cheapest upscaling. Only the defaults change; anything the player picks in
+// Settings still sticks.
 const MOBILE = matchMedia('(hover: none) and (pointer: coarse)').matches;
 const MOBILE_DEFAULTS = {
+  size: BOX_DEFAULT, preset: 'lab',
   nearGI: false, glowLights: false, caustics: false, upscale: 'performance',
   ...Object.fromEntries(DETAIL.map((f) => [settingKey(f), false])),
 };
 if (MOBILE) Object.assign(DEFAULTS, MOBILE_DEFAULTS);
-// Saved settings predating the mobile defaults would keep the full look, so
-// those are switched to the plain look once (marked by MOBILE_LITE in the store).
-const MOBILE_LITE = 'mobileLite';
+// Saved settings keep every key, so a changed default would never reach anyone
+// who has played before. Each entry here is one such change, applied once to
+// settings saved before it (the store's REV_KEY counts the ones applied).
+const DEFAULT_CHANGES = [
+  MOBILE ? MOBILE_DEFAULTS : {},   // 1: phones start on the plain look
+  { size: DEFAULTS.size },         // 2: World by default (phones: the box)
+];
+const REV_KEY = 'rev';
+const LEGACY_MOBILE_KEY = 'mobileLite';   // rev 1's flag before REV_KEY
 const PERSIST = ['size', 'preset', 'tool', 'radius', 'shape', 'rate', 'replace', 'steps', 'gravity', 'view',
   'camSpeed', 'upscale', 'dockCollapsed', 'character', 'povFov', 'sensitivity', 'viewBobbing', 'sprintMode',
   'nearGI', 'glowLights', 'caustics', ...DETAIL.map(settingKey), 'profiler'];
@@ -103,7 +117,8 @@ try {
   // only keys still in use: values of removed settings must not linger
   const saved = JSON.parse(localStorage.getItem(STORE) || '{}');
   for (const k of PERSIST) if (k in saved) settings[k] = saved[k];
-  if (MOBILE && !saved[MOBILE_LITE]) Object.assign(settings, MOBILE_DEFAULTS);
+  const rev = saved[REV_KEY] ?? (saved[LEGACY_MOBILE_KEY] ? 1 : 0);
+  for (const change of DEFAULT_CHANGES.slice(rev)) Object.assign(settings, change);
 } catch { /* storage unavailable */ }
 const params = new URLSearchParams(location.search);
 const knownSize = (s) => s in SIZES || s in WORLDS;
@@ -113,7 +128,9 @@ if (params.get('preset')) settings.preset = params.get('preset');
 const worldSeed = params.has('seed') ? Number(params.get('seed')) >>> 0 : undefined;
 if (!knownSize(settings.size)) settings.size = DEFAULTS.size;
 // the box size the Scene row goes back to from World
-let boxSize = settings.size in SIZES ? settings.size : DEFAULTS.size;
+let boxSize = settings.size in SIZES ? settings.size : BOX_DEFAULT;
+// a scene named in the URL is a box scene (World has its own), as in the Scene row
+if (params.get('preset') && !params.get('size') && settings.size in WORLDS) settings.size = boxSize;
 if (!toolById(settings.tool)) settings.tool = DEFAULTS.tool;
 if (!VIEWS.some((v) => v.id === settings.view)) settings.view = 0;
 if (!['wizard', 'real', 'stick'].includes(settings.character)) settings.character = DEFAULTS.character;
@@ -123,7 +140,7 @@ let saveTimer = 0;
 function save() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
-    try { localStorage.setItem(STORE, JSON.stringify({ ...Object.fromEntries(PERSIST.map((k) => [k, settings[k]])), [MOBILE_LITE]: MOBILE })); } catch { /* ignore */ }
+    try { localStorage.setItem(STORE, JSON.stringify({ ...Object.fromEntries(PERSIST.map((k) => [k, settings[k]])), [REV_KEY]: DEFAULT_CHANGES.length })); } catch { /* ignore */ }
   }, 300);
 }
 
@@ -142,6 +159,7 @@ document.getElementById('app').appendChild(renderer.domElement);
 const post = createPost(renderer, { pixScale: gfxUniforms.uPixScale });
 
 const scene = new THREE.Scene();
+let spawners = null;   // enemy and player spawners (spawners.js), made once the volume is
 const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.05, 200);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
@@ -426,9 +444,17 @@ function loadPreset(name, undoable = true) {
   else buildPreset(name, sim);
   post.reset();
   signs?.clear();
+  resetSpawners(name);
   pov?.worldReplaced();
   save();
   return true;
+}
+
+// A new scene clears the spawners; the lab comes with an enemy spawner of its own.
+function resetSpawners(name) {
+  if (!spawners) return;
+  spawners.clear();
+  if (name === 'lab' && !win) spawners.add(SPAWNER.ENEMY, new THREE.Vector3(Math.round(sim.g.nx * LAB_ENEMY_AT[0]), 0, Math.round(sim.g.nz * LAB_ENEMY_AT[1])));
 }
 
 // ---------------------------------------------------------------- signs (optional module)
@@ -528,7 +554,7 @@ function updateBrush() {
     builds?.update({ hover, active: false });
     return;
   }
-  if (settings.tool !== SIGN_TOOL && !isBuild(settings.tool)) {
+  if (settings.tool !== SIGN_TOOL && !isBuild(settings.tool) && !isSpawnerTool(settings.tool)) {
     if (painting) {
       // a box's brush stops at its walls; a world's window has none, so beyond it there's no brush
       plane.constant = -dragY;
@@ -620,6 +646,13 @@ const actions = {
   },
   screenshot: () => { wantShot = true; },
   firstPerson: () => { painting = false; pov?.toggle(); },
+  // 'god' leaves the walking body; 'first' / 'third' drops in, or switches the camera if already in
+  setCamera: (id) => {
+    if (!pov) { hud.toast('First person is still loading'); return; }
+    if (id === 'god') { if (camState() !== 'god') pov.exit(); return; }
+    pov.camera.third = id === 'third';
+    if (camState() === 'god') { painting = false; pov.enter(); }
+  },
   toggleSettings: () => setSettingsOpen(!settingsPanel.isOpen),
   toggleHelp: () => help.setOpen(!help.isOpen),
   setView,
@@ -853,6 +886,16 @@ function press(e) {
   if (settings.tool === SIGN_TOOL) {
     if (signs && hover.valid) signs.add({ cell: hover.cell.clone(), normal: faceNormal(hover.face) });
     else if (!signs) hud.toast('Signs are still loading');
+    return;
+  }
+  if (isSpawnerTool(settings.tool)) {
+    if (mp.guard()) return;
+    if (!hover.valid) { hud.toast('Click a surface to set it on'); return; }
+    const kind = SPAWNER_KIND[settings.tool];
+    const r = spawners.toggle(kind, feetOnHit(hover));
+    pacer.wake();
+    if (r === 'full') hud.toast('That many is the limit');
+    else hud.toast(r === 'removed' ? 'Spawner removed' : kind === SPAWNER.ENEMY ? 'Enemy spawner set: press F to fight' : 'Player spawn set: F drops you in here');
     return;
   }
   if (isBuild(settings.tool)) {
@@ -1111,6 +1154,9 @@ function saveScreenshot() {
   });
 }
 
+// the camera the toolbar shows: god view, or the body's first / third person
+const camState = () => (!pov?.active || pov.mode === 'exiting' ? 'god' : pov.camera.third ? 'third' : 'first');
+let camShown = '';
 function frame(now) {
   requestAnimationFrame(frame);
   if (capCheck.feed(now, lastIdle)) hud.toast(CAP_NOTICE, CAP_NOTICE_MS);
@@ -1124,6 +1170,8 @@ function frame(now) {
   // only frames that rendered measure how expensive rendering is
   if (renderedLast) autoResolution(dt, clock.getElapsed());
 
+  const cam = camState();
+  if (cam !== camShown) toolbar.setCamera(camShown = cam);
   if (pov?.active) pov.update(dt);
   else {
     rig.update(dt);
@@ -1220,7 +1268,8 @@ function frame(now) {
 
     signs?.update();
     requestPick();
-  } else if (pov?.active) requestPick();   // the crosshair cell stays fresh for the tools
+  } else if (pov?.active) requestPick();
+  if (spawners) { spawners.setGhosts(!pov?.active); spawners.update(); }   // the crosshair cell stays fresh for the tools
 
   const povReadout = pov?.active ? pov.readout : null;   // the held tool's (the scanner's, the trowel's)
   if (povReadout) {
@@ -1254,6 +1303,8 @@ try {
       onChange: () => {},
     });
   }
+  spawners = new Spawners({ scene, getSim: () => sim, getVolume: () => volume, getScale: () => scale });
+  resetSpawners(settings.preset);
   if (BuildsClass) {
     builds = new BuildsClass({
       scene, camera, settings, getSim: () => sim, getVolume: () => volume, getScale: () => scale, onClose: leaveBuild,
@@ -1272,12 +1323,14 @@ try {
     renderer, scene, camera, controls, canvas: renderer.domElement, hud, settings, mp, isTyping,
     getSim: () => sim, getVolume: () => volume, getScale: () => scale,
     hover, pointerHover: () => pointerInside && !uiHover, pickRay,
+    getSpawners: () => spawners,
     requestRender: () => pacer.wake(),
     inWorld: () => !!win,
   });
   window.__app = {
     get sim() { return sim; }, get volume() { return volume; }, get scale() { return scale; }, get signs() { return signs; }, get builds() { return builds; },
     get pov() { return pov; },
+    get spawners() { return spawners; },
     get win() { return win; },
     // world mode: start the world over with the window at `origin` (world cells)
     worldLoad(origin) { win.load(origin); placeVolume(); post.reset(); pov?.worldReplaced(); },

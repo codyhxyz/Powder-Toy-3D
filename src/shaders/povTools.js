@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { prelude, quadVert, stateOutGLSL, copyThroughMain, stateUniforms } from './common.js';
 import { BODY_WIDTH } from '../pov/constants.js';
+import { ELEMENTS } from '../elements.js';
+import { PHYS as ENGINE } from '../physics.js';
 
 // GPU passes for the POV axe, gun, physgun and blowtorch (src/pov/tools/*.tool.js).
 //
@@ -78,19 +80,33 @@ export const PHYS_MODE = { HOLD: 0, FLING: 1 };
 // impulse into the loose matter in a cone from the muzzle along the aim. Every
 // cell gets the same momentum, so it leaves at
 //   Δv = IMPULSE / DENS · falloff
-// (water 0.8 cells/step, sand 0.5, metal dust 0.1, gases capped at V_MAX),
+// (water and sand at V_MAX, metal dust 0.2 cells/step, gases capped at V_MAX),
 // pointing away from the muzzle. falloff fades toward the cone's end and its
 // rim. The cone stops BITE cells past the aimed face, so walls shield what's
 // behind them. Solids don't move: there are no rigid bodies.
+//
+// The shove alone barely dents a pile or a pool: the struck layer runs into
+// the still matter behind it, which has nowhere to go. So where the cone meets
+// a surface it also leaves a pressure pulse (the air pressure the engine
+// already carries, react.js), centred PULSE_DEPTH past the face: just under a
+// water surface or inside a pile. The engine's pressure gradient then throws
+// what lies above and around it up and out, a splash or a crater. The pulse is
+// PULSE_SHARE of the pressure that breaks the weakest breakable solid
+// (hard · P_BREAK_PER_HARD), so it never smashes one.
+const WEAKEST_HARD = Math.min(...ELEMENTS.filter((e) => e.breakInto).map((e) => e.hard));
 export const BLAST = {
-  IMPULSE: 8,        // DENS · cells/step given to each cell at full strength
+  IMPULSE: 16,       // DENS · cells/step given to each cell at full strength
   RANGE: 16,         // cells from the muzzle
   RADIUS0: 1,        // cells, the cone's radius at the muzzle
   SPREAD: 0.35,      // cells of radius gained per cell along it
   BITE: 1.5,         // cells past the aimed face it still pushes
   EDGE: 0.6,         // share of the radius / range held at full strength before fading
   COOLDOWN: 0.4,     // s between blasts
+  PULSE_DEPTH: 1,    // cells past the aimed face the pulse is centred
+  PULSE_RADIUS: 2.5, // cells, the pulse's reach (full strength inside EDGE of it)
+  PULSE_SHARE: 0.8,  // share of the weakest solid's breaking pressure
 };
+BLAST.PULSE_P = BLAST.PULSE_SHARE * WEAKEST_HARD * ENGINE.P_BREAK_PER_HARD;
 
 const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
 const defines = (prefix, obj) =>
@@ -268,16 +284,21 @@ ${defines('BLAST', BLAST)}
 uniform vec3 uMuzzle;   // grid cells
 uniform vec3 uDir;      // unit aim
 uniform float uReach;   // cells along the aim it pushes, ≤ BLAST_RANGE
+uniform vec3 uPulse;    // grid cells: the pressure pulse's centre...
+uniform float uPulseP;  // ...and its pressure (0: the cone met no surface)
 
 void blast(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
+  int id = eid(a);
+  int k = KIND[id];
+  float rp = length(vec3(p) + 0.5 - uPulse);
+  if (k != K_SOLID && rp < BLAST_PULSE_RADIUS)
+    oB.w = max(b.w, uPulseP * (1.0 - smoothstep(BLAST_EDGE, 1.0, rp / BLAST_PULSE_RADIUS)));
   vec3 d = vec3(p) + 0.5 - uMuzzle;
   float along = dot(d, uDir);
   if (along < 0.0 || along > uReach) return;
   float radius = BLAST_RADIUS0 + BLAST_SPREAD * along;
   float r = length(d - along * uDir);
   if (r > radius) return;
-  int id = eid(a);
-  int k = KIND[id];
   if (k != K_POWDER && k != K_LIQUID && k != K_GAS) return;
   float w = (1.0 - smoothstep(BLAST_EDGE, 1.0, along / BLAST_RANGE)) * (1.0 - smoothstep(BLAST_EDGE, 1.0, r / radius));
   vec3 away = d / max(length(d), 1.0);

@@ -100,6 +100,12 @@ button { font: inherit; color: inherit; }
 .icon-btn svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .icon-btn:hover { background: var(--raise-hi); }
 .icon-btn.on { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent); }
+/* camera switch: God / 1st / 3rd */
+.cam-seg { display: flex; align-items: center; gap: 2px; padding: 3px 3px 3px 7px; }
+.cam-seg .ico { display: grid; color: var(--muted); margin-right: 3px; }
+.cam-seg .ico svg { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.cam-seg button { padding: 5px 8px; }
+.cam-seg button.on { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent); box-shadow: none; }
 .toolbar .sep { width: 1px; height: 20px; background: var(--line); margin: 0 3px; }
 
 .view-btn {

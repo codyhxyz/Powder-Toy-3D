@@ -19,8 +19,8 @@ import { addTarget, PLAYER } from './targets.js';
 
 const playerModule = import.meta.glob('./player.js', { eager: true })['./player.js'];
 const toolsModule = import.meta.glob('./tools/index.js', { eager: true })['./tools/index.js'];
-// The NPCs (npc.js: Yuka, the world model, the tools headless) load on first use, in the worlds that have them.
-const NPC_PRESETS = new Set(['lab']);
+// The NPCs (npc.js: Yuka, the world model, the tools headless) load on first use: one per enemy spawner (spawners.js).
+const ENEMY = 'enemy';
 const PLAYER_KNOCKBACK = 18;   // cells/s a blow from an NPC throws the player
 const PLAYER_KNOCK_UP = 0.4;   // its upward share
 const PLAYER_DAMAGE_TAKEN = 0.5;   // share of a weapon's damage the player takes from NPCs (the hero is tougher)
@@ -57,7 +57,8 @@ export function createPov(app) {
   const feel = createFeel({ hud: povHud });
   let vfx = null;                        // three.quarks effects, built on the first drop-in
   let figure = null, player = null, toolbelt = null;
-  let npc = null, npcAi = null, npcLoading = false;   // the NPC (npc.js) and what NPCs share, loaded on first use
+  const npcs = new Map();   // enemy spawner id → its NPC (npc.js)
+  let npcMod = null, npcAi = null, npcLoading = false;   // npc.js and what NPCs share, loaded on first use
   // the player as something weapons hit (an NPC's axe and gun; the player's own never hit it)
   addTarget({
     id: PLAYER,
@@ -227,6 +228,13 @@ export function createPov(app) {
   async function findDropPoint(out) {
     const g = app.getSim().g;
     const hv = app.hover;
+    // a player spawn: the one nearest the cursor's surface (or the box's middle)
+    const sp = app.getSpawners?.();
+    if (sp?.of('player').length) {
+      const near = app.pointerHover() && hv.valid ? hitToFeet(hv, g, new THREE.Vector3()) : new THREE.Vector3(g.nx / 2, 0, g.nz / 2);
+      const s = sp.nearestPlayer(near);
+      if (s) return out.copy(sp.feet(s));
+    }
     if (app.pointerHover() && hv.valid) return hitToFeet(hv, g, out);
     const hit = await app.pickRay(new THREE.Vector3(g.nx / 2, g.ny + 1, g.nz / 2), new THREE.Vector3(0, -1, 0));
     if (hit?.valid) return hitToFeet(hit, g, out);
@@ -326,7 +334,7 @@ export function createPov(app) {
     controls.enabled = true;
     controls.update();
     figure?.setVisible(false);
-    npc?.reset();
+    for (const n of npcs.values()) n.reset();
     viewmodel.visible = false;
     povHud.show(false);
     feel.reset();
@@ -403,29 +411,39 @@ export function createPov(app) {
     }
     speedH = Math.hypot(player.vel.x, player.vel.z);
 
-    // the NPCs: one hunts you in the lab, with every tool you have. Not in a
-    // world (g.windowed): the preset keeps its name there but the lab isn't
-    // loaded, and the NPCs don't move with the window (windowShifted).
-    const npcsWanted = NPC_PRESETS.has(app.settings.preset) && !g.windowed && (mode === 'on' || mode === 'entering') && !!toolbelt;
-    if (npcsWanted && !npc && !npcLoading) {
+    // the NPCs: one per enemy spawner, with every tool you have. Not in a world
+    // (g.windowed): the NPCs don't move with the window (windowShifted).
+    const sp = app.getSpawners?.();
+    const npcsWanted = !!sp && !g.windowed && (mode === 'on' || mode === 'entering') && !!toolbelt;
+    const homes = npcsWanted ? sp.of(ENEMY) : [];
+    if (homes.length && !npcMod && !npcLoading) {
       npcLoading = true;
-      import('./npc.js').then(({ createAi, createNpc }) => {
-        npcAi = createAi({ renderer, getSim: app.getSim });
-        npc = createNpc({
+      import('./npc.js').then((m) => { npcAi = m.createAi({ renderer, getSim: app.getSim }); npcMod = m; })
+        .catch((err) => console.error('NPCs failed to load', err));
+    }
+    if (npcMod) {
+      for (const s of homes) {
+        if (npcs.has(s.id)) continue;
+        const n = npcMod.createNpc({
           env: { renderer, scene, getSim: app.getSim, getVolume: app.getVolume, getScale: app.getScale, ballistics: toolbelt.ballistics },
           ai: npcAi,
+          home: () => sp.feet(s),   // it appears, and comes back, on its spawner
         });
-        scene.add(npc.root);
-        npc.bind(app.getVolume(), app.getSim().g);
-        npc.compile(renderer, camera, scene);
-      }).catch((err) => console.error('NPCs failed to load', err));
-    }
-    if (npc) {
-      if (npcsWanted) {
+        scene.add(n.root);
+        n.bind(app.getVolume(), g);
+        n.compile(renderer, camera, scene);
+        npcs.set(s.id, n);
+      }
+      // a spawner taken away takes its NPC with it
+      for (const [id, n] of npcs) {
+        if (homes.some((s) => s.id === id) || (npcsWanted === false && sp?.list.some((s) => s.id === id))) continue;
+        scene.remove(n.root); n.dispose(); npcs.delete(id);
+      }
+      if (npcsWanted && npcs.size) {
         npcAi.world.update(dt);
-        npc.bind(app.getVolume(), g);
-        npc.update(dt, { player, holding: toolbelt?.selectedKey ?? null, toWorld, worldToGrid, scale, stepsPerFrame: app.settings.paused ? 0 : app.settings.steps });
-      } else npc.reset();
+        const w = { player, holding: toolbelt?.selectedKey ?? null, toWorld, worldToGrid, scale, stepsPerFrame: app.settings.paused ? 0 : app.settings.steps };
+        for (const n of npcs.values()) { n.bind(app.getVolume(), g); n.update(dt, w); }
+      } else for (const n of npcs.values()) n.reset();
     }
 
     // the camera, with the kick and shake on top of the look
@@ -536,7 +554,8 @@ export function createPov(app) {
     // what the held tool shows next to the crosshair ({ name, color, T?, P?, note? } for ui/hud.js showReadout), or null
     get readout() { return live() && mode === 'on' && toolbelt ? toolbelt.readout : null; },
     get figure() { return figure; },
-    get npc() { return npc; },   // the NPC, once loaded (checks)
+    get npc() { return npcs.values().next().value ?? null; },   // the first NPC, once loaded (checks)
+    get npcs() { return [...npcs.values()]; },
     events: povEvents,           // the POV event bus (checks)
     get vfx() { return vfx; },
     feel,

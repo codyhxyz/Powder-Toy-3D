@@ -3,6 +3,7 @@ import { generatorGLSL, layersGLSL } from './generate.js';
 import { lib } from './render.js';
 import { surfaceGLSL } from './gfx/surface.js';
 import { liquidGLSL } from './gfx/liquid.js';
+import { cloudsGLSL } from './gfx/clouds.js';
 import { CELL_M } from '../scale.js';
 import { TREE, MID_TREES, HIGH_TREES } from '../world/generator.js';
 import { scaleFor } from '../constructions/runtime.js';
@@ -1021,6 +1022,7 @@ uniform ivec3 uWinLo;         // the window's low corner (world cells): the volu
 uniform float uSea;           // sea level (cells): the open sea beyond the world
 uniform float uFloor;         // the sea floor beyond the world (cells)
 in vec4 vFar;
+${cloudsGLSL}
 
 #define FAR_MAX_STEPS ${FAR_VIEW.MAX_STEPS}
 #define FAR_COARSE_T ${glf(FAR_VIEW.COARSE_T)}
@@ -1264,13 +1266,15 @@ vec3 farLiquid(vec3 p, vec3 rd, int lk, float sunVis, float bedY) {
   return F * refl + (1.0 - F) * body;
 }
 
-// The clear sky toward rd, with the key light's disc (sun, or the moon at night: SUN_COL carries its colour).
-vec3 farSky(vec3 rd) {
+// The sky toward rd from ro, with the key light's disc (sun, or the moon at
+// night: SUN_COL carries its colour), behind the cumulus deck (gfx/clouds.js).
+vec3 farSky(vec3 ro, vec3 rd) {
   vec3 c = skyRadiance(normalize(vec3(rd.x, max(rd.y, 0.0), rd.z)));
   float r = SUN_TAN_RADIUS;
   float mu = dot(rd, uSun);
   float disc = smoothstep(cos(r * (1.0 + FAR_SUN_DISC_EDGE)), cos(r * (1.0 - FAR_SUN_DISC_EDGE)), mu);
-  return c + disc * SUN_COL * FAR_SUN_DISC;
+  vec4 cl = cloudLayer(ro, rd);
+  return (c + disc * SUN_COL * FAR_SUN_DISC) * cl.a + cl.rgb;
 }
 
 float farDepth(vec3 p) {
@@ -1324,7 +1328,7 @@ void main() {
     col = farHaze(col, rd, tHit);
     depth = farDepth(p);
   } else {
-    col = farSky(rd);
+    col = farSky(ro, rd);
   }
   gl_FragColor = vec4(col, 1.0);
   gl_FragDepth = depth;
