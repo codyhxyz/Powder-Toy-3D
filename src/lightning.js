@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { quadVert, stateUniforms } from './shaders/common.js';
 import { boltFrag, stormBrickFrag, stormRowsFrag, stormPickFrag, stormScanFrag } from './shaders/lightning.js';
-import { BOLT, STORM, boltPath, boltStart, toolStrikeR, stormColumns, pickStrike, prefersStrike } from './bolt.js';
+import { BOLT, STORM, boltPath, boltStart, toolStrikeR, stormColumns, pickStrike } from './bolt.js';
 
 // Lightning on the GPU: the Lightning tool's strikes and storms' (src/bolt.js
 // has the shape and the rules, shaders/lightning.js the passes). One bolt for
@@ -15,9 +15,9 @@ import { BOLT, STORM, boltPath, boltStart, toolStrikeR, stormColumns, pickStrike
 // strikes the nearest (conductors counting nearer), spending the charge
 // around its origin.
 //
-// HOOK for the electricity project: onConductorHit(sim, cell, id) is called
-// when a bolt lands on a conductor (bolt.js prefersStrike); el-elec's "spark
-// this cell if it conducts" goes there.
+// A strike sparks the conductors it lands on: the "BOLT LANDS" spot in
+// shaders/lightning.js boltFrag (and the CPU twin's World.strike) is where
+// el-elec's sparkCell goes.
 
 const RGBA = 4;
 
@@ -37,7 +37,6 @@ export function createLightning({ renderer }) {
   let nextPoll = 0, lastStrike = -Infinity, busy = false, ready = false;
   const rng = Math.random;
   const api = {
-    onConductorHit: null,   // (sim, cell [x, y, z], id) => void: el-elec wires its spark here
     strikes: 0,             // natural strikes so far (tools/mat-check)
     lastBolt: null,         // the last bolt's { from, to, segs, id } (tools/mat-check)
     strikeTool, update, strike,
@@ -117,7 +116,6 @@ export function createLightning({ renderer }) {
     sim.touchCentres(lo, hi);
     sim.pass(mats.bolt);
     api.lastBolt = { from, to, segs, id };
-    if (prefersStrike(id) && api.onConductorHit) api.onConductorHit(sim, to.map(Math.floor), id);
     return segs;
   }
 

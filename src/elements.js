@@ -213,6 +213,9 @@ const defs = [
     desc: 'Lumps of coal, as the pickaxe breaks them from a seam. Sinks in water and burns faster than the seam.' },
 
   // ---- Batch 3 (el-mat): materials and weather. docs/elements.md.
+  // Electrical conductivity (elec, S/m, at 20 °C; CRC Handbook): titanium
+  // 2.38e6, tungsten 1.79e7, gold 4.10e7, mercury 1.04e6 (liquid), 4.4e6
+  // frozen (its resistivity drops ~4× on freezing).
   // Heat, for the rows below: cond follows the rocks' and coal's calibration,
   // cond ≈ 0.03·(k / 2.5 W/m·K)^0.4 (rock 2.5 → 0.03, coal 0.26 → 0.012, steel
   // 50 → 0.1), but never past cap/6, the stability limit react.js enforces per
@@ -255,7 +258,7 @@ const defs = [
   // So it needs no debris: it is the blast-proof wall that still melts. Hot
   // hydrochloric and sulfuric acid attack it, so acid eats it.
   { key: 'TITANIUM', abbr: 'TTAN', name: 'Titanium', kind: K.SOLID, render: R.OPAQUE, color: '#9a9ca3', var: 0.03,
-    cond: 0.07, cap: 0.56, melt: 1668, hard: 190, conducts: true, sound: 'ping',
+    cond: 0.07, cap: 0.56, melt: 1668, hard: 190, conducts: true, elec: 2.38e6, sound: 'ping',
     desc: 'The blast-proof metal: no explosion or bullet breaks it. Melts at 1668 °C.' },
   // Tungsten: 19.3 g/cm³, melts at 3,422 °C, the highest of any metal; k 173
   // W/m·K and 0.13 J/g·K (cap 0.61, cond at the cap/6 limit). Worked rod has a
@@ -265,7 +268,7 @@ const defs = [
   // generic incandescence (gfx/incandescence.js). Only hydrofluoric-nitric
   // mixtures dissolve it: acid-proof.
   { key: 'TUNGSTEN', abbr: 'TUNG', name: 'Tungsten', kind: K.SOLID, render: R.OPAQUE, color: '#7b7d82', var: 0.03,
-    cond: 0.1, cap: 0.61, melt: 3422, hard: 200, acidProof: true, conducts: true, sound: 'ping',
+    cond: 0.1, cap: 0.61, melt: 3422, hard: 200, acidProof: true, conducts: true, elec: 1.79e7, sound: 'ping',
     desc: 'Melts at 3422 °C, higher than any other metal, and glows white-hot long before. Unbreakable and acid-proof.' },
   // Plasma: air ionised by heat, TPT's PLSM (10,000 °C). At 10,000 K an ideal
   // gas has 293/10,273 of its room density: dens 0.03, the lightest thing in
@@ -286,11 +289,11 @@ const defs = [
   // just breaks it, a bullet dents it out). Only aqua regia dissolves it:
   // acid-proof. It breaks into nuggets, which recast as gold.
   { key: 'GOLD', abbr: 'GOLD', name: 'Gold', kind: K.SOLID, render: R.OPAQUE, color: '#dcad2c', var: 0.04,
-    cond: 0.1, cap: 0.6, melt: 1064, hard: 24, breakInto: 'NUGGETS', acidProof: true, conducts: true, sound: 'ping',
+    cond: 0.1, cap: 0.6, melt: 1064, hard: 24, breakInto: 'NUGGETS', acidProof: true, conducts: true, elec: 4.1e7, sound: 'ping',
     desc: 'Soft, heavy and acid-proof. Tools and blasts break it into nuggets; it melts at 1064 °C.' },
   { key: 'NUGGETS', abbr: 'NUGT', name: 'Gold nuggets', kind: K.POWDER, render: R.OPAQUE, color: '#e7bd45', var: 0.15,
     dens: 193, cond: 0.1, cap: 0.6, drag: 0.01, slide: 0.5, melt: 1064, meltInto: 'GOLD', spawn: 0.3, acidProof: true,
-    conducts: true, sound: 'ping',
+    conducts: true, elec: 4.1e7, sound: 'ping',
     desc: 'Lumps of gold. They sink through everything, mercury included, and melt back into gold at 1064 °C.' },
   // Mercury: 13.53 g/cm³ (dens 135: stone, steel scrap and brick float on it,
   // gold and tungsten sink). Freezes at −38.83 °C and boils at 356.73 °C.
@@ -300,14 +303,14 @@ const defs = [
   // k 8.3 W/m·K (cond 0.05), 0.14 J/g·K (cap 0.45). Viscosity 1.5 mPa·s,
   // water's is 0.9: it flows a little slower. Its vapour is toxic (ignored).
   { key: 'MERCURY', abbr: 'MERC', name: 'Mercury', kind: K.LIQUID, render: R.OPAQUE, color: '#b7b9bd', var: 0.03,
-    dens: 135, cond: 0.05, cap: 0.45, drag: 0.01, flow: 0.8, spawn: 0.35, conducts: true, sound: 'splash',
+    dens: 135, cond: 0.05, cap: 0.45, drag: 0.01, flow: 0.8, spawn: 0.35, conducts: true, elec: 1.04e6, sound: 'splash',
     cold: { T: -38.83, into: 'SOLID_MERCURY', latent: 37 },
     hot: { T: 356.73, into: 'MERCURY_VAPOR', latent: 955, puff: 1620 },
     desc: 'Liquid metal, so dense that stone and steel float on it while gold sinks. Freezes at −39 °C and boils at 357 °C.' },
   // Frozen mercury: 14.18 g/cm³, k ~30 W/m·K (cond at the cap/6 limit),
   // cap 0.46. Soft as lead, but it never meets a blow here: no debris.
   { key: 'SOLID_MERCURY', abbr: 'HGIC', name: 'Frozen mercury', kind: K.SOLID, render: R.OPAQUE, color: '#c9cbcf', var: 0.03,
-    cond: 0.07, cap: 0.46, temp: -60, conducts: true, sound: 'ping',
+    cond: 0.07, cap: 0.46, temp: -60, conducts: true, elec: 4.4e6, sound: 'ping',
     hot: { T: -38.83, into: 'MERCURY', latent: 37 },
     desc: 'Mercury frozen solid below −39 °C. It melts back into mercury as soon as it warms.' },
   // Mercury vapour: 200.6 g/mol over air's 28.96, at 360 °C: 6.93 × 293/633 =

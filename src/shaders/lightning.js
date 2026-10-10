@@ -53,6 +53,8 @@ void bolt(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
   if (!open && r < uStrikeR) {
     float f = 1.0 - smoothstep(uStrikeR * STRIKE_CORE, uStrikeR, r);
     oA.y = min(oA.y + STRIKE_E * f / CAP[id], CELL_TEMP_MAX);
+    // BOLT LANDS: the spot where a strike sparks what it hits.
+    // TODO(el-elec, at merge): sparkCell(oA);   (the prelude's: a ready conductor takes a full spark)
   }
   if (open && r < uStrikeR + STRIKE_P_REACH) oB.w = min(max(oB.w, STRIKE_P), P_MAX);
   if (eid(oA) == E_CLOUD && length(c - uBoltFrom) < uDischargeR) oA.w = fract(a.w);   // charge spent
