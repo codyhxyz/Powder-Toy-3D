@@ -31,13 +31,14 @@ export function createToolbar({ views, settings, actions }) {
     camOpt('first', '1st', 'Walk in first person (V)'),
     camOpt('third', '3rd', 'Walk in third person (F swaps)'));
   const shot = btn('camera', 'Save screenshot (P)', actions.screenshot);
+  const maps = btn('maps', 'Maps and gamemodes (Esc)', actions.openMenu);
   const gear = btn('gear', 'Settings (,)', actions.toggleSettings);
   const help = btn('help', 'Keyboard shortcuts (?)', actions.toggleHelp);
   // first person and the shortcut sheet need a keyboard: touch-first devices hide them (styles.css)
   walk.classList.add('keys-only');
   help.classList.add('keys-only');
 
-  const bar = h('div.toolbar.panel', {}, viewBtn, h('span.sep'), pause, undo, recenter, walk, shot, h('span.sep'), gear, help);
+  const bar = h('div.toolbar.panel', {}, viewBtn, h('span.sep'), pause, undo, recenter, walk, shot, h('span.sep'), maps, gear, help);
 
   // ---- views popover ----
   const cards = views.map((v) => {
