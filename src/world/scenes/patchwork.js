@@ -3,7 +3,7 @@ import { WORLD_SEED } from '../generator.js';
 import {
   PATCH_TILE, PATCH_TILE_BITS, PATCH_PRESETS, PATCH_LAB, PATCH_VOLCANO, PATCH_ISLAND, PATCH_MAP,
   PATCH_PALETTE_MAX, PATCH_AIR, PatchPalette, presetState, bakePreset, tileMap, tileOf, inTile, presetAt,
-  islandGroundTwin,
+  islandGroundTwin, PATCH_SALT_CELL,
 } from './patchworkBake.js';
 import { bakeIslandState } from './patchworkIsland.js';
 
@@ -28,8 +28,6 @@ import { bakeIslandState } from './patchworkIsland.js';
 // view and GI would put a sea at P.sea under every lab tile too, so none.
 const PATCH_SEA = 0;      // cells: no open sea (scenes/index.js: 0 for none)
 const PATCH_FLOOR = 0;    // cells: the lab and the volcano's sea stand on the world's bottom, no rock under them
-// Salt of the cells' colour seeds (seedWorld's stream).
-const PATCH_SALT_CELL = 0x9a7d;
 // Palette texture: entries per row (one row holds them all).
 const PATCH_PALETTE_W = PATCH_PALETTE_MAX;
 

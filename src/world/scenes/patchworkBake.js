@@ -31,8 +31,10 @@ export const PATCH_MAP = [WORLD_SIZE[0] / PATCH_TILE, WORLD_SIZE[2] / PATCH_TILE
 export const PATCH_PALETTE_MAX = 256;
 // Palette entry 0 is still air (what the presets start from: Simulation.blankState).
 export const PATCH_AIR = 0;
-// Hash salt of the tile map's random stream (the world seed's).
+// Hash salts of the world seed's random streams: the tile map's, and the
+// cells' colour seeds (seedWorld's, in the scene's GLSL).
 export const PATCH_SALT_MAP = 0x9a7c;
+export const PATCH_SALT_CELL = 0x9a7d;
 
 // The GLSL addresses tiles with shifts and masks (exact for negative cells,
 // where GLSL's % is undefined), so the tile and the map are powers of two.
