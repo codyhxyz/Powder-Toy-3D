@@ -56,6 +56,9 @@ const DEG = Math.PI / 180;
 const GUN_PUNCH = (2 / 1.28) * DEG;
 export const HIT = {
   GUN: { kick: 1, punch: { pitch: [GUN_PUNCH, GUN_PUNCH] } },                          // a shot
+  SMG: { kick: 0.45, punch: { pitch: [0.3 * DEG, 0.8 * DEG], yaw: [-0.4 * DEG, 0.4 * DEG] } },   // a round of a burst (HL2 SMG1's 0.5–1° kick)
+  SNIPER: { kick: 2.2, punch: { pitch: [4 * DEG, 5 * DEG], yaw: [-0.5 * DEG, 0.5 * DEG] } },     // a .50: a heavy shove up
+  ROCKET: { kick: 1.6, punch: { pitch: [2 * DEG, 3 * DEG] } },                         // a rocket leaving the tube
   DRY: { kick: 0.25 },                                                                 // a dry click
   AXE: { kick: 0.5, punch: { pitch: [-2 * DEG, -1 * DEG], yaw: [-2 * DEG, -1 * DEG] } },   // a blow landing
   PICK: { kick: 0.7, punch: { pitch: [-3 * DEG, -2 * DEG], yaw: [-1.5 * DEG, -0.5 * DEG] } },   // a pickaxe blow: heavier, straight down

@@ -105,8 +105,8 @@ for (const [label, dims] of Object.entries(grids)) {
   check(`fieldCopy-${label}`, raw + fields.fieldCopyFrag(g), 'frag');
   for (const set of Object.values(fields.DIRTY)) check(`fieldRegionVert${set}-${label}`, raw + regionVert(fields.fieldRegionsGLSL(g, set)), 'vert');
   for (const [k, v] of Object.entries({ ...move, ...react, ...probe, ...stamp, ...gi, ...povBody, ...transfer, ...windowPasses })) if (typeof v === 'function') check(`${k}-${label}`, raw + v(g), 'frag');
-  for (const k of ['axeFrag', 'pickaxeFrag', 'physgunComFrag', 'physgunFrag']) check(`${k}-${label}`, raw + povTools[k](g), 'frag');
-  for (const k of ['traceFrag', 'handoffFrag']) check(`${k}-${label}`, raw + povTrace[k](g), 'frag');
+  for (const k of ['axeFrag', 'pickaxeFrag', 'physgunComFrag', 'physgunFrag', 'blastFrag', 'torchFrag', 'rocketFrag']) check(`${k}-${label}`, raw + povTools[k](g), 'frag');
+  for (const k of ['traceFrag', 'strikeFrag']) check(`${k}-${label}`, raw + povTrace[k](g), 'frag');
   // the window's fill and diff through a world scene's sceneCell: the island's (every scene's: tools/check-scenes.mjs)
   for (const k of ['sceneFillFrag', 'sceneDiffFrag']) check(`${k}-island-${label}`, raw + generate[k](g, islandGLSL()), 'frag');
 }

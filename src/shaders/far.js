@@ -69,6 +69,11 @@ export const FAR = {
   ID_SCALE: 255,       // an id channel value in an 8-bit channel
   GLOW_SPAN: 2000,     // °C the glow channel spans above the incandescence table's first knot
 };
+// Every element id must fit below LIQ_STRIDE: past it the far view misreads
+// ids, so say so at once (a wider id channel is the fix).
+if (Object.keys(E).length > FAR.LIQ_STRIDE) {
+  throw new Error(`far.js: ${Object.keys(E).length} elements, but the far grid's id channel holds ids below FAR.LIQ_STRIDE (${FAR.LIQ_STRIDE})`);
+}
 // Liquid kinds of the id channel (index → element key; the first is the
 // default); one more says the brick's own cells hold none.
 export const FAR_LIQUIDS = ['WATER', 'OIL', 'ACID'];
