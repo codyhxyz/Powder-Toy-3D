@@ -766,7 +766,7 @@ void main() {
         // glass interface (flat faces: no bending)
         float F = fresnelSchlick(abs(dot(nFace, rd)), IOR[id]) * (liq == E_EMPTY ? 1.0 : GLASS_IN_LIQUID_F);
         mediumLight = uShadows ? sunShadow(hp + nFace * IFACE_PROBE) : vec3(1.0);
-        col += trans * F * envReflect(hp, reflect(rd, nFace), mediumLight);
+        col += trans * F * envReflectGI(hp, nFace, reflect(rd, nFace), mediumLight);
         trans *= 1.0 - F;
       }
       absorbSegment(id, hp, tExit - tEnter, mediumLight, a.y, col, trans);
