@@ -1,5 +1,7 @@
 import { skyGLSL } from '../../gfx/sky.js';
 
+export const WAND_LIGHTS = 8;
+
 // Soft-shadow taps per pass (blocker search, then filter).
 const PCSS_TAPS = 8;
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
@@ -384,6 +386,25 @@ float giSkyVis(Probe g, vec3 n) {
   return clamp(v / max(0.5 + 0.5 * n.y, SKYVIS_MIN), 0.0, 1.0);
 }
 
+// Cold wand lights enter the same surface/media lighting path as local glow,
+// without spawning hot voxels.
+uniform int uWandLightCount;
+uniform vec4 uWandLightPosition[${WAND_LIGHTS}];
+uniform vec4 uWandLightColor[${WAND_LIGHTS}];
+vec3 wandLight(vec3 p) {
+  if (uWandLightCount == 0) return vec3(0.0);
+  vec3 light = vec3(0.0);
+  // ponytail: eight unshadowed radial lights; add occlusion only if light leaking matters.
+  for (int i = 0; i < ${WAND_LIGHTS}; i++) {
+    if (i >= uWandLightCount) break;
+    vec4 pr = uWandLightPosition[i], ci = uWandLightColor[i];
+    vec3 d = p - pr.xyz;
+    float falloff = max(1.0 - dot(d, d) / (pr.w * pr.w), 0.0);
+    light += ci.rgb * ci.w * falloff * falloff;
+  }
+  return light;
+}
+
 // ---- glow volume: blurred emission of lava, fire, hot metal ----
 vec3 sampleLight(vec3 gp) {
   vec3 bpos = gp / float(BS) - 0.5;
@@ -396,7 +417,7 @@ vec3 sampleLight(vec3 gp) {
     vec3 wv = mix(1.0 - f, f, vec3(o));
     s += texelFetch(tLight, brickAtlas(clamp(b0 + o, ivec3(0), hi)), 0).rgb * wv.x * wv.y * wv.z;
   }
-  return s;
+  return s + wandLight(gp);
 }
 
 // ---- ambient occlusion (near field; the probes cover the larger scale) ----
