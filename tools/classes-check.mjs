@@ -159,7 +159,7 @@ try {
   await settle(200);
 
   // ---- the god view keeps comma for settings
-  await p.keyboard.press('f');
+  await p.keyboard.press('v');
   await p.waitForFunction(() => window.__app.pov.mode === 'off', null, { timeout: 10000 }).catch(() => {});
   await p.keyboard.press(',');
   await settle(300);

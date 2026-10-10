@@ -550,7 +550,7 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
   m.sss = SSS[id]; m.glint = GLINT[id]; m.glintDens = 1.0; m.cav = 1.0; m.aniso = 0.0; m.trans = 0.0;
   m.emit = vec3(0.0);
   // anything hot glows (hotEmit, once the texture is known); lava does its own thing
-  if (uMatDetail < 0.5) { m.emit = id == E_METAL ? glowAt(m, id, T) : hotEmit(m, id, T); return m; }
+  if (uMatDetail < 0.5) { m.emit = (id == E_METAL ? glowAt(m, id, T) : hotEmit(m, id, T)) + sparkEmit(id, ctype); return m; }
 
   // Scale: a cell is CELL_M (src/scale.js). Frequencies below are cycles (or
   // lattice cells) per cell; the *_H / *_DEPTH bump amplitudes are heights in
@@ -967,6 +967,7 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
     m.cav = mix(1.0, mix(LAVA_CRACK_CAV, 1.0, smoothstep(0.0, LAVA_PLATE_EDGE, c.y)), solid * lwc);
   }
   if (id != E_LAVA && id != E_METAL && id != E_CRYSTAL) m.emit = hotEmit(m, id, T);
+  m.emit += sparkEmit(id, ctype);   // a live conductor (src/electricity.js)
   return m;
 }
 

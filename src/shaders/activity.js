@@ -12,8 +12,13 @@ import { prelude, inertSelfGLSL, SUPER, SUPER_TEX, BLOCK_TILE } from './common.j
 //     canMove, neither the cell below nor the lower ring it could topple
 //     into, nor for a liquid its four sides;
 //   - nothing that reacts: no gas, nothing burning or hot enough to light
-//     the air, melting, setting, freezing, boiling or banking latent heat,
-//     nothing next to acid, no plant by water, no clone by air;
+//     the air, melting, setting, freezing, boiling or banking latent heat
+//     (elements.js cold/hot included), nothing next to acid or caustic gas, no plant by
+//     water, no clone by air, no explosive touching something past its
+//     ignition point, no cell beside a reaction partner (elements.js
+//     REACTIONS) whose temperature gate the pair passes, nothing that can
+//     move touching void, nothing a singularity touches (it never rests
+//     itself: it holds a vacuum);
 //   - thermally quiet: within MATTER_REST_T of each matter face neighbour,
 //     and within AIR_REST_T of ambient where it touches air.
 // A change a neighbour sets off on its own (a flame catching in the air by
@@ -57,6 +62,18 @@ const ivec3 FACES[6] = ivec3[6](ivec3(1,0,0), ivec3(-1,0,0), ivec3(0,1,0), ivec3
 // acidProof: acid itself, walls, glass, water). Never air or gases.
 bool acidEats(int j) { return KIND[j] != K_EMPTY && KIND[j] != K_GAS && !ACIDPROOF[j]; }
 
+// Reactions (elements.js REACTIONS, mechanisms().lookup): texel (b, a) of
+// tRx is 0 when a cell of element a has no reaction with a neighbour of b,
+// else 2·r + role + 1 (reaction r; role 0: the cell is the row's a).
+uniform highp usampler2D tRx;
+int rxAt(int a, int b) { return RX_ANY ? int(texelFetch(tRx, ivec2(b, a), 0).r) : 0; }
+// Does reaction r's temperature gate pass for a pair at Ta and Tb? It reads
+// the hotter cell: a hot spot lights a mixture, and too hot a cell stops it.
+bool rxGate(int r, float Ta, float Tb) {
+  float Th = max(Ta, Tb);
+  return Th >= RX[r].y && Th <= RX[r].z;
+}
+
 bool inertNear(ivec3 c, vec4 a, vec4 nA[6]) {
   int id = eid(a);
   if (id == E_EMPTY) return true;   // what changes air is a neighbour that isn't inert
@@ -67,11 +84,21 @@ bool inertNear(ivec3 c, vec4 a, vec4 nA[6]) {
     vec4 n = nA[i];
     int j = eid(n);
     // thermally quiet; a face touching air carries heat at air's conductance, so it takes air's tolerance
-    if (j == E_EMPTY ? abs(T - AMBIENT) > AIR_REST_T : abs(T - n.y) > MATTER_REST_T) return false;
-    if (j == E_ACID ? acidEats(id) : id == E_ACID && acidEats(j)) return false;
+    // (a face with no conductance, a temperature sensor's, carries none)
+    if (min(COND[id], COND[j]) > 0.0 && (j == E_EMPTY ? abs(T - AMBIENT) > AIR_REST_T : abs(T - n.y) > MATTER_REST_T)) return false;
+    if (!electricQuietNear(id, a, j, n)) return false;   // src/electricity.js
+    if (ACIDIC[j] ? acidEats(id) : ACIDIC[id] && acidEats(j)) return false;   // acid, caustic gas (elements.js acid)
     if ((id == E_WATER && j == E_PLANT) || (id == E_PLANT && j == E_WATER)) return false;
-    if (id == E_CLONE && (j == E_EMPTY || (a.w < 1.0 && j != E_WALL && j != E_CLONE))) return false;
-    if (id == E_GUNPOWDER && !isGasLike(j) && n.y >= IGNITE[id]) return false;   // a hot touch sets it off
+    if (id == E_CLONE && (j == E_EMPTY || (a.w < 1.0 && cloneable(j)))) return false;   // (cloneable: src/electricity.js)
+    // an explosive with an ignition point: a hot touch sets it off
+    if (INTO[id][PH_BLAST] >= 0 && IGNITE[id] > 0.0 && !isGasLike(j) && n.y >= IGNITE[id]) return false;
+    // a reaction partner past its temperature gate (one below it lets both rest)
+    int rx = rxAt(id, j);
+    if (rx > 0 && rxGate((rx - 1) >> 1, T, n.y)) return false;
+    if (j == E_VOID && k != K_SOLID) return false;   // void drains it (react.js)
+    if (j == E_SINGULARITY && id != E_WALL && id != E_VOID) return false;   // it may be swallowed (react.js singEats)
+    // a fuse lights from a lit fuse beside it, or a hot touch (react.js)
+    if (id == E_FUSE && ((j == E_FUSE && n.z < 1.0) || (!isGasLike(j) && n.y >= IGNITE[id]))) return false;
     // a powder or liquid: nowhere to fall, nor for a liquid to flow sideways
     bool way = FACES[i].y < 0 || (k == K_LIQUID && FACES[i].y == 0);
     if (k != K_SOLID && way && canMove(id, j, d, densityOf(j, n.y), FACES[i].y < 0 ? 0 : 2)) return false;
@@ -231,10 +258,15 @@ void main() {
 
 // Brick resolution: 1 if the brick and its 26 neighbours are inert (outside
 // the box counts as inert: the box walls are). uEnabled = false clears the map.
+// A brick holding a fast particle (raysLayer.js: tRays, when uRays) counts as
+// not inert: a particle flies at most a brick in the steps a map lives
+// (rays.js RAY_V_MAX), so every cell it can heat stays awake.
 export const quietFrag = (g) => /* glsl */ `
 ${prelude(g)}
 uniform sampler2D tInert;
 uniform bool uEnabled;
+uniform sampler2D tRays;
+uniform bool uRays;
 out vec4 oC;
 void main() {
   ivec3 bc = brickFromFrag(ivec2(gl_FragCoord.xy));
@@ -246,6 +278,7 @@ void main() {
     ivec3 b = bc + ivec3(x, y, z);
     if (any(lessThan(b, ivec3(0))) || any(greaterThanEqual(b, ivec3(BX, BY, BZ)))) continue;
     if (texelFetch(tInert, brickAtlas(b), 0).x < 0.5) return;
+    if (uRays && texelFetch(tRays, brickAtlas(b), 0).x > 0.5) return;
   }
   oC = vec4(1.0);
 }

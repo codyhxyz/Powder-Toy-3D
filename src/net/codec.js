@@ -9,7 +9,9 @@ import { prelude, quadVert, stateOutGLSL } from '../shaders/common.js';
 //   R  element id
 //   G  temperature code (see TEMP below); air is always sent as ambient
 //   B  life, only for elements whose look depends on it (smoke density, fire)
-//   A  ctype (what lava melted from sets where its crust forms; what a clone copies)
+//   A  ctype (what lava melted from sets where its crust forms; what a clone copies);
+//      for a conductor only its spark's phase, which says whether it is live
+//      (src/electricity.js; its level can pass a byte)
 // Velocity and pressure aren't sent (so a guest's grains are textured in
 // place, without flow), and the per-grain colour seed is re-derived from the
 // cell position on the guest.
@@ -71,7 +73,8 @@ void main() {
   int id = eid(a);
   float T = encodeTemp(id == E_EMPTY ? AMBIENT : a.y);
   float life = sendsLife(id) ? round(clamp(a.z, 0.0, 1.0) * BYTE_MAX) : 0.0;
-  oP = vec4(float(id), T, life, clamp(floor(a.w), 0.0, BYTE_MAX)) / BYTE_MAX;
+  float ct = CONDUCTS[id] ? float(sparkPhase(floor(a.w))) : floor(a.w);
+  oP = vec4(float(id), T, life, clamp(ct, 0.0, BYTE_MAX)) / BYTE_MAX;
 }
 `;
 

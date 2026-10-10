@@ -7,7 +7,11 @@
 //          continuous surface (the 0.5 isosurface of a blurred, normalised
 //          occupancy field). Elements without a channel are "crisp": drawn
 //          as (bevelled) voxels.
-//   media  participating-medium channel (drawn as a density volume)
+//   media  participating-medium channel (drawn as a density volume). A gas
+//          needs one: without a channel it would be drawn as crisp voxels
+//   haze   the share of a full cell's density a cell of it adds to its
+//          media channel (default 1). Steam and cloud are water droplets,
+//          1; a clear gas a faint haze, a liberty so you can see where it is
 //   rough  GGX roughness
 //   metal  metalness
 //   ior    index of refraction (transparent elements)
@@ -32,6 +36,14 @@ import { bandGlow } from './incandescence.js';
 // dark cave the eyes adjust to it (gfx/post.js ADAPT).
 const FLUORITE_BAND = { peak: 424, fwhm: 25, lum: 0.05 };
 const FLUORITE_GLOW = bandGlow(FLUORITE_BAND.peak, FLUORITE_BAND.fwhm, FLUORITE_BAND.lum);
+// A live conductor's light (src/electricity.js): an electric discharge in
+// air glows blue-violet-white, from nitrogen's second positive bands
+// (337-400 nm, running into the violet) and atomic lines across the visible.
+// Drawn as one band centred in the blue, broad enough to read blue-white
+// (linear ≈ 0.39, 0.65, 0.77), and twelve times fluorite's glow: it reads in
+// daylight and lights a dark room.
+const SPARK_BAND = { peak: 460, fwhm: 300, lum: 0.6 };
+export const SPARK_GLOW = bandGlow(SPARK_BAND.peak, SPARK_BAND.fwhm, SPARK_BAND.lum);
 
 // Smooth-surface channels. sigma = blur radius in cells (how much the
 // blockiness is smoothed away), ema = per-frame blend toward the new state
@@ -152,6 +164,94 @@ const LOOKS = {
   // faces swamps the absorption), and keeps the glow (powdered phosphors do).
   CRYSTAL: { rough: 0.04, ior: 1.434, alb: '#4a3478', sss: 0.3, emit: FLUORITE_GLOW },
   CRYSTAL_DUST: { ch: 'GRANULAR', rough: 0.6, ior: 1.434, alb: '#b7a2d2', sss: 0.3, glint: 0.4, emit: FLUORITE_GLOW },
+  // Electronics (elements.js). A battery's printed steel can; silicon is
+  // grey and mirror-like (n ≈ 3.9 in the visible: F0 ≈ 0.35), tinted as TPT
+  // draws P and N; the switch a dark green relay; the insulator a pale,
+  // chalky aerogel blue; the sensor TPT's magenta.
+  BATTERY: { rough: 0.45, alb: '#6f6d1c' },
+  PSCN: { rough: 0.15, ior: 3.9, alb: '#5c4646' },
+  NSCN: { rough: 0.15, ior: 3.9, alb: '#46465c' },
+  SWITCH: { rough: 0.4, alb: '#1d4a1f' },
+  INSULATOR: { rough: 0.95, alb: '#a7aec2', sss: 0.3 },
+  TSNS: { rough: 0.5, alb: '#c21aa6' },
+  PCLN: { rough: 0.35, metal: 1, alb: [0.45, 0.36, 0.14] },   // Clone's gold, tarnished: TPT draws it dark olive
+  // Radioactive metals as powders: a metal powder is dark, since light is
+  // trapped between the grains, with bright glints off the facets. Uranium
+  // tarnishes to a dark grey-black oxide (UO₂ is black); plutonium's oxide
+  // skin is dull olive-grey.
+  URANIUM: { ch: 'GRANULAR', rough: 0.55, alb: '#3f413b', glint: 0.5 },
+  PLUTONIUM: { ch: 'GRANULAR', rough: 0.6, alb: '#45493a', glint: 0.4 },
+  // Batch 3 (elements.js, el-mat). Void: matte black, a hole in the world.
+  VOID: { rough: 1, alb: '#0d0809' },
+  // Red brick reflects ~0.25 in the red, ~0.1 in the green and ~0.06 in the
+  // blue (USGS spectral library, fired clay); built, so crisp like Wall.
+  // Crushed, it is paler: the broken faces scatter more.
+  BRICK: { rough: 0.9, alb: [0.25, 0.1, 0.06] },
+  RUBBLE: { ch: 'GRANULAR', rough: 0.95, alb: [0.3, 0.14, 0.09] },
+  // Metals: F0 from measured complex indices (n, k at 450/550/650 nm;
+  // refractiveindex.info): titanium (0.54, 0.50, 0.45), tungsten ~0.5 grey,
+  // gold as Clone's, mercury ~0.75 flat (a liquid mirror).
+  TITANIUM: { rough: 0.35, metal: 1, alb: [0.542, 0.497, 0.449] },
+  TUNGSTEN: { rough: 0.3, metal: 1, alb: [0.5, 0.49, 0.46] },
+  GOLD: { rough: 0.3, metal: 1, alb: [1.0, 0.766, 0.336] },
+  NUGGETS: { ch: 'GRANULAR', rough: 0.45, metal: 1, alb: [1.0, 0.766, 0.336], glint: 0.6 },
+  // Liquid metal: an opaque mirror, smoothed like a melt (it shares lava's
+  // channel; the two never meet, since mercury boils at 357 °C)
+  MERCURY: { ch: 'MOLTEN', rough: 0.04, metal: 1, alb: [0.75, 0.75, 0.74] },
+  SOLID_MERCURY: { rough: 0.35, metal: 1, alb: [0.75, 0.75, 0.74] },
+  // Mercury vapour is invisible; what shows where it meets cool air is a mist
+  // of condensed droplets, like steam's
+  MERCURY_VAPOR: { media: 'STEAM' },
+  // Plasma draws as flame (its light, by the flame's temperature channel)
+  PLASMA: { media: 'FIRE' },
+  // Diamond: n = 2.417, so it sparkles far more than glass (n 1.5); a
+  // colourless stone barely absorbs or scatters
+  DIAMOND: { ior: 2.417, rough: 0.01, scatter: [0.0005, 0.0005, 0.0005] },
+  // Batch 2, chemistry and cold (elements.js). Liquid nitrogen is clear and
+  // colourless, n = 1.199 (CRC); its boiling fills it with bubbles that
+  // scatter a little. Saturated brine is water with n = 1.378 (CRC, 26 % NaCl).
+  LIQUID_NITROGEN: { ch: 'LIQUID', ior: 1.199, rough: 0.03, scatter: [0.004, 0.004, 0.004] },
+  SALTWATER: { ch: 'LIQUID', ior: 1.378, rough: 0.02, scatter: [0.002, 0.003, 0.004] },
+  // Salt: clear halite cubes (n = 1.544) crushed white, albedo ~0.8, light
+  // wrapping into the grains and glinting off their cube faces.
+  SALT: { ch: 'GRANULAR', rough: 0.55, ior: 1.544, alb: '#e2e0da', sss: 0.35, glint: 0.7 },
+  // Dry ice: pressed CO₂ snow, white and porous (n ~1.4), light bleeding into it.
+  DRY_ICE: { rough: 0.8, ior: 1.4, alb: '#e4e8ec', sss: 0.5 },
+  // Lithium is silvery cut, but dulls in air within minutes (nitride, hydroxide):
+  // a grey, rough metal.
+  LITHIUM: { ch: 'GRANULAR', rough: 0.55, metal: 1, alb: [0.55, 0.55, 0.56] },
+  // Clear gases (CO₂, hydrogen, oxygen) are invisible: a faint haze shows where
+  // they are. Hydrogen chloride fumes in moist air, pulling the water vapour
+  // out as a mist of acid droplets (real), so it shows more.
+  CO2: { media: 'STEAM', haze: 0.06 },
+  HYDROGEN: { media: 'STEAM', haze: 0.04 },
+  OXYGEN: { media: 'STEAM', haze: 0.05 },
+  CAUSTIC_GAS: { media: 'STEAM', haze: 0.3 },
+  // Batch 4. Flour reflects ~0.8, matte, and light bleeds into a loose heap.
+  // Kaolin is as white (ISO brightness 80-90%); mud is darker, as any wet
+  // soil is (water in the pores cuts the scattering: about half the
+  // reflectance; Lekner & Dorf, Appl. Opt. 27, 1988) and wet-glossy, drawn
+  // with lava's opaque-liquid surface. Ceramic is matte white bisque.
+  // Antimatter is a game substance: a pale lilac powder with a sheen, so it
+  // reads apart from the other powders. The singularity reflects nothing.
+  DUST: { ch: 'GRANULAR', rough: 0.95, alb: '#ebe2cc', sss: 0.35 },
+  CLAY: { ch: 'GRANULAR', rough: 0.95, alb: '#e2dccf', sss: 0.2 },
+  MUD: { ch: 'MOLTEN', rough: 0.3, alb: '#a49b8a' },
+  CERAMIC: { rough: 0.6, alb: '#efeae0' },
+  ANTIMATTER: { ch: 'GRANULAR', rough: 0.4, alb: '#b9b0d9', glint: 0.6 },
+  SINGULARITY: { rough: 1, alb: '#000000' },
+  // Explosives (elements.js). C-4 is an off-white putty, moulded smooth, a
+  // little waxy (light wraps into its edges). Nitroglycerin is a clear, pale
+  // yellow oil, n = 1.479. Cast TNT is pale yellow-brown, dull and crystalline.
+  // Thermite is rust-red iron oxide with flecks of aluminium that glint. A
+  // safety fuse is a tarred cord. Propane is invisible: it borrows steam's
+  // haze so you can see where it pools (a liberty).
+  C4: { ch: 'ORGANIC', rough: 0.55, alb: '#d6d0bf', sss: 0.2 },
+  NITRO: { ch: 'LIQUID', ior: 1.479, rough: 0.03, scatter: [0.004, 0.004, 0.004] },
+  TNT: { rough: 0.7, alb: '#b9975a' },
+  THERMITE: { ch: 'GRANULAR', rough: 0.8, alb: '#6f4436', glint: 0.35 },
+  PROPANE: { media: 'STEAM' },
+  FUSE: { ch: 'ORGANIC', rough: 0.6, alb: '#2a4424' },
 };
 
 // Shared texture families (LOOKS surf). NONE: an element's own (or none).
@@ -189,7 +289,7 @@ const mediaIndex = (k) => (k ? MEDIA.findIndex((m) => m.key === k) : -1);
 export const LOOK = ELEMENTS.map((e) => {
   const l = LOOKS[e.key] ?? {};
   return {
-    ch: chIndex(l.ch), media: mediaIndex(l.media), rough: l.rough ?? DEFAULT_ROUGH, metal: l.metal ?? 0, ior: l.ior ?? DEFAULT_IOR,
+    ch: chIndex(l.ch), media: mediaIndex(l.media), haze: l.haze ?? 1, rough: l.rough ?? DEFAULT_ROUGH, metal: l.metal ?? 0, ior: l.ior ?? DEFAULT_IOR,
     alb: linearOf(l.alb ?? e.color).map((v) => +v.toFixed(GLSL_DIGITS)), sss: l.sss ?? 0, glint: l.glint ?? 0,
     bevel: l.bevel ?? 1,
     emit: (l.emit ?? [0, 0, 0]).map((v) => +v.toFixed(GLSL_DIGITS)),
@@ -272,7 +372,9 @@ vec3 emission(int id, float Ts) { return emission(id, Ts, 1.0); }
 // The open skin of hot matter runs INCAND_SKIN_DROP below its bulk T (metals,
 // conducting well, keep none): what an exposed cell of it gives off.
 float skinT(int id, float T) { return T - (id == E_METAL ? 0.0 : INCAND_SKIN_DROP); }
-vec3 cellEmission(int id, float T) { return emission(id, skinT(id, T)); }`;
+vec3 cellEmission(int id, float T) { return emission(id, skinT(id, T)); }
+// a live conductor's spark (ctype: the cell's, floor of state A's w)
+vec3 sparkEmit(int id, float ctype) { return sparkLive(id, ctype) ? SPARK_GLOW : vec3(0.0); }`;
 
 export function materialsGLSL() {
   const ints = (name, key) => `const int ${name}[NE] = int[NE](${LOOK.map((l) => l[key]).join(', ')});`;
@@ -293,6 +395,7 @@ export function materialsGLSL() {
     `#define THIN_MASK_HI ${f(THIN_MASK_HI)}`,
     ints('SURFCH', 'ch'),
     ints('MEDIACH', 'media'),
+    floats('HAZE', 'haze'),
     floats('ROUGH', 'rough'),
     floats('METAL', 'metal'),
     floats('IOR', 'ior'),
@@ -302,6 +405,7 @@ export function materialsGLSL() {
     `const vec3 ALBEDO[NE] = vec3[NE](${LOOK.map((l) => `vec3(${l.alb.map(f).join(', ')})`).join(', ')});`,
     `const vec3 SCATALB[NE] = vec3[NE](${LOOK.map((l) => `vec3(${l.scatAlb.map(f).join(', ')})`).join(', ')});`,
     `const vec3 EMIT[NE] = vec3[NE](${LOOK.map((l) => `vec3(${l.emit.map(f).join(', ')})`).join(', ')});`,
+    `const vec3 SPARK_GLOW = vec3(${SPARK_GLOW.map((v) => f(+v.toFixed(GLSL_DIGITS))).join(', ')});`,
     `bool luminous(int id) { return ${LUMINOUS.map((e) => `id == E_${e.key}`).join(' || ') || 'false'}; }`,
     EMISSION_GLSL,
     ints('SURF', 'surf'),

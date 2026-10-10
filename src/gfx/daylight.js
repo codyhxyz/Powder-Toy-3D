@@ -57,3 +57,10 @@ export function keyLight(phase, dir, light, fixed = null) {
   dir.set(sunDir.x, 0, sunDir.z).setLength(Math.sqrt(1 - y * y));
   dir.y = y;
 }
+
+// The sun's true elevation (rad, below the horizon negative) at day phase
+// `phase`, or the pinned one's: what keyLight's sun has before it holds at keyElMin.
+export function sunElevation(phase, fixed = null) {
+  if (fixed) return deg(fixed.el);
+  return Math.asin(Math.cos(lat) * Math.cos(2 * Math.PI * (phase - 0.5)));
+}

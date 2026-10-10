@@ -53,7 +53,7 @@ for (const scene of scenes) {
     const tex = sim.actInert.texture;
     const refInert = makeFieldTarget(w, h, 1, tex.type, tex.minFilter);
     const refQuiet = makeFieldTarget(w, h, 1, tex.type, tex.minFilter);
-    const ref = rawMat(inertRefFrag(g), { tA: { value: null }, tB: { value: null } });
+    const ref = rawMat(inertRefFrag(g), { tA: { value: null }, tB: { value: null }, tRx: { value: sim.reactionTable } });
     const px = () => new Uint8Array(w * h * 4);
     const bufs = { inert: px(), quiet: px(), refInert: px(), refQuiet: px() };
     const read = (t, buf) => R.readRenderTargetPixels(t, 0, 0, w, h, buf);
