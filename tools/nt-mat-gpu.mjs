@@ -8,7 +8,7 @@
 //             Reports the growers' counts before and after.
 //   cave-*    the cave, dark but for the fungus's glow; close up
 //   day-*     every new liquid in a row of rock basins in daylight; close up
-//   dock-*    the new elements' dock tiles
+// (The dock tiles run the CPU twin: tools/nt-mat-check.mjs.)
 // usage: node tools/nt-mat-gpu.mjs <outDir> [--port 5432] [--steps 4000]
 import { chromium } from 'playwright';
 import { mkdirSync } from 'fs';
@@ -183,12 +183,5 @@ await view([32, 26, 70], [32, 2, 34]); await shot('day-basins');
 await view([16, 9, 44], [16, 2, 30]); await shot('day-close');
 await view([28, 8, 62], [28, 2, 50]); await shot('day-moss-fungus');
 
-// ---- the dock tiles
-for (const abbr of ['BLOD', 'TOXC', 'SLIM', 'WHSK', 'MOSS', 'FUNG', 'TLPT', 'LEVI', 'HLTH', 'BRSK', 'PLYM', 'PHRM']) {
-  const el = p.getByText(abbr, { exact: true }).first();
-  const bb = await el.boundingBox().catch(() => null);
-  if (bb) await p.screenshot({ path: `${out}/dock-${abbr}.png`, clip: { x: Math.max(0, bb.x - 30), y: Math.max(0, bb.y - 50), width: bb.width + 60, height: bb.height + 60 } });
-  else errs.push(`dock tile ${abbr} not found`);
-}
 console.log(errs.length ? errs.join('\n') : 'no console errors');
 await b.close();
