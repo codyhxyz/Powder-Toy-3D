@@ -9,7 +9,7 @@ Many Claude sessions and their subagents work here at the same time, some in thi
 
 ## Headless GPU budget — all agents
 
-- Use `launchBrowser` and `newTestPage` / `newTestContext` from `tools/browser.mjs`, not another raw Chromium launcher.
+- Use `launchBrowser` and `newTestPage` / `newTestContext` from `tools/browser.mjs`, not another raw Chromium launcher. The deploy enforces it: `tools/check-browser-launch.mjs` fails on any script in `tools/` or `scripts/` that launches a browser itself, except the legacy list in that file, which only shrinks.
 - Pick the cheapest mode that preserves the assertion:
   - `manual`: numerical tests. The app loop is parked at boot. Step explicitly through `__app.test.step(n)` or existing `sim.step()` calls.
   - `ui`: UI-only tests. Starts paused, with normal browser animation callbacks and on-demand rendering.

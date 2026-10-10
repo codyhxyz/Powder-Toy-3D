@@ -33,6 +33,7 @@ jobs:
       - run: npm ci
         env:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1   # playwright is only for local headless checks
+      - run: node tools/check-browser-launch.mjs   # headless tests launch through tools/browser.mjs (CLAUDE.md)
       - run: npm run build
       - name: Deploy to Cloudflare Pages
         env:
