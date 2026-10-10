@@ -61,24 +61,24 @@ function baked() {
   bake = {
     cells, palette, ground, tex, palTex,
     shared: palette.count,      // palette entries of lab and volcano (the island's follow)
-    islandSeed: null, islandTwin: new Map(), pending: new Map(),
+    islandSeed: null,
+    queue: Promise.resolve(),   // island bakes, one after another (the last asked for stays)
   };
   return bake;
 }
 
-// The island tile's ground for world seed `seed`: the bake's once it is done, else the twin's.
-function islandGround(seed) {
+// The island tile's ground at its column (lx, lz) for world seed `seed`: the
+// bake's once it is done, else the generator twin's.
+function islandGround(lx, lz, seed) {
   const b = baked();
-  if (b.islandSeed === seed) return b.ground[PATCH_ISLAND];
-  if (!b.islandTwin.has(seed)) b.islandTwin.set(seed, islandGroundTwin(seed));
-  return b.islandTwin.get(seed);
+  return b.islandSeed === seed ? b.ground[PATCH_ISLAND][lx + PATCH_TILE * lz] : islandGroundTwin(lx, lz, seed);
 }
 
 // Bake the island for world seed `seed` into the island slice (replacing the
 // one there), on the GPU.
 async function bakeIsland(renderer, seed) {
-  const b = baked();
   const { g, A } = await bakeIslandState(renderer, seed);
+  const b = baked();   // (the one there now: dispose() may have come meanwhile)
   b.palette.truncate(b.shared);
   b.ground[PATCH_ISLAND] = bakePreset(PATCH_ISLAND, A, g, b.cells, b.palette);
   b.islandSeed = seed;
@@ -141,17 +141,14 @@ void sceneCell(ivec3 w, out vec4 A, out vec4 B) {
     const cx = Math.floor(x), cz = Math.floor(z);
     const k = presetAt(P.seed, ...tileOf(cx, cz));
     const [lx, lz] = inTile(cx, cz);
-    const g = k === PATCH_ISLAND ? islandGround(P.seed) : baked().ground[k];
-    return g[lx + PATCH_TILE * lz];
+    return k === PATCH_ISLAND ? islandGround(lx, lz, P.seed) : baked().ground[k][lx + PATCH_TILE * lz];
   },
   // The island tiles' bake (patchworkIsland.js): GPU passes and a readback.
+  // Bakes queue, so a world asked for later never gets an earlier one's island.
   prepare(renderer, P) {
     const b = baked();
-    if (b.islandSeed === P.seed) return Promise.resolve();
-    if (!b.pending.has(P.seed)) {
-      b.pending.set(P.seed, bakeIsland(renderer, P.seed).finally(() => b.pending.delete(P.seed)));
-    }
-    return b.pending.get(P.seed);
+    b.queue = b.queue.catch(() => {}).then(() => (baked().islandSeed === P.seed ? null : bakeIsland(renderer, P.seed)));
+    return b.queue;
   },
   dispose() {
     if (!bake) return;

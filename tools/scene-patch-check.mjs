@@ -11,8 +11,10 @@
 //   - ground() matches a scan of buildPreset's state for lab and volcano tiles
 //     (island tiles: within the world, from the generator's twin until a GPU
 //     bake), and start() sits on a seam between two different presets;
-//   - the bake is the same twice (the presets' Math.random seeds don't leak in).
-// The island tile is baked on the GPU (prepare()), so it isn't checked here.
+//   - the bake is the same twice (the presets' Math.random seeds don't leak in);
+//   - prepare() against a stand-in renderer: the island's passes and readback,
+//     and the read-back state lands in the island tiles and their ground.
+// The island's GPU passes themselves need a GPU, so they aren't checked here.
 // No GPU: fine on battery.
 //
 //   node tools/scene-patch-check.mjs
@@ -20,10 +22,11 @@ import { gridLayout, cellTexel, Simulation } from '../src/sim.js';
 import { buildPreset } from '../src/presets.js';
 import { ELEMENTS, K } from '../src/elements.js';
 import { WORLD_SIZE } from '../src/shaders/far.js';
-import { WORLD_SEED } from '../src/world/generator.js';
+import { WORLD_SEED, treesIn, TREE } from '../src/world/generator.js';
 import { patchwork } from '../src/world/scenes/patchwork.js';
 import {
   PATCH_TILE as T, PATCH_TILE_BITS, PATCH_MAP, PATCH_PRESETS, PATCH_ISLAND, PATCH_AIR, PATCH_PALETTE_MAX, tileMap,
+  islandParams,
 } from '../src/world/scenes/patchworkBake.js';
 
 const SEEDS = 200;                 // tile maps checked
@@ -56,10 +59,11 @@ const refCell = (name, x, y, z) => {
 // the scene's uniforms: its baked textures and map
 const P = patchwork.params({ size: WORLD_SIZE, seed: WORLD_SEED });
 const U = patchwork.uniforms(P);
-const cells = U.uPatchCells.value.image.data, pal = U.uPatchPalette.value.image.data;
-const palW = U.uPatchPalette.value.image.width;
-// JS mirror of sceneCell (patchwork.js), without the seed: [id, °C, life, ctype]
-function sceneCell(map, x, y, z) {
+const cells = U.uPatchCells.value.image.data;
+// JS mirror of sceneCell (patchwork.js) with uniforms u, without the seed: [id, °C, life, ctype]
+function sceneCell(map, x, y, z, u = U) {
+  const cells = u.uPatchCells.value.image.data, pal = u.uPatchPalette.value.image.data;
+  const palW = u.uPatchPalette.value.image.width;
   const tx = x >> PATCH_TILE_BITS, tz = z >> PATCH_TILE_BITS, lx = x & (T - 1), lz = z & (T - 1);
   const mx = tx & (PATCH_MAP[0] - 1), mz = tz & (PATCH_MAP[1] - 1);
   const k = map[mx + PATCH_MAP[0] * mz];
@@ -72,7 +76,7 @@ const same = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
 // ---- the palette
 const used = new Set(cells);
 console.log(`palette: ${Math.max(...used) + 1} of ${PATCH_PALETTE_MAX} entries used by lab and volcano`);
-if (!same(Array.from(pal.subarray(0, 4)), [0, ELEMENTS[0].temp, ELEMENTS[0].life, 0])) fail('palette entry 0 is not still air');
+if (!same(Array.from(U.uPatchPalette.value.image.data.subarray(0, 4)), [0, ELEMENTS[0].temp, ELEMENTS[0].life, 0])) fail('palette entry 0 is not still air');
 
 // ---- lab and volcano tiles, every cell, through sceneCell at a tile holding each
 const map = U.uPatchMap.value;
@@ -166,6 +170,48 @@ const first = Uint8Array.from(cells);
 patchwork.dispose();
 const again = patchwork.uniforms(P).uPatchCells.value.image.data;
 if (!same(first, again)) fail('a second bake differs from the first');
+
+// ---- prepare() against a stand-in renderer: the island's passes run in
+// loadIsland's order (columns, fill, a stamp per tree), the state read back
+// is the last one written, and what it reads lands in the island tiles and
+// their ground. The stand-in's readback hands over the volcano's box state
+// (any known state does), so the island tiles must decode to it.
+{
+  const passes = [];
+  let read = null, target = null;
+  const renderer = {
+    getRenderTarget: () => target,
+    setRenderTarget: (t) => { target = t; },
+    render: (scene) => passes.push({ name: scene.children[0].material.name, target }),
+    compileAsync: async () => {},
+    readRenderTargetPixelsAsync: async (t, x, y, w, h, buf, face, index) => { read = { t, index, w, h }; buf.set(refs.volcano.A); },
+  };
+  const U2 = patchwork.uniforms(P), version = U2.uPatchCells.value.version;
+  await patchwork.prepare(renderer, P);
+  await patchwork.prepare(renderer, P);   // baked: nothing to do
+  const names = passes.map((p) => p.name);
+  const trees = treesIn(-TREE.REACH, -TREE.REACH, T + TREE.REACH, T + TREE.REACH, islandParams(P.seed)).length;
+  if (names[0] !== 'column' || names[1] !== 'fill' || names.slice(2).some((n) => n !== 'stamp') || names.length - 2 > trees) {
+    fail(`island passes ${names.slice(0, 4).join(', ')}... (${names.length}; ${trees} trees)`);
+  }
+  if (!read || read.t !== passes.at(-1).target || read.index !== 0 || read.w !== refs.volcano.g.width) fail('the island readback is not the last state written (attachment 0, whole atlas)');
+  if (target !== null) fail('prepare() left the renderer on its own target');
+  if (U2.uPatchCells.value.version === version) fail('the island bake did not re-upload the cells');
+  const m2 = U2.uPatchMap.value, at = m2.indexOf(PATCH_ISLAND);
+  const ox = (at % MX) * T, oz = Math.floor(at / MX) * T;
+  let bad = 0;
+  for (let z = 0; z < T; z++)
+    for (let x = 0; x < T; x++) {
+      let want = 0;
+      for (let y = 0; y < T; y++) {
+        const r = refCell('volcano', x, y, z);
+        if (isGround(r[0])) want = y + 1;
+        if (!same(sceneCell(m2, ox + x, y, oz + z, U2), r) && bad++ < 5) fail(`island tile (${x}, ${y}, ${z}) is ${sceneCell(m2, ox + x, y, oz + z, U2)}, read back ${r}`);
+      }
+      if (patchwork.ground(ox + x, oz + z, P) !== want && bad++ < 5) fail(`island ground(${ox + x}, ${oz + z}) isn't the read-back state's`);
+    }
+  console.log(`prepare: ${names.length} island passes (${names.length - 2} trees stamped), its readback baked into the island tiles${bad ? ` (${bad} wrong)` : ''}`);
+}
 patchwork.dispose();
 
 console.log(failures ? `${failures} failure(s)` : 'patchwork OK');

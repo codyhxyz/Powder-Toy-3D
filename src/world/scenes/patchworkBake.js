@@ -172,12 +172,10 @@ export function bakePreset(k, A, g, cells, palette) {
 // the box's own world seed (app.js loadPreset: loadIsland), snow and all.
 export const islandParams = (seed) => worldParams({ size: [PATCH_TILE, PATCH_TILE, PATCH_TILE], seed });
 
-// The island's ground from the generator's JS twin (heightAt: within a cell
-// of the GPU's, without trees), for before its GPU bake is done.
-export function islandGroundTwin(seed) {
-  const P = islandParams(seed), T = PATCH_TILE;
-  const ground = new Uint8Array(T * T);
-  for (let z = 0; z < T; z++)
-    for (let x = 0; x < T; x++) ground[x + T * z] = Math.max(Math.floor(heightAt(x, z, P) + 0.5), P.sea);
-  return ground;
+// The island's ground at column (x, z) of its tile from the generator's JS
+// twin (heightAt: within a cell of the GPU's, without trees), for before its
+// GPU bake is done.
+export function islandGroundTwin(x, z, seed) {
+  const P = islandParams(seed);
+  return Math.max(Math.floor(heightAt(x, z, P) + 0.5), P.sea);
 }
