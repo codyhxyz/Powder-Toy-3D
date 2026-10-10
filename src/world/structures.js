@@ -1,9 +1,10 @@
 import * as THREE from 'three';
 import { BRICK } from '../shaders/common.js';
 import { E, ELEMENTS, K } from '../elements.js';
-import { runGenerator, bake, MAX_FOOT } from '../constructions/runtime.js';
-import { BUILTINS } from '../constructions/builtins.js';
+import { runGenerator, bake, turnPoint, MAX_FOOT } from '../constructions/runtime.js';
+import { BUILTINS, SHRINE_ALTARS } from '../constructions/builtins.js';
 import { islandTwin, layersAt, pcg, TREE } from './generator.js';
+import { LANDFORMS } from './island/landforms.js';
 
 // The world's structures (docs/structures.md): houses, villages, docks, wrecks,
 // towers, standing stones and mines, placed by a scene from its seed as it
@@ -80,18 +81,52 @@ export const STRUCT = {
   VILLAGE_RISE: 8,      // ...on ground with at most this rise within VILLAGE_R[1] + GAP of it
   VILLAGE_MIN: 2,       // a village needs this many houses that fit
   CAMP_OFF: 10,         // a campfire this far off a watchtower's or a village's middle
+  // a cliff headland, derived from the twin until the landforms mark them (headland):
+  HEAD_ABOVE: 8,        // its ground this far above the sea at least...
+  CLIFF_RUN: 16,        // ...with the sea within this many cells along one of CLIFF_DIRS directions
+  CLIFF_DIRS: 16,
+  CLIFF_STEP: 2,
+  HEAD_MIN: 0.15,       // ...and on this share of a HEAD_RING ring at least; a headland outranks any fallback site
+  HEAD_BONUS: 1,        // (by this much in score)
+  LIGHT_RISE: 12,       // ground rise a lighthouse's box may stand over (a cliff top: its footing builds a plinth on the seaward side)
+  LATTICE: 8,           // cells between the points a lattice scan tries (headlands)
+  MOUTH_LATTICE: 8,     // ...and cave mouths (most are wider than this: a finer scan costs ~1 s a world)
+  // a hermit's cabin by a tarn: on a ring round it, out of islandLakeClearance
+  HERMIT_GAP: 3,        // cells between the lake's clearance and the cabin's box
+  HERMIT_ANGLES: 16,    // places tried round each tarn
+  // a bridge over the ria's dry gorge, at its narrowest axis-aligned crossing
+  GORGE_FROM: 12,       // cells past the drowned part, and short of the head, where crossings are tried...
+  GORGE_STEP: 4,        // ...this often
+  GORGE_DEPTH: 8,       // the gorge is at least this deep below its lower rim there
+  GORGE_SPAN: [10, 56], // the crossing's span between rims
+  RIM_DIFF: 6,          // ...whose heights differ by at most this (the lower abutment's footing makes it up)
+  RIM_FLAT: 1,          // a rim: where the ground rises no more than this over RIM_RUN cells further out
+  RIM_RUN: 3,
+  // the world's shrine (constructions/builtins.js shrine; the app sets its orbs: shrineAltars):
+  // flat dry ground near P.structures.start, the middle of the window the world starts in
+  SHRINE_SEARCH: 40,    // cells from there it looks within...
+  SHRINE_STEP: 4,       // ...on a lattice this fine
+  SHRINE_RISE: 3,       // ground rise under its floor
+  SHRINE_DRY: 2,        // its lowest ground this far above the sea
+  SHRINE_FAR_COST: 0.05,// a spot's score: its rise, plus this per cell from the start (lowest wins)
 };
 
 // The kinds, in RANK order (the thinning keeps rarer, grander ones first).
 // cap: how many a world holds; spacing: cells between two of the kind; tries:
-// points tried a square (SITE_TRIES unless said).
+// points tried a square (SITE_TRIES unless said); sites(T, P): the points to
+// try instead of the squares' (a lattice scan for rare ground, a landform's
+// own places), or null for the squares'.
 const KINDS = [
-  { kind: 'lighthouse', cap: 1, spacing: 400, tries: 48 },   // headlands are few: look harder
+  { kind: 'shrine', cap: 1, spacing: 0, sites: (T, P) => shrineSites(P) },   // the world's perk shrine, near where it starts
+  { kind: 'lighthouse', cap: 1, spacing: 400, sites: (T, P) => lattice(P, STRUCT.LATTICE, (x, z) => T.genTop(x, z) >= P.sea + STRUCT.LIGHT_ABOVE[0]) },
+  { kind: 'bridge', cap: 1, spacing: 400, sites: (T, P) => gorgeCrossings(T, P) },
   { kind: 'stones', cap: 1, spacing: 400 },
   { kind: 'village', cap: 2, spacing: 300 },
   { kind: 'ruin', cap: 2, spacing: 200 },
   { kind: 'watch', cap: 3, spacing: 160 },
-  { kind: 'mine', cap: 3, spacing: 160 },
+  { kind: 'hermit', cap: 2, spacing: 100, sites: (T, P) => tarnSites(P) },
+  { kind: 'mine', cap: 3, spacing: 160,   // at the caves' mouths when they say where (caveMouth), else square tries
+    sites: (T, P) => (T.islandCaveMouth ? lattice(P, STRUCT.MOUTH_LATTICE, (x, z) => T.islandCaveMouth(x, z) > 0) : null) },
   { kind: 'dock', cap: 3, spacing: 200 },
   { kind: 'wreck', cap: 2, spacing: 200 },
   { kind: 'house', cap: 6, spacing: 96 },
@@ -187,12 +222,16 @@ const RULES = {
   lighthouse(T, P, x, z, h) {
     const g = T.genTop(x, z);
     if (g < P.sea + STRUCT.LIGHT_ABOVE[0] || g > P.sea + STRUCT.LIGHT_ABOVE[1]) return null;
-    // landforms hook: a cliff headland (see headland) when the island marks them; else sea on the ring
+    // a cliff headland (headland) first; failing any, the most seaward high ground
     const sea = ring(T, x, z, STRUCT.HEAD_RING, STRUCT.RING_N2).filter((v) => v < P.sea).length / STRUCT.RING_N2;
-    if (!(headland(T, P, x, z) ?? sea >= STRUCT.HEAD_SEA)) return null;
+    if (sea < Math.min(STRUCT.HEAD_MIN, STRUCT.HEAD_SEA)) return null;   // inland: no sea round it
+    const cliff = headland(T, P, x, z);
+    if (!cliff && sea < STRUCT.HEAD_SEA) return null;
     const [dx, dz] = downhill(T, x, z);
     const st = site(T, 'TOWER', 'lighthouse', quarterFacing(-dx, -dz), seedOf(h), x, z);
-    return fits(P, st, STRUCT.TOWER_RISE) ? { score: sea, parts: [st] } : null;
+    // a cliff top is never flat: dry ground under it and a plinth on the seaward side will do
+    const ok = !st.wet && st.rise <= STRUCT.LIGHT_RISE && st.lo > P.sea && st.y + st.s.h + TOP_MARGIN < P.size[1];
+    return ok ? { score: sea + (cliff ? STRUCT.HEAD_BONUS : 0), parts: [st] } : null;
   },
 
   watch(T, P, x, z, h) {
@@ -227,6 +266,34 @@ const RULES = {
     if (L.ground < top - STRUCT.HILL_SLACK) return null;
     const st = site(T, 'STONES', undefined, 0, seedOf(h), x, z);
     return fits(P, st, STRUCT.TOWER_RISE) ? { score: L.ground - top, parts: [st] } : null;
+  },
+
+  // a cabin by a tarn (P.landforms.lakes): its door to the water, its box clear of the lake's clearance
+  hermit(T, P, x, z, h) {
+    const lake = (P.landforms?.lakes ?? []).reduce((b, l) => (!b || Math.hypot(l.x - x, l.z - z) < Math.hypot(b.x - x, b.z - z) ? l : b), null);
+    if (!lake) return null;
+    const st = site(T, 'HOUSE', 'cabin', quarterFacing(lake.x - x, lake.z - z), seedOf(h), x, z);
+    if (!fits(P, st, STRUCT.HOUSE_RISE)) return null;
+    const g = STRUCT.HERMIT_GAP;
+    for (let k = -g; k <= st.s.d + g; k += SAMPLE / 2)
+      for (let i = -g; i <= st.s.w + g; i += SAMPLE / 2) if (T.islandLakeClearance(st.x0 + i, st.z0 + k)) return null;
+    return { score: -Math.hypot(lake.x - x, lake.z - z), parts: [st] };
+  },
+
+  // the world's shrine: the flattest dry spot near the start
+  shrine(T, P, x, z, h) {
+    const st = site(T, 'SHRINE', undefined, 0, 1, x, z);
+    if (st.wet || st.rise > STRUCT.SHRINE_RISE || st.lo < P.sea + STRUCT.SHRINE_DRY || st.y + st.s.h + TOP_MARGIN >= P.size[1]) return null;
+    const [sx, sz] = P.structures.start;
+    return { score: -(st.rise + STRUCT.SHRINE_FAR_COST * Math.hypot(x - sx, z - sz)), parts: [st] };
+  },
+
+  // a footbridge over the gorge: the crossing (gorgeCrossings) gives its span, axis and rims
+  bridge(T, P, x, z, h, c) {
+    if (!c) return null;
+    const st = site(T, 'BRIDGE', String(c.span), c.axis ? 0 : 1, seedOf(h), x, z, 'origin');   // spanning x: front (+z) turned to +x
+    st.y = c.rim;   // the deck's abutments on the higher rim (the lower one's footing makes up the rest)
+    return st.y + st.s.h + TOP_MARGIN < P.size[1] ? { score: -c.span, parts: [st] } : null;
   },
 
   mine(T, P, x, z, h) {
@@ -271,8 +338,95 @@ const RULES = {
 // - headland(T, P, x, z): true/false where the landforms mark cliff headlands
 //   (their site uniforms), undefined where they don't say;
 // - caveMouth(T, P, x, z): { facing: [dx, dz] } at a cave mouth, else null.
-function headland(T, P, x, z) { return T.islandHeadland ? T.islandHeadland(x, z) > 0 : undefined; }
+function headland(T, P, x, z) { return T.islandHeadland ? T.islandHeadland(x, z) > 0 : cliffHeadland(T, P, x, z); }
 function caveMouth(T, P, x, z) { return T.islandCaveMouth?.(x, z) > 0 ? { facing: downhill(T, x, z) } : null; }
+
+// A cliff headland at (x, z), derived from the terrain (headland's fallback):
+// high ground with the sea close below it in some direction (a cliff, not a
+// beach) and on a good share of the ring round it.
+function cliffHeadland(T, P, x, z) {
+  if (T.genTop(x, z) < P.sea + STRUCT.HEAD_ABOVE) return false;
+  let cliff = false;
+  for (let i = 0; i < STRUCT.CLIFF_DIRS && !cliff; i++) {
+    const a = (i / STRUCT.CLIFF_DIRS) * Math.PI * 2;
+    for (let t = STRUCT.CLIFF_STEP; t <= STRUCT.CLIFF_RUN; t += STRUCT.CLIFF_STEP)
+      if (T.genTop(Math.round(x + Math.cos(a) * t), Math.round(z + Math.sin(a) * t)) < P.sea) { cliff = true; break; }
+  }
+  if (!cliff) return false;
+  return ring(T, x, z, STRUCT.HEAD_RING, STRUCT.RING_N2).filter((v) => v < P.sea).length / STRUCT.RING_N2 >= STRUCT.HEAD_MIN;
+}
+
+// The world's lattice points, step cells apart, that pass keep(x, z).
+function lattice(P, step, keep) {
+  const out = [];
+  for (let z = step >> 1; z < P.size[2]; z += step) for (let x = step >> 1; x < P.size[0]; x += step) if (keep(x, z)) out.push({ x, z });
+  return out;
+}
+
+// Lattice points round the world's start for its shrine (none without a start).
+function shrineSites(P) {
+  const st = P.structures?.start, S = STRUCT;
+  if (!st) return [];
+  const out = [];
+  for (let dz = -S.SHRINE_SEARCH; dz <= S.SHRINE_SEARCH; dz += S.SHRINE_STEP)
+    for (let dx = -S.SHRINE_SEARCH; dx <= S.SHRINE_SEARCH; dx += S.SHRINE_STEP) out.push({ x: Math.round(st[0] + dx), z: Math.round(st[1] + dz) });
+  return out;
+}
+
+// The world's shrine's altars (constructions/builtins.js SHRINE_ALTARS), in
+// world cells, for the app's perk orbs; null if the world placed none.
+export function shrineAltars(P) {
+  const s = structuresOf(P).find((r) => r.kind === 'shrine');
+  if (!s) return null;
+  const y0 = s.y - s.s.base.y;
+  return SHRINE_ALTARS.map(([x, y, z]) => {
+    const [X, Z] = turnPoint(x, z, s.quarter);
+    return new THREE.Vector3(s.x0 + s.s.base.x + X + 0.5, y0 + s.s.base.y + y, s.z0 + s.s.base.z + Z + 0.5);
+  });
+}
+
+// Places round each tarn for a hermit's cabin: HERMIT_ANGLES on a ring past its clearance.
+function tarnSites(P) {
+  const reach = LANDFORMS.LAKE_RIM + LANDFORMS.LAKE_CAVE_MARGIN + STRUCT.HERMIT_GAP;
+  return (P.landforms?.lakes ?? []).flatMap((l) => Array.from({ length: STRUCT.HERMIT_ANGLES }, (_, i) => {
+    const a = (i / STRUCT.HERMIT_ANGLES) * Math.PI * 2, d = (l.r + reach) / (1 - LANDFORMS.WOBBLE_AMP) + HOUSE_HALF;
+    return { x: Math.round(l.x + Math.cos(a) * d), z: Math.round(l.z + Math.sin(a) * d) };
+  }));
+}
+const HOUSE_HALF = 10;   // cells from a house's middle to its box's farthest side, about (HOUSE.W 17 · 1.08 / 2, and the log ends)
+
+// The ria's dry gorge (P.landforms.ria), crossed along x or z every GORGE_STEP
+// cells of its length: each crossing whose span between rims, depth and rim
+// heights suit a bridge, as a site { x, z, c: { span, axis, rim } } at its middle.
+function gorgeCrossings(T, P) {
+  const R = P.landforms?.ria, S = STRUCT;
+  if (!R || !(R.len > 0)) return [];
+  const out = [], px = -R.dz, pz = R.dx;   // across the ria's axis
+  for (let u = R.drown + S.GORGE_FROM; u <= R.len - S.GORGE_FROM; u += S.GORGE_STEP) {
+    const m = T.lfMeander(u), cx = Math.round(R.x + R.dx * u + px * m), cz = Math.round(R.z + R.dz * u + pz * m);
+    const floor = T.genTop(cx, cz);
+    // the gorge's direction here, meander and all; the bridge crosses along the axis nearest across it
+    const dm = (T.lfMeander(u + 1) - T.lfMeander(u - 1)) / 2, tx = R.dx + px * dm, tz = R.dz + pz * dm;
+    {
+      const axis = Math.abs(tz) > Math.abs(tx) ? 0 : 1;   // across a gorge running along z is along x
+      const rim = (sgn) => {   // walk out along the axis to where the wall tops out
+        for (let t = 1; t <= S.GORGE_SPAN[1]; t++) {
+          const x = cx + (axis ? 0 : sgn * t), z = cz + (axis ? sgn * t : 0), g = T.genTop(x, z);
+          const beyond = T.genTop(x + (axis ? 0 : sgn * S.RIM_RUN), z + (axis ? sgn * S.RIM_RUN : 0));
+          if (g - floor >= S.GORGE_DEPTH && beyond - g <= S.RIM_FLAT) return { t, g };
+        }
+        return null;
+      };
+      const a = rim(-1), b = rim(1);
+      if (!a || !b) continue;
+      const span = a.t + b.t;
+      if (span < S.GORGE_SPAN[0] || span > S.GORGE_SPAN[1] || Math.abs(a.g - b.g) > S.RIM_DIFF) continue;
+      const mid = (b.t - a.t) / 2;
+      out.push({ x: Math.round(cx + (axis ? 0 : mid)), z: Math.round(cz + (axis ? mid : 0)), c: { span, axis, rim: Math.max(a.g, b.g) } });
+    }
+  }
+  return out;
+}
 
 // Do two sites' boxes come within GAP of each other?
 function overlaps(a, b) {
@@ -290,10 +444,17 @@ export function structuresOf(P) {
   if (placed.has(k)) return placed.get(k);
   const T = islandTwin(P), [wx, , wz] = P.size, stream = pcg((P.seed + SALT) >>> 0);
   const cands = [];
+  // kinds with sites of their own try those (hashed per point), the rest the squares'
+  const siteLists = KINDS.map(({ sites }) => sites?.(T, P) ?? null);
+  siteLists.forEach((list, rank) => list?.forEach(({ x, z, c }) => {
+    const h = pcg((x >>> 0) + pcg(((z >>> 0) + stream + rank) >>> 0)), r = RULES[KINDS[rank].kind](T, P, x, z, h, c);
+    if (r) cands.push({ kind: KINDS[rank].kind, rank, x, z, score: r.score, tie: h, parts: r.parts });
+  }));
   for (let sz = 0; sz < wz / SITE; sz++)
     for (let sx = 0; sx < wx / SITE; sx++) {
       const h0 = pcg((sx >>> 0) + pcg(((sz >>> 0) + stream) >>> 0));
-      KINDS.forEach(({ kind, tries = SITE_TRIES }, rank) => {
+      KINDS.forEach(({ kind, tries = SITE_TRIES, sites }, rank) => {
+        if (sites && siteLists[rank]) return;
         let h = pcg(h0 + rank);
         for (let t = 0; t < tries; t++, h = pcg(h)) {
           const x = sx * SITE + (h % SITE), z = sz * SITE + ((h >>> 8) % SITE);

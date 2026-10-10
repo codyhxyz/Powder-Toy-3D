@@ -9,7 +9,7 @@ import { PerkOrbs } from './perkOrbs.js';
 import { buildPreset, ARENA_PRESETS } from './presets.js';
 import { ArenaMarkers } from './arenas/markers.js';
 import { DAM_VALLEY_BANNERS, shrineAltars } from './arenas/damValley.js';
-import { structureClear } from './world/structures.js';
+import { structureClear, shrineAltars as worldShrineAltars } from './world/structures.js';
 import { loadIsland, releaseGenerator } from './world/gpu.js';
 import { WorldWindow, WIN_STEP } from './world/window.js';
 import { bakedAir } from './constructions/runtime.js';
@@ -392,6 +392,9 @@ const SHRINE_FAR_COST = 0.05;      // ...plus this per cell from the window's mi
 function worldShrine() {
   if (!win || !builds) return;
   const P = win.P, g = sim.g, o = sim.origin, [hx, hz] = SHRINE_HALF;
+  // a scene with structures places its own (world/structures.js: generated, in a clearing): set its orbs
+  const altars = worldShrineAltars(P);
+  if (altars) { perkOrbs?.shrineAt(altars.map((a) => a.sub(o))); return; }
   const sea = P.sea ?? 0;
   const fits = (x, z) => x - hx >= 0 && z - hz >= 0 && x + hx < g.nx && z + hz < g.nz;
   // the ground's lowest and highest under a footprint centred on grid column (x, z)

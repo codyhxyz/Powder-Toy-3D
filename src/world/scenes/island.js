@@ -31,6 +31,7 @@ import { STRUCT_GLSL, structureUniforms, disposeStructureTextures } from '../str
 export const ISLAND_VIEW_XZ = [11, 13];   // the god view's direction across the ground (app.js WORLD_VIEW_DIR's x, z)
 const START_STEP = 16;                    // cells per step of the walk (a window step, world/window.js WIN_STEP)
 const START_INLAND = 0.25;                // share of the window's width inland from the waterline
+const START_WIN = [128, 128];             // the World's window, x and z (app.js WORLDS.world.win): its shrine is placed near its start
 // Far field chunks a frame while it builds (world/far.js): the island's cells
 // cost a texel fetch or a few, so its 256 chunks (~0.3–0.6 ms of GPU each, M5)
 // go in 4 frames, the far field complete about as soon after load as when it
@@ -193,7 +194,11 @@ let worldColumns = null;
 export const island = {
   key: 'island',
   label: 'Island',
-  params: ({ size, seed }) => ({ ...worldParams({ size, seed, snow: false }), structures: true }),
+  // structures (world/structures.js), the shrine among them near where the world starts
+  params({ size, seed }) {
+    const P = worldParams({ size, seed, snow: false });
+    return { ...P, structures: { start: island.start(P, START_WIN) } };
+  },
   glsl: () => islandGLSL(),
   uniforms: (P) => islandUniforms(P, worldColumns?.textureFor(P) ?? null),
   prepare: async (renderer, P) => {
