@@ -1026,7 +1026,7 @@ function press(e) {
       lastShrine = 0;
       builds.place();
       // a shrine's orbs go with its snapshot: undoing it takes them away (undo)
-      if (lastShrine) { sim.history.at(-1).note = { shrine: lastShrine }; hud.toast('Shrine set: in first person (F), take one perk and the others vanish'); }
+      if (lastShrine) { sim.history.at(-1).note = { shrine: lastShrine }; hud.toast('Shrine set: in first person (V), take one perk and the others vanish'); }
       hud.dismissHint();
     }
     return;
