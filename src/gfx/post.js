@@ -25,6 +25,15 @@ import * as THREE from 'three';
 // Bloom (Jimenez 2014): per-pixel soft-knee bright pass at half resolution, 13-tap
 // downsample to 1/64, 9-tap tent upsample. It is energy-conserving: the halo only
 // redistributes the above-threshold light (out = c + k·(blur(bright) − bright(c))).
+// Eyes adjusting to the dark: histogram auto exposure as in Unreal (and Frostbite:
+// Lagarde & de Rousiers 2014), only ever upward. The resolved frame's luminance is
+// sampled on a coarse grid, scattered into a log-luminance histogram (points with
+// additive blending: Scheuermann & Hensley 2007), and the mean of the histogram
+// between two percentiles (Unreal's; it ignores the darkest pixels and small bright
+// lights) says how bright the view is. Over ADAPT.LOG_DARK nothing changes; under it
+// the exposure rises by what brings it back there, up to ADAPT.MAX_EV, with the
+// exponential time course of visual adaptation (Pattanaik et al. 2000, as in
+// Krawczyk et al. 2005): slow into the dark, quick back into the light.
 
 export const POST_DEFAULTS = {
   taa: true,
@@ -43,6 +52,26 @@ export const POST_DEFAULTS = {
   // instead of fading to white: the blend starts at this exposed max-channel radiance…
   hotStart: 1.0,
   hotFull: 4.0, // …and is complete here
+  adapt: true, // eyes adjusting to the dark (ADAPT); false holds the gain at 1 (A/B checks)
+};
+
+// Eye adaptation (see the header). Luminances are log2 of scene radiance, where
+// sunlit white is ≈ 1.2 (gfx/incandescence.js): daylit views sit around -2..0,
+// the moonlit night a few stops under, a cave lit by crystals ~10 under.
+export const ADAPT = {
+  GRID: [64, 36],      // luminance samples across the frame…
+  TAPS: 4,             // …each the mean of TAPS × TAPS bilinear taps over its patch
+  BINS: 64,            // histogram bins…
+  LOG_MIN: -16,        // …over this log2 range (darker or brighter pixels land in the end bins)
+  LOG_MAX: 4,
+  LOW_PCT: 0.8,        // the mean is taken between these shares of the pixels, darkest first
+  HIGH_PCT: 0.983,     // (Unreal's defaults: the brightest 1.7% are lights, not the scene)
+  LOG_DARK: -5,        // a view this bright or brighter keeps the fixed exposure; darker ones rise to it…
+  MAX_EV: 4,           // …by at most this many stops (16×)
+  TAU_DARK: 1.5,       // s: time constant of adjusting to the dark (a few seconds to settle)…
+  TAU_LIGHT: 0.4,      // s: …and back to the light (Pattanaik et al. 2000's rod time constant)
+  SETTLED: 1e-3,       // relative gap to its target under which the gain snaps onto it
+  DT: 1 / 60,          // s: the frame time assumed when render() isn't given one
 };
 
 const MIPS = 6;
@@ -341,6 +370,87 @@ void main() {
 }
 `;
 
+// Eye adaptation, 1: the frame's luminance on the ADAPT.GRID, a patch mean per
+// sample (r: log2 luminance, g: coverage; the page shows through where it's 0).
+const ADAPT_LUM_FRAG = /* glsl */ `
+${COMMON}
+uniform sampler2D tSrc;
+#define TAPS ${ADAPT.TAPS}
+const vec2 GRID = vec2(${ADAPT.GRID[0]}.0, ${ADAPT.GRID[1]}.0);
+const float LOG_FLOOR = ${ADAPT.LOG_MIN - 1}.0;   // log2 luminance of black (below the histogram)
+void main() {
+  vec4 sum = vec4(0.0);
+  for (int y = 0; y < TAPS; y++)
+  for (int x = 0; x < TAPS; x++) {
+    vec2 uv = (gl_FragCoord.xy - 0.5 + (vec2(x, y) + 0.5) / float(TAPS)) / GRID;
+    sum += sanitize(texture(tSrc, uv));
+  }
+  sum /= float(TAPS * TAPS);
+  float L = luma(sum.rgb) / max(sum.a, 1e-4);   // premultiplied: the covered part's own luminance
+  oColor = vec4(L > 0.0 ? max(log2(L), LOG_FLOOR) : LOG_FLOOR, sum.a, 0.0, 1.0);
+}
+`;
+// 2: each sample is a point dropped into its bin, weighted by its coverage
+// (additive blending sums them).
+const ADAPT_HIST_VERT = /* glsl */ `
+precision highp float;
+precision highp int;
+precision highp sampler2D;
+uniform sampler2D tLum;
+out float vW;
+const int GRID_W = ${ADAPT.GRID[0]};
+const float BINS = ${ADAPT.BINS}.0;
+const float LOG_MIN = ${ADAPT.LOG_MIN}.0, LOG_MAX = ${ADAPT.LOG_MAX}.0;
+const float SAMPLES = ${ADAPT.GRID[0] * ADAPT.GRID[1]}.0;
+void main() {
+  vec2 s = texelFetch(tLum, ivec2(gl_VertexID % GRID_W, gl_VertexID / GRID_W), 0).rg;
+  float bin = clamp(floor((s.r - LOG_MIN) / (LOG_MAX - LOG_MIN) * BINS), 0.0, BINS - 1.0);
+  vW = s.g / SAMPLES;
+  gl_Position = vec4((bin + 0.5) / BINS * 2.0 - 1.0, 0.0, 0.0, 1.0);
+  gl_PointSize = 1.0;
+}
+`;
+const ADAPT_HIST_FRAG = /* glsl */ `
+precision highp float;
+in float vW;
+out vec4 oColor;
+void main() { oColor = vec4(vW, 0.0, 0.0, 0.0); }
+`;
+// 3: the histogram's mean between the percentiles, the gain that brings it up to
+// LOG_DARK, and last frame's gain moved toward it. r = gain, g = its target,
+// b = the view's log2 luminance (for tools).
+const ADAPT_FRAG = /* glsl */ `
+${COMMON}
+uniform sampler2D tHist;
+uniform sampler2D tPrev;
+uniform float uDt;
+#define BINS ${ADAPT.BINS}
+const float LOG_MIN = ${ADAPT.LOG_MIN}.0, LOG_MAX = ${ADAPT.LOG_MAX}.0;
+const float LOW_PCT = ${ADAPT.LOW_PCT}, HIGH_PCT = ${ADAPT.HIGH_PCT};
+const float LOG_DARK = ${ADAPT.LOG_DARK}.0, MAX_EV = ${ADAPT.MAX_EV}.0;
+const float TAU_DARK = ${ADAPT.TAU_DARK}, TAU_LIGHT = ${ADAPT.TAU_LIGHT}, SETTLED = ${ADAPT.SETTLED};
+const float EMPTY = 1e-6;   // total weight under which nothing covers the frame
+void main() {
+  float total = 0.0;
+  for (int i = 0; i < BINS; i++) total += texelFetch(tHist, ivec2(i, 0), 0).r;
+  float lo = LOW_PCT * total, hi = HIGH_PCT * total, cum = 0.0, wSum = 0.0, lSum = 0.0;
+  for (int i = 0; i < BINS; i++) {
+    float w = texelFetch(tHist, ivec2(i, 0), 0).r;
+    float part = max(min(cum + w, hi) - max(cum, lo), 0.0);   // this bin's share inside the band
+    lSum += part * (LOG_MIN + (float(i) + 0.5) / float(BINS) * (LOG_MAX - LOG_MIN));
+    wSum += part;
+    cum += w;
+  }
+  float view = wSum > 0.0 ? lSum / wSum : LOG_DARK;
+  float target = total > EMPTY ? exp2(clamp(LOG_DARK - view, 0.0, MAX_EV)) : 1.0;
+  float g = texelFetch(tPrev, ivec2(0), 0).r;
+  g = g > 0.0 ? g : 1.0;   // the first frame starts adapted to daylight
+  g += (target - g) * (1.0 - exp(-uDt / (target > g ? TAU_DARK : TAU_LIGHT)));
+  if (abs(g - target) <= SETTLED * target) g = target;
+  oColor = vec4(g, target, view, 1.0);
+}
+`;
+
 const COMPOSITE_FRAG = /* glsl */ `
 ${COMMON}
 uniform sampler2D tColor;
@@ -352,6 +462,7 @@ uniform float uExposure; // linear multiplier
 uniform float uSharpen;
 uniform float uLook;
 uniform float uRaw;      // 1 = no tone curve/exposure (false-colour data views)
+uniform sampler2D tAdapt; // eye adaptation: r = exposure gain (1 in daylight)
 
 const mat3 SRGB_TO_REC2020 = mat3(
   vec3(0.6274, 0.0691, 0.0164), vec3(0.3293, 0.9195, 0.0880), vec3(0.0433, 0.0113, 0.8956));
@@ -400,14 +511,20 @@ vec3 agx(vec3 c) {
 // bright, clearly saturated pixels blend toward the same curve applied to each
 // Rec.2020 channel alone (AgX's working space; in sRGB primaries the roll-off
 // turns lemon yellow). Greys and everything in the sunlit range stay plain AgX:
-// for a grey both curves agree exactly.
+// for a grey both curves agree exactly. The eye's shift moves bright hues toward
+// its invariant ones (yellow, and blue at ~475 nm): warm light toward yellow, as
+// the per-channel curve does, but violet toward blue, where that curve would turn
+// it magenta. So only warm light (red over blue) takes it; the rest stays plain
+// AgX, whose path to white keeps violet violet.
 uniform vec2 uHot;               // blend start, full (exposed max-channel radiance)
 const float HOT_SAT_POW = 2.0;   // weight ∝ saturation^this: only clearly coloured light
+const float HOT_WARM_EDGE = 0.2; // (red - blue) / max channel over which the weight fades in
 vec3 tonemap(vec3 c) {
   vec3 a = agx(c);
   float mx = max(c.r, max(c.g, c.b));
   float sat = 1.0 - min(c.r, min(c.g, c.b)) / max(mx, 1e-6);
-  float w = smoothstep(uHot.x, uHot.y, mx) * pow(sat, HOT_SAT_POW);
+  float warm = smoothstep(-HOT_WARM_EDGE, HOT_WARM_EDGE, (c.r - c.b) / max(mx, 1e-6));
+  float w = smoothstep(uHot.x, uHot.y, mx) * pow(sat, HOT_SAT_POW) * warm;
   if (w <= 0.0) return a;
   vec3 pc = pow(max(agxCurve(SRGB_TO_REC2020 * c), 0.0), vec3(AGX_GAMMA));
   return mix(a, clamp(REC2020_TO_SRGB * pc, 0.0, 1.0), w);
@@ -455,7 +572,8 @@ void main() {
     rad += uBloom * (b - bright(c.rgb));
   }
 
-  vec3 o = uRaw > 0.5 ? srgbEncode(clamp(rad, 0.0, 1.0)) : srgbEncode(tonemap(max(rad, 0.0) * uExposure));
+  float gain = texelFetch(tAdapt, ivec2(0), 0).r;
+  vec3 o = uRaw > 0.5 ? srgbEncode(clamp(rad, 0.0, 1.0)) : srgbEncode(tonemap(max(rad, 0.0) * (uExposure * gain)));
   // ±½ LSB dither against 8-bit banding; keep exact zeros exact
   float ign = fract(IGN.z * fract(dot(vec2(p), IGN.xy)));
   o += (ign - 0.5) / DITHER_LEVELS * step(DITHER_BLACK, max(o.r, max(o.g, o.b)));
@@ -503,11 +621,35 @@ export function createPost(renderer, { pixScale } = {}) {
     tLow: { value: null }, tHigh: { value: null }, uLowTexel: { value: new THREE.Vector2() },
     uDst: { value: new THREE.Vector2() }, uScatter: { value: POST_DEFAULTS.bloomScatter }, uThresh: thresh,
   });
+  // eye adaptation (ADAPT): luminance grid, histogram, gain (ping-pong)
+  const lumRT = hdr(ADAPT.GRID[0], ADAPT.GRID[1], THREE.LinearFilter);
+  const histRT = hdr(ADAPT.BINS, 1, THREE.NearestFilter);
+  const adaptRT = [0, 1].map(() => hdr(1, 1, THREE.NearestFilter, { type: THREE.FloatType }));
+  let adaptCur = 0;
+  const unitGain = new THREE.DataTexture(new Float32Array([1, 1, 0, 1]), 1, 1, THREE.RGBAFormat, THREE.FloatType);
+  unitGain.needsUpdate = true;
+  const lumMat = mat(ADAPT_LUM_FRAG, { tSrc: { value: null } });
+  const adaptMat = mat(ADAPT_FRAG, { tHist: { value: null }, tPrev: { value: null }, uDt: { value: ADAPT.DT } });
+  const histMat = new THREE.RawShaderMaterial({
+    glslVersion: THREE.GLSL3, vertexShader: ADAPT_HIST_VERT, fragmentShader: ADAPT_HIST_FRAG,
+    uniforms: { tLum: { value: lumRT.texture } }, depthTest: false, depthWrite: false,
+    blending: THREE.CustomBlending, blendEquation: THREE.AddEquation, blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor,
+  });
+  const histGeo = new THREE.BufferGeometry();
+  histGeo.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(ADAPT.GRID[0] * ADAPT.GRID[1] * 3), 3));
+  const histPoints = new THREE.Points(histGeo, histMat);
+  histPoints.frustumCulled = false;
+  const histScene = new THREE.Scene();
+  histScene.add(histPoints);
+  // the gain read back (a frame or so late) for the frame pacing: [gain, target, view log2 luminance]
+  const adaptRead = new Float32Array(4);
+  let adaptReading = false, adaptSeen = null, adaptOn = false;
+
   const compMat = mat(COMPOSITE_FRAG, {
     tColor: { value: null }, tBloom: { value: null }, uBloomTexel: { value: new THREE.Vector2() },
     uSize: { value: new THREE.Vector2() }, uBloom: { value: 0 }, uExposure: { value: 1 },
     uSharpen: { value: 0 }, uLook: { value: 0 }, uRaw: { value: 0 }, uThresh: thresh,
-    uHot: { value: new THREE.Vector2() },
+    uHot: { value: new THREE.Vector2() }, tAdapt: { value: unitGain },
   });
 
   // full-screen triangle
@@ -538,7 +680,11 @@ export function createPost(renderer, { pixScale } = {}) {
     onPass: null,
     get size() { return size.clone(); },
     /** Every render target the pipeline holds (for memory estimates). */
-    get allTargets() { return [sceneRT, still, ...history, ...down, ...up].filter(Boolean); },
+    get allTargets() { return [sceneRT, still, ...history, ...down, ...up, lumRT, histRT, ...adaptRT].filter(Boolean); },
+    /** Eyes still adjusting (the view should keep rendering until they settle). */
+    get adapting() { return adaptOn && !!adaptSeen && adaptSeen.gain !== adaptSeen.target; },
+    /** Last gain read back: { gain, target, view (log2 luminance) }, or null. */
+    get adaptation() { return adaptSeen; },
     /** Current-frame weight TAA settles with (for how long the view needs to converge). */
     get settleWeight() { return upscaling() ? TAAU_WEIGHT_STABLE : TAA_WEIGHT_STABLE; },
     /** Render scale per axis the next render uses (upscaling is TAA's job). */
@@ -583,7 +729,7 @@ export function createPost(renderer, { pixScale } = {}) {
      * Render `scene` through the pipeline into `target` (null = canvas).
      * A non-null target must match the drawing-buffer size.
      */
-    render(scene, camera, target = null) {
+    render(scene, camera, target = null, dt = ADAPT.DT) {
       const s = { ...POST_DEFAULTS, ...post.settings };
       const scale = post.renderScale;
       if (target) post.setSize(target.width, target.height, scale); else post.setSize(undefined, undefined, scale);
@@ -650,6 +796,10 @@ export function createPost(renderer, { pixScale } = {}) {
       prevVP.copy(curVP);
       frame++;
 
+      // 2b. eye adaptation
+      adaptOn = s.adapt && !s.raw;   // (the data views and the plain view keep their exact colours)
+      const adaptTex = adaptOn ? adapt(color, dt) : unitGain;
+
       // 3. bloom chain
       thresh.value.set(s.bloomThreshold, Math.max(s.bloomKnee, 1e-3));
       const bloomOn = s.bloom > 0 && !s.raw;
@@ -688,6 +838,7 @@ export function createPost(renderer, { pixScale } = {}) {
       u.uLook.value = s.look;
       u.uRaw.value = s.raw ? 1 : 0;
       u.uHot.value.set(s.hotStart, s.hotFull);
+      u.tAdapt.value = adaptTex;
       pass(compMat, target);
       post.onPass?.('composite', target);
 
@@ -721,6 +872,7 @@ export function createPost(renderer, { pixScale } = {}) {
       u.uLook.value = s.look;
       u.uRaw.value = s.raw ? 1 : 0;
       u.uHot.value.set(s.hotStart, s.hotFull);
+      u.tAdapt.value = s.adapt && !s.raw ? adaptRT[adaptCur].texture : unitGain;
       pass(compMat, target);
       renderer.setRenderTarget(prevTarget);
       renderer.setClearColor(savedClear, savedAlpha);
@@ -729,10 +881,37 @@ export function createPost(renderer, { pixScale } = {}) {
     dispose() {
       [sceneRT, still, ...history, ...down, ...up].forEach((t) => t?.dispose());
       sceneRT?.depthTexture?.dispose();
-      [taaMat, taauMat, prefilterMat, downMat, upMat, compMat].forEach((m) => m.dispose());
+      [taaMat, taauMat, prefilterMat, downMat, upMat, compMat, lumMat, adaptMat, histMat].forEach((m) => m.dispose());
+      [lumRT, histRT, ...adaptRT].forEach((t) => t.dispose());
+      unitGain.dispose();
+      histGeo.dispose();
       tri.dispose();
     },
   };
+
+  // Eye adaptation for the resolved frame `color`, dt s after the last: returns the gain texture.
+  function adapt(color, dt) {
+    lumMat.uniforms.tSrc.value = color;
+    pass(lumMat, lumRT);
+    renderer.setRenderTarget(histRT);
+    renderer.clear();
+    renderer.render(histScene, quadCam);
+    const u = adaptMat.uniforms;
+    u.tHist.value = histRT.texture;
+    u.tPrev.value = adaptRT[adaptCur].texture;
+    u.uDt.value = dt;
+    adaptCur = 1 - adaptCur;
+    pass(adaptMat, adaptRT[adaptCur]);
+    post.onPass?.('adapt', adaptRT[adaptCur]);
+    if (!adaptReading) {
+      adaptReading = true;
+      renderer.readRenderTargetPixelsAsync(adaptRT[adaptCur], 0, 0, 1, 1, adaptRead)
+        .then(() => { adaptSeen = { gain: adaptRead[0], target: adaptRead[1], view: adaptRead[2] }; })
+        .catch(() => {})
+        .finally(() => { adaptReading = false; });
+    }
+    return adaptRT[adaptCur].texture;
+  }
 
   // Is the scene rendering below output size (TAAU)?
   function upscaling() { return inSize.x !== size.x || inSize.y !== size.y; }

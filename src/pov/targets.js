@@ -6,7 +6,11 @@ import * as THREE from 'three';
 // weapon never hits its own wielder: `owner` is the target's id ('player', or
 // the NPC's), and every test skips the target whose id is `exclude`.
 //
-//   const remove = addTarget({ id, box(min, max), alive, hurt(amount, cause, dir) });
+//   const remove = addTarget({ id, box(min, max), alive, hurt(amount, cause, dir, opts?), facing?(out) });
+//
+// hurt's opts: { lethal } (a backstab: all the health it has, through any shield).
+// facing(out): the unit direction the target looks along (its eyes), for the
+// knife's backstab test; a target without it can't be backstabbed.
 
 export const PLAYER = 'player';   // the player's target id (and the shooter of rounds no actor fired)
 
@@ -54,3 +58,16 @@ export function targetById(id) {
 }
 
 export const hasTargets = () => targets.size > 0;
+
+// Every live target whose box overlaps [min, max] (grid cells), but the one
+// whose id is `exclude` (a vehicle running bodies over: vehicles/index.js).
+export function targetsInBox(min, max, exclude = null, out = []) {
+  out.length = 0;
+  for (const t of targets) {
+    if (!t.alive || t.id === exclude) continue;
+    t.box(lo, hi);
+    if (hi.x < min.x || lo.x > max.x || hi.y < min.y || lo.y > max.y || hi.z < min.z || lo.z > max.z) continue;
+    out.push(t);
+  }
+  return out;
+}

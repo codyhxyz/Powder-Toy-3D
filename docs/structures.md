@@ -2,8 +2,7 @@
 
 The island's built things: what they are, where the generator puts them and why. The constructions themselves are
 ordinary built-ins (`src/constructions/builtins.js`, `src/constructions/structures.js`); this doc is about their scale and
-their place in the world. Phase 1 (this doc, the builds) is done; phase 2 (the placement layer) waits for the generic
-scene path.
+their place in the world. Phase 1 built and checked them; phase 2 placed them on the island (`src/world/structures.js`).
 
 ## Scale: built for the first-person body
 
@@ -62,34 +61,69 @@ two-cell footprint (`STAIR.STRIDE`). Worth making a lint (`walkable`) in phase 2
 They live in `structures.js`, not `builtins.js`, because `builtins.js` is pasted into every AI prompt as worked examples;
 `shared.js` (the human scale) now goes into the prompt ahead of it, so models build to the same scale.
 
-## Placement (phase 2)
+## Placement (`src/world/structures.js`)
 
-### The layer
+### The layer, as built
 
-The tree placement, generalised. A **site lattice** of 64 × 64-cell squares: each square may hold one candidate per
-structure family, hashed from the world seed and the square's coordinates (kind, offset, variant, quarter, construction
-seed, priority), exactly as `treeCandidate` does per brick column. A candidate is kept if its ground suits its kind (the
-table below, from `layersAt` and the foundation's CPU cell function for caves, lakes and strata), and if no higher-priority
-candidate of any family stands within the larger of the two's spacings (Matérn thinning, as `treesIn`). Placement then
-depends only on nearby squares, so any window places the same structures as any other, and the far field can place them
-at world load.
+- **Placement** is a pure function of the world P (`structuresOf`), computed once per world on the CPU twin
+  (`islandTwin`): in each 64 × 64-cell square, each kind tries up to 6 hashed points (the lighthouse 48) and keeps the
+  first whose ground suits it (its site rule, below). Then the whole world's candidates are thinned at once: kinds in
+  rank order (rare and grand first), best site first, each kept while its box stays a GAP (8 cells) clear of every kept
+  box, it is its kind's spacing from others of its kind, and its kind is under its cap. One list per world, so every
+  window and the far field agree by construction. ~0.5 s per world on the CPU (once, at load; most of it the twin's
+  noise for fresh columns). Seeds 20261008, 1, 2, 3 give 24–28 structures each.
+- **Drawn in the scene's cells, not stamped.** Each structure's construction is baked (size 5, its quarter, one of 8
+  seeds a kind) into an R8UI cell atlas; an RGBA8UI brick-column index says which structure's box covers a column
+  (and which columns are a clearing); an RGBA32I table holds each box. The island's `sceneCell` applies them over its
+  own cell (`STRUCT_GLSL structureCell`), with the footing grown exactly as `shaders/stamp.js` grows one (down through
+  what bears no weight, to ground within the construction's footing depth). So the window's fill, its diff (a structure
+  is generated, never an edit, so it costs the store nothing), the far field's build and every window move see the same
+  cells. A CPU twin (`structureCellAt`) does the same for tools.
+- **Trees give way** before thinning: `generator.js treeCandidate` and the island's `sceneTreeCandidate` drop a
+  candidate whose trunk is within `TREE.REACH` of a structure's box (the index's clearing channel), so no crown reaches
+  one and the GPU's far trees match the window's exactly.
+- **Footing and facing.** The base sits on the highest ground under the box (ground sampled a brick apart), and
+  buildings face uphill (village houses face their well), so the door is one step up; the downhill side shows the
+  plinth. The mine and the dock sit on the ground at their origin and face downhill (into and out of the slope); a
+  campfire sits on the lowest ground under it, so its stones always rest on ground.
+- **The start shrine** (main's ad-hoc placement in `app.js`) now skips any spot in a structure's clearing. To move it into
+  the layer fully: add a `shrine` kind whose rule is app.js's (flat dry ground nearest the start window's middle),
+  ranked first with cap 1, and have the app set its orbs (`onPlaced`) from the placed record's `SHRINE_ALTARS` when the
+  window first loads it, instead of stamping it; its tree felling is then the layer's clearing. The orb hook is the only
+  app-side change.
+- **Other scenes.** The mechanism (textures, `STRUCT_GLSL`, the tree clearing) is general: a scene includes
+  `STRUCT_GLSL`, defines `structureGround`, calls `structureCell` in its `sceneCell` and adds `structureUniforms(P)`
+  to its uniforms. The site rules read the island's twin (`genTop`, `genCover`, `genSlope`, `column`), so another scene
+  needs those functions in its twin, or rules of its own.
 
-**Trees give way.** A tree candidate within a structure's clearing radius (its footprint plus 6 cells) is dropped:
-`treeCandidate` asks `structuresNear`, which is cheap because structures are sparse. The far field's tree thinning needs
-the same mask (a small texture of clearing discs), through the foundation's far-field hook. The GPU run below shows why:
-without it a cottage door opens into a pine.
+### Measured (GPU run, `tools/structures-check.mjs`)
 
-**Footing.** The base sits at the highest ground under the footprint (sampled every 2 cells), so the stamp's footing fills
-a plinth on the low side and nothing is buried. A site whose rise under the footprint is more than its kind's limit is
-rejected, which keeps plinths short. The front faces uphill for buildings, so the door is a single step up from the
-ground (the plinth shows on the downhill side). Exceptions: the mine and the dock sit at their origin's ground (the portal,
-the pier's root) and face downhill, toward the valley or the sea.
+- Far build, all 256 chunks with a forced sync, structures on vs off, alternated: 853 vs 861 ms median, so no measurable
+  cost: one integer texel fetch a sample. (Under another session's 99% GPU load: absolute times are inflated.)
+- Stability: 0 cells changed element after 600 steps in a window over a village and one over a dock.
+- Seams: a cottage across the window's +x edge, the window walked 3 steps over it, against a fresh load at the same
+  origin: 0 of 40,320 cells differ.
+- Trees: the far field's GPU placement against `treesIn` (`tools/far-check.mjs` step 6): 313 the same, 0 differ.
+- The box's Island preset (structures off): `tools/gen-check.mjs` stability 0 changed, twin 0 cells differing, seams 0.
+- First person: spawned 6 cells outside a village house's door and walking in for 1.8 s ends inside it.
 
-**Stamping.** Like trees: the window stamps every structure whose box meets the brick columns a move visits for the first
-time, clipped to those columns, with one `stampMany` pass, and the planted record keeps it from stamping twice; after that
-it comes back from the store as edits. The stamp seeds per world cell, so a structure cut across two slabs comes out the
-same in both. `TREE.REACH` (16) becomes the largest half-extent of anything placed: about 40 cells with the wreck and
-the ruin.
+### Wiring after landforms and caves merge
+
+The rules that depend on them are keyed to twin functions; when the twin has them, the rules follow:
+
+- **Headlands (landforms):** export a column function `islandHeadland(x, z)` (> 0 on a cliff headland) in the
+  landforms source; the twin then has `T.islandHeadland`, and `structures.js headland` uses it in place of today's
+  fallback (sea on 20% of a 36-cell ring, the most seaward high ground winning).
+- **Cave mouths (caves):** export `islandCaveMouth(x, z)` (> 0 at a mouth on a steep bare-rock slope); `caveMouth`
+  then places the mine there, facing out of the slope, instead of on today's fallback (a 0.45–2.6 slope with the
+  gallery's back half under 9 cells of ground). The mine's gallery then carves into the cave or toward a coal seam.
+- **Tarns (landforms):** `islandLakeClearance(x, z)` and lake water levels: the `site()` wet check already rejects
+  boxes over standing water (`column(x, z)[3] > genTop`). Add a `hermit` kind (a cabin within 24 cells of a lake,
+  `islandLakeClearance` small but positive) ranked after `watch`, cap 2.
+- **Ria and gorge (landforms):** a dock rule for an inlet's sheltered shore works as is (sand at sea + 1..2 with
+  water ahead). A bridge over the gorge needs a new construction (a timber span with a footing at each end) and a rule
+  that finds the gorge's narrowest crossing between two rims of equal height.
+- **Strata and coal (rocks, landforms):** nothing to wire: structures are drawn over whatever the island's cells hold.
 
 ### Where each one goes
 
@@ -99,11 +133,11 @@ the ruin.
 | Lone cottage or cabin | meadow below the plant line; cabins in the pine zone (above 0.3 of the relief) and by mountain lakes (the hermit's cabin) | ~5 per island, 96 apart | 3 | Shelter on a long walk; a cabin by a lake is a reward for the climb |
 | Dock (hut near villages) | a sand column at sea + 1 to + 2 whose sea floor, 30 cells out along the down-slope, is 3–28 cells deep (stilts reach it, the deck is over water) | 2–4 per island, 200 apart | (root only) | A way out over the water, somewhere to jump in from, and the fishing hut as a coastal home |
 | Shipwreck | sand at sea − 1 to + 2, lying along the shore (her length across the down-slope) | 1–2 per island | 4 | A beach discovery: wood and steel to salvage, a story without words. Later, a keg in her hold |
-| Lighthouse | a cliff headland: high cliff noise, ground sea + 8 to + 30, sea on more than half a 40-cell ring around it | 1 per island (2 on a large one) | 4 | The tallest landmark, seen from everywhere: navigation. The climb ends on a gallery over the sea, and its crystal lamp marks the coast at night |
+| Lighthouse | a cliff headland (landforms' `islandHeadland`); until then the most seaward high ground: sea + 4 to + 40, sea on at least 20% of a 36-cell ring, the highest share wins | 1 per island | 4 | The tallest landmark, seen from everywhere: navigation. The climb ends on a gallery over the sea, and its crystal lamp marks the coast at night |
 | Watchtower | a hilltop in the meadow and pine zones: higher than every sample on a 24-cell ring, slope < 0.5 | 2–3 per island, 160 apart | 4 | A reason to climb a hill and a deck to see the next goal from. Pairs with an unlit campfire at its foot |
 | Ruined keep | bare rock above the plant line, on ridges | 1–2 per island | 5 (rubble hides the rest) | A goal in the bare high country, which is otherwise empty; climb it for the island's best view |
 | Standing stones | a gentle summit inside the plant zone, flat over 16 cells | 1 per island | 4 | A mysterious place, and the island's perk shrine on its altar (below) |
-| Mine | a cave mouth (the caves' mouth list), else a steep slope (1–2 cells per cell) that rises 8+ cells over the gallery's length behind the portal; toward a coal seam where the strata have one | 2–3 per island | (portal only) | An entrance into the mountain that teaches the pickaxe: follow the rails and the crystal lamps to the face, and keep digging to the coal |
+| Mine | a cave mouth (caves' `islandCaveMouth`); until then a slope of 0.45–2.6 (the island's steepest are ~0.8) whose ground is 9+ cells over the gallery's back half, its spur over lower ground | up to 3 per island | (portal only) | An entrance into the mountain that teaches the pickaxe: follow the rails and the crystal lamps to the face, and keep digging to the coal |
 | Campfire (unlit) | beside docks, watchtowers, mines and village greens | with those | 1 | Unlit, so the world doesn't churn; lighting it is the player's choice (warmth and light at night) |
 
 Not placed: greenhouse (its plants grow into its troughs), fountain (its CLONE overflows), igloo (ice melts in 20 °C air),
@@ -142,17 +176,14 @@ felled). I'd fold it into the layer:
 
 ### The far field
 
-Structures are few (a few dozen per island), so the far field can show each exactly rather than as a formula like the
-trees: at world load, bake each placed structure on the CPU (milliseconds each), reduce it to the far grid's bricks
-(4³ cells: dominant material, solid fraction) and write those texels over the terrain's in the far build. The clearing
-mask above thins the far trees the same way the window's are thinned. Lighthouse, towers and ruins are the ones that
-matter from afar; the crystal lamp's glow can ride the far field's glow channel.
+Structures are part of the scene's cells, so the far field's build draws them at brick scale like the terrain (the
+lighthouse, towers and roofs read from across the island), and a structure the window has visited comes back from its
+summaries like everything else. No separate bake.
 
 ## Verifying
 
 - `npm run construct -- --builtins` (every variant ok, at sizes 1–24 and several seeds).
-- The walk check (above): a scratch BFS; worth committing as a lint in phase 2.
-- `tools/structures-shots.mjs`: stamps them all on the World island (an inland window and the start window's shore) and
-  takes god and first-person stills. Phase 1's run used it without clearing trees or turning the mine downhill; it now
-  fells the trees in each clearing (as `app.js` does for the shrine) and turns the mine to face downhill. Its census
-  compares cell counts before and after a few seconds of sim.
+- The walk check (Scale, above): a scratch BFS, worth making a lint.
+- `tools/structures-check.mjs [outDir] --port N`: placement by kind, the far build's cost with structures on and off,
+  stability over a village and a dock, a seam across a window edge, and stills (a village, walking into one of its
+  houses, the lighthouse, a dock, a wreck, the far field from a hilltop).

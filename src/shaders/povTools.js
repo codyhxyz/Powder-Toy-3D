@@ -46,6 +46,17 @@ export const PICK = {
   SHOVE: 0.25,       // cells/step pushed into loose powder at the patch centre
 };
 
+// Knife: the same blow from a blade, which is for bodies (tools/knife.tool.js), not cells. Its
+// energy sits just over PLANT's and ICE's hardness (6) and under GLASS's (8), in a patch no
+// bigger than the struck cell: it cuts a plant or chips ice where it lands and nothing harder.
+export const KNIFE = {
+  ENERGY: 7,         // sim KE units at the patch centre (above PLANT and ICE's 6, below GLASS's 8)
+  RADIUS: 0.8,       // cells, half-width across the stab: the struck cell
+  DEPTH: 1,          // cells, half-depth along it
+  CHIP_MAX: 0.3,     // cells/step, fastest a chip leaves the cut
+  SHOVE: 0.1,        // cells/step pushed into loose powder: a blade parts it, it doesn't shovel
+};
+
 // Physgun: a spring on the centre of mass of the loose matter near a hold
 // point (powders, liquids, gases within RADIUS of it, fading toward RADIUS).
 //
@@ -161,6 +172,7 @@ void blow(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
 ${copyThroughMain('blow')}`;
 export const axeFrag = blowFrag(AXE);
 export const pickaxeFrag = blowFrag(PICK);
+export const knifeFrag = blowFrag(KNIFE);
 
 // A flame: a cone from a nozzle along a direction (P: FLAMER, the
 // flamethrower's, or TORCH_FIRE, a thrown torch's). Air in the cone becomes
