@@ -19,7 +19,7 @@
 //
 // usage: node tools/npc-playtest.mjs [--url http://localhost:5291] [--styles gunner,brawler] [--matches 3]
 // Needs AC power (GPU) and a dev server, or --url https://tpt3d.codyh.xyz.
-import { chromium } from 'playwright';
+import { launchBrowser, newTestPage } from './browser.mjs';
 
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
@@ -31,9 +31,9 @@ const PLAYER_AT = [44, 3, 110];           // grid cells: open dry floor between 
 const NPC_AT = [71, 3, 110];              // 27 cells east of the player
 const W = 960, H = 600;
 
-const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
+const b = await launchBrowser({ lifetimeMs: (STYLES.length * MATCHES * MATCH_S + 120) * 1000 });
 try {
-  const p = await b.newPage({ viewport: { width: W, height: H } });
+  const p = await newTestPage(b, { viewport: { width: W, height: H } });
   const errs = [];
   p.on('pageerror', (e) => errs.push(String(e).slice(0, 300)));
   await p.goto(`${URL}/?preset=lab`);

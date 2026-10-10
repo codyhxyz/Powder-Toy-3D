@@ -11,7 +11,7 @@
 // where the ratio crosses 1 is the threshold. Run it on a quiet GPU.
 // usage: node tools/sleep-crossover.mjs --port N [--scen island:0,lab:0,lab:8,lab:16,lab:40,lab:150] [--chunks 16]
 //   (scen: preset:rain strokes per chunk)
-import { chromium } from 'playwright';
+import { launchBrowser, newTestPage } from './browser.mjs';
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
 const port = opt('port', '5191');
@@ -25,12 +25,12 @@ const CHUNK_STEPS = 24;           // steps per timed chunk
 const REGIONS_ONLY_SHARE = 2;     // a full-screen threshold above any share (shares are at most 1)
 const RAIN = { RADIUS: 3, BELOW_TOP: 6, MARGIN: 4, STRIDE_X: 37, STRIDE_Z: 61, WATER_EVERY: 3 };   // cells; one stroke in WATER_EVERY is water
 
-const browser = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
-const page = await (await browser.newContext({ viewport: { width: 1280, height: 800 } })).newPage();
+const browser = await launchBrowser();
+const page = await newTestPage(browser, { mode: 'manual', viewport: { width: 1280, height: 800 } });
 await page.addInitScript((seed) => {
   let s = seed;
   Math.random = () => { s |= 0; s = (s + 0x6d2b79f5) | 0; let t = Math.imul(s ^ (s >>> 15), 1 | s); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
-  window.requestAnimationFrame = () => 0;   // hold the app's frame loop: only this script steps the sim
+  window.requestAnimationFrame = () => 0;   // also supports benchmarks against legacy builds without manual mode
 }, SEED);
 const errors = [];
 page.on('pageerror', (e) => errors.push(String(e).slice(0, 300)));

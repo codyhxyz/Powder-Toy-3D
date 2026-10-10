@@ -1,7 +1,7 @@
 // Batched visual check: one browser, both scenes, several angles, data views,
 // a smoothing-off comparison and a temporal flicker measurement.
 // usage: node tools/shots.mjs <outDir> [--port 5191]
-import { chromium } from 'playwright';
+import { launchBrowser, newTestPage } from './browser.mjs';
 import { mkdirSync } from 'fs';
 const args = process.argv.slice(2);
 const out = args[0];
@@ -9,8 +9,8 @@ const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i
 const port = opt('port', '5191');
 const only = opt('only', '');
 mkdirSync(out, { recursive: true });
-const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
-const p = await b.newPage({ viewport: { width: 1280, height: 800 } });
+const b = await launchBrowser();
+const p = await newTestPage(b, { mode: 'visual', viewport: { width: 1280, height: 800 } });
 const errs = [];
 p.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warning') errs.push(m.text().slice(0, 3000)); });
 p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 2000)));

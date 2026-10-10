@@ -65,9 +65,9 @@ export function blendFixedFrames(w) {
 }
 
 // viewSettle: a frame count, or a function returning one (it may change at run time).
-export function createPacer({ derivedSettle, viewSettle }) {
+export function createPacer({ derivedSettle, viewSettle, presentHz = MAX_FPS }) {
   const viewFrames = typeof viewSettle === 'function' ? viewSettle : () => viewSettle;
-  let last = -Infinity;
+  let last = -Infinity, lastPresent = -Infinity;
   let derivedKey = null, viewKey = null;
   let derivedLeft = 0, viewLeft = 0;
   return {
@@ -77,6 +77,15 @@ export function createPacer({ derivedSettle, viewSettle }) {
       last = now;
       return true;
     },
+    // Presentation can run less often without slowing physics or consuming
+    // the temporal filters' convergence counts on skipped presentations.
+    present(now, force = false) {
+      if (!force && now - lastPresent < FRAME_EARLY * MS_PER_S / presentHz) return false;
+      lastPresent = now;
+      return true;
+    },
+    get settled() { return derivedLeft <= 0 && viewLeft <= 0; },
+    get settleLimit() { return derivedSettle + viewFrames() + 4; },
     // Run the derived passes this frame? key: everything they depend on.
     derived(key) {
       if (key !== derivedKey) { derivedKey = key; derivedLeft = derivedSettle; }

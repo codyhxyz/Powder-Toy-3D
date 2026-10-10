@@ -23,7 +23,7 @@
 //   reports the share of field-atlas regions its dirty sets flagged (EMA, FIELDS, WORK).
 // Serve each build with its own vite (a checkout: git archive <ref> | tar -x -C <dir>,
 // node_modules symlinked); serve it without a file watcher, so nothing reloads mid-run.
-import { chromium } from 'playwright';
+import { launchBrowser, newTestPage } from './browser.mjs';
 import { writeFileSync } from 'fs';
 import { execSync } from 'child_process';
 
@@ -63,15 +63,14 @@ async function waitQuiet() {
   return n >= QUIET_SAMPLES;
 }
 
-const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
+const b = await launchBrowser();
 const pages = [];
 for (const spec of specs) {
   const [port, mode] = spec.split(':');
-  const p = await b.newPage({ viewport: VIEWPORT });
-  await p.addInitScript(() => localStorage.setItem('powder-toy-3d:settings', JSON.stringify({ paused: true })));
+  const p = await newTestPage(b, { mode: 'visual', viewport: VIEWPORT });
   const errs = [];
   p.on('pageerror', (e) => errs.push(String(e).slice(0, 300)));
-  await p.goto(`http://localhost:${port}/?preset=lab`, { timeout: LOAD_TIMEOUT_MS });
+  await p.goto(`http://localhost:${port}/?preset=lab&paused=1`, { timeout: LOAD_TIMEOUT_MS });
   pages.push({ spec, full: mode === 'full', p, errs });
 }
 await sleep(BOOT_MS);

@@ -4,7 +4,7 @@
 // rate with the profiler off and on. Run it on an otherwise idle GPU: other GPU
 // work inflates every number, and unevenly.
 // usage: node tools/profile-check.mjs [--port N] [--pairs N]
-import { chromium } from 'playwright';
+import { launchBrowser, newTestPage } from './browser.mjs';
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
 const port = opt('port', '5191');
@@ -14,8 +14,8 @@ const SETTLE_MS = 1500;             // after switching the profiler, before a wi
 const WINDOW_MS = 4000;             // frame-rate window per mode
 const SYNC_REPS = 5;                // timed syncs per reference (median: the sync's own cost)
 
-const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
-const p = await b.newPage({ viewport: { width: 1280, height: 800 } });
+const b = await launchBrowser();
+const p = await newTestPage(b, { mode: 'visual', viewport: { width: 1280, height: 800 } });
 const errs = [];
 p.on('pageerror', (e) => errs.push(String(e)));
 await p.goto(`http://localhost:${port}/?preset=lab`);

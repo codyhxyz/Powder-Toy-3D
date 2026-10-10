@@ -19,7 +19,7 @@
 //   --detail: close-up detail features (gfx/detail.js) all on (the default:
 //   they add most of the texture a move could make jump), all off, or as
 //   their cost tiers set them.
-import { chromium } from 'playwright';
+import { launchBrowser, newTestPage } from './browser.mjs';
 import { mkdirSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { DETAIL, settingKey, detailDefaults } from '../src/gfx/detail.js';
@@ -48,10 +48,10 @@ const WALK_SPEED = 1.5;       // cells per frame the focus moves on the continuo
 const JUMP_FRAME = 1000;      // the jitter frame index the jump stills are drawn at (same before and after)
 const SETTLE_FRAMES = 90;     // frames for the derived passes and GI to converge on a still view
 
-const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
-const p = await b.newPage({ viewport: { width: 1280, height: 800 } });
+const b = await launchBrowser();
+const p = await newTestPage(b, { mode: 'visual', viewport: { width: 1280, height: 800 } });
 await p.addInitScript((detail) => {
-  localStorage.setItem('powder-toy-3d:settings', JSON.stringify({ paused: true, ...detail }));
+  localStorage.setItem('powder-toy-3d:settings', JSON.stringify(detail));
   addEventListener('DOMContentLoaded', () => {
     const st = document.createElement('style');
     st.textContent = 'body *{visibility:hidden !important} #app > canvas{visibility:visible !important}';
@@ -72,7 +72,7 @@ p.on('crash', () => errs.push('PAGE CRASHED'));
 let booted = false;
 p.on('framenavigated', (f) => { if (booted && f === p.mainFrame()) errs.push(`NAVIGATED to ${f.url()}`); });
 process.on('exit', () => { if (errs.length) console.log(errs.join('\n')); });
-await p.goto(`http://localhost:${port}/?size=world`);
+await p.goto(`http://localhost:${port}/?size=world&paused=1`);
 booted = true;
 await p.waitForFunction(() => window.__app?.win, null, { timeout: 30000 });
 await p.waitForTimeout(1500);
