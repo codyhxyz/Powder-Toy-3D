@@ -8,6 +8,7 @@ import { createFeel } from './feel.js';
 import { createVfx } from './vfx.js';
 import { povEvents } from './events.js';
 import './pov.css';
+import './potions.js';   // Noita's potion statuses: stains and drinks (registers them)
 import { addTarget, PLAYER } from './targets.js';
 import { grant, PERK } from './perks.js';
 import { CLASSES_ENABLED } from './classes.js';
@@ -92,6 +93,7 @@ export function createPov(app) {
       max.set(player.pos.x + BODY_WIDTH / 2, player.pos.y + BODY_HEIGHT, player.pos.z + BODY_WIDTH / 2);
     },
     facing: (out) => povCam.dir(out),   // where the player looks (the knife's backstab test)
+    get body() { return player; },      // its statuses scale its weapons (targets.js dealtScale)
     hurt(amount, cause, d, opts) {
       povEvents.emit('player:hit', { amount });   // inside the attacker's povEvents.as(): carries its id
       player.hurt(amount * PLAYER_DAMAGE_TAKEN, cause, opts);
@@ -427,7 +429,7 @@ export function createPov(app) {
     primary: false, secondary: false, primaryPressed: false, secondaryPressed: false, wheel: 0,
     viewBobbing: true,              // the View Bobbing setting (the viewmodel rig's hand bob reads it)
     aim: { valid: false, cell: new THREE.Vector3(), face: 0, id: -1, T: 0, P: 0, dist: Infinity },
-    player: { pos: null, vel: null, onGround: false, inLiquid: false, applyImpulse: (dv) => player?.applyImpulse(dv), holdPogo: () => player?.holdPogo() },
+    player: { pos: null, vel: null, onGround: false, inLiquid: false, applyImpulse: (dv) => player?.applyImpulse(dv), holdPogo: () => player?.holdPogo(), body: null },   // body: the player itself (a drink acts on it: ingest.js)
   };
   const input = { move: { x: 0, z: 0 }, jump: false, sprint: false, down: false };
   let sprintOn = false;     // Sprint: Toggle's state
@@ -619,6 +621,7 @@ export function createPov(app) {
       ctx.wheel = wheelNotches;
       ctx.viewBobbing = app.settings.viewBobbing;
       ctx.player.pos = player.pos;
+    ctx.player.body = player;
       ctx.player.vel = player.vel;
       ctx.player.onGround = player.onGround;
       ctx.player.inLiquid = player.inLiquid;

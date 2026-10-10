@@ -69,6 +69,7 @@ export const HIT = {
   FLING: { kick: 0.6 },                                                                // a physgun fling
   PLACE: { kick: 0.3 },                                                                // a trowel block set down
   THROW: { kick: 0.4 },                                                                // a bomb thrown
+  DRINK: { kick: 0.15, punch: { pitch: [1 * DEG, 1.5 * DEG] } },                     // a gulp from the flask: the head tips back
   KNIFE: { kick: 0.3, punch: { pitch: [-1 * DEG, -0.5 * DEG] } },                     // a stab: half the axe's punch, straight in
   BACKSTAB: { kick: 0.8, punch: { pitch: [-3 * DEG, -2 * DEG], yaw: [-1 * DEG, 1 * DEG] } },   // a backstab: the blade driven in, the pickaxe's weight
   POGO: { kick: 0.2 },                                                                 // a pogo bounce: the stick's jolt in the hands

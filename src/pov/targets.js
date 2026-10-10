@@ -11,6 +11,7 @@ import { povEvents } from './events.js';
 //   const remove = addTarget({ id, box(min, max), alive, hurt(amount, cause, dir, opts?), facing?(out) });
 //
 // hurt's opts: { lethal } (a backstab: all the health it has, through any shield).
+// body: the target's first-person body (player.js), whose statuses scale what its weapons deal.
 // facing(out): the unit direction the target looks along (its eyes), for the
 // knife's backstab test; a target without it can't be backstabbed.
 //
@@ -71,6 +72,10 @@ export function segmentTarget(a, b, exclude = null) {
   const len = d.length();
   return len > 0 ? rayTarget(a, d.divideScalar(len), len, exclude) : null;
 }
+
+// × the damage a weapon wielded by `actorId` (an NPC's id; null: the player) deals to a body: the
+// wielder's statuses (Berserk, potions.js). The weapons (melee.js, ballistics.js) multiply by it.
+export const dealtScale = (actorId) => targetById(actorId ?? PLAYER)?.body?.status?.damageScale ?? 1;
 
 // The target with this id, or null (an NPC finding the player's).
 export function targetById(id) {

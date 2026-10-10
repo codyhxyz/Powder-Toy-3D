@@ -44,7 +44,7 @@ const EPS = 1e-4;                      // cells: faces this close to a cell boun
 // speed you ask for, which is what makes Noita's movement feel fluid.
 const NOITA_FPS = 60;
 const NOITA_BODY_PX = 11;              // px, Mina head to feet
-const PX = BODY_HEIGHT / NOITA_BODY_PX; // cells per Noita pixel
+export const PX = BODY_HEIGHT / NOITA_BODY_PX; // cells per Noita pixel (the flask scales Noita's units by it)
 const GRAVITY = 350 * PX;              // cells/s² (175, 5.4 g) at the default sim gravity (pixel_gravity)...
 const SIM_GRAVITY_REF = 0.025;         // ...which is this many cells/step² (sim.js GRAVITY_DEFAULT); the setting scales it
 const SPRINT_SPEED = 57 * PX;          // cells/s (8.6 m/s): Mina's run (velocity_max_x)
@@ -69,6 +69,7 @@ const JET_REFILL_AIR = 0.4;            // s of thrust regained per s in the air,
 const JET_AIR_WAIT_S = 38 / NOITA_FPS; // s off the jet before the air recharge starts (flying_in_air_wait_frames)
 const JET_TAP_S = 8 / NOITA_FPS;       // s of fuel every press burns at least, so tapping can't hover for free (flying_recharge_removal_frames)
 const JET_RISE = 95 * PX;              // cells/s (14 m/s): the climb the jet eases toward (fly_speed_max_up)
+const LEVITATE_RISE = 1.75;            // × the jet's climb while Levitating (Noita's Faster Levitation: 75% faster)
 const JET_EASE = 0.25;                 // share of the gap to JET_RISE closed per Noita frame, gravity off while it fires (fly_speed_change_spd)
 const JET_FLY_SPEED = 52 * PX;         // cells/s: horizontal speed while the jet fires (fly_velocity_x)
 
@@ -224,12 +225,13 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     get dead() { return vitals.dead; },
     get cause() { return vitals.cause; },
     get skinT() { return vitals.skinT; },
+    set skinT(T) { vitals.skinT = T; },   // a drink trades heat with it (ingest.js)
     stepRate: 0,                  // sim steps/s, as measured
     team: null,                   // a team game's side ('red' | 'blue' | 'infected', src/game), or null
   };
   // statuses (status.js; the built-in ones, Burning's fire and Bleeding: stains.js)
   const bodyWorld = createBodyWorld({ renderer, getSim });
-  const statusCtx = { world: bodyWorld, hurt: (amount, cause, opts) => vitals.hurt(amount, cause, false, opts) };
+  const statusCtx = { world: bodyWorld, renderer, getSim, hurt: (amount, cause, opts) => vitals.hurt(amount, cause, false, opts) };
   p.status = createStatusSet(p, statusCtx);
   const impulse = new THREE.Vector3();
 
@@ -660,9 +662,11 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     // Lukki: while a limb touches a wall or ceiling the jet fires on an empty tank, and the tank holds
     // Rocket Boots: climbs faster; Big Tank: a bigger tank (the same refill rates fill it slower, as in Noita)
     const tankS = JET_FUEL_S * perks.fuelRate;
-    const jetRise = Math.min(JET_RISE * perks.jetRate, Math.max(JET_RISE, PERK_SPEED_V));
+    // Levitating (Levitatium, potions.js): Noita's Faster Levitation, 75% faster, and here the tank holds
+    const levitating = p.status.has('LEVITATING');
+    const jetRise = Math.min(JET_RISE * perks.jetRate * (levitating ? LEVITATE_RISE : 1), Math.max(JET_RISE, PERK_SPEED_V));
     const jetWants = alive && !!input.jump && (!pogoing || jumpHeldS > POGO_WINDOW_S);
-    const clings = jetWants && !p.onGround && !swimming && perks.has('LUKKI') && clinging();
+    const clings = jetWants && !p.onGround && !swimming && ((perks.has('LUKKI') && clinging()) || levitating);
     const jet = jetWants && !p.onGround && !jumpedNow && !swimming && (p.jetFuel > 0 || clings);
     if (jet) {
       if (!clings) p.jetFuel = Math.max(0, p.jetFuel - dt / tankS);
@@ -791,10 +795,17 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
   return Object.assign(p, {
     spawn, update, dispose, windowShifted,
     applyImpulse(dv) { impulse.add(dv); },
-    ownBlast() { vitals.ownBlast(); },   // a blast it set off (a rocket, a bomb): it hurts this body less (vitals.js)
+    ownBlast() { vitals.ownBlast(); },
+    // a jump to another spot (Teleportitis, potions.js): health and statuses kept, the probe re-read there
+    teleport(feet) {
+      p.pos.copy(feet); p.vel.set(0, 0, 0); impulse.set(0, 0, 0); p.onGround = false;
+      generation++; probe.valid = false;
+    },
+    heal(amount) { if (!vitals.dead) vitals.health = Math.min(1, vitals.health + amount); },   // Regeneration (potions.js)   // a blast it set off (a rocket, a bomb): it hurts this body less (vitals.js)
     // a blow from outside the sim (an NPC's axe): the Energy Shield takes it first;
-    // { lethal: true } takes all the health there is, through the shield (a backstab)
-    hurt(amount, cause, { lethal = false } = {}) { vitals.hurt(amount, cause, true, { shielded: true, lethal }); },
+    // { lethal: true } takes all the health there is, through the shield (a backstab);
+    // { shielded: false } passes the shield (a drink hurts from inside: ingest.js)
+    hurt(amount, cause, { lethal = false, shielded = true } = {}) { vitals.hurt(amount, cause, true, { shielded, lethal }); },
     holdPogo() { pogoHold = true; },   // a pogo stick in hand: call every frame it's held (tools/pogo.tool.js)
     on(name, fn) {
       (listeners[name] ??= []).push(fn);

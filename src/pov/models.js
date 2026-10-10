@@ -38,6 +38,7 @@ export const MODELS = {
   pickaxe: { fit: 'y', size: 1.3, anchor: [0.5, 0, 0.5], arm: ARM_DOWN, icon: { yaw: -POINT_RIGHT, tilt: 0.2, roll: -Q } },      // handle up from the hand, point forward
   shovel: { fit: 'z', size: 2.2, anchor: [0.5, 0.5, 1], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 1.0, roll: Q } },           // laid flat, blade forward, held at the end of the handle
   bucket: { fit: 'y', size: 0.9, anchor: [0.5, 0.5, 0.5], arm: ARM_UP, icon: { yaw: 0, tilt: 0.4, roll: 0 } },                    // upright, held by the bail
+  flask: { fit: 'y', size: 0.75, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN, icon: { yaw: 0, tilt: 0.3, roll: -Q / 2 } },             // Noita's potion: a round glass bulb, held by the neck, corked
   trowel: { fit: 'z', size: 1.3, anchor: [0.5, 1, 1], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 1.0, roll: Q } },             // blade flat and forward, held at the end of the handle
   scanner: { fit: 'z', size: 0.6, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.7, roll: 0.25 } },    // a handheld box, screen up toward the eye
   flamer: { fit: 'z', size: 1.6, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.3, roll: 0.35 } },     // a flamethrower: wand, fuel tank under it, pilot light at the nozzle
@@ -65,10 +66,13 @@ const COLORS = {
   grip: '#3a3530', orange: '#d87a22', white: '#d6dbe0', glow: '#5ff0ff', skin: '#c48a5c', sleeve: '#8a3a2a',
   screen: '#7dff9a', red: '#b8322a', flame: '#6fa8ff', spark: '#ffb347', olive: '#5a6b2e', oliveDark: '#3d4a1f',
   fire: '#ff8a2a', lamp: '#f4f8ff', cloth: '#5b4630', pitch: '#2a211b', leather: '#4e3322', leatherDark: '#2f1f15',
+  glass: '#cdeef6', cork: '#a87b4f',
 };
 const UNLIT = new Set(['glow', 'screen', 'flame', 'spark', 'fire', 'lamp']);
 // unlit parts that are light sources, drawn this many times brighter than white so they glow (HDR, before the tone curve)
 const GLOW_GAIN = { fire: 1.4, lamp: 5 };
+// see-through parts: their opacity (the flask's glass shows what it holds)
+const SEE_THROUGH = { glass: 0.3 };
 
 // shapes
 const CHUNK = 1.35;          // thin parts (under CHUNK_BELOW units) are thickened this much: RS2's stubby proportions
@@ -78,6 +82,8 @@ const SPHERE_RINGS = 4;
 const TORUS_SIDES = 3;       // around the tube
 const TORUS_SEGMENTS = 8;    // around the ring
 export const BUCKET_SIDES = 8;   // the pail's sides; the bucket's liquid disc matches them so it never pokes through
+// the flask's bulb (model units; the part named 'bulb'): its contents are drawn inside it in its own frame
+export const FLASK_BULB = { r: 0.22, sides: ROUND_SEGMENTS, rings: SPHERE_RINGS };
 
 // the arm, in cells, from the grip toward the bottom right of the screen
 const FIST = [0.22, 0.2, 0.24];
@@ -106,6 +112,12 @@ const PARTS = {
     { geo: 'torus', R: 0.3, tube: 0.016, arc: Math.PI, ring: 6, p: [0, -0.3, 0], m: 'ironDark' },
     { geo: 'box', s: [0.05, 0.08, 0.05], p: [0.3, -0.34, 0], m: 'ironDark' },
     { geo: 'box', s: [0.05, 0.08, 0.05], p: [-0.3, -0.34, 0], m: 'ironDark' },
+  ],
+  flask: [
+    { geo: 'sphere', r: FLASK_BULB.r, p: [0, -0.26, 0], m: 'glass', name: 'bulb' },
+    { geo: 'cyl', rt: 0.06, rb: 0.08, h: 0.2, p: [0, -0.02, 0], m: 'glass' },
+    { geo: 'torus', R: 0.065, tube: 0.02, p: [0, 0.08, 0], rot: [H, 0, 0], m: 'glass' },
+    { geo: 'cyl', rt: 0.07, rb: 0.055, h: 0.09, p: [0, 0.12, 0], m: 'cork' },
   ],
   trowel: [
     { geo: 'cyl', r: 0.05, h: 0.4, p: [0, 0, 0.05], rot: [H, 0, 0], m: 'wood' },
@@ -304,9 +316,10 @@ function material(key) {
   }
   if (!materials.has(key)) {
     const color = jagexColor(COLORS[key]).multiplyScalar(GLOW_GAIN[key] ?? 1);
+    const see = SEE_THROUGH[key] ? { transparent: true, opacity: SEE_THROUGH[key], depthWrite: false } : {};
     materials.set(key, UNLIT.has(key)
       ? new THREE.MeshBasicMaterial({ color })
-      : new THREE.MeshLambertMaterial({ color, flatShading: true }));
+      : new THREE.MeshLambertMaterial({ color, flatShading: true, ...see }));
   }
   return materials.get(key);
 }
