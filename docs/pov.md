@@ -344,10 +344,18 @@ no second takes more than half your health; a runner gets away.
 
 ## Perks (2026-10-10): Noita's, in a falling-sand world
 
-The palette's Perks group sets perk orbs on surfaces (`src/perkOrbs.js`): markers pinned to world cells, like
-the spawners, each the perk's icon floating at chest height over a pad. A body (the player's or an NPC's) that
-walks into one gains the perk (`pov/index.js` `takePerks`). The Perk shrine sets three random ones in a row
-across the view, Noita's Holy Mountain: take one and the others vanish. A new scene clears the orbs.
+Perks come from shrines, Noita's Holy Mountain: the Shrine construction (`constructions/builtins.js` `shrine`, a
+fixed-size stone pavilion with three plinths) with a random perk orb floating over each plinth
+(`SHRINE_ALTARS`; `constructions.js` hands their grid cells to `onPlaced`, and app.js sets the orbs). The orbs
+(`src/perkOrbs.js`) are markers pinned to world cells, like the spawners: the perk's icon at chest height over a
+pad. A body (the player's or an NPC's) that walks into one, or stands against its plinth, gains the perk
+(`pov/index.js` `takePerks`), and the shrine's other orbs vanish. Undoing a placed shrine takes its orbs too (the
+undo snapshot's `note`). A new scene clears the orbs.
+
+Every world gets a shrine (app.js `worldShrine`) once its first window loads: on flat dry ground near the window's
+middle, where the god view starts, scored by rise, trees in the way and distance. The island's trees around it
+are felled (each regenerated and stamped over with air, `runtime.js` `bakedAir`), so it stands in a clearing. It is
+stamped into the window like a placed construction, so the window keeps it as an edit.
 
 Every perk stacks. The list and its sizes are in `pov/perks.js`; a body's set is `player.perks`
 (`createPerkSet`: `count`, `has`, `add`, `take`, `list`, and what the stacks add up to). Death takes them, unless
@@ -371,7 +379,7 @@ Extra Life brings the body back where it fell.
 A new tool gets Faster Tools for free by timing its actions with `trigger` and `toolDt(ctx)` instead of `ctx.dt`.
 NPC bodies carry perks too (npc.js passes `toolRate` into its kit's ctx).
 
-Check: `node tools/perks-check.mjs [--port …] [--shot file.jpg]` (a dev server; AC power).
+Check: `node tools/perks-check.mjs [--port …] [--shot file.jpg] [--worldshot file.jpg]` (a dev server; AC power).
 
 ## Verifying (headless GPU)
 

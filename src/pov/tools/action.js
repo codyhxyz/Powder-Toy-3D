@@ -33,20 +33,26 @@ export const toolDt = (ctx) => ctx.dt * (ctx.toolRate ?? 1);
 
 export function trigger(interval, { hold = true, button = 'primary' } = {}) {
   const holdWait = typeof hold === 'number' ? Math.max(0, hold - interval) : 0;   // s held repeats wait beyond `interval`
-  let wait = 0, queued = 0, heldWait = 0;
+  // The waits run below zero by the part of a frame they overshot, and the next
+  // one starts that much early (HL2: m_flNextPrimaryAttack += fire rate), so a
+  // held SMG keeps its 13 a second at 30 fps instead of rounding up to every
+  // third frame. At most one frame's worth carries over: no burst after a pause.
+  let wait = 0, queued = 0, heldWait = 0, frame = 0;
+  const carry = (w) => Math.max(w, -frame);
   return {
     // true when the tool should act this frame (call once a frame while selected)
     ready(ctx) {
       const dt = toolDt(ctx);
-      wait = Math.max(0, wait - dt);
+      frame = dt;
+      wait -= dt;
+      heldWait -= dt;
       queued = Math.max(0, queued - dt);
-      heldWait = Math.max(0, heldWait - dt);
       if (ctx[`${button}Pressed`]) queued = interval;
       return wait <= TIME_EPS && (queued > 0 || (hold !== false && ctx[button] && heldWait <= TIME_EPS));
     },
-    fire() { wait = interval; heldWait = interval + holdWait; queued = 0; },
+    fire() { wait = carry(wait) + interval; heldWait = carry(heldWait) + interval + holdWait; queued = 0; },
     reset() { wait = 0; heldWait = 0; queued = 0; },
-    get waiting() { return wait; },
+    get waiting() { return Math.max(0, wait); },
   };
 }
 

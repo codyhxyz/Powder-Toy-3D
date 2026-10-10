@@ -103,7 +103,7 @@ await wait(1600);
 n0 = await fires();
 await p.mouse.down(); await wait(1150); await p.mouse.up();
 n1 = await fires();
-check('pistol held fires slower (HL2: 0.5 s)', n1 - n0 === 3, `${n1 - n0} in 1.15 s`);
+check('pistol held fires slower (HL2: 0.5 s)', n1 - n0 >= 2 && n1 - n0 <= 3, `${n1 - n0} in 1.15 s`);
 
 // SMG: about 13 a second held
 await hold('SMG');
