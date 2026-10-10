@@ -326,6 +326,8 @@ export class FarField {
     gi.tFarTop.value = this.top.texture;
     gi.tFarShadow.value = this.shadow.texture;
     gi.uSea.value = this.win.P.sea;
+    gfxUniforms.uClouds.value = true;   // the cumulus deck overhead, and its shadows (shaders/gfx/clouds.js)
+    gfxUniforms.uCloudSea.value = this.win.P.sea;
   }
 
   // Before the scene renders: the view's transforms for this frame (the

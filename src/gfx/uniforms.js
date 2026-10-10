@@ -30,7 +30,9 @@ export const gfxUniforms = {
   uFrame: { value: 0 },       // frame counter (for temporal jitter)
   uPixScale: { value: 1 },    // output pixel in rendered pixels (set by gfx/post.js per render)
   uSimClock: { value: 0 },    // simulation steps (wrapped): media detail drifts with it, frozen when paused
-  uCloudShift: { value: [0, 0] }, // cells: the wind's drift of World's cumulus deck (shaders/gfx/clouds.js)
+  uClouds: { value: false },      // World's cumulus deck (shaders/gfx/clouds.js): on in a world (world/far.js attach)...
+  uCloudShift: { value: [0, 0] }, // ...its wind drift (cells)...
+  uCloudSea: { value: 0 },        // ...and the sea level its height counts from (world cells)
   tFlowV: { value: null },    // flow field: how fast matter moves through each cell (Simulation.flowTexture)
   tMediaNoise: mediaNoiseUniform(),   // tileable detail noise for smoke, steam and fire
   tGI0: { value: null },      // GI probe volume (shaders/gi.js): L1 SH bands 0, 1x, 1y, 1z

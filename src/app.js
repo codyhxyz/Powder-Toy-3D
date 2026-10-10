@@ -318,6 +318,7 @@ function build() {
     depthTest: false,
     depthWrite: false,
   });
+  gfxUniforms.uClouds.value = false;   // a box has no sky of its own (a world's far field turns its clouds on)
   win?.far.attach(volume.material, shadowMat);   // world mode: the far field's haze and shadows on the window
   applyDetail();
   volume.material.uniforms.tShadow.value = shadowTarget.texture;
