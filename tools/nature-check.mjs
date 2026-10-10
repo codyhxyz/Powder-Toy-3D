@@ -10,8 +10,9 @@
 //     damp moss and bare rock across the moss's axis (mossSite); no damp fungus
 //     touches WOOD, SAWDUST or PLANT; each nugget's sides and the 3 × 3 under it
 //     are solid or nuggets (move.js: nothing to topple into);
-//   - a census per element, and spots for stills (spots.json): for moss,
-//     fungus and gold, the 16³ block holding the most, its cell nearest the
+//   - a census per element (and how many are in sight: a face open to air),
+//     and spots for stills (spots.json): for each, the 16³ block holding the
+//     most in sight, its cell nearest the
 //     block's middle (look), and a dry cave floor in sight of it to stand on
 //     (feet), as tools/caves-preview.mjs finds them.
 // usage: node tools/nature-check.mjs [outDir] [--box x0 z0 nx nz]
@@ -33,6 +34,8 @@ const VIEW_FAR = 16;           // ...and at most this far
 const HEADROOM = 6;            // ...under this many cells of air (the POV body is 5.5 tall)
 const SIGHT_STEP = 0.5;        // line-of-sight march step, cells
 const EYE = 5;                 // the POV eye over its feet, cells (pov/constants.js EYE_HEIGHT)
+const EYE_FAR = 10;            // a free camera's eye: in cave air at most this far from what it looks at...
+const EYE_AT = 6;              // ...this far, as near as can be
 const LOG_EVERY = 64;          // rows of z between progress lines
 mkdirSync(out, { recursive: true });
 
@@ -58,9 +61,9 @@ function dampOf(x, y, z) {
   return h;
 }
 
-const census = {}, changes = {}, bad = {}, badAt = [];
+const census = {}, seen = {}, changes = {}, bad = {}, badAt = [];
 const fault = (k, at) => { bad[k] = (bad[k] ?? 0) + 1; if (badAt.length < 20) badAt.push(`${k} at ${at.join(', ')}`); };
-const blocks = new Map();   // `${element}:${bx},${by},${bz}` → count
+const blocks = new Map();   // `${element}:${bx},${by},${bz}` → cells in sight
 const t0 = performance.now();
 const [x0, z0, nx, nz] = box;
 for (let z = z0; z < z0 + nz; z++) {
@@ -75,8 +78,11 @@ for (let z = z0; z < z0 + nz; z++) {
       census[name(id)] = (census[name(id)] ?? 0) + 1;
       const at = [x, y, z];
       if (!PLACED.has(id) || !BED.has(bare)) fault('not ours', at);
-      const bk = `${id}:${Math.floor(x / BLOCK)},${Math.floor(y / BLOCK)},${Math.floor(z / BLOCK)}`;
-      blocks.set(bk, (blocks.get(bk) ?? 0) + 1);
+      if (FACES.some(([dx, dy, dz]) => cell(x + dx, y + dy, z + dz) === E.EMPTY)) {   // in sight: on a face open to air
+        seen[name(id)] = (seen[name(id)] ?? 0) + 1;
+        const bk = `${id}:${Math.floor(x / BLOCK)},${Math.floor(y / BLOCK)},${Math.floor(z / BLOCK)}`;
+        blocks.set(bk, (blocks.get(bk) ?? 0) + 1);
+      }
       if (grower(id)) {
         const ct = T.islandDamp(y, id);
         if (dampOf(x, y, z) !== ct) fault(`${name(id)} damp ${ct} not settled (${dampOf(x, y, z)})`, at);
@@ -144,9 +150,17 @@ function spotFor(id) {
       if (!feet || score < feet[1]) feet = [[fx, fy, fz], score];
     }
   }
-  return { block: best, look: look[0], feet: feet?.[0] ?? null };
+  // (and an eye anywhere in the air in sight of it, for a camera where no floor is)
+  let eye = null;
+  for (let dz = -EYE_FAR; dz <= EYE_FAR; dz++) for (let dy = -EYE_FAR; dy <= EYE_FAR; dy++) for (let dx = -EYE_FAR; dx <= EYE_FAR; dx++) {
+    const r = Math.hypot(dx, dy, dz), e = [lx + dx, ly + dy, lz + dz];
+    if (r < VIEW_NEAR || r > EYE_FAR || cell(...e) !== E.EMPTY || e[1] >= T.genTop(e[0], e[2])) continue;
+    if (!sight(e.map((v) => v + 0.5), [lx + 0.5, ly + 0.5, lz + 0.5])) continue;
+    if (!eye || Math.abs(r - EYE_AT) < eye[1]) eye = [e, Math.abs(r - EYE_AT)];
+  }
+  return { block: best, look: look[0], feet: feet?.[0] ?? null, eye: eye?.[0] ?? null };
 }
 const spots = { moss: spotFor(E.MOSS), fungus: spotFor(E.FUNGUS), gold: spotFor(E.GOLD), nuggets: spotFor(E.NUGGETS) };
 writeFileSync(join(out, 'spots.json'), JSON.stringify(spots, null, 1));
-console.log(JSON.stringify({ box, secs: +secs.toFixed(0), census, changes, faults: bad, faultsAt: badAt, spots }, null, 1));
+console.log(JSON.stringify({ box, secs: +secs.toFixed(0), census, inSight: seen, changes, faults: bad, faultsAt: badAt, spots }, null, 1));
 if (Object.keys(bad).length) process.exitCode = 1;

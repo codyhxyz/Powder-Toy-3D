@@ -68,7 +68,7 @@ const N = {
     FUNGUS_CELL: 20,                 // the fungus patch site grid, cells cube
     FUNGUS_MARGIN: 6,                // ...centres this far inside (at least the largest patch: FUNGUS_R_MAX)
     GOLD_CELL: 40,                   // the gold vein site grid, cells cube
-    GOLD_MARGIN: 12,                 // ...centres this far inside (at least the largest lens: GOLD_R_MAX)
+    GOLD_MARGIN: 14,                 // ...centres this far inside (at least the largest lens: GOLD_R_MAX)
     PLACER_CELL: 16,                 // the placer site grid, columns square
     PLACER_MARGIN: 4,                // ...centres this far inside (at least PLACER_R)
     PLACER_CUP: 13,                  // cells a nugget's socket holds: its 4 sides and the 3 × 3 under it
@@ -80,9 +80,9 @@ const N = {
     FUNGUS_R_MIN: 3.0,               // patch radius, cells
     FUNGUS_R_MAX: 6.0,
     FUNGUS_RAGGED: 0.5,              // each cell's reach is this share of the radius and up (a ragged patch)
-    GOLD_CHANCE: 0.12,               // chance a site has a vein
+    GOLD_CHANCE: 0.25,               // chance a site has a vein
     GOLD_R_MIN: 6.0,                 // a lens' radius along the vein, cells
-    GOLD_R_MAX: 12.0,
+    GOLD_R_MAX: 14.0,
     GOLD_HALF: 0.9,                  // its half-thickness at the middle, cells (~0.5 m of vein)
     GOLD_DIP_MIN: 55 * DEG,          // veins are steep (filled faults)
     GOLD_DIP_MAX: 88 * DEG,
