@@ -2,15 +2,15 @@
 // breaking, impact heat, blast breaking and mass conservation, on a 64³ grid.
 // Each scene is built on the CPU, uploaded with sim.load and stepped by hand.
 // usage: node tools/pov-engine-check.mjs [--port 5191] [scene ...]
-import { chromium } from 'playwright';
+import { launchBrowser, newTestPage, ready } from './browser.mjs';
 
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args.splice(i, 2)[1] : d; };
 const port = opt('port', '5191');
 const only = args;
 
-const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
-const p = await b.newPage({ viewport: { width: 480, height: 320 } });
+const b = await launchBrowser();
+const p = await newTestPage(b, { mode: 'manual', viewport: { width: 480, height: 320 } });
 const errs = [];
 p.on('console', (m) => { if (m.type() === 'error') errs.push(m.text().slice(0, 2000)); else if (m.type() === 'log') console.log('  [page]', m.text()); });
 p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 2000)));
@@ -18,8 +18,7 @@ await p.addInitScript(() => {
   localStorage.setItem('powder-toy-3d:settings', JSON.stringify({ autoRes: false, res: 0.5, liveTiles: false }));
 });
 await p.goto(`http://localhost:${port}/?preset=empty&size=64`);
-await p.waitForFunction(() => window.__app?.sim, null, { timeout: 30000 });
-await p.waitForTimeout(1500);
+await ready(p);
 
 // ---- helpers, installed in the page ----
 await p.evaluate(async () => {

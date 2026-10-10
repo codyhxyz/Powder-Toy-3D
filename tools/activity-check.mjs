@@ -9,7 +9,7 @@
 // pack/unpack, a full-grid copy), so their flags are checked too.
 // usage: node tools/activity-check.mjs [--port 5191] [--scenes lab,volcano,island] [--size 128]
 //          [--steps 600] [--noskip]
-import { chromium } from 'playwright';
+import { launchBrowser, newTestContext, ready } from './browser.mjs';
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
 const port = opt('port', '5191');
@@ -19,15 +19,13 @@ const STEPS = +opt('steps', '600');          // steps per scene, in stretches be
 const STRETCHES = 6;                         // stretches of steps per scene
 const SEED = 12345;                          // Math.random seed (mulberry32, as tools/regress.mjs)
 
-const browser = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
-const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+const browser = await launchBrowser();
+const ctx = await newTestContext(browser, { mode: 'manual', viewport: { width: 1280, height: 800 } });
 await ctx.routeWebSocket(/.*/, () => {});   // no multiplayer relay
 await ctx.addInitScript((seed) => {
   let s = seed;
   Math.random = () => { s |= 0; s = (s + 0x6d2b79f5) | 0; let t = Math.imul(s ^ (s >>> 15), 1 | s); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
   window.__reseed = () => { s = seed; };
-  // hold the app's frame loop: only this script steps the sim
-  window.requestAnimationFrame = () => 0;
 }, SEED);
 const page = await ctx.newPage();
 const errors = [];
@@ -38,7 +36,7 @@ page.on('console', (m) => {
   if ((m.type() === 'error' && !t.startsWith('Failed to load resource')) || /GL_INVALID|WebGL:/.test(t)) errors.push(t.slice(0, 300));
 });
 await page.goto(`http://localhost:${port}/?size=${size}&preset=empty`);
-await page.waitForFunction(() => window.__app?.sim, null, { timeout: 60000 });
+await ready(page);
 
 const results = [];
 for (const scene of scenes) {

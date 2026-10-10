@@ -2,7 +2,7 @@
 // A long-range shot through glass (ballistics + strike), the sound, effects,
 // feedback and viewmodel it sets off, and the realistic body in third person.
 // usage: node tools/gp-integration.mjs [--port 5296] [--shots dir]   (needs a dev server)
-import { chromium } from 'playwright';
+import { launchBrowser, newTestPage } from './browser.mjs';
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
 const port = opt('port', '5296');
@@ -10,8 +10,8 @@ const shots = opt('shots', null);
 const W = 960, H = 600;
 const RANGE = 60;   // cells from the shooter to the pane
 
-const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist', '--autoplay-policy=no-user-gesture-required'] });
-const p = await b.newPage({ viewport: { width: W, height: H } });
+const b = await launchBrowser({ args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist', '--autoplay-policy=no-user-gesture-required'] });
+const p = await newTestPage(b, { mode: shots ? 'visual' : 'preview', viewport: { width: W, height: H } });
 const errs = [];
 p.on('console', (m) => { if (m.type() === 'error') errs.push(m.text().slice(0, 300)); });
 p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 500)));

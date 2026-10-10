@@ -4,7 +4,7 @@
 //   public/favicon.svg, favicon.ico, apple-touch-icon.png, icon-192.png, icon-512.png
 // The card and hero need a dev server (`npm run dev`); the icons don't.
 // usage: node tools/share-assets.mjs [--port 5173] [--only card|hero|icons]
-import { chromium } from 'playwright';
+import { launchBrowser, newTestPage } from './browser.mjs';
 import { writeFileSync, mkdtempSync, rmSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
@@ -46,12 +46,12 @@ function treeCanopy(k) {
 }
 const CARD_TILES = ['SAND', 'WATER', 'FIRE', 'LAVA', 'PLANT', 'ICE'];
 
-const browser = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
+const browser = await launchBrowser();
 const errs = [];
 
 // ---- app captures
 async function capture({ w, h, dpr = 1, ui, cam }) {
-  const p = await browser.newPage({ viewport: { width: w, height: h }, deviceScaleFactor: dpr });
+  const p = await newTestPage(browser, { mode: 'visual', viewport: { width: w, height: h }, deviceScaleFactor: dpr });
   p.on('pageerror', (e) => errs.push(String(e).slice(0, 500)));
   await p.addInitScript((ui) => {
     let s = 12345;   // mulberry32: same scene every run

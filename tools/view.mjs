@@ -2,14 +2,14 @@
 // place the camera and screenshot. Prints console errors and a frame timing.
 // usage: node tools/view.mjs <out.png> [--port 5180] [--preset lab] [--wait 6000]
 //          [--cam x,y,z] [--target x,y,z] [--view 0] [--size 1280x800] [--eval "js"]
-import { chromium } from 'playwright';
+import { launchBrowser, newTestPage } from './browser.mjs';
 const args = process.argv.slice(2);
 const out = args[0];
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
 const port = opt('port', '5180');
 const [w, h] = opt('size', '1280x800').split('x').map(Number);
-const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
-const p = await b.newPage({ viewport: { width: w, height: h } });
+const b = await launchBrowser();
+const p = await newTestPage(b, { mode: 'visual', viewport: { width: w, height: h } });
 const errs = [];
 p.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warning') errs.push(m.text().slice(0, 4000)); });
 p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 2000)));

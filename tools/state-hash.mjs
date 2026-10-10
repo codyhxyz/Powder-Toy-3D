@@ -21,7 +21,7 @@
 // usage: node tools/state-hash.mjs [--port 5191] [--scenes lab,volcano,island] [--sizes 128]
 //          [--steps 200] [--noskip] [--nosleep] [--world]
 // --nosleep draws every supertile (sim.skipSleeping = false): its lines must match a normal run's
-import { chromium } from 'playwright';
+import { launchBrowser, newTestContext } from './browser.mjs';
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
 const port = opt('port', '5191');
@@ -35,16 +35,16 @@ const TRANSFER_TAKES = 40;            // cells the transfer stage takes at most 
 const WORLD_MOVES = 6;                // window moves out along x, then as many back
 const WIN_STEP = 16;                  // cells per move (world/window.js)
 
-const browser = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
+const browser = await launchBrowser();
 const errors = [];
 for (const size of sizes) {
-  const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  const ctx = await newTestContext(browser, { mode: 'manual', viewport: { width: 1280, height: 800 } });
   await ctx.routeWebSocket(/.*/, () => {});   // no multiplayer relay
   await ctx.addInitScript((seed) => {
     let s = seed;
     Math.random = () => { s |= 0; s = (s + 0x6d2b79f5) | 0; let t = Math.imul(s ^ (s >>> 15), 1 | s); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
     window.__reseed = () => { s = seed; };
-    window.requestAnimationFrame = () => 0;   // hold the app's frame loop: only this script steps the sim
+    window.requestAnimationFrame = () => 0;   // legacy builds lack manual mode: keep cross-build hashes comparable
   }, SEED);
   const page = await ctx.newPage();
   page.on('pageerror', (e) => errors.push(String(e).slice(0, 300)));

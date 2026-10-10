@@ -13,7 +13,7 @@
 //   - stills: god view, three-quarter, eye level on a meadow and on a beach.
 // usage: node tools/gen-check.mjs [outDir] [--port 5371] [--size 128|wide|64|96]
 //          [--seed N] [--steps 600] [--no-shots] [--verbose: list the changed cells]
-import { chromium } from 'playwright';
+import { launchBrowser, newTestPage } from './browser.mjs';
 import { mkdirSync } from 'fs';
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
@@ -29,10 +29,9 @@ const TAA_FRAMES = 40;     // frames for TAA to converge on a still view
 const EYE_CELLS = 5.5;     // eye height above the ground, cells (the POV body's eye)
 if (out) mkdirSync(out, { recursive: true });
 
-const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
-const p = await b.newPage({ viewport: { width: 1280, height: 800 } });
+const b = await launchBrowser();
+const p = await newTestPage(b, { mode: 'visual', viewport: { width: 1280, height: 800 } });
 await p.addInitScript(() => {
-  localStorage.setItem('powder-toy-3d:settings', JSON.stringify({ paused: true }));
   addEventListener('DOMContentLoaded', () => {
     const st = document.createElement('style');
     st.textContent = 'body *{visibility:hidden !important} #app > canvas{visibility:visible !important}';
@@ -42,7 +41,7 @@ await p.addInitScript(() => {
 const errs = [];
 p.on('console', (m) => { if (m.type() === 'error') errs.push(m.text().slice(0, 600)); });
 p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 600)));
-await p.goto(`http://localhost:${port}/?preset=island&size=${size}${seed != null ? `&seed=${seed}` : ''}`);
+await p.goto(`http://localhost:${port}/?preset=island&size=${size}&paused=1${seed != null ? `&seed=${seed}` : ''}`);
 await p.waitForFunction(() => window.__app?.sim, null, { timeout: 30000 });
 await p.waitForTimeout(1500);
 

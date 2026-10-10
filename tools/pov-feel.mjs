@@ -1,15 +1,15 @@
 // Gunplay feel check: camera kick and trauma shake, three.quarks effects,
 // hitmarker and crosshair bloom, footsteps. Drives povEvents by hand, so it
 // needs no gun. usage: node tools/pov-feel.mjs [--port 5293] [--shots dir]
-import { chromium } from 'playwright';
+import { launchBrowser, newTestPage } from './browser.mjs';
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
 const port = opt('port', '5293');
 const shots = opt('shots', null);
 const W = 800, H = 500;
 
-const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
-const p = await b.newPage({ viewport: { width: W, height: H } });
+const b = await launchBrowser();
+const p = await newTestPage(b, { mode: shots ? 'visual' : 'preview', viewport: { width: W, height: H } });
 const errs = [];
 p.on('console', (m) => { if (m.type() === 'error') errs.push(m.text().slice(0, 400)); });
 p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 600)));

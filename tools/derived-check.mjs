@@ -6,14 +6,13 @@
 // difference means a dirty set missed a change (or a pass read a texel its
 // region didn't cover).
 // usage: node tools/derived-check.mjs --port N [--size 128]
-import { chromium } from 'playwright';
+import { launchBrowser, newTestPage, ready } from './browser.mjs';
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
 const port = opt('port', '5191');
 const size = opt('size', '128');
 const SEED = 4242;           // Math.random seed (mulberry32) for each load
 const COMPARE_EVERY = 6;     // frames between comparisons (and after the last frame)
-const BOOT_MS = 3000;
 const LOAD_TIMEOUT_MS = 120000;   // page load (shader compiles stall it when the GPU is busy)
 const WATER = 7, HEAT = -2;  // brush tools (elements.js ids)
 // [preset, steps before, frames, steps per frame, writes]. Writes: 'paint' (a moving
@@ -32,14 +31,13 @@ const UNDO_SNAPSHOT = 8, UNDO_AT = 14;   // frames
 const PAINT_AT = [90, 30, 30], PAINT_DRIFT = 1, PAINT_RADIUS = 4;   // cells, cells per frame along x
 const HEAT_AT = [64, 20, 64], HEAT_DRIFT = 1, HEAT_RADIUS = 6;      // cells, cells per frame along y
 
-const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
-const p = await b.newPage({ viewport: { width: 800, height: 600 } });
-await p.addInitScript(() => localStorage.setItem('powder-toy-3d:settings', JSON.stringify({ paused: true })));
+const b = await launchBrowser();
+const p = await newTestPage(b, { mode: 'manual', viewport: { width: 800, height: 600 } });
 const errs = [];
 p.on('console', (m) => { if (m.type() === 'error' && !/ERR_CONNECTION_REFUSED/.test(m.text())) errs.push(m.text().slice(0, 300)); });
 p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 300)));
 await p.goto(`http://localhost:${port}/?preset=lab&size=${size}`, { timeout: LOAD_TIMEOUT_MS });
-await p.waitForTimeout(BOOT_MS);
+await ready(p);
 let failed = false;
 for (const c of CASES) {
   const r = await p.evaluate(([[preset, warm, frames, spf, writes], k]) => {

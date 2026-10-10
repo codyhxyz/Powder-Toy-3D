@@ -164,7 +164,7 @@ export function createDetailGate(renderer, onReady, onCompile) {
     },
 
     get level() { return wantNear ? 1 : 0; },
-    get pending() { return holder && !holder.ready ? 1 : 0; },   // variants still compiling
+    get pending() { return Number(!!mat && applied !== base) + Number(!!holder && !holder.ready); },   // delayed base change + compiling near variant
     get shown() { return keyOf(mat?.defines ?? {}); },
     dispose() { clearTimeout(timer); dropHolder(); dummy.depthTexture.dispose(); dummy.dispose(); mat = mesh = null; },
   };
