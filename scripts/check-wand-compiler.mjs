@@ -32,6 +32,17 @@ const required = ['mining-vacuum', 'tunnel-cutter', 'acid-shotgun', 'spark-machi
   'stored-lava-mortar', 'remote-black-hole', 'double-explosion', 'delayed-second-explosion',
   'ice-bridge', 'cave-lantern', 'powder-and-ignition', 'teleport'];
 for (const id of required) assert.ok(PRESETS.some((preset) => preset.id === id), id);
+const recipe = (id) => {
+  const p = PRESETS.find((p) => p.id === id);
+  return valid(p.cards, p.config).casts[0];
+};
+const cutter = recipe('tunnel-cutter');
+assert.ok(cutter.children[0].params.radius < SPELL_BY_ID.dig.params.radius);
+assert.ok(cutter.children[0].params.power > SPELL_BY_ID.dig.params.power);
+assert.equal(cutter.children[1].effect, 'light');
+assert.equal(recipe('remote-black-hole').trigger, 'timer');
+assert.equal(recipe('remote-black-hole').payload.effect, 'erase', 'Black holes must excavate, not merely attract');
+assert.equal(recipe('cave-lantern').trigger, 'timer', 'A lantern must deploy in open air');
 for (const preset of PRESETS) {
   assert.ok(Number.isInteger(preset.slot) && preset.slot >= 1 && preset.slot <= 10);
   const plan = valid(preset.cards, preset.config);

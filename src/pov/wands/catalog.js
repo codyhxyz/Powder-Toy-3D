@@ -1,4 +1,5 @@
-// Units: cells, cells/second, seconds and radians. Mana is prepaid per whole cast.
+// Units: cells, cells/second, seconds and radians; damage is percent of health.
+// Mana is prepaid per whole cast.
 export const DEFAULT_CONFIG = Object.freeze({ manaMax: 240, manaRegen: 90, castDelay: 0.18, recharge: 0.45, capacity: 32 });
 
 const leaf = (id, name, category, description, op, effect, mana, params = {}) =>
@@ -23,6 +24,10 @@ export const SPELLS = [
   leaf('release', 'Release stored matter', 'Storage', 'Pours stored matter without creating it.', 'touch', 'emit', 4, { radius: 3, power: 1, stored: true }),
   leaf('erase', 'Eraser beam', 'Mining', 'Erases ordinary matter; protected walls and clones survive.', 'beam', 'erase', 35, { radius: 2, power: 1, speed: 40, lifetime: 0.5, recharge: 0.15 }),
   leaf('water-jet', 'Create water jet', 'Creation', 'Creates a cooling water stream; separate from stored matter.', 'beam', 'emit', 8, { radius: 2, power: 1, material: 'WATER', speed: 35, lifetime: 0.5 }),
+  leaf('fire-jet', 'Flame jet', 'Creation', 'Emits real fire. Material heat transfer causes burning and melting.', 'beam', 'emit', 10, { radius: 1.5, power: 1, material: 'FIRE', speed: 20, lifetime: 0.5 }),
+  leaf('oil-jet', 'Oil spray', 'Creation', 'Emits flammable oil. Combine with ignition at your own risk.', 'beam', 'emit', 9, { radius: 2, power: 1, material: 'OIL', speed: 25, lifetime: 0.5 }),
+  leaf('smoke', 'Smoke cloud', 'Creation', 'Sustains a cloud of real smoke.', 'field', 'emit', 10, { radius: 3, power: 1, material: 'SMOKE', lifetime: 2 }),
+  leaf('steam', 'Steam cloud', 'Creation', 'Sustains hot steam. Contact can scald actors.', 'field', 'emit', 12, { radius: 3, power: 1, material: 'STEAM', lifetime: 2 }),
   leaf('sand', 'Create sand', 'Creation', 'Places loose sand in empty space.', 'touch', 'place', 6, { radius: 2, power: 1, material: 'SAND' }),
   leaf('powder', 'Create gunpowder', 'Creation', 'Places explosive powder. Keep away from heat.', 'touch', 'place', 10, { radius: 3, power: 1, material: 'GUNPOWDER' }),
   leaf('ice', 'Create ice beam', 'Creation', 'Builds an ice span in empty space.', 'beam', 'place', 18, { radius: 2, power: 1, material: 'ICE', speed: 24, lifetime: 0.5 }),
@@ -32,7 +37,8 @@ export const SPELLS = [
   leaf('cool', 'Cooling beam', 'Temperature', 'Cools a narrow region and extinguishes heat.', 'beam', 'cool', 8, { radius: 3, power: 160, speed: 35, lifetime: 0.5 }),
   leaf('ignite', 'Remote ignition', 'Temperature', 'Ignites the targeted area without placing fuel.', 'beam', 'ignite', 8, { radius: 2, power: 900, speed: 70, lifetime: 0.6 }),
   leaf('explosion', 'Pressure explosion', 'Forces', 'An outward pressure blast at the cast or payload origin.', 'touch', 'pressure', 20, { radius: 6, power: 35, damage: 32, castDelay: 0.1, recharge: 0.1 }),
-  leaf('black-hole', 'Black hole', 'Forces', 'A temporary attraction field. Pulls matter rather than deleting it.', 'field', 'attract', 35, { radius: 10, power: 30, lifetime: 3, recharge: 0.2 }),
+  leaf('black-hole', 'Black hole', 'Mining', 'Consumes ordinary matter in a temporary sphere. Protected walls and clones survive.', 'field', 'erase', 35, { radius: 4, power: 1, lifetime: 3, recharge: 0.2 }),
+  leaf('attraction', 'Attraction field', 'Forces', 'Draws loose matter toward its center without deleting it.', 'field', 'attract', 20, { radius: 10, power: 30, lifetime: 3 }),
   leaf('repulsion', 'Repulsion field', 'Forces', 'A temporary outward force field.', 'field', 'repel', 20, { radius: 7, power: 24, lifetime: 2 }),
   leaf('recoil', 'Recoil impulse', 'Utility', 'Pushes the caster opposite aim. Aim downward to fly.', 'self', 'pressure', 8, { radius: 1, power: 0, recoil: 14 }),
   leaf('lantern', 'Cave lantern', 'Utility', 'A long-lived cold light; does not heat the world.', 'field', 'light', 10, { radius: 14, power: 1, lifetime: 20 }),
@@ -45,6 +51,7 @@ export const SPELLS = [
   ...[['impact', 'Impact trigger', 'impact'], ['timer', 'Timer trigger (0.6s)', 'timer'], ['expiry', 'Expiry trigger', 'expiry']].map(([id, name, trigger]) => ({ id, name, category: 'Triggers', description: 'Consumes one projectile carrier, then one independently scoped payload expression.', op: 'trigger', trigger, delay: 0.6, mana: 3 })),
 
   modifier('wide', 'Wide area', 'Doubles the next expression’s radii, excluding triggered payloads.', 6, { radius: ['multiply', 2] }),
+  modifier('narrow', 'Narrow cutter', 'Halves the next expression’s radius for precise work.', 1, { radius: ['multiply', 0.5] }),
   modifier('power', 'Extra power', 'Doubles power and damage within the next expression.', 8, { power: ['multiply', 2], damage: ['multiply', 2] }),
   modifier('speed', 'Accelerate', 'Doubles projectile speed within the next expression.', 3, { speed: ['multiply', 2] }),
   modifier('slow', 'Slow shot', 'Halves projectile speed within the next expression.', 1, { speed: ['multiply', 0.5] }),
@@ -72,7 +79,7 @@ const preset = (id, name, description, slot, cards, config = {}, sandboxReservoi
 // It is separate from Create spells: { material: element KEY, count: cells, label }.
 export const PRESETS = [
   preset('mining-vacuum', 'Mining vacuum', 'Break terrain and gather loose debris into storage.', 1, ['multi-2', 'dig', 'vacuum']),
-  preset('tunnel-cutter', 'Tunnel cutter', 'A broad, powerful digging beam that leaves debris.', 10, ['wide', 'power', 'dig']),
+  preset('tunnel-cutter', 'Tunnel cutter', 'A narrow, powerful drill with a cold work light. Leaves debris.', 10, ['multi-2', 'narrow', 'power', 'dig', 'lantern']),
   preset('acid-shotgun', 'Acid shotgun', 'Three created acid splashes spread across a cone.', 4, ['scatter', 'acid-bolt']),
   preset('spark-machinegun', 'Spark machinegun', 'Prepaid triple bursts of fast spark bolts.', 9, ['rapid', 'burst', 'spark'], { castDelay: 0.25, recharge: 0.04 }),
   preset('stored-scrap-machinegun', 'Stored scrap machinegun', 'Finite sandbox starter scrap; refill from collected matter.', 4, ['rapid', 'burst', 'stored-shot'], { castDelay: 0.25, recharge: 0.04 }, { material: 'SCRAP', count: 256, label: 'Sandbox starter: 256 scrap cells' }),
@@ -80,11 +87,11 @@ export const PRESETS = [
   preset('water-extinguisher', 'Water extinguisher', 'Creates water and cools the same area.', 2, ['multi-2', 'water-jet', 'cool']),
   preset('liquid-sponge', 'Liquid sponge', 'Absorb liquids, then release stored matter on the next cast.', 2, ['sponge', 'release']),
   preset('stored-lava-mortar', 'Stored lava mortar', 'Finite sandbox starter lava follows a gravity arc.', 2, ['stored-lob'], {}, { material: 'LAVA', count: 256, label: 'Sandbox starter: 256 lava cells' }),
-  preset('remote-black-hole', 'Remote black hole', 'A harmless bolt deploys attraction at impact.', 5, ['impact', 'carrier', 'black-hole']),
+  preset('remote-black-hole', 'Remote black hole', 'A timed carrier opens an excavating sphere at a distance.', 5, ['timer', 'carrier', 'black-hole']),
   preset('double-explosion', 'Double explosion', 'An impact carrier delivers two simultaneous pressure blasts.', 9, ['impact', 'carrier', 'multi-2', 'explosion', 'explosion']),
   preset('delayed-second-explosion', 'Delayed second explosion', 'An impact blast launches a slow timer carrier for a second blast.', 9, ['impact', 'carrier', 'multi-2', 'explosion', 'timer', 'slow', 'carrier', 'explosion']),
   preset('ice-bridge', 'Ice bridge', 'Creates a short ice span and cools its surroundings.', 6, ['multi-2', 'ice', 'cool']),
-  preset('cave-lantern', 'Cave lantern', 'A bolt places a long-lived cold light at impact.', 7, ['impact', 'carrier', 'lantern']),
+  preset('cave-lantern', 'Cave lantern', 'A slow timed bolt places a long-lived cold light, even in open air.', 7, ['timer', 'slow', 'carrier', 'long-life', 'lantern']),
   preset('powder-and-ignition', 'Powder placement and remote ignition', 'First cast places gunpowder; next cast remotely ignites it.', 8, ['powder', 'ignite']),
   preset('teleport', 'Teleport', 'A fast bolt relocates the caster only to a clear full-body destination.', 7, ['teleport']),
 ];
