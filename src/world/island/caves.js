@@ -23,13 +23,16 @@ import { E } from '../../elements.js';
 //   - "cheese" caverns: where a low-frequency 3D noise is above a threshold
 //     that rises toward the surface and toward the top of their range, so they
 //     stay deep;
-//   - mouths: on steep hillsides (Minecraft's "entrances" noise picks which)
-//     the rock roof thins to nothing, so tunnels running into the slope open
-//     out of it. Steep ground is bare rock: no sand, plant cover, snow or trees
-//     stand there (world/generator.js: BEACH_SLOPE_MAX, PLANT_SLOPE_MAX,
-//     SNOW_SLOPE_MAX, TREE.SLOPE_MAX);
-//   - shafts: a few sinkholes, funnels dropping from gentle ground into a
-//     level tunnel.
+//   - mouths: on bare-rock ground (Minecraft's "entrances" noise picks
+//     where) the rock roof thins to nothing, so the tunnels that run under it
+//     near the surface open out of the hillside. Bare rock holds no sand, plant
+//     cover, snow or trees; it is the high ground above the plant line, rocky
+//     patches between the meadows, and the steep ground (world/generator.js
+//     BEACH_SLOPE_MAX, PLANT_SLOPE_MAX, SNOW_SLOPE_MAX, TREE.SLOPE_MAX). Near
+//     the water only cliffs open, which is where sea caves come out;
+//   - shafts: a few sinkholes, funnels dropping from gentle ground past the
+//     water table: cenotes, opening into whatever tunnels and caverns they
+//     pass.
 // Every family's test gives a signed distance to its wall, in cells (< 0 is
 // cave): the 2D and 3D noises' value over their gradient's length (Quilez,
 // "distance to an implicit function": a noise's zero set is d = n / |∇n|
@@ -47,18 +50,21 @@ import { E } from '../../elements.js';
 // around it, or the sea, at the same level). That needs one water table under
 // all connected caves: a perched lake's level must not be passed as `water`.
 //
+// The island passes each column's ground, water table, slope and top cell
+// (surface), which its layers know already.
+//
 // Stability. A loaded world must not churn (world/generator.js "Stability").
 //   - Only rock is carved (and plant cover, by shafts): never sand or snow.
 //   - Every cave keeps ROOF cells of rock between it and its column's surface.
 //     The island's powders lie at most 3 deep, on gentle columns whose
 //     neighbours stand within 2 cells of them, so with ROOF at least 3 + 3 no
 //     powder cell has a void below it, beside it or diagonally below it.
-//   - Mouths thin the roof only on steep ground (MOUTH_SLOPE_LO and up): bare
-//     rock, which never moves.
-//   - Shafts open only on columns well above the beaches (SHAFT_ABOVE_SEA) and
-//     gentle enough to hold no trees' worth of overhang (SHAFT_SLOPE_MAX);
-//     they carve whole columns from their floor up, wider toward the top (a
-//     funnel), so nothing hangs over them.
+//   - Mouths thin the roof only on bare rock, which never moves, and only well
+//     above the beaches (MOUTH_ABOVE_SEA) or on cliffs too steep for sand.
+//   - Shafts open only on rock or plant cover well above the beaches
+//     (SHAFT_ABOVE_SEA), on gentle ground (SHAFT_SLOPE_MAX); they carve whole
+//     columns from their floor up, wider toward the top (a funnel), so nothing
+//     hangs over them.
 //   - Speleothems and crystals are solids: they never move.
 //
 // Cost. Noise is evaluated only between BOTTOM and the roof; each family
@@ -76,25 +82,22 @@ const C = {
     SHAFT_MARGIN: 12,       // ...its centre this far inside its square (at least the funnel's top radius)
     SPELEO_CELL: 7,         // the speleothem site grid, columns square
     SPELEO_MARGIN: 3,       // ...centres this far inside (at least the widest base: SPELEO_R_MAX)
-    CRYSTAL_CELL: 13,       // the crystal site grid, cells cube
-    CRYSTAL_MARGIN: 4,      // ...centres this far inside (at least the largest cluster: CRYSTAL_R_MAX)
+    CRYSTAL_CELL: 14,       // the crystal site grid, cells cube
+    CRYSTAL_MARGIN: 5,      // ...centres this far inside (at least the largest cluster: CRYSTAL_R_MAX)
     CRYSTAL: E.GLASS,       // placeholder for the glowing crystal element until it lands
     SPELEO: E.ROCK,         // what stalactites and stalagmites are made of
     VALUE: 0,               // caveNoise2 / caveNoise3: return the noise's value...
     DIST: 1,                // ...or its (value - shift) over its gradient's length: a distance, cells
-    LEVEL_UPPER: 0,         // the level a shaft drops into (thRange over these)
-    LEVEL_LOWER: 1,
     // parameter streams of a site's hash (thKey)
-    K_CHANCE: 1, K_X: 2, K_Z: 3, K_Y: 4, K_R: 5, K_TITE: 6, K_MITE: 7, K_LEVEL: 8,
+    K_CHANCE: 1, K_X: 2, K_Z: 3, K_Y: 4, K_R: 5, K_TITE: 6, K_MITE: 7,
   },
   floats: {
     // level tunnels (spaghetti 2D)
-    TUN_WAVE: 110.0,        // the path noise's wavelength, cells: tunnels are this far apart, give or take
+    TUN_WAVE: 100.0,        // the path noise's wavelength, cells: tunnels are about half this apart
     TUN_ELEV_WAVE: 170.0,   // the floor's elevation noise
-    TUN_SIZE_WAVE: 90.0,    // the size (and presence) noise
-    TUN_CUT: -0.15,         // no tunnel where the size noise (about ±1) is below this...
-    TUN_SOFT: 0.2,          // ...tapering in over this much more (dead ends narrow and close)...
-    TUN_SIZE_SPAN: 0.5,     // ...then growing from H_MIN to H_MAX over this much more
+    TUN_STRETCH_WAVE: 120.0,// the stretch noise: tunnels run where it (about ±1) is above CUT...
+    TUN_CUT: -0.3,
+    TUN_GROW: 40.0,         // ...growing from H_MIN at a stretch's end to H_MAX this many cells in
     TUN_H_MIN: 8.0,         // tunnel height, cells (the player is 5.5)
     TUN_H_MAX: 14.0,
     TUN_WIDTH: 0.8,         // half-width over half-height
@@ -103,41 +106,41 @@ const C = {
     LOWER_FLOOR: 3.0,       // LOWER's: dips below the water table into flooded stretches
     LOWER_AMP: 6.0,
     SEA_FLOOR: -5.0,        // SEA's: flat, its lower part flooded...
-    SEA_INLAND: 26.0,       // ...under columns no more than this far above the water table...
-    SEA_FADE: 8.0,          // ...tapering out over this many cells of ground below that
+    SEA_INLAND: 26.0,       // ...ending under ground higher than this above the water table
 
     // 3D tunnels (spaghetti 3D)
     SPAG_WAVE_H: 96.0,      // the two noises' wavelength across...
     SPAG_WAVE_V: 56.0,      // ...and up and down (shorter: their zero surfaces lie flatter, so the tunnels do)
-    SPAG_RARITY_WAVE: 130.0,// the rarity noise (2D): where it is below CUT there are none
-    SPAG_CUT: 0.05,
-    SPAG_SOFT: 0.2,
-    SPAG_SIZE_SPAN: 0.5,
+    SPAG_RARITY_WAVE: 130.0,// the rarity noise (2D): they run where it is above CUT...
+    SPAG_CUT: -0.1,
+    SPAG_GROW: 40.0,        // ...growing from R_MIN at a stretch's end to R_MAX this many cells in
     SPAG_R_MIN: 4.0,        // tube radius, cells
     SPAG_R_MAX: 6.5,
 
     // caverns (cheese)
-    CHEESE_WAVE_H: 105.0,   // the noise's wavelength across...
-    CHEESE_WAVE_V: 62.0,    // ...and up and down
-    CHEESE_CUT: 0.42,       // a cavern where the noise (about ±1) is above this...
+    CHEESE_WAVE_H: 62.0,    // the noise's wavelength across...
+    CHEESE_WAVE_V: 40.0,    // ...and up and down
+    CHEESE_CUT: 0.4,        // a cavern where the noise (about ±1) is above this...
     CHEESE_TOP: 24.0,       // ...below this many cells above the water table...
     CHEESE_FADE: 0.25,      // ...the cut rising by up to this much...
     CHEESE_FADE_SPAN: 12.0, // ...over this many cells below the top and below CHEESE_ROOF's depth
 
     // mouths (entrances)
-    MOUTH_SLOPE_LO: 1.45,   // the roof thins on columns steeper than this (cells per cell; plant cover stops at 1.3)...
-    MOUTH_SLOPE_HI: 2.0,    // ...to MOUTH_ROOF at this
-    MOUTH_WAVE: 80.0,       // the entrance noise: which steep places open
-    MOUTH_CUT: -0.1,
-    MOUTH_SOFT: 0.2,
+    MOUTH_WAVE: 80.0,       // the entrance noise: which bare-rock places open...
+    MOUTH_CUT: -0.3,        // ...where it (about ±1) is above this...
+    MOUTH_SOFT: 0.2,        // ...the roof thinning to MOUTH_ROOF over this much more
+    MOUTH_ABOVE_SEA: 8.0,   // on ground at least this far above the water table (clear of the beaches)...
+    CLIFF_LO: 0.62,         // ...or lower down on cliffs: from this steepness (cells per cell; sand stops at 0.6)...
+    CLIFF_HI: 0.8,          // ...fully at this
 
     // shafts (sinkholes)
-    SHAFT_CHANCE: 0.6,      // chance a site has one (if a level tunnel runs under it)
+    SHAFT_CHANCE: 0.25,     // chance a site has one
     SHAFT_R: 3.5,           // the shaft's radius, cells...
     FUNNEL_DEPTH: 7.0,      // ...widening over this many cells below the surface...
     FUNNEL_FLARE: 1.0,      // ...by this many cells per cell
-    SHAFT_ABOVE_SEA: 14.0,  // only on ground this far above the water table (well above the beaches)...
+    SHAFT_ABOVE_SEA: 14.0,  // only on rock or plant cover this far above the water table (well above the beaches)...
     SHAFT_SLOPE_MAX: 1.0,   // ...and no steeper than this
+    SHAFT_SUMP: 4.0,        // shafts drop this far below the water table (a cenote: water at the bottom)
 
     // speleothems (cones in caverns)
     SPELEO_CHANCE: 0.45,    // chance a site has one
@@ -155,8 +158,8 @@ const C = {
     CRYSTAL_CHANCE_DEEP: 0.65, // ...and deep down
     CRYSTAL_HIGH: 30.0,     // "high": this many cells above the water table and up...
     CRYSTAL_DEEP: 0.0,      // ..."deep": this many and down
-    CRYSTAL_R_MIN: 1.8,     // cluster radius, cells
-    CRYSTAL_R_MAX: 3.6,
+    CRYSTAL_R_MIN: 2.2,     // cluster radius, cells
+    CRYSTAL_R_MAX: 4.5,
     CRYSTAL_RAGGED: 0.55,   // each cell's reach is this share of the radius and up (a jagged cluster)
 
     // noise
@@ -166,9 +169,9 @@ const C = {
     FAR: 1000.0,            // farther than any cave, cells
   },
   salts: {
-    UPPER_PATH: 0x5c10, UPPER_ELEV: 0x5c11, UPPER_SIZE: 0x5c12,
-    LOWER_PATH: 0x5c20, LOWER_ELEV: 0x5c21, LOWER_SIZE: 0x5c22,
-    SEA_PATH: 0x5c30, SEA_SIZE: 0x5c32,
+    UPPER_PATH: 0x5c10, UPPER_ELEV: 0x5c11, UPPER_STRETCH: 0x5c12,
+    LOWER_PATH: 0x5c20, LOWER_ELEV: 0x5c21, LOWER_STRETCH: 0x5c22,
+    SEA_PATH: 0x5c30, SEA_STRETCH: 0x5c32,
     SPAG_A: 0x5c40, SPAG_B: 0x5c41, SPAG_RARITY: 0x5c42,
     CHEESE: 0x5c50,
     MOUTH: 0x5c60,
@@ -275,48 +278,51 @@ float caveLevelFloor(float x, float z, float base, float amp, uint elevSalt) {
   return amp > 0.0 ? base + amp * caveNoise2(x, z, CAVE_TUN_ELEV_WAVE, elevSalt, 0.0, CAVE_VALUE) : base;
 }
 // The distance from cell (x, y, z) to a level's tunnel wall, cells (< 0
-// inside). Its floor averages base (cells), its size is scaled by scale (0..1,
-// 0: none). The cross-section is an ellipse whose lower half is squashed
-// flatter (v² below the middle), so the floor is walkable across most of the
-// width.
-float caveLevel(float x, float y, float z, float base, float amp, float scale, uint pathSalt, uint elevSalt, uint sizeSalt) {
-  if (scale <= 0.0 || y < base - amp - CAVE_CRYSTAL_OUT || y > base + amp + CAVE_TUN_H_MAX + CAVE_CRYSTAL_OUT) return CAVE_FAR;
-  float s = caveNoise2(x, z, CAVE_TUN_SIZE_WAVE, sizeSalt, 0.0, CAVE_VALUE);
-  float k = scale * caveSmooth(CAVE_TUN_CUT, CAVE_TUN_CUT + CAVE_TUN_SOFT, s);
-  if (k <= 0.0) return CAVE_FAR;
-  float semi = 0.5 * k * mix(CAVE_TUN_H_MIN, CAVE_TUN_H_MAX,
-                             caveSmooth(CAVE_TUN_CUT + CAVE_TUN_SOFT, CAVE_TUN_CUT + CAVE_TUN_SOFT + CAVE_TUN_SIZE_SPAN, s));
-  float v = thFdiv(y - caveLevelFloor(x, z, base, amp, elevSalt) - semi, semi);
+// inside). Its floor averages base (cells). The cross-section is an ellipse
+// whose lower half is squashed flatter (v² below the middle), so the floor is
+// walkable across most of the width. A stretch of tunnel ends in a wall where
+// the stretch noise falls below its cut (Minecraft's rarity modulator), or
+// where the tunnel no longer fits under room (the roof's underside), or
+// where cap (a distance, cells) says so; it is H_MIN tall at its ends,
+// growing toward H_MAX inside.
+float caveLevel(float x, float y, float z, float base, float amp, float room, float cap, uint pathSalt, uint elevSalt, uint stretchSalt) {
+  if (cap > CAVE_CRYSTAL_OUT || y < base - amp - CAVE_CRYSTAL_OUT || y > base + amp + CAVE_TUN_H_MAX + CAVE_CRYSTAL_OUT) return CAVE_FAR;
+  float inside = caveNoise2(x, z, CAVE_TUN_STRETCH_WAVE, stretchSalt, CAVE_TUN_CUT, CAVE_DIST);
+  if (inside < -CAVE_CRYSTAL_OUT) return CAVE_FAR;
+  float semi = 0.5 * mix(CAVE_TUN_H_MIN, CAVE_TUN_H_MAX, caveSmooth(0.0, CAVE_TUN_GROW, inside));
+  float floorY = caveLevelFloor(x, z, base, amp, elevSalt);
+  float v = thFdiv(y - floorY - semi, semi);
   if (abs(v) > 1.0 + thFdiv(CAVE_CRYSTAL_OUT, semi)) return CAVE_FAR;
   float w = semi * CAVE_TUN_WIDTH;
   float u = thFdiv(caveNoise2(x, z, CAVE_TUN_WAVE, pathSalt, 0.0, CAVE_DIST), w);
   float vv = v < 0.0 ? v * v : v;
-  return (sqrt(u * u + vv * vv) - 1.0) * min(w, semi);
+  float tube = (sqrt(u * u + vv * vv) - 1.0) * min(w, semi);
+  return max(max(tube, -inside), max(cap, floorY + 2.0 * semi - room));
 }
-float caveUpper(float x, float y, float z, float water) {
-  return caveLevel(x, y, z, water + CAVE_UPPER_FLOOR, CAVE_UPPER_AMP, 1.0, CAVE_SALT_UPPER_PATH, CAVE_SALT_UPPER_ELEV, CAVE_SALT_UPPER_SIZE);
+float caveUpper(float x, float y, float z, float water, float room) {
+  return caveLevel(x, y, z, water + CAVE_UPPER_FLOOR, CAVE_UPPER_AMP, room, -CAVE_FAR,
+                   CAVE_SALT_UPPER_PATH, CAVE_SALT_UPPER_ELEV, CAVE_SALT_UPPER_STRETCH);
 }
-float caveLower(float x, float y, float z, float water) {
-  return caveLevel(x, y, z, water + CAVE_LOWER_FLOOR, CAVE_LOWER_AMP, 1.0, CAVE_SALT_LOWER_PATH, CAVE_SALT_LOWER_ELEV, CAVE_SALT_LOWER_SIZE);
+float caveLower(float x, float y, float z, float water, float room) {
+  return caveLevel(x, y, z, water + CAVE_LOWER_FLOOR, CAVE_LOWER_AMP, room, -CAVE_FAR,
+                   CAVE_SALT_LOWER_PATH, CAVE_SALT_LOWER_ELEV, CAVE_SALT_LOWER_STRETCH);
 }
-// the sea level: only under the coast (ground no higher than SEA_INLAND above the water)
-float caveSea(float x, float y, float z, float G, float water) {
-  float scale = caveSmooth(water + CAVE_SEA_INLAND, water + CAVE_SEA_INLAND - CAVE_SEA_FADE, G);
-  return caveLevel(x, y, z, water + CAVE_SEA_FLOOR, 0.0, scale, CAVE_SALT_SEA_PATH, CAVE_SALT_SEA_PATH, CAVE_SALT_SEA_SIZE);
+// the sea level: only under the coast, ending under ground higher than SEA_INLAND above the water
+float caveSea(float x, float y, float z, float G, float water, float room) {
+  return caveLevel(x, y, z, water + CAVE_SEA_FLOOR, 0.0, room, G - water - CAVE_SEA_INLAND,
+                   CAVE_SALT_SEA_PATH, CAVE_SALT_SEA_PATH, CAVE_SALT_SEA_STRETCH);
 }
 
 // ---- 3D tunnels (spaghetti 3D): a tube of radius r around the curve where
-// two noises' zero surfaces cross
+// two noises' zero surfaces cross; stretches of it end as the level tunnels' do
 float caveSpaghetti(float x, float y, float z) {
-  float s = caveNoise2(x, z, CAVE_SPAG_RARITY_WAVE, CAVE_SALT_SPAG_RARITY, 0.0, CAVE_VALUE);
-  float k = caveSmooth(CAVE_SPAG_CUT, CAVE_SPAG_CUT + CAVE_SPAG_SOFT, s);
-  if (k <= 0.0) return CAVE_FAR;
-  float r = k * mix(CAVE_SPAG_R_MIN, CAVE_SPAG_R_MAX,
-                    caveSmooth(CAVE_SPAG_CUT + CAVE_SPAG_SOFT, CAVE_SPAG_CUT + CAVE_SPAG_SOFT + CAVE_SPAG_SIZE_SPAN, s));
+  float inside = caveNoise2(x, z, CAVE_SPAG_RARITY_WAVE, CAVE_SALT_SPAG_RARITY, CAVE_SPAG_CUT, CAVE_DIST);
+  if (inside < -CAVE_CRYSTAL_OUT) return CAVE_FAR;
+  float r = mix(CAVE_SPAG_R_MIN, CAVE_SPAG_R_MAX, caveSmooth(0.0, CAVE_SPAG_GROW, inside));
   float a = caveNoise3(x, y, z, CAVE_SPAG_WAVE_H, CAVE_SPAG_WAVE_V, CAVE_SALT_SPAG_A, 0.0, CAVE_DIST);
   if (abs(a) > r + CAVE_CRYSTAL_OUT) return CAVE_FAR;   // far from the first surface: skip the second noise
   float b = caveNoise3(x, y, z, CAVE_SPAG_WAVE_H, CAVE_SPAG_WAVE_V, CAVE_SALT_SPAG_B, 0.0, CAVE_DIST);
-  return sqrt(a * a + b * b) - r;
+  return max(sqrt(a * a + b * b) - r, -inside);
 }
 
 // ---- caverns (cheese)
@@ -385,55 +391,52 @@ bool caveCrystal(int x, int y, int z, float f, float water) {
 }
 
 // ---- mouths: the rock kept over caves in column (x, z), cells: ROOF, thinning
-// on steep ground where the entrance noise says so
-float caveRoof(int x, int z, float slope) {
-  if (slope <= CAVE_MOUTH_SLOPE_LO) return float(CAVE_ROOF);
+// to MOUTH_ROOF where the entrance noise says so, on bare rock (surface: the
+// column's top cell) well above the water, or on cliffs nearer it
+float caveRoof(int x, int z, float G, float water, float slope, int surface) {
+  if (surface != E_ROCK) return float(CAVE_ROOF);
+  float site = G >= water + CAVE_MOUTH_ABOVE_SEA ? 1.0 : caveSmooth(CAVE_CLIFF_LO, CAVE_CLIFF_HI, slope);
+  if (site <= 0.0) return float(CAVE_ROOF);
   float gate = caveNoise2(float(x) + 0.5, float(z) + 0.5, CAVE_MOUTH_WAVE, CAVE_SALT_MOUTH, 0.0, CAVE_VALUE);
-  float k = caveSmooth(CAVE_MOUTH_SLOPE_LO, CAVE_MOUTH_SLOPE_HI, slope) * caveSmooth(CAVE_MOUTH_CUT, CAVE_MOUTH_CUT + CAVE_MOUTH_SOFT, gate);
+  float k = site * caveSmooth(CAVE_MOUTH_CUT, CAVE_MOUTH_CUT + CAVE_MOUTH_SOFT, gate);
   return mix(float(CAVE_ROOF), float(CAVE_MOUTH_ROOF), k);
 }
 
 // ---- shafts: a site per SHAFT_CELL square of columns may hold a sinkhole, a
-// shaft of radius SHAFT_R dropping from the surface to the floor of the level
-// tunnel under it (if one runs there), flaring into a funnel near the top.
-// The distance from cell height y of column (x, z) to its wall, cells.
-float caveShaft(int x, int z, float y, float G, float water, float slope) {
-  if (G < water + CAVE_SHAFT_ABOVE_SEA || slope > CAVE_SHAFT_SLOPE_MAX) return CAVE_FAR;
+// shaft of radius SHAFT_R from the surface down past the water table (a
+// cenote: water stands at its bottom, at the sea's level, and any tunnel or
+// cavern it passes opens into it), flaring into a funnel near the top. The
+// distance from cell height y of column (x, z) to its wall, cells.
+float caveShaft(int x, int z, float y, float G, float water, float slope, int surface) {
+  if ((surface != E_ROCK && surface != E_PLANT) || G < water + CAVE_SHAFT_ABOVE_SEA || slope > CAVE_SHAFT_SLOPE_MAX
+      || y < water - CAVE_SHAFT_SUMP) return CAVE_FAR;
   int sx = thDiv(x, CAVE_SHAFT_CELL), sz = thDiv(z, CAVE_SHAFT_CELL);
   uint h = thHash2(sx, sz, CAVE_SALT_SHAFT);
   if (thUnit(thKey(h, CAVE_K_CHANCE)) >= CAVE_SHAFT_CHANCE) return CAVE_FAR;
-  float cx = float(sx * CAVE_SHAFT_CELL + thRange(thKey(h, CAVE_K_X), CAVE_SHAFT_MARGIN, CAVE_SHAFT_CELL - 1 - CAVE_SHAFT_MARGIN)) + 0.5;
-  float cz = float(sz * CAVE_SHAFT_CELL + thRange(thKey(h, CAVE_K_Z), CAVE_SHAFT_MARGIN, CAVE_SHAFT_CELL - 1 - CAVE_SHAFT_MARGIN)) + 0.5;
-  float ox = float(x) + 0.5 - cx, oz = float(z) + 0.5 - cz;
-  float d = sqrt(ox * ox + oz * oz);
+  float ox = float(x - sx * CAVE_SHAFT_CELL - thRange(thKey(h, CAVE_K_X), CAVE_SHAFT_MARGIN, CAVE_SHAFT_CELL - 1 - CAVE_SHAFT_MARGIN));
+  float oz = float(z - sz * CAVE_SHAFT_CELL - thRange(thKey(h, CAVE_K_Z), CAVE_SHAFT_MARGIN, CAVE_SHAFT_CELL - 1 - CAVE_SHAFT_MARGIN));
   float r = CAVE_SHAFT_R + max(0.0, CAVE_FUNNEL_DEPTH - (G - y)) * CAVE_FUNNEL_FLARE;
-  if (d >= r + CAVE_CRYSTAL_OUT) return CAVE_FAR;
-  // the level it drops into, and whether that level's tunnel runs under the site
-  bool upper = thRange(thKey(h, CAVE_K_LEVEL), CAVE_LEVEL_UPPER, CAVE_LEVEL_LOWER) == CAVE_LEVEL_UPPER;
-  float base = water + (upper ? CAVE_UPPER_FLOOR : CAVE_LOWER_FLOOR);
-  float floorY = upper ? caveLevelFloor(cx, cz, base, CAVE_UPPER_AMP, CAVE_SALT_UPPER_ELEV)
-                       : caveLevelFloor(cx, cz, base, CAVE_LOWER_AMP, CAVE_SALT_LOWER_ELEV);
-  float mid = floorY + 0.5 * CAVE_TUN_H_MIN;
-  float tunnel = upper ? caveUpper(cx, mid, cz, water) : caveLower(cx, mid, cz, water);
-  if (tunnel >= 0.0 || y < floorY) return CAVE_FAR;
-  return d - r;
+  return sqrt(ox * ox + oz * oz) - r;
 }
 
 // The element of island cell (x, y, z) after carving: id is what the
 // heightfield's layers gave it, ground its column's height (cells y < ground,
 // rounded, are ground), water the water table, slope the column's steepness
-// (cells per cell, as the layers measure it).
-int islandCave(int x, int y, int z, float ground, float water, float slope, int id) {
+// (cells per cell, as the layers measure it) and surface its top cell's
+// element (E_ROCK: bare).
+int islandCave(int x, int y, int z, float ground, float water, float slope, int surface, int id) {
   if (y < CAVE_BOTTOM || (id != E_ROCK && id != E_PLANT)) return id;
   float G = float(thRound(ground));
   float py = float(y) + 0.5;
-  float shaft = caveShaft(x, z, py, G, water, slope);
-  float top = G - caveRoof(x, z, slope);
+  float shaft = caveShaft(x, z, py, G, water, slope, surface);
+  float roof = caveRoof(x, z, G, water, slope, surface), top = G - roof;
   float f = shaft;
   if (id == E_ROCK && float(y) < top) {
     float px = float(x) + 0.5, pz = float(z) + 0.5;
-    float tunnels = min(min(caveUpper(px, py, pz, water), caveLower(px, py, pz, water)),
-                        min(caveSea(px, py, pz, G, water), caveSpaghetti(px, py, pz)));
+    // level tunnels end where they no longer fit under a full roof; at mouths they run out into the open
+    float room = roof < float(CAVE_ROOF) ? CAVE_FAR : top;
+    float tunnels = min(min(caveUpper(px, py, pz, water, room), caveLower(px, py, pz, water, room)),
+                        min(caveSea(px, py, pz, G, water, room), caveSpaghetti(px, py, pz)));
     float cavern = caveCheese(px, py, pz, G, water);
     f = min(f, min(tunnels, cavern));
     if (f < 0.0 && cavern < 0.0 && tunnels >= 0.0 && shaft >= 0.0 && caveSpeleo(x, z, py, G, water, top)) return CAVE_SPELEO;
