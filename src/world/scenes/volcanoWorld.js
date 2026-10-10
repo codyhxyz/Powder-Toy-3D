@@ -14,8 +14,9 @@ import { E } from '../../elements.js';
 //     push lava up). The crater's rim has a breach on one side, down to the
 //     lava's level, so the lava the source makes spills out that way and runs
 //     down that flank to the sea;
-//   - a DORMANT volcano: the same cone, cold, its crater holding a lake (ice
-//     on a peak above the snow line);
+//   - a DORMANT volcano: the same cone, cold, its crater holding a lake: water
+//     in warm rock, ice in frozen rock (none where the rock is half frozen,
+//     which would freeze the water slowly);
 //   - an ISLET: a low dome of rock;
 //   - or open sea.
 // Cones are wobbled by noise (no two coasts alike) and roughened away from
@@ -281,6 +282,12 @@ float volCraterDist(int x, int z, int slot, bool dormantToo) {
   return thFdiv(sqrt(dx * dx + dz * dz), volCraterR(volRadius(h, kind)));
 }
 
+// Rock's frost at height y: 0 warm, 1 frozen to the snow's temperature (the island's ramp).
+float volFrost(int y) {
+  float lowest = float(VOL_SNOW_LINE) - VOL_SNOW_JITTER;
+  return clamp(thFdiv(float(y) - lowest + float(VOL_FROST_DEPTH + VOL_FROST_SPAN), float(VOL_FROST_SPAN)), 0.0, 1.0);
+}
+
 // What the volcano of the column's site puts at cell (x, y, z), the column's
 // ground topping out at top: its lava source, crater lake, conduit or magma
 // chamber; E_WALL (never generated) for none of these.
@@ -294,9 +301,15 @@ int volVent(int x, int y, int z, int top, int slot) {
   float rc = volCraterR(R);
   float dx = float(x) + 0.5 - volCentre(h, VOL_K_X, ax), dz = float(z) + 0.5 - volCentre(h, VOL_K_Z, az);
   float r = sqrt(dx * dx + dz * dz);
+  // (most cells are outside all of it: the lake reaches rc wobbled, the chamber CHAMBER_MAX)
+  if (r * (1.0 - VOL_WOBBLE_AMP) >= rc && r >= VOL_CHAMBER_MAX) return E_WALL;
   int lakeTop = volLakeTop(h, kind, R);
   bool inLake = y >= top && y < lakeTop && r * volWobble(x, z) < rc;
-  if (kind == VOL_KIND_DORMANT) return inLake ? (lakeTop > VOL_SNOW_LINE ? E_ICE : E_WATER) : E_WALL;
+  if (kind == VOL_KIND_DORMANT) {
+    // ice where the rock under it is frozen through, water where the rock around it is warm; between, a dry crater
+    bool frozen = volFrost(volFloorTop(h, kind, R) - 1) >= 1.0, warm = volFrost(lakeTop) <= 0.0;
+    return inLake && (frozen || warm) ? (frozen ? E_ICE : E_WATER) : E_WALL;
+  }
   float hw = float(VOL_CLONE_HALF);
   if (dx >= -hw && dx < hw && dz >= -hw && dz < hw
       && y >= volFloorTop(h, kind, R) - VOL_CLONE_SINK && y <= lakeTop) return E_CLONE;
@@ -393,11 +406,6 @@ int volCellIn(int x, int y, int z, int col) {
 }
 int volCell(int x, int y, int z) { return y >= VOL_SKY ? E_EMPTY : volCellIn(x, y, z, volColumn(x, z)); }
 
-// Rock's frost at height y: 0 warm, 1 frozen to the snow's temperature (the island's ramp).
-float volFrost(int y) {
-  float lowest = float(VOL_SNOW_LINE) - VOL_SNOW_JITTER;
-  return clamp(thFdiv(float(y) - lowest + float(VOL_FROST_DEPTH + VOL_FROST_SPAN), float(VOL_FROST_SPAN)), 0.0, 1.0);
-}
 `;
 
 // start(): the window centres between the chosen volcano's summit and the
@@ -413,6 +421,7 @@ function twin(P) {
 }
 
 export const VOL = { ...V.ints, ...V.floats };
+export const VOL_KINDS = V.picks.KIND.map(([k]) => k);   // site kinds by index (volSiteKind)
 export const volcanoTwin = twin;   // (tools/scene-themed-preview.mjs)
 
 export const volcanoWorld = {
