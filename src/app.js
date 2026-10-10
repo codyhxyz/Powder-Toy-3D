@@ -12,11 +12,12 @@ import { PerkOrbs } from './perkOrbs.js';
 import { buildPreset, ARENA_PRESETS } from './presets.js';
 import { ArenaMarkers } from './arenas/markers.js';
 import { DAM_VALLEY_BANNERS, shrineAltars } from './arenas/damValley.js';
+import './world/bakeClient.js';   // the World's build-time bake (world/bake.js), before any world is made
 import { structureClear, shrineAltars as worldShrineAltars } from './world/structures.js';
 import { loadIsland, releaseGenerator } from './world/gpu.js';
 import { WorldWindow, WIN_STEP } from './world/window.js';
 import { bakedAir } from './constructions/runtime.js';
-import { WORLD_SCENES, sceneByKey } from './world/scenes/index.js';
+import { sceneByKey } from './world/scenes/index.js';
 import { FarField } from './world/far.js';
 import { farHazeGLSL, farCastersGLSL, farLayout, WORLD_SIZE } from './shaders/far.js';
 import { quadVert } from './shaders/common.js';
@@ -27,7 +28,7 @@ import { createDock } from './ui/dock.js';
 import { createCard } from './ui/card.js';
 import { createSettings } from './ui/settings.js';
 import { createHud, createHelp } from './ui/hud.js';
-import { inkFor, luminance } from './ui/dom.js';
+import { h, inkFor, luminance } from './ui/dom.js';
 import { gfx, gfxUniforms, updateGfxUniforms } from './gfx/uniforms.js';
 import { DETAIL, settingKey, detailDefaults, detailDefines, detailRows } from './gfx/detail.js';
 import { createDetailGate } from './gfx/detailGate.js';
@@ -47,6 +48,8 @@ import { renderViewmodels } from './pov/viewmodel.js';
 import { POV_FOV, POV_FOV_RANGE, SENSITIVITY_RANGE } from './pov/camera.js';
 import { finishSignIn, account, accountsEnabled } from './account.js';
 import { accountSection } from './ui/account-section.js';
+import { launch } from './launch.js';
+import { MAPS, mapByKey, mapOf, isWorld, sizeTag, WORLD_DIMS } from './maps.js';
 
 // Optional modules (built in parallel); the app works without them.
 const optional = import.meta.glob(['./views.js', './signs.js', './constructions.js'], { eager: true });
@@ -69,8 +72,11 @@ const ARENA_BANNERS = { damValley: DAM_VALLEY_BANNERS };
 // Massive worlds (docs/scaling.md D11): a world scene (world/scenes,
 // settings.scene: the island by default), `size` cells, simulated and drawn
 // through a window of `win` cells that follows the focus (the POV body, else
-// the orbit target). The Grid size row's World.
+// the orbit target). The Grid size row's World. A scene with a size of its own
+// (the giant volcano's taller world) gets a window as tall as it (worldOf).
 const WORLDS = { world: { win: [128, 128, 128], size: WORLD_SIZE } };
+// the world and window a WORLDS entry holds with scene s: the window spans the world's height
+const worldOf = (w, s) => (s.size ? { size: s.size, win: [w.win[0], s.size[1], w.win[2]] } : w);
 // God view over a world: the orbit target on the ground, the camera this far
 // off it along the box view's direction (scene units), so the window fills
 // about as much of the view as a box does
@@ -98,7 +104,7 @@ const DEFAULTS = {
   tool: E.SAND, radius: 5, shape: 0, rate: 1, replace: false,
   steps: 4, gravity: 0.025, paused: false,
   view: 0, camSpeed: 1, upscale: 'quality', dockCollapsed: false,
-  character: 'wizard', povFov: POV_FOV, sensitivity: 1, viewBobbing: true, sprintMode: 'hold',
+  character: 'real', povFov: POV_FOV, sensitivity: 1, viewBobbing: true, sprintMode: 'hold',
   nearGI: true, glowLights: true, caustics: true,
   ...detailDefaults(),
   profiler: false,
@@ -154,9 +160,13 @@ let boxSize = settings.size in SIZES && !ARENA_GRIDS.has(settings.size) ? settin
 if (params.get('preset') && !params.get('size') && settings.size in WORLDS) settings.size = boxSize;
 // an arena named in the URL brings its grid
 if (params.get('preset') in ARENA_GRID && !params.get('size')) settings.size = ARENA_GRID[params.get('preset')];
+// a map (maps.js): the start menu's pick (src/main.js), or ?map= — its scene at its own size
+const bootMap = mapByKey(params.get('map') ?? launch.map);
+if (bootMap) useMap(bootMap);
 if (!toolById(settings.tool)) settings.tool = DEFAULTS.tool;
 if (!VIEWS.some((v) => v.id === settings.view)) settings.view = 0;
-if (!['wizard', 'real', 'stick'].includes(settings.character)) settings.character = DEFAULTS.character;
+// (a saved 'wizard', the Castle Crashers body that was the default, falls back to it too)
+if (!['real', 'stick'].includes(settings.character)) settings.character = DEFAULTS.character;
 settings.paused = false;
 
 let saveTimer = 0;
@@ -259,11 +269,11 @@ function build() {
     edges.material.dispose();
     shadowTarget.dispose();
   }
-  worldMode = WORLDS[settings.size] ?? null;
+  worldMode = settings.size in WORLDS ? worldOf(WORLDS[settings.size], sceneByKey(settings.scene)) : null;
   const [nx, ny, nz] = worldMode?.win ?? SIZES[settings.size];
   win?.dispose(retired);   // (a new window over the world shares most of its passes' programs)
   win = null;
-  sim = new Simulation(renderer, nx, ny, nz, { windowed: !!worldMode });
+  sim = new Simulation(renderer, nx, ny, nz, { windowed: !!worldMode, world: worldMode?.size });
   sim.gravity = settings.gravity;
   sim.onPass = prof.on ? simPass : null;
   scale = 10 / Math.max(nx, nz);
@@ -338,7 +348,7 @@ function build() {
     name: 'shadow',
     glslVersion: THREE.GLSL3,
     vertexShader: quadVert,
-    fragmentShader: shadowFrag(sim.g, farCastersGLSL(farLayout(WORLD_SIZE))),
+    fragmentShader: shadowFrag(sim.g, farCastersGLSL(farLayout(sim.world))),
     uniforms: {
       tA: { value: null }, tBrick: { value: null }, tLight: { value: null },
       uSun: { value: SUN }, tShadow: { value: null }, uShadowRes: { value: shadowRes },
@@ -441,11 +451,13 @@ function worldShrine() {
 }
 
 // World: the god view's home over world column (x, z), the orbit target on
-// the ground there (the scene's: on the sea where the sea floor is lower).
+// the ground there (the scene's: on the sea where the sea floor is lower), or
+// as the scene's view has it (world/scenes/index.js)
 function homeOver(x, z) {
-  const ground = win.scene.ground(x, z, win.P);
+  const v = win.scene.view;
+  const ground = win.scene.ground(x, z, win.P) + (v?.lift ?? 0);
   const target = new THREE.Vector3((x - anchor.x) * scale, ground * scale, (z - anchor.y) * scale);
-  rig.setHome(new THREE.Vector3(...WORLD_VIEW_DIR).setLength(WORLD_VIEW_DIST).add(target), target);
+  rig.setHome(new THREE.Vector3(...(v?.dir ?? WORLD_VIEW_DIR)).setLength(v ? v.dist * scale : WORLD_VIEW_DIST).add(target), target);
 }
 
 // The grid's box in the scene: at its world origin, so a window moving over
@@ -504,16 +516,43 @@ function setSize(size) {
   save();
 }
 
-// The Scene row's box scenes: an arena brings its own grid, any other goes
-// back to the box size from before (build() loads settings.preset).
-function pickBoxScene(name) {
-  const grid = ARENA_GRID[name] ?? boxSize;
-  if (settings.size === grid) return loadPreset(name);
-  if (mp.guard()) return false;
-  settings.preset = name;
-  setSize(grid);
+// A map (maps.js) is a scene at its own grid size: the settings that load it.
+function useMap(m) {
+  settings.size = m.size;
+  if (isWorld(m)) settings.scene = m.scene;
+  else { settings.preset = m.preset; boxSize = m.size; }
+}
+// The start menu's Start over a running game (src/main.js): the map, loaded
+// fresh (the current one starts over), then its gamemode.
+function openMap(key, mode = 'sandbox') {
+  const m = mapByKey(key);
+  if (!m || mp.guard() || (isWorld(m) && mp.guardWorld())) return false;
+  if (!isWorld(m) && settings.size === m.size) loadPreset(m.preset);   // (undoable, as any box scene)
+  else { useMap(m); setSize(m.size); }
+  hud.toast(`Loaded ${m.name}`);
+  startMode(mode);
   return true;
 }
+// the map and gamemode playing now, for the menu to open on
+function currentMap() {
+  return { map: mapOf(settings)?.key ?? null, mode: pov?.game?.running ? pov.game.mode : 'sandbox' };
+}
+// A team gamemode (src/game, where the build has it): in the body, a match of
+// it on the map just loaded. Sandbox ends any match running.
+function startMode(mode) {
+  const game = pov?.game;
+  if (!game) return;
+  if (mode === 'sandbox') { if (game.running) game.end(); return; }
+  if (!pov.active) pov.enter();
+  game.start(mode);
+}
+// maps.js is plain data the menu loads on its own: it must agree with the tables here
+for (const m of MAPS) {
+  const dims = m.size in WORLDS ? worldOf(WORLDS[m.size], sceneByKey(m.scene)).size : SIZES[m.size];
+  const ok = dims && dims.every((n, i) => n === m.dims[i]) && (isWorld(m) ? m.size in WORLDS && sceneByKey(m.scene).key === m.scene : m.size in SIZES);
+  if (!ok) console.error(`maps.js: map '${m.key}' doesn't match app.js (size '${m.size}', ${m.dims.join('×')})`);
+}
+if (WORLD_DIMS.some((n, i) => n !== WORLD_SIZE[i])) console.error('maps.js: WORLD_DIMS is not shaders/far.js WORLD_SIZE');
 // cells [nx, ny, nz] for a toast: '128³', '160 × 96 × 160'; for the HUD: '2.1M'
 const dimsName = (d) => (d.every((n) => n === d[0]) ? `${d[0]}³` : d.join(' × '));
 const millions = (d) => `${(d[0] * d[1] * d[2] / 1e6).toFixed(1)}M`;
@@ -558,6 +597,7 @@ function resetSpawners(name) {
   perkOrbs?.clear();
   arenaMarkers?.clear();
   pov?.vehicles.spawnLayout(arenaLayout);   // an arena's jeeps and hoverbikes (null clears the last arena's)
+  pov?.game.useLayout(arenaLayout);          // its spawns, flags, hills and core for the team games (null: the lab's)
   if (!spawners) return;
   spawners.clear();
   if (name === 'lab' && !win) spawners.add(SPAWNER.ENEMY, new THREE.Vector3(Math.round(sim.g.nx * LAB_ENEMY_AT[0]), 0, Math.round(sim.g.nz * LAB_ENEMY_AT[1])));
@@ -725,17 +765,17 @@ function selectTool(id) {
   save();
 }
 
-// A first-person tool from the palette's Tools group (GMod's spawn menu): it
-// goes into the inventory and in hand, now in first person or at the next drop-in.
+// A first-person tool from the palette's Tools group (GMod's spawn menu): every
+// tool is carried (inventory.js), so it goes in hand, now in first person or at the next drop-in.
 function giveGear(id) {
   const it = toolById(id);
   const g = gearByKey(it.gear);
-  const fresh = inventory.give(g.key);
+  inventory.give(g.key);
   const slot = `key ${g.slot + 1} (${SLOTS[g.slot]})`;
   if (pov?.active) {
     pov.closeMenu();
-    hud.toast(fresh ? `${it.name} added: ${slot}` : `${it.name}: ${slot}`);
-  } else hud.toast(`${it.name} ${fresh ? 'added to your tools' : 'is in your tools'}: press V, then ${slot}`);
+    hud.toast(`${it.name}: ${slot}`);
+  } else hud.toast(`${it.name} is in your tools: press V, then ${slot}`);
 }
 
 // Closing a construction's options goes back to the last element or tool.
@@ -782,6 +822,8 @@ const actions = {
   },
   toggleSettings: () => setSettingsOpen(!settingsPanel.isOpen),
   toggleHelp: () => help.setOpen(!help.isOpen),
+  // the start menu over the game (src/main.js), the way Garry's Mod's Esc brings up its menu
+  openMenu: () => { painting = false; launch.openMenu?.(); },
   setView,
   renderThumb,
 };
@@ -789,30 +831,26 @@ const toolbar = createToolbar({ views: VIEWS, settings, actions });
 const mp = createMultiplayer({ renderer, scene, camera, hud, getSim: () => sim, getVolume: () => volume, setGrid, inWorld: () => !!win });
 
 const fmtSpeed = (v) => `${v}×`;
-const SCENE_COLS = 3;   // scenes per row of the Scene row (five or six don't fit the drawer's width in one)
+// the drawer's Map row: the map's name and size, and Change map (the start menu)
+function mapRow() {
+  const name = h('span.map-name'), tag = h('span.map-tag');
+  const change = h('button.btn', { type: 'button', text: 'Change map', on: { click: () => { setSettingsOpen(false); actions.openMenu(); } } });
+  const sync = () => {
+    const m = mapOf(settings);
+    name.textContent = m?.name ?? 'Custom';
+    // (a box at a size its map isn't, from an old save or a link: the grid's own)
+    tag.textContent = m && (isWorld(m) || settings.size === m.size) ? sizeTag(m) : dimsName(SIZES[settings.size] ?? []);
+  };
+  return { type: 'custom', el: h('div.map-row', {}, name, tag, change), sync };
+}
 const fmtTime = (v) => `${Math.floor(v)}:${String(Math.round((v % 1) * 60)).padStart(2, '0')}`;
 const settingsPanel = createSettings({
   settings,
   onClose: () => setSettingsOpen(false),
   // Sections and their rows run from most to least reached-for; keep that order when adding settings.
   sections: [
-    { title: 'Scene', rows: [
-      // a box's scenes: clicking the current one reloads it; Empty clears
-      { type: 'seg', key: 'preset', hidden: () => !!win, cols: SCENE_COLS,
-        options: [['empty', 'Empty'], ['lab', 'Lab'], ['volcano', 'Volcano'], ['island', 'Island'], ['damValley', 'Dam Valley']],
-        onChange: (v) => {
-          if (pickBoxScene(v)) hud.toast(`Loaded ${v === 'empty' ? 'an empty box' : v in ARENA_GRID ? arenaLayout?.name ?? v : `the ${v}`}`);
-        } },
-      // a world's (world/scenes), in rows of three: clicking one starts the world over with it
-      { type: 'seg', key: 'scene', hidden: () => !win, cols: SCENE_COLS,
-        options: WORLD_SCENES.map((s) => [s.key, s.label]),
-        onChange: (v) => {
-          if (mp.guard()) return;
-          settings.scene = v;
-          setSize('world');
-          hud.toast(`Loaded ${sceneByKey(v).label}`);
-        } },
-    ] },
+    // the map playing (maps.js: a scene at its own size); the start menu changes it
+    { title: 'Map', rows: [mapRow()] },
     { title: 'Simulation', rows: [
       { type: 'slider', key: 'steps', label: 'Speed (steps per frame)', min: 1, max: 12, step: 1, def: DEFAULTS.steps, fmt: fmtSpeed, onChange: save },
       { type: 'slider', key: 'gravity', label: 'Gravity', min: 0, max: 0.06, step: 0.005, def: DEFAULTS.gravity,
@@ -828,17 +866,6 @@ const settingsPanel = createSettings({
         .map(([key, label]) => ({ type: 'seg', key, options: [[true, `${label}: On`], [false, 'Off']],
           onChange: (v) => { settings[key] = v; save(); } })),
     ] },
-    { title: 'Grid size', rows: [
-      // World: a world scene (the Scene row's; the island by default), simulated
-      // through a window that follows you (clicking it again starts the world over)
-      { type: 'seg', key: 'size', options: [['64', '64³'], ['96', '96³'], ['128', '128³'], ['wide', '160×96'], ['world', 'World']],
-        onChange: (v) => {
-          if (mp.guard() || (v in WORLDS && mp.guardWorld())) return;
-          setSize(v);
-          const w = WORLDS[v];
-          hud.toast(w ? `World: ${w.size.join(' × ')} cells, simulated ${dimsName(w.win)} around you` : `Grid is now ${dimsName(SIZES[v])}`);
-        } },
-    ] },
     // the scene renders at a share of the screen's pixels and TAA rebuilds full detail over frames
     { title: 'Upscaling', rows: [
       { type: 'seg', key: 'upscale', options: [['native', 'Off'], ['quality', 'Quality'], ['balanced', 'Balanced'], ['performance', 'Fast']],
@@ -851,13 +878,11 @@ const settingsPanel = createSettings({
       { type: 'slider', key: 'camSpeed', label: 'Move speed (WASD)', min: 0.25, max: 3, step: 0.05, def: DEFAULTS.camSpeed,
         fmt: (v) => `${v.toFixed(2)}×`, onChange: (v) => { rig.setSpeed(v); save(); } },
     ] },
-    // The body you see in third person and when you die: Wizard (Castle
-    // Crashers-style, the default), Realistic (a skinned, animated mannequin
-    // in a wizard's hat and robe) or Stickman (the TPT homage). It switches
-    // live, in POV too. The key was 'body' before Wizard; the new key starts
-    // everyone on the default.
+    // The body you see in third person and when you die: Realistic (a
+    // skinned, animated mannequin in a wizard's hat and robe, the default) or
+    // Stickman (the TPT homage). It switches live, in POV too.
     { title: 'First person', rows: [
-      { type: 'seg', key: 'character', options: [['wizard', 'Wizard'], ['real', 'Realistic'], ['stick', 'Stickman']],
+      { type: 'seg', key: 'character', options: [['real', 'Realistic'], ['stick', 'Stickman']],
         onChange: (v) => { settings.character = v; save(); pacer.wake(); } },
       // named as Minecraft names them
       { type: 'slider', key: 'sensitivity', label: 'Mouse Sensitivity', min: SENSITIVITY_RANGE[0], max: SENSITIVITY_RANGE[1], step: 0.05,
@@ -918,7 +943,6 @@ function setSettingsOpen(v) {
 function setPaused(p) {
   if (mp.guard()) return;
   settings.paused = p;
-  hud.setPaused(p);
   toolbar.sync();
 }
 
@@ -1119,8 +1143,8 @@ addEventListener('keydown', (e) => {
   if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); return; }
   if (mod) return;
   const k = e.key;
-  // V is noclip, Garry's Mod's: out of the body to the god view's free camera, and back in.
-  // F drops in too (in the body it swaps first and third person: pov/index.js).
+  // V switches between the god view and the body (Garry's Mod's noclip key). F drops
+  // in too, from the god view only: in the body F is the kick.
   if (k === 'v' || k === 'V' || ((k === 'f' || k === 'F') && !pov?.active)) { if (!e.repeat) actions.firstPerson(); return; }
   if ((k === 't' || k === 'T') && mp.chatAvailable) { e.preventDefault(); mp.openChat(); return; } // Minecraft's chat key, POV included
   if (pov?.blocksKey(e)) return;   // POV owns movement, Space and the digits while active
@@ -1140,7 +1164,8 @@ addEventListener('keydown', (e) => {
   else if (k === 'Escape') {
     const overlay = eyedropper || toolbar.isOpen || settingsPanel.isOpen || help.isOpen || mp.panelOpen;
     setEyedropper(false); toolbar.close(); setSettingsOpen(false); help.setOpen(false); mp.closePanel();
-    if (!overlay) leaveBuild();
+    // nothing open: out of a construction's options, else the start menu (Garry's Mod's Esc)
+    if (!overlay) { if (isBuild(settings.tool)) leaveBuild(); else actions.openMenu(); }
   }
   else if (/^[0-9]$/.test(k)) { const v = VIEWS.find((x) => x.hotkey === k); if (v) setView(v.id); }
 });
@@ -1420,6 +1445,22 @@ function frame(now) {
 }
 
 // ---------------------------------------------------------------- boot
+// The start menu's loading screen comes down once the first map is on screen:
+// a frame after the first frame (that one compiles the renderer), and in a
+// world once its window has filled (or after a while, whatever it's doing).
+// Then the gamemode picked with it starts.
+const READY_POLL_MS = 100;
+const READY_WAIT_MS = 20000;
+function bootReady() {
+  const t0 = performance.now();
+  const check = () => {
+    if (win && !win.loaded && performance.now() - t0 < READY_WAIT_MS) { setTimeout(check, READY_POLL_MS); return; }
+    launch.ready?.();
+    if (bootMap && launch.mode) startMode(launch.mode);
+  };
+  requestAnimationFrame(() => requestAnimationFrame(check));
+}
+
 try {
   if (!renderer.capabilities.isWebGL2) throw new Error('This needs WebGL2, which your browser does not provide.');
   if (SignsClass) {
@@ -1462,11 +1503,14 @@ try {
     hover, pointerHover: () => pointerInside && !uiHover, pickRay,
     getSpawners: () => spawners,
     getPerkOrbs: () => perkOrbs,
+    loadPreset: (name) => loadPreset(name, false),   // a team game's new round (src/game)
+    getArena: () => arenaLayout,                      // the loaded arena's layout, for the team games (src/game)
     requestRender: () => pacer.wake(),
     inWorld: () => !!win,
     showToolsMenu: () => dock.reveal((it) => isGearTool(it.id)),   // Q in first person: the palette at its first-person tools
   });
   pov.vehicles.spawnLayout(arenaLayout);   // the scene loaded before the POV shell existed
+  pov.game.useLayout(arenaLayout);
   window.__app = {
     get sim() { return sim; }, get volume() { return volume; }, get scale() { return scale; }, get signs() { return signs; }, get builds() { return builds; },
     get pov() { return pov; },
@@ -1479,7 +1523,8 @@ try {
     get win() { return win; },
     // world mode: start the world over with the window at `origin` (world cells)
     worldLoad(origin) { win.load(origin); placeVolume(); post.reset(); pov?.worldReplaced(); },
-    setSize,         // switch the grid as the Grid size row does, without its toast (a SIZES or WORLDS key)
+    setSize,         // switch the grid (a SIZES or WORLDS key), keeping the scene settings
+    openMap,         // as the start menu's Start does (a maps.js key, a gamemode)
     undo,            // as ⌘Z does
     get worldFocus() { return worldFocus; }, set worldFocus(v) { worldFocus = v; },
     MOBILE, SUN, day, scene, settings, camera, controls, loadPreset, selectTool, setView, hover, renderer, rig, renderThumb, gfx, post, mp, autoRes, prof,
@@ -1489,9 +1534,13 @@ try {
     requestRender: () => pacer.wake(),   // for changes the frame loop can't see (async results)
   };
   requestAnimationFrame(frame);
+  bootReady();
 } catch (err) {
   const el = document.getElementById('error');
   el.style.display = 'flex';
   el.textContent = String(err.stack || err);
   throw err;
 }
+
+// for the start menu (src/main.js)
+export { openMap, currentMap as current };

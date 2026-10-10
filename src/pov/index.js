@@ -8,17 +8,19 @@ import { createFeel } from './feel.js';
 import { createVfx } from './vfx.js';
 import { povEvents } from './events.js';
 import './pov.css';
+import './potions.js';   // Noita's potion statuses: stains and drinks (registers them)
 import { addTarget, PLAYER } from './targets.js';
 import { grant, PERK } from './perks.js';
 import { CLASSES_ENABLED } from './classes.js';
 import { createClassPicker } from './classPicker.js';
 import { createVehicles } from './vehicles/index.js';
+import { createGame } from '../game/index.js';
 import { SPAWNER, ENEMY_KINDS } from '../spawners.js';
 import { createZoom, ZOOM_KEY } from './zoom.js';
 
-// First-person (POV) mode: drop into the world with V (noclip off, Garry's
-// Mod's key; F drops in too), walk around in it, pop back out to the god
-// view's free camera with V. This module is the shell: input, the camera, the
+// First-person (POV) mode: drop into the world with V (Garry's Mod's noclip
+// key; F drops in too), walk around in it, pop back out to the god view's
+// free camera with V. This module is the shell: input, the camera, the
 // figure, the HUD and the per-frame wiring between the body (player.js) and
 // the toolbelt (tools/index.js), plus the gunplay feedback that listens to
 // povEvents: feel (kick, shake, hitmarker), effects and sound. Both are optional at build time: without the
@@ -45,13 +47,12 @@ const WHEEL_GESTURE_GAP_MS = 180;       // ms without wheel events that ends a g
 const WHEEL_LINE_PX = 40;               // px per line, for wheels that report lines
 const WHEEL_PAGE_PX = 800;              // px per page
 
-// Keys held down: movement, swim down and the zoom. Swim down is Ctrl, the
-// Source games' duck key (Shift is their sprint, as here); C is the zoom key
-// of Minecraft's zoom mods (zoom.js).
-const DOWN_KEYS = ['ControlLeft', 'ControlRight'];
-const MOVE_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ShiftLeft', 'ShiftRight', ...DOWN_KEYS, ZOOM_KEY]);
-// First or third person: Skyrim's and Fallout's F, and Minecraft's F5 (its reload is held back)
-const VIEW_KEYS = new Set(['KeyF', 'F5']);
+// Keys held down: movement, the crouch key (C, PUBG's and Apex's; so far it
+// swims down in liquid) and the zoom (Z, zoom.js).
+const CROUCH_KEY = 'KeyC';
+const MOVE_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ShiftLeft', 'ShiftRight', CROUCH_KEY, ZOOM_KEY]);
+// First or third person: Minecraft's F5 (its page reload is held back)
+const VIEW_KEY = 'F5';
 const VEHICLE_KEY = 'KeyE';             // get in, get out, or right a vehicle (vehicles/index.js; Halo's and most shooters' use key)
 // Driving, the chase camera swings back behind the vehicle once the mouse rests (GTA's and most driving games')
 const CHASE_PITCH = -0.22;              // rad, the look on getting in: a little down onto the vehicle
@@ -80,7 +81,9 @@ export function createPov(app) {
   let vfx = null;                        // three.quarks effects, built on the first drop-in
   let figure = null, player = null, toolbelt = null;
   const npcs = new Map();   // enemy spawner id → its NPC (npc.js)
-  let npcMod = null, npcAi = null, npcLoading = false;   // npc.js and what NPCs share, loaded on first use
+  let npcMod = null, npcAi = null, npcLoading = null;   // npc.js and what NPCs share, loaded on first use
+  const loadNpcs = () => (npcLoading ??= import('./npc.js').then((m) => { npcAi = m.createAi({ renderer, getSim: app.getSim }); npcMod = m; return { mod: m, ai: npcAi }; })
+    .catch((err) => { console.error('NPCs failed to load', err); npcLoading = null; throw err; }));
   // the player as something weapons hit (an NPC's axe and gun; the player's own never hit it)
   addTarget({
     id: PLAYER,
@@ -90,6 +93,7 @@ export function createPov(app) {
       max.set(player.pos.x + BODY_WIDTH / 2, player.pos.y + BODY_HEIGHT, player.pos.z + BODY_WIDTH / 2);
     },
     facing: (out) => povCam.dir(out),   // where the player looks (the knife's backstab test)
+    get body() { return player; },      // its statuses scale its weapons (targets.js dealtScale)
     hurt(amount, cause, d, opts) {
       povEvents.emit('player:hit', { amount });   // inside the attacker's povEvents.as(): carries its id
       player.hurt(amount * PLAYER_DAMAGE_TAKEN, cause, opts);
@@ -165,12 +169,9 @@ export function createPov(app) {
   const setHudHidden = (v) => { hudHidden = v; document.body.classList.toggle('pov-nohud', v); app.requestRender(); };
 
   addEventListener('keydown', (e) => {
-    if (!active() || app.isTyping() || e.metaKey || e.altKey) return;
-    // Ctrl swims down, so movement still counts while it's held, and the
-    // browser's own Ctrl shortcuts on those keys (save, bookmark) are held back
-    if (MOVE_KEYS.has(e.code)) { keys.add(e.code); if (e.code === 'Space' || e.ctrlKey) e.preventDefault(); }
-    if (e.ctrlKey) return;
-    if (VIEW_KEYS.has(e.code)) {
+    if (!active() || app.isTyping() || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (MOVE_KEYS.has(e.code)) { keys.add(e.code); if (e.code === 'Space') e.preventDefault(); }
+    if (e.code === VIEW_KEY) {
       e.preventDefault();
       if (!e.repeat && mode !== 'exiting') povCam.third = !povCam.third;
     }
@@ -187,13 +188,6 @@ export function createPov(app) {
   });
   addEventListener('keyup', (e) => keys.delete(e.code));
   addEventListener('blur', releaseInput);
-  // Ctrl+W closes the tab, and no page can stop it (outside full screen's
-  // keyboard lock): while Ctrl swims down, leaving asks first
-  addEventListener('beforeunload', (e) => {
-    if (!active() || !DOWN_KEYS.some((k) => keys.has(k))) return;
-    e.preventDefault();
-    e.returnValue = true;
-  });
 
   // TF2's class picker on its key, comma (classPicker.js, docs/classes.md). Made
   // now, so its keys are heard before the toolbelt's digits.
@@ -416,6 +410,7 @@ export function createPov(app) {
     figure?.setVisible(false);
     for (const n of npcs.values()) n.reset();
     vehicles.reset(player);
+    game.setVisible(false);
     viewmodel.visible = false;
     povHud.show(false);
     feel.reset();
@@ -434,7 +429,7 @@ export function createPov(app) {
     primary: false, secondary: false, primaryPressed: false, secondaryPressed: false, wheel: 0,
     viewBobbing: true,              // the View Bobbing setting (the viewmodel rig's hand bob reads it)
     aim: { valid: false, cell: new THREE.Vector3(), face: 0, id: -1, T: 0, P: 0, dist: Infinity },
-    player: { pos: null, vel: null, onGround: false, inLiquid: false, applyImpulse: (dv) => player?.applyImpulse(dv), holdPogo: () => player?.holdPogo() },
+    player: { pos: null, vel: null, onGround: false, inLiquid: false, applyImpulse: (dv) => player?.applyImpulse(dv), holdPogo: () => player?.holdPogo(), body: null },   // body: the player itself (a drink acts on it: ingest.js)
   };
   const input = { move: { x: 0, z: 0 }, jump: false, sprint: false, down: false };
   let sprintOn = false;     // Sprint: Toggle's state
@@ -467,7 +462,7 @@ export function createPov(app) {
     }
     input.jump = keys.has('Space');
     input.sprint = app.settings.sprintMode === 'toggle' ? sprintOn : keys.has('ShiftLeft') || keys.has('ShiftRight');
-    input.down = DOWN_KEYS.some((k) => keys.has(k));
+    input.down = keys.has(CROUCH_KEY);
   }
 
   function update(dt) {
@@ -496,12 +491,13 @@ export function createPov(app) {
       toolbelt?.setVisible(false);
       releaseInput();
     }
+    const match = game.playerRespawn;   // in a team game: Halo's delay, at a spawn of your side
     if (deadSeen) {
       deadTime += dt;
-      const asked = deadTime >= RESPAWN_MIN && (buttons.primaryPressed || keys.has('Space'));
-      if ((deadTime >= RESPAWN_DELAY || asked) && mode === 'on') {
+      const asked = !match && deadTime >= RESPAWN_MIN && (buttons.primaryPressed || keys.has('Space'));
+      if ((deadTime >= (match?.delay ?? RESPAWN_DELAY) || asked) && mode === 'on') {
         keys.delete('Space');   // the key that respawned doesn't also jump
-        player.spawn(dropPoint.clone());
+        player.spawn(match ? match.at() : dropPoint.clone());
         classes?.spawned(player);
         deadSeen = false;
         povCam.reset();
@@ -515,13 +511,10 @@ export function createPov(app) {
     // the NPCs: one per enemy spawner, with every tool you have. Not in a world
     // (g.windowed): the NPCs don't move with the window (windowShifted).
     const sp = app.getSpawners?.();
+    const npcFrame = { player, holding: toolbelt?.selectedKey ?? null, toWorld, worldToGrid, scale, stepsPerFrame: app.settings.paused ? 0 : app.settings.steps };
     const npcsWanted = !!sp && !g.windowed && (mode === 'on' || mode === 'entering') && !!toolbelt;
-    const homes = npcsWanted ? ENEMY_KINDS.flatMap((k) => sp.of(k)) : [];
-    if (homes.length && !npcMod && !npcLoading) {
-      npcLoading = true;
-      import('./npc.js').then((m) => { npcAi = m.createAi({ renderer, getSim: app.getSim }); npcMod = m; })
-        .catch((err) => console.error('NPCs failed to load', err));
-    }
+    const homes = npcsWanted && !game.running ? ENEMY_KINDS.flatMap((k) => sp.of(k)) : [];   // a team game (src/game) has its own bots
+    if (homes.length && !npcMod) loadNpcs().catch(() => {});
     if (npcMod) {
       for (const s of homes) {
         if (npcs.has(s.id)) continue;
@@ -544,12 +537,12 @@ export function createPov(app) {
         if (homes.some((s) => s.id === id) || (npcsWanted === false && sp?.list.some((s) => s.id === id))) continue;
         scene.remove(n.root); n.dispose(); npcs.delete(id);
       }
+      if (npcsWanted && (npcs.size || game.botCount)) npcAi.world.update(dt);
       if (npcsWanted && npcs.size) {
-        npcAi.world.update(dt);
-        const w = { player, holding: toolbelt?.selectedKey ?? null, toWorld, worldToGrid, scale, stepsPerFrame: app.settings.paused ? 0 : app.settings.steps };
-        for (const n of npcs.values()) { n.bind(app.getVolume(), g); n.update(dt, w); }
+        for (const n of npcs.values()) { n.bind(app.getVolume(), g); n.update(dt, npcFrame); }
       } else for (const n of npcs.values()) n.reset();
     }
+    game.update(dt, npcMod && npcsWanted ? npcFrame : null);   // the bots, the objectives, the HUD
 
     takePerks();
 
@@ -628,6 +621,7 @@ export function createPov(app) {
       ctx.wheel = wheelNotches;
       ctx.viewBobbing = app.settings.viewBobbing;
       ctx.player.pos = player.pos;
+    ctx.player.body = player;
       ctx.player.vel = player.vel;
       ctx.player.onGround = player.onGround;
       ctx.player.inLiquid = player.inLiquid;
@@ -644,7 +638,7 @@ export function createPov(app) {
       dt, health: player.health, breath: player.breath, feel: player.feel,
       shield: player.shield, shieldMax: player.shieldMax, shieldCharging: player.shieldCharging,
       jetFuel: player.jetFuel, jetting: player.jetting, perks: player.perks, status: player.status,
-      dead: deadSeen, cause: player.cause, respawnIn: RESPAWN_DELAY - deadTime,
+      dead: deadSeen, cause: player.cause, respawnIn: (match?.delay ?? RESPAWN_DELAY) - deadTime,
       locked: isLocked(), swooping: mode !== 'on',
       aimValid: aim.valid, aimInReach: aim.valid && aim.dist <= HAND_REACH, third: povCam.third,
     });
@@ -691,6 +685,25 @@ export function createPov(app) {
     return true;
   }
 
+  // Team games (src/game): teams of bots, the modes, their HUD
+  const game = createGame({
+    app, scene, renderer, camera,
+    get player() { return player; },
+    get toolbelt() { return toolbelt; },
+    active,
+    loadNpcs,
+    env: () => ({ renderer, scene, getSim: app.getSim, getVolume: app.getVolume, getScale: app.getScale, ballistics: toolbelt.ballistics }),
+    loadPreset: () => app.loadPreset?.(app.settings.preset),
+    // a respawn at `at` now (a new round, a team switch)
+    respawnPlayer(at) {
+      if (!player) return;
+      player.spawn(at.clone());
+      if (deadSeen) { deadSeen = false; toolbelt?.setVisible(mode === 'on'); }
+      feel.reset();
+    },
+    freeMouse: () => { if (document.pointerLockElement === canvas) document.exitPointerLock(); },
+  });
+
   // god-mode keys POV takes over (app.js skips them while active)
   const blocksKey = (e) => active() && !PASS_KEYS.has(e.key) && !(e.metaKey || e.ctrlKey);
 
@@ -708,6 +721,7 @@ export function createPov(app) {
     get npc() { return npcs.values().next().value ?? null; },   // the first NPC, once loaded (checks)
     get npcs() { return [...npcs.values()]; },
     events: povEvents,           // the POV event bus (checks)
+    game,                        // team games (src/game): start(mode), end(), useLayout(layout), state
     get vfx() { return vfx; },
     feel,
     get ctx() { return ctx; },

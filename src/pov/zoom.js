@@ -1,12 +1,12 @@
-// The zoom key: Minecraft's zoom mods (OptiFine's C, Ok Zoomer's, Zoomify's),
-// with Zoomify's defaults (its ZoomifySettings.kt and ZoomHelper.kt). Hold to
+// The zoom key, Z: Minecraft's zoom mods (OptiFine, Ok Zoomer, Zoomify; they
+// put it on C, which is the crouch here), with Zoomify's defaults (its ZoomifySettings.kt and ZoomHelper.kt). Hold to
 // narrow the view to a quarter; scroll while holding to zoom further in or
 // back out; let go and it eases back, forgetting the scrolling. The look
 // slows with the view (camera.js turn), as Zoomify's relative sensitivity
 // 100 % does, and a scope's zoom multiplies with it (Zoomify's spyglass
 // "combine").
 
-export const ZOOM_KEY = 'KeyC';
+export const ZOOM_KEY = 'KeyZ';
 const ZOOM_INITIAL = 4;          // the FOV's divisor on holding the key (Zoomify's initialZoom; OptiFine's fixed ÷4)
 const ZOOM_IN_S = 1;             // s, easing in: exponential ease-out, so most of it is in the first fifth (zoomInTime)
 const ZOOM_OUT_S = 0.5;          // s, easing back out: the mirror curve (zoomOutTime)

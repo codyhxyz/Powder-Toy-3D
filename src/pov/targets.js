@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { povEvents } from './events.js';
 
 // Bodies weapons can hit that aren't cells: the player, the NPCs (npc.js) and
 // each segment of a worm (worm.js; those carry creature: 'worm').
@@ -10,15 +11,35 @@ import * as THREE from 'three';
 //   const remove = addTarget({ id, box(min, max), alive, hurt(amount, cause, dir, opts?), facing?(out) });
 //
 // hurt's opts: { lethal } (a backstab: all the health it has, through any shield).
+// body: the target's first-person body (player.js), whose statuses scale what its weapons deal.
 // facing(out): the unit direction the target looks along (its eyes), for the
 // knife's backstab test; a target without it can't be backstabbed.
+//
+// A team game (src/game) sets hit rules: rules.passes(byId, target) lets a
+// weapon go through a body (a teammate: no friendly fire, TF2's way, so a round
+// flies on past them), and rules.share(byId, target) scales a blow (0 during
+// spawn protection). Every blow that lands is announced as 'body:hit' { id,
+// amount, cause }, inside the attacker's povEvents.as() (so it carries `by`;
+// none: the player), which is how kills are credited. The sim's damage (fire,
+// blasts, lava) isn't a blow and can't be filtered: it hurts everyone.
 
 export const PLAYER = 'player';   // the player's target id (and the shooter of rounds no actor fired)
 
 const targets = new Set();
 const lo = new THREE.Vector3(), hi = new THREE.Vector3();
+let rules = null;
+
+export function setHitRules(r) { rules = r; }
 
 export function addTarget(t) {
+  const hurt = t.hurt;
+  t.hurt = function (amount, cause, dir, opts) {
+    const by = povEvents.actor?.id ?? PLAYER;
+    const share = rules ? rules.share(by, t) : 1;
+    if (!(share > 0)) return;
+    povEvents.emit('body:hit', { id: t.id, amount: amount * share, cause });
+    hurt.call(t, amount * share, cause, dir, opts);
+  };
   targets.add(t);
   return () => targets.delete(t);
 }
@@ -28,7 +49,7 @@ export function addTarget(t) {
 export function rayTarget(origin, dir, maxDist, exclude = null) {
   let best = null;
   for (const t of targets) {
-    if (!t.alive || t.id === exclude) continue;
+    if (!t.alive || t.id === exclude || rules?.passes(exclude ?? PLAYER, t)) continue;
     t.box(lo, hi);
     let t0 = 0, t1 = maxDist;
     for (const a of ['x', 'y', 'z']) {
@@ -51,6 +72,10 @@ export function segmentTarget(a, b, exclude = null) {
   const len = d.length();
   return len > 0 ? rayTarget(a, d.divideScalar(len), len, exclude) : null;
 }
+
+// × the damage a weapon wielded by `actorId` (an NPC's id; null: the player) deals to a body: the
+// wielder's statuses (Berserk, potions.js). The weapons (melee.js, ballistics.js) multiply by it.
+export const dealtScale = (actorId) => targetById(actorId ?? PLAYER)?.body?.status?.damageScale ?? 1;
 
 // The target with this id, or null (an NPC finding the player's).
 export function targetById(id) {

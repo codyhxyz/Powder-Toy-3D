@@ -3,8 +3,9 @@
 // in the world's own passes that include it (the window's fill and diff,
 // shaders/generate.js; the far field's build, shaders/far.js, with its tree
 // passes for a scene with trees), its uniforms are declared, and its params,
-// start and ground make sense for the world size; the island's column bake
-// compiles too. No GPU: fine on battery.
+// start and ground make sense for its world's size (its own, else WORLD_SIZE;
+// the window spans its height); the island's column bake compiles too. No
+// GPU: fine on battery.
 //
 //   node tools/check-scenes.mjs
 import { execFileSync } from 'node:child_process';
@@ -18,7 +19,7 @@ import { islandColumnFrag } from '../src/world/scenes/island.js';
 import { sceneFillFrag, sceneDiffFrag } from '../src/shaders/generate.js';
 import { WORLD_SCENES } from '../src/world/scenes/index.js';
 
-const WIN = [128, 128, 128];          // the world's window (app.js WORLDS)
+const WIN = [128, 128, 128];          // the world's window (app.js WORLDS; as tall as a scene's own world)
 const SEED = 1;                       // a world seed
 const GROUND_SAMPLES = 64;            // columns per scene that ground() is tried at
 
@@ -49,14 +50,16 @@ for (const [name, src] of Object.entries({
 }
 
 for (const scene of WORLD_SCENES) {
-  const P = scene.params({ size: WORLD_SIZE, seed: SEED });
+  const size = scene.size ?? WORLD_SIZE;
+  const g = { ...gridLayout(WIN[0], size[1], WIN[2]), windowed: true }, L = farLayout(size);
+  const P = scene.params({ size, seed: SEED });
   for (const k of ['size', 'seed', 'sea', 'floor']) if (P[k] === undefined) fail(scene, `params() has no ${k}`);
   const [sx, sz] = scene.start(P, [WIN[0], WIN[2]]);
-  if (!(sx >= 0 && sz >= 0 && sx <= WORLD_SIZE[0] && sz <= WORLD_SIZE[2])) fail(scene, `start() ${sx}, ${sz} is outside the world`);
+  if (!(sx >= 0 && sz >= 0 && sx <= size[0] && sz <= size[2])) fail(scene, `start() ${sx}, ${sz} is outside the world`);
   for (let i = 0; i < GROUND_SAMPLES; i++) {
-    const x = ((i * 7919) % WORLD_SIZE[0]), z = ((i * 104729) % WORLD_SIZE[2]);
+    const x = ((i * 7919) % size[0]), z = ((i * 104729) % size[2]);
     const y = scene.ground(x, z, P);
-    if (!(y >= 0 && y <= WORLD_SIZE[1])) { fail(scene, `ground(${x}, ${z}) = ${y}`); break; }
+    if (!(y >= 0 && y <= size[1])) { fail(scene, `ground(${x}, ${z}) = ${y}`); break; }
   }
   const glsl = scene.glsl(g);
   const uniforms = scene.uniforms(P);

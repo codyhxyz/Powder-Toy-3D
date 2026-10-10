@@ -4,7 +4,7 @@ import { traceFrag, strikeFrag, TRACE, TRACE_MISS, STRIKE } from '../shaders/pov
 import { ELEMENTS, K } from '../elements.js';
 import { CELL_METERS } from './vitals.js';
 import { povEvents } from './events.js';
-import { segmentTarget, PLAYER } from './targets.js';
+import { segmentTarget, dealtScale, PLAYER } from './targets.js';
 
 // Ballistic rounds: the guns' shots fly outside the sim, with real ballistics,
 // and touch the sim only where they strike, adding nothing to it.
@@ -312,7 +312,7 @@ export function createBallistics({ renderer }) {
         end(r);
         return;
       }
-      body.target.hurt(r.damage, 'Shot', dir);
+      body.target.hurt(r.damage * dealtScale(r.actor?.id), 'Shot', dir);   // × the shooter's Berserk
       povEvents.emit('impact', { source: 'gun', point: body.point, normal: dir.clone().negate(), id: -1, energy: BODY_ROUND_ENERGY, broke: null, body: true });
       end(r);
       return;

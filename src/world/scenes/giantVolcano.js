@@ -8,33 +8,37 @@ import { ISLAND_VIEW_XZ } from './island.js';
 // conduit up to its summit, an endless lava source there, a ring of snow
 // round the top and trees on the flanks.
 //
-// Scales. Across, the box's times the world's width in boxes (1024 / 128 = 8):
-// the cone's foot is 432 cells (130 m) from its summit, leaving the sea a ring
-// round it. Up, the world is only 128 cells, so the box's heights are
-// stretched as far as fits instead: the top of the conduit's lava (the box's
-// highest point, 2 cells over the summit) lands VOLC_HEADROOM below the
-// world's top, over a VOLC_FLOOR-cell sea floor. That is 2 cells per box cell:
-// the summit stands 96 cells (29 m) over the floor, the sea is 16 cells (5 m)
-// deep, and the headroom is room for the lava's fountain, the steam off the
-// snow it melts and the smoke of the forest it burns. The cone comes out
-// shallow (13° against the box's 42°): a shield volcano, the shape a cone
-// takes at this width under this ceiling.
+// Its world is three times as tall as the other scenes' (VOLC_SIZE: 384 cells,
+// 115 m; the window spans it), so the cone keeps the box's steepness instead
+// of flattening into a shield. Across, it is the box's times the world's width
+// in boxes (1024 / 128 = 8): the cone's foot is 432 cells (130 m) from its
+// summit. Up, it is as tall as fits: the summit stands 350 cells (105 m)
+// over the sea floor, the lava source on it VOLC_HEADROOM below the world's
+// top. The flanks are concave (VOLC_PROFILE), as a stratovolcano's are: 46°
+// under the summit (the box's 42°), easing to a gentle foot where the sea
+// laps it, about 390 cells out.
 //
 // What scales how:
-//   - The chamber, the conduit and the CLONE source scale across with the
-//     layout (the source's top is 64 times the box's, as the cone's flanks
-//     are, so its lava covers them as the box's covers its own), and up with
-//     the heights, so the conduit's lava stands as far over its rim as in the
-//     box and spills at once.
-//   - The snow cap is a layer of the cone's height: 4 cells (1.2 m). On these
-//     flanks no column is more than a cell above any neighbour, so a layer of
-//     any depth rests (each grain has snow diagonally under it), but for the
-//     cap's outer edge, which slumps a little as the box's does.
-//   - The trees are scaled by the vertical scale on every axis, so they stay
-//     tree-shaped (8 times wider would be 60 m crowns): 2-cell trunks 16 tall
-//     under crowns 12 wide, about 7 m in all. There are ~16 times as many as
-//     the box's 14: its band of the flanks (0.55 to 0.8 of the radius) holds
-//     rings of sites a tree's spacing apart, most of them planted.
+//   - The summit is the box's: a point, the source on it, the conduit's lava
+//     standing over it, so it spills at once, all round. Lava runs off it
+//     down the steep flanks, and the stone it cools into rolls away, so the
+//     source stays open. (In a crater, or on a source as wide as the layout
+//     scales, the lava pooled, its crust froze into stone that settled on
+//     the source, and the volcano went quiet within a minute.)
+//   - Everything but the cone keeps the old flat giant's cells (VOLC_DETAIL:
+//     2 per box cell on every axis): the conduit, the magma chamber at the
+//     cone's root and the source, the snow's depth and the trees (2-cell
+//     trunks 16 tall under crowns 12 wide, about 7 m in all). Lava under 300
+//     cells of rock is never seen, but every cell of it is simulated, hot and
+//     stirring, whenever the window is over the summit: scaled across, the
+//     conduit and chamber held a million cells and the step took 6 times the
+//     island's. The sea is 16 cells (5 m) deep.
+//   - The snow cap is a layer 4 cells (1.2 m) deep on the steepest flanks,
+//     where a column stands up to two cells over its neighbours, so the
+//     layer's top grains slide a little before it rests, as the box's do.
+//   - There are ~16 times as many trees as the box's 14: its band of the
+//     flanks (0.55 to 0.8 of the radius) holds rings of sites a tree's spacing
+//     apart, most of them planted.
 //
 // A pure function of the world cell, O(1): a cell finds the one tree it could
 // belong to from its ring and angle sector (the sites are far enough apart
@@ -42,7 +46,9 @@ import { ISLAND_VIEW_XZ } from './island.js';
 // GLSL's #defines and the JS twin (volcCell, ground) come from the constants
 // below.
 
-const [WX, WY, WZ] = WORLD_SIZE;
+const VOLC_WORLD_Y = 384;         // cells: its world's height (the other scenes' is WORLD_SIZE's, 128)
+export const VOLC_SIZE = [WORLD_SIZE[0], VOLC_WORLD_Y, WORLD_SIZE[2]];
+const [WX, WY, WZ] = VOLC_SIZE;
 const TAU = 2 * Math.PI;
 
 // The box the preset is laid out in, in its own cells (s = 1), and its layout (presets.js 'volcano').
@@ -58,7 +64,7 @@ const BOX_CONDUIT_R = 3.5;        // the conduit above the chamber
 const BOX_CONDUIT_OVER = 2;       // its lava stands this far over the summit: it spills at once
 const BOX_CLONE_HALF = 2;         // the lava source: half its width, centred on the summit...
 const BOX_CLONE_BELOW = 1;        // ...from this far under the summit...
-const BOX_CLONE_ABOVE = 1;        // ...to this far over it
+const BOX_CLONE_ABOVE = 1;        // ...to this far over it (the giant's: over the conduit's lava)
 const BOX_SNOW_IN = 6;            // the snow cap: a ring from this far from the summit...
 const BOX_SNOW_OUT = 20;          // ...to this far
 const BOX_SNOW_DEPTH = 2;         // ...this deep
@@ -70,13 +76,13 @@ const BOX_CROWN_R = 3;            // its crown: a ball this wide (radius, exclus
 const BOX_CROWN_HALF = 2.5;       // ...cut to this far over and under its centre...
 const BOX_CROWN_LIFT = 1.5;       // ...centred this far over the trunk's top
 const LAVA_T = 1900;              // °C: the conduit's lava, hotter than spawned lava (the box's)
-const BOX_TOP = BOX_H + BOX_CONDUIT_OVER;   // the layout's highest point
 
 // The giant's own numbers.
 export const VOLC_FLOOR = 4;      // rock under the whole sea: one brick, so the far field reads it as solid
-const VOLC_HEADROOM = 24;         // open air over the highest point (see the top)
+const VOLC_HEADROOM = 24;         // open air over the highest point: room for the lava's fountain, the steam off the snow it melts and the smoke of the forest it burns
 const VOLC_XZ = WX / BOX_N;       // world cells per box cell across: the world is 8 boxes wide
-const VOLC_V = (WY - VOLC_HEADROOM - VOLC_FLOOR) / BOX_TOP;   // world cells per box cell up (2)
+const VOLC_DETAIL = 2;            // world cells per box cell for everything but the cone, every axis (see the top)
+const VOLC_PROFILE = 1.3;         // the flanks' concavity: the cone's height goes as (1 - d / R) to this power (1: the box's straight cone)
 const TREE_RINGS = 5;             // rings of tree sites across the band (the box's trees stand at 3 distances)
 const TREE_CHANCE = 0.7;          // share of the sites with a tree
 const TREE_JITTER = 4;            // cells: a tree stands up to this far off its site, each way
@@ -89,23 +95,28 @@ const U16 = 65536;                // a hash's low 16 bits: values below this
 // World cells.
 const CENTER = [WX / 2, WZ / 2];                  // the summit's column (the cone is centred on the world)
 const CONE_R = BOX_R * VOLC_XZ;                   // 432
-const CONE_H = BOX_H * VOLC_V;                    // 96
-export const VOLC_SEA = VOLC_FLOOR + BOX_SEA * VOLC_V;   // 20
-const CHAMBER_TOP = VOLC_FLOOR + BOX_CHAMBER_TOP * VOLC_V;
-const CONDUIT_R = BOX_CONDUIT_R * VOLC_XZ;
-const CONDUIT_TOP = VOLC_FLOOR + BOX_TOP * VOLC_V;
-const CLONE_LO = [CENTER[0] - BOX_CLONE_HALF * VOLC_XZ, VOLC_FLOOR + (BOX_H - BOX_CLONE_BELOW) * VOLC_V, CENTER[1] - BOX_CLONE_HALF * VOLC_XZ];
-const CLONE_HI = [CENTER[0] + BOX_CLONE_HALF * VOLC_XZ, VOLC_FLOOR + (BOX_H + BOX_CLONE_ABOVE) * VOLC_V, CENTER[1] + BOX_CLONE_HALF * VOLC_XZ];
+const CONDUIT_OVER = BOX_CONDUIT_OVER * VOLC_DETAIL;
+const CLONE_OVER = CONDUIT_OVER + BOX_CLONE_ABOVE * VOLC_DETAIL;   // the source's top over the summit: the layout's highest point
+const CONE_H = WY - VOLC_HEADROOM - CLONE_OVER - VOLC_FLOOR;     // 350: the summit as high as the headroom leaves room for
+export const VOLC_SEA = VOLC_FLOOR + BOX_SEA * VOLC_DETAIL;   // 20
+const SUMMIT = VOLC_FLOOR + CONE_H;
+const CHAMBER_TOP = VOLC_FLOOR + BOX_CHAMBER_TOP * VOLC_DETAIL;
+const CONDUIT_R = BOX_CONDUIT_R * VOLC_DETAIL;
+const CONDUIT_TOP = SUMMIT + CONDUIT_OVER;
+const CLONE_HALF = BOX_CLONE_HALF * VOLC_DETAIL;
+const CLONE_LO = [CENTER[0] - CLONE_HALF, SUMMIT - BOX_CLONE_BELOW * VOLC_DETAIL, CENTER[1] - CLONE_HALF];
+const CLONE_HI = [CENTER[0] + CLONE_HALF, SUMMIT + CLONE_OVER, CENTER[1] + CLONE_HALF];
 const SNOW_IN = BOX_SNOW_IN * VOLC_XZ;
 const SNOW_OUT = BOX_SNOW_OUT * VOLC_XZ;
-const SNOW_DEPTH = BOX_SNOW_DEPTH * VOLC_V;
+const SNOW_DEPTH = BOX_SNOW_DEPTH * VOLC_DETAIL;
 const TREE_IN = BOX_TREE_IN * CONE_R;             // the innermost ring's radius
 const TREE_RING_W = (BOX_TREE_OUT - BOX_TREE_IN) * CONE_R / (TREE_RINGS - 1);   // between rings, and between sites on a ring
-const TRUNK_W = BOX_TRUNK_W * VOLC_V;
-const TRUNK_H = BOX_TRUNK_H * VOLC_V;
-const CROWN_R = BOX_CROWN_R * VOLC_V;
-const CROWN_HALF = BOX_CROWN_HALF * VOLC_V;
-const CROWN_LIFT = (BOX_TRUNK_H + BOX_CROWN_LIFT) * VOLC_V;   // the crown's centre over the trunk's base
+const TRUNK_W = BOX_TRUNK_W * VOLC_DETAIL;
+const TRUNK_H = BOX_TRUNK_H * VOLC_DETAIL;
+const CROWN_R = BOX_CROWN_R * VOLC_DETAIL;
+const CROWN_HALF = BOX_CROWN_HALF * VOLC_DETAIL;
+const CROWN_LIFT = (BOX_TRUNK_H + BOX_CROWN_LIFT) * VOLC_DETAIL;   // the crown's centre over the trunk's base
+const MAX_SLOPE = (VOLC_PROFILE * CONE_H) / CONE_R;   // the flanks' steepest (under the summit): cells up per cell across
 // sites per ring: as many as fit TREE_RING_W apart round it
 const TREE_SECTORS = Array.from({ length: TREE_RINGS }, (_, k) => Math.floor((TAU * (TREE_IN + k * TREE_RING_W)) / TREE_RING_W));
 
@@ -121,13 +132,14 @@ TREE_SECTORS.forEach((n, k) => {
   const ring = TREE_IN + k * TREE_RING_W;
   if (Math.asin(TREE_REACH / (ring - TREE_REACH)) >= Math.PI / n) throw new Error(`giant volcano: ring ${k}'s trees reach out of their sectors`);
 });
-if (CONDUIT_TOP > WY - VOLC_HEADROOM) throw new Error('giant volcano: the conduit reaches into the headroom');
+if (CLONE_HI[1] > WY - VOLC_HEADROOM) throw new Error('giant volcano: the source reaches into the headroom');
+if (CHAMBER_TOP >= SUMMIT) throw new Error('giant volcano: the chamber reaches the summit');
 // A tree's cells stand from TRUNK_ROOT under its base to its crown's top, and
-// its base (the rock's top at its trunk's corner) is within the cone's slope
-// over that reach (plus a cell for rounding each top) of the rock's top
-// under any of its cells. Cells outside this band over their own rock's top
-// can't be part of a tree, so they skip the lookup.
-const TREE_SLOPE = Math.ceil((CONE_H / CONE_R) * (TREE_REACH + TRUNK_W)) + 1;
+// its base (the rock's top at its trunk's corner) is within the flanks'
+// steepest slope over that reach (plus a cell for rounding each top) of the
+// rock's top under any of its cells. Cells outside this band over their own
+// rock's top can't be part of a tree, so they skip the lookup.
+const TREE_SLOPE = Math.ceil(MAX_SLOPE * (TREE_REACH + TRUNK_W)) + 1;
 const TREE_BELOW = TRUNK_ROOT + TREE_SLOPE;                         // cells under the rock's top
 const TREE_ABOVE = Math.ceil(CROWN_LIFT + CROWN_HALF) + TREE_SLOPE;  // cells over it
 
@@ -136,18 +148,24 @@ const TREE_ABOVE = Math.ceil(CROWN_LIFT + CROWN_HALF) + TREE_SLOPE;  // cells ov
 // share of its width inland from the waterline, so it holds the sea, the
 // shore and the outer trees.
 const START_INLAND = 0.25;
+// The god view's home (index.js view): from low over the sea and far back, so
+// the whole cone stands in view over the shore the window starts on.
+const VIEW_ELEVATION = 12;        // degrees the camera looks down from
+const VIEW_DIST = 576;            // cells from the orbit target
+const VIEW_LIFT = 150;            // cells the orbit target hangs over the shore (the camera looks up the cone)
+const DEG = Math.PI / 180;
 
 // ---- the JS twin (sceneCell's, step for step) ----
 
 // the rock's top at distance d from the summit (of a column's centre): the floor, and the cone over it
-const topAt = (d) => VOLC_FLOOR + Math.max(0, Math.floor(CONE_H * (1 - d / CONE_R) + 0.5));
+const topAt = (d) => VOLC_FLOOR + Math.floor(CONE_H * Math.max(0, 1 - d / CONE_R) ** VOLC_PROFILE + 0.5);
 // ...at world column (x, z)
 const coneTop = (x, z) => topAt(Math.hypot(x + 0.5 - CENTER[0], z + 0.5 - CENTER[1]));
 // the conduit's radius at height y (the chamber's below CHAMBER_TOP); 0 outside it
 function conduitR(y) {
   if (y < VOLC_FLOOR || y >= CONDUIT_TOP) return 0;
   if (y >= CHAMBER_TOP) return CONDUIT_R;
-  return VOLC_XZ * (BOX_CHAMBER_BULGE * (1 - (y - VOLC_FLOOR) / (VOLC_V * BOX_CHAMBER_FADE)) + BOX_CHAMBER_NECK);
+  return VOLC_DETAIL * (BOX_CHAMBER_BULGE * (1 - (y - VOLC_FLOOR) / (VOLC_DETAIL * BOX_CHAMBER_FADE)) + BOX_CHAMBER_NECK);
 }
 const jitter = (h) => ((h & BYTE) / BYTE * 2 - 1) * TREE_JITTER;
 // the tree a cell at distance d from the summit and offset (ox, oz) from it
@@ -204,10 +222,12 @@ export function volcCell(x, y, z, seed) {
   return id;
 }
 
-// Where ground() starts looking down: over the highest matter, the conduit's
-// lava, the snow on the summit's rock and the innermost trees' crowns.
-const MATTER_TOP = Math.max(CONDUIT_TOP, VOLC_FLOOR + CONE_H + SNOW_DEPTH,
-  Math.ceil(topAt(TREE_IN - TREE_REACH) + CROWN_LIFT + CROWN_HALF));
+// Where ground() starts looking down in a column whose rock's top is `top`:
+// over the highest matter that can stand there, the sea, the snow and any
+// tree's crown, and by the summit the conduit's lava and the source.
+const LAVA_REACH = Math.max(CONDUIT_R, Math.SQRT2 * CLONE_HALF);   // cells from the summit's column they reach
+const MATTER_TOP = Math.max(CONDUIT_TOP, CLONE_HI[1]);
+const columnTop = (top, d) => (d < LAVA_REACH ? MATTER_TOP : Math.max(VOLC_SEA, top + Math.max(SNOW_DEPTH, TREE_ABOVE)));
 // a trunk on the outermost ring still stands on the shore, not in the sea
 if (topAt(TREE_IN + (TREE_RINGS - 1) * TREE_RING_W + TRUNK_REACH) <= VOLC_SEA) throw new Error('giant volcano: trees stand in the sea');
 
@@ -216,11 +236,11 @@ const f = (x) => { const r = +x.toFixed(GLSL_DIGITS); return Number.isInteger(r)
 const glsl = () => /* glsl */ `
 #define GVOL_CENTER vec2(${f(CENTER[0])}, ${f(CENTER[1])})   // the summit's column
 #define GVOL_R ${f(CONE_R)}             // the cone's radius at its foot
-#define GVOL_H ${f(CONE_H)}              // its height over the floor
+#define GVOL_H ${f(CONE_H)}             // its height over the floor
+#define GVOL_PROFILE ${f(VOLC_PROFILE)}           // the flanks' concavity
 #define GVOL_FLOOR ${VOLC_FLOOR}               // rock under everything
 #define GVOL_SEA ${VOLC_SEA}                // the sea's level
-#define GVOL_XZ ${f(VOLC_XZ)}              // world cells per box cell, across and up
-#define GVOL_V ${f(VOLC_V)}
+#define GVOL_DETAIL ${f(VOLC_DETAIL)}            // world cells per box cell for the chamber
 #define GVOL_CHAMBER_TOP ${CHAMBER_TOP}        // the magma chamber, under the conduit
 #define GVOL_CHAMBER_BULGE ${f(BOX_CHAMBER_BULGE)}  // (box cells)
 #define GVOL_CHAMBER_FADE ${f(BOX_CHAMBER_FADE)}
@@ -255,14 +275,14 @@ const int GVOL_TREE_SECTORS[GVOL_TREE_RINGS] = int[GVOL_TREE_RINGS](${TREE_SECTO
 uniform uint uSceneSeed;
 
 // the rock's top at distance d from the summit (of a column's centre): the floor, and the cone over it
-int gvolTopAt(float d) { return GVOL_FLOOR + max(0, int(floor(GVOL_H * (1.0 - d / GVOL_R) + 0.5))); }
+int gvolTopAt(float d) { return GVOL_FLOOR + int(floor(GVOL_H * pow(max(0.0, 1.0 - d / GVOL_R), GVOL_PROFILE) + 0.5)); }
 // ...at world column c
 int gvolTop(ivec2 c) { return gvolTopAt(length(vec2(c) + 0.5 - GVOL_CENTER)); }
 // the conduit's radius at height y (the chamber's below GVOL_CHAMBER_TOP); 0 outside it
 float gvolConduitR(int y) {
   if (y < GVOL_FLOOR || y >= GVOL_CONDUIT_TOP) return 0.0;
   if (y >= GVOL_CHAMBER_TOP) return GVOL_CONDUIT_R;
-  return GVOL_XZ * (GVOL_CHAMBER_BULGE * (1.0 - float(y - GVOL_FLOOR) / (GVOL_V * GVOL_CHAMBER_FADE)) + GVOL_CHAMBER_NECK);
+  return GVOL_DETAIL * (GVOL_CHAMBER_BULGE * (1.0 - float(y - GVOL_FLOOR) / (GVOL_DETAIL * GVOL_CHAMBER_FADE)) + GVOL_CHAMBER_NECK);
 }
 float gvolJitter(uint h) { return (float(h & GVOL_BYTE) / float(GVOL_BYTE) * 2.0 - 1.0) * GVOL_TREE_JITTER; }
 // the tree a cell at distance d from the summit and offset o from it could be
@@ -318,6 +338,12 @@ void sceneCell(ivec3 w, out vec4 A, out vec4 B) {
 export const giantVolcano = {
   key: 'giantVolcano',
   label: 'Giant volcano',
+  size: VOLC_SIZE,
+  view: {
+    dir: [ISLAND_VIEW_XZ[0], Math.tan(VIEW_ELEVATION * DEG) * Math.hypot(...ISLAND_VIEW_XZ), ISLAND_VIEW_XZ[1]],
+    dist: VIEW_DIST,
+    lift: VIEW_LIFT,
+  },
   params: ({ size, seed }) => ({ size, seed, sea: VOLC_SEA, floor: VOLC_FLOOR }),
   glsl,
   uniforms: (P) => ({ uSceneSeed: { value: P.seed } }),
@@ -331,7 +357,8 @@ export const giantVolcano = {
   // the top of the topmost matter in the column (the sea's, off the shore)
   ground(x, z, P) {
     const cx = Math.floor(x), cz = Math.floor(z);
-    for (let y = MATTER_TOP; y >= 0; y--) if (volcCell(cx, y, cz, P.seed) !== E.EMPTY) return y + 1;
+    const d = Math.hypot(cx + 0.5 - CENTER[0], cz + 0.5 - CENTER[1]);
+    for (let y = Math.min(columnTop(topAt(d), d), WY - 1); y >= 0; y--) if (volcCell(cx, y, cz, P.seed) !== E.EMPTY) return y + 1;
     return 0;
   },
 };

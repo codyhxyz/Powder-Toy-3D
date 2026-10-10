@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { BRICK } from '../shaders/common.js';
 import {
   farLayout, farRegionVert, farTreeCandFrag, farTreeThinFrag, farTreeBandFrag,
-  farWinFrag, farBoostFrag, farMip1Frag, farMip2Frag, farTopFrag, farShadowFrag, farVert, farFrag, WORLD_SIZE,
+  farWinFrag, farBoostFrag, farMip1Frag, farMip2Frag, farTopFrag, farShadowFrag, farVert, farFrag,
   farSceneCellsFrag, farSceneFrag, farSceneLayout, FAR_SCENE, FAR,
 } from '../shaders/far.js';
 import { rawMat, makeFieldTarget } from '../sim.js';
@@ -100,8 +100,8 @@ export class FarField {
     this.win = win;
     this.sim = win.sim;
     const g = this.sim.g, L = this.L = farLayout(win.size);
-    // the view, shadow and GI programs have WORLD_SIZE's far layout compiled in (attach)
-    if (win.size.some((n, i) => n !== WORLD_SIZE[i])) throw new Error(`far field: world ${win.size}, but the programs are built for ${WORLD_SIZE}`);
+    // the view, shadow and GI programs have the simulation's world's far layout compiled in (attach)
+    if (win.size.some((n, i) => n !== this.sim.world[i])) throw new Error(`far field: world ${win.size}, but the programs are built for ${this.sim.world}`);
     const U8 = THREE.UnsignedByteType, HALF = THREE.HalfFloatType, NEAR = THREE.NearestFilter, LIN = THREE.LinearFilter;
     this.grid = makeFieldTarget(L.bricks.width, L.bricks.height, 1, HALF, NEAR);   // raw shares, ids, glow (whole numbers: shaders/far.js)
     this.field = makeFieldTarget(L.bricks.width, L.bricks.height, 1, U8, LIN);   // what the view draws (farBoostFrag)
@@ -421,7 +421,7 @@ export class FarField {
   // window, by the shadow heights of the columns outside it (shadowFrag's
   // casters), the GI's rays the far field past their end (gi.js giGatherFrag's
   // far). Their programs already hold these parts, off (shaders/far.js
-  // WORLD_SIZE): this only turns them on, so nothing compiles.
+  // WORLD_SIZE, or the simulation's own world): this only turns them on, so nothing compiles.
   attach(volumeMat, shadowMat) {
     volumeMat.uniforms.uFar.value = true;
     shadowMat.uniforms.uFar.value = true;

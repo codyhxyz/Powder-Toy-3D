@@ -42,8 +42,7 @@ const weights = () => ev(() => {
 const top = (w) => Object.entries(w).sort((a, b) => b[1] - a[1])[0]?.[0];
 const setFigure = (v) => ev((v) => document.querySelector(`.drawer button[data-value="${v}"]`).click(), v);
 
-check('defaults to the wizard', (await ev(() => window.__app.settings.character)) === 'wizard');
-await ev(() => { window.__app.settings.character = 'real'; });
+check('defaults to the realistic body', (await ev(() => window.__app.settings.character)) === 'real');
 
 // ---- drop in, third person
 await p.mouse.move(W * 0.5, H * 0.62);
@@ -52,7 +51,7 @@ await p.keyboard.press('f');
 await p.waitForFunction(() => window.__app.pov.mode === 'on', null, { timeout: 10000 }).catch(() => {});
 await ev(() => { window.__app.pov.test.assumeLocked = true; });
 await p.waitForFunction(() => window.__app.pov.figure.loaded, null, { timeout: 15000 }).catch(() => {});
-await p.keyboard.press('f');
+await p.keyboard.press('F5');
 await settle(1000);
 const st = await ev(() => ({ mode: window.__app.pov.mode, loaded: window.__app.pov.figure.loaded, showing: window.__app.pov.figure.showing, vis: window.__app.pov.figure.root.visible }));
 check('model loaded and showing', st.mode === 'on' && st.loaded && st.showing === 'real' && st.vis, JSON.stringify(st));

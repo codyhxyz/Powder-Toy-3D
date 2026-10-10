@@ -16,6 +16,8 @@ import { povEvents } from './events.js';
 //   blocks:  [keys]  while this is on, those can't build or be added (Wet blocks Burning)
 //   wash:    × fade  while Wet: water rinses the stain off this many times faster (1: it doesn't wash off)
 //   move:    × speed on foot while on (one hook for every status: player.js multiplies by moveScale)
+//   damage:  × damage the body's weapons deal to bodies while on (targets.js dealtScale: Berserk)
+//   noTools: true while on, the body can't use its tools (tools/index.js: Polymorph)
 //   full:    it comes on at its whole duration (a fire, once lit, burns its fuel), not at what built it
 //   refresh: false: while on, its stains don't add to it (Burning burns its own budget down)
 //
@@ -137,6 +139,17 @@ export function createStatusSet(body, ctx = {}) {
       let m = 1;
       for (const [k, s] of st) if (s.on) m *= DEFS.get(k)?.move ?? 1;
       return m;
+    },
+    // × damage dealt to bodies from every status on (Berserk's `damage`: potions.js)
+    get damageScale() {
+      let m = 1;
+      for (const [k, s] of st) if (s.on) m *= DEFS.get(k)?.damage ?? 1;
+      return m;
+    },
+    // a status on that leaves the body no hands for tools (Polymorph)
+    get noTools() {
+      for (const [k, s] of st) if (s.on && DEFS.get(k)?.noTools) return true;
+      return false;
     },
     // the figure's tint: the statuses' tints mixed by strength, [r, g, b, a]
     tint(out = [0, 0, 0, 0]) {

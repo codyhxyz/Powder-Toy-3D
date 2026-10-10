@@ -46,7 +46,7 @@ const ENTRY_DIP = 3;                    // cells/s: the settle as the swoop land
 const TP_DIST = 10;                     // cells behind the eye
 const TP_SHOULDER = 2.4;                // cells to the right
 const TP_UP = 1.4;                      // cells above the eye
-const TP_RATE = 7;                      // 1/s: how fast F swings the camera in or out
+const TP_RATE = 7;                      // 1/s: how fast F5 swings the camera in or out
 const BOX_MARGIN = 0.5;                 // cells: the camera stays this far inside the box
 
 // Death camera: up and back from the body, slowly circling it.
