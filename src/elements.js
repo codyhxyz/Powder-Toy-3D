@@ -47,8 +47,10 @@
 //      channel, and surf for a shared texture (surf 'CRAG': natural rock,
 //      with per-element crag parameters).
 //   The GLSL arrays, the dock tile (ui/tiles/engine.js reads the same table),
-//   the first-person tools (hardness), the AI's prompt (ai/prompt.js) and the
-//   info card all follow from those rows.
+//   the first-person tools (hardness), the AI's prompt (ai/prompt.js), the
+//   info card and the World's far field (shaders/far.js: up to 256 elements;
+//   a render R.LIQUID element is a far liquid with its own optics) all follow
+//   from those rows.
 //   Still needs code:
 //   - A behaviour no field covers (a new reaction, like plant growth or clone)
 //     goes in shaders/react.js, mirrored in ui/tiles/engine.js
@@ -57,8 +59,6 @@
 //   - A texture of its own, beyond its albedo and the shared surf textures, is
 //     a branch of shaders/gfx/surface.js matOf (and reliefHeight, plus
 //     gfx/relief.js, for relief up close).
-//   - A liquid that the world's far field (past the box) should draw goes in
-//     shaders/far.js FAR_LIQUIDS.
 
 import { SHRINE_OFFERS } from './pov/perks.js';
 import { GEAR, SLOTS } from './pov/tools/catalog.js';

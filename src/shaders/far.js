@@ -15,23 +15,25 @@ import { E } from '../elements.js';
 // horizontal brick slices (farTexel, like the render fields' Y-slices), so a
 // region of it is rewritten in one draw and its channels filter bilinearly
 // inside a slice (farSample finishes the trilinear lerp between two slices).
-// It holds whole numbers (a half float holds them exactly up to
-// FAR.HALF_EXACT), read with texelFetch:
+// It holds whole numbers below FAR.HALF_EXACT (a half float holds those
+// exactly), read with texelFetch (farUnpack). Each channel's low 8 bits
+// (below FAR.PAYLOAD) carry one value:
 //   r  opaque share, in FAR.LEVELS steps: the share of the cube of FAR.CUBE
 //      cells centred on the brick that stops light (solids, powders, lava, glass)
-//   g  liquid share: the same for transparent liquids (water, oil, acid)
-//   b  ids, of the brick's own cells: its dominant opaque element, a cell open
-//      above counting FAR.SURFACE_W times (a brick reads as its surface: grass
-//      on rock reads as grass), plus FAR.LIQ_STRIDE × its liquid's kind
-//      (FAR_LIQUIDS; one past them: none), plus FAR.OPEN if it holds open
-//      opaque cells (the view reads a surface's element from such a brick)
+//   g  liquid share: the same for transparent liquids (farLiquid: water, oil, acid...)
+//   b  the dominant opaque element of the brick's own cells, a cell open above
+//      counting FAR.SURFACE_W times (a brick reads as its surface: grass on
+//      rock reads as grass)
 //   a  glow, in FAR.LEVELS steps: how hot its open opaque cells are, from the
 //      incandescence's first knot up over FAR.GLOW_SPAN °C
+// and the bits above them the rest: r's first, whether it holds open opaque
+// cells (the view reads a surface's element from such a brick); and the
+// dominant transparent liquid of its own cells (E_EMPTY: none), an element id
+// spread over g's, b's and r's next ones (FAR.SPARE values each).
 // (The shares and glow keep the 8-bit steps of the RGBA8 grid this was, so
-// the field and the view are what they were; the half floats are for the
-// ids, which outgrew 8 bits: 16 MB at the world's 256×32×256 bricks, against
-// 8 MB, where a second R8 target would cost 2 MB but a second output and a
-// second texture in every pass that writes or reads the grid.)
+// the field and the view are what they were. 16 MB at the world's 256×32×256
+// bricks against 8: ids up to 255, with no list of liquids, and one output and
+// one texture as before in every pass that writes or reads it.)
 // Values sit at brick centres. The drawn surface is where the trilinear field
 // crosses FAR.ISO, as for the window's smooth surfaces. The cube is twice the
 // brick: a box filter as wide as two sample spacings makes the field linear in
@@ -70,30 +72,19 @@ export const FAR = {
                        // trunk: 8/512, safely over it in 8 bits), with no brick next to it at ISO, reads as THIN_V...
   THIN_V: 1.0,         // ...so it stands as a blob, rod or slab instead of vanishing
   SURFACE_W: 8,        // a cell open above counts this many times toward the dominant element
-  LIQ_STRIDE: 256,     // the id channel: opaque id + LIQ_STRIDE × liquid kind (element ids stay below it)...
-  OPEN: 1024,          // ...+ OPEN if the brick holds opaque cells open above (liquid kinds stay below OPEN / LIQ_STRIDE)
-  HALF_EXACT: 2048,    // whole numbers up to this are exact in a half float (11-bit significand): the id channel's room
+  HALF_EXACT: 2048,    // a half float holds every whole number below this exactly (an 11-bit significand)...
+  PAYLOAD: 256,        // ...so a channel holds a value below PAYLOAD (a level, an element id)...
+  SPARE: 8,            // ...and this many values above it (HALF_EXACT / PAYLOAD)
   LEVELS: 255,         // steps of the shares and the glow (an 8-bit channel's)
   GLOW_SPAN: 2000,     // °C the glow channel spans above the incandescence table's first knot
 };
-// Liquid kinds of the id channel (index → element key; the first is the
-// default); one more says the brick's own cells hold none.
-export const FAR_LIQUIDS = ['WATER', 'OIL', 'ACID'];
-// Every element id must fit below LIQ_STRIDE, every liquid kind (and none)
-// below OPEN / LIQ_STRIDE, and the whole channel within HALF_EXACT: past them
-// the far view misreads ids, so say so at once.
-if (Object.keys(E).length > FAR.LIQ_STRIDE) {
-  throw new Error(`far.js: ${Object.keys(E).length} elements, but the far grid's id channel holds ids below FAR.LIQ_STRIDE (${FAR.LIQ_STRIDE})`);
+// Every element id, opaque or liquid, must fit below PAYLOAD (the liquid's
+// spread over SPARE³ values, with r's open flag beside its top: farPack):
+// past it the far view misreads ids, so say so at once.
+if (Object.keys(E).length > FAR.PAYLOAD || FAR.PAYLOAD > FAR.SPARE * FAR.SPARE * (FAR.SPARE / 2)
+    || FAR.PAYLOAD * FAR.SPARE > FAR.HALF_EXACT) {
+  throw new Error(`far.js: ${Object.keys(E).length} elements, but the far grid holds element ids below FAR.PAYLOAD (${FAR.PAYLOAD})`);
 }
-if ((FAR_LIQUIDS.length + 1) * FAR.LIQ_STRIDE > FAR.OPEN || 2 * FAR.OPEN > FAR.HALF_EXACT) {
-  throw new Error(`far.js: the far grid's id channel (FAR.LIQ_STRIDE, FAR.OPEN) outgrew FAR.HALF_EXACT (${FAR.HALF_EXACT})`);
-}
-const liquidKindGLSL = () => /* glsl */ `
-#define FAR_KINDS ${FAR_LIQUIDS.length}
-#define FAR_KIND_NONE ${FAR_LIQUIDS.length}
-int farLiquidKind(int id) { ${FAR_LIQUIDS.slice(1).map((k, i) => `if (id == E_${k}) return ${i + 1};`).join(' ')} return 0; }
-int farLiquidId(int kind) { ${FAR_LIQUIDS.slice(1).map((k, i) => `if (kind == ${i + 1}) return E_${k};`).join(' ')} return E_${FAR_LIQUIDS[0]}; }
-`;
 
 // Children per node edge at each occupancy level: an L1 node is 4³ bricks, an L2 node 4³ L1 nodes.
 export const FAR_NODE = 4;
@@ -162,9 +153,9 @@ export const farLayoutGLSL = (L) => /* glsl */ `
 #define FAR_THIN_MIN ${glf(FAR.THIN_MIN)}
 #define FAR_THIN_V ${glf(FAR.THIN_V)}
 #define FAR_SURFACE_W ${glf(FAR.SURFACE_W)}
-#define FAR_LIQ_STRIDE ${FAR.LIQ_STRIDE}
-#define FAR_OPEN ${FAR.OPEN}
 #define FAR_LEVELS ${glf(FAR.LEVELS)}
+#define FAR_PAYLOAD ${FAR.PAYLOAD}
+#define FAR_SPARE ${FAR.SPARE}
 #define FAR_GLOW_SPAN ${glf(FAR.GLOW_SPAN)}
 const ivec3 WORLD = ivec3(WORLD_X, WORLD_Y, WORLD_Z);
 const ivec3 WB = ivec3(WBX, WBY, WBZ);
@@ -182,6 +173,17 @@ ivec2 far2Texel(ivec3 n) { return ivec2((n.y % F2_COLS) * F2X + n.x, (n.y / F2_C
 ivec3 far2FromFrag(ivec2 f) {
   int tx = f.x / F2X, ty = f.y / F2Z;
   return ivec3(f.x - tx * F2X, ty * F2_COLS + tx, f.y - ty * F2Z);
+}
+// A far grid texel (farPack): its shares and glow (levels), its opaque and
+// liquid elements (E_EMPTY: none) and whether it holds open opaque cells.
+struct FarTexel { int s, l, glow, id, liquid; bool open; };
+FarTexel farUnpack(vec4 t) {
+  ivec4 v = ivec4(t + 0.5), lo = v % FAR_PAYLOAD, hi = v / FAR_PAYLOAD;
+  FarTexel f;
+  f.s = lo.r; f.l = lo.g; f.id = lo.b; f.glow = lo.a;
+  f.open = hi.r % 2 == 1;
+  f.liquid = hi.g + FAR_SPARE * (hi.b + FAR_SPARE * (hi.r / 2));
+  return f;
 }
 `;
 
@@ -206,17 +208,14 @@ const countGLSL = /* glsl */ `
 // what stops light in the far field, and what is a transparent liquid
 bool farOpaque(int id) { return id != E_EMPTY && KIND[id] != K_GAS && RCLASS[id] != R_LIQUID; }
 bool farLiquid(int id) { return RCLASS[id] == R_LIQUID; }
-${liquidKindGLSL()}
 struct FarCount {
-  float w[NE];           // dominant-element weights (the brick's opaque cells)
-  float wl[FAR_KINDS];   // its liquid cells by kind
+  float w[NE];           // weights of the brick's own cells by element: opaque (their dominant one) and liquid
   float open, heat;      // its open opaque cells, and their degrees above the glow's start
   float s, l;            // opaque and liquid cells of its cube
 };
 FarCount farCountInit() {
   FarCount c;
   for (int i = 0; i < NE; i++) c.w[i] = 0.0;
-  for (int i = 0; i < FAR_KINDS; i++) c.wl[i] = 0.0;
   c.open = c.heat = c.s = c.l = 0.0;
   return c;
 }
@@ -227,21 +226,24 @@ void farCell(inout FarCount c, int id, int above, float T) {
     c.w[id] += open ? FAR_SURFACE_W : 1.0;
     if (open) { c.open += 1.0; c.heat += max(T - INCAND_T0, 0.0); }
   } else if (farLiquid(id)) {
-    c.wl[farLiquidKind(id)] += 1.0;
+    c.w[id] += 1.0;
   }
 }
+// a share or the glow in FAR_LEVELS steps, rounded as the 8-bit channel it was (half up)
+float farLevel(float x) { return floor(clamp(x, 0.0, 1.0) * FAR_LEVELS + 0.5); }
 vec4 farPack(FarCount c) {
   float n = float(FAR_CUBE * FAR_CUBE * FAR_CUBE);
-  int best = E_EMPTY;
-  for (int i = 1; i < NE; i++) if (c.w[i] > c.w[best]) best = i;
-  int lk = 0;
-  for (int i = 1; i < FAR_KINDS; i++) if (c.wl[i] > c.wl[lk]) lk = i;
-  if (c.wl[lk] == 0.0) lk = FAR_KIND_NONE;
+  int best = E_EMPTY, liquid = E_EMPTY;   // the dominant opaque element and liquid (ties: the lower id)
+  for (int i = 1; i < NE; i++) {
+    if (farOpaque(i)) { if (c.w[i] > c.w[best]) best = i; }
+    else if (farLiquid(i) && c.w[i] > c.w[liquid]) liquid = i;
+  }
   float glow = c.open > 0.0 ? c.heat / c.open / FAR_GLOW_SPAN : 0.0;
-  int open = c.open > 0.0 ? FAR_OPEN : 0;
-  // (the shares and glow round as the 8-bit channel they were did: to nearest, ties to even)
-  return vec4(roundEven(c.s / n * FAR_LEVELS), roundEven(c.l / n * FAR_LEVELS), float(best + FAR_LIQ_STRIDE * lk + open),
-              roundEven(clamp(glow, 0.0, 1.0) * FAR_LEVELS));
+  int open = c.open > 0.0 ? 1 : 0;
+  // farUnpack: the liquid's id in g's, b's and r's spare values (r's first is the open flag)
+  int lg = liquid % FAR_SPARE, lb = (liquid / FAR_SPARE) % FAR_SPARE, lr = liquid / (FAR_SPARE * FAR_SPARE);
+  return vec4(farLevel(c.s / n) + float(FAR_PAYLOAD * (open + 2 * lr)), farLevel(c.l / n) + float(FAR_PAYLOAD * lg),
+              float(best + FAR_PAYLOAD * lb), farLevel(glow));
 }
 `;
 
@@ -699,15 +701,15 @@ precision highp int;
 precision highp sampler2D;
 ${farLayoutGLSL(L)}
 #define E_EMPTY ${E.EMPTY}
-${liquidKindGLSL().split('\n').filter((l) => l.startsWith('#define')).join('\n')}
 uniform sampler2D tFar;
 out vec4 oC;
+// a brick's shares (farUnpack)
+vec2 farShares(FarTexel f) { return vec2(f.s, f.l) / FAR_LEVELS; }
 void main() {
   ivec3 b = farBrickFromFrag(ivec2(gl_FragCoord.xy));
-  vec4 t = texelFetch(tFar, farTexel(b), 0);
-  vec2 raw = t.rg / FAR_LEVELS;
-  int ids = int(t.b + 0.5) % FAR_OPEN;
-  bool ownS = ids % FAR_LIQ_STRIDE != E_EMPTY, ownL = ids / FAR_LIQ_STRIDE != FAR_KIND_NONE;
+  FarTexel f = farUnpack(texelFetch(tFar, farTexel(b), 0));
+  vec2 raw = farShares(f);
+  bool ownS = f.id != E_EMPTY, ownL = f.liquid != E_EMPTY;
   float ns = raw.r, nm = raw.r + raw.g;   // the most opaque, and most matter, here and next to it
   if (b.y == 0) ns = nm = 1.0;
   for (int dz = -1; dz <= 1; dz++)
@@ -715,7 +717,7 @@ void main() {
   for (int dx = -1; dx <= 1; dx++) {
     ivec3 q = b + ivec3(dx, dy, dz);
     if (any(lessThan(q, ivec3(0))) || any(greaterThanEqual(q, WB))) continue;
-    vec2 v = texelFetch(tFar, farTexel(q), 0).rg / FAR_LEVELS;
+    vec2 v = farShares(farUnpack(texelFetch(tFar, farTexel(q), 0)));
     ns = max(ns, v.r);
     nm = max(nm, v.r + v.g);
   }
@@ -871,18 +873,19 @@ vec4 farSample(vec3 p) {
 }
 // everything a ray stops at or enters (opaque + liquid)
 float farMatter(vec3 p) { vec4 v = farSample(p); return v.r + v.g; }
-// the ids of the brick holding p: x = dominant opaque element, y = liquid
-// kind, z = 1 if it holds opaque cells open above
+// the ids of the brick holding p: x = dominant opaque element, y = dominant
+// liquid (E_EMPTY: none), z = 1 if it holds opaque cells open above
 ivec3 farIds(vec3 p) {
   ivec3 b = clamp(ivec3(floor(p * (1.0 / float(BS)))), ivec3(0), WB - 1);
-  int v = int(texelFetch(tFar, farTexel(b), 0).b + 0.5);
-  int open = v / FAR_OPEN;
-  v -= open * FAR_OPEN;
-  return ivec3(v % FAR_LIQ_STRIDE, v / FAR_LIQ_STRIDE, open);
+  FarTexel f = farUnpack(texelFetch(tFar, farTexel(b), 0));
+  return ivec3(f.id, f.liquid, f.open ? 1 : 0);
 }
+// the liquid a far liquid surface is drawn as: the brick's own, else (only
+// its neighbours' reaches into its cube) water
+int farLiquidOf(int liquid) { return liquid == E_EMPTY ? E_WATER : liquid; }
 float farGlow(vec3 p) {
   ivec3 b = clamp(ivec3(floor(p * (1.0 / float(BS)))), ivec3(0), WB - 1);
-  return texelFetch(tFar, farTexel(b), 0).a / FAR_LEVELS;
+  return float(farUnpack(texelFetch(tFar, farTexel(b), 0)).glow) / FAR_LEVELS;
 }
 bool farNear(ivec3 b) { return texelFetch(tFarField, farTexel(b), 0).b > 0.5; }
 bool farOcc1(ivec3 n) { return texelFetch(tFar1, far1Texel(n), 0).r > 0.5; }
@@ -949,8 +952,7 @@ uniform float uSea;
 #define FAR_SEA_F0 0.02   // water's reflectance face on ((1.333 - 1) / (1.333 + 1))²
 vec3 farGround(vec3 r, float top) {
   ivec3 b = clamp(ivec3(floor(vec3(r.x, top - 1.0, r.z) / float(FAR_BRICK))), ivec3(0), WB - 1);   // the brick under the top
-  int v = int(texelFetch(tFar, farTexel(b), 0).b + 0.5);
-  int id = (v % FAR_OPEN) % FAR_LIQ_STRIDE;
+  int id = farUnpack(texelFetch(tFar, farTexel(b), 0)).id;
   float s = texture(tFarShadow, r.xz / vec2(WORLD.xz)).x;
   float sun = smoothstep(-FAR_SHADOW_SOFT, FAR_SHADOW_SOFT, top + FAR_SHADOW_BIAS - s) * cloudShadow(vec3(r.x, top, r.z));
   return ALBEDO[id == E_EMPTY ? E_ROCK : id] * (SUN_COL * max(uSun.y, 0.0) * sun + uSkyUp);
@@ -1056,7 +1058,6 @@ ${liquidGLSL}
 ${farLayoutGLSL(L)}
 ${farSampleGLSL}
 ${farHazeGLSL}
-${liquidKindGLSL()}
 uniform mat4 projectionMatrix;
 uniform mat4 uWorldToScene;   // world cells → scene units
 uniform mat4 uSceneToWorld;
@@ -1273,11 +1274,10 @@ vec3 farShadeBed(int id, vec3 p, vec3 n, float depth, int lid, float sunVis) {
   vec3 sky = exp(-SIGMA[lid] * depth);
   return alb * (SUN_COL * sunVis * max(dot(n, uSun), 0.0) * down + skyAmbient(n) * sky);
 }
-// A liquid surface at p (liquid kind lk) seen along rd: the sky and the sun's
-// glint off it (Fresnel), and through it the liquid's body down to the bed:
-// the opaque field along the refracted ray (bedY < 0), else the plane y = bedY.
-vec3 farLiquid(vec3 p, vec3 rd, int lk, float sunVis, float bedY) {
-  int lid = farLiquidId(lk);
+// A liquid surface at p (liquid lid, an element) seen along rd: the sky and
+// the sun's glint off it (Fresnel), and through it the liquid's body down to
+// the bed: the opaque field along the refracted ray (bedY < 0), else the plane y = bedY.
+vec3 farLiquid(vec3 p, vec3 rd, int lid, float sunVis, float bedY) {
   // the ripples, as the window's water has them (liquid.js), so its sea carries on past the window
   vec3 n = liquidRipple(p, vec3(0.0, 1.0, 0.0));
   float F = fresnelSchlick(max(dot(-rd, n), 0.0), IOR[lid]);
@@ -1359,8 +1359,8 @@ void main() {
   vec3 col;
   float depth = 1.0;
   if (ocean) {
-    col = plain ? farShadeBed(FAR_OCEAN_BED, ps, vec3(0.0, 1.0, 0.0), 0.0, farLiquidId(0), farSunLit(ps, 0))
-                : farLiquid(ps, rd, 0, farSunLit(ps, 0), seaOut ? uFloor : -1.0);
+    col = plain ? farShadeBed(FAR_OCEAN_BED, ps, vec3(0.0, 1.0, 0.0), 0.0, E_WATER, farSunLit(ps, 0))
+                : farLiquid(ps, rd, E_WATER, farSunLit(ps, 0), seaOut ? uFloor : -1.0);
     col = farHaze(col, rd, tSea);
     depth = farDepth(ps);
   } else if (tHit < NO_HIT) {
@@ -1371,11 +1371,11 @@ void main() {
       // which the volume draws see-through: the water body's own light, as
       // deep water shows, so the window's water carries on past its side.
       vec4 v = farSample(p);
-      col = v.r >= v.g ? ALBEDO[farIds(p).x] * skyAmbient(-rd) : farInScatter(farLiquidId(farIds(p).y), farSunLit(p, 0));
+      col = v.r >= v.g ? ALBEDO[farIds(p).x] * skyAmbient(-rd) : farInScatter(farLiquidOf(farIds(p).y), farSunLit(p, 0));
     } else {
       vec4 v = farSample(p);
       float sunVis = farSunLit(p, 0);
-      if (v.g > v.r) col = farLiquid(p, rd, farIds(p - vec3(0.0, FAR_ID_INSET, 0.0)).y, sunVis, -1.0);
+      if (v.g > v.r) col = farLiquid(p, rd, farLiquidOf(farIds(p - vec3(0.0, FAR_ID_INSET, 0.0)).y), sunVis, -1.0);
       else {
       vec3 n = farNormal(p, 0);
       col = farShadeOpaque(p, n, rd, sunVis * (sunVis > 0.0 && dot(n, uSun) > 0.0 ? farSunRay(p, n) : 1.0));
