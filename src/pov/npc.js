@@ -6,6 +6,7 @@ import { attachModel } from './models.js';
 import { addTarget } from './targets.js';
 import { povEvents } from './events.js';
 import { createKit } from './tools/index.js';
+import { gearByKey } from './tools/catalog.js';
 import { pack, persistentLoad, ownedKey } from './tools/transfer.js';
 import { Agent } from './ai/brain.js';
 import { createWorldModel } from './ai/world.js';
@@ -56,8 +57,8 @@ const PALETTE = {
 const EYE_GLOW = [4, 0.35, 0.15]; // HDR: red eyes
 const HELD_SCALE = 1.8;           // the viewmodels (cells, sized for the camera) grown to read in its big mitten
 const CHOP_S = 0.25;              // s the chop's follow-through shows after a blow
-// the tool's model for each tool key (models.js)
-const MODEL_OF = { SHOVEL: 'shovel', BUCKET: 'bucket', AXE: 'axe', GUN: 'gun', PHYSGUN: 'physgun', TROWEL: 'trowel', SCANNER: 'scanner', BLOWTORCH: 'torch', BOMB: 'bomb', PICKAXE: 'pickaxe', KNIFE: 'knife', POGO: 'pogo' };
+// the tool's model for each tool the brain uses (models.js, by the catalog)
+const MODEL_OF = Object.fromEntries(['SHOVEL', 'BUCKET', 'AXE', 'GUN', 'PHYSGUN', 'TROWEL', 'SCANNER', 'BLOWTORCH', 'BOMB', 'PICKAXE'].map((k) => [k, gearByKey(k).model]));
 
 const HW = BODY_WIDTH / 2;
 const AIM_REACH = 256;            // cells the tools' pick looks along

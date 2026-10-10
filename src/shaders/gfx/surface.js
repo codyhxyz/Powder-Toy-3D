@@ -310,8 +310,10 @@ const float ASH_LUMP_M = 0.18;                // m, wavelength
 const float ASH_LUMP_F = CELL_M / ASH_LUMP_M, ASH_LUMP_H = 0.012 / CELL_M;
 const int ASH_LUMP_OCT = 3;
 vec4 ashLumps(vec3 p, float fp) { return mFbmD(p, ASH_LUMP_F, ASH_LUMP_OCT, fp); }
-// Rock: big lumps (bump only: they are the size of the smooth surface's own
-// shape), which warp the crags: octaves of crease noise.
+// Rock (the CRAG texture family, gfx/materials.js surf: ROCK, sandstone,
+// limestone, coal): big lumps (bump only: they are the size of the smooth
+// surface's own shape), which warp the crags: octaves of crease noise. Each
+// element scales the crags' height by its CRAG[id].x (relief).
 const float ROCK_LUMP_M = 0.5;                // m, wavelength
 const float ROCK_LUMP_F = CELL_M / ROCK_LUMP_M, ROCK_LUMP_H = 0.072 / CELL_M;
 const int ROCK_LUMP_OCT = 3;
@@ -406,7 +408,7 @@ vec4 reliefHeight(int id, vec3 p, vec3 n, float fp) {
   if (id == E_SNOW) return SNOW_DRIFT_H * snowDrifts(p, fp) + SNOW_CLUMP_H * snowClumps(p, fp);
   if (id == E_GUNPOWDER) return POWDER_LUMP_H * powderLumps(p, fp);
   if (id == E_ASH) return ASH_LUMP_H * ashLumps(p, fp);
-  if (id == E_ROCK) { float ws; return ROCK_CRAG_H * rockCrags(p, rockLumps(p, fp), fp, ws); }
+  if (SURF[id] == SURF_CRAG) { float ws; return CRAG[id].x * ROCK_CRAG_H * rockCrags(p, rockLumps(p, fp), fp, ws); }
   if (id == E_WOOD) { vec4 mv, c; float fr; return woodPlates(p, fp, mv, c, fr) * (1.0 - woodEndGrain(n)); }
   return vec4(0.0);
 }
@@ -771,14 +773,17 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
     m.g = MOTTLE_H * lo.yzw + GRIT_H * gr.yzw - PIT_DEPTH * pit.yzw;
     m.cav = (1.0 - PIT_CAV * pit.x) * (1.0 + GRIT_CAV * gr.x);
     m.rough += GRIT_ROUGH * gr.x;
-  } else if (id == E_ROCK) {
-    // Weathered volcanic rock: big lumps, then craggy relief from several
-    // octaves of crease noise (flat-topped knobs between sharp V creases,
-    // each octave turned and warped by the lumps, so the creases of one
-    // scale break up those of the next instead of drawing a network), dark
-    // in its hollows; rusty oxidised and pale weathered patches, faint
-    // flow banding and, up close, clusters of gas vesicles. No cell
-    // lattice: that read as paving.
+  } else if (SURF[id] == SURF_CRAG) {
+    // Natural rock, ROCK's weathered basalt the reference: big lumps, then
+    // craggy relief from several octaves of crease noise (flat-topped knobs
+    // between sharp V creases, each octave turned and warped by the lumps,
+    // so the creases of one scale break up those of the next instead of
+    // drawing a network), dark in its hollows; rusty oxidised and pale
+    // weathered patches, faint flow banding and, up close, clusters of gas
+    // vesicles. No cell lattice: that read as paving. Each element scales
+    // these by its CRAG[id] (gfx/materials.js crag): the relief, the pits
+    // (vesicles; a limestone's solution pits), the banding (a sedimentary
+    // rock's bedding) and the rust stains.
     // (lumps and crags: rockLumps, rockCrags)
     const float GRAIN_M = 0.018;               // m, gritty surface (3 octaves, to ~4 mm)
     const float GRAIN_F = CELL_M / GRAIN_M, GRAIN_H = 0.0036 / CELL_M;
@@ -801,22 +806,27 @@ Mat matOf(int id, vec3 p, vec3 n, float T, float ctype, float fp) {
     const float LUMP_ALB = 0.35, GRAIN_ALB = 0.6, CRAG_ALB = 0.6;   // albedo swing per unit of each
     const float HOLLOW_CAV = 0.8, VES_CAV = 0.6, GRAIN_CAV = 0.6;   // cavity: hollows of the relief, vesicles, grit
     const float GRAIN_ROUGH = 0.1;             // roughness swing with the grit
+    vec4 cp = CRAG[id];                        // (relief, pits, bands, stain), ROCK's = 1
     vec4 lo = rockLumps(p, fp);
     float ws;
     vec4 cg = rockCrags(p, lo, fp, ws);
-    float hc = cg.x;
-    vec3 gc = cg.yzw;
+    float hc = cp.x * cg.x;
+    vec3 gc = cp.x * cg.yzw;
     hc /= ws;                                  // relief about its mean, roughly ±0.5
     vec4 gr = mFbmD(p, GRAIN_F, GRAIN_OCT, fp);
     float tn = vnoise(M_ROT * p * TINT_F + TINT_SALT);
-    float rust = smoothstep(RUST_EDGE.x, RUST_EDGE.y, tn);
+    float rust = cp.w * smoothstep(RUST_EDGE.x, RUST_EDGE.y, tn);
     float pale = smoothstep(PALE_EDGE.x, PALE_EDGE.y, tn) * smoothstep(SKY_EDGE.x, SKY_EDGE.y, n.y);   // weathering on what faces the sky
     float band = vnoise(vec3(p.x * BAND_FH, p.y * BAND_FV, p.z * BAND_FH));
-    float vh;
-    float vp = VES_P * smoothstep(VES_CLUSTER_EDGE.x, VES_CLUSTER_EDGE.y, vnoise(M_ROT * p * VES_CLUSTER_F + VES_CLUSTER_SALT));
-    vec4 ves = mDots(p + VES_WARP * gr.yzw, VES_F, vp, VES_R, fp, vh);
+    vec3 bandLo = 1.0 + cp.z * (BAND_LO - 1.0), bandHi = 1.0 + cp.z * (BAND_HI - 1.0);
+    vec4 ves = vec4(0.0);
+    if (cp.y > 0.0) {
+      float vh;
+      float vp = cp.y * VES_P * smoothstep(VES_CLUSTER_EDGE.x, VES_CLUSTER_EDGE.y, vnoise(M_ROT * p * VES_CLUSTER_F + VES_CLUSTER_SALT));
+      ves = mDots(p + VES_WARP * gr.yzw, VES_F, vp, VES_R, fp, vh);
+    }
     m.alb *= (1.0 + LUMP_ALB * lo.x + GRAIN_ALB * gr.x) * (1.0 + CRAG_ALB * hc)
-           * mix(vec3(1.0), RUST, rust) * mix(vec3(1.0), PALE, pale) * mix(BAND_LO, BAND_HI, band)
+           * mix(vec3(1.0), RUST, rust) * mix(vec3(1.0), PALE, pale) * mix(bandLo, bandHi, band)
            * mix(1.0, VES_ALB, ves.x);
     m.g = ROCK_LUMP_H * lo.yzw + ROCK_CRAG_H * gc + GRAIN_H * gr.yzw - VES_DEPTH * ves.yzw;
     m.cav = (1.0 + HOLLOW_CAV * min(hc, 0.0)) * (1.0 - VES_CAV * ves.x) * (1.0 + GRAIN_CAV * gr.x);
@@ -1304,6 +1314,7 @@ vec3 shadeSurf(Surf s, vec3 rd) {
   c += (envL * FssEss * hor * hor + irr * Fms * Ems) * specAO;
   // indirect (sky + bounce) and glow volume: diffuse
   c += kD * (ind + local * (LOCAL_AO_MIN + LOCAL_AO_GAIN * aoT));
+  if (uLampCount > 0) c += kD * lampLight(s.p, ng, n);   // a torch or lantern (traced shadows, so no AO)
   return c + s.emit;
 }
 
@@ -1324,6 +1335,7 @@ vec3 shadeFloor(vec3 hp, vec3 rd) {
   vec3 pf = vec3(hp.x, 0.0, hp.z);
   if (uNearGI) ind = nearField(pf, n, n, irr, ao);
   if (glowWorthIt(local, irr)) local *= glowLightScale(pf, n, n);
-  return alb * (SUN_COL * ndl * sh + ind + local * (LOCAL_AO_MIN + LOCAL_AO_GAIN * ao));
+  vec3 lamps = uLampCount > 0 ? lampLight(pf, n, n) : vec3(0.0);
+  return alb * (SUN_COL * ndl * sh + ind + local * (LOCAL_AO_MIN + LOCAL_AO_GAIN * ao) + lamps);
 }
 `;

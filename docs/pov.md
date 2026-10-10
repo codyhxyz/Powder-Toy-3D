@@ -46,9 +46,7 @@
      face you aim at; right-click picks the material. The cells are the pack's own, so a sand block slumps.
   7. **Scanner**: the god view's hover readout at the crosshair, at any range: material, temperature,
      pressure, distance.
-  8. **Blowtorch**: hold for a roofing torch's flame: engine FIRE at 1,900 °C blown along the aim, and what it
-     touches heats toward that (shaders/povTools.js TORCH). The engine lights wood, sets off gunpowder,
-     melts metal.
+  8. **Flamethrower** (was the blowtorch): see "Light and fire" below.
   9. **Bomb**: a thrown pipe bomb (18 m/s plus yours, 1 g, on the shared projectiles) that becomes a 5³
      charge of gunpowder where it lands, lit by one detonator cell so the burn runs through it as a wave
      and the blasts stack; the blast is the engine's.
@@ -64,9 +62,9 @@
 
 - `src/pov/tools/catalog.js` is the list of tools (plain data: key, slot, start, name, model, desc), so the
   palette lists them without loading the tools. Each `*.tool.js` spreads `...gear('KEY')` into its definition.
-- Slots are Half-Life 2's weapon buckets: `SLOTS = ['Dig', 'Build', 'Guns', 'Explosives', 'Gadgets']`, one
-  number key each. A key picks the tool last held in its slot; pressed again with that slot in hand it steps
-  to the next (HL2's `hud_fastswitch`). The bar stays five wide however many tools there are, with a pip per
+- Slots are Half-Life 2's weapon buckets: `SLOTS = ['Dig', 'Build', 'Guns', 'Explosives', 'Gadgets', 'Light']`,
+  one number key each. A key picks the tool last held in its slot; pressed again with that slot in hand it steps
+  to the next (HL2's `hud_fastswitch`). The bar stays six wide however many tools there are, with a pip per
   tool in a slot and the slot's names shown after a switch.
 - `src/pov/tools/inventory.js` is what the player carries: the catalog's `start` tools plus every tool given
   since, kept in localStorage (`tpt3d.pov.given`). It lives outside the toolbelt, so a tool given in the god
@@ -97,6 +95,25 @@ break stops it). Nothing is added: struck cells become their own debris or are s
   (Quake III halves self-splash): a rocket at your feet throws you ~5 m and costs about a quarter of your
   health.
 - `tools/weapons-check.mjs` checks all of it end to end.
+
+## Light and fire (2026-10-10)
+
+- **Flamethrower** (the blowtorch's key, `BLOWTORCH`; `shaders/povTools.js FLAMER`): Team Fortress 2's Pyro's
+  reach, 20 cells (6 m). Every frame the whole cone to what it hits becomes engine FIRE (SPAWN 1), blown along
+  the aim, and vfx.js draws it as one stream (the `flame` event). The flame pass is a factory
+  (`flameFrag(P)`) shared with a lying torch's `TORCH_FIRE`.
+- **Hand lamps** (`tools/lamp.js`, the torch and the lantern, slot 6 'Light'): a point light in the world shader
+  (`shaders/gfx/lighting.js lampLight`: inverse-square from LAMP_UNIT, faded to its reach, a traced shadow ray,
+  so light doesn't leak through walls). `src/pov/lamps.js` keeps the lit ones and writes `gfxUniforms`
+  (`uLampCount`, `uLampPos`, `uLampCol`); at most `gfx/lamps.js LAMP_MAX` at once, a held lamp first. No lamps,
+  no cost.
+  - Torch: warm and flickering, 18 cells. Left-click touches its flame to what you aim at; right-click throws
+    it, and it lies lit where it lands for two minutes, licking a small flame that lights what burns.
+  - Lantern: white and much brighter, 40 cells. Left-click switches it; right-click throws it, and it lands
+    unbroken and shines until it's one too many (PROPS_MAX per tool).
+- Tools may have `tick(ctx)` (every frame in first person, held or not) and `worldReplaced()` (a scene load,
+  undo or new grid: what they left in the world goes).
+- `tools/lights-check.mjs` checks it at midnight on the GPU.
 
 ## Physics rules (non-negotiable, see feedback in project memory)
 

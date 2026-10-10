@@ -29,7 +29,8 @@ const CHIP_MAX = 48;
 const MIST_MAX = 96;
 const TRACER_MAX = 48;
 const JET_MAX = 90;
-const JET_SMOKE_MAX = 120;            // the jetpack's and the rockets' smoke
+const JET_SMOKE_MAX = 120;
+const FLAME_MAX = 200;            // the jetpack's and the rockets' smoke
 
 // ---- muzzle flash
 const FLASH_LIFE = 0.055;               // s
@@ -124,6 +125,17 @@ const ROCKET_TRAIL_SIZE = [0.5, 0.8];   // cells across at birth (the jet smoke'
 const ROCKET_TRAIL_LIFE = [0.6, 1.1];   // s
 const ROCKET_TRAIL_DRIFT = 1.5;         // cells/s, a puff's random drift
 const ROCKET_FLAME_SIZE = [0.5, 0.8];   // cells across
+
+// ---- the flamethrower's stream ('flame' event): a continuous jet of fire
+// puffs from the nozzle to what it hits, each living FLAME_LIFE and flying the
+// stream's length in that time, swelling as it goes
+const FLAME_RATE = 260;                 // puffs/s
+const FLAME_LIFE = [0.22, 0.32];        // s
+const FLAME_SIZE = [0.35, 0.55];        // cells across at the nozzle...
+const FLAME_GROW = 5;                   // ...growing to this many times that
+const FLAME_SPREAD = 0.08;              // share of the speed thrown sideways at most
+const FLAME_COLOR = [7, 3.2, 0.8];      // HDR, orange-yellow
+const FLAME_LIGHT = 2;                  // the nozzle light, times the muzzle flash's (kept lit while it burns)
 
 // ---- blasts ('blast' event: a rocket's or a bomb's): a fireball, embers and smoke
 const BLAST_FLASH_SIZE = 6;             // cells across
@@ -239,11 +251,13 @@ export function createVfx(env) {
   system('tracer', { max: TRACER_MAX, material: dotAdd, renderMode: RenderMode.StretchedBillBoard, behaviors: [FADE_SHARP()] });
   system('jet', { max: JET_MAX, material: dotAdd, behaviors: [FADE_SHARP()] });
   system('jetSmoke', { max: JET_SMOKE_MAX, material: dotNormal, behaviors: [FADE_OUT()] });
+  system('flame', { max: FLAME_MAX, material: dotAdd, behaviors: [FADE_OUT()] });
   // dust and mist puffs grow (from each particle's own start size); chips don't.
   // Systems with the same material and mode share one batch (one draw call).
   fx.debris.sys.addBehavior(GROW(DUST_GROW));
   fx.mist.sys.addBehavior(GROW(MIST_GROW));
   fx.jetSmoke.sys.addBehavior(GROW(JET_SMOKE_GROW));
+  fx.flame.sys.addBehavior(GROW(FLAME_GROW));
 
   const light = new THREE.PointLight(FLASH_LIGHT_COLOR, 0, 0, 2);
   light.name = 'pov-muzzle-light';
@@ -402,6 +416,25 @@ export function createVfx(env) {
     burst(fx.jet, 1, (p) => setP(p, b, vV.set(0, 0, 0), randIn(ROCKET_FLAME_SIZE) * s, JET_COLOR, 1, JET_LIFE[1]));
   }
 
+  // the flamethrower's stream for dt seconds: from `at` (world) along unit dir, `length` cells
+  let flameAcc = 0;
+  function flameStream(at, dir, length, dt) {
+    const s = env.getScale();
+    flameAcc += FLAME_RATE * dt;
+    const n = Math.floor(flameAcc);
+    flameAcc -= n;
+    burst(fx.flame, n, (p) => {
+      const life = randIn(FLAME_LIFE);
+      vV.randomDirection().multiplyScalar(FLAME_SPREAD).add(dir).multiplyScalar(Math.max(length, 1) * s / life);
+      // spread along the first frame's stretch, so the jet has no gaps at low frame rates
+      vP.copy(at).addScaledVector(vV, Math.random() * dt);
+      setP(p, vP, vV, randIn(FLAME_SIZE) * s, FLAME_COLOR, 1, life);
+    });
+    light.position.copy(at);
+    light.distance = FLASH_LIGHT_RANGE * FLAME_LIGHT * s;
+    lightT = Math.max(lightT, FLASH_LIGHT_TIME);
+  }
+
   // a blast at `at` (world): a fireball, embers every way and a smoke cloud
   function blast(at) {
     const s = env.getScale();
@@ -479,6 +512,9 @@ export function createVfx(env) {
     }),
     povEvents.on('blast', (e) => {
       if (live() && e.point) blast(toWorld(e.point, vA));
+    }),
+    povEvents.on('flame', (e) => {
+      if (live() && !e.by) flameStream(e.muzzleWorld, e.dir, e.length, e.dt);
     }),
   ];
 

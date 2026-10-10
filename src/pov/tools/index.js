@@ -161,6 +161,7 @@ export function createToolbelt(env) {
       const cur = held();
       if (ctx.wheel && !cur?.wantsWheel?.()) step(Math.sign(ctx.wheel));
       held()?.update(ctx);
+      tools.forEach((t) => t.inst.tick?.(ctx));   // what every tool keeps doing, held or not (a torch lying lit)
       readout = held()?.readout?.(ctx) ?? null;
       lastSteps = ctx.stepsPerFrame;
       ballistics.update(ctx);
@@ -175,6 +176,8 @@ export function createToolbelt(env) {
     // The window moved over the world by (dx, 0, dz) cells (docs/scaling.md
     // D11): every tool, selected or not, moves the grid positions it keeps.
     windowShifted(dx, dz) { tools.forEach((t) => t.inst.windowShifted?.(dx, dz)); },
+    // the world was replaced (a scene load, undo, a new grid): what tools left in it is gone
+    worldReplaced() { tools.forEach((t) => t.inst.worldReplaced?.()); },
     dispose() {
       removeEventListener('keydown', onKey, { capture: true });
       offGive();

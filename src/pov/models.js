@@ -40,7 +40,9 @@ export const MODELS = {
   bucket: { fit: 'y', size: 0.9, anchor: [0.5, 0.5, 0.5], arm: ARM_UP, icon: { yaw: 0, tilt: 0.4, roll: 0 } },                    // upright, held by the bail
   trowel: { fit: 'z', size: 1.3, anchor: [0.5, 1, 1], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 1.0, roll: Q } },             // blade flat and forward, held at the end of the handle
   scanner: { fit: 'z', size: 0.6, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.7, roll: 0.25 } },    // a handheld box, screen up toward the eye
-  torch: { fit: 'z', size: 1.1, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.25, roll: 0.2 } },      // held by the tank, nozzle and flame forward
+  flamer: { fit: 'z', size: 1.6, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.3, roll: 0.35 } },     // a flamethrower: wand, fuel tank under it, pilot light at the nozzle
+  torch: { fit: 'y', size: 1.2, anchor: [0.5, 0, 0.5], arm: ARM_DOWN, icon: { yaw: 0, tilt: 0.2, roll: -Q } },                    // a burning torch, held at the foot of its stick
+  lantern: { fit: 'y', size: 0.85, anchor: [0.5, 1, 0.5], arm: ARM_UP, icon: { yaw: 0, tilt: 0.3, roll: 0 } },                    // a lantern hanging from its bail
   bomb: { fit: 'z', size: 0.8, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.35, roll: Q } },         // a capped pipe with a lit fuse
   knife: { fit: 'z', size: 0.95, anchor: [0.5, 0.5, 0.79], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.3, roll: Q } },       // blade forward, edge down, held by the handle
   pogo: { fit: 'y', size: 3.5, anchor: [0.5, 0.98, 0.5], arm: ARM_DOWN, icon: { yaw: 0, tilt: 0.3, roll: Q / 2 } },              // upright, held by the handlebar, the stick down out of view
@@ -62,8 +64,11 @@ const COLORS = {
   wood: '#7a5230', iron: '#9aa0a6', ironDark: '#585d62', metal: '#4a4f55', metalDark: '#2c2f33',
   grip: '#3a3530', orange: '#d87a22', white: '#d6dbe0', glow: '#5ff0ff', skin: '#c48a5c', sleeve: '#8a3a2a',
   screen: '#7dff9a', red: '#b8322a', flame: '#6fa8ff', spark: '#ffb347', olive: '#5a6b2e', oliveDark: '#3d4a1f',
+  fire: '#ff8a2a', lamp: '#f4f8ff', cloth: '#5b4630',
 };
-const UNLIT = new Set(['glow', 'screen', 'flame', 'spark']);
+const UNLIT = new Set(['glow', 'screen', 'flame', 'spark', 'fire', 'lamp']);
+// unlit parts that are light sources, drawn this many times brighter than white so they glow (HDR, before the tone curve)
+const GLOW_GAIN = { fire: 1.4, lamp: 5 };
 
 // shapes
 const CHUNK = 1.35;          // thin parts (under CHUNK_BELOW units) are thickened this much: RS2's stubby proportions
@@ -108,14 +113,33 @@ const PARTS = {
     { geo: 'box', s: [0.03, 0.03, 0.12], p: [0, -0.04, -0.23], rot: [0.6, 0, 0], m: 'ironDark' },
     { geo: 'plate', pts: [[0, 0], [0.18, 0.22], [0, 0.66], [-0.18, 0.22]], depth: 0.02, p: [0, -0.09, -0.27], rot: [-H, 0, 0], m: 'iron' },
   ],
+  flamer: [
+    { geo: 'cyl', r: 0.07, h: 0.9, p: [0, 0.22, -0.35], rot: [H, 0, 0], m: 'metal' },
+    { geo: 'cyl', r: 0.1, h: 0.3, p: [0, 0.22, -0.7], rot: [H, 0, 0], m: 'metalDark' },
+    { geo: 'cyl', r: 0.05, h: 0.25, p: [0, 0.22, -0.95], rot: [H, 0, 0], m: 'metalDark' },
+    { geo: 'cyl', r: 0.07, h: 0.05, p: [0, 0.22, -1.08], rot: [H, 0, 0], m: 'metal' },
+    { geo: 'sphere', r: 0.04, p: [0, 0.14, -1.06], m: 'fire', name: 'pilot' },
+    { geo: 'cyl', r: 0.13, h: 0.55, p: [0, 0.0, -0.35], rot: [H, 0, 0], m: 'red' },
+    { geo: 'cyl', r: 0.03, h: 0.2, p: [0, 0.12, -0.62], m: 'metalDark' },
+    { geo: 'box', s: [0.08, 0.2, 0.1], p: [0, 0.07, -0.85], rot: [0.15, 0, 0], m: 'grip' },
+    { geo: 'cyl', rt: 0, rb: 0.07, h: 0.4, p: [0, 0.22, -1.32], rot: [-H, 0, 0], m: 'fire', name: 'flame' },
+    STOCK_GRIP,
+  ],
   torch: [
-    { geo: 'cyl', r: 0.13, h: 0.5, p: [0, 0, 0], m: 'red' },
-    { geo: 'cyl', rt: 0.06, rb: 0.13, h: 0.08, p: [0, 0.29, 0], m: 'red' },
-    { geo: 'box', s: [0.1, 0.1, 0.12], p: [0, 0.36, -0.02], m: 'iron' },
-    { geo: 'cyl', r: 0.05, h: 0.1, p: [0.09, 0.36, -0.02], rot: [0, 0, H], m: 'orange' },
-    { geo: 'cyl', r: 0.03, h: 0.45, p: [0, 0.38, -0.3], rot: [H, 0, 0], m: 'iron' },
-    { geo: 'cyl', r: 0.05, h: 0.14, p: [0, 0.38, -0.58], rot: [H, 0, 0], m: 'metalDark' },
-    { geo: 'cyl', rt: 0, rb: 0.05, h: 0.35, p: [0, 0.38, -0.82], rot: [-H, 0, 0], m: 'flame', name: 'flame' },
+    { geo: 'cyl', rt: 0.05, rb: 0.035, h: 1.0, p: [0, 0.5, 0], m: 'wood' },
+    { geo: 'cyl', r: 0.08, h: 0.22, p: [0, 1.0, 0], m: 'cloth' },
+    { geo: 'sphere', r: 0.08, p: [0, 1.14, 0], m: 'spark' },
+    { geo: 'cyl', rt: 0, rb: 0.1, h: 0.36, p: [0, 1.3, 0], m: 'fire', name: 'flame' },
+  ],
+  lantern: [
+    { geo: 'torus', R: 0.1, tube: 0.02, p: [0, -0.06, 0], m: 'metalDark' },
+    { geo: 'cyl', rt: 0.07, rb: 0.2, h: 0.1, p: [0, -0.2, 0], m: 'metalDark' },
+    { geo: 'cyl', r: 0.15, h: 0.36, p: [0, -0.43, 0], m: 'lamp', name: 'glow' },
+    { geo: 'box', s: [0.03, 0.38, 0.03], p: [0.17, -0.43, 0], m: 'metalDark' },
+    { geo: 'box', s: [0.03, 0.38, 0.03], p: [-0.17, -0.43, 0], m: 'metalDark' },
+    { geo: 'box', s: [0.03, 0.38, 0.03], p: [0, -0.43, 0.17], m: 'metalDark' },
+    { geo: 'box', s: [0.03, 0.38, 0.03], p: [0, -0.43, -0.17], m: 'metalDark' },
+    { geo: 'cyl', r: 0.2, h: 0.08, p: [0, -0.65, 0], m: 'metalDark' },
   ],
   bomb: [
     { geo: 'cyl', r: 0.09, h: 0.45, p: [0, 0, 0], rot: [H, 0, 0], m: 'metal' },
@@ -228,7 +252,7 @@ const PARTS = {
 const materials = new Map();   // COLORS key → material, shared by every model
 function material(key) {
   if (!materials.has(key)) {
-    const color = jagexColor(COLORS[key]);
+    const color = jagexColor(COLORS[key]).multiplyScalar(GLOW_GAIN[key] ?? 1);
     materials.set(key, UNLIT.has(key)
       ? new THREE.MeshBasicMaterial({ color })
       : new THREE.MeshLambertMaterial({ color, flatShading: true }));

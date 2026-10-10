@@ -644,7 +644,7 @@ export function createPov(app) {
     exit,
     update,
     // the world was replaced (undo, a scene load): tools drop what they carry from the old one
-    worldReplaced: () => toolsModule?.emptyLoads?.(),
+    worldReplaced: () => { toolsModule?.emptyLoads?.(); toolbelt?.worldReplaced(); },
     // the window moved over the world by (dx, 0, dz) cells (docs/scaling.md D11): grid positions move back.
     // The drop point stays put in the world: a respawn far away waits there
     // for the window to come (player.js).
