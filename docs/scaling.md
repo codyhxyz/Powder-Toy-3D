@@ -351,10 +351,10 @@ The world is much larger than what lives on the GPU. Its size is `WORLD` cells, 
     guests didn't follow the window (W5, below); nothing outside the window is drawn or casts light (W4).
 - **W5 as implemented** (the app: `src/app.js`, signs, POV, multiplayer; the World option in Settings → Grid size).
   - World is a size of the Grid size row (`WORLDS.world`: 1024×128×1024 through 128³), saved like the box sizes;
-    `?size=world` still works. Clicking it again starts the world over. The Scene row lights nothing in World, and
-    picking a scene there goes back to the last box size with it. A switch disposes the window, its generator, the
-    Island scene's generator (`releaseGenerator`) and the box's outline material.
-  - It has no snow caps (`worldParams({ snow: false })`, `uGenSnow`): the air is 20 °C everywhere, so snow would
+    `?size=world` still works. Clicking it again starts the world over. In World the Scene row lists the world's
+    scenes instead of the box's ("Scenes", below); the Grid size row goes back to a box. A switch disposes the
+    window, its generator, the Island scene's generator (`releaseGenerator`) and the box's outline material.
+  - The island world has no snow caps (`scenes/island.js`: `worldParams({ snow: false })`, `uGenSnow`): the air is 20 °C everywhere, so snow would
     melt and every melting brick would be stored. Its peaks are bare rock above the plant line, and no rock is
     frozen, so nothing it generates drifts. The box's Island scene keeps its snow.
   - The window starts on the island's shore toward the god view's camera (`worldStart`: from the island's centre
