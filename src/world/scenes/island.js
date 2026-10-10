@@ -86,7 +86,9 @@ float genColMeadow(int x, int z) { return genCol(x, z).z; }
 float genColWater(int x, int z) { return genCol(x, z).w; }
 ${ISLAND_CELL_SRC}
 ${STRUCT_GLSL}
-int structureGround(ivec3 w) { return islandCell(w.x, w.y, w.z); }
+// (the island before nature.js: what it changes bears weight before and after,
+// and each call inlines the caves)
+int structureGround(ivec3 w) { return islandCellBare(w.x, w.y, w.z); }
 // World cell w's element at its spawn temperature and life, at rest, with a
 // colour seed hashed from its world position and, for moss and fungus, their
 // settled damp in the ctype (world/island/nature.js islandDamp). Under snow the

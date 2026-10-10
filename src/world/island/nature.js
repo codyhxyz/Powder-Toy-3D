@@ -48,7 +48,7 @@ import { PHYS } from '../../physics.js';
 //   - higher growers are dry (0), whatever touches them: the nearest damp one
 //     is DAMP_REACH cells down.
 // Damp moss is placed only where no air cell beside it touches bare rock
-// across its axis (natMossSafe; bare rock as the island makes it, so it asks
+// across its axis (natGrower; bare rock as the island makes it, so it asks
 // more than it must), and damp fungus only deep, where no wood or plant is.
 // Every grower replaces bare rock (react.js mossBed's) on a cave wall: it
 // touches cave air (or, in the water row, cave water).
@@ -148,13 +148,15 @@ bool natPlacer(int x, int y, int z, int id) {
   float oz = float(z - sz * NAT_PLACER_CELL - thRange(thKey(h, NAT_K_Z), lo, hi));
   if (ox * ox + oz * oz >= NAT_PLACER_R * NAT_PLACER_R) return false;
   if (thUnit(thKey(thHash2(x, z, NAT_SALT_PLACER_CELL), y)) >= NAT_PLACER_SHARE) return false;
-  if (islandCellBare(x, y + 1, z) != E_WATER || y + 1 >= genTop(x, z)) return false;   // under cave water
-  for (int n = 0; n < NAT_PLACER_CUP; n++) {
-    bool side = n < 4;
+  if (y + 1 >= genTop(x, z)) return false;
+  // probe -1: the cell over it, cave water; then the socket (one call of islandCellBare: the GPU inlines each)
+  for (int n = -1; n < NAT_PLACER_CUP; n++) {
+    bool side = n >= 0 && n < 4;
     int i = n < 2 ? n : n + 2;   // faces 0, 1, 4, 5: the four sides
-    int dx = side ? natFace(i, 0) : thMod(n - 4, 3) - 1;
-    int dz = side ? natFace(i, 2) : thDiv(n - 4, 3) - 1;
-    if (!natSolid(islandCellBare(x + dx, side ? y : y - 1, z + dz))) return false;
+    int dx = n < 0 ? 0 : (side ? natFace(i, 0) : thMod(n - 4, 3) - 1);
+    int dz = n < 0 ? 0 : (side ? natFace(i, 2) : thDiv(n - 4, 3) - 1);
+    int j = islandCellBare(x + dx, n < 0 ? y + 1 : (side ? y : y - 1), z + dz);
+    if (n < 0 ? j != E_WATER : !natSolid(j)) return false;
   }
   return true;
 }
@@ -190,32 +192,28 @@ bool natFungusPatch(int x, int y, int z) {
   return ox * ox + oy * oy + oz * oz < reach * reach;
 }
 
-// Damp moss at (x, y, z) stays put only if no air cell beside it touches bare
-// rock across the moss's axis (react.js mossSite: that cell would grow moss).
-// The faces' cells and theirs as the island makes them (islandCellBare): some
-// of that rock may turn to moss or gold, so this asks more than it must.
-bool natMossSafe(int x, int y, int z) {
-  bool air = false;
-  for (int n = 0; n < 42; n++) {
-    int i = thDiv(n, 7), k = thMod(n, 7) - 1;   // face i's cell (k = -1), then its faces k
-    if (k >= 0 && (!air || thDiv(k, 2) == thDiv(i, 2))) continue;
-    int dx = natFace(i, 0), dy = natFace(i, 1), dz = natFace(i, 2);
-    if (k >= 0) { dx += natFace(k, 0); dy += natFace(k, 1); dz += natFace(k, 2); }
-    int j = islandCellBare(x + dx, y + dy, z + dz);
-    if (k < 0) air = j == E_EMPTY;
-    else if (natBed(j)) return false;
-  }
-  return true;
+// 2 to the power i
+int natBit(int i) {
+  int b = 1;
+  for (int k = 0; k < i; k++) b *= 2;
+  return b;
 }
 
-// What grows on cell (x, y, z), whose element is id (after the gold), by its
-// own rules (islandNature adds the cells under it): NAT_MOSS, NAT_FUNGUS or
-// NAT_NONE. Bare rock on a cave wall: lit and near the water table, moss; in
-// the dark, deep, in a patch, fungus. In the water table's top water row it
-// touches water and the caves; above it, cave air and no water.
+// What grows on cell (x, y, z), whose element is id (after the gold; id < 0:
+// look it up), by its own rules (islandNature adds the cells under it):
+// NAT_MOSS, NAT_FUNGUS or NAT_NONE. Bare rock on a cave wall: lit and near the
+// water table, moss; in the dark, deep, in a patch, fungus. In the water
+// table's top water row it touches water and the caves; above it, cave air and
+// no water. Damp moss, besides, only where no air cell beside it touches bare
+// rock across the moss's axis (react.js mossSite: that cell would grow moss),
+// bare rock as the island makes it (some of it may turn to moss or gold, so
+// this asks more than it must).
+// The cells it reads come from one call of islandCellBare in one loop (the
+// GPU inlines each call of it, and it holds the caves): probe -1 the cell
+// itself, 0..5 its faces, then for damp moss 6 x 6 more, face i's faces k.
 int natGrower(int x, int y, int z, int id) {
   int sea = natSea();
-  if (!natBed(id) || y < sea - 1) return NAT_NONE;
+  if (y < sea - 1 || (id >= 0 && !natBed(id))) return NAT_NONE;
   bool mossRow = y < sea + NAT_MOSS_RISE;
   bool inPatch = genTop(x, z) - y >= NAT_FUNGUS_DEPTH && natFungusPatch(x, y, z);
   if (!mossRow && !inPatch) return NAT_NONE;
@@ -223,16 +221,30 @@ int natGrower(int x, int y, int z, int id) {
   int kind = lit ? (mossRow ? NAT_MOSS : NAT_NONE) : (inPatch ? NAT_FUNGUS : NAT_NONE);
   if (kind == NAT_NONE) return NAT_NONE;
   int air = 0, water = 0, cave = 0;   // faces on cave air, on water, on the caves (cave air or water)
-  for (int i = 0; i < 6; i++) {
-    int qx = x + natFace(i, 0), qy = y + natFace(i, 1), qz = z + natFace(i, 2);
+  int open = 0;                       // faces on any air: the sum of their natBit
+  for (int n = id < 0 ? -1 : 0; n < 42; n++) {
+    if (n == 6) {
+      if (y == sea - 1 ? (water == 0 || cave == 0) : (water > 0 || air == 0)) return NAT_NONE;
+      if (kind != NAT_MOSS || y > sea + NAT_WET_RISE) return kind;
+    }
+    int i = n < 6 ? n : thDiv(n - 6, 6), k = n < 6 ? -1 : thMod(n - 6, 6);
+    if (k >= 0 && (thDiv(k, 2) == thDiv(i, 2) || thMod(thDiv(open, natBit(i)), 2) == 0)) continue;
+    int qx = x, qy = y, qz = z;
+    if (n >= 0) { qx += natFace(i, 0); qy += natFace(i, 1); qz += natFace(i, 2); }
+    if (k >= 0) { qx += natFace(k, 0); qy += natFace(k, 1); qz += natFace(k, 2); }
     int j = islandCellBare(qx, qy, qz);
-    bool carved = qy < genTop(qx, qz);
-    if (j == E_WATER) water++;
-    if ((j == E_WATER || j == E_EMPTY) && carved) cave++;
-    if (j == E_EMPTY && carved) air++;
+    if (n < 0) {
+      if (!natBed(natMineral(x, y, z, j))) return NAT_NONE;
+    } else if (k >= 0) {
+      if (natBed(j)) return NAT_NONE;
+    } else {
+      bool carved = qy < genTop(qx, qz);
+      if (j == E_EMPTY) open += natBit(i);
+      if (j == E_WATER) water++;
+      if ((j == E_WATER || j == E_EMPTY) && carved) cave++;
+      if (j == E_EMPTY && carved) air++;
+    }
   }
-  if (y == sea - 1 ? (water == 0 || cave == 0) : (water > 0 || air == 0)) return NAT_NONE;
-  if (kind == NAT_MOSS && y <= sea + NAT_WET_RISE && !natMossSafe(x, y, z)) return NAT_NONE;
   return kind;
 }
 
@@ -248,7 +260,7 @@ int islandNature(int x, int y, int z, int id) {
   int down = y >= sea - 1 && y <= sea + NAT_WET_RISE ? y - (sea - 1) : 0;
   int kind = NAT_NONE;
   for (int k = 0; k <= down; k++) {
-    int g = natGrower(x, y - k, z, k == 0 ? id : natMineral(x, y - k, z, islandCellBare(x, y - k, z)));
+    int g = natGrower(x, y - k, z, k == 0 ? id : -1);
     if (g == NAT_NONE) return id;
     if (k == 0) kind = g;
   }

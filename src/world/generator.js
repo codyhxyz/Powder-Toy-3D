@@ -392,7 +392,7 @@ int islandCell(int x, int y, int z) { return islandNature(x, y, z, islandCellBar
 
 // Can a tree's trunk stand on world column (x, z) (treesIn's ground check),
 // and in which zone: GEN_ZONE_PALM (a beach), _MID, _HIGH or _NONE. Its
-// footing, the column's top ground cell as islandCell makes it, must be plant
+// footing, the column's top ground cell as islandCellBare makes it, must be plant
 // cover or sand, with no open cave near (caves.js caveOpenNear).
 int genTreeZone(int x, int z) {
   int top = genTop(x, z);
@@ -400,7 +400,7 @@ int genTreeZone(int x, int z) {
   if (above < GEN_TREE_ABOVE_SEA || genSlope(x, z) >= GEN_TREE_SLOPE_MAX) return GEN_ZONE_NONE;
   if (genColMeadow(x, z) == GEN_MEADOW_BARE) return GEN_ZONE_NONE;   // bare ground (islandBare): no trees, not even on sand
   if (float(top) > genFrostLine() - GEN_TREE_SNOW_GAP) return GEN_ZONE_NONE;
-  int foot = islandCell(x, top - 1, z);
+  int foot = islandCellBare(x, top - 1, z);   // (nature changes only bare rock: never sand or plant)
   if ((foot != E_SAND && foot != E_PLANT) || caveOpenNear(x, z)) return GEN_ZONE_NONE;
   if (foot == E_SAND) return above <= GEN_TREE_PALM_BELOW ? GEN_ZONE_PALM : GEN_ZONE_NONE;
   return float(top) - uGenSea >= GEN_TREE_PINE_ABOVE * uGenRelief ? GEN_ZONE_HIGH : GEN_ZONE_MID;
