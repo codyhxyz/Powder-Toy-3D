@@ -58,8 +58,10 @@ function garbFor(gltf, meshes) {
 function createRealFigure(gltf) {
   const uniforms = {
     uEmit: { value: new THREE.Vector3() },
+    uTint: { value: new THREE.Vector4() },
     uWorldToGrid: { value: new THREE.Matrix4() },
   };
+  const tint = [0, 0, 0, 0];
   const model = cloneSkinned(gltf.scene);   // the download is shared; each body poses its own rig
   const meshes = [];
   model.traverse((o) => {
@@ -167,6 +169,7 @@ function createRealFigure(gltf) {
       root.scale.setScalar(s.scale);
       uniforms.uWorldToGrid.value.copy(s.worldToGrid);
       uniforms.uEmit.value.set(...FIGURE_HEAT_GLOW).multiplyScalar(s.heat ?? 0);
+      uniforms.uTint.value.set(...(s.status ? s.status.tint(tint) : tint.fill(0)));
       if (!s.dead) facing = s.yaw;
       root.rotation.set(0, facing, 0);
 

@@ -2,8 +2,7 @@
 // clay, mud and ceramic, run on the engine's CPU twin (src/ui/tiles/engine.js,
 // a side-on slice of the GPU rules), plus their rows, looks and palette.
 // The phase changes and reactions (clay + water, mud drying, firing,
-// antimatter) ride on the shared mechanisms (branch el-core): until those are
-// in the twin, their checks report PENDING instead of failing.
+// antimatter) ride on the shared mechanisms (elements.js hot, REACTIONS).
 //   node tools/fun-check.mjs
 import { ELEMENTS, E, K, PALETTE } from '../src/elements.js';
 import { LOOK, CHANNELS } from '../src/gfx/materials.js';
@@ -14,15 +13,10 @@ const GRAVITY = 0.025;        // cells/step², the game's default (pov/ballistic
 const N = 32;                 // slice edge, cells
 const NEW = ['DUST', 'ANTIMATTER', 'SINGULARITY', 'CLAY', 'MUD', 'CERAMIC'];
 
-let fails = 0, pending = 0;
+let fails = 0;
 const ok = (cond, what, detail = '') => {
   console.log(`${cond ? 'ok  ' : 'FAIL'} ${what}${detail ? `  (${detail})` : ''}`);
   if (!cond) fails++;
-};
-const later = (cond, what, detail = '') => {
-  if (cond) return ok(true, what, detail);
-  console.log(`PEND ${what}${detail ? `  (${detail})` : ''}  [needs el-core's phases/reactions in the twin]`);
-  pending++;
 };
 const world = () => { const w = new World(N, N); w.gravity = GRAVITY; return w; };
 const count = (w, id) => w.id.reduce((n, v) => n + (v === id), 0);
@@ -66,7 +60,8 @@ ok(ELEMENTS[E.DUST].dens > 1 - PHYS.AIR_DENS_LO, 'dust is denser than any air (s
     w.step();
     for (const x of [17, 18]) if (w.id[w.idx(x, 0)] === E.WATER) { v = Math.min(v, w.vx[w.idx(x, 0)]); xMin = Math.min(xMin, x); }
   }
-  ok(v < 0 && (xMin < 18 || count(w, E.WATER) === 0), 'singularity draws in water from two cells off',
+  // (it may bounce off the singularity and drift out of reach: swallowing is the sand bed's check)
+  ok(v < -PHYS.REST_V, 'singularity draws in water from two cells off',
     `top speed toward it ${fmt(-v)} cells/step, ${count(w, E.WATER) ? 'still there' : 'swallowed'}`);
 }
 {
@@ -190,22 +185,24 @@ const runDust = (w) => { let p = 0; for (let s = 0; s < STEPS_DUST; s++) { w.ste
   fill(w, 0, N, 0, 4, E.CLAY);
   fill(w, 0, N, 4, 8, E.WATER);
   for (let s = 0; s < 600; s++) w.step();
-  later(count(w, E.MUD) > 0, 'clay and water make mud', `${count(w, E.MUD)} mud`);
+  ok(count(w, E.MUD) > 0, 'clay and water make mud', `${count(w, E.MUD)} mud`);
 }
 {
-  // mud dries at 100 °C, back into clay, with a puff of steam
+  // mud held over 100 °C (the Heat tool on it) dries back into clay, taking
+  // its water's latent heat and puffing it off as steam
   const w = world();
-  fill(w, 0, N, 0, 3, E.MUD, { T: 150 });
+  fill(w, 0, N, 0, 3, E.MUD);
+  const m0 = count(w, E.MUD), HEAT_STEPS = 30, HEAT_R = N;   // (long enough to dry, not to fire the clay)
   let p = 0;
-  for (let s = 0; s < 200; s++) { w.step(); p = Math.max(p, maxP(w)); }
-  later(count(w, E.CLAY) > 0, 'mud dries into clay past 100 °C', `${count(w, E.CLAY)} clay, max P ${fmt(p)}`);
+  for (let s = 0; s < HEAT_STEPS; s++) { w.heat(N / 2, 1, HEAT_R); w.step(); p = Math.max(p, maxP(w)); }
+  ok(count(w, E.CLAY) > m0 / 2 && p > 0, 'mud dries into clay past 100 °C, with a puff of steam', `${count(w, E.CLAY)}/${m0} clay, max P ${fmt(p)}`);
 }
 {
   // clay fires into ceramic past 1000 °C
   const w = world();
   fill(w, 0, N, 0, 3, E.CLAY, { T: 1100 });
   for (let s = 0; s < 20; s++) w.step();
-  later(count(w, E.CERAMIC) > 0, 'clay fires into ceramic past 1000 °C', `${count(w, E.CERAMIC)} ceramic`);
+  ok(count(w, E.CERAMIC) > 0, 'clay fires into ceramic past 1000 °C', `${count(w, E.CERAMIC)} ceramic`);
 }
 {
   // antimatter annihilates sand in a blast at the clamps, and rests on the wall
@@ -217,9 +214,9 @@ const runDust = (w) => { let p = 0; for (let s = 0; s < STEPS_DUST; s++) { w.ste
   const s0 = count(w, E.SAND), wall0 = count(w, E.WALL);
   let p = 0, t = 0;
   for (let s = 0; s < 120; s++) { w.step(); p = Math.max(p, maxP(w)); t = Math.max(t, ...w.T); }
-  later(count(w, E.SAND) < s0 - 4 && p > 0.5 * PHYS.P_MAX, 'antimatter annihilates sand in a blast', `sand ${count(w, E.SAND)}/${s0}, max P ${fmt(p)}, max T ${fmt(t)}`);
+  ok(count(w, E.SAND) < s0 - 4 && p > 0.5 * PHYS.P_MAX, 'antimatter annihilates sand in a blast', `sand ${count(w, E.SAND)}/${s0}, max P ${fmt(p)}, max T ${fmt(t)}`);
   ok(count(w, E.WALL) === wall0, 'antimatter spares the wall');
 }
 
-console.log(`\n${fails ? `${fails} FAILED` : 'all passed'}${pending ? `, ${pending} pending el-core` : ''}`);
+console.log(`\n${fails ? `${fails} FAILED` : 'all passed'}`);
 process.exit(fails ? 1 : 0);

@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { prelude, quadVert, stateOutGLSL, copyThroughMain, stateUniforms } from './common.js';
-import { BODY_WIDTH } from '../pov/constants.js';
-import { ELEMENTS } from '../elements.js';
+import { BODY_WIDTH, BODY_HEIGHT } from '../pov/constants.js';
+import { ELEMENTS, E } from '../elements.js';
 import { PHYS as ENGINE } from '../physics.js';
 
 // GPU passes for the POV axe, pickaxe, physgun, flamethrower, torch and rocket (src/pov/tools/*.tool.js).
@@ -44,6 +44,17 @@ export const PICK = {
   DEPTH: 2.5,        // cells, half-depth of the patch along the swing
   CHIP_MAX: 0.3,     // cells/step, fastest a chip leaves the cut
   SHOVE: 0.25,       // cells/step pushed into loose powder at the patch centre
+};
+
+// Knife: the same blow from a blade, which is for bodies (tools/knife.tool.js), not cells. Its
+// energy sits just over PLANT's and ICE's hardness (6) and under GLASS's (8), in a patch no
+// bigger than the struck cell: it cuts a plant or chips ice where it lands and nothing harder.
+export const KNIFE = {
+  ENERGY: 7,         // sim KE units at the patch centre (above PLANT and ICE's 6, below GLASS's 8)
+  RADIUS: 0.8,       // cells, half-width across the stab: the struck cell
+  DEPTH: 1,          // cells, half-depth along it
+  CHIP_MAX: 0.3,     // cells/step, fastest a chip leaves the cut
+  SHOVE: 0.1,        // cells/step pushed into loose powder: a blade parts it, it doesn't shovel
 };
 
 // Physgun: a spring on the centre of mass of the loose matter near a hold
@@ -161,6 +172,7 @@ void blow(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
 ${copyThroughMain('blow')}`;
 export const axeFrag = blowFrag(AXE);
 export const pickaxeFrag = blowFrag(PICK);
+export const knifeFrag = blowFrag(KNIFE);
 
 // A flame: a cone from a nozzle along a direction (P: FLAMER, the
 // flamethrower's, or TORCH_FIRE, a thrown torch's). Air in the cone becomes
@@ -199,6 +211,19 @@ export const TORCH_FIRE = {
   BITE: 1,
 };
 
+// A burning body (pov/stains.js, status Burning): a column of flame up one side of it, from the
+// feet to the head, at burning clothing's flame temperature. The body turns it round its sides.
+export const BODY_FIRE = {
+  FLAME_T: 900,      // °C, burning cloth (cotton's flame, like a torch's pitch)
+  LENGTH: BODY_HEIGHT,   // cells: feet to head
+  RADIUS0: 0.6,
+  SPREAD: 0.1,
+  SPAWN: 0.2,
+  SPEED: 0.15,
+  HEAT_RATE: 0.15,
+  BITE: 0,
+};
+
 const flameFrag = (P) => (g) => /* glsl */ `
 ${head(g)}
 ${defines('FLM', P)}   // (FLM_: FLAME_ is the renderer's)
@@ -230,6 +255,7 @@ void flame(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
 ${copyThroughMain('flame')}`;
 export const flamerFrag = flameFrag(FLAMER);
 export const torchFireFrag = flameFrag(TORCH_FIRE);
+export const bodyFireFrag = flameFrag(BODY_FIRE);
 
 const physGLSL = /* glsl */ `
 ${defines('PHYS', PHYS)}
@@ -366,7 +392,7 @@ export const ROCKET = {
   IMPULSE: 20,       // DENS · cells/step given to loose matter at full strength
   EDGE: 0.4,         // share of a radius held at full strength before fading
 };
-ROCKET.FIRE_T = ENGINE.GUNPOWDER_T;   // °C, the gunpowder blast's (physics.js)
+ROCKET.FIRE_T = ELEMENTS[E.GUNPOWDER].blast.T;   // °C, the gunpowder blast's (elements.js)
 
 export const rocketFrag = (g) => /* glsl */ `
 ${head(g)}

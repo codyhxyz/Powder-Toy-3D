@@ -124,9 +124,7 @@ export const PHYS = {
   FLAME_T_SPREAD: 0.15,
   CLONE_RATE: 0.06,          // chance per step Clone fills a neighbouring empty cell
   SPAWN_DROP_V: -0.3,        // cells/step: spawned powders and liquids start falling
-  GUNPOWDER_FIRE: 0.7,       // chance per step a flame next to gunpowder sets it off
-  GUNPOWDER_T: 2200,         // °C of the blast
-  GUNPOWDER_P: 60,           // pressure of the blast
+  // (Explosives' numbers, the chance a flame sets one off included, are their elements.js blast rows.)
   BURN_P: 0.02,              // pressure per step from burning
   ASH_SHARE: 0.5,            // share of burnt-out cells that leave ash
   BURNT_MIN_T: 600,          // °C, a burnt-out cell is at least this hot
@@ -181,8 +179,10 @@ export const PHYS = {
   // vacuum of −SING_P_PER_MASS·mass (to P_MIN), and the open cells touching it
   // hold SING_RING of that, so the pull reaches two cells: air rushes in and
   // matter is drawn after it (a = −∇P/ρ). It swallows each cell touching it
-  // with chance SING_EAT per step (TPT: 1 in 3), gaining its mass, and merges
-  // with a lighter singularity. Limits, so it can't eat the world:
+  // with chance SING_EAT per step, gaining its mass, and merges with a lighter
+  // singularity. TPT's swallows with 1 in 3; a pair here is partners once in
+  // RX_PAIRINGS steps (react.js: reactions' pairing, so a cell is swallowed or
+  // reacts, never both), which caps it at 1/6. Limits, so it can't eat the world:
   //   - it bursts once it reaches SING_MASS_MAX, its pressure
   //     SING_BURST_P_PER_MASS per unit of mass (at most P_MAX);
   //   - starved, it evaporates (Hawking: dm/dt ∝ −1/m², so it goes faster
@@ -195,7 +195,7 @@ export const PHYS = {
   SING_MASS0: 12,            // spawn mass (elements.js SINGULARITY life): ~1000 steps starving
   SING_MASS_MIN: 1,
   SING_MASS_MAX: 200,        // ~200 cells of water, or 125 of sand, 25 of metal
-  SING_EAT: 0.333,
+  SING_EAT: 1 / 6,
   SING_P_PER_MASS: 2.5,      // so P_MIN from a mass of 20
   SING_RING: 0.6,
   SING_EVAP: 0.6,
@@ -219,7 +219,7 @@ export const PHYS = {
   // A solid breaks when the air pressure difference across it, along any axis,
   // exceeds hard·P_BREAK_PER_HARD (pressure per unit of hardness; a solid
   // neighbour holds no air and counts as 0). One gunpowder cell's blast is
-  // GUNPOWDER_P (60) and loses ~15% per cell, but a pile lit by a flame goes off
+  // blast P (elements.js, 60) and loses ~15% per cell, but a pile lit by a flame goes off
   // in a wave that stacks its blasts: ~140 at the edge of a 3³ pile, ~200 at a
   // 5³ one, still ~100 four cells out. So glass (8 → 40) and ice and plants
   // (6 → 30) smash a few cells from even one cell's blast, wood (20 → 100) a few

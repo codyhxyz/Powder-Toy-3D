@@ -46,7 +46,7 @@ const ENTRY_DIP = 3;                    // cells/s: the settle as the swoop land
 const TP_DIST = 10;                     // cells behind the eye
 const TP_SHOULDER = 2.4;                // cells to the right
 const TP_UP = 1.4;                      // cells above the eye
-const TP_RATE = 7;                      // 1/s: how fast V swings the camera in or out
+const TP_RATE = 7;                      // 1/s: how fast F swings the camera in or out
 const BOX_MARGIN = 0.5;                 // cells: the camera stays this far inside the box
 
 // Death camera: up and back from the body, slowly circling it.
@@ -102,6 +102,7 @@ export function createPovCamera({ fov: fovSetting = () => POV_FOV, sensitivity =
   let dip = 0, dipVel = 0;                  // cells, cells/s
   let fov = fovSetting();
   let zoom = 1;                             // a scope's: the FOV is divided by it (the toolbelt's zoom)
+  let keyZoom = 1;                          // the zoom key's (zoom.js): divides the FOV too, already eased
   let death = 0, deathAngle = 0;            // death camera blend 0..1, its orbit angle
   let swoop = null;
   const pose = { pos: new THREE.Vector3(), quat: new THREE.Quaternion(), fov: fovSetting(), eyeDist: 0 };
@@ -136,6 +137,8 @@ export function createPovCamera({ fov: fovSetting = () => POV_FOV, sensitivity =
     get swooping() { return !!swoop; },
     get zoom() { return zoom; },
     set zoom(v) { zoom = v > 1 ? v : 1; },
+    get keyZoom() { return keyZoom; },
+    set keyZoom(v) { keyZoom = v > 1 ? v : 1; },
     get swoopKind() { return swoop?.kind ?? null; },
     pose,
     dir,
@@ -145,8 +148,8 @@ export function createPovCamera({ fov: fovSetting = () => POV_FOV, sensitivity =
     turn(dx, dy) {
       const cx = THREE.MathUtils.clamp(dx, -LOOK_MAX_PX, LOOK_MAX_PX);
       const cy = THREE.MathUtils.clamp(dy, -LOOK_MAX_PX, LOOK_MAX_PX);
-      // zoomed in, the look slows with the view (HL2's zoom_sensitivity_ratio 1)
-      const k = LOOK_SENSITIVITY * sensitivity() * Math.min(1, fov / fovSetting());
+      // zoomed in, the look slows with the view (HL2's zoom_sensitivity_ratio 1, Zoomify's relative sensitivity 100 %)
+      const k = LOOK_SENSITIVITY * sensitivity() * Math.min(1, fov / keyZoom / fovSetting());
       look.yaw -= cx * k;
       look.pitch = THREE.MathUtils.clamp(look.pitch - cy * k, -PITCH_LIMIT, PITCH_LIMIT);
     },
@@ -244,7 +247,7 @@ export function createPovCamera({ fov: fovSetting = () => POV_FOV, sensitivity =
       if (!swoop) {
         pose.pos.copy(live.pos);
         pose.quat.copy(live.quat);
-        pose.fov = fov;
+        pose.fov = fov / keyZoom;
       } else {
         swoop.t = Math.min(1, swoop.t + dt / swoop.duration);
         const t = swoop.t;

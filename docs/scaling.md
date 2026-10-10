@@ -101,17 +101,26 @@ fetch outside common.js, so code merged from main can't bypass the accessors.
 ### D7. Packed state
 Cost follows bytes per cell (see Measured), so the target is one RGBA32UI texture per copy, 16 bytes per cell
 instead of 32:
-- x: id 6 | ctype 6 | spare 1 | seed 19
+- x: id 8 | ctype 8 | seed bits 0–15
+  - Id and ctype (which holds an element id too: what lava melted from, what a clone copies) get 8 bits each,
+    so both hold 256 elements (docs/elements.md: there are about 100 to come).
   - The inert flag lives in its own R8 target written by react and every other state writer (D8), so the
     activity reduction reads 1 byte per cell.
   - Another session (`../tpt-rest-pos`, not yet on main) turns the seed into a grain's rest position: three
-    6-bit axes plus a free-fall flag, scrambled, in 19 bits (`src/shaders/rest.js`). The seed field holds all 19.
+    6-bit axes plus a free-fall flag, scrambled, in 19 bits (`src/shaders/rest.js`). Bits 0–15 are here, bit 16
+    in z and bits 17–18 in w.
 - y: temperature as f32 bits. Conduction fluxes are tiny and must not round away.
-- z: life f16 | pressure f16
-- w: velocity, 3 × 10-bit signed fixed point over [−V_MAX, V_MAX], with 2 spare flag bits.
+- z: life f16 | pressure f15 | seed bit 16
+  - Pressure is a 15-bit float: sign, 4-bit exponent (bias 7), 10-bit mantissa. Normals run from 2^−6 to 511,
+    past P_MAX − P_MIN; subnormals reach down to 2^−16, so REST_P (0.001) still has 6 significant bits, and
+    stochastic rounding keeps the geometric decay toward 0 unbiased.
+- w: velocity, 3 × 10-bit signed fixed point over [−V_MAX, V_MAX] | seed bits 17–18
   - Stochastic rounding, using the cell's hash random stream, keeps the expected value exact, so gravity, drag
     and friction integrate without bias.
   - Exact zero stays exact zero, which rest states need.
+
+Where the 4 extra id and ctype bits come from (the first draft gave each 6 bits, 64 elements): x's spare bit,
+w's 2 spare flag bits, and 1 bit of pressure's exponent (f16 to f15 above).
 
 The accessors decode to the D5 floats, so readers don't change. This is a precision change: prove it
 statistically, not pixel-wise:
@@ -122,7 +131,7 @@ statistically, not pixel-wise:
 - settling.
 
 **Fallback.** If 10-bit velocity measurably changes behaviour, use f16 velocity: w = vx | vy, plus a second
-R16UI texture for vz and the flags (18 bytes per cell).
+R32UI texture for vz f16 and seed bits 17–18 (20 bytes per cell).
 
 ### D8. Two passes per step, and skipping sleeping bricks
 - **Gather fused into react.** A step is a block pass (one fragment per Margolus block, 8 slot results), then a
@@ -324,6 +333,14 @@ The world is much larger than what lives on the GPU. Its size is `WORLD` cells, 
     `int islandCave(int x, int y, int z, float ground, float water, int id)` last, on every cell. The trees'
     ground check (`genTreeZone`) asks `islandCell` for the trunk's footing, so carving reaches tree placement
     and `ground()` too.
+  - **Caves** (`world/island/caves.js`): Minecraft 1.18's noise caves sized for the player (level tunnels 8–14
+    cells tall, 3D tunnels, caverns 20–60 across), mouths on bare rock, a few cenote shafts, the sea level as
+    their water table, speleothems and crystal clusters. The hook reads the column's slope and cover itself
+    (`genSlope`, `genCover`), only near the surface or a shaft; trees keep `CAVE_TREE_CLEAR` columns from where a
+    cave may open (`caveOpenNear` in `genTreeZone`). Over the world: 5.9% of the ground is cave, two thirds of it
+    reachable from a mouth; 0.54 noise evaluations per world cell. `tools/caves-preview.mjs` (CPU: images,
+    census, stability audit, `spots.json`) and `tools/caves-check.mjs` (GPU: stability, twin, seams, fill time,
+    stills at those spots).
   - **Same world.** Against the two-path generator it replaced (origin/main 1e72afa), headless on the GPU: the
     box's Island preset (128³, with snow and frozen rock), the world's window at load and after 8 moves (slab
     fills and planted trees) and the complete far grid (2,097,152 texels) are bit-identical (0 cells differ in

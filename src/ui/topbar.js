@@ -23,13 +23,13 @@ export function createToolbar({ views, settings, actions }) {
   const pause = btn('pause', 'Pause (Space)', actions.togglePause);
   const undo = btn('undo', 'Undo (⌘Z)', actions.undo);
   const recenter = btn('recenter', 'Reset camera (R)', actions.resetCamera);
-  // Camera: god view, or walking in first or third person; one click each (F and V do the same)
+  // Camera: god view, or walking in first or third person; one click each (V and F do the same)
   const camOpt = (id, label, title) => h('button', { type: 'button', title, 'data-cam': id, on: { click: () => actions.setCamera(id) } }, label);
   const walk = h('div.seg.cam-seg', { role: 'group', 'aria-label': 'Camera' },
     h('span.ico', { html: ICON.person }),
-    camOpt('god', 'God', 'God view: build and pour (F)'),
-    camOpt('first', '1st', 'Walk in first person (F, then V)'),
-    camOpt('third', '3rd', 'Walk in third person (V)'));
+    camOpt('god', 'God', 'God view: build and pour (V: noclip)'),
+    camOpt('first', '1st', 'Walk in first person (V)'),
+    camOpt('third', '3rd', 'Walk in third person (F swaps)'));
   const shot = btn('camera', 'Save screenshot (P)', actions.screenshot);
   const gear = btn('gear', 'Settings (,)', actions.toggleSettings);
   const help = btn('help', 'Keyboard shortcuts (?)', actions.toggleHelp);
