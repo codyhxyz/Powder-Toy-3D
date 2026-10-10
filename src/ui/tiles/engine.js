@@ -41,6 +41,7 @@ export const MELTINTO = Int16Array.from(ELEMENTS, meltInto);
 export const HARD = col('hard');
 export const BREAKINTO = Int16Array.from(ELEMENTS, breakInto);
 export const ACIDPROOF = ELEMENTS.map((e) => e.acidProof);
+export const ACIDIC = ELEMENTS.map((e) => e.acid);
 export const FIZZ = col('fizz');
 export const LEAVES_ASH = ELEMENTS.map((e) => e.ash);
 // the shared mechanisms' tables (elements.js mechanisms; the GLSL arrays of
@@ -114,6 +115,9 @@ const hitKE = (mi, mj, jSolid, u) => 0.5 * (jSolid ? mi : mi * mj / (mi + mj)) *
 const shockActs = (i, j, ke) => i !== j && ((BLAST[i * 4 + 2] > 0 && ke >= BLAST[i * 4 + 2]) || (BLAST[j * 4 + 2] > 0 && ke >= BLAST[j * 4 + 2]));
 const impactActs = (i, j, ke) => (BREAKINTO[j] >= 0 && ke >= HARD[j]) || shockActs(i, j, ke);
 const randDir = () => Math.cos(rnd() * Math.PI * 2); // x part of a random xz direction
+// the oxygen in the gas around a cell over air's, and how hot a flame burns with it (react.js oxyShare, oxyFlameT)
+const oxyShare = (nAir, nOxy) => (nAir + nOxy > 0 ? (nAir + PHYS.O2_PER_AIR * nOxy) / (nAir + nOxy) : 1);
+const oxyFlameT = (T, oxy) => (T + PHYS.KELVIN) * (1 + (PHYS.OXY_FLAME_GAIN - 1) * (oxy - 1) / (PHYS.O2_PER_AIR - 1)) - PHYS.KELVIN;
 const smoothstep = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
 
 function canMove(a, b, da, db, dir) {
@@ -701,7 +705,7 @@ export class World {
 
         // reactions and phase changes
         let out = id, reset = false;
-        let nAir = 0, nFire = 0, nAcid = 0, nPlant = 0, nBurning = 0, flame = 0, cloneOf = 0, nCloud = 0, nVoid = 0;
+        let nAir = 0, nFire = 0, nAcid = 0, nPlant = 0, nBurning = 0, flame = 0, cloneOf = 0, nCloud = 0, nVoid = 0, nOxy = 0, nOxyFire = 0, nCO2 = 0, nGas = 0;
         let closing = 0;   // snow neighbours' closing speed on me (storm charge)
         let surface = false;   // a non-gas neighbour to condense onto (the floor counts, the sides and lid don't)
         for (let q = 0; q < 4; q++) {
@@ -711,13 +715,19 @@ export class World {
           const qx = x + DX[q], qy = y + DY[q];
           if (!isGasLike(j) && ((qx >= 0 && qy >= 0 && qx < nx && qy < ny) || q === 3)) surface = true;
           if (j === E.FIRE) nFire++;
-          if (j === E.ACID) nAcid++;
+          if (j === E.OXYGEN) nOxy++;
+          if (j === E.FIRE && nW[q] === E.OXYGEN) nOxyFire++;   // a flame burning in oxygen (react.js)
+          if (j === E.CO2) nCO2++;
+          if (isGasLike(j)) nGas++;
+          if (ACIDIC[j]) nAcid++;
           if (j === E.PLANT) nPlant++;
           if (j === E.VOID) nVoid++;
           if (j === E.SNOW) closing += Math.max((VX[i] - nVX[q]) * DX[q] + (VY[i] - nVY[q]) * DY[q], 0);
           if ((j === E.CLONE || (j === E.PCLN && nL[q] === ELEC.SWITCH_ON)) && nW[q] >= 1) cloneOf = nW[q];   // a powered clone only while on
           if (IGNITE[j] > 0 && INTO[j * 4 + PH.BLAST] < 0 && nT[q] >= IGNITE[j]) { nBurning++; flame = Math.max(flame, FLAMET[j]); }   // (explosives go off instead)
         }
+        const oxy = oxyShare(nAir + nFire - nOxyFire, nOxy + nOxyFire);
+        const smothered = nCO2 > 0 && nCO2 >= PHYS.CO2_SMOTHER * nGas;   // carbon dioxide puts flames out (react.js)
 
         if (reacted) {
           T += rxT;
@@ -766,22 +776,28 @@ export class World {
           if (T < MELT[ct] - PHYS.LAVA_FREEZE_BELOW) { out = ct; reset = true; ctype = 0; }
         } else if (id === E.FIRE) {
           life -= PHYS.FIRE_BURN + PHYS.FIRE_BURN_SPREAD * rnd();
-          if (life <= 0 || T < PHYS.FIRE_MIN_T) { out = rnd() < PHYS.FIRE_TO_SMOKE ? E.SMOKE : E.EMPTY; reset = true; }
+          if (life <= 0 || T < PHYS.FIRE_MIN_T || smothered) { out = rnd() < PHYS.FIRE_TO_SMOKE ? E.SMOKE : E.EMPTY; reset = true; ctype = 0; }
         } else if (id === E.SMOKE) {
           life -= PHYS.SMOKE_FADE;
           if (life <= 0) { out = E.EMPTY; reset = true; }
-        } else if (id === E.ACID) {
+        } else if (ACIDIC[id]) {   // acid, and caustic gas
           let victims = 0;
           for (let q = 0; q < 4; q++) if (acidEats(nid[q])) victims++;
           life -= PHYS.ACID_USE * victims;
           if (life <= 0) { out = rnd() < PHYS.ACID_TO_SMOKE ? E.SMOKE : E.EMPTY; reset = true; }
         } else if (id === E.EMPTY) {
-          if (nBurning > 0 && rnd() < PHYS.FLAME_SPREAD * nBurning) {
-            out = E.FIRE; reset = true; T = Math.max(T, flame * (PHYS.FLAME_T_MIN + PHYS.FLAME_T_SPREAD * rnd()));
+          if (nBurning > 0 && !smothered && rnd() < PHYS.FLAME_SPREAD * nBurning) {
+            out = E.FIRE; reset = true; ctype = 0; T = Math.max(T, flame * (PHYS.FLAME_T_MIN + PHYS.FLAME_T_SPREAD * rnd()));
           } else if (cloneOf > 0 && rnd() < PHYS.CLONE_RATE) {
             out = cloneOf; reset = true; T = SPAWNT[cloneOf];
             ctype = cloneOf === E.LAVA ? E.STONE : 0;
             vx = 0; vy = KIND[cloneOf] === K.GAS ? 0 : PHYS.SPAWN_DROP_V;
+          }
+        } else if (id === E.OXYGEN) {
+          // flames lick into oxygen as into air, more often and hotter (react.js)
+          if (nBurning > 0 && !smothered && rnd() < PHYS.FLAME_SPREAD * PHYS.O2_PER_AIR * nBurning) {
+            out = E.FIRE; reset = true; ctype = E.OXYGEN;
+            T = Math.max(T, oxyFlameT(flame, PHYS.O2_PER_AIR) * (PHYS.FLAME_T_MIN + PHYS.FLAME_T_SPREAD * rnd()));
           }
         } else if ((id === E.CLONE || id === E.PCLN) && ctype < 1) {
           for (let q = 0; q < 4; q++) {
@@ -845,9 +861,10 @@ export class World {
             reset = true; T = BLAST[id * 4 + 1]; P += BLAST[id * 4];
           }
         } else if (!reacted && out === id && IGNITE[id] > 0) {
-          if (T >= IGNITE[id] && (nAir > 0 || nFire > 0)) {
-            life -= BURNRATE[id];
-            T = Math.max(T, Math.min(T + BURNHEAT[id] / C, FLAMET[id]));
+          if (T >= IGNITE[id] && (nAir > 0 || nFire > 0 || nOxy > 0) && !smothered) {
+            // as fast as oxygen reaches it, and hotter with more (react.js)
+            life -= BURNRATE[id] * oxy;
+            T = Math.max(T, Math.min(T + BURNHEAT[id] * oxy / C, oxyFlameT(FLAMET[id], oxy)));
             P += PHYS.BURN_P;
             if (life <= 0) {
               out = LEAVES_ASH[id] && rnd() < PHYS.ASH_SHARE ? E.ASH : E.FIRE;

@@ -13,7 +13,7 @@ import { prelude, inertSelfGLSL, SUPER, SUPER_TEX, BLOCK_TILE } from './common.j
 //     into, nor for a liquid its four sides;
 //   - nothing that reacts: no gas, nothing burning or hot enough to light
 //     the air, melting, setting, freezing, boiling or banking latent heat
-//     (elements.js cold/hot included), nothing next to acid, no plant by
+//     (elements.js cold/hot included), nothing next to acid or caustic gas, no plant by
 //     water, no clone by air, no explosive touching something past its
 //     ignition point, no cell beside a reaction partner (elements.js
 //     REACTIONS) whose temperature gate the pair passes, nothing that can
@@ -86,7 +86,7 @@ bool inertNear(ivec3 c, vec4 a, vec4 nA[6]) {
     // (a face with no conductance, a temperature sensor's, carries none)
     if (min(COND[id], COND[j]) > 0.0 && (j == E_EMPTY ? abs(T - AMBIENT) > AIR_REST_T : abs(T - n.y) > MATTER_REST_T)) return false;
     if (!electricQuietNear(id, a, j, n)) return false;   // src/electricity.js
-    if (j == E_ACID ? acidEats(id) : id == E_ACID && acidEats(j)) return false;
+    if (ACIDIC[j] ? acidEats(id) : ACIDIC[id] && acidEats(j)) return false;   // acid, caustic gas (elements.js acid)
     if ((id == E_WATER && j == E_PLANT) || (id == E_PLANT && j == E_WATER)) return false;
     if (id == E_CLONE && (j == E_EMPTY || (a.w < 1.0 && cloneable(j)))) return false;   // (cloneable: src/electricity.js)
     // an explosive with an ignition point: a hot touch sets it off

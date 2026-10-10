@@ -7,7 +7,11 @@
 //          continuous surface (the 0.5 isosurface of a blurred, normalised
 //          occupancy field). Elements without a channel are "crisp": drawn
 //          as (bevelled) voxels.
-//   media  participating-medium channel (drawn as a density volume)
+//   media  participating-medium channel (drawn as a density volume). A gas
+//          needs one: without a channel it would be drawn as crisp voxels
+//   haze   the share of a full cell's density a cell of it adds to its
+//          media channel (default 1). Steam and cloud are water droplets,
+//          1; a clear gas a faint haze, a liberty so you can see where it is
 //   rough  GGX roughness
 //   metal  metalness
 //   ior    index of refraction (transparent elements)
@@ -202,6 +206,26 @@ const LOOKS = {
   // Diamond: n = 2.417, so it sparkles far more than glass (n 1.5); a
   // colourless stone barely absorbs or scatters
   DIAMOND: { ior: 2.417, rough: 0.01, scatter: [0.0005, 0.0005, 0.0005] },
+  // Batch 2, chemistry and cold (elements.js). Liquid nitrogen is clear and
+  // colourless, n = 1.199 (CRC); its boiling fills it with bubbles that
+  // scatter a little. Saturated brine is water with n = 1.378 (CRC, 26 % NaCl).
+  LIQUID_NITROGEN: { ch: 'LIQUID', ior: 1.199, rough: 0.03, scatter: [0.004, 0.004, 0.004] },
+  SALTWATER: { ch: 'LIQUID', ior: 1.378, rough: 0.02, scatter: [0.002, 0.003, 0.004] },
+  // Salt: clear halite cubes (n = 1.544) crushed white, albedo ~0.8, light
+  // wrapping into the grains and glinting off their cube faces.
+  SALT: { ch: 'GRANULAR', rough: 0.55, ior: 1.544, alb: '#e2e0da', sss: 0.35, glint: 0.7 },
+  // Dry ice: pressed CO₂ snow, white and porous (n ~1.4), light bleeding into it.
+  DRY_ICE: { rough: 0.8, ior: 1.4, alb: '#e4e8ec', sss: 0.5 },
+  // Lithium is silvery cut, but dulls in air within minutes (nitride, hydroxide):
+  // a grey, rough metal.
+  LITHIUM: { ch: 'GRANULAR', rough: 0.55, metal: 1, alb: [0.55, 0.55, 0.56] },
+  // Clear gases (CO₂, hydrogen, oxygen) are invisible: a faint haze shows where
+  // they are. Hydrogen chloride fumes in moist air, pulling the water vapour
+  // out as a mist of acid droplets (real), so it shows more.
+  CO2: { media: 'STEAM', haze: 0.06 },
+  HYDROGEN: { media: 'STEAM', haze: 0.04 },
+  OXYGEN: { media: 'STEAM', haze: 0.05 },
+  CAUSTIC_GAS: { media: 'STEAM', haze: 0.3 },
 };
 
 // Shared texture families (LOOKS surf). NONE: an element's own (or none).
@@ -239,7 +263,7 @@ const mediaIndex = (k) => (k ? MEDIA.findIndex((m) => m.key === k) : -1);
 export const LOOK = ELEMENTS.map((e) => {
   const l = LOOKS[e.key] ?? {};
   return {
-    ch: chIndex(l.ch), media: mediaIndex(l.media), rough: l.rough ?? DEFAULT_ROUGH, metal: l.metal ?? 0, ior: l.ior ?? DEFAULT_IOR,
+    ch: chIndex(l.ch), media: mediaIndex(l.media), haze: l.haze ?? 1, rough: l.rough ?? DEFAULT_ROUGH, metal: l.metal ?? 0, ior: l.ior ?? DEFAULT_IOR,
     alb: linearOf(l.alb ?? e.color).map((v) => +v.toFixed(GLSL_DIGITS)), sss: l.sss ?? 0, glint: l.glint ?? 0,
     bevel: l.bevel ?? 1,
     emit: (l.emit ?? [0, 0, 0]).map((v) => +v.toFixed(GLSL_DIGITS)),
@@ -345,6 +369,7 @@ export function materialsGLSL() {
     `#define THIN_MASK_HI ${f(THIN_MASK_HI)}`,
     ints('SURFCH', 'ch'),
     ints('MEDIACH', 'media'),
+    floats('HAZE', 'haze'),
     floats('ROUGH', 'rough'),
     floats('METAL', 'metal'),
     floats('IOR', 'ior'),

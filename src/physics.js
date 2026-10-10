@@ -144,6 +144,20 @@ export const PHYS = {
   SPAWN_DROP_V: -0.3,        // cells/step: spawned powders and liquids start falling
   // (Explosives' numbers, the chance a flame sets one off included, are their elements.js blast rows.)
   BURN_P: 0.02,              // pressure per step from burning
+  // Oxygen (elements.js OXYGEN). Air is 20.95 % oxygen, so a cell of pure
+  // oxygen holds O2_PER_AIR times the oxygen of a cell of air. A fuel burns as
+  // fast as oxygen reaches it: its rate goes as the oxygen in the gas around
+  // it, from 1 (air) to O2_PER_AIR (all oxygen), and its flame, in kelvin,
+  // runs hotter by up to OXY_FLAME_GAIN: the mean ratio of adiabatic flame
+  // temperatures in oxygen and in air of hydrogen (2800 / 2254 °C),
+  // acetylene (3480 / 2500) and methylacetylene (2927 / 2010): 1.22, 1.35, 1.40.
+  O2_PER_AIR: 1 / 0.2095,
+  OXY_FLAME_GAIN: 1.32,
+  // Carbon dioxide (elements.js CO2) smothers fire: where it is at least this
+  // share of the gas around a flame or a burning fuel, the flame goes out and
+  // the fuel stops burning. The theoretical least that puts fires out (NFPA 12:
+  // methane 25 %, propane 30 %, ethane 33 %; it designs for 34 %).
+  CO2_SMOTHER: 0.3,
   ASH_SHARE: 0.5,            // share of burnt-out cells that leave ash
   BURNT_MIN_T: 600,          // °C, a burnt-out cell is at least this hot
 
