@@ -23,6 +23,7 @@ import { E, ELEMENTS, K } from '../src/elements.js';
 import { PHYS } from '../src/physics.js';
 import { WORLD_SIZE } from '../src/shaders/far.js';
 import { worldParams, islandTwin } from '../src/world/generator.js';
+import { NATURE } from '../src/world/island/nature.js';
 
 const args = process.argv.slice(2);
 const out = args[0] && !args[0].startsWith('--') ? args[0] : 'nature-check';
@@ -31,6 +32,10 @@ const NY = WORLD_SIZE[1];
 const box = bi >= 0 ? args.slice(bi + 1, bi + 5).map(Number) : [0, 0, WORLD_SIZE[0], WORLD_SIZE[2]];
 const BLOCK = 16;              // spots: elements counted per this many cells cube
 const SPOT_TRIES = 40;         // ...the fullest this many blocks tried for a view
+const MOSS_VIEW = 8;           // the feet's distance from what they look at, as near as can be: moss...
+const FUNGUS_VIEW = 10;        // ...fungus (it glows: seen from farther)...
+const GOLD_VIEW = 5;           // ...gold (dark metal in a dark cave: up close)
+const DAYLIGHT = 3;            // a spot in daylight: open air at its height this many columns away at most
 const VIEW_NEAR = 4;           // a spot's feet stand at least this far from what they look at...
 const VIEW_FAR = 16;           // ...and at most this far
 const HEADROOM = 6;            // ...under this many cells of air (the POV body is 5.5 tall)
@@ -125,22 +130,22 @@ function sight(a, b) {
   return true;
 }
 // the fullest blocks first, until one has feet in sight in a cave
-function spotFor(id) {
+function spotFor(id, view, lookOk = () => true, cave = true) {
   const tries = [...blocks].filter(([k]) => k.startsWith(`${id}:`)).sort((a, b) => b[1] - a[1]).slice(0, SPOT_TRIES);
   let first = null;
   for (const best of tries) {
-    const s = spotIn(id, best);
+    const s = spotIn(id, best, view, lookOk, cave);
     first ??= s;
     if (s.feet) return s;
   }
   return first;
 }
-function spotIn(id, best) {
+function spotIn(id, best, view, lookOk, cave) {
   const [bx, by, bz] = best[0].split(':')[1].split(',').map(Number);
   const mid = [bx, by, bz].map((v) => v * BLOCK + BLOCK / 2);
   let look = null;
   for (let y = by * BLOCK; y < (by + 1) * BLOCK; y++) for (let z = bz * BLOCK; z < (bz + 1) * BLOCK; z++) for (let x = bx * BLOCK; x < (bx + 1) * BLOCK; x++) {
-    if (cell(x, y, z) !== id || !FACES.some(([dx, dy, dz]) => cell(x + dx, y + dy, z + dz) === E.EMPTY)) continue;
+    if (cell(x, y, z) !== id || !lookOk(x, y, z) || !FACES.some(([dx, dy, dz]) => cell(x + dx, y + dy, z + dz) === E.EMPTY)) continue;
     const d = Math.hypot(x - mid[0], y - mid[1], z - mid[2]);
     if (!look || d < look[1]) look = [[x, y, z], d];
   }
@@ -155,9 +160,9 @@ function spotIn(id, best) {
       if (!inWorld(fy - 1) || fy >= T.genTop(fx, fz) || !solid(cell(fx, fy - 1, fz)) || cell(fx, fy - 1, fz) === E.WATER) continue;
       let clear = true;
       for (let h = 0; h < HEADROOM && clear; h++) clear = cell(fx, fy + h, fz) === E.EMPTY;
-      if (fy + HEADROOM >= T.genTop(fx, fz)) continue;   // in a cave: under its column's ground
+      if (cave && fy + HEADROOM >= T.genTop(fx, fz)) continue;   // in a cave: under its column's ground
       if (!clear || !sight([fx + 0.5, fy + EYE, fz + 0.5], [lx + 0.5, ly + 0.5, lz + 0.5])) continue;
-      const score = Math.abs(r - (VIEW_NEAR + VIEW_FAR) / 2);
+      const score = Math.abs(r - view);
       if (!feet || score < feet[1]) feet = [[fx, fy, fz], score];
     }
   }
@@ -171,7 +176,20 @@ function spotIn(id, best) {
   }
   return { block: best, look: look[0], feet: feet?.[0] ?? null, eye: eye?.[0] ?? null };
 }
-const spots = { moss: spotFor(E.MOSS), fungus: spotFor(E.FUNGUS), gold: spotFor(E.GOLD), nuggets: spotFor(E.NUGGETS) };
+// in daylight: open air at its height within DAYLIGHT columns of an air cell beside it (a cave mouth)
+const daylit = (x, y, z) => FACES.some(([dx, dy, dz]) => {
+  if (cell(x + dx, y + dy, z + dz) !== E.EMPTY) return false;
+  for (let j = -DAYLIGHT; j <= DAYLIGHT; j++) for (let i = -DAYLIGHT; i <= DAYLIGHT; i++) if (T.genTop(x + dx + i, z + dz + j) <= y + dy) return true;
+  return false;
+});
+const wet = (x, y) => y <= P.sea + NATURE.WET_RISE;
+const either = (a, b) => (a?.feet ? a : b);
+const spots = {   // in daylight where there is a view of one (from a cave mouth, or outside it), else in a cave
+  moss: either(spotFor(E.MOSS, MOSS_VIEW, (x, y, z) => wet(x, y) && daylit(x, y, z), false), spotFor(E.MOSS, MOSS_VIEW, wet)),   // damp moss: by the water
+  fungus: spotFor(E.FUNGUS, FUNGUS_VIEW),
+  gold: either(spotFor(E.GOLD, GOLD_VIEW, daylit, false), spotFor(E.GOLD, GOLD_VIEW)),
+  nuggets: spotFor(E.NUGGETS, GOLD_VIEW),
+};
 writeFileSync(join(out, 'spots.json'), JSON.stringify(spots, null, 1));
 console.log(JSON.stringify({ box, secs: +secs.toFixed(0), census, inSight: seen, changes, faults: bad, faultsAt: badAt, spots }, null, 1));
 if (Object.keys(bad).length) process.exitCode = 1;
