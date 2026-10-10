@@ -40,6 +40,9 @@ import { E } from '../../elements.js';
 export const SHARE_ONE = 0x10000;
 const LATTICE_ONE = 0x1000000;   // 24-bit hash field to [0, 1): exact in a float32 and a double
 const UINT_RANGE = 4294967296;   // 2^32: a 32-bit hash to [0, 1) (the prelude's UINT_TO_UNIT)
+const GRAD_CACHE = 1 << 16;          // lattice gradients the JS twin keeps (a power of two: the slot is a mask)
+const GRAD_MIX_X = 0x27d4eb2d;        // ...hashed to a slot by these odd multipliers (no structure in the slots)
+const GRAD_MIX_Z = 0x165667b1;
 const TAU = Math.PI * 2;
 // 2D gradient noise peaks near ±1/√2: this scales it to about ±1
 const NOISE_NORM = 1.4142;
@@ -115,25 +118,38 @@ function helpersJs(seed) {
   const thHash2 = (a, b, salt) => pcg(((a >>> 0) + pcg(((b >>> 0) + stream(salt)) >>> 0)) >>> 0);
   // thNoised's derivatives, till the next call
   let dxLast = 0, dzLast = 0;
+  // Lattice gradients, cached: neighbouring samples, octaves of the same field
+  // and repeated rays share corners, and each costs two hashes, a cos and a sin.
+  // Direct-mapped (a slot per hashed corner, the newest wins); a hit returns the
+  // very numbers a miss computes, so results are bit for bit the same.
+  const gKeyX = new Int32Array(GRAD_CACHE), gKeyZ = new Int32Array(GRAD_CACHE), gKeyS = new Uint32Array(GRAD_CACHE);
+  const gCos = new Float64Array(GRAD_CACHE), gSin = new Float64Array(GRAD_CACHE), gSet = new Uint8Array(GRAD_CACHE);
+  let gc = 0, gs = 0;   // the last grad's cos and sin
   const grad = (ix, iz, s) => {
+    const slot = (Math.imul(ix, GRAD_MIX_X) ^ Math.imul(iz, GRAD_MIX_Z) ^ s) & (GRAD_CACHE - 1);
+    if (gSet[slot] && gKeyX[slot] === ix && gKeyZ[slot] === iz && gKeyS[slot] === s) { gc = gCos[slot]; gs = gSin[slot]; return; }
     const a = (pcg(((ix >>> 0) + pcg(((iz >>> 0) + s) >>> 0)) >>> 0) / UINT_RANGE) * TAU;
-    return [Math.cos(a), Math.sin(a)];
+    gc = Math.cos(a); gs = Math.sin(a);
+    gKeyX[slot] = ix; gKeyZ[slot] = iz; gKeyS[slot] = s; gCos[slot] = gc; gSin[slot] = gs; gSet[slot] = 1;
   };
   const thNoised = (x, z, s) => {
     const ix = Math.floor(x), iz = Math.floor(z);
     const fx = x - ix, fz = z - iz;
     const ux = fx * fx * fx * (fx * (fx * 6 - 15) + 10), uz = fz * fz * fz * (fz * (fz * 6 - 15) + 10);
     const dux = 30 * fx * fx * (fx * (fx - 2) + 1), duz = 30 * fz * fz * (fz * (fz - 2) + 1);
-    const ga = grad(ix, iz, s), gb = grad(ix + 1, iz, s), gc = grad(ix, iz + 1, s), gd = grad(ix + 1, iz + 1, s);
-    const va = ga[0] * fx + ga[1] * fz;
-    const vb = gb[0] * (fx - 1) + gb[1] * fz;
-    const vc = gc[0] * fx + gc[1] * (fz - 1);
-    const vd = gd[0] * (fx - 1) + gd[1] * (fz - 1);
+    grad(ix, iz, s); const ga0 = gc, ga1 = gs;
+    grad(ix + 1, iz, s); const gb0 = gc, gb1 = gs;
+    grad(ix, iz + 1, s); const gc0 = gc, gc1 = gs;
+    grad(ix + 1, iz + 1, s); const gd0 = gc, gd1 = gs;
+    const va = ga0 * fx + ga1 * fz;
+    const vb = gb0 * (fx - 1) + gb1 * fz;
+    const vc = gc0 * fx + gc1 * (fz - 1);
+    const vd = gd0 * (fx - 1) + gd1 * (fz - 1);
     const k = va - vb - vc + vd;
     const v = va + ux * (vb - va) + uz * (vc - va) + ux * uz * k;
-    const dx = ga[0] + ux * (gb[0] - ga[0]) + uz * (gc[0] - ga[0]) + ux * uz * (ga[0] - gb[0] - gc[0] + gd[0])
+    const dx = ga0 + ux * (gb0 - ga0) + uz * (gc0 - ga0) + ux * uz * (ga0 - gb0 - gc0 + gd0)
       + dux * (uz * k + vb - va);
-    const dz = ga[1] + ux * (gb[1] - ga[1]) + uz * (gc[1] - ga[1]) + ux * uz * (ga[1] - gb[1] - gc[1] + gd[1])
+    const dz = ga1 + ux * (gb1 - ga1) + uz * (gc1 - ga1) + ux * uz * (ga1 - gb1 - gc1 + gd1)
       + duz * (ux * k + vc - va);
     dxLast = dx * NOISE_NORM;
     dzLast = dz * NOISE_NORM;
