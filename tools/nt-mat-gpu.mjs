@@ -45,7 +45,7 @@ await p.addInitScript(() => {
   performance.now = () => vt;
 });
 const t0 = Date.now();
-await p.goto(`http://localhost:${port}/?preset=empty&size=64`);
+await p.goto(`http://localhost:${port}/?preset=empty&size=64`, { waitUntil: 'commit', timeout: 120000 });
 await p.waitForFunction(() => window.__app?.sim, null, { timeout: 120000 });
 const loadS = (Date.now() - t0) / 1000;
 await p.waitForTimeout(2000);
