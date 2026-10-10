@@ -64,19 +64,25 @@ function check(name, src, stage) {
   }
 }
 
+// The view, shadow and GI gather as the app and the simulation build them for
+// every grid: with a world's far-field parts in, off (shaders/far.js WORLD_SIZE).
+const L = far.farLayout(far.WORLD_SIZE);
+const appVolume = (g) => render.volumeFrag(g, far.farHazeGLSL);
+const appShadow = (g) => render.shadowFrag(g, far.farCastersGLSL(L));
+const appGather = (g) => gi.giGatherFrag(g, far.farGIGLSL(L));
 const grids = { '128': [128, 128, 128], wide: [160, 96, 160], '64': [64, 64, 64] };
 for (const [label, dims] of Object.entries(grids)) {
   const g = gridLayout(...dims);
-  const opt = (fn, ...a) => (typeof fn === 'function' ? fn(g, ...a) : fn);
-  check(`volume-${label}`, shaderMatFrag + opt(render.volumeFrag), 'frag');
-  check(`pick-${label}`, raw + opt(render.pickFrag), 'frag');
-  check(`shadow-${label}`, raw + opt(render.shadowFrag), 'frag');
+  check(`volume-${label}`, shaderMatFrag + appVolume(g), 'frag');
+  check(`pick-${label}`, raw + render.pickFrag(g), 'frag');
+  check(`shadow-${label}`, raw + appShadow(g), 'frag');
+  check(`giGather-far-${label}`, raw + appGather(g), 'frag');
   check(`povFigure-${label}`, shaderMatFrag + figureFrag(g), 'frag');
   // the same with every close-up detail feature compiled in (gfx/detail.js)
   const defs = Object.entries(allDetailDefines()).map(([k, v]) => `#define ${k} ${v}\n`).join('');
   if (defs) {
-    check(`volume-detail-${label}`, shaderMatFrag + defs + opt(render.volumeFrag), 'frag');
-    check(`shadow-detail-${label}`, raw + defs + opt(render.shadowFrag), 'frag');
+    check(`volume-detail-${label}`, shaderMatFrag + defs + appVolume(g), 'frag');
+    check(`shadow-detail-${label}`, raw + defs + appShadow(g), 'frag');
   }
   for (const [k, v] of Object.entries(passes)) if (typeof v === 'function') check(`${k}-${label}`, raw + v(g), 'frag');
   for (const axis of [0, 1, 2]) check(`brickDist${axis}-${label}`, raw + passes.brickDistFrag(g, axis), 'frag');
@@ -104,14 +110,13 @@ for (const [label, dims] of Object.entries(grids)) {
 }
 // the far field (world mode: ?size=world, a 1024×128×1024 world through a 128³ window)
 {
-  // a window of a larger world: the look's world offset compiles in (common.js WINDOWED)
-  const g = { ...gridLayout(128, 128, 128), windowed: true }, L = far.farLayout([1024, 128, 1024]);
+  const g = { ...gridLayout(128, 128, 128), windowed: true };
+  // a world's window compiles the box's programs, so a switch compiles nothing big (app.js build)
+  const box = gridLayout(128, 128, 128);
+  for (const [name, fn] of Object.entries({ volume: appVolume, shadow: appShadow, gather: appGather, pick: render.pickFrag })) {
+    if (fn(g) !== fn(box)) { failures++; console.log(`FAIL ${name}: a world's window compiles a different program from a box's`); }
+  }
   check('farView', shaderMatFrag + far.farFrag(g, L), 'frag');
-  check('shadow-farCasters', raw + render.shadowFrag(g, far.farCastersGLSL(L)), 'frag');
-  check('volume-farHaze', shaderMatFrag + render.volumeFrag(g, far.farHazeGLSL), 'frag');
-  check('giGather-far', raw + gi.giGatherFrag(g, far.farGIGLSL(L)), 'frag');
-  const defs = Object.entries(allDetailDefines()).map(([k, v]) => `#define ${k} ${v}\n`).join('');
-  check('volume-farHaze-detail', shaderMatFrag + defs + render.volumeFrag(g, far.farHazeGLSL), 'frag');
   check('farViewVert', shaderMatVert + far.farVert, 'vert');
   check('farRegionVert', raw + far.farRegionVert(L), 'vert');
   for (const k of ['farLayersFrag']) check(k, raw + far[k](g), 'frag');

@@ -60,17 +60,21 @@ export class WorldGenerator {
     this.v3 = v3;
   }
 
+  // The world window's diff pass (diff), made on first use.
+  diffMat() {
+    return this.mats.diff ??= Object.assign(rawMat(diffFrag(this.sim.g), {
+      ...genUniforms(), tA: { value: null }, tB: { value: null }, tCol: { value: null },
+      uLo: this.v3(), uBricks: this.v3(),
+    }), { name: 'diff' });
+  }
+
   // Which bricks of the slab of grid cells [lo, lo + 4·bricks) differ from
   // world P (shaders/generate.js diffFrag), the grid sitting at the
   // simulation's origin: written to target, one texel per brick.
   diff(P, lo, bricks, target) {
     const o = this.sim.origin;
     this.updateColumns(P, [o.x, o.y, o.z]);
-    this.mats.diff ??= Object.assign(rawMat(diffFrag(this.sim.g), {
-      ...genUniforms(), tA: { value: null }, tB: { value: null }, tCol: { value: null },
-      uLo: this.v3(), uBricks: this.v3(),
-    }), { name: 'diff' });
-    setWorld(this.mats.diff.uniforms, P);
+    setWorld(this.diffMat().uniforms, P);
     const u = this.mats.diff.uniforms;
     u.tA.value = this.sim.stateA;
     u.tB.value = this.sim.stateB;
@@ -182,9 +186,11 @@ export class WorldGenerator {
     tex.dispose();
   }
 
-  dispose() {
+  // retire: as Simulation.dispose's
+  dispose(retire = null) {
     this.columns.dispose();
-    Object.values(this.mats).forEach((m) => m.dispose());
+    if (retire) retire.push(...Object.values(this.mats));
+    else Object.values(this.mats).forEach((m) => m.dispose());
   }
 }
 
@@ -197,10 +203,11 @@ export function generatorFor(sim) {
   }
   return current;
 }
-// The simulation is going away: so does its generator, if it has one.
-export function releaseGenerator(sim) {
+// The simulation is going away: so does its generator, if it has one
+// (retire: as Simulation.dispose's).
+export function releaseGenerator(sim, retire = null) {
   if (current?.sim !== sim) return;
-  current.dispose();
+  current.dispose(retire);
   current = null;
 }
 

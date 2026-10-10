@@ -3,11 +3,8 @@ import { BRICK } from '../shaders/common.js';
 import { columnFrag, COLUMN_MARGIN } from '../shaders/generate.js';
 import {
   farLayout, farRegionVert, farLayersFrag, farTreeCandFrag, farTreeThinFrag, farTreeBandFrag, farGenFrag,
-  farWinFrag, farBoostFrag, farMip1Frag, farMip2Frag, farTopFrag, farShadowFrag, farCastersGLSL, farHazeGLSL,
-  farGIGLSL, farVert, farFrag,
+  farWinFrag, farBoostFrag, farMip1Frag, farMip2Frag, farTopFrag, farShadowFrag, farVert, farFrag, WORLD_SIZE,
 } from '../shaders/far.js';
-import { shadowFrag, volumeFrag } from '../shaders/render.js';
-import { giGatherFrag } from '../shaders/gi.js';
 import { rawMat, makeFieldTarget } from '../sim.js';
 import { genUniforms, setWorld } from './gpu.js';
 import { gfxUniforms } from '../gfx/uniforms.js';
@@ -73,6 +70,8 @@ export class FarField {
     this.win = win;
     this.sim = win.sim;
     const g = this.sim.g, L = this.L = farLayout(win.size);
+    // the view, shadow and GI programs have WORLD_SIZE's far layout compiled in (attach)
+    if (win.size.some((n, i) => n !== WORLD_SIZE[i])) throw new Error(`far field: world ${win.size}, but the programs are built for ${WORLD_SIZE}`);
     const U8 = THREE.UnsignedByteType, HALF = THREE.HalfFloatType, NEAR = THREE.NearestFilter, LIN = THREE.LinearFilter;
     this.grid = makeFieldTarget(L.bricks.width, L.bricks.height, 1, U8, NEAR);   // raw shares, ids, glow
     this.field = makeFieldTarget(L.bricks.width, L.bricks.height, 1, U8, LIN);   // what the view draws (farBoostFrag)
@@ -310,26 +309,23 @@ export class FarField {
     if (what) this.last = { ...this.last, refreshMs: performance.now() - t0 };
   }
 
-  // The window's volume and sun shadow map (the app's materials; before the
-  // detail gate copies the volume's) and its GI (the simulation's): the volume
-  // with the far field's aerial perspective (render.js volumeFrag's haze), the
-  // shadow map shaded from outside the window too, by the shadow heights of the
-  // columns outside it (shadowFrag's casters), the GI's rays reading the far
-  // field past their end (gi.js giGatherFrag's far).
+  // The window's volume and sun shadow map (the app's materials) and its GI
+  // (the simulation's) take the far field: the volume its aerial perspective
+  // (render.js volumeFrag's haze), the shadow map the shade from outside the
+  // window, by the shadow heights of the columns outside it (shadowFrag's
+  // casters), the GI's rays the far field past their end (gi.js giGatherFrag's
+  // far). Their programs already hold these parts, off (shaders/far.js
+  // WORLD_SIZE): this only turns them on, so nothing compiles.
   attach(volumeMat, shadowMat) {
-    const g = this.sim.g;
-    volumeMat.fragmentShader = volumeFrag(g, farHazeGLSL);
-    volumeMat.needsUpdate = true;
-    shadowMat.fragmentShader = shadowFrag(g, farCastersGLSL(this.L));
-    shadowMat.uniforms.tFarShadow = { value: this.shadow.texture };
-    shadowMat.needsUpdate = true;
-    const gi = this.sim.mats.giGather;
-    gi.fragmentShader = giGatherFrag(g, farGIGLSL(this.L));
-    Object.assign(gi.uniforms, {
-      tFar: { value: this.grid.texture }, tFarTop: { value: this.top.texture }, tFarShadow: { value: this.shadow.texture },
-      uSea: { value: this.win.P.sea },
-    });
-    gi.needsUpdate = true;
+    volumeMat.uniforms.uFar.value = true;
+    shadowMat.uniforms.uFar.value = true;
+    shadowMat.uniforms.tFarShadow.value = this.shadow.texture;
+    const gi = this.sim.mats.giGather.uniforms;
+    gi.uFar.value = true;
+    gi.tFar.value = this.grid.texture;
+    gi.tFarTop.value = this.top.texture;
+    gi.tFarShadow.value = this.shadow.texture;
+    gi.uSea.value = this.win.P.sea;
   }
 
   // Before the scene renders: the view's transforms for this frame (the

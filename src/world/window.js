@@ -8,6 +8,7 @@ import { worldParams, treesIn, TREE } from './generator.js';
 import { runGenerator, bake } from '../constructions/runtime.js';
 import { BUILTINS } from '../constructions/builtins.js';
 import { BrickStore, encodeBrick, decodeBrick, BRICK_FLOATS } from './store.js';
+import { compileInBackground } from '../gfx/programs.js';
 
 // The window over a massive world (docs/scaling.md D11, phases W1 and W2).
 //
@@ -39,6 +40,12 @@ import { BrickStore, encodeBrick, decodeBrick, BRICK_FLOATS } from './store.js';
 // The far field (world/far.js), when the app gives the window one (far), is
 // built on load, summarizes the slab about to leave in step 1, and sweeps over
 // the window's region while it changes (update).
+//
+// The window's own passes and the far field's are compiled in the background
+// (whenReady); the app loads the world once they are ready, so switching to a
+// world never stalls the page on a compile: the window fills in, then the
+// far field around it as its view's program is ready (world/far.js). Until
+// load the window doesn't move.
 
 export const WIN_STEP = 16;          // cells: how far the window moves at a time (whole supertiles along x and z)
 export const WIN_HYSTERESIS = 4;     // cells past WIN_STEP from the centre the focus goes before a move
@@ -69,6 +76,8 @@ export class WorldWindow {
     this.last = null;                                             // what the last move cost (tools)
     this.plantCost = null;                                        // the move's tree placing and baking, ms (tools)
     this.far = null;                                              // the far field (world/far.js), if the app draws one
+    this.loaded = false;                                          // load has filled the window (it moves only after)
+    this.ready = null;                                            // whenReady's promise
 
     // the largest slab a move exchanges, and the targets it goes through
     const step = WIN_STEP / BRICK, BX = g.nx / BRICK, BY = g.ny / BRICK, BZ = g.nz / BRICK;
@@ -102,6 +111,19 @@ export class WorldWindow {
     for (const [k, m] of Object.entries(this.mats)) m.name = k;
   }
 
+  // Every full-screen pass the window and its far field draw.
+  materials() {
+    this.gen.diffMat();
+    return [...Object.values(this.mats), ...Object.values(this.gen.mats), ...Object.values(this.far?.mats ?? {})];
+  }
+
+  // Resolves once every pass of the window and its far field is compiled
+  // (started in the background on the first call; give the window its far
+  // field first): load and the moves then run without a compile stall.
+  whenReady() {
+    return (this.ready ??= compileInBackground(this.renderer, this.materials()));
+  }
+
   // The origin that centres the window in the world.
   centre() {
     const g = this.sim.g, snap = (n) => Math.round(n / WIN_STEP) * WIN_STEP;
@@ -123,11 +145,13 @@ export class WorldWindow {
     // a new scene: the render fields and GI start over instead of blending in, and nothing is moving
     sim.fieldReset = sim.giReset = true;
     sim.stillFlow();
+    this.loaded = true;
   }
 
   // Keep the window centred on the focus (world cells, x and z). Returns the
   // move made, [dx, dz] world cells, or null.
   update(fx, fz) {
+    if (!this.loaded) return null;
     this.far?.tick();
     if (this.pending) return null;
     const g = this.sim.g, o = this.sim.origin, lim = WIN_STEP + WIN_HYSTERESIS;

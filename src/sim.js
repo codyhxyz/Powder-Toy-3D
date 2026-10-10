@@ -14,6 +14,7 @@ import {
   fieldEmaFrag, fieldCopyFrag, fieldBlurFrag, fieldBoostFrag, fieldRegions, fieldRegionsGLSL, BOOST_STAGES, BLUR_TAPS, DIRTY,
 } from './shaders/fields.js';
 import { giSourceFrag, giGatherFrag } from './shaders/gi.js';
+import { farGIGLSL, farLayout, WORLD_SIZE } from './shaders/far.js';
 import { shiftFrag, giShiftFrag, flowShiftFrag, undoShiftFrag } from './shaders/window.js';
 import { CHANNELS, MEDIA, gauss5, bulkPeak, bulkPeakCubic, CUBIC_LATTICE } from './gfx/materials.js';
 import { gfxUniforms } from './gfx/uniforms.js';
@@ -196,7 +197,7 @@ export class Simulation {
     this.renderer = renderer;
     this.id = nextSimId++;   // tells a rebuilt simulation from the old one
     this.g = gridLayout(nx, ny, nz);
-    this.g.windowed = windowed;   // shaders compile the world offset only then (common.js WINDOWED)
+    this.g.windowed = windowed;   // a window of a larger world (for the app: every shader compiles the same either way)
     const g = this.g;
     this.frame = 0;
     this.paints = 0;   // brush strokes applied (the paint pass's random stream)
@@ -376,9 +377,11 @@ export class Simulation {
       blur: rawMat(blurFrag(g), { tSrc: { value: null }, uAxis: { value: 0 } }),
       brickDist: [0, 1, 2].map((axis) => rawMat(brickDistFrag(g, axis), { tSrc: { value: null } })),
       giSource: rawMat(giSourceFrag(g), { ...giUniforms(), ...giProbeUniforms() }),
-      giGather: rawMat(giGatherFrag(g), {
+      // the far field's part is in for a box too, off (shaders/far.js WORLD_SIZE; world/far.js attach turns it on)
+      giGather: rawMat(giGatherFrag(g, farGIGLSL(farLayout(WORLD_SIZE))), {
         ...giUniforms(), tGIRad: { value: null }, tGICov: { value: null }, tGIDir: { value: null },
         uParity: { value: -1 },
+        uFar: { value: false }, tFar: { value: null }, tFarTop: { value: null }, tFarShadow: { value: null }, uSea: { value: 0 },
       }),
     };
     // the flow pass blends into the flow field: new * FLOW_BLEND + old * (1 - FLOW_BLEND)
@@ -972,7 +975,13 @@ export class Simulation {
     return out;
   }
 
-  dispose() {
+  // Every pass's material (the profiler's and the app's program bookkeeping).
+  materials() { return Object.values(this.mats).flat(); }   // (fieldBoost, brickDist are arrays)
+
+  // retire: an array to put the materials in instead of disposing of them (the
+  // app disposes of them once the next grid's have claimed their programs, so
+  // the programs both use carry over: app.js build).
+  dispose(retire = null) {
     this.targets.forEach((t) => t.dispose());
     this.brick.dispose();
     this.blocks.dispose();
@@ -1003,7 +1012,8 @@ export class Simulation {
     this.giProbes.dispose();
     this.giProbesTmp?.dispose();
     this.history?.forEach((t) => t.dispose());
-    Object.values(this.mats).flat().forEach((m) => m.dispose());   // (fieldBoost, brickDist are arrays)
+    if (retire) retire.push(...this.materials());
+    else this.materials().forEach((m) => m.dispose());
     this.quad.geometry.dispose();
   }
 }

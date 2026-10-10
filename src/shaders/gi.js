@@ -140,10 +140,12 @@ void main() {
 
 // far: GLSL defining farBeyond(P, Q, d, open), what a ray from P that ended
 // at Q sees past it toward d (a massive world's far field: shaders/far.js),
-// where open says whether the sky is open that way; none for a grid that is
-// its whole world (then: beyond, the sky or the floor around the box).
+// where open says whether the sky is open that way, used while uFar is on
+// (else, and without far: beyond, the sky or the floor around the box). The
+// simulation compiles it in for a box too, off, so a box and a world share it.
 export const giGatherFrag = (g, far = '') => /* glsl */ `
-${lib(g)}${far}
+${lib(g)}${far}${far && `
+uniform bool uFar;   // a world's far field is drawn: rays read it past their end`}
 uniform sampler2D tGIRad;
 uniform sampler2D tGICov;
 uniform sampler2D tGIDir;
@@ -221,7 +223,7 @@ void main() {
       if (T < GI_T_MIN) break;
     }
 ${far && `    float open = 1.0;
-`}    if (T >= GI_T_MIN) L += T * ${far ? 'farBeyond(pc * float(BS), q * float(BS), d, open)' : 'beyond(pc * float(BS), d)'};
+`}    if (T >= GI_T_MIN) L += T * ${far ? '(uFar ? farBeyond(pc * float(BS), q * float(BS), d, open) : beyond(pc * float(BS), d))' : 'beyond(pc * float(BS), d)'};
     float vis = d.y > 0.0 ? T${far && ' * open'} : 0.0;
     vec4 y = vec4(SH_Y0, SH_Y1 * d);
     s0 += L * y.x; sx += L * y.y; sy += L * y.z; sz += L * y.w;

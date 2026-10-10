@@ -435,8 +435,17 @@ The world is much larger than what lives on the GPU. Its size is `WORLD` cells, 
     sky and a concrete floor); and its volume the same aerial perspective (`volumeFrag`'s haze), so the window
     doesn't stand out crisper than the land around it.
   - The view's program compiles in the background (`compileAsync`); the far field shows once it's ready.
-  - Today's sizes build none of it and compile byte-identical shader sources (volume, shadow, pick, GI, generator;
-    checked on the CPU). `regress.mjs` against `scale` isn't deterministic run to run on a busy GPU (its hidden
+  - Switching to a world compiles nothing big (2026-10-09). The box's view, shadow and GI programs hold the three
+    parts above, off behind one uniform (`uFar`, turned on by `attach`), for the one world size
+    (`shaders/far.js WORLD_SIZE`); the world offset is a uniform add (`uOrigin`, 0 in a box) rather than a compile
+    flag. So a world's window draws with exactly the box's 38 programs (`check-shaders.mjs` asserts the sources
+    match), and `app.js build` keeps the old grid's materials alive until the new grid's have claimed their
+    programs (`gfx/programs.js`), so they carry over instead of being deleted and compiled again. Before, a switch
+    recompiled ~1.4 MB of GLSL synchronously (the raymarcher alone is many seconds cold on ANGLE/Metal). What is
+    the world's own (the generator, the window's moves, the far passes: 18 small programs) compiles in the
+    background (`WorldWindow.whenReady`); the window is empty air until then, and the world fills in around it:
+    the window's terrain, then the far field when its view's program is ready.
+  - When the far field landed, `regress.mjs` against `scale` wasn't deterministic run to run on a busy GPU (its hidden
     dock tiles draw from the seeded `Math.random` as wall-clock frames go by, and `sim.giFrame`'s parity depends
     on frames since boot); reseeding and zeroing those before each preset load, this branch differs from `scale`
     by less than `scale` differs from itself (summit 1 vs 5 px, volcano 10 vs 14).
