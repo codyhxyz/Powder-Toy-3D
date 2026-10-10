@@ -10,6 +10,7 @@
 // flags any that are missing.
 import { ELEMENTS, E, K, meltInto, breakInto } from '../../elements.js';
 import { PHYS } from '../../physics.js';
+import { ELEC, SPARK_BORN, CONDUCTS, SPARK_COST, sparkPhase, sparkLevel, packSpark, takesSpark, conductsInto, tsnsSenses, powered, cloneable } from '../../electricity.js';
 
 // ---- element table, as the GLSL arrays (elements.js elementsGLSL) ----
 const col = (key) => Float32Array.from(ELEMENTS, (e) => e[key]);
@@ -116,9 +117,63 @@ function latent(T, acc, Tp, C, L, rising) {
 }
 
 const FIELDS = ['id', 'T', 'life', 'ctype', 'seed', 'mark', 'vx', 'vy', 'P'];
-const TYPES = { id: Uint8Array, ctype: Uint8Array, mark: Uint8Array };
+// ctype holds a conductor's spark (src/electricity.js), up to SPARK_CYCLE·(SPARK_V + 1)
+const TYPES = { id: Uint8Array, ctype: Uint16Array, mark: Uint8Array };
 const DX = [1, -1, 0, 0];
 const DY = [0, 0, 1, -1]; // +x, -x, up, down
+
+// ---- electricity (src/electricity.js electricReactGLSL): a cell's step ----
+// T, life and ctype of element id, from its face neighbours' ids, temperatures,
+// lives and ctypes; results in elecOut.
+const elecOut = { T: 0, life: 0, ctype: 0 };
+function electric(id, T, life, ctype, nid, nT, nL, nW) {
+  const life0 = life;
+  if (powered(id)) {
+    // switch, powered clone: turning off counts down; on and off spread through
+    // touching cells of the same element (off wins); a live P beside it
+    // switches it on, a live N off
+    if (life > 0 && life !== ELEC.SWITCH_ON) life -= 1;
+    let offNb = false, onNb = false, pOn = false, nOff = false;
+    for (let q = 0; q < 4; q++) {
+      const j = nid[q];
+      if (j === id) {
+        if (nL[q] > 0 && nL[q] < ELEC.SWITCH_ON) offNb = true;
+        if (nL[q] >= ELEC.SWITCH_ON) onNb = true;
+      }
+      if (CONDUCTS[j] && sparkPhase(nW[q]) > ELEC.SPARK_REST) { pOn ||= j === E.PSCN; nOff ||= j === E.NSCN; }
+    }
+    if (life0 === ELEC.SWITCH_ON && offNb) life = ELEC.SWITCH_ON - 1;
+    else if (life0 === 0 && onNb) life = ELEC.SWITCH_ON;
+    if (pOn && life0 < ELEC.SWITCH_ON) life = ELEC.SWITCH_ON;
+    if (nOff) life = ELEC.SWITCH_ON - 1;
+  } else if (id === E.TSNS) {
+    let hot = false;
+    for (let q = 0; q < 4; q++) hot ||= tsnsSenses(nid[q]) && nT[q] > T + PHYS.MATTER_REST_T;
+    life = hot ? ELEC.TSNS_FIRE : 0;
+  }
+  if (CONDUCTS[id]) {
+    let ph = sparkPhase(ctype), lv = sparkLevel(ctype);
+    if (ph > 0) {
+      ph--;
+      if (ph <= ELEC.SPARK_REST) lv = 0;
+    } else if (takesSpark(id, life0)) {
+      let best = 0;
+      for (let q = 0; q < 4; q++) {
+        const j = nid[q];
+        if (j === E.BATTERY || (j === E.TSNS && nL[q] >= ELEC.TSNS_FIRE)) best = ELEC.SPARK_V;
+        else if (CONDUCTS[j] && sparkPhase(nW[q]) > ELEC.SPARK_REST && conductsInto(j, id)) best = Math.max(best, sparkLevel(nW[q]));
+      }
+      if (best > 0) {
+        const c = SPARK_COST[id];
+        const spent = Math.min(Math.floor(c) + (rnd() < c - Math.floor(c) ? 1 : 0), best);
+        T += spent * ELEC.JOULE_PER_LEVEL / CAP[id];
+        if (best > spent) { ph = SPARK_BORN; lv = best - spent; }
+      }
+    }
+    ctype = packSpark(ph, lv);
+  }
+  elecOut.T = T; elecOut.life = life; elecOut.ctype = ctype;
+}
 
 export class World {
   constructor(nx, ny) {
@@ -174,6 +229,15 @@ export class World {
     });
   }
   erase(i) { this.id[i] = E.EMPTY; this.T[i] = AMBIENT; this.life[i] = 0; this.ctype[i] = 0; this.vx[i] = 0; this.vy[i] = 0; }
+  // Spark cell i with a full spark, if it conducts, can take one and is ready
+  // (src/electricity.js sparkCell, the Spark tool and lightning's entry point).
+  spark(i) {
+    if (!takesSpark(this.id[i], this.life[i]) || sparkPhase(this.ctype[i]) !== 0) return false;
+    this.ctype[i] = packSpark(SPARK_BORN, ELEC.SPARK_V);
+    return true;
+  }
+  // the Spark tool (passes.js paintFrag)
+  sparkBrush(cx, cy, radius) { this.brush(cx, cy, radius, (i) => this.spark(i)); }
 
   step() {
     this.frame++;
@@ -347,7 +411,7 @@ export class World {
     const { nx, ny } = this;
     const ID = this.id, TT = this.T, LIFE = this.life, CT = this.ctype, VX = this.vx, VY = this.vy, PP = this.P;
     const oID = this._id, oT = this._T, oLife = this._life, oCT = this._ctype, oVX = this._vx, oVY = this._vy, oP = this._P;
-    const nid = [0, 0, 0, 0], nT = [0, 0, 0, 0], nW = [0, 0, 0, 0], nP = [0, 0, 0, 0], pn = [0, 0, 0, 0];
+    const nid = [0, 0, 0, 0], nT = [0, 0, 0, 0], nW = [0, 0, 0, 0], nP = [0, 0, 0, 0], pn = [0, 0, 0, 0], nL = [0, 0, 0, 0];
     const nVX = [0, 0, 0, 0], nVY = [0, 0, 0, 0];
     const g = this.gravity;
     for (let y = 0; y < ny; y++)
@@ -360,8 +424,8 @@ export class World {
           const qx = x + DX[q], qy = y + DY[q];
           if (qx >= 0 && qy >= 0 && qx < nx && qy < ny) {
             const j = qy * nx + qx;
-            nid[q] = ID[j]; nT[q] = TT[j]; nW[q] = CT[j]; nP[q] = PP[j]; nVX[q] = VX[j]; nVY[q] = VY[j];
-          } else { nid[q] = E.WALL; nT[q] = T; nW[q] = 0; nP[q] = P0; nVX[q] = 0; nVY[q] = 0; } // insulating, pressure-reflecting box
+            nid[q] = ID[j]; nT[q] = TT[j]; nW[q] = CT[j]; nP[q] = PP[j]; nVX[q] = VX[j]; nVY[q] = VY[j]; nL[q] = LIFE[j];
+          } else { nid[q] = E.WALL; nT[q] = T; nW[q] = 0; nP[q] = P0; nVX[q] = 0; nVY[q] = 0; nL[q] = 0; } // insulating, pressure-reflecting box
         }
 
         // breaking (impacts and blasts), from the input state
@@ -458,6 +522,10 @@ export class World {
           if (held) { if (Math.abs(vx) < PHYS.REST_V) vx = 0; if (Math.abs(vy) < PHYS.REST_V) vy = 0; }
         } else { vx = 0; vy = 0; }
 
+        // electricity: sparks, switches, sensors (react.js electric)
+        electric(id, T, life, ctype, nid, nT, nL, nW);
+        T = elecOut.T; life = elecOut.life; ctype = elecOut.ctype;
+
         // reactions and phase changes
         let out = id, reset = false;
         let nAir = 0, nFire = 0, nAcid = 0, nPlant = 0, nBurning = 0, flame = 0, cloneOf = 0, nCloud = 0;
@@ -471,7 +539,7 @@ export class World {
           if (j === E.FIRE) nFire++;
           if (j === E.ACID) nAcid++;
           if (j === E.PLANT) nPlant++;
-          if (j === E.CLONE && nW[q] >= 1) cloneOf = nW[q];
+          if ((j === E.CLONE || (j === E.PCLN && nL[q] === ELEC.SWITCH_ON)) && nW[q] >= 1) cloneOf = nW[q];   // a powered clone only while on
           if (IGNITE[j] > 0 && j !== E.GUNPOWDER && nT[q] >= IGNITE[j]) { nBurning++; flame = Math.max(flame, FLAMET[j]); }
         }
 
@@ -532,10 +600,10 @@ export class World {
             ctype = cloneOf === E.LAVA ? E.STONE : 0;
             vx = 0; vy = KIND[cloneOf] === K.GAS ? 0 : PHYS.SPAWN_DROP_V;
           }
-        } else if (id === E.CLONE && ctype < 1) {
+        } else if ((id === E.CLONE || id === E.PCLN) && ctype < 1) {
           for (let q = 0; q < 4; q++) {
             const j = nid[q];
-            if (j !== E.EMPTY && j !== E.WALL && j !== E.CLONE) { ctype = j; break; }
+            if (cloneable(j)) { ctype = j; break; }
           }
         }
 
@@ -570,6 +638,7 @@ export class World {
         }
 
         if (out !== id) {
+          if (CONDUCTS[id] && !CONDUCTS[out] && out !== E.LAVA) ctype = 0;   // its spark goes with it
           if (reset) life = SPAWNLIFE[out];
           if (KIND[out] === K.SOLID) { vx = 0; vy = 0; }
           if (out === E.FIRE) life = PHYS.FIRE_LIFE_MIN + PHYS.FIRE_LIFE_SPREAD * rnd();

@@ -1,6 +1,7 @@
 import { prelude, stateOutGLSL } from './common.js';
 import { quietGLSL, inertNearGLSL } from './activity.js';
 import { ELEMENTS } from '../elements.js';
+import { electricReactGLSL } from '../electricity.js';
 
 // The softest breakable solid: a cell carrying less kinetic energy than this
 // can't break anything, which lets almost every cell skip the impact check.
@@ -43,6 +44,9 @@ const HARD_MIN = Math.min(...ELEMENTS.filter((e) => e.breakInto).map((e) => e.ha
 //     momentum and the fracture work as heat. The move pass that runs before
 //     this one leaves a projectile that can break what it's touching unbounced
 //     (move.js), so it reaches this check with its velocity intact.
+//   - Electricity (src/electricity.js): sparks hop between conductors, one
+//     face a step, losing what each cell's resistance costs and heating it;
+//     batteries and sensors start them, switches gate them.
 //   - The activity flags (shaders/common.js FLAG): the rest test on the cell's
 //     new state, its neighbours as this pass saw them (activity.js).
 export const reactFrag = (g) => /* glsl */ `
@@ -52,6 +56,7 @@ uniform float uGravity;
 ${stateOutGLSL}
 ${quietGLSL}
 ${inertNearGLSL}
+${electricReactGLSL}
 
 const ivec3 DIRS[6] = ivec3[6](ivec3(1,0,0), ivec3(-1,0,0), ivec3(0,1,0), ivec3(0,-1,0), ivec3(0,0,1), ivec3(0,0,-1));
 
@@ -267,6 +272,9 @@ void main() {
     v = vec3(0.0);
   }
 
+  // ---- electricity: sparks, switches, sensors (src/electricity.js) ----
+  electric(id, T, life, ctype, na, nid, rs);
+
   // ---- reactions & phase changes ----
   int nidOut = id;
   bool reset = false;   // new element: take its spawn life
@@ -283,7 +291,7 @@ void main() {
     if (j == E_FIRE) nFire++;
     if (j == E_ACID) nAcid++;
     if (j == E_PLANT) nPlant++;
-    if (j == E_CLONE && na[i].w >= 1.0) cloneOf = int(floor(na[i].w));
+    if ((j == E_CLONE || (j == E_PCLN && na[i].z == SWITCH_ON)) && na[i].w >= 1.0) cloneOf = int(floor(na[i].w));   // a powered clone only while on
     if (IGNITE[j] > 0.0 && j != E_GUNPOWDER && na[i].y >= IGNITE[j]) { nBurning++; flame = max(flame, FLAMET[j]); }
   }
 
@@ -348,10 +356,10 @@ void main() {
       ctype = cloneOf == E_LAVA ? float(E_STONE) : 0.0;
       v = vec3(0.0, KIND[cloneOf] == K_GAS ? 0.0 : SPAWN_DROP_V, 0.0);
     }
-  } else if (id == E_CLONE && ctype < 1.0) {
+  } else if ((id == E_CLONE || id == E_PCLN) && ctype < 1.0) {
     for (int i = 0; i < 6; i++) {
       int j = nid[i];
-      if (j != E_EMPTY && j != E_WALL && j != E_CLONE) { ctype = float(j); break; }
+      if (cloneable(j)) { ctype = float(j); break; }
     }
   }
 
@@ -392,6 +400,7 @@ void main() {
   }
 
   if (nidOut != id) {
+    if (CONDUCTS[id] && !CONDUCTS[nidOut] && nidOut != E_LAVA) ctype = 0.0;   // its spark goes with it
     if (reset) life = SPAWNLIFE[nidOut];
     if (KIND[nidOut] == K_SOLID) v = vec3(0.0);
     if (nidOut == E_FIRE) life = FIRE_LIFE_MIN + FIRE_LIFE_SPREAD * rnd(rs);
