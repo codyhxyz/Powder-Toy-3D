@@ -628,7 +628,10 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
       bounceTimed = sinceJumpPress <= POGO_WINDOW_S;
       pogoStep = bounceTimed ? Math.min(POGO_STEPS, pogoStep + 1) : 0;
       if (bounceTimed) sinceJumpPress = Infinity;   // the press is used up
-      v.y = bounceSpeed(pogoStep);
+      // + half a frame of gravity: each step below takes a whole frame's off before moving
+      // (semi-implicit Euler), which would cost the apex v·dt/2 and make it hang on the frame
+      // rate. The typical frame (dtSmooth), not this one, so one slow frame doesn't skew it.
+      v.y = bounceSpeed(pogoStep) + grav * dtSmooth / 2;
       p.onGround = false; jumpedNow = true; sinceBounce = 0;
       emit('pogo', { step: pogoStep, timed: bounceTimed, speed: v.y });
     } else if (pogoing && pressed && !bounceTimed && sinceBounce <= POGO_WINDOW_S && v.y > 0 && pogoStep < POGO_STEPS) {
@@ -637,7 +640,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
       pogoStep++;
       v.y = Math.sqrt(Math.max(0, v.y * v.y + bounceSpeed(pogoStep) ** 2 - before * before));
       bounceTimed = true; sinceJumpPress = Infinity;
-      emit('pogo', { step: pogoStep, timed: true, speed: v.y });
+      emit('pogo', { step: pogoStep, timed: true, late: true, speed: v.y });
     }
 
     // jetpack: thrust while jump is held in the air (swimming strokes instead). On a pogo a tap is
@@ -726,7 +729,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     // being thrown into a wall or ceiling (a blast) still does. On a pogo the
     // spring takes landings and head bonks up to the top bounce's own speed:
     // those are bounces ('pogo'), not landings.
-    const pogoSafe = pogoing ? bounceSpeed(POGO_STEPS) : 0;
+    const pogoSafe = pogoing ? bounceSpeed(POGO_STEPS) + grav * MAX_DT : 0;   // (+ what a longest frame's step adds)
     if (p.onGround && !wasGround && landSpeed > Math.max(LAND_EVENT_SPEED, pogoSafe)) emit('land', { speed: landSpeed });
     if (slam > 0) vitals.impact(slam, Math.max(SAFE_IMPACT, pogoSafe), LETHAL_IMPACT, 0, slamId >= 0 ? slamId : -1);
 
