@@ -543,6 +543,7 @@ function loadPreset(name, undoable = true) {
 function resetSpawners(name) {
   perkOrbs?.clear();
   arenaMarkers?.clear();
+  pov?.vehicles.spawnLayout(arenaLayout);   // an arena's jeeps and hoverbikes (null clears the last arena's)
   if (!spawners) return;
   spawners.clear();
   if (name === 'lab' && !win) spawners.add(SPAWNER.ENEMY, new THREE.Vector3(Math.round(sim.g.nx * LAB_ENEMY_AT[0]), 0, Math.round(sim.g.nz * LAB_ENEMY_AT[1])));
@@ -1460,6 +1461,7 @@ try {
     inWorld: () => !!win,
     showToolsMenu: () => dock.reveal((it) => isGearTool(it.id)),   // Q in first person: the palette at its first-person tools
   });
+  pov.vehicles.spawnLayout(arenaLayout);   // the scene loaded before the POV shell existed
   window.__app = {
     get sim() { return sim; }, get volume() { return volume; }, get scale() { return scale; }, get signs() { return signs; }, get builds() { return builds; },
     get pov() { return pov; },
