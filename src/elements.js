@@ -15,6 +15,9 @@
 //   slide  probability a supported powder grain topples diagonally per step
 //   melt   temperature above which it becomes LAVA (remembering what it was)
 //   ignite temperature above which it burns (if it touches air)
+//   flash  flash point: with a flame touching it, it burns from this
+//          temperature (whiskey: its vapour lights long before the liquid
+//          would on its own); omitted = ignite
 //   rad    radiative cooling rate toward ambient
 //   sigma  render only: light extinction per cell (RGB), absorption + scattering
 //          (the scattering part is in gfx/materials.js); also tints shadows
@@ -65,6 +68,19 @@ import { GEAR, SLOTS } from './pov/tools/catalog.js';
 
 export const K = { EMPTY: 0, SOLID: 1, POWDER: 2, LIQUID: 3, GAS: 4 };
 export const R = { NONE: 0, OPAQUE: 1, LIQUID: 2, GLASS: 3, GAS: 4, FIRE: 5 };
+
+// A liquid's flow and drag from its viscosity in mPa·s, on a log scale
+// through two rows: water (1 mPa·s: flow 0.9, drag 0.01) and lava (basaltic,
+// ~100 Pa·s: flow 0.3, drag 0.2). Rows older than this set theirs by hand.
+const VISC = { WATER_MPAS: 1, LAVA_MPAS: 1e5, WATER_FLOW: 0.9, LAVA_FLOW: 0.3, WATER_DRAG: 0.01, LAVA_DRAG: 0.2 };
+const VISC_DIGITS = 4;   // decimal places of the derived flow and drag
+function viscous(mPas) {
+  const t = Math.log10(mPas / VISC.WATER_MPAS) / Math.log10(VISC.LAVA_MPAS / VISC.WATER_MPAS);
+  return {
+    flow: +(VISC.WATER_FLOW + (VISC.LAVA_FLOW - VISC.WATER_FLOW) * t).toFixed(VISC_DIGITS),
+    drag: +(VISC.WATER_DRAG * (VISC.LAVA_DRAG / VISC.WATER_DRAG) ** t).toFixed(VISC_DIGITS),
+  };
+}
 
 const defs = [
   { key: 'EMPTY', abbr: 'AIR', name: 'Air', kind: K.EMPTY, render: R.NONE, color: '#000000',
@@ -211,11 +227,105 @@ const defs = [
     dens: 13.5, cond: 0.01, cap: 0.4, drag: 0.04, slide: 0.7, ignite: 450, burnRate: 0.0017, burnHeat: 6, flameT: 1100,
     life: 1, spawn: 0.3, sound: 'crack',
     desc: 'Lumps of coal, as the pickaxe breaks them from a seam. Sinks in water and burns faster than the seam.' },
+
+  // ---- Noita's materials (docs/elements.md, "Noita materials") ----
+  // Names and colours are Noita's (materials.xml ids and the wiki's
+  // descriptions, noita.wiki.gg, read 2026-10-10); flow, density and heat are
+  // real. Liquids take flow and drag from their viscosity (viscous, below).
+  // Their phase changes and Noita-style reactions wait for el-core's rows:
+  // they are listed, as data, in docs/elements.md.
+  // Blood: whole blood, 1.06 g/cm³; 3-4 mPa·s at high shear (it thins as it
+  // flows; Baskurt & Meiselman 2003); 3.6 J/(g·K) × 1.06 → cap 0.91 of
+  // water's; ~0.5 W/(m·K), 0.85 of water's. It is ~80 % water: its freezing
+  // point (-0.5 °C) and boiling point sit close to water's (rows deferred).
+  { key: 'BLOOD', abbr: 'BLOD', name: 'Blood', kind: K.LIQUID, render: R.LIQUID, color: '#8a0f12',
+    dens: 10.6, cond: 0.025, cap: 0.91, ...viscous(3.5), spawn: 0.35,
+    sigma: [0.9, 8, 8], desc: 'Thicker than water and a little heavier, so it settles under it.' },
+  // Toxic sludge (Noita's radioactive_liquid): an industrial slurry or mine
+  // tailings, water carrying 20-30 % fine solids: ~1.2 g/cm³ and 0.1-1 Pa·s
+  // (take 0.3). It sinks below water; Noita's floats (density 3, water's 4).
+  // Its faint green glow is game magic (gfx/materials.js TOXIC_GLOW); what it
+  // does to bodies is the status effects' (nt-status).
+  { key: 'TOXIC', abbr: 'TOXC', name: 'Toxic sludge', kind: K.LIQUID, render: R.LIQUID, color: '#3fb52c',
+    dens: 12, cond: 0.03, cap: 0.85, ...viscous(300), spawn: 0.35,
+    sigma: [1.6, 0.5, 2.5], desc: 'Thick green industrial sludge that sinks below water and glows faintly. Poisons whoever wades in it.' },
+  // Slime: Noita's pink-purple slime, taken as a hydrogel like PVA-borax
+  // slime: mostly water (~1.05 g/cm³, cap and cond near water's) and about as
+  // thick as honey, ~10 Pa·s at the shear rates of a pour.
+  { key: 'SLIME', abbr: 'SLIM', name: 'Slime', kind: K.LIQUID, render: R.LIQUID, color: '#b45cae',
+    dens: 10.5, cond: 0.028, cap: 0.95, ...viscous(1e4), spawn: 0.35,
+    sigma: [0.25, 0.7, 0.3], desc: 'Sticky pink goo, a little heavier than water. It oozes rather than flows.' },
+  // Whiskey (Noita's alcohol): 40 % ethanol by volume. 0.948 g/cm³ at 20 °C;
+  // ~2.8 mPa·s (ethanol-water peaks near 2.9 at 40 % by weight; CRC
+  // Handbook); 3.9 J/(g·K) → cap 0.89; ~0.45 W/(m·K). Its flash point is
+  // ~26 °C (closed cup, 40 % ethanol by volume): above it the vapour over it
+  // lights from a flame touching it (flash). Alone it lights only at
+  // ethanol's autoignition point, 363 °C (ignite). Its heat per volume is
+  // ~9 MJ/L (the ethanol's, 29.7 MJ/kg × 0.32 kg/L) against oil's ~36, a
+  // quarter (burnHeat / burnRate), with no soot (ash: false). It burns low:
+  // the water in it holds the flame cooler than ethanol's 1900 °C. Its boiling
+  // point, ~83 °C (the mixture's bubble point), is a deferred phase row.
+  { key: 'WHISKEY', abbr: 'WHSK', name: 'Whiskey', kind: K.LIQUID, render: R.LIQUID, color: '#c27a2c',
+    dens: 9.48, cond: 0.022, cap: 0.89, ...viscous(2.8), flash: 26, ignite: 363, burnRate: 0.008, burnHeat: 1.3,
+    flameT: 700, life: 1, spawn: 0.35, ash: false,
+    sigma: [0.05, 0.16, 0.55], desc: 'Forty per cent alcohol. Floats on water, and any flame lights it: it burns with a low, clean flame.' },
+  // Moss: a living mat that creeps over damp rock (react.js, physics.js
+  // DAMP_REACH, MOSS_GROW): an air cell on bare rock (ROCK, STONE, LIMESTONE,
+  // SANDSTONE) beside damp moss becomes moss. Damp is liquid water within a
+  // few cells along the moss (its ctype). It holds still once it covers the
+  // damp rock, so a world can be generated with moss at rest. Dry moss is
+  // tinder: like dry leaves and peat it lights at ~250 °C (Babrauskas,
+  // Ignition Handbook 2003) and burns fast (sawdust's rate); damp moss must
+  // first dry (above DAMP_DRY_T its water is gone; its latent heat isn't
+  // modelled). Soft as plant (hard), and breaks into plant debris.
+  { key: 'MOSS', abbr: 'MOSS', name: 'Moss', kind: K.SOLID, render: R.OPAQUE, color: '#4d7a2c', var: 0.22,
+    cond: 0.006, cap: 0.6, ignite: 250, burnRate: 0.006, burnHeat: 2, flameT: 800, life: 1,
+    hard: 6, breakInto: 'SAWDUST', sound: 'thunk',
+    desc: 'Creeps slowly over damp rock wherever water is near, and stops when it has covered it. Burns once dry.' },
+  // Fungus: foxfire, the glow of wood-rotting fungi (Armillaria, Panellus
+  // stipticus) whose luciferin emits at 520-530 nm (Kotlobay et al. 2018,
+  // PNAS). It spreads into WOOD, SAWDUST and PLANT beside damp fungus and
+  // rots them into itself (react.js FUNGUS_GROW): decay fungi need wood above
+  // ~20 % moisture (USDA Wood Handbook, ch. 14), so it is damp the way moss
+  // is. Dark isn't a rule: fungi need no darkness, only the damp that shade
+  // keeps, and the sim has no sunlight on cells. The glow is real but far
+  // dimmer than drawn (gfx/materials.js FOXFIRE_BAND). It burns like
+  // punk wood: lights at ~250 °C and smoulders.
+  { key: 'FUNGUS', abbr: 'FUNG', name: 'Fungus', kind: K.SOLID, render: R.OPAQUE, color: '#b5e08a', var: 0.2,
+    cond: 0.008, cap: 0.6, ignite: 250, burnRate: 0.003, burnHeat: 2, flameT: 700, life: 1,
+    hard: 6, breakInto: 'SAWDUST', sound: 'thunk',
+    desc: 'Glowing fungus, like foxfire. It slowly rots damp wood, sawdust and plants into more of itself. Burns.' },
+  // Noita's magical liquids. What they do to bodies is game magic and other
+  // branches' (nt-status stains, nt-flask drinking). As matter they are
+  // tinctures: water-thin (~1.5 mPa·s; Healthium a light syrup, 10), with
+  // water's heat, and densities in Noita's order (materials.xml: Levitatium
+  // 1.11, Berserkium 2.41, Pheromone 3.51, water 4, Polymorphine 4.14,
+  // Teleportatium 4.21, Healthium 5.53) inside the span real solutions have,
+  // an alcohol's 0.8 g/cm³ to a heavy syrup's 1.35. Their faint glow is game
+  // magic (gfx/materials.js MAGIC_GLOW_LUM); colours as the wiki gives them.
+  { key: 'TELEPORTATIUM', abbr: 'TLPT', name: 'Teleportatium', kind: K.LIQUID, render: R.LIQUID, color: '#3cc6e8',
+    dens: 10.5, cond: 0.03, cap: 1.0, ...viscous(1.5), spawn: 0.35,
+    sigma: [0.45, 0.06, 0.04], desc: 'A glowing cyan potion from Noita. Whoever touches it is flung somewhere else.' },
+  { key: 'LEVITATIUM', abbr: 'LEVI', name: 'Levitatium', kind: K.LIQUID, render: R.LIQUID, color: '#a7ad7a',
+    dens: 8, cond: 0.03, cap: 1.0, ...viscous(1.5), spawn: 0.35,
+    sigma: [0.12, 0.08, 0.3], desc: 'A pale olive potion from Noita, lighter than every other liquid. It makes whoever is soaked in it float faster.' },
+  { key: 'HEALTHIUM', abbr: 'HLTH', name: 'Healthium', kind: K.LIQUID, render: R.LIQUID, color: '#c8f26a',
+    dens: 13.5, cond: 0.03, cap: 1.0, ...viscous(10), spawn: 0.35,
+    sigma: [0.25, 0.03, 0.5], desc: 'A glowing lime potion from Noita that heals. Heavy and a little syrupy: it sinks under water.' },
+  { key: 'BERSERKIUM', abbr: 'BRSK', name: 'Berserkium', kind: K.LIQUID, render: R.LIQUID, color: '#ef5a26',
+    dens: 8.8, cond: 0.03, cap: 1.0, ...viscous(1.5), spawn: 0.35,
+    sigma: [0.03, 0.35, 0.9], desc: 'A red-orange potion from Noita that drives whoever it touches berserk. Floats on water.' },
+  { key: 'POLYMORPHINE', abbr: 'PLYM', name: 'Polymorphine', kind: K.LIQUID, render: R.LIQUID, color: '#ee6fcf',
+    dens: 10.4, cond: 0.03, cap: 1.0, ...viscous(1.5), spawn: 0.35,
+    sigma: [0.04, 0.45, 0.12], desc: 'A pink potion from Noita, and a dangerous one: it turns whoever it touches into something else.' },
+  { key: 'PHEROMONE', abbr: 'PHRM', name: 'Pheromone', kind: K.LIQUID, render: R.LIQUID, color: '#ff3d62',
+    dens: 9.6, cond: 0.03, cap: 1.0, ...viscous(1.5), spawn: 0.35,
+    sigma: [0.03, 0.6, 0.35], desc: 'A sparkling red potion from Noita. Creatures soaked in it become your friends.' },
 ];
 
 export const ELEMENTS = defs.map((d, id) => ({
   id, var: 0, dens: 1000, grav: 0, drag: 0, friction: d.kind === K.POWDER ? 0.25 : 0, jitter: 0, flow: 0, slide: 0, melt: 0, ignite: 0,
-  burnRate: 0, burnHeat: 0, flameT: 0, temp: 20, life: 0, rad: 0, spawn: 1, sigma: [0, 0, 0], desc: '',
+  flash: d.ignite ?? 0, burnRate: 0, burnHeat: 0, flameT: 0, temp: 20, life: 0, rad: 0, spawn: 1, sigma: [0, 0, 0], desc: '',
   hard: 0, breakInto: null, meltInto: null, acidProof: false, fizz: 0, ash: true, sound: null,
   ...d,
   grav: d.grav ?? (d.kind === K.POWDER || d.kind === K.LIQUID ? 1 : 0),
@@ -301,9 +411,11 @@ export const isGearTool = (id) => id <= GEAR_ID0 && id > GEAR_ID0 - 100;
 // ordered so related materials sit together and the colours run smoothly.
 export const PALETTE = [
   { name: 'Powders', items: ['SAND', 'STONE', 'BROKENCOAL', 'GUNPOWDER', 'ASH', 'SNOW', 'SHARDS', 'CRYSTAL_DUST', 'SAWDUST', 'SCRAP'] },
-  { name: 'Liquids', items: ['WATER', 'ACID', 'OIL', 'LAVA'] },
+  { name: 'Liquids', items: ['WATER', 'WHISKEY', 'ACID', 'TOXIC', 'OIL', 'SLIME', 'BLOOD', 'LAVA'] },
+  // Noita's magical liquids
+  { name: 'Potions', items: ['TELEPORTATIUM', 'LEVITATIUM', 'HEALTHIUM', 'BERSERKIUM', 'POLYMORPHINE', 'PHEROMONE'] },
   { name: 'Gases', items: ['STEAM', 'CLOUD', 'SMOKE', 'FIRE'] },
-  { name: 'Solids', items: ['WALL', 'COAL', 'ROCK', 'LIMESTONE', 'SANDSTONE', 'METAL', 'GLASS', 'ICE', 'CRYSTAL', 'WOOD', 'PLANT', 'CLONE'] },
+  { name: 'Solids', items: ['WALL', 'COAL', 'ROCK', 'LIMESTONE', 'SANDSTONE', 'METAL', 'GLASS', 'ICE', 'CRYSTAL', 'WOOD', 'FUNGUS', 'PLANT', 'MOSS', 'CLONE'] },
   { name: 'Tools', items: ['HEAT', 'COOL', 'ERASE', 'BLAST', 'SIGN', ...GEAR_ITEMS.map((g) => g.key)] },
   { name: 'Entities', items: ['ENEMY', 'SPAWN'] },
   { name: 'Constructions', items: ['HOUSE', 'TREE', 'CAMPFIRE', 'IGLOO', 'BARREL', 'AQUARIUM', 'FOUNTAIN', 'SHRINE', 'DOCK', 'TOWER', 'STONES', 'WELL', 'MINE', 'WRECK', 'PROMPT'] },
@@ -354,6 +466,7 @@ export function elementsGLSL() {
     floatArr('SLIDE', 'slide'),
     floatArr('MELT', 'melt'),
     floatArr('IGNITE', 'ignite'),
+    floatArr('FLASH', 'flash'),
     floatArr('BURNRATE', 'burnRate'),
     floatArr('BURNHEAT', 'burnHeat'),
     floatArr('FLAMET', 'flameT'),

@@ -199,3 +199,66 @@ shared mechanism; anything else names its own code.
   explodes.
 - **Propane** is 1.5 times as dense as air, so it pools. TPT's GAS just diffuses.
 - **Caustic gas** is hydrogen chloride: denser than air, and it dissolves back into water as acid.
+
+## Noita materials (branch `nt-mat`)
+
+Noita's materials as simulation elements, appended after the TPT fan-out's rows: blood, toxic sludge, slime, whiskey,
+moss, fungus, and six magical liquids (Teleportatium, Levitatium, Healthium, Berserkium, Polymorphine, Pheromone) in a
+Potions palette group. Their sources are in each row's comment in `src/elements.js`. What they do to bodies is other
+branches' work (`nt-status` stains, `nt-flask` drinking). Two mechanisms came with them:
+
+- **`flash`** (an element field): the flash point. With a flame touching it, a fuel burns from this temperature, and air
+  touching both a flame and a fuel past its flash point catches, so a flame runs across warm whiskey. On its own, a
+  fuel lights only at `ignite`. Whiskey at room temperature (20 °C, under its 26 °C flash point) often fails to take a
+  small flame, as cold spirit does; warmed, it always takes it.
+- **Growers** (`react.js`, `activity.js`; constants in `physics.js`): moss and fungus keep their damp in their ctype.
+  It is `DAMP_REACH` (4) beside liquid water, else one less than the dampest moss or fungus beside it, and 0 at or above
+  100 °C. Moss creeps into an air cell that touches damp moss and bare rock (ROCK, STONE, LIMESTONE, SANDSTONE) on a
+  face across from the moss's axis, so it makes a one-cell mat on the rock and never grows out into open air. Damp
+  fungus rots WOOD, SAWDUST and PLANT into fungus. Both are rare random events (`MOSS_GROW`, `FUNGUS_GROW`). They stop
+  for good once there's nowhere left to grow, and the activity map lets them sleep.
+
+**Placing growers at rest** (for world generation; `tools/gen-check.mjs` wants 0 changed cells):
+- Moss is at rest when no air cell touches both damp moss (ctype ≥ 1) and bare rock on a face off the moss's axis. That
+  means the mat covers the damp rock, or the moss is dry (more than `DAMP_REACH` cells from water along the mat).
+  Fungus is at rest when no WOOD, SAWDUST or PLANT touches damp fungus.
+- The simplest layouts are these: moss more than `DAMP_REACH` mat-cells from any water; or a mat that covers every
+  rock-faced air cell within `DAMP_REACH` of the water along the mat; and fungus that has no wood beside it where it is
+  damp. A whole rotted log made of fungus is at rest.
+- Set ctype to the settled damp: `max(DAMP_REACH - distance to water along the mat, 0)`. Otherwise it settles in the
+  first `DAMP_REACH` steps. Only ctype changes then, never the element, but a mat placed dry beside water may then grow.
+- Moss can't round an outside corner (a ridge's edge) using only face neighbours. It climbs inside corners and stops at
+  the edge.
+
+### Deferred rows, for el-core's tables
+
+These are in the contract shapes above. They become rows when `cold`/`hot` and `REACTIONS` land. Until then, the
+liquids don't boil or freeze.
+
+```js
+// Phase rows (cold / hot), in °C, latent as L_FUSE / L_BOIL (physics.js)
+BLOOD:   { cold: { T: -0.5, into: 'ICE', latent: L_FUSE },     // plasma, ~290 mOsm/kg: ΔTf = 1.86 × 0.29
+           hot:  { T: 100.5, into: [['STEAM', 0.8], ['ASH', 0.2]], latent: L_BOIL, puff: STEAM_EXPANSION } },  // ~80 % water; the solids char
+           // optional: coagulation at ~70 °C (albumin and haemoglobin denature at 60-70 °C) needs a cooked-blood element
+WHISKEY: { cold: { T: -27, into: 'ICE', latent: L_FUSE },      // 40 % ethanol freezes near -27 °C (to a slush)
+           hot:  { T: 83, into: 'STEAM', latent: L_BOIL } },   // the mixture's bubble point; its vapour is flammable: an ethanol-vapour gas would be truer
+TOXIC:   { cold: { T: -2, into: 'ICE', latent: L_FUSE },       // salts and fines depress it a little
+           hot:  { T: 101, into: [['STEAM', 0.7], ['STONE', 0.3]], latent: L_BOIL } },   // the water boils off, the solids stay
+SLIME:   { cold: { T: 0, into: 'ICE', latent: L_FUSE }, hot: { T: 100, into: 'STEAM', latent: L_BOIL } },
+// the six potions: water's, as tinctures
+TELEPORTATIUM ... PHEROMONE: { cold: { T: 0, into: 'ICE' }, hot: { T: 100, into: 'STEAM' } },
+
+// NT_REACTIONS: Noita's materials.xml reactions that map onto our elements.
+// Noita's rate is per 100 frames; chance = rate / 100 here is a game choice.
+const NT_REACTIONS = [
+  { a: 'TOXIC', b: 'WATER', into: ['WATER', 'SAME'], chance: 0.13 },        // Noita: water dilutes sludge away (game: dilution, not cleaning)
+  { a: 'SLIME', b: 'WHISKEY', into: ['SMOKE', 'SAME'], chance: 0.3 },       // Noita: whiskey dissolves slime (game magic)
+  { a: 'LEVITATIUM', b: 'SLIME', into: ['FIRE', 'STEAM'], chance: 0.5 },    // Noita: [slime] + [magic_faster] → blue fire + steam (game magic)
+  { a: 'POLYMORPHINE', b: 'TOXIC', into: ['SAME', 'SAME'] },                // Noita makes chaotic polymorphine: needs that element
+  { a: 'TELEPORTATIUM', b: 'WHISKEY', into: ['SAME', 'SAME'] },             // Noita makes unstable teleportatium: needs that element
+  { a: 'FUNGUS', b: 'TOXIC', into: ['SAME', 'FUNGUS'], chance: 0.5 },       // Noita: fungus feeds on sludge (game)
+  { a: 'BLOOD', b: 'LAVA', into: ['STEAM', 'SAME'], chance: 0.7 },          // Noita: blood on lava → steam (heat does most of it already)
+];
+// Whiskey's burn residue: a burnt-out whiskey cell is 60 % water by volume.
+// Needs a burn-residue field (e.g. burnt: [['WATER', 0.6]]); today it burns away to fire.
+```

@@ -20,7 +20,11 @@ const HARD_MIN = Math.min(...ELEMENTS.filter((e) => e.breakInto).map((e) => e.ha
 //     surface and into cloud in open air; cloud boils back to steam, freezes
 //     into snow, rains where it is thick and evaporates at its edges.
 //   - Combustion: flammables above their ignition temperature that touch air
-//     burn fuel, release heat and spawn flames into adjacent air.
+//     burn fuel, release heat and spawn flames into adjacent air; with a flame
+//     touching them, from their flash point.
+//   - Growth: plant grows into water; moss creeps over damp bare rock and
+//     fungus rots damp wood, sawdust and plant (activity.js growers). Each
+//     moss or fungus cell first updates its damp (its ctype).
 //   - Air pressure: diffuses through non-solid cells, and a shock front also
 //     propagates one cell per step with exponential falloff (each cell takes
 //     at least a decayed copy of its strongest open neighbour). Plain
@@ -272,11 +276,18 @@ void main() {
   bool reset = false;   // new element: take its spawn life
 
   int nAir = 0, nFire = 0, nAcid = 0, nPlant = 0, nBurning = 0, nCloud = 0;
+  int nWetMoss = 0, nWetFungus = 0, nFlash = 0;
+  float flashFlame = 0.0;
+  bvec3 wetMoss = bvec3(false), bed = bvec3(false);   // axes holding damp moss, bare rock (mossSite)
   float flame = 0.0;
   int cloneOf = 0;
   bool surface = false;   // a non-gas neighbour to condense onto (the box's floor counts, its sides and lid don't)
   for (int i = 0; i < 6; i++) {
     int j = nid[i];
+    bool wet = floor(na[i].w) >= 1.0;
+    if (j == E_MOSS && wet) { nWetMoss++; wetMoss[i >> 1] = true; }
+    if (j == E_FUNGUS && wet) nWetFungus++;
+    if (mossBed(j)) bed[i >> 1] = true;
     if (j == E_EMPTY) nAir++;
     if (j == E_CLOUD) nCloud++;
     if (!isGasLike(j) && (inGrid(p + DIRS[i]) || i == 3)) surface = true;
@@ -285,7 +296,11 @@ void main() {
     if (j == E_PLANT) nPlant++;
     if (j == E_CLONE && na[i].w >= 1.0) cloneOf = int(floor(na[i].w));
     if (IGNITE[j] > 0.0 && j != E_GUNPOWDER && na[i].y >= IGNITE[j]) { nBurning++; flame = max(flame, FLAMET[j]); }
+    else if (FLASH[j] < IGNITE[j] && na[i].y >= FLASH[j]) { nFlash++; flashFlame = max(flashFlame, FLAMET[j]); }
   }
+  // past its flash point a fuel's vapour carries a flame along it: air
+  // touching a flame and such a fuel catches as if the fuel were burning
+  if (nFire > 0 && nFlash > 0) { nBurning += nFlash; flame = max(flame, flashFlame); }
 
   if (broke) {
     // debris keeps my temperature, life (fuel, banked latent heat) and ctype,
@@ -347,7 +362,11 @@ void main() {
       nidOut = cloneOf; reset = true; T = SPAWNT[cloneOf];
       ctype = cloneOf == E_LAVA ? float(E_STONE) : 0.0;
       v = vec3(0.0, KIND[cloneOf] == K_GAS ? 0.0 : SPAWN_DROP_V, 0.0);
+    } else if (nWetMoss > 0 && mossSite(wetMoss, bed) && rnd(rs) < MOSS_GROW * float(nWetMoss)) {
+      nidOut = E_MOSS; reset = true; ctype = 0.0;   // its damp comes in next step
     }
+  } else if (id == E_MOSS || id == E_FUNGUS) {
+    ctype = dampOf(T, na);
   } else if (id == E_CLONE && ctype < 1.0) {
     for (int i = 0; i < 6; i++) {
       int j = nid[i];
@@ -371,7 +390,7 @@ void main() {
       if (T >= IGNITE[id] || hotTouch || (nFire > 0 && rnd(rs) < GUNPOWDER_FIRE)) {
         nidOut = E_FIRE; reset = true; T = GUNPOWDER_T; P += GUNPOWDER_P;
       }
-    } else if (T >= IGNITE[id] && (nAir > 0 || nFire > 0)) {
+    } else if ((T >= IGNITE[id] || (nFire > 0 && T >= FLASH[id])) && (nAir > 0 || nFire > 0)) {
       life -= BURNRATE[id];
       T = max(T, min(T + BURNHEAT[id] / C, FLAMET[id]));
       P += BURN_P;
@@ -381,6 +400,11 @@ void main() {
         T = max(T, BURNT_MIN_T);
       }
     }
+  }
+
+  // damp fungus rots wood, sawdust and plant into more fungus
+  if (nidOut == id && nWetFungus > 0 && fungusFood(id) && T < DAMP_DRY_T && rnd(rs) < FUNGUS_GROW * float(nWetFungus)) {
+    nidOut = E_FUNGUS; reset = true;
   }
 
   // acid eats its neighbours; what fizzes (limestone) sets its gas free as a puff
@@ -393,6 +417,7 @@ void main() {
 
   if (nidOut != id) {
     if (reset) life = SPAWNLIFE[nidOut];
+    if (grower(nidOut) || grower(id)) ctype = 0.0;   // a new grower's damp comes in next step; an old one's goes
     if (KIND[nidOut] == K_SOLID) v = vec3(0.0);
     if (nidOut == E_FIRE) life = FIRE_LIFE_MIN + FIRE_LIFE_SPREAD * rnd(rs);
   }

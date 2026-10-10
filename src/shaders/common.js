@@ -296,10 +296,12 @@ uint ownFlags(vec4 a, vec4 b) {
 }
 // Does a cell going from state A a0 to a1 change what its neighbours' tests
 // (activity.js inertNear) read of it? Its element, and its temperature unless
-// it is air (AIR_T_IN_NEAR). Its life and ctype + seed they don't read.
+// it is air (AIR_T_IN_NEAR). Its life and seed they don't read, nor its ctype,
+// except a moss or fungus cell's (its damp).
 bool nearChange(vec4 a0, vec4 a1) {
   int i1 = eid(a1);
-  return eid(a0) != i1 || (a0.y != a1.y && (i1 != E_EMPTY || AIR_T_IN_NEAR));
+  return eid(a0) != i1 || (a0.y != a1.y && (i1 != E_EMPTY || AIR_T_IN_NEAR))
+    || ((i1 == E_MOSS || i1 == E_FUNGUS) && floor(a0.w) != floor(a1.w));
 }
 `;
 
