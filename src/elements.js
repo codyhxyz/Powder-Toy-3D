@@ -27,6 +27,8 @@
 //          omitted = itself
 //   acidProof  acid doesn't eat it (it eats all other matter; gases and air
 //          never count)
+//   acid   it eats matter as acid does (react.js): what touches it and isn't
+//          acidProof dissolves, using it up. Acid, and caustic gas (HCl)
 //   fizz   gas that acid sets free as it dissolves it, as volumes of gas (at
 //          ambient) per volume of the solid: a pressure puff, scaled from
 //          water flashing to steam (physics.js STEAM_BOIL_PUFF, STEAM_EXPANSION)
@@ -86,7 +88,7 @@
 //            cells/step²), so set shock above what it does to itself;
 //          - under more than `crushP` air pressure: its own, and its open
 //            neighbours' (a solid holds none, so it reads theirs);
-//          - only where it touches air (an EMPTY neighbour) or a flame, all
+//          - only where it touches air (an EMPTY or OXYGEN neighbour) or a flame, all
 //            of the above, when `air: true` (a fuel that needs oxygen:
 //            propane). A flame counts because the flame front is where fuel
 //            and air mix (a fireball draws air in), so a front can sweep
@@ -153,6 +155,110 @@ const METAL_REFLECT = 0.58;
 export const K = { EMPTY: 0, SOLID: 1, POWDER: 2, LIQUID: 3, GAS: 4 };
 export const R = { NONE: 0, OPAQUE: 1, LIQUID: 2, GLASS: 3, GAS: 4, FIRE: 5 };
 
+// Clay's porosity: the share of a dry heap's volume that water fills when it
+// makes mud (elements CLAY, MUD), 1 − bulk/grain density = 1 − 1.2/2.6.
+const CLAY_WATER = 0.54;
+
+// ---- Real material data in the sim's units (the chemistry rows) ----
+// Heat capacity per volume over water's 4.18 J/(cm³·K): cap = ρ·c_p / 4.18.
+// Latent heats and heats of reaction per volume the same way, in cap·°C:
+// water's 334 and 2257 J/g give physics.js L_FUSE (80) and L_BOIL (540).
+const WATER_VOL_HEAT = 4.18;                                                       // J/(cm³·K)
+const capOf = (rho, cp) => +(rho * cp / WATER_VOL_HEAT).toFixed(3);                // g/cm³, J/(g·K)
+const latentOf = (L, rho) => +(L * rho / WATER_VOL_HEAT).toFixed(1);               // J/g, g/cm³
+const heatOf = (kJmol, molcm3) => +(kJmol * 1000 * molcm3 / WATER_VOL_HEAT).toFixed(1);   // kJ/mol, mol/cm³
+// Conductance from thermal conductivity, from water's (cond 0.03 at
+// 0.6 W/(m·K)) for liquids, from air's (EMPTY: 0.0005 at 0.026) for gases.
+// Each is held under the stability limit, 6·cond/cap < 1 (COND_STABLE of it).
+const WATER_K = 0.6, WATER_COND = 0.03, AIR_K = 0.026, AIR_COND = 0.0005, COND_STABLE = 0.95;
+const FACES = 6;
+const stableCond = (cond, cap) => +Math.min(cond, COND_STABLE * cap / FACES).toPrecision(2);
+const condOf = (k) => +(WATER_COND * k / WATER_K).toPrecision(2);
+const gasCondOf = (k) => +(AIR_COND * k / AIR_K).toPrecision(2);
+// Gases. Per volume an ideal gas holds the same moles whatever it is, so its
+// cap goes as its molar heat capacity, from air's (EMPTY: 0.02 at
+// 29.1 J/(mol·K)), and its dens is its molar mass over air's. grav is what
+// still air does to a parcel of it: buoyancy over its own mass plus its added
+// mass (half the air it displaces, as for a bubble or a balloon),
+// (ρ − 1)/(ρ + ½) of g, positive sinks. Its jitter goes as √D (a random walk's
+// spread), from steam's 0.15 at water vapour's diffusivity in air, 0.25 cm²/s.
+const AIR_CAP = 0.02, AIR_CPM = 29.1, AIR_M = 28.96, ADDED_MASS = 0.5, D_STEAM = 0.25, JITTER_STEAM = 0.15;
+const gasCapOf = (cpm) => +(AIR_CAP * cpm / AIR_CPM).toPrecision(3);
+const gasDensOf = (M) => +(M / AIR_M).toFixed(3);
+const buoyancy = (dens) => +((dens - 1) / (dens + ADDED_MASS)).toFixed(3);
+const jitterOf = (D) => +(JITTER_STEAM * Math.sqrt(D / D_STEAM)).toFixed(3);
+// Volumes of gas, at ambient and 1 atm (molar volume 24.06 L at 20 °C), per
+// volume of what gave it off: what a puff or a fizz counts.
+const MOLAR_VOLUME = 24055;                                                        // cm³/mol
+const gasVolumes = (molcm3) => Math.round(molcm3 * MOLAR_VOLUME);
+// ...and at temperature T (°C): steam's STEAM_EXPANSION is water's at 100 °C.
+const vapourVolumes = (molcm3, T) => Math.round(molcm3 * MOLAR_VOLUME * (T + PHYS.KELVIN) / (PHYS.AMBIENT + PHYS.KELVIN));
+// A weighted `into` from the volumes of what a cell turns into: [[key, vol], ...] → shares.
+const shares = (parts) => {
+  const sum = parts.reduce((s, [, v]) => s + v, 0);
+  return parts.map(([k, v]) => [k, +(v / sum).toFixed(3)]);
+};
+
+// Our acid is constant-boiling hydrochloric acid, the HCl–water azeotrope
+// (CRC): 20.2 % HCl by mass, 1.10 g/cm³ (ACID's density), boiling at 108.6 °C
+// into a vapour of the same make-up. Per cm³: 0.221 g HCl (36.46 g/mol) and
+// 0.875 g water (18.02 g/mol), so the vapour is 11 % HCl by moles. Boiling
+// takes water's latent heat plus the HCl's heat of solution given back
+// (74.8 kJ/mol).
+const HCL_M = 36.46, WATER_M = 18.015;
+const AZEO = { T: 108.6, hclG: 0.2214, waterG: 0.8746 };
+const HCL_SOLUTION = 74.8;                   // kJ/mol given off as HCl dissolves in water
+const AZEO_HCL = AZEO.hclG / HCL_M, AZEO_WATER = AZEO.waterG / WATER_M;   // mol/cm³
+const ACID_BOIL = {
+  T: AZEO.T,
+  into: shares([['STEAM', AZEO_WATER], ['CAUSTIC_GAS', AZEO_HCL]]),
+  latent: +(latentOf(2257, AZEO.waterG) + heatOf(HCL_SOLUTION, AZEO_HCL)).toFixed(1),
+  puff: vapourVolumes(AZEO_HCL + AZEO_WATER, AZEO.T),
+};
+
+// Saltwater is saturated brine (CRC, 20 °C): 26.4 % NaCl, 1.197 g/cm³, so a
+// cm³ holds 0.881 g of water and 0.316 g of salt. Not sea water (3.5 %, which
+// freezes at −1.9 °C): saturated, it takes up no more salt, and it freezes at
+// the NaCl–water eutectic. A pile of salt is 1.3 g/cm³ (SALT), and ice
+// 0.917 g/cm³, so what it leaves by volume is:
+// Its electrical conductivity (CRC, aqueous NaCl at 20 °C) is ~22 S/m, ~4×
+// sea water's 5: ions carry the current, so it conducts, but nothing like a metal.
+const BRINE = { rho: 1.197, water: 0.881, salt: 0.316, cp: 3.3, k: 0.57, boilT: 108.7, elec: 22 };
+const SALT_PILE = 1.3;                       // g/cm³: halite's 2.165 packed as sand is (60 % solid: 2.65 → SAND's 1.6)
+const ICE_RHO = 0.917;
+const EUTECTIC_T = -21.1;                    // °C, NaCl–H₂O at 23.3 % NaCl
+const BRINE_FREEZE = {
+  T: EUTECTIC_T,
+  into: shares([['ICE', BRINE.water / ICE_RHO], ['SALT', BRINE.salt / SALT_PILE]]),
+  latent: latentOf(334, BRINE.water),
+};
+const BRINE_BOIL = {
+  T: BRINE.boilT,
+  into: shares([['STEAM', BRINE.water], ['SALT', BRINE.salt / SALT_PILE]]),
+  latent: latentOf(2257, BRINE.water),
+  puff: Math.round(PHYS.STEAM_EXPANSION * BRINE.water),
+};
+
+// Lithium (CRC): 0.534 g/cm³ and 6.94 g/mol, so 0.077 mol/cm³. With water,
+// 2Li + 2H₂O → 2LiOH(aq) + H₂, giving 508.5 − 285.8 = 222.7 kJ per mole of
+// lithium (the heats of formation of LiOH(aq) and H₂O(l)) and half a mole of
+// hydrogen: 925 volumes of gas per volume of lithium. Acid sets free the same.
+// Electrical conductivity 1.08e7 S/m (resistivity 92.8 nΩ·m at 20 °C).
+const LI = { rho: 0.534, M: 6.94, cp: 3.58, melt: 180.5, dH: 222.7, elec: 1.08e7 };
+const LI_MOL = LI.rho / LI.M;                // mol/cm³
+const LI_H2_VOLUMES = gasVolumes(LI_MOL / 2);
+const METAL_COND = 0.1;                      // METAL's (iron, 80 W/(m·K)); lithium's 85 is the same
+
+// Carbon dioxide (CRC): 44.01 g/mol. Dry ice is a pressed block of it,
+// 1.56 g/cm³, that sublimes at −78.5 °C (1 atm) taking 571 J/g.
+const CO2_M = 44.01, DRY_ICE_RHO = 1.56, SUBLIME_T = -78.5;
+const DRY_ICE_SPAWN_BELOW = 1.5;             // °C under the sublimation point it is made at
+const CO2_SUBLIME = latentOf(571, DRY_ICE_RHO);
+
+// Liquid nitrogen (CRC, NIST WebBook, at its boiling point, 1 atm): boils at
+// −195.8 °C taking 199 J/g; 0.807 g/cm³ and 28.01 g/mol.
+const LN2 = { rho: 0.807, M: 28.013, cp: 2.04, k: 0.14, bp: -195.8, L: 199 };
+const LN2_SPAWN_BELOW = 0.2;                 // °C under its boiling point it is poured at
 // ---- explosives' numbers (rows at the end of defs; sources there) ----
 // Gunpowder's blast, the reference the others scale from (its row's).
 const GUNPOWDER_BLAST = { P: 60, T: 2200, flame: 0.7 };
@@ -229,8 +335,9 @@ const defs = [
     burnHeat: 5, flameT: 1000, life: 1, spawn: 0.35, ash: false,
     sigma: [0.4, 0.65, 1.8], desc: 'Lighter than water, so it floats on top. Catches fire at 220 °C.' },
   { key: 'ACID', abbr: 'ACID', name: 'Acid', kind: K.LIQUID, render: R.LIQUID, color: '#86f23c',
-    dens: 11, cond: 0.03, cap: 1.0, drag: 0.015, flow: 0.8, life: 1, spawn: 0.35, acidProof: true,
-    sigma: [0.24, 0.06, 0.3], desc: 'Eats through most things except glass and walls, using itself up as it goes.' },
+    dens: 11, cond: 0.03, cap: 1.0, drag: 0.015, flow: 0.8, life: 1, spawn: 0.35, acidProof: true, acid: true,
+    hot: ACID_BOIL,   // boils at 108.6 °C into steam and caustic gas (the azeotrope, above)
+    sigma: [0.24, 0.06, 0.3], desc: 'Eats through most things except glass and walls, using itself up as it goes. Boils at 108.6 °C into steam and caustic gas.' },
   { key: 'LAVA', abbr: 'LAVA', name: 'Lava', kind: K.LIQUID, render: R.OPAQUE, color: '#ff5a1a', var: 0.1,
     dens: 25, cond: 0.03, cap: 0.6, drag: 0.2, flow: 0.3, temp: 1600, spawn: 0.35, sound: 'sizzle',
     desc: 'Molten rock at 1600 °C. Cools back into whatever melted to make it.' },
@@ -411,6 +518,286 @@ const defs = [
     dens: 198, cond: 0.045, cap: 0.62, drag: 0.01, slide: 0.5, melt: 640, spawn: 0.3, sound: 'ping',
     desc: 'Fissile Pu-239. A neutron splits it into heat and 2-3 more neutrons, so a big enough heap runs away and blows itself apart. Water around it makes it go critical sooner.' },
 
+  // ---- Batch 3 (el-mat): materials and weather. docs/elements.md.
+  // Electrical conductivity (elec, S/m, at 20 °C; CRC Handbook): titanium
+  // 2.38e6, tungsten 1.79e7, gold 4.10e7, mercury 1.04e6 (liquid), 4.4e6
+  // frozen (its resistivity drops ~4× on freezing).
+  // Heat, for the rows below: cond follows the rocks' and coal's calibration,
+  // cond ≈ 0.03·(k / 2.5 W/m·K)^0.4 (rock 2.5 → 0.03, coal 0.26 → 0.012, steel
+  // 50 → 0.1), but never past cap/6, the stability limit react.js enforces per
+  // face (physics.js COND_FLUX_SHARE). cap = ρ·c over water's 4.18 J/(cm³·K).
+  // Conductivities and heat capacities: CRC Handbook of Chemistry and Physics.
+  // Strength: hard ≈ strength / 5 MPa, the rocks' rule (UCS for rock and
+  // brick, tensile strength for metals: METAL's 60 is a ~300 MPa structural
+  // steel).
+  //
+  // Void: TPT's VOID ("hole, will drain away any particles"). A solid that
+  // deletes whatever can move (powders, liquids, gases) the step it touches
+  // it; air passes, and solids beside it stay, as in TPT, where only a
+  // particle moving into VOID is drained (Simulation.cpp eval_move). With
+  // Clone upstream, a stream runs forever without flooding. Insulating, like
+  // Wall; acid can't eat it (TPT: VOID's Hardness 0).
+  { key: 'VOID', abbr: 'VOID', name: 'Void', kind: K.SOLID, render: R.OPAQUE, color: '#790b0b', var: 0.04,
+    cond: 0.001, cap: 1.0, acidProof: true,
+    desc: 'Deletes any powder, liquid or gas that touches it. Pair it with Clone for waterfalls that never flood.' },
+  // Brick: fired clay brick, 1.9 g/cm³ (0.84 J/g·K: cap 0.38; k ≈ 0.7 W/m·K:
+  // cond 0.018). Compressive strength 20–100 MPa (ASTM C62 asks ≥ 17; a modern
+  // facing brick tests ~60): hard 12, so a gunpowder blast a cell away (60)
+  // cracks it, the axe chips it and the pickaxe mines it. It breaks into
+  // brick rubble, not stone: crushed brick is a material of its own (grog,
+  // the red of a clay tennis court) and keeps brick's colour and density.
+  // It melts, at ~1,300 °C: common red-brick clays are rich in iron and alkali
+  // fluxes, so their refractoriness is under 1,350 °C (fire clays, with less
+  // flux, stand 1,500 °C+). A wood fire (900 °C) never touches it, lava
+  // (1,600) does. The melt is a glassy aluminosilicate slag that sets as stone.
+  // Fired ceramic shrugs off acids (only hydrofluoric attacks it).
+  { key: 'BRICK', abbr: 'BRCK', name: 'Brick', kind: K.SOLID, render: R.OPAQUE, color: '#a4553d', var: 0.1,
+    cond: 0.018, cap: 0.38, melt: 1300, meltInto: 'STONE', hard: 12, breakInto: 'RUBBLE', acidProof: true, sound: 'crack',
+    desc: 'Fired clay brick. A blast breaks it into rubble; it stands any wood fire and melts only past 1300 °C. Acid-proof.' },
+  { key: 'RUBBLE', abbr: 'BRBL', name: 'Brick rubble', kind: K.POWDER, render: R.OPAQUE, color: '#b0705a', var: 0.2,
+    dens: 19, cond: 0.01, cap: 0.38, drag: 0.04, slide: 0.6, melt: 1300, meltInto: 'STONE', spawn: 0.3, acidProof: true, sound: 'crack',
+    desc: 'Crushed brick, what a blast leaves of a brick wall. Sinks in water; melts past 1300 °C.' },
+  // Titanium: 4.51 g/cm³, melts at 1,668 °C; k 21.9 W/m·K (cond 0.07), 0.52
+  // J/g·K (cap 0.56). Ti-6Al-4V, the structural alloy, has a tensile strength
+  // of ~950 MPa: hard 190, so no blast in the sim cracks it (P_BREAK_PER_HARD:
+  // it would need 950 across it; P_MAX - P_MIN is 250) and no projectile does.
+  // So it needs no debris: it is the blast-proof wall that still melts. Hot
+  // hydrochloric and sulfuric acid attack it, so acid eats it.
+  { key: 'TITANIUM', abbr: 'TTAN', name: 'Titanium', kind: K.SOLID, render: R.OPAQUE, color: '#9a9ca3', var: 0.03,
+    cond: 0.07, cap: 0.56, melt: 1668, hard: 190, conducts: true, elec: 2.38e6, sound: 'ping',
+    desc: 'The blast-proof metal: no explosion or bullet breaks it. Melts at 1668 °C.' },
+  // Tungsten: 19.3 g/cm³, melts at 3,422 °C, the highest of any metal; k 173
+  // W/m·K and 0.13 J/g·K (cap 0.61, cond at the cap/6 limit). Worked rod has a
+  // tensile strength of ~1,000 MPa: hard 200, unbreakable here like
+  // titanium (TPT makes it brittle to pressure jumps; real tungsten
+  // penetrators don't shatter). It glows white past ~2,500 °C, with the
+  // generic incandescence (gfx/incandescence.js). Only hydrofluoric-nitric
+  // mixtures dissolve it: acid-proof.
+  { key: 'TUNGSTEN', abbr: 'TUNG', name: 'Tungsten', kind: K.SOLID, render: R.OPAQUE, color: '#7b7d82', var: 0.03,
+    cond: 0.1, cap: 0.61, melt: 3422, hard: 200, acidProof: true, conducts: true, elec: 1.79e7, sound: 'ping',
+    desc: 'Melts at 3422 °C, higher than any other metal, and glows white-hot long before. Unbreakable and acid-proof.' },
+  // Plasma: air ionised by heat, TPT's PLSM (10,000 °C). At 10,000 K an ideal
+  // gas has 293/10,273 of its room density: dens 0.03, the lightest thing in
+  // the sim. Dissociation and ionisation raise c_p about as much as the
+  // density falls (Boulos, Fauchais & Pfender, Thermal Plasmas, 1994), so its
+  // cap is about air's; its conductivity (~2 W/m·K, the dissociation peak)
+  // is held to the cap/6 limit. It radiates fast (rad: from 10,000 to
+  // recombination in ~40 steps, ~0.15 s, a lightning channel's afterglow)
+  // and recombines into plain air below ~5,000 K, where air's ionisation
+  // collapses (Saha; arcs in air go out at 4,000–5,000 K).
+  { key: 'PLASMA', abbr: 'PLSM', name: 'Plasma', kind: K.GAS, render: R.FIRE, color: '#c7b4ff',
+    dens: 0.03, cond: 0.003, cap: 0.02, grav: -1.4, drag: 0.08, jitter: 0.25, temp: 10000, rad: 0.02, life: 1,
+    spawn: 0.3, cold: { T: 4700, into: 'EMPTY' },
+    desc: 'Ionised air at 10,000 °C, the hottest thing there is. Glows, heats whatever it touches, and cools back into air in a blink.' },
+  // Gold: 19.3 g/cm³ (dens 193 for its nuggets), melts at 1,064 °C; k 318
+  // W/m·K, 0.129 J/g·K (cap 0.6, cond at the limit). Annealed gold has a
+  // tensile strength of ~120 MPa: hard 24, the softest metal here (the axe
+  // just breaks it, a bullet dents it out). Only aqua regia dissolves it:
+  // acid-proof. It breaks into nuggets, which recast as gold.
+  { key: 'GOLD', abbr: 'GOLD', name: 'Gold', kind: K.SOLID, render: R.OPAQUE, color: '#dcad2c', var: 0.04,
+    cond: 0.1, cap: 0.6, melt: 1064, hard: 24, breakInto: 'NUGGETS', acidProof: true, conducts: true, elec: 4.1e7, sound: 'ping',
+    desc: 'Soft, heavy and acid-proof. Tools and blasts break it into nuggets; it melts at 1064 °C.' },
+  { key: 'NUGGETS', abbr: 'NUGT', name: 'Gold nuggets', kind: K.POWDER, render: R.OPAQUE, color: '#e7bd45', var: 0.15,
+    dens: 193, cond: 0.1, cap: 0.6, drag: 0.01, slide: 0.5, melt: 1064, meltInto: 'GOLD', spawn: 0.3, acidProof: true,
+    conducts: true, elec: 4.1e7, sound: 'ping',
+    desc: 'Lumps of gold. They sink through everything, mercury included, and melt back into gold at 1064 °C.' },
+  // Mercury: 13.53 g/cm³ (dens 135: stone, steel scrap and brick float on it,
+  // gold and tungsten sink). Freezes at −38.83 °C and boils at 356.73 °C.
+  // Latent heats over water's (L_FUSE 80 is 334 J/cm³): fusion 11.4 J/g ×
+  // 13.53 = 154 J/cm³ → 37; vaporisation 295 J/g → 3,990 J/cm³ → 955. Boiling,
+  // 0.0675 mol/cm³ makes ~1,620 volumes of vapour at ambient (the puff).
+  // k 8.3 W/m·K (cond 0.05), 0.14 J/g·K (cap 0.45). Viscosity 1.5 mPa·s,
+  // water's is 0.9: it flows a little slower. Its vapour is toxic (ignored).
+  { key: 'MERCURY', abbr: 'MERC', name: 'Mercury', kind: K.LIQUID, render: R.OPAQUE, color: '#b7b9bd', var: 0.03,
+    dens: 135, cond: 0.05, cap: 0.45, drag: 0.01, flow: 0.8, spawn: 0.35, conducts: true, elec: 1.04e6, sound: 'splash',
+    cold: { T: -38.83, into: 'SOLID_MERCURY', latent: 37 },
+    hot: { T: 356.73, into: 'MERCURY_VAPOR', latent: 955, puff: 1620 },
+    desc: 'Liquid metal, so dense that stone and steel float on it while gold sinks. Freezes at −39 °C and boils at 357 °C.' },
+  // Frozen mercury: 14.18 g/cm³, k ~30 W/m·K (cond at the cap/6 limit),
+  // cap 0.46. Soft as lead, but it never meets a blow here: no debris.
+  { key: 'SOLID_MERCURY', abbr: 'HGIC', name: 'Frozen mercury', kind: K.SOLID, render: R.OPAQUE, color: '#c9cbcf', var: 0.03,
+    cond: 0.07, cap: 0.46, temp: -60, conducts: true, elec: 4.4e6, sound: 'ping',
+    hot: { T: -38.83, into: 'MERCURY', latent: 37 },
+    desc: 'Mercury frozen solid below −39 °C. It melts back into mercury as soon as it warms.' },
+  // Mercury vapour: 200.6 g/mol over air's 28.96, at 360 °C: 6.93 × 293/633 =
+  // 3.2 times ambient air, so it sinks (grav: (ρ − ρ_air)/ρ ≈ 0.7 g). Monatomic,
+  // a third of air's heat capacity per volume; k 0.009 W/m·K. It mixes its
+  // heat into the air (rad, like steam) and condenses back into mercury at
+  // its boiling point.
+  { key: 'MERCURY_VAPOR', abbr: 'HGVP', name: 'Mercury vapour', kind: K.GAS, render: R.GAS, color: '#c8ccd2',
+    dens: 3.2, cond: 0.0003, cap: 0.01, grav: 0.7, drag: 0.05, jitter: 0.1, temp: 360, rad: 0.03, spawn: 0.3,
+    sigma: [0.08, 0.08, 0.08], cold: { T: 356.73, into: 'MERCURY', latent: 955 },
+    desc: 'Boiled mercury. A heavy gas that sinks and condenses back into droplets below 357 °C.' },
+  // Diamond: 3.51 g/cm³, 0.509 J/g·K (cap 0.43). It conducts heat better
+  // than any bulk material (~2,200 W/m·K, five times copper): cond is at its
+  // cap/6 limit. The hardest natural material: by the strength rule it is
+  // far past anything the sim carries (hard 560 for its ~2.8 GPa tensile
+  // strength), so it needs no debris. TPT makes it indestructible, but it is
+  // carbon and burns in air: thermogravimetry puts the onset of oxidation at
+  // 700–780 °C (NASA, CVD films; uncoated grit 781 °C). In air the burning
+  // doesn't keep itself alight (Lavoisier needed a burning glass; in pure
+  // oxygen it does), so burnHeat 0: it burns away only while something keeps
+  // it hot, and leaves no ash (CO₂). It burns half as fast as coal (dense,
+  // no volatiles to flame off). n = 2.417.
+  { key: 'DIAMOND', abbr: 'DMND', name: 'Diamond', kind: K.SOLID, render: R.GLASS, color: '#d6f4fb',
+    cond: 0.07, cap: 0.43, ignite: 780, burnRate: 0.00025, burnHeat: 0, flameT: 780, life: 1, ash: false,
+    hard: 560, acidProof: true, sigma: [0.006, 0.006, 0.008], sound: 'shatter',
+    desc: 'Clear, brilliant and harder than anything: nothing breaks it and acid can\'t touch it. But it is carbon: above 780 °C it burns away.' },
+  // ---- Batch 2, chemistry and cold (el-chem; the data above defs) ----
+  // Liquid nitrogen: c_p 2.04 J/(g·K), k 0.14 W/(m·K). It floats on water
+  // (0.807) and boils away into plain air (nitrogen *is* air; TPT's just
+  // vanishes), as cold as it was, with a puff of 0.807 / 28.01 mol × 24.06 L
+  // = 693 volumes. Water it touches loses heat to it faster than it can boil
+  // it off, and freezes. It reacts with nothing: acid freezes on it.
+  { key: 'LIQUID_NITROGEN', abbr: 'LN2', name: 'Liquid nitrogen', kind: K.LIQUID, render: R.LIQUID, color: '#bcd9f0',
+    dens: LN2.rho * 10, cond: condOf(LN2.k), cap: capOf(LN2.rho, LN2.cp), drag: 0.01, flow: 0.9,
+    temp: LN2.bp - LN2_SPAWN_BELOW, spawn: 0.35, acidProof: true,
+    hot: { T: LN2.bp, into: 'EMPTY', latent: latentOf(LN2.L, LN2.rho), puff: gasVolumes(LN2.rho / LN2.M) },
+    sigma: [0.012, 0.011, 0.01],
+    desc: 'Nitrogen cold enough to pour, at −196 °C. Floats on water and freezes it, and boils away into cold air with a big puff.' },
+  // Salt: rock salt, NaCl (CRC), c_p 0.864 J/(g·K), a pile packed as sand's
+  // (SALT_PILE: 1.3, so it sinks even in brine) that conducts like sand. It
+  // melts at 801 °C (into lava that sets back into salt, as TPT's does). Water
+  // dissolves it (REACTIONS): 359 g per litre, so a cell of it salts 3.6 cells
+  // of water into brine.
+  { key: 'SALT', abbr: 'SALT', name: 'Salt', kind: K.POWDER, render: R.OPAQUE, color: '#f0eee8', var: 0.08,
+    dens: SALT_PILE * 10, cond: 0.01, cap: capOf(SALT_PILE, 0.864), drag: 0.04, slide: 0.85, melt: 801, spawn: 0.3,
+    desc: 'White grains that dissolve in water and turn it into saltwater. Melts at 801 °C.' },
+  // Saltwater: saturated brine (BRINE above), c_p 3.3 J/(g·K), k 0.57 W/(m·K).
+  // It sinks under fresh water, freezes at the eutectic, −21.1 °C, into ice
+  // and salt, and boils at 108.7 °C into steam, leaving its salt behind.
+  { key: 'SALTWATER', abbr: 'SLTW', name: 'Saltwater', kind: K.LIQUID, render: R.LIQUID, color: '#3f8ccc',
+    dens: +(BRINE.rho * 10).toFixed(2), cond: condOf(BRINE.k), cap: capOf(BRINE.rho, BRINE.cp), drag: 0.012, flow: 0.85,
+    spawn: 0.35, acidProof: true, conducts: true, elec: BRINE.elec, cold: BRINE_FREEZE, hot: BRINE_BOIL,
+    sigma: [0.052, 0.014, 0.01],
+    desc: 'Water saturated with salt. Heavier than water, freezes only at −21 °C, and boiling it leaves the salt behind. Conducts electricity.' },
+  // Carbon dioxide: 1.52× air, so it sinks and pools in low places, and puts
+  // out flames where it makes up CO2_SMOTHER of the air (react.js). Below
+  // −78.5 °C it settles out as dry ice. c_p,m 37.1 J/(mol·K), k 0.0166 W/(m·K),
+  // diffusivity in air 0.16 cm²/s.
+  { key: 'CO2', abbr: 'CO2', name: 'Carbon dioxide', kind: K.GAS, render: R.GAS, color: '#959aa3',
+    dens: gasDensOf(CO2_M), cond: gasCondOf(0.0166), cap: gasCapOf(37.1), grav: buoyancy(gasDensOf(CO2_M)), drag: 0.05,
+    jitter: jitterOf(0.16), rad: PHYS.AIR_AMBIENT_PULL, spawn: 0.3,
+    cold: { T: SUBLIME_T, into: 'DRY_ICE', latent: CO2_SUBLIME },
+    sigma: [0.02, 0.02, 0.02],
+    desc: 'A heavy, invisible gas that sinks and pools in low places. It smothers fire, and freezes into dry ice at −78.5 °C.' },
+  // Dry ice: c_p ~1.2 J/(g·K) near −80 °C (Giauque & Egan 1937), k ~0.28 W/(m·K).
+  // It sublimes straight into CO₂ at −78.5 °C, setting free
+  // 1.56 / 44.01 mol × 24.06 L = 853 volumes of gas.
+  { key: 'DRY_ICE', abbr: 'DRIC', name: 'Dry ice', kind: K.SOLID, render: R.OPAQUE, color: '#e6ebf0', var: 0.04,
+    cond: condOf(0.28), cap: capOf(DRY_ICE_RHO, 1.2), temp: SUBLIME_T - DRY_ICE_SPAWN_BELOW, acidProof: true,
+    hot: { T: SUBLIME_T, into: 'CO2', latent: CO2_SUBLIME, puff: gasVolumes(DRY_ICE_RHO / CO2_M) },
+    desc: 'Frozen carbon dioxide at −80 °C. It never melts: it turns straight into heavy CO₂ gas, chilling what it touches.' },
+  // Hydrogen: 2.016 g/mol, 0.07× air, so it shoots up; it diffuses faster than
+  // any other gas (0.61 cm²/s in air) and conducts heat 7× better than air
+  // (0.187 W/(m·K), held to the stability limit). c_p,m 28.8 J/(mol·K). It
+  // burns into steam with the oxygen in air or pure oxygen once it is past its
+  // autoignition point, which a flame's heat gets it to in a few steps
+  // (REACTIONS: a flame doesn't light pure hydrogen, which has no oxygen).
+  { key: 'HYDROGEN', abbr: 'HYGN', name: 'Hydrogen', kind: K.GAS, render: R.GAS, color: '#a3b4ff',
+    dens: gasDensOf(2.016), cond: stableCond(gasCondOf(0.187), gasCapOf(28.8)), cap: gasCapOf(28.8),
+    grav: buoyancy(gasDensOf(2.016)), drag: 0.05, jitter: jitterOf(0.61), rad: PHYS.AIR_AMBIENT_PULL, spawn: 0.3,
+    sigma: [0.012, 0.012, 0.012],
+    desc: 'The lightest gas: it rises fast. A flame sets it burning with the air into steam, and with oxygen it goes up all at once.' },
+  // Oxygen: 32.00 g/mol, 1.105× air (which is 21 % oxygen); c_p,m 29.4 J/(mol·K),
+  // k 0.0266 W/(m·K), 0.20 cm²/s. It doesn't burn by itself, but fuel next to
+  // it burns faster and hotter (react.js, physics.js O2_PER_AIR).
+  { key: 'OXYGEN', abbr: 'OXYG', name: 'Oxygen', kind: K.GAS, render: R.GAS, color: '#accbff',
+    dens: gasDensOf(32.0), cond: gasCondOf(0.0266), cap: gasCapOf(29.4), grav: buoyancy(gasDensOf(32.0)), drag: 0.05,
+    jitter: jitterOf(0.2), rad: PHYS.AIR_AMBIENT_PULL, spawn: 0.3,
+    sigma: [0.015, 0.015, 0.015],
+    desc: 'Pure oxygen. It doesn\'t burn by itself, but anything burning next to it burns several times faster and hotter.' },
+  // Caustic gas: hydrogen chloride, 36.46 g/mol, 1.26× air, so it sinks;
+  // c_p,m 29.1 J/(mol·K), k 0.0145 W/(m·K), ~0.175 cm²/s (Fuller, from CO₂'s).
+  // Boiling acid gives it off (ACID_BOIL). A cell of it eats as a cell of acid
+  // does (acid: true), and water takes it back up as acid (REACTIONS).
+  { key: 'CAUSTIC_GAS', abbr: 'CAUS', name: 'Caustic gas', kind: K.GAS, render: R.GAS, color: '#b4efb8',
+    dens: gasDensOf(HCL_M), cond: gasCondOf(0.0145), cap: gasCapOf(29.1), grav: buoyancy(gasDensOf(HCL_M)), drag: 0.05,
+    jitter: jitterOf(0.175), life: 1, rad: PHYS.AIR_AMBIENT_PULL, spawn: 0.3, acidProof: true, acid: true,
+    sigma: [0.05, 0.05, 0.05],
+    desc: 'Hydrogen chloride, the fumes of boiling acid. Heavier than air, it eats through things as acid does, and turns back into acid in water.' },
+  // Lithium (LI above): the lightest metal, so it floats on water, and even on
+  // oil. Lumps of it, as scrap is of metal, so it can float. c_p 3.58 J/(g·K);
+  // it melts at 180.5 °C. In water it fizzes off hydrogen and heat
+  // (REACTIONS): any bang comes from the hydrogen. Acid dissolves it into the
+  // same hydrogen (fizz). Soft: it doesn't ring.
+  { key: 'LITHIUM', abbr: 'LITH', name: 'Lithium', kind: K.POWDER, render: R.OPAQUE, color: '#c3bdc9', var: 0.06,
+    dens: LI.rho * 10, cond: stableCond(METAL_COND, capOf(LI.rho, LI.cp)), cap: capOf(LI.rho, LI.cp), drag: 0.02,
+    slide: 0.5, melt: LI.melt, spawn: 0.3, fizz: LI_H2_VOLUMES, conducts: true, elec: LI.elec,
+    desc: 'A metal so light it floats on water. In water it fizzes out hydrogen and heat, enough to set the hydrogen alight. Melts at 180 °C.' },
+  // ---- Batch 4 (docs/elements.md): dust, antimatter, singularity, clay, mud, ceramic ----
+  // Dust: grain dust (wheat flour), TPT's DUST. A loose heap is 0.5-0.6 g/cm³
+  // (dens 5.5: it floats on water), c ≈ 1.7 J/(g·K) (cap 0.55·1.7/4.18 ≈ 0.22),
+  // and conducts like ash. A 50 µm grain settles at ~0.1 m/s in still air
+  // (Stokes): far under a cell per step, but a cell of it is a puff, not a
+  // grain, so it falls slowly (drag: ~0.14 cells/step at the default gravity,
+  // a quarter of sand's) yet faster than physics.js DUST_LIFT_V, so a falling
+  // cloud counts as suspended. Flour is cohesive (repose ~45°+).
+  // Heat of combustion ~15.5 MJ/kg, 8.5 MJ per litre of heap: burnHeat /
+  // burnRate ≈ 1330 on the scale where wood's 11 MJ/L is 1670. Settled, it
+  // smoulders: a dust layer glows at 450-700 °C rather than flaming (flameT).
+  // Its cloud lights at 380-440 °C (minimum ignition temperature, wheat
+  // flour; Eckhoff 2003): ignite 400. Suspended in air it goes off as one
+  // (react.js dust clouds, physics.js DUST_*).
+  { key: 'DUST', abbr: 'DUST', name: 'Dust', kind: K.POWDER, render: R.OPAQUE, color: '#efdcae', var: 0.12,
+    dens: 5.5, cond: 0.004, cap: 0.22, drag: 0.15, slide: 0.3, ignite: 400, burnRate: 0.0015, burnHeat: 2, flameT: 600,
+    life: 1, spawn: 0.3,
+    desc: 'Fine flour dust. A heap only smoulders, but blown into the air it explodes: a flame runs through the cloud and its blast stirs up more dust.' },
+  // Antimatter (TPT's AMTR): annihilates any matter it touches, both cells
+  // gone in a flash (REACTIONS). E = mc²: a cell of water (27 kg at a
+  // 0.30 m cell) and as much antimatter give 2·27 kg·c² ≈ 4.9e18 J, about a
+  // gigaton of TNT, and even a cell of air ~1e16 J. Nothing in the engine
+  // holds that, so each annihilation is capped at its limits: the pressure
+  // and temperature clamps (physics.js P_MAX, CELL_TEMP_MAX). TPT's AMTR is a
+  // gas that sinks and spreads; ours is a powder, so it can be poured where
+  // it's wanted, and it spares air (a game liberty: real antimatter would
+  // annihilate air too, more slowly by its density, ~1/800 of water's).
+  { key: 'ANTIMATTER', abbr: 'AMTR', name: 'Antimatter', kind: K.POWDER, render: R.OPAQUE, color: '#c4bce4', var: 0.1,
+    dens: 15, cond: 0.01, cap: 0.35, drag: 0.04, slide: 0.8, spawn: 0.3, acidProof: true,   // it annihilates acid instead
+    desc: 'Annihilates whatever matter it touches into a blast of pressure and heat. Only walls, clone and singularities are safe; it rests on air.' },
+  // Singularity (TPT's SING): a tiny black hole (react.js, physics.js SING_*).
+  // It holds a deep vacuum, so air and matter rush in, swallows what touches
+  // it, gaining its mass (life, in cells of water), and bursts when it is
+  // full; starved, it evaporates and winks out. Denser than anything, it
+  // sinks through every liquid. Nothing gets out: it conducts no heat.
+  { key: 'SINGULARITY', abbr: 'SING', name: 'Singularity', kind: K.POWDER, render: R.OPAQUE, color: '#1c1c20',
+    dens: 1000, cond: 0, cap: 1, drag: 0.04, life: PHYS.SING_MASS0, spawn: 0.02, acidProof: true,   // it swallows acid instead
+    desc: 'A tiny black hole. It sucks in the air around it, swallows everything it touches and grows; full, it bursts. Starved, it evaporates.' },
+  // Clay: kaolin, white china clay. Grains of kaolinite are 2.6 g/cm³; a dry
+  // heap ~1.2 (dens 12, porosity 1 − 1.2/2.6 ≈ 0.54: CLAY_WATER), with
+  // c ≈ 0.92 J/(g·K) (cap 1.2·0.92/4.18 ≈ 0.26), conducting like dry sand.
+  // Water soaks into its pores and makes mud (REACTIONS). Fired, it turns
+  // to ceramic: kaolinite loses its water at 450-600 °C and sinters into
+  // spinel and then mullite from ~980 °C (Brindley & Nakahira, J. Am. Ceram.
+  // Soc. 42, 1959); earthenware is fired at 1000-1150 °C. It never slakes again.
+  { key: 'CLAY', abbr: 'CLST', name: 'Clay', kind: K.POWDER, render: R.OPAQUE, color: '#d9d2c3', var: 0.1,
+    dens: 12, cond: 0.01, cap: 0.26, drag: 0.06, slide: 0.35, spawn: 0.3,
+    hot: { T: 1000, into: 'CERAMIC' },
+    desc: 'Kaolin powder. Water soaks into it and makes mud; fired past 1000 °C it bakes into ceramic.' },
+  // Mud: clay with its pores full of water (CLAY_WATER of its volume):
+  // 1.2 + 0.54 = 1.74 g/cm³ (dens 17.4: it sinks in water), cap
+  // (1.2·0.92 + 0.54·4.18)/4.18 ≈ 0.8, conducting like wet soil (~1.2 W/(m·K),
+  // water's 0.03). A clay slurry this thick is a Bingham plastic, viscous like
+  // lava (Coussot, Mudflow Rheology and Dynamics, 1997); its yield stress
+  // holds only a few cm, under a cell, so here it creeps level. TPT's paste
+  // hardens under pressure, as cornstarch in water does (shear thickening); a
+  // clay slurry thins as it's worked instead, so ours doesn't. Past 100 °C its
+  // water boils off, taking that share of water's latent heat and setting the
+  // steam free as a puff, and it dries back into clay.
+  { key: 'MUD', abbr: 'MUD', name: 'Mud', kind: K.LIQUID, render: R.OPAQUE, color: '#9a8f7b', var: 0.08,
+    dens: 17.4, cond: 0.03, cap: 0.8, drag: 0.2, flow: 0.2, spawn: 0.35,
+    hot: { T: 100, into: 'CLAY', latent: CLAY_WATER * PHYS.L_BOIL, puff: CLAY_WATER * PHYS.STEAM_EXPANSION },
+    desc: 'Wet clay. Thick and slow, it sinks in water. Heated past 100 °C its water boils off and it dries back into clay.' },
+  // Ceramic: fired kaolin, unglazed porcelain. ~2.3 g/cm³, c ≈ 0.85 J/(g·K)
+  // (cap 2.3·0.85/4.18 ≈ 0.47), ~1.5 W/(m·K), a little over glass (cond 0.02).
+  // Hard to scratch (Mohs ~7) but brittle: its fracture toughness, ~1-1.5
+  // MPa·√m, is a little over glass's (0.75, hard 8), so hard 9. It breaks
+  // into sharp, acid-proof fragments much as glass does (SHARDS), and shrugs
+  // off acid (HF aside: lab ware is porcelain). Kaolin fuses at ~1750-1785 °C
+  // (pyrometric cone 35), and its melt cools into a glass.
+  { key: 'CERAMIC', abbr: 'CRMC', name: 'Ceramic', kind: K.SOLID, render: R.OPAQUE, color: '#ece7dd', var: 0.04,
+    cond: 0.02, cap: 0.47, melt: 1750, meltInto: 'GLASS', hard: 9, breakInto: 'SHARDS', acidProof: true, sound: 'shatter',
+    desc: 'Fired clay: hard, acid-proof and brittle. A hard knock or a blast shatters it into sharp fragments. Melts into glass at 1750 °C.' },
   // ---- Explosives (batch 1, docs/elements.md): blast rows read by the shared
   // blast mechanism (el-core); the fuse has its own case in react.js.
   // Data: Wikipedia's TNT-equivalent table (density, detonation velocity D,
@@ -519,7 +906,7 @@ const ELEC_METAL = 1e6;
 export const elementRow = (d, id) => ({
   id, var: 0, dens: 1000, grav: 0, drag: 0, friction: d.kind === K.POWDER ? 0.25 : 0, jitter: 0, flow: 0, slide: 0, melt: 0, ignite: 0,
   burnRate: 0, burnHeat: 0, flameT: 0, temp: 20, life: 0, rad: 0, spawn: 1, sigma: [0, 0, 0], desc: '',
-  hard: 0, breakInto: null, meltInto: null, acidProof: false, fizz: 0, ash: true, sound: null,
+  hard: 0, breakInto: null, meltInto: null, acidProof: false, acid: false, fizz: 0, ash: true, sound: null,
   cold: null, hot: null, crush: null, blast: null, conducts: false,
   ...d,
   grav: d.grav ?? (d.kind === K.POWDER || d.kind === K.LIQUID ? 1 : 0),
@@ -531,6 +918,7 @@ export const E = Object.fromEntries(ELEMENTS.map((e) => [e.key, e.id]));
 // What a broken cell becomes: the debris element's id, or -1 when it can't break.
 export const breakInto = (e) => (e.breakInto ? E[e.breakInto] : -1);
 
+
 // Brush tools that are not elements (negative ids in the paint shader).
 // SIGN is handled by the app (it pins a text label), not by the paint shader.
 export const TOOLS = [
@@ -541,8 +929,14 @@ export const TOOLS = [
   { id: -5, key: 'SIGN', abbr: 'SIGN', name: 'Sign', color: '#efe7d2',
     desc: 'Click a surface to pin a label. {t}, {p} and {e} show live temperature, pressure and element.' },
   // Spawners are handled by the app too (src/spawners.js): markers, not cells.
-  { id: -6, key: 'ENEMY', abbr: 'NPC', name: 'Enemy spawner', color: '#e0453a',
+  { id: -6, key: 'ENEMY', abbr: 'NPC', name: 'Axeman spawner', color: '#e0453a',
     desc: 'Click a surface: in first person (V) an enemy with every tool appears here, and comes back after it dies. Click it again to remove it.' },
+  { id: -30, key: 'GUNNER', abbr: 'GUNR', name: 'Gunner spawner', color: '#e08a2a',
+    desc: 'Click a surface: in first person (V) a jetpack gunner appears here. It keeps its distance, flies to high ground and shoots. Click it again to remove it.' },
+  { id: -31, key: 'WORM', abbr: 'WORM', name: 'Worm spawner', color: '#b0607a',
+    desc: 'Click a surface: in first person (V) a worm burrows in here. It tunnels through rock, bursts out under you and bites; loud noises draw it. WALL and metal stop it. Click it again to remove it.' },
+  { id: -32, key: 'GIANTWORM', abbr: 'GWRM', name: 'Giant worm spawner', color: '#7a3550',
+    desc: 'Click a surface: in first person (V) a giant worm burrows in here, Noita\'s Jättimato: twenty metres long, seven times as tough as the worm and faster. Click it again to remove it.' },
   { id: -7, key: 'SPAWN', abbr: 'SPWN', name: 'Player spawn', color: '#3fa7ff',
     desc: 'Click a surface: V drops you in at the spawn nearest the cursor, and you respawn there. Click it again to remove it.' },
   { id: -20, key: 'JEEPPAD', abbr: 'JEEP', name: 'Jeep pad', color: '#8fa04a',
@@ -559,8 +953,16 @@ export const TOOLS = [
     desc: 'Packets of light flying straight. Glass, water and ice let them through, metal reflects them, and anything else soaks them up as heat: enough to light wood.' },
   { id: -41, key: 'NEUTRON', abbr: 'NEUT', name: 'Neutron', color: '#20e0ff',
     desc: 'Fast neutrons. They pass through most things; water slows them, and slow ones split plutonium far more readily.' },
+  // Lightning is handled by the app too (src/lightning.js): a click strikes a
+  // bolt from the top of the box down to the surface under the cursor.
+  { id: -8, key: 'LIGHTNING', abbr: 'LIGH', name: 'Lightning', color: '#fff6b0',
+    desc: 'Click a surface: a branching bolt strikes it from above, leaving a column of plasma, scorching heat and a pressure crack where it lands. Brush size sets how wide the strike is.' },
+  // Magical birds (src/birds/): a flock that lives on this spot. (-30 to -32 are the creature spawners.)
+  { id: -33, key: 'FLOCK', abbr: 'BIRD', name: 'Bird flock', color: '#b58cff',
+    desc: 'Click a surface: a flock of magical birds lives here. They perch in trees and on roofs, take off when you come near or fire, roost and glow at night, and burn and fall like anything else. Click it again to remove it.' },
 ];
-export const isSpawnerTool = (id) => id === -6 || id === -7 || id === -20 || id === -21;
+export const LIGHTNING_TOOL = -8;
+export const isSpawnerTool = (id) => id === -6 || id === -7 || id === -20 || id === -21 || id === -30 || id === -31 || id === -32 || id === -33;
 
 // Constructions: whole structures placed with one click (src/constructions.js
 // builds and stamps them; they never reach the paint shader). Each one is
@@ -604,6 +1006,9 @@ export const BUILDS = [
     desc: 'A timber portal and a gallery it carves into the hillside behind it, with rails and a cart of rubble. Place it facing out of a slope.' },
   { id: -114, key: 'WRECK', abbr: 'WRCK', name: 'Shipwreck', color: '#6b4a2e',
     desc: 'A wooden hull heeled over and half sunk into the sand, her stern stove in, her mast and anchor beside her.' },
+  { id: -115, key: 'BRIDGE', abbr: 'BRDG', name: 'Bridge', color: '#8f6a43',
+    variants: [['short', 'Short'], ['long', 'Long']],
+    desc: 'A timber footbridge on stone abutments, its trusses for railings. Place it across a gap: only the abutments reach down.' },
 ];
 const GEAR_ID0 = -300;   // the first-person tools' ids (GEAR_ITEMS below), past the constructions'
 export const isBuild = (id) => id <= -100 && id > GEAR_ID0;
@@ -620,17 +1025,18 @@ export const isGearTool = (id) => id <= GEAR_ID0 && id > GEAR_ID0 - 100;
 // How the palette is laid out in the UI. Within each group, elements are
 // ordered so related materials sit together and the colours run smoothly.
 export const PALETTE = [
-  { name: 'Powders', items: ['SAND', 'STONE', 'BROKENCOAL', 'ASH', 'SNOW', 'SHARDS', 'CRYSTAL_DUST', 'SAWDUST', 'SCRAP'] },
-  { name: 'Liquids', items: ['WATER', 'ACID', 'OIL', 'LAVA'] },
-  { name: 'Gases', items: ['STEAM', 'CLOUD', 'SMOKE', 'PROPANE', 'FIRE'] },
-  { name: 'Solids', items: ['WALL', 'COAL', 'ROCK', 'LIMESTONE', 'SANDSTONE', 'METAL', 'GLASS', 'ICE', 'CRYSTAL', 'WOOD', 'PLANT', 'CLONE'] },
+  { name: 'Powders', items: ['SAND', 'CLAY', 'STONE', 'BROKENCOAL', 'DUST', 'ASH', 'SNOW', 'SALT', 'SHARDS', 'CRYSTAL_DUST', 'SAWDUST', 'SCRAP', 'RUBBLE', 'NUGGETS', 'LITHIUM'] },
+  { name: 'Liquids', items: ['WATER', 'SALTWATER', 'LIQUID_NITROGEN', 'ACID', 'OIL', 'MUD', 'LAVA', 'MERCURY'] },
+  { name: 'Gases', items: ['STEAM', 'CLOUD', 'HYDROGEN', 'OXYGEN', 'CO2', 'PROPANE', 'CAUSTIC_GAS', 'SMOKE', 'FIRE', 'PLASMA', 'MERCURY_VAPOR'] },
+  { name: 'Solids', items: ['WALL', 'COAL', 'ROCK', 'LIMESTONE', 'SANDSTONE', 'METAL', 'GLASS', 'CERAMIC', 'ICE', 'DRY_ICE', 'CRYSTAL', 'WOOD', 'PLANT', 'CLONE', 'BRICK', 'TITANIUM', 'TUNGSTEN', 'GOLD', 'SOLID_MERCURY', 'DIAMOND', 'VOID'] },
   // TPT's Explosives menu (propane stays a gas)
   { name: 'Explosives', items: ['GUNPOWDER', 'FUSE', 'THERMITE', 'NITRO', 'TNT', 'C4'] },
   { name: 'Electronics', items: ['SPARK', 'BATTERY', 'METAL', 'PSCN', 'NSCN', 'SWITCH', 'INSULATOR', 'TSNS', 'PCLN'] },
   { name: 'Radioactive', items: ['PHOTON', 'NEUTRON', 'URANIUM', 'PLUTONIUM'] },
-  { name: 'Tools', items: ['HEAT', 'COOL', 'ERASE', 'BLAST', 'SIGN', ...GEAR_ITEMS.map((g) => g.key)] },
-  { name: 'Entities', items: ['ENEMY', 'SPAWN', 'JEEPPAD', 'BIKEPAD'] },
-  { name: 'Constructions', items: ['HOUSE', 'TREE', 'CAMPFIRE', 'IGLOO', 'BARREL', 'AQUARIUM', 'FOUNTAIN', 'SHRINE', 'DOCK', 'TOWER', 'STONES', 'WELL', 'MINE', 'WRECK', 'PROMPT'] },
+  { name: 'Exotic', items: ['ANTIMATTER', 'SINGULARITY'] },
+  { name: 'Tools', items: ['HEAT', 'COOL', 'ERASE', 'BLAST', 'LIGHTNING', 'SIGN', ...GEAR_ITEMS.map((g) => g.key)] },
+  { name: 'Entities', items: ['ENEMY', 'GUNNER', 'WORM', 'GIANTWORM', 'SPAWN', 'JEEPPAD', 'BIKEPAD', 'FLOCK'] },
+  { name: 'Constructions', items: ['HOUSE', 'TREE', 'CAMPFIRE', 'IGLOO', 'BARREL', 'AQUARIUM', 'FOUNTAIN', 'SHRINE', 'DOCK', 'TOWER', 'STONES', 'WELL', 'MINE', 'WRECK', 'BRIDGE', 'PROMPT'] },
 ];
 
 const NON_ELEMENTS = [...TOOLS, ...BUILDS, ...GEAR_ITEMS];
@@ -663,7 +1069,108 @@ export const meltInto = (e) => (e.meltInto ? E[e.meltInto] : e.id);
 
 // Reactions between two touching cells, in the style of Noita's materials.xml
 // <Reaction> rows (see the header). New rows go at the end.
-export const REACTIONS = [];
+// Clay draws water into its pores by capillary suction: a clay cell and a
+// water cell make one of mud and leave air (the water fills CLAY_WATER of the
+// clay's volume, the rest of the cell is lost to the pores' slack). A cell's
+// worth soaks in over a few seconds (TPT's CLST: 1 in 1500 per frame per
+// water cell within two).
+const CLAY_SOAK = 0.005;   // chance per step per touching pair
+// Antimatter annihilates both cells, each capped at the engine's limits
+// (elements ANTIMATTER: E = mc²): enough heat to take the pair, left as air,
+// to the temperature clamp (ΔT = heat / (cap_a' + cap_b')), and gas enough
+// that each cell's half reaches the pressure clamp by itself.
+const ANNIHILATION_HEAT = 2 * ELEMENTS[E.EMPTY].cap * (PHYS.CELL_TEMP_MAX - PHYS.AMBIENT);
+const ANNIHILATION_PUFF = 2 * PHYS.P_MAX * PHYS.STEAM_EXPANSION / PHYS.STEAM_BOIL_PUFF;
+// On contact (a pair is partners once every RX_PAIRINGS steps: chance 1
+// takes it at the first pairing).
+const ANNIHILATION_CHANCE = 1;
+// What it spares: the wall (the box itself), clone (a device: it copies
+// antimatter instead), void (a device: it drains antimatter quietly, as it
+// drains anything that moves), itself (a '*' row never pairs an element with
+// itself) and a singularity, which swallows it. Diamond is carbon, matter
+// like any other: it annihilates (TPT's AMTR spares it).
+const ANTIMATTER_SPARES = ['WALL', 'CLONE', 'VOID', 'SINGULARITY'];
+
+// Real speeds go through the sim's clock (physics.js simSteps: a cell is
+// CELL_M, and the sim runs SIM_TIME_SCALE× faster than real time, as its
+// gravity is real only for ~7 mm cells).
+// chance per step that a flame front moving at S (m/s) crosses a cell
+const frontChance = (S) => +Math.min(1, 1 / simSteps(CELL_M / S)).toFixed(3);
+const capAfter = (into) => (Array.isArray(into) ? into.reduce((s, [k, w]) => s + w * capAfter(k), 0) : ELEMENTS[E[into]].cap);
+// heat that brings the products (expected, over a weighted into) from ambient to T
+const flameHeat = (T, a, b, into) => {
+  const cap = (k, own) => capAfter(Array.isArray(k) ? k.map(([kk, w]) => [kk === 'SAME' ? own : kk, w]) : k === 'SAME' ? own : k);
+  return Math.round((T - PHYS.AMBIENT) * (cap(into[0], a) + cap(into[1], b)));
+};
+
+// Salt dissolves into water at TPT's pace (WATR.cpp: 1/50 per step). Each
+// touch salts the water into brine and, one time in SALT_WATER_CELLS (the
+// cells of water a cell of salt saturates: 1.3 / 0.359 g/cm³), uses the salt
+// up: it turns into brine too, rather than leave a bubble of air in the water.
+// Dissolving takes 3.88 kJ/mol (CRC), so the brine comes out a few degrees
+// cooler. Brine is saturated, so it takes up no more. Ice and snow it melts
+// down to the eutectic, taking their latent heat (salted roads, the ice-cream
+// churn's −21 °C).
+const SALT_DISSOLVE = 0.02;
+const SALT_SOLUBILITY = 0.359;               // g of NaCl a cm³ of water takes up at 20 °C (CRC)
+const SALT_WATER_CELLS = SALT_PILE / SALT_SOLUBILITY;
+const SALT_USED = +(1 / SALT_WATER_CELLS).toFixed(3);
+const SALT_INTO = [['SALTWATER', SALT_USED], ['SAME', +(1 - SALT_USED).toFixed(3)]];
+const SALT_SOLUTION_HEAT = +(heatOf(3.88, SALT_PILE / 58.44) / SALT_WATER_CELLS).toFixed(2);   // per cell of water salted
+
+// Hydrogen burns into steam once past its autoignition point (~570 °C in air;
+// Wikipedia, Oxyhydrogen), which a flame's heat gets it to in a few steps
+// (0.02 mJ lights it). With air: adiabatic flame 2254 °C, laminar flame speed
+// 2.1 m/s (Law, Combustion Physics, 2006); the air it burns with becomes the
+// flame. With pure oxygen: ~2800 °C, ~10 m/s, both cells turning to steam (a
+// cell of oxygen could burn two of hydrogen, 2H₂ + O₂ → 2H₂O, but a leftover
+// half cell of oxygen would leave the pair's heat in too little to hold it:
+// one for one keeps the steam at the flame temperature). A flame's touch
+// lights it at once (0.02 mJ will): it burns with the flame's own air, both
+// turning to steam at hydrogen's flame temperature in air, so one flame burns
+// one cell of hydrogen and its heat lights the hydrogen that has air or oxygen
+// beside it; hydrogen with nothing to burn with stays hydrogen. The burning gas
+// swells with its heat: the products' volume at the flame temperature, less
+// what went in, is the puff. 241.8 kJ per mole into steam (LHV); the steam's
+// condensing gives the rest of the 286.
+const H2_AUTOIGNITE = 570;
+const H2_AIR = { T: 2254, S: 2.1 }, H2_O2 = { T: 2800, S: 10 };
+const hotPuff = (T, before, after) => Math.round(after * (T + PHYS.KELVIN) / (PHYS.AMBIENT + PHYS.KELVIN) - before);
+const H2_AIR_INTO = ['STEAM', 'FIRE'];
+const H2_O2_INTO = ['STEAM', 'STEAM'];
+const H2_FLAME_INTO = ['STEAM', 'STEAM'];
+const H2_FLAME_LIGHTS = 1;                   // chance per step a flame's touch lights it
+
+// Lithium fizzes in water as fast as acid eats (a surface reaction; a real
+// 30 cm lump would fizz for many minutes), giving its heat and its hydrogen.
+// The water keeps the lithium hydroxide dissolved in it. Saltwater too.
+const LI_WATER_RATE = PHYS.ACID_USE;
+const LI_WATER_HEAT = heatOf(LI.dH, LI_MOL);
+
+// Hydrogen chloride dissolves into water as it touches it (720 g/L, the most
+// soluble common gas), back into acid, giving its heat of solution: a cell of
+// gas holds 1/24.06 mol per litre.
+const HCL_ABSORB = 1;
+
+export const REACTIONS = [
+  { a: 'SALT', b: 'WATER', into: [SALT_INTO, 'SALTWATER'], chance: SALT_DISSOLVE, heat: -SALT_SOLUTION_HEAT },
+  { a: 'SALT', b: 'ICE', into: [SALT_INTO, 'SALTWATER'], chance: SALT_DISSOLVE, minT: EUTECTIC_T,
+    heat: -(PHYS.L_FUSE + SALT_SOLUTION_HEAT) },
+  { a: 'SALT', b: 'SNOW', into: [SALT_INTO, 'SALTWATER'], chance: SALT_DISSOLVE, minT: EUTECTIC_T,
+    heat: -(PHYS.L_FUSE + SALT_SOLUTION_HEAT) },
+  { a: 'HYDROGEN', b: 'EMPTY', into: H2_AIR_INTO, chance: frontChance(H2_AIR.S), minT: H2_AUTOIGNITE,
+    heat: flameHeat(H2_AIR.T, 'HYDROGEN', 'EMPTY', H2_AIR_INTO), puff: hotPuff(H2_AIR.T, 2, 2) },
+  { a: 'HYDROGEN', b: 'OXYGEN', into: H2_O2_INTO, chance: frontChance(H2_O2.S), minT: H2_AUTOIGNITE,
+    heat: flameHeat(H2_O2.T, 'HYDROGEN', 'OXYGEN', H2_O2_INTO), puff: hotPuff(H2_O2.T, 2, 2) },
+  { a: 'HYDROGEN', b: 'FIRE', into: H2_FLAME_INTO, chance: H2_FLAME_LIGHTS,
+    heat: flameHeat(H2_AIR.T, 'HYDROGEN', 'FIRE', H2_FLAME_INTO), puff: hotPuff(H2_AIR.T, 2, 2) },
+  { a: 'LITHIUM', b: 'WATER', into: ['HYDROGEN', 'SAME'], chance: LI_WATER_RATE, heat: LI_WATER_HEAT, puff: LI_H2_VOLUMES },
+  { a: 'LITHIUM', b: 'SALTWATER', into: ['HYDROGEN', 'SAME'], chance: LI_WATER_RATE, heat: LI_WATER_HEAT, puff: LI_H2_VOLUMES },
+  { a: 'CAUSTIC_GAS', b: 'WATER', into: ['EMPTY', 'ACID'], chance: HCL_ABSORB, heat: heatOf(HCL_SOLUTION, 1 / MOLAR_VOLUME) },
+  { a: 'CLAY', b: 'WATER', into: ['MUD', 'EMPTY'], chance: CLAY_SOAK },
+  { a: 'ANTIMATTER', b: '*', except: ANTIMATTER_SPARES, into: ['EMPTY', 'EMPTY'], chance: ANNIHILATION_CHANCE,
+    heat: ANNIHILATION_HEAT, puff: ANNIHILATION_PUFF },
+];
 
 // `into` 'SAME' (reactions): the cell stays as it is.
 export const SAME = 'SAME';
@@ -832,6 +1339,7 @@ export function elementsGLSL() {
     floatArr('HARD', 'hard'),
     `const int BREAKINTO[NE] = int[NE](${ELEMENTS.map(breakInto).join(', ')});`,
     boolArr('ACIDPROOF', 'acidProof'),
+    boolArr('ACIDIC', 'acid'),
     floatArr('FIZZ', 'fizz'),
     boolArr('LEAVES_ASH', 'ash'),
     vec3Arr('COLOR', (e) => hexToLinear(e.color).map((v) => +v.toFixed(4))),
