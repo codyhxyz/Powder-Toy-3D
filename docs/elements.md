@@ -239,3 +239,15 @@ shared mechanism; anything else names its own code.
   explodes.
 - **Propane** is 1.5 times as dense as air, so it pools. TPT's GAS just diffuses.
 - **Caustic gas** is hydrogen chloride: denser than air, and it dissolves back into water as acid.
+- **Diamond** burns in air above ~780 °C (thermogravimetric onset of oxidation), leaving no ash, but only while
+  something keeps it hot: in air the burning doesn't sustain itself. Nothing in the sim can break it. In TPT it is
+  indestructible.
+- **Brick** breaks into brick rubble (TPT: stone) and melts at ~1,300 °C, the refractoriness of a common red-brick
+  clay (TPT: 950 °C, below its own firing temperature).
+- **Tungsten** is unbreakable, like titanium: its ~1,000 MPa strength is past anything the sim carries. TPT makes it
+  shatter at pressure jumps.
+- **Lightning** steers its main channel to the surface under the cursor (or, from a storm, to the nearest point below
+  the charged cloud, conductors first) and fuses sand where it lands, as real fulgurites form. TPT's falls along
+  gravity.
+- **Storms**: cloud charges where snow falls through freezing cloud (non-inductive graupel-ice charging). TPT has no
+  storms.

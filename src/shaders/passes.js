@@ -167,7 +167,7 @@ void main() {
       else if (id != liq0) mixed = true;
     }
     media = max(media, max(m.x, max(m.y, m.z)));
-    if (id == E_FIRE) em += blackbody(a.y) * (FIRE_GLOW_BASE + a.y / FIRE_GLOW_T) * FIRE_GLOW_GAIN;
+    if (id == E_FIRE || id == E_PLASMA) em += blackbody(a.y) * (FIRE_GLOW_BASE + a.y / FIRE_GLOW_T) * FIRE_GLOW_GAIN;
     else if (id != E_EMPTY && KIND[id] != K_GAS && (a.y > INCAND_T0 || luminous(id) || sparkLive(id, floor(a.w)))) {
       vec3 e = cellEmission(id, a.y) + sparkEmit(id, floor(a.w));   // a live conductor too (src/electricity.js)
       if (dot(e, e) > 0.0) em += e * (RCLASS[id] == R_OPAQUE ? openFaces(c) * GLOW_FACE_GAIN : 1.0);

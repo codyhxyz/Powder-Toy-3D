@@ -180,6 +180,32 @@ const LOOKS = {
   // skin is dull olive-grey.
   URANIUM: { ch: 'GRANULAR', rough: 0.55, alb: '#3f413b', glint: 0.5 },
   PLUTONIUM: { ch: 'GRANULAR', rough: 0.6, alb: '#45493a', glint: 0.4 },
+  // Batch 3 (elements.js, el-mat). Void: matte black, a hole in the world.
+  VOID: { rough: 1, alb: '#0d0809' },
+  // Red brick reflects ~0.25 in the red, ~0.1 in the green and ~0.06 in the
+  // blue (USGS spectral library, fired clay); built, so crisp like Wall.
+  // Crushed, it is paler: the broken faces scatter more.
+  BRICK: { rough: 0.9, alb: [0.25, 0.1, 0.06] },
+  RUBBLE: { ch: 'GRANULAR', rough: 0.95, alb: [0.3, 0.14, 0.09] },
+  // Metals: F0 from measured complex indices (n, k at 450/550/650 nm;
+  // refractiveindex.info): titanium (0.54, 0.50, 0.45), tungsten ~0.5 grey,
+  // gold as Clone's, mercury ~0.75 flat (a liquid mirror).
+  TITANIUM: { rough: 0.35, metal: 1, alb: [0.542, 0.497, 0.449] },
+  TUNGSTEN: { rough: 0.3, metal: 1, alb: [0.5, 0.49, 0.46] },
+  GOLD: { rough: 0.3, metal: 1, alb: [1.0, 0.766, 0.336] },
+  NUGGETS: { ch: 'GRANULAR', rough: 0.45, metal: 1, alb: [1.0, 0.766, 0.336], glint: 0.6 },
+  // Liquid metal: an opaque mirror, smoothed like a melt (it shares lava's
+  // channel; the two never meet, since mercury boils at 357 °C)
+  MERCURY: { ch: 'MOLTEN', rough: 0.04, metal: 1, alb: [0.75, 0.75, 0.74] },
+  SOLID_MERCURY: { rough: 0.35, metal: 1, alb: [0.75, 0.75, 0.74] },
+  // Mercury vapour is invisible; what shows where it meets cool air is a mist
+  // of condensed droplets, like steam's
+  MERCURY_VAPOR: { media: 'STEAM' },
+  // Plasma draws as flame (its light, by the flame's temperature channel)
+  PLASMA: { media: 'FIRE' },
+  // Diamond: n = 2.417, so it sparkles far more than glass (n 1.5); a
+  // colourless stone barely absorbs or scatters
+  DIAMOND: { ior: 2.417, rough: 0.01, scatter: [0.0005, 0.0005, 0.0005] },
   // Batch 2, chemistry and cold (elements.js). Liquid nitrogen is clear and
   // colourless, n = 1.199 (CRC); its boiling fills it with bubbles that
   // scatter a little. Saturated brine is water with n = 1.378 (CRC, 26 % NaCl).
