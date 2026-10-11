@@ -1,3 +1,4 @@
+
 // Surface relief up close (gfx/detail.js: DETAIL_RELIEF).
 //
 // The smooth solids (powders, wood, rock) are the 0.5 isosurface of blurred
@@ -47,16 +48,22 @@
 //
 // Everything is a function of position, the element and its cells' data: the
 // relief is anchored in the matter like its texture.
-export const reliefGLSL = /* glsl */ `
-#ifdef DETAIL_RELIEF
+//
+// WGSL (the names are the GLSL version's, docs/webgpu.md W2); surfaceGLSL
+// pastes it only with DETAIL_RELIEF on (a JS template switch, F2). The GLSL's
+// two reliefCarve overloads are reliefCarve(p, d, &g) and reliefCarveAt(p, d)
+// (WGSL has no overloads, H1.12).
+export const reliefGLSL = /* wgsl */ `
 // fade-in: the relief's high point 'top' spans this many pixels (none .. full)
-const float RELIEF_PX_LO = 1.0, RELIEF_PX_HI = 3.0;
+const RELIEF_PX_LO: f32 = 1.0;
+const RELIEF_PX_HI: f32 = 3.0;
 // ... and the element's share of its channel's cells around the hit (none ..
 // full): at a border with another material the relief flattens out
-const float RELIEF_SHARE_LO = 0.55, RELIEF_SHARE_HI = 0.85;
+const RELIEF_SHARE_LO: f32 = 0.55;
+const RELIEF_SHARE_HI: f32 = 0.85;
 // Carving depth, in units of the element's top: crevices bottom out at
 // top - h = RELIEF_SPAN * top (a flat floor), so past that depth it's solid.
-const float RELIEF_SPAN = 2.5;
+const RELIEF_SPAN: f32 = 2.5;
 // The march through the shell: one sample per RELIEF_STEP_PER_FEATURE of the
 // relief's finest feature (reliefFeature) or RELIEF_PX_STEP pixels of
 // footprint, whichever is longer, measured ALONG THE SURFACE (the ray's
@@ -66,59 +73,73 @@ const float RELIEF_SPAN = 2.5;
 // so a lopsided one still shrinks from both ends). A grazing ray's path is
 // cut at RELIEF_PATH_MAX (cells), its cosine to the surface floored at
 // RELIEF_COS_MIN.
-const float RELIEF_PX_STEP = 2.0;
-const float RELIEF_STEP_PER_FEATURE = 0.25;
-const float RELIEF_SIN_MIN = 0.1;
-const int RELIEF_STEPS_MIN = 2, RELIEF_STEPS_MAX = 16;
-const int RELIEF_REFINE = 2;
-const float RELIEF_SPLIT_LO = 0.1, RELIEF_SPLIT_HI = 0.9;
-const float RELIEF_PATH_MAX = 1.5;
-const float RELIEF_COS_MIN = 0.12;
-const float RELIEF_SLOPE_MIN = 0.05;   // floor on |∇φ| (per cell) when converting φ to depth
+const RELIEF_PX_STEP: f32 = 2.0;
+const RELIEF_STEP_PER_FEATURE: f32 = 0.25;
+const RELIEF_SIN_MIN: f32 = 0.1;
+const RELIEF_STEPS_MIN: i32 = 2;
+const RELIEF_STEPS_MAX: i32 = 16;
+const RELIEF_REFINE: i32 = 2;
+const RELIEF_SPLIT_LO: f32 = 0.1;
+const RELIEF_SPLIT_HI: f32 = 0.9;
+const RELIEF_PATH_MAX: f32 = 1.5;
+const RELIEF_COS_MIN: f32 = 0.12;
+const RELIEF_SLOPE_MIN: f32 = 0.05;   // floor on |∇φ| (per cell) when converting φ to depth
 // The high point 'top' of each element's height (cells): a high quantile of
 // it. fBm heights (mFbmD) are ±0.45 at most and mostly within ±0.3 units.
-const float RELIEF_FBM_TOP = 0.3;
-const float RELIEF_CRAG_TOP = 0.5;     // rock crags, in units of ROCK_CRAG_H (rockCrags: ~±0.9) times the element's relief
-float reliefTop(int id) {
-  if (id == E_SAND) return (SAND_SLUMP_H + SAND_CLUMP_H) * RELIEF_FBM_TOP;
-  if (id == E_SNOW) return (SNOW_DRIFT_H + SNOW_CLUMP_H) * RELIEF_FBM_TOP;
-  if (id == E_GUNPOWDER) return POWDER_LUMP_H * RELIEF_FBM_TOP;
-  if (id == E_ASH) return ASH_LUMP_H * RELIEF_FBM_TOP;
-  if (SURF[id] == SURF_CRAG) return CRAG[id].x * ROCK_CRAG_H * RELIEF_CRAG_TOP;
-  if (id == E_WOOD) return WOOD_FUR_DEPTH;   // the plates' surface (furrows and domes go down from it)
+const RELIEF_FBM_TOP: f32 = 0.3;
+const RELIEF_CRAG_TOP: f32 = 0.5;     // rock crags, in units of ROCK_CRAG_H (rockCrags: ~±0.9) times the element's relief
+fn reliefTop(id: i32) -> f32 {
+  if (id == E_SAND) { return (SAND_SLUMP_H + SAND_CLUMP_H) * RELIEF_FBM_TOP; }
+  if (id == E_SNOW) { return (SNOW_DRIFT_H + SNOW_CLUMP_H) * RELIEF_FBM_TOP; }
+  if (id == E_GUNPOWDER) { return POWDER_LUMP_H * RELIEF_FBM_TOP; }
+  if (id == E_ASH) { return ASH_LUMP_H * RELIEF_FBM_TOP; }
+  if (SURF(id) == SURF_CRAG) { return CRAG(id).x * ROCK_CRAG_H * RELIEF_CRAG_TOP; }
+  if (id == E_WOOD) { return WOOD_FUR_DEPTH; }   // the plates' surface (furrows and domes go down from it)
   return 0.0;
 }
 // Size of the finest feature of each element's relief that the march must
 // not step over (cells): the wavelength of its finest strong octave.
-float reliefFeature(int id) {
-  if (id == E_SAND) return 1.0 / (SAND_CLUMP_F * MFBM_LACUNARITY);
-  if (id == E_SNOW) return 1.0 / (SNOW_CLUMP_F * MFBM_LACUNARITY);
-  if (id == E_GUNPOWDER) return 1.0 / (POWDER_LUMP_F * MFBM_LACUNARITY);
-  if (id == E_ASH) return 1.0 / (ASH_LUMP_F * MFBM_LACUNARITY * MFBM_LACUNARITY);
-  if (SURF[id] == SURF_CRAG) return 1.0 / (ROCK_CRAG_F * ROCK_CRAG_LAC * ROCK_CRAG_LAC);
+fn reliefFeature(id: i32) -> f32 {
+  if (id == E_SAND) { return 1.0 / (SAND_CLUMP_F * MFBM_LACUNARITY); }
+  if (id == E_SNOW) { return 1.0 / (SNOW_CLUMP_F * MFBM_LACUNARITY); }
+  if (id == E_GUNPOWDER) { return 1.0 / (POWDER_LUMP_F * MFBM_LACUNARITY); }
+  if (id == E_ASH) { return 1.0 / (ASH_LUMP_F * MFBM_LACUNARITY * MFBM_LACUNARITY); }
+  if (SURF(id) == SURF_CRAG) { return 1.0 / (ROCK_CRAG_F * ROCK_CRAG_LAC * ROCK_CRAG_LAC); }
   return WOOD_FUR_W / WOOD_PLATE_FH;   // wood: a furrow's half-width
 }
 
 // The relief being traced (set by reliefHit, read by reliefSunVis and
 // reliefSkyVis in its shadeSurf)
-bool gRelOn = false;
-int gRelId, gRelCh;
-float gRelW, gRelTop, gRelSlope, gRelFp, gRelD, gRelOff, gRelSun;
-vec3 gRelN, gRelP, gRelQ;
+var<private> gRelOn: bool = false;
+var<private> gRelId: i32;
+var<private> gRelCh: i32;
+var<private> gRelW: f32;
+var<private> gRelTop: f32;
+var<private> gRelSlope: f32;
+var<private> gRelFp: f32;
+var<private> gRelD: f32;
+var<private> gRelOff: f32;
+var<private> gRelSun: f32;
+var<private> gRelN: vec3f;
+var<private> gRelP: vec3f;
+var<private> gRelQ: vec3f;
 
 // How deep the relief is carved below the envelope at p, d deep (cells): the
 // height is read where p projects onto the envelope (p + n d), so the relief
 // is a height field over the surface, as bark on a trunk or crags on a
 // boulder, not a solid texture that changes with depth.
-// g: the height's gradient there (cells per cell)
-float reliefCarve(vec3 p, float d, out vec3 g) {
-  vec4 h = reliefHeight(gRelId, worldPos(p + gRelN * d), gRelN, gRelFp);   // anchored in the world
-  g = h.yzw;
+// *g: the height's gradient there (cells per cell)
+fn reliefCarve(p: vec3f, d: f32, g: ptr<function, vec3f>) -> f32 {
+  let h = reliefHeight(gRelId, worldPos(p + gRelN * d), gRelN, gRelFp);   // anchored in the world
+  *g = h.yzw;
   return gRelW * clamp(gRelTop - h.x, 0.0, RELIEF_SPAN * gRelTop);
 }
-float reliefCarve(vec3 p, float d) { vec3 g; return reliefCarve(p, d, g); }
+fn reliefCarveAt(p: vec3f, d: f32) -> f32 {
+  var g: vec3f;
+  return reliefCarve(p, d, &g);
+}
 // Depth below the envelope where the field is phi (cells)
-float reliefDepth(float phi) { return (phi - SURF_ISO) / gRelSlope; }
+fn reliefDepth(phi: f32) -> f32 { return (phi - SURF_ISO) / gRelSlope; }
 
 // Sunlight reaching the carved hit past the relief around it: the sun ray (l)
 // from the hit, marched through the shell until it leaves it (it can only be
@@ -135,114 +156,124 @@ float reliefDepth(float phi) { return (phi - SURF_ISO) / gRelSlope; }
 // TAA averages into the edge rather than as streaks along the sun; no test
 // where its whole path is under RELIEF_SUN_PX_MIN pixels (a shadow that short
 // is the bumped normal's own falloff).
-const int RELIEF_SUN_STEPS_MAX = 12;
-const float RELIEF_SUN_PX_MIN = 1.0;
+const RELIEF_SUN_STEPS_MAX: i32 = 12;
+const RELIEF_SUN_PX_MIN: f32 = 1.0;
 // its samples per feature: a shadow is cast by a feature's bulk, so half a
 // feature apart is enough (the eye's march must not step over its tips)
-const float RELIEF_SUN_STEP_PER_FEATURE = 0.25;
-float reliefSun(vec3 l) {
-  float sinE = dot(l, gRelN);
-  if (sinE <= 0.0) return 1.0;   // the envelope faces away: the shadow map and n.l have it
+const RELIEF_SUN_STEP_PER_FEATURE: f32 = 0.25;
+fn reliefSun(l: vec3f) -> f32 {
+  var sinE = dot(l, gRelN);
+  if (sinE <= 0.0) { return 1.0; }   // the envelope faces away: the shadow map and n.l have it
   sinE = max(sinE, RELIEF_COS_MIN);
-  float cosE = max(sqrt(1.0 - sinE * sinE), RELIEF_SIN_MIN);
-  float L = min(gRelD / sinE, RELIEF_PATH_MAX);
-  if (L * cosE < RELIEF_SUN_PX_MIN * gRelFp) return 1.0;
-  float step = max(gRelFp * RELIEF_PX_STEP, RELIEF_SUN_STEP_PER_FEATURE * reliefFeature(gRelId)) / cosE;
-  int n = clamp(int(ceil(L / step)), 1, RELIEF_SUN_STEPS_MAX);
-  float dt = max(step, L / float(RELIEF_SUN_STEPS_MAX));   // (whole steps, as the eye's march)
-  float vis = 1.0, jit = 1.0 - ign(gl_FragCoord.xy, float(uFrame));   // in (0, 1]
-  for (int i = 1; i <= RELIEF_SUN_STEPS_MAX; i++) {
-    if (i > n) break;
+  let cosE = max(sqrt(1.0 - sinE * sinE), RELIEF_SIN_MIN);
+  let L = min(gRelD / sinE, RELIEF_PATH_MAX);
+  if (L * cosE < RELIEF_SUN_PX_MIN * gRelFp) { return 1.0; }
+  let stride = max(gRelFp * RELIEF_PX_STEP, RELIEF_SUN_STEP_PER_FEATURE * reliefFeature(gRelId)) / cosE;
+  let n = clamp(i32(ceil(L / stride)), 1, RELIEF_SUN_STEPS_MAX);
+  let dt = max(stride, L / f32(RELIEF_SUN_STEPS_MAX));   // (whole steps, as the eye's march)
+  var vis = 1.0;
+  let jit = 1.0 - ign(gFragCoord, f32(FU.frame));   // in (0, 1]
+  for (var i = 1; i <= RELIEF_SUN_STEPS_MAX; i++) {
+    if (i > n) { break; }
     // (no nearer than a pixel along the surface: the root's own error is about that)
-    float ts = clamp(dt * (float(i - 1) + jit), RELIEF_SUN_PX_MIN * gRelFp / cosE, L);
-    vec3 p = gRelP + l * ts;
-    float phi = surfChannel(p, gRelCh);
-    if (phi < SURF_ISO) break;   // out of the envelope: past the relief
+    let ts = clamp(dt * (f32(i - 1) + jit), RELIEF_SUN_PX_MIN * gRelFp / cosE, L);
+    let p = gRelP + l * ts;
+    let phi = surfChannel(p, gRelCh);
+    if (phi < SURF_ISO) { break; }   // out of the envelope: past the relief
     // the ray's height above the carved surface under it
-    float d = reliefDepth(phi);
-    float clear = gRelOff - (d - reliefCarve(p, d));
+    let d = reliefDepth(phi);
+    let clear = gRelOff - (d - reliefCarveAt(p, d));
     vis = min(vis, clamp(0.5 + 0.5 * clear / (ts * SUN_TAN_RADIUS), 0.0, 1.0));
-    if (vis <= 0.0) break;
+    if (vis <= 0.0) { break; }
   }
   return vis;
 }
 
 // (read by shadeSurf for the hit reliefHit set)
-float reliefSunVis() { return gRelOn ? gRelSun : 1.0; }
+fn reliefSunVis() -> f32 { return select(1.0, gRelSun, gRelOn); }
 
-// The ray (ro, rd) enters smooth channel ch's surface at t. Moves t onto the
+// The ray (ro, rd) enters smooth channel ch's surface at *t. Moves *t onto the
 // carved surface and returns true, or, if the ray passes through the shell
-// without meeting it, moves t to where it leaves and returns false (the
+// without meeting it, moves *t to where it leaves and returns false (the
 // caller restarts its march there: the ray may come back in at once).
-bool reliefHit(vec3 ro, vec3 rd, int ch, inout float t) {
+fn reliefHit(ro: vec3f, rd: vec3f, ch: i32, t: ptr<function, f32>) -> bool {
   gRelOn = false;
-  vec3 p0 = ro + rd * t;
+  let p0 = ro + rd * (*t);
   // the dominant element around the hit (as gatherSurf weighs the cells)
-  vec3 q = p0 - 0.5;
-  ivec3 c0 = ivec3(floor(q));
-  vec3 f = q - vec3(c0);
-  int id1 = E_EMPTY, id2 = E_EMPTY;
-  float w1 = 0.0, w2 = 0.0;
-  for (int i = 0; i < 8; i++) {
-    ivec3 o = ivec3(i & 1, (i >> 1) & 1, (i >> 2) & 1);
-    ivec3 c = c0 + o;
-    if (outside(c)) continue;
-    int id = eid(fetchA(c));
-    if (SURFCH[id] != ch) continue;
-    vec3 wv = mix(1.0 - f, f, vec3(o));
-    float w = wv.x * wv.y * wv.z;
+  let q = p0 - 0.5;
+  let c0 = vec3i(floor(q));
+  let f = q - vec3f(c0);
+  var id1 = E_EMPTY;
+  var id2 = E_EMPTY;
+  var w1 = 0.0;
+  var w2 = 0.0;
+  for (var i = 0; i < 8; i++) {
+    let o = vec3i(i & 1, (i >> 1u) & 1, (i >> 2u) & 1);
+    let c = c0 + o;
+    if (outside(c)) { continue; }
+    let id = eid(fetchA(c));
+    if (SURFCH(id) != ch) { continue; }
+    let wv = mix(1.0 - f, f, vec3f(o));
+    let w = wv.x * wv.y * wv.z;
     if (id1 == E_EMPTY || id == id1) { id1 = id; w1 += w; }
-    else { if (id2 == E_EMPTY || id == id2) { id2 = id; w2 += w; } }
+    else if (id2 == E_EMPTY || id == id2) { id2 = id; w2 += w; }
   }
-  if (w2 > w1) { id1 = id2; float tw = w1; w1 = w2; w2 = tw; }
-  float top = reliefTop(id1);
-  if (top <= 0.0) return true;
-  float fp = footprint(p0);
-  float w = smoothstep(RELIEF_PX_LO, RELIEF_PX_HI, top / fp)
-          * smoothstep(RELIEF_SHARE_LO, RELIEF_SHARE_HI, w1 / max(w1 + w2, 1e-6));
-  if (w <= 0.0) return true;
+  if (w2 > w1) { id1 = id2; let tw = w1; w1 = w2; w2 = tw; }
+  let top = reliefTop(id1);
+  if (top <= 0.0) { return true; }
+  let fp = footprint(p0);
+  let w = smoothstep(RELIEF_PX_LO, RELIEF_PX_HI, top / fp)
+        * smoothstep(RELIEF_SHARE_LO, RELIEF_SHARE_HI, w1 / max(w1 + w2, 1e-6));
+  if (w <= 0.0) { return true; }
   // the envelope's normal and slope (tetrahedral difference, as surfNormal)
-  const vec2 k = vec2(1.0, -1.0);
-  vec3 gr = k.xyy * surfChannel(p0 + k.xyy * NORMAL_STEP, ch) + k.yyx * surfChannel(p0 + k.yyx * NORMAL_STEP, ch)
-          + k.yxy * surfChannel(p0 + k.yxy * NORMAL_STEP, ch) + k.xxx * surfChannel(p0 + k.xxx * NORMAL_STEP, ch);
-  float gl = length(gr);
-  if (gl < 1e-5) return true;
+  let k = vec2f(1.0, -1.0);
+  let gr = k.xyy * surfChannel(p0 + k.xyy * NORMAL_STEP, ch) + k.yyx * surfChannel(p0 + k.yyx * NORMAL_STEP, ch)
+         + k.yxy * surfChannel(p0 + k.yxy * NORMAL_STEP, ch) + k.xxx * surfChannel(p0 + k.xxx * NORMAL_STEP, ch);
+  let gl = length(gr);
+  if (gl < 1e-5) { return true; }
   // the tetrahedron's four taps sum to 4 h ∇φ
   gRelId = id1; gRelCh = ch; gRelW = w; gRelTop = top;
   gRelN = -gr / gl;
   gRelSlope = max(gl / (4.0 * NORMAL_STEP), RELIEF_SLOPE_MIN);
-  float cosV = max(-dot(rd, gRelN), RELIEF_COS_MIN);
-  float sinV = max(sqrt(1.0 - cosV * cosV), RELIEF_SIN_MIN);
+  let cosV = max(-dot(rd, gRelN), RELIEF_COS_MIN);
+  let sinV = max(sqrt(1.0 - cosV * cosV), RELIEF_SIN_MIN);
   // A pixel's footprint on the surface stretches by 1 / cos along the ray: the
   // relief is filtered (its octaves faded) by that, so at grazing angles only
   // what spans pixels there is left, not a speckle of sub-pixel peaks.
   gRelFp = fp / cosV;
-  float L = min(w * top * RELIEF_SPAN / cosV, RELIEF_PATH_MAX);
-  float step = max(gRelFp * RELIEF_PX_STEP, RELIEF_STEP_PER_FEATURE * reliefFeature(id1)) / sinV;
-  int n = clamp(int(ceil(L / step)), RELIEF_STEPS_MIN, RELIEF_STEPS_MAX);
+  let L = min(w * top * RELIEF_SPAN / cosV, RELIEF_PATH_MAX);
+  let stride = max(gRelFp * RELIEF_PX_STEP, RELIEF_STEP_PER_FEATURE * reliefFeature(id1)) / sinV;
+  let n = clamp(i32(ceil(L / stride)), RELIEF_STEPS_MIN, RELIEF_STEPS_MAX);
   // samples at whole steps (where they fall doesn't jump from pixel to pixel
   // with the step count), stretched only where the count runs out
-  float dt = max(step, L / float(RELIEF_STEPS_MAX));
+  let dt = max(stride, L / f32(RELIEF_STEPS_MAX));
   // ia, ib: how far inside the carved surface (depth - carve, >= 0: solid)
   // the ends of the bracket [ta, tb] are; ca, cb: the carving there; da, db:
   // their depth
   // gb: the height's gradient at the solid end
-  vec3 gb;
-  float cb = reliefCarve(p0, 0.0, gb);
-  float ta = 0.0, tb = 0.0, ia = -cb, ib = -cb, ca = cb, da = 0.0, db = 0.0;
-  bool hit = ib >= 0.0, wasIn = false;
+  var gb: vec3f;
+  var cb = reliefCarve(p0, 0.0, &gb);
+  var ta = 0.0;
+  var tb = 0.0;
+  var ia = -cb;
+  var ib = -cb;
+  var ca = cb;
+  var da = 0.0;
+  var db = 0.0;
+  var hit = ib >= 0.0;
+  var wasIn = false;
   // the whole path: a grazing ray may leave the envelope and come back in
-  for (int i = 1; i <= RELIEF_STEPS_MAX; i++) {
-    if (hit || i > n) break;
-    float ts = min(dt * float(i), L);
-    vec3 p = p0 + rd * ts;
-    float phi = surfChannel(p, ch);
+  for (var i = 1; i <= RELIEF_STEPS_MAX; i++) {
+    if (hit || i > n) { break; }
+    let ts = min(dt * f32(i), L);
+    let p = p0 + rd * ts;
+    let phi = surfChannel(p, ch);
     // in the envelope and out again: it went through a groove
-    if (phi < SURF_ISO && wasIn) { t += ts; return false; }
+    if (phi < SURF_ISO && wasIn) { *t += ts; return false; }
     wasIn = wasIn || phi >= SURF_ISO;
     ta = tb; ia = ib; ca = cb; da = db;
     db = reliefDepth(phi);
-    cb = reliefCarve(p, db, gb);
+    cb = reliefCarve(p, db, &gb);
     tb = ts; ib = db - cb;
     hit = ib >= 0.0;
   }
@@ -251,28 +282,31 @@ bool reliefHit(vec3 ro, vec3 rd, int ch, inout float t) {
   // outside here: go on from the end of the path, where the march finds the
   // surface again if it is ahead. (Keeping the hit drew the uncarved
   // silhouette as a fringe of envelope above the carved one.)
-  if (!hit && !wasIn) { t += L; return false; }
+  if (!hit && !wasIn) { *t += L; return false; }
   // else deeper than any crevice (or the path cut): solid by then
   // gRelOff: how far inside the carved surface the hit itself is (the root's
   // error, or the cut path's shortfall), so the sun test measures clearance
   // from the surface, not from the point
-  float th = tb, dh = db;
+  var th = tb;
+  var dh = db;
   gRelD = cb; gRelOff = ib;
   if (hit && tb > 0.0) {
-    for (int i = 0; i < RELIEF_REFINE; i++) {
-      float tm = mix(ta, tb, clamp(ia / (ia - ib), RELIEF_SPLIT_LO, RELIEF_SPLIT_HI));
-      vec3 p = p0 + rd * tm;
-      vec3 gm;
-      float dm = reliefDepth(surfChannel(p, ch)), cm = reliefCarve(p, dm, gm), im = dm - cm;
+    for (var i = 0; i < RELIEF_REFINE; i++) {
+      let tm = mix(ta, tb, clamp(ia / (ia - ib), RELIEF_SPLIT_LO, RELIEF_SPLIT_HI));
+      let p = p0 + rd * tm;
+      var gm: vec3f;
+      let dm = reliefDepth(surfChannel(p, ch));
+      let cm = reliefCarve(p, dm, &gm);
+      let im = dm - cm;
       if (im >= 0.0) { tb = tm; ib = im; cb = cm; db = dm; gb = gm; } else { ta = tm; ia = im; ca = cm; da = dm; }
     }
-    float s = clamp(ia / (ia - ib), 0.0, 1.0);
+    let s = clamp(ia / (ia - ib), 0.0, 1.0);
     th = mix(ta, tb, s);
     dh = mix(da, db, s);
     gRelD = mix(ca, cb, s);
     gRelOff = mix(ia, ib, s);
   }
-  t += th;
+  *t += th;
   gRelP = p0 + rd * th;
   gRelQ = gRelP + gRelN * dh;   // where its texture is read (gatherSurf)
   gRelOn = true;
@@ -280,8 +314,9 @@ bool reliefHit(vec3 ro, vec3 rd, int ch, inout float t) {
   // (shadeSurf is called from many places; this keeps one copy of the march
   // in the program). Only where the sun can light it: the bumped normal (the
   // tilt applyMat gives it) faces the sun, or wraps light past the terminator.
-  vec3 nb = normalize(gRelN - (gb - gRelN * dot(gRelN, gb)));
-  gRelSun = dot(nb, uSun) + SSS[id1] > 0.0 ? reliefSun(uSun) : 1.0;
+  let nb = normalize(gRelN - (gb - gRelN * dot(gRelN, gb)));
+  gRelSun = 1.0;
+  if (dot(nb, FU.sun) + SSS(id1) > 0.0) { gRelSun = reliefSun(FU.sun); }
   return true;
 }
 
@@ -291,21 +326,21 @@ bool reliefHit(vec3 ro, vec3 rd, int ch, inout float t) {
 // as it is wide: 0.45, about half). d carries the fade-in w, so far away
 // (w = 0) nothing changes. W is the relief's typical crevice: half the
 // wavelength of its main octave, or a bark furrow rim to rim.
-const float RELIEF_CREVICE_PER_WAVE = 0.5;
-float reliefWidth(int id) {
-  if (id == E_SAND) return RELIEF_CREVICE_PER_WAVE * SAND_SLUMP_M / CELL_M;
-  if (id == E_SNOW) return RELIEF_CREVICE_PER_WAVE * SNOW_DRIFT_M / CELL_M;
-  if (id == E_GUNPOWDER) return RELIEF_CREVICE_PER_WAVE * POWDER_LUMP_M / CELL_M;
-  if (id == E_ASH) return RELIEF_CREVICE_PER_WAVE * ASH_LUMP_M / CELL_M;
-  if (SURF[id] == SURF_CRAG) return RELIEF_CREVICE_PER_WAVE * ROCK_CRAG_M / CELL_M;
+const RELIEF_CREVICE_PER_WAVE: f32 = 0.5;
+fn reliefWidth(id: i32) -> f32 {
+  if (id == E_SAND) { return RELIEF_CREVICE_PER_WAVE * SAND_SLUMP_M / CELL_M; }
+  if (id == E_SNOW) { return RELIEF_CREVICE_PER_WAVE * SNOW_DRIFT_M / CELL_M; }
+  if (id == E_GUNPOWDER) { return RELIEF_CREVICE_PER_WAVE * POWDER_LUMP_M / CELL_M; }
+  if (id == E_ASH) { return RELIEF_CREVICE_PER_WAVE * ASH_LUMP_M / CELL_M; }
+  if (SURF(id) == SURF_CRAG) { return RELIEF_CREVICE_PER_WAVE * ROCK_CRAG_M / CELL_M; }
   return 2.0 * WOOD_FUR_W / WOOD_PLATE_FH;   // wood: a furrow, rim to rim (half-width x 2)
 }
 // (and clears the hit: it is read once, by the shadeSurf of the hit that set it)
-float reliefSkyVis() {
-  if (!gRelOn) return 1.0;
+fn reliefSkyVis() -> f32 {
+  if (!gRelOn) { return 1.0; }
   gRelOn = false;
-  float r = 2.0 * gRelD / reliefWidth(gRelId);
-  return inversesqrt(1.0 + r * r);
+  let r = 2.0 * gRelD / reliefWidth(gRelId);
+  return inverseSqrt(1.0 + r * r);
 }
-#endif
 `;
+
