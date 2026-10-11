@@ -534,8 +534,8 @@ fn reactCell(p: vec3i, quiet: bool) -> bool {
       // caps it at FLOW. A bubble in the column (a lone gas cell with liquid
       // over it) weighs nothing but holds the pressure of what is over it,
       // so the count goes on through it; two gas cells is the open air over
-      // the free surface, where it stops. (Past the box's side it reads wall,
-      // as the GLSL did: the column ends there.)
+      // the free surface, where it stops. (Past the box it reads wall, as the
+      // GLSL does: the column ends there.)
       var want = f * FLOW_SURFACE;
       if (head && open) {
         let gh = P.gravity * GRAV(id);
