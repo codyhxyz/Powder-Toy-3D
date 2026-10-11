@@ -119,7 +119,8 @@ export function createFeel({ hud }) {
         const near = 1 - smooth01((d - IMPACT_NEAR) / (IMPACT_FAR - IMPACT_NEAR));
         addTrauma(TRAUMA_IMPACT * clamp01((e.energy ?? 0) / IMPACT_ENERGY_FULL) * near);
       }
-      if (e.source === 'gun' && !e.by) { hitT = HIT_TIME; hitBroke = e.broke === true; }   // the hitmarker is the player's shots only
+      // the hitmarker is the player's shots into a body only (TF2's hit sound: blocks and terrain don't ding)
+      if (e.source === 'gun' && e.body && !e.by) { hitT = HIT_TIME; hitBroke = e.broke === true; }
     }),
     povEvents.on('blast', ({ point }) => {
       if (!live || !point) return;
