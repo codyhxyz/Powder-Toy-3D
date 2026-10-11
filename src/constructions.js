@@ -348,6 +348,7 @@ export class Constructions {
     const lo = [Math.floor(origin.x), Math.floor(origin.y) - u.uFoot.value, Math.floor(origin.z)];
     sim.touch(lo, [lo[0] + s.w, lo[1] + u.uFoot.value + s.h, lo[2] + s.d]);
     sim.pass(this.mat);
+    sim.scrubDeco();   // what it built over loses its decoration, as a TPT stamp replaces particles (src/deco.js)
     tex.dispose();
   }
 

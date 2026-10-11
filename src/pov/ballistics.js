@@ -358,6 +358,8 @@ export function createBallistics({ renderer }) {
     get lastImpact() { return lastImpact; },   // for checks
     get latency() { return latency; },         // frames a trace readback takes (running estimate)
     clear() { while (rounds.length) end(rounds[0]); },
+    // take round `id` out of the air now (a frag whose fuse ran out mid-flight: frag.js); its round:end follows
+    cancel(id) { const r = rounds.find((x) => x.id === id); if (r) end(r); },
     dispose() {
       while (rounds.length) end(rounds[0]);
       slots.forEach((s) => s.target.dispose());

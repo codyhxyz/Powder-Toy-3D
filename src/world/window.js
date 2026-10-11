@@ -157,6 +157,7 @@ export class WorldWindow {
     const sim = this.sim, g = sim.g;
     this.epoch++;   // a slab of the old world still being read back is dropped
     this.store.clear();
+    sim.deco?.reset();   // the decoration and its store go too (src/deco.js)
     this.planted.fill(0);
     sim.origin.set(origin[0], 0, origin[2]);
     this.gen.fill(this.P, [origin[0], 0, origin[2]]);
@@ -170,12 +171,33 @@ export class WorldWindow {
     this.loaded = true;
   }
 
+  // A saved world back (saves/game.js): the window at `origin`, its cells
+  // from fillState() (it loads the saved state into the simulation), the
+  // stored bricks (BrickStore.toBytes) and the planted brick columns as they
+  // were saved. Like load, it drops undo and starts the derived passes over.
+  // The far field is rebuilt from the scene and the window: stored edits
+  // outside the window show from afar once the window has passed over them.
+  loadSaved(origin, fillState, storeBytes, planted) {
+    const sim = this.sim;
+    if (planted.length !== this.planted.length) throw new Error(`saved world: ${planted.length} brick columns, this world has ${this.planted.length}`);
+    this.epoch++;
+    this.store.fromBytes(storeBytes);
+    this.planted.set(planted);
+    sim.origin.set(origin[0], 0, origin[2]);
+    fillState();
+    sim.syncCopies();
+    this.far?.build();
+    sim.dropHistory();
+    sim.fieldReset = sim.giReset = true;
+    this.loaded = true;
+  }
+
   // Keep the window centred on the focus (world cells, x and z). Returns the
   // move made, [dx, dz] world cells, or null.
   update(fx, fz) {
     if (!this.loaded) return null;
     this.far?.tick();
-    if (this.pending) return null;
+    if (this.pending || this.sim.deco?.pending) return null;
     const g = this.sim.g, o = this.sim.origin, lim = WIN_STEP + WIN_HYSTERESIS;
     const off = [fx - (o.x + g.nx / 2), fz - (o.z + g.nz / 2)];
     const at = [o.x, o.z], span = [g.nx, g.nz], world = [this.size[0], this.size[2]];
@@ -209,7 +231,10 @@ export class WorldWindow {
     u.uBricks.value.set(...bricks);
     sim.run(this.mats.stage, this.stage);
     this.gen.diff(this.P, leaveLo, bricks, this.diffTarget);
-    this.readBack([before.x / BRICK + leaveLo[0] / BRICK, 0, before.z / BRICK + leaveLo[2] / BRICK], bricks);
+    const leaveB = [before.x / BRICK + leaveLo[0] / BRICK, 0, before.z / BRICK + leaveLo[2] / BRICK];
+    this.readBack(leaveB, bricks);
+    // the decoration of the slab that leaves goes into its own store (src/deco.js)
+    sim.deco?.leave(leaveLo, bricks, (x, y, z) => this.store.key(leaveB[0] + x, leaveB[1] + y, leaveB[2] + z));
     this.far?.summarize(leaveLo, bricks);
     // 2.
     sim.shift(dx, dz);
@@ -217,6 +242,7 @@ export class WorldWindow {
     const o = sim.origin;
     this.gen.fill(this.P, [o.x, o.y, o.z], enterLo, enterHi);
     const restored = this.restore(enterLo, bricks);
+    sim.deco?.enter(enterLo, bricks, (x, y, z) => this.store.key(o.x / BRICK + enterLo[0] / BRICK + x, y, o.z / BRICK + enterLo[2] / BRICK + z));
     // 4.
     this.plantCost = { placeMs: 0, bakeMs: 0 };
     const trees = this.scene.trees ? this.plant(enterLo, enterHi) : 0;

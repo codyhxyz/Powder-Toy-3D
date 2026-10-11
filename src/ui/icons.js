@@ -23,14 +23,20 @@ export const ICON = {
   close: svg('<path d="M6 6l12 12M18 6L6 18"/>'),
   // four map tiles: the start menu's grid
   maps: svg('<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/>'),
+  // a floppy disk: save the game (the toolbar's Save)
+  save: svg('<path d="M5 4h11l3 3v13H5z"/><path d="M8 4v5h7V4"/><rect x="8" y="13" width="8" height="5" rx="0.5"/>'),
   chevDown: '<svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>',
   chevUp: svg('<path d="M6 15l6-6 6 6"/>'),
   reset: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.4-5.7"/><path d="M4 4v4h4"/></svg>',
   sphere: svg('<circle cx="12" cy="12" r="7.5"/><path d="M4.5 12c2 2.2 13 2.2 15 0"/>'),
   cube: svg('<path d="M12 3.5l7.5 4.3v8.4L12 20.5l-7.5-4.3V7.8z"/><path d="M4.5 7.8L12 12l7.5-4.2M12 12v8.5"/>'),
   replace: svg('<path d="M5 9h11l-3-3M19 15H8l3 3"/>'),
+  // an eraser on its edge: specific delete (TPT's SPECIFIC_DELETE)
+  eraser: svg('<path d="M14.5 4.5l5 5-9 9H6l-2.5-2.5z"/><path d="M9.5 9.5l5 5M10.5 18.5H20"/>'),
   eyedropper: svg('<path d="M13.5 6.5l4 4"/><path d="M15 5l1.8-1.8a2.1 2.1 0 0 1 3 3L18 8z"/><path d="M15.5 8.5L7 17l-3.5 1 1-3.5L13 6"/>'),
   minus: svg('<path d="M6 12h12"/>'),
+  // a paint brush: its tip, the ferrule's edge and the handle (TPT's DECO menu)
+  deco: svg('<path d="M4 20c2.5 0 4-1.3 4-3.5a2.5 2.5 0 0 0-5 0c0 1.3-.5 2.4-1 3.5z"/><path d="M7.5 13.5l2.5 2.5"/><path d="M10 16L20.5 5.5a2 2 0 0 0-2.9-2.9L7.5 13.5"/>'),
   // a round bomb: its body, a neck, a curling fuse and a spark at its tip
   explosives: svg('<circle cx="10" cy="14" r="6.5"/><path d="M14.6 9.4l1.8-1.8M16.4 7.6c1-1 1.4-2.6 2.9-3"/>'
     + '<path d="M20.5 1.8v1.4M22.2 3.6h-1.4M21.7 2.3l-.8.8"/>'),

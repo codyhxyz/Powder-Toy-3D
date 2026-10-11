@@ -1,15 +1,17 @@
 import { helpersGLSL, definesGLSL, jsConstants, compileShared, groundScan } from '../themedShared.js';
 import { E } from '../../../elements.js';
+import { bakeWang, wangGLSL, minesKit, MAT, GEOM, WANG_OUT } from '../../wang/index.js';
 
 // Descent (docs/descent-contract.md): the starting mountain and the first three
 // biomes of Noita's main path, one world scene per level, each ending at the
 // bottom in a Holy Mountain.
 //
 //   descentMines  a forested surface, a snowy mountain with a cave mouth on its
-//                 west slope (the spawn) and a ramp down inside it to the Mines:
-//                 layered horizontal tunnels in x and z shored with timber
-//                 frames (WOOD posts and lintels), crystal lanterns, ledges in
-//                 the shafts, sumps of water or oil, gold in the rock
+//                 west slope (the spawn) and a ramp down inside it to the entry
+//                 hall over the Mines: herringbone Wang tiles (src/world/wang/,
+//                 kits/mines.js: shored galleries, rail corridors, halls, sumps,
+//                 caverns, crystal lanterns), four 24-cell layers, the bottom
+//                 one's exit shaft over the temple's entry shaft
 //   descentCoal   the Coal Pits: wider, rougher tunnels in rock with COAL seams,
 //                 caverns at crossings, toxic sludge sumps, rubble heaps
 //   descentSnow   the Snowy Depths: ice strata in the rock, snow on every floor,
@@ -160,52 +162,96 @@ const COMMON_SALTS = {
   ORE: 0x1b77c5, SEAM: 0x5f0e93, HILL: 0x0c6b3d, MTN: 0x27a4f1, TREE: 0x6e9b25, ROOF: 0x33d10f, CELL: 0x4a52c7,
 };
 
-// Each level's own: its biome's tunnels and features.
+// Each level's own: its biome's tunnels and features. kit: a Wang tile kit
+// (src/world/wang/kits/) tiles the biome band instead of the lattice: swapping
+// the Coal Pits' or Snowy Depths' in is `kit: coalKit` / `kit: snowKit` here
+// (then node scripts/check-descent-levels.mjs --write regenerates levels.js).
 export const DS_LEVEL_DEFS = [
-  { key: 'descentMines', label: 'Descent: Mines', name: 'Mines', tier: 1, ints: {
+  { key: 'descentMines', label: 'Descent: Mines', name: 'Mines', tier: 1, kit: minesKit, ints: {
     LEVEL: 0, LAYERS: 5, TUN_HALF: 4, TUN_H: 10, BUMP_H: 2,   // 7 wide, 10 tall (+2): Noita's mine galleries
     SEG_ON: 620, SHAFT_ON: 120, SUMP_ON: 220, OIL_ON: 300, FEATURE_ON: 0,
     HALL_ON: 0, HALL_R2: 0, HALL_H: 0, ORE: 6,                 // gold: blocks of 3³ in this many per mille of the rock
-    ROOF: 0 } },
-  { key: 'descentCoal', label: 'Descent: Coal Pits', name: 'Coal Pits', tier: 2, ints: {
+    ROOF: 0,
+    ENTRY_I: 8, ENTRY_K: 10 } },                               // Wang levels: the top layer's unit the way in drops into
+                                                               // (Mines: just east of where the ramp from the mouth bottoms out)
+  { key: 'descentCoal', label: 'Descent: Coal Pits', name: 'Coal Pits', tier: 2, kit: null, ints: {
     LEVEL: 1, LAYERS: 7, TUN_HALF: 5, TUN_H: 11, BUMP_H: 1,   // 9 wide, 11 tall (+1)
     SEG_ON: 560, SHAFT_ON: 150, SUMP_ON: 300, OIL_ON: 0, FEATURE_ON: 350,   // rubble heaps
     HALL_ON: 450, HALL_R2: 121, HALL_H: 14, ORE: 25,           // caverns of radius 11 at crossings; coal pockets
-    ROOF: 168 } },
-  { key: 'descentSnow', label: 'Descent: Snowy Depths', name: 'Snowy Depths', tier: 3, ints: {
+    ROOF: 168,
+    ENTRY_I: 12, ENTRY_K: 10 } },                              // (under the level above's exit pit, as the lattice's spawn)
+  { key: 'descentSnow', label: 'Descent: Snowy Depths', name: 'Snowy Depths', tier: 3, kit: null, ints: {
     LEVEL: 2, LAYERS: 7, TUN_HALF: 4, TUN_H: 11, BUMP_H: 1,
     SEG_ON: 600, SHAFT_ON: 130, SUMP_ON: 280, OIL_ON: 0, FEATURE_ON: 300,   // brick ruins
     HALL_ON: 250, HALL_R2: 81, HALL_H: 13, ORE: 2,             // smaller ice halls; crystal pockets
-    ROOF: 168 } },
+    ROOF: 168,
+    ENTRY_I: 12, ENTRY_K: 10 } },
 ];
 
 // Derived constants: the cave mouth on the mountain's west slope, where the
 // rock's top (less its roughness and the hills) clears the mouth's ceiling by
 // MOUTH_COVER, and the ramp down from it to the top layer's floor.
 const MOUTH_COVER = 2;
-function derived(ints) {
+// A level with a Wang kit (DS_LEVEL_DEFS kit; docs/wang-tiles.md) tiles its biome
+// band with it instead of the lattice: the region starts at BIOME_Y0 (its bottom
+// layer's exit shaft opens straight into the temple's entry shaft, so the region
+// is offset in x and z to put a unit's centre over that shaft) and holds as many
+// layers as fit under the surface (Mines) or the roof rock. The way in ends in
+// the entry hall, a chamber on the region's top over the top layer's entry
+// shaft: the Mines' ramp from the cave mouth bottoms out into it; the Coal Pits'
+// and Snowy Depths' spawns stand in it.
+const ENTRY_HALL_HALF_X = 10;   // the entry hall: this far each side of the entry shaft in x...
+const ENTRY_HALL_HALF_Z = 7;    // ...and in z (the shaft is GEOM.SHAFT_W across: a walkway round it)
+const ENTRY_HALL_LIGHT = 4;     // its crystal lantern: this far in from the hall's ends, in its ceiling
+const posMod = (a, n) => ((a % n) + n) % n;
+function wangDerived(ints, ceiling) {
+  const { U, H } = GEOM;
+  const ex = COMMON.ESHAFT_X0 + COMMON.ESHAFT_W / 2, ez = COMMON.TZC;   // the temple's entry shaft's middle
+  const x0 = posMod(ex - U / 2, U), z0 = posMod(ez - U / 2, U);
+  const layers = Math.floor((ceiling - COMMON.BIOME_Y0) / H);
+  const top = COMMON.BIOME_Y0 + layers * H;
+  const cx = x0 + ints.ENTRY_I * U + U / 2, cz = z0 + ints.ENTRY_K * U + U / 2;
+  return {
+    WANG_X0: x0, WANG_Z0: z0, WANG_Y0: COMMON.BIOME_Y0,
+    WANG_NX: Math.floor((COMMON.WX - x0) / U), WANG_NZ: Math.floor((COMMON.WZ - z0) / U), WANG_LAYERS: layers,
+    WANG_TOP: top,
+    WANG_EXIT_I: (ex - U / 2 - x0) / U, WANG_EXIT_K: (ez - U / 2 - z0) / U,
+    ENTRY_CX: cx, ENTRY_CZ: cz,
+    EHALL_X0: cx - ENTRY_HALL_HALF_X, EHALL_X1: cx + ENTRY_HALL_HALF_X,
+    EHALL_Z0: cz - ENTRY_HALL_HALF_Z, EHALL_Z1: cz + ENTRY_HALL_HALF_Z,
+    EHALL_LIGHT: ENTRY_HALL_LIGHT,
+  };
+}
+function derived(ints, kit) {
   const need = COMMON.MOUTH_Y - COMMON.SURF + ints.TUN_H + MOUTH_COVER + COMMON_F.MTN_NA + COMMON_F.HILL_A;
   const d = COMMON_F.MTN_R * (1 - (need / COMMON_F.MTN_H) ** (1 / COMMON_F.MTN_PROFILE));
   const mouthX = Math.floor(COMMON.MTN_X - d);
   const topFloor = COMMON.BIOME_Y0 + (ints.LAYERS - 1) * COMMON.LAYER_H;
+  const surfLo = COMMON.SURF - COMMON.HILL_A_I - 1;
+  const roofLo = ints.ROOF - Math.ceil(COMMON_F.ROOF_A) - 1;
+  const W = wangDerived(ints, ints.LEVEL === 0 ? surfLo + 1 : roofLo);
   return {
+    ...W,
+    WANG: kit ? 1 : 0,
+    // Wang levels: the ramp runs from the mouth along the entry hall's middle, down to the region's top
+    RAMP_FLOOR: kit ? W.WANG_TOP : topFloor,
     MOUTH_X: mouthX,
-    RAMP_X1: mouthX + 2 * (COMMON.MOUTH_Y - topFloor),   // 1 cell down per 2 across
+    RAMP_X1: kit ? W.EHALL_X1 : mouthX + 2 * (COMMON.MOUTH_Y - topFloor),   // 1 cell down per 2 across
     TOP_FLOOR: topFloor,
-    RAMP_Z0: COMMON.TZC + ints.TUN_HALF + 1,              // the way in's band: a cell of wall from the main row's
-    RAMP_ZC: COMMON.TZC + 2 * ints.TUN_HALF,              // ...its middle
-    SURF_LO: COMMON.SURF - COMMON.HILL_A_I - 1,
+    RAMP_Z0: kit ? W.ENTRY_CZ - ints.TUN_HALF + 1 : COMMON.TZC + ints.TUN_HALF + 1,   // the way in's band: a cell of wall from the main row's
+    RAMP_ZC: kit ? W.ENTRY_CZ : COMMON.TZC + 2 * ints.TUN_HALF,                      // ...its middle
+    SURF_LO: surfLo,
     APPROACH_X0: COMMON.MTN_X - COMMON_F.MTN_R - COMMON.APPROACH_OUT,
     APPROACH_Y0: COMMON.SURF - COMMON.HILL_A_I,          // the cut's floor where it starts: the hills' lowest
     TREE_TOP: COMMON.SURF + COMMON.HILL_A_I + 1 + COMMON.TRUNK_H + Math.ceil(COMMON_F.CROWN_R) + 1,
-    ROOF_LO: ints.ROOF - Math.ceil(COMMON_F.ROOF_A) - 1,
+    ROOF_LO: roofLo,
   };
 }
 
 function tables(level) {
   const def = DS_LEVEL_DEFS[level];
   const salts = Object.fromEntries(Object.entries(COMMON_SALTS).map(([k, v]) => [k, (v + level * SALT_LEVEL_STEP) >>> 0]));
-  return { ints: { ...COMMON, ...def.ints, ...derived(def.ints) }, floats: COMMON_F, salts };
+  return { ints: { ...COMMON, ...def.ints, ...derived(def.ints, def.kit) }, floats: COMMON_F, salts };
 }
 const PREFIX = 'DS';
 
@@ -274,6 +320,8 @@ int dsSump(int k, int i, int j, int dx, int dz) {
 // (reachable, the loot candidates) reads the lattice through the twin and
 // must change with it.
 int dsTunnel(int x, int y, int z) {
+  // a level with a Wang kit: its tiles instead (dsWang: the scene's glsl / the twin's bake)
+  if (DS_WANG == 1) return dsWang(x, y, z);
   int k = thDiv(y - DS_BIOME_Y0, DS_LAYER_H);
   int yl = y - DS_BIOME_Y0 - k * DS_LAYER_H;
   int i = thDiv(x - DS_GRID_OFF + DS_GRID_HALF, DS_GRID);
@@ -415,11 +463,26 @@ int dsTree(int x, int y, int z) {
   return -1;
 }
 
+// the Wang levels' entry hall (see wangDerived), its lantern hung in the ceiling, or -1
+int dsEntryHall(int x, int y, int z) {
+  if (x < DS_EHALL_X0 || x >= DS_EHALL_X1 || z < DS_EHALL_Z0 || z >= DS_EHALL_Z1) return -1;
+  if (y < DS_WANG_TOP || y > DS_WANG_TOP + DS_TUN_H) return -1;
+  bool lamp = z == DS_ENTRY_CZ && (x == DS_EHALL_X0 + DS_EHALL_LIGHT || x == DS_EHALL_X1 - 1 - DS_EHALL_LIGHT);
+  if (y == DS_WANG_TOP + DS_TUN_H) return lamp ? E_CRYSTAL : -1;
+  return E_EMPTY;
+}
+
 int dsMines(int x, int y, int z) {
   // The way in, beside the top layer's main row (z RAMP_Z0 on, a wall between): a cut up
   // the west slope, open to the sky and rising 1 in 2 from the forest floor to the
   // mouth, over a causeway of rock; then a ramp down inside the mountain, 1 in 2, to
-  // the top layer's floor, where a doorway opens into the main row.
+  // the top layer's floor, where a doorway opens into the main row. A Wang level's
+  // ramp runs along the entry hall's middle instead and levels out on the region's
+  // top (RAMP_FLOOR), into the hall.
+  if (DS_WANG == 1) {
+    int hall = dsEntryHall(x, y, z);
+    if (hall >= 0) return hall;
+  }
   bool band = z >= DS_RAMP_Z0 && z < DS_RAMP_Z0 + 2 * DS_TUN_HALF - 1;
   if (x >= DS_APPROACH_X0 && x < DS_MOUTH_X && abs(z - DS_RAMP_ZC) < DS_PORCH_HALF) {
     int fl = max(DS_APPROACH_Y0, DS_MOUTH_Y - thDiv(DS_MOUTH_X - 1 - x, 2));
@@ -427,10 +490,10 @@ int dsMines(int x, int y, int z) {
     if (band && y >= fl) return E_EMPTY;
   }
   if (band && x >= DS_MOUTH_X && x < DS_RAMP_X1) {
-    int f = DS_MOUTH_Y - thDiv(x - DS_MOUTH_X, 2);
+    int f = max(DS_RAMP_FLOOR, DS_MOUTH_Y - thDiv(x - DS_MOUTH_X, 2));
     if (y >= f && y < f + DS_TUN_H) return E_EMPTY;
   }
-  if (x >= DS_RAMP_X1 - DS_JOIN_L && x < DS_RAMP_X1 && z >= DS_TZC && z < DS_RAMP_Z0 + 2 * DS_TUN_HALF - 1
+  if (DS_WANG == 0 && x >= DS_RAMP_X1 - DS_JOIN_L && x < DS_RAMP_X1 && z >= DS_TZC && z < DS_RAMP_Z0 + 2 * DS_TUN_HALF - 1
       && y >= DS_TOP_FLOOR && y < DS_TOP_FLOOR + DS_TUN_H) return E_EMPTY;
   if (y >= DS_SURF_LO) {
     float mtn = dsMtn(x, z);
@@ -452,6 +515,10 @@ int dsMines(int x, int y, int z) {
 // ---- Coal Pits, Snowy Depths: under a roof of rock
 int dsRoof(int x, int z) { return DS_ROOF + thRound(thNoised(float(x) * DS_ROOF_F, float(z) * DS_ROOF_F, thStream(DS_SALT_ROOF, 0)) * DS_ROOF_A); }
 int dsDeep(int x, int y, int z) {
+  if (DS_WANG == 1) {
+    int hall = dsEntryHall(x, y, z);
+    if (hall >= 0) return hall;
+  }
   if (y >= DS_ROOF_LO) {
     int top = dsRoof(x, z);
     if (y >= top) return DS_LEVEL == 2 && y < top + DS_SNOW_D ? E_SNOW : E_EMPTY;
@@ -467,11 +534,45 @@ int dsCell(int x, int y, int z) {
 }
 `;
 
+// ---- the Wang tilings (levels with a kit), one bake per level: CPU, ~150 ms,
+// pure in the kit and the fixed seed, so levels.js's sites stay put
+const bakes = new Map();
+export function descentWang(level) {
+  const def = DS_LEVEL_DEFS[level];
+  if (!def.kit) return null;
+  if (!bakes.has(level)) {
+    const C = descentConstants(level), { U, H } = GEOM;
+    const W = bakeWang({
+      kit: def.kit, seed: (DS_SEED + level * SALT_LEVEL_STEP) >>> 0,
+      size: [C.WANG_NX * U, C.WANG_LAYERS * H, C.WANG_NZ * U], origin: [C.WANG_X0, C.WANG_Y0, C.WANG_Z0],
+      entry: [C.ENTRY_I, C.ENTRY_K], exit: [C.WANG_EXIT_I, C.WANG_EXIT_K],
+    });
+    // the tiling may move the entry or exit to the nearest whole brick: the hall and the temple must not move
+    const want = { entry: [C.ENTRY_CX, C.WANG_TOP, C.ENTRY_CZ], exit: [C.ESHAFT_X0 + C.ESHAFT_W / 2, C.WANG_Y0, C.TZC] };
+    for (const k of ['entry', 'exit']) {
+      if (W[k].join() !== want[k].join()) throw new Error(`descent ${def.key}: the Wang ${k} is at ${W[k]}, not ${want[k]} (pick another ENTRY_I/K or seed)`);
+    }
+    bakes.set(level, W);
+  }
+  return bakes.get(level);
+}
+// dsWang's JS twin: the element a Wang level's tile puts at a cell, -1 for its rock or outside it
+const dsWangJS = (W) => (W
+  ? (x, y, z) => { const c = W.wangCellJS(x, y, z); return c === WANG_OUT || c === MAT.ROCK ? -1 : W.elementJS(c); }
+  : () => -1);
+// ...and on the GPU (after wangGLSL(kit))
+const dsWangGLSL = (kit) => (kit ? /* glsl */ `
+${wangGLSL(kit)}
+int dsWang(int x, int y, int z) {
+  int c = wangCell(ivec3(x, y, z));
+  return c == WANG_OUT || c == WANG_ROCK ? -1 : wangElement(c);
+}` : 'int dsWang(int x, int y, int z) { return -1; }');
+
 // ---- the JS twins, one per level
 const twins = new Map();
 export function descentTwin(level) {
   if (!twins.has(level)) {
-    const t = compileShared(SRC, DS_SEED, jsConstants(PREFIX, tables(level)));
+    const t = compileShared(SRC, DS_SEED, { ...jsConstants(PREFIX, tables(level)), dsWang: dsWangJS(descentWang(level)) });
     twins.set(level, t);
   }
   return twins.get(level);
@@ -485,6 +586,7 @@ export function descentConstants(level) {
 const glsl = (level) => () => /* glsl */ `
 ${definesGLSL(PREFIX, tables(level))}
 ${helpersGLSL}
+${dsWangGLSL(DS_LEVEL_DEFS[level].kit)}
 ${SRC}
 void sceneCell(ivec3 w, out vec4 A, out vec4 B) {
   int id = dsCell(w.x, w.y, w.z);
@@ -516,7 +618,10 @@ function makeScene(level) {
     view: { dir: VIEW_DIR, dist: VIEW_DIST, lift: VIEW_LIFT },
     params: ({ size, seed }) => ({ size, seed: seed >>> 0, sea: 0, floor: COMMON.FLOOR }),
     glsl: glsl(level),
-    uniforms: () => ({ uSceneSeed: { value: DS_SEED } }),
+    // a Wang level: the bake is CPU work, done here or on the first uniforms() (descentWang)
+    prepare: async () => { descentWang(level); },
+    uniforms: () => ({ uSceneSeed: { value: DS_SEED }, ...(def.kit ? descentWang(level).uniforms() : {}) }),
+    dispose: () => { if (def.kit) descentWang(level).dispose(); },
     start: () => (spawn ? [spawn[0], spawn[2]] : [COMMON.TX0, COMMON.TZC]),
     setSpawn(s) { spawn = s; },
     ground(x, z) {

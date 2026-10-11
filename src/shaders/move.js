@@ -1,5 +1,6 @@
 import { prelude, stateOutGLSL } from './common.js';
 import { quietGLSL } from './activity.js';
+import { simModesGLSL } from '../simModes.js';
 
 // Movement pass: Margolus block cellular automaton.
 //
@@ -199,7 +200,12 @@ uniform float uGravity;
 ${CELLS.map((i) => `layout(location = ${i}) out vec4 o${i};`).join('\n')}
 ${quietGLSL}
 ${heatGLSL}
+${simModesGLSL}
 uint rs;
+mat3 F;   // the block's gravity frame (simModes.js gravFrame)
+// where cell i of the block as the frame sees it lies: its offset from the base, and its index
+ivec3 frameOff(int i) { return ivec3((vec3(ivec3(i & 1, (i >> 1) & 1, (i >> 2) & 1) * 2 - 1) * F + 1.0) * 0.5); }
+int frameIdx(int i) { ivec3 o = frameOff(i); return o.x + 2 * o.y + 4 * o.z; }
 
 // Moving through a liquid is slower than through air.
 float dragF(int a, int b, float da, float db) {
@@ -261,10 +267,18 @@ void main() {
     return;
   }
 
+  // Loop edges (simModes.js): a block straddling an edge is also the one
+  // based on the far side; both solve it from the same base, so they agree.
+  base = edgeCell(base);
+  // The rules below are written for down = −y. With radial gravity the block
+  // is solved turned so that −y is its pull's dominant axis (gravFrame: cell
+  // i of the turned block, frameOff, and velocities into the frame and back).
+  F = uGravMode == GRAV_RADIAL ? gravFrame(gravDir(vec3(base) + 1.0)) : mat3(1.0);
   ${CELLS.map((i) => `vec4 a${i}; vec3 v${i}; int k${i}; float d${i}; int n${i} = ${i}; float q${i} = 0.0; bool m${i} = false, s${i} = false;`).join('\n  ')}
   ${CELLS.map((i) => `{
-    ivec3 q = base + ivec3(${i & 1}, ${(i >> 1) & 1}, ${(i >> 2) & 1});
-    if (inGrid(q)) { a${i} = fetchA(q); v${i} = fetchB(q).xyz; }
+    ivec3 q = edgeCell(base + frameOff(${i}));
+    if (inGrid(q)) { a${i} = fetchA(q); v${i} = F * fetchB(q).xyz; }
+    else if (uEdge == EDGE_VOID) { a${i} = VOID_AIR_A; v${i} = vec3(0.0); }
     else { a${i} = vec4(float(E_WALL), AMBIENT, 0.0, 0.0); v${i} = vec3(0.0); }
     k${i} = eid(a${i}); d${i} = densityOf(k${i}, a${i}.y);
   }`).join('\n  ')}
@@ -286,7 +300,14 @@ void main() {
     ${horizontalZ()}${horizontalX()}
   }
 
-  ${CELLS.map((i) => `o${i} = vec4(packSlot(n${i}, q${i}), v${i});`).join('\n  ')}
+  if (uGravMode == GRAV_RADIAL) {
+    // back out of the frame: slot frameIdx(i) takes cell i, from source frameIdx(n)
+    vec4 r[SLOTS];
+    ${CELLS.map((i) => `r[frameIdx(${i})] = vec4(packSlot(frameIdx(n${i}), q${i}), v${i} * F);`).join('\n    ')}
+    ${CELLS.map((i) => `o${i} = r[${i}];`).join(' ')}
+  } else {
+    ${CELLS.map((i) => `o${i} = vec4(packSlot(n${i}, q${i}), v${i});`).join('\n    ')}
+  }
 }
 `;
 
@@ -308,6 +329,7 @@ export const slotGLSL = /* glsl */ `
 uniform highp sampler2DArray tSlots;
 uniform int uParity;
 ${heatGLSL}
+${simModesGLSL}
 // the base (lowest) cell of the block holding cell c
 ivec3 blockBase(ivec3 c) { ivec3 off = ivec3(uParity); return ((c + off) / 2) * 2 - off; }
 vec4 slotOf(ivec3 c, out ivec3 q) {
@@ -324,11 +346,13 @@ vec4 slotOf(ivec3 c, out ivec3 q) {
 // the impact energy the slot carries (packSlot), and the slot's new velocity
 // with the pressure of c itself (pressure stays with the position). (A block
 // whose base is in a quiet brick stayed put: its slots give each cell its own
-// state, as fetchA and fetchB would.)
+// state, as fetchA and fetchB would.) A source outside the box is the far
+// side's cell past a loop edge, or still air past a void edge (simModes.js).
 void postMove(ivec3 c, out vec4 a, out vec4 b) {
   ivec3 q;
   vec4 m = slotOf(c, q);
-  a = fetchA(q);
+  q = edgeCell(q);
+  a = inGrid(q) ? fetchA(q) : VOID_AIR_A;
   float heat = float(int(m.x + 0.5) / SLOTS) / HEAT_QUANTA;   // impact energy this cell took
   if (heat > 0.0) a.y = min(a.y + heat * KE_TO_HEAT / CAP[eid(a)], CELL_TEMP_MAX);
   b = vec4(m.yzw, fetchB(c).w);

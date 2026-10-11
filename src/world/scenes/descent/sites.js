@@ -1,6 +1,8 @@
-import { descentTwin, descentConstants, DS_LEVEL_DEFS, DS_SEED } from './scenes.js';
+import { descentTwin, descentConstants, descentWang, DS_LEVEL_DEFS, DS_SEED } from './scenes.js';
 import { pcg } from '../themedShared.js';
 import { E, ELEMENTS, K } from '../../../elements.js';
+import { MAT, GEOM } from '../../wang/index.js';
+import { walkFlood } from '../../wang/walk.js';
 
 // levels.js's data, computed from the scenes' JS twins (scenes.js):
 // node scripts/check-descent-levels.mjs --write writes it, and without --write
@@ -19,6 +21,10 @@ const SPAWN_MOUTH_BACK = 4;       // Mines: the spawn this far out of the cave m
 const SPAWN_PIT_IN = 6;           // Coal, Snow: the spawn over the temple exit's middle above (its x)
 const HEADROOM = 2;               // air cells a site needs over its feet
 const SALT_LOOT = 0x2f61c3;
+// Wang levels: which of the kit's sites (kits/*.js sites) each kind of loot prefers, first to last
+const WANG_PICKS = { wand: ['wand', 'treasure', 'loot'], spell: ['loot', 'treasure'], gold: ['gold', 'loot'] };
+const SITE_SETTLE = 4;            // a kit site's feet: the first standing place this far up from where the tile marks it
+const WALK_TOP_OVER = 4;          // the walk's block reaches this far over the way in's highest roof
 
 // something to stand on: a solid or a powder (not a liquid, not air)
 const solidFloor = (id) => ELEMENTS[id].kind === K.SOLID || ELEMENTS[id].kind === K.POWDER;
@@ -69,10 +75,63 @@ export function reachable(T, C, from) {
 export const crossingOf = (C, x, z) => [Math.round((x - C.GRID_OFF) / C.GRID), Math.round((z - C.GRID_OFF) / C.GRID)];
 export const layerFloor = (C, k) => C.BIOME_Y0 + k * C.LAYER_H;
 
+// A Wang level's walk (wang/walk.js walkFlood: a body's moves, steps, jumps and
+// falls) over the level from the spawn: a block over the tiled region's columns
+// from the band's floor (the temple in it) to over the way in. Returns
+// { reached(x, y, z): can the body stand with its feet in world cell (x, y, z)?
+//   inTemple: did it reach the temple box?, count: standing places reached }.
+const walks = new Map();
+export function wangWalk(level, spawn) {
+  const key = `${level}:${spawn}`;
+  if (walks.has(key)) return walks.get(key);
+  const C = descentConstants(level), W = descentWang(level), cell = descentTwin(level).dsCell, { U, H } = GEOM;
+  const x0 = C.WANG_X0, z0 = C.WANG_Z0, y0 = C.FLOOR;
+  const RX = C.WANG_NX * U, RZ = C.WANG_NZ * U;
+  const RY = Math.max(level === 0 ? C.MOUTH_Y : C.WANG_TOP, spawn[1]) + C.TUN_H + WALK_TOP_OVER - y0;
+  const wy0 = C.WANG_Y0 - y0, wy1 = C.WANG_TOP - y0;
+  const codeOf = (id) => (id === E.EMPTY || ELEMENTS[id].kind === K.GAS ? MAT.AIR : ELEMENTS[id].kind === K.LIQUID ? MAT.WATER : MAT.ROCK);
+  const cells = new Uint8Array(RX * RY * RZ);
+  for (let z = 0; z < RZ; z++) for (let y = 0; y < RY; y++) {
+    const row = RX * (y + RY * z), inWang = y >= wy0 && y < wy1;
+    for (let x = 0; x < RX; x++) {
+      const c = inWang ? W.wangCellJS(x + x0, y + y0, z + z0) : codeOf(cell(x + x0, y + y0, z + z0));
+      cells[row + x] = c === MAT.AIR || c === MAT.ROCK ? c : passableCode(c);
+    }
+  }
+  const { seen, list } = walkFlood(cells, [RX, RY, RZ], [[spawn[0] - x0, spawn[1] - y0, spawn[2] - z0]]);
+  const at = (x, y, z) => (x < 0 || z < 0 || y < 0 || x >= RX || y >= RY || z >= RZ ? 0 : seen[x + RX * (y + RY * z)]);
+  // the body's low corner is a standing place; it's 2 × 2, so feet at (x, z) are any of four corners
+  const reached = (x, y, z) => {
+    const [a, b, c] = [x - x0, y - y0, z - z0];
+    return !!(at(a, b, c) || at(a - 1, b, c) || at(a, b, c - 1) || at(a - 1, b, c - 1));
+  };
+  const [tx0, ty0, tz0, tx1, ty1, tz1] = templeSites(C).box;
+  let inTemple = false;
+  for (let x = tx0; x < tx1 && !inTemple; x++) for (let z = tz0; z < tz1 && !inTemple; z++) for (let y = ty0; y < ty1; y++) if (reached(x, y, z)) { inTemple = true; break; }
+  const out = { reached, inTemple, count: list.length };
+  walks.set(key, out);
+  return out;
+}
+// a kit code the walk keeps as is (liquids, timber, rubble...): passable ones stay, solid ones are ROCK
+const passableCode = (c) => (c === MAT.WATER || c === MAT.OIL ? c : MAT.ROCK);
+
+// A Wang level's loot candidates: the kit's sites the walk reaches, each kind's preferred first.
+function wangCandidates(level, spawn, cell) {
+  const W = descentWang(level), walk = wangWalk(level, spawn), out = [];
+  for (const s of W.sites) {
+    const y = feetAt(cell, s.x, s.z, s.y, s.y + SITE_SETTLE);
+    if (y === null || !walk.reached(s.x, y, s.z)) continue;
+    const h = pcg((pcg((pcg((DS_SEED + SALT_LOOT + level) >>> 0) + s.x) >>> 0) + s.z * 4096 + y) >>> 0);
+    out.push({ x: s.x, y, z: s.z, h, kind: s.kind });
+  }
+  return out;
+}
+
 // Everything levels.js says about level `level`.
 export function levelSites(level) {
   const T = descentTwin(level), C = descentConstants(level), def = DS_LEVEL_DEFS[level];
   const cell = T.dsCell;
+  if (def.kit) return wangLevelSites(level, T, C, def);
   const top = C.LAYERS - 1;
   // the spawn, and the crossing it walks into
   let spawn, start;
@@ -109,12 +168,32 @@ export function levelSites(level) {
     }
   }
   cands.sort((p, q) => p.h - q.h || p.x - q.x || p.z - q.z);
+  return { key: def.key, name: def.name, tier: def.tier, spawn, temple: templeSites(C), loot: pickLoot(cands, spawn, def, () => cands) };
+}
+
+// A Wang level: the spawn (the Mines' by the cave mouth; a deep level's in the
+// entry hall, by the shaft), loot from the kit's sites the walk reaches.
+const HALL_SPAWN_IN = 2;          // a deep level's spawn: this far in from the entry hall's west end
+function wangLevelSites(level, T, C, def) {
+  const cell = T.dsCell;
+  const x = level === 0 ? C.MOUTH_X - SPAWN_MOUTH_BACK : C.EHALL_X0 + HALL_SPAWN_IN;
+  const spawn = [x, feetAt(cell, x, C.RAMP_ZC, level === 0 ? C.APPROACH_Y0 : C.WANG_TOP, C.WY), C.RAMP_ZC];
+  const cands = wangCandidates(level, spawn, cell);
+  const order = (kind) => {
+    const rank = (c) => { const r = WANG_PICKS[kind].indexOf(c.kind); return r < 0 ? Infinity : r; };
+    return cands.filter((c) => rank(c) < Infinity).sort((p, q) => rank(p) - rank(q) || p.h - q.h || p.x - q.x || p.z - q.z);
+  };
+  return { key: def.key, name: def.name, tier: def.tier, spawn, temple: templeSites(C), loot: pickLoot(cands, spawn, def, order) };
+}
+
+// LOOT_COUNTS of each kind from candidates (order(kind): in the order to take them), spaced apart
+function pickLoot(cands, spawn, def, order) {
   const loot = [];
   const dist = (p, q) => Math.hypot(p.x - q.x, p.y - q.y, p.z - q.z);
   const sp = { x: spawn[0], y: spawn[1], z: spawn[2] };
   for (const kind of Object.keys(LOOT_COUNTS)) {
     let n = 0;
-    for (const c of cands) {
+    for (const c of order(kind)) {
       if (n >= LOOT_COUNTS[kind]) break;
       if (dist(c, sp) < LOOT_SPAWN_CLEAR) continue;
       if (loot.some((l) => dist(l, c) < LOOT_GAP || (l.kind === kind && dist(l, c) < LOOT_SPACING[kind]))) continue;
@@ -122,5 +201,5 @@ export function levelSites(level) {
       n++;
     }
   }
-  return { key: def.key, name: def.name, tier: def.tier, spawn, temple: templeSites(C), loot };
+  return loot;
 }

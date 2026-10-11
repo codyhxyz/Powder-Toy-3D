@@ -10,7 +10,9 @@ import { povEvents } from './events.js';
 //
 //   const remove = addTarget({ id, box(min, max), alive, hurt(amount, cause, dir, opts?), facing?(out) });
 //
-// hurt's opts: { lethal } (a backstab: all the health it has, through any shield).
+// hurt's opts: { lethal } (a backstab: all the health it has, through any shield),
+// { exact } (Halo's numbers, halo.js: the amount as given, without the share of
+// a weapon's damage the body takes, npc.js DAMAGE_TAKEN, pov/index.js PLAYER_DAMAGE_TAKEN).
 // body: the target's first-person body (player.js), whose statuses scale what its weapons deal.
 // facing(out): the unit direction the target looks along (its eyes), for the
 // knife's backstab test; a target without it can't be backstabbed.
@@ -21,7 +23,7 @@ import { povEvents } from './events.js';
 //
 // A team game (src/game) sets hit rules: rules.passes(byId, target) lets a
 // weapon go through a body (a teammate: no friendly fire, TF2's way, so a round
-// flies on past them), and rules.share(byId, target) scales a blow (0 during
+// flies on past them), and rules.share(byId, target, cause) scales a blow (0 during
 // spawn protection). Every blow that lands is announced as 'body:hit' { id,
 // amount, cause }, inside the attacker's povEvents.as() (so it carries `by`;
 // none: the player), which is how kills are credited. The sim's damage (fire,
@@ -39,7 +41,7 @@ export function addTarget(t) {
   const hurt = t.hurt;
   t.hurt = function (amount, cause, dir, opts) {
     const by = povEvents.actor?.id ?? PLAYER;
-    const share = rules ? rules.share(by, t) : 1;
+    const share = rules ? rules.share(by, t, cause) : 1;
     if (!(share > 0)) return;
     povEvents.emit('body:hit', { id: t.id, amount: amount * share, cause });
     hurt.call(t, amount * share, cause, dir, opts);
