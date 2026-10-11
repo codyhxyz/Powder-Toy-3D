@@ -80,3 +80,29 @@ for (const s of summary) {
     + `delay ${s.delay.join('–')} s, recharge ${s.recharge.join('–')} s, spells/cast ${s.perCast.join('–')}, shuffled ${Math.round(s.shuffled / N * 100)}%`);
 }
 console.log(`wand generation checks passed: ${N * TIERS} wands compile, deterministic seeds, Noita ranges, shop prices`);
+
+// Descent's run inventory (wands/descentRun.js): four slots, a full hand swaps with the held wand, a spell bag.
+{
+  const { descentWands: d, WAND_SLOTS } = await import('../src/pov/wands/descentRun.js');
+  const drops = [], refreshes = [];
+  d.on('drop', (w) => drops.push(w.id));
+  d.on('refresh', () => refreshes.push(1));
+  d.reset(5);
+  assert.equal(d.wands.length, 2, "Noita's two starting wands");
+  for (const w of d.wands) assert.deepEqual(compileWand(w.cards, w.config).errors, []);
+  for (let seed = 0; seed < WAND_SLOTS - 2; seed++) assert.equal(d.give(generateWand(1, seed)).dropped, null);
+  assert.equal(d.wands.length, WAND_SLOTS);
+  d.held = 1;
+  const old = d.wands[1].id, got = d.give(generateWand(2, 77));
+  assert.equal(got.slot, 1);
+  assert.equal(got.dropped.id, old);
+  assert.deepEqual(drops, [old], 'the swapped wand drops');
+  assert.equal(d.give({ cards: ['nope'], config: {} }), null, 'a bad wand is refused');
+  assert(d.giveSpell('spark') && !d.giveSpell('nope'));
+  assert(d.edit(1, ['spark', 'spark'], []));
+  assert.deepEqual(d.wands[1].cards, ['spark', 'spark']);
+  assert.deepEqual(d.bag, []);
+  d.refresh();
+  assert.equal(refreshes.length, 1);
+  console.log('descent run inventory checks passed: 4 slots, swap drops the held wand, spell bag, edit, refresh');
+}
