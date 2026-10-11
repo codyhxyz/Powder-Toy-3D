@@ -16,6 +16,7 @@ import { canFight } from '../pov/ai/brain.js';
 import { createArsenal } from './arsenal.js';
 import { CAUSE } from '../pov/halo.js';
 import { createFeel } from './feel.js';
+import { iconFor } from '../pov/killfeed.js';
 
 // Team games in first person: Halo's Team Slayer, Capture the Flag, King of
 // the Hill and Infection, and Siege (TF2's attack/defend on a row of control
@@ -414,6 +415,8 @@ export function createGame(shell) {
     if (v.id === PLAYER) myDeath = { at: time, killer: e.killer, killerTeam: e.killerTeam, weapon: gearByKey(weapon)?.name ?? null, cause };
     hud.kill(e);
     povEvents.emit('game:kill', e);
+    // the killfeed's own event (pov/killfeed.js 'kill'): the scoreboard and the medals listen to both kinds of game alike
+    povEvents.emit('kill', { id: v.id, victim: v.name, by: e.by, killer: e.killer, cause, icon: iconFor(cause, held), held, self: false, team: true });
     // the mode's part
     if (mode === 'slayer') {
       if (k) { teamScore[k.team]++; k.score++; }
