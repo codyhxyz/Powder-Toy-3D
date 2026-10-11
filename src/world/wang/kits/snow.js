@@ -152,7 +152,7 @@ const tiles = openTiles([
   },
   // ---- a cold pocket off the main path: liquid nitrogen in a blob's basin, blocks of dry ice
   {
-    name: 'cold pocket', weight: 0.7, offPath: true,
+    name: 'cold pocket', weight: 0.3, offPath: true,
     prims: island(209, {
       blobs: [blob([24, LOW - 1, 20], [8, 3.5, 4.5])],
       extra: [basin(24, LOW, 20, 4, 2, 2.5, 'LIQUID_NITROGEN')],

@@ -187,7 +187,7 @@ const tiles = openTiles([
   // ---- coal laid down burning (EMBER): a smouldering heap on a bare-rock blob off the main
   // path, no coal, timber or powder within EMBER_CLEAR cells
   {
-    name: 'burning coal', weight: 0.7, offPath: true,
+    name: 'burning coal', weight: 0.25, offPath: true,
     prims: [
       ...island(114, { blobs: [blob([24, LOW - 2, 20], [8, 3, 4])] }),
       vein([24, LOW, 20], [EMBER_CLEAR + 4, EMBER_CLEAR, EMBER_CLEAR], 'ROCK', ['COAL', 'GOLD', 'FUNGUS'], 0),
