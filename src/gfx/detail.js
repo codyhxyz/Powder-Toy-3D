@@ -46,6 +46,14 @@ const RELIEF_FADE_M = 0.035;   // m per pixel
 // clod's lump (2 · CLOD_LUMP_R = 0.34 cells ≈ 10 cm) spans 8 pixels (*_PX_NONE).
 const GRAINS_FADE_M = 0.05 / 8;           // m per pixel
 const CLODS_FADE_M = 0.34 * CELL_M / 8;   // m per pixel
+// Smooth up close (shaders/gfx/core.js cubicClose): sand's and liquids' smooth
+// surfaces read their fields cubic wherever a trilinear surface's facets (about
+// half a cell across: a lone peak's octahedron) would span CUBIC_PX_NONE pixels,
+// all of it by CUBIC_PX_FULL: the grains' hand-off (shaders/gfx/grains.js
+// *_PX_NONE, *_PX_FULL) on the facet. Until then the thin mask alone decides.
+export const CUBIC_FACET = 0.5;           // cells
+export const CUBIC_PX_NONE = 8, CUBIC_PX_FULL = 16;
+const CUBIC_FADE_M = CUBIC_FACET * CELL_M / CUBIC_PX_NONE;   // m per pixel
 // Smoke filaments start once their coarser octave (FILAMENT_1_M = 20 cm)
 // passes the material LOD's fade-out (lodFade: DETAIL_FADE_HI cycles per
 // pixel). The finer media sampling and flow-following apply at any distance
@@ -84,6 +92,11 @@ export const DETAIL = [
   // high: plume fireNear +5.9, smokeIn / steamNear +3-4 ms
   { key: 'mediaFlow', define: 'DETAIL_MEDIA_FLOW', label: 'Smoke follows the flow', cost: 'high',
     desc: 'Wisps of smoke, steam and fire ride the simulated flow instead of a steady rise' },
+  // medium (estimated): lab eyeSandClose (standing on the pile) +5 to +24 % of the view in three
+  // runs, eyeTank and volcano eyeFlank within noise, 2026-10-11. The GPU was saturated by other
+  // sessions (the god view, where the gate leaves it out, read +3 ms), so re-measure on a quiet one.
+  { key: 'smoothClose', define: 'DETAIL_CUBIC_CLOSE', label: 'Smooth sand and water up close', cost: 'medium', fadeM: CUBIC_FADE_M,
+    desc: 'Clumps of falling sand, snow and powder and splashes of liquid stay round right in front of you, instead of turning into flat-faced shards' },
   // low: ~0 ms (25 rounds at eyeTank: -0.3; within noise) (shaders/gfx/liquidDetail.js)
   { key: 'liquidRipples', define: 'DETAIL_LIQ_RIPPLES', label: 'Liquid ripples', cost: 'low', fadeM: RIPPLE_FADE_M,
     desc: 'Centimetre capillary ripples on open liquid, fading in as you get close' },

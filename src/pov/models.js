@@ -453,20 +453,24 @@ function normalised(key, withArm = true) {
     hand.position.copy(inner.position);   // the parts' origin is the grip
     outer.add(hand);
   }
-  return { obj: outer, size: size.multiplyScalar(k) };
+  return { obj: outer, size: size.multiplyScalar(k), grip: inner.position.clone(), unit: k };
 }
 
 // Add model `key` to `parent`; onLoad(obj, info) runs before this returns.
-// opts.arm: false leaves the forearm off. Returns { dispose(), get obj() }.
+// opts.arm: false leaves the forearm off. Returns { dispose(), get obj(), info }.
+// info: { size, grip, unit }: grip is the parts' origin (the grip) in the
+// model's space, unit the cells per PARTS unit (so a point given in PARTS
+// units p sits at grip + p × unit).
 export function attachModel(parent, key, onLoad, { arm: withArm = true } = {}) {
-  const { obj, size } = normalised(key, withArm);
+  const { obj, ...info } = normalised(key, withArm);
   obj.name = `viewmodel-${key}`;
   parent.add(obj);
-  onLoad?.(obj, { size });
+  onLoad?.(obj, info);
   globalThis.__app?.requestRender?.();
   let disposed = false;
   return {
     get obj() { return obj; },
+    info,
     dispose() {
       if (disposed) return;
       disposed = true;

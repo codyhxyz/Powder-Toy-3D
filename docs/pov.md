@@ -322,13 +322,40 @@ Check: `node tools/kick-hook-check.mjs [--port …] [--shots dir]` (a dev server
 - Rendering is on demand (gfx/pacing.js). Anything that changes the view must change the camera or call
   `pacer.wake()` (`__app.requestRender()`).
 
+## Third person: the tool in hand (2026-10-11)
+
+In third person (and whenever the body is drawn with the camera out of its head) the body holds the
+selected tool the way Garry's Mod's and Team Fortress 2's player models do: by its kind of tool.
+
+- `src/pov/holds.js`: GMod's hold types (`pistol`, `smg`, `ar2`, `rpg`, `shotgun`, `physgun`, `melee`,
+  `melee2`, `knife`, `grenade`, `slam`, `normal`, plus `torch` from Skyrim and `pogo` from Commander
+  Keen). A hold puts the tool's grip at a rest point in the aim frame (the body's eye, turned to its yaw
+  and a share of its pitch) and says how much of the look's pitch the torso leans into. Each model has
+  its hold, its size against the viewmodel, and its hands: the right fist on the grip, the left on a
+  foregrip or handguard for two-handed tools, and for the pogo stick the pegs the feet stand on.
+- `src/pov/held.js`: the held model, lit by the world's light like the body (figure.js's shader), with the
+  first-person tool's motion replayed on it about its grip (the swing, the kick, the throw, a lamp gone
+  from the hand). It also moves the viewmodel, which is never drawn in third person, onto the held model,
+  so what a tool works out from its viewmodel (a gun's muzzle flash and tracer, the hook's rope) leaves
+  from the tool on the body. Tools can ask `env.heldOnBody()`.
+- `src/pov/limbs.js`: analytic two-bone IK (the arms to the grips, the legs to the pogo's pegs) and the
+  hand frames that close the realistic body's fists round a grip. Both bodies have `anchor(out)` (the eye
+  a hold hangs from) and `reach({ right, left, feet, weight })`; their `update` takes `look` (the head
+  follows the look, the torso leans into an aim), `lift` and `ride` (standing on a pogo stick).
+- The pogo stick is ridden: its foot on the ground under the body, the body standing on its pegs (lifted
+  by their height), both hands on the bar.
+- Check: `node tools/tp-held-check.mjs --port P` (hands on grips, the pogo ridden, lit, the flash from the
+  gun on the body, the axe's swing, first person restored, the stickman). Stills: `tools/tp-held-look.mjs`.
+- Not yet: the physgun's beam, the shovel's heap, the bucket's and the flask's contents are only drawn in
+  first person.
+
 ## Modules and ownership (one owner per file, to keep merges clean)
 
 | Area | Owner | Files |
 |---|---|---|
 | Hardness physics: impact and blast breaking, KE→heat, debris behaviour, acid-proof shards, CPU tile port | engine | `src/elements.js` (values only), `src/physics.js`, `src/shaders/react.js`, `src/shaders/move.js`, `src/ui/tiles/*` |
 | Body physics: probe readback, collisions, swimming, pressure push, vitals and damage, body→sim coupling pass | player | `src/pov/player.js`, `src/pov/vitals.js`, `src/shaders/povBody.js` |
-| Camera, drop-in swoop, pointer lock, first/third person, body mesh, HUD, input, app integration | shell | `src/pov/index.js`, `src/pov/camera.js`, `src/pov/figure.js`, `src/pov/hud.js`, `src/pov/pov.css`, `src/app.js`, `src/camera.js`, `src/ui/hud.js` (help list) |
+| Camera, drop-in swoop, pointer lock, first/third person, body mesh, HUD, input, app integration | shell | `src/pov/index.js`, `src/pov/camera.js`, `src/pov/figure.js`, `src/pov/held.js`, `src/pov/holds.js`, `src/pov/limbs.js`, `src/pov/hud.js`, `src/pov/pov.css`, `src/app.js`, `src/camera.js`, `src/ui/hud.js` (help list) |
 | Hotbar, tool registry, shovel, bucket, exact cell transfer | tools-a | `src/pov/tools/index.js`, `src/pov/tools/hotbar.js`, `src/pov/tools/transfer.js`, `src/shaders/transfer.js`, `src/pov/tools/shovel.tool.js`, `src/pov/tools/bucket.tool.js`, `src/pov/tools/hotbar.css` |
 | Axe, gun, physgun | tools-b | `src/pov/tools/axe.tool.js`, `src/pov/tools/gun.tool.js`, `src/pov/tools/physgun.tool.js`, `src/shaders/povTools.js` |
 

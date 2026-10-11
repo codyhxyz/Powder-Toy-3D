@@ -79,11 +79,12 @@ export const MAT = {
   TOXIC: 16, BLOOD: 17, ACID: 18, LAVA: 19, SLIME: 20, MUD: 21, WHISKEY: 22,
   TELEPORTATIUM: 23, LEVITATIUM: 24, BERSERKIUM: 25, HEALTHIUM: 26, POLYMORPHINE: 27,
   GUNPOWDER: 28, TNT: 29, FUNGUS: 30, MEAT: 31, NUGGETS: 32, CLAY: 33, PLANT: 34, WOOD: 35,
+  GLASS: 36,   // acid-proof: what an acid pit is lined with
   // ...and the Coal Pits' and Snowy Depths' own (EMBER: coal laid down burning, the kit's temps)
-  SNOW: 36, SALTWATER: 37, LIQUID_NITROGEN: 38, DRY_ICE: 39, BRICK: 40, BROKENCOAL: 41, SCRAP: 42,
-  EMBER: 43,
+  SNOW: 37, SALTWATER: 38, LIQUID_NITROGEN: 39, DRY_ICE: 40, BRICK: 41, BROKENCOAL: 42, SCRAP: 43,
+  EMBER: 44,
 };
-export const MAT_COUNT = 44;
+export const MAT_COUNT = 45;
 // A kit's temps: { CODE: °C } lays those codes down at that temperature instead
 // of their element's spawn temperature (EMBER burning, a lake's water above
 // freezing in the Snowy Depths' cold). wangTemp (glsl.js) / tempJS (bake.js);
@@ -240,9 +241,12 @@ export function rasterTile(tile, index, G = GEOM) {
   coated = new Set();
   tile.prims.forEach((pr, pi) => applyPrim(out, dims, pr, NOISE_SALT + noiseIndex * NOISE_TILE_STRIDE + (pr.salt ?? tile.prims.indexOf(pr)) * NOISE_PRIM_STRIDE, tile.vseed ?? 0, pr.salt ?? pi));
   // the border: rock at every face, so a tile meets its neighbours only through its ports
+  // (an `open` tile keeps only its floor and ceiling: its void runs on into an open neighbour's)
   // (but a solid coat stays: the floor is the border, and moss grows on it)
+  // (an open kit, geom.OPEN, keeps none: its region is capped instead, openCap)
   if (!G.OPEN) for (let z = 0; z < Z; z++) for (let y = 0; y < Y; y++) for (let x = 0; x < X; x++) {
-    if (x < G.BORDER || x >= X - G.BORDER || z < G.BORDER || z >= Z - G.BORDER || y < G.BORDER || y >= Y - G.BORDER) {
+    const side = !tile.open && (x < G.BORDER || x >= X - G.BORDER || z < G.BORDER || z >= Z - G.BORDER);
+    if (side || y < G.BORDER || y >= Y - G.BORDER) {
       const i = x + X * (y + Y * z);
       if (!coated.has(i)) out[i] = MAT.ROCK;
     }
@@ -398,7 +402,12 @@ function resolvePrims(prims, r, base = 0) {
     const q = { salt, ...pr };
     delete q.chance;
     if (q.m && typeof q.m === 'object') { const ent = Object.entries(q.m); q.m = ent[pickWeighted(ent.map(([, v]) => v), r)][0]; }
-    if (q.put) q.put = resolvePrims(q.put, r);
+    if (q.scatter && (q.n ?? 1) > 1 && q.put?.some(isRandom)) {
+      // each copy resolves its own `put` (a shelf of different crates), its own spot stream
+      for (let k = 0; k < q.n; k++) out.push({ ...q, n: 1, salt: salt * NEST_SALT + k + 1, put: resolvePrims(q.put, r, salt + 1) });
+      continue;
+    }
+    if (q.put) q.put = resolvePrims(q.put, r, salt + 1);
     out.push(q);
   }
   return out;

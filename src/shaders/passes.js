@@ -209,8 +209,9 @@ void main() {
 //                              cells: the skip map is dilated for free. The
 //                              flags sit below the 1/64 step. bits (BRICK_BITS):
 //                              1 media, 2 smooth surface, 4 opaque matter (crisp
-//                              or an opaque surface field), 8 thin liquid (the
-//                              tracer reads it cubic), 16 more than one liquid.
+//                              or an opaque surface field), 8 thin cubic matter
+//                              (drops, grains: the tracer reads it cubic), 16 more
+//                              than one liquid.
 //   -(1 + flags/8)             only air, but air a data view draws; the
 //                              realistic view, picking and the shadow map
 //                              skip it like an empty brick (they test a < 0.5)
@@ -222,7 +223,7 @@ ${materialsGLSL()}
 ${brickGLSL}
 uniform sampler2D tFS;
 uniform sampler2D tFM;
-uniform sampler2D tFT;   // thin-feature mask (x: liquid)
+uniform sampler2D tFT;   // thin-feature mask, per surface channel (the cubic ones read it)
 uniform sampler2D tDirty;   // dirty sets (dirtyFrag)
 out vec4 oC;
 // Air worth flagging for the data views: off ambient by more than AIR_FLAG_T °C,
@@ -278,7 +279,8 @@ void main() {
     // something opaque (not liquid, glass or gas) here or in an opaque surface field
     if (id != E_EMPTY && KIND[id] != K_GAS && RCLASS[id] != R_LIQUID && RCLASS[id] != R_GLASS) opaque = 1.0;
     opaque = max(opaque, max(s.y, max(s.z, s.w)));
-    thin = max(thin, texelFetch(tFT, t, 0).x);
+    vec4 tm = texelFetch(tFT, t, 0) * CH_CUBIC;
+    thin = max(thin, max(max(tm.x, tm.y), max(tm.z, tm.w)));
     if (SURFCH[id] == CH_LIQUID) {
       if (liq0 == E_EMPTY) liq0 = id;
       else if (id != liq0) mixed = true;

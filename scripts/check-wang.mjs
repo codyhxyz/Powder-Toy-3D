@@ -190,7 +190,7 @@ const COLOURS = {
   [MAT.SLIME]: [90, 200, 120], [MAT.MUD]: [90, 70, 45], [MAT.WHISKEY]: [200, 140, 60], [MAT.TELEPORTATIUM]: [120, 200, 255],
   [MAT.LEVITATIUM]: [200, 230, 255], [MAT.BERSERKIUM]: [255, 120, 160], [MAT.HEALTHIUM]: [140, 255, 200], [MAT.POLYMORPHINE]: [230, 120, 255],
   [MAT.GUNPOWDER]: [60, 60, 70], [MAT.TNT]: [220, 40, 40], [MAT.FUNGUS]: [200, 170, 120], [MAT.MEAT]: [200, 90, 90],
-  [MAT.NUGGETS]: [255, 220, 90], [MAT.CLAY]: [180, 120, 90], [MAT.PLANT]: [60, 170, 60], [MAT.WOOD]: [150, 95, 45],
+  [MAT.NUGGETS]: [255, 220, 90], [MAT.CLAY]: [180, 120, 90], [MAT.PLANT]: [60, 170, 60], [MAT.WOOD]: [150, 95, 45], [MAT.GLASS]: [200, 230, 230],
 };
 // a kit's palette can make a code another element: preview it as that element (its elements.js colour
 // where the table above has no say; the base codes keep theirs unless remapped)

@@ -248,7 +248,7 @@ export function generateTiling({ kit: rawKit, seed, units, entry, exit }) {
   for (const b of bricks) for (const e of b.edges) {
     if (e.nb < 0 || e.nb < b.id) continue;          // each edge once, between whole bricks
     if (open.has(e.key)) continue;
-    if (RO() < (e.dy ? P_SHAFT : P_LOOP) && shaftOk(e)) open.set(e.key, true);
+    if (RO() < (e.dy ? kit.shafts ?? P_SHAFT : kit.loops ?? P_LOOP) && shaftOk(e)) open.set(e.key, true);
   }
   // 4. repair: every brick reachable from the entry (doorways both ways, shafts down)
   const reached = new Uint8Array(bricks.length);

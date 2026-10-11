@@ -771,12 +771,44 @@ void main() {
 }
 `;
 
+// The sky over the far field, as Minecraft's sky light (sun and sky are one
+// light, whole over a column's ground and gone under it): the ground's surface
+// seen from above (farTopFrag's y), and how far under it the sky still reaches.
+// Ground is matter wide enough to be the land: at FAR.ISO and REACH bricks out
+// each way too (7 bricks, 28 cells: wider than any crown, ~24 cells for an oak's
+// cluster, constructions/builtins.js TREES). A crown, a trunk, a wall, a bridge
+// or a house's roof is narrower and leaves the sky over what is under it (and
+// casts no pillar into the shadow heights); the rock over a cave or a tunnel
+// doesn't. Narrowing the land by REACH errs open: on a slope the surface reads
+// as low as the lowest ground within REACH, so only what lies deeper loses it.
+export const FAR_SKY = {
+  REACH: 3,       // bricks: matter counts as ground when it reaches this far along ±x and ±z
+  OPEN: 1,        // bricks under the ground's surface the sky starts fading...
+  SHUT: 2,        // ...and is gone (a Descent tunnel's ceiling is 2 or more under it)
+  LIFT: 1,        // bricks out along its normal a far surface reads its sky (past its own brick's matter)
+};
+export const farSkyGLSL = /* glsl */ `
+uniform sampler2D tFarTop;   // per brick column: x the ground's top seen from below, y its surface seen from above (farTopFrag)
+#define FAR_SKY_OPEN ${glf(FAR_SKY.OPEN * BRICK)}
+#define FAR_SKY_SHUT ${glf(FAR_SKY.SHUT * BRICK)}
+#define FAR_SKY_LIFT ${glf(FAR_SKY.LIFT * BRICK)}
+// Share of the sky reaching world point p (cells): 1 over the ground, 0 under it.
+// Its own column's (not filtered: a cliff's top would bury its foot).
+float farSkyOpen(vec3 p) {
+  if (any(lessThan(p.xz, vec2(0.0))) || any(greaterThanEqual(p.xz, vec2(WORLD.xz)))) return 1.0;
+  float hs = texelFetch(tFarTop, ivec2(p.xz) / FAR_BRICK, 0).y;
+  return smoothstep(hs - FAR_SKY_SHUT, hs - FAR_SKY_OPEN, p.y);
+}
+`;
+
 // Brick-column tops: the height (cells) of each column's ground, seen from
 // below: where the opaque field first falls through FAR.ISO going up from the
 // bottom, between the centres of the last brick at or over it and the next
 // (exact for the ground: the field is 0.5 + (h - y) / 8 there). What floats
 // above that (a crown, a roof) isn't a column: it would shade the ground under
-// it from every side, as a pillar.
+// it from every side, as a pillar. y: the ground's surface seen from above
+// (FAR_SKY): the top of the highest brick at FAR.ISO whose neighbours REACH
+// bricks out along ±x and ±z are too, crossed the same way.
 export const farTopFrag = (L) => /* glsl */ `
 precision highp float;
 precision highp int;
@@ -785,6 +817,16 @@ ${farLayoutGLSL(L)}
 uniform sampler2D tFar;
 out vec4 oC;
 #define FAR_TOP_EPS 1e-3   // value steps below this count as none
+#define FAR_SKY_REACH ${FAR_SKY.REACH}
+float farTopAt(ivec3 b) { return texelFetch(tFar, farTexel(clamp(b, ivec3(0), WB - 1)), 0).r; }
+// ground: at FAR_ISO, and so are its neighbours FAR_SKY_REACH bricks out each way
+bool farGroundAt(ivec3 b) {
+  if (farTopAt(b) < FAR_ISO) return false;
+  for (int k = 1; k <= FAR_SKY_REACH; k++)
+    if (min(min(farTopAt(b + ivec3(k, 0, 0)), farTopAt(b - ivec3(k, 0, 0))),
+            min(farTopAt(b + ivec3(0, 0, k)), farTopAt(b - ivec3(0, 0, k)))) < FAR_ISO) return false;
+  return true;
+}
 void main() {
   ivec2 c = ivec2(gl_FragCoord.xy);
   float below = texelFetch(tFar, farTexel(ivec3(c.x, 0, c.y)), 0).r;
@@ -798,7 +840,15 @@ void main() {
       }
       below = v;
     }
-  oC = vec4(h, 0.0, 0.0, 1.0);
+  float hs = 0.0;
+  for (int y = WBY - 1; y >= 0; y--) {
+    ivec3 b = ivec3(c.x, y, c.y);
+    if (!farGroundAt(b)) continue;
+    float v = farTopAt(b), a = y + 1 < WBY ? farTopAt(b + ivec3(0, 1, 0)) : 0.0;
+    hs = (float(y) + 0.5 + clamp((v - FAR_ISO) / max(v - a, FAR_TOP_EPS), 0.0, 1.0)) * float(FAR_BRICK);
+    break;
+  }
+  oC = vec4(h, hs, 0.0, 1.0);
 }
 `;
 
@@ -808,7 +858,9 @@ void main() {
 // per column they alias into streaks). x: every column; y: columns outside the
 // window only (uWinCols: its brick columns [x0, z0) .. [x1, z1)), which the
 // window's shadow map adds to its own (FAR_CASTERS). Starts a column away (a
-// column's own top is its surface).
+// column's own top is its surface). A column's top is the higher of its ground
+// seen from below and from above (FAR_SKY): the rock over a cave casts, so the
+// sun doesn't shine down the caves and tunnels under it.
 export const FAR_SHADOW_STEPS = 512;     // most columns marched toward the sun
 export const FAR_SHADOW_NONE = -1e4;     // cells: a height no point is below (nothing blocks the sun)
 export const farShadowFrag = (L) => /* glsl */ `
@@ -838,7 +890,8 @@ void main() {
     if (any(lessThan(q, vec2(0.0))) || any(greaterThanEqual(q, vec2(WB.xz)))) break;
     float fall = d * drop;
     if (float(WORLD_Y) - fall <= max(sOut, 0.0)) break;   // nothing farther can rise above what is found (or the floor)
-    float h = texture(tTop, q / vec2(WB.xz)).x - fall;
+    vec2 t = texture(tTop, q / vec2(WB.xz)).xy;
+    float h = max(t.x, t.y) - fall;
     sAll = max(sAll, h);
     ivec2 qc = ivec2(floor(q));
     bool inWin = all(greaterThanEqual(qc, uWinCols.xy)) && all(lessThan(qc, uWinCols.zw));
@@ -938,12 +991,14 @@ float farCasterDepth(vec3 ro, vec3 rd, float t0, float t1) {
 // and send back the light of their ground (its element's albedo, the sun
 // through the shadow heights, the sky over it); a ray going down past the
 // coast meets the sea (the sky in it by Fresnel, and its body); else the sky.
+// A ray that leaves the window under the ground (a tunnel or cave its side
+// cuts) gets what the sky leaves there (FAR_SKY): none deep under it.
 export const FAR_GI_STEPS = 6;       // reads along the ray past its end...
 export const FAR_GI_STEP0 = 8;       // ...the first this many cells out, each next twice as far (~500 cells in all)
 export const farGIGLSL = (L) => /* glsl */ `
 ${farLayoutGLSL(L)}
+${farSkyGLSL}
 uniform sampler2D tFar;
-uniform sampler2D tFarTop;
 uniform sampler2D tFarShadow;
 uniform float uSea;
 #define FAR_GI_STEPS ${FAR_GI_STEPS}
@@ -964,13 +1019,13 @@ vec3 farSea(vec3 d) {
 }
 // a world without a sea (uSea 0: world/scenes) has a rock plain past its edge (the far view's)
 vec3 farPlain() { return ALBEDO[E_ROCK] * (SUN_COL * max(uSun.y, 0.0) + uSkyUp); }
-vec3 farBeyond(vec3 P, vec3 Q, vec3 d, inout float open) {
-  vec3 w = Q + vec3(uOrigin);
+vec3 farBeyondOpen(vec3 w, vec3 d, inout float open) {
   float s = FAR_GI_STEP0;
   for (int i = 0; i < FAR_GI_STEPS; i++) {
     vec3 r = w + d * s;
     if (any(lessThan(r.xz, vec2(0.0))) || any(greaterThanEqual(r.xz, vec2(WORLD.xz)))) break;
-    float top = texture(tFarTop, r.xz / vec2(WORLD.xz)).x;
+    vec2 t = texture(tFarTop, r.xz / vec2(WORLD.xz)).xy;
+    float top = max(t.x, t.y);   // the ground seen from below or above (the rock over a cave)
     if (r.y < max(top, uSea)) {
       open = 0.0;
       return top >= uSea ? farGround(r, top) : farSea(d);
@@ -978,6 +1033,12 @@ vec3 farBeyond(vec3 P, vec3 Q, vec3 d, inout float open) {
     s *= 2.0;
   }
   return d.y >= 0.0 ? skyColor(d) : (uSea > 0.0 ? farSea(d) : farPlain());
+}
+vec3 farBeyond(vec3 P, vec3 Q, vec3 d, inout float open) {
+  vec3 w = Q + vec3(uOrigin);
+  float sky = farSkyOpen(w);
+  open *= sky;
+  return sky > 0.0 ? sky * farBeyondOpen(w, d, open) : vec3(0.0);
 }
 `;
 
@@ -1043,11 +1104,16 @@ vec3 farAir(vec3 rd) {
 // Share of the open sky's light on the air from a to b (window cells): the
 // probes' sky visibility at its ends and middle, by Simpson's rule, the far end
 // GI_OFFSET back out of the matter it lies on (whose brick's probe is buried).
+// FAR_AIR_SKY reads it at a window point: the probes, or in the far view past
+// the window the far field's sky (farAirSky).
+#ifndef FAR_AIR_SKY
+#define FAR_AIR_SKY giAirSkyVis
+#endif
 float farAirLit(vec3 a, vec3 b) {
   vec3 v = b - a;
   float d = length(v);
   vec3 bo = b - v * (min(GI_OFFSET, d) / max(d, 1e-6));
-  return (giAirSkyVis(a) + 4.0 * giAirSkyVis(0.5 * (a + bo)) + giAirSkyVis(bo)) / 6.0;
+  return (FAR_AIR_SKY(a) + 4.0 * FAR_AIR_SKY(0.5 * (a + bo)) + FAR_AIR_SKY(bo)) / 6.0;
 }
 vec3 farHaze(vec3 col, vec3 rd, float d, float lit) {
   vec3 T = exp(-FAR_HAZE_RGB * d);
@@ -1069,11 +1135,17 @@ ${surfaceGLSL}
 ${liquidGLSL}
 ${farLayoutGLSL(L)}
 ${farSampleGLSL}
+${farSkyGLSL}
+uniform ivec3 uWinLo;         // the window's low corner (world cells): the volume draws [uWinLo, uWinLo + GRID)
+// the air's sky share at window point q: the probes in the window, the far field's sky past it
+float farAirSky(vec3 q) {
+  return all(greaterThanEqual(q, vec3(0.0))) && all(lessThan(q, vec3(GRID))) ? giAirSkyVis(q) : farSkyOpen(q + vec3(uWinLo));
+}
+#define FAR_AIR_SKY farAirSky
 ${farHazeGLSL}
 uniform mat4 projectionMatrix;
 uniform mat4 uWorldToScene;   // world cells → scene units
 uniform mat4 uSceneToWorld;
-uniform ivec3 uWinLo;         // the window's low corner (world cells): the volume draws [uWinLo, uWinLo + GRID)
 uniform float uSea;           // sea level (cells): the open sea beyond the world (0: none, a plain instead)
 uniform float uFloor;         // the sea floor beyond the world, or the plain (cells)
 in vec4 vFar;
@@ -1266,7 +1338,7 @@ float farGlowT(vec3 p, vec3 n) {
 
 // A lit opaque far surface: its material (matOf, at the pixel's footprint, so
 // texture fades to its far look), the sun through the shadow heights, the sky
-// over its open share, its own glow.
+// over its open share (none under the ground: FAR_SKY), its own glow.
 vec3 farShadeMaterial(vec3 p, vec3 n, vec3 rd, float sunVis, int id) {
   float fp = footprint(p);
   Mat m = matOf(id, p, n, farGlowT(p, n), 0.0, fp);
@@ -1292,34 +1364,36 @@ vec3 farShadeMaterial(vec3 p, vec3 n, vec3 rd, float sunVis, int id) {
   vec3 dSun = kD * mix(vec3(lam), wrap * m.sssCol, m.sss);
   float cav = clamp(m.cav, 0.0, 1.0);
   vec3 c = SUN_COL * sunVis * (dSun * (SUN_CAV_MIN + SUN_CAV_GAIN * cav) + PI_S * ggxSpec(ns, v, uSun, rough, F0));
-  vec3 ambient = skyAmbient(ns) * ${mesh ? '1.0' : 'farAO(p, n)'} * cav;
+  vec3 ambient = skyAmbient(ns) * ${mesh ? '1.0' : 'farAO(p, n)'} * cav * farSkyOpen(p + n * FAR_SKY_LIFT);
   return c + kD * ambient + m.emit;
 }
 
-// Light scattered toward the eye inside liquid lid, per unit (1 - transmittance) (interiorScatter, without the glow volume).
-vec3 farInScatter(int lid, float sunVis) {
-  vec3 L = skyAmbient(vec3(0.0, 1.0, 0.0)) * mix(SKY_IN_FLOOR, 1.0, sunVis)
+// Light scattered toward the eye inside liquid lid, per unit (1 - transmittance) (interiorScatter, without the glow volume);
+// sky: the share of the sky over it (farSkyOpen).
+vec3 farInScatter(int lid, float sunVis, float sky) {
+  vec3 L = skyAmbient(vec3(0.0, 1.0, 0.0)) * sky * mix(SKY_IN_FLOOR, 1.0, sunVis)
          + SUN_COL * sunVis * max(uSun.y, 0.0) * SUN_IN_GAIN;
   return SCATALB[lid] * L;
 }
 // The bed under liquid lid at p (normal n, depth below the surface): lit by
 // sun and sky through the liquid above.
-vec3 farShadeBed(int id, vec3 p, vec3 n, float depth, int lid, float sunVis) {
+vec3 farShadeBed(int id, vec3 p, vec3 n, float depth, int lid, float sunVis, float sky) {
   vec3 alb = matOf(id, p, n, AMBIENT, 0.0, footprint(p)).alb;
   vec3 down = exp(-SIGMA[lid] * depth / max(uSun.y, FAR_SUN_Y_MIN));
-  vec3 sky = exp(-SIGMA[lid] * depth);
-  return alb * (SUN_COL * sunVis * max(dot(n, uSun), 0.0) * down + skyAmbient(n) * sky);
+  return alb * (SUN_COL * sunVis * max(dot(n, uSun), 0.0) * down + skyAmbient(n) * sky * exp(-SIGMA[lid] * depth));
 }
 // A liquid surface at p (liquid lid, an element) seen along rd: the sky and
 // the sun's glint off it (Fresnel), and through it the liquid's body down to
 // the bed: the opaque field along the refracted ray (bedY < 0), else the plane y = bedY.
+// Under the ground (a lake in a cave) the sky neither lights nor shows in it (FAR_SKY).
 vec3 farLiquid(vec3 p, vec3 rd, int lid, float sunVis, float bedY) {
+  float sky = farSkyOpen(p + vec3(0.0, FAR_SKY_LIFT, 0.0));
   // the ripples, as the window's water has them (liquid.js), so its sea carries on past the window
   vec3 n = liquidRipple(p, vec3(0.0, 1.0, 0.0));
   float F = fresnelSchlick(max(dot(-rd, n), 0.0), IOR[lid]);
   vec3 r = reflect(rd, n);
   r.y = abs(r.y);   // a ripple tilted past a grazing view shows the sky above, not the ground (dark specks)
-  vec3 refl = envReflect(p, r, vec3(sunVis));
+  vec3 refl = envReflect(p, r, vec3(sunVis)) * sky;
   vec3 rt = refract(rd, n, 1.0 / IOR[lid]);
   if (dot(rt, rt) < 1e-6) rt = vec3(0.0, -1.0, 0.0);
   float s = -1.0;
@@ -1327,7 +1401,7 @@ vec3 farLiquid(vec3 p, vec3 rd, int lid, float sunVis, float bedY) {
   if (bedY >= 0.0) {
     s = (p.y - bedY) / max(-rt.y, FAR_FLAT_EPS);
     vec3 q = p + rt * s;
-    bed = farShadeBed(FAR_OCEAN_BED, q, vec3(0.0, 1.0, 0.0), p.y - q.y, lid, sunVis);
+    bed = farShadeBed(FAR_OCEAN_BED, q, vec3(0.0, 1.0, 0.0), p.y - q.y, lid, sunVis, sky);
   } else {
     float ta = 0.0, fa = farSample(p).r;
     for (int i = 1; i <= FAR_WATER_STEPS; i++) {
@@ -1336,14 +1410,14 @@ vec3 farLiquid(vec3 p, vec3 rd, int lid, float sunVis, float bedY) {
       if (fb >= FAR_ISO) {
         s = mix(ta, tb, clamp((FAR_ISO - fa) / max(fb - fa, FAR_FLAT_EPS), 0.0, 1.0));
         vec3 q = p + rt * s, nq = farNormal(q, 0);
-        bed = farShadeBed(farElement(q, nq), q, nq, p.y - q.y, lid, sunVis * farSunLit(q, 0));
+        bed = farShadeBed(farElement(q, nq), q, nq, p.y - q.y, lid, sunVis * farSunLit(q, 0), sky);
         break;
       }
       ta = tb; fa = fb;
     }
   }
   vec3 att = s >= 0.0 ? exp(-SIGMA[lid] * s) : vec3(0.0);
-  vec3 body = bed * att + (1.0 - att) * farInScatter(lid, sunVis);
+  vec3 body = bed * att + (1.0 - att) * farInScatter(lid, sunVis, sky);
   return F * refl + (1.0 - F) * body;
 }
 
@@ -1418,7 +1492,7 @@ void main() {
   vec3 col;
   float depth = 1.0;
   if (ocean) {
-    col = plain ? farShadeBed(FAR_OCEAN_BED, ps, vec3(0.0, 1.0, 0.0), 0.0, E_WATER, farSunLit(ps, 0))
+    col = plain ? farShadeBed(FAR_OCEAN_BED, ps, vec3(0.0, 1.0, 0.0), 0.0, E_WATER, farSunLit(ps, 0), 1.0)
                 : farLiquid(ps, rd, E_WATER, farSunLit(ps, 0), seaOut ? uFloor : -1.0);
     col = farHaze(col, rd, tSea, farAirLit(ro - vec3(uWinLo), ps - vec3(uWinLo)));
     depth = farDepth(ps);
@@ -1432,7 +1506,7 @@ void main() {
       // light, as deep water shows, so the window's water carries on past its side.
       vec4 v = farSample(p);
       col = v.r >= v.g ? ALBEDO[farIds(p).x] * giIrradiance(probeAt(p - vec3(uWinLo) - rd * GI_OFFSET), -rd)
-                       : farInScatter(farLiquidOf(farIds(p).y), farSunLit(p, 0));
+                       : farInScatter(farLiquidOf(farIds(p).y), farSunLit(p, 0), farSkyOpen(p));
     } else {
       vec4 v = farSample(p);
       float sunVis = farSunLit(p, 0);

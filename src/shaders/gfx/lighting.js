@@ -16,6 +16,12 @@ const vogel = (n) => Array.from({ length: n }, (_, i) => {
 // Lighting: sun + shadow map, sky, the GI probe volume, the glow (emission)
 // volume and ambient occlusion. Shading code only talks to the scene's light
 // through these.
+// The probes' spherical-harmonic constants and the open sky's band-0 sky
+// visibility, for the shaders below and CPU readers of the probes (pov/viewmodel.js).
+export const SH_Y0 = 0.282095;          // Y00
+export const SH_Y1 = 0.488603;          // Y1m = SH_Y1 * (x, y, z)
+export const SKYVIS_OPEN_DC = 0.5;      // SH_Y0 * c0.a of the open sky: the sphere's upper half
+
 export const lightingGLSL = /* glsl */ `
 uniform vec3 uSun;
 const float PI_L = 3.14159265;
@@ -368,8 +374,8 @@ uniform sampler2D tGI0;   // band 0
 uniform sampler2D tGI1;   // band 1, x
 uniform sampler2D tGI2;   // band 1, y
 uniform sampler2D tGI3;   // band 1, z
-const float SH_Y0 = 0.282095;      // Y00
-const float SH_Y1 = 0.488603;      // Y1m = SH_Y1 * (x, y, z)
+const float SH_Y0 = ${SH_Y0.toFixed(6)};      // Y00
+const float SH_Y1 = ${SH_Y1.toFixed(6)};      // Y1m = SH_Y1 * (x, y, z)
 const float SH_COS1 = 2.0 / 3.0;   // band-1 clamped-cosine convolution / pi (band 0: 1)
 // Surfaces read the probes this many cells out along their normal: past the
 // brick their own matter shares, into the light in front of them. Detail
@@ -416,7 +422,7 @@ float giSkyVis(Probe g, vec3 n) {
 // Share of the open sky the air at p sees, over every direction (1 in the
 // open, 0 in a closed cave): band 0 against the open sky's, the sphere's upper
 // half. Past the window there are no probes: open.
-const float SKYVIS_OPEN_DC = 0.5;   // SH_Y0 * c0.a of the open sky
+const float SKYVIS_OPEN_DC = ${SKYVIS_OPEN_DC.toFixed(6)};   // SH_Y0 * c0.a of the open sky
 float giAirSkyVis(vec3 p) {
   if (any(lessThan(p, vec3(0.0))) || any(greaterThan(p, vec3(GRID)))) return 1.0;
   return clamp(SH_Y0 * probeTex(tGI0, p).a / SKYVIS_OPEN_DC, 0.0, 1.0);
