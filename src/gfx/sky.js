@@ -77,19 +77,21 @@ export function skyState(sun, light, out) {
 }
 
 const glf = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
-const vec3 = (a) => `vec3(${a.map(glf).join(', ')})`;
+const vec3 = (a) => `vec3f(${a.map(glf).join(', ')})`;
 
+// WGSL for the render library (shaders/gfx/lighting.js; the name is the GLSL
+// version's, docs/webgpu.md W2): the model's constants, each with its type.
 export function skyGLSL() {
   return [
-    `const vec3 TAU_RAYLEIGH = ${vec3(SKY.tauRayleigh)};`,
-    `const float TAU_AEROSOL = ${glf(SKY.tauAerosol)};`,
-    `const float AEROSOL_G = ${glf(SKY.aerosolG)};`,
-    `const vec3 TAU_AIR = ${vec3(tauAir)};`,
-    `const float SUN_TOA = ${glf(SKY.sunTOA)};`,
-    `const float SKY_MULTI = ${glf(SKY.multi)};`,
-    `const float AIRMASS_HORIZON = ${glf(SKY.airmassHorizon)};`,
-    `const float AIRMASS_FALLOFF = ${glf(SKY.airmassFalloff)};`,
-    `const float AIRMASS_EQ_EPS = ${glf(AIRMASS_EQ_EPS)};`,
-    `const vec3 GROUND_ALB = ${vec3(SKY.groundAlb)};`,
+    `const TAU_RAYLEIGH: vec3f = ${vec3(SKY.tauRayleigh)};`,
+    `const TAU_AEROSOL: f32 = ${glf(SKY.tauAerosol)};`,
+    `const AEROSOL_G: f32 = ${glf(SKY.aerosolG)};`,
+    `const TAU_AIR: vec3f = ${vec3(tauAir)};`,
+    `const SUN_TOA: f32 = ${glf(SKY.sunTOA)};`,
+    `const SKY_MULTI: f32 = ${glf(SKY.multi)};`,
+    `const AIRMASS_HORIZON: f32 = ${glf(SKY.airmassHorizon)};`,
+    `const AIRMASS_FALLOFF: f32 = ${glf(SKY.airmassFalloff)};`,
+    `const AIRMASS_EQ_EPS: f32 = ${glf(AIRMASS_EQ_EPS)};`,
+    `const GROUND_ALB: vec3f = ${vec3(SKY.groundAlb)};`,
   ].join('\n');
 }
