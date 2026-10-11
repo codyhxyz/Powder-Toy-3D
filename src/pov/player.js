@@ -201,7 +201,9 @@ const PERK_SPEED_V = MAX_SPEED;        // cells/s upward at most: Noita's fastes
 // to the landing takes the next bounce one Keen step higher (held − released), and a run of
 // timed presses climbs, as Super Mario 64's triple jump climbs with three timed presses; a
 // landing without one drops back to the released bounce. Heights are shares of this body's
-// own jump (JUMP_SPEED), so they hold whatever the gravity setting.
+// own jump (JUMP_SPEED), so they hold whatever the gravity setting. It is a trampoline's timing:
+// press (tap or hold) jump just before the stick meets the ground and it springs high; press too
+// early and the spring gives only the rest bounce. Holding jump never flies the jetpack on a pogo.
 const POGO_REST = 750 / 1124;          // × jump height: a bounce with no timed press (Keen, jump released)
 const POGO_STEP = (1518 - 750) / 1124; // × jump height each timed press adds (Keen's held bounce over its released one)
 const POGO_STEPS = 3;                  // timed presses in a row to the top bounce (SM64's triple jump)
@@ -241,7 +243,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
   let revengeWait = 0, revengeDue = false;
   // pogo: the tool's hold (renewed every frame), the climb, and the jump button's timing
   let pogoHold = false, pogoStep = 0, bounceTimed = false;
-  let prevJump = false, jumpHeldS = 0, sinceJumpPress = Infinity, sinceBounce = Infinity;
+  let prevJump = false, sinceJumpPress = Infinity, sinceBounce = Infinity;
   let gibDue = false;   // vitals.js GIB_HEALTH: the body bursts into meat at the next update (it needs the sim)
   const meat = createMeat({ renderer, getSim });
   const by = id ? { by: id } : {};
@@ -782,7 +784,6 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     const jumpDown = alive && !!input.jump;
     const pressed = jumpDown && !prevJump;
     prevJump = jumpDown;
-    jumpHeldS = jumpDown ? jumpHeldS + dt : 0;
     sinceJumpPress = pressed ? 0 : sinceJumpPress + dt;
     sinceBounce += dt;
     const pogoing = alive && pogoHold && !swimming;   // it doesn't bounce off liquid: it sinks in
@@ -853,15 +854,16 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
       emit('pogo', { step: pogoStep, timed: true, late: true, speed: v.y });
     }
 
-    // jetpack: thrust while jump is held in the air (swimming strokes instead). On a pogo a tap is
-    // a bounce, so the jet waits until jump has been held past the bounce's window.
+    // jetpack: thrust while jump is held in the air (swimming strokes instead). Never on a pogo:
+    // there jump is the spring's charge, held into the next landing (POGO_* above), as Keen's
+    // pogo has no jetpack and a held jump just rides the bounce.
     // Lukki: while a limb touches a wall or ceiling the jet fires on an empty tank, and the tank holds
     // Rocket Boots: climbs faster; Big Tank: a bigger tank (the same refill rates fill it slower, as in Noita)
     const tankS = JET_FUEL_S * perks.fuelRate;
     // Levitating (Levitatium, potions.js): Noita's Faster Levitation, 75% faster, and here the tank holds
     const levitating = p.status.has('LEVITATING');
     const jetRise = Math.min(JET_RISE * gait * perks.jetRate * (levitating ? LEVITATE_RISE : 1), Math.max(JET_RISE * gait, PERK_SPEED_V));
-    const jetWants = alive && !!input.jump && (!pogoing || jumpHeldS > POGO_WINDOW_S);
+    const jetWants = alive && !!input.jump && !pogoing;
     const clings = jetWants && !p.onGround && !swimming && ((perks.has('LUKKI') && clinging()) || levitating);
     const jet = jetWants && !p.onGround && !jumpedNow && !swimming && (p.jetFuel > 0 || clings);
     if (jet) {
@@ -1016,7 +1018,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     p.vel.set(0, 0, 0);
     impulse.set(0, 0, 0);
     p.onGround = false; p.inLiquid = false; p.headInLiquid = false; p.liquidId = -1; p.submerged = 0;
-    p.pogoing = false; pogoStep = 0; bounceTimed = false; prevJump = false; jumpHeldS = 0; sinceJumpPress = Infinity; sinceBounce = Infinity;
+    p.pogoing = false; pogoStep = 0; bounceTimed = false; prevJump = false; sinceJumpPress = Infinity; sinceBounce = Infinity;
     if (p.jetting) { p.jetting = false; if (!quiet) povEvents.emit('player:jet', { on: false }); }
     generation++; probe.valid = false;   // reject in-flight probes from the old spot
     env.contactN = 0; env.headInLiquid = false; env.liquidId = E.WATER; env.buriedId = -1; env.pressure = 0;

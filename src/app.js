@@ -196,6 +196,8 @@ if (params.get('preset') in ARENA_GRID && !params.get('size')) settings.size = A
 // a map (maps.js): the start menu's pick (src/main.js), or ?map= — its scene at its own size
 const bootMap = mapByKey(params.get('map') ?? launch.map);
 if (bootMap) useMap(bootMap);
+// the gamemode playing (maps.js GAMEMODES): the start menu's pick, or ?mode= with ?map=; Sandbox otherwise
+let gamemode = (bootMap && (launch.mode ?? params.get('mode'))) || 'sandbox';
 if (!toolById(settings.tool)) settings.tool = DEFAULTS.tool;
 if (propIndex(settings.propField) < 0) settings.propField = DEFAULTS.propField;
 if (!VIEWS.some((v) => v.id === settings.view)) settings.view = 0;
@@ -628,7 +630,7 @@ function openMap(key, mode = 'sandbox') {
 // the map and gamemode playing now, for the menu to open on
 function currentMap() {
   const m = mapOf(settings);
-  return { map: m?.key ?? null, mode: pov?.game?.running ? pov.game.mode : m?.sandbox === false ? m.modes[0] : 'sandbox' };
+  return { map: m?.key ?? null, mode: pov?.game?.running ? pov.game.mode : gamemode === 'noita' && m?.modes?.includes('noita') ? 'noita' : 'sandbox' };
 }
 // A team gamemode (src/game, where the build has it): in the body, a match of
 // it on the map just loaded. Sandbox ends any match running. The match waits
@@ -636,6 +638,7 @@ function currentMap() {
 // builds it), while the bots' module loads beside it; a map loaded just now
 // (fresh) isn't loaded again for the match. Resolves true once it runs.
 async function startMode(mode, { fresh = false } = {}) {
+  gamemode = mode;
   if (mode === 'noita') { if (pov?.game?.running) pov.game.end(); if (pov && !pov.active) pov.enter(); return false; }   // its rules are the map's (Descent)
   const game = pov?.game;
   if (!game) return false;
@@ -2351,6 +2354,7 @@ try {
     dropAt: () => descentSpawn(levelByScene(win ? settings.scene : null)),   // a Descent level: you start (and respawn) at its spawn
     requestRender: () => pacer.wake(),
     inWorld: () => !!win,
+    gamemode: () => gamemode,   // Noita's rules (wands only) are its gamemode's, not Descent's: Sandbox there has the tools
     toolGun,   // the tool gun's click at the crosshair
     // Q in first person: the spawn menu where it was left (at first, at what's selected)
     showToolsMenu: () => dock.reveal((it) => it.id === (menuPick ?? settings.tool)) || dock.reveal((it) => isGearTool(it.id)),

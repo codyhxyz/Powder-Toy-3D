@@ -6,8 +6,8 @@ import { gear } from './catalog.js';
 // landing, and a press of jump timed to the landing bounces it a step higher,
 // three steps to the top (Commander Keen 4's pogo, Super Mario 64's triple
 // jump: player.js holds the physics and its numbers). It doesn't bounce off
-// liquid; the spring takes its own landings. Holding jump still flies the
-// jetpack.
+// liquid; the spring takes its own landings. The jetpack is off while it's in
+// hand: holding jump charges the next bounce instead, timed like a trampoline.
 //
 // The tool only holds the stick: every frame it's selected it tells the body
 // so (ctx.player.holdPogo()), and the body does the rest, so an NPC's body

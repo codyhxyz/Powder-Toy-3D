@@ -232,7 +232,8 @@ export function createDescent({ app, scene, hud, interact, events, getToolbelt =
   function update(f) {
     const sim = app.getSim?.(), vol = app.getVolume?.(), scale = app.getScale?.();
     if (!sim || !vol) return;
-    const key = app.inWorld?.() ? app.settings.scene : null;
+    // the run (gold, shop, pool, altar) is the Noita gamemode's: Descent in Sandbox is only the map
+    const key = app.inWorld?.() && app.gamemode?.() === 'noita' ? app.settings.scene : null;
     const lv = key ? levelByScene(key) : null;
     if (!lv) { if (level) leave(); pendingArrive = null; return; }
     // arrive on A's descent:level, or (before it lands) the first live frame on a new level

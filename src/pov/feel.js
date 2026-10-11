@@ -111,7 +111,7 @@ export function createFeel({ hud }) {
   const eye = { x: 0, y: 0, z: 0 };      // grid, for impact distances
   const prevVel = { x: 0, y: 0, z: 0 };
   let prevValid = false, prevGround = false;
-  const offsets = { pitch: 0, yaw: 0, roll: 0 };
+  const offsets = { pitch: 0, yaw: 0, roll: 0, punchPitch: 0, punchYaw: 0 };   // punch*: the view punch's share of pitch and yaw
 
   const addTrauma = (x) => { if (x > 0) trauma = Math.min(1, trauma + x); };
   const addRumble = (x) => { if (x > 0) rumble = Math.min(1, rumble + x); };
@@ -194,10 +194,10 @@ export function createFeel({ hud }) {
       drunk = drunkSway = 0;
       punch.pitch = punch.yaw = punch.vp = punch.vy = 0;
       prevValid = false;
-      offsets.pitch = offsets.yaw = offsets.roll = 0;
+      offsets.pitch = offsets.yaw = offsets.roll = offsets.punchPitch = offsets.punchYaw = 0;
     },
     // Every POV frame. s = { dt, live (in the eyes and alive), eye (grid) }.
-    // Returns offsets {pitch, yaw, roll} (rad) for the camera.
+    // Returns offsets {pitch, yaw, roll} (rad) for the camera, and punchPitch, punchYaw: the view punch's share.
     update({ dt, live: isLive, eye: e }) {
       live = !!isLive;
       time += dt;
@@ -233,8 +233,10 @@ export function createFeel({ hud }) {
       const m = motionScale();
       const shake = trauma * trauma * SHAKE_ANGLE * m;
       const t = time * SHAKE_FREQ;
-      offsets.pitch = punch.pitch * m + shake * noise(t, SEED_PITCH);
-      offsets.yaw = punch.yaw * m + shake * noise(t, SEED_YAW);
+      offsets.punchPitch = punch.pitch * m;
+      offsets.punchYaw = punch.yaw * m;
+      offsets.pitch = offsets.punchPitch + shake * noise(t, SEED_PITCH);
+      offsets.yaw = offsets.punchYaw + shake * noise(t, SEED_YAW);
       offsets.roll = (shake * SHAKE_ROLL + rumble * rumble * SHAKE_ANGLE * RUMBLE_ROLL * m) * noise(t, SEED_ROLL);
 
       drunk = Math.max(0, drunk - dt);

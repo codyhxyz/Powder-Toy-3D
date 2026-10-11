@@ -32,12 +32,12 @@ import { MODEICONS, MODEICON_BOX } from './modeicons.js';
 //                         cold; 'match' with app.js's line for it)
 const THUMB = (key) => `/maps/${key}.webp`;
 const YOU = '/you.webp';
-// Skyrim's loading screen: the model turns by itself, slowly, and the mouse turns it
-const YOU_SPIN = (2 * Math.PI) / 40;   // rad/s it turns by itself: once round in 40 s
-const YOU_DRAG = (2 * Math.PI) / 360;  // rad per CSS px of drag: once round in 360 px
-const YOU_MAX_DPR = 2;                 // its canvas's px per CSS px, at most
-const YOU_MAX_STEP = 0.1;              // s it turns at most in a frame: none of a freeze (the map build, the shaders) is made up
+// the live player's canvas (ui/youWorker.js), sized once for the tallest he is shown (menu.css .mm-you)
+const YOU_MAX_H = 560;                 // CSS px
 const YOU_ASPECT = 260 / 420;          // the still's width over its height (tools/you-portrait.mjs SHOWN_W, SHOWN_H)
+const YOU_MAX_DPR = 2;                 // px per CSS px, at most
+const YOU_IDLE_TIMEOUT_MS = 2000;      // the longest it waits for an idle moment to build him (src/preload.js's wait)
+const YOU_NO_IDLE_DELAY_MS = 200;      // its wait without requestIdleCallback (Safari)
 const STORE = 'powder-toy-3d:menu';   // the last gamemode and map picked here
 // What the loading screen says it's on, one line under its bar. GMod's loading
 // screen names the step it is really on ("Retrieving server info", "Sending
@@ -104,6 +104,8 @@ export function createMenu({ modes, map, mode, onStart, onResume, onLoadSave }) 
   you.addEventListener('error', () => you.closest('figure')?.remove());
   const youFig = h('figure.mm-you', {}, you, h('figcaption', { text: 'This is you.' }));
   const youLive = liveYou(youFig, you);
+  // built in the background once the menu is up (an idle moment, as src/preload.js waits for one)
+  const prepareYou = () => (self.requestIdleCallback ? requestIdleCallback(youLive.prepare, { timeout: YOU_IDLE_TIMEOUT_MS }) : setTimeout(youLive.prepare, YOU_NO_IDLE_DELAY_MS));
 
   const el = h('div.mm', { role: 'dialog', 'aria-label': 'Maps' },
     backdrop,
@@ -124,6 +126,7 @@ export function createMenu({ modes, map, mode, onStart, onResume, onLoadSave }) 
       h('div.mm-load-copy', {}, loadMode, loadName, loadStatus, h('div.mm-load-bar', {}, h('i')), loadStep),
       youFig));
   document.body.append(el);
+  prepareYou();
 
   // a preview that isn't there (a map added since tools/map-thumbs.mjs last ran): the card's gradient shows
   const thumb = (m) => {
@@ -323,6 +326,7 @@ export function createMenu({ modes, map, mode, onStart, onResume, onLoadSave }) 
       renderMaps();
       if (saves) showSaves(); else refreshCount();
       el.classList.add('open');
+      prepareYou();
       requestAnimationFrame(() => cards.find((c) => c.m === pick)?.card.focus({ preventScroll: true }));
       cards.find((c) => c.m === pick)?.card.scrollIntoView({ block: 'nearest' });
     },
@@ -361,60 +365,62 @@ export function createMenu({ modes, map, mode, onStart, onResume, onLoadSave }) 
   };
 }
 
-// The loading screen's player live (ui/youViewer.js, its three.js loaded only now): in the still's
-// place once his first frame is drawn, and gone with the screen, its WebGL context with it. A
-// failure (no WebGL) leaves the still.
+// The loading screen's player live (ui/youViewer.js), in a worker on an OffscreenCanvas
+// (ui/youWorker.js): built while the menu is up, so he is there the moment Start is pressed, and
+// breathing and turning on through the boot's long frames. In the still's place once built; the
+// worker and its WebGL context go with the screen, and the next menu builds him again. Without
+// OffscreenCanvas WebGL, or on a failure, the still stays.
 function liveYou(fig, still) {
-  let you = null, on = false, loading = null, raf = 0, last = 0, drag = null;
-  const loop = (t) => {
-    raf = requestAnimationFrame(loop);
-    const dt = last ? (t - last) / 1000 : 0;
-    last = t;
-    if (!drag) you.yaw += YOU_SPIN * Math.min(dt, YOU_MAX_STEP);
-    you.frame(dt);
+  let worker = null, canvas = null, ready = false, shown = false, on = false, drag = null;
+  const show = () => {
+    if (shown || !ready) return;
+    shown = true;
+    still.replaceWith(canvas);
+    fig.classList.add('live');
+    worker.postMessage({ run: true });
+  };
+  const prepare = () => {
+    if (worker || !still.isConnected || typeof OffscreenCanvas === 'undefined' || !HTMLCanvasElement.prototype.transferControlToOffscreen) return;
+    const dpr = Math.min(devicePixelRatio || 1, YOU_MAX_DPR);
+    canvas = h('canvas.mm-you-live');
+    canvas.width = Math.round(YOU_MAX_H * YOU_ASPECT * dpr);
+    canvas.height = Math.round(YOU_MAX_H * dpr);
+    const off = canvas.transferControlToOffscreen();
+    worker = new Worker(new URL('./youWorker.js', import.meta.url), { type: 'module' });
+    worker.onmessage = ({ data }) => {
+      if (data === 'ready') { ready = true; if (on) show(); return; }
+      console.warn('loading screen: the live player failed, the still stays', data.failed);
+      drop();
+    };
+    worker.onerror = (e) => { console.warn('loading screen: the live player failed, the still stays', e.message); drop(); };
+    worker.postMessage({ canvas: off, width: canvas.width, height: canvas.height }, [off]);
+  };
+  const drop = () => {
+    worker?.terminate();
+    if (shown) { canvas.replaceWith(still); fig.classList.remove('live', 'dragging'); }
+    worker = canvas = drag = null;
+    ready = shown = false;
   };
   fig.addEventListener('pointerdown', (e) => {
-    if (!you || e.button !== 0) return;
-    drag = { x: e.clientX, yaw: you.yaw };
+    if (!shown || e.button !== 0) return;
+    drag = { x: e.clientX };
+    worker.postMessage({ drag: 'start' });
     fig.setPointerCapture(e.pointerId);
     fig.classList.add('dragging');
     e.preventDefault();
   });
-  fig.addEventListener('pointermove', (e) => { if (drag) you.yaw = drag.yaw + (e.clientX - drag.x) * YOU_DRAG; });
-  const drop = () => { drag = null; fig.classList.remove('dragging'); };
-  fig.addEventListener('pointerup', drop);
-  fig.addEventListener('pointercancel', drop);
+  fig.addEventListener('pointermove', (e) => { if (drag) worker.postMessage({ dx: e.clientX - drag.x }); });
+  const release = () => {
+    if (!drag) return;
+    drag = null;
+    worker?.postMessage({ drag: 'end' });
+    fig.classList.remove('dragging');
+  };
+  fig.addEventListener('pointerup', release);
+  fig.addEventListener('pointercancel', release);
   return {
-    start() {
-      on = true;
-      if (you || loading || !still.isConnected) return;
-      const height = fig.clientHeight, width = Math.round(height * (still.naturalWidth / still.naturalHeight || YOU_ASPECT));
-      if (!height) return;
-      const pixelRatio = Math.min(devicePixelRatio || 1, YOU_MAX_DPR);
-      loading = import('./youViewer.js')
-        .then(({ createYou }) => createYou({ width: width * pixelRatio, height: height * pixelRatio, yaw: 0.42, time: 0.6 }))
-        .then((y) => {
-          if (!on) { y.dispose(); return; }
-          you = y;
-          you.canvas.className = 'mm-you-live';
-          you.frame();
-          still.replaceWith(you.canvas);
-          fig.classList.add('live');
-          last = 0;
-          raf = requestAnimationFrame(loop);
-        })
-        .catch((err) => console.warn('loading screen: the live player failed, the still stays', err))
-        .finally(() => { loading = null; });
-    },
-    stop() {
-      on = false;
-      cancelAnimationFrame(raf);
-      drop();
-      if (!you) return;
-      you.canvas.replaceWith(still);
-      fig.classList.remove('live');
-      you.dispose();
-      you = null;
-    },
+    prepare,
+    start() { on = true; prepare(); show(); },
+    stop() { on = false; release(); drop(); },
   };
 }
