@@ -2,8 +2,10 @@
 // limbs.js): each hold's hands reach its grips, the pogo stick is ridden (feet
 // on its pegs, its foot on the ground), the held model is lit like the body, a
 // gun's muzzle flash leaves from the gun on the body, an axe's swing moves the
-// held axe, first person puts the viewmodel back at the eye, and the stickman
-// holds tools too.
+// held axe, what a tool carries shows on the body (the shovel's heap, the
+// bucket's and the flask's contents, the physgun's beam, the laser's charge),
+// first person puts the viewmodel back at the eye, and the stickman holds tools
+// too.
 // usage: node tools/tp-held-check.mjs [--port 5205 | --url https://tpt3d.codyh.xyz]   (a dev server, or the live site)
 import { launchBrowser, newTestPage } from './browser.mjs';
 const args = process.argv.slice(2);
@@ -20,6 +22,11 @@ const TIP_TOL = 0.3;                      // cells between the pogo's foot and t
 const MUZZLE_PAD = 0.6;                   // cells round the held gun's box the flash may leave from
 const SWING_TURN = 0.2;                   // rad the held axe turns at least during a swing
 const SETTLE_MS = 900;
+const MATTER_AT = 6;                      // cells ahead of the feet the matter for the carrying checks goes
+const MATTER_R = 2.5;                     // cells, its radius
+const MATTER_PITCH = -0.75;               // rad: looking down at it
+const CARRY_PAD = 0.3;                    // cells round the held model's box what it carries must sit in
+const PRESS_MS = 350;                     // ms a button is held for a scoop
 
 const b = await launchBrowser();
 let fails = 0;
@@ -149,6 +156,85 @@ try {
   check('SMG looking up: the gun points up', up > 0.4, `forward.y ${up}`);
   check('SMG looking up: hands still on it', upHands.right < HAND_TOL && upHands.left < HAND_TOL, `${upHands.right} / ${upHands.left}`);
   await ev(([yaw]) => window.__app.pov.setLook(yaw, 0), [YAW]);
+
+  // ---- what a tool carries shows on the body: matter painted ahead, scooped up with the tool
+  const press = (ms) => ev(async (ms) => {
+    const c = document.querySelector('canvas');
+    c.dispatchEvent(new MouseEvent('mousedown', { button: 0, bubbles: true }));
+    await new Promise((r) => setTimeout(r, ms));
+    c.dispatchEvent(new MouseEvent('mouseup', { button: 0, bubbles: true }));
+    window.dispatchEvent(new MouseEvent('mouseup', { button: 0, bubbles: true }));
+  }, ms);
+  // an element's id by name, from the spawn menu's tiles (works on the bundled site too)
+  const paintAhead = (name) => ev(([name, ahead, r, yaw, pitch]) => {
+    const a = window.__app, T = a.THREE;
+    const id = Number(document.querySelector(`button.tile[aria-label="${name}"]`)?.dataset.id);
+    if (!Number.isFinite(id)) return false;
+    const p = a.pov.player.pos;
+    a.sim.paint({ center: new T.Vector3(p.x + ahead, r, p.z), radius: r, shape: 1, tool: id, rate: 1, replace: true });
+    a.pov.setLook(yaw, pitch);
+    return true;
+  }, [name, MATTER_AT, MATTER_R, YAW, MATTER_PITCH]);
+  const carried = () => ev((pad) => {
+    const a = window.__app, T = a.THREE, h = a.pov.held;
+    const s = a.pov.figure.real.root.scale.x;
+    const box = new T.Box3().setFromObject(h.model).expandByScalar(pad * s);
+    const ex = h.extras;
+    return { n: ex.length, inside: ex.every((c) => box.containsPoint(new T.Vector3().setFromMatrixPosition(c.matrixWorld))) };
+  }, CARRY_PAD);
+  // (the flask may come already holding a potion: Noita's start with one)
+  for (const [key, matter, startsEmpty] of [['SHOVEL', 'Sand', true], ['BUCKET', 'Water', true], ['FLASK', 'Water', false]]) {
+    await ev((spawn) => window.__app.pov.player.spawn(new window.__app.THREE.Vector3(...spawn)), SPAWN);
+    await select(key);
+    const before = await carried();
+    if (!(await paintAhead(matter))) { check(`${key}: ${matter} to scoop`, false, 'no tile'); continue; }
+    await wait(150);
+    await press(PRESS_MS);
+    await wait(500);
+    const after = await carried();
+    check(`${key}: what it carries shows on the body`, (!startsEmpty || before.n === 0) && after.n > 0 && after.inside, JSON.stringify({ before: before.n, after }));
+  }
+  await ev(([spawn, yaw]) => { window.__app.pov.player.spawn(new window.__app.THREE.Vector3(...spawn)); window.__app.pov.setLook(yaw, 0); }, [SPAWN, YAW]);
+
+  // the physgun's beam leaves from the gun on the body
+  await select('PHYSGUN');
+  await paintAhead('Sand');
+  await wait(150);
+  const beam = await ev(async (pad) => {
+    const a = window.__app, T = a.THREE, h = a.pov.held;
+    const c = document.querySelector('canvas');
+    c.dispatchEvent(new MouseEvent('mousedown', { button: 0, bubbles: true }));
+    await new Promise((r) => setTimeout(r, 600));
+    const b = a.scene.getObjectByName('pov-physgun-beam')?.children[0];
+    const s = a.pov.figure.real.root.scale.x;
+    let out = { visible: !!b?.visible };
+    if (b?.visible) {
+      const axis = new T.Vector3(0, 1, 0).applyQuaternion(b.quaternion);
+      const start = b.position.clone().addScaledVector(axis, -b.scale.y / 2);
+      out.fromGun = new T.Box3().setFromObject(h.model).expandByScalar(pad * s).containsPoint(start);
+    }
+    c.dispatchEvent(new MouseEvent('mouseup', { button: 0, bubbles: true }));
+    window.dispatchEvent(new MouseEvent('mouseup', { button: 0, bubbles: true }));
+    return out;
+  }, MUZZLE_PAD);
+  check('PHYSGUN: the beam shows, from the gun on the body', beam.visible && beam.fromGun, JSON.stringify(beam));
+  await ev(([spawn, yaw]) => { window.__app.pov.player.spawn(new window.__app.THREE.Vector3(...spawn)); window.__app.pov.setLook(yaw, 0); }, [SPAWN, YAW]);
+
+  // the laser's charge strips glow on the body as they do in the hands
+  await select('LASER');
+  const charge = await ev(async () => {
+    const a = window.__app, h = a.pov.held;
+    const c = document.querySelector('canvas');
+    c.dispatchEvent(new MouseEvent('mousedown', { button: 0, bubbles: true }));
+    await new Promise((r) => setTimeout(r, 800));
+    const fp = a.pov.viewmodel.getObjectByName('viewmodel-laser')?.getObjectByName('charge');
+    const tp = h.model?.getObjectByName('charge');
+    const same = !!fp && fp.material === tp?.material;
+    c.dispatchEvent(new MouseEvent('mouseup', { button: 0, bubbles: true }));
+    window.dispatchEvent(new MouseEvent('mouseup', { button: 0, bubbles: true }));
+    return { same };
+  });
+  check('LASER: the charge glows on the body too', charge.same, JSON.stringify(charge));
 
   // ---- first person: the viewmodel back at the eye, nothing held on the body
   await p.keyboard.press('F5');

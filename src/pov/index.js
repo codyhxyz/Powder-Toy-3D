@@ -403,6 +403,7 @@ export function createPov(app) {
           hud, viewmodel, handWorld, heldOnBody: () => held.holding !== null,
           interact,                            // Descent's wand and spell pickups (wands/loot.js)
           getScene: () => (app.inWorld?.() ? app.settings.scene : null),   // the world scene loaded (Descent levels are world scenes)
+          getMode: () => app.gamemode?.() ?? 'sandbox',   // the gamemode playing: Noita's wands only in it
           toolGun: app.toolGun,   // the god view's click at the crosshair (app.js), for the tool gun
           isActive: () => live() && !editing,
           getStepsPerFrame: () => app.settings.paused ? 0 : app.settings.steps,

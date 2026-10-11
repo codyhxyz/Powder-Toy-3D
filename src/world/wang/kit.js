@@ -1,3 +1,5 @@
+import { ELEMENTS, K } from '../../elements.js';
+
 // Wang tile kits: the authoring format and its rasterizer (docs/wang-tiles.md).
 //
 // A kit is a set of hand-authored tiles that tiling.js stitches into a
@@ -264,9 +266,43 @@ export function rasterTile(tile, index, G = GEOM) {
       if (!coated.has(i)) out[i] = MAT.ROCK;
     }
   }
+  settleLoose(out, dims);
   if (tile.torches) placeTorches(out, tile.torches, index, G);
   coated = null;
   return out;
+}
+// Loose dressing (heaps, crate fills, gravel: elements.js powders by the default
+// palette) that would fall off a ledge at load isn't laid down: a cell with
+// open space in its lower ring (where the move pass would let it fall or
+// topple) over a drop deeper than LOOSE_DROP_MAX. What a later carve (a doorway,
+// a shaft) or the tile's face left hanging spilled at load otherwise: gold
+// nuggets (dens 193) falling a storey land with ~100 units of kinetic energy,
+// ~250 °C of impact heat (physics.js KE_TO_HEAT), and that hot spot kept the
+// Mines' caverns simulating for minutes. A step down onto the floor beside a
+// heap is fine (the toppling there barely warms it). Repeated until nothing
+// changes: a cell left hanging by one taken out under it goes too.
+const LOOSE = new Set(Object.entries(DEFAULT_PALETTE).filter(([, k]) => ELEMENTS.find((e) => e.key === k)?.kind === K.POWDER).map(([n]) => MAT[n]));
+const LOOSE_DROP_MAX = 2;   // cells: the deepest drop a loose cell may stand over the edge of
+function settleLoose(out, [X, Y, Z]) {
+  const at = (x, y, z) => x + X * (y + Y * z);
+  const drop = (x, y, z) => {   // open cells from (x, y, z) down, past LOOSE_DROP_MAX at most
+    let d = 0;
+    while (y - d >= 0 && d <= LOOSE_DROP_MAX && passable(out[at(x, y - d, z)])) d++;
+    return y - d < 0 ? 0 : d;   // (the tile's floor: its neighbour below decides)
+  };
+  for (let changed = true; changed;) {
+    changed = false;
+    for (let y = 1; y < Y; y++) for (let z = 0; z < Z; z++) for (let x = 0; x < X; x++) {
+      const i = at(x, y, z);
+      if (!LOOSE.has(out[i])) continue;
+      let hangs = false;
+      for (let dz = -1; dz <= 1 && !hangs; dz++) for (let dx = -1; dx <= 1 && !hangs; dx++) {
+        const qx = x + dx, qz = z + dz;
+        if (qx >= 0 && qz >= 0 && qx < X && qz < Z) hangs = drop(qx, y - 1, qz) > LOOSE_DROP_MAX;
+      }
+      if (hangs) { out[i] = MAT.AIR; changed = true; }
+    }
+  }
 }
 // Wall lights a kit doesn't place by hand (kit.torches, or a tile's own: { every, max,
 // lights }): after the carving, on walls TORCH_Y over a floor, at least `every` cells
@@ -277,7 +313,12 @@ export function rasterTile(tile, index, G = GEOM) {
 // and there, darkness between.
 export const TORCH_Y = 7;              // a light's head this far over the floor: over a body's head (5.5)
 const TORCH_HASH = 0x9e3779b1;
-function placeTorches(out, { every = 16, max = 3, lights = ['TORCH'] }, index, G) {
+// posts: true (the open kits' islands, which have few walls to hang one on): where
+// no wall will take one, a torch on a timber post at an island's rim, the post
+// POST_H cells tall (Noita's Coal Pits light their ledges with torches on poles).
+// It stands at the rim, off the walkway's middle, where nothing walks into it.
+export const POST_H = 5;               // the post's timber, cells: the head at a body's head height (5.5)
+function placeTorches(out, { every = 16, max = 3, lights = ['TORCH'], posts = false }, index, G) {
   const X = 2 * G.U, Y = G.H, Z = G.U;
   const at = (x, y, z) => x + X * (y + Y * z);
   const solid = (c) => !passable(c) && c !== MAT.BEAM;
@@ -294,6 +335,20 @@ function placeTorches(out, { every = 16, max = 3, lights = ['TORCH'] }, index, G
       if (wall) cand.push({ x, y, z, wall, h: Math.imul((x * 73856093) ^ (y * 19349663) ^ (z * 83492791) ^ index, TORCH_HASH) >>> 0 });
     }
   cand.sort((a, b) => a.h - b.h);
+  // then the posts (after every wall spot: a wall torch is the first choice)
+  const postCand = [];
+  if (posts) for (let z = G.BORDER + 1; z < Z - G.BORDER - 1; z++) for (let x = G.BORDER + 1; x < X - G.BORDER - 1; x++)
+    for (let y = G.BORDER; y < Y - G.BORDER - POST_H - 2; y++) {
+      // rock (no timber: a plank won't hold it) with air POST_H + 2 over it, at the rim: a side open down to under the floor
+      if (!solid(out[at(x, y, z)]) || out[at(x, y, z)] === MAT.TORCH) continue;
+      let ok = true;
+      for (let k = 1; k <= POST_H + 2 && ok; k++) ok = out[at(x, y + k, z)] === MAT.AIR;
+      if (!ok) continue;
+      const rim = SIDES.some(([dx, dz]) => out[at(x + dx, y, z + dz)] === MAT.AIR && out[at(x + dx, y - 1, z + dz)] === MAT.AIR);
+      if (rim) postCand.push({ x, y: y + POST_H + 1, z, post: true, h: Math.imul((x * 73856093) ^ (y * 19349663) ^ (z * 83492791) ^ index, TORCH_HASH) >>> 0 });
+    }
+  postCand.sort((a, b) => a.h - b.h);
+  cand.push(...postCand);
   const lit = [];
   for (let z = 0; z < Z; z++) for (let y = 0; y < Y; y++) for (let x = 0; x < X; x++) {
     const c = out[at(x, y, z)];
@@ -301,11 +356,15 @@ function placeTorches(out, { every = 16, max = 3, lights = ['TORCH'] }, index, G
   }
   const far = (x, y, z) => lit.every(([a, b, c]) => (a - x) ** 2 + (b - y) ** 2 + (c - z) ** 2 >= every * every);
   let n = 0;
-  for (const { x, y, z, wall: [dx, dz] } of cand) {
+  for (const { x, y, z, wall, post } of cand) {
     if (n >= max) break;
     if (!far(x, y, z)) continue;
     const kind = lights[n % lights.length];
-    if (kind === 'TORCH') {
+    if (post) {   // (always a torch: a crystal doesn't grow on a pole)
+      for (let k = 1; k <= POST_H; k++) out[at(x, y - k, z)] = MAT.BEAM;
+      out[at(x, y, z)] = MAT.TORCH;
+    } else if (kind === 'TORCH') {
+      const [dx, dz] = wall;
       out[at(x + dx, y - 1, z + dz)] = MAT.BEAM;
       out[at(x, y - 1, z)] = MAT.BEAM;
       out[at(x, y, z)] = MAT.TORCH;
@@ -394,11 +453,46 @@ function scatter(out, [X, Y, Z], pr, salt, vseed, pi) {
     if (ceiling) { for (let yy = Math.max(1, a[1]); yy < Math.min(Y - 1, b[1]); yy++) if (out[at(x, yy, z)] === MAT.AIR && solidAt(x, yy + 1, z)) { y = yy; break; } }
     else for (let yy = Math.min(Y - 2, b[1] - 1); yy >= Math.max(1, a[1]); yy--) if (out[at(x, yy, z)] === MAT.AIR && solidAt(x, yy - 1, z)) { y = yy; break; }
     if (y < 0) continue;
+    if (!ceiling && !settled(out, [X, Y, Z], pr.put ?? [], [x, y, z], solidAt)) continue;
     (pr.put ?? []).forEach((q, qi) => applyPrim(out, [X, Y, Z], shiftPrim(q, [x, y, z]), salt + qi + 1, vseed, pi * 64 + k));
   }
 }
+// Does a floor scatter's `put` at spot o sit whole and at rest? Its footprint
+// (the prims' bounds, x and z) inside the tile clear of its edge cells, and a
+// solid under every column of it. A heap or crate hanging over a shelf's edge,
+// or cut by the tile's face where a neighbour's doorway opens, spilled its
+// nuggets and powder at load: gold (dens 193) falling a storey lands with
+// ~100 units of kinetic energy, ~250 °C of impact heat (physics.js KE_TO_HEAT),
+// and broke the moss it hit, and that hot spot's heat kept the Mines' caverns
+// awake for minutes. Noita's props stand on the ground they are placed on.
+function settled(out, [X, Y, Z], put, o, solidAt) {
+  const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  let loose = false;
+  for (const q of put) {
+    if (q.coat || q.scatter) continue;
+    const [a, b] = boundsOf(shiftPrim(q, o));
+    for (let i = 0; i < 3; i++) { lo[i] = Math.min(lo[i], Math.floor(a[i])); hi[i] = Math.max(hi[i], Math.ceil(b[i])); }
+    loose ||= [].concat(typeof q.m === 'object' && q.m ? Object.keys(q.m) : q.m ?? []).some((n) => LOOSE.has(MAT[n]));
+  }
+  if (lo[0] === Infinity) return true;
+  if (lo[0] < 1 || lo[2] < 1 || hi[0] > X - 1 || hi[2] > Z - 1) return false;
+  for (let z = lo[2]; z < hi[2]; z++) for (let x = lo[0]; x < hi[0]; x++) if (!solidAt(x, o[1] - 1, z)) return false;
+  // loose stuff clear of where a doorway may be cut (tiling.js cutPorts, at sampling: it
+  // would cut the crate or the shelf under it), with a cell under it for the support
+  return !loose || !inPortCut([lo[0], o[1] - 1, lo[2]], [hi[0], hi[1], hi[2]]);
+}
+// Does box [a, b) (canonical cells) touch any doorway tiling.js cutPorts may cut (any
+// side port, either floor, the jitter included)?
+function inPortCut(a, b, G = GEOM) {
+  const U = G.U, half = G.DOOR_W / 2 + G.JITTER, span = (lo, hi, l, h) => lo < h && hi > l;
+  const ys = [G.FLOOR, G.HIGH_FLOOR].some((yb) => span(a[1], b[1], yb, yb + G.DOOR_H + G.JITTER));
+  if (!ys) return false;
+  const lat = (lo, hi, c) => span(lo, hi, c - half, c + half);
+  if (lat(a[2], b[2], U / 2) && (span(a[0], b[0], 0, G.PORT_DEPTH) || span(a[0], b[0], 2 * U - G.PORT_DEPTH, 2 * U))) return true;   // W, E
+  return [0, 1].some((u) => lat(a[0], b[0], u * U + U / 2) && (span(a[2], b[2], 0, G.PORT_DEPTH_SIDE) || span(a[2], b[2], U - G.PORT_DEPTH_SIDE, U)));   // N, S
+}
 // a primitive moved by o (cells)
-const add = (p, o) => p.map((v, i) => v + o[i]);
+const add =(p, o) => p.map((v, i) => v + o[i]);
 export function shiftPrim(pr, o) {
   const q = { ...pr };
   for (const k of ['box', 'ramp', 'stairs', 'coat', 'scatter']) if (pr[k]) q[k] = pr[k].map((p) => add(p, o));

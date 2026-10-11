@@ -6,6 +6,7 @@ import { addTarget, areaTargets, setHitRules } from '../src/pov/targets.js';
 import { BODY_WIDTH, BODY_HEIGHT } from '../src/pov/constants.js';
 
 import { createWandRuntime, WAND_LIMITS } from '../src/pov/wands/runtime.js';
+import { povEvents } from '../src/pov/events.js';
 const v = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
 const leaf = (effect, params = {}, op = 'self') => ({ op, id: effect, effect,
   params: { mana: 1, radius: 1, power: 10, lifetime: 0.3, speed: 30, ...params } });
@@ -48,9 +49,9 @@ function harness(options = {}) {
   const ctx = { sim, dt: 0.05, stepsPerFrame: 1, primary: false, eye: v(20, 20, 20), dir: v(1),
     player: { pos: v(20, 16, 20), applyImpulse: (dv) => impulses.push(dv), teleport: (feet) => teleports.push(feet) } };
   const equip = (nodes, config = {}, more = {}) => runtime.equip({ id: 'test', cards: nodes, config, ...more });
-  async function step({ fire = false, paused = false, dt = 0.05, tick = false } = {}) {
+  async function step({ fire = false, paused = false, dt = 0.05, tick = false, view = null } = {}) {
     ctx.primary = fire; ctx.dt = dt; ctx.stepsPerFrame = paused ? 0 : 1;
-    if (tick) runtime.tick(ctx); else runtime.update(ctx);
+    if (tick) runtime.tick(ctx); else runtime.update(ctx, view);
     const s = runtime.stats;
     assert(s.frameCommands <= WAND_LIMITS.commands);
     assert(s.frameTransfers <= WAND_LIMITS.transfers);
@@ -210,6 +211,57 @@ function delayedHarness(latency = 0.15) {
   assert(h.runtime.stats.dropped > 0);
   assert(h.rays.flat().some((ray) => Math.abs(ray.to.distanceTo(ray.from) - speed * WAND_LIMITS.flightStep) < 1e-6));
   assert(h.rays.flat().every((ray) => ray.to.distanceTo(ray.from) <= speed * WAND_LIMITS.flightStep + 1e-6));
+  h.runtime.dispose();
+}
+
+// Cast from the wand's tip: a bolt's flight starts at the tip's depth along its aim (traced
+// from the eye), and up close it is drawn between the tip and the wall, never behind the wall.
+{
+  const wall = 24, tip = v(22.3, 19.6, 20.5), dt = 1 / 60, speed = 65;   // the gem: 2.3 cells out, off the aim
+  const h = harness({ trace: (segments) => Promise.resolve(segments.map(({ from, to }) => to.x < wall ? null
+    : { point: from.clone().lerp(to, (wall - from.x) / (to.x - from.x)), normal: v(-1), id: E.WALL })) });
+  h.equip([leaf('spark', { speed, lifetime: 2 }, 'projectile')]);
+  const view = { tip, tipWorld: tip.clone() };
+  const drawn = (item) => item.position.clone().add(item.offset ?? v());
+  const trail = [];
+  const off = povEvents.on('wand:flight', (e) => trail.push(...e.flights));
+  await h.step({ fire: true, view, dt });
+  assert(drawn(h.visual.items[0]).distanceTo(tip) < 1e-6, 'a bolt is first drawn at the tip');
+  assert.equal(h.rays[0][0].from.x, 20, 'its first segment is traced from the eye');
+  assert(Math.abs(h.rays[0][0].to.x - (tip.x + speed * dt)) < 1e-6, 'its flight starts at the tip');
+  let between = 0;
+  for (let i = 0; i < 10 && h.runtime.stats.projectiles; i++) {
+    await h.step({ view, dt });
+    for (const item of h.visual.items) {
+      const at = drawn(item);
+      assert(at.x < wall, `drawn behind the wall it is about to hit: x=${at.x}`);
+      assert(at.x <= Math.max(tip.x, item.position.x) + 1e-6, 'never drawn deeper than it has flown');
+      if (at.x > tip.x) between++;
+    }
+  }
+  assert.equal(h.runtime.stats.projectiles, 0);
+  assert(between >= 1, 'the bolt is seen in flight between the tip and a near wall');
+  assert(h.calls.length && h.calls.every((c) => Math.abs(c.center.x - wall) < 1e-6), 'it lands on the wall');
+  assert(trail.length && trail[0].from.distanceTo(tip) < 1e-6 && Math.abs(trail.at(-1).to.x - wall) < 1e-6,
+    'its trail runs from the tip to where it landed');
+  off();
+  h.runtime.dispose();
+}
+// Point-blank (the wall nearer than a frame of flight past the tip): drawn at the tip, then its trail to the wall.
+{
+  const wall = 23, tip = v(22.3, 19.6, 20.5), dt = 1 / 60;
+  const h = harness({ trace: (segments) => Promise.resolve(segments.map(({ from, to }) => to.x < wall ? null
+    : { point: from.clone().lerp(to, (wall - from.x) / (to.x - from.x)), normal: v(-1), id: E.WALL })) });
+  h.equip([leaf('spark', { speed: 65, lifetime: 2 }, 'projectile')]);
+  const view = { tip, tipWorld: tip.clone() }, trail = [];
+  const off = povEvents.on('wand:flight', (e) => trail.push(...e.flights));
+  await h.step({ fire: true, view, dt });
+  assert(h.visual.items[0].position.clone().add(h.visual.items[0].offset).distanceTo(tip) < 1e-6);
+  await h.step({ view, dt });
+  assert.equal(h.runtime.stats.projectiles, 0, 'it lands on its first segment');
+  assert(trail.length === 1 && trail[0].from.distanceTo(tip) < 1e-6 && Math.abs(trail[0].to.x - wall) < 1e-6,
+    'its trail still runs from the tip to the wall');
+  off();
   h.runtime.dispose();
 }
 
@@ -584,4 +636,4 @@ let recipes = 0;
   assert(n >= 4, 'reshuffled after the recharge');
   h.runtime.dispose();
 }
-console.log(`wand runtime checks passed: scheduling, prepaid mana, pause, delayed catch-up, exact timers, bounded queues, caster clearance, piercing, collision, shifts, inventory, effects, spells per cast, shuffle, refill; ${recipes} catalog recipes`);
+console.log(`wand runtime checks passed: scheduling, prepaid mana, pause, delayed catch-up, cast from the tip, exact timers, bounded queues, caster clearance, piercing, collision, shifts, inventory, effects, spells per cast, shuffle, refill; ${recipes} catalog recipes`);

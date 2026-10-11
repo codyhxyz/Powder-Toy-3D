@@ -73,6 +73,11 @@ export const PHYS = {
   // forces (react.js)
   V_MAX: 1,                  // cells/step
   FLOW_SURFACE: 0.6,         // a pool's surface flows at this share of FLOW
+  // Liquid under a head h leaves an opening at Torricelli's v = Cv·√(2gh)
+  // (react.js). Cv, the velocity coefficient of a sharp-edged orifice, is
+  // 0.97-0.99 (its discharge coefficient, ~0.61, is mostly the jet's
+  // contraction, Cc ≈ 0.62: White, Fluid Mechanics, §6.12; Cd = Cc·Cv).
+  ORIFICE_CV: 0.98,
   FLOW_KICK: 0.5,            // re-pick a flow direction below this share of the target speed
   FILM_KEEP: 0.5,            // a film on dry ground keeps this share of its velocity...
   FILM_COHESION: 0.3,        // ...and is pulled toward neighbouring liquid by this share of FLOW
@@ -90,10 +95,21 @@ export const PHYS = {
   REST_V_SLOP: 0.0001,       // cells/step, float slop on air's jitter-speed bound (activity.js)
   // °C: air within this of ambient can sleep, and so can matter touching air.
   AIR_REST_T: 1,
-  // °C: other matter can sleep within this of each face neighbour. Chosen so
-  // a matter face at the tolerance carries no more heat per step than an air
-  // face at its tolerance: metal, the best conductor, 0.1·0.01 = 0.001, the
-  // same as air's 0.0005 across 2·AIR_REST_T.
+  // Other matter can sleep while the heat each matter face carries per step,
+  // min(cond)·ΔT (react.js condFlux), is at most REST_FLUX, which is what an
+  // air face at its tolerance carries: air's 0.0005 across 2·AIR_REST_T. So a
+  // face's tolerance in °C is REST_FLUX / min(cond), never more than
+  // AIR_REST_T: metal, the best conductor, MATTER_REST_T (0.01 °C); rock and
+  // ice ~0.03; wood, moss and snow 0.1-0.2; an insulator AIR_REST_T. It is the
+  // heat a face carries that skipping leaves unbooked, not the degrees, so a
+  // poor conductor's sub-degree front stops waking the bricks it crawls
+  // through (2026-10-11: moss and timber kept the Mines' caverns stepping
+  // under a front a few hundredths of a degree tall) while the bound below
+  // holds as before. A rest staircase of such steps across n cells of rock is
+  // at most n·0.03 °C (3 °C over a 100-cell cavern), nothing a rule reads.
+  REST_FLUX: 0.001,
+  // °C: the tolerance at the best conductor (metal, cond 0.1: REST_FLUX/0.1),
+  // and what a temperature sensor counts as a difference (electricity.js TSNS).
   //
   // Energy bound. A sleeping region changes nothing inside, so the only heat
   // skipping fails to book crosses its boundary, one-sided: the awake side

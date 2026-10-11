@@ -418,6 +418,7 @@ function build(key) {
     if (p.rot) m.rotation.set(...p.rot);
     if (p.name) m.name = p.name;
     if (p.m === 'ember') m.onBeforeRender = () => { emberTime.value = performance.now() / 1000; };
+    m.userData.part = true;   // the model's own (held.js tells a tool's additions from them)
     g.add(m);
   }
   return g;
@@ -431,6 +432,7 @@ function arm(dir) {
     material('sleeve'));
   forearm.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3(...dir).normalize());
   g.add(forearm);
+  g.traverse((o) => { o.userData.arm = true; });   // the first-person arm: never on the body
   return g;
 }
 

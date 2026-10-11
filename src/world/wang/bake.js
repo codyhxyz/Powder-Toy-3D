@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { E } from '../../elements.js';
-import { compileKit, MAT_NAMES, MAT_COUNT, WANG_OUT, WANG_NO_TEMP } from './kit.js';
-import { generateTiling, bakeAtlas, packPlacement, makeSampler } from './tiling.js';
+import { compileKit, MAT, MAT_NAMES, MAT_COUNT, WANG_OUT, WANG_NO_TEMP } from './kit.js';
+import { generateTiling, bakeAtlas, atlasLayout, packPlacement, makeSampler } from './tiling.js';
 import { wangGLSL } from './glsl.js';
 
 // bakeWang({ kit, seed, size, origin, entry, exit }): a world's Wang tiling,
@@ -30,6 +30,8 @@ import { wangGLSL } from './glsl.js';
 //   mainPath        the main path's bricks, entry to exit, as world boxes
 //                   [x0, y0, z0, x1, y1, z1]
 //   sites           [{ kind, tile, x, y, z }]: the placed tiles' sites, world cells
+//   torches         [[x, y, z], ...]: every wall torch's head (MAT.TORCH) the tiling
+//                   left standing, world cells (world/torchLights.js lights them)
 //   tiling          the generator's result (bricks, placement) for tools
 //   dispose()       frees the textures
 // A scene bakes in its prepare(renderer, P) (scenes/index.js); the bake is CPU
@@ -66,6 +68,23 @@ export function bakeWang({ kit: rawKit, seed, size, origin = [0, 0, 0], entry, e
       sites.push({ kind: s.kind, tile: t.name, x, y, z });
     }
   }
+  // the torches: each tile's heads (from the atlas), placed, and kept where the
+  // sampler didn't cut them away (a port or a shaft through the tile)
+  const lay = atlasLayout(kit), [AX, AY] = lay.dims;
+  const tileTorches = kit.tiles.map((t, ti) => {
+    const [, y0, z0] = lay.origin(ti), out = [];
+    for (let z = 0; z < G.U; z++) for (let y = 0; y < G.H; y++) for (let x = 0; x < 2 * G.U; x++)
+      if (atlas.data[x + AX * (y0 + y + AY * (z0 + z))] === MAT.TORCH) out.push([x, y, z]);
+    return out;
+  });
+  const torches = [];
+  for (const b of tiling.bricks) {
+    const pl = tiling.place[b.id];
+    for (const c of tileTorches[pl.tile]) {
+      const w = toWorld(b, pl.xf, c);
+      if (wangCellJS(w) === MAT.TORCH) torches.push(w);
+    }
+  }
   let tex = null;
   const textures = () => {
     if (tex) return tex;
@@ -77,7 +96,7 @@ export function bakeWang({ kit: rawKit, seed, size, origin = [0, 0, 0], entry, e
     return (tex = { at, pl });
   };
   return {
-    kit, units, origin, glsl: wangGLSL(kit), tiling, atlas, placement, sites,
+    kit, units, origin, glsl: wangGLSL(kit), tiling, atlas, placement, sites, torches,
     uniforms: () => {
       const t = textures();
       return {

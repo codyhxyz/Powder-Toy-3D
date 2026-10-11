@@ -193,7 +193,8 @@ export function createPovCamera({ fov: fovSetting = () => POV_FOV, sensitivity =
     // Call once per frame. s = {
     //   dt, eye (world, the unbobbed eye), feet (world), scale (world units per cell),
     //   speedH (cells/s), onGround, inLiquid, sprinting, dead, deadTime (s), box {min, max, margin} (world),
-    //   shake {pitch, yaw, roll} (rad, optional: feel.js offsets added to the look),
+    //   shake {pitch, yaw, roll, punchPitch, punchYaw} (rad, optional: feel.js offsets added to the look;
+    //     punch*: the view punch's share of them, which third person leaves out),
     //   arm (optional: the spring arms, cameraArm.js, in world space) {
     //     want(k, from, to): arm k (ARM_TP, ARM_DEATH) is in use this frame, from → to;
     //     share(k): the share of it found clear, 0..1 }
@@ -226,9 +227,13 @@ export function createPovCamera({ fov: fovSetting = () => POV_FOV, sensitivity =
       tp += ((third ? 1 : 0) - tp) * approach(TP_RATE, dt);
       if (!third && tp < ARM_REST) tp = 0;
       const tpK = smooth01(tp);
+      // what the eyes feel (the head bob, the landing dip, a tool's view punch) is the first person's
+      // alone: the over-the-shoulder camera rides steady behind the body, as Garry's Mod's third person
+      // does, and keeps only the world's shake (a blast, a hard landing) and the drunk sway
+      const fp = 1 - tpK;
 
       // live pose: the eye, swung over the shoulder by tpK, as far as the box and the arm let it
-      const eye = v1.copy(s.eye).addScaledVector(UP, (bobY + dip) * scale).addScaledVector(rightH(v3), bobX * scale);
+      const eye = v1.copy(s.eye).addScaledVector(UP, (bobY + dip) * fp * scale).addScaledVector(rightH(v3), bobX * fp * scale);
       const lookDir = dir(v2);
       live.pos.copy(eye)
         .addScaledVector(lookDir, -TP_DIST * scale)
@@ -240,7 +245,7 @@ export function createPovCamera({ fov: fovSetting = () => POV_FOV, sensitivity =
       live.pos.lerpVectors(eye, live.pos, Math.min(tpK, tpArm));
       const sh = s.shake;
       live.quat.setFromEuler(sh
-        ? euler.set(look.pitch + sh.pitch, look.yaw + sh.yaw, sh.roll)
+        ? euler.set(look.pitch + sh.pitch - tpK * (sh.punchPitch ?? 0), look.yaw + sh.yaw - tpK * (sh.punchYaw ?? 0), sh.roll)
         : euler.set(look.pitch, look.yaw, 0));
 
       // death: up, back and circling the body, looking at it

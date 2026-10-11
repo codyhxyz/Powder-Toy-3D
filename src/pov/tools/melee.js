@@ -62,6 +62,8 @@ export function meleeTool({ key, name, model: modelKey, desc, blow, frag, hit: H
     const hand = rig.hand(POSE.pos);
     const pivot = new THREE.Group();
     hand.add(pivot);
+    // the swing seen from outside (held.js plays holds.js GESTURES on the body instead of the pivot's flick)
+    hand.userData.gesture = { since: Infinity, span: refire };
     const mesh = attachModel(pivot, modelKey);
     return { rig, hand, pivot, dispose() { mesh.dispose(); hand.removeFromParent(); } };
   }
@@ -138,11 +140,13 @@ export function meleeTool({ key, name, model: modelKey, desc, blow, frag, hit: H
           model.hand.visible = true;
           model.rig.update(ctx);
           const dt = toolDt(ctx);
+          model.hand.userData.gesture.since += dt;
           // the tell: the next blow would be special (a backstab lined up)
           telling = !!tell?.(ctx, bodyInReach(ctx));
           tellK += ((telling ? 1 : 0) - tellK) * (1 - Math.exp(-TELL_RATE * dt));
           if (button.ready(ctx)) {
             button.fire();
+            model.hand.userData.gesture.since = 0;
             povEvents.emit('tool:action', { tool: source, action: 'swing' });
             const r = strike(ctx);
             turning = r.lethal ? lethalPose : pose;

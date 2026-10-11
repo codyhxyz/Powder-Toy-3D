@@ -8,9 +8,9 @@
 //
 // The Snowy Depths scene holds every cell at −15 °C (descent/scenes.js COLD_T),
 // so what is liquid here is what stays liquid at −15: saltwater (it freezes at
-// −21 °C), whiskey (−23 °C), liquid nitrogen. Water and the potions would
-// freeze, so the kit lays them down above freezing (temps): a frozen lake's
-// water under its ice lid, Noita's whiskey and healthium caches in timber
+// −21 °C), whiskey (−23 °C), liquid nitrogen. Its water is brine (the palette):
+// a frozen lake's under its ice lid. The potions would freeze, so the kit lays
+// them down above freezing (temps): Noita's whiskey and healthium caches in timber
 // barrels (timber insulates), the rare pool in a timber-lined basin. Liquid
 // nitrogen and dry ice lie in pockets off the main path.
 //
@@ -103,7 +103,7 @@ const tiles = openTiles([
       dress: [plankX(16, 32, MID, SPINE + 1)],
     }),
   },
-  // ---- the frozen lake: a great blob holding water (laid down above freezing) under a lid of ice
+  // ---- the frozen lake: a great blob holding water (brine: the palette) under a lid of ice
   {
     name: 'frozen lake', weight: 1.2,
     prims: island(204, {
@@ -202,14 +202,20 @@ const tiles = openTiles([
 export default {
   name: 'snow',
   geom: { OPEN: 1, SPINE },
-  // wall lights (kit.js placeTorches): a torch and the crystals' cold light in turn
-  torches: { every: 16, max: 3, lights: ['CRYSTAL', 'TORCH'] },
+  // wall lights (kit.js placeTorches): a torch and the crystals' cold light in turn, and
+  // torches on posts at the islands' rims where no wall takes one: one every ~20 cells of walk
+  torches: { every: 20, max: 4, lights: ['TORCH', 'CRYSTAL'], posts: true },
   palette: {
     ROCK: 'ROCK', SOFT: 'SNOW', BEAM: 'WOOD', RAIL: 'METAL', RUBBLE: 'RUBBLE', SAND: 'SNOW',
     ICE: 'ICE', CRYSTAL: 'CRYSTAL', COAL: 'COAL', GRAVEL: 'STONE',
+    // the lakes and the water under thin ice are brine, as the liquid left under sea ice is:
+    // liquid at the Depths' −15 °C (saltwater freezes at −21), so it rests there. Fresh water
+    // laid down above freezing froze from its edges in for minutes, and the lake, the ice
+    // growing on it and the rock round it stepped all that while (2026-10-11).
+    WATER: 'SALTWATER',
   },
   // laid down above freezing in the Snowy Depths' −15 °C (scenes.js COLD_T): they freeze from
   // their edges in, slowly (timber and their own ice insulate them)
-  temps: { WATER: 2, HEALTHIUM: 4, SLIME: 4, LEVITATIUM: 4 },
+  temps: { HEALTHIUM: 4, SLIME: 4, LEVITATIUM: 4 },
   tiles,
 };

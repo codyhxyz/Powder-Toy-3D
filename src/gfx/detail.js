@@ -112,7 +112,7 @@ export const DETAIL = [
   // walks did. The pour / pourAfter presets of tools/detail-bench.mjs add
   // the step cost to the tier.
   { key: 'liquidFoam', define: 'DETAIL_LIQ_FOAM', label: 'Whitewater', cost: 'medium',
-    desc: 'Liquid that plunges or lands hard turns white with foam that drifts on the flow and bursts over a few seconds; pouring and falling water is drawn as one stream, white as it falls' },
+    desc: 'Liquid that plunges or lands hard turns white with foam that drifts on the flow and bursts over a few seconds; long falls tear into spray' },
 ];
 
 // Features whose realistic module SwiftShader (the software adapter: the test
