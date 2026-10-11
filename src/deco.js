@@ -111,7 +111,7 @@ class Deco {
   // the passes a painting session runs: made (and compiled ahead, prepareDeco) on first use
   gatherMat() {
     return this.mat('gather', decoGatherFrag(this.sim.g), {
-      tA: { value: null }, tQuiet: { value: null }, tSlots: { value: null }, uParity: { value: 0 },
+      tA: { value: null }, tQuiet: { value: null }, tSlots: { value: null }, uParity: { value: 0 }, uEdge: { value: 0 },
     });
   }
   paintMat() {
@@ -131,6 +131,7 @@ class Deco {
     m.uniforms.tQuiet.value = sim.actQuiet.texture;
     m.uniforms.tSlots.value = sim.slots.texture;
     m.uniforms.uParity.value = sim.frame & 1;
+    m.uniforms.uEdge.value = sim.mats.moveGather.uniforms.uEdge.value;   // the gather's edge mode (simModes.js)
     this.write(m);
   }
 

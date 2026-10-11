@@ -60,8 +60,8 @@ void main() {
   ivec3 p = cellFromFrag(ivec2(gl_FragCoord.xy));
   if (!inGrid(p)) { oD = vec4(0.0); return; }   // a texel holding no cell
   ivec3 q = p;
-  if (!quietCell(blockBase(p))) slotOf(p, q);
-  oD = eid(fetchA(p)) == E_EMPTY ? vec4(0.0) : decoOf(q);
+  if (!quietCell(blockBase(p))) { slotOf(p, q); q = edgeCell(q); }   // (past a loop edge: the far side's, as postMove reads it)
+  oD = eid(fetchA(p)) == E_EMPTY || !inGrid(q) ? vec4(0.0) : decoOf(q);   // (from past a void edge: still air, unpainted)
 }
 `;
 
