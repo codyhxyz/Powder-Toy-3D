@@ -7,9 +7,10 @@
 //   try { await page.goto(vite.url('/tools/harness/foundation.html')); } finally { await vite.close(); }
 //
 // The port is `port`, else --port N on the command line, else TPT_VITE_PORT,
-// else one the OS hands out. `harness: true` serves the harness pages
-// (tools/harness/) in Vite's 'harness' mode, which skips the World's bake
-// (vite.config.js): those pages don't import it, and it costs a CPU for a while.
+// else one the OS hands out (a tool that starts two servers passes `port` to
+// the second). `harness: true` serves the harness pages (tools/harness/) in
+// Vite's 'harness' mode, which bakes the World only when a page imports it
+// (vite.config.js): most don't, and the bake costs a CPU for a while.
 import net from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -52,7 +53,7 @@ export async function startVite({ port, harness = false, quiet = true } = {}) {
     server: { host: '127.0.0.1', port, strictPort: true, hmr: false, watch: null },
   });
   await server.listen();
-  // WebGPU needs a secure origin: http://127.0.0.1 and http://localhost are
+  // WebGPU needs a secure origin: http://127.0.0.1 and http://localhost are secure
   const origin = `http://127.0.0.1:${port}`;
   return {
     port,

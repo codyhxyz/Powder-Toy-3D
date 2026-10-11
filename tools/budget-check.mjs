@@ -9,12 +9,12 @@
 // harness mode) or an app URL. It may give ready(page) and mode; the default
 // waits for __harness.ready or __app.sim, in 'manual' mode.
 //
-// usage: node tools/budget-check.mjs [--unit foundation,sim] [--port N]
+// usage: node tools/budget-check.mjs [--unit foundation,sim] [--port N]   (N, and N + 1 when app units run too)
 import { readdirSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { launchBrowser, newTestPage, gpuInfo } from './browser.mjs';
-import { startVite } from './vite-server.mjs';
+import { startVite, argPort } from './vite-server.mjs';
 import { openHarness } from './harness/open.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -42,8 +42,19 @@ function compare(m, expect) {
   return bad;
 }
 
+// One server per kind (harness pages in harness mode, the app in development
+// mode). With an explicit port (--port N, TPT_VITE_PORT) the first gets N and
+// the second N + 1; otherwise each gets a free one.
 const servers = {};
-const serve = async (harness) => (servers[harness ? 'harness' : 'app'] ??= await startVite({ harness }));
+const basePort = argPort() ?? (process.env.TPT_VITE_PORT ? Number(process.env.TPT_VITE_PORT) : null);
+const serve = async (harness) => {
+  const kind = harness ? 'harness' : 'app';
+  if (!servers[kind]) {
+    const port = basePort === null ? undefined : basePort + Object.keys(servers).length;
+    servers[kind] = await startVite({ harness, ...(port === undefined ? {} : { port }) });
+  }
+  return servers[kind];
+};
 const browser = await launchBrowser();
 let failures = 0, printedGpu = false;
 try {

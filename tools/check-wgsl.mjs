@@ -344,12 +344,27 @@ for (const entry of entries) {
 
 const vite = await startVite({ harness: true });
 const log = [];
-const browserArgs = argv.flatMap((a, i) => (a === '--browser-arg' ? [argv[i + 1]] : []));
-const browser = await launchBrowser({ args: browserArgs, browserLog: (line) => log.push({ t: Date.now(), line }) });
+// After a page has lost the GPU 3 times, Chromium blocks its origin from 3D
+// APIs and requestAdapter() answers null (a 2000-line kernel lost 3 times in
+// one browser; the 4th page had no adapter). (b) and --curve go on after a
+// loss, so the block is turned off (--disable-gpu-process-crash-limit alone
+// didn't help), and should a page still find no adapter, a new browser opens.
+const browserArgs = ['--disable-domain-blocking-for-3d-apis', ...argv.flatMap((a, i) => (a === '--browser-arg' ? [argv[i + 1]] : []))];
+const launch = () => launchBrowser({ args: browserArgs, browserLog: (line) => log.push({ t: Date.now(), line }) });
+let browser = await launch();
 let page = null;
 const open = async () => {
   if (page) await page.close().catch(() => {});
-  page = await openHarness(browser, vite, '/tools/harness/wgsl.html');
+  page = null;
+  try {
+    page = await openHarness(browser, vite, '/tools/harness/wgsl.html');
+  } catch (e) {
+    if (!/adapter/i.test(e.message)) throw e;
+    console.log(`     (${e.message.split('\n')[0]}: a new browser)`);
+    await browser.close().catch(() => {});
+    browser = await launch();
+    page = await openHarness(browser, vite, '/tools/harness/wgsl.html');
+  }
   return page;
 };
 try {
