@@ -118,6 +118,8 @@ export function createHelp(onClose) {
         h('h3', { text: 'Simulation and interface' }),
         row('Pause or resume', 'Space'),
         row('Step one frame', '.'),
+        row('Air mode: on, pressure off, velocity off, off, no update', 'Y'),
+        row('Ambient heat on or off (gravity and edges: Settings)', 'U'),
         row('Switch view', '1', '–', '5'),
         row('Show or hide elements', 'T'),
         row('Chat, when playing together', 'T'),

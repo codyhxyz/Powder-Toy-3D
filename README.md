@@ -50,6 +50,7 @@ Press `?` in the app for the full list.
 | Everything else | |
 |---|---|
 | Space / `.` | pause / step one frame |
+| `Y` / `U` | cycle the air mode / turn ambient heat on or off (The Powder Toy's keys; see Simulation modes) |
 | `1`–`5` | switch view |
 | `T` | show or hide the element dock |
 | `,` | settings |
@@ -222,6 +223,27 @@ Density decides whether it can displace its neighbour, so sand sinks through wat
   rock chips only right beside one, and metal never breaks.
 
 **3. Brush** (only while painting).
+
+**Simulation modes** (`src/simModes.js`): The Powder Toy's Simulation Options, in the Settings drawer's Simulation
+section. They belong to the world: a new scene or map starts them over (vertical, on, on, solid), and in multiplayer the
+host sets them.
+- **Gravity**: vertical; off (nothing falls, topples, settles or spreads downhill: the first-person body floats too, as
+  TPT's stickman does; loose matter still drifts a little with the air's jitter); radial, toward the centre of the box, at
+  full strength (TPT's `GetGravityField`). The move pass's rules are written for down = −y, so each 2×2×2 block is solved
+  turned so that −y is the dominant axis of its pull, and the react pass applies the full vector, with its normal force,
+  friction and liquid flow along that axis. A pool has no level in radial gravity, so a drop's surface keeps churning.
+- **Air** (`Y`): on; pressure off (held at 0: blasts heat and burn but throw nothing); velocity off (still air: no wind or
+  convection, and matter isn't pushed by pressure, since in TPT particles feel pressure only through the air's velocity);
+  off (both); no update (pressure and wind stay where they are, without spreading or fading).
+- **Ambient heat** (`U`): off holds the air at 20 °C, and matter trades no heat with it, so nothing cools in air and
+  convection carries no heat. TPT starts with it off; here it starts on, as the world always was.
+- **Edges**: solid (walls); void (whatever leaves the box is gone, and the air outside is still, at ambient, with no
+  pressure, so blasts vent out of the sides); loop (what leaves comes back on the far side, along all three axes, air,
+  heat and reactions included: TPT's air doesn't wrap, but ours lives on the same cells as matter). World keeps solid
+  edges: its window's edge is where the stored island goes on.
+
+Radial gravity and void or loop edges switch off quiet-brick skipping (below): its rest test knows only vertical
+gravity and walls, so every brick is stepped. Photons and neutrons, the first-person body and constructions don't wrap.
 
 **Quiet bricks** (`src/shaders/activity.js`). Most of the box is still air or resting matter, and stepping it only
 reshuffles the air's jitter. A cell is inert when stepping it could change nothing beyond the rest tolerances: air near

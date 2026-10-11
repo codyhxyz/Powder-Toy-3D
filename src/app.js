@@ -1089,11 +1089,13 @@ function simModeLock(key) {
   if (key === 'edgeMode' && win) return 'World\'s edges stay solid: past them is the rest of the island, not the void';
   return false;
 }
-function resetSimModes() {
-  Object.assign(settings, sanitizeModes({ ...SIM_MODE_DEFAULTS, ...mapOf(settings)?.modes }));
+// a world's modes, all at once (a map's; a saved world's, after its scene has loaded)
+function setSimModes(modes) {
+  Object.assign(settings, sanitizeModes(modes));
   applySimModes(sim, settings);
   settingsPanel.sync();
 }
+function resetSimModes() { setSimModes({ ...SIM_MODE_DEFAULTS, ...mapOf(settings)?.modes }); }
 
 function setSettingsOpen(v) {
   settingsPanel.setOpen(v);
@@ -1777,6 +1779,7 @@ try {
     openMap,         // as the start menu's Start does (a maps.js key, a gamemode)
     undo,            // as ⌘Z does
     setSimMode,      // (key, value): as the drawer's Simulation switches do (simModes.js SIM_MODE_KEYS)
+    setSimModes,     // ({ gravityMode, airMode, ambientHeat, edgeMode }): a world's, at once (a save's)
     get worldFocus() { return worldFocus; }, set worldFocus(v) { worldFocus = v; },
     MOBILE, SUN, day, scene, settings, camera, controls, loadPreset, selectTool, setView, hover, renderer, rig, renderThumb, gfx, post, mp, autoRes, prof,
     applyDetail,   // after changing settings.detail_* by hand
