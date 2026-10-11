@@ -19,8 +19,9 @@ const genMod = one(import.meta.glob('../wands/generate.js', { eager: true }));
 export const generator = {
   generateWand: genMod?.generateWand ?? stubs.generateWand,
   randomSpell: genMod?.randomSpell ?? stubs.randomSpell,
-  wandPrice: genMod?.wandPrice ?? stubs.wandPrice,
-  spellPrice: genMod?.spellPrice ?? stubs.spellPrice,
+  // B's take (tier, item); the shop calls (item, tier)
+  wandPrice: genMod?.wandPrice ? (wand, tier) => genMod.wandPrice(tier, wand) : stubs.wandPrice,
+  spellPrice: genMod?.spellPrice ? (id, tier) => genMod.spellPrice(tier, id) : stubs.spellPrice,
 };
 export const generatorIsStub = !genMod?.generateWand;
 
