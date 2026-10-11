@@ -150,8 +150,9 @@ The spawn menu's **Deco** tab is The Powder Toy's deco menu: paint a colour onto
 around each cell, averaged in linear light as TPT does. The colour's alpha is how strongly the paint covers: TPT blends by
 it. **Ctrl+B** (or *Show decoration* under the picker) hides it all and shows it again; the paint stays either way.
 
-The paint belongs to the matter. Sand that falls keeps its colour, painted ice melts into painted water and painted wood
-burns as painted fire, because TPT's transitions keep it (`part_change_type`). A cell that empties loses it, and so does a
+The paint belongs to the matter. Sand that falls keeps its colour, painted ice melts into painted water, painted sand melts
+and sets into painted glass, and painted wood burns down to painted ash, because TPT's transitions keep it
+(`part_change_type`). A cell that empties loses it, and so does a
 cell the brush or a construction gives a new element (TPT's `create_part` starts a particle fresh). Undo brings it back, and
 in World it travels with the window: bricks of paint that leave the window are kept and come back with it.
 
