@@ -401,10 +401,14 @@ const defs = [
     dens: 8, cond: 0.008, cap: 0.45, drag: 0.03, flow: 0.55, ignite: 220, burnRate: 0.008,
     burnHeat: 5, flameT: 1000, life: 1, spawn: 0.35, ash: false,
     sigma: [0.4, 0.65, 1.8], desc: 'Oil. Flammable: catches fire at 220 °C. Lighter than water, so it floats on top.' },
-  { key: 'ACID', abbr: 'ACID', name: 'Acid', kind: K.LIQUID, render: R.LIQUID, color: '#86f23c',
+  // Drawn as Noita's acid, not as real HCl (which is clear): a vivid toxic lime
+  // green (Noita's acid is ~#5f0), thick and near opaque, so it never reads as
+  // water. Green is extinguished least and scattered most (gfx/materials.js
+  // ACID): a body of it glows lime from within; you see ~2 cells into it.
+  { key: 'ACID', abbr: 'ACID', name: 'Acid', kind: K.LIQUID, render: R.LIQUID, color: '#55ff00',
     dens: 11, cond: 0.03, cap: 1.0, drag: 0.015, flow: 0.8, life: 1, spawn: 0.35, acidProof: true, acid: true,
     hot: ACID_BOIL,   // boils at 108.6 °C into steam and caustic gas (the azeotrope, above)
-    sigma: [0.24, 0.06, 0.3], desc: 'Acid. Dissolves almost everything, using itself up as it goes; glass and walls are safe. Boils at 108.6 °C into steam and caustic gas.' },
+    sigma: [1.5, 0.5, 2.0], desc: 'Acid. Dissolves almost everything, using itself up as it goes; glass and walls are safe. Boils at 108.6 °C into steam and caustic gas.' },
   { key: 'LAVA', abbr: 'LAVA', name: 'Lava', kind: K.LIQUID, render: R.OPAQUE, color: '#ff5a1a', var: 0.1,
     dens: 25, cond: 0.03, cap: 0.6, drag: 0.2, flow: 0.3, temp: 1600, spawn: 0.35, sound: 'sizzle',
     desc: 'Lava. Molten rock at 1600 °C. Ignites flammable materials. Generated when metals and other materials melt; cools back into whatever melted to make it.' },
@@ -981,14 +985,14 @@ const defs = [
   // Toxic sludge (Noita's radioactive_liquid): an industrial slurry or mine
   // tailings, water carrying 20-30 % fine solids: ~1.2 g/cm³ and 0.1-1 Pa·s
   // (take 0.3). It sinks below water; Noita's floats (density 3, water's 4).
-  // Its faint green glow is game magic (gfx/materials.js TOXIC_GLOW); what it
+  // Its faint olive glow is game magic (gfx/materials.js TOXIC_GLOW_*); what it
   // does to bodies is the status effects' (nt-status).
   { key: 'TOXIC', abbr: 'TOXC', name: 'Toxic sludge', kind: K.LIQUID, render: R.LIQUID, color: '#3fb52c',
     dens: 12, cond: 0.03, cap: 0.85, ...viscous(300), spawn: 0.35,
     cold: { T: SLUDGE_MIX.freezeT, into: shares([['ICE', SLUDGE_MIX.water / ICE_RHO], ['SAND', SLUDGE_MIX.fines / SLUDGE_MIX.finesPile]]),
       latent: latentOf(334, SLUDGE_MIX.water) },
     hot: boilOf(SLUDGE_MIX.boilT, SLUDGE_MIX.water, [['SAND', SLUDGE_MIX.fines / SLUDGE_MIX.finesPile]]),
-    sigma: [1.6, 0.5, 2.5], desc: 'Toxic sludge. Thick green industrial sludge that sinks below water and glows faintly. Poisons whoever wades in it. Water washes it away.' },
+    sigma: [1.2, 0.9, 2.5], desc: 'Toxic sludge. Thick green industrial sludge that sinks below water and glows faintly. Poisons whoever wades in it. Water washes it away.' },
   // Slime: Noita's pink-purple slime, taken as a hydrogel like PVA-borax
   // slime: mostly water (~1.05 g/cm³, cap and cond near water's) and about as
   // thick as honey, ~10 Pa·s at the shear rates of a pour.

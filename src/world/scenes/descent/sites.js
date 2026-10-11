@@ -11,10 +11,17 @@ import { walkFlood } from '../../wang/walk.js';
 // plain data, so the wand and Holy Mountain code read it without pulling in
 // the generator.
 
-// Loot per level (Noita's Mines hold a handful of wands and more spells and
-// gold lying about; the contract's ~4–6 wands, ~6 spells, ~10 gold).
-export const LOOT_COUNTS = { wand: 5, spell: 6, gold: 10 };
-const LOOT_SPACING = { wand: 64, spell: 32, gold: 16 };   // cells from another site of its kind at least...
+// Loot per level (Noita's Mines hold a handful of wands and more spells, and
+// drip with gold: nuggets lie in every other pocket). The contract's ~4–6
+// wands, ~6 spells, ~25 gold. Chests and potion flasks are lists of their own
+// (levels.js `chests`, `potions`): Noita's treasure chests (2–3 a biome, in its
+// treasure rooms) and the flasks lying about (Noita's potion.lua items).
+export const LOOT_COUNTS = { wand: 5, spell: 6, gold: 25 };
+export const CHEST_COUNT = 3;     // chests a level (Noita: a couple per biome, chest_random.lua)
+export const POTION_COUNT = 6;    // potion flasks lying about a level
+// the order sites are picked in: chests first, so they get the kits' treasure nooks
+const PICK_ORDER = { chest: CHEST_COUNT, wand: LOOT_COUNTS.wand, spell: LOOT_COUNTS.spell, potion: POTION_COUNT, gold: LOOT_COUNTS.gold };
+const LOOT_SPACING = { wand: 64, spell: 32, gold: 12, chest: 96, potion: 40 };   // cells from another site of its kind at least...
 const LOOT_GAP = 10;              // ...and from any site
 const LOOT_SPAWN_CLEAR = 24;      // cells from the spawn: nothing lies at your feet
 const LOOT_RELS = [12, 36];       // where along a corridor segment a site may be (off its middle's lantern)
@@ -23,7 +30,7 @@ const SPAWN_PIT_IN = 6;           // Coal, Snow: the spawn over the temple exit'
 const HEADROOM = 2;               // air cells a site needs over its feet
 const SALT_LOOT = 0x2f61c3;
 // Wang levels: which of the kit's sites (kits/*.js sites) each kind of loot prefers, first to last
-const WANG_PICKS = { wand: ['wand', 'treasure', 'loot'], spell: ['loot', 'treasure'], gold: ['gold', 'loot'] };
+const WANG_PICKS = { chest: ['treasure', 'loot'], wand: ['wand', 'treasure', 'loot'], spell: ['loot', 'treasure'], potion: ['loot', 'treasure'], gold: ['gold', 'loot'] };
 const SITE_SETTLE = 4;            // a kit site's feet: the first standing place this far up from where the tile marks it
 const WALK_TOP_OVER = 4;          // the walk's block reaches this far over the way in's highest roof
 
@@ -169,7 +176,7 @@ export function levelSites(level) {
     }
   }
   cands.sort((p, q) => p.h - q.h || p.x - q.x || p.z - q.z);
-  return { key: def.key, name: def.name, tier: def.tier, spawn, temple: templeSites(C), loot: pickLoot(cands, spawn, def, () => cands) };
+  return { key: def.key, name: def.name, tier: def.tier, spawn, temple: templeSites(C), ...pickLoot(cands, spawn, def, () => cands) };
 }
 
 // A Wang level: the spawn (the Mines' by the cave mouth; a deep level's in the
@@ -184,23 +191,26 @@ function wangLevelSites(level, T, C, def) {
     const rank = (c) => { const r = WANG_PICKS[kind].indexOf(c.kind); return r < 0 ? Infinity : r; };
     return cands.filter((c) => rank(c) < Infinity).sort((p, q) => rank(p) - rank(q) || p.h - q.h || p.x - q.x || p.z - q.z);
   };
-  return { key: def.key, name: def.name, tier: def.tier, spawn, temple: templeSites(C), loot: pickLoot(cands, spawn, def, order) };
+  return { key: def.key, name: def.name, tier: def.tier, spawn, temple: templeSites(C), ...pickLoot(cands, spawn, def, order) };
 }
 
-// LOOT_COUNTS of each kind from candidates (order(kind): in the order to take them), spaced apart
+// PICK_ORDER's counts of each kind from candidates (order(kind): in the order to take them), spaced
+// apart: { loot: [{ x, y, z, kind, tier }] (wand, spell, gold), chests: [{ x, y, z, tier }], potions: [...] }
 function pickLoot(cands, spawn, def, order) {
-  const loot = [];
+  const all = [];
   const dist = (p, q) => Math.hypot(p.x - q.x, p.y - q.y, p.z - q.z);
   const sp = { x: spawn[0], y: spawn[1], z: spawn[2] };
-  for (const kind of Object.keys(LOOT_COUNTS)) {
+  for (const [kind, want] of Object.entries(PICK_ORDER)) {
     let n = 0;
     for (const c of order(kind)) {
-      if (n >= LOOT_COUNTS[kind]) break;
+      if (n >= want) break;
       if (dist(c, sp) < LOOT_SPAWN_CLEAR) continue;
-      if (loot.some((l) => dist(l, c) < LOOT_GAP || (l.kind === kind && dist(l, c) < LOOT_SPACING[kind]))) continue;
-      loot.push({ x: c.x, y: c.y, z: c.z, kind, tier: def.tier });
+      if (all.some((l) => dist(l, c) < LOOT_GAP || (l.kind === kind && dist(l, c) < LOOT_SPACING[kind]))) continue;
+      all.push({ x: c.x, y: c.y, z: c.z, kind, tier: def.tier });
       n++;
     }
   }
-  return loot;
+  const only = (kind) => all.filter((l) => l.kind === kind).map(({ x, y, z, tier }) => ({ x, y, z, tier }));
+  const loot = Object.keys(LOOT_COUNTS).flatMap((kind) => all.filter((l) => l.kind === kind));
+  return { loot, chests: only('chest'), potions: only('potion') };
 }
