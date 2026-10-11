@@ -469,7 +469,8 @@ export function createToolbelt(env) {
     descentWands.on('refresh', () => wandRuntime.refill()),
   ];
   function syncDescent() {
-    const key = env.getScene?.() ?? null;
+    // (Descent in Sandbox is a map like any other: the tools, no run)
+    const key = env.getMode?.() === 'noita' ? env.getScene?.() ?? null : null;
     if (key === descentKey) return;
     const was = descentLevel;
     descentKey = key;
