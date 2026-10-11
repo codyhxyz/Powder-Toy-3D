@@ -308,6 +308,61 @@ shared mechanism; anything else names its own code.
   mutual; both cells test the same things and draw one coin, as reactions pair (above). It swaps loose matter of one
   kind, as MIX.cpp does, at MIX.cpp's rate (`tools/brush-tools-check.mjs`).
 
+## Descriptions: The Powder Toy's voice
+
+Every spawn-menu tile has a `desc`, the line on its hover card (`ui/card.js`, `ui/dock.js`). Elements, brush tools,
+spawners, constructions, first-person gear and starter wands all use The Powder Toy's description voice: "Sand, Heavy
+particles. Melts into glass." / "Diamond. Indestructible." / "Stickman. Don't kill him! Control with the arrow keys."
+
+The rule:
+- **Name first.** The desc opens with the item's `name`, then a full stop, comma or colon: "Wood, flammable.",
+  "Battery. Generates infinite electricity." The gear and wand tiles add the name to their catalog's desc
+  (`GEAR_ITEMS`, `WAND_STARTERS`), since the hotbar shows the name beside it.
+- **Flat facts.** Short sentences that say what it is and what it does. Instructions are facts too, as TPT gives
+  them: "Change the brush size to set the size of the lightning."
+- **Keep the numbers.** Every melting point, ignition point, density and the like that the row has stays in the desc.
+- **Start from TPT.** Where TPT has the element, its `Description` comes first, word for word and punctuation and
+  all, but only the words that are true of this engine. Check them against the row, `shaders/react.js`,
+  `src/electricity.js`, `src/rays.js` and the sections above. Where TPT's line is false here, drop it and say what
+  ours does.
+- **No jokes but true ones.** The deadpan comes from saying a true thing flatly. The house example is "Bored", the
+  burrower's cause of death in the kill feed: it is exactly what happened. Likewise "Fountain. ... It will overflow
+  eventually." and "Raw meat does nothing for you." TPT's "Bagels." on broken glass is a joke and isn't borrowed.
+
+`node tools/check-descriptions.mjs` checks the shape (a desc on every tile, the name first, whole sentences): run it
+after adding or rewording a tile. Whether the facts are true is the author's check.
+
+Before and after (2026-10-11, all 176 tiles):
+
+| Tile | Before | After | From TPT |
+| --- | --- | --- | --- |
+| Sand | Grains that pile into slopes and sink in water. Melts into glass above 1700 °C. | Sand, Heavy particles. Piles into slopes and sinks in water. Melts into glass above 1700 °C. | `SAND.cpp` |
+| Smoke | Drifts upward and slowly fades away. | Smoke, created by fire. Drifts upward and slowly fades away. | `SMKE.cpp` |
+| Battery | Endless electricity: it sparks every conductor it touches. ... | Battery. Generates infinite electricity: sparks every conductor it touches. ... | `BTRY.cpp` |
+| Titanium | The blast-proof metal: no explosion or bullet breaks it. Melts at 1668 °C. | Titanium. Higher melting temperature than most other metals: 1668 °C. The blast-proof metal: no explosion or bullet breaks it. | `TTAN.cpp` |
+| Scrap metal | Heavy bits of metal: what metal breaks into, and the slugs the gun fires. ... | Scrap metal. Created when metal breaks. ... | `BRMT.cpp` (the slugs are gone: `pov/ballistics.js`) |
+| Lightning | Click a surface: a branching bolt strikes it ... Brush size sets how wide the strike is. | Lightning. Click a surface: a branching bolt strikes it ... Change the brush size to set the size of the lightning. | `LIGH.cpp` |
+| Axeman spawner | Click a surface: in first person (V) an enemy with every tool appears here, and comes back after it dies. ... | Axeman spawner. Click a surface: in first person (V) an axeman with every tool appears here. Tries to kill you. Comes back after it dies. ... | `FIGH.cpp`, "Fighter. Tries to kill stickmen." |
+| Diamond | Clear, brilliant and harder than anything ... above 780 °C it burns away. | Diamond. Clear, brilliant and harder than anything ... above 780 °C it burns away. | none: TPT's "Indestructible." is false here |
+
+TPT lines left out because they are false here: Diamond "Indestructible." (it burns), Oxygen "Ignites easily.",
+Glass "refracts photons" (not built), Tungsten "Brittle", Ceramic "Gets stronger under pressure", Uranium "Generates
+heat under pressure", Plutonium "Generates neutrons under pressure" (ours gives off a few by itself), Mercury "Volume
+changes with temperature", Gold "will reverse corrosion of iron", Insulator's "radiation" (neutrons pass it), CO₂
+"Carbonates water", Hydrogen's fusion, Lithium "explodes on contact with water" (its hydrogen does), Gunpowder's "Light
+dust" and "spark", Fuse "Ignites at very high temperatures or when sparked", Nitroglycerin "Mix with CLST to make
+TNT", Oil "turns into GAS", Water "extinguishes fires" (no rule of ours does; it only cools what it touches), and GAS's "Diffuses quickly" on propane.
+
+Our own descs had stale or wrong facts, now fixed: scrap as the gun's slugs; uranium as "the heaviest powder"
+(plutonium is 198 and gold nuggets 193, against its 191); nuggets sinking "through everything" (every liquid);
+Levitatium "lighter than every other liquid" (oil is as light); liquid nitrogen freezing water (the follow-up above:
+it doesn't on the GPU); whiskey taking "any flame" (only past its 26 °C flash point); antimatter's safe list
+missing void.
+
+Sources: The Powder Toy's `src/simulation/elements/*.cpp` (`Description`), `src/simulation/simtools/*.cpp`, the wall
+table in `src/simulation/SimulationData.cpp`, `src/gui/game/tool/SignTool.h` and `PropertyTool.h`, and the
+decoration tools in `src/gui/game/GameModel.cpp`, at commit c205becb (read 2026-10-11). The Powder Toy is GPL-3.0; we quote only short descriptive phrases from it, never its code.
+
 ## Noita materials (branch `nt-mat`)
 
 Noita's materials as simulation elements, appended after the TPT fan-out's rows: blood, toxic sludge, slime, whiskey,
