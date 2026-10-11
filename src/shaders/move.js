@@ -1,6 +1,7 @@
-import { prelude, STATE_OPTS, LAYOUT, STAGE, gridDims, sleepUnitOf } from './common.js';
+import { prelude, STATE_OPTS, LAYOUT, STAGE, gridDims, sleepUnitOf, marksLayout } from './common.js';
 import { uniformStruct } from '../gpu/params.js';
 import { fold } from '../gpu/kernels.js';
+import { simModesGLSL, SIM_MODE_FIELDS } from '../simModes.js';
 
 // Movement pass: Margolus block cellular automaton.
 //
@@ -51,6 +52,45 @@ import { fold } from '../gpu/kernels.js';
 // so in place and out of place can't differ by how a compiler contracted two
 // modules' math (docs/webgpu.md D8.11).
 //
+// Simulation modes (src/simModes.js; per-dispatch params, P.gravMode, P.edge):
+//   - Edges. Past a solid edge a block's cell is wall at ambient; past a void
+//     edge, still air (VOID_AIR_A): matter that moves out of the box is gone,
+//     air comes in. Past a loop edge it is the far side's cell (edgeCell), so
+//     at partition offset 1 a block straddling the high edge also holds cells
+//     of the low one, and the low margin's blocks (base -1) are the same
+//     blocks seen from the other side. The WebGL pass solved such a block
+//     twice from one base and both fragments wrote their own slots; here a
+//     block's thread writes its cells in place, so each block must have
+//     exactly one owner (docs/webgpu.md D8.8, Sync log S2): the block based in
+//     the grid (at N - 1 on the straddling axes) owns it, from the lists'
+//     dispatch, and with loop edges the margin's threads return at once (sim.js
+//     doesn't record that dispatch at all). Loop edges switch quiet skipping
+//     off (sim.js quietOk), so every brick is DRAWN, the lists hold every
+//     brick, and MOVE1's dilation needn't wrap. Debug builds stamp every cell a
+//     running block covers with the step's frame and count a cell stamped twice
+//     in one step (ownCell: sim-check's edges stage asserts none, and that a
+//     run of the margin under loop edges, sim.test.loopMargin, is caught).
+//   - Radial gravity. The rules are written for down = -y, so a block is
+//     solved turned so that -y is its pull's dominant axis (gravFrame of the
+//     pull at its centre): its cell i as the frame sees it is grid cell
+//     frameOff(i), velocities go into the frame and back out (intoFrame,
+//     outOfFrame). With vertical gravity (or none) the frame is the grid's and
+//     no matrix is applied, so those modes run exactly what they ran before.
+//
+// The decoration's attach point (TPT's dcolour, src/deco.js: U17, Sync log
+// S3): a u32 per cell that rides the move. It lives in the moveSrc binding's
+// buffer, a plane of one u32 per slot at P.decoAt (moveSrc's own plane, with
+// Whitewater, at P.srcAt), so the move stays within 8 storage buffers. One
+// plane, updated in place: after the solve each block reads its 8 cells' words,
+// then gives every cell its content's source's word, or 0 where the content is
+// air (a cell that empties loses its paint, as shaders/deco.js
+// decoGatherFrag rules; and still air from past a void edge brings none). A
+// quiet-base block's cells keep theirs, but air loses it. Only blocks that run
+// write it, so air a reaction left in a block that is skipped keeps its word
+// until a running block covers it (decoGatherFrag rewrote every cell each
+// step; emptying a cell marks its brick, so the next map draws it). P.deco = 0:
+// no plane.
+//
 // The flow field for the renderer (gfx/surface.js, flowing grains): how far
 // each cell's content moved this step, blended into the field over recent
 // steps (FLOW_BLEND). This is motion that happened, not velocity: grains
@@ -61,9 +101,10 @@ import { fold } from '../gpu/kernels.js';
 // Code form (docs/webgpu.md D2, W23). The WebGL build generated the block
 // update unrolled, every cell index a literal and the 8 cells in named
 // registers (a0..a7 …), so GPU compilers keep the whole block in registers.
-// That form ships (MOVE_FORM): as WGSL it is about 3,100 lines, and it builds
-// on SwiftShader (the test device) in 11-14 s, within PIPELINE_BUDGET_MS, so
-// D2 keeps it. The loop form (the rules as functions over the block held in
+// That form ships (MOVE_FORM): as WGSL it is about 3,200 lines, and it builds
+// on SwiftShader (the test device) in 11-16 s (15.5 s with the simulation
+// modes, 14.2 s without them, in one run), within PIPELINE_BUDGET_MS, so D2
+// keeps it. The loop form (the rules as functions over the block held in
 // arrays indexed at runtime) builds in about 1 s and runs about 3× faster on
 // SwiftShader, a CPU rasterizer; on a GPU those arrays are likely to spill.
 // It stays for the sim bench's A/B on the Mac (tools/harness/sim-bench.js,
@@ -94,6 +135,14 @@ export function marginBlocks(g) {
   return (hy + 1) * (hz + 1) + hx * (hz + 1) + hx * hy;
 }
 
+// The owner check's words, after the marks' own in a debug build's marks
+// buffer (sim.js allocates them; readOwners reads them): a count of cells
+// stamped twice in one step, then a stamp (the last frame that moved it) per slot.
+export function ownerLayout(g) {
+  const at = marksLayout(g).words;
+  return { dup: at, stamps: at + 1, words: at + 1 + gridDims(g).slots };
+}
+
 export const MoveParams = uniformStruct('MoveParams', {
   frame: 'u32',
   parity: 'u32',      // the partition offset: frame & 1
@@ -103,9 +152,15 @@ export const MoveParams = uniformStruct('MoveParams', {
   margin: 'u32',      // the low margin's blocks (direct), not a list's
   blockRev: 'u32',    // test (sim.test.blockOrder): reversed thread → block map
   eight: 'u32',       // 8: the loops' bound at runtime, so compilers keep them loops
+  ...SIM_MODE_FIELDS, // gravMode, edge (src/simModes.js)
+  deco: 'u32',        // the decoration plane is there (U17's attach point, above)
+  decoAt: 'u32',      // ...at this word of moveSrc's buffer
+  srcAt: 'u32',       // moveSrc's own plane (Whitewater) at this word
+  loopMargin: 'u32',  // test (sim.test.loopMargin): run the margin with loop edges, a second owner
 });
 
-// Group 2 (docs/webgpu.md C4): the flow field and moveSrc, both read_write.
+// Group 2 (docs/webgpu.md C4): the flow field and moveSrc's buffer (moveSrc's
+// plane and the decoration's), both read_write.
 export const MOVE_LAYOUT = [
   { binding: 0, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } },
   { binding: 1, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } },
@@ -285,8 +340,9 @@ const unrolled = () => ({
   var m${i} = false;
   var s${i} = false;`).join('\n  ')}
   ${CELLS.map((i) => `{
-    let c = cellAt(base, ${i});
-    if (inGrid(c)) { a${i} = fetchA(c); v${i} = fetchB(c).xyz; }
+    let c = blockCell(base, ${i});
+    if (inGrid(c)) { a${i} = fetchA(c); v${i} = intoFrame(fetchB(c).xyz); }
+    else if (P.edge == EDGE_VOID) { a${i} = VOID_AIR_A; v${i} = vec3f(0.0); }
     else { a${i} = vec4f(f32(E_WALL), AMBIENT, 0.0, 0.0); v${i} = vec3f(0.0); }
     k${i} = eid(a${i});
     d${i} = densityOf(k${i}, a${i}.y);
@@ -510,8 +566,9 @@ const loop = () => ({
   load: `
   var blk: Blk;
   for (var i = 0; i < i32(P.eight); i++) {
-    let c = cellAt(base, i);
-    if (inGrid(c)) { blk.a[i] = fetchA(c); blk.v[i] = fetchB(c).xyz; }
+    let c = blockCell(base, i);
+    if (inGrid(c)) { blk.a[i] = fetchA(c); blk.v[i] = intoFrame(fetchB(c).xyz); }
+    else if (P.edge == EDGE_VOID) { blk.a[i] = VOID_AIR_A; blk.v[i] = vec3f(0.0); }
     else { blk.a[i] = vec4f(f32(E_WALL), AMBIENT, 0.0, 0.0); blk.v[i] = vec3f(0.0); }
     blk.k[i] = eid(blk.a[i]);
     blk.d[i] = densityOf(blk.k[i], blk.a[i].y);
@@ -564,7 +621,7 @@ export const moveBlockFrag = (g, { form = MOVE_FORM, debug = false, raceProbe = 
   const f = MOVE_FORMS[form]();
   const u = sleepUnitOf(g);
   // the content's new state at cell c (heat-warmed), its flags, and where it came from
-  const body = /* wgsl */ `let c = cellAt(base, i);
+  const body = /* wgsl */ `let c = blockCell(base, i);
     if (inGrid(c)) {
       // the thread's own cell before the move: untouched until written here
       let aOld = fetchA(c);
@@ -578,17 +635,20 @@ export const moveBlockFrag = (g, { form = MOVE_FORM, debug = false, raceProbe = 
       // read (shaders/common.js FLAG)
       if (P.fresh != 0u) { fl &= ~FLAG_DIRTY; }
       if (nearChange(aOld, na)) { fl |= FLAG_DIRTY; }
-      // velocity moves with the content, pressure stays with the position
-      writeState(c, na, vec4f(vv, bOld.w), fl);
-      if (P.outOfPlace != 0u) { moveSrc[slotOf(c)] = u32(src); }
-      if (!quietCell(c)) { blendFlow(c, vec3f(c - cellAt(base, src))); }
+      // velocity moves with the content (out of the block's frame), pressure stays with the position
+      writeState(c, na, vec4f(outOfFrame(vv), bOld.w), fl);
+      // where it came from, as a grid-local index (aeration, gfx/foam.js), and the decoration with it
+      if (P.outOfPlace != 0u) { moveSrc[P.srcAt + slotOf(c)] = u32(frameIdx(src)); }
+      if (P.deco != 0u) { moveSrc[P.decoAt + slotOf(c)] = select(dc[src], 0u, eid(na) == E_EMPTY); }
+      if (!quietCell(c)) { blendFlow(c, vec3f(frameOff(i) - frameOff(src))); }
     }`;
   return /* wgsl */ `
 ${prelude(g, { ...STATE_OPTS.STATE_RW, debug })}
 ${MoveParams.wgsl}
 @group(3) @binding(1) var<uniform> P: MoveParams;
 @group(2) @binding(0) var<storage, read_write> flow: array<vec2u>;   // per slot: 3 × f16 (pack2x16float) + 0
-@group(2) @binding(1) var<storage, read_write> moveSrc: array<u32>;  // per slot: the source cell 0..7 (out of place only)
+// per slot at P.srcAt: the source cell 0..7 (out of place only); at P.decoAt the decoration plane
+@group(2) @binding(1) var<storage, read_write> moveSrc: array<u32>;
 const HEAT_QUANTA: f32 = ${HEAT_QUANTA.toFixed(1)};
 const HEAT_Q_MAX: f32 = ${HEAT_Q_MAX.toFixed(1)};
 const FLOW_BLEND: f32 = ${FLOW_BLEND};
@@ -640,6 +700,32 @@ fn bounceR(id: i32) -> f32 {
 
 fn cellAt(base: vec3i, i: i32) -> vec3i { return base + vec3i(i & 1, (i >> 1u) & 1, (i >> 2u) & 1); }
 
+// ---- simulation modes (src/simModes.js; see the top of shaders/move.js) ----
+${simModesGLSL}
+var<private> GF: mat3x3f;   // the block's gravity frame (simModes.js gravFrame; F is the flags): set and read only with radial gravity
+// where cell i of the block as the frame sees it lies: its offset from the
+// base, and its index (the grid's own with vertical gravity or none)
+fn frameOff(i: i32) -> vec3i {
+  let l = vec3i(i & 1, (i >> 1u) & 1, (i >> 2u) & 1);
+  if (P.gravMode != GRAV_RADIAL) { return l; }
+  return vec3i((vec3f(l * 2 - 1) * GF + 1.0) * 0.5);
+}
+fn frameIdx(i: i32) -> i32 { let o = frameOff(i); return o.x + 2 * o.y + 4 * o.z; }
+// a velocity into the block's frame, and back out
+fn intoFrame(v: vec3f) -> vec3f { if (P.gravMode == GRAV_RADIAL) { return GF * v; } return v; }
+fn outOfFrame(v: vec3f) -> vec3f { if (P.gravMode == GRAV_RADIAL) { return v * GF; } return v; }
+// the grid cell the block's frame cell i is (past a loop edge, the far side's)
+fn blockCell(base: vec3i, i: i32) -> vec3i { return edgeCell(base + frameOff(i)); }
+${debug ? `
+// The owner check (debug builds; shaders/move.js ownerLayout): cell c is
+// covered by this block in this step; a cell stamped with this step's frame
+// already has another owner, which is counted.
+const OWNER_DUP: u32 = ${ownerLayout(g).dup}u;
+const OWNER_STAMPS: u32 = ${ownerLayout(g).stamps}u;
+fn ownCell(c: vec3i) {
+  if (atomicExchange(&marks[OWNER_STAMPS + slotOf(c)], P.frame) == P.frame) { atomicAdd(&marks[OWNER_DUP], 1u); }
+}` : ''}
+
 // The flow field: three half floats per slot, blended toward how far the
 // content at c moved this step.
 fn blendFlow(c: vec3i, moved: vec3f) {
@@ -671,7 +757,11 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
   var base: vec3i;
   if (P.margin != 0u) {
     if (t >= NMARGIN) { return; }
-    base = 2 * marginBlock(t) + 1;
+    // With loop edges every margin block is a block based in the grid on the
+    // far side, which the lists' dispatch owns (one owner, D8.8): none of
+    // these run (P.loopMargin, test only, runs them anyway: the negative control)
+    if (P.edge == EDGE_LOOP && P.loopMargin == 0u) { return; }
+    base = edgeCell(2 * marginBlock(t) + 1);
   } else {
     // entry e of the offset's list, and the unit's home block kb
     let e = t / BLOCKS_PER_UNIT;
@@ -687,29 +777,39 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
   // it runs if a cell of it lies in a unit this map's steps draw
   var run = false;
   for (var i = 0; i < 8; i++) {
-    let c = cellAt(base, i);
+    let c = edgeCell(cellAt(base, i));
     if (inGrid(c) && drawnUnit(unitOfCell(c))) { run = true; }
   }
-  if (!run) { return; }
+  if (!run) { return; }${debug ? `
+  for (var i = 0; i < 8; i++) {
+    let c = edgeCell(cellAt(base, i));
+    if (inGrid(c)) { ownCell(c); }
+  }` : ''}
 
   if (quietCell(base)) {
-    // it stays put: flags settle, flow blends toward still (in a brick that isn't quiet)
+    // it stays put: flags settle, flow blends toward still (in a brick that
+    // isn't quiet), air loses its decoration
     for (var i = 0; i < 8; i++) {
-      let c = cellAt(base, i);
+      let c = edgeCell(cellAt(base, i));
       if (!inGrid(c)) { continue; }
       let f0 = fetchF(c);
       var fl = f0;
       if (P.fresh != 0u) { fl &= ~FLAG_DIRTY; }
       if (P.outOfPlace != 0u) {
         writeState(c, fetchA(c), fetchB(c), fl);
-        moveSrc[slotOf(c)] = u32(i);
+        moveSrc[P.srcAt + slotOf(c)] = u32(i);
       } else if (fl != f0) {
         writeFlags(c, fl);
+      }
+      if (P.deco != 0u) {
+        let ds = P.decoAt + slotOf(c);
+        if (moveSrc[ds] != 0u && eid(fetchA(c)) == E_EMPTY) { moveSrc[ds] = 0u; }
       }
       if (!quietCell(c)) { blendFlow(c, vec3f(0.0)); }
     }
     return;
   }
+  if (P.gravMode == GRAV_RADIAL) { GF = gravFrame(gravDir(vec3f(base) + 1.0)); }
   ${f.load}
   var rs = seed3(base, P.frame, 0x51u);${raceProbe ? `
   // RACE PROBE (test only, docs/webgpu.md I2.10): a cell of the next block
@@ -717,6 +817,14 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
   { let r = base + vec3i(2, 0, 0); if (inGrid(r)) { rs ^= bitcast<u32>(fetchA(r).y); } }` : ''}
 ${f.solve}
 
+  // the decoration's words, all 8 before any is written (in place)
+  var dc: array<u32, 8>;
+  if (P.deco != 0u) {
+    for (var i = 0; i < 8; i++) {
+      let c = blockCell(base, i);
+      if (inGrid(c)) { dc[i] = moveSrc[P.decoAt + slotOf(c)]; }
+    }
+  }
   ${f.write(body)}
 }
 `;
@@ -733,6 +841,8 @@ const dispatch = (g) => [fold(Math.ceil(marginBlocks(g) / 64)), fold(Math.ceil(g
 export const WGSL_CHECK = [
   { name: 'move', kind: 'compute', code: (g) => moveBlockFrag(g), layouts, dispatch },
   { name: 'moveLoop', kind: 'compute', code: (g) => moveBlockFrag(g, { form: 'loop' }), layouts, dispatch, tool: true },
+  // the debug build tools run (the owner check, I2.8's counter)
+  { name: 'moveDebug', kind: 'compute', code: (g) => moveBlockFrag(g, { debug: true }), layouts, dispatch, tool: true },
 ];
 
 // WEBGPU-STUB (docs/webgpu.md J3): the gather and flow passes are fused into

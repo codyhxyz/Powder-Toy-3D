@@ -8,12 +8,15 @@
 //   seed(s)                        seed Math.random (mulberry32, as tools/regress.mjs)
 
 import { boot, ready, log, test } from './harness.js';
-import { Simulation, cellTexel } from '/src/sim.js';
+import { Simulation, cellTexel, slotCell } from '/src/sim.js';
 import { buildPreset } from '/src/presets.js';
-import { E, ELEMENTS } from '/src/elements.js';
-import { SEED_MAX, prelude, STATE_OPTS } from '/src/shaders/common.js';
+import { E, ELEMENTS, TOOLS, PROP_TOOL, DECO_TOOLS } from '/src/elements.js';
+import { PHYS } from '/src/physics.js';
+import { SEED_MAX, SUPER_TEX, prelude, STATE_OPTS } from '/src/shaders/common.js';
 import { MOVE_FORM, MOVE_FORMS } from '/src/shaders/move.js';
 import { uniformStruct } from '/src/gpu/params.js';
+import { GRAV, AIR, EDGE, SIM_MODE_DEFAULTS } from '/src/simModes.js';
+import { PROP, boxFromCorners, oneShotRate, runFill } from '/src/editing.js';
 
 const h = await boot({ label: 'sim-check' });
 const gpu = h.gpu;
@@ -707,9 +710,11 @@ test('budget:asleep', async (steps = 10) => {
 // A frame of the lab at 4 steps per frame (the app's default speed): one
 // submit, one compute pass, and the indirect dispatches' workgroups (their
 // arguments read back) equal to what the lists' lengths call for.
-test('budget:frame', async ({ scene = 'lab', size = 32, steps = 4 } = {}) => {
+// (modes: simulation modes to set first, src/simModes.js)
+test('budget:frame', async ({ scene = 'lab', size = 32, steps = 4, modes = null } = {}) => {
   const sim = await h.make(size, { debug: false });
   try {
+    if (modes) Object.assign(sim, modes);
     h.scene(sim, scene);
     for (let i = 0; i < 8; i++) sim.step();
     await sim.gpuSync();
@@ -745,6 +750,589 @@ test('budget:paint', async () => {
       await sim.gpuSync();
     });
     return { stats };
+  } finally { sim.dispose(); }
+});
+
+// ---------------------------------------------------------------- simulation modes, edges, the brush's tools
+// (main's tools/sim-modes-check.mjs, brush-tools-gpu.mjs and editing-gpu-check.mjs,
+// on the harness's Simulation at 32³; docs/webgpu.md Sync log S2, S4)
+
+// A scene of boxes (half-open, clipped to the grid): box(x0, y0, z0, x1, y1, z1, key, { T, P }).
+const boxes = (sim, fill, seed = 12345) => {
+  h.seed(seed);
+  const g = sim.g, [A, B] = sim.blankState();
+  const box = (x0, y0, z0, x1, y1, z1, key, o = {}) => {
+    const id = E[key];
+    for (let x = Math.max(x0, 0); x < Math.min(x1, g.nx); x++)
+      for (let y = Math.max(y0, 0); y < Math.min(y1, g.ny); y++)
+        for (let z = Math.max(z0, 0); z < Math.min(z1, g.nz); z++) {
+          const i = cellTexel(g, x, y, z) * 4;
+          A[i] = id; A[i + 1] = o.T ?? ELEMENTS[id].temp; A[i + 2] = ELEMENTS[id].life; A[i + 3] = Math.random() * SEED_MAX;
+          if (o.P != null) B[i + 3] = o.P;
+        }
+  };
+  fill(box, g);
+  sim.load(A, B);
+};
+// Per element: n, mean x, y, z and distance from the centre r, ymax, mean T;
+// the air's T range and fastest wind; pressure Σ|P| and max |P|.
+const tally = async (sim) => {
+  const g = sim.g, [A, B] = await sim.readState();
+  const o = { air: { Tmax: -1e9, Tmin: 1e9, vmax: 0 }, Pabs: 0, Pmax: 0 };
+  for (let y = 0; y < g.ny; y++) for (let z = 0; z < g.nz; z++) for (let x = 0; x < g.nx; x++) {
+    const i = cellTexel(g, x, y, z) * 4, id = Math.round(A[i]);
+    o.Pabs += Math.abs(B[i + 3]); o.Pmax = Math.max(o.Pmax, Math.abs(B[i + 3]));
+    if (id === E.EMPTY) {
+      o.air.Tmax = Math.max(o.air.Tmax, A[i + 1]); o.air.Tmin = Math.min(o.air.Tmin, A[i + 1]);
+      o.air.vmax = Math.max(o.air.vmax, Math.abs(B[i]), Math.abs(B[i + 1]), Math.abs(B[i + 2]));
+      continue;
+    }
+    const e = (o[ELEMENTS[id]?.key ?? id] ??= { n: 0, x: 0, y: 0, z: 0, ymax: 0, r: 0, T: 0 });
+    e.n++; e.x += x; e.y += y; e.z += z; e.ymax = Math.max(e.ymax, y); e.T += A[i + 1];
+    e.r += Math.hypot(x + 0.5 - g.nx / 2, y + 0.5 - g.ny / 2, z + 0.5 - g.nz / 2);
+  }
+  for (const k in o) if (o[k].n) for (const f of ['x', 'y', 'z', 'r', 'T']) o[k][f] /= o[k].n;
+  return o;
+};
+const count = (t, key) => t[key]?.n ?? 0;
+const fmt = (o) => JSON.stringify(o, (k, v) => (typeof v === 'number' ? +v.toFixed(2) : v));
+const setModes = (sim, m) => Object.assign(sim, { ...SIM_MODE_DEFAULTS, ...m });
+const stepN = (sim, k) => { for (let i = 0; i < k; i++) sim.step(); };
+
+const MODE_STAGES = {
+  // the gravity modes, judged as main's tools/sim-modes-check.mjs judges
+  // them (its 64³ scenes scaled to the grid)
+  async modes({ size = 32 } = {}) {
+    const out = { checks: [], ms: {} };
+    const sim = await h.make(size);
+    const n = size, c = n / 2;
+    const t0 = performance.now();
+    let steps = 0;
+    const go = (m) => { stepN(sim, m); steps += m; };
+    try {
+      // vertical (the default): a block of sand in mid-air falls to the floor
+      const SAND = 4 ** 3;
+      setModes(sim, {});
+      boxes(sim, (box) => box(c - 2, n - 12, c - 2, c + 2, n - 8, c + 2, 'SAND'));
+      go(120);
+      let t = await tally(sim);
+      check(out, `vertical: sand falls to the floor (${fmt(t.SAND)})`, count(t, 'SAND') === SAND && t.SAND.y < 5);
+      // off: it stays up; a column on the floor doesn't topple
+      setModes(sim, { gravityMode: GRAV.OFF });
+      check(out, `off: sim.gravity reads 0 (the body, shots and physgun float): ${sim.gravity}`, sim.gravity === 0);
+      boxes(sim, (box) => { box(c - 2, 20, c - 2, c + 2, 24, c + 2, 'SAND'); box(5, 0, 5, 7, 8, 7, 'SAND'); });
+      go(50);
+      t = await tally(sim);
+      {
+        const [A] = await sim.readState(), at = (x, y, z) => Math.round(A[cellTexel(sim.g, x, y, z) * 4]);
+        let aloft = 0, top = -1;
+        for (let y = 15; y < n; y++) for (let z = 0; z < n; z++) for (let x = 0; x < n; x++) if (at(x, y, z) === E.SAND) aloft++;
+        for (let y = 0; y < n; y++) for (let z = 5; z < 7; z++) for (let x = 5; x < 7; x++) if (at(x, y, z) === E.SAND) top = Math.max(top, y);
+        check(out, `off: sand in mid-air stays up (${aloft} of ${SAND} aloft)`, aloft > 0.9 * SAND);
+        check(out, `off: a sand column stands (top ${top})`, top === 7);
+      }
+      // radial: sand from the eight corners gathers at the centre; nothing is made or lost
+      setModes(sim, { gravityMode: GRAV.RADIAL });
+      const lo = 1, hi = n - 4;
+      boxes(sim, (box) => {
+        for (const x of [lo, hi]) for (const y of [lo, hi]) for (const z of [lo, hi]) box(x, y, z, x + 3, y + 3, z + 3, 'SAND');
+        box(c - 3, n - 7, c - 3, c + 3, n - 5, c + 3, 'WATER');
+      });
+      const r0 = await tally(sim);
+      go(220);
+      t = await tally(sim);
+      check(out, `radial: sand gathers at the centre (mean r ${r0.SAND.r.toFixed(1)} → ${t.SAND.r.toFixed(1)})`, t.SAND.r < 0.5 * r0.SAND.r);
+      check(out, `radial: no cell made or lost (sand ${count(r0, 'SAND')} → ${count(t, 'SAND')}, water ${count(r0, 'WATER')} → ${count(t, 'WATER')})`,
+        count(t, 'SAND') === 8 * 27 && count(t, 'WATER') === count(r0, 'WATER'));
+      check(out, `radial: water falls in too (mean r ${r0.WATER.r.toFixed(1)} → ${t.WATER?.r.toFixed(1)})`, t.WATER?.r < 0.6 * r0.WATER.r);
+      out.ms.step = (performance.now() - t0) / steps;
+      check(out, 'no out-of-grid access', (await sim.readDebug()) === 0);
+    } finally { sim.dispose(); }
+    return out;
+  },
+
+  // the edge modes (main's tools/sim-modes-check.mjs, its 64³ scenes scaled to the grid)
+  async edgemodes({ size = 32 } = {}) {
+    const out = { checks: [], ms: {} };
+    const sim = await h.make(size);
+    const n = size, c = n / 2, SAND = 4 ** 3;
+    const t0 = performance.now();
+    let steps = 0, t;
+    const go = (m) => { stepN(sim, m); steps += m; };
+    try {
+      // void edges: sand falls out of the floor and is gone
+      setModes(sim, { edgeMode: EDGE.VOID });
+      boxes(sim, (box) => box(c - 2, 1, c - 2, c + 2, 5, c + 2, 'SAND'));
+      go(80);
+      t = await tally(sim);
+      check(out, `void: sand falls out of the box (${count(t, 'SAND')} of ${SAND} left)`, count(t, 'SAND') < 0.2 * SAND);
+      // ...and a blast vents through the sides
+      const vent = async (m) => { setModes(sim, m); boxes(sim, (box) => box(0, c - 2, c - 2, 3, c + 2, c + 2, 'EMPTY', { P: 100 })); go(30); return (await tally(sim)).Pabs; };
+      const pVoid = await vent({ edgeMode: EDGE.VOID }), pSolid = await vent({});
+      check(out, `void: pressure drains out of the sides (Σ|P| ${pVoid.toFixed(1)} void, ${pSolid.toFixed(1)} walls)`, pVoid < pSolid);
+      // loop edges: sand falls through the floor and comes back in at the top
+      setModes(sim, { edgeMode: EDGE.LOOP });
+      boxes(sim, (box) => box(c - 2, 1, c - 2, c + 2, 5, c + 2, 'SAND'));
+      let top = 0, lost = 0;
+      for (let i = 0; i < 6; i++) {
+        go(10);
+        t = await tally(sim);
+        top = Math.max(top, t.SAND?.ymax ?? 0);
+        if (count(t, 'SAND') !== SAND) lost++;
+      }
+      check(out, `loop: sand falls through the floor and in at the top (highest ${top}), none lost`, top > n - 6 && !lost);
+      // ...and water thrown out of +x comes in at -x
+      boxes(sim, (box) => box(n - 4, c - 2, c - 2, n, c + 2, c + 2, 'WATER'));
+      for (let i = 0; i < 12; i++) {
+        const [A, B] = await sim.readState();
+        for (let y = 0; y < n; y++) for (let z = 0; z < n; z++) for (let x = 0; x < n; x++) {
+          const q = cellTexel(sim.g, x, y, z) * 4;
+          if (Math.round(A[q]) === E.WATER) B[q] = 0.8;   // keep pushing it toward +x
+        }
+        sim.load(A, B);
+        go(3);
+      }
+      t = await tally(sim);
+      check(out, `loop: water thrown out of +x comes in at -x (mean x ${t.WATER?.x.toFixed(1)}), none lost (${count(t, 'WATER')})`,
+        count(t, 'WATER') === 64 && t.WATER.x < n / 2);
+      out.ms.step = (performance.now() - t0) / steps;
+      check(out, 'no out-of-grid access', (await sim.readDebug()) === 0);
+    } finally { sim.dispose(); }
+    return out;
+  },
+
+  // the air modes and ambient heat (main's tools/sim-modes-check.mjs)
+  async air({ size = 32 } = {}) {
+    const out = { checks: [], ms: {} };
+    const sim = await h.make(size);
+    const c = size / 2;
+    try {
+      // a blob of pressure
+      const blast = async (m) => {
+        setModes(sim, m);
+        boxes(sim, (box) => box(c - 3, c - 3, c - 3, c + 3, c + 3, c + 3, 'EMPTY', { P: 80 }));
+        stepN(sim, 1);
+        const t1 = await tally(sim);
+        stepN(sim, 16);
+        return [t1, await tally(sim)];
+      };
+      let [a1, a2] = await blast({});
+      // (the shock front spreads it, so the total grows while the peak falls)
+      check(out, `air on: pressure spreads, fades and blows (Pmax ${a1.Pmax.toFixed(1)} → ${a2.Pmax.toFixed(1)}, wind ${a2.air.vmax.toFixed(3)})`,
+        a2.Pmax < a1.Pmax && a2.air.vmax > 0.05);
+      [a1, a2] = await blast({ airMode: AIR.PRESSURE_OFF });
+      check(out, `pressure off: none left (${a1.Pmax}, ${a2.Pmax})`, a1.Pmax === 0 && a2.Pmax === 0);
+      [a1, a2] = await blast({ airMode: AIR.VELOCITY_OFF });
+      check(out, `velocity off: pressure stays (${a2.Pmax.toFixed(1)}), the air is still (${a2.air.vmax})`, a2.Pmax > 0 && a2.air.vmax === 0);
+      [a1, a2] = await blast({ airMode: AIR.OFF });
+      check(out, `air off: no pressure, no wind (${a2.Pmax}, ${a2.air.vmax})`, a2.Pmax === 0 && a2.air.vmax === 0);
+      [a1, a2] = await blast({ airMode: AIR.NO_UPDATE });
+      check(out, `no update: pressure holds where it is (Σ|P| ${a1.Pabs.toFixed(1)} → ${a2.Pabs.toFixed(1)})`, Math.abs(a2.Pabs - a1.Pabs) < 1e-3 * a1.Pabs);
+      // ambient heat: a hot metal block in air
+      const hot = async (m) => { setModes(sim, m); boxes(sim, (box) => box(c - 3, c - 3, c - 3, c + 3, c + 3, c + 3, 'METAL', { T: 600 })); stepN(sim, 60); return tally(sim); };
+      const on = await hot({}), off = await hot({ ambientHeat: false });
+      check(out, `ambient heat on: the metal warms the air (to ${on.air.Tmax.toFixed(1)}) and cools (${on.METAL.T.toFixed(1)})`, on.air.Tmax > 30 && on.METAL.T < 600);
+      check(out, `ambient heat off: the air stays at ambient (${off.air.Tmax}), the metal keeps its heat (${off.METAL.T.toFixed(2)})`,
+        off.air.Tmax === PHYS.AMBIENT && off.METAL.T > 599.9);
+      check(out, 'no out-of-grid access', (await sim.readDebug()) === 0);
+    } finally { sim.dispose(); }
+    return out;
+  },
+
+  // Edges and the in-place move (docs/webgpu.md Sync log S2): one owner per
+  // block (the owner check: none twice, and with loop or void edges, or after
+  // a switch to loop edges, every cell exactly once a step; the margin run
+  // anyway under loop edges must be caught); void
+  // edges lose matter only from the boundary; the decoration plane rides the
+  // move (U17's attach point), in place and out of place.
+  async edges({ size = 32 } = {}) {
+    const out = { checks: [], ms: {} };
+    const g0 = { slots: size ** 3 };
+    // owners under solid edges (the margin runs at odd steps)
+    let r = await run(size, 'lab', {}, async (sim) => { stepN(sim, 12); return sim.readOwners(); });
+    check(out, `solid edges, the lab, 12 steps: no cell covered twice in a step (${r.r.dup})`, r.r.dup === 0);
+    // every brick DRAWN (loop or void edges, radial gravity): every cell has
+    // exactly one owner a step; k steps, each's dup and cells not covered
+    const onceEach = async (sim, k) => {
+      const res = [];
+      for (let i = 0; i < k; i++) {
+        sim.step();
+        const o = await sim.readOwners();
+        let other = 0;
+        for (let s = 0; s < o.stamps.length; s++) if (o.stamps[s] !== sim.frame) other++;
+        res.push({ frame: sim.frame, dup: o.dup, other });
+      }
+      return res;
+    };
+    const once = (res) => res.every((x) => x.dup === 0 && x.other === 0);
+    const say = (res) => res.map((x) => `${x.frame}: dup ${x.dup}, missed ${x.other}`).join('; ');
+    // loop edges: the margin isn't recorded (its blocks are the lists' seen from the far side)
+    r = await run(size, 'mix', { setup: (sim) => setModes(sim, { edgeMode: EDGE.LOOP, gravityMode: GRAV.RADIAL }) }, (sim) => onceEach(sim, 4));
+    check(out, `loop edges, radial gravity: every cell covered exactly once at each of 4 steps (${say(r.r)})`, once(r.r));
+    // void edges: the margin's blocks at odd steps and the lists' blocks, every brick drawn
+    r = await run(size, 'mix', { setup: (sim) => setModes(sim, { edgeMode: EDGE.VOID, gravityMode: GRAV.RADIAL }) }, (sim) => onceEach(sim, 4));
+    check(out, `void edges, radial gravity: every cell covered exactly once at each of 4 steps (${say(r.r)})`, once(r.r));
+    check(out, 'void edges: no out-of-grid access', r.dbg === 0, `dbgOob ${r.dbg}`);
+    // a switch mid-run: the lab under solid edges until bricks are quiet, then
+    // loop edges (every cell once a step from the next), then solid again
+    r = await run(size, 'lab', {}, async (sim) => {
+      stepN(sim, 5);
+      const quiet = (await sim.readMaps()).quiet.reduce((m, v) => m + v, 0);
+      setModes(sim, { edgeMode: EDGE.LOOP });
+      const loop = await onceEach(sim, 4);
+      setModes(sim, { edgeMode: EDGE.SOLID });
+      stepN(sim, 6);
+      return { quiet, loop, back: (await sim.readOwners()).dup };
+    });
+    check(out, `solid → loop edges after ${r.r.quiet} bricks went quiet: every cell covered exactly once at each of 4 steps (${say(r.r.loop)}); back to solid, none twice in 6 steps (${r.r.back})`,
+      r.r.quiet > 0 && once(r.r.loop) && r.r.back === 0);
+    check(out, 'the switches: no out-of-grid access', r.dbg === 0, `dbgOob ${r.dbg}`);
+    // the negative control: the margin's blocks run too under loop edges, so blocks straddling an edge get a second owner
+    r = await run(size, 'mix', { setup: (sim) => setModes(sim, { edgeMode: EDGE.LOOP }), test: { loopMargin: true } }, async (sim) => {
+      do sim.step(); while ((sim.frame & 1) === 0);   // to an odd step: the margin's
+      return sim.readOwners();
+    });
+    check(out, `negative control: the margin run under loop edges is caught (${r.r.dup} cells covered twice)`, r.r.dup > 0);
+    check(out, 'no out-of-grid access', r.dbg === 0, `dbgOob ${r.dbg}`);
+    // void edges: per step, an element loses at most what it had on the
+    // boundary (a cell next to the void), none at even steps (no block
+    // straddles an edge), and nothing is made
+    r = await run(size, 'empty', { setup: (sim) => setModes(sim, { edgeMode: EDGE.VOID }) }, async (sim) => {
+      const n = size;
+      boxes(sim, (box) => {
+        box(4, 0, 4, n - 4, 2, n - 4, 'SAND');
+        box(0, 3, n / 2 - 4, 4, 8, n / 2 + 4, 'WATER');
+        box(n / 2 - 3, n / 2, n / 2 - 3, n / 2 + 3, n / 2 + 4, n / 2 + 3, 'OIL');
+      });
+      const census = async () => {
+        const [A] = await sim.readState(), all = {}, edge = {};
+        for (let y = 0; y < n; y++) for (let z = 0; z < n; z++) for (let x = 0; x < n; x++) {
+          const id = Math.round(A[cellTexel(sim.g, x, y, z) * 4]);
+          all[id] = (all[id] ?? 0) + 1;
+          if (x === 0 || y === 0 || z === 0 || x === n - 1 || y === n - 1 || z === n - 1) edge[id] = (edge[id] ?? 0) + 1;
+        }
+        return { all, edge };
+      };
+      let prev = await census(), lost = 0;
+      const bad = [];
+      for (let i = 0; i < 30; i++) {
+        sim.step();
+        const now = await census();
+        for (const id of [E.SAND, E.WATER, E.OIL]) {
+          const d = (prev.all[id] ?? 0) - (now.all[id] ?? 0);
+          lost += Math.max(d, 0);
+          if (d < 0 || d > (prev.edge[id] ?? 0) || (d > 0 && (sim.frame & 1) === 0)) bad.push(`${ELEMENTS[id].key} −${d} at step ${sim.frame} (${prev.edge[id] ?? 0} on the boundary)`);
+        }
+        prev = now;
+      }
+      return { lost, bad };
+    });
+    check(out, `void edges: matter leaves only from the boundary, at odd steps (${r.r.lost} cells gone over 30 steps)`, r.r.lost > 0 && !r.r.bad.length, r.r.bad.slice(0, 4).join('; '));
+    // a sealed glass tank on the floor: water inside it, a block falling in
+    r = await run(size, 'empty', { setup: (sim) => setModes(sim, { edgeMode: EDGE.VOID }) }, async (sim) => {
+      const n = size;
+      boxes(sim, (box) => {
+        box(2, 0, 2, n - 2, n - 10, n - 2, 'GLASS');
+        box(3, 1, 3, n - 3, n - 11, n - 3, 'EMPTY');
+        box(3, 1, 3, n - 3, 8, n - 3, 'WATER');
+        box(6, n - 15, 6, 10, n - 12, 10, 'WATER');
+      });
+      const c0 = (await h.census(sim)).n;
+      stepN(sim, 40);
+      const c1 = (await h.census(sim)).n;
+      return { c0, c1 };
+    });
+    check(out, `void edges: a sealed glass tank keeps every cell (water ${r.r.c0[E.WATER]} → ${r.r.c1[E.WATER]}, glass ${r.r.c0[E.GLASS]} → ${r.r.c1[E.GLASS]})`,
+      r.r.c0[E.WATER] === r.r.c1[E.WATER] && r.r.c0[E.GLASS] === r.r.c1[E.GLASS]);
+    // the decoration plane (U17's attach point): tag every non-empty cell with
+    // its state A's w (bits), which these scenes never change; after the
+    // steps every cell must hold its content's tag, or 0 for air
+    const decoRun = (name, m, aer) => run(size, 'mix', { setup: (sim) => setModes(sim, m) }, async (sim) => {
+      const g = sim.g, n = g.slots;
+      sim.attachDeco({});
+      const tags = async () => {
+        const [A] = await sim.readState(), a32 = new Uint32Array(A.buffer, A.byteOffset, A.length), t = new Uint32Array(n);
+        for (let s = 0; s < n; s++) {
+          const q = cellTexel(g, ...slotCell(g, s)) * 4;
+          t[s] = Math.round(A[q]) === E.EMPTY ? 0 : a32[q + 3];
+        }
+        return t;
+      };
+      gpu.write(sim.decoPlane.buffer, sim.decoPlane.offset, await tags());
+      // whitewater's moveSrc plane comes after it: the plane moves to a new buffer, its words kept
+      if (aer) sim.attachAeration({ active: true, step() {}, idle() {}, reset() {} });
+      stepN(sim, 30);
+      const want = await tags(), p = sim.decoPlane;
+      const got = new Uint32Array(await gpu.readback.buffer(p.buffer, p.offset, p.size));
+      let wrong = 0, painted = 0;
+      for (let s = 0; s < n; s++) { if (got[s] !== want[s]) wrong++; if (want[s]) painted++; }
+      return { wrong, painted, side: sim.moveSrc.size };
+    });
+    for (const [name, m, aer] of [['vertical gravity', {}, false], ['radial gravity and loop edges, out of place', { gravityMode: GRAV.RADIAL, edgeMode: EDGE.LOOP }, true]]) {
+      r = await decoRun(name, m, aer);
+      check(out, `${name}: the decoration plane rides the move (${r.r.wrong} of ${g0.slots} cells wrong, ${r.r.painted} tagged; moveSrc's buffer ${r.r.side} B)`,
+        r.r.wrong === 0 && r.r.painted > 0 && r.r.side === g0.slots * 4 * (aer ? 2 : 1));
+    }
+    return out;
+  },
+
+  // Radial gravity and loop edges: cells per element exact (the move's frames
+  // and wrapped blocks only permute), and permuted lists and blocks give the
+  // same hashes (I2.1)
+  async radial({ size = 32, steps = 60 } = {}) {
+    const out = { checks: [], ms: {} };
+    const keep = [E.SAND, E.WATER, E.STONE, E.WALL, E.OIL];
+    let r;
+    for (const [name, m] of [['radial gravity', { gravityMode: GRAV.RADIAL }], ['loop edges', { edgeMode: EDGE.LOOP }],
+      ['radial gravity and loop edges', { gravityMode: GRAV.RADIAL, edgeMode: EDGE.LOOP }]]) {
+      r = await run(size, 'mix', { setup: (sim) => setModes(sim, m) }, async (sim) => {
+        const c0 = (await h.census(sim)).n, bad = [];
+        for (let k = 0; k < 3; k++) {
+          stepN(sim, steps / 3);
+          const c = (await h.census(sim)).n;
+          for (const id of keep) if ((c[id] ?? 0) !== (c0[id] ?? 0)) bad.push(`${ELEMENTS[id].key} ${c0[id]} → ${c[id]} at ${(k + 1) * steps / 3}`);
+        }
+        return { c0, bad };
+      });
+      out.ms[name] = r.ms / steps;
+      check(out, `${name}: cells per element exact over ${steps} steps (${keep.map((id) => `${ELEMENTS[id].key} ${r.r.c0[id] ?? 0}`).join(', ')})`, !r.r.bad.length, r.r.bad.join('; '));
+      check(out, `${name}: no out-of-grid access`, r.dbg === 0, `dbgOob ${r.dbg}`);
+    }
+    // determinism with radial gravity and loop edges (I2.1): permuted lists and blocks
+    const det = (test) => run(size, 'lab', { setup: (sim) => setModes(sim, { gravityMode: GRAV.RADIAL, edgeMode: EDGE.LOOP }), test }, (sim) => script(sim, { steps: 24, every: 8 }));
+    const base = await det({});
+    for (const [name, test] of [['listOrder reverse', { listOrder: 'reverse' }], ['blockOrder reverse', { blockOrder: 'reverse' }]]) {
+      const v = await det(test);
+      const diffs = v.r.map((x, i) => same(base.r[i], x, [...LINES, 'drawn']).map((k) => `${k}@${(i + 1) * 8}`)).flat();
+      check(out, `radial gravity, loop edges: ${name} = base (state, flow, copies, maps, drawn at ${v.r.length} checkpoints)`, !diffs.length, diffs.join(' '));
+    }
+    check(out, 'no out-of-grid access', base.dbg === 0, `dbgOob ${base.dbg}`);
+    return out;
+  },
+
+  // TPT's brush tools and editing tools on the brush's kernel, no steps
+  // (main's tools/brush-tools-gpu.mjs and editing-gpu-check.mjs, scaled to
+  // 32³), and the console's rectangle read
+  async tools({ size = 32 } = {}) {
+    const out = { checks: [] };
+    const sim = await h.make(size);
+    const n = size, c = [n / 2, n / 2, n / 2], cc = c.map((x) => x + 0.5);
+    const T = Object.fromEntries(TOOLS.map((t) => [t.key, t.id]));
+    const V = (x, y, z) => ({ x, y, z });
+    const paint = (tool, { at = cc, radius = 5, shape = 0, wind = null, times = 1, ...more } = {}) => {
+      for (let i = 0; i < times; i++) sim.paint({ center: V(...at), radius, shape, tool, rate: 1, replace: false, wind, ...more });
+    };
+    const cell = async (x, y, z) => { const [A, B] = await sim.readCell(x, y, z); return { id: Math.round(A[0]), T: A[1], v: [B[0], B[1], B[2]], P: B[3] }; };
+    const near = (x, want, tol = 1e-3) => Math.abs(x - want) <= tol * Math.max(1, Math.abs(want));
+    const ids = (A) => { const m = {}; for (let i = 0; i < A.length; i += 4) m[Math.round(A[i])] = (m[Math.round(A[i])] ?? 0) + 1; return m; };
+    const fill = (f) => {
+      const [A, B] = sim.blankState();
+      for (let x = 0; x < n; x++) for (let y = 0; y < n; y++) for (let z = 0; z < n; z++) {
+        const key = f(x, y, z);
+        if (!key) continue;
+        const id = E[key], i = cellTexel(sim.g, x, y, z) * 4;
+        A[i] = id; A[i + 1] = ELEMENTS[id].temp; A[i + 2] = ELEMENTS[id].life; A[i + 3] = Math.random() * SEED_MAX;
+      }
+      sim.load(A, B);
+    };
+    try {
+      h.seed(4242);
+      // ---- Mix ----
+      const layer = (y) => ['SAND', 'SALT', 'WATER', 'OIL', 'STEAM', 'SMOKE'][(y >> 1) % 6];
+      fill((x, y, z) => (Math.hypot(x + 0.5 - c[0], z + 0.5 - c[2]) < 6 && y < n ? ((x + y + z) % 11 === 0 ? 'WALL' : (y % 7 === 6 ? null : layer(y))) : null));
+      const [A0, B0] = await sim.readState();
+      paint(T.MIX, { radius: 5, times: 100 });
+      const [A1, B1] = await sim.readState();
+      const n0 = ids(A0), n1 = ids(A1);
+      let changed = 0, fixed = 0, pMoved = 0;
+      for (let i = 0; i < A0.length; i += 4) {
+        const i0 = Math.round(A0[i]), i1 = Math.round(A1[i]);
+        if (i0 !== i1) changed++;
+        if ((i0 === E.EMPTY || i0 === E.WALL) && i1 !== i0) fixed++;
+        if (!Object.is(B0[i + 3], B1[i + 3])) pMoved++;
+      }
+      check(out, `Mix keeps every element's cell count (${Object.keys(n0).length} elements) and mixed ${changed} cells`,
+        Object.keys({ ...n0, ...n1 }).every((k) => n0[k] === n1[k]) && changed > 0);
+      check(out, `Mix never moves air or walls (${fixed}), leaves pressure in place (${pMoved})`, fixed === 0 && pMoved === 0);
+      // ---- Vacuum ----
+      fill(() => null);
+      paint(T.VACUUM);
+      let p = (await cell(...c)).P;
+      check(out, `Vacuum: -${PHYS.TOOL_PRESSURE} at the centre (${p})`, near(p, -PHYS.TOOL_PRESSURE));
+      paint(T.VACUUM, { times: 20 });
+      p = (await cell(...c)).P;
+      check(out, `Vacuum stops at P_MIN (${p})`, near(p, PHYS.P_MIN));
+      // ---- Wind, Cyclone, gravity wells, ambient heat: on air, a sand cell and a wall cell ----
+      const [sx, sy, sz] = [c[0] + 3, c[1], c[2]];   // east of the centre, inside the brush's falloff
+      const fresh = () => fill((x, y, z) => (x === sx && y === sy && z === sz ? 'SAND' : x === sx - 1 && y === sy && z === sz ? 'WALL' : null));
+      const air = () => cell(c[0] + 1, c[1], c[2]), sand = () => cell(sx, sy, sz), wall = () => cell(sx - 1, sy, sz);
+      fresh();
+      paint(T.WIND, { wind: [2, 0, 0] });
+      const ra = PHYS.RHO_MIN / Math.max(ELEMENTS[E.SAND].dens * PHYS.RHO_SCALE, PHYS.RHO_MIN);
+      const [wa, ws, ww] = [await air(), await sand(), await wall()];
+      check(out, `Wind: air +x at ${wa.v[0].toFixed(3)} (want ${(2 * PHYS.TOOL_WIND).toFixed(3)}), sand its share (${ws.v[0].toFixed(4)}), walls still`,
+        near(wa.v[0], 2 * PHYS.TOOL_WIND, 0.02) && ws.v[0] > 0 && ws.v[0] < wa.v[0] * ra * 1.01 && ww.v.every((v) => v === 0));
+      fresh();
+      paint(T.CYCLONE);
+      const cs = await sand();
+      check(out, `Cyclone: east of the centre goes north (-z): ${cs.v.map((v) => v.toFixed(4))}`, cs.v[2] < 0 && Math.abs(cs.v[0]) < 1e-6);
+      fresh();
+      paint(T.GRAV_IN);
+      const [gs, ga] = [await sand(), await air()];
+      check(out, `PGRV pulls sand in (${gs.v[0].toFixed(3)}), not air`, gs.v[0] < 0 && ga.v.every((v) => v === 0));
+      fresh();
+      paint(T.GRAV_OUT);
+      check(out, `NGRV pushes sand out (${(await sand()).v[0].toFixed(3)})`, (await sand()).v[0] > 0);
+      fresh();
+      const sT = (await sand()).T;
+      paint(T.AMB_HEAT);
+      let ct = (await cell(...c)).T;
+      check(out, `AMBP warms air (${ct}), not sand`, near(ct, PHYS.AMBIENT + PHYS.TOOL_HEAT) && (await sand()).T === sT);
+      fresh();
+      paint(T.AMB_COOL);
+      ct = (await cell(...c)).T;
+      check(out, `AMBM cools air (${ct}), not sand`, near(ct, PHYS.AMBIENT - PHYS.TOOL_HEAT) && (await sand()).T === sT);
+      // ---- the editing tools: a line, a box, replace with a target, PROP, specific delete, a fill ----
+      fill(() => null);
+      const census = async () => (await h.census(sim)).n;
+      const full = (id) => oneShotRate(id, 1);
+      const la = [4.5, 20.5, 16.5], lb = [28.5, 20.5, 20.5], R = 2;
+      sim.paint({ center: V(...la), end: V(...lb), radius: R, shape: 0, tool: E.SAND, rate: full(E.SAND), replace: false });
+      let want = 0;
+      const s = lb.map((v, k) => v - la[k]), ss = s.reduce((m, v) => m + v * v, 0);
+      for (let x = 0; x < n; x++) for (let y = 0; y < n; y++) for (let z = 0; z < n; z++) {
+        const d = [x + 0.5 - la[0], y + 0.5 - la[1], z + 0.5 - la[2]];
+        const t = Math.min(Math.max((d[0] * s[0] + d[1] * s[1] + d[2] * s[2]) / ss, 0), 1);
+        if (Math.hypot(d[0] - s[0] * t, d[1] - s[1] * t, d[2] - s[2] * t) <= R) want++;
+      }
+      const nl = (await census())[E.SAND] ?? 0;
+      check(out, `a line is the brush swept along it (${nl} cells, the CPU's ${want})`, Math.abs(nl - want) <= want * 0.01);
+      const bx = boxFromCorners({ x: 10.5, y: 3, z: 10.5 }, { x: 15.5, y: 3, z: 13.5 }, 2, [n, n, n]);
+      const wet = boxFromCorners({ x: 13.5, y: 3, z: 9.5 }, { x: 18.5, y: 3, z: 14.5 }, 2, [n, n, n]);
+      const vol = (b) => b.hi.map((v, k) => v - b.lo[k]).reduce((m, v) => m * v, 1);
+      sim.paint({ center: V(bx.center.x, bx.center.y, bx.center.z), grow: bx.grow, radius: 2, shape: 1, tool: E.WALL, rate: full(E.WALL), replace: false });
+      const nw = (await census())[E.WALL] ?? 0, corner = await cell(...bx.lo), past = await cell(bx.hi[0], bx.lo[1], bx.lo[2]);
+      check(out, `a box fills exactly its cells (${nw} of ${vol(bx)})`, nw === vol(bx) && corner.id === E.WALL && past.id === E.EMPTY);
+      sim.paint({ center: V(wet.center.x, wet.center.y, wet.center.z), grow: wet.grow, radius: 2, shape: 1, tool: E.WATER, rate: full(E.WATER), replace: true, filter: E.WALL });
+      const overlap = [0, 1, 2].map((k) => Math.max(0, Math.min(bx.hi[k], wet.hi[k]) - Math.max(bx.lo[k], wet.lo[k]))).reduce((m, v) => m * v, 1);
+      let cn = await census();
+      check(out, `replace with a target touches only the target (water ${cn[E.WATER] ?? 0} = ${overlap}, wall ${cn[E.WALL]} = ${vol(bx) - overlap})`,
+        (cn[E.WATER] ?? 0) === overlap && cn[E.WALL] === vol(bx) - overlap);
+      sim.paint({ center: V(bx.center.x, bx.center.y, bx.center.z), grow: bx.grow, radius: 2, shape: 1, tool: PROP_TOOL, rate: 1, replace: false, prop: { field: PROP.TEMP, value: 500 } });
+      const wallT = (await cell(...bx.lo)).T, airT = (await cell(bx.lo[0], bx.hi[1] + 1, bx.lo[2])).T;
+      sim.paint({ center: V(5.5, 25.5, 5.5), radius: 2, shape: 1, tool: PROP_TOOL, rate: 1, replace: false, prop: { field: PROP.PRESSURE, value: 42 } });
+      const airP = (await cell(5, 25, 5)).P;
+      check(out, `PROP sets matter (${wallT} °C), leaves the air's temperature (${airT}), sets the air's pressure (${airP})`, wallT === 500 && airT === PHYS.AMBIENT && near(airP, 42));
+      sim.paint({ center: V(wet.center.x, wet.center.y, wet.center.z), grow: wet.grow, radius: 2, shape: 1, tool: E.SAND, rate: 1, replace: false, erase: true, filter: E.WATER });
+      cn = await census();
+      check(out, `specific delete erases only the target (water ${cn[E.WATER] ?? 0}, wall ${cn[E.WALL]})`, !cn[E.WATER] && cn[E.WALL] === vol(bx) - overlap);
+      // a flood fill: a wall bowl (x, z 4..11, y 0..5, hollow 5..10 from y 1), water up to y = 3
+      fill((x, y, z) => (x >= 4 && x < 12 && z >= 4 && z < 12 && y < 6 && (y === 0 || x === 4 || x === 11 || z === 4 || z === 11) ? 'WALL' : null));
+      const fr = await runFill(sim, { cell: [7, 1, 7], id: E.EMPTY, maxY: 3, stroke: { radius: 3, shape: 0, tool: E.WATER, rate: full(E.WATER), replace: false, erase: false, prop: null } });
+      cn = await census();
+      check(out, `the fill fills the bowl to its level (${fr.count} cells, water ${cn[E.WATER] ?? 0}, want ${6 * 6 * 3})`, fr.count === 6 * 6 * 3 && cn[E.WATER] === 6 * 6 * 3);
+      // U17's hooks (docs/webgpu.md Sync log S3): the first deco stroke makes
+      // the decoration layer (decoFactory), and a brush stroke shows it the
+      // box's cells before its in-place write (beforeWrite) and after it
+      // (scrub), so it can scrub the cells given a new element
+      fill(() => null);
+      const slots = sim.g.slots, bytes = slots * 16;
+      const plane = (label) => gpu.createBuffer({ label, size: bytes, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
+      const seen = { before: plane('deco check before'), after: plane('deco check after'), calls: [], made: 0 };
+      const keepA = (f, into) => f.copy(sim.state.A, sim.cur * bytes, into, 0, bytes);
+      try {
+        sim.decoFactory = () => {
+          seen.made++;
+          return {
+            paint: (stroke) => seen.calls.push(`paint ${stroke.tool}`),
+            beforeWrite: (f, box) => { seen.calls.push('before'); seen.box = box; keepA(f, seen.before); },
+            scrub: (f, box) => { seen.calls.push(box === seen.box ? 'scrub' : 'scrub (another box)'); keepA(f, seen.after); },
+          };
+        };
+        const deco = DECO_TOOLS[0].id;
+        paint(deco, { times: 2 });
+        sim.paint({ center: V(...cc), radius: 3, shape: 0, tool: E.SAND, rate: full(E.SAND), replace: false });
+        const [A1] = await sim.readState();
+        const [before, after] = (await Promise.all([seen.before, seen.after].map((b) => gpu.readback.buffer(b, 0, bytes)))).map((x) => new Float32Array(x));
+        let made = 0, wrongBefore = 0, wrongAfter = 0, outside = 0;
+        const { lo, hi } = seen.box;
+        for (let s = 0; s < slots; s++) {
+          const p = slotCell(sim.g, s), id = Math.round(after[4 * s]);
+          if (before[4 * s] !== E.EMPTY) wrongBefore++;
+          if (id !== Math.round(A1[cellTexel(sim.g, ...p) * 4])) wrongAfter++;
+          if (id === E.EMPTY) continue;
+          made++;
+          if (p.some((v, k) => v < lo[k] || v > hi[k])) outside++;
+        }
+        const calls = seen.calls.join(', '), want = `paint ${deco}, paint ${deco}, before, scrub`;
+        check(out, `deco hooks: made on the first deco stroke (${seen.made}), then ${calls}`, seen.made === 1 && calls === want && sim.deco !== null, `want ${want}`);
+        check(out, `deco hooks: beforeWrite sees the cells before the write (${wrongBefore} not air), scrub after it (${wrongAfter} wrong; ${made} sand cells, ${outside} outside its box)`,
+          wrongBefore === 0 && wrongAfter === 0 && made > 0 && outside === 0);
+        let threw = false;
+        try { sim.scrubDeco(); } catch { threw = true; }
+        check(out, 'scrubDeco on its own is a J3 stub (the scrub rides on the write)', threw);
+      } finally {
+        sim.decoFactory = null;
+        sim.attachDeco(null);
+        sim._retire(seen.before);   // (once the frame that copies into them is done)
+        sim._retire(seen.after);
+      }
+      // the console's reads (src/console/gpu.js): rectangles of the atlas,
+      // async only, each converting only itself; several in one task share
+      // the scratch (each copy is recorded before the next one's dispatch)
+      const [SA, SB] = await sim.readState(), g = sim.g;
+      const rects = [[8, 4, 24, 6], [0, 0, SUPER_TEX, SUPER_TEX], [g.width - SUPER_TEX, g.height - SUPER_TEX, SUPER_TEX, SUPER_TEX], [0, 3, g.width, 2 * SUPER_TEX - 3], [5, 7, 1, 1]];
+      const bufs = rects.map(([, , w, hh]) => [new Float32Array(w * hh * 4), new Float32Array(w * hh * 4)]);
+      await Promise.all(rects.map(([x, y, w, hh], i) => sim.readStateRect(x, y, w, hh, ...bufs[i], true)));
+      let rectWrong = 0;
+      rects.forEach(([rx, ry, rw, rh], i) => {
+        const [ra2, rb2] = bufs[i];
+        for (let y = 0; y < rh; y++) for (let x = 0; x < rw; x++) for (let k = 0; k < 4; k++) {
+          const t = ((ry + y) * g.width + rx + x) * 4 + k, q = (y * rw + x) * 4 + k;
+          if (!Object.is(SA[t], ra2[q]) || !Object.is(SB[t], rb2[q])) rectWrong++;
+        }
+      });
+      // as the state is at the call: a paint recorded after it isn't in it
+      const pc = cellTexel(g, 3, 3, 3), [pa, pb] = [new Float32Array(4), new Float32Array(4)];
+      const pending = sim.readStateRect(pc % g.width, Math.floor(pc / g.width), 1, 1, pa, pb, true);
+      sim.paint({ center: V(3.5, 3.5, 3.5), radius: 1, shape: 1, tool: E.STONE, rate: full(E.STONE), replace: true });
+      await pending;
+      const painted = (await cell(3, 3, 3)).id;
+      let threw = false, rejected = false;
+      try { sim.readStateRect(8, 4, 24, 6, bufs[0][0], bufs[0][1]); } catch { threw = true; }
+      try { await sim.readStateRect(g.width - 4, 0, 8, 1, bufs[0][0], bufs[0][1], true).catch(() => { rejected = true; }); } catch { rejected = false; }
+      check(out, `readStateRect reads readState's rectangles (${rects.length} in one task, a row band and a texel among them: ${rectWrong} wrong)`, rectWrong === 0);
+      check(out, `readStateRect reads the state at the call (${Math.round(pa[0])} there, ${painted} after the paint recorded next)`, Math.round(pa[0]) === Math.round(SA[pc * 4]) && painted === E.STONE && Math.round(pa[0]) !== E.STONE);
+      check(out, 'readStateRect refuses to read synchronously (throws), and rejects a rectangle outside the atlas', threw && rejected);
+      check(out, 'no out-of-grid access', (await sim.readDebug()) === 0);
+    } finally { sim.dispose(); }
+    return out;
+  },
+};
+Object.assign(STAGES, MODE_STAGES);
+
+// TPT's Mix after the first stroke (a two-phase edit: two dispatches), a
+// flood fill after the first (a read of state A, an upload of its mask and
+// one edit; its buffer is made once), and the console's reads of 4 blocks in
+// one frame after the first (src/console/gpu.js readBlocks: a read a block,
+// each converting only its supertile's square).
+test('budget:tools', async () => {
+  const sim = await h.make(32, { debug: false });
+  try {
+    h.scene(sim, 'pile');
+    const req = { cell: [16, 1, 16], id: E.EMPTY, maxY: 3, stroke: { radius: 3, shape: 0, tool: E.WATER, rate: 1, replace: false, erase: false, prop: null } };
+    const mixStroke = () => sim.paint({ center: V(16, 18, 16), radius: 4, shape: 0, tool: TOOLS.find((t) => t.key === 'MIX').id, rate: 1, replace: false });
+    await runFill(sim, req);
+    mixStroke();   // (the first makes the two-phase edits' scratch)
+    await sim.gpuSync();
+    const mix = await measure(async () => { mixStroke(); await sim.gpuSync(); });
+    let fill;
+    const fillStats = await measure(async () => { fill = await runFill(sim, req); await sim.gpuSync(); });
+    const T = SUPER_TEX, block = () => [new Float32Array(T * T * 4), new Float32Array(T * T * 4)];
+    const readBlocks = () => Promise.all([0, 1, 2, 3].map((i) => sim.readStateRect(i * T, 0, T, T, ...block(), true)));
+    await readBlocks();
+    const reads = await measure(readBlocks);
+    return { mix, fill: fillStats, filled: fill.count ?? 0, maskBytes: sim.g.width * sim.g.height, reads, blockTexels: T * T };
   } finally { sim.dispose(); }
 });
 

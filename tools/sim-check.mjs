@@ -19,6 +19,24 @@
 //                       the open encoder), edits bound to two ranges of one
 //                       buffer, a probe (D6)
 //   shift         I2.9  shift + slab edit + 50 steps: identical without syncCopies
+//   modes               TPT's gravity modes (vertical, off, radial), judged as
+//                       main's tools/sim-modes-check.mjs judges them
+//   edgemodes           its edge modes (void, loop)
+//   air                 its air modes and ambient heat
+//   edges               one owner per Margolus block (the move's owner check:
+//                       with loop or void edges, and after a switch from solid
+//                       to loop edges, every cell exactly once a step, and the
+//                       low margin run anyway caught); void edges lose matter
+//                       only from the boundary, a sealed tank none; the
+//                       decoration plane rides the move (U17's attach point),
+//                       in and out of place
+//   radial              cells per element exact with radial gravity, loop edges
+//                       and both; permuted lists and blocks identical (I2.1) there
+//   tools               TPT's brush tools (Mix, Vacuum, Wind, Cyclone, gravity
+//                       wells, ambient heat) and editing tools (line, box, replace
+//                       target, PROP, specific delete, flood fill) on the brush's
+//                       kernel, the decoration layer's hooks around a stroke
+//                       (U17), and the console's readStateRect
 //   timing              GPU ms per step per kernel (timestamps) at 32³ and 64³
 // Every stage's sims run the debug prelude: an out-of-grid access fails it (I2.8).
 // I2.6 (aeration over its list vs every brick) is U12's: the aeration kernel is its.
@@ -30,7 +48,12 @@
 // 100, behaviour about 1,000, moves 3 × 60, io 28, shift 2 × 60 (156, 129, 93,
 // 165, 64, 33 and 49 s); at --size 64 a third to a half of that, over fewer
 // scenes, and determinism without I2.10's reported-only race probe (behaviour
-// stays a 32³ stage: its scenes are sized for it).
+// stays a 32³ stage: its scenes are sized for it). The sync 2 stages run where
+// every brick is drawn (radial gravity and void or loop edges switch quiet
+// skipping off: 300-520 ms per 32³ step with the debug prelude, sharing the
+// CPUs): modes 120 + 50 + 220 steps, edgemodes 80 + 60 + 60 + 36, air 85 +
+// 120, edges about 170, radial 3 × 60 + 3 × 24, tools none (124, 102, 61,
+// 78, 120 and 34 s at 32³); they are 32³ stages, their scenes sized for it.
 //
 // --unit super runs every stage's sims with supertile sleeping units (SLEEP_UNIT =
 // SUPER, docs/scaling.md D8's granularity, the A/B docs/webgpu.md W12 keeps),
@@ -47,7 +70,7 @@ import { openHarness } from './harness/open.mjs';
 
 const argv = process.argv.slice(2);
 const opt = (k) => (argv.includes(`--${k}`) ? argv[argv.indexOf(`--${k}`) + 1] : null);
-const ALL = ['determinism', 'sleep', 'conservation', 'behaviour', 'moves', 'io', 'shift'];
+const ALL = ['determinism', 'sleep', 'conservation', 'behaviour', 'moves', 'io', 'shift', 'modes', 'edgemodes', 'air', 'edges', 'radial', 'tools'];
 const stages = opt('stage')?.split(',') ?? ALL;
 const SUPER = { x: 4, y: 2, z: 2 };   // shaders/common.js SUPER
 const unit = opt('unit') === 'super' ? SUPER : null;
