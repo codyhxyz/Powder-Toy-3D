@@ -2,7 +2,7 @@ import { CELL_METERS } from '../pov/vitals.js';
 
 // The rules of the team games, each borrowed from the game that made it
 // (Halo for Slayer, CTF, King of the Hill and Infection; TF2's attack/defend
-// with a halftime swap for Siege). Tuning values live here as constants, not
+// for Siege, whose own rules are in siege.js). Tuning values live here as constants, not
 // settings. Distances are grid cells (CELL_METERS a cell), times seconds.
 
 export const TEAMS = ['red', 'blue'];
@@ -87,9 +87,11 @@ export const MODES = {
   siege: {
     style: 'tf2',
     name: 'Siege', short: 'Siege',
-    desc: 'Attackers hold the core; then the teams swap sides. Faster capture wins.',
-    holdToWin: 30,                           // s the attackers must hold the core in all (a TF2 point's capture, slowed for one zone)
-    timeLimit: 4 * 60,                       // s a half lasts (TF2's attack/defend round timer, shortened)
+    desc: 'Attackers take the control points in turn before the clock runs out. Defenders hold them.',
+    // s on the clock once setup ends, for the first point; each capture adds more (siege.js:
+    // TF2's attack/defend rules, its setup, capture and respawn numbers). Our pick: Dustbowl
+    // adds 4:30 a point, so three minutes for a point a third of its walk away is generous.
+    timeLimit: 3 * 60,
   },
 };
 export const MODE_KEYS = Object.keys(MODES);

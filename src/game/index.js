@@ -9,25 +9,28 @@ import { labLayout, fitLayout } from './layout.js';
 import { ObjectiveEvaluator, WANT, NEAR } from './bots.js';
 import { createMarkers } from './markers.js';
 import { createGameHud } from './hud.js';
+import { createSiege } from './siege.js';
+import { canFight } from '../pov/ai/brain.js';
 
 // Team games in first person: Halo's Team Slayer, Capture the Flag, King of
-// the Hill and Infection, and a Siege (TF2's attack/defend with a halftime
-// swap). Teams of bots (npc.js: the player's body, tools and a Yuka brain) on
+// the Hill and Infection, and Siege (TF2's attack/defend on a row of control
+// points, siege.js). Teams of bots (npc.js: the player's body, tools and a Yuka brain) on
 // both sides, the player on one of them. docs/modes.md has the rules.
 //
 //   game.start(mode, opts)   'slayer' | 'ctf' | 'koth' | 'infection' | 'siege';
 //                            opts: { side: 'auto' | 'red' | 'blue' | 'spectate', teamSize, ...rule overrides }
 //   game.end()               stop now (no winner)
-//   game.useLayout(layout)   a map's spawns, flags, hills and core (layout.js); none: the lab's
+//   game.useLayout(layout)   a map's spawns, flags, hills and siege points (layout.js); none: the lab's
 //   game.state               what the HUD shows (checks read it)
 //
 // Every body carries body.team ('red' | 'blue' | 'infected' | null); other
 // modules (vehicles, classes) read it. Blows through targets.js don't hurt
 // teammates (setHitRules); the sim's damage (fire, blasts, lava) can't tell
 // teams apart and hurts everyone. Events on povEvents: game:start, game:end,
-// game:kill, game:flag, game:hill, game:infected, game:half, game:team,
-// game:spawn (a body enters play: set it up for the mode's style) and
-// game:stop (the match is over, ended or not: undo it). docs/halo-contract.md.
+// game:kill, game:flag, game:hill, game:infected, game:team, Siege's
+// game:setup, game:point and game:overtime (siege.js), game:spawn (a body
+// enters play: set it up for the mode's style) and game:stop (the match is
+// over, ended or not: undo it). docs/halo-contract.md.
 //
 // shell (pov/index.js): { app, scene, renderer, camera, player, toolbelt,
 //   loadNpcs() → Promise<{ mod, ai }>, env(), loadPreset(), respawnPlayer(at), freeMouse() }
@@ -101,7 +104,7 @@ export function createGame(shell) {
   }
   function loadout(e) {
     if (!e.bot) return;
-    const want = e.team === R.INFECTED ? WEAPONS.infected : carrying(e) ? WEAPONS.carrier : null;
+    const want = e.team === R.INFECTED ? WEAPONS.infected : carrying(e) ? WEAPONS.carrier : e.classWeapons ?? null;   // (Siege: its class's tools)
     if (e.bot.agent.weapons !== want) e.bot.agent.weapons = want;
   }
 
@@ -129,7 +132,7 @@ export function createGame(shell) {
   // nearest living enemy, a little jittered so bodies don't land on each other
   function spawnFor(e) {
     let pts = layout.spawns[e.team] ?? [...layout.spawns.red, ...layout.spawns.blue];
-    if (mode === 'siege') pts = layout.spawns[e.team === siege.attackers ? layout.siege.attackers : other(layout.siege.attackers)];
+    if (mode === 'siege') pts = siege.spawnPoints(e.team);   // this stage's: the spawns move up as points fall
     if (mode === 'infection') pts = [...layout.spawns.red, ...layout.spawns.blue];
     const foes = [...roster.values()].filter((o) => o.team && o.team !== e.team && alive(o)).map((o) => bodyOf(o).pos);
     let best = pts[0], bd = -Infinity;
@@ -159,13 +162,14 @@ export function createGame(shell) {
   function addBot(team, name) {
     let e = null;
     const n = npc.mod.createNpc({
-      env: shell.env(), ai: npc.ai, team, name, respawnS: R.RESPAWN_S,
+      env: shell.env(), ai: npc.ai, team, name,
+      respawnS: () => (siege ? siege.respawnS(e.team) : R.RESPAWN_S),   // Siege: attackers come back sooner (TF2's waves)
       opponents: () => opponentsOf(e),
       home: () => spawnFor(e),
     });
     e = entry(n.id, name, team, n);
     n.agent.radar = R.RADAR;
-    n.agent.brain.addEvaluator(new ObjectiveEvaluator(() => objectiveFor(e), (plan) => { if (plan.kind === 'roam') e.roam++; }));
+    n.agent.brain.addEvaluator(new ObjectiveEvaluator(() => objectiveFor(e), (plan) => { if (plan.kind === 'roam' || plan.kind === 'guard') e.roam++; }));
     shell.scene.add(n.root);
     n.bind(app.getVolume(), sim().g);
     n.compile(shell.renderer, shell.camera, shell.scene);
@@ -190,6 +194,7 @@ export function createGame(shell) {
   function spawned(e) {
     const body = bodyOf(e);
     if (!body || !e.team) return;
+    if (siege) siege.spawned(e, body);   // a bot's class (the player's is the class picker's)
     povEvents.emit('game:spawn', { id: e.id, team: e.team, bot: !!e.bot, body, mode, style: rules.style });
   }
 
@@ -256,9 +261,12 @@ export function createGame(shell) {
       }
       if (m === 'koth') { hill = { i: -1, owner: null, contested: false }; moveHill(); }
       if (m === 'siege') {
-        siege = { half: 1, attackers: layout.siege.attackers, held: 0, halfStart: 0, results: [] };
-        const [x, y, z, r] = layout.siege.core;
-        markers.zone({ x, y, z, r });
+        siege = createSiege({
+          layout, rules, size: [g.nx, g.ny, g.nz], teamScore, canFight,
+          time: () => time, entries: () => [...roster.values()], bodyOf, alive, inZone,
+          announce: (text) => hud.announce(text, now()), end, emit: (n, e) => povEvents.emit(n, e), markZone: (z) => markers.zone(z),
+        });
+        siege.begin();
       }
       if (m === 'infection') for (const e of pick([...roster.values()].filter((o) => o.team), rules.alphas)) setTeam(e, R.INFECTED);
       setHitRules(hitRules);
@@ -355,6 +363,7 @@ export function createGame(shell) {
     if (mode === 'ctf') {
       for (const f of Object.values(flags)) if (f.carrier === v.id) dropFlag(f, bodyOf(v).pos);
     }
+    if (mode === 'siege') siege?.died(v, k);
   }
 
   // ---------------------------------------------------------------- CTF
@@ -398,7 +407,7 @@ export function createGame(shell) {
     }
   }
 
-  // ---------------------------------------------------------------- zones (KOTH's hill, Siege's core)
+  // ---------------------------------------------------------------- zones (KOTH's hill, Siege's points)
   const zoneOf = ([x, y, z, r]) => ({ x, y, z, r });
   function inZone(b, z) { return hdist(b.pos, z) < z.r && b.pos.y - z.y > -1 && b.pos.y - z.y < R.ZONE_UP; }
   function teamsIn(z) {
@@ -427,41 +436,6 @@ export function createGame(shell) {
     }
   }
 
-  function tickSiege(dt) {
-    const core = zoneOf(layout.siege.core);
-    const s = teamsIn(core);
-    siege.contested = s.has(siege.attackers) && s.size > 1;
-    siege.owner = s.size === 1 ? [...s][0] : null;
-    if (siege.owner === siege.attackers) {
-      siege.held += dt;
-      teamScore[siege.attackers] += dt;
-      for (const e of members(siege.attackers)) if (alive(e) && inZone(bodyOf(e), core)) e.score += dt;
-    }
-    if (siege.held >= rules.holdToWin) halfOver(true);
-    else if (time >= ends) halfOver(false);
-  }
-  function halfOver(captured) {
-    siege.results.push({ attackers: siege.attackers, captured, time: time - siege.halfStart, held: siege.held });
-    const r = siege.results.at(-1);
-    povEvents.emit('game:half', { half: siege.half, ...r });
-    if (siege.half === 1) {
-      hud.announce(`${label(r.attackers)} ${captured ? `took the core in ${Math.round(r.time)} s` : `held it ${Math.round(r.held)} s`}. Halftime: sides swap`, now());
-      siege.half = 2; siege.attackers = other(siege.attackers); siege.held = 0; siege.halfStart = time;
-      ends = time + rules.timeLimit;
-      shell.loadPreset();
-      spawnAll();
-      return;
-    }
-    // TF2's stopwatch: a capture beats none; two captures, the faster; none, the longer hold
-    const [a, b] = siege.results;
-    let w = null;
-    if (a.captured !== b.captured) w = a.captured ? a.attackers : b.attackers;
-    else if (a.captured) w = a.time < b.time ? a.attackers : b.time < a.time ? b.attackers : null;
-    else w = a.held > b.held ? a.attackers : b.held > a.held ? b.attackers : null;
-    const say = (x) => `${label(x.attackers)} ${x.captured ? `capped in ${Math.round(x.time)} s` : `held ${Math.round(x.held)} s`}`;
-    end(w, `${say(a)}, ${say(b)}`);
-  }
-
   // ---------------------------------------------------------------- what bots go for
   function objectiveFor(e) {
     if (!running || !e.team) return null;
@@ -477,11 +451,7 @@ export function createGame(shell) {
       const z = hill.zone;
       return { kind: 'hill', at: z, r: z.r, want: inZone(b, z) ? WANT.inZone : WANT.zone };
     }
-    if (mode === 'siege') {
-      const z = zoneOf(layout.siege.core);
-      if (e.team === siege.attackers) return { kind: 'attackCore', at: z, r: z.r, want: inZone(b, z) ? WANT.inZone : WANT.zone };
-      return { kind: 'defendCore', at: z, r: z.r, want: WANT.defend };
-    }
+    if (mode === 'siege') return siege.objective(e);
     if (mode === 'ctf') {
       const mine = flags[e.team], theirs = flags[other(e.team)];
       if (theirs.carrier === e.id) return { kind: 'carry', at: mine.home, r: 0, want: WANT.carry };
@@ -530,7 +500,7 @@ export function createGame(shell) {
       count();
       if (mode === 'ctf') tickCtf();
       if (mode === 'koth') tickKoth(dt);
-      if (mode === 'siege') tickSiege(dt);
+      if (mode === 'siege') siege?.tick(dt);
       // the end: the score, the last survivor, the clock
       if (running && mode !== 'siege') {
         const won = mode !== 'infection' && teams.find((t) => teamScore[t] >= rules.scoreToWin);
@@ -544,7 +514,7 @@ export function createGame(shell) {
       markers.update({
         time,
         flagAt: (t) => (flags?.[t] && flags[t].carrier !== PLAYER ? flags[t].pos : null),   // the player's own carry would be in their eye
-        zoneOwner: hill?.owner ?? siege?.owner ?? (siege ? other(siege.attackers) : null),
+        zoneOwner: hill?.owner ?? siege?.zoneOwner ?? null,
         zoneContested: hill?.contested ?? siege?.contested ?? false,
         bots: bots().map((e) => ({ id: e.id, team: e.team, alive: alive(e), pos: e.bot.body.pos })),
         myTeam: me()?.team ?? null,
@@ -573,12 +543,7 @@ export function createGame(shell) {
       const n = teamScore[R.HUMANS];
       return { text: `${n} survivor${n === 1 ? '' : 's'} · ${teamScore[R.INFECTED]} infected` };
     }
-    if (mode === 'siege') {
-      return {
-        text: `Half ${siege.half} · ${label(siege.attackers)} attack the core · ${Math.floor(siege.held)}/${rules.holdToWin} s${siege.contested ? ' · contested' : ''}`,
-        progress: siege.held / rules.holdToWin, progressTeam: siege.attackers,
-      };
-    }
+    if (mode === 'siege') return siege.hud();
     return { text: '' };
   }
 
@@ -587,14 +552,14 @@ export function createGame(shell) {
     return {
       running, mode, now: now(), time,
       teamScore: { ...teamScore }, teams,
-      timeLeft: running ? ends - time : 0,
+      timeLeft: running ? (siege ? siege.timeLeft : ends - time) : 0,   // (Siege: setup's, then the round's)
       objective: o.text, progress: o.progress, progressTeam: o.progressTeam,
       roster: board(),
       scoreLine: running ? `${rules.name} on ${layout.name}` : lastResult ? `Last match: ${R.MODES[lastResult.mode].name}` : '',
-      scoreLabel: { slayer: 'Kills', ctf: 'Caps', koth: 'Hill s', infection: 'Kills', siege: 'Core s' }[mode] ?? 'Score',
+      scoreLabel: { slayer: 'Kills', ctf: 'Caps', koth: 'Hill s', infection: 'Kills', siege: 'Points' }[mode] ?? 'Score',
       flags: flags ? Object.fromEntries(Object.values(flags).map((f) => [f.team, { state: f.state, carrier: f.carrier }])) : null,
       hill: hill ? { index: hill.i, owner: hill.owner, contested: hill.contested } : null,
-      siege: siege ? { half: siege.half, attackers: siege.attackers, held: siege.held, results: siege.results } : null,
+      siege: siege ? siege.state : null,
       bots: bots().length,
       botMs,
     };
@@ -656,8 +621,10 @@ export function createGame(shell) {
     // the player's respawn while a match runs: Halo's delay, at a spawn of their side (null: the shell's own)
     get playerRespawn() {
       const p = me();
-      return running && p?.team ? { delay: R.RESPAWN_S, at: () => spawnFor(p) } : null;
+      return running && p?.team ? { delay: siege ? siege.respawnS(p.team) : R.RESPAWN_S, at: () => spawnFor(p) } : null;
     },
+    // Siege: the player is in their side's respawn room (or it's setup): a class change applies at once (TF2)
+    inSpawnRoom() { return running && !!siege && siege.inSpawnRoom(me()); },
     switchTeam,
     menu,
     setVisible,
