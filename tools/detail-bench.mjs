@@ -1,40 +1,42 @@
 // Cost of each close-up detail feature (src/gfx/detail.js), for its cost tier.
-// Loads the lab deterministically (as tools/regress.mjs), then for each camera
-// (the god view and eye-level close-ups, the POV-mode worst case) times the
-// view raymarch with the feature off and on, alternating A/B rounds, and
-// prints the median extra GPU ms per frame and the tier that gives.
-// Features with per-step work (src/sim.js stepping it, e.g. the whitewater's
-// aeration field) also pay per simulation step: that is timed with the world
-// stepping (feature off vs on), times the app's default steps per frame, and
-// added to the worst camera's figure.
-// usage: node tools/detail-bench.mjs [--port 5191] [--preset lab|volcano|plume|pour|pourAfter] [--cams eyeSand,god]
-//        [--features relief,grains] [--shots outDir]
+// Builds a scene on the volume's harness page (tools/harness/volume.html:
+// the app's presets, or the plume and pour scenes painted while the
+// simulation runs), then for each camera (the god view and eye-level
+// close-ups, the POV-mode worst case) times the realistic view's scene pass
+// with the feature off and on (every other feature off), alternating A/B
+// rounds, in GPU ms from timestamp queries (docs/webgpu.md B8), and prints the
+// median extra GPU ms per frame and the tier that gives. The two variants are
+// separate pipelines (shaders/render.js volumeFrag(g, { detail })), each built
+// before it is timed. Features with per-step work (Whitewater's aeration
+// field) also pay per simulation step: that is timed with the world stepping,
+// times the app's default steps per frame, and added to the worst camera's
+// figure (it needs the aeration attached: src/wire/foam.js, U12).
+// The figures that set the tiers come from the Mac (BENCH_W×BENCH_H, 128³);
+// SwiftShader runs the view on the CPU, so in the container use a small
+// viewport and grid to see it run: --size 64 --viewport 160x100 --cams god --rounds 1.
+// usage: node tools/detail-bench.mjs [--port 5606] [--preset lab|volcano|plume|pour|pourAfter|test] [--cams eyeSand,god]
+//        [--features relief,grains] [--shots outDir] [--size 128] [--viewport 1280x800] [--rounds 7] [--frames 20] [--steps 900]
 // Noise: identical shaders differ by up to ~0.4 ms per camera; rerun a tier
 // that sits near a COST_*_MS boundary.
 //        --all  also times every feature on at once against all off
-import { launchBrowser, newTestPage } from './browser.mjs';
-import { mkdirSync } from 'fs';
-import { BENCH_W, BENCH_H, DETAIL, settingKey, costTier } from '../src/gfx/detail.js';
-import { ELEMENTS, K } from '../src/elements.js';
-
-const GAS_IDS = ELEMENTS.map((e, i) => (e.kind === K.GAS ? i : -1)).filter((i) => i >= 0);
+import { mkdirSync, writeFileSync } from 'fs';
+import { launchBrowser } from './browser.mjs';
+import { startVite } from './vite-server.mjs';
+import { openHarness } from './harness/open.mjs';
+import { BENCH_W, BENCH_H, DETAIL, costTier } from '../src/gfx/detail.js';
 
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
-const port = opt('port', '5191');
 const shots = opt('shots', '');
 const only = opt('features', '');
 const features = DETAIL.filter((f) => !only || only.split(',').includes(f.key));
 if (shots) mkdirSync(shots, { recursive: true });
 
-const APP_TIMEOUT_MS = 30000;   // for the app to start
-const APP_SETTLE_MS = 1500;     // after it has, before the first evaluate
-const SIM_STEPS = 900;     // the lab sand has landed and piled
-const ROUNDS = 7;          // A/B rounds per feature and camera (median taken)
-const FRAMES = 20;         // renders per timing sample
-const WARM_FRAMES = 4;     // renders after a switch before timing (program compile, caches)
-const GATE_WAIT_FRAMES = 60;  // × WARM_FRAMES, at most, for background shader compiles
-const SETTLE_FRAMES = 30;  // frame-loop frames after moving the camera (uniforms, TAA)
+const SIM_STEPS = Number(opt('steps', '900'));   // the lab sand has landed and piled
+const ROUNDS = Number(opt('rounds', '7'));       // A/B rounds per feature and camera (median taken)
+const FRAMES = Number(opt('frames', '20'));      // renders per timing sample (median)
+const SIZE = Number(opt('size', '128'));         // the grid (the cameras below are the 128³ layout's)
+const VIEWPORT = (opt('viewport', `${BENCH_W}x${BENCH_H}`)).split('x').map(Number);
 // Cameras (128³ layout, grid cells). null = the home (god) view. Eye
 // cameras stand a POV-height body on whatever is under `feet` = [x, z]
 // (the top non-gas cell) and look at the ground under `look` = [x, z],
@@ -86,184 +88,59 @@ const preset = opt('preset', 'lab');
 const isPour = preset === 'pour' || preset === 'pourAfter';
 const loadName = preset === 'plume' ? PLUME.base : isPour ? POUR.base : preset;
 const camSel = opt('cams', '');
-const cams = Object.fromEntries(Object.entries(CAMS[preset]).filter(([k]) => !camSel || camSel.split(',').includes(k)));
+const cams = Object.fromEntries(Object.entries(CAMS[preset] ?? { god: null }).filter(([k]) => !camSel || camSel.split(',').includes(k)));
 
+const vite = await startVite({ harness: true, port: Number(opt('port', '5606')) });
 const b = await launchBrowser();
-const p = await newTestPage(b, { mode: 'visual', viewport: { width: BENCH_W, height: BENCH_H } });
-await p.addInitScript(() => {
-  let s = 12345;   // mulberry32: same scene every run
-  Math.random = () => { s |= 0; s = (s + 0x6d2b79f5) | 0; let t = Math.imul(s ^ (s >>> 15), 1 | s); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
-  addEventListener('DOMContentLoaded', () => {
-    const st = document.createElement('style');
-    st.textContent = 'body > *:not(canvas):not(:has(canvas)), .dock, .card, .topbar, .hud { visibility: hidden !important; }';
-    document.head.appendChild(st);
-  });
-});
 const errs = [];
-p.on('console', (m) => { if (m.type() === 'error') errs.push(m.text().slice(0, 500)); });
-p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 500)));
-await p.goto(`http://localhost:${port}/?preset=${loadName}&paused=1`);
-await p.waitForFunction(() => window.__app?.sim, null, { timeout: APP_TIMEOUT_MS });
-await p.waitForTimeout(APP_SETTLE_MS);
-const ids = Object.fromEntries(['WOOD', 'FIRE', 'SMOKE', 'STEAM', 'WATER'].map((k) => [k, ELEMENTS.findIndex((e) => e.key === k)]));
-await p.evaluate(async ([steps, keys, loadName, plume, ids, pour]) => {
-  const a = window.__app;
-  a.settings.paused = true;
-  a.autoRes.enabled = false;   // a fixed resolution: auto resolution would change it mid-run
-  a.post.settings.taa = false;
-  for (const k of keys) a.settings[k] = false;
-  if (pour) a.settings.detail_liquidFoam = true;   // its aeration field follows the pour as it happens
-  a.applyDetail();
-  a.loadPreset(loadName, false);
-  // screenshots show only the scene
-  const cv = a.renderer.domElement;
-  document.querySelectorAll('body *').forEach((el) => { if (!el.contains(cv)) el.style.visibility = 'hidden'; });
-  a.sim.frame = 0;
-  const V = a.THREE.Vector3;
-  const paint = (tool, [x, y, z], radius) => a.sim.paint({ center: new V(x, y, z), radius, shape: 0, tool, rate: 1, replace: false });
-  if (pour) {
-    for (let i = 0; i < pour.steps; i++) { paint(ids.WATER, pour.at, pour.r); a.sim.step(); }
-    for (let i = 0; i < pour.after; i++) a.sim.step();
-    return;
-  }
-  if (!plume) { for (let i = 0; i < steps; i++) a.sim.step(); return; }
-  paint(ids.WOOD, plume.wood.at, plume.wood.r);
-  for (let i = 0; i < plume.steps; i++) {
-    for (const y of plume.columnYs) {
-      paint(ids.SMOKE, [plume.smoke.x, y, plume.smoke.z], plume.smoke.r);
-      paint(ids.STEAM, [plume.steam.x, y, plume.steam.z], plume.steam.r);
-    }
-    if (i < plume.fireSteps) paint(ids.FIRE, plume.fire.at, plume.fire.r);
-    a.sim.step();
-  }
-}, [SIM_STEPS, DETAIL.map(settingKey), loadName, preset === 'plume' ? PLUME : null, ids,
-  isPour ? { ...POUR, after: preset === 'pourAfter' ? POUR.after : 0 } : null]);
-
-const frames = (n) => p.evaluate(async (n) => { for (let i = 0; i < n; i++) await new Promise((r) => requestAnimationFrame(r)); }, n);
-
-async function setCam(cam) {
-  await p.evaluate(([cam, EYE_H, LOOK_DROP, gasIds]) => {
-    const a = window.__app;
-    if (!cam) { a.rig.reset(true); return; }
-    if (Array.isArray(cam)) {   // fixed [eye, target], grid cells
-      const g = (c) => a.volume.position.clone().addScaledVector({ x: c[0], y: c[1], z: c[2] }, a.scale);
-      a.camera.position.copy(g(cam[0])); a.controls.target.copy(g(cam[1])); a.controls.update();
-      return;
-    }
-    const { ny } = a.sim.g;
-    const [st] = a.sim.readState();
-    const ground = ([x, z]) => {
-      for (let y = ny - 1; y >= 0; y--) {
-        const id = Math.round(st[a.sim.cellTexel(x, y, z) * 4]);
-        if (id && !gasIds.includes(id)) return y + 1;
-      }
-      return 0;
-    };
-    const w = (x, y, z) => a.volume.position.clone().addScaledVector({ x, y, z }, a.scale);
-    const eyeY = ground(cam.feet) + EYE_H;
-    a.camera.position.copy(w(cam.feet[0], eyeY, cam.feet[1]));
-    a.controls.target.copy(w(cam.look[0], Math.max(ground(cam.look), eyeY - LOOK_DROP), cam.look[1]));
-    a.controls.update();
-  }, [cam, EYE_H, LOOK_DROP, GAS_IDS]);
-  await frames(SETTLE_FRAMES);
-  await settleGate();
-}
-
-// switch features on/off (keys → bool), let the frame loop pick it up and
-// wait for the distance gate (gfx/detailGate.js) to finish compiling the
-// variant this camera wants
-async function setDetail(state) {
-  await p.evaluate((state) => {
-    const a = window.__app;
-    Object.assign(a.settings, state);
-    a.applyDetail();
-  }, state);
-  await settleGate();
-}
-async function settleGate() {
-  for (let i = 0; i < GATE_WAIT_FRAMES; i++) {
-    await frames(WARM_FRAMES);
-    if (await p.evaluate(() => window.__app.detailGate.pending === 0)) break;
-  }
-  await frames(WARM_FRAMES);
-}
-
-// GPU ms per view render: FRAMES renders of the scene into an offscreen HDR
-// target, synced by reading one texel back (reading the canvas wouldn't wait).
-const timeView = () => p.evaluate(async ([n, warm]) => {
-  const a = window.__app, r = a.renderer;
-  const w = r.domElement.width, h = r.domElement.height;
-  if (window.__benchRT?.width !== w || window.__benchRT?.height !== h) {
-    window.__benchRT?.dispose();
-    window.__benchRT = new a.THREE.WebGLRenderTarget(w, h, { type: a.THREE.HalfFloatType });
-  }
-  const rt = window.__benchRT, px = new Uint16Array(4);
-  const draw = () => { r.setRenderTarget(rt); r.clear(); r.render(a.scene, a.camera); r.setRenderTarget(null); };
-  for (let i = 0; i < warm; i++) draw();
-  r.readRenderTargetPixels(rt, 0, 0, 1, 1, px);
-  const t0 = performance.now();
-  for (let i = 0; i < n; i++) draw();
-  r.readRenderTargetPixels(rt, 0, 0, 1, 1, px);
-  return (performance.now() - t0) / n;
-}, [FRAMES, WARM_FRAMES]);
-
-const median = (xs) => [...xs].sort((x, y) => x - y)[Math.floor(xs.length / 2)];
-const off = Object.fromEntries(DETAIL.map((f) => [settingKey(f), false]));
-
-async function abCost(on, cam, name) {
-  await setCam(cam);
-  const base = [], with_ = [];
-  for (let r = 0; r < ROUNDS; r++) {
-    await setDetail(off); base.push(await timeView());
-    await setDetail({ ...off, ...on }); with_.push(await timeView());
-  }
-  if (shots) {
-    await setDetail(off); await frames(SETTLE_FRAMES); await p.screenshot({ path: `${shots}/${name}-off.png` });
-    await setDetail({ ...off, ...on }); await frames(SETTLE_FRAMES); await p.screenshot({ path: `${shots}/${name}-on.png` });
-  }
-  return { base: median(base), on: median(with_), extra: median(with_.map((v, i) => v - base[i])) };
-}
-
-// GPU ms per simulation step: STEP_FRAMES steps from a snapshot of the scene
-// (undone after, so the cameras keep seeing the same world), synced by reading
-// one texel of the state back.
-const timeSteps = () => p.evaluate(async (n) => {
-  const a = window.__app, sim = a.sim, px = new Float32Array(4);
-  sim.snapshot();
-  const sync = () => a.renderer.readRenderTargetPixels(sim.targets[sim.cur], 0, 0, 1, 1, px);
-  sim.step(); sync();
-  const t0 = performance.now();
-  for (let i = 0; i < n; i++) sim.step();
-  sync();
-  const ms = (performance.now() - t0) / n;
-  sim.undo();
-  return ms;
-}, STEP_FRAMES);
-async function stepCost(on) {
-  const base = [], with_ = [];
-  for (let r = 0; r < ROUNDS; r++) {
-    await setDetail(off); base.push(await timeSteps());
-    await setDetail({ ...off, ...on }); with_.push(await timeSteps());
-  }
-  return { base: median(base), on: median(with_), extra: median(with_.map((v, i) => v - base[i])) };
-}
-
 const rows = [];
-const sets = features.map((f) => [f.key, { [settingKey(f)]: true }, f]);
-if (args.includes('--all')) sets.push(['ALL', Object.fromEntries(DETAIL.map((f) => [settingKey(f), true])), null]);
-for (const [key, on, f] of sets) {
-  let worst = 0;
-  for (const [camName, cam] of Object.entries(cams)) {
-    const r = await abCost(on, cam, `${key}-${camName}`);
-    worst = Math.max(worst, r.extra);
-    rows.push({ feature: key, cam: camName, 'base ms': r.base.toFixed(2), 'on ms': r.on.toFixed(2), 'extra ms': r.extra.toFixed(2) });
+try {
+  const p = await openHarness(b, vite, `/tools/harness/volume.html?size=${SIZE}`, { errors: errs, timeout: 180000, viewport: { width: VIEWPORT[0], height: VIEWPORT[1] } });
+  const run = (name, arg) => p.evaluate(([n, a]) => window.__harness.run(n, a), [name, arg]);
+  await run('benchScene', {
+    scene: loadName, steps: preset === 'plume' || isPour ? 0 : SIM_STEPS,
+    plume: preset === 'plume' ? PLUME : null, pour: isPour ? { ...POUR, after: preset === 'pourAfter' ? POUR.after : 0 } : null,
+  });
+  const median = (xs) => [...xs].sort((x, y) => x - y)[Math.floor(xs.length / 2)];
+  const defines = (list) => Object.fromEntries(list.map((f) => [f.define, 1]));
+  const timeView = async (detail, shot = null) => {
+    const r = await run('gpuTime', { view: 'realistic', detail, frames: FRAMES, viewport: VIEWPORT, shot: !!shot });
+    if (r.error) throw new Error(r.error);
+    if (shot && r.shot) writeFileSync(shot, Buffer.from(r.shot, 'base64'));
+    return r.median;
+  };
+  async function abCost(on, cam, name) {
+    await run('benchCam', { cam, eyeH: EYE_H, lookDrop: LOOK_DROP });
+    const base = [], with_ = [];
+    for (let r = 0; r < ROUNDS; r++) {
+      base.push(await timeView({}, shots && r === 0 ? `${shots}/${name}-off.png` : null));
+      with_.push(await timeView(on, shots && r === 0 ? `${shots}/${name}-on.png` : null));
+    }
+    return { base: median(base), on: median(with_), extra: median(with_.map((v, i) => v - base[i])) };
   }
-  const st = await stepCost(on);
-  const perFrame = Math.max(0, st.extra) * APP_STEPS;
-  rows.push({ feature: key, cam: `steps ×${APP_STEPS}`, 'base ms': (st.base * APP_STEPS).toFixed(2), 'on ms': (st.on * APP_STEPS).toFixed(2), 'extra ms': perFrame.toFixed(2) });
-  worst += perFrame;
-  rows.push({ feature: key, cam: 'WORST', 'extra ms': worst.toFixed(2), tier: costTier(worst), declared: f?.cost ?? '' });
+  // the per-step cost: only Whitewater has one, and only with its aeration attached (U12)
+  const stepCost = async (f) => {
+    if (f?.key !== 'liquidFoam') return null;
+    const st = await run('stepTime', { steps: STEP_FRAMES });
+    return { base: st.ms, on: null, extra: null };
+  };
+
+  const sets = features.map((f) => [f.key, defines([f]), f]);
+  if (args.includes('--all')) sets.push(['ALL', defines(DETAIL), null]);
+  for (const [key, on, f] of sets) {
+    let worst = 0;
+    for (const [camName, cam] of Object.entries(cams)) {
+      const r = await abCost(on, cam, `${key}-${camName}`);
+      worst = Math.max(worst, r.extra);
+      rows.push({ feature: key, cam: camName, 'base ms': r.base.toFixed(2), 'on ms': r.on.toFixed(2), 'extra ms': r.extra.toFixed(2) });
+    }
+    const st = await stepCost(f);
+    if (st) rows.push({ feature: key, cam: `steps ×${APP_STEPS}`, 'base ms': (st.base * APP_STEPS).toFixed(2), 'on ms': 'n/a (no aeration attached: U12)', 'extra ms': '' });
+    rows.push({ feature: key, cam: 'WORST', 'extra ms': worst.toFixed(2), tier: costTier(worst), declared: f?.cost ?? '' });
+  }
+} finally {
+  await b.close();
+  await vite.close();
 }
 console.table(rows);
 console.log(errs.length ? errs.join('\n') : 'no console errors');
-await b.close();

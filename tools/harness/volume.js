@@ -12,7 +12,8 @@
 //   meshes      three.js renders a box standing in a pool first; the march stops at it, the water
 //               in front tints it; without the cut (control) the water hides it
 //   bench       one view's pipeline creation (a module no cache has seen), the main thread's longest gap
-//   gpuTime     a view's scene pass in GPU ms (timestamps), for detail-bench
+//   benchScene, benchCam, gpuTime, stepTime   tools/detail-bench.mjs: a scene, a camera, the
+//               scene pass's GPU ms (timestamps), ms per simulation step
 //
 // ?size=N (default 64): the grid, N³.
 
@@ -20,10 +21,10 @@ import { createPresenter } from '/src/gpu/index.js';
 import { halfsToFloats } from '/src/gpu/readback.js';
 import { useWebGPUCamera, createThreeRenderer, threeHasVisible } from '/src/gpu/three.js';
 import { PerspectiveCamera, Matrix4, Vector3, Scene, Mesh, BoxGeometry, MeshBasicNodeMaterial } from 'three/webgpu';
-import { Simulation, cellTexel } from '/src/sim.js';
+import { Simulation, cellTexel, gridLayout } from '/src/sim.js';
 import { Derived } from '/src/derived.js';
 import { buildPreset } from '/src/presets.js';
-import { E, ELEMENTS } from '/src/elements.js';
+import { E, K, ELEMENTS } from '/src/elements.js';
 import { SEED_MAX } from '/src/shaders/common.js';
 import { createPost, POST_DEFAULTS } from '/src/gfx/post.js';
 import { createVolume } from '/src/gfx/volume.js';
@@ -420,17 +421,19 @@ test('meshes', async ({ detail = {}, shots = false } = {}) => {
   };
 });
 
-// One view's pipeline, built in a module no cache has seen (a unique constant
-// it really uses), timed; meanwhile a 4 ms timer measures the main thread's
-// longest gap (docs/webgpu.md goal 4: nothing over 100 ms while pipelines build).
-test('bench', async ({ view = 'plain', detail = {}, runs = 1 } = {}) => {
+// One view's pipeline for grid [nx, ny, nz] (default the page's), built from a
+// module no cache has seen (a unique constant in its text), timed; meanwhile a
+// 4 ms timer measures the main thread's longest gap (docs/webgpu.md goal 4:
+// nothing over 100 ms while pipelines build).
+test('bench', async ({ view = 'plain', detail = {}, runs = 1, grid = null } = {}) => {
+  const gb = grid ? gridLayout(...grid) : g;
   const L = VOLUME_LAYOUTS().map((entries, i) => gpu.device.createBindGroupLayout({ label: `bench ${i}`, entries }));
   const layout = gpu.device.createPipelineLayout({ label: 'bench', bindGroupLayouts: L });
   const d = volumePipeline();
   const out = [];
   for (let r = 0; r < runs; r++) {
     const bust = `${Date.now()}${r}${Math.random()}`.replace(/\D/g, '').slice(0, 9);
-    const code = volumeFrag(g, { view, detail }).replace('let t0 = max(bh.x, P.marchNear);', `let t0 = max(bh.x, P.marchNear) + f32(${bust}u % 1u);`);
+    const code = volumeFrag(gb, { view, detail }).replace('let t0 = max(bh.x, P.marchNear);', `let t0 = max(bh.x, P.marchNear) + f32(${bust}u % 1u);`);
     let gap = 0, last = performance.now(), ticks = 0;
     const timer = setInterval(() => { const now = performance.now(); gap = Math.max(gap, now - last); last = now; ticks++; }, 4);
     const t0 = performance.now();
@@ -449,26 +452,94 @@ test('bench', async ({ view = 'plain', detail = {}, runs = 1 } = {}) => {
   return { out, failures: [...h.failures] };
 });
 
-// GPU ms of the scene pass (timestamps) for a view at a detail, over `frames`
-// frames (median), from a camera: [eye, at] in grid cells (null: home).
-test('gpuTime', async ({ view = 'realistic', detail = {}, scene = 'test', cam = null, frames = 5, size = null } = {}) => {
-  if (scene) await load(scene);
-  if (size) { canvas.width = size[0]; canvas.height = size[1]; }
-  if (cam) lookFrom(toScene(...cam[0]), toScene(...cam[1])); else home();
+// ---------------------------------------------------------------- tools/detail-bench.mjs
+
+// A scene for the bench: one of ours or the app's presets (presets.js), then
+// `steps` steps; plume: smoke, steam and fire painted while it runs; pour: a
+// jet of water (tools/detail-bench.mjs PLUME, POUR).
+test('benchScene', async ({ scene = 'test', steps = 0, plume = null, pour = null } = {}) => {
+  await load(scene);
+  sim.frame = 0;
+  const paint = (tool, [x, y, z], radius) => sim.paint({ center: { x, y, z }, radius, shape: 0, tool, rate: 1, replace: false });
+  if (pour) {
+    for (let i = 0; i < pour.steps; i++) { paint(E.WATER, pour.at, pour.r); sim.step(); }
+    for (let i = 0; i < pour.after; i++) sim.step();
+  } else if (plume) {
+    paint(E.WOOD, plume.wood.at, plume.wood.r);
+    for (let i = 0; i < plume.steps; i++) {
+      for (const y of plume.columnYs) {
+        paint(E.SMOKE, [plume.smoke.x, y, plume.smoke.z], plume.smoke.r);
+        paint(E.STEAM, [plume.steam.x, y, plume.steam.z], plume.steam.r);
+      }
+      if (i < plume.fireSteps) paint(E.FIRE, plume.fire.at, plume.fire.r);
+      sim.step();
+    }
+  } else for (let i = 0; i < steps; i++) sim.step();
+  for (let k = 0; k < 16; k++) sim.updateBricks();
+  await fence();
+  return { failures: [...h.failures] };
+});
+
+// The bench's camera: null the home view; [eye, target] in grid cells; or an
+// eye camera { feet: [x, z], look: [x, z] } standing eyeH cells over the top
+// non-gas cell under feet, looking at the ground under look, lookDrop below eye height.
+test('benchCam', async ({ cam = null, eyeH = 5, lookDrop = 3 } = {}) => {
+  if (!cam) { home(); return {}; }
+  if (Array.isArray(cam)) { lookFrom(toScene(...cam[0]), toScene(...cam[1])); return {}; }
+  const [A] = await sim.readState();
+  const ground = ([x, z]) => {
+    for (let y = g.ny - 1; y >= 0; y--) {
+      const id = Math.round(A[cellTexel(g, x, y, z) * 4]);
+      if (id && ELEMENTS[id].kind !== K.GAS) return y + 1;
+    }
+    return 0;
+  };
+  const eyeY = ground(cam.feet) + eyeH;
+  lookFrom(toScene(cam.feet[0], eyeY, cam.feet[1]), toScene(cam.look[0], Math.max(ground(cam.look), eyeY - lookDrop), cam.look[1]));
+  return {};
+});
+
+// GPU ms of the scene pass (timestamps) for a view at a detail from the
+// bench's camera, `frames` frames after a warm one (median), at viewport
+// [w, h] (the canvas's size; default as it is). shot: the last frame as a PNG.
+test('gpuTime', async ({ view = 'realistic', detail = {}, frames = 5, viewport = null, shot = false } = {}) => {
+  if (viewport && (canvas.width !== viewport[0] || canvas.height !== viewport[1])) {
+    canvas.width = viewport[0]; canvas.height = viewport[1];
+    camera.aspect = viewport[0] / viewport[1];
+    camera.updateProjectionMatrix();
+  }
   await volume.viewReady(view, detail);
   if (!gpu.timing.supported) return { error: 'no timestamp-query on this device' };
   gpu.timing.enabled = true;
   const ms = [];
+  let cap = null;
   for (let k = 0; k < frames + 1; k++) {
     post.render(hooks({ view, detail }), camera);
+    if (shot && k === frames) cap = post.capture();
     gpu.endFrame();
     await fence();
     await new Promise((r) => setTimeout(r, 0));
+    await gpu.fence();
     if (k > 0 && gpu.timing.last?.scene !== undefined) ms.push(gpu.timing.last.scene);
   }
   gpu.timing.enabled = false;
   ms.sort((a, b) => a - b);
-  return { median: ms[Math.floor(ms.length / 2)] ?? null, samples: ms, failures: [...h.failures] };
+  return { median: ms[Math.floor(ms.length / 2)] ?? null, samples: ms, shot: cap ? await png(await cap) : null, failures: [...h.failures] };
+});
+
+// Wall ms per simulation step over `steps` steps from a snapshot (undone after,
+// so the cameras keep seeing the same world), synced by the queue's fence.
+test('stepTime', async ({ steps = 30 } = {}) => {
+  sim.snapshot();
+  sim.step();
+  await gpu.fence();
+  const t0 = performance.now();
+  for (let i = 0; i < steps; i++) sim.step();
+  await gpu.fence();
+  const ms = (performance.now() - t0) / steps;
+  sim.undo();
+  await fence();
+  return { ms, failures: [...h.failures] };
 });
 
 ready();
