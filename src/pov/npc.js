@@ -8,7 +8,8 @@ import { povEvents } from './events.js';
 import { createKit } from './tools/index.js';
 import { gearByKey } from './tools/catalog.js';
 import { pack, persistentLoad, ownedKey } from './tools/transfer.js';
-import { Agent } from './ai/brain.js';
+import { Agent, wantsMelee } from './ai/brain.js';
+import { throwFrag } from './frag.js';
 import { GunnerAgent } from './ai/gunner.js';
 import { createWorldModel } from './ai/world.js';
 import { createNav } from './ai/nav.js';
@@ -166,7 +167,7 @@ export function createNpc({ env, ai, home = () => null, style = 'axeman', team =
     facing: (out) => out.copy(dir),   // where it looks (the knife's backstab test)
     body,                             // its statuses scale its weapons (targets.js dealtScale)
     hurt(amount, cause, d, opts) {
-      body.hurt(amount * DAMAGE_TAKEN, cause, opts);
+      body.hurt(amount * (opts?.exact ? 1 : DAMAGE_TAKEN), cause, opts);   // exact: Halo's numbers (halo.js)
       agent.stagger();   // a hit stops its wind-up
       // d null: the weapon shoves it itself (the kick, by momentum: shove below)
       if (d) body.applyImpulse(tmp.set(d.x, Math.max(d.y, 0) + KNOCK_UP, d.z).normalize().multiplyScalar(HIT_KNOCKBACK));
@@ -284,6 +285,15 @@ export function createNpc({ env, ai, home = () => null, style = 'axeman', team =
       if (dir.lengthSq() < 1e-9) dir.set(0, 0, -1);
       dir.normalize();
       yaw = Math.atan2(-dir.x, -dir.z);
+
+      // Halo's in a Halo match: a frag from the eye, whatever is in hand (frag.js), and the melee: the
+      // body's kick (kick.js), turned to the enemy first (Halo's melee magnetism)
+      if (alive && it.frag && body.grenades > 0 && povEvents.as(actor, () => throwFrag(body, eye, dir))) body.grenades--;
+      if (alive && wantsMelee(agent)) {
+        const c = agent.chest();
+        tmp.set(c.x - eye.x, c.y - eye.y, c.z - eye.z).normalize();
+        povEvents.as(actor, () => body.kick(tmp));
+      }
 
       // the hands: the tool the brain wants, with its buttons, as this NPC
       if (alive && it.tool) {
