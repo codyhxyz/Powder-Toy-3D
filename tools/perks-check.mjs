@@ -6,7 +6,8 @@
 // usage: node tools/perks-check.mjs [--port 5291] [--shot file.jpg] [--worldshot file.jpg]
 //        [--nvshot prefix] [--rainshot file.jpg]   (needs a dev server; the night-vision shots are
 //        prefix-off.jpg and prefix-on.jpg; ImageMagick measures their brightness)
-import { chromium } from 'playwright';
+import { launchBrowser, newTestPage } from './browser.mjs';
+import { pageGpu } from './page-gpu.mjs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -20,8 +21,9 @@ const rainShot = opt('rainshot', null);
 const meanGray = (f) => +execFileSync('magick', [f, '-colorspace', 'Gray', '-format', '%[fx:mean]', 'info:']).toString();
 const W = 960, H = 600;
 
-const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
-const p = await b.newPage({ viewport: { width: W, height: H } });
+const b = await launchBrowser();
+// visual: Night Vision is judged by the brightness of screenshots, at the app's own cadence
+const p = await pageGpu(await newTestPage(b, { mode: 'visual', viewport: { width: W, height: H } }));
 const errs = [];
 // (the multiplayer relay isn't running locally: its refused connection isn't ours)
 p.on('console', (m) => { if (m.type() === 'error' && !/ERR_CONNECTION_REFUSED/.test(m.text())) errs.push(m.text().slice(0, 400)); });
@@ -61,7 +63,7 @@ try {
   const build = (boxes) => ev(async (boxes) => {
     const { E } = await import('/src/elements.js');
     const sim = window.__app.sim;
-    const [a, b] = sim.readState();
+    const [a, b] = await window.__pageGpu.readState(sim);
     for (const [x0, x1, y0, y1, z0, z1, key] of boxes)
       for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) for (let z = z0; z <= z1; z++) {
         const i = sim.cellTexel(x, y, z) * 4;
@@ -73,7 +75,7 @@ try {
   const countIn = (box, keys) => ev(async ([[x0, x1, y0, y1, z0, z1], keys]) => {
     const { E } = await import('/src/elements.js');
     const sim = window.__app.sim;
-    const [a] = sim.readState();
+    const [a] = await window.__pageGpu.readState(sim);
     const out = Object.fromEntries(keys.map((k) => [k, 0]));
     for (let x = Math.max(0, x0); x <= Math.min(sim.g.nx - 1, x1); x++)
       for (let y = Math.max(0, y0); y <= Math.min(sim.g.ny - 1, y1); y++)
@@ -168,7 +170,7 @@ try {
   const left = await countIn(box0, ['CLOUD']);
   check('Rain Cloud: it follows you', near.CLOUD > 100 && at0.x - at1.x > 10, `walked ${(at0.x - at1.x).toFixed(1)} cells: ${near.CLOUD} cloud over you, ${left.CLOUD} left behind`);
   await setPerks([]);
-  const whole = await ev(async () => { const { E } = await import('/src/elements.js'); const c = window.__app.sim.census(); return { cloud: c[E.CLOUD]?.n ?? 0, water: c[E.WATER]?.n ?? 0 }; });
+  const whole = await ev(async () => { const { E } = await import('/src/elements.js'); const c = await window.__pageGpu.census(); return { cloud: c[E.CLOUD]?.n ?? 0, water: c[E.WATER]?.n ?? 0 }; });
   console.log('     (whole box:', JSON.stringify(whole), ')');
 
   // ---- walking into orbs, stacking
@@ -207,7 +209,7 @@ try {
   const altars = await ev(() => { const a = window.__app; return a.builds.stampAt('SHRINE', a.pov.player.pos.clone().set(60, 0, 30)).map((v) => v.toArray()); });
   await settle(300);
   check('a shrine sets three orbs', (await ev(() => window.__app.perkOrbs.list.length)) === 3, JSON.stringify(altars));
-  const plinths = await ev(async (alt) => { const { ELEMENTS } = await import('/src/elements.js'); return alt.map(([x, y, z]) => ELEMENTS[Math.round(window.__app.sim.readCell(Math.floor(x), y - 1, Math.floor(z))[0][0])]?.key); }, altars);
+  const plinths = await ev(async (alt) => { const { ELEMENTS } = await import('/src/elements.js'); return Promise.all(alt.map(async ([x, y, z]) => ELEMENTS[Math.round((await window.__pageGpu.readCell(Math.floor(x), y - 1, Math.floor(z)))[0][0])]?.key)); }, altars);
   check('each orb floats over a steel-topped plinth', plinths.every((k) => k === 'METAL'), plinths.join(','));
   if (shotPath) {
     await ev(() => { const a = window.__app; a.pov.player.spawn(a.pov.player.pos.clone().set(60, 0, 20)); a.pov.setLook(Math.PI, -0.15); });
@@ -222,7 +224,7 @@ try {
   await ev(() => window.__app.pov.player.perks.clear());
 
   // ---- Freeze Field: a pool of water freezes under you
-  const census = () => ev(async () => { const { E } = await import('/src/elements.js'); const c = window.__app.sim.census(); return { water: c[E.WATER]?.n ?? 0, ice: c[E.ICE]?.n ?? 0, sand: c[E.SAND]?.n ?? 0 }; });
+  const census = () => ev(async () => { const { E } = await import('/src/elements.js'); const c = await window.__pageGpu.census(); return { water: c[E.WATER]?.n ?? 0, ice: c[E.ICE]?.n ?? 0, sand: c[E.SAND]?.n ?? 0 }; });
   await ev(async () => {
     const { E } = await import('/src/elements.js');
     const a = window.__app, C = a.camera.position.constructor;
@@ -301,10 +303,10 @@ try {
   const w = await ev(async () => {
     const { ELEMENTS } = await import('/src/elements.js');
     const a = window.__app, o = a.sim.origin;
-    return a.perkOrbs.list.map((orb) => {
+    return Promise.all(a.perkOrbs.list.map(async (orb) => {
       const f = orb.world.clone().sub(o);
-      return { key: orb.key, at: f.toArray().map((v) => +v.toFixed(1)), under: ELEMENTS[Math.round(a.sim.readCell(Math.floor(f.x), f.y - 1, Math.floor(f.z))[0][0])]?.key };
-    });
+      return { key: orb.key, at: f.toArray().map((v) => +v.toFixed(1)), under: ELEMENTS[Math.round((await window.__pageGpu.readCell(Math.floor(f.x), f.y - 1, Math.floor(f.z)))[0][0])]?.key };
+    }));
   });
   check('the world has a shrine with three perks on plinths', w.length === 3 && w.every((o) => o.under === 'METAL'), JSON.stringify(w));
   if (worldShot) { await settle(3000); await p.screenshot({ path: worldShot, type: 'jpeg', quality: 70 }); }

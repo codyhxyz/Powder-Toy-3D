@@ -4,7 +4,8 @@
 // by WALL, and dies to pistol fire; the jetpack gunner (npc.js style 'gunner',
 // ai/gunner.js) shoots, keeps its range (backs off when you close in) and flies.
 // usage: node tools/creatures-check.mjs [--port 5434] [--shot file.jpg]   (needs a dev server; AC power)
-import { chromium } from 'playwright';
+import { launchBrowser, newTestPage } from './browser.mjs';
+import { pageGpu } from './page-gpu.mjs';
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
 const port = opt('port', '5434');
@@ -14,8 +15,8 @@ const GROUND = 36;           // the rock's top (cells)
 const ROCK_Z = 80;           // rock under z < ROCK_Z; past it the bare floor
 const WALL_X = 60;           // the WALL slab's near face (phase 2)
 
-const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
-const p = await b.newPage({ viewport: { width: W, height: H } });
+const b = await launchBrowser();
+const p = await pageGpu(await newTestPage(b, { mode: shotPath ? 'visual' : 'preview', viewport: { width: W, height: H } }));
 const errs = [];
 p.on('console', (m) => { if (m.type() === 'error' && !/ERR_CONNECTION_REFUSED/.test(m.text())) errs.push(m.text().slice(0, 400)); });
 p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 600)));
@@ -37,7 +38,7 @@ const fill = (key, lo, hi) => ev(async ([key, lo, hi]) => {
 }, [key, lo, hi]);
 const census = () => ev(async () => {
   const { ELEMENTS } = await import('/src/elements.js');
-  return Object.fromEntries(Object.entries(window.__app.sim.census()).map(([k, v]) => [ELEMENTS[k].key, v.n]));
+  return Object.fromEntries(Object.entries(await window.__pageGpu.census()).map(([k, v]) => [ELEMENTS[k].key, v.n]));
 });
 const stand = (x, y, z) => ev(([x, y, z]) => { const a = window.__app; a.pov.player.spawn(a.pov.player.pos.clone().set(x, y, z)); }, [x, y, z]);
 const creature = (kind) => ev((kind) => window.__app.pov.npcs.find((n) => n.kind === kind)?.debug ?? null, kind);

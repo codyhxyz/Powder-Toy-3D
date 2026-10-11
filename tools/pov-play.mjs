@@ -2,6 +2,7 @@
 // on a scene built for it, through the real shell, body and toolbelt.
 // usage: node tools/pov-play.mjs [--port 5196] [--shots dir]   (needs a dev server)
 import { launchBrowser, newTestPage } from './browser.mjs';
+import { pageGpu } from './page-gpu.mjs';
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
 const port = opt('port', '5196');
@@ -9,7 +10,7 @@ const shots = opt('shots', null);
 const W = 960, H = 600;
 
 const b = await launchBrowser();
-const p = await newTestPage(b, { mode: shots ? 'visual' : 'preview', viewport: { width: W, height: H } });
+const p = await pageGpu(await newTestPage(b, { mode: shots ? 'visual' : 'preview', viewport: { width: W, height: H } }));
 const errs = [];
 p.on('console', (m) => { if (m.type() === 'error') errs.push(m.text().slice(0, 400)); });
 p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 600)));
@@ -21,8 +22,8 @@ let fails = 0;
 const check = (name, ok, info = '') => { if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${info ? `  ${info}` : ''}`); };
 const ev = (fn, arg) => p.evaluate(fn, arg);
 const shot = async (name) => { if (shots) await p.screenshot({ path: `${shots}/${name}.jpg`, type: 'jpeg', quality: 70 }); };
-const census = () => ev(() => {
-  const c = window.__app.sim.census();
+const census = () => ev(async () => {
+  const c = await window.__pageGpu.census();
   return Object.fromEntries(Object.entries(c).map(([k, v]) => [k, v.n]));
 });
 const named = (c) => ev((c) => import('/src/elements.js').then(({ ELEMENTS }) =>
@@ -121,8 +122,8 @@ await slot(5);
 await p.mouse.down();
 await ev(() => window.__app.pov.setLook(-Math.PI / 2, 0.15));
 await settle(2500);
-const lifted = await ev(() => {
-  const a = window.__app, s = a.sim.census();
+const lifted = await ev(async () => {
+  const s = await window.__pageGpu.census();
   return s[2] ? { minY: s[2].minY, maxY: s[2].maxY } : null;
 });
 await shot('physgun-hold');
