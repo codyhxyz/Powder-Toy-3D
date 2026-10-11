@@ -1,6 +1,7 @@
 import { prelude, stateOutGLSL, copyThroughMain, BRICK } from './common.js';
 import { materialsGLSL } from '../gfx/materials.js';
 import { FIELD_EMA_SETTLE, FIELD_REACH, FIELD_SCRATCH_REACH, fieldRegions, DIRTY } from './fields.js';
+import { propGLSL } from '../editing.js';
 
 // What a brick holding matter carries (brickFrag): a = 1 + gas/BRICK_GAS_DIV +
 // 2·bits + air flags/BRICK_FLAG_DIV. Decoded by gfx/core.js (brickInfo & co.)
@@ -29,18 +30,41 @@ uniform int uShape;     // 0 sphere, 1 cube
 uniform int uTool;      // element id, or negative tool id
 uniform float uRate;    // spawn density multiplier
 uniform bool uReplace;
+// TPT's editing tools (src/editing.js):
+uniform vec3 uEnd;      // a line (Shift-drag): the brush swept from uCenter to here (uCenter for a dab)
+uniform vec3 uGrow;     // a box (Ctrl-drag): the brush grown by this much along each axis (0 for a dab)
+uniform bool uMasked;   // a flood fill (Ctrl+Shift-click): the cells tMask marks, not the brush's
+uniform sampler2D tMask;
+uniform int uFilter;    // only cells of this element (replace mode's target, a fill's region); -1: any
+uniform bool uDelete;   // specific delete: an element brush erases instead (TPT's SPECIFIC_DELETE)
+uniform int uProp;      // the PROP tool: which property (PROP_*), and its value
+uniform float uPropValue;
+${propGLSL()}
+#define SEGMENT_EPS 1e-6        // a line's squared length below which it is a dab
 ${stateOutGLSL}
 
 void brush(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
-  vec3 d = vec3(p) + 0.5 - uCenter;
-  float r = uShape == 0 ? length(d) : max(abs(d.x), max(abs(d.y), abs(d.z)));
-  if (r > uRadius) return;
+  float r = 0.0;
+  if (uMasked) {
+    if (texelFetch(tMask, atlas(p), 0).r < 0.5) return;
+  } else {
+    vec3 d = vec3(p) + 0.5 - uCenter;
+    vec3 s = uEnd - uCenter;
+    d -= s * clamp(dot(d, s) / max(dot(s, s), SEGMENT_EPS), 0.0, 1.0);   // from the line's nearest point
+    d = max(abs(d) - uGrow, 0.0);                                        // from the box's core
+    r = uShape == 0 ? length(d) : max(d.x, max(d.y, d.z));
+    if (r > uRadius) return;
+  }
   float falloff = 1.0 - smoothstep(uRadius * TOOL_FALLOFF, uRadius + BRUSH_EDGE_EPS, r);
 
   uint rs = seed3(p, uFrame, PAINT_RNG_SALT);
   int id = eid(a);
+  if (uFilter >= 0 && id != uFilter) return;
+  // TPT's PropertyTool sets particles only (SetProperty skips empty pixels); pressure is the air's own
+  if (uTool == T_PROP && id == E_EMPTY && uProp != PROP_PRESSURE) return;
+  bool propErases = uTool == T_PROP && uProp == PROP_TYPE && uPropValue == float(E_EMPTY);   // TPT: type NONE kills the particle
 
-  if (uTool >= 0) {
+  if (uTool >= 0 && !uDelete) {
     if (id == uTool) return;
     if (id != E_EMPTY && !uReplace) return;
     if (rnd(rs) > SPAWNDENS[uTool] * uRate) return;
@@ -49,7 +73,7 @@ void brush(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
     oA = vec4(float(uTool), T, SPAWNLIFE[uTool], ctype + rnd(rs) * SEED_MAX);
     float vy = KIND[uTool] == K_POWDER || KIND[uTool] == K_LIQUID ? SPAWN_DROP_V : 0.0;
     oB = vec4(0.0, vy, 0.0, b.w);
-  } else if (uTool == T_ERASE) {
+  } else if (uTool == T_ERASE || uTool >= 0 || propErases) {   // (uTool >= 0 here: specific delete)
     oA = vec4(float(E_EMPTY), AMBIENT, 0.0, rnd(rs) * SEED_MAX);
     oB = vec4(0.0, 0.0, 0.0, b.w);
   } else if (uTool == T_HEAT) {
@@ -60,6 +84,13 @@ void brush(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
     oB.w = b.w + TOOL_PRESSURE * falloff;
   } else if (uTool == T_SPARK) {
     sparkCell(oA);   // conductors only, and only when ready (src/electricity.js)
+  } else if (uTool == T_PROP) {
+    if (uProp == PROP_PRESSURE) oB.w = uPropValue;
+    else if (uProp == PROP_TYPE) oA.x = uPropValue;
+    else if (uProp == PROP_CTYPE) oA.w = uPropValue + fract(a.w);
+    else if (uProp == PROP_TEMP) oA.y = uPropValue;
+    else if (uProp == PROP_LIFE) oA.z = uPropValue;
+    else oB[uProp - PROP_VX] = uPropValue;
   }
 }
 ${copyThroughMain('brush')}`;
