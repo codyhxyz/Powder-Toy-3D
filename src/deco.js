@@ -82,6 +82,7 @@ class Deco {
     this.mats = {};        // made on first use: a pass that never runs never compiles
     this.store = new Map();   // the World's decorated bricks outside the window, by world brick key (leave)
     this.pending = null;      // the leaving slab's readback (world/window.js waits for it)
+    this.epoch = 0;           // bumped by reset: a readback of what was before lands nowhere
     this.clearTargets();
   }
 
@@ -191,9 +192,10 @@ class Deco {
 
   // Everything goes (a new state replaced the old: Simulation.load, a new world).
   reset() {
-    if (!this.active && !this.store.size) return;
+    if (!this.active && !this.store.size && !this.pending) return;
     this.clearTargets();
     this.store.clear();
+    this.epoch++;
     this.active = false;
   }
 
@@ -215,9 +217,10 @@ class Deco {
     m.uniforms.uBricks.value.set(...bricks);
     sim.run(m, this.stage);
     const buf = new Uint8Array(STAGE_W * rows * DECO_BYTES), brickBytes = BRICK_CELLS * DECO_BYTES;
-    const keys = [];
+    const keys = [], epoch = this.epoch;
     for (let i = 0; i < n; i++) keys.push(key(i % bricks[0], Math.floor(i / bricks[0]) % bricks[1], Math.floor(i / (bricks[0] * bricks[1]))));
     this.pending = r.readRenderTargetPixelsAsync(this.stage, 0, 0, STAGE_W, rows, buf).then(() => {
+      if (epoch !== this.epoch) return;
       keys.forEach((k, i) => {
         const b = buf.subarray(i * brickBytes, (i + 1) * brickBytes);
         if (b.some((v) => v)) this.store.set(k, b.slice());
