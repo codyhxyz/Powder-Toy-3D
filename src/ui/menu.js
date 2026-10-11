@@ -27,12 +27,20 @@ import { MODEICONS, MODEICON_BOX } from './modeicons.js';
 // Start turns it into the loading screen until the map is up, kept plain: the
 // map's art behind the gamemode, the map's name, the game's line, a bar, what
 // the boot is doing now, and the player as he is ("This is you.":
-// public/you.webp, tools/you-portrait.mjs).
+// public/you.webp, tools/you-portrait.mjs), then live (ui/youViewer.js):
+// breathing, turning slowly, and turned left or right with a drag, as on
+// Skyrim's loading screen.
 //   loading(status, o)    the screen, with the game's line (src/main.js)
 //   progress(step, text)  a boot step began (STEPS keys; 'cold': the shaders are compiling
 //                         cold; 'match' with app.js's line for it)
 const THUMB = (key) => `/maps/${key}.webp`;
 const YOU = '/you.webp';
+// Skyrim's loading screen: the model turns by itself, slowly, and the mouse turns it
+const YOU_SPIN = (2 * Math.PI) / 40;   // rad/s it turns by itself: once round in 40 s
+const YOU_DRAG = (2 * Math.PI) / 360;  // rad per CSS px of drag: once round in 360 px
+const YOU_MAX_DPR = 2;                 // its canvas's px per CSS px, at most
+const YOU_MAX_STEP = 0.1;              // s it turns at most in a frame: none of a freeze (the map build, the shaders) is made up
+const YOU_ASPECT = 260 / 420;          // the still's width over its height (tools/you-portrait.mjs SHOWN_W, SHOWN_H)
 const STORE = 'powder-toy-3d:menu';   // the last gamemode and map picked here
 // What the loading screen says it's on, one line under its bar. GMod's loading
 // screen names the step it is really on ("Retrieving server info", "Sending
@@ -101,6 +109,8 @@ export function createMenu({ modes, quick = [], map, mode, onStart, onResume, on
   // undecoded image paints, and the caption then points at nothing
   you.decode?.().catch(() => {});
   you.addEventListener('error', () => you.closest('figure')?.remove());
+  const youFig = h('figure.mm-you', {}, you, h('figcaption', { text: 'This is you.' }));
+  const youLive = liveYou(youFig, you);
 
   const el = h('div.mm', { role: 'dialog', 'aria-label': 'Maps' },
     backdrop,
@@ -119,7 +129,7 @@ export function createMenu({ modes, quick = [], map, mode, onStart, onResume, on
         h('div.mm-actions', {}, exportBtn, deleteBtn, startBtn))),
     h('div.mm-load', { 'aria-live': 'polite' },
       h('div.mm-load-copy', {}, loadMode, loadName, loadStatus, h('div.mm-load-bar', {}, h('i')), loadStep),
-      h('figure.mm-you', {}, you, h('figcaption', { text: 'This is you.' }))));
+      youFig));
   document.body.append(el);
 
   // a preview that isn't there (a map added since tools/map-thumbs.mjs last ran): the card's gradient shows
@@ -332,7 +342,7 @@ export function createMenu({ modes, quick = [], map, mode, onStart, onResume, on
       requestAnimationFrame(() => cards.find((c) => c.m === pick)?.card.focus({ preventScroll: true }));
       cards.find((c) => c.m === pick)?.card.scrollIntoView({ block: 'nearest' });
     },
-    close() { el.classList.remove('open', 'loading'); busy = false; },
+    close() { el.classList.remove('open', 'loading'); busy = false; youLive.stop(); },
     // the loading screen: the gamemode, the map, the step under way, and you (on a pick of its
     // own: a link's ?map= and ?mode=, src/main.js); name: what is loading, if not the picked map (a save)
     loading(status, { map: mk, mode: md, name = null } = {}) {
@@ -351,6 +361,7 @@ export function createMenu({ modes, quick = [], map, mode, onStart, onResume, on
       cold = false;
       renderStep();
       el.classList.add('open', 'loading');
+      youLive.start();
     },
     // a boot step began (text: its line, if not STEPS' own: the match's, from app.js)
     progress(step, text) {
@@ -363,5 +374,63 @@ export function createMenu({ modes, quick = [], map, mode, onStart, onResume, on
       renderStep();
     },
     get isOpen() { return el.classList.contains('open'); },
+  };
+}
+
+// The loading screen's player live (ui/youViewer.js, its three.js loaded only now): in the still's
+// place once his first frame is drawn, and gone with the screen, its WebGL context with it. A
+// failure (no WebGL) leaves the still.
+function liveYou(fig, still) {
+  let you = null, on = false, loading = null, raf = 0, last = 0, drag = null;
+  const loop = (t) => {
+    raf = requestAnimationFrame(loop);
+    const dt = last ? (t - last) / 1000 : 0;
+    last = t;
+    if (!drag) you.yaw += YOU_SPIN * Math.min(dt, YOU_MAX_STEP);
+    you.frame(dt);
+  };
+  fig.addEventListener('pointerdown', (e) => {
+    if (!you || e.button !== 0) return;
+    drag = { x: e.clientX, yaw: you.yaw };
+    fig.setPointerCapture(e.pointerId);
+    fig.classList.add('dragging');
+    e.preventDefault();
+  });
+  fig.addEventListener('pointermove', (e) => { if (drag) you.yaw = drag.yaw + (e.clientX - drag.x) * YOU_DRAG; });
+  const drop = () => { drag = null; fig.classList.remove('dragging'); };
+  fig.addEventListener('pointerup', drop);
+  fig.addEventListener('pointercancel', drop);
+  return {
+    start() {
+      on = true;
+      if (you || loading || !still.isConnected) return;
+      const height = fig.clientHeight, width = Math.round(height * (still.naturalWidth / still.naturalHeight || YOU_ASPECT));
+      if (!height) return;
+      const pixelRatio = Math.min(devicePixelRatio || 1, YOU_MAX_DPR);
+      loading = import('./youViewer.js')
+        .then(({ createYou }) => createYou({ width: width * pixelRatio, height: height * pixelRatio, yaw: 0.42, time: 0.6 }))
+        .then((y) => {
+          if (!on) { y.dispose(); return; }
+          you = y;
+          you.canvas.className = 'mm-you-live';
+          you.frame();
+          still.replaceWith(you.canvas);
+          fig.classList.add('live');
+          last = 0;
+          raf = requestAnimationFrame(loop);
+        })
+        .catch((err) => console.warn('loading screen: the live player failed, the still stays', err))
+        .finally(() => { loading = null; });
+    },
+    stop() {
+      on = false;
+      cancelAnimationFrame(raf);
+      drop();
+      if (!you) return;
+      you.canvas.replaceWith(still);
+      fig.classList.remove('live');
+      you.dispose();
+      you = null;
+    },
   };
 }

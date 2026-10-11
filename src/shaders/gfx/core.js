@@ -1,4 +1,5 @@
 import { brickGLSL, BRICK_DIST_SCALE } from '../passes.js';
+import { CUBIC_FACET, CUBIC_PX_NONE, CUBIC_PX_FULL } from '../../gfx/detail.js';
 
 // Shared render core: brick/field access, the DDA helpers and the
 // smooth-surface machinery (sampling, root finding, normals). The state is
@@ -11,7 +12,7 @@ uniform sampler2D tBrickDist;   // empty-space distance per brick (shaders/passe
 uniform sampler2D tLight;
 uniform sampler2D tFS;   // smooth-surface fields (liquid, molten, granular, organic); SURF_ISO = surface
 uniform sampler2D tFM;   // media fields (smoke, steam, fire, heat)
-uniform sampler2D tFT;   // thin-feature mask (x: liquid), see shaders/fields.js
+uniform sampler2D tFT;   // thin-feature mask, per surface channel (the cubic ones read it), see shaders/fields.js
 uniform int uView;
 uniform bool uShadows;
 uniform float uTime;
@@ -54,7 +55,7 @@ bool brickHas(int f, int bit) { return f > 0 && ((f - 1) & bit) != 0; }
 bool brickMedia(int f) { return brickHas(f, BRICK_MEDIA); }
 bool brickSurf(int f) { return brickHas(f, BRICK_SURF); }
 bool brickOpaque(int f) { return brickHas(f, BRICK_OPAQUE); }   // crisp or opaque smooth matter
-bool brickThin(int f) { return brickHas(f, BRICK_THIN); }       // thin liquid: read cubic
+bool brickThin(int f) { return brickHas(f, BRICK_THIN); }       // thin cubic matter (drops, grains): read cubic
 bool brickMixed(int f) { return brickHas(f, BRICK_MIXED); }     // more than one liquid
 
 // A ray entering the box starts its DDA in the cell this far (cells) past the
@@ -168,33 +169,51 @@ vec4 fieldCubic(sampler2D t, vec3 p) {
   return s;
 }
 
-// The liquid channel (gfx/materials.js CHANNELS cubic) reads cubic only for
-// thin features, blended in by the thin mask; bulk surfaces (pools, seas)
-// read the same either way and stay trilinear. In the tracer's march it also
-// only reads cubic near the surface: where the trilinear value is outside
-// this band, both readings fall on the same side of it (checked for drops,
-// streams, films, slabs, edges, corners and bubbles; the closest call is
-// ~0.54..0.70), so the cheap one decides.
-#define LIQ_CUBIC_LO 0.3
-#define LIQ_CUBIC_HI 0.85
-// Whether the brick being traced holds thin liquid (brickThin): set by the
-// marches on entering each brick, so bulk liquid never reads the mask.
+// The cubic channels (gfx/materials.js CHANNELS cubic: liquids, powders) read
+// cubic for thin features, blended in by the thin mask; bulk surfaces (pools,
+// piles) read the same either way and stay trilinear. Up close they read cubic
+// everywhere (DETAIL_CUBIC_CLOSE): there a trilinear surface's facets span
+// many pixels, and a clump of sand falling past the eye is a cut gem. In the
+// tracer's march they only read cubic near the surface: where the trilinear
+// value is outside this band, both readings fall on the same side of it
+// (checked for grains, drops, streams, clumps, films, slabs, edges and
+// corners at the liquid's and the powders' blur; the closest call is ~0.73, a
+// lone grain), so the cheap one decides.
+#define CUBIC_LO 0.3
+#define CUBIC_HI 0.85
+// Whether the brick being traced holds thin cubic matter (brickThin): set by
+// the marches on entering each brick, so bulk matter never reads the mask.
 bool gThin = true;
-float liquidCubic(vec3 p, float tri) {
-  if (!gThin) return tri;
-  float t = fieldTex(tFT, p).x;
-  return t > 0.0 ? mix(tri, fieldCubic(tFS, p).x, t) : tri;
+// Up close: the view march sets the eye and its pixel's angular size
+// (gfx/surface.js surfView); other passes leave it 0, and read no closer.
+vec3 gCubicEye = vec3(0.0);
+float gCubicPixAng = 0.0;
+#ifdef DETAIL_CUBIC_CLOSE
+// cells per pixel at which a trilinear facet (CUBIC_FACET cells) spans gfx/detail.js CUBIC_PX_NONE / _FULL pixels
+const float CUBIC_FP_NONE = ${CUBIC_FACET} / ${CUBIC_PX_NONE}.0, CUBIC_FP_FULL = ${CUBIC_FACET} / ${CUBIC_PX_FULL}.0;
+float cubicClose(vec3 p) {
+  return gCubicPixAng > 0.0 ? 1.0 - smoothstep(CUBIC_FP_FULL, CUBIC_FP_NONE, distance(p, gCubicEye) * gCubicPixAng) : 0.0;
+}
+#else
+float cubicClose(vec3 p) { return 0.0; }
+#endif
+// how much channel ch reads cubic at p: its thin mask, or being close
+float cubicShare(vec3 p, int ch) {
+  return CH_CUBIC[ch] > 0.0 ? max(gThin ? fieldTex(tFT, p)[ch] : 0.0, cubicClose(p)) : 0.0;
 }
 // The surface fields as the tracer sees them.
 vec4 surfSample(vec3 p) {
   vec4 s = surfField(p);
-  if (s.x > LIQ_CUBIC_LO && s.x < LIQ_CUBIC_HI) s.x = liquidCubic(p, s.x);
-  return s;
+  vec4 band = CH_CUBIC * vec4(greaterThan(s, vec4(CUBIC_LO))) * vec4(lessThan(s, vec4(CUBIC_HI)));
+  if (band == vec4(0.0)) return s;
+  vec4 w = band * max(gThin ? fieldTex(tFT, p) : vec4(0.0), vec4(cubicClose(p)));
+  return w == vec4(0.0) ? s : mix(s, fieldCubic(tFS, p), w);
 }
 // One channel, at the surface (root finding, normals).
 float surfChannel(vec3 p, int ch) {
   float v = surfField(p)[ch];
-  return ch == CH_LIQUID ? liquidCubic(p, v) : v;
+  float w = cubicShare(p, ch);
+  return w > 0.0 ? mix(v, fieldCubic(tFS, p)[ch], w) : v;
 }
 
 // Root of φ_ch(t) = SURF_ISO bracketed by [ta, tb] (fa, fb = φ - SURF_ISO at
@@ -236,14 +255,14 @@ float tClosest(ivec3 c, vec3 ro, vec3 rd, float ta, float tb) {
 
 // Outward surface normal (−∇φ) from a tetrahedral central difference. The
 // step is wide on purpose: trilinear fields have creased gradients at the
-// cell-centre lattice, and a wide stencil irons them out. Where the liquid
-// reads cubic (thin features) it is smooth, and the step only has to be
-// small next to a drop's radius.
+// cell-centre lattice, and a wide stencil irons them out. Where a channel
+// reads cubic (thin features, up close) it is smooth, and the step only has
+// to be small next to a drop's radius.
 #define NORMAL_STEP 0.55
 #define NORMAL_STEP_CUBIC 0.25
 vec3 surfNormal(vec3 p, int ch, vec3 fallback) {
   const vec2 k = vec2(1.0, -1.0);
-  float h = ch == CH_LIQUID && gThin ? mix(NORMAL_STEP, NORMAL_STEP_CUBIC, fieldTex(tFT, p).x) : NORMAL_STEP;
+  float h = mix(NORMAL_STEP, NORMAL_STEP_CUBIC, cubicShare(p, ch));
   vec3 gr = k.xyy * surfChannel(p + k.xyy * h, ch) + k.yyx * surfChannel(p + k.yyx * h, ch)
           + k.yxy * surfChannel(p + k.yxy * h, ch) + k.xxx * surfChannel(p + k.xxx * h, ch);
   float l = length(gr);
