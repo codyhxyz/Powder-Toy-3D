@@ -88,6 +88,23 @@ export function gridDims(g) {
   return { nx, ny, nz, bx, by, bz, stx, sty, stz, slots: nx * ny * nz, nbricks: bx * by * bz, nsuper: stx * sty * stz };
 }
 
+// The CPU's state atlas (docs/webgpu.md C2; sim.js gridLayout, cellTexel):
+// supertile squares in rows of stw, stw the smallest divisor of their count
+// from its square root up, so the atlas is near square and every texel holds
+// a cell (all the app's grid sizes); if that would make it more than
+// ATLAS_ASPECT_MAX times wider than tall, a square atlas whose last row is
+// partly empty.
+const ATLAS_ASPECT_MAX = 4;
+export function atlasDims(g) {
+  const { stx, sty, stz } = gridDims(g), count = stx * sty * stz;
+  const root = Math.ceil(Math.sqrt(count));
+  let w = root;
+  while (count % w) w++;
+  const stw = w * w <= ATLAS_ASPECT_MAX * count ? w : root;
+  const sth = Math.ceil(count / stw);
+  return { stw, sth, width: stw * SUPER_TEX, height: sth * SUPER_TEX };
+}
+
 // JS mirrors of brickId, brickCoord, slotOf and cellOf (below), with WGSL's
 // i32 and u32 arithmetic: out-of-grid cells give some slot (docs/webgpu.md C2:
 // slotOf(-1, 6, 7) = 763), as the WGSL does. sim.js re-exports cellSlot and
@@ -122,6 +139,77 @@ export function slotCell(g, s) {
 export function marksLayout(g) {
   const { nbricks } = gridDims(g), bits = Math.ceil(nbricks / 32);
   return { act: 0, derived: bits, foams: 2 * bits, dbg: 2 * bits + nbricks, words: 2 * bits + nbricks + 1 };
+}
+
+// The sleeping unit of a grid (docs/webgpu.md W12, D5): a brick (SLEEP_UNIT),
+// or SUPER (docs/scaling.md D8's supertile, for an A/B). Units are numbered so
+// that unit u holds bricks u·bricks … u·bricks + bricks − 1: a brick's number
+// is its own, a supertile's is the one its 16 bricks share (brickId runs
+// supertile by supertile), so a list of units names its bricks too.
+export function sleepUnitOf(g) {
+  const u = g.sleepUnit ?? SLEEP_UNIT;
+  const brick = u.x === 1 && u.y === 1 && u.z === 1;
+  const sup = u.x === SUPER.x && u.y === SUPER.y && u.z === SUPER.z;
+  if (!brick && !sup) throw new Error(`sleep unit ${u.x}×${u.y}×${u.z}: a brick or a supertile (${SUPER.x}×${SUPER.y}×${SUPER.z})`);
+  const bricks = u.x * u.y * u.z, d = gridDims(g);
+  return { x: u.x, y: u.y, z: u.z, bricks, ux: d.bx / u.x, uy: d.by / u.y, uz: d.bz / u.z, units: d.nbricks / bricks };
+}
+
+// The activity arrays and lists (the act buffer, docs/webgpu.md C1, D4), in
+// u32 words, a run of one word per brick each:
+//   inert    1: the brick is inert (the build's inert kernel)
+//   quiet    1: it and its 26 neighbours are inert, so steps skip it
+//   changed  1: steps may have changed it since the derived passes last
+//            noted it (noteAwake, the old MAX blend; their age pass reads it)
+//   map      per unit: AWAKE and DRAWN (ACT_MAP) and the settle run counter
+//            (docs/webgpu.md D5.3)
+//   aerSeen  per brick, the aeration list's history (G4, its own kernel's)
+//   drawnL, move1L, inertL, aerL   the lists: unit numbers (DRAWN, MOVE1),
+//            brick numbers (INERT, AER)
+//   count    the lists' lengths (ACT_COUNTS), and the units AWAKE
+export const ACT_COUNTS = { DRAWN: 0, MOVE1: 1, INERT: 2, AER: 3, AWAKE: 4 };
+export const ACT_MAP = { AWAKE: 1, DRAWN: 2, RUN_SHIFT: 8, RUN_MAX: 255 };
+export function actLayout(g) {
+  const { nbricks } = gridDims(g);
+  const at = (k) => k * nbricks;
+  return {
+    inert: at(0), quiet: at(1), changed: at(2), map: at(3), aerSeen: at(4),
+    drawnL: at(5), move1L: at(6), inertL: at(7), aerL: at(8), count: at(9), words: at(9) + 8,
+  };
+}
+
+// The activity arrays' WGSL, with the act binding: their offsets, the unit
+// helpers and the map's readers (prelude).
+function actWGSL(g, o) {
+  const a = actLayout(g), u = sleepUnitOf(g);
+  const load = o.act === 'read_write' ? 'atomicLoad(&act[i])' : 'act[i]';
+  return /* wgsl */ `
+// ---- the activity arrays (docs/webgpu.md C1, D4; shaders/common.js actLayout) ----
+${Object.entries(a).map(([k, v]) => `const ACT_${k.toUpperCase()}: u32 = ${v}u;`).join('\n')}
+${Object.entries(ACT_COUNTS).map(([k, v]) => `const CNT_${k}: u32 = ${v}u;`).join('\n')}
+const MAP_AWAKE: u32 = ${ACT_MAP.AWAKE}u;
+const MAP_DRAWN: u32 = ${ACT_MAP.DRAWN}u;
+const MAP_RUN_SHIFT: u32 = ${ACT_MAP.RUN_SHIFT}u;
+const MAP_RUN_MAX: u32 = ${ACT_MAP.RUN_MAX}u;
+// the sleeping unit (docs/webgpu.md W12): UNIT_B bricks; units along x, y, z
+const UNIT_B: u32 = ${u.bricks}u;
+const UX: i32 = ${u.ux};
+const UY: i32 = ${u.uy};
+const UZ: i32 = ${u.uz};
+const NUNITS: u32 = ${u.units}u;
+fn actLoad(i: u32) -> u32 { return ${load}; }
+fn unitOfBrick(id: u32) -> u32 { return id / UNIT_B; }
+fn unitCoord(un: u32) -> vec3i { return brickCoord(un * UNIT_B) / SLEEP_UNIT; }
+fn unitId(c: vec3i) -> u32 { return brickId(c * SLEEP_UNIT) / UNIT_B; }
+fn unitOfCell(p: vec3i) -> u32 { return unitOfBrick(brickId(p >> vec3u(2u))); }
+fn inUnits(c: vec3i) -> bool { return all(c >= vec3i(0)) && all(c < vec3i(UX, UY, UZ)); }
+fn inBricks(b: vec3i) -> bool { return all(b >= vec3i(0)) && all(b < vec3i(BX, BY, BZ)); }
+// Is brick id quiet, or the brick holding cell c (clamped into the grid)?
+fn quietBrick(id: u32) -> bool { return actLoad(ACT_QUIET + id) != 0u; }
+fn quietCell(c: vec3i) -> bool { return quietBrick(brickId(clamp(c, vec3i(0), vec3i(NX, NY, NZ) - 1) >> vec3u(2u))); }
+// Unit un's map word, and whether this map's steps draw it
+fn unitMap(un: u32) -> u32 { return actLoad(ACT_MAP + un); }
+fn drawnUnit(un: u32) -> bool { return (unitMap(un) & MAP_DRAWN) != 0u; }`;
 }
 
 // ---------------------------------------------------------------- tables
@@ -283,6 +371,12 @@ fn writeStateS(s: u32, a: vec4f, b: vec4f, f: u32) {
   B[i] = b;
   F[i] = f;
 }
+// Store only cell p's flags (its A and B stay as they are): a pass that
+// leaves a cell's state but settles its flags, as the move's blocks with a
+// quiet base do in place (docs/webgpu.md D2). Same rules as writeState.
+fn writeFlags(p: vec3i, f: u32) {
+  ${o.debug ? 'if (!inGrid(p) || H.dst > 1u) { dbgOob(); return; }\n  ' : ''}F[H.dst * SLOTS + slotOf(p)] = f;
+}
 // A writer's store (docs/webgpu.md D6): cell p held (a, b) with flags f and
 // gets (oA, oB). Outside the grid it stores nothing; inside, only if A or B
 // changed, with the flags writtenFlags leaves. True when it stored: the
@@ -388,6 +482,7 @@ fn markBrick(id: u32) {
   atomicOr(&marks[MARK_DERIVED + (id >> 5u)], 1u << (id & 31u));
   atomicStore(&marks[MARK_FOAMS + id], 1u);
 }` : ''}
+${o.act ? actWGSL(g, o) : ''}
 ${o.debug ? `// an accessor reached outside the grid (or past a copy): counted for sim-check
 // (I2.8) in the marks' dbg word${o.marks ? '' : ' (no marks bound here: nothing to count in)'}
 fn dbgOob() {${o.marks ? ' atomicAdd(&marks[MARK_DBG], 1u); ' : ''}}` : ''}
@@ -669,6 +764,29 @@ ${head.replace('NAME', 'apply')}
     if (writeCell(p, fetchA(p), fetchB(p), fetchF(p), editScratch[i], editScratch[i + 1u])) { atomicOr(&editChanged, 1u); }
   }${mark}
 `;
+}
+
+/**
+ * A box writer's whole module (docs/webgpu.md D6; sim.editKernel builds it):
+ * the prelude with the writable state, its params struct (EDIT_FIELDS first)
+ * at group 3 binding 1 as P, extra declarations, its update and editMain.
+ * @param {object} g grid
+ * @param {{ update: string, params: object, reads?: 'own' | 'neighbours', decls?: string, debug?: boolean }} opts
+ *   update   WGSL defining fn update(p, a, b, oA, oB)
+ *   params   a uniformStruct whose first fields are EDIT_FIELDS
+ *   decls    WGSL after the params (the kernel's own group-2 bindings, helpers)
+ * @returns {string}
+ */
+export function editKernelWGSL(g, { update, params, reads = 'own', decls = '', debug = false }) {
+  const [lo, hi] = params.fields ?? [];
+  if (lo?.name !== 'editLo' || hi?.name !== 'editHi') throw new Error(`editKernelWGSL: ${params.name} must start with EDIT_FIELDS`);
+  return /* wgsl */ `
+${prelude(g, { ...STATE_OPTS.STATE_RW, debug })}
+${params.deps?.map((d) => d.wgsl).join('') ?? ''}${params.wgsl}
+@group(3) @binding(1) var<uniform> P: ${params.name};
+${decls}
+${update}
+${editMain('update', { reads })}`;
 }
 
 // ---------------------------------------------------------------- WebGL leftovers

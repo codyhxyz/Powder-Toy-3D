@@ -1,92 +1,83 @@
-import * as THREE from 'three';
-import { quadVert, BRICK, SEED_MAX, TILE, SUPER, SUPER_TEX, SUPER_CELLS, BLOCK_TILE, stateUniforms } from './shaders/common.js';
 import {
-  inertFrag, inertRowsFrag, inertJoinFrag, quietFrag, activityPeriod, superMapFrag, superRowsFrag, superShareFrag, stepRegionsGLSL,
-  SUPER_MAP, SUPER_SETTLE_STEPS, STEP_FULL_SHARE,
+  BRICK, SEED_MAX, TILE, SUPER, SUPER_TEX, SUPER_CELLS, LAYOUT, STATE_OPTS, gridDims, atlasDims, sleepUnitOf,
+  marksLayout, actLayout, ACT_COUNTS, ACT_MAP, tablesBuffer, cellSlot, slotCell, brickIdOf, brickCoordOf,
+  editKernelWGSL, EDIT_FIELDS, EDIT_SCRATCH_BINDING,
+} from './shaders/common.js';
+import {
+  activityPeriod, inertListFrag, inertFrag, quietFrag, drawnFrag, move1Frag, argsFrag, permuteFrag, inertRefFrag,
+  BuildParams, BUILD_LAYOUT, REF_LAYOUT, ARGS, ARGS_BYTES, COUNTS_SLOTS, COUNTS_BYTES, inertFold, SUPER_SETTLE_STEPS,
 } from './shaders/activity.js';
-import { moveBlockFrag, moveFlowFrag, moveGatherFrag, SLOTS } from './shaders/move.js';
-import { reactFrag, FACES } from './shaders/react.js';
+import { moveBlockFrag, MoveParams, MOVE_LAYOUT, marginBlocks, MOVE_FORM } from './shaders/move.js';
+import { reactFrag, ReactParams, REACT_LAYOUT, FACES } from './shaders/react.js';
 import {
-  paintFrag, copyFrag, brickFrag, blurFrag, brickDistFrag,
-  awakeFrag, ageFrag, dirtyFrag, fieldRegionMapFrag, regionShareFrag,
+  paintUpdateWGSL, PaintParams, freshFrag, toAtlasFrag, fromAtlasFrag, ConvertParams, CONVERT_LAYOUT, awakeFrag, AwakeParams,
 } from './shaders/passes.js';
-import {
-  fieldEmaFrag, fieldCopyFrag, fieldBlurFrag, fieldBoostFrag, fieldRegions, fieldRegionsGLSL, BOOST_STAGES, BLUR_TAPS, DIRTY,
-} from './shaders/fields.js';
-import { giSourceFrag, giGatherFrag } from './shaders/gi.js';
-import { farGIGLSL, farLayout, WORLD_SIZE } from './shaders/far.js';
-import { shiftFrag, giShiftFrag, flowShiftFrag, undoShiftFrag } from './shaders/window.js';
-import { CHANNELS, MEDIA, gauss5, bulkPeak, bulkPeakCubic, CUBIC_LATTICE } from './gfx/materials.js';
-import { gfxUniforms } from './gfx/uniforms.js';
-import { RegionQuads, regionMaterial } from './gfx/regions.js';
-import { ELEMENTS, mechanisms } from './elements.js';
-import { Rays } from './raysLayer.js';
+import { shiftFrag, undoShiftFrag, flowShiftFrag, ShiftParams, UNDO_LAYOUT, FLOW_SHIFT_LAYOUT } from './shaders/window.js';
+import { stateLayout } from './shaders/common.js';
+import { uniformStruct } from './gpu/params.js';
+import { fold } from './gpu/kernels.js';
+
+// The simulation on the GPU (docs/webgpu.md C, D): the state buffers, the
+// step (the move in place, then react: shaders/move.js, react.js), the
+// activity map that puts quiet bricks to sleep (shaders/activity.js), the
+// writers that aren't steps (edits, loads, undo, shifts) and every read back.
+// Everything records into the one open frame (gpu.frame, B3); nothing here
+// submits or waits, and every read is a promise (W6).
+//
+//   const sim = new Simulation(gpu, 128, 128, 128);
+//   await sim.ready;               // its pipelines (built asynchronously, B5)
+//   sim.paint({ center, radius, shape: 0, tool: E.SAND, rate: 1, replace: false });
+//   sim.step();
+//   const [A, B] = await sim.readState();   // atlas order (cellTexel), as load() takes
+//
+// The derived passes (render fields, the brick map, light, GI) are
+// src/derived.js's (docs/webgpu.md E): sim.attachDerived(d) and the
+// delegating methods below. Fast particles and whitewater plug in the same
+// way (attachRays, attachAeration; J3).
 
 // cells/step² downward (the app's gravity setting overrides it)
 const GRAVITY_DEFAULT = 0.025;
-// blur passes over the glow volume: x, y, z, twice
-const LIGHT_BLUR_PASSES = 6;
 
 // Steps an activity map stays valid (shaders/activity.js).
 const ACTIVITY_PERIOD = activityPeriod(BRICK);
 
-// The state atlas may be at most this many times wider than tall (atlasColumns).
-const ATLAS_ASPECT_MAX = 4;
-
-// A box of bricks (or supertiles) none is in (no write touched any): lo > hi.
-const TOUCH_NONE_LO = 2 ** 30, TOUCH_NONE_HI = -1;
-// Cells per supertile along x, y, z (shaders/common.js SUPER_CELLS), indexed like a cell's [x, y, z].
-const SUPER_SIDE = [SUPER_CELLS.x, SUPER_CELLS.y, SUPER_CELLS.z];
-// Cells added around a box of cell centres in the box a write declares
+// Cells added around a box of cell centres in the box an edit covers
 // (touchCentres(): the brush, the first-person body and physgun): the centres
 // sit half a cell off the grid, so this covers them with room.
 const TOUCH_MARGIN = 1;
 
-// Supertiles per state-atlas row: the smallest divisor of their count from its
-// square root up, so the atlas is near square and every texel holds a cell
-// (all the app's grid sizes). If that would make it more than ATLAS_ASPECT_MAX
-// times wider than tall, a square atlas whose last row is partly empty.
-function atlasColumns(count) {
-  const root = Math.ceil(Math.sqrt(count));
-  let w = root;
-  while (count % w) w++;
-  return w * w <= ATLAS_ASPECT_MAX * count ? w : root;
-}
+// Undo snapshots kept, at most (each is the current A and B: ~67 MB at 128³).
+const UNDO_LIMIT = 3;
+
+// Share of each update's new GI probes blended into the probe volume (the rest
+// is history): smooths cells popping between bricks over a few frames. Each
+// probe is updated every other frame. (The GI is src/derived.js's, U9; the
+// number stays here for the modules that import it.)
+export const GI_BLEND = 0.4;
 
 export function gridLayout(nx, ny, nz) {
-  if (nx % SUPER_CELLS.x || ny % SUPER_CELLS.y || nz % SUPER_CELLS.z) {
-    throw new Error(`grid ${nx}×${ny}×${nz}: sides must be multiples of ${SUPER_CELLS.x}×${SUPER_CELLS.y}×${SUPER_CELLS.z} (a supertile)`);
-  }
-  // state atlas (brick-major, shaders/common.js): supertiles row-major
-  const stx = nx / SUPER_CELLS.x, sty = ny / SUPER_CELLS.y, stz = nz / SUPER_CELLS.z;
-  const stw = atlasColumns(stx * sty * stz);
-  const sth = Math.ceil((stx * sty * stz) / stw);
-  // render-field atlas: Y-slices, ftx per row
+  const d = gridDims({ nx, ny, nz });
+  const at = atlasDims(d);
+  // render-field and brick atlases (WebGL; tools still size readbacks by them until their units port them)
   const ftx = Math.ceil(Math.sqrt((ny * nz) / nx));
   const fty = Math.ceil(ny / ftx);
-  const bx = nx / BRICK, by = ny / BRICK, bz = nz / BRICK;
-  const btx = Math.ceil(Math.sqrt((by * bz) / bx));
-  const bty = Math.ceil(by / btx);
-  // Margolus blocks (2×2×2, partition offset 0 or 1): the block atlas
-  // (shaders/common.js BLOCK_TILE), the state's supertile grid at one tile per
-  // brick, then rows for the low-margin blocks of offset 1 (N/2 + 1 per axis
-  // then, N/2 at offset 0).
-  const mwidth = stw * SUPER.x * BLOCK_TILE.x, mmainh = sth * SUPER.z * SUPER.y * BLOCK_TILE.y;
-  const margin = (nx / 2 + 1) * (ny / 2 + 1) * (nz / 2 + 1) - (nx / 2) * (ny / 2) * (nz / 2);
+  const btx = Math.ceil(Math.sqrt((d.by * d.bz) / d.bx));
+  const bty = Math.ceil(d.by / btx);
   return {
-    nx, ny, nz, stx, sty, stz, stw, ftx, btx, bty,
-    width: stw * SUPER_TEX, height: sth * SUPER_TEX,
+    nx, ny, nz, stx: d.stx, sty: d.sty, stz: d.stz, stw: at.stw, ftx, btx, bty,
+    width: at.width, height: at.height,
     fwidth: ftx * nx, fheight: fty * nz,
-    bwidth: btx * bx, bheight: bty * bz,
-    mwidth, mmainh, mheight: mmainh + Math.ceil(margin / mwidth),
+    bwidth: btx * d.bx, bheight: bty * d.bz,
     maxSteps: nx + ny + nz + 8,
+    // the WebGPU layout (docs/webgpu.md C2)
+    bx: d.bx, by: d.by, bz: d.bz, slots: d.slots, nbricks: d.nbricks, nsuper: d.nsuper,
   };
 }
 
-// JS mirror of atlas() and cellFromFrag() (shaders/common.js), for CPU code
-// that builds or reads the state: the index of cell (x, y, z)'s texel in a
-// width × height state texture (× 4 for its RGBA floats), and back ([x, y, z],
-// or null for a texel past the last supertile, which holds no cell).
+// JS mirror of the atlas order (docs/webgpu.md C2: the CPU's order, readState
+// and load): the index of cell (x, y, z)'s texel in a width × height state
+// texture (× 4 for its RGBA floats), and back ([x, y, z], or null for a texel
+// past the last supertile, which holds no cell).
 export function cellTexel(g, x, y, z) {
   const bx = Math.floor(x / BRICK), by = Math.floor(y / BRICK), bz = Math.floor(z / BRICK);   // brick
   const sx = Math.floor(bx / SUPER.x), sy = Math.floor(by / SUPER.y), sz = Math.floor(bz / SUPER.z);   // supertile
@@ -112,355 +103,227 @@ export function texelCell(g, t) {
     (sz * SUPER.z + (kv % SUPER.z)) * BRICK + (lv % BRICK),
   ];
 }
+// The slot order (docs/webgpu.md C2): cell (x, y, z)'s place in the state
+// buffers, and back (shaders/common.js mirrors brickId, slotOf, cellOf).
+export { cellSlot, slotCell };
 
-// JS mirror of brickAtlas() (shaders/common.js): the index of brick (bx, by,
-// bz)'s texel in the brick-resolution targets (bwidth × bheight).
-export function brickTexel(g, bx, by, bz) {
-  const BX = g.nx / BRICK, BZ = g.nz / BRICK;
-  return (Math.floor(by / g.btx) * BZ + bz) * g.bwidth + (by % g.btx) * BX + bx;
+// WEBGPU-STUB (docs/webgpu.md J3): the brick atlas is gone (brick buffers run in brickId order).
+export function brickTexel() { throw new Error('brickTexel removed in the WebGPU port: docs/webgpu.md C2 (brickId)'); }
+// WEBGPU-STUB (docs/webgpu.md J3)
+export function makeFieldTarget() { throw new Error('makeFieldTarget removed in the WebGPU port: docs/webgpu.md C7 (gpu.createBuffer, gpu.createTexture)'); }
+// WEBGPU-STUB (docs/webgpu.md J3)
+export function rawMat() { throw new Error('rawMat removed in the WebGPU port: docs/webgpu.md C7 (gpu.kernel, sim.editKernel)'); }
+// WEBGPU-STUB (docs/webgpu.md J3): the reaction lookup is in the element tables (shaders/common.js rxAt).
+export function reactionTexture() { throw new Error('reactionTexture removed in the WebGPU port: docs/webgpu.md C6'); }
+
+// The window's place in the world (docs/scaling.md D11): a grid cell's world
+// cell is origin + the cell. The few Vector3 methods its readers use, so sim
+// code doesn't import three.
+export class Vec3 {
+  constructor(x = 0, y = 0, z = 0) { this.x = x; this.y = y; this.z = z; }
+  set(x, y, z) { this.x = x; this.y = y; this.z = z; return this; }
+  copy(v) { this.x = v.x; this.y = v.y; this.z = v.z; return this; }
+  clone() { return new Vec3(this.x, this.y, this.z); }
+  add(v) { this.x += v.x; this.y += v.y; this.z += v.z; return this; }
+  sub(v) { this.x -= v.x; this.y -= v.y; this.z -= v.z; return this; }
+  equals(v) { return this.x === v.x && this.y === v.y && this.z === v.z; }
+  fromArray(a, o = 0) { this.x = a[o]; this.y = a[o + 1]; this.z = a[o + 2]; return this; }
+  toArray(a = [], o = 0) { a[o] = this.x; a[o + 1] = this.y; a[o + 2] = this.z; return a; }
 }
 
-function makeTarget(w, h, count = 2) {
-  return new THREE.WebGLRenderTarget(w, h, {
-    count,
-    type: THREE.FloatType,
-    format: THREE.RGBAFormat,
-    minFilter: THREE.NearestFilter,
-    magFilter: THREE.NearestFilter,
-    depthBuffer: false,
-    stencilBuffer: false,
-    generateMipmaps: false,
-  });
-}
-
-// A copy of the state: A and B (RGBA32F), and the activity flags (R8UI, one
-// byte per cell: shaders/common.js FLAG).
-const STATE_FLAGS = 2;   // attachment index of the flags
-function makeStateTarget(w, h) {
-  const t = makeTarget(w, h, STATE_FLAGS + 1);
-  t.textures[STATE_FLAGS].format = THREE.RedIntegerFormat;
-  t.textures[STATE_FLAGS].type = THREE.UnsignedByteType;
-  return t;
-}
-
-export function makeFieldTarget(w, h, count, type, filter) {
-  return new THREE.WebGLRenderTarget(w, h, {
-    count, type, format: THREE.RGBAFormat, minFilter: filter, magFilter: filter,
-    depthBuffer: false, stencilBuffer: false, generateMipmaps: false,
-  });
-}
-
-// The reaction lookup (elements.js mechanisms().lookup) as an NE × NE
-// integer texture: texel (b, a) is what a cell of a does with a neighbour of b
-// (shaders/activity.js rxAt). The react pass and the activity map read it.
-export function reactionTexture() {
-  const n = ELEMENTS.length;
-  const t = new THREE.DataTexture(mechanisms().lookup, n, n, THREE.RedIntegerFormat, THREE.UnsignedShortType);
-  t.internalFormat = 'R16UI';
-  t.needsUpdate = true;
-  return t;
-}
-
-export function rawMat(frag, uniforms) {
-  return new THREE.RawShaderMaterial({
-    glslVersion: THREE.GLSL3,
-    vertexShader: quadVert,
-    fragmentShader: frag,
-    uniforms,
-    depthTest: false,
-    depthWrite: false,
-  });
-}
-
-// Uniforms of the GI passes (shaders/gi.js); the probe textures are rebound per frame.
-const giUniforms = () => ({
-  tA: { value: null }, tBrick: { value: null }, tShadow: { value: null }, uShadowRes: { value: 1 },
-  uShadows: { value: true }, uSun: { value: new THREE.Vector3(0, 1, 0) },
-  // sky values (computed per frame by updateGfxUniforms)
-  uSunExt: gfxUniforms.uSunExt, uSunCol: gfxUniforms.uSunCol, uSkyUp: gfxUniforms.uSkyUp, uGround: gfxUniforms.uGround,
-  uKeyLight: gfxUniforms.uKeyLight,
-  // the cloud deck's shadows (shaders/gfx/clouds.js, in sunShadow)
-  tMediaNoise: gfxUniforms.tMediaNoise, uClouds: gfxUniforms.uClouds, uCloudShift: gfxUniforms.uCloudShift,
-  uCloudSea: gfxUniforms.uCloudSea,
-});
-const giProbeUniforms = () => Object.fromEntries([0, 1, 2, 3].map((i) => [`tGI${i}`, { value: null }]));
-
-// Share of each step's displacements blended into the flow field (the rest is
-// history): grains move a cell on some steps and not others, so the field
-// averages their speed over about 1 / FLOW_BLEND steps.
-const FLOW_BLEND = 0.05;
-
-// Share of each update's new GI probes blended into the probe volume (the rest
-// is history): smooths cells popping between bricks over a few frames. Each
-// probe is updated every other frame.
-export const GI_BLEND = 0.4;
-
-const fieldBlurUniforms = () => ({
-  t0: { value: null }, t1: { value: null }, t2: { value: null }, uAxis: { value: 0 },
-  uW: { value: [...Array(BLUR_TAPS)].map(() => new THREE.Vector4()) },
+// The rays layer while nothing is attached (docs/webgpu.md J3: src/wire/rays.js
+// attaches the real one, U12): never active.
+const NO_RAYS = Object.freeze({
+  active: false, stepped: false, bricks: null, deposit: null,
+  step() {}, settle() {}, paint() { return false; }, noteElement() {}, reset() {}, wake() {}, dispose() {},
 });
 
 let nextSimId = 0;
 
-// Every simulation's uOrigin uniform (run): a pass kept across grids, made for
-// an older simulation of the same size (a tool's), takes the current one's.
-const simOrigins = new WeakSet();
+// The bind group layouts the simulation's kernels use, named in gpu.L (C4).
+function simLayouts(gpu) {
+  const L = {};
+  for (const [name, entries] of Object.entries({
+    TABLES: LAYOUT.TABLES, STATE_RW: LAYOUT.STATE_RW, STATE_RO: LAYOUT.STATE_RO, STATE_ACT: LAYOUT.STATE_ACT,
+    STATE_BUILD: LAYOUT.STATE_BUILD, STATE_FLAGS_RO: stateLayout({ state: 'read', flags: true }),
+    MOVE: MOVE_LAYOUT, REACT: REACT_LAYOUT, BUILD: BUILD_LAYOUT, REF: REF_LAYOUT, CONVERT: CONVERT_LAYOUT,
+    UNDO: UNDO_LAYOUT, FLOW_SHIFT: FLOW_SHIFT_LAYOUT,
+    EDIT_SCRATCH: [{ binding: EDIT_SCRATCH_BINDING, buffer: { type: 'storage' } }],
+  })) L[name] = gpu.layout(name, entries);
+  return L;
+}
 
-// GPU simulation driver: owns the state ping-pong targets and runs passes.
+// The element tables' buffer (C6): one per device, made on first use.
+function tablesOf(gpu) {
+  if (!gpu._simTables) {
+    const bytes = tablesBuffer();
+    const buffer = gpu.createBuffer({ label: 'tables', size: Math.ceil(bytes.byteLength / 16) * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    gpu.queue.writeBuffer(buffer, 0, bytes);
+    gpu._simTables = { buffer, group: gpu.bindGroup(simLayouts(gpu).TABLES, [{ binding: 0, resource: { buffer } }], 'tables') };
+  }
+  return gpu._simTables;
+}
+
+// GPU simulation driver: owns the state buffers and records the passes.
 export class Simulation {
-  // windowed: the grid is a window of a larger world (docs/scaling.md D11; app.js World)
-  // windowed: a window of a larger world; world: that world's size (its far
-  // layout goes into the GI, shaders/far.js WORLD_SIZE: a box's is the default
-  // world's, so a box and that world share the program)
-  constructor(renderer, nx, ny, nz, { windowed = false, world = WORLD_SIZE } = {}) {
-    this.renderer = renderer;
+  /**
+   * @param {object} gpu the gpu from src/gpu/device.js createGpu
+   * @param {number} nx
+   * @param {number} ny
+   * @param {number} nz
+   * @param {{ windowed?: boolean, world?: number[], sleepUnit?: {x: number, y: number, z: number}, debug?: boolean, form?: string }} [opts]
+   *   windowed: the grid is a window of a larger world (docs/scaling.md D11);
+   *   world: that world's size (the GI's far layout, src/derived.js);
+   *   sleepUnit: the sleeping unit in bricks (shaders/common.js SLEEP_UNIT; SUPER for an A/B);
+   *   debug: every state access tests its cell and counts misses (readDebug; I2.8)
+   */
+  constructor(gpu, nx, ny, nz, { windowed = false, world = null, sleepUnit = null, debug = gpu.debug, form = MOVE_FORM } = {}) {
+    this.gpu = gpu;
     this.id = nextSimId++;   // tells a rebuilt simulation from the old one
     this.g = gridLayout(nx, ny, nz);
-    this.g.windowed = windowed;   // a window of a larger world (for the app: every shader compiles the same either way)
-    this.world = world;           // the world size whose far layout the GI and the app's shadow pass hold
     const g = this.g;
+    if (sleepUnit) g.sleepUnit = sleepUnit;
+    this.unit = sleepUnitOf(g);
+    this.g.windowed = windowed;   // a window of a larger world
+    this.world = world;           // the world size whose far layout the GI holds (src/derived.js)
+    this.debug = Boolean(debug);
+    if (!gpu.fits(g)) throw new Error(`grid ${nx}×${ny}×${nz}: ${gpu.fitsReason(g)}`);
     this.frame = 0;
-    this.paints = 0;   // brush strokes applied (the paint pass's random stream)
+    this.paints = 0;   // brush strokes applied (the brush's random stream)
     this.idleEpoch = 0;
     this.idleCertified = false;
-    this.idleRead = null;   // at most one asynchronous one-texel readback
+    this.idleRead = null;   // at most one asynchronous read of the activity counts
     this.gravity = GRAVITY_DEFAULT;
-    // bumped by every write to the state (steps, painting, loads, undo, network
+    // bumped by every write to the state (steps, edits, loads, undo, network
     // updates), so callers can tell when the world changed
     this.version = 0;
-
-    this.targets = [makeStateTarget(g.width, g.height), makeStateTarget(g.width, g.height)];
-    this.cur = 0;
-    // The block pass's results: slot i of every block in layer i of one array
-    // texture (shaders/move.js slotGLSL). three.js gives a multi-target its own
-    // textures, so the block pass draws into this.blocks, whose colour
-    // attachments are pointed at the slot layers (attachSlots).
-    this.slots = new THREE.WebGLArrayRenderTarget(g.mwidth, g.mheight, SLOTS, {
-      type: THREE.FloatType, format: THREE.RGBAFormat, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter,
-      depthBuffer: false, stencilBuffer: false, generateMipmaps: false,
-    });
-    this.blocks = makeTarget(g.mwidth, g.mheight, SLOTS);
-    this.attachSlots();
-    this.brick = makeTarget(g.bwidth, g.bheight, 1);
-    this.light = [makeTarget(g.bwidth, g.bheight, 1), makeTarget(g.bwidth, g.bheight, 1)];
-    // render fields (see shaders/fields.js): the EMA (kept from frame to frame)
-    // and two scratch targets for the blur and boost in RGBA8, the blurred
-    // fields in half floats, the boosted final fields (and the thin-feature
-    // mask) in filterable half floats
-    const U8 = THREE.UnsignedByteType, NEAR = THREE.NearestFilter, HALF = THREE.HalfFloatType;
-    // (all in the field atlas: Y-slices, fwidth × fheight)
-    this.fieldEma = makeFieldTarget(g.fwidth, g.fheight, 3, U8, NEAR);
-    this.fieldTmp = [makeFieldTarget(g.fwidth, g.fheight, 3, U8, NEAR), makeFieldTarget(g.fwidth, g.fheight, 3, U8, NEAR)];
-    this.fieldsBlurred = makeFieldTarget(g.fwidth, g.fheight, 2, HALF, NEAR);
-    this.fields = makeFieldTarget(g.fwidth, g.fheight, 3, HALF, THREE.LinearFilter);
-    // how fast matter has been moving through each cell (shaders/move.js moveFlowFrag);
-    // read with atlas(), so it shares the state's texel layout and size
-    this.flowV = makeFieldTarget(g.width, g.height, 1, HALF, NEAR);
-    // whitewater's aeration field (gfx/foam.js): made and stepped while that switch is on
+    // The grid is a window of the world (docs/scaling.md D11): origin is the
+    // world cell of grid cell (0, 0, 0), every dispatch's header (B4). A grid
+    // that is its whole world stays at 0; shift() moves it.
+    this.origin = new Vec3();
+    this.originUniform = { value: this.origin };   // (for the render setup until it reads the header)
+    // fast particles and whitewater (attachRays, attachAeration), the derived passes (attachDerived)
+    this.rays = NO_RAYS;
     this.aeration = null;
-    this.fieldReset = true;
-    this.smoothing = 1;
-    // GI (shaders/gi.js): per-brick light sources and blockers, and the probe
-    // volume (L1 spherical harmonics, filterable for trilinear lookups)
-    this.giSrc = makeFieldTarget(g.bwidth, g.bheight, 3, HALF, NEAR);
-    this.giProbes = makeFieldTarget(g.bwidth, g.bheight, 4, HALF, THREE.LinearFilter);
-    this.giReset = true;
-    // activity map (shaders/activity.js): inert bricks, then the quiet ones the
-    // step passes skip. Rebuilt every ACTIVITY_PERIOD steps and after any
-    // write that isn't a step (painting, loads), which may wake a brick.
-    // empty-space distance per brick (shaders/passes.js brickDistFrag), and its scratch
-    this.brickDist = [makeFieldTarget(g.bwidth, g.bheight, 1, U8, NEAR), makeFieldTarget(g.bwidth, g.bheight, 1, U8, NEAR)];
-    // (built in passes: per-brick decisions from the activity flags, the
-    // re-tests of the bricks they leave open, row by row, then the join)
-    this.actClass = makeFieldTarget(g.bwidth, g.bheight, 1, U8, NEAR);
-    this.actRows = makeFieldTarget(g.bwidth * BRICK, g.bheight * BRICK, 1, U8, NEAR);
-    this.actInert = makeFieldTarget(g.bwidth, g.bheight, 1, U8, NEAR);
-    this.actQuiet = makeFieldTarget(g.bwidth, g.bheight, 1, U8, NEAR);
-    this.reactionTable = reactionTexture();   // what the react pass and activity map read of elements.js REACTIONS
+    this.derived = null;
+    // profiling hook (gfx/profiler.js): onPass(name, { kind, gpuMs }) after every dispatch
+    this.onPass = null;
+    // test knobs (docs/webgpu.md C7, I2); test mode only
+    this.test = { listOrder: null, blockOrder: null, raceProbe: false, syncAfterShift: false };
+    this._shiftListeners = [];
+    this._retired = [];
+
+    // ---- buffers (docs/webgpu.md C1) ----
+    const S = GPUBufferUsage.STORAGE, CS = GPUBufferUsage.COPY_SRC, CD = GPUBufferUsage.COPY_DST;
+    const buf = (label, size, usage = S | CS | CD) => gpu.createBuffer({ label: `sim${this.id} ${label}`, size: Math.max(16, Math.ceil(size / 16) * 16), usage });
+    const slots = g.slots;
+    this.cur = 0;
+    const A = buf('A', 2 * slots * 16), B = buf('B', 2 * slots * 16), F = buf('F', 2 * slots * 4);
+    this.flow = buf('flow', slots * 8);
+    this.moveSrc = buf('moveSrc (none)', 16);
+    this.marks = buf('marks', marksLayout(g).words * 4);
+    this.actLayout = actLayout(g);
+    this.act = buf('act', this.actLayout.words * 4);
+    this.args = buf('args', ARGS_BYTES, S | CS | CD | GPUBufferUsage.INDIRECT);
+    // dummies for the rays layer's deposit and brick bits while none is attached
+    this.noDeposit = buf('rays deposit (none)', 16);
+    this.noRayBricks = buf('rays bricks (none)', 16);
+    const sim = this;
+    this.state = {
+      A, B, F, flow: this.flow, slots,
+      get cur() { return sim.cur; },
+    };
+    // the INERT dispatch's y and z stay 1 (its x is the inertList kernel's)
+    const argsInit = new Uint32Array(ARGS_BYTES / 4);
+    argsInit[1] = argsInit[2] = 1;
+    gpu.queue.writeBuffer(this.args, 0, argsInit);
+    // the activity counts' ring (B7): a slot per build whose counts are read
+    this.counts = gpu.readback.ring(`sim${this.id} counts`, COUNTS_BYTES, COUNTS_SLOTS, { buffer: this.args, offset: ARGS.RING });
+
+    // ---- bind groups, made once (B6) ----
+    const L = (this.L = simLayouts(gpu));
+    this.tables = tablesOf(gpu).group;
+    const b = (binding, buffer) => ({ binding, resource: { buffer } });
+    this.bindRW = gpu.bindGroup(L.STATE_RW, [b(0, A), b(1, B), b(2, F), b(3, this.marks), b(4, this.act)], 'state rw');
+    this.bindRO = gpu.bindGroup(L.STATE_RO, [b(0, A), b(1, B)], 'state ro');
+    this.bindAct = gpu.bindGroup(L.STATE_ACT, [b(0, A), b(1, B), b(4, this.act)], 'state act');
+    this.bindBuild = gpu.bindGroup(L.STATE_BUILD, [b(0, A), b(1, B), b(2, F), b(3, this.marks), b(4, this.act)], 'state build');
+    this.bindFlagsRO = gpu.bindGroup(L.STATE_FLAGS_RO, [b(0, A), b(1, B), b(2, F)], 'state flags ro');
+    this._groups();
+
+    // ---- kernels (B5): built now, asynchronously; sim.ready resolves when they are ----
+    const dbg = { debug: this.debug };
+    const kernel = (name, code, layouts, params, extra = {}) => gpu.kernel({ name, code, layouts: [this.L.TABLES, ...layouts], params, ...extra });
+    const build = (name, frag) => kernel(name, frag(g), [L.STATE_BUILD, L.BUILD], BuildParams);
+    this.kernels = {
+      move: kernel('move', moveBlockFrag(g, { form, ...dbg }), [L.STATE_RW, L.MOVE], MoveParams),
+      react: kernel('react', reactFrag(g, dbg), [L.STATE_RW, L.REACT], ReactParams),
+      inertList: build('inertList', inertListFrag),
+      inert: kernel('inert', inertFrag(g, dbg), [L.STATE_BUILD], BuildParams),
+      quiet: build('quiet', quietFrag),
+      drawn: build('drawn', drawnFrag),
+      move1: build('move1', move1Frag),
+      args: build('args', argsFrag),
+    };
+    // the simulation's other passes (docs/webgpu.md D6, D7, C2): built now too,
+    // so a write never waits; the tools' kernels on first use (passOf)
+    this.passes = {
+      paint: this.editKernel('paint', { update: paintUpdateWGSL, params: PaintParams, reads: 'own' }),
+      fresh: kernel('fresh', freshFrag(g, dbg), [L.STATE_RW]),
+      toAtlas: kernel('toAtlas', toAtlasFrag(g), [L.STATE_FLAGS_RO, L.CONVERT], ConvertParams),
+      fromAtlas: kernel('fromAtlas', fromAtlasFrag(g, dbg), [L.STATE_RW, L.CONVERT], ConvertParams),
+      undoShift: kernel('undoShift', undoShiftFrag(g, dbg), [L.STATE_RW, L.UNDO], ShiftParams),
+      awake: kernel('awake', awakeFrag(g), [L.STATE_BUILD], AwakeParams),
+    };
+    this._lazy = {
+      inertRef: () => kernel('inertRef', inertRefFrag(g), [L.STATE_RO, L.REF]),
+      permute: () => build('permute', permuteFrag),
+      moveRace: () => kernel('moveRace', moveBlockFrag(g, { form, ...dbg, raceProbe: true }), [L.STATE_RW, L.MOVE], MoveParams),
+      shift: () => kernel('shift', shiftFrag(g, dbg), [L.STATE_RW], ShiftParams),
+      flowShift: () => kernel('flowShift', flowShiftFrag(g), [gpu.L.EMPTY, L.FLOW_SHIFT], ShiftParams),
+    };
+    // (the state starts blank once they are: load() needs its kernel)
+    this.ready = Promise.all([...Object.values(this.kernels), ...Object.values(this.passes)].map((k) => k.ready))
+      .then(() => { if (!this.disposed && this.version === 0) this.clear(); return this; });
+
+    // ---- activity (docs/webgpu.md D4, D5) ----
     this.actAge = ACTIVITY_PERIOD;
     this.actDirty = true;
     this.actFresh = false;   // the next step is the first since a map was built (its dirty marks start over)
     this.actSteps = 0;       // steps that used the current map
-    this.stepping = false;
-    this.skipQuiet = true;   // false: step every brick (A/B testing)
-    // Sleeping supertiles (docs/scaling.md D8, shaders/activity.js SUPER_MAP):
-    // with each activity map, which supertiles each step pass draws (ping-pong:
-    // a map reads the last one), and the share of them on per channel. The step
-    // passes draw a quad per supertile (stepQuads), or one full-screen quad.
-    const supers = g.stx * g.sty * g.stz;
-    this.superMap = [0, 1].map(() => makeFieldTarget(g.stw, g.height / SUPER_TEX, 1, U8, NEAR));
-    this.superCur = 0;
-    this.superRows = makeFieldTarget(g.height / SUPER_TEX, 1, 1, THREE.FloatType, NEAR);   // (counts per row of the map)
-    this.superShare = makeFieldTarget(1, 1, 1, THREE.FloatType, NEAR);
-    this.stepQuads = new RegionQuads(supers + 1);   // (the last region: the block atlas's low margin)
-    this.skipSleeping = true;   // false: draw every supertile (A/B testing)
-    // Writes that aren't steps since the last map: their supertiles are drawn
-    // by the next map's steps (noteWrite). All of them, or a box (inclusive).
-    this.forceAll = true;
-    this.forceLo = [TOUCH_NONE_LO, TOUCH_NONE_LO, TOUCH_NONE_LO];
-    this.forceHi = [TOUCH_NONE_HI, TOUCH_NONE_HI, TOUCH_NONE_HI];
-    this.wroteSinceStep = false;   // a write that isn't a step came after the last step
-    // Incremental derived passes (docs/scaling.md D9, shaders/passes.js
-    // dirtyFrag): the bricks the state may have changed in since the last
-    // updateBricks (every quiet map a step used, as 1 - quiet: the first
-    // overwrites, the rest blend with MAX; writes that aren't steps add
-    // changedAll or a touched box), each
-    // brick's age in frames since it last changed (ping-pong), the dirty sets
-    // derived from that, and per region of the field atlas, with their shares.
-    const fr = fieldRegions(g);
-    this.actChanged = makeFieldTarget(g.bwidth, g.bheight, 1, U8, NEAR);
-    this.brickAge = [makeFieldTarget(g.bwidth, g.bheight, 1, U8, NEAR), makeFieldTarget(g.bwidth, g.bheight, 1, U8, NEAR)];
-    this.ageCur = 0;
-    this.dirty = makeFieldTarget(g.bwidth, g.bheight, 1, U8, NEAR);
-    this.regionMap = makeFieldTarget(fr.mapWidth, fr.mapHeight, 1, U8, NEAR);
-    this.regionShare = makeFieldTarget(1, 1, 1, THREE.FloatType, NEAR);
-    this.fieldQuads = new RegionQuads(fr.count);
-    this.changedAll = true;
-    this.touchLo = [TOUCH_NONE_LO, TOUCH_NONE_LO, TOUCH_NONE_LO];   // bricks, inclusive
-    this.touchHi = [TOUCH_NONE_HI, TOUCH_NONE_HI, TOUCH_NONE_HI];
-    this.touchNext = null;   // the box the next write that isn't a step declared (touch())
+    this.actFull = true;     // the next map rebuilds every brick's inert bit (not only near the last DRAWN and marks)
+    this.forceAll = true;    // every unit was written since the last map: the next map draws them all
+    this._skipQuiet = true;      // false: step every brick (A/B testing)
+    this._skipSleeping = true;   // false: every unit DRAWN (A/B testing)
+    // the derived passes' bookkeeping (src/derived.js reads and resets these)
+    this.changedAll = true;  // every brick changed since the derived passes last ran
     this.actCarry = null;    // actAge at the last updateBricks while that quiet map is current
-    this.actNoted = false;   // actChanged holds a quiet map noted since the last updateBricks
-    this.lastSmoothing = null;
-    this.incremental = true;   // false: rebuild every brick every frame (A/B testing)
-
-    // The grid is a window of the world (docs/scaling.md D11): origin is the
-    // world cell of grid cell (0, 0, 0), the prelude's uOrigin in every pass
-    // (run). A grid that is its whole world stays at 0; shift() moves it.
-    this.origin = new THREE.Vector3();
-    this.originUniform = { value: this.origin };
-    simOrigins.add(this.originUniform);
-    // grid cells the window moved since the render fields last updated (their history follows)
-    this.fieldShift = new THREE.Vector3();
-    // false: a shift starts the render fields and GI over instead of moving their history (A/B)
-    this.shiftKeepsHistory = true;
-
-    this.scene = new THREE.Scene();
-    this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-    this.quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2));
-    this.quad.frustumCulled = false;
-    this.scene.add(this.quad);
-
-    const state = stateUniforms;
-    // the block pass's results, as passes that read them per cell take them (shaders/move.js slotGLSL)
-    const slots = () => ({ uParity: { value: 0 }, tSlots: { value: null } });
-    // field passes draw over the regions of their dirty set (gfx/regions.js)
-    const regionU = { tRegion: { value: this.regionMap.texture }, tShare: { value: this.regionShare.texture } };
-    const fieldMat = (frag, uniforms, set) => regionMaterial(this.fieldQuads, frag, fieldRegionsGLSL(g, set), { ...uniforms, ...regionU });
-    // step passes draw over the supertiles on in channel ch of the supertile map
-    // (over the block atlas: block); tSuper follows the map's ping-pong
-    this.superU = {
-      tSuper: { value: this.superMap[this.superCur].texture }, tSuperShare: { value: this.superShare.texture },
-      uFullShare: { value: STEP_FULL_SHARE },   // (a tool may move it: A/B and measuring the crossover)
-    };
-    const stepMat = (frag, uniforms, ch, block = false) => regionMaterial(this.stepQuads, frag, stepRegionsGLSL(g, ch, block), { ...uniforms, ...this.superU });
-    this.mats = {
-      moveBlock: stepMat(moveBlockFrag(g), {
-        ...state(), uParity: { value: 0 }, uFrame: { value: 0 }, uGravity: { value: this.gravity }, tQuiet: { value: null },
-      }, SUPER_MAP.BLOCKS, true),
-      moveGather: stepMat(moveGatherFrag(g), { ...state(), ...slots(), tQuiet: { value: null }, uFresh: { value: false } }, SUPER_MAP.DRAWN),
-      react: stepMat(reactFrag(g), {
-        ...state(), uFrame: { value: 0 }, uGravity: { value: this.gravity }, tQuiet: { value: null }, tRx: { value: this.reactionTable },
-        tRayDep: { value: null }, uRays: { value: false }, uFaces: { value: FACES },
-      }, SUPER_MAP.DRAWN),
-      inert: rawMat(inertFrag(g), { tF: { value: null } }),
-      inertRows: rawMat(inertRowsFrag(g), { tA: { value: null }, tF: { value: null }, tClass: { value: null }, tRx: { value: this.reactionTable } }),
-      inertJoin: rawMat(inertJoinFrag(g), { tClass: { value: null }, tRows: { value: null } }),
-      quiet: rawMat(quietFrag(g), { tInert: { value: null }, uEnabled: { value: true }, tRays: { value: null }, uRays: { value: false } }),
-      superMap: rawMat(superMapFrag(g), {
-        tQuiet: { value: this.actQuiet.texture }, tPrev: { value: null }, uPrevSettled: { value: false },
-        uForceAll: { value: true }, uForceLo: { value: new THREE.Vector3() }, uForceHi: { value: new THREE.Vector3() },
-      }),
-      superRows: rawMat(superRowsFrag(g), { tSuper: { value: null } }),
-      superShare: rawMat(superShareFrag(g), { tRows: { value: this.superRows.texture } }),
-      paint: rawMat(paintFrag(g), {
-        ...state(), uFrame: { value: 0 }, uCenter: { value: new THREE.Vector3() }, uRadius: { value: 4 },
-        uShape: { value: 0 }, uTool: { value: 2 }, uRate: { value: 1 }, uReplace: { value: false },
-      }),
-      copy: rawMat(copyFrag(g), state()),
-      moveFlow: stepMat(moveFlowFrag(g), { ...slots(), tQuiet: { value: null } }, SUPER_MAP.STEPS),
-      brick: rawMat(brickFrag(g), {
-        tA: { value: null }, tB: { value: null }, tFS: { value: null }, tFM: { value: null }, tFT: { value: null },
-        tDirty: { value: this.dirty.texture },
-      }),
-      fieldEma: fieldMat(fieldEmaFrag(g), {
-        tA: { value: null }, tP0: { value: null }, tP1: { value: null },
-        uEmaS: { value: new THREE.Vector4() }, uEmaM: { value: new THREE.Vector4() }, uShift: { value: new THREE.Vector3() },
-      }, DIRTY.EMA),
-      fieldCopy: fieldMat(fieldCopyFrag(), { t0: { value: null }, t1: { value: null }, t2: { value: null } }, DIRTY.EMA),
-      fieldBlur: fieldMat(fieldBlurFrag(g, false), fieldBlurUniforms(), DIRTY.WORK),
-      fieldFinal: fieldMat(fieldBlurFrag(g, true), fieldBlurUniforms(), DIRTY.WORK),
-      fieldBoost: [...Array(BOOST_STAGES).keys()].map((stage) => fieldMat(fieldBoostFrag(g, stage), {
-        tA: { value: null }, t0: { value: null }, t1: { value: null }, tPhi: { value: null }, tMed: { value: null },
-        uS: { value: new THREE.Vector4(...CHANNELS.map((c) => (c.cubic ? CUBIC_LATTICE[1] : 1))) },
-        uBulk: { value: new THREE.Vector4() }, tDirty: { value: this.dirty.texture },
-      }, stage === BOOST_STAGES - 1 ? DIRTY.FIELDS : DIRTY.WORK)),
-      awake: rawMat(awakeFrag(), { tQuiet: { value: this.actQuiet.texture } }),
-      age: rawMat(ageFrag(g), {
-        tAge: { value: null }, tChanged: { value: this.actChanged.texture }, uSteps: { value: false }, uAll: { value: true },
-        uTouchLo: { value: new THREE.Vector3() }, uTouchHi: { value: new THREE.Vector3() },
-      }),
-      dirty: rawMat(dirtyFrag(g), { tAge: { value: null } }),
-      regionMap: rawMat(fieldRegionMapFrag(g), { tDirty: { value: this.dirty.texture } }),
-      regionShare: rawMat(regionShareFrag(g), { tRegion: { value: this.regionMap.texture } }),
-      blur: rawMat(blurFrag(g), { tSrc: { value: null }, uAxis: { value: 0 } }),
-      brickDist: [0, 1, 2].map((axis) => rawMat(brickDistFrag(g, axis), { tSrc: { value: null } })),
-      giSource: rawMat(giSourceFrag(g), { ...giUniforms(), ...giProbeUniforms() }),
-      // the far field's part is in for a box too, off (shaders/far.js WORLD_SIZE; world/far.js attach turns it on)
-      giGather: rawMat(giGatherFrag(g, farGIGLSL(farLayout(world))), {
-        ...giUniforms(), tGIRad: { value: null }, tGICov: { value: null }, tGIDir: { value: null },
-        uParity: { value: -1 },
-        uFar: { value: false }, tFar: { value: null }, tFarTop: { value: null }, tFarShadow: { value: null }, uSea: { value: 0 },
-      }),
-    };
-    // the flow pass blends into the flow field: new * FLOW_BLEND + old * (1 - FLOW_BLEND)
-    Object.assign(this.mats.moveFlow, {
-      blending: THREE.CustomBlending, blendEquation: THREE.AddEquation,
-      blendSrc: THREE.ConstantAlphaFactor, blendDst: THREE.OneMinusConstantAlphaFactor, blendAlpha: FLOW_BLEND,
-    });
-    // the gather blends into the probe volume: new * GI_BLEND + old * (1 - GI_BLEND)
-    Object.assign(this.mats.giGather, {
-      blending: THREE.CustomBlending, blendEquation: THREE.AddEquation,
-      blendSrc: THREE.ConstantAlphaFactor, blendDst: THREE.OneMinusConstantAlphaFactor,
-    });
-    // awake bricks accumulate into the changed map: max(old, new) (noteAwake)
-    this.mats.awake.blendEquation = THREE.MaxEquation;
-    // pass names (the profiler's labels): the key, plus the stage for staged passes (fieldBoost0…)
-    for (const [key, m] of Object.entries(this.mats)) {
-      if (Array.isArray(m)) m.forEach((stage, i) => { stage.name = `${key}${i}`; });
-      else m.name = key;
-    }
-    // profiling hook (gfx/profiler.js): onPass(name, target) after every pass
-    this.onPass = null;
-    // fast particles (docs/particles.md): photons and neutrons in a list beside the grid
-    this.rays = new Rays(this, quadVert);
-    this.clear();
+    this.actNoted = false;   // `changed` holds a quiet map noted since the last updateBricks
+    this.incremental = true; // false: the derived passes rebuild every brick (A/B testing)
+    this.smoothing = 1;
+    this.fieldReset = true;
+    this.giReset = true;
+    this.shiftKeepsHistory = true;   // false: a shift starts the derived history over (A/B)
+    this.history = [];
   }
 
-  // Point the block pass's colour attachments (this.blocks) at the layers of
-  // this.slots, and shrink the block target's own textures, which nothing
-  // draws into or reads.
-  attachSlots() {
-    const r = this.renderer, gl = r.getContext(), keep = r.getRenderTarget();
-    r.initRenderTarget(this.slots);
-    r.initRenderTarget(this.blocks);
-    const layers = r.properties.get(this.slots.texture).__webglTexture;
-    r.state.bindFramebuffer(gl.FRAMEBUFFER, r.properties.get(this.blocks).__webglFramebuffer);
-    for (let i = 0; i < SLOTS; i++) gl.framebufferTextureLayer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + i, layers, 0, i);
-    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) throw new Error('block pass: slot layers not attachable');
-    for (const t of this.blocks.textures) {
-      r.state.bindTexture(gl.TEXTURE_2D, r.properties.get(t).__webglTexture);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, 1, 1, 0, gl.RGBA, gl.FLOAT, null);
-    }
-    r.state.unbindTexture();
-    r.setRenderTarget(keep);
+  // The group-2 bind groups that hold attachable resources (rays, aeration).
+  _groups() {
+    const { gpu, L } = this;
+    const b = (binding, buffer) => ({ binding, resource: { buffer } });
+    this.moveGroup = gpu.bindGroup(L.MOVE, [b(0, this.flow), b(1, this.moveSrc)], 'move');
+    this.reactGroup = gpu.bindGroup(L.REACT, [b(0, this.rays.deposit ?? this.noDeposit)], 'react');
+    this.buildGroup = gpu.bindGroup(L.BUILD, [b(0, this.args), b(1, this.rays.bricks ?? this.noRayBricks)], 'build');
   }
+
+  // A tool's kernel, made on first use.
+  passOf(name) { return (this.passes[name] ??= this._lazy[name]()); }
 
   // Settings can change while asleep (including away and back during a readback).
   get gravity() { return this._gravity; }
   set gravity(v) { if (v !== this._gravity) { this._gravity = v; this.wake(); } }
   get skipQuiet() { return this._skipQuiet; }
-  set skipQuiet(v) { if (v !== this._skipQuiet) { this._skipQuiet = v; this.wake(); } }
+  set skipQuiet(v) { if (v !== this._skipQuiet) { this._skipQuiet = v; this.actFull = true; this.wake(); } }
   get skipSleeping() { return this._skipSleeping; }
   set skipSleeping(v) { if (v !== this._skipSleeping) { this._skipSleeping = v; this.wake(); } }
 
@@ -470,519 +333,344 @@ export class Simulation {
     this.actDirty = true;
   }
 
-  // A zero share in *every* channel certifies not just quiet cells, but that
-  // the previous map settled both state histories (DRAWN). Steps cannot wake
-  // this state themselves. External writes/settings invalidate even a late
-  // result; ordinary steps/map rebuilds need not, so a slow read can finish.
-  checkIdle() {
-    if (this.idleRead || this.idleCertified || !this.skipQuiet || !this.skipSleeping || this.rays.active || this.disposed) return;
+  /**
+   * The header a dispatch on this grid gets (docs/webgpu.md B4): the window's
+   * origin and the state copies it reads and writes (both the current one by
+   * default: an edit's).
+   */
+  header(src = this.cur, dst = src) {
+    return { origin: [this.origin.x, this.origin.y, this.origin.z], src, dst };
+  }
+
+  // Records a dispatch into the frame's compute pass and tells the profiler.
+  _dispatch(kernel, size, opts) {
+    kernel.dispatch(this.gpu.frame, size, opts);
+    this.onPass?.(kernel.name, { kind: 'compute', gpuMs: null });
+  }
+
+  // ---- the activity map (docs/webgpu.md D4) ----
+
+  // A zero AWAKE and DRAWN count certifies not just quiet cells, but that the
+  // last maps settled both state copies of every unit. Steps cannot wake this
+  // state themselves. External writes and settings invalidate even a late
+  // result (the epoch); ordinary steps and map rebuilds need not (a map built
+  // from the same state is the same fixed point), so a slow read can finish.
+  _wantIdleRead() {
+    return !this.idleRead && !this.idleCertified && this.skipQuiet && this.skipSleeping && !this.rays.active && !this.disposed;
+  }
+
+  _readIdle(slot) {
     const epoch = this.idleEpoch;
-    const pixels = new Float32Array(4).fill(NaN);   // a failed/unsupported read must not certify sleep
-    this.idleRead = this.renderer.readRenderTargetPixelsAsync(this.superShare, 0, 0, 1, 1, pixels)
-      .then(() => {
-        if (!this.disposed && epoch === this.idleEpoch && pixels.every((v) => v === 0)) this.idleCertified = true;
-      })
-      .catch(() => {})   // readback failure only disables this optimization; keep stepping
+    this.idleRead = this.counts.read(slot).then((bytes) => {
+      const [awake, drawn] = new Uint32Array(bytes);
+      if (!this.disposed && epoch === this.idleEpoch && awake === 0 && drawn === 0) this.idleCertified = true;
+    }).catch(() => {})   // a failed read only disables this optimization; keep stepping
       .finally(() => { this.idleRead = null; });
   }
 
-  get stateA() { return this.targets[this.cur].textures[0]; }
-  get stateB() { return this.targets[this.cur].textures[1]; }
-  get stateF() { return this.targets[this.cur].textures[STATE_FLAGS]; }
-  // A target shaped like the state (its attachments and formats), for code
-  // that draws a state pass somewhere else (e.g. once, to build its pipeline).
-  makeStateTarget(w, h) { return makeStateTarget(w, h); }
-
-  // Index of cell (x, y, z)'s texel in the state arrays, and back (cellTexel, texelCell).
-  cellTexel(x, y, z) { return cellTexel(this.g, x, y, z); }
-  texelCell(i) { return texelCell(this.g, i); }
-
-  // The current state read back, as float RGBA per atlas texel in the
-  // fetchA/fetchB layout (what load() takes): [A, B]. For CPU checks and
-  // tools; cellTexel finds a cell in it.
-  readState() {
-    const { width, height } = this.g;
-    const t = this.targets[this.cur];
-    const a = new Float32Array(width * height * 4), b = new Float32Array(width * height * 4);
-    this.renderer.readRenderTargetPixels(t, 0, 0, width, height, a, undefined, 0);
-    this.renderer.readRenderTargetPixels(t, 0, 0, width, height, b, undefined, 1);
-    return [a, b];
-  }
-
-  // One cell of the current state, read back: [a, b] in the fetchA/fetchB
-  // layout (two RGBA float arrays). Synchronous; for tests and tools.
-  readCell(x, y, z) {
-    const i = this.cellTexel(x, y, z), w = this.g.width;
-    const t = this.targets[this.cur];
-    const a = new Float32Array(4), b = new Float32Array(4);
-    this.renderer.readRenderTargetPixels(t, i % w, Math.floor(i / w), 1, 1, a, undefined, 0);
-    this.renderer.readRenderTargetPixels(t, i % w, Math.floor(i / w), 1, 1, b, undefined, 1);
-    return [a, b];
-  }
-
-  // Block until the GPU has done everything queued so far, by reading one
-  // texel of the current state back (wall-clock timing of GPU work).
-  gpuSync() {
-    this.syncTexel ??= new Float32Array(4);
-    this.renderer.readRenderTargetPixels(this.targets[this.cur], 0, 0, 1, 1, this.syncTexel, undefined, 0);
-  }
-
-  // A pass into target: one full-screen quad, or quads (gfx/regions.js
-  // RegionQuads) over the regions its material picks. Every pass sees the
-  // window's origin (shaders/common.js uOrigin), unless it brings its own; a
-  // pass kept across grids takes the current simulation's (simOrigins).
-  run(mat, target, quads = null) {
-    const o = mat.uniforms.uOrigin;
-    if (!o || simOrigins.has(o)) mat.uniforms.uOrigin = this.originUniform;
-    const mesh = quads ? quads.mesh : this.quad;
-    mesh.material = mat;
-    this.renderer.setRenderTarget(target);
-    this.renderer.render(quads ? quads.scene : this.scene, this.camera);
-    this.onPass?.(mat.name, target);
-    const touched = this.touchNext;   // (for this pass only)
-    this.touchNext = null;
-    if (target === this.targets[0] || target === this.targets[1]) {
-      this.version++;
-      if (!this.stepping) this.noteWrite(touched);
-    }
-  }
-
-  // The next pass, a write to the state that isn't a step (run outside
-  // step()), changes only cells in [lo, hi] (inclusive; [x, y, z] arrays), so
-  // the derived passes rebuild only the bricks there, and only the supertiles
-  // there are woken for the next activity map's steps (noteWrite). Without it
-  // such a write rebuilds every brick and wakes every supertile. The pass must
-  // copy every cell outside the box through unchanged, flags and all (as
-  // shaders/common.js copyThroughMain does): sleeping supertiles count on both
-  // state copies holding the same there.
-  touch(lo, hi) {
-    this.touchNext = { lo, hi };
-  }
-
-  // touch() for a pass that changes only cells whose centres lie in the box
-  // [lo, hi] (grid cells, any reals; [x, y, z] arrays).
-  touchCentres(lo, hi) {
-    this.touch(lo.map((x) => Math.floor(x) - TOUCH_MARGIN), hi.map((x) => Math.floor(x) + TOUCH_MARGIN));
-  }
-
-  // A write that isn't a step: the box it declared changed, or every brick.
-  // The derived passes rebuild those bricks (D9), and the next activity map's
-  // steps draw those supertiles even where they sleep (D8): the write may have
-  // left the two state copies different there, or flags the steps settle
-  // (shaders/activity.js SUPER_MAP).
-  noteWrite(t) {
-    this.wake();
-    this.wroteSinceStep = true;
-    if (!t) {
-      this.changedAll = true;
-      this.forceAll = true;
-      return;
-    }
-    for (let k = 0; k < 3; k++) {
-      this.touchLo[k] = Math.min(this.touchLo[k], Math.floor(t.lo[k] / BRICK));
-      this.touchHi[k] = Math.max(this.touchHi[k], Math.floor(t.hi[k] / BRICK));
-      this.forceLo[k] = Math.min(this.forceLo[k], Math.floor(t.lo[k] / SUPER_SIDE[k]));
-      this.forceHi[k] = Math.max(this.forceHi[k], Math.floor(t.hi[k] / SUPER_SIDE[k]));
-    }
-  }
-
-  // The bricks the current quiet map doesn't skip may change: note them in the
-  // changed map, over what it holds unless it was consumed since.
-  noteAwake() {
-    this.mats.awake.blending = this.actNoted ? THREE.CustomBlending : THREE.NoBlending;
-    this.run(this.mats.awake, this.actChanged);
-    this.actNoted = true;
-  }
-
-  // Rebuild the activity map from the current state's activity flags (shaders/activity.js).
+  // Rebuild the activity map: six dispatches in the step's compute pass, one
+  // of them indirect (docs/webgpu.md D4).
   updateActivity() {
+    const g = this.g;
     // the outgoing map, if steps used it since the last updateBricks noted it
-    if (this.actCarry !== null && this.actAge > this.actCarry) this.noteAwake();
+    const carry = this.actCarry !== null && this.actAge > this.actCarry;
     this.actCarry = null;
-    const { inert, inertRows, inertJoin, quiet } = this.mats;
-    inert.uniforms.tF.value = this.stateF;
-    this.run(inert, this.actClass);
-    inertRows.uniforms.tA.value = this.stateA;
-    inertRows.uniforms.tF.value = this.stateF;
-    inertRows.uniforms.tClass.value = this.actClass.texture;
-    this.run(inertRows, this.actRows);
-    inertJoin.uniforms.tClass.value = this.actClass.texture;
-    inertJoin.uniforms.tRows.value = this.actRows.texture;
-    this.run(inertJoin, this.actInert);
-    quiet.uniforms.tInert.value = this.actInert.texture;
-    quiet.uniforms.uEnabled.value = this.skipQuiet;
-    // bricks holding a particle stay awake, and their neighbours (raysLayer.js)
-    quiet.uniforms.uRays.value = this.rays.active;
-    quiet.uniforms.tRays.value = this.rays.bricks.texture;
-    this.run(quiet, this.actQuiet);
+    const read = this._wantIdleRead();
+    const order = this.gpu.testMode ? this.test.listOrder : null;
+    const params = {
+      full: this.actFull, enabled: this.skipQuiet, rays: this.rays.active, carry, noted: this.actNoted,
+      forceAll: this.forceAll, nPrev: this.actSteps, all: !this.skipSleeping, slot: 0,
+    };
+    const bind = [this.tables, this.bindBuild, this.buildGroup];
+    const header = this.header();
+    const perBrick = fold(Math.ceil(g.nbricks / 64)), perUnit = fold(Math.ceil(this.unit.units / 64));
+    const { inertList, inert, quiet, drawn, move1, args } = this.kernels;
+    this._dispatch(inertList, perBrick, { bind, header, params });
+    if (order) this._permute(ACT_COUNTS.INERT, order);
+    this._dispatch(inert, { indirect: this.args, offset: ARGS.INERT }, { bind: [this.tables, this.bindBuild], header, params });
+    this._dispatch(quiet, perBrick, { bind, header, params });
+    this._dispatch(drawn, perUnit, { bind, header, params });
+    this._dispatch(move1, perUnit, { bind, header, params });
+    // the counts go to a ring slot when the idle check reads them, else to the spare one
+    const slot = read ? this.counts.next() : COUNTS_SLOTS;
+    this._dispatch(args, [1, 1, 1], { bind, header, params: { ...params, slot: (ARGS.RING + slot * COUNTS_BYTES) / 4 } });
+    if (order) {
+      this._permute(ACT_COUNTS.DRAWN, order);
+      this._permute(ACT_COUNTS.MOVE1, order);
+    }
+    this.actNoted = true;   // the quiet kernel noted the new map in `changed` (the step about to run uses it)
     this.actAge = 0;
     this.actDirty = false;
     this.actFresh = true;
-    this.noteAwake();   // the step about to run uses it
-    // the supertiles its steps draw: from this map, the last one and the
-    // writes since (shaders/activity.js SUPER_MAP), and their shares
-    const { superMap, superRows, superShare } = this.mats, u = superMap.uniforms;
-    u.tPrev.value = this.superMap[this.superCur].texture;
-    u.uPrevSettled.value = this.actSteps >= SUPER_SETTLE_STEPS || (this.actSteps > 0 && this.wroteSinceStep);
-    u.uForceAll.value = this.forceAll;
-    u.uForceLo.value.fromArray(this.forceLo);
-    u.uForceHi.value.fromArray(this.forceHi);
-    this.superCur = 1 - this.superCur;
-    this.run(superMap, this.superMap[this.superCur]);
-    this.superU.tSuper.value = superRows.uniforms.tSuper.value = this.superMap[this.superCur].texture;
-    this.run(superRows, this.superRows);
-    this.run(superShare, this.superShare);
+    this.actFull = false;
     this.forceAll = false;
-    this.forceLo.fill(TOUCH_NONE_LO);
-    this.forceHi.fill(TOUCH_NONE_HI);
     this.actSteps = 0;
-    this.checkIdle();
+    if (read) this._readIdle(slot);
   }
 
-  // Ping-pong pass over the state. The pass writes every cell, flags and all
-  // (shaders/common.js stateOutGLSL), so it needs stateUniforms(); with quads
-  // (a step's passes), every cell of the supertiles they draw (run).
-  pass(mat, quads = null) {
-    if (!mat.uniforms.tF) throw new Error(`pass ${mat.name || '(unnamed)'}: a state writer needs stateUniforms() (tF)`);
-    mat.uniforms.tA.value = this.stateA;
-    mat.uniforms.tB.value = this.stateB;
-    mat.uniforms.tF.value = this.stateF;
-    this.run(mat, this.targets[1 - this.cur], quads);
-    this.cur = 1 - this.cur;
+  // Test only (I2.1): reorders a list in place ('reverse' or 'shuffle:<seed>').
+  _permute(list, order) {
+    const [kind, seed] = String(order).split(':');
+    const mode = kind === 'reverse' ? 1 : kind === 'shuffle' ? 2 : 0;
+    if (!mode) throw new Error(`sim.test.listOrder: 'reverse' or 'shuffle:<seed>', not ${order}`);
+    this._dispatch(this.passOf('permute'), [1, 1, 1], {
+      bind: [this.tables, this.bindBuild, this.buildGroup], header: this.header(),
+      params: { list, order: mode, seed: (Number(seed) || 0) + this.frame },
+    });
   }
+
+  // The bricks the current quiet map doesn't skip may change: note them in
+  // `changed`, over what it holds unless it was consumed since (the derived
+  // passes' updateDirty carry, docs/webgpu.md D4, E).
+  noteAwake() {
+    this._dispatch(this.passes.awake, fold(Math.ceil(this.g.nbricks / 64)), {
+      bind: [this.tables, this.bindBuild], header: this.header(), params: { noted: this.actNoted },
+    });
+    this.actNoted = true;
+  }
+
+  // ---- the step (docs/webgpu.md D1) ----
 
   step() {
-    this.frame++;   // simulation time/parity advance even when no GPU work is needed
-    // Finish fresh flags and both ping-pong histories before sleeping. A quiet
-    // flow pass already discards every cell, so its EMA needs no further work.
+    const f = this.gpu.frame;   // (throws GraphicsFailure once graphics have stopped)
+    this.frame++;   // simulation time and parity advance even when there is nothing to step
+    // Certified idle: every unit settled in both copies, no unit AWAKE or DRAWN,
+    // and that's a fixed point until something writes (docs/webgpu.md D4).
     if (this.idleCertified && !this.actDirty && !this.actFresh && this.actSteps >= SUPER_SETTLE_STEPS
         && this.skipQuiet && this.skipSleeping && !this.rays.active) {
-      this.aeration?.idle();   // nothing moves, but the foam left on it still bursts
+      this.aeration?.idle?.(f);   // nothing moves, but the foam left on it still bursts
       return;
     }
     // particles fly first: the map below keeps the bricks they're in awake
-    this.stepping = true;
-    this.rays.step();
-    this.stepping = false;
+    if (this.rays.active) this.rays.step(f);
     if (this.actDirty || this.actAge >= ACTIVITY_PERIOD) this.updateActivity();
     this.actAge++;
     this.actSteps++;
-    this.wroteSinceStep = false;
-    this.stepping = true;
-    const { moveBlock, moveFlow, moveGather, react } = this.mats;
     const parity = this.frame & 1;
-    // each pass draws only the supertiles the map's steps can change (the
-    // supertile map), or one full-screen quad
-    const quads = this.stepQuads;
-    quads.fullOnly = !this.skipSleeping;
-    // movement: solve each 2×2×2 block once (moveBlock), then every cell
-    // gathers its result (moveGather) and the flow field takes its move
-    for (const m of [moveBlock, moveGather, moveFlow, react]) m.uniforms.tQuiet.value = this.actQuiet.texture;
-    moveBlock.uniforms.uParity.value = parity;
-    moveBlock.uniforms.uFrame.value = this.frame;
-    moveBlock.uniforms.uGravity.value = this.gravity;
-    moveBlock.uniforms.tA.value = this.stateA;
-    moveBlock.uniforms.tB.value = this.stateB;
-    this.run(moveBlock, this.blocks, quads);
-    for (const m of [moveGather, moveFlow]) {
-      m.uniforms.uParity.value = parity;
-      m.uniforms.tSlots.value = this.slots.texture;
-    }
-    moveGather.uniforms.uFresh.value = this.actFresh;
+    const fresh = this.actFresh;
     this.actFresh = false;
-    this.pass(moveGather, quads);
-    this.run(moveFlow, this.flowV, quads);
-    this.aeration?.step();   // whitewater's field follows the move (gfx/foam.js)
-    react.uniforms.uFrame.value = this.frame;
-    react.uniforms.uGravity.value = this.gravity;
-    react.uniforms.uRays.value = this.rays.stepped;   // the particles' deposits (heat, pressure)
-    react.uniforms.tRayDep.value = this.rays.deposit.texture;
-    this.pass(react, quads);
-    this.rays.settle();
-    this.stepping = false;
+    const outOfPlace = Boolean(this.aeration?.active);
+    const cur = this.cur, other = 1 - cur;
+    const testing = this.gpu.testMode;
+    const move = testing && this.test.raceProbe ? this.passOf('moveRace') : this.kernels.move;
+    const mp = {
+      frame: this.frame, parity, gravity: this.gravity, fresh, outOfPlace, margin: 0,
+      blockRev: testing && this.test.blockOrder === 'reverse', eight: 8,
+    };
+    // the move: in place (or into the other copy, for whitewater), over the
+    // offset's list, then at offset 1 the low margin's blocks
+    const mh = this.header(cur, outOfPlace ? other : cur);
+    const mb = [this.tables, this.bindRW, this.moveGroup];
+    this._dispatch(move, { indirect: this.args, offset: parity ? ARGS.MOVE1 : ARGS.MOVE0 }, { bind: mb, header: mh, params: mp });
+    if (parity) this._dispatch(move, fold(Math.ceil(marginBlocks(this.g) / 64)), { bind: mb, header: mh, params: { ...mp, margin: 1 } });
+    // whitewater's field follows the move (gfx/foam.js): it reads the copy from before it
+    if (outOfPlace) this.aeration.step(f, { pre: cur, post: other, moveSrc: this.moveSrc });
+    // react, from the moved state into the other copy
+    const rh = outOfPlace ? this.header(other, cur) : this.header(cur, other);
+    this._dispatch(this.kernels.react, { indirect: this.args, offset: ARGS.REACT }, {
+      bind: [this.tables, this.bindRW, this.reactGroup], header: rh,
+      params: { frame: this.frame, gravity: this.gravity, faces: FACES, rays: Boolean(this.rays.stepped) },
+    });
+    if (!outOfPlace) this.cur = other;
+    if (this.rays.active) this.rays.settle(f);
+    this.version += 2;   // (the move and react: as the WebGL build counted its two state passes)
   }
+
+  // ---- writers that aren't steps (docs/webgpu.md D6) ----
+
+  /**
+   * A box writer's kernel (docs/webgpu.md D6): every cell of a box gets
+   * update(p, a, b, oA, oB) (WGSL), stored with the flags writtenFlags leaves,
+   * and the bricks it changed are marked for the activity map and the derived
+   * passes. One per kind of writer and grid (pipelines are cached by source).
+   * @param {string} name
+   * @param {{ update: string, params?: object, reads?: 'own' | 'neighbours', decls?: string, layout?: GPUBindGroupLayoutEntry[] }} desc
+   *   params  a uniformStruct whose first fields are EDIT_FIELDS, or its other
+   *           fields ({ name: type }), which get EDIT_FIELDS put first
+   *   reads   'own': in place; 'neighbours': update reads other cells, so it
+   *           runs into a scratch first and a second dispatch stores it (two-phase)
+   *   decls   WGSL declarations the update needs (its group-2 bindings, helpers)
+   *   layout  those group-2 bindings' layout entries (bind them with edit's opts.bind)
+   * @returns {{ name: string, params: object, reads: string, main: object, apply: object | null, layout: GPUBindGroupLayout | null, ready: Promise<unknown> }}
+   */
+  editKernel(name, { update, params = {}, reads = 'own', decls = '', layout = null }) {
+    const struct = params.isStruct ? params : uniformStruct(`${name[0].toUpperCase()}${name.slice(1)}Params`, { ...EDIT_FIELDS, ...params });
+    const code = editKernelWGSL(this.g, { update, params: struct, reads, decls, debug: this.debug });
+    let entries = layout ?? [];
+    if (reads === 'neighbours') entries = [...entries, { binding: EDIT_SCRATCH_BINDING, buffer: { type: 'storage' } }];
+    const group2 = entries.length ? this.gpu.layout(`edit ${name} ${JSON.stringify(entries)}`, entries) : null;
+    const layouts = [this.L.TABLES, this.L.STATE_RW, ...(group2 ? [group2] : [])];
+    const main = this.gpu.kernel({ name, code, layouts, params: struct, workgroupSize: [4, 4, 4] });
+    const apply = reads === 'neighbours' ? this.gpu.kernel({ name: `${name} apply`, code, entry: 'apply', layouts, params: struct, workgroupSize: [4, 4, 4] }) : null;
+    return {
+      name, params: struct, reads, main, apply, layout: group2, extra: layout ?? [],
+      ready: Promise.all([main.ready, apply?.ready]),
+    };
+  }
+
+  // The box [lo, hi] (inclusive grid cells) clipped to the grid, or null if empty.
+  _clip(lo, hi) {
+    const n = [this.g.nx, this.g.ny, this.g.nz];
+    const a = lo.map((x, k) => Math.max(0, Math.floor(x)));
+    const b = hi.map((x, k) => Math.min(n[k] - 1, Math.floor(x)));
+    return a.every((x, k) => x <= b[k]) ? [a, b] : null;
+  }
+
+  /**
+   * One edit: a dispatch of `kernel` over the box, in call order, so the next
+   * edit sees this one's result (docs/webgpu.md D6). Writes the current copy;
+   * the GPU marks the bricks it changes.
+   * @param {ReturnType<Simulation['editKernel']>} kernel
+   * @param {{ lo: number[], hi: number[] }} box inclusive grid cells (clipped to the grid)
+   * @param {object} [values] the params' other fields
+   * @param {{ bind?: GPUBindGroup[] }} [opts] the kernel's own group-2 resources (its layout's bindings, in order)
+   */
+  edit(kernel, { lo, hi }, values = {}, { bind = [] } = {}) {
+    const f = this.gpu.frame;
+    const box = this._clip(lo, hi);
+    if (!box) return;
+    const [a, b] = box;
+    const nb = [0, 1, 2].map((k) => (b[k] >> 2) - (a[k] >> 2) + 1);
+    const size = fold(nb[0] * nb[1] * nb[2]);
+    const params = { ...values, editLo: a, editHi: b };
+    let group2 = null;
+    if (kernel.layout) {
+      const entries = kernel.extra.map((e, i) => ({ binding: e.binding, resource: bind[i] }));
+      if (kernel.reads === 'neighbours') {
+        const bytes = nb[0] * nb[1] * nb[2] * 64 * 32;
+        entries.push({ binding: EDIT_SCRATCH_BINDING, resource: { buffer: this._editScratch(bytes) } });
+      }
+      group2 = this.gpu.bindGroup(kernel.layout, entries, `${kernel.name} group`);
+    }
+    const groups = [this.tables, this.bindRW, ...(group2 ? [group2] : [])];
+    const header = this.header();
+    this._dispatch(kernel.main, size, { bind: groups, header, params });
+    if (kernel.apply) this._dispatch(kernel.apply, size, { bind: groups, header, params });
+    void f;
+    this.version++;
+    this.wake();   // the next step rebuilds the map: the marked bricks are forced
+  }
+
+  // The two-phase edits' scratch (two vec4f per cell of the brick-aligned
+  // box), grown as needed; a buffer it outgrew is destroyed after the frames
+  // that may hold it are done.
+  _editScratch(bytes) {
+    if (!this.editScratch || this.editScratch.size < bytes) {
+      if (this.editScratch) this._retire(this.editScratch);
+      this.editScratch = this.gpu.createBuffer({ label: `sim${this.id} edit scratch`, size: Math.max(bytes, 64 * 32), usage: GPUBufferUsage.STORAGE });
+    }
+    return this.editScratch;
+  }
+
+  _retire(buffer) {
+    this.gpu.fence().then(() => buffer.destroy(), () => {});
+  }
+
+  // The box an edit covers for a write that changes only cells whose centres
+  // lie in [lo, hi] (grid cells, any reals; [x, y, z] arrays): { lo, hi }.
+  touchCentres(lo, hi) {
+    return { lo: lo.map((x) => Math.floor(x) - TOUCH_MARGIN), hi: hi.map((x) => Math.floor(x) + TOUCH_MARGIN) };
+  }
+  // (kept for callers that declared boxes before their pass: marking is the GPU's now, D6)
+  touch(lo, hi) { return { lo, hi }; }
 
   paint({ center, radius, shape, tool, rate, replace }) {
     // particle tools paint into the particle list, not the grid
     if (this.rays.paint({ center, radius, shape, tool, rate })) return;
     this.rays.noteElement(tool);   // plutonium emits neutrons: the layer wakes
-    const u = this.mats.paint.uniforms;
     // Its own random stream: this.frame counts steps only. The move pass
     // alternates its block partition by the step count's parity, so a paint
     // bumping it would lock the partition when one step runs per paint (Speed
     // 1 while painting: poured matter could never leave its 2×2×2 block); the
     // POV body and the media drift clock also read it as steps taken.
     this.paints++;
-    u.uFrame.value = this.paints;
-    u.uCenter.value.copy(center);
-    u.uRadius.value = radius;
-    u.uShape.value = shape;
-    u.uTool.value = tool;
-    u.uRate.value = rate;
-    u.uReplace.value = replace;
-    // it changes cells within radius of its centre (either shape)
     const c = [center.x, center.y, center.z];
-    this.touchCentres(c.map((x) => x - radius), c.map((x) => x + radius));
-    this.pass(this.mats.paint);
-  }
-
-  get flowTexture() { return this.flowV.texture; }
-  get fieldSurf() { return this.fields.textures[0]; }
-  get fieldMedia() { return this.fields.textures[1]; }
-  get fieldThin() { return this.fields.textures[2]; }
-
-  // Rebuild the renderer's continuous fields (shaders/fields.js), over the
-  // regions of the dirty sets (updateDirty): the rest of every target keeps
-  // what it holds, which is what these passes would write there again.
-  updateFields() {
-    const { fieldEma, fieldCopy, fieldBlur, fieldFinal } = this.mats;
-    const [tmpA, tmpB] = this.fieldTmp;
-    const quads = this.fieldQuads;
-    const reset = this.fieldReset;
-    this.fieldReset = false;
-    const u = fieldEma.uniforms;
-    u.tA.value = this.stateA;
-    u.tP0.value = this.fieldEma.textures[0];
-    u.tP1.value = this.fieldEma.textures[1];
-    u.uEmaS.value.set(...CHANNELS.map((c) => (reset ? 1 : c.ema)));
-    u.uEmaM.value.set(...MEDIA.map((m) => (reset ? 1 : m.ema)));
-    u.uShift.value.copy(this.fieldShift);   // the window moved (D11): the history follows its cells
-    this.fieldShift.set(0, 0, 0);
-    // into scratch, then copied back over the same regions
-    this.run(fieldEma, tmpA, quads);
-    tmpA.textures.forEach((t, i) => { fieldCopy.uniforms[`t${i}`].value = t; });
-    this.run(fieldCopy, this.fieldEma, quads);
-    // per-channel kernels, tap-major
-    const k = CHANNELS.map((c) => gauss5(Math.max(c.sigma * this.smoothing, 0.05)));
-    const setW = (mat) => mat.uniforms.uW.value.forEach((v, i) => v.set(k[0][i], k[1][i], k[2][i], k[3][i]));
-    // x: EMA -> A, y: A -> B, z: B -> blurred
-    const passes = [[fieldBlur, this.fieldEma, tmpA], [fieldBlur, tmpA, tmpB], [fieldFinal, tmpB, this.fieldsBlurred]];
-    passes.forEach(([mat, src, dst], axis) => {
-      setW(mat);
-      mat.uniforms.uAxis.value = axis;
-      mat.uniforms.t0.value = src.textures[0];
-      mat.uniforms.t1.value = src.textures[1];
-      mat.uniforms.t2.value = src.textures[2];
-      this.run(mat, dst, quads);
-    });
-    // thin-feature boost: smooth x, y, z then peak x, y, z, ping-ponging
-    // between A and B; stage 0 reads the blurred fields and the state, the
-    // last writes the final fields
-    const boost = this.mats.fieldBoost;
-    const last = BOOST_STAGES - 1;
-    const dst = (s) => (s === last ? this.fields : s % 2 ? tmpB : tmpA);
-    const lu = boost[last].uniforms;
-    lu.tPhi.value = this.fieldsBlurred.textures[0];
-    lu.tMed.value = this.fieldsBlurred.textures[1];
-    lu.uBulk.value.set(...k.map((w, i) => (CHANNELS[i].cubic ? bulkPeakCubic(w) : bulkPeak(w))));
-    boost.forEach((mat, s) => {
-      mat.uniforms.t0.value = s ? dst(s - 1).textures[0] : this.fieldsBlurred.textures[0];
-      if (s) mat.uniforms.t1.value = dst(s - 1).textures[1];
-      else mat.uniforms.tA.value = this.stateA;
-      this.run(mat, dst(s), quads);
+    this.edit(this.passes.paint, this.touchCentres(c.map((x) => x - radius), c.map((x) => x + radius)), {
+      center: c, radius, shape, tool, rate, replace: Boolean(replace), frame: this.paints,
     });
   }
 
-  // Which bricks the derived passes rebuild this frame: ages from what changed
-  // since the last call, then the dirty sets, their regions of the field atlas
-  // and the regions' shares (shaders/passes.js dirtyFrag).
-  updateDirty() {
-    // the quiet map still current at the last call, if steps used it since
-    if (this.actCarry !== null && this.actAge > this.actCarry) this.noteAwake();
-    this.actCarry = this.actAge;
-    // a new kernel or a reset changes the fields everywhere
-    if (this.smoothing !== this.lastSmoothing || this.fieldReset) this.changedAll = true;
-    this.lastSmoothing = this.smoothing;
-    const { age, dirty, regionMap, regionShare } = this.mats;
-    const prev = this.brickAge[this.ageCur], next = this.brickAge[1 - this.ageCur];
-    this.ageCur = 1 - this.ageCur;
-    const u = age.uniforms;
-    u.tAge.value = prev.texture;
-    u.uSteps.value = this.actNoted;
-    u.uAll.value = this.changedAll || !this.incremental;
-    u.uTouchLo.value.fromArray(this.touchLo);
-    u.uTouchHi.value.fromArray(this.touchHi);
-    this.run(age, next);
-    this.changedAll = false;
-    this.actNoted = false;
-    this.touchLo.fill(TOUCH_NONE_LO);
-    this.touchHi.fill(TOUCH_NONE_HI);
-    dirty.uniforms.tAge.value = next.texture;
-    this.run(dirty, this.dirty);
-    this.run(regionMap, this.regionMap);
-    this.run(regionShare, this.regionShare);
-    this.fieldQuads.fullOnly = !this.incremental;
+  /**
+   * A whole-grid write that isn't a step (a load, an undo, the codec's unpack):
+   * the next map rebuilds every inert bit and draws every unit, and the
+   * derived passes rebuild every brick.
+   */
+  noteWrite() {
+    this.version++;
+    this.forceAll = true;
+    this.actFull = true;
+    this.changedAll = true;
+    this.wake();
   }
 
-  // Rebuild the render fields, the empty-space bricks and the blurred light
-  // volume: the fields and bricks only where they may have changed.
-  updateBricks() {
-    this.updateDirty();
-    this.updateFields();
-    this.mats.brick.uniforms.tA.value = this.stateA;
-    this.mats.brick.uniforms.tB.value = this.stateB;
-    this.mats.brick.uniforms.tFS.value = this.fieldSurf;
-    this.mats.brick.uniforms.tFM.value = this.fieldMedia;
-    this.mats.brick.uniforms.tFT.value = this.fieldThin;
-    this.run(this.mats.brick, this.brick);
-    // empty-space distance: x from the brick map, then y, then z (ends in brickDist[0])
-    const [dx, dy, dz] = this.mats.brickDist;
-    dx.uniforms.tSrc.value = this.brick.texture;
-    this.run(dx, this.brickDist[0]);
-    dy.uniforms.tSrc.value = this.brickDist[0].texture;
-    this.run(dy, this.brickDist[1]);
-    dz.uniforms.tSrc.value = this.brickDist[1].texture;
-    this.run(dz, this.brickDist[0]);
-    const blur = this.mats.blur;
-    let src = this.brick.texture;
-    for (let i = 0; i < LIGHT_BLUR_PASSES; i++) {
-      blur.uniforms.tSrc.value = src;
-      blur.uniforms.uAxis.value = i % 3;
-      const dst = this.light[i & 1];
-      this.run(blur, dst);
-      src = dst.texture;
-    }
-    this.lightTexture = src;
-  }
-
-  get giTextures() { return this.giProbes.textures; }
-  get brickDistTexture() { return this.brickDist[0].texture; }
-
-  // Rebuild the GI probe volume (realistic view; after the shadow map, which it
-  // reads for sunlight). sun: unit vector toward the sun.
-  updateGI(sun, shadowMap, shadowRes, shadows) {
-    const { giSource, giGather } = this.mats;
-    for (const m of [giSource, giGather]) {
-      const u = m.uniforms;
-      u.tA.value = this.stateA;
-      u.tBrick.value = this.brick.texture;
-      u.tShadow.value = shadowMap;
-      u.uShadowRes.value = shadowRes;
-      u.uShadows.value = shadows;
-      u.uSun.value.copy(sun);
-    }
-    this.giProbes.textures.forEach((t, i) => { giSource.uniforms[`tGI${i}`].value = t; });
-    this.run(giSource, this.giSrc);
-    const u = giGather.uniforms;
-    [u.tGIRad.value, u.tGICov.value, u.tGIDir.value] = this.giSrc.textures;
-    // after a reset trace every probe and replace; else half of them, blended in
-    this.giFrame = (this.giFrame ?? 0) + 1;
-    u.uParity.value = this.giReset ? -1 : this.giFrame & 1;
-    giGather.blendAlpha = this.giReset ? 1 : GI_BLEND;
-    this.giReset = false;
-    this.run(giGather, this.giProbes);
-  }
-
-  // Move the window over the world (docs/scaling.md D11) by (dx, 0, dz) world
-  // cells, whole supertiles: cell p takes the state of p + (dx, 0, dz), so the
-  // content moves the other way and stays put in the world. Cells shifted in
-  // from outside are still air until the caller fills them (world/window.js:
-  // the generator, then stored edits). One pass: the other state copy is left
-  // stale until syncCopies(), so the caller fills first and syncs once. The
-  // render fields' history, the GI probes and the flow field move with the
-  // cells, the brick maps rebuild with the next updateBricks and the activity
-  // map is redone (run). Undo snapshots keep the window where they were taken
-  // (undo maps them across).
-  shift(dx, dz) {
-    if (dx % SUPER_CELLS.x || dz % SUPER_CELLS.z) {
-      throw new Error(`shift ${dx}, ${dz}: must be whole supertiles (${SUPER_CELLS.x} × ${SUPER_CELLS.z} cells)`);
-    }
-    // (made on the first shift: only a window of a larger world moves)
-    const g = this.g;
-    this.mats.shift ??= Object.assign(rawMat(shiftFrag(g), { ...stateUniforms(), uShift: { value: new THREE.Vector3() } }), { name: 'shift' });
-    this.mats.giShift ??= Object.assign(rawMat(giShiftFrag(g), { ...giProbeUniforms(), uShift: { value: new THREE.Vector3() } }), { name: 'giShift' });
-    this.mats.flowShift ??= Object.assign(rawMat(flowShiftFrag(g), { tFlowSrc: { value: null }, uShift: { value: new THREE.Vector3() } }), { name: 'flowShift' });
-    const m = this.mats.shift;
-    m.uniforms.uShift.value.set(dx, 0, dz);
-    this.pass(m);
-    this.rays.reset();   // particles are in grid cells: v1 lets them go (docs/particles.md)
-    this.origin.x += dx;
-    this.origin.z += dz;
-    if (!this.shiftKeepsHistory) {
-      this.fieldReset = this.giReset = true;
-      this.stillFlow();
-    } else {
-      // the flow field is laid out like the state (shaders/move.js moveFlowFrag): it moves with the cells
-      const fs = this.mats.flowShift;
-      this.flowVTmp ??= makeFieldTarget(g.width, g.height, 1, THREE.HalfFloatType, THREE.NearestFilter);
-      fs.uniforms.uShift.value.set(dx, 0, dz);
-      fs.uniforms.tFlowSrc.value = this.flowV.texture;
-      this.run(fs, this.flowVTmp);
-      [this.flowV, this.flowVTmp] = [this.flowVTmp, this.flowV];
-      this.aeration?.shift(fs);   // laid out like the state too
-      this.fieldShift.x += dx;
-      this.fieldShift.z += dz;
-      if (!this.giReset) {
-        const gs = this.mats.giShift;
-        this.giProbesTmp ??= makeFieldTarget(g.bwidth, g.bheight, 4, THREE.HalfFloatType, THREE.LinearFilter);
-        gs.uniforms.uShift.value.set(dx / BRICK, 0, dz / BRICK);
-        this.giProbes.textures.forEach((t, i) => { gs.uniforms[`tGI${i}`].value = t; });
-        this.run(gs, this.giProbesTmp);
-        [this.giProbes, this.giProbesTmp] = [this.giProbesTmp, this.giProbes];
-      }
-    }
-  }
-
-  // Forget the undo snapshots (they hold a window that has moved or been replaced).
-  dropHistory() {
-    this.history?.forEach((t) => t.dispose());
-    this.history = [];
-  }
-
-  // Copy the current state into the other copy, so both hold it (after passes
-  // that leave it stale: a shift and its fill). Like every write that isn't a
-  // step, it has the next map's steps draw every supertile (noteWrite; the copy
-  // pass leaves fresh flags in the other copy: docs/scaling.md D8).
-  syncCopies() {
-    const u = this.mats.copy.uniforms;
-    u.tA.value = this.stateA;
-    u.tB.value = this.stateB;
-    this.run(this.mats.copy, this.targets[1 - this.cur]);
-  }
-
-  // Upload CPU-built state (Float32Array RGBA per atlas texel).
+  // Upload CPU-built state (Float32Array RGBA per atlas texel: cellTexel)
+  // into the current copy, with fresh flags (docs/webgpu.md C2).
   load(dataA, dataB) {
-    const { width, height } = this.g;
-    const texA = new THREE.DataTexture(dataA, width, height, THREE.RGBAFormat, THREE.FloatType);
-    const texB = new THREE.DataTexture(dataB, width, height, THREE.RGBAFormat, THREE.FloatType);
-    texA.needsUpdate = texB.needsUpdate = true;
-    const u = this.mats.copy.uniforms;
-    u.tA.value = texA;
-    u.tB.value = texB;
-    this.run(this.mats.copy, this.targets[this.cur]);
+    const { width, height } = this.g, texels = width * height;
+    const scratch = this._atlasScratch();
+    this.gpu.write(scratch, 0, dataA.subarray(0, texels * 4));
+    this.gpu.write(scratch, texels * 16, dataB.subarray(0, texels * 4), { ordered: false });
+    this._dispatch(this.passes.fromAtlas, fold(Math.ceil(this.g.slots / 64)), {
+      bind: [this.tables, this.bindRW, this._convertGroup], header: this.header(),
+    });
+    this.noteWrite();
     this.fieldReset = true;
     this.giReset = true;
     this.stillFlow();
     this.rays.reset();   // a new state: the old particles go, and it may hold plutonium
-    texA.dispose();
-    texB.dispose();
   }
 
   clear() {
     this.load(...this.blankState());
   }
 
-  // ---- undo history: full GPU copies of the state, newest last ----
-  // Each snapshot is two RGBA32F atlases (~70 MB at 128³), so keep only a few.
+  // The atlas-order scratch (load, readState, readCopies): A then B, or flags.
+  _atlasScratch() {
+    if (!this.atlasScratch) {
+      const texels = this.g.width * this.g.height;
+      this.atlasScratch = this.gpu.createBuffer({
+        label: `sim${this.id} atlas scratch`, size: texels * 32,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+      });
+      this._convertGroup = this.gpu.bindGroup(this.L.CONVERT, [{ binding: 0, resource: { buffer: this.atlasScratch } }], 'atlas scratch');
+    }
+    return this.atlasScratch;
+  }
+
+  // Copy the current state into the other copy, so both hold it (tools; after
+  // a shift and its fill nothing needs it: docs/webgpu.md D6). An exact copy of
+  // A, B and F keeps the sleeping invariant, so it forces nothing.
+  syncCopies() {
+    const f = this.gpu.frame, slots = this.g.slots, { A, B, F } = this.state, from = this.cur, to = 1 - this.cur;
+    f.copy(A, from * slots * 16, A, to * slots * 16, slots * 16);
+    f.copy(B, from * slots * 16, B, to * slots * 16, slots * 16);
+    f.copy(F, from * slots * 4, F, to * slots * 4, slots * 4);
+  }
+
+  // ---- undo history: GPU copies of the state, newest last ----
+  // Each snapshot is the current A and B (~67 MB at 128³), so keep only a few.
   // Each remembers the window's origin it was taken at (t.origin): after the
   // window moves (docs/scaling.md D11) it still holds the cells where they were.
-  snapshot(limit = 3) {
-    this.history ??= [];
-    const t = this.history.length >= limit ? this.history.shift() : makeTarget(this.g.width, this.g.height);
-    const u = this.mats.copy.uniforms;
-    u.tA.value = this.stateA;
-    u.tB.value = this.stateB;
-    this.run(this.mats.copy, t);
+  snapshot(limit = UNDO_LIMIT) {
+    const f = this.gpu.frame, bytes = this.g.slots * 16, { A, B } = this.state;
+    let t = this.history.length >= limit ? this.history.shift() : null;
+    if (!t) {
+      const mk = (n) => this.gpu.createBuffer({ label: `sim${this.id} undo ${n}`, size: bytes, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+      t = { A: mk('A'), B: mk('B') };
+      t.group = this.gpu.bindGroup(this.L.UNDO, [{ binding: 0, resource: { buffer: t.A } }, { binding: 1, resource: { buffer: t.B } }], 'undo snapshot');
+    }
+    f.copy(A, this.cur * bytes, t.A, 0, bytes);
+    f.copy(B, this.cur * bytes, t.B, 0, bytes);
     t.origin = this.origin.clone();
     t.note = null;   // the app's tag for what undoing this takes back besides cells (app.js: a shrine's orbs)
     this.history.push(t);
   }
 
-  get canUndo() { return (this.history?.length ?? 0) > 0; }
+  get canUndo() { return this.history.length > 0; }
 
   // Grid cells [dx, dz] the window moved since the newest snapshot was taken, or null without one.
   get undoShift() {
-    const t = this.history?.at(-1);
+    const t = this.history.at(-1);
     return t ? [this.origin.x - t.origin.x, this.origin.z - t.origin.z] : null;
   }
 
@@ -993,35 +681,88 @@ export class Simulation {
   // snapshot for when the window comes back: returns false then, and when
   // there is none.
   undo() {
-    const t = this.history?.at(-1);
+    const t = this.history.at(-1);
     if (!t) return false;
     const [dx, dz] = this.undoShift;
     if (Math.abs(dx) >= this.g.nx || Math.abs(dz) >= this.g.nz) return false;
     this.history.pop();
-    let mat = this.mats.copy;
-    if (dx || dz) {
-      // (made on the first undo after a move: only a window of a larger world moves)
-      this.mats.undoShift ??= Object.assign(rawMat(undoShiftFrag(this.g), {
-        tA: { value: null }, tB: { value: null }, uShift: { value: new THREE.Vector3() },
-      }), { name: 'undoShift' });
-      mat = this.mats.undoShift;
-      mat.uniforms.uShift.value.set(dx, 0, dz);
-    }
-    mat.uniforms.tA.value = t.textures[0];
-    mat.uniforms.tB.value = t.textures[1];
-    this.run(mat, this.targets[this.cur]);
+    this._dispatch(this.passes.undoShift, fold(Math.ceil(this.g.slots / 64)), {
+      bind: [this.tables, this.bindRW, t.group], header: this.header(), params: { shift: [dx, 0, dz] },
+    });
+    this.noteWrite();
     this.stillFlow();
     this.rays.wake();   // it may bring plutonium back
-    t.dispose();
+    this._retire(t.A);
+    this._retire(t.B);
     return true;
+  }
+
+  // Forget the undo snapshots (they hold a window that has moved or been replaced).
+  dropHistory() {
+    for (const t of this.history) { this._retire(t.A); this._retire(t.B); }
+    this.history = [];
   }
 
   // The state was replaced: nothing is moving until the next step says so.
   stillFlow() {
-    this.renderer.setRenderTarget(this.flowV);
-    this.renderer.setClearColor(0x000000, 0);
-    this.renderer.clear(true, false, false);
-    this.aeration?.reset();
+    this.gpu.frame.clear(this.flow);
+    this.aeration?.reset?.(this.gpu.frame);
+  }
+
+  /**
+   * Whole-grid shift kernels registered by the derived passes and whitewater
+   * (docs/webgpu.md E: every shift kernel runs out of place, D8.12): fn(dx, dz, frame).
+   * @param {(dx: number, dz: number, f: object) => void} fn
+   */
+  onShift(fn) { this._shiftListeners.push(fn); return () => { this._shiftListeners = this._shiftListeners.filter((x) => x !== fn); }; }
+
+  // Move the window over the world (docs/scaling.md D11) by (dx, 0, dz) world
+  // cells, whole supertiles: cell p takes the state of p + (dx, 0, dz), so the
+  // content moves the other way and stays put in the world. Cells shifted in
+  // from outside are still air until the caller fills them (world/window.js:
+  // the generator, then stored edits, both edits over the slab). Out of place,
+  // into the other copy with fresh flags; the next map draws every unit
+  // (forceAll), so its first step's react rewrites the other copy before
+  // anything reads it and no syncCopies is needed (docs/webgpu.md D6, G1). The
+  // flow field moves with the cells; the derived passes and whitewater move
+  // their own (onShift). Undo snapshots keep the window where they were taken
+  // (undo maps them across).
+  shift(dx, dz) {
+    if (dx % SUPER_CELLS.x || dz % SUPER_CELLS.z) {
+      throw new Error(`shift ${dx}, ${dz}: must be whole supertiles (${SUPER_CELLS.x} × ${SUPER_CELLS.z} cells)`);
+    }
+    const f = this.gpu.frame, size = fold(Math.ceil(this.g.slots / 64)), shift = [dx, 0, dz];
+    this._dispatch(this.passOf('shift'), size, { bind: [this.tables, this.bindRW], header: this.header(this.cur, 1 - this.cur), params: { shift } });
+    this.cur = 1 - this.cur;
+    // the flow field: into a scratch, then back
+    this.flowTmp ??= this.gpu.createBuffer({ label: `sim${this.id} flow shift`, size: this.flow.size, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+    this._flowShiftGroup ??= this.gpu.bindGroup(this.L.FLOW_SHIFT, [
+      { binding: 0, resource: { buffer: this.flow } }, { binding: 1, resource: { buffer: this.flowTmp } }], 'flow shift');
+    this._dispatch(this.passOf('flowShift'), size, { bind: [this.tables, this.gpu.emptyGroup, this._flowShiftGroup], params: { shift } });
+    f.copy(this.flowTmp, 0, this.flow, 0, this.flow.size);
+    this.origin.x += dx;
+    this.origin.z += dz;
+    for (const fn of this._shiftListeners) fn(dx, dz, f);
+    if (!this.shiftKeepsHistory) {
+      this.fieldReset = this.giReset = true;
+      this.stillFlow();
+    }
+    this.rays.reset();   // particles are in grid cells: v1 lets them go (docs/particles.md)
+    this.version++;
+    this.forceAll = true;
+    this.actFull = true;
+    this.wake();
+  }
+
+  /**
+   * A shift kernel for a field of two words per slot (the flow field's; whitewater
+   * shifts its aeration halves with it): records src → dst shifted by (dx, 0, dz).
+   * @param {GPUBindGroup} group L.FLOW_SHIFT: src (read) at 0, dst (read_write) at 1
+   */
+  shiftField(group, dx, dz) {
+    this._dispatch(this.passOf('flowShift'), fold(Math.ceil(this.g.slots / 64)), {
+      bind: [this.tables, this.gpu.emptyGroup, group], params: { shift: [dx, 0, dz] },
+    });
   }
 
   blankState() {
@@ -1045,10 +786,159 @@ export class Simulation {
     return [a, b];
   }
 
+  // ---- reads (all asynchronous: docs/webgpu.md W6, B7) ----
+
+  // Index of cell (x, y, z)'s texel in the atlas-order arrays, and back (cellTexel, texelCell).
+  cellTexel(x, y, z) { return cellTexel(this.g, x, y, z); }
+  texelCell(i) { return texelCell(this.g, i); }
+
+  // Records the conversion of copy `c` (A and B, or with flags its F) into the scratch.
+  _toAtlas(c, flags) {
+    this._atlasScratch();
+    this._dispatch(this.passes.toAtlas, fold(Math.ceil(this.g.slots / 64)), {
+      bind: [this.tables, this.bindFlagsRO, this._convertGroup], header: this.header(c), params: { flags },
+    });
+  }
+
+  /**
+   * The current state as it is at this call, as float RGBA per atlas texel in
+   * the fetchA/fetchB layout (what load() takes): [A, B]. For CPU checks and
+   * tools; cellTexel finds a cell in it.
+   * @returns {Promise<[Float32Array, Float32Array]>}
+   */
+  async readState() {
+    const texels = this.g.width * this.g.height;
+    this._toAtlas(this.cur, false);
+    const bytes = await this.gpu.readback.buffer(this.atlasScratch, 0, texels * 32);
+    return [new Float32Array(bytes, 0, texels * 4), new Float32Array(bytes, texels * 16, texels * 4)];
+  }
+
+  /**
+   * Both state copies as they are at this call, atlas order, flags included
+   * (tools/state-hash.mjs's copies line): { A: [copy0, copy1], B: […], F: […] }.
+   */
+  async readCopies() {
+    const texels = this.g.width * this.g.height, rb = this.gpu.readback;
+    const reads = [];
+    for (const c of [0, 1]) {
+      this._toAtlas(c, false);
+      reads.push(rb.buffer(this.atlasScratch, 0, texels * 32));
+      this._toAtlas(c, true);
+      reads.push(rb.buffer(this.atlasScratch, 0, texels * 4));
+    }
+    const [ab0, f0, ab1, f1] = await Promise.all(reads);
+    const ab = (x, k) => new Float32Array(x, k * texels * 16, texels * 4);
+    return { A: [ab(ab0, 0), ab(ab1, 0)], B: [ab(ab0, 1), ab(ab1, 1)], F: [new Uint32Array(f0), new Uint32Array(f1)] };
+  }
+
+  /**
+   * One cell of the current state as it is at this call: [a, b] in the
+   * fetchA/fetchB layout. For tests and tools.
+   * @returns {Promise<[Float32Array, Float32Array]>}
+   */
+  async readCell(x, y, z) {
+    const s = cellSlot(this.g, x, y, z), at = (this.cur * this.g.slots + s) * 16, rb = this.gpu.readback;
+    const [a, b] = await Promise.all([rb.buffer(this.state.A, at, 16), rb.buffer(this.state.B, at, 16)]);
+    return [new Float32Array(a), new Float32Array(b)];
+  }
+
+  // Resolves when the GPU has done everything recorded so far (wall-clock timing of GPU work).
+  gpuSync() { return this.gpu.fence(); }
+
+  /**
+   * The flow field as it is at this call: half-float words (x, y, z, 0) per
+   * atlas texel, as the WebGL build's RGBA16F target held it.
+   * @returns {Promise<Uint16Array>}
+   */
+  async readFlow() {
+    const g = this.g, words = new Uint16Array(await this.gpu.readback.buffer(this.flow, 0, g.slots * 8));
+    const out = new Uint16Array(g.width * g.height * 4);
+    for (let s = 0; s < g.slots; s++) {
+      const [x, y, z] = slotCell(g, s);
+      out.set(words.subarray(s * 4, s * 4 + 4), cellTexel(g, x, y, z) * 4);
+    }
+    return out;
+  }
+
+  /**
+   * The activity maps as they are at this call, a byte per brick in brick
+   * coordinates (bx + BX·(by + BY·bz)): inert, quiet, and its unit's AWAKE
+   * and DRAWN (docs/webgpu.md C2; tools only).
+   * @returns {Promise<{ inert: Uint8Array, quiet: Uint8Array, awake: Uint8Array, drawn: Uint8Array, run: Uint8Array }>}
+   */
+  async readMaps() {
+    const g = this.g, L = this.actLayout, n = g.nbricks;
+    const w = new Uint32Array(await this.gpu.readback.buffer(this.act, 0, L.aerSeen * 4));
+    const out = { inert: new Uint8Array(n), quiet: new Uint8Array(n), awake: new Uint8Array(n), drawn: new Uint8Array(n), run: new Uint8Array(n) };
+    for (let id = 0; id < n; id++) {
+      const [bx, by, bz] = brickCoordOf(g, id);
+      const i = bx + g.bx * (by + g.by * bz);
+      const m = w[L.map + Math.floor(id / this.unit.bricks)];
+      out.inert[i] = w[L.inert + id];
+      out.quiet[i] = w[L.quiet + id];
+      out.awake[i] = m & ACT_MAP.AWAKE ? 1 : 0;
+      out.drawn[i] = m & ACT_MAP.DRAWN ? 1 : 0;
+      out.run[i] = m >>> ACT_MAP.RUN_SHIFT;
+    }
+    return out;
+  }
+
+  /**
+   * The current map's list lengths (units AWAKE, DRAWN, MOVE1; bricks the
+   * inert kernel redid), as they are at this call.
+   * @returns {Promise<{ awake: number, drawn: number, move1: number, inert: number, units: number }>}
+   */
+  async readCounts() {
+    const c = new Uint32Array(await this.gpu.readback.buffer(this.act, this.actLayout.count * 4, 32));
+    return { awake: c[ACT_COUNTS.AWAKE], drawn: c[ACT_COUNTS.DRAWN], move1: c[ACT_COUNTS.MOVE1], inert: c[ACT_COUNTS.INERT], units: this.unit.units };
+  }
+
+  /**
+   * The inert map built from the state alone, as it is at this call
+   * (shaders/activity.js inertRefFrag: the reference tools/activity-check.mjs
+   * compares the incremental build with), a byte per brick in brick coordinates.
+   * @returns {Promise<Uint8Array>}
+   */
+  async inertRef() {
+    const g = this.g;
+    if (!this.refInert) {
+      this.refInert = this.gpu.createBuffer({ label: `sim${this.id} inert ref`, size: g.nbricks * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+      this._refGroup = this.gpu.bindGroup(this.L.REF, [{ binding: 0, resource: { buffer: this.refInert } }], 'inert ref');
+    }
+    const k = this.passOf('inertRef');
+    await k.ready;
+    this._dispatch(k, fold(g.nbricks), { bind: [this.tables, this.bindRO, this._refGroup], header: this.header() });
+    const w = new Uint32Array(await this.gpu.readback.buffer(this.refInert, 0, g.nbricks * 4));
+    const out = new Uint8Array(g.nbricks);
+    for (let id = 0; id < g.nbricks; id++) {
+      const [bx, by, bz] = brickCoordOf(g, id);
+      out[bx + g.bx * (by + g.by * bz)] = w[id];
+    }
+    return out;
+  }
+
+  /** The debug prelude's count of out-of-grid accesses (I2.8; 0 without debug). */
+  async readDebug() {
+    const at = marksLayout(this.g).dbg * 4;
+    return new Uint32Array(await this.gpu.readback.buffer(this.marks, at, 4))[0];
+  }
+
+  /**
+   * A read-only probe (docs/webgpu.md D6): `kernel` writes its result into a
+   * slot of `ring` (a gpu.readback.ring, its buffer bound in the kernel's own
+   * groups), whose index it gets in its params as `slot`.
+   * @returns {Promise<ArrayBuffer>}
+   */
+  probe(kernel, size, { ring, bind = [], params = {} }) {
+    const slot = ring.next();
+    this._dispatch(kernel, size, { bind, header: this.header(), params: { ...params, slot } });
+    return ring.read(slot);
+  }
+
   // Debug: read the full state back and summarise it per element.
-  census() {
+  async census() {
     const { nx, ny, nz } = this.g;
-    const [a] = this.readState();
+    const [a] = await this.readState();
     const out = {};
     for (let y = 0; y < ny; y++)
       for (let z = 0; z < nz; z++)
@@ -1062,50 +952,71 @@ export class Simulation {
     return out;
   }
 
-  // Every pass's material (the profiler's and the app's program bookkeeping).
-  materials() { return Object.values(this.mats).flat().concat(this.rays.materials()); }   // (fieldBoost, brickDist are arrays)
+  // ---- what plugs in (docs/webgpu.md C7, J3) ----
 
-  // retire: an array to put the materials in instead of disposing of them (the
-  // app disposes of them once the next grid's have claimed their programs, so
-  // the programs both use carry over: app.js build).
-  dispose(retire = null) {
+  /**
+   * The rays layer (raysLayer.js, U12): { active, stepped, step(f), settle(f),
+   * bricks (a GPUBuffer bitset: a bit per brick), deposit (two i32 per slot),
+   * paint(), noteElement(), reset(), wake() }. null detaches it.
+   */
+  attachRays(rays) {
+    this.rays = rays ?? NO_RAYS;
+    this._groups();
+    this.wake();
+  }
+
+  /**
+   * Whitewater's aeration field (gfx/foam.js, U12): { active, step(f, { pre,
+   * post, moveSrc }), idle(f), reset(f) }. While active the move runs out of
+   * place and records moveSrc.
+   */
+  attachAeration(aer) {
+    this.aeration = aer ?? null;
+    const want = aer ? this.g.slots * 4 : 16;
+    if (this.moveSrc.size < want || (!aer && this.moveSrc.size > 16)) {
+      this._retire(this.moveSrc);
+      this.moveSrc = this.gpu.createBuffer({ label: `sim${this.id} moveSrc`, size: want, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+      this._groups();
+    }
+  }
+
+  /** The derived passes (src/derived.js, U4): fields, bricks, light, GI. */
+  attachDerived(derived) { this.derived = derived ?? null; }
+
+  // Delegated to src/derived.js (docs/webgpu.md C7, E): nothing to do until one is attached.
+  updateBricks(...args) { return this.derived?.updateBricks(...args); }
+  updateGI(...args) { return this.derived?.updateGI(...args); }
+  resetGI() { this.giReset = true; return this.derived?.resetGI?.(); }
+  get fieldSurf() { return this.derived?.fieldSurf ?? null; }
+  get fieldMedia() { return this.derived?.fieldMedia ?? null; }
+  get fieldThin() { return this.derived?.fieldThin ?? null; }
+  get light() { return this.derived?.light ?? null; }
+  get brick() { return this.derived?.brick ?? null; }
+  get brickDist() { return this.derived?.brickDist ?? null; }
+  get giTextures() { return this.derived?.giTextures ?? null; }
+  get flowTexture() { return this.flow; }
+
+  // WEBGPU-STUB (docs/webgpu.md J3): passes are dispatches (gpu.kernel, sim.edit).
+  run() { throw new Error('sim.run removed in the WebGPU port: docs/webgpu.md C7 (gpu.kernel, sim.edit)'); }
+  // WEBGPU-STUB (docs/webgpu.md J3)
+  pass() { throw new Error('sim.pass removed in the WebGPU port: docs/webgpu.md D6 (sim.edit)'); }
+  // WEBGPU-STUB (docs/webgpu.md J3)
+  makeStateTarget() { throw new Error('sim.makeStateTarget removed in the WebGPU port: docs/webgpu.md C7'); }
+  // WEBGPU-STUB (docs/webgpu.md J3): the state is sim.state's buffers.
+  get stateA() { throw new Error('sim.stateA removed in the WebGPU port: docs/webgpu.md C7 (sim.state, sim.bindRO)'); }
+  // WEBGPU-STUB (docs/webgpu.md J3)
+  get stateB() { throw new Error('sim.stateB removed in the WebGPU port: docs/webgpu.md C7 (sim.state, sim.bindRO)'); }
+  // WEBGPU-STUB (docs/webgpu.md J3)
+  get stateF() { throw new Error('sim.stateF removed in the WebGPU port: docs/webgpu.md C7 (sim.state, sim.bindRW)'); }
+
+  dispose() {
     this.disposed = true;
     this.wake();   // an outstanding readback cannot certify a disposed simulation
-    this.targets.forEach((t) => t.dispose());
-    this.brick.dispose();
-    this.blocks.dispose();
-    this.slots.dispose();
-    this.light.forEach((t) => t.dispose());
-    this.fieldEma.dispose();
-    this.fieldTmp.forEach((t) => t.dispose());
-    this.fieldsBlurred.dispose();
-    this.fields.dispose();
-    this.flowV.dispose();
-    this.flowVTmp?.dispose();
-    this.aeration?.dispose();
-    this.brickDist.forEach((t) => t.dispose());
-    this.actClass.dispose();
-    this.actRows.dispose();
-    this.actInert.dispose();
-    this.actQuiet.dispose();
-    this.reactionTable.dispose();
-    this.superMap.forEach((t) => t.dispose());
-    this.superRows.dispose();
-    this.superShare.dispose();
-    this.stepQuads.dispose();
-    this.actChanged.dispose();
-    this.brickAge.forEach((t) => t.dispose());
-    this.dirty.dispose();
-    this.regionMap.dispose();
-    this.regionShare.dispose();
-    this.fieldQuads.dispose();
-    this.giSrc.dispose();
-    this.giProbes.dispose();
-    this.giProbesTmp?.dispose();
-    this.history?.forEach((t) => t.dispose());
-    if (retire) retire.push(...this.materials());
-    else this.materials().forEach((m) => m.dispose());
-    this.rays.dispose([]);   // (its materials went with materials() above)
-    this.quad.geometry.dispose();
+    const { A, B, F } = this.state;
+    for (const b of [A, B, F, this.flow, this.moveSrc, this.marks, this.act, this.args, this.noDeposit, this.noRayBricks,
+      this.flowTmp, this.atlasScratch, this.editScratch, this.refInert]) b?.destroy();
+    this.counts.close();
+    for (const t of this.history) { t.A.destroy(); t.B.destroy(); }
+    this.history = [];
   }
 }
