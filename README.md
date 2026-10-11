@@ -54,6 +54,7 @@ Press `?` in the app for the full list.
 | `T` | show or hide the element dock |
 | `,` | settings |
 | `P` | save a screenshot |
+| `` ` `` | the Lua console (TPT's): run commands, or code every step |
 
 Hovering shows the element, temperature and air pressure under the cursor. Settings are remembered between visits.
 
@@ -338,6 +339,18 @@ into the shader, so the on-screen legend always matches.
 Pick the SIGN tool and click any surface to pin a label (Enter to save, Escape to cancel, click a sign to edit, × to delete).
 Signs can show live values from the cell they're attached to: `{t}` temperature, `{p}` pressure, `{e}` element.
 A small GPU probe pass reads those values and dims signs that are hidden behind voxels.
+
+## Console
+
+`` ` `` opens a Lua console, The Powder Toy's: real Lua 5.3 (through [fengari](https://github.com/fengari-lua/fengari),
+loaded the first time you open it) with TPT's API and a `z` on every position, so
+`sim.partCreate(-1, 64, 100, 64, elem.DEFAULT_PT_WATR)` makes a water cell and
+`event.register(event.beforesim, fn)` runs `fn` before every simulation step. Writes are queued and applied in one
+small GPU pass per step; a typed command reads the world exactly, and event handlers read a copy that refreshes
+asynchronously, so a script never stalls the GPU. A handler that errors or runs too long is removed with a message,
+and handlers share an 8 ms budget a frame. Only what you type or paste runs, and in multiplayer only the host's
+console runs scripts. Other features add functions through a registry (`src/console/registry.js`).
+The API, the limits and the registry are in [docs/console.md](docs/console.md).
 
 ## Multiplayer
 
