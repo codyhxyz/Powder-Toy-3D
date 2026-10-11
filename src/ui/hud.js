@@ -93,7 +93,7 @@ export function createHelp(onClose) {
         row('Pan', 'Shift', 'Right drag'),
         row('Zoom', 'Scroll'),
         row('Move', 'W', 'A', 'S', 'D'),
-        row('Turn left / right', 'Q', 'E'),
+        row('Turn left / right', 'E', 'Q'),
         row('Move faster', 'Shift'),
         row('Reset camera', 'R'),
         h('h3', { text: 'First person' }),

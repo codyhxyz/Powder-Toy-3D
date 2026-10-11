@@ -47,9 +47,9 @@ export function createCameraRig(camera, controls, isTyping) {
       }
       if (!keys.size || isTyping()) return;
       const fast = keys.has('ShiftLeft') || keys.has('ShiftRight') ? 2.5 : 1;
-      const turn = (keys.has('KeyQ') ? 1 : 0) - (keys.has('KeyE') ? 1 : 0);
+      const turn = (keys.has('KeyE') ? 1 : 0) - (keys.has('KeyQ') ? 1 : 0);
       if (turn) {
-        // swing the camera around the orbit target: Q turns the view left, E right
+        // swing the camera around the orbit target: E turns the view left, Q right
         offset.subVectors(camera.position, controls.target).applyAxisAngle(UP, turn * TURN_RATE * fast * dt);
         camera.position.addVectors(controls.target, offset);
         anim = null;
