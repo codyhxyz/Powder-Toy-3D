@@ -86,7 +86,8 @@ export function createConsole(app) {
   document.body.append(panel);
 
   function print(text, kind = 'out') {
-    for (const line of String(text).split('\n')) logEl.append(h(`div.console-row.${kind}`, { text: line }));
+    // (row-: the app's .error is its fatal-error overlay, hidden)
+    for (const line of String(text).split('\n')) logEl.append(h(`div.console-row.row-${kind}`, { text: line }));
     while (logEl.childElementCount > MAX_LOG_LINES) logEl.firstElementChild.remove();
     logEl.scrollTop = logEl.scrollHeight;
   }

@@ -50,7 +50,7 @@ try {
     await p.keyboard.press('Enter');
     await p.waitForFunction((n) => document.querySelectorAll('.console-row').length > n, before, { timeout: 15000 }).catch(() => {});
     return p.evaluate(([n, ms]) => {
-      const rows = [...document.querySelectorAll('.console-row')].slice(n).filter((r) => !r.classList.contains('cmd'));
+      const rows = [...document.querySelectorAll('.console-row')].slice(n).filter((r) => !r.classList.contains('row-cmd'));
       return { out: rows.map((r) => r.textContent).join('\n'), error: document.querySelector('.console-error').textContent, ms };
     }, [before, Date.now() - t]);
   };
@@ -104,10 +104,10 @@ try {
   check('...and a later frame reads it from the asynchronous cache', r.out === String(E.WALL), r.out || r.error);
   await cmd('event.register(event.tick, function() error("boom") end)');
   await frames(1);
-  check('a throwing handler is removed with a message', await p.evaluate(() => [...document.querySelectorAll('.console-row.error')].some((e) => e.textContent.includes('removed') && e.textContent.includes('boom'))));
+  check('a throwing handler is removed with a message', await p.evaluate(() => [...document.querySelectorAll('.console-row.row-error')].some((e) => e.textContent.includes('removed') && e.textContent.includes('boom'))));
   await cmd('event.register(event.tick, function() while true do end end)');
   await frames(1);
-  check('a runaway handler is removed', await p.evaluate(() => [...document.querySelectorAll('.console-row.error')].some((e) => e.textContent.includes('ran longer'))));
+  check('a runaway handler is removed', await p.evaluate(() => [...document.querySelectorAll('.console-row.row-error')].some((e) => e.textContent.includes('ran longer'))));
   await cmd('event.register(event.beforesim, function() sim.partCreate(-1, 30, 120, 30, "SAND") end)');
   await frames(20, 4);
   r = await cmd('sim.elementCount("SAND")');
