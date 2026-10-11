@@ -37,7 +37,7 @@ import { createDetailGate } from './gfx/detailGate.js';
 import { createColdShaderGuard } from './gfx/coldShader.js';
 import { createGpuLossTracker, silentLinkFailure, processLossMessage, lossDetails } from './gfx/gpuLoss.js';
 import { setAeration } from './gfx/foam.js';
-import { decoView } from './deco.js';
+import { decoView, prepareDeco } from './deco.js';
 import { claimPrograms } from './gfx/programs.js';
 import { createPost, createAutoResolution, UPSCALE } from './gfx/post.js';
 import { createPacer, settleFrames, sceneKey, createCapCheck, CAP_IDLE_MS, MAX_FPS } from './gfx/pacing.js';
@@ -869,6 +869,7 @@ function selectTool(id) {
     return;   // Never save or send starter IDs to the paint shader.
   }
   if (!isBuild(id)) lastPaintTool = id;
+  if (isDecoTool(id) && sim) prepareDeco(sim);   // its passes compile while the colour is picked (src/deco.js)
   settings.tool = id;
   const it = toolById(id);
   const accent = accentFor(it.color);

@@ -5,6 +5,7 @@ import {
   decoGatherFrag, decoScrubFrag, decoPaintFrag, decoUndoFrag, decoCopyFrag, decoStageFrag, decoEditFrag, STAGE_W,
 } from './shaders/deco.js';
 import { DECO_ID0 } from './elements.js';
+import { compileInBackground } from './gfx/programs.js';
 
 // The Powder Toy's decoration layer ("deco"): a colour painted onto matter
 // that travels with it. TPT keeps it per particle (dcolour, 0xAARRGGBB:
@@ -107,13 +108,25 @@ class Deco {
     r.setRenderTarget(keep);
   }
 
+  // the passes a painting session runs: made (and compiled ahead, prepareDeco) on first use
+  gatherMat() {
+    return this.mat('gather', decoGatherFrag(this.sim.g), {
+      tA: { value: null }, tQuiet: { value: null }, tSlots: { value: null }, uParity: { value: 0 },
+    });
+  }
+  paintMat() {
+    return this.mat('paint', decoPaintFrag(this.sim.g), {
+      tA: { value: null }, uCenter: { value: new THREE.Vector3() }, uRadius: { value: 1 }, uShape: { value: 0 },
+      uMode: { value: 0 }, uColor: { value: new THREE.Vector4() },
+    });
+  }
+  scrubMat() { return this.mat('scrub', decoScrubFrag(this.sim.g), { tA: { value: null }, tPrevA: { value: null } }); }
+
   // A step, after the move's gather (Simulation.step): the decoration follows the cells.
   step() {
     if (!this.active) return;
-    const sim = this.sim, g = sim.g;
-    const m = this.mat('gather', decoGatherFrag(g), {
-      tA: { value: null }, tQuiet: { value: null }, tSlots: { value: null }, uParity: { value: 0 },
-    });
+    const sim = this.sim;
+    const m = this.gatherMat();
     m.uniforms.tA.value = sim.stateA;
     m.uniforms.tQuiet.value = sim.actQuiet.texture;
     m.uniforms.tSlots.value = sim.slots.texture;
@@ -124,11 +137,7 @@ class Deco {
   // A deco tool's brush stroke (Simulation.paint).
   paint({ center, radius, shape, tool }) {
     const sim = this.sim;
-    const m = this.mat('paint', decoPaintFrag(sim.g), {
-      tA: { value: null }, uCenter: { value: new THREE.Vector3() }, uRadius: { value: 1 }, uShape: { value: 0 },
-      uMode: { value: 0 }, uColor: { value: new THREE.Vector4() },
-    });
-    const u = m.uniforms;
+    const u = this.paintMat().uniforms;
     u.tA.value = sim.stateA;
     u.uCenter.value.copy(center);
     u.uRadius.value = radius;
@@ -136,7 +145,7 @@ class Deco {
     u.uMode.value = modeOf(tool);
     u.uColor.value.fromArray(decoView.color).divideScalar(BYTE_MAX);
     this.active = true;
-    this.write(m);
+    this.write(this.paintMat());
     sim.version++;   // the picture changed (gfx/pacing.js redraws on it)
   }
 
@@ -144,7 +153,7 @@ class Deco {
   // prevA: cells it gave a new element, or emptied, lose their decoration.
   scrub(prevA) {
     if (!this.active) return;
-    const m = this.mat('scrub', decoScrubFrag(this.sim.g), { tA: { value: null }, tPrevA: { value: null } });
+    const m = this.scrubMat();
     m.uniforms.tA.value = this.sim.stateA;
     m.uniforms.tPrevA.value = prevA;
     this.write(m);
@@ -293,6 +302,14 @@ class Deco {
 
 // sim's decoration layer, made the first time it is needed.
 export const ensureDeco = (sim) => (sim.deco ??= new Deco(sim));
+// A deco tool was picked: make the layer (still switched off: nothing runs
+// until the first stroke) and compile its passes in the background, so the
+// first stroke doesn't stall on them.
+export function prepareDeco(sim) {
+  if (sim.deco) return;
+  const d = ensureDeco(sim);
+  compileInBackground(sim.renderer, [d.gatherMat(), d.paintMat(), d.scrubMat()]).catch(() => { /* compiled on first use instead */ });
+}
 
 // For saves (a save section's save and load): the decoration as RGBA8 per
 // state-atlas texel (sim.cellTexel(x, y, z) * 4 is a cell's sRGB colour and
