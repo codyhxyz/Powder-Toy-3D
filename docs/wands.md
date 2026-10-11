@@ -78,7 +78,15 @@ reservoirs are finite sandbox supplies, not infinite ammunition.
 
 This is not a byte-compatible Noita evaluator. In Noita, modifiers share a
 casting block, and deck wrapping adds more interactions. This version uses
-explicit expression scope, with no wrapping or shuffle.
+explicit expression scope, with no wrapping.
+
+Two of Noita's wand settings exist: `shuffle` (0/1, Noita's
+`shuffle_deck_when_empty`: the order of the top-level expressions is reshuffled at
+every recharge) and `spellsPerCast` (Noita's `actions_per_round`: one cast fires that
+many top-level expressions together, paying for all of them up front, stopping at the
+deck's end, then the wand recharges). Defaults keep every preset as before: 0 and 1.
+Mana stays prepaid: a cast that can't be paid waits for mana (Noita instead skips the
+spells it can't afford). Procedural wands (Descent's loot and shop): `generate.js`.
 
 ## Why not Rust or Go?
 
@@ -104,6 +112,7 @@ Run these commands from the worktree:
 ```sh
 node scripts/check-wand-compiler.mjs
 node scripts/check-wand-runtime.mjs
+node scripts/check-wand-generate.mjs
 node scripts/bench-wands.mjs
 node scripts/check-wand-world.mjs --port 53241
 node scripts/check-wand-recipes.mjs --port 53243

@@ -3,11 +3,11 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import './ui/styles.css';
 import { Simulation } from './sim.js';
 import { volumeVert, volumeFrag, pickFrag, shadowFrag } from './shaders/render.js';
-import { ELEMENTS, E, toolById, isBuild, isSpawnerTool, isGearTool, LIGHTNING_TOOL, wandPresetForTool } from './elements.js';
+import { ELEMENTS, E, TOOLS, toolById, isBuild, isSpawnerTool, isGearTool, LIGHTNING_TOOL, wandPresetForTool } from './elements.js';
 import { createLightning } from './lightning.js';
 import { Spawners, SPAWNER, ENEMY_KINDS, feetOnHit } from './spawners.js';
 import { createBirdLife } from './birds/index.js';
-import { BODY_HEIGHT } from './pov/constants.js';
+import { BODY_HEIGHT, HAND_REACH } from './pov/constants.js';
 import { PerkOrbs } from './perkOrbs.js';
 import { buildPreset, ARENA_PRESETS } from './presets.js';
 import { ArenaMarkers } from './arenas/markers.js';
@@ -23,7 +23,6 @@ import { farHazeGLSL, farCastersGLSL, farLayout, WORLD_SIZE } from './shaders/fa
 import { quadVert } from './shaders/common.js';
 import { createBrushCursor } from './brush.js';
 import { createCameraRig } from './camera.js';
-import { createMeshCut } from './gfx/meshCut.js';
 import { createBrand, createToolbar } from './ui/topbar.js';
 import { createDock } from './ui/dock.js';
 import { createCard } from './ui/card.js';
@@ -46,6 +45,10 @@ import { createMultiplayer } from './net/multiplayer.js';
 import { createProfiler } from './gfx/profiler.js';
 import { createProfilerPanel } from './ui/profiler.js';
 import { createPov } from './pov/index.js';
+import { createDescentRunner, runSnapshot, LOAD_POLL_MS, LOAD_WAIT_MS } from './pov/descent/switch.js';
+import { createDescentOverlay } from './pov/descent/overlay.js';
+import { DESCENT_LEVELS, levelByScene } from './world/scenes/descent/levels.js';
+import { descentWands } from './pov/wands/descentRun.js';
 import { inventory } from './pov/tools/inventory.js';
 import { gearByKey, SLOTS } from './pov/tools/catalog.js';
 import { renderViewmodels } from './pov/viewmodel.js';
@@ -212,7 +215,6 @@ function stopGraphics(error) {
 // What the page was doing when the GPU went away (gfx/gpuLoss.js): a dead
 // GPU process first shows as a link failure with no text, not a lost context.
 const gpuLoss = createGpuLossTracker(renderer);
-const meshCut = createMeshCut(renderer);   // the volume's march stops at the opaque meshes in it
 renderer.domElement.addEventListener('webglcontextlost', () => {
   // Three restores its renderer, not our GPU-only state, undo history, or
   // manually attached array layers. Never resume those as an intact world.
@@ -265,7 +267,6 @@ floorGrid.position.y = -0.002;
 // so the grid and the box outline fade by the render scale to keep their weight.
 // Transparent for that, but still drawn before the other transparent objects.
 floorGrid.material.transparent = true;
-floorGrid.material.depthWrite = false;   // (the volume's march stops at the depth meshes leave: gfx/meshCut.js)
 floorGrid.renderOrder = -1;
 const EDGE_OPACITY = 0.55;
 scene.add(floorGrid);
@@ -366,7 +367,6 @@ function build() {
       uOrigin: sim.originUniform,   // the window's place in the world (the sim passes get it from sim.run)
       uFar: { value: false },
       ...gfxUniforms,
-      ...meshCut.uniforms,   // bodies in water show through it (gfx/meshCut.js)
     },
     side: THREE.BackSide,
     transparent: true,
@@ -376,7 +376,6 @@ function build() {
     blendDst: THREE.OneMinusSrcAlphaFactor,
   }));
   volume.scale.setScalar(scale);
-  volume.onBeforeRender = meshCut.hook;
   volume.frustumCulled = false;
   scene.add(volume);
   volume.add(sim.rays.view);   // photons and neutrons as points, in grid cells (raysLayer.js)
@@ -472,7 +471,7 @@ const SHRINE_GLADE = 10;           // cells around its footprint the clearing re
 const SHRINE_TREE_COST = 2;        // a spot's score: cells of rise, plus this per tree to fell...
 const SHRINE_FAR_COST = 0.05;      // ...plus this per cell from the window's middle (lowest wins)
 function worldShrine() {
-  if (!win || !builds) return;
+  if (!win || !builds || win.scene.shrine === false) return;   // (Descent's temples have their own altars)
   const P = win.P, g = sim.g, o = sim.origin, [hx, hz] = SHRINE_HALF;
   // a scene with structures places its own (world/structures.js: generated, in a clearing): set its orbs
   const altars = worldShrineAltars(P);
@@ -688,6 +687,44 @@ function resetSpawners(name) {
 let arenaLayout = null;
 let arenaMarkers = null;   // its team banners (arenas/markers.js)
 
+// ---------------------------------------------------------------- Descent's level switch
+// Descent (docs/descent-contract.md, "D"): each level is its own world scene;
+// the temple's exit loads the next one here, in the same session, and drops
+// the body in at its spawn. The POV shell, the body (health, perks, statuses),
+// the toolbelt, the run's wands (wands/descentRun.js) and gold (pov.descent)
+// all outlive build(), so the run comes through: nothing is rebuilt but the world.
+let descent = null;   // pov/descent/switch.js createDescentRunner, made with the POV shell
+const descentFeet = new THREE.Vector3();
+// a level's spawn as grid feet (the middle of its cell), or null
+function descentSpawn(level) {
+  if (!level?.spawn || !sim) return null;
+  const [x, y, z] = level.spawn;
+  return new THREE.Vector3(x + 0.5, y, z + 0.5).sub(sim.origin);
+}
+// Load world scene `key` (as the map menu does a world map) and resolve once its window has filled.
+function descentLoad(key) {
+  settings.scene = key;
+  setSize('world');
+  const t0 = performance.now();
+  return new Promise((resolve, reject) => {
+    const check = () => {
+      if (win?.loaded && win.scene.key === key) resolve();
+      else if (performance.now() - t0 > LOAD_WAIT_MS) reject(new Error(`Descent: '${key}' took too long to load`));
+      else setTimeout(check, LOAD_POLL_MS);
+    };
+    check();
+  });
+}
+function descentFrame() {
+  const p = pov?.player;
+  const live = !!(win && p && pov.mode === 'on' && !p.dead);
+  descent.frame({
+    key: win ? settings.scene : null,
+    feet: live ? descentFeet.copy(p.pos).add(sim.origin) : null,
+    live, load: win,
+  });
+}
+
 // ---------------------------------------------------------------- signs (optional module)
 const signLayer = Object.assign(document.createElement('div'), { className: 'sign-layer' });
 Object.assign(signLayer.style, { position: 'fixed', inset: '0', pointerEvents: 'none', zIndex: 4 });
@@ -703,9 +740,17 @@ let pointerClient = [0, 0];
 const raycaster = new THREE.Raycaster();
 const hover = { valid: false, cell: new THREE.Vector3(), face: 0, id: -1, T: 0, P: 0 };
 let painting = false;
+let strokeTool = E.SAND;   // what the stroke under way paints: the selected tool, or the tool gun's eraser
+let strokeDist = 0;        // cells from the eye along the aim that a tool gun stroke of an element pours at
+let toolGunOut = false;    // the tool gun is in hand this frame (toolGun.aim)
 let dragY = 0;
 const brushCenter = new THREE.Vector3();
 let brushValid = false;
+// The Wind tool blows the way the brush moves (TPT WIND.cpp takes the mouse's
+// motion between frames): where the stroke last painted, in world cells, so a
+// moving World window (docs/scaling.md D11) doesn't count as a gust.
+const windFrom = new THREE.Vector3();
+let windFromValid = false;
 const invVolume = new THREE.Matrix4();
 
 function gridRay() {
@@ -767,11 +812,12 @@ const faceNormal = (face) => {
   return n;
 };
 
-function hoverBrushCenter(out) {
+// an element's brush sits on the hovered face; a brush tool's (erase, heat) is centred in the hovered cell
+function hoverBrushCenter(out, tool = settings.tool) {
   const axis = Math.floor(hover.face / 2);
   const sign = hover.face % 2 === 0 ? 1 : -1;
   out.copy(hover.cell).addScalar(0.5);
-  if (!isTool() || hover.id < 0) out.setComponent(axis, out.getComponent(axis) + sign * (settings.radius + 0.5));
+  if (tool >= 0 || hover.id < 0) out.setComponent(axis, out.getComponent(axis) + sign * (settings.radius + 0.5));
   return out;
 }
 
@@ -780,12 +826,8 @@ const tmpV = new THREE.Vector3();
 function updateBrush() {
   const g = sim.g;
   brushValid = false;
-  if (pov?.active) {
-    brush.set({ visible: false });
-    builds?.update({ hover, active: false });
-    return;
-  }
-  if (settings.tool !== SIGN_TOOL && !isBuild(settings.tool) && !isSpawnerTool(settings.tool)) {
+  if (pov?.active) { updateGunBrush(); return; }
+  if (isBrush(settings.tool)) {
     if (painting) {
       // a box's brush stops at its walls; a world's window has none, so beyond it there's no brush
       plane.constant = -dragY;
@@ -808,6 +850,46 @@ function updateBrush() {
     color: toolById(settings.tool).color,
   });
   builds?.update({ hover, active: isBuild(settings.tool) && pointerInside && !uiHover && !eyedropper });
+}
+
+// Whether the brush shows for `id`: everything but signs, spawners and constructions (lightning's sets its width).
+const isBrush = (id) => id !== SIGN_TOOL && !isBuild(id) && !isSpawnerTool(id);
+
+// First person: the brush and the construction ghost only show with the tool gun
+// out, at the crosshair (the pick follows it there: requestPick). An element's
+// stroke stays at the distance it started at, along the aim, as the god view's
+// stays on its drag plane, so a held pour doesn't climb up its own heap toward
+// you; a brush tool's (erase, heat) follows the crosshair into what it works on.
+function updateGunBrush() {
+  const g = sim.g;
+  const out = toolGunOut;
+  toolGunOut = false;   // the gun says so again next frame (toolGun.aim), while it's in hand
+  if (!out) painting = false;
+  const tool = painting ? strokeTool : settings.tool;
+  if (out && isBrush(tool)) {
+    if (painting && tool >= 0) {
+      if (pov.aimRay(povRay.origin, povRay.direction)) {
+        brushCenter.copy(povRay.origin).addScaledVector(povRay.direction, strokeDist);
+        brushValid = !win || inWindow(brushCenter);
+      }
+    } else if (hover.valid) {
+      hoverBrushCenter(brushCenter, tool);
+      brushValid = true;
+    }
+  }
+  if (brushValid) {
+    brushCenter.x = THREE.MathUtils.clamp(brushCenter.x, 0, g.nx);
+    brushCenter.y = THREE.MathUtils.clamp(brushCenter.y, 0, g.ny);
+    brushCenter.z = THREE.MathUtils.clamp(brushCenter.z, 0, g.nz);
+  }
+  brush.set({
+    visible: brushValid,
+    position: tmpV.copy(brushCenter).multiplyScalar(scale).add(volume.position),
+    radius: settings.radius * scale,
+    shape: settings.shape,
+    color: toolById(tool).color,
+  });
+  builds?.update({ hover, active: out && isBuild(settings.tool), crosshair: true });
 }
 
 // ---------------------------------------------------------------- UI
@@ -860,12 +942,29 @@ function giveGear(id) {
   } else hud.toast(`${it.name} is in your tools: press V, then ${slot}`);
 }
 
+// Anything else picked from the spawn menu in first person loads the tool gun
+// (toolGun below) and puts it in hand, as Garry's Mod's Q menu does with a tool.
+function loadToolGun() {
+  const it = toolById(settings.tool), g = gearByKey('TOOLGUN');
+  inventory.give(g.key);
+  pov.closeMenu();
+  hud.toast(`${it.name} in the ${g.name}: left-click spawns, right-click erases (key ${g.slot + 1})`);
+}
+
 // Closing a construction's options goes back to the last element or tool.
 function leaveBuild() { if (isBuild(settings.tool)) selectTool(lastPaintTool); }
 
+let menuPick = null;   // the spawn menu's last pick: Q in first person opens the menu where it was left
 const dock = createDock({
   settings,
-  onSelect: (id) => (isGearTool(id) ? giveGear(id) : selectTool(id)),
+  onSelect: (id) => {
+    menuPick = id;
+    if (isGearTool(id)) giveGear(id);
+    else {
+      selectTool(id);
+      if (pov?.active && !wandPresetForTool(id)) loadToolGun();
+    }
+  },
   onBrushChange: (patch) => { Object.assign(settings, patch); dock.sync(); save(); },
   onHover: (id) => card.show(id ?? settings.tool),
   onEyedropper: () => setEyedropper(!eyedropper),
@@ -1107,7 +1206,14 @@ canvasEl.addEventListener('pointermove', (e) => {
 canvasEl.addEventListener('pointerleave', () => { pointerInside = false; });
 canvasEl.addEventListener('pointerdown', (e) => {
   toolbar.close();
-  if (pov?.active) return;   // POV handles its own mouse buttons
+  if (pov?.active) {   // POV handles its own mouse buttons, but for the tool gun's middle one:
+    // pick up what it aims at, Minecraft creative's pick block (TPT's middle click samples too)
+    if (e.button === 1 && pov.locked && pov.toolbelt?.selectedKey === 'TOOLGUN') {
+      e.preventDefault();
+      if (!pickHovered()) hud.toast('Nothing to pick there');
+    }
+    return;
+  }
   if (e.pointerType === 'touch') touchDown(e);
   else press(e);
 });
@@ -1120,54 +1226,101 @@ function press(e) {
     if (!pickHovered()) hud.toast('Nothing to pick there');
     return;
   }
+  if (clickTool() !== null) return;
+  dragY = hover.valid ? hoverBrushCenter(tmpV).y : (isTool() ? 0.5 : settings.radius);
+  startStroke(settings.tool);
+  if (e.pointerType !== 'touch') canvasEl.setPointerCapture(e.pointerId);   // (a touch is captured already)
+}
+
+// A click with a one-click tool (a sign, lightning, a spawner, a construction)
+// at `hover`: under the cursor in the god view, under the crosshair through the
+// tool gun. true if it did something, false if it couldn't (it says why),
+// null if the tool paints a stroke instead.
+function clickTool() {
   if (settings.tool === SIGN_TOOL) {
-    if (signs && hover.valid) signs.add({ cell: hover.cell.clone(), normal: faceNormal(hover.face) });
-    else if (!signs) hud.toast('Signs are still loading');
-    return;
+    if (signs && hover.valid) { signs.add({ cell: hover.cell.clone(), normal: faceNormal(hover.face) }); return true; }
+    if (!signs) hud.toast('Signs are still loading');
+    return false;
   }
   if (settings.tool === LIGHTNING_TOOL) {
-    if (mp.guard()) return;
-    if (!hover.valid) { hud.toast('Click a surface to strike it'); return; }
+    if (mp.guard()) return false;
+    if (!hover.valid) { hud.toast('Click a surface to strike it'); return false; }
     sim.snapshot();
     toolbar.setUndoEnabled(true);
     lightning.strikeTool(sim, hover, settings.radius);
     pacer.wake();
     hud.dismissHint();
-    return;
+    return true;
   }
   if (isSpawnerTool(settings.tool)) {
-    if (mp.guard()) return;
-    if (!hover.valid) { hud.toast('Click a surface to set it on'); return; }
+    if (mp.guard()) return false;
+    if (!hover.valid) { hud.toast('Click a surface to set it on'); return false; }
     const kind = SPAWNER_KIND[settings.tool];
     const r = spawners.toggle(kind, feetOnHit(hover));
     pacer.wake();
     if (r === 'full') hud.toast('That many is the limit');
     else hud.toast(r === 'removed' ? 'Spawner removed' : SPAWNER_SET[ENEMY_KINDS.includes(kind) ? SPAWNER.ENEMY : kind]);
-    return;
+    return r !== 'full';
   }
   if (isBuild(settings.tool)) {
-    if (mp.guard()) return;
-    if (!builds) hud.toast('Constructions are still loading');
-    else if (builds.ready) {
-      sim.snapshot();
-      toolbar.setUndoEnabled(true);
-      lastShrine = 0;
-      builds.place();
-      // a shrine's orbs go with its snapshot: undoing it takes them away (undo)
-      if (lastShrine) { sim.history.at(-1).note = { shrine: lastShrine }; hud.toast('Shrine set: in first person (V), take one perk and the others vanish'); }
-      hud.dismissHint();
-    }
-    return;
+    if (mp.guard()) return false;
+    if (!builds) { hud.toast('Constructions are still loading'); return false; }
+    if (!builds.ready) return false;
+    sim.snapshot();
+    toolbar.setUndoEnabled(true);
+    lastShrine = 0;
+    builds.place();
+    // a shrine's orbs go with its snapshot: undoing it takes them away (undo)
+    if (lastShrine) { sim.history.at(-1).note = { shrine: lastShrine }; hud.toast('Shrine set: in first person (V), take one perk and the others vanish'); }
+    hud.dismissHint();
+    return true;
   }
-  dragY = hover.valid ? hoverBrushCenter(tmpV).y : (isTool() ? 0.5 : settings.radius);
+  return null;
+}
+
+// A brush stroke of `tool` from now until the button lets go (undone as one).
+function startStroke(tool) {
   if (!mp.isGuest) {
     sim.snapshot();
     toolbar.setUndoEnabled(true);
   }
+  strokeTool = tool;
   painting = true;
+  windFromValid = false;
   hud.dismissHint();
-  if (e.pointerType !== 'touch') canvasEl.setPointerCapture(e.pointerId);   // (a touch is captured already)
 }
+
+// The tool gun (pov/tools/toolgun.tool.js, Garry's Mod's gmod_tool): the god
+// view's click at the crosshair, with whatever the spawn menu picked last. In
+// first person the pick follows the crosshair (requestPick), so `hover` is
+// what the gun points at.
+const ERASE_TOOL = TOOLS.find((t) => t.key === 'ERASE').id;   // its right button: TPT's right mouse paints its secondary element, nothing by default
+const GUN_AIR_DIST = HAND_REACH;   // cells: a stroke started at the sky pours a hand's reach (Minecraft's) in front of you
+const toolGun = {
+  get item() { return toolById(settings.tool); },
+  // it's in hand this frame: the brush and the construction ghost follow the crosshair (updateGunBrush)
+  aim() { toolGunOut = true; },
+  // a button went down: 'stroke' while a stroke runs until release(), 'click' for one-click tools, null if nothing happened
+  press({ erase = false } = {}) {
+    if (signs?.editing) { document.activeElement?.blur?.(); return null; }   // as in the god view, the click that ends a sign's edit does nothing else
+    if (!erase) {
+      const done = clickTool();
+      if (done !== null) {
+        // a sign takes typing: free the mouse for it (V or a click on the world takes it back)
+        if (done && settings.tool === SIGN_TOOL && document.pointerLockElement) document.exitPointerLock();
+        return done ? 'click' : null;
+      }
+    }
+    const tool = erase ? ERASE_TOOL : settings.tool;
+    if (tool >= 0) {
+      if (!pov.aimRay(povRay.origin, povRay.direction)) return null;
+      strokeDist = hover.valid ? hoverBrushCenter(tmpV, tool).distanceTo(povRay.origin) : GUN_AIR_DIST;
+    }
+    startStroke(tool);
+    return 'stroke';
+  },
+  release() { painting = false; },
+};
 addEventListener('pointerup', (e) => { if (e.button === 0) painting = false; });
 
 // Touch: one finger paints, two fingers turn and zoom (controls.touches). A finger
@@ -1409,7 +1562,8 @@ function tick(now, renderOnly = false) {
     const cam = camState();
     if (cam !== camShown) toolbar.setCamera(camShown = cam);
     if (pov?.active) pov.update(dt);
-    else {
+    if (descent) descentFrame();
+    if (!pov?.active) {
       rig.update(dt);
       controls.update();
     }
@@ -1418,13 +1572,17 @@ function tick(now, renderOnly = false) {
 
     prof.phase('paint');
     if (painting && brushValid) {
+      tmpV.copy(brushCenter).add(sim.origin);   // world cells
+      const wind = windFromValid ? [tmpV.x - windFrom.x, tmpV.y - windFrom.y, tmpV.z - windFrom.z] : null;
+      windFrom.copy(tmpV);
+      windFromValid = true;
       const stroke = {
         center: brushCenter, radius: settings.radius, shape: settings.shape,
-        tool: settings.tool, rate: settings.rate, replace: settings.replace,
+        tool: strokeTool, rate: settings.rate, replace: settings.replace, wind,
       };
       if (mp.isGuest) mp.paint(stroke); // the host paints it
       else sim.paint(stroke);
-    }
+    } else windFromValid = false;
   }
   // The world continues beyond its simulation window: don't outline the window.
   edges.visible = !win;
@@ -1632,18 +1790,37 @@ try {
     getPerkOrbs: () => perkOrbs,
     loadPreset: (name) => loadPreset(name, false),   // a team game's new round (src/game)
     getArena: () => arenaLayout,                      // the loaded arena's layout, for the team games (src/game)
+    dropAt: () => descentSpawn(levelByScene(win ? settings.scene : null)),   // a Descent level: you start (and respawn) at its spawn
     requestRender: () => pacer.wake(),
     inWorld: () => !!win,
-    showToolsMenu: () => dock.reveal((it) => isGearTool(it.id)),
-    hideToolsMenu: () => dock.setCollapsed(true),   // Q in first person: the palette at its first-person tools
+    toolGun,   // the tool gun's click at the crosshair
+    // Q in first person: the spawn menu where it was left (at first, at what's selected)
+    showToolsMenu: () => dock.reveal((it) => it.id === (menuPick ?? settings.tool)) || dock.reveal((it) => isGearTool(it.id)),
+    hideToolsMenu: () => dock.setCollapsed(true),
   });
   pov.vehicles.spawnLayout(arenaLayout);   // the scene loaded before the POV shell existed
   pov.game.useLayout(arenaLayout);
+  descent = createDescentRunner({
+    levels: DESCENT_LEVELS,
+    emit: (name, payload) => pov.events.emit(name, payload),
+    loadScene: descentLoad,
+    enterAt: async (spawn) => {
+      await pov.enter({ at: descentSpawn({ spawn }) });
+      if (!pov.active) throw new Error("the body didn't drop in");
+    },
+    snapshot: () => runSnapshot({ player: pov.player, gold: pov.descent?.gold ?? null, wands: descentWands }),
+    overlay: createDescentOverlay(),
+    toast: (text) => hud.toast(text),
+    finish: () => { pov.exit(); actions.openMenu(); },
+    wait: (s) => new Promise((resolve) => setTimeout(resolve, s * 1000)),
+    loadId: () => win,
+  });
   if (bootMap && launch.mode && launch.mode !== 'sandbox') pov.game.prepare();   // a match was picked: the bots' module loads during the first frames
   mark('app');
   window.__app = {
     get sim() { return sim; }, get volume() { return volume; }, get scale() { return scale; }, get signs() { return signs; }, get builds() { return builds; },
     get pov() { return pov; },
+    get descent() { return descent; },   // Descent's level switch (pov/descent/switch.js): level, index, inside, busy
     get spawners() { return spawners; },
     get birds() { return birds; },
     get perkOrbs() { return perkOrbs; },

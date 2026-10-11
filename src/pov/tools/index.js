@@ -8,6 +8,8 @@ import * as THREE from 'three';
 import { PRESETS } from '../wands/catalog.js';
 import { createWandRuntime } from '../wands/runtime.js';
 import { createWandEditor } from '../wands/editor.js';
+import { createDescentLoot, descentWands, wandLines } from '../wands/loot.js';
+import { levelByScene } from '../wands/descentSites.js';
 import { viewmodelRig, heldMaterial, HIT, VIEWMODEL_GLOW_LAYER } from '../viewmodel.js';
 import { wandLook } from '../wands/look.js';
 
@@ -60,7 +62,9 @@ const MS_PER_S = 1000;
 const noHands = (ctx) => !!(ctx.player?.body?.status ?? ctx.player?.status)?.noTools;
 const CARRY_LABELS = ['Primary', 'Secondary'];   // a restricted bar's slots (Halo's two weapons)
 const WAND = 'WAND';              // selectedKey while a wand is in hand
-const WAND_KEY = 'WAND:';         // a wand's row key in the hotbar stack: WAND_KEY + preset id (or 'custom')
+const WAND_KEY = 'WAND:';
+const DESCENT_ID = 'descent:';    // a Descent wand's row id: DESCENT_ID + its inventory slot (wands/descentRun.js)
+const DESCENT_SLOT = 2;           // Descent's wands are its guns: the Guns slot, ahead of its tools         // a wand's row key in the hotbar stack: WAND_KEY + preset id (or 'custom')
 const WAND_COLOR = '#b994ff';
 // The held wand, in cells along the hand (−z forward): pommel, wrapped handle, collar, a shaft
 // tapering to a capped gem that glows in the wand's main spell's colour (wands/look.js) and
@@ -202,17 +206,27 @@ export function createToolbelt(env) {
 
   const clampSlot = (slot) => Math.max(0, Math.min(HOTBAR_SLOTS - 1, (Number.isInteger(slot) ? slot : 1) - 1));
   // slot i's wand rows: the starter presets for it, then the saved custom wand
-  const wandRows = (i) => [
+  // On Descent (wands/descentRun.js): only the run's four wand slots, in the Guns slot; no presets, no custom
+  let descentLevel = null, descentKey;
+  const wandRows = (i) => descentLevel ? (i === DESCENT_SLOT ? descentWands.wands.map((w, j) => ({ key: WAND_KEY + DESCENT_ID + j,
+    name: `Wand ${j + 1}: ${w.name}`, desc: wandLines(w).join(' · '), color: WAND_COLOR })) : []) : [
     ...PRESETS.filter((p) => clampSlot(p.slot) === i).map((p) => ({ key: WAND_KEY + p.id, name: `Wand: ${p.name}`, desc: p.description, color: WAND_COLOR })),
     ...(custom && clampSlot(custom.slot) === i ? [{ key: `${WAND_KEY}custom`, name: `Wand: ${custom.name}`, desc: 'Your edited wand (B edits it).', color: WAND_COLOR }] : []),
   ];
 
   // slot i's row keys: its carried tools, then its wands (only in a slot that carries a tool, so a class's empty slots stay
   // empty; none while restricted)
-  const slotKeys = (i) => { const keys = inSlot(i); return keys.length && !only ? [...keys, ...wandRows(i).map((r) => r.key)] : keys; };
+  const slotKeys = (i) => {
+    const keys = inSlot(i);
+    if (only) return keys;
+    const wands = wandRows(i).map((r) => r.key);
+    if (descentLevel) return [...wands, ...keys];
+    return keys.length ? [...keys, ...wands] : [];
+  };
   const rowDef = (k) => (k.startsWith(WAND_KEY) ? wandRows(wandSlotOf(k)).find((r) => r.key === k) : tools.get(k).def);
   const wandSlotOf = (k) => {
     const id = k.slice(WAND_KEY.length);
+    if (id.startsWith(DESCENT_ID)) return DESCENT_SLOT;
     return clampSlot((id === 'custom' ? custom : PRESETS.find((p) => p.id === id))?.slot);
   };
   const slotOf = (k) => (k?.startsWith(WAND_KEY) ? wandSlotOf(k) : toolSlot(k));
@@ -243,6 +257,14 @@ export function createToolbelt(env) {
     putAway();
     wandRuntime.equip(def);
     wandSlot = clampSlot(def.slot ?? wandSlot + 1);
+    const run = descentLevel ? descentWands.wands.findIndex((w) => w.id === def.id) : -1;
+    if (run >= 0) {
+      wandSlot = DESCENT_SLOT; wandSelected = true; wandId = DESCENT_ID + run; descentWands.held = run;
+      lastIn[wandSlot] = WAND_KEY + wandId;
+      refresh(); hotbar.select(wandSlot);
+      env.releaseInput?.(); env.requestRender?.();
+      return true;
+    }
     const preset = PRESETS.some((p) => p.id === def.id);
     if (!preset) custom = { ...def, slot: wandSlot + 1, name: def.name?.trim?.() || 'Custom wand' };
     wandSelected = true; wandId = preset ? def.id : 'custom';
@@ -257,12 +279,13 @@ export function createToolbelt(env) {
     if (typeof key === 'string' && key.startsWith(WAND_KEY)) {
       if (key === heldKey()) { hotbar.select(wandSlot); return true; }   // already in hand
       const id = key.slice(WAND_KEY.length);
+      if (id.startsWith(DESCENT_ID)) return equipWand(descentWands.wands[Number(id.slice(DESCENT_ID.length))]);
       return equipWand(id === 'custom' ? custom : id);
     }
     if (typeof key === 'number') key = carried()[key];
     const t = tools.get(key);
     if (!t || !inventory.has(key) || (only && !only.includes(key))) return false;
-    if (wandSelected) { putAway(); wandSelected = false; wandId = null; }
+    if (wandSelected) { putAway(); wandSelected = false; wandId = null; descentWands.held = -1; }
     else if (key !== selected) tools.get(selected)?.inst.deselect?.();
     selected = key;
     lastIn[toolSlot(key)] = key;
@@ -314,7 +337,7 @@ export function createToolbelt(env) {
     const t = e.target;
     if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
     if (e.code === 'KeyB' && !only) {   // edit the wand (not while restricted: no wands then)
-      e.preventDefault(); e.stopImmediatePropagation(); if (!e.repeat) editor.show(); return;
+      e.preventDefault(); e.stopImmediatePropagation(); if (!e.repeat) openEditor(); return;
     }
     const i = e.key.length === 1 ? [...Array(HOTBAR_SLOTS).keys()].find((j) => slotKey(j) === e.key) : undefined;
     if (i === undefined) return;
@@ -323,6 +346,51 @@ export function createToolbelt(env) {
     if (!e.repeat) pressSlot(i);
   }
   addEventListener('keydown', onKey, { capture: true });
+
+  // B: the editor. On Descent, Noita's rule: only inside a Holy Mountain, only the wand in
+  // hand, and only with the spells you carry (the bag); off it, the free sandbox editor.
+  function openEditor() {
+    if (!descentLevel) { editor.show(); return; }
+    if (!descentWands.inTemple) { env.hud?.toast?.('Edit wands at a Holy Mountain'); return; }
+    const slot = wandSelected && wandId?.startsWith(DESCENT_ID) ? Number(wandId.slice(DESCENT_ID.length)) : -1;
+    if (slot < 0 || !descentWands.wands[slot]) { env.hud?.toast?.('Hold a wand to edit it'); return; }
+    editor.show({ bag: descentWands.bag, commit: (def, bag) => { descentWands.edit(slot, def.cards, bag); } });
+  }
+
+  // Descent (docs/descent-contract.md): the run's wands follow the level loaded; its loot
+  // floats at the level's sites (wands/loot.js) and is taken with look + E (env.interact).
+  const loot = createDescentLoot({ scene: env.scene, getSim: env.getSim, getVolume: env.getVolume, getScale: env.getScale,
+    interact: env.interact, toast: (text) => env.hud?.toast?.(text),
+    getFeet: () => (lastCtx?.player?.pos ? { feet: lastCtx.player.pos.clone(), dir: lastCtx.dir ?? null } : null) });
+  const offTemple = povEvents.on('descent:temple', ({ inside }) => { descentWands.inTemple = inside; });
+  const offRun = [
+    descentWands.on('change', () => {
+      if (!descentLevel) return;
+      // the wand in hand changed under it (a swap, an edit): hold its new self
+      if (wandSelected && wandId?.startsWith(DESCENT_ID)) {
+        const w = descentWands.wands[Number(wandId.slice(DESCENT_ID.length))];
+        if (w) wandRuntime.equip(w);
+      }
+      refresh();
+    }),
+    descentWands.on('refresh', () => wandRuntime.refill()),
+  ];
+  function syncDescent() {
+    const key = env.getScene?.() ?? null;
+    if (key === descentKey) return;
+    const was = descentLevel;
+    descentKey = key;
+    descentLevel = levelByScene(key);
+    // a new run starts when you arrive on Descent from elsewhere (A carries it between its levels)
+    if (descentLevel && !was) descentWands.reset();
+    descentWands.inTemple = false;
+    loot.setLevel(descentLevel);
+    if (wandSelected && !allKeys().includes(heldKey())) {
+      const keys = allKeys();
+      if (keys.length) select(keys[0]); else { putAway(); wandSelected = false; wandId = null; }
+    }
+    refresh();
+  }
 
   const held = () => (wandSelected ? null : tools.get(selected)?.inst);
   let wasHelpless = false;
@@ -341,13 +409,15 @@ export function createToolbelt(env) {
     // text shown after tool `key`'s status (null: none)
     setNote(key, text) { if (text) notes.set(key, String(text)); else notes.delete(key); },
     wandRuntime, editor, equipWand,
-    openEditor: () => editor.show(),
+    openEditor,
     // a tool by key (or, given a number, the carried tool at that place), carried or not
     tool: (key) => tools.get(typeof key === 'number' ? carried()[key] : key)?.inst ?? null,
     select,
     pressSlot,
     update(ctx) {
       lastCtx = ctx;
+      syncDescent();
+      if (loot.update()) env.requestRender?.();
       const cur = held();
       // a status that leaves no hands (Polymorph, potions.js): the tool in hand is put away while it lasts,
       // and a wand is drawn again when it ends (putting it away stopped its casting)
@@ -395,6 +465,7 @@ export function createToolbelt(env) {
     worldReplaced() { tools.forEach((t) => t.inst.worldReplaced?.()); wandRuntime.resetWorld(); },
     dispose() {
       removeEventListener('keydown', onKey, { capture: true });
+      loot.dispose(); offTemple(); offRun.forEach((off) => off());
       offGive();
       if (raf) cancelAnimationFrame(raf);
       ballistics.dispose();

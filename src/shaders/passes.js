@@ -17,6 +17,75 @@ export const brickGLSL = [
   '#define BRICK_AIR_DIV 8.0        // air-only bricks: a = -(1 + flags/BRICK_AIR_DIV)',
 ].join('\n');
 
+// The Mix tool pairs cells inside blocks of 2^MIX_BITS cells a side: up to 7
+// cells apart, as MIX.cpp's reach of 10 pixels (±5) at strength 1.
+export const MIX_BITS = 3;
+const MIX_SALT = 0x4d, MIX_PAIR_SALT = 0x4e;   // the Mix tool's random streams (seedWorld salts)
+
+// TPT's air tools on our cells (elements.js TOOLS -50..-57, physics.js TOOL_*).
+// TPT moves its air and lets particles follow it by their advection; we have
+// no advection, so the tools push the cells themselves: air in full, loose
+// matter by its inertia, as the pressure push does (react.js: a = −∇P·P_ACCEL/ρ),
+// solids not at all.
+// Mix (TPT MIX.cpp swaps a particle with a random one within reach) can't swap
+// per cell on the GPU: two cells could pick the same partner. So each paint
+// splits the grid into blocks at an offset drawn for that paint, and each block
+// draws one mask m: cell l of the block (its coordinates in it) pairs with
+// cell l XOR m. That is its own inverse, so partners are mutual, and both
+// cells test the same things (both inside the brush, loose matter of one kind,
+// as MIX.cpp: powder with powder, liquid with liquid, gas with gas) and draw
+// one coin seeded at the pair's lower cell: they swap together or not at all.
+// No cell is lost or copied (tools/brush-tools-check.mjs runs a twin of it).
+const brushToolsGLSL = /* glsl */ `
+#define MIX_BITS ${MIX_BITS}
+#define MIX_MASK ${(1 << MIX_BITS) - 1}
+#define MIX_SALT ${MIX_SALT}u
+#define MIX_PAIR_SALT ${MIX_PAIR_SALT}u
+float brushDist(vec3 d) { return uShape == 0 ? length(d) : max(abs(d.x), max(abs(d.y), abs(d.z))); }
+bool inBrush(ivec3 p) { return brushDist(vec3(p) + 0.5 - uCenter) <= uRadius; }
+// a push dv given to the air, as the cell (id at T) takes it, capped at V_MAX
+vec3 pushed(int id, float T, vec3 v, vec3 dv) {
+  if (KIND[id] == K_SOLID) return v;
+  return clamp(v + dv * RHO_MIN / max(densityOf(id, T) * RHO_SCALE, RHO_MIN), -V_MAX, V_MAX);
+}
+// TPT CYCL.cpp turns the brush's pull a quarter turn. Ours spins about the
+// vertical through the brush centre, counterclockwise seen from above, as a
+// northern-hemisphere cyclone and most tornadoes do: the unit tangent at d.
+vec3 cyclone(vec3 d) {
+  float r = length(d.xz);
+  return r > 0.0 ? vec3(d.z, 0.0, -d.x) / r : vec3(0.0);   // TPT skips the centre too
+}
+// A ball of mass filling the brush (physics.js TOOL_GRAVITY): the pull at d
+// grows as |d| / radius, toward the centre (sign 1) or away (-1), on matter.
+vec3 gravityWell(int id, vec3 v, vec3 d, float sign) {
+  if (id == E_EMPTY || KIND[id] == K_SOLID) return v;
+  return clamp(v - sign * TOOL_GRAVITY * d / max(uRadius, BRUSH_EDGE_EPS), -V_MAX, V_MAX);
+}
+// what Mix moves (MIX.cpp: TYPE_PART | TYPE_LIQUID | TYPE_GAS)
+bool mixes(int id) { int k = KIND[id]; return k == K_POWDER || k == K_LIQUID || k == K_GAS; }
+void mixCell(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
+  uint fs = pcg(uFrame * LCG_MUL + MIX_SALT);   // this paint's block offset
+  ivec3 off = ivec3(uvec3(fs, fs >> MIX_BITS, fs >> (2 * MIX_BITS)) & uvec3(MIX_MASK));
+  ivec3 w = p + uOrigin + off;   // world cell, so blocks don't follow the window
+  ivec3 l = w & MIX_MASK;        // the cell in its block (two's complement: fine below 0)
+  ivec3 base = w - l;
+  uint hs = seedWorld(base, uFrame, MIX_SALT);
+  ivec3 m = ivec3(uvec3(hs, hs >> MIX_BITS, hs >> (2 * MIX_BITS)) & uvec3(MIX_MASK));   // the block's mask
+  ivec3 lq = l ^ m;
+  ivec3 q = p + lq - l;
+  if (m == ivec3(0) || !inGrid(q) || !inBrush(p) || !inBrush(q)) return;
+  vec4 qa = fetchA(q);
+  int id = eid(a);
+  if (!mixes(id) || KIND[eid(qa)] != KIND[id]) return;
+  int li = l.x | (l.y << MIX_BITS) | (l.z << (2 * MIX_BITS));
+  int lqi = lq.x | (lq.y << MIX_BITS) | (lq.z << (2 * MIX_BITS));
+  uint ps = seedWorld(base + (li < lqi ? l : lq), uFrame, MIX_PAIR_SALT);
+  if (rnd(ps) >= TOOL_MIX_SWAP) return;
+  oA = qa;
+  oB = vec4(fetchB(q).xyz, b.w);   // the cell moves with its velocity; the air's pressure stays
+}
+`;
+
 // Brush: spawns elements / applies tools inside a sphere or cube.
 export const paintFrag = (g) => /* glsl */ `
 ${prelude(g)}
@@ -29,9 +98,12 @@ uniform int uShape;     // 0 sphere, 1 cube
 uniform int uTool;      // element id, or negative tool id
 uniform float uRate;    // spawn density multiplier
 uniform bool uReplace;
+uniform vec3 uWind;     // Wind: cells the brush moved since the last frame of the stroke
 ${stateOutGLSL}
+${brushToolsGLSL}
 
 void brush(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
+  if (uTool == T_MIX) { mixCell(p, a, b, oA, oB); return; }   // before the radius test: both cells of a pair test inBrush alike
   vec3 d = vec3(p) + 0.5 - uCenter;
   float r = uShape == 0 ? length(d) : max(abs(d.x), max(abs(d.y), abs(d.z)));
   if (r > uRadius) return;
@@ -60,6 +132,18 @@ void brush(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
     oB.w = b.w + TOOL_PRESSURE * falloff;
   } else if (uTool == T_SPARK) {
     sparkCell(oA);   // conductors only, and only when ready (src/electricity.js)
+  } else if (uTool == T_VACUUM) {
+    oB.w = max(b.w - TOOL_PRESSURE * falloff, P_MIN);   // TPT VAC.cpp: AIR.cpp's pressure, taken away
+  } else if (uTool == T_WIND) {
+    oB.xyz = pushed(id, a.y, b.xyz, uWind * TOOL_WIND * falloff);
+  } else if (uTool == T_CYCLONE) {
+    oB.xyz = pushed(id, a.y, b.xyz, cyclone(d) * TOOL_CYCLONE * falloff);
+  } else if (uTool == T_GRAV_IN || uTool == T_GRAV_OUT) {
+    oB.xyz = gravityWell(id, b.xyz, d, uTool == T_GRAV_IN ? 1.0 : -1.0);
+  } else if (uTool == T_AMB_HEAT) {
+    if (id == E_EMPTY) oA.y = min(a.y + TOOL_HEAT * falloff, CELL_TEMP_MAX);   // TPT AMBP.cpp: the air only
+  } else if (uTool == T_AMB_COOL) {
+    if (id == E_EMPTY) oA.y = max(a.y - TOOL_HEAT * falloff, CELL_TEMP_MIN);   // TPT AMBM.cpp
   }
 }
 ${copyThroughMain('brush')}`;

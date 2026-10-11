@@ -75,7 +75,10 @@ export function createPovHud() {
     h('div.pov-track', {}, shieldFill, shieldOver));
   const perkRow = h('div.pov-perks');   // above health, in the same panel
   const statusRow = h('div.pov-statuses');   // above the perks
-  const vitals = h('div.pov-vitals.panel', {}, statusRow, perkRow, shieldRow, healthRow, manaRow, breathRow, jetRow);
+  // gold: Noita's "$ 123" by the health bar, on the Descent map (pov/descent) or once there is any
+  const goldText = h('b');
+  const goldRow = h('div.pov-gold', { 'aria-label': 'Gold' }, h('span.pov-ic', { text: '$' }), goldText);
+  const vitals = h('div.pov-vitals.panel', {}, statusRow, perkRow, shieldRow, healthRow, manaRow, breathRow, jetRow, goldRow);
 
   const lock = h('div.pov-lock.panel', {}, h('b', { text: 'Click' }), ' to look around', h('span.pov-dot', { text: '·' }), key('V'), ' to leave');
 
@@ -139,6 +142,7 @@ export function createPovHud() {
       clearTimeout(hintTimer);
       hintTimer = setTimeout(() => set(hint, '.show', false), HINT_S * 1000);
     },
+    // s.gold: the run's gold (pov/descent), or null for no counter
     // s = { dt, health, breath, jetFuel (0..1), jetting, mana ({ mana, manaMax } of the wand in hand, or null), perks (pov/perks.js set), status (pov/status.js set), feel {heat, cold, acid, hurt},
     //       shield, shieldMax (base lives; no bar while shieldMax is 0), shieldCharging,
     //       dead, cause, respawnIn (s), locked, swooping, aimInReach, aimValid, third }
@@ -221,6 +225,8 @@ export function createPovHud() {
       set(manaFill, 'transform', `scaleX(${round(mana)})`);
       set(manaText, 'text', manaMax > 0 ? String(Math.floor(s.mana.mana)) : '');
       set(manaRow, '.low', mana < HEALTH_LOW);
+      set(goldRow, '.show', s.gold != null);
+      set(goldText, 'text', s.gold != null ? String(s.gold) : '');
       const fuel = s.jetFuel ?? 1;
       set(jetRow, '.show', fuel < JET_SHOWN_BELOW || !!s.jetting);
       set(jetFill, 'transform', `scaleX(${round(Math.max(0, fuel))})`);

@@ -24,9 +24,11 @@ import { KICK_KEY, createKickLeg } from './kick.js';
 import { createCombat } from './combat.js';
 import { viewmodelRig, HIT } from './viewmodel.js';
 import { createGame } from '../game/index.js';
+import { createDeathWatch } from './killfeed.js';
 import { SPAWNER, ENEMY_KINDS } from '../spawners.js';
 import { createZoom, ZOOM_KEY } from './zoom.js';
 import { createTouchControls } from './touch.js';
+import { createDescent } from './descent/index.js';
 
 // First-person (POV) mode: drop into the world with V (Garry's Mod's noclip
 // key; F drops in too), walk around in it, pop back out to the god view's
@@ -93,7 +95,9 @@ export function createPov(app) {
   });
   const zoom = createZoom();   // C (zoom.js)
   const povHud = createPovHud();
-const interact = createInteract();   // look + E (interact.js): perks, and Descent's pickups and shop
+  const interact = createInteract();   // look + E (interact.js): perks, and Descent's pickups and shop
+  // the Descent map's Holy Mountain and gold (descent/index.js); idle off that map
+  const descent = createDescent({ app, scene, hud, interact, events: povEvents, getToolbelt: () => toolbelt });
   // feedback: everything here hears povEvents (events.js) and the body's events
   const feel = createFeel({ hud: povHud });
   const nightVision = app.post ? createNightVision(app.post) : null;   // the Night Vision perk's goggles (the local player's view)
@@ -101,6 +105,13 @@ const interact = createInteract();   // look + E (interact.js): perks, and Desce
   let figure = null, player = null, toolbelt = null;
   const npcs = new Map();   // enemy spawner id → its NPC (npc.js)
   let npcMod = null, npcAi = null, npcLoading = null;   // npc.js and what NPCs share, loaded on first use
+  // the killfeed's books (killfeed.js): who hurt whom last, and every body that can die
+  const bodyById = (id) => [...npcs.values(), ...game.bots].find((n) => n.id === id) ?? null;
+  const deaths = createDeathWatch({
+    heldBy: (id) => (id === PLAYER ? toolbelt?.selectedKey ?? null : bodyById(id)?.agent?.intent.tool ?? bodyById(id)?.agent?.weapon ?? null),
+    bodies: () => [...(player ? [[PLAYER, player]] : []), ...[...npcs.values()].map((n) => [n.id, n.body, n.kind])],
+    quiet: () => game.running,   // a team game posts its own (src/game/index.js died)
+  });
   const loadNpcs = () => (npcLoading ??= import('./npc.js').then((m) => { npcAi = m.createAi({ renderer, getSim: app.getSim }); npcMod = m; return { mod: m, ai: npcAi }; })
     .catch((err) => { console.error('NPCs failed to load', err); npcLoading = null; throw err; }));
   // the player as something weapons hit (an NPC's axe and gun; the player's own never hit it)
@@ -237,9 +248,10 @@ const interact = createInteract();   // look + E (interact.js): perks, and Desce
     touch.reset();
   }
 
-  // Q: the tools menu, Garry's Mod's spawn menu: the mouse is freed and the
-  // palette shows, its Tools group giving tools (app.js giveGear). Q again, a
-  // click on the world or a tool given closes it.
+  // Q: the spawn menu, Garry's Mod's: the mouse is freed and the palette shows
+  // where it was left. A tool picked goes in hand (app.js giveGear); anything
+  // else loads the tool gun (app.js loadToolGun). Q again, a click on the world
+  // or a pick closes it.
   let menuOpen = false;
   function setMenu(v) {
     const was = menuOpen;
@@ -386,6 +398,9 @@ const interact = createInteract();   // look + E (interact.js): perks, and Desce
           renderer, scene,
           getSim: app.getSim, getVolume: app.getVolume, getScale: app.getScale,
           hud, viewmodel, handWorld,
+          interact,                            // Descent's wand and spell pickups (wands/loot.js)
+          getScene: () => (app.inWorld?.() ? app.settings.scene : null),   // the world scene loaded (Descent levels are world scenes)
+          toolGun: app.toolGun,   // the god view's click at the crosshair (app.js), for the tool gun
           isActive: () => live() && !editing,
           getStepsPerFrame: () => app.settings.paused ? 0 : app.settings.steps,
           requestRender: app.requestRender,
@@ -411,6 +426,8 @@ const interact = createInteract();   // look + E (interact.js): perks, and Desce
     return out;
   };
   async function findDropPoint(out) {
+    const fixed = app.dropAt?.();   // a map that says where you start (a Descent level's spawn: app.js)
+    if (fixed) return out.copy(fixed);
     const g = app.getSim().g;
     const hv = app.hover;
     // a player spawn: the one nearest the cursor's surface (or the box's middle)
@@ -429,12 +446,15 @@ const interact = createInteract();   // look + E (interact.js): perks, and Desce
   const camPose = () => ({ pos: camera.position.clone(), quat: camera.quaternion.clone(), fov: camera.fov });
 
   // Drop in. A call while a drop-in is under way waits for it (app.js startMode
-  // starts a match once the player exists). swoop: s of the flight down from the
-  // god view (a match: 0, Halo's cut straight to the eyes); hint: the keys' hint
-  // on the first drop-in (a match shows its own card, game/hud.js).
+  // starts a match once the player exists). opts.swoop: s of the flight down from
+  // the god view (a match: 0, Halo's cut straight to the eyes); opts.hint: the
+  // keys' hint on the first drop-in (a match shows its own card, game/hud.js);
+  // opts.at: drop in with the feet here (grid cells) and keep the body as it
+  // is, health, fuel and statuses (player.teleport): a Descent level change
   let dropping = null;
   function enter(opts) { return starting ? dropping : (dropping = dropIn(opts)); }
-  async function dropIn({ swoop = SWOOP_S, hint = true } = {}) {
+  async function dropIn(opts = {}) {
+    const { swoop = SWOOP_S, hint = true } = opts;
     if (mode === 'on' || mode === 'entering' || starting) return;
     if (app.mp.isGuest) { hud.toast("POV isn't available as a guest yet"); return; }
     if (mode === 'exiting') {   // changed our mind halfway out: fly back in
@@ -448,7 +468,7 @@ const interact = createInteract();   // look + E (interact.js): perks, and Desce
     starting = true;
     const foundAt = new THREE.Vector3();   // the window's origin when the drop point was found (docs/scaling.md D11)
     try {
-      await Promise.all([findDropPoint(dropPoint).then(() => foundAt.copy(app.getSim().origin)), ensureFigure()]);
+      await Promise.all([(opts.at ? Promise.resolve(dropPoint.copy(opts.at)) : findDropPoint(dropPoint)).then(() => foundAt.copy(app.getSim().origin)), ensureFigure()]);
       ensureParts();
       // the figure may compile for a while, and a world's window move meanwhile
       const o = app.getSim().origin;
@@ -479,7 +499,8 @@ const interact = createInteract();   // look + E (interact.js): perks, and Desce
     povCam.reset();
     zoom.reset();
     feel.reset();
-    player.spawn(dropPoint.clone());
+    if (opts.at && !player.dead) player.teleport(dropPoint.clone());
+    else player.spawn(dropPoint.clone());
     classes?.spawned(player);
     enteredAt.copy(dropPoint).add(app.getSim().origin);
     deadSeen = false;
@@ -597,6 +618,7 @@ const interact = createInteract();   // look + E (interact.js): perks, and Desce
       live: live(), tool: toolbelt?.selectedKey, inLiquid: !!player?.inLiquid,
       wantsWheel: !!toolbelt?.wantsWheel, driving: !!vehicles.seated, vehicles: vehicles.list.length > 0,
     });
+    descentFrame(dt);
     if (!active()) return;
     const sim = app.getSim(), vol = app.getVolume(), scale = app.getScale();
     const g = sim.g;
@@ -674,6 +696,7 @@ const interact = createInteract();   // look + E (interact.js): perks, and Desce
       } else for (const n of npcs.values()) n.reset();
     }
     game.update(dt, npcMod && npcsWanted ? npcFrame : null);   // the bots, the objectives, the HUD
+    deaths.update();   // the killfeed: who died this frame, and to what
 
     takePerks();
 
@@ -795,9 +818,20 @@ const interact = createInteract();   // look + E (interact.js): perks, and Desce
       dt, health: player.health, breath: player.breath, feel: player.feel,
       shield: player.shield, shieldMax: player.shieldMax, shieldCharging: player.shieldCharging,
       jetFuel: player.jetFuel, jetting: player.jetting, mana: toolbelt?.mana ?? null, perks: player.perks, status: player.status,
+      gold: descent.goldShown,
       dead: deadSeen, cause: player.cause, respawnIn: (match?.delay ?? RESPAWN_DELAY) - deadTime,
       locked: canUse(), swooping: mode !== 'on',
       aimValid: aim.valid, aimInReach: aim.valid && aim.dist <= HAND_REACH, third: povCam.third,
+    });
+  }
+
+  // The Descent map (descent/index.js): every frame, in the body or not (its
+  // nuggets and shop items follow the window in the god view too)
+  function descentFrame(dt) {
+    const sp = npcs.size ? app.getSpawners?.() : null;
+    descent.update({
+      dt, time: performance.now() / 1000, player, live: mode === 'on' && live(),
+      npcs: [...npcs].map(([id, n]) => ({ id, body: n.body, kind: sp?.list.find((s) => s.id === id)?.kind })),
     });
   }
 
@@ -855,6 +889,7 @@ const interact = createInteract();   // look + E (interact.js): perks, and Desce
   const game = createGame({
     app, scene, renderer, camera,
     get player() { return player; },
+    deaths: { heldOn: (id, by) => deaths.heldOn(id, by) },   // the killfeed's books: a kill's weapon
     get toolbelt() { return toolbelt; },
     interact,                        // look + E: the power weapons' pads and dropped guns (arsenal.js)
     active,
@@ -887,6 +922,7 @@ const interact = createInteract();   // look + E (interact.js): perks, and Desce
     get locked() { return isLocked(); },
     get player() { return player; },
     get toolbelt() { return toolbelt; },
+    descent,                     // the Descent map's gold, shop, altar, pool and refresher (descent/index.js)
     interact,                    // look + E (interact.js): focus, use()
     vehicles,                    // the jeep and the hoverbike (vehicles/index.js): spawnLayout(layout), list, seated
     get classes() { return classes; },   // the class picker (classPicker.js), or null with CLASSES_ENABLED off

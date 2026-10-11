@@ -32,6 +32,7 @@ const CURSOR_STEPS_PER_CELL = 10;     // cursor positions are rounded to a tenth
 const MIN_BRUSH_RADIUS = 1;           // the dock's brush-size range; guests' strokes are clamped to it
 const MAX_BRUSH_RADIUS = 24;
 const BRUSH_SHAPES = new Set([0, 1]); // sphere, cube (see brush.js)
+const MAX_WIND_CELLS = 64;            // the Wind tool's drag in a frame (cells; shaders/passes.js caps its speed anyway)
 
 const PEER_COLORS = ['#ffb84d', '#5ad1ff', '#ff6fa8', '#8ce36b', '#c49bff', '#ff8a5c', '#4de0c0', '#f4e04d'];
 const PAINTABLE = new Set([...ELEMENTS.map((e) => e.id), ...TOOLS.filter((t) => t.key !== 'SIGN').map((t) => t.id)]);
@@ -184,6 +185,12 @@ export function createMultiplayer({ renderer, scene, camera, hud, getSim, getVol
         break;
     }
     syncButton();
+  }
+
+  // a guest's Wind drag (null when it has none, or an invalid one), clamped to MAX_WIND_CELLS a frame per axis
+  function strokeWind(w) {
+    if (!Array.isArray(w) || w.length !== 3 || !w.every(Number.isFinite)) return null;
+    return w.map((x) => Math.min(Math.max(x, -MAX_WIND_CELLS), MAX_WIND_CELLS));
   }
 
   function validStroke(m) {
@@ -346,8 +353,8 @@ export function createMultiplayer({ renderer, scene, camera, hud, getSim, getVol
     },
 
     // Guests send their strokes to the host instead of painting locally.
-    paint({ center, radius, shape, tool, rate, replace }) {
-      send({ t: 'paint', to: 'host', c: center.toArray(), r: radius, shape, tool, rate, replace });
+    paint({ center, radius, shape, tool, rate, replace, wind }) {
+      send({ t: 'paint', to: 'host', c: center.toArray(), r: radius, shape, tool, rate, replace, w: wind });
     },
 
     // Once per frame, before the world is drawn.
@@ -360,7 +367,7 @@ export function createMultiplayer({ renderer, scene, camera, hud, getSim, getVol
         for (const s of strokes) {
           sim.paint({
             center: { x: s.c[0], y: s.c[1], z: s.c[2] }, radius: Math.min(Math.max(s.r, MIN_BRUSH_RADIUS), MAX_BRUSH_RADIUS),
-            shape: s.shape, tool: s.tool, rate: s.rate, replace: !!s.replace,
+            shape: s.shape, tool: s.tool, rate: s.rate, replace: !!s.replace, wind: strokeWind(s.w),
           });
         }
         strokes.length = 0;

@@ -1,0 +1,27 @@
+/* The killfeed (killfeed.js): Garry's Mod's death notices. No boxes behind them, as
+   in GMod: orange icons and coloured names in ChatFont, Verdana bold with a 1 px drop
+   shadow, sized by the screen's height (ClientScheme.res ChatFont: 12 px up to 599 px
+   tall, then 14, 15, 17 and 22 from 1200 px). The variables come from killfeed.js.
+   GMod's first row sits 4% down the screen; ours hangs that far under the toolbar,
+   which takes the top right here. */
+.killfeed {
+  position: fixed; z-index: 5; pointer-events: none;
+  left: var(--kf-x); top: calc(var(--bar-bottom) + var(--kf-y));
+  width: 0; height: 0;
+}
+body.pov-nohud .killfeed { display: none; }
+.kf-row { position: absolute; left: 0; top: 0; width: 0; height: var(--kf-cell); will-change: transform, opacity; }
+.kf-icon {
+  position: absolute; left: calc(var(--kf-icon-h) / -2); top: calc((var(--kf-cell) - var(--kf-icon-h)) / 2);
+  width: var(--kf-icon-h); height: var(--kf-icon-h); fill: var(--kf-icon-color);
+}
+.kf-name {
+  position: absolute; top: 50%; transform: translateY(-50%); white-space: nowrap;
+  font: 700 12px Verdana, 'DejaVu Sans', Tahoma, sans-serif; text-shadow: 1px 1px 0 #000;
+}
+.kf-left { right: calc(var(--kf-icon-h) / 2 + var(--kf-gap)); }
+.kf-right { left: calc(var(--kf-icon-h) / 2 + var(--kf-gap)); }
+@media (min-height: 600px) { .kf-name { font-size: 14px; } }
+@media (min-height: 768px) { .kf-name { font-size: 15px; } }
+@media (min-height: 1024px) { .kf-name { font-size: 17px; } }
+@media (min-height: 1200px) { .kf-name { font-size: 22px; } }

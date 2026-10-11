@@ -1,6 +1,7 @@
 // Units: cells, cells/second, seconds and radians; damage is percent of health.
 // Mana is prepaid per whole cast.
-export const DEFAULT_CONFIG = Object.freeze({ manaMax: 240, manaRegen: 90, castDelay: 0.18, recharge: 0.45, capacity: 32 });
+// shuffle (0/1) and spellsPerCast are Noita's: in order, one top-level expression per cast.
+export const DEFAULT_CONFIG = Object.freeze({ manaMax: 240, manaRegen: 90, castDelay: 0.18, recharge: 0.45, capacity: 32, shuffle: 0, spellsPerCast: 1 });
 
 const leaf = (id, name, category, description, op, effect, mana, params = {}) =>
   ({ id, name, category, description, op, effect, params: { mana, ...params } });

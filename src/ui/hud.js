@@ -107,7 +107,8 @@ export function createHelp(onClose) {
         row('Zoom (hold; scroll to zoom further)', 'Z'),
         row('Use tool / its other action', 'Left', 'Right'),
         row('Pick a tool slot; again for the next in it', '1', '–', '6'),
-        row('Tools menu: get more tools', 'Q'),
+        row('Spawn menu: a tool, or anything to spawn with the tool gun', 'Q'),
+        row('Tool gun: pick up what you aim at', 'Middle'),
         row('Drink from the flask', 'H'),
         row('First or third person', 'F5 or Ctrl'),
         row('Get in or out of a vehicle (drive: W A S D, Space, Shift)', 'E'),
@@ -124,7 +125,8 @@ export function createHelp(onClose) {
         row('Screenshot', 'P'),
         row('Close menus; with none open, the map menu', 'Esc'),
       ),
-      h('p', { text: 'Signs can show live values: write {t} for temperature, {p} for pressure and {e} for the element under the sign.' })));
+      h('p', { text: 'Signs can show live values: write {t} for temperature, {p} for pressure and {e} for the element under the sign.' }),
+      h('p', { text: 'Tools from The Powder Toy: Wind blows the way you drag the brush, Cyclone spins air and matter around it, Mix shuffles what is inside it, PGRV and NGRV pull matter in or push it out while held, and AMBP and AMBM warm or cool only the air.' })));
   document.body.append(el);
   return {
     setOpen: (v) => el.classList.toggle('open', v),

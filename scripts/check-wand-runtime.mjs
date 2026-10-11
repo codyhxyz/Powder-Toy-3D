@@ -41,7 +41,7 @@ function harness(options = {}) {
     },
   };
   const renderer = options.renderer ?? {};
-  const env = { renderer, world, visuals: visual, transfer, compileWand: options.compile ?? fakeCompile,
+  const env = { renderer, world, visuals: visual, transfer, compileWand: options.compile ?? fakeCompile, random: options.random,
     getSim: () => sim, getScale: () => 1 };
   const runtime = createWandRuntime(env);
   const impulses = [], teleports = [];
@@ -554,4 +554,34 @@ let recipes = 0;
   assert(evidence.get('teleport').teleports.length);
 
 }
-console.log(`wand runtime checks passed: scheduling, prepaid mana, pause, delayed catch-up, exact timers, bounded queues, caster clearance, piercing, collision, shifts, inventory, effects; ${recipes} catalog recipes`);
+
+// Noita's spells per cast and shuffle (generate.js wands); defaults keep one in-order root per cast.
+{
+  const h = harness();
+  h.equip([leaf('heat'), leaf('cool'), leaf('dig')], { spellsPerCast: 2, castDelay: 0.5, recharge: 0.5 });
+  await h.step({ fire: true });
+  assert.equal(h.runtime.stats.casts, 1);
+  assert.deepEqual(h.calls.map((c) => c.effect), ['heat', 'cool']);
+  assert.equal(h.runtime.stats.mana, 98);
+  assert.equal(h.runtime.stats.castIndex, 2);
+  for (let i = 0; i < 12; i++) await h.step({ fire: true });
+  assert.deepEqual(h.calls.map((c) => c.effect).slice(0, 3), ['heat', 'cool', 'dig'], 'the draw stops at the deck end, then recharges');
+  assert.equal(h.runtime.stats.casts, 2);
+  h.runtime.refill();
+  assert.equal(h.runtime.stats.mana, 100);
+  assert(h.runtime.stats.cooldown <= 0);
+  h.runtime.dispose();
+}
+{
+  const draws = [0, 0.99, 0.5, 0.1];
+  let n = 0;
+  const h = harness({ random: () => draws[n++ % draws.length] });
+  h.equip([leaf('heat'), leaf('cool'), leaf('dig')], { shuffle: 1, castDelay: 0.02, recharge: 0.02 });
+  for (let i = 0; i < 6; i++) await h.step({ fire: true, dt: 0.05 });
+  const effects = h.calls.map((c) => c.effect);
+  assert.deepEqual([...effects.slice(0, 3)].sort(), ['cool', 'dig', 'heat'], 'a shuffled cycle still casts every root once');
+  assert.notDeepEqual(effects.slice(0, 3), ['heat', 'cool', 'dig'], 'shuffle reorders the deck');
+  assert(n >= 4, 'reshuffled after the recharge');
+  h.runtime.dispose();
+}
+console.log(`wand runtime checks passed: scheduling, prepaid mana, pause, delayed catch-up, exact timers, bounded queues, caster clearance, piercing, collision, shifts, inventory, effects, spells per cast, shuffle, refill; ${recipes} catalog recipes`);

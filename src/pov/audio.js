@@ -606,7 +606,7 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
       case 'bomb:throw': case 'torch:throw': case 'lantern:throw': case 'flask:throw': play('swoosh', { at }); break;
       case 'flask:drink': play('plop', { at, rate: GULP_RATE }); break;   // a gulp (the shatter is its 'impact')
       case 'torch:land': case 'lantern:land': play('thunk', { at, gain: TOOL_HIT_GAIN }); break;
-      case 'lantern:toggle': play('dryClick', { at }); break;
+      case 'lantern:toggle': case 'toolgun:fire': play('dryClick', { at }); break;
       case 'blowtorch:on': loop('torchLoop', true); break;
       case 'blowtorch:off': loop('torchLoop', false); break;
       case 'physgun:grab': play('physGrab'); loop('physHum', true); humSince = clock(); break;

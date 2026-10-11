@@ -264,15 +264,16 @@ export function createDock({ settings, onSelect, onBrushChange, onHover, onEyedr
     setEyedropper,
     toggle: () => setCollapsed(!settings.dockCollapsed),
     focusSearch: () => { setCollapsed(false); search.focus(); search.select(); },
-    // Q in first person opens the category containing the requested tool.
+    // Q in first person opens the category containing the requested tool (false if no tile is it).
     reveal(pick) {
       const match = tiles.find(({ it }) => pick(it));
-      if (!match) return;
+      if (!match) return false;
       category = match.group;
       search.value = '';
       filter();
       setCollapsed(false);
       match.el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      return true;
     },
     get collapsed() { return !!settings.dockCollapsed; },
   };

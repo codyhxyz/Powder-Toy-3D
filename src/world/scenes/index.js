@@ -67,6 +67,9 @@
 //                  the island's) includes STRUCT_GLSL, defines int structureGround(ivec3 w) (its
 //                  own cell), applies structureCell in its sceneCell, adds structureUniforms(P)
 //                  to its uniforms, and drops tree candidates where structureClears
+//   shrine         optional: false for no world shrine (app.js worldShrine; Descent's
+//                  temples have their own perk altars)
+//   descentLevel   optional: Descent's level index (descent/scenes.js; app.js's level switch)
 //   farChunksPerFrame
 //                  optional: far field chunks it builds a frame (world/far.js; cheap
 //                  cells can go faster than the default one)
@@ -77,6 +80,11 @@ import { island } from './island.js';
 import { labWorld } from './labWorld.js';
 import { volcanoWorld } from './volcanoWorld.js';
 import { giantVolcano } from './giantVolcano.js';
+import { DESCENT_SCENES } from './descent/scenes.js';
+import { DESCENT_LEVELS } from './descent/levels.js';
 
-export const WORLD_SCENES = [island, labWorld, volcanoWorld, giantVolcano];
+// Descent's levels (descent/scenes.js; docs/descent-contract.md) start at their levels.js spawns
+DESCENT_SCENES.forEach((s, i) => s.setSpawn(DESCENT_LEVELS[i].spawn));
+
+export const WORLD_SCENES = [island, labWorld, volcanoWorld, giantVolcano, ...DESCENT_SCENES];
 export const sceneByKey = (key) => WORLD_SCENES.find((s) => s.key === key) ?? island;

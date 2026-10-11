@@ -131,6 +131,10 @@ body.pov-locked canvas { cursor: none; }
 .pov-mana .pov-ic svg { fill: #4dabf7; }
 .pov-mana .pov-fill { background: linear-gradient(90deg, #1c7ed6, #74c0fc); transition: transform 90ms linear; }
 .pov-mana.low .pov-fill { background: linear-gradient(90deg, #364fc7, #748ffc); }
+/* gold (pov/descent): Noita's "$ 123" */
+.pov-gold { display: none; align-items: center; gap: 8px; font-size: 13px; font-variant-numeric: tabular-nums; color: #ffd34d; }
+.pov-gold.show { display: flex; animation: pov-in 200ms var(--ease); }
+.pov-gold .pov-ic { flex: 0 0 auto; width: 14px; text-align: center; font-weight: 700; }
 .pov-val { min-width: 2.2em; text-align: right; font-size: 11px; font-variant-numeric: tabular-nums; color: var(--muted); }
 .pov-jet { display: none; }
 .pov-jet.show { display: flex; animation: pov-in 200ms var(--ease); }

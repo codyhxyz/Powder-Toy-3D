@@ -408,10 +408,11 @@ export function createGame(shell) {
     // a frag's own blast finishing what its shrapnel started is still the frag's kill (Halo names the grenade)
     const bodyCause = bodyOf(v)?.cause ?? '';
     const cause = k && h.cause === FRAG_CAUSE && BLAST_DEATH.test(bodyCause) ? FRAG_CAUSE : bodyCause;
+    const held = k ? shell.deaths?.heldOn(v.id, k.id) ?? null : null;   // the killer's weapon when the blow landed (the killfeed's icon)
     const weapon = k ? weaponOf(k) : null;
-    const e = { killer: k?.name ?? null, killerTeam: k?.team ?? null, victim: v.name, victimTeam: v.team, cause, by: k?.id ?? null, id: v.id, weapon };
+    const e = { killer: k?.name ?? null, killerTeam: k?.team ?? null, victim: v.name, victimTeam: v.team, cause, held, by: k?.id ?? null, id: v.id, weapon };
     if (v.id === PLAYER) myDeath = { at: time, killer: e.killer, killerTeam: e.killerTeam, weapon: gearByKey(weapon)?.name ?? null, cause };
-    hud.kill({ ...e, weapon: gearByKey(weapon)?.name ?? null }, now());
+    hud.kill(e);
     povEvents.emit('game:kill', e);
     // the mode's part
     if (mode === 'slayer') {

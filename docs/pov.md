@@ -97,8 +97,9 @@ first person; nothing changes on desktop. The topbar's God / 1st / 3rd camera ch
   rest waited in the spawn menu). A new tool needs only its catalog entry. It lives outside the toolbelt, so
   a tool picked in the god view is in hand at the next drop-in.
 - Picking from the palette: the Tools group lists every tool (elements.js `GEAR_ITEMS`, ids −300…). A click
-  puts it in hand (app.js `giveGear`). In first person, `Q` frees the mouse and shows the palette at those
-  tiles: GMod's spawn menu. `Q` does nothing in a Halo-style match (`docs/modes.md` "Halo rules").
+  puts it in hand (app.js `giveGear`). In first person, `Q` frees the mouse and shows the palette where it was
+  last left (at first, at what's selected): GMod's spawn menu. Anything that isn't a tool loads the tool gun. `Q` does nothing in a Halo-style match
+  (`docs/modes.md` "Halo rules").
 - **A restricted hotbar** (2026-10-11, a Halo match's two guns): `toolbelt.restrict(keys, hold?)` lets only `keys`
   be in hand, each in a slot of its own in their order (the bar shows `1 Primary`, `2 Secondary` and hides the
   rest: `hotbar.setLabels`), so `1` and `2` hold Halo's primary and secondary; the wheel steps between them, there are no wands (`B` and `equipWand` refuse) and `select()` refuses anything else, so the palette, a
@@ -106,6 +107,32 @@ first person; nothing changes on desktop. The topbar's God / 1st / 3rd camera ch
   one of them) goes in hand. `restrict(null)` gives every tool back; `toolbelt.restricted` reads the keys.
   `toolbelt.setNote(key, text)` shows text after the tool's status in the held-tool corner (a power weapon's
   shots left); null clears it. Owner: `src/game/arsenal.js`.
+
+## Tool gun (2026-10-11): Garry's Mod's `gmod_tool`
+
+The spawn menu used to be no use in first person: picking an element only set the god view's brush. Now
+anything picked from it in first person (an element, a brush tool, lightning, a sign, a spawner, a
+construction) loads the **tool gun** (`tools/toolgun.tool.js`, slot 2 Build, last in `GEAR` so the palette
+ids before it stay put) and puts it in hand (app.js `loadToolGun`). This reverses v1's "no infinite
+painting in POV": GMod's sandbox spawns without limit, and the user asked for it.
+
+- The gun does what a click does in the god view, at the crosshair: app.js `toolGun` runs the same
+  `clickTool()` (signs, lightning, spawners, constructions) and `startStroke()` as the god view's `press()`.
+  In first person `hover` already follows the crosshair (`requestPick`), so nothing new is picked.
+- Left: one-click tools act per click; an element or a brush tool paints while held, at the brush size,
+  flow, shape and Replace set in the menu's options pane. Right (held): erase, The Powder Toy's right button
+  (its secondary element starts as nothing). Middle: pick up the material under the crosshair, Minecraft
+  creative's pick block (app.js canvas `pointerdown`).
+- An element's stroke stays at the distance it started at, along the aim (`strokeDist`), as the god view's
+  stays on its drag plane, so a held pour doesn't climb its own heap toward your face. Started at the sky,
+  it pours `HAND_REACH` ahead. A brush tool's stroke (erase, heat, cool) follows the crosshair, so a held
+  eraser tunnels into what it works on.
+- The brush and the construction ghost show only while the gun is out: the tool calls `toolGun.aim()` every
+  frame and `updateGunBrush` takes it once. The construction ghost has no pointer to move off what was just
+  placed, so `builds.update({ crosshair: true })` drops its hold and the ghost comes straight back.
+- Each stroke or click is one undo step, as in the god view. A guest's strokes go to the host (`mp.paint`).
+- The gun's screen (the model's part named `screen`) shows the loaded item's colour; its readout by the
+  crosshair names it. An NPC's kit has no `env.toolGun`: the gun is carried but does nothing.
 
 ## Guns (2026-10-10)
 
