@@ -481,6 +481,12 @@ say world. Emitters own their event names. Listeners never mutate payloads.
 | `shake` | laser cannon | `{ trauma }` 0..1. Adds to the player's screen shake (feel.js), a shared hook for any tool. |
 | `body:gib` | player.js (any body) | `{ point, cells, lost, by? }`. A body burst into meat: `cells` MEAT cells laid, `lost` that found no room (buried). `by` is the NPC's id. |
 | `body:eat` | player.js (any body) | `{ point, cells, by? }`. A body ate `cells` cooked meat cells. |
+| `wand:fire` | wands/runtime.js | `{ origin, muzzle, muzzleWorld, dir, effect, material }`. A cast left the wand: origin is the eye (the physics origin), muzzle the drawn tip (grid; muzzleWorld world, or null). effect/material are its main spell's (wands/look.js colours it). Feel blooms the crosshair, audio plays the cast. |
+| `wand:flight` | wands/runtime.js | `{ flights: [{ from, to, effect, material }], dt }`. Every bolt that moved this frame, once per frame, at its drawn position (vfx.js's trails). |
+| `wand:impact` | wands/runtime.js | `{ point, normal, effect, material, radius, id, body }`. A bolt or beam landed (id: the cell hit, −1 for a body or nothing). A hit into a body also emits `impact` `{ source: 'wand', body: true, id: −1 }` for the hitmarker. |
+| `wand:beam` | wands/runtime.js | `{ from, to, dir, effect, op, material, radius, hit, normal, id }`. A beam or touch, drawn from the tip (from) to its true end. |
+| `wand:blast` | wands/runtime.js | `{ point, radius, power }`. A wand's pressure blast: fireball, boom and shake like `blast`, but not `blast` itself (that one lowers the player's self-damage). |
+| `wand:teleport` | wands/runtime.js | `{ from, to }` feet (grid). A teleport bolt moved the caster. |
 
 The player's own events (`player.on('hurt'|'death'|'land'|'splash'|'revive'|'revenge')`) stay as they are; listeners subscribe there too.
 

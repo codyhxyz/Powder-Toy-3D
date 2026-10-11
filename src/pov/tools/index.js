@@ -8,7 +8,8 @@ import * as THREE from 'three';
 import { PRESETS } from '../wands/catalog.js';
 import { createWandRuntime } from '../wands/runtime.js';
 import { createWandEditor } from '../wands/editor.js';
-import { viewmodelRig, heldMaterial } from '../viewmodel.js';
+import { viewmodelRig, heldMaterial, HIT, VIEWMODEL_GLOW_LAYER } from '../viewmodel.js';
+import { wandLook } from '../wands/look.js';
 
 export { emptyLoads };
 
@@ -54,7 +55,23 @@ const noHands = (ctx) => !!(ctx.player?.body?.status ?? ctx.player?.status)?.noT
 const WAND = 'WAND';              // selectedKey while a wand is in hand
 const WAND_KEY = 'WAND:';         // a wand's row key in the hotbar stack: WAND_KEY + preset id (or 'custom')
 const WAND_COLOR = '#b994ff';
-const WAND_CAST_KICK = 0.4;       // viewmodel kick per cast
+// The held wand, in cells along the hand (−z forward): pommel, wrapped handle, collar, a shaft
+// tapering to a capped gem that glows in the wand's main spell's colour (wands/look.js) and
+// flares on each cast, as Noita's wands show their spell. Casts are drawn from the gem.
+const WAND_PARTS = {
+  pommel: { radius: 0.07, z: 0.3, color: '#c9a14a' },
+  handle: { radius: 0.058, length: 0.42, z: 0.06, color: '#3b2618' },
+  collar: { radius: 0.078, length: 0.07, z: -0.18, color: '#c9a14a' },
+  shaft: { back: 0.05, front: 0.028, length: 0.78, z: -0.6, color: '#6b4526' },
+  cap: { radius: 0.042, length: 0.06, z: -1.0, color: '#c9a14a' },
+  gem: { radius: 0.085, z: -1.09 },
+  halo: { radius: 0.15, opacity: 0.35 },   // an additive glow round the gem (the hands' pass has no bloom: it goes on the glow layer)
+};
+const WAND_SIDES = 10;                // sides on the wand's round parts
+const GEM_GLOW = 1.6;                 // the gem's colour × this at rest (above 1 it reads as lit from within)
+const GEM_FLASH_GAIN = 2.5;           // on a cast its brightness rises by this × the flash...
+const GEM_FLASH_GROW = 0.6;           // ...and its size by this share...
+const GEM_FLASH_DECAY = 8;            // ...falling off at this rate (1/s, exponential)
 
 export function createToolbelt(env) {
   const hotbar = createHotbar((i) => pressSlot(i), (key) => select(key));
@@ -64,12 +81,48 @@ export function createToolbelt(env) {
   const wandHand = wandRig.hand([0.5, -0.4, -1.2]);
   wandHand.name = 'held-wand';
   wandHand.visible = false;
-  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.075, 1.2, 8), heldMaterial('#674426'));
-  shaft.rotation.x = Math.PI / 2;
-  shaft.position.z = -0.25;
-  const tip = new THREE.Mesh(new THREE.IcosahedronGeometry(0.14, 0), new THREE.MeshBasicMaterial({ color: '#efcf79' }));
-  tip.position.z = -0.9;
-  wandHand.add(shaft, tip);
+  const P = WAND_PARTS;
+  const along = (geometry, color, z) => {   // a round part laid along the hand's −z
+    const mesh = new THREE.Mesh(geometry, heldMaterial(color));
+    mesh.rotation.x = Math.PI / 2; mesh.position.z = z;
+    return mesh;
+  };
+  const wandParts = [
+    along(new THREE.SphereGeometry(P.pommel.radius, WAND_SIDES, WAND_SIDES / 2), P.pommel.color, P.pommel.z),
+    along(new THREE.CylinderGeometry(P.handle.radius, P.handle.radius, P.handle.length, WAND_SIDES), P.handle.color, P.handle.z),
+    along(new THREE.CylinderGeometry(P.collar.radius, P.collar.radius, P.collar.length, WAND_SIDES), P.collar.color, P.collar.z),
+    along(new THREE.CylinderGeometry(P.shaft.back, P.shaft.front, P.shaft.length, WAND_SIDES), P.shaft.color, P.shaft.z),
+    along(new THREE.CylinderGeometry(P.cap.radius, P.cap.radius, P.cap.length, WAND_SIDES), P.cap.color, P.cap.z),
+  ];
+  const gem = new THREE.Mesh(new THREE.IcosahedronGeometry(P.gem.radius, 0), new THREE.MeshBasicMaterial({ color: '#efcf79' }));
+  gem.position.z = P.gem.z;
+  const halo = new THREE.Mesh(new THREE.IcosahedronGeometry(P.halo.radius, 1), new THREE.MeshBasicMaterial({
+    color: '#efcf79', transparent: true, opacity: P.halo.opacity, depthWrite: false, blending: THREE.AdditiveBlending }));
+  halo.userData.vmLayer = VIEWMODEL_GLOW_LAYER;   // light round the gem goes on the glow pass (viewmodel.js), as the torch's flame does
+  gem.add(halo);
+  wandHand.add(...wandParts, gem);
+  let gemFlash = 0, gemCards = null, gemLook = wandLook([]);
+  const vTip = new THREE.Vector3();
+  // where a cast is drawn from (wands/runtime.js update's view): the gem in first person,
+  // the body's right hand in third (env.handWorld), else nothing (the eye)
+  function wandView() {
+    let world = null;
+    if (env.viewmodel?.visible) { gem.updateWorldMatrix(true, false); world = gem.getWorldPosition(vTip); }
+    else world = env.handWorld?.(vTip) ?? null;
+    if (!world) return null;
+    const tip = world.clone().sub(env.getVolume().position).divideScalar(env.getScale());
+    return { tip, tipWorld: world.clone() };
+  }
+  // the gem's colour (the wand's main spell) and its flare after a cast
+  function updateGem(dt) {
+    const cards = wandRuntime.definition?.cards ?? null;
+    if (cards !== gemCards) { gemCards = cards; gemLook = wandLook(cards ?? []); }
+    gemFlash *= Math.exp(-GEM_FLASH_DECAY * dt);
+    const glow = GEM_GLOW * (1 + GEM_FLASH_GAIN * gemFlash);
+    gem.material.color.copy(gemLook.color).multiplyScalar(glow);
+    halo.material.color.copy(gemLook.color).multiplyScalar(glow);
+    gem.scale.setScalar(1 + GEM_FLASH_GROW * gemFlash);
+  }
   let wandSelected = false, wandSlot = 0, wandId = null, custom = null;
   const editor = createWandEditor({
     runtime: wandRuntime, toast: (text) => env.hud?.toast?.(text),
@@ -277,8 +330,9 @@ export function createToolbelt(env) {
       if (wandInHand) {
         wandRig.update(ctx);
         const casts = wandRuntime.stats.casts;
-        wandRuntime.update(ctx);
-        if (wandRuntime.stats.casts > casts) wandRig.kick(WAND_CAST_KICK);
+        wandRuntime.update(ctx, wandView());
+        if (wandRuntime.stats.casts > casts) { wandRig.hit(HIT.WAND); gemFlash = 1; }
+        updateGem(ctx.dt ?? 0);
       } else {
         wandRuntime.tick(ctx);   // flights and fields keep going while a tool is in hand
         if (!helpless && !editor.open) held()?.update(ctx);
@@ -312,7 +366,7 @@ export function createToolbelt(env) {
       ballistics.dispose();
       editor.dispose(); wandRuntime.dispose();
       wandHand.removeFromParent();
-      for (const mesh of [shaft, tip]) { mesh.geometry.dispose(); mesh.material.dispose(); }
+      for (const mesh of [...wandParts, gem, halo]) { mesh.geometry.dispose(); mesh.material.dispose(); }
       tools.forEach((t) => { t.inst.deselect?.(); t.inst.dispose?.(); });
       hotbar.dispose();
     },
