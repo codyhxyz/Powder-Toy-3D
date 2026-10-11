@@ -5,16 +5,24 @@
 //
 //   const post = createPost(gpu, { presenter, pixScale });
 //   await post.ready;                    // its pipelines (built at once: boot needs post)
-//   post.render({ prepare, draw, meshes, overlay }, camera, null, dt);
+//   post.render({ prepare, compute, draw, meshes, overlay }, camera, null, dt);
 //   post.reset();                        // after anything that invalidates history
 //   post.settings.taa / .upscale / .bloom / .exposure (EV) / .sharpen / .look / .raw / .hotStart / .hotFull
 //   post.settings.night / .nightGain / .meter, post.sceneLuma: night-vision goggles (below)
 //
-// A presented frame, as render() records it (B3's E1 and E2):
-//   prepare(post)        the camera is jittered now: write FrameUniforms (they can't be written inside a pass)
+// A presented frame, as render() records it (B3's E1 and E2), all of it in the
+// tick's one encoder unless three draws:
+//   beginScene           sizes the targets, jitters camera.projectionMatrix in place (F4), sets pixScale
+//   prepare(post)        write FrameUniforms, the tick's one write: the camera is jittered now, and
+//                        post.jitter, post.inSize and pixScale are this frame's (F6)
+//   compute(post)        E1's commands that read FrameUniforms (derived passes, shadow, GI, pick),
+//                        after that write, so the write needn't flush (B3). E1's other work (edits,
+//                        paint, the steps) may come before render(), into the same encoder. JS here
+//                        that casts rays from the camera wraps them in post.withoutJitter(fn)
 //   scene pass           draw(rp, post) into post.sceneTarget: colour cleared to 0, depth to 1 (F1)
 //   meshes(post)         three.render into post.sceneTarget.rt (its own submit, loadOp load), if any
 //   overlay pass         overlay(rp, post): the rays sprites, colour loaded, depth read-only, if any
+//   endScene             the camera's own projection back; onPass('scene')
 //   TAA pass             → history[next]                                  (fragment)
 //   prefilter pass       → down[0], half resolution                       (fragment)
 //   compute pass 'post'  bloom down 1–5, up 4–1; luminance grid, histogram, adaptation, meter (one workgroup)
@@ -22,7 +30,8 @@
 //   canvas pass          sky, composite, viewmodel composite, glow       (fragment, presenter's texture)
 // so post is 3 render passes and 1 compute pass besides the scene and canvas
 // passes (the WebGL2 build made about 17). The split methods (beginScene,
-// endScene, finish) are there for callers that need the parts apart.
+// endScene, finish) are there for callers that need the parts apart; tools
+// count view frames by wrapping render(), so the app's frames go through it.
 //
 // The scene is rendered as linear, premultiplied HDR radiance. Tone mapping is
 // applied to the premultiplied colour ("over black"), so opaque pixels are
@@ -927,6 +936,50 @@ fn sky(uv: vec2f) -> vec3f {
 }
 `;
 
+// ---------------------------------------------------------------- pipelines (tools/check-wgsl.mjs, B5's warm-up)
+
+// Post's pipelines as plain data. check-wgsl and the start menu's warm-up (B5)
+// read WGSL_CHECK, and createPost builds each of its pipelines from the same
+// entry (postPipe), so the two can't describe different pipelines. The
+// pipeline cache keys on the module, the layout objects and the descriptor: a
+// warm-up hits createPost's entries only with the layouts made under their
+// names, gpu.layout(e.layoutNames[i], e.layouts()[i]) (POST_TAA, POST_PAIR,
+// POST_MIP, POST_REDUCE, POST_COMPOSITE), and the descriptor fields as given.
+const groupsOf = (layout) => () => [undefined, undefined, POST_LAYOUTS[layout]];
+const namesOf = (layout) => [undefined, undefined, `POST_${layout}`];
+const renderEntry = (name, code, layout, params, entry = 'fs', format = HDR) => ({
+  name, kind: 'render', grids: false, code, layouts: groupsOf(layout), layoutNames: namesOf(layout), params,
+  fragment: { entry, targets: [{ format }] },
+});
+const computeEntry = (name, code, layout, params, extra) => ({
+  name, kind: 'compute', grids: false, code, layouts: groupsOf(layout), layoutNames: namesOf(layout), params, ...extra,
+});
+// the composite into one output format: the canvas's (navigator.gpu.getPreferredCanvasFormat()) or a still's
+const compositeEntry = (format) => renderEntry(`composite ${format}`, compositeWGSL, 'COMPOSITE', CompositeParams, 'fs', format);
+
+/** The pipelines post builds (docs/webgpu.md I1, B5: the start menu warms the same list). */
+export const WGSL_CHECK = [
+  renderEntry('taa', taaWGSL, 'TAA', TaaParams, 'taa'),
+  renderEntry('taau', taaWGSL, 'TAA', TaaParams, 'taau'),
+  renderEntry('prefilter', prefilterWGSL, 'PAIR', PrefilterParams),
+  renderEntry('bloomUp0', bloomUp0WGSL, 'PAIR', MipParams),
+  computeEntry('bloomDown', bloomWGSL, 'MIP', MipParams, { entry: 'down', workgroupSize: [BLOOM_TILE, BLOOM_TILE, 1] }),
+  computeEntry('bloomUp', bloomWGSL, 'MIP', MipParams, { entry: 'up', workgroupSize: [BLOOM_TILE, BLOOM_TILE, 1] }),
+  computeEntry('postReduce', reduceWGSL, 'REDUCE', ReduceParams, { workgroupSize: [REDUCE_THREADS, 1, 1], dispatch: () => [1, 1, 1] }),
+  compositeEntry('bgra8unorm'),
+  compositeEntry('rgba8unorm'),
+];
+const PIPES = Object.fromEntries(WGSL_CHECK.map((e) => [e.name, e]));
+
+// One of post's pipelines on `gpu`, built from its WGSL_CHECK entry.
+function postPipe(gpu, e) {
+  const groups = e.layouts();
+  const layouts = e.layoutNames.map((name, i) => (name ? gpu.layout(name, groups[i]) : undefined));
+  const desc = { name: e.name, code: e.code(), layouts, params: e.params };
+  if (e.kind === 'render') return gpu.renderPipeline({ ...desc, fragment: e.fragment });
+  return gpu.kernel({ ...desc, entry: e.entry, workgroupSize: e.workgroupSize });
+}
+
 // ---------------------------------------------------------------- JS helpers
 
 function halton(i, b) {
@@ -1010,9 +1063,13 @@ function createSceneTarget(gpu, label) {
     get height() { return height; },
     /** changes whenever the GPUTextures do */
     get version() { return version; },
+    /** Sizes it (new GPUTextures on a change only); true when they changed. */
     resize(w, h) {
-      if (w === width && h === height && color) return;
+      if (w === width && h === height && color) return false;
       if (three === undefined) three = gpu.three?.renderer ?? null;
+      // the old textures go now (ours and three's alike): commands recorded
+      // with them must be submitted first, or the submit fails validation
+      if (color) gpu.flush('post resize');
       if (three) {
         if (!rt) {
           rt = new RenderTarget(w, h, {
@@ -1033,6 +1090,7 @@ function createSceneTarget(gpu, label) {
         depth = gpu.createTexture({ label: `${label} depth`, size: [w, h], format: 'depth32float', usage });
       }
       width = w; height = h; version++;
+      return true;
     },
     // three recreates its GPUTextures on a samples change and after dispose
     // (B10): fetch them again, true when they changed
@@ -1046,6 +1104,7 @@ function createSceneTarget(gpu, label) {
     // bytes three holds for it (gpu.memory() counts ours)
     get threeBytes() { return rt ? width * height * (8 + 4) : 0; },
     destroy() {
+      if (color) gpu.flush('post dispose');
       if (rt) { rt.depthTexture?.dispose(); rt.dispose(); } else { color?.destroy(); depth?.destroy(); }
       rt = color = depth = null; width = height = 0;
     },
@@ -1064,23 +1123,19 @@ function createSceneTarget(gpu, label) {
  */
 export function createPost(gpu, { presenter = null, pixScale = null, sky = skyColours(), readable = false } = {}) {
   const L = Object.fromEntries(Object.entries(POST_LAYOUTS).map(([k, entries]) => [k, gpu.layout(`POST_${k}`, entries)]));
-  const fsTarget = (entry = 'fs', format = HDR) => ({ entry, targets: [{ format }] });
   const pipes = {
-    taa: gpu.renderPipeline({ name: 'taa', code: taaWGSL(), layouts: [, , L.TAA], params: TaaParams, fragment: fsTarget('taa') }),
-    taau: gpu.renderPipeline({ name: 'taau', code: taaWGSL(), layouts: [, , L.TAA], params: TaaParams, fragment: fsTarget('taau') }),
-    prefilter: gpu.renderPipeline({ name: 'prefilter', code: prefilterWGSL(), layouts: [, , L.PAIR], params: PrefilterParams, fragment: fsTarget() }),
-    up0: gpu.renderPipeline({ name: 'bloomUp0', code: bloomUp0WGSL(), layouts: [, , L.PAIR], params: MipParams, fragment: fsTarget() }),
-    down: gpu.kernel({ name: 'bloomDown', code: bloomWGSL(), entry: 'down', layouts: [, , L.MIP], params: MipParams, workgroupSize: [BLOOM_TILE, BLOOM_TILE, 1] }),
-    up: gpu.kernel({ name: 'bloomUp', code: bloomWGSL(), entry: 'up', layouts: [, , L.MIP], params: MipParams, workgroupSize: [BLOOM_TILE, BLOOM_TILE, 1] }),
-    reduce: gpu.kernel({ name: 'postReduce', code: reduceWGSL(), layouts: [, , L.REDUCE], params: ReduceParams, workgroupSize: [REDUCE_THREADS, 1, 1] }),
+    taa: postPipe(gpu, PIPES.taa),
+    taau: postPipe(gpu, PIPES.taau),
+    prefilter: postPipe(gpu, PIPES.prefilter),
+    up0: postPipe(gpu, PIPES.bloomUp0),
+    down: postPipe(gpu, PIPES.bloomDown),
+    up: postPipe(gpu, PIPES.bloomUp),
+    reduce: postPipe(gpu, PIPES.postReduce),
   };
   const composites = new Map();
   const compositeFor = (format) => {
     let p = composites.get(format);
-    if (!p) {
-      p = gpu.renderPipeline({ name: `composite ${format}`, code: compositeWGSL(), layouts: [, , L.COMPOSITE], params: CompositeParams, fragment: fsTarget('fs', format) });
-      composites.set(format, p);
-    }
+    if (!p) composites.set(format, p = postPipe(gpu, compositeEntry(format)));
     return p;
   };
   if (presenter) compositeFor(presenter.format);
@@ -1104,8 +1159,9 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
   let jitter = [0, 0];
   const prevVP = new Matrix4(), curVP = new Matrix4(), invVP = new Matrix4(), reproj = new Matrix4();
   const prevPos = new Vector3(), prevQuat = new Quaternion();
-  const savedProj = new Matrix4(), savedProjInv = new Matrix4();
-  let jittered = null;
+  // the jittered camera's own projection and the jittered one (withoutJitter swaps them)
+  const savedProj = new Matrix4(), savedProjInv = new Matrix4(), jitProj = new Matrix4(), jitProjInv = new Matrix4();
+  let jittered = null, unjitteredNow = false;
   // adaptation and the meter, read back 1–3 frames late, one read at a time
   let reading = false, adaptSeen = null, adaptOn = false, meterAt = 0;
 
@@ -1164,6 +1220,11 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
     get jitter() { return active === still ? [0, 0] : [...jitter]; },
     /** The target the scene is drawn into now ({ rt, color, depth, width, height }): the main one, or the still's during renderStill. */
     get sceneTarget() { return active; },
+    /**
+     * Between beginScene and endScene, the jittered camera's projection
+     * without the jitter, { projectionMatrix, projectionMatrixInverse }; null otherwise.
+     */
+    get unjittered() { return jittered ? { projectionMatrix: savedProj, projectionMatrixInverse: savedProjInv } : null; },
     /** Every texture post holds, for memory estimates (gpu.memory() counts ours; threeBytes is three's share). */
     get allTargets() { return [main.color, main.depth, still.color, still.depth, ...history, ...down, ...up].filter(Boolean); },
     /** Bytes of the scene targets three holds (not in gpu.memory()). */
@@ -1200,6 +1261,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
       size = z.size; inSize = z.inSize;
       main.resize(inSize[0], inSize[1]);
       if (outChanged) {
+        if (history.length) gpu.flush('post resize');   // (as the scene target's resize)
         [...history, ...down, ...up].forEach((t) => t.destroy());
         history = [0, 1].map((i) => make(`post history ${i}`, size, ATTACH));
         down = z.mips.map((m, i) => make(`post down ${i}`, m, i === 0 ? ATTACH : STORE));
@@ -1213,14 +1275,18 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
     reset() { historyValid = false; },
 
     /**
-     * E1's start: sizes the targets for the output (`target` or the canvas),
-     * jitters `camera.projectionMatrix` in place (F4), sets pixScale. Then
-     * write FrameUniforms from the camera and record the scene pass into
-     * post.sceneTarget (sceneDescriptor()), three's meshes after it.
+     * A presented frame's start (render() calls it; the split methods are for
+     * callers that need the parts apart): sizes the targets for the output
+     * (`target` or the canvas), jitters `camera.projectionMatrix` in place
+     * (F4), sets pixScale. Then write FrameUniforms once from the jittered
+     * camera, record E1's commands that read it, the scene pass into
+     * post.sceneTarget (sceneDescriptor()) and three's meshes, and call
+     * endScene, then finish.
      * @param {object} camera a three camera in WebGPU's coordinate system
      * @param {{ target?: { width: number, height: number } | null }} [opts]
      */
     beginScene(camera, { target = null } = {}) {
+      if (jittered) restore(jittered);   // (a scene left unended: don't jitter twice)
       const s = settingsOf();
       const scale = post.renderScale;
       if (target) post.setSize(target.width, target.height, scale); else post.setSize(undefined, undefined, scale);
@@ -1249,7 +1315,34 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
         for (let c = 0; c < 4; c++) { e[c * 4] += ox * e[c * 4 + 3]; e[c * 4 + 1] += oy * e[c * 4 + 3]; }
         camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
       }
+      jitProj.copy(camera.projectionMatrix);
+      jitProjInv.copy(camera.projectionMatrixInverse);
       if (pixScale) pixScale.value = inSize[0] / size[0];
+    },
+
+    /**
+     * Runs `fn` with the jittered camera's projection back without the jitter,
+     * then jitters it again, and returns what fn returns: for JS between
+     * beginScene and endScene (render's prepare and compute) that casts rays
+     * from the camera or projects with it (hover, pickRay, labels). Outside a
+     * scene it just runs fn.
+     * @template T
+     * @param {() => T} fn
+     * @returns {T}
+     */
+    withoutJitter(fn) {
+      const camera = jittered;
+      if (!camera || unjitteredNow) return fn();
+      unjitteredNow = true;
+      camera.projectionMatrix.copy(savedProj);
+      camera.projectionMatrixInverse.copy(savedProjInv);
+      try {
+        return fn();
+      } finally {
+        camera.projectionMatrix.copy(jitProj);
+        camera.projectionMatrixInverse.copy(jitProjInv);
+        unjitteredNow = false;
+      }
     },
 
     /**
@@ -1275,12 +1368,14 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
       };
     },
 
-    /** E1's end: the camera's projection without the jitter again. */
+    /**
+     * The scene's end (after the meshes and the overlay): the camera's
+     * projection without the jitter again, then onPass('scene').
+     */
     endScene(camera = jittered) {
       if (!camera || camera !== jittered) return;
-      camera.projectionMatrix.copy(savedProj);
-      camera.projectionMatrixInverse.copy(savedProjInv);
-      jittered = null;
+      restore(camera);
+      post.onPass?.('scene', { kind: 'render' });
     },
 
     /**
@@ -1381,15 +1476,16 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
 
     /**
      * Render a frame through the pipeline into `target` (null = the canvas):
-     * beginScene, the scene pass, meshes, the overlay, endScene, finish. Tools
-     * wrap this to count view frames.
-     * @param {{ prepare?: Function, draw?: Function, meshes?: Function, overlay?: Function } | Function | null} scene
+     * beginScene, prepare, compute, the scene pass, meshes, the overlay,
+     * endScene, finish (the file header). This is the app's view frame: tools
+     * wrap it to count them.
+     * @param {{ prepare?: Function, compute?: Function, draw?: Function, meshes?: Function, overlay?: Function } | Function | null} scene
      *   the frame's parts (see the file header); a function is draw alone
      * @param {object} camera
      * @param {object | null} [target] a GPUTexture or { view, width, height, format }
      * @param {number} [dt] s since the last frame (eye adaptation's time course)
      * @param {{ viewmodel?: GPUTexture | null, glow?: GPUTexture | null }} [extra]
-     * @returns {boolean} false while post's pipelines are still building (nothing recorded)
+     * @returns {boolean} false while post's pipelines are still building (no hook runs, nothing is recorded)
      */
     render(scene, camera, target = null, dt = ADAPT.DT, { viewmodel = null, glow = null } = {}) {
       if (!post.isReady) return false;
@@ -1397,6 +1493,8 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
       const out = target ? outputOf(target) : null;
       post.beginScene(camera, { target: out });
       try {
+        hooks.prepare?.(post);
+        hooks.compute?.(post);
         drawScene(hooks);
       } finally {
         post.endScene(camera);
@@ -1409,7 +1507,9 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
      * One-off render (thumbnails, captures) into `target` at its own size: HDR scene
      * + tone mapping, no TAA, no bloom, no night vision, the last adaptation gain;
      * history untouched. The output keeps the scene's alpha (premultiplied).
-     * @param {object} scene the frame's parts, as render() takes them
+     * @param {object} scene the frame's parts, as render() takes them, without
+     *   compute: a still is drawn from the state the last frame derived
+     *   (prepare, draw, meshes, overlay run; no jitter)
      * @param {object} camera
      * @param {object} target a GPUTexture (rgba8unorm with RENDER_ATTACHMENT) or { view, width, height, format }
      * @returns {boolean} false while post's pipelines are still building
@@ -1420,17 +1520,19 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
       const pipe = compositeFor(out.format);
       if (pipe.state !== 'ready') return false;
       const s = settingsOf();
-      still.resize(out.width, out.height);
-      still.refresh();
+      if (still.resize(out.width, out.height) | still.refresh()) groups = new Map();
       const was = active;
       active = still;
       try {
         if (pixScale) pixScale.value = 1;
         camera.updateMatrixWorld();
-        drawScene(hooksOf(scene));
+        const hooks = hooksOf(scene);
+        hooks.prepare?.(post);
+        drawScene(hooks);
       } finally {
         active = was;
       }
+      post.onPass?.('scene', { kind: 'render' });
       const adapt = s.adapt && !s.raw;
       const bind = group(L.COMPOSITE, [still.color, blank, blank, blank], () => [
         texEntry(0, still.color), texEntry(1, blank), samplerEntry(2), { binding: 3, resource: { buffer: adaptState } }, texEntry(4, blank), texEntry(5, blank),
@@ -1458,6 +1560,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
     get adaptationBuffer() { return adaptState; },
 
     dispose() {
+      gpu.flush('post dispose');
       [...history, ...down, ...up, blank].forEach((t) => t.destroy());
       history = []; down = []; up = [];
       main.destroy();
@@ -1470,7 +1573,6 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
   // The scene pass and what follows it in E1: the meshes (three's own submit)
   // and E2's overlay. Everything here draws into `active`.
   function drawScene(hooks) {
-    hooks.prepare?.(post);
     const rp = gpu.frame.render(post.sceneDescriptor(), 'scene');
     try { hooks.draw?.(rp, post); } finally { rp.end(); }
     hooks.meshes?.(post);
@@ -1478,13 +1580,19 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
       const op = gpu.frame.render(post.overlayDescriptor(), 'overlay');
       try { hooks.overlay(op, post); } finally { op.end(); }
     }
-    post.onPass?.('scene', { kind: 'render' });
+  }
+
+  // The jittered camera's own projection back (endScene)
+  function restore(camera) {
+    camera.projectionMatrix.copy(savedProj);
+    camera.projectionMatrixInverse.copy(savedProjInv);
+    jittered = null;
   }
 
   function hooksOf(scene) {
     if (!scene) return {};
     if (typeof scene === 'function') return { draw: scene };
-    if (scene.isObject3D) throw new Error('post.render takes the frame\'s parts ({ prepare, draw, meshes, overlay }), not a three scene (docs/webgpu.md F1)');
+    if (scene.isObject3D) throw new Error('post.render takes the frame\'s parts ({ prepare, compute, draw, meshes, overlay }), not a three scene (docs/webgpu.md F1)');
     return scene;
   }
 
@@ -1540,22 +1648,3 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
 
   return post;
 }
-
-// ---------------------------------------------------------------- tools/check-wgsl.mjs
-
-const ENTRIES = (layout) => () => [undefined, undefined, layout];
-const render = (name, code, layout, entry = 'fs', format = HDR) => ({
-  name, kind: 'render', grids: false, code, layouts: ENTRIES(layout), vertex: { entry: 'vs' }, fragment: { entry, targets: [{ format }] },
-});
-/** The pipelines post builds (docs/webgpu.md I1, B5: the start menu warms the same list). */
-export const WGSL_CHECK = [
-  render('taa', taaWGSL, POST_LAYOUTS.TAA, 'taa'),
-  render('taau', taaWGSL, POST_LAYOUTS.TAA, 'taau'),
-  render('prefilter', prefilterWGSL, POST_LAYOUTS.PAIR),
-  render('bloomUp0', bloomUp0WGSL, POST_LAYOUTS.PAIR),
-  { name: 'bloomDown', kind: 'compute', grids: false, code: bloomWGSL, entry: 'down', layouts: ENTRIES(POST_LAYOUTS.MIP) },
-  { name: 'bloomUp', kind: 'compute', grids: false, code: bloomWGSL, entry: 'up', layouts: ENTRIES(POST_LAYOUTS.MIP) },
-  { name: 'postReduce', kind: 'compute', grids: false, code: reduceWGSL, layouts: ENTRIES(POST_LAYOUTS.REDUCE), dispatch: () => [1, 1, 1] },
-  render('composite bgra8unorm', compositeWGSL, POST_LAYOUTS.COMPOSITE, 'fs', 'bgra8unorm'),
-  render('composite rgba8unorm', compositeWGSL, POST_LAYOUTS.COMPOSITE, 'fs', 'rgba8unorm'),
-];
