@@ -3,15 +3,18 @@
 // the brush and post on this page's device, no app. tools/volume-check.mjs,
 // tools/compile-bench.mjs and tools/detail-bench.mjs drive it through
 // window.__harness:
-//   views       each view module draws a known scene (pipeline build times, coverage, a shot)
-//   inside      the camera inside the box: the box's back faces cover the screen (cull winding)
-//   shadow      the shadow map of a wall slab and a glass slab against a JS march of the same rays;
-//               its r32float copy equals its .x
+//   views       each view module (or WGSL_CHECK entry) draws a known scene (build times, coverage, a shot)
+//   inside      the camera inside the box: the box's back faces cover the screen (cull winding),
+//               the pixels left empty, from given eyes
+//   shadow      the shadow map of wall, glass and water slabs and smoke and steam puffs against a
+//               JS march of the same rays; its r32float copy equals its .x
 //   pick        a batch of rays against cells the scene puts there (hits, floor, misses)
 //   overlays    the floor grid, the box's edges and the brush each draw into the scene pass
 //   meshes      three.js renders a box standing in a pool first; the march stops at it, the water
 //               in front tints it; without the cut (control) the water hides it
-//   gate        the detail gate's two variants by camera distance, async; the cold pipeline toast
+//   meshFront   a box outside the volume in front of cut-open sand, then water: left as three drew it
+//   gate        the detail gate's two variants by camera distance, async, and by view; the cold
+//               pipeline toast
 //   bench       one view's pipeline creation (a module no cache has seen), the main thread's longest gap
 //   benchScene, benchCam, gpuTime, stepTime   tools/detail-bench.mjs: a scene, a camera, the
 //               scene pass's GPU ms (timestamps), ms per simulation step
@@ -32,7 +35,7 @@ import { createVolume } from '/src/gfx/volume.js';
 import { createOverlays, FLOOR_Y, EDGE_OPACITY } from '/src/gfx/overlays.js';
 import { createBrushCursor } from '/src/brush.js';
 import { createMeshCut } from '/src/gfx/meshCut.js';
-import { createDetailGate, gateVariants } from '/src/gfx/detailGate.js';
+import { createDetailGate, gateVariants, PREWARM_DELAY_MS } from '/src/gfx/detailGate.js';
 import { createColdShaderGuard, COLD_TOAST_MS } from '/src/gfx/coldShader.js';
 import { detailDefaults } from '/src/gfx/detail.js';
 import { writeFrameUniforms, updateGfxUniforms, gfxUniforms } from '/src/gfx/uniforms.js';
@@ -103,10 +106,12 @@ const SCENES = {
     for (let x = 4; x < 7; x++) for (let z = 54; z < 57; z++) for (let y = 0; y < 30; y++) set(x, y, z, E.STONE);
     for (let x = 50; x < 55; x++) for (let z = 10; z < 15; z++) for (let y = 0; y < 4; y++) set(x, y, z, E.LAVA);
   },
-  // the shadow test: a wall slab and a glass slab in the air, apart
+  // the shadow test: a wall slab, a glass slab and a water slab in the air,
+  // a smoke puff and a steam puff, apart (no sun ray meets two of them)
   shadow(set) {
-    for (let x = 8; x < 24; x++) for (let z = 8; z < 24; z++) for (let y = 40; y < 43; y++) set(x, y, z, E.WALL);
-    for (let x = 36; x < 52; x++) for (let z = 36; z < 52; z++) for (let y = 30; y < 32; y++) set(x, y, z, E.GLASS);
+    for (const [id, [lo, hi]] of Object.entries(SCENE_BOXES.shadow)) {
+      for (let x = lo[0]; x < hi[0]; x++) for (let y = lo[1]; y < hi[1]; y++) for (let z = lo[2]; z < hi[2]; z++) set(x, y, z, E[id]);
+    }
   },
   // the meshes test: a pool in a glass tank (a body stands in it, near its front)
   pool(set) {
@@ -115,9 +120,17 @@ const SCENES = {
       if (wall) set(x, y, z, E.GLASS); else if (y <= 12) set(x, y, z, E.WATER);
     }
   },
+  // the meshes test, a mesh outside the box: sand, then water, against the
+  // front wall (z = 0), which cuts them open
+  frontSand(set) { for (let x = 0; x < g.nx; x++) for (let y = 0; y < 40; y++) for (let z = 0; z < 8; z++) set(x, y, z, E.SAND); },
+  frontWater(set) { for (let x = 0; x < g.nx; x++) for (let y = 0; y < 40; y++) for (let z = 0; z < 8; z++) set(x, y, z, E.WATER); },
 };
 const SCENE_BOXES = {
-  shadow: { wall: [[8, 40, 8], [24, 43, 24]], glass: [[36, 30, 36], [52, 32, 52]] },
+  // element key → [lo, hi) in cells
+  shadow: {
+    WALL: [[8, 40, 8], [24, 43, 24]], GLASS: [[36, 30, 36], [52, 32, 52]], WATER: [[36, 43, 8], [52, 47, 24]],
+    SMOKE: [[4, 16, 52], [12, 24, 60]], STEAM: [[24, 16, 52], [32, 24, 60]],
+  },
 };
 
 // Math.random from a seed (mulberry32), so the cells' seeds repeat
@@ -238,38 +251,64 @@ const REALISTIC_FULL = () => REALISTIC_LEVELS.full();
 
 // ---------------------------------------------------------------- tests
 
-test('views', async ({ views = VIEWS.map((v) => v.key), detail = {}, scene = 'test', shots = false } = {}) => {
+// entries: [{ name, view, detail }] (shaders/render.js WGSL_CHECK's volume
+// entries); or views (keys) with one detail for all
+test('views', async ({ entries = null, views = VIEWS.map((v) => v.key), detail = {}, scene = 'test', shots = false } = {}) => {
   await load(scene);
   home();
   const out = {};
-  for (const view of views) {
+  for (const { name, view, detail: d } of entries ?? views.map((view) => ({ name: view, view, detail }))) {
     const t0 = performance.now();
-    await volume.viewReady(view, detail);
+    await volume.viewReady(view, d);
     const buildMs = performance.now() - t0;
-    const f = await frame({ view, detail, size: view === 'realistic' ? SMALL : null });
-    out[view] = { buildMs, ...stats(f), shot: shots ? await png(await f.cap) : null };
-    log(view, JSON.stringify({ buildMs: Math.round(buildMs), ...stats(f) }));
+    const t1 = performance.now();
+    const f = await frame({ view, detail: d, size: view === 'realistic' ? SMALL : null });
+    out[name] = { buildMs, drawMs: performance.now() - t1, ...stats(f), shot: shots ? await png(await f.cap) : null };
+    log(name, JSON.stringify({ buildMs: Math.round(buildMs), ...stats(f) }));
   }
   return { out, failures: [...h.failures] };
 });
 
-// The camera inside the box looking down: every pixel's ray meets the floor
-// (or what is on it), so the box's back faces must cover the screen (cullMode
-// 'front'); with the wrong winding nothing would draw from inside.
-test('inside', async () => {
+// The camera inside the empty box looking down: every pixel's ray meets the
+// floor, so the box's back faces must cover the screen (cullMode 'front'; with
+// the wrong winding nothing would draw from inside) and every pixel draws.
+// eyes: grid points; each looks down a little off vertical. Per view and eye:
+// the share covered, the pixels left empty and their bounding box.
+test('inside', async ({ views = ['plain'], eyes = [[g.nx / 2 + 0.3, g.ny * 0.6, g.nz / 2 + 0.7]] } = {}) => {
   await load('empty');
-  await volume.viewReady('plain');
-  lookFrom(toScene(g.nx / 2, g.ny * 0.6, g.nz / 2), toScene(g.nx / 2 + 0.01, 0, g.nz / 2 + 0.02));
-  const f = await frame({ view: 'plain', grid: false, edges: false });
+  const out = [];
+  for (const view of views) {
+    await volume.viewReady(view);
+    for (const eye of eyes) {
+      lookFrom(toScene(...eye), toScene(eye[0] + 0.01, 0, eye[2] + 0.02));
+      const f = await frame({ view, grid: false, edges: false });
+      let missing = 0;
+      const box = [Infinity, Infinity, -Infinity, -Infinity];
+      for (let y = 0; y < f.h; y++) for (let x = 0; x < f.w; x++) {
+        if (f.color[4 * (y * f.w + x) + 3] > 0.01) continue;
+        missing++;
+        box[0] = Math.min(box[0], x); box[1] = Math.min(box[1], y); box[2] = Math.max(box[2], x); box[3] = Math.max(box[3], y);
+      }
+      out.push({ view, eye, covered: stats(f).covered, missing, pixels: f.w * f.h, box: missing ? box : null });
+    }
+  }
   home();
-  return { ...stats(f), failures: [...h.failures] };
+  return { out, failures: [...h.failures] };
 });
 
 // The shadow map against a JS march of the same texel rays (sunBasis as
-// shaders/gfx/lighting.js, origin 0): where a ray meets the wall slab, x is
-// where it enters it; where it crosses the glass slab first, y and z are where
-// it enters and leaves it and w's tint id is glass's; elsewhere x is the
-// floor's depth. Rays that pass within EDGE cells of a slab's edges are left out.
+// shaders/gfx/lighting.js, origin 0). Rays that meet only the wall and glass
+// slabs: where a ray meets the wall slab, x is where it enters it; where it
+// crosses the glass slab first, y and z are where it enters and leaves it and
+// w's tint id is glass's; elsewhere x is the floor's depth (within TOL). Rays
+// that pass within EDGE cells of a slab's edges are left out. Rays through the
+// water slab's core: water's tint, y and z its top and bottom within LIQ_TOL
+// (the fields' smooth surface and the march's cell segments), optical depth
+// within LIQ_TOL cells of water's extinction times the path, x the floor. Rays
+// through a gas puff's core: its tint (smoke or steam), y and z where the ray
+// enters and leaves the puff grown by the media field's reach, give or take a
+// cell segment, some optical depth, x the floor. Rays near the water or a
+// puff without crossing its core are left out.
 test('shadow', async () => {
   await load('shadow');
   writeFrameUniforms(gpu, { camera, model, sun: SUN, shadowRes: volume.shadowRes, lightGain: GLOW_GAIN });
@@ -286,6 +325,10 @@ test('shadow', async () => {
   const u = norm(cross([0, 1, 0], sun)), v = cross(sun, u);
   const rd = sun.map((s) => -s);
   const EDGE = 0.02, TOL = 2e-3;
+  const NEAR = 4, CORE = 1.5;          // cells: a ray within NEAR of the water or a puff is theirs; through CORE-shrunk, checked
+  const LIQ_TOL = 2.5;                 // cells along the ray
+  const GAS_REACH = 3, SEG = Math.sqrt(3);   // cells: the media field's spread past the gas; a cell segment's longest
+  const TINT = 256;                    // SHADOW_TINT_ID_SCALE (gfx/lighting.js)
   const slab = ([lo, hi], ro) => {
     let tn = -Infinity, tf = Infinity;
     for (let k = 0; k < 3; k++) {
@@ -294,11 +337,14 @@ test('shadow', async () => {
     }
     return { hit: tf > tn, tn, tf };
   };
-  // the slab's answer where it doesn't depend on rounding: grown and shrunk by EDGE it agrees, else null
   const grow = ([lo, hi], e) => [lo.map((x) => x - e), hi.map((x) => x + e)];
+  // the slab's answer where it doesn't depend on rounding: grown and shrunk by EDGE it agrees, else null
   const robust = (b, ro) => (slab(grow(b, EDGE), ro).hit === slab(grow(b, -EDGE), ro).hit ? slab(b, ro) : null);
   const boxes = SCENE_BOXES.shadow;
+  const soft = ['WATER', 'SMOKE', 'STEAM'];
+  const sigmaW = ELEMENTS[E.WATER].sigma.reduce((a, b) => a + b, 0) / 3;
   let checked = 0, skipped = 0, bad = 0, xCopyBad = 0, glassTexels = 0, wallTexels = 0, floorTexels = 0;
+  const soft_ = { WATER: { checked: 0, bad: 0 }, SMOKE: { checked: 0, bad: 0 }, STEAM: { checked: 0, bad: 0 } };
   const worst = [];
   for (let j = 0; j < res; j++) {
     for (let i = 0; i < res; i++) {
@@ -309,23 +355,47 @@ test('shadow', async () => {
       // the ray must cross the box
       const box = slab([[0, 0, 0], G], ro);
       if (!box.hit || box.tf <= Math.max(box.tn, 0)) continue;
-      const wall = robust(boxes.wall, ro), glass = robust(boxes.glass, ro);
+      const got = { x: m[k], y: m[k + 1], z: m[k + 2], tid: Math.floor(m[k + 3] / TINT) };
+      const tau = m[k + 3] - got.tid * TINT;
+      const floorT = ro[1] / -rd[1];
+      const near = soft.filter((key) => slab(grow(boxes[key], NEAR), ro).hit);
+      if (near.length) {
+        // the water slab or a gas puff alone, through its core
+        const key = near[0];
+        if (near.length > 1 || slab(grow(boxes.WALL, NEAR), ro).hit || slab(grow(boxes.GLASS, NEAR), ro).hit) { skipped++; continue; }
+        const s = slab(boxes[key], ro);
+        if (!slab(grow(boxes[key], -CORE), ro).hit) { skipped++; continue; }
+        let ok = got.tid === E[key] && Math.abs(got.x - floorT) <= TOL * floorT;
+        if (key === 'WATER') {
+          ok &&= Math.abs(got.y - s.tn) <= LIQ_TOL && Math.abs(got.z - s.tf) <= LIQ_TOL && Math.abs(tau - sigmaW * (s.tf - s.tn)) <= sigmaW * LIQ_TOL;
+        } else {
+          // the gas starts and ends within the media field's reach of the puff, to a segment
+          const r = slab(grow(boxes[key], GAS_REACH), ro);
+          ok &&= tau > 0 && got.y >= r.tn - SEG && got.y <= s.tn + SEG && got.z >= s.tf - SEG && got.z <= r.tf + SEG;
+        }
+        soft_[key].checked++;
+        if (!ok) {
+          soft_[key].bad++;
+          if (worst.length < 8) worst.push({ key, i, j, got: { ...got, tau }, want: { x: floorT, y: s.tn, z: s.tf, tid: E[key], tau: key === 'WATER' ? sigmaW * (s.tf - s.tn) : '> 0' } });
+        }
+        continue;
+      }
+      const wall = robust(boxes.WALL, ro), glass = robust(boxes.GLASS, ro);
       if (!wall || !glass) { skipped++; continue; }
-      const want = { x: ro[1] / -rd[1], y: 1e5, z: 1e5, tid: 0 };
+      const want = { x: floorT, y: 1e5, z: 1e5, tid: 0 };
       if (glass.hit && (!wall.hit || glass.tn < wall.tn)) { want.y = glass.tn; want.z = glass.tf; want.tid = E.GLASS; }
       if (wall.hit) want.x = wall.tn;
       if (wall.hit) wallTexels++; else floorTexels++;
       if (want.tid) glassTexels++;
-      const got = { x: m[k], y: m[k + 1], z: m[k + 2], tid: Math.floor(m[k + 3] / 256) };
       const err = Math.max(Math.abs(got.x - want.x), Math.abs(got.y - want.y), Math.abs(got.z - want.z)) / Math.max(1, Math.abs(want.x));
       checked++;
       if (err > TOL || got.tid !== want.tid) {
         bad++;
-        if (worst.length < 5) worst.push({ i, j, got, want: { ...want } });
+        if (worst.length < 8) worst.push({ i, j, got, want: { ...want } });
       }
     }
   }
-  return { res, checked, skipped, bad, xCopyBad, wallTexels, glassTexels, floorTexels, worst, failures: [...h.failures] };
+  return { res, checked, skipped, bad, xCopyBad, wallTexels, glassTexels, floorTexels, soft: soft_, sigmaW, worst, failures: [...h.failures] };
 });
 
 // A batch of rays (more than one dispatch takes) against cells the test scene
@@ -426,6 +496,40 @@ test('meshes', async ({ detail = {}, shots = false } = {}) => {
   };
 });
 
+// A mesh outside the box, 10 cells in front of the front wall, where the wall
+// cuts sand (then water) open: everything the volume holds is behind the mesh,
+// so the mesh's pixels must stay exactly as three left them (its colour, its
+// depth), cut or no cut. Beside it the cut-open sand shows (the case isn't
+// empty). The GL build had this from its depth test; ours writes the nearer of
+// the hit and the mesh, so the march itself must draw nothing past the cut.
+test('meshFront', async ({ detail = {}, shots = false } = {}) => {
+  await volume.viewReady('realistic', detail);
+  const meshScene = new Scene();
+  const s = 8;   // cells
+  const body = new Mesh(new BoxGeometry(s * SCALE, s * SCALE, s * SCALE), new MeshBasicNodeMaterial({ color: 0xff0000 }));
+  body.position.copy(toScene(32, 20, -10));
+  meshScene.add(body);
+  meshScene.updateMatrixWorld();
+  lookFrom(toScene(32, 20, -40), toScene(32, 20, 32));
+  await three.compileAsync(meshScene, camera);
+  const pMesh = project(toScene(32, 20, -10 - s / 2), SMALL), pBeside = project(toScene(52, 20, 0), SMALL);
+  const common = { view: 'realistic', detail, meshes: meshScene, grid: false, edges: false, size: SMALL };
+  const at = (f, p) => ({ color: px(f, p), depth: pxDepth(f, p) });
+  const out = { points: { mesh: pMesh, beside: pBeside } };
+  let shot = null;
+  for (const scene of ['frontSand', 'frontWater']) {
+    await load(scene);
+    const withCut = await frame({ ...common, useCut: true });
+    const alone = await frame({ ...common, useCut: true, volumeOn: false });
+    out[scene] = { withCut: { mesh: at(withCut, pMesh), beside: at(withCut, pBeside) }, alone: { mesh: at(alone, pMesh), beside: at(alone, pBeside) } };
+    if (shots && scene === 'frontSand') shot = await png(await withCut.cap);
+  }
+  home();
+  body.geometry.dispose();
+  body.material.dispose();
+  return { ...out, shot, failures: [...h.failures] };
+});
+
 // One view's pipeline for grid [nx, ny, nz] (default the page's), built from a
 // module no cache has seen (a unique constant in its text), timed; meanwhile a
 // 4 ms timer measures the main thread's longest gap (docs/webgpu.md goal 4:
@@ -480,6 +584,20 @@ test('gate', async () => {
   const secondNear = key(gate.update(camera, [g.nx / 2, g.ny / 2, g.nz / 2], dims, H));
   const backFar = key(gate.update(camera, [g.nx / 2, g.ny * 40, g.nz / 2], dims, H));
   gate.dispose();
+  // in another view nothing of the realistic view builds (B5), not even later;
+  // switching to it builds its base at once (a volume of its own, so its list is the gate's doing)
+  const v2 = createVolume(gpu, sim);
+  const realisticPipes = () => v2.pipelines.filter((p) => p.key.startsWith('realistic|')).map((p) => p.key);
+  const gate2 = createDetailGate(gpu);
+  gate2.configure(v2, settings, 'plain');
+  await new Promise((r) => setTimeout(r, PREWARM_DELAY_MS + 300));
+  const builtInPlain = realisticPipes();
+  const nearInPlain = key(gate2.update(camera, [g.nx / 2, g.ny / 2, g.nz / 2], dims, H));
+  gate2.setView(0);   // the app's settings.view id: realistic
+  const builtOnSwitch = realisticPipes();
+  gate2.dispose();
+  await v2.ready;
+  v2.dispose();
   // the toast
   let warned = 0;
   const cold = createColdShaderGuard(() => warned++);
@@ -490,7 +608,7 @@ test('gate', async () => {
   const warnedWhileBuilding = warned;
   await slow.ready;
   return {
-    base: key(base), near: key(near), farShown, firstNear, pendingThen, secondNear, backFar,
+    base: key(base), near: key(near), farShown, firstNear, pendingThen, secondNear, backFar, builtInPlain, nearInPlain, builtOnSwitch,
     readyCalls, compileCalls, warnedWhileBuilding, held: cold.hold(), failures: [...h.failures],
   };
 });

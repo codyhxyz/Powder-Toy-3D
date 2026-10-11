@@ -18,12 +18,15 @@
 //        [--features relief,grains] [--shots outDir] [--size 128] [--viewport 1280x800] [--rounds 7] [--frames 20] [--steps 900]
 // Noise: identical shaders differ by up to ~0.4 ms per camera; rerun a tier
 // that sits near a COST_*_MS boundary.
+// On a software adapter (SwiftShader) the features it can't draw
+// (gfx/detail.js SOFTWARE_UNDRAWABLE: relief, grains, clumps) are skipped with
+// that reason: their first draw crashes its GPU process.
 //        --all  also times every feature on at once against all off
 import { mkdirSync, writeFileSync } from 'fs';
-import { launchBrowser } from './browser.mjs';
+import { launchBrowser, gpuInfo } from './browser.mjs';
 import { startVite } from './vite-server.mjs';
 import { openHarness } from './harness/open.mjs';
-import { BENCH_W, BENCH_H, DETAIL, costTier } from '../src/gfx/detail.js';
+import { BENCH_W, BENCH_H, DETAIL, SOFTWARE_UNDRAWABLE, costTier } from '../src/gfx/detail.js';
 
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
@@ -97,6 +100,13 @@ const rows = [];
 try {
   const p = await openHarness(b, vite, `/tools/harness/volume.html?size=${SIZE}`, { errors: errs, timeout: 180000, viewport: { width: VIEWPORT[0], height: VIEWPORT[1] } });
   const run = (name, arg) => p.evaluate(([n, a]) => window.__harness.run(n, a), [name, arg]);
+  const info = await gpuInfo(p);
+  const software = info.isFallbackAdapter;
+  console.log(`gpu: ${info.vendor} ${info.architecture}${software ? ' (fallback adapter)' : ''}`);
+  const undrawable = (f) => software && SOFTWARE_UNDRAWABLE.includes(f.define);
+  for (const f of features.filter(undrawable)) {
+    rows.push({ feature: f.key, cam: 'SKIPPED', 'extra ms': '', tier: '', declared: f.cost, reason: 'a software adapter can\'t draw it (its GPU process crashes compiling the module): measure on a real GPU' });
+  }
   await run('benchScene', {
     scene: loadName, steps: preset === 'plume' || isPour ? 0 : SIM_STEPS,
     plume: preset === 'plume' ? PLUME : null, pour: isPour ? { ...POUR, after: preset === 'pourAfter' ? POUR.after : 0 } : null,
@@ -125,8 +135,8 @@ try {
     return { base: st.ms, on: null, extra: null };
   };
 
-  const sets = features.map((f) => [f.key, defines([f]), f]);
-  if (args.includes('--all')) sets.push(['ALL', defines(DETAIL), null]);
+  const sets = features.filter((f) => !undrawable(f)).map((f) => [f.key, defines([f]), f]);
+  if (args.includes('--all')) sets.push([software ? 'ALL (but SOFTWARE_UNDRAWABLE)' : 'ALL', defines(DETAIL.filter((f) => !undrawable(f))), null]);
   for (const [key, on, f] of sets) {
     let worst = 0;
     for (const [camName, cam] of Object.entries(cams)) {
