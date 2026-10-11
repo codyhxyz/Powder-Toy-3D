@@ -1,4 +1,4 @@
-import { BRICK } from './shaders/common.js';
+import { BRICK, brickIdOf } from './shaders/common.js';
 import {
   fieldEmaFrag, fieldBlurFrag, fieldBoostFrag, fieldPeakFrag, fieldShiftFrag, fieldMaxFrag,
   EmaParams, FieldBlurParams, BoostParams, PeakParams, FieldShiftParams, MaxParams,
@@ -10,6 +10,7 @@ import {
 } from './shaders/passes.js';
 import { CHANNELS, MEDIA, gauss5, bulkPeak, bulkPeakCubic, CUBIC_LATTICE } from './gfx/materials.js';
 import { fold } from './gpu/kernels.js';
+import { halfsToFloats } from './gpu/readback.js';
 import {
   giSourceFrag, giGatherFrag, GiParams, giProbeCount, giSourceDispatch, giGatherDispatch, GI_LAYOUT_NAMES,
 } from './shaders/gi.js';
@@ -470,6 +471,22 @@ export class Derived {
       r.groups.set(key, group);
     }
     return group;
+  }
+
+  /**
+   * The GI probe of brick b ([x, y, z] in bricks) as it is at this call
+   * (the copy is recorded now, B7): its four bands, rgba each, band k's at
+   * 4k (what pov/viewmodel.js reads at the eye for the hands' light).
+   * @param {number[]} b
+   * @returns {Promise<Float32Array>}
+   */
+  async readProbe([x, y, z]) {
+    const g = this.g, n = g.nbricks, rb = this.gpu.readback;
+    const id = brickIdOf(g, x, y, z);
+    const bands = await Promise.all([0, 1, 2, 3].map((k) => rb.buffer(this.giHist, (k * n + id) * 8, 8)));
+    const out = new Float32Array(16);
+    bands.forEach((bytes, k) => out.set(halfsToFloats(new Uint16Array(bytes)), 4 * k));
+    return out;
   }
 
   /** Starts the GI probes over: their history and their four textures to zeros. */

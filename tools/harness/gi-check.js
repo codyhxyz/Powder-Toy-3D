@@ -11,7 +11,7 @@
 //            beside it: giSource against a JS twin from the cells, the probes
 //            against the JS projection, the light's direction and energy on
 //            either side; the next frame's bounce (the slab's shaded face lit
-//            by the cube's light), again against the twin
+//            by the cube's light), again against the twin; derived.readProbe
 //   bits     giSource's coverage and light against the twin on a plate one
 //            cell thick, glass, half a brick of water, metal, lamps lit and not
 //   parity   from zero history, frame by frame: exactly the frame's
@@ -26,6 +26,7 @@
 //            sky's visibility exactly the box's
 //   lazy     a new Derived builds no GI pipeline until asked (B5); updateGI
 //            records nothing until they're ready
+//   bench    ms per derived frame with and without the GI
 //   budget:* tools/budgets/gi.mjs
 // The JS references read what the kernels read (giSrc as stored, the GPU's own
 // ray directions: SwiftShader's sin and cos needn't match JS's), march in f32
@@ -483,6 +484,8 @@ test('cube', async () => {
       mean3(slab1.rad) === 0 && mean3(slab2.rad) > 0 && slab2.dir[2] < 0, `${JSON.stringify(slab1)} ${JSON.stringify(slab2)}`);
     const a = agree(g, r2);
     check(out, 'the history and the band textures hold the same halves', a.bad === 0, `${a.bad} differ, ${a.first}`);
+    const p = await derived.readProbe([5, 3, 3]), want = probeOf(r2, brickIdOf(g, 5, 3, 3)).flat();
+    check(out, 'derived.readProbe gives a probe\'s four bands as the history holds them', p.length === 16 && p.every((x, i) => x === want[i]), `${p} ${want}`);
   } finally { dispose(); }
   return out;
 });
@@ -676,6 +679,36 @@ test('lazy', async () => {
     check(out, 'updateGI without the frame group throws', threw);
   } finally { derived.dispose(); sim.dispose(); }
   return out;
+});
+
+// What the GI costs on this device (wall clock over fenced frames: SwiftShader
+// runs on the CPU, so that is its GPU time): derived frames with and without
+// it, in a room scaled to the grid.
+test('bench', async ({ size = 32, frames = 8 } = {}) => {
+  const { sim, derived, g, dispose } = await make(size);
+  try {
+    const s = size / 32;
+    load(sim, (box) => {
+      box([0, 0, 0], [g.nx, 1, g.nz], E.STONE);
+      box([0, 1, 0], [2 * s, 24 * s, g.nz], E.WALL);
+      box([0, 16 * s, 0], [16 * s, 18 * s, g.nz], E.WALL);
+      box([20 * s, 1, 12 * s], [24 * s, 5 * s, 16 * s], E.METAL, { temp: 1200 });
+      box([8 * s, 1, 20 * s], [14 * s, 6 * s, 26 * s], E.SAND);
+    });
+    writeFU(skyValues(SKY_SUN));
+    frame(sim, derived);
+    await gpu.fence();
+    const time = async (fn) => {
+      await gpu.fence();
+      const t0 = performance.now();
+      for (let f = 0; f < frames; f++) fn();
+      await gpu.fence();
+      return (performance.now() - t0) / frames;
+    };
+    const bricksMs = await time(() => sim.updateBricks());
+    const withGiMs = await time(() => frame(sim, derived));
+    return { checks: [], info: { size, frames, bricksMs: +bricksMs.toFixed(1), withGiMs: +withGiMs.toFixed(1), giMs: +(withGiMs - bricksMs).toFixed(1) } };
+  } finally { dispose(); }
 });
 
 // tools/budgets/gi.mjs: a derived frame with the GI (the realistic view's), and one after a reset.

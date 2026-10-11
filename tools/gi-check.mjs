@@ -13,8 +13,10 @@
 //              overhang: convergence with bounces, sky visibility, colour
 //   far        FrameUniforms.far on with a stand-in far field
 //   lazy       no GI pipeline until asked (B5)
+//   bench      ms per derived frame with and without the GI (--size N: N³, a
+//              multiple of 32; 32 by default)
 //
-// usage: node tools/gi-check.mjs [--stage reference,parity,lit,far,lazy] [--port N]
+// usage: node tools/gi-check.mjs [--stage reference,parity,lit,far,lazy,bench] [--size N] [--port N]
 import { launchBrowser, gpuInfo } from './browser.mjs';
 import { startVite } from './vite-server.mjs';
 import { openHarness } from './harness/open.mjs';
@@ -27,7 +29,10 @@ const STAGES = {
   lit: ['lit'],
   far: ['far'],
   lazy: ['lazy'],
+  bench: ['bench'],
 };
+const size = Number(opt('size') ?? 32);
+if (!(size >= 32 && size % 32 === 0)) throw new Error(`--size ${opt('size')}: a multiple of 32`);
 const stages = opt('stage')?.split(',') ?? Object.keys(STAGES);
 
 const vite = await startVite({ harness: true });
@@ -45,12 +50,16 @@ try {
     for (const name of STAGES[stage]) {
       const t0 = Date.now();
       try {
-        const r = await page.evaluate((n) => window.__harness.run(n), name);
+        const r = await page.evaluate(([n, s]) => window.__harness.run(n, n === 'bench' ? { size: s } : undefined), [name, size]);
         for (const c of r.checks) {
           if (!c.ok) failures++;
           console.log(`${c.ok ? 'ok  ' : 'FAIL'} ${name}: ${c.name}${c.ok || !c.detail ? '' : `\n     ${c.detail}`}`);
         }
         if (r.changes) console.log(`     largest change over two frames, every second frame: ${r.changes.join(' ')}`);
+        if (name === 'bench') {
+          const b = r.info;
+          console.log(`     ${b.size}³: a derived frame ${b.bricksMs} ms, with the GI ${b.withGiMs} ms: the GI ${b.giMs} ms (mean of ${b.frames}, fenced)`);
+        }
       } catch (e) {
         failures++;
         console.log(`FAIL ${name}: ${e.message.split('\n')[0]}`);
