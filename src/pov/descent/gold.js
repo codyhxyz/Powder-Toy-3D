@@ -12,7 +12,7 @@ import { rng } from './rng.js';
 
 export const NUGGET = Object.freeze({ SMALL: 10, BIG: 50, HUGE: 200 });   // Noita's gold_nugget, gold_nugget_50, gold_nugget_200
 const DENOMINATIONS = [NUGGET.HUGE, NUGGET.BIG, NUGGET.SMALL];          // largest first: a drop is split into these
-export const NUGGETS_PER_SITE = 3;      // nuggets at a loot site of kind 'gold': a little clump (Noita's lie in pockets)
+export const NUGGETS_PER_SITE = 2;      // nuggets at a loot site of kind 'gold': a small clump (Noita's lie in pockets, in many small ones)
 // The chance a site's nugget is a bigger one, by level tier (Noita: deeper, bigger nuggets)
 const BIG_CHANCE_BY_TIER = [0, 0, 0.25, 0.5];    // [tier] → chance a nugget is a 50 instead of a 10
 const HUGE_CHANCE_BY_TIER = [0, 0, 0, 0.1];      // [tier] → chance a nugget is a 200
