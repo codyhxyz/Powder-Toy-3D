@@ -8,6 +8,12 @@ import { libChecks } from './lib.js';
 // (gfx/uniforms.js imports it from here).
 export { WAND_LIGHTS };
 
+// The probes' spherical-harmonic constants and the open sky's band-0 sky
+// visibility, for the shaders below and CPU readers of the probes (pov/viewmodel.js).
+export const SH_Y0 = 0.282095;          // Y00
+export const SH_Y1 = 0.488603;          // Y1m = SH_Y1 * (x, y, z)
+export const SKYVIS_OPEN_DC = 0.5;      // SH_Y0 * c0.a of the open sky: the sphere's upper half
+
 // Soft-shadow taps per pass (blocker search, then filter).
 const PCSS_TAPS = 8;
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
@@ -38,6 +44,7 @@ const vogel = (n) => Array.from({ length: n }, (_, i) => {
  *   exact sun ray       smoothOpaque(p), sunRayClear(ro, tLim)
  *   GI probes (4-7)     probeTex(t, p), probeAt(p), surfProbe(p, n) -> Probe
  *   SH evaluation       giIrradiance(g, n), giRadiance(g, d, blur), giSkyVis(g, n)
+ *   the air's sky       giAirSkyVis(p) (the probes: band 0's sky visibility)
  *   glow volume (3)     sampleLight(gp) (with wandLight(p))
  *   AO                  occluder(c), faceAO(cell, n, hp), solidity(p), fieldAO(p, n)
  *   near field          nearSmoothIn, traceNear(ro, rd, tLim, opaqueOnly, selfSkip, &hc, &hn),
@@ -436,8 +443,8 @@ fn sunShadowAt(p: vec3f) -> vec3f {
 // direction (sky, ground and one-or-more bounces off lit matter, occluded at
 // brick scale) as L1 spherical harmonics: rgb = radiance, a = sky visibility.
 // Bands: tGI0 (band 0), tGI1, tGI2, tGI3 (band 1: x, y, z).
-const SH_Y0: f32 = 0.282095;      // Y00
-const SH_Y1: f32 = 0.488603;      // Y1m = SH_Y1 * (x, y, z)
+const SH_Y0: f32 = ${SH_Y0.toFixed(6)};      // Y00
+const SH_Y1: f32 = ${SH_Y1.toFixed(6)};      // Y1m = SH_Y1 * (x, y, z)
 const SH_COS1: f32 = 2.0 / 3.0;   // band-1 clamped-cosine convolution / pi (band 0: 1)
 // Surfaces read the probes this many cells out along their normal: past the
 // brick their own matter shares, into the light in front of them. Detail
@@ -479,6 +486,15 @@ fn giSkyVis(g: Probe, n: vec3f) -> f32 {
   let v = SH_Y0 * g.c0.a + SH_COS1 * SH_Y1 * (g.cx.a * n.x + g.cy.a * n.y + g.cz.a * n.z);
   return clamp(v / max(0.5 + 0.5 * n.y, SKYVIS_MIN), 0.0, 1.0);
 }
+// Share of the open sky the air at p sees, over every direction (1 in the
+// open, 0 in a closed cave): band 0 against the open sky's, the sphere's upper
+// half. Past the window there are no probes: open.
+const SKYVIS_OPEN_DC: f32 = ${SKYVIS_OPEN_DC.toFixed(6)};   // SH_Y0 * c0.a of the open sky${probes ? /* wgsl */ `
+fn giAirSkyVis(p: vec3f) -> f32 {
+  if (any(p < vec3f(0.0)) || any(p > vec3f(GRID))) { return 1.0; }
+  return clamp(SH_Y0 * probeTex(tGI0, p).a / SKYVIS_OPEN_DC, 0.0, 1.0);
+}` : `
+// (no giAirSkyVis here: it samples the bands this pipeline writes)`}
 
 // Cold wand lights (FU.wandLightPosition: xyz grid cells, w reach;
 // FU.wandLightColor: rgb, w intensity; FU.wandLightCount of them) enter the
@@ -670,7 +686,7 @@ fn nearField(p: vec3f, ng: vec3f, n: vec3f, irr: vec3f, vis: ptr<function, f32>)
     let hid = eid(ah);
     var alb = GROUND_ALB;
     var emit = vec3f(0.0);
-    if (!floorHit) { alb = ALBEDO(hid); emit = cellEmission(hid, ah.y); }
+    if (!floorHit) { alb = ALBEDO(hid); emit = cellEmission(hid, ah.y) + sparkEmit(hid, floor(ah.w)); }   // a live conductor, a lit lamp
     let ndl = max(dot(hn, FU.sun), 0.0);
     var sun = vec3f(0.0);
     if (ndl > 0.0) {

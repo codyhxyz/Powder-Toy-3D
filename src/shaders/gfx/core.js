@@ -1,4 +1,5 @@
 import { libChecks } from './lib.js';
+import { CUBIC_FACET, CUBIC_PX_NONE, CUBIC_PX_FULL } from '../../gfx/detail.js';
 
 // Shared render core: brick and field access, the DDA helpers and the
 // smooth-surface machinery (sampling, root finding, normals), in WGSL (the
@@ -20,8 +21,19 @@ import { libChecks } from './lib.js';
 // centres as the atlases clamped it.
 //
 // opts.flow: declare cellFlow (it reads the flow buffer, binding 18, which
-// the GI gather's writer layout drops).
-export const coreGLSL = (g, { flow = true } = {}) => /* wgsl */ `
+// the GI gather's writer layout drops). opts.detail: the close-up detail's
+// defines (gfx/detail.js, as shaders/gfx/surface.js takes them); this module
+// reads DETAIL_CUBIC_CLOSE (cubicClose), a template switch as #ifdef was
+// (docs/webgpu.md F2).
+//
+// The GLSL's BRICK_DIST_IN_LIGHT (the realistic view read its bricks'
+// empty-space distance from the light volume's alpha, to free a texture unit
+// for gfx/meshCut.js) has no WGSL side: brickDist is a storage buffer here
+// (binding 17, brickDistAt), not one of the 16 sampled textures, and the
+// light blur copied the same integer, so skipEmpty reads it from brickDist in
+// every view.
+const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
+export const coreGLSL = (g, { flow = true, detail = {} } = {}) => /* wgsl */ `
 ${ddaGLSL(g)}
 // The pixel whose noise a function draws (ign, pixRand, the glow candidates,
 // the clouds' jitter): what gl_FragCoord.xy was. Every entry point sets it
@@ -51,7 +63,7 @@ fn brickHas(f: u32, bit: u32) -> bool { return (f & bit) != 0u; }
 fn brickMedia(f: u32) -> bool { return brickHas(f, BRICK_MEDIA); }
 fn brickSurf(f: u32) -> bool { return brickHas(f, BRICK_SURF); }
 fn brickOpaque(f: u32) -> bool { return brickHas(f, BRICK_OPAQUE); }   // crisp or opaque smooth matter
-fn brickThin(f: u32) -> bool { return brickHas(f, BRICK_THIN); }       // thin liquid: read cubic
+fn brickThin(f: u32) -> bool { return brickHas(f, BRICK_THIN); }       // thin cubic matter (drops, grains): read cubic
 fn brickMixed(f: u32) -> bool { return brickHas(f, BRICK_MIXED); }     // more than one liquid
 
 // ---- brick skipping (the brick map and brickDist) ----
@@ -144,36 +156,58 @@ fn fieldCubic(t: texture_3d<f32>, p: vec3f) -> vec4f {
   return g0.z * za + g1.z * zb;
 }
 
-// The liquid channel (gfx/materials.js CHANNELS cubic) reads cubic only for
-// thin features, blended in by the thin mask; bulk surfaces (pools, seas)
-// read the same either way and stay trilinear. In the tracer's march it also
-// only reads cubic near the surface: where the trilinear value is outside
-// this band, both readings fall on the same side of it (checked for drops,
-// streams, films, slabs, edges, corners and bubbles; the closest call is
-// ~0.54..0.70), so the cheap one decides.
-const LIQ_CUBIC_LO: f32 = 0.3;
-const LIQ_CUBIC_HI: f32 = 0.85;
-// Whether the brick being traced holds thin liquid (brickThin): set by the
-// marches on entering each brick, so bulk liquid never reads the mask.
+// The cubic channels (gfx/materials.js CHANNELS cubic: liquids, powders) read
+// cubic for thin features, blended in by the thin mask; bulk surfaces (pools,
+// piles) read the same either way and stay trilinear. Up close they read cubic
+// everywhere (DETAIL_CUBIC_CLOSE): there a trilinear surface's facets span
+// many pixels, and a clump of sand falling past the eye is a cut gem. In the
+// tracer's march they only read cubic near the surface: where the trilinear
+// value is outside this band, both readings fall on the same side of it
+// (checked for grains, drops, streams, clumps, films, slabs, edges and
+// corners at the liquid's and the powders' blur; the closest call is ~0.73, a
+// lone grain), so the cheap one decides.
+const CUBIC_LO: f32 = 0.3;
+const CUBIC_HI: f32 = 0.85;
+// Whether the brick being traced holds thin cubic matter (brickThin): set by
+// the marches on entering each brick, so bulk matter never reads the mask.
 var<private> gThin: bool = true;
-// The liquid's field at p given its trilinear value tri: blended toward the
-// cubic reading by the thin mask (only while gThin).
-fn liquidCubic(p: vec3f, tri: f32) -> f32 {
-  if (!gThin) { return tri; }
-  let t = fieldTex(tFT, p).x;
-  if (t > 0.0) { return mix(tri, fieldCubic(tFS, p).x, t); }
-  return tri;
+// Up close: the view march sets the eye and its pixel's angular size
+// (gfx/surface.js surfView); other passes leave it 0, and read no closer.
+var<private> gCubicEye: vec3f = vec3f(0.0);
+var<private> gCubicPixAng: f32 = 0.0;
+${detail.DETAIL_CUBIC_CLOSE ? `
+// cells per pixel at which a trilinear facet (CUBIC_FACET cells) spans gfx/detail.js CUBIC_PX_NONE / _FULL pixels
+const CUBIC_FP_NONE: f32 = ${f(CUBIC_FACET)} / ${f(CUBIC_PX_NONE)};
+const CUBIC_FP_FULL: f32 = ${f(CUBIC_FACET)} / ${f(CUBIC_PX_FULL)};
+fn cubicClose(p: vec3f) -> f32 {
+  if (gCubicPixAng > 0.0) { return 1.0 - smoothstep(CUBIC_FP_FULL, CUBIC_FP_NONE, distance(p, gCubicEye) * gCubicPixAng); }
+  return 0.0;
+}` : `
+fn cubicClose(p: vec3f) -> f32 { return 0.0; }`}
+// how much channel ch reads cubic at p: its thin mask, or being close
+fn cubicShare(p: vec3f, ch: i32) -> f32 {
+  if (CH_CUBIC[ch] <= 0.0) { return 0.0; }
+  var t = 0.0;
+  if (gThin) { t = fieldTex(tFT, p)[ch]; }
+  return max(t, cubicClose(p));
 }
-// The surface fields as the tracer sees them.
+// The surface fields as the tracer sees them: each cubic channel within the
+// band blended toward its cubic reading by its share.
 fn surfSample(p: vec3f) -> vec4f {
-  var s = surfField(p);
-  if (s.x > LIQ_CUBIC_LO && s.x < LIQ_CUBIC_HI) { s.x = liquidCubic(p, s.x); }
-  return s;
+  let s = surfField(p);
+  let band = CH_CUBIC * select(vec4f(0.0), vec4f(1.0), s > vec4f(CUBIC_LO)) * select(vec4f(0.0), vec4f(1.0), s < vec4f(CUBIC_HI));
+  if (all(band == vec4f(0.0))) { return s; }
+  var thin = vec4f(0.0);
+  if (gThin) { thin = fieldTex(tFT, p); }
+  let w = band * max(thin, vec4f(cubicClose(p)));
+  if (all(w == vec4f(0.0))) { return s; }
+  return mix(s, fieldCubic(tFS, p), w);
 }
 // One channel, at the surface (root finding, normals).
 fn surfChannel(p: vec3f, ch: i32) -> f32 {
   let v = surfField(p)[ch];
-  if (ch == CH_LIQUID) { return liquidCubic(p, v); }
+  let w = cubicShare(p, ch);
+  if (w > 0.0) { return mix(v, fieldCubic(tFS, p)[ch], w); }
   return v;
 }
 
@@ -222,20 +256,37 @@ fn surfCross(ro: vec3f, rd: vec3f, ch: i32, into: bool, ta: f32, tm: f32, tb: f3
 // Outward surface normal (−∇φ) of channel ch at p from a tetrahedral central
 // difference; fallback where the gradient vanishes. The step is wide on
 // purpose: trilinear fields have creased gradients at the cell-centre
-// lattice, and a wide stencil irons them out. Where the liquid reads cubic
-// (thin features) it is smooth, and the step only has to be small next to a
-// drop's radius.
+// lattice, and a wide stencil irons them out. Where a channel reads cubic
+// (thin features, up close) it is smooth, and the step only has to be small
+// next to a drop's radius.
 const NORMAL_STEP: f32 = 0.55;
 const NORMAL_STEP_CUBIC: f32 = 0.25;
 fn surfNormal(p: vec3f, ch: i32, fallback: vec3f) -> vec3f {
   let k = vec2f(1.0, -1.0);
-  var h = NORMAL_STEP;
-  if (ch == CH_LIQUID && gThin) { h = mix(NORMAL_STEP, NORMAL_STEP_CUBIC, fieldTex(tFT, p).x); }
+  let h = mix(NORMAL_STEP, NORMAL_STEP_CUBIC, cubicShare(p, ch));
   let gr = k.xyy * surfChannel(p + k.xyy * h, ch) + k.yyx * surfChannel(p + k.yyx * h, ch)
          + k.yxy * surfChannel(p + k.yxy * h, ch) + k.xxx * surfChannel(p + k.xxx * h, ch);
   let l = length(gr);
   if (l > 1e-5) { return -gr / l; }
   return fallback;
+}
+
+// ---- the opaque meshes' cut (gfx/meshCut.js; docs/webgpu.md Sync log S1) ----
+// three.js draws the opaque meshes into the scene target before the volume,
+// and the march stops at their depth, so the water in front of a body tints it
+// instead of painting over it. This is the WebGPU half of the GLSL's meshCutT:
+// d is the scene target's depth at this pixel (gFragCoord), in [0, 1] with 1
+// the clear (docs/webgpu.md F4); clipToGrid is inverse(viewProj · model) of
+// the volume's own (jittered) matrices; res the target's size in pixels.
+// Returns the distance along the unit eye ray rd (grid cells, from FU.cam) to
+// that mesh point, MESH_CUT_NONE where there is none. Reading the depth and
+// those values is the volume's (shaders/render.js, gfx/plain.js meshCutT).
+const MESH_CUT_NONE: f32 = 1e30;
+fn meshCutAt(d: f32, clipToGrid: mat4x4f, res: vec2f, rd: vec3f) -> f32 {
+  if (d >= 1.0) { return MESH_CUT_NONE; }
+  let uv = gFragCoord / res;   // y down: ndc y is 1 at the top row
+  let p = clipToGrid * vec4f(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, d, 1.0);
+  return dot(p.xyz / p.w - FU.cam, rd);
 }
 `;
 

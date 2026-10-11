@@ -11,10 +11,12 @@ import { libChecks } from './gfx/lib.js';
 //   FAR, FAR_NODE, WORLD_SIZE, farLayout(size)   the far grid's constants and layout (JS)
 //   farLayoutGLSL(L)    its WGSL consts, the far grid's texel record (FarTexel,
 //                       farUnpack, farPackTexel) and the far shadow heights' constants
-//   farHazeGLSL         aerial perspective (the volume's haze in a world, the far view's)
+//   FAR_SKY, farSkyGLSL the sky over the far field: farSkyOpen(p), none under the ground
+//   farHazeGLSL         aerial perspective (the volume's haze in a world, the far view's),
+//                       its in-scatter taken by the air's sky share (farHazeFor picks the reader)
 //   farCastersGLSL(L)   far casters in the window's sun shadow map
 //   farGIGLSL(L)        what a GI probe's ray sees past the window
-// The casters and GI read the far textures of the lighting group
+// The sky, casters and GI read the far textures of the lighting group
 // (shaders/bindings.js L.LIGHTING 11-13: tFarGrid, tFarTop, tFarShadow; lib()
 // declares them with far: true); in a box they are dummies and the callers'
 // branches on FrameUniforms.far keep them unread, so a box and a world share
@@ -157,6 +159,42 @@ fn farPackTexel(f: FarTexel) -> vec4u {
 }
 `;
 
+// ---------------------------------------------------------------- sky
+// The sky over the far field, as Minecraft's sky light (sun and sky are one
+// light, whole over a column's ground and gone under it): the ground's surface
+// seen from above (farTop's y: shaders/far.js farTopFrag), and how far under
+// it the sky still reaches. Ground is matter wide enough to be the land: at
+// FAR.ISO and REACH bricks out each way too (7 bricks, 28 cells: wider than any
+// crown, ~24 cells for an oak's cluster, constructions/builtins.js TREES). A
+// crown, a trunk, a wall, a bridge or a house's roof is narrower and leaves the
+// sky over what is under it (and casts no pillar into the shadow heights); the
+// rock over a cave or a tunnel doesn't. Narrowing the land by REACH errs open:
+// on a slope the surface reads as low as the lowest ground within REACH, so
+// only what lies deeper loses it.
+export const FAR_SKY = {
+  REACH: 3,       // bricks: matter counts as ground when it reaches this far along ±x and ±z
+  OPEN: 1,        // bricks under the ground's surface the sky starts fading...
+  SHUT: 2,        // ...and is gone (a Descent tunnel's ceiling is 2 or more under it)
+  LIFT: 1,        // bricks out along its normal a far surface reads its sky (past its own brick's matter)
+};
+/**
+ * The sky's share at a world point (after farLayoutGLSL(L), with the far
+ * textures declared: lib(g, { far: true })):
+ *   farSkyOpen(p) -> f32   1 over the ground, 0 under it (p in world cells)
+ * Its own column's, read exact (textureLoad, not filtered: a cliff's top
+ * would bury its foot); past the world's edge, open.
+ */
+export const farSkyGLSL = /* wgsl */ `
+const FAR_SKY_OPEN: f32 = ${glf(FAR_SKY.OPEN * BRICK)};
+const FAR_SKY_SHUT: f32 = ${glf(FAR_SKY.SHUT * BRICK)};
+const FAR_SKY_LIFT: f32 = ${glf(FAR_SKY.LIFT * BRICK)};
+fn farSkyOpen(p: vec3f) -> f32 {
+  if (any(p.xz < vec2f(0.0)) || any(p.xz >= vec2f(WORLD.xz))) { return 1.0; }
+  let hs = textureLoad(tFarTop, vec2i(p.xz) / FAR_BRICK, 0).y;
+  return smoothstep(hs - FAR_SKY_SHUT, hs - FAR_SKY_OPEN, p.y);
+}
+`;
+
 // ---------------------------------------------------------------- haze
 const FAR_HAZE_VISIBILITY_M = 12000;   // m: meteorological range of the air (a clear day with some haze)
 const KOSCHMIEDER = 3.912;             // ln(1/0.02): the 2 % contrast threshold of the visibility definition
@@ -168,14 +206,28 @@ export const FAR_HAZE = KOSCHMIEDER / (FAR_HAZE_VISIBILITY_M / CELL_M);
  * over d cells along rd, the air's extinction (the sky's spectral shape,
  * scaled to the haze's visibility) and its in-scatter, the sky's own radiance
  * toward rd, held at the horizon for rays going down, so distance fades into
- * the sky. After lib() (skyRadiance, TAU_AIR).
+ * the sky. The in-scatter is the sky's light on the air, so it takes the share
+ * of the open sky the air on the way sees (the GI probes': farAirLit): a
+ * cave's air, which no sky reaches, adds none, and the eyes adjusting to the
+ * dark don't raise it into a blue fog. After lib() (skyRadiance, TAU_AIR,
+ * GI_OFFSET and the sky reader).
  *   farAir(rd) -> vec3f                           the air's light toward unit rd
- *   farHaze(col, rd, d) -> vec3f                  col seen through d cells of air
+ *   farAirLit(a, b) -> f32                        share of the open sky's light on
+ *                                                 the air from a to b (window cells)
+ *   farHaze(col, rd, d, lit) -> vec3f             col seen through d cells of air
+ *                                                 whose sky share is lit
  *   farHazePremul(col, alpha, eye, p) -> vec3f    premultiplied colour (the
  *                                                 volume's): the share alpha
  *                                                 covers takes the air's light
+ * farHazeFor(airSky) names the function that reads the air's sky share at a
+ * window point (the GLSL's FAR_AIR_SKY): giAirSkyVis, the probes (farHazeGLSL,
+ * the volume's), or the far view's own reader, which takes the far field's sky
+ * past the window. null leaves out farAirLit and farHazePremul, for a pipeline
+ * that doesn't sample the probes (GI gather writes them): farAir and farHaze
+ * need neither.
+ * @param {string | null} [airSky]
  */
-export const farHazeGLSL = /* wgsl */ `
+export const farHazeFor = (airSky = 'giAirSkyVis') => /* wgsl */ `
 const FAR_HAZE: f32 = ${FAR_HAZE.toExponential(4)};
 const FAR_HAZE_RGB: vec3f = FAR_HAZE * TAU_AIR / TAU_AIR.g;
 fn farAir(rd: vec3f) -> vec3f {
@@ -184,17 +236,28 @@ fn farAir(rd: vec3f) -> vec3f {
   if (dot(h, h) > 1e-8) { h = normalize(h); } else { h = vec3f(1.0, 0.0, 0.0); }
   return skyRadiance(h);
 }
-fn farHaze(col: vec3f, rd: vec3f, d: f32) -> vec3f {
+fn farHaze(col: vec3f, rd: vec3f, d: f32, lit: f32) -> vec3f {
   let T = exp(-FAR_HAZE_RGB * d);
-  return col * T + farAir(rd) * (1.0 - T);
+  return col * T + lit * farAir(rd) * (1.0 - T);
+}${airSky ? `
+// The air's sky share from a to b: ${airSky} at its ends and middle, by
+// Simpson's rule, the far end GI_OFFSET back out of the matter it lies on
+// (whose brick's probe is buried).
+fn farAirLit(a: vec3f, b: vec3f) -> f32 {
+  let v = b - a;
+  let d = length(v);
+  let bo = b - v * (min(GI_OFFSET, d) / max(d, 1e-6));
+  return (${airSky}(a) + 4.0 * ${airSky}(0.5 * (a + bo)) + ${airSky}(bo)) / 6.0;
 }
 fn farHazePremul(col: vec3f, alpha: f32, eye: vec3f, p: vec3f) -> vec3f {
   let v = p - eye;
   let d = length(v);
   let T = exp(-FAR_HAZE_RGB * d);
-  return col * T + alpha * farAir(v / max(d, 1e-6)) * (1.0 - T);
-}
+  return col * T + alpha * farAirLit(eye, p) * farAir(v / max(d, 1e-6)) * (1.0 - T);
+}` : ''}
 `;
+/** The haze with the probes' sky reader (giAirSkyVis): the volume's, in a world. */
+export const farHazeGLSL = farHazeFor();
 
 // ---------------------------------------------------------------- casters
 // Far casters in the window's sun shadow map (the shadow kernel): where
@@ -202,7 +265,9 @@ fn farHazePremul(col: vec3f, alpha: f32, eye: vec3f, p: vec3f) -> vec3f {
 // first goes under the shadow height of the columns outside the window
 // (tFarShadow's y). Along a sun ray the height above it can only fall (see
 // shaders/far.js), so one read at the ray's end says whether it ever does,
-// and bisection finds where.
+// and bisection finds where. A column casts from the higher of its ground seen
+// from below and from above (FAR_SKY): the rock over a cave casts, so the sun
+// doesn't shine down the caves and tunnels under it (farShadowFrag).
 export const FAR_CASTER_STEPS = 10;   // bisection steps (a box diagonal of ~220 cells to ~0.2 cells)
 const castersWGSL = /* wgsl */ `
 const FAR_CASTER_STEPS: i32 = ${FAR_CASTER_STEPS};
@@ -242,6 +307,10 @@ export const farCastersGLSL = (L, { layout = true } = {}) => `${layout ? farLayo
 // and send back the light of their ground (its element's albedo, the sun
 // through the shadow heights, the sky over it); a ray going down past the
 // coast meets the sea (the sky in it by Fresnel, and its body); else the sky.
+// A column's top is the higher of its ground seen from below and from above
+// (FAR_SKY: the rock over a cave). A ray that leaves the window under the
+// ground (a tunnel or cave its side cuts) gets what the sky leaves there
+// (farSkyOpen): none deep under it.
 export const FAR_GI_STEPS = 6;       // reads along the ray past its end...
 export const FAR_GI_STEP0 = 8;       // ...the first this many cells out, each next twice as far (~500 cells in all)
 const giWGSL = /* wgsl */ `
@@ -263,15 +332,15 @@ fn farSea(d: vec3f) -> vec3f {
 }
 // a world without a sea (FU.sea 0: world/scenes) has a rock plain past its edge (the far view's)
 fn farPlain() -> vec3f { return ALBEDO(E_ROCK) * (FU.sunCol * max(FU.sun.y, 0.0) + FU.skyUp); }
-// What a ray from grid point P that ended at Q sees past it toward unit d;
-// *open becomes 0 where the far field blocks the sky that way.
-fn farBeyond(P: vec3f, Q: vec3f, d: vec3f, open: ptr<function, f32>) -> vec3f {
-  let w = Q + vec3f(H.origin);
+// What a ray from world point w sees toward unit d past the window, under the
+// open sky; *open becomes 0 where the far field blocks the sky that way.
+fn farBeyondOpen(w: vec3f, d: vec3f, open: ptr<function, f32>) -> vec3f {
   var s = FAR_GI_STEP0;
   for (var i = 0; i < FAR_GI_STEPS; i++) {
     let r = w + d * s;
     if (any(r.xz < vec2f(0.0)) || any(r.xz >= vec2f(WORLD.xz))) { break; }
-    let top = textureSampleLevel(tFarTop, linearClamp, r.xz / vec2f(WORLD.xz), 0.0).x;
+    let t = textureSampleLevel(tFarTop, linearClamp, r.xz / vec2f(WORLD.xz), 0.0).xy;
+    let top = max(t.x, t.y);   // the ground seen from below or above (the rock over a cave)
     if (r.y < max(top, FU.sea)) {
       *open = 0.0;
       if (top >= FU.sea) { return farGround(r, top); }
@@ -283,14 +352,25 @@ fn farBeyond(P: vec3f, Q: vec3f, d: vec3f, open: ptr<function, f32>) -> vec3f {
   if (FU.sea > 0.0) { return farSea(d); }
   return farPlain();
 }
+// What a ray from grid point P that ended at Q sees past it toward unit d,
+// scaled by the sky's share where it leaves (*open with it).
+fn farBeyond(P: vec3f, Q: vec3f, d: vec3f, open: ptr<function, f32>) -> vec3f {
+  let w = Q + vec3f(H.origin);
+  let sky = farSkyOpen(w);
+  *open *= sky;
+  if (sky > 0.0) { return sky * farBeyondOpen(w, d, open); }
+  return vec3f(0.0);
+}
 `;
 /**
  * The GI's far WGSL (after lib(g, { variant: 'LIGHTING_GI' }) or any variant
- * with the far textures); with the layout unless layout is false.
+ * with the far textures), with the sky (farSkyGLSL) as the GLSL had it; with
+ * the layout unless layout is false, the sky unless sky is false (a module
+ * that pastes farSkyGLSL itself).
  * @param {ReturnType<typeof farLayout>} L
- * @param {{ layout?: boolean }} [opts]
+ * @param {{ layout?: boolean, sky?: boolean }} [opts]
  */
-export const farGIGLSL = (L, { layout = true } = {}) => `${layout ? farLayoutGLSL(L) : ''}${giWGSL}`;
+export const farGIGLSL = (L, { layout = true, sky = true } = {}) => `${layout ? farLayoutGLSL(L) : ''}${sky ? farSkyGLSL : ''}${giWGSL}`;
 
 /** tools/check-wgsl.mjs: a probe kernel calling every function above (shaders/gfx/lib.js libChecks) */
 export const WGSL_CHECK = () => libChecks('farShared');
