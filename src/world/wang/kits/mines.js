@@ -46,6 +46,7 @@ let gallerySalt = GALLERY_SALT;
 function galleryX(x0, x1, { zr = GAL_Z, y0 = F, h = DOOR_H, frames = true, rough = ROUGH_WALL, wave = WAVE, lift = LIFT, phase = 0 } = {}) {
   const air = [], floor = [], timber = [];
   const len = x1 - x0, salt = gallerySalt++;
+  let lamp = false;
   for (let x = x0; x < x1; x += SLICE) {
     const t = (x + SLICE / 2 - x0) / len, pin = Math.sin(Math.PI * t);
     const dz = Math.round(wave * pin * Math.sin(2 * Math.PI * t + phase));
@@ -57,7 +58,11 @@ function galleryX(x0, x1, { zr = GAL_Z, y0 = F, h = DOOR_H, frames = true, rough
     air.push({ box: [[Math.max(x0, x - pad), y0 + dy, zr[0] + dz], [Math.min(x1, xe + pad), y0 + dy + h, zr[1] + dz]], m: 'AIR', rough, salt });
     // the floor stays solid under the noise (and under a raised stretch)
     floor.push({ box: [[x, y0 - 1, zr[0] + dz], [xe, y0 + dy, zr[1] + dz]], m: 'ROCK' });
-    if (frames && (x - x0) % FRAME_STEP === 0 && x > x0) timber.push(...frameX(x, [zr[0] + dz, zr[1] + dz], y0 + dy, h));
+    if (frames && (x - x0) % FRAME_STEP === 0 && x > x0) {
+      timber.push(...frameX(x, [zr[0] + dz, zr[1] + dz], y0 + dy, h));
+      lamp ||= ((x - x0) / FRAME_STEP) % LANTERN_FRAMES === 0;
+      if (lamp && clearOfShafts(x, MID)) { timber.push(lanternX(x, (zr[0] + zr[1]) / 2 + dz, y0 + dy + h - 1)); lamp = false; }
+    }
   }
   return [...air, ...floor, ...timber];
 }
@@ -65,9 +70,27 @@ function galleryZ(z0, z1, xc, { y0 = F, h = DOOR_H, w = DOOR_W, frames = true, r
   const xr = [xc - w / 2, xc + w / 2];
   const out = [{ box: [[xr[0], y0, z0], [xr[1], y0 + h, z1]], m: 'AIR', rough }];
   out.push({ box: [[xr[0], y0 - 1, z0], [xr[1], y0, z1]], m: 'ROCK' });
-  if (frames) for (let z = z0 + FRAME_STEP / 2; z < z1 - 1; z += FRAME_STEP) out.push(...frameZ(z, xr, y0, h));
+  if (frames) {
+    let lamp = false;
+    for (let z = z0 + FRAME_STEP / 2, n = 1; z < z1 - 1; z += FRAME_STEP, n++) {
+      out.push(...frameZ(z, xr, y0, h));
+      lamp ||= n % LANTERN_FRAMES === 0;
+      if (lamp && clearOfShafts(xc, z)) { out.push(lanternZ(z, xc, y0 + h - 1)); lamp = false; }
+    }
+  }
   return out;
 }
+// A crystal lantern hung under a timber set's cap (cap at y): the Mines' light.
+// The caves are dark but for crystals (as Noita's are dark but for what glows),
+// so every few sets carries one, close enough apart (LANTERN_FRAMES sets, 18
+// cells: 5 m) that a gallery reads dimly end to end.
+const lamp = (pr) => ({ ...pr, lantern: true });   // a light added after the authoring (goes last: see the end)
+const LANTERN_FRAMES = 3;              // a lantern under every this many timber sets (the next clear one)
+const LANTERN_SHAFT_CLEAR = GEOM.SHAFT_W / 2 + 2;   // ...not over a unit's shaft: you'd land on it
+const clearOfShafts = (x, z) => [C0, C1].every((c) => Math.abs(x - c) >= LANTERN_SHAFT_CLEAR || Math.abs(z - MID) >= LANTERN_SHAFT_CLEAR);
+const LANTERN_LEN = 3;                 // cells along the cap; one cell deep under it (clear of a body walking under)
+function lanternX(x, zc, y) { const z = Math.floor(zc) - 1; return { box: [[x, y - 1, z], [x + 1, y, z + LANTERN_LEN]], m: 'CRYSTAL', lantern: true }; }
+function lanternZ(z, xc, y) { const x = Math.floor(xc) - 1; return { box: [[x, y - 1, z], [x + LANTERN_LEN, y, z + 1]], m: 'CRYSTAL', lantern: true }; }
 // a timber set across an x gallery at x: two posts and a cap
 function frameX(x, zr, y0, h) {
   return [
@@ -236,6 +259,7 @@ const tiles = [
       { box: [[IN[0], F - 1, GAL_Z[0]], [10, F, GAL_Z[1]]], m: 'ROCK' },
 
       ...[16, 24, 32].flatMap((x) => frameX(x, GAL_Z, F + Math.round(((x - 10) * (HF - F)) / 28), DOOR_H)),
+      lamp(crystal([24, HIGH_TOP, GAL_Z[0]])),
     ],
   },
   // ---- collapsed room: the roof came down; rubble heaps, broken timber, soft fallen rock
@@ -277,6 +301,7 @@ const tiles = [
       { box: [[IN[0], F - 1, 6], [IN[1], F, 18]], m: 'ROCK' },
       chimney(C1), ...stub('W'), ...stub('E'),
       heap(24, MID, 3), { box: [[20, F, 6], [28, F + 1, 18]], m: 'BEAM' },   // planks over the gap between the holes
+      lamp(crystal([24, 15, 6])),
     ],
   },
   // ---- flooded sump: the gallery dips behind two sills and the water stands in it
@@ -378,6 +403,7 @@ const tiles = [
       { capsule: [[3, 7, MID], [16, 8, 7], 5.6], m: 'MOSS', only: 'ROCK', rough: ROUGH_ROOM },
       { capsule: [[16, 8, 7], [32, 7, 17], 5.6], m: 'MOSS', only: 'ROCK', rough: ROUGH_ROOM },
       { box: [[22, F, 9], [27, F + 1, 15]], m: 'WATER', only: 'AIR' },
+      lamp(crystal([24, 12.5, 12])),
     ],
   },
   // ---- a side chamber up three steps off the gallery: the miners' store
@@ -396,6 +422,9 @@ const tiles = [
     sites: [{ kind: 'loot', at: [28, F + 3, INZ[0] + 2] }],
   },
 ];
+// the lanterns go last in each tile: a prim's noise stream is its index
+// (kit.js NOISE_PRIM_STRIDE), so the shapes stay as authored
+for (const t of tiles) t.prims = [...t.prims.filter((pr) => !pr.lantern), ...t.prims.filter((pr) => pr.lantern)];
 
 export default {
   name: 'mines',
