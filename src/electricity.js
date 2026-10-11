@@ -38,9 +38,10 @@
 import { ELEMENTS, E } from './elements.js';
 import { accessorsWGSL } from './shaders/hostStruct.js';
 
+const SPARK_REST_STEPS = 4;   // ELEC.SPARK_REST, named here so LAMP_HOLD can build on it
 export const ELEC = {
   SPARK_LIFE: 4,         // steps a spark stays live (TPT SPRK's life)
-  SPARK_REST: 4,         // steps a conductor rests after one (TPT gives it life 4)
+  SPARK_REST: SPARK_REST_STEPS, // steps a conductor rests after one (TPT gives it life 4)
   // Levels in a full spark: what a battery, a sensor and the Spark tool give.
   // With SPARK_DROP, fresh water (σ = 0.05 S/m) costs a quarter of it per cell.
   SPARK_V: 400,
@@ -61,10 +62,21 @@ export const ELEC = {
   WIRE_SIGMA: 1e3,
   SWITCH_ON: 10,         // a switch's (or powered clone's) life while on (TPT SWCH's); below it, it is turning off, one a step, to 0
   TSNS_FIRE: 1,          // a temperature sensor's life while firing (TPT TSNS's)
+  // Steps a lamp stays lit after a spark leaves it: Minecraft's redstone lamp
+  // goes dark 2 redstone ticks after its power. Long enough to bridge the
+  // rest and the ready step before the next spark down a powered wire, so a
+  // wired lamp shines steadily; short enough that cutting its wire puts it out.
+  LAMP_HOLD: SPARK_REST_STEPS + 4,
 };
 // A conductor's phase when sparked, and the number of phases (ready = 0).
 export const SPARK_BORN = ELEC.SPARK_LIFE + ELEC.SPARK_REST;
 export const SPARK_CYCLE = SPARK_BORN + 1;
+// A lamp touching a battery is on direct current: lit and still, its ctype
+// LAMP_DC (phase 0, a level no spark leaves), so it never churns (a loaded
+// world's lamps stay as generated: docs/structures.md, Stability). It passes
+// no sparks on. Its battery gone, it runs down from LAMP_HOLD like any lamp.
+const LAMP_DC_LEVEL = ELEC.LAMP_HOLD + 1;
+export const LAMP_DC = LAMP_DC_LEVEL * SPARK_CYCLE;
 
 // ---- per element (elements.js elec: electrical conductivity σ, S/m) ----
 export const CONDUCTS = ELEMENTS.map((e) => e.elec > 0);
@@ -120,6 +132,8 @@ const SPARK_V: i32 = ${ELEC.SPARK_V};
 const JOULE_PER_LEVEL: f32 = ${f(ELEC.JOULE_PER_LEVEL)};
 const SWITCH_ON: f32 = ${f(ELEC.SWITCH_ON)};
 const TSNS_FIRE: f32 = ${f(ELEC.TSNS_FIRE)};
+const LAMP_HOLD: i32 = ${ELEC.LAMP_HOLD};
+const LAMP_DC_LEVEL: i32 = ${LAMP_DC_LEVEL};
 ${accessorsWGSL('TB.elem', ELEC_FIELDS)}
 fn sparkPhase(ctype: f32) -> i32 { return i32(ctype) % SPARK_CYCLE; }
 fn sparkLevel(ctype: f32) -> i32 { return i32(ctype) / SPARK_CYCLE; }
@@ -156,6 +170,7 @@ fn sparkCell(a: ptr<function, vec4f>) -> bool {
 // sparking or resting, a switch turning off and a firing sensor all change.
 fn electricQuiet(id: i32, a: vec4f) -> bool {
   if (CONDUCTS(id) && sparkPhase(floor(a.w)) != 0) { return false; }
+  if (id == E_LAMP && sparkLevel(floor(a.w)) > 0 && sparkLevel(floor(a.w)) != LAMP_DC_LEVEL) { return false; }   // a lamp's light running down
   if (powered(id) && a.z > 0.0 && a.z != SWITCH_ON) { return false; }
   if (id == E_TSNS && a.z > 0.0) { return false; }
   return true;
@@ -166,7 +181,7 @@ fn electricQuiet(id: i32, a: vec4f) -> bool {
 // takes what touches it), a sensor by something hotter fires. (A live
 // neighbour isn't inert itself.)
 fn electricQuietNear(id: i32, a: vec4f, j: i32, n: vec4f) -> bool {
-  if (j == E_BATTERY && takesSpark(id, a.z) && sparkPhase(floor(a.w)) == 0) { return false; }
+  if (j == E_BATTERY && takesSpark(id, a.z) && sparkPhase(floor(a.w)) == 0 && !(id == E_LAMP && sparkLevel(floor(a.w)) == LAMP_DC_LEVEL)) { return false; }
   if (powered(id) && a.z == 0.0 && j == id && n.z >= SWITCH_ON) { return false; }
   if (id == E_PCLN && ((a.z == SWITCH_ON && j == E_EMPTY) || (a.w < 1.0 && cloneable(j)))) { return false; }
   if (id == E_TSNS && tsnsSenses(j) && n.y > a.y + MATTER_REST_T) { return false; }
@@ -213,10 +228,20 @@ fn electric(id: i32, T: ptr<function, f32>, life: ptr<function, f32>, ctype: ptr
   if (!CONDUCTS(id)) { return; }
   var ph = sparkPhase(*ctype);
   var lv = sparkLevel(*ctype);
+  if (id == E_LAMP) {
+    var dc = false;   // on a battery's direct current (LAMP_DC)
+    for (var i = 0; i < faces; i++) { dc = dc || (*nid)[i] == E_BATTERY; }
+    if (dc) { *ctype = packSpark(0, LAMP_DC_LEVEL); return; }
+    if (lv == LAMP_DC_LEVEL) { lv = LAMP_HOLD; }   // its battery is gone: it runs down
+  }
   if (ph > 0) {
     ph--;
-    if (ph <= SPARK_REST) { lv = 0; }   // the level only matters while live
+    // the level only matters while live; a lamp keeps it as its light's hold (LAMP_HOLD)
+    if (ph <= SPARK_REST) {
+      if (id != E_LAMP) { lv = 0; } else if (ph == SPARK_REST) { lv = LAMP_HOLD; } else { lv = max(lv - 1, 0); }
+    }
   } else if (takesSpark(id, life0)) {
+    if (id == E_LAMP) { lv = max(lv - 1, 0); }
     var best = 0;   // the strongest spark offered
     for (var i = 0; i < faces; i++) {
       let j = (*nid)[i];
