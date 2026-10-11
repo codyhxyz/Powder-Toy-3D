@@ -763,6 +763,11 @@ export function stats() {
   };
 }
 
+// The chain's input for sounds that aren't presets (announcer.js's voice): flat,
+// through the same master gain (silent outside POV), underwater low-pass and
+// limiter as everything here. null before start-up.
+export const voiceBus = () => (S.started ? { ctx: S.ctx, input: S.listener.getInput() } : null);
+
 // For checks: the rendered buffers of a preset (null before start-up).
 export const debugBuffers = (name) => S.buffers.get(name) ?? null;
 export const PRESET_NAMES = Object.keys(PRESETS);

@@ -75,7 +75,7 @@ export function createDock({ settings, onSelect, onBrushChange, onHover, onEyedr
       const it = itemByKey(key);
       const t = tile(it, '.material-swatch', { live: true });
       t.style.setProperty('--ink', luminance(it.color) > 0.179 ? '#000' : '#fff');
-      t.title = `${it.name} — ${it.desc}`;
+      t.title = it.desc;   // it starts with the name (docs/elements.md, "Descriptions")
       t.addEventListener('click', (e) => (e.altKey && it.id >= 0 && onTarget ? onTarget(it.id) : select(it)));
       t.addEventListener('pointerenter', () => preview(it));
       t.addEventListener('pointerleave', () => preview());
@@ -232,7 +232,7 @@ export function createDock({ settings, onSelect, onBrushChange, onHover, onEyedr
   function preview(it = toolById(settings.tool)) {
     detailName.textContent = it.name;
     detailText.textContent = it.desc;
-    detail.title = `${it.name} — ${it.desc}`;
+    detail.title = it.desc;
     detail.style.setProperty('--material-color', it.color);
     onHover?.(it.id);
   }

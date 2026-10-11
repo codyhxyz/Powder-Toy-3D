@@ -12,7 +12,8 @@ import { writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { E, ELEMENTS, K } from '../src/elements.js';
 import { descentTwin, descentConstants, DS_LEVEL_DEFS } from '../src/world/scenes/descent/scenes.js';
-import { levelSites, reachable, crossingOf, feetAt } from '../src/world/scenes/descent/sites.js';
+import { levelSites, reachable, crossingOf, feetAt, wangWalk } from '../src/world/scenes/descent/sites.js';
+import { GEOM } from '../src/world/wang/index.js';
 
 const LEVELS_JS = fileURLToPath(new URL('../src/world/scenes/descent/levels.js', import.meta.url));
 const SHELL_SAMPLES = 400;   // cells of the band round the temple checked to be WALL
@@ -102,29 +103,39 @@ DESCENT_LEVELS.forEach((L, level) => {
     const id = cell(sx, y, C.TZC);
     if (id !== E.EMPTY) { fail(L.key, `entry shaft blocked at y ${y} (${ELEMENTS[id].key})`); break; }
   }
+  const wang = !!DS_LEVEL_DEFS[level].kit;
+  // a Wang level: the body's walk from the spawn reaches the temple, and every loot site
+  if (wang) {
+    const walk = wangWalk(level, L.spawn);
+    if (!walk.inTemple) fail(L.key, 'no way down from the spawn to the temple (Wang walk)');
+    for (const l of L.loot) if (!walk.reached(l.x, l.y, l.z)) fail(L.key, `${l.kind} site ${[l.x, l.y, l.z]} out of the walk's reach`);
+    console.log(`${L.key}: Wang walk reaches ${walk.count} standing places${walk.inTemple ? ', the temple among them' : ''}`);
+  }
   // the way down: from the spawn's crossing, down to the lowest layer's crossing over the entry shaft
   const start = level === 0 ? [C.LAYERS - 1, ...crossingOf(C, C.RAMP_X1, C.TZC)] : [C.LAYERS - 1, ...crossingOf(C, L.spawn[0], L.spawn[2])];
   const reach = reachable(T, C, start);
   const goal = [0, ...crossingOf(C, C.ESHAFT_X0, C.TZC)];
   // (the entry shaft's on the main row, which is open end to end: any crossing of row MAIN_ROW in layer 0 will do)
   const layer0 = [...reach].filter((k) => k.startsWith('0,') && k.endsWith(`,${C.MAIN_ROW}`));
-  if (!layer0.length) fail(L.key, `no way down from the spawn to the temple (goal ${goal})`);
+  if (!wang && !layer0.length) fail(L.key, `no way down from the spawn to the temple (goal ${goal})`);
   // Mines: from the spawn, east into the mouth and down the ramp to the top layer, a cell at a time
   if (level === 0) {
     let y = L.spawn[1];
-    for (let x = L.spawn[0] + 1; x < C.RAMP_X1; x++) {
+    // (a Wang level's ramp runs on to the entry shaft's hole in the hall's floor)
+    const rampEnd = wang ? C.ENTRY_CX - GEOM.SHAFT_W / 2 : C.RAMP_X1;
+    for (let x = L.spawn[0] + 1; x < rampEnd; x++) {
       // the highest floor in reach: a step up, else where the body falls to
       let ny = null;
       for (let yy = y + MAX_CLIMB; yy >= y - MAX_DROP && ny === null; yy--) if (feetAt(cell, x, C.RAMP_ZC, yy, yy + 1) === yy) ny = yy;
       if (ny === null) { fail(L.key, `the way from the spawn into the mountain is blocked at x ${x} (feet ${y})`); break; }
       y = ny;
     }
-    if (y !== C.TOP_FLOOR) fail(L.key, `the ramp ends at ${y}, not on the top layer's floor`);
+    if (y !== C.RAMP_FLOOR) fail(L.key, `the ramp ends at ${y}, not at ${C.RAMP_FLOOR}`);
     // ...and through the doorway into the main row
-    for (let z = C.RAMP_ZC; z >= C.TZC; z--) if (feetAt(cell, C.RAMP_X1 - 1, z, C.TOP_FLOOR, C.TOP_FLOOR + 1) !== C.TOP_FLOOR) { fail(L.key, `no doorway from the ramp into the main row at z ${z}`); break; }
+    if (!wang) for (let z = C.RAMP_ZC; z >= C.TZC; z--) if (feetAt(cell, C.RAMP_X1 - 1, z, C.TOP_FLOOR, C.TOP_FLOOR + 1) !== C.TOP_FLOOR) { fail(L.key, `no doorway from the ramp into the main row at z ${z}`); break; }
   }
   const lowest = Math.min(...[...reach].map((k) => +k.split(',')[0]));
-  console.log(`${L.key}: spawn ${L.spawn}, ${L.loot.length} loot sites (${Object.entries(counts).map(([k, v]) => `${v} ${k}`).join(', ')}), ${reach.size} crossings reachable down to layer ${lowest}`);
+  console.log(`${L.key}: spawn ${L.spawn}, ${L.loot.length} loot sites (${Object.entries(counts).map(([k, v]) => `${v} ${k}`).join(', ')})${wang ? '' : `, ${reach.size} crossings reachable down to layer ${lowest}`}`);
 });
 console.log(failures ? `${failures} failure(s)` : 'descent levels OK');
 process.exit(failures ? 1 : 0);

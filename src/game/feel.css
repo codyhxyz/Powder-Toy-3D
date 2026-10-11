@@ -8,6 +8,7 @@
   --feel-left: 238px;               /* the vitals' left edge + width + a gap */
   --feel-bottom: 16px;
   --feel-gap: 10px;
+  --feel-badge: 40px;               /* a medal's badge (medalBadge.js draws it) */
 }
 @media (max-width: 560px) { :root { --feel-tracker: 104px; --feel-left: 184px; --feel-bottom: 12px; } }
 
@@ -33,14 +34,19 @@
   position: absolute; left: var(--feel-left); bottom: calc(var(--feel-bottom) + var(--feel-tracker) + var(--feel-gap));
   display: flex; flex-direction: column; align-items: flex-start; gap: 5px;
 }
+/* first person outside a match (pov/sandboxMedals.js): no tracker, so the stack sits where it would */
+.feel-medal-hud.solo .feel-medals { bottom: var(--feel-bottom); }
 .feel-medal {
   display: flex; align-items: center; gap: 7px;
   animation: feel-medal-in 380ms var(--ease), feel-medal-out 400ms ease-in 2.6s forwards;   /* out: medalHud.js MEDAL_S */
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.85);
 }
-.feel-badge {
+.feel-badge { width: var(--feel-badge); height: var(--feel-badge); flex: 0 0 auto; filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.55)); }
+.feel-badge svg { display: block; width: 100%; height: 100%; }
+/* a medal medalBadge.js can't draw: the plain glyph badge */
+.feel-badge.glyph {
   --c: #e8e2d0;
-  width: 30px; height: 30px; flex: 0 0 auto; display: grid; place-items: center;
+  display: grid; place-items: center; filter: none;
   clip-path: polygon(25% 3%, 75% 3%, 100% 50%, 75% 97%, 25% 97%, 0 50%);
   background: radial-gradient(circle at 50% 35%, color-mix(in srgb, var(--c) 70%, #fff), var(--c) 55%, color-mix(in srgb, var(--c) 55%, #000));
 }
@@ -49,6 +55,7 @@
 .feel-medal.spree .feel-badge { --c: #ff4b5c; }
 .feel-medal.style .feel-badge { --c: #5fd3ff; }
 .feel-medal.objective .feel-badge { --c: #ffd84a; }
+.feel-medal.chaos .feel-badge { --c: #ff6fd0; }
 .feel-name { font: 700 13px var(--ui); letter-spacing: 0.04em; text-transform: uppercase; }
 @keyframes feel-medal-in {
   0% { opacity: 0; transform: translateX(-14px) scale(1.6); }

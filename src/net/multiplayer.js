@@ -35,6 +35,11 @@ const MAX_BRUSH_RADIUS = 24;
 const BRUSH_SHAPES = new Set([0, 1]); // sphere, cube (see brush.js)
 const MAX_WIND_CELLS = 64;            // the Wind tool's drag in a frame (cells; shaders/passes.js caps its speed anyway)
 const MAX_FILLS_PER_FRAME = 1;        // guests' flood fills the host runs a frame (each reads the world back)
+// The scoreboard's ping (ui/scoreboard.js): the host times a round trip to each guest
+// through the relay this often, Source's rate (player_resource.cpp updates every
+// player's ping each 20th think of 0.1 s), and sends everyone the table, with its own
+// kills and deaths (only the host can drop in). The host's own ping is 0, a listen server's.
+const PING_INTERVAL_MS = 2000;
 
 const PEER_COLORS = ['#ffb84d', '#5ad1ff', '#ff6fa8', '#8ce36b', '#c49bff', '#ff8a5c', '#4de0c0', '#f4e04d'];
 const PAINTABLE = new Set([...ELEMENTS.map((e) => e.id), ...TOOLS.filter((t) => t.key !== 'SIGN').map((t) => t.id)]);
@@ -65,11 +70,14 @@ const sameDims = (g, dims) => g.nx === dims[0] && g.ny === dims[1] && g.nz === d
 //   getSim(), getVolume()   current simulation and volume mesh (both are rebuilt on grid size changes)
 //   setGrid([nx, ny, nz])   rebuild the world at the host's grid size (a box, never World); returns false if unsupported
 //   inWorld()               the grid is World's window (docs/scaling.md D11): no hosting, and a guest leaves it
-export function createMultiplayer({ renderer, scene, camera, hud, getSim, getVolume, setGrid, inWorld = () => false }) {
+//   score()                 your [kills, deaths] on the scoreboard (the host sends its own to the guests)
+export function createMultiplayer({ renderer, scene, camera, hud, getSim, getVolume, setGrid, inWorld = () => false, score = () => null }) {
   let role = 'solo';
   let socket = null, room = null, me = null;
   let joiningAs = null; // the role we asked the relay for, until it welcomes us
   const peers = new Map();
+  const pings = new Map();   // id → round trip (ms): the host's measures, a guest's copy of the host's table
+  let hostScore = null, lastPing = 0;
   const cursors = createRemoteCursors({ scene, camera, getVolume });
 
   // host state
@@ -112,6 +120,8 @@ export function createMultiplayer({ renderer, scene, camera, hud, getSim, getVol
     const wasGuest = role === 'guest';
     socket = null; role = 'solo'; me = null; room = null; sent = null; world = null; joiningAs = null;
     peers.clear();
+    pings.clear();
+    hostScore = null;
     cursors.clear();
     chat.clear();
     strokes.length = 0;
@@ -172,6 +182,7 @@ export function createMultiplayer({ renderer, scene, camera, hud, getSim, getVol
         }
         if (p) chat.notice(`${peerName(p)} left`);
         peers.delete(m.id);
+        pings.delete(m.id);
         cursors.remove(m.id);
         break;
       }
@@ -193,6 +204,16 @@ export function createMultiplayer({ renderer, scene, camera, hud, getSim, getVol
       case 'away':
         if (from?.role === 'host') hud.toast(m.away ? HOST_AWAY : HOST_BACK);
         break;
+      case 'ping':   // the host's: answer it, and keep its table and its score
+        if (from?.role !== 'host') return;
+        send({ t: 'pong', to: 'host', at: m.at });
+        pings.clear();
+        for (const [id, ms] of Object.entries(m.pings ?? {})) if (Number.isFinite(ms)) pings.set(id, ms);
+        hostScore = Array.isArray(m.kd) && m.kd.length === 2 && m.kd.every(Number.isFinite) ? m.kd : null;
+        return;
+      case 'pong':   // a guest's answer: its round trip
+        if (role === 'host' && from && Number.isFinite(m.at)) pings.set(m.from, Math.max(0, Math.round(performance.now() - m.at)));
+        return;
     }
     syncButton();
   }
@@ -309,7 +330,7 @@ export function createMultiplayer({ renderer, scene, camera, hud, getSim, getVol
 
   async function onButton() {
     if (role === 'solo' && !socket) {
-      if (inWorld()) { hud.toast(NO_WORLD); return; }
+      if (inWorld()) { hud.toast(NO_WORLD, { kind: 'error' }); return; }
       const code = crypto.randomUUID().replaceAll('-', '').slice(0, ROOM_CODE_LENGTH);
       connect('host', code);
       syncButton();
@@ -366,6 +387,16 @@ export function createMultiplayer({ renderer, scene, camera, hud, getSim, getVol
     get isGuest() { return role === 'guest'; },
     get joining() { return role === 'guest' || joiningAs === 'guest'; },   // a guest, or on the way to being one
     get panelOpen() { return panelOpen; },
+    // everyone in the session, you first ([] solo), for the scoreboard: { id, name, color, role, you,
+    // ping (ms; null till measured), kd ([kills, deaths]: the host's own, sent with its pings) }
+    get players() {
+      if (!me) return [];
+      const ping = (p) => (p.role === 'host' ? 0 : pings.get(p.id) ?? null);
+      return [{ ...me, you: true }, ...peers.values()].map((p) => ({
+        id: p.id, name: peerName(p), color: peerColor(p), role: p.role, you: !!p.you, ping: ping(p),
+        kd: p.role === 'host' && !p.you ? hostScore : null,
+      }));
+    },
     // Chat is for sessions; solo, T keeps toggling the element dock.
     get chatAvailable() { return role !== 'solo'; },
     openChat: () => chat.open(),
@@ -374,14 +405,14 @@ export function createMultiplayer({ renderer, scene, camera, hud, getSim, getVol
     // Guests: shows a toast and returns true for host-only actions.
     guard() {
       if (role !== 'guest') return false;
-      hud.toast(GUEST_BLOCKED);
+      hud.toast(GUEST_BLOCKED, { kind: 'error' });
       return true;
     },
 
     // In a session (or joining one), World can't be chosen: shows a toast and returns true.
     guardWorld() {
       if (role === 'solo' && !socket) return false;
-      hud.toast(role === 'guest' ? GUEST_BLOCKED : NO_WORLD);
+      hud.toast(role === 'guest' ? GUEST_BLOCKED : NO_WORLD, { kind: 'error' });
       return true;
     },
 
@@ -417,6 +448,10 @@ export function createMultiplayer({ renderer, scene, camera, hud, getSim, getVol
             .finally(() => { filling = false; });
         }
         const hasGuests = [...peers.values()].some((p) => p.role === 'guest');
+        if (hasGuests && now - lastPing >= PING_INTERVAL_MS) {
+          lastPing = now;
+          send({ t: 'ping', at: now, pings: Object.fromEntries(pings), kd: score() });
+        }
         if (hasGuests && now - lastStream >= STREAM_INTERVAL_MS && socket.bufferedAmount < MAX_BUFFERED_BYTES) {
           const capture = packer.pack(sim);
           if (capture) {

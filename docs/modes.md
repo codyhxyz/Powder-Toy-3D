@@ -4,9 +4,9 @@ Halo-style team games in first person: teams of bots on both sides (the lab's NP
 tools and Yuka brain, `docs/pov.md` "NPCs"), the player on one of them, and five modes. Code in
 `src/game/`; the rules and their sources in `src/game/rules.js`.
 
-In first person: **M** opens the match menu (mode, side, Start / End; the mouse is freed while it's open; Esc or M
-closes it), **Tab** holds up the scoreboard, **.** switches team (TF2's key; a bot from the other side takes your
-place). With no match running a small "M Match" chip sits top-centre. The main drawer has no match settings.
+Gamemodes are picked on the start menu (Esc opens it over the game), never in the game: there is no match menu
+(the user's call, 2026-10-11). In first person **Tab** holds up the scoreboard and **.** switches team (TF2's key; a
+bot from the other side takes your place). Picking Sandbox on the start menu ends a match.
 
 ## Joining
 
@@ -40,7 +40,7 @@ End match) shows a line and doesn't loop.
 
 **The first seconds**: the first time you have control in a match (alive, mouse captured) a card of the match's
 keys shows under the score for 9 s, once a session per rule style: Halo's (Shoot · Zoom right-click · Grenade G ·
-Melee F · 1/2 or wheel swap guns · Pick up E · Scores Tab · Match menu M) and Siege's (TF2's keys with `,` Class),
+Melee F · 1/2 or wheel swap guns · Pick up E · Scores Tab) and Siege's (TF2's keys with `,` Class),
 which waits until the class picker, which frees the mouse, has closed. The sandbox's key hint doesn't show in a
 match.
 
@@ -167,7 +167,8 @@ HUD (`src/game/hud.js`, `game.css`): top-centre the mode, both scores (yours fir
 other outlined; a bar under each filling toward the score to win, Halo 3's score meter), the clock and the objective (flags
 home / taken / dropped; the hill's owner, when it moves and the leader's progress; survivors and infected; Siege's setup,
 the point, who's on it and its capture bar); the killfeed (with the killer's weapon) and announcements top-right; the
-scoreboard on Tab (your team first, your row highlighted); while you're dead, who killed you with what and
+scoreboard on Tab (Garry's Mod's, `src/ui/scoreboard.js`: the map's name, the mode's score line, a row per player
+by kills with deaths, the mode's score, medals and ping, BOT for bots, pink while dead); while you're dead, who killed you with what and
 "Respawn in N" (Halo 3's death screen, under "You died"); the carnage report at the end. The motion tracker and
 medals (bottom-left) and the reticle (centre) are other modules' (`docs/halo-contract.md`).
 
@@ -233,7 +234,10 @@ awareness, `src/game/feel.js` over three modules. Sources: Halopedia ("List of H
 bottom-left, stacked above the tracker, newest at the bottom, each for 3 s (6 at most), with a synthesized sting per
 kind (`audio.js` `medalMulti | medalSpree | medalStyle | medalObjective`, a beat apart). A kill's rarest medal is
 called out by a deep, slow voice (the browser's `speechSynthesis`; silent where there is none) and, for a multi-kill
-or a spree, as a line high in the centre under the objective. No Halo audio or art: the badges are CSS hexagons.
+or a spree, as a line high in the centre under the objective. No Halo audio or art: each badge is drawn by
+`medalBadge.js` (a hex or a disc in its kind's colours, a gloss, a game-icons.net silhouette from `medalIcons.js`,
+baked by `tools/medal-icons.mjs`; a multi-kill is Halo 3's red disc with a star per kill). Anything can draw one:
+`badgeSvg(key)`, `badgeElement(key)`, `badgeDataUrl(key)`.
 
 | Medal | When | Source |
 |---|---|---|
@@ -253,6 +257,21 @@ or a spree, as a line high in the centre under the objective. No Halo audio or a
 | Flag Returned | touch your dropped flag home | Halo 2 (Halo 3 has none) |
 | Hail to the King | 5 kills in a row from inside the hill, in one life, before it moves | Halo 3 |
 | Infection Spree, Mmmm... Brains; Zombie Killing Spree, Hell's Janitor; Last Man Standing | 5, 10 infections in one life; 5, 10 zombies killed; the lone survivor at the clock | Halo 3 |
+| Own Goal | your own blast killed you (the killfeed's `self`: sandbox only, a match's `game:kill` has no suicides' credit) | ours |
+| Bored, Heavy Particles, Flooded | a burrower kill; `Buried in …`; `Drowned in …`, with your kill credit | ours |
+| Chain Reaction | your blast, then 2 more set off by something else (a vehicle, a Revenge, a charge), each within 1 s (`CHAIN_BLASTS`, `CHAIN_GAP_S`). Only povEvents `blast`s count: the sim's own TNT and gunpowder don't announce themselves | ours |
+
+**Outside a match** (first person in the sandbox) `src/pov/sandboxMedals.js` feeds a book of its own from the
+killfeed's `kill` (axemen, gunners, worms, birds) and `blast`, so multi-kills, sprees, Splatter and the chaos medals
+work there too; the same stack shows the player's, without the tracker under it (no First Strike: there's no match).
+
+**The announcer** (`src/pov/announcer.js`): every line, key → words (each medal's name, the modes, Flag taken /
+dropped / captured, Hill moved, You are infected, Overtime, One minute remaining, Game over, the winner). The clips
+are `public/announcer/<KEY>.mp3`, recorded from `node tools/announcer-lines.mjs` (JSON; `--missing` lists the ones
+not made yet). A clip plays through the first-person sound chain (master, underwater low-pass, limiter: flat, not
+positional), one line at a time as Halo queues them, a line older than 5 s dropped. A medal with no clip falls back
+to the synthesized voice; a match line with none is silent. The match's lines come from its events
+(`announceMatches`); your own capture or return is left to your medal's line.
 
 Each roster entry carries `medals` (its count this match) and `medalCounts` (`{ KEY: n }`) for the scoreboard.
 Events: `game:medal` `{ id, key, name, kind, mine, order }` for every award. `node tools/medals-check.mjs` checks the
@@ -373,8 +392,7 @@ and the tower, and south of the pit; Siege's points as above.
 
 `node tools/join-check.mjs [--url http://localhost:5425]` (AC power, a dev server): the start menu's Play drops into
 a Slayer match on Dam Valley with the player on a team, prints the `join:` timing marks, plays a match with its
-score to win cut to 1 and asserts the carnage report and that the next match starts by itself; Esc closes the M
-menu without opening the start menu.
+score to win cut to 1 and asserts the carnage report and that the next match starts by itself; M opens no match menu.
 
 `tools/halo-combat-check.mjs --url http://localhost:PORT` (default port 5423; `tools/combat-check.mjs` is Big Team
 Battle's shield, perks, knife and pogo check) starts a Team Slayer and checks Halo
