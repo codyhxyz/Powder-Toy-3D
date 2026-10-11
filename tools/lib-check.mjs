@@ -10,9 +10,12 @@
 //            evaluation (giIrradiance, giRadiance, giSkyVis), the 3D-texture
 //            readers against a CPU trilinear and cubic B-spline on a
 //            non-cubic grid (fieldTex, mediaField, fieldCubic, probeTex,
-//            probeAt, sampleLight: texel (x, y, z) is cell or brick (x, y, z),
-//            edges clamped), and the far grid's texel (farUnpack and
-//            farPackTexel against farShared.js's JS twins)
+//            probeAt, surfProbe, sampleLight: texel (x, y, z) is cell or
+//            brick (x, y, z), edges clamped, each GI band its own volume),
+//            GI's sun lookups (the GI variants' sunShadowAt and
+//            sunMapShadowAt see no caustics, whatever FU.caustics, FU.time
+//            and FU.frame say, docs/webgpu.md E), and the far grid's texel
+//            (farUnpack and farPackTexel against farShared.js's JS twins)
 // It serves tools/harness/lib.html from its own Vite (tools/vite-server.mjs:
 // --port N, else a free port) and launches Chromium through tools/browser.mjs.
 //   node tools/lib-check.mjs [--port N] [--only probes,values] [--budget ms]
@@ -24,9 +27,9 @@ import { openHarness } from './harness/open.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const src = (p) => import(pathToFileURL(join(ROOT, 'src', p)));
-const [libM, common, bindings, farM, skyM, kernels] = await Promise.all([
+const [libM, common, bindings, farM, skyM, kernels, elementsM] = await Promise.all([
   src('shaders/gfx/lib.js'), src('shaders/common.js'), src('shaders/bindings.js'), src('shaders/farShared.js'),
-  src('gfx/sky.js'), src('gpu/kernels.js')]);
+  src('gfx/sky.js'), src('gpu/kernels.js'), src('elements.js')]);
 const { lib, libProbe, libProbeLayouts, LIB_PROBES } = libM;
 
 const argv = process.argv.slice(2);
@@ -257,7 +260,7 @@ try {
     const g = await gridOf(32, 16, 24);
     const head = lib(g);
     const layouts = libProbeLayouts('lib.lighting');
-    const kernel = (n, body) => `${head}
+    const kernel = (n, body, top = head) => `${top}
 @group(3) @binding(2) var<storage, read_write> io: array<vec4f>;
 const NIN: u32 = ${n}u;
 @compute @workgroup_size(64) fn main(@builtin(global_invocation_id) gid: vec3u) {
@@ -409,48 +412,135 @@ ${body}
       const q = (x) => Math.round(x * 64) / 64;
       const fs = volume(grid, (x, y, z) => [q(((x * 7 + y * 3 + z * 5) % 32) / 16), q(x / 16), q(y / 8), q(z / 12)]);
       const fm = volume(grid, (x, y, z) => [q(z / 12), q(((x + 2 * y) % 9) / 8), q(x / 32), 1]);
-      const gi0 = volume(bricks, (x, y, z) => [q(x / 4), q(y / 2), q(z / 3), q(((x + y + z) % 5) / 4)]);
-      const gi3 = volume(bricks, (x, y, z) => [q(z / 3), q(x / 8), 0.5, q(y / 4)]);
+      // the four GI bands differ from each other, so a band read from the wrong texture shows
+      const gi = [
+        volume(bricks, (x, y, z) => [q(x / 4), q(y / 2), q(z / 3), q(((x + y + z) % 5) / 4)]),
+        volume(bricks, (x, y, z) => [q(y / 2), q(z / 3), q(((2 * x + z) % 5) / 4), q(x / 8)]),
+        volume(bricks, (x, y, z) => [q(((3 * y + x) % 7) / 4), q(z / 6), q(x / 4), 0.25]),
+        volume(bricks, (x, y, z) => [q(z / 3), q(x / 8), 0.5, q(y / 4)]),
+      ];
       const lt = volume(bricks, (x, y, z) => [q(((x * 3 + z) % 7) / 2), q(y), q(z / 6), 1]);
-      const N = 256, io = new Float32Array(N * 4 * 7), pts = [];
+      const GI_OFFSET = 3;   // lighting.js: cells out along the normal a surface reads the probes
+      const IN = 2, OUT = 13;
+      const N = 256, io = new Float32Array(N * 4 * (IN + OUT)), pts = [], nrm = [];
       for (let i = 0; i < N; i++) {
         // inside, with some outside the grid (the edge clamps)
         const p = grid.map((n) => F((rand() * 1.2 - 0.1) * n));
-        io.set([...p, 0], 4 * i);
+        const n = norm([rand() - 0.5, rand() - 0.5, rand() - 0.5]).map(F);
+        io.set([...p, 0, ...n, 0], 4 * IN * i);
         pts.push(p);
+        nrm.push(n);
       }
-      const extra = { '2.0': { tex: fs.tex }, '2.1': { tex: fm.tex }, '2.3': { tex: lt.tex }, '2.4': { tex: gi0.tex }, '2.7': { tex: gi3.tex } };
-      const r = await run({ label: 'textures', code: kernel(N, `  let p = io[i].xyz;
-  let o = NIN + 6u * i;
+      const extra = { '2.0': { tex: fs.tex }, '2.1': { tex: fm.tex }, '2.3': { tex: lt.tex },
+        '2.4': { tex: gi[0].tex }, '2.5': { tex: gi[1].tex }, '2.6': { tex: gi[2].tex }, '2.7': { tex: gi[3].tex } };
+      const r = await run({ label: 'textures', code: kernel(N, `  let p = io[${IN}u * i].xyz;
+  let n = io[${IN}u * i + 1u].xyz;
+  let o = ${IN}u * NIN + ${OUT}u * i;
   io[o] = fieldTex(tFS, p);
   io[o + 1u] = mediaField(p);
   io[o + 2u] = fieldCubic(tFS, p);
   io[o + 3u] = probeTex(tGI0, p);
-  io[o + 4u] = probeAt(p).cz;
-  io[o + 5u] = vec4f(sampleLight(p), surfField(p).x);`), groups: groupsFor(layouts, { io, extra }), dispatch: [N / 64, 1, 1] });
+  let pa = probeAt(p);
+  io[o + 4u] = pa.c0;
+  io[o + 5u] = pa.cx;
+  io[o + 6u] = pa.cy;
+  io[o + 7u] = pa.cz;
+  io[o + 8u] = vec4f(sampleLight(p), surfField(p).x);
+  let sp = surfProbe(p, n);
+  io[o + 9u] = sp.c0;
+  io[o + 10u] = sp.cx;
+  io[o + 11u] = sp.cy;
+  io[o + 12u] = sp.cz;`), groups: groupsFor(layouts, { io, extra }), dispatch: [N / 64, 1, 1] });
       if (ranOk('3D-texture kernel', r)) {
         const out = f32s(r.outputs['3.2']);
         const fieldQ = (p, n) => clampV(p, [0.5, 0.5, 0.5], n.map((s) => s - 0.5));
         const brickQ = (p) => clampV(p.map((v) => v / 4), [0.5, 0.5, 0.5], bricks.map((s) => s - 0.5));
-        const sets = { fieldTex: [[], []], mediaField: [[], []], fieldCubic: [[], []], probeTex: [[], []], 'probeAt.cz': [[], []], sampleLight: [[], []] };
+        const BANDS = ['c0', 'cx', 'cy', 'cz'];
+        const sets = Object.fromEntries(['fieldTex', 'mediaField', 'fieldCubic', 'probeTex', ...BANDS.map((b) => `probeAt.${b}`),
+          'sampleLight', ...BANDS.map((b) => `surfProbe.${b}`)].map((k) => [k, [[], []]]));
         pts.forEach((p, i) => {
-          const o = 4 * (N + 6 * i), at = (k, n = 4) => Array.from(out.subarray(o + 4 * k, o + 4 * k + n));
+          const o = 4 * (IN * N + OUT * i), at = (k, n = 4) => Array.from(out.subarray(o + 4 * k, o + 4 * k + n));
           const add = (k, got, want) => { sets[k][0].push(got); sets[k][1].push(want); };
-          add('fieldTex', [...at(0), at(5)[3]], [...fs.tri(fieldQ(p, grid)), fs.tri(fieldQ(p, grid))[0]]);
+          const ps = p.map((v, k) => F(v + F(nrm[i][k] * GI_OFFSET)));   // where surfProbe reads, in f32
+          add('fieldTex', [...at(0), at(8)[3]], [...fs.tri(fieldQ(p, grid)), fs.tri(fieldQ(p, grid))[0]]);
           add('mediaField', at(1), fm.tri(fieldQ(p, grid)));
           add('fieldCubic', at(2), cubic(fs, p));
-          add('probeTex', at(3), gi0.tri(brickQ(p)));
-          add('probeAt.cz', at(4), gi3.tri(brickQ(p)));
-          add('sampleLight', at(5, 3), lt.tri(brickQ(p)).slice(0, 3));
+          add('probeTex', at(3), gi[0].tri(brickQ(p)));
+          BANDS.forEach((b, k) => add(`probeAt.${b}`, at(4 + k), gi[k].tri(brickQ(p))));
+          add('sampleLight', at(8, 3), lt.tri(brickQ(p)).slice(0, 3));
+          BANDS.forEach((b, k) => add(`surfProbe.${b}`, at(9 + k), gi[k].tri(brickQ(ps))));
         });
         // Hardware filtering weights are fixed point (SwiftShader: 8 bits of
         // fraction would be 1/256 of the texel step); the data steps by up to 2
         // per texel: within 2/256 of the double reference. A misplaced texel
-        // (an axis swapped, an off-by-half) is off by far more.
+        // (an axis swapped, an off-by-half, a band from the wrong texture, a
+        // wrong offset) is off by far more.
         for (const [k, [got, want]] of Object.entries(sets)) {
           const { max, at } = worst(got, want);
           check(`${k}: ${N} points (edges included), max |err| ${fmt(max)}${at >= 0 ? ` at (${pts[at].map((v) => v.toFixed(2))})` : ''}`, max <= 2 / 256);
         }
+      }
+    }
+
+    // GI's sun lookups (docs/webgpu.md E): the GI variants build the library
+    // with the uniforms GI's GLSL left unset (caustics off, time and frame 0)
+    // as literal zeros, so FrameUniforms' shared caustics, time and frame
+    // can't reach the probes. A uniform shadow map puts every point of the
+    // box under a pool of water, lit (nothing opaque), so caustics, when on,
+    // change the light everywhere.
+    {
+      const strip = (code) => code.split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n');
+      const reads = (variant) => [...new Set(strip(lib(g, { variant })).match(/FU\.(caustics|time|frame)\b/g) ?? [])].sort().join(', ') || 'none';
+      const giReads = ['LIGHTING_GI', 'LIGHTING_GISRC'].map((v) => `${v} ${reads(v)}`);
+      check(`GI variants read none of FU.caustics, FU.time, FU.frame (${giReads.join('; ')}; LIGHTING ${reads('LIGHTING')})`,
+        giReads.every((x) => x.endsWith('none')) && reads('LIGHTING') === 'FU.caustics, FU.frame, FU.time');
+
+      const W = elementsM.E.WATER, water = elementsM.ELEMENTS[W];
+      const R = 0.5 * Math.hypot(g.nx, g.ny, g.nz) + 1, res = 16;
+      // the pool: translucent from depth 0 to past the box's far side, as
+      // much water as path (underPool's fill share is met at every depth),
+      // nothing opaque
+      const meanSigma = water.sigma.reduce((a, b) => a + b, 0) / 3, tau = meanSigma * 2 * R;
+      const sm = new Float32Array(res * res * 4), smx = new Float32Array(res * res);
+      for (let i = 0; i < res * res; i++) { sm.set([1e6, 0, 2 * R + 1, W * 256 + tau], 4 * i); smx[i] = 1e6; }
+      const extra = { '2.8': { tex: { format: 'rgba32float', size: [res, res], data: b64(new Uint8Array(sm.buffer)) } },
+        '2.9': { tex: { format: 'r32float', size: [res, res], data: b64(new Uint8Array(smx.buffer)) } } };
+      const N = 128, pts = new Float32Array(N * 4 * 3);   // N points in, 2N results out
+      for (let i = 0; i < N; i++) pts.set([(rand() * 0.9 + 0.05) * g.nx, (rand() * 0.9 + 0.05) * g.ny, (rand() * 0.9 + 0.05) * g.nz, 0], 4 * i);
+      const body = `  let p = io[i].xyz;
+  io[NIN + 2u * i] = vec4f(sunShadowAt(p), 0.0);
+  io[NIN + 2u * i + 1u] = vec4f(sunMapShadowAt(p), 0.0);`;
+      const live = { ...FRAME, shadowRes: res, caustics: 1, time: 3.5, frame: 7, clouds: 0 };
+      const off = { ...live, caustics: 0, time: 0, frame: 0 };
+      const runs = {};
+      for (const [k, variant, frame] of [['live', 'LIGHTING', live], ['off', 'LIGHTING', off], ['gi', 'LIGHTING_GI', live]]) {
+        const top = lib(g, { variant });
+        const lay = variant === 'LIGHTING_GI' ? libProbeLayouts('lib.gi') : layouts;
+        const r = await run({ label: `GI sun ${k}`, code: kernel(N, body, top),
+          groups: groupsFor(lay, { frame, io: pts.slice(), extra }), dispatch: [N / 64, 1, 1] });
+        if (ranOk(`GI sun kernel (${variant}, caustics ${frame.caustics}, time ${frame.time}, frame ${frame.frame})`, r)) {
+          runs[k] = f32s(r.outputs['3.2']).slice(4 * N, 4 * N + 8 * N);
+        }
+      }
+      if (runs.live && runs.off && runs.gi) {
+        let changed = 0, lit = 0, eGI = 0;
+        for (let i = 0; i < N; i++) {
+          let dLive = 0;
+          for (let k = 0; k < 8; k++) {
+            if ((k & 3) === 3) continue;
+            const j = 8 * i + k;
+            dLive = Math.max(dLive, Math.abs(runs.live[j] - runs.off[j]));
+            eGI = Math.max(eGI, Math.abs(runs.gi[j] - runs.off[j]));
+          }
+          if (dLive > 1e-3) changed++;
+          if (runs.off[8 * i] > 0.05) lit++;
+        }
+        // the control: with the volume's library and caustics on, the light
+        // under the pool moves (else this test couldn't see them)
+        check(`GI sun control: LIGHTING with caustics on changes ${changed}/${N} points under the pool (lit ${lit}/${N})`,
+          changed >= N / 2 && lit === N);
+        check(`GI sun: LIGHTING_GI's sunShadowAt, sunMapShadowAt with FU.caustics 1, time 3.5, frame 7 = LIGHTING with all 0, max |diff| ${fmt(eGI)}`,
+          eGI <= 1e-6);
       }
     }
 

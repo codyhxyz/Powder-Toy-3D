@@ -2,7 +2,7 @@ import { prelude, STATE_OPTS, LAYOUT, STAGE } from '../common.js';
 import { frameBindings, lightingBindings, RENDER_LAYOUT } from '../bindings.js';
 import { materialsGLSL } from '../../gfx/materials.js';
 import { glslMod, fullscreenVert } from '../../gpu/wgsl.js';
-import { coreGLSL } from './core.js';
+import { coreGLSL, ddaGLSL } from './core.js';
 import { noiseGLSL } from './noise.js';
 import { lightingGLSL } from './lighting.js';
 import { crystalGLSL } from './crystal.js';
@@ -33,11 +33,16 @@ import { farLayout, farLayoutGLSL, farHazeGLSL, farCastersGLSL, farGIGLSL, WORLD
 //                    nearField) and no cellFlow (the layout drops flow and
 //                    aeration): GI gather writes the bands
 //   LIGHTING_GISRC   everything, beside giSrc (GI source's output)
+// The two GI variants also build the library with the GI passes' uniforms
+// (giUniforms, lighting.js): what their GLSL left unset (uCaustics, uTime,
+// uFrame) is a literal 0, not the shared FrameUniforms field, so the probes'
+// sun lookups see no caustics and nothing in them moves with time or frame
+// (docs/webgpu.md E).
 export const LIB_VARIANTS = {
-  LIGHTING: { shadowMap: true, probes: true, flow: true },
-  LIGHTING_SHADOW: { shadowMap: false, probes: true, flow: true },
-  LIGHTING_GI: { shadowMap: true, probes: false, flow: false },
-  LIGHTING_GISRC: { shadowMap: true, probes: true, flow: true },
+  LIGHTING: { shadowMap: true, probes: true, flow: true, giUniforms: false },
+  LIGHTING_SHADOW: { shadowMap: false, probes: true, flow: true, giUniforms: false },
+  LIGHTING_GI: { shadowMap: true, probes: false, flow: false, giUniforms: true },
+  LIGHTING_GISRC: { shadowMap: true, probes: true, flow: true, giUniforms: true },
 };
 
 /**
@@ -82,6 +87,10 @@ export const libLayouts = (variant = 'LIGHTING') => [RENDER_LAYOUT.FRAME, LAYOUT
 // set, accumulating into acc (so nothing is dead). Inputs come from a buffer
 // (compute) or the pixel and FrameUniforms (fragment), so nothing folds.
 const PROBE_CALLS = {
+  dda: () => `
+  acc.x += select(0.0, 1.0, outside(ci) || isCrisp(i32(s)));
+  acc += vec4f(worldPos(p) + safeDir(d) + boxHit(p, d), f32(argmin3(d)) + tClosest(ci, p, d, 0.0, 4.0));
+  acc.y += f32(eid(fetchA(ci))) * DDA_START_NUDGE + f32(MAX_STEPS) + f32(GRID.x);`,
   noise: () => `
   acc += vec4f(hash33(p), hash13(p));
   acc.x += vnoise(p) + fbm3(p) + ign(gFragCoord, s);`,
@@ -159,6 +168,9 @@ const PROBE_CALLS = {
 // stage and its far parts.
 const ALL = ['noise', 'core', 'lighting', 'crystal', 'clouds', 'farShared'];
 const PROBES = {
+  // core.js's binding-free part on the prelude and the materials alone (no
+  // FrameUniforms, no lighting group): what a state-only DDA can paste
+  'lib.dda': { modules: ['dda'], bare: true },
   'lib.noise': { modules: ['noise'] },
   'lib.core': { modules: ['core'] },
   'lib.lighting': { modules: ['lighting'] },
@@ -174,7 +186,7 @@ const PROBES = {
 };
 // which probes each module's WGSL_CHECK lists
 const CHECKS = {
-  noise: ['lib.noise'], core: ['lib.core'], lighting: ['lib.lighting'], crystal: ['lib.crystal'], clouds: ['lib.clouds'],
+  noise: ['lib.noise'], core: ['lib.dda', 'lib.core'], lighting: ['lib.lighting'], crystal: ['lib.crystal'], clouds: ['lib.clouds'],
   farShared: ['farShared'], lib: ['lib.shadow', 'lib.gi', 'lib.gisrc', 'lib.fragment'],
 };
 export const LIB_PROBES = Object.keys(PROBES);
@@ -182,6 +194,10 @@ export const LIB_PROBES = Object.keys(PROBES);
 // The probe's own output: group 3 binding 2, beside the header and params
 // (the GISRC variant has no room for it, 8 storage buffers; it writes giSrc).
 const PROBE_OUT = { binding: 2, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } };
+// A bare probe's head: the prelude (tables, state read-only, header), the
+// materials' table accessors and core.js's DDA helpers; groups 0 and 1 are
+// LAYOUT.TABLES and LAYOUT.STATE_RO, group 2 is empty.
+const bareHead = (g) => [prelude(g, STATE_OPTS.STATE_RO), materialsGLSL(), ddaGLSL(g)].join('\n');
 
 /**
  * A probe's WGSL for grid g (LIB_PROBES names it).
@@ -191,7 +207,7 @@ const PROBE_OUT = { binding: 2, visibility: STAGE.COMPUTE, buffer: { type: 'stor
 export function libProbe(g, name) {
   const pr = PROBES[name];
   if (!pr) throw new Error(`libProbe: no probe ${name} (${LIB_PROBES.join(', ')})`);
-  const { modules, variant = 'LIGHTING', stage = 'compute', casters = true, gi = true } = pr;
+  const { modules, variant = 'LIGHTING', stage = 'compute', casters = true, gi = true, bare = false } = pr;
   const v = LIB_VARIANTS[variant];
   const L = farLayout(WORLD_SIZE);
   const far = modules.includes('farShared');
@@ -220,12 +236,12 @@ ${gisrc ? '' : '@group(3) @binding(2) var<storage, read_write> probeIO: array<ve
   let a = ${gisrc ? 'bitcast<vec4f>(giSrc[0])' : 'probeIO[0]'};
   let b = ${gisrc ? 'bitcast<vec4f>(giSrc[1])' : 'probeIO[1]'};
   let c = ${gisrc ? 'bitcast<vec4f>(giSrc[2])' : 'probeIO[2]'};
-  gFragCoord = b.xy;${prologue}${body}
+  ${bare ? '' : 'gFragCoord = b.xy;'}${prologue}${body}
   ${gisrc ? 'giSrc[3] = bitcast<vec4u>(acc);' : 'probeIO[3] = acc;'}
 }`;
   return [
-    `// probe ${name}: calls ${modules.join(', ')} (${variant}, ${stage})`,
-    lib(g, { variant, far: true }),
+    `// probe ${name}: calls ${modules.join(', ')} (${bare ? 'no lighting group' : variant}, ${stage})`,
+    bare ? bareHead(g) : lib(g, { variant, far: true }),
     haze ? farHazeGLSL : '',
     modules.includes('clouds') ? cloudsGLSL : '',
     far && (casters || gi) ? farLayoutGLSL(L) : '',
@@ -240,17 +256,23 @@ ${gisrc ? '' : '@group(3) @binding(2) var<storage, read_write> probeIO: array<ve
  * @param {string} name
  */
 export function libProbeLayouts(name) {
-  const { variant = 'LIGHTING', stage = 'compute' } = PROBES[name];
-  const groups = libLayouts(variant);
+  const { variant = 'LIGHTING', stage = 'compute', bare = false } = PROBES[name];
+  const groups = bare ? [LAYOUT.TABLES, LAYOUT.STATE_RO, LAYOUT.EMPTY, LAYOUT.PARAMS] : libLayouts(variant);
   if (stage === 'compute' && variant !== 'LIGHTING_GISRC') groups[3] = [...LAYOUT.PARAMS, PROBE_OUT];
   return groups;
 }
 
-/** A probe as a check-wgsl entry (src/gpu/checks.js). */
+/**
+ * A probe as a check-wgsl entry (src/gpu/checks.js). warm: false marks it as
+ * a test kernel no game path builds: preload's warm-on-menu set (B5), which
+ * comes from the WGSL_CHECK lists, leaves it out (about 14 s of SwiftShader
+ * pipeline time for the library's ten).
+ */
 function probeCheck(name) {
   const { stage = 'compute' } = PROBES[name];
   return {
     name,
+    warm: false,
     kind: stage === 'fragment' ? 'render' : 'compute',
     code: (g) => libProbe(g, name),
     layouts: () => libProbeLayouts(name),

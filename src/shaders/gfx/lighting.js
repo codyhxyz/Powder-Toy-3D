@@ -47,9 +47,20 @@ const vogel = (n) => Array.from({ length: n }, (_, i) => {
  * Options (lib() sets them per L.LIGHTING variant): shadowMap: false leaves
  * out what reads the shadow map (the shadow kernel writes it); probes: false
  * what samples the GI bands (GI gather writes them). nearField needs both.
- * @param {{ shadowMap?: boolean, probes?: boolean }} [opts]
+ * giUniforms: the GI passes' uniforms. Their GLSL material (sim.js
+ * giUniforms) set no uCaustics, uTime or uFrame, so those read 0 there; GI
+ * binds the shared FrameUniforms, so here the three are literal zeros in the
+ * text instead (docs/webgpu.md E): no caustics in the sun lookups (sunShadow
+ * and sunShadowAt as GI calls them), causticGain at time 0, frame 0 in the
+ * per-frame jitter (PCSS, pixRand, the glow candidates).
+ * @param {{ shadowMap?: boolean, probes?: boolean, giUniforms?: boolean }} [opts]
  */
-export const lightingGLSL = ({ shadowMap = true, probes = true } = {}) => /* wgsl */ `
+export const lightingGLSL = ({ shadowMap = true, probes = true, giUniforms = false } = {}) => {
+  // FU.caustics != 0u, FU.time, f32(FU.frame), or the GI passes' zeros
+  const caustics = giUniforms ? 'false' : 'FU.caustics != 0u';
+  const time = giUniforms ? '0.0' : 'FU.time';
+  const frame = giUniforms ? '0.0' : 'f32(FU.frame)';
+  return /* wgsl */ `
 const PI_L: f32 = 3.14159265;
 // Lighting upgrades, each switchable at run time (Settings → Lighting):
 // FU.nearGI (traced voxel AO and nearby bounce light), FU.glowLights (lava and
@@ -192,7 +203,7 @@ fn underPool(sm: vec4f, d: f32, tid: i32) -> bool {
 fn causticGain(p: vec3f, D: f32) -> f32 {
   let s = p + FU.sun * D;   // where the light entered the liquid
   let q = worldPos(s).xz * RIPPLE_FREQ;   // the ripples are anchored in the world (gfx/liquid.js)
-  let t = FU.time * RIPPLE_DRIFT;
+  let t = ${time} * RIPPLE_DRIFT;
   let h0 = rippleH(q, t);
   let lapQ = (rippleH(q + vec2f(CAUSTIC_EPS, 0.0), t) + rippleH(q - vec2f(CAUSTIC_EPS, 0.0), t)
             + rippleH(q + vec2f(0.0, CAUSTIC_EPS), t) + rippleH(q - vec2f(0.0, CAUSTIC_EPS), t) - 4.0 * h0)
@@ -323,7 +334,7 @@ fn sunMapShadow(hp: vec3f, n: vec3f) -> vec3f {
     nLit += lit;
     dMin = min(dMin, sm.x);
   }
-  if (FU.caustics != 0u && cW > 0.0) {
+  if (${caustics} && cW > 0.0) {
     let cg = mix(1.0, causticGain(p, cD / cW), cW);
     acc *= cg;
     tr *= cg;
@@ -339,7 +350,7 @@ fn sunMapShadow(hp: vec3f, n: vec3f) -> vec3f {
   let slope = vec2f(dot(n, u), dot(n, v)) / ns;
   let ft = st * f32(FU.shadowRes);
   let hi = vec2i(FU.shadowRes - 1);
-  let rot = 2.0 * PI_L * ign(gFragCoord, f32(FU.frame));
+  let rot = 2.0 * PI_L * ign(gFragCoord, ${frame});
   let R2 = mat2x2f(cos(rot), sin(rot), -sin(rot), cos(rot));
   // blocker search over the widest penumbra anything in front of p could cast
   let rs = SUN_TAN_RADIUS * d;
@@ -401,7 +412,7 @@ fn sunMapShadowAt(p: vec3f) -> vec3f {
     }
     acc += lit * wk0(o, w);
   }
-  if (FU.caustics != 0u && cW > 0.0) { acc *= mix(1.0, causticGain(p, cD / cW), cW); }
+  if (${caustics} && cW > 0.0) { acc *= mix(1.0, causticGain(p, cD / cW), cW); }
   return acc;
 }
 
@@ -616,7 +627,7 @@ fn traceNear(ro: vec3f, rd0: vec3f, tLim: f32, opaqueOnly: bool, selfSkip: f32,
 // Random numbers for this pixel (gFragCoord) and frame: k-th of a decorrelated set.
 const NEAR_RAND_STREAMS: i32 = 8;       // random streams per frame (near-field rays, glow candidates)
 fn pixRand(k: i32) -> vec2f {
-  return hash33(vec3f(gFragCoord, f32(FU.frame) * f32(NEAR_RAND_STREAMS) + f32(k))).xy;
+  return hash33(vec3f(gFragCoord, ${frame} * f32(NEAR_RAND_STREAMS) + f32(k))).xy;
 }
 ${shadowMap && probes ? /* wgsl */ `
 // Voxel AO and nearby bounce light (Teardown style). NEAR_RAYS cosine-
@@ -707,7 +718,7 @@ fn glowLightScale(p: vec3f, ng: vec3f, n: vec3f) -> f32 {
   var wSum = 0.0;
   var pick = vec3i(-1);
   for (var i = 0; i < GLOW_CANDIDATES; i++) {
-    let u = hash33(vec3f(gFragCoord, f32(FU.frame) * f32(NEAR_RAND_STREAMS) + f32(NEAR_RAYS + i)));
+    let u = hash33(vec3f(gFragCoord, ${frame} * f32(NEAR_RAND_STREAMS) + f32(NEAR_RAYS + i)));
     let bc = min(lo + vec3i(u * span), hi);
     let e = dot(brickAt(bc).emit, LUMA);
     if (e < GLOW_EMIT_MIN) { continue; }
@@ -719,7 +730,7 @@ fn glowLightScale(p: vec3f, ng: vec3f, n: vec3f) -> f32 {
   if (pick.x < 0) { return 1.0; }
   if (all(pick == pb)) { return 1.0; }   // inside the emitter's own brick: no direction to speak of
   let bmin = vec3f(pick * BS);
-  let tgt = bmin + hash33(vec3f(gFragCoord.yx, f32(FU.frame) + 0.5)) * f32(BS);
+  let tgt = bmin + hash33(vec3f(gFragCoord.yx, ${frame} + 0.5)) * f32(BS);
   let ro = p + ng * GLOW_START;
   let dv = tgt - ro;
   let dist = length(dv);
@@ -775,6 +786,7 @@ fn lampLight(p: vec3f, ng: vec3f, n: vec3f) -> vec3f {
   return sum;
 }
 `;
+};
 
 /** tools/check-wgsl.mjs: probe kernels calling every function above (shaders/gfx/lib.js libChecks) */
 export const WGSL_CHECK = () => libChecks('lighting');

@@ -8,7 +8,9 @@ import { libChecks } from './lib.js';
 // (shaders/bindings.js lightingBindings), the per-frame values from
 // FrameUniforms (FU: what were uView, uShadows, uTime, uLightGain, uFrame,
 // uSimClock and uPixScale, the output pixel's size in rendered pixels).
-// shaders/gfx/lib.js assembles it after those.
+// shaders/gfx/lib.js assembles it after those. Its binding-free part (the
+// grid, cells and the DDA's ray helpers) is ddaGLSL below, for kernels that
+// walk the state without the lighting group.
 //
 // Volumes are 3D textures (docs/webgpu.md E, W14): texel (x, y, z) of the
 // fields is cell (x, y, z); of the light and the GI probes, brick (x, y, z).
@@ -20,9 +22,7 @@ import { libChecks } from './lib.js';
 // opts.flow: declare cellFlow (it reads the flow buffer, binding 18, which
 // the GI gather's writer layout drops).
 export const coreGLSL = (g, { flow = true } = {}) => /* wgsl */ `
-const GRID: vec3i = vec3i(NX, NY, NZ);
-const MAX_STEPS: i32 = ${g.maxSteps ?? g.nx + g.ny + g.nz + 8};   // DDA steps that cross the box corner to corner
-
+${ddaGLSL(g)}
 // The pixel whose noise a function draws (ign, pixRand, the glow candidates,
 // the clouds' jitter): what gl_FragCoord.xy was. Every entry point sets it
 // first: a fragment shader to @builtin(position).xy (pixel centres, top-left
@@ -36,20 +36,6 @@ fn cellFlow(c: vec3i) -> vec3f {
   let w = flow[slotOf(c)];
   return vec3f(unpack2x16float(w.x), unpack2x16float(w.y).x);
 }` : ''}
-// Whether cell c lies outside the grid.
-fn outside(c: vec3i) -> bool { return any(c < vec3i(0)) || any(c >= GRID); }
-
-// World position of grid point p (docs/scaling.md D11). The look is anchored
-// to it (surface textures, glints, ripples, gas detail, floor lines), so moving
-// the window doesn't move the textures; everything that samples the grid's own
-// textures (fields, bricks, probes, the shadow map) stays in grid space. In a
-// box the header's origin is 0. (Always compiled, so a box and a world share
-// every pipeline.)
-fn worldPos(p: vec3f) -> vec3f { return p + vec3f(H.origin); }
-
-// Crisp elements are drawn as voxels; everything else is a field.
-fn isCrisp(id: i32) -> bool { return id != E_EMPTY && SURFCH(id) < 0 && MEDIACH(id) < 0; }
-
 // ---- bricks (the brick map: shaders/bindings.js BrickInfo) ----
 // Brick bc's info word: 0 empty; with BRICK_MATTER (brickMatter) it holds
 // matter (brickBits, brickGas); without, it holds only air the data views
@@ -68,31 +54,7 @@ fn brickOpaque(f: u32) -> bool { return brickHas(f, BRICK_OPAQUE); }   // crisp 
 fn brickThin(f: u32) -> bool { return brickHas(f, BRICK_THIN); }       // thin liquid: read cubic
 fn brickMixed(f: u32) -> bool { return brickHas(f, BRICK_MIXED); }     // more than one liquid
 
-// ---- the DDA ----
-// A ray entering the box starts its DDA in the cell this far (cells) past the
-// entry point, so the cell it starts in is the one inside.
-const DDA_START_NUDGE: f32 = 1e-4;
-
-// rd with every component at least 1e-6 away from 0 (the DDA divides by it).
-fn safeDir(rd: vec3f) -> vec3f { return select(rd, vec3f(1e-6), abs(rd) < vec3f(1e-6)); }
-// Ray (ro, rd) against the box [0, GRID]: (tNear, tFar, entry axis 0..2). A miss has tFar <= tNear.
-fn boxHit(ro: vec3f, rd: vec3f) -> vec3f {
-  let t0 = (vec3f(0.0) - ro) / rd;
-  let t1 = (vec3f(GRID) - ro) / rd;
-  let tn = min(t0, t1);
-  let tf = max(t0, t1);
-  let n = max(max(tn.x, tn.y), tn.z);
-  var axis = 2.0;
-  if (tn.x >= tn.y && tn.x >= tn.z) { axis = 0.0; } else if (tn.y >= tn.z) { axis = 1.0; }
-  return vec3f(n, min(min(tf.x, tf.y), tf.z), axis);
-}
-// The axis of v's smallest component (ties: x, then y).
-fn argmin3(v: vec3f) -> i32 {
-  if (v.x <= v.y && v.x <= v.z) { return 0; }
-  if (v.y <= v.z) { return 1; }
-  return 2;
-}
-
+// ---- brick skipping (the brick map and brickDist) ----
 // Jump the DDA to the exit of empty brick bc: updates *cell, *tMax and
 // *tEnter as one step would, returns the axis crossed.
 fn skipBrick(bc: vec3i, ro: vec3f, rd: vec3f, istp: vec3i,
@@ -257,11 +219,6 @@ fn surfCross(ro: vec3f, rd: vec3f, ch: i32, into: bool, ta: f32, tm: f32, tb: f3
   return surfRoot(ro, rd, ch, select(tm, ta, first), select(tb, tm, first), select(m, a, first), select(b, m, first));
 }
 
-// Where in [ta, tb] the ray passes closest to the centre of cell c.
-fn tClosest(c: vec3i, ro: vec3f, rd: vec3f, ta: f32, tb: f32) -> f32 {
-  return clamp(dot(vec3f(c) + 0.5 - ro, rd), ta, tb);
-}
-
 // Outward surface normal (−∇φ) of channel ch at p from a tetrahedral central
 // difference; fallback where the gradient vanishes. The step is wide on
 // purpose: trilinear fields have creased gradients at the cell-centre
@@ -279,6 +236,60 @@ fn surfNormal(p: vec3f, ch: i32, fallback: vec3f) -> vec3f {
   let l = length(gr);
   if (l > 1e-5) { return -gr / l; }
   return fallback;
+}
+`;
+
+// The binding-free part of the core: the grid's extent, cells, world
+// positions and the DDA's ray helpers. It needs only the prelude (NX, NY, NZ,
+// the header's origin, the element tables) and, for isCrisp, the materials'
+// table accessors, so a kernel that walks the state alone (pick, the POV
+// trace: docs/webgpu.md F5, G2) pastes prelude(g) + materialsGLSL() +
+// ddaGLSL(g) and binds no lighting group. coreGLSL includes it.
+export const ddaGLSL = (g) => /* wgsl */ `
+const GRID: vec3i = vec3i(NX, NY, NZ);
+const MAX_STEPS: i32 = ${g.maxSteps ?? g.nx + g.ny + g.nz + 8};   // DDA steps that cross the box corner to corner
+
+// Whether cell c lies outside the grid.
+fn outside(c: vec3i) -> bool { return any(c < vec3i(0)) || any(c >= GRID); }
+
+// World position of grid point p (docs/scaling.md D11). The look is anchored
+// to it (surface textures, glints, ripples, gas detail, floor lines), so moving
+// the window doesn't move the textures; everything that samples the grid's own
+// textures (fields, bricks, probes, the shadow map) stays in grid space. In a
+// box the header's origin is 0. (Always compiled, so a box and a world share
+// every pipeline.)
+fn worldPos(p: vec3f) -> vec3f { return p + vec3f(H.origin); }
+
+// Crisp elements are drawn as voxels; everything else is a field.
+fn isCrisp(id: i32) -> bool { return id != E_EMPTY && SURFCH(id) < 0 && MEDIACH(id) < 0; }
+
+// ---- the DDA ----
+// A ray entering the box starts its DDA in the cell this far (cells) past the
+// entry point, so the cell it starts in is the one inside.
+const DDA_START_NUDGE: f32 = 1e-4;
+
+// rd with every component at least 1e-6 away from 0 (the DDA divides by it).
+fn safeDir(rd: vec3f) -> vec3f { return select(rd, vec3f(1e-6), abs(rd) < vec3f(1e-6)); }
+// Ray (ro, rd) against the box [0, GRID]: (tNear, tFar, entry axis 0..2). A miss has tFar <= tNear.
+fn boxHit(ro: vec3f, rd: vec3f) -> vec3f {
+  let t0 = (vec3f(0.0) - ro) / rd;
+  let t1 = (vec3f(GRID) - ro) / rd;
+  let tn = min(t0, t1);
+  let tf = max(t0, t1);
+  let n = max(max(tn.x, tn.y), tn.z);
+  var axis = 2.0;
+  if (tn.x >= tn.y && tn.x >= tn.z) { axis = 0.0; } else if (tn.y >= tn.z) { axis = 1.0; }
+  return vec3f(n, min(min(tf.x, tf.y), tf.z), axis);
+}
+// The axis of v's smallest component (ties: x, then y).
+fn argmin3(v: vec3f) -> i32 {
+  if (v.x <= v.y && v.x <= v.z) { return 0; }
+  if (v.y <= v.z) { return 1; }
+  return 2;
+}
+// Where in [ta, tb] the ray passes closest to the centre of cell c.
+fn tClosest(c: vec3i, ro: vec3f, rd: vec3f, ta: f32, tb: f32) -> f32 {
+  return clamp(dot(vec3f(c) + 0.5 - ro, rd), ta, tb);
 }
 `;
 
