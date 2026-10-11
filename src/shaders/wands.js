@@ -48,7 +48,7 @@ void wand(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
     else if (effect == ${WAND_EFFECTS.pressure}) oB.w += ep.y;
     else if (effect == ${WAND_EFFECTS.erase}) {
       if (id != E_WALL && id != E_CLONE) {
-        oA = vec4(float(E_EMPTY), AMBIENT, 0.0, fract(oA.w));
+        oA = vec4(float(E_EMPTY), uAirT, 0.0, fract(oA.w));
         oB.xyz = vec3(0.0);
       }
     } else if (effect == ${WAND_EFFECTS.ignite}) {

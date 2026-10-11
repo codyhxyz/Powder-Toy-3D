@@ -25,6 +25,7 @@ import { Rays } from './raysLayer.js';
 import { isDecoTool } from './elements.js';
 import { ensureDeco } from './deco.js';
 import { GRAV, EDGE, SIM_MODE_DEFAULTS } from './simModes.js';
+import { PHYS } from './physics.js';
 
 // cells/step² downward (the app's gravity setting overrides it)
 const GRAVITY_DEFAULT = 0.025;
@@ -165,12 +166,16 @@ export function reactionTexture() {
   return t;
 }
 
+// The ambient air temperature every pass reads (shaders/common.js uAirT), one
+// value for all: only one world is live at a time. Simulation.airT sets it.
+export const airTUniform = { value: PHYS.AMBIENT };
+
 export function rawMat(frag, uniforms) {
   return new THREE.RawShaderMaterial({
     glslVersion: THREE.GLSL3,
     vertexShader: quadVert,
     fragmentShader: frag,
-    uniforms,
+    uniforms: { uAirT: airTUniform, ...uniforms },
     depthTest: false,
     depthWrite: false,
   });
@@ -527,6 +532,10 @@ export class Simulation {
   // that draws a state pass somewhere else (e.g. once, to build its pipeline).
   makeStateTarget(w, h) { return makeStateTarget(w, h); }
 
+  // The ambient air temperature, °C (airTUniform): app.js sets the world scene's (scene.airT).
+  get airT() { return airTUniform.value; }
+  set airT(v) { airTUniform.value = v; }
+
   // Index of cell (x, y, z)'s texel in the state arrays, and back (cellTexel, texelCell).
   cellTexel(x, y, z) { return cellTexel(this.g, x, y, z); }
   texelCell(i) { return texelCell(this.g, i); }
@@ -586,6 +595,7 @@ export class Simulation {
   run(mat, target, quads = null) {
     const o = mat.uniforms.uOrigin;
     if (!o || simOrigins.has(o)) mat.uniforms.uOrigin = this.originUniform;
+    mat.uniforms.uAirT ??= airTUniform;   // (a material not made by rawMat)
     const mesh = quads ? quads.mesh : this.quad;
     mesh.material = mat;
     this.renderer.setRenderTarget(target);

@@ -148,7 +148,7 @@ void brush(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
     float vy = KIND[uTool] == K_POWDER || KIND[uTool] == K_LIQUID ? SPAWN_DROP_V : 0.0;
     oB = vec4(0.0, vy, 0.0, b.w);
   } else if (uTool == T_ERASE || uTool >= 0 || propErases) {   // (uTool >= 0 here: specific delete)
-    oA = vec4(float(E_EMPTY), AMBIENT, 0.0, rnd(rs) * SEED_MAX);
+    oA = vec4(float(E_EMPTY), uAirT, 0.0, rnd(rs) * SEED_MAX);
     oB = vec4(0.0, 0.0, 0.0, b.w);
   } else if (uTool == T_HEAT) {
     oA.y = min(a.y + TOOL_HEAT * falloff, CELL_TEMP_MAX);
@@ -273,7 +273,7 @@ void main() {
     vec4 m = texelFetch(tFM, t, 0);
     int id = eid(a);
     if (id != E_EMPTY) occ = 1.0;
-    else if (abs(a.y - AMBIENT) > AIR_FLAG_T) flags |= AIR_HOT;
+    else if (abs(a.y - uAirT) > AIR_FLAG_T) flags |= AIR_HOT;
     if (id == E_STEAM || id == E_CLOUD || id == E_SMOKE) gas += 1.0;
     surf = max(surf, max(max(s.x, s.y), max(s.z, s.w)));
     // something opaque (not liquid, glass or gas) here or in an opaque surface field

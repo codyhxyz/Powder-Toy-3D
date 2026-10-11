@@ -36,7 +36,7 @@ void main() {
   // a moved cell keeps its state but not its neighbours, so its flags start
   // over (FLAG_DIRTY: the next activity map redoes its neighbour tests)
   vec4 a = fetchA(q), b = fetchB(q);
-  if (inGrid(p) && !inGrid(q)) { a = vec4(float(E_EMPTY), AMBIENT, 0.0, 0.0); b = vec4(0.0); }
+  if (inGrid(p) && !inGrid(q)) { a = vec4(float(E_EMPTY), uAirT, 0.0, 0.0); b = vec4(0.0); }
   writeState(a, b, freshFlags(a, b));
 }
 `;

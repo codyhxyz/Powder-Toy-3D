@@ -108,7 +108,7 @@ uniform int uEdge;
 // a cell next to the box: in loop mode, the one on the far side (every axis)
 ivec3 edgeCell(ivec3 q) { return uEdge == EDGE_LOOP ? (q + ivec3(NX, NY, NZ)) % ivec3(NX, NY, NZ) : q; }
 // what a cell outside the box holds, past a void edge: still air at ambient
-const vec4 VOID_AIR_A = vec4(float(E_EMPTY), AMBIENT, 0.0, 0.0);
+#define VOID_AIR_A vec4(float(E_EMPTY), uAirT, 0.0, 0.0)
 uniform int uGravMode;
 // Which way gravity pulls at x (grid cells): down, or with radial gravity
 // toward the box's centre (none at the centre itself).

@@ -358,7 +358,7 @@ void main() {
   for (int i = 0; i < uFaces; i++) if (uAmbientHeat || (id != E_EMPTY && nid[i] != E_EMPTY)) dE += condFlux(id, T, nid[i], na[i].y);
   T += (dE + rayDep.x) / C;   // (and what particles left: photons absorbed, fissions)
   // the open world above the box slowly pulls air back to ambient; gases radiate
-  T += (AMBIENT - T) * (id == E_EMPTY ? AIR_AMBIENT_PULL : RAD[id]);
+  T += (uAirT - T) * (id == E_EMPTY ? AIR_AMBIENT_PULL : RAD[id]);
 
   // ---- air pressure ----
   bool solid = KIND[id] == K_SOLID;
@@ -393,7 +393,7 @@ void main() {
     // gravity's pull here (simModes.js gravDir: down, or radial)
     vec3 gv = gravDir(vec3(p) + 0.5);
     // air, and cloud (air carrying droplets), is buoyant by its temperature
-    if (id == E_EMPTY || id == E_CLOUD) v -= gv * (uGravity * clamp((T - AMBIENT) / (AMBIENT + KELVIN), AIR_BUOY_LO, AIR_BUOY_HI));
+    if (id == E_EMPTY || id == E_CLOUD) v -= gv * (uGravity * clamp((T - uAirT) / (uAirT + KELVIN), AIR_BUOY_LO, AIR_BUOY_HI));
     if (id != E_EMPTY) v += gv * (uGravity * GRAV[id]);
     v *= 1.0 - DRAG[id];
     // The rules below are written for down = −y and its face neighbour (the
@@ -544,7 +544,7 @@ void main() {
       // thick cloud coalesces into raindrops; the edges evaporate into the
       // unsaturated air, the faster the warmer (saturation vapour pressure)
       float rain = CLOUD_RAIN * max(float(nCloud) - CLOUD_RAIN_NB, 0.0);
-      float es = exp(MAGNUS_A * (T / (T + MAGNUS_B) - AMBIENT / (AMBIENT + MAGNUS_B)));
+      float es = exp(MAGNUS_A * (T / (T + MAGNUS_B) - uAirT / (uAirT + MAGNUS_B)));
       float r = rnd(rs);
       if (r < rain) { nidOut = E_WATER; life = 0.0; }
       else if (r < rain + CLOUD_EVAP * max(float(nAir) - CLOUD_EVAP_NB, 0.0) * es) { nidOut = E_EMPTY; reset = true; T -= CLOUD_EVAP_COOL; }
@@ -735,11 +735,11 @@ void main() {
 
   // swallowed by the singularity it is partnered with (the draw above); its
   // heat goes in with it
-  if (swallow && id != E_SINGULARITY) { nidOut = E_EMPTY; reset = true; T = AMBIENT; ctype = 0.0; }
+  if (swallow && id != E_SINGULARITY) { nidOut = E_EMPTY; reset = true; T = uAirT; ctype = 0.0; }
 
   // Void (elements.js VOID) drains whatever can move the step it touches it
   if (nVoid > 0 && id != E_EMPTY && KIND[id] != K_SOLID) {
-    nidOut = E_EMPTY; reset = true; T = AMBIENT; v = vec3(0.0); ctype = 0.0;
+    nidOut = E_EMPTY; reset = true; T = uAirT; v = vec3(0.0); ctype = 0.0;
   }
 
   if (nidOut != id) {
@@ -751,7 +751,7 @@ void main() {
   }
 
   // simModes.js: ambient heat off holds the air at ambient; pressure off holds it at 0
-  if (!uAmbientHeat && nidOut == E_EMPTY) T = AMBIENT;
+  if (!uAmbientHeat && nidOut == E_EMPTY) T = uAirT;
   if (uAirMode == AIR_PRESSURE_OFF || uAirMode == AIR_OFF) P = 0.0;
   T = clamp(T, CELL_TEMP_MIN, CELL_TEMP_MAX);
   vec4 outA = vec4(float(nidOut), T, life, ctype + seed), outB = vec4(v, clamp(P, P_MIN, P_MAX));
