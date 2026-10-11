@@ -11,7 +11,7 @@ import { moveBlockFrag, MoveParams, MOVE_LAYOUT, marginBlocks, MOVE_FORM, ownerL
 import { reactFrag, ReactParams, REACT_LAYOUT, FACES } from './shaders/react.js';
 import {
   paintUpdateWGSL, PaintParams, PAINT_LAYOUT, paintDeclsWGSL, freshFrag, copyFrag, toAtlasFrag, fromAtlasFrag, ConvertParams, CONVERT_LAYOUT,
-  awakeFrag, AwakeParams,
+  rectToAtlasFrag, RectParams, awakeFrag, AwakeParams,
 } from './shaders/passes.js';
 import { shiftFrag, undoShiftFrag, flowShiftFrag, ShiftParams, UNDO_LAYOUT, FLOW_SHIFT_LAYOUT } from './shaders/window.js';
 import { stateLayout } from './shaders/common.js';
@@ -65,6 +65,11 @@ const UNDO_LIMIT = 3;
 // meant to be long-lived (B6: a pooled upload buffer and its sub-ranges); a
 // caller binding a new buffer per edit would otherwise grow the cache forever.
 const EDIT_GROUPS_MAX = 64;
+
+// readStateRect's scratch is kept up to this size between reads (the
+// console's block reads: a supertile's square, 32 KB); a larger one (a band
+// of rows) goes once its read is submitted.
+const RECT_SCRATCH_KEEP = 1 << 20;
 
 // Share of each update's new GI probes blended into the probe volume (the rest
 // is history): smooths cells popping between bricks over a few frames. Each
@@ -236,6 +241,10 @@ export class Simulation {
     this.aeration = null;
     this.derived = null;
     this.deco = null;
+    // The decoration layer exists from the first deco stroke (main's
+    // ensureDeco): decoFactory(sim), set by its wire module (U17), makes it
+    // then (ensureDeco); until one is set, deco strokes paint nothing.
+    this.decoFactory = null;
     // profiling hook (gfx/profiler.js): onPass(name, { kind, gpuMs }) after every dispatch
     this.onPass = null;
     // test knobs (docs/webgpu.md C7, I2); test mode only
@@ -317,6 +326,7 @@ export class Simulation {
     };
     this._lazy = {
       toAtlas: () => kernel('toAtlas', toAtlasFrag(g), [L.STATE_FLAGS_RO, L.CONVERT], ConvertParams),
+      rectToAtlas: () => kernel('rectToAtlas', rectToAtlasFrag(g), [L.STATE_FLAGS_RO, L.CONVERT], RectParams),
       copy: () => kernel('copy', copyFrag(g, dbg), [L.STATE_RW]),
       fresh: () => kernel('fresh', freshFrag(g, dbg), [L.STATE_RW]),
       inertRef: () => kernel('inertRef', inertRefFrag(g), [L.STATE_RO, L.REF]),
@@ -619,12 +629,14 @@ export class Simulation {
    * @param {ReturnType<Simulation['editKernel']>} kernel
    * @param {{ lo: number[], hi: number[] }} box inclusive grid cells (clipped to the grid)
    * @param {object} [values] the params' other fields
-   * @param {{ bind?: GPUBindingResource[] }} [opts] the kernel's own group-2 resources: one per entry of
-   *   editKernel's `layout`, in order ({ buffer, offset?, size? } for a buffer); the sim adds the two-phase
-   *   scratch and makes the bind group once per set of resources (a buffer's range included). Bind
-   *   long-lived buffers (B6): a kernel keeps at most EDIT_GROUPS_MAX groups
+   * @param {{ bind?: GPUBindingResource[], scrub?: boolean }} [opts] bind: the kernel's own group-2
+   *   resources: one per entry of editKernel's `layout`, in order ({ buffer, offset?, size? } for a
+   *   buffer); the sim adds the two-phase scratch and makes the bind group once per set of resources (a
+   *   buffer's range included). Bind long-lived buffers (B6): a kernel keeps at most EDIT_GROUPS_MAX
+   *   groups. scrub: the cells it gives a new element lose their decoration, as TPT's create_part
+   *   resets dcolour (the brush, a stamp, the console's script: main's scrubDeco callers)
    */
-  edit(kernel, { lo, hi }, values = {}, { bind = [] } = {}) {
+  edit(kernel, { lo, hi }, values = {}, { bind = [], scrub = false } = {}) {
     const box = this._clip(lo, hi);
     if (!box) return;
     const [a, b] = box;
@@ -639,8 +651,15 @@ export class Simulation {
     }
     const groups = [this.tables, this.bindRW, ...(group2 ? [group2] : [])];
     const header = this.header();
+    // The write is in place: afterwards nothing holds the cells as they were
+    // (main scrubbed against its ping-pong pass's other copy), so the
+    // decoration layer keeps what it needs of the box first (beforeWrite) and
+    // compares after (scrub), both recorded around the edit's dispatches.
+    const deco = scrub ? this.deco : null, f = this.gpu.frame, clipped = { lo: a, hi: b };
+    deco?.beforeWrite?.(f, clipped);
     this._dispatch(kernel.main, size, { bind: groups, header, params });
     if (kernel.apply) this._dispatch(kernel.apply, size, { bind: groups, header, params });
+    deco?.scrub?.(f, clipped);
     this.version++;
     this.wake();   // the next step rebuilds the map: the marked bricks are forced
   }
@@ -713,8 +732,8 @@ export class Simulation {
   // cells read their partners, a two-phase one.
   paint({ center, radius, shape, tool, rate, replace, wind = null, end = center, grow = null, mask = null, filter = -1, erase = false, prop = null }) {
     if (tool === PROP_TOOL && !prop) return;
-    // TPT's deco tools paint the decoration layer, not the cells (src/deco.js; nothing until one is attached)
-    if (isDecoTool(tool)) { this.deco?.paint?.({ center, radius, shape, tool }); return; }
+    // TPT's deco tools paint the decoration layer, not the cells (src/deco.js): made on the first stroke
+    if (isDecoTool(tool)) { this.ensureDeco()?.paint?.({ center, radius, shape, tool }); return; }
     // particle tools paint into the particle list, not the grid (a line or box: dabs along it)
     const dabs = !mask && (end !== center || grow) ? strokeDabs(center, end, grow ?? undefined, radius) : [center];
     if (this.rays.paint({ center: dabs[0], radius, shape, tool, rate })) {
@@ -740,8 +759,7 @@ export class Simulation {
       center: [center.x, center.y, center.z], radius, shape, tool, rate, replace: Boolean(replace), frame: this.paints,
       wind: wind ? [wind[0], wind[1], wind[2]] : [0, 0, 0], end: [end.x, end.y, end.z], grow: grow ?? [0, 0, 0],
       masked: Boolean(mask), filter_: filter, del: Boolean(erase), prop: prop?.field ?? 0, propValue: prop?.value ?? 0,
-    }, { bind: [{ buffer: mask ? this._paintMask(mask.data) : this.noMask }] });
-    this.scrubDeco();
+    }, { bind: [{ buffer: mask ? this._paintMask(mask.data) : this.noMask }], scrub: true });
   }
 
   // A fill's mask on the GPU (editing.js regionMask's bytes, a byte per atlas
@@ -757,11 +775,10 @@ export class Simulation {
     return this.paintMask;
   }
 
-  // After a write that isn't a step (the brush, a stamp): cells it gave a new
-  // element lose their decoration, as TPT's create_part resets it (src/deco.js, U17).
-  scrubDeco() {
-    this.deco?.scrub?.(this.gpu.frame);
-  }
+  // WEBGPU-STUB (docs/webgpu.md J3): main scrubbed after a writer's pass,
+  // against the other copy; the port's writes are in place, so the scrub rides
+  // on the write: sim.edit(kernel, box, values, { scrub: true }).
+  scrubDeco() { throw new Error('sim.scrubDeco removed in the WebGPU port: docs/webgpu.md Sync log S3 (sim.edit with { scrub: true })'); }
 
   /**
    * A whole-grid write that isn't a step (a load, an undo, the codec's unpack):
@@ -1013,8 +1030,8 @@ export class Simulation {
    * @returns {Promise<[Float32Array, Float32Array]>}
    */
   async readState() {
-    const texels = this.g.width * this.g.height;
-    await this._readyFor('toAtlas');
+    const texels = this.g.width * this.g.height, wait = this._readyFor('toAtlas');
+    if (wait) await wait;   // (not await null: that records after the caller's next writes)
     this._toAtlas(this.cur, false);
     const read = this.gpu.readback.buffer(this.atlasScratch, 0, texels * 32);
     this._dropAtlasScratch();
@@ -1034,25 +1051,50 @@ export class Simulation {
    * call, read into a and b (Float32Array RGBA per texel, row by row, in the
    * fetchA/fetchB layout): the console's reads (src/console/gpu.js). Only
    * asynchronously (docs/webgpu.md W6): async must be true, and the promise
-   * resolves once a and b hold it.
+   * resolves once a and b hold it (or rejects: a rectangle outside the atlas).
+   * It converts only the rectangle, into a scratch of its size, so the
+   * console's reads of one block each cost a block (its kernel is built on
+   * the first: that read waits for it, and reads the state then).
    * @returns {Promise<void>}
    */
   readStateRect(x, y, w, h, a, b, async = false) {
     if (!async) throw new Error('readStateRect: synchronous reads removed in the WebGPU port: docs/webgpu.md W6 (pass async = true)');
-    if (x < 0 || y < 0 || x + w > this.g.width || y + h > this.g.height) throw new Error(`readStateRect: ${w} × ${h} at ${x}, ${y} is outside the atlas`);
-    return (async () => {
-      const { width } = this.g, texels = width * this.g.height, rb = this.gpu.readback;
-      await this._readyFor('toAtlas');
-      this._toAtlas(this.cur, false);
-      // the rows the rectangle spans, A then B
-      const rows = [rb.buffer(this.atlasScratch, y * width * 16, h * width * 16), rb.buffer(this.atlasScratch, (texels + y * width) * 16, h * width * 16)];
-      this._dropAtlasScratch();
-      const [ra, rbk] = (await Promise.all(rows)).map((x) => new Float32Array(x));
-      for (let r = 0; r < h; r++) {
-        a.set(ra.subarray((r * width + x) * 4, (r * width + x + w) * 4), r * w * 4);
-        b.set(rbk.subarray((r * width + x) * 4, (r * width + x + w) * 4), r * w * 4);
+    const { width, height } = this.g;
+    if (!(x >= 0 && y >= 0 && w > 0 && h > 0 && x + w <= width && y + h <= height)) {
+      return Promise.reject(new Error(`readStateRect: ${w} × ${h} at ${x}, ${y} is outside the ${width} × ${height} atlas`));
+    }
+    const read = () => {
+      const n = w * h, scratch = this._rectScratch(n * 32);
+      this._dispatch(this.passOf('rectToAtlas'), fold(Math.ceil(n / 64)), {
+        bind: [this.tables, this.bindFlagsRO, this._rectGroup], header: this.header(), params: { at: [x, y], size: [w, h] },
+      });
+      const got = this.gpu.readback.buffer(scratch, 0, n * 32);
+      // (a later read reuses it: its dispatch is recorded after this copy)
+      if (!this.gpu.testMode && scratch.size > RECT_SCRATCH_KEEP) {
+        this._retire(scratch);
+        this.rectScratch = this._rectGroup = null;
       }
-    })();
+      return got.then((bytes) => {
+        a.set(new Float32Array(bytes, 0, n * 4));
+        b.set(new Float32Array(bytes, n * 16, n * 4));
+      });
+    };
+    const wait = this._readyFor('rectToAtlas');
+    return wait ? wait.then(read) : read();
+  }
+
+  // readStateRect's scratch (A then B, 32 bytes a texel), grown as needed and
+  // kept while small (RECT_SCRATCH_KEEP); a buffer it outgrew is
+  // destroyed once the queue is done with it.
+  _rectScratch(bytes) {
+    if (!this.rectScratch || this.rectScratch.size < bytes) {
+      if (this.rectScratch) this._retire(this.rectScratch);
+      this.rectScratch = this.gpu.createBuffer({
+        label: `sim${this.id} rect scratch`, size: Math.max(bytes, 1024), usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
+      });
+      this._rectGroup = this.gpu.bindGroup(this.L.CONVERT, [{ binding: 0, resource: { buffer: this.rectScratch } }], 'rect scratch');
+    }
+    return this.rectScratch;
   }
 
   /**
@@ -1060,8 +1102,8 @@ export class Simulation {
    * (tools/state-hash.mjs's copies line): { A: [copy0, copy1], B: […], F: […] }.
    */
   async readCopies() {
-    const texels = this.g.width * this.g.height, rb = this.gpu.readback;
-    await this._readyFor('toAtlas');
+    const texels = this.g.width * this.g.height, rb = this.gpu.readback, wait = this._readyFor('toAtlas');
+    if (wait) await wait;
     const reads = [];
     for (const c of [0, 1]) {
       this._toAtlas(c, false);
@@ -1244,16 +1286,32 @@ export class Simulation {
 
   /**
    * TPT's decoration layer (src/deco.js, U17; docs/webgpu.md Sync log S3):
-   * { paint(stroke), scrub(f), snapshot(t), restore(t, dx, dz), shift(dx, dz,
-   * f), reset(), dispose() }, each optional. The move carries its plane, a u32
-   * per slot (0: none), with the cells (shaders/move.js): sim.decoPlane says
+   * { paint(stroke), beforeWrite(f, box), scrub(f, box), snapshot(t),
+   * restore(t, dx, dz), shift(dx, dz, f), reset(), dispose() }, each
+   * optional. An edit with { scrub: true } (the brush, a stamp, the console's
+   * script) calls beforeWrite before its in-place write and scrub after it,
+   * with the open frame and the box it writes ({ lo, hi }: inclusive grid
+   * cells, clipped): the layer copies what it needs of the box's cells (their
+   * element ids) in the first and clears the decoration of each cell whose
+   * element changed in the second. The move carries its plane, a u32 per
+   * slot (0: none), with the cells (shaders/move.js): sim.decoPlane says
    * where it is ({ buffer, offset, size } in bytes; it moves when whitewater
-   * comes or goes, keeping its words: bind it again then). null detaches it.
-   * (Attach through here, not by setting sim.deco: the plane is made here.)
+   * comes or goes, keeping its words: bind it again then). Only blocks that
+   * run write it: a block that empties a cell clears its word, and air in a
+   * skipped block keeps the word it had (main's gather rewrote every cell
+   * each step). null detaches it. (Attach through here, not by setting
+   * sim.deco: the plane is made here. Once attached, every running block of
+   * the move reads and writes 8 more words, so make it on first use:
+   * decoFactory, ensureDeco.)
    */
   attachDeco(deco) {
     this.deco = deco ?? null;
     this._side();
+  }
+  // The decoration layer, made by decoFactory on first use if there is none (main's ensureDeco).
+  ensureDeco() {
+    if (!this.deco && this.decoFactory) this.attachDeco(this.decoFactory(this));
+    return this.deco;
   }
   get decoPlane() { return this.sideDeco ? { buffer: this.moveSrc, offset: 0, size: this.g.slots * 4 } : null; }
   // moveSrc's plane: after the decoration's when there is one
@@ -1316,7 +1374,7 @@ export class Simulation {
     const { A, B, F } = this.state;
     this.deco?.dispose?.();   // (its own buffers; its plane is moveSrc's, below)
     for (const b of [A, B, F, this.flow, this.moveSrc, this.marks, this.act, this.args, this.noDeposit, this.noRayBricks, this.noMask,
-      this.paintMask, this.flowTmp, this.atlasScratch, this.editScratch, this.refInert]) b?.destroy();
+      this.paintMask, this.flowTmp, this.atlasScratch, this.rectScratch, this.editScratch, this.refInert]) b?.destroy();
     this.counts.close();
     for (const t of this.history) { t.A.destroy(); t.B.destroy(); }
     this.history = [];

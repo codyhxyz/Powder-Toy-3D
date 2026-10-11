@@ -24,7 +24,8 @@
 //   edgemodes           its edge modes (void, loop)
 //   air                 its air modes and ambient heat
 //   edges               one owner per Margolus block (the move's owner check:
-//                       with loop edges every cell exactly once a step, and the
+//                       with loop or void edges, and after a switch from solid
+//                       to loop edges, every cell exactly once a step, and the
 //                       low margin run anyway caught); void edges lose matter
 //                       only from the boundary, a sealed tank none; the
 //                       decoration plane rides the move (U17's attach point),
@@ -34,7 +35,8 @@
 //   tools               TPT's brush tools (Mix, Vacuum, Wind, Cyclone, gravity
 //                       wells, ambient heat) and editing tools (line, box, replace
 //                       target, PROP, specific delete, flood fill) on the brush's
-//                       kernel, and the console's readStateRect
+//                       kernel, the decoration layer's hooks around a stroke
+//                       (U17), and the console's readStateRect
 //   timing              GPU ms per step per kernel (timestamps) at 32³ and 64³
 // Every stage's sims run the debug prelude: an out-of-grid access fails it (I2.8).
 // I2.6 (aeration over its list vs every brick) is U12's: the aeration kernel is its.
@@ -50,8 +52,8 @@
 // every brick is drawn (radial gravity and void or loop edges switch quiet
 // skipping off: 300-520 ms per 32³ step with the debug prelude, sharing the
 // CPUs): modes 120 + 50 + 220 steps, edgemodes 80 + 60 + 60 + 36, air 85 +
-// 120, edges about 150, radial 3 × 60 + 3 × 24, tools none (150, 133, 92,
-// 102, 152 and 35 s at 32³); they are 32³ stages, their scenes sized for it.
+// 120, edges about 170, radial 3 × 60 + 3 × 24, tools none (124, 102, 61,
+// 78, 120 and 34 s at 32³); they are 32³ stages, their scenes sized for it.
 //
 // --unit super runs every stage's sims with supertile sleeping units (SLEEP_UNIT =
 // SUPER, docs/scaling.md D8's granularity, the A/B docs/webgpu.md W12 keeps),

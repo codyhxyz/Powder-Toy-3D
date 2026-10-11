@@ -40,17 +40,25 @@ export default {
       // scratch is made by the first, as any two-phase edit's). A fill reads
       // state A back (editing.js runFill: the conversion to atlas order is a
       // dispatch), uploads its mask (a byte per atlas texel, regionMask) into
-      // the buffer the first fill made, and paints it in one edit.
-      name: 'TPT\'s Mix after the first: two dispatches; a flood fill after the first: the read\'s and the edit\'s, its mask uploaded, nothing allocated',
+      // the buffer the first fill made, and paints it in one edit. The
+      // console's block reads (src/console/gpu.js readBlocks, sim.readStateRect)
+      // convert only their own squares: a thread a texel, into one kept scratch.
+      name: 'TPT\'s Mix after the first: two dispatches; a flood fill after the first: the read\'s and the edit\'s, its mask uploaded, nothing allocated; '
+        + 'the console\'s reads of 4 blocks in a frame: a dispatch of a block\'s texels each, a block read back each, nothing allocated',
       run: (page) => page.evaluate(async () => {
         const r = await window.__harness.run('budget:tools');
         return {
           mixDispatches: r.mix.dispatches, mixAllocated: r.mix.bytesAllocated,
           fillDispatches: r.fill.dispatches, fillAllocated: r.fill.bytesAllocated,
           fillUploadedMask: r.fill.bytesUploaded >= r.maskBytes ? 1 : 0, filled: r.filled > 0 ? 1 : 0,
+          readDispatches: r.reads.dispatches, readThreadsPerTexel: (r.reads.workgroupsDirect * 64) / (4 * r.blockTexels),
+          readBackPerTexel: r.reads.bytesReadBack / (4 * r.blockTexels), readAllocated: r.reads.bytesAllocated,
         };
       }),
-      expect: { mixDispatches: 2, mixAllocated: 0, fillDispatches: 2, fillAllocated: 0, fillUploadedMask: 1, filled: 1 },
+      expect: {
+        mixDispatches: 2, mixAllocated: 0, fillDispatches: 2, fillAllocated: 0, fillUploadedMask: 1, filled: 1,
+        readDispatches: 4, readThreadsPerTexel: 1, readBackPerTexel: 32, readAllocated: 0,
+      },
     },
   ],
 };

@@ -217,6 +217,7 @@ export function paintFrag() { throw new Error('paintFrag removed in the WebGPU p
 
 // ---- whole-grid passes: one thread per slot ----
 const perSlot = (g) => fold(Math.ceil(gridDims(g).slots / 64));
+const perTexel = (g) => { const at = atlasDims(g); return fold(Math.ceil((at.width * at.height) / 64)); };
 const slotMain = /* wgsl */ `@compute @workgroup_size(64)
 fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
   let s = foldThread(wg, nwg, li);
@@ -280,6 +281,49 @@ ${slotMain}
   for (var c = 0u; c < 4u; c++) {
     scratch[4u * t + c] = a[c];
     scratch[4u * (TEXELS + t) + c] = b[c];
+  }
+}
+`;
+// rectToAtlas: the w × h rectangle of the atlas at texel P.at, of the copy
+// H.src, into the scratch row by row: A (4 words a texel) then B, the console's
+// reads (sim.readStateRect) at the rectangle's cost, not the grid's. A thread a
+// texel, atlasIndex inverted (sim.js texelCell); a texel past the last
+// supertile is no cell's and reads 0.
+export const RectParams = uniformStruct('RectParams', { at: 'vec2u', size: 'vec2u' });
+export const rectToAtlasFrag = (g) => /* wgsl */ `
+${prelude(g, { state: 'read', flags: true })}
+${RectParams.wgsl}
+@group(3) @binding(1) var<uniform> P: RectParams;
+@group(2) @binding(0) var<storage, read_write> scratch: array<u32>;
+const STW: i32 = ${atlasDims(g).stw};   // supertiles per atlas row
+@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
+  let r = foldThread(wg, nwg, li);
+  let n = P.size.x * P.size.y;
+  if (r >= n) { return; }
+  let u = i32(P.at.x + r % P.size.x);
+  let v = i32(P.at.y + r / P.size.x);
+  let su = u / ${SUPER_TEX};
+  let sv = v / ${SUPER_TEX};
+  let i = su + STW * sv;
+  var a = vec4u(0u);
+  var b = vec4u(0u);
+  if (i < STX * STY * STZ) {
+    // supertile i, its brick tile k (x, z + SUPER.z·y), the texel l in the tile
+    let st = vec3i(i % STX, i / (STX * STZ), (i / STX) % STZ);
+    let tu = u - su * ${SUPER_TEX};
+    let tv = v - sv * ${SUPER_TEX};
+    let k = vec2i(tu / ${TILE}, tv / ${TILE});
+    let l = vec2i(tu - k.x * ${TILE}, tv - k.y * ${TILE});
+    let p = (st * SUPER_B + vec3i(k.x, k.y / ${SUPER.z}, k.y % ${SUPER.z})) * ${BRICK}
+      + vec3i(l.x % ${BRICK}, (l.x / ${BRICK}) | ((l.y / ${BRICK}) << 1u), l.y % ${BRICK});
+    let s = slotOf(p);
+    a = bitcast<vec4u>(fetchAs(s));
+    b = bitcast<vec4u>(fetchBs(s));
+  }
+  for (var c = 0u; c < 4u; c++) {
+    scratch[4u * r + c] = a[c];
+    scratch[4u * (n + r) + c] = b[c];
   }
 }
 `;
@@ -374,6 +418,9 @@ export const WGSL_CHECK = [
   // (a world's window syncs its copies until world/window.js stops, G1; elsewhere tools only)
   { name: 'copy', kind: 'compute', code: (g) => copyFrag(g), layouts: rw, dispatch: perSlot, windowed: true },
   { name: 'toAtlas', kind: 'compute', code: toAtlasFrag, dispatch: perSlot, tool: true,
+    layouts: () => [LAYOUT.TABLES, stateLayout({ state: 'read', flags: true }), CONVERT_LAYOUT] },
+  // (the console's reads, U12: a rectangle as large as the atlas at most)
+  { name: 'rectToAtlas', kind: 'compute', code: rectToAtlasFrag, dispatch: perTexel, tool: true,
     layouts: () => [LAYOUT.TABLES, stateLayout({ state: 'read', flags: true }), CONVERT_LAYOUT] },
   { name: 'fromAtlas', kind: 'compute', code: (g) => fromAtlasFrag(g), dispatch: perSlot, layouts: () => [...rw(), CONVERT_LAYOUT] },
   { name: 'awake', kind: 'compute', code: awakeFrag, dispatch: (g) => fold(Math.ceil(gridDims(g).nbricks / 64)),

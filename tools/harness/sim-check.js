@@ -10,9 +10,9 @@
 import { boot, ready, log, test } from './harness.js';
 import { Simulation, cellTexel, slotCell } from '/src/sim.js';
 import { buildPreset } from '/src/presets.js';
-import { E, ELEMENTS, TOOLS, PROP_TOOL } from '/src/elements.js';
+import { E, ELEMENTS, TOOLS, PROP_TOOL, DECO_TOOLS } from '/src/elements.js';
 import { PHYS } from '/src/physics.js';
-import { SEED_MAX, prelude, STATE_OPTS } from '/src/shaders/common.js';
+import { SEED_MAX, SUPER_TEX, prelude, STATE_OPTS } from '/src/shaders/common.js';
 import { MOVE_FORM, MOVE_FORMS } from '/src/shaders/move.js';
 import { uniformStruct } from '/src/gpu/params.js';
 import { GRAV, AIR, EDGE, SIM_MODE_DEFAULTS } from '/src/simModes.js';
@@ -940,8 +940,9 @@ const MODE_STAGES = {
   },
 
   // Edges and the in-place move (docs/webgpu.md Sync log S2): one owner per
-  // block (the owner check: none twice, and with loop edges every cell exactly
-  // once a step; the margin run anyway under loop edges must be caught); void
+  // block (the owner check: none twice, and with loop or void edges, or after
+  // a switch to loop edges, every cell exactly once a step; the margin run
+  // anyway under loop edges must be caught); void
   // edges lose matter only from the boundary; the decoration plane rides the
   // move (U17's attach point), in place and out of place.
   async edges({ size = 32 } = {}) {
@@ -950,10 +951,11 @@ const MODE_STAGES = {
     // owners under solid edges (the margin runs at odd steps)
     let r = await run(size, 'lab', {}, async (sim) => { stepN(sim, 12); return sim.readOwners(); });
     check(out, `solid edges, the lab, 12 steps: no cell covered twice in a step (${r.r.dup})`, r.r.dup === 0);
-    // loop edges: every brick is DRAWN, so every cell has exactly one owner a step
-    r = await run(size, 'mix', { setup: (sim) => setModes(sim, { edgeMode: EDGE.LOOP, gravityMode: GRAV.RADIAL }) }, async (sim) => {
+    // every brick DRAWN (loop or void edges, radial gravity): every cell has
+    // exactly one owner a step; k steps, each's dup and cells not covered
+    const onceEach = async (sim, k) => {
       const res = [];
-      for (let i = 0; i < 4; i++) {
+      for (let i = 0; i < k; i++) {
         sim.step();
         const o = await sim.readOwners();
         let other = 0;
@@ -961,9 +963,30 @@ const MODE_STAGES = {
         res.push({ frame: sim.frame, dup: o.dup, other });
       }
       return res;
+    };
+    const once = (res) => res.every((x) => x.dup === 0 && x.other === 0);
+    const say = (res) => res.map((x) => `${x.frame}: dup ${x.dup}, missed ${x.other}`).join('; ');
+    // loop edges: the margin isn't recorded (its blocks are the lists' seen from the far side)
+    r = await run(size, 'mix', { setup: (sim) => setModes(sim, { edgeMode: EDGE.LOOP, gravityMode: GRAV.RADIAL }) }, (sim) => onceEach(sim, 4));
+    check(out, `loop edges, radial gravity: every cell covered exactly once at each of 4 steps (${say(r.r)})`, once(r.r));
+    // void edges: the margin's blocks at odd steps and the lists' blocks, every brick drawn
+    r = await run(size, 'mix', { setup: (sim) => setModes(sim, { edgeMode: EDGE.VOID, gravityMode: GRAV.RADIAL }) }, (sim) => onceEach(sim, 4));
+    check(out, `void edges, radial gravity: every cell covered exactly once at each of 4 steps (${say(r.r)})`, once(r.r));
+    check(out, 'void edges: no out-of-grid access', r.dbg === 0, `dbgOob ${r.dbg}`);
+    // a switch mid-run: the lab under solid edges until bricks are quiet, then
+    // loop edges (every cell once a step from the next), then solid again
+    r = await run(size, 'lab', {}, async (sim) => {
+      stepN(sim, 5);
+      const quiet = (await sim.readMaps()).quiet.reduce((m, v) => m + v, 0);
+      setModes(sim, { edgeMode: EDGE.LOOP });
+      const loop = await onceEach(sim, 4);
+      setModes(sim, { edgeMode: EDGE.SOLID });
+      stepN(sim, 6);
+      return { quiet, loop, back: (await sim.readOwners()).dup };
     });
-    check(out, `loop edges, radial gravity: every cell covered exactly once at each of 4 steps (${r.r.map((x) => `${x.frame}: dup ${x.dup}, missed ${x.other}`).join('; ')})`,
-      r.r.every((x) => x.dup === 0 && x.other === 0));
+    check(out, `solid → loop edges after ${r.r.quiet} bricks went quiet: every cell covered exactly once at each of 4 steps (${say(r.r.loop)}); back to solid, none twice in 6 steps (${r.r.back})`,
+      r.r.quiet > 0 && once(r.r.loop) && r.r.back === 0);
+    check(out, 'the switches: no out-of-grid access', r.dbg === 0, `dbgOob ${r.dbg}`);
     // the negative control: the margin's blocks run too under loop edges, so blocks straddling an edge get a second owner
     r = await run(size, 'mix', { setup: (sim) => setModes(sim, { edgeMode: EDGE.LOOP }), test: { loopMargin: true } }, async (sim) => {
       do sim.step(); while ((sim.frame & 1) === 0);   // to an odd step: the margin's
@@ -1208,18 +1231,79 @@ const MODE_STAGES = {
       const fr = await runFill(sim, { cell: [7, 1, 7], id: E.EMPTY, maxY: 3, stroke: { radius: 3, shape: 0, tool: E.WATER, rate: full(E.WATER), replace: false, erase: false, prop: null } });
       cn = await census();
       check(out, `the fill fills the bowl to its level (${fr.count} cells, water ${cn[E.WATER] ?? 0}, want ${6 * 6 * 3})`, fr.count === 6 * 6 * 3 && cn[E.WATER] === 6 * 6 * 3);
-      // the console's read (src/console/gpu.js): a rectangle of the atlas, async only
-      const [SA, SB] = await sim.readState(), g = sim.g, [rx, ry, rw, rh] = [8, 4, 24, 6];
-      const ra2 = new Float32Array(rw * rh * 4), rb2 = new Float32Array(rw * rh * 4);
-      await sim.readStateRect(rx, ry, rw, rh, ra2, rb2, true);
-      let rectWrong = 0;
-      for (let y = 0; y < rh; y++) for (let x = 0; x < rw; x++) for (let k = 0; k < 4; k++) {
-        const t = ((ry + y) * g.width + rx + x) * 4 + k, q = (y * rw + x) * 4 + k;
-        if (!Object.is(SA[t], ra2[q]) || !Object.is(SB[t], rb2[q])) rectWrong++;
+      // U17's hooks (docs/webgpu.md Sync log S3): the first deco stroke makes
+      // the decoration layer (decoFactory), and a brush stroke shows it the
+      // box's cells before its in-place write (beforeWrite) and after it
+      // (scrub), so it can scrub the cells given a new element
+      fill(() => null);
+      const slots = sim.g.slots, bytes = slots * 16;
+      const plane = (label) => gpu.createBuffer({ label, size: bytes, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
+      const seen = { before: plane('deco check before'), after: plane('deco check after'), calls: [], made: 0 };
+      const keepA = (f, into) => f.copy(sim.state.A, sim.cur * bytes, into, 0, bytes);
+      try {
+        sim.decoFactory = () => {
+          seen.made++;
+          return {
+            paint: (stroke) => seen.calls.push(`paint ${stroke.tool}`),
+            beforeWrite: (f, box) => { seen.calls.push('before'); seen.box = box; keepA(f, seen.before); },
+            scrub: (f, box) => { seen.calls.push(box === seen.box ? 'scrub' : 'scrub (another box)'); keepA(f, seen.after); },
+          };
+        };
+        const deco = DECO_TOOLS[0].id;
+        paint(deco, { times: 2 });
+        sim.paint({ center: V(...cc), radius: 3, shape: 0, tool: E.SAND, rate: full(E.SAND), replace: false });
+        const [A1] = await sim.readState();
+        const [before, after] = (await Promise.all([seen.before, seen.after].map((b) => gpu.readback.buffer(b, 0, bytes)))).map((x) => new Float32Array(x));
+        let made = 0, wrongBefore = 0, wrongAfter = 0, outside = 0;
+        const { lo, hi } = seen.box;
+        for (let s = 0; s < slots; s++) {
+          const p = slotCell(sim.g, s), id = Math.round(after[4 * s]);
+          if (before[4 * s] !== E.EMPTY) wrongBefore++;
+          if (id !== Math.round(A1[cellTexel(sim.g, ...p) * 4])) wrongAfter++;
+          if (id === E.EMPTY) continue;
+          made++;
+          if (p.some((v, k) => v < lo[k] || v > hi[k])) outside++;
+        }
+        const calls = seen.calls.join(', '), want = `paint ${deco}, paint ${deco}, before, scrub`;
+        check(out, `deco hooks: made on the first deco stroke (${seen.made}), then ${calls}`, seen.made === 1 && calls === want && sim.deco !== null, `want ${want}`);
+        check(out, `deco hooks: beforeWrite sees the cells before the write (${wrongBefore} not air), scrub after it (${wrongAfter} wrong; ${made} sand cells, ${outside} outside its box)`,
+          wrongBefore === 0 && wrongAfter === 0 && made > 0 && outside === 0);
+        let threw = false;
+        try { sim.scrubDeco(); } catch { threw = true; }
+        check(out, 'scrubDeco on its own is a J3 stub (the scrub rides on the write)', threw);
+      } finally {
+        sim.decoFactory = null;
+        sim.attachDeco(null);
+        sim._retire(seen.before);   // (once the frame that copies into them is done)
+        sim._retire(seen.after);
       }
-      let threw = false;
-      try { sim.readStateRect(rx, ry, rw, rh, ra2, rb2); } catch { threw = true; }
-      check(out, `readStateRect reads readState's rectangle (${rectWrong} wrong), and refuses to read synchronously`, rectWrong === 0 && threw);
+      // the console's reads (src/console/gpu.js): rectangles of the atlas,
+      // async only, each converting only itself; several in one task share
+      // the scratch (each copy is recorded before the next one's dispatch)
+      const [SA, SB] = await sim.readState(), g = sim.g;
+      const rects = [[8, 4, 24, 6], [0, 0, SUPER_TEX, SUPER_TEX], [g.width - SUPER_TEX, g.height - SUPER_TEX, SUPER_TEX, SUPER_TEX], [0, 3, g.width, 2 * SUPER_TEX - 3], [5, 7, 1, 1]];
+      const bufs = rects.map(([, , w, hh]) => [new Float32Array(w * hh * 4), new Float32Array(w * hh * 4)]);
+      await Promise.all(rects.map(([x, y, w, hh], i) => sim.readStateRect(x, y, w, hh, ...bufs[i], true)));
+      let rectWrong = 0;
+      rects.forEach(([rx, ry, rw, rh], i) => {
+        const [ra2, rb2] = bufs[i];
+        for (let y = 0; y < rh; y++) for (let x = 0; x < rw; x++) for (let k = 0; k < 4; k++) {
+          const t = ((ry + y) * g.width + rx + x) * 4 + k, q = (y * rw + x) * 4 + k;
+          if (!Object.is(SA[t], ra2[q]) || !Object.is(SB[t], rb2[q])) rectWrong++;
+        }
+      });
+      // as the state is at the call: a paint recorded after it isn't in it
+      const pc = cellTexel(g, 3, 3, 3), [pa, pb] = [new Float32Array(4), new Float32Array(4)];
+      const pending = sim.readStateRect(pc % g.width, Math.floor(pc / g.width), 1, 1, pa, pb, true);
+      sim.paint({ center: V(3.5, 3.5, 3.5), radius: 1, shape: 1, tool: E.STONE, rate: full(E.STONE), replace: true });
+      await pending;
+      const painted = (await cell(3, 3, 3)).id;
+      let threw = false, rejected = false;
+      try { sim.readStateRect(8, 4, 24, 6, bufs[0][0], bufs[0][1]); } catch { threw = true; }
+      try { await sim.readStateRect(g.width - 4, 0, 8, 1, bufs[0][0], bufs[0][1], true).catch(() => { rejected = true; }); } catch { rejected = false; }
+      check(out, `readStateRect reads readState's rectangles (${rects.length} in one task, a row band and a texel among them: ${rectWrong} wrong)`, rectWrong === 0);
+      check(out, `readStateRect reads the state at the call (${Math.round(pa[0])} there, ${painted} after the paint recorded next)`, Math.round(pa[0]) === Math.round(SA[pc * 4]) && painted === E.STONE && Math.round(pa[0]) !== E.STONE);
+      check(out, 'readStateRect refuses to read synchronously (throws), and rejects a rectangle outside the atlas', threw && rejected);
       check(out, 'no out-of-grid access', (await sim.readDebug()) === 0);
     } finally { sim.dispose(); }
     return out;
@@ -1227,9 +1311,11 @@ const MODE_STAGES = {
 };
 Object.assign(STAGES, MODE_STAGES);
 
-// TPT's Mix after the first stroke (a two-phase edit: two dispatches) and a
+// TPT's Mix after the first stroke (a two-phase edit: two dispatches), a
 // flood fill after the first (a read of state A, an upload of its mask and
-// one edit; its buffer is made once).
+// one edit; its buffer is made once), and the console's reads of 4 blocks in
+// one frame after the first (src/console/gpu.js readBlocks: a read a block,
+// each converting only its supertile's square).
 test('budget:tools', async () => {
   const sim = await h.make(32, { debug: false });
   try {
@@ -1242,7 +1328,11 @@ test('budget:tools', async () => {
     const mix = await measure(async () => { mixStroke(); await sim.gpuSync(); });
     let fill;
     const fillStats = await measure(async () => { fill = await runFill(sim, req); await sim.gpuSync(); });
-    return { mix, fill: fillStats, filled: fill.count ?? 0, maskBytes: sim.g.width * sim.g.height };
+    const T = SUPER_TEX, block = () => [new Float32Array(T * T * 4), new Float32Array(T * T * 4)];
+    const readBlocks = () => Promise.all([0, 1, 2, 3].map((i) => sim.readStateRect(i * T, 0, T, T, ...block(), true)));
+    await readBlocks();
+    const reads = await measure(readBlocks);
+    return { mix, fill: fillStats, filled: fill.count ?? 0, maskBytes: sim.g.width * sim.g.height, reads, blockTexels: T * T };
   } finally { sim.dispose(); }
 });
 

@@ -85,7 +85,11 @@ import { simModesGLSL, SIM_MODE_FIELDS } from '../simModes.js';
 // then gives every cell its content's source's word, or 0 where the content is
 // air (a cell that empties loses its paint, as shaders/deco.js
 // decoGatherFrag rules; and still air from past a void edge brings none). A
-// quiet-base block's cells keep theirs, but air loses it. P.deco = 0: no plane.
+// quiet-base block's cells keep theirs, but air loses it. Only blocks that run
+// write it, so air a reaction left in a block that is skipped keeps its word
+// until a running block covers it (decoGatherFrag rewrote every cell each
+// step; emptying a cell marks its brick, so the next map draws it). P.deco = 0:
+// no plane.
 //
 // The flow field for the renderer (gfx/surface.js, flowing grains): how far
 // each cell's content moved this step, blended into the field over recent
