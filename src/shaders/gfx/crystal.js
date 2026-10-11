@@ -1,3 +1,5 @@
+import { libChecks } from './lib.js';
+
 // Crystal (E_CRYSTAL) shapes: a run of crystal cells is one long crystal, not
 // a stack of cubes. Fluorite's own habit is the cube, and a cube of crystal on
 // the cell grid reads as just another block; the shape eyes read as "crystal"
@@ -23,201 +25,256 @@
 // faces of a point come out unequal, as real ones do): a convex solid, hit
 // exactly, cut by its cell. It leans by less than its cell leaves room for
 // along the whole run, so it never crosses a side of its cells. The march
-// finds it as it crosses the cell (crispHit), and the shadow map does too
-// (shadowFrag).
-export const crystalGLSL = /* glsl */ `
-const int CRYS_RUN_MAX = 6;          // cells looked along each way; more crystal than that counts as rock
-const float CRYS_R_MIN = 0.16, CRYS_R_MAX = 0.38;  // apothem of a crystal (cells)
-const float CRYS_R_LOOSE = 0.33;     // most a crystal pointed at both ends in one cell may have (room for two points)
-const float CRYS_GAP = 0.03;         // least room (cells) a crystal leaves to its cells' sides
-const float CRYS_OFF_SHARE = 0.6;    // share of the room left across the cell spent on where it sits (the rest leans)
-const float CRYS_TILT_MAX = 0.3;     // most it leans: tangent off its axis
-const float CRYS_TIP_IN = 0.06;      // the apex stays this far (cells) inside its cell
+// finds it as it crosses the cell (crispHit), and the shadow map does too.
+//
+// WGSL (the name is the GLSL version's, docs/webgpu.md W2), after core and
+// noise in lib(). Reads the state (fetchA) and nothing else.
+//   crystalHit(cell, ro, rd, tEnter, tExit, &t, &n) -> bool   the march's test (sets gCrys*)
+//   crysShard(cell) -> Shard                                  the crystal running through cell
+//   shardHit(s, ro, rd, &tN, tF, &n, &kind) -> bool           ray vs its piece in the cell
+//   shardExit(s, p, d) -> f32                                 distance to leave it from inside
+//   crysRun(cell, dir, &open) -> i32, crysPlane(s, i, &m, &dist)   their parts
+export const crystalGLSL = /* wgsl */ `
+const CRYS_RUN_MAX: i32 = 6;         // cells looked along each way; more crystal than that counts as rock
+const CRYS_R_MIN: f32 = 0.16;        // apothem of a crystal (cells), least ...
+const CRYS_R_MAX: f32 = 0.38;        // ... and most
+const CRYS_R_LOOSE: f32 = 0.33;      // most a crystal pointed at both ends in one cell may have (room for two points)
+const CRYS_GAP: f32 = 0.03;          // least room (cells) a crystal leaves to its cells' sides
+const CRYS_OFF_SHARE: f32 = 0.6;     // share of the room left across the cell spent on where it sits (the rest leans)
+const CRYS_TILT_MAX: f32 = 0.3;      // most it leans: tangent off its axis
+const CRYS_TIP_IN: f32 = 0.06;       // the apex stays this far (cells) inside its cell
 // Quartz's rhombohedral faces meet its c axis at 38.2°: the point rises
 // cot(38.2°) apothems from the prism's shoulder to its apex.
-const float CRYS_TIP_K = 1.27;
-const float CRYS_TIP_SKEW = 0.4;     // the apex sits up to this many apothems off the axis
-const float CRYS_CIRC = 1.1547;      // circumradius / apothem of a hexagon (2/√3)
-const float CRYS_SALT = 17.31, CRYS_SALT2 = 5.77;   // decorrelate a crystal's hashes
-const float CRYS_RAY_EPS = 1e-6;     // a ray this parallel to a plane is treated as parallel
-const float CRYS_IN = 1e-3;          // cells: a hit point stepped back this far is inside its cell
-// unit hexagon: the side normals' (u, w) components (the slabs are the first three)
-const vec2 CRYS_HEX[6] = vec2[6](vec2(1.0, 0.0), vec2(0.5, 0.8660254), vec2(-0.5, 0.8660254),
-                                 vec2(-1.0, 0.0), vec2(-0.5, -0.8660254), vec2(0.5, -0.8660254));
+const CRYS_TIP_K: f32 = 1.27;
+const CRYS_TIP_SKEW: f32 = 0.4;      // the apex sits up to this many apothems off the axis
+const CRYS_CIRC: f32 = 1.1547;       // circumradius / apothem of a hexagon (2/√3)
+const CRYS_SALT: f32 = 17.31;        // decorrelate a crystal's hashes
+const CRYS_SALT2: f32 = 5.77;
+const CRYS_RAY_EPS: f32 = 1e-6;      // a ray this parallel to a plane is treated as parallel
+const CRYS_IN: f32 = 1e-3;           // cells: a hit point stepped back this far is inside its cell
+const CRYS_TURN_MAX: f32 = 1.0471976;   // the hexagon turns about its axis by up to 60°
+// unit hexagon: the side normals' (u, w) components (the slabs are the first
+// three); six entries, so a private array (docs/webgpu.md C6)
+var<private> CRYS_HEX: array<vec2f, 6> = array<vec2f, 6>(vec2f(1.0, 0.0), vec2f(0.5, 0.8660254), vec2f(-0.5, 0.8660254),
+                                                        vec2f(-1.0, 0.0), vec2f(-0.5, -0.8660254), vec2f(0.5, -0.8660254));
 
 // what a hit landed on (gCrysKind)
-#define CRYS_SIDE 0    // a prism side
-#define CRYS_TIP 1     // a face of a point
-#define CRYS_CUT 2     // where its cell's face cuts through it (it grows on into other crystal)
+const CRYS_SIDE: i32 = 0;    // a prism side
+const CRYS_TIP: i32 = 1;     // a face of a point
+const CRYS_CUT: i32 = 2;     // where its cell's face cuts through it (it grows on into other crystal)
 
 // ends a cell holds (Shard.ends)
-#define CRYS_END_FRONT 1
-#define CRYS_END_BACK 2
+const CRYS_END_FRONT: i32 = 1;
+const CRYS_END_BACK: i32 = 2;
 
 struct Shard {
-  vec3 o;      // the axis where it leaves the rock (its root cell's back face)
-  vec3 d;      // the grid axis it runs along, toward its point
-  vec3 a;      // its axis (unit): d, leaning
-  vec3 u, w;   // across the axis: the hexagon's frame
-  float r;     // apothem
-  vec3 apex;   // its point…
-  vec3 apexB;  // …and the back one (a loose crystal)
-  int ends;    // the points in this cell (CRYS_END_*)
-  float len;   // root face to apex, along d (cells)
-  float seed;  // a hash of the crystal, in [0, 1)
-};
+  o: vec3f,       // the axis where it leaves the rock (its root cell's back face)
+  d: vec3f,       // the grid axis it runs along, toward its point
+  a: vec3f,       // its axis (unit): d, leaning
+  u: vec3f,       // across the axis: the hexagon's frame
+  w: vec3f,
+  r: f32,         // apothem
+  apex: vec3f,    // its point...
+  apexB: vec3f,   // ...and the back one (a loose crystal)
+  ends: i32,      // the points in this cell (CRYS_END_*)
+  len: f32,       // root face to apex, along d (cells)
+  seed: f32,      // a hash of the crystal, in [0, 1)
+}
 
 // The crystal the last crystalHit landed on, for the look (gfx/surface.js
 // crystalLook, which runs right after it on the same cell).
-bool gCrysOn = false;
-ivec3 gCrysCell = ivec3(0);
-int gCrysKind = CRYS_CUT;
-Shard gCrys;
+var<private> gCrysOn: bool = false;
+var<private> gCrysCell: vec3i = vec3i(0);
+var<private> gCrysKind: i32 = CRYS_CUT;
+var<private> gCrys: Shard;
 
 // Crystal from cell along dir: the steps to where it ends (1: the neighbour
-// isn't crystal), and whether open space ends it. Reaching past CRYS_RUN_MAX
-// counts as rock; so does the box's floor, and the box's outside is open.
-int crysRun(ivec3 cell, ivec3 dir, out bool open) {
-  for (int k = 1; k <= CRYS_RUN_MAX; k++) {
-    ivec3 c = cell + dir * k;
-    if (c.y < 0) { open = false; return k; }
-    if (outside(c)) { open = true; return k; }
-    int id = eid(fetchA(c));
-    if (id == E_CRYSTAL) continue;
-    open = isGasLike(id) || SURFCH[id] == CH_LIQUID || RCLASS[id] == R_GLASS;
+// isn't crystal), and in *open whether open space ends it. Reaching past
+// CRYS_RUN_MAX counts as rock; so does the box's floor, and the box's outside
+// is open.
+fn crysRun(cell: vec3i, dir: vec3i, open: ptr<function, bool>) -> i32 {
+  for (var k = 1; k <= CRYS_RUN_MAX; k++) {
+    let c = cell + dir * k;
+    if (c.y < 0) { *open = false; return k; }
+    if (outside(c)) { *open = true; return k; }
+    let id = eid(fetchA(c));
+    if (id == E_CRYSTAL) { continue; }
+    *open = isGasLike(id) || SURFCH(id) == CH_LIQUID || RCLASS(id) == R_GLASS;
     return k;
   }
-  open = false;
+  *open = false;
   return CRYS_RUN_MAX + 1;
 }
 
-// planes of the point(s) (i < 6: the front point's faces, else the back's), as dot(p - o, m) <= dist
-void crysPlane(Shard s, int i, out vec3 m, out float dist) {
-  vec2 hx = CRYS_HEX[i % 6];
-  vec3 nk = hx.x * s.u + hx.y * s.w;
-  bool front = i < 6;
-  m = normalize(CRYS_TIP_K * nk + (front ? s.a : -s.a));
-  dist = dot((front ? s.apex : s.apexB) - s.o, m);
+// Plane i of the point(s) (i < 6: the front point's faces, else the back's),
+// as dot(p - s.o, *m) <= *dist.
+fn crysPlane(s: Shard, i: i32, m: ptr<function, vec3f>, dist: ptr<function, f32>) {
+  let hx = CRYS_HEX[i % 6];
+  let nk = hx.x * s.u + hx.y * s.w;
+  let front = i < 6;
+  *m = normalize(CRYS_TIP_K * nk + select(-s.a, s.a, front));
+  *dist = dot(select(s.apexB, s.apex, front) - s.o, *m);
 }
 
-// Ray (ro, rd) vs the crystal's piece in this cell, within [tN, tF]: tN
-// becomes the entry and n its face (left as passed in if the ray starts
-// inside); kind: which face.
-bool shardHit(Shard s, vec3 ro, vec3 rd, inout float tN, float tF, inout vec3 n, out int kind) {
-  vec3 q = ro - s.o;
-  kind = CRYS_CUT;
-  for (int i = 0; i < 3; i++) {
-    vec3 m = CRYS_HEX[i].x * s.u + CRYS_HEX[i].y * s.w;
-    float dn = dot(rd, m), dq = dot(q, m);
-    if (abs(dn) < CRYS_RAY_EPS) { if (abs(dq) > s.r) return false; continue; }
-    float ta = (-s.r - dq) / dn, tb = (s.r - dq) / dn;
-    float tin = min(ta, tb);
-    if (tin > tN) { tN = tin; n = -sign(dn) * m; kind = CRYS_SIDE; }
+// Ray (ro, rd) vs the crystal's piece in this cell, within [*tN, tF]: *tN
+// becomes the entry and *n its face (left as passed in if the ray starts
+// inside); *kind: which face (CRYS_*).
+fn shardHit(s: Shard, ro: vec3f, rd: vec3f, tN: ptr<function, f32>, tF0: f32, n: ptr<function, vec3f>,
+            kind: ptr<function, i32>) -> bool {
+  let q = ro - s.o;
+  var tF = tF0;
+  *kind = CRYS_CUT;
+  for (var i = 0; i < 3; i++) {
+    let m = CRYS_HEX[i].x * s.u + CRYS_HEX[i].y * s.w;
+    let dn = dot(rd, m);
+    let dq = dot(q, m);
+    if (abs(dn) < CRYS_RAY_EPS) {
+      if (abs(dq) > s.r) { return false; }
+      continue;
+    }
+    let ta = (-s.r - dq) / dn;
+    let tb = (s.r - dq) / dn;
+    let tin = min(ta, tb);
+    if (tin > *tN) { *tN = tin; *n = -sign(dn) * m; *kind = CRYS_SIDE; }
     tF = min(tF, max(ta, tb));
   }
-  for (int i = 0; i < 12; i++) {
-    if ((s.ends & (i < 6 ? CRYS_END_FRONT : CRYS_END_BACK)) == 0) continue;
-    vec3 m; float d;
-    crysPlane(s, i, m, d);
-    float dn = dot(rd, m), dist = d - dot(q, m);
-    if (dn < -CRYS_RAY_EPS) { float t = dist / dn; if (t > tN) { tN = t; n = m; kind = CRYS_TIP; } }
-    else if (dn > CRYS_RAY_EPS) tF = min(tF, dist / dn);
-    else if (dist < 0.0) return false;
+  for (var i = 0; i < 12; i++) {
+    if ((s.ends & select(CRYS_END_BACK, CRYS_END_FRONT, i < 6)) == 0) { continue; }
+    var m: vec3f;
+    var d: f32;
+    crysPlane(s, i, &m, &d);
+    let dn = dot(rd, m);
+    let dist = d - dot(q, m);
+    if (dn < -CRYS_RAY_EPS) {
+      let t = dist / dn;
+      if (t > *tN) { *tN = t; *n = m; *kind = CRYS_TIP; }
+    } else if (dn > CRYS_RAY_EPS) {
+      tF = min(tF, dist / dn);
+    } else if (dist < 0.0) {
+      return false;
+    }
   }
-  return tN <= tF;
+  return *tN <= tF;
 }
 
 // How far a ray from p (inside the crystal) along unit d runs before it
 // leaves it (its piece in this cell has no end but its points: through the
 // cell's faces the crystal carries on).
-float shardExit(Shard s, vec3 p, vec3 d) {
-  vec3 q = p - s.o;
-  float t = 1e9;
-  for (int i = 0; i < 3; i++) {
-    vec3 m = CRYS_HEX[i].x * s.u + CRYS_HEX[i].y * s.w;
-    float dn = dot(d, m), dq = dot(q, m);
-    if (abs(dn) > CRYS_RAY_EPS) t = min(t, (sign(dn) * s.r - dq) / dn);
+fn shardExit(s: Shard, p: vec3f, d: vec3f) -> f32 {
+  let q = p - s.o;
+  var t = 1e9;
+  for (var i = 0; i < 3; i++) {
+    let m = CRYS_HEX[i].x * s.u + CRYS_HEX[i].y * s.w;
+    let dn = dot(d, m);
+    let dq = dot(q, m);
+    if (abs(dn) > CRYS_RAY_EPS) { t = min(t, (sign(dn) * s.r - dq) / dn); }
   }
-  for (int i = 0; i < 12; i++) {
-    if ((s.ends & (i < 6 ? CRYS_END_FRONT : CRYS_END_BACK)) == 0) continue;
-    vec3 m; float dist;
-    crysPlane(s, i, m, dist);
-    float dn = dot(d, m);
-    if (dn > CRYS_RAY_EPS) t = min(t, (dist - dot(q, m)) / dn);
+  for (var i = 0; i < 12; i++) {
+    if ((s.ends & select(CRYS_END_BACK, CRYS_END_FRONT, i < 6)) == 0) { continue; }
+    var m: vec3f;
+    var dist: f32;
+    crysPlane(s, i, &m, &dist);
+    let dn = dot(d, m);
+    if (dn > CRYS_RAY_EPS) { t = min(t, (dist - dot(q, m)) / dn); }
   }
   return max(t, 0.0);
 }
 
-// The crystal running through cell.
-Shard crysShard(ivec3 cell) {
+// The crystal running through cell (a crystal cell in the grid).
+fn crysShard(cell: vec3i) -> Shard {
   // which way it runs (y first, so ties go up)
-  int best = -1, ax = 1, fwd = CRYS_RUN_MAX + 2, back = 0;
-  bool plus = true;
-  for (int j = 0; j < 3; j++) {
-    int k = (j + 1) % 3;   // y, z, x
-    ivec3 e = ivec3(0);
+  var best = -1;
+  var ax = 1;
+  var fwd = CRYS_RUN_MAX + 2;
+  var back = 0;
+  var plus = true;
+  for (var j = 0; j < 3; j++) {
+    let k = (j + 1) % 3;   // y, z, x
+    var e = vec3i(0);
     e[k] = 1;
-    bool oP, oM;
-    int kP = crysRun(cell, e, oP), kM = crysRun(cell, -e, oM);
-    int cls = oP != oM ? 2 : (oP ? 1 : 0);   // rooted, loose, buried
-    bool pl = cls != 2 || oP;
-    int f = pl ? kP : kM, bk = pl ? kM : kP;
+    var oP: bool;
+    var oM: bool;
+    let kP = crysRun(cell, e, &oP);
+    let kM = crysRun(cell, -e, &oM);
+    var cls = 0;                         // rooted 2, loose 1, buried 0
+    if (oP != oM) { cls = 2; } else if (oP) { cls = 1; }
+    let pl = cls != 2 || oP;
+    let f = select(kM, kP, pl);
+    let bk = select(kP, kM, pl);
     if (cls > best || (cls == best && (f < fwd || (f == fwd && bk > back)))) {
       best = cls; ax = k; plus = pl; fwd = f; back = bk;
     }
   }
-  int bestLen = fwd + back - 1;
-  Shard s;
-  s.d = vec3(0.0);
-  s.d[ax] = plus ? 1.0 : -1.0;
-  ivec3 di = ivec3(s.d);
-  ivec3 root = cell - di * (back - 1);   // the run's first cell
-  float n = float(bestLen);              // cells in the run
-  vec3 wr = worldPos(vec3(root)) + float(ax) * CRYS_SALT;
-  vec3 h1 = hash33(wr), h2 = hash33(wr + CRYS_SALT2);
+  let bestLen = fwd + back - 1;
+  var s: Shard;
+  s.d = vec3f(0.0);
+  s.d[ax] = select(-1.0, 1.0, plus);
+  let di = vec3i(s.d);
+  let root = cell - di * (back - 1);   // the run's first cell
+  let n = f32(bestLen);                // cells in the run
+  let wr = worldPos(vec3f(root)) + f32(ax) * CRYS_SALT;
+  let h1 = hash33(wr);
+  let h2 = hash33(wr + CRYS_SALT2);
   s.seed = h2.z;
-  bool loose = best == 1;
-  s.r = mix(CRYS_R_MIN, loose && bestLen == 1 ? CRYS_R_LOOSE : CRYS_R_MAX, h1.x);
+  let loose = best == 1;
+  var rMax = CRYS_R_MAX;
+  if (loose && bestLen == 1) { rMax = CRYS_R_LOOSE; }
+  s.r = mix(CRYS_R_MIN, rMax, h1.x);
   // where it sits across its cells and how it leans, within the room it has
-  vec3 t1 = vec3(0.0), t2 = vec3(0.0);
-  t1[(ax + 1) % 3] = 1.0; t2[(ax + 2) % 3] = 1.0;
-  float room = 0.5 - CRYS_CIRC * s.r - CRYS_GAP;
-  vec2 off = (2.0 * vec2(h1.y, h1.z) - 1.0) * room * CRYS_OFF_SHARE;
-  vec2 lean = (2.0 * vec2(h2.x, h2.y) - 1.0) * min((room - abs(off)) / n, vec2(CRYS_TILT_MAX));
-  vec3 rootFace = vec3(root) + 0.5 - s.d * 0.5;
+  var t1 = vec3f(0.0);
+  var t2 = vec3f(0.0);
+  t1[(ax + 1) % 3] = 1.0;
+  t2[(ax + 2) % 3] = 1.0;
+  let room = 0.5 - CRYS_CIRC * s.r - CRYS_GAP;
+  let off = (2.0 * vec2f(h1.y, h1.z) - 1.0) * room * CRYS_OFF_SHARE;
+  let lean = (2.0 * vec2f(h2.x, h2.y) - 1.0) * min((room - abs(off)) / n, vec2f(CRYS_TILT_MAX));
+  let rootFace = vec3f(root) + 0.5 - s.d * 0.5;
   s.o = rootFace + t1 * off.x + t2 * off.y;
-  vec3 lv = s.d + t1 * lean.x + t2 * lean.y;   // the axis per cell along d
+  let lv = s.d + t1 * lean.x + t2 * lean.y;   // the axis per cell along d
   s.a = normalize(lv);
   // the hexagon's turn about the axis
-  float turn = h2.z * 1.0471976;   // up to 60°
-  vec3 b1 = normalize(cross(s.a, t2)), b2 = cross(s.a, b1);
+  let turn = h2.z * CRYS_TURN_MAX;
+  let b1 = normalize(cross(s.a, t2));
+  let b2 = cross(s.a, b1);
   s.u = cos(turn) * b1 + sin(turn) * b2;
   s.w = cross(s.a, s.u);
   // the point: its apex somewhere in the run's last cell, CRYS_TIP_IN from its face at most
-  float tipH = CRYS_TIP_K * s.r * dot(s.a, s.d);   // the point's height along d
-  float lo = loose ? CRYS_TIP_IN + 2.0 * tipH - n + 1.0 : CRYS_TIP_IN + tipH;   // a loose one leaves room for its back point
-  float hi = 1.0 - CRYS_TIP_IN;
+  let tipH = CRYS_TIP_K * s.r * dot(s.a, s.d);   // the point's height along d
+  var lo = CRYS_TIP_IN + tipH;
+  if (loose) { lo = CRYS_TIP_IN + 2.0 * tipH - n + 1.0; }   // a loose one leaves room for its back point
+  let hi = 1.0 - CRYS_TIP_IN;
   s.len = n - 1.0 + mix(max(lo, tipH), hi, hash13(wr + 2.0 * CRYS_SALT2));
   s.apex = s.o + lv * s.len;
   s.apexB = s.o + lv * CRYS_TIP_IN;
-  vec2 sk = (hash33(wr + 2.0 * CRYS_SALT).xy * 2.0 - 1.0) * CRYS_TIP_SKEW * s.r;
+  let sk = (hash33(wr + 2.0 * CRYS_SALT).xy * 2.0 - 1.0) * CRYS_TIP_SKEW * s.r;
   s.apex += s.u * sk.x + s.w * sk.y;
   s.apexB -= s.u * sk.y + s.w * sk.x;
-  s.ends = (best >= 1 && fwd == 1 ? CRYS_END_FRONT : 0) | (loose && back == 1 ? CRYS_END_BACK : 0);
+  var ends = 0;
+  if (best >= 1 && fwd == 1) { ends = CRYS_END_FRONT; }
+  if (loose && back == 1) { ends = ends | CRYS_END_BACK; }
+  s.ends = ends;
   return s;
 }
 
-// The march crossing crystal cell over [tEnter, tExit]: true with the hit's t
-// and normal n (n comes in as the entry face) if it meets the cell's piece of
-// crystal. Sets gCrys for the look.
-bool crystalHit(ivec3 cell, vec3 ro, vec3 rd, float tEnter, float tExit, inout float t, inout vec3 n) {
-  Shard s = crysShard(cell);
-  float tk = tEnter;
-  vec3 nk = n;
-  int kind;
-  if (!shardHit(s, ro, rd, tk, tExit, nk, kind)) { gCrysOn = false; return false; }
-  gCrysOn = true; gCrysCell = cell; gCrysKind = kind; gCrys = s;
-  t = tk; n = nk;
+// The march crossing crystal cell over [tEnter, tExit]: true with the hit's
+// *t and normal *n (*n comes in as the entry face) if it meets the cell's
+// piece of crystal. Sets gCrys* for the look.
+fn crystalHit(cell: vec3i, ro: vec3f, rd: vec3f, tEnter: f32, tExit: f32, t: ptr<function, f32>,
+              n: ptr<function, vec3f>) -> bool {
+  let s = crysShard(cell);
+  var tk = tEnter;
+  var nk = *n;
+  var kind: i32;
+  if (!shardHit(s, ro, rd, &tk, tExit, &nk, &kind)) { gCrysOn = false; return false; }
+  gCrysOn = true;
+  gCrysCell = cell;
+  gCrysKind = kind;
+  gCrys = s;
+  *t = tk;
+  *n = nk;
   return true;
 }
 `;
+
+/** tools/check-wgsl.mjs: a probe kernel calling every function above (shaders/gfx/lib.js libChecks) */
+export const WGSL_CHECK = () => libChecks('crystal');
