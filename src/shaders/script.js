@@ -48,7 +48,7 @@ void scriptEdit(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
   if ((m & EDIT_SPAWN) != 0u) {
     int n = int(va.x + 0.5);
     float ctype = n == E_LAVA ? float(E_STONE) : 0.0;
-    oA = n == E_EMPTY ? vec4(float(E_EMPTY), AMBIENT, 0.0, seed) : vec4(float(n), SPAWNT[n], SPAWNLIFE[n], ctype + seed);
+    oA = n == E_EMPTY ? vec4(float(E_EMPTY), uAirT, 0.0, seed) : vec4(float(n), SPAWNT[n], SPAWNLIFE[n], ctype + seed);
     oB = vec4(0.0, 0.0, 0.0, b.w);
   }
   if ((m & EDIT_TYPE) != 0u) oA.x = float(int(va.x + 0.5));

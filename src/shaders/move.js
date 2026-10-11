@@ -315,7 +315,7 @@ void main() {
     ivec3 q = edgeCell(base + frameOff(${i}));
     if (inGrid(q)) { a${i} = fetchA(q); v${i} = F * fetchB(q).xyz; }
     else if (uEdge == EDGE_VOID) { a${i} = VOID_AIR_A; v${i} = vec3(0.0); }
-    else { a${i} = vec4(float(E_WALL), AMBIENT, 0.0, 0.0); v${i} = vec3(0.0); }
+    else { a${i} = vec4(float(E_WALL), uAirT, 0.0, 0.0); v${i} = vec3(0.0); }
     k${i} = eid(a${i}); d${i} = densityOf(k${i}, a${i}.y);
   }`).join('\n  ')}
   rs = seed3(base, uFrame, 0x51u);

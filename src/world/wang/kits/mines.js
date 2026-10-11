@@ -381,7 +381,8 @@ for (const t of tiles) {
 export default {
   name: 'mines',
   // wall torches where the hung ones don't reach (kit.js placeTorches: pillars, the void's walls)
-  torches: { every: 18, max: 2, lights: ['TORCH'] },
+  // (and on posts at a shelf's rim where no wall takes one), one every ~20 cells
+  torches: { every: 20, max: 3, lights: ['TORCH'], posts: true },
   // Noita's Mines: brown earth and dark rock, timber, a lot of it diggable
   palette: { ROCK: 'BASALT', SOFT: 'SANDSTONE', BEAM: 'WOOD', RAIL: 'METAL', RUBBLE: 'RUBBLE' },
   geom: MINES_GEOM,

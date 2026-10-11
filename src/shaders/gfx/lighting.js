@@ -1,6 +1,6 @@
 import { skyGLSL } from '../../gfx/sky.js';
 import { cloudDeckGLSL } from './clouds.js';
-import { LAMP_MAX, LAMP_UNIT, LAMP_SOFT } from '../../gfx/lamps.js';
+import { LAMP_MAX, LAMP_UNIT, LAMP_SOFT, LAMP_FIXED_PAD } from '../../gfx/lamps.js';
 
 export const WAND_LIGHTS = 8;
 
@@ -34,7 +34,8 @@ uniform bool uCaustics;    // sun caustics through liquid
 #define LAMP_MAX ${LAMP_MAX}
 uniform int uLampCount;
 uniform vec4 uLampPos[LAMP_MAX];   // xyz grid cells, w its reach (cells)
-uniform vec4 uLampCol[LAMP_MAX];   // rgb: linear colour × intensity, in SUN_COL's units at LAMP_UNIT cells
+uniform vec4 uLampCol[LAMP_MAX];   // rgb: linear colour × intensity, in SUN_COL's units at LAMP_UNIT cells; w 1: fixed (a wall torch's)
+uniform vec3 uCaveAmbient;         // a scene's ambient floor, radiance (gfx/uniforms.js; world scene ambient)
 
 // ---- sun and sky: a clear-sky atmosphere (gfx/sky.js) ----
 // Values that only depend on the sun are computed once per frame in JS.
@@ -404,14 +405,16 @@ Probe probeAt(vec3 p) {
 Probe surfProbe(vec3 p, vec3 n) { return probeAt(p + n * GI_OFFSET); }
 
 // Indirect irradiance / pi on a surface facing n.
+// uCaveAmbient: a scene's floor of light everywhere (world scene ambient: the
+// Descent's caves, which Noita never draws pitch black); 0 elsewhere.
 vec3 giIrradiance(Probe g, vec3 n) {
-  return max(SH_Y0 * g.c0.rgb + SH_COS1 * SH_Y1 * (g.cx.rgb * n.x + g.cy.rgb * n.y + g.cz.rgb * n.z), 0.0);
+  return max(SH_Y0 * g.c0.rgb + SH_COS1 * SH_Y1 * (g.cx.rgb * n.x + g.cy.rgb * n.y + g.cz.rgb * n.z), 0.0) + uCaveAmbient;
 }
 // Indirect radiance arriving from direction d, as blurry as L1 allows; blur
 // in [0, 1] widens it further, to the irradiance lobe (rough reflections).
 vec3 giRadiance(Probe g, vec3 d, float blur) {
   float k1 = SH_Y1 * mix(1.0, SH_COS1, blur);
-  return max(SH_Y0 * g.c0.rgb + k1 * (g.cx.rgb * d.x + g.cy.rgb * d.y + g.cz.rgb * d.z), 0.0);
+  return max(SH_Y0 * g.c0.rgb + k1 * (g.cx.rgb * d.x + g.cy.rgb * d.y + g.cz.rgb * d.z), 0.0) + uCaveAmbient;
 }
 // Share of the open sky a surface facing n sees (1 in the open, less under
 // overhangs, in pits and between tall things).
@@ -680,6 +683,8 @@ const float LAMP_SOFT = ${LAMP_SOFT.toFixed(1)};        // cells: the soft core'
 const float LAMP_START = 0.55;      // cells off the surface a shadow ray starts
 const float LAMP_SELF_SKIP = 1.0;   // smooth-surface cells ignored this close to its start
 const float LAMP_PAD = 0.3;         // cells short of the lamp the shadow ray stops (it hangs in air)
+const float LAMP_FIXED_PAD = ${LAMP_FIXED_PAD.toFixed(2)};   // ...a fixed lamp's: its light is in a solid cell (gfx/lamps.js)
+const float LAMP_FIXED_SELF = 0.6;  // cells: a surface this close to a fixed lamp's centre (each axis) is its own cell's
 vec3 lampLight(vec3 p, vec3 ng, vec3 n) {
   vec3 sum = vec3(0.0);
   for (int i = 0; i < LAMP_MAX; i++) {
@@ -688,6 +693,12 @@ vec3 lampLight(vec3 p, vec3 ng, vec3 n) {
     vec3 dv = uLampPos[i].xyz - ro;
     float d2 = dot(dv, dv), R = uLampPos[i].w;
     if (d2 >= R * R) continue;
+    bool fixedLamp = uLampCol[i].w > 0.5;
+    if (fixedLamp) {   // a wall torch's: lit while its cell is still a torch (dug out, burnt, it goes dark)
+      ivec3 lc = ivec3(floor(uLampPos[i].xyz));
+      if (outside(lc) || eid(fetchA(lc)) != E_WALL_TORCH) continue;
+      if (all(lessThan(abs(p - uLampPos[i].xyz), vec3(LAMP_FIXED_SELF)))) continue;   // the torch's own head: its glow is its emission
+    }
     float d = sqrt(d2);
     vec3 l = dv / max(d, 1e-4);
     float nl = dot(n, l);
@@ -696,7 +707,7 @@ vec3 lampLight(vec3 p, vec3 ng, vec3 n) {
     float fade = 1.0 - x2 * x2;
     float fall = (LAMP_UNIT * LAMP_UNIT + LAMP_SOFT * LAMP_SOFT) / (d2 + LAMP_SOFT * LAMP_SOFT) * fade * fade;
     ivec3 hc; vec3 hn;
-    if (traceNear(ro, l, max(d - LAMP_PAD, 0.0), true, LAMP_SELF_SKIP, hc, hn) >= 0.0) continue;
+    if (traceNear(ro, l, max(d - (fixedLamp ? LAMP_FIXED_PAD : LAMP_PAD), 0.0), true, LAMP_SELF_SKIP, hc, hn) >= 0.0) continue;
     sum += uLampCol[i].rgb * nl * fall;
   }
   return sum;

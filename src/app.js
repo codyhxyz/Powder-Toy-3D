@@ -34,6 +34,7 @@ import { createHud, createHelp } from './ui/hud.js';
 import { createScoreboard } from './ui/scoreboard.js';
 import { h, inkFor, luminance } from './ui/dom.js';
 import { gfx, gfxUniforms, updateGfxUniforms } from './gfx/uniforms.js';
+import { createTorchLights } from './world/torchLights.js';
 import { DETAIL, settingKey, detailDefaults, detailDefines, detailRows } from './gfx/detail.js';
 import { createDetailGate } from './gfx/detailGate.js';
 import { createColdShaderGuard } from './gfx/coldShader.js';
@@ -48,6 +49,7 @@ import { DAY, dayPhase, phaseSteps, keyLight, sunElevation } from './gfx/dayligh
 import { GI_BLEND, cellTexel } from './sim.js';
 import { createMultiplayer } from './net/multiplayer.js';
 import { createProfiler } from './gfx/profiler.js';
+import { PHYS } from './physics.js';
 import { createProfilerPanel } from './ui/profiler.js';
 import { createPov } from './pov/index.js';
 import { createDescentRunner, runSnapshot, LOAD_POLL_MS, LOAD_WAIT_MS } from './pov/descent/switch.js';
@@ -161,6 +163,8 @@ const STORE = 'powder-toy-3d:settings';
 // Fixed look: glow is heat-driven light (×uLightGain); smoothing, TAA, bloom and
 // exposure keep their defaults in gfx/uniforms.js and gfx/post.js.
 const GLOW_GAIN = 1.6;
+const torchLights = createTorchLights();
+const NO_AMBIENT = [0, 0, 0];   // a scene without an ambient floor (world scene `ambient`)
 
 const settings = { ...DEFAULTS };
 Object.assign(settings, SIM_MODE_DEFAULTS);   // world options (simModes.js): not remembered, a fresh scene starts them over
@@ -362,6 +366,7 @@ function build() {
   win = null;
   sim = new Simulation(renderer, nx, ny, nz, { windowed: !!worldMode, world: worldMode?.size });
   sim.gravity = settings.gravity;
+  sim.airT = worldMode ? sceneByKey(settings.scene).airT ?? PHYS.AMBIENT : PHYS.AMBIENT;   // (a box: room temperature)
   applySimModes(sim, settings);
   sim.onPass = prof.on ? simPass : null;
   scale = 10 / Math.max(nx, nz);
@@ -2196,6 +2201,7 @@ function tick(now, renderOnly = false) {
     renderedLast = runView;
   }
   if (runView) updateGfxUniforms(sim, SUN, KEY_LIGHT);   // (runDerived implies runView)
+  if (runView) gfxUniforms.uCaveAmbient.value = win?.scene.ambient ?? NO_AMBIENT;   // a world scene's ambient floor (Descent's caves)
   if (runDerived) {
     prof.phase('derived');
     sim.updateBricks();
@@ -2222,6 +2228,7 @@ function tick(now, renderOnly = false) {
     u.uCam.value.copy(camera.position).applyMatrix4(invVol.copy(volume.matrixWorld).invert());
     u.uMarchNear.value = pov?.marchNear ?? 0;
     detailGate.update(camera, u.uCam.value, [sim.g.nx, sim.g.ny, sim.g.nz], scene);
+    torchLights.update(win?.scene ?? null, u.uCam.value, sim.origin);   // the nearest wall torches lit as lamps (world/torchLights.js)
     win?.far.view(volume, settings.view === 0, camera);
     u.uView.value = settings.view;
 

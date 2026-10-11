@@ -148,7 +148,7 @@ void brush(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
     float vy = KIND[uTool] == K_POWDER || KIND[uTool] == K_LIQUID ? SPAWN_DROP_V : 0.0;
     oB = vec4(0.0, vy, 0.0, b.w);
   } else if (uTool == T_ERASE || uTool >= 0 || propErases) {   // (uTool >= 0 here: specific delete)
-    oA = vec4(float(E_EMPTY), AMBIENT, 0.0, rnd(rs) * SEED_MAX);
+    oA = vec4(float(E_EMPTY), uAirT, 0.0, rnd(rs) * SEED_MAX);
     oB = vec4(0.0, 0.0, 0.0, b.w);
   } else if (uTool == T_HEAT) {
     oA.y = min(a.y + TOOL_HEAT * falloff, CELL_TEMP_MAX);
@@ -273,7 +273,7 @@ void main() {
     vec4 m = texelFetch(tFM, t, 0);
     int id = eid(a);
     if (id != E_EMPTY) occ = 1.0;
-    else if (abs(a.y - AMBIENT) > AIR_FLAG_T) flags |= AIR_HOT;
+    else if (abs(a.y - uAirT) > AIR_FLAG_T) flags |= AIR_HOT;
     if (id == E_STEAM || id == E_CLOUD || id == E_SMOKE) gas += 1.0;
     surf = max(surf, max(max(s.x, s.y), max(s.z, s.w)));
     // something opaque (not liquid, glass or gas) here or in an opaque surface field
@@ -288,7 +288,7 @@ void main() {
     media = max(media, max(m.x, max(m.y, m.z)));
     if (id == E_FIRE || id == E_PLASMA) em += blackbody(a.y) * (FIRE_GLOW_BASE + a.y / FIRE_GLOW_T) * FIRE_GLOW_GAIN;
     else if (id != E_EMPTY && KIND[id] != K_GAS && (a.y > INCAND_T0 || luminous(id) || sparkLive(id, floor(a.w)) || lampLit(id, floor(a.w)))) {
-      vec3 e = cellEmission(id, a.y) + sparkEmit(id, floor(a.w)) * (id == E_LAMP ? LAMP_ROOM_GAIN : 1.0);   // a live conductor or a lit lamp too (gfx/materials.js LAMP_ROOM_GAIN) (src/electricity.js)
+      vec3 e = cellEmission(id, a.y) * SHED[id] + sparkEmit(id, floor(a.w)) * (id == E_LAMP ? LAMP_ROOM_GAIN : 1.0);   // small sources shed more (gfx/materials.js SHED); a live conductor or a lit lamp too (LAMP_ROOM_GAIN) (src/electricity.js)
       if (dot(e, e) > 0.0) em += e * (RCLASS[id] == R_OPAQUE ? openFaces(c) * GLOW_FACE_GAIN : 1.0);
     }
   }

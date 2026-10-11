@@ -188,6 +188,10 @@ bool inGrid(ivec3 p) {
 // not depend on where the window is (random streams, the look) adds uOrigin.
 // A grid that is its whole world sits at 0. Simulation.run sets it on every pass.
 uniform ivec3 uOrigin;
+// The scene's ambient air temperature, °C (sim.js airTUniform; TPT's "ambient air
+// temperature" option): what the air relaxes to and rests at. PHYS.AMBIENT unless a
+// world scene sets its own (scene.airT: the Snowy Depths are frozen through).
+uniform float uAirT;
 
 // ---- the state (see the top of shaders/common.js) ----
 uniform sampler2D tA;
@@ -219,7 +223,7 @@ float rnd(inout uint s) {
   return float(s) * UINT_TO_UNIT;
 }
 
-float airDensity(float T) { return 1.0 - clamp((T - AMBIENT) / AIR_DENS_SPAN, AIR_DENS_LO, AIR_DENS_HI); }
+float airDensity(float T) { return 1.0 - clamp((T - uAirT) / AIR_DENS_SPAN, AIR_DENS_LO, AIR_DENS_HI); }
 // Gases thin with heat the way air does (ideal gas): a gas's DENS is its density
 // at its spawn temperature, so hot smoke rises through the hot air around a fire.
 float densityOf(int id, float T) {
@@ -295,7 +299,7 @@ bool inertSelf(vec4 a, vec4 b) {
   float T = a.y;
   if (id == E_EMPTY) {
     vec3 v = abs(b.xyz);
-    return abs(T - AMBIENT) <= AIR_REST_T && abs(b.w) <= REST_P && max(v.x, max(v.y, v.z)) <= AIR_JITTER_V + REST_V_SLOP;
+    return abs(T - uAirT) <= AIR_REST_T && abs(b.w) <= REST_P && max(v.x, max(v.y, v.z)) <= AIR_JITTER_V + REST_V_SLOP;
   }
   int k = KIND[id];
   if (k == K_GAS) return false;   // smoke, steam and flames rise, fade and burn
@@ -309,9 +313,14 @@ bool inertSelf(vec4 a, vec4 b) {
   if (INTO[id][PH_HOT] >= 0 && (T > HOT[id].x || (T == HOT[id].x && HOT[id].y == 0.0))) return false;
   if (INTO[id][PH_COLD] >= 0 && (T < COLD[id].x || (T == COLD[id].x && COLD[id].y == 0.0))) return false;
   if (LIFE_BANK[id] && (HOT[id].y > 0.0 || COLD[id].y > 0.0) && a.z != 0.0) return false;
-  // latent heat: water and ice at rest have nothing banked and sit within their phase
-  if (id == E_WATER) return a.z == 0.0 && T >= 0.0 && T <= 100.0;
-  if (id == E_ICE || id == E_SNOW) return a.z == 0.0 && T <= 0.0;
+  // latent heat: water and ice at rest sit within their phase with nothing
+  // banked, or with some banked but pinned at the phase point (react.js latent()
+  // holds them there): then only heat flowing in or out changes them, and that
+  // takes a neighbour off the rest test (or is drift under its tolerances). So
+  // snow in freezing air, warmed a little by its grains settling, rests.
+  // (water's life: + banked toward boiling, - toward freezing)
+  if (id == E_WATER) return a.z == 0.0 ? T >= 0.0 && T <= 100.0 : T == (a.z > 0.0 ? 100.0 : 0.0);
+  if (id == E_ICE || id == E_SNOW) return a.z == 0.0 ? T <= 0.0 : T == 0.0;
   if (id == E_FUSE) return a.z >= 1.0;   // lit: burning down (react.js)
   if (id == E_LAVA) {
     int ct = int(floor(a.w));
