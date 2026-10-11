@@ -1,163 +1,147 @@
-import { brickGLSL, BRICK_DIST_SCALE } from '../passes.js';
+import { libChecks } from './lib.js';
 
-// Shared render core: brick/field access, the DDA helpers and the
-// smooth-surface machinery (sampling, root finding, normals). The state is
-// read with the prelude's fetchA/fetchB (shaders/common.js).
-export const coreGLSL = (g) => /* glsl */ `
-${brickGLSL}
-uniform sampler2D tBrick;
-uniform sampler2D tBrickDist;   // empty-space distance per brick (shaders/passes.js)
-#define BRICK_DIST_SCALE ${BRICK_DIST_SCALE.toFixed(1)}
-uniform sampler2D tLight;
-uniform sampler2D tFS;   // smooth-surface fields (liquid, molten, granular, organic); SURF_ISO = surface
-uniform sampler2D tFM;   // media fields (smoke, steam, fire, heat)
-uniform sampler2D tFT;   // thin-feature mask (x: liquid), see shaders/fields.js
-uniform int uView;
-uniform bool uShadows;
-uniform float uTime;
-uniform float uLightGain;
-uniform int uFrame;
-uniform float uSimClock;   // simulation steps (wrapped); frozen when paused
-uniform sampler2D tFlowV;  // how fast matter has been moving through each cell (cells/step), see moveFlowFrag in shaders/move.js
-// An output pixel's size in rendered pixels: 1 at native resolution, below 1 when
-// TAAU renders under the canvas size (gfx/post.js). Pixel-sized filtering (material
-// LOD, line widths) works in output pixels, so the upscaler gets the detail it can
-// resolve over the jitter cycle (DLSS/FSR's negative mip bias).
-uniform float uPixScale;
-
-const ivec3 GRID = ivec3(NX, NY, NZ);
-#define MAX_STEPS ${g.maxSteps}
-
-vec3 cellFlow(ivec3 c) { return texelFetch(tFlowV, atlas(c), 0).xyz; }   // flow field: same texel layout as the state
-bool outside(ivec3 c) { return any(lessThan(c, ivec3(0))) || any(greaterThanEqual(c, GRID)); }
-
-// World position of grid point p (docs/scaling.md D11). The look is anchored
-// to it (surface textures, glints, ripples, gas detail, floor lines), so moving
-// the window doesn't move the textures; everything that samples the grid's own
-// textures (fields, bricks, probes, the shadow map) stays in grid space. In a
-// box uOrigin is 0. (Always compiled, so a box and a world share every program.)
-vec3 worldPos(vec3 p) { return p + vec3(uOrigin); }
-
-// Crisp elements are drawn as voxels; everything else is a field.
-bool isCrisp(int id) { return id != E_EMPTY && SURFCH[id] < 0 && MEDIACH[id] < 0; }
-
-// ---- bricks (see brickFrag and BRICK_BITS in passes.js) ----
-// a = 0: empty. a < 0: air only, flagged for the data views.
-// a >= 1: 1 + gas fraction + 2·bits (+ air flags / BRICK_FLAG_DIV); the gas
-// fraction is at most 1, so halving leaves the bits in the integer part.
-float brickOcc(ivec3 bc) { return texelFetch(tBrick, brickAtlas(bc), 0).a; }
-int brickBits(float occ) { return int((occ - 1.0) * 0.5); }
-float brickGas(float occ) { return occ > 0.5 ? clamp(occ - 1.0 - 2.0 * float(brickBits(occ)), 0.0, 1.0) : 0.0; }
-// realistic view: 0 = skip the brick, else 1 + bits
-int brickInfo(ivec3 bc) { float a = brickOcc(bc); return a < 0.5 ? 0 : 1 + brickBits(a); }
-bool brickHas(int f, int bit) { return f > 0 && ((f - 1) & bit) != 0; }
-bool brickMedia(int f) { return brickHas(f, BRICK_MEDIA); }
-bool brickSurf(int f) { return brickHas(f, BRICK_SURF); }
-bool brickOpaque(int f) { return brickHas(f, BRICK_OPAQUE); }   // crisp or opaque smooth matter
-bool brickThin(int f) { return brickHas(f, BRICK_THIN); }       // thin liquid: read cubic
-bool brickMixed(int f) { return brickHas(f, BRICK_MIXED); }     // more than one liquid
-
-// A ray entering the box starts its DDA in the cell this far (cells) past the
-// entry point, so the cell it starts in is the one inside.
-#define DDA_START_NUDGE 1e-4
-
-vec3 safeDir(vec3 rd) {
-  return vec3(abs(rd.x) < 1e-6 ? 1e-6 : rd.x, abs(rd.y) < 1e-6 ? 1e-6 : rd.y, abs(rd.z) < 1e-6 ? 1e-6 : rd.z);
+// Shared render core: brick and field access, the DDA helpers and the
+// smooth-surface machinery (sampling, root finding, normals), in WGSL (the
+// names are the GLSL version's, docs/webgpu.md W2). The state is read with
+// the prelude's fetchA/fetchB (shaders/common.js, STATE_OPTS.STATE_RO); the
+// brick map, the fields and the flow come from the lighting group
+// (shaders/bindings.js lightingBindings), the per-frame values from
+// FrameUniforms (FU: what were uView, uShadows, uTime, uLightGain, uFrame,
+// uSimClock and uPixScale, the output pixel's size in rendered pixels).
+// shaders/gfx/lib.js assembles it after those. Its binding-free part (the
+// grid, cells and the DDA's ray helpers) is ddaGLSL below, for kernels that
+// walk the state without the lighting group.
+//
+// Volumes are 3D textures (docs/webgpu.md E, W14): texel (x, y, z) of the
+// fields is cell (x, y, z); of the light and the GI probes, brick (x, y, z).
+// Every read is a textureSampleLevel at level 0 (nothing has mips; implicit
+// derivatives aren't allowed in the marches' non-uniform control flow, H1.18),
+// through linearClamp, after the coordinate is clamped to the edge texels'
+// centres as the atlases clamped it.
+//
+// opts.flow: declare cellFlow (it reads the flow buffer, binding 18, which
+// the GI gather's writer layout drops).
+export const coreGLSL = (g, { flow = true } = {}) => /* wgsl */ `
+${ddaGLSL(g)}
+// The pixel whose noise a function draws (ign, pixRand, the glow candidates,
+// the clouds' jitter): what gl_FragCoord.xy was. Every entry point sets it
+// first: a fragment shader to @builtin(position).xy (pixel centres, top-left
+// origin), a compute kernel to its own texel's centre.
+var<private> gFragCoord: vec2f;
+${flow ? `
+// How fast matter has been moving through cell c (cells/step; c in the grid):
+// the move's flow field, one vec2u per slot holding x, y and z as f16
+// (pack2x16float) and a zero (docs/webgpu.md C1).
+fn cellFlow(c: vec3i) -> vec3f {
+  let w = flow[slotOf(c)];
+  return vec3f(unpack2x16float(w.x), unpack2x16float(w.y).x);
+}` : ''}
+// ---- bricks (the brick map: shaders/bindings.js BrickInfo) ----
+// Brick bc's info word: 0 empty; with BRICK_MATTER (brickMatter) it holds
+// matter (brickBits, brickGas); without, it holds only air the data views
+// draw (brickAir). bc in the grid.
+fn brickOcc(bc: vec3i) -> u32 { return brickAt(bc).info; }
+// The realistic view's test: 0 = skip the brick (empty or air only), else its
+// info word, for the brick* predicates below.
+fn brickInfo(bc: vec3i) -> u32 {
+  let w = brickOcc(bc);
+  return select(0u, w, brickMatter(w));
 }
-// returns (tNear, tFar, entryAxis)
-vec3 boxHit(vec3 ro, vec3 rd) {
-  vec3 t0 = (vec3(0.0) - ro) / rd, t1 = (vec3(GRID) - ro) / rd;
-  vec3 tn = min(t0, t1), tf = max(t0, t1);
-  float n = max(max(tn.x, tn.y), tn.z);
-  float axis = tn.x >= tn.y && tn.x >= tn.z ? 0.0 : (tn.y >= tn.z ? 1.0 : 2.0);
-  return vec3(n, min(min(tf.x, tf.y), tf.z), axis);
-}
-int argmin3(vec3 v) { return v.x <= v.y && v.x <= v.z ? 0 : (v.y <= v.z ? 1 : 2); }
+fn brickHas(f: u32, bit: u32) -> bool { return (f & bit) != 0u; }
+fn brickMedia(f: u32) -> bool { return brickHas(f, BRICK_MEDIA); }
+fn brickSurf(f: u32) -> bool { return brickHas(f, BRICK_SURF); }
+fn brickOpaque(f: u32) -> bool { return brickHas(f, BRICK_OPAQUE); }   // crisp or opaque smooth matter
+fn brickThin(f: u32) -> bool { return brickHas(f, BRICK_THIN); }       // thin liquid: read cubic
+fn brickMixed(f: u32) -> bool { return brickHas(f, BRICK_MIXED); }     // more than one liquid
 
-// Jump the DDA to the exit of empty brick bc. Updates cell/tMax/tEnter, returns axis crossed.
-int skipBrick(ivec3 bc, vec3 ro, vec3 rd, ivec3 istp, inout ivec3 cell, inout vec3 tMax, inout float tEnter) {
-  vec3 bmin = vec3(bc * BS), bmax = bmin + float(BS);
-  vec3 tb = (mix(bmin, bmax, step(0.0, rd)) - ro) / rd;
-  int ax = argmin3(tb);
-  float tx = tb[ax];
-  cell = ivec3(floor(ro + rd * tx));
-  cell[ax] = istp[ax] > 0 ? int(bmax[ax]) : int(bmin[ax]) - 1;
-  tMax = (vec3(cell) + step(0.0, rd) - ro) / rd;
-  tEnter = tx;
+// ---- brick skipping (the brick map and brickDist) ----
+// Jump the DDA to the exit of empty brick bc: updates *cell, *tMax and
+// *tEnter as one step would, returns the axis crossed.
+fn skipBrick(bc: vec3i, ro: vec3f, rd: vec3f, istp: vec3i,
+             cell: ptr<function, vec3i>, tMax: ptr<function, vec3f>, tEnter: ptr<function, f32>) -> i32 {
+  let bmin = vec3f(bc * BS);
+  let bmax = bmin + f32(BS);
+  let tb = (mix(bmin, bmax, step(vec3f(0.0), rd)) - ro) / rd;
+  let ax = argmin3(tb);
+  let tx = tb[ax];
+  var c = vec3i(floor(ro + rd * tx));
+  c[ax] = select(i32(bmin[ax]) - 1, i32(bmax[ax]), istp[ax] > 0);
+  *cell = c;
+  *tMax = (vec3f(c) + step(vec3f(0.0), rd) - ro) / rd;
+  *tEnter = tx;
   return ax;
 }
 
 // Jump the DDA out of the empty region around empty brick bc: every brick
-// within (distance - 1) of it is empty (shaders/passes.js brickDistFrag), so
-// the ray crosses that whole cube in one step. Same contract as skipBrick.
-// Only for walks that treat "brick alpha < 0.5" as empty (not the data views,
-// which also visit flagged air).
-int skipEmpty(ivec3 bc, vec3 ro, vec3 rd, ivec3 istp, inout ivec3 cell, inout vec3 tMax, inout float tEnter) {
-  int r = max(int(texelFetch(tBrickDist, brickAtlas(bc), 0).x * BRICK_DIST_SCALE + 0.5) - 1, 0);
+// within (distance - 1) of it is empty (brickDistAt, built by the derived
+// passes), so the ray crosses that whole cube in one step. Same contract as
+// skipBrick. Only for walks that treat a brick without matter as empty (not
+// the data views, which also visit flagged air).
+fn skipEmpty(bc: vec3i, ro: vec3f, rd: vec3f, istp: vec3i,
+             cell: ptr<function, vec3i>, tMax: ptr<function, vec3f>, tEnter: ptr<function, f32>) -> i32 {
+  let r = max(brickDistAt(bc), 0);
   // kept inside the box: a ray leaving it must leave through the face it
   // really crosses (the floor below all, which the callers shade)
-  vec3 bmin = vec3(max(bc - r, ivec3(0)) * BS), bmax = vec3(min(bc + r + 1, ivec3(BX, BY, BZ)) * BS);
-  vec3 tb = (mix(bmin, bmax, step(0.0, rd)) - ro) / rd;
-  int ax = argmin3(tb);
-  float tx = tb[ax];
-  cell = ivec3(floor(ro + rd * tx));
-  cell[ax] = istp[ax] > 0 ? int(bmax[ax]) : int(bmin[ax]) - 1;
-  tMax = (vec3(cell) + step(0.0, rd) - ro) / rd;
-  tEnter = tx;
+  let bmin = vec3f(max(bc - r, vec3i(0)) * BS);
+  let bmax = vec3f(min(bc + r + 1, vec3i(BX, BY, BZ)) * BS);
+  let tb = (mix(bmin, bmax, step(vec3f(0.0), rd)) - ro) / rd;
+  let ax = argmin3(tb);
+  let tx = tb[ax];
+  var c = vec3i(floor(ro + rd * tx));
+  c[ax] = select(i32(bmin[ax]) - 1, i32(bmax[ax]), istp[ax] > 0);
+  *cell = c;
+  *tMax = (vec3f(c) + step(vec3f(0.0), rd) - ro) / rd;
+  *tEnter = tx;
   return ax;
 }
 
 // ---- continuous fields ----
 // A smooth surface is where its field crosses this level (shaders/fields.js
 // builds them so: inside > SURF_ISO > outside).
-#define SURF_ISO 0.5
-// The fields live in a Y-slice atlas (shaders/common.js fieldAtlas). Hardware
-// bilinear filtering works inside a slice (clamped to the tile), and one lerp
-// between two slices completes the trilinear sample: 2 taps.
-vec4 fieldTex(sampler2D t, vec3 p) {
-  vec3 q = clamp(p, vec3(0.5), vec3(GRID) - 0.5);
-  float fy = q.y - 0.5;
-  int y0 = int(fy);
-  int y1 = min(y0 + 1, NY - 1);
-  vec2 inv = 1.0 / vec2(textureSize(t, 0));
-  vec2 o0 = vec2(float((y0 % FTX) * NX), float((y0 / FTX) * NZ));
-  vec2 o1 = vec2(float((y1 % FTX) * NX), float((y1 / FTX) * NZ));
-  return mix(texture(t, (o0 + q.xz) * inv), texture(t, (o1 + q.xz) * inv), fy - float(y0));
+const SURF_ISO: f32 = 0.5;
+// Field t at grid point p, hardware trilinear (one tap; the 2D atlas took two
+// and a lerp). p is held to the edge cells' centres: the grid extends by its edge.
+fn fieldTex(t: texture_3d<f32>, p: vec3f) -> vec4f {
+  let q = clamp(p, vec3f(0.5), vec3f(GRID) - 0.5);
+  return textureSampleLevel(t, linearClamp, q / vec3f(GRID), 0.0);
 }
-vec4 surfField(vec3 p) { return fieldTex(tFS, p); }
-vec4 mediaField(vec3 p) { return fieldTex(tFM, p); }
+fn surfField(p: vec3f) -> vec4f { return fieldTex(tFS, p); }    // the smooth-surface fields, by channel (CH_*)
+fn mediaField(p: vec3f) -> vec4f { return fieldTex(tFM, p); }   // the media fields
 
-// Cubic B-spline sample of a field (cell values are its control points).
+// Cubic B-spline sample of field t at p (cell values are its control points).
 // Trilinear interpolation of a lone peak has octahedral isosurfaces, so drops
 // drawn from it are faceted gems; the B-spline's kernel is smooth (C²) and
 // nearly radial, so they come out round and their normals smooth. Sigg &
-// Hadwiger's trick folds each pair of x and z taps into one bilinear fetch,
-// 2×2 per slice; y has no hardware filtering, so 4 slices: 16 fetches.
-// Taps are clamped to the slice's tile, i.e. the grid is extended by its edge.
-vec4 fieldCubic(sampler2D t, vec3 p) {
-  vec3 c = clamp(p, vec3(0.5), vec3(GRID) - 0.5) - 0.5;   // cell centres at integers
-  vec3 i = floor(c), f = c - i;
-  vec3 f2 = f * f, f3 = f2 * f;
+// Hadwiger's trick folds each pair of taps along an axis into one linear
+// fetch: 2×2×2 trilinear fetches (the y-slice atlas needed 16). Taps are
+// clamped to the edge cells' centres, i.e. the grid is extended by its edge.
+fn fieldCubic(t: texture_3d<f32>, p: vec3f) -> vec4f {
+  let c = clamp(p, vec3f(0.5), vec3f(GRID) - 0.5) - 0.5;   // cell centres at integers
+  let i = floor(c);
+  let f = c - i;
+  let f2 = f * f;
+  let f3 = f2 * f;
   // weights of the control points at i-1, i, i+1, i+2
-  vec3 w0 = (1.0 - 3.0 * f + 3.0 * f2 - f3) / 6.0;
-  vec3 w1 = (4.0 - 6.0 * f2 + 3.0 * f3) / 6.0;
-  vec3 w2 = (1.0 + 3.0 * f + 3.0 * f2 - 3.0 * f3) / 6.0;
-  vec3 w3 = f3 / 6.0;
-  // x and z: two bilinear taps each, between i-1|i and i+1|i+2 (texel units)
-  vec2 g0 = w0.xz + w1.xz, g1 = w2.xz + w3.xz;
-  vec2 lo = vec2(0.5), hi = vec2(NX, NZ) - 0.5;
-  vec2 a = clamp(i.xz - 0.5 + w1.xz / g0, lo, hi);
-  vec2 b = clamp(i.xz + 1.5 + w3.xz / g1, lo, hi);
-  vec2 inv = 1.0 / vec2(textureSize(t, 0));
-  vec4 wy = vec4(w0.y, w1.y, w2.y, w3.y);
-  vec4 s = vec4(0.0);
-  for (int k = 0; k < 4; k++) {
-    int y = clamp(int(i.y) - 1 + k, 0, NY - 1);
-    vec2 o = vec2(float((y % FTX) * NX), float((y / FTX) * NZ));
-    s += wy[k] * (g0.y * (g0.x * texture(t, (o + vec2(a.x, a.y)) * inv) + g1.x * texture(t, (o + vec2(b.x, a.y)) * inv))
-                + g1.y * (g0.x * texture(t, (o + vec2(a.x, b.y)) * inv) + g1.x * texture(t, (o + vec2(b.x, b.y)) * inv)));
-  }
-  return s;
+  let w0 = (1.0 - 3.0 * f + 3.0 * f2 - f3) / 6.0;
+  let w1 = (4.0 - 6.0 * f2 + 3.0 * f3) / 6.0;
+  let w2 = (1.0 + 3.0 * f + 3.0 * f2 - 3.0 * f3) / 6.0;
+  let w3 = f3 / 6.0;
+  // per axis, two linear taps: between i-1|i and i+1|i+2 (texel units, then normalised)
+  let g0 = w0 + w1;
+  let g1 = w2 + w3;
+  let lo = vec3f(0.5);
+  let hi = vec3f(GRID) - 0.5;
+  let a = clamp(i - 0.5 + w1 / g0, lo, hi) / vec3f(GRID);
+  let b = clamp(i + 1.5 + w3 / g1, lo, hi) / vec3f(GRID);
+  let za = g0.y * (g0.x * textureSampleLevel(t, linearClamp, vec3f(a.x, a.y, a.z), 0.0)
+                 + g1.x * textureSampleLevel(t, linearClamp, vec3f(b.x, a.y, a.z), 0.0))
+         + g1.y * (g0.x * textureSampleLevel(t, linearClamp, vec3f(a.x, b.y, a.z), 0.0)
+                 + g1.x * textureSampleLevel(t, linearClamp, vec3f(b.x, b.y, a.z), 0.0));
+  let zb = g0.y * (g0.x * textureSampleLevel(t, linearClamp, vec3f(a.x, a.y, b.z), 0.0)
+                 + g1.x * textureSampleLevel(t, linearClamp, vec3f(b.x, a.y, b.z), 0.0))
+         + g1.y * (g0.x * textureSampleLevel(t, linearClamp, vec3f(a.x, b.y, b.z), 0.0)
+                 + g1.x * textureSampleLevel(t, linearClamp, vec3f(b.x, b.y, b.z), 0.0));
+  return g0.z * za + g1.z * zb;
 }
 
 // The liquid channel (gfx/materials.js CHANNELS cubic) reads cubic only for
@@ -167,78 +151,147 @@ vec4 fieldCubic(sampler2D t, vec3 p) {
 // this band, both readings fall on the same side of it (checked for drops,
 // streams, films, slabs, edges, corners and bubbles; the closest call is
 // ~0.54..0.70), so the cheap one decides.
-#define LIQ_CUBIC_LO 0.3
-#define LIQ_CUBIC_HI 0.85
+const LIQ_CUBIC_LO: f32 = 0.3;
+const LIQ_CUBIC_HI: f32 = 0.85;
 // Whether the brick being traced holds thin liquid (brickThin): set by the
 // marches on entering each brick, so bulk liquid never reads the mask.
-bool gThin = true;
-float liquidCubic(vec3 p, float tri) {
-  if (!gThin) return tri;
-  float t = fieldTex(tFT, p).x;
-  return t > 0.0 ? mix(tri, fieldCubic(tFS, p).x, t) : tri;
+var<private> gThin: bool = true;
+// The liquid's field at p given its trilinear value tri: blended toward the
+// cubic reading by the thin mask (only while gThin).
+fn liquidCubic(p: vec3f, tri: f32) -> f32 {
+  if (!gThin) { return tri; }
+  let t = fieldTex(tFT, p).x;
+  if (t > 0.0) { return mix(tri, fieldCubic(tFS, p).x, t); }
+  return tri;
 }
 // The surface fields as the tracer sees them.
-vec4 surfSample(vec3 p) {
-  vec4 s = surfField(p);
-  if (s.x > LIQ_CUBIC_LO && s.x < LIQ_CUBIC_HI) s.x = liquidCubic(p, s.x);
+fn surfSample(p: vec3f) -> vec4f {
+  var s = surfField(p);
+  if (s.x > LIQ_CUBIC_LO && s.x < LIQ_CUBIC_HI) { s.x = liquidCubic(p, s.x); }
   return s;
 }
 // One channel, at the surface (root finding, normals).
-float surfChannel(vec3 p, int ch) {
-  float v = surfField(p)[ch];
-  return ch == CH_LIQUID ? liquidCubic(p, v) : v;
+fn surfChannel(p: vec3f, ch: i32) -> f32 {
+  let v = surfField(p)[ch];
+  if (ch == CH_LIQUID) { return liquidCubic(p, v); }
+  return v;
 }
 
 // Root of φ_ch(t) = SURF_ISO bracketed by [ta, tb] (fa, fb = φ - SURF_ISO at
 // the ends, opposite signs). Clamped regula falsi: the field is smooth, so a
 // few steps do. Each step's split is kept this far (share of the bracket)
 // from either end, so a lopsided bracket still shrinks from both sides.
-#define SURF_ROOT_STEPS 5
-#define SURF_ROOT_SPLIT_LO 0.15
-#define SURF_ROOT_SPLIT_HI 0.85
-float surfRoot(vec3 ro, vec3 rd, int ch, float ta, float tb, float fa, float fb) {
-  for (int k = 0; k < SURF_ROOT_STEPS; k++) {
-    float tm = mix(ta, tb, clamp(fa / (fa - fb), SURF_ROOT_SPLIT_LO, SURF_ROOT_SPLIT_HI));
-    float fm = surfChannel(ro + rd * tm, ch) - SURF_ISO;
+const SURF_ROOT_STEPS: i32 = 5;
+const SURF_ROOT_SPLIT_LO: f32 = 0.15;
+const SURF_ROOT_SPLIT_HI: f32 = 0.85;
+fn surfRoot(ro: vec3f, rd: vec3f, ch: i32, ta0: f32, tb0: f32, fa0: f32, fb0: f32) -> f32 {
+  var ta = ta0;
+  var tb = tb0;
+  var fa = fa0;
+  var fb = fb0;
+  for (var k = 0; k < SURF_ROOT_STEPS; k++) {
+    let tm = mix(ta, tb, clamp(fa / (fa - fb), SURF_ROOT_SPLIT_LO, SURF_ROOT_SPLIT_HI));
+    let fm = surfChannel(ro + rd * tm, ch) - SURF_ISO;
     if ((fm < 0.0) == (fa < 0.0)) { ta = tm; fa = fm; } else { tb = tm; fb = fm; }
   }
   return mix(ta, tb, clamp(fa / (fa - fb), 0.0, 1.0));
 }
 
-#define NO_HIT 1e9
+// What a crossing test returns when there is none.
+const NO_HIT: f32 = 1e9;
 
 // Where along [ta, tb] the ray first crosses channel ch's surface, going into
 // the material (into = true) or out of it; NO_HIT if it doesn't. The field is
 // sampled at both ends and at tm, where the ray passes closest to a cell
 // centre: a lone droplet or grain can sit entirely between the ends. With no
 // middle sample, pass tm = tb and phiM = phiB.
-float surfCross(vec3 ro, vec3 rd, int ch, bool into, float ta, float tm, float tb,
-                float phiA, float phiM, float phiB) {
-  float a = phiA - SURF_ISO, m = phiM - SURF_ISO, b = phiB - SURF_ISO;
-  bool first = into ? (a < 0.0 && m >= 0.0) : (a >= 0.0 && m < 0.0);
-  if (!first && !(tm < tb && (into ? (m < 0.0 && b >= 0.0) : (m >= 0.0 && b < 0.0)))) return NO_HIT;
+fn surfCross(ro: vec3f, rd: vec3f, ch: i32, into: bool, ta: f32, tm: f32, tb: f32,
+             phiA: f32, phiM: f32, phiB: f32) -> f32 {
+  let a = phiA - SURF_ISO;
+  let m = phiM - SURF_ISO;
+  let b = phiB - SURF_ISO;
+  var first: bool;
+  var second: bool;
+  if (into) { first = a < 0.0 && m >= 0.0; second = m < 0.0 && b >= 0.0; }
+  else { first = a >= 0.0 && m < 0.0; second = m >= 0.0 && b < 0.0; }
+  if (!first && !(tm < tb && second)) { return NO_HIT; }
   // one surfRoot call on whichever half holds the crossing (each call is inlined)
-  return surfRoot(ro, rd, ch, first ? ta : tm, first ? tm : tb, first ? a : m, first ? m : b);
+  return surfRoot(ro, rd, ch, select(tm, ta, first), select(tb, tm, first), select(m, a, first), select(b, m, first));
 }
 
-// Where in [ta, tb] the ray passes closest to the centre of cell c.
-float tClosest(ivec3 c, vec3 ro, vec3 rd, float ta, float tb) {
-  return clamp(dot(vec3(c) + 0.5 - ro, rd), ta, tb);
-}
-
-// Outward surface normal (−∇φ) from a tetrahedral central difference. The
-// step is wide on purpose: trilinear fields have creased gradients at the
-// cell-centre lattice, and a wide stencil irons them out. Where the liquid
-// reads cubic (thin features) it is smooth, and the step only has to be
-// small next to a drop's radius.
-#define NORMAL_STEP 0.55
-#define NORMAL_STEP_CUBIC 0.25
-vec3 surfNormal(vec3 p, int ch, vec3 fallback) {
-  const vec2 k = vec2(1.0, -1.0);
-  float h = ch == CH_LIQUID && gThin ? mix(NORMAL_STEP, NORMAL_STEP_CUBIC, fieldTex(tFT, p).x) : NORMAL_STEP;
-  vec3 gr = k.xyy * surfChannel(p + k.xyy * h, ch) + k.yyx * surfChannel(p + k.yyx * h, ch)
-          + k.yxy * surfChannel(p + k.yxy * h, ch) + k.xxx * surfChannel(p + k.xxx * h, ch);
-  float l = length(gr);
-  return l > 1e-5 ? -gr / l : fallback;
+// Outward surface normal (−∇φ) of channel ch at p from a tetrahedral central
+// difference; fallback where the gradient vanishes. The step is wide on
+// purpose: trilinear fields have creased gradients at the cell-centre
+// lattice, and a wide stencil irons them out. Where the liquid reads cubic
+// (thin features) it is smooth, and the step only has to be small next to a
+// drop's radius.
+const NORMAL_STEP: f32 = 0.55;
+const NORMAL_STEP_CUBIC: f32 = 0.25;
+fn surfNormal(p: vec3f, ch: i32, fallback: vec3f) -> vec3f {
+  let k = vec2f(1.0, -1.0);
+  var h = NORMAL_STEP;
+  if (ch == CH_LIQUID && gThin) { h = mix(NORMAL_STEP, NORMAL_STEP_CUBIC, fieldTex(tFT, p).x); }
+  let gr = k.xyy * surfChannel(p + k.xyy * h, ch) + k.yyx * surfChannel(p + k.yyx * h, ch)
+         + k.yxy * surfChannel(p + k.yxy * h, ch) + k.xxx * surfChannel(p + k.xxx * h, ch);
+  let l = length(gr);
+  if (l > 1e-5) { return -gr / l; }
+  return fallback;
 }
 `;
+
+// The binding-free part of the core: the grid's extent, cells, world
+// positions and the DDA's ray helpers. It needs only the prelude (NX, NY, NZ,
+// the header's origin, the element tables) and, for isCrisp, the materials'
+// table accessors, so a kernel that walks the state alone (pick, the POV
+// trace: docs/webgpu.md F5, G2) pastes prelude(g) + materialsGLSL() +
+// ddaGLSL(g) and binds no lighting group. coreGLSL includes it.
+export const ddaGLSL = (g) => /* wgsl */ `
+const GRID: vec3i = vec3i(NX, NY, NZ);
+const MAX_STEPS: i32 = ${g.maxSteps ?? g.nx + g.ny + g.nz + 8};   // DDA steps that cross the box corner to corner
+
+// Whether cell c lies outside the grid.
+fn outside(c: vec3i) -> bool { return any(c < vec3i(0)) || any(c >= GRID); }
+
+// World position of grid point p (docs/scaling.md D11). The look is anchored
+// to it (surface textures, glints, ripples, gas detail, floor lines), so moving
+// the window doesn't move the textures; everything that samples the grid's own
+// textures (fields, bricks, probes, the shadow map) stays in grid space. In a
+// box the header's origin is 0. (Always compiled, so a box and a world share
+// every pipeline.)
+fn worldPos(p: vec3f) -> vec3f { return p + vec3f(H.origin); }
+
+// Crisp elements are drawn as voxels; everything else is a field.
+fn isCrisp(id: i32) -> bool { return id != E_EMPTY && SURFCH(id) < 0 && MEDIACH(id) < 0; }
+
+// ---- the DDA ----
+// A ray entering the box starts its DDA in the cell this far (cells) past the
+// entry point, so the cell it starts in is the one inside.
+const DDA_START_NUDGE: f32 = 1e-4;
+
+// rd with every component at least 1e-6 away from 0 (the DDA divides by it).
+fn safeDir(rd: vec3f) -> vec3f { return select(rd, vec3f(1e-6), abs(rd) < vec3f(1e-6)); }
+// Ray (ro, rd) against the box [0, GRID]: (tNear, tFar, entry axis 0..2). A miss has tFar <= tNear.
+fn boxHit(ro: vec3f, rd: vec3f) -> vec3f {
+  let t0 = (vec3f(0.0) - ro) / rd;
+  let t1 = (vec3f(GRID) - ro) / rd;
+  let tn = min(t0, t1);
+  let tf = max(t0, t1);
+  let n = max(max(tn.x, tn.y), tn.z);
+  var axis = 2.0;
+  if (tn.x >= tn.y && tn.x >= tn.z) { axis = 0.0; } else if (tn.y >= tn.z) { axis = 1.0; }
+  return vec3f(n, min(min(tf.x, tf.y), tf.z), axis);
+}
+// The axis of v's smallest component (ties: x, then y).
+fn argmin3(v: vec3f) -> i32 {
+  if (v.x <= v.y && v.x <= v.z) { return 0; }
+  if (v.y <= v.z) { return 1; }
+  return 2;
+}
+// Where in [ta, tb] the ray passes closest to the centre of cell c.
+fn tClosest(c: vec3i, ro: vec3f, rd: vec3f, ta: f32, tb: f32) -> f32 {
+  return clamp(dot(vec3f(c) + 0.5 - ro, rd), ta, tb);
+}
+`;
+
+/** tools/check-wgsl.mjs: a probe kernel calling every function above (shaders/gfx/lib.js libChecks) */
+export const WGSL_CHECK = () => libChecks('core');

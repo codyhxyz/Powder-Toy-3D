@@ -7,6 +7,15 @@ import { CELL_M } from '../scale.js';
 import { TREE, MID_TREES, HIGH_TREES } from '../world/generator.js';
 import { scaleFor } from '../constructions/runtime.js';
 import { E } from '../elements.js';
+// The parts the window's own pipelines read (the layout, haze, casters and GI)
+// live in farShared.js (docs/webgpu.md G1, J3); re-exported for their importers.
+import {
+  FAR, FAR_NODE, WORLD_SIZE, farLayout, farLayoutGLSL, FAR_SHADOW_SOFT, FAR_SHADOW_BIAS, FAR_HAZE, farHazeGLSL,
+} from './farShared.js';
+export {
+  FAR, FAR_NODE, WORLD_SIZE, farLayout, farLayoutGLSL, FAR_SHADOW_SOFT, FAR_SHADOW_BIAS, FAR_HAZE, farHazeGLSL,
+  FAR_CASTER_STEPS, farCastersGLSL, FAR_GI_STEPS, FAR_GI_STEP0, farGIGLSL,
+} from './farShared.js';
 
 // The far field (docs/scaling.md D11, "Far field"; phase W4): everything of a
 // massive world outside the simulated window, at brick resolution.
@@ -65,127 +74,7 @@ import { E } from '../elements.js';
 // less the sun ray's drop on the way. Along a sun ray the height above it
 // can only fall, so a point is lit or not by one lookup, and the window's own
 // shadow map finds where its texel rays first go under it by bisection.
-export const FAR = {
-  ISO: 0.5,            // the field's surface level
-  CUBE: 8,             // cells: the edge of the cube centred on a brick whose share it holds (twice the brick)
-  THIN_MIN: 1 / 80,    // matter filling at least this share of its cube (a line of cells through it, a single-cell
-                       // trunk: 8/512, safely over it in 8 bits), with no brick next to it at ISO, reads as THIN_V...
-  THIN_V: 1.0,         // ...so it stands as a blob, rod or slab instead of vanishing
-  SURFACE_W: 8,        // a cell open above counts this many times toward the dominant element
-  HALF_EXACT: 2048,    // a half float holds every whole number below this exactly (an 11-bit significand)...
-  PAYLOAD: 256,        // ...so a channel holds a value below PAYLOAD (a level, an element id)...
-  SPARE: 8,            // ...and this many values above it (HALF_EXACT / PAYLOAD)
-  LEVELS: 255,         // steps of the shares and the glow (an 8-bit channel's)
-  GLOW_SPAN: 2000,     // °C the glow channel spans above the incandescence table's first knot
-};
-// Every element id, opaque or liquid, must fit below PAYLOAD (the liquid's
-// spread over SPARE³ values, with r's open flag beside its top: farPack):
-// past it the far view misreads ids, so say so at once.
-if (Object.keys(E).length > FAR.PAYLOAD || FAR.PAYLOAD > FAR.SPARE * FAR.SPARE * (FAR.SPARE / 2)
-    || FAR.PAYLOAD * FAR.SPARE > FAR.HALF_EXACT) {
-  throw new Error(`far.js: ${Object.keys(E).length} elements, but the far grid holds element ids below FAR.PAYLOAD (${FAR.PAYLOAD})`);
-}
-
-// Children per node edge at each occupancy level: an L1 node is 4³ bricks, an L2 node 4³ L1 nodes.
-export const FAR_NODE = 4;
-const FAR_ATLAS_MAX = 8192;   // texels: the widest atlas row the far grid may use
-
-// Slices per atlas row for n slices of w × h texels: the smallest divisor of n
-// from the near-square count up (so no slot is empty), else that count.
-function sliceCols(n, w, h) {
-  const root = Math.max(1, Math.ceil(Math.sqrt((n * h) / w)));
-  for (let c = root; c <= n && c * w <= FAR_ATLAS_MAX; c++) if (n % c === 0) return c;
-  return root;
-}
-
-// The one world size (app.js WORLDS). Its far layout is compiled into the
-// box's view, shadow and GI programs too, their far parts off (uFar): a box and
-// a world then share every big program, so switching to a world compiles none.
-export const WORLD_SIZE = [1024, 128, 1024];
-
-// The far grid's layout for a world of `size` cells: bricks, the atlas, the
-// occupancy levels and the brick-column maps.
-export function farLayout(size) {
-  const [wx, wy, wz] = size;
-  if ([wx, wy, wz].some((n) => n % BRICK)) throw new Error(`far field: world ${size} must be whole ${BRICK}-cell bricks`);
-  // (occupancy nodes round up: the last ones along an axis may stick out of the world)
-  const level = (div) => {
-    const n = [wx, wy, wz].map((v) => Math.ceil(v / div));
-    const cols = sliceCols(n[1], n[0], n[2]);
-    return { n, cols, width: cols * n[0], height: Math.ceil(n[1] / cols) * n[2] };
-  };
-  return {
-    size: [wx, wy, wz],
-    bricks: level(BRICK),
-    l1: level(BRICK * FAR_NODE),
-    l2: level(BRICK * FAR_NODE * FAR_NODE),
-  };
-}
-
 const glf = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
-
-// Layout defines and atlas addressing, shared by every far pass.
-export const farLayoutGLSL = (L) => /* glsl */ `
-#define WORLD_X ${L.size[0]}
-#define WORLD_Y ${L.size[1]}
-#define WORLD_Z ${L.size[2]}
-#define WBX ${L.bricks.n[0]}         // world bricks along x, y, z
-#define WBY ${L.bricks.n[1]}
-#define WBZ ${L.bricks.n[2]}
-#define FAR_COLS ${L.bricks.cols}       // brick slices per atlas row
-#define FAR_W ${L.bricks.width}
-#define FAR_H ${L.bricks.height}
-#define F1X ${L.l1.n[0]}         // L1 nodes
-#define F1Y ${L.l1.n[1]}
-#define F1Z ${L.l1.n[2]}
-#define F1_COLS ${L.l1.cols}
-#define F2X ${L.l2.n[0]}         // L2 nodes
-#define F2Y ${L.l2.n[1]}
-#define F2Z ${L.l2.n[2]}
-#define F2_COLS ${L.l2.cols}
-#define FAR_BRICK ${BRICK}            // cells per brick edge (the prelude's BS, for passes without it)
-#define FAR_NODE ${FAR_NODE}
-#define FAR_L1_CELLS ${BRICK * FAR_NODE}
-#define FAR_L2_CELLS ${BRICK * FAR_NODE * FAR_NODE}
-#define FAR_ISO ${glf(FAR.ISO)}
-#define FAR_CUBE ${FAR.CUBE}
-#define FAR_CUBE_LO ${(FAR.CUBE - BRICK) / 2}          // cells the cube reaches past the brick on each side
-#define FAR_THIN_MIN ${glf(FAR.THIN_MIN)}
-#define FAR_THIN_V ${glf(FAR.THIN_V)}
-#define FAR_SURFACE_W ${glf(FAR.SURFACE_W)}
-#define FAR_LEVELS ${glf(FAR.LEVELS)}
-#define FAR_PAYLOAD ${FAR.PAYLOAD}
-#define FAR_SPARE ${FAR.SPARE}
-#define FAR_GLOW_SPAN ${glf(FAR.GLOW_SPAN)}
-const ivec3 WORLD = ivec3(WORLD_X, WORLD_Y, WORLD_Z);
-const ivec3 WB = ivec3(WBX, WBY, WBZ);
-ivec2 farTexel(ivec3 b) { return ivec2((b.y % FAR_COLS) * WBX + b.x, (b.y / FAR_COLS) * WBZ + b.z); }
-ivec3 farBrickFromFrag(ivec2 f) {
-  int tx = f.x / WBX, ty = f.y / WBZ;
-  return ivec3(f.x - tx * WBX, ty * FAR_COLS + tx, f.y - ty * WBZ);
-}
-ivec2 far1Texel(ivec3 n) { return ivec2((n.y % F1_COLS) * F1X + n.x, (n.y / F1_COLS) * F1Z + n.z); }
-ivec3 far1FromFrag(ivec2 f) {
-  int tx = f.x / F1X, ty = f.y / F1Z;
-  return ivec3(f.x - tx * F1X, ty * F1_COLS + tx, f.y - ty * F1Z);
-}
-ivec2 far2Texel(ivec3 n) { return ivec2((n.y % F2_COLS) * F2X + n.x, (n.y / F2_COLS) * F2Z + n.z); }
-ivec3 far2FromFrag(ivec2 f) {
-  int tx = f.x / F2X, ty = f.y / F2Z;
-  return ivec3(f.x - tx * F2X, ty * F2_COLS + tx, f.y - ty * F2Z);
-}
-// A far grid texel (farPack): its shares and glow (levels), its opaque and
-// liquid elements (E_EMPTY: none) and whether it holds open opaque cells.
-struct FarTexel { int s, l, glow, id, liquid; bool open; };
-FarTexel farUnpack(vec4 t) {
-  ivec4 v = ivec4(t + 0.5), lo = v % FAR_PAYLOAD, hi = v / FAR_PAYLOAD;
-  FarTexel f;
-  f.s = lo.r; f.l = lo.g; f.id = lo.b; f.glow = lo.a;
-  f.open = hi.r % 2 == 1;
-  f.liquid = hi.g + FAR_SPARE * (hi.b + FAR_SPARE * (hi.r / 2));
-  return f;
-}
-`;
 
 // Region draws into the far grid: one quad per brick slice covering bricks
 // [uFarLo, uFarLo + uFarSize) along x and z (every slice: regions span the
@@ -851,8 +740,6 @@ void main() {
 // ---------------------------------------------------------------- the view
 // Sampling the far grid and its shadow heights (the view, and the window's
 // passes that look outside it).
-export const FAR_SHADOW_SOFT = 1.5;    // cells: half the width of a far shadow's edge
-export const FAR_SHADOW_BIAS = 1.0;    // cells a point is lifted before its shadow-height test (column tops are coarse)
 const farSampleGLSL = /* glsl */ `
 uniform sampler2D tFar;        // ids and glow (texelFetch)
 uniform sampler2D tFarField;   // the field: opaque, liquid (filtered), near (texelFetch)
@@ -902,85 +789,6 @@ float farSunVis(vec3 p, int ch) {
 }
 `;
 
-// Far casters in the window's sun shadow map (render.js shadowFrag): where
-// along a texel's ray (grid cells, [t0, t1]: its stretch through the box) it
-// first goes under the shadow height of the columns outside the window. Along
-// a sun ray the height above it can only fall (see the top), so one read at
-// the ray's end says whether it ever does, and bisection finds where.
-export const FAR_CASTER_STEPS = 10;   // bisection steps (a box diagonal of ~220 cells to ~0.2 cells)
-export const farCastersGLSL = (L) => /* glsl */ `
-${farLayoutGLSL(L)}
-uniform sampler2D tFarShadow;
-#define FAR_CASTER_STEPS ${FAR_CASTER_STEPS}
-#define FAR_SHADOW_BIAS ${glf(FAR_SHADOW_BIAS)}
-bool farUnder(vec3 p) {
-  vec3 w = p + vec3(uOrigin);
-  // past the world's edge nothing casts (the heights hold only its columns: clamped, an edge wall's shade ran on forever)
-  if (any(lessThan(w.xz, vec2(0.0))) || any(greaterThanEqual(w.xz, vec2(WORLD.xz)))) return false;
-  return w.y + FAR_SHADOW_BIAS < texture(tFarShadow, w.xz / vec2(WORLD.xz)).y;
-}
-float farCasterDepth(vec3 ro, vec3 rd, float t0, float t1) {
-  if (!farUnder(ro + rd * t1)) return NO_HIT;
-  if (farUnder(ro + rd * t0)) return t0;
-  float a = t0, b = t1;
-  for (int i = 0; i < FAR_CASTER_STEPS; i++) {
-    float m = 0.5 * (a + b);
-    if (farUnder(ro + rd * m)) b = m; else a = m;
-  }
-  return b;
-}
-`;
-
-// The far field in the window's GI (gi.js giGatherFrag's far): a probe's ray
-// that has marched its bricks without being stopped reads the far field past
-// where it ended, at doubling distances: the brick-column tops (the window's
-// own region included, from its summary), so distant hills block the low sky
-// and send back the light of their ground (its element's albedo, the sun
-// through the shadow heights, the sky over it); a ray going down past the
-// coast meets the sea (the sky in it by Fresnel, and its body); else the sky.
-export const FAR_GI_STEPS = 6;       // reads along the ray past its end...
-export const FAR_GI_STEP0 = 8;       // ...the first this many cells out, each next twice as far (~500 cells in all)
-export const farGIGLSL = (L) => /* glsl */ `
-${farLayoutGLSL(L)}
-uniform sampler2D tFar;
-uniform sampler2D tFarTop;
-uniform sampler2D tFarShadow;
-uniform float uSea;
-#define FAR_GI_STEPS ${FAR_GI_STEPS}
-#define FAR_GI_STEP0 ${glf(FAR_GI_STEP0)}
-#define FAR_SHADOW_SOFT ${glf(FAR_SHADOW_SOFT)}
-#define FAR_SHADOW_BIAS ${glf(FAR_SHADOW_BIAS)}
-#define FAR_SEA_F0 0.02   // water's reflectance face on ((1.333 - 1) / (1.333 + 1))²
-vec3 farGround(vec3 r, float top) {
-  ivec3 b = clamp(ivec3(floor(vec3(r.x, top - 1.0, r.z) / float(FAR_BRICK))), ivec3(0), WB - 1);   // the brick under the top
-  int id = farUnpack(texelFetch(tFar, farTexel(b), 0)).id;
-  float s = texture(tFarShadow, r.xz / vec2(WORLD.xz)).x;
-  float sun = smoothstep(-FAR_SHADOW_SOFT, FAR_SHADOW_SOFT, top + FAR_SHADOW_BIAS - s) * cloudShadow(vec3(r.x, top, r.z));
-  return ALBEDO[id == E_EMPTY ? E_ROCK : id] * (SUN_COL * max(uSun.y, 0.0) * sun + uSkyUp);
-}
-vec3 farSea(vec3 d) {
-  float F = FAR_SEA_F0 + (1.0 - FAR_SEA_F0) * pow(1.0 - clamp(-d.y, 0.0, 1.0), 5.0);
-  return F * skyColor(reflect(d, vec3(0.0, 1.0, 0.0))) + (1.0 - F) * SCATALB[E_WATER] * uSkyUp;
-}
-// a world without a sea (uSea 0: world/scenes) has a rock plain past its edge (the far view's)
-vec3 farPlain() { return ALBEDO[E_ROCK] * (SUN_COL * max(uSun.y, 0.0) + uSkyUp); }
-vec3 farBeyond(vec3 P, vec3 Q, vec3 d, inout float open) {
-  vec3 w = Q + vec3(uOrigin);
-  float s = FAR_GI_STEP0;
-  for (int i = 0; i < FAR_GI_STEPS; i++) {
-    vec3 r = w + d * s;
-    if (any(lessThan(r.xz, vec2(0.0))) || any(greaterThanEqual(r.xz, vec2(WORLD.xz)))) break;
-    float top = texture(tFarTop, r.xz / vec2(WORLD.xz)).x;
-    if (r.y < max(top, uSea)) {
-      open = 0.0;
-      return top >= uSea ? farGround(r, top) : farSea(d);
-    }
-    s *= 2.0;
-  }
-  return d.y >= 0.0 ? skyColor(d) : (uSea > 0.0 ? farSea(d) : farPlain());
-}
-`;
-
 // The full-screen pass: a triangle covering the screen, each pixel's ray as
 // the homogeneous world point it meets on the far plane.
 export const farVert = /* glsl */ `
@@ -993,8 +801,6 @@ void main() {
 `;
 
 // Constants of the view (cells unless said otherwise).
-const FAR_HAZE_VISIBILITY_M = 12000;   // m: meteorological range of the air (a clear day with some haze)
-const KOSCHMIEDER = 3.912;             // ln(1/0.02): the 2 % contrast threshold of the visibility definition
 export const FAR_VIEW = {
   NUDGE: 0.01,             // a ray restarts this far past a node's exit
   NEAR: 0.2,               // a brick segment whose ends both read below this gets no middle sample
@@ -1020,34 +826,9 @@ export const FAR_VIEW = {
   CLUMP_OCT: 2,            // fBm octaves of the clumps
   SUN_DISC: 40.0,          // the sun's disc radiance, × the sunlight at the ground (the real ratio blooms the whole sky)
   SUN_DISC_EDGE: 0.15,     // its soft edge, share of its radius
-  HAZE: KOSCHMIEDER / (FAR_HAZE_VISIBILITY_M / CELL_M),   // extinction per cell of the air, green (blue and red follow the sky's)
+  HAZE: FAR_HAZE,          // extinction per cell of the air, green (blue and red follow the sky's): farShared.js
   OCEAN_ROCK: 'ROCK',      // the open sea's bed beyond the world (the generator's floor)
 };
-
-// Aerial perspective, for the far field and (world mode) the window's volume:
-// over d cells along rd, the air's extinction (the sky's spectral shape, scaled
-// to the haze's visibility) and its in-scatter, the sky's own radiance toward
-// rd, held at the horizon for rays going down, so distance fades into the sky.
-export const farHazeGLSL = /* glsl */ `
-#define FAR_HAZE ${FAR_VIEW.HAZE.toExponential(4)}
-const vec3 FAR_HAZE_RGB = FAR_HAZE * TAU_AIR / TAU_AIR.g;
-vec3 farAir(vec3 rd) {
-  vec3 h = vec3(rd.x, 0.0, rd.z);
-  h = dot(h, h) > 1e-8 ? normalize(h) : vec3(1.0, 0.0, 0.0);
-  return skyRadiance(rd.y > 0.0 ? rd : h);
-}
-vec3 farHaze(vec3 col, vec3 rd, float d) {
-  vec3 T = exp(-FAR_HAZE_RGB * d);
-  return col * T + farAir(rd) * (1.0 - T);
-}
-// premultiplied colour (the volume's): the share alpha it covers takes the air's light
-vec3 farHazePremul(vec3 col, float alpha, vec3 eye, vec3 p) {
-  vec3 v = p - eye;
-  float d = length(v);
-  vec3 T = exp(-FAR_HAZE_RGB * d);
-  return col * T + alpha * farAir(v / max(d, 1e-6)) * (1.0 - T);
-}
-`;
 
 export const farFrag = (g, L, mesh = false) => /* glsl */ `
 ${lib(g)}

@@ -16,6 +16,7 @@
 // Its shadows fall on the island (cloudShadow, in every sun lookup). The wind
 // drifts the deck with the simulation clock (frozen when paused).
 import { CELL_M } from '../../scale.js';
+import { libChecks } from './lib.js';
 
 export const CLOUD = {
   baseM: 1200,          // m above the sea: the flat bases (lifting condensation level of a humid day)
@@ -73,140 +74,168 @@ export function cloudShift(steps, out) {
 const glf = (x) => { const s = String(+(+x).toPrecision(7)); return /[.e]/.test(s) ? s : s + '.0'; };
 const cells = (m) => glf(m / CELL_M);
 
-// The deck itself and the sunlight through it, in every program that lights
+// The deck itself and the sunlight through it, in every pipeline that lights
 // with the sun (lighting.js: sunShadow multiplies it in, so the window's
 // surfaces, media, figures and GI probes all lie in the clouds' shadows), off
-// in a box. Its sampler is declared here for every program (media.js reads it
-// too); programs that never call sunShadow drop it unused.
-export const cloudDeckGLSL = /* glsl */ `
-uniform highp sampler3D tMediaNoise;   // r billows, g wisps, b flame tongues, a flicker (gfx/mediaNoise.js)
-uniform bool uClouds;                  // world mode: the deck is overhead (a box has none)
-uniform vec2 uCloudShift;              // cells: the wind's drift of the deck
-uniform float uCloudSea;               // world cells: the sea level the deck's height counts from
-#define CLOUD_BASE ${cells(CLOUD.baseM)}
-#define CLOUD_THICK ${cells(CLOUD.thickM)}
-#define CLOUD_COVER ${glf(CLOUD.cover)}
-#define CLOUD_SHAPE_A_F ${glf(CELL_M / CLOUD.shapeAM)}   // tiles per cell
-#define CLOUD_SHAPE_B_F ${glf(CELL_M / CLOUD.shapeBM)}
-#define CLOUD_SHAPE_B_W ${glf(CLOUD.shapeBW)}
-#define CLOUD_SLICE_A ${glf(CLOUD.sliceA)}
-#define CLOUD_SLICE_B ${glf(CLOUD.sliceB)}
-#define CLOUD_DETAIL_F ${glf(CELL_M / CLOUD.detailM)}
-#define CLOUD_ERODE ${glf(CLOUD.erode)}
-#define CLOUD_DETAIL_NEAR ${cells(CLOUD.detailFadeM[0])}
-#define CLOUD_DETAIL_FAR ${cells(CLOUD.detailFadeM[1])}
-#define CLOUD_NOISE_MEAN 0.5  // the noise channels are equalised to uniform on [0, 1]
-#define CLOUD_ROUND_LO ${glf(CLOUD.roundLo)}
-#define CLOUD_ROUND_HI ${glf(CLOUD.roundHi)}
-#define CLOUD_DOME ${glf(CLOUD.dome)}
-#define CLOUD_SIGMA ${glf(CLOUD.sigmaM * CELL_M)}   // per cell
-#define CLOUD_SHADOW_N ${CLOUD.shadowSamples}
-#define CLOUD_SHADOW_SKIP ${glf(CLOUD.shadowSkip)}   // sunlight through the deck below this: the shadow map isn't read
+// in a box (FU.clouds). WGSL (the name is the GLSL version's, docs/webgpu.md
+// W2); reads the media noise (tMediaNoise, L.LIGHTING binding 10: r billows,
+// g wisps, b flame tongues, a flicker; gfx/mediaNoise.js), which tiles, through
+// linearRepeat, and FrameUniforms' clouds, cloudShift (cells: the wind's drift
+// of the deck), cloudSea (world cells: the sea level the deck's height counts
+// from) and sun.
+//   cloudDensity(p, detail) -> f32   the deck's density (0..1) at world point p
+//   cloudShadow(w) -> f32            sunlight reaching world point w through it (1: no deck)
+export const cloudDeckGLSL = /* wgsl */ `
+const CLOUD_BASE: f32 = ${cells(CLOUD.baseM)};
+const CLOUD_THICK: f32 = ${cells(CLOUD.thickM)};
+const CLOUD_COVER: f32 = ${glf(CLOUD.cover)};
+const CLOUD_SHAPE_A_F: f32 = ${glf(CELL_M / CLOUD.shapeAM)};   // tiles per cell
+const CLOUD_SHAPE_B_F: f32 = ${glf(CELL_M / CLOUD.shapeBM)};
+const CLOUD_SHAPE_B_W: f32 = ${glf(CLOUD.shapeBW)};
+const CLOUD_SLICE_A: f32 = ${glf(CLOUD.sliceA)};
+const CLOUD_SLICE_B: f32 = ${glf(CLOUD.sliceB)};
+const CLOUD_DETAIL_F: f32 = ${glf(CELL_M / CLOUD.detailM)};
+const CLOUD_ERODE: f32 = ${glf(CLOUD.erode)};
+const CLOUD_DETAIL_NEAR: f32 = ${cells(CLOUD.detailFadeM[0])};
+const CLOUD_DETAIL_FAR: f32 = ${cells(CLOUD.detailFadeM[1])};
+const CLOUD_NOISE_MEAN: f32 = 0.5;   // the noise channels are equalised to uniform on [0, 1]
+const CLOUD_ROUND_LO: f32 = ${glf(CLOUD.roundLo)};
+const CLOUD_ROUND_HI: f32 = ${glf(CLOUD.roundHi)};
+const CLOUD_DOME: f32 = ${glf(CLOUD.dome)};
+const CLOUD_SIGMA: f32 = ${glf(CLOUD.sigmaM * CELL_M)};   // per cell
+const CLOUD_SHADOW_N: i32 = ${CLOUD.shadowSamples};
+const CLOUD_SHADOW_SKIP: f32 = ${glf(CLOUD.shadowSkip)};   // sunlight through the deck below this: the shadow map isn't read
 
 // Cloud density (0..1) at world point p (cells); detail (0..1): how much the
 // fine billows erode it (0: their mean, for the light march and far off).
-float cloudDensity(vec3 p, float detail) {
-  float h = (p.y - uCloudSea - CLOUD_BASE) / CLOUD_THICK;
-  if (h <= 0.0 || h >= 1.0) return 0.0;
-  vec2 xz = p.xz + uCloudShift;
-  float w = mix(texture(tMediaNoise, vec3(xz * CLOUD_SHAPE_A_F, CLOUD_SLICE_A)).r,
-                texture(tMediaNoise, vec3(xz.yx * CLOUD_SHAPE_B_F, CLOUD_SLICE_B)).g, CLOUD_SHAPE_B_W);
-  float cov = (w - (1.0 - CLOUD_COVER)) / CLOUD_COVER;
-  if (cov <= 0.0) return 0.0;
+fn cloudDensity(p: vec3f, detail: f32) -> f32 {
+  let h = (p.y - FU.cloudSea - CLOUD_BASE) / CLOUD_THICK;
+  if (h <= 0.0 || h >= 1.0) { return 0.0; }
+  let xz = p.xz + FU.cloudShift;
+  let w = mix(textureSampleLevel(tMediaNoise, linearRepeat, vec3f(xz * CLOUD_SHAPE_A_F, CLOUD_SLICE_A), 0.0).r,
+              textureSampleLevel(tMediaNoise, linearRepeat, vec3f(xz.yx * CLOUD_SHAPE_B_F, CLOUD_SLICE_B), 0.0).g, CLOUD_SHAPE_B_W);
+  let cov = (w - (1.0 - CLOUD_COVER)) / CLOUD_COVER;
+  if (cov <= 0.0) { return 0.0; }
   // flat bases, domed tops: the profile thins the coverage away from the core
-  float prof = smoothstep(0.0, CLOUD_ROUND_LO, h) * (1.0 - smoothstep(CLOUD_ROUND_HI, 1.0, h));
-  float d = cov - CLOUD_DOME * (1.0 - prof);
-  if (d <= 0.0) return 0.0;
-  float n = detail > 0.0 ? texture(tMediaNoise, vec3(xz.x, p.y, xz.y) * CLOUD_DETAIL_F).r : CLOUD_NOISE_MEAN;
+  let prof = smoothstep(0.0, CLOUD_ROUND_LO, h) * (1.0 - smoothstep(CLOUD_ROUND_HI, 1.0, h));
+  let d = cov - CLOUD_DOME * (1.0 - prof);
+  if (d <= 0.0) { return 0.0; }
+  var n = CLOUD_NOISE_MEAN;
+  if (detail > 0.0) { n = textureSampleLevel(tMediaNoise, linearRepeat, vec3f(xz.x, p.y, xz.y) * CLOUD_DETAIL_F, 0.0).r; }
   return clamp(d - CLOUD_ERODE * (1.0 - mix(CLOUD_NOISE_MEAN, n, detail)), 0.0, 1.0);
 }
 
 // Sunlight reaching world point w (cells) through the deck: its optical depth
 // along the sun, read at CLOUD_SHADOW_N heights through it (the shapes without
 // their fine detail, which the sun's penumbra at that height, ~10 m, blurs).
-float cloudShadow(vec3 w) {
-  if (!uClouds) return 1.0;
-  float od = 0.0;
-  for (int k = 0; k < CLOUD_SHADOW_N; k++) {
-    float y = uCloudSea + CLOUD_BASE + (float(k) + 0.5) / float(CLOUD_SHADOW_N) * CLOUD_THICK;
-    od += cloudDensity(w + uSun * ((y - w.y) / uSun.y), 0.0);   // (the key light stays above DAY.keyElMin)
+fn cloudShadow(w: vec3f) -> f32 {
+  if (FU.clouds == 0u) { return 1.0; }
+  var od = 0.0;
+  for (var k = 0; k < CLOUD_SHADOW_N; k++) {
+    let y = FU.cloudSea + CLOUD_BASE + (f32(k) + 0.5) / f32(CLOUD_SHADOW_N) * CLOUD_THICK;
+    od += cloudDensity(w + FU.sun * ((y - w.y) / FU.sun.y), 0.0);   // (the key light stays above DAY.keyElMin)
   }
-  return exp(-CLOUD_SIGMA * od * CLOUD_THICK / (uSun.y * float(CLOUD_SHADOW_N)));
+  return exp(-CLOUD_SIGMA * od * CLOUD_THICK / (FU.sun.y * f32(CLOUD_SHADOW_N)));
 }
 `;
 
-// The deck seen in World's sky (far.js farSky). Needs (before it): the deck,
-// lighting.js (uSun, SUN_COL, uSkyUp, uGround, PI_L), the far field's haze
-// (farAir, FAR_HAZE_RGB), hash33, uFrame.
-export const cloudsGLSL = /* glsl */ `
-#define CLOUD_STEPS ${CLOUD.steps}
-#define CLOUD_MAX_SPAN ${cells(CLOUD.maxSpanM)}
-#define CLOUD_MAX_DIST ${cells(CLOUD.maxDistM)}
-#define CLOUD_LIGHT_STEPS ${CLOUD.lightSteps}
-#define CLOUD_LIGHT_STEP0 ${cells(CLOUD.lightStep0M)}
-#define CLOUD_G_FWD ${glf(CLOUD.gFwd)}
-#define CLOUD_G_BACK ${glf(CLOUD.gBack)}
-#define CLOUD_G_MIX ${glf(CLOUD.gMix)}
-#define CLOUD_MS_OCTAVES ${CLOUD.msOctaves}
-#define CLOUD_MS_A ${glf(CLOUD.msA)}
-#define CLOUD_MS_B ${glf(CLOUD.msB)}
-#define CLOUD_MS_C ${glf(CLOUD.msC)}
-#define CLOUD_AMB_BASE ${glf(CLOUD.ambBase)}
-#define CLOUD_T_MIN ${glf(CLOUD.tMin)}
-#define CLOUD_HAZE_H ${cells(CLOUD.hazeScaleM)}
-#define CLOUD_FLAT_EPS 1e-4   // height differences below this count as level (the haze's scale-height factor)
+// The deck seen in World's sky (the far view, shaders/far.js farSky). Needs,
+// before it: lib() (the deck, lighting.js's sky, hash33, gFragCoord) and the
+// far field's haze (shaders/farShared.js farHazeGLSL: farAir, FAR_HAZE_RGB).
+//   cloudHG(mu, g) -> f32           Henyey–Greenstein phase
+//   cloudLayer(ro, rd) -> vec4f     the deck seen from ro along rd: rgb the light it
+//                                   sends toward the eye (premultiplied, hazed), a how
+//                                   much of what lies behind it still shows
+export const cloudsGLSL = /* wgsl */ `
+const CLOUD_STEPS: i32 = ${CLOUD.steps};
+const CLOUD_MAX_SPAN: f32 = ${cells(CLOUD.maxSpanM)};
+const CLOUD_MAX_DIST: f32 = ${cells(CLOUD.maxDistM)};
+const CLOUD_LIGHT_STEPS: i32 = ${CLOUD.lightSteps};
+const CLOUD_LIGHT_STEP0: f32 = ${cells(CLOUD.lightStep0M)};
+const CLOUD_G_FWD: f32 = ${glf(CLOUD.gFwd)};
+const CLOUD_G_BACK: f32 = ${glf(CLOUD.gBack)};
+const CLOUD_G_MIX: f32 = ${glf(CLOUD.gMix)};
+const CLOUD_MS_OCTAVES: i32 = ${CLOUD.msOctaves};
+const CLOUD_MS_A: f32 = ${glf(CLOUD.msA)};
+const CLOUD_MS_B: f32 = ${glf(CLOUD.msB)};
+const CLOUD_MS_C: f32 = ${glf(CLOUD.msC)};
+const CLOUD_AMB_BASE: f32 = ${glf(CLOUD.ambBase)};
+const CLOUD_T_MIN: f32 = ${glf(CLOUD.tMin)};
+const CLOUD_HAZE_H: f32 = ${cells(CLOUD.hazeScaleM)};
+const CLOUD_FLAT_EPS: f32 = 1e-4;   // height differences below this count as level (the haze's scale-height factor)
 
-float cloudHG(float mu, float g) {
-  float g2 = g * g;
+fn cloudHG(mu: f32, g: f32) -> f32 {
+  let g2 = g * g;
   return (1.0 - g2) / (4.0 * PI_L * pow(1.0 + g2 - 2.0 * g * mu, 1.5));
 }
 
-// The deck seen from ro along rd: rgb = the light it sends toward the eye
-// (premultiplied, hazed), a = how much of what lies behind it still shows.
-vec4 cloudLayer(vec3 ro, vec3 rd) {
-  if (rd.y <= 0.0) return vec4(0.0, 0.0, 0.0, 1.0);
-  float lo = uCloudSea + CLOUD_BASE, hi = lo + CLOUD_THICK;
-  float t0 = max((lo - ro.y) / rd.y, 0.0);
-  if (t0 > CLOUD_MAX_DIST) return vec4(0.0, 0.0, 0.0, 1.0);
-  float t1 = min((hi - ro.y) / rd.y, t0 + CLOUD_MAX_SPAN);
-  float dt = (t1 - t0) / float(CLOUD_STEPS);
-  float t = t0 + dt * hash33(vec3(gl_FragCoord.xy, float(uFrame))).x;   // jittered: TAA blends the banding away
-  float mu = dot(rd, uSun);
-  float detail = 1.0 - smoothstep(CLOUD_DETAIL_NEAR, CLOUD_DETAIL_FAR, t0);
-  vec3 S = vec3(0.0);
-  float T = 1.0, tw = 0.0, ww = 0.0;   // transmittance; the in-scatter's mean distance (for the haze)
-  for (int i = 0; i < CLOUD_STEPS; i++, t += dt) {
-    vec3 p = ro + rd * t;
-    float d = cloudDensity(p, detail);
-    if (d <= 0.0) continue;
-    // sunlight reaching p: optical depth along a short march toward the sun
-    float od = 0.0, s0 = 0.0, len = CLOUD_LIGHT_STEP0;
-    for (int k = 0; k < CLOUD_LIGHT_STEPS; k++) {
-      od += cloudDensity(p + uSun * (s0 + 0.5 * len), 0.0) * len;
-      s0 += len; len *= 2.0;
+fn cloudLayer(ro: vec3f, rd: vec3f) -> vec4f {
+  if (rd.y <= 0.0) { return vec4f(0.0, 0.0, 0.0, 1.0); }
+  let lo = FU.cloudSea + CLOUD_BASE;
+  let hi = lo + CLOUD_THICK;
+  let t0 = max((lo - ro.y) / rd.y, 0.0);
+  if (t0 > CLOUD_MAX_DIST) { return vec4f(0.0, 0.0, 0.0, 1.0); }
+  let t1 = min((hi - ro.y) / rd.y, t0 + CLOUD_MAX_SPAN);
+  let dt = (t1 - t0) / f32(CLOUD_STEPS);
+  var t = t0 + dt * hash33(vec3f(gFragCoord, f32(FU.frame))).x;   // jittered: TAA blends the banding away
+  let mu = dot(rd, FU.sun);
+  let detail = 1.0 - smoothstep(CLOUD_DETAIL_NEAR, CLOUD_DETAIL_FAR, t0);
+  var S = vec3f(0.0);
+  var T = 1.0;    // transmittance
+  var tw = 0.0;   // the in-scatter's mean distance (for the haze): its weighted sum ...
+  var ww = 0.0;   // ... and its weight
+  var i = 0;
+  loop {
+    if (i >= CLOUD_STEPS) { break; }
+    let p = ro + rd * t;
+    let d = cloudDensity(p, detail);
+    if (d > 0.0) {
+      // sunlight reaching p: optical depth along a short march toward the sun
+      var od = 0.0;
+      var s0 = 0.0;
+      var len = CLOUD_LIGHT_STEP0;
+      for (var k = 0; k < CLOUD_LIGHT_STEPS; k++) {
+        od += cloudDensity(p + FU.sun * (s0 + 0.5 * len), 0.0) * len;
+        s0 += len;
+        len *= 2.0;
+      }
+      od *= CLOUD_SIGMA;
+      var sun = 0.0;
+      var a = 1.0;
+      var b = 1.0;
+      var c = 1.0;
+      for (var k = 0; k < CLOUD_MS_OCTAVES; k++) {
+        sun += b * mix(cloudHG(mu, CLOUD_G_BACK * c), cloudHG(mu, CLOUD_G_FWD * c), CLOUD_G_MIX) * exp(-a * od);
+        a *= CLOUD_MS_A;
+        b *= CLOUD_MS_B;
+        c *= CLOUD_MS_C;
+      }
+      let h = (p.y - lo) / CLOUD_THICK;
+      let L = PI_L * FU.sunCol * sun + mix(FU.ground, FU.skyUp, mix(CLOUD_AMB_BASE, 1.0, h));
+      let a0 = 1.0 - exp(-CLOUD_SIGMA * d * dt);   // this step's opacity (albedo 1: what it stops, it scatters)
+      let wgt = T * a0;
+      S += wgt * L;
+      tw += wgt * t;
+      ww += wgt;
+      T *= 1.0 - a0;
+      if (T < CLOUD_T_MIN) { break; }
     }
-    od *= CLOUD_SIGMA;
-    vec3 sun = vec3(0.0);
-    float a = 1.0, b = 1.0, c = 1.0;
-    for (int k = 0; k < CLOUD_MS_OCTAVES; k++) {
-      sun += b * mix(cloudHG(mu, CLOUD_G_BACK * c), cloudHG(mu, CLOUD_G_FWD * c), CLOUD_G_MIX) * exp(-a * od);
-      a *= CLOUD_MS_A; b *= CLOUD_MS_B; c *= CLOUD_MS_C;
+    continuing {
+      i++;
+      t += dt;
     }
-    float h = (p.y - lo) / CLOUD_THICK;
-    vec3 L = PI_L * SUN_COL * sun + mix(uGround, uSkyUp, mix(CLOUD_AMB_BASE, 1.0, h));
-    float a0 = 1.0 - exp(-CLOUD_SIGMA * d * dt);   // this step's opacity (albedo 1: what it stops, it scatters)
-    float wgt = T * a0;
-    S += wgt * L;
-    tw += wgt * t; ww += wgt;
-    T *= 1.0 - a0;
-    if (T < CLOUD_T_MIN) break;
   }
-  if (ww <= 0.0) return vec4(0.0, 0.0, 0.0, 1.0);
+  if (ww <= 0.0) { return vec4f(0.0, 0.0, 0.0, 1.0); }
   // the haze in front: the far field's air, thinning with height over its scale height
-  float dist = tw / ww, dy = dist * rd.y;
-  float k = dy > CLOUD_FLAT_EPS ? CLOUD_HAZE_H / dy * (1.0 - exp(-dy / CLOUD_HAZE_H)) : 1.0;
-  vec3 Th = exp(-FAR_HAZE_RGB * dist * k);
+  let dist = tw / ww;
+  let dy = dist * rd.y;
+  var k = 1.0;
+  if (dy > CLOUD_FLAT_EPS) { k = CLOUD_HAZE_H / dy * (1.0 - exp(-dy / CLOUD_HAZE_H)); }
+  let Th = exp(-FAR_HAZE_RGB * dist * k);
   S = S * Th + farAir(rd) * (1.0 - Th) * (1.0 - T);
-  return vec4(S, T);
+  return vec4f(S, T);
 }
 `;
+
+/** tools/check-wgsl.mjs: probe kernels calling the deck's functions and cloudLayer (shaders/gfx/lib.js libChecks) */
+export const WGSL_CHECK = () => libChecks('clouds');
