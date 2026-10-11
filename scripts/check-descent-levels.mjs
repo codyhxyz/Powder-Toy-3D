@@ -12,7 +12,7 @@ import { writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { E, ELEMENTS, K } from '../src/elements.js';
 import { descentTwin, descentConstants, DS_LEVEL_DEFS } from '../src/world/scenes/descent/scenes.js';
-import { levelSites, reachable, crossingOf, feetAt, wangWalk } from '../src/world/scenes/descent/sites.js';
+import { levelSites, reachable, crossingOf, feetAt, wangWalk, LOOT_COUNTS, CHEST_COUNT, POTION_COUNT } from '../src/world/scenes/descent/sites.js';
 import { GEOM } from '../src/world/wang/index.js';
 
 const LEVELS_JS = fileURLToPath(new URL('../src/world/scenes/descent/levels.js', import.meta.url));
@@ -36,6 +36,12 @@ ${Object.entries(L.temple).map(([k, v]) => `      ${k}: ${row(v)},`).join('\n')}
     },
     loot: [
 ${L.loot.map((l) => `      ${row(l)},`).join('\n')}
+    ],
+    chests: [
+${L.chests.map((l) => `      ${row(l)},`).join('\n')}
+    ],
+    potions: [
+${L.potions.map((l) => `      ${row(l)},`).join('\n')}
     ],
   },`;
   writeFileSync(LEVELS_JS, `// The Descent levels (docs/descent-contract.md): plain data, no imports, so the
@@ -72,7 +78,12 @@ DESCENT_LEVELS.forEach((L, level) => {
   if (feetAt(cell, L.spawn[0], L.spawn[2], L.spawn[1], L.spawn[1] + 1) !== L.spawn[1]) fail(L.key, 'spawn is not on the floor');
   const counts = {};
   for (const l of L.loot) { stands(`${l.kind} site`, [l.x, l.y, l.z]); counts[l.kind] = (counts[l.kind] ?? 0) + 1; if (l.tier !== L.tier) fail(L.key, 'loot tier'); }
-  if (!(counts.wand >= 4 && counts.wand <= 6 && counts.spell >= 6 && counts.gold >= 10)) fail(L.key, `loot counts ${JSON.stringify(counts)}`);
+  if (!(counts.wand >= 4 && counts.wand <= 6 && counts.spell >= 6 && counts.gold >= LOOT_COUNTS.gold)) fail(L.key, `loot counts ${JSON.stringify(counts)}`);
+  // chests (Noita's 2–3 a biome) and potion flasks: their own lists, same rules as a loot site
+  for (const c of L.chests ?? []) { stands('chest', [c.x, c.y, c.z]); if (c.tier !== L.tier) fail(L.key, 'chest tier'); }
+  for (const c of L.potions ?? []) { stands('potion', [c.x, c.y, c.z]); if (c.tier !== L.tier) fail(L.key, 'potion tier'); }
+  if (!(L.chests?.length >= 2 && L.chests.length <= CHEST_COUNT)) fail(L.key, `${L.chests?.length} chests, want 2–${CHEST_COUNT}`);
+  if (L.potions?.length !== POTION_COUNT) fail(L.key, `${L.potions?.length} potions, want ${POTION_COUNT}`);
 
   const t = L.temple, [bx0, by0, bz0, bx1, by1, bz1] = t.box;
   // the temple and its pit lie in the band, which is WALL round them beyond the lining
@@ -108,7 +119,7 @@ DESCENT_LEVELS.forEach((L, level) => {
   if (wang) {
     const walk = wangWalk(level, L.spawn);
     if (!walk.inTemple) fail(L.key, 'no way down from the spawn to the temple (Wang walk)');
-    for (const l of L.loot) if (!walk.reached(l.x, l.y, l.z)) fail(L.key, `${l.kind} site ${[l.x, l.y, l.z]} out of the walk's reach`);
+    for (const l of [...L.loot, ...L.chests, ...L.potions]) if (!walk.reached(l.x, l.y, l.z)) fail(L.key, `${l.kind ?? 'chest/potion'} site ${[l.x, l.y, l.z]} out of the walk's reach`);
     console.log(`${L.key}: Wang walk reaches ${walk.count} standing places${walk.inTemple ? ', the temple among them' : ''}`);
   }
   // the way down: from the spawn's crossing, down to the lowest layer's crossing over the entry shaft
@@ -135,7 +146,7 @@ DESCENT_LEVELS.forEach((L, level) => {
     if (!wang) for (let z = C.RAMP_ZC; z >= C.TZC; z--) if (feetAt(cell, C.RAMP_X1 - 1, z, C.TOP_FLOOR, C.TOP_FLOOR + 1) !== C.TOP_FLOOR) { fail(L.key, `no doorway from the ramp into the main row at z ${z}`); break; }
   }
   const lowest = Math.min(...[...reach].map((k) => +k.split(',')[0]));
-  console.log(`${L.key}: spawn ${L.spawn}, ${L.loot.length} loot sites (${Object.entries(counts).map(([k, v]) => `${v} ${k}`).join(', ')})${wang ? '' : `, ${reach.size} crossings reachable down to layer ${lowest}`}`);
+  console.log(`${L.key}: spawn ${L.spawn}, ${L.loot.length} loot sites (${Object.entries(counts).map(([k, v]) => `${v} ${k}`).join(', ')}), ${L.chests.length} chests, ${L.potions.length} potions${wang ? '' : `, ${reach.size} crossings reachable down to layer ${lowest}`}`);
 });
 console.log(failures ? `${failures} failure(s)` : 'descent levels OK');
 process.exit(failures ? 1 : 0);

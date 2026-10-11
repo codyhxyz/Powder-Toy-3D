@@ -5,6 +5,7 @@ import { DESCENT_LEVELS, levelByScene, generator, descentWands } from './deps.js
 import { createPurse, siteNuggets, splitGold, enemyGold, DROP_LIFETIME_S, DROP_BLINK_S, NUGGET } from './gold.js';
 import { rollShop, buy } from './shop.js';
 import { hashString, mixSeed } from './rng.js';
+import { createDescentItems } from './items.js';
 
 // The Holy Mountain (docs/descent-contract.md, C): Noita's temple between biomes,
 // and the gold that pays for it. On a Descent level (A's levels.js) it keeps:
@@ -127,7 +128,12 @@ export function createDescent({ app, scene, hud, interact, events, getToolbelt =
     });
   }
 
+  // potion flasks and treasure chests (items.js)
+  const items = createDescentItems({ app, root, interact, events, spill, generator,
+    toast: (text) => hud.toast(text), wands: () => descentWands(getToolbelt()) });
+
   function leave() {
+    items.leave();
     shop.forEach(dropItem); shop = [];
     dropItem(refresher); refresher = null;
     for (const n of nuggets) n.obj.removeFromParent();
@@ -166,6 +172,8 @@ export function createDescent({ app, scene, hud, interact, events, getToolbelt =
       if (l.kind !== 'gold') return;
       spill(site([l.x, l.y, l.z]), siteNuggets(l.tier ?? tier, mixSeed(levelSeed, NUGGET_SALT, i)), mixSeed(levelSeed, i));
     });
+    // flasks lying about and the chests (items.js)
+    items.arrive(lv);
     app.requestRender?.();
   }
 
@@ -269,6 +277,8 @@ export function createDescent({ app, scene, hud, interact, events, getToolbelt =
       n.obj.scale.setScalar(scale * (NUGGET_SIZE[n.value] ?? NUGGET_SIZE[NUGGET.SMALL]));
     }
 
+    items.update(f);
+
     // shop items and the refresher follow the window and bob
     for (const it of [...shop, refresher]) {
       if (!it?.obj) continue;
@@ -294,9 +304,11 @@ export function createDescent({ app, scene, hud, interact, events, getToolbelt =
     get shrine() { return shrine; },
     get nuggets() { return nuggets; },
     get refresher() { return refresher; },
+    get items() { return items; },
     arrive: (key) => { const lv = levelByScene(key); if (lv) arrive(lv); },   // checks: set up a level by hand
     dispose() {
       leave();
+      items.dispose();
       offs.forEach((o) => o());
       offInteract();
       root.removeFromParent();
