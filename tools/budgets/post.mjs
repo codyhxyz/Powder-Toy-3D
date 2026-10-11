@@ -26,9 +26,17 @@ export default {
       expect: frame,
     },
     {
-      name: 'night vision\'s meter rides in the same reduction dispatch',
+      name: 'E1\'s FrameUniforms reader recorded in compute(), after prepare()\'s write: still one submit, no write flush (B3)',
+      run: (page) => page.evaluate(() => window.__harness.run('frameUniforms', { route: 'hooks' })),
+      // the reader's own compute pass and dispatch besides the frame's
+      expect: { ...frame, computePasses: 2, dispatches: 11, writeFlushes: 0 },
+    },
+    {
+      // adaptation off, so the reduction runs only for the meter: in 8 frames it
+      // runs on 2 (every METER_INTERVAL), inside the bloom's compute pass
+      name: 'night vision\'s meter rides in the post compute pass, every 4th frame',
       run: (page) => page.evaluate(() => window.__harness.run('budget:meter')),
-      expect: frame,
+      expect: { ...frame, metered: 2, unmeteredDispatches: 9, sceneLuma: { min: 1e-3 } },
     },
     {
       name: 'TAA off: no TAA pass (scene, prefilter, up[0], canvas)',

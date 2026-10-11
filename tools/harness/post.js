@@ -9,10 +9,10 @@
 //
 // Each test returns plain data; the tool asserts on it.
 
-import { createPresenter, uniformStruct, fullscreenVert, halfsToFloats } from '/src/gpu/index.js';
+import { createPresenter, uniformStruct, fullscreenVert, halfsToFloats, STAGE } from '/src/gpu/index.js';
 import { useWebGPUCamera, createThreeRenderer, threeHasVisible } from '/src/gpu/three.js';
 import { PerspectiveCamera, Matrix4, Vector3, Scene, Mesh, BoxGeometry, MeshBasicNodeMaterial } from 'three/webgpu';
-import { createPost, POST_DEFAULTS } from '/src/gfx/post.js';
+import { createPost, POST_DEFAULTS, WGSL_CHECK } from '/src/gfx/post.js';
 import { createProfiler } from '/src/gfx/profiler.js';
 import { createProfilerPanel } from '/src/ui/profiler.js';
 import { boot, ready, test, log, measure } from './harness.js';
@@ -321,6 +321,36 @@ test('canvas', async ({ mode = 'none', settings = {} } = {}) => {
 });
 test('canvasVisible', (on) => { canvas.classList.toggle('hidden', !on); return true; });
 
+// bytes as base64 (the tool decodes; JSON arrays of this size are slow)
+function b64(u8) {
+  let bin = '';
+  for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode(...u8.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+const bytesOf = (a) => new Uint8Array(a.buffer, a.byteOffset, a.byteLength);
+
+// The plane over the sky through the whole chain (TAA, bloom, sharpening; the
+// adaptation gain held at 1 unless settings say otherwise), after `frames`
+// frames: post's own textures of the last frame (the resolved frame TAA wrote,
+// every bloom level, as half bits) and the canvas it composited, for the tool to
+// recompute each step in JS from the step before.
+test('chain', async ({ settings = {}, frames = 8 } = {}) => {
+  setPost({ adapt: false, ...settings });
+  home(camera);
+  for (let k = 1; k < frames; k++) frame(sceneHooks());
+  post.render(sceneHooks(), camera);
+  const cap = post.capture();
+  const t = post.targets;
+  const level = async (x) => ({ w: x.width, h: x.height, bits: b64(bytesOf(await gpu.readback.texture(x))) });
+  const reads = { history: level(t.history), down: t.down.map(level), up: t.up.map(level) };
+  gpu.endFrame();
+  const { width, height, data } = await cap;
+  return {
+    history: await reads.history, down: await Promise.all(reads.down), up: await Promise.all(reads.up),
+    canvas: { w: width, h: height, rgba: b64(data) }, settings: { ...POST_DEFAULTS, ...post.settings },
+  };
+});
+
 // RGBA bytes of a PNG (a Playwright screenshot, base64)
 async function pngPixels(base64) {
   const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
@@ -376,6 +406,33 @@ test('still', async () => {
   return { covered, clear, partial, colourInClear, historyKept: difference(before, after).rgb === 0, stats };
 });
 
+// Resizes inside one task: two stills of different sizes, a frame into a
+// 200×120 target and one into the canvas, then one flush. Each resize destroys
+// textures the open encoder's commands use; post flushes before it does, so
+// the submits stay valid. Returns the GPU failure (null) and the second still's
+// coverage.
+test('resize', async () => {
+  setPost({});
+  home(camera);
+  const usage = GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC;
+  const mk = (w, h) => gpu.createTexture({ label: `resize ${w}×${h}`, size: [w, h], format: 'rgba8unorm', usage });
+  const a = mk(320, 200), b = mk(160, 100), c = mk(200, 120);
+  const before = { ...gpu.stats };
+  post.renderStill(sceneHooks(), camera, a);
+  post.renderStill(sceneHooks(), camera, b);
+  post.render(sceneHooks(), camera, c);
+  post.render(sceneHooks(), camera);
+  const px = gpu.readback.texture(b);
+  gpu.endFrame();
+  await gpu.fence();
+  const bytes = await px;
+  let covered = 0;
+  for (let i = 3; i < bytes.length; i += 4) if (bytes[i] === 255) covered++;
+  await tick();
+  [a, b, c].forEach((t) => t.destroy());
+  return { failure: gpu.failure ? String(gpu.failure.message ?? gpu.failure) : null, submits: gpu.stats.flushes - before.flushes, covered, pixels: bytes.length / 4, size: post.size };
+});
+
 // ---------------------------------------------------------------- budgets (tools/budgets/post.mjs)
 
 // one presented frame after a warm-up frame (sizes allocated, bind groups made)
@@ -390,7 +447,95 @@ test('budget:frame', () => budgetFrame({}));
 test('budget:raw', () => budgetFrame({ raw: true }));
 test('budget:noTaa', () => budgetFrame({ taa: false }));
 test('budget:taau', () => budgetFrame({ upscale: 1 / 1.5 }));
-test('budget:meter', () => budgetFrame({ meter: true }));
+// The meter with adaptation off, so the reduction is dispatched only for it:
+// over 8 frames (each awaited, so its reading lands) it runs every
+// METER_INTERVAL (4) frames, in the same compute pass; returns a metered
+// frame's stats, how many of the 8 metered, an unmetered frame's dispatches
+// and post.sceneLuma after.
+test('budget:meter', async () => {
+  setPost({ meter: true, adapt: false });
+  home(camera);
+  post.sceneLuma = null;
+  for (let k = 0; k < 2; k++) frame(sceneHooks());
+  await gpu.fence(); await gpu.readback.idle(); await tick();
+  const all = [];
+  for (let k = 0; k < 8; k++) {
+    all.push(await measure(gpu, async () => { frame(sceneHooks()); await tick(); }));
+    await gpu.fence(); await gpu.readback.idle(); await tick();
+  }
+  const metered = all.filter((st) => st.dispatches === 10), plain = all.filter((st) => st.dispatches !== 10);
+  const out = { stats: metered[0] ?? all[0], metered: metered.length, unmeteredDispatches: plain[0]?.dispatches ?? null, sceneLuma: post.sceneLuma };
+  setPost({ meter: false });
+  return out;
+});
+
+// ---------------------------------------------------------------- FrameUniforms and E1 (B3)
+
+// A FrameUniforms stand-in (a SharedUniforms: its writes flush when the open
+// encoder already reads it) and an E1 kernel that reads it, as shadow and GI
+// read FrameUniforms: it stores the jitter, pixScale and the jittered
+// projection's [2][0] (−2·jx/w) it saw.
+const FrameTest = uniformStruct('FrameTest', { proj: 'mat4x4f', jitter: 'vec2f', pixScale: 'f32' });
+const frameU = gpu.uniforms(FrameTest, 'FrameTest');
+const seenBuf = gpu.createBuffer({ label: 'frame seen', size: 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+const frameLayout = gpu.layout('TEST_FRAME_READ', [
+  { binding: 0, visibility: STAGE.COMPUTE, buffer: { type: 'uniform' } },
+  { binding: 1, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } },
+]);
+const frameKernel = gpu.kernel({
+  name: 'testFrameRead', layouts: [, , frameLayout], workgroupSize: [1, 1, 1], code: /* wgsl */ `
+${FrameTest.wgsl}
+@group(2) @binding(0) var<uniform> FT: FrameTest;
+@group(2) @binding(1) var<storage, read_write> seen: array<f32, 4>;
+@compute @workgroup_size(1) fn main() {
+  seen[0] = FT.jitter.x; seen[1] = FT.jitter.y; seen[2] = FT.pixScale; seen[3] = FT.proj[2][0];
+}
+`,
+});
+const frameGroup = gpu.bindGroup(frameLayout, [{ binding: 0, resource: { buffer: frameU.buffer } }, { binding: 1, resource: { buffer: seenBuf } }]);
+await frameKernel.ready;
+const e1 = () => frameKernel.dispatch(gpu.frame, [1, 1, 1], { bind: [, , frameGroup] });
+const writeFrame = (p) => frameU.write({ proj: camera.projectionMatrix, jitter: p.jitter, pixScale: p.inSize[0] / p.size[0] });
+
+// One presented frame with an E1 FrameUniforms reader. route 'hooks': the
+// write in prepare(), the reader in compute() (the documented route). route
+// 'before' (the control): the reader recorded before render(), the write in
+// prepare(): the write must flush, and the reader sees the frame before's values.
+test('frameUniforms', async ({ route = 'hooks', upscale = 1 } = {}) => {
+  setPost({ upscale });
+  home(camera);
+  const base = sceneHooks();
+  const hooks = { ...base, prepare(p) { base.prepare(p); writeFrame(p); } };
+  for (let k = 0; k < 2; k++) frame({ ...hooks, compute: e1 });
+  await gpu.fence();
+  const stats = await measure(gpu, async () => {
+    if (route === 'before') e1();
+    frame(route === 'hooks' ? { ...hooks, compute: e1 } : hooks);
+    await tick();
+  });
+  const seen = Array.from(new Float32Array(await gpu.readback.buffer(seenBuf)));
+  return { stats, seen, jitter: post.jitter, inSize: post.inSize, size: post.size };
+});
+
+// The start menu's warm-up (B5) from WGSL_CHECK alone, written here without
+// post.js's helpers: every entry built with its layouts made under
+// layoutNames. On this page createPost has built its pipelines already, so a
+// warm-up that describes them exactly creates none (the pipeline cache keys on
+// module, layout objects and descriptor). control: the layouts under other
+// names, which must miss the cache.
+test('warm', async ({ control = false } = {}) => {
+  const before = { ...gpu.stats };
+  const pipes = WGSL_CHECK.map((e) => {
+    const groups = e.layouts(null);
+    const layouts = e.layoutNames.map((name, i) => (name ? gpu.layout(control ? `WARM_${name}` : name, groups[i]) : undefined));
+    const desc = { name: `warm ${e.name}`, code: e.code(null), layouts, params: e.params, constants: e.constants };
+    return e.kind === 'render'
+      ? gpu.renderPipeline({ ...desc, vertex: e.vertex, fragment: e.fragment, primitive: e.primitive, depthStencil: e.depthStencil })
+      : gpu.kernel({ ...desc, entry: e.entry, workgroupSize: e.workgroupSize });
+  });
+  await Promise.all(pipes.map((p) => p.ready));
+  return { entries: WGSL_CHECK.length, created: gpu.stats.pipelinesCreated - before.pipelinesCreated, ready: pipes.every((p) => p.state === 'ready') };
+});
 test('budget:still', async () => {
   const target = gpu.createTexture({ label: 'thumb', size: [320, 200], format: 'rgba8unorm', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC });
   setPost({});

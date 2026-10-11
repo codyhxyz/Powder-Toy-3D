@@ -8,10 +8,14 @@
 //    scene edits, figures moving, objects hidden and re-added, values that
 //    print alike, such as 0 and -0, NaN and Infinity in JSON, 1 and '1') and
 //    then a seeded random one, the counter must change on exactly the ticks
-//    where the string does.
+//    where the string does. Negative controls: createViewKey with one of its
+//    rules broken (made from gfx/pacing.js's own text: the scene read before
+//    the camera, key names ignored, scalars compared with ===, no
+//    scene.updateMatrixWorld) must each fail those sessions.
 // 2. createFrameLoop: deep idle (F7) stops scheduling callbacks when a frame
 //    says so; wake() and pacer.wake() start it again, once.
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import * as THREE from 'three';
 import { createViewKey, sceneKey, createFrameLoop, createPacer } from '../src/gfx/pacing.js';
 
@@ -123,10 +127,10 @@ const mutations = {
 // Both keys mutate what they read (sceneKey brings the world matrices up to
 // date), so each runs on a session of its own, the two kept in lockstep: the
 // same mutations with the same random draws.
-function run(name, seed, steps) {
+function run(name, seed, steps, makeViewKey = createViewKey) {
   const sOld = session(), sNew = session();
   const rOld = rng(seed), rNew = rng(seed);
-  const viewKey = createViewKey();
+  const viewKey = makeViewKey();
   let prevOld = null, prevNew = null, changes = 0, ticks = 0;
   for (const [what, apply] of steps()) {
     apply(sOld, rOld);
@@ -142,7 +146,7 @@ function run(name, seed, steps) {
 }
 
 // the scripted session: each mutation alone, with settled ticks around it, then each again to undo or repeat it
-const scripted = run('scripted', 1, function* () {
+function* scriptedSteps() {
   yield ['first tick', () => {}];
   for (const [what, m] of Object.entries(mutations)) {
     yield [what, m];
@@ -150,21 +154,48 @@ const scripted = run('scripted', 1, function* () {
     yield [`${what} again`, m];
     yield [`${what} again, settled`, () => {}];
   }
-});
+}
+const scripted = run('scripted', 1, scriptedSteps);
 assert.ok(scripted.changes > 20 && scripted.changes < scripted.ticks, `scripted: ${scripted.changes} changes in ${scripted.ticks} ticks`);
 console.log(`PASS: view key, scripted session: ${scripted.ticks} ticks, the string changed on ${scripted.changes}, the counter on the same ticks`);
 
 // the seeded random session: 0-3 mutations between ticks (often none: a settled view)
-const pick = rng(SEED + 1);
 const names = Object.keys(mutations);
-const random = run(`random (seed ${SEED})`, SEED, function* () {
-  for (let i = 0; i < TICKS; i++) {
+const randomSteps = (seed, ticks) => function* () {
+  const pick = rng(seed + 1);
+  for (let i = 0; i < ticks; i++) {
     const n = pick() < 0.4 ? 0 : 1 + Math.floor(pick() * 3);
     const picked = Array.from({ length: n }, () => names[Math.floor(pick() * names.length)]);
     yield [picked.join(' + ') || 'nothing', (s, r) => picked.forEach((k) => mutations[k](s, r))];
   }
-});
+};
+const random = run(`random (seed ${SEED})`, SEED, randomSteps(SEED, TICKS));
 console.log(`PASS: view key, random session (seed ${SEED}): ${random.ticks} ticks, ${random.changes} changes, all on the string's ticks`);
+
+// Negative controls: createViewKey with one rule broken, each made from
+// gfx/pacing.js's own text by one edit (which must still apply: a control
+// that no longer matches the source fails), must fail the scripted session
+// or the random one (seed 7, up to 20,000 ticks, whatever --ticks says).
+const SOURCE = readFileSync(new URL('../src/gfx/pacing.js', import.meta.url), 'utf8');
+const SCENE_LINE = '    if (sceneChanged(scene)) changed = true;\n';
+const CAMERA_LINE = '    if (storeNumbers(camera.matrixWorld.elements';
+const CONTROLS = {
+  'the scene read before the camera (its update moves a camera inside it)': (src) => src.replace(SCENE_LINE, '').replace(CAMERA_LINE, `${SCENE_LINE}${CAMERA_LINE}`),
+  'object key names ignored (only values compared)': (src) => src.replace('keys[n] !== k || ', ''),
+  'scalars compared with === (0 and -0, NaN, 1 and \'1\' print alike)': (src) => src.replace('const same = sameText(v, scalars[i]);', 'const same = v === scalars[i];'),
+  'no scene.updateMatrixWorld before reading world matrices': (src) => src.replace('    scene.updateMatrixWorld();\n    n = 0;', '    n = 0;'),
+};
+for (const [what, edit] of Object.entries(CONTROLS)) {
+  const broken = edit(SOURCE);
+  assert.notEqual(broken, SOURCE, `negative control "${what}": its edit no longer applies to gfx/pacing.js (update the control)`);
+  const mod = await import(`data:text/javascript;base64,${Buffer.from(broken).toString('base64')}`);
+  let caught = null;
+  for (const [name, seed, steps] of [['scripted', 1, scriptedSteps], ['random', 7, randomSteps(7, 20000)]]) {
+    try { run(name, seed, steps, mod.createViewKey); } catch (e) { caught = e.message.split('\n')[0]; break; }
+  }
+  assert.ok(caught, `negative control "${what}": the broken key passed every session (the check can't see that rule)`);
+  console.log(`PASS: negative control, ${what}: fails (${caught})`);
+}
 
 // the cost it removes: the string per tick against the counter, on a settled scene with many objects
 {

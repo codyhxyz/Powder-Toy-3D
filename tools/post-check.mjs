@@ -2,7 +2,14 @@
 // page (tools/harness/post.html), a synthetic scene target at 400×250, no app.
 //
 //   passes      a presented frame is the scene pass, 3 render passes and 1
-//               compute pass of post's, and the canvas pass: one submit
+//               compute pass of post's, and the canvas pass: one submit. An E1
+//               kernel that reads FrameUniforms, recorded in compute() after
+//               prepare()'s write, sees this frame's jitter and pixScale, and the
+//               frame stays one submit; recorded before render() (control) the
+//               write flushes and the kernel sees the frame before's
+//   warm        WGSL_CHECK, built as the start menu's warm-up would (layouts under
+//               layoutNames), creates no pipeline createPost hasn't (B5); under
+//               other layout names (control) it creates them all
 //   taa         a still camera: TAA converges (the change over a jitter cycle
 //               falls to the noise floor) to an image nearer the 8×8-supersampled
 //               reference than the aliased frame; with the jitter left out or
@@ -19,11 +26,20 @@
 //   composite   canvas pixels of uniform scenes against a JS port of the GLSL
 //               composite (AgX, Punchy, hot roll-off, sRGB, raw), within the dither;
 //               night vision; the viewmodel composite; the glow layer
+//               a half-covered pixel is the composite plus (1 − alpha) × the sky
+//   chain       the plane over the sky (TAA, bloom, sharpening): each bloom level
+//               (prefilter, down 1–5, up 4–1, up[0]) against the WGSL's taps and
+//               weights in JS from the GPU's level before, its energy, and every
+//               canvas pixel against the composite in JS (CAS, the bloom term,
+//               AgX, sRGB, the sky behind partial coverage, the dither) from the
+//               GPU's resolved frame and up[0]; with stronger settings again
 //   canvas      an empty scene: the opaque canvas presents the sky gradient (alpha
 //               255; the capture against this file's gradient and against
 //               Playwright's screenshot of the page, and Chrome's own rendering of
 //               the page's CSS background with the canvas hidden, reported)
-//   still       renderStill into 320×200 rgba8unorm keeps alpha, leaves history alone
+//   still       renderStill into 320×200 rgba8unorm keeps alpha, leaves history alone;
+//               resizes within one task (two still sizes, a target, the canvas)
+//               submit without a validation error (post flushes before it destroys)
 //   three       (the page with ?three=1) post's scene target is three's RenderTarget;
 //               three draws a box in front of the plane and one behind it into it
 //               after our scene pass (our depth, loadOp load): the front one shows,
@@ -33,7 +49,8 @@
 import { launchBrowser, gpuInfo } from './browser.mjs';
 import { startVite } from './vite-server.mjs';
 import { openHarness } from './harness/open.mjs';
-import { SKY, ADAPT, POST_DEFAULTS, NV_PHOSPHOR } from '../src/gfx/post.js';
+import { SKY, ADAPT, POST_DEFAULTS, NV_PHOSPHOR, MIPS } from '../src/gfx/post.js';
+import { halfToFloat } from '../src/gpu/readback.js';
 
 const argv = process.argv.slice(2);
 const ONLY = argv.includes('--only') ? argv[argv.indexOf('--only') + 1].split(',') : null;
@@ -91,6 +108,116 @@ function sky(u, v) {
 // float32 and half-float rounding (the scene target is rgba16float)
 const f16 = (x) => { const e = Math.floor(Math.log2(Math.abs(x))); const q = 2 ** (e - 10); return Math.round(x / q) * q; };
 
+// ---------------------------------------------------------------- bloom and the whole composite, in JS (post.js's WGSL)
+
+// an rgba16float image the harness sent ({ w, h, bits: base64 of the half bits })
+function image({ w, h, bits }) {
+  const u8 = new Uint8Array(Buffer.from(bits, 'base64'));
+  return { w, h, d: Float64Array.from(new Uint16Array(u8.buffer), halfToFloat) };
+}
+const texelAt = (t, x, y) => {
+  x = clamp(x, 0, t.w - 1); y = clamp(y, 0, t.h - 1);
+  const i = 4 * (y * t.w + x);
+  return [t.d[i], t.d[i + 1], t.d[i + 2], t.d[i + 3]];
+};
+// the linear clamp-to-edge sampler at uv (rgb)
+function sample(t, u, v) {
+  const x = u * t.w - 0.5, y = v * t.h - 0.5, x0 = Math.floor(x), y0 = Math.floor(y), fx = x - x0, fy = y - y0;
+  const a = texelAt(t, x0, y0), b = texelAt(t, x0 + 1, y0), c = texelAt(t, x0, y0 + 1), d = texelAt(t, x0 + 1, y0 + 1);
+  return [0, 1, 2].map((k) => (a[k] * (1 - fx) + b[k] * fx) * (1 - fy) + (c[k] * (1 - fx) + d[k] * fx) * fy);
+}
+const addTo = (acc, c, w) => acc.map((x, k) => x + c[k] * w);
+const sanitize = (c) => {
+  let rgb = c.slice(0, 3).map((x) => Math.max(x, 0));
+  const m = Math.max(...rgb);
+  if (m > 4096) rgb = rgb.map((x) => x * 4096 / m);
+  return [...rgb, Math.min(c[3], 1)];
+};
+function bright(c, [t, knee]) {
+  const br = Math.max(c[0], c[1], c[2]);
+  let rq = clamp(br - t + knee, 0, 2 * knee);
+  rq = rq * rq / (4 * knee + 1e-4);
+  return c.slice(0, 3).map((x) => x * (Math.max(rq, br - t) / Math.max(br, 1e-4)));
+}
+function tent9(t, u, v) {
+  const tx = 1 / t.w, ty = 1 / t.h;
+  let acc = [0, 0, 0];
+  for (const [ox, oy, w] of [[-1, -1, 1], [1, -1, 1], [-1, 1, 1], [1, 1, 1], [0, -1, 2], [-1, 0, 2], [1, 0, 2], [0, 1, 2], [0, 0, 4]]) acc = addTo(acc, sample(t, u + ox * tx, v + oy * ty), w);
+  return acc.map((x) => x / 16);
+}
+const makeImage = (w, h, fn) => {
+  const d = new Float64Array(w * h * 4);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) d.set([...fn(x, y), 1], 4 * (y * w + x));
+  return { w, h, d };
+};
+// the bloom prefilter: 2×2 texels of the resolved frame, each's bright part, averaged
+const prefilterRef = (src, w, h, th) => makeImage(w, h, (x, y) => {
+  let acc = [0, 0, 0];
+  for (const [ox, oy] of [[0, 0], [1, 0], [0, 1], [1, 1]]) acc = addTo(acc, bright(sanitize(texelAt(src, Math.min(2 * x + ox, src.w - 1), Math.min(2 * y + oy, src.h - 1))), th), 0.25);
+  return acc;
+});
+// Jimenez 2014's 13 taps (DOWN_W_*), bilinear, ±1 and ±2 texels of the finer level
+const downRef = (src, w, h) => makeImage(w, h, (x, y) => {
+  const u = (x + 0.5) / w, v = (y + 0.5) / h, tap = (ox, oy) => sample(src, u + ox / src.w, v + oy / src.h);
+  let c = tap(0, 0).map((z) => z * 0.125);
+  for (const [ox, oy] of [[-2, 2], [2, 2], [-2, -2], [2, -2]]) c = addTo(c, tap(ox, oy), 0.03125);
+  for (const [ox, oy] of [[0, 2], [-2, 0], [2, 0], [0, -2]]) c = addTo(c, tap(ox, oy), 0.0625);
+  for (const [ox, oy] of [[-1, 1], [1, 1], [-1, -1], [1, -1]]) c = addTo(c, tap(ox, oy), 0.125);
+  return c;
+});
+// up: this level's down mixed toward the tent of the coarser level by the scatter
+const upRef = (low, high, scatter) => makeImage(high.w, high.h, (x, y) => {
+  const hi = texelAt(high, x, y), lo = tent9(low, (x + 0.5) / high.w, (y + 0.5) / high.h);
+  return [0, 1, 2].map((k) => hi[k] + (lo[k] - hi[k]) * scatter);
+});
+// mean |Δ| / mean |ref| and max |Δ| over the colour channels
+function levelError(ref, got) {
+  let sum = 0, mag = 0, max = 0;
+  for (let i = 0; i < ref.d.length; i += 4) {
+    for (let k = 0; k < 3; k++) { const e = Math.abs(ref.d[i + k] - got.d[i + k]); sum += e; mag += Math.abs(ref.d[i + k]); max = Math.max(max, e); }
+  }
+  return { rel: sum / Math.max(mag, 1e-30), max, mean: mag / (ref.d.length * 0.75) };
+}
+const fract = (x) => x - Math.floor(x);
+// The dither's interleaved gradient noise in f32, as the shader computes it:
+// where 52.98·fract(…) lands next to an integer, f64 can wrap to the other side
+// of fract (a whole code value away). FMA in the shader may still differ there,
+// so the check accepts either side within IGN_WRAP of a wrap.
+const IGN_WRAP = 1e-3;
+function ign(x, y) {
+  const r = Math.fround;
+  const a = r(r(r(x) * r(0.06711056)) + r(r(y) * r(0.00583715)));
+  return fract(r(r(52.9829189) * r(fract(a))));
+}
+// one canvas pixel (0..255, before the 8-bit rounding) from the resolved frame and up[0]
+function compositeAt(hist, up0, s, x, y, noise = ign(x, y)) {
+  const u = (x + 0.5) / hist.w, v = (y + 0.5) / hist.h;
+  const c = sanitize(texelAt(hist, x, y));
+  let rad = c.slice(0, 3);
+  const sharpen = s.taa && !s.raw ? s.sharpen : 0;
+  if (sharpen > 0) {   // CAS: cross taps in c / (1 + luma) space
+    const tm = (q) => { const l = 1 + luma(q); return q.slice(0, 3).map((z) => z / l); };
+    const e = tm(c), n = tm(sanitize(texelAt(hist, x, y + 1))), so = tm(sanitize(texelAt(hist, x, y - 1)));
+    const w = tm(sanitize(texelAt(hist, x - 1, y))), r = tm(sanitize(texelAt(hist, x + 1, y)));
+    const ls = [e, n, so, w, r].map(luma);
+    const mn = Math.min(...ls), mx = Math.max(...ls);
+    const amp = Math.sqrt(clamp(Math.min(mn, 1 - mx) / Math.max(mx, 1e-4), 0, 1));
+    const k = -amp / mix(8, 5, sharpen);
+    const t = e.map((z, i) => Math.max((z + k * (n[i] + so[i] + w[i] + r[i])) / (1 + 4 * k), 0));
+    const lt = Math.max(1 - luma(t), 1e-3);
+    rad = t.map((z) => z / lt);
+  }
+  if (s.bloom > 0 && !s.raw) {
+    const b = tent9(up0, u, v), br = bright(c, [s.bloomThreshold, Math.max(s.bloomKnee, 1e-3)]);
+    rad = rad.map((z, k) => z + s.bloom * (b[k] - br[k]));
+  }
+  let o = s.raw ? srgb(rad.map((z) => clamp(z, 0, 1))) : srgb(tonemap(rad.map((z) => Math.max(z, 0) * 2 ** s.exposure), s));
+  const sk = sky(u, v);
+  o = o.map((z, k) => z + (1 - c[3]) * sk[k]);
+  if (Math.max(...o) >= 1e-5) o = o.map((z) => z + (noise - 0.5) / 255);
+  return o.map((z) => clamp(z, 0, 1) * 255);
+}
+
 // ---------------------------------------------------------------- run
 
 const vite = await startVite({ harness: true });
@@ -111,6 +238,25 @@ try {
       `a presented frame: ${stats.renderPasses} render passes (scene + taa, prefilter, bloom up0 + canvas), ${stats.computePasses} compute pass, ${stats.submits} submit`);
     check(stats.dispatches === 10 && stats.draws === 5, `${stats.dispatches} dispatches (bloom down 5, up 4, reduce 1), ${stats.draws} draws (scene 1 + post 4)`);
     check(stats.bytesAllocated === 0 && stats.pipelinesCreated === 0, `nothing allocated or built per frame (${stats.bytesAllocated} B, ${stats.pipelinesCreated} pipelines)`);
+    for (const upscale of [1, 1 / 1.5]) {
+      const r = await run('frameUniforms', { route: 'hooks', upscale });
+      const [jx, jy, pix, p20] = r.seen;
+      const want = [r.jitter[0], r.jitter[1], r.inSize[0] / r.size[0], -2 * r.jitter[0] / r.inSize[0]];
+      const same = r.seen.every((x, i) => Math.abs(x - want[i]) < 1e-6);
+      check(same && r.stats.submits === 1 && r.stats.writeFlushes === 0 && r.jitter.some((j) => j !== 0),
+        `E1's FrameUniforms reader in compute() after prepare()'s write (upscale ${r5(upscale)}): it saw this frame's jitter ${[jx, jy].map(r5)} (${r.jitter.map(r5)}), pixScale ${r5(pix)}, the jittered projection [2][0] ${r5(p20)} (${r5(want[3])}); ${r.stats.submits} submit, ${r.stats.writeFlushes} write flushes`);
+    }
+    const c = await run('frameUniforms', { route: 'before' });
+    check(c.stats.writeFlushes === 1 && c.stats.submits === 2 && Math.abs(c.seen[0] - c.jitter[0]) > 1e-3,
+      `control, the reader recorded before render(): the write flushes (${c.stats.writeFlushes}), ${c.stats.submits} submits, and it saw the frame before's jitter ${r5(c.seen[0])} (this frame's ${r5(c.jitter[0])})`);
+  }
+
+  if (want('warm')) {
+    console.log('\nwarm (B5: WGSL_CHECK as the start menu\'s warm-up builds it)');
+    const w = await run('warm');
+    check(w.ready && w.created === 0, `${w.entries} WGSL_CHECK entries built with their layoutNames: ${w.created} pipelines created (createPost's cache has them all)`);
+    const c = await run('warm', { control: true });
+    check(c.ready && c.created === c.entries, `control, the same entries under other layout names: ${c.created} of ${c.entries} created`);
   }
 
   if (want('taa')) {
@@ -193,6 +339,12 @@ try {
       const err = Math.max(...want.map((x, i) => Math.abs(x - got[i])));
       check(err <= 1.01 && got[3] === 255, `${label}: ${got.slice(0, 3)} vs ${want.map((x) => x.toFixed(1))}`);
     }
+    // half coverage: the composite of the premultiplied colour, plus (1 − alpha) × the sky behind it (F7)
+    const half = [0.09, 0.09, 0.09].map(f16);
+    const gotHalf = (await run('pixel', { fill: [...half, 0.5] })).values[0];
+    const skyAt = sky(200.5 / 400, 125.5 / 250);
+    const wantHalf = composite(half).map((x, i) => (clamp(x, 0, 1) + 0.5 * skyAt[i]) * 255);
+    check(Math.max(...wantHalf.map((x, i) => Math.abs(x - gotHalf[i]))) <= 1.01 && gotHalf[3] === 255, `half covered, over the sky: ${gotHalf.slice(0, 3)} vs ${wantHalf.map((x) => x.toFixed(1))}`);
     const black = (await run('pixel', { fill: [0, 0, 0, 1] })).values[0];
     check(black.slice(0, 3).every((x) => x === 0), `black stays exactly black (no dither): ${black.slice(0, 3)}`);
     const nv = (await run('pixel', { fill: [0.05, 0.05, 0.05, 1], settings: { night: 1, nightGain: 8 }, points: [[200, 125], [40, 30]] })).values;
@@ -207,6 +359,54 @@ try {
     const glow = [0.1, 0.2, 0.3].map(f16);
     const gotGlow = (await run('pixel', { fill: [0, 0, 0, 1], glow: [...glow, 0] })).values[0];
     check(Math.max(...glow.map((x, i) => Math.abs(x * 255 - gotGlow[i]))) <= 0.51, `glow added over black: ${gotGlow.slice(0, 3)} (${glow.map((x) => (x * 255).toFixed(1))})`);
+  }
+
+  if (want('chain')) {
+    console.log('\nchain (the plane over the sky: each bloom level from the GPU\'s level before, every canvas pixel from the GPU\'s resolved frame and up[0])');
+    for (const [label, settings] of [['defaults (adaptation held at 1)', {}], ['bloom 1, sharpen 1, look 0, exposure +1.5', { bloom: 1, sharpen: 1, look: 0, exposure: 1.5 }]]) {
+      const r = await run('chain', { settings });
+      const s = r.settings;
+      const hist = image(r.history), down = r.down.map(image), up = r.up.map(image);
+      const th = [s.bloomThreshold, Math.max(s.bloomKnee, 1e-3)];
+      const levels = [['prefilter', prefilterRef(hist, down[0].w, down[0].h, th), down[0]]];
+      for (let i = 1; i < MIPS; i++) levels.push([`down ${i}`, downRef(down[i - 1], down[i].w, down[i].h), down[i]]);
+      for (let i = MIPS - 2; i >= 0; i--) levels.push([`up ${i}`, upRef(i === MIPS - 2 ? down[MIPS - 1] : up[i + 1], down[i], s.bloomScatter), up[i]]);
+      const errs = levels.map(([name, ref, got]) => ({ name, ...levelError(ref, got) }));
+      const worst = errs.reduce((a, b) => (b.rel > a.rel ? b : a));
+      console.log(`     ${label}: ${errs.map((e) => `${e.name} ${e.rel.toExponential(1)}`).join(', ')} (mean relative error)`);
+      check(errs.every((e) => e.rel < 2e-3 && e.max < 2e-3), `${label}: 11 bloom levels match the taps and weights, worst ${worst.name}: relative ${worst.rel.toExponential(2)}, max |Δ| ${Math.max(...errs.map((e) => e.max)).toExponential(2)} (half floats)`);
+      const mean = (t) => { let m = 0; for (let i = 0; i < t.d.length; i += 4) m += t.d[i] + t.d[i + 1] + t.d[i + 2]; return m / (t.d.length / 4); };
+      const energy = mean(up[0]) / mean(down[0]);
+      check(Math.abs(energy - 1) < 0.03 && mean(down[0]) > 1e-3, `${label}: the chain keeps the bright part's energy: mean up[0] / mean down[0] = ${energy.toFixed(4)}`);
+      // every canvas pixel
+      const px = new Uint8Array(Buffer.from(r.canvas.rgba, 'base64'));
+      let max = 0, sum = 0, at = null, partial = 0, sharpened = 0, bloomed = 0;
+      for (let y = 0; y < r.canvas.h; y++) {
+        for (let x = 0; x < r.canvas.w; x++) {
+          const i = 4 * (y * r.canvas.w + x), noise = ign(x, y);
+          const ref = compositeAt(hist, up[0], s, x, y, noise);
+          // (next to a wrap of the noise: the other side's value too)
+          const alt = Math.min(noise, 1 - noise) < IGN_WRAP ? compositeAt(hist, up[0], s, x, y, noise < 0.5 ? noise + 1 : noise - 1) : ref;
+          const a = texelAt(hist, x, y)[3];
+          if (a > 0.02 && a < 0.98) partial++;
+          for (let k = 0; k < 3; k++) {
+            const d = Math.min(Math.abs(px[i + k] - ref[k]), Math.abs(px[i + k] - alt[k]));
+            sum += d;
+            if (d > max) { max = d; at = [x, y, k, px[i + k], ref[k].toFixed(2)]; }
+          }
+        }
+      }
+      // how much the CAS and bloom terms move pixels (the check is only as strong as they are), every 5th pixel
+      for (let k = 0; k < (r.canvas.w / 5) * (r.canvas.h / 5); k++) {
+        const x = 5 * (k % (r.canvas.w / 5)), y = 5 * Math.floor(k / (r.canvas.w / 5));
+        const base = compositeAt(hist, up[0], { ...s, sharpen: 0, bloom: 0 }, x, y), withCas = compositeAt(hist, up[0], { ...s, bloom: 0 }, x, y), all = compositeAt(hist, up[0], s, x, y);
+        sharpened = Math.max(sharpened, ...withCas.map((z, k) => Math.abs(z - base[k])));
+        bloomed = Math.max(bloomed, ...all.map((z, k) => Math.abs(z - withCas[k])));
+      }
+      const n = r.canvas.w * r.canvas.h * 3;
+      check(max <= 0.75 && sharpened > 2 && bloomed > 1 && partial > 100,
+        `${label}: every canvas pixel against the composite in JS: max |Δ| ${max.toFixed(2)} at ${JSON.stringify(at)}, mean ${(sum / n).toFixed(3)} (8-bit rounding: ≤ ½); ${partial} partly covered pixels; CAS moves values by up to ${sharpened.toFixed(1)}, the bloom term by ${bloomed.toFixed(1)} (every 5th pixel)`);
+    }
   }
 
   if (want('canvas')) {
@@ -236,8 +436,6 @@ try {
     await run('canvasVisible', true);
     const cssDiff = await run('compare', { png: css, rgba: cap.rgba });
     check(cssDiff.mean <= 1.5, `Chrome's own rendering of the page's CSS background (canvas hidden) against the canvas: max |Δ| ${cssDiff.max} at ${JSON.stringify(cssDiff.at)}, mean ${cssDiff.mean?.toFixed(3)} (reported; the gradients' dithering differs)`);
-    const scene = await run('canvas', { mode: 'plane' });
-    check(scene.rgba.length > 0, 'the plane over the sky (TAA, bloom, adaptation on) presents');
   }
 
   if (want('still')) {
@@ -246,6 +444,9 @@ try {
     check(r.covered > 0 && r.clear > 0 && r.colourInClear === 0, `renderStill 320×200: ${r.covered} covered, ${r.clear} clear (alpha 0, no sky, no colour), ${r.partial} partial`);
     check(r.historyKept, 'TAA history untouched');
     check(r.stats.renderPasses === 2 && r.stats.computePasses === 0, `${r.stats.renderPasses} render passes (scene, composite), ${r.stats.computePasses} compute`);
+    const z = await run('resize');
+    check(z.failure === null && z.covered > 0 && z.size.join() === '400,250',
+      `two stills (320×200, 160×100), a frame into 200×120 and one into the canvas in one task: ${z.submits} submits, GPU failure ${z.failure}; the second still covers ${z.covered} of ${z.pixels} pixels`);
   }
 
   const failed = await page.evaluate(() => window.__harness.failures);
