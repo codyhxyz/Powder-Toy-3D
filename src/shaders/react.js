@@ -2,6 +2,7 @@ import { prelude, stateOutGLSL } from './common.js';
 import { quietGLSL, inertNearGLSL } from './activity.js';
 import { ELEMENTS } from '../elements.js';
 import { electricReactGLSL } from '../electricity.js';
+import { simModesGLSL } from '../simModes.js';
 
 // The softest breakable solid: a cell carrying less kinetic energy than this
 // can't break anything, which lets almost every cell skip the impact check.
@@ -90,12 +91,19 @@ uniform int uFaces;
 // heat (energy) and air pressure, in a target laid out like the state.
 uniform sampler2D tRayDep;
 uniform bool uRays;
+// simulation modes (src/simModes.js; uEdge and uGravMode come with simModesGLSL)
+uniform int uAirMode;
+uniform bool uAmbientHeat;
+${simModesGLSL}
 ${stateOutGLSL}
 ${quietGLSL}
 ${inertNearGLSL}
 ${electricReactGLSL}
 
 const ivec3 DIRS[6] = ivec3[6](ivec3(1,0,0), ivec3(-1,0,0), ivec3(0,1,0), ivec3(0,-1,0), ivec3(0,0,1), ivec3(0,0,-1));
+
+// the DIRS index of a unit axis vector
+int faceOf(vec3 d) { return d.x > 0.5 ? 0 : d.x < -0.5 ? 1 : d.y > 0.5 ? 2 : d.y < -0.5 ? 3 : d.z > 0.5 ? 4 : 5; }
 
 // Latent heat bookkeeping. acc is energy banked toward a transition at Tp.
 // rising: transition happens when heated past Tp (melting, boiling).
@@ -217,10 +225,13 @@ void main() {
   vec4 nb[6];
   int nid[6];
   for (int i = 0; i < uFaces; i++) {
-    ivec3 q = p + DIRS[i];
+    ivec3 q = edgeCell(p + DIRS[i]);   // (past a loop edge: the far side)
     if (inGrid(q)) {
       na[i] = fetchA(q);
       nb[i] = fetchB(q);
+    } else if (uEdge == EDGE_VOID) {
+      na[i] = VOID_AIR_A;   // open: still air at ambient, no pressure (simModes.js)
+      nb[i] = vec4(0.0);
     } else {
       na[i] = vec4(float(E_WALL), T, 0.0, 0.0); // insulating, pressure-reflecting box
       nb[i] = vec4(0.0, 0.0, 0.0, P0);
@@ -314,17 +325,18 @@ void main() {
   ivec3 w = p + uOrigin;   // world cell: the pairing doesn't depend on where the window is
   bool base = ((w[ax] + par) & 1) == 0;
   int k = 2 * ax + (base ? 0 : 1);   // the partner's DIRS index
+  ivec3 pk = edgeCell(p + DIRS[k]);   // ...and cell
   // A singularity swallows its partner (any matter it has no reaction with),
   // on a draw of the pair's own stream, so both cells agree (physics.js SING_*).
-  uint ss = seed3(base ? p : p + DIRS[k], uFrame, SING_SALT);
+  uint ss = seed3(base ? p : pk, uFrame, SING_SALT);
   bool swallow = (id == E_SINGULARITY ? singEats(nid[k]) : nid[k] == E_SINGULARITY && singEats(id))
-    && inGrid(p + DIRS[k]) && rxAt(id, nid[k]) == 0 && rnd(ss) < SING_EAT * RX_PAIRINGS;
+    && inGrid(pk) && rxAt(id, nid[k]) == 0 && rnd(ss) < SING_EAT * RX_PAIRINGS;
   if (RX_ANY) {
     int rx = rxAt(id, nid[k]);
-    if (rx > 0 && inGrid(p + DIRS[k])) {
+    if (rx > 0 && inGrid(pk)) {
       int r = (rx - 1) >> 1;
       bool isA = ((rx - 1) & 1) == 0;
-      uint ps = seed3(base ? p : p + DIRS[k], uFrame, RX_SALT);
+      uint ps = seed3(base ? p : pk, uFrame, RX_SALT);
       if (rxGate(r, a.y, na[k].y) && rnd(ps) < RX[r].x * RX_PAIRINGS) {
         int ida = isA ? id : nid[k], idb = isA ? nid[k] : id;
         int oa = pickOut(RX_INTO[r].x, ps), ob = pickOut(RX_INTO[r].y, ps);
@@ -342,7 +354,8 @@ void main() {
   // ---- heat conduction (energy conserving) ----
   float C = CAP[id];
   float dE = 0.0;
-  for (int i = 0; i < uFaces; i++) dE += condFlux(id, T, nid[i], na[i].y);
+  // (ambient heat off: matter trades no heat with the air, simModes.js)
+  for (int i = 0; i < uFaces; i++) if (uAmbientHeat || (id != E_EMPTY && nid[i] != E_EMPTY)) dE += condFlux(id, T, nid[i], na[i].y);
   T += (dE + rayDep.x) / C;   // (and what particles left: photons absorbed, fissions)
   // the open world above the box slowly pulls air back to ambient; gases radiate
   T += (AMBIENT - T) * (id == E_EMPTY ? AIR_AMBIENT_PULL : RAD[id]);
@@ -360,7 +373,8 @@ void main() {
       lap += pn[i] - P0;
       front = max(front, pn[i]);
     }
-    P = max(P0 + P_DIFFUSE * lap, front * P_FRONT) * P_DECAY + rayDep.y;
+    // (air mode no update: it stays as it is, simModes.js)
+    P = (uAirMode == AIR_NO_UPDATE ? P0 : max(P0 + P_DIFFUSE * lap, front * P_FRONT) * P_DECAY) + rayDep.y;
     gradP = 0.5 * vec3(pn[0] - pn[1], pn[2] - pn[3], pn[4] - pn[5]);
   } else {
     P = 0.0;
@@ -373,33 +387,45 @@ void main() {
   // ---- forces ----
   if (!solid) {
     float rho = max(densityOf(id, T) * RHO_SCALE, RHO_MIN);
-    v -= gradP * P_ACCEL / rho;
+    // (matter feels the air's pressure unless the air mode stills or empties it:
+    // in TPT particles feel pressure only through the air's velocity, simModes.js)
+    if (uAirMode == AIR_ON || uAirMode == AIR_NO_UPDATE) v -= gradP * P_ACCEL / rho;
+    // gravity's pull here (simModes.js gravDir: down, or radial)
+    vec3 gv = gravDir(vec3(p) + 0.5);
     // air, and cloud (air carrying droplets), is buoyant by its temperature
-    if (id == E_EMPTY || id == E_CLOUD) v.y += uGravity * clamp((T - AMBIENT) / (AMBIENT + KELVIN), AIR_BUOY_LO, AIR_BUOY_HI);
-    if (id != E_EMPTY) v.y -= uGravity * GRAV[id];
+    if (id == E_EMPTY || id == E_CLOUD) v -= gv * (uGravity * clamp((T - AMBIENT) / (AMBIENT + KELVIN), AIR_BUOY_LO, AIR_BUOY_HI));
+    if (id != E_EMPTY) v += gv * (uGravity * GRAV[id]);
     v *= 1.0 - DRAG[id];
+    // The rules below are written for down = −y and its face neighbour (the
+    // cell below, fd): with radial gravity, turned so that −y is the pull's
+    // dominant axis (simModes.js gravFrame; identity for vertical gravity).
+    mat3 F = gravFrame(gv);
+    int fd = faceOf(vec3(0.0, -1.0, 0.0) * F);
+    v = F * v;
     // Normal force: a powder or liquid at rest on what it can't push aside
     // (the floor, a solid, or a grain or liquid that isn't falling itself) is
     // held up, so gravity can't start it moving down. One already moving down
     // (falling, landing, knocked from above) isn't at rest: it keeps feeling
     // gravity, and the move pass lands it with its splash, scatter and heat.
+    // (The box's floor is a wall face, nid[fd]; past a void edge it is air.)
     float d = densityOf(id, a.y);
-    bool held = (KIND[id] == K_POWDER || KIND[id] == K_LIQUID) && b.y >= 0.0 && (p.y == 0 || KIND[nid[3]] == K_SOLID
-      || (!canMove(id, nid[3], d, densityOf(nid[3], na[3].y), 0) && nb[3].y >= 0.0));
+    bool held = (KIND[id] == K_POWDER || KIND[id] == K_LIQUID) && (F * b.xyz).y >= 0.0 && (KIND[nid[fd]] == K_SOLID
+      || (!canMove(id, nid[fd], d, densityOf(nid[fd], na[fd].y), 0) && (F * nb[fd].xyz).y >= 0.0));
     if (held) v.y = max(v.y, 0.0);
-    // grains only feel friction while resting on something
-    bool supported = p.y == 0 || KIND[nid[3]] == K_SOLID || KIND[nid[3]] == K_POWDER;
+    // grains only feel friction while resting on something (pressed on it by gravity)
+    bool supported = uGravity > 0.0 && (KIND[nid[fd]] == K_SOLID || KIND[nid[fd]] == K_POWDER);
     if (supported) v.xz *= 1.0 - FRICTION[id];
 
     // Liquids: hydrostatic head drives spreading, surface tension stops it.
     // Both push only a liquid that has somewhere to go, a side neighbour it
     // can move into; boxed in, its speed just decays to a stop. (A lower
     // diagonal needs no push: the move pass topples into it regardless.)
-    if (KIND[id] == K_LIQUID && (supported || KIND[nid[3]] == K_LIQUID)) {
+    // Without gravity there is no head and nothing to rest on.
+    if (KIND[id] == K_LIQUID && uGravity > 0.0 && (supported || KIND[nid[fd]] == K_LIQUID)) {
       bool open = false;
       for (int i = 0; i < uFaces; i++)
-        if (DIRS[i].y == 0) open = open || canMove(id, nid[i], d, densityOf(nid[i], na[i].y), 2);
-      int up = nid[2];
+        if ((i >> 1) != (fd >> 1)) open = open || canMove(id, nid[i], d, densityOf(nid[i], na[i].y), 2);
+      int up = nid[fd ^ 1];
       bool head = KIND[up] == K_LIQUID || KIND[up] == K_POWDER;   // weight above us
       bool onLiquid = !supported;                                  // surface of a pool
       float f = FLOW[id];
@@ -414,14 +440,11 @@ void main() {
       } else {
         // a thin film on dry ground: cohesion pulls it toward neighbouring
         // liquid, so films gather into puddles with clean edges
-        vec2 coh = vec2(0.0);
-        if (KIND[nid[0]] == K_LIQUID) coh.x += 1.0;
-        if (KIND[nid[1]] == K_LIQUID) coh.x -= 1.0;
-        if (KIND[nid[4]] == K_LIQUID) coh.y += 1.0;
-        if (KIND[nid[5]] == K_LIQUID) coh.y -= 1.0;
-        bool alone = KIND[nid[0]] != K_LIQUID && KIND[nid[1]] != K_LIQUID
-                  && KIND[nid[4]] != K_LIQUID && KIND[nid[5]] != K_LIQUID;
-        v.xz = v.xz * FILM_KEEP + (open ? coh * f * FILM_COHESION : vec2(0.0));
+        vec3 coh = vec3(0.0);
+        bool alone = true;
+        for (int i = 0; i < uFaces; i++)
+          if ((i >> 1) != (fd >> 1) && KIND[nid[i]] == K_LIQUID) { coh += vec3(DIRS[i]); alone = false; }
+        v.xz = v.xz * FILM_KEEP + (open ? (F * coh).xz * f * FILM_COHESION : vec2(0.0));
         if (open && alone && rnd(rs) < DROPLET_WANDER) {
           // isolated droplets wander until they meet others
           float ang = rnd(rs) * 6.2831853;
@@ -429,9 +452,13 @@ void main() {
         }
       }
     }
+    v = v * F;   // (out of the frame)
     if (JITTER[id] > 0.0) v += (vec3(rnd(rs), rnd(rs), rnd(rs)) - 0.5) * JITTER[id];
     v += dvBreak;
     v = clamp(v, -V_MAX, V_MAX);
+    // the air mode (simModes.js): still air, or the wind as it was
+    if (id == E_EMPTY && (uAirMode == AIR_VELOCITY_OFF || uAirMode == AIR_OFF)) v = vec3(0.0);
+    if (id == E_EMPTY && uAirMode == AIR_NO_UPDATE) v = b.xyz;
     // a held cell's leftover creep stops dead (physics.js REST_V)
     if (held) v *= step(REST_V, abs(v));
   } else {
@@ -723,6 +750,9 @@ void main() {
     if (nidOut == E_FIRE) life = FIRE_LIFE_MIN + FIRE_LIFE_SPREAD * rnd(rs);
   }
 
+  // simModes.js: ambient heat off holds the air at ambient; pressure off holds it at 0
+  if (!uAmbientHeat && nidOut == E_EMPTY) T = AMBIENT;
+  if (uAirMode == AIR_PRESSURE_OFF || uAirMode == AIR_OFF) P = 0.0;
   T = clamp(T, CELL_TEMP_MIN, CELL_TEMP_MAX);
   vec4 outA = vec4(float(nidOut), T, life, ctype + seed), outB = vec4(v, clamp(P, P_MIN, P_MAX));
   // the rest test on what this cell becomes, its neighbours as this pass saw
