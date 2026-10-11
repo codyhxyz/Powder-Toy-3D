@@ -10,7 +10,7 @@
 //   - the GLSL compiles (glslangValidator, GLSL ES 3.00) after the prelude
 //   - optional previews: PNG slices to a directory (not the repo)
 //
-//   node scripts/check-wang.mjs [--seeds N] [--preview DIR]
+//   node scripts/check-wang.mjs [--seeds N] [--kit NAME] [--preview DIR]
 import { execFileSync } from 'node:child_process';
 import { writeFileSync, mkdtempSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -18,12 +18,15 @@ import { join } from 'node:path';
 import { deflateSync } from 'node:zlib';
 import { gridLayout } from '../src/sim.js';
 import { prelude } from '../src/shaders/common.js';
-import { bakeWang, minesKit, MAT, WANG_OUT } from '../src/world/wang/index.js';
+import { bakeWang, minesKit, snowKit, MAT, WANG_OUT } from '../src/world/wang/index.js';
 import { rasterTile, passable, isLiquid, PORTS, SIDE_PORTS, COL } from '../src/world/wang/kit.js';
 import { cutPorts } from '../src/world/wang/tiling.js';
 import { walkFlood, BODY_W, BODY_H, JUMP } from '../src/world/wang/walk.js';
 
-const KITS = [minesKit];
+// every kit is checked; --kit NAME checks just that one
+const ALL_KITS = [minesKit, snowKit];
+const ONLY = process.argv.includes('--kit') ? process.argv[process.argv.indexOf('--kit') + 1] : null;
+const KITS = ALL_KITS.filter((k) => !ONLY || k.name === ONLY);
 const SIZE = [384, 120, 240];       // a region of 16 × 5 × 10 units (cells)
 const SEEDS = Number(process.argv[process.argv.indexOf('--seeds') + 1]) || 4;
 const PREVIEW = process.argv.includes('--preview') ? process.argv[process.argv.indexOf('--preview') + 1] : null;
@@ -181,6 +184,7 @@ const COLOURS = {
   [MAT.AIR]: [18, 14, 20], [MAT.ROCK]: [92, 84, 74], [MAT.SOFT]: [130, 112, 86], [MAT.BEAM]: [170, 110, 50], [MAT.RAIL]: [190, 190, 200],
   [MAT.RUBBLE]: [120, 120, 112], [MAT.WATER]: [40, 110, 170], [MAT.OIL]: [60, 40, 30], [MAT.GOLD]: [240, 200, 40], [MAT.CRYSTAL]: [200, 120, 255],
   [MAT.COAL]: [30, 30, 30], [MAT.MOSS]: [70, 130, 50], [MAT.GRAVEL]: [140, 140, 140], [MAT.METAL]: [160, 165, 175],
+  [MAT.SAND]: [236, 242, 255], [MAT.ICE]: [140, 200, 235],
 };
 function png(path, w, h, rgb) {
   const raw = Buffer.alloc((w * 3 + 1) * h);
