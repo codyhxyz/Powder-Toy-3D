@@ -57,6 +57,9 @@ import { finishSignIn, account, accountsEnabled } from './account.js';
 import { accountSection } from './ui/account-section.js';
 import { launch } from './launch.js';
 import { MAPS, mapByKey, mapOf, isWorld, sizeTag, WORLD_DIMS } from './maps.js';
+import { createSaves, SaveRefused } from './saves/game.js';
+import { registerSaveSection, registerSavedSettings } from './saves/sections.js';
+import { putSave, getSave, cleanName } from './saves/local.js';
 
 // Optional modules (built in parallel); the app works without them.
 const optional = import.meta.glob(['./views.js', './signs.js', './constructions.js'], { eager: true });
@@ -165,7 +168,8 @@ if (params.get('preset')) settings.preset = params.get('preset');
 if (params.get('scene')) settings.scene = params.get('scene');
 settings.scene = sceneByKey(settings.scene).key;   // (a scene no longer listed: the island)
 // the Island scene's world seed (world/generator.js), and World's; its default world without one
-const worldSeed = params.has('seed') ? Number(params.get('seed')) >>> 0 : undefined;
+// (a loaded save sets it to the save's: saves/game.js)
+let worldSeed = params.has('seed') ? Number(params.get('seed')) >>> 0 : undefined;
 if (!knownSize(settings.size)) settings.size = DEFAULTS.size;
 // the box size the Scene row goes back to from World
 let boxSize = settings.size in SIZES && !ARENA_GRIDS.has(settings.size) ? settings.size : BOX_DEFAULT;
@@ -983,6 +987,9 @@ const actions = {
     hud.toast('Camera reset');
   },
   screenshot: () => { wantShot = true; },
+  saveGame: () => saveGame(),
+  // the map menu on its Saves list (Garry's Mod's Saves; ⌘O)
+  openSaves: () => { painting = false; launch.openMenu?.({ saves: true }); },
   firstPerson: () => { painting = false; pov?.toggle(); },
   // 'god' leaves the walking body; 'first' / 'third' drops in, or switches the camera if already in
   setCamera: (id) => {
@@ -1133,11 +1140,206 @@ function setView(id) {
 
 function undo() {
   if (mp.guard()) return;
-  const shrine = sim.history?.at(-1)?.note?.shrine;
-  if (sim.undo()) { if (shrine) perkOrbs?.removeShrine(shrine); pov?.worldReplaced(); hud.toast('Undone'); }
+  const note = sim.history?.at(-1)?.note, shrine = note?.shrine;
+  if (sim.undo()) {
+    if (shrine) perkOrbs?.removeShrine(shrine);
+    if (note?.scene) restoreSceneExtras(note.scene);   // a loaded save taken back: the box's signs, spawners and orbs too
+    pov?.worldReplaced();
+    hud.toast('Undone');
+  }
   // (a world's window moved off all of it: it's kept for when the window comes back)
   else hud.toast(sim.canUndo ? 'Too far away to undo that: go back to it first' : 'Nothing to undo');
   toolbar.setUndoEnabled(sim.canUndo);
+}
+
+// ---------------------------------------------------------------- saves (src/saves)
+// ⌘S or the toolbar's Save keeps the game in the Saves list, with a picture;
+// the map menu's Saves (Esc, ⌘O) loads one, exports it as a .tpt3d file or
+// opens one. Garry's Mod's way: a save is named for its map and the time, and
+// listed with its thumbnail. A box save loads as a scene change, so ⌘Z takes
+// it back; a World save, like any world load, can't be undone.
+const SAVE_THUMB_BG = '#0e1117';   // what a thumbnail's clear pixels (a box has no sky) sit on: the page's background
+const SAVE_THUMB_TYPE = 'image/jpeg', SAVE_THUMB_QUALITY = 0.82;
+const MB = 1024 * 1024;
+// the gravity and speed a world was saved with come back with it (TPT keeps gravity in a save)
+registerSavedSettings(['gravity', 'steps']);
+const saves = createSaves({
+  renderer, settings, getSim: () => sim, getWin: () => win,
+  header: () => {
+    const m = mapOf(settings);
+    return {
+      map: m?.key ?? null, mapName: m?.name ?? null, size: settings.size, preset: win ? null : settings.preset,
+      world: win ? { scene: settings.scene, seed: worldSeed ?? null } : null,
+      guestCopy: mp.isGuest || undefined,   // a guest's copy of the host's world (no velocity or pressure: net/codec.js)
+    };
+  },
+  thumbnail: saveThumbnail,
+  prepare: prepareSave,
+  finish: () => {
+    if (win) placeVolume();
+    post.reset();
+    pov?.worldReplaced();
+    birds?.worldReplaced();
+    toolbar.setUndoEnabled(sim.canUndo);
+    dock.sync();
+    toolbar.sync();
+    settingsPanel.sync();
+    save();
+    pacer.wake();
+  },
+  onSettings: () => { sim.gravity = settings.gravity; },
+});
+
+// The save's picture for the Saves list: the next frame on screen, cropped and
+// scaled down, read from the canvas in the frame's own task as the screenshot
+// is (saveScreenshot). It draws nothing extra (no second render, no program to
+// build). Resolves to a data URL, or null if no frame comes (a parked test page).
+const SAVE_THUMB_SIZE = [320, 200];   // px: the views menu's thumbnails' size
+const SAVE_THUMB_WAIT_MS = 1500;
+function saveThumbnail() {
+  return new Promise((resolve) => {
+    thumbWaiters.push(resolve);
+    pacer.wake();
+    setTimeout(() => {
+      const i = thumbWaiters.indexOf(resolve);
+      if (i >= 0) { thumbWaiters.splice(i, 1); resolve(null); }
+    }, SAVE_THUMB_WAIT_MS);
+  });
+}
+function takeSaveThumbnail() {
+  const waiting = thumbWaiters;
+  thumbWaiters = [];
+  let url = null;
+  try {
+    const src = renderer.domElement, [w, h] = SAVE_THUMB_SIZE;
+    const out = Object.assign(document.createElement('canvas'), { width: w, height: h });
+    const ctx = out.getContext('2d');
+    ctx.fillStyle = SAVE_THUMB_BG;
+    ctx.fillRect(0, 0, w, h);
+    const k = Math.min(src.width / w, src.height / h);   // (cover: the middle of the view)
+    ctx.drawImage(src, (src.width - w * k) / 2, (src.height - h * k) / 2, w * k, h * k, 0, 0, w, h);
+    url = out.toDataURL(SAVE_THUMB_TYPE, SAVE_THUMB_QUALITY);
+  } catch (err) {
+    console.warn('save: no thumbnail', err);
+  }
+  for (const resolve of waiting) resolve(url);
+}
+
+// Get the grid ready for a save: its map and size (a rebuild if they differ),
+// else an undo snapshot. Resolves false to refuse.
+async function prepareSave(h) {
+  if (graphicsFailure) throw graphicsFailure;
+  if (mp.guard()) return false;
+  painting = false;
+  pov?.exit(true);   // the body is left out of a save; you come back in the god view
+  if (h.world) {
+    if (mp.guardWorld()) return false;
+    const scene = sceneByKey(h.world.scene);
+    if (!(h.size in WORLDS) || scene.key !== h.world.scene) throw new SaveRefused('That save is of a world this version doesn\'t have');
+    const seed = h.world.seed ?? undefined;
+    if (!win || settings.size !== h.size || settings.scene !== scene.key || worldSeed !== seed) {
+      settings.scene = scene.key;
+      worldSeed = seed;
+      setSize(h.size);
+    }
+    const w = win;
+    if (w.size.some((n, i) => n !== h.world.size?.[i])) throw new SaveRefused('That save\'s world is a different size');
+    await w.whenReady();   // (after the world's own start, which the switch queued first)
+    return win === w;      // (switched again meanwhile: the newer pick wins)
+  }
+  const fits = (k) => SIZES[k]?.every((n, i) => n === h.dims[i]);
+  const size = fits(h.size) ? h.size : Object.keys(SIZES).find(fits);
+  if (!size) throw new SaveRefused(`This version has no ${h.dims.join(' × ')} grid`);
+  const preset = h.preset ?? 'empty';
+  if (settings.size !== size) {
+    settings.preset = 'empty';   // (the save brings the cells: no building the map's scene first)
+    setSize(size);
+  } else {
+    // undoable like any scene change; TPT takes a history snapshot before opening a local save (GameController.cpp OpenLocalBrowse)
+    sim.snapshot();
+    sim.history.at(-1).note = { scene: sceneExtras() };
+  }
+  settings.preset = preset;
+  // an arena's layout (spawns, flags, shrines) is its build's, without its cells
+  arenaLayout = preset in ARENA_PRESETS ? ARENA_PRESETS[preset].build().layout : null;
+  signs?.clear();
+  resetSpawners(preset);
+  return true;
+}
+
+// What a box holds besides its cells (its scene, signs, spawners, perk orbs), for undoing a load.
+const sceneExtras = () => ({ preset: settings.preset, signs: signs?.toJSON(), spawners: spawners?.toJSON(), perkOrbs: perkOrbs?.toJSON() });
+function restoreSceneExtras(x) {
+  settings.preset = x.preset;
+  arenaLayout = x.preset in ARENA_PRESETS ? ARENA_PRESETS[x.preset].build().layout : null;
+  resetSpawners(x.preset);
+  spawners?.fromJSON(x.spawners);
+  perkOrbs?.fromJSON(x.perkOrbs);
+  signs?.fromJSON(x.signs);
+  save();
+}
+
+// the god camera in world cells, so it comes back over the same ground in a world whose window has moved
+const camToCells = (v) => [v.x / scale + anchor.x, v.y / scale, v.z / scale + anchor.y];
+const camFromCells = (a, out) => out.set((a[0] - anchor.x) * scale, a[1] * scale, (a[2] - anchor.y) * scale);
+registerSaveSection('camera', {
+  save: () => (camState() === 'god' ? { position: camToCells(camera.position), target: camToCells(controls.target) } : undefined),
+  load: (d) => {
+    camFromCells(d.position, camera.position);
+    camFromCells(d.target, controls.target);
+    controls.update();
+  },
+  // saved in the body: in a world, the god view over the window (the window would chase a camera left elsewhere)
+  absent: () => { if (win) { homeOver(sim.origin.x + sim.g.nx / 2, sim.origin.z + sim.g.nz / 2); rig.reset(true); } },
+});
+registerSaveSection('day', {
+  save: () => ({ clock: day.clock }),
+  load: (d) => { if (Number.isFinite(d.clock)) { day.clock = d.clock; updateSun(); } },
+});
+registerSaveSection('signs', { save: () => signs?.toJSON(), load: (d) => signs?.fromJSON(d), absent: () => signs?.clear() });
+registerSaveSection('spawners', { save: () => spawners?.toJSON(), load: (d) => spawners?.fromJSON(d) });
+registerSaveSection('perkOrbs', { save: () => perkOrbs?.toJSON(), load: (d) => perkOrbs?.fromJSON(d) });
+
+const saveName = () => {
+  const d = new Date(), pad = (n) => String(n).padStart(2, '0');
+  return `${mapOf(settings)?.name ?? 'Custom'} ${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+let saving = false;
+// Save the game into the Saves list. Resolves to the save's meta (saves/local.js), or null.
+async function saveGame(name) {
+  if (saving) return null;
+  saving = true;
+  hud.toast('Saving…');
+  try {
+    const bytes = await saves.capture(cleanName(name) || saveName());
+    const meta = await putSave(bytes);
+    hud.toast(`Saved "${meta.name}" (${(bytes.length / MB).toFixed(1)} MB). Esc → Saves to load it`);
+    return meta;
+  } catch (err) {
+    if (!(err instanceof SaveRefused)) console.error('save failed', err);
+    hud.toast(err instanceof SaveRefused ? err.message : `Couldn't save: ${err.message}`);
+    return null;
+  } finally {
+    saving = false;
+  }
+}
+let loadingSave = false;
+// Load a save: a local save's id, or a save file's bytes. Resolves to whether it loaded.
+async function openSave(what) {
+  if (loadingSave) return false;
+  loadingSave = true;
+  try {
+    const bytes = typeof what === 'string' ? await getSave(what) : what;
+    const h = await saves.apply(bytes);
+    if (h) hud.toast(`Loaded "${h.name}"${h.world ? '' : sim.canUndo ? ' (⌘Z takes it back)' : ''}`);
+    return !!h;
+  } catch (err) {
+    if (!(err instanceof SaveRefused)) console.error('load failed', err);
+    hud.toast(err instanceof SaveRefused ? err.message : `Couldn't load that save: ${err.message}`);
+    return false;
+  } finally {
+    loadingSave = false;
+  }
 }
 
 // UI elements shouldn't show the brush or receive paint
@@ -1364,6 +1566,8 @@ function setRadius(r) {
 let stepOnce = false;
 let timeShown = NaN;   // the time of day the drawer last showed
 let wantShot = false;
+let thumbWaiters = [];   // saves waiting for the next presented frame as their thumbnail (saveThumbnail)
+const wantFrame = () => wantShot || thumbWaiters.length > 0;
 
 addEventListener('keydown', (e) => {
   if (pov?.editingWand) return;
@@ -1372,6 +1576,12 @@ addEventListener('keydown', (e) => {
   if (isTyping()) return;
   const mod = e.metaKey || e.ctrlKey;
   if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); return; }
+  // ⌘S saves, ⌘O opens the Saves list: every program's keys (TPT has none: its Save
+  // and Open buttons go local with Ctrl held, GameView.cpp saveSimulationButton, searchButton)
+  // (in the body Ctrl is the camera key and S walks back: there only ⌘ saves; the toolbar's Save always does)
+  const fileMod = e.metaKey || (e.ctrlKey && !pov?.active);
+  if (fileMod && e.key.toLowerCase() === 's') { e.preventDefault(); if (!e.repeat) actions.saveGame(); return; }
+  if (fileMod && e.key.toLowerCase() === 'o') { e.preventDefault(); if (!e.repeat) actions.openSaves(); return; }
   if (mod) return;
   const k = e.key;
   // V switches between the god view and the body (Garry's Mod's noclip key). F drops
@@ -1605,14 +1815,14 @@ function tick(now, renderOnly = false) {
   lastVersion = sim.version;
   // Keep animation time tied to simulation, not the test preview's draw rate.
   if (worldChanged) volume.material.uniforms.uTime.value += dt;
-  const present = renderOnly || pacer.present(now, wantShot);
+  const present = renderOnly || pacer.present(now, wantFrame());
   const runDerived = present && pacer.derived(
     `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${KEY_LIGHT}|${settings.view}|${gfx.smoothing}|${detailVersion}`);
   let runView = present && pacer.view(
     `${camera.matrixWorld.elements}|${camera.projectionMatrix.elements}|${pixelRatio}|${innerWidth}x${innerHeight}`
     + `|${JSON.stringify(settings)}|${JSON.stringify(gfx)}|${JSON.stringify(post.settings)}|${sceneKey(scene)}`
     + `|${win?.far?.chunksDrawn}`,   // a world scene's far field filling in (world/far.js)
-    runDerived || wantShot || (!renderOnly && post.adapting));   // frozen-time snapshots cannot advance eye adaptation
+    runDerived || wantFrame() || (!renderOnly && post.adapting));   // frozen-time snapshots cannot advance eye adaptation
   if (present && !runView && autoRes.recover(clock.getElapsed())) {
     post.settings.resolutionScale = autoRes.scale;
     pacer.wake();   // settle the final full-quality still; don't wake auto resolution
@@ -1676,6 +1886,7 @@ function tick(now, renderOnly = false) {
     // own depth, so it never clips into walls); before the screenshot reads the canvas
     renderViewmodels(renderer, scene, camera, post);
     if (wantShot) { wantShot = false; saveScreenshot(); }
+    if (thumbWaiters.length) takeSaveThumbnail();
 
     signs?.update();
   }
@@ -1717,10 +1928,12 @@ function tick(now, renderOnly = false) {
 // Then the gamemode picked with it starts.
 const READY_POLL_MS = 100;
 const READY_WAIT_MS = 20000;
-function bootReady() {
+function bootReady(pending = null) {
   const t0 = performance.now();
+  let settled = !pending;   // (a save picked on the menu: it loads first)
+  pending?.finally(() => { settled = true; });
   const check = () => {
-    if (win && !win.loaded && performance.now() - t0 < READY_WAIT_MS) { setTimeout(check, READY_POLL_MS); return; }
+    if (((win && !win.loaded) || !settled) && performance.now() - t0 < READY_WAIT_MS) { setTimeout(check, READY_POLL_MS); return; }
     launch.ready?.();
     if (bootMap && launch.mode) startMode(launch.mode);
   };
@@ -1813,6 +2026,8 @@ try {
     setSize,         // switch the grid (a SIZES or WORLDS key), keeping the scene settings
     openMap,         // as the start menu's Start does (a maps.js key, a gamemode)
     undo,            // as ⌘Z does
+    saveGame,        // as ⌘S does: resolves to the save's meta (saves/local.js), or null
+    openSave,        // a local save's id, or a .tpt3d file's bytes: resolves to whether it loaded
     get worldFocus() { return worldFocus; }, set worldFocus(v) { worldFocus = v; },
     MOBILE, SUN, day, scene, settings, camera, controls, loadPreset, selectTool, setView, hover, renderer, rig, renderThumb, gfx, post, mp, autoRes, prof,
     applyDetail,   // after changing settings.detail_* by hand
@@ -1846,7 +2061,7 @@ try {
   };
   gpuLoss.settle();
   requestAnimationFrame(frame);
-  bootReady();
+  bootReady(launch.save ? openSave(launch.save) : null);   // a save picked on the menu's Saves before the game had loaded
 } catch (err) {
   if (err !== graphicsFailure) {
     const el = document.getElementById('error');
@@ -1857,4 +2072,4 @@ try {
 }
 
 // for the start menu (src/main.js)
-export { openMap, currentMap as current };
+export { openMap, currentMap as current, openSave, saveGame };

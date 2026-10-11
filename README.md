@@ -54,6 +54,8 @@ Press `?` in the app for the full list.
 | `T` | show or hide the element dock |
 | `,` | settings |
 | `P` | save a screenshot |
+| ⌘S / Ctrl+S | save the game (in first person ⌘ only, Ctrl being the camera key there) |
+| ⌘O / Ctrl+O | the Saves list: load a save, export it, open a file |
 
 Hovering shows the element, temperature and air pressure under the cursor. Settings are remembered between visits.
 
@@ -348,6 +350,30 @@ into the shader, so the on-screen legend always matches.
 Pick the SIGN tool and click any surface to pin a label (Enter to save, Escape to cancel, click a sign to edit, × to delete).
 Signs can show live values from the cell they're attached to: `{t}` temperature, `{p}` pressure, `{e}` element.
 A small GPU probe pass reads those values and dims signs that are hidden behind voxels.
+
+## Saves
+
+⌘S (Ctrl+S) or the floppy in the toolbar saves the game, named for its map and the time, with a picture of the view.
+The map menu (Esc, or ⌘O) lists your saves under **Saves**, Garry's Mod's menu item: load one, export it as a
+`.tpt3d` file, delete it, or *Open file…* to load a file (it joins the list). Saves live in the browser (IndexedDB),
+so export the ones you want to keep elsewhere.
+
+A save is exact: every cell's element, temperature, life, ctype and colour seed, its velocity and pressure, as the
+GPU holds them. It also keeps the signs, the spawners and perk orbs, the fast particles in flight, the time of day,
+gravity and speed, and where the god camera was. What derives from the cells (activity, render fields, light) is
+rebuilt on load. The body, NPCs, birds and vehicles are left out: you come back in the god view.
+
+In a box, loading is a scene change, so ⌘Z takes it back (as TPT snapshots its history before opening a local save).
+In a World, a save holds the seed and scene, the window as it was and every edited brick the island keeps, so loading
+puts you back on your island as you left it; like any world load, it can't be undone. Edits you made away from the
+window show from afar again once you pass back over them. When playing together, only the host loads; a guest can save
+a copy of what it sees (without velocity or pressure, which guests aren't sent).
+
+The file is a short JSON header (version, name, date, map, size, thumbnail) and deflated sections, TPT's own design:
+named fields that a reader skips when it doesn't know them, so old saves keep loading as features are added. A feature
+adds its own with `registerSaveSection(key, { save, load, absent })` (`src/saves/sections.js`), and settings that belong
+to a world with `registerSavedSettings(keys)`. A 128³ box is about 5–10 MB: the random per-cell colour seeds don't
+compress. `node tools/saves-check.mjs` checks the format on the CPU.
 
 ## Multiplayer
 

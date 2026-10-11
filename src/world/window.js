@@ -170,6 +170,27 @@ export class WorldWindow {
     this.loaded = true;
   }
 
+  // A saved world back (saves/game.js): the window at `origin`, its cells
+  // from fillState() (it loads the saved state into the simulation), the
+  // stored bricks (BrickStore.toBytes) and the planted brick columns as they
+  // were saved. Like load, it drops undo and starts the derived passes over.
+  // The far field is rebuilt from the scene and the window: stored edits
+  // outside the window show from afar once the window has passed over them.
+  loadSaved(origin, fillState, storeBytes, planted) {
+    const sim = this.sim;
+    if (planted.length !== this.planted.length) throw new Error(`saved world: ${planted.length} brick columns, this world has ${this.planted.length}`);
+    this.epoch++;
+    this.store.fromBytes(storeBytes);
+    this.planted.set(planted);
+    sim.origin.set(origin[0], 0, origin[2]);
+    fillState();
+    sim.syncCopies();
+    this.far?.build();
+    sim.dropHistory();
+    sim.fieldReset = sim.giReset = true;
+    this.loaded = true;
+  }
+
   // Keep the window centred on the focus (world cells, x and z). Returns the
   // move made, [dx, dz] world cells, or null.
   update(fx, fz) {

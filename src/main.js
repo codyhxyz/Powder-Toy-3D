@@ -8,7 +8,7 @@ import './ui/menu.css';
 import { createMenu } from './ui/menu.js';
 import { launch } from './launch.js';
 import { preloadGame } from './preload.js';
-import { GAMEMODES, mapOf, DEFAULT_MAP, MOBILE_MAP } from './maps.js';
+import { GAMEMODES, mapOf, mapByKey, DEFAULT_MAP, MOBILE_MAP } from './maps.js';
 
 // The team gamemodes exist only in builds that have them (src/game: the Big Team Battle modes).
 const TEAM_GAMES = Object.keys(import.meta.glob('./game/index.js')).length > 0;
@@ -25,11 +25,13 @@ const menu = createMenu({
   map: lastPlayed ?? (MOBILE ? MOBILE_MAP : DEFAULT_MAP),
   onStart: start,
   onResume: () => menu.close(),
+  onLoadSave: loadSave,
 });
 
-launch.openMenu = () => {
+// (opts.saves: on the Saves list)
+launch.openMenu = (opts = {}) => {
   if (menu.isOpen) return;
-  menu.open({ inGame: true, ...app?.current() });
+  menu.open({ inGame: true, ...app?.current(), ...opts });
 };
 
 async function start(map, mode) {
@@ -42,6 +44,25 @@ async function start(map, mode) {
   launch.mode = mode;
   // (one message: the main thread is busy compiling until the map is up, so a second would never paint)
   menu.loading('Loading something cool, please be patient');
+  launch.ready = () => menu.close();
+  await boot();
+}
+
+// A save picked on the menu's Saves (what: a local save's id or a file's bytes;
+// meta: its name and map). Before the game has loaded, it boots on the save's
+// map and loads the save before the menu comes down (app.js bootReady).
+async function loadSave(what, meta) {
+  if (app) {
+    menu.close();
+    app.openSave(what);
+    return;
+  }
+  launch.save = what;
+  // (a box the Empty map's size boots on Empty: the save brings the cells, so no scene is built first)
+  const emptyDims = mapByKey('empty').dims;
+  launch.map = !meta?.world && emptyDims.every((n, i) => n === meta?.dims?.[i]) ? 'empty' : meta?.map ?? null;
+  launch.mode = 'sandbox';
+  menu.loading('Loading your save', meta?.name ?? 'Save');
   launch.ready = () => menu.close();
   await boot();
 }
