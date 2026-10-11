@@ -716,19 +716,17 @@ ${f.solve}
 };
 
 const layouts = () => [LAYOUT.TABLES, LAYOUT.STATE_RW, MOVE_LAYOUT];
-/** tools/check-wgsl.mjs, and the pipeline a grid needs (the start menu's warm-up, docs/webgpu.md B5). */
-export const WGSL_CHECK = [{
-  name: 'move',
-  kind: 'compute',
-  code: (g) => moveBlockFrag(g),
-  layouts,
-  // the margin's direct dispatch (the lists' are indirect, at most every unit's home blocks)
-  dispatch: (g) => [fold(Math.ceil(marginBlocks(g) / 64)), fold(Math.ceil(gridDims(g).nbricks * 8 / 64))],
-}];
-// The forms D2 weighs, for check-wgsl --file move --only moveUnrolled (not built for a session).
-export const WGSL_CHECK_FORMS = [{
-  name: 'moveUnrolled', kind: 'compute', code: (g) => moveBlockFrag(g, { form: 'unrolled' }), layouts, tool: true,
-}];
+// the margin's direct dispatch (the lists' are indirect, at most every unit's home blocks)
+const dispatch = (g) => [fold(Math.ceil(marginBlocks(g) / 64)), fold(Math.ceil(gridDims(g).nbricks * 8 / 64))];
+/**
+ * tools/check-wgsl.mjs, and the pipeline a grid needs (the start menu's
+ * warm-up, docs/webgpu.md B5). The unrolled form only the sim bench builds
+ * (tools/harness/sim-bench.js, Mac checkpoint M1), never a session: `tool`.
+ */
+export const WGSL_CHECK = [
+  { name: 'move', kind: 'compute', code: (g) => moveBlockFrag(g), layouts, dispatch },
+  { name: 'moveUnrolled', kind: 'compute', code: (g) => moveBlockFrag(g, { form: 'unrolled' }), layouts, dispatch, tool: true },
+];
 
 // WEBGPU-STUB (docs/webgpu.md J3): the gather and flow passes are fused into
 // the move (D2); the slot array they read is gone.
