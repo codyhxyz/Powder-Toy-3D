@@ -6,6 +6,11 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
+    "harness": "node tools/harness/serve.mjs",
+    "check:wgsl": "node tools/check-wgsl.mjs",
+    "check:imports": "node tools/check-imports.mjs",
+    "check:gpu": "node tools/gpu-foundation-check.mjs",
+    "check:budget": "node tools/budget-check.mjs",
     "relay": "wrangler dev --config relay/wrangler.toml",
     "construct": "node scripts/construct.mjs",
     "mcp:construct": "node scripts/mcp-construct.mjs"
