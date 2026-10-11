@@ -2136,6 +2136,15 @@ try {
         await gpu.fence();
         return n;
       },
+      // The view's clocks back to their start (its animation time and the
+      // frame counter its noise is keyed on) and the post history dropped:
+      // tools/regress.mjs's fixed shot, whatever frames the page ran before.
+      resetView() {
+        viewTime = 0;
+        gfxUniforms.uFrame.value = 0;
+        post.reset();
+        pacer.wake();
+      },
       // One frame (no convergence), the GPU done with it: the smoke test's
       // shot (docs/webgpu.md I1). capture: resolves to the canvas as that
       // frame presented it ({ width, height, data }: RGBA bytes).
