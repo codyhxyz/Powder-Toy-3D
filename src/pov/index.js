@@ -413,6 +413,8 @@ export function createPov(app) {
     return out;
   };
   async function findDropPoint(out) {
+    const fixed = app.dropAt?.();   // a map that says where you start (a Descent level's spawn: app.js)
+    if (fixed) return out.copy(fixed);
     const g = app.getSim().g;
     const hv = app.hover;
     // a player spawn: the one nearest the cursor's surface (or the box's middle)
@@ -430,7 +432,9 @@ export function createPov(app) {
 
   const camPose = () => ({ pos: camera.position.clone(), quat: camera.quaternion.clone(), fov: camera.fov });
 
-  async function enter() {
+  // opts.at: drop in with the feet here (grid cells) and keep the body as it
+  // is, health, fuel and statuses (player.teleport): a Descent level change
+  async function enter(opts = {}) {
     if (mode === 'on' || mode === 'entering' || starting) return;
     if (app.mp.isGuest) { hud.toast("POV isn't available as a guest yet"); return; }
     if (mode === 'exiting') {   // changed our mind halfway out: fly back in
@@ -444,7 +448,7 @@ export function createPov(app) {
     starting = true;
     const foundAt = new THREE.Vector3();   // the window's origin when the drop point was found (docs/scaling.md D11)
     try {
-      await Promise.all([findDropPoint(dropPoint).then(() => foundAt.copy(app.getSim().origin)), ensureFigure()]);
+      await Promise.all([(opts.at ? Promise.resolve(dropPoint.copy(opts.at)) : findDropPoint(dropPoint)).then(() => foundAt.copy(app.getSim().origin)), ensureFigure()]);
       ensureParts();
       // the figure may compile for a while, and a world's window move meanwhile
       const o = app.getSim().origin;
@@ -475,7 +479,8 @@ export function createPov(app) {
     povCam.reset();
     zoom.reset();
     feel.reset();
-    player.spawn(dropPoint.clone());
+    if (opts.at && !player.dead) player.teleport(dropPoint.clone());
+    else player.spawn(dropPoint.clone());
     classes?.spawned(player);
     enteredAt.copy(dropPoint).add(app.getSim().origin);
     deadSeen = false;
