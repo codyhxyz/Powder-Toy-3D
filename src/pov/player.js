@@ -1058,6 +1058,8 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     applyImpulse(dv) { impulse.add(dv); },
     ownBlast() { vitals.ownBlast(); },
     heal(amount) { if (!vitals.dead) vitals.health = Math.min(1, vitals.health + amount); },   // Regeneration (potions.js)   // a blast it set off (a rocket, a bomb): it hurts this body less (vitals.js)
+    // the Energy Shield full now, no refill to wait for (a Halo match gives the shield after the spawn: Halo spawns you shielded)
+    fillShield() { if (!vitals.dead) { vitals.shield = vitals.shieldMax; vitals.shieldWait = 0; vitals.shieldCharging = false; } },
     // a blow from outside the sim (an NPC's axe): the Energy Shield takes it first;
     // { lethal: true } takes all the health there is, through the shield (a backstab);
     // { shielded: false } passes the shield (a drink hurts from inside: ingest.js)

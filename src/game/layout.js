@@ -6,7 +6,8 @@
 //     spawns: { red: [[x, y, z], ...], blue: [...] }, flags: { red: [x, y, z], blue: [x, y, z] },
 //     hills: [[x, y, z, r], ...],
 //     siege: { attackers: 'red', points: [[x, y, z, r], ...], spawns: [{ attack, defend }, ...], core },
-//     shrines: [...], vehicles: [...] }          (shrines and vehicles are other modules')
+//     shrines: [...], vehicles: [...],           (shrines and vehicles are other modules')
+//     weapons: [{ key, at: [x, y, z], respawnS? }] }   (power weapons' pads: arsenal.js, Halo-style matches)
 //
 // siege: the control points in the order they're taken, and per stage (before A
 // falls, after A, ...) where each side spawns (siege.js has the rules; a stage
@@ -36,6 +37,9 @@ const LAB = {
     points: [[68, 0, 68, 7], [44, 0, 100, 7]],
     spawns: [{}, { attack: [[100, 0, 64], [96, 0, 58], [104, 0, 70], [92, 0, 66]] }],
   },
+  // the rocket launcher in the open middle, by the first hill (between the tank and the pit), as
+  // Halo 3 puts its rockets where both sides must fight for them
+  weapons: [{ key: 'ROCKET', at: [68, 0, 62] }],
 };
 
 export function labLayout(g) {
@@ -56,6 +60,7 @@ export function labLayout(g) {
     },
     shrines: [],
     vehicles: [],
+    weapons: LAB.weapons.map((w) => ({ ...w, at: at(w.at) })),
   };
 }
 

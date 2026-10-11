@@ -13,6 +13,7 @@ import { createMarkers } from './markers.js';
 import { createGameHud } from './hud.js';
 import { createSiege } from './siege.js';
 import { canFight } from '../pov/ai/brain.js';
+import { createArsenal } from './arsenal.js';
 
 // Team games in first person: Halo's Team Slayer, Capture the Flag, King of
 // the Hill and Infection, and Siege (TF2's attack/defend on a row of control
@@ -40,7 +41,7 @@ import { canFight } from '../pov/ai/brain.js';
 // one starts by itself on the same map after it (Halo 3 matchmaking: the
 // playlist moves on to the next game; you leave by backing out: Esc or Leave).
 //
-// shell (pov/index.js): { app, scene, renderer, camera, player, toolbelt, active(), locked(),
+// shell (pov/index.js): { app, scene, renderer, camera, player, toolbelt, interact, active(), locked(),
 //   loadNpcs() → Promise<{ mod, ai }>, env(), loadPreset(), respawnPlayer(at), freeMouse() }
 
 const CARRIER_PRIORITY = 30;         // cells: a bot goes after the enemy carrying its flag as if they were this much nearer
@@ -103,6 +104,12 @@ export function createGame(shell) {
     return e;
   }
 
+  // Halo's equal start, two-gun carry and power-weapon pads (arsenal.js)
+  const arsenal = createArsenal({
+    scene: shell.scene, getVolume: app.getVolume, getScale: app.getScale, shell,
+    entries: () => [...roster.values()], bodyOf, carrying,
+  });
+
   // a body's side: its colour, and what it may do on it
   const WEAPONS = { infected: new Set(R.INFECTED_WEAPONS), carrier: new Set(R.CARRIER_WEAPONS) };
   function setTeam(e, team) {
@@ -119,6 +126,7 @@ export function createGame(shell) {
     if (b.speedScale !== want) b.speedScale = want;
   }
   function loadout(e) {
+    if (R.isHalo(mode)) { arsenal.loadout(e); return; }   // Halo's carry, the player's hands too (arsenal.js)
     if (!e.bot) return;
     const want = e.team === R.INFECTED ? WEAPONS.infected : carrying(e) ? WEAPONS.carrier : e.classWeapons ?? null;   // (Siege: its class's tools)
     if (e.bot.agent.weapons !== want) e.bot.agent.weapons = want;
@@ -185,7 +193,8 @@ export function createGame(shell) {
     });
     e = entry(n.id, name, team, n);
     n.agent.radar = R.RADAR;
-    n.agent.brain.addEvaluator(new ObjectiveEvaluator(() => objectiveFor(e), (plan) => { if (plan.kind === 'roam' || plan.kind === 'guard') e.roam++; }));
+    n.agent.brain.addEvaluator(new ObjectiveEvaluator(() => arsenal.objective(e, objectiveFor(e)),   // (a power weapon's pad near it: arsenal.js)
+      (plan) => { if (plan.kind === 'roam' || plan.kind === 'guard') e.roam++; arsenal.failed(e, plan); }));
     shell.scene.add(n.root);
     n.bind(app.getVolume(), sim().g);
     n.compile(shell.renderer, shell.camera, shell.scene);
@@ -228,13 +237,13 @@ export function createGame(shell) {
       const a = roster.get(by), b = roster.get(t.id);
       return !!b && (!b.team || (!!a?.team && a.team === b.team));
     },
-    share(by, t) {
+    share(by, t, cause) {
       const v = roster.get(t.id);
       if (!v) return 1;
       if (!v.team || v.protect > 0) return 0;
       const a = roster.get(by);
       if (a?.team === v.team) return 0;
-      return a?.team === R.INFECTED ? R.INFECTED_MELEE : 1;
+      return (a?.team === R.INFECTED ? R.INFECTED_MELEE : 1) * arsenal.damageShare(by, t, cause);   // (Halo's shots to kill: arsenal.js)
     },
   };
 
@@ -300,6 +309,7 @@ export function createGame(shell) {
       if (m === 'infection') for (const e of pick([...roster.values()].filter((o) => o.team), rules.alphas)) setTeam(e, R.INFECTED);
       setHitRules(hitRules);
       running = true;
+      arsenal.start(R.isHalo(m) ? layout : null);   // the power weapons' pads, before the spawns' equal start
       spawnAll();
       count();
       povEvents.emit('game:start', { mode: m, layout: layout.name, teams: Object.fromEntries(teams.map((t) => [t, members(t).map((e) => e.id)])) });
@@ -562,6 +572,8 @@ export function createGame(shell) {
         e.wasDead = b.dead;
       }
       count();
+      arsenal.update(dt);
+      if (me()) loadout(me());   // the player's hands (a Halo match's carry)
       if (mode === 'ctf') tickCtf();
       if (mode === 'koth') tickKoth(dt);
       if (mode === 'siege') siege?.tick(dt);
@@ -668,6 +680,7 @@ export function createGame(shell) {
     visible = v;
     if (!v) next = null;   // out of the body (V): out of the match loop
     markers.setVisible(v);
+    arsenal.setVisible(v);
     hud.show(v);
     for (const e of bots()) e.bot.setVisible(v);
   }
@@ -703,6 +716,7 @@ export function createGame(shell) {
     get nextIn() { return next ? next.at - now() : null; },   // s to the next match (the report's countdown), else null
     get roster() { return [...roster.values()]; },
     get bots() { return bots().map((e) => e.bot); },
+    get arsenal() { return arsenal.state; },   // the power weapons' pads, drops and who holds what (checks)
     get botCount() { return running ? bots().length : 0; },
     // the player's respawn while a match runs: Halo's delay, at a spawn of their side (null: the shell's own)
     get playerRespawn() {

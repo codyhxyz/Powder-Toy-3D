@@ -139,6 +139,14 @@ const LAST_X = 36;                   // siege: C, on the plateau just out of the
 const FWD_SPAWN_X = [84, 88];        // siege: forward spawns on an abutment's top, behind its point...
 const FWD_SPAWN_Z = [56, 62, 68];    // ...two rows of three (flat, tree-free, the tunnel deep under it)
 const SHRINE_LIFT = 1;               // a shrine's floor is a slab one cell up: feet stand on it
+// Power weapons' pads (game/arsenal.js), where the fights should be, as Halo 3's maps place them:
+// the rocket launcher in the contested middle (the spillway basin, between its boulders), a sniper
+// rifle per side up on a ridge over its own forest (Valhalla's snipers are each team's; ours are a
+// jetpack's climb), and the one Spartan Laser in the pump room (Valhalla's sits on the hill by the
+// river, between the bases), on the shrine's floor in front of its altars.
+const ROCKET_PAD = [MID_X, 40];      // x, z: the basin's middle, clear of the boulders (z 34 and 46)
+const SNIPER_PAD = [60, 7];          // x, z (red's; blue's mirrors it across both axes): the south ridge's top over red's forest
+const LASER_PAD_Z = ROOM_Z0 + 2;     // z: the pump room's downstream side, before the shrine's altar row
 
 // ---------------------------------------------------------------- noise
 
@@ -248,6 +256,13 @@ export const DAM_VALLEY_LAYOUT = {
     core: [NX - 1 - LAST_X, BASE_Y, STAND_Z, CORE_R],   // the last point (older readers)
   },
   shrines: SHRINES.map(([x, y, z]) => [x, y + SHRINE_LIFT, z]),
+  // respawnS: each weapon's own (arsenal.js POWER) unless given
+  weapons: [
+    { key: 'ROCKET', at: onGround(...ROCKET_PAD) },
+    { key: 'SNIPER', at: onGround(...SNIPER_PAD) },
+    { key: 'SNIPER', at: onGround(NX - 1 - SNIPER_PAD[0], NZ - 1 - SNIPER_PAD[1]) },
+    { key: 'LASER', at: [MID_X, TUN_Y + SHRINE_LIFT, LASER_PAD_Z] },
+  ],
   vehicles: ['red', 'blue'].flatMap((side) => [
     { kind: 'jeep', team: side, at: [team(JEEP_AT[0], side), BASE_Y, JEEP_AT[1]], yaw: side === 'red' ? FACE_BLUE : FACE_RED },
     ...BIKE_AT.map(([x, z]) => ({ kind: 'hoverbike', team: side, at: [team(x, side), BASE_Y, z], yaw: side === 'red' ? FACE_BLUE : FACE_RED })),

@@ -97,7 +97,14 @@ first person; nothing changes on desktop. The topbar's God / 1st / 3rd camera ch
   a tool picked in the god view is in hand at the next drop-in.
 - Picking from the palette: the Tools group lists every tool (elements.js `GEAR_ITEMS`, ids −300…). A click
   puts it in hand (app.js `giveGear`). In first person, `Q` frees the mouse and shows the palette at those
-  tiles: GMod's spawn menu.
+  tiles: GMod's spawn menu. `Q` does nothing in a Halo-style match (`docs/modes.md` "Halo rules").
+- **A restricted hotbar** (2026-10-11, a Halo match's two guns): `toolbelt.restrict(keys, hold?)` lets only `keys`
+  be in hand, each in a slot of its own in their order (the bar shows `1 Primary`, `2 Secondary` and hides the
+  rest: `hotbar.setLabels`), so `1` and `2` hold Halo's primary and secondary; the wheel steps between them, there are no wands (`B` and `equipWand` refuse) and `select()` refuses anything else, so the palette, a
+  class or the spawn menu can't put another tool in hand. `hold` (else the first key, if the tool in hand isn't
+  one of them) goes in hand. `restrict(null)` gives every tool back; `toolbelt.restricted` reads the keys.
+  `toolbelt.setNote(key, text)` shows text after the tool's status in the held-tool corner (a power weapon's
+  shots left); null clears it. Owner: `src/game/arsenal.js`.
 
 ## Guns (2026-10-10)
 
