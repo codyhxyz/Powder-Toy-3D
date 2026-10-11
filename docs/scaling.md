@@ -27,8 +27,8 @@ actually decided, which in places differs from that page; where they disagree, t
 ## Decisions
 
 ### D1. We stay on WebGL2
-**Superseded by docs/webgpu.md**, which ports every one of these passes to WebGPU at once and keeps the last WebGL2
-build at `/legacy/` (its W5). D2–D11 still hold: that document refers to them by number and restates them where the
+**Superseded by docs/webgpu.md**, which ports every one of these passes to WebGPU at once, with no WebGL2 fallback
+(its W5). D2–D11 still hold: that document refers to them by number and restates them where the
 port changes their form (bricks and storage buffers where they say atlases and render targets). What follows is why
 we stayed, at the time.
 

@@ -76,13 +76,14 @@ its own list), box-scoped writers instead of full-grid copy-through passes, few 
 pipelines, 3D textures for render fields, timestamp profiling, a readback ring, deep idle. Integer, hash and generation
 logic is ported verbatim so it stays exact.
 
-**W5. `main` becomes WebGPU-only; the deploy also ships a frozen WebGL2 build at `/legacy/`.** `src/main.js` probes
-WebGPU before importing the app (B2) and `location.replace`s to `/legacy/` (query and hash kept) when the browser has
-no usable adapter, under the guards of G5 (production build only, never from a test page, never twice). `?legacy=1`
-forces the legacy build. The legacy build is the last WebGL2 commit of `main`, pinned by SHA in the deploy workflow and
-never updated (J, U15). Most Linux browsers get the legacy build: WebGPU shows up in about 18% of Linux reports
-(webgpu-research map 7.5). WebGPU needs a secure origin, so LAN dev over plain `http` (an iPad on the dev server) has
-no `navigator.gpu`: in dev that shows the WebGPU error page, not a redirect (G5).
+**W5. WebGPU only, no fallback (the user's decision).** `src/main.js` probes WebGPU before importing the app (B2);
+a browser with no usable adapter gets a page that says the game needs WebGPU and why this browser can't start it
+(G5). Nothing is redirected and no WebGL2 build is deployed. Every target device has WebGPU on by default: Chrome and
+Edge on macOS, Windows, ChromeOS and Android, and Safari 26 on macOS, iOS, iPadOS and visionOS (every iOS 26 browser
+is WebKit, so iPhone 11 and later). What this gives up, knowingly: most Linux desktops (WebGPU in about 18% of Linux
+reports) and Firefox on Linux (webgpu-research map 7.5). WebGPU needs a secure origin, so LAN dev over plain `http`
+(an iPad on the dev server) has no `navigator.gpu`; the error page says so. The last WebGL2 commit is still checked out
+*locally* for the Mac's cross-build comparisons (I4), never deployed.
 
 **W6. Every GPU→CPU read is asynchronous.** One readback service (B7). `readState`, `readCell`, `census`, `gpuSync`
 return promises. The laser's synchronous reach read goes away (G2). No sync read remains in `src/` or `tools/`;
@@ -212,7 +213,7 @@ const gpu = await createGpu({ adapter: probe.adapter, label: 'tpt3d' });
   `'high-performance'`.
 - **Fallback (software) adapters** (`adapter.info.isFallbackAdapter`) are rejected unless the page is in test mode
   (`?test=` or `__TPT_TEST_MODE__`), running under the Vite dev server, or has `?software=1`. A user whose GPU is
-  blocklisted for WebGPU but fine for WebGL2 gets the legacy build on their GPU instead of a CPU rasterizer.
+  blocklisted for WebGPU gets the error page (G5), which offers `?software=1`, rather than a CPU rasterizer by surprise.
 - **Required limits: the spec defaults only.** Nothing is required above them, so every WebGPU device qualifies.
 - **Requested limits.** `maxStorageBufferBindingSize` and `maxBufferSize` = `min(adapter limit, 1 GiB)`: they decide
   which grids fit, not which kernels compile. Everything else is requested at the spec default on purpose, so a
@@ -1264,15 +1265,13 @@ every view frame while active). Instanced quads (no point size in WebGPU), `size
 - `gfx/profiler.js` reads `gpu.timing` (split mode while on) and keeps its report shape; `ui/profiler.js` unchanged.
   `gpuName` from `adapterInfo`; memory from a registry of our buffers and textures. `awakeShare` and `drawnShare` read
   `sim.readMaps()`/the counts ring, both now at brick level.
-- **`src/main.js` boot and redirect.** `probeWebGPU()` before `import('./app.js')`. On failure it redirects to
-  `/legacy/` (query and hash kept) only when all of these hold: `import.meta.env.PROD`; no `?test=` and no
-  `__TPT_TEST_MODE__`; the path doesn't start with `/legacy`; and `sessionStorage['tpt-legacy-redirect']` is unset (set
-  just before redirecting). Otherwise it shows a WebGPU error page naming the cause: no `navigator.gpu` (with "WebGPU
-  needs a secure origin: use https or localhost" when `!isSecureContext`, the LAN-dev case), no adapter, a software
-  adapter (`?software=1` to use it anyway), or "run Chromium with `--enable-unsafe-webgpu`" under test. The Vite dev
-  server and Cloudflare Pages serve the root `index.html` for unknown paths, so without these guards a missing
-  `dist/legacy/` or dev's `/legacy/` would loop forever. U15's deploy fails if `dist/legacy/index.html` is missing.
-  The `WEBGL_OFF` message becomes a WebGPU one for errors after the probe. `index.html`'s `<noscript>` names WebGPU.
+- **`src/main.js` boot.** `probeWebGPU()` before `import('./app.js')`; the menu doesn't wait for it. On failure, or
+  when app.js's `createGpu` is refused (app.js stores that rejection in `launch.deviceError` before rethrowing, so
+  main.js can tell it from an ordinary bug, which keeps today's stack-trace page), main.js closes the menu and shows a
+  WebGPU error page naming the cause: no `navigator.gpu` (with "WebGPU needs a secure origin: use https or localhost"
+  when `!isSecureContext`, the LAN-dev case), no adapter, a software adapter (`?software=1` to use it anyway), a refused
+  device, or "run Chromium with `--enable-unsafe-webgpu`" under test. No redirect anywhere (W5). The `WEBGL_OFF`
+  message becomes a WebGPU one for errors after the probe. `index.html`'s `<noscript>` names WebGPU.
 - Menus grey out scenes and sizes `gpu.fits` rejects (B2).
 
 ## H. GLSL → WGSL porting guide for this codebase
@@ -1594,7 +1593,7 @@ gates before handing back. "GLSL" is the GLSL being replaced (measured from the 
 | **U13 Mesh layer** | `src/pov/figure.js`, `figureReal.js`, `flame.js`, `models.js`, `viewmodel.js`, `vfx.js`, `classPortraits.js`, `vehicles/look.js`, `worm.js` (material; from U11), `src/pov/tools/physgun.tool.js` (rim; from U11), `src/pov/tools/hotbar.js`, `src/pov/classPicker.js`, `src/ui/dock.js`, `src/birds/render.js`, `src/net/cursors.js`, `src/constructions.js`, `src/gfx/billboards.js` (new), `src/wire/mesh.js`; `src/spawners.js`, `src/perkOrbs.js`, `src/game/markers.js`, `src/arenas/markers.js` only if their built-in materials need a change; `package.json` and `package-lock.json` (remove three.quarks), `tools/bake-icons.mjs` (new), `public/icons/*` (new), `tools/pov-character.mjs`, `pov-viewmodels.mjs`, `torch-look.mjs`, `birds-shots.mjs` | U8, U11 | ~550 → TSL | figures lit, viewmodel composited, particles and ghost in smoke shots; every new mesh kind compiled through `prepare`; icons baked and `bake-icons --check` clean; no three.quarks import; the smoke allowlist emptied |
 | **U14a Async tools** | `tools/page-gpu.mjs` (new), `tools/check-async-reads.mjs` (new), and the ~25 ASYNC-only tools no other unit owns (the codemod list in the tools-tests map 8) | U0 (API in this doc) | 0 | check-async-reads clean over `tools/` and `scripts/`; converted tools use page-gpu; those runnable in the container at that point run, the rest say why |
 | **U14b Cross-build and performance tools** | `bench.mjs` (build-agnostic through page-gpu), `state-hash.mjs` (from U2's sim API), `headless-cost`, `lod-frame-bench`, `world-load-time`, `preload-check`, `check-browser-launch` LEGACY list, `program-bench`/`app-compile-probe` (retire), `check-shaders`/`check-scenes` (delete), `tools/power.mjs` (new), `tools/cold-start.mjs` (new) | U8, U14a; U10, U11 for their scenarios | 0 | every tool runs in the container or says why it is Mac-only; a cross-build dry run (the legacy build here stops at its known GL failure, but page-gpu must pick the legacy path); no `readRenderTargetPixels`, `getContext()` or GLSL left in `tools/` |
-| **U15 Deploy and docs** | `.github/workflows/deploy.yml`, `docs/scaling.md` (D1 note), `docs/headless-testing-cost.md`, `docs/world-lod.md`, `docs/particles.md` (where they describe WebGL); a separate branch and PR against `main` for `blankState`'s own PRNG (K2.4) | — | 0 | the workflow builds `dist/` first (it empties `dist/`), then `dist/legacy/` from a `git worktree` of `LEGACY_SHA` with its own `npm ci` and `vite build --base /legacy/ --outDir <repo>/dist/legacy` (checkout with enough history to reach the SHA), then fails unless `dist/legacy/index.html` exists. Provisional `LEGACY_SHA` = 9b075ae; set at merge time to the last WebGL2 `main` commit. Verified by running those build steps locally; never by running the workflow (it deploys) |
+| **U15 Deploy and docs** (done) | `.github/workflows/deploy.yml`, `docs/scaling.md` (D1 note), `docs/headless-testing-cost.md`, `docs/world-lod.md`, `docs/particles.md` (where they describe WebGL); a local branch against `main` for `blankState`'s own PRNG (K2.4) | — | 0 | Landed with a `/legacy/` build step; the user then chose no fallback (W5), so the deploy is back to building `dist/` alone. The docs notes and the PRNG branch stand |
 | **U16 Final integration** | `src/app.js` (second pass), `src/wire/index.js` (`ready` flags removed), the stubs (J3), the `*GLSL` → `*WGSL` rename commit, `docs/webgpu.md` ("as implemented" notes) | all | 0 | I1 in full; the Mac checklist (I4, I5) written out for the user with exact commands |
 
 ### J2. Waves (two agents at a time)
@@ -1605,7 +1604,7 @@ gates before handing back. "GLSL" is the GLSL being replaced (measured from the 
 | 1 | U2 (GPU), U3 | the sim and the render library only share the prelude; U3 is mostly Tint validation |
 | 2 | U4 (GPU), U5 | derived needs the sim; materials need the library core; U5 is mostly validation |
 | 3 | U6 (GPU), U7 | the volume needs both libraries and the derived textures; post needs only U0 and tests at 400×250 |
-| 4 | U8 (GPU), U15 | first boot of the box app; deploy is CPU-only and de-risks the legacy build early |
+| 4 | U8 (GPU), U15 | first boot of the box app (U15 ran early, beside wave 0) |
 | 5 | U9 (GPU), U14a | GI plugs into derived and the volume's lighting group; the async codemod is CPU-only |
 | 6 | U10 (GPU), U12 | world needs the booting app and GI; the small subsystems need only the app |
 | 7 | U11 (GPU), U14b | POV; the cross-build tools are mostly Mac-run |
@@ -1698,12 +1697,12 @@ wave's worktrees branch from the merged result.
 ### K2. Open questions for the user
 1. Is the volume-first composition acceptable (F1: a mesh behind glass with nothing behind it disappears)? The
    alternative splits three's scene into two renders. (The grid and edges keep today's order now.)
-2. Should `/legacy/` stay deployed forever, or be removed once WebGPU reaches the browsers you care about?
+2. ~~Should `/legacy/` stay deployed?~~ Answered: no fallback at all (W5).
 3. The giant volcano needs a 256 MiB storage binding (201 MB of state). Devices that allow less (the spec default,
    128 MiB, is common on Android) get it greyed out with the reason; every other scene and size runs. Acceptable?
 4. Cross-build `load` hashes need `blankState` to use its own seeded PRNG instead of `Math.random` (tools-tests map
-   7.7.5). U15 opens that as a small PR against `main`; merging it before `LEGACY_SHA` is chosen makes I4.2 exact
-   (it re-baselines state-hash once). Merge it?
+   7.7.5). U15 prepared it as a local branch against `main` (not pushed); merging it before the port merges makes
+   I4.2 exact against the last WebGL2 commit (it re-baselines state-hash once). Merge it?
 
 ### K3. Phase 2 (after parity is pinned; each with its proof)
 - **Mesh-only frames.** When only three's meshes move (the default World scene's birds, with camera and sim still),
@@ -1785,7 +1784,7 @@ the doc now says what the item asked, in the section named.
 | X-I3 detached canvas breaks call sites | Adopted, option (a) | W7, B10: three gets the visible canvas and sizes it; our presenter configures it with three's own parameters; debug assertion on default-target renders |
 | X-I4 ExternalTexture repointing, unfilterable float | Adopted | B10, F8 |
 | X-I5 ring growth, FrameUniforms timing | Adopted | B3, B4 |
-| X-I6 redirect loop | Adopted | G5 guards; U15 checks `dist/legacy/index.html` |
+| X-I6 redirect loop | Moot | No fallback and no redirect (W5, the user's decision) |
 | X-I7 fallback adapters, per-map gating | Adopted | B2; I4.8 records Safari 26 and Chrome Mac limits (not measurable here) |
 | X-I8 dispatch > 65,535 | Adopted | B5 `fold`, assertion in `dispatch`, check-wgsl (a) |
 | X-I9 test sizes and runtime | Adopted | I1 budgets and stages, activity-check `--harness`, `?win=`, readMaps without `drawn` in I2.2 |
@@ -1794,7 +1793,7 @@ the doc now says what the item asked, in the section named.
 | X-I12 `__app.volume`, `__app.renderer` | Adopted | B10 (renderer methods); U8: `__app.volume` stays a three `Object3D` (the transform only) and `__app.view = { time, frame, detailShown }` replaces `volume.material.uniforms`/`defines` in tools |
 | X-I13 Safari 26 | Adopted | I4.8; B5 `idle()` fallback |
 | X-M owners for rays.js, bolt.js, lockfile, vite.config | Adopted | J1 (U12, U12, U0→U13, U0) |
-| X-M deploy early | Adopted | J2 wave 4 (with U8), provisional `LEGACY_SHA` 9b075ae; not wave 0, where both slots are on the critical path |
+| X-M deploy early | Adopted, then moot | U15 ran beside wave 0; its `/legacy/` build was removed when the user chose no fallback (W5) |
 | X-M wave pairing | Adopted | J2: each GPU unit paired with a light one where dependencies allow |
 | X-M GLSL ShaderMaterials at U8 | Adopted | I1 smoke allowlist until U13; brush moved to U6 (ours) |
 | X-M walking skeleton | Adopted | U0 acceptance |
