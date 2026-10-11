@@ -235,19 +235,27 @@ if (port) {
     // ---- step cost: Dam Valley's grid vs 'wide' (160×96×160) with the Lab
     const stepMs = () => ev(async ([iters, chunks]) => {
       const a = window.__app, sim = a.sim, out = { sleep: [], noSleep: [], awake: [] };
-      for (const [k, sleep, quiet] of [['sleep', true, true], ['noSleep', false, true], ['awake', false, false]]) {
-        sim.skipSleeping = sleep;
-        sim.skipQuiet = quiet;
-        for (let i = 0; i < 5; i++) sim.step();
-        await window.__pageGpu.fence(sim);
-        for (let c = 0; c < chunks; c++) {
-          const t = performance.now();
-          for (let i = 0; i < iters; i++) sim.step();
+      // each fence yields to the page, where the app loop would draw a frame inside the
+      // timing (the old build's gpuSync() kept it all one task): park the loop meanwhile
+      const parked = a.test?.parked;
+      a.test?.park();
+      try {
+        for (const [k, sleep, quiet] of [['sleep', true, true], ['noSleep', false, true], ['awake', false, false]]) {
+          sim.skipSleeping = sleep;
+          sim.skipQuiet = quiet;
+          for (let i = 0; i < 5; i++) sim.step();
           await window.__pageGpu.fence(sim);
-          out[k].push((performance.now() - t) / iters);
+          for (let c = 0; c < chunks; c++) {
+            const t = performance.now();
+            for (let i = 0; i < iters; i++) sim.step();
+            await window.__pageGpu.fence(sim);
+            out[k].push((performance.now() - t) / iters);
+          }
+          out[k].sort((u, v) => u - v);
+          out[k] = +out[k][Math.floor(chunks / 2)].toFixed(3);
         }
-        out[k].sort((u, v) => u - v);
-        out[k] = +out[k][Math.floor(chunks / 2)].toFixed(3);
+      } finally {
+        if (!parked) a.test?.resume();
       }
       sim.skipSleeping = sim.skipQuiet = true;
       return out;

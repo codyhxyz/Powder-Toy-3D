@@ -60,16 +60,23 @@ try {
 
   const setPerks = (keys) => ev((keys) => { const pl = window.__app.pov.player; pl.perks.clear(); keys.forEach((k) => pl.perks.add(k)); }, keys);
   // cells set straight into the state: [x0, x1, y0, y1, z0, z1, element key] boxes, inclusive
+  // (the read yields to the page: the app loop is parked until the load, so no step
+  // lands between them and gets loaded over, as none could when the read was sync)
   const build = (boxes) => ev(async (boxes) => {
     const { E } = await import('/src/elements.js');
-    const sim = window.__app.sim;
-    const [a, b] = await window.__pageGpu.readState(sim);
-    for (const [x0, x1, y0, y1, z0, z1, key] of boxes)
-      for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) for (let z = z0; z <= z1; z++) {
-        const i = sim.cellTexel(x, y, z) * 4;
-        a[i] = E[key]; a[i + 1] = 20; a[i + 2] = 0; b[i] = b[i + 1] = b[i + 2] = 0;
-      }
-    sim.load(a, b);
+    const app = window.__app, sim = app.sim, parked = app.test?.parked;
+    app.test?.park();
+    try {
+      const [a, b] = await window.__pageGpu.readState(sim);
+      for (const [x0, x1, y0, y1, z0, z1, key] of boxes)
+        for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) for (let z = z0; z <= z1; z++) {
+          const i = sim.cellTexel(x, y, z) * 4;
+          a[i] = E[key]; a[i + 1] = 20; a[i + 2] = 0; b[i] = b[i + 1] = b[i + 2] = 0;
+        }
+      sim.load(a, b);
+    } finally {
+      if (!parked) app.test?.resume();
+    }
   }, boxes);
   // cells of each element key in a box (inclusive)
   const countIn = (box, keys) => ev(async ([[x0, x1, y0, y1, z0, z1], keys]) => {
