@@ -20,9 +20,11 @@ import './firearm.css';
 //
 // Accuracy is Half-Life 2's pistol (weapon_pistol.cpp): every shot adds
 // spread.penalty seconds of inaccuracy, up to spread.penaltyMax, which wears
-// off at one second a second; the cone's full angle runs from spread.min to
-// spread.max with it. Spam the trigger and the shots wander; pace them and
-// they're true.
+// off at one second a second once the trigger has rested SPREAD_RECOVER_DELAY;
+// the cone's full angle runs from spread.min to spread.max with it. Spam the
+// trigger and the shots wander; pace them and they're true. The penalty holds
+// mid-burst the way CS and Rust bloom does: decaying between an SMG's rounds,
+// it outran the 0.1 s a round added and a held spray never opened up.
 //
 // Recoil conserves momentum: Δv_body = m_round·v_round / m_body, with a real
 // round's mass. Standing, the ground takes it the way it takes any impact:
@@ -49,6 +51,7 @@ import './firearm.css';
 const MUZZLE_NUDGE = 1e-3;         // cells past the muzzle cell's entry face the round starts
 const BODY_MASS_KG = 70;           // kg, the player
 const SPREAD_RECOVER = 1;          // s of accuracy penalty worn off per second
+const SPREAD_RECOVER_DELAY = 0.25; // s after a shot before the penalty starts wearing off
 
 // a random direction within a cone of full angle `angle` around unit d (uniform over the cone's cap)
 const tmpA = new THREE.Vector3(), tmpB = new THREE.Vector3();
@@ -93,7 +96,7 @@ export function firearm({ key, name, model: modelKey, desc, round, refire, hold,
       // the scope's view (only the player's: an NPC's toolbelt has no hud)
       const overlay = scope && env.hud ? h('div.pov-scope', { 'aria-hidden': 'true' }) : null;
       if (overlay) document.body.append(overlay);
-      let penalty = 0, scoped = false, lastShot = null;
+      let penalty = 0, sinceShot = Infinity, scoped = false, lastShot = null;
 
       const setScoped = (v) => {
         scoped = !!scope && v;
@@ -129,6 +132,7 @@ export function firearm({ key, name, model: modelKey, desc, round, refire, hold,
           speed, energy: round.energy, depth: round.depth, damage: round.damage,
         });
         penalty = Math.min(spread.penaltyMax, penalty + spread.penalty);
+        sinceShot = 0;
         // momentum: the round's at its muzzle speed (cells/s)
         const dv = dir.clone().multiplyScalar(-round.mass * speed / BODY_MASS_KG);
         if (ctx.player.onGround) dv.set(0, Math.max(dv.y, 0), 0);
@@ -142,7 +146,9 @@ export function firearm({ key, name, model: modelKey, desc, round, refire, hold,
       return {
         update(ctx) {
           model.rig.update(ctx);
-          penalty = Math.max(0, penalty - SPREAD_RECOVER * toolDt(ctx));
+          const dt = toolDt(ctx);
+          sinceShot += dt;
+          if (sinceShot > SPREAD_RECOVER_DELAY) penalty = Math.max(0, penalty - SPREAD_RECOVER * dt);
           if (scope && ctx.secondaryPressed) setScoped(!scoped);
           model.hand.visible = !scoped;
           if (button.ready(ctx) && fire(ctx)) button.fire();
