@@ -97,9 +97,12 @@ export const gatherFrag = stub('gatherFrag', 'U10');
 export const giShiftFrag = stub('giShiftFrag', 'U4');
 
 const rw = () => [LAYOUT.TABLES, LAYOUT.STATE_RW];
-/** tools/check-wgsl.mjs; a windowed grid's pipelines (built on its first shift). */
+/**
+ * tools/check-wgsl.mjs, and the pipelines a grid needs (B5): undoShift every
+ * grid (undo is it with no shift), shift and flowShift a world's grid only.
+ */
 export const WGSL_CHECK = [
-  { name: 'shift', kind: 'compute', code: (g) => shiftFrag(g), layouts: rw, dispatch: perSlot },
+  { name: 'shift', kind: 'compute', code: (g) => shiftFrag(g), layouts: rw, dispatch: perSlot, windowed: true },
   { name: 'undoShift', kind: 'compute', code: (g) => undoShiftFrag(g), layouts: () => [...rw(), UNDO_LAYOUT], dispatch: perSlot },
-  { name: 'flowShift', kind: 'compute', code: flowShiftFrag, layouts: () => [LAYOUT.TABLES, 'EMPTY', FLOW_SHIFT_LAYOUT], dispatch: perSlot },
+  { name: 'flowShift', kind: 'compute', code: flowShiftFrag, layouts: () => [LAYOUT.TABLES, 'EMPTY', FLOW_SHIFT_LAYOUT], dispatch: perSlot, windowed: true },
 ];

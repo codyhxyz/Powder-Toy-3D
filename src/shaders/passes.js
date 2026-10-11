@@ -214,12 +214,16 @@ const rw = () => [LAYOUT.TABLES, LAYOUT.STATE_RW];
 export const paintKernelWGSL = (g, opts = {}) => editKernelWGSL(g, { update: paintUpdateWGSL, params: PaintParams, reads: 'own', ...opts });
 // One 64-thread workgroup per brick of a box (editMain), at most the grid's.
 const perBox = (g) => fold(gridDims(g).nbricks);
-/** tools/check-wgsl.mjs, and the pipelines a grid needs (the start menu's warm-up, docs/webgpu.md B5). */
+/**
+ * tools/check-wgsl.mjs, and the pipelines a grid needs (the start menu's
+ * warm-up, docs/webgpu.md B5): every entry but those marked `tool` (built only
+ * when a tool or a writer asks: sim.prepare) and `windowed` (a world's grid only).
+ */
 export const WGSL_CHECK = [
   { name: 'paint', kind: 'compute', code: (g) => paintKernelWGSL(g), layouts: rw, dispatch: perBox },
-  { name: 'fresh', kind: 'compute', code: (g) => freshFrag(g), layouts: rw, dispatch: perSlot },
-  { name: 'copy', kind: 'compute', code: (g) => copyFrag(g), layouts: rw, dispatch: perSlot },
-  { name: 'toAtlas', kind: 'compute', code: toAtlasFrag, dispatch: perSlot,
+  { name: 'fresh', kind: 'compute', code: (g) => freshFrag(g), layouts: rw, dispatch: perSlot, tool: true },
+  { name: 'copy', kind: 'compute', code: (g) => copyFrag(g), layouts: rw, dispatch: perSlot, tool: true, windowed: true },
+  { name: 'toAtlas', kind: 'compute', code: toAtlasFrag, dispatch: perSlot, tool: true,
     layouts: () => [LAYOUT.TABLES, stateLayout({ state: 'read', flags: true }), CONVERT_LAYOUT] },
   { name: 'fromAtlas', kind: 'compute', code: (g) => fromAtlasFrag(g), dispatch: perSlot, layouts: () => [...rw(), CONVERT_LAYOUT] },
   { name: 'awake', kind: 'compute', code: awakeFrag, dispatch: (g) => fold(Math.ceil(gridDims(g).nbricks / 64)),

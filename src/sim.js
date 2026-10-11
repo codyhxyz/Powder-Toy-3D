@@ -140,6 +140,11 @@ const NO_RAYS = Object.freeze({
 
 let nextSimId = 0;
 
+// A number per object (buffer, texture view), for keys of bind group caches.
+const objectIds = new WeakMap();
+let nextObjectId = 1;
+const idOf = (o) => { let id = objectIds.get(o); if (!id) objectIds.set(o, id = nextObjectId++); return id; };
+
 // The bind group layouts the simulation's kernels use, named in gpu.L (C4).
 function simLayouts(gpu) {
   const L = {};
@@ -214,7 +219,6 @@ export class Simulation {
     this.test = { listOrder: null, blockOrder: null, raceProbe: false, syncAfterShift: false, logCounts: false };
     this.countsLog = [];
     this._shiftListeners = [];
-    this._retired = [];
 
     // ---- buffers (docs/webgpu.md C1) ----
     const S = GPUBufferUsage.STORAGE, CS = GPUBufferUsage.COPY_SRC, CD = GPUBufferUsage.COPY_DST;
@@ -268,26 +272,29 @@ export class Simulation {
       move1: build('move1', move1Frag),
       args: build('args', argsFrag),
     };
-    // the simulation's other passes (docs/webgpu.md D6, D7, C2): built now too,
-    // so a write never waits; the tools' kernels on first use (passOf)
+    // the simulation's other passes (docs/webgpu.md D6, D7, C2): what a session
+    // writes with (the brush, load, undo, the derived passes' note) built now
+    // too, so a write never waits; the rest on first use (passOf, prepare)
     this.passes = {
       paint: this.editKernel('paint', { update: paintUpdateWGSL, params: PaintParams, reads: 'own' }),
-      fresh: kernel('fresh', freshFrag(g, dbg), [L.STATE_RW]),
-      copy: kernel('copy', copyFrag(g, dbg), [L.STATE_RW]),
-      toAtlas: kernel('toAtlas', toAtlasFrag(g), [L.STATE_FLAGS_RO, L.CONVERT], ConvertParams),
       fromAtlas: kernel('fromAtlas', fromAtlasFrag(g, dbg), [L.STATE_RW, L.CONVERT], ConvertParams),
       undoShift: kernel('undoShift', undoShiftFrag(g, dbg), [L.STATE_RW, L.UNDO], ShiftParams),
       awake: kernel('awake', awakeFrag(g), [L.STATE_BUILD], AwakeParams),
     };
     this._lazy = {
+      toAtlas: () => kernel('toAtlas', toAtlasFrag(g), [L.STATE_FLAGS_RO, L.CONVERT], ConvertParams),
+      copy: () => kernel('copy', copyFrag(g, dbg), [L.STATE_RW]),
+      fresh: () => kernel('fresh', freshFrag(g, dbg), [L.STATE_RW]),
       inertRef: () => kernel('inertRef', inertRefFrag(g), [L.STATE_RO, L.REF]),
       permute: () => build('permute', permuteFrag),
       moveRace: () => kernel('moveRace', moveBlockFrag(g, { form, ...dbg, raceProbe: true }), [L.STATE_RW, L.MOVE], MoveParams),
       shift: () => kernel('shift', shiftFrag(g, dbg), [L.STATE_RW], ShiftParams),
       flowShift: () => kernel('flowShift', flowShiftFrag(g), [gpu.L.EMPTY, L.FLOW_SHIFT], ShiftParams),
     };
-    // a window of a larger world moves: its shift kernels are built now too
-    if (windowed) { this.passOf('shift'); this.passOf('flowShift'); }
+    // a window of a larger world moves (and its window code syncs copies until
+    // U10 drops that, G1); tools read the state back from their first call
+    if (windowed) for (const k of ['shift', 'flowShift', 'copy']) this.passOf(k);
+    if (gpu.testMode) for (const k of ['toAtlas', 'copy']) this.passOf(k);
     // (the state starts blank once they are: load() needs its kernel)
     this.ready = Promise.all([...Object.values(this.kernels), ...Object.values(this.passes)].map((k) => k.ready))
       .then(() => { if (!this.disposed && this.version === 0) this.clear(); return this; });
@@ -324,6 +331,9 @@ export class Simulation {
 
   // A tool's kernel, made on first use; recording it needs it ready (prepare).
   passOf(name) { return (this.passes[name] ??= this._lazy[name]()); }
+
+  // Nothing when the kernel is ready (so a read still records at its call), else its build.
+  _readyFor(name) { const k = this.passOf(name); return k.state === 'ready' ? null : k.ready; }
 
   /**
    * Builds kernels the simulation makes only on demand: 'inertRef',
@@ -543,7 +553,6 @@ export class Simulation {
    * @param {{ bind?: GPUBindGroup[] }} [opts] the kernel's own group-2 resources (its layout's bindings, in order)
    */
   edit(kernel, { lo, hi }, values = {}, { bind = [] } = {}) {
-    const f = this.gpu.frame;
     const box = this._clip(lo, hi);
     if (!box) return;
     const [a, b] = box;
@@ -552,20 +561,30 @@ export class Simulation {
     const params = { ...values, editLo: a, editHi: b };
     let group2 = null;
     if (kernel.layout) {
-      const entries = kernel.extra.map((e, i) => ({ binding: e.binding, resource: bind[i] }));
-      if (kernel.reads === 'neighbours') {
-        const bytes = nb[0] * nb[1] * nb[2] * 64 * 32;
-        entries.push({ binding: EDIT_SCRATCH_BINDING, resource: { buffer: this._editScratch(bytes) } });
-      }
-      group2 = this.gpu.bindGroup(kernel.layout, entries, `${kernel.name} group`);
+      const res = [...bind];
+      if (kernel.reads === 'neighbours') res.push({ buffer: this._editScratch(nb[0] * nb[1] * nb[2] * 64 * 32) });
+      group2 = this._editGroup(kernel, res);
     }
     const groups = [this.tables, this.bindRW, ...(group2 ? [group2] : [])];
     const header = this.header();
     this._dispatch(kernel.main, size, { bind: groups, header, params });
     if (kernel.apply) this._dispatch(kernel.apply, size, { bind: groups, header, params });
-    void f;
     this.version++;
     this.wake();   // the next step rebuilds the map: the marked bricks are forced
+  }
+
+  // An edit kernel's group 2 for these resources (its own bindings, then the
+  // scratch), made once per set of buffers (B6), not per edit.
+  _editGroup(kernel, res) {
+    const key = res.map((r) => idOf(r.buffer ?? r)).join(',');
+    kernel.groups ??= new Map();
+    let group = kernel.groups.get(key);
+    if (!group) {
+      const bindings = [...kernel.extra.map((e) => e.binding), ...(kernel.reads === 'neighbours' ? [EDIT_SCRATCH_BINDING] : [])];
+      group = this.gpu.bindGroup(kernel.layout, bindings.map((binding, i) => ({ binding, resource: res[i] })), `${kernel.name} group`);
+      kernel.groups.set(key, group);
+    }
+    return group;
   }
 
   // The two-phase edits' scratch (two vec4f per cell of the brick-aligned
@@ -620,6 +639,15 @@ export class Simulation {
     this.wake();
   }
 
+  /**
+   * Fresh flags (freshFlags: the next map redoes every neighbour test) on
+   * every cell of the current copy, for a whole-grid writer that stored A and B
+   * only (D6); then noteWrite(). Its kernel is built on demand: sim.prepare('fresh').
+   */
+  freshFlags() {
+    this._dispatch(this.passOf('fresh'), fold(Math.ceil(this.g.slots / 64)), { bind: [this.tables, this.bindRW], header: this.header() });
+  }
+
   // Upload CPU-built state (Float32Array RGBA per atlas texel: cellTexel)
   // into the current copy, with fresh flags (docs/webgpu.md C2).
   load(dataA, dataB) {
@@ -659,7 +687,7 @@ export class Simulation {
   // A, B and F keeps the sleeping invariant, so it forces nothing. (One
   // dispatch: WebGPU copies no range of a buffer into another range of it.)
   syncCopies() {
-    this._dispatch(this.passes.copy, fold(Math.ceil(this.g.slots / 64)), {
+    this._dispatch(this.passOf('copy'), fold(Math.ceil(this.g.slots / 64)), {
       bind: [this.tables, this.bindRW], header: this.header(this.cur, 1 - this.cur),
     });
   }
@@ -812,7 +840,7 @@ export class Simulation {
   // Records the conversion of copy `c` (A and B, or with flags its F) into the scratch.
   _toAtlas(c, flags) {
     this._atlasScratch();
-    this._dispatch(this.passes.toAtlas, fold(Math.ceil(this.g.slots / 64)), {
+    this._dispatch(this.passOf('toAtlas'), fold(Math.ceil(this.g.slots / 64)), {
       bind: [this.tables, this.bindFlagsRO, this._convertGroup], header: this.header(c), params: { flags },
     });
   }
@@ -820,11 +848,13 @@ export class Simulation {
   /**
    * The current state as it is at this call, as float RGBA per atlas texel in
    * the fetchA/fetchB layout (what load() takes): [A, B]. For CPU checks and
-   * tools; cellTexel finds a cell in it.
+   * tools; cellTexel finds a cell in it. (Its kernel is built with the rest in
+   * test mode; elsewhere the first read waits for it, and reads the state then.)
    * @returns {Promise<[Float32Array, Float32Array]>}
    */
   async readState() {
     const texels = this.g.width * this.g.height;
+    await this._readyFor('toAtlas');
     this._toAtlas(this.cur, false);
     const bytes = await this.gpu.readback.buffer(this.atlasScratch, 0, texels * 32);
     return [new Float32Array(bytes, 0, texels * 4), new Float32Array(bytes, texels * 16, texels * 4)];
@@ -836,6 +866,7 @@ export class Simulation {
    */
   async readCopies() {
     const texels = this.g.width * this.g.height, rb = this.gpu.readback;
+    await this._readyFor('toAtlas');
     const reads = [];
     for (const c of [0, 1]) {
       this._toAtlas(c, false);
@@ -1031,6 +1062,10 @@ export class Simulation {
   dispose() {
     this.disposed = true;
     this.wake();   // an outstanding readback cannot certify a disposed simulation
+    // what is recorded on these buffers goes out first: a destroyed buffer in a
+    // later submit is a validation error, while one already submitted is freed
+    // once the queue is done with it
+    if (!this.gpu.failure) this.gpu.flush('sim dispose');
     const { A, B, F } = this.state;
     for (const b of [A, B, F, this.flow, this.moveSrc, this.marks, this.act, this.args, this.noDeposit, this.noRayBricks,
       this.flowTmp, this.atlasScratch, this.editScratch, this.refInert]) b?.destroy();
