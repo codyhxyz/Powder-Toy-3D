@@ -265,9 +265,11 @@ export function createToolbelt(env) {
     update(ctx) {
       lastCtx = ctx;
       const cur = held();
-      // a status that leaves no hands (Polymorph, potions.js): the tool in hand is put away while it lasts
+      // a status that leaves no hands (Polymorph, potions.js): the tool in hand is put away while it lasts,
+      // and a wand is drawn again when it ends (putting it away stopped its casting)
       const helpless = noHands(ctx);
       if (helpless && !wasHelpless) putAway();
+      else if (!helpless && wasHelpless && wandSelected && wandRuntime.definition) wandRuntime.equip(wandRuntime.definition);
       wasHelpless = helpless;
       if (!editor.open && ctx.wheel && !cur?.wantsWheel?.()) step(Math.sign(ctx.wheel));
       const wandInHand = wandSelected && !editor.open && !helpless;

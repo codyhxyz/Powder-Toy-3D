@@ -226,7 +226,9 @@ export function createWandRuntime(env) {
       }
       if (r.node.trigger === 'timer' && r.age + 1e-6 >= finite(r.node.params.delay, 0.5)) triggerPayload(r, 'timer');
       if (r.age + 1e-6 >= finite(r.node.params.lifetime, 2)) { endFlight(r, null, true); return; }
-      if (r.node.params.trail) queue({ ...commandFor(r.node, r.at, job.dir, job.dt), effect: 'emit', radius: 0.6, material: r.node.params.trail });
+      // the trail is made at its own material's temperature (fire's), not the bolt's (acid's, water's)
+      const trail = r.node.params.trail;
+      if (trail) queue({ ...commandFor(r.node, r.at, job.dir, job.dt), effect: 'emit', radius: 0.6, material: trail, temperature: ELEMENTS[E[trail]]?.temp });
       return;
     }
     const end = hit?.point ?? job.to;
