@@ -184,7 +184,7 @@ fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<functi
     let vy = select(0.0, SPAWN_DROP_V, KIND(tool) == K_POWDER || KIND(tool) == K_LIQUID);
     *oB = vec4f(0.0, vy, 0.0, b.w);
   } else if (tool == T_ERASE || tool >= 0 || propErases) {   // (tool >= 0 here: specific delete)
-    *oA = vec4f(f32(E_EMPTY), AMBIENT, 0.0, rnd(&rs) * SEED_MAX);
+    *oA = vec4f(f32(E_EMPTY), airT(), 0.0, rnd(&rs) * SEED_MAX);
     *oB = vec4f(0.0, 0.0, 0.0, b.w);
   } else if (tool == T_HEAT) {
     (*oA).y = min(a.y + TOOL_HEAT * falloff, CELL_TEMP_MAX);
@@ -600,7 +600,7 @@ ${listMainWGSL('LIST_FIELDS')}
   let a = fetchAs(s);
   let id = eid(a);
   if (id != E_EMPTY) { atomicOr(&wgOcc, 1u); }
-  else if (abs(a.y - AMBIENT) > AIR_FLAG_T) { atomicOr(&wgFlags, AIR_HOT); }
+  else if (abs(a.y - airT()) > AIR_FLAG_T) { atomicOr(&wgFlags, AIR_HOT); }
   if (id == E_STEAM || id == E_CLOUD || id == E_SMOKE) { atomicAdd(&wgGas, 1u); }
   let sf = textureLoad(tFS, p, 0);
   let mf = textureLoad(tFM, p, 0);
@@ -618,8 +618,9 @@ ${listMainWGSL('LIST_FIELDS')}
   var em = vec3f(0.0);
   if (id == E_FIRE || id == E_PLASMA) { em = blackbody(a.y) * (FIRE_GLOW_BASE + a.y / FIRE_GLOW_T) * FIRE_GLOW_GAIN; }
   else if (id != E_EMPTY && KIND(id) != K_GAS && (a.y > INCAND_T0 || luminous(id) || sparkLive(id, floor(a.w)) || lampLit(id, floor(a.w)))) {
-    // a live conductor or a lit lamp too (src/electricity.js; gfx/materials.js LAMP_ROOM_GAIN)
-    let ce = cellEmission(id, a.y) + sparkEmit(id, floor(a.w)) * select(1.0, LAMP_ROOM_GAIN, id == E_LAMP);
+    // small sources shed more (gfx/materials.js SHED); a live conductor or a
+    // lit lamp too (LAMP_ROOM_GAIN) (src/electricity.js)
+    let ce = cellEmission(id, a.y) * SHED(id) + sparkEmit(id, floor(a.w)) * select(1.0, LAMP_ROOM_GAIN, id == E_LAMP);
     if (dot(ce, ce) > 0.0) {
       var f = 1.0;
       if (RCLASS(id) == R_OPAQUE) { f = openFaces(p) * GLOW_FACE_GAIN; }

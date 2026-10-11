@@ -22,7 +22,8 @@ import { fold, MAX_WORKGROUPS } from '../gpu/kernels.js';
 //     move touching void, nothing a singularity touches (it never rests
 //     itself: it holds a vacuum), no moss or fungus whose damp is settling or
 //     that can grow (growers, below);
-//   - thermally quiet: within MATTER_REST_T of each matter face neighbour,
+//   - thermally quiet: each matter face carrying at most REST_FLUX of heat
+//     (within REST_FLUX / min(cond) of the neighbour: physics.js),
 //     and within AIR_REST_T of ambient where it touches air.
 // A change a neighbour sets off on its own (a flame catching in the air by
 // burning wood) makes that neighbour non-inert instead.
@@ -129,6 +130,10 @@ fn inertNear(c: vec3i, a: vec4f, nA: ptr<function, array<vec4f, 6>>) -> bool {
       }
     }
   }
+  // One exit after the faces, not one per test: inlined into the react pass
+  // (its last call), a return per test and face made ANGLE/Metal's cold build
+  // of that pass ~8x slower: 17-20 s, this way 2.3 s (tools/program-bench.mjs).
+  var busy = false;
   for (var i = 0; i < 6; i++) {
     let f = FACES(i);
     if (!inGrid(c + f)) { continue; }
@@ -136,32 +141,36 @@ fn inertNear(c: vec3i, a: vec4f, nA: ptr<function, array<vec4f, 6>>) -> bool {
     let j = eid(n);
     // thermally quiet; a face touching air carries heat at air's conductance, so it takes air's tolerance
     // (a face with no conductance, a temperature sensor's, carries none)
-    if (min(COND(id), COND(j)) > 0.0) {
+    // (a matter face: the heat it carries, physics.js REST_FLUX)
+    let cf = min(COND(id), COND(j));
+    if (cf > 0.0) {
       if (j == E_EMPTY) {
-        if (abs(T - AMBIENT) > AIR_REST_T) { return false; }
-      } else if (abs(T - n.y) > MATTER_REST_T) { return false; }
+        if (abs(T - airT()) > AIR_REST_T) { busy = true; }
+      } else if (abs(T - n.y) > min(REST_FLUX / cf, AIR_REST_T)) { busy = true; }
     }
-    if (!electricQuietNear(id, a, j, n)) { return false; }   // src/electricity.js
+    if (!electricQuietNear(id, a, j, n)) { busy = true; }   // src/electricity.js
     // acid, caustic gas (elements.js acid)
     if (ACIDIC(j)) {
-      if (acidEats(id)) { return false; }
-    } else if (ACIDIC(id) && acidEats(j)) { return false; }
-    if ((id == E_WATER && j == E_PLANT) || (id == E_PLANT && j == E_WATER)) { return false; }
-    if (fungusFood(id) && j == E_FUNGUS && floor(n.w) >= 1.0 && T < DAMP_DRY_T) { return false; }   // damp fungus rots it
-    if (id == E_CLONE && (j == E_EMPTY || (a.w < 1.0 && cloneable(j)))) { return false; }   // (cloneable: src/electricity.js)
+      if (acidEats(id)) { busy = true; }
+    } else if (ACIDIC(id) && acidEats(j)) { busy = true; }
+    if ((id == E_WATER && j == E_PLANT) || (id == E_PLANT && j == E_WATER)) { busy = true; }
+    if (fungusFood(id) && j == E_FUNGUS && floor(n.w) >= 1.0 && T < DAMP_DRY_T) { busy = true; }   // damp fungus rots it
+    if (id == E_CLONE && (j == E_EMPTY || (a.w < 1.0 && cloneable(j)))) { busy = true; }   // (cloneable: src/electricity.js)
     // an explosive with an ignition point: a hot touch sets it off
-    if (INTO(id)[PH_BLAST] >= 0 && IGNITE(id) > 0.0 && !isGasLike(j) && n.y >= IGNITE(id)) { return false; }
+    if (INTO(id)[PH_BLAST] >= 0 && IGNITE(id) > 0.0 && !isGasLike(j) && n.y >= IGNITE(id)) { busy = true; }
     // a reaction partner past its temperature gate (one below it lets both rest)
     let rx = rxAt(id, j);
-    if (rx > 0 && rxGate((rx - 1) >> 1u, T, n.y)) { return false; }
-    if (j == E_VOID && k != K_SOLID) { return false; }   // void drains it (react.js)
-    if (j == E_SINGULARITY && id != E_WALL && id != E_VOID) { return false; }   // it may be swallowed (react.js singEats)
+    if (rx > 0 && rxGate((rx - 1) >> 1u, T, n.y)) { busy = true; }
+    if (j == E_VOID && k != K_SOLID) { busy = true; }   // void drains it (react.js)
+    if (j == E_SINGULARITY && id != E_WALL && id != E_VOID) { busy = true; }   // it may be swallowed (react.js singEats)
     // a fuse lights from a lit fuse beside it, or a hot touch (react.js)
-    if (id == E_FUSE && ((j == E_FUSE && n.z < 1.0) || (!isGasLike(j) && n.y >= IGNITE(id)))) { return false; }
+    if (id == E_FUSE && ((j == E_FUSE && n.z < 1.0) || (!isGasLike(j) && n.y >= IGNITE(id)))) { busy = true; }
     // a powder or liquid: nowhere to fall, nor for a liquid to flow sideways
     let way = f.y < 0 || (k == K_LIQUID && f.y == 0);
-    if (k != K_SOLID && way && canMove(id, j, d, densityOf(j, n.y), select(2, 0, f.y < 0))) { return false; }
+    if (k != K_SOLID && way && canMove(id, j, d, densityOf(j, n.y), select(2, 0, f.y < 0))) { busy = true; }
+    if (busy) { break; }
   }
+  if (busy) { return false; }
   if (k == K_SOLID) { return true; }
   // ... nor to topple into, in the rest of the lower ring
   for (var z = -1; z <= 1; z++) {

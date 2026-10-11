@@ -757,7 +757,7 @@ test('budget:paint', async () => {
 // (main's tools/sim-modes-check.mjs, brush-tools-gpu.mjs and editing-gpu-check.mjs,
 // on the harness's Simulation at 32³; docs/webgpu.md Sync log S2, S4)
 
-// A scene of boxes (half-open, clipped to the grid): box(x0, y0, z0, x1, y1, z1, key, { T, P }).
+// A scene of boxes (half-open, clipped to the grid): box(x0, y0, z0, x1, y1, z1, key, { T, P, life }).
 const boxes = (sim, fill, seed = 12345) => {
   h.seed(seed);
   const g = sim.g, [A, B] = sim.blankState();
@@ -767,7 +767,7 @@ const boxes = (sim, fill, seed = 12345) => {
       for (let y = Math.max(y0, 0); y < Math.min(y1, g.ny); y++)
         for (let z = Math.max(z0, 0); z < Math.min(z1, g.nz); z++) {
           const i = cellTexel(g, x, y, z) * 4;
-          A[i] = id; A[i + 1] = o.T ?? ELEMENTS[id].temp; A[i + 2] = ELEMENTS[id].life; A[i + 3] = Math.random() * SEED_MAX;
+          A[i] = id; A[i + 1] = o.T ?? ELEMENTS[id].temp; A[i + 2] = o.life ?? ELEMENTS[id].life; A[i + 3] = Math.random() * SEED_MAX;
           if (o.P != null) B[i + 3] = o.P;
         }
   };
@@ -839,12 +839,20 @@ const MODE_STAGES = {
         box(c - 3, n - 7, c - 3, c + 3, n - 5, c + 3, 'WATER');
       });
       const r0 = await tally(sim);
-      go(220);
+      // (where the water's centre of mass is, every 10 steps: since main's
+      // sync 3 a liquid in free fall feels no drag, so the water falls in,
+      // through the centre and out again, and keeps sloshing round it, |v| ≈
+      // 0.5, instead of settling: its mean distance from the centre stays
+      // near where it started, its centre of mass doesn't)
+      const fromCentre = (w) => (w ? Math.hypot(w.x + 0.5 - c, w.y + 0.5 - c, w.z + 0.5 - c) : n);
+      const wr = [];
+      for (let k = 0; k < 22; k++) { go(10); wr.push(fromCentre((await tally(sim)).WATER)); }
       t = await tally(sim);
       check(out, `radial: sand gathers at the centre (mean r ${r0.SAND.r.toFixed(1)} → ${t.SAND.r.toFixed(1)})`, t.SAND.r < 0.5 * r0.SAND.r);
       check(out, `radial: no cell made or lost (sand ${count(r0, 'SAND')} → ${count(t, 'SAND')}, water ${count(r0, 'WATER')} → ${count(t, 'WATER')})`,
         count(t, 'SAND') === 8 * 27 && count(t, 'WATER') === count(r0, 'WATER'));
-      check(out, `radial: water falls in too (mean r ${r0.WATER.r.toFixed(1)} → ${t.WATER?.r.toFixed(1)})`, t.WATER?.r < 0.6 * r0.WATER.r);
+      check(out, `radial: water falls in too (its centre of mass ${fromCentre(r0.WATER).toFixed(1)} from the centre → ${wr.map((r) => r.toFixed(1)).join(', ')})`,
+        Math.min(...wr) < 0.4 * fromCentre(r0.WATER));
       out.ms.step = (performance.now() - t0) / steps;
       check(out, 'no out-of-grid access', (await sim.readDebug()) === 0);
     } finally { sim.dispose(); }
@@ -881,20 +889,30 @@ const MODE_STAGES = {
         if (count(t, 'SAND') !== SAND) lost++;
       }
       check(out, `loop: sand falls through the floor and in at the top (highest ${top}), none lost`, top > n - 6 && !lost);
-      // ...and water thrown out of +x comes in at -x
+      // ...and water thrown out of +x comes in at -x. (Paced since main's sync
+      // 3, a falling blob pushed at 0.8 cells a step crosses a cell on every
+      // one of its first 30 steps, so by the last it has gone round the whole
+      // box: judged at every push, from the lowest mean x it reached.)
       boxes(sim, (box) => box(n - 4, c - 2, c - 2, n, c + 2, c + 2, 'WATER'));
+      let xMin = n;
+      lost = 0;
       for (let i = 0; i < 12; i++) {
         const [A, B] = await sim.readState();
+        let k = 0, sx = 0;
         for (let y = 0; y < n; y++) for (let z = 0; z < n; z++) for (let x = 0; x < n; x++) {
           const q = cellTexel(sim.g, x, y, z) * 4;
-          if (Math.round(A[q]) === E.WATER) B[q] = 0.8;   // keep pushing it toward +x
+          if (Math.round(A[q]) !== E.WATER) continue;
+          B[q] = 0.8;   // keep pushing it toward +x
+          k++; sx += x;
         }
+        if (i > 0) xMin = Math.min(xMin, sx / k);
+        if (k !== 64) lost++;
         sim.load(A, B);
         go(3);
       }
       t = await tally(sim);
-      check(out, `loop: water thrown out of +x comes in at -x (mean x ${t.WATER?.x.toFixed(1)}), none lost (${count(t, 'WATER')})`,
-        count(t, 'WATER') === 64 && t.WATER.x < n / 2);
+      check(out, `loop: water thrown out of +x comes in at -x (mean x down to ${xMin.toFixed(1)}), none lost (${count(t, 'WATER')})`,
+        count(t, 'WATER') === 64 && !lost && xMin < n / 2);
       out.ms.step = (performance.now() - t0) / steps;
       check(out, 'no out-of-grid access', (await sim.readDebug()) === 0);
     } finally { sim.dispose(); }
@@ -1310,6 +1328,268 @@ const MODE_STAGES = {
   },
 };
 Object.assign(STAGES, MODE_STAGES);
+
+// Steps until the world certifies idle (at most k steps), reading the counts as it goes.
+const settle = async (sim, k) => {
+  let steps = 0;
+  for (; steps < k && !sim.idleCertified; steps++) {
+    sim.step();
+    if (steps % 8 === 7) { await sim.gpuSync(); await wait(); }
+  }
+  return { steps, idle: sim.idleCertified };
+};
+
+// Main's sync-3 rules (docs/webgpu.md Sync log, sync 3).
+const SYNC3_STAGES = {
+  // The scene's ambient air temperature (sim.airT, the tables' airT: main's
+  // uAirT) and the rest rules: a matter face rests while the heat it carries
+  // is at most REST_FLUX; water, ice and snow pinned at the phase point with
+  // latent heat banked rest. airT is the device's (one value for every
+  // simulation, as main's uniform), so each case sets it and the stage puts
+  // it back.
+  async rest({ size = 32 } = {}) {
+    const out = { checks: [] };
+    const n = size;
+    const sim = await h.make(n);
+    const frozen = (T = -15) => boxes(sim, (box) => box(0, 0, 0, n, n, n, 'EMPTY', { T }));
+    const airRange = (t) => `${t.air.Tmin.toFixed(3)}..${t.air.Tmax.toFixed(3)}`;
+    // (airT set on a written state redoes the flags once their kernel is
+    // built: built here first, so each redo records at the set)
+    await sim.prepare('fresh');
+    try {
+      // air at -15 °C: at room temperature's airT it isn't at rest and warms
+      frozen();
+      let r = await settle(sim, 24);
+      let t = await tally(sim);
+      check(out, `airT ${PHYS.AMBIENT}: air at -15 °C doesn't rest and warms (idle ${r.idle} after ${r.steps} steps, air ${airRange(t)})`, !r.idle && t.air.Tmin > -15);
+      // ...and at airT -15, set before the state is written (as app.js sets a
+      // world scene's), the same air rests, exactly where it is
+      sim.airT = -15;
+      frozen();
+      r = await settle(sim, 40);
+      t = await tally(sim);
+      check(out, `airT -15: the same air rests (idle after ${r.steps} steps) and keeps -15 °C (${airRange(t)})`, r.idle && t.air.Tmin === -15 && t.air.Tmax === -15);
+      // Set on a written state, every cell's flags are redone (a flag holds
+      // the rest test as it was written). On the idle world: it wakes, and the
+      // air warms toward the new airT
+      sim.airT = PHYS.AMBIENT;
+      const woke = !sim.idleCertified;
+      stepN(sim, 16);
+      t = await tally(sim);
+      check(out, `airT set back on the idle world: it wakes (${woke}) and the air warms (${airRange(t)})`, woke && t.air.Tmax > -15);
+      // On a live world, part of it asleep: room-temperature air settled at
+      // airT 20, then a block of sand painted high in one corner (an edit, not
+      // a load: the bricks round it are drawn, the far ones stay asleep), then
+      // airT -15. The air in the far quarter (x and z from 5n/8) is pulled
+      // toward -15 at the next step. The negative control writes the word
+      // straight into the tables, skipping the redo: the far air sleeps on at
+      // 20 °C. (Not for long: the drawn air is now off its rest and wakes two
+      // bricks further at each map, but the far quarter is out of reach for
+      // the two steps read here.)
+      const lively = async (setAirT) => {
+        boxes(sim, () => {});
+        const calm = await settle(sim, 40);
+        sim.paint({ center: V(4, n - 4, 4), radius: 2, shape: 1, tool: E.SAND, rate: oneShotRate(E.SAND, 1), replace: true });
+        stepN(sim, 2);
+        const live = !sim.idleCertified;
+        setAirT(-15);
+        stepN(sim, 2);
+        const [A] = await sim.readState();
+        let lo = Infinity, hi = -Infinity;
+        for (let y = 0; y < n; y++) for (let z = n * 5 / 8; z < n; z++) for (let x = n * 5 / 8; x < n; x++) {
+          const i = cellTexel(sim.g, x, y, z) * 4;
+          if (Math.round(A[i]) === E.EMPTY) { lo = Math.min(lo, A[i + 1]); hi = Math.max(hi, A[i + 1]); }
+        }
+        return { calm: calm.idle, live, lo, hi, range: `${lo.toFixed(3)}..${hi.toFixed(3)}` };
+      };
+      const word = (v) => gpu.write(gpu._simTables.buffer, gpu._simTables.airTOffset, new Float32Array([v]));
+      const set = await lively((v) => { sim.airT = v; });
+      sim.airT = PHYS.AMBIENT;
+      const skip = await lively(word);
+      word(PHYS.AMBIENT);
+      check(out, `airT set on a live world (idle ${set.calm} before the sand, live ${set.live} after): the far air, asleep, is pulled toward -15 at once (${set.range} after 2 steps)`,
+        set.calm && set.live && set.hi < PHYS.AMBIENT);
+      check(out, `negative control: airT written without the redo leaves that air asleep at ${PHYS.AMBIENT} °C (${skip.range})`,
+        skip.calm && skip.live && skip.lo === PHYS.AMBIENT && skip.hi === PHYS.AMBIENT);
+      // void edges bring in still air at airT: no heat crosses the box's sides
+      sim.airT = -15;
+      setModes(sim, { edgeMode: EDGE.VOID });
+      frozen();
+      stepN(sim, 24);
+      t = await tally(sim);
+      check(out, `void edges at airT -15: the air keeps -15 °C exactly (${airRange(t)})`, t.air.Tmin === -15 && t.air.Tmax === -15);
+      setModes(sim, {});
+      // the brush's erase leaves air at airT
+      boxes(sim, (box) => { box(0, 0, 0, n, n, n, 'EMPTY', { T: -15 }); box(4, 0, 4, 12, 6, 12, 'STONE', { T: -15 }); });
+      sim.paint({ center: V(8, 3, 8), radius: 3, shape: 1, tool: TOOLS.find((x) => x.key === 'ERASE').id, rate: 1, replace: false });
+      t = await tally(sim);
+      check(out, `the brush's erase leaves air at airT (stone ${count(t, 'STONE')} of 384 left, air ${airRange(t)})`, count(t, 'STONE') < 384 && t.air.Tmin === -15 && t.air.Tmax === -15);
+      // snow wall to wall at 0 °C with latent heat banked (life: toward melting)
+      // under air at 0 °C, airT 0 (main's Mines): pinned at the phase point, it
+      // rests (main's rule before sync 3 kept it awake: life ≠ 0)
+      sim.airT = 0;
+      boxes(sim, (box) => { box(0, 0, 0, n, n, n, 'EMPTY', { T: 0 }); box(0, 0, 0, n, 3, n, 'SNOW', { T: 0, life: 0.4 }); });
+      r = await settle(sim, 40);
+      t = await tally(sim);
+      check(out, `snow at 0 °C with latent heat banked, airT 0: rests (idle ${r.idle} after ${r.steps} steps; snow ${count(t, 'SNOW')} at ${t.SNOW?.T})`,
+        r.idle && count(t, 'SNOW') === 3 * n * n);
+      sim.airT = PHYS.AMBIENT;
+      // A matter face rests by the heat it carries (REST_FLUX): two slabs 0.1 °C
+      // apart. Wood (cond 0.008: tolerance REST_FLUX / 0.008 = 0.125 °C)
+      // rests at once; metal (cond 0.1: 0.01 °C, MATTER_REST_T) doesn't
+      // where the slabs meet. (Before sync 3 every matter face had 0.01 °C.)
+      const slabs = async (key) => {
+        boxes(sim, (box) => { box(0, 0, 0, n, n / 2, n, key, { T: 20 }); box(0, n / 2, 0, n, n, n, key, { T: 20.1 }); });
+        sim.step();
+        const m = await sim.readMaps();
+        return m.inert.length - m.inert.reduce((a, v) => a + (v ? 1 : 0), 0);
+      };
+      const wood = await slabs('WOOD'), metal = await slabs('METAL');
+      check(out, `slabs 0.1 °C apart: wood rests (${wood} bricks not inert), metal doesn't where they meet (${metal} of ${2 * (n / 4) ** 2})`,
+        wood === 0 && metal === 2 * (n / 4) ** 2);
+      check(out, 'no out-of-grid access', (await sim.readDebug()) === 0);
+    } finally {
+      sim.airT = PHYS.AMBIENT;
+      sim.dispose();
+    }
+    // the shift's uncovered cells are air at airT (a window's grid)
+    const win = await h.make(n, { windowed: true });
+    try {
+      win.airT = -15;
+      boxes(win, (box) => box(0, 0, 0, n, n, n, 'STONE', { T: -15 }));
+      win.shift(n / 2, 0);
+      const [A] = await win.readState();
+      let wrong = 0;
+      for (let y = 0; y < n; y++) for (let z = 0; z < n; z++) for (let x = n / 2; x < n; x++) {
+        const i = cellTexel(win.g, x, y, z) * 4;
+        if (Math.round(A[i]) !== E.EMPTY || A[i + 1] !== -15) wrong++;
+      }
+      check(out, `a shift uncovers air at airT -15 (${wrong} of ${n * n * n / 2} cells otherwise)`, wrong === 0);
+      check(out, 'the shift: no out-of-grid access', (await win.readDebug()) === 0);
+    } finally {
+      win.airT = PHYS.AMBIENT;
+      win.dispose();
+    }
+    return out;
+  },
+
+  // Main's coherent jets (ca75fdb, 1c87096): liquid at rest under a head
+  // leaves an opening at Torricelli's ORIFICE_CV·√(2gh), counted up its
+  // column through a one-cell bubble, capped at FLOW; and a liquid falling
+  // through a gas is paced (move.js PACE): a slab of water dropped in the air
+  // falls as one layer.
+  async jets({ size = 32 } = {}) {
+    const out = { checks: [] };
+    const n = size;
+    const sim = await h.make(n);
+    try {
+      // Shafts of water in rock, each open at its foot through a tunnel to the
+      // air at +x: column[y] says what the shaft holds at height y (W water,
+      // a gas cell .), air above. The head h counts the water over the foot
+      // cell's centre (0.5, then 1 a water cell), on through a lone gas cell,
+      // up to two in a row; the scan stops once √(2gh) reaches FLOW, so a
+      // tall column leaves at ORIFICE_CV·√(2gh) of the h it stopped at (just
+      // under FLOW: main's rule, kept).
+      const shafts = ['WW', 'WWWW', 'WWWWWWW', 'WWWWWWWWWWW', 'WWWWWWWWWWWWWWWW', 'W'.repeat(24), 'WWWW.WWWWW', 'WWWW..WWWW'];
+      const water = ELEMENTS[E.WATER], g = Math.fround(sim.gravity) * water.grav, f = Math.fround(water.flow);
+      const head = (col) => {
+        let h = 0.5, gas = false;
+        for (let y = 1; y < n && 2 * g * h < f * f; y++) {
+          const c = y < col.length ? col[y] : '.';
+          if (c !== 'W' && gas) break;
+          gas = c !== 'W';
+          if (c === 'W') h += 1;
+        }
+        return h;
+      };
+      boxes(sim, (box) => {
+        box(2, 0, 1, 7, n, 1 + 3 * shafts.length, 'ROCK');
+        shafts.forEach((col, k) => {
+          const z = 2 + 3 * k;
+          box(4, 0, z, 5, n, z + 1, 'EMPTY');
+          for (let y = 0; y < col.length; y++) if (col[y] === 'W') box(4, y, z, 5, y + 1, z + 1, 'WATER');
+          box(5, 0, z, 7, 1, z + 1, 'EMPTY');   // the tunnel out
+        });
+      });
+      sim.step();
+      const got = await Promise.all(shafts.map((_, k) => sim.readCell(4, 0, 2 + 3 * k)));
+      const rows = shafts.map((col, k) => {
+        const h = head(col), want = Math.min(Math.fround(PHYS.ORIFICE_CV) * Math.sqrt(2 * g * h), f);
+        const [, B] = got[k];
+        return { col, h, want, vx: B[0], vz: B[2], ok: Math.abs(B[0] - want) <= 1e-5 * want && B[2] === 0 };
+      });
+      check(out, `Torricelli: the foot of each shaft leaves at min(ORIFICE_CV·√(2gh), FLOW) toward its opening (${rows.map((r) => `h ${r.h}: ${r.vx.toFixed(4)}/${r.want.toFixed(4)}`).join(', ')})`,
+        rows.every((r) => r.ok), rows.filter((r) => !r.ok).map((r) => `${r.col}: vx ${r.vx} vz ${r.vz} want ${r.want}`).join('; '));
+      // a 4×1×4 slab of water in the air: every cell falls on the same paced
+      // steps, so it stays one layer all the way down
+      const y0 = n - 6, c = n / 2;
+      boxes(sim, (box) => box(c - 2, y0, c - 2, c + 2, y0 + 1, c + 2, 'WATER'));
+      const layers = [];
+      for (let k = 0; k < 4; k++) {
+        stepN(sim, 9);
+        const [A] = await sim.readState();
+        const ys = new Set();
+        for (let y = 0; y < n; y++) for (let z = 0; z < n; z++) for (let x = 0; x < n; x++) {
+          if (Math.round(A[cellTexel(sim.g, x, y, z) * 4]) === E.WATER) ys.add(y);
+        }
+        layers.push([...ys]);
+      }
+      const last = layers.at(-1);
+      check(out, `a falling slab of water stays one layer (heights at steps 9, 18, 27, 36: ${layers.map((l) => l.join('/')).join(', ')})`,
+        layers.every((l) => l.length === 1) && last[0] < y0 - 6);
+      check(out, 'no out-of-grid access', (await sim.readDebug()) === 0);
+      // The fall is paced by the liquid's own fall age (move.js fallAge: the
+      // steps it has fallen, -vy/g), not by the frame, so a parcel falls alike
+      // whenever it left. The slab can't tell the two apart (its cells leave
+      // together, so any sequence they share keeps it one layer): here a
+      // 4×2×4 blob, moving across at 0.3 so the paced x draws count too, is
+      // released on a new grid at its first step and 6 steps later (the same
+      // parity), and its heights after each of 34 steps are the same. The
+      // negative control paces the fall by the frame (a move whose fallAge
+      // returns P.frame) and is caught.
+      const release = async (delay, move) => {
+        const s = await h.make(n);
+        try {
+          if (move) s.kernels.move = move;
+          stepN(s, delay);
+          h.seed(12345);
+          const [A, B] = s.blankState();
+          for (let y = n - 6; y < n - 4; y++) for (let z = c - 2; z < c + 2; z++) for (let x = c - 2; x < c + 2; x++) {
+            const i = cellTexel(s.g, x, y, z) * 4;
+            A[i] = E.WATER; A[i + 1] = water.temp; A[i + 2] = water.life;
+            B[i] = 0.3;
+          }
+          s.load(A, B);
+          const ys = [];
+          for (let k = 0; k < 34; k++) {
+            s.step();
+            const [S] = await s.readState();
+            let lo = n, hi = -1;
+            for (let y = 0; y < n; y++) for (let z = 0; z < n; z++) for (let x = 0; x < n; x++) {
+              if (Math.round(S[cellTexel(s.g, x, y, z) * 4]) === E.WATER) { lo = Math.min(lo, y); hi = Math.max(hi, y); }
+            }
+            ys.push(`${lo}-${hi}`);
+          }
+          return { ys, lo: Number(ys.at(-1).split('-')[0]), dbg: await s.readDebug() };
+        } finally { s.dispose(); }
+      };
+      const differ = (a, b) => a.ys.findIndex((y, k) => y !== b.ys[k]);
+      const a = await release(0), b = await release(6);
+      check(out, `the same blob released 6 steps later falls alike, step for step (heights ${a.ys.filter((_, k) => k % 6 === 5).join(', ')} at steps 6, 12, …, 30${differ(a, b) < 0 ? '' : `; ${b.ys[differ(a, b)]} at step ${differ(a, b) + 1}`})`,
+        differ(a, b) < 0 && a.lo < n - 6 - 8 && a.dbg === 0 && b.dbg === 0);
+      const code = sim.kernels.move.desc.code;
+      if (code.split('fn fallAge(').length !== 2) throw new Error('jets: move.js fallAge not found for the negative control');
+      const byFrame = gpu.kernel({ ...sim.kernels.move.desc, name: 'move (fall paced by the frame)',
+        code: `${code.replace('fn fallAge(', 'fn fallAgeShipped(')}\nfn fallAge(k: i32, vy: f32) -> u32 { return P.frame; }\n` });
+      await byFrame.ready;
+      const fa = await release(0, byFrame), fb = await release(6, byFrame);
+      check(out, `negative control: a fall paced by the frame is caught (released 6 steps later: ${differ(fa, fb) < 0 ? 'the same heights' : `${fb.ys[differ(fa, fb)]} for ${fa.ys[differ(fa, fb)]} at step ${differ(fa, fb) + 1}`})`,
+        differ(fa, fb) >= 0);
+    } finally { sim.dispose(); }
+    return out;
+  },
+};
+Object.assign(STAGES, SYNC3_STAGES);
 
 // TPT's Mix after the first stroke (a two-phase edit: two dispatches), a
 // flood fill after the first (a read of state A, an upload of its mask and

@@ -25,11 +25,15 @@ export const ReactParams = uniformStruct('ReactParams', {
   // inlines every call in every loop body six times over, and ANGLE/Metal took
   // a minute to build this pass cold (docs/webgpu.md D3).
   faces: 'u32',
+  // The most cells a liquid looks up its column for its head (the grid's
+  // height; the scan stops at the surface, or once the head is enough for
+  // FLOW). A param, so the loop isn't unrolled.
+  headScan: 'u32',
   rays: 'u32',   // the rays layer stepped: its deposits are in rayDeposit
   // simulation modes (src/simModes.js): gravMode, edge, and
   ...SIM_MODE_FIELDS,
   airMode: 'u32',       // AIR_*
-  ambientHeat: 'u32',   // heat in the air (off: air holds AMBIENT and matter trades no heat with it)
+  ambientHeat: 'u32',   // heat in the air (off: air holds its ambient, airT(), and matter trades no heat with it)
 });
 
 // Group 2 (docs/webgpu.md C4, D3): what fast particles left in each cell this
@@ -277,7 +281,7 @@ fn reactCell(p: vec3i, quiet: bool) -> bool {
       na[i] = fetchA(q);
       nb[i] = fetchB(q);
     } else if (P.edge == EDGE_VOID) {
-      na[i] = VOID_AIR_A;   // open: still air at ambient, no pressure (simModes.js)
+      na[i] = VOID_AIR_A();   // open: still air at ambient, no pressure (simModes.js)
       nb[i] = vec4f(0.0);
     } else {
       na[i] = vec4f(f32(E_WALL), T, 0.0, 0.0);   // insulating, pressure-reflecting box
@@ -414,7 +418,7 @@ fn reactCell(p: vec3i, quiet: bool) -> bool {
   }
   T += (dE + rayDep.x) / C;   // (and what particles left: photons absorbed, fissions)
   // the open world above the box slowly pulls air back to ambient; gases radiate
-  T += (AMBIENT - T) * select(RAD(id), AIR_AMBIENT_PULL, id == E_EMPTY);
+  T += (airT() - T) * select(RAD(id), AIR_AMBIENT_PULL, id == E_EMPTY);
 
   // ---- air pressure ----
   let solid = KIND(id) == K_SOLID;
@@ -469,13 +473,12 @@ fn reactCell(p: vec3i, quiet: bool) -> bool {
     }
     // air, and cloud (air carrying droplets), is buoyant by its temperature
     if (id == E_EMPTY || id == E_CLOUD) {
-      let lift = P.gravity * clamp((T - AMBIENT) / (AMBIENT + KELVIN), AIR_BUOY_LO, AIR_BUOY_HI);
+      let lift = P.gravity * clamp((T - airT()) / (airT() + KELVIN), AIR_BUOY_LO, AIR_BUOY_HI);
       if (radial) { v -= gv * lift; } else { v.y += lift; }
     }
     if (id != E_EMPTY) {
       if (radial) { v += gv * (P.gravity * GRAV(id)); } else { v.y -= P.gravity * GRAV(id); }
     }
-    v *= 1.0 - DRAG(id);
     var bF = b.xyz;       // this cell's and the one below's velocity, in the frame
     var nbF = nb[fd].xyz;
     if (radial) {
@@ -493,6 +496,12 @@ fn reactCell(p: vec3i, quiet: bool) -> bool {
     let held = (KIND(id) == K_POWDER || KIND(id) == K_LIQUID) && bF.y >= 0.0 && (KIND(nid[fd]) == K_SOLID
       || (!canMove(id, nid[fd], d, densityOf(nid[fd], na[fd].y), 0) && nbF.y >= 0.0));
     if (held) { v.y = max(v.y, 0.0); }
+    // Drag. Not on a liquid in free fall (nothing under it but air, or the
+    // falling liquid ahead of it): a liquid's drag is its viscosity acting on
+    // its flow, and the air's drag on a falling parcel is negligible over a
+    // few metres, so a jet keeps its horizontal speed and falls in a parabola.
+    let flying = KIND(id) == K_LIQUID && !held && (isGasLike(nid[fd]) || (KIND(nid[fd]) == K_LIQUID && nbF.y < 0.0));
+    if (!flying) { v *= 1.0 - DRAG(id); }
     // grains only feel friction while resting on something (pressed on it by gravity)
     let supported = P.gravity > 0.0 && (KIND(nid[fd]) == K_SOLID || KIND(nid[fd]) == K_POWDER);
     if (supported) {
@@ -501,30 +510,72 @@ fn reactCell(p: vec3i, quiet: bool) -> bool {
       v.z *= fr;
     }
 
-    // Liquids: hydrostatic head drives spreading, surface tension stops it.
-    // Both push only a liquid that has somewhere to go, a side neighbour it
-    // can move into; boxed in, its speed just decays to a stop. (A lower
-    // diagonal needs no push: the move pass topples into it regardless.)
-    // Without gravity there is no head and nothing to rest on.
-    if (KIND(id) == K_LIQUID && P.gravity > 0.0 && (supported || KIND(nid[fd]) == K_LIQUID)) {
+    // Liquids at rest: hydrostatic head drives spreading, surface tension
+    // stops it. Both push only a liquid that has somewhere to go, a side
+    // neighbour it can move into, and toward it: the pressure falls toward an
+    // open side. Boxed in, its speed just decays to a stop. (A lower diagonal
+    // needs no push: the move pass topples into it regardless.) A falling
+    // liquid holds no pressure and nothing pushes it. Without gravity there is
+    // no head and nothing to rest on.
+    let up = nid[fd ^ 1];
+    let head = KIND(up) == K_LIQUID || KIND(up) == K_POWDER;   // weight above us
+    if (KIND(id) == K_LIQUID && P.gravity > 0.0 && held) {
       var open = false;
+      var od = vec3f(0.0);   // toward the open sides
       for (var i = 0; i < faces; i++) {
-        if ((i >> 1u) != (fd >> 1u)) { open = open || canMove(id, nid[i], d, densityOf(nid[i], na[i].y), 2); }
+        if ((i >> 1u) != (fd >> 1u) && canMove(id, nid[i], d, densityOf(nid[i], na[i].y), 2)) { open = true; od += vec3f(DIRS(i)); }
       }
-      let up = nid[fd ^ 1];
-      let head = KIND(up) == K_LIQUID || KIND(up) == K_POWDER;   // weight above us
       let onLiquid = !supported;                                  // surface of a pool
       let f = FLOW(id);
       let hv = length(v.xz);
+      // Under a head it leaves at Torricelli's speed, ORIFICE_CV·√(2gh), h the
+      // weight of the column above in cells of this liquid, to this cell's
+      // centre (each parcel the same, so a hole pours one jet); viscosity
+      // caps it at FLOW. A bubble in the column (a lone gas cell with liquid
+      // over it) weighs nothing but holds the pressure of what is over it,
+      // so the count goes on through it; two gas cells is the open air over
+      // the free surface, where it stops. (Past the box it reads wall, as the
+      // GLSL does: the column ends there.)
+      var want = f * FLOW_SURFACE;
+      if (head && open) {
+        let gh = P.gravity * GRAV(id);
+        var h = 0.5;
+        var q = p;
+        var gas = false;
+        for (var k = 0; k < i32(P.headScan) && 2.0 * gh * h < f * f; k++) {
+          q = edgeCell(q + DIRS(fd ^ 1));
+          var e = E_WALL;
+          if (inGrid(q)) { e = eid(fetchA(q)); }
+          let weight = KIND(e) == K_LIQUID || KIND(e) == K_POWDER;
+          if (!weight && (gas || !isGasLike(e))) { break; }
+          gas = !weight;
+          if (weight) { h += DENS(e) / d; }
+        }
+        want = min(ORIFICE_CV * sqrt(2.0 * gh * h), f);
+      }
       if (head || onLiquid) {
-        // keep flowing in some direction until the level evens out
-        let want = select(f * FLOW_SURFACE, f, head);
-        if (open && hv < want * FLOW_KICK) {
+        // keep flowing until the level evens out
+        // The pressure drives it out of the opening, not along it: whatever
+        // it was doing, it leaves at the speed the head gives. (Open both
+        // ways, nothing picks a side: a random one, kept while it flows.)
+        var odF = od;
+        if (radial) { odF = GF * od; }
+        let dir = odF.xz;
+        if (dot(dir, dir) > 0.0) {
+          let n = normalize(dir);
+          if (dot(v.xz, n) < want) {
+            let h = n * want;
+            v.x = h.x;
+            v.z = h.y;
+          }
+        } else if (open && hv < want * FLOW_KICK) {
           let ang = rnd(&rs) * 6.2831853;
           let h = vec2f(cos(ang), sin(ang)) * want;
           v.x = h.x;
           v.z = h.y;
         }
+      } else if (!movable(up)) {
+        // (under a solid lid it is pipe flow, below: no film)
       } else {
         // a thin film on dry ground: cohesion pulls it toward neighbouring
         // liquid, so films gather into puddles with clean edges
@@ -544,6 +595,28 @@ fn reactCell(p: vec3i, quiet: bool) -> bool {
           v.x = w2.x;
           v.z = w2.y;
         }
+      }
+    }
+    // Between a solid floor and a solid lid (a hole through a wall, a pipe)
+    // a liquid is in pipe flow: what drives it is the pressure behind, not a
+    // film's surface tension, and the walls turn it along the pipe (their
+    // normal force takes the velocity into them, the floor its fall) at the
+    // speed it came in with (in a pipe of one section the speed is set by
+    // continuity, not by the angle it came in at), so it leaves a hole
+    // straight, whichever way it came in.
+    if (KIND(id) == K_LIQUID && !movable(up) && supported) {
+      let v0 = v;
+      for (var i = 0; i < faces; i++) {
+        if (i != (fd ^ 1) && !movable(nid[i])) {
+          var n = vec3f(DIRS(i));
+          if (radial) { n = GF * n; }
+          v -= n * max(dot(v, n), 0.0);
+        }
+      }
+      if (dot(v.xz, v.xz) > 0.0) {
+        let h = normalize(v.xz) * length(v0.xz);
+        v.x = h.x;
+        v.z = h.y;
       }
     }
     if (radial) { v = v * GF; }   // (out of the frame)
@@ -658,7 +731,7 @@ fn reactCell(p: vec3i, quiet: bool) -> bool {
       // thick cloud coalesces into raindrops; the edges evaporate into the
       // unsaturated air, the faster the warmer (saturation vapour pressure)
       let rain = CLOUD_RAIN * max(f32(nCloud) - CLOUD_RAIN_NB, 0.0);
-      let es = exp(MAGNUS_A * (T / (T + MAGNUS_B) - AMBIENT / (AMBIENT + MAGNUS_B)));
+      let es = exp(MAGNUS_A * (T / (T + MAGNUS_B) - airT() / (airT() + MAGNUS_B)));
       let r = rnd(&rs);
       if (r < rain) { nidOut = E_WATER; life = 0.0; }
       else if (r < rain + CLOUD_EVAP * max(f32(nAir) - CLOUD_EVAP_NB, 0.0) * es) { nidOut = E_EMPTY; reset = true; T -= CLOUD_EVAP_COOL; }
@@ -869,11 +942,11 @@ fn reactCell(p: vec3i, quiet: bool) -> bool {
 
   // swallowed by the singularity it is partnered with (the draw above); its
   // heat goes in with it
-  if (swallow && id != E_SINGULARITY) { nidOut = E_EMPTY; reset = true; T = AMBIENT; ctype = 0.0; }
+  if (swallow && id != E_SINGULARITY) { nidOut = E_EMPTY; reset = true; T = airT(); ctype = 0.0; }
 
   // Void (elements.js VOID) drains whatever can move the step it touches it
   if (nVoid > 0 && id != E_EMPTY && KIND(id) != K_SOLID) {
-    nidOut = E_EMPTY; reset = true; T = AMBIENT; v = vec3f(0.0); ctype = 0.0;
+    nidOut = E_EMPTY; reset = true; T = airT(); v = vec3f(0.0); ctype = 0.0;
   }
 
   if (nidOut != id) {
@@ -885,7 +958,7 @@ fn reactCell(p: vec3i, quiet: bool) -> bool {
   }
 
   // simModes.js: ambient heat off holds the air at ambient; pressure off holds it at 0
-  if (P.ambientHeat == 0u && nidOut == E_EMPTY) { T = AMBIENT; }
+  if (P.ambientHeat == 0u && nidOut == E_EMPTY) { T = airT(); }
   if (P.airMode == AIR_PRESSURE_OFF || P.airMode == AIR_OFF) { Pr = 0.0; }
   T = clamp(T, CELL_TEMP_MIN, CELL_TEMP_MAX);
   let outA = vec4f(f32(nidOut), T, life, ctype + seed);

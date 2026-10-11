@@ -126,9 +126,49 @@ const HEAT_Q_MAX = Math.floor((2 ** 24 / SLOTS - 1) / HEAT_QUANTA);
 // history): grains move a cell on some steps and not others, so the field
 // averages their speed over about 1 / FLOW_BLEND steps.
 export const FLOW_BLEND = 0.05;
-// Main's paced draws for a falling liquid's jets (sync 3, main 5551bd7): the
-// CPU tile engine reads these now; the WGSL move takes the rule in DP-E1.
+
+// Pacing. A particle moves along an axis on a share |v| of the steps, which a
+// random draw against |v| gives on average; but independent draws make its
+// position a random walk about where its velocity puts it (±4 cells over a
+// 30-cell fall, so the parcels of one pour fan out). A liquid crossing into a
+// gas (a jet, a falling sheet, a spill's front) is paced instead by a
+// low-discrepancy sequence, one per axis, shared by every cell: the R3
+// sequence (Roberts 2018, "The Unreasonable Effectiveness of Quasirandom
+// Sequences": steps of 1/φ₃, 1/φ₃², 1/φ₃³, φ₃ the root of x⁴ = x + 1, here as
+// 32-bit fixed point). It moves on the same share of steps, but its position
+// stays within a cell or so of where its velocity puts it, and parcels with
+// one velocity move as one, so a pour stays one jet. A falling liquid's fall
+// is paced by its own fall age instead of the frame, so the parcels of a pour
+// drop alike whenever they left. (Other matter keeps its
+// random draws: its rules were tuned to them.) Such a liquid may also move
+// across after it has moved down in the same step: a diagonal step, which
+// the block holds. Without it, a parcel falling a cell a step could never
+// move sideways, so a jet ran out level and then fell straight down.
+// (Each pair of cells is still exchanged once along each axis.) A paced draw
+// takes nothing from the block's random stream, and reads only the block's
+// own cells and the step's params, so the move stays a pure function of its
+// block: in place, one owner per cell (src/ui/tiles/engine.js reads PACE too).
 export const PACE = { Y: 3518319154, X: 2882110344, Z: 2360945575 };
+const paceGLSL = /* wgsl */ `
+const PACE_Y: u32 = ${PACE.Y}u;
+const PACE_X: u32 = ${PACE.X}u;
+const PACE_Z: u32 = ${PACE.Z}u;
+fn jet(a: i32, b: i32) -> bool { return (KIND(a) == K_LIQUID && isGasLike(b)) || (KIND(b) == K_LIQUID && isGasLike(a)); }
+// Step n of the sequence with step pace when the pair is a jet (n·pace wraps:
+// the fixed-point fraction; u32ToF32, as rnd converts a hash), else the
+// stream's next draw. (Never a select: only the stream's branch draws.)
+fn draw(a: i32, b: i32, n: u32, pace: u32, rs: ptr<function, u32>) -> f32 {
+  if (jet(a, b)) { return u32ToF32(n * pace) * UINT_TO_UNIT; }
+  return rnd(rs);
+}
+// the steps a liquid falling at vy has been falling (its velocity is g a step
+// in free fall: react.js keeps drag off it), or else the frame
+fn fallAge(k: i32, vy: f32) -> u32 {
+  let g = P.gravity * GRAV(k);
+  if (vy < 0.0 && vy > -V_MAX && g > 0.0) { return u32(-vy / g + 0.5); }
+  return P.frame;
+}
+`;
 
 // Margolus blocks at partition offset 1 with a base coordinate of -1 (the
 // grid's low margin): the slab x = -1, then y = -1 (x ≥ 0), then z = -1
@@ -195,17 +235,23 @@ const swap = (i, j) => `{
 // side, j on the positive side). Fast impacts exchange momentum, weighted by
 // density as mass, with restitution 0.3: this is what lets a blast or an
 // impact travel through a pile like a Newton's cradle. Slow contact is just
-// support: the approaching velocity is cancelled.
-const collide = (i, j, c) => `{
+// support: the approaching velocity is cancelled. Side by side (flow), two
+// liquid cells in slow contact flow on together (sideways is not support):
+// they take their common velocity, momentum kept, so a parcel catching the
+// one ahead of it in a jet stays in the jet instead of stopping dead.
+const collide = (i, j, c, flow = false) => `{
       let rel = v${i}.${c} - v${j}.${c};
+      let mi = d${i};
+      let mj = d${j};
+      let inv = 1.0 / (mi + mj);
+      let vc = (mi * v${i}.${c} + mj * v${j}.${c}) * inv;
       if (rel > COLLIDE_V) {
-        let mi = d${i};
-        let mj = d${j};
-        let inv = 1.0 / (mi + mj);
-        let vc = (mi * v${i}.${c} + mj * v${j}.${c}) * inv;
         v${i}.${c} = vc - RESTITUTION * mj * inv * rel;
         v${j}.${c} = vc + RESTITUTION * mi * inv * rel;
-      } else if (rel > 0.0) {
+      }${flow ? ` else if (rel > 0.0 && KIND(k${i}) == K_LIQUID && KIND(k${j}) == K_LIQUID) {
+        v${i}.${c} = vc;
+        v${j}.${c} = vc;
+      }` : ''} else if (rel > 0.0) {
         if (v${i}.${c} > 0.0) { v${i}.${c} = 0.0; }
         if (v${j}.${c} < 0.0) { v${j}.${c} = 0.0; }
       }
@@ -253,7 +299,7 @@ const vertical = (b, t) => `
       let okUp = up && ${can(b, t, 1)};
       if (okDown || okUp) {
         let pr = max(select(0.0, -v${t}.y, okDown), select(0.0, v${b}.y, okUp)) * ${drag(t, b)};
-        if (rnd(&rs) < pr) ${swap(t, b)}
+        if (draw(k${t}, k${b}, select(P.frame, fallAge(k${t}, v${t}.y), okDown), PACE_Y, &rs) < pr) ${swap(t, b)}
       } else if (!(v${b}.y > v${t}.y && shockActs(k${t}, k${b}, hitKE(d${t}, d${b}, false, v${b}.y - v${t}.y)))) {
         // blocked by another particle: collide (bottom is on the -y side).
         // (A hit that sets off an explosive is left as it is: react.js sees it.)
@@ -270,7 +316,10 @@ const vertical = (b, t) => `
 
 // 2. diagonal topple: a blocked top cell falls diagonally (powders/liquids),
 // a blocked bottom gas cell that is buoyant rises diagonally. Candidates are
-// scored by the particle's horizontal velocity plus noise; the best open one wins.
+// scored by the particle's horizontal velocity plus noise; the best open one
+// wins. A liquid doesn't topple toward where it is already moving: it goes
+// there by the horizontal exchange (3) and falls from there, as thrown (a
+// pour out of a hole leaves level, not a cell lower).
 const diagonal = (i) => {
   const top = (i & 2) !== 0;
   const xi = i & 1, zi = (i >> 2) & 1;
@@ -283,11 +332,12 @@ const diagonal = (i) => {
     const passable = top ? `isFluid(k${path}) && d${path} < d${i}` : `isFluid(k${path})`;
     return `!m${target} && ${passable} && ${can(i, target, top ? 0 : 1)}`;
   };
+  const away = (n) => (top ? ` && !(kd == K_LIQUID && ${dirs[n]} > 0.0)` : '');
   // buoyant gases (not cloud, which rides the air)
   const kindOk = top ? '(kd == K_POWDER || kd == K_LIQUID)' : `(kd == K_GAS && GRAV(k${i}) < 0.0)`;
   const score = (n) => `
       var s${'ABC'[n]} = -9.0;
-      if (${ok(cols[n])}) { s${'ABC'[n]} = ${dirs[n]} + rnd(&rs) * DIAG_NOISE; }`;
+      if (${ok(cols[n])}${away(n)}) { s${'ABC'[n]} = ${dirs[n]} + rnd(&rs) * DIAG_NOISE; }`;
   return `
   if (s${i} && !m${i}) {
     let kd = KIND(k${i});
@@ -303,7 +353,7 @@ const diagonal = (i) => {
 
 // 3. horizontal exchange between i and its +axis neighbour j
 const horizontal = (i, j, c) => `
-  if (!m${i} && !m${j}) {
+  if ((!m${i} && !m${j}) || jet(k${i}, k${j})) {
     let h0 = v${i}.${c};
     let h1 = v${j}.${c};
     let w0 = h0 > 0.0;
@@ -313,9 +363,10 @@ const horizontal = (i, j, c) => `
       let ok1 = w1 && ${can(j, i, 2)};
       if (ok0 || ok1) {
         let pr = max(select(0.0, h0, ok0), select(0.0, -h1, ok1)) * ${drag(i, j)};
-        if (rnd(&rs) < pr) ${swap(i, j)}
+        let age = select(fallAge(k${j}, v${j}.y), fallAge(k${i}, v${i}.y), KIND(k${i}) == K_LIQUID);
+        if (draw(k${i}, k${j}, age, PACE_${c.toUpperCase()}, &rs) < pr) ${swap(i, j)}
       } else if (movable(k${i}) && movable(k${j})) {
-        if (!(h0 > h1 && shockActs(k${i}, k${j}, hitKE(d${i}, d${j}, false, h0 - h1)))) ${collide(i, j, c)}
+        if (!(h0 > h1 && shockActs(k${i}, k${j}, hitKE(d${i}, d${j}, false, h0 - h1)))) ${collide(i, j, c, true)}
       } else {
         if (w0 && !${breaks(i, j, 'h0')}) {${i === 0 ? ' /* (QUIRK: cell 0 keeps its velocity and takes no heat) */ ' : `
           let vo = v${i};
@@ -345,8 +396,8 @@ const unrolled = () => ({
   ${CELLS.map((i) => `{
     let c = blockCell(base, ${i});
     if (inGrid(c)) { a${i} = fetchA(c); v${i} = intoFrame(fetchB(c).xyz); }
-    else if (P.edge == EDGE_VOID) { a${i} = VOID_AIR_A; v${i} = vec3f(0.0); }
-    else { a${i} = vec4f(f32(E_WALL), AMBIENT, 0.0, 0.0); v${i} = vec3f(0.0); }
+    else if (P.edge == EDGE_VOID) { a${i} = VOID_AIR_A(); v${i} = vec3f(0.0); }
+    else { a${i} = vec4f(f32(E_WALL), airT(), 0.0, 0.0); v${i} = vec3f(0.0); }
     k${i} = eid(a${i});
     d${i} = densityOf(k${i}, a${i}.y);
   }`).join('\n  ')}`,
@@ -415,16 +466,22 @@ fn breaks(b: ptr<function, Blk>, i: i32, j: i32, vn: f32) -> bool { return impac
 // side, j on the positive side). Fast impacts exchange momentum, weighted by
 // density as mass, with restitution 0.3: this is what lets a blast or an
 // impact travel through a pile like a Newton's cradle. Slow contact is just
-// support: the approaching velocity is cancelled.
-fn collide(b: ptr<function, Blk>, i: i32, j: i32, c: i32) {
+// support: the approaching velocity is cancelled. Side by side (flow), two
+// liquid cells in slow contact flow on together (sideways is not support):
+// they take their common velocity, momentum kept, so a parcel catching the
+// one ahead of it in a jet stays in the jet instead of stopping dead.
+fn collide(b: ptr<function, Blk>, i: i32, j: i32, c: i32, flow: bool) {
   let rel = (*b).v[i][c] - (*b).v[j][c];
+  let mi = (*b).d[i];
+  let mj = (*b).d[j];
+  let inv = 1.0 / (mi + mj);
+  let vc = (mi * (*b).v[i][c] + mj * (*b).v[j][c]) * inv;
   if (rel > COLLIDE_V) {
-    let mi = (*b).d[i];
-    let mj = (*b).d[j];
-    let inv = 1.0 / (mi + mj);
-    let vc = (mi * (*b).v[i][c] + mj * (*b).v[j][c]) * inv;
     (*b).v[i][c] = vc - RESTITUTION * mj * inv * rel;
     (*b).v[j][c] = vc + RESTITUTION * mi * inv * rel;
+  } else if (flow && rel > 0.0 && KIND((*b).k[i]) == K_LIQUID && KIND((*b).k[j]) == K_LIQUID) {
+    (*b).v[i][c] = vc;
+    (*b).v[j][c] = vc;
   } else if (rel > 0.0) {
     if ((*b).v[i][c] > 0.0) { (*b).v[i][c] = 0.0; }
     if ((*b).v[j][c] < 0.0) { (*b).v[j][c] = 0.0; }
@@ -472,12 +529,12 @@ fn vertical(b: ptr<function, Blk>, bo: i32, t: i32, rs: ptr<function, u32>) {
     let okUp = up && can(b, bo, t, 1);
     if (okDown || okUp) {
       let pr = max(select(0.0, -(*b).v[t].y, okDown), select(0.0, (*b).v[bo].y, okUp)) * dragOf(b, t, bo);
-      if (rnd(rs) < pr) { swapCells(b, t, bo); }
+      if (draw((*b).k[t], (*b).k[bo], select(P.frame, fallAge((*b).k[t], (*b).v[t].y), okDown), PACE_Y, rs) < pr) { swapCells(b, t, bo); }
     } else if (!((*b).v[bo].y > (*b).v[t].y && shockActs((*b).k[t], (*b).k[bo], hitKE((*b).d[t], (*b).d[bo], false, (*b).v[bo].y - (*b).v[t].y)))) {
       // blocked by another particle: collide (bottom is on the -y side).
       // (A hit that sets off an explosive is left as it is: react.js sees it.)
       let vt = (*b).v[t].y;
-      collide(b, bo, t, 1);
+      collide(b, bo, t, 1, false);
       if (down) {
         if (KIND((*b).k[t]) == K_LIQUID) { (*b).v[t] = land(vec3f((*b).v[t].x, vt, (*b).v[t].z), (*b).k[t], rs) + vec3f(0.0, (*b).v[t].y, 0.0); }
         stop(b, t);
@@ -489,7 +546,10 @@ fn vertical(b: ptr<function, Blk>, bo: i32, t: i32, rs: ptr<function, u32>) {
 
 // 2. diagonal topple: a blocked top cell falls diagonally (powders/liquids),
 // a blocked bottom gas cell that is buoyant rises diagonally. Candidates are
-// scored by the particle's horizontal velocity plus noise; the best open one wins.
+// scored by the particle's horizontal velocity plus noise; the best open one
+// wins. A liquid doesn't topple toward where it is already moving: it goes
+// there by the horizontal exchange (3) and falls from there, as thrown (a
+// pour out of a hole leaves level, not a cell lower).
 // Candidate n of cell i (0: across x, 1: across z, 2: across both), in i's column's row.
 fn diagCol(i: i32, n: i32) -> i32 {
   let xi = i & 1;
@@ -498,7 +558,8 @@ fn diagCol(i: i32, n: i32) -> i32 {
   if (n == 1) { return xi + 4 * (1 - zi); }
   return (1 - xi) + 4 * (1 - zi);
 }
-// its score, or -9 if it isn't open (drawing noise only for an open one)
+// its score, or -9 if it isn't open, or a falling liquid's way it is already
+// going (drawing noise only for an open one)
 fn diagScore(b: ptr<function, Blk>, i: i32, n: i32, rs: ptr<function, u32>) -> f32 {
   let top = (i & 2) != 0;
   let c = diagCol(i, n);
@@ -506,12 +567,13 @@ fn diagScore(b: ptr<function, Blk>, i: i32, n: i32, rs: ptr<function, u32>) -> f
   let path = c + select(0, 2, top);
   var passable = isFluid((*b).k[path]);
   if (top) { passable = passable && (*b).d[path] < (*b).d[i]; }
-  if (!(!isM(b, to) && passable && can(b, i, to, select(1, 0, top)))) { return -9.0; }
   let sx = f32(1 - 2 * (i & 1));
   let sz = f32(1 - 2 * ((i >> 2u) & 1));
   var dir = (*b).v[i].x * sx;
   if (n == 1) { dir = (*b).v[i].z * sz; }
   if (n == 2) { dir = ((*b).v[i].x * sx + (*b).v[i].z * sz) * 0.7071; }
+  if (!(!isM(b, to) && passable && can(b, i, to, select(1, 0, top)))) { return -9.0; }
+  if (top && KIND((*b).k[i]) == K_LIQUID && dir > 0.0) { return -9.0; }
   return dir + rnd(rs) * DIAG_NOISE;
 }
 fn diagonal(b: ptr<function, Blk>, i: i32, rs: ptr<function, u32>) {
@@ -535,7 +597,7 @@ fn diagonal(b: ptr<function, Blk>, i: i32, rs: ptr<function, u32>) {
 
 // 3. horizontal exchange between i and its +axis neighbour j (axis c: 0 x, 2 z)
 fn horizontal(b: ptr<function, Blk>, i: i32, j: i32, c: i32, rs: ptr<function, u32>) {
-  if (isM(b, i) || isM(b, j)) { return; }
+  if ((isM(b, i) || isM(b, j)) && !jet((*b).k[i], (*b).k[j])) { return; }
   let h0 = (*b).v[i][c];
   let h1 = (*b).v[j][c];
   let w0 = h0 > 0.0;
@@ -545,9 +607,10 @@ fn horizontal(b: ptr<function, Blk>, i: i32, j: i32, c: i32, rs: ptr<function, u
   let ok1 = w1 && can(b, j, i, 2);
   if (ok0 || ok1) {
     let pr = max(select(0.0, h0, ok0), select(0.0, -h1, ok1)) * dragOf(b, i, j);
-    if (rnd(rs) < pr) { swapCells(b, i, j); }
+    let age = select(fallAge((*b).k[j], (*b).v[j].y), fallAge((*b).k[i], (*b).v[i].y), KIND((*b).k[i]) == K_LIQUID);
+    if (draw((*b).k[i], (*b).k[j], age, select(PACE_Z, PACE_X, c == 0), rs) < pr) { swapCells(b, i, j); }
   } else if (movable((*b).k[i]) && movable((*b).k[j])) {
-    if (!(h0 > h1 && shockActs((*b).k[i], (*b).k[j], hitKE((*b).d[i], (*b).d[j], false, h0 - h1)))) { collide(b, i, j, c); }
+    if (!(h0 > h1 && shockActs((*b).k[i], (*b).k[j], hitKE((*b).d[i], (*b).d[j], false, h0 - h1)))) { collide(b, i, j, c, true); }
   } else {
     if (w0 && !breaks(b, i, j, h0) && i != 0) {   // (QUIRK, above: cell 0 keeps its velocity and takes no heat)
       let vo = (*b).v[i];
@@ -571,8 +634,8 @@ const loop = () => ({
   for (var i = 0; i < i32(P.eight); i++) {
     let c = blockCell(base, i);
     if (inGrid(c)) { blk.a[i] = fetchA(c); blk.v[i] = intoFrame(fetchB(c).xyz); }
-    else if (P.edge == EDGE_VOID) { blk.a[i] = VOID_AIR_A; blk.v[i] = vec3f(0.0); }
-    else { blk.a[i] = vec4f(f32(E_WALL), AMBIENT, 0.0, 0.0); blk.v[i] = vec3f(0.0); }
+    else if (P.edge == EDGE_VOID) { blk.a[i] = VOID_AIR_A(); blk.v[i] = vec3f(0.0); }
+    else { blk.a[i] = vec4f(f32(E_WALL), airT(), 0.0, 0.0); blk.v[i] = vec3f(0.0); }
     blk.k[i] = eid(blk.a[i]);
     blk.d[i] = densityOf(blk.k[i], blk.a[i].y);
     blk.n[i] = i;
@@ -702,7 +765,7 @@ fn bounceR(id: i32) -> f32 {
 }
 
 fn cellAt(base: vec3i, i: i32) -> vec3i { return base + vec3i(i & 1, (i >> 1u) & 1, (i >> 2u) & 1); }
-
+${paceGLSL}
 // ---- simulation modes (src/simModes.js; see the top of shaders/move.js) ----
 ${simModesGLSL}
 var<private> GF: mat3x3f;   // the block's gravity frame (simModes.js gravFrame; F is the flags): set and read only with radial gravity
