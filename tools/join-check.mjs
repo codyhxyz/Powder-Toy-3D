@@ -2,7 +2,7 @@
 // loop"): from the bare start menu, one click on Play drops into Team Slayer on
 // Dam Valley with the player on a team; the loading screen comes down on the
 // match running; "Click to play" shows until the mouse is captured, then the
-// controls card; the join:… timing marks are printed; Esc closes the M menu
+// controls card; the join:… timing marks are printed; M opens no match menu
 // without opening the start menu; a match with its clock cut short ends in the
 // carnage report, which counts down and the next match starts by itself; Leave
 // ends the loop at the start menu.
@@ -73,13 +73,11 @@ try {
   const names = marks.map(([n]) => n);
   check('every join mark is set', ['click', 'app', 'npcs', 'first-frame', 'entered', 'bots', 'match', 'ready', 'control'].every((n) => names.includes(n)), names.join());
 
-  // Esc with the M menu open closes it, and nothing else
+  // no match menu in the game (gamemodes are picked on the start menu): M opens nothing, no "M Match" chip
   await p.keyboard.press('m');
-  await p.waitForSelector('.game-menu.on');
-  await p.keyboard.press('Escape');
   await p.waitForTimeout(300);
-  const s3 = await p.evaluate(() => ({ menu: !!document.querySelector('.game-menu.on'), start: !!document.querySelector('.mm.open') }));
-  check('Esc closes the M menu without opening the start menu', !s3.menu && !s3.start, JSON.stringify(s3));
+  const s3 = await p.evaluate(() => ({ menu: !!document.querySelector('.game-menu, .game-chip'), start: !!document.querySelector('.mm.open'), running: window.__app.pov.game.running }));
+  check('no match menu: M opens nothing and the match plays on', !s3.menu && !s3.start && s3.running, JSON.stringify(s3));
 
   // a match on a short clock: the carnage report, then the next match by itself
   await p.evaluate((t) => window.__app.pov.game.start('slayer', { timeLimit: t }), SHORT_MATCH_S);

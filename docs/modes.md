@@ -4,9 +4,9 @@ Halo-style team games in first person: teams of bots on both sides (the lab's NP
 tools and Yuka brain, `docs/pov.md` "NPCs"), the player on one of them, and five modes. Code in
 `src/game/`; the rules and their sources in `src/game/rules.js`.
 
-In first person: **M** opens the match menu (mode, side, Start / End; the mouse is freed while it's open; Esc or M
-closes it), **Tab** holds up the scoreboard, **.** switches team (TF2's key; a bot from the other side takes your
-place). With no match running a small "M Match" chip sits top-centre. The main drawer has no match settings.
+Gamemodes are picked on the start menu (Esc opens it over the game), never in the game: there is no match menu
+(the user's call, 2026-10-11). In first person **Tab** holds up the scoreboard and **.** switches team (TF2's key; a
+bot from the other side takes your place). Picking Sandbox on the start menu ends a match.
 
 ## Joining
 
@@ -40,7 +40,7 @@ End match) shows a line and doesn't loop.
 
 **The first seconds**: the first time you have control in a match (alive, mouse captured) a card of the match's
 keys shows under the score for 9 s, once a session per rule style: Halo's (Shoot · Zoom right-click · Grenade G ·
-Melee F · 1/2 or wheel swap guns · Pick up E · Scores Tab · Match menu M) and Siege's (TF2's keys with `,` Class),
+Melee F · 1/2 or wheel swap guns · Pick up E · Scores Tab) and Siege's (TF2's keys with `,` Class),
 which waits until the class picker, which frees the mouse, has closed. The sandbox's key hint doesn't show in a
 match.
 
@@ -373,8 +373,7 @@ and the tower, and south of the pit; Siege's points as above.
 
 `node tools/join-check.mjs [--url http://localhost:5425]` (AC power, a dev server): the start menu's Play drops into
 a Slayer match on Dam Valley with the player on a team, prints the `join:` timing marks, plays a match with its
-score to win cut to 1 and asserts the carnage report and that the next match starts by itself; Esc closes the M
-menu without opening the start menu.
+score to win cut to 1 and asserts the carnage report and that the next match starts by itself; M opens no match menu.
 
 `tools/halo-combat-check.mjs --url http://localhost:PORT` (default port 5423; `tools/combat-check.mjs` is Big Team
 Battle's shield, perks, knife and pogo check) starts a Team Slayer and checks Halo
