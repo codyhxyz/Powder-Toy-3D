@@ -26,9 +26,10 @@
 //           bit; the brick map's info words: the WGSL decoders against their JS twins
 //           on every combination, and a scene's bricks against what they hold (a lit
 //           lamp's light with LAMP_ROOM_GAIN included)
-//   jet     falling water from whitewater's aeration field (shaders/fields.js jetWGSL,
-//           with a stand-in for gfx/foam.js's buffer): every kind of record through
-//           the EMA, the boost, the thin mask and the brick map against a JS twin, the
+//   jet     pours from whitewater's aeration field (shaders/fields.js jetWGSL, with a
+//           stand-in for gfx/foam.js's buffer): every kind of record (a pour's parcel,
+//           liquid that isn't one, wakes that show and each way one doesn't) through the
+//           EMA at every cell, the boost and the brick map against a JS twin, the
 //           current copy, detaching; and incremental == full while the aeration
 //           starts and stops over a still world, with its negative control (no rebuild
 //           at the start and stop: derived.test.dropJetToggle) that must differ

@@ -753,22 +753,9 @@ fn traceView(ro: vec3f, rd: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
 // The realistic view (0).
 // =====================================================================
 
-// What the realistic tracer calls that a material module may not have yet:
-// main's liquidDetail took the ray (rd) and added liquidUnderSkin with
-// whitewater v2 (docs/webgpu.md Sync log: the materials' delta-port brings
-// them). The tracer calls whichever form the module holds.
-const liquidHooks = (detail) => {
-  const text = liquidDetailGLSL(detail);
-  const sig = /fn liquidDetail\(([^)]*)\)/.exec(text)?.[1] ?? '';
-  return { rd: /\brd\s*:/.test(sig), underSkin: /fn liquidUnderSkin\(/.test(text) };
-};
-
 const realistic = (detail) => {
   const grains = GRAINS_ANY(detail), relief = !!detail.DETAIL_RELIEF;
-  const liq = LIQ_DETAIL(detail), foam = !!detail.DETAIL_LIQ_FOAM;
-  const hooks = liquidHooks(detail);
-  const underSkin = foam && hooks.underSkin ? `
-            liquidUnderSkin(&col, &trans);   // a falling jet's bubbly body, under the reflection` : '';
+  const liq = LIQ_DETAIL(detail);
   return /* wgsl */ `
 // Inside a liquid, sunlight fades with depth: the sun's visibility is read
 // where the ray got in (shadow map) and then attenuated by the liquid between
@@ -992,8 +979,8 @@ fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
         }
         phiB = surfSample(ro + rd * tExit);
         // smooth matter in this cell may be a lone droplet or grain, or (air
-        // in a brick with thin liquid) the stream a falling parcel draws
-        // through it (shaders/fields.js jetGLSL)
+        // in a brick with thin liquid) a pour drawn through the wake between
+        // its parcels (shaders/fields.js jetWGSL)
         var tM = tExit;
         var phiM = phiB;
         if (SURFCH(id) >= 0 || (gThin && id == E_EMPTY)) {
@@ -1040,7 +1027,8 @@ fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
         else if (SURFCH(id) == CH_LIQUID) { liq = id; }
         mediumLight = lightRef * exp(-SIGMA(liq) * max(lightY - pm.y, 0.0) / max(FU.sun.y, LIQ_SUN_Y_MIN));
         let own = SURFCH(id) == CH_LIQUID;
-        absorbDeco(liq, select(vec3i(-1), cell, own), ro + rd * tEnter, tEv - tEnter, mediumLight, select(AMBIENT, a.y, own), &col, &trans);   // (painted liquid: gfx/deco.js)
+        // (painted liquid: gfx/deco.js; drops and pours show their colour: gfx/liquid.js thinBodySeg)
+        absorbDeco(liq, select(vec3i(-1), cell, own), ro + rd * tEnter, thinBodySeg(pm, tEv - tEnter), mediumLight, select(AMBIENT, a.y, own), &col, &trans);
       } else if (brickMedia(flags)) {
         let al = mediaSegment(ro, rd, tEnter, tEv, &mNext, &col, &trans);
         // until something is hit, hitPos tracks the first gas, and the gas
@@ -1074,11 +1062,11 @@ fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
           var n = liquidRipple(hp, surfNormal(hp, CH_LIQUID, select(rd, -rd, ev == EV_ENTER)));
           var lid = liq;
           if (ev == EV_ENTER) { lid = liquidIdAt(hp - n * IFACE_PROBE, E_WATER); }${liq ? `
-          n = liquidDetail(hp, n, lid, ${hooks.rd ? 'rd, ' : ''}&col, &trans);   // close-up detail (gfx/liquidDetail.js)` : ''}
+          n = liquidDetail(hp, n, lid, &col, &trans);   // close-up detail (gfx/liquidDetail.js)` : ''}
           if (bends < MAX_BENDS) {
             bends++;
             // the scene shows in the reflection only off the first surface the eye ray meets
-            let inside = liquidInterface(hp, n, ev == EV_ENTER, lid, bends == 1, &ro, &rd, &col, &trans, &mediumLight);${underSkin}
+            let inside = liquidInterface(hp, n, ev == EV_ENTER, lid, bends == 1, &ro, &rd, &col, &trans, &mediumLight);
             tCut -= tEv;
             liq = select(E_EMPTY, lid, inside);
             if (ev == EV_ENTER) { lightRef = mediumLight; lightY = hp.y; }
@@ -1096,7 +1084,7 @@ fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
             }
             continue;
           }
-          // out of bends: switch medium, keep straight${underSkin}
+          // out of bends: switch medium, keep straight
           liq = select(E_EMPTY, lid, ev == EV_ENTER);
           if (ev == EV_ENTER) {
             lightRef = vec3f(1.0);

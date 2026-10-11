@@ -1975,10 +1975,9 @@ const realisticBody = (d) => /* wgsl */ `
   var ml = vec3f(1.0);
   let lid = liquidIdAt(p, E_WATER);
   var nl = liquidRipple(p, n);
-  nl = liquidDetail(p, nl, lid, rd, &col, &trans);
+  nl = liquidDetail(p, nl, lid, &col, &trans);
   let inside = liquidInterface(p, nl, s > 0.5, lid, true, &lro, &lrd, &col, &trans, &ml);
-  liquidUnderSkin(&col, &trans);   // a falling jet's body, under the reflection (as the tracer)
-  absorbSegment(lid, lro, s, ml, AMBIENT, &col, &trans);
+  absorbSegment(lid, lro, thinBodySeg(p, s), ml, AMBIENT, &col, &trans);   // (drops and pours show their colour, as the tracer)
   acc += vec4f(col + trans + lro + lrd, select(0.0, 1.0, inside));
   acc.w += fresnelSchlick(s, IOR(lid)) + skyInAt(probeAt(p)) + gSkyIn + envReflect(p, nl, ml).x;
   // a media segment, the media lattice carrying on from the ray's jitter

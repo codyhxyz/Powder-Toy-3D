@@ -9,9 +9,9 @@
 //   bits           the brick map's info words: the WGSL decoders against the
 //                  JS twins, and a scene's bricks against what they hold (a
 //                  lit lamp's light with LAMP_ROOM_GAIN)
-//   jet            falling water from whitewater's aeration field (shaders/
-//                  fields.js jetWGSL): every record kind through the EMA,
-//                  the boost and the thin mask, against a JS twin
+//   jet            pours from whitewater's aeration field (shaders/fields.js
+//                  jetWGSL): every record kind through the EMA, the boost
+//                  and the brick map, against a JS twin
 //   budget:*       tools/budgets/derived.mjs
 //   bench          GPU ms per derived kernel, incremental and full
 
@@ -25,7 +25,7 @@ import { AGE, DIRTY } from '/src/shaders/fields.js';
 import { unpackBrickInfo, BRICK_INFO, AIR } from '/src/shaders/bindings.js';
 import { LOOK, LAMP_GLOW, LAMP_ROOM_GAIN } from '/src/gfx/materials.js';
 import { LAMP_DC } from '/src/electricity.js';
-import { TRAIL_LONE_MIN } from '/src/shaders/gfx/liquidDetail.js';
+import { JOIN_REACH } from '/src/shaders/gfx/liquidDetail.js';
 
 const h = await boot({ label: 'derived-check' });
 const gpu = h.gpu;
@@ -208,7 +208,7 @@ const CASES = {
     slab: E.WALL, shifts: { 2: [[16, 0]], 16: [[0, -8]], 30: [[-16, 0]] },
     checkMoves: true, mustSkip: true, control: 'dropFold',
   },
-  // falling water (shaders/fields.js jetWGSL) in a still world: whitewater's
+  // pours (shaders/fields.js jetWGSL) in a still world: whitewater's
   // aeration attached with records over settled bricks (JET_RECORDS), then
   // detached, each time long enough for the lists to empty again. Its start
   // and stop rebuild every brick (src/derived.js updateDirty); without that
@@ -619,13 +619,17 @@ test('bits', async () => {
   return out;
 });
 
-// ---------------------------------------------------------------- falling water (jetWGSL)
+// ---------------------------------------------------------------- pours (jetWGSL)
 // A stand-in for whitewater's aeration field (gfx/foam.js, U12): records put
 // by hand, both copies, `cur` the current one. sim.attachAeration takes it.
-const half = (x) => {   // f32 → f16 bits, for values f16 holds exactly
+const half = (x) => {   // f32 → f16 bits (the mantissa truncated: exact for values f16 holds)
   if (x === 0) return 0;
   const u = new Uint32Array(new Float32Array([x]).buffer)[0];
   return ((u >>> 16) & 0x8000) | ((((u >>> 23) & 255) - 112) << 10) | ((u >>> 13) & 1023);
+};
+const unhalf = (h) => {   // f16 bits → the number (normal values and 0)
+  if (!(h & 0x7fff)) return 0;
+  return (h & 0x8000 ? -1 : 1) * 2 ** (((h >>> 10) & 31) - 15) * (1 + (h & 1023) / 1024);
 };
 function fakeAeration(sim, records, cur = 1) {
   const g = sim.g, words = new Uint32Array(4 * g.slots);   // vec2u per slot, two copies
@@ -639,21 +643,47 @@ function fakeAeration(sim, records, cur = 1) {
   gpu.write(buffer, 0, words);
   return { active: true, buffer, cur, step() {}, idle() {}, reset() {}, dispose: () => buffer.destroy() };
 }
-// (aeration, presence) of a record, as jetWGSL reads it (the JS twin)
-const jetOf = ([x, y, z, w]) => {
-  if (y > 0.5) return w < 0.5 ? [x, 1] : [0, 0];
-  return w > (x > 0.5 ? 0 : TRAIL_LONE_MIN) ? [z, 1] : [0, 0];   // a stream's wake, or a lone parcel's last steps
-};
-// Records in the air over the pool scene's tank (32³): every kind, and one in
-// the other copy where this copy has none.
+// jetWGSL's jetAt, the JS twin: does cell p draw as a pour, given the records
+// of the current copy (as the GPU reads them back: f16)?
+const roundEven = (x) => { const r = Math.round(x); return Math.abs(x % 1) === 0.5 && r % 2 ? r - 1 : r; };
+function jetTwin(g, records, cur) {
+  const at = new Map();
+  for (const rec of records) if ((rec.copy ?? cur) === cur) at.set(rec.at.join(','), rec.f.map((v) => unhalf(half(v))));
+  const inGrid = ([x, y, z]) => x >= 0 && y >= 0 && z >= 0 && x < g.nx && y < g.ny && z < g.nz;
+  const aerAt = (c) => (inGrid(c) && at.get(c.join(','))) || [0, 0, 0, 0];
+  return (p) => {
+    const f = aerAt(p);
+    if (f[1] > 1.5) return true;
+    if (f[1] >= 0 || f[0] * f[0] + f[2] * f[2] + f[3] * f[3] < 0.5) return false;
+    for (let k = 1; k <= JOIN_REACH; k++) {
+      if (aerAt([p[0] - roundEven(f[0] * k), p[1] - roundEven(f[2] * k), p[2] - roundEven(f[3] * k)])[1] > 1.5) return true;
+    }
+    return false;
+  };
+}
+// Records in the air over the pool scene's tank (32³), in the aeration's
+// layout (shaders/gfx/liquidDetail.js, the aeration model): liquid (aeration,
+// 1 or 2 for a pour's parcel, fall, grounded); a wake (way x, −age, way y, way
+// z), the way a unit vector if a pour's parcel left it, half that if not. Each
+// kind, each way a wake can fail to show, and one record in the other copy.
+const DOWN = [0, -1, 0];
+const wake = (way, age = 0.5) => [way[0], -age, way[1], way[2]];
+const PARCEL = [0.5, 2, 0.25, 0];
 const JET_RECORDS = [
-  { what: 'liquid off the ground', at: [12, 24, 12], f: [0.625, 1, 0, 0] },
-  { what: 'liquid in a stream', at: [20, 24, 12], f: [0.75, 2, 0, 0] },
-  { what: 'grounded liquid', at: [12, 24, 20], f: [0.5, 1, 0, 1] },
-  { what: 'a stream\'s wake', at: [20, 24, 20], f: [1, 0, 0.25, 0.25] },
-  { what: 'a lone parcel\'s fresh wake', at: [6, 24, 26], f: [0, 0, 0.5, 0.875] },
-  { what: 'a lone parcel\'s older wake', at: [26, 24, 6], f: [0, 0, 0.5, 0.75] },
-  { what: 'the other copy\'s', at: [16, 28, 16], f: [0.625, 1, 0, 0], copy: 0 },
+  { what: 'a pour\'s parcel', at: [12, 24, 12], f: PARCEL, shows: true },
+  { what: 'a pour\'s parcel two cells behind a wake', at: [12, 28, 12], f: PARCEL, shows: true },
+  { what: 'the wake between them', at: [12, 26, 12], f: wake(DOWN), shows: true },
+  { what: 'liquid off the ground, not a pour', at: [20, 24, 12], f: [0.625, 1, 0, 0], shows: false },
+  { what: 'a pour\'s wake nothing comes up behind', at: [20, 26, 20], f: wake(DOWN, 1), shows: false },
+  { what: 'a wake liquid that isn\'t a pour comes up behind', at: [26, 26, 6], f: wake(DOWN), shows: false },
+  { what: '(that liquid)', at: [26, 27, 6], f: [0.25, 1, 0, 0], shows: false },
+  { what: 'a wake a lone parcel left (half its way), a pour\'s parcel behind', at: [6, 24, 26], f: wake([0, -0.5, 0]), shows: false },
+  { what: '(that parcel)', at: [6, 25, 26], f: PARCEL, shows: true },
+  { what: 'a pour\'s wake whose next parcel is past JOIN_REACH', at: [26, 22, 26], f: wake(DOWN), shows: false },
+  { what: '(that parcel)', at: [26, 22 + JOIN_REACH + 1, 26], f: PARCEL, shows: true },
+  { what: 'a slanting pour\'s wake (the reach rounded along its way)', at: [16, 22, 20], f: wake([0.6, -0.8, 0]), shows: true },
+  { what: '(its parcel, three cells back)', at: [14, 24, 20], f: PARCEL, shows: true },
+  { what: 'the other copy\'s parcel', at: [16, 28, 16], f: PARCEL, copy: 0, shows: false },
 ];
 test('jet', async () => {
   const out = { checks: [] };
@@ -664,67 +694,64 @@ test('jet', async () => {
     h.scene(sim, 'pool');
     for (let i = 0; i < 4; i++) sim.step();
     sim.incremental = false;
-    derived.updateBricks();
+    for (let i = 0; i < SETTLE; i++) derived.updateBricks();   // the EMA at its fixed point
     const before = await derived.read();
     aer = fakeAeration(sim, JET_RECORDS, 1);
     sim.attachAeration(aer);
     derived.updateBricks();
     const r = await derived.read();
-    // the thin mask's y, z at every cell: aeration × presence and presence,
-    // half floats as jetWGSL makes them (and 0 wherever no record shows)
-    const want = new Map();
-    for (const rec of JET_RECORDS) if ((rec.copy ?? 1) === aer.cur) want.set(rec.at.join(','), jetOf(rec.f));
-    let bad = 0;
+    // the twin agrees with what each record says it is
+    const twin = jetTwin(g, JET_RECORDS, aer.cur);
+    const wrong = JET_RECORDS.filter((rec) => twin(rec.at) !== rec.shows);
+    check(out, `the JS twin: ${JET_RECORDS.filter((rec) => rec.shows).length} records show, ${JET_RECORDS.filter((rec) => !rec.shows).length} don't`,
+      !wrong.length, wrong.map((rec) => rec.what).join('; '));
+    // the EMA at every cell: a pour at full liquid occupancy at once, every other cell as it was
+    const ema = words(r.ema), ema0 = words(before.ema);
+    let bad = 0, shown = 0;
     const firstBad = [];
     for (let z = 0; z < g.nz; z++)
       for (let y = 0; y < g.ny; y++)
         for (let x = 0; x < g.nx; x++) {
-          const [a, m] = want.get(`${x},${y},${z}`) ?? [0, 0];
-          const i = 4 * (x + g.nx * (y + g.ny * z));
-          if (r.fieldThin[i + 1] !== half(Math.fround(a * m)) || r.fieldThin[i + 2] !== half(m)) {
+          const s = cellSlot(g, x, y, z), shows = twin([x, y, z]);
+          if (shows) shown++;
+          const want = shows ? 255 : ema0[s] & 255;
+          if ((ema[s] & 255) !== want) {
             bad++;
-            if (firstBad.length < 4) firstBad.push(`${x},${y},${z}: y ${r.fieldThin[i + 1]} z ${r.fieldThin[i + 2]}`);
+            if (firstBad.length < 4) firstBad.push(`${x},${y},${z}: ${ema[s] & 255} (want ${want})`);
           }
         }
-    const shown = [...want.values()].filter(([, m]) => m).length;
-    check(out, `thin mask y, z == the JS twin at every cell (${shown} records show, ${JET_RECORDS.length - shown} don't)`, !bad && shown === 4, `${bad} cells: ${firstBad.join('; ')}`);
-    // the EMA: falling water at full liquid occupancy at once; the rest as before
-    const ema = words(r.ema), ema0 = words(before.ema);
-    const per = JET_RECORDS.map((rec) => {
-      const s = cellSlot(g, ...rec.at), shows = (rec.copy ?? 1) === aer.cur && jetOf(rec.f)[1] > 0;
-      const x = ema[s] & 255, ok = shows ? x === 255 : x === (ema0[s] & 255);
-      return { rec, shows, x, ok };
-    });
-    check(out, `EMA liquid occupancy: 255 at the ${per.filter((q) => q.shows).length} records that show, unchanged at the rest`,
-      per.every((q) => q.ok), per.filter((q) => !q.ok).map((q) => `${q.rec.what}: ${q.x}`).join('; '));
-    // the boost: a lone jet cell in the air counts as current liquid, so it is boosted (thin mask x)
-    const thinX = (t, at) => t.fieldThin[4 * (at[0] + g.nx * (at[1] + g.ny * at[2]))];
-    const lone = JET_RECORDS.filter((rec) => (rec.copy ?? 1) === aer.cur && jetOf(rec.f)[1] > 0);
-    check(out, `boost: the ${lone.length} jet cells are boosted (thin mask x > 0; 0 before)`,
+    check(out, `EMA liquid occupancy == the JS twin at every cell (255 at the ${shown} that show, unchanged elsewhere)`,
+      !bad && shown === JET_RECORDS.filter((rec) => rec.shows && (rec.copy ?? 1) === 1).length, `${bad} cells: ${firstBad.join('; ')}`);
+    // the boost: a pour's cell in the air counts as current liquid, so it is boosted (thin mask x)
+    const texel = (at) => 4 * (at[0] + g.nx * (at[1] + g.ny * at[2]));
+    const thinX = (t, at) => t.fieldThin[texel(at)];
+    const lone = JET_RECORDS.filter((rec) => (rec.copy ?? 1) === aer.cur && rec.shows);
+    check(out, `boost: the ${lone.length} cells that show are boosted (thin mask x > 0; 0 before)`,
       lone.every((rec) => thinX(r, rec.at) !== 0 && thinX(before, rec.at) === 0),
       lone.map((rec) => `${rec.what}: ${thinX(before, rec.at)} → ${thinX(r, rec.at)}`).join('; '));
-    // the brick map: the thin bit reads every cubic channel's mask, the jet's presence (z) among them
+    // the thin mask's y and z are the molten and granular channels' alone now (no pour in them)
+    const jetYZ = JET_RECORDS.filter((rec) => r.fieldThin[texel(rec.at) + 1] || r.fieldThin[texel(rec.at) + 2]);
+    check(out, 'thin mask y, z: nothing at the records (they carry no pour)', !jetYZ.length, jetYZ.map((rec) => rec.what).join('; '));
+    // the brick map: the thin bit reads every cubic channel's mask, liquid's (x) among them
     const bw = words(r.brick), bw0 = words(before.brick);
     const info = (w, at) => w[4 * brickIdOf(g, ...at.map((v) => Math.floor(v / BRICK))) + 3];
     const bricks = lone.map((rec) => ({ rec, was: unpackBrickInfo(info(bw0, rec.at)), now: unpackBrickInfo(info(bw, rec.at)) }));
-    check(out, 'brick map: the jet cells\' bricks were empty and now hold matter with the thin bit',
+    check(out, 'brick map: the bricks of the cells that show were empty and now hold matter with the thin bit',
       bricks.every((q) => !q.was.matter && q.now.matter && (q.now.bits & BRICK_INFO.THIN)),
       bricks.map((q) => `${q.rec.what}: ${JSON.stringify(q.was)} → ${JSON.stringify(q.now)}`).join('; '));
-    // the copy: the same records read from the other copy show the decoy instead
+    // the copy: read from the other copy, its parcel shows (boosted) and this copy's records don't
     aer.cur = 0;
     derived.updateBricks();
     const c0 = await derived.read();
-    const texel = (at) => 4 * (at[0] + g.nx * (at[1] + g.ny * at[2]));
     const decoy = JET_RECORDS.find((rec) => rec.copy === 0), first = JET_RECORDS[0];
-    check(out, 'the current copy decides (cur = 0 shows the other copy\'s record, and not this one\'s)',
-      c0.fieldThin[texel(decoy.at) + 2] === half(1) && c0.fieldThin[texel(first.at) + 2] === 0
-      && r.fieldThin[texel(decoy.at) + 2] === 0 && r.fieldThin[texel(first.at) + 2] === half(1));
-    // off: detached, every jet is gone again
+    check(out, 'the current copy decides (cur = 0 shows the other copy\'s parcel, and not this one\'s)',
+      thinX(c0, decoy.at) !== 0 && thinX(c0, first.at) === 0 && thinX(r, decoy.at) === 0 && thinX(r, first.at) !== 0,
+      `cur 1: ${thinX(r, decoy.at)}, ${thinX(r, first.at)}; cur 0: ${thinX(c0, decoy.at)}, ${thinX(c0, first.at)}`);
+    // off: detached, no pour is boosted any more
     sim.attachAeration(null);
     derived.updateBricks();
     const off = await derived.read();
-    const anyJet = (t) => { for (let i = 0; i < t.length; i += 4) if (t[i + 1] || t[i + 2]) return true; return false; };
-    check(out, 'detached: no jet left in the thin mask', anyJet(r.fieldThin) && !anyJet(off.fieldThin));
+    check(out, 'detached: no pour left in the thin mask', lone.every((rec) => thinX(off, rec.at) === 0) && thinX(off, decoy.at) === 0);
   } finally { aer?.dispose(); dispose(); }
   return out;
 });

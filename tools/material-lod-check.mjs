@@ -22,14 +22,18 @@
 //            heading) holds at the centre and drifts off it, and an
 //            isotropic footprint is off everywhere, both by more than the
 //            check allows
-//   deltas   main's sync-2 changes on the GPU, against JS twins: crispT (a
-//            crisp face's temperature, bilinear with its three neighbours in
-//            the face's plane, gas and cells past the grid left out) at
-//            points on three faces of a slab with a temperature ramp, and
-//            crispSurf's T is it; whitewater's aerationAt over liquid records
-//            only (the air holds the falling parcels' wakes), from the
-//            current copy; controls: a cell's own temperature, and taps that
-//            take the wakes, are off
+//   deltas   main's sync-2 and sync-3 changes on the GPU, against JS twins:
+//            crispT (a crisp face's temperature, bilinear with its three
+//            neighbours in the face's plane, gas and cells past the grid left
+//            out) at points on three faces of a slab with a temperature ramp,
+//            and crispSurf's T is it; whitewater's aerationAt over liquid
+//            records only (the air holds the pours' wakes), from the current
+//            copy; liquidFoam's cover (a raft on resting liquid, a sparser
+//            spray on liquid off the ground, nothing where no liquid record
+//            is) and thinBodySeg (drops and pours: their segment through
+//            water read as THIN_BODY_CELLS by the thin mask's liquid
+//            channel, with the brick's thin bit only); controls: a cell's own
+//            temperature, and taps that take the wakes, are off
 //   combos   every combination of the close-up detail switches (gfx/detail.js
 //            DETAIL: ten since smoothClose, 2^10 = 1024 module texts of the
 //            realistic probe)
@@ -91,9 +95,9 @@ if (['values', 'floor', 'deltas', 'combos'].some((k) => ONLY.includes(k))) {
   const { launchBrowser, gpuInfo } = await import('./browser.mjs');
   const { startVite } = await import('./vite-server.mjs');
   const { openHarness } = await import('./harness/open.mjs');
-  const [common, bindings, kernels, detailM, elementsM, materialsM, scaleM, liquidDetailM] = await Promise.all([
+  const [common, bindings, kernels, detailM, elementsM, materialsM, scaleM, liquidDetailM, liquidM] = await Promise.all([
     src('shaders/common.js'), src('shaders/bindings.js'), src('gpu/kernels.js'), src('gfx/detail.js'),
-    src('elements.js'), src('gfx/materials.js'), src('scale.js'), src('shaders/gfx/liquidDetail.js')]);
+    src('elements.js'), src('gfx/materials.js'), src('scale.js'), src('shaders/gfx/liquidDetail.js'), src('shaders/gfx/liquid.js')]);
   const BUDGET = Number(opt('--budget') ?? kernels.PIPELINE_BUDGET_MS);
   let gridLayout = null;
   try { ({ gridLayout } = await src('sim.js')); } catch { /* sizes alone */ }
@@ -388,7 +392,7 @@ ${(await src('gpu/wgsl.js')).fullscreenVert('vs')}
     // ------------------------------------------------------------ deltas
     if (ONLY.includes('deltas')) {
       const page = await openHarness(browser, vite, '/tools/harness/lib.html', { errors });
-      console.log('\ndeltas: main\'s sync-2 changes to the materials, against JS twins');
+      console.log('\ndeltas: main\'s sync-2 and sync-3 changes to the materials, against JS twins');
       const { cellSlot } = await src('sim.js');
       const E = elementsM.E;
       const S = g.nx * g.ny * g.nz;
@@ -436,8 +440,9 @@ ${(await src('gpu/wgsl.js')).fullscreenVert('vs')}
             pts.push({ cell, face, hp, want: crispT(cell, at(...cell).T, hp, face), own: at(...cell).T });
           }
       // aeration (lighting group binding 19, two copies of vec2u per slot):
-      // copy 1 holds liquid records in a 4×4×4 block (y 1, or 2 in a stream)
-      // and falling parcels' wakes in the air beside it (y 0); copy 0 a decoy
+      // copy 1 holds liquid records in a 4×4×4 block (y 1, or 2 for a pour's
+      // parcel) and pours' wakes in the air beside it (way x, −age, way y, way
+      // z: shaders/gfx/liquidDetail.js, the aeration model); copy 0 a decoy
       const half = (x) => {
         if (x === 0) return 0;
         const bits = new Uint32Array(new Float32Array([x]).buffer)[0];
@@ -454,8 +459,8 @@ ${(await src('gpu/wgsl.js')).fullscreenVert('vs')}
       for (let x = 20; x < 24; x++) for (let y = 18; y < 22; y++) for (let z = 20; z < 24; z++) {
         rec(x, y, z, [((x + 2 * y + 3 * z) % 5) / 4, (x + z) % 3 ? 1 : 2, 0, (y + x) % 2]);
       }
-      for (let y = 18; y < 24; y++) for (const [x, z] of [[24, 21], [19, 22], [22, 24]]) rec(x, y, z, [1, 0, 0.5, 0.75]);
-      for (let y = 22; y < 24; y++) for (let x = 20; x < 24; x++) rec(x, y, 22, [0, 0, 0.25, 0.875]);
+      for (let y = 18; y < 24; y++) for (const [x, z] of [[24, 21], [19, 22], [22, 24]]) rec(x, y, z, [0, -0.5, -1, 0]);
+      for (let y = 22; y < 24; y++) for (let x = 20; x < 24; x++) rec(x, y, 22, [0.375, -0.875, -0.25, 0.25]);
       for (let x = 18; x < 26; x++) for (let y = 16; y < 24; y++) for (let z = 18; z < 26; z++) rec(x, y, z, [0.5, 1, 0, 1], 0);
       for (let x = 2; x <= 10; x++) for (let y = 2; y <= 10; y++) for (let z = 2; z <= 10; z++) rec(x, y, z, [0.625, 1, 0, 1]);   // a resting raft
       // the JS twins of aerationAt: liquid taps only (main's), and every record's (x, y, w) (the control)
@@ -475,53 +480,49 @@ ${(await src('gpu/wgsl.js')).fullscreenVert('vs')}
         const p = [19 + 6 * rnd(), 17.5 + 7 * rnd(), 19 + 6 * rnd()].map(F);
         apts.push({ p, want: aerAt(p, true), old: aerAt(p, false) });
       }
-      // whitewater v2's foam (liquidFoam, liquidUnderSkin) where pixels are far
-      // too big for the streaks and the raft's pattern (lodFade 0: their means),
-      // so it is the formulas alone: the thin mask's jet channels (fieldThin y,
-      // z) in three regions, a raft from the aeration above, rays entering and
-      // leaving at every angle
+      // the foam (liquidFoam) where pixels are far too big for the raft's
+      // pattern (lodFade 0: its mean), so it is the formula alone: the cover
+      // a liquid record's aeration gives, a raft's on resting liquid, a
+      // spray's off the ground; and thinBodySeg, the segment a drop or a pour
+      // is read as, by the thin mask's liquid channel (fieldThin x) in three
+      // regions, with the brick's thin bit and without
       const wg = (name) => {
         const m = new RegExp(`const ${name}: f32 = ([^;]+);`).exec(liquidDetailM.liquidDetailGLSL({ DETAIL_LIQ_FOAM: 1 }));
         if (!m) throw new Error(`material-lod-check: no const ${name} in liquidDetailGLSL`);
         return F(+m[1]);
       };
-      const JET = { TAU: wg('JET_TAU'), FRINGE: wg('JET_FRINGE'), EDGE_MIN: wg('JET_EDGE_MIN'), M_MIN: wg('JET_M_MIN'), COVER: wg('FOAM_COVER_MAX') };
-      // fieldThin (lighting binding 2): (0, aeration × presence, presence, 0) by region
-      const REGIONS = { A: [0.5, 1], B: [0.375, 0.5], C: [0.0078125, 0.015625] };
+      const FOAM = { COVER: wg('FOAM_COVER_MAX'), SPRAY: wg('SPRAY_COVER_MAX') };
+      const THIN_BODY = F(+/const THIN_BODY_CELLS: f32 = ([^;]+);/.exec(liquidM.liquidGLSL)[1]);
+      // fieldThin (lighting binding 2): (liquid, 0, 0, 0) by region
+      const REGIONS = { A: 0.5, B: 0.25, C: 1 };
       const regionOf = (x, z) => (z >= 16 ? 'B' : x >= 24 ? 'C' : 'A');
       const thin = new Uint16Array(4 * S);
       for (let z = 0; z < g.nz; z++) for (let y = 0; y < g.ny; y++) for (let x = 0; x < g.nx; x++) {
-        const [ym, m] = REGIONS[regionOf(x, z)];
-        thin.set([0, half(ym), half(m), 0], 4 * (x + g.nx * (y + g.ny * z)));
+        thin.set([half(REGIONS[regionOf(x, z)]), 0, 0, 0], 4 * (x + g.nx * (y + g.ny * z)));
       }
-      const smooth = (e0, e1, x) => { const t = Math.min(Math.max((x - e0) / (e1 - e0), 0), 1); return t * t * (3 - 2 * t); };
       const unit = () => { for (;;) { const v = [rnd() * 2 - 1, rnd() * 2 - 1, rnd() * 2 - 1], l = Math.hypot(...v); if (l > 0.2 && l < 1) return v.map((x) => x / l); } };
       const fpts = [];
-      for (const [lo, hi] of [[[4, 4, 4], [8, 8, 8]], [[12, 12, 4], [20, 16, 12]], [[4, 3, 19], [12, 12, 28]], [[26, 12, 4], [30, 16, 12]]])
+      // a raft (2..10, grounded), the block of mixed records, no liquid, and the C region
+      for (const [lo, hi] of [[[4, 4, 4], [8, 8, 8]], [[20.5, 18.5, 20.5], [23.5, 21.5, 23.5]], [[12, 12, 4], [20, 16, 12]], [[4, 3, 19], [12, 12, 28]], [[26, 12, 4], [30, 16, 12]]])
         for (let k = 0; k < 24; k++) {
           const p = lo.map((v, j) => F(v + (hi[j] - v) * rnd()));
           const n = unit().map(F);
-          let rd = unit().map(F);
-          const d0 = n.reduce((a, v, j) => a + v * rd[j], 0);
-          if ((k & 1) === (d0 < 0 ? 1 : 0)) rd = rd.map((v) => -v);   // half entering, half leaving
-          const dot = n.reduce((a, v, j) => a + v * rd[j], 0), chord = Math.abs(dot);
-          const aer = aerAt(p.map((v, j) => v - n[j] * 0.25), true), raft = aer[0] * aer[1];
-          const [ym, m] = REGIONS[regionOf(p[0], p[2])];
-          const jw = m > JET.M_MIN && dot < 0 ? Math.min(Math.max(ym / m, 0), 1) : 0;
-          let t1 = 1, jc = 0;
-          if (Math.max(raft, jw) > 0) {
-            const c = JET.COVER * raft;
-            const cj = jw > 0 ? jw * (1 - Math.exp(-JET.TAU * chord)) * smooth(0, Math.max(Math.sqrt(JET.FRINGE * jw), JET.EDGE_MIN), chord) : 0;
-            if (c > 0 || cj > 0) { t1 = 1 - c; jc = cj; }
+          const seg = F(40 * rnd());
+          const aer = aerAt(p.map((v, j) => v - n[j] * 0.25), true);
+          let t1 = 1;
+          if (aer[0] > 0) {
+            const c = (FOAM.SPRAY * (1 - aer[1]) + FOAM.COVER * aer[1]) * aer[0];
+            if (c > 0) t1 = 1 - c;
           }
-          fpts.push({ p, n, rd, raft, jw, want: [t1, jc, t1 * (1 - jc), 0] });
+          const th = REGIONS[regionOf(p[0], p[2])];
+          fpts.push({ p, n, seg, aer, want: [t1, seg * (1 - th) + Math.max(seg, THIN_BODY) * th, seg, 0] });
         }
       const NP = pts.length, NA = apts.length, NF = fpts.length;
       const io = new Float32Array(4 * (2 * NP + NP + 2 * NA + 4 * NF));
       const faceIndex = (fc) => FACES.findIndex((x) => x.every((v, k) => v === fc[k]));
       pts.forEach((pt, i) => { io.set([...pt.hp, faceIndex(pt.face)], 4 * i); io.set([...pt.cell, 0], 4 * (NP + i)); });
       apts.forEach((pt, i) => io.set([...pt.p, 0], 4 * (3 * NP + i)));
-      fpts.forEach((pt, i) => io.set([...pt.p, 0, ...pt.n, 0, ...pt.rd, 0], 4 * (3 * NP + 2 * NA + 4 * i)));
+      fpts.forEach((pt, i) => io.set([...pt.p, 0, ...pt.n, 0, pt.seg, 0, 0, 0], 4 * (3 * NP + 2 * NA + 4 * i)));
       const frame = new ArrayBuffer(bindings.FrameUniforms.size);
       bindings.FrameUniforms.write(new DataView(frame), 0, { matDetail: 1, sun: [0.4, 0.8, 0.45], sunCol: [1, 1, 1], shadowRes: 128 });
       const header = new ArrayBuffer(common.Header.size);
@@ -559,18 +560,19 @@ var<private> FACE: array<vec3i, 4> = array<vec3i, 4>(${FACES.map((fc) => `vec3i(
     let j = i - NP;
     io[3u * NP + NA + j] = vec4f(aerationAt(io[3u * NP + j].xyz), 0.0, 0.0);
   } else if (i < NP + NA + NF) {
-    let b = 3u * NP + 2u * NA + 4u * (i - NP - NA);   // p, n, rd in, the result out
+    let b = 3u * NP + 2u * NA + 4u * (i - NP - NA);   // p, n, seg in, the result out
     let p = io[b].xyz;
     gEye = p + vec3f(0.0, 1.0e4, 0.0);   // far: pixels a hundred metres across
     gPixAng = 1.0;
     var n = io[b + 1u].xyz;
     var col = vec3f(0.0);
     var trans = vec3f(1.0);
-    liquidFoam(p, &n, E_WATER, io[b + 2u].xyz, &col, &trans);
-    let t1 = trans.x;
-    let jc = gJetC;
-    liquidUnderSkin(&col, &trans);
-    io[b + 3u] = vec4f(t1, jc, trans.x, gJetC);
+    liquidFoam(p, &n, E_WATER, &col, &trans);
+    let seg = io[b + 2u].x;
+    gThin = true;
+    let thinSeg = thinBodySeg(p, seg);
+    gThin = false;   // (a brick without thin matter: the mask isn't read)
+    io[b + 3u] = vec4f(trans.x, thinSeg, thinBodySeg(p, seg), 0.0);
   }
 }`;
       const r = await page.evaluate((j) => window.__harness.run('run', j), {
@@ -603,17 +605,22 @@ var<private> FACE: array<vec3i, 4> = array<vec3i, 4>(${FACES.map((fc) => `vec3i(
         });
         check(`aerationAt: ${NA} points (${liquid} over liquid) from the current copy, liquid records only, == the JS twin within ${aWorst.toExponential(1)} (≤ 1e-5)`, aWorst <= 1e-5 && liquid > NA / 4, abad.join('; '));
         check(`control: taps that take the wakes (the old aerTap) differ at ${oldOff} of ${NA} points`, oldOff > 4);
-        let fWorst = 0;
-        const fbad = [], kinds = { raft: 0, jet: 0, both: 0, none: 0 };
+        let fWorst = 0, tWorst = 0;
+        const fbad = [], kinds = { raft: 0, spray: 0, none: 0 }, longer = { yes: 0, no: 0 };
         fpts.forEach((pt, i) => {
           const got = out.subarray(4 * (3 * NP + 2 * NA + 4 * i + 3), 4 * (3 * NP + 2 * NA + 4 * i + 4));
-          const e = Math.max(...pt.want.map((v, k) => Math.abs(got[k] - v)));
+          const e = Math.abs(got[0] - pt.want[0]);
+          const et = Math.max(Math.abs(got[1] - pt.want[1]), Math.abs(got[2] - pt.want[2])) / Math.max(1, pt.want[1]);
           fWorst = Math.max(fWorst, e);
-          if (e > 1e-5 && fbad.length < 4) fbad.push(`p ${pt.p.map((v) => v.toFixed(2))} raft ${pt.raft} jet ${pt.jw}: ${Array.from(got).map((v) => v.toFixed(5))} want ${pt.want.map((v) => v.toFixed(5))}`);
-          kinds[pt.raft > 0 && pt.jw > 0 ? 'both' : pt.raft > 0 ? 'raft' : pt.jw > 0 ? 'jet' : 'none']++;
+          tWorst = Math.max(tWorst, et);
+          if ((e > 1e-5 || et > 1e-5) && fbad.length < 4) fbad.push(`p ${pt.p.map((v) => v.toFixed(2))} aer ${pt.aer.map((v) => v.toFixed(3))} seg ${pt.seg.toFixed(2)}: ${Array.from(got).map((v) => v.toFixed(5))} want ${pt.want.map((v) => v.toFixed(5))}`);
+          kinds[pt.aer[0] <= 0 ? 'none' : pt.aer[1] >= 1 ? 'raft' : 'spray']++;
+          longer[pt.want[1] > pt.seg ? 'yes' : 'no']++;
         });
-        check(`liquidFoam + liquidUnderSkin: ${NF} points (raft and jet ${kinds.both}, raft ${kinds.raft}, jet ${kinds.jet}, neither ${kinds.none}): the raft's cover on top, the jet's body under the skin, == the JS twin within ${fWorst.toExponential(1)} (≤ 1e-5)`,
+        check(`liquidFoam: ${NF} points (raft ${kinds.raft}, spray or part spray ${kinds.spray}, no liquid ${kinds.none}): the cover mix(SPRAY_COVER_MAX, FOAM_COVER_MAX, grounded) × aeration == the JS twin within ${fWorst.toExponential(1)} (≤ 1e-5)`,
           fWorst <= 1e-5 && Object.values(kinds).every((v) => v > 0), fbad.join('; '));
+        check(`thinBodySeg: ${NF} segments (${longer.yes} read longer, ${longer.no} not: already past THIN_BODY_CELLS ${THIN_BODY}) by the thin mask's liquid channel, and unchanged without the brick's thin bit, == the JS twin within ${tWorst.toExponential(1)} (≤ 1e-5)`,
+          tWorst <= 1e-5 && longer.yes > 0 && longer.no > 0, fbad.join('; '));
       }
       await page.close();
     }
