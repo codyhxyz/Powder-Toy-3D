@@ -9,6 +9,10 @@ const copy = (def) => ({ ...def, cards: [...def.cards], config: { ...DEFAULT_CON
 
 export function createWandEditor({ runtime, onSave, onOpenChange, toast }) {
   let draft, previousFocus;
+  // Bag mode (Descent, Noita's rule): the library is the spells you carry, a card
+  // added comes out of the bag and a card removed goes back; settings are the wand's own.
+  // show({ bag, commit(def, bag) }); null is the free sandbox editor.
+  let bagMode = null, draftBag = [];
   let saved = null;
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -26,6 +30,7 @@ export function createWandEditor({ runtime, onSave, onOpenChange, toast }) {
 
   const name = h('input', { type: 'text', maxlength: 80, 'aria-label': 'Wand name', on: { input: () => { draft.name = name.value; } } });
   const preset = h('select', { 'aria-label': 'Wand recipe', on: { change: () => {
+    if (bagMode) return;
     const def = preset.value === 'saved' ? saved : PRESETS.find((p) => p.id === preset.value);
     if (def) { draft = copy(def); renderDefinition(); }
   } } });
@@ -43,6 +48,7 @@ export function createWandEditor({ runtime, onSave, onOpenChange, toast }) {
   const configs = h('div.we-config', {}, [
     ['manaMax', 'Max mana', 1], ['manaRegen', 'Mana / second', 1],
     ['castDelay', 'Cast delay (s)', 0.01], ['recharge', 'Recharge (s)', 0.01], ['capacity', 'Card capacity', 1],
+    ['spellsPerCast', 'Spells / cast', 1], ['shuffle', 'Shuffle (0 or 1)', 1],
   ].map(([key, label, step]) => {
     const input = h('input', { type: 'number', min: CONFIG_BOUNDS[key][0], max: CONFIG_BOUNDS[key][1], step, 'aria-label': label, on: { input: () => {
       draft.config[key] = input.value === '' ? NaN : Number(input.value); renderPreview();
@@ -53,6 +59,13 @@ export function createWandEditor({ runtime, onSave, onOpenChange, toast }) {
   const save = h('button.we-save', { type: 'button', text: 'Save & equip', on: { click: () => {
     if (!draft || save.disabled) return;
     draft.name = draft.name.trim() || 'Custom wand';
+    if (bagMode) {
+      const result = runtime.setDefinition(copy(draft));
+      if (result.errors.length) { errors.textContent = result.errors.map(errorText).join('\n'); return; }
+      bagMode.commit(copy(draft), [...draftBag]);
+      close();
+      return;
+    }
     // An edit of a starter recipe is the custom wand: its own mana, cooldown and storage, not the recipe's
     draft.id = 'custom';
     const result = runtime.setDefinition(copy(draft));
@@ -71,22 +84,32 @@ export function createWandEditor({ runtime, onSave, onOpenChange, toast }) {
     h('div.we-columns', {},
       h('section.we-spells', { 'aria-label': 'Spell library' }, h('h3', { text: 'Spell library' }), h('div.we-filters', {}, search, category), library),
       h('section.we-build', { 'aria-label': 'Wand deck' }, h('div.we-deck-heading', {}, h('h3', { text: 'Ordered deck' }),
-        h('button', { type: 'button', text: 'Clear deck', on: { click: () => { draft.cards = []; renderDeck(); } } })), deck,
+        h('button', { type: 'button', text: 'Clear deck', on: { click: () => {
+          if (bagMode) { draftBag.push(...draft.cards); renderLibrary(); }
+          draft.cards = []; renderDeck();
+        } } })), deck,
       configs, stats, errors, h('h3', { text: 'Cast preview' }), preview)),
     h('footer.we-footer', {}, h('span', { text: 'Esc cancels · Changes apply only on Save' }), cancel, save));
   document.body.append(dialog);
 
   function renderLibrary() {
     const query = search.value.trim().toLowerCase();
-    const matches = SPELLS.filter((s) => (!category.value || category.value === s.category)
+    const have = new Map();
+    if (bagMode) for (const id of draftBag) have.set(id, (have.get(id) ?? 0) + 1);
+    const matches = (bagMode ? SPELLS.filter((s) => have.has(s.id)) : SPELLS).filter((s) => (!category.value || category.value === s.category)
       && `${s.name} ${s.description} ${s.category}`.toLowerCase().includes(query));
     library.replaceChildren(...matches.map((s) => h('li', {},
-      h('div', {}, h('strong', { text: s.name }), h('small', { text: s.category }), h('p', { text: s.description })),
+      h('div', {}, h('strong', { text: bagMode ? `${s.name} ×${have.get(s.id)}` : s.name }), h('small', { text: s.category }), h('p', { text: s.description })),
       h('button', { type: 'button', text: 'Add', 'aria-label': `Add ${s.name}`, on: { click: () => {
         if (draft.cards.length >= 256) { toast?.('Deck limit reached. Remove a card first.'); return; }
+        if (bagMode) {
+          if (draft.cards.length >= draft.config.capacity) { toast?.('This wand is full. Remove a spell first.'); return; }
+          draftBag.splice(draftBag.indexOf(s.id), 1); renderLibrary();
+        }
         draft.cards.push(s.id); renderDeck();
       } } }))));
-    if (!matches.length) library.append(h('li.we-empty', { text: 'No spells match. Try another search or category.' }));
+    if (!matches.length) library.append(h('li.we-empty', { text: bagMode && !draftBag.length
+      ? 'Your spell bag is empty. Spells you find, buy, or take off a wand wait here.' : 'No spells match. Try another search or category.' }));
   }
 
   function renderDeck(focusIndex, action) {
@@ -100,7 +123,9 @@ export function createWandEditor({ runtime, onSave, onOpenChange, toast }) {
         h('button', { type: 'button', text: 'Up', disabled: i === 0, 'data-action': 'up', 'aria-label': `Move ${title} up`, on: { click: () => move(-1) } }),
         h('button', { type: 'button', text: 'Down', disabled: i === draft.cards.length - 1, 'data-action': 'down', 'aria-label': `Move ${title} down`, on: { click: () => move(1) } }),
         h('button', { type: 'button', text: 'Remove', 'data-action': 'remove', 'aria-label': `Remove ${title}`, on: { click: () => {
-          draft.cards.splice(i, 1); renderDeck(Math.min(i, draft.cards.length - 1), 'remove');
+          const [gone] = draft.cards.splice(i, 1);
+          if (bagMode) { draftBag.push(gone); renderLibrary(); }
+          renderDeck(Math.min(i, draft.cards.length - 1), 'remove');
         } } }));
     }));
     if (!draft.cards.length) deck.append(h('li.we-empty', { text: 'Your deck is empty. Add a spell from the library.' }));
@@ -127,7 +152,7 @@ export function createWandEditor({ runtime, onSave, onOpenChange, toast }) {
     if (invalid) messages.unshift('Enter a finite number for every wand setting.');
     for (const [key, input] of Object.entries(configInputs)) {
       if (Number.isFinite(draft.config[key]) && draft.config[key] !== result.config[key]) {
-        messages.push(`${input.getAttribute('aria-label')}: enter ${key === 'capacity' ? 'a whole number' : 'a number'} from ${input.min} to ${input.max}.`);
+        messages.push(`${input.getAttribute('aria-label')}: enter ${['capacity', 'spellsPerCast', 'shuffle'].includes(key) ? 'a whole number' : 'a number'} from ${input.min} to ${input.max}.`);
       }
     }
     errors.replaceChildren(...messages.map((message) => h('p', { text: message })));
@@ -163,9 +188,13 @@ export function createWandEditor({ runtime, onSave, onOpenChange, toast }) {
   addEventListener('keyup', blockKeys, true);
   return {
     get open() { return dialog.open; },
-    show() {
+    show(mode = null) {
       if (dialog.open) return;
       previousFocus = document.activeElement;
+      bagMode = mode?.commit ? mode : null;
+      draftBag = bagMode ? [...(mode.bag ?? [])] : [];
+      preset.disabled = !!bagMode;
+      for (const input of Object.values(configInputs)) input.disabled = !!bagMode;
       draft = copy(runtime.definition ?? saved ?? PRESETS[0]);
       preset.replaceChildren(h('option', { value: '', text: 'Current wand', disabled: true }),
         ...(saved ? [h('option', { value: 'saved', text: 'Saved custom wand' })] : []),
