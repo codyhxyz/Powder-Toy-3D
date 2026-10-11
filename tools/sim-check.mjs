@@ -46,7 +46,12 @@
 // 100, behaviour about 1,000, moves 3 × 60, io 28, shift 2 × 60 (156, 129, 93,
 // 165, 64, 33 and 49 s); at --size 64 a third to a half of that, over fewer
 // scenes, and determinism without I2.10's reported-only race probe (behaviour
-// stays a 32³ stage: its scenes are sized for it).
+// stays a 32³ stage: its scenes are sized for it). The sync 2 stages run where
+// every brick is drawn (radial gravity and void or loop edges switch quiet
+// skipping off: 300-520 ms per 32³ step with the debug prelude, sharing the
+// CPUs): modes 120 + 50 + 220 steps, edgemodes 80 + 60 + 60 + 36, air 85 +
+// 120, edges about 150, radial 3 × 60 + 3 × 24, tools none (150, 133, 92,
+// 102, 152 and 35 s at 32³); they are 32³ stages, their scenes sized for it.
 //
 // --unit super runs every stage's sims with supertile sleeping units (SLEEP_UNIT =
 // SUPER, docs/scaling.md D8's granularity, the A/B docs/webgpu.md W12 keeps),
