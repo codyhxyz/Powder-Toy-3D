@@ -1,4 +1,5 @@
-import { ELEMENTS, TOOLS } from '../elements.js';
+import { ELEMENTS, TOOLS, PROP_TOOL } from '../elements.js';
+import { propRangeError, runFill, PROP_FIELDS } from '../editing.js';
 import { createPacker, createUnpacker, encodeFrame, decodeFrame, xorInto, FRAME_KEY, FRAME_DELTA } from './codec.js';
 import { createRemoteCursors } from './cursors.js';
 import { createChat, MAX_CHAT_CHARS } from './chat.js';
@@ -32,9 +33,12 @@ const CURSOR_STEPS_PER_CELL = 10;     // cursor positions are rounded to a tenth
 const MIN_BRUSH_RADIUS = 1;           // the dock's brush-size range; guests' strokes are clamped to it
 const MAX_BRUSH_RADIUS = 24;
 const BRUSH_SHAPES = new Set([0, 1]); // sphere, cube (see brush.js)
+const MAX_FILLS_PER_FRAME = 1;        // guests' flood fills the host runs a frame (each reads the world back)
 
 const PEER_COLORS = ['#ffb84d', '#5ad1ff', '#ff6fa8', '#8ce36b', '#c49bff', '#ff8a5c', '#4de0c0', '#f4e04d'];
 const PAINTABLE = new Set([...ELEMENTS.map((e) => e.id), ...TOOLS.filter((t) => t.key !== 'SIGN').map((t) => t.id)]);
+// what floods (app.js fills: elements, Erase and the Property tool, as in TPT)
+const FILL_TOOLS = (tool) => (tool >= 0 && tool < ELEMENTS.length) || tool === TOOLS.find((t) => t.key === 'ERASE').id || tool === PROP_TOOL;
 const GUEST_BLOCKED = 'Only the host can do that';
 const HOST_AWAY = 'The host switched to another tab, so the world is paused until they come back';
 const HOST_BACK = 'The host is back';
@@ -72,6 +76,8 @@ export function createMultiplayer({ renderer, scene, camera, hud, getSim, getVol
   let sent = null, sentDims = '', scratch = null, seq = 0, wantKey = false, lastStream = 0;
   let sending = Promise.resolve(); // captures are encoded and sent strictly in order
   const strokes = [];
+  const fills = [];   // guests' flood fills (src/editing.js runFill), run one at a time
+  let filling = false;
 
   // guest state
   const unpacker = createUnpacker();
@@ -108,6 +114,7 @@ export function createMultiplayer({ renderer, scene, camera, hud, getSim, getVol
     cursors.clear();
     chat.clear();
     strokes.length = 0;
+    fills.length = 0;
     if (new URLSearchParams(location.search).has(JOIN_PARAM)) history.replaceState(null, '', location.pathname);
     hud.toast(wasGuest ? `${reason}. You can keep playing with this world on your own.` : reason);
     closePanel();
@@ -173,6 +180,9 @@ export function createMultiplayer({ renderer, scene, camera, hud, getSim, getVol
       case 'paint':
         if (role === 'host' && validStroke(m)) strokes.push(m);
         break;
+      case 'fill':
+        if (role === 'host' && validFill(m)) fills.push(m);
+        break;
       case 'chat':
         if (from && typeof m.text === 'string') chat.say(peerName(from), peerColor(from), m.text.slice(0, MAX_CHAT_CHARS));
         break;
@@ -186,10 +196,33 @@ export function createMultiplayer({ renderer, scene, camera, hud, getSim, getVol
     syncButton();
   }
 
+  const vec3 = (v) => Array.isArray(v) && v.length === 3 && v.every(Number.isFinite);
+  // TPT's editing tools (src/editing.js) on a stroke: a line's end e, a box's grow g,
+  // the target filter f, specific delete d, the Property tool's [field, value] p
+  function validEdits(m) {
+    const maxDim = Math.max(...['nx', 'ny', 'nz'].map((k) => getSim().g[k]));
+    return (m.e === undefined || vec3(m.e)) && (m.g === undefined || (vec3(m.g) && m.g.every((v) => Math.abs(v) <= maxDim)))
+      && (m.f === undefined || (Number.isInteger(m.f) && m.f >= -1 && m.f < ELEMENTS.length))
+      && (m.tool !== PROP_TOOL || (Array.isArray(m.p) && Number.isInteger(m.p[0]) && m.p[0] >= 0 && m.p[0] < PROP_FIELDS.length && !propRangeError(m.p[0], m.p[1])));
+  }
   function validStroke(m) {
     return Array.isArray(m.c) && m.c.length === 3 && m.c.every(Number.isFinite) && PAINTABLE.has(m.tool) &&
-      Number.isFinite(m.r) && Number.isFinite(m.rate) && BRUSH_SHAPES.has(m.shape);
+      Number.isFinite(m.r) && Number.isFinite(m.rate) && BRUSH_SHAPES.has(m.shape) && validEdits(m);
   }
+  function validFill(m) {
+    return vec3(m.c) && m.c.every(Number.isInteger) && Number.isInteger(m.id) && m.id >= 0 && m.id < ELEMENTS.length
+      && Number.isInteger(m.top) && FILL_TOOLS(m.tool) && Number.isFinite(m.r) && Number.isFinite(m.rate) && BRUSH_SHAPES.has(m.shape) && validEdits(m);
+  }
+  const xyz = (v) => [v.x, v.y, v.z];
+  // a stroke's editing fields as sent (validEdits) and as Simulation.paint takes them
+  const editsOut = ({ end, grow, filter = -1, erase, prop }) => ({
+    ...(end ? { e: xyz(end) } : {}), ...(grow ? { g: grow } : {}), ...(filter >= 0 ? { f: filter } : {}),
+    ...(erase ? { d: 1 } : {}), ...(prop ? { p: [prop.field, prop.value] } : {}),
+  });
+  const editsIn = (m) => ({
+    end: m.e ? { x: m.e[0], y: m.e[1], z: m.e[2] } : undefined, grow: m.g ?? null, filter: m.f ?? -1,
+    erase: !!m.d, prop: m.p ? { field: m.p[0], value: m.p[1] } : null,
+  });
 
   // ---- host: stream the world ----
   async function sendCapture({ bytes, dims, release }) {
@@ -346,8 +379,12 @@ export function createMultiplayer({ renderer, scene, camera, hud, getSim, getVol
     },
 
     // Guests send their strokes to the host instead of painting locally.
-    paint({ center, radius, shape, tool, rate, replace }) {
-      send({ t: 'paint', to: 'host', c: center.toArray(), r: radius, shape, tool, rate, replace });
+    paint({ center, radius, shape, tool, rate, replace, ...edits }) {
+      send({ t: 'paint', to: 'host', c: xyz(center), r: radius, shape, tool, rate, replace, ...editsOut(edits) });
+    },
+    // ...and their flood fills (src/editing.js runFill's request), which the host reads its world for.
+    fill({ cell, id, maxY, stroke: { radius, shape, tool, rate, replace, ...edits } }) {
+      send({ t: 'fill', to: 'host', c: cell, id, top: maxY, r: radius, shape, tool, rate, replace, ...editsOut({ ...edits, filter: -1 }) });
     },
 
     // Once per frame, before the world is drawn.
@@ -360,10 +397,18 @@ export function createMultiplayer({ renderer, scene, camera, hud, getSim, getVol
         for (const s of strokes) {
           sim.paint({
             center: { x: s.c[0], y: s.c[1], z: s.c[2] }, radius: Math.min(Math.max(s.r, MIN_BRUSH_RADIUS), MAX_BRUSH_RADIUS),
-            shape: s.shape, tool: s.tool, rate: s.rate, replace: !!s.replace,
+            shape: s.shape, tool: s.tool, rate: s.rate, replace: !!s.replace, ...editsIn(s),
           });
         }
         strokes.length = 0;
+        for (let i = 0; i < MAX_FILLS_PER_FRAME && fills.length && !filling; i++) {
+          const f = fills.shift();
+          filling = true;
+          const stroke = { radius: Math.min(Math.max(f.r, MIN_BRUSH_RADIUS), MAX_BRUSH_RADIUS), shape: f.shape, tool: f.tool, rate: f.rate, replace: !!f.replace, ...editsIn(f) };
+          runFill(sim, { cell: f.c, id: f.id, maxY: f.top, stroke })
+            .catch((err) => console.error('multiplayer: a guest\'s fill failed', err))
+            .finally(() => { filling = false; });
+        }
         const hasGuests = [...peers.values()].some((p) => p.role === 'guest');
         if (hasGuests && now - lastStream >= STREAM_INTERVAL_MS && socket.bufferedAmount < MAX_BUFFERED_BYTES) {
           const capture = packer.pack(sim);

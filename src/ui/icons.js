@@ -29,6 +29,8 @@ export const ICON = {
   sphere: svg('<circle cx="12" cy="12" r="7.5"/><path d="M4.5 12c2 2.2 13 2.2 15 0"/>'),
   cube: svg('<path d="M12 3.5l7.5 4.3v8.4L12 20.5l-7.5-4.3V7.8z"/><path d="M4.5 7.8L12 12l7.5-4.2M12 12v8.5"/>'),
   replace: svg('<path d="M5 9h11l-3-3M19 15H8l3 3"/>'),
+  // an eraser on its edge: specific delete (TPT's SPECIFIC_DELETE)
+  eraser: svg('<path d="M14.5 4.5l5 5-9 9H6l-2.5-2.5z"/><path d="M9.5 9.5l5 5M10.5 18.5H20"/>'),
   eyedropper: svg('<path d="M13.5 6.5l4 4"/><path d="M15 5l1.8-1.8a2.1 2.1 0 0 1 3 3L18 8z"/><path d="M15.5 8.5L7 17l-3.5 1 1-3.5L13 6"/>'),
   minus: svg('<path d="M6 12h12"/>'),
   // a round bomb: its body, a neck, a curling fuse and a spark at its tip

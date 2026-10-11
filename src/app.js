@@ -3,7 +3,8 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import './ui/styles.css';
 import { Simulation } from './sim.js';
 import { volumeVert, volumeFrag, pickFrag, shadowFrag } from './shaders/render.js';
-import { ELEMENTS, E, TOOLS, toolById, isBuild, isSpawnerTool, isGearTool, LIGHTNING_TOOL, wandPresetForTool } from './elements.js';
+import { ELEMENTS, E, TOOLS, toolById, isBuild, isSpawnerTool, isGearTool, LIGHTNING_TOOL, PROP_TOOL, wandPresetForTool } from './elements.js';
+import { propIndex, parseProp, boxFromCorners, runFill, oneShotRate, FILL_AIR, FLOOD_MAX_CELLS } from './editing.js';
 import { createLightning } from './lightning.js';
 import { Spawners, SPAWNER, ENEMY_KINDS, feetOnHit } from './spawners.js';
 import { createBirdLife } from './birds/index.js';
@@ -106,6 +107,9 @@ const BOX_DEFAULT = '128';
 const DEFAULTS = {
   size: 'world', preset: 'lab', scene: 'island',
   tool: E.SAND, radius: 5, shape: 0, rate: 1, replace: false,
+  // TPT's specific delete and replace target (not kept between visits, as TPT's
+  // aren't), and its Property tool's last property and value (kept, as TPT's prefs)
+  specificDelete: false, replaceTarget: -1, propField: 'temp', propText: '',
   steps: 4, gravity: 0.025, paused: false,
   view: 0, camSpeed: 1, upscale: 'quality', dockCollapsed: true,
   character: 'real', povFov: POV_FOV, sensitivity: 1, viewBobbing: true, sprintMode: 'hold',
@@ -133,7 +137,7 @@ const DEFAULT_CHANGES = [
 ];
 const REV_KEY = 'rev';
 const LEGACY_MOBILE_KEY = 'mobileLite';   // rev 1's flag before REV_KEY
-const PERSIST = ['size', 'preset', 'scene', 'tool', 'radius', 'shape', 'rate', 'replace', 'steps', 'gravity', 'view',
+const PERSIST = ['size', 'preset', 'scene', 'tool', 'radius', 'shape', 'rate', 'replace', 'propField', 'propText', 'steps', 'gravity', 'view',
   'camSpeed', 'upscale', 'dockCollapsed', 'character', 'povFov', 'sensitivity', 'viewBobbing', 'sprintMode',
   'nearGI', 'glowLights', 'caustics', ...DETAIL.map(settingKey), 'profiler'];
 const STORE = 'powder-toy-3d:settings';
@@ -174,6 +178,7 @@ if (params.get('preset') in ARENA_GRID && !params.get('size')) settings.size = A
 const bootMap = mapByKey(params.get('map') ?? launch.map);
 if (bootMap) useMap(bootMap);
 if (!toolById(settings.tool)) settings.tool = DEFAULTS.tool;
+if (propIndex(settings.propField) < 0) settings.propField = DEFAULTS.propField;
 if (!VIEWS.some((v) => v.id === settings.view)) settings.view = 0;
 // (a saved 'wizard', the Castle Crashers body that was the default, falls back to it too)
 if (!['real', 'stick'].includes(settings.character)) settings.character = DEFAULTS.character;
@@ -286,7 +291,7 @@ function updateSun() {
 updateSun();
 
 const brush = createBrushCursor();
-scene.add(brush.mesh);
+scene.add(brush.mesh, ...brush.extras);
 
 const isTyping = () => {
   const a = document.activeElement;
@@ -774,21 +779,21 @@ const tmpV = new THREE.Vector3();
 function updateBrush() {
   const g = sim.g;
   brushValid = false;
-  if (pov?.active) { updateGunBrush(); return; }
+  if (pov?.active) { shapeDrag = null; updateGunBrush(); return; }
   if (isBrush(settings.tool)) {
-    if (painting) {
+    if (painting || shapeDrag) {
       // a box's brush stops at its walls; a world's window has none, so beyond it there's no brush
-      plane.constant = -dragY;
-      if (gridRay().intersectPlane(plane, tmpV) && (!win || inWindow(tmpV))) { brushCenter.copy(tmpV); brushValid = true; }
+      if (planePoint(tmpV)) { brushCenter.copy(tmpV); brushValid = true; }
     } else if (hover.valid) {
       hoverBrushCenter(brushCenter);
       brushValid = true;
     }
   }
-  if (brushValid) {
-    brushCenter.x = THREE.MathUtils.clamp(brushCenter.x, 0, g.nx);
-    brushCenter.y = THREE.MathUtils.clamp(brushCenter.y, 0, g.ny);
-    brushCenter.z = THREE.MathUtils.clamp(brushCenter.z, 0, g.nz);
+  if (brushValid) clampToGrid(brushCenter);
+  if (shapeDrag) {
+    if (brushValid) shapeDrag.end.copy(brushCenter);
+    showShapeDrag();
+    return;
   }
   brush.set({
     visible: brushValid && pointerInside && !uiHover && !eyedropper,
@@ -798,6 +803,158 @@ function updateBrush() {
     color: toolById(settings.tool).color,
   });
   builds?.update({ hover, active: isBuild(settings.tool) && pointerInside && !uiHover && !eyedropper });
+}
+
+const clampToGrid = (v) => v.set(THREE.MathUtils.clamp(v.x, 0, sim.g.nx), THREE.MathUtils.clamp(v.y, 0, sim.g.ny), THREE.MathUtils.clamp(v.z, 0, sim.g.nz));
+// Where the pointer's ray meets the paint plane (the height a press started at), if in the grid's window.
+function planePoint(out) {
+  plane.constant = -dragY;
+  return !!gridRay().intersectPlane(plane, out) && (!win || inWindow(out));
+}
+
+// ---------------------------------------------------------------- TPT's editing tools (src/editing.js)
+// Line, box and flood fill (TPT's GameView.cpp UpdateDrawMode): Shift-drag draws
+// a line, Ctrl-drag a box, Ctrl+Shift-click fills. ⌘ stands in for Ctrl, as a
+// Mac's Ctrl-click is a right click. As in TPT the mode is fixed when the button
+// goes down, and a line or box is put down when it comes up; one undo step each.
+// TPT's Alt snaps them to 45°; Alt orbits here, so there's no snapping.
+let shapeDrag = null;   // { kind: 'line' | 'box', start, end (grid cells on the paint plane) } while one is dragged
+const drawModeOf = (e) => {
+  const ctrl = e.metaKey || e.ctrlKey;
+  return ctrl && e.shiftKey ? 'fill' : ctrl ? 'box' : e.shiftKey ? 'line' : null;
+};
+// TPT's tools (heat, cool, pressure: DEFAULT_TOOL_*) and particles don't flood fill: they paint as usual
+const fills = (tool) => tool >= 0 || tool === ERASE_TOOL || tool === PROP_TOOL;
+
+function startShape(kind) {
+  const start = new THREE.Vector3();
+  if (!planePoint(start)) return false;
+  clampToGrid(start);
+  shapeDrag = { kind, start, end: start.clone() };
+  hud.dismissHint();
+  return true;
+}
+// the line or box ghost while dragging (TPT's RenderLine and RenderRect previews)
+const ghostA = new THREE.Vector3(), ghostB = new THREE.Vector3(), ghostHalf = new THREE.Vector3();
+const toScene = (out, v) => out.copy(v).multiplyScalar(scale).add(volume.position);
+function showShapeDrag() {
+  const { kind, start, end } = shapeDrag, color = toolById(settings.tool).color;
+  if (kind === 'line') {
+    brush.setLine({ from: toScene(ghostA, start), to: toScene(ghostB, end), radius: settings.radius * scale, shape: settings.shape, color });
+  } else {
+    const b = boxFromCorners(start, end, settings.radius, [sim.g.nx, sim.g.ny, sim.g.nz]);
+    brush.setBox({ position: toScene(ghostA, b.center), half: ghostHalf.fromArray(b.half).multiplyScalar(scale), color });
+  }
+}
+// Put the line or box down (button up).
+function finishShape() {
+  const d = shapeDrag;
+  shapeDrag = null;
+  if (!d) return;
+  const tool = settings.tool;
+  const stroke = { ...brushStroke(tool), center: d.start, rate: oneShotRate(tool, settings.rate) };
+  if (d.kind === 'line') stroke.end = d.end;
+  else {
+    const b = boxFromCorners(d.start, d.end, settings.radius, [sim.g.nx, sim.g.ny, sim.g.nz]);
+    Object.assign(stroke, { center: new THREE.Vector3().copy(b.center), shape: 1, grow: b.grow });
+  }
+  if (!mp.isGuest) {
+    sim.snapshot();
+    toolbar.setUndoEnabled(true);
+  }
+  paintStroke(stroke);
+  pacer.wake();
+}
+
+// Replace mode and specific delete (TPT's REPLACE_MODE and SPECIFIC_DELETE,
+// Editing.cpp CreatePartFlags) keep to the target element when one is set
+// (TPT's replaceModeSelected). X keeps its meaning with no target: paint over
+// anything; with one, only that element is painted over (TPT's replace mode).
+const targetOn = () => (settings.replace || settings.specificDelete) && settings.replaceTarget >= 0;
+function propValue() {
+  const field = propIndex(settings.propField);
+  const r = parseProp(field, settings.propText);
+  return r.ok ? { field, value: r.value } : null;
+}
+// A stroke of `tool` with the brush as it is now (its centre is brushCenter's).
+function brushStroke(tool) {
+  return {
+    center: brushCenter, radius: settings.radius, shape: settings.shape, tool, rate: settings.rate, replace: settings.replace,
+    filter: targetOn() ? settings.replaceTarget : -1, erase: settings.specificDelete,
+    prop: tool === PROP_TOOL ? propValue() : null,
+  };
+}
+const paintStroke = (stroke) => (mp.isGuest ? mp.paint(stroke) : sim.paint(stroke));   // a guest's goes to the host
+
+function editModeText() {
+  const t = ELEMENTS[settings.replaceTarget]?.name;
+  if (settings.specificDelete) return t ? `Deleting only ${t}` : 'Specific delete';
+  if (settings.replace) return t ? `Replacing only ${t}` : 'Replace mode';
+  return null;
+}
+// One at a time (TPT's GameController::SetReplaceModeFlags): turning one on turns the other off.
+function setEditMode(patch) {
+  Object.assign(settings, patch);
+  if (patch.replace) settings.specificDelete = false;
+  if (patch.specificDelete) settings.replace = false;
+  dock.sync();
+  hud.setEditMode(editModeText());
+  save();
+}
+function toggleEditMode(key) {
+  setEditMode({ [key]: !settings[key] });
+  hud.toast(editModeText() ?? (key === 'replace' ? 'Replace mode off' : 'Specific delete off'));
+}
+// The target (TPT's Ctrl+Alt-click on an element button): picking one turns
+// replace mode on unless specific delete is; picking it again clears it.
+function setTarget(id) {
+  const clear = id === settings.replaceTarget || !(id >= 0);
+  setEditMode({ replaceTarget: clear ? -1 : id, ...(!clear && !settings.specificDelete ? { replace: true } : {}) });
+  hud.toast(clear ? 'No target: replace and delete touch any element' : `${editModeText()}. Alt+click it again to clear`);
+}
+function targetHovered() {
+  if (pointerInside && !uiHover && hover.valid && hover.id > 0) setTarget(hover.id);
+  else hud.toast('Point at an element to make it the target');
+}
+// TPT's Ctrl+P: the Property tool, its window open
+function openProp() {
+  selectTool(PROP_TOOL);
+  dock.openProp();
+}
+
+// Ctrl+Shift-click (TPT's DrawFill). An element fills the open air it was
+// clicked into (FloodParts fills empty space), up to the top of the brush: in
+// 3D open air would fill the sky, so the brush gives the fill a level, the way
+// a liquid finds one. With replace mode on it fills over the connected cells of
+// what was clicked instead. Erase, specific delete and PROP take the connected
+// cells of what was clicked (FloodParts with no element, flood_prop).
+const FILL_REFUSED = {
+  start: 'Nothing to fill there',
+  cap: `Too big to fill at once (over ${FLOOD_MAX_CELLS.toLocaleString()} cells). An element's fill rises to the top of the brush: try a smaller one`,
+  edge: 'That runs on past the simulated area: fill something smaller',
+  gone: 'The world changed before the fill: try again',
+};
+function fillAt() {
+  if (!hover.valid) { hud.toast('Click a surface to fill from'); return; }
+  const tool = settings.tool, st = brushStroke(tool);
+  let cell, id, maxY = sim.g.ny - 1;
+  if (tool >= 0 && !settings.replace && !settings.specificDelete) {
+    cell = hover.cell.clone().add(faceNormal(hover.face));
+    id = FILL_AIR;
+    maxY = Math.floor(hoverBrushCenter(tmpV).y + settings.radius - 0.5);
+  } else {
+    cell = hover.cell.clone();
+    id = hover.id;
+    if (id < 0) { hud.toast(FILL_REFUSED.start); return; }
+    if (st.filter >= 0 && id !== st.filter) { hud.toast(`${editModeText()}: click ${ELEMENTS[st.filter].name} to fill it`); return; }
+  }
+  const req = { cell: cell.toArray(), id, maxY, stroke: { ...st, rate: oneShotRate(tool, settings.rate) } };
+  delete req.stroke.center;
+  hud.dismissHint();
+  if (mp.isGuest) { mp.fill(req); return; }
+  runFill(sim, req, { openSides: !!win, before: () => { sim.snapshot(); toolbar.setUndoEnabled(true); } })
+    .then((r) => { pacer.wake(); hud.toast(r.error ? FILL_REFUSED[r.error] : `Filled ${r.count.toLocaleString()} cells`); })
+    .catch((err) => { console.error('Fill failed', err); hud.toast('The fill failed'); });
 }
 
 // Whether the brush shows for `id`: everything but signs, spawners and constructions (lightning's sets its width).
@@ -913,10 +1070,15 @@ const dock = createDock({
       if (pov?.active && !wandPresetForTool(id)) loadToolGun();
     }
   },
-  onBrushChange: (patch) => { Object.assign(settings, patch); dock.sync(); save(); },
+  onBrushChange: (patch) => {
+    if ('replace' in patch || 'specificDelete' in patch || 'replaceTarget' in patch) setEditMode(patch);
+    else { Object.assign(settings, patch); dock.sync(); save(); }
+  },
   onHover: (id) => card.show(id ?? settings.tool),
   onEyedropper: () => setEyedropper(!eyedropper),
+  onTarget: setTarget,
 });
+hud.setEditMode(editModeText());
 
 // Eyedropper: the next click on the scene selects whatever element it lands on.
 function setEyedropper(on) {
@@ -1175,8 +1337,12 @@ function press(e) {
     return;
   }
   if (clickTool() !== null) return;
+  // TPT's PropertyTool does nothing until its window holds a value that reads
+  if (settings.tool === PROP_TOOL && !propValue()) { hud.toast('Give the Property tool a value first (⌘P)'); openProp(); return; }
   dragY = hover.valid ? hoverBrushCenter(tmpV).y : (isTool() ? 0.5 : settings.radius);
-  startStroke(settings.tool);
+  const mode = drawModeOf(e);
+  if (mode === 'fill' && fills(settings.tool)) { fillAt(); return; }
+  if (!((mode === 'line' || mode === 'box') && isBrush(settings.tool) && startShape(mode))) startStroke(settings.tool);
   if (e.pointerType !== 'touch') canvasEl.setPointerCapture(e.pointerId);   // (a touch is captured already)
 }
 
@@ -1268,7 +1434,11 @@ const toolGun = {
   },
   release() { painting = false; },
 };
-addEventListener('pointerup', (e) => { if (e.button === 0) painting = false; });
+addEventListener('pointerup', (e) => {
+  if (e.button !== 0) return;
+  painting = false;
+  if (shapeDrag) finishShape();
+});
 
 // Touch: one finger paints, two fingers turn and zoom (controls.touches). A finger
 // that lands has no hover pick yet, so it picks where it touched first; and it waits
@@ -1329,6 +1499,9 @@ addEventListener('keydown', (e) => {
   if (isTyping()) return;
   const mod = e.metaKey || e.ctrlKey;
   if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); return; }
+  // TPT's Ctrl+; (specific delete) and Ctrl+P (the Property tool): GameView.cpp OnKeyPress
+  if (mod && e.key === ';' && !pov?.active) { e.preventDefault(); toggleEditMode('specificDelete'); return; }
+  if (mod && e.key.toLowerCase() === 'p' && !e.shiftKey) { e.preventDefault(); if (!pov?.active) openProp(); return; }
   if (mod) return;
   const k = e.key;
   // V switches between the god view and the body (Garry's Mod's noclip key). F drops
@@ -1341,7 +1514,10 @@ addEventListener('keydown', (e) => {
   else if (k === '[') setRadius(settings.radius - 1);
   else if (k === ']') setRadius(settings.radius + 1);
   else if (k === 'b' || k === 'B') { settings.shape ^= 1; dock.sync(); save(); }
-  else if (k === 'x' || k === 'X') { settings.replace = !settings.replace; dock.sync(); save(); hud.toast(settings.replace ? 'Replace mode on' : 'Replace mode off'); }
+  // replace mode: X, or TPT's ; and Insert; specific delete: TPT's Delete (a Mac's delete key is Backspace)
+  else if (k === 'x' || k === 'X' || k === ';' || k === 'Insert') toggleEditMode('replace');
+  else if (k === 'Delete' || k === 'Backspace') toggleEditMode('specificDelete');
+  else if (e.code === 'KeyI' && e.altKey) targetHovered();   // (⌥I types a dead key on a Mac: by its code)
   else if (k === 'i' || k === 'I') { if (!(pointerInside && !uiHover && pickHovered())) setEyedropper(!eyedropper); }
   else if (k === 'r' || k === 'R') actions.resetCamera();
   else if (k === 't' || k === 'T') dock.toggle();
@@ -1350,7 +1526,8 @@ addEventListener('keydown', (e) => {
   else if (k === '?') actions.toggleHelp();
   else if (k === 'p' || k === 'P') actions.screenshot();
   else if (k === 'Escape') {
-    const overlay = eyedropper || toolbar.isOpen || settingsPanel.isOpen || help.isOpen || mp.panelOpen;
+    const overlay = eyedropper || toolbar.isOpen || settingsPanel.isOpen || help.isOpen || mp.panelOpen || !!shapeDrag;
+    shapeDrag = null;   // a line or box being dragged is dropped
     setEyedropper(false); toolbar.close(); setSettingsOpen(false); help.setOpen(false); mp.closePanel();
     // nothing open: out of a construction's options, else the start menu (Garry's Mod's Esc)
     if (!overlay) { if (isBuild(settings.tool)) leaveBuild(); else actions.openMenu(); }
@@ -1365,6 +1542,7 @@ addEventListener('blur', () => {
   controls.mouseButtons.LEFT = null;
   controls.mouseButtons.RIGHT = THREE.MOUSE.ROTATE;
   painting = false;
+  shapeDrag = null;
 });
 addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
@@ -1517,14 +1695,7 @@ function tick(now, renderOnly = false) {
     updateBrush();
 
     prof.phase('paint');
-    if (painting && brushValid) {
-      const stroke = {
-        center: brushCenter, radius: settings.radius, shape: settings.shape,
-        tool: strokeTool, rate: settings.rate, replace: settings.replace,
-      };
-      if (mp.isGuest) mp.paint(stroke); // the host paints it
-      else sim.paint(stroke);
-    }
+    if (painting && brushValid) paintStroke(brushStroke(strokeTool));   // (a guest's: the host paints it)
   }
   // The world continues beyond its simulation window: don't outline the window.
   edges.visible = !win;
