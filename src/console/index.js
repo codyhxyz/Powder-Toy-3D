@@ -161,7 +161,6 @@ export function createConsole(app) {
     // menu once this closes; app.js isTyping covers the rest)
     e.stopPropagation();
     if (e.code === CONSOLE_KEY && !e.ctrlKey && !e.metaKey && !e.altKey) { e.preventDefault(); setOpen(false); return; }
-    if (e.key === 'Escape') { e.preventDefault(); if (lua?.continuing) { lua.cancel(); print('(cancelled)', 'info'); sync(); } else setOpen(false); return; }
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); return; }
     const before = input.value.slice(0, input.selectionStart), after = input.value.slice(input.selectionEnd);
     if (e.key === 'ArrowUp' && !before.includes('\n') && hIndex > 0) {
@@ -177,8 +176,17 @@ export function createConsole(app) {
   });
   input.addEventListener('input', sync);
 
-  // ` anywhere opens or closes it (the app's own keys ignore it while you type here: app.js isTyping)
+  // Esc, while it's open, cancels an unfinished chunk or closes it, and goes no
+  // further (the app's Esc would open the map menu): taken in the capture phase,
+  // as the map menu takes its keys (ui/menu.js). ` anywhere opens or closes it
+  // (the app's own keys ignore it while you type here: app.js isTyping).
   addEventListener('keydown', (e) => {
+    if (open && e.key === 'Escape' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (lua?.continuing) { lua.cancel(); print('(cancelled)', 'info'); sync(); } else setOpen(false);
+      return;
+    }
     if (e.code !== CONSOLE_KEY || e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
     if (e.target === input) return;   // (its own handler)
     const a = document.activeElement;
