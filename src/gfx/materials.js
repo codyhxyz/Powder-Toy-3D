@@ -97,13 +97,14 @@ export const LAMP_GLOW = tintGlow(LAMP_TINT, LAMP_LUM);
 // Smooth-surface channels. sigma = blur radius in cells (how much the
 // blockiness is smoothed away), ema = per-frame blend toward the new state
 // (temporal smoothing; 1 = none). Liquids smooth the most, built structures not at all.
-// cubic: thin features of the channel (drops, streams, films) are read as a
-// cubic B-spline instead of trilinearly (shaders/gfx/core.js surfSample), so
-// they come out round instead of faceted.
+// cubic: thin features of the channel (drops, streams, lone grains) are read
+// as a cubic B-spline instead of trilinearly (shaders/gfx/core.js surfSample),
+// so they come out round instead of faceted, and so is all of it up close
+// (gfx/detail.js cubicClose): falling sand and splashes.
 export const CHANNELS = [
   { key: 'LIQUID', sigma: 1.0, ema: 0.35, transparent: true, cubic: true },
   { key: 'MOLTEN', sigma: 0.85, ema: 0.5 },
-  { key: 'GRANULAR', sigma: 0.75, ema: 0.6 },
+  { key: 'GRANULAR', sigma: 0.75, ema: 0.6, cubic: true },
   { key: 'ORGANIC', sigma: 0.6, ema: 1.0 },   // natural solids: wood, plant, rock
 ];
 // Media channels share the liquid blur kernel. The first three are gases with
@@ -460,6 +461,7 @@ export function materialsGLSL() {
   const floats = (name, key) => `const float ${name}[NE] = float[NE](${LOOK.map((l) => f(l[key])).join(', ')});`;
   return [
     ...CHANNELS.map((c, i) => `#define CH_${c.key} ${i}`),
+    `const vec4 CH_CUBIC = vec4(${CHANNELS.map((c) => (c.cubic ? '1.0' : '0.0')).join(', ')});   // 1: the channel reads cubic (CHANNELS cubic)`,
     ...MEDIA.map((m, i) => `#define MD_${m.key} ${i}`),
     ...SURFS.map((k, i) => `#define SURF_${k} ${i}`),
     `#define HEAT_RANGE ${f(HEAT_RANGE)}`,

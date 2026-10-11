@@ -689,6 +689,7 @@ void main() {
   vec3 rd = safeDir(normalize(vGrid - uCam));
   if (CUR_VIEW == VIEW_FLOW) gPix = length(fwidth(rd)) * uPixScale;
   surfView(uCam, rd);   // pixel footprint for material LOD (needs uniform control flow)
+  gCubicEye = gEye; gCubicPixAng = gPixAng;   // and for reading fields cubic up close (gfx/core.js cubicClose)
   vec3 bh = boxHit(ro, rd);
   float t0 = max(bh.x, uMarchNear);
   if (bh.y <= t0) discard;
