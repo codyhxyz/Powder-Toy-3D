@@ -1311,8 +1311,9 @@ let detailVersion = 0;
 const DETAIL_FOAM = DETAIL.find((f) => f.key === 'liquidFoam');   // whitewater also runs a field with the sim
 const detailGate = createDetailGate(renderer, () => pacer.wake(), () => hud.toast('Preparing close-up detail… the first time after an update this can take several seconds'));
 // The view program's first draw after an update freezes the page while the
-// GPU driver builds it: say so first (gfx/coldShader.js).
-const coldShader = createColdShaderGuard(() => hud.toast('Loading something cool, please be patient'));
+// GPU driver builds it: say so first (gfx/coldShader.js), on the start menu's
+// loading screen too while it is up.
+const coldShader = createColdShaderGuard(() => { hud.toast('Loading something cool, please be patient'); launch.progress?.('cold'); });
 function applyDetail() {
   shadowMat.defines = detailDefines(settings);
   shadowMat.needsUpdate = true;
@@ -2239,7 +2240,11 @@ function bootReady(pending = null) {
   let settled = !pending;   // (a save picked on the menu: it loads first)
   pending?.finally(() => { settled = true; });
   const check = async () => {
-    if (((win && !win.loaded) || !settled) && performance.now() - t0 < READY_WAIT_MS) { setTimeout(check, READY_POLL_MS); return; }
+    if (((win && !win.loaded) || !settled) && performance.now() - t0 < READY_WAIT_MS) {
+      if (win && !win.loaded) launch.progress?.('world');   // (the loading screen's step: its passes compile, then it generates)
+      setTimeout(check, READY_POLL_MS);
+      return;
+    }
     mark('first-frame');
     if (bootMap && launch.mode && launch.mode !== 'sandbox' && pov?.game) {
       launch.status?.(launch.mode === 'noita' ? 'Dropping in' : 'Picking the teams');
@@ -2379,6 +2384,7 @@ try {
     } : null,
   };
   gpuLoss.settle();
+  launch.progress?.('compile');   // the first frame compiles the view (the loading screen's step)
   requestAnimationFrame(frame);
   bootReady(launch.save ? openSave(launch.save) : null);   // a save picked on the menu's Saves before the game had loaded
 } catch (err) {
