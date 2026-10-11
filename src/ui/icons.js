@@ -31,6 +31,8 @@ export const ICON = {
   replace: svg('<path d="M5 9h11l-3-3M19 15H8l3 3"/>'),
   eyedropper: svg('<path d="M13.5 6.5l4 4"/><path d="M15 5l1.8-1.8a2.1 2.1 0 0 1 3 3L18 8z"/><path d="M15.5 8.5L7 17l-3.5 1 1-3.5L13 6"/>'),
   minus: svg('<path d="M6 12h12"/>'),
+  // a paint brush: its tip, the ferrule's edge and the handle (TPT's DECO menu)
+  deco: svg('<path d="M4 20c2.5 0 4-1.3 4-3.5a2.5 2.5 0 0 0-5 0c0 1.3-.5 2.4-1 3.5z"/><path d="M7.5 13.5l2.5 2.5"/><path d="M10 16L20.5 5.5a2 2 0 0 0-2.9-2.9L7.5 13.5"/>'),
   // a round bomb: its body, a neck, a curling fuse and a spark at its tip
   explosives: svg('<circle cx="10" cy="14" r="6.5"/><path d="M14.6 9.4l1.8-1.8M16.4 7.6c1-1 1.4-2.6 2.9-3"/>'
     + '<path d="M20.5 1.8v1.4M22.2 3.6h-1.4M21.7 2.3l-.8.8"/>'),

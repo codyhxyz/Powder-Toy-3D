@@ -1,8 +1,9 @@
 import { h, inkFor, luminance } from './dom.js';
 import { ICON } from './icons.js';
-import { PALETTE, itemByKey, toolById, isBuild, K } from '../elements.js';
+import { PALETTE, itemByKey, toolById, isBuild, isDecoTool, K } from '../elements.js';
 import { mountTile, setTileSettings } from './tiles/live.js';
 import { modelIcon } from '../pov/models.js';
+import { createDecoPicker } from './decoPicker.js';
 
 const KIND_NAME = { [K.POWDER]: 'powder', [K.LIQUID]: 'liquid', [K.GAS]: 'gas', [K.SOLID]: 'solid' };
 export const kindOf = (it) => (isBuild(it.id) ? 'build' : it.id < 0 ? 'tool' : KIND_NAME[it.kind]);
@@ -38,14 +39,14 @@ function iconLater(t, model) {
 // by palette group name (elements.js PALETTE), so a new group can't shift the others' icons
 const CATEGORY_ICONS = {
   Powders: ICON.powders, Liquids: ICON.liquids, Potions: ICON.flask, Gases: ICON.gases, Solids: ICON.cube, Explosives: ICON.explosives, Electronics: ICON.bolt, Radioactive: ICON.radioactive,
-  Exotic: ICON.exotic, Tools: ICON.tools, Entities: ICON.person, Constructions: ICON.constructions,
+  Exotic: ICON.exotic, Tools: ICON.tools, Entities: ICON.person, Constructions: ICON.constructions, Deco: ICON.deco,
 };
 
 // The element menu, Garry's Mod's spawn menu copied: closed until T (GMod's Q),
 // then a panel under the toolbar with a tab strip of categories, a grid of big
 // icons, and the tool-options pane on the right (what's selected, the brush).
 // Picking an element or clicking the world closes it, like letting go of Q.
-export function createDock({ settings, onSelect, onBrushChange, onHover, onEyedropper }) {
+export function createDock({ settings, onSelect, onBrushChange, onHover, onEyedropper, onDecoToggle }) {
   setTileSettings(settings);
   let category = Math.max(0, PALETTE.findIndex((g) => g.items.some((key) => itemByKey(key).id === settings.tool)));
   let lastTool = settings.tool;
@@ -120,12 +121,14 @@ export function createDock({ settings, onSelect, onBrushChange, onHover, onEyedr
   flow.addEventListener('input', () => onBrushChange({ rate: +flow.value }));
   const sizeLabel = h('span', { text: 'Size' });
   const dropper = iconButton(ICON.eyedropper, 'Eyedropper', 'Pick an element from the world (I)', () => onEyedropper?.());
+  const decoPicker = createDecoPicker({ onToggle: () => onDecoToggle?.() });   // the deco tools' colour (TPT's DECO menu)
   const brush = h('div.material-brush', { role: 'group', 'aria-label': 'Brush controls' },
     h('label.material-range', {}, sizeLabel, size, sizeOut),
     h('label.material-range.paint-only', {}, h('span', { text: 'Flow' }), flow, flowOut),
     h('div.material-shapes.paint-only', { role: 'group', 'aria-label': 'Brush shape' }, shapeSphere, shapeCube),
     h('div.paint-only', {}, replace),
     h('p.build-only', { text: 'Click a surface to place. Faces the camera.' }),
+    decoPicker.el,
     dropper);
 
   const search = h('input.search', { type: 'search', placeholder: 'Find an element', 'aria-label': 'Find element', spellcheck: false });
@@ -242,6 +245,8 @@ export function createDock({ settings, onSelect, onBrushChange, onHover, onEyedr
     tab.setAttribute('aria-label', `Show elements, ${it.name} selected`);
     const build = isBuild(settings.tool);
     brush.classList.toggle('build', build);
+    brush.classList.toggle('deco', isDecoTool(settings.tool));
+    decoPicker.sync();
     sizeLabel.textContent = build ? 'Scale' : 'Size';
     size.setAttribute('aria-label', build ? 'Construction size' : 'Brush size');
     size.value = settings.radius; sizeOut.textContent = settings.radius; fill(size);

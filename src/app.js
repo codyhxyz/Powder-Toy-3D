@@ -4,6 +4,7 @@ import './ui/styles.css';
 import { Simulation } from './sim.js';
 import { volumeVert, volumeFrag, pickFrag, shadowFrag } from './shaders/render.js';
 import { ELEMENTS, E, TOOLS, toolById, isBuild, isSpawnerTool, isGearTool, LIGHTNING_TOOL, wandPresetForTool } from './elements.js';
+import { isDecoTool } from './elements.js';
 import { createLightning } from './lightning.js';
 import { Spawners, SPAWNER, ENEMY_KINDS, feetOnHit } from './spawners.js';
 import { createBirdLife } from './birds/index.js';
@@ -36,6 +37,7 @@ import { createDetailGate } from './gfx/detailGate.js';
 import { createColdShaderGuard } from './gfx/coldShader.js';
 import { createGpuLossTracker, silentLinkFailure, processLossMessage, lossDetails } from './gfx/gpuLoss.js';
 import { setAeration } from './gfx/foam.js';
+import { decoView } from './deco.js';
 import { claimPrograms } from './gfx/programs.js';
 import { createPost, createAutoResolution, UPSCALE } from './gfx/post.js';
 import { createPacer, settleFrames, sceneKey, createCapCheck, CAP_IDLE_MS, MAX_FPS } from './gfx/pacing.js';
@@ -916,7 +918,17 @@ const dock = createDock({
   onBrushChange: (patch) => { Object.assign(settings, patch); dock.sync(); save(); },
   onHover: (id) => card.show(id ?? settings.tool),
   onEyedropper: () => setEyedropper(!eyedropper),
+  onDecoToggle: () => toggleDeco(),
 });
+
+// TPT's Ctrl+B (src/gui/game/GameView.cpp): draw decoration or not. The paint
+// stays either way (src/deco.js); off, everything draws as if undecorated.
+function toggleDeco() {
+  decoView.show = !decoView.show;
+  dock.sync();
+  pacer.wake();
+  hud.toast(decoView.show ? 'Decoration shown' : 'Decoration hidden');
+}
 
 // Eyedropper: the next click on the scene selects whatever element it lands on.
 function setEyedropper(on) {
@@ -1185,6 +1197,7 @@ function press(e) {
 // tool gun. true if it did something, false if it couldn't (it says why),
 // null if the tool paints a stroke instead.
 function clickTool() {
+  if (isDecoTool(settings.tool) && mp.guard()) return false;   // decoration isn't in the host's stream yet (src/deco.js)
   if (settings.tool === SIGN_TOOL) {
     if (signs && hover.valid) { signs.add({ cell: hover.cell.clone(), normal: faceNormal(hover.face) }); return true; }
     if (!signs) hud.toast('Signs are still loading');
@@ -1329,6 +1342,7 @@ addEventListener('keydown', (e) => {
   if (isTyping()) return;
   const mod = e.metaKey || e.ctrlKey;
   if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); return; }
+  if (e.ctrlKey && !pov?.active && e.key.toLowerCase() === 'b') { e.preventDefault(); toggleDeco(); return; }   // TPT's key (in the body, Ctrl swims)
   if (mod) return;
   const k = e.key;
   // V switches between the god view and the body (Garry's Mod's noclip key). F drops

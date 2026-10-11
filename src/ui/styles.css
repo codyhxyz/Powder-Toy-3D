@@ -448,6 +448,17 @@ input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border-radius: 
 .material-detail > span { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
 .material-brush.build .paint-only { display: none; }
 .material-brush.build .build-only { display: block; }
+/* the deco tools (TPT's DECO menu, ui/decoPicker.js): their colour instead of flow and replace */
+.material-brush .deco-only { display: none; flex: 1 1 100%; flex-direction: column; align-items: stretch; gap: 8px; }
+.material-brush.deco .deco-only { display: flex; }
+.material-brush.deco > .material-range.paint-only, .material-brush.deco > div.paint-only:not(.material-shapes) { display: none; }
+.deco-color { width: 100%; height: 22px; padding: 0; border: 0; background: none; cursor: pointer; }
+.deco-swatch {
+  justify-self: end; width: 22px; height: 22px; border-radius: 4px;
+  background: linear-gradient(var(--deco), var(--deco)), repeating-conic-gradient(#8a8f98 0 25%, #4a4f58 0 50%) 0 0 / 8px 8px;
+}
+.deco-only .material-control { justify-content: flex-start; }
+.deco-only kbd { margin-left: auto; }
 body.eyedropper canvas { cursor: crosshair; }
 
 .search {
