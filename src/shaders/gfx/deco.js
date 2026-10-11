@@ -24,15 +24,30 @@ const DECO_SIGMA = 2.0;
 const DECO_DETAIL_MAX = 2.0;
 const DECO_LUM_MIN = 1e-3;
 
+// The view can't bind the paint as a texture of its own: with whitewater on it
+// already uses the 16 texture units every GPU has (tools/check-sampler-budget.mjs;
+// a 17th blacks the whole view out). So src/deco.js viewFlow hands it a copy of
+// the flow field (core.js tFlowV, read for xyz only) with each cell's paint
+// packed into the spare w: 6 bits a channel (DECO_PACK_LEVELS + 1 steps), four
+// channels in float32's 24 exact integer bits.
+export const DECO_PACK_LEVELS = 63;
+const DECO_PACK_BASE = DECO_PACK_LEVELS + 1;
+export const decoPackGLSL = /* glsl */ `
+#define DECO_PACK_LEVELS ${DECO_PACK_LEVELS.toFixed(1)}
+const vec4 DECO_PACK_PLACE = vec4(1.0, ${DECO_PACK_BASE}.0, ${DECO_PACK_BASE ** 2}.0, ${DECO_PACK_BASE ** 3}.0);
+float decoPack(vec4 d) { return dot(floor(clamp(d, 0.0, 1.0) * DECO_PACK_LEVELS + 0.5), DECO_PACK_PLACE); }
+vec4 decoUnpack(float v) { return mod(floor(floor(v + 0.5) / DECO_PACK_PLACE), DECO_PACK_LEVELS + 1.0) / DECO_PACK_LEVELS; }
+`;
+
 // Uniforms, lookups and the albedo tint: before surfaceGLSL and plainGLSL.
 export const decoViewGLSL = /* glsl */ `
-uniform bool uDeco;          // draw the decoration (display on, and something is decorated)
-uniform sampler2D tDeco;     // per cell: sRGB colour and alpha (src/deco.js), laid out like the state
+uniform bool uDeco;          // draw the decoration (display on, and something is decorated): tFlowV.w holds it then
+${decoPackGLSL}
 #define DECO_SIGMA ${DECO_SIGMA.toFixed(1)}
 #define DECO_DETAIL_MAX ${DECO_DETAIL_MAX.toFixed(1)}
 #define DECO_LUM_MIN ${DECO_LUM_MIN}
 const vec3 DECO_LUM = vec3(0.2126, 0.7152, 0.0722);   // Rec. 709 luminance weights
-vec4 decoAt(ivec3 c) { return uDeco && !outside(c) ? texelFetch(tDeco, atlas(c), 0) : vec4(0.0); }
+vec4 decoAt(ivec3 c) { return uDeco && !outside(c) ? decoUnpack(texelFetch(tFlowV, atlas(c), 0).w) : vec4(0.0); }
 vec3 decoLinear(vec3 c) { return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c)); }
 // albedo alb of an element whose mean albedo is base, painted with d
 vec3 decoTint(vec3 alb, vec3 base, vec4 d) {

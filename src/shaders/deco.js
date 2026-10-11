@@ -2,6 +2,7 @@ import { prelude } from './common.js';
 import { quietGLSL } from './activity.js';
 import { slotGLSL } from './move.js';
 import { slabGLSL, STAGE_W } from './window.js';
+import { decoPackGLSL } from './gfx/deco.js';
 
 // The decoration layer's passes (src/deco.js runs them): The Powder Toy's
 // "deco", a colour painted onto matter that travels with it.
@@ -163,6 +164,21 @@ precision highp sampler2D;
 uniform sampler2D tSrc;
 out vec4 oD;
 void main() { oD = texelFetch(tSrc, ivec2(gl_FragCoord.xy), 0); }
+`;
+
+// The view's flow field with the paint packed into its w (src/deco.js
+// viewFlow; shaders/gfx/deco.js says why): flow and paint share a layout.
+export const decoViewPackFrag = () => /* glsl */ `
+precision highp float;
+precision highp sampler2D;
+uniform sampler2D tDeco;
+uniform sampler2D tFlow;
+out vec4 oD;
+${decoPackGLSL}
+void main() {
+  ivec2 t = ivec2(gl_FragCoord.xy);
+  oD = vec4(texelFetch(tFlow, t, 0).xyz, decoPack(texelFetch(tDeco, t, 0)));
+}
 `;
 
 // The World's window (world/window.js): the slab about to leave, staged in

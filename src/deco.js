@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { quadVert, BRICK } from './shaders/common.js';
 import { flowShiftFrag, BRICK_CELLS } from './shaders/window.js';
 import {
-  decoGatherFrag, decoScrubFrag, decoPaintFrag, decoUndoFrag, decoCopyFrag, decoStageFrag, decoEditFrag, STAGE_W,
+  decoGatherFrag, decoScrubFrag, decoPaintFrag, decoUndoFrag, decoCopyFrag, decoStageFrag, decoEditFrag, decoViewPackFrag, STAGE_W,
 } from './shaders/deco.js';
 import { DECO_ID0 } from './elements.js';
 import { compileInBackground } from './gfx/programs.js';
@@ -88,6 +88,27 @@ class Deco {
   }
 
   get texture() { return this.copies[this.cur].texture; }
+
+  // The view's flow field (gfx/uniforms.js tFlowV) with the paint packed into
+  // its spare w (shaders/gfx/deco.js says why), rebuilt when either changed:
+  // a step, a paint, a load or a window move.
+  viewFlow() {
+    const sim = this.sim, key = `${sim.frame}|${sim.paints}|${sim.version}|${this.cur}|${this.epoch}`;
+    if (key !== this.viewKey) {
+      this.viewTarget ??= new THREE.WebGLRenderTarget(sim.g.width, sim.g.height, {
+        type: THREE.FloatType, format: THREE.RGBAFormat, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter,
+        depthBuffer: false, stencilBuffer: false, generateMipmaps: false,
+      });
+      const m = this.mat('viewPack', decoViewPackFrag(), { tFlow: { value: null } });
+      m.uniforms.tDeco.value = this.texture;
+      m.uniforms.tFlow.value = sim.flowTexture;
+      const keep = sim.renderer.getRenderTarget();
+      sim.run(m, this.viewTarget);
+      sim.renderer.setRenderTarget(keep);
+      this.viewKey = key;
+    }
+    return this.viewTarget.texture;
+  }
 
   mat(key, frag, uniforms) {
     return (this.mats[key] ??= rawMat(frag, { tDeco: { value: null }, ...uniforms }, `deco${key[0].toUpperCase()}${key.slice(1)}`));
@@ -297,6 +318,7 @@ class Deco {
   // (its materials go with Simulation.materials(), which disposes or retires them)
   dispose() {
     this.copies.forEach((t) => t.dispose());
+    this.viewTarget?.dispose();
     this.stage?.dispose();
   }
 }
