@@ -628,7 +628,7 @@ export function createGame(shell) {
     const rows = board();
     const cols = [];
     if (scoreLabel() !== 'Kills') cols.push({ key: 'score', label: scoreLabel() });
-    if (rows.some((r) => r.medals != null)) cols.push({ key: 'medals', label: 'Medals' });
+    if (rules.style === 'halo' || rows.some((r) => r.medals != null)) cols.push({ key: 'medals', label: 'Medals' });   // (feel.js runs in Halo's style)
     return {
       map: layout.name,
       sub: [rules.name, teams.map((t) => `${label(t)} ${Math.floor(teamScore[t] ?? 0)}`).join(' – '), objectiveText().text,

@@ -69,8 +69,8 @@ body.game-halo .hotbar { display: none !important; }
 .game-chip.on { display: block; }
 
 /* (the scoreboard on Tab is GMod's, ui/scoreboard.css): while it's up, its header has the
-   score and the clock, so the top centre steps aside for it */
-body.sb-on .game-top, body.sb-on .game-feed { visibility: hidden; }
+   score and the clock, so the top centre (and the first spawn's keys card) steps aside for it */
+body.sb-on .game-top, body.sb-on .game-feed, body.sb-on .game-card { visibility: hidden; }
 
 /* ---- the carnage report's tables */
 .game-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }

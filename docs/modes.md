@@ -167,7 +167,8 @@ HUD (`src/game/hud.js`, `game.css`): top-centre the mode, both scores (yours fir
 other outlined; a bar under each filling toward the score to win, Halo 3's score meter), the clock and the objective (flags
 home / taken / dropped; the hill's owner, when it moves and the leader's progress; survivors and infected; Siege's setup,
 the point, who's on it and its capture bar); the killfeed (with the killer's weapon) and announcements top-right; the
-scoreboard on Tab (your team first, your row highlighted); while you're dead, who killed you with what and
+scoreboard on Tab (Garry's Mod's, `src/ui/scoreboard.js`: the map's name, the mode's score line, a row per player
+by kills with deaths, the mode's score, medals and ping, BOT for bots, pink while dead); while you're dead, who killed you with what and
 "Respawn in N" (Halo 3's death screen, under "You died"); the carnage report at the end. The motion tracker and
 medals (bottom-left) and the reticle (centre) are other modules' (`docs/halo-contract.md`).
 

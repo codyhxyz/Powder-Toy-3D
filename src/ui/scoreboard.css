@@ -46,7 +46,7 @@
 .sb-n { text-align: center; font-variant-numeric: tabular-nums; }
 .sb-head {
   height: auto; padding-top: 0; padding-bottom: 4px; background: none; box-shadow: none;
-  font: 700 11px/1 var(--ui); letter-spacing: 0.06em; text-transform: uppercase; color: rgba(255, 255, 255, 0.8);
+  font: 700 10.5px/1 var(--ui); letter-spacing: 0.02em; text-transform: uppercase; color: rgba(255, 255, 255, 0.8);
   text-shadow: 1px 1px 1px rgba(0, 0, 0, 0.9);
 }
 .sb-foot {
