@@ -26,10 +26,11 @@ export function createHotbar(onSelect, onSelectTool) {
   const slots = SLOTS.map((label, i) => {
     const status = h('span.hb-status');
     const count = h('span.hb-count', { 'aria-hidden': 'true' });
+    const labelEl = h('span.hb-label', { text: label });
     const el = h('button.hb-slot', { type: 'button', 'data-empty': '', disabled: true, title: label,
-      on: { click: () => onSelect?.(i) } }, h('span.hb-num', { text: slotKey(i) }), h('span.hb-label', { text: label }), count, status);
+      on: { click: () => onSelect?.(i) } }, h('span.hb-num', { text: slotKey(i) }), labelEl, count, status);
     const col = h('div.hb-col', {}, el);
-    return { el, col, status, count, label, text: '', defs: [], at: -1 };
+    return { el, col, status, count, label, labelEl, text: '', defs: [], at: -1 };
   });
   const bar = h('div.hotbar', { inert: true, role: 'toolbar', 'aria-label': 'Tool slots' }, slots.map((s) => s.col));
   document.body.append(bar, held);
@@ -83,6 +84,15 @@ export function createHotbar(onSelect, onSelectTool) {
 
   return {
     el: bar,
+    // the slots' labels: `labels` (a team game's carry: 'Primary', 'Secondary'), the slots past them
+    // hidden; null: the catalog's (SLOTS)
+    setLabels(labels) {
+      slots.forEach((s, i) => {
+        s.label = labels ? labels[i] ?? '' : SLOTS[i];
+        s.labelEl.textContent = s.label;
+        s.col.style.display = labels && i >= labels.length ? 'none' : '';
+      });
+    },
     // slot i holds `defs` ({ name, model, desc }, in order) and has `at` in hand (an index into them)
     setSlot(i, defs, at) {
       const s = slots[i];

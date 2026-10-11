@@ -2,7 +2,7 @@ import { h } from '../ui/dom.js';
 import { modelIcon, MODELS } from './models.js';
 import { PERK } from './perks.js';
 import { povEvents } from './events.js';
-import { CLASSES, CLASS, STATS, RESPAWN_ROOM_S, applyClass, classStats, heldTool, keyName } from './classes.js';
+import { CLASSES, CLASS, STATS, RESPAWN_ROOM_S, DEFAULT_CLASS, applyClass, classStats, heldTool, keyName } from './classes.js';
 import { renderPortraits } from './classPortraits.js';
 import './classPicker.css';
 
@@ -15,9 +15,16 @@ import './classPicker.css';
 // and taken back after.
 //
 // Picking takes effect at the next spawn, or at once within RESPAWN_ROOM_S of
-// one (TF2's respawn room). The shell calls spawned(body) on every spawn.
+// one (TF2's respawn room), or while the game says the body is in its side's
+// respawn room (Siege). The shell calls spawned(body) on every spawn.
 //
-// env: { isActive, getBody, getToolbelt, lock, unlock, isLocked, toast }
+// A team game can open it as TF2 does on joining a team (open({ joined: true })):
+// the pointer is taken back when it closes, and closing it without a class ever
+// picked plays DEFAULT_CLASS. A Halo match has no classes (allowed() false):
+// comma does nothing and spawned() takes the class off.
+//
+// env: { isActive, getBody, getToolbelt, lock, unlock, isLocked, toast,
+//        allowed?() (classes on now; default yes), inRoom?() (the game's respawn room) }
 
 const STORE_KEY = 'tpt3d.pov.class';    // the last class picked, kept in this browser
 const MS_PER_S = 1000;
@@ -86,7 +93,10 @@ function kitItem(kind, key, n = 1) {
 export function createClassPicker(env) {
   let chosen = loadChosen();
   let open = false, focus = 0, relockOnClose = false, portraitsAsked = false, hinted = false;
+  let mustPick = false;   // opened on joining a team: closing without a class plays DEFAULT_CLASS
+  let pendingJoin = false;   // asked to open on joining before first person was up: opens at the next spawn
   let spawnAt = -Infinity;
+  const allowed = () => env.allowed?.() ?? true;
 
   // ---- the screen
   const word = h('div.cp-word', { 'aria-hidden': 'true' });
@@ -150,7 +160,7 @@ export function createClassPicker(env) {
 
   const inRoom = () => {
     const body = env.getBody();
-    return env.isActive() && !!body && !body.dead && (performance.now() - spawnAt) / MS_PER_S < RESPAWN_ROOM_S;
+    return env.isActive() && !!body && !body.dead && ((performance.now() - spawnAt) / MS_PER_S < RESPAWN_ROOM_S || !!env.inRoom?.());
   };
 
   function refresh() {
@@ -165,7 +175,7 @@ export function createClassPicker(env) {
     });
     const name = chosen && CLASS[chosen].name;
     if (chosen) root.style.setProperty('--cc', CLASS[chosen].color); else root.style.removeProperty('--cc');
-    spawnLine.replaceChildren(...(!chosen ? ['Pick a class. You become it when you next spawn.']
+    spawnLine.replaceChildren(...(!chosen ? (mustPick ? ['Pick a class. Close this and you play ', h('b', { text: CLASS[DEFAULT_CLASS].name }), '.'] : ['Pick a class. You become it when you next spawn.'])
       : chosen === body?.cls ? ['You are playing ', h('b', { text: name }), '.']
         : inRoom() ? ['You just spawned: pick, and you change at once.']
           : ['You will spawn as ', h('b', { text: name }), '.']));
@@ -186,10 +196,15 @@ export function createClassPicker(env) {
     });
   }
 
-  function show() {
-    if (open || !env.isActive()) return;
+  // joined: opened by a team game on joining a side (TF2's class menu): the pointer is
+  // taken back on closing whatever it was, and a class is a must
+  function show({ joined = false } = {}) {
+    if (!allowed()) return;
+    if (!env.isActive()) { if (joined) pendingJoin = true; return; }
+    if (joined) { mustPick = true; relockOnClose = true; }
+    if (open) { refresh(); return; }
     open = true;
-    relockOnClose = env.isLocked();
+    relockOnClose = joined || env.isLocked();
     env.unlock();
     root.hidden = false;
     refresh();
@@ -201,8 +216,11 @@ export function createClassPicker(env) {
 
   // relock: take the pointer back (only from a key press or click: the browser wants a gesture)
   function close({ relock = true } = {}) {
+    pendingJoin = false;
     if (!open) return;
     open = false;
+    if (mustPick && !chosen) choose(DEFAULT_CLASS);   // closed on joining without a pick: never classless
+    mustPick = false;
     root.classList.remove('open');
     root.hidden = true;
     if (document.activeElement && root.contains(document.activeElement)) document.activeElement.blur();
@@ -229,8 +247,14 @@ export function createClassPicker(env) {
   // the shell, on every spawn of the player's body
   function spawned(body) {
     spawnAt = performance.now();
+    if (!allowed()) {   // a Halo match: everyone equal, no class (its perks and scales come off)
+      if (body.cls) applyClassTo(body, null);
+      return null;
+    }
+    const joining = pendingJoin || mustPick;
+    if (pendingJoin) { pendingJoin = false; setTimeout(() => show({ joined: true }), 0); }   // (once the shell is in first person)
     if (chosen) return applyClassTo(body, chosen, env.getToolbelt());
-    if (!hinted) { hinted = true; env.toast?.('Press , to choose a class'); }
+    if (!hinted && !joining) { hinted = true; env.toast?.('Press , to choose a class'); }
     return null;
   }
 
@@ -242,7 +266,7 @@ export function createClassPicker(env) {
     const t = e.target;
     if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
     if (!open) {
-      if (e.key === ',' && !e.repeat && env.isActive()) { e.preventDefault(); e.stopImmediatePropagation(); show(); }
+      if (e.key === ',' && !e.repeat && env.isActive()) { e.preventDefault(); e.stopImmediatePropagation(); show(); }   // (nothing in a Halo match)
       return;
     }
     const digit = /^[1-9]$/.test(e.key) ? Number(e.key) - 1 : -1;

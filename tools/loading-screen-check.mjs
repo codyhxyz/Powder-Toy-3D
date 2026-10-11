@@ -24,6 +24,7 @@ const base = opt('base', `http://localhost:${port}`);
 const WIDE = { width: 1440, height: 900 };
 const NARROW = { width: 380, height: 760 };   // a narrow window (not a phone emulation)
 const LOAD_TIMEOUT = 180000;                   // ms: a cold shader compile
+const TEAM = GAMEMODES.find((m) => m.key === 'slayer');   // the team game the checks pick
 const TIP_WAIT = 5000;                         // ms: the tips module and its first tip
 mkdirSync(out, { recursive: true });
 
@@ -46,9 +47,8 @@ try {
     check('every gamemode listed with its icon', modes.length > 0 && modes.every(([, icon]) => icon), JSON.stringify(modes));
     check('the title has the gamemode\'s emblem', await page.$eval('.mm-mode-head .mm-emblem svg path', (p) => p.getAttribute('d').length > 50));
     await page.screenshot({ path: join(out, '1-menu-sandbox.png') });
-    const team = GAMEMODES.find((m) => m.key === 'slayer');
-    if (modes.some(([n]) => n === team.name)) {
-      await page.click(`.mm-mode:has-text("${team.name}")`);
+    if (modes.some(([n]) => n === TEAM.name)) {
+      await page.click(`.mm-mode:has-text("${TEAM.name}")`);
       await page.screenshot({ path: join(out, '2-menu-slayer.png') });
     }
 
@@ -66,8 +66,8 @@ try {
     check('compile under way, with the cold note', (await steps())[2]?.startsWith('now') && (await steps())[2].includes('update'), JSON.stringify(await steps()));
     const load = await page.evaluate(() => ({
       mode: document.querySelector('.mm-load-mode').textContent, rules: document.querySelector('.mm-load-rules').textContent,
-      name: document.querySelector('.mm-load-name').textContent, facts: [...document.querySelectorAll('.mm-load-facts li')].map((l) => l.textContent),
-      emblem: !!document.querySelector('.mm-emblem-big svg path'), tip: document.querySelector('.mm-tip-text').textContent,
+      name: document.querySelector('.mm-load-name').textContent, facts: [...document.querySelectorAll('.mm-medals li')].map((l) => l.textContent),
+      emblem: !!document.querySelector('.mm-medal-big svg path'), tip: document.querySelector('.mm-tip-text').textContent,
       tipIcon: !!document.querySelector('.mm-tip-icon svg path'), you: document.querySelector('.mm-you img')?.naturalWidth ?? 0,
     }));
     check('mode, rules, name, facts, emblem, tip and portrait', load.emblem && load.tipIcon && load.tip && load.you > 0 && load.facts.length === 3 && load.rules, JSON.stringify(load));
@@ -100,7 +100,7 @@ try {
   }
 
   if (boot) {
-    // the real boot, on a fresh page: Lab, in the gamemode the menu remembers (Team Slayer)
+    // the real boot, on a fresh page: Lab in Team Slayer, so its match starts behind the screen too
     const page3 = await newTestPage(browser, { mode: 'ui', viewport: WIDE });
     page3.on('pageerror', (e) => errs.push(String(e).slice(0, 400)));
     await page3.goto(`${base}/`);
@@ -114,11 +114,15 @@ try {
       });
       mo.observe(document.querySelector('.mm'), { subtree: true, childList: true, attributes: true, characterData: true });
     });
+    const slayer = await page3.$(`.mm-mode:has-text("${TEAM.name}")`);
+    if (slayer) await slayer.click();
     await page3.click('.mm-card[data-map="lab"]');
     await page3.click('.mm-start');
     await page3.waitForFunction(() => window.__app?.sim && !document.querySelector('.mm.open'), null, { timeout: LOAD_TIMEOUT });
     const seen = await page3.evaluate(() => [...window.__seen]);
-    const reached = ['Downloading', 'Filling', 'Compiling'].every((t) => seen.some((l) => l.includes(t) && /^(now|done)/.test(l)));
+    // (a team game's match step reads app.js's line for it)
+    const lines = ['Downloading', 'Filling', 'Compiling', ...(slayer ? ['Picking the teams'] : [])];
+    const reached = lines.every((t) => seen.some((l) => l.includes(t) && /^(now|done)/.test(l)));
     check('a real boot reaches every step and the screen comes down', reached, JSON.stringify(seen));
     const s3 = await page3.evaluate(() => ({ preset: window.__app.settings.preset, size: window.__app.settings.size }));
     check('the lab is up', s3.preset === 'lab', JSON.stringify(s3));

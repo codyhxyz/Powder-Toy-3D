@@ -132,8 +132,21 @@ const BIKE_AT = [[14, 92], [26, 92]];   // ...and hoverbike pads (north of it)
 const JEEP_PAD = [9, 5];             // pad half-extents (x, z)
 const BIKE_PAD = [4, 4];
 const HILL_R = 9;                    // KOTH zones' radius
-const CORE_R = 8;                    // siege: the core room's radius
+const CORE_R = 8;                    // siege: the last point's radius (C, at the fortress's front door)
+const POINT_R = 9;                   // siege: A's and B's radius
+const POINT_X = 90;                  // siege: A on red's abutment top, at the dam's end (B mirrors it on blue's)
+const LAST_X = 36;                   // siege: C, on the plateau just out of the fortress's front door
+const FWD_SPAWN_X = [84, 88];        // siege: forward spawns on an abutment's top, behind its point...
+const FWD_SPAWN_Z = [56, 62, 68];    // ...two rows of three (flat, tree-free, the tunnel deep under it)
 const SHRINE_LIFT = 1;               // a shrine's floor is a slab one cell up: feet stand on it
+// Power weapons' pads (game/arsenal.js), where the fights should be, as Halo 3's maps place them:
+// the rocket launcher in the contested middle (the spillway basin, between its boulders), a sniper
+// rifle per side up on a ridge over its own forest (Valhalla's snipers are each team's; ours are a
+// jetpack's climb), and the one Spartan Laser in the pump room (Valhalla's sits on the hill by the
+// river, between the bases), on the shrine's floor in front of its altars.
+const ROCKET_PAD = [MID_X, 40];      // x, z: the basin's middle, clear of the boulders (z 34 and 46)
+const SNIPER_PAD = [60, 7];          // x, z (red's; blue's mirrors it across both axes): the south ridge's top over red's forest
+const LASER_PAD_Z = ROOM_Z0 + 2;     // z: the pump room's downstream side, before the shrine's altar row
 
 // ---------------------------------------------------------------- noise
 
@@ -209,6 +222,8 @@ const SHRINE_HEIGHT = 12;            // cells from its floor to the top of its r
 // What the round modes and vehicles build against (grid cells; feet positions;
 // a vehicle's yaw as vehicles/index.js reads it: 0 faces +z, π/2 faces +x).
 const FACE_BLUE = Math.PI / 2, FACE_RED = -Math.PI / 2;
+const baseSpawns = (side) => SPAWN_ROWS.flatMap((x) => SPAWN_ZS.map((z) => [team(x, side), BASE_Y, z]));
+const forwardSpawns = (side) => FWD_SPAWN_X.flatMap((x) => FWD_SPAWN_Z.map((z) => [team(x, side), CREST_Y, z]));
 const RED_FOREST = [68, 84], BLUE_FOREST = [NX - 1 - 68, 84];
 export const DAM_VALLEY_LAYOUT = {
   name: 'Dam Valley',
@@ -223,8 +238,31 @@ export const DAM_VALLEY_LAYOUT = {
     [MID_X, BASIN_Y, (BASIN_Z0 + DAM_Z0) / 2, HILL_R],               // the spillway basin
     [MID_X, TUN_Y + SHRINE_LIFT, ROOM_Z1 - 2, Math.min(HILL_R, (ROOM_Z1 - ROOM_Z0) / 2)],   // the pump room
   ],
-  siege: { attackers: 'red', core: [NX - 1 - (SPAWN_X1 + STAND_X) / 2, BASE_Y, STAND_Z, CORE_R] },
+  // Siege (game/siege.js): red attacks three points in turn, TF2's Dustbowl on one valley: A on red's
+  // end of the dam, B on blue's end, C at blue's front door. Blue first spawns forward on its abutment;
+  // as points fall red's spawn moves up behind the point it took and blue's falls back to its fortress.
+  siege: {
+    attackers: 'red',
+    points: [
+      [POINT_X, CREST_Y, (DAM_Z0 + DAM_Z1) / 2, POINT_R],
+      [NX - 1 - POINT_X, CREST_Y, (DAM_Z0 + DAM_Z1) / 2, POINT_R],
+      [NX - 1 - LAST_X, BASE_Y, STAND_Z, CORE_R],
+    ],
+    spawns: [
+      { defend: forwardSpawns('blue') },
+      { attack: forwardSpawns('red'), defend: baseSpawns('blue') },
+      { attack: forwardSpawns('blue') },
+    ],
+    core: [NX - 1 - LAST_X, BASE_Y, STAND_Z, CORE_R],   // the last point (older readers)
+  },
   shrines: SHRINES.map(([x, y, z]) => [x, y + SHRINE_LIFT, z]),
+  // respawnS: each weapon's own (arsenal.js POWER) unless given
+  weapons: [
+    { key: 'ROCKET', at: onGround(...ROCKET_PAD) },
+    { key: 'SNIPER', at: onGround(...SNIPER_PAD) },
+    { key: 'SNIPER', at: onGround(NX - 1 - SNIPER_PAD[0], NZ - 1 - SNIPER_PAD[1]) },
+    { key: 'LASER', at: [MID_X, TUN_Y + SHRINE_LIFT, LASER_PAD_Z] },
+  ],
   vehicles: ['red', 'blue'].flatMap((side) => [
     { kind: 'jeep', team: side, at: [team(JEEP_AT[0], side), BASE_Y, JEEP_AT[1]], yaw: side === 'red' ? FACE_BLUE : FACE_RED },
     ...BIKE_AT.map(([x, z]) => ({ kind: 'hoverbike', team: side, at: [team(x, side), BASE_Y, z], yaw: side === 'red' ? FACE_BLUE : FACE_RED })),

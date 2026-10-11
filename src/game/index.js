@@ -4,31 +4,47 @@ import { setHitRules, targetById, PLAYER } from '../pov/targets.js';
 import { CLASS } from '../pov/classes.js';
 import { BODY_HEIGHT } from '../pov/constants.js';
 import { ELEMENTS, E, K } from '../elements.js';
+import { gearByKey } from '../pov/tools/catalog.js';
+import { launch, mark } from '../launch.js';
 import * as R from './rules.js';
 import { labLayout, fitLayout } from './layout.js';
 import { ObjectiveEvaluator, WANT, NEAR } from './bots.js';
 import { createMarkers } from './markers.js';
 import { createGameHud } from './hud.js';
 import { iconFor } from '../pov/killfeed.js';
+import { createSiege } from './siege.js';
+import { canFight } from '../pov/ai/brain.js';
+import { createArsenal } from './arsenal.js';
+import { CAUSE } from '../pov/halo.js';
+import { createFeel } from './feel.js';
 
 // Team games in first person: Halo's Team Slayer, Capture the Flag, King of
-// the Hill and Infection, and a Siege (TF2's attack/defend with a halftime
-// swap). Teams of bots (npc.js: the player's body, tools and a Yuka brain) on
+// the Hill and Infection, and Siege (TF2's attack/defend on a row of control
+// points, siege.js). Teams of bots (npc.js: the player's body, tools and a Yuka brain) on
 // both sides, the player on one of them. docs/modes.md has the rules.
 //
 //   game.start(mode, opts)   'slayer' | 'ctf' | 'koth' | 'infection' | 'siege';
-//                            opts: { side: 'auto' | 'red' | 'blue' | 'spectate', teamSize, ...rule overrides }
+//                            opts: { side: 'auto' | 'red' | 'blue' | 'spectate', teamSize, ...rule overrides,
+//                            fresh: the map was loaded just now (app.js), so the match doesn't reload it }
+//   game.prepare()           load the bots' module now (a match was picked: it loads during the loading screen)
 //   game.end()               stop now (no winner)
-//   game.useLayout(layout)   a map's spawns, flags, hills and core (layout.js); none: the lab's
+//   game.useLayout(layout)   a map's spawns, flags, hills and siege points (layout.js); none: the lab's
 //   game.state               what the HUD shows (checks read it)
 //
 // Every body carries body.team ('red' | 'blue' | 'infected' | null); other
 // modules (vehicles, classes) read it. Blows through targets.js don't hurt
 // teammates (setHitRules); the sim's damage (fire, blasts, lava) can't tell
 // teams apart and hurts everyone. Events on povEvents: game:start, game:end,
-// game:kill, game:flag, game:hill, game:infected, game:half, game:team.
+// game:kill, game:flag, game:hill, game:infected, game:team, Siege's
+// game:setup, game:point and game:overtime (siege.js), game:spawn (a body
+// enters play: set it up for the mode's style) and game:stop (the match is
+// over, ended or not: undo it). docs/halo-contract.md.
 //
-// shell (pov/index.js): { app, scene, renderer, camera, player, toolbelt,
+// A match that ends by its rules shows Halo 3's carnage report, and the next
+// one starts by itself on the same map after it (Halo 3 matchmaking: the
+// playlist moves on to the next game; you leave by backing out: Esc or Leave).
+//
+// shell (pov/index.js): { app, scene, renderer, camera, player, toolbelt, interact, active(), locked(),
 //   loadNpcs() → Promise<{ mod, ai }>, env(), loadPreset(), respawnPlayer(at), freeMouse() }
 
 const CARRIER_PRIORITY = 30;         // cells: a bot goes after the enemy carrying its flag as if they were this much nearer
@@ -40,6 +56,11 @@ const SPAWN_LIFT_MAX = 40;           // cells a spawn rises at most to clear wha
 const BOT_MS_EASE = 0.05;            // the bots' CPU time per frame is shown as this running average (checks)
 const ROAM_SPAWN_R = 10;             // cells: an enemy spawn, as somewhere to roam to, is a zone this wide
 const ROAM_S = 30;                   // s a Slayer bot heads for one stretch of open ground before the next
+// s from a match's result to the next match: the carnage report counts down
+// over its whole stay (rules.js END_SCREEN_S, Halo 3's post-game carnage report)
+const NEXT_MATCH_S = R.END_SCREEN_S;
+const FRAG_CAUSE = CAUSE.GRENADE;     // a frag's kill (the medals read it)
+const BLAST_DEATH = /^blown up/i;    // the cause a body dies of in a blast's pressure (vitals.js)
 const other = (t) => (t === 'red' ? 'blue' : 'red');
 const hdist = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
 const v3 = ([x, y, z]) => new THREE.Vector3(x, y, z);
@@ -55,8 +76,12 @@ export function createGame(shell) {
   const teamScore = {};
   let teams = R.TEAMS;
   let flags = null, hill = null, siege = null;
-  let npc = null;
+  let npc = null, npcLoad = null;
   let starting = null;
+  let lastStart = null;              // { mode, opts } of the match running or just played: the next one's
+  let next = null;                   // { at (s, now()), mode, opts }: the next match, counting down over the report
+  let myDeath = null;                // { at (game time), killer, killerTeam, weapon, cause }: the player's last death
+  let controlled = false;            // the player has had control in a match since the page loaded (the 'control' mark)
   let visible = true;
   let botMs = 0;
   const markers = createMarkers({ scene: shell.scene, getVolume: app.getVolume, getScale: app.getScale });
@@ -65,9 +90,12 @@ export function createGame(shell) {
     onEnd: () => { menu(false); end(); },
     onSide: (s) => { side = s; if (running && (s === 'red' || s === 'blue')) switchTeam(s); },
     onClose: () => menu(false),
+    onLeave: leave,
   });
   const now = () => performance.now() / 1000;
   const sim = () => app.getSim();
+  // Halo's medals, motion tracker and power-ups (feel.js): it hears the match's events and reads the roster
+  const feel = createFeel({ shell, roster: () => roster, bodyOf: (e) => bodyOf(e), alive: (e) => alive(e), clock: () => time });
 
   // ---------------------------------------------------------------- roster
   const me = () => roster.get(PLAYER) ?? null;
@@ -82,6 +110,12 @@ export function createGame(shell) {
     roster.set(id, e);
     return e;
   }
+
+  // Halo's equal start, two-gun carry and power-weapon pads (arsenal.js)
+  const arsenal = createArsenal({
+    scene: shell.scene, getVolume: app.getVolume, getScale: app.getScale, shell,
+    entries: () => [...roster.values()], bodyOf, carrying,
+  });
 
   // a body's side: its colour, and what it may do on it
   const WEAPONS = { infected: new Set(R.INFECTED_WEAPONS), carrier: new Set(R.CARRIER_WEAPONS) };
@@ -99,8 +133,9 @@ export function createGame(shell) {
     if (b.speedScale !== want) b.speedScale = want;
   }
   function loadout(e) {
+    if (R.isHalo(mode)) { arsenal.loadout(e); return; }   // Halo's carry, the player's hands too (arsenal.js)
     if (!e.bot) return;
-    const want = e.team === R.INFECTED ? WEAPONS.infected : carrying(e) ? WEAPONS.carrier : null;
+    const want = e.team === R.INFECTED ? WEAPONS.infected : carrying(e) ? WEAPONS.carrier : e.classWeapons ?? null;   // (Siege: its class's tools)
     if (e.bot.agent.weapons !== want) e.bot.agent.weapons = want;
   }
 
@@ -128,7 +163,7 @@ export function createGame(shell) {
   // nearest living enemy, a little jittered so bodies don't land on each other
   function spawnFor(e) {
     let pts = layout.spawns[e.team] ?? [...layout.spawns.red, ...layout.spawns.blue];
-    if (mode === 'siege') pts = layout.spawns[e.team === siege.attackers ? layout.siege.attackers : other(layout.siege.attackers)];
+    if (mode === 'siege') pts = siege.spawnPoints(e.team);   // this stage's: the spawns move up as points fall
     if (mode === 'infection') pts = [...layout.spawns.red, ...layout.spawns.blue];
     const foes = [...roster.values()].filter((o) => o.team && o.team !== e.team && alive(o)).map((o) => bodyOf(o).pos);
     let best = pts[0], bd = -Infinity;
@@ -158,13 +193,15 @@ export function createGame(shell) {
   function addBot(team, name) {
     let e = null;
     const n = npc.mod.createNpc({
-      env: shell.env(), ai: npc.ai, team, name, respawnS: R.RESPAWN_S,
+      env: shell.env(), ai: npc.ai, team, name,
+      respawnS: () => (siege ? siege.respawnS(e.team) : R.RESPAWN_S),   // Siege: attackers come back sooner (TF2's waves)
       opponents: () => opponentsOf(e),
       home: () => spawnFor(e),
     });
     e = entry(n.id, name, team, n);
     n.agent.radar = R.RADAR;
-    n.agent.brain.addEvaluator(new ObjectiveEvaluator(() => objectiveFor(e), (plan) => { if (plan.kind === 'roam') e.roam++; }));
+    n.agent.brain.addEvaluator(new ObjectiveEvaluator(() => arsenal.objective(e, objectiveFor(e)),   // (a power weapon's pad near it: arsenal.js)
+      (plan) => { if (plan.kind === 'roam' || plan.kind === 'guard') e.roam++; arsenal.failed(e, plan); }));
     shell.scene.add(n.root);
     n.bind(app.getVolume(), sim().g);
     n.compile(shell.renderer, shell.camera, shell.scene);
@@ -180,23 +217,40 @@ export function createGame(shell) {
       e.protect = R.SPAWN_PROTECT_S; e.lastHit = null; e.wasDead = false;
       if (e.bot) e.bot.placeAt(spawnFor(e));
       else if (e.team) shell.respawnPlayer(spawnFor(e));
+      spawned(e);
     }
+  }
+  // a body entered play (the match's start, a respawn, a team switch, Siege's
+  // halftime): the style's modules set it up (shield, loadout, class).
+  // Fires after the shell has put the player's class on (pov/index.js).
+  function spawned(e) {
+    const body = bodyOf(e);
+    if (!body || !e.team) return;
+    if (siege) siege.spawned(e, body);   // a bot's class (the player's is the class picker's)
+    povEvents.emit('game:spawn', { id: e.id, team: e.team, bot: !!e.bot, body, mode, style: rules.style });
   }
 
   // ---------------------------------------------------------------- the match
+  // the bots' module (npc.js: Yuka, the world model), loaded once; a failure is tried again by the next start
+  function prepare() {
+    npcLoad ??= shell.loadNpcs().then((n) => { npc = n; mark('npcs'); return n; }, (err) => { npcLoad = null; throw err; });
+    npcLoad.catch(() => {});   // (loadNpcs said why)
+    return npcLoad;
+  }
+
   const hitRules = {
     // a teammate (or someone watching) lets the blow through
     passes(by, t) {
       const a = roster.get(by), b = roster.get(t.id);
       return !!b && (!b.team || (!!a?.team && a.team === b.team));
     },
-    share(by, t) {
+    share(by, t, cause) {
       const v = roster.get(t.id);
       if (!v) return 1;
       if (!v.team || v.protect > 0) return 0;
       const a = roster.get(by);
       if (a?.team === v.team) return 0;
-      return a?.team === R.INFECTED ? R.INFECTED_MELEE : 1;
+      return (a?.team === R.INFECTED ? R.INFECTED_MELEE : 1) * arsenal.damageShare(by, t, cause);   // (Halo's shots to kill: arsenal.js)
     },
   };
 
@@ -204,14 +258,19 @@ export function createGame(shell) {
     if (!R.MODES[m]) throw new Error(`game: no mode '${m}'`);
     if (!shell.player || !sim()) { app.hud?.toast?.('Drop in first (F), then start a match'); return false; }
     if (starting) return starting;
+    const { fresh = false, ...over } = opts;
+    next = null;
+    hud.closeReport();
     starting = (async () => {
       if (running) stop();
-      npc ??= await shell.loadNpcs();
+      npc ??= await prepare();
       const g = sim().g;
       layout = fitLayout(userLayout ?? app.getArena?.(), g) ?? labLayout(g);   // useLayout's, the loaded arena's (Dam Valley), else the lab's
       mode = m;
-      rules = { ...R.MODES[m], ...opts };
-      side = opts.side ?? side;
+      rules = { ...R.MODES[m], ...over };
+      lastStart = { mode: m, opts: over };
+      side = over.side ?? side;
+      myDeath = null;
       time = 0; ends = rules.timeLimit;
       for (const k of Object.keys(teamScore)) delete teamScore[k];
       roster.clear();
@@ -234,9 +293,10 @@ export function createGame(shell) {
       for (const t of teams) teamScore[t] = 0;
       // CTF roles: half of each side goes for the flag, half guards theirs
       for (const t of R.TEAMS) members(t).filter((e) => e.bot).forEach((e, i) => { e.role = ROLES[i % ROLES.length]; });
+      mark('bots');
 
-      // the round: a fresh scene, the objectives, everyone at their spawns
-      shell.loadPreset();
+      // the round: a fresh scene (unless the map was loaded just now), the objectives, everyone at their spawns
+      if (!fresh) shell.loadPreset();
       flags = null; hill = null; siege = null;
       markers.clear();
       if (m === 'ctf') {
@@ -246,18 +306,23 @@ export function createGame(shell) {
       }
       if (m === 'koth') { hill = { i: -1, owner: null, contested: false }; moveHill(); }
       if (m === 'siege') {
-        siege = { half: 1, attackers: layout.siege.attackers, held: 0, halfStart: 0, results: [] };
-        const [x, y, z, r] = layout.siege.core;
-        markers.zone({ x, y, z, r });
+        siege = createSiege({
+          layout, rules, size: [g.nx, g.ny, g.nz], teamScore, canFight,
+          time: () => time, entries: () => [...roster.values()], bodyOf, alive, inZone,
+          announce: (text) => hud.announce(text, now()), end, emit: (n, e) => povEvents.emit(n, e), markZone: (z) => markers.zone(z),
+        });
+        siege.begin();
       }
       if (m === 'infection') for (const e of pick([...roster.values()].filter((o) => o.team), rules.alphas)) setTeam(e, R.INFECTED);
       setHitRules(hitRules);
       running = true;
+      arsenal.start(R.isHalo(m) ? layout : null);   // the power weapons' pads, before the spawns' equal start
       spawnAll();
       count();
       povEvents.emit('game:start', { mode: m, layout: layout.name, teams: Object.fromEntries(teams.map((t) => [t, members(t).map((e) => e.id)])) });
       hud.announce(`${rules.name}${pe.team ? `: you're on ${label(pe.team)}` : ''}`, now());
       hud.choose(m);
+      mark('match');
       return true;
     })();
     try { return await starting; } finally { starting = null; }
@@ -271,6 +336,7 @@ export function createGame(shell) {
 
   // stop without a result
   function stop() {
+    povEvents.emit('game:stop', { mode, style: rules?.style ?? null });
     running = false;
     removeBots();
     const p = me();
@@ -282,14 +348,22 @@ export function createGame(shell) {
     return p;
   }
 
+  // the match is over: by its rules (winner: a team, or null for a draw), with the carnage
+  // report and the next match counting down; or by hand (no winner given), with a line
   function end(winner = undefined, why = '') {
     if (!running) return;
     const p = me();
     const result = { mode, winner: winner ?? null, score: { ...teamScore }, why, roster: board() };
     if (winner !== undefined) {
-      const title = winner ? `${label(winner)} ${winner === R.INFECTED ? 'win' : 'wins'}` : 'Draw';   // (the Infected win)
-      const you = p?.team ? (winner === p.team ? 'You win. ' : winner ? 'You lose. ' : '') : '';
-      hud.result(title, `${you}${why}`, now(), R.END_SCREEN_S);
+      // Halo Infinite's banner: Victory or Defeat for a side you played on, else who won
+      const wins = winner ? `${label(winner)} ${winner === R.INFECTED ? 'win' : 'wins'}` : 'Draw';   // (the Infected win)
+      const outcome = !p?.team ? null : !winner ? 'draw' : winner === p.team ? 'win' : 'loss';
+      const title = { win: 'Victory', loss: 'Defeat', draw: 'Draw' }[outcome] ?? wins;
+      hud.report({
+        title, outcome, sub: outcome && winner ? `${wins} · ${why}` : why,
+        teams, teamScore: { ...teamScore }, roster: result.roster, scoreLabel: scoreLabel(), myTeam: p?.team ?? null, winner: winner ?? null,
+      }, now(), NEXT_MATCH_S);
+      next = { at: now() + NEXT_MATCH_S, ...lastStart };
     } else hud.result('Match ended', '', now(), R.END_SCREEN_S / 2);
     povEvents.emit('game:end', result);
     stop();
@@ -298,19 +372,27 @@ export function createGame(shell) {
   }
   let lastResult = null;
 
+  // out of the match loop, back to the start menu (the report's Leave, Esc)
+  function leave() {
+    next = null;
+    hud.closeReport();
+    if (running) end();
+    launch.openMenu?.();
+  }
+
   // ---------------------------------------------------------------- deaths and kills
   povEvents.on('body:hit', (e) => {
     if (!running) return;
     const v = roster.get(e.id), by = e.by ?? PLAYER;
-    if (v && by !== v.id) v.lastHit = { by, at: time };
+    if (v && by !== v.id) v.lastHit = { by, at: time, cause: e.cause ?? null };
   });
-  const near = (by, point, r) => {
+  const near = (by, point, r, cause = null) => {
     for (const v of roster.values()) {
       const b = bodyOf(v);
-      if (b && v.id !== by && b.pos.distanceTo(point) < r) v.lastHit = { by, at: time };
+      if (b && v.id !== by && b.pos.distanceTo(point) < r) v.lastHit = { by, at: time, cause };
     }
   };
-  povEvents.on('blast', (e) => { if (running && e.point) near(e.by ?? PLAYER, e.point, R.BLAST_CREDIT_R); });
+  povEvents.on('blast', (e) => { if (running && e.point) near(e.by ?? PLAYER, e.point, R.BLAST_CREDIT_R, e.kind === 'frag' ? FRAG_CAUSE : null); });
   povEvents.on('tool:action', (e) => {
     if (!running || e.tool !== 'blowtorch' || e.action !== 'on') return;
     const from = e.from ?? shell.player?.pos;
@@ -324,9 +406,13 @@ export function createGame(shell) {
     if (k && (!k.team || k.team === v.team)) k = null;   // a teammate's bomb, say: a betrayal counts as a suicide
     if (k) k.kills++;
     v.lastHit = null;
-    const cause = bodyOf(v)?.cause ?? '';
+    // a frag's own blast finishing what its shrapnel started is still the frag's kill (Halo names the grenade)
+    const bodyCause = bodyOf(v)?.cause ?? '';
+    const cause = k && h.cause === FRAG_CAUSE && BLAST_DEATH.test(bodyCause) ? FRAG_CAUSE : bodyCause;
     const held = k ? shell.deaths?.heldOn(v.id, k.id) ?? null : null;   // the killer's weapon when the blow landed (the killfeed's icon)
-    const e = { killer: k?.name ?? null, killerTeam: k?.team ?? null, victim: v.name, victimTeam: v.team, cause, held, by: k?.id ?? null, id: v.id };
+    const weapon = k ? weaponOf(k) : null;
+    const e = { killer: k?.name ?? null, killerTeam: k?.team ?? null, victim: v.name, victimTeam: v.team, cause, held, by: k?.id ?? null, id: v.id, weapon };
+    if (v.id === PLAYER) myDeath = { at: time, killer: e.killer, killerTeam: e.killerTeam, weapon: gearByKey(weapon)?.name ?? null, cause };
     hud.kill(e);
     povEvents.emit('game:kill', e);
     // the killfeed's own event (pov/killfeed.js 'kill'): the scoreboard and the medals listen to both kinds of game alike
@@ -347,7 +433,11 @@ export function createGame(shell) {
     if (mode === 'ctf') {
       for (const f of Object.values(flags)) if (f.carrier === v.id) dropFlag(f, bodyOf(v).pos);
     }
+    if (mode === 'siege') siege?.died(v, k);
   }
+
+  // what a killer had in hand (a tool key): a bot's brain's pick, the player's hotbar
+  const weaponOf = (e) => (e.bot ? e.bot.agent.intent.tool : shell.toolbelt?.selectedKey) ?? null;
 
   // ---------------------------------------------------------------- CTF
   const touching = (b, p) => hdist(b.pos, p) < R.TOUCH_R && Math.abs(b.pos.y - p.y) < R.TOUCH_UP;
@@ -390,7 +480,7 @@ export function createGame(shell) {
     }
   }
 
-  // ---------------------------------------------------------------- zones (KOTH's hill, Siege's core)
+  // ---------------------------------------------------------------- zones (KOTH's hill, Siege's points)
   const zoneOf = ([x, y, z, r]) => ({ x, y, z, r });
   function inZone(b, z) { return hdist(b.pos, z) < z.r && b.pos.y - z.y > -1 && b.pos.y - z.y < R.ZONE_UP; }
   function teamsIn(z) {
@@ -419,41 +509,6 @@ export function createGame(shell) {
     }
   }
 
-  function tickSiege(dt) {
-    const core = zoneOf(layout.siege.core);
-    const s = teamsIn(core);
-    siege.contested = s.has(siege.attackers) && s.size > 1;
-    siege.owner = s.size === 1 ? [...s][0] : null;
-    if (siege.owner === siege.attackers) {
-      siege.held += dt;
-      teamScore[siege.attackers] += dt;
-      for (const e of members(siege.attackers)) if (alive(e) && inZone(bodyOf(e), core)) e.score += dt;
-    }
-    if (siege.held >= rules.holdToWin) halfOver(true);
-    else if (time >= ends) halfOver(false);
-  }
-  function halfOver(captured) {
-    siege.results.push({ attackers: siege.attackers, captured, time: time - siege.halfStart, held: siege.held });
-    const r = siege.results.at(-1);
-    povEvents.emit('game:half', { half: siege.half, ...r });
-    if (siege.half === 1) {
-      hud.announce(`${label(r.attackers)} ${captured ? `took the core in ${Math.round(r.time)} s` : `held it ${Math.round(r.held)} s`}. Halftime: sides swap`, now());
-      siege.half = 2; siege.attackers = other(siege.attackers); siege.held = 0; siege.halfStart = time;
-      ends = time + rules.timeLimit;
-      shell.loadPreset();
-      spawnAll();
-      return;
-    }
-    // TF2's stopwatch: a capture beats none; two captures, the faster; none, the longer hold
-    const [a, b] = siege.results;
-    let w = null;
-    if (a.captured !== b.captured) w = a.captured ? a.attackers : b.attackers;
-    else if (a.captured) w = a.time < b.time ? a.attackers : b.time < a.time ? b.attackers : null;
-    else w = a.held > b.held ? a.attackers : b.held > a.held ? b.attackers : null;
-    const say = (x) => `${label(x.attackers)} ${x.captured ? `capped in ${Math.round(x.time)} s` : `held ${Math.round(x.held)} s`}`;
-    end(w, `${say(a)}, ${say(b)}`);
-  }
-
   // ---------------------------------------------------------------- what bots go for
   function objectiveFor(e) {
     if (!running || !e.team) return null;
@@ -469,11 +524,7 @@ export function createGame(shell) {
       const z = hill.zone;
       return { kind: 'hill', at: z, r: z.r, want: inZone(b, z) ? WANT.inZone : WANT.zone };
     }
-    if (mode === 'siege') {
-      const z = zoneOf(layout.siege.core);
-      if (e.team === siege.attackers) return { kind: 'attackCore', at: z, r: z.r, want: inZone(b, z) ? WANT.inZone : WANT.zone };
-      return { kind: 'defendCore', at: z, r: z.r, want: WANT.defend };
-    }
+    if (mode === 'siege') return siege.objective(e);
     if (mode === 'ctf') {
       const mine = flags[e.team], theirs = flags[other(e.team)];
       if (theirs.carrier === e.id) return { kind: 'carry', at: mine.home, r: 0, want: WANT.carry };
@@ -505,6 +556,19 @@ export function createGame(shell) {
   // frame: npc.js's per-frame world ({ player, holding, toWorld, worldToGrid, scale, stepsPerFrame })
   function update(dt, frame) {
     if (!visible) setVisible(true);
+    // the next match: it starts when the report's countdown runs out, unless the player went to the menu (left)
+    if (next && launch.menuOpen?.()) next = null;
+    if (next && !running && now() >= next.at) {
+      const n = next;
+      next = null;
+      start(n.mode, n.opts).catch((err) => console.error('The next match failed to start', err));
+    }
+    // the first moment of control in a match: the keys' card (once a session per style; in Siege
+    // after the class picker, which frees the mouse, has closed) and the 'control' timing mark
+    if (running && shell.locked?.() && me()?.team && alive(me())) {
+      hud.card(rules.style, now());
+      if (!controlled) { controlled = true; mark('control'); }
+    }
     if (running) {
       time += dt;
       const t0 = performance.now();
@@ -516,13 +580,15 @@ export function createGame(shell) {
         e.protect = Math.max(0, e.protect - dt);
         pace(e, b);
         if (b.dead && !e.wasDead) died(e);
-        else if (!b.dead && e.wasDead) e.protect = R.SPAWN_PROTECT_S;   // back: a moment's protection
+        else if (!b.dead && e.wasDead) { e.protect = R.SPAWN_PROTECT_S; spawned(e); }   // back: a moment's protection
         e.wasDead = b.dead;
       }
       count();
+      arsenal.update(dt);
+      if (me()) loadout(me());   // the player's hands (a Halo match's carry)
       if (mode === 'ctf') tickCtf();
       if (mode === 'koth') tickKoth(dt);
-      if (mode === 'siege') tickSiege(dt);
+      if (mode === 'siege') siege?.tick(dt);
       // the end: the score, the last survivor, the clock
       if (running && mode !== 'siege') {
         const won = mode !== 'infection' && teams.find((t) => teamScore[t] >= rules.scoreToWin);
@@ -536,18 +602,21 @@ export function createGame(shell) {
       markers.update({
         time,
         flagAt: (t) => (flags?.[t] && flags[t].carrier !== PLAYER ? flags[t].pos : null),   // the player's own carry would be in their eye
-        zoneOwner: hill?.owner ?? siege?.owner ?? (siege ? other(siege.attackers) : null),
+        zoneOwner: hill?.owner ?? siege?.zoneOwner ?? null,
         zoneContested: hill?.contested ?? siege?.contested ?? false,
         bots: bots().map((e) => ({ id: e.id, team: e.team, alive: alive(e), pos: e.bot.body.pos })),
         myTeam: me()?.team ?? null,
       });
     }
     hud.update(state());
+    feel.update();
   }
 
+  // the scoreboard's rows; medals: a count or list the feel agent's medals.js may keep on the entry (e.medals)
   function board() {
-    return [...roster.values()].filter((e) => e.team).map((e) => ({ id: e.id, name: e.name, team: e.team, kills: e.kills, deaths: e.deaths, score: e.score, me: e.id === PLAYER }));
+    return [...roster.values()].filter((e) => e.team).map((e) => ({ id: e.id, name: e.name, team: e.team, kills: e.kills, deaths: e.deaths, score: e.score, me: e.id === PLAYER, medals: e.medals ?? null }));
   }
+  const scoreLabel = () => ({ slayer: 'Kills', ctf: 'Caps', koth: 'Hill s', infection: 'Kills', siege: 'Points' }[mode] ?? 'Score');
 
   function objectiveText() {
     if (mode === 'slayer') return { text: `First to ${rules.scoreToWin}` };
@@ -565,28 +634,33 @@ export function createGame(shell) {
       const n = teamScore[R.HUMANS];
       return { text: `${n} survivor${n === 1 ? '' : 's'} · ${teamScore[R.INFECTED]} infected` };
     }
-    if (mode === 'siege') {
-      return {
-        text: `Half ${siege.half} · ${label(siege.attackers)} attack the core · ${Math.floor(siege.held)}/${rules.holdToWin} s${siege.contested ? ' · contested' : ''}`,
-        progress: siege.held / rules.holdToWin, progressTeam: siege.attackers,
-      };
-    }
+    if (mode === 'siege') return siege.hud();
     return { text: '' };
   }
 
   function state() {
     const o = running ? objectiveText() : {};
+    const p = me();
+    const dead = !!(running && p?.team && bodyOf(p)?.dead);
     return {
       running, mode, now: now(), time,
+      style: running ? rules.style : null,
+      myTeam: p?.team ?? null,
+      scoreToWin: running && mode !== 'infection' && mode !== 'siege' ? rules.scoreToWin : null,
+      locked: !!shell.locked?.(),
+      dead, death: dead ? myDeath : null,
+      respawnIn: dead && myDeath ? R.RESPAWN_S - (time - myDeath.at) : 0,
+      nextIn: next ? next.at - now() : null,
+      menuUp: !!launch.menuOpen?.(),
       teamScore: { ...teamScore }, teams,
-      timeLeft: running ? ends - time : 0,
+      timeLeft: running ? (siege ? siege.timeLeft : ends - time) : 0,   // (Siege: setup's, then the round's)
       objective: o.text, progress: o.progress, progressTeam: o.progressTeam,
       roster: board(),
       scoreLine: running ? `${rules.name} on ${layout.name}` : lastResult ? `Last match: ${R.MODES[lastResult.mode].name}` : '',
-      scoreLabel: { slayer: 'Kills', ctf: 'Caps', koth: 'Hill s', infection: 'Kills', siege: 'Core s' }[mode] ?? 'Score',
+      scoreLabel: scoreLabel(),
       flags: flags ? Object.fromEntries(Object.values(flags).map((f) => [f.team, { state: f.state, carrier: f.carrier }])) : null,
       hill: hill ? { index: hill.i, owner: hill.owner, contested: hill.contested } : null,
-      siege: siege ? { half: siege.half, attackers: siege.attackers, held: siege.held, results: siege.results } : null,
+      siege: siege ? siege.state : null,
       bots: bots().length,
       botMs,
     };
@@ -605,6 +679,7 @@ export function createGame(shell) {
     for (const f of Object.values(flags ?? {})) if (f.carrier === p.id) dropFlag(f, shell.player.pos);
     shell.respawnPlayer(spawnFor(p));
     p.protect = R.SPAWN_PROTECT_S;
+    spawned(p);
     hud.announce(`You joined ${label(dest)}`, now());
     return true;
   }
@@ -616,12 +691,23 @@ export function createGame(shell) {
 
   function setVisible(v) {
     visible = v;
+    if (!v) next = null;   // out of the body (V): out of the match loop
     markers.setVisible(v);
+    arsenal.setVisible(v);
     hud.show(v);
+    feel.show(v);
     for (const e of bots()) e.bot.setVisible(v);
   }
   setVisible(false);
 
+  // Esc with the match menu open closes it and nothing else (app.js would open the start menu
+  // over it); capture, so it's heard first
+  addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || !hud.menuOpen) return;
+    e.preventDefault();
+    e.stopPropagation();
+    menu(false);
+  }, true);
   // keys, in first person: Tab holds the scoreboard, M opens the match menu, '.' switches team
   addEventListener('keydown', (e) => {
     if (!shell.active() || app.isTyping() || e.metaKey || e.ctrlKey || e.altKey) return;
@@ -634,20 +720,26 @@ export function createGame(shell) {
   addEventListener('blur', () => hud.holdBoard(false));
 
   return {
-    start, end: () => end(), useLayout(l) { userLayout = l ?? null; },
+    start, prepare, end: () => end(), leave, useLayout(l) { userLayout = l ?? null; },
     get running() { return running; },
     get mode() { return mode; },
+    get style() { return running ? rules.style : null; },   // 'halo' | 'tf2' while a match runs (rules.js MODES)
     get layout() { return layout ?? (sim() ? fitLayout(userLayout ?? app.getArena?.(), sim().g) ?? labLayout(sim().g) : null); },
     get state() { return state(); },
     get lastResult() { return lastResult; },
+    get nextIn() { return next ? next.at - now() : null; },   // s to the next match (the report's countdown), else null
     get roster() { return [...roster.values()]; },
     get bots() { return bots().map((e) => e.bot); },
+    get arsenal() { return arsenal.state; },   // the power weapons' pads, drops and who holds what (checks)
     get botCount() { return running ? bots().length : 0; },
+    get feel() { return feel; },   // Halo's medals, tracker and power-ups (feel.js; checks)
     // the player's respawn while a match runs: Halo's delay, at a spawn of their side (null: the shell's own)
     get playerRespawn() {
       const p = me();
-      return running && p?.team ? { delay: R.RESPAWN_S, at: () => spawnFor(p) } : null;
+      return running && p?.team ? { delay: siege ? siege.respawnS(p.team) : R.RESPAWN_S, at: () => spawnFor(p) } : null;
     },
+    // Siege: the player is in their side's respawn room (or it's setup): a class change applies at once (TF2)
+    inSpawnRoom() { return running && !!siege && siege.inSpawnRoom(me()); },
     switchTeam,
     menu,
     setVisible,

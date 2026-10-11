@@ -1,0 +1,82 @@
+/* ------------------------------------------------------------------ Halo's feel (src/game/feel.js) */
+/* Bottom left, Halo 3's corner: the motion tracker beside the vitals panel (pov.css .pov-vitals: 16px in,
+   210px wide), the medals stacked above it, newest at the bottom. A line high in the centre, under the
+   objective (game.css .game-top), for a multi-kill, a spree or a power-up. */
+
+:root {
+  --feel-tracker: 132px;            /* tracker.js TRACKER_PX */
+  --feel-left: 238px;               /* the vitals' left edge + width + a gap */
+  --feel-bottom: 16px;
+  --feel-gap: 10px;
+}
+@media (max-width: 560px) { :root { --feel-tracker: 104px; --feel-left: 184px; --feel-bottom: 12px; } }
+
+/* ---- the motion tracker */
+.feel-tracker {
+  position: fixed; left: var(--feel-left); bottom: var(--feel-bottom); z-index: 5;
+  width: var(--feel-tracker); height: var(--feel-tracker);
+  pointer-events: none; display: none;
+  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.6));
+}
+.feel-tracker.on { display: block; animation: feel-fade 200ms var(--ease); }
+.feel-tracker-canvas { width: 100%; height: 100%; display: block; }
+.feel-tracker-range {
+  position: absolute; right: 0; bottom: 0;
+  font: 600 9px var(--ui); letter-spacing: 0.06em; color: rgba(200, 225, 255, 0.7);
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.8);
+}
+
+/* ---- medals */
+.feel-medal-hud { position: fixed; inset: 0; z-index: 5; pointer-events: none; display: none; font-family: var(--ui); color: var(--text); }
+.feel-medal-hud.on { display: block; }
+.feel-medals {
+  position: absolute; left: var(--feel-left); bottom: calc(var(--feel-bottom) + var(--feel-tracker) + var(--feel-gap));
+  display: flex; flex-direction: column; align-items: flex-start; gap: 5px;
+}
+.feel-medal {
+  display: flex; align-items: center; gap: 7px;
+  animation: feel-medal-in 380ms var(--ease), feel-medal-out 400ms ease-in 2.6s forwards;   /* out: medalHud.js MEDAL_S */
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.85);
+}
+.feel-badge {
+  --c: #e8e2d0;
+  width: 30px; height: 30px; flex: 0 0 auto; display: grid; place-items: center;
+  clip-path: polygon(25% 3%, 75% 3%, 100% 50%, 75% 97%, 25% 97%, 0 50%);
+  background: radial-gradient(circle at 50% 35%, color-mix(in srgb, var(--c) 70%, #fff), var(--c) 55%, color-mix(in srgb, var(--c) 55%, #000));
+}
+.feel-badge b { font: 800 13px var(--ui); color: #10131a; text-shadow: none; line-height: 1; }
+.feel-medal.multi .feel-badge { --c: #ff9b2f; }
+.feel-medal.spree .feel-badge { --c: #ff4b5c; }
+.feel-medal.style .feel-badge { --c: #5fd3ff; }
+.feel-medal.objective .feel-badge { --c: #ffd84a; }
+.feel-name { font: 700 13px var(--ui); letter-spacing: 0.04em; text-transform: uppercase; }
+@keyframes feel-medal-in {
+  0% { opacity: 0; transform: translateX(-14px) scale(1.6); }
+  60% { opacity: 1; transform: translateX(0) scale(0.94); }
+  100% { transform: none; }
+}
+@keyframes feel-medal-out { to { opacity: 0; transform: translateX(-8px); } }
+
+/* ---- the centre line */
+.feel-line {
+  position: absolute; left: 50%; top: 172px; transform: translateX(-50%);
+  font: 800 24px var(--ui); letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap;
+  color: #fff1c9; text-shadow: 0 0 12px rgba(255, 160, 60, 0.55), 0 2px 3px rgba(0, 0, 0, 0.9);
+  opacity: 0;
+}
+.feel-line.on { animation: feel-line 2.5s var(--ease) forwards; }   /* medalHud.js LINE_S */
+@keyframes feel-line {
+  0% { opacity: 0; transform: translateX(-50%) scale(1.5); }
+  10% { opacity: 1; transform: translateX(-50%) scale(1); }
+  80% { opacity: 1; }
+  100% { opacity: 0; }
+}
+@keyframes feel-fade { from { opacity: 0; } }
+
+/* ---- the Overshield's layer on the shield bar (pov/hud.js: .pov-over, .pov-shield.over) */
+.pov-shield .pov-track .pov-fill.pov-over {
+  background: linear-gradient(90deg, #2fbf5a, #b6ffc4); transform: scaleX(0);
+  transition: transform 90ms linear;
+}
+.pov-shield.over .pov-ic svg { fill: #5dff8a; }
+.pov-shield.over .pov-track { box-shadow: inset 0 0 0 1px #5dff8a, 0 0 8px rgba(93, 255, 138, 0.6); }

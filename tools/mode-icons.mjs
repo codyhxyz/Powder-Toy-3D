@@ -14,11 +14,13 @@ import { bakeIcons } from './game-icons.mjs';
 const MODE_ICONS = {
   // the gamemodes (maps.js GAMEMODES keys)
   sandbox: 'delapouite/sand-castle',
+  noita: 'lorc/fairy-wand',            // the killfeed's wand (tools/killicons.mjs WAND)
   slayer: 'lorc/crossed-swords',
   ctf: 'lorc/flying-flag',
   koth: 'lorc/crown',                  // Halo's King of the Hill is a crown too
   infection: 'skoll/raise-zombie',
   siege: 'delapouite/siege-tower',
+  saves: 'delapouite/save',            // the menu's Saves (Your games)
   // a map's kind and size
   box: 'delapouite/cube',
   world: 'lorc/world',

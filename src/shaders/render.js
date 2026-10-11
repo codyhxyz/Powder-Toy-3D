@@ -13,6 +13,7 @@ import { mediaGLSL } from './gfx/media.js';
 import { plainGLSL } from './gfx/plain.js';
 import { grainsGLSL } from './gfx/grains.js';
 import { crystalGLSL } from './gfx/crystal.js';
+import { decoViewGLSL, decoSurfGLSL } from './gfx/deco.js';
 import { meshCutGLSL } from '../gfx/meshCut.js';
 
 
@@ -185,8 +186,10 @@ ${flush}
   return /* glsl */ `
 #define BRICK_DIST_IN_LIGHT   // the empty-space distance from tLight's alpha (gfx/core.js): a texture unit for meshCut
 ${lib(g)}
+${decoViewGLSL}
 ${surfaceGLSL}
 ${liquidGLSL}
+${decoSurfGLSL}
 ${liquidDetailGLSL}
 ${mediaGLSL}${haze}${haze && `
 uniform bool uFar;   // a world's far field is drawn: the window takes its haze`}
@@ -808,7 +811,7 @@ void main() {
         col += trans * F * paneEnv;
         trans *= 1.0 - F;
       }
-      absorbSegment(id, hp, tExit - tEnter, mediumLight, a.y, col, trans);
+      absorbDeco(id, cell, hp, tExit - tEnter, mediumLight, a.y, col, trans);   // (stained glass: gfx/deco.js)
       // Leaving the pane, its far face reflects as much again (into air; less
       // into liquid; none against something opaque, which it touches, the
       // floor included). A face parallel to the front one reflects the same view.
@@ -901,7 +904,7 @@ void main() {
         if (SURFCH[lj] == CH_LIQUID) liq = lj;
         else if (SURFCH[id] == CH_LIQUID) liq = id;
         mediumLight = lightRef * exp(-SIGMA[liq] * max(lightY - pm.y, 0.0) / max(uSun.y, LIQ_SUN_Y_MIN));
-        absorbSegment(liq, ro + rd * tEnter, tEv - tEnter, mediumLight, SURFCH[id] == CH_LIQUID ? a.y : AMBIENT, col, trans);
+        absorbDeco(liq, SURFCH[id] == CH_LIQUID ? cell : ivec3(-1), ro + rd * tEnter, tEv - tEnter, mediumLight, SURFCH[id] == CH_LIQUID ? a.y : AMBIENT, col, trans);   // (painted liquid: gfx/deco.js)
       } else if (brickMedia(flags)) {
         float al = mediaSegment(ro, rd, tEnter, tEv, mNext, col, trans);
         // until something is hit, hitPos tracks the first gas, and the gas
@@ -1001,6 +1004,7 @@ void main() {
       else if (hitK == HIT_GRAIN) s = grainSurf(gHitA, gHitK, hitP, shadeRd);
 #endif
       else s = gatherSurf(hitP, dot(hitN, hitN) > 0.0 ? hitN : surfNormal(hitP, hitCh, -shadeRd), hitCh);
+      decoSurf(s);   // TPT's deco colour (gfx/deco.js)
       c = shadeSurf(s, shadeRd);
 #ifdef GRAINS_ANY
       gGrainSun = 1.0;   // (grainSurf set it for this shadeSurf)
