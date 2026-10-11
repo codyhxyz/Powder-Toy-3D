@@ -64,10 +64,6 @@ body.game-halo .hotbar { display: none !important; }
 .game-kill.note { color: #f2e2b0; }
 @keyframes game-in { from { opacity: 0; transform: translateY(-6px); } }
 
-/* ---- "M Match" when no match is on */
-.game-chip { position: absolute; top: 64px; left: 50%; transform: translateX(-50%); padding: 4px 10px; font: 500 12px var(--ui); display: none; opacity: 0.8; }
-.game-chip.on { display: block; }
-
 /* (the scoreboard on Tab is GMod's, ui/scoreboard.css): while it's up, its header has the
    score and the clock, so the top centre (and the first spawn's keys card) steps aside for it */
 body.sb-on .game-top, body.sb-on .game-feed, body.sb-on .game-card { visibility: hidden; }
@@ -85,34 +81,6 @@ body.sb-on .game-top, body.sb-on .game-feed, body.sb-on .game-card { visibility:
 .game-line span:not(:first-child) { text-align: right; }
 .game-line.head { opacity: 0.55; font-size: 11px; }
 .game-line.me { color: var(--accent-ink); background: var(--accent); font-weight: 700; }
-
-/* ---- match menu (M), up top under the score as every menu here (Garry's Mod's): pointer events
-   on, the mouse is free while it's open */
-.game-menu {
-  position: absolute; left: 50%; top: 150px; transform: translateX(-50%);
-  width: min(640px, calc(100vw - 32px)); padding: 12px 14px; display: none; pointer-events: auto;
-}
-.game-menu.on { display: block; }
-.game-menu-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; font-size: 15px; }
-.game-menu-keys { margin-left: auto; font: 500 12px var(--ui); color: var(--muted); }
-.game-x { background: none; border: 0; color: var(--muted); font-size: 22px; cursor: pointer; line-height: 1; }
-.game-picks { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 6px; }
-.game-pick {
-  display: flex; flex-direction: column; gap: 2px; text-align: left; cursor: pointer;
-  padding: 7px 9px; border-radius: var(--r-ctl); color: var(--text);
-  background: var(--raise); border: 1px solid var(--line);
-}
-.game-pick b { font: 600 13px var(--ui); }
-.game-pick span { font: 400 11px var(--ui); color: var(--muted); }
-.game-pick.on { border-color: var(--accent); background: var(--raise-hi); }
-.game-sides { display: flex; align-items: center; gap: 6px; margin: 10px 0; font: 500 12px var(--ui); color: var(--muted); }
-.game-side { padding: 4px 10px; border-radius: var(--r-ctl); cursor: pointer; color: var(--text); background: var(--raise); border: 1px solid var(--line); font: 500 12px var(--ui); }
-.game-side.on { border-color: var(--accent); }
-.game-actions { display: flex; gap: 8px; justify-content: flex-end; }
-.game-go, .game-stop { padding: 6px 14px; border-radius: var(--r-ctl); cursor: pointer; font: 600 13px var(--ui); border: 1px solid var(--line-hi); }
-.game-go { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
-.game-stop { background: var(--raise); color: var(--text); }
-.game-stop.off { display: none; }
 
 /* ---- a match ended by hand */
 .game-end { position: absolute; left: 50%; top: 30%; transform: translateX(-50%); text-align: center; display: none; text-shadow: 0 2px 6px rgba(0, 0, 0, 0.85); }

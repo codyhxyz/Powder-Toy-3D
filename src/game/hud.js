@@ -9,11 +9,11 @@ import './game.css';
 // sits bottom-right there; docs/halo-contract.md puts ours top-centre), the
 // match's news under them; kills go to the shared killfeed top-right (GMod's,
 // pov/killfeed.js); Tab holds up the scoreboard (GMod's, ui/scoreboard.js:
-// index.js scoreboard() is its view); M opens the match menu (mode, side,
-// Start/End: kept out of the main drawer). At the end, Halo 3's post-game
-// carnage report (every player's kills, deaths and score) under Halo
-// Infinite's Victory / Defeat banner, counting down to the next match, with
-// Leave. While you're dead, who killed you with what and the respawn count; while the mouse isn't
+// index.js scoreboard() is its view). (No match menu: the gamemode is picked on
+// the start menu, outside the game.) At the end, Halo 3's post-game carnage
+// report (every player's kills, deaths and score) under Halo Infinite's Victory /
+// Defeat banner, counting down to the next match, with Leave. While you're dead,
+// who killed you with what and the respawn count; while the mouse isn't
 // captured, "Click to play"; on the first spawn of a session, a card of the
 // match's keys. update() only writes the DOM when a shown string changes.
 // docs/halo-contract.md: this file owns top-centre and top-right; bottom-left
@@ -34,15 +34,15 @@ const dot = () => h('span.game-dot', { text: '·' });
 const CARDS = {
   halo: [
     [['Click'], 'Shoot'], [['Right-click'], 'Zoom'], [['G'], 'Grenade'], [['F'], 'Melee'],
-    [['1', '2'], 'or wheel: swap guns'], [['E'], 'Pick up'], [['Tab'], 'Scores'], [['M'], 'Match menu'],
+    [['1', '2'], 'or wheel: swap guns'], [['E'], 'Pick up'], [['Tab'], 'Scores'],
   ],
   tf2: [
     [['Click'], 'Shoot'], [['Right-click'], 'Alt-fire'], [['F'], 'Kick'], [['1–9'], 'or wheel: weapons'],
-    [['E'], 'Use'], [[','], 'Class'], [['Tab'], 'Scores'], [['M'], 'Match menu'],
+    [['E'], 'Use'], [[','], 'Class'], [['Tab'], 'Scores'],
   ],
 };
 
-export function createGameHud({ onStart, onEnd, onSide, onClose, onLeave }) {
+export function createGameHud({ onLeave }) {
   // ---- top centre: the mode, both scores with their bars, the clock, the objective
   const modeName = h('div.game-mode');
   const teamBox = () => {
@@ -55,27 +55,7 @@ export function createGameHud({ onStart, onEnd, onSide, onClose, onLeave }) {
   const barFill = h('i'), bar = h('div.game-bar', {}, barFill);
   const top = h('div.game-top', {}, modeName, h('div.game-row', {}, sideA.el, timer, sideB.el), objective, bar);
   const feed = h('div.game-feed');
-  const chip = h('div.game-chip.panel', {}, key('M'), ' Match');
 
-  // the match menu (M)
-  let chosen = 'slayer', side = 'auto';
-  const modeBtns = MODE_KEYS.map((k) => h('button.game-pick', { type: 'button', on: { click: () => { chosen = k; sync(); } } },
-    h('b', { text: MODES[k].name }), h('span', { text: MODES[k].desc })));
-  const sideBtns = ['auto', 'red', 'blue', 'spectate'].map((s) => h('button.game-side', { type: 'button', 'data-side': s, on: { click: () => { side = s; sync(); onSide?.(s); } } },
-    s === 'auto' ? 'Auto' : s === 'spectate' ? 'Watch' : TEAM_NAME[s]));
-  const startBtn = h('button.game-go', { type: 'button', on: { click: () => onStart?.(chosen, side) } }, 'Start match');
-  const endBtn = h('button.game-stop', { type: 'button', on: { click: () => onEnd?.() } }, 'End match');
-  const menu = h('div.game-menu.panel', {},
-    h('div.game-menu-head', {}, h('b', { text: 'Match' }), h('span.game-menu-keys', {}, key('Esc'), ' or ', key('M'), ' to close'),
-      h('button.game-x', { type: 'button', 'aria-label': 'Close', on: { click: () => onClose?.() } }, '×')),
-    h('div.game-picks', {}, modeBtns),
-    h('div.game-sides', {}, h('span', { text: 'Side' }), sideBtns),
-    h('div.game-actions', {}, startBtn, endBtn));
-  function sync() {
-    modeBtns.forEach((b, i) => b.classList.toggle('on', MODE_KEYS[i] === chosen));
-    sideBtns.forEach((b) => b.classList.toggle('on', b.dataset.side === side));
-  }
-  sync();
 
   // a match ended by hand: a line for a moment
   const endTitle = h('div.game-end-title'), endSub = h('div.game-end-sub');
@@ -95,12 +75,12 @@ export function createGameHud({ onStart, onEnd, onSide, onClose, onLeave }) {
   const death = h('div.game-death', {}, deathWho, h('div.game-death-count', {}, 'Respawn in ', deathCount));
 
   // the mouse isn't captured: one click puts you in (pointer lock needs it)
-  const play = h('div.game-play', {}, h('b', { text: 'Click to play' }), h('span', {}, key('Esc'), ' menu', dot(), key('M'), ' match'));
+  const play = h('div.game-play', {}, h('b', { text: 'Click to play' }), h('span', {}, key('Esc'), ' menu'));
 
   // the first spawn's controls card
   const card = h('div.game-card.panel');
 
-  const root = h('div.game-hud', {}, top, feed, chip, menu, end, report, death, play, card);
+  const root = h('div.game-hud', {}, top, feed, end, report, death, play, card);
   document.body.append(root);
 
   const shown = {};
@@ -109,7 +89,7 @@ export function createGameHud({ onStart, onEnd, onSide, onClose, onLeave }) {
   // the body's classes for the first-person HUD to give way (game.css): game-live while a match runs, game-on with the report too
   const bodyClass = (cls, on) => { if (shown[cls] !== on) { shown[cls] = on; document.body.classList.toggle(cls, on); } };
   const lines = [];
-  let menuOpen = false, endUntil = -Infinity;
+  let endUntil = -Infinity;
   let reportUntil = -Infinity, reportOn = false;
   let cardUntil = -Infinity;
   const cardsShown = new Set();   // the styles whose card this session has shown (once each)
@@ -137,14 +117,11 @@ export function createGameHud({ onStart, onEnd, onSide, onClose, onLeave }) {
   }
 
   return {
-    get menuOpen() { return menuOpen; },
     get reportOpen() { return reportOn; },
     show(v) {
       root.classList.toggle('on', v);
       if (!v) for (const c of ['game-live', 'game-on', 'game-halo', 'game-reporting']) bodyClass(c, false);
     },
-    setMenu(v) { menuOpen = v; },
-    choose(mode) { chosen = mode; sync(); },
     // a kill for the killfeed: { killer, killerTeam, victim, victimTeam, cause, held } (no killer: a suicide or the world)
     kill(e) {
       deathNotice({
@@ -184,18 +161,14 @@ export function createGameHud({ onStart, onEnd, onSide, onClose, onLeave }) {
       bodyClass('game-on', st.running || reportOn);
       bodyClass('game-reporting', reportOn);
       toggle(top, 'on', st.running);
-      toggle(chip, 'on', !st.running && !menuOpen && now >= endUntil && !reportOn);
       toggle(end, 'on', now < endUntil && !reportOn);
       toggle(report, 'on', reportOn);
       toggle(report, 'free', reportOn && !st.locked);   // the mouse is free: Leave can be clicked
-      toggle(menu, 'on', menuOpen);
-      toggle(endBtn, 'off', !st.running);
-      startBtn.textContent = st.running ? 'Restart' : 'Start match';
       if (reportOn) set(repNext, 'next', st.nextIn != null ? String(Math.max(1, Math.ceil(st.nextIn))) : '');
       toggle(repFoot, 'nonext', st.nextIn == null);
       const dead = st.running && st.dead;
       toggle(death, 'on', dead);
-      toggle(play, 'on', st.running && !st.locked && !dead && !menuOpen && !st.menuUp);
+      toggle(play, 'on', st.running && !st.locked && !dead && !st.menuUp);
       toggle(card, 'on', st.running && now < cardUntil);
       toggle(card, 'fading', now > cardUntil - CARD_FADE_S);
       if (st.running) {

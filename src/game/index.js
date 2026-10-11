@@ -85,13 +85,7 @@ export function createGame(shell) {
   let visible = true;
   let botMs = 0;
   const markers = createMarkers({ scene: shell.scene, getVolume: app.getVolume, getScale: app.getScale });
-  const hud = createGameHud({
-    onStart: (m, s) => { side = s; menu(false); start(m, { side: s }); },
-    onEnd: () => { menu(false); end(); },
-    onSide: (s) => { side = s; if (running && (s === 'red' || s === 'blue')) switchTeam(s); },
-    onClose: () => menu(false),
-    onLeave: leave,
-  });
+  const hud = createGameHud({ onLeave: leave });
   const now = () => performance.now() / 1000;
   const sim = () => app.getSim();
   // Halo's medals, motion tracker and power-ups (feel.js): it hears the match's events and reads the roster
@@ -321,7 +315,6 @@ export function createGame(shell) {
       count();
       povEvents.emit('game:start', { mode: m, layout: layout.name, teams: Object.fromEntries(teams.map((t) => [t, members(t).map((e) => e.id)])) });
       hud.announce(`${rules.name}${pe.team ? `: you're on ${label(pe.team)}` : ''}`, now());
-      hud.choose(m);
       mark('match');
       return true;
     })();
@@ -710,11 +703,6 @@ export function createGame(shell) {
     return true;
   }
 
-  function menu(open) {
-    hud.setMenu(open);
-    if (open) shell.freeMouse();
-  }
-
   function setVisible(v) {
     visible = v;
     if (!v) next = null;   // out of the body (V): out of the match loop
@@ -726,20 +714,11 @@ export function createGame(shell) {
   }
   setVisible(false);
 
-  // Esc with the match menu open closes it and nothing else (app.js would open the start menu
-  // over it); capture, so it's heard first
-  addEventListener('keydown', (e) => {
-    if (e.key !== 'Escape' || !hud.menuOpen) return;
-    e.preventDefault();
-    e.stopPropagation();
-    menu(false);
-  }, true);
-  // keys, in first person: M opens the match menu, '.' switches team (Tab, the
-  // scoreboard, is ui/scoreboard.js's: scoreboard() is what it shows)
+  // keys, in first person: '.' switches team (Tab, the scoreboard, is ui/scoreboard.js's:
+  // scoreboard() is what it shows). The gamemode is picked on the start menu (Esc), never in the game
   addEventListener('keydown', (e) => {
     if (!shell.active() || app.isTyping() || e.metaKey || e.ctrlKey || e.altKey || e.repeat) return;
-    if (e.code === 'KeyM') menu(!hud.menuOpen);
-    else if (e.key === '.') switchTeam();
+    if (e.key === '.') switchTeam();
   });
 
   return {
@@ -765,7 +744,6 @@ export function createGame(shell) {
     // Siege: the player is in their side's respawn room (or it's setup): a class change applies at once (TF2)
     inSpawnRoom() { return running && !!siege && siege.inSpawnRoom(me()); },
     switchTeam,
-    menu,
     setVisible,
     update,
   };
