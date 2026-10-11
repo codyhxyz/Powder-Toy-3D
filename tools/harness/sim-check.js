@@ -12,6 +12,7 @@ import { Simulation, cellTexel } from '/src/sim.js';
 import { buildPreset } from '/src/presets.js';
 import { E, ELEMENTS } from '/src/elements.js';
 import { SEED_MAX } from '/src/shaders/common.js';
+import { inertFold } from '/src/shaders/activity.js';
 
 const h = await boot({ label: 'sim-check' });
 const gpu = h.gpu;
@@ -523,6 +524,71 @@ const STAGES = {
     return out;
   },
 };
+
+// ---------------------------------------------------------------- budgets (tools/budgets/sim.mjs)
+const measure = async (fn) => {
+  const before = { ...gpu.stats };
+  await fn();
+  return Object.fromEntries(Object.entries(gpu.stats).map(([k, v]) => [k, v - before[k]]));
+};
+// An idle-certified world's steps record nothing (docs/webgpu.md D4).
+test('budget:asleep', async (steps = 10) => {
+  const sim = await h.make(32, { debug: false });
+  try {
+    h.scene(sim, 'floor');
+    for (let i = 0; i < 200 && !sim.idleCertified; i++) {
+      sim.step();
+      if (i % 8 === 7) { await sim.gpuSync(); await wait(); }
+    }
+    await sim.gpuSync();
+    const stats = await measure(async () => { for (let i = 0; i < steps; i++) sim.step(); await sim.gpuSync(); });
+    return { stats, idle: sim.idleCertified ? 1 : 0 };
+  } finally { sim.dispose(); }
+});
+// A frame of the lab at 4 steps per frame (the app's default speed): one
+// submit, one compute pass, and the indirect dispatches' workgroups (their
+// arguments read back) equal to what the lists' lengths call for.
+test('budget:frame', async ({ scene = 'lab', size = 32, steps = 4 } = {}) => {
+  const sim = await h.make(size, { debug: false });
+  try {
+    h.scene(sim, scene);
+    for (let i = 0; i < 8; i++) sim.step();
+    await sim.gpuSync();
+    sim.test.logCounts = true;
+    sim.countsLog = [];
+    const from = gpu.indirectLog.length;
+    const stats = await measure(async () => { for (let i = 0; i < steps; i++) sim.step(); gpu.endFrame(); await sim.gpuSync(); });
+    sim.test.logCounts = false;
+    // (the arguments are read back after the frame, so only the last build's are still there:
+    // its steps' move and react dispatches; the inert dispatch's are reset by its own build)
+    const log = gpu.indirectLog.slice(from);
+    const tail = log.slice(log.map((e) => e.kernel).lastIndexOf('inert') + 1);
+    const args = await Promise.all(tail.map((e) => gpu.readback.buffer(e.buffer, e.offset, 12)));
+    const workgroups = args.reduce((n, a) => { const [x, y, z] = new Uint32Array(a); return n + x * y * z; }, 0);
+    const last = sim.countsLog.at(-1);
+    const [, nD, nM] = new Uint32Array(await last.counts);
+    const u = sim.unit.bricks;
+    let expected = 0;
+    for (let frame = last.frame; frame <= sim.frame; frame++) expected += Math.ceil(((frame & 1 ? nM : nD) * u * 8) / 64) + nD * u;
+    const builds = sim.countsLog.length;
+    const counts = await sim.readCounts();
+    return { stats, workgroups, expected, matchesLists: workgroups === expected ? 1 : 0, builds, drawnShare: counts.drawn / counts.units };
+  } finally { sim.dispose(); }
+});
+// One brush stroke: one dispatch (an edit), nothing allocated.
+test('budget:paint', async () => {
+  const sim = await h.make(32, { debug: false });
+  try {
+    h.scene(sim, 'empty');
+    await sim.gpuSync();
+    const stats = await measure(async () => {
+      sim.paint({ center: V(16, 16, 16), radius: 4, shape: 0, tool: E.SAND, rate: 1, replace: false });
+      await sim.gpuSync();
+    });
+    return { stats };
+  } finally { sim.dispose(); }
+});
+
 h.STAGES = Object.keys(STAGES);
 for (const [name, fn] of Object.entries(STAGES)) test(`stage:${name}`, fn);
 

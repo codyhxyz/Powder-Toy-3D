@@ -209,7 +209,10 @@ export class Simulation {
     // profiling hook (gfx/profiler.js): onPass(name, { kind, gpuMs }) after every dispatch
     this.onPass = null;
     // test knobs (docs/webgpu.md C7, I2); test mode only
-    this.test = { listOrder: null, blockOrder: null, raceProbe: false, syncAfterShift: false };
+    //   logCounts: every build's counts go through the ring, into countsLog
+    //   ({ frame, counts: Promise<ArrayBuffer> }: nAWAKE, nDRAWN, nMOVE1, nINERT), for budget-check
+    this.test = { listOrder: null, blockOrder: null, raceProbe: false, syncAfterShift: false, logCounts: false };
+    this.countsLog = [];
     this._shiftListeners = [];
     this._retired = [];
 
@@ -389,6 +392,7 @@ export class Simulation {
     this.actCarry = null;
     const read = this._wantIdleRead();
     const order = this.gpu.testMode ? this.test.listOrder : null;
+    const log = this.gpu.testMode && this.test.logCounts;
     const params = {
       full: this.actFull, enabled: this.skipQuiet, rays: this.rays.active, carry, noted: this.actNoted,
       forceAll: this.forceAll, nPrev: this.actSteps, all: !this.skipSleeping, slot: 0,
@@ -404,7 +408,7 @@ export class Simulation {
     this._dispatch(drawn, perUnit, { bind, header, params });
     this._dispatch(move1, perUnit, { bind, header, params });
     // the counts go to a ring slot when the idle check reads them, else to the spare one
-    const slot = read ? this.counts.next() : COUNTS_SLOTS;
+    const slot = read || log ? this.counts.next() : COUNTS_SLOTS;
     this._dispatch(args, [1, 1, 1], { bind, header, params: { ...params, slot: (ARGS.RING + slot * COUNTS_BYTES) / 4 } });
     if (order) {
       this._permute(ACT_COUNTS.DRAWN, order);
@@ -418,6 +422,7 @@ export class Simulation {
     this.forceAll = false;
     this.actSteps = 0;
     if (read) this._readIdle(slot);
+    if (log) this.countsLog.push({ frame: this.frame, counts: this.counts.read(slot) });
   }
 
   // Test only (I2.1): reorders a list in place ('reverse' or 'shuffle:<seed>').
@@ -906,9 +911,11 @@ export class Simulation {
   }
 
   /**
-   * The inert map built from the state alone, as it is at this call
-   * (shaders/activity.js inertRefFrag: the reference tools/activity-check.mjs
-   * compares the incremental build with), a byte per brick in brick coordinates.
+   * The inert map built from the state alone (shaders/activity.js
+   * inertRefFrag: the reference tools/activity-check.mjs compares the
+   * incremental build with), a byte per brick in brick coordinates: of the
+   * state at this call once its kernel is built (sim.prepare('inertRef')), else
+   * of the state when it is.
    * @returns {Promise<Uint8Array>}
    */
   async inertRef() {
@@ -918,7 +925,7 @@ export class Simulation {
       this._refGroup = this.gpu.bindGroup(this.L.REF, [{ binding: 0, resource: { buffer: this.refInert } }], 'inert ref');
     }
     const k = this.passOf('inertRef');
-    await k.ready;
+    if (k.state !== 'ready') await k.ready;   // (once prepared, it records at the call, as the other reads do)
     this._dispatch(k, fold(g.nbricks), { bind: [this.tables, this.bindRO, this._refGroup], header: this.header() });
     const w = new Uint32Array(await this.gpu.readback.buffer(this.refInert, 0, g.nbricks * 4));
     const out = new Uint8Array(g.nbricks);

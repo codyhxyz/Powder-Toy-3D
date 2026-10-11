@@ -789,6 +789,28 @@ ${update}
 ${editMain('update', { reads })}`;
 }
 
+// ---------------------------------------------------------------- check-wgsl
+// The prelude on its own with each state layout (C4), its debug variant
+// included, so tools/check-wgsl.mjs validates it at every grid even before a
+// kernel that uses it is checked. Tools' entries: never warmed for a session.
+const PROBES = {
+  preludeRW: [{ ...STATE_OPTS.STATE_RW, debug: true }, 'writeState(p, fetchA(p), fetchB(p), fetchF(p));\n  _ = quietCell(p);'],
+  preludeBuild: [STATE_OPTS.STATE_BUILD, '_ = fetchF(p);\n  _ = drawnUnit(unitOfCell(p));'],
+  preludeAct: [STATE_OPTS.STATE_ACT, '_ = fetchA(p);\n  _ = quietCell(p);'],
+  preludeRO: [STATE_OPTS.STATE_RO, '_ = fetchB(p);'],
+};
+/** tools/check-wgsl.mjs (docs/webgpu.md I1) */
+export const WGSL_CHECK = Object.entries(PROBES).map(([name, [opts, body]]) => ({
+  name, kind: 'compute', tool: true,
+  code: (g) => `${prelude(g, opts)}
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) id: vec3u) {
+  let p = cellOf(id.x % SLOTS);
+  ${body}
+}`,
+  layouts: () => [LAYOUT.TABLES, stateLayout(opts)],
+}));
+
 // ---------------------------------------------------------------- WebGL leftovers
 // WEBGPU-STUB (docs/webgpu.md J3): the WebGL passes' plumbing, kept so the
 // modules that import it still load until their units port them. Writers are

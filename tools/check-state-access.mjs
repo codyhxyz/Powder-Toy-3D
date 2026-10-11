@@ -1,6 +1,8 @@
 // Lint for docs/scaling.md D5 and docs/webgpu.md D8.1: the simulation state is
 // reached only through the accessors in src/shaders/common.js (fetchA, fetchB,
-// fetchF and their slot twins to read, writeState and writeCell to write)
+// fetchF and their slot twins to read; writeState, writeStateS and writeCell
+// to write, and writeFlags where a pass settles only a cell's flags, as the
+// move's quiet blocks do in place, D2)
 // and, on the CPU, through Simulation's readState/readCell in src/sim.js, so
 // its layout and format can change in those two files (and the slot order
 // only through brickId, slotOf, brickCoord and cellOf, C2). Fails on any
@@ -125,6 +127,7 @@ const SAMPLES = [
   ['bad', 'const k = `${x ? `${y}` : \'}\'}\nlet v = B [i];`;'],
   ['bad', 'const bytes = await gpu.readback.buffer(sim.state.A, 0, 64);'],
   ['ok', 'const k = `fn f(p: vec3i) -> vec4f { return fetchA(p) + fetchB(p); }`;'],
+  ['ok', 'const k = `if (fl != f0) { writeFlags(c, fl); }`;'],
   ['ok', 'const [A, B] = await sim.readState();\nconst id = A[i * 4];   // JS, not shader text'],
   ['ok', 'const k = `${A[0]} cells`;   // a JS expression inside the template'],
   ['ok', 'const re = /`/; const x = A[1]; const s = "`"; const t = \'`\';'],
