@@ -31,6 +31,8 @@ const LIMB_R = 0.17;                     // stick radius
 const TORSO_R = 0.24;
 const CAP_SEGMENTS = 4, RADIAL_SEGMENTS = 10;
 
+export const STICK_HAND = 'stick-hand_r';   // the stickman's right-hand point, by name (the mannequin's bone is hand_r)
+
 // Material: a light, slightly warm matte (albedo, linear).
 const ALBEDO = [0.72, 0.7, 0.66];
 
@@ -201,10 +203,15 @@ export function buildStick() {
   const shR = limb(torso, ALBEDO, SHOULDER_HALF, shY, UPPER_ARM, LIMB_R);
   const hipL = limb(body, ALBEDO, -HIP_HALF, 0, THIGH, LIMB_R);
   const hipR = limb(body, ALBEDO, HIP_HALF, 0, THIGH, LIMB_R);
+  const elR = limb(shR, ALBEDO, 0, -UPPER_ARM, FOREARM, LIMB_R);
+  // the right hand's point, where the shell (index.js) puts the tool in hand in third person
+  const hand = new THREE.Group();
+  hand.name = STICK_HAND;
+  hand.position.y = -FOREARM;
+  elR.add(hand);
   return {
-    hipY: HIP_Y, lieLift: LIMB_R, body, torso, neck, shL, shR, hipL, hipR,
+    hipY: HIP_Y, lieLift: LIMB_R, body, torso, neck, shL, shR, hipL, hipR, elR,
     elL: limb(shL, ALBEDO, 0, -UPPER_ARM, FOREARM, LIMB_R),
-    elR: limb(shR, ALBEDO, 0, -UPPER_ARM, FOREARM, LIMB_R),
     knL: limb(hipL, ALBEDO, 0, -THIGH, SHIN, LIMB_R),
     knR: limb(hipR, ALBEDO, 0, -THIGH, SHIN, LIMB_R),
   };

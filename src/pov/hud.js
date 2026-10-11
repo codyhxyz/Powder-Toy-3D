@@ -78,7 +78,7 @@ export function createPovHud() {
     h('span', {}, key('C'), ' crouch'),
     h('span', {}, key('F'), ' kick'),
     h('span', {}, key('Z'), ' zoom'),
-    h('span', {}, key('F5'), ' third person'),
+    h('span', {}, key('F5'), '/', key('Ctrl'), ' third person'),
     h('span', {}, key('V'), ' god view'));
   if (touch) hint.replaceChildren(
     h('span', { text: 'Drag the scene to look' }),

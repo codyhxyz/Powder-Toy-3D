@@ -109,7 +109,7 @@ export function createHelp(onClose) {
         row('Pick a tool slot; again for the next in it', '1', '–', '6'),
         row('Tools menu: get more tools', 'Q'),
         row('Drink from the flask', 'H'),
-        row('First or third person', 'F5'),
+        row('First or third person', 'F5 or Ctrl'),
         row('Get in or out of a vehicle (drive: W A S D, Space, Shift)', 'E'),
         CLASSES_ENABLED ? row('Choose a class (Team Fortress 2\'s key)', ',') : null,
         row('Hide the HUD and hand', 'F1'),

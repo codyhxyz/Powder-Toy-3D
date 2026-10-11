@@ -2,6 +2,9 @@ import * as THREE from 'three';
 import { BODY_HEIGHT, BODY_WIDTH, HAND_REACH } from './constants.js';
 import { createPovCamera, ENTRY_PITCH, FIGURE_HIDE_DIST, RESPAWN_SWOOP_S, SWOOP_S } from './camera.js';
 import { createBody } from './figureReal.js';
+import { STICK_HAND } from './figure.js';
+import { attachModel } from './models.js';
+import { gearByKey } from './tools/catalog.js';
 import { createPovHud } from './hud.js';
 import { createPovAudio } from './audio.js';
 import { createFeel } from './feel.js';
@@ -55,8 +58,14 @@ const WHEEL_PAGE_PX = 800;              // px per page
 // duck in player.js; in liquid it swims down) and the zoom (Z, zoom.js).
 const CROUCH_KEY = 'KeyC';
 const MOVE_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ShiftLeft', 'ShiftRight', CROUCH_KEY, ZOOM_KEY]);
-// First or third person: Minecraft's F5 (its page reload is held back)
+// First or third person: Minecraft's F5 (its page reload is held back), or a
+// tap of Ctrl on its own (a laptop's F5 hides behind fn; Ctrl is free in the body)
 const VIEW_KEY = 'F5';
+const VIEW_TAP_KEYS = new Set(['ControlLeft', 'ControlRight']);
+// Third person, the tool in hand on the body (Team Fortress 2's world models):
+// the viewmodel's model grown to read at a distance, as the NPCs' are (npc.js HELD_SCALE)
+const HELD_SCALE = 1.8;
+const REAL_HAND = 'hand_r';             // the mannequin's right-hand bone (figureReal.js)
 const VEHICLE_KEY = 'KeyE';             // get in, get out, or right a vehicle (vehicles/index.js; Halo's and most shooters' use key)
 // Driving, the chase camera swings back behind the vehicle once the mouse rests (GTA's and most driving games')
 const CHASE_PITCH = -0.22;              // rad, the look on getting in: a little down onto the vehicle
@@ -118,6 +127,32 @@ export function createPov(app) {
   viewmodel.name = 'pov-viewmodel';
   camera.add(viewmodel);
   viewmodel.visible = false;
+
+  // the tool in hand, drawn on the body once the camera is out of the head (the
+  // viewmodel shows it in first person): its model at the right hand, along the aim
+  const heldProp = new THREE.Group();
+  heldProp.name = 'pov-held';
+  heldProp.visible = false;
+  scene.add(heldProp);
+  const heldModels = new Map();          // tool key → its model, built the first time it's held
+  const hands = new WeakMap();           // a body's root → its right hand
+  const vAim = new THREE.Vector3();
+  function showHeld(show, size) {
+    const key = show ? toolbelt?.selectedKey : null;
+    const model = key ? gearByKey(key)?.model : null;   // the wand has no model
+    if (model && !heldModels.has(key)) heldModels.set(key, attachModel(heldProp, model, null, { arm: false }).obj);
+    for (const [k, obj] of heldModels) obj.visible = k === key;
+    const body = figure?.showing === 'real' ? figure.real.model : figure?.root;
+    if (body && !hands.has(body)) hands.set(body, body.getObjectByName(body === figure.root ? STICK_HAND : REAL_HAND));
+    const hand = body && hands.get(body);
+    heldProp.visible = !!(model && hand);
+    if (!heldProp.visible) return;
+    hand.updateWorldMatrix(true, false);
+    hand.getWorldPosition(heldProp.position);
+    povCam.dir(vAim);
+    heldProp.rotation.set(Math.asin(THREE.MathUtils.clamp(vAim.y, -1, 1)), povCam.look.yaw, 0, 'YXZ');
+    heldProp.scale.setScalar(size * HELD_SCALE);
+  }
 
   let mode = 'off';                      // off | entering | on | exiting
   let editing = false;
@@ -197,12 +232,24 @@ export function createPov(app) {
   let hudHidden = false;
   const setHudHidden = (v) => { hudHidden = v; document.body.classList.toggle('pov-nohud', v); app.requestRender(); };
 
+  // Ctrl swaps the view on its own release, so a Ctrl chord (Ctrl+click, Ctrl+Z) doesn't
+  let viewTap = false;
+  const swapView = () => { if (mode !== 'exiting') povCam.third = !povCam.third; };
+  addEventListener('keydown', (e) => {
+    viewTap = VIEW_TAP_KEYS.has(e.code) && !e.repeat && !e.metaKey && !e.altKey && !e.shiftKey;
+  }, { capture: true });
+  addEventListener('mousedown', () => { viewTap = false; }, { capture: true });
+  addEventListener('keyup', (e) => {
+    if (!VIEW_TAP_KEYS.has(e.code) || !viewTap) return;
+    viewTap = false;
+    if (!editing && active() && !app.isTyping()) swapView();
+  });
   addEventListener('keydown', (e) => {
     if (editing || !active() || app.isTyping() || e.metaKey || e.ctrlKey || e.altKey) return;
     if (MOVE_KEYS.has(e.code)) { keys.add(e.code); if (e.code === 'Space') e.preventDefault(); }
     if (e.code === VIEW_KEY) {
       e.preventDefault();
-      if (!e.repeat && mode !== 'exiting') povCam.third = !povCam.third;
+      if (!e.repeat) swapView();
     }
     if (e.code === VEHICLE_KEY && !e.repeat) useVehicle();
     if (e.code === KICK_KEY && !e.repeat && mode === 'on') kickQueued = true;   // the kick (kick.js): always to hand, no slot
@@ -416,7 +463,7 @@ export function createPov(app) {
     vehicles.reset(player);
     setMenu(false);
     toolbelt?.setVisible(false);
-    viewmodel.visible = false;
+    viewmodel.visible = heldProp.visible = false;
     classes?.close({ relock: false });
     if (document.pointerLockElement === canvas) document.exitPointerLock();
     releaseInput();
@@ -452,7 +499,7 @@ export function createPov(app) {
     for (const n of npcs.values()) n.reset();
     vehicles.reset(player);
     game.setVisible(false);
-    viewmodel.visible = false;
+    viewmodel.visible = heldProp.visible = false;
     povHud.show(false);
     feel.reset();
     nightVision?.reset();
@@ -642,6 +689,7 @@ export function createPov(app) {
     if (player.status.has('BURNING') && !player.dead) vfx?.burn(player.pos, dt);
     for (const n of npcs.values()) if (n.body.status?.has('BURNING') && !n.body.dead) vfx?.burn(n.body.pos, dt);
     viewmodel.visible = mode === 'on' && !deadSeen && pose.eyeDist <= FIGURE_HIDE_DIST && !hudHidden && !driving;
+    showHeld(mode === 'on' && !deadSeen && pose.eyeDist > FIGURE_HIDE_DIST && !driving && !player.gibbed, scale * player.size);
 
     // the toolbelt
     const aim = ctx.aim, hv = app.hover;

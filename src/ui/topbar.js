@@ -31,7 +31,7 @@ export function createToolbar({ views, settings, actions }) {
   const walk = h('div.cam-seg', { role: 'group', 'aria-label': 'Camera' },
     camOpt('god', 'God', 'God view: build and pour (V)'),
     camOpt('first', '1st', 'Walk in first person (V)'),
-    camOpt('third', '3rd', 'Walk in third person (F5 swaps)'));
+    camOpt('third', '3rd', 'Walk in third person (F5 or Ctrl swaps)'));
   const shot = btn('camera', 'Save screenshot (P)', actions.screenshot);
   const maps = btn('maps', 'Maps and gamemodes (Esc)', actions.openMenu);
   const gear = btn('gear', 'Settings (,)', actions.toggleSettings);
