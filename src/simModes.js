@@ -73,6 +73,23 @@ export function sanitizeModes(m) {
   };
 }
 
+// The Settings drawer's rows (ui/settings.js), for its Simulation section:
+// change(key, value) applies one, locked(key) says why it can't change now
+// (a guest; World's edge), else falsy.
+const AIR_COLS = 3;   // the air row's five options, in rows of this many
+export function simModeRows({ change, locked }) {
+  const seg = (key, name, list, extra = {}) => ({
+    type: 'seg', key, options: list.map(([v, l], i) => [v, i ? l : `${name}: ${l}`]),
+    onChange: (v) => change(key, v), disabled: () => locked(key), ...extra,
+  });
+  return [
+    seg('gravityMode', 'Gravity', GRAV_LABELS),
+    seg('airMode', 'Air', AIR_LABELS, { cols: AIR_COLS }),
+    seg('ambientHeat', 'Ambient Heat', [[true, 'On'], [false, 'Off']]),
+    seg('edgeMode', 'Edges', EDGE_LABELS),
+  ];
+}
+
 // Hand the modes in settings to a simulation (sim.js keeps World solid).
 export function applySimModes(sim, s) {
   sim.gravityMode = s.gravityMode;

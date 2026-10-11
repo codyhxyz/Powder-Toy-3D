@@ -54,6 +54,7 @@ import { finishSignIn, account, accountsEnabled } from './account.js';
 import { accountSection } from './ui/account-section.js';
 import { launch } from './launch.js';
 import { MAPS, mapByKey, mapOf, isWorld, sizeTag, WORLD_DIMS } from './maps.js';
+import { SIM_MODE_DEFAULTS, simModeRows, applySimModes, sanitizeModes, modeToast, MODE_KEYS, nextMode } from './simModes.js';
 
 // Optional modules (built in parallel); the app works without them.
 const optional = import.meta.glob(['./views.js', './signs.js', './constructions.js'], { eager: true });
@@ -142,6 +143,7 @@ const STORE = 'powder-toy-3d:settings';
 const GLOW_GAIN = 1.6;
 
 const settings = { ...DEFAULTS };
+Object.assign(settings, SIM_MODE_DEFAULTS);   // world options (simModes.js): not remembered, a fresh scene starts them over
 try {
   // only keys still in use: values of removed settings must not linger
   const saved = JSON.parse(localStorage.getItem(STORE) || '{}');
@@ -336,6 +338,7 @@ function build() {
   win = null;
   sim = new Simulation(renderer, nx, ny, nz, { windowed: !!worldMode, world: worldMode?.size });
   sim.gravity = settings.gravity;
+  applySimModes(sim, settings);
   sim.onPass = prof.on ? simPass : null;
   scale = 10 / Math.max(nx, nz);
   if (worldMode) {
@@ -648,6 +651,7 @@ function loadPreset(name, undoable = true) {
   else if (name === 'island') loadIsland(sim, { seed: worldSeed });
   else arenaLayout = buildPreset(name, sim);
   if (win || !(name in ARENA_GRID)) arenaLayout = null;
+  resetSimModes();
   post.reset();
   signs?.clear();
   resetSpawners(name);
@@ -984,6 +988,8 @@ const settingsPanel = createSettings({
       { type: 'slider', key: 'steps', label: 'Speed (steps per frame)', min: 1, max: 12, step: 1, def: DEFAULTS.steps, fmt: fmtSpeed, onChange: save },
       { type: 'slider', key: 'gravity', label: 'Gravity', min: 0, max: 0.06, step: 0.005, def: DEFAULTS.gravity,
         fmt: (v) => `${(v / DEFAULTS.gravity).toFixed(1)} g`, onChange: (v) => { sim.gravity = v; save(); } },
+      // TPT's Simulation Options: gravity, air, ambient heat and edge modes (simModes.js)
+      ...simModeRows({ change: setSimMode, locked: simModeLock }),
     ] },
     // a cost lever too: sim work grows with cells, ray marching with the grid's span
     { title: 'Lighting', rows: [
@@ -1066,6 +1072,27 @@ function resetSettings() {
   toolbar.sync();
   save();
   hud.toast('Settings reset');
+}
+
+// Simulation modes (simModes.js): options of the world playing, so the host's
+// alone; a fresh scene starts them over at their defaults, or its map's.
+function setSimMode(key, v, toast = false) {
+  if (mp.guard()) return;
+  if (simModeLock(key)) { hud.toast(simModeLock(key)); return; }
+  settings[key] = v;
+  applySimModes(sim, settings);
+  settingsPanel.sync();
+  if (toast) hud.toast(modeToast[key](settings[key]));
+}
+function simModeLock(key) {
+  if (mp.isGuest) return 'The host sets these';
+  if (key === 'edgeMode' && win) return 'World\'s edges stay solid: past them is the rest of the island, not the void';
+  return false;
+}
+function resetSimModes() {
+  Object.assign(settings, sanitizeModes({ ...SIM_MODE_DEFAULTS, ...mapOf(settings)?.modes }));
+  applySimModes(sim, settings);
+  settingsPanel.sync();
 }
 
 function setSettingsOpen(v) {
@@ -1342,6 +1369,7 @@ addEventListener('keydown', (e) => {
   else if (k === ']') setRadius(settings.radius + 1);
   else if (k === 'b' || k === 'B') { settings.shape ^= 1; dock.sync(); save(); }
   else if (k === 'x' || k === 'X') { settings.replace = !settings.replace; dock.sync(); save(); hud.toast(settings.replace ? 'Replace mode on' : 'Replace mode off'); }
+  else if (Object.hasOwn(MODE_KEYS, k.toLowerCase())) { const key = MODE_KEYS[k.toLowerCase()]; setSimMode(key, nextMode(key, settings[key]), true); }   // TPT's Y, U
   else if (k === 'i' || k === 'I') { if (!(pointerInside && !uiHover && pickHovered())) setEyedropper(!eyedropper); }
   else if (k === 'r' || k === 'R') actions.resetCamera();
   else if (k === 't' || k === 'T') dock.toggle();
@@ -1748,6 +1776,7 @@ try {
     setSize,         // switch the grid (a SIZES or WORLDS key), keeping the scene settings
     openMap,         // as the start menu's Start does (a maps.js key, a gamemode)
     undo,            // as ⌘Z does
+    setSimMode,      // (key, value): as the drawer's Simulation switches do (simModes.js SIM_MODE_KEYS)
     get worldFocus() { return worldFocus; }, set worldFocus(v) { worldFocus = v; },
     MOBILE, SUN, day, scene, settings, camera, controls, loadPreset, selectTool, setView, hover, renderer, rig, renderThumb, gfx, post, mp, autoRes, prof,
     applyDetail,   // after changing settings.detail_* by hand
