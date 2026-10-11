@@ -158,6 +158,7 @@ export class FarField {
         ...gfxUniforms,
         tFar: { value: this.grid.texture }, tFarField: { value: this.field.texture },
         tFar1: { value: this.l1.texture }, tFar2: { value: this.l2.texture }, tFarShadow: { value: this.shadow.texture },
+        tFarTop: { value: this.top.texture },   // the ground's surface over each column: the sky under it (FAR_SKY)
         uWorldToScene: { value: this.worldToScene }, uSceneToWorld: { value: this.sceneToWorld },
         uWinLo: { value: new THREE.Vector3() },
         // the sea beyond the world and its bed, or (sea 0) the plain there
