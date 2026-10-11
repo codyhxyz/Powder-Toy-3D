@@ -1,104 +1,109 @@
-// Incremental derived passes (docs/scaling.md D9) against a full rebuild, bit
-// for bit. Each case runs twice from the same seed with the same steps and
-// writes, once with sim.incremental and once without, and compares every
-// derived target after several frames' updateBricks: the field EMA, the final
-// fields, the brick map, the empty-space distance and the glow volume. Any
-// difference means a dirty set missed a change (or a pass read a texel its
-// region didn't cover).
-// usage: node tools/derived-check.mjs --port N [--size 128]
-import { launchBrowser, newTestPage, ready } from './browser.mjs';
-const args = process.argv.slice(2);
-const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
-const port = opt('port', '5191');
-const size = opt('size', '128');
-const SEED = 4242;           // Math.random seed (mulberry32) for each load
-const COMPARE_EVERY = 6;     // frames between comparisons (and after the last frame)
-const LOAD_TIMEOUT_MS = 120000;   // page load (shader compiles stall it when the GPU is busy)
-const WATER = 7, HEAT = -2;  // brush tools (elements.js ids)
-// [preset, steps before, frames, steps per frame, writes]. Writes: 'paint' (a moving
-// water brush every frame), 'heat' (the heat tool every frame), 'undo' (a snapshot,
-// then undo six frames later), 'pause' (no steps in the second half).
-// 1 and 3 steps per frame: activity maps outlive a frame (shaders/activity.js).
-const CASES = [
-  ['lab', 200, 40, 4, null],
-  ['lab', 200, 30, 4, 'paint'],
-  ['volcano', 200, 30, 4, 'heat'],
-  ['island', 100, 30, 4, null],
-  ['lab', 100, 24, 1, 'undo'],
-  ['lab', 100, 24, 3, 'pause'],
-];
-const UNDO_SNAPSHOT = 8, UNDO_AT = 14;   // frames
-const PAINT_AT = [90, 30, 30], PAINT_DRIFT = 1, PAINT_RADIUS = 4;   // cells, cells per frame along x
-const HEAT_AT = [64, 20, 64], HEAT_DRIFT = 1, HEAT_RADIUS = 6;      // cells, cells per frame along y
+// The derived passes (docs/webgpu.md E), in the harness (tools/harness/derived-check.*:
+// a Simulation and its src/derived.js on their own device, no app). One browser per
+// stage, each within ~3 minutes on SwiftShader:
+//   steps   incremental (sim.incremental) against a full rebuild every frame
+//           (sim.incremental = false: the same kernels over lists of every brick), bit
+//           for bit, every derived resource (the field EMA, the three final fields,
+//           the brick map, brickDist, the glow volume, the GI history and bands), at
+//           checkpoints of scripted runs: the lab running, a moving water brush
+//   writes  the heat tool, undo, three steps a frame then derived frames without
+//           steps (the age pass's steps gate), a still world painted every frame
+//           (only the lists' dilation covers the brush's surroundings), a
+//           smoothing change
+//   shift   the same over window moves along x and z (two in one derived frame), each
+//           slab filled by an edit, in a running world and in a still one whose
+//           derived passes have settled: the derived history shifts by whole bricks
+//           and re-ages only the slab and the moving faces; and the shift's kernels and
+//           copies against a CPU model (ages, brick map, brickDist, EMA, final
+//           fields, GI history and textures, an edit's change pending at the move)
+//   pending moves in a settled, running world, each tick in the app's order (an edit,
+//           the steps, an edit after them, the move, the slab's fill, the derived
+//           frame), so every move finds changes the age pass hasn't counted (writer
+//           marks, the steps' `changed` map): compared at each move's frame and the
+//           next, where the lists must skip bricks; and its negative control, the
+//           same run without the fold before the shift, must differ
+//   units   the fused peak (boost stages 3-5) against the separable stages, bit for
+//           bit; the brick map's info words: the WGSL decoders against their JS twins
+//           on every combination, and a scene's bricks against what they hold
+// Any difference between incremental and full means a dirty set missed a change, or
+// a pass read a value its list didn't cover. Each stage also shows that the
+// incremental lists skipped bricks, so a comparison isn't vacuous.
+//
+// usage: node tools/derived-check.mjs [--stage steps,writes,shift,pending,units] [--case name,…] [--size N] [--port N]
+//   --case runs only those cases (the harness's CASES), in one browser
+//   --size N runs the cases at N³, the moving ones in an N×… window twice as wide (2N×N×N);
+//           else at their own (32³, 64×32×32: the container's). On the Mac (docs/webgpu.md
+//           I4.0): --size 64, then --size 128 (one stage at a time: each takes longer)
+import { launchBrowser, gpuInfo } from './browser.mjs';
+import { startVite } from './vite-server.mjs';
+import { openHarness } from './harness/open.mjs';
 
-const b = await launchBrowser();
-const p = await newTestPage(b, { mode: 'manual', viewport: { width: 800, height: 600 } });
-const errs = [];
-p.on('console', (m) => { if (m.type() === 'error' && !/ERR_CONNECTION_REFUSED/.test(m.text())) errs.push(m.text().slice(0, 300)); });
-p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 300)));
-await p.goto(`http://localhost:${port}/?preset=lab&size=${size}`, { timeout: LOAD_TIMEOUT_MS });
-await ready(p);
-let failed = false;
-for (const c of CASES) {
-  const r = await p.evaluate(([[preset, warm, frames, spf, writes], k]) => {
-    const a = window.__app, R = a.renderer;
-    a.settings.paused = true;
-    const seed = () => { let s = k.SEED; Math.random = () => { s |= 0; s = (s + 0x6d2b79f5) | 0; let t = Math.imul(s ^ (s >>> 15), 1 | s); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; };
-    const read = (t, i) => {
-      const tex = t.textures[i], n = t.width * t.height * 4;
-      const T = a.THREE;
-      const buf = tex.type === T.FloatType ? new Float32Array(n) : tex.type === T.HalfFloatType ? new Uint16Array(n) : new Uint8Array(n);
-      R.readRenderTargetPixels(t, 0, 0, t.width, t.height, buf, undefined, i);
-      return buf;
-    };
-    const snap = (sim) => [
-      ...[0, 1, 2].map((i) => [`fields${i}`, read(sim.fields, i)]),
-      ...[0, 1, 2].map((i) => [`ema${i}`, read(sim.fieldEma, i)]),
-      ['brick', read(sim.brick, 0)], ['brickDist', read(sim.brickDist[0], 0)], ['light', read(sim.light[1], 0)],
-    ];
-    // One run, synchronous throughout, so the app's own frames can't interleave.
-    const run = (incremental) => {
-      seed();
-      a.day.clock = 0;
-      a.loadPreset(preset, false);
-      const sim = a.sim;
-      sim.frame = 0;
-      sim.paints = 0;
-      sim.incremental = incremental;
-      for (let i = 0; i < warm; i++) sim.step();
-      const V = a.camera.position.constructor;
-      const snaps = [];
-      for (let f = 0; f < frames; f++) {
-        if (!(writes === 'pause' && f >= frames / 2)) for (let s = 0; s < spf; s++) sim.step();
-        if (writes === 'paint') {
-          const [x, y, z] = k.PAINT_AT;
-          sim.paint({ center: new V(x + f * k.PAINT_DRIFT, y, z), radius: k.PAINT_RADIUS, shape: f & 1, tool: k.WATER, rate: 1, replace: false });
-        }
-        if (writes === 'heat') {
-          const [x, y, z] = k.HEAT_AT;
-          sim.paint({ center: new V(x, y + f * k.HEAT_DRIFT, z), radius: k.HEAT_RADIUS, shape: 0, tool: k.HEAT, rate: 1, replace: false });
-        }
-        if (writes === 'undo' && f === k.UNDO_SNAPSHOT) sim.snapshot();
-        if (writes === 'undo' && f === k.UNDO_AT) sim.undo();
-        sim.updateBricks();
-        if (f % k.COMPARE_EVERY === k.COMPARE_EVERY - 1 || f === frames - 1) snaps.push(snap(sim));
+const argv = process.argv.slice(2);
+const opt = (k) => (argv.includes(`--${k}`) ? argv[argv.indexOf(`--${k}`) + 1] : null);
+// stage → [cases (harness CASES), unit tests]
+const STAGES = {
+  steps: [['lab', 'paint'], []],
+  writes: [['heat', 'undo', 'pause', 'still', 'smoothing'], []],
+  shift: [['shift', 'shiftStill'], ['shiftModel']],
+  pending: [['shiftPending'], []],
+  units: [[], ['fused', 'bits']],
+};
+const size = opt('size') ? Number(opt('size')) : null;
+if (size !== null && !(size >= 16 && size % 16 === 0)) throw new Error(`--size ${opt('size')}: a multiple of 16 (whole supertiles)`);
+if (opt('case')) STAGES.cases = [opt('case').split(','), []];
+const stages = opt('case') ? ['cases'] : opt('stage')?.split(',') ?? Object.keys(STAGES).filter((k) => k !== 'cases');
+
+const vite = await startVite({ harness: true });
+let failures = 0, printedGpu = false;
+try {
+  for (const stage of stages) {
+    if (!STAGES[stage]) { failures++; console.log(`FAIL no stage ${stage} (have: ${Object.keys(STAGES).join(', ')})`); continue; }
+    const [cases, units] = STAGES[stage];
+    const browser = await launchBrowser();
+    const errors = [];
+    const t0 = Date.now();
+    try {
+      const page = await openHarness(browser, vite, '/tools/harness/derived-check.html', { errors });
+      if (!printedGpu) {
+        const info = await gpuInfo(page);
+        console.log(`gpu: ${info.vendor} ${info.architecture}${info.isFallbackAdapter ? ' (fallback adapter)' : ''}`);
+        printedGpu = true;
       }
-      return snaps;
-    };
-    const A = run(true), B = run(false);
-    a.sim.incremental = true;
-    const diffs = [];
-    A.forEach((s, n) => s.forEach(([name, buf], j) => {
-      const other = B[n][j][1];
-      let d = 0;
-      for (let i = 0; i < buf.length; i++) if (buf[i] !== other[i]) d++;
-      if (d) diffs.push(`${name}@${n}: ${d}`);
-    }));
-    return { checks: A.length * A[0].length, diffs };
-  }, [c, { SEED, COMPARE_EVERY, WATER, HEAT, UNDO_SNAPSHOT, UNDO_AT, PAINT_AT, PAINT_DRIFT, PAINT_RADIUS, HEAT_AT, HEAT_DRIFT, HEAT_RADIUS }]);
-  if (r.diffs.length) failed = true;
-  console.log(`${c.map((x) => x ?? '-').join(' ')}: ${r.checks} target comparisons, ${r.diffs.length ? 'DIFFERENT ' + r.diffs.join(', ') : 'all identical'}`);
+      console.log(`\n${stage}`);
+      let skipped = false;
+      const print = (r) => {
+        for (const c of r.checks) {
+          if (!c.ok) failures++;
+          console.log(`${c.ok ? 'ok  ' : 'FAIL'} ${c.name}${c.ok || !c.detail ? '' : `\n     ${c.detail}`}`);
+        }
+      };
+      for (const name of cases) {
+        const r = await page.evaluate(([n, s]) => window.__harness.run('case', n, { size: s }), [name, size]);
+        print(r);
+        skipped ||= r.skipped;
+        const l = r.lists.map((x) => `${x.ema}/${x.fields}/${x.work}`).join(' ');
+        console.log(`     ${r.grid}, ${(r.ms / 1000).toFixed(0)} s; incremental lists EMA/FIELDS/WORK at the checkpoints: ${l} (of ${r.lists[0].bricks} bricks)`);
+        if (r.control) console.log(`     the control differs in ${r.control.words} words: ${r.control.first}`);
+      }
+      if (cases.length) {
+        const ok = skipped;
+        if (!ok) failures++;
+        console.log(`${ok ? 'ok  ' : 'FAIL'} the incremental passes skipped bricks at some checkpoint (the comparisons aren't vacuous)`);
+      }
+      for (const name of units) print(await page.evaluate((n) => window.__harness.run(n), name));
+      const pageFailures = await page.evaluate(() => window.__harness.failures);
+      if (pageFailures.length) { failures++; console.log(`FAIL graphics failures: ${pageFailures.join(' | ')}`); }
+      console.log(`     (${((Date.now() - t0) / 1000).toFixed(0)} s)`);
+    } catch (e) {
+      failures++;
+      console.log(`\n${stage}\nFAIL ${e.message.split('\n')[0]}`);
+    } finally {
+      if (errors.length) { failures++; console.log(`FAIL page errors: ${errors.join(' | ')}`); }
+      await browser.close();
+    }
+  }
+} finally {
+  await vite.close();
 }
-console.log(errs.length ? errs.join('\n') : 'no console errors');
-await b.close();
-process.exit(failed || errs.length ? 1 : 0);
+console.log(failures ? `\nderived-check: ${failures} failure(s)` : '\nderived-check: incremental == full, bit for bit');
+process.exit(failures ? 1 : 0);
