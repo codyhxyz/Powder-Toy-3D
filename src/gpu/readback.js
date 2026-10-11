@@ -11,12 +11,15 @@
 // the state at the call whatever is recorded after it. Results produced
 // inside a pass go into a slot of a GPU-side ring (nothing can copy from
 // inside a compute pass), and each ring's used range is copied once at the
-// flush. Staging buffers (MAP_READ | COPY_DST) are pooled by size class and
-// mapped once after the submit; the mapped range is copied out before
-// resolving, since mapped memory can't be transferred to a worker and the
-// staging buffer goes back to the pool. Callers keep their own staleness
-// tokens (epoch, generation, sim.id); the service only rejects when graphics
-// have stopped.
+// flush. A slot from next() belongs to the next dispatch or draw recorded,
+// whichever encoder that lands in: the command's own pre-flush (a full frame,
+// a nearly full params ring) or a write in between doesn't copy it early. So
+// take the slot right before the command that writes it, as above. Staging
+// buffers (MAP_READ | COPY_DST) are pooled by size class and mapped once
+// after the submit; the mapped range is copied out before resolving, since
+// mapped memory can't be transferred to a worker and the staging buffer goes
+// back to the pool. Callers keep their own staleness tokens (epoch,
+// generation, sim.id); the service only rejects when graphics have stopped.
 
 import { GraphicsFailure } from './errors.js';
 
@@ -72,6 +75,7 @@ export class Readback {
     this.pending = [];   // copies recorded into the open encoder
     this.mapping = new Set();
     this.rings = new Set();
+    this._reserving = new Set();   // rings with slots taken since the last command
   }
 
   _staging(size) {
@@ -179,7 +183,14 @@ export class Readback {
     return r;
   }
 
-  // flush: copy every ring's used range (before finish)
+  // frame: a dispatch or draw was recorded; slots taken before it are written by it
+  _commandRecorded() {
+    for (const r of this._reserving) r._commit();
+    this._reserving.clear();
+  }
+
+  // flush: copy every ring's used range (before finish); slots taken since
+  // the last command stay reserved for the encoder that records it
   _beforeSubmit(enc) {
     for (const r of this.rings) r._collect(enc);
   }
@@ -240,24 +251,38 @@ export class ResultRing {
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
     });
     this.counter = 0;
-    this.used = new Map();      // slot → deferred, written in the open encoder
+    this.reserved = new Map();  // slot → deferred, taken; no command recorded since
+    this.used = new Map();      // slot → deferred, written by a command in the open encoder
     this.inflight = new Map();  // slot → promise, submitted, not yet mapped
     this.last = new Map();      // slot → its latest bytes
   }
 
   /**
-   * The next slot, marked used in the open encoder. A slot reused before the
-   * flush that copies it would lose a result, so that flushes first.
+   * The next slot. It joins the encoder that records the next dispatch or
+   * draw (the one that writes it), so a flush between this call and that
+   * command, the command's own included, doesn't copy it before it is
+   * written. A slot reused before the flush that copies it would lose a
+   * result, so that flushes first.
    * @returns {number}
    */
   next() {
     const slot = this.counter++ % this.slots;
+    if (this.reserved.has(slot)) {
+      throw new Error(`ring ${this.name}: slot ${slot} taken again before a command wrote it (${this.slots} next() calls with no dispatch between)`);
+    }
     if (this.used.has(slot)) this.readback.gpu.flush(`ring ${this.name} wrapped`);
     let resolve, reject;
     const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
     promise.catch(() => {});
-    this.used.set(slot, { promise, resolve, reject });
+    this.reserved.set(slot, { promise, resolve, reject });
+    this.readback._reserving.add(this);
     return slot;
+  }
+
+  // a dispatch or draw was just recorded: the slots taken before it are its results
+  _commit() {
+    for (const [s, d] of this.reserved) this.used.set(s, d);
+    this.reserved.clear();
   }
 
   /** @param {number} slot @returns {number} the slot's byte offset */
@@ -269,7 +294,7 @@ export class ResultRing {
    * @returns {Promise<ArrayBuffer>}
    */
   read(slot) {
-    const d = this.used.get(slot);
+    const d = this.reserved.get(slot) ?? this.used.get(slot);
     if (d) return d.promise;
     const p = this.inflight.get(slot);
     if (p) return p;
@@ -298,7 +323,9 @@ export class ResultRing {
   }
 
   _fail(failure) {
+    for (const d of this.reserved.values()) d.reject(failure);
     for (const d of this.used.values()) d.reject(failure);
+    this.reserved.clear();
     this.used.clear();
   }
 }

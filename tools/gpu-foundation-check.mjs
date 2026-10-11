@@ -3,14 +3,16 @@
 // layout (uniform and storage), more than FLUSH_DISPATCHES steps in one run
 // with every step's frame, parity and header right, readback recorded at the
 // request, texture de-padding, result rings, indirect dispatch counts, fold(),
-// shared-uniform and write ordering, the WGSL snippets, timestamps, three.js
-// interop (a mesh into a target we read, an external 3D texture sampled from
-// TSL and its source swapped once, render target identity on resize,
-// threeHasVisible), the walking skeleton (our scene pass, three's mesh after it
-// with loadOp load, our composite to the canvas, a non-blank screenshot), and
-// the failure paths: a bad WGSL module, a per-stage limit overrun, lose(), and
-// a validation error after three's init, each reaching gpu.fail with the text
-// tools assert.
+// result-ring slots taken just before a flush, shared-uniform and write
+// ordering, the WGSL snippets, timestamps, three.js interop (a mesh into a
+// target we read, an external 3D texture sampled from TSL and its source
+// swapped once, render target identity on resize, threeHasVisible), the
+// walking skeleton (our scene pass, three's mesh after it with loadOp load,
+// our composite to the canvas, a non-blank screenshot), the failure paths (a
+// bad WGSL module, a per-stage limit overrun, lose(), and a validation error
+// after three's init, each reaching gpu.fail with the text tools assert, the
+// last through our listener and three's onError both), a render pass held
+// open past its task, and frames in flight.
 //
 // usage: node tools/gpu-foundation-check.mjs [--port N] [--out DIR] [--real-gpu]
 import assert from 'node:assert/strict';
@@ -60,7 +62,8 @@ try {
     const r = await run('params');
     assert.deepEqual(r.uniform.mismatches, [], 'uniform');
     assert.deepEqual(r.storage.mismatches, [], 'storage');
-    return `Pack ${r.uniform.size} B, Store ${r.storage.size} B, every word equal`;
+    assert.match(r.oddStride ?? '', /array<Five, 2> has a 20-byte stride/, 'a uniform array of 20-byte structs is refused');
+    return `Pack ${r.uniform.size} B (incl. an array of structs), Store ${r.storage.size} B, every word equal; 20-byte struct stride refused`;
   });
   await check('2500 steps, distinct headers (the ring fills first)', async () => {
     const r = await run('manySteps', 2500, true);
@@ -95,6 +98,14 @@ try {
     assert.deepEqual(r.again, [11, 121, 3, 7]);
     return `12 uses of 8 slots, ${r.submits} submits (a wrap flushes)`;
   });
+  await check('result ring: a slot taken just before a flush', async () => {
+    const r = await run('ringAcrossFlush');
+    for (const c of r) {
+      assert.deepEqual(c.got, c.want, `${c.name} (slot taken at command ${c.at})`);
+      assert.deepEqual(c.again, c.want, `${c.name}: read again`);
+    }
+    return r.map((c) => `${c.name} (at command ${c.at})`).join(', ');
+  });
   await check('indirect dispatch', async () => {
     const r = await run('indirect');
     assert.equal(r.workgroups, 3);
@@ -117,7 +128,10 @@ try {
     assert.deepEqual(r.ruled, [11, 22], 'each command sees the value current when it was recorded');
     assert.deepEqual(r.raw, [44, 44], 'control: a raw writeBuffer between them reaches both');
     assert.deepEqual(r.ordered, [3, 5], 'gpu.write keeps program order');
-    return 'FrameUniforms-style writes flush first (control shows the hazard)';
+    assert.equal(r.writeFlushes, 1, 'the second write flushed (the first found nothing reading it): stats.writeFlushes');
+    assert.equal(r.warnings.length, 1, `one warning for a raw group at a uniform layout: ${JSON.stringify(r.warnings)}`);
+    assert.match(r.warnings[0], /sharedRead binds "raw shared" at group 2, made outside gpu\.bindGroup/);
+    return 'FrameUniforms-style writes flush first (control shows the hazard), counted in writeFlushes; a raw group warns once';
   });
   await check('WGSL snippets', async () => {
     const r = await run('snippets');
@@ -193,7 +207,30 @@ try {
     assert(r.threeOwnsHandler, 'three assigned device.onuncapturederror');
     assert.match(r.message ?? '', /^GPU validation error: /);
     assert.equal(r.frameThrows, 'GraphicsFailure');
-    return 'reached gpu.fail through our listener';
+    assert.equal(r.cause, 'GPUValidationError', 'the failure came from our listener (its cause is the GPUError)');
+    assert.deepEqual(r.paths, ['listener (GPUValidationError)', 'three onError'], 'our listener first, then three\'s forward');
+    return `reached gpu.fail through our listener, then three's onError (${r.paths.join(', ')})`;
+  });
+  await check('a render pass held open past its task', async () => {
+    const r = await run('openPassFlush');
+    assert(r.openAcrossTask, 'the pass was open across a task');
+    assert.equal(r.openAfter, false, 'flushed after rp.end()');
+    assert.equal(r.submits, 1);
+    assert.deepEqual(r.pixel, [0, 255, 0, 255], 'the pass\'s clear landed');
+    return 'skipped by the microtask while open, submitted once it ended';
+  });
+  await check('frames in flight', async () => {
+    const r = await run('inFlight');
+    assert.equal(r.afterOutside, 0, 'work flushed outside a tick is not a frame in flight');
+    assert.equal(r.tickWithWork, 1);
+    assert.equal(r.emptyTick, 0);
+    return 'a tick with work +1, an empty tick and out-of-tick work 0';
+  });
+  await check('rAF counter (budget:idle\'s control)', async () => {
+    const r = await run('rafControl');
+    assert(r.seen > 0, 'three\'s loop, started for 300 ms, ran callbacks');
+    assert(r.afterStop <= 1, `${r.afterStop} callbacks after stop()`);
+    return `three's loop ran ${r.seen} callbacks in 300 ms; createThreeRenderer stops it`;
   });
   const pageFailures = await page.evaluate(() => window.__harness.failures);
   await check('no stray failures on the main gpu', () => { assert.deepEqual(pageFailures, []); return ''; });

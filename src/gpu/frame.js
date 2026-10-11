@@ -16,7 +16,9 @@
 // nearly full, flushes before the next one, so test.step(10000) becomes a few
 // hundred-step submits and the ring never overflows. Inside a render pass
 // nothing flushes: the pass couldn't be resumed without reloading its
-// attachments.
+// attachments. gpu.stats.flushes counts our submits, and writeFlushes those a
+// write forced (gpu.write's ordering, a FrameUniforms write), so a budget
+// sees a mid-frame write that split the frame.
 
 import { FLUSH_DISPATCHES, ParamRing, PARAM_SLOT } from './params.js';
 
@@ -50,20 +52,30 @@ export class GpuFrame {
     if (!this.encoder) {
       const gpu = this.gpu;
       this.encoder = gpu.device.createCommandEncoder({ label: `${gpu.label} frame ${gpu.frameNo}.${this._flushNo}` });
-      if (!this._scheduled) {
-        this._scheduled = true;
-        queueMicrotask(() => {
-          this._scheduled = false;
-          if (!this.encoder) return;
-          if (this._passKind === 'render') {
-            console.warn(`gpu: render pass "${this._passName}" left open past its task; not flushed`);
-            return;
-          }
-          this.flush('outside a tick');
-        });
-      }
+      this._schedule();
     }
     return this.encoder;
+  }
+
+  // The microtask that flushes work recorded outside a tick. A synchronous
+  // tick has flushed in endFrame by the time it runs, so it finds nothing to
+  // do there; whatever was submitted since the last endFrame when it runs
+  // was recorded outside a tick, and endFrame doesn't count it in flight. A
+  // render pass still open waits for its owner: rp.end() schedules it again.
+  _schedule() {
+    if (this._scheduled) return;
+    this._scheduled = true;
+    queueMicrotask(() => {
+      this._scheduled = false;
+      if (this.encoder) {
+        if (this._passKind === 'render') {
+          console.warn(`gpu: render pass "${this._passName}" left open past its task; flushed when it ends`);
+          return;
+        }
+        this.flush('outside a tick');
+      }
+      this._submitsAtEnd = this.gpu.stats.submits;
+    });
   }
 
   /**
@@ -110,6 +122,8 @@ export class GpuFrame {
     rp.end = () => {
       if (this._pass === rp) { this._pass = null; this._passKind = null; this._passName = null; }
       end();
+      // a pass held open past its task skipped the microtask flush: run it again
+      if (this.encoder) this._schedule();
     };
     this._pass = rp;
     this._passKind = 'render';
@@ -176,6 +190,8 @@ export class GpuFrame {
   _commandDone(name) {
     this.commands++;
     this._last = name;
+    const rb = this.gpu.readback;
+    if (rb._reserving.size) rb._commandRecorded();
     if (this.gpu.debug && this._passKind !== 'render') this.gpu.flush(`debug ${name}`);
   }
 
@@ -224,6 +240,7 @@ export class GpuFrame {
     const last = this._last;
     if (gpu.debug) gpu.device.pushErrorScope('validation');
     gpu.queue.submit([enc.finish()]);
+    gpu.stats.flushes++;
     if (gpu.debug) {
       gpu.device.popErrorScope().then((e) => {
         if (e) gpu.fail(new Error(`GPU validation error in ${reason} (last command: ${last}): ${e.message}`));
@@ -236,7 +253,9 @@ export class GpuFrame {
   /**
    * Ends a presented (or derived-only) tick: flushes, counts the frame in
    * flight until the queue has done its work (gpu.inFlight), and closes the
-   * timing frame. A tick that submitted nothing adds nothing in flight.
+   * timing frame. A tick that submitted nothing adds nothing in flight; work
+   * recorded outside a tick (a tool's steps, flushed by its microtask) isn't
+   * counted either.
    */
   endFrame() {
     const gpu = this.gpu;

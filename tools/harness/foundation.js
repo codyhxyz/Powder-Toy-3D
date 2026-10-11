@@ -5,12 +5,19 @@
 
 import {
   probeWebGPU, createGpu, uniformStruct, headerWGSL, fold, createPresenter, createBlit,
-  halfsToFloats, fullscreenVert, glslMod, luma,
+  halfsToFloats, fullscreenVert, glslMod, luma, FLUSH_DISPATCHES, RING_RESERVE,
 } from '/src/gpu/index.js';
 import { createThreeRenderer, gpuTextureOf, externalTexture, initRenderTarget, threeHasVisible, useWebGPUCamera } from '/src/gpu/three.js';
 import * as THREE from 'three/webgpu';
 import { texture3D, vec3 } from 'three/tsl';
 import { boot, ready, test, log, measure, readU32 } from './harness.js';
+
+// requestAnimationFrame callbacks, counted from before three exists: three
+// runs a rAF loop of its own unless createThreeRenderer stops it (deep idle,
+// F7). The wrapper only counts; every callback still runs.
+let rafCallbacks = 0;
+const raf = window.requestAnimationFrame.bind(window);
+window.requestAnimationFrame = (fn) => raf((t) => { rafCallbacks++; fn(t); });
 
 const W = 400, H = 250;
 const h = await boot({ label: 'foundation' });
@@ -30,11 +37,13 @@ const kernel = (name, code, params, layouts = outLayouts, workgroupSize = [1, 1,
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
 // params packing: every type uniformStruct lays out, read back through a kernel
+// (j: an array of structs, whose stride is the struct's natural one)
+const Pair = uniformStruct('Pair', { p: 'vec3f', w: 'f32' });
 const Pack = uniformStruct('Pack', {
-  a: 'f32', b: 'vec3f', c: 'i32', d: 'vec2u', e: 'bool', f: 'array<vec4f, 2>', g: 'mat4x4f', h: 'u32', i: 'vec3i',
+  a: 'f32', b: 'vec3f', c: 'i32', d: 'vec2u', e: 'bool', f: 'array<vec4f, 2>', g: 'mat4x4f', h: 'u32', i: 'vec3i', j: [Pair, 2], k: 'u32',
 });
 const packK = kernel('packCheck', `
-${Pack.wgsl}${headerWGSL()}
+${Pair.wgsl}${Pack.wgsl}${headerWGSL()}
 @group(3) @binding(1) var<uniform> P: Pack;
 @group(2) @binding(0) var<storage, read_write> out: array<u32>;
 @compute @workgroup_size(1) fn main() {
@@ -47,6 +56,8 @@ ${Pack.wgsl}${headerWGSL()}
   out[33] = bitcast<u32>(P.i.x); out[34] = bitcast<u32>(P.i.y); out[35] = bitcast<u32>(P.i.z);
   out[36] = bitcast<u32>(H.origin.x); out[37] = bitcast<u32>(H.origin.y); out[38] = bitcast<u32>(H.origin.z);
   out[39] = H.src; out[40] = H.dst;
+  for (var j = 0; j < 2; j++) { for (var k = 0; k < 3; k++) { out[41 + j * 4 + k] = bitcast<u32>(P.j[j].p[k]); } out[44 + j * 4] = bitcast<u32>(P.j[j].w); }
+  out[49] = P.k;
 }`, Pack);
 
 // the same rules in the storage address space (C6 tables use them)
@@ -159,12 +170,14 @@ test('params', async () => {
   const values = {
     a: 1.5, b: [-2.25, 3.125, 1e-7], c: -123456, d: [7, 0xfffffffe], e: true,
     f: [[1, 2, 3, 4], { x: 5, y: 6, z: 7, w: 8 }], g: Array.from({ length: 16 }, (_, i) => i * 0.5 - 3), h: 0xdeadbeef, i: [-1, 2, -2147483648],
+    j: [{ p: [11, 12, 13], w: 14 }, { p: [15, 16, 17], w: 18 }], k: 0x12345678,
   };
   const header = { origin: [-64, 128, 3], src: 1, dst: 0 };
   const expect = [
     f32(1.5), f32(-2.25), f32(3.125), f32(1e-7), i32(-123456), 7, 0xfffffffe, 1,
     ...[1, 2, 3, 4, 5, 6, 7, 8].map(f32), ...values.g.map(f32), 0xdeadbeef, i32(-1), 2, i32(-2147483648),
     i32(-64), 128, 3, 1, 0,
+    ...[11, 12, 13, 14, 15, 16, 17, 18].map(f32), 0x12345678,
   ];
   const out = storage('pack out', 256);
   packK.dispatch(gpu.frame, [1, 1, 1], { bind: [, , outGroup(out)], header, params: values });
@@ -177,7 +190,11 @@ test('params', async () => {
   storeK.dispatch(gpu.frame, [1, 1, 1], { bind: [, , gpu.bindGroup(IN_OUT, [{ binding: 0, resource: { buffer: sout } }, { binding: 1, resource: { buffer: sbuf } }])] });
   const sexpect = [-0.5, 1, 2, 3, 0.25, 0.5, 0.75, 9, 10, 1, 2, 3, 4, 5, 6, 7, 8, 9].map(f32).concat([i32(-7)]);
   const sgot = [...await readU32(gpu, sout, sexpect.length)];
+  // a uniform array of 20-byte structs: WGSL rejects the stride, so uniformStruct must too
+  let oddStride = null;
+  try { uniformStruct('Odd', { list: [uniformStruct('Five', { a: 'f32', b: 'f32', c: 'f32', d: 'f32', e: 'f32' }), 2], z: 'u32' }); } catch (e) { oddStride = e.message; }
   return {
+    oddStride,
     uniform: { size: Pack.size, offsets: Pack.offsets, mismatches: expect.flatMap((w, i) => (w === got[i] ? [] : [{ i, want: w, got: got[i] }])) },
     storage: { size: Store.size, offsets: Store.offsets, mismatches: sexpect.flatMap((w, i) => (w === sgot[i] ? [] : [{ i, want: w, got: sgot[i] }])) },
   };
@@ -260,6 +277,47 @@ test('ring', async () => {
   return { results: h.tmp, again, submits: stats.submits };
 });
 
+// A slot taken just before a flush: the command that writes it is recorded
+// after the flush (a full frame, a params ring under RING_RESERVE, a write in
+// between), and its copy must come from the encoder that holds that command.
+test('ringAcrossFlush', async () => {
+  const ring = gpu.readback.ring('acrossFlush', 16, 8);
+  const group = outGroup(ring.buffer);
+  const fillBuf = storage('flush filler', 256);
+  const fillGroup = outGroup(fillBuf);
+  const write = (k) => {
+    const slot = ring.next();
+    return { slot, k, at: gpu.frame.commands, write: () => ringK.dispatch(gpu.frame, [1, 1, 1], { bind: [, , group], params: { slot, k } }) };
+  };
+  const cases = [];
+  // 1. the frame already holds FLUSH_DISPATCHES commands: the writer's own dispatch flushes first
+  for (let i = 0; i < FLUSH_DISPATCHES; i++) fillK.dispatch(gpu.frame, [1, 1, 1], { bind: [, , fillGroup], header: gpu.nullHeader, params: { value: i } });
+  let c = write(4242);
+  c.write();
+  cases.push({ name: 'full frame', ...c });
+  // 2. the params ring under RING_RESERVE (distinct headers), fewer commands than a full frame
+  for (let i = 0; gpu.paramRing.free >= RING_RESERVE; i++) {
+    fillK.dispatch(gpu.frame, [1, 1, 1], { bind: [, , fillGroup], header: { origin: [i, 0, 0], src: 0, dst: 0 }, params: { value: i } });
+  }
+  c = write(4343);
+  c.write();
+  cases.push({ name: 'params ring', ...c });
+  // 3. an ordered write between the slot and its command flushes the open encoder
+  fillK.dispatch(gpu.frame, [1, 1, 1], { bind: [, , fillGroup], params: { value: 1 } });
+  c = write(4444);
+  gpu.write(fillBuf, 0, new Uint32Array([9]));
+  c.write();
+  cases.push({ name: 'write', ...c });
+  const reads = cases.map((x) => ring.read(x.slot));
+  await gpu.fence();
+  const out = [];
+  for (let i = 0; i < cases.length; i++) {
+    const { name, slot, k, at } = cases[i];
+    out.push({ name, at, got: [...new Uint32Array(await reads[i])], again: [...new Uint32Array(await ring.read(slot))], want: [k, k * k, slot, 7] });
+  }
+  return out;
+});
+
 test('indirect', async () => {
   const args = storage('args', 16, GPUBufferUsage.INDIRECT);
   const count = storage('count', 16);
@@ -315,7 +373,20 @@ test('sharedUniforms', async () => {
   gpu.write(src, 0, new Uint32Array([5]));
   copyK.dispatch(gpu.frame, [1, 1, 1], { bind: [, , copyGroup], params: { i: 1 } });
   const ordered = [...await readU32(gpu, out, 2)];
-  return { ruled, raw, ordered, submits: stats.submits };
+  // a group made with device.createBindGroup hides what it reads from the
+  // rule: test and dev builds say so, once per group
+  const warnings = [];
+  const warn = console.warn;
+  console.warn = (...a) => warnings.push(a.join(' '));
+  try {
+    const rawGroup = gpu.device.createBindGroup({ label: 'raw shared', layout: SHARED, entries: [{ binding: 0, resource: { buffer: su.buffer } }, { binding: 1, resource: { buffer: out } }] });
+    for (let i = 0; i < 2; i++) sharedK.dispatch(gpu.frame, [1, 1, 1], { bind: [, , rawGroup], params: { i } });
+    sharedK.dispatch(gpu.frame, [1, 1, 1], { bind: [, , group], params: { i: 0 } });
+    await gpu.fence();
+  } finally {
+    console.warn = warn;
+  }
+  return { ruled, raw, ordered, submits: stats.submits, writeFlushes: stats.writeFlushes, warnings };
 });
 
 test('snippets', async () => {
@@ -391,16 +462,63 @@ test('failLose', async () => {
   return { message: f?.message, name: f?.name, frameThrows: frameThrows(g), pending: await within(pending, 5000), after, dispatchThrows };
 });
 
+// Both paths reach gpu.fail: our listener (its cause is the GPUError) and
+// three's onError (its cause is three's { api, type, message } object). fail
+// is idempotent, so a spy records every call to tell them apart.
 test('failValidationAfterThree', async () => {
   const { g, failed } = await freshGpu('fail-validation');
   const c = document.createElement('canvas');
   c.width = 16; c.height = 16;
   await createThreeRenderer(g, c);
   const threeOwnsHandler = typeof g.device.onuncapturederror === 'function';
+  const paths = [];
+  const fail = g.fail.bind(g);
+  g.fail = (e) => {
+    paths.push(e?.cause instanceof GPUError ? `listener (${e.cause.constructor.name})` : e?.cause?.api === 'WebGPU' ? 'three onError' : `other (${e?.message})`);
+    return fail(e);
+  };
   g.device.createBuffer({ label: 'injected', size: 4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.MAP_WRITE });
   g.queue.submit([]);   // errors reach the page when the device next does work, as every frame does
   const f = await within(failed, 10000);
-  return { message: f?.message, name: f?.name, threeOwnsHandler, frameThrows: frameThrows(g) };
+  await tick();
+  return {
+    message: f?.message, name: f?.name, threeOwnsHandler, frameThrows: frameThrows(g),
+    cause: f?.cause?.constructor?.name ?? null, paths,
+  };
+});
+
+// B3 out of a tick: a render pass held open past its task is flushed when it ends
+test('openPassFlush', async () => {
+  const tex = gpu.createTexture({ label: 'late pass', size: [4, 4], format: 'rgba8unorm', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC });
+  const before = gpu.stats.submits;
+  const rp = gpu.frame.render({ colorAttachments: [{ view: tex.createView(), loadOp: 'clear', clearValue: [0, 1, 0, 1], storeOp: 'store' }] }, 'late');
+  await new Promise((r) => setTimeout(r, 50));
+  const openAcrossTask = gpu._frame.open;
+  rp.end();
+  await new Promise((r) => setTimeout(r, 50));
+  const out = { openAcrossTask, openAfter: gpu._frame.open, submits: gpu.stats.submits - before };
+  out.pixel = [...(await gpu.readback.texture(tex, { size: [1, 1, 1] }))];
+  tex.destroy();
+  return out;
+});
+
+// B3: endFrame counts a frame in flight only for the tick's own submits
+test('inFlight', async () => {
+  const buf = storage('in flight', 256);
+  const group = outGroup(buf);
+  await gpu.fence();
+  const delta = () => { const a = gpu.inFlight; gpu.endFrame(); return gpu.inFlight - a; };
+  // work recorded outside a tick, flushed by its microtask, then an empty tick
+  fillK.dispatch(gpu.frame, [1, 1, 1], { bind: [, , group], params: { value: 1 } });
+  await tick();
+  const afterOutside = delta();
+  // a tick that records
+  fillK.dispatch(gpu.frame, [1, 1, 1], { bind: [, , group], params: { value: 2 } });
+  const tickWithWork = delta();
+  // a tick that recorded nothing
+  const emptyTick = delta();
+  await gpu.fence();
+  return { afterOutside, tickWithWork, emptyTick };
 });
 
 // ---------------------------------------------------------------- three.js interop and the walking skeleton
@@ -539,9 +657,22 @@ const budgetGroup = outGroup(budgetBuf);
 const budgetArgs = storage('budget args', 16, GPUBufferUsage.INDIRECT);
 const budgetCount = storage('budget count', 16);
 
+// control for budget:idle's rafCallbacks: three's own loop, started for a
+// moment, is seen by the counter
+test('rafControl', async () => {
+  const before = rafCallbacks;
+  three._animation.start();
+  await new Promise((r) => setTimeout(r, 300));
+  three._animation.stop();
+  const seen = rafCallbacks - before;
+  await new Promise((r) => setTimeout(r, 100));
+  return { seen, afterStop: rafCallbacks - before - seen };
+});
+
 test('budget:idle', async (ms = 1000) => {
+  const raf0 = rafCallbacks;
   const stats = await measure(gpu, () => new Promise((r) => setTimeout(r, ms)));
-  return { stats };
+  return { stats, rafCallbacks: rafCallbacks - raf0 };
 });
 test('budget:frame', async (n = 10) => {
   const stats = await measure(gpu, async () => {

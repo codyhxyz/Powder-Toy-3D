@@ -72,15 +72,20 @@ function layoutOf(type, space, where) {
   throw new Error(`${where}: unsupported type ${type}`);
 }
 
+// WGSL lays an array out by its element's natural alignment in every address
+// space (stride = roundUp(AlignOf(E), SizeOf(E))); the uniform rules only check
+// it, and no attribute on the array can change the stride. So a uniform array
+// whose natural stride isn't a multiple of 16 is refused here, as Tint would.
 function arrayLayout(elem, n, space, where) {
   const e = layoutOf(elem, space, where);
-  const stride = roundUp(e.align, e.size);
+  const stride = roundUp(e.natural, e.size);
   if (space === 'uniform' && stride % 16) {
-    throw new Error(`${where}: array<${e.wgsl}, ${n}> has a ${stride}-byte stride; a uniform array needs a multiple of 16: use vec4 elements (H1.15)`);
+    const fix = typeof elem === 'object' && elem?.isStruct ? `pad ${e.wgsl} to a multiple of 16 bytes` : 'use vec4 elements';
+    throw new Error(`${where}: array<${e.wgsl}, ${n}> has a ${stride}-byte stride; a uniform array needs a multiple of 16: ${fix} (H1.15)`);
   }
-  const align = space === 'uniform' ? roundUp(16, e.align) : e.align;
+  const align = space === 'uniform' ? roundUp(16, e.natural) : e.natural;
   return {
-    wgsl: `array<${e.wgsl}, ${n}>`, align, size: n * stride, natural: e.align,
+    wgsl: `array<${e.wgsl}, ${n}>`, align, size: n * stride, natural: e.natural,
     write: (v, o, x) => { for (let i = 0; i < n; i++) if (x?.[i] !== undefined) e.write(v, o + i * stride, x[i]); },
   };
 }
@@ -286,7 +291,7 @@ export class SharedUniforms {
   write(values) {
     Object.assign(this.values, values);
     const frame = this.gpu._frame;
-    if (frame?.readsUniforms(this)) this.gpu.flush(`${this.label} write`);
+    if (frame?.readsUniforms(this) && this.gpu.flush(`${this.label} write`)) this.gpu.stats.writeFlushes++;
     new Uint8Array(this.data).fill(0);
     this.struct.pack(this.values, this.data);
     this.gpu.queue.writeBuffer(this.buffer, 0, this.data);

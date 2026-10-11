@@ -263,6 +263,7 @@ class Pipe {
       if (!g) throw new Error(`${this.name}: no bind group for group ${i}`);
       pass.setBindGroup(i, g);
       f._noteGroup(g);
+      if (gpu._checkGroups) gpu._checkGroup(this, i, g);
     }
     const { group, offsets } = f._params(header ?? gpu.nullHeader, this.params, params, this.name);
     pass.setBindGroup(3, group, offsets);

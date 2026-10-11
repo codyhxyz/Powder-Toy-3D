@@ -155,10 +155,15 @@ export class Gpu {
     this.inFlight = 0;
     /** endFrame calls so far */
     this.frameNo = 0;
-    /** counters tools read (B3); `dispatches` counts each indirect dispatch twice */
+    /**
+     * counters tools read (B3); `dispatches` counts each indirect dispatch
+     * twice; `submits` counts three's too, `flushes` only ours, `writeFlushes`
+     * those forced by a write (gpu.write's ordering, a FrameUniforms write)
+     */
     this.stats = {
       submits: 0, computePasses: 0, renderPasses: 0, dispatches: 0, indirectDispatches: 0, draws: 0,
       workgroupsDirect: 0, pipelinesCreated: 0, pipelinesPending: 0, bytesAllocated: 0, bytesReadBack: 0, bytesUploaded: 0,
+      flushes: 0, writeFlushes: 0,
     };
     /** test mode: every indirect dispatch's { kernel, buffer, offset }, for tools/budget-check.mjs */
     this.indirectLog = testMode ? [] : null;
@@ -188,6 +193,12 @@ export class Gpu {
     this.paramRing = new ParamRing(device, { label: `${label} params ring` });
     this._paramsGroups = new Map();
     this._groupReads = new WeakMap();
+    // test and dev builds: groups bound where a layout has a plain uniform
+    // buffer (FrameUniforms' kind) must come from gpu.bindGroup (_checkGroup)
+    this._checkGroups = Boolean(testMode || debug || import.meta.env?.DEV);
+    this._ourGroups = new WeakSet();
+    this._uniformLayouts = new WeakSet();
+    this._warnedGroups = new WeakSet();
     this.layout('EMPTY', []);
     this.layout('PARAMS', [
       { binding: 0, buffer: { type: 'uniform', hasDynamicOffset: true } },
@@ -275,13 +286,16 @@ export class Gpu {
       return this.L[name];
     }
     this._layoutEntries.set(name, key);
-    return (this.L[name] = this.device.createBindGroupLayout({ label: name, entries: full }));
+    const layout = (this.L[name] = this.device.createBindGroupLayout({ label: name, entries: full }));
+    if (full.some((e) => e.buffer && (e.buffer.type ?? 'uniform') === 'uniform' && !e.buffer.hasDynamicOffset)) this._uniformLayouts.add(layout);
+    return layout;
   }
 
   /**
    * A bind group (made once per grid or resize, never per frame: B6). Use
    * this rather than device.createBindGroup so the frame knows which commands
-   * read shared uniforms such as FrameUniforms.
+   * read shared uniforms such as FrameUniforms (test and dev builds warn
+   * when a group made otherwise is bound where a layout has a uniform buffer).
    * @param {GPUBindGroupLayout} layout
    * @param {GPUBindGroupEntry[]} entries
    * @param {string} [label]
@@ -296,7 +310,18 @@ export class Gpu {
       if (u) reads.push(u);
     }
     if (reads.length) this._groupReads.set(group, reads);
+    this._ourGroups.add(group);
     return group;
+  }
+
+  // Test and dev builds, at each bind: a group made with device.createBindGroup
+  // where the layout has a uniform buffer hides from the FrameUniforms flush
+  // rule (B3) what it reads. Warns once per group.
+  _checkGroup(pipe, index, group) {
+    if (this._ourGroups.has(group) || group === this.emptyGroup || this._warnedGroups.has(group)) return;
+    if (!this._uniformLayouts.has(pipe.groups[index])) return;
+    this._warnedGroups.add(group);
+    console.warn(`gpu: ${pipe.name} binds "${group.label}" at group ${index}, made outside gpu.bindGroup: a FrameUniforms write can't see that it reads one`);
   }
 
   /**
@@ -414,9 +439,9 @@ export class Gpu {
   /**
    * queue.writeBuffer in program order: a write lands before every command
    * not yet submitted, so by default the open frame is flushed first and
-   * commands recorded before this call never see the new bytes. Pass
-   * `ordered: false` only when nothing recorded since the last flush reads
-   * the target.
+   * commands recorded before this call never see the new bytes. That flush
+   * costs a submit (counted in stats.writeFlushes): pass `ordered: false`
+   * when nothing recorded since the last flush reads the target.
    * @param {GPUBuffer} buffer
    * @param {number} offset
    * @param {BufferSource} data
@@ -424,7 +449,7 @@ export class Gpu {
    */
   write(buffer, offset, data, { ordered = true } = {}) {
     if (this.failure) throw this.failure;
-    if (ordered) this._frame.flush('write');
+    if (ordered && this._frame.flush('write')) this.stats.writeFlushes++;
     this.queue.writeBuffer(buffer, offset, data);
     this.stats.bytesUploaded += data.byteLength;
   }
