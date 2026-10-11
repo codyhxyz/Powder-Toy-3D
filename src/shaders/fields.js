@@ -94,8 +94,11 @@ export const WORK_DILATE = Math.ceil((FIELD_REACH + FIELD_SCRATCH_REACH) / BRICK
 // in (shaders/passes.js brickShiftFrag sets SHIFTED; the next age pass turns
 // it into FRESH, which the EMA pass reads): their cells came from outside the
 // window and have no history, so the EMA starts them over at their targets,
-// as the WebGL build's EMA pass did for cells shifted in.
-export const AGE = { MAX: 255, MASK: 255, FRESH: 256, SHIFTED: 512 };
+// as the WebGL build's EMA pass did for cells shifted in. CHANGED is a change
+// the age pass noted just before a shift (its fold, tick 0): the writers'
+// marks and the steps' `changed` map are where the brick was, so the shift
+// carries the change in the brick's own word, and the next age pass counts it.
+export const AGE = { MAX: 255, MASK: 255, FRESH: 256, SHIFTED: 512, CHANGED: 1024 };
 
 // The lists buffer (src/derived.js), in u32 words: the three lists (a run of
 // NBRICKS brick numbers each, in DIRTY order), their append counters, their
@@ -124,6 +127,7 @@ const AGE_MAX: u32 = ${AGE.MAX}u;
 const AGE_MASK: u32 = ${AGE.MASK}u;
 const AGE_FRESH: u32 = ${AGE.FRESH}u;
 const AGE_SHIFTED: u32 = ${AGE.SHIFTED}u;
+const AGE_CHANGED: u32 = ${AGE.CHANGED}u;
 const EMA_SETTLE: u32 = ${FIELD_EMA_SETTLE}u;   // frames
 const FIELDS_DILATE: i32 = ${FIELDS_DILATE};    // bricks
 const WORK_DILATE: i32 = ${WORK_DILATE};
@@ -399,9 +403,9 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
 export function fieldCopyFrag() { throw new Error('fieldCopyFrag removed in the WebGPU port: docs/webgpu.md E (fieldEmaFrag, in place)'); }
 // WEBGPU-STUB (docs/webgpu.md J3): the field passes run over brick lists, not
 // regions of a field atlas (docs/webgpu.md E).
-export const FIELD_REGION_BRICKS = 8;
+export const FIELD_REGION_BRICKS = null;
 // WEBGPU-STUB (docs/webgpu.md J3)
-export const FIELD_FULL_SHARE = 0.95;
+export const FIELD_FULL_SHARE = null;
 // WEBGPU-STUB (docs/webgpu.md J3)
 export function fieldRegions() { throw new Error('fieldRegions removed in the WebGPU port: docs/webgpu.md E (brick lists)'); }
 // WEBGPU-STUB (docs/webgpu.md J3)

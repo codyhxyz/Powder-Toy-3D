@@ -34,7 +34,9 @@ import { fold } from './gpu/kernels.js';
 // with the cells instead of starting it over: the EMA, the ages, the brick
 // map, its distances, the final fields and the GI probes shift, and only the
 // bricks shifted in and those at the grid's faces on the moving axis re-age
-// (shift below).
+// (shift below). The changes still pending at a move (the writers' marks and
+// the steps' `changed` map, both where the bricks were) are folded into the
+// ages first, so they move with their bricks.
 
 // Resources, per grid (sizes at 128³):
 //   age        u32 per brick: the age and its shift bits (shaders/fields.js AGE)          128 KB
@@ -93,6 +95,9 @@ export class Derived {
     this.world = world;
     this.far = null;              // the far field's textures (attachFar; the GI's far branch)
     this.shiftsBricks = true;     // sim.shift: this keeps the history across a move (no changedAll)
+    // test only (gpu.testMode): dropFold leaves the changes pending at a shift
+    // where they are (tools/derived-check.mjs's negative control)
+    this.test = { dropFold: false };
     this.lastSmoothing = null;
     const g = this.g, n = g.nbricks, slots = g.slots;
     this.lists = dirtyLists(g);
@@ -226,9 +231,7 @@ export class Derived {
    */
   updateDirty() {
     const sim = this.sim;
-    // the quiet map still current at the last call, if steps used it since
-    if (sim.actCarry !== null && sim.actAge > sim.actCarry) sim.noteAwake();
-    sim.actCarry = sim.actAge;
+    this._carry();
     // a new kernel or a reset changes the fields everywhere
     if (sim.smoothing !== this.lastSmoothing || sim.fieldReset) sim.changedAll = true;
     this.lastSmoothing = sim.smoothing;
@@ -236,12 +239,20 @@ export class Derived {
     const book = this.groups.book, tables = sim.tables;
     this._dispatch(age, this._perBrick, {
       bind: [tables, sim.bindBuild, book], header: sim.header(),
-      params: { steps: sim.actNoted, all: sim.changedAll || !sim.incremental },
+      params: { steps: sim.actNoted, all: sim.changedAll || !sim.incremental, tick: 1 },
     });
     sim.changedAll = false;
     sim.actNoted = false;
     this._dispatch(dirty, this._perBrick, { bind: [tables, this.gpu.emptyGroup, book] });
     this._dispatch(dirtyArgs, [1, 1, 1], { bind: [tables, this.gpu.emptyGroup, book] });
+  }
+
+  // The quiet map still current at the last age pass, if steps used it since:
+  // its bricks into `changed` (sim.noteAwake), for the age pass about to run.
+  _carry() {
+    const sim = this.sim;
+    if (sim.actCarry !== null && sim.actAge > sim.actCarry) sim.noteAwake();
+    sim.actCarry = sim.actAge;
   }
 
   /**
@@ -352,6 +363,21 @@ export class Derived {
       return;
     }
     const f = gpu.frame, tables = sim.tables, empty = gpu.emptyGroup, L = this.L, n = g.nbricks;
+    // The changes since the last age pass that it hasn't counted yet: the
+    // writers' marks and the steps' `changed` map (with the carry from the
+    // quiet map still current) are kept by brick number, where the bricks were
+    // before this move. The age pass's fold (tick 0) notes them in each
+    // brick's own word (AGE.CHANGED), which moves with it below; the next
+    // derived frame counts them as its own. `changed` is consumed (the next
+    // map's note starts it over), and a whole-grid change (changedAll, a reset)
+    // is the same everywhere, so it waits for that frame.
+    if (!(gpu.testMode && this.test.dropFold)) {
+      this._carry();
+      this._dispatch(this.kernels.age, this._perBrick, {
+        bind: [tables, sim.bindBuild, this.groups.book], header: sim.header(), params: { steps: sim.actNoted, all: false, tick: 0 },
+      });
+      sim.actNoted = false;
+    }
     const sb = [dx / BRICK, 0, dz / BRICK];
     const b = (binding, buffer) => ({ binding, resource: { buffer } });
     this._shiftGroups ??= {

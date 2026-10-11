@@ -27,9 +27,11 @@ export default {
       run: (page) => page.evaluate(() => window.__harness.run('budget:move')),
       // EMA: the slab (4 × 8 × 8 bricks) and the far face's column (1 × 8 × 8; the near one is in the slab);
       // FIELDS and WORK: those dilated by 1 and 2 bricks along x. The WebGL build rebuilt all 1,024.
-      // The second move: sim.shift's 2 dispatches, the derived shift's 4 (brickShift × 3, fieldShift; the
-      // GI's only once the probes are traced, U9) and a derived frame's 30; each copy back ends a pass.
-      expect: { ema: 320, fields: 448, work: 576, bricks: 1024, submits: 1, dispatches: 36, computePasses: 6, bytesAllocated: 0 },
+      // The second move: sim.shift's 2 dispatches, the derived shift's 5 (the age pass's fold of the changes
+      // pending at the move, brickShift × 3, fieldShift; the GI's only once the probes are traced, U9; the
+      // carry's noteAwake only when steps ran since the last derived frame) and a derived frame's 30; each
+      // copy back ends a pass (the fold opens the one brickShift continues).
+      expect: { ema: 320, fields: 448, work: 576, bricks: 1024, submits: 1, dispatches: 37, computePasses: 6, bytesAllocated: 0 },
     },
   ],
 };

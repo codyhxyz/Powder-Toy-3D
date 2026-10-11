@@ -201,7 +201,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
 // (brick-resolution passes: cheap whole).
 export const BRICK_DIST_MAX = 8;          // bricks; also the half-width of each pass's window
 // WEBGPU-STUB (docs/webgpu.md J3): brickDist holds the distance itself, a u32 per brick (bindings.js brickDistAt).
-export const BRICK_DIST_SCALE = 255;
+export const BRICK_DIST_SCALE = null;
 export const AGE_MAX = AGE.MAX;           // frames an age counts up to
 export { FIELDS_DILATE, WORK_DILATE };
 
@@ -231,12 +231,18 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
 // used didn't skip it (act's `changed`, noted by the activity build and
 // sim.noteAwake), or a writer changed it (marks.derived, which this pass
 // clears: a mark is read once), or every brick did (all: a whole-grid write, a
-// new smoothing, sim.incremental = false). Else one more, up to AGE_MAX. A
-// brick a shift brought in (AGE_SHIFTED) becomes FRESH for this frame's EMA.
-// Without the steps gate, a derived frame with no steps since the last
-// (paused, with a view or smoothing change) would age the last map's awake
-// bricks back to 0: exact, but wasted work (docs/webgpu.md E).
-export const AgeParams = uniformStruct('AgeParams', { steps: 'u32', all: 'u32' });
+// new smoothing, sim.incremental = false), or a shift's fold noted a change
+// (AGE_CHANGED, below). Else one more, up to AGE_MAX. A brick a shift brought
+// in (AGE_SHIFTED) becomes FRESH for this frame's EMA. Without the steps gate,
+// a derived frame with no steps since the last (paused, with a view or
+// smoothing change) would age the last map's awake bricks back to 0: exact,
+// but wasted work (docs/webgpu.md E).
+// tick 0 is the fold before a window shift (src/derived.js shift): the marks
+// and `changed` are where the bricks were before it, so the same test runs
+// there and only notes its answer in the brick's word (AGE_CHANGED), which the
+// shift moves with the brick; the age itself waits for the next derived frame,
+// which counts the change as its own. One pipeline for both (D8.11).
+export const AgeParams = uniformStruct('AgeParams', { steps: 'u32', all: 'u32', tick: 'u32' });
 export const ageFrag = (g) => /* wgsl */ `
 ${prelude(g, STATE_OPTS.STATE_BUILD)}
 ${dirtyListsWGSL(g)}
@@ -251,8 +257,13 @@ ${brickMain}
   let marked = (atomicLoad(&marks[word]) & bit) != 0u;
   if (marked) { atomicAnd(&marks[word], ~bit); }
   let w = age[b];
+  let changed = P.all != 0u || marked || (P.steps != 0u && actLoad(ACT_CHANGED + b) != 0u) || (w & AGE_CHANGED) != 0u;
+  if (P.tick == 0u) {
+    age[b] = w | select(0u, AGE_CHANGED, changed);
+    return;
+  }
   var a = min((w & AGE_MASK) + 1u, AGE_MAX);
-  if (P.all != 0u || marked || (P.steps != 0u && actLoad(ACT_CHANGED + b) != 0u)) { a = 0u; }
+  if (changed) { a = 0u; }
   age[b] = a | select(0u, AGE_FRESH, (w & AGE_SHIFTED) != 0u);
 }
 `;
@@ -537,9 +548,10 @@ ${brickMain}
 // copies the result back); bricks shifted in from outside get zeros. With
 // age, the ages: the bricks shifted in start over with no history (age 0,
 // AGE_SHIFTED), and the bricks within FIELDS_DILATE of either grid face on a
-// moving axis re-age (age 0): the grid's edge clamps reach them differently
-// now. Every other brick is a fixed point of inputs that moved with it, so it
-// keeps its age, its brick record and its final fields.
+// moving axis re-age (age 0, their bits kept: a change the fold noted, AGE_CHANGED,
+// still counts): the grid's edge clamps reach them differently now. Every
+// other brick is a fixed point of inputs that moved with it, so it keeps its
+// age word, its brick record and its final fields.
 export const BrickShiftParams = uniformStruct('BrickShiftParams', { shift: 'vec3i', words: 'u32', age: 'u32' });
 export const brickShiftFrag = (g) => /* wgsl */ `
 ${prelude(g, { state: false })}
