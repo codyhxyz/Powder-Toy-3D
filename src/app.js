@@ -23,6 +23,7 @@ import { farHazeGLSL, farCastersGLSL, farLayout, WORLD_SIZE } from './shaders/fa
 import { quadVert } from './shaders/common.js';
 import { createBrushCursor } from './brush.js';
 import { createCameraRig } from './camera.js';
+import { createMeshCut } from './gfx/meshCut.js';
 import { createBrand, createToolbar } from './ui/topbar.js';
 import { createDock } from './ui/dock.js';
 import { createCard } from './ui/card.js';
@@ -211,6 +212,7 @@ function stopGraphics(error) {
 // What the page was doing when the GPU went away (gfx/gpuLoss.js): a dead
 // GPU process first shows as a link failure with no text, not a lost context.
 const gpuLoss = createGpuLossTracker(renderer);
+const meshCut = createMeshCut(renderer);   // the volume's march stops at the opaque meshes in it
 renderer.domElement.addEventListener('webglcontextlost', () => {
   // Three restores its renderer, not our GPU-only state, undo history, or
   // manually attached array layers. Never resume those as an intact world.
@@ -263,6 +265,7 @@ floorGrid.position.y = -0.002;
 // so the grid and the box outline fade by the render scale to keep their weight.
 // Transparent for that, but still drawn before the other transparent objects.
 floorGrid.material.transparent = true;
+floorGrid.material.depthWrite = false;   // (the volume's march stops at the depth meshes leave: gfx/meshCut.js)
 floorGrid.renderOrder = -1;
 const EDGE_OPACITY = 0.55;
 scene.add(floorGrid);
@@ -363,6 +366,7 @@ function build() {
       uOrigin: sim.originUniform,   // the window's place in the world (the sim passes get it from sim.run)
       uFar: { value: false },
       ...gfxUniforms,
+      ...meshCut.uniforms,   // bodies in water show through it (gfx/meshCut.js)
     },
     side: THREE.BackSide,
     transparent: true,
@@ -372,6 +376,7 @@ function build() {
     blendDst: THREE.OneMinusSrcAlphaFactor,
   }));
   volume.scale.setScalar(scale);
+  volume.onBeforeRender = meshCut.hook;
   volume.frustumCulled = false;
   scene.add(volume);
   volume.add(sim.rays.view);   // photons and neutrons as points, in grid cells (raysLayer.js)
