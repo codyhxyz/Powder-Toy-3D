@@ -1,18 +1,18 @@
 // CPU check of TPT's brush tools (elements.js TOOLS -50..-57, shaders/passes.js
-// paintFrag). No browser, no GPU:
+// paintUpdateWGSL, the brush's kernel). No browser, no GPU:
 //   1. Mix: a twin of mixCell (same hash, same block rule) over a random 3D
 //      grid and many paints, with the window anywhere in the world. Every
 //      cell must end up in exactly one place (no cell lost or copied), only in
 //      a mutual swap with a cell of its own kind, both inside the brush; air
 //      and solids never move. It also prints how fast Mix mixes, next to TPT's.
 //   2. Vacuum: the tiles' CPU port of the engine (ui/tiles/engine.js), with the
-//      Vacuum brush applied as paintFrag does, must pull loose matter in.
-//   3. Wiring: every tool has a branch in paintFrag, a dock tile in the Tools
+//      Vacuum brush applied as the kernel does, must pull loose matter in.
+//   3. Wiring: every tool has a branch in the kernel, a dock tile in the Tools
 //      group, and is paintable over the network.
 // usage: node tools/brush-tools-check.mjs
 import { ELEMENTS, E, K, TOOLS, PALETTE } from '../src/elements.js';
 import { PHYS } from '../src/physics.js';
-import { paintFrag, MIX_BITS } from '../src/shaders/passes.js';
+import { paintKernelWGSL, MIX_BITS } from '../src/shaders/passes.js';
 import { gridLayout } from '../src/sim.js';
 import { World } from '../src/ui/tiles/engine.js';
 
@@ -31,21 +31,21 @@ const seedWorld = (w, frame, salt) =>
   pcg((w[0] >>> 0) + pcg((w[1] >>> 0) + pcg((w[2] >>> 0) + pcg(Math.imul(frame, LCG_MUL) + salt))));
 const rnd = (s) => pcg(s) / 4294967296;
 
-// the constants mixCell reads, from the GLSL itself, so the twin can't drift from them
+// the constants mixCell reads, from the WGSL itself, so the twin can't drift from them
 const g = gridLayout(32, 32, 32);
-const src = paintFrag(g);
+const src = paintKernelWGSL(g);
 const def = (name) => {
-  const m = src.match(new RegExp(`#define ${name} (\\S+)`));
-  if (!m) throw new Error(`paintFrag has no #define ${name}`);
-  return m[1];
+  const m = src.match(new RegExp(`const ${name}(?:: *\\w+)? *= *([^;]+);`));
+  if (!m) throw new Error(`the brush's kernel has no const ${name}`);
+  return m[1].replace(/[uif]$/, '');
 };
 const BITS = +def('MIX_BITS'), MASK = +def('MIX_MASK');
 const SALT = parseInt(def('MIX_SALT')), PAIR_SALT = parseInt(def('MIX_PAIR_SALT'));
-const SWAP = +def('TOOL_MIX_SWAP');
-if (BITS !== MIX_BITS || MASK !== (1 << BITS) - 1 || SWAP !== PHYS.TOOL_MIX_SWAP) fail('Mix constants in paintFrag disagree with passes.js/physics.js');
+const SWAP = Math.fround(+def('TOOL_MIX_SWAP'));
+if (BITS !== MIX_BITS || MASK !== (1 << BITS) - 1 || SWAP !== Math.fround(PHYS.TOOL_MIX_SWAP)) fail('Mix constants in the brush\'s kernel disagree with passes.js/physics.js');
 
 // ---- 1. Mix ----
-// twin of paintFrag's brushDist/inBrush/mixes/mixCell; cell (x, y, z) of an n³ grid
+// twin of the kernel's strokeDist/inBrush/mixes/mixCell; cell (x, y, z) of an n³ grid
 const brushDist = (d, shape) => (shape === 0 ? Math.hypot(...d) : Math.max(...d.map(Math.abs)));
 const inBrush = (p, br) => brushDist(p.map((c, k) => c + 0.5 - br.center[k]), br.shape) <= br.radius;
 const mixes = (id) => [K.POWDER, K.LIQUID, K.GAS].includes(ELEMENTS[id].kind);
@@ -142,7 +142,7 @@ function mixPartner(p, br, frame, origin, n, ids) {
   }
   let inward = 0, n = 0, minP = 0;
   for (let frame = 0; frame < 20; frame++) {
-    // paintFrag's Vacuum branch: max(P - TOOL_PRESSURE·falloff, P_MIN)
+    // the kernel's Vacuum branch: max(P - TOOL_PRESSURE·falloff, P_MIN)
     w.brush(c, c, R, (i, f) => { w.P[i] = Math.max(w.P[i] - PHYS.TOOL_PRESSURE * f, PHYS.P_MIN); });
     for (let i = 0; i < w.P.length; i++) minP = Math.min(minP, w.P[i]);
     for (let s = 0; s < 4; s++) w.step();
@@ -171,10 +171,10 @@ function mixPartner(p, br, frame, origin, n, ids) {
     if (key in E) fail(`${key} is also an element key`);
     if (!tools.includes(key)) fail(`${key} is not in the dock's Tools group`);
     if (!t.abbr || !t.desc) fail(`${key} has no abbreviation or description`);
-    if (!new RegExp(`uTool == T_${key}\\b`).test(src)) fail(`paintFrag has no branch for T_${key}`);
-    if (!src.includes(`#define T_${key} ${id}`)) fail(`T_${key} is not #defined as ${id}`);
+    if (!new RegExp(`tool == T_${key}\\b`).test(src)) fail(`the brush's kernel has no branch for T_${key}`);
+    if (!src.includes(`const T_${key}: i32 = ${id};`)) fail(`T_${key} is not a const ${id}`);
   }
-  if (!failed) ok(`wiring: ${Object.keys(NEW).length} tools have ids, dock tiles and paintFrag branches`);
+  if (!failed) ok(`wiring: ${Object.keys(NEW).length} tools have ids, dock tiles and the brush kernel's branches`);
 }
 
 if (failed) process.exit(1);
