@@ -79,6 +79,18 @@ try {
   r = await cmd('sim.partID(5, 5, 5)');
   check('⌘Z undoes a command', r.out === 'nil', r.out || r.error);
 
+  // the Simulation options and the deco colour, registered by app.js under TPT's Lua names
+  await cmd('sim.gravityMode(2); sim.airMode(3); sim.edgeMode(2); sim.ambientHeatSim(false)');
+  r = await cmd('sim.gravityMode() .. sim.airMode() .. sim.edgeMode() .. tostring(sim.ambientHeatSim())');
+  check('sim.gravityMode, airMode, edgeMode (TPT numbering), ambientHeatSim', r.out === '232false', r.out || r.error);
+  const modes = await p.evaluate(() => { const st = window.__app.settings; return [st.gravityMode, st.airMode, st.edgeMode, st.ambientHeat].join(); });
+  check('...set the drawer\'s switches (edge loop is ours 2)', modes === '2,3,2,false', modes);
+  await cmd('sim.gravityMode(0); sim.airMode(0); sim.edgeMode(1); sim.ambientHeatSim(true)');
+  // (alpha under 128: fengari's integers are 32-bit, so a literal 0xFF…… wraps negative)
+  await cmd('sim.decoColor(10, 20, 30, 127)');
+  r = await cmd('sim.decoColor() == 0x7F0A141E');
+  check('sim.decoColor sets and reads 0xAARRGGBB', r.out === 'true', r.out || r.error);
+
   // handlers: frames driven as app.js's loop drives them (steps: 0 = paused);
   // a frame apart in real time, so the asynchronous reads can land
   const frames = (n, steps = 0) => p.evaluate(async ([n, steps]) => {
