@@ -9,8 +9,13 @@ unit-sized shafts. The scheme and its diagram are in the header of
 `src/world/wang/tiling.js`.
 
 A **kit** is one file, `src/world/wang/kits/<biome>.js` (`mines.js` is the
-example), exporting `{ name, palette, tiles }`. The Coal Pits and Snowy Depths
-kits go next to it.
+example), exporting `{ name, palette, tiles }`. `coal.js` (the Coal Pits) is
+the second: natural caverns built from chains of vaults (`cave()`), crooked
+tunnels, and coal beds at fixed heights so they read as strata across tiles.
+Its palette makes `WATER` toxic sludge and `SAND` broken coal. The Snowy
+Depths kit goes next to them. `node scripts/check-wang.mjs --kit coal` checks
+one kit. The per-tile check also walks each tile mirrored, since a 2-wide body
+sits on a mirrored tile's cells differently.
 
 ## Using a kit in a scene
 

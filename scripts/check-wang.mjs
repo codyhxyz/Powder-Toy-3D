@@ -10,7 +10,7 @@
 //   - the GLSL compiles (glslangValidator, GLSL ES 3.00) after the prelude
 //   - optional previews: PNG slices to a directory (not the repo)
 //
-//   node scripts/check-wang.mjs [--seeds N] [--preview DIR]
+//   node scripts/check-wang.mjs [--seeds N] [--kit NAME] [--preview DIR]
 import { execFileSync } from 'node:child_process';
 import { writeFileSync, mkdtempSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -18,12 +18,15 @@ import { join } from 'node:path';
 import { deflateSync } from 'node:zlib';
 import { gridLayout } from '../src/sim.js';
 import { prelude } from '../src/shaders/common.js';
-import { bakeWang, minesKit, MAT, WANG_OUT } from '../src/world/wang/index.js';
-import { rasterTile, passable, isLiquid, PORTS, SIDE_PORTS, COL } from '../src/world/wang/kit.js';
+import { bakeWang, minesKit, coalKit, snowKit, MAT, WANG_OUT } from '../src/world/wang/index.js';
+import { MAT_NAMES, rasterTile, passable, isLiquid, PORTS, SIDE_PORTS, COL } from '../src/world/wang/kit.js';
 import { cutPorts } from '../src/world/wang/tiling.js';
 import { walkFlood, BODY_W, BODY_H, JUMP } from '../src/world/wang/walk.js';
 
-const KITS = [minesKit];
+// every kit is checked; --kit NAME checks just that one
+const ALL_KITS = [minesKit, coalKit, snowKit];
+const ONLY = process.argv.includes('--kit') ? process.argv[process.argv.indexOf('--kit') + 1] : null;
+const KITS = ALL_KITS.filter((k) => !ONLY || k.name === ONLY);
 const SIZE = [384, 120, 240];       // a region of 16 × 5 × 10 units (cells)
 const SEEDS = Number(process.argv[process.argv.indexOf('--seeds') + 1]) || 4;
 const PREVIEW = process.argv.includes('--preview') ? process.argv[process.argv.indexOf('--preview') + 1] : null;
@@ -181,7 +184,11 @@ const COLOURS = {
   [MAT.AIR]: [18, 14, 20], [MAT.ROCK]: [92, 84, 74], [MAT.SOFT]: [130, 112, 86], [MAT.BEAM]: [170, 110, 50], [MAT.RAIL]: [190, 190, 200],
   [MAT.RUBBLE]: [120, 120, 112], [MAT.WATER]: [40, 110, 170], [MAT.OIL]: [60, 40, 30], [MAT.GOLD]: [240, 200, 40], [MAT.CRYSTAL]: [200, 120, 255],
   [MAT.COAL]: [30, 30, 30], [MAT.MOSS]: [70, 130, 50], [MAT.GRAVEL]: [140, 140, 140], [MAT.METAL]: [160, 165, 175],
+  [MAT.SAND]: [236, 242, 255], [MAT.ICE]: [140, 200, 235],
 };
+// a kit's palette can make a code another element: preview it as that element
+const ELEMENT_COLOURS = { TOXIC: [120, 170, 40], BROKENCOAL: [50, 46, 44], STONE: [125, 125, 120] };
+const paletteColours = (kit) => Object.fromEntries(Object.entries(COLOURS).map(([c, rgb]) => [c, ELEMENT_COLOURS[kit.palette[MAT_NAMES[c]]] ?? rgb]));
 function png(path, w, h, rgb) {
   const raw = Buffer.alloc((w * 3 + 1) * h);
   for (let y = 0; y < h; y++) { raw[y * (w * 3 + 1)] = 0; rgb.copy(raw, y * (w * 3 + 1) + 1, y * w * 3, (y + 1) * w * 3); }
@@ -194,6 +201,7 @@ function png(path, w, h, rgb) {
 const PREVIEW_SCALE = 2;
 function preview(W, cells, reachedS, [RX, RY, RZ], name) {
   mkdirSync(PREVIEW, { recursive: true });
+  const COLOURS = paletteColours(W.kit);
   const G = W.kit.geom, at = (x, y, z) => x + RX * (y + RY * z);
   const S = PREVIEW_SCALE;
   // top-down slices, one per layer at walking height (and at the gallery storey), stacked
@@ -283,16 +291,36 @@ function checkTiles(rawKit) {
       for (let z = 0; z < Z; z++) for (let y = 0; y < Y; y++) for (let x = 0; x < X; x++) {
         grid[x + X * (y + Y * z)] = cutPorts(G, cells[x + X * (y + Y * z)], ports, x, y, z, x, y, z);
       }
-      const st = mouth(G, pa, ca);
-      const starts = [];
-      for (let d = 0; d < 3; d++) for (const [ox, oz] of [[0, 0], [-1, 0], [0, -1], [1, 0], [0, 1], [-1, -1], [1, 1]]) starts.push([st[0] + ox * d, st[1], st[2] + oz * d]);
-      const f = walkFlood(grid, [X, Y, Z], starts.filter((s0) => s0[0] >= 0 && s0[2] >= 0).slice(0, 1).concat());
-      const res = [...f.list].some((i) => inMouth(G, pb, cb, i % X, Math.floor(i / X) % Y, Math.floor(i / (X * Y)))) ||
-        f.fellOut.some(([x, z]) => inMouth(G, pb, cb, x, -1, z));
-      if (!res) { bad++; failures++; console.log(`FAIL tile ${t.name}: ${PORTS[pa]}(${ca}) -> ${PORTS[pb]}(${cb}) not walkable`); }
+      // as authored and mirrored (the tiling places it either way: a 2-wide body sits on the
+      // cells differently, so a one-cell ledge can pass one way round and fail the other)
+      for (let mir = 0; mir < MIRRORS; mir++) {
+        const mx = mir & 1, mz = mir & 2;
+        const mg = mir ? new Uint8Array(X * Y * Z) : grid;
+        if (mir) for (let z = 0; z < Z; z++) for (let y = 0; y < Y; y++) for (let x = 0; x < X; x++) {
+          mg[(mx ? X - 1 - x : x) + X * (y + Y * (mz ? Z - 1 - z : z))] = grid[x + X * (y + Y * z)];
+        }
+        const qa = mirrorPort(pa, mx, mz), qb = mirrorPort(pb, mx, mz);
+        const st = mouth(G, qa, ca);
+        const f = walkFlood(mg, [X, Y, Z], [st]);
+        const res = [...f.list].some((i) => inMouth(G, qb, cb, i % X, Math.floor(i / X) % Y, Math.floor(i / (X * Y)))) ||
+          f.fellOut.some(([x, z]) => inMouth(G, qb, cb, x, -1, z));
+        if (!res) {
+          bad++; failures++;
+          console.log(`FAIL tile ${t.name}${mir ? ` (mirrored ${['', 'x', 'z', 'x and z'][mir]})` : ''}: ${PORTS[pa]}(${ca}) -> ${PORTS[pb]}(${cb}) not walkable`);
+          break;
+        }
+      }
     }
   });
   if (!bad) console.log(`${kit.name}: all ${kit.tiles.length} tiles connect every pair of ports they accept`);
+}
+// a port's name in a tile mirrored in x (W and E, units 0 and 1 swap) and/or z (N and S swap)
+const MIRRORS = 4;
+function mirrorPort(p, mx, mz) {
+  let n = PORTS[p];
+  if (mx) n = n === 'W' ? 'E' : n === 'E' ? 'W' : n[0] + (n[1] === '0' ? '1' : '0');
+  if (mz && (n[0] === 'N' || n[0] === 'S')) n = (n[0] === 'N' ? 'S' : 'N') + n[1];
+  return PORTS.indexOf(n);
 }
 // a start in port p's mouth (canonical cell), standing (a U port: high in its shaft, to fall)
 function mouth(G, p, c) {
