@@ -3,6 +3,7 @@ import { materialsGLSL, CHANNELS, MEDIA } from '../gfx/materials.js';
 import { blendFixedFrames } from '../gfx/pacing.js';
 import { uniformStruct } from '../gpu/params.js';
 import { fold } from '../gpu/kernels.js';
+import { TRAIL_LONE_MIN } from './gfx/liquidDetail.js';
 
 // Render fields: continuous versions of the blocky state, rebuilt once per
 // frame for the renderer only (the simulation never reads them).
@@ -29,6 +30,17 @@ import { fold } from '../gpu/kernels.js';
 //    trunks, films, streams. Ghosts of cells that moved on hold no matter now,
 //    so they still fade with the EMA.
 //
+// Falling water (jetWGSL): the sim draws a stream as parcels a few cells
+// apart, which drawn as they are make a dotted line of glass beads, nearly
+// invisible. While the whitewater runs (gfx/foam.js), its aeration field
+// marks liquid off the ground and the wake each falling parcel leaves for a
+// few steps (shaders/gfx/liquidDetail.js, the aeration model:
+// TRAIL_JOIN_STEPS; a lone parcel's for TRAIL_LONE_STEPS). Those cells are
+// drawn as liquid at full occupancy at once (the EMA pass), count as current
+// matter for the boost, so a stream is one even column a cell across, and
+// the thin mask's spare channels carry their aeration for the view (y:
+// aeration × presence, z: presence; liquidDetail.js liquidFoam).
+//
 // Channels (vec4f): surface = liquid, molten, granular, organic; media =
 // smoke, steam, fire, flame temperature; non-crisp weight, one copy per
 // surface channel since each channel has its own blur radius (the media share
@@ -36,9 +48,10 @@ import { fold } from '../gpu/kernels.js';
 // Final output, three rgba16float 3D textures the renderer samples with
 // hardware trilinear filtering (docs/webgpu.md W14): fieldSurf = surface φ
 // (0.5 is the surface), fieldMedia = media densities, fieldThin = the thin
-// mask, rising from 0 to 1 with a channel's boost (THIN_MASK_LO..HI). Only
-// cubic channels need it: the tracer reads them cubic only there (bulk
-// surfaces read the same either way, and trilinear is 8x cheaper).
+// mask, rising from 0 to 1 with a channel's boost (THIN_MASK_LO..HI), in x
+// (only cubic channels need it: the tracer reads them cubic only there; bulk
+// surfaces read the same either way, and trilinear is 8x cheaper); y, z:
+// falling water's aeration × presence and presence (above).
 //
 // Every stage is a compute kernel over a brick list (src/derived.js): a
 // 64-thread workgroup per listed brick, a thread per cell. In between, the
@@ -147,10 +160,13 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
   let p = cellOf(s);`;
 
 // The group-2 layouts of the field kernels (src/derived.js makes them):
-//   FIELD  the lists, a source and a destination (the EMA pass: the lists,
-//          the ages and the EMA, which it updates in place)
+//   FIELD  the lists, a source and a destination (the blur, the boost's
+//          later stages)
+//   JET    the same and the aeration buffer (jetWGSL: the EMA pass, with the
+//          lists, the ages and the EMA, which it updates in place; the
+//          boost's stage 0)
 //   PEAK   the lists, the boost's last smoothing stage, the normalised blur,
-//          and the three final fields as storage textures
+//          the three final fields as storage textures, and the aeration
 //   PAIR   a source and a destination (the window shift of the EMA)
 const ro = (binding) => ({ binding, visibility: STAGE.COMPUTE, buffer: { type: 'read-only-storage' } });
 const rw = (binding) => ({ binding, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } });
@@ -158,19 +174,41 @@ const out3d = (binding) => ({ binding, visibility: STAGE.COMPUTE, storageTexture
 const tex3d = (binding) => ({ binding, visibility: STAGE.COMPUTE, texture: { sampleType: 'float', viewDimension: '3d' } });
 // (shaders/passes.js builds its layouts from the same entries)
 export const LAYOUT_ENTRY = { ro, rw, out3d, tex3d };
+// where the aeration buffer is bound in JET and PEAK
+const JET_BINDING = { JET: 3, PEAK: 6 };
 export const FIELD_LAYOUT = {
   FIELD: [ro(0), ro(1), rw(2)],
-  PEAK: [ro(0), ro(1), ro(2), out3d(3), out3d(4), out3d(5)],
+  JET: [ro(0), ro(1), rw(2), ro(JET_BINDING.JET)],
+  PEAK: [ro(0), ro(1), ro(2), out3d(3), out3d(4), out3d(5), ro(JET_BINDING.PEAK)],
   PAIR: [ro(0), rw(1)],
 };
 // The format of the final fields (src/derived.js allocates them).
 export const FIELD_FORMAT = 'rgba16float';
 
+// ---- falling water (docs/webgpu.md G4; the header's paragraph above) ----
+// Whitewater's aeration buffer (gfx/foam.js; its record: shaders/gfx/
+// liquidDetail.js, the aeration model) holds both copies (copy c of slot s
+// at c·SLOTS + s), per slot (x, y) and (z, w) as two pack2x16float words. A
+// kernel's params carry aer: 0 while the field doesn't run (the Whitewater
+// switch; a 16-byte stand-in is bound then), else 1 + its current copy (the
+// aeration's ping-pong isn't the state's, so the header can't say).
+const jetWGSL = (binding) => /* wgsl */ `
+const TRAIL_LONE_MIN: f32 = ${TRAIL_LONE_MIN.toFixed(4)};
+@group(2) @binding(${binding}) var<storage, read> aer: array<vec2u>;
+// (aeration, presence) at slot s: liquid off the ground, or a falling parcel's wake
+fn jetAtS(s: u32) -> vec2f {
+  if (P.aer == 0u) { return vec2f(0.0); }
+  let w = aer[(P.aer - 1u) * SLOTS + s];
+  let f = vec4f(unpack2x16float(w.x), unpack2x16float(w.y));
+  if (f.y > 0.5) { return select(vec2f(0.0), vec2f(f.x, 1.0), f.w < 0.5); }
+  // a stream's wake, or a lone parcel's last steps
+  return select(vec2f(0.0), vec2f(f.z, 1.0), f.w > select(TRAIL_LONE_MIN, 0.0, f.x > 0.5));
+}`;
 // ---- 1. the EMA ----
 // emaS, emaM: each channel's blend weight (CHANNELS[i].ema, MEDIA[i].ema);
 // reset: every cell starts over at its target (a load, a new smoothing:
-// sim.fieldReset), as the cells of FRESH bricks do.
-export const EmaParams = uniformStruct('EmaParams', { emaS: 'vec4f', emaM: 'vec4f', reset: 'u32' });
+// sim.fieldReset), as the cells of FRESH bricks do. aer: jetWGSL's.
+export const EmaParams = uniformStruct('EmaParams', { emaS: 'vec4f', emaM: 'vec4f', reset: 'u32', aer: 'u32' });
 export const fieldEmaFrag = (g) => /* wgsl */ `
 ${prelude(g, STATE_OPTS.STATE_RO)}
 ${materialsGLSL()}
@@ -188,6 +226,7 @@ ${EmaParams.wgsl}
 // the EMA, in place (each cell reads only its own history): planes surface,
 // media, non-crisp weight (the weight has no history: it is the state's)
 @group(2) @binding(2) var<storage, read_write> ema: array<u32>;
+${jetWGSL(JET_BINDING.JET)}
 ${listMainWGSL('LIST_EMA')}
   let a = fetchAs(s);
   let id = eid(a);
@@ -213,6 +252,7 @@ ${listMainWGSL('LIST_EMA')}
     sv = mix(unpack4x8unorm(ema[s]), sv, P.emaS);
     m = mix(unpack4x8unorm(ema[SLOTS + s]), m, P.emaM);
   }
+  if (jetAtS(s).y > 0.0) { sv.x = 1.0; }   // falling water and its wakes: full now (jetWGSL)
   ema[s] = pack4x8unorm(sv);
   ema[SLOTS + s] = pack4x8unorm(m);
   ema[2u * SLOTS + s] = pack4x8unorm(vec4f(select(1.0, 0.0, crisp)));
@@ -271,8 +311,9 @@ ${final ? `  // normalise; deep inside crisp solids there is nothing to normalis
 // planes smoothed φ, occupancy, 8 bits each. Stage 0 is a kernel of its own
 // (it reads the half-float blur and the state); stages 1 and 2 share one
 // (fieldBoostFrag(g, 1), axis 1 then 2).
-// s: per-channel centre weight of the lattice smoothing (1 = none).
-export const BoostParams = uniformStruct('BoostParams', { s: 'vec4f', axis: 'u32' });
+// s: per-channel centre weight of the lattice smoothing (1 = none). aer:
+// jetWGSL's (stage 0 reads it: a falling parcel's wake is current liquid).
+export const BoostParams = uniformStruct('BoostParams', { s: 'vec4f', axis: 'u32', aer: 'u32' });
 export const fieldBoostFrag = (g, stage) => /* wgsl */ `
 ${prelude(g, stage === 0 ? STATE_OPTS.STATE_RO : { state: false })}
 ${dirtyListsWGSL(g)}
@@ -282,6 +323,7 @@ ${BoostParams.wgsl}
 // ${stage === 0 ? 'the blurred fields (φ in planes 0 and 1)' : 'the last stage: smoothed φ, occupancy'}
 @group(2) @binding(1) var<storage, read> src: array<u32>;
 @group(2) @binding(2) var<storage, read_write> dst: array<u32>;
+${stage === 0 ? jetWGSL(JET_BINDING.JET) : ''}
 ${listMainWGSL('LIST_WORK')}
   var dir = vec3i(0);
   dir[P.axis] = 1;
@@ -295,7 +337,8 @@ ${listMainWGSL('LIST_WORK')}
     if (i == 0) { w = P.s; }
 ${stage === 0 ? `    acc += w * vec4f(unpack2x16float(src[t]), unpack2x16float(src[SLOTS + t]));
     let ch = SURFCH(eid(fetchAs(t)));
-    if (ch >= 0) { occ[ch] = 1.0; }` : `    acc += w * unpack4x8unorm(src[t]);
+    if (ch >= 0) { occ[ch] = 1.0; }
+    if (jetAtS(t).y > 0.0) { occ.x = 1.0; }   // a falling parcel's wake is current liquid` : `    acc += w * unpack4x8unorm(src[t]);
     occ = max(occ, unpack4x8unorm(src[SLOTS + t]));`}
   }
   dst[s] = pack4x8unorm(acc);
@@ -311,7 +354,7 @@ ${stage === 0 ? `    acc += w * vec4f(unpack2x16float(src[t]), unpack2x16float(s
 // order. reach: cells to either side along each axis the maximum takes (1, 1,
 // 1; tools/derived-check.mjs's separable reference gives 0, 0, 1 after its
 // own x and y passes, fieldMaxFrag).
-export const PeakParams = uniformStruct('PeakParams', { bulk: 'vec4f', reach: 'vec3i' });
+export const PeakParams = uniformStruct('PeakParams', { bulk: 'vec4f', reach: 'vec3i', aer: 'u32' });   // aer: jetWGSL's
 export const fieldPeakFrag = (g) => /* wgsl */ `
 ${prelude(g, { state: false })}
 ${materialsGLSL()}
@@ -324,6 +367,7 @@ ${PeakParams.wgsl}
 @group(2) @binding(3) var fieldSurf: texture_storage_3d<rgba16float, write>;
 @group(2) @binding(4) var fieldMedia: texture_storage_3d<rgba16float, write>;
 @group(2) @binding(5) var fieldThin: texture_storage_3d<rgba16float, write>;
+${jetWGSL(JET_BINDING.PEAK)}
 ${listMainWGSL('LIST_FIELDS')}
   var acc = vec4f(0.0);
   for (var z = -P.reach.z; z <= P.reach.z; z++) {
@@ -341,7 +385,11 @@ ${listMainWGSL('LIST_FIELDS')}
   let med = vec4f(unpack2x16float(blurred[2u * SLOTS + s]), unpack2x16float(blurred[3u * SLOTS + s]));
   textureStore(fieldSurf, p, phi * mix(vec4f(1.0), k, boosted));
   textureStore(fieldMedia, p, med);
-  textureStore(fieldThin, p, boosted * smoothstep(vec4f(THIN_MASK_LO), vec4f(THIN_MASK_HI), k));
+  var thin = boosted * smoothstep(vec4f(THIN_MASK_LO), vec4f(THIN_MASK_HI), k);
+  let jet = jetAtS(s);
+  thin.y = jet.x * jet.y;   // falling water's aeration (jetWGSL)
+  thin.z = jet.y;
+  textureStore(fieldThin, p, thin);
 }
 `;
 
@@ -414,16 +462,16 @@ export function fieldRegionsGLSL() { throw new Error('fieldRegionsGLSL removed i
 // windowed: a world's grid only; tool: built only by the tools that run it
 // (docs/webgpu.md B5; src/derived.js builds them on first use otherwise).
 const perList = (g) => fold(gridDims(g).nbricks);   // the longest list: every brick
-const fieldLayouts = (state) => () => [LAYOUT.TABLES, state ? LAYOUT.STATE_RO : 'EMPTY', FIELD_LAYOUT.FIELD];
+const fieldLayouts = (state, group = FIELD_LAYOUT.FIELD) => () => [LAYOUT.TABLES, state ? LAYOUT.STATE_RO : 'EMPTY', group];
 /**
  * tools/check-wgsl.mjs, and the pipelines a grid's derived passes need (the
  * start menu's warm-up, docs/webgpu.md B5).
  */
 export const WGSL_CHECK = [
-  { name: 'fieldEma', kind: 'compute', code: fieldEmaFrag, layouts: fieldLayouts(true), dispatch: perList },
+  { name: 'fieldEma', kind: 'compute', code: fieldEmaFrag, layouts: fieldLayouts(true, FIELD_LAYOUT.JET), dispatch: perList },
   { name: 'fieldBlur', kind: 'compute', code: (g) => fieldBlurFrag(g, false), layouts: fieldLayouts(false), dispatch: perList },
   { name: 'fieldFinal', kind: 'compute', code: (g) => fieldBlurFrag(g, true), layouts: fieldLayouts(false), dispatch: perList },
-  { name: 'fieldBoost0', kind: 'compute', code: (g) => fieldBoostFrag(g, 0), layouts: fieldLayouts(true), dispatch: perList },
+  { name: 'fieldBoost0', kind: 'compute', code: (g) => fieldBoostFrag(g, 0), layouts: fieldLayouts(true, FIELD_LAYOUT.JET), dispatch: perList },
   { name: 'fieldBoost', kind: 'compute', code: (g) => fieldBoostFrag(g, 1), layouts: fieldLayouts(false), dispatch: perList },
   { name: 'fieldPeak', kind: 'compute', code: fieldPeakFrag, layouts: () => [LAYOUT.TABLES, 'EMPTY', FIELD_LAYOUT.PEAK], dispatch: perList },
   { name: 'fieldShift', kind: 'compute', code: fieldShiftFrag, layouts: () => [LAYOUT.TABLES, 'EMPTY', FIELD_LAYOUT.PAIR],

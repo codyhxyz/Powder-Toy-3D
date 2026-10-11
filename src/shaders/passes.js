@@ -346,9 +346,9 @@ fn main() {
 //          field reaches into it (the render fields are already blurred, so a
 //          brick next to a surface or plume sees them in its own cells: the
 //          skip map is dilated for free); bits BRICK_MEDIA, _SURF, _OPAQUE
-//          (crisp matter or an opaque surface field), _THIN (a liquid the
-//          tracer reads cubic), _MIXED (more than one liquid); its steam and
-//          smoke cells (brickGas)
+//          (crisp matter or an opaque surface field), _THIN (thin cubic
+//          matter, drops and grains: the tracer reads it cubic), _MIXED (more
+//          than one liquid); its steam and smoke cells (brickGas)
 //   air    the air flags (warmer or colder than ambient, pressure, moving)
 //          on matter bricks and on air-only bricks, which carry nothing else;
 //          the realistic view, picking and the shadow map skip those like
@@ -366,7 +366,7 @@ ${dirtyListsWGSL(g)}
 @group(2) @binding(0) var<storage, read> dlist: array<u32>;
 @group(2) @binding(1) var tFS: texture_3d<f32>;
 @group(2) @binding(2) var tFM: texture_3d<f32>;
-@group(2) @binding(3) var tFT: texture_3d<f32>;   // thin-feature mask (x: liquid)
+@group(2) @binding(3) var tFT: texture_3d<f32>;   // thin-feature mask, per surface channel (the cubic ones read it)
 @group(2) @binding(4) var<storage, read_write> brick: array<BrickInfo>;
 // Air worth flagging for the data views: off ambient by more than AIR_FLAG_T °C,
 // pressure beyond AIR_FLAG_P, or moving faster than AIR_FLAG_V cells/step.
@@ -421,11 +421,13 @@ ${listMainWGSL('LIST_FIELDS')}
     atomicMax(&wgLiqHi, u32(id) + 1u);
     atomicMax(&wgLiqLo, u32(NE - id));
   }
-  wgMax[li] = vec4f(max(max(sf.x, sf.y), max(sf.z, sf.w)), opaque, textureLoad(tFT, p, 0).x, max(mf.x, max(mf.y, mf.z)));
+  let tm = textureLoad(tFT, p, 0) * CH_CUBIC;
+  wgMax[li] = vec4f(max(max(sf.x, sf.y), max(sf.z, sf.w)), opaque, max(max(tm.x, tm.y), max(tm.z, tm.w)), max(mf.x, max(mf.y, mf.z)));
   var em = vec3f(0.0);
   if (id == E_FIRE || id == E_PLASMA) { em = blackbody(a.y) * (FIRE_GLOW_BASE + a.y / FIRE_GLOW_T) * FIRE_GLOW_GAIN; }
-  else if (id != E_EMPTY && KIND(id) != K_GAS && (a.y > INCAND_T0 || luminous(id) || sparkLive(id, floor(a.w)))) {
-    let ce = cellEmission(id, a.y) + sparkEmit(id, floor(a.w));   // a live conductor too (src/electricity.js)
+  else if (id != E_EMPTY && KIND(id) != K_GAS && (a.y > INCAND_T0 || luminous(id) || sparkLive(id, floor(a.w)) || lampLit(id, floor(a.w)))) {
+    // a live conductor or a lit lamp too (src/electricity.js; gfx/materials.js LAMP_ROOM_GAIN)
+    let ce = cellEmission(id, a.y) + sparkEmit(id, floor(a.w)) * select(1.0, LAMP_ROOM_GAIN, id == E_LAMP);
     if (dot(ce, ce) > 0.0) {
       var f = 1.0;
       if (RCLASS(id) == R_OPAQUE) { f = openFaces(p) * GLOW_FACE_GAIN; }
@@ -510,7 +512,12 @@ ${brickMain}
 // axis per dispatch, one thread per brick (docs/webgpu.md H2): six passes
 // x, y, z, x, y, z ping-ponging two buffers (pass 0 reads the brick map
 // through an array<vec4f> view: .rgb is BrickInfo's emit); the last stores
-// the light volume (last: its own pipeline, writing the texture).
+// the light volume (last: its own pipeline, writing the texture). Its alpha
+// stays 1: the WebGL build carried brickDist there for the realistic view
+// (gfx/core.js BRICK_DIST_IN_LIGHT, a texture unit freed for gfx/meshCut.js),
+// but brickDist is a storage buffer here (shaders/bindings.js binding 17),
+// which every view reads, and storage buffers don't count against the 16
+// sampled textures, so nothing reads the light volume's alpha.
 export const BlurParams = uniformStruct('BlurParams', { axis: 'u32' });
 export const LIGHT_BLUR_PASSES = 6;
 export const blurFrag = (g, { last = false } = {}) => /* wgsl */ `
