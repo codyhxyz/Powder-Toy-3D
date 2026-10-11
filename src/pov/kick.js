@@ -6,12 +6,14 @@ import { kickFrag, KICK, kickWeight } from '../shaders/povKick.js';
 import { toolPass } from '../shaders/povTools.js';
 import { PROBE_OUTSIDE } from '../shaders/povBody.js';
 import { povEvents } from './events.js';
-import { rayTarget, PLAYER } from './targets.js';
+import { rayTarget, dealtScale, PLAYER } from './targets.js';
 import { gravityScale } from './ballistics.js';
 import { BODY_MASS_KG, cellKg, split, brace } from './tug.js';
 import { viewmodelRig, heldMaterial } from './viewmodel.js';
 import { swing } from './tools/action.js';
 import { sharedTransfer, cellsNear, outsideBody, persistentLoad, ownedKey } from './tools/transfer.js';
+import { behind } from './tools/knife.tool.js';
+import { haloMatch, points, wu, CAUSE } from './halo.js';
 
 // The kick: Cruelty Squad's, always on its own key, no hotbar slot. A body
 // ability (player.js body.kick(dir)), so an NPC's body has it too.
@@ -40,11 +42,24 @@ import { sharedTransfer, cellsNear, outsideBody, persistentLoad, ownedKey } from
 // ease then works on like any other speed: kept while you're faster than a
 // run with no keys held in the air, eased toward what you ask for otherwise.
 //
-// Events: kick { point, normal, dir, hit: 'cell'|'body'|null, id, broke, dv, mass }
-// on every kick (dv your Δv in cells/s, mass the struck kg or Infinity), and an
-// impact (source 'kick') when it meets something.
+// In a Halo match (halo.js haloMatch) the same key and the same body ability
+// are Halo 3's melee: a body within the lunge (MELEE_LUNGE, along the aim from
+// the eye, no wall between) takes Halo's blow and you lunge into it; with none
+// there the boot does what it always does to the cells. From the front the
+// blow is Halo 3's 70 points: one pops a full 70-point shield, the second kills
+// the 45 health under it (Halopedia, "Melee": "two blows to a normally-shielded
+// opponent's body were sufficient to kill"). From behind (the knife's backstab
+// test, TF2's: knife.tool.js behind) it is Halo's assassination: it kills
+// outright, through any shield ("A melee from behind ... is sufficient to kill
+// virtually any enemy"). The bots melee the same way (npc.js), and their
+// knockback is the blow's own (npc.js, pov/index.js hurt's dir).
+//
+// Events: kick { point, normal, dir, hit: 'cell'|'body'|null, id, broke, dv, mass,
+// melee?, assassination? } on every kick (dv your Δv in cells/s, mass the struck
+// kg or Infinity; melee: it was Halo's), and an impact (source 'kick') when it
+// meets something.
 
-export const KICK_KEY = 'KeyF';      // F: free in the body (V god view, F5 first/third, Z zoom, C crouch, Q tools, E vehicles, digits slots)
+export const KICK_KEY = 'KeyF';      // F: free in the body (V god view, F5 first/third, Z zoom, C crouch, Q tools, E vehicles, digits slots); Halo's melee in a Halo match
 
 const KICK_SPEED = 14 / CELL_M;      // cells/s (47, a Noita jump's speed): a martial artist's front kick, ≈ 14 m/s at the foot
 const KICK_HIP = 2.6;                // cells above the feet the leg swings from (figure.js HIP_Y)
@@ -53,6 +68,16 @@ export const KICK_REFIRE = 0.5;      // s between kicks
 const KICK_DAMAGE = 0.04;            // health a kick takes from a body: Noita's kick_damage (KickComponent, 1/25)
 const KICK_CAUSE = 'Kicked';
 const KICK_POSE_S = KICK_REFIRE;     // s the figure's kick runs (chamber, extend, retract)
+
+// Halo 3's melee, in a Halo match. Halopedia gives the damage ("H3:Melee": Strike 70, against
+// "Energy shielding"'s 70 shield and 45 health) but no lunge range or recovery: those are by eye
+// from play, a standard weapon's lunge (well under the Energy Sword's).
+const MELEE_DAMAGE = 70;             // points (halo.js: base lives = points / 45)
+export const MELEE_LUNGE = wu(0.8);  // cells (≈ 8, 2.4 m) from the eye a body is reached within (by eye)
+const MELEE_REFIRE = 0.8;            // s between blows: Halo 3's swing and recovery (by eye)
+const LUNGE_SPEED = 8 / CELL_M;      // cells/s: the lunge carries you into a body farther than the boot's reach (by eye)
+const MELEE_ENERGY = 60;             // the impact's energy for the shake and hitmarker: the knife's backstab (a full blow)
+const WALL_STEP = 0.5;               // cells between the samples of the lunge's way for a wall
 const MARCH_MAX = Math.ceil(KICK_REACH * 3) + 3;   // safety: most cells a reach ray can cross
 
 // Loose matter has no cohesion: the boot carries off only the grains under its
@@ -164,13 +189,45 @@ export function createKick({ body, owner = null, renderer, getSim, cellAt, unkno
     return { kg: anchored ? Infinity : kg, breaks, loose, broke: isSolid(id) ? !anchored : null };
   }
 
+  // Halo's melee on the body in the lunge along dir, or null (none there: the boot kicks as ever)
+  const eye = new THREE.Vector3(), toward = new THREE.Vector3(), lo = new THREE.Vector3(), hi = new THREE.Vector3();
+  function melee() {
+    const me = povEvents.actor?.id ?? PLAYER;
+    eye.set(body.pos.x, body.pos.y + body.eyeHeight, body.pos.z);
+    const who = rayTarget(eye, dir, MELEE_LUNGE, me);
+    if (!who) return null;
+    // a wall between (what the body's probe holds; beyond it, open)
+    for (let t = WALL_STEP; t < who.dist; t += WALL_STEP) {
+      if (isSolid(cellAt(Math.floor(eye.x + dir.x * t), Math.floor(eye.y + dir.y * t), Math.floor(eye.z + dir.z * t)))) return null;
+    }
+    const t = who.target;
+    const assassination = behind({ player: body, dir }, t);
+    // the lunge: on into a body beyond the boot's reach, along the ground
+    let dv = new THREE.Vector3();
+    t.box(lo, hi);
+    toward.set((lo.x + hi.x) / 2 - body.pos.x, 0, (lo.z + hi.z) / 2 - body.pos.z);
+    if (who.dist > KICK_REACH && toward.lengthSq() > EPS) {
+      dv = toward.normalize().multiplyScalar(LUNGE_SPEED);
+      body.applyImpulse(dv);
+    }
+    if (assassination) t.hurt(1, CAUSE.ASSASSINATION, dir.clone(), { lethal: true, exact: true });
+    else t.hurt(points(MELEE_DAMAGE) * dealtScale(povEvents.actor?.id), CAUSE.MELEE, dir.clone(), { exact: true });
+    const normal = dir.clone().negate();
+    povEvents.emit('impact', { source: 'kick', point: who.point, normal, id: -1, energy: MELEE_ENERGY, broke: null, body: true, backstab: assassination });
+    const res = { hit: 'body', point: who.point, normal, id: -1, broke: null, mass: t.mass ?? BODY_MASS_KG, dv, melee: true, assassination };
+    povEvents.emit('kick', { ...res, point: who.point.clone(), dir: dir.clone(), dv: dv.clone() });
+    return res;
+  }
+
   function kick(dirIn) {
     const sim = getSim();
     if (!sim || wait > 0 || body.dead) return null;
-    wait = KICK_REFIRE;
+    const halo = haloMatch();
+    wait = halo ? MELEE_REFIRE : KICK_REFIRE;
     poseT = 0;
     dir.copy(dirIn).normalize();
     hip.set(body.pos.x, body.pos.y + KICK_HIP, body.pos.z);
+    if (halo) { const m = melee(); if (m) return m; }
     const struck = march();
     const who = rayTarget(hip, dir, struck ? struck.t : KICK_REACH, povEvents.actor?.id ?? PLAYER);
     let res = { hit: null, point: null, normal: null, id: -1, broke: null, mass: 0 };

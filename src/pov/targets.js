@@ -10,7 +10,9 @@ import { povEvents } from './events.js';
 //
 //   const remove = addTarget({ id, box(min, max), alive, hurt(amount, cause, dir, opts?), facing?(out) });
 //
-// hurt's opts: { lethal } (a backstab: all the health it has, through any shield).
+// hurt's opts: { lethal } (a backstab: all the health it has, through any shield),
+// { exact } (Halo's numbers, halo.js: the amount as given, without the share of
+// a weapon's damage the body takes, npc.js DAMAGE_TAKEN, pov/index.js PLAYER_DAMAGE_TAKEN).
 // body: the target's first-person body (player.js), whose statuses scale what its weapons deal.
 // facing(out): the unit direction the target looks along (its eyes), for the
 // knife's backstab test; a target without it can't be backstabbed.
