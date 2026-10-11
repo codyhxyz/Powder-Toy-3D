@@ -1,5 +1,5 @@
-// Engine constants. The GPU passes get them as GLSL #defines (physicsGLSL, in
-// the shared prelude) and the CPU port that runs the dock tiles
+// Engine constants. The GPU passes get them as typed WGSL consts (physicsGLSL,
+// in the shared prelude) and the CPU port that runs the dock tiles
 // (src/ui/tiles/engine.js) imports the same object, so the two can't drift.
 // Per-element numbers live in elements.js; these are the rules around them.
 import { CELL_M } from './scale.js';
@@ -303,12 +303,26 @@ export const PHYS = {
   // P_MAX - P_MIN = 250.
   P_BREAK_PER_HARD: 5,
 
+  // Fast particles' deposits (src/rays.js, react.js): rays add heat and
+  // pressure to the cells they cross with integer atomics (WebGPU has no float
+  // atomics, docs/webgpu.md W21, D3), in fixed point at this many steps per
+  // unit (°C or pressure), so a sum doesn't depend on the order the particles
+  // add in. An i32 holds ±2·10⁶ units at this scale, far past CELL_TEMP_MAX
+  // and P_MAX.
+  RAY_DEPOSIT_SCALE: 1024,
+
   // tools (passes.js), applied once per frame
   TOOL_HEAT: 30,             // °C at the brush centre
   TOOL_PRESSURE: 6,
   TOOL_FALLOFF: 0.6,         // full strength inside this share of the radius
 };
 
+// WGSL for the shared prelude (shaders/common.js): every PHYS entry as an f32
+// const. The type is explicit so WGSL doesn't fold expressions over them in
+// f64 (docs/webgpu.md H1.7); the literal is JS's own, so the f32 is
+// Math.fround of it, the value the CPU twin's Float32 tables hold too
+// (tools/tables-check.mjs reads each one back). (Name kept from the GLSL
+// version, docs/webgpu.md W2.)
 const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
 export const physicsGLSL = () =>
-  Object.entries(PHYS).map(([k, v]) => `#define ${k} ${v < 0 ? `(${f(v)})` : f(v)}`).join('\n');
+  Object.entries(PHYS).map(([k, v]) => `const ${k}: f32 = ${f(v)};`).join('\n');
