@@ -254,7 +254,7 @@ export function createClassPicker(env) {
     const joining = pendingJoin || mustPick;
     if (pendingJoin) { pendingJoin = false; setTimeout(() => show({ joined: true }), 0); }   // (once the shell is in first person)
     if (chosen) return applyClassTo(body, chosen, env.getToolbelt());
-    if (!hinted && !joining) { hinted = true; env.toast?.('Press , to choose a class'); }
+    if (!hinted && !joining) { hinted = true; env.toast?.('Press , to choose a class', { kind: 'hint' }); }
     return null;
   }
 

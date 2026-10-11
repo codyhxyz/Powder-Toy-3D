@@ -68,7 +68,7 @@ their own functions or entries, so the merge is mechanical.
 
 G grenade (combat) · F melee (combat; the kick key outside a match) · E pick up / vehicles
 (arsenal; interact.js) · wheel and 1/2 swap guns (arsenal) · `,` class picker in Siege only
-(siege) · M match menu · Tab scoreboard · `.` team (join). Q (spawn menu) does nothing in a
+(siege) · Tab scoreboard · `.` team (join). Q (spawn menu) does nothing in a
 match (arsenal).
 
 ## Rules for every agent
