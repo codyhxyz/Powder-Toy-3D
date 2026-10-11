@@ -757,7 +757,7 @@ test('budget:paint', async () => {
 // (main's tools/sim-modes-check.mjs, brush-tools-gpu.mjs and editing-gpu-check.mjs,
 // on the harness's Simulation at 32³; docs/webgpu.md Sync log S2, S4)
 
-// A scene of boxes (half-open, clipped to the grid): box(x0, y0, z0, x1, y1, z1, key, { T, P }).
+// A scene of boxes (half-open, clipped to the grid): box(x0, y0, z0, x1, y1, z1, key, { T, P, life }).
 const boxes = (sim, fill, seed = 12345) => {
   h.seed(seed);
   const g = sim.g, [A, B] = sim.blankState();
@@ -767,7 +767,7 @@ const boxes = (sim, fill, seed = 12345) => {
       for (let y = Math.max(y0, 0); y < Math.min(y1, g.ny); y++)
         for (let z = Math.max(z0, 0); z < Math.min(z1, g.nz); z++) {
           const i = cellTexel(g, x, y, z) * 4;
-          A[i] = id; A[i + 1] = o.T ?? ELEMENTS[id].temp; A[i + 2] = ELEMENTS[id].life; A[i + 3] = Math.random() * SEED_MAX;
+          A[i] = id; A[i + 1] = o.T ?? ELEMENTS[id].temp; A[i + 2] = o.life ?? ELEMENTS[id].life; A[i + 3] = Math.random() * SEED_MAX;
           if (o.P != null) B[i + 3] = o.P;
         }
   };
@@ -1310,6 +1310,184 @@ const MODE_STAGES = {
   },
 };
 Object.assign(STAGES, MODE_STAGES);
+
+// Steps until the world certifies idle (at most k steps), reading the counts as it goes.
+const settle = async (sim, k) => {
+  let steps = 0;
+  for (; steps < k && !sim.idleCertified; steps++) {
+    sim.step();
+    if (steps % 8 === 7) { await sim.gpuSync(); await wait(); }
+  }
+  return { steps, idle: sim.idleCertified };
+};
+
+// Main's sync-3 rules (docs/webgpu.md Sync log, sync 3).
+const SYNC3_STAGES = {
+  // The scene's ambient air temperature (sim.airT, the tables' airT: main's
+  // uAirT) and the rest rules: a matter face rests while the heat it carries
+  // is at most REST_FLUX; water, ice and snow pinned at the phase point with
+  // latent heat banked rest. airT is the device's (one value for every
+  // simulation, as main's uniform), so each case sets it and the stage puts
+  // it back.
+  async rest({ size = 32 } = {}) {
+    const out = { checks: [] };
+    const n = size;
+    const sim = await h.make(n);
+    const frozen = (T = -15) => boxes(sim, (box) => box(0, 0, 0, n, n, n, 'EMPTY', { T }));
+    const airRange = (t) => `${t.air.Tmin.toFixed(3)}..${t.air.Tmax.toFixed(3)}`;
+    try {
+      // air at -15 °C: at room temperature's airT it isn't at rest and warms
+      frozen();
+      let r = await settle(sim, 24);
+      let t = await tally(sim);
+      check(out, `airT ${PHYS.AMBIENT}: air at -15 °C doesn't rest and warms (idle ${r.idle} after ${r.steps} steps, air ${airRange(t)})`, !r.idle && t.air.Tmin > -15);
+      // ...and at airT -15 it rests, exactly where it is. Set on a live state:
+      // every cell's flags are redone (they hold the rest test as written)
+      frozen();
+      sim.airT = -15;
+      await sim.prepare('fresh');   // (the redo waits for its kernel, then records)
+      r = await settle(sim, 40);
+      t = await tally(sim);
+      check(out, `airT -15: the same air rests (idle after ${r.steps} steps) and keeps -15 °C (${airRange(t)})`, r.idle && t.air.Tmin === -15 && t.air.Tmax === -15);
+      // set back on the idle world: it wakes, and the air warms toward the new airT
+      sim.airT = PHYS.AMBIENT;
+      await sim.prepare('fresh');
+      const woke = !sim.idleCertified;
+      stepN(sim, 16);
+      t = await tally(sim);
+      check(out, `airT set back on the idle world: it wakes (${woke}) and the air warms (${airRange(t)})`, woke && t.air.Tmax > -15);
+      // void edges bring in still air at airT: no heat crosses the box's sides
+      sim.airT = -15;
+      setModes(sim, { edgeMode: EDGE.VOID });
+      frozen();
+      stepN(sim, 24);
+      t = await tally(sim);
+      check(out, `void edges at airT -15: the air keeps -15 °C exactly (${airRange(t)})`, t.air.Tmin === -15 && t.air.Tmax === -15);
+      setModes(sim, {});
+      // the brush's erase leaves air at airT
+      boxes(sim, (box) => { box(0, 0, 0, n, n, n, 'EMPTY', { T: -15 }); box(4, 0, 4, 12, 6, 12, 'STONE', { T: -15 }); });
+      sim.paint({ center: V(8, 3, 8), radius: 3, shape: 1, tool: TOOLS.find((x) => x.key === 'ERASE').id, rate: 1, replace: false });
+      t = await tally(sim);
+      check(out, `the brush's erase leaves air at airT (stone ${count(t, 'STONE')} of 384 left, air ${airRange(t)})`, count(t, 'STONE') < 384 && t.air.Tmin === -15 && t.air.Tmax === -15);
+      // snow wall to wall at 0 °C with latent heat banked (life: toward melting)
+      // under air at 0 °C, airT 0 (main's Mines): pinned at the phase point, it
+      // rests (main's rule before sync 3 kept it awake: life ≠ 0)
+      sim.airT = 0;
+      boxes(sim, (box) => { box(0, 0, 0, n, n, n, 'EMPTY', { T: 0 }); box(0, 0, 0, n, 3, n, 'SNOW', { T: 0, life: 0.4 }); });
+      r = await settle(sim, 40);
+      t = await tally(sim);
+      check(out, `snow at 0 °C with latent heat banked, airT 0: rests (idle ${r.idle} after ${r.steps} steps; snow ${count(t, 'SNOW')} at ${t.SNOW?.T})`,
+        r.idle && count(t, 'SNOW') === 3 * n * n);
+      sim.airT = PHYS.AMBIENT;
+      // A matter face rests by the heat it carries (REST_FLUX): two slabs 0.1 °C
+      // apart. Wood (cond 0.008: tolerance REST_FLUX / 0.008 = 0.125 °C)
+      // rests at once; metal (cond 0.1: 0.01 °C, MATTER_REST_T) doesn't
+      // where the slabs meet. (Before sync 3 every matter face had 0.01 °C.)
+      const slabs = async (key) => {
+        boxes(sim, (box) => { box(0, 0, 0, n, n / 2, n, key, { T: 20 }); box(0, n / 2, 0, n, n, n, key, { T: 20.1 }); });
+        sim.step();
+        const m = await sim.readMaps();
+        return m.inert.length - m.inert.reduce((a, v) => a + (v ? 1 : 0), 0);
+      };
+      const wood = await slabs('WOOD'), metal = await slabs('METAL');
+      check(out, `slabs 0.1 °C apart: wood rests (${wood} bricks not inert), metal doesn't where they meet (${metal} of ${2 * (n / 4) ** 2})`,
+        wood === 0 && metal === 2 * (n / 4) ** 2);
+      check(out, 'no out-of-grid access', (await sim.readDebug()) === 0);
+    } finally {
+      sim.airT = PHYS.AMBIENT;
+      sim.dispose();
+    }
+    // the shift's uncovered cells are air at airT (a window's grid)
+    const win = await h.make(n, { windowed: true });
+    try {
+      win.airT = -15;
+      boxes(win, (box) => box(0, 0, 0, n, n, n, 'STONE', { T: -15 }));
+      win.shift(n / 2, 0);
+      const [A] = await win.readState();
+      let wrong = 0;
+      for (let y = 0; y < n; y++) for (let z = 0; z < n; z++) for (let x = n / 2; x < n; x++) {
+        const i = cellTexel(win.g, x, y, z) * 4;
+        if (Math.round(A[i]) !== E.EMPTY || A[i + 1] !== -15) wrong++;
+      }
+      check(out, `a shift uncovers air at airT -15 (${wrong} of ${n * n * n / 2} cells otherwise)`, wrong === 0);
+      check(out, 'the shift: no out-of-grid access', (await win.readDebug()) === 0);
+    } finally {
+      win.airT = PHYS.AMBIENT;
+      win.dispose();
+    }
+    return out;
+  },
+
+  // Main's coherent jets (ca75fdb, 1c87096): liquid at rest under a head
+  // leaves an opening at Torricelli's ORIFICE_CV·√(2gh), counted up its
+  // column through a one-cell bubble, capped at FLOW; and a liquid falling
+  // through a gas is paced (move.js PACE): a slab of water dropped in the air
+  // falls as one layer.
+  async jets({ size = 32 } = {}) {
+    const out = { checks: [] };
+    const n = size;
+    const sim = await h.make(n);
+    try {
+      // Shafts of water in rock, each open at its foot through a tunnel to the
+      // air at +x: column[y] says what the shaft holds at height y (W water,
+      // a gas cell .), air above. The head h counts the water over the foot
+      // cell's centre (0.5, then 1 a water cell), on through a lone gas cell,
+      // up to two in a row; the scan stops once √(2gh) reaches FLOW, so a
+      // tall column leaves at ORIFICE_CV·√(2gh) of the h it stopped at (just
+      // under FLOW: main's rule, kept).
+      const shafts = ['WW', 'WWWW', 'WWWWWWW', 'WWWWWWWWWWW', 'WWWWWWWWWWWWWWWW', 'W'.repeat(24), 'WWWW.WWWWW', 'WWWW..WWWW'];
+      const water = ELEMENTS[E.WATER], g = Math.fround(sim.gravity) * water.grav, f = Math.fround(water.flow);
+      const head = (col) => {
+        let h = 0.5, gas = false;
+        for (let y = 1; y < n && 2 * g * h < f * f; y++) {
+          const c = y < col.length ? col[y] : '.';
+          if (c !== 'W' && gas) break;
+          gas = c !== 'W';
+          if (c === 'W') h += 1;
+        }
+        return h;
+      };
+      boxes(sim, (box) => {
+        box(2, 0, 1, 7, n, 1 + 3 * shafts.length, 'ROCK');
+        shafts.forEach((col, k) => {
+          const z = 2 + 3 * k;
+          box(4, 0, z, 5, n, z + 1, 'EMPTY');
+          for (let y = 0; y < col.length; y++) if (col[y] === 'W') box(4, y, z, 5, y + 1, z + 1, 'WATER');
+          box(5, 0, z, 7, 1, z + 1, 'EMPTY');   // the tunnel out
+        });
+      });
+      sim.step();
+      const got = await Promise.all(shafts.map((_, k) => sim.readCell(4, 0, 2 + 3 * k)));
+      const rows = shafts.map((col, k) => {
+        const h = head(col), want = Math.min(Math.fround(PHYS.ORIFICE_CV) * Math.sqrt(2 * g * h), f);
+        const [, B] = got[k];
+        return { col, h, want, vx: B[0], vz: B[2], ok: Math.abs(B[0] - want) <= 1e-5 * want && B[2] === 0 };
+      });
+      check(out, `Torricelli: the foot of each shaft leaves at min(ORIFICE_CV·√(2gh), FLOW) toward its opening (${rows.map((r) => `h ${r.h}: ${r.vx.toFixed(4)}/${r.want.toFixed(4)}`).join(', ')})`,
+        rows.every((r) => r.ok), rows.filter((r) => !r.ok).map((r) => `${r.col}: vx ${r.vx} vz ${r.vz} want ${r.want}`).join('; '));
+      // a 4×1×4 slab of water in the air: every cell falls on the same paced
+      // steps, so it stays one layer all the way down
+      const y0 = n - 6, c = n / 2;
+      boxes(sim, (box) => box(c - 2, y0, c - 2, c + 2, y0 + 1, c + 2, 'WATER'));
+      const layers = [];
+      for (let k = 0; k < 4; k++) {
+        stepN(sim, 9);
+        const [A] = await sim.readState();
+        const ys = new Set();
+        for (let y = 0; y < n; y++) for (let z = 0; z < n; z++) for (let x = 0; x < n; x++) {
+          if (Math.round(A[cellTexel(sim.g, x, y, z) * 4]) === E.WATER) ys.add(y);
+        }
+        layers.push([...ys]);
+      }
+      const last = layers.at(-1);
+      check(out, `a falling slab of water stays one layer (heights at steps 9, 18, 27, 36: ${layers.map((l) => l.join('/')).join(', ')})`,
+        layers.every((l) => l.length === 1) && last[0] < y0 - 6);
+      check(out, 'no out-of-grid access', (await sim.readDebug()) === 0);
+    } finally { sim.dispose(); }
+    return out;
+  },
+};
+Object.assign(STAGES, SYNC3_STAGES);
 
 // TPT's Mix after the first stroke (a two-phase edit: two dispatches), a
 // flood fill after the first (a read of state A, an upload of its mask and

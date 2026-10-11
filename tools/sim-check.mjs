@@ -37,6 +37,15 @@
 //                       target, PROP, specific delete, flood fill) on the brush's
 //                       kernel, the decoration layer's hooks around a stroke
 //                       (U17), and the console's readStateRect
+//   rest                main's sync-3 rest rules: the scene's ambient air
+//                       temperature (sim.airT: air rests at it, void edges,
+//                       the shift and the erase bring air at it, a change on a
+//                       live or idle world redoes the flags), a matter face
+//                       resting by the heat it carries (REST_FLUX), snow with
+//                       latent heat banked at its phase point
+//   jets                main's coherent pours: Torricelli's exit speed under
+//                       several heads (a bubble counted through), a falling
+//                       slab of water paced as one layer
 //   timing              GPU ms per step per kernel (timestamps) at 32³ and 64³
 // Every stage's sims run the debug prelude: an out-of-grid access fails it (I2.8).
 // I2.6 (aeration over its list vs every brick) is U12's: the aeration kernel is its.
@@ -54,6 +63,7 @@
 // CPUs): modes 120 + 50 + 220 steps, edgemodes 80 + 60 + 60 + 36, air 85 +
 // 120, edges about 170, radial 3 × 60 + 3 × 24, tools none (124, 102, 61,
 // 78, 120 and 34 s at 32³); they are 32³ stages, their scenes sized for it.
+// The sync 3 stages: rest about 150 steps, most of them asleep, jets 37.
 //
 // --unit super runs every stage's sims with supertile sleeping units (SLEEP_UNIT =
 // SUPER, docs/scaling.md D8's granularity, the A/B docs/webgpu.md W12 keeps),
@@ -70,7 +80,7 @@ import { openHarness } from './harness/open.mjs';
 
 const argv = process.argv.slice(2);
 const opt = (k) => (argv.includes(`--${k}`) ? argv[argv.indexOf(`--${k}`) + 1] : null);
-const ALL = ['determinism', 'sleep', 'conservation', 'behaviour', 'moves', 'io', 'shift', 'modes', 'edgemodes', 'air', 'edges', 'radial', 'tools'];
+const ALL = ['determinism', 'sleep', 'conservation', 'behaviour', 'moves', 'io', 'shift', 'modes', 'edgemodes', 'air', 'edges', 'radial', 'tools', 'rest', 'jets'];
 const stages = opt('stage')?.split(',') ?? ALL;
 const SUPER = { x: 4, y: 2, z: 2 };   // shaders/common.js SUPER
 const unit = opt('unit') === 'super' ? SUPER : null;

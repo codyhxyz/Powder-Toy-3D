@@ -296,7 +296,7 @@ export function expectedTables(M) {
     ['ROUGH', 'f32', (e) => LOOK[e.id].rough], ['METAL', 'f32', (e) => LOOK[e.id].metal], ['IOR', 'f32', (e) => LOOK[e.id].ior],
     ['SSS', 'f32', (e) => LOOK[e.id].sss], ['GLINT', 'f32', (e) => LOOK[e.id].glint], ['BEVEL', 'f32', (e) => LOOK[e.id].bevel],
     ['ALBEDO', 'vec3f', (e) => LOOK[e.id].alb], ['SCATALB', 'vec3f', (e) => LOOK[e.id].scatAlb], ['EMIT', 'vec3f', (e) => LOOK[e.id].emit],
-    ['SURF', 'i32', (e) => LOOK[e.id].surf], ['CRAG', 'vec4f', (e) => LOOK[e.id].crag],
+    ['SURF', 'i32', (e) => LOOK[e.id].surf], ['CRAG', 'vec4f', (e) => LOOK[e.id].crag], ['SHED', 'f32', (e) => LOOK[e.id].shed],
   ];
   const pad = (arr, empty) => (arr.length ? arr : [empty]);
   const rx = pad(m.rx, [0, 0, 0, 0, 0, 0, 0]);
@@ -325,6 +325,9 @@ export async function tableCheck(lab, M, { check }, times) {
     tabCode.push(`if (id < ${rows.length}) {\n    let o = ${tabAt}u + u32(id) * ${COMPS[type]}u;\n    ${store(type, `${fn}(id)`, 'o').join('\n    ')}\n  }`);
     tabAt += rows.length * COMPS[type];
   }
+  // after the tables, the ambient air temperature (common.js airT(): PHYS.AMBIENT until a simulation sets it)
+  const airAt = tabAt++;
+  tabCode.push(`if (id == 0) { outBuf[${airAt}u] = bitcast<u32>(airT()); }`);
   const threads = Math.max(ne, ...tabs.map(([, , rows]) => rows.length));
   const code = `${M.prelude(RUN_GRID, { state: false })}
 @group(2) @binding(0) var<storage, read_write> outBuf: array<u32>;
@@ -352,8 +355,9 @@ export async function tableCheck(lab, M, { check }, times) {
     const o = tabOffsets[k] + i * COMPS[type] + c;
     label[o] = `${fn}(${i})`; want[o] = w;
   })));
+  label[airAt] = 'airT()'; want[airAt] = f32bits(M.physics.PHYS.AMBIENT);
   const bad = compareWords(got, want, (i) => label[i]);
-  const fields = elem.length + 1 + tabs.length;
+  const fields = elem.length + 1 + tabs.length + 1;
   check(`every table field read back through its accessor equals JS (${fields} accessors, ${ne} elements, ${want.length} words)`,
     bad.length === 0, `${bad.length} differ: ${bad.slice(0, SHOWN).join('; ')}`);
 }
