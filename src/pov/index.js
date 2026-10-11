@@ -141,14 +141,26 @@ const interact = createInteract();   // look + E (interact.js): perks, and Desce
   const heldModels = new Map();          // tool key → its model, built the first time it's held
   const hands = new WeakMap();           // a body's root → its right hand
   const vAim = new THREE.Vector3();
+  let figureShown = false;               // the figure is drawn this frame (the camera is out of the head)
+  // the shown figure's right hand (a bone), or null
+  function rightHand() {
+    const body = figure?.showing === 'real' ? figure.real.model : figure?.root;
+    if (body && !hands.has(body)) hands.set(body, body.getObjectByName(body === figure.root ? STICK_HAND : REAL_HAND));
+    return (body && hands.get(body)) ?? null;
+  }
+  // the right hand in the world while the figure is drawn, else null: a wand's casts are drawn from it in third person (tools/index.js)
+  function handWorld(out) {
+    const hand = figureShown ? rightHand() : null;
+    if (!hand) return null;
+    hand.updateWorldMatrix(true, false);
+    return hand.getWorldPosition(out);
+  }
   function showHeld(show, size) {
     const key = show ? toolbelt?.selectedKey : null;
     const model = key ? gearByKey(key)?.model : null;   // the wand has no model
     if (model && !heldModels.has(key)) heldModels.set(key, attachModel(heldProp, model, null, { arm: false }).obj);
     for (const [k, obj] of heldModels) obj.visible = k === key;
-    const body = figure?.showing === 'real' ? figure.real.model : figure?.root;
-    if (body && !hands.has(body)) hands.set(body, body.getObjectByName(body === figure.root ? STICK_HAND : REAL_HAND));
-    const hand = body && hands.get(body);
+    const hand = rightHand();
     heldProp.visible = !!(model && hand);
     if (!heldProp.visible) return;
     hand.updateWorldMatrix(true, false);
@@ -360,7 +372,7 @@ const interact = createInteract();   // look + E (interact.js): perks, and Desce
         toolbelt = createToolbelt({
           renderer, scene,
           getSim: app.getSim, getVolume: app.getVolume, getScale: app.getScale,
-          hud, viewmodel,
+          hud, viewmodel, handWorld,
           isActive: () => live() && !editing,
           getStepsPerFrame: () => app.settings.paused ? 0 : app.settings.steps,
           requestRender: app.requestRender,
@@ -682,7 +694,8 @@ const interact = createInteract();   // look + E (interact.js): perks, and Desce
     }
 
     // the figure: shown once the camera is out of the head
-    figure.setVisible(pose.eyeDist > FIGURE_HIDE_DIST && !driving && !player.gibbed);   // the vehicle draws its driver; a body burst into meat has nothing left to draw
+    figureShown = pose.eyeDist > FIGURE_HIDE_DIST && !driving && !player.gibbed;
+    figure.setVisible(figureShown);   // the vehicle draws its driver; a body burst into meat has nothing left to draw
     figure.update(dt, {
       // Shrink: the figure at the body's size, its gait timed at the plain figure's speed for the size
       feet: vFeet, scale: scale * player.size, yaw: povCam.look.yaw, worldToGrid,
