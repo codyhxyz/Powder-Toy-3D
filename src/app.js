@@ -31,6 +31,7 @@ import { createDock } from './ui/dock.js';
 import { createCard } from './ui/card.js';
 import { createSettings } from './ui/settings.js';
 import { createHud, createHelp } from './ui/hud.js';
+import { createScoreboard } from './ui/scoreboard.js';
 import { h, inkFor, luminance } from './ui/dom.js';
 import { gfx, gfxUniforms, updateGfxUniforms } from './gfx/uniforms.js';
 import { DETAIL, settingKey, detailDefaults, detailDefines, detailRows } from './gfx/detail.js';
@@ -38,7 +39,7 @@ import { createDetailGate } from './gfx/detailGate.js';
 import { createColdShaderGuard } from './gfx/coldShader.js';
 import { createGpuLossTracker, silentLinkFailure, processLossMessage, lossDetails } from './gfx/gpuLoss.js';
 import { setAeration } from './gfx/foam.js';
-import { decoView, prepareDeco, readDeco, uploadDeco, ensureDeco, DECO_BYTES } from './deco.js';
+import { decoView, prepareDeco, readDeco, uploadDeco, ensureDeco, DECO_BYTES, setDecoColor } from './deco.js';
 import { claimPrograms } from './gfx/programs.js';
 import { createPost, createAutoResolution, UPSCALE } from './gfx/post.js';
 import { createPacer, settleFrames, sceneKey, createCapCheck, CAP_IDLE_MS, MAX_FPS } from './gfx/pacing.js';
@@ -66,7 +67,9 @@ import { registerSaveSection, registerSavedSettings } from './saves/sections.js'
 import { packCells, unpackCells } from './saves/format.js';
 import { BRICK_CELLS } from './shaders/window.js';
 import { putSave, getSave, cleanName } from './saves/local.js';
-import { SIM_MODE_DEFAULTS, SIM_MODE_KEYS, simModeRows, applySimModes, sanitizeModes, modeToast, MODE_KEYS, nextMode } from './simModes.js';
+import { SIM_MODE_DEFAULTS, SIM_MODE_KEYS, EDGE, simModeRows, applySimModes, sanitizeModes, modeToast, MODE_KEYS, nextMode } from './simModes.js';
+import { createConsole } from './console/index.js';
+import { registerConsoleApi } from './console/registry.js';
 
 // Optional modules (built in parallel); the app works without them.
 const optional = import.meta.glob(['./views.js', './signs.js', './constructions.js'], { eager: true });
@@ -112,6 +115,8 @@ const SPAWNER_SET = {
 };
 // the lab's own enemy spawner: its open south floor, as shares of the grid (the old lab NPC's arena)
 const LAB_ENEMY_AT = [0.555, 0.86];
+// the most gravity a script may set (sim.gravity): the Gravity slider's top
+const CONSOLE_GRAVITY_MAX = 0.06;
 
 // ---------------------------------------------------------------- settings
 // the box the Scene row goes back to from World, and phones' grid
@@ -380,7 +385,7 @@ function build() {
     fragmentShader: volumeFrag(sim.g, farHazeGLSL),
     uniforms: {
       tA: { value: null }, tB: { value: null }, tBrick: { value: null }, tLight: { value: null },
-      uCam: { value: new THREE.Vector3() },
+      uCam: { value: new THREE.Vector3() }, uMarchNear: { value: 0 },
       uSun: { value: SUN }, tShadow: { value: null }, uShadowRes: { value: 0 },
       uView: { value: 0 }, uShadows: { value: true }, uTime: { value: 0 }, uLightGain: { value: GLOW_GAIN },
       uOrigin: sim.originUniform,   // the window's place in the world (the sim passes get it from sim.run)
@@ -616,6 +621,7 @@ function openMap(key, mode = 'sandbox') {
   if (!isWorld(m) && settings.size === m.size) loadPreset(m.preset);   // (undoable, as any box scene)
   else { useMap(m); setSize(m.size); }
   hud.toast(`Loaded ${m.name}`);
+  scoreboard.reset();   // a new map: the sandbox's kills and deaths start over, as a GMod server's frags do
   startMode(mode, { fresh: true }).catch((err) => console.error('The match failed to start', err));
   return true;
 }
@@ -655,10 +661,12 @@ if (WORLD_DIMS.some((n, i) => n !== WORLD_SIZE[i])) console.error('maps.js: WORL
 const dimsName = (d) => (d.every((n) => n === d[0]) ? `${d[0]}^3` : d.join(' × '));
 const millions = (d) => `${(d[0] * d[1] * d[2] / 1e6).toFixed(1)}M`;
 
+// what undoing a scene load names: its map ('Undone Lab'), and the Empty map, TPT's Clear
+function sceneLabel(preset) { return preset === 'empty' ? 'Clear' : MAPS.find((m) => m.preset === preset)?.name ?? preset; }
 function loadPreset(name, undoable = true) {
   if (graphicsFailure) throw graphicsFailure;
   if (undoable && mp.guard()) return false;
-  if (undoable && !win) sim.snapshot();
+  if (undoable && !win) sim.snapshot(sceneLabel(name));
   settings.preset = name;
   if (win) {
     // A world has one scene, its own: loading starts it over (and can't be
@@ -756,6 +764,7 @@ document.body.append(signLayer);
 let signs = null;
 let builds = null; // constructions (optional module)
 let pov = null;    // first-person mode (src/pov)
+let scripts = null; // the scripting console, ` (src/console)
 
 // ---------------------------------------------------------------- picking & brush
 const pointer = new THREE.Vector2();
@@ -930,7 +939,7 @@ function finishShape() {
     Object.assign(stroke, { center: new THREE.Vector3().copy(b.center), shape: 1, grow: b.grow });
   }
   if (!mp.isGuest) {
-    sim.snapshot();
+    sim.snapshot(`${toolById(tool)?.name ?? 'Shape'} ${d.kind}`);   // 'Undone Sand line'
     toolbar.setUndoEnabled(true);
   }
   paintStroke(stroke);
@@ -1010,7 +1019,7 @@ const FILL_REFUSED = {
   gone: 'The world changed before the fill: try again',
 };
 function fillAt() {
-  if (!hover.valid) { hud.toast('Click a surface to fill from'); return; }
+  if (!hover.valid) { hud.toast('Click a surface to fill from', { kind: 'error' }); return; }
   const tool = settings.tool, st = brushStroke(tool);
   let cell, id, maxY = sim.g.ny - 1;
   if (tool >= 0 && !settings.replace && !settings.specificDelete) {
@@ -1020,15 +1029,15 @@ function fillAt() {
   } else {
     cell = hover.cell.clone();
     id = hover.id;
-    if (id < 0) { hud.toast(FILL_REFUSED.start); return; }
+    if (id < 0) { hud.toast(FILL_REFUSED.start, { kind: 'error' }); return; }
     if (st.filter >= 0 && id !== st.filter) { hud.toast(`${editModeText()}: click ${ELEMENTS[st.filter].name} to fill it`); return; }
   }
   const req = { cell: cell.toArray(), id, maxY, stroke: { ...st, rate: oneShotRate(tool, settings.rate) } };
   delete req.stroke.center;
   hud.dismissHint();
   if (mp.isGuest) { mp.fill(req); return; }
-  runFill(sim, req, { openSides: !!win, before: () => { sim.snapshot(); toolbar.setUndoEnabled(true); } })
-    .then((r) => { pacer.wake(); hud.toast(r.error ? FILL_REFUSED[r.error] : `Filled ${r.count.toLocaleString()} cells`); })
+  runFill(sim, req, { openSides: !!win, before: () => { sim.snapshot(`${toolById(tool)?.name ?? 'Flood'} fill`); toolbar.setUndoEnabled(true); } })
+    .then((r) => { pacer.wake(); hud.toast(r.error ? FILL_REFUSED[r.error] : `Filled ${r.count.toLocaleString()} cells`, { kind: r.error ? 'error' : 'generic' }); })
     .catch((err) => { console.error('Fill failed', err); hud.toast('The fill failed'); });
 }
 
@@ -1195,7 +1204,7 @@ const actions = {
   firstPerson: () => { painting = false; pov?.toggle(); },
   // 'god' leaves the walking body; 'first' / 'third' drops in, or switches the camera if already in
   setCamera: (id) => {
-    if (!pov) { hud.toast('First person is still loading'); return; }
+    if (!pov) { hud.toast('Your body is still loading'); return; }
     if (id === 'god') { if (camState() !== 'god') pov.exit(); return; }
     pov.camera.third = id === 'third';
     if (camState() === 'god') { painting = false; pov.enter(); }
@@ -1208,7 +1217,21 @@ const actions = {
   renderThumb,
 };
 const toolbar = createToolbar({ views: VIEWS, settings, actions });
-const mp = createMultiplayer({ renderer, scene, camera, hud, getSim: () => sim, getVolume: () => volume, setGrid, inWorld: () => !!win });
+const mp = createMultiplayer({ renderer, scene, camera, hud, getSim: () => sim, getVolume: () => volume, setGrid, inWorld: () => !!win, score: () => scoreboard.mine });
+// Tab held: Garry's Mod's scoreboard (ui/scoreboard.js), in the body and in the god view, while
+// you're on the world: with the mouse held by the body, or nothing focused (a click on the world
+// lets go of the controls: press). With a control or a dialog focused, Tab moves through them.
+const scoreboard = createScoreboard({
+  wantsTab() {
+    if (isTyping() || pov?.editingWand) return false;
+    const a = document.activeElement;
+    return !!pov?.locked || !a || a === document.body || a === renderer.domElement;
+  },
+  map: () => mapOf(settings)?.name ?? null,
+  match: () => pov?.game?.scoreboard?.() ?? null,
+  session: () => mp.players,
+  dead: () => !!(pov?.active && pov.player?.dead),
+});
 
 const fmtSpeed = (v) => `${v}×`;
 // the drawer's Map row: the map's name and size, and Change map (the start menu)
@@ -1276,7 +1299,7 @@ const settingsPanel = createSettings({
       { type: 'seg', key: 'sprintMode', options: [['hold', 'Sprint: Hold'], ['toggle', 'Toggle']],
         onChange: (v) => { settings.sprintMode = v; save(); } },
     ] },
-    ...(accountsEnabled ? [accountSection({ toast: (text) => hud.toast(text) })] : []),
+    ...(accountsEnabled ? [accountSection({ toast: (text, opts) => hud.toast(text, opts) })] : []),
     // for working on the app itself (the frame loop applies it)
     { title: 'Developer', rows: [
       { type: 'seg', key: 'profiler', options: [[false, 'Profiler off'], [true, 'Profiler on']],
@@ -1293,8 +1316,9 @@ let detailVersion = 0;
 const DETAIL_FOAM = DETAIL.find((f) => f.key === 'liquidFoam');   // whitewater also runs a field with the sim
 const detailGate = createDetailGate(renderer, () => pacer.wake(), () => hud.toast('Preparing close-up detail… the first time after an update this can take several seconds'));
 // The view program's first draw after an update freezes the page while the
-// GPU driver builds it: say so first (gfx/coldShader.js).
-const coldShader = createColdShaderGuard(() => hud.toast('Loading something cool, please be patient'));
+// GPU driver builds it: say so first (gfx/coldShader.js), on the start menu's
+// loading screen too while it is up.
+const coldShader = createColdShaderGuard(() => { hud.toast('Loading something cool, please be patient'); launch.progress?.('cold'); });
 function applyDetail() {
   shadowMat.defines = detailDefines(settings);
   shadowMat.needsUpdate = true;
@@ -1319,7 +1343,7 @@ function resetSettings() {
   toolbar.sync();
   hud.setEditMode(editModeText());
   save();
-  hud.toast('Settings reset');
+  hud.toast('Settings reset', { kind: 'cleanup' });
 }
 
 // Simulation modes (simModes.js): options of the world playing, so the host's
@@ -1345,6 +1369,45 @@ function setSimModes(modes) {
 }
 function resetSimModes() { setSimModes({ ...SIM_MODE_DEFAULTS, ...mapOf(settings)?.modes }); }
 
+// The Simulation options in the console by TPT's Lua names and numbers
+// (src/lua/LuaSimulation.cpp gravityMode, airMode, ambientHeatSim, edgeMode):
+// no argument reads, one sets. TPT numbers its edges void 0, solid 1, loop 2
+// (SimulationSettings.h EdgeMode); ours start at solid.
+const TPT_EDGES = [EDGE.VOID, EDGE.SOLID, EDGE.LOOP];
+function consoleMode(key, toOurs = (v) => v, toTpt = (v) => v) {
+  return function (v) {
+    if (v === undefined || v === null) return toTpt(settings[key]);
+    const ours = toOurs(v);
+    if (sanitizeModes({ ...settings, [key]: ours })[key] !== ours) throw new Error(`${key}: no mode ${v}`);
+    const lock = simModeLock(key);
+    if (lock) throw new Error(lock);
+    setSimMode(key, ours);
+    return toTpt(settings[key]);
+  };
+}
+registerConsoleApi('sim', 'gravityMode', consoleMode('gravityMode'),
+  { args: '[mode]', doc: 'Gravity: 0 vertical, 1 off, 2 radial (toward the box centre).', writes: true });
+registerConsoleApi('sim', 'airMode', consoleMode('airMode'),
+  { args: '[mode]', doc: 'Air: 0 on, 1 pressure off, 2 velocity off, 3 off, 4 no update.', writes: true });
+registerConsoleApi('sim', 'ambientHeatSim', consoleMode('ambientHeat', (v) => !!v),
+  { args: '[on]', doc: 'Ambient heat: whether air holds and trades heat.', writes: true });
+registerConsoleApi('sim', 'edgeMode', consoleMode('edgeMode', (v) => TPT_EDGES[v] ?? -1, (v) => TPT_EDGES.indexOf(v)),
+  { args: '[mode]', doc: 'Box edges (TPT numbering): 0 void, 1 solid, 2 loop. World keeps solid.', writes: true });
+// TPT's sim.decoColor: the deco tools' colour, read as a packed 0xAARRGGBB, set
+// packed or as r, g, b[, a] (0-255).
+const BYTE = 256;
+registerConsoleApi('sim', 'decoColor', function (r, g, b, a) {
+  if (r !== undefined && r !== null) {
+    const rgba = g === undefined || g === null
+      ? [(r >>> 16) & 0xff, (r >>> 8) & 0xff, r & 0xff, (r >>> 24) & 0xff]
+      : [r, g, b ?? 0, a ?? BYTE - 1];
+    setDecoColor(rgba);
+    dock.sync();
+  }
+  const [cr, cg, cb, ca] = decoView.color;
+  return ((ca * BYTE + cr) * BYTE + cg) * BYTE + cb;
+}, { args: '[packed | r, g, b[, a]]', doc: 'The deco tools\' colour, as 0xAARRGGBB.', writes: false });
+
 function setSettingsOpen(v) {
   settingsPanel.setOpen(v);
   toolbar.setSettingsOpen(v);
@@ -1368,15 +1431,16 @@ function setView(id) {
 
 function undo() {
   if (mp.guard()) return;
-  const note = sim.history?.at(-1)?.note, shrine = note?.shrine;
+  const { note, label } = sim.history?.at(-1) ?? {};
+  const shrine = note?.shrine;
   if (sim.undo()) {
     if (shrine) perkOrbs?.removeShrine(shrine);
     if (note?.scene) restoreSceneExtras(note.scene);   // a loaded save taken back: the box's signs, spawners and orbs too
     pov?.worldReplaced();
-    hud.toast('Undone');
+    hud.toast(label ? `Undone ${label}` : 'Undone', { kind: 'undo' });   // Garry's Mod's "Undone Prop": it names what was undone
   }
   // (a world's window moved off all of it: it's kept for when the window comes back)
-  else hud.toast(sim.canUndo ? 'Too far away to undo that: go back to it first' : 'Nothing to undo');
+  else hud.toast(sim.canUndo ? 'Too far away to undo that: go back to it first' : 'Nothing to undo', { kind: 'error' });
   toolbar.setUndoEnabled(sim.canUndo);
 }
 
@@ -1526,7 +1590,7 @@ async function prepareSave(h) {
     setSize(size);
   } else {
     // undoable like any scene change; TPT takes a history snapshot before opening a local save (GameController.cpp OpenLocalBrowse)
-    sim.snapshot();
+    sim.snapshot('Loaded save');
     sim.history.at(-1).note = { scene: sceneExtras() };
   }
   settings.preset = preset;
@@ -1672,7 +1736,7 @@ canvasEl.addEventListener('pointerdown', (e) => {
     // pick up what it aims at, Minecraft creative's pick block (TPT's middle click samples too)
     if (e.button === 1 && pov.locked && pov.toolbelt?.selectedKey === 'TOOLGUN') {
       e.preventDefault();
-      if (!pickHovered()) hud.toast('Nothing to pick there');
+      if (!pickHovered()) hud.toast('Nothing to pick there. That\'s air.', { kind: 'error' });
     }
     return;
   }
@@ -1685,7 +1749,7 @@ function press(e) {
   if (e.button !== 0 || e.altKey || wasEditing) return; // a click that just finishes editing a sign doesn't paint
   pointer.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
   if (eyedropper) {
-    if (!pickHovered()) hud.toast('Nothing to pick there');
+    if (!pickHovered()) hud.toast('Nothing to pick there. That\'s air.', { kind: 'error' });
     return;
   }
   if (clickTool() !== null) return;
@@ -1711,8 +1775,8 @@ function clickTool() {
   }
   if (settings.tool === LIGHTNING_TOOL) {
     if (mp.guard()) return false;
-    if (!hover.valid) { hud.toast('Click a surface to strike it'); return false; }
-    sim.snapshot();
+    if (!hover.valid) { hud.toast('Click a surface to strike it', { kind: 'error' }); return false; }
+    sim.snapshot(toolById(LIGHTNING_TOOL).name);
     toolbar.setUndoEnabled(true);
     lightning.strikeTool(sim, hover, settings.radius);
     pacer.wake();
@@ -1721,11 +1785,11 @@ function clickTool() {
   }
   if (isSpawnerTool(settings.tool)) {
     if (mp.guard()) return false;
-    if (!hover.valid) { hud.toast('Click a surface to set it on'); return false; }
+    if (!hover.valid) { hud.toast('Click a surface to set it on', { kind: 'error' }); return false; }
     const kind = SPAWNER_KIND[settings.tool];
     const r = spawners.toggle(kind, feetOnHit(hover));
     pacer.wake();
-    if (r === 'full') hud.toast('That many is the limit');
+    if (r === 'full') hud.toast('That many is the limit', { kind: 'error' });   // GMod's LimitHit
     else hud.toast(r === 'removed' ? 'Spawner removed' : SPAWNER_SET[ENEMY_KINDS.includes(kind) ? SPAWNER.ENEMY : kind]);
     return r !== 'full';
   }
@@ -1733,12 +1797,12 @@ function clickTool() {
     if (mp.guard()) return false;
     if (!builds) { hud.toast('Constructions are still loading'); return false; }
     if (!builds.ready) return false;
-    sim.snapshot();
+    sim.snapshot(toolById(settings.tool)?.name);
     toolbar.setUndoEnabled(true);
     lastShrine = 0;
     builds.place();
     // a shrine's orbs go with its snapshot: undoing it takes them away (undo)
-    if (lastShrine) { sim.history.at(-1).note = { shrine: lastShrine }; hud.toast('Shrine set: in first person (V), take one perk and the others vanish'); }
+    if (lastShrine) { sim.history.at(-1).note = { shrine: lastShrine }; hud.toast('Shrine set: in first person (V), take one perk and the others vanish', { kind: 'hint' }); }
     hud.dismissHint();
     return true;
   }
@@ -1748,7 +1812,7 @@ function clickTool() {
 // A brush stroke of `tool` from now until the button lets go (undone as one).
 function startStroke(tool) {
   if (!mp.isGuest) {
-    sim.snapshot();
+    sim.snapshot(toolById(tool)?.name);
     toolbar.setUndoEnabled(true);
   }
   strokeTool = tool;
@@ -2017,7 +2081,7 @@ function saveScreenshot() {
     });
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-    hud.toast('Screenshot saved');
+    hud.toast('Screenshot saved', { icon: 'camera' });
   });
 }
 
@@ -2034,7 +2098,7 @@ function frame(now) {
 function tick(now, renderOnly = false) {
   if (graphicsFailure) throw graphicsFailure;
   if (!renderOnly && coldShader.hold()) return;   // a cold-compile message is painting
-  if (!renderOnly && capCheck.feed(now, lastIdle)) hud.toast(CAP_NOTICE, CAP_NOTICE_MS);
+  if (!renderOnly && capCheck.feed(now, lastIdle)) hud.toast(CAP_NOTICE, { kind: 'hint', ms: CAP_NOTICE_MS });
   const t0 = performance.now();
   lastIdle = false;
   if (!renderOnly && !pacer.due(now)) { lastIdle = performance.now() - t0 < CAP_IDLE_MS; return; }
@@ -2072,13 +2136,15 @@ function tick(now, renderOnly = false) {
   edges.visible = !win;
   prof.phase('sim');
   const stepping = !renderOnly && !mp.isGuest && (!settings.paused || stepOnce);
+  if (!renderOnly) scripts?.tick();   // event.tick: every frame, paused too (TPT)
   if (stepping) {
-    for (let i = 0; i < settings.steps; i++) sim.step();
+    for (let i = 0; i < settings.steps; i++) { scripts?.beforeStep(); sim.step(); scripts?.afterStep(); }
     lightning.update(sim);   // storms: charged cloud strikes by itself (src/lightning.js)
     if (DAY.running) day.clock += settings.steps;
     animTime += dt;
     stepOnce = false;
   } else if (!renderOnly && mp.isGuest && DAY.running) day.clock += settings.steps;   // guests don't step: keep the day going at their own rate
+  if (!renderOnly) scripts?.endFrame();
   updateSun();
   if (birds) {
     prof.phase('other');   // (their probe pass, birdProbe, counts here)
@@ -2151,6 +2217,7 @@ function tick(now, renderOnly = false) {
     u.tBrick.value = sim.brick.texture;
     u.tLight.value = sim.lightTexture;
     u.uCam.value.copy(camera.position).applyMatrix4(invVol.copy(volume.matrixWorld).invert());
+    u.uMarchNear.value = pov?.marchNear ?? 0;
     detailGate.update(camera, u.uCam.value, [sim.g.nx, sim.g.ny, sim.g.nz], scene);
     win?.far.view(volume, settings.view === 0, camera);
     u.uView.value = settings.view;
@@ -2220,7 +2287,11 @@ function bootReady(pending = null) {
   let settled = !pending;   // (a save picked on the menu: it loads first)
   pending?.finally(() => { settled = true; });
   const check = async () => {
-    if (((win && !win.loaded) || !settled) && performance.now() - t0 < READY_WAIT_MS) { setTimeout(check, READY_POLL_MS); return; }
+    if (((win && !win.loaded) || !settled) && performance.now() - t0 < READY_WAIT_MS) {
+      if (win && !win.loaded) launch.progress?.('world');   // (the loading screen's step: its passes compile, then it generates)
+      setTimeout(check, READY_POLL_MS);
+      return;
+    }
     mark('first-frame');
     if (bootMap && launch.mode && launch.mode !== 'sandbox' && pov?.game) {
       launch.status?.(launch.mode === 'noita' ? 'Dropping in' : 'Picking the teams');
@@ -2286,6 +2357,30 @@ try {
     hideToolsMenu: () => dock.setCollapsed(true),
   });
   pov.vehicles.spawnLayout(arenaLayout);   // the scene loaded before the POV shell existed
+  // the scripting console, ` (optional: the game runs without it)
+  try {
+    scripts = createConsole({
+      getSim: () => sim, isGuest: () => mp.isGuest,
+      paused: () => settings.paused, setPaused,
+      stepNow: (n) => { for (let i = 0; i < n; i++) sim.step(); if (DAY.running) day.clock += n; },
+      gravity: () => settings.gravity / DEFAULTS.gravity,
+      setGravity: (g) => {
+        settings.gravity = THREE.MathUtils.clamp(g * DEFAULTS.gravity, 0, CONSOLE_GRAVITY_MAX);
+        sim.gravity = settings.gravity;
+        if (settingsPanel.isOpen) settingsPanel.sync();
+        save();
+      },
+      brushRadius: () => settings.radius, setBrushRadius: setRadius,
+      brushShape: () => settings.shape, setBrushShape: (v) => { settings.shape = v; dock.sync(); save(); },
+      selected: () => settings.tool, select: selectTool,
+      paint: ({ x, y, z, radius, shape, tool }) => sim.paint({
+        center: new THREE.Vector3(x, y, z).addScalar(0.5), radius, shape, tool, rate: settings.rate, replace: false,
+      }),
+      snapshot: () => { sim.snapshot(); toolbar.setUndoEnabled(true); },
+      requestRender: () => pacer.wake(),
+      exitPointerLock: () => { if (document.pointerLockElement) document.exitPointerLock(); },
+    });
+  } catch (err) { console.error('Console unavailable', err); }
   pov.game.useLayout(arenaLayout);
   descent = createDescentRunner({
     levels: DESCENT_LEVELS,
@@ -2297,7 +2392,7 @@ try {
     },
     snapshot: () => runSnapshot({ player: pov.player, gold: pov.descent?.gold ?? null, wands: descentWands }),
     overlay: createDescentOverlay(),
-    toast: (text) => hud.toast(text),
+    toast: (text, opts) => hud.toast(text, opts),
     finish: () => { pov.exit(); actions.openMenu(); },
     wait: (s) => new Promise((resolve) => setTimeout(resolve, s * 1000)),
     loadId: () => win,
@@ -2311,6 +2406,7 @@ try {
     get spawners() { return spawners; },
     get birds() { return birds; },
     get perkOrbs() { return perkOrbs; },
+    get scripts() { return scripts; },   // the console (src/console): .setOpen, .world
     lightning,     // the Lightning tool's and storms' bolts (src/lightning.js)
     // the loaded arena's layout (spawns, flags, hills, siege core, shrines, vehicles: arenas/damValley.js), else null
     get arena() { return arenaLayout; },
@@ -2321,6 +2417,8 @@ try {
     setSize,         // switch the grid (a SIZES or WORLDS key), keeping the scene settings
     openMap,         // as the start menu's Start does (a maps.js key, a gamemode)
     undo,            // as ⌘Z does
+    hud,             // toast(text, { kind }): GMod's notices (ui/notices.js)
+    scoreboard,      // GMod's, on Tab (ui/scoreboard.js): show(v), shown, mine
     saveGame,        // as ⌘S does: resolves to the save's meta (saves/local.js), or null
     openSave,        // a local save's id, or a .tpt3d file's bytes: resolves to whether it loaded
     setSimMode,      // (key, value): as the drawer's Simulation switches do (simModes.js SIM_MODE_KEYS)
@@ -2358,6 +2456,7 @@ try {
     } : null,
   };
   gpuLoss.settle();
+  launch.progress?.('compile');   // the first frame compiles the view (the loading screen's step)
   requestAnimationFrame(frame);
   bootReady(launch.save ? openSave(launch.save) : null);   // a save picked on the menu's Saves before the game had loaded
 } catch (err) {

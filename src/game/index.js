@@ -10,13 +10,14 @@ import * as R from './rules.js';
 import { labLayout, fitLayout } from './layout.js';
 import { ObjectiveEvaluator, WANT, NEAR } from './bots.js';
 import { createMarkers } from './markers.js';
-import { createGameHud } from './hud.js';
+import { createGameHud, clock } from './hud.js';
 import { createSiege } from './siege.js';
 import { canFight } from '../pov/ai/brain.js';
 import { createArsenal } from './arsenal.js';
 import { CAUSE } from '../pov/halo.js';
 import { createFeel } from './feel.js';
 import { iconFor } from '../pov/killfeed.js';
+import { play as announce } from '../pov/announcer.js';
 
 // Team games in first person: Halo's Team Slayer, Capture the Flag, King of
 // the Hill and Infection, and Siege (TF2's attack/defend on a row of control
@@ -56,6 +57,7 @@ const SPAWN_LIFT_MAX = 40;           // cells a spawn rises at most to clear wha
 const BOT_MS_EASE = 0.05;            // the bots' CPU time per frame is shown as this running average (checks)
 const ROAM_SPAWN_R = 10;             // cells: an enemy spawn, as somewhere to roam to, is a zone this wide
 const ROAM_S = 30;                   // s a Slayer bot heads for one stretch of open ground before the next
+const LAST_MINUTE_S = 60;            // s left on the clock when Halo's announcer calls "One minute remaining"
 // s from a match's result to the next match: the carnage report counts down
 // over its whole stay (rules.js END_SCREEN_S, Halo 3's post-game carnage report)
 const NEXT_MATCH_S = R.END_SCREEN_S;
@@ -85,13 +87,7 @@ export function createGame(shell) {
   let visible = true;
   let botMs = 0;
   const markers = createMarkers({ scene: shell.scene, getVolume: app.getVolume, getScale: app.getScale });
-  const hud = createGameHud({
-    onStart: (m, s) => { side = s; menu(false); start(m, { side: s }); },
-    onEnd: () => { menu(false); end(); },
-    onSide: (s) => { side = s; if (running && (s === 'red' || s === 'blue')) switchTeam(s); },
-    onClose: () => menu(false),
-    onLeave: leave,
-  });
+  const hud = createGameHud({ onLeave: leave });
   const now = () => performance.now() / 1000;
   const sim = () => app.getSim();
   // Halo's medals, motion tracker and power-ups (feel.js): it hears the match's events and reads the roster
@@ -256,7 +252,7 @@ export function createGame(shell) {
 
   async function start(m, opts = {}) {
     if (!R.MODES[m]) throw new Error(`game: no mode '${m}'`);
-    if (!shell.player || !sim()) { app.hud?.toast?.('Drop in first (F), then start a match'); return false; }
+    if (!shell.player || !sim()) { app.hud?.toast?.('Drop in first (F), then start a match', { kind: 'hint' }); return false; }
     if (starting) return starting;
     const { fresh = false, ...over } = opts;
     next = null;
@@ -321,7 +317,6 @@ export function createGame(shell) {
       count();
       povEvents.emit('game:start', { mode: m, layout: layout.name, teams: Object.fromEntries(teams.map((t) => [t, members(t).map((e) => e.id)])) });
       hud.announce(`${rules.name}${pe.team ? `: you're on ${label(pe.team)}` : ''}`, now());
-      hud.choose(m);
       mark('match');
       return true;
     })();
@@ -571,6 +566,7 @@ export function createGame(shell) {
     }
     if (running) {
       time += dt;
+      if (mode !== 'siege' && ends - time <= LAST_MINUTE_S && ends - time + dt > LAST_MINUTE_S) announce('ONE_MINUTE');   // (the match's other lines: pov/announcer.js announceMatches)
       const t0 = performance.now();
       if (frame) for (const e of bots()) { loadout(e); e.bot.bind(app.getVolume(), sim().g); e.bot.update(dt, frame); }
       botMs += (performance.now() - t0 - botMs) * BOT_MS_EASE;
@@ -614,7 +610,33 @@ export function createGame(shell) {
 
   // the scoreboard's rows; medals: a count or list the feel agent's medals.js may keep on the entry (e.medals)
   function board() {
-    return [...roster.values()].filter((e) => e.team).map((e) => ({ id: e.id, name: e.name, team: e.team, kills: e.kills, deaths: e.deaths, score: e.score, me: e.id === PLAYER, medals: e.medals ?? null }));
+    return [...roster.values()].filter((e) => e.team).map((e) => ({ id: e.id, name: e.name, team: e.team, kills: e.kills, deaths: e.deaths, score: e.score, me: e.id === PLAYER, medals: e.medals ?? null, bot: !!e.bot, dead: !alive(e) }));
+  }
+
+  // the scoreboard's view while a match runs (ui/scoreboard.js): the mode's score
+  // line under the map's name, and a row per player edged in their team's colour.
+  // A bot's ping reads BOT, as in GMod; yours is the host's, 0. Extra columns
+  // between deaths and ping: the mode's score when it isn't kills, and the medals
+  // this match in a Halo match (feel.js keeps the count on the entry; Halo 3's
+  // scoreboard has the column, and GMod's base board doesn't mind one more).
+  function scoreboard() {
+    if (!running) return null;
+    const rows = board();
+    const cols = [];
+    if (scoreLabel() !== 'Kills') cols.push({ key: 'score', label: scoreLabel() });
+    if (rules.style === 'halo' || rows.some((r) => r.medals != null)) cols.push({ key: 'medals', label: 'Medals' });   // (feel.js runs in Halo's style)
+    return {
+      map: layout.name,
+      sub: [rules.name, teams.map((t) => `${label(t)} ${Math.floor(teamScore[t] ?? 0)}`).join(' – '), objectiveText().text,
+        `${clock(siege ? siege.timeLeft : ends - time)} left`],
+      cols,
+      rows: rows.map((r) => ({
+        key: r.id, name: r.name, avatar: R.TEAM_CSS[r.team], team: R.TEAM_CSS[r.team], kills: r.kills, deaths: r.deaths,
+        score: cols.some((c) => c.key === 'score') ? Math.floor(r.score) : null, medals: r.medals ?? 0,
+        ping: r.bot ? 'BOT' : 0, dead: r.dead, me: r.me, admin: false,
+      })),
+      foot: me()?.team && mode !== 'infection' ? '. switch team · M match menu' : 'M match menu',
+    };
   }
   const scoreLabel = () => ({ slayer: 'Kills', ctf: 'Caps', koth: 'Hill s', infection: 'Kills', siege: 'Points' }[mode] ?? 'Score');
 
@@ -684,11 +706,6 @@ export function createGame(shell) {
     return true;
   }
 
-  function menu(open) {
-    hud.setMenu(open);
-    if (open) shell.freeMouse();
-  }
-
   function setVisible(v) {
     visible = v;
     if (!v) next = null;   // out of the body (V): out of the match loop
@@ -700,24 +717,12 @@ export function createGame(shell) {
   }
   setVisible(false);
 
-  // Esc with the match menu open closes it and nothing else (app.js would open the start menu
-  // over it); capture, so it's heard first
+  // keys, in first person: '.' switches team (Tab, the scoreboard, is ui/scoreboard.js's:
+  // scoreboard() is what it shows). The gamemode is picked on the start menu (Esc), never in the game
   addEventListener('keydown', (e) => {
-    if (e.key !== 'Escape' || !hud.menuOpen) return;
-    e.preventDefault();
-    e.stopPropagation();
-    menu(false);
-  }, true);
-  // keys, in first person: Tab holds the scoreboard, M opens the match menu, '.' switches team
-  addEventListener('keydown', (e) => {
-    if (!shell.active() || app.isTyping() || e.metaKey || e.ctrlKey || e.altKey) return;
-    if (e.code === 'Tab') { e.preventDefault(); hud.holdBoard(true); return; }
-    if (e.repeat) return;
-    if (e.code === 'KeyM') menu(!hud.menuOpen);
-    else if (e.key === '.') switchTeam();
+    if (!shell.active() || app.isTyping() || e.metaKey || e.ctrlKey || e.altKey || e.repeat) return;
+    if (e.key === '.') switchTeam();
   });
-  addEventListener('keyup', (e) => { if (e.code === 'Tab') hud.holdBoard(false); });
-  addEventListener('blur', () => hud.holdBoard(false));
 
   return {
     start, prepare, end: () => end(), leave, useLayout(l) { userLayout = l ?? null; },
@@ -726,6 +731,7 @@ export function createGame(shell) {
     get style() { return running ? rules.style : null; },   // 'halo' | 'tf2' while a match runs (rules.js MODES)
     get layout() { return layout ?? (sim() ? fitLayout(userLayout ?? app.getArena?.(), sim().g) ?? labLayout(sim().g) : null); },
     get state() { return state(); },
+    scoreboard,
     get lastResult() { return lastResult; },
     get nextIn() { return next ? next.at - now() : null; },   // s to the next match (the report's countdown), else null
     get roster() { return [...roster.values()]; },
@@ -741,7 +747,6 @@ export function createGame(shell) {
     // Siege: the player is in their side's respawn room (or it's setup): a class change applies at once (TF2)
     inSpawnRoom() { return running && !!siege && siege.inSpawnRoom(me()); },
     switchTeam,
-    menu,
     setVisible,
     update,
   };

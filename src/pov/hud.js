@@ -36,6 +36,7 @@ const key = (k) => h('kbd', { text: k });
 export function createPovHud() {
   const touch = matchMedia(TOUCH_MEDIA).matches;   // a phone: the hints name the thumbs' controls (touch.js), not keys
   const fx = {
+    buried: h('div.pov-fx.pov-buried'),   // the head in matter: Minecraft's in-wall overlay (index.js BURIED_SHADE)
     heat: h('div.pov-fx.pov-heat'),
     frost: h('div.pov-fx.pov-frost'),
     acid: h('div.pov-fx.pov-acid'),
@@ -107,7 +108,7 @@ export function createPovHud() {
     h('span', { text: 'God leaves' }));
 
   const root = h('div.pov-hud', { 'aria-hidden': 'true' },
-    fx.heat, fx.frost, fx.acid, fx.stain, fx.hurt, shieldEdge, cross, hitmark, nades, vitals, lock, death, hint);
+    fx.buried, fx.heat, fx.frost, fx.acid, fx.stain, fx.hurt, shieldEdge, cross, hitmark, nades, vitals, lock, death, hint);
   document.body.append(root);
 
   // DOM writes only on change
@@ -181,6 +182,8 @@ export function createPovHud() {
       const screen = live ? st?.screen : null;
       if (screen) set(fx.stain, '--c', screen);
       set(fx.stain, 'opacity', screen ? String(STATUS_TINT) : '0');
+      if (s.buried) set(fx.buried, '--c', s.buried);
+      set(fx.buried, 'opacity', live && s.buried ? '1' : '0');
       set(lock, '.show', live && !s.locked);
 
       // health, with a trail that shows what the last hit took

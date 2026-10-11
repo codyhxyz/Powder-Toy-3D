@@ -1,5 +1,7 @@
 import { h } from '../ui/dom.js';
 import { rankOf } from './medals.js';
+import { badgeSvg } from './medalBadge.js';
+import { play as announce } from '../pov/announcer.js';
 import './feel.css';
 
 // The player's own medals on screen (medals.js decides who earned what). Halo 3's
@@ -11,6 +13,11 @@ import './feel.css';
 // synthesized voice (the browser's speechSynthesis) calls the rarest medal of a
 // kill, and stays silent where the browser has none. The stings are audio.js's
 // ('game:medal'). Styles in feel.css.
+//
+// The announcer's recorded line comes first (pov/announcer.js: the clip
+// public/announcer/<KEY>.mp3, queued as Halo queues them); the synthesized voice
+// stands in for a clip that isn't there. Each badge is medalBadge.js's drawing.
+// opts.solo: no motion tracker under the stack (first person outside a match).
 
 const MEDAL_S = 3;              // s a medal stays (Halo 3's isn't documented; ours: long enough to read a stack)
 const MEDAL_MAX = 6;            // medals shown at once; the oldest goes first
@@ -24,10 +31,10 @@ const VOICE_DEEP = /daniel|fred|ralph|alex|male|bruce|aaron|arthur/i;   // ...a 
 const VOICE_AFTER_CANCEL_MS = 60;   // ms between cutting an older call and speaking (Chrome can drop a speak() in the cancel's tick)
 const TEXT_GLYPH = '\uFE0E';       // variation selector 15: a symbol drawn as text, not as a colour emoji
 
-export function createMedalHud() {
+export function createMedalHud({ solo = false } = {}) {
   const stack = h('div.feel-medals');
   const line = h('div.feel-line');
-  const root = h('div.feel-medal-hud', { 'aria-hidden': 'true' }, stack, line);
+  const root = h(`div.feel-medal-hud${solo ? '.solo' : ''}`, { 'aria-hidden': 'true' }, stack, line);
   document.body.append(root);
   const shown = [];   // { el, at }
   let lineUntil = -Infinity;
@@ -71,8 +78,9 @@ export function createMedalHud() {
   }
 
   function badge(m) {
+    const art = badgeSvg(m.key, { label: false });
     return h(`div.feel-medal.${m.kind}`, {},
-      h('span.feel-badge', {}, h('b', { text: `${m.glyph ?? ''}${TEXT_GLYPH}` })),
+      art ? h('span.feel-badge', { html: art }) : h('span.feel-badge.glyph', {}, h('b', { text: `${m.glyph ?? ''}${TEXT_GLYPH}` })),
       h('span.feel-name', { text: m.name }));
   }
 
@@ -97,7 +105,7 @@ export function createMedalHud() {
       while (shown.length > MEDAL_MAX) shown.shift().el.remove();
       const top = list.reduce((a, b) => (rankOf(b.key) > rankOf(a.key) ? b : a));
       if (LINE_KINDS.has(top.kind)) popLine(top.name, now);
-      say(top.name);
+      announce(top.key, () => say(top.name));   // the recorded line, else the synthesized one
     },
     // a line in the centre on its own (a power-up taken)
     note(text, now) { popLine(text, now); },

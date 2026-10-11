@@ -3,9 +3,10 @@ import { logoMark } from './logo.js';
 import { MAPS, mapByKey, mapsFor, isWorld, sizeTag } from '../maps.js';
 import { listSaves, getSave, putSave, deleteSave, downloadSave, pickSaveFile } from '../saves/local.js';
 import { readSaveHeader } from '../saves/format.js';
+import { MODEICONS, MODEICON_BOX } from './modeicons.js';
 
-// The start menu, Garry's Mod's New Game screen: gamemodes down the left, the
-// maps built for the chosen one as square previews (public/maps, rendered by
+// The start menu, Garry's Mod's New Game screen: gamemodes down the left, each
+// with its icon, the maps built for the chosen one as square previews (public/maps, rendered by
 // tools/map-thumbs.mjs) with each map's size tagged in its corner, and the
 // picked map with Start along the bottom. One-click Play sits in the top bar
 // (maps.js QUICK_PLAY): a match with your team picked, Halo 3 matchmaking's
@@ -22,8 +23,40 @@ import { readSaveHeader } from '../saves/format.js';
 // games you saved (⌘S, the toolbar's Save: saves/local.js) with their
 // thumbnails, newest first; the picked one loads, exports as a file or is
 // deleted, and Open file… loads a .tpt3d file (and keeps it in the list).
+//
+// Start turns it into the loading screen until the map is up, kept plain: the
+// map's art behind the gamemode, the map's name, the game's line, a bar, what
+// the boot is doing now, and the player as he is ("This is you.":
+// public/you.webp, tools/you-portrait.mjs).
+//   loading(status, o)    the screen, with the game's line (src/main.js)
+//   progress(step, text)  a boot step began (STEPS keys; 'cold': the shaders are compiling
+//                         cold; 'match' with app.js's line for it)
 const THUMB = (key) => `/maps/${key}.webp`;
+const YOU = '/you.webp';
 const STORE = 'powder-toy-3d:menu';   // the last gamemode and map picked here
+// What the loading screen says it's on, one line under its bar. GMod's loading
+// screen names the step it is really on ("Retrieving server info", "Sending
+// client info"...), and so does this one: the boot's own, in order, reported
+// through progress() by src/main.js and app.js; only the current one shows.
+// world: only in a world; match: only in a gamemode that starts a match behind
+// the screen (app.js bootReady: all but Sandbox).
+const STEPS = [
+  { key: 'fetch', text: () => 'Downloading the game' },
+  { key: 'build', text: (m) => (isWorld(m) ? 'Setting up the simulation around you' : `Filling ${count(m)} cells`) },
+  { key: 'compile', text: () => 'Compiling shaders' },
+  { key: 'world', text: () => 'Generating the world', world: true },
+  { key: 'match', text: () => 'Starting the match', match: true },
+];
+// a cold compile's note, said as app.js's close-up detail toast says it
+const COLD_NOTE = 'The first time after an update, this can take several seconds.';
+
+const count = (m) => m.dims.reduce((a, b) => a * b, 1).toLocaleString('en-US');
+const dimsText = (m) => `${m.dims.join(' × ')} cells`;
+
+// a baked icon (tools/game-icons.mjs) as inline SVG, drawn in the text's colour
+const iconSVG = (icon, box, cls) => (icon ? `<svg class="${cls}" viewBox="0 0 ${box} ${box}" aria-hidden="true"><path d="${icon.d}"/></svg>` : '');
+const modeIcon = (key, cls) => iconSVG(MODEICONS[key], MODEICON_BOX, cls);
+const iconEl = (tag, key, cls) => h(tag, { html: modeIcon(key, cls) });
 const MB = 1024 * 1024;
 const fmtDate = (iso) => { const d = new Date(iso); return Number.isNaN(+d) ? '' : d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }); };
 const SAVES_DESC = 'Games you saved with ⌘S or the toolbar\'s Save, kept in this browser. Export one to keep it as a file.';
@@ -40,6 +73,7 @@ export function createMenu({ modes, quick = [], map, mode, onStart, onResume, on
 
   const backdrop = h('div.mm-backdrop');
   const nav = h('nav.mm-modes', { 'aria-label': 'Gamemodes' });
+  const modeEmblem = h('div.mm-emblem');
   const modeTitle = h('h2');
   const modeDesc = h('p');
   const grid = h('div.mm-grid', { role: 'listbox', 'aria-label': 'Maps' });
@@ -56,9 +90,17 @@ export function createMenu({ modes, quick = [], map, mode, onStart, onResume, on
   const openFileBtn = h('button.mm-head-btn', { type: 'button', text: 'Open file…', title: 'Load a .tpt3d save file', on: { click: () => openFile() } });
   const exportBtn = h('button.mm-side', { type: 'button', text: 'Export', title: 'Download this save as a .tpt3d file', on: { click: () => exportPicked() } });
   const deleteBtn = h('button.mm-side', { type: 'button', text: 'Delete', on: { click: () => deletePicked() } });
-  const loadName = h('div.mm-load-name');
+  // the loading screen's parts
   const loadMode = h('div.mm-load-mode');
+  const loadName = h('h1.mm-load-name');
   const loadStatus = h('div.mm-load-status');
+  const loadStep = h('div.mm-load-step');
+  // (eager, at low priority: he must be there the moment Start is pressed, when the page is about to freeze compiling)
+  const you = h('img', { src: YOU, alt: '', decoding: 'async', fetchpriority: 'low', draggable: false });
+  // decoded while the menu is up: a fast boot freezes the page (the map build, the shaders) before an
+  // undecoded image paints, and the caption then points at nothing
+  you.decode?.().catch(() => {});
+  you.addEventListener('error', () => you.closest('figure')?.remove());
 
   const el = h('div.mm', { role: 'dialog', 'aria-label': 'Maps' },
     backdrop,
@@ -69,14 +111,15 @@ export function createMenu({ modes, quick = [], map, mode, onStart, onResume, on
       h('div.mm-body', {},
         nav,
         h('section.mm-main', {},
-          h('div.mm-mode-head', {}, h('div.mm-head-line', {}, modeTitle, openFileBtn), modeDesc),
+          h('div.mm-mode-head', {}, modeEmblem, h('div.mm-head-text', {}, h('div.mm-head-line', {}, modeTitle, openFileBtn), modeDesc)),
           grid)),
       h('footer.mm-bar', {},
         pickThumb,
         h('div.mm-pick', {}, h('div.mm-pick-line', {}, pickName, pickMeta), pickDesc),
         h('div.mm-actions', {}, exportBtn, deleteBtn, startBtn))),
-    h('div.mm-load', {},
-      h('div.mm-load-copy', {}, loadMode, loadName, loadStatus, h('div.mm-load-bar', {}, h('i')))));
+    h('div.mm-load', { 'aria-live': 'polite' },
+      h('div.mm-load-copy', {}, loadMode, loadName, loadStatus, h('div.mm-load-bar', {}, h('i')), loadStep),
+      h('figure.mm-you', {}, you, h('figcaption', { text: 'This is you.' }))));
   document.body.append(el);
 
   // a preview that isn't there (a map added since tools/map-thumbs.mjs last ran): the card's gradient shows
@@ -90,16 +133,17 @@ export function createMenu({ modes, quick = [], map, mode, onStart, onResume, on
     nav.replaceChildren(h('div.mm-label', { text: 'Gamemode' }), ...modes.map((m) => h('button.mm-mode', {
       type: 'button', 'aria-pressed': String(view === 'maps' && m.key === modeKey),
       on: { click: () => setMode(m.key) },
-    }, h('span', { text: m.name }), h('small', { text: String(mapsFor(m.key).length) }))),
+    }, iconEl('span.mm-mode-ico', m.key, 'mm-ico'), h('span.mm-mode-name', { text: m.name }), h('small', { text: String(mapsFor(m.key).length) }))),
     h('div.mm-label.mm-label-gap', { text: 'Your games' }),
     h('button.mm-mode', { type: 'button', 'aria-pressed': String(view === 'saves'), on: { click: () => showSaves() } },
-      h('span', { text: 'Saves' }), h('small', { text: saveList.length ? String(saveList.length) : '' })));
+      iconEl('span.mm-mode-ico', 'saves', 'mm-ico'), h('span.mm-mode-name', { text: 'Saves' }), h('small', { text: saveList.length ? String(saveList.length) : '' })));
   }
 
   let cards = [];
   function renderMaps() {
     el.classList.remove('saves-view');
     const mo = modes.find((m) => m.key === modeKey);
+    modeEmblem.innerHTML = modeIcon(mo.key, 'mm-ico');
     modeTitle.textContent = mo.name;
     modeDesc.textContent = mo.desc;
     const list = mapsFor(modeKey);
@@ -117,14 +161,14 @@ export function createMenu({ modes, quick = [], map, mode, onStart, onResume, on
     select(pick);
   }
 
-  const dimsText = (m) => `${m.dims.join(' × ')} cells`;
   function select(m) {
     pick = m;
     for (const c of cards) c.card.setAttribute('aria-selected', String(c.m === m));
     pickThumb.src = THUMB(m.key);
     backdrop.style.backgroundImage = `url(${THUMB(m.key)})`;
     pickName.textContent = m.name;
-    pickMeta.textContent = isWorld(m) ? `World · ${dimsText(m)}, simulated around you` : `Box · ${dimsText(m)}`;
+    pickMeta.innerHTML = modeIcon(isWorld(m) ? 'world' : 'box', 'mm-ico');
+    pickMeta.append(isWorld(m) ? `World · ${dimsText(m)}, simulated around you` : `Box · ${dimsText(m)}`);
     pickDesc.textContent = m.desc;
     startBtn.textContent = inGame ? 'Load map' : 'Start game';
     startBtn.disabled = false;              // (an empty Saves list leaves it off)
@@ -150,6 +194,7 @@ export function createMenu({ modes, quick = [], map, mode, onStart, onResume, on
 
   function renderSaves() {
     el.classList.add('saves-view');
+    modeEmblem.innerHTML = modeIcon('saves', 'mm-ico');
     modeTitle.textContent = 'Saves';
     modeDesc.textContent = SAVES_DESC;
     saveCards = saveList.map((sv) => {
@@ -252,6 +297,16 @@ export function createMenu({ modes, quick = [], map, mode, onStart, onResume, on
   }
   for (const type of ['keydown', 'keyup']) addEventListener(type, (e) => (type === 'keydown' ? key(e) : el.classList.contains('open') && e.stopPropagation()), true);
 
+  // ---- the loading screen
+  let steps = [];        // this load's STEPS, each with its label
+  let at = -1;           // the step under way
+  let cold = false;      // the view's shaders are compiling cold (app.js's guard said so)
+
+  function renderStep() {
+    const s = steps[at];
+    loadStep.textContent = !s ? '' : s.key === 'compile' && cold ? `${s.label}. ${COLD_NOTE}` : s.label;
+  }
+
   renderModes();
   renderMaps();
   refreshCount();
@@ -278,17 +333,34 @@ export function createMenu({ modes, quick = [], map, mode, onStart, onResume, on
       cards.find((c) => c.m === pick)?.card.scrollIntoView({ block: 'nearest' });
     },
     close() { el.classList.remove('open', 'loading'); busy = false; },
-    // the loading screen: the map's preview, its name, and what is happening (on a pick of its
+    // the loading screen: the gamemode, the map, the step under way, and you (on a pick of its
     // own: a link's ?map= and ?mode=, src/main.js); name: what is loading, if not the picked map (a save)
     loading(status, { map: mk, mode: md, name = null } = {}) {
       busy = true;
       if (md && modes.some((m) => m.key === md)) modeKey = md;
       if (mapByKey(mk)) { pick = mapByKey(mk); backdrop.style.backgroundImage = `url(${THUMB(pick.key)})`; }
       const mo = modes.find((m) => m.key === modeKey);
+      const save = name != null;   // (a save brings its own cells: no map's world step)
+      loadMode.textContent = save ? 'Save' : mo.name;
       loadName.textContent = name ?? pick.name;
-      loadMode.textContent = name ? 'Save' : mo.name;
       loadStatus.textContent = status;
+      const matchMode = !save && mo.key !== 'sandbox';
+      steps = STEPS.filter((s) => (!s.world || (!save && isWorld(pick))) && (!s.match || matchMode))
+        .map((s) => ({ key: s.key, label: s.text(pick) }));
+      at = -1;
+      cold = false;
+      renderStep();
       el.classList.add('open', 'loading');
+    },
+    // a boot step began (text: its line, if not STEPS' own: the match's, from app.js)
+    progress(step, text) {
+      if (!el.classList.contains('loading')) return;
+      if (step === 'cold') { cold = true; renderStep(); return; }
+      const i = steps.findIndex((s) => s.key === step);
+      if (i < 0) return;   // not this load's
+      if (text) steps[i].label = text;
+      at = Math.max(at, i);   // (a step already past only changes its line)
+      renderStep();
     },
     get isOpen() { return el.classList.contains('open'); },
   };
