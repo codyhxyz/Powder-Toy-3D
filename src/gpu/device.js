@@ -329,6 +329,24 @@ export class Gpu {
   /** Resolves when every pipeline build started or queued so far has settled. */
   settled() { return this.pipelines.settled(); }
 
+  /**
+   * Test mode: the workgroups the indirect dispatches in indirectLog (from
+   * index `from`) ran, their args read back now. Call it right after the
+   * frame being measured, before a later build rewrites the args; the args
+   * buffers need COPY_SRC.
+   * @param {number} [from]
+   * @returns {Promise<number>}
+   */
+  async indirectWorkgroups(from = 0) {
+    const reads = (this.indirectLog ?? []).slice(from).map((e) => this.readback.buffer(e.buffer, e.offset, 12));
+    let n = 0;
+    for (const bytes of await Promise.all(reads)) {
+      const [x, y, z] = new Uint32Array(bytes);
+      n += x * y * z;
+    }
+    return n;
+  }
+
   // the params group (L.PARAMS) whose binding 1 is `bytes` long
   _paramsGroup(bytes) {
     let g = this._paramsGroups.get(bytes);

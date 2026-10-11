@@ -138,6 +138,7 @@ try {
     const r = await run('threeInterop');
     assert.deepEqual([r.visible, r.hiddenMesh, r.otherLayer, r.emptyScene], [true, false, false, false], 'threeHasVisible');
     assert(r.is3D, 'ExternalTexture is3DTexture');
+    assert.equal(r.newPipelinesAtFirstDraw, 0, 'gpu.three.prepare compiled for the target\'s formats');
     near(r.sampleA, [0.25, 0.5, 0.75, 1], 1e-3, 'external 3D texture A through TSL');
     near(r.sampleB, [0, 1, 0, 1], 1e-3, 'after the source swap');
     assert(r.newTextureOnResize, 'three recreates the GPUTexture on resize');

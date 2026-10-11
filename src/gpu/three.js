@@ -63,14 +63,20 @@ export async function createThreeRenderer(gpu, canvas, { assertTarget } = {}) {
 
   gpu.three = {
     renderer,
+    /** what prepare() uses when a call leaves it out: the app sets its camera, scene and scene target once */
+    defaults: { camera: null, scene: null, target: null },
     /**
      * Compiles a new kind of mesh before it joins the scene (B5, F8), for the
      * formats of `target` (the scene target): three otherwise creates its
-     * pipeline synchronously at the first draw.
+     * pipeline synchronously at the first draw. `gpu.three.prepare(object)`
+     * uses gpu.three.defaults.
      * @param {object} object the mesh or group
-     * @param {{ camera: object, scene?: object, target?: object }} opts
+     * @param {{ camera?: object, scene?: object, target?: object }} [opts]
+     * @returns {Promise<unknown>}
      */
-    prepare(object, { camera, scene = null, target = null }) {
+    prepare(object, opts = {}) {
+      const { camera, scene = null, target = null } = { ...gpu.three.defaults, ...opts };
+      if (!camera) return Promise.reject(new Error('gpu.three.prepare: no camera (set gpu.three.defaults.camera)'));
       const prev = renderer.getRenderTarget();
       if (target) renderer.setRenderTarget(target);
       try {

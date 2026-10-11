@@ -433,7 +433,8 @@ plane.position.z = -5;
 scene.add(plane);
 const sceneTarget = new THREE.RenderTarget(W, H, { type: THREE.HalfFloatType, depthTexture: new THREE.DepthTexture(W, H, THREE.FloatType) });
 initRenderTarget(three, sceneTarget);
-await gpu.three.prepare(plane, { camera, scene, target: sceneTarget });
+gpu.three.defaults = { camera, scene, target: sceneTarget };
+await gpu.three.prepare(plane);
 log('three ready; pipelines', gpu.stats.pipelinesCreated);
 
 const px = (data, x, y, w = W) => Array.from(data.subarray(4 * (y * w + x), 4 * (y * w + x) + 4));
@@ -512,7 +513,10 @@ test('threeInterop', async () => {
     return px(c, 4, 4, 8);
   };
   out.is3D = extA.is3DTexture === true;
+  // prepare() compiled the pipeline for this target's formats: the first draw creates none
+  const pipelinesBefore = three._pipelines.caches.size;
   out.sampleA = await draw();
+  out.newPipelinesAtFirstDraw = three._pipelines.caches.size - pipelinesBefore;
   const extB = externalTexture(texB);
   node.value = extB;
   extA.dispose();
@@ -556,12 +560,7 @@ test('budget:indirect', async () => {
     await tick();
   });
   // the workgroups the indirect dispatches ran, from their args read back
-  let workgroups = 0;
-  for (const e of gpu.indirectLog) {
-    const a = new Uint32Array(await gpu.readback.buffer(e.buffer, e.offset, 12));
-    workgroups += a[0] * a[1] * a[2];
-  }
-  return { stats, workgroups };
+  return { stats, workgroups: await gpu.indirectWorkgroups() };
 });
 test('budget:flush', async (n = 3000) => {
   const stats = await measure(gpu, async () => {
