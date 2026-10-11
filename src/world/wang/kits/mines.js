@@ -1,443 +1,390 @@
-// The Mines kit (Noita's Kaivos, its first biome under the mountain): timber-
-// shored galleries, collapsed rooms full of rubble, mine-cart corridors with
-// rails, flooded sumps, oil pockets, gold veins, a hidden treasure nook, a big
-// natural cavern. "Better than Noita": it uses the third dimension: galleries
-// cross over each other on timber bridges, rooms have a gallery storey,
-// shafts drop through several layers past ledges, and corridors climb.
+// The Mines kit (Noita's Kaivos, its first biome under the mountain).
+//
+// Noita's Mines are not tunnels in rock: they're one huge dark cavern full of
+// stacked, floating earth shelves (a few cells thick, ragged, grass on top,
+// roots hanging under), held up by timber posts and beams, joined by timber
+// stairs, with mine carts on rails, water tanks, crates of gunpowder, dead
+// miners and hanging lanterns all over them, loose sand masses slumping at the
+// edges, gold and gems lower down and a flooded bottom (docs/descent-reference.md).
+// So every tile here is a void, wall to wall and floor to ceiling, and what it
+// holds is shelves and the stuff on them. The layer between two layers (the
+// tiles' borders: 4 cells of rock) reads as one more shelf, grassed on top.
+//
+// What a tile holds varies per placement (kit.js variants: chance, weighted
+// materials, `any`, scatter): no two shelves of crates or two water tanks
+// hold the same. Nothing hot spawns next to what burns: the one lava is a
+// sealed basin in the lowest layer with no timber near it.
 //
 // Format: kit.js (docs/wang-tiles.md). Canonical frame: x 0..48 (two units),
 // y 0..24, z 0..24, cells of 0.30 m; a body is 5.5 tall and 1.6 wide, steps a
 // cell and jumps about two. The border (2) is rock whatever a tile does; the
-// floor is y = 2 and a high gallery's floor y = 13.
-import { GEOM, wallTorch } from '../kit.js';
+// floor is y = 2 and a shelf's top at the high doorways is y = 13.
+import { GEOM } from '../kit.js';
 
-const { U, H, BORDER: B, FLOOR: F, HIGH_FLOOR: HF, DOOR_W, DOOR_H } = GEOM;
+// The Mines' doorways are the void going on: 16 wide and as tall as the tile,
+// cut only through the border (Noita's Mines have no walls between rooms).
+const MINES_GEOM = { DOOR_W: 16, DOOR_H: 19, PORT_DEPTH: 4, PORT_DEPTH_SIDE: 4 };
+const G = { ...GEOM, ...MINES_GEOM };
+const { U, H, BORDER: B, FLOOR: F, HIGH_FLOOR: HF } = G;
 const X = 2 * U;                       // a tile's length
-const IN = [B, X - B];                 // the tile's inside, x
-const INZ = [B, U - B];                // ...and z
 const TOP = H - B;                     // the ceiling's underside
-const MID = U / 2;                     // a long side's door centre, z (W, E); a unit's centre
+const MID = U / 2;                     // the tile's middle line, z
 const C0 = U / 2, C1 = U + U / 2;      // unit 0's and unit 1's centre, x
-const DH = DOOR_W / 2;                 // half a doorway
-const GAL_Z = [MID - DH, MID + DH];    // a gallery along x lines up with the W and E doorways
-const GAL_TOP = F + DOOR_H;            // ...and is as tall as they are
-const DECK = HF - 1;                   // a timber deck's cell: its top is the high floor
-const HIGH_TOP = HF + DOOR_H;          // a high gallery's ceiling
-const FRAME_STEP = 6;                  // timber sets along a gallery, this far apart (Noita's Mines: a set every few metres)
-const ROUGH_WALL = 1.1;                // cells of noise on a dug gallery's walls
-const ROUGH_ROOM = 2.2;                // ...a collapsed room's or a natural cave's
-const ROUGH_CAVE = 3.2;                // ...the big cavern's
-const ROUGH_VEIN = 1.6;                // ...a vein's
-const RAIL_GAUGE = GEOM.RAIL_GAUGE;
-const CART_BAY = 7;
-const SUMP_HEADROOM = 4;               // the sump's gallery is this much taller: headroom over its sills                    // half the rail corridor's width: room to walk past a cart
-const WAVE = 3;                       // cells a gallery's line swings in z (Noita's Mines tunnels never run ruler-straight)
-const LIFT = 2;                       // cells its floor rises over a hump
+const SH = G.SHAFT_W / 2 + 2;          // keep features this far from a unit's centre where a shaft may open
+const ALL = [[0, 0, 0], [X, H, U]];
+const VOID_ROUGH = 1.6;                // cells of noise on the void's walls
+const SHELF_ROUGH = 1.1;               // ...a shelf's ragged edges (Noita's shelves are torn earth)
+const SHELF_THICK = 3;                 // a shelf's thickness under its top (Noita's: 2–6 cells)
+const POST_STEP = 8;                   // timber posts under a shelf's edge, this far apart
+const GRASS_COVER = 0.5;               // share of up-facing earth and rock with grass (moss) on it
+const ROOT_N = 12;                     // roots hanging from shelves and the ceiling, per tile
+const RAIL_GAUGE = G.RAIL_GAUGE;
+const LOW_TOP = 4;                     // a low earth step's top: two over the floor, a jump up
+const UPPER_TOP = 16;                  // the highest shelf a body stands on (6 cells under the ceiling)
 
 // ---- helpers: each returns a list of primitives
-// a dug gallery along x from x0 to x1 (z range zr, floor y0, height h), shored
-// with timber sets. It meanders: its line swings up to wave cells in z and its
-// floor rises up to lift cells, both pinned to straight at its ends (where the
-// doorways meet it), phase choosing where; slices of SLICE cells, so the floor
-// steps a cell at a time.
-const SLICE = 2;
-const GALLERY_SALT = 1000;             // galleries' shared noise streams start here (past any prim index)
-let gallerySalt = GALLERY_SALT;
-function galleryX(x0, x1, { zr = GAL_Z, y0 = F, h = DOOR_H, frames = true, rough = ROUGH_WALL, wave = WAVE, lift = LIFT, phase = 0 } = {}) {
-  const air = [], floor = [], timber = [];
-  const len = x1 - x0, salt = gallerySalt++;
-  let lamp = false, side = 0;
-  for (let x = x0; x < x1; x += SLICE) {
-    const t = (x + SLICE / 2 - x0) / len, pin = Math.sin(Math.PI * t);
-    const dz = Math.round(wave * pin * Math.sin(2 * Math.PI * t + phase));
-    const dy = Math.max(0, Math.round(lift * pin * Math.sin(3 * Math.PI * t + phase * 2)));
-    const xe = Math.min(x + SLICE, x1);
-    // the slices overlap (by their roughness and a cell) and share one noise field, so the
-    // noise roughens the gallery's walls, not the seams between its slices
-    const pad = Math.ceil(rough) + 1;
-    air.push({ box: [[Math.max(x0, x - pad), y0 + dy, zr[0] + dz], [Math.min(x1, xe + pad), y0 + dy + h, zr[1] + dz]], m: 'AIR', rough, salt });
-    // the floor stays solid under the noise (and under a raised stretch)
-    floor.push({ box: [[x, y0 - 1, zr[0] + dz], [xe, y0 + dy, zr[1] + dz]], m: 'ROCK' });
-    if (frames && (x - x0) % FRAME_STEP === 0 && x > x0) {
-      timber.push(...frameX(x, [zr[0] + dz, zr[1] + dz], y0 + dy, h));
-      lamp ||= ((x - x0) / FRAME_STEP) % LANTERN_FRAMES === 0;
-      if (lamp && clearOfShafts(x, MID)) { timber.push(...torchX(x, [zr[0] + dz, zr[1] + dz], y0 + dy, h, side++)); lamp = false; }
-    }
+// the void: the whole tile open, its walls ragged
+// the void: the whole tile open, and (the tiles are `open`) on into its open neighbours, so
+// the Mines are one cavern, not a grid of halls; rock and earth masses stand at some corners
+// (where four tiles meet) and break the grid up
+const CORNER_R = [4, 12, 4];           // a corner mass's radii (x, y, z)
+const voidAll = () => [
+  { box: [[0, F, 0], [X, H, U]], m: 'AIR' },
+  ...[[0, 0], [X, 0], [0, U], [X, U]].map(([x, z]) => ({ ball: [[x, H / 2, z], CORNER_R], m: { ROCK: 2, SOFT: 1 }, rough: 2, chance: 0.5 })),
+];
+// a floating earth shelf, top at y over x0..x1 × z0..z1: torn edges, a flat top,
+// timber beams along its long edges and posts down to the floor (or whatever is under)
+function shelf(x0, x1, z0, z1, top, { thick = SHELF_THICK, posts = true, beams = true, m = 'SOFT' } = {}) {
+  const out = [
+    { box: [[x0, top - thick, z0], [x1, top, z1]], m, rough: SHELF_ROUGH, only: 'AIR' },
+    { box: [[x0 - 2, top, z0 - 2], [x1 + 2, top + 2, z1 + 2]], m: 'AIR', only: m },   // a flat top to walk
+  ];
+  if (beams) {
+    out.push({ box: [[x0, top - 1, z0], [x1, top, z0 + 1]], m: 'BEAM' }, { box: [[x0, top - 1, z1 - 1], [x1, top, z1]], m: 'BEAM' });
   }
-  return [...air, ...floor, ...timber];
-}
-function galleryZ(z0, z1, xc, { y0 = F, h = DOOR_H, w = DOOR_W, frames = true, rough = ROUGH_WALL } = {}) {
-  const xr = [xc - w / 2, xc + w / 2];
-  const out = [{ box: [[xr[0], y0, z0], [xr[1], y0 + h, z1]], m: 'AIR', rough }];
-  out.push({ box: [[xr[0], y0 - 1, z0], [xr[1], y0, z1]], m: 'ROCK' });
-  if (frames) {
-    let lamp = false, side = 0;
-    for (let z = z0 + FRAME_STEP / 2, n = 1; z < z1 - 1; z += FRAME_STEP, n++) {
-      out.push(...frameZ(z, xr, y0, h));
-      lamp ||= n % LANTERN_FRAMES === 0;
-      if (lamp && clearOfShafts(xc, z) && z + 1 < z1) { out.push(...torchZ(z, xr, y0, h, side++)); lamp = false; }
+  if (posts && top - thick > F + 1) {
+    for (let x = x0 + 1; x < x1 - 1; x += POST_STEP) {
+      for (const z of [z0, z1 - 1]) out.push({ box: [[x, F, z], [x + 1, top - 1, z + 1]], m: 'BEAM', only: ['AIR', m] });
     }
+    out.push(...[z0, z1 - 1].map((z) => ({ box: [[x1 - 2, F, z], [x1 - 1, top - 1, z + 1]], m: 'BEAM', only: ['AIR', m] })));
   }
   return out;
 }
-// A wall torch beside a timber set (kit.js wallTorch): the Mines' light. The
-// galleries are dark but for these (as Noita's mines are dark but for their
-// torches and what glows), one every few sets (LANTERN_FRAMES sets, 18 cells:
-// 5 m), on the wall just past the set's post, the sides taking turns, so a
-// gallery reads as warm pools of light with darkness between.
-const lamp = (pr) => ({ ...pr, lantern: true });   // a light added after the authoring (goes last: see the end)
-const LANTERN_FRAMES = 3;              // a torch every this many timber sets (the next clear one)
-const LANTERN_SHAFT_CLEAR = GEOM.SHAFT_W / 2 + 2;   // ...not over a unit's shaft: you'd land on it
-const clearOfShafts = (x, z) => [C0, C1].every((c) => Math.abs(x - c) >= LANTERN_SHAFT_CLEAR || Math.abs(z - MID) >= LANTERN_SHAFT_CLEAR);
-const TORCH_Y = 7;                     // a torch's head this far over the floor (over a body's head, 5.5), under the cap
-const torchY = (y0, h) => y0 + Math.min(TORCH_Y, h - 2);
-// on an x gallery's wall (z range zr) one cell past the set at x; side 0, 1: its low, high z wall in turn
-const torchX = (x, zr, y0, h, side) => (side % 2 === 0
-  ? wallTorch([x + 1, torchY(y0, h), zr[0]], [0, -1])
-  : wallTorch([x + 1, torchY(y0, h), zr[1] - 1], [0, 1]));
-const torchZ = (z, xr, y0, h, side) => (side % 2 === 0
-  ? wallTorch([xr[0], torchY(y0, h), z + 1], [-1, 0])
-  : wallTorch([xr[1] - 1, torchY(y0, h), z + 1], [1, 0]));
-// a timber set across an x gallery at x: two posts and a cap
-function frameX(x, zr, y0, h) {
-  return [
-    { box: [[x, y0, zr[0]], [x + 1, y0 + h, zr[0] + 1]], m: 'BEAM' },
-    { box: [[x, y0, zr[1] - 1], [x + 1, y0 + h, zr[1]]], m: 'BEAM' },
-    { box: [[x, y0 + h - 1, zr[0]], [x + 1, y0 + h, zr[1]]], m: 'BEAM' },
-  ];
-}
-function frameZ(z, xr, y0, h) {
-  return [
-    { box: [[xr[0], y0, z], [xr[0] + 1, y0 + h, z + 1]], m: 'BEAM' },
-    { box: [[xr[1] - 1, y0, z], [xr[1], y0 + h, z + 1]], m: 'BEAM' },
-    { box: [[xr[0], y0 + h - 1, z], [xr[1], y0 + h, z + 1]], m: 'BEAM' },
-  ];
-}
-// a short dug passage from a side port's face to depth (for a port the tile accepts)
-const STUB_DEPTH = 10;
-function stub(port, { y0 = F, depth = STUB_DEPTH, rough = ROUGH_WALL } = {}) {
-  const top = y0 + DOOR_H;
-  const x = port.endsWith('1') ? C1 : C0;
-  const flat = (a, b) => [{ box: [a, b], m: 'AIR', rough }, { box: [[a[0], y0 - 1, a[2]], [b[0], y0, b[2]]], m: 'ROCK' }];
-  if (port === 'W') return flat([IN[0], y0, GAL_Z[0]], [IN[0] + depth, top, GAL_Z[1]]);
-  if (port === 'E') return flat([IN[1] - depth, y0, GAL_Z[0]], [IN[1], top, GAL_Z[1]]);
-  if (port[0] === 'N') return flat([x - DH, y0, INZ[0]], [x + DH, top, INZ[0] + depth]);
-  return flat([x - DH, y0, INZ[1] - depth], [x + DH, top, INZ[1]]);
-}
-// rails along x on the floor, centred on z
-const railsX = (x0, x1, zc = MID, y = F) => [
+// timber stairs from y0 up to top along x (rise +1: climbing toward +x), z0..z1 wide
+const stairsX = (x0, z0, z1, y0, top, rise = 1) => {
+  const run = top - y0;
+  const a = rise > 0 ? x0 : x0 - run;
+  return { stairs: [[a, y0, z0], [a + run, top, z1]], m: 'BEAM', axis: 'x', rise };
+};
+const stairsZ = (z0, x0, x1, y0, top, rise = 1) => {
+  const run = top - y0;
+  const a = rise > 0 ? z0 : z0 - run;
+  return { stairs: [[x0, y0, a], [x1, top, a + run]], m: 'BEAM', axis: 'z', rise };
+};
+// grass on what faces up, roots and drips under what faces down: every tile ends with these
+const growth = ({ cover = GRASS_COVER, roots = ROOT_N, fungus = 0 } = {}) => [
+  { coat: ALL, m: 'MOSS', face: 'up', cover, only: ['ROCK', 'SOFT'] },
+  ...(fungus ? [{ coat: ALL, m: 'FUNGUS', face: 'down', cover: fungus, only: ['ROCK', 'SOFT'] }] : []),
+  { scatter: [[B, F, B], [X - B, TOP, U - B]], n: roots, on: 'ceiling', put: [{ box: [[0, -1, 0], [1, 1, 1]], m: 'PLANT', only: 'AIR' }] },
+];
+// a crate: a wooden box (4 cells) round what it holds (Noita's skull crates hold gunpowder)
+const CRATE_FILL = { GUNPOWDER: 4, NUGGETS: 2, COAL: 2, TNT: 1, RUBBLE: 1 };
+const crate = (fill = CRATE_FILL) => [
+  { box: [[0, 0, 0], [4, 4, 4]], m: 'WOOD', only: 'AIR' },
+  { box: [[1, 1, 1], [3, 3, 3]], m: fill },
+];
+// an explosive barrel: an iron drum of oil or gunpowder (Noita's red barrels)
+const BARREL_FILL = { OIL: 3, GUNPOWDER: 2, WATER: 1 };
+const barrel = (fill = BARREL_FILL) => [
+  { cyl: [[1.5, 0, 1.5], 1.5, 4], m: 'METAL', axis: 'y', only: 'AIR' },
+  { cyl: [[1.5, 1, 1.5], 0.7, 2.5], m: fill, axis: 'y' },
+];
+// a TNT box
+const tnt = () => [{ box: [[0, 0, 0], [2, 2, 2]], m: 'TNT', only: 'AIR' }];
+// a dead miner: meat and a splash of blood (Noita's corpses)
+const remains = () => [
+  { ball: [[0.5, 0.5, 0.5], [1.4, 0.8, 1]], m: 'MEAT', only: 'AIR' },
+  { box: [[-2, 0, -2], [3, 1, 3]], m: 'BLOOD', only: 'AIR' },
+];
+// a small heap of gold nuggets
+const nuggets = () => [{ ball: [[0.5, 0.5, 0.5], [1.2, 0.8, 1.2]], m: 'NUGGETS', only: 'AIR' }];
+// scatter `put` over the shelf with top at y over x0..x1 × z0..z1
+const onShelf = (x0, x1, z0, z1, top, n, put) => ({ scatter: [[x0 + 1, top, z0 + 1], [x1 - 1, top + 3, z1 - 1]], n, put });
+// a water tank: a timber basin standing on a surface at y, full (Noita's water tanks on shelves)
+const TANK_FILL = { WATER: 8, OIL: 2, BLOOD: 1, TOXIC: 1 };
+const tank = (x0, x1, z0, z1, y, h = 4, fill = TANK_FILL) => [
+  { box: [[x0, y, z0], [x1, y + h, z1]], m: 'WOOD' },
+  { box: [[x0 + 1, y + 1, z0 + 1], [x1 - 1, y + h, z1 - 1]], m: fill },
+];
+// a mine cart on rails along x at y: an iron tub of ore
+const CART_FILL = { GOLD: 2, NUGGETS: 2, COAL: 3, RUBBLE: 2 };
+const cart = (x, y, zc = MID, fill = CART_FILL) => [
+  { box: [[x, y + 1, zc - 2], [x + 6, y + 4, zc + 2]], m: 'METAL' },
+  { box: [[x + 1, y + 2, zc - 1], [x + 5, y + 4, zc + 1]], m: fill },
+  { box: [[x + 1, y, zc - 2], [x + 2, y + 1, zc + 2]], m: 'METAL' }, { box: [[x + 4, y, zc - 2], [x + 5, y + 1, zc + 2]], m: 'METAL' },
+];
+const railsX = (x0, x1, y = F, zc = MID) => [
   { box: [[x0, y, zc - RAIL_GAUGE / 2], [x1, y + 1, zc - RAIL_GAUGE / 2 + 1]], m: 'RAIL' },
   { box: [[x0, y, zc + RAIL_GAUGE / 2 - 1], [x1, y + 1, zc + RAIL_GAUGE / 2]], m: 'RAIL' },
 ];
-const railsZ = (z0, z1, xc, y = F) => [
-  { box: [[xc - RAIL_GAUGE / 2, y, z0], [xc - RAIL_GAUGE / 2 + 1, y + 1, z1]], m: 'RAIL' },
-  { box: [[xc + RAIL_GAUGE / 2 - 1, y, z0], [xc + RAIL_GAUGE / 2, y + 1, z1]], m: 'RAIL' },
+// a light under a shelf or the ceiling at (x, y, z): a torch (the Mines' light: Noita's Mines
+// are lit by torches and lanterns, warm, not by crystal) on a timber stick hung from it, its
+// head (TORCH: elements.js WALL_TORCH, light and no heat: it sets nothing alight) at the
+// stick's foot. Tagged so a light rule can find them all, and they go last: see the end.
+const TORCH_STICK = 2;                 // cells of stick under the shelf
+const lantern = (x, y, z) => [
+  { box: [[x, y - TORCH_STICK, z], [x + 1, y, z + 1]], m: 'BEAM', lantern: true },
+  { box: [[x, y - TORCH_STICK - 1, z], [x + 1, y - TORCH_STICK, z + 1]], m: 'TORCH', lantern: true },
 ];
-// a crystal cluster (the light) at c
-const CRYSTAL_R = 1.4;
-const crystal = (c, r = CRYSTAL_R) => ({ ball: [c, [r, r * 1.6, r]], m: 'CRYSTAL', only: ['ROCK', 'AIR'] });
-// a rubble heap on the floor at (x, z)
-const heap = (x, z, r, y = F) => ({ ball: [[x, y, z], [r, r * 0.6, r]], m: 'RUBBLE', only: 'AIR', rough: 0.6 });
-// a chimney: open from a gallery up to the ceiling at a unit's centre, so a shaft from above lands in it
-const CHIMNEY_W = GEOM.SHAFT_W + 4;
-const chimney = (xc, y0 = F) => ({ box: [[xc - CHIMNEY_W / 2, y0, MID - CHIMNEY_W / 2], [xc + CHIMNEY_W / 2, TOP, MID + CHIMNEY_W / 2]], m: 'AIR', rough: ROUGH_WALL });
-// a bay round a floor shaft at a unit's centre: walkways past the hole on both sides, so a
-// shaft never cuts the gallery it opens in (scripts/check-wang.mjs opens every hole a tile takes)
-const BAY_WALK = 4;                    // cells of floor each side of the hole
-function bay(xc) {
-  const hw = GEOM.SHAFT_W / 2 + BAY_WALK;
-  return [
-    { box: [[xc - hw, F, MID - hw], [xc + hw, GAL_TOP, MID + hw]], m: 'AIR', rough: ROUGH_WALL },
-    { box: [[xc - hw, F - 1, MID - hw], [xc + hw, F, MID + hw]], m: 'ROCK' },
-  ];
-}
-// a deck of timber (its top at the high floor) over x0..x1 × z0..z1
-const deck = (x0, x1, z0, z1, y = DECK) => ({ box: [[x0, y, z0], [x1, y + 1, z1]], m: 'BEAM' });
+// a hanging chain: iron, cells down from the ceiling at (x, z)
+const chain = (x, z, len) => ({ box: [[x, TOP - len, z], [x + 1, TOP, z + 1]], m: 'METAL', only: 'AIR' });
+// gold threaded through the rock round the void (veins), and the odd nugget in the earth
+const veins = (n = 2) => Array.from({ length: n }, (_, i) => ({
+  capsule: [[4 + i * 20, 3 + (i % 2) * 14, 1], [20 + i * 18, 18 - (i % 2) * 12, 23], 1.1], m: 'GOLD', only: 'ROCK', rough: 1.4, chance: 0.6,
+}));
+// loose earth heaped against a wall (z0 side): Noita's sand masses, at their slope so they hold until dug
+const slump = (x0, x1, h, m = { SAND: 3, GRAVEL: 1 }) => ({ ramp: [[x0, F, B], [x1, F + h, B + h + 2]], m, axis: 'z', rise: -1, only: 'AIR' });
 
-const SIDES = ['N0', 'N1', 'S0', 'S1'];
+const SIDES_OPEN = { N0: '-D', N1: '-D', S0: '-D', S1: '-D' };
 
 const tiles = [
-  // ---- the universal tile: a two-storey timber hall, a balcony all round at the
-  // gallery level, stairs up both long sides. It takes any colour on any port.
+  // ---- the universal tile: a timber-shored hall, a ring of earth shelves at the high
+  // doorways all round, stairs up to it on both sides. It takes any colour on any port.
   {
-    name: 'timber hall', weight: 0.6,
+    name: 'shelf hall', weight: 0.8, variants: 3,
     ports: { W: 'DHR-', E: 'DHR-', N0: 'DHR-', N1: 'DHR-', S0: 'DHR-', S1: 'DHR-', D0: 'S-', D1: 'S-', U0: 'S-', U1: 'S-' },
     prims: [
-      { box: [[IN[0], F, INZ[0]], [IN[1], TOP, INZ[1]]], m: 'AIR', rough: ROUGH_WALL },
-      { box: [[IN[0], F - 1, INZ[0]], [IN[1], F, INZ[1]]], m: 'ROCK' },
-      // the balcony: a ring of timber 5 wide
-      deck(IN[0], IN[1], INZ[0], INZ[0] + 5), deck(IN[0], IN[1], INZ[1] - 5, INZ[1]),
-      deck(IN[0], IN[0] + 5, INZ[0], INZ[1]), deck(IN[1] - 5, IN[1], INZ[0], INZ[1]),
-      // its posts
-      ...[8, 16, 24, 32, 40].flatMap((x) => [
-        { box: [[x, F, INZ[0] + 4], [x + 1, DECK, INZ[0] + 5]], m: 'BEAM' },
-        { box: [[x, F, INZ[1] - 5], [x + 1, DECK, INZ[1] - 4]], m: 'BEAM' },
-      ]),
-      // stairs up to it on both long sides
-      { stairs: [[18, F, INZ[0] + 5], [18 + HF - F, HF, INZ[0] + 8]], m: 'BEAM', axis: 'x', rise: -1 },
-      { stairs: [[30 - (HF - F), F, INZ[1] - 8], [30, HF, INZ[1] - 5]], m: 'BEAM', axis: 'x', rise: 1 },
-      crystal([C0, TOP, MID - 6]), crystal([C1, TOP, MID + 6]),
-      heap(24, MID, 3),
+      ...voidAll(),
+      ...shelf(B, X - B, B, B + 6, HF), ...shelf(B, X - B, U - B - 6, U - B, HF),
+      ...shelf(B, B + 6, B, U - B, HF, { beams: false }), ...shelf(X - B - 6, X - B, B, U - B, HF, { beams: false }),
+      stairsX(18, B + 6, B + 9, F, HF, -1), stairsX(30, U - B - 9, U - B - 6, F, HF, 1),
+      onShelf(B, X - B, B, B + 6, HF, 3, [{ any: [crate(), barrel(), remains(), nuggets()] }]),
+      { any: [cart(21, F, MID), tank(20, 28, MID - 3, MID + 3, F, 3), [], remains()] },
+      chain(24, MID, 6),
+      lantern(C0, HF - SHELF_THICK, B + 3), lantern(C1, HF - SHELF_THICK, U - B - 4),
+      ...growth(),
     ],
-    sites: [{ kind: 'loot', at: [24, HF, INZ[0] + 2] }],
+    sites: [{ kind: 'loot', at: [24, HF, B + 3] }],
   },
-  // ---- plain shored gallery, side niches where it may open
+  // ---- shelf cavern: the Mines' commonest piece. Two or three ragged shelves at
+  // different heights over an open floor, posts and stairs, stuff all over them.
   {
-    name: 'gallery', weight: 3,
-    ports: { W: 'DR-', E: 'DR-', N0: '-D', N1: '-D', S0: '-D', S1: '-D', D0: '-S', D1: '-S' },
-    prims: [...galleryX(IN[0], IN[1], { phase: 0.4 }), heap(C0 - 8, GAL_Z[0] + 1, 2.5)],
-  },
-  // ---- a gallery whose floor caves in: shafts from above land in it, its floor drops away
-  {
-    name: 'chimney gallery', weight: 1.5,
-    ports: { W: 'D-R', E: 'D-R', N0: '-D', S1: '-D', D0: 'S-', D1: '-S', U0: 'S-', U1: '-S' },
+    name: 'shelf cavern', weight: 3, variants: 6,
+    ports: { W: 'DR-', E: 'DR-', ...SIDES_OPEN, D0: '-S', D1: '-S', U0: '-S', U1: '-S' },
     prims: [
-      ...galleryX(IN[0], IN[1], { phase: 2.1, lift: 0 }), chimney(C0), chimney(C1),
-      { box: [[C0 - 6, 14, MID - 6], [C0 - 3, 15, MID + 6]], m: 'BEAM' },   // a ledge in the chimney
-      heap(C1 + 6, MID, 2),
+      ...voidAll(), ...veins(),
+      {
+        any: [
+          [...shelf(6, 30, 3, 11, HF), ...shelf(22, 44, 14, 21, UPPER_TOP - 1), stairsX(30, 5, 8, F, HF, 1)],
+          [...shelf(4, 22, 13, 21, HF), ...shelf(26, 44, 3, 10, HF), ...shelf(16, 34, 6, 13, UPPER_TOP, { posts: false }), stairsZ(4, 22, 25, F, HF, 1)],
+          // a low earth ledge mid-floor, two jumps up (a step, then the ledge)
+          [...shelf(8, 40, 15, 21, HF), ...shelf(18, 30, 6, 14, LOW_TOP + 2, { posts: false }), { box: [[30, F, 7], [33, LOW_TOP, 13]], m: 'SOFT' }],
+        ],
+      },
+      { scatter: [[4, F, 3], [44, HF + 1, 21]], n: 4, put: [{ any: [crate(), barrel(), tnt(), remains(), nuggets(), nuggets()] }] },
+      { scatter: [[4, F, 3], [44, F + 1, 21]], n: 2, put: [{ any: [remains(), nuggets(), [{ ball: [[0, 0, 0], [2.5, 1.5, 2.5]], m: { SAND: 2, RUBBLE: 2, GRAVEL: 1 }, only: 'AIR' }]] }] },
+      { box: [[30, F, 16], [40, F + 2, 21]], m: { WATER: 4, OIL: 1, BLOOD: 1 }, only: 'AIR', chance: 0.35 },
+      chain(18, 14, 5), chain(34, 8, 7),
+      lantern(18, HF - SHELF_THICK, 6), lantern(34, UPPER_TOP - 1 - SHELF_THICK, 16),
+      ...growth({ fungus: 0.12 }),
     ],
+    sites: [{ kind: 'loot', at: [12, F, MID] }, { kind: 'gold', at: [36, F, 8] }],
   },
-  // ---- mine-cart corridor: rails end to end, an iron cart parked on them
+  // ---- the rail line: rails the tile's length on the floor, carts of ore on them, a shelf over
   {
-    name: 'rail corridor', weight: 2,
-    ports: { W: 'RD', E: 'RD', N1: '-D', S0: '-D' },
+    name: 'rail line', weight: 2, variants: 4,
+    ports: { W: 'RD', E: 'RD', N1: '-D', S0: '-D', D0: '-S', U1: '-S' },
     prims: [
-      // wide enough to pass the cart
-      ...galleryX(IN[0], IN[1], { wave: 0, lift: 0, zr: [MID - CART_BAY, MID + CART_BAY] }), ...railsX(IN[0], IN[1]),
-      { box: [[30, F + 1, MID - 3], [36, F + 4, MID + 3]], m: 'METAL' },
-      { box: [[31, F + 2, MID - 2], [35, F + 4, MID + 2]], m: 'GRAVEL' },
+      ...voidAll(), ...veins(1),
+      ...railsX(B, X - B),
+      cart(6, F), { any: [cart(30, F), [], cart(36, F)] },
+      ...shelf(4, 44, 16, 22, HF), stairsX(14, 16, 19, F, HF, -1),
+      onShelf(4, 44, 16, 22, HF, 3, [{ any: [crate(), barrel(), crate({ COAL: 3, NUGGETS: 1 })] }]),
+      { box: [[38, F, 3], [44, F + 3, 7]], m: { COAL: 2, RUBBLE: 1 }, rough: 0.8, only: 'AIR' },   // a spill of ore by the line
+      lantern(24, HF - SHELF_THICK, 18),
+      ...growth(),
     ],
   },
-  // ---- rail junction: the line forks off along z through unit 1
+  // ---- the water tanks: timber basins on the floor and on a shelf; a pool in the floor's dip
   {
-    name: 'rail junction', weight: 1,
-    ports: { W: 'RD', E: 'RD-', S1: 'R', N1: '-RD' },
+    name: 'water tanks', weight: 1.4, variants: 4,
+    ports: { W: 'D-', E: 'D-', ...SIDES_OPEN },
     prims: [
-      ...galleryX(IN[0], IN[1], { wave: 0, lift: 0 }), ...galleryZ(INZ[0], INZ[1], C1),
-      ...railsX(IN[0], C1 + RAIL_GAUGE), ...railsZ(MID, INZ[1], C1),
-      crystal([C1 + 5, GAL_TOP, MID - 5]),
+      ...voidAll(),
+      ...shelf(18, 44, 3, 11, HF),
+      tank(24, 36, 4, 10, HF, 4), stairsX(18, 3, 6, F, HF, 1),
+      tank(4, 12, 14, 21, F, 4),
+      { box: [[16, F, 16], [30, F + 2, 21]], m: 'SOFT', rough: 0.7 },
+      { box: [[18, F + 1, 17], [28, F + 2, 20]], m: { WATER: 5, OIL: 1, TOXIC: 1 } },   // a pool in the bank
+      chain(14, 8, 6),
+      lantern(30, HF - SHELF_THICK, 7),
+      ...growth({ fungus: 0.25, cover: 0.65 }),   // damp: moss thick, fungus under the shelves
     ],
+    sites: [{ kind: 'loot', at: [38, F, 16] }],
   },
-  // ---- crossroads: galleries along x and along z through unit 0
+  // ---- the powder store: crates of gunpowder, TNT and barrels stacked on and under a shelf
+  // (Noita's skull crates: shoot one and the store goes up). Nothing hot near: no lantern.
   {
-    name: 'crossroads', weight: 1.5,
-    ports: { W: 'D-R', E: 'D-R', N0: 'D-', S0: 'D-', N1: '-D', S1: '-D', D1: '-S' },
-    prims: [...galleryX(IN[0], IN[1], { phase: 4.0 }), ...galleryZ(INZ[0], INZ[1], C0), ...bay(C1), heap(C1 + 8, MID + 6, 2)],
-  },
-  // ---- overpass: a gallery along x, a timber bridge crossing over it along z
-  // (unit 1, the high doorways), and stairs between them
-  {
-    name: 'overpass', weight: 1.4,
-    ports: { W: 'D-R', E: 'D-R', N1: 'H-', S1: 'H-', N0: '-D' },
+    name: 'powder store', weight: 1, variants: 4,
+    ports: { W: 'D-R', E: 'D-R', S0: '-D', S1: '-D' },
     prims: [
-      ...galleryX(IN[0], IN[1], { phase: 1.2, lift: 0 }),
-      // the bridge: an open cut along z over unit 1, decked at the high floor
-      { box: [[C1 - DH, HF, INZ[0]], [C1 + DH, HIGH_TOP, INZ[1]]], m: 'AIR', rough: ROUGH_WALL },
-      // the stair hall beside the gallery, up to the bridge
-      { box: [[12, F, MID], [C1 + DH, HIGH_TOP, INZ[1] - 1]], m: 'AIR', rough: ROUGH_WALL },   // (into the bridge's cut: no rough seam between them)
-      { box: [[12, F - 1, MID], [C1 - DH, F, INZ[1] - 1]], m: 'ROCK' },
-      { stairs: [[C1 - DH - (HF - F) - 2, F, GAL_Z[1] + 1], [C1 - DH, HF, INZ[1] - 1]], m: 'BEAM', axis: 'x', rise: 1 },
-      deck(C1 - DH, C1 + DH, INZ[0], INZ[1]),   // (after the stair hall, which cuts through its line)
-      crystal([C1, HIGH_TOP, MID]),
+      ...voidAll(),
+      ...shelf(4, 44, 3, 10, HF), stairsX(30, 11, 14, F, HF, 1),
+      onShelf(4, 44, 3, 10, HF, 6, [{ any: [crate({ GUNPOWDER: 1 }), crate(), tnt(), barrel({ OIL: 1, GUNPOWDER: 1 })], weights: [3, 2, 2, 2] }]),
+      { scatter: [[4, F, 3], [44, F + 1, 10]], n: 4, put: [{ any: [crate({ GUNPOWDER: 1 }), tnt(), barrel()] }] },
+      { ball: [[24, 18, 1], [8, 2, 2]], m: 'GUNPOWDER', only: 'ROCK', rough: 1, chance: 0.5 },   // a seam of powder in the rock
+      { box: [[40, F, 16], [44, F + 1, 20]], m: 'GUNPOWDER', only: 'AIR', chance: 0.5 },          // a spilt heap
+      ...growth({ roots: 6 }),
+    ],
+    sites: [{ kind: 'loot', at: [12, HF, 6] }],
+  },
+  // ---- the acid pit: a mound of earth with an acid-filled pit in it, glass-lined (acid eats
+  // all but glass, gold and walls), gold at its bottom: get it out without dissolving
+  {
+    name: 'acid pit', weight: 0.7, variants: 2,
+    ports: { W: 'D-', E: 'D-', N0: '-D', S0: '-D', N1: '-', S1: '-' },
+    prims: [
+      ...voidAll(),
+      { box: [[16, F, B], [37, F + 7, U - B]], m: 'SOFT', rough: 0.6 },     // the mound, wall to wall
+      { box: [[14, F + 7, B], [42, F + 9, U - B]], m: 'AIR', only: 'SOFT' },
+      stairsX(9, 4, 8, F, F + 7, 1),                                         // up from the west, down to the east
+      stairsX(44, 16, 20, F, F + 7, -1),          // (inside the doorway's cut)
+      { box: [[21, F, 7], [35, F + 7, 17]], m: 'GLASS' },                   // the lining
+      { box: [[22, F + 1, 8], [34, F + 7, 16]], m: 'ACID' },
+      { box: [[25, F + 1, 10], [29, F + 2, 14]], m: 'GOLD' },               // the treasure
+      { ball: [[31, F + 1.5, 12], [1.5, 1, 1.5]], m: 'NUGGETS' },
+      { box: [[21, F + 7, 7], [35, F + 8, 8]], m: 'BEAM' }, { box: [[21, F + 7, 16], [35, F + 8, 17]], m: 'BEAM' },
+      lantern(28, TOP, 4),
+      ...growth({ roots: 8 }),
+    ],
+    sites: [{ kind: 'gold', at: [18, F + 7, 4] }, { kind: 'treasure', at: [38, F + 7, 19] }],
+  },
+  // ---- the sand slump: a huge loose mass heaped against the wall, a shelf and a cart
+  // half buried in it (Noita's Mines' edges: earth that comes down when you dig)
+  {
+    name: 'sand slump', weight: 1, variants: 3,
+    ports: { W: 'D-', E: 'D-', N0: '-', N1: '-', S0: '-D', S1: '-D' },
+    prims: [
+      ...voidAll(),
+      slump(4, 44, 9),
+      ...shelf(30, 44, 14, 21, HF), stairsX(30, 18, 21, F, HF, -1),
+      { any: [cart(20, F + 3, 6), [], remains()] },
+      onShelf(30, 44, 14, 21, HF, 2, [{ any: [crate(), nuggets()] }]),
+      ...growth({ roots: 8 }),
     ],
   },
-  // ---- two storeys: a gallery over a gallery, a stairwell between; either end may be high or low
+  // ---- the scaffold: a cross-braced timber tower floor to ceiling, platforms in it, stairs round
   {
-    name: 'two storeys', weight: 1.2,
-    ports: { W: 'DH-', E: 'HD-', S0: '-D', N1: '-H' },
+    name: 'scaffold', weight: 1, variants: 3,
+    ports: { W: 'D-R', E: 'D-R', ...SIDES_OPEN, D1: '-S', U1: '-S' },
     prims: [
-      ...galleryX(IN[0], IN[1], { wave: 0, lift: 0 }), ...galleryX(IN[0], IN[1], { y0: HF, wave: 0, lift: 0 }), deck(IN[0], IN[1], GAL_Z[0], GAL_Z[1]),
-
-      // the stairwell, beside the galleries
-      { box: [[16, F, INZ[0]], [34, HIGH_TOP, GAL_Z[0]]], m: 'AIR', rough: ROUGH_WALL },
-      { box: [[16, F - 1, INZ[0]], [34, F, GAL_Z[0]]], m: 'ROCK' },
-      { stairs: [[16, F, INZ[0]], [16 + HF - F + 2, HF, GAL_Z[0]]], m: 'BEAM', axis: 'x', rise: -1 },
-      crystal([30, HIGH_TOP, INZ[0] + 2]),
+      ...voidAll(),
+      ...[[6, 4], [18, 4], [6, 14], [18, 14]].map(([x, z]) => ({ box: [[x, F, z], [x + 1, TOP, z + 1]], m: 'BEAM' })),
+      { capsule: [[6.5, F, 4.5], [18.5, HF - 1, 4.5], 0.5], m: 'BEAM' }, { capsule: [[6.5, F, 14.5], [18.5, HF - 1, 14.5], 0.5], m: 'BEAM' },
+      { capsule: [[6.5, HF, 4.5], [18.5, TOP - 1, 4.5], 0.5], m: 'BEAM' },
+      { box: [[6, HF - 1, 4], [19, HF, 15]], m: 'WOOD' },                    // the platform
+      stairsX(19, 8, 11, F, HF, -1),
+      onShelf(6, 19, 4, 15, HF, 2, [{ any: [crate(), barrel(), nuggets(), remains()] }]),
+      ...shelf(28, 44, 12, 21, UPPER_TOP - 2), stairsX(28, 12, 15, F, UPPER_TOP - 2, -1),
+      { any: [cart(30, F, 6), tank(30, 40, 3, 9, F, 3), []] },
+      chain(24, MID, 8),
+      lantern(12, HF - 1, 9),
+      ...growth(),
     ],
+    sites: [{ kind: 'loot', at: [12, HF, 9] }],
   },
-  // ---- a corridor climbing a storey: low at W, high at E
+  // ---- dead miners' camp: a lantern, crates, the miners
   {
-    name: 'incline', weight: 1,
-    ports: { W: 'D', E: 'H', N0: '-D', N1: '-', S0: '-', S1: '-' },
+    name: 'miners camp', weight: 0.8, variants: 3,
+    ports: { W: 'D-', E: 'D-', N1: '-D', S0: '-D', D0: '-S' },
     prims: [
-      { box: [[IN[0], F, GAL_Z[0]], [IN[1], HIGH_TOP, GAL_Z[1]]], m: 'AIR', rough: ROUGH_WALL },
-      { ramp: [[10, F, GAL_Z[0]], [38, HF, GAL_Z[1]]], m: 'ROCK', axis: 'x', rise: 1 },
-      { box: [[38, F, GAL_Z[0]], [IN[1], HF, GAL_Z[1]]], m: 'ROCK' },
-      { box: [[IN[0], F - 1, GAL_Z[0]], [10, F, GAL_Z[1]]], m: 'ROCK' },
-
-      ...[16, 24, 32].flatMap((x) => frameX(x, GAL_Z, F + Math.round(((x - 10) * (HF - F)) / 28), DOOR_H)),
-      ...wallTorch([24, HF + TORCH_Y, GAL_Z[0]], [0, -1]),
+      ...voidAll(), ...veins(2),
+      ...shelf(26, 44, 3, 12, HF), stairsZ(13, 22, 25, F, HF, -1),
+      { scatter: [[4, F, 3], [44, F + 1, 21]], n: 3, put: remains() },
+      onShelf(26, 44, 3, 12, HF, 3, [{ any: [crate(), remains(), nuggets()] }]),
+      ...[0, 1].map((i) => ({ box: [[28 + i * 6, F, 15], [32 + i * 6, F + 4, 19]], m: 'WOOD' })),   // crates by the wall
+      lantern(34, HF - SHELF_THICK, 6), lantern(10, TOP, 16),
+      ...growth({ fungus: 0.2 }),
     ],
+    sites: [{ kind: 'loot', at: [38, HF, 6] }, { kind: 'wand', at: [20, F, 18] }],
   },
-  // ---- collapsed room: the roof came down; rubble heaps, broken timber, soft fallen rock
+  // ---- a rare pool of one of Noita's magic liquids in an earth basin
   {
-    name: 'collapsed room', weight: 1.3,
-    ports: { W: 'D-', E: 'D-', N0: '-D', N1: '-D', S0: '-D', S1: '-D', D1: '-S' },
+    name: 'magic pool', weight: 0.12,
+    ports: { W: 'D-', E: 'D-', N0: '-D', S1: '-D' },
     prims: [
-      { box: [[4, F, 4], [44, 16, 20]], m: 'AIR', rough: ROUGH_ROOM },
-      { box: [[4, F - 1, 4], [44, F, 20]], m: 'ROCK' },
-      ...['W', 'E'].flatMap((p) => stub(p)),
-      heap(14, 9, 5), heap(30, 15, 6), heap(38, 7, 3),
-      { ball: [[22, 18, 12], [6, 3, 4]], m: 'SOFT', only: 'ROCK', rough: 1 },
-      { capsule: [[8, F, 6], [16, 12, 9], 0.8], m: 'BEAM' },      // a fallen prop
-      { capsule: [[26, F + 1, 18], [36, F + 6, 10], 0.8], m: 'BEAM' },
-      crystal([40, 14, 18]),
+      ...voidAll(),
+      { box: [[14, F, 6], [34, F + 4, 18]], m: 'SOFT', rough: 0.8 },
+      { box: [[16, F + 1, 8], [32, F + 4, 16]], m: { TELEPORTATIUM: 2, LEVITATIUM: 2, BERSERKIUM: 2, HEALTHIUM: 2, WHISKEY: 2, POLYMORPHINE: 1 } },
+      lantern(24, TOP, 11),
+      ...growth({ cover: 0.7 }),
     ],
-    sites: [{ kind: 'loot', at: [24, F, 8] }],
+    sites: [{ kind: 'loot', at: [40, F, 12] }],
   },
-  // ---- a shaft down through unit 0, ledges on its walls, the gallery past it
+  // ---- the flooded bottom: earth banks and standing water (only in the lowest layer),
+  // and sometimes a sealed basin of lava in rock, no timber near it
   {
-    name: 'shaft', weight: 1.4,
-    ports: { W: 'D-', E: 'D-R', S1: '-D', D0: 'S', U0: 'S-' },
+    name: 'flooded bottom', weight: 1.5, variants: 4, deepest: 1,
+    ports: { W: 'D-', E: 'D-', N0: '-D', N1: '-D', S0: '-', S1: '-' },
     prims: [
-      ...galleryX(IN[0], IN[1], { phase: 2.6, lift: 0 }),
-      { box: [[C0 - 7, F, MID - 7], [C0 + 7, TOP, MID + 7]], m: 'AIR', rough: ROUGH_ROOM },
-      // ledges stepping round the walls (out of the drop's line)
-      { box: [[C0 - 7, 8, MID - 7], [C0 - 3, 9, MID + 1]], m: 'BEAM' },
-      { box: [[C0 + 3, 14, MID - 2], [C0 + 7, 15, MID + 7]], m: 'BEAM' },
-      { box: [[C0 - 7, 18, MID + 3], [C0 + 1, 19, MID + 7]], m: 'BEAM' },
-      crystal([C0 + 7, 10, MID - 6]),
+      ...voidAll(),
+      // the walk along the north wall; the water stands in an earth bank to the south
+      { box: [[4, F, 10], [44, F + 3, U - B]], m: 'SOFT', rough: 0.6 },
+      { box: [[6, F + 1, 12], [42, F + 3, 20]], m: { WATER: 6, TOXIC: 1, MUD: 1 } },
+      { any: [[{ ball: [[24, F + 1, 16], [6, 1.5, 3]], m: 'GOLD', only: 'SOFT' }], []] },
+      ...growth({ fungus: 0.2, cover: 0.6 }),
+      // sometimes a basin of lava sunk in rock in the bank (after the growth: no moss at its rim)
+      { any: [[{ box: [[30, F, 13], [44, F + 6, 21]], m: 'ROCK' }, { box: [[32, F + 2, 15], [42, F + 5, 19]], m: 'LAVA' }], []], weights: [1, 2] },
     ],
-  },
-  // ---- a drop room: the floor gives way into the layer below in both units
-  {
-    name: 'drop room', weight: 0.8,
-    ports: { W: 'D-', E: '-D', N1: '-D', D0: 'S-', D1: 'S-', U1: '-S' },
-    prims: [
-      { box: [[IN[0], F, 6], [IN[1], 15, 18]], m: 'AIR', rough: ROUGH_ROOM },
-      { box: [[IN[0], F - 1, 6], [IN[1], F, 18]], m: 'ROCK' },
-      chimney(C1), ...stub('W'), ...stub('E'),
-      heap(24, MID, 3), { box: [[20, F, 6], [28, F + 1, 18]], m: 'BEAM' },   // planks over the gap between the holes
-      ...wallTorch([24, F + TORCH_Y, 6], [0, -1]),
-    ],
-  },
-  // ---- flooded sump: the gallery dips behind two sills and the water stands in it
-  {
-    name: 'flooded sump', weight: 1,
-    ports: { W: 'D-', E: 'D-', N1: '-D' },
-    prims: [
-      ...galleryX(IN[0], IN[1], { wave: 0, lift: 0, h: DOOR_H + SUMP_HEADROOM }),
-      { box: [[14, F, GAL_Z[0] - 2], [34, GAL_TOP + 4, GAL_Z[1] + 2]], m: 'AIR', rough: ROUGH_ROOM },
-      { box: [[14, F - 1, GAL_Z[0] - 2], [34, F, GAL_Z[1] + 2]], m: 'ROCK' },
-      { ramp: [[10, F, GAL_Z[0]], [15, F + 4, GAL_Z[1]]], m: 'ROCK', axis: 'x', rise: 1 },
-      { ramp: [[33, F, GAL_Z[0]], [38, F + 4, GAL_Z[1]]], m: 'ROCK', axis: 'x', rise: -1 },
-      { box: [[15, F, GAL_Z[0] - 2], [33, F + 4, GAL_Z[1] + 2]], m: 'WATER', only: 'AIR' },
-
-      crystal([24, GAL_TOP + 4, MID]),
-    ],
-  },
-  // ---- oil pocket: a sealed lens of oil in the rock over the gallery (dig, and it pours), a slick on the floor
-  {
-    name: 'oil pocket', weight: 0.9,
-    ports: { W: 'D-R', E: 'D-R', S0: '-D' },
-    prims: [
-      ...galleryX(IN[0], IN[1], { phase: 3.1 }),
-      { ball: [[28, 17, MID], [10, 2.5, 5]], m: 'OIL', only: 'ROCK', rough: 1 },
-      { box: [[20, F, GAL_Z[0] + 1], [26, F + 1, GAL_Z[1] - 1]], m: 'OIL', only: 'AIR' },
-    ],
-  },
-  // ---- gold vein: the gallery widens into a working face threaded with gold
-  {
-    name: 'gold face', weight: 0.9,
-    ports: { W: 'D-', E: 'D-R', N0: '-D', S1: '-D' },
-    prims: [
-      ...galleryX(IN[0], IN[1], { phase: 5.2 }),
-      { ball: [[28, 8, MID], [10, 7, 8]], m: 'AIR', rough: ROUGH_ROOM },
-      { box: [[18, F - 1, MID - 8], [38, F, MID + 8]], m: 'ROCK' },
-      { capsule: [[16, 4, 3], [40, 16, 21], 1.2], m: 'GOLD', only: 'ROCK', rough: ROUGH_VEIN },
-      { capsule: [[22, 18, 3], [36, 6, 21], 0.9], m: 'GOLD', only: 'ROCK', rough: ROUGH_VEIN },
-      crystal([28, 14, MID + 7]),
-    ],
-    sites: [{ kind: 'gold', at: [28, F, MID] }],
+    sites: [{ kind: 'gold', at: [8, F + 3, 4] }],
   },
   // ---- the hidden treasure nook: one way in, a crooked crawl, gold and a light at the end
   {
-    name: 'treasure nook', weight: 2,
+    name: 'treasure nook', weight: 2, open: false,
     ports: { E: 'D', W: '-', N0: '-', N1: '-', S0: '-', S1: '-' },
     prims: [
-      ...galleryX(32, IN[1], { frames: false }),
+      { box: [[30, F, B], [X - B, TOP, U - B]], m: 'AIR', rough: VOID_ROUGH },
       { capsule: [[33, F + 3, MID], [22, F + 3, MID - 6], 3.2], m: 'AIR', rough: 0.8 },
-      { box: [[8, F, 3], [24, 12, 13]], m: 'AIR', rough: ROUGH_ROOM },
+      { box: [[8, F, 3], [24, 12, 13]], m: 'AIR', rough: 2.2 },
       { box: [[8, F - 1, 3], [24, F, 13]], m: 'ROCK' },
       { box: [[20, F - 1, 4], [32, F, 12]], m: 'ROCK' },
       { box: [[11, F, 5], [15, F + 2, 9]], m: 'GOLD' },
-      crystal([10, 11, 4]), crystal([22, 11, 12]),
+      { ball: [[17, F + 0.5, 10], [1.5, 1, 1.5]], m: 'NUGGETS', only: 'AIR' },
+      lantern(10, 11, 4), lantern(22, 11, 9),
+      ...growth({ roots: 6 }),
     ],
     sites: [{ kind: 'treasure', at: [13, F + 2, 7] }, { kind: 'wand', at: [18, F, 8] }],
   },
+  // ---- a store off to the side: shelves of crates, gold on the floor
   {
-    name: 'side nook', weight: 1.4,
+    name: 'side store', weight: 1.4, variants: 2, open: false,
     ports: { S1: 'D', W: '-', E: '-', N0: '-', N1: '-', S0: '-' },
     prims: [
-
-      { box: [[10, F, 4], [42, 11, 15]], m: 'AIR', rough: ROUGH_ROOM },
+      { box: [[10, F, 4], [42, 14, U - B]], m: 'AIR', rough: 2.2 },
       { box: [[10, F - 1, 4], [42, F, 15]], m: 'ROCK' },
-      { box: [[12, F, 5], [16, F + 3, 8]], m: 'BEAM' },      // crates
-      { box: [[12, F + 3, 5], [15, F + 5, 8]], m: 'BEAM' },
+      { box: [[12, F, 5], [16, F + 4, 9]], m: 'WOOD' }, { box: [[13, F + 1, 6], [15, F + 3, 8]], m: { GUNPOWDER: 1, NUGGETS: 1 } },
+      { box: [[12, F + 4, 5], [16, F + 7, 9]], m: 'WOOD' },
       { box: [[18, F, 5], [21, F + 2, 7]], m: 'GOLD' },
-      crystal([26, 11, 5]),
+      lantern(26, 13, 5),
+      ...growth({ roots: 4 }),
     ],
     sites: [{ kind: 'loot', at: [24, F, 10] }],
   },
-  // ---- the big cavern set piece: a natural vault, crystals, a pool, ledges
-  {
-    name: 'great cavern', weight: 0.7,
-    ports: { W: 'D-', E: 'D-', N0: '-D', N1: '-D', S0: '-D', S1: '-D', D0: '-S', D1: '-S', U0: '-S', U1: '-S' },
-    prims: [
-      { ball: [[24, 12, 12], [24, 13, 12]], m: 'AIR', rough: ROUGH_CAVE },
-      { box: [[3, F, 3], [45, 10, 21]], m: 'AIR', rough: ROUGH_ROOM },
-      { box: [[3, F - 1, 3], [45, F, 21]], m: 'ROCK' },
-      ...['W', 'E'].flatMap((p) => stub(p)),
-      { box: [[28, F, 15], [40, F + 2, 20]], m: 'WATER', only: 'AIR' },
-      { ball: [[28, F, 14], [2, 2, 1]], m: 'ROCK' },
-      { ramp: [[4, F, 3], [16, 10, 8]], m: 'ROCK', axis: 'x', rise: -1 },
-      crystal([6, 18, 12], 2), crystal([42, 16, 6], 1.8), crystal([24, 21, 12], 2),
-      heap(18, 16, 3),
-      { box: [[32, 15, 4], [44, 16, 9]], m: 'BEAM' },   // an old scaffold
-    ],
-    sites: [{ kind: 'loot', at: [8, 10, 5] }],
-  },
-  // ---- a crooked natural crawl: no timber, moss on the walls
-  {
-    name: 'moss crawl', weight: 1,
-    ports: { W: 'D-', E: 'D-', S0: '-D', N1: '-D' },
-    prims: [
-      { capsule: [[3, 7, MID], [16, 8, 7], 4.5], m: 'AIR', rough: ROUGH_ROOM },
-      { capsule: [[16, 8, 7], [32, 7, 17], 4.5], m: 'AIR', rough: ROUGH_ROOM },
-      { capsule: [[32, 7, 17], [45, 7, MID], 4.5], m: 'AIR', rough: ROUGH_ROOM },
-      { box: [[IN[0], F - 1, INZ[0]], [IN[1], F, INZ[1]]], m: 'ROCK' },
-      ...stub('W'), ...stub('E'),
-      { capsule: [[3, 7, MID], [16, 8, 7], 5.6], m: 'MOSS', only: 'ROCK', rough: ROUGH_ROOM },
-      { capsule: [[16, 8, 7], [32, 7, 17], 5.6], m: 'MOSS', only: 'ROCK', rough: ROUGH_ROOM },
-      { box: [[22, F, 9], [27, F + 1, 15]], m: 'WATER', only: 'AIR' },
-      lamp(crystal([24, 12.5, 12])),
-    ],
-  },
-  // ---- a side chamber up three steps off the gallery: the miners' store
-  {
-    name: 'store room', weight: 1,
-    ports: { W: 'D-R', E: 'D-R', S0: '-D', S1: '-D' },
-    prims: [
-      ...galleryX(IN[0], IN[1], { phase: 0.9, lift: 0 }),
-      { box: [[18, F + 3, INZ[0]], [38, 14, GAL_Z[0]]], m: 'AIR', rough: ROUGH_WALL },
-      { stairs: [[18, F, GAL_Z[0] - 3], [24, F + 3, GAL_Z[0]]], m: 'ROCK', axis: 'z', rise: -1 },
-      { box: [[18, F, INZ[0]], [38, F + 3, GAL_Z[0] - 3]], m: 'ROCK' },
-      { box: [[30, F + 3, INZ[0]], [34, F + 6, INZ[0] + 3]], m: 'BEAM' },
-      { box: [[34, F + 3, INZ[0]], [37, F + 5, INZ[0] + 3]], m: 'BEAM' },
-      crystal([26, 14, INZ[0] + 1]),
-    ],
-    sites: [{ kind: 'loot', at: [28, F + 3, INZ[0] + 2] }],
-  },
 ];
-// the lanterns go last in each tile: a prim's noise stream is its index
-// (kit.js NOISE_PRIM_STRIDE), so the shapes stay as authored
-for (const t of tiles) t.prims = [...t.prims.filter((pr) => !pr.lantern), ...t.prims.filter((pr) => pr.lantern)];
+// the lanterns go last in each tile (after the stuff they hang over)
+for (const t of tiles) {
+  t.open ??= true;
+  const flat = t.prims.flat();
+  t.prims = [...flat.filter((pr) => !pr.lantern), ...flat.filter((pr) => pr.lantern)];
+}
 
 export default {
   name: 'mines',
-  // wall torches where the timber sets' don't reach (kit.js placeTorches: rooms, caverns, stores)
+  // wall torches where the hung ones don't reach (kit.js placeTorches: pillars, the void's walls)
   torches: { every: 18, max: 2, lights: ['TORCH'] },
-  // Noita's Mines: brown-grey rock, timber, a lot of it diggable
-  palette: { ROCK: 'ROCK', SOFT: 'LIMESTONE', BEAM: 'WOOD', RAIL: 'METAL', RUBBLE: 'RUBBLE' },
+  // Noita's Mines: brown earth and dark rock, timber, a lot of it diggable
+  palette: { ROCK: 'BASALT', SOFT: 'SANDSTONE', BEAM: 'WOOD', RAIL: 'METAL', RUBBLE: 'RUBBLE' },
+  geom: MINES_GEOM,
+  loops: 0.7,          // Noita's Mines are one cavern: most neighbours open onto each other
   tiles,
 };

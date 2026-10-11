@@ -78,7 +78,7 @@ bool rxGate(int r, float Ta, float Tb) {
 // Growers (react.js; physics.js DAMP_REACH): moss and fungus keep their damp
 // in their ctype. A grower's damp, given its temperature and face neighbours.
 bool grower(int j) { return j == E_MOSS || j == E_FUNGUS; }
-bool mossBed(int j) { return j == E_ROCK || j == E_STONE || j == E_LIMESTONE || j == E_SANDSTONE; }   // the rock moss creeps over
+bool mossBed(int j) { return j == E_ROCK || j == E_BASALT || j == E_STONE || j == E_LIMESTONE || j == E_SANDSTONE; }   // the rock moss creeps over
 bool fungusFood(int j) { return j == E_WOOD || j == E_SAWDUST || j == E_PLANT; }                     // what fungus rots
 float dampOf(float T, vec4 nA[6]) {
   if (T >= DAMP_DRY_T) return 0.0;

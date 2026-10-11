@@ -2,9 +2,9 @@
 // The menu: every gamemode listed with its icon, the picked one's emblem in
 // its title. The loading screen, held at each of its steps (the game's own
 // download is stalled, and the steps are reported through launch.progress as
-// app.js would): its emblem, facts, steps, tip and portrait, and no sideways
-// scroll at a narrow width. Then one real boot: the steps tick through and the
-// screen comes down once the map is up. Screenshots go to --out.
+// app.js would): its mode, name, one step line and portrait, nothing more, and
+// no sideways scroll at a narrow width. Then one real boot: the step line
+// walks through and the screen comes down once the map is up. Screenshots go to --out.
 // Needs a dev server: `node_modules/.bin/vite --port 5611 --strictPort`, then
 // usage: node tools/loading-screen-check.mjs [--port 5611] [--out dir] [--no-boot]
 //        node tools/loading-screen-check.mjs --boot-only --base <a build: vite preview, the live site>
@@ -25,7 +25,7 @@ const WIDE = { width: 1440, height: 900 };
 const NARROW = { width: 380, height: 760 };   // a narrow window (not a phone emulation)
 const LOAD_TIMEOUT = 180000;                   // ms: a cold shader compile
 const TEAM = GAMEMODES.find((m) => m.key === 'slayer');   // the team game the checks pick
-const TIP_WAIT = 5000;                         // ms: the tips module and its first tip
+const STEP_WAIT = 5000;                        // ms: the first step line
 mkdirSync(out, { recursive: true });
 
 const results = [];
@@ -56,22 +56,19 @@ try {
     await page.click('.mm-card[data-map="lab"]');
     await page.click('.mm-start');
     await page.waitForSelector('.mm.loading');
-    await page.waitForFunction(() => document.querySelector('.mm-steps li.now'), null, { timeout: TIP_WAIT });
-    await page.waitForSelector('.mm.has-tip', { timeout: TIP_WAIT });
+    await page.waitForFunction(() => document.querySelector('.mm-load-step')?.textContent, null, { timeout: STEP_WAIT });
     const report = (step) => page.evaluate(async (s) => (await import(performance.getEntriesByType('resource').map((r) => r.name).find((n) => n.includes('/src/launch.js')))).launch.progress(s), step);
-    const steps = () => page.$$eval('.mm-steps li', (els) => els.map((e) => `${e.className || 'todo'}: ${e.querySelector('.mm-step-text').textContent}`));
-    check('the loading screen: build under way', (await steps())[1]?.startsWith('now'), JSON.stringify(await steps()));
+    const step = () => page.$eval('.mm-load-step', (e) => e.textContent);
+    check('the loading screen: build under way', (await step()).startsWith('Filling'), await step());
     await report('compile');
     await report('cold');
-    check('compile under way, with the cold note', (await steps())[2]?.startsWith('now') && (await steps())[2].includes('update'), JSON.stringify(await steps()));
+    check('compile under way, with the cold note', (await step()).startsWith('Compiling') && (await step()).includes('update'), await step());
     const load = await page.evaluate(() => ({
-      mode: document.querySelector('.mm-load-mode').textContent, rules: document.querySelector('.mm-load-rules').textContent,
-      name: document.querySelector('.mm-load-name').textContent, facts: [...document.querySelectorAll('.mm-medals li')].map((l) => l.textContent),
-      emblem: !!document.querySelector('.mm-medal-big svg path'), tip: document.querySelector('.mm-tip-text').textContent,
-      tipIcon: !!document.querySelector('.mm-tip-icon svg path'), you: document.querySelector('.mm-you img')?.naturalWidth ?? 0,
+      mode: document.querySelector('.mm-load-mode').textContent, name: document.querySelector('.mm-load-name').textContent,
+      you: document.querySelector('.mm-you img')?.naturalWidth ?? 0,
+      extra: document.querySelectorAll('.mm-load svg, .mm-load ul, .mm-load ol, .mm-load aside').length,   // no medals, step list or tip
     }));
-    check('mode, rules, name, facts, emblem, tip and portrait', load.emblem && load.tipIcon && load.tip && load.you > 0 && load.facts.length === 3 && load.rules, JSON.stringify(load));
-    await page.waitForTimeout(500);   // (the tip fades in)
+    check('mode, name and portrait, nothing more', load.mode && load.name && load.you > 0 && load.extra === 0, JSON.stringify(load));
     await page.screenshot({ path: join(out, '3-loading-lab-slayer.png') });
     await page.setViewportSize(NARROW);
     await page.waitForTimeout(200);
@@ -89,11 +86,10 @@ try {
     await page2.click('.mm-mode:first-of-type');
     await page2.click('.mm-card[data-map="island"]');
     await page2.click('.mm-start');
-    await page2.waitForSelector('.mm.has-tip', { timeout: TIP_WAIT });
+    await page2.waitForFunction(() => document.querySelector('.mm-load-step')?.textContent, null, { timeout: STEP_WAIT });
     for (const s of ['compile', 'world']) await page2.evaluate(async (k) => (await import(performance.getEntriesByType('resource').map((r) => r.name).find((n) => n.includes('/src/launch.js')))).launch.progress(k), s);
-    const s2 = await page2.$$eval('.mm-steps li', (els) => els.map((e) => `${e.className || 'todo'}: ${e.textContent}`));
-    check('a world has the world step, under way', s2.length === 4 && s2[3].startsWith('now'), JSON.stringify(s2));
-    await page2.waitForTimeout(500);
+    const s2 = await page2.$eval('.mm-load-step', (e) => e.textContent);
+    check('a world has the world step, under way', s2 === 'Generating the world', s2);
     await page2.screenshot({ path: join(out, '5-loading-island.png') });
     await page2.close();
     await page.close();
@@ -109,7 +105,7 @@ try {
     await page3.evaluate(() => {
       window.__seen = new Set();
       const mo = new MutationObserver(() => {
-        for (const li of document.querySelectorAll('.mm-steps li')) window.__seen.add(`${li.className || 'todo'}: ${li.textContent}`);
+        window.__seen.add(document.querySelector('.mm-load-step').textContent);
         if (window.__app && !document.querySelector('.mm.open')) mo.disconnect();
       });
       mo.observe(document.querySelector('.mm'), { subtree: true, childList: true, attributes: true, characterData: true });
@@ -122,7 +118,7 @@ try {
     const seen = await page3.evaluate(() => [...window.__seen]);
     // (a team game's match step reads app.js's line for it)
     const lines = ['Downloading', 'Filling', 'Compiling', ...(slayer ? ['Picking the teams'] : [])];
-    const reached = lines.every((t) => seen.some((l) => l.includes(t) && /^(now|done)/.test(l)));
+    const reached = lines.every((t) => seen.some((l) => l.includes(t)));
     check('a real boot reaches every step and the screen comes down', reached, JSON.stringify(seen));
     const s3 = await page3.evaluate(() => ({ preset: window.__app.settings.preset, size: window.__app.settings.size }));
     check('the lab is up', s3.preset === 'lab', JSON.stringify(s3));

@@ -83,6 +83,10 @@ export function createDescentLoot({ scene, getSim, getVolume, getScale, interact
     add({ kind: 'wand', world, wand });
   }
   const offDrop = descentWands.on('drop', (wand) => { const f = getFeet?.(); if (f) drop(wand, f.feet, f.dir); });
+  // a chest's wand or spells (descent/index.js): pickups where it spilled them, world cells
+  const offPlace = descentWands.on('place', ({ kind, wand, spell, world, site }) => {
+    if (kind === 'wand' ? wand : SPELL_BY_ID[spell]) add({ kind, wand, spell, world: new THREE.Vector3(...world), site });
+  });
 
   function take(p) {
     if (p.kind === 'wand') {
@@ -155,7 +159,7 @@ export function createDescentLoot({ scene, getSim, getVolume, getScale, interact
     setLevel, drop, update,
     get list() { return list; },
     dispose() {
-      offDrop(); offInteract?.();
+      offDrop(); offPlace(); offInteract?.();
       root.removeFromParent();
       for (const mesh of [shafts, gems, cards]) { mesh.geometry.dispose(); mesh.material.dispose(); mesh.dispose(); }
     },

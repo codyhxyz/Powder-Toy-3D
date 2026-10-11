@@ -401,10 +401,14 @@ const defs = [
     dens: 8, cond: 0.008, cap: 0.45, drag: 0.03, flow: 0.55, ignite: 220, burnRate: 0.008,
     burnHeat: 5, flameT: 1000, life: 1, spawn: 0.35, ash: false,
     sigma: [0.4, 0.65, 1.8], desc: 'Oil. Flammable: catches fire at 220 °C. Lighter than water, so it floats on top.' },
-  { key: 'ACID', abbr: 'ACID', name: 'Acid', kind: K.LIQUID, render: R.LIQUID, color: '#86f23c',
+  // Drawn as Noita's acid, not as real HCl (which is clear): a vivid toxic lime
+  // green (Noita's acid is ~#5f0), thick and near opaque, so it never reads as
+  // water. Green is extinguished least and scattered most (gfx/materials.js
+  // ACID): a body of it glows lime from within; you see ~2 cells into it.
+  { key: 'ACID', abbr: 'ACID', name: 'Acid', kind: K.LIQUID, render: R.LIQUID, color: '#55ff00',
     dens: 11, cond: 0.03, cap: 1.0, drag: 0.015, flow: 0.8, life: 1, spawn: 0.35, acidProof: true, acid: true,
     hot: ACID_BOIL,   // boils at 108.6 °C into steam and caustic gas (the azeotrope, above)
-    sigma: [0.24, 0.06, 0.3], desc: 'Acid. Dissolves almost everything, using itself up as it goes; glass and walls are safe. Boils at 108.6 °C into steam and caustic gas.' },
+    sigma: [1.5, 0.5, 2.0], desc: 'Acid. Dissolves almost everything, using itself up as it goes; glass and walls are safe. Boils at 108.6 °C into steam and caustic gas.' },
   { key: 'LAVA', abbr: 'LAVA', name: 'Lava', kind: K.LIQUID, render: R.OPAQUE, color: '#ff5a1a', var: 0.1,
     dens: 25, cond: 0.03, cap: 0.6, drag: 0.2, flow: 0.3, temp: 1600, spawn: 0.35, sound: 'sizzle',
     desc: 'Lava. Molten rock at 1600 °C. Ignites flammable materials. Generated when metals and other materials melt; cools back into whatever melted to make it.' },
@@ -981,14 +985,14 @@ const defs = [
   // Toxic sludge (Noita's radioactive_liquid): an industrial slurry or mine
   // tailings, water carrying 20-30 % fine solids: ~1.2 g/cm³ and 0.1-1 Pa·s
   // (take 0.3). It sinks below water; Noita's floats (density 3, water's 4).
-  // Its faint green glow is game magic (gfx/materials.js TOXIC_GLOW); what it
+  // Its faint olive glow is game magic (gfx/materials.js TOXIC_GLOW_*); what it
   // does to bodies is the status effects' (nt-status).
   { key: 'TOXIC', abbr: 'TOXC', name: 'Toxic sludge', kind: K.LIQUID, render: R.LIQUID, color: '#3fb52c',
     dens: 12, cond: 0.03, cap: 0.85, ...viscous(300), spawn: 0.35,
     cold: { T: SLUDGE_MIX.freezeT, into: shares([['ICE', SLUDGE_MIX.water / ICE_RHO], ['SAND', SLUDGE_MIX.fines / SLUDGE_MIX.finesPile]]),
       latent: latentOf(334, SLUDGE_MIX.water) },
     hot: boilOf(SLUDGE_MIX.boilT, SLUDGE_MIX.water, [['SAND', SLUDGE_MIX.fines / SLUDGE_MIX.finesPile]]),
-    sigma: [1.6, 0.5, 2.5], desc: 'Toxic sludge. Thick green industrial sludge that sinks below water and glows faintly. Poisons whoever wades in it. Water washes it away.' },
+    sigma: [1.2, 0.9, 2.5], desc: 'Toxic sludge. Thick green industrial sludge that sinks below water and glows faintly. Poisons whoever wades in it. Water washes it away.' },
   // Slime: Noita's pink-purple slime, taken as a hydrogel like PVA-borax
   // slime: mostly water (~1.05 g/cm³, cap and cond near water's) and about as
   // thick as honey, ~10 Pa·s at the shear rates of a pour.
@@ -1107,6 +1111,17 @@ const defs = [
     cond: 0.015, cap: 0.5, melt: 1400, meltInto: 'GLASS', hard: 3, breakInto: 'SHARDS', acidProof: true, sound: 'shatter',
     conducts: true, elec: 1.8e7,
     desc: 'Lamp. An electric light: it shines while sparks reach it and goes out a moment after they stop. Touch it to a battery to keep it on. Fragile: a shot or a kick smashes the bulb.' },
+  // Basalt: fresh lava rock, the dark flows a volcano's eruptions leave on its
+  // flanks (the giant volcano's). Minecraft's basalt and Noita's lava rock.
+  // ROCK is the same rock weathered. Unlike ROCK it melts, at stone's 1200 °C
+  // (basalt's solidus ~1100 °C, liquidus ~1250 °C), and its lava sets back
+  // into basalt. Young flows are vesicular, so weaker than dense basalt
+  // (100-350 MPa, Goodman 1989; ROCK's hard 30 is ~150 MPa): ~100 MPa, hard 20
+  // (hard ≈ UCS / 5 MPa, as the rocks above). Heat: ~1.7 W/m·K like ROCK's
+  // basalt (Robertson 1988); 2.9 g/cm³ × 0.84 J/g·K over water's 4.18 → cap 0.58.
+  { key: 'BASALT', abbr: 'BSLT', name: 'Basalt', kind: K.SOLID, render: R.OPAQUE, color: '#353331', var: 0.1,
+    cond: 0.03, cap: 0.58, melt: 1200, hard: 20, breakInto: 'STONE', sound: 'crack',
+    desc: 'Dark lava rock, the flows a volcano leaves on its slopes. Melts back into lava at 1200 °C. Moss grows on it.' },
   // A wall torch (Descent's galleries: world/wang/kits): a pitch torch's burning
   // head in a bracket, the Mines' and Coal Pits' light, as Noita's mines are lit
   // by torches on their walls. Game magic: its flame is only light (gfx/materials.js
@@ -1321,7 +1336,7 @@ export const PALETTE = [
   // Noita's magical liquids
   { name: 'Potions', items: ['TELEPORTATIUM', 'LEVITATIUM', 'HEALTHIUM', 'BERSERKIUM', 'POLYMORPHINE', 'PHEROMONE'] },
   { name: 'Gases', items: ['STEAM', 'CLOUD', 'HYDROGEN', 'OXYGEN', 'CO2', 'PROPANE', 'CAUSTIC_GAS', 'SMOKE', 'FIRE', 'PLASMA', 'MERCURY_VAPOR'] },
-  { name: 'Solids', items: ['WALL', 'COAL', 'ROCK', 'LIMESTONE', 'SANDSTONE', 'METAL', 'GLASS', 'CERAMIC', 'ICE', 'DRY_ICE', 'CRYSTAL', 'WOOD', 'FUNGUS', 'PLANT', 'MOSS', 'CLONE', 'BRICK', 'TITANIUM', 'TUNGSTEN', 'GOLD', 'SOLID_MERCURY', 'DIAMOND', 'VOID'] },
+  { name: 'Solids', items: ['WALL', 'COAL', 'ROCK', 'BASALT', 'LIMESTONE', 'SANDSTONE', 'METAL', 'GLASS', 'CERAMIC', 'ICE', 'DRY_ICE', 'CRYSTAL', 'WOOD', 'FUNGUS', 'PLANT', 'MOSS', 'CLONE', 'BRICK', 'TITANIUM', 'TUNGSTEN', 'GOLD', 'SOLID_MERCURY', 'DIAMOND', 'VOID'] },
   // TPT's Explosives menu (propane stays a gas)
   { name: 'Explosives', items: ['GUNPOWDER', 'FUSE', 'THERMITE', 'NITRO', 'TNT', 'C4'] },
   { name: 'Electronics', items: ['SPARK', 'BATTERY', 'METAL', 'LAMP', 'PSCN', 'NSCN', 'SWITCH', 'INSULATOR', 'TSNS', 'PCLN'] },
