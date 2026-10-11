@@ -174,7 +174,10 @@ const vertical = (b, t) => `
 
 // 2. diagonal topple: a blocked top cell falls diagonally (powders/liquids),
 // a blocked bottom gas cell that is buoyant rises diagonally. Candidates are scored by the
-// particle's horizontal velocity plus noise; the best open one wins.
+// particle's horizontal velocity plus noise; the best open one wins. A
+// liquid doesn't topple toward where it is already moving: it goes there by
+// the horizontal exchange (3) and falls from there, as thrown (a pour out of
+// a hole leaves level, not a cell lower).
 const diagonal = (i) => {
   const top = (i & 2) !== 0;
   const xi = i & 1, zi = (i >> 2) & 1;
@@ -187,14 +190,15 @@ const diagonal = (i) => {
     const passable = top ? `isFluid(k${path}) && d${path} < d${i}` : `isFluid(k${path})`;
     return `(!m${target} && ${passable} && ${can(i, target, top ? 0 : 1)})`;
   };
+  const away = (k) => (top ? ` && !(kd == K_LIQUID && ${dirs[k]} > 0.0)` : '');
   const kindOk = top ? `(kd == K_POWDER || kd == K_LIQUID)` : `(kd == K_GAS && GRAV[k${i}] < 0.0)`;   // buoyant gases (not cloud, which rides the air)
   return `
   if (s${i} && !m${i}) {
     int kd = KIND[k${i}];
     if (${kindOk} && (kd != K_POWDER || rnd(rs) <= SLIDE[k${i}])) {
-      float sA = ${ok(cols[0])} ? ${dirs[0]} + rnd(rs) * DIAG_NOISE : -9.0;
-      float sB = ${ok(cols[1])} ? ${dirs[1]} + rnd(rs) * DIAG_NOISE : -9.0;
-      float sC = ${ok(cols[2])} ? ${dirs[2]} + rnd(rs) * DIAG_NOISE : -9.0;
+      float sA = ${ok(cols[0])}${away(0)} ? ${dirs[0]} + rnd(rs) * DIAG_NOISE : -9.0;
+      float sB = ${ok(cols[1])}${away(1)} ? ${dirs[1]} + rnd(rs) * DIAG_NOISE : -9.0;
+      float sC = ${ok(cols[2])}${away(2)} ? ${dirs[2]} + rnd(rs) * DIAG_NOISE : -9.0;
       if (max(sA, max(sB, sC)) > -8.0) {
         if (sA >= sB && sA >= sC) ${swap(i, cols[0] + yo)}
         else if (sB >= sC) ${swap(i, cols[1] + yo)}

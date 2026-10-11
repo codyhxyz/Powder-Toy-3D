@@ -573,6 +573,7 @@ export class World {
     const top = (i & 2) !== 0, xi = i & 1, kd = KIND[k[i]];
     if (top ? !(kd === K.POWDER || kd === K.LIQUID) : !(kd === K.GAS && GRAV[k[i]] < 0)) return;   // buoyant gases (not cloud)
     if (kd === K.POWDER && rnd() > SLIDE[k[i]]) return;
+    if (top && kd === K.LIQUID && this.bvx[i] * (1 - 2 * xi) > 0) return;   // heading that way: it goes across, then falls (move.js diagonal)
     const c = 1 - xi, target = c + (top ? 0 : 2), path = c + (top ? 2 : 0);
     const passable = top ? isFluid(k[path]) && d[path] < d[i] : isFluid(k[path]);
     if (m[target] || !passable || !canMove(k[i], k[target], d[i], d[target], top ? 0 : 1)) return;
@@ -762,37 +763,42 @@ export class World {
           // (pressed on what's below by gravity: none, no friction, no head)
           const supported = g > 0 && (below === K.SOLID || below === K.POWDER);
           if (supported) vx *= 1 - FRICTION[id];
+          const up = KIND[nid[fd ^ 1]];
+          const head = up === K.LIQUID || up === K.POWDER;
           if (KIND[id] === K.LIQUID && g > 0 && held) {
             // pushed sideways only where it can go, toward it, at Torricelli's speed under a head (react.js)
             const oR = canMove(id, nid[fr], d, densityOf(nid[fr], nT[fr]), 2), oL = canMove(id, nid[fr ^ 1], d, densityOf(nid[fr ^ 1], nT[fr ^ 1]), 2);
             const open = oR || oL, dir = (oR ? 1 : 0) - (oL ? 1 : 0);
-            const up = KIND[nid[fd ^ 1]];
-            const head = up === K.LIQUID || up === K.POWDER;
             const onLiquid = !supported;
             const f = FLOW[id];
-            if (head || onLiquid) {
-              let want = f * PHYS.FLOW_SURFACE;
-              if (head && open) {
+            let want = f * PHYS.FLOW_SURFACE;
+            if (head && open) {
                 const gh = g * GRAV[id], ux = DX[fd ^ 1], uy = DY[fd ^ 1];
-                let h = 0.5;
+                let h = 0.5, gas = false;   // (on through a one-cell bubble: react.js)
                 for (let qx = x + ux, qy = y + uy; qx >= 0 && qy >= 0 && qx < nx && qy < ny && 2 * gh * h < f * f; qx += ux, qy += uy) {
-                  const e = ID[qy * nx + qx];
-                  if (KIND[e] !== K.LIQUID && KIND[e] !== K.POWDER) break;
-                  h += DENS[e] / d;
+                  const e = ID[qy * nx + qx], weight = KIND[e] === K.LIQUID || KIND[e] === K.POWDER;
+                  if (!weight && (gas || !isGasLike(e))) break;
+                  gas = !weight;
+                  if (weight) h += DENS[e] / d;
                 }
                 want = Math.min(PHYS.ORIFICE_CV * Math.sqrt(2 * gh * h), f);
-              }
+            }
+            if (head || onLiquid) {
               if (dir !== 0) { if (vx * dir < want) vx = dir * want; }
               else if (open && Math.abs(vx) < want * PHYS.FLOW_KICK) vx = randDir() * want;
             } else if (!movable(nid[fd ^ 1])) {
-              // pipe flow: the walls turn it along the pipe (react.js)
-              if (!movable(nid[fr]) && vx > 0) vx = 0;
-              if (!movable(nid[fr ^ 1]) && vx < 0) vx = 0;
+              // (under a solid lid it is pipe flow, below: no film)
             } else {
               const l = KIND[nid[fr]] === K.LIQUID, r = KIND[nid[fr ^ 1]] === K.LIQUID;
               vx = vx * PHYS.FILM_KEEP + (open ? ((l ? 1 : 0) - (r ? 1 : 0)) * f * PHYS.FILM_COHESION : 0);
               if (open && !l && !r && rnd() < PHYS.DROPLET_WANDER) vx = randDir() * f * PHYS.DROPLET_SPEED;
             }
+          }
+          // pipe flow between a solid floor and lid: the walls take the velocity into them (react.js)
+          if (KIND[id] === K.LIQUID && !movable(nid[fd ^ 1]) && supported) {
+            if (!movable(nid[fr]) && vx > 0) vx = 0;
+            if (!movable(nid[fr ^ 1]) && vx < 0) vx = 0;
+            if (!movable(nid[fd]) && vy < 0) vy = 0;
           }
           if (sw) { const t = vy; vy = vx; vx = fs * t; } else vy *= fs;   // (out of the frame)
           if (JITTER[id] > 0) { vx += (rnd() - 0.5) * JITTER[id]; vy += (rnd() - 0.5) * JITTER[id]; }

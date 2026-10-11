@@ -432,33 +432,40 @@ void main() {
     // needs no push: the move pass topples into it regardless.) A falling
     // liquid holds no pressure and nothing pushes it. Without gravity there is
     // no head and nothing to rest on.
+    int up = nid[fd ^ 1];
+    bool head = KIND[up] == K_LIQUID || KIND[up] == K_POWDER;   // weight above us
     if (KIND[id] == K_LIQUID && uGravity > 0.0 && held) {
       bool open = false;
       vec3 od = vec3(0.0);   // toward the open sides
       for (int i = 0; i < uFaces; i++)
         if ((i >> 1) != (fd >> 1) && canMove(id, nid[i], d, densityOf(nid[i], na[i].y), 2)) { open = true; od += vec3(DIRS[i]); }
-      int up = nid[fd ^ 1];
-      bool head = KIND[up] == K_LIQUID || KIND[up] == K_POWDER;   // weight above us
       bool onLiquid = !supported;                                  // surface of a pool
       float f = FLOW[id];
       float hv = length(v.xz);
-      if (head || onLiquid) {
-        // Keep flowing until the level evens out. Under a head it leaves at
-        // Torricelli's speed, ORIFICE_CV·√(2gh), h the weight of the column
-        // above in cells of this liquid, to this cell's centre (each parcel
-        // the same, so a hole pours one jet); viscosity caps it at FLOW.
-        float want = f * FLOW_SURFACE;
-        if (head && open) {
-          float gh = uGravity * GRAV[id], h = 0.5;
-          ivec3 q = p;
-          for (int k = 0; k < uHeadScan && 2.0 * gh * h < f * f; k++) {
-            q = edgeCell(q + DIRS[fd ^ 1]);
-            int e = inGrid(q) ? eid(fetchA(q)) : E_WALL;
-            if (KIND[e] != K_LIQUID && KIND[e] != K_POWDER) break;
-            h += DENS[e] / d;
-          }
-          want = min(ORIFICE_CV * sqrt(2.0 * gh * h), f);
+      // Under a head it leaves at Torricelli's speed, ORIFICE_CV·√(2gh), h the
+      // weight of the column above in cells of this liquid, to this cell's
+      // centre (each parcel the same, so a hole pours one jet); viscosity
+      // caps it at FLOW. A bubble in the column (a lone gas cell with liquid
+      // over it) weighs nothing but holds the pressure of what is over it,
+      // so the count goes on through it; two gas cells is the open air over
+      // the free surface, where it stops.
+      float want = f * FLOW_SURFACE;
+      if (head && open) {
+        float gh = uGravity * GRAV[id], h = 0.5;
+        ivec3 q = p;
+        bool gas = false;
+        for (int k = 0; k < uHeadScan && 2.0 * gh * h < f * f; k++) {
+          q = edgeCell(q + DIRS[fd ^ 1]);
+          int e = inGrid(q) ? eid(fetchA(q)) : E_WALL;
+          bool weight = KIND[e] == K_LIQUID || KIND[e] == K_POWDER;
+          if (!weight && (gas || !isGasLike(e))) break;
+          gas = !weight;
+          if (weight) h += DENS[e] / d;
         }
+        want = min(ORIFICE_CV * sqrt(2.0 * gh * h), f);
+      }
+      if (head || onLiquid) {
+        // keep flowing until the level evens out
         // The pressure drives it out of the opening, not along it: whatever
         // it was doing, it leaves at the speed the head gives. (Open both
         // ways, nothing picks a side: a random one, kept while it flows.)
@@ -471,16 +478,7 @@ void main() {
           v.xz = vec2(cos(ang), sin(ang)) * want;
         }
       } else if (!movable(up)) {
-        // Under a solid lid (a hole through a wall, a pipe) it is pipe flow:
-        // what drives it is the pressure behind, not a film's surface
-        // tension, and the walls turn it along the pipe (their normal force
-        // takes the velocity into them) at the speed it came in with (in a
-        // pipe of one section the speed is set by continuity, not by the
-        // angle it came in at), so it leaves a hole straight.
-        vec3 v0 = v;
-        for (int i = 0; i < uFaces; i++)
-          if ((i >> 1) != (fd >> 1) && !movable(nid[i])) { vec3 n = F * vec3(DIRS[i]); v -= n * max(dot(v, n), 0.0); }
-        if (dot(v.xz, v.xz) > 0.0) v.xz = normalize(v.xz) * length(v0.xz);
+        // (under a solid lid it is pipe flow, below: no film)
       } else {
         // a thin film on dry ground: cohesion pulls it toward neighbouring
         // liquid, so films gather into puddles with clean edges
@@ -495,6 +493,19 @@ void main() {
           v.xz = vec2(cos(ang), sin(ang)) * f * DROPLET_SPEED;
         }
       }
+    }
+    // Between a solid floor and a solid lid (a hole through a wall, a pipe)
+    // a liquid is in pipe flow: what drives it is the pressure behind, not a
+    // film's surface tension, and the walls turn it along the pipe (their
+    // normal force takes the velocity into them, the floor its fall) at the
+    // speed it came in with (in a pipe of one section the speed is set by
+    // continuity, not by the angle it came in at), so it leaves a hole
+    // straight, whichever way it came in.
+    if (KIND[id] == K_LIQUID && !movable(up) && supported) {
+      vec3 v0 = v;
+      for (int i = 0; i < uFaces; i++)
+        if (i != (fd ^ 1) && !movable(nid[i])) { vec3 n = F * vec3(DIRS[i]); v -= n * max(dot(v, n), 0.0); }
+      if (dot(v.xz, v.xz) > 0.0) v.xz = normalize(v.xz) * length(v0.xz);
     }
     v = v * F;   // (out of the frame)
     if (JITTER[id] > 0.0) v += (vec3(rnd(rs), rnd(rs), rnd(rs)) - 0.5) * JITTER[id];
