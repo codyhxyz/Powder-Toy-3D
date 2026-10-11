@@ -1,5 +1,5 @@
 import { E } from '../../elements.js';
-import { MAT, MAT_NAMES, MAT_COUNT, COL, SIDE_PORTS, WANG_OUT } from './kit.js';
+import { MAT, MAT_NAMES, MAT_COUNT, COL, SIDE_PORTS, WANG_OUT, compileKit } from './kit.js';
 import { SOLID_TILE } from './tiling.js';
 
 // The GPU sampler of a baked Wang tiling (bake.js): GLSL to include after the
@@ -15,7 +15,8 @@ import { SOLID_TILE } from './tiling.js';
 //   uWangOrigin  ivec3: the region's low corner in world cells
 //   uWangUnits   ivec3: the region in units (x, layers, z)
 // Its CPU twin is tiling.js makeSampler (bake.js wangCellJS): keep them in step.
-export function wangGLSL(kit) {
+export function wangGLSL(rawKit) {
+  const kit = rawKit.geom && rawKit.tiles[0]?.accepts ? rawKit : compileKit(rawKit);
   const G = kit.geom;
   const elemOf = (name) => {
     const id = E[kit.palette[name]];
