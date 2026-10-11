@@ -17,7 +17,11 @@ try {
   const page = await newTestPage(browser, { mode: 'manual', viewport: { width: 960, height: 600 } });
   const errors = [];
   page.on('pageerror', (e) => errors.push(String(e).slice(0, 300)));
-  page.on('console', (m) => { if (m.type() === 'error' || /GL_INVALID|WebGL:/.test(m.text())) errors.push(m.text().slice(0, 300)); });
+  // (a dev page without `npm run relay` fails to reach it: not an error of ours, as in activity-check)
+  page.on('console', (m) => {
+    const t = m.text();
+    if ((m.type() === 'error' && !t.startsWith('Failed to load resource')) || /GL_INVALID|WebGL:/.test(t)) errors.push(t.slice(0, 300));
+  });
   await page.goto(`http://localhost:${port}/?size=128&preset=empty&test=manual`);
   await ready(page);
 
