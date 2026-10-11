@@ -116,6 +116,21 @@ function delayedHarness(latency = 0.15) {
   h.runtime.dispose();
 }
 
+// Faster Tools (toolRate 2) casts about twice as often; mana regen stays on plain dt.
+{
+  const castsIn = async (rate) => {
+    const h = harness();
+    h.equip([leaf('heat', { mana: 0 })], { manaMax: 1000, manaRegen: 0 });
+    h.ctx.toolRate = rate;
+    const before = h.runtime.stats.casts;
+    for (let i = 0; i < 50; i++) await h.step({ fire: true, dt: 0.02 });
+    h.runtime.dispose();
+    return h.runtime.stats.casts - before;
+  };
+  const slow = await castsIn(1), fast = await castsIn(2);
+  assert(slow > 0 && fast >= slow * 1.8 && fast <= slow * 2.2, `toolRate 2 casts ${fast} vs ${slow}`);
+}
+
 // Async timer payload survives edits/deselect, freezes while paused, and fires once.
 {
   const h = harness();

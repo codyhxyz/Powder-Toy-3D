@@ -6,6 +6,7 @@ import { E, ELEMENTS, K } from '../../elements.js';
 import { Load, sharedTransfer, cellsNear, outsideBody, toStepVelocity, TRANSFER_SLOTS } from '../tools/transfer.js';
 import { areaTargets, segmentTarget, PLAYER } from '../targets.js';
 import { povEvents } from '../events.js';
+import { toolDt } from '../tools/action.js';
 import { BODY_WIDTH, BODY_HEIGHT } from '../constants.js';
 
 export const WAND_LIMITS = Object.freeze({
@@ -360,9 +361,12 @@ export function createWandRuntime(env) {
     const dt = ctx.stepsPerFrame > 0 && !ctx.paused ? clamp(finite(ctx.dt), 0, WAND_LIMITS.dt) : 0;
     if (!sim || !dt) { draw(0); return; }
     time += dt; nodesLeft = WAND_LIMITS.nodes;
+    // Cast delays and recharge count down on the tool clock: Faster Tools speeds
+    // wands like Noita's Faster Wands (pov/perks.js). Mana regen stays on plain dt.
+    const toolStep = toolDt({ dt, toolRate: ctx.toolRate });
     for (const state of inventories.values()) {
       state.mana = Math.min(state.manaMax, state.mana + state.manaRegen * dt);
-      state.cooldown = Math.max(-WAND_LIMITS.dt, state.cooldown - dt);
+      state.cooldown = Math.max(-WAND_LIMITS.dt, state.cooldown - toolStep);
     }
     while (answers.length && nodesLeft > 0) {
       const answer = answers.shift(); nodesLeft--; frameNodes++;
