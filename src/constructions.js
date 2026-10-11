@@ -343,6 +343,9 @@ export class Constructions {
     u.uSize.value.set(s.w, s.h, s.d);
     u.uFoot.value = Math.min(s.foot, MAX_FOOT);
     u.uSeed.value = newSeed();
+    // the stamp's box, its footings below it included (shaders/stamp.js)
+    const lo = [Math.floor(origin.x), Math.floor(origin.y) - u.uFoot.value, Math.floor(origin.z)];
+    sim.touch(lo, [lo[0] + s.w, lo[1] + u.uFoot.value + s.h, lo[2] + s.d]);
     sim.pass(this.mat);
     tex.dispose();
   }

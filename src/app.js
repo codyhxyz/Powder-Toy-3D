@@ -1280,6 +1280,7 @@ function applyProfiler() {
 
 // ---------------------------------------------------------------- loop
 const clock = new THREE.Timer();
+let animTime = 0;   // s the simulation has run: the scene's own animations (perk orbs, arena banners)
 // The fps readout is the rate frames are drawn while drawing: a paused, still
 // scene draws nothing (render on demand) and reads as idle, not as a low rate.
 let frames = 0, fpsTime = 0, fps = 60, idleTime = 0, lastDrawAt = null;
@@ -1418,6 +1419,7 @@ function tick(now, renderOnly = false) {
     for (let i = 0; i < settings.steps; i++) sim.step();
     lightning.update(sim);   // storms: charged cloud strikes by itself (src/lightning.js)
     if (DAY.running) day.clock += settings.steps;
+    animTime += dt;
     stepOnce = false;
   } else if (!renderOnly && mp.isGuest && DAY.running) day.clock += settings.steps;   // guests don't step: keep the day going at their own rate
   updateSun();
@@ -1517,8 +1519,10 @@ function tick(now, renderOnly = false) {
   // Picking is input work, not presentation: a preview must keep it responsive.
   if (!renderOnly && (runView || pov?.active || testMode === 'preview')) requestPick();
   if (spawners) { spawners.setGhosts(!pov?.active); spawners.update(); }   // the crosshair cell stays fresh for the tools
-  perkOrbs?.update(clock.getElapsed());
-  arenaMarkers?.update(clock.getElapsed());
+  // they hold still with the world, like the birds: on wall-clock time they moved every
+  // frame, so the view key (sceneKey) never settled and a paused scene redrew at full rate
+  perkOrbs?.update(animTime);
+  arenaMarkers?.update(animTime);
   if (renderOnly) { prof.endFrame(0); return; }
 
   const povReadout = pov?.active ? pov.readout : null;   // the held tool's (the scanner's, the trowel's)
