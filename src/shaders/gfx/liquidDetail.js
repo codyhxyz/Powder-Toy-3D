@@ -338,7 +338,8 @@ const FOAM_V_ONSET = 1.0;         // m/s
 // Pours: a wake lasts TRAIL_JOIN_STEPS steps, and is drawn where a parcel is
 // coming up behind it within JOIN_REACH cells (pours, below). The parcels of
 // tools/jet-check.mjs's pour come 2-4 cells apart at ~0.8 cells/step, so the
-// next one reaches a wake within ~5 steps and 4 cells.
+// next one reaches a wake within ~5 steps and 4 cells. (Twice that joined
+// little more of the pour and twice as much spray: tools/pour-field-probe.mjs.)
 export const TRAIL_JOIN_STEPS = 6;
 export const JOIN_REACH = 4;
 const JOIN_COS = 0.9;   // cos 25°: the most a pour's next parcel turns from the last one's way
@@ -352,10 +353,12 @@ const FOAM_V_FULL = 4.0;          // m/s
 // block automaton moves a stream a cell a step only every other cell), so
 // drawn as they are a pour is a dotted line of glass beads. So the field also
 // keeps the wake a parcel off the ground leaves in the air it just left, for
-// TRAIL_JOIN_STEPS steps: (way it went, as x, z, w; −record in y, 1 fading to
-// 0). The field passes draw a wake as water only where a parcel is coming up
-// behind it, along the way its maker went, within JOIN_REACH cells: between
-// the parcels of a pour, which then read as one rope of water. A parcel of a
+// TRAIL_JOIN_STEPS steps: (way it went, as x, z, w, a unit vector if the
+// parcel was a pour's and half that if not; −record in y, 1 fading to 0). The
+// field passes draw a wake as water only where a pour's parcel left it and
+// another is coming up behind it, along the way it went, within JOIN_REACH
+// cells: between the parcels of a pour, which then read as one rope of water
+// (three parcels on one path at least, which spray seldom makes). A parcel of a
 // pour (y is 2) is liquid off the ground, touching no other liquid (a blob's
 // cells touch), that has just moved into a wake (or beside one: the path
 // wanders a cell) going the way that wake's maker went (within JOIN_COS: on
@@ -397,7 +400,7 @@ vec4 wakeAt(ivec3 p, ivec3 q, int id) {
   if (f.y > 0.5) {
     vec3 v = fetchB(p).xyz;   // the parcel's velocity before it left
     if (q == p || f.w > 0.5 || dot(v, v) == 0.0) return vec4(0.0);   // (it was on the ground)
-    v = normalize(v);
+    v = normalize(v) * (f.y > 1.5 ? 1.0 : 0.5);
     return vec4(v.x, -1.0, v.y, v.z);
   }
   float rec = -f.y - TRAIL_FADE;
@@ -405,7 +408,7 @@ vec4 wakeAt(ivec3 p, ivec3 q, int id) {
 }
 #define JOIN_COS ${g(JOIN_COS)}
 // a wake at c whose maker went the way dir does
-bool wake(ivec3 c, vec3 dir) { if (!inGrid(c)) return false; vec4 f = aerPrev(c); return f.y < 0.0 && dot(f.xzw, dir) > JOIN_COS; }
+bool wake(ivec3 c, vec3 dir) { if (!inGrid(c)) return false; vec4 f = aerPrev(c); return f.y < 0.0 && dot(normalize(f.xzw), dir) > JOIN_COS; }
 bool wet(ivec3 c) { return inGrid(c) && foams(eid(fetchA(c))); }
 // Pilch & Erdman's total breakup time, in units of t* (We > WE_ONSET)
 float breakupT(float we) {

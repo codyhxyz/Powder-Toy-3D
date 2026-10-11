@@ -54,6 +54,7 @@ try {
       const f = at(x, y, z);
       if (f[1] > 1.5) return 'parcel';
       if (f[1] >= 0) return null;
+      if (f[0] * f[0] + f[2] * f[2] + f[3] * f[3] < 0.5) return 'lone';   // (not a pour parcel's wake)
       for (let k = 1; k <= JOIN_REACH; k++) {
         const bb = at(x - Math.round(f[0] * k), y - Math.round(f[2] * k), z - Math.round(f[3] * k));
         if (bb[1] > 1.5) return 'wake';

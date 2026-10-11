@@ -52,13 +52,13 @@ const jetGLSL = /* glsl */ `
 uniform sampler2D tAer;
 uniform bool uAer;   // the aeration field runs (the Whitewater switch)
 vec4 aerAt(ivec3 c) { return inGrid(c) ? texelFetch(tAer, atlas(c), 0) : vec4(0.0); }
-// a pour's parcel, or a wake with one coming up behind it (along the way its
-// maker went)
+// a pour's parcel, or a wake one left with another coming up behind it
+// (along the way it went)
 bool jetAt(ivec3 p) {
   if (!uAer) return false;
   vec4 f = aerAt(p);
   if (f.y > 1.5) return true;
-  if (f.y >= 0.0) return false;
+  if (f.y >= 0.0 || dot(f.xzw, f.xzw) < 0.5) return false;   // (a wake a pour's parcel left: its way is a unit vector)
   for (int k = 1; k <= JOIN_REACH; k++) {
     vec4 b = aerAt(p - ivec3(round(f.xzw * float(k))));
     if (b.y > 1.5) return true;   // a pour's parcel
