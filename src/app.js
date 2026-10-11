@@ -2411,7 +2411,7 @@ try {
   if (bootMap && launch.mode && launch.mode !== 'sandbox' && launch.mode !== 'noita') pov.game.prepare();   // a match was picked: the bots' module loads during the first frames
   mark('app');
   window.__app = {
-    get sim() { return sim; }, get volume() { return volume; }, get scale() { return scale; }, get signs() { return signs; }, get builds() { return builds; },
+    get sim() { return sim; }, get volume() { return volume; }, get shadowMap() { return shadowTarget; }, get scale() { return scale; }, get signs() { return signs; }, get builds() { return builds; },
     get pov() { return pov; },
     get descent() { return descent; },   // Descent's level switch (pov/descent/switch.js): level, index, inside, busy
     get spawners() { return spawners; },

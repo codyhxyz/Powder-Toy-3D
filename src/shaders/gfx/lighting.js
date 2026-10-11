@@ -21,6 +21,11 @@ const vogel = (n) => Array.from({ length: n }, (_, i) => {
 export const SH_Y0 = 0.282095;          // Y00
 export const SH_Y1 = 0.488603;          // Y1m = SH_Y1 * (x, y, z)
 export const SKYVIS_OPEN_DC = 0.5;      // SH_Y0 * c0.a of the open sky: the sphere's upper half
+// The sun shadow map's layout and its test inside volumes (sunBasis, sunMapShadow
+// below), for CPU readers of the map too (pov/viewmodel.js: the sun on the hands).
+export const SHADOW_TINT_ID_SCALE = 256;   // w = tint element id * this + optical depth (see below)
+export const SHADOW_PAD = 1;               // voxels the map's disc reaches past the box's bounding sphere
+export const VOLUME_SHADOW_BIAS = 0.6;     // depth bias (voxels) for points inside volumes (no normal)
 
 export const lightingGLSL = /* glsl */ `
 uniform vec3 uSun;
@@ -95,15 +100,15 @@ uniform int uShadowRes;
 // let through). Depth past SCALE - 1 lets no light through anyway (e^-255); it
 // only flattens the proportional share inside a medium that thick (~270 cells
 // of oil along the sun, 10,000 of water).
-const float SHADOW_TINT_ID_SCALE = 256.0;
-const float SHADOW_PAD = 1.0;              // voxels the map's disc reaches past the box's bounding sphere
+const float SHADOW_TINT_ID_SCALE = ${SHADOW_TINT_ID_SCALE.toFixed(1)};
+const float SHADOW_PAD = ${SHADOW_PAD.toFixed(1)};
 const float SHADOW_NORMAL_OFFSET = 0.002;  // voxels a surface lookup moves off the surface along its normal
 // Hard-map depth bias (voxels), see sunShadow: at least SHADOW_BIAS_MIN, else the
 // PCF slope term (n.sun floored at SHADOW_BIAS_NS_MIN) plus SHADOW_BIAS_PAD.
 const float SHADOW_BIAS_MIN = 0.8;
 const float SHADOW_BIAS_NS_MIN = 0.25;
 const float SHADOW_BIAS_PAD = 0.1;
-const float VOLUME_SHADOW_BIAS = 0.6;      // depth bias (voxels) for points inside volumes (no normal)
+const float VOLUME_SHADOW_BIAS = ${VOLUME_SHADOW_BIAS.toFixed(1)};
 // Exact sun rays: smooth opaque surfaces block them where their field is
 // inside (by SUN_RAY_ISO_MARGIN: trilinear creases wobble about the level),
 // except within SUN_RAY_SMOOTH_SKIP voxels of the start, which sits on one;
