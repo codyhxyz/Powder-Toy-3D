@@ -120,6 +120,7 @@ export const WGSL_CHECK = [
   {
     name: 'blit',
     kind: 'render',
+    grids: false,
     code: () => blitWGSL(),
     layouts: () => [BLIT_LAYOUT],
     fragment: { targets: [{ format: 'bgra8unorm' }] },

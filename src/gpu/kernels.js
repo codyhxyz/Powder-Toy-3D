@@ -23,6 +23,8 @@ export const PIPELINE_BUDGET_MS = 30000;
 export const PIPELINE_CONCURRENCY = 2;
 /** The spec's maxComputeWorkgroupsPerDimension: fold() keeps every dimension within it. */
 export const MAX_WORKGROUPS = 65535;
+// test mode keeps at most this many recent indirect dispatches in gpu.indirectLog
+const INDIRECT_LOG_MAX = 8192;
 
 /**
  * A 1-D count of workgroups as a dispatch size every device accepts:
@@ -318,7 +320,11 @@ export class Kernel extends Pipe {
       // Chrome validates each indirect dispatch with a dispatch of its own (B3)
       stats.dispatches += 2;
       stats.indirectDispatches++;
-      if (this.gpu.indirectLog) this.gpu.indirectLog.push({ kernel: this.name, buffer: size.indirect, offset });
+      const log = this.gpu.indirectLog;
+      if (log) {
+        log.push({ kernel: this.name, buffer: size.indirect, offset });
+        if (log.length > INDIRECT_LOG_MAX) log.splice(0, log.length - INDIRECT_LOG_MAX / 2);
+      }
     } else {
       throw new Error(`${this.name}: dispatch size is [x, y, z] or { indirect, offset }`);
     }

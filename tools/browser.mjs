@@ -9,6 +9,7 @@
 // throw on a fallback (software) adapter, so a Mac run can't pass on
 // SwiftShader by accident.
 import { chromium } from 'playwright';
+import { createRequire } from 'node:module';
 
 const browsers = new Set();
 const MODES = ['manual', 'preview', 'ui', 'visual'];
@@ -74,18 +75,41 @@ const handlers = {
   unhandledRejection: error => stop(1, error),
 };
 
+// The browser's own stderr (the GPU process's log, where a lost device says
+// why) reaches Playwright's `pw:browser` debug channel. browserLog turns that
+// channel on and hands its lines to a callback instead of printing them.
+// Returns false when this Playwright doesn't expose its debug module.
+function hookBrowserLog(fn) {
+  let debug;
+  try { debug = createRequire(import.meta.url)('playwright-core/lib/utilsBundle').debug; } catch { return false; }
+  if (typeof debug?.enable !== 'function') return false;
+  const was = debug.disable();
+  debug.enable([was, 'pw:browser'].filter(Boolean).join(','));
+  const log = debug.log;
+  debug.log = (...parts) => {
+    const line = parts.join(' ').replace(/\u001b\[[0-9;]*m/g, '');
+    if (/pw:browser/.test(line)) fn(line.replace(/^.*?pw:browser\s*/, ''));
+    else if (log) log(...parts);
+    else process.stderr.write(`${parts.join(' ')}\n`);
+  };
+  return true;
+}
+
 /**
  * Launches headless Chromium with GPU_ARGS plus `options.args`, closed on
  * uncaught failures and signals and after `lifetimeMs` (TPT_TEST_TIMEOUT_MS).
- * @param {{ lifetimeMs?: number, args?: string[] } & object} [options] Playwright launch options
+ * `browserLog(line)` receives the browser's stderr, GPU process included
+ * (adds --enable-logging=stderr).
+ * @param {{ lifetimeMs?: number, args?: string[], browserLog?: (line: string) => void } & object} [options] Playwright launch options
  * @returns {Promise<import('playwright').Browser>}
  */
 export async function launchBrowser(options = {}) {
-  const { lifetimeMs = Number(process.env.TPT_TEST_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS), args = [], ...launch } = options;
+  const { lifetimeMs = Number(process.env.TPT_TEST_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS), args = [], browserLog, ...launch } = options;
   if (!Number.isFinite(lifetimeMs) || lifetimeMs <= 0) throw new RangeError('Test lifetime must be positive milliseconds');
+  const logArgs = browserLog && hookBrowserLog(browserLog) ? ['--enable-logging=stderr', '--v=0'] : [];
   const browser = await chromium.launch({
     headless: true,
-    args: mergeArgs([...GPU_ARGS, ...args]),
+    args: mergeArgs([...GPU_ARGS, ...logArgs, ...args]),
     ...launch,
   });
   if (!browsers.size) for (const [event, fn] of Object.entries(handlers)) process.on(event, fn);
