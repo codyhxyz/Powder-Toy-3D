@@ -62,7 +62,56 @@ scale (Attack 0.6 when an enemy is in sight, Hunt 0.45):
 | roam | Slayer, and Infection's survivors: the open ground, a new stretch every 30 s | 0.3 |
 
 Loadouts: a carrier and the infected fight with the axe only (`agent.weapons`, Halo's flag melee and zombies);
-the infected run 1.25× (`body.speedScale`, on top of a class's).
+the infected run 1.25× (`body.speedScale`, on top of a class's). In a Halo-style match a bot fights with its
+`body.carry` (below): the SMG in bursts (Halo's AI fires the assault rifle so), the pistol, and a power weapon it
+picked up (the sniper at range, rockets at the feet from past their own blast, the laser held through its 3 s
+charge, its red sighting beam the tell). The new weapon entries (`SMG`, `SNIPER`, `ROCKET`, `LASER`) are only used
+when a game's limits name them, so the sandbox's NPCs fight as before; with limits a bot doesn't dig, build or
+breach with a tool it doesn't carry. With nothing in sight, no power weapon and a ready pad within 48 cells, a bot
+goes for it (want 0.58: over going to a zone, under fighting and holding one); a pad it finds no way to is left
+alone for 60 s; it takes a power weapon it walks onto.
+
+## Halo rules (2026-10-11): the equal start and the weapons (`src/game/arsenal.js`)
+
+Slayer, CTF, King of the Hill and Infection play by Halo's rules (`rules.js` `MODES[mode].style` `'halo'`;
+`docs/halo-contract.md`); Siege plays by TF2's (classes) and none of this applies to it or to the sandbox.
+
+- **The equal start**, on every `game:spawn` (the match's start, every respawn, a team switch), bots and the player
+  alike: one Energy Shield stack (Halo 3's 70 shield over 45 health, full at once), the SMG and the pistol
+  (`body.carry`; Halo: Reach's and CE's assault rifle and magnum), the SMG in hand, and two frag grenades
+  (`body.grenades`, Halo 3's; thrown on `G` by the combat module). Nothing earned before (a shrine's perks, a
+  class's) carries over. The infected carry the axe and pickaxe, no grenades.
+- **Two weapons**: the player's hands are restricted to `body.carry` (`toolbelt.restrict`): `1` and `2` and the wheel
+  swap them; no sandbox tools, no wands, and `Q` does nothing. A flag carrier, the player included, has the axe only
+  while carrying (Halo's flag melee); the carry is back when the flag is gone. `game:stop` gives the hotbar back.
+- **Halo's shots to kill** a full-shielded body, whatever the gun's sandbox damage (`arsenal.damageShare`, on a
+  round's or the laser's hit only): the pistol 5 (Reach's magnum), the SMG 16 (Halo 3's assault rifle, about),
+  the sniper rifle 2 (Halo 3, body shots), the laser 1. Rockets do their damage by blast (the sim's pressure),
+  which this doesn't scale.
+- **Power weapons on pads** (`layout.weapons`): each floats and turns over a glowing amber pad. Look at it and
+  press `E`: "Rocket launcher · 4 rockets · E Pick up (drops SMG)". It replaces the gun in hand (Halo's two-weapon
+  limit), which drops and lies there for 30 s for anyone to take; one you already carry gives its ammo. Shots are
+  counted (each `gun:fire`) and shown after the weapon's name in the held-tool corner; the last one spent, it's gone
+  and the other gun is in hand. A body that dies drops its power weapon where it fell, with the shots left.
+
+| Weapon | Shots | Pad respawn | Source |
+|---|---|---|---|
+| Rocket launcher | 2 + 2 | 120 s | Halo 3's map spawn: a magazine and one spare |
+| Sniper rifle | 4 + 4 | 120 s | Halopedia: a 4-round magazine; one spare |
+| Laser cannon | 5 | 180 s | Halopedia: the Spartan Laser's battery, 20% a shot; the power-up tier's 3:00 |
+
+  A pad's timer starts when its weapon is picked up (Halo 3's rule), and it brings a new one only once the last is
+  out of play (spent, or a drop gone). The timers are Halo 3 matchmaking's power-weapon tier from community timer
+  lists (Bungie.net's MCC Halo 3 list: Overshield and Camo 3:00); the per-map numbers weren't confirmed.
+- **Where**: Dam Valley: the rocket launcher in the spillway basin's middle (the contested low way across), a sniper
+  rifle per side on the ridge over its own forest (a jetpack's climb; Valhalla gives each team a sniper), the laser
+  in the pump room on the shrine's floor in front of its altars (Valhalla's sits between the bases). The lab: the
+  rocket launcher in the open middle by the first hill.
+
+```js
+game.arsenal;   // { on, pads: [{ key, ready, at, takenAt }], drops: [{ key, shots, at }], holds: { id: { KEY: shots } } }
+```
+Event: `game:weapon` `{ id, key, action: take | drop | empty | spawn, pad }`.
 
 ## Modes
 
@@ -106,7 +155,8 @@ Events on `povEvents`: `game:start`, `game:end` `{ winner, score, why }`, `game:
 { name, size: [nx, ny, nz],
   spawns: { red: [[x, y, z], ...], blue: [...] }, flags: { red: [x, y, z], blue: [x, y, z] },
   hills: [[x, y, z, r], ...], siege: { attackers: 'red', core: [x, y, z, r] },
-  shrines: [...], vehicles: [...] }          // shrines and vehicles: other modules'
+  shrines: [...], vehicles: [...],           // shrines and vehicles: other modules'
+  weapons: [{ key, at: [x, y, z], respawnS? }] }   // power weapons' pads (Halo-style matches: arsenal.js)
 ```
 
 Without one, the loaded arena's (Dam Valley: `arenas/damValley.js` `DAM_VALLEY_LAYOUT`, `app.getArena()`); without
@@ -135,8 +185,8 @@ a frame for a moment at a Dam Valley start, while every bot tries its bearings t
 
 ## Not yet
 
-- The player carrying a flag keeps the whole hotbar (bots melee only); an infected player too. Classes could give
-  the infected a loadout (`applyClass`).
+- A bot with a power weapon doesn't save it for a fight worth it, and bots can't reach the ridges' snipers (no
+  jetpack in the nav): a bot seeking one gives up and leaves that pad alone for 60 s.
 - Siege swaps who attacks, not where the core is: the core stays by the first defenders' base and the second
   attackers spawn on the first attackers' side, as in TF2.
 - Siege is hard on the attackers: with 4v4 on the lab the defenders nearly always stand on the core, so holds are a
