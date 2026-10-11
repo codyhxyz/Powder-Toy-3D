@@ -4,11 +4,12 @@ import './game.css';
 
 // The team game's screen, Halo's layout: the score, the clock and the
 // objective top-centre (your team first and filled in, the other outlined, a
-// bar under each toward the score to win, as Halo Infinite's); the killfeed
+// bar under each filling toward the score to win: Halo 3's score meter, which
+// sits bottom-right there; docs/halo-contract.md puts ours top-centre); the killfeed
 // and announcements top-right; Tab holds up the scoreboard; M opens the match
 // menu (mode, side, Start/End: kept out of the main drawer). At the end, Halo
-// 3's post-game carnage report (Victory / Defeat, every player's kills, deaths
-// and score) counting down to the next match, with Leave. While you're dead,
+// 3's post-game carnage report (every player's kills, deaths and score) under
+// Halo Infinite's Victory / Defeat banner, counting down to the next match, with Leave. While you're dead,
 // who killed you with what and the respawn count; while the mouse isn't
 // captured, "Click to play"; on the first spawn of a session, a card of the
 // match's keys. update() only writes the DOM when a shown string changes.
@@ -212,12 +213,12 @@ export function createGameHud({ onStart, onEnd, onSide, onClose, onLeave }) {
         set(modeName, 'mode', MODES[st.mode].name);
         const [a, b] = ordered(st.teams, st.myTeam);
         for (const [box, team, k] of [[sideA, a, 'a'], [sideB, b, 'b']]) {
-          box.el.className = `game-team ${team}${team === st.myTeam ? ' mine' : ''}`;
+          const cls = `game-team ${team}${team === st.myTeam ? ' mine' : ''}${st.scoreToWin ? ' barred' : ''}`;
+          if (shown[`${k}c`] !== cls) { shown[`${k}c`] = cls; box.el.className = cls; }
           const score = Math.floor(st.teamScore[team] ?? 0);
           set(box.num, k, String(score));
           const w = st.scoreToWin ? `${Math.round(Math.min(1, Math.max(0, score / st.scoreToWin)) * 100)}%` : '0%';
           if (shown[`${k}w`] !== w) { shown[`${k}w`] = w; box.fill.style.width = w; }
-          toggle(box.el, 'barred', !!st.scoreToWin);
         }
         set(timer, 'timer', clock(st.timeLeft));
         set(objective, 'obj', st.objective ?? '');
@@ -233,7 +234,7 @@ export function createGameHud({ onStart, onEnd, onSide, onClose, onLeave }) {
         if (shown.who !== who) {
           shown.who = who;
           deathWho.replaceChildren(...(d?.killer
-            ? ['Killed by ', h('b', { text: d.killer, style: { color: TEAM_CSS[d.killerTeam] ?? '' } }), d.weapon ? h('span', { text: ` · ${d.weapon}` }) : null]
+            ? ['Killed by ', h('b', { text: d.killer, style: { color: TEAM_CSS[d.killerTeam] ?? '' } }), ...(d.weapon ? [h('span', { text: ` · ${d.weapon}` })] : [])]
             : [who]));
         }
         set(deathCount, 'respawn', String(Math.max(1, Math.ceil(st.respawnIn))));

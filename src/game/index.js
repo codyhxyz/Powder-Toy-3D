@@ -330,7 +330,7 @@ export function createGame(shell) {
     const p = me();
     const result = { mode, winner: winner ?? null, score: { ...teamScore }, why, roster: board() };
     if (winner !== undefined) {
-      // Halo's words: Victory or Defeat for a side you played on, else who won
+      // Halo Infinite's banner: Victory or Defeat for a side you played on, else who won
       const wins = winner ? `${label(winner)} ${winner === R.INFECTED ? 'win' : 'wins'}` : 'Draw';   // (the Infected win)
       const outcome = !p?.team ? null : !winner ? 'draw' : winner === p.team ? 'win' : 'loss';
       const title = { win: 'Victory', loss: 'Defeat', draw: 'Draw' }[outcome] ?? wins;

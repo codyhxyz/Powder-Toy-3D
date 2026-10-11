@@ -613,6 +613,9 @@ async function startMode(mode, { fresh = false } = {}) {
   if (!game) return false;
   if (mode === 'sandbox') { if (game.running) game.end(); return false; }
   game.prepare();
+  // the start menu's Play over a game is a click: the mouse is taken now, while it counts as a
+  // gesture (a drop-in from the god view asks for it itself)
+  if (pov.active && !pov.locked) try { renderer.domElement.requestPointerLock?.()?.catch?.(() => {}); } catch { /* not allowed here */ }
   // Halo puts you in your eyes at a spawn: no swoop down from the god view, no sandbox key hint
   await pov.enter({ swoop: 0, hint: false });
   mark('entered');

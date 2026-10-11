@@ -135,7 +135,7 @@ body.game-live .pov-respawn, body.game-live .pov-cause { display: none; }
 .game-col.won .game-col-head b::before { content: '★ '; }
 .game-report-foot { display: flex; align-items: center; justify-content: center; gap: 2px; margin-top: 14px; font: 500 13px var(--ui); color: var(--muted); }
 .game-report-foot b { color: var(--text); font-variant-numeric: tabular-nums; }
-.game-report-foot.nonext .game-report-next, .game-report-foot.nonext .game-dot:first-of-type { display: none; }
+.game-report-foot.nonext .game-report-next, .game-report-foot.nonext .game-report-next + .game-dot { display: none; }
 .game-leave {
   margin-left: 14px; padding: 5px 14px; border-radius: var(--r-ctl); cursor: pointer;
   font: 600 13px var(--ui); color: var(--text); background: var(--raise-hi); border: 1px solid var(--line-hi);

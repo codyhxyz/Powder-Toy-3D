@@ -30,7 +30,7 @@ place). With no match running a small "M Match" chip sits top-centre. The main d
 
 ## The match loop
 
-A match that ends by its rules shows **Halo 3's post-game carnage report** top-centre: **Victory** / **Defeat** (or
+A match that ends by its rules shows **Halo 3's post-game carnage report** top-centre under Halo Infinite's **Victory** / **Defeat** banner (or
 who won, watching), the result line, both teams' tables (each player's score, kills, deaths, you highlighted, the
 winner starred; a medals column once the roster has `medals`). It counts down `END_SCREEN_S` (10 s) and **the next
 match starts by itself** on the same map with the same options (fresh terrain, sides auto-balanced again): Halo 3
@@ -114,7 +114,7 @@ Each new match (and Siege's halftime) reloads the current preset (`app.loadPrese
 so the terrain is fresh. The lab's own enemy spawner sleeps during a match.
 
 HUD (`src/game/hud.js`, `game.css`): top-centre the mode, both scores (yours first and filled in your colour, the
-other outlined; a bar under each toward the score to win, as Halo Infinite's), the clock and the objective (flags
+other outlined; a bar under each filling toward the score to win, Halo 3's score meter), the clock and the objective (flags
 home / taken / dropped; the hill's owner, when it moves and the leader's progress; survivors and infected; the half,
 the attackers and the core count); the killfeed (with the killer's weapon) and announcements top-right; the
 scoreboard on Tab (your team first, your row highlighted); while you're dead, who killed you with what and
