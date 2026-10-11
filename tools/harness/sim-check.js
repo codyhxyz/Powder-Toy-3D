@@ -844,15 +844,15 @@ const MODE_STAGES = {
       // through the centre and out again, and keeps sloshing round it, |v| ≈
       // 0.5, instead of settling: its mean distance from the centre stays
       // near where it started, its centre of mass doesn't)
-      const com = (w) => (w ? Math.hypot(w.x + 0.5 - c, w.y + 0.5 - c, w.z + 0.5 - c) : n);
+      const fromCentre = (w) => (w ? Math.hypot(w.x + 0.5 - c, w.y + 0.5 - c, w.z + 0.5 - c) : n);
       const wr = [];
-      for (let k = 0; k < 22; k++) { go(10); wr.push(com((await tally(sim)).WATER)); }
+      for (let k = 0; k < 22; k++) { go(10); wr.push(fromCentre((await tally(sim)).WATER)); }
       t = await tally(sim);
       check(out, `radial: sand gathers at the centre (mean r ${r0.SAND.r.toFixed(1)} → ${t.SAND.r.toFixed(1)})`, t.SAND.r < 0.5 * r0.SAND.r);
       check(out, `radial: no cell made or lost (sand ${count(r0, 'SAND')} → ${count(t, 'SAND')}, water ${count(r0, 'WATER')} → ${count(t, 'WATER')})`,
         count(t, 'SAND') === 8 * 27 && count(t, 'WATER') === count(r0, 'WATER'));
-      check(out, `radial: water falls in too (its centre of mass ${com(r0.WATER).toFixed(1)} from the centre → ${wr.map((r) => r.toFixed(1)).join(', ')})`,
-        Math.min(...wr) < 0.4 * com(r0.WATER));
+      check(out, `radial: water falls in too (its centre of mass ${fromCentre(r0.WATER).toFixed(1)} from the centre → ${wr.map((r) => r.toFixed(1)).join(', ')})`,
+        Math.min(...wr) < 0.4 * fromCentre(r0.WATER));
       out.ms.step = (performance.now() - t0) / steps;
       check(out, 'no out-of-grid access', (await sim.readDebug()) === 0);
     } finally { sim.dispose(); }
