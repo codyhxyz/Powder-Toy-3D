@@ -99,6 +99,19 @@ const tintGlow = (hex, lum) => {
   return c.map((v) => (v / y) * lum);
 };
 export const LAMP_GLOW = tintGlow(LAMP_TINT, LAMP_LUM);
+// A wall torch (elements.js WALL_TORCH): a pitch flame's ~1,900 K orange (the
+// hand torch's colour, pov/tools/torch.tool.js), its glow lighting the gallery
+// round it through the glow volume. Dim on purpose: Noita's torches light a
+// small warm pool and leave the rest of the cave dark.
+const TORCH_TINT = '#ff8a3c';
+const TORCH_LUM = 0.15;
+const TORCH_GLOW = tintGlow(TORCH_TINT, TORCH_LUM);
+// Embers (elements.js EMBER): coal glowing at ~800 °C, a dull red-orange
+// (Charity's blackbody table, ≈ #ff6a28). A clump of them lights the Coal Pits'
+// roof and seams round it warmly; a third of a torch's, so they read as embers.
+const EMBER_TINT = '#ff6a28';
+const EMBER_LUM = 0.04;
+const EMBER_GLOW = tintGlow(EMBER_TINT, EMBER_LUM);
 
 // Smooth-surface channels. sigma = blur radius in cells (how much the
 // blockiness is smoothed away), ema = per-frame blend toward the new state
@@ -237,6 +250,8 @@ const LOOKS = {
   // dust is pale, as any crushed coloured crystal is (scattering at the grain
   // faces swamps the absorption), and keeps the glow (powdered phosphors do).
   CRYSTAL: { rough: 0.04, ior: 1.434, alb: '#4a3478', sss: 0.3, emit: FLUORITE_GLOW },
+  WALL_TORCH: { rough: 0.9, alb: '#ffb25e', emit: TORCH_GLOW },
+  EMBER: { rough: 0.8, alb: '#3a1c12', glint: 0.3, emit: EMBER_GLOW },
   CRYSTAL_DUST: { rough: 0.6, ior: 1.434, alb: '#b7a2d2', sss: 0.3, glint: 0.4, emit: FLUORITE_GLOW },
   // Electronics (elements.js). A battery's printed steel can; silicon is
   // grey and mirror-like (n ≈ 3.9 in the visible: F0 ≈ 0.35), tinted as TPT

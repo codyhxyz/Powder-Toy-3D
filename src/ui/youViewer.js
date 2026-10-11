@@ -2,14 +2,16 @@
 // body (figureReal.js's model, public/models/character/body.glb) in his wizard
 // hat (garb.js) and purple boxers, breathing in his idle clip on a small
 // renderer of its own. Skyrim's loading screen: the model turns slowly by
-// itself, and a click and drag turns it left or right. tools/you-portrait.mjs
-// renders one frame of the same scene into public/you.webp, the still shown
-// until this one is up.
+// itself, and a click and drag turns it left or right. The menu runs it in a
+// worker on an OffscreenCanvas (ui/youWorker.js), so he keeps breathing and
+// turning while the boot holds the page (the map build, the shaders).
+// tools/you-portrait.mjs renders one frame of it into public/you.webp, the
+// still shown until this one is up.
 //
 // It lights him like a character-select portrait (TF2's class select, Halo 3's
 // player model in the lobby): a warm key from the front, a cool rim from behind
 // to cut him out of a dark screen, and a soft room for the skin's sheen.
-//   createYou({ width, height, pixelRatio, yaw, time }) → { canvas, yaw, frame(dt), dispose() }
+//   createYou({ canvas, width, height, pixelRatio, yaw, time }) → { canvas, yaw, frame(dt), dispose() }
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
@@ -32,9 +34,14 @@ const FILL = 1.6;                     // a purple fill from behind left: the hat
 const FILL_COLOR = 0x9a63db;
 const FILL_DIR = [-2.6, 0.6, -2];
 const EXPOSURE = 1.05;
-const MAX_DT = 0.1;                   // s: a frame after the page froze (the map build, the shaders) steps no further
+const MAX_DT = 0.1;                   // s: a frame after a stall steps no further
+// Skyrim's loading screen: the model turns by itself, slowly, and the mouse turns it
+export const YOU_SPIN = (2 * Math.PI) / 40;    // rad/s it turns by itself: once round in 40 s
+export const YOU_DRAG = (2 * Math.PI) / 360;   // rad per CSS px of drag: once round in 360 px
+export const YOU_YAW = 0.42;                   // rad: the still's turn, a little to screen left (where the live one starts)
+export const YOU_TIME = 0.6;                   // s into the idle clip: the still's moment
 
-export async function createYou({ width, height, pixelRatio = 1, yaw = 0, time = 0, preserveDrawingBuffer = false }) {
+export async function createYou({ canvas, width, height, pixelRatio = 1, yaw = YOU_YAW, time = YOU_TIME, preserveDrawingBuffer = false }) {
   const gltf = await new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).loadAsync(BODY_MODEL_URL);
   const model = gltf.scene;
   const meshes = [];
@@ -85,7 +92,7 @@ export async function createYou({ width, height, pixelRatio = 1, yaw = 0, time =
   camera.position.set(0, centre.y - Math.sin(LOW_ANGLE) * dist, Math.cos(LOW_ANGLE) * dist);
   camera.lookAt(centre);
 
-  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer });
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, preserveDrawingBuffer });
   renderer.setPixelRatio(pixelRatio);
   renderer.setSize(width, height, false);
   renderer.setClearColor(0x000000, 0);
@@ -104,9 +111,11 @@ export async function createYou({ width, height, pixelRatio = 1, yaw = 0, time =
   const you = {
     canvas: renderer.domElement,
     yaw,
-    // advance his breathing dt seconds and draw him at you.yaw
-    frame(dt = 0) {
-      mixer.update(Math.min(dt, MAX_DT));
+    // advance his breathing dt seconds (turning him too, unless held) and draw him at you.yaw
+    frame(dt = 0, turn = false) {
+      dt = Math.min(dt, MAX_DT);
+      if (turn) you.yaw += YOU_SPIN * dt;
+      mixer.update(dt);
       holder.rotation.y = you.yaw;
       renderer.render(scene, camera);
     },

@@ -1,5 +1,5 @@
 // Joining a match end to end, on the GPU (docs/modes.md "Joining", "The match
-// loop"): from the bare start menu, one click on Play drops into Team Slayer on
+// loop"): from the bare start menu, Team Slayer, Dam Valley and Start drop into the match on
 // Dam Valley with the player on a team; the loading screen comes down on the
 // match running; "Click to play" shows until the mouse is captured, then the
 // controls card; the join:… timing marks are printed; M opens no match menu
@@ -15,7 +15,7 @@ import { launchBrowser, newTestPage } from './browser.mjs';
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
 const URL = opt('url', 'http://localhost:5425');
-const WITHIN_S = +opt('within', '90');   // s from the Play click to a running match (a cold shader compile is most of it)
+const WITHIN_S = +opt('within', '90');   // s from the Start click to a running match (a cold shader compile is most of it)
 const SHOTS = opt('shots', null);        // a directory for screenshots, else none
 const MENU_MS = 15000;                   // ms the bare page may take to show the menu (dev server, unbundled)
 const SHORT_MATCH_S = 20;                // game s: the cut-short match's clock (rule override), so it ends on time
@@ -37,13 +37,14 @@ try {
   p.on('console', (m) => { if (m.type() === 'error' && !/ERR_CONNECTION_REFUSED/.test(m.text())) errs.push(m.text().slice(0, 400)); });
 
   await p.goto(`${URL}/`);
-  await p.waitForSelector('.mm.open .mm-play.main', { timeout: MENU_MS });
-  check('the start menu shows Play and Siege', await p.$$eval('.mm-play', (els) => els.map((e) => e.dataset.play).join()) === 'slayer,siege');
+  await p.waitForSelector('.mm.open .mm-start', { timeout: MENU_MS });
+  // Team Slayer, Dam Valley, Start
+  await p.click('.mm-mode:has-text("Team Slayer")');
+  await p.click('.mm-card[data-map="damValley"]');
   await shot(p, '1-menu');
 
-  // one click
   const t0 = Date.now();
-  await p.click('.mm-play.main');
+  await p.click('.mm-start');
   await p.waitForSelector('.mm.loading');
   await p.waitForFunction(() => window.__app?.pov?.game?.running && !document.querySelector('.mm.open'), null, { timeout: WITHIN_S * 1000, polling: 250 });
   const joinS = (Date.now() - t0) / 1000;
@@ -51,7 +52,7 @@ try {
     const a = window.__app, g = a.pov.game, me = g.roster.find((e) => !e.bot);
     return { mode: g.mode, map: a.settings.preset, team: me?.team ?? null, bots: g.botCount, pov: a.pov.mode, play: !!document.querySelector('.game-play.on') };
   });
-  check(`Play is a Slayer match on Dam Valley within ${WITHIN_S} s`, s1.mode === 'slayer' && s1.map === 'damValley' && joinS <= WITHIN_S, `${joinS.toFixed(1)} s, ${JSON.stringify(s1)}`);
+  check(`Start is a Slayer match on Dam Valley within ${WITHIN_S} s`, s1.mode === 'slayer' && s1.map === 'damValley' && joinS <= WITHIN_S, `${joinS.toFixed(1)} s, ${JSON.stringify(s1)}`);
   check('the player is on a team, with 7 bots', (s1.team === 'red' || s1.team === 'blue') && s1.bots === 7);
   check('"Click to play" shows while the mouse is free', s1.play);
   await shot(p, '2-click-to-play');

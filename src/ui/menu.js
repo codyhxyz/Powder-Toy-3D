@@ -8,12 +8,9 @@ import { MODEICONS, MODEICON_BOX } from './modeicons.js';
 // The start menu, Garry's Mod's New Game screen: gamemodes down the left, each
 // with its icon, the maps built for the chosen one as square previews (public/maps, rendered by
 // tools/map-thumbs.mjs) with each map's size tagged in its corner, and the
-// picked map with Start along the bottom. One-click Play sits in the top bar
-// (maps.js QUICK_PLAY): a match with your team picked, Halo 3 matchmaking's
-// way. The landing page (src/main.js), and over the game from the toolbar's
-// Maps or Esc, with Resume.
+// picked map with Start along the bottom. The landing page (src/main.js), and
+// over the game from the toolbar's Maps or Esc, with Resume.
 //   modes                 the gamemodes to list (maps.js GAMEMODES, filtered by the build)
-//   quick                 the one-click Play entries (maps.js QUICK_PLAY; [] without the team games)
 //   map, mode             the pick it opens on
 //   onStart(map, mode)    Start (or a double-click, or Enter)
 //   onResume()            Resume / Esc, over a running game
@@ -35,12 +32,12 @@ import { MODEICONS, MODEICON_BOX } from './modeicons.js';
 //                         cold; 'match' with app.js's line for it)
 const THUMB = (key) => `/maps/${key}.webp`;
 const YOU = '/you.webp';
-// Skyrim's loading screen: the model turns by itself, slowly, and the mouse turns it
-const YOU_SPIN = (2 * Math.PI) / 40;   // rad/s it turns by itself: once round in 40 s
-const YOU_DRAG = (2 * Math.PI) / 360;  // rad per CSS px of drag: once round in 360 px
-const YOU_MAX_DPR = 2;                 // its canvas's px per CSS px, at most
-const YOU_MAX_STEP = 0.1;              // s it turns at most in a frame: none of a freeze (the map build, the shaders) is made up
+// the live player's canvas (ui/youWorker.js), sized once for the tallest he is shown (menu.css .mm-you)
+const YOU_MAX_H = 560;                 // CSS px
 const YOU_ASPECT = 260 / 420;          // the still's width over its height (tools/you-portrait.mjs SHOWN_W, SHOWN_H)
+const YOU_MAX_DPR = 2;                 // px per CSS px, at most
+const YOU_IDLE_TIMEOUT_MS = 2000;      // the longest it waits for an idle moment to build him (src/preload.js's wait)
+const YOU_NO_IDLE_DELAY_MS = 200;      // its wait without requestIdleCallback (Safari)
 const STORE = 'powder-toy-3d:menu';   // the last gamemode and map picked here
 // What the loading screen says it's on, one line under its bar. GMod's loading
 // screen names the step it is really on ("Retrieving server info", "Sending
@@ -69,7 +66,7 @@ const MB = 1024 * 1024;
 const fmtDate = (iso) => { const d = new Date(iso); return Number.isNaN(+d) ? '' : d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }); };
 const SAVES_DESC = 'Games you saved with ⌘S or the toolbar\'s Save, kept in this browser. Export one to keep it as a file.';
 
-export function createMenu({ modes, quick = [], map, mode, onStart, onResume, onLoadSave }) {
+export function createMenu({ modes, map, mode, onStart, onResume, onLoadSave }) {
   let saved = {};
   try { saved = JSON.parse(localStorage.getItem(STORE) || '{}'); } catch { /* storage unavailable */ }
   let modeKey = modes.some((m) => m.key === (mode ?? saved.mode)) ? mode ?? saved.mode : modes[0].key;
@@ -91,10 +88,6 @@ export function createMenu({ modes, quick = [], map, mode, onStart, onResume, on
   const pickDesc = h('div.mm-pick-desc');
   const startBtn = h('button.mm-start', { type: 'button', on: { click: () => start() } });
   const resumeBtn = h('button.mm-resume', { type: 'button', text: 'Resume', on: { click: () => onResume?.() } });
-  // one-click Play: the first entry is the big one
-  const quickBtns = quick.filter((q) => modes.some((m) => m.key === q.mode) && mapByKey(q.map)).map((q, i) =>
-    h(`button.mm-play${i ? '' : '.main'}`, { type: 'button', 'data-play': q.key, title: `${q.name}: ${q.desc}`, on: { click: () => play(q) } },
-      h('b', { text: q.name }), h('small', { text: q.desc })));
   const openFileBtn = h('button.mm-head-btn', { type: 'button', text: 'Open file…', title: 'Load a .tpt3d save file', on: { click: () => openFile() } });
   const exportBtn = h('button.mm-side', { type: 'button', text: 'Export', title: 'Download this save as a .tpt3d file', on: { click: () => exportPicked() } });
   const deleteBtn = h('button.mm-side', { type: 'button', text: 'Delete', on: { click: () => deletePicked() } });
@@ -111,13 +104,15 @@ export function createMenu({ modes, quick = [], map, mode, onStart, onResume, on
   you.addEventListener('error', () => you.closest('figure')?.remove());
   const youFig = h('figure.mm-you', {}, you, h('figcaption', { text: 'This is you.' }));
   const youLive = liveYou(youFig, you);
+  // built in the background once the menu is up (an idle moment, as src/preload.js waits for one)
+  const prepareYou = () => (self.requestIdleCallback ? requestIdleCallback(youLive.prepare, { timeout: YOU_IDLE_TIMEOUT_MS }) : setTimeout(youLive.prepare, YOU_NO_IDLE_DELAY_MS));
 
   const el = h('div.mm', { role: 'dialog', 'aria-label': 'Maps' },
     backdrop,
     h('div.mm-shell', {},
       h('header.mm-top', {},
         h('div.mm-brand', { html: `${logoMark(30)}<span>Powder Toy 3D</span>` }),
-        h('div.mm-top-actions', {}, quickBtns.length ? h('div.mm-quick', {}, quickBtns) : null, resumeBtn)),
+        resumeBtn),
       h('div.mm-body', {},
         nav,
         h('section.mm-main', {},
@@ -131,6 +126,7 @@ export function createMenu({ modes, quick = [], map, mode, onStart, onResume, on
       h('div.mm-load-copy', {}, loadMode, loadName, loadStatus, h('div.mm-load-bar', {}, h('i')), loadStep),
       youFig));
   document.body.append(el);
+  prepareYou();
 
   // a preview that isn't there (a map added since tools/map-thumbs.mjs last ran): the card's gradient shows
   const thumb = (m) => {
@@ -274,15 +270,6 @@ export function createMenu({ modes, quick = [], map, mode, onStart, onResume, on
     try { localStorage.setItem(STORE, JSON.stringify({ mode: modeKey, map: pick.key })); } catch { /* ignore */ }
     onStart(pick.key, modeKey);
   }
-  // one-click Play: its gamemode and map picked (the loading screen names them), then Start
-  function play(q) {
-    if (busy) return;
-    modeKey = q.mode;
-    pick = mapByKey(q.map);
-    renderModes();
-    renderMaps();
-    start();
-  }
 
   // arrows walk the grid (by its columns), Enter starts, Esc resumes
   function key(e) {
@@ -339,6 +326,7 @@ export function createMenu({ modes, quick = [], map, mode, onStart, onResume, on
       renderMaps();
       if (saves) showSaves(); else refreshCount();
       el.classList.add('open');
+      prepareYou();
       requestAnimationFrame(() => cards.find((c) => c.m === pick)?.card.focus({ preventScroll: true }));
       cards.find((c) => c.m === pick)?.card.scrollIntoView({ block: 'nearest' });
     },
@@ -377,60 +365,62 @@ export function createMenu({ modes, quick = [], map, mode, onStart, onResume, on
   };
 }
 
-// The loading screen's player live (ui/youViewer.js, its three.js loaded only now): in the still's
-// place once his first frame is drawn, and gone with the screen, its WebGL context with it. A
-// failure (no WebGL) leaves the still.
+// The loading screen's player live (ui/youViewer.js), in a worker on an OffscreenCanvas
+// (ui/youWorker.js): built while the menu is up, so he is there the moment Start is pressed, and
+// breathing and turning on through the boot's long frames. In the still's place once built; the
+// worker and its WebGL context go with the screen, and the next menu builds him again. Without
+// OffscreenCanvas WebGL, or on a failure, the still stays.
 function liveYou(fig, still) {
-  let you = null, on = false, loading = null, raf = 0, last = 0, drag = null;
-  const loop = (t) => {
-    raf = requestAnimationFrame(loop);
-    const dt = last ? (t - last) / 1000 : 0;
-    last = t;
-    if (!drag) you.yaw += YOU_SPIN * Math.min(dt, YOU_MAX_STEP);
-    you.frame(dt);
+  let worker = null, canvas = null, ready = false, shown = false, on = false, drag = null;
+  const show = () => {
+    if (shown || !ready) return;
+    shown = true;
+    still.replaceWith(canvas);
+    fig.classList.add('live');
+    worker.postMessage({ run: true });
+  };
+  const prepare = () => {
+    if (worker || !still.isConnected || typeof OffscreenCanvas === 'undefined' || !HTMLCanvasElement.prototype.transferControlToOffscreen) return;
+    const dpr = Math.min(devicePixelRatio || 1, YOU_MAX_DPR);
+    canvas = h('canvas.mm-you-live');
+    canvas.width = Math.round(YOU_MAX_H * YOU_ASPECT * dpr);
+    canvas.height = Math.round(YOU_MAX_H * dpr);
+    const off = canvas.transferControlToOffscreen();
+    worker = new Worker(new URL('./youWorker.js', import.meta.url), { type: 'module' });
+    worker.onmessage = ({ data }) => {
+      if (data === 'ready') { ready = true; if (on) show(); return; }
+      console.warn('loading screen: the live player failed, the still stays', data.failed);
+      drop();
+    };
+    worker.onerror = (e) => { console.warn('loading screen: the live player failed, the still stays', e.message); drop(); };
+    worker.postMessage({ canvas: off, width: canvas.width, height: canvas.height }, [off]);
+  };
+  const drop = () => {
+    worker?.terminate();
+    if (shown) { canvas.replaceWith(still); fig.classList.remove('live', 'dragging'); }
+    worker = canvas = drag = null;
+    ready = shown = false;
   };
   fig.addEventListener('pointerdown', (e) => {
-    if (!you || e.button !== 0) return;
-    drag = { x: e.clientX, yaw: you.yaw };
+    if (!shown || e.button !== 0) return;
+    drag = { x: e.clientX };
+    worker.postMessage({ drag: 'start' });
     fig.setPointerCapture(e.pointerId);
     fig.classList.add('dragging');
     e.preventDefault();
   });
-  fig.addEventListener('pointermove', (e) => { if (drag) you.yaw = drag.yaw + (e.clientX - drag.x) * YOU_DRAG; });
-  const drop = () => { drag = null; fig.classList.remove('dragging'); };
-  fig.addEventListener('pointerup', drop);
-  fig.addEventListener('pointercancel', drop);
+  fig.addEventListener('pointermove', (e) => { if (drag) worker.postMessage({ dx: e.clientX - drag.x }); });
+  const release = () => {
+    if (!drag) return;
+    drag = null;
+    worker?.postMessage({ drag: 'end' });
+    fig.classList.remove('dragging');
+  };
+  fig.addEventListener('pointerup', release);
+  fig.addEventListener('pointercancel', release);
   return {
-    start() {
-      on = true;
-      if (you || loading || !still.isConnected) return;
-      const height = fig.clientHeight, width = Math.round(height * (still.naturalWidth / still.naturalHeight || YOU_ASPECT));
-      if (!height) return;
-      const pixelRatio = Math.min(devicePixelRatio || 1, YOU_MAX_DPR);
-      loading = import('./youViewer.js')
-        .then(({ createYou }) => createYou({ width: width * pixelRatio, height: height * pixelRatio, yaw: 0.42, time: 0.6 }))
-        .then((y) => {
-          if (!on) { y.dispose(); return; }
-          you = y;
-          you.canvas.className = 'mm-you-live';
-          you.frame();
-          still.replaceWith(you.canvas);
-          fig.classList.add('live');
-          last = 0;
-          raf = requestAnimationFrame(loop);
-        })
-        .catch((err) => console.warn('loading screen: the live player failed, the still stays', err))
-        .finally(() => { loading = null; });
-    },
-    stop() {
-      on = false;
-      cancelAnimationFrame(raf);
-      drop();
-      if (!you) return;
-      you.canvas.replaceWith(still);
-      fig.classList.remove('live');
-      you.dispose();
-      you = null;
-    },
+    prepare,
+    start() { on = true; prepare(); show(); },
+    stop() { on = false; release(); drop(); },
   };
 }

@@ -55,9 +55,9 @@ export const GEAR = [
   { key: 'POGO', slot: 4, name: 'Pogo stick', model: 'pogo', abbr: 'POGO', color: '#d0453a', touch: [],
     desc: 'Hold it to bounce. Press jump just as you land to bounce higher, three times in a row to the top. Hold jump to fly.' },
   { key: 'TORCH', slot: 5, name: 'Torch', model: 'torch', abbr: 'TRCH', color: '#e07b2a', touch: ['Touch', 'Throw'],
-    desc: 'A warm, flickering light. Left-click touches its flame to things; right-click throws it, and it burns where it lands, setting fire to what burns.' },
+    desc: 'A warm, flickering light. Right-click throws it, and it burns where it lands for two minutes. Its flame sets nothing alight.' },
   { key: 'LANTERN', slot: 5, name: 'Lantern', model: 'lantern', abbr: 'LNTN', color: '#e8f0ff', touch: ['Switch', 'Throw'],
-    desc: 'A very bright white light. Left-click switches it off and on; right-click throws it, and it lands unbroken and keeps shining.' },
+    desc: 'A steady, warm light. Left-click switches it off and on; right-click throws it, and it lands unbroken and keeps shining.' },
   { key: 'HOOK', slot: 4, name: 'Hook', model: 'hook', abbr: 'HOOK', color: '#b0884a', touch: ['Fire / reel', 'Let go'],
     desc: 'Fires a grappling hook up to 30 m. Hold left-click to reel in: a wall pulls you to it, loose matter comes to you, an enemy and you meet in the middle. Let go to hang and swing; right-click lets go.' },
   // (last, so the palette ids of the tools before it, elements.js GEAR_ITEMS, stay put)
