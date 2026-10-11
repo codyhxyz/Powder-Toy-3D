@@ -1012,7 +1012,7 @@ function createSceneTarget(gpu, label) {
     get version() { return version; },
     resize(w, h) {
       if (w === width && h === height && color) return;
-      three ??= gpu.three?.renderer ?? null;
+      if (three === undefined) three = gpu.three?.renderer ?? null;
       if (three) {
         if (!rt) {
           rt = new RenderTarget(w, h, {
@@ -1158,10 +1158,10 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
     get isReady() { return allPipes().every((p) => p.state === 'ready'); },
     /** Output size [w, h] (canvas or target). */
     get size() { return [...size]; },
-    /** The scene's size [w, h]: the output size × the render scale. */
-    get inSize() { return [...inSize]; },
-    /** This frame's jitter, pixels from the pixel centre, y down (FrameUniforms.jitter, F4). */
-    get jitter() { return [...jitter]; },
+    /** The scene's size [w, h]: the output size × the render scale (the still's size during renderStill). */
+    get inSize() { return active === still ? [still.width, still.height] : [...inSize]; },
+    /** This frame's jitter, pixels from the pixel centre, y down (FrameUniforms.jitter, F4); none during renderStill. */
+    get jitter() { return active === still ? [0, 0] : [...jitter]; },
     /** The target the scene is drawn into now ({ rt, color, depth, width, height }): the main one, or the still's during renderStill. */
     get sceneTarget() { return active; },
     /** Every texture post holds, for memory estimates (gpu.memory() counts ours; threeBytes is three's share). */

@@ -10,8 +10,8 @@
 // Each test returns plain data; the tool asserts on it.
 
 import { createPresenter, uniformStruct, fullscreenVert, halfsToFloats } from '/src/gpu/index.js';
-import { useWebGPUCamera } from '/src/gpu/three.js';
-import { PerspectiveCamera, Matrix4, Vector3 } from 'three/webgpu';
+import { useWebGPUCamera, createThreeRenderer, threeHasVisible } from '/src/gpu/three.js';
+import { PerspectiveCamera, Matrix4, Vector3, Scene, Mesh, BoxGeometry, MeshBasicNodeMaterial } from 'three/webgpu';
 import { createPost, POST_DEFAULTS } from '/src/gfx/post.js';
 import { createProfiler } from '/src/gfx/profiler.js';
 import { createProfilerPanel } from '/src/ui/profiler.js';
@@ -22,6 +22,10 @@ const gpu = h.gpu;
 const canvas = document.getElementById('view');
 const W = canvas.width, H = canvas.height;
 const presenter = createPresenter(gpu, canvas);
+// ?three=1: three's renderer exists before post, so post's scene target is three's
+// RenderTarget (F3) and three's meshes render into it between our scene pass and post
+const three = new URLSearchParams(location.search).has('three') ? await createThreeRenderer(gpu, canvas) : null;
+if (three) { three.setPixelRatio(1); three.setSize(W, H, false); }
 const post = createPost(gpu, { presenter, readable: true });
 h.post = post;
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -464,6 +468,46 @@ test('timing', async ({ split = false, frames = 12 } = {}) => {
   gpu.timing.enabled = false;
   gpu.timing.split = false;
   return { last, supported: gpu.timing.supported };
+});
+
+// ---------------------------------------------------------------- three's meshes in the scene target (?three=1)
+
+// A red box in front of the plane and a green one behind it, drawn by three into
+// post's scene target after our scene pass (loadOp load, our depth): the red one
+// shows, the green one doesn't (F1). TAA off for the pixel test, then a few TAA
+// frames (the meshes jitter with the scene: three reads the projection post set).
+test('meshes', async () => {
+  if (!three) return { error: 'open the page with ?three=1' };
+  setPost({ taa: false, bloom: 0, adapt: false });
+  home(camera);
+  const meshScene = new Scene();
+  const box = (color, x, y, z) => { const m = new Mesh(new BoxGeometry(0.8, 0.8, 0.8), new MeshBasicNodeMaterial({ color })); m.position.set(x, y, z); meshScene.add(m); return m; };
+  const red = box(0xff0000, -1.2, 0.5, 0.6), green = box(0x00ff00, 1.2, -0.5, -0.8);
+  meshScene.updateMatrixWorld();
+  await three.compileAsync(meshScene, camera);
+  const at = (o) => { const v = o.position.clone().project(camera); return [Math.round((v.x * 0.5 + 0.5) * W), Math.round((0.5 - v.y * 0.5) * H)]; };
+  const points = [at(red), at(green)];
+  const pixels = async (meshes) => {
+    const hooks = { ...sceneHooks(), meshes: meshes ? (p) => { three.setRenderTarget(p.sceneTarget.rt); three.render(meshScene, camera); three.setRenderTarget(null); } : undefined };
+    const stats = await measure(gpu, async () => {
+      post.render(hooks, camera);
+      h.cap = post.capture();
+      gpu.endFrame();
+      await gpu.fence();
+    });
+    const { width, data } = await h.cap;
+    return { stats, values: points.map(([x, y]) => Array.from(data.subarray(4 * (y * width + x), 4 * (y * width + x) + 4))) };
+  };
+  const without = await pixels(false);
+  const withMeshes = await pixels(true);
+  setPost({ taa: true, bloom: 0.3, adapt: true });
+  for (let k = 0; k < 8; k++) await pixels(true);
+  const taa = await pixels(true);
+  meshScene.traverse((o) => { o.geometry?.dispose(); o.material?.dispose(); });
+  return {
+    points, visible: threeHasVisible(meshScene, camera), rtIsThree: Boolean(post.sceneTarget.rt),
+    without: without.values, with: withMeshes.values, taa: taa.values, stats: withMeshes.stats, taaStats: taa.stats,
+  };
 });
 
 ready();

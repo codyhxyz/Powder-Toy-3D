@@ -24,6 +24,10 @@
 //               Playwright's screenshot of the page, and Chrome's own rendering of
 //               the page's CSS background with the canvas hidden, reported)
 //   still       renderStill into 320×200 rgba8unorm keeps alpha, leaves history alone
+//   three       (the page with ?three=1) post's scene target is three's RenderTarget;
+//               three draws a box in front of the plane and one behind it into it
+//               after our scene pass (our depth, loadOp load): the front one shows,
+//               the hidden one doesn't; ours before three, three's, ours after: 3 submits
 //
 // usage: node tools/post-check.mjs [--port N] [--only passes,taa,…]
 import { launchBrowser, gpuInfo } from './browser.mjs';
@@ -246,6 +250,22 @@ try {
 
   const failed = await page.evaluate(() => window.__harness.failures);
   check(!failed.length && !errors.length, `no GPU failures or page errors${failed.length || errors.length ? `: ${[...failed, ...errors].join(' | ')}` : ''}`);
+  await page.close();
+
+  if (want('three')) {
+    console.log('\nthree (the page with ?three=1: three\'s RenderTarget as the scene target)');
+    const errs = [];
+    const p3 = await openHarness(browser, vite, '/tools/harness/post.html?three=1', { errors: errs, viewport: { width: 400, height: 250 } });
+    const r = await p3.evaluate(() => window.__harness.run('meshes'));
+    check(r.rtIsThree && r.visible, `post.sceneTarget.rt is three's RenderTarget (${r.rtIsThree}); threeHasVisible ${r.visible}`);
+    const [frontWithout, behindWithout] = r.without, [front, behind] = r.with;
+    check(front[0] > 200 && front[0] > 2 * front[1] && front[0] > 2 * front[2], `the box in front of the plane shows: ${front.slice(0, 3)} (the plane there: ${frontWithout.slice(0, 3)})`);
+    check(behind.slice(0, 3).join() === behindWithout.slice(0, 3).join(), `the box behind it doesn't: ${behind.slice(0, 3)} (the plane: ${behindWithout.slice(0, 3)})`);
+    check(r.stats.submits === 3 && r.taaStats.submits === 3, `ours before three, three's own, ours after: ${r.stats.submits} submits (TAA, bloom, adaptation on: ${r.taaStats.submits}, ${r.taaStats.renderPasses} render passes of ours)`);
+    check(r.taa[0][0] > 200, `with TAA the box still shows: ${r.taa[0].slice(0, 3)}`);
+    const f3 = await p3.evaluate(() => window.__harness.failures);
+    check(!f3.length && !errs.length, `no GPU failures or page errors${f3.length || errs.length ? `: ${[...f3, ...errs].join(' | ')}` : ''}`);
+  }
 } finally {
   await browser.close();
   await vite.close();
