@@ -26,7 +26,10 @@ import { bodyExit } from './transfer.js';
 // debris. Its reach is an energy budget spent on the heat each cell takes,
 // so it goes far through rock, less through metal, less still through water.
 // Bodies anywhere in the beam take LASER.DAMAGE. Light carries next to no
-// momentum, so there's no recoil; the kick and the shake are the gun's feel.
+// momentum, so there's no recoil; the kick in the hands and the shake are the
+// gun's feel. Neither moves the crosshair off the beam while it burns: no view
+// punch (Halo 3's Spartan Laser never throws your aim), and the shake only rolls
+// the view, which turns it about the crosshair.
 //
 // The beam's reach comes back from one small pass (laserReachFrag) read at
 // once, a short GPU wait once a shot, before the beam itself (laserFrag) runs
@@ -42,7 +45,7 @@ import { bodyExit } from './transfer.js';
 const CHARGE_S = 3;            // s to full charge (Halo's Spartan Laser, about three)
 const REFIRE_S = 2;            // s of standby after a shot before it charges again (Halo's, about two)
 const BODY_CLEARANCE = 0.3;    // cells: the beam starts this far outside the body
-const SHAKE = 1;               // trauma a shot adds to the screen shake (0..1, feel.js): all of it
+const SHAKE = 1;               // rumble a shot adds to the screen shake (0..1, feel.js, roll only): all of it
 const TREMBLE = 0.035;         // cells the gun shudders in the hands at full charge (it grows as the square of the charge)
 const GLOW_IDLE = 0.15;        // the charge strip's brightness when idle, as a share of full
 const GLOW_FULL = 4;           // ...and at full charge (HDR: it blooms)

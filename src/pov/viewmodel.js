@@ -76,7 +76,7 @@ export const HIT = {
   POGO: { kick: 0.2 },                                                                 // a pogo bounce: the stick's jolt in the hands
   HOOK: { kick: 0.5, punch: { pitch: [0.5 * DEG, 1 * DEG] } },                       // the hook's claw fired
   KICK: { punch: { pitch: [-1.5 * DEG, -0.5 * DEG], yaw: [-0.5 * DEG, 0.5 * DEG] } },   // the boot landed (kick.js): the view jolts, the hands stay put
-  LASER: { kick: 4, punch: { pitch: [8 * DEG, 10 * DEG], yaw: [-1.5 * DEG, 1.5 * DEG] } },   // the laser cannon's beam: a cannon's shove, the heaviest in the game
+  LASER: { kick: 4 },                                                                  // the laser cannon's beam: the heaviest shove in the hands, but no view punch (Halo 3's Spartan Laser never throws the view), so the crosshair stays on the lingering beam
   BURROWER: { kick: 1.2, punch: { pitch: [1.5 * DEG, 2.5 * DEG] } },                   // the burrower's drill leaving the tube
 };
 const randIn = ([lo, hi] = [0, 0]) => lo + Math.random() * (hi - lo);

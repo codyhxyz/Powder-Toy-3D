@@ -23,6 +23,10 @@ const REDUCED_MOTION_SHAKE = 0.15;      // share of the shake (and kick) kept un
 const TRAUMA_DECAY = 1.5;               // trauma lost per second (linear)
 const SHAKE_ANGLE = 0.045;              // rad of pitch and yaw at full trauma
 const SHAKE_ROLL = 0.6;                 // roll's share of SHAKE_ANGLE
+// a rumble (a tool's own 'shake' event, the laser cannon's beam): trauma like the shake's, decaying
+// as fast, but it only rolls the view. A roll turns the view about the crosshair, so a beam laid
+// along the shot stays on it
+const RUMBLE_ROLL = 1;                  // roll's share of SHAKE_ANGLE at full rumble: the pitch and yaw it gives up go into roll
 const SHAKE_FREQ = 22;                  // noise time scale (1/s): roughly how fast the view jitters
 // smooth noise: three incommensurate sines per axis, weights sum to 1
 const NOISE_RATES = [1.0, 2.3, 4.1];
@@ -93,7 +97,7 @@ export function createFeel({ hud }) {
   const reduced = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)');
   const motionScale = () => SHAKE_SCALE * (reduced?.matches ? REDUCED_MOTION_SHAKE : 1);
 
-  let trauma = 0, time = 0;
+  let trauma = 0, rumble = 0, time = 0;
   const punch = { pitch: 0, yaw: 0, vp: 0, vy: 0 };   // rad and rad/s
   let bloom = 0, hitT = 0, hitBroke = false;
   let drunk = 0, drunkSway = 0, drunkTime = 0;   // s of Drunkenness left; the sway's size (0..1); its clock
@@ -105,6 +109,7 @@ export function createFeel({ hud }) {
   const offsets = { pitch: 0, yaw: 0, roll: 0 };
 
   const addTrauma = (x) => { if (x > 0) trauma = Math.min(1, trauma + x); };
+  const addRumble = (x) => { if (x > 0) rumble = Math.min(1, rumble + x); };
 
   const offs = [
     povEvents.on('gun:fire', ({ by }) => {
@@ -127,8 +132,8 @@ export function createFeel({ hud }) {
       const d = Math.hypot(point.x - eye.x, point.y - eye.y, point.z - eye.z);
       addTrauma(TRAUMA_BOMB * (1 - smooth01((d - IMPACT_NEAR) / (BOMB_FAR - IMPACT_NEAR))));
     }),
-    // a tool's own screen shake (the laser cannon's beam): trauma 0..1, the player's only
-    povEvents.on('shake', ({ trauma: x = 0, by }) => { if (live && !by) addTrauma(x); }),
+    // a tool's own screen shake (the laser cannon's beam): trauma 0..1 of rumble, the player's only
+    povEvents.on('shake', ({ trauma: x = 0, by }) => { if (live && !by) addRumble(x); }),
     povEvents.on('drunk', ({ seconds = 0, by }) => {
       if (!live || by) return;   // an NPC's drink isn't the player's head
       drunk = Math.min(DRUNK_MAX_S, drunk + seconds);
@@ -155,6 +160,7 @@ export function createFeel({ hud }) {
     offsets,
     get time() { return time; },         // s of POV frames seen (checks)
     get trauma() { return trauma; },
+    get rumble() { return rumble; },
     get kick() { return punch.pitch; },   // the view punch's pitch (rad), for checks
     get punch() { return { pitch: punch.pitch, yaw: punch.yaw }; },
     get bloom() { return bloom; },
@@ -171,7 +177,7 @@ export function createFeel({ hud }) {
     },
     // a fresh body (drop in, respawn): nothing carried over
     reset() {
-      trauma = bloom = hitT = 0;
+      trauma = rumble = bloom = hitT = 0;
       drunk = drunkSway = 0;
       punch.pitch = punch.yaw = punch.vp = punch.vy = 0;
       prevValid = false;
@@ -210,12 +216,13 @@ export function createFeel({ hud }) {
         globalThis.__app?.requestRender?.();
       } else punch.pitch = punch.yaw = punch.vp = punch.vy = 0;
       trauma = Math.max(0, trauma - TRAUMA_DECAY * dt);
+      rumble = Math.max(0, rumble - TRAUMA_DECAY * dt);
       const m = motionScale();
       const shake = trauma * trauma * SHAKE_ANGLE * m;
       const t = time * SHAKE_FREQ;
       offsets.pitch = punch.pitch * m + shake * noise(t, SEED_PITCH);
       offsets.yaw = punch.yaw * m + shake * noise(t, SEED_YAW);
-      offsets.roll = shake * SHAKE_ROLL * noise(t, SEED_ROLL);
+      offsets.roll = (shake * SHAKE_ROLL + rumble * rumble * SHAKE_ANGLE * RUMBLE_ROLL * m) * noise(t, SEED_ROLL);
 
       drunk = Math.max(0, drunk - dt);
       drunkSway += (clamp01(drunk / DRUNK_WASTED_S) - drunkSway) * (1 - Math.exp(-DRUNK_EASE * dt));
