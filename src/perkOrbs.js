@@ -3,14 +3,14 @@ import { PERK, shrineOffer } from './pov/perks.js';
 import { BODY_HEIGHT, BODY_WIDTH } from './pov/constants.js';
 
 // Perk orbs: markers like the spawners (spawners.js), not cells. Each is a
-// perk's icon floating at chest height over a glowing pad; a body (the
-// player's, or an NPC's) that walks into it gains the perk (pov/index.js,
-// pov/perks.js). They come with shrines (the Shrine construction, Noita's Holy
+// perk's icon floating at chest height over a glowing pad. The player looks at
+// one and presses E to take it, seeing its name first (Noita's rule; pov/interact.js);
+// an NPC walks into one (pov/index.js, pov/perks.js). They come with shrines (the Shrine construction, Noita's Holy
 // Mountain: constructions/builtins.js shrine), one random perk over each of its
 // plinths: taking one takes the others with it. An orb stands on a world cell,
 // so in a world bigger than the grid it stays put while the window moves.
 
-const ORB_LIFT = BODY_HEIGHT * 0.5;   // cells from the surface to the icon's centre: chest height
+export const ORB_LIFT = BODY_HEIGHT * 0.5;   // cells from the surface to the icon's centre: chest height
 const ORB_SIZE = 2.2;                 // cells across the icon sprite
 const PAD_R = 1.1;                    // cells, the pad's radius
 const PAD_LIFT = 0.05;                // cells above the surface (no z-fighting)
@@ -133,10 +133,18 @@ export class PerkOrbs {
       c.y += ORB_LIFT;
       if (Math.abs(c.x - feet.x) > hw || Math.abs(c.z - feet.z) > hw) continue;
       if (c.y < feet.y - TAKE_REACH || c.y > feet.y + BODY_HEIGHT + TAKE_REACH) continue;
-      for (const s of o.shrine ? this.list.filter((x) => x.shrine === o.shrine) : [o]) this.remove(s);
-      return { key: o.key, at: c.clone() };
+      return this.take(o);
     }
     return null;
+  }
+
+  // take orb `o`, and the rest of its shrine with it: { key, at (its icon's centre, grid cells) }, or null if it's gone
+  take(o) {
+    const at = this.feet(o, new THREE.Vector3());
+    if (!this.list.includes(o) || !at) return null;
+    at.y += ORB_LIFT;
+    for (const s of o.shrine ? this.list.filter((x) => x.shrine === o.shrine) : [o]) this.remove(s);
+    return { key: o.key, at };
   }
 
   // every frame: markers follow the world's scale, the volume and the window; the icons bob

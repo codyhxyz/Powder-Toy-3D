@@ -128,18 +128,19 @@ export function targetById(id) {
   return null;
 }
 
-// Live boxes intersecting a sphere (wand blasts/fields). Closest point avoids
-// missing a tall actor whose centre is outside the effect's radius.
+// Live boxes intersecting a sphere (wand blasts/fields, homing), nearest first,
+// passing teammates as rayTarget does. Closest point avoids missing a tall
+// actor whose centre is outside the effect's radius.
 export function areaTargets(center, radius, exclude = null) {
   const found = [];
   for (const target of targets) {
-    if (!target.alive || target.id === exclude) continue;
+    if (!target.alive || target.id === exclude || rules?.passes(exclude ?? PLAYER, target)) continue;
     target.box(lo, hi);
     const point = center.clone().clamp(lo, hi);
     const distance = point.distanceTo(center);
     if (distance <= radius) found.push({ target, point, distance });
   }
-  return found;
+  return found.sort((a, b) => a.distance - b.distance);
 }
 
 export const hasTargets = () => targets.size > 0;

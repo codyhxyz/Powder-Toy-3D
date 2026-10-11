@@ -7,6 +7,7 @@ import { ELEMENTS, E, K } from '../elements.js';
 import { povEvents } from './events.js';
 import { JET_NOZZLES } from './figure.js';
 import { MELEE_SOURCES, BODY_WIDTH, BODY_HEIGHT } from './constants.js';
+import { lookOf } from './wands/look.js';
 
 // POV effects, with three.quarks: muzzle flash (and a short light), sparks,
 // dust and chips, splash mist and tracers. Cosmetic only: the real debris,
@@ -225,8 +226,48 @@ const CHARGE_MOTE_RING = [0.6, 1.4];    // cells out from the muzzle they start
 const CHARGE_MOTE_LIFE = 0.25;          // s they take to arrive
 const CHARGE_MOTE_SIZE = [0.04, 0.09];  // cells across
 
+// ---- wands (wands/runtime.js's wand:* events). After Noita, where every spell trails
+// particles in its own colour and bursts into more where it lands. Colours are
+// wands/look.js's (one table for every drawer) × these HDR gains; the bolts, fields
+// and beams themselves are wands/visuals.js's.
+const WAND_TRAIL_MAX = 400;             // the wand trail's pool (glowing motes, one draw with the other additive dots)
+const WAND_TRAIL_STEP = 0.7;            // cells of flight between trail motes
+const WAND_TRAIL_LIFE = [0.2, 0.45];    // s
+const WAND_TRAIL_SIZE = [0.1, 0.24];    // cells across
+const WAND_TRAIL_DRIFT = 1.2;           // cells/s, a mote's random drift
+const WAND_TRAIL_GRAVITY = -1;          // cells/s²: they float up a little
+const WAND_TRAIL_DRAG = 2;              // 1/s
+const WAND_TRAIL_GAIN = 4;              // HDR, the look's colour × this
+const WAND_TRAIL_EXTRA_STEP = 1.6;      // cells of flight between the look's own trail particles (sparks, embers, mist, dust, smoke)
+const WAND_FLARE_SIZE = 0.8;            // cells across, the flare at the tip on a cast
+const WAND_FLARE_LIFE = 0.09;           // s
+const WAND_FLARE_GAIN = 5;              // HDR, the look's colour × this
+const WAND_CAST_MOTES = 7;              // motes thrown out of the tip on a cast...
+const WAND_CAST_MOTE_SPEED = [4, 12];   // ...cells/s, along the aim
+const WAND_CAST_SPREAD = 0.5;           // share of the speed thrown sideways at most
+const WAND_FIRE_PUFFS_S = 0.06;         // s of the flamethrower's stream a fire-look cast puffs out of the tip
+const WAND_IMPACT_FLASH = [0.8, 4];     // cells across, an impact's flash at least / at most...
+const WAND_IMPACT_FLASH_PER_RADIUS = 0.6;   // ...per cell of the spell's radius
+const WAND_IMPACT_FLASH_LIFE = 0.12;    // s
+const WAND_IMPACT_MOTES = 16;           // motes burst out of an impact
+const WAND_IMPACT_MOTE_SPEED = [3, 10]; // cells/s
+const WAND_IMPACT_SPARKS = 10;          // sparks off a spark-look or fire-look impact
+const WAND_IMPACT_MIST = 10;            // puffs off a liquid-look impact
+const WAND_IMPACT_DUST = 5;             // puffs (and chips) off a dust-look impact
+const WAND_IMPLODE_LIFE = 0.3;          // s the void look's motes take to fall into its point
+const WAND_IMPLODE_RING = [1, 2.5];     // cells out they start
+const WAND_BEAM_MOTES_PER_CELL = 0.5;   // motes shed along a beam per cell...
+const WAND_BEAM_MOTES_MAX = 48;         // ...at most
+const WAND_BEAM_MIST_PER_CELL = 0.6;    // mist puffs along a liquid beam per cell...
+const WAND_BEAM_MIST_MAX = 30;          // ...at most
+const WAND_FIRE_JET_S = 0.14;           // s of the flamethrower's stream a fire-look beam is worth
+const WAND_TELEPORT_STEP = 0.6;         // cells between the motes of a teleport's streak...
+const WAND_TELEPORT_MAX = 90;           // ...at most this many
+const WAND_TELEPORT_LIFE = [0.25, 0.5]; // s
+const WAND_TELEPORT_FLASH = 3;          // cells across, the arrival flash
+
 // ---- textures
-const TEX_SIZE = 64;                    // px square
+const TEX_SIZE = 64;                   // px square
 const DOT_FALLOFF = 2;                  // alpha = (1 − r²)^this
 const FLASH_SPIKES = 6;                 // rays in the flash texture
 const FLASH_SPIKE_SHARP = 6;            // higher = thinner rays
@@ -332,6 +373,7 @@ export function createVfx(env) {
   system('flame', { max: FLAME_MAX, material: dotAdd, behaviors: [FADE_OUT()] });
   system('ember', { max: EMBER_MAX, material: dotAdd, behaviors: [FADE_OUT()] });
   system('mote', { max: MOTE_MAX, material: dotAdd, behaviors: [FADE_OUT()] });
+  system('wandTrail', { max: WAND_TRAIL_MAX, material: dotAdd, behaviors: [FADE_OUT()] });
   // dust and mist puffs grow (from each particle's own start size); chips don't.
   // Systems with the same material and mode share one batch (one draw call).
   fx.debris.sys.addBehavior(GROW(DUST_GROW));
@@ -417,12 +459,12 @@ export function createVfx(env) {
     lightT = FLASH_LIGHT_TIME;
   }
 
-  function sparks(at, n, normalDir) {
+  function sparks(at, n, normalDir, rgb = SPARK_COLOR) {
     const s = env.getScale();
     fx.spark.sys.rendererEmitterSettings.speedFactor = SPARK_STREAK_S / (SPARK_WIDTH * s);
     burst(fx.spark, n, (p) => {
       around(normalDir, SPARK_SPREAD, vV).multiplyScalar(randIn(SPARK_SPEED) * s);
-      setP(p, at, vV, SPARK_WIDTH * s, SPARK_COLOR, 1, randIn(SPARK_LIFE), SPARK_GRAVITY, SPARK_DRAG);
+      setP(p, at, vV, SPARK_WIDTH * s, rgb, 1, randIn(SPARK_LIFE), SPARK_GRAVITY, SPARK_DRAG);
     });
   }
 
@@ -445,9 +487,10 @@ export function createVfx(env) {
   }
 
   const mistRgb = [0, 0, 0];
-  function mist(at, n, upDir, id, ring = 0) {
+  function mist(at, n, upDir, id, ring = 0, rgb = null) {   // rgb (0..1): a tint in place of the liquid's colour
     const s = env.getScale();
-    rgbOf(id, MIST_LIGHT, mistRgb);
+    if (rgb) for (let k = 0; k < 3; k++) mistRgb[k] = rgb[k] * MIST_LIGHT;
+    else rgbOf(id, MIST_LIGHT, mistRgb);
     for (let k = 0; k < 3; k++) mistRgb[k] += (MIST_LIGHT - mistRgb[k]) * MIST_WHITE;
     burst(fx.mist, n, (p) => {
       around(upDir, SPARK_SPREAD, vV);
@@ -756,6 +799,130 @@ export function createVfx(env) {
     });
   }
 
+  // ---- wands: points in world units, directions unit; look = wands/look.js lookOf(...)
+  const wA = new THREE.Vector3(), wB = new THREE.Vector3(), wD = new THREE.Vector3(), wN = new THREE.Vector3(), wV = new THREE.Vector3(), wP = new THREE.Vector3();
+  const tint = (look, gain, out) => { for (let k = 0; k < 3; k++) out[k] = look.rgb[k] * gain; return out; };
+  const trailRgb = [0, 0, 0], flareRgb = [0, 0, 0], sparkRgb = [0, 0, 0];
+  const randomRound = (x) => Math.floor(x + Math.random());
+  // n glowing motes in the look's colour at `at`, drifting from `vel` (world units/s)
+  function wandMotes(at, n, look, speed = [0, WAND_TRAIL_DRIFT], dir = null, spread = 1) {
+    const s = env.getScale();
+    tint(look, WAND_TRAIL_GAIN, trailRgb);
+    burst(fx.wandTrail, n, (p) => {
+      wV.randomDirection();
+      if (dir) wV.multiplyScalar(spread).add(dir);
+      wV.multiplyScalar(randIn(speed) * s);
+      setP(p, at, wV, randIn(WAND_TRAIL_SIZE) * s, trailRgb, 1, randIn(WAND_TRAIL_LIFE), WAND_TRAIL_GRAVITY, WAND_TRAIL_DRAG);
+    });
+  }
+  // a flash in the look's colour, `size` world units across
+  function wandFlash(at, look, size, life, gain = WAND_FLARE_GAIN) {
+    burst(fx.flash, 1, (p) => setP(p, at, vT.set(0, 0, 0), size, tint(look, gain, flareRgb), 1, life));
+  }
+  // the look's own particles over n points along a → b (world): sparks, embers, mist, dust or smoke
+  function lookParticles(a, b, n, look) {
+    const s = env.getScale();
+    wD.subVectors(b, a);
+    const up = wN.set(0, 1, 0);
+    for (let i = 0; i < n; i++) {
+      wP.copy(a).addScaledVector(wD, Math.random());
+      if (look.trail === 'spark') sparks(wP, 1, up, tint(look, WAND_TRAIL_GAIN, sparkRgb));
+      else if (look.trail === 'ember') torchEmbers(wP, wV.set(0, 0, 0), 1 / EMBER_RATE);
+      else if (look.trail === 'mist') mist(wP, 1, up, look.id, 0, look.id >= 0 ? null : look.rgb);
+      else if (look.trail === 'dust') dust(wP, 1, up, look.id >= 0 ? look.id : E.SAND);
+      else if (look.trail === 'smoke') {
+        burst(fx.jetSmoke, 1, (p) => {
+          wV.randomDirection().multiplyScalar(ROCKET_TRAIL_DRIFT * s);
+          setP(p, wP, wV, randIn(JET_SMOKE_SIZE) * s, JET_SMOKE_COLOR, JET_SMOKE_ALPHA, randIn(JET_SMOKE_LIFE), JET_SMOKE_GRAVITY, JET_SMOKE_DRAG);
+        });
+      }
+    }
+  }
+  // a cast leaving the tip (world) along dir
+  function wandCast(at, dir, look) {
+    const s = env.getScale();
+    wandFlash(at, look, WAND_FLARE_SIZE * s, WAND_FLARE_LIFE);
+    wandMotes(at, WAND_CAST_MOTES, look, WAND_CAST_MOTE_SPEED, dir, WAND_CAST_SPREAD);
+    if (look.fire) flameStream(at, dir, 1, WAND_FIRE_PUFFS_S);
+  }
+  // bolts flew a → b (world) this frame: motes every WAND_TRAIL_STEP, the look's own particles sparser
+  function wandTrail(a, b, look) {
+    const s = env.getScale();
+    const len = wD.subVectors(b, a).length() / s;
+    if (len <= 0) return;
+    const n = randomRound(len / WAND_TRAIL_STEP);
+    tint(look, WAND_TRAIL_GAIN, trailRgb);
+    burst(fx.wandTrail, n, (p) => {
+      wP.copy(a).addScaledVector(wD, Math.random());
+      wV.randomDirection().multiplyScalar(WAND_TRAIL_DRIFT * s);
+      setP(p, wP, wV, randIn(WAND_TRAIL_SIZE) * s, trailRgb, 1, randIn(WAND_TRAIL_LIFE), WAND_TRAIL_GRAVITY, WAND_TRAIL_DRAG);
+    });
+    lookParticles(a, b, randomRound(len / WAND_TRAIL_EXTRA_STEP), look);
+  }
+  // a spell landed at `at` (world), the surface facing `normal` (unit, or null), radius in cells, id the cell hit
+  function wandImpact(at, normal, look, radius, id) {
+    const s = env.getScale();
+    const n = normal ?? wN.set(0, 1, 0);
+    const size = Math.min(WAND_IMPACT_FLASH[1], Math.max(WAND_IMPACT_FLASH[0], radius * WAND_IMPACT_FLASH_PER_RADIUS)) * s;
+    wandFlash(at, look, size, WAND_IMPACT_FLASH_LIFE);
+    if (look.field === 'void' || look.field === 'pull') {
+      // the matter-eating looks: motes fall into the point instead of bursting out of it
+      tint(look, WAND_TRAIL_GAIN, trailRgb);
+      burst(fx.wandTrail, WAND_IMPACT_MOTES, (p) => {
+        const r = randIn(WAND_IMPLODE_RING) * s;
+        wV.randomDirection();
+        wP.copy(at).addScaledVector(wV, r);
+        wV.multiplyScalar(-r / WAND_IMPLODE_LIFE);
+        setP(p, wP, wV, randIn(WAND_TRAIL_SIZE) * s, trailRgb, 1, WAND_IMPLODE_LIFE);
+      });
+    } else wandMotes(at, WAND_IMPACT_MOTES, look, WAND_IMPACT_MOTE_SPEED, n, 1);
+    if (look.trail === 'spark' || look.fire) sparks(at, WAND_IMPACT_SPARKS, n, look.fire ? SPARK_COLOR : tint(look, WAND_TRAIL_GAIN, sparkRgb));
+    if (look.fire) torchEmbers(at, wV.set(0, 0, 0), WAND_IMPACT_SPARKS / EMBER_RATE);
+    if (look.trail === 'mist') mist(at, WAND_IMPACT_MIST, n, look.id, 0, look.id >= 0 ? null : look.rgb);
+    const hitSolid = id >= 0 && ELEMENTS[id] && ELEMENTS[id].kind !== K.LIQUID && ELEMENTS[id].kind !== K.GAS;
+    if (look.trail === 'dust') {
+      const what = hitSolid ? id : look.id >= 0 ? look.id : E.SAND;
+      dust(at, WAND_IMPACT_DUST, n, what);
+      if (hitSolid) chips(at, WAND_IMPACT_DUST, n, id);
+    }
+  }
+  // a beam (or touch) from → to (world), the look's along it and its own particles where it ends
+  function wandBeam(from, to, dir, look, hit) {
+    const s = env.getScale();
+    const len = wD.subVectors(to, from).length() / s;
+    if (len <= 0) return;
+    if (look.fire) { flameStream(from, dir, len, WAND_FIRE_JET_S); return; }
+    if (look.trail === 'mist') {
+      const n = Math.min(WAND_BEAM_MIST_MAX, Math.ceil(len * WAND_BEAM_MIST_PER_CELL));
+      for (let i = 0; i < n; i++) {
+        wP.copy(from).addScaledVector(wD, (i + Math.random()) / n);
+        mist(wP, 1, dir, look.id, 0, look.id >= 0 ? null : look.rgb);
+      }
+    }
+    const n = Math.min(WAND_BEAM_MOTES_MAX, Math.ceil(len * WAND_BEAM_MOTES_PER_CELL));
+    tint(look, WAND_TRAIL_GAIN, trailRgb);
+    burst(fx.wandTrail, n, (p) => {
+      wP.copy(from).addScaledVector(wD, Math.random());
+      wV.randomDirection().multiplyScalar(WAND_TRAIL_DRIFT * s);
+      setP(p, wP, wV, randIn(WAND_TRAIL_SIZE) * s, trailRgb, 1, randIn(WAND_TRAIL_LIFE), WAND_TRAIL_GRAVITY, WAND_TRAIL_DRAG);
+    });
+    if (!hit && look.trail !== 'mist') lookParticles(to, to, 2, look);
+  }
+  // the caster moved from → to (world, body middles): a streak of motes and a flash where it arrives
+  function wandTeleport(from, to, look) {
+    const s = env.getScale();
+    const len = wD.subVectors(to, from).length() / s;
+    tint(look, WAND_TRAIL_GAIN, trailRgb);
+    burst(fx.wandTrail, Math.min(WAND_TELEPORT_MAX, Math.ceil(len / WAND_TELEPORT_STEP)), (p) => {
+      wP.copy(from).addScaledVector(wD, Math.random());
+      wV.randomDirection().multiplyScalar(WAND_TRAIL_DRIFT * s);
+      setP(p, wP, wV, randIn(WAND_TRAIL_SIZE) * s, trailRgb, 1, randIn(WAND_TELEPORT_LIFE), WAND_TRAIL_GRAVITY, WAND_TRAIL_DRAG);
+    });
+    wandFlash(to, look, WAND_TELEPORT_FLASH * s, WAND_IMPACT_FLASH_LIFE * 2);
+    wandMotes(to, WAND_IMPACT_MOTES, look, WAND_IMPACT_MOTE_SPEED);
+  }
+  const bodyMiddle = (feet, out) => toWorld(out.copy(feet).setY(feet.y + BODY_HEIGHT / 2), out);
+
   // ---- events
   const live = () => env.isActive();
   const offs = [
@@ -809,6 +976,29 @@ export function createVfx(env) {
     }),
     povEvents.on('torch:burn', (e) => {
       if (live()) torchEmbers(e.at, e.vel, e.dt);
+    }),
+    // wands (wands/runtime.js): points in grid cells, except wand:fire's muzzleWorld
+    povEvents.on('wand:fire', (e) => {
+      if (!live() || !e.dir) return;
+      const at = e.muzzleWorld && !e.by ? wA.copy(e.muzzleWorld) : toWorld(e.muzzle ?? e.origin, wA);
+      wandCast(at, wB.copy(e.dir).normalize(), lookOf(e.effect, e.material));
+    }),
+    povEvents.on('wand:flight', (e) => {
+      if (!live()) return;
+      for (const fl of e.flights ?? []) wandTrail(toWorld(fl.from, wA), toWorld(fl.to, wB), lookOf(fl.effect, fl.material));
+    }),
+    povEvents.on('wand:impact', (e) => {
+      if (live() && e.point) wandImpact(toWorld(e.point, wA), e.normal ? wB.copy(e.normal).normalize() : null, lookOf(e.effect, e.material), e.radius ?? 1, e.id ?? -1);
+    }),
+    povEvents.on('wand:beam', (e) => {
+      if (live() && e.from && e.to) wandBeam(toWorld(e.from, wA), toWorld(e.to, wB), vD.copy(e.dir).normalize(), lookOf(e.effect, e.material), e.hit);
+    }),
+    // a wand's blast is the bomb's fireball (not 'blast', which index.js counts as the player's own bomb)
+    povEvents.on('wand:blast', (e) => {
+      if (live() && e.point) blast(toWorld(e.point, wA));
+    }),
+    povEvents.on('wand:teleport', (e) => {
+      if (live() && e.from && e.to) wandTeleport(bodyMiddle(e.from, wA), bodyMiddle(e.to, wB), lookOf('teleport'));
     }),
   ];
 

@@ -53,6 +53,8 @@ export function createWandEditor({ runtime, onSave, onOpenChange, toast }) {
   const save = h('button.we-save', { type: 'button', text: 'Save & equip', on: { click: () => {
     if (!draft || save.disabled) return;
     draft.name = draft.name.trim() || 'Custom wand';
+    // An edit of a starter recipe is the custom wand: its own mana, cooldown and storage, not the recipe's
+    draft.id = 'custom';
     const result = runtime.setDefinition(copy(draft));
     if (result.errors.length) { errors.textContent = result.errors.map(errorText).join('\n'); return; }
     saved = { id: 'custom', name: draft.name.trim() || 'Custom wand', slot: draft.slot ?? 1, cards: [...draft.cards], config: { ...result.config } };

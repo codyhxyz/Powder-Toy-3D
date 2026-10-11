@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { setImmediate as turn } from 'node:timers/promises';
 import * as THREE from 'three';
-import { E, K } from '../src/elements.js';
-import { addTarget } from '../src/pov/targets.js';
+import { E, K, ELEMENTS } from '../src/elements.js';
+import { addTarget, areaTargets, setHitRules } from '../src/pov/targets.js';
 import { BODY_WIDTH, BODY_HEIGHT } from '../src/pov/constants.js';
 
 import { createWandRuntime, WAND_LIMITS } from '../src/pov/wands/runtime.js';
@@ -305,6 +305,29 @@ function delayedHarness(latency = 0.15) {
   assert(h.calls.some((c) => c.material === 'FIRE'));
   assert.equal(h.calls.filter((c) => c.effect === 'pressure').length, 1);
   h.runtime.dispose();
+}
+
+// A trail is made at its own material's temperature: an acid bolt's fire trail is fire-hot, not acid's 20 °C.
+{
+  const h = harness();
+  h.equip([leaf('emit', { material: 'ACID', lifetime: 0.15, trail: 'FIRE' }, 'projectile')]);
+  await h.step({ fire: true });
+  for (let i = 0; i < 4; i++) await h.step();
+  const trail = h.calls.filter((c) => c.material === 'FIRE');
+  assert(trail.length && trail.every((c) => c.temperature === ELEMENTS[E.FIRE].temp), 'trail at fire temperature');
+  h.runtime.dispose();
+}
+
+// Area targets (blasts, homing) come nearest first, not in registration order, and pass teammates as rays do.
+{
+  const remove = [['far', 40, 41], ['near', 26, 27], ['mate', 23, 24]].map(([id, x0, x1]) =>
+    addTarget({ id, alive: true, box(lo, hi) { lo.set(x0, 19, 19); hi.set(x1, 22, 21); }, hurt() {} }));
+  const ids = () => areaTargets(v(20, 20, 20), 32, 'player').map((f) => f.target.id);
+  assert.deepEqual(ids(), ['mate', 'near', 'far']);
+  setHitRules({ passes: (by, t) => t.id === 'mate', share: () => 1 });
+  assert.deepEqual(ids(), ['near', 'far']);
+  setHitRules(null);
+  remove.forEach((fn) => fn());
 }
 {
   const h = harness({ trace: (segments) => Promise.resolve(segments.map((s) => ({ point: s.to.clone(), normal: v(-1), id: E.ROCK }))) });
