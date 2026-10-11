@@ -139,8 +139,11 @@ const res = await p.evaluate(async () => {
   t = tally();
   check('stone floats on mercury, gold sinks', t.STONE?.y >= 6 && t.NUGGETS?.y < t.STONE?.y - 3, { STONEy: t.STONE?.y, NUGGETSy: t.NUGGETS?.y, MERCURYy: t.MERCURY?.y });
 
-  // Materials: void drains a falling column of water
-  await scene((box) => { box(40, 0, 40, 80, 1, 80, 'VOID'); box(50, 10, 50, 70, 20, 70, 'WATER'); });
+  // Materials: void drains a falling column of water. The void is the whole
+  // floor: the slab lands at once and its splash keeps its speed in the air
+  // (react.js, move.js), so it throws water well past a void the slab's size
+  // (tools/void-drain-probe.mjs), which isn't what this checks.
+  await scene((box) => { box(0, 0, 0, 128, 1, 128, 'VOID'); box(50, 10, 50, 70, 20, 70, 'WATER'); });
   await steps(400);
   t = tally();
   check('void drains water', n(t, 'WATER') < 0.2 * 20 * 10 * 20, { WATER: n(t, 'WATER') });
