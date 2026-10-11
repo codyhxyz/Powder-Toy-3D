@@ -341,6 +341,7 @@ body { color: var(--mm-text); font: 400 13px/1.4 var(--mm-ui); -webkit-font-smoo
   .mm-mode { padding: 6px 10px 6px 6px; }
   .mm-mode-ico { width: 22px; height: 22px; font-size: 15px; }
   .mm-load { padding: 14px 16px 18px; gap: 12px; }
+  .mm-load-top .mm-brand span { display: inline; }   /* (the menu hides it for its Play buttons; the loading screen has room) */
   /* he stands behind the copy, top right */
   .mm-load-stage { grid-template-columns: minmax(0, 1fr); }
   .mm-you { position: absolute; right: 0; top: 0; height: min(40vh, 290px); }

@@ -149,8 +149,9 @@ into `public/maps`, and `tools/menu-check.mjs` checks the menu on the GPU. A lin
 `?preset=…`, an invite) skips the menu.
 
 Start brings up a loading screen in the manner of Halo 3's, GMod's and TF2's. The map's art drifts behind it. It shows
-the gamemode's emblem and rules, the map's name with its size in cells and metres, the steps the boot is really on
-(download, build, shader compile, world) ticked off with their times, and a tip about the game in a box with its icon.
+the gamemode's emblem and rules, and the map's name. The map's kind and its size in cells and metres sit below it as a
+row of Halo 3 style medals. The steps the boot is really on (download, build, shader compile, world, the match being set
+up) are ticked off with their times. A tip about the game sits in a box with its icon.
 The player stands beside it: "This is you." He is a render of the real body (`tools/you-portrait.mjs`).
 `tools/loading-screen-check.mjs` checks the menu's icons and the loading screen on the GPU.
 
