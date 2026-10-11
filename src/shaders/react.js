@@ -87,6 +87,10 @@ uniform float uGravity;
 // inlines every call in every loop body six times over, and ANGLE/Metal took
 // a minute to build this pass cold (tools/program-bench.mjs).
 uniform int uFaces;
+// The most cells a liquid looks up its column for its head (the grid's
+// height; the scan stops at the surface, or once the head is enough for
+// FLOW). A uniform, so the loop isn't unrolled.
+uniform int uHeadScan;
 // What fast particles left in each cell this step (raysLayer.js, docs/particles.md):
 // heat (energy) and air pressure, in a target laid out like the state.
 uniform sampler2D tRayDep;
@@ -395,7 +399,6 @@ void main() {
     // air, and cloud (air carrying droplets), is buoyant by its temperature
     if (id == E_EMPTY || id == E_CLOUD) v -= gv * (uGravity * clamp((T - AMBIENT) / (AMBIENT + KELVIN), AIR_BUOY_LO, AIR_BUOY_HI));
     if (id != E_EMPTY) v += gv * (uGravity * GRAV[id]);
-    v *= 1.0 - DRAG[id];
     // The rules below are written for down = −y and its face neighbour (the
     // cell below, fd): with radial gravity, turned so that −y is the pull's
     // dominant axis (simModes.js gravFrame; identity for vertical gravity).
@@ -412,31 +415,72 @@ void main() {
     bool held = (KIND[id] == K_POWDER || KIND[id] == K_LIQUID) && (F * b.xyz).y >= 0.0 && (KIND[nid[fd]] == K_SOLID
       || (!canMove(id, nid[fd], d, densityOf(nid[fd], na[fd].y), 0) && (F * nb[fd].xyz).y >= 0.0));
     if (held) v.y = max(v.y, 0.0);
+    // Drag. Not on a liquid in free fall (nothing under it but air, or the
+    // falling liquid ahead of it): a liquid's drag is its viscosity acting on
+    // its flow, and the air's drag on a falling parcel is negligible over a
+    // few metres, so a jet keeps its horizontal speed and falls in a parabola.
+    bool flying = KIND[id] == K_LIQUID && !held && (isGasLike(nid[fd]) || (KIND[nid[fd]] == K_LIQUID && (F * nb[fd].xyz).y < 0.0));
+    if (!flying) v *= 1.0 - DRAG[id];
     // grains only feel friction while resting on something (pressed on it by gravity)
     bool supported = uGravity > 0.0 && (KIND[nid[fd]] == K_SOLID || KIND[nid[fd]] == K_POWDER);
     if (supported) v.xz *= 1.0 - FRICTION[id];
 
-    // Liquids: hydrostatic head drives spreading, surface tension stops it.
-    // Both push only a liquid that has somewhere to go, a side neighbour it
-    // can move into; boxed in, its speed just decays to a stop. (A lower
-    // diagonal needs no push: the move pass topples into it regardless.)
-    // Without gravity there is no head and nothing to rest on.
-    if (KIND[id] == K_LIQUID && uGravity > 0.0 && (supported || KIND[nid[fd]] == K_LIQUID)) {
+    // Liquids at rest: hydrostatic head drives spreading, surface tension
+    // stops it. Both push only a liquid that has somewhere to go, a side
+    // neighbour it can move into, and toward it: the pressure falls toward an
+    // open side. Boxed in, its speed just decays to a stop. (A lower diagonal
+    // needs no push: the move pass topples into it regardless.) A falling
+    // liquid holds no pressure and nothing pushes it. Without gravity there is
+    // no head and nothing to rest on.
+    if (KIND[id] == K_LIQUID && uGravity > 0.0 && held) {
       bool open = false;
+      vec3 od = vec3(0.0);   // toward the open sides
       for (int i = 0; i < uFaces; i++)
-        if ((i >> 1) != (fd >> 1)) open = open || canMove(id, nid[i], d, densityOf(nid[i], na[i].y), 2);
+        if ((i >> 1) != (fd >> 1) && canMove(id, nid[i], d, densityOf(nid[i], na[i].y), 2)) { open = true; od += vec3(DIRS[i]); }
       int up = nid[fd ^ 1];
       bool head = KIND[up] == K_LIQUID || KIND[up] == K_POWDER;   // weight above us
       bool onLiquid = !supported;                                  // surface of a pool
       float f = FLOW[id];
       float hv = length(v.xz);
       if (head || onLiquid) {
-        // keep flowing in some direction until the level evens out
-        float want = head ? f : f * FLOW_SURFACE;
-        if (open && hv < want * FLOW_KICK) {
+        // Keep flowing until the level evens out. Under a head it leaves at
+        // Torricelli's speed, ORIFICE_CV·√(2gh), h the weight of the column
+        // above in cells of this liquid, to this cell's centre (each parcel
+        // the same, so a hole pours one jet); viscosity caps it at FLOW.
+        float want = f * FLOW_SURFACE;
+        if (head && open) {
+          float gh = uGravity * GRAV[id], h = 0.5;
+          ivec3 q = p;
+          for (int k = 0; k < uHeadScan && 2.0 * gh * h < f * f; k++) {
+            q = edgeCell(q + DIRS[fd ^ 1]);
+            int e = inGrid(q) ? eid(fetchA(q)) : E_WALL;
+            if (KIND[e] != K_LIQUID && KIND[e] != K_POWDER) break;
+            h += DENS[e] / d;
+          }
+          want = min(ORIFICE_CV * sqrt(2.0 * gh * h), f);
+        }
+        // The pressure drives it out of the opening, not along it: whatever
+        // it was doing, it leaves at the speed the head gives. (Open both
+        // ways, nothing picks a side: a random one, kept while it flows.)
+        vec2 dir = (F * od).xz;
+        if (dot(dir, dir) > 0.0) {
+          vec2 n = normalize(dir);
+          if (dot(v.xz, n) < want) v.xz = n * want;
+        } else if (open && hv < want * FLOW_KICK) {
           float ang = rnd(rs) * 6.2831853;
           v.xz = vec2(cos(ang), sin(ang)) * want;
         }
+      } else if (!movable(up)) {
+        // Under a solid lid (a hole through a wall, a pipe) it is pipe flow:
+        // what drives it is the pressure behind, not a film's surface
+        // tension, and the walls turn it along the pipe (their normal force
+        // takes the velocity into them) at the speed it came in with (in a
+        // pipe of one section the speed is set by continuity, not by the
+        // angle it came in at), so it leaves a hole straight.
+        vec3 v0 = v;
+        for (int i = 0; i < uFaces; i++)
+          if ((i >> 1) != (fd >> 1) && !movable(nid[i])) { vec3 n = F * vec3(DIRS[i]); v -= n * max(dot(v, n), 0.0); }
+        if (dot(v.xz, v.xz) > 0.0) v.xz = normalize(v.xz) * length(v0.xz);
       } else {
         // a thin film on dry ground: cohesion pulls it toward neighbouring
         // liquid, so films gather into puddles with clean edges

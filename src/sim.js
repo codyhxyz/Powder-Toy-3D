@@ -373,7 +373,7 @@ export class Simulation {
       moveGather: stepMat(moveGatherFrag(g), { ...state(), ...slots(), tQuiet: { value: null }, uFresh: { value: false }, uEdge: { value: 0 } }, SUPER_MAP.DRAWN),
       react: stepMat(reactFrag(g), {
         ...state(), uFrame: { value: 0 }, uGravity: { value: this.gravity }, tQuiet: { value: null }, tRx: { value: this.reactionTable },
-        tRayDep: { value: null }, uRays: { value: false }, uFaces: { value: FACES },
+        tRayDep: { value: null }, uRays: { value: false }, uFaces: { value: FACES }, uHeadScan: { value: g.ny },
         uGravMode: { value: 0 }, uEdge: { value: 0 }, uAirMode: { value: 0 }, uAmbientHeat: { value: true },
       }, SUPER_MAP.DRAWN),
       inert: rawMat(inertFrag(g), { tF: { value: null } }),

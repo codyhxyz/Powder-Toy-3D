@@ -73,6 +73,11 @@ export const PHYS = {
   // forces (react.js)
   V_MAX: 1,                  // cells/step
   FLOW_SURFACE: 0.6,         // a pool's surface flows at this share of FLOW
+  // Liquid under a head h leaves an opening at Torricelli's v = Cv·√(2gh)
+  // (react.js). Cv, the velocity coefficient of a sharp-edged orifice, is
+  // 0.97-0.99 (its discharge coefficient, ~0.61, is mostly the jet's
+  // contraction, Cc ≈ 0.62: White, Fluid Mechanics, §6.12; Cd = Cc·Cv).
+  ORIFICE_CV: 0.98,
   FLOW_KICK: 0.5,            // re-pick a flow direction below this share of the target speed
   FILM_KEEP: 0.5,            // a film on dry ground keeps this share of its velocity...
   FILM_COHESION: 0.3,        // ...and is pulled toward neighbouring liquid by this share of FLOW
