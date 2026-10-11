@@ -9,7 +9,7 @@
 // y 0..24, z 0..24, cells of 0.30 m; a body is 5.5 tall and 1.6 wide, steps a
 // cell and jumps about two. The border (2) is rock whatever a tile does; the
 // floor is y = 2 and a high gallery's floor y = 13.
-import { GEOM } from '../kit.js';
+import { GEOM, wallTorch } from '../kit.js';
 
 const { U, H, BORDER: B, FLOOR: F, HIGH_FLOOR: HF, DOOR_W, DOOR_H } = GEOM;
 const X = 2 * U;                       // a tile's length
@@ -46,7 +46,7 @@ let gallerySalt = GALLERY_SALT;
 function galleryX(x0, x1, { zr = GAL_Z, y0 = F, h = DOOR_H, frames = true, rough = ROUGH_WALL, wave = WAVE, lift = LIFT, phase = 0 } = {}) {
   const air = [], floor = [], timber = [];
   const len = x1 - x0, salt = gallerySalt++;
-  let lamp = false;
+  let lamp = false, side = 0;
   for (let x = x0; x < x1; x += SLICE) {
     const t = (x + SLICE / 2 - x0) / len, pin = Math.sin(Math.PI * t);
     const dz = Math.round(wave * pin * Math.sin(2 * Math.PI * t + phase));
@@ -61,7 +61,7 @@ function galleryX(x0, x1, { zr = GAL_Z, y0 = F, h = DOOR_H, frames = true, rough
     if (frames && (x - x0) % FRAME_STEP === 0 && x > x0) {
       timber.push(...frameX(x, [zr[0] + dz, zr[1] + dz], y0 + dy, h));
       lamp ||= ((x - x0) / FRAME_STEP) % LANTERN_FRAMES === 0;
-      if (lamp && clearOfShafts(x, MID)) { timber.push(lanternX(x, (zr[0] + zr[1]) / 2 + dz, y0 + dy + h - 1)); lamp = false; }
+      if (lamp && clearOfShafts(x, MID)) { timber.push(...torchX(x, [zr[0] + dz, zr[1] + dz], y0 + dy, h, side++)); lamp = false; }
     }
   }
   return [...air, ...floor, ...timber];
@@ -71,26 +71,33 @@ function galleryZ(z0, z1, xc, { y0 = F, h = DOOR_H, w = DOOR_W, frames = true, r
   const out = [{ box: [[xr[0], y0, z0], [xr[1], y0 + h, z1]], m: 'AIR', rough }];
   out.push({ box: [[xr[0], y0 - 1, z0], [xr[1], y0, z1]], m: 'ROCK' });
   if (frames) {
-    let lamp = false;
+    let lamp = false, side = 0;
     for (let z = z0 + FRAME_STEP / 2, n = 1; z < z1 - 1; z += FRAME_STEP, n++) {
       out.push(...frameZ(z, xr, y0, h));
       lamp ||= n % LANTERN_FRAMES === 0;
-      if (lamp && clearOfShafts(xc, z)) { out.push(lanternZ(z, xc, y0 + h - 1)); lamp = false; }
+      if (lamp && clearOfShafts(xc, z) && z + 1 < z1) { out.push(...torchZ(z, xr, y0, h, side++)); lamp = false; }
     }
   }
   return out;
 }
-// A crystal lantern hung under a timber set's cap (cap at y): the Mines' light.
-// The caves are dark but for crystals (as Noita's are dark but for what glows),
-// so every few sets carries one, close enough apart (LANTERN_FRAMES sets, 18
-// cells: 5 m) that a gallery reads dimly end to end.
+// A wall torch beside a timber set (kit.js wallTorch): the Mines' light. The
+// galleries are dark but for these (as Noita's mines are dark but for their
+// torches and what glows), one every few sets (LANTERN_FRAMES sets, 18 cells:
+// 5 m), on the wall just past the set's post, the sides taking turns, so a
+// gallery reads as warm pools of light with darkness between.
 const lamp = (pr) => ({ ...pr, lantern: true });   // a light added after the authoring (goes last: see the end)
-const LANTERN_FRAMES = 3;              // a lantern under every this many timber sets (the next clear one)
+const LANTERN_FRAMES = 3;              // a torch every this many timber sets (the next clear one)
 const LANTERN_SHAFT_CLEAR = GEOM.SHAFT_W / 2 + 2;   // ...not over a unit's shaft: you'd land on it
 const clearOfShafts = (x, z) => [C0, C1].every((c) => Math.abs(x - c) >= LANTERN_SHAFT_CLEAR || Math.abs(z - MID) >= LANTERN_SHAFT_CLEAR);
-const LANTERN_LEN = 3;                 // cells along the cap; one cell deep under it (clear of a body walking under)
-function lanternX(x, zc, y) { const z = Math.floor(zc) - 1; return { box: [[x, y - 1, z], [x + 1, y, z + LANTERN_LEN]], m: 'CRYSTAL', lantern: true }; }
-function lanternZ(z, xc, y) { const x = Math.floor(xc) - 1; return { box: [[x, y - 1, z], [x + LANTERN_LEN, y, z + 1]], m: 'CRYSTAL', lantern: true }; }
+const TORCH_Y = 7;                     // a torch's head this far over the floor (over a body's head, 5.5), under the cap
+const torchY = (y0, h) => y0 + Math.min(TORCH_Y, h - 2);
+// on an x gallery's wall (z range zr) one cell past the set at x; side 0, 1: its low, high z wall in turn
+const torchX = (x, zr, y0, h, side) => (side % 2 === 0
+  ? wallTorch([x + 1, torchY(y0, h), zr[0]], [0, -1])
+  : wallTorch([x + 1, torchY(y0, h), zr[1] - 1], [0, 1]));
+const torchZ = (z, xr, y0, h, side) => (side % 2 === 0
+  ? wallTorch([xr[0], torchY(y0, h), z + 1], [-1, 0])
+  : wallTorch([xr[1] - 1, torchY(y0, h), z + 1], [1, 0]));
 // a timber set across an x gallery at x: two posts and a cap
 function frameX(x, zr, y0, h) {
   return [
@@ -259,7 +266,7 @@ const tiles = [
       { box: [[IN[0], F - 1, GAL_Z[0]], [10, F, GAL_Z[1]]], m: 'ROCK' },
 
       ...[16, 24, 32].flatMap((x) => frameX(x, GAL_Z, F + Math.round(((x - 10) * (HF - F)) / 28), DOOR_H)),
-      lamp(crystal([24, HIGH_TOP, GAL_Z[0]])),
+      ...wallTorch([24, HF + TORCH_Y, GAL_Z[0]], [0, -1]),
     ],
   },
   // ---- collapsed room: the roof came down; rubble heaps, broken timber, soft fallen rock
@@ -301,7 +308,7 @@ const tiles = [
       { box: [[IN[0], F - 1, 6], [IN[1], F, 18]], m: 'ROCK' },
       chimney(C1), ...stub('W'), ...stub('E'),
       heap(24, MID, 3), { box: [[20, F, 6], [28, F + 1, 18]], m: 'BEAM' },   // planks over the gap between the holes
-      lamp(crystal([24, 15, 6])),
+      ...wallTorch([24, F + TORCH_Y, 6], [0, -1]),
     ],
   },
   // ---- flooded sump: the gallery dips behind two sills and the water stands in it
@@ -428,6 +435,8 @@ for (const t of tiles) t.prims = [...t.prims.filter((pr) => !pr.lantern), ...t.p
 
 export default {
   name: 'mines',
+  // wall torches where the timber sets' don't reach (kit.js placeTorches: rooms, caverns, stores)
+  torches: { every: 18, max: 2, lights: ['TORCH'] },
   // Noita's Mines: brown-grey rock, timber, a lot of it diggable
   palette: { ROCK: 'ROCK', SOFT: 'LIMESTONE', BEAM: 'WOOD', RAIL: 'METAL', RUBBLE: 'RUBBLE' },
   tiles,

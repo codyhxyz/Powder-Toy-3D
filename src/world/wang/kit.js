@@ -75,8 +75,9 @@ export const MAT = {
   METAL: 13,     // iron: carts, braces
   SAND: 14,
   ICE: 15,
+  TORCH: 16,     // a wall torch's head (its light: elements.js WALL_TORCH), on a BEAM stick
 };
-export const MAT_COUNT = 16;
+export const MAT_COUNT = 17;
 export const MAT_NAMES = Object.keys(MAT);
 // codes the sampler returns outside the tiled region (the scene fills them)
 export const WANG_OUT = 255;
@@ -84,12 +85,23 @@ export const WANG_OUT = 255;
 export const DEFAULT_PALETTE = {
   AIR: 'EMPTY', ROCK: 'ROCK', SOFT: 'LIMESTONE', BEAM: 'WOOD', RAIL: 'METAL', RUBBLE: 'RUBBLE',
   WATER: 'WATER', OIL: 'OIL', GOLD: 'GOLD', CRYSTAL: 'CRYSTAL', COAL: 'COAL', MOSS: 'MOSS',
-  GRAVEL: 'STONE', METAL: 'METAL', SAND: 'SAND', ICE: 'ICE',
+  GRAVEL: 'STONE', METAL: 'METAL', SAND: 'SAND', ICE: 'ICE', TORCH: 'WALL_TORCH',
 };
 const LIQUIDS = [MAT.WATER, MAT.OIL];
 // can a body pass through it (air or a liquid: you swim)
 export const passable = (m) => m === MAT.AIR || LIQUIDS.includes(m) || m === WANG_OUT;
 export const isLiquid = (m) => LIQUIDS.includes(m);
+
+// A wall torch (elements.js WALL_TORCH; Noita's mines are lit by torches on their
+// walls): its head (TORCH) at `at`, on a timber stick under it, the stick's
+// bracket set in the wall one cell toward `wall` ([dx, dz], pointing into the
+// wall), so the torch hangs on the wall even where a rough face was dug back.
+// lantern: true (a light added after the authoring: a kit puts these last).
+export const wallTorch = ([x, y, z], [dx, dz]) => [
+  { box: [[x + dx, y - 1, z + dz], [x + dx + 1, y, z + dz + 1]], m: 'BEAM', lantern: true },
+  { box: [[x, y - 1, z], [x + 1, y, z + 1]], m: 'BEAM', lantern: true },
+  { box: [[x, y, z], [x + 1, y + 1, z + 1]], m: 'TORCH', lantern: true },
+];
 
 // ---- ports (canonical frame)
 export const PORTS = ['W', 'E', 'N0', 'N1', 'S0', 'S1', 'D0', 'D1', 'U0', 'U1'];
@@ -231,7 +243,58 @@ export function rasterTile(tile, index, G = GEOM) {
       out[at(x, y, z)] = MAT.ROCK;
     }
   }
+  if (tile.torches) placeTorches(out, tile.torches, index, G);
   return out;
+}
+
+// Wall lights a kit doesn't place by hand (kit.torches, or a tile's own: { every, max,
+// lights }): after the carving, on walls TORCH_Y over a floor, at least `every` cells
+// apart and from any light already there (CRYSTAL, TORCH), up to `max` a tile,
+// taking `lights` in turn ('TORCH': kit.js wallTorch's stick and head; 'CRYSTAL': a
+// two-cell cluster on the wall). The candidates go in a fixed hashed order, so every
+// load gets the same ones. Noita lights its caves this way: a torch on a wall here
+// and there, darkness between.
+export const TORCH_Y = 7;              // a light's head this far over the floor: over a body's head (5.5)
+const TORCH_HASH = 0x9e3779b1;
+function placeTorches(out, { every = 16, max = 3, lights = ['TORCH'] }, index, G) {
+  const X = 2 * G.U, Y = G.H, Z = G.U;
+  const at = (x, y, z) => x + X * (y + Y * z);
+  const solid = (c) => !passable(c) && c !== MAT.BEAM;
+  const SIDES = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+  const cand = [];
+  for (let z = G.BORDER; z < Z - G.BORDER; z++) for (let x = G.BORDER; x < X - G.BORDER; x++)
+    for (let y = G.BORDER + TORCH_Y; y < Y - G.BORDER - 1; y++) {
+      // head and stick in air, air down to a floor TORCH_Y under the head, a wall beside the stick
+      let ok = true;
+      for (let k = 0; k <= TORCH_Y && ok; k++) ok = out[at(x, y - k, z)] === MAT.AIR;
+      if (!ok || !solid(out[at(x, y - TORCH_Y - 1, z)])) continue;
+      const wall = SIDES.find(([dx, dz]) => solid(out[at(x + dx, y - 1, z + dz)]) && solid(out[at(x + dx, y, z + dz)])
+        && out[at(x - dx, y - 1, z - dz)] === MAT.AIR);   // open in front: on a wall, not in a crack
+      if (wall) cand.push({ x, y, z, wall, h: Math.imul((x * 73856093) ^ (y * 19349663) ^ (z * 83492791) ^ index, TORCH_HASH) >>> 0 });
+    }
+  cand.sort((a, b) => a.h - b.h);
+  const lit = [];
+  for (let z = 0; z < Z; z++) for (let y = 0; y < Y; y++) for (let x = 0; x < X; x++) {
+    const c = out[at(x, y, z)];
+    if (c === MAT.CRYSTAL || c === MAT.TORCH) lit.push([x, y, z]);
+  }
+  const far = (x, y, z) => lit.every(([a, b, c]) => (a - x) ** 2 + (b - y) ** 2 + (c - z) ** 2 >= every * every);
+  let n = 0;
+  for (const { x, y, z, wall: [dx, dz] } of cand) {
+    if (n >= max) break;
+    if (!far(x, y, z)) continue;
+    const kind = lights[n % lights.length];
+    if (kind === 'TORCH') {
+      out[at(x + dx, y - 1, z + dz)] = MAT.BEAM;
+      out[at(x, y - 1, z)] = MAT.BEAM;
+      out[at(x, y, z)] = MAT.TORCH;
+    } else {
+      out[at(x, y - 1, z)] = MAT[kind];
+      out[at(x, y, z)] = MAT[kind];
+    }
+    lit.push([x, y, z]);
+    n++;
+  }
 }
 function boundsOf(pr) {
   if (pr.box) return pr.box;
@@ -264,7 +327,7 @@ export function portAccepts(tile) {
 export function compileKit(kit) {
   if (!kit.tiles?.length) throw new Error(`wang: kit ${kit.name} has no tiles`);
   const palette = { ...DEFAULT_PALETTE, ...(kit.palette ?? {}) };
-  const tiles = kit.tiles.map((t, i) => ({ ...t, index: i, weight: t.weight ?? 1, accepts: portAccepts(t), sites: t.sites ?? [] }));
+  const tiles = kit.tiles.map((t, i) => ({ ...t, index: i, weight: t.weight ?? 1, accepts: portAccepts(t), sites: t.sites ?? [], torches: t.torches ?? kit.torches }));
   // a kit must have a tile that takes every colour on every port, so a slot always has a tile
   const universal = tiles.filter((t) => t.accepts.every((cols, i) => (i < SIDE_PORTS ? [0, 1, 2, 3] : [0, 1]).every((c) => cols.includes(c))));
   if (!universal.length) throw new Error(`wang: kit ${kit.name} needs a tile accepting every colour on every port (its fallback)`);

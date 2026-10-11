@@ -506,6 +506,8 @@ const tiles = [
 
 export default {
   name: 'snow',
+  // wall lights (kit.js placeTorches): a torch in a brick sconce and the crystals' cold light in turn
+  torches: { every: 16, max: 3, lights: ['CRYSTAL', 'TORCH'] },
   // Noita's Snowy Depths: dark stone with ice through it, snow on every floor,
   // brick ruins, crystal's cold light
   palette: {

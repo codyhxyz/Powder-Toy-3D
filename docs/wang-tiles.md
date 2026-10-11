@@ -130,7 +130,7 @@ what's carved, `only: 'ROCK'` threads a vein through rock), `salt` (share one
 noise field between primitives, as a gallery's overlapping slices do).
 
 Materials are codes, not elements (`kit.js MAT`): `AIR ROCK SOFT BEAM RAIL
-RUBBLE WATER OIL GOLD CRYSTAL COAL MOSS GRAVEL METAL SAND ICE`. The kit's
+RUBBLE WATER OIL GOLD CRYSTAL COAL MOSS GRAVEL METAL SAND ICE TORCH`. The kit's
 `palette` maps them to `elements.js` keys, so the Coal Pits can make `ROCK`
 coal-streaked stone and the Snowy Depths `ROCK` ice without new codes.
 

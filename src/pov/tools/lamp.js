@@ -30,13 +30,16 @@ import { faceNormal, muzzleCell } from './transfer.js';
 // touches its head, which lights wood and plants; held, left-click touches the
 // flame to what you aim at within reach. Without burn (the lantern) it never goes out
 // or breaks, and left-click switches it off and on.
+// burn.ignites: whether its flame heats what it touches (setting wood alight).
+// The torch's doesn't (2026-10-11, the user's call: its burning misbehaved):
+// its flame and embers are only to look at and see by.
 //
 // Events (tool = key in lower case): tool:action 'throw', 'land' (point),
 // 'toggle'; round:move / round:end with kind = tool while it flies;
 // 'torch:burn' { at (world), vel (world units/s), dt } for each flame drawn.
 //
 //   export default lampTool({ ...gear(KEY), light: { color, intensity, range, flicker },
-//     burn: { seconds } | null, pose: { pos, yaw } });
+//     burn: { seconds, ignites } | null, pose: { pos, yaw } });
 
 const THROW_REFIRE = 0.8;      // s between throws (the bomb's)
 const TOUCH_REFIRE = 0;        // s: holding left-click keeps the torch's flame on what it touches
@@ -272,7 +275,7 @@ export function lampTool({ key, name, model: modelKey, desc, light, burn = null,
             handLight.intensity = light.intensity * f * LIGHT_SCALE * HAND_LIGHT * d * d;
           }
           // the torch touched to what you aim at, within reach
-          if (burn && inHand && toucher.ready(ctx) && ctx.primary && ctx.aim?.valid && ctx.aim.dist <= HAND_REACH && ctx.aim.cell.y >= 0) {
+          if (burn?.ignites && inHand && toucher.ready(ctx) && ctx.primary && ctx.aim?.valid && ctx.aim.dist <= HAND_REACH && ctx.aim.cell.y >= 0) {
             const n = faceNormal(ctx.aim.face);
             flame(ctx.sim ?? env.getSim(), scratch.copy(ctx.aim.cell).addScalar(0.5).add(n), n.clone().negate(), 1, toolDt(ctx));
             toucher.fire();
@@ -286,6 +289,7 @@ export function lampTool({ key, name, model: modelKey, desc, light, burn = null,
             burnFlame(p.flame, ctx.dt, f);
             if (p.lit) shine(`${tag}:prop:${p.id}`, p.light, f);
           }
+          if (!burn.ignites) return;   // a flame to look at and see by, not a fire (spec.burn.ignites)
           fireWait -= ctx.dt;
           if (fireWait > 0) return;
           fireWait = FIRE_INTERVAL;

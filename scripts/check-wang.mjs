@@ -184,7 +184,7 @@ const COLOURS = {
   [MAT.AIR]: [18, 14, 20], [MAT.ROCK]: [92, 84, 74], [MAT.SOFT]: [130, 112, 86], [MAT.BEAM]: [170, 110, 50], [MAT.RAIL]: [190, 190, 200],
   [MAT.RUBBLE]: [120, 120, 112], [MAT.WATER]: [40, 110, 170], [MAT.OIL]: [60, 40, 30], [MAT.GOLD]: [240, 200, 40], [MAT.CRYSTAL]: [200, 120, 255],
   [MAT.COAL]: [30, 30, 30], [MAT.MOSS]: [70, 130, 50], [MAT.GRAVEL]: [140, 140, 140], [MAT.METAL]: [160, 165, 175],
-  [MAT.SAND]: [236, 242, 255], [MAT.ICE]: [140, 200, 235],
+  [MAT.SAND]: [236, 242, 255], [MAT.ICE]: [140, 200, 235], [MAT.TORCH]: [255, 150, 60],
 };
 // a kit's palette can make a code another element: preview it as that element
 const ELEMENT_COLOURS = { TOXIC: [120, 170, 40], BROKENCOAL: [50, 46, 44], STONE: [125, 125, 120] };

@@ -464,10 +464,13 @@ const tiles = [
 
 export default {
   name: 'coal',
+  // wall torches (kit.js placeTorches): Noita's Coal Pits are dark rock lit by a torch here and there
+  torches: { every: 16, max: 3, lights: ['TORCH'] },
   // Noita's Coal Pits: dark rock, coal beds, toxic sludge in the hollows, broken coal and stone heaps
   palette: {
     ROCK: 'ROCK', COAL: 'COAL', BEAM: 'WOOD', RAIL: 'METAL', METAL: 'METAL',
-    RUBBLE: 'STONE', GRAVEL: 'STONE', SAND: 'BROKENCOAL', WATER: 'TOXIC', GOLD: 'GOLD', CRYSTAL: 'CRYSTAL',
+    RUBBLE: 'STONE', GRAVEL: 'STONE', SAND: 'BROKENCOAL', WATER: 'TOXIC', GOLD: 'GOLD',
+    CRYSTAL: 'EMBER',   // the Coal Pits' clusters of light are smouldering coal, not crystal: warm, as Noita's are
   },
   tiles,
 };

@@ -992,7 +992,7 @@ vec3 farPlain() { return ALBEDO[E_ROCK] * (SUN_COL * max(uSun.y, 0.0) + uSkyUp);
 bool farUnderRoof(vec3 r, vec2 tr) { return tr.y > tr.x + FAR_GI_ROOF && r.y < tr.y; }
 vec3 farBeyond(vec3 P, vec3 Q, vec3 d, inout float open) {
   vec3 w = Q + vec3(uOrigin);
-  bool out = any(lessThan(w.xz, vec2(0.0))) || any(greaterThanEqual(w.xz, vec2(WORLD.xz)))
+  bool inAir = any(lessThan(w.xz, vec2(0.0))) || any(greaterThanEqual(w.xz, vec2(WORLD.xz)))
           || !farUnderRoof(w, texture(tFarTop, w.xz / vec2(WORLD.xz)).xy);   // the ray left the window in the open air
   float s = FAR_GI_STEP0;
   for (int i = 0; i < FAR_GI_STEPS; i++) {
@@ -1002,9 +1002,9 @@ vec3 farBeyond(vec3 P, vec3 Q, vec3 d, inout float open) {
     float top = tr.x;
     if (farUnderRoof(r, tr)) {   // a cave's roof over it (FAR_GI_ROOF): coming from the open air, its top; from under one, the dark
       open = 0.0;
-      return out ? farGround(r, tr.y) : vec3(0.0);
+      return inAir ? farGround(r, tr.y) : vec3(0.0);
     }
-    out = true;
+    inAir = true;
     if (r.y < max(top, uSea)) {
       open = 0.0;
       return top >= uSea ? farGround(r, top) : farSea(d);
