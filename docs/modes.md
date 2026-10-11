@@ -233,7 +233,10 @@ awareness, `src/game/feel.js` over three modules. Sources: Halopedia ("List of H
 bottom-left, stacked above the tracker, newest at the bottom, each for 3 s (6 at most), with a synthesized sting per
 kind (`audio.js` `medalMulti | medalSpree | medalStyle | medalObjective`, a beat apart). A kill's rarest medal is
 called out by a deep, slow voice (the browser's `speechSynthesis`; silent where there is none) and, for a multi-kill
-or a spree, as a line high in the centre under the objective. No Halo audio or art: the badges are CSS hexagons.
+or a spree, as a line high in the centre under the objective. No Halo audio or art: each badge is drawn by
+`medalBadge.js` (a hex or a disc in its kind's colours, a gloss, a game-icons.net silhouette from `medalIcons.js`,
+baked by `tools/medal-icons.mjs`; a multi-kill is Halo 3's red disc with a star per kill). Anything can draw one:
+`badgeSvg(key)`, `badgeElement(key)`, `badgeDataUrl(key)`.
 
 | Medal | When | Source |
 |---|---|---|
@@ -253,6 +256,21 @@ or a spree, as a line high in the centre under the objective. No Halo audio or a
 | Flag Returned | touch your dropped flag home | Halo 2 (Halo 3 has none) |
 | Hail to the King | 5 kills in a row from inside the hill, in one life, before it moves | Halo 3 |
 | Infection Spree, Mmmm... Brains; Zombie Killing Spree, Hell's Janitor; Last Man Standing | 5, 10 infections in one life; 5, 10 zombies killed; the lone survivor at the clock | Halo 3 |
+| Own Goal | your own blast killed you (the killfeed's `self`: sandbox only, a match's `game:kill` has no suicides' credit) | ours |
+| Bored, Heavy Particles, Flooded | a burrower kill; `Buried in …`; `Drowned in …`, with your kill credit | ours |
+| Chain Reaction | your blast, then 2 more set off by something else (a vehicle, a Revenge, a charge), each within 1 s (`CHAIN_BLASTS`, `CHAIN_GAP_S`). Only povEvents `blast`s count: the sim's own TNT and gunpowder don't announce themselves | ours |
+
+**Outside a match** (first person in the sandbox) `src/pov/sandboxMedals.js` feeds a book of its own from the
+killfeed's `kill` (axemen, gunners, worms, birds) and `blast`, so multi-kills, sprees, Splatter and the chaos medals
+work there too; the same stack shows the player's, without the tracker under it (no First Strike: there's no match).
+
+**The announcer** (`src/pov/announcer.js`): every line, key → words (each medal's name, the modes, Flag taken /
+dropped / captured, Hill moved, You are infected, Overtime, One minute remaining, Game over, the winner). The clips
+are `public/announcer/<KEY>.mp3`, recorded from `node tools/announcer-lines.mjs` (JSON; `--missing` lists the ones
+not made yet). A clip plays through the first-person sound chain (master, underwater low-pass, limiter: flat, not
+positional), one line at a time as Halo queues them, a line older than 5 s dropped. A medal with no clip falls back
+to the synthesized voice; a match line with none is silent. The match's lines come from its events
+(`announceMatches`); your own capture or return is left to your medal's line.
 
 Each roster entry carries `medals` (its count this match) and `medalCounts` (`{ KEY: n }`) for the scoreboard.
 Events: `game:medal` `{ id, key, name, kind, mine, order }` for every award. `node tools/medals-check.mjs` checks the

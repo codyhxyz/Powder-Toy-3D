@@ -25,8 +25,8 @@ import { createCombat } from './combat.js';
 import { viewmodelRig, HIT } from './viewmodel.js';
 import { createGame } from '../game/index.js';
 import { createDeathWatch } from './killfeed.js';
-import { createMedals } from './medals.js';
-import { connectAnnouncer } from './announcer.js';
+import { createSandboxMedals } from './sandboxMedals.js';
+import { connectAnnouncer, announceMatches } from './announcer.js';
 import { SPAWNER, ENEMY_KINDS } from '../spawners.js';
 import { createZoom, ZOOM_KEY } from './zoom.js';
 import { createTouchControls } from './touch.js';
@@ -114,8 +114,8 @@ export function createPov(app) {
     bodies: () => [...(player ? [[PLAYER, player]] : []), ...[...npcs.values()].map((n) => [n.id, n.body, n.kind])],
     quiet: () => game.running,   // a team game posts its own (src/game/index.js died)
   });
-  // Halo 3's medals (medals.js), off the killfeed's 'kill' and the match's events
-  const medals = createMedals({ isPlayerDead: () => !!player?.dead });
+  // Halo 3's medals outside a match (sandboxMedals.js; a match's are src/game/feel.js's)
+  const medals = createSandboxMedals({ quiet: () => game.running, isPlayerDead: () => !!player?.dead });
   const loadNpcs = () => (npcLoading ??= import('./npc.js').then((m) => { npcAi = m.createAi({ renderer, getSim: app.getSim }); npcMod = m; return { mod: m, ai: npcAi }; })
     .catch((err) => { console.error('NPCs failed to load', err); npcLoading = null; throw err; }));
   // the player as something weapons hit (an NPC's axe and gun; the player's own never hit it)
@@ -227,7 +227,8 @@ export function createPov(app) {
   });
   const canUse = () => isLocked() || touch.enabled;   // the tools and the kick take input
   createPovAudio({ camera, getVolume: app.getVolume, getScale: app.getScale, state: () => ({ active: active(), player, toolbelt }) });
-  connectAnnouncer(voiceBus);   // the announcer (announcer.js) speaks through the same chain
+  connectAnnouncer(voiceBus);   // the announcer (announcer.js) speaks through the same chain...
+  announceMatches();            // ...and calls the matches' moments
 
   // ---- grid ↔ world
   const toWorld = (g, out) => out.copy(g).multiplyScalar(app.getScale()).add(app.getVolume().position);
@@ -702,6 +703,7 @@ export function createPov(app) {
     }
     game.update(dt, npcMod && npcsWanted ? npcFrame : null);   // the bots, the objectives, the HUD
     deaths.update();   // the killfeed: who died this frame, and to what
+    medals.update();   // the sandbox's medal stack (its fades)
 
     takePerks();
 
@@ -944,7 +946,7 @@ export function createPov(app) {
     get npc() { return npcs.values().next().value ?? null; },   // the first NPC, once loaded (checks)
     get npcs() { return [...npcs.values()]; },
     events: povEvents,           // the POV event bus (checks)
-    medals,                      // Halo 3's medals (medals.js): awarded, award(key)
+    medals,                      // the sandbox's medals (sandboxMedals.js): medals() the player's counts
     game,                        // team games (src/game): start(mode), end(), useLayout(layout), state
     combat,                      // Halo combat (combat.js): frags (frag.js), throw(), red
     get vfx() { return vfx; },

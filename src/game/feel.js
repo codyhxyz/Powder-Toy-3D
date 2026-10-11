@@ -82,6 +82,7 @@ export function createFeel({ shell, roster, bodyOf, alive, clock }) {
     awarded(book.kill(gun ? { ...e, cause: `${e.cause} (${String(gun).toLowerCase()})` } : e, clock()));
   });
   povEvents.on('game:flag', (e) => { if (halo) awarded(book.flag(e)); });
+  povEvents.on('blast', (e) => { if (halo) awarded(book.blast(e.by ?? PLAYER, clock())); });   // Chain Reaction (no by: the player's)
   povEvents.on('game:hill', (e) => { hill = e.at ?? null; book.hillMoved(); });
   povEvents.on('game:end', (r) => { if (halo) awarded(book.end(r)); });
 

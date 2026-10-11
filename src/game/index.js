@@ -17,6 +17,7 @@ import { createArsenal } from './arsenal.js';
 import { CAUSE } from '../pov/halo.js';
 import { createFeel } from './feel.js';
 import { iconFor } from '../pov/killfeed.js';
+import { play as announce } from '../pov/announcer.js';
 
 // Team games in first person: Halo's Team Slayer, Capture the Flag, King of
 // the Hill and Infection, and Siege (TF2's attack/defend on a row of control
@@ -56,6 +57,7 @@ const SPAWN_LIFT_MAX = 40;           // cells a spawn rises at most to clear wha
 const BOT_MS_EASE = 0.05;            // the bots' CPU time per frame is shown as this running average (checks)
 const ROAM_SPAWN_R = 10;             // cells: an enemy spawn, as somewhere to roam to, is a zone this wide
 const ROAM_S = 30;                   // s a Slayer bot heads for one stretch of open ground before the next
+const LAST_MINUTE_S = 60;            // s left on the clock when Halo's announcer calls "One minute remaining"
 // s from a match's result to the next match: the carnage report counts down
 // over its whole stay (rules.js END_SCREEN_S, Halo 3's post-game carnage report)
 const NEXT_MATCH_S = R.END_SCREEN_S;
@@ -571,6 +573,7 @@ export function createGame(shell) {
     }
     if (running) {
       time += dt;
+      if (mode !== 'siege' && ends - time <= LAST_MINUTE_S && ends - time + dt > LAST_MINUTE_S) announce('ONE_MINUTE');   // (the match's other lines: pov/announcer.js announceMatches)
       const t0 = performance.now();
       if (frame) for (const e of bots()) { loadout(e); e.bot.bind(app.getVolume(), sim().g); e.bot.update(dt, frame); }
       botMs += (performance.now() - t0 - botMs) * BOT_MS_EASE;

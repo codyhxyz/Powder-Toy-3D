@@ -132,10 +132,12 @@ draws the muzzle flash, sparks, dust and tracers. The held tools are low-poly an
 
 Every death goes up in a killfeed in the top right, Garry's Mod's death notices with its layout, timing and colours
 (`src/pov/killfeed.js`): *Attacker* [weapon] *Victim*, or only the icon and the victim when you did it yourself or the world
-did. The icon is the killer's weapon, or what the death's cause names (fire, acid, drowning, a fall). The kill icons are
-from [game-icons.net](https://game-icons.net) by Lorc, Delapouite, Skoll, Sbed and Carl Olsen, under
-[CC BY 3.0](https://creativecommons.org/licenses/by/3.0/), recoloured and with their backgrounds removed
-(`tools/killicons.mjs` bakes them).
+did. The icon is the killer's weapon, or what the death's cause names (fire, acid, drowning, a fall). Your kills earn
+Halo 3's medals there too, sandbox or match (Double Kill, Killing Spree, Splatter…), plus five for the sim's chaos (Own
+Goal, Bored, Chain Reaction, Heavy Particles, Flooded); see [docs/modes.md](docs/modes.md). The kill icons and the
+medal badges' icons are from [game-icons.net](https://game-icons.net) by Lorc, Delapouite, Skoll, Sbed and Carl Olsen,
+under [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/), recoloured and with their backgrounds removed
+(`tools/killicons.mjs` and `tools/medal-icons.mjs` bake them).
 
 ## Maps
 

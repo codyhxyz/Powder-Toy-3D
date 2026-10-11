@@ -7,6 +7,9 @@
 // scoreboard can show (feel.js writes entry.medals). Names and rules are Halo 3's
 // (Halopedia, "List of Halo 3 and Halo 3: ODST medals"); four the brief asked for
 // that Halo 3 doesn't have are borrowed from the Halo that does, and say so.
+// Five are the sim's and ours (kind 'chaos': Own Goal, Bored, Chain Reaction,
+// Heavy Particles, Flooded). Outside a match pov/sandboxMedals.js feeds a book
+// of its own from the killfeed's 'kill' and 'blast'.
 // The cause strings come from the combat module (docs/halo-contract.md).
 
 // ---- multi-kills: each kill within this long of the last one chains (Halo 3:
@@ -33,6 +36,15 @@ export const EXTERMINATION_MIN = 4;
 export const PERFECTION_KILLS = 15;
 // Halo 3's Hail to the King: this many kills in a row in one life from inside the hill, before it moves
 export const HILL_KILLS = 5;
+
+// ---- the sim's chaos (ours, not Halo's; kind 'chaos'). Chain Reaction: one body's
+// blast, then at least CHAIN_BLASTS − 1 more set off by anything else (a vehicle
+// going up, a Revenge perk, someone's charge), each within CHAIN_GAP_S of the one
+// before. Only blasts on povEvents count (a bomb, a rocket, a vehicle, a Revenge);
+// the sim's own explosions (TNT, gunpowder) don't announce themselves, so three is
+// already a big chain.
+export const CHAIN_BLASTS = 3;
+export const CHAIN_GAP_S = 1;         // s between two links: a vehicle blows the instant its health runs out
 
 // key → { name, kind, tier }. kind picks the badge's colour and the sting
 // (medalHud.js, audio.js); tier ranks the medals of one kill (the highest is
@@ -80,9 +92,15 @@ export const MEDALS = {
   FLAG_KILL: { name: 'Flag Kill', kind: 'objective', glyph: '⚔' },     // Halo 3's: a melee kill with the flag in hand
   FLAG_RETURNED: { name: 'Flag Returned', kind: 'objective', glyph: '↺' },   // Halo 2's (Halo 3 has none)
   HAIL_TO_THE_KING: { name: 'Hail to the King', kind: 'objective', glyph: '♛' },
+  // the sim's (ours): the cause names them (vitals.js, the burrower), but Own Goal and Chain Reaction
+  OWN_GOAL: { name: 'Own Goal', kind: 'chaos', glyph: '↩' },               // killed by your own blast (the killfeed's self)
+  BORED: { name: 'Bored', kind: 'chaos', glyph: '⚙' },                     // a burrower kill
+  CHAIN_REACTION: { name: 'Chain Reaction', kind: 'chaos', glyph: '⛓' },   // see CHAIN_BLASTS
+  HEAVY_PARTICLES: { name: 'Heavy Particles', kind: 'chaos', glyph: '▤' }, // buried them (The Powder Toy calls sand "heavy particles")
+  FLOODED: { name: 'Flooded', kind: 'chaos', glyph: '≈' },                 // drowned with your kill credit
 };
 // a kind's rank, for the headline of one kill's medals: the rarest wins (then the higher in its table)
-const KIND_RANK = { objective: 1, style: 2, spree: 3, multi: 4 };
+const KIND_RANK = { objective: 1, style: 2, chaos: 2, spree: 3, multi: 4 };
 const tableRank = Object.fromEntries([MULTI_KILLS, SPREES, INFECTION_SPREES, ZOMBIE_SPREES, ...Object.values(WEAPON_SPREES)].flatMap((t) => t.map((k, i) => [k, i])));
 export const rankOf = (key) => (KIND_RANK[MEDALS[key]?.kind] ?? 0) * 100 + (tableRank[key] ?? 0);
 
@@ -98,6 +116,9 @@ const CAUSE_MEDALS = [
   [/sniper/i, 'SNIPER_KILL'],
   [/laser/i, 'LASER_KILL'],
   [/burn|flame|incinerat|torch/i, 'INCINERATION'],
+  [/^bored/i, 'BORED'],              // the burrower's
+  [/^buried/i, 'HEAVY_PARTICLES'],   // vitals.js 'Buried in sand'
+  [/^drowned/i, 'FLOODED'],          // vitals.js 'Drowned in water'
 ];
 export const causeMedal = (cause) => CAUSE_MEDALS.find(([re]) => re.test(cause ?? ''))?.[1] ?? null;
 
@@ -115,6 +136,7 @@ export function createMedalBook(world = {}) {
   const bodies = new Map();
   let mode = null, firstStrike = false;
   const carriers = new Map();   // CTF: carrier id → the flag's team
+  let chain = null;             // a Chain Reaction under way: { by, last, links, done }
 
   const life = () => ({ streak: 0, chain: 0, lastKill: -Infinity, infections: 0, zombieKills: 0, hillKills: 0, runs: new Map() });
   const of = (id) => {
@@ -133,7 +155,7 @@ export function createMedalBook(world = {}) {
 
   return {
     // a new match: everything back to nothing
-    start(m) { mode = m; firstStrike = false; bodies.clear(); carriers.clear(); },
+    start(m) { mode = m; firstStrike = false; bodies.clear(); carriers.clear(); chain = null; },
 
     // game:kill { by, id, cause, killerTeam, victimTeam } at game time t (s): the awards, [{ id, key, name, kind, glyph }]
     kill(e, t) {
@@ -143,6 +165,7 @@ export function createMedalBook(world = {}) {
       v.deaths++;
       const ended = Math.max(v.streak, v.infections, v.zombieKills);
       Object.assign(v, life());   // death ends every run
+      if (e.self) give(out, e.id, 'OWN_GOAL');   // its own blast (pov/killfeed.js 'kill' self; a match's game:kill has none)
       if (!k) return out;         // a suicide or a betrayal: nothing for anyone
       k.kills++;
       if (!firstStrike) { firstStrike = true; give(out, e.by, 'FIRST_STRIKE'); }
@@ -179,6 +202,19 @@ export function createMedalBook(world = {}) {
       if (e.by == null) return out;
       if (e.action === 'captured') give(out, e.by, 'FLAG_SCORE');
       if (e.action === 'returned') give(out, e.by, 'FLAG_RETURNED');
+      return out;
+    },
+
+    // povEvents 'blast' set off by `by` at time t (s): Chain Reaction for whoever's blast set off
+    // CHAIN_BLASTS − 1 more. While a chain runs, its starter's own next blasts neither count nor
+    // keep it going: something else has to go off.
+    blast(by, t) {
+      const out = [];
+      if (chain && t - chain.last > CHAIN_GAP_S) chain = null;
+      if (!chain) { chain = { by, last: t, links: 1, done: false }; return out; }
+      if (by === chain.by) return out;
+      chain.last = t;
+      if (++chain.links >= CHAIN_BLASTS && !chain.done) { chain.done = true; give(out, chain.by, 'CHAIN_REACTION'); }
       return out;
     },
 
