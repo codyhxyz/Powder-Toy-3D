@@ -150,7 +150,8 @@ shader text (C6). Variants that change code size (views, detail levels) are sepa
 `override` constants are for small switches only (F2).
 
 **W18. Every pipeline is created with `create*PipelineAsync` and an explicit layout, and only when its mode is in
-use.** Boot builds the current mode's set behind the loading screen; the near-detail variant is prefetched; other
+use.** The start menu builds the selected map's set while it is up (B5, "Warm on the menu"), so the loading screen
+shows only if Start comes first; the near-detail variant is prefetched; other
 views, world kernels and POV families build on first use with the existing toast. three's mesh pipelines go through
 `renderer.compileAsync`. `gfx/coldShader.js`'s hold, `detailGate`'s warm draw and `gfx/programs.js` go away (B5).
 
@@ -350,7 +351,15 @@ react.dispatch(f, { indirect: sim.args, offset: ARGS.REACT }, { bind, header, pa
 - **Compile budget (W23).** `tools/check-wgsl.mjs --time` reports each pipeline's creation time on SwiftShader. A
   kernel over `PIPELINE_BUDGET_MS` is split (separate entry points, a loop over a rule table instead of unrolled
   code, fewer inlined variants) before it ships, or, for render-only modules, put on `WGSL_MAC_ONLY` with a reason.
-- **Cold start.** Boot builds the current mode's set and awaits it behind the loading screen: the sim step and
+- **Warm on the menu** (the user's call: compile while the player is busy choosing, the way a catalogue site loads
+  behind its first page). `src/preload.js`, once the menu is idle, creates the device (B2) and starts building the
+  selected map's set (the list below) for its grid; selecting or hovering a map with another grid starts that grid's
+  set too, before the click. The default box and the world's window are both 128³, so one warm-up covers most play.
+  Pipelines are cached by source and descriptor (above), so `new Simulation` and the renderer then find them built.
+  The set per grid comes from each module's `WGSL_CHECK` list, the same one `check-wgsl` builds. Start awaits only
+  what is still pending, behind today's loading screen. Nothing here blocks the menu: creation is asynchronous, at
+  most `PIPELINE_CONCURRENCY` at a time. The device made here is the one app.js uses (`launch.gpu`).
+- **Cold start.** Boot builds the current mode's set (already warm from the menu, above) and awaits what remains: the sim step and
   activity kernels, the derived kernels, shadow and GI only if the current view uses them, the current view's base
   volume module, the scene overlays, post, pick. Then, in the background, the current view's near-detail variant
   (`detailGate`'s prefetch). Everything else builds on first use, with the existing toast: another view, the world's
@@ -1705,6 +1714,14 @@ wave's worktrees branch from the merged result.
    I4.2 exact against the last WebGL2 commit (it re-baselines state-hash once). Merge it?
 
 ### K3. Phase 2 (after parity is pinned; each with its proof)
+The user's rules for this list: an optimization lands when a Mac profile shows it matters and the change is simple;
+a second code path (subgroups, `shader-f16`) has to be a clear win to earn its test burden. First in line:
+- **D7 packed state, A/B'd in compute before committing** (the user's priority once parity is pinned). On WebGL2 it
+  measured 8–10% slower per step (react's decode); in compute it may differ. It also halves the state's memory
+  (69 → ~35 MB a copy at 128³, undo snapshots and window moves with it), which matters on phones. Ship it if it wins on
+  time or on memory without losing the D7 statistics.
+- **GPU-side diffs instead of whole-world snapshots**: the multiplayer host diffs 8.4 MB in JS at 10 Hz today; diff
+  bricks on the GPU and read back only changed ones. No zero-copy access is needed for this (W6 stands).
 - **Mesh-only frames.** When only three's meshes move (the default World scene's birds, with camera and sim still),
   keep the converged pre-mesh scene (colour and depth) and re-run only the mesh layer and post instead of the volume
   and far march at 60 Hz: the dominant power cost of the default scene. Render-only.
