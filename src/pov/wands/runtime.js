@@ -63,6 +63,7 @@ export function createWandRuntime(env) {
   let projectiles = [], fields = [], events = [], rayJobs = [], answers = [], transfers = [];
   let lastError = '', lastScan = null;
   let flashes = [];   // impact lights: { at (world cell), rgb, radius, life, left }
+  let landed = [];    // this frame's ended bolts' last stretch, from where each was drawn to where it ended (wand:flight)
   const totals = { casts: 0, rejected: 0, dropped: 0, traceErrors: 0, transferErrors: 0, teleports: 0 };
   const grid = (p) => p.clone().sub(offset);
   const absolute = (p) => p.clone().add(offset);
@@ -249,6 +250,8 @@ export function createWandRuntime(env) {
   }
   function endFlight(r, hit, expiry = false) {
     const dir = r.velocity.clone().normalize();
+    // its trail reaches where it landed, so a bolt that hits within a frame of the wand is still seen leaving it
+    if (r.drawn) landed.push({ from: grid(r.drawn), to: grid(r.at), effect: r.node.effect, material: materialOf(r.node, r.cargo) });
     impacted(r.node, r.at, hit, r.cargo);
     leaf(r.node, r.at, dir, r.cast, { hit, cargo: r.cargo });
     r.cargo = null;
@@ -406,7 +409,8 @@ export function createWandRuntime(env) {
     }
   }
   function draw(dt) {
-    const items = [], lights = [], flights = [];
+    const items = [], lights = [], flights = landed;
+    landed = [];
     const room = () => lights.length < WAND_LIMITS.lights;
     for (const f of fields) {
       items.push({ position: grid(f.at), effect: f.node.effect, material: f.node.params.material, kind: 'field',
@@ -549,7 +553,7 @@ export function createWandRuntime(env) {
   function cancelEffects() {
     for (const r of projectiles) refund(r.cargo);
     for (const job of transfers) refund(job.cargo);
-    projectiles = []; fields = []; events = []; rayJobs = []; answers = []; transfers = []; flashes = [];
+    projectiles = []; fields = []; events = []; rayJobs = []; answers = []; transfers = []; flashes = []; landed = [];
     generation++; tracePending = transferPending = clearancePending = 0;
     visuals.clear(); world.setLights([]);
   }

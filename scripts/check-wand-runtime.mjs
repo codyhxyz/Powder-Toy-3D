@@ -6,6 +6,7 @@ import { addTarget, areaTargets, setHitRules } from '../src/pov/targets.js';
 import { BODY_WIDTH, BODY_HEIGHT } from '../src/pov/constants.js';
 
 import { createWandRuntime, WAND_LIMITS } from '../src/pov/wands/runtime.js';
+import { povEvents } from '../src/pov/events.js';
 const v = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
 const leaf = (effect, params = {}, op = 'self') => ({ op, id: effect, effect,
   params: { mana: 1, radius: 1, power: 10, lifetime: 0.3, speed: 30, ...params } });
@@ -222,6 +223,8 @@ function delayedHarness(latency = 0.15) {
   h.equip([leaf('spark', { speed, lifetime: 2 }, 'projectile')]);
   const view = { tip, tipWorld: tip.clone() };
   const drawn = (item) => item.position.clone().add(item.offset ?? v());
+  const trail = [];
+  const off = povEvents.on('wand:flight', (e) => trail.push(...e.flights));
   await h.step({ fire: true, view, dt });
   assert(drawn(h.visual.items[0]).distanceTo(tip) < 1e-6, 'a bolt is first drawn at the tip');
   assert.equal(h.rays[0][0].from.x, 20, 'its first segment is traced from the eye');
@@ -239,6 +242,26 @@ function delayedHarness(latency = 0.15) {
   assert.equal(h.runtime.stats.projectiles, 0);
   assert(between >= 1, 'the bolt is seen in flight between the tip and a near wall');
   assert(h.calls.length && h.calls.every((c) => Math.abs(c.center.x - wall) < 1e-6), 'it lands on the wall');
+  assert(trail.length && trail[0].from.distanceTo(tip) < 1e-6 && Math.abs(trail.at(-1).to.x - wall) < 1e-6,
+    'its trail runs from the tip to where it landed');
+  off();
+  h.runtime.dispose();
+}
+// Point-blank (the wall nearer than a frame of flight past the tip): drawn at the tip, then its trail to the wall.
+{
+  const wall = 23, tip = v(22.3, 19.6, 20.5), dt = 1 / 60;
+  const h = harness({ trace: (segments) => Promise.resolve(segments.map(({ from, to }) => to.x < wall ? null
+    : { point: from.clone().lerp(to, (wall - from.x) / (to.x - from.x)), normal: v(-1), id: E.WALL })) });
+  h.equip([leaf('spark', { speed: 65, lifetime: 2 }, 'projectile')]);
+  const view = { tip, tipWorld: tip.clone() }, trail = [];
+  const off = povEvents.on('wand:flight', (e) => trail.push(...e.flights));
+  await h.step({ fire: true, view, dt });
+  assert(h.visual.items[0].position.clone().add(h.visual.items[0].offset).distanceTo(tip) < 1e-6);
+  await h.step({ view, dt });
+  assert.equal(h.runtime.stats.projectiles, 0, 'it lands on its first segment');
+  assert(trail.length === 1 && trail[0].from.distanceTo(tip) < 1e-6 && Math.abs(trail[0].to.x - wall) < 1e-6,
+    'its trail still runs from the tip to the wall');
+  off();
   h.runtime.dispose();
 }
 
