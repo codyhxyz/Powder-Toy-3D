@@ -1,5 +1,3 @@
-import * as THREE from 'three';
-
 // Tileable 3D detail noise for smoke, steam and fire (shaders/gfx/media.js),
 // built once on the CPU. One tile spans MEDIA_NOISE_CELLS world cells.
 //   r  billows: inverted Worley (cellular) fBm, the cauliflower puffs of
@@ -10,6 +8,8 @@ import * as THREE from 'three';
 // g, b and a together also make the vector that curls (domain-warps) the gas.
 // Every channel is histogram-equalised to uniform on [0, 1] (mean 0.5), so
 // the shader can modulate density around its mean without biasing it.
+// It is a 64³ rgba8unorm 3D texture in the render kernels' lighting group
+// (shaders/bindings.js binding 10, sampled with linearRepeat).
 export const MEDIA_NOISE_SIZE = 64;   // texels per side
 
 // Lattice periods (cells per tile) of each channel's octaves, coarse to fine,
@@ -108,7 +108,8 @@ function equalise(vals) {
   return vals.map((v) => cdf[Math.round((v - lo) * k)]);
 }
 
-export function createMediaNoise() {
+// The tile's texels, x fastest, 4 bytes each (r, g, b, a as above).
+export function mediaNoiseData() {
   const N = MEDIA_NOISE_SIZE, n3 = N * N * N;
   const ch = [
     fbmTile(N, worley, featurePoints, BILLOW_PERIODS, BILLOW_SEED, -1),   // inverted: puffs around the feature points
@@ -120,26 +121,34 @@ export function createMediaNoise() {
   const data = new Uint8Array(n3 * 4);
   for (let i = 0; i < n3; i++)
     for (let c = 0; c < 4; c++) data[i * 4 + c] = Math.round(eq[c][i] * TEXEL_MAX);
-  const tex = new THREE.Data3DTexture(data, N, N, N);
-  tex.format = THREE.RGBAFormat;
-  tex.type = THREE.UnsignedByteType;
-  tex.minFilter = THREE.LinearFilter;
-  tex.magFilter = THREE.LinearFilter;
-  tex.wrapS = tex.wrapT = tex.wrapR = THREE.RepeatWrapping;
-  tex.generateMipmaps = false;
-  tex.unpackAlignment = 1;
-  tex.needsUpdate = true;
-  return tex;
+  return data;
 }
 
-// Uniform holding the noise. Building it takes a few hundred ms of CPU, so it
-// happens after startup; until then a neutral texel (every channel at its
-// mean) draws the gas without detail.
+// Building the tile takes a few hundred ms of CPU, so it happens after
+// startup; until then every texel is neutral (each channel at its mean) and
+// the gas draws without detail. The texture is made at its full size at once
+// and filled in place, so the bind groups holding it never change.
 const NEUTRAL = 128;
-export function mediaNoiseUniform() {
-  const tex = new THREE.Data3DTexture(new Uint8Array(4).fill(NEUTRAL), 1, 1, 1);
-  tex.needsUpdate = true;
-  const u = { value: tex };
-  setTimeout(() => { u.value = createMediaNoise(); tex.dispose(); }, 0);
-  return u;
+const TEX = { COPY_DST: 0x02, TEXTURE_BINDING: 0x04 };   // (GPUTextureUsage's bits)
+
+/**
+ * The device's media noise texture (one per device): { texture, view, ready },
+ * ready resolving once the tile is in it.
+ * @param {object} gpu
+ */
+export function createMediaNoise(gpu) {
+  if (gpu._mediaNoise) return gpu._mediaNoise;
+  const N = MEDIA_NOISE_SIZE;
+  const texture = gpu.createTexture({
+    label: 'media noise', size: [N, N, N], dimension: '3d', format: 'rgba8unorm', usage: TEX.TEXTURE_BINDING | TEX.COPY_DST,
+  });
+  const write = (data) => gpu.queue.writeTexture({ texture }, data, { bytesPerRow: N * 4, rowsPerImage: N }, [N, N, N]);
+  write(new Uint8Array(N * N * N * 4).fill(NEUTRAL));
+  // (a write lands before the next submit: a frame already recorded draws the tile a frame early, harmlessly)
+  const ready = new Promise((resolve) => setTimeout(() => {
+    if (!gpu.failure && !gpu.lost) write(mediaNoiseData());
+    resolve();
+  }, 0));
+  gpu._mediaNoise = { texture, view: texture.createView({ label: 'media noise', dimension: '3d' }), ready };
+  return gpu._mediaNoise;
 }

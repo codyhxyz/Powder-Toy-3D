@@ -1,9 +1,9 @@
 // Display modes ("views") of the raymarcher.
 //
 // This file is the single source of truth for each view's name, hotkey,
-// description and colour legend. The colormaps below are baked into the GLSL
+// description and colour legend. The colormaps below are baked into the WGSL
 // by src/shaders/render.js, so the legend the UI draws always matches what the
-// shader shows.
+// shader shows. Each view is a shader module of its own there, named by its key.
 //
 // Colormap format: knots [[value, '#rrggbb'], ...]. Knots sit evenly spaced
 // along the legend bar, so the value axis is piecewise (roughly logarithmic).
@@ -144,3 +144,6 @@ export const VIEWS = [
     legend: null, shadows: true,
   },
 ];
+
+/** A view's key (its shader module in src/shaders/render.js) from its id; unknown ids are the realistic view. */
+export const viewKey = (id) => VIEWS.find((v) => v.id === id)?.key ?? 'realistic';

@@ -10,8 +10,9 @@
 // worse of the god view and an eye-level close-up (the close-up is the worst
 // case, since there detail covers the whole screen).
 //
-// A feature compiles in only when on: the shaders see `#define <define> 1`
-// (three.js material defines), so a switched-off feature costs nothing.
+// A feature compiles in only when on: the view's WGSL is generated with it
+// (shaders/render.js volumeFrag(g, { detail }), a JS template switch where the
+// GLSL had `#define <define> 1`), so a switched-off feature costs nothing.
 
 import { CELL_M } from '../scale.js';
 
@@ -34,7 +35,8 @@ export const COST = {
 };
 export const costTier = (ms) => (ms < COST_LOW_MS ? 'low' : ms < COST_MEDIUM_MS ? 'medium' : 'high');
 
-// The features. key: settings key suffix; define: GLSL macro; label: the
+// The features. key: settings key suffix; define: the switch's name in the
+// defines object the shaders take (the GLSL's macro); label: the
 // setting's name; desc: tooltip; cost: tier from tools/detail-bench.mjs
 // (put the measured ms in a comment next to it); fadeM: pixel footprint
 // (metres per pixel) above which the feature draws nothing, so the view
@@ -118,11 +120,11 @@ export const settingKey = (f) => `detail_${f.key}`;
 // settings defaults for every feature, by cost tier
 export const detailDefaults = () => Object.fromEntries(DETAIL.map((f) => [settingKey(f), COST[f.cost].on]));
 
-// three.js `defines` for the features switched on in `settings`
+// the defines object (shaders/render.js volumeFrag's detail) for the features switched on in `settings`
 export const detailDefines = (settings) =>
   Object.fromEntries(DETAIL.filter((f) => settings[settingKey(f)]).map((f) => [f.define, 1]));
 
-// every feature on (tools/check-shaders.mjs compiles this variant too)
+// every feature on (shaders/render.js WGSL_CHECK builds this variant too)
 export const allDetailDefines = () => Object.fromEntries(DETAIL.map((f) => [f.define, 1]));
 
 // Levels for the one visible control: none, the cost-tier defaults, every feature.

@@ -5,7 +5,7 @@
 //
 //   const post = createPost(gpu, { presenter, pixScale });
 //   await post.ready;                    // its pipelines (built at once: boot needs post)
-//   post.render({ prepare, compute, draw, meshes, overlay }, camera, null, dt);
+//   post.render({ prepare, compute, opaque, draw, meshes, overlay }, camera, null, dt);
 //   post.reset();                        // after anything that invalidates history
 //   post.settings.taa / .upscale / .bloom / .exposure (EV) / .sharpen / .look / .raw / .hotStart / .hotFull
 //   post.settings.night / .nightGain / .meter, post.sceneLuma: night-vision goggles (below)
@@ -19,8 +19,14 @@
 //                        after that write, so the write needn't flush (B3). E1's other work (edits,
 //                        paint, the steps) may come before render(), into the same encoder. JS here
 //                        that casts rays from the camera wraps them in post.withoutJitter(fn)
-//   scene pass           draw(rp, post) into post.sceneTarget: colour cleared to 0, depth to 1 (F1)
-//   meshes(post)         three.render into post.sceneTarget.rt (its own submit, loadOp load), if any
+//   opaque(post)         three's opaque meshes first, if any (docs/webgpu.md Sync log S1): three
+//                        renders them into post.sceneTarget.rt clearing it (colour 0, depth 1),
+//                        and the hook returns true; the volume then reads their depth
+//                        (gfx/meshCut.js capture, which also returns true)
+//   scene pass           draw(rp, post) into post.sceneTarget: colour cleared to 0 and depth to 1,
+//                        or both loaded when opaque drew (F1, S1)
+//   meshes(post)         three.render into post.sceneTarget.rt (its own submit, loadOp load), if any:
+//                        what draws after our scene (the transparent meshes)
 //   overlay pass         overlay(rp, post): the rays sprites, colour loaded, depth read-only, if any
 //   endScene             the camera's own projection back; onPass('scene')
 //   TAA pass             → history[next]                                  (fragment)
@@ -1347,13 +1353,17 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
 
     /**
      * The scene pass's descriptor: post.sceneTarget's colour cleared to 0 and
-     * depth to 1, both stored (TAA reads the depth).
+     * depth to 1, both stored (TAA reads the depth); with load, both loaded
+     * instead (three's opaque meshes are in them: the `opaque` hook, S1).
+     * @param {{ load?: boolean }} [opts]
      * @returns {GPURenderPassDescriptor}
      */
-    sceneDescriptor() {
+    sceneDescriptor({ load = false } = {}) {
       return {
-        colorAttachments: [{ view: viewOf(active.color), loadOp: 'clear', storeOp: 'store', clearValue: CLEAR }],
-        depthStencilAttachment: { view: viewOf(active.depth), depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'store' },
+        colorAttachments: [{ view: viewOf(active.color), loadOp: load ? 'load' : 'clear', storeOp: 'store', clearValue: CLEAR }],
+        depthStencilAttachment: {
+          view: viewOf(active.depth), depthClearValue: 1, depthLoadOp: load ? 'load' : 'clear', depthStoreOp: 'store',
+        },
       };
     },
 
@@ -1476,10 +1486,10 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
 
     /**
      * Render a frame through the pipeline into `target` (null = the canvas):
-     * beginScene, prepare, compute, the scene pass, meshes, the overlay,
-     * endScene, finish (the file header). This is the app's view frame: tools
-     * wrap it to count them.
-     * @param {{ prepare?: Function, compute?: Function, draw?: Function, meshes?: Function, overlay?: Function } | Function | null} scene
+     * beginScene, prepare, compute, the opaque meshes, the scene pass, meshes,
+     * the overlay, endScene, finish (the file header). This is the app's view
+     * frame: tools wrap it to count them.
+     * @param {{ prepare?: Function, compute?: Function, opaque?: Function, draw?: Function, meshes?: Function, overlay?: Function } | Function | null} scene
      *   the frame's parts (see the file header); a function is draw alone
      * @param {object} camera
      * @param {object | null} [target] a GPUTexture or { view, width, height, format }
@@ -1509,7 +1519,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
      * history untouched. The output keeps the scene's alpha (premultiplied).
      * @param {object} scene the frame's parts, as render() takes them, without
      *   compute: a still is drawn from the state the last frame derived
-     *   (prepare, draw, meshes, overlay run; no jitter)
+     *   (prepare, opaque, draw, meshes, overlay run; no jitter)
      * @param {object} camera
      * @param {object} target a GPUTexture (rgba8unorm with RENDER_ATTACHMENT) or { view, width, height, format }
      * @returns {boolean} false while post's pipelines are still building
@@ -1570,10 +1580,12 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
     },
   };
 
-  // The scene pass and what follows it in E1: the meshes (three's own submit)
-  // and E2's overlay. Everything here draws into `active`.
+  // The scene pass and what goes around it: three's opaque meshes before it
+  // (Sync log S1: the volume marches to their depth), the meshes after it
+  // (three's own submits) and E2's overlay. Everything here draws into `active`.
   function drawScene(hooks) {
-    const rp = gpu.frame.render(post.sceneDescriptor(), 'scene');
+    const drew = hooks.opaque?.(post) === true;
+    const rp = gpu.frame.render(post.sceneDescriptor({ load: drew }), 'scene');
     try { hooks.draw?.(rp, post); } finally { rp.end(); }
     hooks.meshes?.(post);
     if (hooks.overlay) {
@@ -1592,7 +1604,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
   function hooksOf(scene) {
     if (!scene) return {};
     if (typeof scene === 'function') return { draw: scene };
-    if (scene.isObject3D) throw new Error('post.render takes the frame\'s parts ({ prepare, compute, draw, meshes, overlay }), not a three scene (docs/webgpu.md F1)');
+    if (scene.isObject3D) throw new Error('post.render takes the frame\'s parts ({ prepare, compute, opaque, draw, meshes, overlay }), not a three scene (docs/webgpu.md F1)');
     return scene;
   }
 
