@@ -127,10 +127,15 @@ const railsX = (x0, x1, y = F, zc = MID) => [
   { box: [[x0, y, zc - RAIL_GAUGE / 2], [x1, y + 1, zc - RAIL_GAUGE / 2 + 1]], m: 'RAIL' },
   { box: [[x0, y, zc + RAIL_GAUGE / 2 - 1], [x1, y + 1, zc + RAIL_GAUGE / 2]], m: 'RAIL' },
 ];
-// a light under a shelf or the ceiling at (x, y, z): a crystal lantern (the Mines' light;
-// tagged so a light rule can find them all, and they go last: see the end)
-const LANTERN_LEN = 3;
-const lantern = (x, y, z) => ({ box: [[x, y - 1, z], [x + 1, y, z + LANTERN_LEN]], m: 'CRYSTAL', lantern: true });
+// a light under a shelf or the ceiling at (x, y, z): a torch (the Mines' light: Noita's Mines
+// are lit by torches and lanterns, warm, not by crystal) on a timber stick hung from it, its
+// head (TORCH: elements.js WALL_TORCH, light and no heat: it sets nothing alight) at the
+// stick's foot. Tagged so a light rule can find them all, and they go last: see the end.
+const TORCH_STICK = 2;                 // cells of stick under the shelf
+const lantern = (x, y, z) => [
+  { box: [[x, y - TORCH_STICK, z], [x + 1, y, z + 1]], m: 'BEAM', lantern: true },
+  { box: [[x, y - TORCH_STICK - 1, z], [x + 1, y - TORCH_STICK, z + 1]], m: 'TORCH', lantern: true },
+];
 // a hanging chain: iron, cells down from the ceiling at (x, z)
 const chain = (x, z, len) => ({ box: [[x, TOP - len, z], [x + 1, TOP, z + 1]], m: 'METAL', only: 'AIR' });
 // gold threaded through the rock round the void (veins), and the odd nugget in the earth
@@ -375,6 +380,8 @@ for (const t of tiles) {
 
 export default {
   name: 'mines',
+  // wall torches where the hung ones don't reach (kit.js placeTorches: pillars, the void's walls)
+  torches: { every: 18, max: 2, lights: ['TORCH'] },
   // Noita's Mines: brown earth and dark rock, timber, a lot of it diggable
   palette: { ROCK: 'BASALT', SOFT: 'SANDSTONE', BEAM: 'WOOD', RAIL: 'METAL', RUBBLE: 'RUBBLE' },
   geom: MINES_GEOM,

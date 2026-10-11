@@ -132,7 +132,7 @@ noise field between primitives, as a gallery's overlapping slices do).
 Materials are codes, not elements (`kit.js MAT`): `AIR ROCK SOFT BEAM RAIL
 RUBBLE WATER OIL GOLD CRYSTAL COAL MOSS GRAVEL METAL SAND ICE`, and the
 Noita stuff a biome is dense with, each the element of its name by default:
-`TOXIC BLOOD ACID LAVA SLIME MUD WHISKEY TELEPORTATIUM LEVITATIUM BERSERKIUM
+`TORCH` (a wall torch's head), `TOXIC BLOOD ACID LAVA SLIME MUD WHISKEY TELEPORTATIUM LEVITATIUM BERSERKIUM
 HEALTHIUM POLYMORPHINE GUNPOWDER TNT FUNGUS MEAT NUGGETS CLAY PLANT WOOD`
 (`WOOD` is timber that stays wood when a kit remaps `BEAM`). The kit's
 `palette` maps them to `elements.js` keys, so the Coal Pits can make `ROCK`
@@ -198,7 +198,7 @@ the pieces; `coal.js` and `snow.js` use them):
   to the layer below.
 
 Also for any kit: `temps: { CODE: °C }` lays a code down at that temperature
-(`EMBER`, coal laid down burning; a Snowy Depths lake's water above freezing:
+(`HOTCOAL`, coal laid down burning; a Snowy Depths lake's water above freezing:
 `wangTemp` / `tempJS`, applied by the Descent scenes), and tiles may say
 `max: n` (at most n a region: a rare pool) and `offPath: true` (never on the
 main path: hazards).

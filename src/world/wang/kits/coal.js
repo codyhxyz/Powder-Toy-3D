@@ -9,7 +9,7 @@
 //
 // Then the Coal Pits' dangers, as Noita's: oil seeping out of the rock,
 // gunpowder and TNT caches and powder kegs (cold: nothing burns near them),
-// heaps of coal laid down burning (EMBER, off the main path, with no coal,
+// heaps of coal laid down burning (HOTCOAL, off the main path, with no coal,
 // timber or powder near), acid dripping from pockets in the blobs, lava
 // pockets in the lowest layer only, an acid pit with treasure at its bottom,
 // the remains of what came before (blood, meat, scrap of old machinery), and
@@ -31,7 +31,7 @@ const HIGH = 19;                       // a high blob's middle: over the void, o
 const GOLD_FLECKS = 7;                 // gold specks a tile scatters through its rock (Noita: gold everywhere in it)
 const FLECK_R = 0.8;
 const COAL_SEAMS = 3;                  // coal lenses through its rock
-const EMBER_CLEAR = 9;                 // cells round a burning heap kept free of coal (rock only): it smoulders, it doesn't spread
+const HOT_CLEAR = 9;                 // cells round a burning heap kept free of coal (rock only): it smoulders, it doesn't spread
 const FUNGUS_TUFTS = 3;                // red fungus tufts on the tops
 
 // the island stuff every tile has: the spine, its coal and gold, fungus on the tops
@@ -184,15 +184,15 @@ const tiles = openTiles([
     }),
     sites: [onSpine(28, 1)],
   },
-  // ---- coal laid down burning (EMBER): a smouldering heap on a bare-rock blob off the main
-  // path, no coal, timber or powder within EMBER_CLEAR cells
+  // ---- coal laid down burning (HOTCOAL): a smouldering heap on a bare-rock blob off the main
+  // path, no coal, timber or powder within HOT_CLEAR cells
   {
     name: 'burning coal', weight: 0.25, offPath: true,
     prims: [
       ...island(114, { blobs: [blob([24, LOW - 2, 20], [8, 3, 4])] }),
-      vein([24, LOW, 20], [EMBER_CLEAR + 4, EMBER_CLEAR, EMBER_CLEAR], 'ROCK', ['COAL', 'GOLD', 'FUNGUS'], 0),
+      vein([24, LOW, 20], [HOT_CLEAR + 4, HOT_CLEAR, HOT_CLEAR], 'ROCK', ['COAL', 'GOLD', 'FUNGUS'], 0),
       { box: [[14, SPINE, 15], [34, SPINE + 3, 24]], m: 'AIR', only: 'FUNGUS' },
-      { ball: [[24, LOW, 20], [3, 1.8, 2]], m: 'EMBER', only: 'AIR' },
+      { ball: [[24, LOW, 20], [3, 1.8, 2]], m: 'HOTCOAL', only: 'AIR' },
     ],
   },
   // ---- a lava pocket in a blob of bare rock: the lowest layer only, off the main path
@@ -200,7 +200,7 @@ const tiles = openTiles([
     name: 'lava pocket', weight: 1.5, deepest: 1, offPath: true,
     prims: [
       ...island(115, { blobs: [blob([24, LOW - 1, 20], [9, 4, 4.5])] }),
-      vein([24, LOW, 20], [EMBER_CLEAR + 4, EMBER_CLEAR, EMBER_CLEAR], 'ROCK', ['COAL', 'GOLD', 'FUNGUS'], 0),
+      vein([24, LOW, 20], [HOT_CLEAR + 4, HOT_CLEAR, HOT_CLEAR], 'ROCK', ['COAL', 'GOLD', 'FUNGUS'], 0),
       { box: [[12, SPINE, 15], [36, SPINE + 3, 24]], m: 'AIR', only: 'FUNGUS' },
       basin(24, LOW, 20, 5, 2.5, 2.5, 'LAVA'),
     ],
@@ -228,11 +228,14 @@ const tiles = openTiles([
 export default {
   name: 'coal',
   geom: { OPEN: 1, SPINE },
+  // wall torches (kit.js placeTorches) where an island has a face to hang one on
+  torches: { every: 16, max: 3, lights: ['TORCH'] },
   palette: {
     ROCK: 'ROCK', COAL: 'COAL', BEAM: 'WOOD', RAIL: 'METAL', METAL: 'METAL',
-    RUBBLE: 'RUBBLE', GRAVEL: 'STONE', SAND: 'BROKENCOAL', WATER: 'WATER', GOLD: 'GOLD', CRYSTAL: 'CRYSTAL',
+    RUBBLE: 'RUBBLE', GRAVEL: 'STONE', SAND: 'BROKENCOAL', WATER: 'WATER', GOLD: 'GOLD',
+    CRYSTAL: 'EMBER',   // the Coal Pits' clusters of light are smouldering coal, not crystal (light only)
   },
   // coal laid down burning (it lights at 450 °C, elements.js COAL)
-  temps: { EMBER: 600 },
+  temps: { HOTCOAL: 600 },
   tiles,
 };

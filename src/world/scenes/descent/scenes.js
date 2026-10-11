@@ -202,7 +202,7 @@ const MOUTH_COVER = 2;
 // and Snowy Depths' spawns stand in it.
 const ENTRY_HALL_HALF_X = 10;   // the entry hall: this far each side of the entry shaft in x...
 const ENTRY_HALL_HALF_Z = 7;    // ...and in z (the shaft is GEOM.SHAFT_W across: a walkway round it)
-const ENTRY_HALL_LIGHT = 4;     // its crystal lantern: this far in from the hall's ends, in its ceiling
+const ENTRY_HALL_LIGHT = 4;     // its torches (WALL_TORCH): this far in from the hall's ends, in its ceiling
 const posMod = (a, n) => ((a % n) + n) % n;
 function wangDerived(ints, ceiling) {
   const { U, H } = GEOM;
@@ -463,12 +463,12 @@ int dsTree(int x, int y, int z) {
   return -1;
 }
 
-// the Wang levels' entry hall (see wangDerived), its lantern hung in the ceiling, or -1
+// the Wang levels' entry hall (see wangDerived), its torches hung in the ceiling, or -1
 int dsEntryHall(int x, int y, int z) {
   if (x < DS_EHALL_X0 || x >= DS_EHALL_X1 || z < DS_EHALL_Z0 || z >= DS_EHALL_Z1) return -1;
   if (y < DS_WANG_TOP || y > DS_WANG_TOP + DS_TUN_H) return -1;
   bool lamp = z == DS_ENTRY_CZ && (x == DS_EHALL_X0 + DS_EHALL_LIGHT || x == DS_EHALL_X1 - 1 - DS_EHALL_LIGHT);
-  if (y == DS_WANG_TOP + DS_TUN_H) return lamp ? E_CRYSTAL : -1;
+  if (y == DS_WANG_TOP + DS_TUN_H) return lamp ? E_WALL_TORCH : -1;   // warm, as the galleries' torches (crystal flooded it violet)
   return E_EMPTY;
 }
 

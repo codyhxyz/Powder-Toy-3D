@@ -202,6 +202,8 @@ const tiles = openTiles([
 export default {
   name: 'snow',
   geom: { OPEN: 1, SPINE },
+  // wall lights (kit.js placeTorches): a torch and the crystals' cold light in turn
+  torches: { every: 16, max: 3, lights: ['CRYSTAL', 'TORCH'] },
   palette: {
     ROCK: 'ROCK', SOFT: 'SNOW', BEAM: 'WOOD', RAIL: 'METAL', RUBBLE: 'RUBBLE', SAND: 'SNOW',
     ICE: 'ICE', CRYSTAL: 'CRYSTAL', COAL: 'COAL', GRAVEL: 'STONE',

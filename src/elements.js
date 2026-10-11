@@ -1122,6 +1122,22 @@ const defs = [
   { key: 'BASALT', abbr: 'BSLT', name: 'Basalt', kind: K.SOLID, render: R.OPAQUE, color: '#353331', var: 0.1,
     cond: 0.03, cap: 0.58, melt: 1200, hard: 20, breakInto: 'STONE', sound: 'crack',
     desc: 'Dark lava rock, the flows a volcano leaves on its slopes. Melts back into lava at 1200 °C. Moss grows on it.' },
+  // A wall torch (Descent's galleries: world/wang/kits): a pitch torch's burning
+  // head in a bracket, the Mines' and Coal Pits' light, as Noita's mines are lit
+  // by torches on their walls. Game magic: its flame is only light (gfx/materials.js
+  // TORCH_GLOW) and a flame to look at, never heat: it sets nothing alight and never
+  // burns down (the user's call, 2026-10-11: torches lighting the world misbehaved).
+  // Pitch-soaked wood's numbers; a kick knocks it out (sawdust).
+  { key: 'WALL_TORCH', abbr: 'WTRC', name: 'Wall torch', kind: K.SOLID, render: R.OPAQUE, color: '#ffb25e', var: 0.06,
+    cond: 0.008, cap: 0.6, hard: 4, breakInto: 'SAWDUST', sound: 'thunk',
+    desc: 'Wall torch. A burning torch in a bracket: a warm, flickering light in a dark cave. Its flame sets nothing alight and never burns down.' },
+  // Embers: the Coal Pits' light (world/wang/kits/coal.js), smouldering coal in
+  // the roof and the seams, glowing dull orange as Noita's coal glows where it
+  // has caught. Game magic like the wall torch's: light only (gfx/materials.js
+  // EMBER_GLOW), no heat, so it never spreads and never burns out. Coal's numbers.
+  { key: 'EMBER', abbr: 'EMBR', name: 'Embers', kind: K.SOLID, render: R.OPAQUE, color: '#c2502a', var: 0.15,
+    cond: 0.01, cap: 0.4, hard: 3, breakInto: 'BROKENCOAL', sound: 'crack',
+    desc: 'Embers. Smouldering coal glowing a dull orange in the dark. It gives light but no heat: it never spreads and never burns out.' },
 ];
 
 // σ (S/m) of a conductor given as conducts: true with no elec: a metal. The

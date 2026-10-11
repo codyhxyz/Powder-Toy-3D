@@ -1,4 +1,4 @@
-import { ELEMENTS, E } from '../elements.js';
+import { ELEMENTS, E, K } from '../elements.js';
 import { SAVING_GRACE_HEALTH } from './perks.js';
 
 // Health, breath and everything that hurts the first-person body. The player
@@ -111,6 +111,12 @@ const lower = (id) => ELEMENTS[id].name.toLowerCase();
 const fmtT = (T) => `${Math.round(T).toLocaleString('en-US')} °C`;
 const clamp01 = (x) => Math.min(1, Math.max(0, x));
 const relCond = (id) => Math.min(SKIN_COND, ELEMENTS[id].cond) / SKIN_COND;
+// Boots and gloves: frozen ground (ice, snow, the Snowy Depths' rock at −15 °C) chills the
+// skin no further than SKIN_COLD_T, so walking on it or touching a wall never hurts (Noita's
+// Snowy Depths don't freeze you on their ice either). Solids and powders only: liquid nitrogen,
+// cold water and cold gases still freeze you (they soak through).
+const SHOD = new Set([K.SOLID, K.POWDER]);
+const contactT = (id, T) => (SHOD.has(ELEMENTS[id]?.kind) ? Math.max(T, SKIN_COLD_T) : T);
 
 function heatCause(id, T) {
   if (id === E.LAVA) return `Killed by lava, ${fmtT(T)}`;
@@ -283,7 +289,7 @@ export function createVitals(emit, perks = null) {
     const n = env.contactN;
     let kSum = 0, kT = 0, acid = 0, worst = 0, worstId = E.EMPTY, worstT = BODY_T;
     for (let i = 0; i < n; i++) {
-      const id = env.contactId[i], T = env.contactT[i];
+      const id = env.contactId[i], T = contactT(id, env.contactT[i]);
       const k = relCond(id);
       kSum += k; kT += k * T;
       const flux = k * Math.abs(T - v.skinT);
