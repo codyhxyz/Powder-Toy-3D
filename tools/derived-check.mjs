@@ -24,12 +24,19 @@
 //           same run without the fold before the shift, must differ
 //   units   the fused peak (boost stages 3-5) against the separable stages, bit for
 //           bit; the brick map's info words: the WGSL decoders against their JS twins
-//           on every combination, and a scene's bricks against what they hold
+//           on every combination, and a scene's bricks against what they hold (a lit
+//           lamp's light with LAMP_ROOM_GAIN included)
+//   jet     falling water from whitewater's aeration field (shaders/fields.js jetWGSL,
+//           with a stand-in for gfx/foam.js's buffer): every kind of record through
+//           the EMA, the boost, the thin mask and the brick map against a JS twin, the
+//           current copy, detaching; and incremental == full while the aeration
+//           starts and stops over a still world, with its negative control (no rebuild
+//           at the start and stop: derived.test.dropJetToggle) that must differ
 // Any difference between incremental and full means a dirty set missed a change, or
 // a pass read a value its list didn't cover. Each stage also shows that the
 // incremental lists skipped bricks, so a comparison isn't vacuous.
 //
-// usage: node tools/derived-check.mjs [--stage steps,writes,shift,pending,units] [--case name,…] [--size N] [--port N]
+// usage: node tools/derived-check.mjs [--stage steps,writes,shift,pending,units,jet] [--case name,…] [--size N] [--port N]
 //   --case runs only those cases (the harness's CASES), in one browser
 //   --size N runs the cases at N³, the moving ones in an N×… window twice as wide (2N×N×N);
 //           else at their own (32³, 64×32×32: the container's). On the Mac (docs/webgpu.md
@@ -47,6 +54,7 @@ const STAGES = {
   shift: [['shift', 'shiftStill'], ['shiftModel']],
   pending: [['shiftPending'], []],
   units: [[], ['fused', 'bits']],
+  jet: [['jetToggle'], ['jet']],
 };
 const size = opt('size') ? Number(opt('size')) : null;
 if (size !== null && !(size >= 16 && size % 16 === 0)) throw new Error(`--size ${opt('size')}: a multiple of 16 (whole supertiles)`);

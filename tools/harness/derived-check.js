@@ -7,7 +7,11 @@
 //   shiftModel     the window shift's kernels and copies against a CPU model
 //   fused          the fused peak (boost stages 3-5) against the separable stages
 //   bits           the brick map's info words: the WGSL decoders against the
-//                  JS twins, and a scene's bricks against what they hold
+//                  JS twins, and a scene's bricks against what they hold (a
+//                  lit lamp's light with LAMP_ROOM_GAIN)
+//   jet            falling water from whitewater's aeration field (shaders/
+//                  fields.js jetWGSL): every record kind through the EMA,
+//                  the boost and the thin mask, against a JS twin
 //   budget:*       tools/budgets/derived.mjs
 //   bench          GPU ms per derived kernel, incremental and full
 
@@ -19,7 +23,9 @@ import { E, ELEMENTS, TOOLS } from '/src/elements.js';
 import { SEED_MAX, BRICK, brickIdOf, brickCoordOf } from '/src/shaders/common.js';
 import { AGE, DIRTY } from '/src/shaders/fields.js';
 import { unpackBrickInfo, BRICK_INFO, AIR } from '/src/shaders/bindings.js';
-import { LOOK } from '/src/gfx/materials.js';
+import { LOOK, LAMP_GLOW, LAMP_ROOM_GAIN } from '/src/gfx/materials.js';
+import { LAMP_DC } from '/src/electricity.js';
+import { TRAIL_LONE_MIN } from '/src/shaders/gfx/liquidDetail.js';
 
 const h = await boot({ label: 'derived-check' });
 const gpu = h.gpu;
@@ -92,17 +98,17 @@ const SCENES = {
   },
   // bricks that each hold one thing (the brick bits test, 32³; BITS below)
   bits(set) {
-    for (const [, id, lo, temp] of BITS) {
+    for (const [, id, lo, temp, ctype] of BITS) {
       if (id === null) continue;
       for (let y = lo[1] * 4; y < (lo[1] + 1) * 4; y++)
         for (let z = lo[2] * 4; z < (lo[2] + 1) * 4; z++)
           for (let x = lo[0] * 4; x < (lo[0] + 1) * 4; x++) {
-            set(x, y, z, Array.isArray(id) ? id[x & 1] : id, temp ? { temp } : {});
+            set(x, y, z, Array.isArray(id) ? id[x & 1] : id, { ...(temp ? { temp } : {}), ...(ctype ? { ctype } : {}) });
           }
     }
   },
 };
-// The bits scene's bricks: [what, element (or two, alternating by x), brick, temperature]
+// The bits scene's bricks: [what, element (or two, alternating by x), brick, temperature, ctype]
 const BITS = [
   ['water', E.WATER, [1, 0, 1]],
   ['rubble', E.STONE, [5, 0, 1]],
@@ -111,6 +117,8 @@ const BITS = [
   ['water and oil', [E.WATER, E.OIL], [5, 5, 1]],
   ['lava', E.LAVA, [1, 5, 1]],
   ['empty', null, [3, 7, 3]],
+  ['lit lamp', E.LAMP, [3, 3, 6], null, LAMP_DC],   // (src/electricity.js: a lamp on a battery's current)
+  ['lamp', E.LAMP, [6, 2, 3]],
 ];
 
 // Loads scene `name` into sim from Math.random seeded with `seed`.
@@ -200,6 +208,15 @@ const CASES = {
     slab: E.WALL, shifts: { 2: [[16, 0]], 16: [[0, -8]], 30: [[-16, 0]] },
     checkMoves: true, mustSkip: true, control: 'dropFold',
   },
+  // falling water (shaders/fields.js jetWGSL) in a still world: whitewater's
+  // aeration attached with records over settled bricks (JET_RECORDS), then
+  // detached, each time long enough for the lists to empty again. Its start
+  // and stop rebuild every brick (src/derived.js updateDirty); without that
+  // (the control) the settled bricks would keep what they held
+  jetToggle: {
+    scene: 'pool', size: 32, warm: 4, settle: SETTLE, frames: 36, spf: 0, aer: { on: 1, off: 19 },
+    control: 'dropJetToggle',
+  },
 };
 // The grid of a case at --size n (tools/derived-check.mjs): n³, or a window
 // twice as wide for the moving cases (as 64×32×32 is to 32); else its own.
@@ -241,9 +258,12 @@ function fillSlab(sim, dx, dz, tool = E.SAND) {
 }
 
 // test: derived.test's switches for this run (the negative controls)
+const NO_CONTROLS = { dropFold: false, dropJetToggle: false };
 async function scripted(sim, derived, spec, incremental, test = {}) {
   const g = sim.g;
-  Object.assign(derived.test, { dropFold: false }, test);
+  Object.assign(derived.test, NO_CONTROLS, test);
+  sim.attachAeration(null);
+  let aer = null;
   sim.origin.set(0, 0, 0);   // (seeds hash world cells: a run starts where the last began)
   h.scene(sim, spec.scene);
   sim.frame = 0;
@@ -272,6 +292,8 @@ async function scripted(sim, derived, spec, incremental, test = {}) {
       sim.shift(dx, dz);
       fillSlab(sim, dx, dz, spec.slab);
     }
+    if (spec.aer?.on === f) sim.attachAeration(aer = fakeAeration(sim, JET_RECORDS, 1));
+    if (spec.aer?.off === f) sim.attachAeration(null);
     derived.updateBricks();
     const due = spec.checkMoves ? Boolean(spec.shifts[f] || spec.shifts[f - 1]) : f % COMPARE_EVERY === COMPARE_EVERY - 1;
     if (due || f === spec.frames - 1) {
@@ -279,7 +301,9 @@ async function scripted(sim, derived, spec, incremental, test = {}) {
       lists.push(await derived.readLists());
     }
   }
-  Object.assign(derived.test, { dropFold: false });
+  Object.assign(derived.test, NO_CONTROLS);
+  sim.attachAeration(null);
+  aer?.dispose();
   return { snaps, lists };
 }
 
@@ -571,7 +595,13 @@ test('bits', async () => {
       'water and oil': (u) => u.matter && has(u, B.MIXED) && has(u, B.SURF),
       lava: (u) => u.matter && has(u, B.OPAQUE) && lit(u),
       empty: (u) => u.info === 0 && !lit(u),
+      // a lamp is opaque matter: lit, it sheds LAMP_ROOM_GAIN × its glow
+      // through its open faces (the brick's 96, × GLOW_FACE_GAIN = BRICK
+      // each), averaged over the brick's 64 cells; unlit and cold, nothing
+      'lit lamp': (u) => u.matter && has(u, B.OPAQUE) && u.emit.every((x, k) => Math.abs(x - lampWant[k]) <= 1e-5 * lampWant[k]),
+      lamp: (u) => u.matter && has(u, B.OPAQUE) && !lit(u),
     };
+    const lampWant = LAMP_GLOW.map((v) => Math.fround(+v.toFixed(4)) * LAMP_ROOM_GAIN * ((96 * BRICK) / 64));
     const liquids = LOOK[E.WATER].ch === 0 && LOOK[E.OIL].ch === 0;   // (both in the liquid channel, so MIXED holds)
     const seen = [];
     for (const [what, , b] of BITS) {
@@ -589,6 +619,115 @@ test('bits', async () => {
   return out;
 });
 
+// ---------------------------------------------------------------- falling water (jetWGSL)
+// A stand-in for whitewater's aeration field (gfx/foam.js, U12): records put
+// by hand, both copies, `cur` the current one. sim.attachAeration takes it.
+const half = (x) => {   // f32 → f16 bits, for values f16 holds exactly
+  if (x === 0) return 0;
+  const u = new Uint32Array(new Float32Array([x]).buffer)[0];
+  return ((u >>> 16) & 0x8000) | ((((u >>> 23) & 255) - 112) << 10) | ((u >>> 13) & 1023);
+};
+function fakeAeration(sim, records, cur = 1) {
+  const g = sim.g, words = new Uint32Array(4 * g.slots);   // vec2u per slot, two copies
+  for (const { at: [x, y, z], f, copy = cur } of records) {
+    if (x >= g.nx || y >= g.ny || z >= g.nz) continue;
+    const i = 2 * (copy * g.slots + cellSlot(g, x, y, z));
+    words[i] = half(f[0]) | (half(f[1]) << 16);
+    words[i + 1] = half(f[2]) | (half(f[3]) << 16);
+  }
+  const buffer = gpu.createBuffer({ label: 'fake aeration', size: words.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+  gpu.write(buffer, 0, words);
+  return { active: true, buffer, cur, step() {}, idle() {}, reset() {}, dispose: () => buffer.destroy() };
+}
+// (aeration, presence) of a record, as jetWGSL reads it (the JS twin)
+const jetOf = ([x, y, z, w]) => {
+  if (y > 0.5) return w < 0.5 ? [x, 1] : [0, 0];
+  return w > (x > 0.5 ? 0 : TRAIL_LONE_MIN) ? [z, 1] : [0, 0];   // a stream's wake, or a lone parcel's last steps
+};
+// Records in the air over the pool scene's tank (32³): every kind, and one in
+// the other copy where this copy has none.
+const JET_RECORDS = [
+  { what: 'liquid off the ground', at: [12, 24, 12], f: [0.625, 1, 0, 0] },
+  { what: 'liquid in a stream', at: [20, 24, 12], f: [0.75, 2, 0, 0] },
+  { what: 'grounded liquid', at: [12, 24, 20], f: [0.5, 1, 0, 1] },
+  { what: 'a stream\'s wake', at: [20, 24, 20], f: [1, 0, 0.25, 0.25] },
+  { what: 'a lone parcel\'s fresh wake', at: [6, 24, 26], f: [0, 0, 0.5, 0.875] },
+  { what: 'a lone parcel\'s older wake', at: [26, 24, 6], f: [0, 0, 0.5, 0.75] },
+  { what: 'the other copy\'s', at: [16, 28, 16], f: [0.625, 1, 0, 0], copy: 0 },
+];
+test('jet', async () => {
+  const out = { checks: [] };
+  const { sim, derived, dispose } = await h.make(32);
+  let aer = null;
+  try {
+    const g = sim.g;
+    h.scene(sim, 'pool');
+    for (let i = 0; i < 4; i++) sim.step();
+    sim.incremental = false;
+    derived.updateBricks();
+    const before = await derived.read();
+    aer = fakeAeration(sim, JET_RECORDS, 1);
+    sim.attachAeration(aer);
+    derived.updateBricks();
+    const r = await derived.read();
+    // the thin mask's y, z at every cell: aeration × presence and presence,
+    // half floats as jetWGSL makes them (and 0 wherever no record shows)
+    const want = new Map();
+    for (const rec of JET_RECORDS) if ((rec.copy ?? 1) === aer.cur) want.set(rec.at.join(','), jetOf(rec.f));
+    let bad = 0;
+    const firstBad = [];
+    for (let z = 0; z < g.nz; z++)
+      for (let y = 0; y < g.ny; y++)
+        for (let x = 0; x < g.nx; x++) {
+          const [a, m] = want.get(`${x},${y},${z}`) ?? [0, 0];
+          const i = 4 * (x + g.nx * (y + g.ny * z));
+          if (r.fieldThin[i + 1] !== half(Math.fround(a * m)) || r.fieldThin[i + 2] !== half(m)) {
+            bad++;
+            if (firstBad.length < 4) firstBad.push(`${x},${y},${z}: y ${r.fieldThin[i + 1]} z ${r.fieldThin[i + 2]}`);
+          }
+        }
+    const shown = [...want.values()].filter(([, m]) => m).length;
+    check(out, `thin mask y, z == the JS twin at every cell (${shown} records show, ${JET_RECORDS.length - shown} don't)`, !bad && shown === 4, `${bad} cells: ${firstBad.join('; ')}`);
+    // the EMA: falling water at full liquid occupancy at once; the rest as before
+    const ema = words(r.ema), ema0 = words(before.ema);
+    const per = JET_RECORDS.map((rec) => {
+      const s = cellSlot(g, ...rec.at), shows = (rec.copy ?? 1) === aer.cur && jetOf(rec.f)[1] > 0;
+      const x = ema[s] & 255, ok = shows ? x === 255 : x === (ema0[s] & 255);
+      return { rec, shows, x, ok };
+    });
+    check(out, `EMA liquid occupancy: 255 at the ${per.filter((q) => q.shows).length} records that show, unchanged at the rest`,
+      per.every((q) => q.ok), per.filter((q) => !q.ok).map((q) => `${q.rec.what}: ${q.x}`).join('; '));
+    // the boost: a lone jet cell in the air counts as current liquid, so it is boosted (thin mask x)
+    const thinX = (t, at) => t.fieldThin[4 * (at[0] + g.nx * (at[1] + g.ny * at[2]))];
+    const lone = JET_RECORDS.filter((rec) => (rec.copy ?? 1) === aer.cur && jetOf(rec.f)[1] > 0);
+    check(out, `boost: the ${lone.length} jet cells are boosted (thin mask x > 0; 0 before)`,
+      lone.every((rec) => thinX(r, rec.at) !== 0 && thinX(before, rec.at) === 0),
+      lone.map((rec) => `${rec.what}: ${thinX(before, rec.at)} → ${thinX(r, rec.at)}`).join('; '));
+    // the brick map: the thin bit reads every cubic channel's mask, the jet's presence (z) among them
+    const bw = words(r.brick), bw0 = words(before.brick);
+    const info = (w, at) => w[4 * brickIdOf(g, ...at.map((v) => Math.floor(v / BRICK))) + 3];
+    const bricks = lone.map((rec) => ({ rec, was: unpackBrickInfo(info(bw0, rec.at)), now: unpackBrickInfo(info(bw, rec.at)) }));
+    check(out, 'brick map: the jet cells\' bricks were empty and now hold matter with the thin bit',
+      bricks.every((q) => !q.was.matter && q.now.matter && (q.now.bits & BRICK_INFO.THIN)),
+      bricks.map((q) => `${q.rec.what}: ${JSON.stringify(q.was)} → ${JSON.stringify(q.now)}`).join('; '));
+    // the copy: the same records read from the other copy show the decoy instead
+    aer.cur = 0;
+    derived.updateBricks();
+    const c0 = await derived.read();
+    const texel = (at) => 4 * (at[0] + g.nx * (at[1] + g.ny * at[2]));
+    const decoy = JET_RECORDS.find((rec) => rec.copy === 0), first = JET_RECORDS[0];
+    check(out, 'the current copy decides (cur = 0 shows the other copy\'s record, and not this one\'s)',
+      c0.fieldThin[texel(decoy.at) + 2] === half(1) && c0.fieldThin[texel(first.at) + 2] === 0
+      && r.fieldThin[texel(decoy.at) + 2] === 0 && r.fieldThin[texel(first.at) + 2] === half(1));
+    // off: detached, every jet is gone again
+    sim.attachAeration(null);
+    derived.updateBricks();
+    const off = await derived.read();
+    const anyJet = (t) => { for (let i = 0; i < t.length; i += 4) if (t[i + 1] || t[i + 2]) return true; return false; };
+    check(out, 'detached: no jet left in the thin mask', anyJet(r.fieldThin) && !anyJet(off.fieldThin));
+  } finally { aer?.dispose(); dispose(); }
+  return out;
+});
 // ---------------------------------------------------------------- budgets (tools/budgets/derived.mjs)
 const measure = async (fn) => {
   const before = { ...gpu.stats };
