@@ -5,17 +5,18 @@
 // rebuild) on the same state, derives the quiet map from it, and counts the
 // bricks where they differ. They must never differ (tools/harness/sim-activity.js).
 //
-// Each scene loads from a seeded Math.random, then steps; between stretches of
+// Each scene loads from a seeded Math.random (the seed also offsets sim.frame,
+// so each seed's random streams differ), then steps; between stretches of
 // steps it runs the state writers (every brush tool, an undo, a readState/load,
 // an in-place edit), so their flags are checked too.
 //   --harness  without the app: the sim harness page (tools/harness/sim-check.html),
 //              scenes built on the CPU by presets.js buildPreset, 64³ by default,
-//              --runs seeds a scene, one browser each: 120 steps (60 maps) a run
-//              keeps each within ~3 minutes on SwiftShader (lab and volcano × 3
-//              runs: 360 maps)
+//              --runs seeds a scene, one browser each: 100 steps (50 maps) a run
+//              keeps each within ~3 minutes on SwiftShader with the unrolled move
+//              (lab and volcano × 3 runs: the 300 maps of docs/webgpu.md D4)
 //   (default)  in the app on a dev server at --port, ?size= and its presets
 // usage: node tools/activity-check.mjs [--harness] [--scenes lab,volcano] [--size 64]
-//          [--steps 120] [--runs 3] [--noskip] [--port N]
+//          [--steps 100] [--runs 3] [--noskip] [--port N]
 import { launchBrowser, newTestContext, ready, gpuInfo } from './browser.mjs';
 import { startVite } from './vite-server.mjs';
 import { openHarness } from './harness/open.mjs';
@@ -25,7 +26,7 @@ const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i
 const HARNESS = args.includes('--harness');
 const scenes = opt('scenes', HARNESS ? 'lab,volcano' : 'lab,volcano,island').split(',');
 const size = Number(opt('size', HARNESS ? '64' : '128'));
-const STEPS = +opt('steps', HARNESS ? '120' : '600');   // steps per run, in stretches between the writers
+const STEPS = +opt('steps', HARNESS ? '100' : '600');   // steps per run, in stretches between the writers
 const RUNS = +opt('runs', HARNESS ? '3' : '1');         // runs per scene, seeds SEED, SEED + 1, …
 const STRETCHES = 6;                         // stretches of steps per scene
 const SEED = 12345;                          // Math.random seed (mulberry32, as tools/regress.mjs)
@@ -58,7 +59,10 @@ if (HARNESS) {
           const { activityCheck } = await import('/tools/harness/sim-activity.js');
           const sim = await h.make(size);
           try {
-            return await activityCheck(sim, { load: (s) => h.scene(s, scene, seed), steps, stretches, noskip, E: h.E });
+            // (the seed also moves the step count every random stream hashes: the
+            // presets' dynamics don't read the cells' seeds, so runs would repeat)
+            const load = (s) => { h.scene(s, scene, seed); s.frame += 1000 * (seed - 12345); };
+            return await activityCheck(sim, { load, steps, stretches, noskip, E: h.E });
           } finally { sim.dispose(); }
         }, { scene, size, steps: STEPS, stretches: STRETCHES, noskip, seed });
         if (report(`${scene} (seed ${seed})`, r)) bad++;

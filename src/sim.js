@@ -220,6 +220,7 @@ export class Simulation {
     this.test = { listOrder: null, blockOrder: null, raceProbe: false, syncAfterShift: false, logCounts: false };
     this.countsLog = [];
     this._shiftListeners = [];
+    this._scratchGroups = [];   // [edit kernel's group cache, key] of the groups holding the edit scratch
 
     // ---- buffers (docs/webgpu.md C1) ----
     const S = GPUBufferUsage.STORAGE, CS = GPUBufferUsage.COPY_SRC, CD = GPUBufferUsage.COPY_DST;
@@ -598,7 +599,7 @@ export class Simulation {
   _editScratch(bytes) {
     if (!this.editScratch || this.editScratch.size < bytes) {
       if (this.editScratch) this._retire(this.editScratch);
-      for (const [groups, key] of this._scratchGroups ?? []) groups.delete(key);
+      for (const [groups, key] of this._scratchGroups) groups.delete(key);
       this._scratchGroups = [];
       this.editScratch = this.gpu.createBuffer({ label: `sim${this.id} edit scratch`, size: Math.max(bytes, 64 * 32), usage: GPUBufferUsage.STORAGE });
     }
