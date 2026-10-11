@@ -606,7 +606,7 @@ export class Simulation {
     this._dispatch(this.kernels.react, { indirect: this.args, offset: ARGS.REACT }, {
       bind: [this.tables, this.bindRW, this.reactGroup], header: rh,
       params: {
-        frame: this.frame, gravity: this.gravity, faces: FACES, rays: Boolean(this.rays.stepped), ...modes,
+        frame: this.frame, gravity: this.gravity, faces: FACES, headScan: this.g.ny, rays: Boolean(this.rays.stepped), ...modes,
         airMode: this._airMode, ambientHeat: this._ambientHeat,
       },
     });
