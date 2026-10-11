@@ -13,12 +13,34 @@ function volume(bounds, at, step = 1) {
   }
   return { ids, options: { size, origin, bounds, step } };
 }
+// The indexed contract, then the mesh as a triangle soup for the checks below.
+function soup(indexed) {
+  const { positions, normals, ids, indices } = indexed;
+  assert(positions instanceof Float32Array);
+  assert(normals instanceof Float32Array);
+  assert(ids instanceof Uint8Array);
+  assert(indices instanceof (ids.length > 0xffff ? Uint32Array : Uint16Array), 'Uint16 indices below primitive restart');
+  assert.equal(positions.length, normals.length);
+  assert.equal(positions.length, ids.length * 3);
+  assert.equal(indices.length % 3, 0);
+  const used = new Uint8Array(ids.length), tuples = new Set();
+  for (const i of indices) { assert(i < ids.length, 'index in range'); used[i] = 1; }
+  assert(used.every(Boolean), 'every vertex used');
+  for (let i = 0; i < ids.length; i++) {
+    tuples.add(`${positions.subarray(3 * i, 3 * i + 3)};${normals.subarray(3 * i, 3 * i + 3)};${ids[i]}`);
+  }
+  assert.equal(tuples.size, ids.length, 'no duplicate (position, normal, id) vertices');
+  const m = { positions: new Float32Array(indices.length * 3), normals: new Float32Array(indices.length * 3), ids: new Uint8Array(indices.length) };
+  indices.forEach((v, i) => {
+    m.positions.set(positions.subarray(3 * v, 3 * v + 3), 3 * i);
+    m.normals.set(normals.subarray(3 * v, 3 * v + 3), 3 * i);
+    m.ids[i] = ids[v];
+  });
+  return m;
+}
 function mesh(bounds, at, step = 1) {
   const v = volume(bounds, at, step);
-  const m = buildSurfaceMesh(v.ids, v.options);
-  assert(m.positions instanceof Float32Array);
-  assert(m.normals instanceof Float32Array);
-  assert(m.ids instanceof Uint8Array);
+  const m = soup(buildSurfaceMesh(v.ids, v.options));
   assert.equal(m.positions.length, m.normals.length);
   assert.equal(m.positions.length, m.ids.length * 3);
   assert.equal(m.positions.length % 9, 0);
@@ -215,4 +237,4 @@ assert.throws(() => buildSurfaceMesh(input.ids.subarray(1), input.options), Rang
 assert.throws(() => buildSurfaceMesh(new Uint8Array(8), { size: [2, 2, 2], origin: [0, 0, 0], bounds: [0, 0, 0, 2, 2, 2] }), /padded/);
 // Topology-only padding is insufficient for chunk-independent gradients.
 assert.throws(() => buildSurfaceMesh(new Uint8Array(27), { size: [3, 3, 3], origin: [-1, -1, -1], bounds: [0, 0, 0, 1, 1, 1] }), /padded/);
-console.log('surface-mesh-check: PASS (smooth/unit/outward normals, fallback, exact seams, isolated/manifold/winding, high IDs, thin branch/tunnel, steps 1/2/4, 255 closed sign cases, validation; 32x32 plane: 2048 triangles vs 8192 tetrahedra, 75% reduction)');
+console.log('surface-mesh-check: PASS (indexed, unique vertices, smooth/unit/outward normals, fallback, exact seams, isolated/manifold/winding, high IDs, thin branch/tunnel, steps 1/2/4, 255 closed sign cases, validation; 32x32 plane: 2048 triangles vs 8192 tetrahedra, 75% reduction)');
