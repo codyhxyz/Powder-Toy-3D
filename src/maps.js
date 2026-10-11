@@ -52,6 +52,19 @@ export const GAMEMODES = [
   { key: 'siege', name: 'Siege', team: true, desc: 'Attack the core, then swap sides. The faster capture wins.' },
 ];
 
+// One-click Play: the start menu's top bar (ui/menu.js), a gamemode on the map
+// built for it, with the team picked for you (src/game auto-balance). Halo 3
+// matchmaking's way: you pick a playlist, not a map and a side. Shown only in
+// builds with the team games (src/main.js). ?mode=<a team mode> without ?map=
+// boots into its entry here too.
+//   key          its id (the button's data-play)
+//   mode, map    a GAMEMODES key, a MAPS key that lists it
+//   name, desc   the button's label and its line
+export const QUICK_PLAY = [
+  { key: 'slayer', mode: 'slayer', map: 'damValley', name: 'Play', desc: 'Team Slayer · Dam Valley' },
+  { key: 'siege', mode: 'siege', map: 'damValley', name: 'Siege', desc: 'Classes · attack and defend' },
+];
+
 export const mapByKey = (key) => MAPS.find((m) => m.key === key) ?? null;
 export const mapsFor = (mode) => (mode === 'sandbox' ? MAPS : MAPS.filter((m) => m.modes?.includes(mode)));
 export const isWorld = (m) => !m.preset;

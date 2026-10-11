@@ -415,7 +415,13 @@ const interact = createInteract();   // look + E (interact.js): perks, and Desce
 
   const camPose = () => ({ pos: camera.position.clone(), quat: camera.quaternion.clone(), fov: camera.fov });
 
-  async function enter() {
+  // Drop in. A call while a drop-in is under way waits for it (app.js startMode
+  // starts a match once the player exists). swoop: s of the flight down from the
+  // god view (a match: 0, Halo's cut straight to the eyes); hint: the keys' hint
+  // on the first drop-in (a match shows its own card, game/hud.js).
+  let dropping = null;
+  function enter(opts) { return starting ? dropping : (dropping = dropIn(opts)); }
+  async function dropIn({ swoop = SWOOP_S, hint = true } = {}) {
     if (mode === 'on' || mode === 'entering' || starting) return;
     if (app.mp.isGuest) { hud.toast("POV isn't available as a guest yet"); return; }
     if (mode === 'exiting') {   // changed our mind halfway out: fly back in
@@ -464,14 +470,14 @@ const interact = createInteract();   // look + E (interact.js): perks, and Desce
     classes?.spawned(player);
     enteredAt.copy(dropPoint).add(app.getSim().origin);
     deadSeen = false;
-    povCam.startSwoop('in', camPose(), { duration: SWOOP_S });
+    povCam.startSwoop('in', camPose(), { duration: swoop });
     camera.near = POV_NEAR * app.getScale();
     camera.updateProjectionMatrix();
     mode = 'entering';
     document.body.classList.add('pov-on');
     hud.dismissHint();
     povHud.show(true);
-    if (firstEntry) { povHud.showHint(); firstEntry = false; }
+    if (firstEntry && hint) { povHud.showHint(); firstEntry = false; }
     app.requestRender();
   }
 
@@ -834,6 +840,7 @@ const interact = createInteract();   // look + E (interact.js): perks, and Desce
     get player() { return player; },
     get toolbelt() { return toolbelt; },
     active,
+    locked: canUse,   // the mouse is captured (or touch): a match's "Click to play" (game/hud.js)
     loadNpcs,
     env: () => ({ renderer, scene, getSim: app.getSim, getVolume: app.getVolume, getScale: app.getScale, ballistics: toolbelt.ballistics }),
     loadPreset: () => app.loadPreset?.(app.settings.preset),
