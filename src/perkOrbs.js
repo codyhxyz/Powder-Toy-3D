@@ -115,6 +115,21 @@ export class PerkOrbs {
   // take away what's left of shrine `id`'s orbs (its placement was undone)
   removeShrine(id) { for (const o of this.list.filter((x) => x.shrine === id)) this.remove(o); }
 
+  // The orbs for a save (saves/game.js), feet in world cells, and back. A
+  // loaded shrine gets a fresh id, so it never shares one with a shrine
+  // placed since (taking one orb takes its shrine's others).
+  toJSON() { return this.list.map((o) => ({ key: o.key, shrine: o.shrine, world: o.world.toArray() })); }
+  fromJSON(arr) {
+    this.clear();
+    const ids = new Map();
+    const origin = this.getSim().origin;
+    for (const o of arr ?? []) {
+      if (!PERK[o?.key] || !Array.isArray(o.world) || this.list.length >= MAX_ORBS) continue;   // (a perk this build lacks: skipped)
+      const shrine = o.shrine ? (ids.get(o.shrine) ?? ids.set(o.shrine, nextShrine++).get(o.shrine)) : 0;
+      this.add(o.key, new THREE.Vector3().fromArray(o.world).sub(origin), shrine);
+    }
+  }
+
   // an orb's foot in grid cells (the window's), or null while it's outside the window
   feet(o, out = new THREE.Vector3()) {
     const sim = this.getSim();
