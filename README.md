@@ -132,21 +132,32 @@ draws the muzzle flash, sparks, dust and tracers. The held tools are low-poly an
 
 Every death goes up in a killfeed in the top right, Garry's Mod's death notices with its layout, timing and colours
 (`src/pov/killfeed.js`): *Attacker* [weapon] *Victim*, or only the icon and the victim when you did it yourself or the world
-did. The icon is the killer's weapon, or what the death's cause names (fire, acid, drowning, a fall). The kill icons are
-from [game-icons.net](https://game-icons.net) by Lorc, Delapouite, Skoll, Sbed and Carl Olsen, under
-[CC BY 3.0](https://creativecommons.org/licenses/by/3.0/), recoloured and with their backgrounds removed
-(`tools/killicons.mjs` bakes them).
+did. The icon is the killer's weapon, or what the death's cause names (fire, acid, drowning, a fall). The kill icons,
+and the map menu's gamemode, map and tip icons, are from [game-icons.net](https://game-icons.net) by Lorc, Delapouite,
+Skoll, Sbed and Carl Olsen, under [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/), recoloured and with their
+backgrounds removed (`tools/killicons.mjs` and `tools/mode-icons.mjs` bake them). So are the notices' icons (info,
+warning, undo, light bulb, broom and camera, by Delapouite and Lorc; `tools/noticeicons.mjs`): Garry's Mod's notices,
+dark tabs that slide in at the bottom right (`src/ui/notices.js`), with its "Undone Prop" habit of naming what an undo
+took back. Holding **Tab** shows Garry's Mod's scoreboard (`src/ui/scoreboard.js`): the map's name, then a row per
+player with kills, deaths and ping (BOT for bots), pink while dead.
 
 ## Maps
 
-The site opens on a map menu, Garry's Mod's New Game screen: gamemodes down the left, a square preview of each
-map built for the chosen one, its size tagged in the corner, and Start. Sandbox lists every map. A map is one
+The site opens on a map menu, Garry's Mod's New Game screen: gamemodes down the left with their icons, a square
+preview of each map built for the chosen one, its size tagged in the corner, and Start. Sandbox lists every map. A map is one
 place at one size: the boxes (Lab, Volcano, Islet and Empty at 128³, Dam Valley at 256 × 96 × 128) and the
 worlds (Island, Volcano Isles, Lab Complex, Giant Volcano). The game itself only loads once
 you pick one. **Esc** (with nothing else open), the toolbar's map button or **Settings → Map → Change map**
 brings the menu back over the game. The maps are in `src/maps.js`. `tools/map-thumbs.mjs` renders their previews
 into `public/maps`, and `tools/menu-check.mjs` checks the menu on the GPU. A link with a query (`?map=lab`,
 `?preset=…`, an invite) skips the menu.
+
+Start brings up a loading screen in the manner of Halo 3's, GMod's and TF2's. The map's art drifts behind it. It shows
+the gamemode's emblem and rules, and the map's name. The map's kind and its size in cells and metres sit below it as a
+row of Halo 3 style medals. The steps the boot is really on (download, build, shader compile, world, the match being set
+up) are ticked off with their times. A tip about the game sits in a box with its icon.
+The player stands beside it: "This is you." He is a render of the real body (`tools/you-portrait.mjs`).
+`tools/loading-screen-check.mjs` checks the menu's icons and the loading screen on the GPU.
 
 ## World
 

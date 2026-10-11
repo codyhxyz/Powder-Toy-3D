@@ -1049,8 +1049,10 @@ export class Simulation {
   // ---- undo history: full GPU copies of the state, newest last ----
   // Each snapshot is two RGBA32F atlases (~70 MB at 128³), so keep only a few.
   // Each remembers the window's origin it was taken at (t.origin): after the
-  // window moves (docs/scaling.md D11) it still holds the cells where they were.
-  snapshot(limit = 3) {
+  // window moves (docs/scaling.md D11) it still holds the cells where they were,
+  // and what it was taken before (t.label: 'Sand', 'House'), for the undo
+  // notice's "Undone Sand" (Garry's Mod's "Undone Prop").
+  snapshot(label = null, limit = 3) {
     this.history ??= [];
     const t = this.history.length >= limit ? this.history.shift() : makeTarget(this.g.width, this.g.height);
     const u = this.mats.copy.uniforms;
@@ -1060,6 +1062,7 @@ export class Simulation {
     t.deco = null;
     this.deco?.snapshot(t);   // and the decoration (src/deco.js)
     t.origin = this.origin.clone();
+    t.label = label;
     t.note = null;   // the app's tag for what undoing this takes back besides cells (app.js: a shrine's orbs)
     this.history.push(t);
   }

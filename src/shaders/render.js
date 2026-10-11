@@ -194,6 +194,7 @@ ${liquidDetailGLSL}
 ${mediaGLSL}${haze}${haze && `
 uniform bool uFar;   // a world's far field is drawn: the window takes its haze`}
 uniform vec3 uCam;
+uniform float uMarchNear;   // cells: nothing nearer the camera is drawn (first person's eye clip, pov/index.js EYE_CLIP)
 uniform mat4 projectionMatrix;
 uniform mat4 modelMatrix;
 in vec3 vGrid;
@@ -689,7 +690,7 @@ void main() {
   if (CUR_VIEW == VIEW_FLOW) gPix = length(fwidth(rd)) * uPixScale;
   surfView(uCam, rd);   // pixel footprint for material LOD (needs uniform control flow)
   vec3 bh = boxHit(ro, rd);
-  float t0 = max(bh.x, 0.0);
+  float t0 = max(bh.x, uMarchNear);
   if (bh.y <= t0) discard;
   if (CUR_VIEW == VIEW_PLAIN) { plainView(ro, rd, t0, bh); return; }
   if (CUR_VIEW != VIEW_REALISTIC) { dataView(ro, rd, t0, bh); return; }
@@ -749,7 +750,8 @@ void main() {
       vec3 hp = ro + rd * tEnter;
       anyHit = true; hitPos = hp;
       if (ch != CH_LIQUID) {
-        hitK = HIT_SMOOTH; hitP = hp; hitN = n0; hitCh = ch;
+        // started inside it, not at the box wall (the camera in a pile, or its near clip): the cut faces the eye
+        hitK = HIT_SMOOTH; hitP = hp; hitN = t0 > bh.x ? -rd : n0; hitCh = ch;
         stop = true;
       } else {
         int lid = liquidIdAt(hp - n0 * IFACE_PROBE, E_WATER);
