@@ -10,4 +10,7 @@ import { appPreloadPlugin } from './scripts/app-preload-plugin.mjs';
 // own, fetched and compiled as it streams, on the first vehicle).
 export default defineConfig({
   plugins: [wasm(), worldBakePlugin(), appPreloadPlugin()],
+  // fonts stay files (src/fonts.css): a small subset inlined into the page's
+  // CSS would be downloaded by every visitor, needed or not
+  build: { assetsInlineLimit: (file) => (/\.woff2?$/.test(file) ? false : undefined) },
 });

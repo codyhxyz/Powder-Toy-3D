@@ -10,6 +10,8 @@
 // usage: node tools/program-bench.mjs [--port 5735] [--base URL] [--query '?map=damValley']
 //        [--programs react,moveBlock] [--capture-ms 6000] [--warm] [--save dir]
 //        [--from dir]   (bench <name>.vert/<name>.frag files instead of capturing: A/B an edited shader)
+//        [--budget-s 8] (exit 1 if any program's link + first draw takes longer: one GPU task that
+//                       long can get the GPU process killed by Chrome's watchdog, gfx/gpuLoss.js)
 import { readFileSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { launchBrowser, newTestPage } from './browser.mjs';
@@ -24,6 +26,8 @@ const warm = args.includes('--warm');
 const save = opt('save', '');
 const from = opt('from', '');
 const BUST_RANGE = 1e6;
+const budget = opt('budget-s', '') ? +opt('budget-s') * 1000 : Infinity;
+const over = [];
 
 // 1. the sources, as three.js hands them to WebGL (its own browser: work it left on the GPU must not delay the timing)
 let programs = {};
@@ -131,9 +135,14 @@ try {
       const err = gl.getError();
       return { link: tLink - t0, draw: now() - tLink, outs: outs.length, err };
     }, { vert, frag: fragSrc });
-    if (r.error) console.log(`${name.padEnd(16)} failed: ${r.error}`);
-    else console.log(`${name.padEnd(16)} link ${(r.link / 1000).toFixed(2)} s  first draw ${(r.draw / 1000).toFixed(2)} s  (${Math.round(frag.length / 1024)} KB, ${r.outs} outputs${r.err ? `, GL error ${r.err}` : ''})`);
+    if (r.error) { console.log(`${name.padEnd(16)} failed: ${r.error}`); continue; }
+    if (r.link + r.draw > budget) over.push(`${name} ${((r.link + r.draw) / 1000).toFixed(1)} s`);
+    console.log(`${name.padEnd(16)} link ${(r.link / 1000).toFixed(2)} s  first draw ${(r.draw / 1000).toFixed(2)} s  (${Math.round(frag.length / 1024)} KB, ${r.outs} outputs${r.err ? `, GL error ${r.err}` : ''})`);
   }
 } finally {
   await browser.close();
+}
+if (over.length) {
+  console.log(`FAIL: over the ${budget / 1000} s cold-build budget: ${over.join(', ')}`);
+  process.exitCode = 1;
 }

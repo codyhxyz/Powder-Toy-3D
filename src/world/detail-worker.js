@@ -1,5 +1,4 @@
-import { DataUtils, BufferGeometry, BufferAttribute } from 'three';
-import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
+import { DataUtils } from 'three';
 import { E, ELEMENTS, K, R } from '../elements.js';
 import { runGenerator, bake, MAX_FOOT } from '../constructions/runtime.js';
 import { BUILTINS } from '../constructions/builtins.js';
@@ -71,16 +70,8 @@ self.onmessage = ({ data: d }) => {
       }
     }
     const liquid = ids.some((id) => ELEMENTS[id]?.render === R.LIQUID);
+    // Already indexed: positions, normals, ids (the element attribute), indices.
     const mesh = buildSurfaceMesh(ids, { size, origin, bounds, step: token.step });
-    const geometry = new BufferGeometry();
-    geometry.setAttribute('position', new BufferAttribute(mesh.positions, 3));
-    geometry.setAttribute('normal', new BufferAttribute(mesh.normals, 3));
-    geometry.setAttribute('element', new BufferAttribute(mesh.ids, 1));
-    const indexed = mergeVertices(geometry);
-    mesh.positions = indexed.attributes.position.array;
-    mesh.normals = indexed.attributes.normal.array;
-    mesh.ids = indexed.attributes.element.array;
-    mesh.indices = indexed.index.array;
     const transfer = Object.values(mesh).filter((a) => ArrayBuffer.isView(a)).map((a) => a.buffer);
     self.postMessage({ token, ...mesh, liquid }, [...new Set(transfer)]);
   } catch (err) {
