@@ -24,6 +24,9 @@
 // synchronously (a CPU twin's own census(w) { ... }). The scan reads code
 // only: comments, strings, template text and regex literals are blanked
 // first, ${...} kept.
+// It also fails an async predicate given to Playwright's waitForFunction (or
+// to a function of the file that calls it): waitForFunction doesn't await the
+// predicate, so a pending promise counts as true and the wait passes at once.
 // Its blind spots: a promise kept in a variable and awaited later is flagged
 // (await the call itself); an anonymous arrow that returns a read is trusted
 // whatever its caller does with it (xs.map((x) => sim.readCell(...x)) needs
@@ -247,11 +250,14 @@ function conciseEnd(code, s) {
   return code.length;
 }
 
+// the plain parameter names in a parameter list's text (destructured ones are left out)
+const paramNames = (text) => text.split(',').map((t) => /^\s*(?:\.\.\.)?([\w$]+)/.exec(t)?.[1]).filter(Boolean);
+
 /**
  * Every function body (a brace body, or a named arrow's expression), and the
- * named functions: { name, member, async, start, end, arrow } where member
- * means it is called as x.name(...) and arrow is the index of a concise
- * arrow's =>.
+ * named functions: { name, member, async, params, start, end, arrow } where
+ * member means it is called as x.name(...) and arrow is the index of a
+ * concise arrow's =>.
  */
 function functions(code) {
   const ranges = [], defs = [];
@@ -259,12 +265,13 @@ function functions(code) {
   for (let i = 0; i < code.length; i++) {
     if (code[i] !== '{') continue;
     const k = back(code, i - 1);
-    let name = null, isFn = false, member = false, async = false;
+    let name = null, isFn = false, member = false, async = false, params = [];
     if (code[k] === '>' && code[k - 1] === '=') isFn = true;
     else if (code[k] === ')') {
       const o = match(code, k), q = back(code, o - 1);
       if (isWord(code[q]) && !CONTROL.has(wordBefore(code, q))) {
         isFn = true;
+        params = paramNames(code.slice(o + 1, k));
         const w = wordBefore(code, q), before = wordBefore(code, back(code, q - w.length));
         if (w !== 'function') {   // function name(...) { or a method's name(...) {
           name = w;
@@ -277,7 +284,7 @@ function functions(code) {
     const end = match(code, i);
     if (end < 0) continue;
     ranges.push({ start: i, end });
-    if (name && !KEYWORDS.has(name)) at.set(i, { name, member, async, start: i, end, arrow: -1 });
+    if (name && !KEYWORDS.has(name)) at.set(i, { name, member, async, params, start: i, end, arrow: -1 });
   }
   // name = [async] function (...) {...} | name = [async] (...) => ... | name: [async] x => ...
   for (const m of code.matchAll(/(?<![\w$])([\w$]+)\s*(=(?![=>])|:)\s*/g)) {
@@ -286,18 +293,25 @@ function functions(code) {
     let j = m.index + m[0].length, async = false;
     if (wordAt(code, j) === 'async') { async = true; j = ahead(code, j + 5); }
     const member = m[2] === ':' || code[back(code, m.index - 1)] === '.';
-    let arrow = -1;
+    let arrow = -1, params = [];
     if (wordAt(code, j) === 'function') {
       const o = code.indexOf('(', j), c = o < 0 ? -1 : match(code, o), b = c < 0 ? -1 : ahead(code, c + 1);
-      if (code[b] === '{') at.set(b, { name, member, async, start: b, end: match(code, b), arrow: -1 });
+      if (code[b] === '{') at.set(b, { name, member, async, params: paramNames(code.slice(o + 1, c)), start: b, end: match(code, b), arrow: -1 });
       continue;
     }
-    if (code[j] === '(') { const c = match(code, j); if (c < 0) continue; arrow = ahead(code, c + 1); }
-    else if (isWord(code[j])) arrow = ahead(code, j + wordAt(code, j).length);
+    if (code[j] === '(') {
+      const c = match(code, j);
+      if (c < 0) continue;
+      params = paramNames(code.slice(j + 1, c));
+      arrow = ahead(code, c + 1);
+    } else if (isWord(code[j])) {
+      params = [wordAt(code, j)];
+      arrow = ahead(code, j + params[0].length);
+    }
     if (arrow < 0 || code[arrow] !== '=' || code[arrow + 1] !== '>') continue;
     const body = ahead(code, arrow + 2);
-    if (code[body] === '{') { at.set(body, { name, member, async, start: body, end: match(code, body), arrow: -1 }); continue; }
-    const def = { name, member, async, start: body, end: conciseEnd(code, body), arrow };
+    if (code[body] === '{') { at.set(body, { name, member, async, params, start: body, end: match(code, body), arrow: -1 }); continue; }
+    const def = { name, member, async, params, start: body, end: conciseEnd(code, body), arrow };
     ranges.push({ start: def.start, end: def.end, def });
     defs.push(def);
   }
@@ -367,7 +381,20 @@ export function scan(src, html = false) {
     }
     if (derived.size === known) break;
   }
-  return found;
+  // Playwright's waitForFunction doesn't await its predicate: an async one returns a pending
+  // promise, which is truthy, so the wait ends at once and the check it guards always passes.
+  // Flag one given to waitForFunction, or to a function of the file that hands its own
+  // parameter to waitForFunction as the predicate.
+  const hands = (d) => d.params.some((q) => new RegExp(`\\bwaitForFunction\\s*\\(\\s*${q.replace(/\$/g, '\\$')}\\b`).test(code.slice(d.start, d.end)));
+  const waiters = new Set(['waitForFunction', ...defs.filter(hands).map((d) => d.name)]);
+  const wait = new RegExp(`(?<![\\w$])(${[...waiters].map((n) => n.replace(/\$/g, '\\$')).join('|')})\\s*\\(\\s*async\\b`, 'g');
+  for (const m of code.matchAll(wait)) {
+    const line = code.slice(0, m.index).split('\n').length;
+    if (lines[line - 1].includes(IGNORE)) continue;
+    found.push({ line, col: m.index - code.lastIndexOf('\n', m.index - 1),
+      name: `${m[1]} with an async predicate, which it doesn't await (poll through evaluate)`, text: lines[line - 1].trim() });
+  }
+  return found.sort((a, b) => a.line - b.line || a.col - b.col);
 }
 
 // ---------------------------------------------------------------- self-test
@@ -401,6 +428,8 @@ const BAD = [
   'H.ids = async () => (await sim.readState())[0];\nconst a = H.ids()[3];',
   'const t = { async sync() { await sim.gpuSync(); } };\nt.sync();',
   'const cell = (x) => sim.readCell(x, 0, 0);\nconst id = () => cell(1);\ncheck(id()[0] === 3);',
+  'await p.waitForFunction(async () => (await sim.census())[1] > 0);',
+  'const until = (fn, ms) => p.waitForFunction(fn, null, { timeout: ms });\nawait until(async () => true, 100);',
 ];
 const GOOD = [
   'const [A] = await sim.readState();',
@@ -432,6 +461,9 @@ const GOOD = [
   'const t = { async sync() { await sim.gpuSync(); } };\nawait t.sync();',
   'const total = (c) => { let n = 0; for (const k in c) n += c[k]; return n; };\nconst t = total(c);',
   'const p = await ev(() => sim.census());',
+  'await p.waitForFunction(() => window.__app.sim.frame > 10);',
+  'const until = (fn, ms) => p.waitForFunction(fn, null, { timeout: ms });\nawait until(() => window.x, 100);',
+  'const withLab = async (fn) => { await p.waitForFunction(() => window.ready); return fn(1); };\nawait withLab(async (lab) => lab);',
 ];
 const selfFails = [];
 for (const s of BAD) if (scan(s).length !== 1) selfFails.push(`should catch exactly one (got ${scan(s).length}): ${s}`);
