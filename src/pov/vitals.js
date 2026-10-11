@@ -20,6 +20,11 @@ import { SAVING_GRACE_HEALTH } from './perks.js';
 // through shields in Halo 2 and 3. Any hurt holds off the recharge for
 // SHIELD_DELAY; then it fills in SHIELD_REFILL from empty. Its events (on the
 // body's emitter): 'shield' { state: 'hit' | 'break' | 'recharge' | 'full', amount? }.
+//
+// The Overshield (a Halo power-up: game/powerups.js gives it and holds its
+// numbers): the shield charges past its maximum, the body taking no harm but a
+// lethal blow while it does (Halo's charge-up), then the extra drains away. A
+// hit takes the extra first, and the refill never brings it back. Death takes it.
 
 // One cell is about this many metres (pov/constants.js: the body is 5.5 cells ≈ 1.7 m).
 export const CELL_METERS = 0.3;
@@ -59,6 +64,7 @@ export const LETHAL_FALL_M = 15;
 const SHIELD_DELAY = 5;         // s after the last hurt before the shield starts to refill
 const SHIELD_REFILL = 2;        // s to refill from empty
 const SHIELD_FULL_EPS = 1e-6;   // a shield this close to full counts as full
+const OVER_BASE_MIN = 1;        // base lives an Overshield's layer holds at least (on a body with no shield of its own)
 
 // ---- blasts ----
 const BLAST_HURT_P = 8;         // air pressure (sim units) the body shrugs off...
@@ -128,10 +134,11 @@ export function createVitals(emit, perks = null) {
   };
   let pending = 0, pendingCause = '', pendingAge = 0;
   let selfBlastT = 0;   // s left of your own blast's reduced damage
+  let over = null;      // the Overshield: { from, target, charge (s left), chargeS, rate (base lives/s it drains) }, or null
 
   v.reset = () => {
     v.health = 1; v.breath = 1; v.skinT = BODY_T;
-    v.shield = shieldMax(); v.shieldWait = 0; v.shieldCharging = false;
+    v.shield = shieldMax(); v.shieldWait = 0; v.shieldCharging = false; over = null;
     Object.assign(v.feel, { heat: 0, cold: 0, acid: 0, hurt: 0 });
     v.dead = false; v.cause = '';
     v.gibbed = false; v.under = 0;
@@ -164,6 +171,7 @@ export function createVitals(emit, perks = null) {
       if (violent) overkill(amount / maxHealth, cause);
       return;
     }
+    if (over?.charge > 0 && !lethal) return;   // an Overshield charging up: only a backstab gets through
     // any hurt holds the shield's refill off (Halo)
     v.shieldWait = SHIELD_DELAY;
     v.shieldCharging = false;
@@ -212,9 +220,32 @@ export function createVitals(emit, perks = null) {
   // a blast of your own just went off (see SELF_BLAST_SHARE)
   v.ownBlast = () => { selfBlastT = SELF_BLAST_TIME; };
 
+  // The Overshield: `layers` × the shield (at least OVER_BASE_MIN a layer), charged over
+  // chargeS s, its extra drained over drainS s. False on a dead body.
+  v.giveOvershield = ({ layers, chargeS, drainS }) => {
+    if (v.dead) return false;
+    const max = shieldMax(), target = Math.max(max, OVER_BASE_MIN) * layers;
+    over = { from: Math.min(v.shield, target), target, charge: chargeS, chargeS, rate: (target - max) / drainS };
+    v.shieldWait = 0; v.shieldCharging = false;
+    return true;
+  };
+  // 'charging' | 'on' while the body has one, else null
+  v.overshieldState = () => (over ? (over.charge > 0 ? 'charging' : 'on') : null);
+
   // The shield: Halo's refill after the delay; a smaller maximum (death took the perk) clips it.
   function shieldUpdate(dt) {
     const max = shieldMax();
+    if (over && v.dead) over = null;
+    if (over?.charge > 0) {
+      over.charge = Math.max(0, over.charge - dt);
+      v.shield = over.target - (over.target - over.from) * (over.charge / over.chargeS);
+      return;
+    }
+    if (over && v.shield > max) {
+      v.shield = Math.max(max, v.shield - over.rate * dt);
+      if (v.shield > max) return;
+    }
+    over = null;
     if (v.shield > max) v.shield = max;
     if (v.dead || max <= 0) { v.shieldCharging = false; return; }
     if (v.shieldWait > 0) { v.shieldWait = Math.max(0, v.shieldWait - dt); return; }

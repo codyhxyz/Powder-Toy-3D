@@ -66,6 +66,7 @@ const CROUCH_EYE = 28 / 64;             // × the eye's height, crouched
 const CROUCH_DOWN_S = 0.4;              // s to crouch
 const CROUCH_UP_S = 0.2;                // s to stand back up
 const CROUCH_SPEED = 1 / 3;             // × the speed on the ground, crouched
+export const CROUCH_WALK_SPEED = WALK_SPEED * CROUCH_SPEED;   // cells/s: a crouch-walk (Halo's motion tracker misses it: game/tracker.js)
 const STEP_DOWN = 1.1;                 // cells: walking off a ledge this low follows the ground down
 const MAX_SPEED = 350 * PX;            // cells/s (52 m/s): Noita's fastest fall (velocity_max_y), past a lethal one
 const SUBSTEP = 0.4;                   // cells: longest move per collision substep
@@ -1057,6 +1058,9 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     spawn, teleport, update, dispose, windowShifted,
     applyImpulse(dv) { impulse.add(dv); },
     ownBlast() { vitals.ownBlast(); },
+    // Halo's Overshield ({ layers, chargeS, drainS }: game/powerups.js); its state: 'charging' | 'on' | null
+    overshield(o) { return vitals.giveOvershield(o); },
+    get overshielded() { return vitals.overshieldState(); },
     heal(amount) { if (!vitals.dead) vitals.health = Math.min(1, vitals.health + amount); },   // Regeneration (potions.js)   // a blast it set off (a rocket, a bomb): it hurts this body less (vitals.js)
     // a blow from outside the sim (an NPC's axe): the Energy Shield takes it first;
     // { lethal: true } takes all the health there is, through the shield (a backstab);

@@ -21,6 +21,7 @@ const GAP_STEPS = 2;                    // the gap is rounded to 1/this px (fewe
 // broken, and sweeps back up as it refills (pov.css animates each state).
 const SHIELD_HIT_MS = 160;              // ms a hit's flash lasts (pov.css .pov-shield.hit)
 const SHIELD_POP_MS = 420;              // ms the break's pop lasts (pov.css .pov-shield.pop)
+const OVER_DRAIN_MAX = 0.2;             // base lives/s: a slower fall while above the maximum is an Overshield draining, not a hit
 // Statuses (status.js): Noita's row of icons, each with its seconds left and a bar that runs down.
 const STATUS_ENDING_S = 1.5;            // s left from which an icon blinks (about to wear off)
 const STATUS_TINT = 0.4;                // opacity of the first-person tint while a stain with a screen colour is on
@@ -59,9 +60,10 @@ export function createPovHud() {
     h('span.pov-ic', { html: '<svg viewBox="0 0 16 16"><path d="M8 1.5 12.5 8 8 14.5 3.5 8z"/></svg>' }),
     h('div.pov-track', {}, manaFill), manaText);
   const shieldFill = h('div.pov-fill');
+  const shieldOver = h('div.pov-fill.pov-over');   // the Overshield's layer over it (Halo 3's green; styled in game/feel.css)
   const shieldRow = h('div.pov-bar.pov-shield', { 'aria-label': 'Shield' },
     h('span.pov-ic', { html: '<svg viewBox="0 0 16 16"><path d="M8 1.5 13.5 3.6v4.1c0 3.3-2.3 5.6-5.5 6.8-3.2-1.2-5.5-3.5-5.5-6.8V3.6z"/></svg>' }),
-    h('div.pov-track', {}, shieldFill));
+    h('div.pov-track', {}, shieldFill, shieldOver));
   const perkRow = h('div.pov-perks');   // above health, in the same panel
   const statusRow = h('div.pov-statuses');   // above the perks
   const vitals = h('div.pov-vitals.panel', {}, statusRow, perkRow, shieldRow, healthRow, manaRow, breathRow, jetRow);
@@ -180,7 +182,8 @@ export function createPovHud() {
       // the shield: flash on a hit, pop when it breaks, blink while empty, a sweep while it refills
       const sMax = s.shieldMax ?? 0, sh = sMax > 0 ? Math.max(0, Math.min(1, (s.shield ?? 0) / sMax)) : 0;
       const shAbs = s.shield ?? 0;   // compared unscaled, so another stack (a bigger maximum) isn't a hit
-      if (sMax > 0 && shAbs < lastShield) {
+      const draining = lastShield > sMax && lastShield - shAbs <= OVER_DRAIN_MAX * s.dt;
+      if (sMax > 0 && shAbs < lastShield && !draining) {
         shieldHitT = SHIELD_HIT_MS / 1000;
         if (sh <= 0) shieldPopT = SHIELD_POP_MS / 1000;
       }
@@ -189,6 +192,10 @@ export function createPovHud() {
       shieldPopT = Math.max(0, shieldPopT - s.dt);
       set(shieldRow, '.show', sMax > 0);
       set(shieldFill, 'transform', `scaleX(${round(sh)})`);
+      // an Overshield: the shield past its maximum, a layer drawn over the full bar
+      const over = sMax > 0 ? Math.max(0, Math.min(1, shAbs / sMax - 1)) : 0;
+      set(shieldOver, 'transform', `scaleX(${round(over)})`);
+      set(shieldRow, '.over', over > 0);
       set(shieldRow, '.hit', shieldHitT > 0);
       set(shieldRow, '.pop', shieldPopT > 0);
       set(shieldRow, '.empty', sMax > 0 && sh <= 0);
