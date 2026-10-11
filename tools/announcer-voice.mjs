@@ -42,7 +42,7 @@ async function speak(text) {
   const res = await fetch(`${API}/text-to-speech/${VOICE}?output_format=${FORMAT}`, {
     method: 'POST',
     headers: { 'xi-api-key': apiKey(), 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text: `${DIRECTION} ${text}`, model_id: MODEL }),
+    body: JSON.stringify({ text: `${DIRECTION} ${/[.!?]$/.test(text) ? text : `${text}!`}`, model_id: MODEL }),   // booming ends on "!" (the take picked)
   });
   if (!res.ok) throw new Error(`text-to-speech: HTTP ${res.status} ${(await res.text()).slice(0, 300)}`);
   return Buffer.from(await res.arrayBuffer());

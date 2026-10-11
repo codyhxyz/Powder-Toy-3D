@@ -136,6 +136,7 @@ export function createHelp(onClose) {
         row('Scoreboard (hold)', 'Tab'),
         row('Save the game (in the body, ⌘ only)', '⌘', 'S'),
         row('Saves: load one, export it, open a file', '⌘', 'O'),
+        row('Lua console, TPT\'s (scripts run every step: event.register)', '`'),
         row('Close menus; with none open, the map menu', 'Esc'),
       ),
       h('p', { text: 'Signs can show live values: write {t} for temperature, {p} for pressure and {e} for the element under the sign.' }),
