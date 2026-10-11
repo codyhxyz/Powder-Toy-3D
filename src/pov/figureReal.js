@@ -5,6 +5,7 @@ import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js';
 import { BODY_HEIGHT } from './constants.js';
 import { BODY_MODEL_URL } from './bodyModel.js';
 import { buildGarb, GARB_COLORS } from './garb.js';
+import { bulkUp } from './physique.js';
 import {
   createFigure, createContactShadow, JET_NOZZLES, figureFrag, figureSkinnedVert, FIGURE_ALBEDO, FIGURE_HEAT_GLOW,
   CROUCH_POSE,
@@ -24,9 +25,11 @@ import {
 // lighting (sun and its shadow map, GI probes, glow from hot matter), with a
 // skinned version of its vertex shader. It glows when hot like the stickman.
 
-// Materials, by the glTF material name (albedo, linear): the body matches the
-// stickman, the joint bands are a darker grey.
-const ALBEDO_BY_MATERIAL = { M_Main: FIGURE_ALBEDO, M_Joints: [0.22, 0.22, 0.24] };
+// Materials, by the glTF material name (albedo, linear): skin, not the
+// stickman's grey; the mannequin's joint bands a shade darker, like creases.
+const SKIN_ALBEDO = [0.75, 0.42, 0.26];  // linear of sRGB (224, 172, 138), a light-medium skin tone
+const JOINT_SHADE = 0.8;                 // the joint bands' share of the skin's albedo
+const ALBEDO_BY_MATERIAL = { M_Main: SKIN_ALBEDO, M_Joints: SKIN_ALBEDO.map((c) => c * JOINT_SHADE) };
 const MODEL_YAW = Math.PI;               // rad: the glTF faces +z, the body's forward is -z at yaw 0
 
 // Locomotion. Clip speeds come from the file (extras.speed, metres/s of the
@@ -52,7 +55,9 @@ const approach = (rate, dt) => 1 - Math.exp(-rate * dt);
 let gltfPromise = null;   // one download for the page
 function loadModel() {
   // the file is meshopt-compressed (tools/character-compress.mjs)
-  gltfPromise ??= new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).loadAsync(BODY_MODEL_URL);
+  // and jacked (physique.js) before anything is fit to it
+  gltfPromise ??= new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).loadAsync(BODY_MODEL_URL)
+    .then((gltf) => { bulkUp(gltf.scene); return gltf; });
   return gltfPromise;
 }
 const garbByModel = new WeakMap();   // the clothes' geometry, built once per download and shared by every body
