@@ -51,6 +51,7 @@ export const MODELS = {
   drill: { fit: 'x', size: 1, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.3, roll: Q } },           // the burrower's drill in flight, a cell across (the tool scales it to its bore)
   pogo: { fit: 'y', size: 3.5, anchor: [0.5, 0.98, 0.5], arm: ARM_DOWN, icon: { yaw: 0, tilt: 0.3, roll: Q / 2 } },              // upright, held by the handlebar, the stick down out of view
   hook: { fit: 'z', size: 1.15, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.3, roll: 0.35 } },      // a grapple launcher, the claw in its mouth
+  toolgun: { fit: 'z', size: 1.2, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.3, roll: 0.35 } },   // GMod's tool gun: a boxy body, a thin barrel, a screen facing you
 };
 
 // RS2 stores a colour as 16-bit HSL: 6 bits of hue, 3 of saturation, 7 of lightness.
@@ -314,6 +315,18 @@ const PARTS = {
     { geo: 'cyl', rt: 0.09, rb: 0.13, h: 0.1, p: [0, 0.22, -0.56], rot: [-H, 0, 0], m: 'metalDark' },
     ...FINS.map((a) => ({ geo: 'cyl', rt: 0.012, rb: 0.03, h: 0.24, p: [Math.sin(a) * 0.08, 0.22 + Math.cos(a) * 0.08, -0.72], rot: [-H, 0, 0], m: 'metalDark' })),
     { geo: 'sphere', r: 0.05, p: [0, 0.22, -0.7], m: 'glow' },
+    STOCK_GRIP,
+  ],
+  // the tool gun (toolgun.tool.js): Garry's Mod's gmod_tool, a grey box of a gun with a thin
+  // barrel and a screen on its back; the tool lights the part named 'screen' in what it holds
+  toolgun: [
+    { geo: 'box', s: [0.2, 0.22, 0.6], p: [0, 0.2, -0.2], m: 'iron' },
+    { geo: 'box', s: [0.17, 0.13, 0.3], p: [0, 0.37, -0.06], m: 'metal' },
+    { geo: 'box', s: [0.15, 0.11, 0.02], p: [0, 0.37, 0.095], m: 'screen', name: 'screen' },
+    { geo: 'box', s: [0.025, 0.09, 0.34], p: [0.11, 0.2, -0.24], m: 'orange' },
+    { geo: 'cyl', r: 0.07, h: 0.06, p: [0, 0.2, -0.52], rot: [H, 0, 0], m: 'ironDark' },
+    { geo: 'cyl', r: 0.04, h: 0.4, p: [0, 0.2, -0.74], rot: [H, 0, 0], m: 'metalDark' },
+    { geo: 'sphere', r: 0.045, p: [0, 0.2, -0.95], m: 'glow' },
     STOCK_GRIP,
   ],
   // the hook (hook.tool.js): a stubby launcher with a spool of rope under it and a three-pronged
