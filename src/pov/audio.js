@@ -4,6 +4,7 @@ import { povEvents } from './events.js';
 import { CELL_METERS } from './vitals.js';
 import { MELEE_SOURCES } from './constants.js';
 import { lookOf } from './wands/look.js';
+import { PLAYER } from './targets.js';
 
 // POV sound. Every noise in first person comes from an event (docs/pov.md,
 // "Gunplay v2"): the gun, the tools and the shell announce what happened on
@@ -87,6 +88,10 @@ const HURT_GAIN_MIN = 0.35;
 const LOG_SIZE = 16;                    // recent plays kept for stats()
 const SHIELD_HIT_GAP_S = 0.12;          // s between shield-hit crackles (a blast hits it every frame)
 const SHIELD_BEEP_S = 0.5;              // s between beeps of the empty-shield alarm (Halo's), by ear
+const FRAG_THROW_RATE = 1.3;            // a frag thrown: the axe's whoosh, quicker (a flick of the arm)
+const FRAG_CLINK_SPEED = 25;            // cells/s: a bounce this fast clinks at gain 1...
+const FRAG_CLINK_MIN = 8;               // ...and one slower than this (a roll's last hops) is silent
+const FRAG_CLINK_GAIN_MIN = 0.2;        // the softest clink heard
 const POGO_PITCH_STEP = 0.12;           // × playback rate per timed step up: each climb boings higher
 const KNIFE_SWING_RATE = 1.35;          // the knife's swing is the axe's whoosh, quicker and thinner
 const LASER_CHARGE_RATE = [0.6, 2.2];     // the laser's charge whine plays at this playback rate empty → full: it climbs as it fills
@@ -193,6 +198,16 @@ const PRESETS = {
   wandTeleport: [.6, .05, 220, .02, .08, .3, 2, 1, 14, , , , , , 10, , , .6, , , -2000],
   // a backstab: a hard metallic ring over the stab (TF2's crit), FM'd like the metal ping
   backstab: [1, .02, 1600, , .03, .45, 0, 1, , , -400, .05, , , 22, , .06, .6],
+
+  // -- Halo combat (pov/halo.js: the melee, the frag grenade)
+  // Halo's melee landing: a heavy, punchy bash, a low square thump with a crushed crack on top
+  meleeBash: [1.3, .1, 95, , .02, .16, 5, 2, -3, , , , , 2, , .35, , .5, .02, , -1500],
+  // an assassination: a dry, sharp crack (the neck) over the bash
+  assassinate: [1, .05, 900, , .01, .09, 4, 2.5, -4, , , , , 3, , .3, , .4],
+  // a frag bouncing: a small, hollow metal clink, a sine FM'd short
+  fragClink: [.45, .15, 1900, , .005, .07, 0, 1, , , , , , , 26, , , .4],
+  // a frag picked up off the ground: two quick dry clicks
+  fragPickup: [.5, .05, 1300, , .005, .03, 5, .5, , , 500, .03, .05, , , , , .4],
 
   // -- the body
   // a footfall on dry ground: a short, low, padded thud
@@ -469,6 +484,25 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
   });
 
   // wands (wands/runtime.js): your cast from you, an impact where it lands, a wand's blast as a bomb's boom
+  // Halo combat (pov/halo.js): the melee's bash, the frag's throw, clink and pickup, and the Energy
+  // Shield on every body but yours (yours: bindPlayer's 'shield', in your ears)
+  povEvents.on('kick', ({ melee, assassination, point, by }) => {
+    if (!live() || !melee) return;
+    const at = by ? point ?? null : null;
+    play('meleeBash', { at });
+    if (assassination) play('assassinate', { at });
+  });
+  povEvents.on('frag', ({ action, point, speed = FRAG_CLINK_SPEED, by }) => {
+    if (!live()) return;
+    if (action === 'throw') play('swoosh', { at: by ? point ?? null : null, rate: FRAG_THROW_RATE });
+    else if (action === 'bounce' && speed >= FRAG_CLINK_MIN) play('fragClink', { at: point ?? null, gain: clamp(speed / FRAG_CLINK_SPEED, FRAG_CLINK_GAIN_MIN, 1) });
+    else if (action === 'pickup') play('fragPickup', { at: by ? point ?? null : null });
+  });
+  povEvents.on('body:shield', ({ id, state: st, point }) => {
+    if (!live() || id === PLAYER || !point) return;
+    if (st === 'hit') play('shieldHit', { at: point });
+    else if (st === 'break') play('shieldBreak', { at: point });
+  });
   povEvents.on('wand:fire', ({ by, origin, effect, material }) => {
     if (live()) play('wandCast', { at: by ? origin ?? null : null, rate: lookOf(effect, material).pitch });
   });

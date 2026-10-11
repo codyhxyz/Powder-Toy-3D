@@ -6,6 +6,7 @@ import { povProbeFrag, povCouplingFrag, povFieldFrag, PROBE, PROBE_OUTSIDE } fro
 import { BODY_HEIGHT, BODY_WIDTH, EYE_HEIGHT, BODY_DENS } from './constants.js';
 import { createVitals, CELL_METERS, SAFE_FALL_M, LETHAL_FALL_M } from './vitals.js';
 import { povEvents } from './events.js';
+import { PLAYER } from './targets.js';
 import { createPerkSet } from './perks.js';
 import { createStatusSet } from './status.js';
 import { wound, createBodyWorld } from './stains.js';
@@ -248,6 +249,8 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     if (name === 'hurt' && perks.has('REVENGE_EXPLOSION') && revengeWait <= 0) { revengeDue = true; revengeWait = REVENGE_COOLDOWN; }
     if (name === 'wound') wound(p, data.amount, statusCtx);   // a blow, fall or blast bleeds (stains.js)
     if (name === 'gib') gibDue = true;
+    // the Energy Shield's events on the bus for every body (the shimmer and the pop: vfx.js, audio.js)
+    if (name === 'shield') povEvents.emit('body:shield', { ...data, id: id ?? PLAYER, point: p.pos.clone(), height: p.height });
     (listeners[name] || []).forEach((fn) => fn(data));
   };
   const vitals = createVitals(emit, perks);
