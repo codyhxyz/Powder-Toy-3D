@@ -15,11 +15,15 @@ export const WAND_LIMITS = Object.freeze({
   rays: 128, traceBatches: 2, commands: 64, transfers: 2, transferQueue: 128,
   lights: 8, beamSamples: 16, inventory: 4096, dt: 0.1, flightStep: 0.25, traceFailures: 8,
 });
-// ---- how casts look (visual only: nothing here changes what a spell does)
-// A cast starts at the eye (the physics origin), but is drawn from the wand's tip
-// (update's view.tip): a bolt's drawn offset (tip − eye) shrinks to nothing over
-// this much flight, so it leaves the wand and joins its true path, as a gun's
-// tracer leaves the muzzle; a beam is drawn from the tip to its true end.
+// ---- where a cast leaves the wand
+// A cast is aimed from the eye (ctx.eye, ctx.dir) and drawn from the wand's tip
+// (update's view.tip). After Noita, where a spell spawns at the wand's tip, a bolt
+// starts its flight as far along its aim as the tip is; its first trace still runs
+// from the eye, so a wall nearer than the tip stops it. The tip's offset across the
+// aim is drawn only: it shrinks to nothing over this much flight, so the bolt leaves
+// the gem and joins its true path, as a gun's tracer leaves the muzzle. A bolt is
+// never drawn deeper than it has flown, so up close it isn't hidden behind the wall
+// it's about to hit. A beam is drawn from the tip to its true end.
 const WAND_CONVERGE_CELLS = 12;
 // Lights fed to world.setLights (at most WAND_LIMITS.lights, in this priority):
 // lanterns, then short impact flashes (newest first), then bolts in flight. After
@@ -217,9 +221,13 @@ export function createWandRuntime(env) {
       if (projectiles.length >= WAND_LIMITS.projectiles) { totals.dropped++; return; }
       const cargo = p.stored && (node.effect === 'emit' || node.effect === 'place') ? reserveMatter(node, cast.load) : null;
       if (cargo && !cargo.load.cells.length) { error('Stored material depleted'); return; }
+      // the tip's depth along this bolt's aim (where its flight starts; never behind the eye)
+      // and the rest of the tip's offset (drawn only, `side`)
+      const tip = tipOffset(cast), lead = tip ? Math.max(0, tip.dot(dir)) : 0;
       projectiles.push({ node, at: at.clone(), velocity: dir.clone().multiplyScalar(clamp(finite(p.speed, 60), 0, 1200)),
         cast, cargo, age: 0, started: time - clamp(finite(ctx.dt), 0, WAND_LIMITS.dt),
-        start: at.clone(), offset: tipOffset(cast)?.clone() ?? null, drawn: null,
+        ahead: lead > 0 ? dir.clone().multiplyScalar(lead) : null, side: tip?.clone().addScaledVector(dir, -lead) ?? null,
+        flown: 0, drawn: null,
         pending: false, triggered: false, alive: true, traceFailures: 0,
         bounces: Math.max(0, finite(p.bounces)), pierce: Math.max(0, finite(p.pierce)), ignored: new Set() });
       return;
@@ -261,7 +269,10 @@ export function createWandRuntime(env) {
       r.pending = false;
       r.age += job.dt;
       r.velocity.copy(job.velocity);
-      r.at.copy(hit?.point ?? job.to);
+      const next = hit?.point ?? job.to;
+      r.flown += Math.max(0, r.at.distanceTo(next) - job.ahead);   // the eye-to-tip run isn't flight
+      r.ahead = null;
+      r.at.copy(next);
       if (hit) {
         if (r.bounces > 0 && !actor) {
           r.bounces--; r.velocity.reflect(hit.normal); r.at.addScaledVector(hit.normal, 0.15);
@@ -317,8 +328,10 @@ export function createWandRuntime(env) {
       const to = r.at.clone().addScaledVector(velocity, step);
       to.y -= finite(p.gravity) * step * step / 2;
       velocity.y -= finite(p.gravity) * step;
+      if (r.ahead) to.add(r.ahead);   // the first segment runs from the eye out past the tip
       r.pending = true;
-      jobs.push({ flight: r, from: r.at.clone(), to, velocity, dir: velocity.clone().normalize(), dt: step, cast: r.cast });
+      jobs.push({ flight: r, from: r.at.clone(), to, velocity, dir: velocity.clone().normalize(), dt: step, cast: r.cast,
+        ahead: r.ahead?.length() ?? 0 });
     }
     if (!jobs.length) return;
     const g = generation, s = sim;
@@ -407,9 +420,10 @@ export function createWandRuntime(env) {
       lights.push({ position: grid(fl.at), color: fl.rgb, radius: fl.radius, intensity: IMPACT_LIGHT_INTENSITY * fl.left / fl.life });
     }
     for (const r of projectiles) if (r.alive) {
-      // drawn from the tip, converging on the physics position (which items keep as `position`)
-      const k = r.offset ? Math.max(0, 1 - r.at.distanceTo(r.start) / WAND_CONVERGE_CELLS) : 0;
-      const offset = k > 0 ? r.offset.clone().multiplyScalar(k) : null;
+      // drawn at the tip until its first trace lands, then off its physics position (which items
+      // keep as `position`) by the tip's offset across its aim, shrinking as it flies
+      const k = r.side ? Math.max(0, 1 - r.flown / WAND_CONVERGE_CELLS) : 0;
+      const offset = k > 0 ? r.side.clone().multiplyScalar(k).add(r.ahead ?? zero) : null;
       const material = materialOf(r.node, r.cargo), look = lookOf(r.node.effect, material);
       items.push({ position: grid(r.at), offset, velocity: r.velocity.clone(), effect: r.node.effect, material,
         radius: r.node.params.radius, kind: 'bolt' });
