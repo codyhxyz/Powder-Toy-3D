@@ -32,8 +32,9 @@ export const MAPS = [
     desc: 'The Volcano blown up: one cone 105 m tall in the sea, lava pouring from its summit, snow on top, forest below.' },
   // Noita's main path, three levels deep: world/scenes/descent (docs/descent-contract.md). It starts on its
   // first level's scene; the others are its too (scenes), each its own 512×256×512 world (descent/scenes.js DS_WORLD)
+  // the Noita gamemode's map, and only its (sandbox: false): wands and nothing else in hand
   { key: 'descent', name: 'Descent', size: 'world', scene: 'descentMines', scenes: ['descentMines', 'descentCoal', 'descentSnow'],
-    dims: [512, 256, 512],
+    dims: [512, 256, 512], modes: ['noita'], sandbox: false,
     desc: 'Down through the Mines, the Coal Pits and the Snowy Depths, with a Holy Mountain at the bottom of each. Find wands on the way.' },
   { key: 'damValley', name: 'Dam Valley', size: 'valley', preset: 'damValley', dims: [256, 96, 128], modes: TEAM_MODES,
     desc: 'Two bases across a dammed river, with vehicles and shrines. Blow the sluice gate to flood the tunnel.' },
@@ -51,6 +52,7 @@ export const MAPS = [
 // the menu shows them only in builds that have src/game.
 export const GAMEMODES = [
   { key: 'sandbox', name: 'Sandbox', desc: 'Pour, build, burn and blow it up. Every map.' },
+  { key: 'noita', name: 'Noita', desc: 'Wands only. Go down through the Mines and the Holy Mountains, finding wands and spells on the way.' },
   { key: 'slayer', name: 'Team Slayer', team: true, desc: 'Red against blue with bots on both sides. First to the kill limit wins.' },
   { key: 'ctf', name: 'Capture the Flag', team: true, desc: 'Take their flag from its stand and bring it home while yours is there.' },
   { key: 'koth', name: 'King of the Hill', team: true, desc: 'Hold the hill alone to score. It moves every minute.' },
@@ -73,7 +75,7 @@ export const QUICK_PLAY = [
 ];
 
 export const mapByKey = (key) => MAPS.find((m) => m.key === key) ?? null;
-export const mapsFor = (mode) => (mode === 'sandbox' ? MAPS : MAPS.filter((m) => m.modes?.includes(mode)));
+export const mapsFor = (mode) => (mode === 'sandbox' ? MAPS.filter((m) => m.sandbox !== false) : MAPS.filter((m) => m.modes?.includes(mode)));
 export const isWorld = (m) => !m.preset;
 
 // The map a grid size and scene are (app.js settings), else null (a box size no map has: '64' with the lab is

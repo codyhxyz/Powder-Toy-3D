@@ -33,6 +33,8 @@ export function createToolbar({ views, settings, actions }) {
     camOpt('first', '1st', 'Walk in first person (V)'),
     camOpt('third', '3rd', 'Walk in third person (F5 or Ctrl swaps)'));
   const shot = btn('camera', 'Save screenshot (P)', actions.screenshot);
+  // Save the game into the Saves list (Esc → Saves loads it), Garry's Mod's Save in its spawn menu's Saves
+  const saveGame = btn('save', 'Save the game (⌘S)', () => actions.saveGame());
   const maps = btn('maps', 'Maps and gamemodes (Esc)', actions.openMenu);
   const gear = btn('gear', 'Settings (,)', actions.toggleSettings);
   const help = btn('help', 'Keyboard shortcuts (?)', actions.toggleHelp);
@@ -41,7 +43,7 @@ export function createToolbar({ views, settings, actions }) {
   help.classList.add('keys-only');
 
   const bar = h('div.toolbar.panel', { role: 'group', 'aria-label': 'Simulation controls' },
-    pause, h('span.sep'), viewBtn, walk, h('span.sep'), undo, recenter, shot, maps, gear, help);
+    pause, h('span.sep'), viewBtn, walk, h('span.sep'), undo, recenter, saveGame, shot, maps, gear, help);
 
   // ---- views popover ----
   const cards = views.map((v) => {

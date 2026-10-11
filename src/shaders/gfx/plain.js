@@ -95,7 +95,7 @@ vec3 plainLiquidNormal(ivec3 c, vec3 faceN) {
 
 vec3 plainOpaque(ivec3 cell, int id, vec4 a, vec3 hp, vec3 n, vec3 rd) {
   float seed = fract(a.w), T = a.y;
-  vec3 alb = COLOR[id] * (1.0 + COLORVAR[id] * (seed * 2.0 - 1.0));
+  vec3 alb = decoTint(COLOR[id] * (1.0 + COLORVAR[id] * (seed * 2.0 - 1.0)), COLOR[id], decoAt(cell));   // TPT's deco (gfx/deco.js)
   vec3 emit;
   if (id == E_LAVA) {
     alb = PLAIN_LAVA_ALB;
@@ -148,9 +148,12 @@ void plainView(vec3 ro, vec3 rd, float t0, vec3 bh) {
   vec3 mediumLight = vec3(1.0);
   ivec3 lastB = ivec3(-1);
   float occ = 0.0;
+  float tCut = meshCutT(rd);   // the nearest opaque mesh (gfx/meshCut.js): the march stops there
+  bool cut = false;
 
   for (int i = 0; i < ${g.maxSteps}; i++) {
     if (outside(cell)) break;
+    if (tEnter >= tCut) { cut = true; break; }
     ivec3 bc = cell / BS;
     if (bc != lastB) { lastB = bc; occ = brickOcc(bc); }
     if (occ < 0.5) {
@@ -159,7 +162,7 @@ void plainView(vec3 ro, vec3 rd, float t0, vec3 bh) {
       continue;
     }
     float tExit = min(tMax.x, min(tMax.y, tMax.z));
-    float seg = tExit - tEnter;
+    float seg = min(tExit, tCut) - tEnter;
     vec4 a = fetchA(cell);
     int id = eid(a);
     vec3 n = vec3(0.0);
@@ -187,9 +190,10 @@ void plainView(vec3 ro, vec3 rd, float t0, vec3 bh) {
           col += trans * F * (plainSky(r) + PLAIN_SUN * mediumLight * pow(max(dot(r, uSun), 0.0), PLAIN_GLINT_EXP) * PLAIN_GLINT_GAIN);
           trans *= 1.0 - F;
         }
-        vec3 att = exp(-PLAIN_SIGMA[id] * seg);
+        vec4 dp = decoAt(cell);   // painted: the deco colour, and opaque by its alpha (gfx/deco.js)
+        vec3 att = exp(-mix(PLAIN_SIGMA[id], vec3(DECO_SIGMA), dp.a) * seg);
         vec3 amb = PLAIN_MEDIUM_AMB + PLAIN_SUN * mediumLight * max(uSun.y, 0.0) * PLAIN_MEDIUM_SUN + sampleLight(hp) * uLightGain;
-        vec3 sc = COLOR[id] * amb * (rc == R_LIQUID ? PLAIN_SCATTER_LIQUID : PLAIN_SCATTER_GLASS) + plainEmit(id, a.y);
+        vec3 sc = mix(COLOR[id], decoLinear(dp.rgb), dp.a) * amb * (rc == R_LIQUID ? PLAIN_SCATTER_LIQUID : PLAIN_SCATTER_GLASS) + plainEmit(id, a.y);
         col += trans * (1.0 - att) * sc;
         trans *= att;
       } else if (rc == R_GAS) {
@@ -197,7 +201,7 @@ void plainView(vec3 ro, vec3 rd, float t0, vec3 bh) {
         float dens = (id == E_SMOKE ? clamp(a.z, 0.0, 1.0) : 1.0) * softBlob(cell, ro, rd, tEnter, tExit)
                    * (PLAIN_GAS_LONE + PLAIN_GAS_DENSE * brickGas(occ));
         float alpha = 1.0 - exp(-SIGMA[id].x * seg * dens);
-        col += trans * alpha * COLOR[id] * (PLAIN_GAS_AMB + PLAIN_SUN * PLAIN_GAS_SUN + sampleLight(hp) * uLightGain);
+        col += trans * alpha * decoTint(COLOR[id], COLOR[id], decoAt(cell)) * (PLAIN_GAS_AMB + PLAIN_SUN * PLAIN_GAS_SUN + sampleLight(hp) * uLightGain);
         trans *= 1.0 - alpha;
       } else if (rc == R_FIRE) {
         float T = a.y;
@@ -216,7 +220,7 @@ void plainView(vec3 ro, vec3 rd, float t0, vec3 bh) {
   }
 
   // floor of the box
-  if (max(trans.x, max(trans.y, trans.z)) >= PLAIN_OPAQUE && cell.y < 0 && rd.y < 0.0) {
+  if (!cut && max(trans.x, max(trans.y, trans.z)) >= PLAIN_OPAQUE && cell.y < 0 && rd.y < 0.0) {
     float tf = -ro.y / rd.y;
     if (tHit < 0.0) tHit = tf;
     col += trans * plainFloor(ro + rd * tf);

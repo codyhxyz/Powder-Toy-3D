@@ -28,11 +28,13 @@ const menu = createMenu({
   map: lastPlayed ?? (MOBILE ? MOBILE_MAP : DEFAULT_MAP),
   onStart: start,
   onResume: () => menu.close(),
+  onLoadSave: loadSave,
 });
 
-launch.openMenu = () => {
+// (opts.saves: on the Saves list)
+launch.openMenu = (opts = {}) => {
   if (menu.isOpen) return;
-  menu.open({ inGame: true, ...app?.current() });
+  menu.open({ inGame: true, ...app?.current(), ...opts });
 };
 launch.menuOpen = () => menu.isOpen;
 
@@ -64,6 +66,25 @@ function linkMode(params) {
   launch.mode = mode;
   if (!params.get('map')) launch.map = map;
   menu.loading('Loading something cool, please be patient', { map, mode });   // (down once the match runs)
+}
+
+// A save picked on the menu's Saves (what: a local save's id or a file's bytes;
+// meta: its name and map). Before the game has loaded, it boots on the save's
+// map and loads the save before the menu comes down (app.js bootReady).
+async function loadSave(what, meta) {
+  if (app) {
+    menu.close();
+    app.openSave(what);
+    return;
+  }
+  launch.save = what;
+  // (a box the Empty map's size boots on Empty: the save brings the cells, so no scene is built first)
+  const emptyDims = mapByKey('empty').dims;
+  launch.map = !meta?.world && emptyDims.every((n, i) => n === meta?.dims?.[i]) ? 'empty' : meta?.map ?? null;
+  launch.mode = 'sandbox';
+  menu.loading('Loading your save', { name: meta?.name ?? 'Save' });
+  launch.ready = () => menu.close();
+  await boot();
 }
 
 const WEBGL_OFF = `Your browser won't start WebGL 2 right now, so the game can't draw.
