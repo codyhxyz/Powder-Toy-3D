@@ -1087,8 +1087,9 @@ let detailVersion = 0;
 const DETAIL_FOAM = DETAIL.find((f) => f.key === 'liquidFoam');   // whitewater also runs a field with the sim
 const detailGate = createDetailGate(renderer, () => pacer.wake(), () => hud.toast('Preparing close-up detail… the first time after an update this can take several seconds'));
 // The view program's first draw after an update freezes the page while the
-// GPU driver builds it: say so first (gfx/coldShader.js).
-const coldShader = createColdShaderGuard(() => hud.toast('Loading something cool, please be patient'));
+// GPU driver builds it: say so first (gfx/coldShader.js), on the start menu's
+// loading screen too while it is up.
+const coldShader = createColdShaderGuard(() => { hud.toast('Loading something cool, please be patient'); launch.progress?.('cold'); });
 function applyDetail() {
   shadowMat.defines = detailDefines(settings);
   shadowMat.needsUpdate = true;
@@ -1725,7 +1726,11 @@ const READY_WAIT_MS = 20000;
 function bootReady() {
   const t0 = performance.now();
   const check = () => {
-    if (win && !win.loaded && performance.now() - t0 < READY_WAIT_MS) { setTimeout(check, READY_POLL_MS); return; }
+    if (win && !win.loaded && performance.now() - t0 < READY_WAIT_MS) {
+      launch.progress?.('world');   // (the loading screen's step: its passes compile, then it generates)
+      setTimeout(check, READY_POLL_MS);
+      return;
+    }
     launch.ready?.();
     if (bootMap && launch.mode) startMode(launch.mode);
   };
@@ -1850,6 +1855,7 @@ try {
     } : null,
   };
   gpuLoss.settle();
+  launch.progress?.('compile');   // the first frame compiles the view (the loading screen's step)
   requestAnimationFrame(frame);
   bootReady();
 } catch (err) {

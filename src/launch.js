@@ -3,4 +3,6 @@
 //   map, mode    the menu's pick for the boot (maps.js keys), null: none (a direct link, ?size=…)
 //   openMenu()   set by main.js: the menu over the running app (the toolbar's Maps, Esc)
 //   ready()      set by main.js, called by app.js once the first map is on screen
-export const launch = { map: null, mode: 'sandbox', openMenu: null, ready: null };
+//   progress(step)  set by main.js, called by app.js as the boot reaches a step
+//                (the loading screen's status lines, ui/menu.js STEPS)
+export const launch = { map: null, mode: 'sandbox', openMenu: null, ready: null, progress: null };

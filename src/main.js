@@ -7,7 +7,7 @@ import './fonts.css';   // Archivo and Silkscreen, self-hosted
 import './ui/menu.css';
 import { createMenu } from './ui/menu.js';
 import { launch } from './launch.js';
-import { preloadGame } from './preload.js';
+import { preloadGame, gameFetched } from './preload.js';
 import { GAMEMODES, mapOf, DEFAULT_MAP, MOBILE_MAP } from './maps.js';
 
 // The team gamemodes exist only in builds that have them (src/game: the Big Team Battle modes).
@@ -15,6 +15,9 @@ const TEAM_GAMES = Object.keys(import.meta.glob('./game/index.js')).length > 0;
 const MODES = GAMEMODES.filter((m) => !m.team || TEAM_GAMES);
 const SETTINGS_STORE = 'powder-toy-3d:settings';   // app.js STORE: the map last played
 const MOBILE = matchMedia('(hover: none) and (pointer: coarse)').matches;   // app.js MOBILE
+// the most it waits for the loading screen's next step to paint before the
+// build holds the main thread (a hidden tab paints nothing: it goes on anyway)
+const PAINT_WAIT_MS = 100;
 
 let lastPlayed = null;
 try { lastPlayed = mapOf(JSON.parse(localStorage.getItem(SETTINGS_STORE) || '{}'))?.key; } catch { /* storage unavailable */ }
@@ -40,11 +43,23 @@ async function start(map, mode) {
   }
   launch.map = map;
   launch.mode = mode;
-  // (one message: the main thread is busy compiling until the map is up, so a second would never paint)
+  // The loading screen, and its steps as the boot reaches them (ui/menu.js STEPS):
+  // the download here, then app.js's build, shader compile and world.
   menu.loading('Loading something cool, please be patient');
+  launch.progress = (step) => menu.progress(step);
   launch.ready = () => menu.close();
+  menu.progress('fetch');
+  await gameFetched();
+  menu.progress('build');
+  await painted();   // (app.js builds the map in one go: the line must be on screen first)
   await boot();
 }
+
+// after the next frame has painted, or PAINT_WAIT_MS
+const painted = () => new Promise((resolve) => {
+  requestAnimationFrame(() => requestAnimationFrame(resolve));
+  setTimeout(resolve, PAINT_WAIT_MS);
+});
 
 const WEBGL_OFF = `Your browser won't start WebGL 2 right now, so the game can't draw.
 This error does not identify the cause. Save your other work, then quit the browser completely and reopen it.
