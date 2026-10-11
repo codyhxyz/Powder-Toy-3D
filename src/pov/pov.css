@@ -243,6 +243,25 @@ body.pov-locked canvas { cursor: none; }
   box-shadow: 0 0 3px rgba(0, 0, 0, 0.8), 0 0 7px rgba(255, 255, 255, 0.9);
 }
 
+/* ---- Halo combat (combat.js): the red reticle on an enemy in range, the grenade count, the shield's edge flare */
+.pov-cross.enemy i, .pov-cross.enemy b { background: #ff3b30; }
+.pov-cross.enemy b { opacity: 1; }
+.pov-nades {
+  position: absolute; right: calc(50% + 16px); top: calc(50% + 14px);
+  display: none; align-items: center; gap: 4px;
+  font: 600 13px/1 var(--font, system-ui); color: #fff;
+  filter: drop-shadow(0 0 1.5px rgba(0, 0, 0, 0.9));
+}
+.pov-nades.show { display: flex; }
+.pov-nades .pov-ic svg { width: 14px; height: 14px; fill: #b9c97a; display: block; }
+.pov-nades.empty { opacity: 0.45; }
+.pov-shieldfx {
+  background: radial-gradient(120% 95% at 50% 50%, transparent 55%, rgba(255, 205, 90, 0.35) 82%, rgba(255, 225, 140, 0.7) 100%);
+  mix-blend-mode: screen;
+  transition: none;
+}
+body.pov-on.pov-nohud .pov-nades { display: none; }
+
 /* F1 (as in Minecraft): the HUD and the hand hidden. Screen effects, the death
    screen and the click-to-look prompt stay. */
 body.pov-on.pov-nohud .pov-cross,

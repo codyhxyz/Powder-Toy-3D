@@ -10,6 +10,9 @@ import { AXE, PICK, FLAMER, PHYS, ROCKET } from '../../shaders/povTools.js';
 import { ROUND_GRAVITY, gravityScale } from '../ballistics.js';
 import { THROW_SPEED } from '../tools/bomb.tool.js';
 import { CHARGE_S as LASER_CHARGE_S, REFIRE_S as LASER_REFIRE_S } from '../tools/laser.tool.js';
+import { FRAG_SPEED, FRAG_GRAVITY } from '../frag.js';
+import { MELEE_LUNGE } from '../kick.js';
+import { haloMatch } from '../halo.js';
 
 // An NPC's mind, from Mat Buckland's "Programming Game AI by Example" as Yuka
 // implements it (github.com/Mugen87/yuka):
@@ -74,6 +77,13 @@ const TORCH_RANGE = 1.5 + FLAMER.LENGTH;      // cells: nozzle reach + flame
 const BOMB_MIN = 10;                 // cells: closer than this a bomb would hurt itself
 const BOMB_COOLDOWN = 7;             // s between bombs
 const BOMB_ERROR = 0.12;             // its throw's spread: σ of the landing point, as a share of the distance
+// Halo's frag (frag.js), thrown from the eye whatever is in hand, in a Halo match (body.grenades):
+// at mid range, as Halo's AI does, never so close that its own blast would catch it
+const FRAG_MIN = 12;                 // cells: beyond the blast's pressure (shaders/povTools.js ROCKET.PULSE_RADIUS 9) and its roll
+const FRAG_MAX = 45;                 // cells: the far edge of the fuzzy "medium" (distanceModule)
+const FRAG_COOLDOWN = 6;             // s between its frags (by eye: not both at once)
+const FRAG_ERROR = BOMB_ERROR;       // the same throwing arm
+const LOB_LOOK = 10;                 // cells out along a lob it looks at (only the direction counts)
 const PHYS_GRAB_S = 0.9;             // s it holds the beam on loose matter before flinging
 const PHYS_FIND = 12;                // cells: loose matter this near its eye can be grabbed
 const PHYS_COOLDOWN = 2.5;
@@ -160,6 +170,8 @@ const WEAPONS = {
   SNIPER: { rate: distanceModule([['close', 'no'], ['medium', 'yes'], ['far', 'very']]), needsSight: true, carried: true },
   ROCKET: { rate: distanceModule([['close', 'no'], ['medium', 'very'], ['far', 'yes']]), needsSight: true, carried: true },
   LASER: { rate: distanceModule([['close', 'yes'], ['medium', 'very'], ['far', 'very']]), needsSight: true, carried: true },
+  // Halo's frag grenade (frag.js): mid range only; the gun it carries stays in hand (holds)
+  FRAG: { rate: distanceModule([['close', 'no'], ['medium', 'very'], ['far', 'no']]), needsSight: true, holds: (a) => [...(a.npc.body.carry ?? [])][0] ?? 'GUN' },
 };
 // Can a bot fight with tool `key`? (A game's loadout, game/siege.js's classes, falls back when none of its tools can.)
 export const canFight = (key) => Object.hasOwn(WEAPONS, key);
@@ -287,7 +299,7 @@ export class Agent extends Vehicle {
   clearIntent() {
     const i = this.intent;
     i.share = 0; i.sprint = false; i.jump = false; i.look = null; i.tool = null;
-    i.primary = false; i.secondary = false; i.primaryPressed = false; i.secondaryPressed = false; i.chop = null;
+    i.primary = false; i.secondary = false; i.primaryPressed = false; i.secondaryPressed = false; i.chop = null; i.frag = false;
     this.pursuit.active = this.seek.active = this.wander.active = false;
   }
   steerTo(p, share = 1) { this.seek.target.set(p.x, 0, p.z); this.seek.active = true; this.intent.share = share; this.intent.sprint = share > 0.7; }
@@ -445,7 +457,7 @@ class AttackGoal extends CompositeGoal {
     // not yet: still reacting to the sight of it, staggered, or catching its breath; face it and hold
     if ((a.sees && a.inSight < REACTION_S) || !a.ready('ATTACK')) {
       a.lookAt(a.chest());
-      a.hold(w);
+      a.hold(WEAPONS[w].holds?.(a) ?? w);
       return;
     }
     USE[w](a);
@@ -598,6 +610,7 @@ function usable(a, key) {
     case 'BOMB': return d > BOMB_MIN && d < 90;
     case 'GUN': case 'SMG': case 'SNIPER': case 'LASER': return true;
     case 'ROCKET': return d > ROCKET_MIN;
+    case 'FRAG': return a.ready('FRAG') && a.npc.body.grenades > 0 && d > FRAG_MIN && d < FRAG_MAX;
     case 'PHYSGUN': return d < PHYS.HOLD_MAX && !!a.npc.world.nearest(a.eye(), PHYS_FIND, LOOSE);
     case 'BUCKET': {
       const b = a.npc.bucket();
@@ -666,6 +679,20 @@ const USE = {
     const t = a.target.pos, d = a.dist;
     const at = { x: t.x + gauss() * BOMB_ERROR * d, y: t.y, z: t.z + gauss() * BOMB_ERROR * d };
     if (throwBombAt(a, at, false)) a.cooldown('BOMB', BOMB_COOLDOWN);
+    s.tool = null;
+  },
+  // Halo's frag: a beat with the arm back (the tell), then lobbed to land at its feet; npc.js throws it (intent.frag)
+  FRAG(a) {
+    const s = a.useState ??= {};
+    if (s.tool !== 'FRAG') { s.tool = 'FRAG'; s.t = 0; }
+    s.t += a.dt;
+    a.hold(WEAPONS.FRAG.holds(a));
+    a.lookAt(a.chest());
+    a.intent.chop = Math.min(s.t / THROW_WINDUP, 1) * 0.7;   // the arm goes up: the tell
+    if (s.t < THROW_WINDUP) return;
+    const t = a.target.pos, d = a.dist;
+    const at = { x: t.x + gauss() * FRAG_ERROR * d, y: t.y, z: t.z + gauss() * FRAG_ERROR * d };
+    if (lobAt(a, at, FRAG_SPEED, FRAG_GRAVITY)) { a.intent.frag = true; a.cooldown('FRAG', FRAG_COOLDOWN); }
     s.tool = null;
   },
   BLOWTORCH(a) {
@@ -777,6 +804,26 @@ function throwBombAt(a, p, breach) {
   a.lookAt({ x: e.x + (dx / x) * c * 10, y: e.y + Math.sin(th) * 10, z: e.z + (dz / x) * c * 10 });
   a.intent.primaryPressed = true;
   return true;
+}
+
+// Look along the low arc that lands a throw at speed v (cells/s), falling at `share` of gravity, on p:
+// the bomb's formula (throwBombAt). False if p is out of its reach.
+function lobAt(a, p, v, share) {
+  const e = a.eye();
+  const dx = p.x - e.x, dz = p.z - e.z, x = Math.hypot(dx, dz), y = p.y - e.y;
+  const g = ROUND_GRAVITY * gravityScale(a.npc.getSim()) * share;
+  const disc = v ** 4 - g * (g * x * x + 2 * y * v * v);
+  if (disc < 0 || !(x > 0)) return false;
+  const th = Math.atan((v * v - Math.sqrt(disc)) / (g * x)), c = Math.cos(th);
+  a.lookAt({ x: e.x + (dx / x) * c * LOB_LOOK, y: e.y + Math.sin(th) * LOB_LOOK, z: e.z + (dz / x) * c * LOB_LOOK });
+  return true;
+}
+
+// Halo's melee (kick.js, in a Halo match): its enemy within the lunge, seen past the reaction
+// delay and with no breather due, gets the bash (npc.js turns it to the enemy and kicks)
+export function wantsMelee(a) {
+  return haloMatch() && a.knows && a.sees && a.inSight >= REACTION_S && a.ready('ATTACK')
+    && !!a.npc.body.kicker?.ready && a.dist3 < MELEE_LUNGE;
 }
 
 // cell c if the hand gets to it: the cell its look ray strikes on the way, if

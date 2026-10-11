@@ -7,6 +7,8 @@ import { viewmodelRig, HIT } from '../viewmodel.js';
 import { trigger } from './action.js';
 import { gear } from './catalog.js';
 import { muzzleCell } from './transfer.js';
+import { haloSplash } from '../frag.js';
+import { haloMatch, wu, HALO_HEALTH, HALO_SHIELD } from '../halo.js';
 
 // Rocket launcher: Team Fortress 2's (the Soldier's): a rocket a click, 0.8 s
 // apart, that flies dead straight at 1100 HU/s (≈ 21 m/s: slow enough to see
@@ -25,6 +27,16 @@ const SPEED = 21 / CELL_METERS;         // cells/s (TF2's 1100 HU/s)
 const REFIRE = 0.8;                     // s between rockets (TF2's rocket launcher)
 const KIND = 'rocket';
 const STANDOFF = 1;                     // cells out of the struck face the blast is centred: in the air in front of it
+// In a Halo match a rocket also does Halo's splash (frag.js haloSplash): Halo 3's rocket kills a
+// full-shielded Spartan it lands beside and pops shields farther out. Halopedia has no figures for
+// it ("H3:Rocket Launcher" is a stub), so the radii are by eye, and the damage is just enough for that.
+const HALO_SPLASH = {
+  inner: HALO_HEALTH + HALO_SHIELD,     // points: a kill from a full shield...
+  outer: HALO_SHIELD,                   // ...falling to a shield pop at the edge
+  rInner: wu(0.75), rOuter: wu(2),      // cells (≈ 7.6 and 20: 2.3 m and 6 m)
+  vs: 1,
+  cause: 'Blown up',                    // as the blast's own (vitals.js), so the feed reads the same
+};
 
 // viewmodel, in cells (camera space: +x right, +y up, −z forward): on the shoulder
 const HELD_POS = [0.62, -0.55, -1.6];
@@ -80,6 +92,7 @@ export default {
       sim.pass(mat);
       lastBlast = { point: center.clone(), id: hit.id };
       povEvents.emit('blast', { point: center.clone() });
+      if (haloMatch()) haloSplash(center, HALO_SPLASH);
     }
 
     function fire(ctx) {

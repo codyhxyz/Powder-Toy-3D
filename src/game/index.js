@@ -14,6 +14,7 @@ import { createGameHud } from './hud.js';
 import { createSiege } from './siege.js';
 import { canFight } from '../pov/ai/brain.js';
 import { createArsenal } from './arsenal.js';
+import { CAUSE } from '../pov/halo.js';
 import { createFeel } from './feel.js';
 
 // Team games in first person: Halo's Team Slayer, Capture the Flag, King of
@@ -57,6 +58,8 @@ const ROAM_S = 30;                   // s a Slayer bot heads for one stretch of 
 // s from a match's result to the next match: the carnage report counts down
 // over its whole stay (rules.js END_SCREEN_S, Halo 3's post-game carnage report)
 const NEXT_MATCH_S = R.END_SCREEN_S;
+const FRAG_CAUSE = CAUSE.GRENADE;     // a frag's kill (the medals read it)
+const BLAST_DEATH = /^blown up/i;    // the cause a body dies of in a blast's pressure (vitals.js)
 const other = (t) => (t === 'red' ? 'blue' : 'red');
 const hdist = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
 const v3 = ([x, y, z]) => new THREE.Vector3(x, y, z);
@@ -380,15 +383,15 @@ export function createGame(shell) {
   povEvents.on('body:hit', (e) => {
     if (!running) return;
     const v = roster.get(e.id), by = e.by ?? PLAYER;
-    if (v && by !== v.id) v.lastHit = { by, at: time };
+    if (v && by !== v.id) v.lastHit = { by, at: time, cause: e.cause ?? null };
   });
-  const near = (by, point, r) => {
+  const near = (by, point, r, cause = null) => {
     for (const v of roster.values()) {
       const b = bodyOf(v);
-      if (b && v.id !== by && b.pos.distanceTo(point) < r) v.lastHit = { by, at: time };
+      if (b && v.id !== by && b.pos.distanceTo(point) < r) v.lastHit = { by, at: time, cause };
     }
   };
-  povEvents.on('blast', (e) => { if (running && e.point) near(e.by ?? PLAYER, e.point, R.BLAST_CREDIT_R); });
+  povEvents.on('blast', (e) => { if (running && e.point) near(e.by ?? PLAYER, e.point, R.BLAST_CREDIT_R, e.kind === 'frag' ? FRAG_CAUSE : null); });
   povEvents.on('tool:action', (e) => {
     if (!running || e.tool !== 'blowtorch' || e.action !== 'on') return;
     const from = e.from ?? shell.player?.pos;
@@ -402,7 +405,9 @@ export function createGame(shell) {
     if (k && (!k.team || k.team === v.team)) k = null;   // a teammate's bomb, say: a betrayal counts as a suicide
     if (k) k.kills++;
     v.lastHit = null;
-    const cause = bodyOf(v)?.cause ?? '';
+    // a frag's own blast finishing what its shrapnel started is still the frag's kill (Halo names the grenade)
+    const bodyCause = bodyOf(v)?.cause ?? '';
+    const cause = k && h.cause === FRAG_CAUSE && BLAST_DEATH.test(bodyCause) ? FRAG_CAUSE : bodyCause;
     const weapon = k ? weaponOf(k) : null;
     const e = { killer: k?.name ?? null, killerTeam: k?.team ?? null, victim: v.name, victimTeam: v.team, cause, by: k?.id ?? null, id: v.id, weapon };
     if (v.id === PLAYER) myDeath = { at: time, killer: e.killer, killerTeam: e.killerTeam, weapon: gearByKey(weapon)?.name ?? null, cause };

@@ -1,7 +1,7 @@
 import { h } from '../ui/dom.js';
 import { TOUCH_MEDIA } from './touch.js';
 
-// The POV HUD: crosshair (with its bloom) and hitmarker, the Energy Shield (Halo's bar over health), health and breath, the perks held (Noita's row of
+// The POV HUD: crosshair (with its bloom, and Halo's red on an enemy in range) and hitmarker, Halo's grenade count, the Energy Shield (Halo's bar over health, and its flare on the screen's edge), health and breath, the perks held (Noita's row of
 // icons), screen effects for what the body feels, the pointer-lock prompt, the death screen and the entry hint. Styles
 // in pov.css. update() runs every frame and only touches the DOM when a
 // (rounded) value changes.
@@ -22,6 +22,10 @@ const GAP_STEPS = 2;                    // the gap is rounded to 1/this px (fewe
 const SHIELD_HIT_MS = 160;              // ms a hit's flash lasts (pov.css .pov-shield.hit)
 const SHIELD_POP_MS = 420;              // ms the break's pop lasts (pov.css .pov-shield.pop)
 const OVER_DRAIN_MAX = 0.2;             // base lives/s: a slower fall while above the maximum is an Overshield draining, not a hit
+// ...and the screen's edge flares with it, Halo 3's shield flash: a hit's flicker, the break's flash
+const SHIELD_EDGE_HIT = 0.45;           // opacity of the edge flare on a hit...
+const SHIELD_EDGE_POP = 1;              // ...and on the break
+const SHIELD_EDGE_FADE = 4;             // opacity lost per second
 // Statuses (status.js): Noita's row of icons, each with its seconds left and a bar that runs down.
 const STATUS_ENDING_S = 1.5;            // s left from which an icon blinks (about to wear off)
 const STATUS_TINT = 0.4;                // opacity of the first-person tint while a stain with a screen colour is on
@@ -40,6 +44,11 @@ export function createPovHud() {
   };
   const cross = h('div.pov-cross', {}, h('i'), h('i'), h('i'), h('i'), h('b'));
   const hitmark = h('div.pov-hitmark');
+  const shieldEdge = h('div.pov-fx.pov-shieldfx');
+  // Halo's grenade count, beside the held tool's readout (which sits below-right of the crosshair)
+  const nadeCount = h('b');
+  const nades = h('div.pov-nades', { 'aria-label': 'Grenades' },
+    h('span.pov-ic', { html: '<svg viewBox="0 0 16 16"><path d="M6.5 1.5h3v2h-3z"/><path d="M10 3.6l2.6-1.3.6 1.1-2.4 1.3z"/><ellipse cx="8" cy="9.6" rx="4.6" ry="5.4"/></svg>' }), nadeCount);
 
   const healthFill = h('div.pov-fill'), healthTrail = h('div.pov-trail');
   const breathFill = h('div.pov-fill');
@@ -95,7 +104,7 @@ export function createPovHud() {
     h('span', { text: 'God leaves' }));
 
   const root = h('div.pov-hud', { 'aria-hidden': 'true' },
-    fx.heat, fx.frost, fx.acid, fx.stain, fx.hurt, cross, hitmark, vitals, lock, death, hint);
+    fx.heat, fx.frost, fx.acid, fx.stain, fx.hurt, shieldEdge, cross, hitmark, nades, vitals, lock, death, hint);
   document.body.append(root);
 
   // DOM writes only on change
@@ -113,7 +122,8 @@ export function createPovHud() {
   };
 
   let trail = 1, trailHold = 0, lastHealth = 1;
-  let lastShield = 0, shieldHitT = 0, shieldPopT = 0;
+  let lastShield = 0, shieldHitT = 0, shieldPopT = 0, edge = 0;
+  let shotHit = 0, combatHit = 0;   // the hitmarker: feel.js's (shots) and combat.js's (Halo: any blow that landed)
   let perkVersion = -1, perkSet = null;
   let statusVersion = -1, statusSet = null, statusIcons = [];
   const statusPeak = new Map();   // key → the most seconds it had left while on (its bar's full length)
@@ -186,7 +196,10 @@ export function createPovHud() {
       if (sMax > 0 && shAbs < lastShield && !draining) {
         shieldHitT = SHIELD_HIT_MS / 1000;
         if (sh <= 0) shieldPopT = SHIELD_POP_MS / 1000;
+        edge = Math.max(edge, sh <= 0 ? SHIELD_EDGE_POP : SHIELD_EDGE_HIT);
       }
+      edge = live ? Math.max(0, edge - SHIELD_EDGE_FADE * s.dt) : 0;
+      set(shieldEdge, 'opacity', String(round(edge)));
       lastShield = shAbs;
       shieldHitT = Math.max(0, shieldHitT - s.dt);
       shieldPopT = Math.max(0, shieldPopT - s.dt);
@@ -233,8 +246,19 @@ export function createPovHud() {
     feedback({ bloom = 0, hit = 0, broke = false }) {
       const gap = Math.round((CROSS_GAP_PX + bloom * BLOOM_GAP_PX) * GAP_STEPS) / GAP_STEPS;
       set(cross, '--gap', `${gap}px`);
-      set(hitmark, 'opacity', String(round(hit)));
+      shotHit = hit;
+      set(hitmark, 'opacity', String(round(Math.max(shotHit, combatHit))));
       set(hitmark, '.broke', !!broke);
+    },
+    // Halo's feedback (combat.js), every POV frame: red (the crosshair is on an enemy in the held
+    // gun's range), hit 0..1 (a blow of yours landed), grenades (the count; null: none carried, no chip)
+    combat({ red = false, hit = 0, grenades = null }) {
+      set(cross, '.enemy', !!red);
+      combatHit = hit;
+      set(hitmark, 'opacity', String(round(Math.max(shotHit, combatHit))));
+      set(nades, '.show', grenades != null);
+      set(nades, '.empty', grenades === 0);
+      if (grenades != null) set(nadeCount, 'text', String(grenades));
     },
     dispose() { root.remove(); },
   };

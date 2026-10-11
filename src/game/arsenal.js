@@ -214,7 +214,10 @@ export function createArsenal({ scene, getVolume, getScale, shell, entries, body
     if (!on || !b || !e.team) return;   // (someone watching keeps their hands)
     const want = handsOf(e, b), sig = want.join();
     if (e.bot) {
-      if (e.bot.agent.weapons?.sig !== sig) { const s = new Set(want); s.sig = sig; e.bot.agent.weapons = s; }
+      // its frags too, beside the guns (brain.js FRAG spends body.grenades; the infected and a
+      // flag carrier throw none, Halo's)
+      const hands = infected(e) || carrying(e) ? want : [...want, 'FRAG'], hsig = hands.join();
+      if (e.bot.agent.weapons?.sig !== hsig) { const s = new Set(hands); s.sig = hsig; e.bot.agent.weapons = s; }
       return;
     }
     const tb = shell.toolbelt;

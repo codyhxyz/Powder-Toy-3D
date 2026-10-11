@@ -17,7 +17,7 @@ each in its own worktree, each owning the files listed below. The integrator mer
 - `R.styleOf(mode)`, `R.isHalo(mode)` (rules.js); `game.style` is `'halo' | 'tf2'` while a match
   runs, else `null`.
 - `povEvents` `game:spawn` `{ id, team, bot, body, mode, style }`: a body enters play in a match
-  (the match's start, every respawn, a team switch, Siege's halftime). It fires after the shell has
+  (the match's start, every respawn, a team switch). It fires after the shell has
   put the player's class on (`classes.spawned`, pov/index.js). Death clears every perk
   (vitals.js), so whatever a spawn gives (shield, loadout, grenades) is given again here, every time.
 - `povEvents` `game:stop` `{ mode, style }`: the match is over, ended or abandoned (also before a
