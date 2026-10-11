@@ -160,7 +160,7 @@ into `public/maps`, and `tools/menu-check.mjs` checks the menu on the GPU. A lin
 
 Start brings up a plain loading screen over the map's art: the gamemode, the map's name, a bar, and the one step the
 boot is on now (download, build, shader compile, world, the match being set up), as GMod's loading screen names it.
-The player stands beside it: "This is you." He is the real body, live (`src/ui/youViewer.js`): breathing in his idle clip and turning slowly, and a click and drag turns him left or right, as on Skyrim's loading screen. A render of him (`tools/you-portrait.mjs`) stands in until he is up.
+The player stands beside it: "This is you." He is the real body, live (`src/ui/youViewer.js`, drawn in a worker so he keeps moving while the boot holds the page): breathing in his idle clip and turning slowly, and a click and drag turns him left or right, as on Skyrim's loading screen. A render of him (`tools/you-portrait.mjs`) stands in until he is up.
 `tools/loading-screen-check.mjs` checks the menu's icons and the loading screen on the GPU.
 
 ## World
