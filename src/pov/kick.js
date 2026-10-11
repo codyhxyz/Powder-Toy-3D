@@ -200,21 +200,21 @@ export function createKick({ body, owner = null, renderer, getSim, cellAt, unkno
     for (let t = WALL_STEP; t < who.dist; t += WALL_STEP) {
       if (isSolid(cellAt(Math.floor(eye.x + dir.x * t), Math.floor(eye.y + dir.y * t), Math.floor(eye.z + dir.z * t)))) return null;
     }
-    const t = who.target;
-    const assassination = behind({ player: body, dir }, t);
+    const foe = who.target;
+    const assassination = behind({ player: body, dir }, foe);
     // the lunge: on into a body beyond the boot's reach, along the ground
     let dv = new THREE.Vector3();
-    t.box(lo, hi);
+    foe.box(lo, hi);
     toward.set((lo.x + hi.x) / 2 - body.pos.x, 0, (lo.z + hi.z) / 2 - body.pos.z);
     if (who.dist > KICK_REACH && toward.lengthSq() > EPS) {
       dv = toward.normalize().multiplyScalar(LUNGE_SPEED);
       body.applyImpulse(dv);
     }
-    if (assassination) t.hurt(1, CAUSE.ASSASSINATION, dir.clone(), { lethal: true, exact: true });
-    else t.hurt(points(MELEE_DAMAGE) * dealtScale(povEvents.actor?.id), CAUSE.MELEE, dir.clone(), { exact: true });
+    if (assassination) foe.hurt(1, CAUSE.ASSASSINATION, dir.clone(), { lethal: true, exact: true });
+    else foe.hurt(points(MELEE_DAMAGE) * dealtScale(povEvents.actor?.id), CAUSE.MELEE, dir.clone(), { exact: true });
     const normal = dir.clone().negate();
     povEvents.emit('impact', { source: 'kick', point: who.point, normal, id: -1, energy: MELEE_ENERGY, broke: null, body: true, backstab: assassination });
-    const res = { hit: 'body', point: who.point, normal, id: -1, broke: null, mass: t.mass ?? BODY_MASS_KG, dv, melee: true, assassination };
+    const res = { hit: 'body', point: who.point, normal, id: -1, broke: null, mass: foe.mass ?? BODY_MASS_KG, dv, melee: true, assassination };
     povEvents.emit('kick', { ...res, point: who.point.clone(), dir: dir.clone(), dv: dv.clone() });
     return res;
   }
