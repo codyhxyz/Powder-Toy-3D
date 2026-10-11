@@ -57,6 +57,12 @@ const FLUORITE_GLOW = bandGlow(FLUORITE_BAND.peak, FLUORITE_BAND.fwhm, FLUORITE_
 // daylight and lights a dark room.
 const SPARK_BAND = { peak: 460, fwhm: 300, lum: 0.6 };
 export const SPARK_GLOW = bandGlow(SPARK_BAND.peak, SPARK_BAND.fwhm, SPARK_BAND.lum);
+// A lit lamp (elements.js LAMP): a warm-white incandescent bulb, 2700 K
+// (sRGB ≈ #ffa957, Charity's blackbody table). A frosted bulb is far brighter
+// than a sunlit wall (~10⁵ against ~10⁴ cd/m²); drawn at under twice sunlit
+// white (≈ 1.2, above) so it stays a lamp, not a sun, and lights a room.
+const LAMP_TINT = '#ffa957';
+const LAMP_LUM = 2;
 // Foxfire (elements.js FUNGUS): fungal luciferin's green band, peaking at
 // 520-530 nm and ~80 nm wide (Kotlobay et al. 2018, PNAS; Oliveira et al.
 // 2015). Real foxfire is faint, ~10⁻³ cd/m², seen only by dark-adapted eyes;
@@ -76,6 +82,7 @@ const tintGlow = (hex, lum) => {
   const c = linearOf(hex), y = c.reduce((t, v, i) => t + v * REC709_LUMA[i], 0);
   return c.map((v) => (v / y) * lum);
 };
+export const LAMP_GLOW = tintGlow(LAMP_TINT, LAMP_LUM);
 
 // Smooth-surface channels. sigma = blur radius in cells (how much the
 // blockiness is smoothed away), ema = per-frame blend toward the new state
@@ -206,6 +213,7 @@ const LOOKS = {
   SWITCH: { rough: 0.4, alb: '#1d4a1f' },
   INSULATOR: { rough: 0.95, alb: '#a7aec2', sss: 0.3 },
   TSNS: { rough: 0.5, alb: '#c21aa6' },
+  LAMP: { rough: 0.5, ior: 1.5, alb: '#f4e6c4', sss: 0.5 },   // frosted bulb glass: its light is sparkEmit's (lampLit)
   PCLN: { rough: 0.35, metal: 1, alb: [0.45, 0.36, 0.14] },   // Clone's gold, tarnished: TPT draws it dark olive
   // Radioactive metals as powders: a metal powder is dark, since light is
   // trapped between the grains, with bright glints off the facets. Uranium
@@ -420,8 +428,10 @@ vec3 emission(int id, float Ts) { return emission(id, Ts, 1.0); }
 // conducting well, keep none): what an exposed cell of it gives off.
 float skinT(int id, float T) { return T - (id == E_METAL ? 0.0 : INCAND_SKIN_DROP); }
 vec3 cellEmission(int id, float T) { return emission(id, skinT(id, T)); }
-// a live conductor's spark (ctype: the cell's, floor of state A's w)
-vec3 sparkEmit(int id, float ctype) { return sparkLive(id, ctype) ? SPARK_GLOW : vec3(0.0); }`;
+// a lit lamp (src/electricity.js LAMP_HOLD: its spark level holds while it is lit)
+bool lampLit(int id, float ctype) { return id == E_LAMP && sparkLevel(ctype) > 0; }
+// a live conductor's spark (ctype: the cell's, floor of state A's w), or a lit lamp's light
+vec3 sparkEmit(int id, float ctype) { return lampLit(id, ctype) ? LAMP_GLOW : sparkLive(id, ctype) ? SPARK_GLOW : vec3(0.0); }`;
 
 export function materialsGLSL() {
   const ints = (name, key) => `const int ${name}[NE] = int[NE](${LOOK.map((l) => l[key]).join(', ')});`;
@@ -453,6 +463,7 @@ export function materialsGLSL() {
     `const vec3 SCATALB[NE] = vec3[NE](${LOOK.map((l) => `vec3(${l.scatAlb.map(f).join(', ')})`).join(', ')});`,
     `const vec3 EMIT[NE] = vec3[NE](${LOOK.map((l) => `vec3(${l.emit.map(f).join(', ')})`).join(', ')});`,
     `const vec3 SPARK_GLOW = vec3(${SPARK_GLOW.map((v) => f(+v.toFixed(GLSL_DIGITS))).join(', ')});`,
+    `const vec3 LAMP_GLOW = vec3(${LAMP_GLOW.map((v) => f(+v.toFixed(GLSL_DIGITS))).join(', ')});`,
     `bool luminous(int id) { return ${LUMINOUS.map((e) => `id == E_${e.key}`).join(' || ') || 'false'}; }`,
     EMISSION_GLSL,
     ints('SURF', 'surf'),

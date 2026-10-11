@@ -57,8 +57,16 @@ export function createDock({ settings, onSelect, onBrushChange, onHover, onEyedr
   const detail = h('div.material-detail', {}, detailName, detailText);
   const empty = h('p.material-empty', { text: 'No matches. Try a name like water or glass.', hidden: true });
   const collection = h('div.material-swatches', { role: 'group', 'aria-label': 'Elements' });
+  const headers = [];   // section headers (a group's sections), shown with their group
   PALETTE.forEach((g, group) => {
+    const sectionOf = new Map(g.sections?.flatMap((s) => s.items.map((key, i) => [key, i === 0 ? s.name : null])) ?? []);
     for (const key of g.items) {
+      const head = sectionOf.get(key);
+      if (head) {
+        const el = h('h5.material-section', { text: head });
+        headers.push({ el, group });
+        collection.append(el);
+      }
       const it = itemByKey(key);
       const t = tile(it, '.material-swatch', { live: true });
       t.style.setProperty('--ink', luminance(it.color) > 0.179 ? '#000' : '#fff');
@@ -193,6 +201,7 @@ export function createDock({ settings, onSelect, onBrushChange, onHover, onEyedr
       el.hidden = !hit;
       if (hit) visible++;
     }
+    for (const { el, group } of headers) el.hidden = !!q || group !== category;
     categories.forEach((button, i) => button.setAttribute('aria-pressed', String(!q && i === category)));
     categoryName.textContent = q ? 'Search results' : PALETTE[category].name;
     count.textContent = String(visible).padStart(2, '0');

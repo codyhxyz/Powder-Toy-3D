@@ -55,7 +55,7 @@ two-cell footprint (`STAIR.STRIDE`). Worth making a lint (`walkable`) in phase 2
 | `TOWER` | lighthouse, watch, ruin | spiral stair round a newel, one cell a step under 11 clear; a striped lighthouse with a railed gallery and a glass lantern whose lamp is CRYSTAL; a braced timber watchtower with a roofed deck; a broken round keep with a stair to its broken top, a curtain wall and fallen blocks | 19 × 50 × 19, 15 × 41 × 15, 34 × 23 × 21 |
 | `STONES` | | 9–12 rock monoliths (some leaning, some fallen) round a low altar, 9 m across; natural ROCK, so the pickaxe quarries it | 31 × 11 × 31 |
 | `WELL` | | a stone parapet round sealed water on its own stone floor (no ground cover touches it), windlass, rope, bucket, roof | 9 × 13 × 7 |
-| `MINE` | | timber portal and a 7 m gallery it carves into the hill behind it, timber sets with CRYSTAL lamps, rails on a plank floor out to a cart of rubble, crates at the face | 11 × 15 × 34 |
+| `MINE` | | timber portal and a 7 m gallery it carves into the hill behind it, timber sets with electric lamps (LAMP on a BATTERY in the beam), rails on a plank floor out to a cart of rubble, crates at the face | 11 × 15 × 34 |
 | `WRECK` | | a hull heeled over and sunk into the sand (cells below the base are dropped, so the beach shows there), stern stove in to ribs, a gash on her high side, mast stump, spar and anchor on the sand | 20 × 15 × 46 |
 
 They live in `structures.js`, not `builtins.js`, because `builtins.js` is pasted into every AI prompt as worked examples;
@@ -171,7 +171,7 @@ main thread for ~1.4 s at every World load. Now the default World's are baked at
 | Watchtower | a hilltop in the meadow and pine zones: higher than every sample on a 24-cell ring, slope < 0.5 | 2–3 per island, 160 apart | 4 | A reason to climb a hill and a deck to see the next goal from. Pairs with an unlit campfire at its foot |
 | Ruined keep | bare rock above the plant line, on ridges | 1–2 per island | 5 (rubble hides the rest) | A goal in the bare high country, which is otherwise empty; climb it for the island's best view |
 | Standing stones | a gentle summit inside the plant zone, flat over 16 cells | 1 per island | 4 | A mysterious place, and the island's perk shrine on its altar (below) |
-| Mine | a cave mouth (caves' `islandCaveMouth`); until then a slope of 0.45–2.6 (the island's steepest are ~0.8) whose ground is 9+ cells over the gallery's back half, its spur over lower ground | up to 3 per island | (portal only) | An entrance into the mountain that teaches the pickaxe: follow the rails and the crystal lamps to the face, and keep digging to the coal |
+| Mine | a cave mouth (caves' `islandCaveMouth`); until then a slope of 0.45–2.6 (the island's steepest are ~0.8) whose ground is 9+ cells over the gallery's back half, its spur over lower ground | up to 3 per island | (portal only) | An entrance into the mountain that teaches the pickaxe: follow the rails and the lamps to the face, and keep digging to the coal |
 | Campfire (unlit) | beside docks, watchtowers, mines and village greens | with those | 1 | Unlit, so the world doesn't churn; lighting it is the player's choice (warmth and light at night) |
 
 Not placed: greenhouse (its plants grow into its troughs), fountain (its CLONE overflows), igloo (ice melts in 20 °C air),
@@ -191,7 +191,7 @@ and cottages low, cabins in the pines.
 A loaded world must not churn, so as generated: no lit fire, no CLONE, no ice, no water that touches plants, and no
 loose powder that can move. Checked per structure by the physics lint (sealed water, contained and supported powder):
 the well's water sits on its own stone floor, the mine's rubble is held by the cart's walls, the campfire's stones lie on
-the ground. The crystal lamps glow but never change. The one powder that can settle is the igloo's snow, and the igloo is
+the ground. The crystal lamps glow but never change, and so do the electric ones: a lamp touching a battery is on direct current, lit and still, and is generated that way (`electricity.js` LAMP_DC, `runtime.js` toCells). The one powder that can settle is the igloo's snow, and the igloo is
 not placed.
 
 ### Shrines

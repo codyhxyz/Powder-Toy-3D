@@ -12,7 +12,7 @@
 import { ELEMENTS, E, K, meltInto, breakInto, meltPoint, mechanisms, PH } from '../../elements.js';
 import { PHYS } from '../../physics.js';
 import { BOLT, STORM, boltPath, stormColumns, pickStrike } from '../../bolt.js';
-import { ELEC, SPARK_BORN, CONDUCTS, SPARK_COST, sparkPhase, sparkLevel, packSpark, takesSpark, conductsInto, tsnsSenses, powered, cloneable } from '../../electricity.js';
+import { ELEC, SPARK_BORN, CONDUCTS, SPARK_COST, sparkPhase, sparkLevel, packSpark, takesSpark, conductsInto, tsnsSenses, powered, cloneable, LAMP_DC } from '../../electricity.js';
 
 // ---- element table, as the GLSL arrays (elements.js elementsGLSL) ----
 const col = (key) => Float32Array.from(ELEMENTS, (e) => e[key]);
@@ -241,10 +241,17 @@ function electric(id, T, life, ctype, nid, nT, nL, nW) {
   }
   if (CONDUCTS[id]) {
     let ph = sparkPhase(ctype), lv = sparkLevel(ctype);
-    if (ph > 0) {
+    let dc = false;   // a lamp on a battery's direct current (src/electricity.js LAMP_DC)
+    if (id === E.LAMP) {
+      for (let q = 0; q < 4; q++) dc ||= nid[q] === E.BATTERY;
+      if (!dc && lv === sparkLevel(LAMP_DC)) lv = ELEC.LAMP_HOLD;
+    }
+    if (dc) { ph = 0; lv = sparkLevel(LAMP_DC); } else if (ph > 0) {
       ph--;
-      if (ph <= ELEC.SPARK_REST) lv = 0;
+      // the level only matters while live; a lamp keeps it as its light's hold (src/electricity.js)
+      if (ph <= ELEC.SPARK_REST) lv = id !== E.LAMP ? 0 : ph === ELEC.SPARK_REST ? ELEC.LAMP_HOLD : Math.max(lv - 1, 0);
     } else if (takesSpark(id, life0)) {
+      if (id === E.LAMP) lv = Math.max(lv - 1, 0);
       let best = 0;
       for (let q = 0; q < 4; q++) {
         const j = nid[q];

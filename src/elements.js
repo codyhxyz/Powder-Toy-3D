@@ -1090,6 +1090,17 @@ const defs = [
     dens: 10.5, cond: 0.02, cap: 0.75, drag: 0.04, slide: 0.35, ignite: 320, burnRate: 0.0018, burnHeat: 3, flameT: 800,
     life: 1, spawn: 0.3, sound: 'thunk',
     desc: 'Meat cooked through. In first person, walk into it to eat it: every chunk heals you. Past 320 °C it chars and burns to ash.' },
+  // Lamp: Minecraft's redstone lamp on TPT's wiring. It lights while a spark
+  // has crossed it lately and goes dark a moment after the power stops
+  // (electricity.js LAMP_HOLD), as the redstone lamp does. A bulb: a tungsten
+  // filament (σ 1.8·10⁷ S/m, CRC) in thin frosted glass, so it carries sparks on
+  // to the next lamp like a wire, and glass's heat numbers. Thin bulb glass is
+  // far weaker than a pane: a bullet, a kick or a blast breaks it into broken
+  // glass, and the light goes out (Noita's lamps).
+  { key: 'LAMP', abbr: 'LAMP', name: 'Lamp', kind: K.SOLID, render: R.OPAQUE, color: '#f4e6c4', var: 0.03,
+    cond: 0.015, cap: 0.5, melt: 1400, meltInto: 'GLASS', hard: 3, breakInto: 'SHARDS', acidProof: true, sound: 'shatter',
+    conducts: true, elec: 1.8e7,
+    desc: 'An electric light: it shines while sparks reach it and goes out a moment after they stop. Touch it to a battery to keep it on. Fragile: a shot or a kick smashes the bulb.' },
 ];
 
 // σ (S/m) of a conductor given as conducts: true with no elec: a metal. The
@@ -1200,6 +1211,9 @@ export const BUILDS = [
     desc: 'A timber portal and a gallery it carves into the hillside behind it, with rails and a cart of rubble. Place it facing out of a slope.' },
   { id: -114, key: 'WRECK', abbr: 'WRCK', name: 'Shipwreck', color: '#6b4a2e',
     desc: 'A wooden hull heeled over and half sunk into the sand, her stern stove in, her mast and anchor beside her.' },
+  { id: -116, key: 'LIGHT', abbr: 'LITE', name: 'Light', color: '#ffd28a',
+    variants: [['wall', 'Wall light'], ['ceiling', 'Ceiling light'], ['floor', 'Floor lamp'], ['street', 'Street lamp']],
+    desc: 'An electric light on its own battery. Click a wall for a wall light, a ceiling to hang one. The bulbs are glass: shoot one and it goes out; break the battery and the whole light dies.' },
   { id: -115, key: 'BRIDGE', abbr: 'BRDG', name: 'Bridge', color: '#8f6a43',
     variants: [['short', 'Short'], ['long', 'Long']],
     desc: 'A timber footbridge on stone abutments, its trusses for railings. Place it across a gap: only the abutments reach down.' },
@@ -1238,13 +1252,22 @@ export const PALETTE = [
   { name: 'Solids', items: ['WALL', 'COAL', 'ROCK', 'LIMESTONE', 'SANDSTONE', 'METAL', 'GLASS', 'CERAMIC', 'ICE', 'DRY_ICE', 'CRYSTAL', 'WOOD', 'FUNGUS', 'PLANT', 'MOSS', 'CLONE', 'BRICK', 'TITANIUM', 'TUNGSTEN', 'GOLD', 'SOLID_MERCURY', 'DIAMOND', 'VOID'] },
   // TPT's Explosives menu (propane stays a gas)
   { name: 'Explosives', items: ['GUNPOWDER', 'FUSE', 'THERMITE', 'NITRO', 'TNT', 'C4'] },
-  { name: 'Electronics', items: ['SPARK', 'BATTERY', 'METAL', 'PSCN', 'NSCN', 'SWITCH', 'INSULATOR', 'TSNS', 'PCLN'] },
+  { name: 'Electronics', items: ['SPARK', 'BATTERY', 'METAL', 'LAMP', 'PSCN', 'NSCN', 'SWITCH', 'INSULATOR', 'TSNS', 'PCLN'] },
   { name: 'Radioactive', items: ['PHOTON', 'NEUTRON', 'URANIUM', 'PLUTONIUM'] },
   { name: 'Exotic', items: ['ANTIMATTER', 'SINGULARITY'] },
   { name: 'Tools', items: ['HEAT', 'COOL', 'ERASE', 'BLAST', 'LIGHTNING', 'SIGN', ...GEAR_ITEMS.map((g) => g.key), ...WAND_STARTERS.map((item) => item.key)] },
   { name: 'Entities', items: ['ENEMY', 'GUNNER', 'WORM', 'GIANTWORM', 'SPAWN', 'JEEPPAD', 'BIKEPAD', 'FLOCK'] },
-  { name: 'Constructions', items: ['HOUSE', 'TREE', 'CAMPFIRE', 'IGLOO', 'BARREL', 'AQUARIUM', 'FOUNTAIN', 'SHRINE', 'DOCK', 'TOWER', 'STONES', 'WELL', 'MINE', 'WRECK', 'BRIDGE', 'PROMPT'] },
-];
+  // Sections under headers, as Garry's Mod's spawnlists split their props
+  // (and Halo Reach's Forge splits Structure into Buildings, Bridges and so on)
+  { name: 'Constructions', sections: [
+    { name: 'Buildings', items: ['HOUSE', 'IGLOO', 'TOWER', 'MINE', 'SHRINE'] },
+    { name: 'Landmarks', items: ['DOCK', 'BRIDGE', 'WELL', 'FOUNTAIN', 'STONES', 'WRECK'] },
+    { name: 'Nature', items: ['TREE'] },
+    { name: 'Props', items: ['CAMPFIRE', 'BARREL', 'AQUARIUM'] },
+    { name: 'Lights', items: ['LIGHT'] },
+    { name: 'From a prompt', items: ['PROMPT'] },
+  ] },
+].map((g) => (g.sections ? { ...g, items: g.sections.flatMap((s) => s.items) } : g));
 
 const NON_ELEMENTS = [...TOOLS, ...BUILDS, ...GEAR_ITEMS, ...WAND_STARTERS];
 export const toolById = (id) => (id < 0 ? NON_ELEMENTS.find((t) => t.id === id) : ELEMENTS[id]);

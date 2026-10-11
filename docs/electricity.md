@@ -153,9 +153,18 @@ does the rest. TPT's other spark heat (+10 K a spark on metal, up to 400 °C) ha
 blocks it, so our insulator is a material for keeping wires apart that also blocks heat: silica aerogel's numbers
 (0.015 W/m·K, half of still air's), acid-proof, and it sinters into glass at 1200 °C.
 
+**Lamp.** Minecraft's redstone lamp on these wires: a tungsten filament in frosted glass (σ 1.8·10⁷ S/m, a wire),
+lit while a spark has crossed it lately. A wired lamp keeps its spark's level after the spark leaves, as a hold
+(`LAMP_HOLD`, 8 steps, longer than the rest and ready steps before the next spark down a battery's wire), so it
+shines steadily and goes out a moment after the wire is cut. A lamp touching a battery is on direct current
+instead: ctype `LAMP_DC` (phase 0, level `LAMP_HOLD + 1`), lit and still, passing no sparks on, so lights don't
+keep their bricks awake and a World structure's lamps stay as generated (`runtime.js` toCells writes it). Its
+battery gone, it runs down from the hold. The bulb glass is thin (hard 3): a shot or a kick smashes it into broken
+glass. Lights built from it: `constructions/lights.js`.
+
 ## Rendering
 
-A live conductor gives off `SPARK_GLOW` (`gfx/materials.js`): blue-white, the colour of a discharge in air (nitrogen's
+A live conductor gives off `SPARK_GLOW` (`gfx/materials.js`), and a lit lamp `LAMP_GLOW` (2700 K warm white) instead,: blue-white, the colour of a discharge in air (nitrogen's
 bands from 337 nm into the violet, with atomic lines across the visible), as bright as twelve times fluorite's glow.
 It is added:
 - on surfaces, in `shaders/gfx/surface.js` `matOf`, which already gets each cell's ctype (crisp voxels, smooth

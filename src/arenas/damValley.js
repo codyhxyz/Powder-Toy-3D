@@ -84,6 +84,12 @@ const GATE_H = 10;                   // ...and this high from the room's floor
 const WINDOW_EVERY = 12;             // a window slit through the dam's face onto the tunnel every this many cells
 const WINDOW_W = 3, WINDOW_Y0 = 4, WINDOW_H = 3;   // a slit's width, its sill above the tunnel floor, its height
 const ROOM_WINDOW_Y0 = 3, ROOM_WINDOW_H = 7;       // the pump room's window band onto the basin
+// Electric lights (constructions/lights.js): a lamp on a battery set into the
+// roof over it, lit and still. Shoot one and that corridor goes dark (Halo 3's
+// corridors are lit by their sconces; Noita's lamps break).
+const TUN_LIGHT_EVERY = 12;          // a light in the tunnel's roof every this many cells, between the window slits
+const ROOM_LIGHTS = 4;               // lights in a row down the pump room's roof
+const FORT_LIGHT_EVERY = 8;          // a grid of lights under each fortress's roof, this far apart
 const KEG_SIZE = 2;                  // construction size of the powder kegs by the gate
 const KEG_X = ROOM_X0 + GATE_W / 2 - 1, KEG_Z = 63;   // a keg's middle, against the gate (red side; the other mirrors it)
 
@@ -259,6 +265,9 @@ export function buildDamValley() {
   const box = (x0, y0, z0, x1, y1, z1, id) => {
     for (let y = y0; y < y1; y++) for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) put(x, y, z, id);
   };
+  // a ceiling light under roof cell (x, roof, z): a battery set into the roof
+  // and a lamp under it (ids only: the lamp goes on direct current, lit, in the first step)
+  const light = (x, roof, z) => { put(x, roof, z, E.BATTERY); put(x, roof - 1, z, E.LAMP); };
   // a construction's cells with its base point at (x, y, z), its x flipped when `flip`
   const stamp = (cells, x, y, z, flip = false) => {
     for (let i = 0; i < cells.n; i++) put(x + (flip ? -cells.x[i] : cells.x[i]), y + cells.y[i], z + cells.z[i], cells.id[i]);
@@ -319,6 +328,7 @@ export function buildDamValley() {
     box(x, TUN_Y, TUN_Z0, x + 1, TUN_Y + TUN_H, TUN_Z1, E.EMPTY);
     box(x, TUN_Y - 1, TUN_Z0, x + 1, TUN_Y, TUN_Z1, E.WALL);                    // a paved floor
     box(x, TUN_Y + TUN_H, TUN_Z0, x + 1, TUN_Y + TUN_H + 1, TUN_Z1, E.WALL);    // and a lined roof
+    if (Math.abs(x - MID_X + 0.5) % TUN_LIGHT_EVERY < 1) light(x, TUN_Y + TUN_H, (TUN_Z0 + TUN_Z1) >> 1);
   }
   // window slits through the dam's downstream face onto the tunnel
   for (let d = WINDOW_EVERY / 2; MID_X + d + WINDOW_W <= NX - LAKE_X0; d += WINDOW_EVERY)
@@ -330,6 +340,10 @@ export function buildDamValley() {
   box(ROOM_X0, TUN_Y, ROOM_Z1, ROOM_X0 + GATE_W, TUN_Y + GATE_H, DAM_Z1, E.WOOD);
   box(NX - ROOM_X0 - GATE_W, TUN_Y, ROOM_Z1, NX - ROOM_X0, TUN_Y + GATE_H, DAM_Z1, E.WOOD);
   box(ROOM_X0, TUN_Y + ROOM_WINDOW_Y0, DAM_Z0, NX - ROOM_X0, TUN_Y + ROOM_WINDOW_Y0 + ROOM_WINDOW_H, ROOM_Z0, E.GLASS);
+  for (let i = 0; i < ROOM_LIGHTS / 2; i++) {   // red's half, mirrored
+    const x = Math.floor(ROOM_X0 + (NX - 2 * ROOM_X0) * (i + 0.5) / ROOM_LIGHTS);
+    for (const lx of [x, NX - 1 - x]) light(lx, TUN_Y + ROOM_H, (ROOM_Z0 + ROOM_Z1) >> 1);
+  }
   // the powder kegs by the gate
   const keg = runGenerator(BUILTINS.BARREL, { size: KEG_SIZE, seed: SEED, variant: 'keg' });
   stamp(keg, KEG_X, TUN_Y, KEG_Z);
@@ -348,6 +362,12 @@ export function buildDamValley() {
     B(FORT_X0, BASE_Y, FORT_Z0, FORT_X1, top, FORT_Z1, E.ROCK);
     B(FORT_X0 + FORT_WALL, BASE_Y, FORT_Z0 + FORT_WALL, FORT_X1 - FORT_WALL, top, FORT_Z1 - FORT_WALL, E.EMPTY);
     B(FORT_X0, top, FORT_Z0, FORT_X1, top + 1, FORT_Z1, E.WOOD);
+    // lights hung under the roof: a battery against it, a lamp under that
+    for (let x = FORT_X0 + FORT_WALL + FORT_LIGHT_EVERY / 2; x < FORT_X1 - FORT_WALL; x += FORT_LIGHT_EVERY)
+      for (let z = FORT_Z0 + FORT_WALL + FORT_LIGHT_EVERY / 2; z < FORT_Z1 - FORT_WALL; z += FORT_LIGHT_EVERY) {
+        B(x, top - 1, z, x + 1, top, z + 1, E.BATTERY);
+        B(x, top - 2, z, x + 1, top - 1, z + 1, E.LAMP);
+      }
     for (let x = FORT_X0; x < FORT_X1; x += MERLON_EVERY) {
       B(x, top + 1, FORT_Z0, x + 1, top + 3, FORT_Z0 + 1, E.ROCK);
       B(x, top + 1, FORT_Z1 - 1, x + 1, top + 3, FORT_Z1, E.ROCK);
