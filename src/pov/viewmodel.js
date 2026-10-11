@@ -4,7 +4,7 @@ import { povEvents } from './events.js';
 import { NV_PHOSPHOR } from '../gfx/post.js';
 import { brickTexel } from '../sim.js';
 import { BRICK } from '../shaders/common.js';
-import { SH_Y0, SH_Y1, SKYVIS_OPEN_DC } from '../shaders/gfx/lighting.js';
+import { SH_Y0, SH_Y1, SKYVIS_OPEN_DC, SHADOW_TINT_ID_SCALE, SHADOW_PAD, VOLUME_SHADOW_BIAS } from '../shaders/gfx/lighting.js';
 
 // The viewmodel: the tool in your hands, its motion, and the pass that draws it.
 //
@@ -120,10 +120,13 @@ const LIGHT_SCALE = Math.PI;
 // The world's light at the eye: the GI probe the camera is in, read back a few
 // times a second. Its spherical harmonics light the hands the way the probes
 // light the world (sky and bounce in the open, a cave's own light under the
-// ground: three's LightProbe takes the same L1 basis, irradiance included),
-// and its sky visibility dims the sun on them, as Minecraft's sky light carries
-// sun and sky together: the hands hold no daylight down a tunnel.
-const EYE_READ_S = 0.25;              // s between reads of the eye's probe
+// ground: three's LightProbe takes the same L1 basis, irradiance included).
+// The sun on them is the window's sun shadow map at the eye, read as the world
+// reads it inside volumes (lighting.js sunMapShadow): the hands hold no
+// daylight down a tunnel. (The probe's sky visibility won't do for the sun:
+// L1 over a brick leaves a cave a few % of the open sky's, and the sun is so
+// much brighter than a cave's own light that the hands shone in it.)
+const EYE_READ_S = 0.25;              // s between reads of the eye's probe and its sun
 const EYE_LIGHT_TAU = 0.3;            // s: the hands' light follows the reads this smoothly (no pop at a cave's mouth)
 
 const approach = (rate, dt) => 1 - Math.exp(-rate * dt);
@@ -308,6 +311,8 @@ function createPass(renderer) {
     read: new Float32Array(16),   // the last read: band 0 (rgb, sky visibility), band 1 x, y, z
     cur: new Float32Array(16),    // what lights the hands now, easing toward it
     have: false, pending: false, readAt: -Infinity, at: 0, pos: new THREE.Vector3(),
+    sunBuf: new Float32Array(4),  // the sun shadow map's texel at the eye
+    sunRead: 1, sunCur: 1,        // the sun's share at the eye: the last read, and easing toward it
   };
   return { cam, sun, sky, target, quadScene, quadCam, size, clear, eye, attached: null };
 }
@@ -325,8 +330,35 @@ function hemisphereSH(out, sky, ground) {
   out[7] = out[11] = out[15] = 0;
 }
 
-// Read the probe at the eye (now and then) and ease the hands' light toward it.
-// Returns the share of the open sky the eye sees.
+// Where the window's sun shadow map (app.js shadowMap, render.js shadowFrag)
+// holds grid point p: its texel (x, y) and p's depth d along the sun, as
+// lighting.js sunBasis and sunMapShadow(p) find them.
+const UP = new THREE.Vector3(0, 1, 0);
+const sb = { u: new THREE.Vector3(), v: new THREE.Vector3(), c: new THREE.Vector3(), q: new THREE.Vector3() };
+function shadowTexel(g, origin, sun, res, p) {
+  const R = 0.5 * Math.hypot(g.nx, g.ny, g.nz) + SHADOW_PAD, T = (2 * R) / res;
+  const { u, v, c, q } = sb;
+  u.crossVectors(UP, sun).normalize();
+  v.crossVectors(sun, u);
+  // the map's centre, snapped to whole texels across the sun as the window moves
+  const ou = origin.dot(u) / T, ov = origin.dot(v) / T;
+  c.set(g.nx / 2, g.ny / 2, g.nz / 2).addScaledVector(u, (Math.round(ou) - ou) * T).addScaledVector(v, (Math.round(ov) - ov) * T);
+  q.subVectors(p, c);
+  const texel = (s) => Math.min(Math.max(Math.floor(((s / R) * 0.5 + 0.5) * res), 0), res - 1);
+  return { x: texel(q.dot(u)), y: texel(q.dot(v)), d: R - q.dot(sun) };
+}
+// The sun's share at depth d behind texel sm: none past the first opaque
+// matter, and liquid or glass in between dims it by its optical depth.
+function sunThrough(sm, d) {
+  if (d >= sm[0] + VOLUME_SHADOW_BIAS) return 0;
+  const tid = Math.floor(sm[3] / SHADOW_TINT_ID_SCALE);
+  if (tid === 0 || d <= sm[1]) return 1;
+  const frac = Math.min(Math.max((d - sm[1]) / Math.max(sm[2] - sm[1], 1e-3), 0), 1);
+  return Math.exp(-(sm[3] - tid * SHADOW_TINT_ID_SCALE) * frac);
+}
+
+// Read the probe and the sun at the eye (now and then) and ease the hands'
+// light toward them. Returns the share of the sun reaching the eye.
 function eyeLight(renderer, camera, eye, sky) {
   const app = globalThis.__app, sim = app?.sim, volume = app?.volume;
   const now = performance.now() / 1000;
@@ -337,33 +369,42 @@ function eyeLight(renderer, camera, eye, sky) {
   const g = sim?.g;
   const b = p && [Math.floor(p.x / BRICK), Math.floor(p.y / BRICK), Math.floor(p.z / BRICK)];
   const inside = b && b[0] >= 0 && b[1] >= 0 && b[2] >= 0 && b[0] < g.nx / BRICK && b[1] < g.ny / BRICK && b[2] < g.nz / BRICK;
-  if (inside && !eye.pending && now - eye.readAt >= EYE_READ_S) {
+  const map = app?.shadowMap, sun = app?.SUN;
+  if (inside && map && sun && !eye.pending && now - eye.readAt >= EYE_READ_S) {
     const i = brickTexel(g, b[0], b[1], b[2]), x = i % g.bwidth, y = Math.floor(i / g.bwidth);
+    const st = shadowTexel(g, sim.origin, sun, map.width, p);
     eye.pending = true;
     eye.readAt = now;
-    Promise.all(eye.bufs.map((buf, k) => renderer.readRenderTargetPixelsAsync(sim.giProbes, x, y, 1, 1, buf, undefined, k)))
+    Promise.all([
+      ...eye.bufs.map((buf, k) => renderer.readRenderTargetPixelsAsync(sim.giProbes, x, y, 1, 1, buf, undefined, k)),
+      renderer.readRenderTargetPixelsAsync(map, st.x, st.y, 1, 1, eye.sunBuf),
+    ])
       .then(() => {
         eye.bufs.forEach((buf, k) => { for (let c = 0; c < 4; c++) eye.read[k * 4 + c] = THREE.DataUtils.fromHalfFloat(buf[c]); });
-        if (!eye.have) eye.cur.set(eye.read);   // the first read: no easing in from nothing
+        eye.sunRead = sunThrough(eye.sunBuf, st.d);
+        if (!eye.have) { eye.cur.set(eye.read); eye.sunCur = eye.sunRead; }   // the first read: no easing in from nothing
         eye.have = true;
       })
       .catch(() => {})
       .finally(() => { eye.pending = false; });
   }
+  let sunTarget = eye.sunRead;
   if (!inside || !eye.have) {
     target = eye.hemi ??= new Float32Array(16);
     hemisphereSH(target, gfxUniforms.uSkyUp.value, gfxUniforms.uGround.value);
-    if (!eye.have) eye.cur.set(target);
+    sunTarget = 1;
+    if (!eye.have) { eye.cur.set(target); eye.sunCur = sunTarget; }
   }
   const k = 1 - Math.exp(-dt / EYE_LIGHT_TAU);
   for (let j = 0; j < 16; j++) eye.cur[j] += (target[j] - eye.cur[j]) * k;
+  eye.sunCur += (sunTarget - eye.sunCur) * k;
   // three's SH3 order: Y00, then band 1 as y, z, x
   const sh = sky.sh.coefficients, c = eye.cur;
   sh[0].set(c[0], c[1], c[2]);
   sh[1].set(c[8], c[9], c[10]);
   sh[2].set(c[12], c[13], c[14]);
   sh[3].set(c[4], c[5], c[6]);
-  return Math.min(Math.max((SH_Y0 * c[3]) / SKYVIS_OPEN_DC, 0), 1);
+  return eye.sunCur;
 }
 
 // Draw the viewmodels over the finished frame. Call right after post.render
@@ -388,14 +429,14 @@ export function renderViewmodels(renderer, scene, camera, post) {
   cam.updateProjectionMatrix();
 
   // lit like the world: the key light's direction and colour, as much of it as
-  // the sky over the eye lets in, and the light of the probe the eye is in
+  // reaches the eye, and the light of the probe the eye is in
   const SUN = globalThis.__app?.SUN;
   if (SUN) sun.position.copy(SUN);
-  const open = eyeLight(renderer, camera, eye, sky);
+  const lit = eyeLight(renderer, camera, eye, sky);
   // the key light: the sun by day, the dim blue moon by night (gfx/daylight.js)
   const [kr, kg, kb] = gfxUniforms.uKeyLight?.value ?? [1, 1, 1];
   const [sr, sg, sb] = gfxUniforms.uSunCol.value;
-  sun.color.setRGB(sr * kr * open, sg * kg * open, sb * kb * open);
+  sun.color.setRGB(sr * kr * lit, sg * kg * lit, sb * kb * lit);
 
   renderer.getDrawingBufferSize(size);
   if (target.width !== size.x || target.height !== size.y) target.setSize(size.x, size.y);
