@@ -36,6 +36,12 @@ import './firearm.css';
 // crossbow: the view narrows by scope.zoom (pov/camera.js, through the
 // toolbelt's zoom), the hand is put away and a scope covers the screen.
 //
+// A gun without a scope aims down its sights while right-click is held, the
+// way Rust, CS and Halo's do it: over ADS_TIME the gun comes up to the middle of the
+// screen (its bore just under the crosshair), the view narrows by ADS_ZOOM, the
+// cone shrinks to ADS_SPREAD of the hip's and the body walks at ADS_SPEED.
+// Hip fire sprays; aim to hit.
+//
 // Events (docs/pov.md): gun:fire { origin, dir, muzzleWorld, gun, sound },
 // gun:dry here; round:move, round:end and impact from ballistics.js.
 //
@@ -46,14 +52,21 @@ import './firearm.css';
 //     hit,                                        // viewmodel.js HIT row of a shot
 //     sound: { rate, gain, thump },               // the shot's sound (audio.js), as a share of the pistol's
 //     scope: { zoom },                            // optional: right-click zoom
-//     pose: { pos, muzzle } });                   // the held model and its bore's end, in cells (camera space)
+//     pose: { pos, muzzle, ads } });              // the held model, its bore's end and (optional) its aimed pose, in cells (camera space)
 
 const MUZZLE_NUDGE = 1e-3;         // cells past the muzzle cell's entry face the round starts
 const BODY_MASS_KG = 70;           // kg, the player
 const SPREAD_RECOVER = 1;          // s of accuracy penalty worn off per second
 const SPREAD_RECOVER_DELAY = 0.25; // s after a shot before the penalty starts wearing off
+// ironsights (right-click held, guns without a scope)
+const ADS_TIME = 0.2;              // s to raise the sights or drop them (Rust's and CS's are ~0.2–0.3 s)
+const ADS_ZOOM = 1.3;              // × the view's zoom aimed in (Rust's ironsights, a light zoom)
+const ADS_SPREAD = 0.3;            // × the hip's cone aimed in
+const ADS_SPEED = 0.6;             // × walking speed aimed in (CS's scoped walk, Rust's ADS walk)
+const ADS_SIGHT_DROP = 0.08;       // cells: how far under the crosshair the bore sits aimed in
 
 // a random direction within a cone of full angle `angle` around unit d (uniform over the cone's cap)
+const smooth = (t) => t * t * (3 - 2 * t);   // smoothstep: the sights ease up and down
 const tmpA = new THREE.Vector3(), tmpB = new THREE.Vector3();
 function scatter(d, angle) {
   if (!(angle > 0)) return d;
@@ -79,8 +92,12 @@ export function firearm({ key, name, model: modelKey, desc, round, refire, hold,
     muzzle.position.set(...pose.muzzle);
     hand.add(muzzle);
     const mesh = attachModel(hand, modelKey);
+    // the hand's rest pose at the hip and aimed in (ironsights: the bore centred, just under the crosshair)
+    const hip = new THREE.Vector3(...pose.pos);
+    const ads = new THREE.Vector3(...(pose.ads ?? [-pose.muzzle[0], -pose.muzzle[1] - ADS_SIGHT_DROP, pose.pos[2]]));
     return {
       rig, hand, muzzle,
+      aimPose: (k) => hand.userData.rest.lerpVectors(hip, ads, k),
       // the muzzle in world space (for gun:fire's muzzleWorld); valid before the mesh arrives
       muzzleWorld: (out = new THREE.Vector3()) => { muzzle.updateWorldMatrix(true, false); return muzzle.getWorldPosition(out); },
       dispose() { mesh.dispose(); hand.removeFromParent(); },
@@ -96,7 +113,7 @@ export function firearm({ key, name, model: modelKey, desc, round, refire, hold,
       // the scope's view (only the player's: an NPC's toolbelt has no hud)
       const overlay = scope && env.hud ? h('div.pov-scope', { 'aria-hidden': 'true' }) : null;
       if (overlay) document.body.append(overlay);
-      let penalty = 0, sinceShot = Infinity, scoped = false, lastShot = null;
+      let penalty = 0, sinceShot = Infinity, scoped = false, aimed = 0, body = null, lastShot = null;   // aimed: 0 hip … 1 down the sights
 
       const setScoped = (v) => {
         scoped = !!scope && v;
@@ -125,7 +142,8 @@ export function firearm({ key, name, model: modelKey, desc, round, refire, hold,
         const aim = ctx.aim;
         if (!m || (aim?.valid && aim.cell && m.path.some((c) => c.equals(aim.cell)))) { dry(); return true; }
         if (ballistics.count >= MAX_ROUNDS) return false;
-        const cone = THREE.MathUtils.lerp(spread.min, spread.max, Math.min(1, penalty / spread.penaltyMax));
+        const cone = THREE.MathUtils.lerp(spread.min, spread.max, Math.min(1, penalty / spread.penaltyMax))
+          * THREE.MathUtils.lerp(1, ADS_SPREAD, aimed);
         const dir = scatter(aimDir.clone(), cone);
         const origin = ctx.eye.clone().addScaledVector(aimDir, m.t + MUZZLE_NUDGE);
         const id = ballistics.fire(origin, dir, gravityScale(sim), {
@@ -145,18 +163,31 @@ export function firearm({ key, name, model: modelKey, desc, round, refire, hold,
 
       return {
         update(ctx) {
-          model.rig.update(ctx);
           const dt = toolDt(ctx);
           sinceShot += dt;
           if (sinceShot > SPREAD_RECOVER_DELAY) penalty = Math.max(0, penalty - SPREAD_RECOVER * dt);
           if (scope && ctx.secondaryPressed) setScoped(!scoped);
+          // ironsights: right-click held
+          const aimTo = !scope && ctx.secondary ? 1 : 0;
+          if (aimed !== aimTo) {
+            aimed = aimTo > aimed ? Math.min(1, aimed + dt / ADS_TIME) : Math.max(0, aimed - dt / ADS_TIME);
+            model.aimPose(smooth(aimed));
+            env.requestRender?.();
+          }
+          model.rig.update(ctx);
+          body = ctx.player;
+          if (body) body.aimScale = THREE.MathUtils.lerp(1, ADS_SPEED, aimed);
           model.hand.visible = !scoped;
           if (button.ready(ctx) && fire(ctx)) button.fire();
         },
-        deselect() { model.hand.visible = false; button.reset(); setScoped(false); },
+        deselect() {
+          model.hand.visible = false; button.reset(); setScoped(false);
+          aimed = 0; model.aimPose(0);
+          if (body) body.aimScale = 1;
+        },
         status: () => null,
         // the view's zoom: FOV ÷ this (the toolbelt hands it to the camera)
-        zoom: () => (scoped ? scope.zoom : 1),
+        zoom: () => (scoped ? scope.zoom : THREE.MathUtils.lerp(1, ADS_ZOOM, aimed)),
         // rounds in the air keep flying where they are in the world (docs/scaling.md D11)
         windowShifted(dx, dz) {
           ballistics.windowShifted(dx, dz);
@@ -167,6 +198,7 @@ export function firearm({ key, name, model: modelKey, desc, round, refire, hold,
         get ballistics() { return ballistics; },
         get penalty() { return penalty; },
         get scoped() { return scoped; },
+        get aimed() { return aimed; },         // 0 at the hip … 1 down the sights
         get muzzle() { return model.muzzle; }, // the viewmodel's muzzle point (Object3D)
         muzzleWorld: model.muzzleWorld,        // (out?) → its world position now
         dispose() { setScoped(false); overlay?.remove(); model.dispose(); },

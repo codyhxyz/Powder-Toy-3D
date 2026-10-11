@@ -308,6 +308,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     get eyeHeight() { return EYE; },  // cells above the feet
     get crouch() { return crouch; },  // 0 standing … 1 crouched
     speedScale: 1,                // × walking and running speed: a class's (classes.js; the Bulwark is slow)
+    aimScale: 1,                  // × walking and running speed: a gun's ironsights (tools/firearm.js ADS_SPEED)
     get health() { return vitals.health; },
     get shield() { return vitals.shield; },             // Energy Shield left (base lives, 0..shieldMax)
     get shieldMax() { return vitals.shieldMax; },
@@ -792,7 +793,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     // Shrink: × gait (√size); the jet's own speeds too
     // Crouched: no sprint, and a third of the speed on the ground
     const sprinting = alive && input.sprint && crouch === 0;
-    const footSpeed = (sprinting ? SPRINT_SPEED : WALK_SPEED) * p.speedScale * p.status.moveScale * gait
+    const footSpeed = (sprinting ? SPRINT_SPEED : WALK_SPEED) * p.speedScale * p.aimScale * p.status.moveScale * gait
       * (p.onGround ? crouchShare(crouch, CROUCH_SPEED) : 1);
     const jetFly = JET_FLY_SPEED * gait;
     const runSpeed = p.jetting ? Math.min(jetFly * perks.jetRate, Math.max(jetFly, PERK_SPEED_H))
