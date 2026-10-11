@@ -34,21 +34,24 @@ import { bodyExit } from './transfer.js';
 //
 // Events: laser:charge { amount 0..1, dt } every frame it charges (audio.js's
 // rising whine); tool:action 'laser' 'charge' / 'cancel' / 'fire'; gun:fire
-// (vfx.js's flash, the shot's sound); laser { from, to, dir } in world space
-// (vfx.js's beam); shake { trauma }.
+// (vfx.js's flash, the shot's sound); laser { from, to, dir, radius, hit } in
+// world space (vfx.js's beam); laser:aim { from, to, amount } in world space every
+// frame it charges (vfx.js's thin red sighting beam, which thickens as it fills,
+// as the Spartan Laser's does in Halo 3); shake { trauma }.
 
 const CHARGE_S = 3;            // s to full charge (Halo's Spartan Laser, about three)
 const REFIRE_S = 2;            // s of standby after a shot before it charges again (Halo's, about two)
 const BODY_CLEARANCE = 0.3;    // cells: the beam starts this far outside the body
-const SHAKE = 0.6;             // trauma a shot adds to the screen shake (0..1, feel.js)
+const SHAKE = 1;               // trauma a shot adds to the screen shake (0..1, feel.js): all of it
+const TREMBLE = 0.035;         // cells the gun shudders in the hands at full charge (it grows as the square of the charge)
 const GLOW_IDLE = 0.15;        // the charge strip's brightness when idle, as a share of full
 const GLOW_FULL = 4;           // ...and at full charge (HDR: it blooms)
 const GLOW_FLICKER = 0.15;     // share the strip's brightness flickers by while charging
 const RGBA = 4;
 
-// viewmodel, in cells (camera space): held at the hip, long and heavy
-const HELD_POS = [0.45, -0.55, -1.7];
-const MUZZLE = [0, 0.12, -1.1];   // cells from the model's centre to the barrel's mouth
+// viewmodel, in cells (camera space): shouldered low at the hip, long and heavy, as Halo holds it
+const HELD_POS = [0.55, -0.62, -1.9];
+const MUZZLE = [0, 0.07, -1.7];   // cells from the model's centre to the prongs' mouth (models.js laser)
 
 export default {
   ...gear('LASER'),
@@ -59,10 +62,12 @@ export default {
     muzzle.position.set(...MUZZLE);
     hand.add(muzzle);
     const mesh = attachModel(hand, 'laser');
-    // its own copy of the strip's glow material, so its brightness is this gun's alone
-    const strip = mesh.obj.getObjectByName('charge');
+    // its own copy of the strips' glow material, so their brightness is this gun's alone
+    const strips = [];
+    mesh.obj.traverse((o) => { if (o.name === 'charge') strips.push(o); });
     let glow = null, glowBase = null;
-    if (strip) { glow = strip.material.clone(); strip.material = glow; glowBase = glow.color.clone(); }
+    if (strips.length) { glow = strips[0].material.clone(); for (const o of strips) o.material = glow; glowBase = glow.color.clone(); }
+    const restPos = mesh.obj.position.clone();
     const beam = toolPass(laserFrag, () => ({
       uFrom: { value: new THREE.Vector3() }, uDir: { value: new THREE.Vector3() },
       uLo: { value: new THREE.Vector3() }, uHi: { value: new THREE.Vector3() },
@@ -126,8 +131,19 @@ export default {
       const toWorld = (g) => g.clone().multiplyScalar(env.getScale()).add(env.getVolume().position);
       povEvents.emit('tool:action', { tool: 'laser', action: 'fire' });
       povEvents.emit('gun:fire', { origin: from.clone(), dir: dir.clone(), muzzleWorld, gun: 'LASER', sound: { voice: 'laserFire', rate: 1, gain: 1.4, thump: 2.5 } });
-      povEvents.emit('laser', { from: muzzleWorld ?? toWorld(from), to: toWorld(end), dir: dir.clone(), radius: LASER.CORE_RADIUS * env.getScale() });
+      povEvents.emit('laser', { from: muzzleWorld ?? toWorld(from), to: toWorld(end), dir: dir.clone(), radius: LASER.CORE_RADIUS * env.getScale(), hit: reach < LASER.LENGTH });
       povEvents.emit('shake', { trauma: SHAKE });
+    }
+
+    // the sighting beam while it charges: from the muzzle to what the crosshair is on
+    function aim(ctx, amount) {
+      if (!hand.visible) return;
+      muzzle.updateWorldMatrix(true, false);
+      const from = muzzle.getWorldPosition(new THREE.Vector3());
+      const a = ctx.aim;
+      const dist = a?.valid && Number.isFinite(a.dist) ? Math.min(a.dist, LASER.LENGTH) : LASER.LENGTH;
+      const to = ctx.eye.clone().addScaledVector(ctx.dir.clone().normalize(), dist).multiplyScalar(env.getScale()).add(env.getVolume().position);
+      povEvents.emit('laser:aim', { from, to, amount });
     }
 
     function cancel() {
@@ -146,12 +162,15 @@ export default {
           if (charge === 0) povEvents.emit('tool:action', { tool: 'laser', action: 'charge' });
           charge += dt;
           povEvents.emit('laser:charge', { amount: Math.min(1, charge / CHARGE_S), dt });
+          aim(ctx, Math.min(1, charge / CHARGE_S));
           if (charge >= CHARGE_S) {
             fire(ctx);
             charge = 0; standby = REFIRE_S; armed = false;
           }
         }
         const share = charge / CHARGE_S;
+        const shudder = TREMBLE * share * share;
+        mesh.obj.position.set(restPos.x + (Math.random() - 0.5) * shudder, restPos.y + (Math.random() - 0.5) * shudder, restPos.z);
         setGlow(GLOW_IDLE + (GLOW_FULL - GLOW_IDLE) * share * (1 + (Math.random() - 0.5) * 2 * GLOW_FLICKER * share));
         if (charge > 0) env.requestRender?.();
       },

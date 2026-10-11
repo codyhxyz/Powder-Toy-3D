@@ -32,6 +32,7 @@ const JET_MAX = 90;
 const JET_SMOKE_MAX = 120;
 const FLAME_MAX = 200;            // the jetpack's and the rockets' smoke
 const EMBER_MAX = 90;             // a torch's embers (held and lying)
+const MOTE_MAX = 220;             // the laser's motes: drawn in while it charges, shed off the beam
 
 // ---- muzzle flash
 const FLASH_LIFE = 0.055;               // s
@@ -175,16 +176,54 @@ const BLAST_LIGHT = 4;                  // times the muzzle light's strength
 const DRILL_CHIP_RATE = 60;             // chips/s while it cuts
 const DRILL_DUST_RATE = 14;             // dust puffs/s while it cuts
 
-// ---- the laser cannon's beam ('laser' event): a white-hot core in a red glow, fading out
-const BEAM_LINGER = 0.35;               // s the beam stays, fading linearly
-const BEAM_CORE_COLOR = [14, 10, 9];    // HDR, white-hot
-const BEAM_GLOW_COLOR = [9, 1.2, 0.8];  // HDR, laser red
-const BEAM_GLOW_SCALE = 1.6;            // the glow's radius over the core's
-const BEAM_NEAR = 5;                    // cells out from the muzzle the beam reaches full width (closer, the eye would sit inside it)...
+// ---- the laser cannon's beam ('laser' event), after Halo 3's Spartan Laser: a fat
+// red beam with a white-hot core that hangs in the air, thins and burns out over
+// most of a second, shedding sparks, with a flare where it bites. Three
+// cylinders, each a soft-edged glow (brightest face-on, fading to nothing at its
+// silhouette) with pulses running down it
+const BEAM_LINGER = 0.85;               // s the beam stays
+const BEAM_FLASH_S = 0.07;              // s it opens at BEAM_FLASH_WIDTH before settling
+const BEAM_FLASH_WIDTH = 1.6;           // times its width while it opens
+const BEAM_THIN = 0.7;                  // width falls as (life left)^this
+const BEAM_FADE = 1.6;                  // brightness falls as (life left)^this
+// layers, inner to outer: radius as a share of the bore, HDR colour, softness (higher = a tighter glow)
+const BEAM_LAYERS = [
+  { radius: 0.45, color: [16, 12, 10], soft: 1.5 },   // the white-hot core
+  { radius: 1.3, color: [10, 0.9, 0.5], soft: 2 },    // the red beam
+  { radius: 3.2, color: [2.2, 0.15, 0.08], soft: 3 }, // the haze round it
+];
+const BEAM_PULSE_SPACING = 6;           // cells between the pulses running down the beam
+const BEAM_PULSE_SPEED = 140;           // cells/s they run away from the muzzle
+const BEAM_PULSE_DEPTH = 0.35;          // share of brightness they add and take
+const BEAM_FLICKER = 0.12;              // share of brightness it flickers by, every frame
+const BEAM_NEAR = 8;                    // cells out from the muzzle the beam reaches full width (closer, the eye would sit inside it)...
 const BEAM_MUZZLE_SHARE = 0.08;         // ...tapering to this share of it at the muzzle
-const BEAM_GLOW_ALPHA = 0.5;            // the glow's opacity at its brightest
-const BEAM_SIDES = 12;                  // sides on the beam's cylinders
-const BEAM_LIGHT = 5;                   // its flash, times the muzzle light's strength
+const BEAM_SIDES = 16;                  // sides on the beam's cylinders
+const BEAM_LIGHT = 8;                   // its flash, times the muzzle light's strength
+const BEAM_LIGHT_COLOR = 0xff3020;      // laser red
+const BEAM_MUZZLE_FLARE = 3;            // cells across, the flare at the muzzle
+const BEAM_IMPACT_FLARE = 7;            // cells across, the flare where it bites...
+const BEAM_IMPACT_LIFE = 0.25;          // s
+const BEAM_FLARE_COLOR = [14, 3, 1.6];  // HDR, red-white
+const BEAM_SPARKS = 45;                 // sparks thrown back out of the bite
+const BEAM_SPARK_SPEED = [15, 45];      // cells/s
+const BEAM_SPARK_LIFE = [0.25, 0.55];   // s: longer than a bullet's sparks
+const BEAM_MOTES_PER_CELL = 0.5;        // sparks shed along the beam per cell of it...
+const BEAM_MOTES_MAX = 120;             // ...at most
+const BEAM_MOTE_SPEED = [0.5, 3];       // cells/s outward
+const BEAM_MOTE_LIFE = [0.3, 1.1];      // s
+const BEAM_MOTE_SIZE = [0.06, 0.14];    // cells across
+const BEAM_MOTE_COLOR = [9, 1.6, 0.6];  // HDR, red-orange
+// the sighting beam while it charges ('laser:aim'): a thin red line that thickens and brightens as it fills
+const AIM_RADIUS = [0.03, 0.14];        // cells, empty → full
+const AIM_COLOR = [5, 0.35, 0.2];       // HDR at full
+const AIM_DIM = 0.25;                   // its brightness at empty, a share of full
+const AIM_HOLD_S = 0.1;                 // s it stays after the last aim event (then it's gone: cancelled or fired)
+// motes drawn into the muzzle while it charges
+const CHARGE_MOTE_RATE = 70;            // motes/s at full charge
+const CHARGE_MOTE_RING = [0.6, 1.4];    // cells out from the muzzle they start
+const CHARGE_MOTE_LIFE = 0.25;          // s they take to arrive
+const CHARGE_MOTE_SIZE = [0.04, 0.09];  // cells across
 
 // ---- textures
 const TEX_SIZE = 64;                    // px square
@@ -292,6 +331,7 @@ export function createVfx(env) {
   system('jetSmoke', { max: JET_SMOKE_MAX, material: dotNormal, behaviors: [FADE_OUT()] });
   system('flame', { max: FLAME_MAX, material: dotAdd, behaviors: [FADE_OUT()] });
   system('ember', { max: EMBER_MAX, material: dotAdd, behaviors: [FADE_OUT()] });
+  system('mote', { max: MOTE_MAX, material: dotAdd, behaviors: [FADE_OUT()] });
   // dust and mist puffs grow (from each particle's own start size); chips don't.
   // Systems with the same material and mode share one batch (one draw call).
   fx.debris.sys.addBehavior(GROW(DUST_GROW));
@@ -371,6 +411,7 @@ export function createVfx(env) {
       vV.randomDirection().add(dir).multiplyScalar(randIn(DUST_SPEED) * s);
       setP(p, at, vV, randIn(DUST_SIZE) * s, FLASH_SMOKE_COLOR, DUST_ALPHA, randIn(DUST_LIFE), -DUST_GRAVITY, DUST_DRAG);
     });
+    light.color.setHex(FLASH_LIGHT_COLOR);
     light.position.copy(at);
     light.distance = FLASH_LIGHT_RANGE * s;
     lightT = FLASH_LIGHT_TIME;
@@ -470,6 +511,7 @@ export function createVfx(env) {
       vP.copy(at).addScaledVector(vV, Math.random() * dt);
       setP(p, vP, vV, randIn(FLAME_SIZE) * s, FLAME_COLOR, 1, life);
     });
+    light.color.setHex(FLASH_LIGHT_COLOR);
     light.position.copy(at);
     light.distance = FLASH_LIGHT_RANGE * FLAME_LIGHT * s;
     lightT = Math.max(lightT, FLASH_LIGHT_TIME);
@@ -502,6 +544,7 @@ export function createVfx(env) {
       vV.randomDirection().multiplyScalar(randIn(BLAST_SMOKE_SPEED) * s);
       setP(p, at, vV, randIn(BLAST_SMOKE_SIZE) * s, JET_SMOKE_COLOR, JET_SMOKE_ALPHA, randIn(ROCKET_TRAIL_LIFE) * 2, JET_SMOKE_GRAVITY, JET_SMOKE_DRAG);
     });
+    light.color.setHex(FLASH_LIGHT_COLOR);
     light.position.copy(at);
     light.distance = FLASH_LIGHT_RANGE * BLAST_LIGHT * s;
     lightT = FLASH_LIGHT_TIME * BLAST_LIGHT;
@@ -519,45 +562,150 @@ export function createVfx(env) {
     if (nd) dust(at, nd, back, id);
   }
 
-  // the laser's beam from `from` to `to` (world), its core `radius` (world units) thick
+  // the laser's beam from `from` to `to` (world), the bore `radius` (world units) across
   const beamGeo = new THREE.CylinderGeometry(1, 1, 1, BEAM_SIDES, 1, true).translate(0, 0.5, 0);
   const taperGeo = new THREE.CylinderGeometry(1, BEAM_MUZZLE_SHARE, 1, BEAM_SIDES, 1, true).translate(0, 0.5, 0);   // narrow end at the muzzle
-  const beamMat = (rgb, opacity) => new THREE.MeshBasicMaterial({
-    color: new THREE.Color(...rgb), transparent: true, opacity, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+  const beamMat = (rgb, soft) => new THREE.ShaderMaterial({
+    uniforms: {
+      uColor: { value: new THREE.Vector3(...rgb) }, uBright: { value: 1 }, uSoft: { value: soft },
+      uFrom: { value: new THREE.Vector3() }, uDir: { value: new THREE.Vector3(0, 1, 0) }, uScale: { value: 1 },
+      uTime: { value: 0 }, uPulse: { value: BEAM_PULSE_DEPTH },
+    },
+    vertexShader: /* glsl */ `
+      varying vec3 vN, vV, vW;
+      void main() {
+        vec4 w = modelMatrix * vec4(position, 1.0);
+        vW = w.xyz;
+        vec4 v = viewMatrix * w;
+        vV = -v.xyz;
+        vN = normalize(mat3(viewMatrix) * mat3(modelMatrix) * normal);
+        gl_Position = projectionMatrix * v;
+      }`,
+    fragmentShader: /* glsl */ `
+      uniform vec3 uColor, uFrom, uDir;
+      uniform float uBright, uSoft, uScale, uTime, uPulse;
+      varying vec3 vN, vV, vW;
+      void main() {
+        float face = abs(dot(normalize(vN), normalize(vV)));   // 1 face-on, 0 at the silhouette
+        float glow = pow(face, uSoft);
+        float along = dot(vW - uFrom, uDir) / uScale;           // cells from the muzzle
+        float pulse = 1.0 + uPulse * sin(6.2831853 * (along - uTime * ${BEAM_PULSE_SPEED.toFixed(1)}) / ${BEAM_PULSE_SPACING.toFixed(1)});
+        gl_FragColor = vec4(uColor * glow * pulse * uBright, 1.0);
+      }`,
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
   });
-  const beams = [];   // { group, mats, t }
+  // a beam: one group of tapered-then-full cylinders per layer, every layer's mesh scaled by
+  // radius × its share; returned with its materials so the caller can drive them
   const UP = new THREE.Vector3(0, 1, 0);
-  function laserBeam(from, to, radius) {
-    const len = vD.subVectors(to, from).length();
-    if (len <= 0) return;
+  function beamMesh(name, layers) {
     const group = new THREE.Group();
-    group.name = 'pov-laser-beam';
-    const mats = [beamMat(BEAM_CORE_COLOR, 1), beamMat(BEAM_GLOW_COLOR, BEAM_GLOW_ALPHA)];
-    const near = Math.min(BEAM_NEAR * env.getScale(), len);
-    mats.forEach((m, i) => {
-      const r = radius * (i ? BEAM_GLOW_SCALE : 1);
-      const taper = new THREE.Mesh(taperGeo, m);
-      taper.scale.set(r, near, r);
-      const full = new THREE.Mesh(beamGeo, m);
-      full.scale.set(r, Math.max(len - near, 1e-6), r);
-      full.position.y = near;
-      for (const mesh of [taper, full]) { mesh.frustumCulled = false; group.add(mesh); }
+    group.name = name;
+    const mats = [], meshes = [];
+    for (const L of layers) {
+      const m = beamMat(L.color, L.soft);
+      mats.push(m);
+      const taper = new THREE.Mesh(taperGeo, m), full = new THREE.Mesh(beamGeo, m);
+      for (const mesh of [taper, full]) { mesh.frustumCulled = false; mesh.userData.share = L.radius; group.add(mesh); meshes.push(mesh); }
+    }
+    // lay it from `from` to `to` (world), `radius` (world units) per share
+    const lay = (from, to, radius) => {
+      const len = vD.subVectors(to, from).length();
+      if (len <= 0) return false;
+      const near = Math.min(BEAM_NEAR * env.getScale(), len);
+      for (let i = 0; i < meshes.length; i += 2) {
+        const r = radius * meshes[i].userData.share;
+        meshes[i].scale.set(r, near, r);
+        meshes[i + 1].scale.set(r, Math.max(len - near, 1e-6), r);
+        meshes[i + 1].position.y = near;
+      }
+      group.position.copy(from);
+      group.quaternion.setFromUnitVectors(UP, vD.divideScalar(len));
+      for (const m of mats) { m.uniforms.uFrom.value.copy(from); m.uniforms.uDir.value.copy(vD); m.uniforms.uScale.value = env.getScale(); }
+      return true;
+    };
+    const width = (k) => { for (const mesh of meshes) { mesh.scale.x = mesh.scale.z = mesh.userData.r0 * k; } };
+    const keepWidth = () => { for (const mesh of meshes) mesh.userData.r0 = mesh.scale.x; };
+    return { group, mats, lay, width, keepWidth };
+  }
+  const beams = [];   // { beam, t, age }
+  const vBeamDir = new THREE.Vector3(), vBack = new THREE.Vector3();
+  let beamClock = 0;
+  function laserBeam(from, to, radius, hit) {
+    const s = env.getScale();
+    const beam = beamMesh('pov-laser-beam', BEAM_LAYERS);
+    if (!beam.lay(from, to, radius)) { beam.mats.forEach((m) => m.dispose()); return; }
+    beam.keepWidth();
+    beam.width(BEAM_FLASH_WIDTH);
+    scene.add(beam.group);
+    beams.push({ beam, t: BEAM_LINGER, age: 0 });
+    const len = vD.subVectors(to, from).length(), dir = vBeamDir.copy(vD).divideScalar(len);
+    // flares at both ends
+    burst(fx.flash, 1, (p) => setP(p, from, vT.set(0, 0, 0), BEAM_MUZZLE_FLARE * s, BEAM_FLARE_COLOR, 1, BEAM_IMPACT_LIFE));
+    if (hit) {
+      burst(fx.flash, 1, (p) => setP(p, to, vT.set(0, 0, 0), BEAM_IMPACT_FLARE * s, BEAM_FLARE_COLOR, 1, BEAM_IMPACT_LIFE));
+      fx.spark.sys.rendererEmitterSettings.speedFactor = SPARK_STREAK_S / (SPARK_WIDTH * s);
+      const back = vBack.copy(dir).negate();
+      burst(fx.spark, BEAM_SPARKS, (p) => {
+        around(back, SPARK_SPREAD, vV).multiplyScalar(randIn(BEAM_SPARK_SPEED) * s);
+        setP(p, to, vV, SPARK_WIDTH * s, SPARK_COLOR, 1, randIn(BEAM_SPARK_LIFE), SPARK_GRAVITY, SPARK_DRAG);
+      });
+    }
+    // sparks shed all along it, drifting out from the axis
+    const n = Math.min(BEAM_MOTES_MAX, Math.ceil(len / s * BEAM_MOTES_PER_CELL));
+    burst(fx.mote, n, (p) => {
+      vP.copy(from).addScaledVector(dir, Math.random() * len);
+      vV.randomDirection(); vV.addScaledVector(dir, -vV.dot(dir)).normalize();
+      vP.addScaledVector(vV, radius * Math.random());
+      vV.multiplyScalar(randIn(BEAM_MOTE_SPEED) * s);
+      setP(p, vP, vV, randIn(BEAM_MOTE_SIZE) * s, BEAM_MOTE_COLOR, 1, randIn(BEAM_MOTE_LIFE));
     });
-    group.position.copy(from);
-    group.quaternion.setFromUnitVectors(UP, vD.divideScalar(len));
-    scene.add(group);
-    beams.push({ group, mats, base: mats.map((m) => m.opacity), t: BEAM_LINGER });
+    light.color.setHex(BEAM_LIGHT_COLOR);
     light.position.copy(from);
-    light.distance = FLASH_LIGHT_RANGE * BEAM_LIGHT * env.getScale();
+    light.distance = FLASH_LIGHT_RANGE * BEAM_LIGHT * s;
     lightT = FLASH_LIGHT_TIME * BEAM_LIGHT;
   }
   function fadeBeams(dt) {
+    beamClock += dt;
     for (let i = beams.length - 1; i >= 0; i--) {
       const b = beams[i];
-      b.t -= dt;
-      if (b.t <= 0) { scene.remove(b.group); b.mats.forEach((m) => m.dispose()); beams.splice(i, 1); continue; }
-      b.mats.forEach((m, k) => { m.opacity = b.base[k] * (b.t / BEAM_LINGER); });
+      b.t -= dt; b.age += dt;
+      if (b.t <= 0) { scene.remove(b.beam.group); b.beam.mats.forEach((m) => m.dispose()); beams.splice(i, 1); continue; }
+      const k = b.t / BEAM_LINGER;
+      const open = Math.min(1, b.age / BEAM_FLASH_S);
+      b.beam.width((BEAM_FLASH_WIDTH + (1 - BEAM_FLASH_WIDTH) * open) * Math.pow(k, BEAM_THIN));
+      const bright = Math.pow(k, BEAM_FADE) * (1 + (Math.random() - 0.5) * 2 * BEAM_FLICKER);
+      for (const m of b.beam.mats) { m.uniforms.uBright.value = bright; m.uniforms.uTime.value = beamClock; }
     }
+  }
+
+  // the sighting beam while the laser charges: one beam kept in the scene, shown while aim events come
+  const aimBeam = beamMesh('pov-laser-aim', [{ radius: 1, color: AIM_COLOR, soft: 1 }]);
+  aimBeam.group.visible = false;
+  aimBeam.mats[0].uniforms.uPulse.value = 0;
+  scene.add(aimBeam.group);
+  let aimT = 0, moteOwed = 0;
+  function laserAim(from, to, amount, dt) {
+    const s = env.getScale();
+    if (!aimBeam.lay(from, to, (AIM_RADIUS[0] + (AIM_RADIUS[1] - AIM_RADIUS[0]) * amount) * s)) return;
+    aimBeam.mats[0].uniforms.uBright.value = (AIM_DIM + (1 - AIM_DIM) * amount) * (1 + (Math.random() - 0.5) * 2 * BEAM_FLICKER * amount);
+    aimBeam.group.visible = true;
+    aimT = AIM_HOLD_S;
+    // motes drawn in to the muzzle, faster as it fills
+    moteOwed += CHARGE_MOTE_RATE * amount * (dt ?? 0);
+    const n = Math.floor(moteOwed);
+    moteOwed -= n;
+    burst(fx.mote, n, (p) => {
+      const r = randIn(CHARGE_MOTE_RING) * s;
+      vV.randomDirection();
+      vP.copy(from).addScaledVector(vV, r);
+      vV.multiplyScalar(-r / CHARGE_MOTE_LIFE);
+      setP(p, vP, vV, randIn(CHARGE_MOTE_SIZE) * s, BEAM_MOTE_COLOR, 1, CHARGE_MOTE_LIFE);
+    });
+  }
+  function fadeAim(dt) {
+    if (aimT <= 0) return;
+    aimT -= dt;
+    if (aimT <= 0) aimBeam.group.visible = false;
   }
 
   // jetpack exhaust for dt seconds, out of the nozzles of a body at feet (grid) facing yaw
@@ -652,7 +800,12 @@ export function createVfx(env) {
       if (live() && e.point && e.id >= 0) drillSpray(toWorld(e.point, vA), vB.copy(e.dir), e.id, e.dt);
     }),
     povEvents.on('laser', (e) => {
-      if (live() && e.from && e.to) laserBeam(vA.copy(e.from), vB.copy(e.to), e.radius);
+      if (!live() || !e.from || !e.to) return;
+      // an NPC's emit carries its eye (grid) as `from` (events.js): the beam starts there
+      laserBeam(e.by ? toWorld(e.from, vA) : vA.copy(e.from), vB.copy(e.to), e.radius, e.hit !== false);
+    }),
+    povEvents.on('laser:aim', (e) => {
+      if (live() && !e.by && e.from && e.to) laserAim(vA.copy(e.from), vB.copy(e.to), e.amount ?? 0, lastDt);
     }),
     povEvents.on('torch:burn', (e) => {
       if (live()) torchEmbers(e.at, e.vel, e.dt);
@@ -660,7 +813,7 @@ export function createVfx(env) {
   ];
 
   const count = () => {
-    let n = beams.length;
+    let n = beams.length + (aimBeam.group.visible ? 1 : 0);
     for (const k in fx) n += fx[k].sys.particleNum;
     return n;
   };
@@ -682,6 +835,7 @@ export function createVfx(env) {
     update(dt) {
       batch.update(dt);
       fadeBeams(dt);
+      fadeAim(dt);
       lastDt = dt;
       // the light shows at its current strength this frame, then fades (at
       // least one frame lit, however slow)
@@ -714,6 +868,7 @@ export function createVfx(env) {
       materials.forEach((m) => m.dispose());
       dot.dispose(); star.dispose();
       fadeBeams(Infinity);
+      scene.remove(aimBeam.group); aimBeam.mats.forEach((m) => m.dispose());
       beamGeo.dispose(); taperGeo.dispose();
     },
   };

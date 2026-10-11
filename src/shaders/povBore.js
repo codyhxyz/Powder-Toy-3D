@@ -166,7 +166,7 @@ ${copyThroughMain('burrow')}`;
 // enters costs the heat that takes the core's slice of that matter to VAPOR_T,
 //   cost = CAP · (VAPOR_T − T) · π · CORE_RADIUS²
 // in the engine's own heat units (latent heats left out). Air and gas cost
-// nothing. ENERGY 1.25 M gives (from 20 °C):
+// nothing. ENERGY 2.22 M through a CORE_RADIUS 2 core gives (from 20 °C):
 //   rock / glass (CAP 0.5)  ≈ 119 cells (36 m)    metal (0.85) ≈ 70 cells (21 m)
 //   wood (0.3) ≈ 198          water (1.0) ≈ 59
 // A solid that neither breaks, melts nor burns (WALL, CLONE) stops it, as does
@@ -189,9 +189,9 @@ ${copyThroughMain('burrow')}`;
 //     below stone's melt in under a second (tested: 21 lava cells, now ~300).
 // Every power number is here, so the gun can be made weaker in one place.
 export const LASER = {
-  ENERGY: 1.25e6,     // heat units (CAP · °C) the beam delivers: see the reaches above
-  CORE_RADIUS: 1.5,   // cells vaporised round the axis (a 0.9 m bore)
-  RIM_RADIUS: 4,      // cells heated round the axis (the tunnel's wall)
+  ENERGY: 2.22e6,     // heat units (CAP · °C) the beam delivers: see the reaches above
+  CORE_RADIUS: 2,     // cells vaporised round the axis (a 1.2 m bore: Halo's beam is fat)
+  RIM_RADIUS: 5,      // cells heated round the axis (the tunnel's wall)
   LENGTH: 192,        // cells, the longest beam (58 m)
   VAPOR_T: 3000,      // °C the core's vapour is made at (iron boils at 2862, basalt about 2900)
   RIM_T: 4500,        // °C at the core's edge
