@@ -63,6 +63,13 @@ export const SPARK_GLOW = bandGlow(SPARK_BAND.peak, SPARK_BAND.fwhm, SPARK_BAND.
 // white (≈ 1.2, above) so it stays a lamp, not a sun, and lights a room.
 const LAMP_TINT = '#ffa957';
 const LAMP_LUM = 2;
+// ...and the light it sheds on the room, through the glow volume
+// (shaders/passes.js brickFrag), is this many times what that radiance gives.
+// A game liberty, as Halo's and Source's lit interiors are: a cell-sized bulb
+// at that radiance lights the floor 3 m below to under 1% of sunlight (real
+// rooms are ~1% of daylight, and real eyes adapt further than ADAPT's 4
+// stops), so this brings it to ~10%, with a bright patch on the ceiling round it.
+export const LAMP_ROOM_GAIN = 12;
 // Foxfire (elements.js FUNGUS): fungal luciferin's green band, peaking at
 // 520-530 nm and ~80 nm wide (Kotlobay et al. 2018, PNAS; Oliveira et al.
 // 2015). Real foxfire is faint, ~10⁻³ cd/m², seen only by dark-adapted eyes;
@@ -463,6 +470,7 @@ export function materialsGLSL() {
     `const vec3 SCATALB[NE] = vec3[NE](${LOOK.map((l) => `vec3(${l.scatAlb.map(f).join(', ')})`).join(', ')});`,
     `const vec3 EMIT[NE] = vec3[NE](${LOOK.map((l) => `vec3(${l.emit.map(f).join(', ')})`).join(', ')});`,
     `const vec3 SPARK_GLOW = vec3(${SPARK_GLOW.map((v) => f(+v.toFixed(GLSL_DIGITS))).join(', ')});`,
+    `#define LAMP_ROOM_GAIN ${f(LAMP_ROOM_GAIN)}`,
     `const vec3 LAMP_GLOW = vec3(${LAMP_GLOW.map((v) => f(+v.toFixed(GLSL_DIGITS))).join(', ')});`,
     `bool luminous(int id) { return ${LUMINOUS.map((e) => `id == E_${e.key}`).join(' || ') || 'false'}; }`,
     EMISSION_GLSL,

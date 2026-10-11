@@ -590,7 +590,7 @@ vec3 nearField(vec3 p, vec3 ng, vec3 n, vec3 irr, out float vis) {
     float ndl = max(dot(hn, uSun), 0.0);
     vec3 sun = ndl > 0.0 ? SUN_COL * ndl * (uShadows ? sunShadow(hp) : vec3(1.0)) : vec3(0.0);
     vec3 Lhit = alb * (sun + giIrradiance(probeAt(hp + hn * GI_OFFSET), hn) + sampleLight(hp) * uLightGain)
-              + (hc.y < 0 ? vec3(0.0) : cellEmission(hid, ah.y));
+              + (hc.y < 0 ? vec3(0.0) : cellEmission(hid, ah.y) + sparkEmit(hid, floor(ah.w)));
     sum += mix(irr, Lhit, w);
     vis += 1.0 - w;
   }
