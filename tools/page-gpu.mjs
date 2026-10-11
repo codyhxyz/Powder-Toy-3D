@@ -22,10 +22,27 @@
 //   readCell(x, y, z, sim) [a, b], Float32Array(4) each
 //   census(sim)            { [id]: { n, T, minY, maxY, Tmax } }
 //   fence(sim)             resolves when the GPU has done the work recorded so far
+//                          (WebGL2: the work since page-gpu first saw the renderer, below)
 //   drawCount()            draws and dispatches since its first call after boot
 //                          (which returns 0; 0 before boot)
 //   gpuName(), info()      the adapter (WebGPU) or the unmasked renderer (WebGL2)
 // `sim` defaults to window.__app.sim, read at the call (a rebuild replaces it).
+//
+// The two fences. This build's is gpu.fence() (B8): everything submitted to the
+// queue. The old build has no such thing: a WebGL read waits for the pending
+// work on what it reads and only that, and gl.finish() doesn't wait at all
+// (the old src/gfx/profiler.js, measured on Apple GPUs). So its fence is the
+// old tools/bench.mjs sync: sim.gpuSync() (a texel of the state), a texel of
+// the newest offscreen target drawn, and, when the canvas was drawn last, a
+// clear and read of a 1×1 target of our own (a read of the canvas waits for
+// nothing). Knowing the newest target takes a hook on the renderer's
+// renderBufferDirect, which also counts the draws for drawCount. It goes in at
+// the first __pageGpu call that sees the WebGL renderer (any of them: api,
+// gpuName, drawCount, fence), so a tool that times the old build makes one
+// before the span it times, as it calls drawCount once before counting; the
+// gpuName for its report, or an untimed fence after boot, does it. Until a
+// draw has been seen, the fence clears and reads its own target as a best
+// effort.
 // readState, readCell, census and fence return promises in both builds, so a
 // tool awaits them once and runs unchanged on either; tools/check-async-reads.mjs
 // fails a call that isn't awaited (a missed await turns
@@ -36,7 +53,8 @@
 // where the tool reduces it: 67 MB at 128³ doesn't cross the CDP bridge well.
 //
 // This is the one file in tools/ that names the old build's GL API (the
-// WebGL2 branches of info and drawCount): the cross-build runs need it.
+// WebGL2 branches of info, fence and drawCount: getContext(), readPixels):
+// the cross-build runs need it.
 //
 // usage: node tools/page-gpu.mjs [--port N]   (its self-check, at the end: both
 //        branches on stand-ins of the two builds, in headless Chromium)
@@ -63,16 +81,83 @@ function installPageGpu() {
     const r = sim?.renderer ?? app()?.renderer;
     return r?.isWebGLRenderer === true ? r : null;
   };
+  // The old build's renderer, hooked once: three calls renderBufferDirect once
+  // per draw (every pass of the old sim and view was one, as tools/bench.mjs
+  // and headless-cost counted them), so the hook counts the draws and notes
+  // where each went, the newest offscreen target and whether the canvas came
+  // last (null target), for the fence.
+  const hooks = new WeakMap();   // renderer → { draws, last, canvasLast, seen, reads, own }
+  const glHook = (r) => {
+    let h = hooks.get(r);
+    if (h) return h;
+    h = { draws: 0, last: null, canvasLast: false, seen: new WeakSet(), reads: new WeakMap(), own: null };
+    hooks.set(r, h);
+    const draw = r.renderBufferDirect;
+    r.renderBufferDirect = function (...args) {
+      const t = r.getRenderTarget();
+      h.draws++;
+      h.canvasLast = !t;
+      if (t && t !== h.last) {
+        h.last = t;
+        if (!h.seen.has(t)) {   // a disposed target is no longer one to read
+          h.seen.add(t);
+          t.addEventListener('dispose', () => { if (h.last === t) h.last = null; });
+        }
+      }
+      return draw.apply(this, args);
+    };
+    return h;
+  };
   const apiOf = (sim) => {
     if (gpuOf(sim)) return 'webgpu';
     const r = glRendererOf(sim);
-    if (r && typeof WebGL2RenderingContext === 'function' && r.getContext() instanceof WebGL2RenderingContext) return 'webgl2';
+    if (r && typeof WebGL2RenderingContext === 'function' && r.getContext() instanceof WebGL2RenderingContext) {
+      glHook(r);
+      return 'webgl2';
+    }
     return null;
   };
 
-  // drawCount: the old build counts three's renderBufferDirect calls (every
-  // pass of its sim and view was a draw, as tools/bench.mjs and headless-cost
-  // counted them); this one counts our draws and dispatches from gpu.stats
+  // One texel of a target of the old build's renderer, read in the format the
+  // implementation reads it in natively (float, half float, 8-bit or integer
+  // alike, as the old bench did). The first read of each target is checked.
+  const READ_ARRAYS = (gl) => ({ [gl.FLOAT]: Float32Array, [gl.HALF_FLOAT]: Uint16Array, [gl.UNSIGNED_BYTE]: Uint8Array,
+    [gl.BYTE]: Int8Array, [gl.UNSIGNED_SHORT]: Uint16Array, [gl.SHORT]: Int16Array, [gl.UNSIGNED_INT]: Uint32Array, [gl.INT]: Int32Array });
+  const readTexel = (r, h, t) => {
+    const gl = r.getContext();
+    const prev = r.getRenderTarget(), face = r.getActiveCubeFace(), level = r.getActiveMipmapLevel();
+    r.setRenderTarget(t);
+    gl.readBuffer(gl.COLOR_ATTACHMENT0);   // (three leaves an MRT target's read buffer where its last read put it)
+    let f = h.reads.get(t), err = 0;
+    if (!f) {
+      gl.getError();   // (an older error isn't ours)
+      const format = gl.getParameter(gl.IMPLEMENTATION_COLOR_READ_FORMAT), type = gl.getParameter(gl.IMPLEMENTATION_COLOR_READ_TYPE);
+      f = { format, type, buf: new (READ_ARRAYS(gl)[type] ?? Float32Array)(4) };
+      gl.readPixels(0, 0, 1, 1, format, type, f.buf);
+      err = gl.getError();
+      if (!err) h.reads.set(t, f);
+    } else gl.readPixels(0, 0, 1, 1, f.format, f.type, f.buf);
+    r.setRenderTarget(prev, face, level);
+    if (err) throw new Error(`page-gpu: the fence's read of a render target failed (GL error ${err})`);
+  };
+  // After a pass into the canvas: clear a 1×1 target of our own and read that
+  // (the old profiler's and bench's way). Its class comes from the old app's
+  // THREE (window.__app.THREE), else from the sim's targets.
+  const syncOwn = (r, h, sim) => {
+    if (!h.own) {
+      const RenderTarget = app()?.THREE?.WebGLRenderTarget ?? sim?.targets?.[0]?.constructor;
+      if (typeof RenderTarget !== 'function') throw new Error('page-gpu: no WebGLRenderTarget class for the fence (window.__app.THREE)');
+      h.own = new RenderTarget(1, 1, { depthBuffer: false });
+    }
+    const prev = r.getRenderTarget(), face = r.getActiveCubeFace(), level = r.getActiveMipmapLevel();
+    r.setRenderTarget(h.own);
+    r.clear(true, false, false);
+    r.setRenderTarget(prev, face, level);
+    readTexel(r, h, h.own);
+  };
+
+  // drawCount: the old build counts its renderer's draws (the hook above);
+  // this one counts our draws and dispatches from gpu.stats
   // (an indirect dispatch once, though stats.dispatches counts it twice, B3)
   // plus three's mesh draws, through its Info.update (one call per draw).
   // The count starts at drawCount's first call once there is a GPU, and again
@@ -96,7 +181,7 @@ function installPageGpu() {
       const gpu = gpuOf(), s = gpu.stats, three = countCalls(app()?.renderer?.info, 'update');
       return [gpu, s.draws + s.dispatches - s.indirectDispatches + three()];
     }
-    if (which === 'webgl2') return [app().renderer, countCalls(app().renderer, 'renderBufferDirect')()];
+    if (which === 'webgl2') return [app().renderer, glHook(app().renderer).draws];
     return null;
   };
 
@@ -130,9 +215,14 @@ function installPageGpu() {
     async fence(sim) {
       const s = sim ?? app()?.sim, gpu = gpuOf(s);
       if (gpu) return gpu.fence();     // flush, then onSubmittedWorkDone (B8)
-      // the old build: a one-texel read of the state, which waits for the passes that wrote it
-      if (typeof s?.gpuSync === 'function') return s.gpuSync();
-      throw new Error('page-gpu: nothing to fence on (no WebGPU device and no sim.gpuSync)');
+      // the old build (the header): the state, the newest target, the canvas through our own
+      const r = apiOf(s) === 'webgl2' ? glRendererOf(s) : null;
+      if (!r && typeof s?.gpuSync !== 'function') throw new Error('page-gpu: nothing to fence on (no WebGPU device, no WebGL2 renderer)');
+      await s?.gpuSync?.();
+      if (!r) return;
+      const h = glHook(r);
+      if (h.last) readTexel(r, h, h.last);
+      if (h.canvasLast || !h.draws) syncOwn(r, h, s);
     },
     drawCount() {
       const now = draws();
@@ -145,6 +235,7 @@ function installPageGpu() {
     info,
   };
   Object.defineProperty(window, '__pageGpu', { value: Object.freeze(api), configurable: true });
+  apiOf();   // a document that already shows the old build's app (pageGpu after boot): hook its renderer now
 }
 
 /**
@@ -174,7 +265,7 @@ export const api = (page) => run(page, () => window.__pageGpu.api);
 export const gpuName = (page) => run(page, () => window.__pageGpu.gpuName());
 /** { api, name, vendor, architecture, description, isFallbackAdapter } */
 export const pageGpuInfo = (page) => run(page, () => window.__pageGpu.info());
-/** Resolves when the page's GPU has finished the work recorded so far. */
+/** Resolves when the page's GPU has finished the work recorded so far (on the old build, since page-gpu first saw its renderer). */
 export const fence = (page) => run(page, () => window.__pageGpu.fence());
 /** Draws and dispatches since the page's first drawCount after boot (0 on that call). */
 export const drawCount = (page) => run(page, () => window.__pageGpu.drawCount());
@@ -257,37 +348,88 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
       console.log(`     adapter: ${g.vendor} ${g.architecture}${g.isFallbackAdapter ? ' (fallback)' : ''}`);
     }
 
-    // ---- the frozen build: window.__app.renderer is WebGL2, the reads return values
+    // ---- the frozen build: window.__app.renderer is three's WebGLRenderer (a real one,
+    // the old build's), the reads return values, sim.gpuSync reads a texel of the state
     await page.reload();
     const glSide = await page.evaluate(async () => {
-      const gl = document.createElement('canvas').getContext('webgl2');
-      if (!gl) return { error: 'no WebGL2 context' };
-      const A = new Float32Array([2, 30, 0, 0.25]), B = new Float32Array(4);
+      const THREE = await import('/node_modules/three/build/three.module.js');
+      let renderer;
+      try { renderer = new THREE.WebGLRenderer({ canvas: Object.assign(document.createElement('canvas'), { width: 4, height: 4 }) }); }
+      catch (e) { return { error: e.message }; }
+      const gl = renderer.getContext();
+      if (!(gl instanceof WebGL2RenderingContext)) return { error: 'no WebGL2 context' };
+      // every read and clear, with the framebuffer it went to (null: the canvas)
+      const log = [], readPixels = gl.readPixels.bind(gl), clear = gl.clear.bind(gl);
+      gl.readPixels = (...a) => { readPixels(...a); log.push({ op: 'read', fb: gl.getParameter(gl.READ_FRAMEBUFFER_BINDING), px: Array.from(a[6].slice(0, 4)) }); };
+      gl.clear = (bits) => { clear(bits); log.push({ op: 'clear', fb: gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING) }); };
+      // the state (float, as the old sim's) and another pass's target (8-bit), one quad drawn into either or the canvas
+      const state = new THREE.WebGLRenderTarget(2, 2, { type: THREE.FloatType, depthBuffer: false });
+      const other = new THREE.WebGLRenderTarget(2, 2, { depthBuffer: false });
+      const material = new THREE.MeshBasicMaterial({ color: 0xff00ff });
+      const scene = new THREE.Scene().add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material));
+      const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, -1, 1);
+      const pass = (t) => { renderer.setRenderTarget(t); renderer.render(scene, camera); };
+      const fbOf = (t) => renderer.properties.get(t).__webglFramebuffer;
+      const A = new Float32Array([2, 30, 0, 0.25]), B = new Float32Array(4), texel = new Float32Array(4);
       let syncs = 0;
-      const renderer = { isWebGLRenderer: true, getContext: () => gl, renderBufferDirect() {} };
-      window.__app = { renderer, sim: {
-        readState: () => [A, B], readCell: () => [A, B], census: () => ({ 2: { n: 5 } }), gpuSync: () => { syncs++; },
+      window.__app = { renderer, THREE, sim: { renderer, targets: [state],
+        readState: () => [A, B], readCell: () => [A, B], census: () => ({ 2: { n: 5 } }),
+        gpuSync() { syncs++; renderer.readRenderTargetPixels(state, 0, 0, 1, 1, texel); },   // as the old src/sim.js
       } };
       const P = window.__pageGpu, out = { api: P.api };
       const s = P.readState();   // check-async-reads: ignore held to test it is a promise; awaited below
       out.promise = s instanceof Promise;
       out.readState = Array.from((await s)[0]);
       out.census = (await P.census())[2].n;
-      await P.fence();
-      out.syncs = syncs;
+      log.length = 0;
+      await P.fence();                  // no draw seen yet: sim.gpuSync, and our own target as a best effort
+      out.beforeDraws = log.splice(0);  // (three skips gpuSync's read: the state has no framebuffer before its first pass)
+      out.syncsBefore = syncs;
       out.first = P.drawCount();
-      renderer.renderBufferDirect(); renderer.renderBufferDirect(); renderer.renderBufferDirect();
+      pass(state);                      // a sim pass…
+      pass(other);                      // …then another pass, into its own target
+      log.length = 0;
+      await P.fence();
+      out.afterOther = { log: log.splice(0), stateFb: fbOf(state), otherFb: fbOf(other), restored: renderer.getRenderTarget() === other };
+      pass(null);                       // a pass into the canvas
+      log.length = 0;
+      await P.fence();
+      out.afterCanvas = { log: log.splice(0), restored: renderer.getRenderTarget() === null };
       out.later = P.drawCount();
+      out.syncs = syncs;
+      // three's cached GL state still holds: a pass after the fences draws and reads back right
+      material.color.setHex(0x00ff00);
+      pass(other);
+      const px = new Uint8Array(4);
+      renderer.readRenderTargetPixels(other, 0, 0, 1, 1, px);
+      out.after = Array.from(px);
       out.info = P.info();
+      const fbs = new Map();   // framebuffers as names, for the report
+      const name = (fb) => fb === null ? 'canvas' : fb === out.afterOther.stateFb ? 'state' : fb === out.afterOther.otherFb ? 'other'
+        : (fbs.has(fb) || fbs.set(fb, `own${fbs.size}`), fbs.get(fb));
+      for (const l of [...out.beforeDraws, ...out.afterOther.log, ...out.afterCanvas.log]) l.fb = name(l.fb);
+      delete out.afterOther.stateFb; delete out.afterOther.otherFb;
+      renderer.dispose();
       return out;
     });
     if (glSide.error) check('a WebGL2 context for the frozen build\'s branch', false, glSide.error);
     else {
+      const ops = (log) => log.map((l) => `${l.op} ${l.fb}`).join(', ');
+      const o = glSide.afterOther, c = glSide.afterCanvas;
       check('webgl2: api', glSide.api === 'webgl2', glSide.api);
       check('webgl2: a sync read comes back as a promise of its value', glSide.promise && glSide.readState.join() === '2,30,0,0.25');
       check('webgl2: census', glSide.census === 5);
-      check('webgl2: fence is sim.gpuSync()', glSide.syncs === 1);
-      check('webgl2: drawCount counts renderBufferDirect calls', glSide.first === 0 && glSide.later === 3, `${glSide.first} then ${glSide.later}`);
+      check('webgl2: fence before any draw is seen: sim.gpuSync, then a clear and a read of its own target',
+        glSide.syncsBefore === 1 && ops(glSide.beforeDraws) === 'clear own0, read own0', `${ops(glSide.beforeDraws)}; gpuSync ${glSide.syncsBefore}`);
+      check('webgl2: fence after a pass into another target: sim.gpuSync, then a read of that target',
+        o.log.length === 2 && o.log[0].op === 'read' && o.log[0].fb === 'state' && o.log[1].op === 'read' && o.log[1].fb === 'other'
+        && o.log[1].px.join() === '255,0,255,255' && o.restored, `${ops(o.log)}; other read ${o.log[1]?.px}; target restored ${o.restored}`);
+      const own = c.log.find((l) => l.op === 'clear')?.fb;
+      check('webgl2: fence after a pass into the canvas: a clear and a read of its own 1×1 target, no read of the canvas',
+        own?.startsWith('own') && c.log.at(-2)?.op === 'clear' && c.log.at(-1)?.op === 'read' && c.log.at(-1).fb === own
+        && !c.log.some((l) => l.fb === 'canvas') && c.restored && glSide.syncs === 3, `${ops(c.log)}; canvas restored ${c.restored}`);
+      check('webgl2: drawCount counts the renderer\'s draws', glSide.first === 0 && glSide.later === 3, `${glSide.first} then ${glSide.later}`);
+      check('webgl2: three draws and reads back right after the fences', glSide.after.join() === '0,255,0,255', glSide.after.join());
       check('webgl2: gpuName is the unmasked renderer', /^WebGL2 \S/.test(glSide.info.name), glSide.info.name);
     }
 
