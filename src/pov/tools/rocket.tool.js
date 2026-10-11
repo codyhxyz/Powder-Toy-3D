@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { CELL_METERS } from '../vitals.js';
-import { rocketFrag, toolPass } from '../../shaders/povTools.js';
+import { rocketFrag, toolPass, ROCKET } from '../../shaders/povTools.js';
 import { povEvents } from '../events.js';
 import { attachModel } from '../models.js';
 import { viewmodelRig, HIT } from '../viewmodel.js';
@@ -75,6 +75,8 @@ export default {
       const mat = pass(sim);
       mat.uniforms.uCenter.value.copy(center);
       mat.uniforms.uFrame.value = ++frame;
+      const r = ROCKET.PULSE_RADIUS;   // the farthest the blast reaches
+      sim.touchCentres([center.x - r, center.y - r, center.z - r], [center.x + r, center.y + r, center.z + r]);
       sim.pass(mat);
       lastBlast = { point: center.clone(), id: hit.id };
       povEvents.emit('blast', { point: center.clone() });

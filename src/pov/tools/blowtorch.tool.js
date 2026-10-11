@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { ELEMENTS } from '../../elements.js';
-import { flamerFrag, toolPass, FLAMER } from '../../shaders/povTools.js';
+import { flamerFrag, flameBox, toolPass, FLAMER } from '../../shaders/povTools.js';
 import { povEvents } from '../events.js';
 import { attachModel } from '../models.js';
 import { viewmodelRig } from '../viewmodel.js';
@@ -76,6 +76,7 @@ export default {
       u.uReach.value = reach;
       u.uDt.value = toolDt(ctx);
       u.uFrame.value = ++frame;
+      sim.touchCentres(...flameBox(FLAMER, nozzle, dir, reach));
       sim.pass(mat);
       muzzle.updateWorldMatrix(true, false);
       povEvents.emit('flame', { muzzleWorld: muzzle.getWorldPosition(new THREE.Vector3()), dir, length: reach + (t - NOZZLE_REACH), dt: ctx.dt });

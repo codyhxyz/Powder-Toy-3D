@@ -1,0 +1,13 @@
+# Cloudflare Pages response headers (copied to the root of dist/ by the build).
+# https://developers.cloudflare.com/pages/configuration/headers/
+#
+# /assets/ holds only Vite's build output, every file named by a hash of its
+# content (public/ has no assets/ folder), so a URL there never changes what it
+# serves: browsers keep it for a year and never ask again. Everything else (the
+# HTML, and the models, maps and icons under fixed names) keeps Pages' default,
+# revalidated against its ETag on each visit, so a deploy shows at once.
+# public/_routes.json keeps these paths out of functions/_middleware.js, so
+# Pages serves them as static files with these headers.
+
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable

@@ -4,14 +4,13 @@
 // coasting from 10 m/s the jeep slows far faster on sand than on stone.
 // usage: node tools/vehicles-node-check.mjs
 import * as THREE from 'three';
-import RAPIER from '@dimforge/rapier3d-compat';
+import RAPIER from './rapier-node.mjs';   // the game's @dimforge/rapier3d-simd, initialised
 import { createPhysics } from '../src/pov/vehicles/physics.js';
 import { buildJeep, JEEP } from '../src/pov/vehicles/jeep.js';
 import { buildHoverbike, HOVERBIKE } from '../src/pov/vehicles/hoverbike.js';
 import { E, K, ELEMENTS } from '../src/elements.js';
 import { CELL_M } from '../src/scale.js';
 
-await RAPIER.init();
 const N = [128, 64, 128];
 const STEP = 1 / 60;
 let fails = 0;

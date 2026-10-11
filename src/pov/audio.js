@@ -639,9 +639,10 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
       const pl = s.player;
       if (s.active && pl && !pl.dead && pl.shieldMax > 0 && pl.shield <= 0 && !pl.shieldCharging && t - lastBeep >= SHIELD_BEEP_S) { lastBeep = t; play('shieldBeep'); }
     }
-    if (s.active && !document.hidden) requestAnimationFrame(tick);
-    else setTimeout(tick, IDLE_POLL_MS);
+    if (s.active && !document.hidden) next = requestAnimationFrame(tick);
+    else { next = null; idle = setTimeout(tick, IDLE_POLL_MS); }
   }
+  let next = null, idle = null;   // the one pending tick: a second chain would run every frame beside it
 
   function onGesture() {
     gestured = true;
@@ -655,7 +656,7 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
     if (!S.started) return;
     setMaster(state().active && !document.hidden);
     if (document.hidden) stopLoops();
-    else tick();
+    else { cancelAnimationFrame(next); clearTimeout(idle); tick(); }   // wake now, without starting another chain
   });
   tick();
 

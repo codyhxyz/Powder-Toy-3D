@@ -3,6 +3,7 @@
 // at once. A link with a query (?size=…, ?preset=…, ?map=…, an invite's
 // ?join=…, a sign-in's return) skips the menu and boots straight into the app,
 // as before: the test tools and shared links depend on that.
+import './fonts.css';   // Archivo and Silkscreen, self-hosted
 import './ui/menu.css';
 import { createMenu } from './ui/menu.js';
 import { launch } from './launch.js';

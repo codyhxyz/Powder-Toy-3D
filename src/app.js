@@ -33,6 +33,7 @@ import { gfx, gfxUniforms, updateGfxUniforms } from './gfx/uniforms.js';
 import { DETAIL, settingKey, detailDefaults, detailDefines, detailRows } from './gfx/detail.js';
 import { createDetailGate } from './gfx/detailGate.js';
 import { createColdShaderGuard } from './gfx/coldShader.js';
+import { createGpuLossTracker, silentLinkFailure, processLossMessage, lossDetails } from './gfx/gpuLoss.js';
 import { setAeration } from './gfx/foam.js';
 import { claimPrograms } from './gfx/programs.js';
 import { createPost, createAutoResolution, UPSCALE } from './gfx/post.js';
@@ -207,17 +208,28 @@ function stopGraphics(error) {
   }
   return graphicsFailure;
 }
+// What the page was doing when the GPU went away (gfx/gpuLoss.js): a dead
+// GPU process first shows as a link failure with no text, not a lost context.
+const gpuLoss = createGpuLossTracker(renderer);
 renderer.domElement.addEventListener('webglcontextlost', () => {
   // Three restores its renderer, not our GPU-only state, undo history, or
   // manually attached array layers. Never resume those as an intact world.
-  stopGraphics(new Error('The browser lost the WebGL context. The cause is not available from this event.'));
+  const seen = gpuLoss.snapshot();
+  if (!graphicsFailure) gpuLoss.record({ kind: 'contextLost', ...seen });
+  stopGraphics(new Error(`The browser lost the WebGL context. The cause is not available from this event.\n${lossDetails(seen)}`));
 });
 renderer.debug.onShaderError = (gl, program, vertex, fragment) => {
   const name = renderer.info.programs.find(p => p.program === program)?.name || 'unnamed';
+  if (silentLinkFailure(gl, program, vertex, fragment)) {
+    const seen = gpuLoss.snapshot();
+    gpuLoss.record({ kind: 'gpuProcessLost', linking: name, ...seen });
+    throw stopGraphics(new Error(processLossMessage(name, seen)));
+  }
   const logs = [
     gl.getProgramInfoLog(program), gl.getShaderInfoLog(vertex), gl.getShaderInfoLog(fragment),
   ].filter(Boolean).join('\n');
-  throw stopGraphics(new Error(`GPU shader failed: ${name}.\n${logs || 'The graphics driver returned no diagnostic text.'}`));
+  gpuLoss.record({ kind: 'shaderFailed', linking: name, log: logs.slice(0, 2000) });
+  throw stopGraphics(new Error(`GPU shader failed: ${name}.\n${logs}`));
 };
 renderer.setClearColor(0x000000, 0);
 // Keep the existing CSS-native output; adaptation only changes scene pixels.
@@ -1268,6 +1280,7 @@ function applyProfiler() {
 
 // ---------------------------------------------------------------- loop
 const clock = new THREE.Timer();
+let animTime = 0;   // s the simulation has run: the scene's own animations (perk orbs, arena banners)
 // The fps readout is the rate frames are drawn while drawing: a paused, still
 // scene draws nothing (render on demand) and reads as idle, not as a low rate.
 let frames = 0, fpsTime = 0, fps = 60, idleTime = 0, lastDrawAt = null;
@@ -1358,7 +1371,7 @@ function frame(now) {
   if (graphicsFailure) return;
   requestAnimationFrame(frame);
   if (testParked) return;   // leave browser/UI rAF alone (Playwright actionability needs it)
-  try { tick(now); }
+  try { tick(now); gpuLoss.settle(); }
   catch (error) { if (error !== graphicsFailure) throw error; }
 }
 function tick(now, renderOnly = false) {
@@ -1406,6 +1419,7 @@ function tick(now, renderOnly = false) {
     for (let i = 0; i < settings.steps; i++) sim.step();
     lightning.update(sim);   // storms: charged cloud strikes by itself (src/lightning.js)
     if (DAY.running) day.clock += settings.steps;
+    animTime += dt;
     stepOnce = false;
   } else if (!renderOnly && mp.isGuest && DAY.running) day.clock += settings.steps;   // guests don't step: keep the day going at their own rate
   updateSun();
@@ -1505,8 +1519,10 @@ function tick(now, renderOnly = false) {
   // Picking is input work, not presentation: a preview must keep it responsive.
   if (!renderOnly && (runView || pov?.active || testMode === 'preview')) requestPick();
   if (spawners) { spawners.setGhosts(!pov?.active); spawners.update(); }   // the crosshair cell stays fresh for the tools
-  perkOrbs?.update(clock.getElapsed());
-  arenaMarkers?.update(clock.getElapsed());
+  // they hold still with the world, like the birds: on wall-clock time they moved every
+  // frame, so the view key (sceneKey) never settled and a paused scene redrew at full rate
+  perkOrbs?.update(animTime);
+  arenaMarkers?.update(animTime);
   if (renderOnly) { prof.endFrame(0); return; }
 
   const povReadout = pov?.active ? pov.readout : null;   // the held tool's (the scanner's, the trowel's)
@@ -1608,6 +1624,7 @@ try {
     // the loaded arena's layout (spawns, flags, hills, siege core, shrines, vehicles: arenas/damValley.js), else null
     get arena() { return arenaLayout; },
     get win() { return win; },
+    get lastGpuFailure() { return gpuLoss.last; },   // the last GPU failure's report, kept across reloads (gfx/gpuLoss.js)
     // world mode: start the world over with the window at `origin` (world cells)
     worldLoad(origin) { if (graphicsFailure) throw graphicsFailure; win.load(origin); placeVolume(); post.reset(); pov?.worldReplaced(); },
     setSize,         // switch the grid (a SIZES or WORLDS key), keeping the scene settings
@@ -1644,6 +1661,7 @@ try {
       },
     } : null,
   };
+  gpuLoss.settle();
   requestAnimationFrame(frame);
   bootReady();
 } catch (err) {

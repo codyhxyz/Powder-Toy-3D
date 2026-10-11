@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { HAND_REACH } from '../constants.js';
-import { torchFireFrag, toolPass, TORCH_FIRE } from '../../shaders/povTools.js';
+import { torchFireFrag, flameBox, toolPass, TORCH_FIRE } from '../../shaders/povTools.js';
 import { gravityScale } from '../ballistics.js';
 import { THROW_SPEED } from './bomb.tool.js';
 import { lamps } from '../lamps.js';
@@ -222,6 +222,7 @@ export function lampTool({ key, name, model: modelKey, desc, light, burn = null,
         u.uReach.value = reach;
         u.uDt.value = dt;
         u.uFrame.value = ++frame;
+        sim.touchCentres(...flameBox(TORCH_FIRE, at, dir, reach));
         sim.pass(mat);
       }
 

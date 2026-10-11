@@ -290,6 +290,7 @@ export function createBallistics({ renderer }) {
     const far = h.point.clone().addScaledVector(dir, r.depth + 1);
     u.uLo.value.copy(h.point).min(far).floor().subScalar(1);
     u.uHi.value.copy(h.point).max(far).floor().addScalar(1);
+    sim.touch(u.uLo.value.toArray(), u.uHi.value.toArray());   // (the shader changes nothing outside it)
     sim.pass(mats.strike);
   }
 
