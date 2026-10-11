@@ -1612,11 +1612,12 @@ let frames = 0, fpsTime = 0, fps = 60, idleTime = 0, lastDrawAt = null;
 let stepTime = 0, stepCount = 0, stepRate = 0;
 // Render on demand (gfx/pacing.js). The derived passes settle once the slowest
 // field EMA and the GI blend (each probe is traced every other frame) have
-// converged; the view once TAA's history has (upscaled, it accumulates for longer).
+// converged; the view once TAA's history has (upscaled, it accumulates for
+// longer), or at once without TAA (tools turn it off: no history to converge).
 const GI_PROBE_EVERY = 2;
 const pacer = createPacer({
   derivedSettle: Math.max(...[...CHANNELS, ...MEDIA].map((c) => settleFrames(c.ema)), settleFrames(GI_BLEND, GI_PROBE_EVERY)),
-  viewSettle: () => settleFrames(post.settleWeight),
+  viewSettle: () => (post.settings.taa ? settleFrames(post.settleWeight) : 1),
   presentHz: testMode === 'preview' ? PREVIEW_HZ : MAX_FPS,
   onWake: wakeLoop,
 });
@@ -1789,6 +1790,7 @@ const simAsleep = () => sim.idleCertified && !sim.actDirty && !sim.actFresh && s
 const camState = () => (!pov?.active || pov.mode === 'exiting' ? 'god' : pov.camera.third ? 'third' : 'first');
 let camShown = '';
 let loopCallbacks = 0;   // frames the loop has run (tools/idle-check.mjs: none while asleep)
+let captureNext = null;  // test.renderOnce({ capture }): takes the next presented frame's canvas
 // The animation frame: false stops the loop (deep idle, or graphics stopped, or a parked test page).
 function frame(now) {
   loopCallbacks++;
@@ -1908,6 +1910,8 @@ function tick(now, renderOnly = false) {
     gfxUniforms.uCaustics.value = settings.caustics;
     frameDerived = runDerived;
     post.render(frameHooks, camera, null, dt, { viewmodel: ctx.viewmodel, glow: ctx.glow });   // its passes after the scene count as 'post'
+    // (a test's capture: the canvas texture is this frame's only until the task ends)
+    if (captureNext) { const c = captureNext; captureNext = null; c(post.capture()); }
     prof.phase('other');
   }
   gpu.endFrame();   // this tick's command buffer, if it recorded anything (B3)
@@ -2132,13 +2136,19 @@ try {
         await gpu.fence();
         return n;
       },
-      // One frame (no convergence), the GPU done with it: the smoke test's shot (docs/webgpu.md I1).
-      async renderOnce() {
+      // One frame (no convergence), the GPU done with it: the smoke test's
+      // shot (docs/webgpu.md I1). capture: resolves to the canvas as that
+      // frame presented it ({ width, height, data }: RGBA bytes).
+      async renderOnce({ capture = false } = {}) {
         await coreWait;
         if (graphicsFailure) throw graphicsFailure;
         pacer.wake();
+        let shot = null;
+        if (capture) captureNext = (p) => { shot = p; };
         tick(performance.now(), true);
+        captureNext = null;
         await gpu.fence();
+        return shot ? await shot : null;
       },
     } : null,
   };
