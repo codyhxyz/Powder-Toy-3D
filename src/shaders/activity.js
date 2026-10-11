@@ -122,6 +122,10 @@ bool inertNear(ivec3 c, vec4 a, vec4 nA[6]) {
       }
     }
   }
+  // One exit after the faces, not one per test: inlined into the react pass
+  // (its last call), a return per test and face made ANGLE/Metal's cold build
+  // of that pass ~8x slower: 17-20 s, this way 2.3 s (tools/program-bench.mjs).
+  bool busy = false;
   for (int i = 0; i < 6; i++) {
     if (!inGrid(c + FACES[i])) continue;
     vec4 n = nA[i];
@@ -130,25 +134,27 @@ bool inertNear(ivec3 c, vec4 a, vec4 nA[6]) {
     // (a face with no conductance, a temperature sensor's, carries none)
     // (a matter face: the heat it carries, physics.js REST_FLUX)
     float cf = min(COND[id], COND[j]);
-    if (cf > 0.0 && (j == E_EMPTY ? abs(T - uAirT) > AIR_REST_T : abs(T - n.y) > min(REST_FLUX / cf, AIR_REST_T))) return false;
-    if (!electricQuietNear(id, a, j, n)) return false;   // src/electricity.js
-    if (ACIDIC[j] ? acidEats(id) : ACIDIC[id] && acidEats(j)) return false;   // acid, caustic gas (elements.js acid)
-    if ((id == E_WATER && j == E_PLANT) || (id == E_PLANT && j == E_WATER)) return false;
-    if (fungusFood(id) && j == E_FUNGUS && floor(n.w) >= 1.0 && T < DAMP_DRY_T) return false;   // damp fungus rots it
-    if (id == E_CLONE && (j == E_EMPTY || (a.w < 1.0 && cloneable(j)))) return false;   // (cloneable: src/electricity.js)
+    if (cf > 0.0 && (j == E_EMPTY ? abs(T - uAirT) > AIR_REST_T : abs(T - n.y) > min(REST_FLUX / cf, AIR_REST_T))) busy = true;
+    if (!electricQuietNear(id, a, j, n)) busy = true;   // src/electricity.js
+    if (ACIDIC[j] ? acidEats(id) : ACIDIC[id] && acidEats(j)) busy = true;   // acid, caustic gas (elements.js acid)
+    if ((id == E_WATER && j == E_PLANT) || (id == E_PLANT && j == E_WATER)) busy = true;
+    if (fungusFood(id) && j == E_FUNGUS && floor(n.w) >= 1.0 && T < DAMP_DRY_T) busy = true;   // damp fungus rots it
+    if (id == E_CLONE && (j == E_EMPTY || (a.w < 1.0 && cloneable(j)))) busy = true;   // (cloneable: src/electricity.js)
     // an explosive with an ignition point: a hot touch sets it off
-    if (INTO[id][PH_BLAST] >= 0 && IGNITE[id] > 0.0 && !isGasLike(j) && n.y >= IGNITE[id]) return false;
+    if (INTO[id][PH_BLAST] >= 0 && IGNITE[id] > 0.0 && !isGasLike(j) && n.y >= IGNITE[id]) busy = true;
     // a reaction partner past its temperature gate (one below it lets both rest)
     int rx = rxAt(id, j);
-    if (rx > 0 && rxGate((rx - 1) >> 1, T, n.y)) return false;
-    if (j == E_VOID && k != K_SOLID) return false;   // void drains it (react.js)
-    if (j == E_SINGULARITY && id != E_WALL && id != E_VOID) return false;   // it may be swallowed (react.js singEats)
+    if (rx > 0 && rxGate((rx - 1) >> 1, T, n.y)) busy = true;
+    if (j == E_VOID && k != K_SOLID) busy = true;   // void drains it (react.js)
+    if (j == E_SINGULARITY && id != E_WALL && id != E_VOID) busy = true;   // it may be swallowed (react.js singEats)
     // a fuse lights from a lit fuse beside it, or a hot touch (react.js)
-    if (id == E_FUSE && ((j == E_FUSE && n.z < 1.0) || (!isGasLike(j) && n.y >= IGNITE[id]))) return false;
+    if (id == E_FUSE && ((j == E_FUSE && n.z < 1.0) || (!isGasLike(j) && n.y >= IGNITE[id]))) busy = true;
     // a powder or liquid: nowhere to fall, nor for a liquid to flow sideways
     bool way = FACES[i].y < 0 || (k == K_LIQUID && FACES[i].y == 0);
-    if (k != K_SOLID && way && canMove(id, j, d, densityOf(j, n.y), FACES[i].y < 0 ? 0 : 2)) return false;
+    if (k != K_SOLID && way && canMove(id, j, d, densityOf(j, n.y), FACES[i].y < 0 ? 0 : 2)) busy = true;
+    if (busy) break;
   }
+  if (busy) return false;
   if (k == K_SOLID) return true;
   // ... nor to topple into, in the rest of the lower ring
   for (int z = -1; z <= 1; z++)
