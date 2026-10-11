@@ -2,13 +2,16 @@
 // rebuild every frame (sim.incremental = false), in the harness
 // (tools/harness/derived-check.html: no app). Each frame steps the simulation
 // first, as the app does, so the incremental passes have something to rebuild.
-// Per grid and scene, chunks of K frames alternate the two modes (A B B A);
+// Per grid and scene, two simulations, one per mode (a full frame ages every
+// brick to 0, so one switching modes would time its incremental frames over
+// everything): load, a few steps, derived frames until the load's rebuild has
+// aged out, then chunks of K frames alternating the two (A B B A);
 // each chunk's GPU ms per kernel come from timestamp queries in split mode (a
 // pass per dispatch), and the medians are reported per derived frame, with the
 // lists' lengths. Without timestamp-query only the wall ms (steps included)
 // are meaningful.
 //
-// usage: node tools/derived-bench.mjs [--size 32,64] [--scen lab,volcano] [--frames 6] [--steps 2]
+// usage: node tools/derived-bench.mjs [--size 32,64] [--scen lab,volcano,pile] [--frames 6] [--steps 2]
 //          [--chunks 2] [--out report.json] [--port N]
 //   On the Mac (docs/webgpu.md I4.5): --size 64,128 --chunks 4.
 import { writeFileSync } from 'node:fs';
@@ -20,7 +23,7 @@ const argv = process.argv.slice(2);
 const opt = (k, d) => (argv.includes(`--${k}`) ? argv[argv.indexOf(`--${k}`) + 1] : d);
 const opts = {
   sizes: opt('size', '32,64').split(',').map(Number),
-  scenes: opt('scen', 'lab,volcano').split(','),
+  scenes: opt('scen', 'lab,volcano,pile').split(','),
   frames: Number(opt('frames', '6')),
   steps: Number(opt('steps', '2')),
   chunks: Number(opt('chunks', '2')),

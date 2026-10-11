@@ -527,37 +527,45 @@ async function timeChunk(sim, derived, frames, steps) {
   return { wall, per, derived: Object.values(per).reduce((a, b) => a + b, 0) };
 }
 /**
+ * Two simulations of the same scene, one incremental and one full (a full
+ * frame ages every brick to 0, so one simulation switching modes would time
+ * its incremental chunks over everything), stepped alike, their chunks
+ * alternating A B B A.
  * @param {{ sizes?: number[], scenes?: string[], frames?: number, steps?: number, chunks?: number, warm?: number }} [opts]
  */
-async function bench({ sizes = [32, 64], scenes = ['lab', 'volcano'], frames = 6, steps = 2, chunks = 2, warm = 12 } = {}) {
+async function bench({ sizes = [32, 64], scenes = ['lab', 'volcano', 'pile'], frames = 6, steps = 2, chunks = 2, warm = 8 } = {}) {
   const out = { gpu: gpu.adapterInfo, timestamps: gpu.timing.supported, grids: [] };
   for (const n of sizes) {
-    const { sim, derived, dispose } = await h.make(n);
+    const modes = { incremental: await h.make(n), full: await h.make(n) };
+    modes.full.sim.incremental = false;
     const grid = { n, scenes: [] };
     try {
       for (const scene of scenes) {
-        h.scene(sim, scene);
-        for (let i = 0; i < warm; i++) { sim.step(); if (i % 4 === 3) derived.updateBricks(); }
+        // each: the scene running, then settled (the load rebuilt every brick: that ages out)
+        for (const { sim, derived } of Object.values(modes)) {
+          sim.origin.set(0, 0, 0);
+          h.scene(sim, scene);
+          sim.frame = 0;
+          for (let i = 0; i < warm; i++) sim.step();
+          for (let i = 0; i < SETTLE; i++) derived.updateBricks();
+        }
         const rows = { incremental: [], full: [] };
         for (let c = 0; c < chunks; c++) {
           for (const mode of c % 2 ? ['full', 'incremental'] : ['incremental', 'full']) {
-            sim.incremental = mode === 'incremental';
-            rows[mode].push(await timeChunk(sim, derived, frames, steps));
+            rows[mode].push(await timeChunk(modes[mode].sim, modes[mode].derived, frames, steps));
           }
         }
-        sim.incremental = true;
-        derived.updateBricks();
-        const l = await derived.readLists();
-        const res = { scene, bricks: sim.g.nbricks, lists: { ema: l.ema, fields: l.fields, work: l.work }, modes: {} };
+        const l = await modes.incremental.derived.readLists();
+        const res = { scene, bricks: modes.incremental.sim.g.nbricks, lists: { ema: l.ema, fields: l.fields, work: l.work }, modes: {} };
         for (const [mode, r] of Object.entries(rows)) {
           const kernels = {};
           for (const k of DERIVED_KERNELS) { const xs = r.map((x) => x.per[k]).filter((x) => x !== undefined); if (xs.length) kernels[k] = median(xs); }
           res.modes[mode] = { gpuMsPerFrame: median(r.map((x) => x.derived)), wallMsPerFrame: median(r.map((x) => x.wall)), kernels };
         }
         grid.scenes.push(res);
-        log(`${n}³ ${scene}: lists ${l.ema}/${l.fields}/${l.work} of ${sim.g.nbricks}; derived GPU ms/frame incremental ${res.modes.incremental.gpuMsPerFrame.toFixed(2)}, full ${res.modes.full.gpuMsPerFrame.toFixed(2)}`);
+        log(`${n}³ ${scene}: lists ${l.ema}/${l.fields}/${l.work} of ${res.bricks}; derived GPU ms/frame incremental ${res.modes.incremental.gpuMsPerFrame.toFixed(2)}, full ${res.modes.full.gpuMsPerFrame.toFixed(2)}`);
       }
-    } finally { dispose(); }
+    } finally { for (const m of Object.values(modes)) m.dispose(); }
     out.grids.push(grid);
   }
   return out;
