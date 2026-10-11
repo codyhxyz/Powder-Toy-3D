@@ -4,9 +4,45 @@ Halo-style team games in first person: teams of bots on both sides (the lab's NP
 tools and Yuka brain, `docs/pov.md` "NPCs"), the player on one of them, and five modes. Code in
 `src/game/`; the rules and their sources in `src/game/rules.js`.
 
-In first person: **M** opens the match menu (mode, side, Start / End; the mouse is freed while it's open),
-**Tab** holds up the scoreboard, **.** switches team (TF2's key; a bot from the other side takes your place).
-With no match running a small "M Match" chip sits top-centre. The main drawer has no match settings.
+In first person: **M** opens the match menu (mode, side, Start / End; the mouse is freed while it's open; Esc or M
+closes it), **Tab** holds up the scoreboard, **.** switches team (TF2's key; a bot from the other side takes your
+place). With no match running a small "M Match" chip sits top-centre. The main drawer has no match settings.
+
+## Joining
+
+- **One click**: the start menu's top bar has **Play** (Team Slayer on Dam Valley) and **Siege** (TF2's classes; the
+  class picker opens on joining), `maps.js QUICK_PLAY`: the team is picked for you (auto-balance), Halo 3
+  matchmaking's way. The gamemode categories and their maps are still there for any other pick; Start on a team
+  mode's map starts that match.
+- **A link**: `?mode=slayer` boots straight into a match on the mode's Play map (Dam Valley), `?map=lab&mode=ctf` on
+  that map (a map not built for the mode, or a mode the build lacks, is Sandbox). The loading screen shows for it.
+- **Behind the loading screen** (app.js `bootReady`, `startMode`): the bots' module (`npc.js`, Yuka) starts loading
+  with the first frames (`game.prepare()`), the body drops in with no swoop (Halo cuts to your eyes), the match
+  waits for the body (`game.start` needs the player, which the first drop-in builds), the bots are built and
+  compiled, and the map just loaded isn't loaded again (`start(mode, { fresh: true })`). The screen comes down on
+  the match running (at most 30 s).
+- **Click to play**: pointer lock needs a click, and the load outlasts the Play click's, so the match shows a big
+  "Click to play" while the mouse is free (the first-person "Click to look around" gives way to it).
+- **Timing marks** (`performance.mark('join:<step>')`, `launch.js mark`): `click`, `app` (app.js ran), `npcs`
+  (the bots' module), `first-frame`, `entered` (the body is in), `bots` (built), `match` (running), `ready` (the
+  loading screen is down), `control` (the first moment with the mouse captured in a match). `tools/join-check.mjs`
+  prints them.
+
+## The match loop
+
+A match that ends by its rules shows **Halo 3's post-game carnage report** top-centre under Halo Infinite's **Victory** / **Defeat** banner (or
+who won, watching), the result line, both teams' tables (each player's score, kills, deaths, you highlighted, the
+winner starred; a medals column once the roster has `medals`). It counts down `END_SCREEN_S` (10 s) and **the next
+match starts by itself** on the same map with the same options (fresh terrain, sides auto-balanced again): Halo 3
+matchmaking moves the party on to the next game. The way out: **Leave** (the mouse is free once Esc has released
+it) or **Esc** opens the start menu, which ends the loop; so does leaving the body (V). A match ended by hand (M,
+End match) shows a line and doesn't loop.
+
+**The first seconds**: the first time you have control in a match (alive, mouse captured) a card of the match's
+keys shows under the score for 9 s, once a session per rule style: Halo's (Shoot · Zoom right-click · Grenade G ·
+Melee F · 1/2 or wheel swap guns · Pick up E · Scores Tab · Match menu M) and Siege's (TF2's keys with `,` Class),
+which waits until the class picker, which frees the mouse, has closed. The sandbox's key hint doesn't show in a
+match.
 
 ## Teams
 
@@ -77,16 +113,24 @@ the infected run 1.25× (`body.speedScale`, on top of a class's).
 Each new match (and Siege's halftime) reloads the current preset (`app.loadPreset`, as a new scene: not undoable),
 so the terrain is fresh. The lab's own enemy spawner sleeps during a match.
 
-HUD (`src/game/hud.js`, `game.css`): top-centre the mode, both scores, the clock and the objective (flags home /
-taken / dropped; the hill's owner, when it moves and the leader's progress; survivors and infected; the half, the
-attackers and the core count); the killfeed and announcements top-right; the scoreboard on Tab; the result for 10 s.
+HUD (`src/game/hud.js`, `game.css`): top-centre the mode, both scores (yours first and filled in your colour, the
+other outlined; a bar under each filling toward the score to win, Halo 3's score meter), the clock and the objective (flags
+home / taken / dropped; the hill's owner, when it moves and the leader's progress; survivors and infected; the half,
+the attackers and the core count); the killfeed (with the killer's weapon) and announcements top-right; the
+scoreboard on Tab (your team first, your row highlighted); while you're dead, who killed you with what and
+"Respawn in N" (Halo 3's death screen, under "You died"); the carnage report at the end. The motion tracker and
+medals (bottom-left) and the reticle (centre) are other modules' (`docs/halo-contract.md`).
 
 ## API
 
 ```js
 const game = __app.pov.game;
 await game.start('ctf', { side: 'red' });   // 'slayer' | 'ctf' | 'koth' | 'infection' | 'siege'; side: auto | red | blue | spectate
-game.end();                                  // stop, no winner
+                                             // fresh: true: the map was just loaded, don't reload it
+game.prepare();                              // load the bots' module now (app.js: while the loading screen is up)
+game.end();                                  // stop, no winner (no report, no next match)
+game.leave();                                // out of the match loop, to the start menu
+game.nextIn;                                 // s to the next match while the report counts down, else null
 game.useLayout(layout);                      // a map's (below); null: the lab's
 game.state;   // { running, mode, time, timeLeft, teamScore, objective, flags, hill, siege, roster, bots, botMs }
 game.roster;  // [{ id, name, team, bot, kills, deaths, score, role, ... }]
@@ -117,6 +161,11 @@ them the defenders contest it forever).
 
 ## Check
 
+`node tools/join-check.mjs [--url http://localhost:5425]` (AC power, a dev server): the start menu's Play drops into
+a Slayer match on Dam Valley with the player on a team, prints the `join:` timing marks, plays a match with its
+score to win cut to 1 and asserts the carnage report and that the next match starts by itself; Esc closes the M
+menu without opening the start menu.
+
 `node tools/modes-check.mjs [--url http://localhost:5405] [--preset lab|damValley] [--modes slayer,ctf] [--side spectate|red] [--strict] [--sweep 0,2,4,6,8] [--tour prefix]`
 (AC power, a dev server). Bots only by default; each mode runs until it has done its thing or a game-time box:
 kills score (Slayer), a flag is taken and captured or returned (CTF), the hill scores (KOTH), the infection
@@ -141,7 +190,6 @@ a frame for a moment at a Dam Valley start, while every bot tries its bearings t
   attackers spawn on the first attackers' side, as in TF2.
 - Siege is hard on the attackers: with 4v4 on the lab the defenders nearly always stand on the core, so holds are a
   second or two and halves end on the clock. TF2 balances this with respawn waves; ours are equal.
-- The POV entry hint (the first 7 s in first person) sits over the objective line.
 - Not in worlds (the window): NPCs don't follow it, so team games are box presets only.
 - The NPC nav is one height-map layer: roofed halls, tunnels (Dam Valley's pump room) and the crest shrine's hill are
   reached by the straight-in fallback or not at all. A layered nav (a voxel navmesh, Recast-style) is the real fix;

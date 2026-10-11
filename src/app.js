@@ -52,7 +52,7 @@ import { renderViewmodels } from './pov/viewmodel.js';
 import { POV_FOV, POV_FOV_RANGE, SENSITIVITY_RANGE } from './pov/camera.js';
 import { finishSignIn, account, accountsEnabled } from './account.js';
 import { accountSection } from './ui/account-section.js';
-import { launch } from './launch.js';
+import { launch, mark } from './launch.js';
 import { MAPS, mapByKey, mapOf, isWorld, sizeTag, WORLD_DIMS } from './maps.js';
 
 // Optional modules (built in parallel); the app works without them.
@@ -596,7 +596,7 @@ function openMap(key, mode = 'sandbox') {
   if (!isWorld(m) && settings.size === m.size) loadPreset(m.preset);   // (undoable, as any box scene)
   else { useMap(m); setSize(m.size); }
   hud.toast(`Loaded ${m.name}`);
-  startMode(mode);
+  startMode(mode, { fresh: true }).catch((err) => console.error('The match failed to start', err));
   return true;
 }
 // the map and gamemode playing now, for the menu to open on
@@ -604,13 +604,23 @@ function currentMap() {
   return { map: mapOf(settings)?.key ?? null, mode: pov?.game?.running ? pov.game.mode : 'sandbox' };
 }
 // A team gamemode (src/game, where the build has it): in the body, a match of
-// it on the map just loaded. Sandbox ends any match running.
-function startMode(mode) {
+// it on the map just loaded. Sandbox ends any match running. The match waits
+// for the body to drop in (game.start needs the player: the first drop-in
+// builds it), while the bots' module loads beside it; a map loaded just now
+// (fresh) isn't loaded again for the match. Resolves true once it runs.
+async function startMode(mode, { fresh = false } = {}) {
   const game = pov?.game;
-  if (!game) return;
-  if (mode === 'sandbox') { if (game.running) game.end(); return; }
-  if (!pov.active) pov.enter();
-  game.start(mode);
+  if (!game) return false;
+  if (mode === 'sandbox') { if (game.running) game.end(); return false; }
+  game.prepare();
+  // the start menu's Play over a game is a click: the mouse is taken now, while it counts as a
+  // gesture (a drop-in from the god view asks for it itself)
+  if (pov.active && !pov.locked) try { renderer.domElement.requestPointerLock?.()?.catch?.(() => {}); } catch { /* not allowed here */ }
+  // Halo puts you in your eyes at a spawn: no swoop down from the god view, no sandbox key hint
+  await pov.enter({ swoop: 0, hint: false });
+  mark('entered');
+  if (!pov.player) return false;   // (it couldn't drop in: pov.enter said why)
+  return game.start(mode, { fresh });
 }
 // maps.js is plain data the menu loads on its own: it must agree with the tables here
 for (const m of MAPS) {
@@ -1556,15 +1566,24 @@ function tick(now, renderOnly = false) {
 // The start menu's loading screen comes down once the first map is on screen:
 // a frame after the first frame (that one compiles the renderer), and in a
 // world once its window has filled (or after a while, whatever it's doing).
-// Then the gamemode picked with it starts.
+// A team gamemode picked with it starts behind the loading screen first (the
+// body drops in, the bots are built and compiled), so the screen comes down
+// on the match running, not on the hitches of setting it up.
 const READY_POLL_MS = 100;
 const READY_WAIT_MS = 20000;
+const MATCH_WAIT_MS = 30000;   // the longest the loading screen waits on a match starting (a cold shader compile)
 function bootReady() {
   const t0 = performance.now();
-  const check = () => {
+  const check = async () => {
     if (win && !win.loaded && performance.now() - t0 < READY_WAIT_MS) { setTimeout(check, READY_POLL_MS); return; }
+    mark('first-frame');
+    if (bootMap && launch.mode && launch.mode !== 'sandbox' && pov?.game) {
+      launch.status?.('Picking the teams');
+      const match = startMode(launch.mode, { fresh: true }).catch((err) => console.error('The match failed to start', err));
+      await Promise.race([match, new Promise((r) => setTimeout(r, MATCH_WAIT_MS))]);
+    }
+    mark('ready');
     launch.ready?.();
-    if (bootMap && launch.mode) startMode(launch.mode);
   };
   requestAnimationFrame(() => requestAnimationFrame(check));
 }
@@ -1620,6 +1639,8 @@ try {
   });
   pov.vehicles.spawnLayout(arenaLayout);   // the scene loaded before the POV shell existed
   pov.game.useLayout(arenaLayout);
+  if (bootMap && launch.mode && launch.mode !== 'sandbox') pov.game.prepare();   // a match was picked: the bots' module loads during the first frames
+  mark('app');
   window.__app = {
     get sim() { return sim; }, get volume() { return volume; }, get scale() { return scale; }, get signs() { return signs; }, get builds() { return builds; },
     get pov() { return pov; },

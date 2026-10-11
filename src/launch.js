@@ -1,6 +1,16 @@
 // The start menu's hand-off to the app and back (src/main.js loads app.js on
 // the first Start; app.js reads what was picked when it boots).
 //   map, mode    the menu's pick for the boot (maps.js keys), null: none (a direct link, ?size=…)
-//   openMenu()   set by main.js: the menu over the running app (the toolbar's Maps, Esc)
-//   ready()      set by main.js, called by app.js once the first map is on screen
-export const launch = { map: null, mode: 'sandbox', openMenu: null, ready: null };
+//   openMenu()   set by main.js: the menu over the running app (the toolbar's Maps, Esc, a match's Leave)
+//   menuOpen()   set by main.js: the menu is up (a match's next-match countdown stops for it)
+//   status(text) set by main.js: the loading screen's line, while app.js starts a match behind it
+//   ready()      set by main.js, called by app.js once the first map is on screen (and a match
+//                picked with it is running)
+export const launch = { map: null, mode: 'sandbox', openMenu: null, menuOpen: null, status: null, ready: null };
+
+// Timing marks from a click on the start menu to having control in a match,
+// for tools/join-check.mjs (performance.getEntriesByType('mark'), names
+// 'join:<step>'): click, app, first-frame, entered, bots, match, ready, control.
+export function mark(step) {
+  try { performance.mark(`join:${step}`); } catch { /* no User Timing */ }
+}

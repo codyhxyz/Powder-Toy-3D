@@ -5,16 +5,19 @@ import { MAPS, mapByKey, mapsFor, isWorld, sizeTag } from '../maps.js';
 // The start menu, Garry's Mod's New Game screen: gamemodes down the left, the
 // maps built for the chosen one as square previews (public/maps, rendered by
 // tools/map-thumbs.mjs) with each map's size tagged in its corner, and the
-// picked map with Start along the bottom. The landing page (src/main.js), and
-// over the game from the toolbar's Maps or Esc, with Resume.
+// picked map with Start along the bottom. One-click Play sits in the top bar
+// (maps.js QUICK_PLAY): a match with your team picked, Halo 3 matchmaking's
+// way. The landing page (src/main.js), and over the game from the toolbar's
+// Maps or Esc, with Resume.
 //   modes                 the gamemodes to list (maps.js GAMEMODES, filtered by the build)
+//   quick                 the one-click Play entries (maps.js QUICK_PLAY; [] without the team games)
 //   map, mode             the pick it opens on
 //   onStart(map, mode)    Start (or a double-click, or Enter)
 //   onResume()            Resume / Esc, over a running game
 const THUMB = (key) => `/maps/${key}.webp`;
 const STORE = 'powder-toy-3d:menu';   // the last gamemode and map picked here
 
-export function createMenu({ modes, map, mode, onStart, onResume }) {
+export function createMenu({ modes, quick = [], map, mode, onStart, onResume }) {
   let saved = {};
   try { saved = JSON.parse(localStorage.getItem(STORE) || '{}'); } catch { /* storage unavailable */ }
   let modeKey = modes.some((m) => m.key === (mode ?? saved.mode)) ? mode ?? saved.mode : modes[0].key;
@@ -33,6 +36,10 @@ export function createMenu({ modes, map, mode, onStart, onResume }) {
   const pickDesc = h('div.mm-pick-desc');
   const startBtn = h('button.mm-start', { type: 'button', on: { click: () => start() } });
   const resumeBtn = h('button.mm-resume', { type: 'button', text: 'Resume', on: { click: () => onResume?.() } });
+  // one-click Play: the first entry is the big one
+  const quickBtns = quick.filter((q) => modes.some((m) => m.key === q.mode) && mapByKey(q.map)).map((q, i) =>
+    h(`button.mm-play${i ? '' : '.main'}`, { type: 'button', 'data-play': q.key, title: `${q.name}: ${q.desc}`, on: { click: () => play(q) } },
+      h('b', { text: q.name }), h('small', { text: q.desc })));
   const loadName = h('div.mm-load-name');
   const loadMode = h('div.mm-load-mode');
   const loadStatus = h('div.mm-load-status');
@@ -42,7 +49,7 @@ export function createMenu({ modes, map, mode, onStart, onResume }) {
     h('div.mm-shell', {},
       h('header.mm-top', {},
         h('div.mm-brand', { html: `${logoMark(30)}<span>Powder Toy 3D</span>` }),
-        resumeBtn),
+        h('div.mm-top-actions', {}, quickBtns.length ? h('div.mm-quick', {}, quickBtns) : null, resumeBtn)),
       h('div.mm-body', {},
         nav,
         h('section.mm-main', {},
@@ -113,6 +120,15 @@ export function createMenu({ modes, map, mode, onStart, onResume }) {
     try { localStorage.setItem(STORE, JSON.stringify({ mode: modeKey, map: pick.key })); } catch { /* ignore */ }
     onStart(pick.key, modeKey);
   }
+  // one-click Play: its gamemode and map picked (the loading screen names them), then Start
+  function play(q) {
+    if (busy) return;
+    modeKey = q.mode;
+    pick = mapByKey(q.map);
+    renderModes();
+    renderMaps();
+    start();
+  }
 
   // arrows walk the grid (by its columns), Enter starts, Esc resumes
   function key(e) {
@@ -155,9 +171,12 @@ export function createMenu({ modes, map, mode, onStart, onResume }) {
       cards.find((c) => c.m === pick)?.card.scrollIntoView({ block: 'nearest' });
     },
     close() { el.classList.remove('open', 'loading'); busy = false; },
-    // the loading screen: the map's preview, its name, and what is happening
-    loading(status) {
+    // the loading screen: the map's preview, its name, and what is happening (on a pick of its
+    // own: a link's ?map= and ?mode=, src/main.js)
+    loading(status, { map: mk, mode: md } = {}) {
       busy = true;
+      if (md && modes.some((m) => m.key === md)) modeKey = md;
+      if (mapByKey(mk)) { pick = mapByKey(mk); backdrop.style.backgroundImage = `url(${THUMB(pick.key)})`; }
       const mo = modes.find((m) => m.key === modeKey);
       loadName.textContent = pick.name;
       loadMode.textContent = mo.name;
