@@ -157,6 +157,11 @@ const CASES = {
   undo: { scene: 'pool', size: 32, warm: 4, settle: SETTLE, frames: 24, spf: 1, writes: 'undo' },
   // three steps a frame (maps outlive a frame), then derived frames with no steps (the age pass's steps gate)
   pause: { scene: 'pile', size: 32, warm: 8, settle: 0, frames: 24, spf: 3, writes: 'pause' },
+  // a still world (no steps) painted every frame with stone and water: only the
+  // bricks the brush changes are marked, so the lists' dilation alone covers
+  // the fields around them (in a running world the quiet map's own dilation
+  // hides a short one)
+  still: { scene: 'mix', size: 32, warm: 4, settle: SETTLE, frames: 18, spf: 0, writes: 'still' },
   // a smoothing change (every brick changes), the brush too
   smoothing: { scene: 'mix', size: 32, warm: 4, settle: SETTLE, frames: 24, spf: 1, writes: 'smoothing' },
   // window moves along x and z, two in one derived frame among them, each
@@ -199,6 +204,9 @@ async function scripted(sim, derived, spec, incremental) {
     if (!(spec.writes === 'pause' && f >= spec.frames / 2)) for (let s = 0; s < spec.spf; s++) sim.step();
     if (spec.writes === 'paint' || (spec.writes === 'smoothing' && f % 3 === 0)) {
       sim.paint({ center: V(g.nx * 0.3 + f * PAINT_DRIFT, g.ny * 0.6, g.nz * 0.4), radius: 3, shape: f & 1, tool: E.WATER, rate: 1, replace: false });
+    }
+    if (spec.writes === 'still') {
+      sim.paint({ center: V(g.nx * 0.25 + f * PAINT_DRIFT, g.ny * 0.75, g.nz * 0.6), radius: 1.5, shape: f & 1, tool: f & 2 ? E.WATER : E.STONE, rate: 1, replace: true });
     }
     if (spec.writes === 'heat') sim.paint({ center: V(g.nx / 2, g.ny * 0.2 + f * PAINT_DRIFT, g.nz / 2), radius: 4, shape: 0, tool: -2, rate: 1, replace: false });
     if (spec.writes === 'undo' && f === 2) sim.snapshot();
@@ -324,6 +332,29 @@ test('shiftModel', async ({ shift = [16, -8] } = {}) => {
     check(out, 'final fields: moved texel by texel', !badTex, `${badTex} halves`);
     // and none of it was trivially equal: the shift moved something
     check(out, 'the shift changed what it moved', differ(be, ae) > 0 && differ(bw, aw) > 0 && differ(bh, ah) > 0);
+    // The slab filled, a derived frame: its bricks are FRESH (the age pass took
+    // their SHIFTED), and their cells start over at their targets: sand in it
+    // has full granular occupancy at once, not a blend from no history.
+    fillSlab(sim, dx, dz);
+    derived.updateBricks();
+    const [A] = await sim.readState();
+    const ema = words((await derived.read()).ema), ages = (await derived.readLists()).ages;
+    let fresh = 0, notFresh = 0;
+    for (let id = 0; id < n; id++) {
+      const q = brickCoordOf(g, id).map((v, k) => v + sb[k]);
+      if (inBricks(q)) continue;
+      if ((ages[id] & AGE.FRESH) && !(ages[id] & AGE.SHIFTED)) fresh++; else notFresh++;
+    }
+    let sand = 0, blended = 0;
+    for (let s = 0; s < S; s++) {
+      const [x, y, z] = slotCell(g, s);
+      const inSlab = (dx > 0 ? x >= g.nx - dx : x < -dx) || (dz > 0 ? z >= g.nz - dz : z < -dz);
+      if (!inSlab || Math.round(A[cellTexel(g, x, y, z) * 4]) !== E.SAND) continue;
+      sand++;
+      if (((ema[s] >>> 16) & 255) !== 255) blended++;   // byte 2: the granular channel
+    }
+    check(out, `the slab's ${fresh} bricks are FRESH after the next age pass`, fresh > 0 && !notFresh, `${notFresh} not`);
+    check(out, `the slab's ${sand} sand cells start at full occupancy (no blend from a history they lack)`, sand > 0 && !blended, `${blended} blended`);
   } finally { dispose(); }
   return out;
 });

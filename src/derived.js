@@ -182,7 +182,8 @@ export class Derived {
       brickBits: () => kernel('brickBits', brickBitsFrag(g), E, L.PAIR),
     };
     if (g.windowed) this.prepare('shift');
-    this.ready = Promise.all(Object.values(this.kernels).map((k) => k.ready)).then(() => this);
+    // (a world's grid moves: its shift's kernels are part of what it waits for)
+    this.ready = Promise.all([...Object.values(this.kernels), ...Object.values(this.passes)].map((k) => k.ready)).then(() => this);
 
     // a new derived history: every brick starts over
     sim.changedAll = true;
@@ -346,6 +347,7 @@ export class Derived {
     const p = this.passes;
     if (![p.fieldShift, p.brickShift, p.giShift].every((x) => x?.state === 'ready')) {
       // (a grid made without `windowed` that hasn't prepared its shift: start over)
+      console.warn('derived: the shift\'s kernels aren\'t ready (derived.prepare(\'shift\')): the derived history starts over');
       sim.changedAll = sim.fieldReset = sim.giReset = true;
       return;
     }

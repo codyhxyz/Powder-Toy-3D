@@ -7,7 +7,9 @@
 //           the brick map, brickDist, the glow volume, the GI history and bands), at
 //           checkpoints of scripted runs: the lab running, a moving water brush
 //   writes  the heat tool, undo, three steps a frame then derived frames without
-//           steps (the age pass's steps gate), a smoothing change
+//           steps (the age pass's steps gate), a still world painted every frame
+//           (only the lists' dilation covers the brush's surroundings), a
+//           smoothing change
 //   shift   the same over window moves along x and z (two in one derived frame), each
 //           slab filled by an edit, in a running world and in a still one whose
 //           derived passes have settled: the derived history shifts by whole bricks
@@ -21,7 +23,8 @@
 // a pass read a value its list didn't cover. Each stage also shows that the
 // incremental lists skipped bricks, so a comparison isn't vacuous.
 //
-// usage: node tools/derived-check.mjs [--stage steps,writes,shift,units] [--port N]
+// usage: node tools/derived-check.mjs [--stage steps,writes,shift,units] [--case name,…] [--port N]
+//   --case runs only those cases (the harness's CASES), in one browser
 import { launchBrowser, gpuInfo } from './browser.mjs';
 import { startVite } from './vite-server.mjs';
 import { openHarness } from './harness/open.mjs';
@@ -31,11 +34,12 @@ const opt = (k) => (argv.includes(`--${k}`) ? argv[argv.indexOf(`--${k}`) + 1] :
 // stage → [cases (harness CASES), unit tests]
 const STAGES = {
   steps: [['lab', 'paint'], []],
-  writes: [['heat', 'undo', 'pause', 'smoothing'], []],
+  writes: [['heat', 'undo', 'pause', 'still', 'smoothing'], []],
   shift: [['shift', 'shiftStill'], ['shiftModel']],
   units: [[], ['fused', 'bits']],
 };
-const stages = opt('stage')?.split(',') ?? Object.keys(STAGES);
+if (opt('case')) STAGES.cases = [opt('case').split(','), []];
+const stages = opt('case') ? ['cases'] : opt('stage')?.split(',') ?? Object.keys(STAGES).filter((k) => k !== 'cases');
 
 const vite = await startVite({ harness: true });
 let failures = 0, printedGpu = false;
