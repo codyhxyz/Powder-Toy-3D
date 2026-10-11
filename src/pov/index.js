@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { BODY_HEIGHT, BODY_WIDTH, HAND_REACH } from './constants.js';
 import { createPovCamera, ENTRY_PITCH, FIGURE_HIDE_DIST, RESPAWN_SWOOP_S, SWOOP_S } from './camera.js';
+import { createCameraArm } from './cameraArm.js';
+import { ELEMENTS } from '../elements.js';
 import { createBody } from './figureReal.js';
 import { STICK_HAND } from './figure.js';
 import { attachModel } from './models.js';
@@ -51,6 +53,15 @@ const PREWARM_DELAY_MS = 2000;          // ms after start-up before the figure's
 const RESPAWN_DELAY = 3.5;              // s from death to respawning at the drop point on its own
 const RESPAWN_MIN = 1;                  // s after death before a click or Space respawns early (Minecraft-style: no forced wait)
 const POV_NEAR = 0.08;                  // cells: near plane in POV (a held item sits close to the eye)
+// cells: in the eyes, the march (render.js uMarchNear) draws nothing closer, so grains
+// falling past the face aren't drawn as sheets across the view. Source's VIEW_NEARZ, 7
+// units against its hull's 16-unit half-width, on this body's half-width.
+const EYE_CLIP = (7 / 16) * (BODY_WIDTH / 2);
+// Buried (the head in powder or solid: player.js buriedId), the first-person view is
+// Minecraft's in-wall overlay: the matter's colour at its 0.1 brightness (ScreenEffectRenderer)
+const BURIED_SHADE = 0.1;
+const shadeHex = (hex, k) => `#${[1, 3, 5].map((i) => Math.round(parseInt(hex.slice(i, i + 2), 16) * k).toString(16).padStart(2, '0')).join('')}`;
+const BURIED_COLOR = ELEMENTS.map((e) => shadeHex(e.color, BURIED_SHADE));
 // Wheel → notches: the first event of a gesture is one notch at once (mice
 // report anything from a few px to 120 per click), then every WHEEL_NOTCH_PX
 // more in the same direction (fast spins, trackpad swipes) is another.
@@ -92,6 +103,14 @@ export function createPov(app) {
   const povCam = createPovCamera({
     fov: () => app.settings.povFov, sensitivity: () => app.settings.sensitivity, bobbing: () => app.settings.viewBobbing,
   });
+  // the third-person and death cameras' spring arms, traced in the grid (cameraArm.js)
+  const cameraArm = createCameraArm({ renderer, cellAt: (x, y, z) => player.cellAt(x, y, z), top: () => app.getSim().g.ny });
+  const armFrom = new THREE.Vector3(), armTo = new THREE.Vector3();
+  const arm = {
+    want: (k, from, to) => cameraArm.want(k, armFrom.copy(from).applyMatrix4(worldToGrid), armTo.copy(to).applyMatrix4(worldToGrid), player.size),
+    share: (k) => cameraArm.share(k),
+  };
+  let marchNear = 0;          // cells (render.js uMarchNear), this frame's
   const zoom = createZoom();   // C (zoom.js)
   const povHud = createPovHud();
   const interact = createInteract();   // look + E (interact.js): perks, and Descent's pickups and shop
@@ -693,8 +712,11 @@ export function createPov(app) {
     const pose = povCam.update({
       dt, eye: vEye, feet: vFeet, scale, speedH,
       onGround: player.onGround, inLiquid: player.inLiquid, sprinting: input.sprint && !player.crouch,
-      dead: deadSeen, deadTime, box, shake,
+      dead: deadSeen, deadTime, box, shake, arm,
     });
+    cameraArm.trace(sim);
+    const inEyes = pose.eyeDist <= FIGURE_HIDE_DIST && !driving;   // (driving, the chase camera has the view)
+    marchNear = inEyes ? EYE_CLIP * player.size : 0;
     if (pose.footfall && mode === 'on' && !deadSeen) povEvents.emit('player:step', { speed: speedH, inLiquid: player.inLiquid });
     camera.position.copy(pose.pos);
     camera.quaternion.copy(pose.quat);
@@ -798,6 +820,7 @@ export function createPov(app) {
       dead: deadSeen, cause: player.cause, respawnIn: (match?.delay ?? RESPAWN_DELAY) - deadTime,
       locked: canUse(), swooping: mode !== 'on',
       aimValid: aim.valid, aimInReach: aim.valid && aim.dist <= HAND_REACH, third: povCam.third,
+      buried: mode === 'on' && !deadSeen && inEyes && player.buriedId >= 0 ? BURIED_COLOR[player.buriedId] : null,
     });
   }
 
@@ -903,6 +926,7 @@ export function createPov(app) {
     openWandEditor() { if (active()) toolbelt?.openEditor(); },
     // what the held tool shows next to the crosshair ({ name, color, T?, P?, note? } for ui/hud.js showReadout), or null
     get readout() { return live() && mode === 'on' && toolbelt ? toolbelt.readout : null; },
+    get marchNear() { return active() ? marchNear : 0; },   // cells: the view's near clip (render.js uMarchNear)
     get figure() { return figure; },
     get npc() { return npcs.values().next().value ?? null; },   // the first NPC, once loaded (checks)
     get npcs() { return [...npcs.values()]; },

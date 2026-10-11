@@ -26,6 +26,9 @@ export const STRIKE = {
 // face's normal is minus that step. The floor is hit stepping down y.
 export const TRACE_FACE_FLOOR = 2;
 export const TRACE_MISS = -1;   // face of a segment that hit nothing
+// uFrom[i].w of an active segment: what stops it
+export const TRACE_ROUND = 1;   // a round: liquids, powders and solids
+export const TRACE_SIGHT = 2;   // a camera's line of sight (pov/cameraArm.js): powders and solids, liquids let it through
 
 const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
 
@@ -37,7 +40,7 @@ const traceLib = (g) => `${prelude(g)}\n${materialsGLSL()}\n${coreGLSL(g)}`;
 // row marches the round's segment uFrom[i].xyz → uTo[i] the same way (the DDA
 // and brick skipping of render.js's pickFrag) and writes its share of the
 // answer: the first cell holding a liquid, powder or solid (air and gases let a
-// round through).
+// round through; a TRACE_SIGHT segment passes liquids too).
 //   row 0: (struck cell xyz, face), face TRACE_MISS if the segment is clear
 //   row 1: (last air or gas cell before it xyz, element id); xyz −1 if unknown
 //   row 2: (entry point xyz, share of the segment flown to it, 0..1)
@@ -49,6 +52,7 @@ ${traceLib(g)}
 #define TRACE_ROUNDS ${TRACE.ROUNDS}
 #define TRACE_FACE_FLOOR ${TRACE_FACE_FLOOR}
 #define TRACE_MISS ${f(TRACE_MISS)}
+#define TRACE_SIGHT ${f(TRACE_SIGHT)}
 #define TRACE_NUDGE 1e-3   // cells: how far back from a start point inside a cell the cell before it is looked for
 uniform vec4 uFrom[TRACE_ROUNDS];   // xyz grid, w 1 = active
 uniform vec3 uTo[TRACE_ROUNDS];
@@ -60,6 +64,7 @@ void main() {
   oC = miss;
   vec4 from = uFrom[i];
   if (from.w < 0.5) return;
+  bool sight = from.w > TRACE_SIGHT - 0.5;
   vec3 ro = from.xyz;
   vec3 dv = uTo[i] - ro;
   float len = length(dv);
@@ -95,7 +100,7 @@ void main() {
     if (flags == 0) { ax = skipEmpty(bc, ro, rd, istp, cell, tMax, tEnter); continue; }
     vec4 a = fetchA(cell);
     int id = eid(a);
-    if (id != E_EMPTY && KIND[id] != K_GAS) {
+    if (id != E_EMPTY && KIND[id] != K_GAS && !(sight && KIND[id] == K_LIQUID)) {
       // entered from outside the box, or from an unknown side: no cell before it
       bool known = ax >= 0 && !(k == 0 && bh.x > 0.0);
       int axis = ax >= 0 ? ax : argmin3(-abs(rd));

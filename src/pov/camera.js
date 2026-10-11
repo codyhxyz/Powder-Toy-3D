@@ -6,6 +6,11 @@ import { BODY_HEIGHT } from './constants.js';
 // god view and the eyes. Feel offsets (camera kick, trauma shake: feel.js)
 // ride on top of the look. Everything here is in grid cells (one cell ≈ 30 cm)
 // and seconds unless noted; poses come out in world space.
+//
+// The third-person and death cameras hang on a spring arm (cameraArm.js finds
+// how much of each arm is clear of matter): an arm that runs into a wall comes
+// in to it at once, and lets back out at TP_RATE once the wall is gone, as
+// F5 swings it.
 
 const DEG = THREE.MathUtils.degToRad;
 
@@ -48,6 +53,9 @@ const TP_SHOULDER = 2.4;                // cells to the right
 const TP_UP = 1.4;                      // cells above the eye
 const TP_RATE = 7;                      // 1/s: how fast F5 swings the camera in or out
 const BOX_MARGIN = 0.5;                 // cells: the camera stays this far inside the box
+export const ARM_TP = 0;                // the spring arms (cameraArm.js): third person's, from the eye...
+export const ARM_DEATH = 1;             // ...and the death camera's, from the fallen body
+const ARM_REST = 1e-3;                  // a swing in from third person closer than this to the eye is over
 
 // Death camera: up and back from the body, slowly circling it.
 const DEATH_CAM_DIST = 13;              // cells, horizontally from the body
@@ -104,6 +112,7 @@ export function createPovCamera({ fov: fovSetting = () => POV_FOV, sensitivity =
   let zoom = 1;                             // a scope's: the FOV is divided by it (the toolbelt's zoom)
   let keyZoom = 1;                          // the zoom key's (zoom.js): divides the FOV too, already eased
   let death = 0, deathAngle = 0;            // death camera blend 0..1, its orbit angle
+  let tpArm = 0, deathArm = 0;              // shares of the third-person and death arms let out (0 at the body)
   let swoop = null;
   const pose = { pos: new THREE.Vector3(), quat: new THREE.Quaternion(), fov: fovSetting(), eyeDist: 0 };
   const live = { pos: new THREE.Vector3(), quat: new THREE.Quaternion() };
@@ -118,8 +127,8 @@ export function createPovCamera({ fov: fovSetting = () => POV_FOV, sensitivity =
 
   const lookAtQuat = (from, to, out) => out.setFromRotationMatrix(m4.lookAt(from, to, UP));
 
-  // keep a world point inside the box: shorten the segment a → b until it is
-  function clampSegment(a, b, box) {
+  // the share of the segment a → b that stays inside the box
+  function inBox(a, b, box) {
     let t = 1;
     for (const ax of ['x', 'y', 'z']) {
       const d = b[ax] - a[ax];
@@ -127,8 +136,10 @@ export function createPovCamera({ fov: fovSetting = () => POV_FOV, sensitivity =
       if (d > 0 && b[ax] > hi) t = Math.min(t, Math.max(0, (hi - a[ax]) / d));
       if (d < 0 && b[ax] < lo) t = Math.min(t, Math.max(0, (lo - a[ax]) / d));
     }
-    return b.lerpVectors(a, b, t);
+    return t;
   }
+  // a spring arm's share: in to what's clear at once, back out at TP_RATE
+  const armTo = (cur, clear, dt) => (clear < cur ? clear : cur + (clear - cur) * approach(TP_RATE, dt));
 
   return {
     look,
@@ -164,6 +175,7 @@ export function createPovCamera({ fov: fovSetting = () => POV_FOV, sensitivity =
       fov = fovSetting();
       death = 0;
       tp = third ? 1 : 0;
+      tpArm = deathArm = 0;   // a new spot: the arms let out from the body as the traces find room
     },
     land(speed) {
       if (speed < LAND_DIP_MIN_SPEED) return;
@@ -181,7 +193,10 @@ export function createPovCamera({ fov: fovSetting = () => POV_FOV, sensitivity =
     // Call once per frame. s = {
     //   dt, eye (world, the unbobbed eye), feet (world), scale (world units per cell),
     //   speedH (cells/s), onGround, inLiquid, sprinting, dead, deadTime (s), box {min, max, margin} (world),
-    //   shake {pitch, yaw, roll} (rad, optional: feel.js offsets added to the look)
+    //   shake {pitch, yaw, roll} (rad, optional: feel.js offsets added to the look),
+    //   arm (optional: the spring arms, cameraArm.js, in world space) {
+    //     want(k, from, to): arm k (ARM_TP, ARM_DEATH) is in use this frame, from → to;
+    //     share(k): the share of it found clear, 0..1 }
     // }. Returns the pose; pose.done is set on the frame a swoop finishes, and
     // pose.footfall on a frame a foot comes down.
     update(s) {
@@ -209,16 +224,20 @@ export function createPovCamera({ fov: fovSetting = () => POV_FOV, sensitivity =
 
       // first / third person
       tp += ((third ? 1 : 0) - tp) * approach(TP_RATE, dt);
+      if (!third && tp < ARM_REST) tp = 0;
       const tpK = smooth01(tp);
 
-      // live pose: the eye, swung over the shoulder by tpK
+      // live pose: the eye, swung over the shoulder by tpK, as far as the box and the arm let it
       const eye = v1.copy(s.eye).addScaledVector(UP, (bobY + dip) * scale).addScaledVector(rightH(v3), bobX * scale);
       const lookDir = dir(v2);
       live.pos.copy(eye)
-        .addScaledVector(lookDir, -TP_DIST * scale * tpK)
-        .addScaledVector(rightH(v3), TP_SHOULDER * scale * tpK)
-        .addScaledVector(UP, TP_UP * scale * tpK);
-      clampSegment(eye, live.pos, s.box);
+        .addScaledVector(lookDir, -TP_DIST * scale)
+        .addScaledVector(rightH(v3), TP_SHOULDER * scale)
+        .addScaledVector(UP, TP_UP * scale);
+      live.pos.lerpVectors(eye, live.pos, inBox(eye, live.pos, s.box));
+      if (tp > 0) s.arm?.want(ARM_TP, eye, live.pos);
+      tpArm = armTo(tpArm, s.arm ? s.arm.share(ARM_TP) : 1, dt);
+      live.pos.lerpVectors(eye, live.pos, Math.min(tpK, tpArm));
       const sh = s.shake;
       live.quat.setFromEuler(sh
         ? euler.set(look.pitch + sh.pitch, look.yaw + sh.yaw, sh.roll)
@@ -232,9 +251,14 @@ export function createPovCamera({ fov: fovSetting = () => POV_FOV, sensitivity =
         const at = v3.copy(s.feet).addScaledVector(UP, DEATH_LOOK_Y * scale);
         const dp = v2.set(Math.sin(deathAngle), 0, Math.cos(deathAngle)).multiplyScalar(DEATH_CAM_DIST * scale)
           .add(s.feet).addScaledVector(UP, DEATH_CAM_UP * scale);
-        clampSegment(at, dp, s.box);
+        dp.lerpVectors(at, dp, inBox(at, dp, s.box));
+        s.arm?.want(ARM_DEATH, at, dp);
+        deathArm = armTo(deathArm, s.arm ? s.arm.share(ARM_DEATH) : 1, dt);
+        const reach = at.distanceTo(dp) * deathArm / scale;   // cells the arm is let out
+        dp.lerpVectors(at, dp, deathArm);
         lookAtQuat(dp, at, qa);
-        const k = smooth01(death);
+        // with no room to let it out (a tunnel), the view stays in the eyes: closer, it would watch the body from inside it
+        const k = smooth01(death) * smooth01(reach / FIGURE_HIDE_DIST);
         live.pos.lerp(dp, k);
         live.quat.slerp(qa, k);
       }

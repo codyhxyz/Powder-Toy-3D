@@ -306,6 +306,10 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     get height() { return H; },   // cells, feet to crown
     get width() { return 2 * HW; },   // cells, the square footprint's side
     get eyeHeight() { return EYE; },  // cells above the feet
+    get buriedId() { return env.buriedId; },   // the powder or solid the head is buried in, or -1
+    // the id of grid cell (x, y, z) (integers) as the last probe saw it: PROBE_OUTSIDE for the box's walls
+    // and floor, below −1 (unknown) past the probe (the camera's arm walks it: cameraArm.js)
+    cellAt: (x, y, z) => (probe.valid && g ? idAt(x, y, z) : UNKNOWN),
     get crouch() { return crouch; },  // 0 standing … 1 crouched
     speedScale: 1,                // × walking and running speed: a class's (classes.js; the Bulwark is slow)
     aimScale: 1,                  // × walking and running speed: a gun's ironsights (tools/firearm.js ADS_SPEED)

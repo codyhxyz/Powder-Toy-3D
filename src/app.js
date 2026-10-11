@@ -361,7 +361,7 @@ function build() {
     fragmentShader: volumeFrag(sim.g, farHazeGLSL),
     uniforms: {
       tA: { value: null }, tB: { value: null }, tBrick: { value: null }, tLight: { value: null },
-      uCam: { value: new THREE.Vector3() },
+      uCam: { value: new THREE.Vector3() }, uMarchNear: { value: 0 },
       uSun: { value: SUN }, tShadow: { value: null }, uShadowRes: { value: 0 },
       uView: { value: 0 }, uShadows: { value: true }, uTime: { value: 0 }, uLightGain: { value: GLOW_GAIN },
       uOrigin: sim.originUniform,   // the window's place in the world (the sim passes get it from sim.run)
@@ -1657,6 +1657,7 @@ function tick(now, renderOnly = false) {
     u.tBrick.value = sim.brick.texture;
     u.tLight.value = sim.lightTexture;
     u.uCam.value.copy(camera.position).applyMatrix4(invVol.copy(volume.matrixWorld).invert());
+    u.uMarchNear.value = pov?.marchNear ?? 0;
     detailGate.update(camera, u.uCam.value, [sim.g.nx, sim.g.ny, sim.g.nz], scene);
     win?.far.view(volume, settings.view === 0, camera);
     u.uView.value = settings.view;
