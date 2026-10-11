@@ -204,6 +204,7 @@ fn jetAtS(s: u32) -> vec2f {
   // a stream's wake, or a lone parcel's last steps
   return select(vec2f(0.0), vec2f(f.z, 1.0), f.w > select(TRAIL_LONE_MIN, 0.0, f.x > 0.5));
 }`;
+
 // ---- 1. the EMA ----
 // emaS, emaM: each channel's blend weight (CHANNELS[i].ema, MEDIA[i].ema);
 // reset: every cell starts over at its target (a load, a new smoothing:
