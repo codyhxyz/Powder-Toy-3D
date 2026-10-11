@@ -6,9 +6,13 @@ import {
 } from 'yuka';
 import { ELEMENTS, E, K } from '../../elements.js';
 import { HAND_REACH, BODY_HEIGHT, EYE_HEIGHT } from '../constants.js';
-import { AXE, PICK, FLAMER, PHYS } from '../../shaders/povTools.js';
+import { AXE, PICK, FLAMER, PHYS, ROCKET } from '../../shaders/povTools.js';
 import { ROUND_GRAVITY, gravityScale } from '../ballistics.js';
 import { THROW_SPEED } from '../tools/bomb.tool.js';
+import { CHARGE_S as LASER_CHARGE_S, REFIRE_S as LASER_REFIRE_S } from '../tools/laser.tool.js';
+import { FRAG_SPEED, FRAG_GRAVITY } from '../frag.js';
+import { MELEE_LUNGE } from '../kick.js';
+import { haloMatch } from '../halo.js';
 
 // An NPC's mind, from Mat Buckland's "Programming Game AI by Example" as Yuka
 // implements it (github.com/Mugen87/yuka):
@@ -55,6 +59,16 @@ const TORCH_IGNITE_S = 0.4;          // s the torch is aimed before the flame li
 const TORCH_BURST_S = 1;             // s the flame burns at most...
 const TORCH_REST_S = 1.6;            // ...then it rests
 const GUN_INTERVAL = 1.1;            // s between its shots
+const GUN_CHASE = 60;                // cells: farther than this it closes in while it shoots
+// Halo's guns (src/game/arsenal.js, a Halo match's carry): Halo's AI fires the assault rifle in
+// bursts, and the power weapons from the map's pads, each on its own beat
+const SMG_INTERVAL = 1.2;            // s from one burst to the next...
+const SMG_BURST_S = 0.45;            // ...each holding the trigger this long (about six of the SMG's 13 rounds a second)
+const SNIPER_INTERVAL = 2.2;         // s between its shots (the bolt's 1.2 s and a breath to aim)
+const ROCKET_INTERVAL = 2;           // s between its rockets (the launcher's 0.8 s refire, slowed: no spam)
+const ROCKET_MIN = ROCKET.PULSE_RADIUS + 4;   // cells: nearer than this its own blast would reach it
+const ROCKET_AIM_UP = 0.5;           // cells over the target's feet it aims (the blast takes them on a near miss)
+const LASER_SLACK_S = 0.2;           // s it keeps the trigger held past the laser's charge (it fires itself when full)
 const AXE_WINDUP = 0.6;              // s it faces the target, axe up, before a blow (the tell)
 const AXE_COOLDOWN = 0.5;            // s after a blow
 const PICK_COOLDOWN = 0.7;           // s after a pickaxe blow (its refire is 0.6)
@@ -63,6 +77,13 @@ const TORCH_RANGE = 1.5 + FLAMER.LENGTH;      // cells: nozzle reach + flame
 const BOMB_MIN = 10;                 // cells: closer than this a bomb would hurt itself
 const BOMB_COOLDOWN = 7;             // s between bombs
 const BOMB_ERROR = 0.12;             // its throw's spread: σ of the landing point, as a share of the distance
+// Halo's frag (frag.js), thrown from the eye whatever is in hand, in a Halo match (body.grenades):
+// at mid range, as Halo's AI does, never so close that its own blast would catch it
+const FRAG_MIN = 12;                 // cells: beyond the blast's pressure (shaders/povTools.js ROCKET.PULSE_RADIUS 9) and its roll
+const FRAG_MAX = 45;                 // cells: the far edge of the fuzzy "medium" (distanceModule)
+const FRAG_COOLDOWN = 6;             // s between its frags (by eye: not both at once)
+const FRAG_ERROR = BOMB_ERROR;       // the same throwing arm
+const LOB_LOOK = 10;                 // cells out along a lob it looks at (only the direction counts)
 const PHYS_GRAB_S = 0.9;             // s it holds the beam on loose matter before flinging
 const PHYS_FIND = 12;                // cells: loose matter this near its eye can be grabbed
 const PHYS_COOLDOWN = 2.5;
@@ -142,7 +163,20 @@ const WEAPONS = {
   BLOWTORCH: { rate: distanceModule([['close', 'very'], ['medium', 'no'], ['far', 'no']]), needsSight: true },
   PHYSGUN: { rate: distanceModule([['close', 'yes'], ['medium', 'yes'], ['far', 'no']]), needsSight: true },
   BUCKET: { rate: distanceModule([['close', 'very'], ['medium', 'yes'], ['far', 'no']]) },
+  // Halo's guns (a Halo match's carry: src/game/arsenal.js): the SMG plays the assault rifle (close to mid),
+  // the power weapons outclass it where they're meant to be used. carried: only when a game's limits
+  // (agent.weapons) name it; the sandbox's NPCs fight as they always have
+  SMG: { rate: distanceModule([['close', 'very'], ['medium', 'yes'], ['far', 'no']]), needsSight: true, carried: true },
+  SNIPER: { rate: distanceModule([['close', 'no'], ['medium', 'yes'], ['far', 'very']]), needsSight: true, carried: true },
+  ROCKET: { rate: distanceModule([['close', 'no'], ['medium', 'very'], ['far', 'yes']]), needsSight: true, carried: true },
+  LASER: { rate: distanceModule([['close', 'yes'], ['medium', 'very'], ['far', 'very']]), needsSight: true, carried: true },
+  // Halo's frag grenade (frag.js): mid range only; the gun it carries stays in hand (holds)
+  FRAG: { rate: distanceModule([['close', 'no'], ['medium', 'very'], ['far', 'no']]), needsSight: true, holds: (a) => [...(a.npc.body.carry ?? [])][0] ?? 'GUN' },
 };
+// Can a bot fight with tool `key`? (A game's loadout, game/siege.js's classes, falls back when none of its tools can.)
+export const canFight = (key) => Object.hasOwn(WEAPONS, key);
+// a game's limits (agent.weapons) hold for what it digs and builds with too: in a Halo match it only fights
+const may = (a, tool) => !a.weapons || a.weapons.has(tool);
 
 // ---------------------------------------------------------------- the agent
 
@@ -265,7 +299,7 @@ export class Agent extends Vehicle {
   clearIntent() {
     const i = this.intent;
     i.share = 0; i.sprint = false; i.jump = false; i.look = null; i.tool = null;
-    i.primary = false; i.secondary = false; i.primaryPressed = false; i.secondaryPressed = false; i.chop = null;
+    i.primary = false; i.secondary = false; i.primaryPressed = false; i.secondaryPressed = false; i.chop = null; i.frag = false;
     this.pursuit.active = this.seek.active = this.wander.active = false;
   }
   steerTo(p, share = 1) { this.seek.target.set(p.x, 0, p.z); this.seek.active = true; this.intent.share = share; this.intent.sprint = share > 0.7; }
@@ -304,14 +338,16 @@ class BreachEvaluator extends GoalEvaluator {
   calculateDesirability(a) {
     if (!a.knows || a.sees) return 0;
     if (!a.blockedAt || a.now - a.blockedAt > 2) return 0;   // set by GoTo when the path fails
-    return a.ready('BREACH') && breachPlan(a) ? 0.7 : 0;
+    if (!a.ready('BREACH')) return 0;
+    const p = breachPlan(a);
+    return p && may(a, p.tool) ? 0.7 : 0;
   }
   setGoal(a) { if (!(a.brain.currentSubgoal() instanceof BreachGoal)) { a.brain.clearSubgoals(); a.brain.addSubgoal(new BreachGoal(a)); } }
 }
 // The target is up where it can't walk or jump: build up to it.
 class ClimbEvaluator extends GoalEvaluator {
   calculateDesirability(a) {
-    if (!a.knows || !a.ready('CLIMB')) return 0;
+    if (!a.knows || !a.ready('CLIMB') || !may(a, 'TROWEL')) return 0;
     const up = a.lastSeen.y - a.feet.y;
     if (up <= JUMP_UP) return 0;
     if (a.dist > 2 * BLOCK + 2 && a.npc.nav.path(a.feet, a.lastSeen)) return 0;   // there's a way round: walk it
@@ -320,11 +356,11 @@ class ClimbEvaluator extends GoalEvaluator {
   setGoal(a) { if (!(a.brain.currentSubgoal() instanceof ClimbGoal)) { a.brain.clearSubgoals(); a.brain.addSubgoal(new ClimbGoal(a)); } }
 }
 // Hurt and under fire: wall itself off, the sooner if the target holds something that reaches it.
-const RANGED = new Set(['GUN', 'SMG', 'SNIPER', 'BOMB', 'ROCKET']);
+const RANGED = new Set(['GUN', 'SMG', 'SNIPER', 'BOMB', 'ROCKET', 'LASER']);
 class CoverEvaluator extends GoalEvaluator {
   calculateDesirability(a) {
     const b = a.npc.body;
-    if (!a.sees || b.health > COVER_HEALTH || !a.ready('COVER') || a.npc.packCells() < 2 * BLOCK_CELLS) return 0;
+    if (!a.sees || b.health > COVER_HEALTH || !a.ready('COVER') || !may(a, 'TROWEL') || a.npc.packCells() < 2 * BLOCK_CELLS) return 0;
     return RANGED.has(a.target.holding) ? 0.8 : 0.5;
   }
   setGoal(a) { if (!(a.brain.currentSubgoal() instanceof CoverGoal)) { a.brain.clearSubgoals(); a.brain.addSubgoal(new CoverGoal(a)); } }
@@ -336,7 +372,7 @@ class ExtinguishEvaluator extends GoalEvaluator {
 }
 // Nothing to fight and an empty pack: dig some material for building.
 class GatherEvaluator extends GoalEvaluator {
-  calculateDesirability(a) { return !a.knows && a.npc.packCells() < GATHER_TO && a.ready('GATHER') ? 0.2 : 0; }
+  calculateDesirability(a) { return !a.knows && may(a, 'SHOVEL') && a.npc.packCells() < GATHER_TO && a.ready('GATHER') ? 0.2 : 0; }
   setGoal(a) { if (!(a.brain.currentSubgoal() instanceof GatherGoal)) { a.brain.clearSubgoals(); a.brain.addSubgoal(new GatherGoal(a, GATHER_TO)); } }
 }
 class WanderEvaluator extends GoalEvaluator {
@@ -421,7 +457,7 @@ class AttackGoal extends CompositeGoal {
     // not yet: still reacting to the sight of it, staggered, or catching its breath; face it and hold
     if ((a.sees && a.inSight < REACTION_S) || !a.ready('ATTACK')) {
       a.lookAt(a.chest());
-      a.hold(w);
+      a.hold(WEAPONS[w].holds?.(a) ?? w);
       return;
     }
     USE[w](a);
@@ -549,7 +585,7 @@ function chooseWeapon(a) {
   if (a.weapon && a.now - a.weaponAt < WEAPON_SWITCH_S && usable(a, a.weapon) && (!a.weapons || a.weapons.has(a.weapon))) return a.weapon;
   let best = null, bw = 0;
   for (const [key, w] of Object.entries(WEAPONS)) {
-    if (a.weapons && !a.weapons.has(key)) continue;   // a game's limits (an infected: melee only)
+    if (a.weapons ? !a.weapons.has(key) : w.carried) continue;   // a game's limits (an infected: melee only; Halo's two guns)
     if (!usable(a, key)) continue;
     const d = w.rate(a.dist3) + (Math.random() * 2 - 1) * WEAPON_NOISE;
     if (d > bw) { bw = d; best = key; }
@@ -572,7 +608,9 @@ function usable(a, key) {
     case 'AXE': return d < AXE_RANGE + 6;   // close enough to step in
     case 'BLOWTORCH': return d < TORCH_RANGE + 4;
     case 'BOMB': return d > BOMB_MIN && d < 90;
-    case 'GUN': return true;
+    case 'GUN': case 'SMG': case 'SNIPER': case 'LASER': return true;
+    case 'ROCKET': return d > ROCKET_MIN;
+    case 'FRAG': return a.ready('FRAG') && a.npc.body.grenades > 0 && d > FRAG_MIN && d < FRAG_MAX;
     case 'PHYSGUN': return d < PHYS.HOLD_MAX && !!a.npc.world.nearest(a.eye(), PHYS_FIND, LOOSE);
     case 'BUCKET': {
       const b = a.npc.bucket();
@@ -610,22 +648,25 @@ const USE = {
     a.intent.chop = Math.min(s.t / AXE_WINDUP, 1) * 0.7;   // the arm rises: the tell (figure.js chop)
     if (s.t >= AXE_WINDUP) { a.intent.primaryPressed = true; a.intent.chop = 1; a.cooldown('AXE', AXE_COOLDOWN); s.t = 0; s.tool = null; }
   },
-  GUN(a) {
-    a.hold('GUN');
-    const t = a.target;
-    const ramp = Math.min(a.inSight / AIM_RAMP_S, 1);
-    const err = AIM_ERROR_START + (AIM_ERROR - AIM_ERROR_START) * ramp + AIM_ERROR_MOVING * Math.hypot(t.vel.x, t.vel.z);
-    const c = a.chest();
-    if (a.warnedAt !== a.record.timeBecameVisible) {
-      // the first shot since it spotted you: a near miss to one side
-      const e = a.eye(), dx = c.x - e.x, dz = c.z - e.z, d = Math.hypot(dx, dz) || 1, side = Math.random() < 0.5 ? -1 : 1;
-      a.lookAt({ x: c.x - (dz / d) * side * WARNING_MISS * 1.6, y: c.y, z: c.z + (dx / d) * side * WARNING_MISS * 1.6 });
-      if (a.ready('GUN')) { a.intent.primaryPressed = true; a.cooldown('GUN', GUN_INTERVAL); a.warnedAt = a.record.timeBecameVisible; }
-      return;
-    }
-    aimWith(a, c, err);
-    if (a.dist3 > 60) a.chase(0.6);
-    if (a.ready('GUN')) { a.intent.primaryPressed = true; a.cooldown('GUN', GUN_INTERVAL); }
+  GUN(a) { fireGun(a, 'GUN', GUN_INTERVAL); },
+  SMG(a) { fireGun(a, 'SMG', SMG_INTERVAL, { burst: SMG_BURST_S }); },
+  SNIPER(a) { fireGun(a, 'SNIPER', SNIPER_INTERVAL, { chaseFrom: Infinity }); },
+  // at the feet: the blast takes them on a near miss
+  ROCKET(a) {
+    a.hold('ROCKET');
+    const f = a.target.pos;
+    aimWith(a, { x: f.x, y: f.y + ROCKET_AIM_UP, z: f.z }, aimError(a));
+    if (a.ready('ROCKET')) { a.intent.primaryPressed = true; a.cooldown('ROCKET', ROCKET_INTERVAL); }
+  },
+  // held through the charge (its red sighting beam is the tell), then let go through the standby
+  LASER(a) {
+    const s = a.useState ??= {};
+    if (s.tool !== 'LASER') { s.tool = 'LASER'; s.t = 0; }
+    a.hold('LASER');
+    s.t += a.dt;
+    aimWith(a, a.chest(), aimError(a));
+    a.intent.primary = s.t < LASER_CHARGE_S + LASER_SLACK_S;
+    if (s.t >= LASER_CHARGE_S + LASER_SLACK_S + LASER_REFIRE_S) s.tool = null;
   },
   BOMB(a) {
     const s = a.useState ??= {};
@@ -638,6 +679,20 @@ const USE = {
     const t = a.target.pos, d = a.dist;
     const at = { x: t.x + gauss() * BOMB_ERROR * d, y: t.y, z: t.z + gauss() * BOMB_ERROR * d };
     if (throwBombAt(a, at, false)) a.cooldown('BOMB', BOMB_COOLDOWN);
+    s.tool = null;
+  },
+  // Halo's frag: a beat with the arm back (the tell), then lobbed to land at its feet; npc.js throws it (intent.frag)
+  FRAG(a) {
+    const s = a.useState ??= {};
+    if (s.tool !== 'FRAG') { s.tool = 'FRAG'; s.t = 0; }
+    s.t += a.dt;
+    a.hold(WEAPONS.FRAG.holds(a));
+    a.lookAt(a.chest());
+    a.intent.chop = Math.min(s.t / THROW_WINDUP, 1) * 0.7;   // the arm goes up: the tell
+    if (s.t < THROW_WINDUP) return;
+    const t = a.target.pos, d = a.dist;
+    const at = { x: t.x + gauss() * FRAG_ERROR * d, y: t.y, z: t.z + gauss() * FRAG_ERROR * d };
+    if (lobAt(a, at, FRAG_SPEED, FRAG_GRAVITY)) { a.intent.frag = true; a.cooldown('FRAG', FRAG_COOLDOWN); }
     s.tool = null;
   },
   BLOWTORCH(a) {
@@ -690,16 +745,44 @@ const USE = {
   },
 };
 
+// its aim's error now: wide when it has just seen the target, narrowing over AIM_RAMP_S, wider on a moving one
+function aimError(a) {
+  const t = a.target, ramp = Math.min(a.inSight / AIM_RAMP_S, 1);
+  return AIM_ERROR_START + (AIM_ERROR - AIM_ERROR_START) * ramp + AIM_ERROR_MOVING * Math.hypot(t.vel.x, t.vel.z);
+}
+// A gun: a near miss first (the warning), then aimed shots every `interval`, each holding the trigger
+// for `burst` s (an automatic's burst), closing in from farther than `chaseFrom`.
+function fireGun(a, key, interval, { burst = 0, chaseFrom = GUN_CHASE } = {}) {
+  a.hold(key);
+  const c = a.chest();
+  if (a.warnedAt !== a.record.timeBecameVisible) {
+    // the first shot since it spotted you: a near miss to one side
+    const e = a.eye(), dx = c.x - e.x, dz = c.z - e.z, d = Math.hypot(dx, dz) || 1, side = Math.random() < 0.5 ? -1 : 1;
+    a.lookAt({ x: c.x - (dz / d) * side * WARNING_MISS * 1.6, y: c.y, z: c.z + (dx / d) * side * WARNING_MISS * 1.6 });
+    if (a.ready(key)) { a.intent.primaryPressed = true; a.cooldown(key, interval); a.warnedAt = a.record.timeBecameVisible; }
+    return;
+  }
+  aimWith(a, c, aimError(a));
+  if (a.dist3 > chaseFrom) a.chase(0.6);
+  if (a.ready(key)) { a.intent.primaryPressed = true; a.cooldown(key, interval); a.burstUntil = a.now + burst; }
+  else if (a.now < (a.burstUntil ?? 0)) a.intent.primary = true;
+}
+
 // Raven's weapon system runs beside the goals (TakeAimAndShoot): a bot busy
 // with something else (a team game's objective: holding a hill, guarding a
 // stand) still shoots what it sees, with the gun and the same fairness rules
 // (the reaction delay, the warning miss, the accuracy ramp, the breather), and
 // keeps moving where its goal steers it. False when it has nothing to shoot.
+// With a game's limits (agent.weapons: a Halo match's two guns) it shoots the
+// one it would choose to fight with, if that's a gun.
+const SHOOTERS = new Set(['GUN', 'SMG', 'SNIPER', 'ROCKET', 'LASER']);
 export function takeAimAndShoot(a) {
-  if (!a.knows || !a.sees || (a.weapons && !a.weapons.has('GUN'))) return false;
-  if (a.inSight < REACTION_S || !a.ready('ATTACK')) { a.hold('GUN'); a.lookAt(a.chest()); return true; }
+  if (!a.knows || !a.sees) return false;
+  const w = a.weapons ? chooseWeapon(a) : 'GUN';
+  if (!SHOOTERS.has(w)) return false;
+  if (a.inSight < REACTION_S || !a.ready('ATTACK')) { a.hold(w); a.lookAt(a.chest()); return true; }
   const { share, sprint } = a.intent, steer = [a.pursuit.active, a.seek.active, a.wander.active];
-  USE.GUN(a);
+  USE[w](a);
   a.intent.share = share; a.intent.sprint = sprint;
   [a.pursuit.active, a.seek.active, a.wander.active] = steer;
   return true;
@@ -721,6 +804,26 @@ function throwBombAt(a, p, breach) {
   a.lookAt({ x: e.x + (dx / x) * c * 10, y: e.y + Math.sin(th) * 10, z: e.z + (dz / x) * c * 10 });
   a.intent.primaryPressed = true;
   return true;
+}
+
+// Look along the low arc that lands a throw at speed v (cells/s), falling at `share` of gravity, on p:
+// the bomb's formula (throwBombAt). False if p is out of its reach.
+function lobAt(a, p, v, share) {
+  const e = a.eye();
+  const dx = p.x - e.x, dz = p.z - e.z, x = Math.hypot(dx, dz), y = p.y - e.y;
+  const g = ROUND_GRAVITY * gravityScale(a.npc.getSim()) * share;
+  const disc = v ** 4 - g * (g * x * x + 2 * y * v * v);
+  if (disc < 0 || !(x > 0)) return false;
+  const th = Math.atan((v * v - Math.sqrt(disc)) / (g * x)), c = Math.cos(th);
+  a.lookAt({ x: e.x + (dx / x) * c * LOB_LOOK, y: e.y + Math.sin(th) * LOB_LOOK, z: e.z + (dz / x) * c * LOB_LOOK });
+  return true;
+}
+
+// Halo's melee (kick.js, in a Halo match): its enemy within the lunge, seen past the reaction
+// delay and with no breather due, gets the bash (npc.js turns it to the enemy and kicks)
+export function wantsMelee(a) {
+  return haloMatch() && a.knows && a.sees && a.inSight >= REACTION_S && a.ready('ATTACK')
+    && !!a.npc.body.kicker?.ready && a.dist3 < MELEE_LUNGE;
 }
 
 // cell c if the hand gets to it: the cell its look ray strikes on the way, if

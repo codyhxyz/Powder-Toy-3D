@@ -12,7 +12,8 @@
 import { ELEMENTS, E, K, meltInto, breakInto, meltPoint, mechanisms, PH } from '../../elements.js';
 import { PHYS } from '../../physics.js';
 import { BOLT, STORM, boltPath, stormColumns, pickStrike } from '../../bolt.js';
-import { ELEC, SPARK_BORN, CONDUCTS, SPARK_COST, sparkPhase, sparkLevel, packSpark, takesSpark, conductsInto, tsnsSenses, powered, cloneable } from '../../electricity.js';
+import { GRAV as GRAV_MODE } from '../../simModes.js';
+import { ELEC, SPARK_BORN, CONDUCTS, SPARK_COST, sparkPhase, sparkLevel, packSpark, takesSpark, conductsInto, tsnsSenses, powered, cloneable, LAMP_DC } from '../../electricity.js';
 
 // ---- element table, as the GLSL arrays (elements.js elementsGLSL) ----
 const col = (key) => Float32Array.from(ELEMENTS, (e) => e[key]);
@@ -79,7 +80,7 @@ const movable = (id) => KIND[id] !== K.SOLID;
 const acidEats = (id) => KIND[id] !== K.EMPTY && KIND[id] !== K.GAS && !ACIDPROOF[id];
 // growers: moss and fungus keep their damp in their ctype (activity.js grower, mossBed, fungusFood, dampOf)
 const grower = (id) => id === E.MOSS || id === E.FUNGUS;
-const mossBed = (id) => id === E.ROCK || id === E.STONE || id === E.LIMESTONE || id === E.SANDSTONE;
+const mossBed = (id) => id === E.ROCK || id === E.BASALT || id === E.STONE || id === E.LIMESTONE || id === E.SANDSTONE;
 const fungusFood = (id) => id === E.WOOD || id === E.SAWDUST || id === E.PLANT;
 function dampOf(T, nid, nW) {
   if (T >= PHYS.DAMP_DRY_T) return 0;
@@ -210,6 +211,25 @@ const TYPES = { id: Uint8Array, ctype: Uint16Array, mark: Uint8Array };
 const DX = [1, -1, 0, 0];
 const DY = [0, 0, 1, -1]; // +x, -x, up, down
 
+// Gravity's pull at (px, py) (simModes.js gravDir: down, or with radial
+// gravity toward the slice's centre), into pull.x, pull.y, and the frame the
+// move rules are written in, down = −y (gravFrame): turned so that −y is the
+// pull's dominant axis. frame.sw swaps x and y, frame.s flips y: in the
+// frame, (x, y) = sw ? (vy, s·vx) : (vx, s·vy).
+const pull = { x: 0, y: -1 }, frame = { sw: false, s: 1 };
+function gravAt(w, px, py) {
+  pull.x = 0; pull.y = -1;
+  if (w.gravityMode === GRAV_MODE.RADIAL) {
+    const dx = w.nx / 2 - px, dy = w.ny / 2 - py, l = Math.hypot(dx, dy);
+    pull.x = l > 0 ? dx / l : 0; pull.y = l > 0 ? dy / l : 0;
+  }
+  frame.sw = Math.abs(pull.x) > Math.abs(pull.y);
+  frame.s = (frame.sw ? pull.x : pull.y) > 0 ? -1 : 1;
+}
+// the face (DX/DY index) along the frame's −y, and its +x
+const frameDown = () => (frame.sw ? (frame.s > 0 ? 1 : 0) : (frame.s > 0 ? 3 : 2));
+const frameRight = () => (frame.sw ? 2 : 0);
+
 // ---- electricity (src/electricity.js electricReactGLSL): a cell's step ----
 // T, life and ctype of element id, from its face neighbours' ids, temperatures,
 // lives and ctypes; results in elecOut.
@@ -241,10 +261,17 @@ function electric(id, T, life, ctype, nid, nT, nL, nW) {
   }
   if (CONDUCTS[id]) {
     let ph = sparkPhase(ctype), lv = sparkLevel(ctype);
-    if (ph > 0) {
+    let dc = false;   // a lamp on a battery's direct current (src/electricity.js LAMP_DC)
+    if (id === E.LAMP) {
+      for (let q = 0; q < 4; q++) dc ||= nid[q] === E.BATTERY;
+      if (!dc && lv === sparkLevel(LAMP_DC)) lv = ELEC.LAMP_HOLD;
+    }
+    if (dc) { ph = 0; lv = sparkLevel(LAMP_DC); } else if (ph > 0) {
       ph--;
-      if (ph <= ELEC.SPARK_REST) lv = 0;
+      // the level only matters while live; a lamp keeps it as its light's hold (src/electricity.js)
+      if (ph <= ELEC.SPARK_REST) lv = id !== E.LAMP ? 0 : ph === ELEC.SPARK_REST ? ELEC.LAMP_HOLD : Math.max(lv - 1, 0);
     } else if (takesSpark(id, life0)) {
+      if (id === E.LAMP) lv = Math.max(lv - 1, 0);
       let best = 0;
       for (let q = 0; q < 4; q++) {
         const j = nid[q];
@@ -271,6 +298,7 @@ export class World {
     this.T.fill(AMBIENT);
     this.frame = 0;
     this.gravity = 0; // set from the game's gravity setting before stepping
+    this.gravityMode = GRAV_MODE.VERTICAL;   // ...and its gravity mode (simModes.js; off is gravity 0)
     this.lastStrike = -Infinity; // storms (src/lightning.js): the last natural strike's frame
     this.strikes = 0;
     this.sinkRow = -1; // a row the Erase tool is held over (gas tiles)
@@ -402,12 +430,17 @@ export class World {
     const { bk: k, bn: n, bsrc: src, bvx: vx, bvy: vy, bd: d, bm: m, bs: s } = this;
     const [tId, tT, tLife, tCt, tSeed, tMark] = this.tA;
     let any = false;
+    // the block solved turned, as move.js does with radial gravity: cell i of the turned block, velocities into its frame
+    gravAt(this, x0 + 1, y0 + 1);
+    const { sw, s: fs } = frame;
     for (let i = 0; i < 4; i++) {
-      const x = x0 + (i & 1), y = y0 + (i >> 1);
+      const cx = 2 * (i & 1) - 1, cy = fs * (2 * (i >> 1) - 1);
+      const x = x0 + (((sw ? cy : cx) + 1) >> 1), y = y0 + (((sw ? cx : cy) + 1) >> 1);
       n[i] = i; m[i] = 0; s[i] = 0;
       if (x >= 0 && y >= 0 && x < this.nx && y < this.ny) {
         const j = y * this.nx + x;
-        src[i] = j; k[i] = this.id[j]; vx[i] = this.vx[j]; vy[i] = this.vy[j];
+        src[i] = j; k[i] = this.id[j];
+        vx[i] = sw ? this.vy[j] : this.vx[j]; vy[i] = fs * (sw ? this.vx[j] : this.vy[j]);
         d[i] = densityOf(k[i], this.T[j]);
         tId[i] = this.id[j]; tT[i] = this.T[j]; tLife[i] = this.life[j];
         tCt[i] = this.ctype[j]; tSeed[i] = this.seed[j]; tMark[i] = this.mark[j];
@@ -429,7 +462,7 @@ export class World {
       const o = n[i];
       this.id[j] = tId[o]; this.T[j] = tT[o]; this.life[j] = tLife[o];
       this.ctype[j] = tCt[o]; this.seed[j] = tSeed[o]; this.mark[j] = tMark[o];
-      this.vx[j] = vx[i]; this.vy[j] = vy[i];
+      this.vx[j] = sw ? fs * vy[i] : vx[i]; this.vy[j] = sw ? vx[i] : fs * vy[i];
     }
   }
   // block cells i and j trade places
@@ -693,22 +726,31 @@ export class World {
           const rho = Math.max(densityOf(id, T) * PHYS.RHO_SCALE, PHYS.RHO_MIN);
           vx -= gx * PHYS.P_ACCEL / rho;
           vy -= gy * PHYS.P_ACCEL / rho;
-          if (id === E.EMPTY || id === E.CLOUD) vy += g * Math.min(PHYS.AIR_BUOY_HI, Math.max(PHYS.AIR_BUOY_LO, (T - AMBIENT) / (AMBIENT + PHYS.KELVIN)));
-          if (id !== E.EMPTY) vy -= g * GRAV[id];
+          // gravity's pull here (react.js gv: down, or radial)
+          gravAt(this, x + 0.5, y + 0.5);
+          if (id === E.EMPTY || id === E.CLOUD) {
+            const buoy = g * Math.min(PHYS.AIR_BUOY_HI, Math.max(PHYS.AIR_BUOY_LO, (T - AMBIENT) / (AMBIENT + PHYS.KELVIN)));
+            vx -= pull.x * buoy; vy -= pull.y * buoy;
+          }
+          if (id !== E.EMPTY) { vx += pull.x * g * GRAV[id]; vy += pull.y * g * GRAV[id]; }
           vx *= 1 - DRAG[id];
           vy *= 1 - DRAG[id];
+          // the rules below in the frame (react.js F): fd is the face below, fr its +x
+          const { sw, s: fs } = frame, fd = frameDown(), fr = frameRight();
+          if (sw) { const t = vx; vx = vy; vy = fs * t; } else vy *= fs;
           // normal force: at rest on what can hold it up, gravity can't start it moving down (react.js)
           const d = densityOf(id, T0);
-          const held = (KIND[id] === K.POWDER || KIND[id] === K.LIQUID) && VY[i] >= 0 && (y === 0 || KIND[nid[3]] === K.SOLID
-            || (!canMove(id, nid[3], d, densityOf(nid[3], nT[3]), 0) && nVY[3] >= 0));
+          const held = (KIND[id] === K.POWDER || KIND[id] === K.LIQUID) && fs * (sw ? VX[i] : VY[i]) >= 0 && (KIND[nid[fd]] === K.SOLID
+            || (!canMove(id, nid[fd], d, densityOf(nid[fd], nT[fd]), 0) && fs * (sw ? nVX[fd] : nVY[fd]) >= 0));
           if (held) vy = Math.max(vy, 0);
-          const below = KIND[nid[3]];
-          const supported = y === 0 || below === K.SOLID || below === K.POWDER;
+          const below = KIND[nid[fd]];
+          // (pressed on what's below by gravity: none, no friction, no head)
+          const supported = g > 0 && (below === K.SOLID || below === K.POWDER);
           if (supported) vx *= 1 - FRICTION[id];
-          if (KIND[id] === K.LIQUID && (supported || below === K.LIQUID)) {
+          if (KIND[id] === K.LIQUID && g > 0 && (supported || below === K.LIQUID)) {
             // pushed sideways only where it can go (react.js)
-            const open = canMove(id, nid[0], d, densityOf(nid[0], nT[0]), 2) || canMove(id, nid[1], d, densityOf(nid[1], nT[1]), 2);
-            const up = KIND[nid[2]];
+            const open = canMove(id, nid[fr], d, densityOf(nid[fr], nT[fr]), 2) || canMove(id, nid[fr ^ 1], d, densityOf(nid[fr ^ 1], nT[fr ^ 1]), 2);
+            const up = KIND[nid[fd ^ 1]];
             const head = up === K.LIQUID || up === K.POWDER;
             const onLiquid = !supported;
             const f = FLOW[id];
@@ -716,11 +758,12 @@ export class World {
               const want = head ? f : f * PHYS.FLOW_SURFACE;
               if (open && Math.abs(vx) < want * PHYS.FLOW_KICK) vx = randDir() * want;
             } else {
-              const l = KIND[nid[0]] === K.LIQUID, r = KIND[nid[1]] === K.LIQUID;
+              const l = KIND[nid[fr]] === K.LIQUID, r = KIND[nid[fr ^ 1]] === K.LIQUID;
               vx = vx * PHYS.FILM_KEEP + (open ? ((l ? 1 : 0) - (r ? 1 : 0)) * f * PHYS.FILM_COHESION : 0);
               if (open && !l && !r && rnd() < PHYS.DROPLET_WANDER) vx = randDir() * f * PHYS.DROPLET_SPEED;
             }
           }
+          if (sw) { const t = vy; vy = vx; vx = fs * t; } else vy *= fs;   // (out of the frame)
           if (JITTER[id] > 0) { vx += (rnd() - 0.5) * JITTER[id]; vy += (rnd() - 0.5) * JITTER[id]; }
           vx += dvx; vy += dvy;
           vx = Math.max(-PHYS.V_MAX, Math.min(PHYS.V_MAX, vx));

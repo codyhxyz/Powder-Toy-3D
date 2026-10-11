@@ -119,7 +119,7 @@ void main() {
         vec4 a = fetchA(c);
         int id = eid(a);
         alb = ALBEDO[id] * (1.0 - METAL[id] * (1.0 - GI_METAL_DIFFUSE));
-        em = cellEmission(id, a.y);
+        em = cellEmission(id, a.y) + sparkEmit(id, floor(a.w));   // a live conductor, a lit lamp
       }
       vec3 nrm = vec3(fn);
       vec3 e = giIrradiance(pr, nrm);

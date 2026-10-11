@@ -2,17 +2,20 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js';
-import { BODY_HEIGHT } from './constants.js';
+import { BODY_HEIGHT, EYE_HEIGHT } from './constants.js';
 import { BODY_MODEL_URL } from './bodyModel.js';
 import { buildGarb, GARB_COLORS } from './garb.js';
 import {
   createFigure, createContactShadow, JET_NOZZLES, figureFrag, figureSkinnedVert, FIGURE_ALBEDO, FIGURE_HEAT_GLOW,
-  CROUCH_POSE,
+  CROUCH_POSE, HEAD_LOOK, HEAD_LOOK_MAX, ELBOW_POLE, KNEE_POLE,
 } from './figure.js';
+import { limb, solveLimb, handFrame, handTurn, setWorldQuaternion } from './limbs.js';
 
-// The realistic body: Quaternius's mannequin (Universal Animation Library,
-// CC0), skinned and played by an AnimationMixer, dressed as a wizard (a
-// pointed hat and a robe, garb.js). It is the default body; the stickman
+// The realistic body: Quaternius's Superhero Male (Universal Base Characters,
+// CC0), sculpted muscles in his mesh and normal map, playing clips from
+// Quaternius's Universal Animation Library retargeted onto his skeleton
+// (tools/character-pack.mjs) through an AnimationMixer. A wizard: his pointed
+// hat (garb.js) and purple boxers. It is the default body; the stickman
 // (figure.js) is the other setting, and stands in while the model loads or if
 // it fails to.
 //
@@ -20,13 +23,15 @@ import {
 // compile, update, setVisible, dispose), so the shell swaps them freely.
 // choice() is read every frame: 'stick' or 'real'.
 //
-// Lighting: the mannequin's meshes use figure.js's figureFrag, the world's own
-// lighting (sun and its shadow map, GI probes, glow from hot matter), with a
-// skinned version of its vertex shader. It glows when hot like the stickman.
+// Lighting: his meshes use figure.js's figureFrag, the world's own lighting
+// (sun and its shadow map, GI probes, glow from hot matter), with a skinned
+// version of its vertex shader, his albedo and normal maps read through it. He
+// glows when hot like the stickman.
 
-// Materials, by the glTF material name (albedo, linear): the body matches the
-// stickman, the joint bands are a darker grey.
-const ALBEDO_BY_MATERIAL = { M_Main: FIGURE_ALBEDO, M_Joints: [0.22, 0.22, 0.24] };
+// Tints over each glTF material's albedo map (linear). The eyebrows' map is a
+// greyscale hair mask, tinted in the pack's engines by Quaternius's hair shader:
+// a dark brown here.
+const TINT_BY_MATERIAL = { MI_Superhero_Male: [1, 1, 1], MI_Eyes: [1, 1, 1], MI_Hair_1: [0.06, 0.035, 0.02] };
 const MODEL_YAW = Math.PI;               // rad: the glTF faces +z, the body's forward is -z at yaw 0
 
 // Locomotion. Clip speeds come from the file (extras.speed, metres/s of the
@@ -45,6 +50,16 @@ const SWIM_RATE_MAX = 1.5;               // and at most this fast
 // the bend takes off the legs, so the feet stay on the ground.
 const CROUCH_BONES = ['pelvis', 'spine_01', 'neck_01', 'thigh_l', 'thigh_r', 'calf_l', 'calf_r', 'foot_l', 'foot_r'];
 const CROUCH_RATE = 14;                  // 1/s: the bend follows the body's crouch (figure.js POSE_RATE)
+// Looking and holding, on top of the clips and the crouch (figure.js's look, reach()):
+// the torso's share of an aim's pitch spread over the spine, the head's over the neck,
+// and hands closed round a held tool's grips.
+const SPINE_BONES = ['spine_01', 'spine_02', 'spine_03'];
+const HEAD_BONES = ['neck_01', 'Head'];
+const FINGERS = ['index', 'middle', 'ring', 'pinky'];
+const FINGER_CURL = [1.1, 1.2, 0.8];    // rad at the first, second and third knuckles: a fist round a handle
+const GRIP_ALONG = 0.5;                  // share of the way from the wrist to the knuckles a grip's centre sits...
+const GRIP_PALM = 0.035;                 // ...and model units (m) off the palm
+const SIDES = { r: 'right', l: 'left' };
 
 const smooth01 = (x) => { const t = Math.min(Math.max(x, 0), 1); return t * t * (3 - 2 * t); };
 const approach = (rate, dt) => 1 - Math.exp(-rate * dt);
@@ -55,13 +70,13 @@ function loadModel() {
   gltfPromise ??= new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).loadAsync(BODY_MODEL_URL);
   return gltfPromise;
 }
-const garbByModel = new WeakMap();   // the clothes' geometry, built once per download and shared by every body
+const garbByModel = new WeakMap();   // the hat's geometry, built once per download and shared by every body
 function garbFor(gltf, meshes) {
   if (!garbByModel.has(gltf)) garbByModel.set(gltf, buildGarb(meshes));
   return garbByModel.get(gltf);
 }
 
-// The mannequin from a loaded glTF. Same per-frame state as the stickman.
+// The body from a loaded glTF. Same per-frame state as the stickman.
 function createRealFigure(gltf) {
   const uniforms = {
     uEmit: { value: new THREE.Vector3() },
@@ -74,23 +89,26 @@ function createRealFigure(gltf) {
   model.traverse((o) => {
     if (!o.isSkinnedMesh) return;
     o.frustumCulled = false;             // bounds are the bind pose; a fall or a swim leaves them
-    o.userData.albedo = ALBEDO_BY_MATERIAL[o.material.name] ?? FIGURE_ALBEDO;
+    // the maps GLTFLoader made (shared by every clone; the download owns them)
+    const { map, normalMap, normalScale } = o.material;
+    o.userData.look = { albedo: TINT_BY_MATERIAL[o.material.name] ?? FIGURE_ALBEDO, map, normalMap, normalScale, side: THREE.FrontSide };
     meshes.push(o);
   });
   if (!meshes.length) throw new Error('the character model has no skinned mesh');
+  const body = meshes.reduce((a, b) => (b.geometry.attributes.position.count > a.geometry.attributes.position.count ? b : a));
 
   // model units (metres) → body cells, from the bind pose's height (without the hat)
   const box = new THREE.Box3();
   for (const m of meshes) { m.geometry.computeBoundingBox(); box.union(m.geometry.boundingBox); }
 
-  // the wizard's clothes, on this body's own skeleton
+  // the wizard's hat, on this body's own skeleton
   for (const [name, geo] of Object.entries(garbFor(gltf, meshes))) {
-    const garment = new THREE.SkinnedMesh(geo, meshes[0].material);
+    const garment = new THREE.SkinnedMesh(geo, body.material);
     garment.name = name;
     garment.frustumCulled = false;
-    garment.bind(meshes[0].skeleton, meshes[0].bindMatrix);
-    garment.userData.albedo = GARB_COLORS[name];
-    meshes[0].parent.add(garment);
+    garment.bind(body.skeleton, body.bindMatrix);
+    garment.userData.look = { albedo: GARB_COLORS[name], side: THREE.DoubleSide };   // the brim is one sheet
+    body.parent.add(garment);
     meshes.push(garment);
   }
   const cellsPerUnit = BODY_HEIGHT / (box.max.y - box.min.y);
@@ -127,6 +145,42 @@ function createRealFigure(gltf) {
   death.clampWhenFinished = true;
   // gait cycle lengths (cells of travel per loop)
   const cycle = Object.fromEntries(GAIT.map((k) => [k, clipSpeed[k] * actions[k].getClip().duration]));
+
+  // ---- looking and holding: bones read off the bind pose (the clone is still in it)
+  root.updateMatrixWorld(true);
+  const bone = (n) => model.getObjectByName(n);
+  const spine = SPINE_BONES.map(bone), head = HEAD_BONES.map(bone);
+  const chestToEye = EYE_HEIGHT - spine[2].getWorldPosition(new THREE.Vector3()).y;   // cells at the plain size
+  const qRoot = new THREE.Quaternion(), qBind = new THREE.Quaternion();
+  const arms = {}, legs = {};
+  for (const [k, side] of Object.entries(SIDES)) {
+    const hand = bone(`hand_${k}`);
+    const frame = handFrame(hand, bone(`middle_01_${k}`), bone(`thumb_01_${k}`), side);
+    // a fist: each finger joint turned toward the palm, about the knuckles' axis (fingers × palm) in its own frame
+    hand.getWorldQuaternion(qBind);
+    const curlAxis = frame.fingers.clone().cross(frame.palm).applyQuaternion(qBind);
+    const fingers = FINGERS.flatMap((f) => [1, 2, 3].map((j) => {
+      const b = bone(`${f}_0${j}_${k}`);
+      return { b, bind: b.quaternion.clone(), axis: curlAxis.clone().applyQuaternion(b.getWorldQuaternion(new THREE.Quaternion()).invert()), curl: FINGER_CURL[j - 1] };
+    }));
+    arms[k] = { L: limb(bone(`upperarm_${k}`), bone(`lowerarm_${k}`), hand.position, 1), hand, frame, fingers, side: k === 'r' ? 1 : -1 };
+    // a foot on a peg: the ankle above and behind the middle of the sole, the sole level
+    const foot = bone(`foot_${k}`), ankle = foot.getWorldPosition(new THREE.Vector3()), ball = bone(`ball_${k}`).getWorldPosition(new THREE.Vector3());
+    legs[k] = {
+      L: limb(bone(`thigh_${k}`), bone(`calf_${k}`), foot.position, 1), foot, side: k === 'r' ? 1 : -1,
+      ankle: ankle.clone().sub(new THREE.Vector3(ankle.x, 0, (ankle.z + ball.z) / 2)),   // cells, body frame, from the sole's middle
+      level: foot.getWorldQuaternion(new THREE.Quaternion()),   // the sole flat, body frame
+    };
+  }
+  // the bones looking and holding turn: put back to the clips' pose before the clips run again
+  const held = [...spine, ...head, ...Object.values(arms).flatMap((a) => [a.L.upper, a.L.lower, a.hand, ...a.fingers.map((f) => f.b)]),
+    ...Object.values(legs).flatMap((l) => [l.L.upper, l.L.lower, l.foot])];
+  const heldPose = held.map(() => new THREE.Quaternion());
+  let holding = false;
+  const keepPose = () => held.forEach((b, i) => heldPose[i].copy(b.quaternion));
+  const putBack = () => { if (holding) held.forEach((b, i) => b.quaternion.copy(heldPose[i])); holding = false; };
+  const vPole = new THREE.Vector3(), vAt = new THREE.Vector3(), qHand = new THREE.Quaternion(), qFoot = new THREE.Quaternion();
+  const vScale = new THREE.Vector3();
 
   const w = { ground: 1, air: 0, swim: 0, tread: 0, death: 0 };
   const tw = { ...w };
@@ -195,11 +249,18 @@ function createRealFigure(gltf) {
       boundTo = volume;
       for (const m of mats) m.dispose();
       mats = meshes.map((mesh) => {
+        const { albedo, map, normalMap, normalScale, side } = mesh.userData.look;
         const mat = new THREE.ShaderMaterial({
           vertexShader: figureSkinnedVert,
           fragmentShader: figureFrag(g),
-          side: THREE.DoubleSide,          // the robe is open at the hem
-          uniforms: { ...volume.material.uniforms, ...uniforms, uAlbedo: { value: new THREE.Vector3(...mesh.userData.albedo) } },
+          side,
+          defines: { ...(map && { FIG_MAP: '' }), ...(normalMap && { FIG_NORMAL_MAP: '' }) },
+          uniforms: {
+            ...volume.material.uniforms, ...uniforms,
+            uAlbedo: { value: new THREE.Vector3(...albedo) },
+            ...(map && { uMap: { value: map } }),
+            ...(normalMap && { uNormalMap: { value: normalMap }, uNormalScale: { value: normalScale } }),
+          },
         });
         mesh.material = mat;
         return mat;
@@ -212,7 +273,11 @@ function createRealFigure(gltf) {
     },
     // s: the stickman's state, plus headInLiquid
     update(dt, s) {
+      // riding (a pogo stick: s.ride): standing still on its pegs, whatever the body is doing under it
+      const riding = !!s.ride && !s.dead;
+      if (riding) s = { ...s, onGround: true, inLiquid: false, speedH: 0 };
       root.position.copy(s.feet);
+      root.position.y += (s.lift ?? 0) * s.scale;
       root.scale.setScalar(s.scale);
       uniforms.uWorldToGrid.value.copy(s.worldToGrid);
       uniforms.uEmit.value.set(...FIGURE_HEAT_GLOW).multiplyScalar(s.heat ?? 0);
@@ -249,13 +314,68 @@ function createRealFigure(gltf) {
       actions.swim.timeScale = THREE.MathUtils.clamp(s.speedH / clipSpeed.swim, SWIM_RATE_MIN, SWIM_RATE_MAX);
       actions.tread.setEffectiveWeight(w.tread);
       death.setEffectiveWeight(w.death);
+      putBack();
       crouchBend(0);   // the clips' pose, for the mixer to write over
       mixer.update(dt);
       bend += ((s.dead ? 0 : (s.crouch ?? 0) * w.ground) - bend) * approach(CROUCH_RATE, dt);
       crouchBend(bend);
-      contact.visible = s.onGround && !s.dead;
+      keepPose();
+      // the look: the torso leans into a held tool's aim, the head follows the rest
+      if (s.look && !s.dead) {
+        holding = true;
+        root.updateWorldMatrix(true, true);
+        right.set(1, 0, 0).applyQuaternion(root.getWorldQuaternion(qa));
+        const lean = s.look.pitch * s.look.spine;
+        const nod = THREE.MathUtils.clamp((s.look.pitch - lean) * HEAD_LOOK, -HEAD_LOOK_MAX, HEAD_LOOK_MAX);
+        for (const b of spine) { turn(b, lean / spine.length); b.updateWorldMatrix(false, false); }
+        for (const b of head) { turn(b, nod / head.length); b.updateWorldMatrix(false, false); }
+      }
+      contact.visible = s.onGround && !s.dead && !riding;
     },
     setVisible(v) { root.visible = v; },
+    // the eye (world), riding the chest: a held tool's aim frame hangs from it (held.js)
+    anchor(out) {
+      spine[2].updateWorldMatrix(true, false);
+      return spine[2].getWorldPosition(out).add(vAt.set(0, chestToEye * root.scale.x, 0));
+    },
+    // Hands and feet to a held tool (held.js), after update(): right / left grips
+    // { pos, fingers, palm } (world: the grip's centre, and the way the knuckles and
+    // the palm face), the fist closed round it; feet [right, left]: where the soles
+    // stand (world); weight 0..1 of the reach over the clips' pose.
+    reach({ right: r = null, left: l = null, feet = null, weight = 1 }) {
+      if (!(weight > 0)) return;
+      holding = true;
+      root.updateWorldMatrix(true, true);
+      root.getWorldQuaternion(qRoot);
+      const s = root.scale.x;
+      const blend = (bones, from) => { if (weight < 1) bones.forEach((b, i) => b.quaternion.copy(from[i].slerp(b.quaternion, weight))); };
+      const pole = (L, side, P) => L.upper.getWorldPosition(vPole).add(vAt.set(side * P[0], P[1], P[2]).applyQuaternion(qRoot).multiplyScalar(s));
+      for (const [k, g] of [['r', r], ['l', l]]) {
+        if (!g) continue;
+        const a = arms[k], bones = [a.L.upper, a.L.lower, a.hand, ...a.fingers.map((f) => f.b)];
+        const from = bones.map((b) => b.quaternion.clone());
+        handTurn(a.frame, g.fingers, g.palm, qHand);
+        // the wrist: back from the grip's centre along the fingers and off the palm
+        const ws = a.hand.getWorldScale(vScale).x;
+        const wrist = vAt.copy(a.frame.fingers).multiplyScalar(GRIP_ALONG * a.frame.reach).addScaledVector(a.frame.palm, GRIP_PALM)
+          .applyQuaternion(qHand).multiplyScalar(-ws).add(g.pos);
+        const target = wrist.clone();
+        solveLimb(a.L, target, pole(a.L, a.side, ELBOW_POLE));
+        setWorldQuaternion(a.hand, qHand);
+        for (const f of a.fingers) f.b.quaternion.setFromAxisAngle(f.axis, f.curl).premultiply(f.bind);
+        blend(bones, from);
+      }
+      if (feet) {
+        for (const [k, at] of [['r', feet[0]], ['l', feet[1]]]) {
+          const g = legs[k], bones = [g.L.upper, g.L.lower, g.foot];
+          const from = bones.map((b) => b.quaternion.clone());
+          const ankle = vAt.copy(g.ankle).applyQuaternion(qRoot).multiplyScalar(s).add(at).clone();
+          solveLimb(g.L, ankle, pole(g.L, g.side, KNEE_POLE));
+          setWorldQuaternion(g.foot, qFoot.copy(qRoot).multiply(g.level));
+          blend(bones, from);
+        }
+      }
+    },
     get material() { return mats[0]; },
     // tests: the posed rig and each clip's blend weight
     model,
@@ -269,8 +389,8 @@ function createRealFigure(gltf) {
   };
 }
 
-// The body the shell shows, by choice(): 'real' (the wizard mannequin) or
-// 'stick', with the stickman standing in until the mannequin is loaded and
+// The body the shell shows, by choice(): 'real' (the superhero wizard) or
+// 'stick', with the stickman standing in until the model is loaded and
 // compiled. (The Castle Crashers wizard, figureCrasher.js, now only draws NPCs.)
 export function createBody({ choice }) {
   const stick = createFigure();
@@ -319,6 +439,9 @@ export function createBody({ choice }) {
       fig.update(dt, s);
     },
     setVisible(v) { root.visible = v; },
+    // the showing body's eye and reach (held.js), after update()
+    anchor(out) { return active().anchor(out); },
+    reach(r) { active().reach(r); },
     // which body is showing: 'stick' or 'real' (tests)
     get showing() { return active() === real ? 'real' : 'stick'; },
     // where the showing body's jetpack exhaust leaves (vfx.js)

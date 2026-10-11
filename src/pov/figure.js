@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { lib } from '../shaders/render.js';
 import { BODY_HEIGHT, BODY_WIDTH } from './constants.js';
+import { limb as ikLimb, solveLimb } from './limbs.js';
 
 // The body you see in third person and when you die, built from three.js
 // primitives in grid cells and scaled into the world. createFigure(build)
@@ -30,6 +31,8 @@ const SHOULDER_HALF = BODY_WIDTH * 0.32; // half the distance between the should
 const LIMB_R = 0.17;                     // stick radius
 const TORSO_R = 0.24;
 const CAP_SEGMENTS = 4, RADIAL_SEGMENTS = 10;
+
+export const STICK_HAND = 'stick-hand_r';   // the stickman's right-hand point, by name (the realistic body's bone is hand_r)
 
 // Material: a light, slightly warm matte (albedo, linear).
 const ALBEDO = [0.72, 0.7, 0.66];
@@ -99,11 +102,19 @@ const KICK_EXTEND_END = 0.45;            // ...then extending; the rest retracts
 const KICK_CHAMBER = [1.35, -1.9];       // rad: hip forward, knee folded
 const KICK_EXTEND = [1.5, -0.05];        // rad: leg straight out, about level
 const KICK_LEAN = -0.25;                 // rad: torso back, against the kick
+// Looking up and down (s.look: the look's pitch, and the share of it the torso
+// takes for a held tool's aim, holds.js): the head follows most of what's left
+export const HEAD_LOOK = 0.8;            // share of the look's pitch the head turns
+export const HEAD_LOOK_MAX = 1.1;        // rad the head turns at most, up or down
+// Reaching (reach(): a held tool's grips, a pogo stick's pegs): where the joints point, cells
+// from the shoulder or hip in the body's frame (right, up, back); the left side mirrors right
+export const ELBOW_POLE = [1, -1.5, 0.6];   // down, out to the side, a little back
+export const KNEE_POLE = [0, -0.5, -2];      // ahead
 
 const smooth01 = (x) => { const t = Math.min(Math.max(x, 0), 1); return t * t * (3 - 2 * t); };
 const approach = (rate, dt) => 1 - Math.exp(-rate * dt);
 
-const figureVert = /* glsl */ `
+export const figureVert = /* glsl */ `
 uniform mat4 uWorldToGrid;
 out vec3 vGrid;
 out vec3 vN;
@@ -119,14 +130,43 @@ ${lib(g)}
 #define FIG_SHADOW_LIFT ${SHADOW_LIFT.toFixed(3)}
 #define FIG_GI_LIFT ${GI_LIFT.toFixed(3)}
 #define FIG_TOON_EDGE ${TOON_EDGE.toFixed(3)}
-uniform vec3 uAlbedo;
+uniform vec3 uAlbedo;   // with FIG_MAP, multiplies the map (a tint)
 uniform vec3 uEmit;
 uniform vec4 uTint;   // a stain over the albedo (status.js tint): rgb, share
 in vec3 vGrid;
 in vec3 vN;
+#if defined(FIG_MAP) || defined(FIG_NORMAL_MAP)
+in vec2 vFigUv;
+#endif
+#ifdef FIG_MAP
+uniform sampler2D uMap;   // albedo, sRGB (sampled linear)
+#endif
+#ifdef FIG_NORMAL_MAP
+uniform sampler2D uNormalMap;   // tangent space
+uniform vec2 uNormalScale;      // the loaded material's (GLTFLoader flips y for derivative tangents)
+in vec3 vFigWorld;
+// three.js's getTangentFrame (normalmap_pars_fragment): the tangent frame from
+// screen-space derivatives of the position and UV, for meshes with no tangents
+// (Mikkelsen, "Bump Mapping Unparametrized Surfaces on the GPU", 2010)
+vec3 figNormalMapped(vec3 n, float face) {
+  vec3 q0 = dFdx(vFigWorld), q1 = dFdy(vFigWorld);
+  vec2 st0 = dFdx(vFigUv), st1 = dFdy(vFigUv);
+  vec3 q1perp = cross(q1, n), q0perp = cross(n, q0);
+  vec3 T = q1perp * st0.x + q0perp * st1.x;
+  vec3 B = q1perp * st0.y + q0perp * st1.y;
+  float det = max(dot(T, T), dot(B, B));
+  float s = det == 0.0 ? 0.0 : face * inversesqrt(det);
+  vec3 m = texture(uNormalMap, vFigUv).xyz * 2.0 - 1.0;
+  m.xy *= uNormalScale;
+  return normalize(T * (m.x * s) + B * (m.y * s) + n * m.z);
+}
+#endif
 void main() {
-  vec3 n = normalize(vN);
-  if (!gl_FrontFacing) n = -n;
+  float face = gl_FrontFacing ? 1.0 : -1.0;
+  vec3 n = normalize(vN) * face;
+#ifdef FIG_NORMAL_MAP
+  n = figNormalMapped(n, face);
+#endif
   vec3 sh = uShadows ? sunShadow(vGrid + uSun * FIG_SHADOW_LIFT) : vec3(1.0);
   vec3 irr = giIrradiance(probeAt(vGrid + n * FIG_GI_LIFT), n);
   vec3 local = sampleLight(vGrid) * uLightGain;
@@ -135,7 +175,11 @@ void main() {
 #ifdef FIG_TOON
   ndl = smoothstep(0.0, FIG_TOON_EDGE, ndl);   // cel shading: lit or not, with a thin soft edge
 #endif
-  vec3 albedo = mix(uAlbedo, uTint.rgb, uTint.a);
+  vec3 base = uAlbedo;
+#ifdef FIG_MAP
+  base *= texture(uMap, vFigUv).rgb;
+#endif
+  vec3 albedo = mix(base, uTint.rgb, uTint.a);
   gl_FragColor = vec4(albedo * (SUN_COL * ndl * sh + irr + local) + uEmit, 1.0);
 }`;
 
@@ -201,10 +245,15 @@ export function buildStick() {
   const shR = limb(torso, ALBEDO, SHOULDER_HALF, shY, UPPER_ARM, LIMB_R);
   const hipL = limb(body, ALBEDO, -HIP_HALF, 0, THIGH, LIMB_R);
   const hipR = limb(body, ALBEDO, HIP_HALF, 0, THIGH, LIMB_R);
+  const elR = limb(shR, ALBEDO, 0, -UPPER_ARM, FOREARM, LIMB_R);
+  // the right hand's point, where the shell (index.js) puts the tool in hand in third person
+  const hand = new THREE.Group();
+  hand.name = STICK_HAND;
+  hand.position.y = -FOREARM;
+  elR.add(hand);
   return {
-    hipY: HIP_Y, lieLift: LIMB_R, body, torso, neck, shL, shR, hipL, hipR,
+    hipY: HIP_Y, lieLift: LIMB_R, body, torso, neck, shL, shR, hipL, hipR, elR,
     elL: limb(shL, ALBEDO, 0, -UPPER_ARM, FOREARM, LIMB_R),
-    elR: limb(shR, ALBEDO, 0, -UPPER_ARM, FOREARM, LIMB_R),
     knL: limb(hipL, ALBEDO, 0, -THIGH, SHIN, LIMB_R),
     knR: limb(hipR, ALBEDO, 0, -THIGH, SHIN, LIMB_R),
   };
@@ -263,6 +312,13 @@ export function createFigure(build = buildStick) {
   let phase = 0, clock = 0, pitch = 0, facing = 0;
 
   function setTarget(k, v, weight) { T[k] += v * weight; }
+  // the limbs reach() bends (the stickman's lengths, unless the look has its own): the elbows bend forward (+x), the knees back (−x)
+  const hand = new THREE.Vector3(0, -(rig.forearm ?? FOREARM), 0), foot = new THREE.Vector3(0, -(rig.shin ?? SHIN), 0);
+  const limbs = {
+    armR: ikLimb(shR, elR, hand, 1), armL: ikLimb(shL, elL, hand, 1),
+    legR: ikLimb(hipR, knR, foot, -1), legL: ikLimb(hipL, knL, foot, -1),
+  };
+  const vPole = new THREE.Vector3();
 
   return {
     root,
@@ -298,10 +354,15 @@ export function createFigure(build = buildStick) {
     },
     // s = { feet (world), scale, yaw, worldToGrid (Matrix4), speedH (cells/s), velY (cells/s),
     //       onGround, inLiquid, dead, deadTime (s), heat (0..1), jetting, status (status.js set: its stains tint the body),
-    //       crouch (0 standing … 1 crouched) }
+    //       crouch (0 standing … 1 crouched), look ({ pitch, spine }: the head and the torso follow the look),
+    //       lift (cells the body rides up off its feet: a pogo stick's pegs), ride (on a pogo stick) }
     update(dt, s) {
       clock += dt;
+      // riding (a pogo stick: s.ride): standing still on its pegs, whatever the body is doing under it
+      const riding = !!s.ride && !s.dead;
+      if (riding) s = { ...s, onGround: true, inLiquid: false, speedH: 0 };
       root.position.copy(s.feet);
+      root.position.y += (s.lift ?? 0) * s.scale;
       root.scale.setScalar(s.scale);
       uniforms.uWorldToGrid.value.copy(s.worldToGrid);
       uniforms.uEmit.value.set(...HEAT_GLOW).multiplyScalar(s.heat ?? 0);
@@ -413,8 +474,10 @@ export function createFigure(build = buildStick) {
       shR.rotation.set(J.shR, 0, J.armOut);
       elL.rotation.x = J.elL;
       elR.rotation.x = J.elR;
-      torso.rotation.x = -J.lean;
-      neck.rotation.x = J.headPitch;
+      const look = !s.dead && s.look ? s.look : null;
+      const aimLean = look ? look.pitch * look.spine : 0;
+      torso.rotation.x = -J.lean + aimLean;
+      neck.rotation.x = J.headPitch + (look ? THREE.MathUtils.clamp((look.pitch - aimLean) * HEAD_LOOK, -HEAD_LOOK_MAX, HEAD_LOOK_MAX) : 0);
       body.position.y = HIP - J.drop;
 
       // swim pitch about the hips; death topples the whole body backward about the feet
@@ -444,15 +507,33 @@ export function createFigure(build = buildStick) {
         knR.rotation.x = at(J.knR, 1);
         torso.rotation.x = -J.lean - KICK_LEAN * (chamber - back);
       }
-      contact.visible = s.onGround && !s.dead;
+      contact.visible = s.onGround && !s.dead && !riding;
       for (const f of flames) {
         f.visible = !!s.jetting && !s.dead;
         f.scale.set(1, 1 + (Math.random() * 2 - 1) * FLAME_FLICKER, 1);
       }
     },
     setVisible(v) { root.visible = v; },
-    // where this body's jetpack exhaust leaves (vfx.js), JET_NOZZLES' shape
-    nozzles: rig.nozzles ?? JET_NOZZLES,
+    // the eye (world), riding the torso: a held tool's aim frame hangs from it (held.js)
+    anchor(out) {
+      neck.updateWorldMatrix(true, false);
+      return neck.localToWorld(out.set(0, NECK + HEAD / 2, 0));
+    },
+    // Hands and feet to points (world), after update(): { right, left } grips ({ pos },
+    // the stickman has no wrist to turn), feet [right, left], weight 0..1 of the reach over the pose
+    reach({ right = null, left = null, feet = null, weight = 1 }) {
+      if (!(weight > 0)) return;
+      const go = (L, at, pole, side) => {
+        const q0 = L.upper.quaternion.clone(), q1 = L.lower.quaternion.clone();
+        L.upper.parent.localToWorld(vPole.set(side * pole[0], pole[1], pole[2]).add(L.upper.position));
+        solveLimb(L, at, vPole);
+        if (weight < 1) { L.upper.quaternion.copy(q0.slerp(L.upper.quaternion, weight)); L.lower.quaternion.copy(q1.slerp(L.lower.quaternion, weight)); }
+      };
+      root.updateWorldMatrix(true, true);
+      if (right) go(limbs.armR, right.pos, ELBOW_POLE, 1);
+      if (left) go(limbs.armL, left.pos, ELBOW_POLE, -1);
+      if (feet) { go(limbs.legR, feet[0], KNEE_POLE, 1); go(limbs.legL, feet[1], KNEE_POLE, -1); }
+    },
     dispose() {
       for (const m of mats) m.dispose();
       for (const m of glowMats) m.dispose();
@@ -472,11 +553,19 @@ export { ALBEDO as FIGURE_ALBEDO, HEAT_GLOW as FIGURE_HEAT_GLOW };
 // figureVert for a SkinnedMesh: three's skinning chunks pose the vertex and
 // its normal, then it goes to grid space like the stickman's. Pair it with
 // figureFrag(g) and the volume's uniforms (plus uAlbedo, uEmit, uWorldToGrid).
+// Defines FIG_MAP (uMap) and FIG_NORMAL_MAP (uNormalMap, uNormalScale) add a
+// textured mesh's maps, on its first UV set.
 export const figureSkinnedVert = /* glsl */ `
 #include <skinning_pars_vertex>
 uniform mat4 uWorldToGrid;
 out vec3 vGrid;
 out vec3 vN;
+#if defined(FIG_MAP) || defined(FIG_NORMAL_MAP)
+out vec2 vFigUv;
+#endif
+#ifdef FIG_NORMAL_MAP
+out vec3 vFigWorld;
+#endif
 void main() {
   #include <beginnormal_vertex>
   #include <skinbase_vertex>
@@ -486,6 +575,12 @@ void main() {
   vec4 w = modelMatrix * vec4(transformed, 1.0);
   vGrid = (uWorldToGrid * w).xyz;
   vN = mat3(modelMatrix) * objectNormal;   // uniform scale only
+#if defined(FIG_MAP) || defined(FIG_NORMAL_MAP)
+  vFigUv = uv;
+#endif
+#ifdef FIG_NORMAL_MAP
+  vFigWorld = w.xyz;
+#endif
   gl_Position = projectionMatrix * viewMatrix * w;
 }`;
 

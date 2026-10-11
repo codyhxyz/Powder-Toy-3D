@@ -58,8 +58,6 @@ const GHOST_ALPHA = 0.6;
 const GHOST_SHADE_MIN = 0.92;      // ghost cubes vary in brightness from this
 const GHOST_TEXTURE = 0.16;        // ... to this much brighter
 const HOLD_PX = 6;                 // pointer travel that brings the ghost back after placing
-const DOCK_MARGIN_PX = 14;         // the dock's gap to the bottom of the window
-const BAR_GAP_PX = 8;              // gap between the dock and the construction bar
 const IMPORT_NAME_CHARS = 60;
 // Points of a built-in construction the app hangs things on once it's placed
 // (local cells: y up, base on y = 0, front +z): the shrine's perk orbs.
@@ -200,12 +198,15 @@ export class Constructions {
   get maxSpan() { const g = this.getSim().g; return Math.min(g.nx, g.ny, g.nz); }
 
   // Call every frame. `active`: a construction is selected and the pointer is over the scene.
-  update({ hover, active }) {
+  // `crosshair`: hover follows the first-person crosshair (the tool gun), which has no
+  // pointer to move off what was just placed, so the ghost comes straight back.
+  update({ hover, active, crosshair = false }) {
     const id = this.settings.tool;
     const build = isBuild(id) ? BUILDS.find((b) => b.id === id) : null;
     this._syncBar(build);
     this.valid = false;
     this.group.visible = false;
+    if (crosshair) this.hold = null;
     if (!build || !active || !hover.valid || this.hold) return;
     const key = this._loadCells(build);
     if (!key || !this._bakeFacingCamera(key)) return;
@@ -347,6 +348,7 @@ export class Constructions {
     const lo = [Math.floor(origin.x), Math.floor(origin.y) - u.uFoot.value, Math.floor(origin.z)];
     sim.touch(lo, [lo[0] + s.w, lo[1] + u.uFoot.value + s.h, lo[2] + s.d]);
     sim.pass(this.mat);
+    sim.scrubDeco();   // what it built over loses its decoration, as a TPT stamp replaces particles (src/deco.js)
     tex.dispose();
   }
 
@@ -629,20 +631,12 @@ export class Constructions {
 
   _syncBar(build) {
     this.bar.classList.toggle('show', !!build);
-    if (build) this._positionBar();
     const sel = this._barKey(build);
     if (sel === this.barFor) return;
     this.barFor = sel;
     this.bar.classList.toggle('prompt', build?.key === PROMPT);
     if (build?.key === PROMPT) this._promptBar();
     else if (build) this._variantBar(build);
-  }
-
-  // sit just above the dock (or its collapsed tab)
-  _positionBar() {
-    const dock = document.querySelector('.dock:not(.collapsed)') ?? document.querySelector('.dock-tab');
-    const top = dock ? dock.getBoundingClientRect().top : innerHeight - DOCK_MARGIN_PX;
-    this.bar.style.bottom = `${Math.round(innerHeight - top + BAR_GAP_PX)}px`;
   }
 
   // what the bar shows; it is rebuilt only when this changes

@@ -30,13 +30,16 @@ import { faceNormal, muzzleCell } from './transfer.js';
 // touches its head, which lights wood and plants; held, left-click touches the
 // flame to what you aim at within reach. Without burn (the lantern) it never goes out
 // or breaks, and left-click switches it off and on.
+// burn.ignites: whether its flame heats what it touches (setting wood alight).
+// The torch's doesn't (2026-10-11, the user's call: its burning misbehaved):
+// its flame and embers are only to look at and see by.
 //
 // Events (tool = key in lower case): tool:action 'throw', 'land' (point),
 // 'toggle'; round:move / round:end with kind = tool while it flies;
 // 'torch:burn' { at (world), vel (world units/s), dt } for each flame drawn.
 //
 //   export default lampTool({ ...gear(KEY), light: { color, intensity, range, flicker },
-//     burn: { seconds } | null, pose: { pos, yaw } });
+//     burn: { seconds, ignites } | null, pose: { pos, yaw } });
 
 const THROW_REFIRE = 0.8;      // s between throws (the bomb's)
 const TOUCH_REFIRE = 0;        // s: holding left-click keeps the torch's flame on what it touches
@@ -79,6 +82,37 @@ const flickerAt = (t, share) => {
   return 1 + share * (2 * (n - 0.5) - GUTTER_DEPTH * gutter);
 };
 
+// The live flame: a flame.js card at the foot of a model's cone (named 'flame', hidden: it's the
+// icon's flame), or null for a model without one. Also the torch held on the body (held.js).
+export function liveFlame(obj, mode) {
+  const cone = obj.getObjectByName('flame');
+  if (!cone) return null;
+  cone.visible = false;
+  const f = createFlame({ width: FLAME_WIDTH, height: FLAME_HEIGHT, mode });
+  f.obj.position.copy(cone.position).y -= cone.geometry.parameters.height / 2;
+  if (mode === 'overlay') f.meshes.forEach((mesh) => { mesh.userData.vmLayer = VIEWMODEL_GLOW_LAYER; });
+  cone.parent.add(f.obj);
+  const heart = new THREE.Object3D();   // where its light and embers come from
+  heart.position.y = FLAME_HEIGHT * FLAME_HEART;
+  f.obj.add(heart);
+  return { ...f, heart, last: new THREE.Vector3(), vel: new THREE.Vector3(), fresh: true };
+}
+// A live flame follows its motion (world): it leans and trails as it's swung or carried. Its heart
+// (world) is left in f.last.
+const vWind = new THREE.Vector3();
+export function fanFlame(f, dt, flicker) {
+  f.heart.getWorldPosition(vWind);
+  const at = vWind.clone();
+  if (!f.fresh && dt > 0) {
+    vWind.sub(f.last).divideScalar(dt);
+    f.vel.lerp(vWind, 1 - Math.exp(-WIND_FOLLOW * dt));
+  }
+  f.fresh = false;
+  f.last.copy(at);
+  f.setWind(vWind.copy(f.vel).negate());
+  f.setFlicker(flicker);
+}
+
 export function lampTool({ key, name, model: modelKey, desc, light, burn = null, pose }) {
   const tool = key.toLowerCase();
   const color = light.color.map((c) => c * light.intensity);
@@ -105,33 +139,12 @@ export function lampTool({ key, name, model: modelKey, desc, light, burn = null,
       const scratch = new THREE.Vector3(), lightColor = [0, 0, 0];
       const vA = new THREE.Vector3(), vB = new THREE.Vector3();
 
-      // ---- the live flame: a flame.js card at the foot of the model's cone (hidden: it's the icon's flame)
-      function lightModel(m, mode) {
-        const cone = m.obj.getObjectByName('flame');
-        if (!burn || !cone) return null;
-        cone.visible = false;
-        const f = createFlame({ width: FLAME_WIDTH, height: FLAME_HEIGHT, mode });
-        f.obj.position.copy(cone.position).y -= cone.geometry.parameters.height / 2;
-        if (mode === 'overlay') f.meshes.forEach((mesh) => { mesh.userData.vmLayer = VIEWMODEL_GLOW_LAYER; });
-        cone.parent.add(f.obj);
-        const heart = new THREE.Object3D();   // where its light and embers come from
-        heart.position.y = FLAME_HEIGHT * FLAME_HEART;
-        f.obj.add(heart);
-        return { ...f, heart, last: new THREE.Vector3(), vel: new THREE.Vector3(), fresh: true };
-      }
+      const lightModel = (m, mode) => (burn ? liveFlame(m.obj, mode) : null);
       // follow the flame's motion (world): its lean, and the embers it throws
       function burnFlame(f, dt, flicker, seen = true) {
         if (!f) return;
-        f.heart.getWorldPosition(vA);
-        if (!f.fresh && dt > 0) {
-          vB.subVectors(vA, f.last).divideScalar(dt);
-          f.vel.lerp(vB, 1 - Math.exp(-WIND_FOLLOW * dt));
-        }
-        f.fresh = false;
-        f.last.copy(vA);
-        f.setWind(vB.copy(f.vel).negate());
-        f.setFlicker(flicker);
-        if (drawn && seen) povEvents.emit('torch:burn', { at: vA, vel: f.vel, dt });
+        fanFlame(f, dt, flicker);
+        if (drawn && seen) povEvents.emit('torch:burn', { at: f.last, vel: f.vel, dt });
       }
       const heldFlame = drawn ? lightModel(heldMesh, 'overlay') : null;
       // the flame lights the hand that holds it (the viewmodel pass's lights; the world's is lamps.js)
@@ -272,7 +285,7 @@ export function lampTool({ key, name, model: modelKey, desc, light, burn = null,
             handLight.intensity = light.intensity * f * LIGHT_SCALE * HAND_LIGHT * d * d;
           }
           // the torch touched to what you aim at, within reach
-          if (burn && inHand && toucher.ready(ctx) && ctx.primary && ctx.aim?.valid && ctx.aim.dist <= HAND_REACH && ctx.aim.cell.y >= 0) {
+          if (burn?.ignites && inHand && toucher.ready(ctx) && ctx.primary && ctx.aim?.valid && ctx.aim.dist <= HAND_REACH && ctx.aim.cell.y >= 0) {
             const n = faceNormal(ctx.aim.face);
             flame(ctx.sim ?? env.getSim(), scratch.copy(ctx.aim.cell).addScalar(0.5).add(n), n.clone().negate(), 1, toolDt(ctx));
             toucher.fire();
@@ -286,6 +299,7 @@ export function lampTool({ key, name, model: modelKey, desc, light, burn = null,
             burnFlame(p.flame, ctx.dt, f);
             if (p.lit) shine(`${tag}:prop:${p.id}`, p.light, f);
           }
+          if (!burn.ignites) return;   // a flame to look at and see by, not a fire (spec.burn.ignites)
           fireWait -= ctx.dt;
           if (fireWait > 0) return;
           fireWait = FIRE_INTERVAL;

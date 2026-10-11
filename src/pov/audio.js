@@ -3,6 +3,8 @@ import { ELEMENTS, E, K } from '../elements.js';
 import { povEvents } from './events.js';
 import { CELL_METERS } from './vitals.js';
 import { MELEE_SOURCES } from './constants.js';
+import { lookOf } from './wands/look.js';
+import { PLAYER } from './targets.js';
 
 // POV sound. Every noise in first person comes from an event (docs/pov.md,
 // "Gunplay v2"): the gun, the tools and the shell announce what happened on
@@ -86,9 +88,16 @@ const HURT_GAIN_MIN = 0.35;
 const LOG_SIZE = 16;                    // recent plays kept for stats()
 const SHIELD_HIT_GAP_S = 0.12;          // s between shield-hit crackles (a blast hits it every frame)
 const SHIELD_BEEP_S = 0.5;              // s between beeps of the empty-shield alarm (Halo's), by ear
+const FRAG_THROW_RATE = 1.3;            // a frag thrown: the axe's whoosh, quicker (a flick of the arm)
+const FRAG_CLINK_SPEED = 25;            // cells/s: a bounce this fast clinks at gain 1...
+const FRAG_CLINK_MIN = 8;               // ...and one slower than this (a roll's last hops) is silent
+const FRAG_CLINK_GAIN_MIN = 0.2;        // the softest clink heard
 const POGO_PITCH_STEP = 0.12;           // × playback rate per timed step up: each climb boings higher
 const KNIFE_SWING_RATE = 1.35;          // the knife's swing is the axe's whoosh, quicker and thinner
 const LASER_CHARGE_RATE = [0.6, 2.2];     // the laser's charge whine plays at this playback rate empty → full: it climbs as it fills
+// Halo's medals (game/feel.js 'game:medal'): the player's own, a sting per kind, one after another
+const MEDAL_STING = { multi: 'medalMulti', spree: 'medalSpree', style: 'medalStyle', objective: 'medalObjective' };
+const MEDAL_STING_GAP_S = 0.18;         // s between the stings of one kill's medals, so a stack reads as a stack
 
 // ---- presets
 // ZzFX parameter order (paste any of these into https://killedbyapixel.github.io/ZzFX/ to retune):
@@ -183,8 +192,25 @@ const PRESETS = {
   laserCharge: [.35, 0, 240, , 1, 0, 2, 1, , , , , , , 6, , , .8, , .4, -2500],
   // the laser's shot: a bright saw zap diving from 1.2 kHz, FM'd, crushed, with a slapback (the Spartan Laser's crack)
   laserFire: [1.6, .05, 1200, .01, .2, .7, 2, 1.5, -6, , , , , 2, 20, .3, .05, .6, .1, , -3000],
+  // -- wands (wands/runtime.js; pitched per spell by wands/look.js)
+  // a cast: a bright sine chirp rising, FM'd into a shimmer with a short slapback (Noita's cast "pew")
+  wandCast: [.45, .05, 640, .005, .03, .16, 0, 1, 4, , , , , , 9, , .03, .6],
+  // a spell landing: a soft fizzling pop of noise sliding down
+  wandImpact: [.55, .15, 420, , .02, .14, 4, 1, -3, , , , , 2.5, , , , .5, , .2],
+  // a teleport: a saw sweeping up through a low-pass, FM'd, a rushing blink
+  wandTeleport: [.6, .05, 220, .02, .08, .3, 2, 1, 14, , , , , , 10, , , .6, , , -2000],
   // a backstab: a hard metallic ring over the stab (TF2's crit), FM'd like the metal ping
   backstab: [1, .02, 1600, , .03, .45, 0, 1, , , -400, .05, , , 22, , .06, .6],
+
+  // -- Halo combat (pov/halo.js: the melee, the frag grenade)
+  // Halo's melee landing: a heavy, punchy bash, a low square thump with a crushed crack on top
+  meleeBash: [1.3, .1, 95, , .02, .16, 5, 2, -3, , , , , 2, , .35, , .5, .02, , -1500],
+  // an assassination: a dry, sharp crack (the neck) over the bash
+  assassinate: [1, .05, 900, , .01, .09, 4, 2.5, -4, , , , , 3, , .3, , .4],
+  // a frag bouncing: a small, hollow metal clink, a sine FM'd short
+  fragClink: [.45, .15, 1900, , .005, .07, 0, 1, , , , , , , 26, , , .4],
+  // a frag picked up off the ground: two quick dry clicks
+  fragPickup: [.5, .05, 1300, , .005, .03, 5, .5, , , 500, .03, .05, , , , , .4],
 
   // -- the body
   // a footfall on dry ground: a short, low, padded thud
@@ -211,6 +237,17 @@ const PRESETS = {
   eat: [.6, .2, 260, , .03, .07, 4, 1.5, -1, , , , .09, 3, , , , .55, , , -1100],
   // a body bursting into meat: a heavy, wet splat sliding down
   gib: [1.2, .15, 110, , .05, .35, 4, 1.8, -2, , , , , 4, , .15, .03, .5, .05, , -900],
+  // -- Halo's layer (game/feel.js): our own synths, no Halo audio
+  // a multi-kill: a saw stab that jumps a fifth up, bright and punchy
+  medalMulti: [.7, 0, 330, .005, .07, .3, 2, 1.2, , , 165, .07, , , , , .03, .6, .02],
+  // a spree: a low brass swell with a slow wobble, a jump up an octave
+  medalSpree: [.8, 0, 110, .02, .25, .5, 2, 1.6, , , 110, .12, , , 3, , .05, .7, , .15],
+  // a style medal (a beat down, a splatter): a clean sine chime with a jump up
+  medalStyle: [.55, 0, 880, .002, .05, .3, 0, 1, , , 440, .05, , , , , .04, .6],
+  // an objective medal (a flag score): a triangle two-note call
+  medalObjective: [.6, 0, 523, .005, .1, .35, 1, 1, , , 262, .1, , , , , .03, .6],
+  // an Overshield taken: a rising, wavering charge as long as its charge-up (powerups.js, 3 s)
+  overshield: [.6, 0, 140, .1, 2.5, .4, 0, 1, .7, , , , , , 9, , , .7, , .25],
 };
 // presets that play as seamless loops (one render each)
 const LOOPS = new Set(['pourLoop', 'physHum', 'torchLoop', 'jetLoop', 'laserCharge']);
@@ -460,12 +497,50 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
     play('shotEcho', { at: point ?? null, delay: ECHO_DELAY_S });
   });
 
+  // wands (wands/runtime.js): your cast from you, an impact where it lands, a wand's blast as a bomb's boom
+  // Halo combat (pov/halo.js): the melee's bash, the frag's throw, clink and pickup, and the Energy
+  // Shield on every body but yours (yours: bindPlayer's 'shield', in your ears)
+  povEvents.on('kick', ({ melee, assassination, point, by }) => {
+    if (!live() || !melee) return;
+    const at = by ? point ?? null : null;
+    play('meleeBash', { at });
+    if (assassination) play('assassinate', { at });
+  });
+  povEvents.on('frag', ({ action, point, speed = FRAG_CLINK_SPEED, by }) => {
+    if (!live()) return;
+    if (action === 'throw') play('swoosh', { at: by ? point ?? null : null, rate: FRAG_THROW_RATE });
+    else if (action === 'bounce' && speed >= FRAG_CLINK_MIN) play('fragClink', { at: point ?? null, gain: clamp(speed / FRAG_CLINK_SPEED, FRAG_CLINK_GAIN_MIN, 1) });
+    else if (action === 'pickup') play('fragPickup', { at: by ? point ?? null : null });
+  });
+  povEvents.on('body:shield', ({ id, state: st, point }) => {
+    if (!live() || id === PLAYER || !point) return;
+    if (st === 'hit') play('shieldHit', { at: point });
+    else if (st === 'break') play('shieldBreak', { at: point });
+  });
+  povEvents.on('wand:fire', ({ by, origin, effect, material }) => {
+    if (live()) play('wandCast', { at: by ? origin ?? null : null, rate: lookOf(effect, material).pitch });
+  });
+  povEvents.on('wand:impact', ({ point, effect, material }) => {
+    if (live()) play('wandImpact', { at: point ?? null, rate: lookOf(effect, material).pitch });
+  });
+  povEvents.on('wand:blast', ({ point }) => {
+    if (!live()) return;
+    play('boom', { at: point ?? null });
+    play('shotEcho', { at: point ?? null, delay: ECHO_DELAY_S });
+  });
+  povEvents.on('wand:teleport', ({ by, to }) => { if (live()) play('wandTeleport', { at: by ? to ?? null : null }); });
+
   // a perk taken (pov/index.js), yours up close, an NPC's where it stands; an Extra Life spent sounds the same
   povEvents.on('perk:take', ({ point, by }) => { if (live()) play('perk', { at: by ? point ?? null : null }); });
   // gibs and eating (meat.js): the player's own bite is close, an NPC's (by) and every burst at the body
   povEvents.on('body:eat', ({ point, by }) => { if (live()) play('eat', { at: by ? point ?? null : null }); });
   povEvents.on('body:gib', ({ point }) => { if (live()) play('gib', { at: point ?? null }); });
   povEvents.on('perk:revive', () => { if (live()) play('perk'); });
+  // Halo's layer (game/feel.js): your medals' stings, a beat apart; an Overshield taken, yours close, a bot's where it is
+  povEvents.on('game:medal', ({ mine, kind, order = 0 }) => {
+    if (live() && mine) play(MEDAL_STING[kind] ?? MEDAL_STING.style, { delay: order * MEDAL_STING_GAP_S });
+  });
+  povEvents.on('game:powerup', ({ mine, point }) => { if (live()) play('overshield', { at: mine ? null : point ?? null }); });
 
   povEvents.on('impact', ({ source, point, id, energy, broke, body, backstab }) => {
     if (!live()) return;
@@ -531,7 +606,7 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
       case 'bomb:throw': case 'torch:throw': case 'lantern:throw': case 'flask:throw': play('swoosh', { at }); break;
       case 'flask:drink': play('plop', { at, rate: GULP_RATE }); break;   // a gulp (the shatter is its 'impact')
       case 'torch:land': case 'lantern:land': play('thunk', { at, gain: TOOL_HIT_GAIN }); break;
-      case 'lantern:toggle': play('dryClick', { at }); break;
+      case 'lantern:toggle': case 'toolgun:fire': play('dryClick', { at }); break;
       case 'blowtorch:on': loop('torchLoop', true); break;
       case 'blowtorch:off': loop('torchLoop', false); break;
       case 'physgun:grab': play('physGrab'); loop('physHum', true); humSince = clock(); break;
@@ -687,6 +762,11 @@ export function stats() {
     last: S.log.slice(),
   };
 }
+
+// The chain's input for sounds that aren't presets (announcer.js's voice): flat,
+// through the same master gain (silent outside POV), underwater low-pass and
+// limiter as everything here. null before start-up.
+export const voiceBus = () => (S.started ? { ctx: S.ctx, input: S.listener.getInput() } : null);
 
 // For checks: the rendered buffers of a preset (null before start-up).
 export const debugBuffers = (name) => S.buffers.get(name) ?? null;

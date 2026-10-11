@@ -6,6 +6,7 @@ import { povProbeFrag, povCouplingFrag, povFieldFrag, PROBE, PROBE_OUTSIDE } fro
 import { BODY_HEIGHT, BODY_WIDTH, EYE_HEIGHT, BODY_DENS } from './constants.js';
 import { createVitals, CELL_METERS, SAFE_FALL_M, LETHAL_FALL_M } from './vitals.js';
 import { povEvents } from './events.js';
+import { PLAYER } from './targets.js';
 import { createPerkSet } from './perks.js';
 import { createStatusSet } from './status.js';
 import { wound, createBodyWorld } from './stains.js';
@@ -66,6 +67,7 @@ const CROUCH_EYE = 28 / 64;             // × the eye's height, crouched
 const CROUCH_DOWN_S = 0.4;              // s to crouch
 const CROUCH_UP_S = 0.2;                // s to stand back up
 const CROUCH_SPEED = 1 / 3;             // × the speed on the ground, crouched
+export const CROUCH_WALK_SPEED = WALK_SPEED * CROUCH_SPEED;   // cells/s: a crouch-walk (Halo's motion tracker misses it: game/tracker.js)
 const STEP_DOWN = 1.1;                 // cells: walking off a ledge this low follows the ground down
 const MAX_SPEED = 350 * PX;            // cells/s (52 m/s): Noita's fastest fall (velocity_max_y), past a lethal one
 const SUBSTEP = 0.4;                   // cells: longest move per collision substep
@@ -248,6 +250,8 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     if (name === 'hurt' && perks.has('REVENGE_EXPLOSION') && revengeWait <= 0) { revengeDue = true; revengeWait = REVENGE_COOLDOWN; }
     if (name === 'wound') wound(p, data.amount, statusCtx);   // a blow, fall or blast bleeds (stains.js)
     if (name === 'gib') gibDue = true;
+    // the Energy Shield's events on the bus for every body (the shimmer and the pop: vfx.js, audio.js)
+    if (name === 'shield') povEvents.emit('body:shield', { ...data, id: id ?? PLAYER, point: p.pos.clone(), height: p.height });
     (listeners[name] || []).forEach((fn) => fn(data));
   };
   const vitals = createVitals(emit, perks);
@@ -306,8 +310,13 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     get height() { return H; },   // cells, feet to crown
     get width() { return 2 * HW; },   // cells, the square footprint's side
     get eyeHeight() { return EYE; },  // cells above the feet
+    get buriedId() { return env.buriedId; },   // the powder or solid the head is buried in, or -1
+    // the id of grid cell (x, y, z) (integers) as the last probe saw it: PROBE_OUTSIDE for the box's walls
+    // and floor, below −1 (unknown) past the probe (the camera's arm walks it: cameraArm.js)
+    cellAt: (x, y, z) => (probe.valid && g ? idAt(x, y, z) : UNKNOWN),
     get crouch() { return crouch; },  // 0 standing … 1 crouched
     speedScale: 1,                // × walking and running speed: a class's (classes.js; the Bulwark is slow)
+    aimScale: 1,                  // × walking and running speed: a gun's ironsights (tools/firearm.js ADS_SPEED)
     get health() { return vitals.health; },
     get shield() { return vitals.shield; },             // Energy Shield left (base lives, 0..shieldMax)
     get shieldMax() { return vitals.shieldMax; },
@@ -792,7 +801,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     // Shrink: × gait (√size); the jet's own speeds too
     // Crouched: no sprint, and a third of the speed on the ground
     const sprinting = alive && input.sprint && crouch === 0;
-    const footSpeed = (sprinting ? SPRINT_SPEED : WALK_SPEED) * p.speedScale * p.status.moveScale * gait
+    const footSpeed = (sprinting ? SPRINT_SPEED : WALK_SPEED) * p.speedScale * p.aimScale * p.status.moveScale * gait
       * (p.onGround ? crouchShare(crouch, CROUCH_SPEED) : 1);
     const jetFly = JET_FLY_SPEED * gait;
     const runSpeed = p.jetting ? Math.min(jetFly * perks.jetRate, Math.max(jetFly, PERK_SPEED_H))
@@ -1056,7 +1065,12 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     spawn, teleport, update, dispose, windowShifted,
     applyImpulse(dv) { impulse.add(dv); },
     ownBlast() { vitals.ownBlast(); },
+    // Halo's Overshield ({ layers, chargeS, drainS }: game/powerups.js); its state: 'charging' | 'on' | null
+    overshield(o) { return vitals.giveOvershield(o); },
+    get overshielded() { return vitals.overshieldState(); },
     heal(amount) { if (!vitals.dead) vitals.health = Math.min(1, vitals.health + amount); },   // Regeneration (potions.js)   // a blast it set off (a rocket, a bomb): it hurts this body less (vitals.js)
+    // the Energy Shield full now, no refill to wait for (a Halo match gives the shield after the spawn: Halo spawns you shielded)
+    fillShield() { if (!vitals.dead) { vitals.shield = vitals.shieldMax; vitals.shieldWait = 0; vitals.shieldCharging = false; } },
     // a blow from outside the sim (an NPC's axe): the Energy Shield takes it first;
     // { lethal: true } takes all the health there is, through the shield (a backstab);
     // { shielded: false } passes the shield (a drink hurts from inside: ingest.js)

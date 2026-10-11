@@ -1,113 +1,94 @@
-/* Numbered slots and a Source-style vertical stack for the active category. */
+/* Half-Life 2's weapon selector (hotbar.js). Sizes are HL2's HudLayout.res
+   HudWeaponSelection in its 640×480 units, one unit a pixel: SmallBoxSize 32,
+   LargeBoxWide 112, LargeBoxTall 80, BoxGap 8. Colours are its HUD yellow on
+   translucent black boxes. */
 .hotbar {
-  --hb-active: #ffd477;
+  --hb-small: 32px;
+  --hb-wide: 112px;
+  --hb-tall: 80px;
+  --hb-gap: 8px;
+  --hb-fade: 750ms;                 /* HL2 SELECTION_FADEOUT_TIME 0.75 s */
+  --hb-active: rgb(255, 220, 0);    /* HL2 ClientScheme FgColor */
   --hb-ink: #201b10;
-  --hb-muted: #aeb5c1;
-  position: fixed; left: 50%; bottom: max(14px, env(safe-area-inset-bottom)); z-index: 12;
-  width: 456px; max-width: calc(100% - 24px);
-  transform: translate(-50%, 12px);
-  display: flex; flex-direction: column; align-items: center; gap: 6px;
-  color: var(--text); font: 400 12px/1.4 var(--ui);
+  --hb-muted: rgba(255, 220, 0, 0.55);
+  --hb-box: rgba(0, 0, 0, 0.45);
+  --hb-box-on: rgba(0, 0, 0, 0.72);
+  position: fixed; left: 50%; top: var(--bar-bottom); z-index: 12;
+  transform: translateX(-50%);
+  display: flex; align-items: flex-start; gap: var(--hb-gap);
+  color: var(--hb-active); font: 400 12px/1.2 var(--ui);
   opacity: 0; visibility: hidden; pointer-events: none;
-  transition: opacity 200ms var(--ease), transform 200ms var(--ease), visibility 0s 200ms;
+  transition: opacity var(--hb-fade), visibility 0s var(--hb-fade);
 }
-.hotbar.show { opacity: 1; visibility: visible; transform: translate(-50%, 0); transition-delay: 0s; }
-.hotbar.show .hb-row, .hotbar.show .hb-stack { pointer-events: auto; }
-.hotbar :focus-visible { outline: 2px solid var(--hb-active); outline-offset: 3px; }
+.hotbar.show.open { opacity: 1; visibility: visible; pointer-events: auto; transition: opacity 80ms, visibility 0s; }
+.hotbar :focus-visible { outline: 2px solid var(--hb-active); outline-offset: 2px; }
 
-.hb-name {
-  padding: 3px 10px; border-radius: 4px;
-  background: var(--panel-solid); color: var(--text); font-weight: 600;
-}
-.hb-name:empty { display: none; }
-.hb-row {
-  display: grid; grid-template-columns: repeat(6, minmax(0, 1fr));
-  width: 100%; gap: 4px; padding: 5px;
-  background: var(--panel); border-radius: var(--r-panel); box-shadow: var(--shadow);
-}
+.hb-col { display: flex; flex-direction: column; gap: var(--hb-gap); }
 .hb-slot {
-  position: relative; min-width: 0; height: 76px;
-  border: 0; padding: 12px 0 21px; color: inherit; cursor: pointer;
-  display: grid; place-items: center;
-  border-radius: 6px; background: var(--raise);
-  box-shadow: inset 0 0 0 1px var(--line);
+  position: relative; width: var(--hb-small); height: var(--hb-small);
+  border: 0; padding: 0; border-radius: 4px; cursor: pointer;
+  background: var(--hb-box); color: var(--hb-muted);
 }
-.hb-slot:hover:not(:disabled) { background: var(--raise-hi); }
-.hb-slot.on { box-shadow: inset 0 0 0 2px var(--hb-active); }
-.hb-num {
-  position: absolute; left: 6px; top: 4px;
-  font: 400 10px/1 var(--pixel); color: var(--hb-muted);
+.hb-slot:hover:not(:disabled) { background: var(--hb-box-on); color: var(--hb-active); }
+.hb-num { position: absolute; left: 4px; top: 4px; font: 400 10px/1 var(--pixel); }
+/* the open slot's box widens to the tool boxes and names its category */
+.hb-label, .hb-count, .hb-status { display: none; }
+.hb-slot.on { width: var(--hb-wide); background: var(--hb-box-on); color: var(--hb-active); }
+.hb-slot.on .hb-label { display: block; position: absolute; left: 22px; right: 26px; top: 9px; text-align: left; font-size: 11px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hb-slot.on .hb-count { display: block; position: absolute; right: 5px; top: 10px; font-size: 9px; font-variant-numeric: tabular-nums; }
+.hb-slot:disabled { cursor: default; opacity: 0.4; }
+
+.hb-stack[hidden] { display: none; }
+.hb-tools { display: flex; flex-direction: column; gap: var(--hb-gap); }
+.hb-tool {
+  position: relative; width: var(--hb-wide); height: var(--hb-tall);
+  display: grid; grid-template-rows: 1fr auto; place-items: center;
+  padding: 6px 4px 7px; border: 0; border-radius: 4px; cursor: pointer;
+  background: var(--hb-box); color: var(--hb-muted);
 }
-.hb-slot.on .hb-num, .hb-slot.on .hb-label { color: var(--hb-active); }
-.hb-label {
-  position: absolute; bottom: 5px; left: 0; right: 0;
-  font-size: 10px; font-weight: 600; text-align: center;
-}
-.hb-count {
-  position: absolute; right: 5px; top: 3px;
-  color: var(--hb-muted); font-size: 9px; font-variant-numeric: tabular-nums;
-}
+.hb-tool:hover { background: var(--hb-box-on); color: var(--hb-active); }
+.hb-tool.on, .hb-tool.on:hover { background: var(--hb-box-on); color: var(--hb-active); box-shadow: inset 0 0 0 1px var(--hb-active); }
+.hb-tool-name { font-size: 11px; font-weight: 650; text-align: center; }
 .hb-icon {
-  width: 38px; height: 38px; flex: 0 0 auto;
-  display: grid; place-items: center;
+  width: 44px; height: 44px; display: grid; place-items: center;
   font: 400 9px/1 var(--pixel);
 }
+.hb-tool:not(.on) .hb-icon { opacity: 0.6; }
 .hb-icon img { width: 100%; height: 100%; image-rendering: pixelated; user-select: none; }
-.hb-slot[data-empty] .hb-icon { visibility: hidden; }
-.hb-slot:disabled { cursor: default; opacity: 0.5; }
-.hb-status {
-  position: absolute; left: 2px; right: 2px; bottom: 20px;
-  text-align: center; white-space: nowrap; overflow: hidden;
-  font: 400 8px/1 var(--pixel); color: var(--text);
-  text-shadow: 0 1px 2px #000;
-}
 
-.hb-stack {
-  position: absolute; bottom: calc(100% + 8px);
-  left: clamp(0px, calc((var(--hb-slot, 0) + 0.5) * 100% / 6 - 144px), calc(100% - 288px));
-  width: 288px; max-width: 100%; max-height: calc(100dvh - 152px);
-  overflow-y: auto; overscroll-behavior: contain;
-  padding: 10px; border-radius: 8px;
-  background: var(--panel-solid); box-shadow: var(--shadow);
-  scrollbar-color: var(--hb-muted) var(--panel-solid); scrollbar-width: thin;
+/* the tool in hand: bottom right, where HL2 shows ammo */
+.hb-held {
+  position: fixed; z-index: 12;
+  right: max(16px, env(safe-area-inset-right)); bottom: max(16px, env(safe-area-inset-bottom));
+  display: none; align-items: baseline; gap: 10px;
+  padding: 6px 12px; border-radius: 6px;
+  background: rgba(0, 0, 0, 0.45); color: rgb(255, 220, 0);
+  pointer-events: none;
 }
-.hb-stack[hidden] { display: none; }
-.hb-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 2px 4px 10px; }
-.hb-heading { font-size: 16px; font-weight: 650; }
-.hb-position { color: var(--hb-muted); font-variant-numeric: tabular-nums; }
-.hb-tools { display: flex; flex-direction: column; gap: 3px; }
-.hb-tool {
-  display: flex; align-items: center; gap: 10px; width: 100%; min-height: 48px;
-  padding: 4px 8px; border: 0; border-radius: 4px;
-  background: var(--raise); text-align: left; cursor: pointer;
-}
-.hb-tool:hover { background: var(--raise-hi); }
-.hb-tool.on, .hb-tool.on:hover { background: var(--hb-active); color: var(--hb-ink); }
-.hb-tool-name { flex: 1; font-size: 13px; font-weight: 600; }
-.hb-equipped { font-size: 10px; }
-.hb-cycle { padding: 10px 4px 0; font-weight: 600; }
-.hb-help { padding: 3px 4px 2px; color: var(--hb-muted); font-size: 11px; }
-.hb-touch-hint { display: none; }
+.hb-held.show { display: flex; }
+.hb-held .hb-name { font-size: 13px; font-weight: 650; }
+.hb-held .hb-name:empty { display: none; }
+.hb-held-status { font: 400 11px/1 var(--pixel); }
+.hb-held-status:empty { display: none; }
+.hb-held:has(.hb-name:empty) { display: none; }
 
-.hb-slot.shake { animation: hb-shake 360ms var(--ease); background: color-mix(in srgb, var(--raise) 55%, var(--danger)); }
+.hb-slot.shake { animation: hb-shake 360ms var(--ease); background: color-mix(in srgb, var(--hb-box) 55%, var(--danger)); }
 @keyframes hb-shake {
   0%, 100% { transform: none; }
   20%, 60% { transform: translateX(-3px); }
   40%, 80% { transform: translateX(3px); }
 }
-@media (max-width: 560px) {
-  .hotbar { bottom: max(8px, env(safe-area-inset-bottom)); }
-  .hb-slot { height: 68px; }
-  .hb-icon { width: 32px; height: 32px; }
-  .hb-label { font-size: 9px; }
+/* touch screens have no number keys: the selector stays up to tap */
+@media (hover: none) and (pointer: coarse) {
+  .hotbar.show { opacity: 1; visibility: visible; pointer-events: auto; }
+  .hotbar:not(.open) .hb-stack { display: none; }
+  .hotbar { --hb-small: 40px; --hb-wide: 104px; --hb-tall: 64px; --hb-gap: 6px; }
+  .hb-icon { width: 36px; height: 36px; }
+  /* the held tool's name would sit under the action buttons */
+  .hb-held { display: none !important; }
 }
 @media (max-width: 360px) {
-  .hotbar { max-width: calc(100% - 16px); }
-  .hb-row { gap: 2px; padding: 4px; }
-}
-@media (hover: none) and (pointer: coarse) {
-  .hb-key-hint, .hb-help { display: none; }
-  .hb-touch-hint { display: inline; }
+  .hotbar { --hb-wide: 96px; --hb-gap: 4px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .hotbar { transition: none; }

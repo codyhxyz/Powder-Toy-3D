@@ -12,7 +12,8 @@
   view `F` drops in too), `F5` first or third person (Minecraft), `Z` held zooms (Minecraft's zoom mods,
   `zoom.js`, with Zoomify's defaults: ÷4 eased in over 1 s and out over 0.5 s, the wheel ×1.5 a notch while
   held, the look slowed with the view, a scope's zoom multiplied in), `C` held crouches (PUBG's and Apex's key,
-  Source's duck: below), `F` kicks.
+  Source's duck: below), `F` kicks (in a Halo match: Halo's melee), `G` throws a frag grenade in a Halo match
+  (Halo: MCC's PC key; `docs/modes.md` "Halo combat").
 - **Crouch** (`C` held, player.js `crouchStep`, Source's gamemovement.cpp numbers): the body goes to half its
   height (hull 36 of 72) and the eye to 28/64 of its height, in 0.4 s down and 0.2 s up; on the ground it
   moves at a third of the speed and can't sprint. On the ground it shrinks from the top; in the air the feet
@@ -20,10 +21,12 @@
   the room: under a low ceiling it stays crouched until it's out. In liquid `C` swims down instead. The
   stickman squats (figure.js `CROUCH_POSE`, the pelvis dropped so the feet stay down); the realistic body has
   no crouch clip, so figureReal.js bends its pelvis, spine, thighs, calves and feet on top of the clips.
-- **The body** (setting: Realistic | Stickman, key `character`): Realistic is the default, the skinned
-  mannequin dressed as a wizard, a pointed hat and a robe skinned to its skeleton (garb.js: the robe's
-  weights are transferred from the nearest body vertices and eased toward the pelvis below the hips).
-  Stickman stands in while it loads. The jet exhaust leaves from the small of the back (`JET_NOZZLES`).
+- **The body** (setting: Realistic | Stickman, key `character`): Realistic is the default: Quaternius's
+  Superhero Male (Universal Base Characters, CC0), his muscles sculpted into the mesh and its normal map,
+  playing Universal Animation Library clips retargeted onto his skeleton (`tools/character-pack.mjs`:
+  each bone keeps the mannequin's world-space turn off its rest pose). A wizard in a pointed hat skinned
+  to his head (garb.js) and boxers dyed the hat's purple when the model is packed. The robe was dropped
+  on 2026-10-11 so the abs show. Stickman stands in while it loads. The jet exhaust leaves from the small of the back (`JET_NOZZLES`).
   The Castle Crashers wizard (figureCrasher.js: the stickman's rig with a huge hooded head, glowing eyes,
   outlines and cel shading) was a choice and the default until 2026-10-10; now it only draws the NPCs and
   the class portraits.
@@ -94,8 +97,42 @@ first person; nothing changes on desktop. The topbar's God / 1st / 3rd camera ch
   rest waited in the spawn menu). A new tool needs only its catalog entry. It lives outside the toolbelt, so
   a tool picked in the god view is in hand at the next drop-in.
 - Picking from the palette: the Tools group lists every tool (elements.js `GEAR_ITEMS`, ids −300…). A click
-  puts it in hand (app.js `giveGear`). In first person, `Q` frees the mouse and shows the palette at those
-  tiles: GMod's spawn menu.
+  puts it in hand (app.js `giveGear`). In first person, `Q` frees the mouse and shows the palette where it was
+  last left (at first, at what's selected): GMod's spawn menu. Anything that isn't a tool loads the tool gun. `Q` does nothing in a Halo-style match
+  (`docs/modes.md` "Halo rules").
+- **A restricted hotbar** (2026-10-11, a Halo match's two guns): `toolbelt.restrict(keys, hold?)` lets only `keys`
+  be in hand, each in a slot of its own in their order (the bar shows `1 Primary`, `2 Secondary` and hides the
+  rest: `hotbar.setLabels`), so `1` and `2` hold Halo's primary and secondary; the wheel steps between them, there are no wands (`B` and `equipWand` refuse) and `select()` refuses anything else, so the palette, a
+  class or the spawn menu can't put another tool in hand. `hold` (else the first key, if the tool in hand isn't
+  one of them) goes in hand. `restrict(null)` gives every tool back; `toolbelt.restricted` reads the keys.
+  `toolbelt.setNote(key, text)` shows text after the tool's status in the held-tool corner (a power weapon's
+  shots left); null clears it. Owner: `src/game/arsenal.js`.
+
+## Tool gun (2026-10-11): Garry's Mod's `gmod_tool`
+
+The spawn menu used to be no use in first person: picking an element only set the god view's brush. Now
+anything picked from it in first person (an element, a brush tool, lightning, a sign, a spawner, a
+construction) loads the **tool gun** (`tools/toolgun.tool.js`, slot 2 Build, last in `GEAR` so the palette
+ids before it stay put) and puts it in hand (app.js `loadToolGun`). This reverses v1's "no infinite
+painting in POV": GMod's sandbox spawns without limit, and the user asked for it.
+
+- The gun does what a click does in the god view, at the crosshair: app.js `toolGun` runs the same
+  `clickTool()` (signs, lightning, spawners, constructions) and `startStroke()` as the god view's `press()`.
+  In first person `hover` already follows the crosshair (`requestPick`), so nothing new is picked.
+- Left: one-click tools act per click; an element or a brush tool paints while held, at the brush size,
+  flow, shape and Replace set in the menu's options pane. Right (held): erase, The Powder Toy's right button
+  (its secondary element starts as nothing). Middle: pick up the material under the crosshair, Minecraft
+  creative's pick block (app.js canvas `pointerdown`).
+- An element's stroke stays at the distance it started at, along the aim (`strokeDist`), as the god view's
+  stays on its drag plane, so a held pour doesn't climb its own heap toward your face. Started at the sky,
+  it pours `HAND_REACH` ahead. A brush tool's stroke (erase, heat, cool) follows the crosshair, so a held
+  eraser tunnels into what it works on.
+- The brush and the construction ghost show only while the gun is out: the tool calls `toolGun.aim()` every
+  frame and `updateGunBrush` takes it once. The construction ghost has no pointer to move off what was just
+  placed, so `builds.update({ crosshair: true })` drops its hold and the ghost comes straight back.
+- Each stroke or click is one undo step, as in the god view. A guest's strokes go to the host (`mp.paint`).
+- The gun's screen (the model's part named `screen`) shows the loaded item's colour; its readout by the
+  crosshair names it. An NPC's kit has no `env.toolGun`: the gun is carried but does nothing.
 
 ## Guns (2026-10-10)
 
@@ -147,12 +184,18 @@ of charge, an abortable charge and "approximately two seconds" of standby betwee
 (`CHARGE_S` 3), it fires itself when full, releasing early cancels, and you press again after `REFIRE_S` 2.
 - Energy model: heat, not impact. Every power number is in povBore.js `LASER`, so a nerf is one edit.
 - The reach is the lumped heat balance of laser drilling (Steen & Mazumder, *Laser Material Processing*).
-  Each cell on the axis costs CAP·(VAPOR_T − T)·π·CORE² of the beam's `ENERGY` (1.25 M), so it goes
+  Each cell on the axis costs CAP·(VAPOR_T − T)·π·CORE² of the beam's `ENERGY` (2.22 M), so it goes
   ~119 cells through rock, ~70 through metal and ~59 through water. WALL and the floor stop it.
-- Core (r ≤ 1.5): vaporised. It becomes STEAM (water, ice, snow), FIRE (burnables) or SMOKE (the rest), at
+- Core (r ≤ 2): vaporised. It becomes STEAM (water, ice, snow), FIRE (burnables) or SMOKE (the rest), at
   3000 °C, blown back.
-- Rim (r ≤ 4): heated from 4500 down to 1600 °C, and the engine melts metal, glass and stone, boils water and
+- Rim (r ≤ 5): heated from 4500 down to 1600 °C, and the engine melts metal, glass and stone, boils water and
   lights wood.
+- r is from the bore: the axis up to where the beam stopped, then from that point, so the hole's hot end is
+  round (2026-10-11). The rim used to be cut flat there, so a surface met at a slant got only the near half of
+  the ring, a crescent, and WALL hit square on got nothing.
+- WALL and CLONE are heated but not vaporised (the spot the beam stops on glows), and the heat doesn't pass
+  them: a cell with one between it and the bore stays as it is (`LASER.SHADOW_STEP`). Before, it heated the
+  lava behind the Lab pit's wall.
 - ROCK can't melt in this engine, so the rim spalls it into STONE first (thermal spallation, Rauenzahn &
   Tester 1989), which then melts into lava.
 - The rim's heat isn't charged to `ENERGY`.
@@ -220,7 +263,9 @@ of charge, an abortable charge and "approximately two seconds" of standby betwee
 - Shows: the figure's front kick (`figure.js s.kick`: chamber, extend, retract), a boot swung up into the
   viewmodel (`createKickLeg`), `HIT.KICK`'s view jolt, `kick` event and sounds (whoosh, a thud on a body or
   an anchored kick-off; the material's own through `impact` with source `kick`, a `MELEE_SOURCES` member).
-- Not done: a touch button (`touch.js` isn't on main yet); the NPC brain kicking; a pose for the Realistic body.
+- In a Halo match the kick is Halo 3's melee on a body in the lunge (2.4 m from the eye: 70 points, from behind an
+  assassination), and the bots use it (`brain.js wantsMelee`, `npc.js`); see `docs/modes.md` "Halo combat".
+- Not done: a touch button (`touch.js` isn't on main yet); a pose for the Realistic body.
 
 ## Hook (2026-10-10): one rope, mass decides which way things move
 
@@ -277,13 +322,40 @@ Check: `node tools/kick-hook-check.mjs [--port …] [--shots dir]` (a dev server
 - Rendering is on demand (gfx/pacing.js). Anything that changes the view must change the camera or call
   `pacer.wake()` (`__app.requestRender()`).
 
+## Third person: the tool in hand (2026-10-11)
+
+In third person (and whenever the body is drawn with the camera out of its head) the body holds the
+selected tool the way Garry's Mod's and Team Fortress 2's player models do: by its kind of tool.
+
+- `src/pov/holds.js`: GMod's hold types (`pistol`, `smg`, `ar2`, `rpg`, `shotgun`, `physgun`, `melee`,
+  `melee2`, `knife`, `grenade`, `slam`, `normal`, plus `torch` from Skyrim and `pogo` from Commander
+  Keen). A hold puts the tool's grip at a rest point in the aim frame (the body's eye, turned to its yaw
+  and a share of its pitch) and says how much of the look's pitch the torso leans into. Each model has
+  its hold, its size against the viewmodel, and its hands: the right fist on the grip, the left on a
+  foregrip or handguard for two-handed tools, and for the pogo stick the pegs the feet stand on.
+- `src/pov/held.js`: the held model, lit by the world's light like the body (figure.js's shader), with the
+  first-person tool's motion replayed on it about its grip (the swing, the kick, the throw, a lamp gone
+  from the hand). It also moves the viewmodel, which is never drawn in third person, onto the held model,
+  so what a tool works out from its viewmodel (a gun's muzzle flash and tracer, the hook's rope) leaves
+  from the tool on the body. Tools can ask `env.heldOnBody()`.
+- `src/pov/limbs.js`: analytic two-bone IK (the arms to the grips, the legs to the pogo's pegs) and the
+  hand frames that close the realistic body's fists round a grip. Both bodies have `anchor(out)` (the eye
+  a hold hangs from) and `reach({ right, left, feet, weight })`; their `update` takes `look` (the head
+  follows the look, the torso leans into an aim), `lift` and `ride` (standing on a pogo stick).
+- The pogo stick is ridden: its foot on the ground under the body, the body standing on its pegs (lifted
+  by their height), both hands on the bar.
+- Check: `node tools/tp-held-check.mjs --port P` (hands on grips, the pogo ridden, lit, the flash from the
+  gun on the body, the axe's swing, first person restored, the stickman). Stills: `tools/tp-held-look.mjs`.
+- Not yet: the physgun's beam, the shovel's heap, the bucket's and the flask's contents are only drawn in
+  first person.
+
 ## Modules and ownership (one owner per file, to keep merges clean)
 
 | Area | Owner | Files |
 |---|---|---|
 | Hardness physics: impact and blast breaking, KE→heat, debris behaviour, acid-proof shards, CPU tile port | engine | `src/elements.js` (values only), `src/physics.js`, `src/shaders/react.js`, `src/shaders/move.js`, `src/ui/tiles/*` |
 | Body physics: probe readback, collisions, swimming, pressure push, vitals and damage, body→sim coupling pass | player | `src/pov/player.js`, `src/pov/vitals.js`, `src/shaders/povBody.js` |
-| Camera, drop-in swoop, pointer lock, first/third person, body mesh, HUD, input, app integration | shell | `src/pov/index.js`, `src/pov/camera.js`, `src/pov/figure.js`, `src/pov/hud.js`, `src/pov/pov.css`, `src/app.js`, `src/camera.js`, `src/ui/hud.js` (help list) |
+| Camera, drop-in swoop, pointer lock, first/third person, body mesh, HUD, input, app integration | shell | `src/pov/index.js`, `src/pov/camera.js`, `src/pov/figure.js`, `src/pov/held.js`, `src/pov/holds.js`, `src/pov/limbs.js`, `src/pov/hud.js`, `src/pov/pov.css`, `src/app.js`, `src/camera.js`, `src/ui/hud.js` (help list) |
 | Hotbar, tool registry, shovel, bucket, exact cell transfer | tools-a | `src/pov/tools/index.js`, `src/pov/tools/hotbar.js`, `src/pov/tools/transfer.js`, `src/shaders/transfer.js`, `src/pov/tools/shovel.tool.js`, `src/pov/tools/bucket.tool.js`, `src/pov/tools/hotbar.css` |
 | Axe, gun, physgun | tools-b | `src/pov/tools/axe.tool.js`, `src/pov/tools/gun.tool.js`, `src/pov/tools/physgun.tool.js`, `src/shaders/povTools.js` |
 
@@ -452,7 +524,9 @@ say world. Emitters own their event names. Listeners never mutate payloads.
 
 | Event | Emitted by | Payload |
 |---|---|---|
-| `blast` | bomb, rocket | `{ point }` grid. A charge or rocket went off there (sound, shake, fireball; with no `by`, the player's own: less blast damage). |
+| `blast` | bomb, rocket, frag | `{ point, kind? }` grid. A charge, rocket or frag (`kind: 'frag'`) went off there (sound, shake, fireball; with no `by`, the player's own: less blast damage). |
+| `frag` | frag.js | `{ action: 'throw'\|'bounce'\|'pickup', point, speed? }`. A frag grenade left a hand, bounced (speed in cells/s) or was picked up off the ground. Its flight is `round:move` / `round:end` with kind `'frag'`. |
+| `body:shield` | player.js (any body) | `{ id, state: 'hit'\|'break'\|'recharge'\|'full', amount?, point, height }`. A body's Energy Shield event (vitals.js), on the bus: point its feet (grid), height its own (vfx.js's shimmer and pop, audio.js). |
 | `punch` | `rig.hit` (viewmodel.js `HIT`) | `{ pitch, yaw }` rad, + up and + left. Throws the view punch (feel.js). |
 | `gun:fire` | pistol, SMG, sniper, rocket | `{ origin, dir, muzzleWorld, gun, sound }`. The round left the muzzle (origin grid, dir unit; muzzleWorld is the viewmodel muzzle in world space, for the flash; gun the tool key; sound `{ rate, gain, thump, voice }` scales the pistol's shot). |
 | `gun:dry` | gun | `{}`. The trigger clicked but nothing fired (muzzle blocked). |
@@ -463,7 +537,7 @@ say world. Emitters own their event names. Listeners never mutate payloads.
 | `drunk` | ingest.js (whiskey) | `{ seconds }`. Seconds of Drunk added to the player (feel.js sways the view; an NPC's has `by`). |
 | `player:step` | shell (camera bob cycle) | `{ speed, inLiquid }`. A footfall. |
 | `player:jet` | player | `{ on }`. The jetpack lit or went out. |
-| `kick` | a body's kick (kick.js) | `{ hit: 'cell'\|'body'\|null, point, normal, dir, id, broke, mass, dv }`. A kick, landed or not: mass is what it met (kg, Infinity when anchored), dv the kicker's own Δv (cells/s). |
+| `kick` | a body's kick (kick.js) | `{ hit: 'cell'\|'body'\|null, point, normal, dir, id, broke, mass, dv, melee?, assassination? }`. A kick, landed or not: mass is what it met (kg, Infinity when anchored), dv the kicker's own Δv (cells/s); melee: it was Halo's melee (a Halo match), assassination: from behind. |
 | `perk:take` | shell | `{ key, keys, point, by? }`. A body took a perk orb: key is the orb's, keys what it gained (Gamble's two). |
 | `perk:revive` | shell | `{ point }`. Extra Life brought the player back. |
 | `status:on` / `status:off` | a body's status set (`status.js`) | `{ key, cause }`. A status came on or went off (cause: an element key, the status that cancelled it, `'add'`, `'faded'`, `'died'`; an NPC's carry `by`). See "Status effects". |
@@ -473,6 +547,12 @@ say world. Emitters own their event names. Listeners never mutate payloads.
 | `shake` | laser cannon | `{ trauma }` 0..1. Adds to the player's screen shake (feel.js), a shared hook for any tool. |
 | `body:gib` | player.js (any body) | `{ point, cells, lost, by? }`. A body burst into meat: `cells` MEAT cells laid, `lost` that found no room (buried). `by` is the NPC's id. |
 | `body:eat` | player.js (any body) | `{ point, cells, by? }`. A body ate `cells` cooked meat cells. |
+| `wand:fire` | wands/runtime.js | `{ origin, muzzle, muzzleWorld, dir, effect, material }`. A cast left the wand: origin is the eye (the physics origin), muzzle the drawn tip (grid; muzzleWorld world, or null). effect/material are its main spell's (wands/look.js colours it). Feel blooms the crosshair, audio plays the cast. |
+| `wand:flight` | wands/runtime.js | `{ flights: [{ from, to, effect, material }], dt }`. Every bolt that moved this frame, once per frame, at its drawn position (vfx.js's trails). |
+| `wand:impact` | wands/runtime.js | `{ point, normal, effect, material, radius, id, body }`. A bolt or beam landed (id: the cell hit, −1 for a body or nothing). A hit into a body also emits `impact` `{ source: 'wand', body: true, id: −1 }` for the hitmarker. |
+| `wand:beam` | wands/runtime.js | `{ from, to, dir, effect, op, material, radius, hit, normal, id }`. A beam or touch, drawn from the tip (from) to its true end. |
+| `wand:blast` | wands/runtime.js | `{ point, radius, power }`. A wand's pressure blast: fireball, boom and shake like `blast`, but not `blast` itself (that one lowers the player's self-damage). |
+| `wand:teleport` | wands/runtime.js | `{ from, to }` feet (grid). A teleport bolt moved the caster. |
 
 The player's own events (`player.on('hurt'|'death'|'land'|'splash'|'revive'|'revenge')`) stay as they are; listeners subscribe there too.
 
@@ -590,8 +670,10 @@ Perks come from shrines, Noita's Holy Mountain: the Shrine construction (`constr
 fixed-size stone pavilion with three plinths) with a random perk orb floating over each plinth
 (`SHRINE_ALTARS`; `constructions.js` hands their grid cells to `onPlaced`, and app.js sets the orbs). The orbs
 (`src/perkOrbs.js`) are markers pinned to world cells, like the spawners: the perk's icon at chest height over a
-pad. A body (the player's or an NPC's) that walks into one, or stands against its plinth, gains the perk
-(`pov/index.js` `takePerks`), and the shrine's other orbs vanish. Undoing a placed shrine takes its orbs too (the
+pad. The player looks at one, sees its name and what it does under the crosshair, and presses **E** to take it
+(Noita's pick-up rule; `pov/interact.js`, the shared look + E for every pickup); walking into one takes nothing.
+An NPC walks into one, or stands against its plinth (`pov/index.js` `takePerks`). Either way the shrine's other
+orbs vanish. Undoing a placed shrine takes its orbs too (the
 undo snapshot's `note`). A new scene clears the orbs.
 
 Every world gets a shrine (app.js `worldShrine`) once its first window loads: on flat dry ground near the window's

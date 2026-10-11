@@ -1,36 +1,14 @@
 import * as THREE from 'three';
 
-// The wizard's clothes for the realistic body (figureReal.js): a pointed hat
-// and a plain robe, built once per loaded model and skinned to its skeleton,
-// so every clip (walk, swim, death...) moves them with the body.
-//
-// - The robe is a ring of ellipses fitted around the mannequin's bind pose
-//   (arms left out), hanging straight from the hips and flaring to the hem.
-//   Its skin weights are transferred from the nearest body vertices (inverse
-//   distance over the K nearest, as Blender's Data Transfer does), and below
-//   the hips they are blended toward the pelvis, so the skirt follows the legs
-//   only part of the way instead of splitting into trousers.
-// - The hat is a lathe (brim and cone, the tip bent back), seated on the head
-//   and weighted wholly to the head bone.
+// The wizard's hat for the realistic body (figureReal.js): a lathe (brim and
+// cone, the tip bent back), built once per loaded model, seated on the head and
+// skinned wholly to the head bone, so every clip (walk, swim, death...) carries
+// it. Below it he wears only his boxers, dyed the hat's purple when the model is
+// packed (tools/character-pack.mjs): wizard boxers.
 //
 // Lengths are in model units (metres); the body's own scale takes them to cells.
 
-const ARM_BONE = /upperarm|lowerarm|hand|index|middle|pinky|ring|thumb/;  // left out of the robe's fit
-const HEAD_BONE = 'Head', PELVIS_BONE = 'pelvis', HIP_BONE = 'thigh_l';
-
-// robe
-const ROBE_TOP = 1.47;                   // collar height
-const ROBE_SHOULDER = 1.40;              // the ring that covers the shoulders
-const ROBE_HEM = 0.3;                    // hem height: mid-shin
-const ROBE_RINGS = 24, ROBE_SEGMENTS = 28;
-const ROBE_BAND = 0.03;                  // ± height of body vertices fitted to each ring
-const ROBE_MARGIN = 0.035;               // cloth stands this far off the body
-const ROBE_COLLAR_R = 0.085;             // radius of the neck opening
-const ROBE_FLARE = 0.16;                 // extra radius at the hem, ramped in from the hips
-const ROBE_FRONT_SHIFT = 0.01;           // hem centre this far forward, so a stride clears the cloth
-const SKIN_K = 6;                        // body vertices averaged per robe vertex
-const SKIRT_PELVIS = 0.2;                // share of the hem's weight moved to the pelvis (0: follows the legs)
-const MAX_INFLUENCES = 4;                // per vertex, as three's skinning takes
+const HEAD_BONE = 'Head';
 
 // hat (sizes as multiples of the head's half-width)
 const HAT_BRIM = 2.0;                    // brim radius
@@ -43,9 +21,7 @@ const HAT_SEAT = 0.4;                    // brim sits this share of the head's h
 const HAT_TILT = 0.12;                   // rad back
 const HAT_RINGS = 14, HAT_SEGMENTS = 28;
 
-export const GARB_COLORS = { robe: [0.2, 0.08, 0.42], hat: [0.16, 0.06, 0.35] };   // albedo, linear
-
-const smooth01 = (x) => { const t = Math.min(Math.max(x, 0), 1); return t * t * (3 - 2 * t); };
+export const GARB_COLORS = { hat: [0.16, 0.06, 0.35] };   // albedo, linear
 
 // Every body vertex in the bind pose, with its skin influences and its main bone.
 function bodyVertices(meshes) {
@@ -63,87 +39,6 @@ function bodyVertices(meshes) {
     }
   }
   return out;
-}
-
-// The top MAX_INFLUENCES of a bone → weight map, normalized, as attribute rows.
-function topInfluences(acc) {
-  const top = [...acc.entries()].sort((a, b) => b[1] - a[1]).slice(0, MAX_INFLUENCES);
-  const sum = top.reduce((s, [, w]) => s + w, 0) || 1;
-  while (top.length < MAX_INFLUENCES) top.push([0, 0]);
-  return { idx: top.map(([b]) => b), w: top.map(([, w]) => w / sum) };
-}
-
-function buildRobe(verts, boneIndex) {
-  const body = verts.filter((p) => !ARM_BONE.test(p.bone));
-  const hipY = verts.find((p) => p.bone === HIP_BONE)?.y ?? 0.9;
-  const pelvis = boneIndex(PELVIS_BONE);
-  const hip = body.reduce((h, p) => (p.y > hipY - ROBE_BAND && p.y < hipY + ROBE_BAND ? Math.max(h, p.y) : h), hipY);
-
-  // ring heights, hem to shoulder, then the collar
-  const heights = [];
-  for (let i = 0; i < ROBE_RINGS; i++) heights.push(ROBE_HEM + (ROBE_SHOULDER - ROBE_HEM) * (i / (ROBE_RINGS - 1)));
-  const rings = heights.map((y) => {
-    let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
-    for (const p of body) {
-      if (Math.abs(p.y - y) > ROBE_BAND) continue;
-      x0 = Math.min(x0, p.x); x1 = Math.max(x1, p.x); z0 = Math.min(z0, p.z); z1 = Math.max(z1, p.z);
-    }
-    return { y, rx: Math.max(-x0, x1) + ROBE_MARGIN, rz: (z1 - z0) / 2 + ROBE_MARGIN, cz: (z0 + z1) / 2 };
-  });
-  // below the hips the cloth hangs: never narrower than the ring above, plus the flare
-  const hipRing = rings.findLastIndex((r) => r.y <= hip);
-  for (let i = hipRing - 1; i >= 0; i--) {
-    const up = rings[i + 1], r = rings[i];
-    const f = ROBE_FLARE * (1 - (r.y - ROBE_HEM) / (hip - ROBE_HEM)) / ROBE_RINGS * 2;
-    r.rx = Math.max(r.rx, up.rx) + f;
-    r.rz = Math.max(r.rz, up.rz) + f;
-    r.cz = up.cz + ROBE_FRONT_SHIFT / ROBE_RINGS;
-  }
-  const top = rings[rings.length - 1];
-  rings.push({ y: ROBE_TOP, rx: ROBE_COLLAR_R, rz: ROBE_COLLAR_R, cz: top.cz });
-
-  const n = ROBE_SEGMENTS;
-  const pos = [], skinIdx = [], skinW = [], index = [];
-  for (const r of rings) {
-    for (let s = 0; s <= n; s++) {
-      const a = (s / n + 0.5) * 2 * Math.PI;   // the seam (s = 0 and n) down the back
-      pos.push(Math.sin(a) * r.rx, r.y, r.cz + Math.cos(a) * r.rz);
-    }
-  }
-  for (let j = 0; j < rings.length - 1; j++) {
-    for (let s = 0; s < n; s++) {
-      const a = j * (n + 1) + s, b = a + n + 1;
-      index.push(a, b, a + 1, a + 1, b, b + 1);
-    }
-  }
-
-  // skin weights: inverse distance over the K nearest body vertices, the skirt eased toward the pelvis
-  const near = [];
-  for (let i = 0; i < pos.length; i += 3) {
-    const x = pos[i], y = pos[i + 1], z = pos[i + 2];
-    near.length = 0;
-    for (const p of verts) {
-      const d = (p.x - x) ** 2 + (p.y - y) ** 2 + (p.z - z) ** 2;
-      if (near.length < SKIN_K || d < near[near.length - 1].d) {
-        near.push({ d, p });
-        near.sort((a, b) => a.d - b.d);
-        if (near.length > SKIN_K) near.pop();
-      }
-    }
-    const acc = new Map();
-    for (const { d, p } of near) {
-      const k = 1 / (Math.sqrt(d) + 1e-4);
-      p.idx.forEach((b, j) => { if (p.w[j] > 0) acc.set(b, (acc.get(b) ?? 0) + p.w[j] * k); });
-    }
-    const total = [...acc.values()].reduce((s, w) => s + w, 0);
-    const toPelvis = SKIRT_PELVIS * smooth01((hip - y) / (hip - ROBE_HEM));
-    for (const [b, w] of acc) acc.set(b, (w / total) * (1 - toPelvis));
-    acc.set(pelvis, (acc.get(pelvis) ?? 0) + toPelvis);
-    const { idx, w } = topInfluences(acc);
-    skinIdx.push(...idx);
-    skinW.push(...w);
-  }
-  return skinnedGeometry(pos, index, skinIdx, skinW);
 }
 
 function buildHat(verts, boneIndex) {
@@ -183,18 +78,8 @@ function buildHat(verts, boneIndex) {
   return geo;
 }
 
-function skinnedGeometry(pos, index, skinIdx, skinW) {
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  geo.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(skinIdx, 4));
-  geo.setAttribute('skinWeight', new THREE.Float32BufferAttribute(skinW, 4));
-  geo.setIndex(index);
-  geo.computeVertexNormals();
-  return geo;
-}
-
-// Geometries for the robe and hat, from the model's skinned meshes (bind pose).
-// Skin indices refer to meshes[0].skeleton's bones.
+// The hat's geometry, from the model's skinned meshes (bind pose). Skin indices
+// refer to meshes[0].skeleton's bones.
 export function buildGarb(meshes) {
   const bones = meshes[0].skeleton.bones;
   const boneIndex = (name) => {
@@ -202,6 +87,5 @@ export function buildGarb(meshes) {
     if (i < 0) throw new Error(`the character model has no ${name} bone`);
     return i;
   };
-  const verts = bodyVertices(meshes);
-  return { robe: buildRobe(verts, boneIndex), hat: buildHat(verts, boneIndex) };
+  return { hat: buildHat(bodyVertices(meshes), boneIndex) };
 }

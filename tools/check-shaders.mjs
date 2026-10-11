@@ -18,6 +18,7 @@ import { allDetailDefines } from '../src/gfx/detail.js';
 import { aerationFrag } from '../src/shaders/gfx/liquidDetail.js';
 import * as probe from '../src/shaders/probe.js';
 import * as stamp from '../src/shaders/stamp.js';
+import * as script from '../src/shaders/script.js';
 import * as gi from '../src/shaders/gi.js';
 import * as povBody from '../src/shaders/povBody.js';
 import * as transfer from '../src/shaders/transfer.js';
@@ -29,6 +30,7 @@ import * as povBore from '../src/shaders/povBore.js';
 import * as generate from '../src/shaders/generate.js';
 import { island, islandGLSL, islandColumnFrag } from '../src/world/scenes/island.js';
 import * as windowPasses from '../src/shaders/window.js';
+import * as decoPasses from '../src/shaders/deco.js';
 import { regionVert } from '../src/gfx/regions.js';
 import * as far from '../src/shaders/far.js';
 import { figureFrag, figureSkinnedVert } from '../src/pov/figure.js';
@@ -85,6 +87,7 @@ for (const [label, dims] of Object.entries(grids)) {
   check(`shadow-${label}`, raw + appShadow(g), 'frag');
   check(`giGather-far-${label}`, raw + appGather(g), 'frag');
   check(`povFigure-${label}`, shaderMatFrag + figureFrag(g), 'frag');
+  check(`povFigureMapped-${label}`, `${shaderMatFrag}#define FIG_MAP\n#define FIG_NORMAL_MAP\n${figureFrag(g)}`, 'frag');
   check(`birdProbe-${label}`, raw + birdProbeFrag(g), 'frag');
   // the same with every close-up detail feature compiled in (gfx/detail.js)
   const defs = Object.entries(allDetailDefines()).map(([k, v]) => `#define ${k} ${v}\n`).join('');
@@ -112,7 +115,7 @@ for (const [label, dims] of Object.entries(grids)) {
   for (let stage = 0; stage < fields.BOOST_STAGES; stage++) check(`fieldBoost${stage}-${label}`, raw + fields.fieldBoostFrag(g, stage), 'frag');
   check(`fieldCopy-${label}`, raw + fields.fieldCopyFrag(g), 'frag');
   for (const set of Object.values(fields.DIRTY)) check(`fieldRegionVert${set}-${label}`, raw + regionVert(fields.fieldRegionsGLSL(g, set)), 'vert');
-  for (const [k, v] of Object.entries({ ...move, ...react, ...probe, ...stamp, ...gi, ...povBody, ...transfer, ...windowPasses, ...lightning })) if (typeof v === 'function') check(`${k}-${label}`, raw + v(g), 'frag');
+  for (const [k, v] of Object.entries({ ...move, ...react, ...probe, ...stamp, ...script, ...gi, ...povBody, ...transfer, ...windowPasses, ...lightning, ...decoPasses })) if (typeof v === 'function') check(`${k}-${label}`, raw + v(g), 'frag');
   for (const k of ['axeFrag', 'pickaxeFrag', 'knifeFrag', 'wormFrag', 'wormGiantFrag', 'physgunComFrag', 'physgunFrag', 'blastFrag', 'flamerFrag', 'torchFireFrag', 'bodyFireFrag', 'rocketFrag']) check(`${k}-${label}`, raw + povTools[k](g), 'frag');
   for (const k of ['traceFrag', 'strikeFrag']) check(`${k}-${label}`, raw + povTrace[k](g), 'frag');
   for (const k of ['kickFrag', 'hookCellFrag']) check(`${k}-${label}`, raw + povKick[k](g), 'frag');
@@ -150,5 +153,7 @@ check('quadVert', raw + quadVert, 'vert');
 // the realistic body's skinned vertex shader, as three builds it for a SkinnedMesh
 const includes = (src) => src.replace(/^[ \t]*#include +<(\w+)>/gm, (_, k) => includes(ShaderChunk[k]));
 check('figureSkinnedVert', `${shaderMatVert}#define USE_SKINNING\nin vec3 normal;\nin vec4 skinIndex;\nin vec4 skinWeight;\n${includes(figureSkinnedVert)}`, 'vert');
+// ...and with a textured mesh's maps (figureReal.js)
+check('figureSkinnedVertMapped', `${shaderMatVert}#define USE_SKINNING\n#define FIG_MAP\n#define FIG_NORMAL_MAP\nin vec3 normal;\nin vec2 uv;\nin vec4 skinIndex;\nin vec4 skinWeight;\n${includes(figureSkinnedVert)}`, 'vert');
 console.log(failures ? `${failures} shader(s) failed` : 'all shaders OK');
 process.exit(failures ? 1 : 0);

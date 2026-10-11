@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { quadVert, stateUniforms } from '../shaders/common.js';
-import { traceFrag, strikeFrag, TRACE, TRACE_MISS, STRIKE } from '../shaders/povTrace.js';
+import { traceFrag, strikeFrag, TRACE, TRACE_MISS, TRACE_ROUND, STRIKE } from '../shaders/povTrace.js';
 import { ELEMENTS, K } from '../elements.js';
 import { CELL_METERS } from './vitals.js';
 import { povEvents } from './events.js';
@@ -209,7 +209,7 @@ export function createBallistics({ renderer }) {
       if (!inBox(from, sim.g)) return;   // the rest of its path is outside: nothing to strike
       const tTo = Math.min(r.t + want, r.tTraced + chordTime(r));
       if (tTo <= r.tTraced) return;
-      u.uFrom.value[i].set(from.x, from.y, from.z, 1);
+      u.uFrom.value[i].set(from.x, from.y, from.z, TRACE_ROUND);
       posAt(r, tTo, u.uTo.value[i]);
       const job = { r, slot: i, tFrom: r.tTraced, tTo, done: false };
       jobs.push(job);
@@ -358,6 +358,8 @@ export function createBallistics({ renderer }) {
     get lastImpact() { return lastImpact; },   // for checks
     get latency() { return latency; },         // frames a trace readback takes (running estimate)
     clear() { while (rounds.length) end(rounds[0]); },
+    // take round `id` out of the air now (a frag whose fuse ran out mid-flight: frag.js); its round:end follows
+    cancel(id) { const r = rounds.find((x) => x.id === id); if (r) end(r); },
     dispose() {
       while (rounds.length) end(rounds[0]);
       slots.forEach((s) => s.target.dispose());

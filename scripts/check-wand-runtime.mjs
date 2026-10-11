@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { setImmediate as turn } from 'node:timers/promises';
 import * as THREE from 'three';
-import { E, K } from '../src/elements.js';
-import { addTarget } from '../src/pov/targets.js';
+import { E, K, ELEMENTS } from '../src/elements.js';
+import { addTarget, areaTargets, setHitRules } from '../src/pov/targets.js';
 import { BODY_WIDTH, BODY_HEIGHT } from '../src/pov/constants.js';
 
 import { createWandRuntime, WAND_LIMITS } from '../src/pov/wands/runtime.js';
@@ -41,7 +41,7 @@ function harness(options = {}) {
     },
   };
   const renderer = options.renderer ?? {};
-  const env = { renderer, world, visuals: visual, transfer, compileWand: options.compile ?? fakeCompile,
+  const env = { renderer, world, visuals: visual, transfer, compileWand: options.compile ?? fakeCompile, random: options.random,
     getSim: () => sim, getScale: () => 1 };
   const runtime = createWandRuntime(env);
   const impulses = [], teleports = [];
@@ -114,6 +114,21 @@ function delayedHarness(latency = 0.15) {
   assert.equal(h.runtime.stats.castIndex, 0);
   assert(h.runtime.stats.cooldown > 0.4);
   h.runtime.dispose();
+}
+
+// Faster Tools (toolRate 2) casts about twice as often; mana regen stays on plain dt.
+{
+  const castsIn = async (rate) => {
+    const h = harness();
+    h.equip([leaf('heat', { mana: 0 })], { manaMax: 1000, manaRegen: 0 });
+    h.ctx.toolRate = rate;
+    const before = h.runtime.stats.casts;
+    for (let i = 0; i < 50; i++) await h.step({ fire: true, dt: 0.02 });
+    h.runtime.dispose();
+    return h.runtime.stats.casts - before;
+  };
+  const slow = await castsIn(1), fast = await castsIn(2);
+  assert(slow > 0 && fast >= slow * 1.8 && fast <= slow * 2.2, `toolRate 2 casts ${fast} vs ${slow}`);
 }
 
 // Async timer payload survives edits/deselect, freezes while paused, and fires once.
@@ -290,6 +305,29 @@ function delayedHarness(latency = 0.15) {
   assert(h.calls.some((c) => c.material === 'FIRE'));
   assert.equal(h.calls.filter((c) => c.effect === 'pressure').length, 1);
   h.runtime.dispose();
+}
+
+// A trail is made at its own material's temperature: an acid bolt's fire trail is fire-hot, not acid's 20 °C.
+{
+  const h = harness();
+  h.equip([leaf('emit', { material: 'ACID', lifetime: 0.15, trail: 'FIRE' }, 'projectile')]);
+  await h.step({ fire: true });
+  for (let i = 0; i < 4; i++) await h.step();
+  const trail = h.calls.filter((c) => c.material === 'FIRE');
+  assert(trail.length && trail.every((c) => c.temperature === ELEMENTS[E.FIRE].temp), 'trail at fire temperature');
+  h.runtime.dispose();
+}
+
+// Area targets (blasts, homing) come nearest first, not in registration order, and pass teammates as rays do.
+{
+  const remove = [['far', 40, 41], ['near', 26, 27], ['mate', 23, 24]].map(([id, x0, x1]) =>
+    addTarget({ id, alive: true, box(lo, hi) { lo.set(x0, 19, 19); hi.set(x1, 22, 21); }, hurt() {} }));
+  const ids = () => areaTargets(v(20, 20, 20), 32, 'player').map((f) => f.target.id);
+  assert.deepEqual(ids(), ['mate', 'near', 'far']);
+  setHitRules({ passes: (by, t) => t.id === 'mate', share: () => 1 });
+  assert.deepEqual(ids(), ['near', 'far']);
+  setHitRules(null);
+  remove.forEach((fn) => fn());
 }
 {
   const h = harness({ trace: (segments) => Promise.resolve(segments.map((s) => ({ point: s.to.clone(), normal: v(-1), id: E.ROCK }))) });
@@ -516,4 +554,34 @@ let recipes = 0;
   assert(evidence.get('teleport').teleports.length);
 
 }
-console.log(`wand runtime checks passed: scheduling, prepaid mana, pause, delayed catch-up, exact timers, bounded queues, caster clearance, piercing, collision, shifts, inventory, effects; ${recipes} catalog recipes`);
+
+// Noita's spells per cast and shuffle (generate.js wands); defaults keep one in-order root per cast.
+{
+  const h = harness();
+  h.equip([leaf('heat'), leaf('cool'), leaf('dig')], { spellsPerCast: 2, castDelay: 0.5, recharge: 0.5 });
+  await h.step({ fire: true });
+  assert.equal(h.runtime.stats.casts, 1);
+  assert.deepEqual(h.calls.map((c) => c.effect), ['heat', 'cool']);
+  assert.equal(h.runtime.stats.mana, 98);
+  assert.equal(h.runtime.stats.castIndex, 2);
+  for (let i = 0; i < 12; i++) await h.step({ fire: true });
+  assert.deepEqual(h.calls.map((c) => c.effect).slice(0, 3), ['heat', 'cool', 'dig'], 'the draw stops at the deck end, then recharges');
+  assert.equal(h.runtime.stats.casts, 2);
+  h.runtime.refill();
+  assert.equal(h.runtime.stats.mana, 100);
+  assert(h.runtime.stats.cooldown <= 0);
+  h.runtime.dispose();
+}
+{
+  const draws = [0, 0.99, 0.5, 0.1];
+  let n = 0;
+  const h = harness({ random: () => draws[n++ % draws.length] });
+  h.equip([leaf('heat'), leaf('cool'), leaf('dig')], { shuffle: 1, castDelay: 0.02, recharge: 0.02 });
+  for (let i = 0; i < 6; i++) await h.step({ fire: true, dt: 0.05 });
+  const effects = h.calls.map((c) => c.effect);
+  assert.deepEqual([...effects.slice(0, 3)].sort(), ['cool', 'dig', 'heat'], 'a shuffled cycle still casts every root once');
+  assert.notDeepEqual(effects.slice(0, 3), ['heat', 'cool', 'dig'], 'shuffle reorders the deck');
+  assert(n >= 4, 'reshuffled after the recharge');
+  h.runtime.dispose();
+}
+console.log(`wand runtime checks passed: scheduling, prepaid mana, pause, delayed catch-up, exact timers, bounded queues, caster clearance, piercing, collision, shifts, inventory, effects, spells per cast, shuffle, refill; ${recipes} catalog recipes`);

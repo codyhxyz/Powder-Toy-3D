@@ -3,14 +3,14 @@ import { PERK, shrineOffer } from './pov/perks.js';
 import { BODY_HEIGHT, BODY_WIDTH } from './pov/constants.js';
 
 // Perk orbs: markers like the spawners (spawners.js), not cells. Each is a
-// perk's icon floating at chest height over a glowing pad; a body (the
-// player's, or an NPC's) that walks into it gains the perk (pov/index.js,
-// pov/perks.js). They come with shrines (the Shrine construction, Noita's Holy
+// perk's icon floating at chest height over a glowing pad. The player looks at
+// one and presses E to take it, seeing its name first (Noita's rule; pov/interact.js);
+// an NPC walks into one (pov/index.js, pov/perks.js). They come with shrines (the Shrine construction, Noita's Holy
 // Mountain: constructions/builtins.js shrine), one random perk over each of its
 // plinths: taking one takes the others with it. An orb stands on a world cell,
 // so in a world bigger than the grid it stays put while the window moves.
 
-const ORB_LIFT = BODY_HEIGHT * 0.5;   // cells from the surface to the icon's centre: chest height
+export const ORB_LIFT = BODY_HEIGHT * 0.5;   // cells from the surface to the icon's centre: chest height
 const ORB_SIZE = 2.2;                 // cells across the icon sprite
 const PAD_R = 1.1;                    // cells, the pad's radius
 const PAD_LIFT = 0.05;                // cells above the surface (no z-fighting)
@@ -115,6 +115,21 @@ export class PerkOrbs {
   // take away what's left of shrine `id`'s orbs (its placement was undone)
   removeShrine(id) { for (const o of this.list.filter((x) => x.shrine === id)) this.remove(o); }
 
+  // The orbs for a save (saves/game.js), feet in world cells, and back. A
+  // loaded shrine gets a fresh id, so it never shares one with a shrine
+  // placed since (taking one orb takes its shrine's others).
+  toJSON() { return this.list.map((o) => ({ key: o.key, shrine: o.shrine, world: o.world.toArray() })); }
+  fromJSON(arr) {
+    this.clear();
+    const ids = new Map();
+    const origin = this.getSim().origin;
+    for (const o of arr ?? []) {
+      if (!PERK[o?.key] || !Array.isArray(o.world) || this.list.length >= MAX_ORBS) continue;   // (a perk this build lacks: skipped)
+      const shrine = o.shrine ? (ids.get(o.shrine) ?? ids.set(o.shrine, nextShrine++).get(o.shrine)) : 0;
+      this.add(o.key, new THREE.Vector3().fromArray(o.world).sub(origin), shrine);
+    }
+  }
+
   // an orb's foot in grid cells (the window's), or null while it's outside the window
   feet(o, out = new THREE.Vector3()) {
     const sim = this.getSim();
@@ -133,10 +148,18 @@ export class PerkOrbs {
       c.y += ORB_LIFT;
       if (Math.abs(c.x - feet.x) > hw || Math.abs(c.z - feet.z) > hw) continue;
       if (c.y < feet.y - TAKE_REACH || c.y > feet.y + BODY_HEIGHT + TAKE_REACH) continue;
-      for (const s of o.shrine ? this.list.filter((x) => x.shrine === o.shrine) : [o]) this.remove(s);
-      return { key: o.key, at: c.clone() };
+      return this.take(o);
     }
     return null;
+  }
+
+  // take orb `o`, and the rest of its shrine with it: { key, at (its icon's centre, grid cells) }, or null if it's gone
+  take(o) {
+    const at = this.feet(o, new THREE.Vector3());
+    if (!this.list.includes(o) || !at) return null;
+    at.y += ORB_LIFT;
+    for (const s of o.shrine ? this.list.filter((x) => x.shrine === o.shrine) : [o]) this.remove(s);
+    return { key: o.key, at };
   }
 
   // every frame: markers follow the world's scale, the volume and the window; the icons bob

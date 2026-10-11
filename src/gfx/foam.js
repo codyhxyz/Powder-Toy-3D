@@ -30,7 +30,7 @@ function createAeration(sim) {
   let idleSteps = 0;   // idle steps run since the world went idle
   const mat = Object.assign(rawMat(aerationFrag(g), {
     ...stateUniforms(), tAerPrev: { value: null }, tQuiet: { value: null }, uStill: { value: false },
-    uParity: { value: 0 }, tSlots: { value: null },
+    uParity: { value: 0 }, tSlots: { value: null }, uEdge: { value: 0 },
   }), { name: 'aeration' });
   const run = (still) => {
     const u = mat.uniforms, before = sim.targets[1 - sim.cur];
@@ -39,6 +39,7 @@ function createAeration(sim) {
     u.tAerPrev.value = targets[cur].texture;
     u.tQuiet.value = sim.actQuiet.texture;
     u.uParity.value = sim.frame & 1;
+    u.uEdge.value = sim.mats.moveGather.uniforms.uEdge.value;   // the gather's edge mode (simModes.js)
     u.tSlots.value = sim.slots.texture;
     u.uStill.value = still;
     cur = 1 - cur;

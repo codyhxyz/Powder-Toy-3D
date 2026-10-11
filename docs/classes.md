@@ -6,6 +6,9 @@ takes effect at your next spawn, or at once if you spawned less than `RESPAWN_RO
 
 The whole layer sits behind one constant, `CLASSES_ENABLED` in `src/pov/classes.js`. It is not a user setting.
 
+Classes belong to Siege (TF2's mode) and the sandbox. The Halo modes (Slayer, CTF, King of the Hill, Infection) are
+Halo 3's equal start and have none: see "In matches" below.
+
 ## The classes
 
 | # | Class | Signature tool | Other tools | Perks | Body | Role |
@@ -67,6 +70,38 @@ The player's choice is `__app.pov.classes`: `chosen`, `choose(key)`, `open()`, `
 kept in this browser (`localStorage` `tpt3d.pov.class`). The first spawn without a class shows a toast: "Press , to
 choose a class".
 
+## In matches (2026-10-11, `docs/halo-contract.md`)
+
+The picker asks the shell two things (`pov/index.js` passes them to `createClassPicker`): `allowed()`, false while
+a Halo match runs (`game.style === 'halo'`), and `inRoom()`, the game's respawn room (`game.inSpawnRoom()`).
+
+- **Siege** (`style: 'tf2'`): the picker opens when the match starts and when you switch team (`.`), as TF2's class
+  menu does on joining a team (`classes.open({ joined: true })`, on `game:start` and the player's `game:team`).
+  Closing it takes the pointer back (a key or a click; Esc leaves the click-to-look prompt), and closing it without
+  ever having picked a class plays `DEFAULT_CLASS`, the Rocketeer (TF2's Soldier, the class its Basic Training
+  teaches first), so nobody starts classless. If first person isn't up yet when the match starts (the menu's Play
+  drops in and starts at once), it opens at the next spawn. A pick applies at once during setup and anywhere in your
+  side's respawn room (within `ROOM_R`, 8 cells, of one of its current spawn points: TF2 swaps you on the spot
+  there), as well as in the 6 s after a spawn; else it waits for the next spawn. Dead, `,` opens it and the pick
+  comes with the respawn.
+- **Halo matches**: `,` does nothing (it's swallowed, not passed to Settings), the picker can't open (it shuts if
+  it was open when the match starts), and every spawn takes the class off (`applyClassTo(body, null)`: its perks,
+  the speed and health scales). Bots in a Halo match have none.
+- **Sandbox** (no match): as before; the class goes back on at your next spawn after a Halo match.
+- Every spawn the game makes (the start, a team switch, a respawn) puts the class on before `game:spawn` fires, so
+  the mode's own setup (a Halo loadout, a shield) comes after it.
+
+**Bots in Siege** (`src/game/siege.js`): each bot is dealt a class from its side's list, the first one no teammate
+bot has (attackers `ATTACK_CLASSES`: Rocketeer, Runner, Pyro, Skyjack; defenders `DEFEND_CLASSES`: Bulwark, Pyro,
+Skyjack, Rocketeer; with the player on a side, its bots take the first three). It's put on with `applyClass` at
+every spawn (perks and scales; a bot's kit holds every tool), and the bot fights with the class's tools its brain
+can use (`agent.weapons`, through `loadout()` in `game/index.js`; `canFight(key)` in `ai/brain.js` says which). A
+class with none of them fights with the gun. Today the brain fights with AXE, GUN, BOMB, BLOWTORCH, PHYSGUN and
+BUCKET, so the Rocketeer throws bombs (its rocket comes with the arsenal branch's `ROCKET` entry), the Runner swings
+the axe, the Pyro torches, the Skyjack and the Bulwark shoot (the Bulwark's SMG with the arsenal's `SMG` entry). A
+bot without a gun can't shoot while holding the point, so it leaves it to fight an enemy it sees near. The Spy, the
+Sapper and the Runner's pogo aren't bot material yet (no knife, pickaxe or pogo entry in the brain).
+
 ## The picker
 
 `src/pov/classPicker.js` and `.css`. It is a full-screen overlay over the live world. The focused class's name is set
@@ -75,7 +110,7 @@ loadout and its bars. Below the row are the focused class's role and the spawn l
 are playing Pyro" / "You just spawned: pick, and you change at once"). A `body.team` (`'red' | 'blue' |
 'infected'`, from the game modes) adds a team chip and lights the floor in the team's colour.
 
-- **Keys**: `,` opens and closes it (first person only); `1`–`7` pick and close; `←` `→` (and Tab) move the focus;
+- **Keys**: `,` opens and closes it (first person only; not in a Halo match); `1`–`7` pick and close; `←` `→` (and Tab) move the focus;
   `Enter` or `Space` pick the focused class; `Esc` closes. The picker listens in the capture phase and is created
   before the toolbelt, so while it's open the digits pick classes, not hotbar slots, and WASD, Space and Shift don't
   move the body. F, P, T and ? work as usual.
@@ -109,7 +144,8 @@ Settings in the god view.
 
 - Show your class on the POV HUD (`pov/hud.js`, combat's file just now).
 - Restrict the hotbar to the class's tools when a game mode asks for it (`applyClassTo` already knows the loadout).
-- Bots: game modes call `applyClassTo(n.body, key)`. The NPC figure could take the class colour (`npc.js` `PALETTE`).
+- Bots: Siege deals them classes (above). The NPC figure could take the class colour (`npc.js` `PALETTE`), and the
+  brain could learn the knife (backstabs), the pickaxe and the pogo.
 - Re-render the portraits when the merged branches bring the rocket, knife and pogo models (it happens on its own:
   the portraits are drawn at the first open from whatever models exist).
 - Speed scale vs Fleet Foot: when both land in `player.js`'s run speed line, multiply them.

@@ -221,7 +221,8 @@ export default {
       }).catch(() => { checking = false; });
     }
 
-    // the rope and claw in the world, from the hand (the viewmodel's tip in first person, else the body's hand)
+    // the rope and claw in the world, from the hand (the viewmodel's tip in first person, and in third
+    // person while the body holds the hook: held.js puts the viewmodel on it; else the body's hand)
     function draw() {
       const show = state !== 'idle' && !!myBody;
       model.root.visible = show;
@@ -231,7 +232,7 @@ export default {
       vol.updateMatrixWorld();
       const end = vol.localToWorld(tmp.copy(claw));
       let start;
-      if (env.viewmodel.visible && model.hand.visible) { model.tip.updateWorldMatrix(true, false); start = model.tip.getWorldPosition(tmpB); }
+      if ((env.viewmodel.visible || env.heldOnBody?.()) && model.hand.visible) { model.tip.updateWorldMatrix(true, false); start = model.tip.getWorldPosition(tmpB); }
       else start = vol.localToWorld(myBody.ropeHand(tmpB));
       const span = end.clone().sub(start);
       const len = span.length();

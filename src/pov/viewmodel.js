@@ -2,6 +2,9 @@ import * as THREE from 'three';
 import { gfxUniforms } from '../gfx/uniforms.js';
 import { povEvents } from './events.js';
 import { NV_PHOSPHOR } from '../gfx/post.js';
+import { brickTexel } from '../sim.js';
+import { BRICK } from '../shaders/common.js';
+import { SH_Y0, SH_Y1, SKYVIS_OPEN_DC } from '../shaders/gfx/lighting.js';
 
 // The viewmodel: the tool in your hands, its motion, and the pass that draws it.
 //
@@ -76,8 +79,9 @@ export const HIT = {
   POGO: { kick: 0.2 },                                                                 // a pogo bounce: the stick's jolt in the hands
   HOOK: { kick: 0.5, punch: { pitch: [0.5 * DEG, 1 * DEG] } },                       // the hook's claw fired
   KICK: { punch: { pitch: [-1.5 * DEG, -0.5 * DEG], yaw: [-0.5 * DEG, 0.5 * DEG] } },   // the boot landed (kick.js): the view jolts, the hands stay put
-  LASER: { kick: 2.6, punch: { pitch: [5 * DEG, 6 * DEG], yaw: [-1 * DEG, 1 * DEG] } },        // the laser cannon's beam: the sniper's shove, harder
+  LASER: { kick: 4 },                                                                  // the laser cannon's beam: the heaviest shove in the hands, but no view punch (Halo 3's Spartan Laser never throws the view), so the crosshair stays on the lingering beam
   BURROWER: { kick: 1.2, punch: { pitch: [1.5 * DEG, 2.5 * DEG] } },                   // the burrower's drill leaving the tube
+  WAND: { kick: 0.4, punch: { pitch: [0.2 * DEG, 0.5 * DEG], yaw: [-0.2 * DEG, 0.2 * DEG] } },   // a wand's cast: a flick of the wrist and a small nod, under the SMG's (Noita's wands have no recoil of their own)
 };
 const randIn = ([lo, hi] = [0, 0]) => lo + Math.random() * (hi - lo);
 
@@ -113,6 +117,14 @@ const VM_FAR = 12;                    // cells: far plane (the physgun's beam do
 const VM_MSAA = 4;                    // samples: the hands skip TAA, so they get MSAA
 // three's Lambert BRDF is albedo/π; the engine's shading is albedo × light. Lights at π make them agree.
 const LIGHT_SCALE = Math.PI;
+// The world's light at the eye: the GI probe the camera is in, read back a few
+// times a second. Its spherical harmonics light the hands the way the probes
+// light the world (sky and bounce in the open, a cave's own light under the
+// ground: three's LightProbe takes the same L1 basis, irradiance included),
+// and its sky visibility dims the sun on them, as Minecraft's sky light carries
+// sun and sky together: the hands hold no daylight down a tunnel.
+const EYE_READ_S = 0.25;              // s between reads of the eye's probe
+const EYE_LIGHT_TAU = 0.3;            // s: the hands' light follows the reads this smoothly (no pop at a cave's mouth)
 
 const approach = (rate, dt) => 1 - Math.exp(-rate * dt);
 const wrapAngle = (a) => Math.atan2(Math.sin(a), Math.cos(a));
@@ -259,10 +271,9 @@ function createPass(renderer) {
   cam.layers.set(VIEWMODEL_LAYER);
   cam.matrixAutoUpdate = false;
   const sun = new THREE.DirectionalLight(0xffffff, LIGHT_SCALE);
-  const sky = new THREE.HemisphereLight(0xffffff, 0xffffff, LIGHT_SCALE);
+  const sky = new THREE.LightProbe();   // the eye's GI probe (eyeLight)
   sun.layers.set(VIEWMODEL_LAYER);
   sky.layers.set(VIEWMODEL_LAYER);
-  sky.position.set(0, 1, 0);
   const target = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: VM_MSAA });
   // composite: linear premultiplied radiance → three's AgX at the post pass's exposure → sRGB, over the frame.
   // Tone mapping and the sRGB curve are nonlinear, so they run on straight colour: applied to premultiplied
@@ -292,7 +303,67 @@ function createPass(renderer) {
   quadScene.add(quad);
   const quadCam = new THREE.OrthographicCamera();
   const size = new THREE.Vector2(), clear = new THREE.Color();
-  return { cam, sun, sky, target, quadScene, quadCam, size, clear, attached: null };
+  const eye = {
+    bufs: [0, 1, 2, 3].map(() => new Uint16Array(4)),   // the probe's four bands, half floats
+    read: new Float32Array(16),   // the last read: band 0 (rgb, sky visibility), band 1 x, y, z
+    cur: new Float32Array(16),    // what lights the hands now, easing toward it
+    have: false, pending: false, readAt: -Infinity, at: 0, pos: new THREE.Vector3(),
+  };
+  return { cam, sun, sky, target, quadScene, quadCam, size, clear, eye, attached: null };
+}
+
+// The probe bands of an open hemisphere: sky radiance sky over the upper half,
+// ground under it (the world's skyAmbient as L1), sky visibility whole. The
+// hands' light before the first read and with the eye outside the window.
+function hemisphereSH(out, sky, ground) {
+  for (let c = 0; c < 3; c++) {
+    out[c] = (sky[c] + ground[c]) / (2 * SH_Y0);
+    out[4 + c] = out[12 + c] = 0;
+    out[8 + c] = (3 * (sky[c] - ground[c])) / (4 * SH_Y1);
+  }
+  out[3] = SKYVIS_OPEN_DC / SH_Y0;
+  out[7] = out[11] = out[15] = 0;
+}
+
+// Read the probe at the eye (now and then) and ease the hands' light toward it.
+// Returns the share of the open sky the eye sees.
+function eyeLight(renderer, camera, eye, sky) {
+  const app = globalThis.__app, sim = app?.sim, volume = app?.volume;
+  const now = performance.now() / 1000;
+  const dt = Math.min(now - eye.at, 1);
+  eye.at = now;
+  let target = eye.read;
+  const p = sim && volume ? volume.worldToLocal(camera.getWorldPosition(eye.pos)) : null;
+  const g = sim?.g;
+  const b = p && [Math.floor(p.x / BRICK), Math.floor(p.y / BRICK), Math.floor(p.z / BRICK)];
+  const inside = b && b[0] >= 0 && b[1] >= 0 && b[2] >= 0 && b[0] < g.nx / BRICK && b[1] < g.ny / BRICK && b[2] < g.nz / BRICK;
+  if (inside && !eye.pending && now - eye.readAt >= EYE_READ_S) {
+    const i = brickTexel(g, b[0], b[1], b[2]), x = i % g.bwidth, y = Math.floor(i / g.bwidth);
+    eye.pending = true;
+    eye.readAt = now;
+    Promise.all(eye.bufs.map((buf, k) => renderer.readRenderTargetPixelsAsync(sim.giProbes, x, y, 1, 1, buf, undefined, k)))
+      .then(() => {
+        eye.bufs.forEach((buf, k) => { for (let c = 0; c < 4; c++) eye.read[k * 4 + c] = THREE.DataUtils.fromHalfFloat(buf[c]); });
+        if (!eye.have) eye.cur.set(eye.read);   // the first read: no easing in from nothing
+        eye.have = true;
+      })
+      .catch(() => {})
+      .finally(() => { eye.pending = false; });
+  }
+  if (!inside || !eye.have) {
+    target = eye.hemi ??= new Float32Array(16);
+    hemisphereSH(target, gfxUniforms.uSkyUp.value, gfxUniforms.uGround.value);
+    if (!eye.have) eye.cur.set(target);
+  }
+  const k = 1 - Math.exp(-dt / EYE_LIGHT_TAU);
+  for (let j = 0; j < 16; j++) eye.cur[j] += (target[j] - eye.cur[j]) * k;
+  // three's SH3 order: Y00, then band 1 as y, z, x
+  const sh = sky.sh.coefficients, c = eye.cur;
+  sh[0].set(c[0], c[1], c[2]);
+  sh[1].set(c[8], c[9], c[10]);
+  sh[2].set(c[12], c[13], c[14]);
+  sh[3].set(c[4], c[5], c[6]);
+  return Math.min(Math.max((SH_Y0 * c[3]) / SKYVIS_OPEN_DC, 0), 1);
 }
 
 // Draw the viewmodels over the finished frame. Call right after post.render
@@ -301,7 +372,7 @@ export function renderViewmodels(renderer, scene, camera, post) {
   const vm = scene.getObjectByName('pov-viewmodel');
   if (!vm?.visible || !vm.parent) return;
   pass ??= createPass(renderer);
-  const { cam, sun, sky, target, quadScene, quadCam, size, clear } = pass;
+  const { cam, sun, sky, target, quadScene, quadCam, size, clear, eye } = pass;
   if (pass.attached !== scene) { scene.add(sun, sky); pass.attached = scene; }
   const glow = setLayers(vm);
 
@@ -316,15 +387,15 @@ export function renderViewmodels(renderer, scene, camera, post) {
   cam.far = VM_FAR * scale;
   cam.updateProjectionMatrix();
 
-  // lit like the world: the key light's direction and colour, sky above and ground below
+  // lit like the world: the key light's direction and colour, as much of it as
+  // the sky over the eye lets in, and the light of the probe the eye is in
   const SUN = globalThis.__app?.SUN;
   if (SUN) sun.position.copy(SUN);
+  const open = eyeLight(renderer, camera, eye, sky);
   // the key light: the sun by day, the dim blue moon by night (gfx/daylight.js)
   const [kr, kg, kb] = gfxUniforms.uKeyLight?.value ?? [1, 1, 1];
   const [sr, sg, sb] = gfxUniforms.uSunCol.value;
-  sun.color.setRGB(sr * kr, sg * kg, sb * kb);
-  sky.color.setRGB(...gfxUniforms.uSkyUp.value);
-  sky.groundColor.setRGB(...gfxUniforms.uGround.value);
+  sun.color.setRGB(sr * kr * open, sg * kg * open, sb * kb * open);
 
   renderer.getDrawingBufferSize(size);
   if (target.width !== size.x || target.height !== size.y) target.setSize(size.x, size.y);
@@ -341,7 +412,8 @@ export function renderViewmodels(renderer, scene, camera, post) {
   renderer.render(scene, cam);
   renderer.setRenderTarget(null);
   renderer.toneMapping = post?.settings.raw ? THREE.NoToneMapping : THREE.AgXToneMapping;
-  renderer.toneMappingExposure = 2 ** (post?.settings.exposure ?? 0);
+  // the post pass's exposure, the eyes' adjustment to the dark included (post.js ADAPT)
+  renderer.toneMappingExposure = 2 ** (post?.settings.exposure ?? 0) * (post?.adaptation?.gain ?? 1);
   quadScene.children[0].material.uniforms.uNight.value = post?.settings.raw ? 0 : post?.settings.night ?? 0;
   renderer.render(quadScene, quadCam);
   if (glow) {   // the hands' light, added over it all (its materials tone map themselves)

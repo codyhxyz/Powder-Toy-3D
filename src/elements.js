@@ -137,8 +137,14 @@ import { PRESETS as WAND_PRESETS } from './pov/wands/catalog.js';
 //      Cite the published numbers in a comment above the row (as COAL and
 //      LIMESTONE do); node tools/elements-core-check.mjs checks the
 //      mechanisms, and the table's own checks throw on a bad row.
-//   2. Add it to a PALETTE group below.
-//   3. Give it a LOOKS row in gfx/materials.js: albedo, roughness, smooth
+//   2. Write its desc (the hover card) in The Powder Toy's voice
+//      (docs/elements.md, "Descriptions"): its name first, then flat facts,
+//      with the numbers the row has ("Sand, Heavy particles. ... Melts into
+//      glass above 1700 °C."). If TPT has it, start from TPT's Description
+//      (src/simulation/elements/<ID>.cpp) and keep only what is true here.
+//      No jokes but true ones. node tools/check-descriptions.mjs checks it.
+//   3. Add it to a PALETTE group below.
+//   4. Give it a LOOKS row in gfx/materials.js: albedo, roughness, smooth
 //      channel, and surf for a shared texture (surf 'CRAG': natural rock,
 //      with per-element crag parameters).
 //   The GPU tables, the dock tile (ui/tiles/engine.js reads the same table),
@@ -369,84 +375,88 @@ const defs = [
   { key: 'EMPTY', abbr: 'AIR', name: 'Air', kind: K.EMPTY, render: R.NONE, color: '#000000',
     dens: 1, cond: 0.0005, cap: 0.02, drag: 0.1, jitter: 0.02, desc: 'Air. Carries heat and pressure; hot air rises.' },
   { key: 'WALL', abbr: 'WALL', name: 'Wall', kind: K.SOLID, render: R.OPAQUE, color: '#59606e', var: 0.05,
-    cond: 0.001, cap: 1.0, acidProof: true, desc: 'Indestructible and insulating. Build containers and barriers with it.' },
+    cond: 0.001, cap: 1.0, acidProof: true, desc: 'Wall. Indestructible and insulating. Build containers and barriers with it.' },
 
   { key: 'SAND', abbr: 'SAND', name: 'Sand', kind: K.POWDER, render: R.OPAQUE, color: '#dcbc74', var: 0.22,
     dens: 16, cond: 0.01, cap: 0.35, drag: 0.04, slide: 0.9, melt: 1700, meltInto: 'GLASS', spawn: 0.3,
-    desc: 'Grains that pile into slopes and sink in water. Melts into glass above 1700 °C.' },
+    desc: 'Sand, Heavy particles. Piles into slopes and sinks in water. Melts into glass above 1700 °C.' },
   { key: 'STONE', abbr: 'STNE', name: 'Stone', kind: K.POWDER, render: R.OPAQUE, color: '#78726c', var: 0.18,
     dens: 26, cond: 0.03, cap: 0.5, drag: 0.04, slide: 0.55, melt: 1200, spawn: 0.3, sound: 'crack',
-    desc: 'Heavy rubble that sinks through anything lighter. Melts into lava at 1200 °C.' },
+    desc: 'Stone. Heavy particles, sinks through anything lighter. Melts into lava at 1200 °C.' },
   { key: 'SNOW', abbr: 'SNOW', name: 'Snow', kind: K.POWDER, render: R.OPAQUE, color: '#eef4ff', var: 0.06,
     dens: 9, cond: 0.005, cap: 0.2, drag: 0.08, slide: 0.35, temp: -10, spawn: 0.3,
-    desc: 'Light powder that floats on water. Melts at 0 °C, soaking up heat as it goes.' },
+    desc: 'Snow. Light particles, floats on water. Created when ice breaks or cloud freezes. Melts at 0 °C, soaking up heat as it goes.' },
   { key: 'GUNPOWDER', abbr: 'GUNP', name: 'Gunpowder', kind: K.POWDER, render: R.OPAQUE, color: '#3d3d47', var: 0.35,
     dens: 15, cond: 0.01, cap: 0.35, drag: 0.04, slide: 0.8, ignite: 200, spawn: 0.3, blast: GUNPOWDER_BLAST,
-    desc: 'Explodes when it touches fire or gets hotter than 200 °C.' },
+    desc: 'Gunpowder. Explodes on contact with fire, or past 200 °C.' },
   { key: 'ASH', abbr: 'ASH', name: 'Ash', kind: K.POWDER, render: R.OPAQUE, color: '#9b968d', var: 0.2,
     dens: 4, cond: 0.003, cap: 0.2, drag: 0.1, slide: 0.5, spawn: 0.3,
-    desc: 'Fluffy leftovers from burnt wood. Light enough to float on water.' },
+    desc: 'Ash. What burnt wood leaves behind. Light, floats on water.' },
 
   { key: 'WATER', abbr: 'WATR', name: 'Water', kind: K.LIQUID, render: R.LIQUID, color: '#2a78d4',
     dens: 10, cond: 0.03, cap: 1.0, drag: 0.01, flow: 0.9, spawn: 0.35, acidProof: true,   // dilutes acid, isn't eaten
     // fresh water conducts, weakly: ~0.005-0.05 S/m from its dissolved ions
     // (USGS, Specific conductance; pure water 5.5·10⁻⁶), 10⁸ times less than steel
     elec: 0.05,
-    sigma: [0.052, 0.014, 0.01], desc: 'Flows and levels out. Freezes at 0 °C and boils at 100 °C, with real latent heat.' },
+    sigma: [0.052, 0.014, 0.01], desc: 'Water. Conducts electricity, weakly. Flows and levels out. Freezes at 0 °C and boils at 100 °C, with real latent heat.' },
   { key: 'OIL', abbr: 'OIL', name: 'Oil', kind: K.LIQUID, render: R.LIQUID, color: '#5a3c12',
     dens: 8, cond: 0.008, cap: 0.45, drag: 0.03, flow: 0.55, ignite: 220, burnRate: 0.008,
     burnHeat: 5, flameT: 1000, life: 1, spawn: 0.35, ash: false,
-    sigma: [0.4, 0.65, 1.8], desc: 'Lighter than water, so it floats on top. Catches fire at 220 °C.' },
-  { key: 'ACID', abbr: 'ACID', name: 'Acid', kind: K.LIQUID, render: R.LIQUID, color: '#86f23c',
+    sigma: [0.4, 0.65, 1.8], desc: 'Oil. Flammable: catches fire at 220 °C. Lighter than water, so it floats on top.' },
+  // Drawn as Noita's acid, not as real HCl (which is clear): a vivid toxic lime
+  // green (Noita's acid is ~#5f0), thick and near opaque, so it never reads as
+  // water. Green is extinguished least and scattered most (gfx/materials.js
+  // ACID): a body of it glows lime from within; you see ~2 cells into it.
+  { key: 'ACID', abbr: 'ACID', name: 'Acid', kind: K.LIQUID, render: R.LIQUID, color: '#55ff00',
     dens: 11, cond: 0.03, cap: 1.0, drag: 0.015, flow: 0.8, life: 1, spawn: 0.35, acidProof: true, acid: true,
     hot: ACID_BOIL,   // boils at 108.6 °C into steam and caustic gas (the azeotrope, above)
-    sigma: [0.24, 0.06, 0.3], desc: 'Eats through most things except glass and walls, using itself up as it goes. Boils at 108.6 °C into steam and caustic gas.' },
+    sigma: [1.5, 0.5, 2.0], desc: 'Acid. Dissolves almost everything, using itself up as it goes; glass and walls are safe. Boils at 108.6 °C into steam and caustic gas.' },
   { key: 'LAVA', abbr: 'LAVA', name: 'Lava', kind: K.LIQUID, render: R.OPAQUE, color: '#ff5a1a', var: 0.1,
     dens: 25, cond: 0.03, cap: 0.6, drag: 0.2, flow: 0.3, temp: 1600, spawn: 0.35, sound: 'sizzle',
-    desc: 'Molten rock at 1600 °C. Cools back into whatever melted to make it.' },
+    desc: 'Lava. Molten rock at 1600 °C. Ignites flammable materials. Generated when metals and other materials melt; cools back into whatever melted to make it.' },
 
   { key: 'STEAM', abbr: 'WTRV', name: 'Steam', kind: K.GAS, render: R.GAS, color: '#e6edf5',
     dens: 0.6, cond: 0.02, cap: 0.5, grav: -0.6, drag: 0.05, jitter: 0.15, temp: 110, rad: 0.03,
-    spawn: 0.3, sigma: [0.16, 0.16, 0.16], desc: 'Water vapour. Rises and spreads. Below 100 °C it condenses: into cloud in open air, into water on a surface.' },
+    spawn: 0.3, sigma: [0.16, 0.16, 0.16], desc: 'Steam. Produced from hot water. Rises and spreads. Below 100 °C it condenses: into cloud in open air, into water on a surface.' },
   { key: 'SMOKE', abbr: 'SMKE', name: 'Smoke', kind: K.GAS, render: R.GAS, color: '#38383d',
     dens: 0.85, cond: 0.0005, cap: 0.02, grav: -0.25, drag: 0.05, jitter: 0.12, life: 1, rad: 0.01,
-    spawn: 0.3, sigma: [0.3, 0.3, 0.3], desc: 'Drifts upward and slowly fades away.' },
+    spawn: 0.3, sigma: [0.3, 0.3, 0.3], desc: 'Smoke, created by fire. Drifts upward and slowly fades away.' },
   { key: 'FIRE', abbr: 'FIRE', name: 'Fire', kind: K.GAS, render: R.FIRE, color: '#ff8a2a',
     dens: 0.5, cond: 0.04, cap: 0.3, grav: -1.4, drag: 0.08, jitter: 0.25, temp: 1000, life: 1,
-    rad: 0.01, spawn: 0.3, desc: 'Hot, short-lived and rising. Ignites anything flammable it heats up.' },
+    rad: 0.01, spawn: 0.3, desc: 'Fire. Ignites flammable materials. Heats air. Hot, short-lived and rising.' },
 
   { key: 'WOOD', abbr: 'WOOD', name: 'Wood', kind: K.SOLID, render: R.OPAQUE, color: '#7a4a26', var: 0.12,
     cond: 0.008, cap: 0.3, ignite: 300, burnRate: 0.0018, burnHeat: 3, flameT: 900, life: 1,
-    hard: 20, breakInto: 'SAWDUST', sound: 'thunk', desc: 'Burns slowly above 300 °C and leaves ash behind.' },
+    hard: 20, breakInto: 'SAWDUST', sound: 'thunk', desc: 'Wood, flammable. Burns slowly above 300 °C and leaves ash behind.' },
   { key: 'PLANT', abbr: 'PLNT', name: 'Plant', kind: K.SOLID, render: R.OPAQUE, color: '#3da236', var: 0.25,
     cond: 0.008, cap: 0.5, ignite: 250, burnRate: 0.004, burnHeat: 2, flameT: 800, life: 1,
-    hard: 6, breakInto: 'SAWDUST', sound: 'thunk', desc: 'Grows into neighbouring water. Burns easily.' },
+    hard: 6, breakInto: 'SAWDUST', sound: 'thunk', desc: 'Plant, drinks water and grows: neighbouring water turns into plant. Burns easily.' },
   // Steel: carbon steel's resistivity ~1.43·10⁻⁷ Ω·m, σ ≈ 7·10⁶ S/m (CRC Handbook).
   { key: 'METAL', abbr: 'METL', name: 'Metal', kind: K.SOLID, render: R.OPAQUE, color: '#a9afba', var: 0.04,
     cond: 0.1, cap: 0.85, melt: 1500, hard: 60, breakInto: 'SCRAP', sound: 'ping', conducts: true, elec: 7e6, reflect: METAL_REFLECT,
-    desc: 'Conducts heat fast and glows when hot. Carries electricity. Melts at 1500 °C.' },
+    desc: 'Metal, the basic conductor. Carries electricity, conducts heat fast and glows when hot. Melts at 1500 °C.' },
   { key: 'GLASS', abbr: 'GLAS', name: 'Glass', kind: K.SOLID, render: R.GLASS, color: '#d2ecf2',
     cond: 0.015, cap: 0.5, melt: 1400, sigma: [0.05, 0.025, 0.03], hard: 8, breakInto: 'SHARDS', acidProof: true, sound: 'shatter',
-    desc: 'Clear and acid-proof. Melts at 1400 °C.' },
+    desc: 'Glass. Clear and acid-proof; photons pass through it. Shatters under pressure. Melts at 1400 °C.' },
   { key: 'ICE', abbr: 'ICE', name: 'Ice', kind: K.SOLID, render: R.GLASS, color: '#a9d8f2',
-    cond: 0.04, cap: 0.5, temp: -20, sigma: [0.055, 0.031, 0.028], hard: 6, breakInto: 'SNOW', desc: 'Frozen water. Melts at 0 °C and chills whatever it touches.' },
+    cond: 0.04, cap: 0.5, temp: -20, sigma: [0.055, 0.031, 0.028], hard: 6, breakInto: 'SNOW', desc: 'Ice. Frozen water. Crushes into snow under pressure. Melts at 0 °C and chills whatever it touches.' },
   { key: 'CLONE', abbr: 'CLNE', name: 'Clone', kind: K.SOLID, render: R.OPAQUE, color: '#d9b81e', var: 0.05,
-    cond: 0.001, cap: 1.0, desc: 'Copies the first element that touches it, forever.' },
+    cond: 0.001, cap: 1.0, desc: 'Clone. Duplicates the first element that touches it, forever.' },
   // New elements go at the end so existing ids (saved scenes, presets) stay stable.
   { key: 'ROCK', abbr: 'ROCK', name: 'Rock', kind: K.SOLID, render: R.OPAQUE, color: '#6a6560', var: 0.12,
     cond: 0.03, cap: 0.5, melt: 0,
-    hard: 30, breakInto: 'STONE', desc: 'Natural bedrock for terrain and mountains. Never moves and never melts; conducts heat like stone.' },
+    hard: 30, breakInto: 'STONE', desc: 'Rock. Natural bedrock for terrain and mountains. Never moves and never melts; conducts heat like stone.' },
   // Debris: what breakable solids turn into when they break (see hard/breakInto).
   { key: 'SHARDS', abbr: 'BGLA', name: 'Broken glass', kind: K.POWDER, render: R.OPAQUE, color: '#b9dbe3', var: 0.15,
     dens: 25, cond: 0.015, cap: 0.5, drag: 0.04, slide: 0.6, melt: 1400, meltInto: 'GLASS', spawn: 0.3, acidProof: true, sound: 'shatter',
-    desc: 'Shattered glass. Acid-proof like glass, and melts back into clear glass at 1400 °C.' },
+    desc: 'Broken glass, heavy particles formed when glass breaks. Acid-proof like glass; melts back into clear glass at 1400 °C.' },
   { key: 'SAWDUST', abbr: 'SAWD', name: 'Sawdust', kind: K.POWDER, render: R.OPAQUE, color: '#c99a62', var: 0.2,
     dens: 4, cond: 0.006, cap: 0.3, drag: 0.1, slide: 0.45, ignite: 250, burnRate: 0.006, burnHeat: 3, flameT: 900,
-    life: 1, spawn: 0.3, sound: 'thunk', desc: 'Chips and splinters of wood or plant. Floats on water and burns faster than a log.' },
+    life: 1, spawn: 0.3, sound: 'thunk', desc: 'Sawdust. Floats on water. Chips and splinters of wood or plant; burns faster than a log.' },
   { key: 'SCRAP', abbr: 'BRMT', name: 'Scrap metal', kind: K.POWDER, render: R.OPAQUE, color: '#8e939c', var: 0.1,
     dens: 78, cond: 0.1, cap: 0.85, drag: 0.01, slide: 0.5, melt: 1500, meltInto: 'METAL', spawn: 0.3, sound: 'ping', reflect: METAL_REFLECT,
     conducts: true, elec: 7e6,   // the same steel (TPT's BRMT conducts as METL does)
-    desc: 'Heavy bits of metal: what metal breaks into, and the slugs the gun fires. Carries electricity. Melts and recasts as solid metal.' },
+    desc: 'Scrap metal. Created when metal breaks. Heavy, and carries electricity. Melts at 1500 °C and recasts as solid metal.' },
   // Cloud: condensed water droplets riding in air. It moves as air does (buoyant
   // when warm; droplets this small barely settle), holds the water and heat
   // capacity of the steam it condensed from, and mixes its heat into the air
@@ -454,7 +464,7 @@ const defs = [
   { key: 'CLOUD', abbr: 'CLOD', name: 'Cloud', kind: K.GAS, render: R.GAS, color: '#f2f5f9',
     dens: 1, cond: 0.02, cap: 0.5, grav: 0, drag: 0.05, jitter: 0.01, rad: 0.03, spawn: 0.3,
     sigma: [0.16, 0.16, 0.16],
-    desc: 'Droplets of water in the air: what steam becomes as it cools. Floats when warm, rains where it is thick, thins away at its edges, boils back to steam at 100 °C and snows below 0 °C.' },
+    desc: 'Cloud. Droplets of water in the air, what steam becomes as it cools. Floats when warm, rains where it is thick and thins away at its edges. Boils back to steam at 100 °C and snows below 0 °C.' },
   // Crystal: purple fluorite (CaF₂), the mineral fluorescence is named after.
   // Real: n = 1.434, its colour, Mohs hardness 4 (the scale's reference),
   // melting point 1418 °C, 3.18 g/cm³, 0.85 J/(g·K) (cap: 2.7 J/(cm³·K) over
@@ -465,12 +475,12 @@ const defs = [
   // fluoresces only under ultraviolet light (gfx/materials.js FLUORITE_BAND).
   { key: 'CRYSTAL', abbr: 'CRYS', name: 'Crystal', kind: K.SOLID, render: R.OPAQUE, color: '#9466cf', var: 0.08,
     cond: 0.05, cap: 0.65, melt: 1418, hard: 7, breakInto: 'CRYSTAL_DUST', sound: 'shatter',
-    desc: 'Fluorite. Glows blue-violet by itself, enough to light a dark cave. Brittle: it shatters into glowing dust. Melts at 1418 °C.' },
+    desc: 'Crystal. Fluorite. Glows blue-violet by itself, enough to light a dark cave. Brittle: it shatters into glowing dust. Melts at 1418 °C.' },
   // Its debris. Crushed, it keeps the crystal's glow (as powdered phosphors do)
   // and its grains' density; molten and cooled it grows back into crystal.
   { key: 'CRYSTAL_DUST', abbr: 'CDST', name: 'Crystal dust', kind: K.POWDER, render: R.OPAQUE, color: '#c3aee0', var: 0.15,
     dens: 32, cond: 0.05, cap: 0.65, drag: 0.04, slide: 0.6, melt: 1418, meltInto: 'CRYSTAL', spawn: 0.3, sound: 'shatter',
-    desc: 'Crushed fluorite crystal. It still glows, so pour it wherever you need light. Melts back into crystal at 1418 °C.' },
+    desc: 'Crystal dust. Crushed fluorite. Still glows, so pour it wherever you need light. Melts back into crystal at 1418 °C.' },
   // Rocks beside ROCK (a weathered basalt), for the island's strata.
   // Hardness follows strength: the specific energy of cutting or drilling
   // rock comes out close to its uniaxial compressive strength (Teale 1965),
@@ -489,14 +499,14 @@ const defs = [
   // (quartz, ~1700 °C, past lava's 1600) and breaks back into sand.
   { key: 'SANDSTONE', abbr: 'SDST', name: 'Sandstone', kind: K.SOLID, render: R.OPAQUE, color: '#c39a64', var: 0.12,
     cond: 0.03, cap: 0.5, melt: 1700, meltInto: 'GLASS', hard: 15, breakInto: 'SAND',
-    desc: 'Sand cemented into rock. Softer than rock: it breaks back into sand, and fuses into glass above 1700 °C.' },
+    desc: 'Sandstone. Sand cemented into rock. Softer than rock: it breaks back into sand. Fuses into glass above 1700 °C.' },
   // Limestone is calcite, CaCO₃, the rock caves are dissolved out of. Acid
   // eats it with a fizz of CO₂: 2.71 g/cm³ / 100.1 g/mol = 0.027 mol per cm³,
   // ~650 cm³ of gas at 20 °C. It never melts: past ~900 °C it calcines to
   // quicklime instead (not modelled), and the lime melts only at 2570 °C.
   { key: 'LIMESTONE', abbr: 'LMST', name: 'Limestone', kind: K.SOLID, render: R.OPAQUE, color: '#c9c3b2', var: 0.08,
     cond: 0.03, cap: 0.55, hard: 20, breakInto: 'STONE', fizz: 650,
-    desc: 'Pale calcite rock, the rock caves form in. Acid dissolves it in a fizz of gas. Never melts.' },
+    desc: 'Limestone. Pale calcite rock, the rock caves form in. Acid dissolves it in a fizz of gas. Never melts.' },
   // Coal: a bituminous seam, burning through the same fields as wood. It
   // lights at ~450 °C (bituminous coal's ignition point, 400-500 °C in fuel
   // handbooks) and its bed burns at ~1100 °C in still air (an orange glow:
@@ -507,7 +517,7 @@ const defs = [
   { key: 'COAL', abbr: 'COAL', name: 'Coal', kind: K.SOLID, render: R.OPAQUE, color: '#2c2b2f', var: 0.1,
     cond: 0.01, cap: 0.4, ignite: 450, burnRate: 0.0005, burnHeat: 3, flameT: 1100, life: 1,
     hard: 6, breakInto: 'BROKENCOAL',
-    desc: 'Black seam rock that burns long and hot: it lights at 450 °C and burns at 1100 °C, several times longer than wood.' },
+    desc: 'Coal, Burns very slowly. Gets red when hot. Black seam rock: lights at 450 °C and burns at 1100 °C, several times longer than wood.' },
   // Broken coal, what the pickaxe makes of a seam: lumps of the same coal
   // (1.35 g/cm³: they sink in water) that pile like gravel (angle of repose
   // ~38°, between sand's and stone's). Like sawdust from wood, the bared
@@ -516,7 +526,7 @@ const defs = [
   { key: 'BROKENCOAL', abbr: 'BCOL', name: 'Broken coal', kind: K.POWDER, render: R.OPAQUE, color: '#39383c', var: 0.2,
     dens: 13.5, cond: 0.01, cap: 0.4, drag: 0.04, slide: 0.7, ignite: 450, burnRate: 0.0017, burnHeat: 6, flameT: 1100,
     life: 1, spawn: 0.3, sound: 'crack',
-    desc: 'Lumps of coal, as the pickaxe breaks them from a seam. Sinks in water and burns faster than the seam.' },
+    desc: 'Broken coal. Heavy particles: lumps of coal, as the pickaxe breaks them from a seam. Sinks in water and burns faster than the seam.' },
   // ---- Electronics (src/electricity.js, docs/electricity.md): TPT's BTRY,
   // PSCN, NSCN, SWCH, INSL and TSNS. ----
   // Battery: a sealed lithium-ion cell, a source that sparks every conductor
@@ -528,7 +538,7 @@ const defs = [
   { key: 'BATTERY', abbr: 'BTRY', name: 'Battery', kind: K.SOLID, render: R.OPAQUE, color: '#858505', var: 0.04,
     cond: 0.03, cap: 0.6, ignite: 200, burnRate: 0.01, burnHeat: 4, flameT: 900, life: 1, ash: false,
     hard: 20, breakInto: 'SCRAP', sound: 'ping',
-    desc: 'Endless electricity: it sparks every conductor it touches. A lithium cell: past 200 °C it bursts into flame.' },
+    desc: 'Battery. Generates infinite electricity: sparks every conductor it touches. A lithium cell: past 200 °C it bursts into flame.' },
   // P- and N-type silicon: doped silicon, the two halves of a diode. Heavily
   // doped (~10¹⁹ cm⁻³) it conducts ~10⁴ S/m, losslessly here. Silicon melts
   // at 1414 °C (TPT's 1687 K too), 2.33 g/cm³ × 0.71 J/g·K → cap 0.4, and
@@ -536,32 +546,32 @@ const defs = [
   // The junction: N never sparks P (a p-n junction conducts from P to N).
   { key: 'PSCN', abbr: 'PSCN', name: 'P-type silicon', kind: K.SOLID, render: R.OPAQUE, color: '#805050', var: 0.04,
     cond: 0.06, cap: 0.4, melt: 1414, elec: 1e4,
-    desc: 'Carries sparks to any conductor, but takes none from N-type silicon: together they make a diode. A spark from it turns a switch on.' },
+    desc: 'P-type silicon. Will transfer current to any conductor, but takes none from N-type silicon: together they make a diode. Enables powered materials: a spark from it turns a switch or powered clone on.' },
   { key: 'NSCN', abbr: 'NSCN', name: 'N-type silicon', kind: K.SOLID, render: R.OPAQUE, color: '#505080', var: 0.04,
     cond: 0.06, cap: 0.4, melt: 1414, elec: 1e4,
-    desc: 'Carries sparks to any conductor except P-type silicon. A spark from it turns a switch off.' },
+    desc: 'N-type silicon. Will not transfer current to P-type silicon; carries sparks to any other conductor. Disables powered materials: a spark from it turns a switch or powered clone off.' },
   // Switch: a relay. Copper contacts (σ 5.96·10⁷ S/m, CRC) in a steel frame
   // (steel's heat numbers and melting point). life: SWITCH_ON while on.
   { key: 'SWITCH', abbr: 'SWCH', name: 'Switch', kind: K.SOLID, render: R.OPAQUE, color: '#103b11', var: 0.04,
     cond: 0.1, cap: 0.85, melt: 1500, meltInto: 'METAL', hard: 60, breakInto: 'SCRAP', sound: 'ping', elec: 5.96e7,
-    desc: 'Passes sparks only while it is on. A spark from P-type silicon turns it on, one from N-type turns it off; touching switches go together.' },
+    desc: 'Switch. Only conducts when switched on. P-type silicon switches it on, N-type switches it off; touching switches go together.' },
   // Insulator: TPT's INSL, which blocks heat and electricity, with silica
   // aerogel's numbers: 0.015 W/m·K, about half still air's 0.026 (cond 0.0003
   // to air's 0.0005); 0.1 g/cm³ × 1 J/g·K → cap 0.03; a dielectric. It is
   // silica, so acid can't touch it and it sinters into glass at ~1200 °C.
   { key: 'INSULATOR', abbr: 'INSL', name: 'Insulator', kind: K.SOLID, render: R.OPAQUE, color: '#9ea3b6', var: 0.03,
     cond: 0.0003, cap: 0.03, melt: 1200, meltInto: 'GLASS', acidProof: true,
-    desc: 'Blocks electricity and almost all heat. Put it between wires that must not touch. Melts into glass at 1200 °C.' },
+    desc: 'Insulator. Blocks electricity and almost all heat. Put it between wires that must not touch. Melts into glass at 1200 °C.' },
   // Temperature sensor: TPT's TSNS. It holds no heat (cond 0, as TPT's), so
   // its own temperature is the threshold: set it with Heat and Cool.
   { key: 'TSNS', abbr: 'TSNS', name: 'Temperature sensor', kind: K.SOLID, render: R.OPAQUE, color: '#fd00d5', var: 0.03,
     cond: 0, cap: 1.0,
-    desc: 'Sparks the conductors it touches while anything beside it is hotter than itself. Heat or cool it to set its temperature.' },
+    desc: 'Temperature sensor, creates a spark when there\'s a nearby particle with a greater temperature: it sparks the conductors it touches. Heat or cool it to set its temperature.' },
   // Powered clone: TPT's PCLN, Clone switched on by P and off by N (life:
   // SWITCH_ON while on). Clone's numbers: a game block, not a material.
   { key: 'PCLN', abbr: 'PCLN', name: 'Powered clone', kind: K.SOLID, render: R.OPAQUE, color: '#3b3b0a', var: 0.05,
     cond: 0.001, cap: 1.0,
-    desc: 'A clone you switch: it copies the first element that touches it, but only while it is on. A spark from P-type silicon turns it on, one from N-type off.' },
+    desc: 'Powered clone. When activated, duplicates the first element that touches it. A spark from P-type silicon turns it on, one from N-type off.' },
   // Radioactive (docs/particles.md; neutron data in rays.js NUCLEAR). Both
   // are metals painted as heavy powders, as TPT has them, so a runaway's
   // pressure can throw a lump apart.
@@ -572,14 +582,14 @@ const defs = [
   // captures some and fissions a few.
   { key: 'URANIUM', abbr: 'URAN', name: 'Uranium', kind: K.POWDER, render: R.OPAQUE, color: '#707a5c', var: 0.1,
     dens: 191, cond: 0.08, cap: 0.53, drag: 0.01, slide: 0.5, melt: 1132, spawn: 0.3, sound: 'ping',
-    desc: 'Natural uranium: the heaviest powder, sinking through anything. Barely radioactive by itself; neutrons bounce off it, and it fissions a little when they hit.' },
+    desc: 'Uranium. Heavy particles: sinks through every liquid. Natural uranium, barely radioactive by itself. Neutrons bounce off it, and it fissions a little when they hit.' },
   // Plutonium: Pu-239 metal, 19.8 g/cm³; 0.132 J/(g·K) → cap 0.62; 6.7
   // W/(m·K), the worst-conducting metal (cond near crystal's); melts at only
   // 640 °C, into lava that stays fissile. A neutron splits it (rays.js
   // NUCLEAR), freeing 2-3 more, so a lump past critical size runs away.
   { key: 'PLUTONIUM', abbr: 'PLUT', name: 'Plutonium', kind: K.POWDER, render: R.OPAQUE, color: '#55703c', var: 0.1,
     dens: 198, cond: 0.045, cap: 0.62, drag: 0.01, slide: 0.5, melt: 640, spawn: 0.3, sound: 'ping',
-    desc: 'Fissile Pu-239. A neutron splits it into heat and 2-3 more neutrons, so a big enough heap runs away and blows itself apart. Water around it makes it go critical sooner.' },
+    desc: 'Plutonium. Heavy, fissile particles: Pu-239. It gives off a few neutrons by itself. A neutron splits it into heat and 2-3 more, so a big enough heap runs away and blows itself apart. Water around it makes it go critical sooner.' },
 
   // ---- Batch 3 (el-mat): materials and weather. docs/elements.md.
   // Electrical conductivity (elec, S/m, at 20 °C; CRC Handbook): titanium
@@ -602,7 +612,7 @@ const defs = [
   // Wall; acid can't eat it (TPT: VOID's Hardness 0).
   { key: 'VOID', abbr: 'VOID', name: 'Void', kind: K.SOLID, render: R.OPAQUE, color: '#790b0b', var: 0.04,
     cond: 0.001, cap: 1.0, acidProof: true,
-    desc: 'Deletes any powder, liquid or gas that touches it. Pair it with Clone for waterfalls that never flood.' },
+    desc: 'Void. Hole, will drain away any powder, liquid or gas that touches it. Pair it with clone for waterfalls that never flood.' },
   // Brick: fired clay brick, 1.9 g/cm³ (0.84 J/g·K: cap 0.38; k ≈ 0.7 W/m·K:
   // cond 0.018). Compressive strength 20–100 MPa (ASTM C62 asks ≥ 17; a modern
   // facing brick tests ~60): hard 12, so a gunpowder blast a cell away (60)
@@ -616,10 +626,10 @@ const defs = [
   // Fired ceramic shrugs off acids (only hydrofluoric attacks it).
   { key: 'BRICK', abbr: 'BRCK', name: 'Brick', kind: K.SOLID, render: R.OPAQUE, color: '#a4553d', var: 0.1,
     cond: 0.018, cap: 0.38, melt: 1300, meltInto: 'STONE', hard: 12, breakInto: 'RUBBLE', acidProof: true, sound: 'crack',
-    desc: 'Fired clay brick. A blast breaks it into rubble; it stands any wood fire and melts only past 1300 °C. Acid-proof.' },
+    desc: 'Brick, breakable building material. A blast breaks it into rubble. It stands any wood fire and melts only past 1300 °C. Acid-proof.' },
   { key: 'RUBBLE', abbr: 'BRBL', name: 'Brick rubble', kind: K.POWDER, render: R.OPAQUE, color: '#b0705a', var: 0.2,
     dens: 19, cond: 0.01, cap: 0.38, drag: 0.04, slide: 0.6, melt: 1300, meltInto: 'STONE', spawn: 0.3, acidProof: true, sound: 'crack',
-    desc: 'Crushed brick, what a blast leaves of a brick wall. Sinks in water; melts past 1300 °C.' },
+    desc: 'Brick rubble. Crushed brick, what a blast leaves of a brick wall. Sinks in water; melts past 1300 °C.' },
   // Titanium: 4.51 g/cm³, melts at 1,668 °C; k 21.9 W/m·K (cond 0.07), 0.52
   // J/g·K (cap 0.56). Ti-6Al-4V, the structural alloy, has a tensile strength
   // of ~950 MPa: hard 190, so no blast in the sim cracks it (P_BREAK_PER_HARD:
@@ -628,7 +638,7 @@ const defs = [
   // hydrochloric and sulfuric acid attack it, so acid eats it.
   { key: 'TITANIUM', abbr: 'TTAN', name: 'Titanium', kind: K.SOLID, render: R.OPAQUE, color: '#9a9ca3', var: 0.03,
     cond: 0.07, cap: 0.56, melt: 1668, hard: 190, conducts: true, elec: 2.38e6, sound: 'ping',
-    desc: 'The blast-proof metal: no explosion or bullet breaks it. Melts at 1668 °C.' },
+    desc: 'Titanium. Higher melting temperature than most other metals: 1668 °C. The blast-proof metal: no explosion or bullet breaks it.' },
   // Tungsten: 19.3 g/cm³, melts at 3,422 °C, the highest of any metal; k 173
   // W/m·K and 0.13 J/g·K (cap 0.61, cond at the cap/6 limit). Worked rod has a
   // tensile strength of ~1,000 MPa: hard 200, unbreakable here like
@@ -638,7 +648,7 @@ const defs = [
   // mixtures dissolve it: acid-proof.
   { key: 'TUNGSTEN', abbr: 'TUNG', name: 'Tungsten', kind: K.SOLID, render: R.OPAQUE, color: '#7b7d82', var: 0.03,
     cond: 0.1, cap: 0.61, melt: 3422, hard: 200, acidProof: true, conducts: true, elec: 1.79e7, sound: 'ping',
-    desc: 'Melts at 3422 °C, higher than any other metal, and glows white-hot long before. Unbreakable and acid-proof.' },
+    desc: 'Tungsten. Metal with a very high melting point: 3422 °C, higher than any other metal. Glows white-hot long before. Unbreakable and acid-proof.' },
   // Plasma: air ionised by heat, TPT's PLSM (10,000 °C). At 10,000 K an ideal
   // gas has 293/10,273 of its room density: dens 0.03, the lightest thing in
   // the sim. Dissociation and ionisation raise c_p about as much as the
@@ -651,7 +661,7 @@ const defs = [
   { key: 'PLASMA', abbr: 'PLSM', name: 'Plasma', kind: K.GAS, render: R.FIRE, color: '#c7b4ff',
     dens: 0.03, cond: 0.003, cap: 0.02, grav: -1.4, drag: 0.08, jitter: 0.25, temp: 10000, rad: 0.02, life: 1,
     spawn: 0.3, cold: { T: 4700, into: 'EMPTY' },
-    desc: 'Ionised air at 10,000 °C, the hottest thing there is. Glows, heats whatever it touches, and cools back into air in a blink.' },
+    desc: 'Plasma, extremely hot: ionised air at 10,000 °C, the hottest thing there is. Glows, heats whatever it touches, and cools back into air in a blink.' },
   // Gold: 19.3 g/cm³ (dens 193 for its nuggets), melts at 1,064 °C; k 318
   // W/m·K, 0.129 J/g·K (cap 0.6, cond at the limit). Annealed gold has a
   // tensile strength of ~120 MPa: hard 24, the softest metal here (the axe
@@ -659,11 +669,11 @@ const defs = [
   // acid-proof. It breaks into nuggets, which recast as gold.
   { key: 'GOLD', abbr: 'GOLD', name: 'Gold', kind: K.SOLID, render: R.OPAQUE, color: '#dcad2c', var: 0.04,
     cond: 0.1, cap: 0.6, melt: 1064, hard: 24, breakInto: 'NUGGETS', acidProof: true, conducts: true, elec: 4.1e7, sound: 'ping',
-    desc: 'Soft, heavy and acid-proof. Tools and blasts break it into nuggets; it melts at 1064 °C.' },
+    desc: 'Gold. Corrosion resistant metal: acid can\'t touch it. Excellent conductor. Soft and heavy: tools and blasts break it into nuggets. Melts at 1064 °C.' },
   { key: 'NUGGETS', abbr: 'NUGT', name: 'Gold nuggets', kind: K.POWDER, render: R.OPAQUE, color: '#e7bd45', var: 0.15,
     dens: 193, cond: 0.1, cap: 0.6, drag: 0.01, slide: 0.5, melt: 1064, meltInto: 'GOLD', spawn: 0.3, acidProof: true,
     conducts: true, elec: 4.1e7, sound: 'ping',
-    desc: 'Lumps of gold. They sink through everything, mercury included, and melt back into gold at 1064 °C.' },
+    desc: 'Gold nuggets. Lumps of gold. They sink through every liquid, mercury included, and melt back into gold at 1064 °C.' },
   // Mercury: 13.53 g/cm³ (dens 135: stone, steel scrap and brick float on it,
   // gold and tungsten sink). Freezes at −38.83 °C and boils at 356.73 °C.
   // Latent heats over water's (L_FUSE 80 is 334 J/cm³): fusion 11.4 J/g ×
@@ -675,13 +685,13 @@ const defs = [
     dens: 135, cond: 0.05, cap: 0.45, drag: 0.01, flow: 0.8, spawn: 0.35, conducts: true, elec: 1.04e6, sound: 'splash',
     cold: { T: -38.83, into: 'SOLID_MERCURY', latent: 37 },
     hot: { T: 356.73, into: 'MERCURY_VAPOR', latent: 955, puff: 1620 },
-    desc: 'Liquid metal, so dense that stone and steel float on it while gold sinks. Freezes at −39 °C and boils at 357 °C.' },
+    desc: 'Mercury. Conductive liquid metal, so dense that stone and steel float on it while gold sinks. Freezes at −39 °C and boils at 357 °C.' },
   // Frozen mercury: 14.18 g/cm³, k ~30 W/m·K (cond at the cap/6 limit),
   // cap 0.46. Soft as lead, but it never meets a blow here: no debris.
   { key: 'SOLID_MERCURY', abbr: 'HGIC', name: 'Frozen mercury', kind: K.SOLID, render: R.OPAQUE, color: '#c9cbcf', var: 0.03,
     cond: 0.07, cap: 0.46, temp: -60, conducts: true, elec: 4.4e6, sound: 'ping',
     hot: { T: -38.83, into: 'MERCURY', latent: 37 },
-    desc: 'Mercury frozen solid below −39 °C. It melts back into mercury as soon as it warms.' },
+    desc: 'Frozen mercury. Mercury frozen solid below −39 °C. Conductive. It melts back into mercury as soon as it warms.' },
   // Mercury vapour: 200.6 g/mol over air's 28.96, at 360 °C: 6.93 × 293/633 =
   // 3.2 times ambient air, so it sinks (grav: (ρ − ρ_air)/ρ ≈ 0.7 g). Monatomic,
   // a third of air's heat capacity per volume; k 0.009 W/m·K. It mixes its
@@ -690,7 +700,7 @@ const defs = [
   { key: 'MERCURY_VAPOR', abbr: 'HGVP', name: 'Mercury vapour', kind: K.GAS, render: R.GAS, color: '#c8ccd2',
     dens: 3.2, cond: 0.0003, cap: 0.01, grav: 0.7, drag: 0.05, jitter: 0.1, temp: 360, rad: 0.03, spawn: 0.3,
     sigma: [0.08, 0.08, 0.08], cold: { T: 356.73, into: 'MERCURY', latent: 955 },
-    desc: 'Boiled mercury. A heavy gas that sinks and condenses back into droplets below 357 °C.' },
+    desc: 'Mercury vapour. Boiled mercury: a heavy gas that sinks, and condenses back into droplets below 357 °C.' },
   // Diamond: 3.51 g/cm³, 0.509 J/g·K (cap 0.43). It conducts heat better
   // than any bulk material (~2,200 W/m·K, five times copper): cond is at its
   // cap/6 limit. The hardest natural material: by the strength rule it is
@@ -705,7 +715,7 @@ const defs = [
   { key: 'DIAMOND', abbr: 'DMND', name: 'Diamond', kind: K.SOLID, render: R.GLASS, color: '#d6f4fb',
     cond: 0.07, cap: 0.43, ignite: 780, burnRate: 0.00025, burnHeat: 0, flameT: 780, life: 1, ash: false,
     hard: 560, acidProof: true, sigma: [0.006, 0.006, 0.008], sound: 'shatter',
-    desc: 'Clear, brilliant and harder than anything: nothing breaks it and acid can\'t touch it. But it is carbon: above 780 °C it burns away.' },
+    desc: 'Diamond. Clear, brilliant and harder than anything: nothing breaks it and acid can\'t touch it. But it is carbon: above 780 °C it burns away.' },
   // ---- Batch 2, chemistry and cold (el-chem; the data above defs) ----
   // Liquid nitrogen: c_p 2.04 J/(g·K), k 0.14 W/(m·K). It floats on water
   // (0.807) and boils away into plain air (nitrogen *is* air; TPT's just
@@ -717,7 +727,7 @@ const defs = [
     temp: LN2.bp - LN2_SPAWN_BELOW, spawn: 0.35, acidProof: true,
     hot: { T: LN2.bp, into: 'EMPTY', latent: latentOf(LN2.L, LN2.rho), puff: gasVolumes(LN2.rho / LN2.M) },
     sigma: [0.012, 0.011, 0.01],
-    desc: 'Nitrogen cold enough to pour, at −196 °C. Floats on water and freezes it, and boils away into cold air with a big puff.' },
+    desc: 'Liquid nitrogen. Very cold: −196 °C. Floats on water and chills what it touches, then boils away into cold air with a big puff.' },
   // Salt: rock salt, NaCl (CRC), c_p 0.864 J/(g·K), a pile packed as sand's
   // (SALT_PILE: 1.3, so it sinks even in brine) that conducts like sand. It
   // melts at 801 °C (into lava that sets back into salt, as TPT's does). Water
@@ -725,7 +735,7 @@ const defs = [
   // of water into brine.
   { key: 'SALT', abbr: 'SALT', name: 'Salt', kind: K.POWDER, render: R.OPAQUE, color: '#f0eee8', var: 0.08,
     dens: SALT_PILE * 10, cond: 0.01, cap: capOf(SALT_PILE, 0.864), drag: 0.04, slide: 0.85, melt: 801, spawn: 0.3,
-    desc: 'White grains that dissolve in water and turn it into saltwater. Melts at 801 °C.' },
+    desc: 'Salt, dissolves in water and turns it into saltwater. Thaws ice and snow down to −21 °C. Melts at 801 °C.' },
   // Saltwater: saturated brine (BRINE above), c_p 3.3 J/(g·K), k 0.57 W/(m·K).
   // It sinks under fresh water, freezes at the eutectic, −21.1 °C, into ice
   // and salt, and boils at 108.7 °C into steam, leaving its salt behind.
@@ -733,7 +743,7 @@ const defs = [
     dens: +(BRINE.rho * 10).toFixed(2), cond: condOf(BRINE.k), cap: capOf(BRINE.rho, BRINE.cp), drag: 0.012, flow: 0.85,
     spawn: 0.35, acidProof: true, conducts: true, elec: BRINE.elec, cold: BRINE_FREEZE, hot: BRINE_BOIL,
     sigma: [0.052, 0.014, 0.01],
-    desc: 'Water saturated with salt. Heavier than water, freezes only at −21 °C, and boiling it leaves the salt behind. Conducts electricity.' },
+    desc: 'Saltwater, conducts electricity, difficult to freeze: only at −21 °C. Heavier than water. Boiling it leaves the salt behind.' },
   // Carbon dioxide: 1.52× air, so it sinks and pools in low places, and puts
   // out flames where it makes up CO2_SMOTHER of the air (react.js). Below
   // −78.5 °C it settles out as dry ice. c_p,m 37.1 J/(mol·K), k 0.0166 W/(m·K),
@@ -743,14 +753,14 @@ const defs = [
     jitter: jitterOf(0.16), rad: PHYS.AIR_AMBIENT_PULL, spawn: 0.3,
     cold: { T: SUBLIME_T, into: 'DRY_ICE', latent: CO2_SUBLIME },
     sigma: [0.02, 0.02, 0.02],
-    desc: 'A heavy, invisible gas that sinks and pools in low places. It smothers fire, and freezes into dry ice at −78.5 °C.' },
+    desc: 'Carbon dioxide. Heavy gas, drifts downwards and pools in low places. Invisible. It smothers fire, and turns to dry ice at −78.5 °C.' },
   // Dry ice: c_p ~1.2 J/(g·K) near −80 °C (Giauque & Egan 1937), k ~0.28 W/(m·K).
   // It sublimes straight into CO₂ at −78.5 °C, setting free
   // 1.56 / 44.01 mol × 24.06 L = 853 volumes of gas.
   { key: 'DRY_ICE', abbr: 'DRIC', name: 'Dry ice', kind: K.SOLID, render: R.OPAQUE, color: '#e6ebf0', var: 0.04,
     cond: condOf(0.28), cap: capOf(DRY_ICE_RHO, 1.2), temp: SUBLIME_T - DRY_ICE_SPAWN_BELOW, acidProof: true,
     hot: { T: SUBLIME_T, into: 'CO2', latent: CO2_SUBLIME, puff: gasVolumes(DRY_ICE_RHO / CO2_M) },
-    desc: 'Frozen carbon dioxide at −80 °C. It never melts: it turns straight into heavy CO₂ gas, chilling what it touches.' },
+    desc: 'Dry ice, formed when CO₂ is cooled. Starts at −80 °C. It never melts: it turns straight into heavy CO₂ gas, chilling what it touches.' },
   // Hydrogen: 2.016 g/mol, 0.07× air, so it shoots up; it diffuses faster than
   // any other gas (0.61 cm²/s in air) and conducts heat 7× better than air
   // (0.187 W/(m·K), held to the stability limit). c_p,m 28.8 J/(mol·K). It
@@ -761,7 +771,7 @@ const defs = [
     dens: gasDensOf(2.016), cond: stableCond(gasCondOf(0.187), gasCapOf(28.8)), cap: gasCapOf(28.8),
     grav: buoyancy(gasDensOf(2.016)), drag: 0.05, jitter: jitterOf(0.61), rad: PHYS.AIR_AMBIENT_PULL, spawn: 0.3,
     sigma: [0.012, 0.012, 0.012],
-    desc: 'The lightest gas: it rises fast. A flame sets it burning with the air into steam, and with oxygen it goes up all at once.' },
+    desc: 'Hydrogen. The lightest gas: it rises fast. Combusts with oxygen to make steam: a flame sets it burning in air, and with pure oxygen it goes up all at once.' },
   // Oxygen: 32.00 g/mol, 1.105× air (which is 21 % oxygen); c_p,m 29.4 J/(mol·K),
   // k 0.0266 W/(m·K), 0.20 cm²/s. It doesn't burn by itself, but fuel next to
   // it burns faster and hotter (react.js, physics.js O2_PER_AIR).
@@ -769,7 +779,7 @@ const defs = [
     dens: gasDensOf(32.0), cond: gasCondOf(0.0266), cap: gasCapOf(29.4), grav: buoyancy(gasDensOf(32.0)), drag: 0.05,
     jitter: jitterOf(0.2), rad: PHYS.AIR_AMBIENT_PULL, spawn: 0.3,
     sigma: [0.015, 0.015, 0.015],
-    desc: 'Pure oxygen. It doesn\'t burn by itself, but anything burning next to it burns several times faster and hotter.' },
+    desc: 'Oxygen. Doesn\'t burn by itself, but anything burning next to it burns several times faster and hotter.' },
   // Caustic gas: hydrogen chloride, 36.46 g/mol, 1.26× air, so it sinks;
   // c_p,m 29.1 J/(mol·K), k 0.0145 W/(m·K), ~0.175 cm²/s (Fuller, from CO₂'s).
   // Boiling acid gives it off (ACID_BOIL). A cell of it eats as a cell of acid
@@ -778,7 +788,7 @@ const defs = [
     dens: gasDensOf(HCL_M), cond: gasCondOf(0.0145), cap: gasCapOf(29.1), grav: buoyancy(gasDensOf(HCL_M)), drag: 0.05,
     jitter: jitterOf(0.175), life: 1, rad: PHYS.AIR_AMBIENT_PULL, spawn: 0.3, acidProof: true, acid: true,
     sigma: [0.05, 0.05, 0.05],
-    desc: 'Hydrogen chloride, the fumes of boiling acid. Heavier than air, it eats through things as acid does, and turns back into acid in water.' },
+    desc: 'Caustic gas, acts like acid. Hydrogen chloride, the fumes of boiling acid. Heavier than air; turns back into acid in water.' },
   // Lithium (LI above): the lightest metal, so it floats on water, and even on
   // oil. Lumps of it, as scrap is of metal, so it can float. c_p 3.58 J/(g·K);
   // it melts at 180.5 °C. In water it fizzes off hydrogen and heat
@@ -787,7 +797,7 @@ const defs = [
   { key: 'LITHIUM', abbr: 'LITH', name: 'Lithium', kind: K.POWDER, render: R.OPAQUE, color: '#c3bdc9', var: 0.06,
     dens: LI.rho * 10, cond: stableCond(METAL_COND, capOf(LI.rho, LI.cp)), cap: capOf(LI.rho, LI.cp), drag: 0.02,
     slide: 0.5, melt: LI.melt, spawn: 0.3, fizz: LI_H2_VOLUMES, conducts: true, elec: LI.elec,
-    desc: 'A metal so light it floats on water. In water it fizzes out hydrogen and heat, enough to set the hydrogen alight. Melts at 180 °C.' },
+    desc: 'Lithium. Reactive metal so light it floats on water. In water it fizzes out hydrogen and heat, enough to set the hydrogen alight. Melts at 180 °C.' },
   // ---- Batch 4 (docs/elements.md): dust, antimatter, singularity, clay, mud, ceramic ----
   // Dust: grain dust (wheat flour), TPT's DUST. A loose heap is 0.5-0.6 g/cm³
   // (dens 5.5: it floats on water), c ≈ 1.7 J/(g·K) (cap 0.55·1.7/4.18 ≈ 0.22),
@@ -805,7 +815,7 @@ const defs = [
   { key: 'DUST', abbr: 'DUST', name: 'Dust', kind: K.POWDER, render: R.OPAQUE, color: '#efdcae', var: 0.12,
     dens: 5.5, cond: 0.004, cap: 0.22, drag: 0.15, slide: 0.3, ignite: 400, burnRate: 0.0015, burnHeat: 2, flameT: 600,
     life: 1, spawn: 0.3,
-    desc: 'Fine flour dust. A heap only smoulders, but blown into the air it explodes: a flame runs through the cloud and its blast stirs up more dust.' },
+    desc: 'Dust. Very light dust: fine flour. Flammable. A heap only smoulders, but blown into the air it explodes: a flame runs through the cloud and its blast stirs up more dust.' },
   // Antimatter (TPT's AMTR): annihilates any matter it touches, both cells
   // gone in a flash (REACTIONS). E = mc²: a cell of water (27 kg at a
   // 0.30 m cell) and as much antimatter give 2·27 kg·c² ≈ 4.9e18 J, about a
@@ -817,7 +827,7 @@ const defs = [
   // annihilate air too, more slowly by its density, ~1/800 of water's).
   { key: 'ANTIMATTER', abbr: 'AMTR', name: 'Antimatter', kind: K.POWDER, render: R.OPAQUE, color: '#c4bce4', var: 0.1,
     dens: 15, cond: 0.01, cap: 0.35, drag: 0.04, slide: 0.8, spawn: 0.3, acidProof: true,   // it annihilates acid instead
-    desc: 'Annihilates whatever matter it touches into a blast of pressure and heat. Only walls, clone and singularities are safe; it rests on air.' },
+    desc: 'Antimatter, destroys a majority of particles: it annihilates whatever matter it touches into a blast of pressure and heat. Only walls, clone, void and singularities are safe. It rests on air.' },
   // Singularity (TPT's SING): a tiny black hole (react.js, physics.js SING_*).
   // It holds a deep vacuum, so air and matter rush in, swallows what touches
   // it, gaining its mass (life, in cells of water), and bursts when it is
@@ -825,7 +835,7 @@ const defs = [
   // sinks through every liquid. Nothing gets out: it conducts no heat.
   { key: 'SINGULARITY', abbr: 'SING', name: 'Singularity', kind: K.POWDER, render: R.OPAQUE, color: '#1c1c20',
     dens: 1000, cond: 0, cap: 1, drag: 0.04, life: PHYS.SING_MASS0, spawn: 0.02, acidProof: true,   // it swallows acid instead
-    desc: 'A tiny black hole. It sucks in the air around it, swallows everything it touches and grows; full, it bursts. Starved, it evaporates.' },
+    desc: 'Singularity. A tiny black hole: creates huge amounts of negative pressure, so air and matter rush in. Swallows what it touches and grows; full, it bursts. Starved, it evaporates.' },
   // Clay: kaolin, white china clay. Grains of kaolinite are 2.6 g/cm³; a dry
   // heap ~1.2 (dens 12, porosity 1 − 1.2/2.6 ≈ 0.54: CLAY_WATER), with
   // c ≈ 0.92 J/(g·K) (cap 1.2·0.92/4.18 ≈ 0.26), conducting like dry sand.
@@ -836,7 +846,7 @@ const defs = [
   { key: 'CLAY', abbr: 'CLST', name: 'Clay', kind: K.POWDER, render: R.OPAQUE, color: '#d9d2c3', var: 0.1,
     dens: 12, cond: 0.01, cap: 0.26, drag: 0.06, slide: 0.35, spawn: 0.3,
     hot: { T: 1000, into: 'CERAMIC' },
-    desc: 'Kaolin powder. Water soaks into it and makes mud; fired past 1000 °C it bakes into ceramic.' },
+    desc: 'Clay. Clay dust: kaolin. Produces mud when mixed with water; fired past 1000 °C it bakes into ceramic.' },
   // Mud: clay with its pores full of water (CLAY_WATER of its volume):
   // 1.2 + 0.54 = 1.74 g/cm³ (dens 17.4: it sinks in water), cap
   // (1.2·0.92 + 0.54·4.18)/4.18 ≈ 0.8, conducting like wet soil (~1.2 W/(m·K),
@@ -850,7 +860,7 @@ const defs = [
   { key: 'MUD', abbr: 'MUD', name: 'Mud', kind: K.LIQUID, render: R.OPAQUE, color: '#9a8f7b', var: 0.08,
     dens: 17.4, cond: 0.03, cap: 0.8, drag: 0.2, flow: 0.2, spawn: 0.35,
     hot: { T: 100, into: 'CLAY', latent: CLAY_WATER * PHYS.L_BOIL, puff: CLAY_WATER * PHYS.STEAM_EXPANSION },
-    desc: 'Wet clay. Thick and slow, it sinks in water. Heated past 100 °C its water boils off and it dries back into clay.' },
+    desc: 'Mud. Wet clay. Thick and slow; it sinks in water. Heated past 100 °C its water boils off and it dries back into clay.' },
   // Ceramic: fired kaolin, unglazed porcelain. ~2.3 g/cm³, c ≈ 0.85 J/(g·K)
   // (cap 2.3·0.85/4.18 ≈ 0.47), ~1.5 W/(m·K), a little over glass (cond 0.02).
   // Hard to scratch (Mohs ~7) but brittle: its fracture toughness, ~1-1.5
@@ -860,7 +870,7 @@ const defs = [
   // (pyrometric cone 35), and its melt cools into a glass.
   { key: 'CERAMIC', abbr: 'CRMC', name: 'Ceramic', kind: K.SOLID, render: R.OPAQUE, color: '#ece7dd', var: 0.04,
     cond: 0.02, cap: 0.47, melt: 1750, meltInto: 'GLASS', hard: 9, breakInto: 'SHARDS', acidProof: true, sound: 'shatter',
-    desc: 'Fired clay: hard, acid-proof and brittle. A hard knock or a blast shatters it into sharp fragments. Melts into glass at 1750 °C.' },
+    desc: 'Ceramic. Fired clay: hard, acid-proof and brittle. A hard knock or a blast shatters it into sharp fragments. Melts into glass at 1750 °C.' },
   // ---- Explosives (batch 1, docs/elements.md): blast rows read by the shared
   // blast mechanism (el-core); the fuse has its own case in react.js.
   // Data: Wikipedia's TNT-equivalent table (density, detonation velocity D,
@@ -890,7 +900,7 @@ const defs = [
   { key: 'C4', abbr: 'C-4', name: 'C-4', kind: K.SOLID, render: R.OPAQUE, color: '#e3ddcb', var: 0.04,
     cond: 0.012, cap: 0.45, ignite: 263,
     blast: { P: EXPLOSIVE_P.C4, T: HE_BLAST_T, shock: 20, crushP: GUNPOWDER_BLAST.P },
-    desc: 'Plastic explosive: paint it on and it stays put. The biggest blast here. Goes off at 263 °C, from a nearby blast or a hard hit.' },
+    desc: 'C-4. Solid pressure sensitive explosive: paint it on and it stays put. The biggest blast here. Goes off at 263 °C, from a nearby blast or a hard hit.' },
   // Nitroglycerin: a pale yellow oily liquid, 1.593 g/cm³ (it sinks in water,
   // which it hardly mixes with), refractive index 1.479. It explodes above
   // 218 °C (Wikipedia). Very shock-sensitive: 0.2 J in the BAM fall-hammer
@@ -903,7 +913,7 @@ const defs = [
     dens: NITRO_DENS, cond: 0.01, cap: 0.52, drag: NITRO_DRAG, flow: 0.5, ignite: 218, spawn: 0.35,
     blast: { P: EXPLOSIVE_P.NITRO, T: HE_BLAST_T, shock: fallKE(NITRO_DENS, NITRO_DRAG, NITRO_FALL_M), crushP: GUNPOWDER_BLAST.P / 3 },
     sigma: [0.012, 0.016, 0.07],
-    desc: 'Nitroglycerin: an oily liquid that sinks in water. A fall, a hit or 218 °C sets it off, so pour it gently.' },
+    desc: 'Nitroglycerin. Pressure sensitive explosive: an oily liquid that sinks in water. A fall, a hit or 218 °C sets it off, so pour it gently.' },
   // TNT, as cast blocks: 1.654 g/cm³, "insensitive" to shock and friction; it
   // decomposes at 240 °C (Wikipedia), where it goes off here. It needs a
   // booster's pressure wave: a lit pile of gunpowder or another high
@@ -914,7 +924,7 @@ const defs = [
   { key: 'TNT', abbr: 'TNT', name: 'TNT', kind: K.SOLID, render: R.OPAQUE, color: '#c9a24e', var: 0.06,
     cond: 0.013, cap: 0.54, ignite: 240,
     blast: { P: EXPLOSIVE_P.TNT, T: HE_BLAST_T, crushP: 2 * GUNPOWDER_BLAST.P },
-    desc: 'Cast TNT blocks: shrug off hits and sparks. Go off at 240 °C or when a big blast goes off next to them.' },
+    desc: 'TNT. Cast blocks that shrug off hits and sparks. They go off at 240 °C, or when a big blast goes off next to them.' },
   // Thermite: iron oxide and aluminium powders, 2Al + Fe₂O₃ → 2Fe + Al₂O₃.
   // Hard to light: Al–Fe₂O₃ ignites at ~1,220 °C in thermal analysis (1,130 °C
   // heated slowly; ~1,600 K in a furnace), so a wood fire won't do it but
@@ -930,7 +940,7 @@ const defs = [
   { key: 'THERMITE', abbr: 'THRM', name: 'Thermite', kind: K.POWDER, render: R.OPAQUE, color: '#8a5546', var: 0.25,
     dens: 18, cond: 0.01, cap: 0.31, drag: 0.04, slide: 0.75, ignite: 1220, spawn: 0.3,
     blast: { P: THERMITE_P, T: 2500, into: 'LAVA', of: 'METAL' },
-    desc: 'Rust and aluminium powder. Hard to light (1220 °C: lava or a blast, not a wood fire), then burns at 2500 °C into molten iron that eats through floors.' },
+    desc: 'Thermite. Burns into extremely hot molten metal: iron at 2500 °C that eats through floors. Rust and aluminium powder, hard to light: 1220 °C takes lava or a blast, not a wood fire.' },
   // Propane: 1.808 kg/m³ at 25 °C, ~1.5 times air (Wikipedia), so it pools
   // in low spots: grav (ρ - ρ_air)/ρ, as steam's and smoke's buoyancy. It
   // diffuses half as fast as steam (0.11 against 0.25 cm²/s), so it jitters
@@ -947,7 +957,7 @@ const defs = [
     dens: PROPANE_DENS, cond: 0.0005, cap: 0.05, grav: (PROPANE_DENS - 1) / PROPANE_DENS, drag: 0.05, jitter: 0.06,
     ignite: 470, spawn: 0.3, sigma: [0.04, 0.04, 0.05],
     blast: { P: PROPANE_P, T: 1980, flame: PROPANE_FLAME, air: true },
-    desc: 'Heavier than air, so it pools in low spots. A flame sends the whole pool up in a rolling fireball.' },
+    desc: 'Propane. Flammable gas, heavier than air, so it pools in low spots. A flame sends the whole pool up in a rolling fireball.' },
   // Safety fuse: a black-powder core in tarred jute (Bickford's, 1831). The
   // powder carries its own oxidiser (potassium nitrate), so it burns
   // underwater and sealed in, at a steady ~1 cm/s ("30 seconds per foot",
@@ -958,7 +968,7 @@ const defs = [
   // tar: low conductance; it breaks into fibre (sawdust) like a plant stem.
   { key: 'FUSE', abbr: 'FUSE', name: 'Fuse', kind: K.SOLID, render: R.OPAQUE, color: '#2f5a26', var: 0.08,
     cond: 0.005, cap: 0.4, ignite: 300, life: 1, hard: 6, breakInto: 'SAWDUST', sound: 'thunk',
-    desc: 'A slow wick that carries its own oxidiser: it burns about a cell every 4.5 s, even underwater, then spits a flame at its end.' },
+    desc: 'Fuse. Burns slowly: about a cell every 4.5 s, even underwater, because it carries its own oxidiser. Lights from a flame or at 300 °C, then spits a flame at its end.' },
   // ---- Noita's materials (docs/elements.md, "Noita materials") ----
   // Names and colours are Noita's (materials.xml ids and the wiki's
   // descriptions, noita.wiki.gg, read 2026-10-10); flow, density and heat are
@@ -973,25 +983,25 @@ const defs = [
     dens: 10.6, cond: 0.025, cap: 0.91, ...viscous(3.5), spawn: 0.35,
     cold: freezeOf(BLOOD_MIX.freezeT, BLOOD_MIX.water),
     hot: boilOf(BLOOD_MIX.boilT, BLOOD_MIX.water, [['ASH', BLOOD_MIX.solids / BLOOD_MIX.solidsRho]]),
-    sigma: [0.9, 8, 8], desc: 'Thicker than water and a little heavier, so it settles under it.' },
+    sigma: [0.9, 8, 8], desc: 'Blood. Thicker than water and a little heavier, so it settles under it.' },
   // Toxic sludge (Noita's radioactive_liquid): an industrial slurry or mine
   // tailings, water carrying 20-30 % fine solids: ~1.2 g/cm³ and 0.1-1 Pa·s
   // (take 0.3). It sinks below water; Noita's floats (density 3, water's 4).
-  // Its faint green glow is game magic (gfx/materials.js TOXIC_GLOW); what it
+  // Its faint olive glow is game magic (gfx/materials.js TOXIC_GLOW_*); what it
   // does to bodies is the status effects' (nt-status).
   { key: 'TOXIC', abbr: 'TOXC', name: 'Toxic sludge', kind: K.LIQUID, render: R.LIQUID, color: '#3fb52c',
     dens: 12, cond: 0.03, cap: 0.85, ...viscous(300), spawn: 0.35,
     cold: { T: SLUDGE_MIX.freezeT, into: shares([['ICE', SLUDGE_MIX.water / ICE_RHO], ['SAND', SLUDGE_MIX.fines / SLUDGE_MIX.finesPile]]),
       latent: latentOf(334, SLUDGE_MIX.water) },
     hot: boilOf(SLUDGE_MIX.boilT, SLUDGE_MIX.water, [['SAND', SLUDGE_MIX.fines / SLUDGE_MIX.finesPile]]),
-    sigma: [1.6, 0.5, 2.5], desc: 'Thick green industrial sludge that sinks below water and glows faintly. Poisons whoever wades in it.' },
+    sigma: [1.2, 0.9, 2.5], desc: 'Toxic sludge. Thick green industrial sludge that sinks below water and glows faintly. Poisons whoever wades in it. Water washes it away.' },
   // Slime: Noita's pink-purple slime, taken as a hydrogel like PVA-borax
   // slime: mostly water (~1.05 g/cm³, cap and cond near water's) and about as
   // thick as honey, ~10 Pa·s at the shear rates of a pour.
   { key: 'SLIME', abbr: 'SLIM', name: 'Slime', kind: K.LIQUID, render: R.LIQUID, color: '#b45cae',
     dens: 10.5, cond: 0.028, cap: 0.95, ...viscous(1e4), spawn: 0.35,
     cold: freezeOf(0, GEL_WATER), hot: boilOf(100, GEL_WATER),
-    sigma: [0.25, 0.7, 0.3], desc: 'Sticky pink goo, a little heavier than water. It oozes rather than flows.' },
+    sigma: [0.25, 0.7, 0.3], desc: 'Slime. Sticky pink goo, a little heavier than water. It oozes rather than flows.' },
   // Whiskey (Noita's alcohol): 40 % ethanol by volume. 0.948 g/cm³ at 20 °C;
   // ~2.8 mPa·s (ethanol-water peaks near 2.9 at 40 % by weight; CRC
   // Handbook); 3.9 J/(g·K) → cap 0.89; ~0.45 W/(m·K). Its flash point is
@@ -1006,7 +1016,7 @@ const defs = [
     dens: 9.48, cond: 0.022, cap: 0.89, ...viscous(2.8), flash: 26, ignite: 363, burnRate: 0.008, burnHeat: 1.3,
     flameT: 700, life: 1, spawn: 0.35, ash: false,
     cold: freezeOf(WHISKEY_MIX.freezeT, WHISKEY_MIX.water), hot: WHISKEY_BOIL,
-    sigma: [0.05, 0.16, 0.55], desc: 'Forty per cent alcohol. Floats on water, and any flame lights it: it burns with a low, clean flame.' },
+    sigma: [0.05, 0.16, 0.55], desc: 'Whiskey. Forty per cent alcohol. Floats on water. Past 26 °C any flame lights it, and it burns with a low, clean flame.' },
   // Moss: a living mat that creeps over damp rock (react.js, physics.js
   // DAMP_REACH, MOSS_GROW): an air cell on bare rock (ROCK, STONE, LIMESTONE,
   // SANDSTONE) beside damp moss becomes moss. Damp is liquid water within a
@@ -1019,7 +1029,7 @@ const defs = [
   { key: 'MOSS', abbr: 'MOSS', name: 'Moss', kind: K.SOLID, render: R.OPAQUE, color: '#4d7a2c', var: 0.22,
     cond: 0.006, cap: 0.6, ignite: 250, burnRate: 0.006, burnHeat: 2, flameT: 800, life: 1,
     hard: 6, breakInto: 'SAWDUST', sound: 'thunk',
-    desc: 'Creeps slowly over damp rock wherever water is near, and stops when it has covered it. Burns once dry.' },
+    desc: 'Moss. Creeps slowly over damp rock wherever water is near, and stops when it has covered it. Burns once dry.' },
   // Fungus: foxfire, the glow of wood-rotting fungi (Armillaria, Panellus
   // stipticus) whose luciferin emits at 520-530 nm (Kotlobay et al. 2018,
   // PNAS). It spreads into WOOD, SAWDUST and PLANT beside damp fungus and
@@ -1032,7 +1042,7 @@ const defs = [
   { key: 'FUNGUS', abbr: 'FUNG', name: 'Fungus', kind: K.SOLID, render: R.OPAQUE, color: '#b5e08a', var: 0.2,
     cond: 0.008, cap: 0.6, ignite: 250, burnRate: 0.003, burnHeat: 2, flameT: 700, life: 1,
     hard: 6, breakInto: 'SAWDUST', sound: 'thunk',
-    desc: 'Glowing fungus, like foxfire. It slowly rots damp wood, sawdust and plants into more of itself. Burns.' },
+    desc: 'Fungus. Glows, like foxfire. It slowly rots damp wood, sawdust and plants into more of itself. Burns.' },
   // Noita's magical liquids. What they do to bodies is game magic and other
   // branches' (nt-status stains, nt-flask drinking). As matter they are
   // tinctures: water-thin (~1.5 mPa·s; Healthium a light syrup, 10), with
@@ -1044,27 +1054,27 @@ const defs = [
   { key: 'TELEPORTATIUM', abbr: 'TLPT', name: 'Teleportatium', kind: K.LIQUID, render: R.LIQUID, color: '#3cc6e8',
     dens: 10.5, cond: 0.03, cap: 1.0, ...viscous(1.5), spawn: 0.35,
     cold: freezeOf(0, TINCTURE_WATER), hot: boilOf(100, TINCTURE_WATER),
-    sigma: [0.45, 0.06, 0.04], desc: 'A glowing cyan potion from Noita. Whoever touches it is flung somewhere else.' },
+    sigma: [0.45, 0.06, 0.04], desc: 'Teleportatium. A glowing cyan potion from Noita. Whoever touches it is flung somewhere else.' },
   { key: 'LEVITATIUM', abbr: 'LEVI', name: 'Levitatium', kind: K.LIQUID, render: R.LIQUID, color: '#a7ad7a',
     dens: 8, cond: 0.03, cap: 1.0, ...viscous(1.5), spawn: 0.35,
     cold: freezeOf(0, TINCTURE_WATER), hot: boilOf(100, TINCTURE_WATER),
-    sigma: [0.12, 0.08, 0.3], desc: 'A pale olive potion from Noita, lighter than every other liquid. It makes whoever is soaked in it float faster.' },
+    sigma: [0.12, 0.08, 0.3], desc: 'Levitatium. A pale olive potion from Noita, as light as oil: it floats on water. It makes whoever is soaked in it float faster.' },
   { key: 'HEALTHIUM', abbr: 'HLTH', name: 'Healthium', kind: K.LIQUID, render: R.LIQUID, color: '#c8f26a',
     dens: 13.5, cond: 0.03, cap: 1.0, ...viscous(10), spawn: 0.35,
     cold: freezeOf(0, TINCTURE_WATER), hot: boilOf(100, TINCTURE_WATER),
-    sigma: [0.25, 0.03, 0.5], desc: 'A glowing lime potion from Noita that heals. Heavy and a little syrupy: it sinks under water.' },
+    sigma: [0.25, 0.03, 0.5], desc: 'Healthium. A glowing lime potion from Noita that heals. Heavy and a little syrupy: it sinks under water.' },
   { key: 'BERSERKIUM', abbr: 'BRSK', name: 'Berserkium', kind: K.LIQUID, render: R.LIQUID, color: '#ef5a26',
     dens: 8.8, cond: 0.03, cap: 1.0, ...viscous(1.5), spawn: 0.35,
     cold: freezeOf(0, TINCTURE_WATER), hot: boilOf(100, TINCTURE_WATER),
-    sigma: [0.03, 0.35, 0.9], desc: 'A red-orange potion from Noita that drives whoever it touches berserk. Floats on water.' },
+    sigma: [0.03, 0.35, 0.9], desc: 'Berserkium. A red-orange potion from Noita that drives whoever it touches berserk. Floats on water.' },
   { key: 'POLYMORPHINE', abbr: 'PLYM', name: 'Polymorphine', kind: K.LIQUID, render: R.LIQUID, color: '#ee6fcf',
     dens: 10.4, cond: 0.03, cap: 1.0, ...viscous(1.5), spawn: 0.35,
     cold: freezeOf(0, TINCTURE_WATER), hot: boilOf(100, TINCTURE_WATER),
-    sigma: [0.04, 0.45, 0.12], desc: 'A pink potion from Noita, and a dangerous one: it turns whoever it touches into something else.' },
+    sigma: [0.04, 0.45, 0.12], desc: 'Polymorphine. A pink potion from Noita, and a dangerous one: it turns whoever it touches into something else.' },
   { key: 'PHEROMONE', abbr: 'PHRM', name: 'Pheromone', kind: K.LIQUID, render: R.LIQUID, color: '#ff3d62',
     dens: 9.6, cond: 0.03, cap: 1.0, ...viscous(1.5), spawn: 0.35,
     cold: freezeOf(0, TINCTURE_WATER), hot: boilOf(100, TINCTURE_WATER),
-    sigma: [0.03, 0.6, 0.35], desc: 'A sparkling red potion from Noita. Creatures soaked in it become your friends.' },
+    sigma: [0.03, 0.6, 0.35], desc: 'Pheromone. A sparkling red potion from Noita. Creatures soaked in it become your friends.' },
   // Meat: what a body bursts into when it's killed by overkill (pov/vitals.js
   // GIB_HEALTH): chunks of lean muscle, ~75% water. Thermal properties of lean
   // beef above freezing (ASHRAE Handbook, Refrigeration, "Thermal Properties
@@ -1079,7 +1089,7 @@ const defs = [
   { key: 'MEAT', abbr: 'MEAT', name: 'Meat', kind: K.POWDER, render: R.OPAQUE, color: '#d65a64', var: 0.15,
     dens: 10.5, cond: 0.024, cap: 0.88, drag: 0.04, slide: 0.35, spawn: 0.3, sound: 'thunk',
     hot: { T: 71, into: 'COOKED_MEAT', latent: 0.9 },
-    desc: 'Raw chunks of a body. Too wet to burn: heat it past 71 °C (fire, lava, steam, the flamethrower) and it cooks. Raw meat does nothing for you.' },
+    desc: 'Meat. Raw chunks of a body. Too wet to burn: heat it past 71 °C (fire, lava, steam, the flamethrower) and it cooks. Raw meat does nothing for you.' },
   // Cooked meat: the same chunks, cooked through. Cooking drives out some
   // water: ~3.0 J/(g·K) and ~0.4 W/(m·K) cooked (ASHRAE, as above). Its fat
   // flashes at ~320 °C (beef tallow's flash point, 319 °C, Sigma-Aldrich), so
@@ -1091,7 +1101,45 @@ const defs = [
   { key: 'COOKED_MEAT', abbr: 'CMET', name: 'Cooked meat', kind: K.POWDER, render: R.OPAQUE, color: '#8a5530', var: 0.15,
     dens: 10.5, cond: 0.02, cap: 0.75, drag: 0.04, slide: 0.35, ignite: 320, burnRate: 0.0018, burnHeat: 3, flameT: 800,
     life: 1, spawn: 0.3, sound: 'thunk',
-    desc: 'Meat cooked through. In first person, walk into it to eat it: every chunk heals you. Past 320 °C it chars and burns to ash.' },
+    desc: 'Cooked meat. In first person, walk into it to eat it: every chunk heals you. Past 320 °C it chars and burns to ash.' },
+  // Lamp: Minecraft's redstone lamp on TPT's wiring. It lights while a spark
+  // has crossed it lately and goes dark a moment after the power stops
+  // (electricity.js LAMP_HOLD), as the redstone lamp does. A bulb: a tungsten
+  // filament (σ 1.8·10⁷ S/m, CRC) in thin frosted glass, so it carries sparks on
+  // to the next lamp like a wire, and glass's heat numbers. Thin bulb glass is
+  // far weaker than a pane: a bullet, a kick or a blast breaks it into broken
+  // glass, and the light goes out (Noita's lamps).
+  { key: 'LAMP', abbr: 'LAMP', name: 'Lamp', kind: K.SOLID, render: R.OPAQUE, color: '#f4e6c4', var: 0.03,
+    cond: 0.015, cap: 0.5, melt: 1400, meltInto: 'GLASS', hard: 3, breakInto: 'SHARDS', acidProof: true, sound: 'shatter',
+    conducts: true, elec: 1.8e7,
+    desc: 'Lamp. An electric light: it shines while sparks reach it and goes out a moment after they stop. Touch it to a battery to keep it on. Fragile: a shot or a kick smashes the bulb.' },
+  // Basalt: fresh lava rock, the dark flows a volcano's eruptions leave on its
+  // flanks (the giant volcano's). Minecraft's basalt and Noita's lava rock.
+  // ROCK is the same rock weathered. Unlike ROCK it melts, at stone's 1200 °C
+  // (basalt's solidus ~1100 °C, liquidus ~1250 °C), and its lava sets back
+  // into basalt. Young flows are vesicular, so weaker than dense basalt
+  // (100-350 MPa, Goodman 1989; ROCK's hard 30 is ~150 MPa): ~100 MPa, hard 20
+  // (hard ≈ UCS / 5 MPa, as the rocks above). Heat: ~1.7 W/m·K like ROCK's
+  // basalt (Robertson 1988); 2.9 g/cm³ × 0.84 J/g·K over water's 4.18 → cap 0.58.
+  { key: 'BASALT', abbr: 'BSLT', name: 'Basalt', kind: K.SOLID, render: R.OPAQUE, color: '#353331', var: 0.1,
+    cond: 0.03, cap: 0.58, melt: 1200, hard: 20, breakInto: 'STONE', sound: 'crack',
+    desc: 'Dark lava rock, the flows a volcano leaves on its slopes. Melts back into lava at 1200 °C. Moss grows on it.' },
+  // A wall torch (Descent's galleries: world/wang/kits): a pitch torch's burning
+  // head in a bracket, the Mines' and Coal Pits' light, as Noita's mines are lit
+  // by torches on their walls. Game magic: its flame is only light (gfx/materials.js
+  // TORCH_GLOW) and a flame to look at, never heat: it sets nothing alight and never
+  // burns down (the user's call, 2026-10-11: torches lighting the world misbehaved).
+  // Pitch-soaked wood's numbers; a kick knocks it out (sawdust).
+  { key: 'WALL_TORCH', abbr: 'WTRC', name: 'Wall torch', kind: K.SOLID, render: R.OPAQUE, color: '#ffb25e', var: 0.06,
+    cond: 0.008, cap: 0.6, hard: 4, breakInto: 'SAWDUST', sound: 'thunk',
+    desc: 'Wall torch. A burning torch in a bracket: a warm, flickering light in a dark cave. Its flame sets nothing alight and never burns down.' },
+  // Embers: the Coal Pits' light (world/wang/kits/coal.js), smouldering coal in
+  // the roof and the seams, glowing dull orange as Noita's coal glows where it
+  // has caught. Game magic like the wall torch's: light only (gfx/materials.js
+  // EMBER_GLOW), no heat, so it never spreads and never burns out. Coal's numbers.
+  { key: 'EMBER', abbr: 'EMBR', name: 'Embers', kind: K.SOLID, render: R.OPAQUE, color: '#c2502a', var: 0.15,
+    cond: 0.01, cap: 0.4, hard: 3, breakInto: 'BROKENCOAL', sound: 'crack',
+    desc: 'Embers. Smouldering coal glowing a dull orange in the dark. It gives light but no heat: it never spreads and never burns out.' },
 ];
 
 // σ (S/m) of a conductor given as conducts: true with no elec: a metal. The
@@ -1118,46 +1166,94 @@ export const breakInto = (e) => (e.breakInto ? E[e.breakInto] : -1);
 // Brush tools that are not elements (negative ids in the paint shader).
 // SIGN is handled by the app (it pins a text label), not by the paint shader.
 export const TOOLS = [
-  { id: -1, key: 'ERASE', abbr: 'ERAS', name: 'Erase', color: '#e5536a', desc: 'Removes everything inside the brush.' },
-  { id: -2, key: 'HEAT', abbr: 'HEAT', name: 'Heat', color: '#ff7a2f', desc: 'Warms everything inside the brush.' },
-  { id: -3, key: 'COOL', abbr: 'COOL', name: 'Cool', color: '#52b6ff', desc: 'Chills everything inside the brush.' },
-  { id: -4, key: 'BLAST', abbr: 'PRES', name: 'Pressure', color: '#b994ff', desc: 'Adds air pressure that pushes things outward.' },
+  { id: -1, key: 'ERASE', abbr: 'ERAS', name: 'Erase', color: '#e5536a', desc: 'Erase. Removes everything inside the brush.' },
+  { id: -2, key: 'HEAT', abbr: 'HEAT', name: 'Heat', color: '#ff7a2f', desc: 'Heat. Heats everything inside the brush.' },
+  { id: -3, key: 'COOL', abbr: 'COOL', name: 'Cool', color: '#52b6ff', desc: 'Cool. Cools everything inside the brush.' },
+  { id: -4, key: 'BLAST', abbr: 'PRES', name: 'Pressure', color: '#b994ff', desc: 'Pressure. Adds air pressure that pushes things outward.' },
   { id: -5, key: 'SIGN', abbr: 'SIGN', name: 'Sign', color: '#efe7d2',
-    desc: 'Click a surface to pin a label. {t}, {p} and {e} show live temperature, pressure and element.' },
+    desc: 'Sign. Displays text. Click a surface to pin one. {t}, {p} and {e} show live temperature, pressure and element.' },
   // Spawners are handled by the app too (src/spawners.js): markers, not cells.
   { id: -6, key: 'ENEMY', abbr: 'NPC', name: 'Axeman spawner', color: '#e0453a',
-    desc: 'Click a surface: in first person (V) an enemy with every tool appears here, and comes back after it dies. Click it again to remove it.' },
+    desc: 'Axeman spawner. Click a surface: in first person (V) an axeman with every tool appears here. Tries to kill you. Comes back after it dies. Click it again to remove it.' },
   { id: -30, key: 'GUNNER', abbr: 'GUNR', name: 'Gunner spawner', color: '#e08a2a',
-    desc: 'Click a surface: in first person (V) a jetpack gunner appears here. It keeps its distance, flies to high ground and shoots. Click it again to remove it.' },
+    desc: 'Gunner spawner. Click a surface: in first person (V) a jetpack gunner appears here. It keeps its distance, flies to high ground and shoots. Click it again to remove it.' },
   { id: -31, key: 'WORM', abbr: 'WORM', name: 'Worm spawner', color: '#b0607a',
-    desc: 'Click a surface: in first person (V) a worm burrows in here. It tunnels through rock, bursts out under you and bites; loud noises draw it. WALL and metal stop it. Click it again to remove it.' },
+    desc: 'Worm spawner. Click a surface: in first person (V) a worm burrows in here. It tunnels through rock, bursts out under you and bites; loud noises draw it. Wall and metal stop it. Click it again to remove it.' },
   { id: -32, key: 'GIANTWORM', abbr: 'GWRM', name: 'Giant worm spawner', color: '#7a3550',
-    desc: 'Click a surface: in first person (V) a giant worm burrows in here, Noita\'s Jättimato: twenty metres long, seven times as tough as the worm and faster. Click it again to remove it.' },
+    desc: 'Giant worm spawner. Click a surface: in first person (V) a giant worm burrows in here, Noita\'s Jättimato: twenty metres long, seven times as tough as the worm, and faster. Click it again to remove it.' },
   { id: -7, key: 'SPAWN', abbr: 'SPWN', name: 'Player spawn', color: '#3fa7ff',
-    desc: 'Click a surface: V drops you in at the spawn nearest the cursor, and you respawn there. Click it again to remove it.' },
+    desc: 'Player spawn. Click a surface: V drops you in at the spawn nearest the cursor, and you respawn there. Click it again to remove it.' },
   { id: -20, key: 'JEEPPAD', abbr: 'JEEP', name: 'Jeep pad', color: '#8fa04a',
-    desc: 'Click open ground: in first person (V) a jeep waits here (E to drive it), and a new one comes a few seconds after it is destroyed. Click it again to remove it.' },
+    desc: 'Jeep pad. Click open ground: in first person (V) a jeep waits here (E to drive it), and a new one comes a few seconds after it is destroyed. Click it again to remove it.' },
   { id: -21, key: 'BIKEPAD', abbr: 'HOVR', name: 'Hoverbike pad', color: '#5fd0e0',
-    desc: 'Click open ground: in first person (V) a hoverbike waits here (E to ride it; it skims water), and comes back after it is destroyed. Click it again to remove it.' },
+    desc: 'Hoverbike pad. Click open ground: in first person (V) a hoverbike waits here (E to ride it; it skims water), and comes back after it is destroyed. Click it again to remove it.' },
   // TPT's SPRK brush: sparks the conductors inside it (src/electricity.js
   // sparkCell). -8 is left for the Lightning tool (branch el-mat).
   { id: -9, key: 'SPARK', abbr: 'SPRK', name: 'Spark', color: '#ffff80',
-    desc: 'Sparks the conductors inside the brush: metal, silicon, water, and switches that are on. Everything else ignores it.' },
+    desc: 'Spark. Electricity, the basis of all electronics: it travels along conductive elements. Sparks the conductors inside the brush: metal, silicon, water, and switches that are on. Everything else ignores it.' },
   // Fast particles (rays.js RAY_TOOLS): painted into the particle list, not the grid.
   // (Ids from -40: the spawner pads hold -20 and -21.)
   { id: -40, key: 'PHOTON', abbr: 'PHOT', name: 'Photon', color: '#fff6c8',
-    desc: 'Packets of light flying straight. Glass, water and ice let them through, metal reflects them, and anything else soaks them up as heat: enough to light wood.' },
+    desc: 'Photon. Packets of light flying straight. Glass, water and ice let them through and tint them; metal reflects them. Anything else soaks them up as heat, so they can ignite flammable materials.' },
   { id: -41, key: 'NEUTRON', abbr: 'NEUT', name: 'Neutron', color: '#20e0ff',
-    desc: 'Fast neutrons. They pass through most things; water slows them, and slow ones split plutonium far more readily.' },
+    desc: 'Neutron. Fast neutrons. They pass through most things; water slows them, and slow ones split plutonium far more readily.' },
   // Lightning is handled by the app too (src/lightning.js): a click strikes a
   // bolt from the top of the box down to the surface under the cursor.
   { id: -8, key: 'LIGHTNING', abbr: 'LIGH', name: 'Lightning', color: '#fff6b0',
-    desc: 'Click a surface: a branching bolt strikes it from above, leaving a column of plasma, scorching heat and a pressure crack where it lands. Brush size sets how wide the strike is.' },
+    desc: 'Lightning. Click a surface: a branching bolt strikes it from above, leaving a column of plasma, scorching heat and a pressure crack where it lands. Change the brush size to set the size of the lightning.' },
+  // The rest of TPT's Tools menu (src/simulation/simtools/*.cpp), applied by
+  // the paint shader (passes.js paintFrag; strengths: physics.js TOOL_*).
+  // Colours are TPT's, lightened where they would vanish on the dark dock.
+  { id: -50, key: 'VACUUM', abbr: 'VAC', name: 'Vacuum', color: '#8a8f99',
+    desc: 'Vacuum, reduces air pressure, so air and loose matter rush in.' },
+  { id: -51, key: 'WIND', abbr: 'WIND', name: 'Wind', color: '#a9c1d4',
+    desc: 'Wind. Creates air movement: blows air and loose matter the way you drag the brush. Light things go furthest.' },
+  { id: -52, key: 'MIX', abbr: 'MIX', name: 'Mix', color: '#ffd090',
+    desc: 'Mix. Mixes particles: shuffles the powders, liquids and gases inside the brush, each with its own kind.' },
+  { id: -53, key: 'CYCLONE', abbr: 'CYCL', name: 'Cyclone', color: '#4a77c4',
+    desc: 'Cyclone, produces swirling air currents: spins air and loose matter around the brush like a tornado.' },
+  { id: -54, key: 'GRAV_IN', abbr: 'PGRV', name: 'Gravity well', color: '#ccccff',
+    desc: 'Gravity well. Pulls matter toward the middle of the brush while you hold it.' },
+  { id: -55, key: 'GRAV_OUT', abbr: 'NGRV', name: 'Gravity repeller', color: '#aaccff',
+    desc: 'Gravity repeller. Pushes matter out from the middle of the brush while you hold it.' },
+  { id: -56, key: 'AMB_HEAT', abbr: 'AMBP', name: 'Warm air', color: '#ffdd00',
+    desc: 'Warm air. Increases air temperature inside the brush, not the matter in it. Warm air rises.' },
+  { id: -57, key: 'AMB_COOL', abbr: 'AMBM', name: 'Cool air', color: '#00ddff',
+    desc: 'Cool air. Decreases air temperature inside the brush, not the matter in it. Cold air sinks.' },
   // Magical birds (src/birds/): a flock that lives on this spot. (-30 to -32 are the creature spawners.)
   { id: -33, key: 'FLOCK', abbr: 'BIRD', name: 'Bird flock', color: '#b58cff',
-    desc: 'Click a surface: a flock of magical birds lives here. They perch in trees and on roofs, take off when you come near or fire, roost and glow at night, and burn and fall like anything else. Click it again to remove it.' },
+    desc: 'Bird flock. Click a surface: a flock of magical birds lives here. They perch in trees and on roofs, take off when you come near or fire, roost and glow at night, and burn and fall like anything else. Click it again to remove it.' },
+  // TPT's Property tool (src/gui/game/tool/PropertyTool.cpp, its colour): sets
+  // one property of the matter under the brush (src/editing.js PROP_FIELDS).
+  { id: -60, key: 'PROP', abbr: 'PROP', name: 'Property', color: '#fea900',
+    desc: 'Property. Use to alter the properties of elements in the field: sets one property of the matter under the brush to a value, its element, ctype, temperature, life, velocity, or the air pressure. Pick the property and type the value in the menu.' },
 ];
+// TPT's decoration tools (src/gui/game/GameModel.cpp AllocTool(DecorationTool...),
+// src/simulation/Editing.cpp ApplyDecoration): paint a colour onto matter that
+// moves with it (src/deco.js). Ids run in TPT's mode order from DECO_ID0
+// (shaders/deco.js DECO_MODE); the brush routes them to the deco pass
+// (Simulation.paint), never to the paint shader.
+export const DECO_ID0 = -70;
+export const DECO_TOOLS = [
+  { id: -70, key: 'DECO_SET', abbr: 'SET', name: 'Decorate', color: '#c86432',
+    desc: 'Decorate. Draw decoration, no blending: paints the picker\'s colour onto everything inside the brush. The paint moves with the matter and stays through melting, freezing and burning; the brush, a construction or emptying the cell wipes it. Alpha is how strongly it covers.' },
+  { id: -71, key: 'DECO_CLEAR', abbr: 'CLR', name: 'Clear decoration', color: '#3a3f47',
+    desc: 'Clear decoration. Erases any set decoration inside the brush.' },
+  { id: -72, key: 'DECO_ADD', abbr: 'ADD', name: 'Add colour', color: '#5f9e5a',
+    desc: 'Add colour. Adds a little of the picker\'s colour to the decoration inside the brush, more the longer you hold it. Cells with no decoration need some alpha first (Decorate).' },
+  { id: -73, key: 'DECO_SUB', abbr: 'SUB', name: 'Subtract colour', color: '#9e5a5a',
+    desc: 'Subtract colour. Takes a little of the picker\'s colour away from the decoration inside the brush.' },
+  { id: -74, key: 'DECO_MUL', abbr: 'MUL', name: 'Multiply colour', color: '#5a7a9e',
+    desc: 'Multiply colour. Brightens the decoration inside the brush in proportion to the picker\'s colour.' },
+  { id: -75, key: 'DECO_DIV', abbr: 'DIV', name: 'Divide colour', color: '#7a5a9e',
+    desc: 'Divide colour. Darkens the decoration inside the brush in proportion to the picker\'s colour.' },
+  { id: -76, key: 'DECO_SMUDGE', abbr: 'SMDG', name: 'Smudge', color: '#9e8a5a',
+    desc: 'Smudge. Blends surrounding decoration together, around each cell inside the brush.' },
+];
+TOOLS.push(...DECO_TOOLS);
+export const isDecoTool = (id) => id <= DECO_ID0 && id > DECO_ID0 - DECO_TOOLS.length;
 export const LIGHTNING_TOOL = -8;
+export const PROP_TOOL = -60;   // TPT's Property tool (src/editing.js)
 export const isSpawnerTool = (id) => id === -6 || id === -7 || id === -20 || id === -21 || id === -30 || id === -31 || id === -32 || id === -33;
 
 // Constructions: whole structures placed with one click (src/constructions.js
@@ -1167,54 +1263,59 @@ export const isSpawnerTool = (id) => id === -6 || id === -7 || id === -20 || id 
 export const BUILDS = [
   { id: -100, key: 'HOUSE', abbr: 'HOUS', name: 'House', color: '#b9774b',
     variants: [['cottage', 'Cottage'], ['cabin', 'Log cabin'], ['brick', 'Brick'], ['greenhouse', 'Greenhouse']],
-    desc: 'Built from real materials: wooden walls burn, windows are glass, and the chimney draws smoke up from the fireplace.' },
+    desc: 'House. Built from real materials: wooden walls burn, windows are glass, and the chimney draws smoke up from the fireplace.' },
   { id: -101, key: 'TREE', abbr: 'TREE', name: 'Tree', color: '#4f9a3c', shuffle: true,
     variants: [['oak', 'Oak'], ['pine', 'Pine'], ['birch', 'Birch'], ['palm', 'Palm'], ['willow', 'Willow'], ['dead', 'Dead']],
-    desc: 'A wooden trunk and plant leaves, grown from a new seed every time. Pick a kind or shuffle between them.' },
+    desc: 'Tree. A wooden trunk and plant leaves, grown from a new seed every time. Pick a kind or shuffle between them.' },
   { id: -102, key: 'CAMPFIRE', abbr: 'CAMP', name: 'Campfire', color: '#c75b30',
     variants: [['lit', 'Lit'], ['unlit', 'Unlit']],
-    desc: 'A teepee of logs in a ring of stones. The lit one is already burning.' },
+    desc: 'Campfire. A teepee of logs in a ring of stones. The lit one is already burning.' },
   { id: -103, key: 'IGLOO', abbr: 'IGLO', name: 'Igloo', color: '#cfe6f5',
-    desc: 'A dome of ice at −20 °C with an entrance tunnel. Warm it and it melts.' },
+    desc: 'Igloo. A dome of ice at −20 °C with an entrance tunnel. Warm it and it melts.' },
   { id: -104, key: 'BARREL', abbr: 'BRRL', name: 'Barrel', color: '#8c6239',
     variants: [['drum', 'Oil drum'], ['keg', 'Powder keg']],
-    desc: 'A steel drum full of oil or a wooden keg full of gunpowder. Both go up when they get hot.' },
+    desc: 'Barrel. A steel drum full of oil, or a wooden keg full of gunpowder. Both go up when they get hot.' },
   { id: -105, key: 'AQUARIUM', abbr: 'AQUA', name: 'Aquarium', color: '#4aa3c4',
-    desc: 'A glass tank of water on a bed of sand and pebbles. Glass shrugs off acid but melts at 1400 °C.' },
+    desc: 'Aquarium. A glass tank of water on a bed of sand and pebbles. Glass shrugs off acid but melts at 1400 °C.' },
   { id: -106, key: 'FOUNTAIN', abbr: 'FNTN', name: 'Fountain', color: '#93a6bd',
-    desc: 'A stone basin with a spout fed by an endless water clone. It will overflow eventually.' },
+    desc: 'Fountain. A stone basin with a spout fed by an endless water clone. It will overflow eventually.' },
   { id: -108, key: 'SHRINE', abbr: 'SHRN', name: 'Shrine', color: '#e9c46a',
-    desc: `Noita's Holy Mountain: a stone pavilion with ${SHRINE_OFFERS} random perks floating over its plinths. In first person (V), walk into one to take it, and the others vanish. Every world has one near where you start.` },
+    desc: `Shrine. Noita's Holy Mountain: a stone pavilion with ${SHRINE_OFFERS} random perks floating over its plinths. In first person (V), walk into one to take it, and the others vanish. Every world has one near where you start.` },
   { id: -107, key: 'PROMPT', abbr: 'AI', name: 'Prompt', color: '#9b86e8',
-    desc: 'Describe a construction and a model writes it, checked for leaks and loose powder before you place it. Or paste code from any chatbot.' },
+    desc: 'Prompt. Describe a construction and a model writes it, checked for leaks and loose powder before you place it. Or paste code from any chatbot.' },
   // The World's structures (constructions/structures.js, docs/structures.md): built to walk into at the default size.
   { id: -109, key: 'DOCK', abbr: 'DOCK', name: 'Dock', color: '#9a7046',
     variants: [['pier', 'Pier'], ['hut', 'Fishing hut']],
-    desc: 'A wooden pier on stilts that reach down to the sea floor. Place it on a shore facing the water; the fishing hut sits on its head.' },
+    desc: 'Dock. A wooden pier on stilts that reach down to the sea floor; the fishing hut sits on its head. Place it on a shore facing the water.' },
   { id: -110, key: 'TOWER', abbr: 'TOWR', name: 'Tower', color: '#c9ccd3',
     variants: [['lighthouse', 'Lighthouse'], ['watch', 'Watchtower'], ['ruin', 'Ruined keep']],
-    desc: 'Climb the spiral stair inside for the view: a striped lighthouse with a glass lantern, a timber watchtower, or a broken stone keep.' },
+    desc: 'Tower. A striped lighthouse with a glass lantern, a timber watchtower, or a broken stone keep. Climb the spiral stair inside for the view.' },
   { id: -111, key: 'STONES', abbr: 'STNS', name: 'Standing stones', color: '#7d776f',
-    desc: 'A ring of rock monoliths round a low altar. Natural rock: the pickaxe can quarry it.' },
+    desc: 'Standing stones. A ring of rock monoliths round a low altar. Natural rock: the pickaxe can quarry it.' },
   { id: -112, key: 'WELL', abbr: 'WELL', name: 'Well', color: '#6f7f99',
-    desc: 'A stone well with water in it, a windlass and a little roof.' },
+    desc: 'Well. A stone well with water in it, a windlass and a little roof.' },
   { id: -113, key: 'MINE', abbr: 'MINE', name: 'Mine entrance', color: '#8a6a44',
-    desc: 'A timber portal and a gallery it carves into the hillside behind it, with rails and a cart of rubble. Place it facing out of a slope.' },
+    desc: 'Mine entrance. A timber portal and a gallery it carves into the hillside behind it, with rails and a cart of rubble. Place it facing out of a slope.' },
   { id: -114, key: 'WRECK', abbr: 'WRCK', name: 'Shipwreck', color: '#6b4a2e',
-    desc: 'A wooden hull heeled over and half sunk into the sand, her stern stove in, her mast and anchor beside her.' },
+    desc: 'Shipwreck. A wooden hull heeled over and half sunk into the sand, her stern stove in, her mast and anchor beside her.' },
+  { id: -116, key: 'LIGHT', abbr: 'LITE', name: 'Light', color: '#ffd28a',
+    variants: [['wall', 'Wall light'], ['ceiling', 'Ceiling light'], ['floor', 'Floor lamp'], ['street', 'Street lamp']],
+    desc: 'Light. An electric light on its own battery. Click a wall for a wall light, a ceiling to hang one. The bulbs are glass: shoot one and it goes out. Break the battery and the whole light dies.' },
   { id: -115, key: 'BRIDGE', abbr: 'BRDG', name: 'Bridge', color: '#8f6a43',
     variants: [['short', 'Short'], ['long', 'Long']],
-    desc: 'A timber footbridge on stone abutments, its trusses for railings. Place it across a gap: only the abutments reach down.' },
+    desc: 'Bridge. A timber footbridge on stone abutments, its trusses for railings. Place it across a gap: only the abutments reach down.' },
 ];
 const GEAR_ID0 = -300;   // the first-person tools' ids (GEAR_ITEMS below), past the constructions'
 export const isBuild = (id) => id <= -100 && id > GEAR_ID0;
 
 // First-person tools (src/pov/tools/catalog.js), listed in the palette's Tools
 // group: Garry's Mod's spawn menu. Every tool is carried (pov/tools/inventory.js);
-// a click puts it in hand; nothing is painted.
+// a click puts it in hand; nothing is painted. The tile's desc puts the name
+// first, as every desc does (the header's checklist); the catalog's own desc
+// goes without it, as the hotbar shows the name beside it.
 export const GEAR_ITEMS = GEAR.map((g, i) => ({
   id: GEAR_ID0 - i, key: `GEAR_${g.key}`, abbr: g.abbr, name: g.name, color: g.color, gear: g.key, model: g.model,
-  desc: `${g.desc} First person, key ${g.slot + 1} (${SLOTS[g.slot]}).`,
+  desc: `${g.name}. ${g.desc} First person, key ${g.slot + 1} (${SLOTS[g.slot]}).`,
 }));
 export const isGearTool = (id) => id <= GEAR_ID0 && id > GEAR_ID0 - 100;
 
@@ -1224,7 +1325,7 @@ const WAND_ID0 = GEAR_ID0 - 100;
 const WAND_STARTER_MAX = 20;
 export const WAND_STARTERS = WAND_PRESETS.slice(0, WAND_STARTER_MAX).map((preset, i) => ({
   id: WAND_ID0 - i, key: `WAND_${preset.id.replaceAll('-', '_').toUpperCase()}`, abbr: 'WAND', name: preset.name,
-  color: '#b994ff', desc: `${preset.description} Equip in first person; B edits the wand.`, preset,
+  color: '#b994ff', desc: `${preset.name}. ${preset.description} Equip in first person; B edits the wand.`, preset,
 }));
 export const isWandTool = (id) => id <= WAND_ID0 && id > WAND_ID0 - WAND_STARTER_MAX;
 export const wandPresetForTool = (id) => WAND_STARTERS.find((item) => item.id === id)?.preset;
@@ -1237,16 +1338,27 @@ export const PALETTE = [
   // Noita's magical liquids
   { name: 'Potions', items: ['TELEPORTATIUM', 'LEVITATIUM', 'HEALTHIUM', 'BERSERKIUM', 'POLYMORPHINE', 'PHEROMONE'] },
   { name: 'Gases', items: ['STEAM', 'CLOUD', 'HYDROGEN', 'OXYGEN', 'CO2', 'PROPANE', 'CAUSTIC_GAS', 'SMOKE', 'FIRE', 'PLASMA', 'MERCURY_VAPOR'] },
-  { name: 'Solids', items: ['WALL', 'COAL', 'ROCK', 'LIMESTONE', 'SANDSTONE', 'METAL', 'GLASS', 'CERAMIC', 'ICE', 'DRY_ICE', 'CRYSTAL', 'WOOD', 'FUNGUS', 'PLANT', 'MOSS', 'CLONE', 'BRICK', 'TITANIUM', 'TUNGSTEN', 'GOLD', 'SOLID_MERCURY', 'DIAMOND', 'VOID'] },
+  { name: 'Solids', items: ['WALL', 'COAL', 'ROCK', 'BASALT', 'LIMESTONE', 'SANDSTONE', 'METAL', 'GLASS', 'CERAMIC', 'ICE', 'DRY_ICE', 'CRYSTAL', 'WOOD', 'FUNGUS', 'PLANT', 'MOSS', 'CLONE', 'BRICK', 'TITANIUM', 'TUNGSTEN', 'GOLD', 'SOLID_MERCURY', 'DIAMOND', 'VOID'] },
   // TPT's Explosives menu (propane stays a gas)
   { name: 'Explosives', items: ['GUNPOWDER', 'FUSE', 'THERMITE', 'NITRO', 'TNT', 'C4'] },
-  { name: 'Electronics', items: ['SPARK', 'BATTERY', 'METAL', 'PSCN', 'NSCN', 'SWITCH', 'INSULATOR', 'TSNS', 'PCLN'] },
+  { name: 'Electronics', items: ['SPARK', 'BATTERY', 'METAL', 'LAMP', 'PSCN', 'NSCN', 'SWITCH', 'INSULATOR', 'TSNS', 'PCLN'] },
   { name: 'Radioactive', items: ['PHOTON', 'NEUTRON', 'URANIUM', 'PLUTONIUM'] },
   { name: 'Exotic', items: ['ANTIMATTER', 'SINGULARITY'] },
-  { name: 'Tools', items: ['HEAT', 'COOL', 'ERASE', 'BLAST', 'LIGHTNING', 'SIGN', ...GEAR_ITEMS.map((g) => g.key), ...WAND_STARTERS.map((item) => item.key)] },
+  { name: 'Tools', items: ['HEAT', 'COOL', 'ERASE', 'BLAST', 'VACUUM', 'WIND', 'CYCLONE', 'MIX', 'GRAV_IN', 'GRAV_OUT', 'AMB_HEAT', 'AMB_COOL', 'PROP', 'LIGHTNING', 'SIGN', ...GEAR_ITEMS.map((g) => g.key)] },   // (no starter wands: wands are the Noita gamemode's alone)
   { name: 'Entities', items: ['ENEMY', 'GUNNER', 'WORM', 'GIANTWORM', 'SPAWN', 'JEEPPAD', 'BIKEPAD', 'FLOCK'] },
-  { name: 'Constructions', items: ['HOUSE', 'TREE', 'CAMPFIRE', 'IGLOO', 'BARREL', 'AQUARIUM', 'FOUNTAIN', 'SHRINE', 'DOCK', 'TOWER', 'STONES', 'WELL', 'MINE', 'WRECK', 'BRIDGE', 'PROMPT'] },
-];
+  // TPT's DECO menu (its tools in TPT's order)
+  { name: 'Deco', items: DECO_TOOLS.map((t) => t.key) },
+  // Sections under headers, as Garry's Mod's spawnlists split their props
+  // (and Halo Reach's Forge splits Structure into Buildings, Bridges and so on)
+  { name: 'Constructions', sections: [
+    { name: 'Buildings', items: ['HOUSE', 'IGLOO', 'TOWER', 'MINE', 'SHRINE'] },
+    { name: 'Landmarks', items: ['DOCK', 'BRIDGE', 'WELL', 'FOUNTAIN', 'STONES', 'WRECK'] },
+    { name: 'Nature', items: ['TREE'] },
+    { name: 'Props', items: ['CAMPFIRE', 'BARREL', 'AQUARIUM'] },
+    { name: 'Lights', items: ['LIGHT'] },
+    { name: 'From a prompt', items: ['PROMPT'] },
+  ] },
+].map((g) => (g.sections ? { ...g, items: g.sections.flatMap((s) => s.items) } : g));
 
 const NON_ELEMENTS = [...TOOLS, ...BUILDS, ...GEAR_ITEMS, ...WAND_STARTERS];
 export const toolById = (id) => (id < 0 ? NON_ELEMENTS.find((t) => t.id === id) : ELEMENTS[id]);

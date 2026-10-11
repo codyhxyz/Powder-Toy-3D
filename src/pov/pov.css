@@ -1,13 +1,14 @@
 /* ------------------------------------------------------------------ POV (first person) */
 
-/* the god-mode chrome steps aside: the toolbelt's hotbar takes the bottom */
+/* the god-mode chrome steps aside: the toolbelt's hotbar takes the top */
 body.pov-on .dock,
 body.pov-on .dock-tab,
 body.pov-on .card,
 body.pov-on .hint { opacity: 0 !important; pointer-events: none !important; }
 /* the hover readout stays: in POV it's the held tool's (app.js shows it only then) */
-body.pov-on .dock { transform: translate(-50%, calc(100% + 30px)); }
+body.pov-on .dock { transform: translate(-50%, calc(-100% - 30px)); }
 body.pov-on .brand { opacity: 0.35; transition: opacity 300ms; }
+body.pov-on .toolbar { z-index: 5; }   /* over the HUD's screen effects (a buried view is opaque), as Minecraft's HUD is over its in-wall overlay */
 body.pov-locked canvas { cursor: none; }
 
 .pov-hud {
@@ -19,6 +20,13 @@ body.pov-locked canvas { cursor: none; }
 
 /* ---- screen effects (opacity driven by what the body feels) */
 .pov-fx { position: absolute; inset: 0; opacity: 0; transition: opacity 120ms linear; }
+/* the head buried in matter (index.js buried): its colour, darkened, with a little grain, over the whole view */
+.pov-buried {
+  --c: #000;
+  background:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.7' numOctaves='2' seed='3'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.6 -0.25'/%3E%3C/filter%3E%3Crect width='240' height='240' filter='url(%23n)'/%3E%3C/svg%3E"),
+    var(--c);
+}
 .pov-heat {
   background: radial-gradient(120% 95% at 50% 55%, transparent 48%, rgba(255, 120, 30, 0.35) 72%, rgba(255, 70, 10, 0.75) 100%);
   mix-blend-mode: screen;
@@ -71,7 +79,7 @@ body.pov-locked canvas { cursor: none; }
 .pov-cross.reach i:nth-child(4) { transform: translateX(-1.5px); }
 .pov-cross.reach b { opacity: 1; background: var(--accent); }
 
-/* ---- vitals (bottom left; the hotbar owns the bottom centre) */
+/* ---- vitals (bottom left; the hotbar hangs from the top) */
 .pov-vitals {
   position: absolute; left: 16px; bottom: 16px;
   display: flex; flex-direction: column; gap: 7px;
@@ -80,13 +88,7 @@ body.pov-locked canvas { cursor: none; }
   transition: opacity 220ms, transform 260ms var(--ease);
 }
 .pov-vitals.show { opacity: 1; transform: none; }
-/* Where the centred hotbar (tools/hotbar.css: 10 slots, 568px) would reach the
-   vitals (16px + 210px from the left), the vitals sit above it instead. */
-@media (max-width: 1040px) { .pov-vitals { bottom: 88px; } }
-/* On narrow screens the tool stack and equipped name fill the bottom. */
-@media (max-width: 560px) {
-  .pov-vitals { top: 76px; bottom: auto; left: 12px; width: 160px; }
-}
+@media (max-width: 560px) { .pov-vitals { left: 12px; bottom: 12px; width: 160px; } }
 .pov-bar { display: flex; align-items: center; gap: 8px; }
 /* statuses (pov/status.js): Noita's row, each icon with its seconds left and a bar that runs down */
 .pov-statuses { display: flex; flex-wrap: wrap; gap: 4px; }
@@ -132,6 +134,16 @@ body.pov-locked canvas { cursor: none; }
 .pov-breath .pov-ic svg { fill: none; stroke: #7cc4ff; stroke-width: 1.4; }
 .pov-breath .pov-fill { background: linear-gradient(90deg, #3d8fd6, #7cc4ff); transition: transform 120ms linear; }
 .pov-breath.low .pov-fill { background: linear-gradient(90deg, #6b4fd6, #b08cff); }
+.pov-mana { display: none; }
+.pov-mana.show { display: flex; animation: pov-in 200ms var(--ease); }
+.pov-mana .pov-ic svg { fill: #4dabf7; }
+.pov-mana .pov-fill { background: linear-gradient(90deg, #1c7ed6, #74c0fc); transition: transform 90ms linear; }
+.pov-mana.low .pov-fill { background: linear-gradient(90deg, #364fc7, #748ffc); }
+/* gold (pov/descent): Noita's "$ 123" */
+.pov-gold { display: none; align-items: center; gap: 8px; font-size: 13px; font-variant-numeric: tabular-nums; color: #ffd34d; }
+.pov-gold.show { display: flex; animation: pov-in 200ms var(--ease); }
+.pov-gold .pov-ic { flex: 0 0 auto; width: 14px; text-align: center; font-weight: 700; }
+.pov-val { min-width: 2.2em; text-align: right; font-size: 11px; font-variant-numeric: tabular-nums; color: var(--muted); }
 .pov-jet { display: none; }
 .pov-jet.show { display: flex; animation: pov-in 200ms var(--ease); }
 .pov-jet .pov-ic svg { fill: #ffa94d; }
@@ -157,6 +169,14 @@ body.pov-locked canvas { cursor: none; }
 @keyframes pov-shield-sweep { from { background-position: 100% 0; } to { background-position: -100% 0; } }
 @keyframes pov-in { from { opacity: 0; transform: translateY(4px); } }
 
+/* ---- look + E (interact.js): what's under the crosshair, just below it */
+.pov-use { position: fixed; left: 50%; top: calc(50% + 28px); transform: translate(-50%, 4px); opacity: 0; pointer-events: none;
+  display: flex; flex-direction: column; align-items: center; gap: 2px; max-width: min(340px, 80vw); padding: 7px 12px; text-align: center;
+  transition: opacity 120ms, transform 120ms var(--ease); z-index: 6; }
+.pov-use.show { opacity: 1; transform: translate(-50%, 0); }
+.pov-use-title { font-weight: 640; }
+.pov-use-lines { display: flex; flex-direction: column; font-size: 12px; color: var(--muted); }
+.pov-use-key { margin-top: 3px; font-size: 12px; }
 /* ---- pointer-lock prompt */
 .pov-lock {
   position: absolute; left: 50%; top: calc(50% - 70px); transform: translate(-50%, 4px);
@@ -235,13 +255,32 @@ body.pov-locked canvas { cursor: none; }
   box-shadow: 0 0 3px rgba(0, 0, 0, 0.8), 0 0 7px rgba(255, 255, 255, 0.9);
 }
 
+/* ---- Halo combat (combat.js): the red reticle on an enemy in range, the grenade count, the shield's edge flare */
+.pov-cross.enemy i, .pov-cross.enemy b { background: #ff3b30; }
+.pov-cross.enemy b { opacity: 1; }
+.pov-nades {
+  position: absolute; right: calc(50% + 16px); top: calc(50% + 14px);
+  display: none; align-items: center; gap: 4px;
+  font: 600 13px/1 var(--font, system-ui); color: #fff;
+  filter: drop-shadow(0 0 1.5px rgba(0, 0, 0, 0.9));
+}
+.pov-nades.show { display: flex; }
+.pov-nades .pov-ic svg { width: 14px; height: 14px; fill: #b9c97a; display: block; }
+.pov-nades.empty { opacity: 0.45; }
+.pov-shieldfx {
+  background: radial-gradient(120% 95% at 50% 50%, transparent 55%, rgba(255, 205, 90, 0.35) 82%, rgba(255, 225, 140, 0.7) 100%);
+  mix-blend-mode: screen;
+  transition: none;
+}
+body.pov-on.pov-nohud .pov-nades { display: none; }
+
 /* F1 (as in Minecraft): the HUD and the hand hidden. Screen effects, the death
    screen and the click-to-look prompt stay. */
 body.pov-on.pov-nohud .pov-cross,
 body.pov-on.pov-nohud .pov-hitmark,
 body.pov-on.pov-nohud .pov-vitals,
 body.pov-on.pov-nohud .hotbar,
-body.pov-on.pov-nohud .hb-name,
+body.pov-on.pov-nohud .hb-held,
 body.pov-on.pov-nohud .brand,
 body.pov-on.pov-nohud .toolbar,
 body.pov-on.pov-nohud .stats,
@@ -252,18 +291,18 @@ body.pov-on.pov-nohud .legend-box { visibility: hidden !important; }
    back so its Tools group can give tools, GMod's spawn menu; the hotbar steps aside. */
 body.pov-on.pov-menu .dock { opacity: 1 !important; pointer-events: auto !important; transform: translateX(-50%); }
 body.pov-on.pov-menu .card { opacity: 1 !important; }
-body.pov-on.pov-menu .hotbar { opacity: 0; pointer-events: none; }
+body.pov-on.pov-menu .hotbar, body.pov-on.pov-menu .hb-held { opacity: 0; pointer-events: none; }
 body.pov-on.pov-menu .pov-lock { display: none; }
 
-/* ---- touch controls (touch.js): phones and tablets only. The thumbs sit above
-   the hotbar at the screen's edges, leaving the middle clear for aiming; a drag
+/* ---- touch controls (touch.js): phones and tablets only. The thumbs sit at the
+   bottom corners (the hotbar is up top), leaving the middle clear for aiming; a drag
    on the scene only looks, tools fire from their own buttons. */
 .pov-touch { display: none; }
 @media (hover: none) and (pointer: coarse) {
   .pov-touch {
     --touch-gap: 8px;
     --touch-side: max(16px, env(safe-area-inset-left));
-    --touch-lift: calc(max(14px, env(safe-area-inset-bottom)) + 120px);   /* clears the hotbar and its tool name */
+    --touch-lift: max(14px, env(safe-area-inset-bottom));
     position: fixed; inset: 0; z-index: 11; pointer-events: none;
   }
   .pov-touch.show { display: block; }
@@ -294,27 +333,17 @@ body.pov-on.pov-menu .pov-lock { display: none; }
   .pov-touch .touch-primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
   .pov-touch .touch-primary.held { background: var(--accent); filter: brightness(0.85); }
 
-  /* the vitals go top left, out of the thumbs' way (below the bar, and its camera row when narrow) */
-  .pov-vitals { top: calc(max(12px, env(safe-area-inset-top)) + 66px); bottom: auto; left: max(12px, env(safe-area-inset-left)); width: 160px; padding: 8px; }
+  /* the vitals sit above the move stick (112px), out of the thumbs' way */
+  .pov-vitals { bottom: calc(var(--touch-lift) + 124px); left: max(12px, env(safe-area-inset-left)); width: 160px; padding: 8px; }
   .pov-hint { top: 40%; border-radius: var(--r-panel); font-size: 12px; }
   .pov-respawn { flex-wrap: wrap; justify-content: center; padding: 0 16px; }
   body.pov-on.pov-nohud .pov-touch { visibility: hidden; }
-}
-@media (hover: none) and (pointer: coarse) and (max-width: 760px) {
-  .pov-vitals { top: calc(max(12px, env(safe-area-inset-top)) + 128px); }
-}
-@media (hover: none) and (pointer: coarse) and (max-width: 560px) {
-  .pov-touch { --touch-lift: calc(max(8px, env(safe-area-inset-bottom)) + 112px); }   /* the smaller hotbar (hotbar.css) */
 }
 @media (hover: none) and (pointer: coarse) and (max-width: 360px) {
   .pov-touch { --touch-side: 12px; --touch-gap: 6px; }
   .touch-stick { width: 96px; height: 96px; }
   .touch-actions { right: 12px; }
   .pov-touch button { min-width: 56px; padding: 8px; font-size: 12px; }
-}
-/* landscape phones: the thumbs beside the hotbar (456px, hotbar.css), not above it */
-@media (hover: none) and (pointer: coarse) and (max-height: 500px) and (min-width: 740px) {
-  .pov-touch { --touch-lift: max(14px, env(safe-area-inset-bottom)); }
 }
 @media (hover: none) and (pointer: coarse) and (max-height: 500px) {
   .pov-hint, .touch-tool-name { display: none; }

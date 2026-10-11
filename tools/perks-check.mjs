@@ -1,5 +1,5 @@
 // End-to-end check of the perks (src/pov/perks.js, src/perkOrbs.js) through the
-// real shell, body and toolbelt: the Shrine construction, walking into orbs,
+// real shell, body and toolbelt: the Shrine construction, taking orbs (look + E),
 // stacking, the HUD row, Faster Tools on a real tool, the Freeze Field, Lukki,
 // Sand Swimmer, Revenge Explosion, Slow Fall, Shrink, Night Vision, Rain Cloud (the CLOUD element on
 // the GPU), and the shrine every world gets.
@@ -56,6 +56,20 @@ try {
   const V = (x, y, z) => ({ x, y, z });
   const stand = (x, z, y = 0) => ev(([x, y, z]) => { const a = window.__app; a.pov.player.spawn(a.pov.player.pos.clone().set(x, y, z)); }, [x, y, z]);
   const orb = (key, x, z, y = 0) => ev(([key, x, y, z]) => { const a = window.__app; a.perkOrbs.add(key, a.pov.player.pos.clone().set(x, y, z)); }, [key, x, y, z]);
+  // look at orb i's icon and press E (interact.js: walking into one takes nothing)
+  const takeLooked = async (i = 0, press = true) => {
+    await ev(async (i) => {
+      const { ORB_LIFT } = await import('/src/perkOrbs.js');
+      const a = window.__app, pl = a.pov.player, orbs = a.perkOrbs, o = orbs.list[i];
+      const c = orbs.feet(o, pl.pos.clone()); c.y += ORB_LIFT;
+      const dx = c.x - pl.pos.x, dy = c.y - (pl.pos.y + pl.eyeHeight), dz = c.z - pl.pos.z;
+      a.pov.setLook(Math.atan2(-dx, -dz), Math.atan2(dy, Math.hypot(dx, dz)));
+    }, i);
+    await settle(200);
+    if (!press) return;
+    await p.keyboard.press('KeyE');
+    await settle(200);
+  };
   const perks = () => ev(() => Object.fromEntries(window.__app.pov.player.perks.list().map(({ perk, n }) => [perk.key, n])));
 
   const setPerks = (keys) => ev((keys) => { const pl = window.__app.pov.player; pl.perks.clear(); keys.forEach((k) => pl.perks.add(k)); }, keys);
@@ -180,15 +194,24 @@ try {
   const whole = await ev(async () => { const { E } = await import('/src/elements.js'); const c = await window.__pageGpu.census(); return { cloud: c[E.CLOUD]?.n ?? 0, water: c[E.WATER]?.n ?? 0 }; });
   console.log('     (whole box:', JSON.stringify(whole), ')');
 
-  // ---- walking into orbs, stacking
+  // ---- taking orbs (look + E, Noita's rule: walking into one takes nothing), stacking
   await stand(20, 20);
   await settle(400);
   await orb('FASTER_TOOLS', 20, 20);
   await settle(300);
-  check('walking into an orb takes it', (await perks()).FASTER_TOOLS === 1, JSON.stringify(await perks()));
-  check('the orb is gone', (await ev(() => window.__app.perkOrbs.list.length)) === 0);
-  await orb('FASTER_TOOLS', 20, 20);
+  check('walking into an orb leaves it', !(await perks()).FASTER_TOOLS && (await ev(() => window.__app.perkOrbs.list.length)) === 1, JSON.stringify(await perks()));
+  await ev(() => window.__app.perkOrbs.clear());
+  await orb('FASTER_TOOLS', 20, 24);
   await settle(300);
+  await takeLooked(0, false);
+  const named = await ev(() => document.querySelector('.pov-use.show')?.textContent ?? '');
+  check('looking at an orb names it before you take it', /Faster Tools/.test(named), JSON.stringify(named));
+  await takeLooked();
+  check('look + E takes it', (await perks()).FASTER_TOOLS === 1, JSON.stringify(await perks()));
+  check('the orb is gone', (await ev(() => window.__app.perkOrbs.list.length)) === 0);
+  await orb('FASTER_TOOLS', 20, 24);
+  await settle(300);
+  await takeLooked();
   check('a second one stacks', (await perks()).FASTER_TOOLS === 2);
   check('tool speed 4x after two', (await ev(() => window.__app.pov.ctx.toolRate)) === 4);
   const hud = await ev(() => [...document.querySelectorAll('.pov-perk')].map((e) => e.textContent));
@@ -224,8 +247,9 @@ try {
     await p.screenshot({ path: shotPath, type: 'jpeg', quality: 70 });
   }
   const before = await perks();
-  await stand(60.5, 32.85);   // against the middle plinth's front
+  await stand(60.5, 26);   // a step back from the plinths
   await settle(400);
+  await takeLooked(1);
   const after = await perks();
   check('taking one shrine orb takes one perk, the rest vanish', Object.keys(after).length >= Object.keys(before).length + 1 && (await ev(() => window.__app.perkOrbs.list.length)) === 0, JSON.stringify(after));
   await ev(() => window.__app.pov.player.perks.clear());

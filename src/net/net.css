@@ -44,7 +44,7 @@
 .net-peers .you { margin-left: auto; color: var(--faint); font-size: 11px; }
 .net-panel .btn:disabled { opacity: 0.4; cursor: default; }
 
-/* Chat (net/chat.js): bottom left, above the element dock. Lines fade after a
+/* Chat (net/chat.js): bottom left, above the first-person vitals. Lines fade after a
    while; opening the chat (T) shows the whole history. */
 .chat {
   position: fixed; left: 14px; bottom: 178px; z-index: 11;

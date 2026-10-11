@@ -1,4 +1,5 @@
 import { ELEMENTS, E, K } from '../elements.js';
+import { LAMP_DC } from '../electricity.js';
 
 // The construction runtime: the small API every construction is written in.
 //
@@ -163,8 +164,14 @@ export class Model {
   }
 
   // Compact, transferable copy: one entry per cell in parallel typed arrays.
+  // A lamp touching a battery comes out lit and still (electricity.js
+  // LAMP_DC), as the sim would leave it a step later, so a world's lamps are
+  // as generated from the start.
   toCells() {
     const n = this.cells.size;
+    const FACES = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+    for (const c of this.cells.values())
+      if (c.id === E.LAMP && FACES.some(([dx, dy, dz]) => this.get(c.x + dx, c.y + dy, c.z + dz) === E.BATTERY)) c.ctype = LAMP_DC;
     const out = {
       n, foot: this.foot,
       x: new Int16Array(n), y: new Int16Array(n), z: new Int16Array(n),

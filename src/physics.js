@@ -27,6 +27,13 @@ const FUSE_STEPS_PER_CELL = Math.round(simSteps(CELL_M / FUSE_SPEED));
 // the front closely; FUSE_BURN is set so the handoff is FUSE_STEPS_PER_CELL steps in.
 const FUSE_HANDOFF = 0.05;
 
+// Brush tools from TPT (PHYS.TOOL_* below). TPT's air maps are cells of CELL
+// = 4 pixels a side (TPT src/SimulationConfig.h), so 16 pixels.
+const TPT_CELL_PIXELS = 4 * 4;
+const TOOL_FRAME_RATE = 60;                       // fps: brushes apply once a frame (TPT runs at 60)
+const STEPS_PER_FRAME = NOMINAL_STEP_RATE / TOOL_FRAME_RATE;   // the sim's steps in such a frame
+const TOOL_GRAV_EDGE_G = 4;                       // a gravity well's pull at the brush edge, in g (game choice)
+
 export const PHYS = {
   AMBIENT: 20,               // °C, room temperature
   KELVIN: 273.15,            // °C to K
@@ -315,6 +322,35 @@ export const PHYS = {
   TOOL_HEAT: 30,             // °C at the brush centre
   TOOL_PRESSURE: 6,
   TOOL_FALLOFF: 0.6,         // full strength inside this share of the radius
+  // TPT's other tools (src/simulation/simtools/*.cpp), applied once per frame
+  // as TPT applies them (passes.js paintFrag). TPT runs a tool on every pixel
+  // of its brush, and its air maps (pressure, velocity, ambient heat) are
+  // cells of TPT_CELL_PIXELS pixels, so a per-pixel rate reaches an air cell
+  // that many times a frame. A TPT pixel and step are our cell and step.
+  // Vacuum (VAC.cpp) is TPT's AIR tool (our Pressure) with the sign turned, so
+  // it takes TOOL_PRESSURE off down to P_MIN; ambient heat (AMBP.cpp, AMBM.cpp)
+  // adds strength·2 a pixel to the air as HEAT.cpp adds to particles, so it is
+  // TOOL_HEAT, on air cells only.
+  // Air speed (cells/step) per cell the brush moved this frame: WIND.cpp's
+  // 0.01·strength a pixel per pixel of drag.
+  TOOL_WIND: 0.01 * TPT_CELL_PIXELS,
+  // Air speed (cells/step) a frame, tangential: CYCL.cpp's strength/16,
+  // applied once per air cell, not per pixel.
+  TOOL_CYCLONE: 1 / 16,
+  // TPT's PGRV/NGRV (PGRV.cpp, NGRV.cpp) put mass into its Newtonian gravity
+  // map, which we don't have. Ours is a ball of mass filling the brush: the
+  // pull inside a uniform ball grows with distance from its centre (Newton's
+  // shell theorem), TOOL_GRAV_EDGE_G times the world's gravity at its edge, on
+  // matter only (TPT's gravity map doesn't move air either). Velocity per frame
+  // at the edge (cells/step): the world's own SIM_GRAVITY per step over a
+  // frame's steps. At 4 g, sand held in the well settles a quarter of the way
+  // out below the centre.
+  TOOL_GRAVITY: TOOL_GRAV_EDGE_G * SIM_GRAVITY * STEPS_PER_FRAME,
+  // Chance a frame that a pair of cells the Mix tool picked swap. MIX.cpp
+  // starts a swap from a particle one frame in 100 and lands on another
+  // about as often, so a particle moves 2 frames in 100; our pairs reach as far
+  // (shaders/passes.js MIX_BITS).
+  TOOL_MIX_SWAP: 2 / 100,
 };
 
 // WGSL for the shared prelude (shaders/common.js): every PHYS entry as an f32

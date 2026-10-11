@@ -9,9 +9,11 @@
 //   5. temperature sensor: fires while something hotter touches it, and sparks its wire
 //   6. the Spark tool sparks conductors only, and only ready ones
 //   7. the powered clone copies only while on, switched by P and N
+//   8. lamps: a wired lamp shines steadily and goes out LAMP_HOLD steps after its
+//      wire is cut; one on a battery is lit and still (LAMP_DC), and runs down when it goes
 // usage: node tools/elec-check.mjs
 import { E } from '../src/elements.js';
-import { ELEC, SPARK_CYCLE, SPARK_COST, isLive, sparkOf } from '../src/electricity.js';
+import { ELEC, SPARK_CYCLE, SPARK_COST, isLive, sparkOf, sparkLevel, LAMP_DC } from '../src/electricity.js';
 import { World } from '../src/ui/tiles/engine.js';
 
 const results = [];
@@ -168,6 +170,36 @@ function firstLive(w, cells, steps) {
   for (let i = 0; i < w.id.length; i++) if (w.id[i] === E.SAND) w.erase(i);
   for (let s = 0; s < 30; s++) w.step();
   check('powered clone: a live N turns it off, and it stops', sandNow() === 0, `sand after N: ${sandNow()}, lives ${[w.life[w.idx(2, 1)], w.life[w.idx(2, 2)]]}`);
+}
+
+// 8. lamps
+{
+  const lit = (w, x, y) => sparkLevel(w.ctype[w.idx(x, y)]) > 0;   // gfx/materials.js lampLit
+  // battery → metal → lamp → lamp: steady once the spark arrives
+  const w = world(8);
+  w.put(0, 1, E.BATTERY);
+  for (let x = 1; x <= 3; x++) w.put(x, 1, E.METAL);
+  w.put(4, 1, E.LAMP); w.put(5, 1, E.LAMP);
+  for (let s = 0; s < 10; s++) w.step();
+  let dark = 0;
+  for (let s = 0; s < SPARK_CYCLE * 10; s++) { w.step(); if (!lit(w, 4, 1) || !lit(w, 5, 1)) dark++; }
+  check('lamp: wired, it shines every step, and lights the lamp beside it', dark === 0, `${dark} dark steps in ${SPARK_CYCLE * 10}`);
+  w.erase(w.idx(2, 1));
+  let out = -1;
+  for (let s = 1; s <= 40 && out < 0; s++) { w.step(); if (!lit(w, 4, 1)) out = s; }
+  check('lamp: its wire cut, it goes out within a spark cycle and its hold', out > 0 && out <= SPARK_CYCLE + ELEC.LAMP_HOLD, `out after ${out} steps`);
+  // on a battery: direct current, unchanging
+  const d = world(4);
+  d.put(0, 1, E.BATTERY); d.put(1, 1, E.LAMP);
+  d.step();
+  const c0 = d.ctype[d.idx(1, 1)];
+  let same = true;
+  for (let s = 0; s < 30; s++) { d.step(); same &&= d.ctype[d.idx(1, 1)] === c0; }
+  check('lamp: on a battery it is lit and still (LAMP_DC)', c0 === LAMP_DC && same && lit(d, 1, 1), `ctype ${c0}, unchanged ${same}`);
+  d.erase(d.idx(0, 1));
+  let gone = -1;
+  for (let s = 1; s <= 40 && gone < 0; s++) { d.step(); if (!lit(d, 1, 1)) gone = s; }
+  check('lamp: its battery gone, it runs down and goes out', gone > 0 && gone <= ELEC.LAMP_HOLD + 1, `out after ${gone} steps`);
 }
 
 const failed = results.filter((r) => !r.ok).length;

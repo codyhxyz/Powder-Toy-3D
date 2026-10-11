@@ -1,7 +1,7 @@
-/* Construction options: variant chips and a reroll, floating just above the dock. */
+/* Construction options: variant chips and a reroll, just under the element tab. */
 .build-bar {
-  position: fixed; left: 50%; bottom: 160px; z-index: 10;
-  transform: translate(-50%, 6px);
+  position: fixed; left: 50%; top: calc(var(--dock-bottom) + 8px); z-index: 10;
+  transform: translate(-50%, -6px);
   display: flex; align-items: center; gap: 6px;
   max-width: calc(100vw - 28px);
   padding: 5px;

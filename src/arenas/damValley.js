@@ -84,6 +84,12 @@ const GATE_H = 10;                   // ...and this high from the room's floor
 const WINDOW_EVERY = 12;             // a window slit through the dam's face onto the tunnel every this many cells
 const WINDOW_W = 3, WINDOW_Y0 = 4, WINDOW_H = 3;   // a slit's width, its sill above the tunnel floor, its height
 const ROOM_WINDOW_Y0 = 3, ROOM_WINDOW_H = 7;       // the pump room's window band onto the basin
+// Electric lights (constructions/lights.js): a lamp on a battery set into the
+// roof over it, lit and still. Shoot one and that corridor goes dark (Halo 3's
+// corridors are lit by their sconces; Noita's lamps break).
+const TUN_LIGHT_EVERY = 12;          // a light in the tunnel's roof every this many cells, between the window slits
+const ROOM_LIGHTS = 4;               // lights in a row down the pump room's roof
+const FORT_LIGHT_EVERY = 8;          // a grid of lights under each fortress's roof, this far apart
 const KEG_SIZE = 2;                  // construction size of the powder kegs by the gate
 const KEG_X = ROOM_X0 + GATE_W / 2 - 1, KEG_Z = 63;   // a keg's middle, against the gate (red side; the other mirrors it)
 
@@ -126,8 +132,21 @@ const BIKE_AT = [[14, 92], [26, 92]];   // ...and hoverbike pads (north of it)
 const JEEP_PAD = [9, 5];             // pad half-extents (x, z)
 const BIKE_PAD = [4, 4];
 const HILL_R = 9;                    // KOTH zones' radius
-const CORE_R = 8;                    // siege: the core room's radius
+const CORE_R = 8;                    // siege: the last point's radius (C, at the fortress's front door)
+const POINT_R = 9;                   // siege: A's and B's radius
+const POINT_X = 90;                  // siege: A on red's abutment top, at the dam's end (B mirrors it on blue's)
+const LAST_X = 36;                   // siege: C, on the plateau just out of the fortress's front door
+const FWD_SPAWN_X = [84, 88];        // siege: forward spawns on an abutment's top, behind its point...
+const FWD_SPAWN_Z = [56, 62, 68];    // ...two rows of three (flat, tree-free, the tunnel deep under it)
 const SHRINE_LIFT = 1;               // a shrine's floor is a slab one cell up: feet stand on it
+// Power weapons' pads (game/arsenal.js), where the fights should be, as Halo 3's maps place them:
+// the rocket launcher in the contested middle (the spillway basin, between its boulders), a sniper
+// rifle per side up on a ridge over its own forest (Valhalla's snipers are each team's; ours are a
+// jetpack's climb), and the one Spartan Laser in the pump room (Valhalla's sits on the hill by the
+// river, between the bases), on the shrine's floor in front of its altars.
+const ROCKET_PAD = [MID_X, 40];      // x, z: the basin's middle, clear of the boulders (z 34 and 46)
+const SNIPER_PAD = [60, 7];          // x, z (red's; blue's mirrors it across both axes): the south ridge's top over red's forest
+const LASER_PAD_Z = ROOM_Z0 + 2;     // z: the pump room's downstream side, before the shrine's altar row
 
 // ---------------------------------------------------------------- noise
 
@@ -203,6 +222,8 @@ const SHRINE_HEIGHT = 12;            // cells from its floor to the top of its r
 // What the round modes and vehicles build against (grid cells; feet positions;
 // a vehicle's yaw as vehicles/index.js reads it: 0 faces +z, π/2 faces +x).
 const FACE_BLUE = Math.PI / 2, FACE_RED = -Math.PI / 2;
+const baseSpawns = (side) => SPAWN_ROWS.flatMap((x) => SPAWN_ZS.map((z) => [team(x, side), BASE_Y, z]));
+const forwardSpawns = (side) => FWD_SPAWN_X.flatMap((x) => FWD_SPAWN_Z.map((z) => [team(x, side), CREST_Y, z]));
 const RED_FOREST = [68, 84], BLUE_FOREST = [NX - 1 - 68, 84];
 export const DAM_VALLEY_LAYOUT = {
   name: 'Dam Valley',
@@ -217,8 +238,31 @@ export const DAM_VALLEY_LAYOUT = {
     [MID_X, BASIN_Y, (BASIN_Z0 + DAM_Z0) / 2, HILL_R],               // the spillway basin
     [MID_X, TUN_Y + SHRINE_LIFT, ROOM_Z1 - 2, Math.min(HILL_R, (ROOM_Z1 - ROOM_Z0) / 2)],   // the pump room
   ],
-  siege: { attackers: 'red', core: [NX - 1 - (SPAWN_X1 + STAND_X) / 2, BASE_Y, STAND_Z, CORE_R] },
+  // Siege (game/siege.js): red attacks three points in turn, TF2's Dustbowl on one valley: A on red's
+  // end of the dam, B on blue's end, C at blue's front door. Blue first spawns forward on its abutment;
+  // as points fall red's spawn moves up behind the point it took and blue's falls back to its fortress.
+  siege: {
+    attackers: 'red',
+    points: [
+      [POINT_X, CREST_Y, (DAM_Z0 + DAM_Z1) / 2, POINT_R],
+      [NX - 1 - POINT_X, CREST_Y, (DAM_Z0 + DAM_Z1) / 2, POINT_R],
+      [NX - 1 - LAST_X, BASE_Y, STAND_Z, CORE_R],
+    ],
+    spawns: [
+      { defend: forwardSpawns('blue') },
+      { attack: forwardSpawns('red'), defend: baseSpawns('blue') },
+      { attack: forwardSpawns('blue') },
+    ],
+    core: [NX - 1 - LAST_X, BASE_Y, STAND_Z, CORE_R],   // the last point (older readers)
+  },
   shrines: SHRINES.map(([x, y, z]) => [x, y + SHRINE_LIFT, z]),
+  // respawnS: each weapon's own (arsenal.js POWER) unless given
+  weapons: [
+    { key: 'ROCKET', at: onGround(...ROCKET_PAD) },
+    { key: 'SNIPER', at: onGround(...SNIPER_PAD) },
+    { key: 'SNIPER', at: onGround(NX - 1 - SNIPER_PAD[0], NZ - 1 - SNIPER_PAD[1]) },
+    { key: 'LASER', at: [MID_X, TUN_Y + SHRINE_LIFT, LASER_PAD_Z] },
+  ],
   vehicles: ['red', 'blue'].flatMap((side) => [
     { kind: 'jeep', team: side, at: [team(JEEP_AT[0], side), BASE_Y, JEEP_AT[1]], yaw: side === 'red' ? FACE_BLUE : FACE_RED },
     ...BIKE_AT.map(([x, z]) => ({ kind: 'hoverbike', team: side, at: [team(x, side), BASE_Y, z], yaw: side === 'red' ? FACE_BLUE : FACE_RED })),
@@ -259,6 +303,9 @@ export function buildDamValley() {
   const box = (x0, y0, z0, x1, y1, z1, id) => {
     for (let y = y0; y < y1; y++) for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) put(x, y, z, id);
   };
+  // a ceiling light under roof cell (x, roof, z): a battery set into the roof
+  // and a lamp under it (ids only: the lamp goes on direct current, lit, in the first step)
+  const light = (x, roof, z) => { put(x, roof, z, E.BATTERY); put(x, roof - 1, z, E.LAMP); };
   // a construction's cells with its base point at (x, y, z), its x flipped when `flip`
   const stamp = (cells, x, y, z, flip = false) => {
     for (let i = 0; i < cells.n; i++) put(x + (flip ? -cells.x[i] : cells.x[i]), y + cells.y[i], z + cells.z[i], cells.id[i]);
@@ -319,6 +366,7 @@ export function buildDamValley() {
     box(x, TUN_Y, TUN_Z0, x + 1, TUN_Y + TUN_H, TUN_Z1, E.EMPTY);
     box(x, TUN_Y - 1, TUN_Z0, x + 1, TUN_Y, TUN_Z1, E.WALL);                    // a paved floor
     box(x, TUN_Y + TUN_H, TUN_Z0, x + 1, TUN_Y + TUN_H + 1, TUN_Z1, E.WALL);    // and a lined roof
+    if (Math.abs(x - MID_X + 0.5) % TUN_LIGHT_EVERY < 1) light(x, TUN_Y + TUN_H, (TUN_Z0 + TUN_Z1) >> 1);
   }
   // window slits through the dam's downstream face onto the tunnel
   for (let d = WINDOW_EVERY / 2; MID_X + d + WINDOW_W <= NX - LAKE_X0; d += WINDOW_EVERY)
@@ -330,6 +378,10 @@ export function buildDamValley() {
   box(ROOM_X0, TUN_Y, ROOM_Z1, ROOM_X0 + GATE_W, TUN_Y + GATE_H, DAM_Z1, E.WOOD);
   box(NX - ROOM_X0 - GATE_W, TUN_Y, ROOM_Z1, NX - ROOM_X0, TUN_Y + GATE_H, DAM_Z1, E.WOOD);
   box(ROOM_X0, TUN_Y + ROOM_WINDOW_Y0, DAM_Z0, NX - ROOM_X0, TUN_Y + ROOM_WINDOW_Y0 + ROOM_WINDOW_H, ROOM_Z0, E.GLASS);
+  for (let i = 0; i < ROOM_LIGHTS / 2; i++) {   // red's half, mirrored
+    const x = Math.floor(ROOM_X0 + (NX - 2 * ROOM_X0) * (i + 0.5) / ROOM_LIGHTS);
+    for (const lx of [x, NX - 1 - x]) light(lx, TUN_Y + ROOM_H, (ROOM_Z0 + ROOM_Z1) >> 1);
+  }
   // the powder kegs by the gate
   const keg = runGenerator(BUILTINS.BARREL, { size: KEG_SIZE, seed: SEED, variant: 'keg' });
   stamp(keg, KEG_X, TUN_Y, KEG_Z);
@@ -348,6 +400,12 @@ export function buildDamValley() {
     B(FORT_X0, BASE_Y, FORT_Z0, FORT_X1, top, FORT_Z1, E.ROCK);
     B(FORT_X0 + FORT_WALL, BASE_Y, FORT_Z0 + FORT_WALL, FORT_X1 - FORT_WALL, top, FORT_Z1 - FORT_WALL, E.EMPTY);
     B(FORT_X0, top, FORT_Z0, FORT_X1, top + 1, FORT_Z1, E.WOOD);
+    // lights hung under the roof: a battery against it, a lamp under that
+    for (let x = FORT_X0 + FORT_WALL + FORT_LIGHT_EVERY / 2; x < FORT_X1 - FORT_WALL; x += FORT_LIGHT_EVERY)
+      for (let z = FORT_Z0 + FORT_WALL + FORT_LIGHT_EVERY / 2; z < FORT_Z1 - FORT_WALL; z += FORT_LIGHT_EVERY) {
+        B(x, top - 1, z, x + 1, top, z + 1, E.BATTERY);
+        B(x, top - 2, z, x + 1, top - 1, z + 1, E.LAMP);
+      }
     for (let x = FORT_X0; x < FORT_X1; x += MERLON_EVERY) {
       B(x, top + 1, FORT_Z0, x + 1, top + 3, FORT_Z0 + 1, E.ROCK);
       B(x, top + 1, FORT_Z1 - 1, x + 1, top + 3, FORT_Z1, E.ROCK);

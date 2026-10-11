@@ -17,8 +17,14 @@ import { appPreloadPlugin } from './scripts/app-preload-plugin.mjs';
 // most harness pages never import it, and the bake keeps a CPU busy a while.
 export default defineConfig(({ mode }) => ({
   plugins: [wasm(), mode === 'harness' ? lazyBake(worldBakePlugin()) : worldBakePlugin(), appPreloadPlugin()],
-  // harness mode: scan only the harness pages for dependencies to pre-bundle (the game imports the bake)
-  optimizeDeps: mode === 'harness' ? { entries: ['tools/harness/*.html'] } : {},
+  optimizeDeps: {
+    // harness mode: scan only the harness pages for dependencies to pre-bundle (the game imports the bake)
+    ...(mode === 'harness' ? { entries: ['tools/harness/*.html'] } : {}),
+    // fengari (the console's Lua, src/console/lua.js) reads process.env.FENGARICONF
+    // as it loads; the build replaces process.env, the dev server's pre-bundle
+    // doesn't, and the browser has no process: no config means its defaults
+    rolldownOptions: { transform: { define: { 'process.env.FENGARICONF': 'undefined' } } },
+  },
   build: {
     rollupOptions: { input: 'index.html' },
     // fonts stay files (src/fonts.css): a small subset inlined into the page's

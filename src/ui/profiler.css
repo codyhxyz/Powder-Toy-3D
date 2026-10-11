@@ -16,7 +16,7 @@
   --prof-name: 54px;
   --prof-num: 38px;
   --prof-gap: 6px;
-  --prof-bottom: 168px;      /* above the dock, like the hint */
+  --prof-bottom: 14px;       /* bottom left; the element menu is up top */
   --prof-top-clear: 220px;   /* never taller than the space under the element card */
   --budget: 100%;
   --spark-budget: 100%;

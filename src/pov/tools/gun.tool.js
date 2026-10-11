@@ -23,8 +23,8 @@ export default firearm({
   refire: 0.1,               // s between clicks (PISTOL_FASTEST_REFIRE_TIME)
   hold: 0.5,                 // s between shots while held (CWeaponPistol::GetFireRate)
   spread: {
-    min: 1 * DEG,            // full cone angle, paced (VECTOR_CONE_1DEGREES)
-    max: 6 * DEG,            // ...and spammed (VECTOR_CONE_6DEGREES)
+    min: 1.5 * DEG,          // full cone angle, paced (HL2's VECTOR_CONE_1DEGREES, a touch looser)
+    max: 10 * DEG,           // ...and spammed (HL2's 6°, widened: spam should miss)
     penalty: 0.2,            // s of inaccuracy per shot (PISTOL_ACCURACY_SHOT_PENALTY_TIME)
     penaltyMax: 1.5,         // s (PISTOL_ACCURACY_MAXIMUM_PENALTY_TIME)
   },

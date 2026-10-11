@@ -72,8 +72,11 @@ for (const spell of SPELLS) {
 
 for (const cards of [null, {}, 'spark', [], [null], [5], [{}], ['missing'], ['__proto__'], ['constructor'], Array(2)]) invalid(cards);
 for (const config of [null, [], 'bad', { manaMax: NaN }, { manaRegen: Infinity }, { castDelay: -Infinity }, { recharge: '1' }, { capacity: undefined }]) invalid(['spark'], config);
-const clamped = valid(['spark'], { manaMax: -5, manaRegen: -10, castDelay: 0, recharge: 1e20, capacity: 99 });
-assert.deepEqual(clamped.config, { manaMax: 1, manaRegen: 0, castDelay: 0.02, recharge: 60, capacity: 64 });
+const clamped = valid(['spark'], { manaMax: -5, manaRegen: -10, castDelay: 0, recharge: 1e20, capacity: 99, shuffle: 7, spellsPerCast: 0 });
+assert.deepEqual(clamped.config, { manaMax: 1, manaRegen: 0, castDelay: 0.02, recharge: 60, capacity: 64, shuffle: 1, spellsPerCast: 1 });
+assert.equal(valid(['spark'], { spellsPerCast: 2.7, shuffle: 0.5 }).config.spellsPerCast, 2);
+assert.equal(valid(['spark'], { shuffle: 0.5 }).config.shuffle, 0);
+invalid(['spark'], { shuffle: true });
 assert.equal(valid(['spark'], { capacity: 1.9 }).config.capacity, 1);
 assert.deepEqual(valid(['spark']).config, DEFAULT_CONFIG);
 invalid(Array(33).fill('spark'), undefined, /capacity/);

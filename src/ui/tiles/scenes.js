@@ -8,6 +8,8 @@
 //   gases: two soft blobs, sampled as gas cells. The Erase tool is held
 //     over a hidden row above the box, so gas rises out instead of filling it.
 //   a battery: under a plate of metal (BATTERY_PLATE rows), which it sparks.
+//   a lamp: wired to a battery (LAMP_BATTERY rows at the bottom under a row of
+//     metal), so sparks run up through it and it shines.
 import { K, E } from '../../elements.js';
 import { World } from './engine.js';
 
@@ -22,6 +24,7 @@ export const HEADSPACE = {             // rows of air above the material
 };
 const GAS_HIDDEN_ABOVE = 1;           // erased row
 const BATTERY_PLATE = 3;              // rows of metal on top of a battery tile's battery
+const LAMP_BATTERY = 3;               // rows of battery under a lamp tile's lamp
 
 // the flat tile textures (formerly CSS), used to lay out the starting cells
 export const SPECKS = [               // powder dots: background cell size (px), dot centre in it
@@ -72,7 +75,9 @@ export function makeScene(item, seed) {
         if (rand() < p) w.put(x, y, item.id, { seed: rand() });
       } else if (r >= HEADSPACE[item.kind]) {
         const plate = item.id === E.BATTERY && r < HEADSPACE[item.kind] + BATTERY_PLATE;
-        w.put(x, y, plate ? E.METAL : item.id, { seed: rand() });
+        const under = item.id === E.LAMP ? ROWS - 1 - r : -1;   // a lamp tile's row, counted up from the bottom
+        const lampBase = under < 0 || under > LAMP_BATTERY ? item.id : under < LAMP_BATTERY ? E.BATTERY : E.METAL;
+        w.put(x, y, plate ? E.METAL : lampBase, { seed: rand() });
       }
     }
   if (item.kind === K.POWDER) {

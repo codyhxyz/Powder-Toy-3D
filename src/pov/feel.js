@@ -23,6 +23,10 @@ const REDUCED_MOTION_SHAKE = 0.15;      // share of the shake (and kick) kept un
 const TRAUMA_DECAY = 1.5;               // trauma lost per second (linear)
 const SHAKE_ANGLE = 0.045;              // rad of pitch and yaw at full trauma
 const SHAKE_ROLL = 0.6;                 // roll's share of SHAKE_ANGLE
+// a rumble (a tool's own 'shake' event, the laser cannon's beam): trauma like the shake's, decaying
+// as fast, but it only rolls the view. A roll turns the view about the crosshair, so a beam laid
+// along the shot stays on it
+const RUMBLE_ROLL = 1;                  // roll's share of SHAKE_ANGLE at full rumble: the pitch and yaw it gives up go into roll
 const SHAKE_FREQ = 22;                  // noise time scale (1/s): roughly how fast the view jitters
 // smooth noise: three incommensurate sines per axis, weights sum to 1
 const NOISE_RATES = [1.0, 2.3, 4.1];
@@ -79,6 +83,11 @@ const HIT_TIME = 0.18;                  // s the hitmarker shows
 const HIT_FADE = 0.08;                  // s at the end of HIT_TIME over which it fades out
 const BLOOM_PER_SHOT = 1;               // crosshair bloom added per shot (0..1 scale)
 const BLOOM_DECAY = 5;                  // bloom lost per second (linear)
+const BLOOM_PER_CAST = 0.5;             // crosshair bloom per wand cast: half a shot's (a cast has no recoil to recover from)
+// sources whose hits into a body show the hitmarker (TF2's hit sound: blocks and terrain don't ding)
+const HITMARKER_SOURCES = new Set(['gun', 'wand']);
+// a wand's blast ('wand:blast', wands/runtime.js): the bomb's trauma, scaled by its radius against the bomb's
+const WAND_BLAST_RADIUS_FULL = 6;       // cells: a blast this wide shakes like a bomb (catalog.js explosion)
 
 const clamp01 = (x) => Math.min(1, Math.max(0, x));
 const smooth01 = (x) => { const t = clamp01(x); return t * t * (3 - 2 * t); };
@@ -93,7 +102,7 @@ export function createFeel({ hud }) {
   const reduced = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)');
   const motionScale = () => SHAKE_SCALE * (reduced?.matches ? REDUCED_MOTION_SHAKE : 1);
 
-  let trauma = 0, time = 0;
+  let trauma = 0, rumble = 0, time = 0;
   const punch = { pitch: 0, yaw: 0, vp: 0, vy: 0 };   // rad and rad/s
   let bloom = 0, hitT = 0, hitBroke = false;
   let drunk = 0, drunkSway = 0, drunkTime = 0;   // s of Drunkenness left; the sway's size (0..1); its clock
@@ -105,6 +114,7 @@ export function createFeel({ hud }) {
   const offsets = { pitch: 0, yaw: 0, roll: 0 };
 
   const addTrauma = (x) => { if (x > 0) trauma = Math.min(1, trauma + x); };
+  const addRumble = (x) => { if (x > 0) rumble = Math.min(1, rumble + x); };
 
   const offs = [
     povEvents.on('gun:fire', ({ by }) => {
@@ -119,15 +129,24 @@ export function createFeel({ hud }) {
         const near = 1 - smooth01((d - IMPACT_NEAR) / (IMPACT_FAR - IMPACT_NEAR));
         addTrauma(TRAUMA_IMPACT * clamp01((e.energy ?? 0) / IMPACT_ENERGY_FULL) * near);
       }
-      if (e.source === 'gun' && !e.by) { hitT = HIT_TIME; hitBroke = e.broke === true; }   // the hitmarker is the player's shots only
+      // the hitmarker is the player's shots into a body only (TF2's hit sound: blocks and terrain don't ding)
+      if (HITMARKER_SOURCES.has(e.source) && e.body && !e.by) { hitT = HIT_TIME; hitBroke = e.broke === true; }
     }),
     povEvents.on('blast', ({ point }) => {
       if (!live || !point) return;
       const d = Math.hypot(point.x - eye.x, point.y - eye.y, point.z - eye.z);
       addTrauma(TRAUMA_BOMB * (1 - smooth01((d - IMPACT_NEAR) / (BOMB_FAR - IMPACT_NEAR))));
     }),
-    // a tool's own screen shake (the laser cannon's beam): trauma 0..1, the player's only
-    povEvents.on('shake', ({ trauma: x = 0, by }) => { if (live && !by) addTrauma(x); }),
+    povEvents.on('wand:fire', ({ by }) => {
+      if (live && !by) bloom = Math.min(1, bloom + BLOOM_PER_CAST);
+    }),
+    povEvents.on('wand:blast', ({ point, radius = WAND_BLAST_RADIUS_FULL }) => {
+      if (!live || !point) return;
+      const d = Math.hypot(point.x - eye.x, point.y - eye.y, point.z - eye.z);
+      addTrauma(TRAUMA_BOMB * clamp01(radius / WAND_BLAST_RADIUS_FULL) * (1 - smooth01((d - IMPACT_NEAR) / (BOMB_FAR - IMPACT_NEAR))));
+    }),
+    // a tool's own screen shake (the laser cannon's beam): trauma 0..1 of rumble, the player's only
+    povEvents.on('shake', ({ trauma: x = 0, by }) => { if (live && !by) addRumble(x); }),
     povEvents.on('drunk', ({ seconds = 0, by }) => {
       if (!live || by) return;   // an NPC's drink isn't the player's head
       drunk = Math.min(DRUNK_MAX_S, drunk + seconds);
@@ -154,6 +173,7 @@ export function createFeel({ hud }) {
     offsets,
     get time() { return time; },         // s of POV frames seen (checks)
     get trauma() { return trauma; },
+    get rumble() { return rumble; },
     get kick() { return punch.pitch; },   // the view punch's pitch (rad), for checks
     get punch() { return { pitch: punch.pitch, yaw: punch.yaw }; },
     get bloom() { return bloom; },
@@ -170,7 +190,7 @@ export function createFeel({ hud }) {
     },
     // a fresh body (drop in, respawn): nothing carried over
     reset() {
-      trauma = bloom = hitT = 0;
+      trauma = rumble = bloom = hitT = 0;
       drunk = drunkSway = 0;
       punch.pitch = punch.yaw = punch.vp = punch.vy = 0;
       prevValid = false;
@@ -209,12 +229,13 @@ export function createFeel({ hud }) {
         globalThis.__app?.requestRender?.();
       } else punch.pitch = punch.yaw = punch.vp = punch.vy = 0;
       trauma = Math.max(0, trauma - TRAUMA_DECAY * dt);
+      rumble = Math.max(0, rumble - TRAUMA_DECAY * dt);
       const m = motionScale();
       const shake = trauma * trauma * SHAKE_ANGLE * m;
       const t = time * SHAKE_FREQ;
       offsets.pitch = punch.pitch * m + shake * noise(t, SEED_PITCH);
       offsets.yaw = punch.yaw * m + shake * noise(t, SEED_YAW);
-      offsets.roll = shake * SHAKE_ROLL * noise(t, SEED_ROLL);
+      offsets.roll = (shake * SHAKE_ROLL + rumble * rumble * SHAKE_ANGLE * RUMBLE_ROLL * m) * noise(t, SEED_ROLL);
 
       drunk = Math.max(0, drunk - dt);
       drunkSway += (clamp01(drunk / DRUNK_WASTED_S) - drunkSway) * (1 - Math.exp(-DRUNK_EASE * dt));

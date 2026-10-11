@@ -5,8 +5,8 @@
 // (gfx/materials.js emit). Styling is per kind, never per element.
 import { ELEMENTS, E, K } from '../../elements.js';
 import { INCAND, INCAND_TABLE } from '../../gfx/incandescence.js';
-import { LOOK as MATERIAL, SPARK_GLOW } from '../../gfx/materials.js';
-import { isLive } from '../../electricity.js';
+import { LOOK as MATERIAL, SPARK_GLOW, LAMP_GLOW } from '../../gfx/materials.js';
+import { isLive, sparkLevel } from '../../electricity.js';
 import { KIND } from './engine.js';
 import { TILE, CELL, COLS, ROWS, GAS_FILL } from './scenes.js';
 
@@ -72,11 +72,12 @@ const LUMIN = MATERIAL.map((m) => {
   const e = m.emit.map((v) => v * LOOK.GLOW_EXPOSURE);
   return e.map((v) => v / Math.max(1, ...e));
 });
-// a live conductor's spark (gfx/materials.js sparkEmit), the same way
-const SPARK_LUMIN = (() => {
-  const e = SPARK_GLOW.map((v) => v * LOOK.GLOW_EXPOSURE);
+// a live conductor's spark and a lit lamp's light (gfx/materials.js sparkEmit), the same way
+const fitGlow = (g) => {
+  const e = g.map((v) => v * LOOK.GLOW_EXPOSURE);
   return e.map((v) => v / Math.max(1, ...e));
-})();
+};
+const SPARK_LUMIN = fitGlow(SPARK_GLOW), LAMP_LUMIN = fitGlow(LAMP_GLOW);
 // What a cell at tC gives off, scaled for the dock: incandescence
 // (gfx/incandescence.js) and luminescence, as emission() has them in the game,
 // and a spark if it is live (ctype: its ctype).
@@ -90,7 +91,8 @@ function glow(id, tC, out, ctype = 0) {
     for (let c = 0; c < 3; c++) out[c] = (a[c] + (b[c] - a[c]) * u) * lum;
   }
   for (let c = 0; c < 3; c++) out[c] += LUMIN[id][c];
-  if (isLive(id, ctype)) for (let c = 0; c < 3; c++) out[c] += SPARK_LUMIN[c];
+  const add = id === E.LAMP ? (sparkLevel(ctype) > 0 ? LAMP_LUMIN : null) : isLive(id, ctype) ? SPARK_LUMIN : null;
+  if (add) for (let c = 0; c < 3; c++) out[c] += add[c];
   return out[0] + out[1] + out[2] > 1 / 255;
 }
 

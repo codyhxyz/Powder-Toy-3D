@@ -374,6 +374,16 @@ export default {
         const id = load.mainId;
         return `${id >= 0 ? ELEMENTS[id].abbr : ''}${load.mixed ? '+' : ''} ${Math.round((100 * n) / FLASK_CAP)}%`;
       },
+      // Descent's flasks (tools/index.js): put `cells` in the flask (copies) and the flask in hand; false while
+      // a pour or a dip is still in flight (its cells come back to the flask that sent them)
+      holdCells(cells) {
+        if (load.busy) return false;
+        load.cells = cells.map((c) => [...c]);
+        load.version++;
+        flask.inHand = true;
+        return true;
+      },
+      set inHand(v) { flask.inHand = !!v; },
       // the world was replaced: spills from the old world stop (their matter was the old world's)
       worldReplaced() { spillEpoch++; spills.clear(); },
       windowShifted() { /* spill points are pinned (transfer.js pinned); rounds move with the projectiles */ },

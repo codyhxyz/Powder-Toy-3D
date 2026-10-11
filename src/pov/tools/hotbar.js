@@ -3,48 +3,58 @@ import { modelIcon } from '../models.js';
 import { SLOTS } from './catalog.js';
 import './hotbar.css';
 
-// Numbered categories stay visible; switching opens the selected slot's
-// vertical tool stack. Number keys cycle; unlocked pointers can pick a row.
+// Half-Life 2's weapon selector, as Garry's Mod shows it: nothing on screen
+// while you play. A number key or the wheel brings it up at the top centre, a
+// small numbered box per slot and the chosen slot opened downward into one box
+// per tool, then it fades. The tool in hand stays bottom right, where HL2 keeps
+// its ammo. With the mouse free (or on a touch screen) it stays up to click.
+// While it is up, a click picks what it shows and closes it, and the click
+// doesn't fire (HL2 weapon_selection.cpp ProcessInput: IN_ATTACK or IN_ATTACK2
+// selects, the button is swallowed, the selection hides).
 
 export const HOTBAR_SLOTS = SLOTS.length;
 export const slotKey = (i) => String((i + 1) % 10);   // slot i's number key
-const STACK_SHOW_MS = 4000;
+const SHOW_MS = 1500;             // HL2 hud_weaponselection.cpp FASTSWITCH_DISPLAY_TIMEOUT 1.5 s
 const SHAKE_MS = 360;             // .shake animation length (hotbar.css)
 
 export function createHotbar(onSelect, onSelectTool) {
-  const nameEl = h('div.hb-name', { role: 'status', 'aria-live': 'polite' });
-  const heading = h('strong.hb-heading');
-  const position = h('span.hb-position');
+  const nameEl = h('span.hb-name', { role: 'status', 'aria-live': 'polite' });
+  const heldStatus = h('span.hb-held-status');
+  const held = h('div.hb-held', {}, nameEl, heldStatus);
   const list = h('div.hb-tools', { role: 'group' });
-  const hint = h('div.hb-cycle');
-  const stack = h('div.hb-stack', { hidden: true },
-    h('div.hb-head', {}, heading, position), list, hint,
-    h('div.hb-help', { text: 'Wheel: all tools · Q: more tools · B: edit wand' }));
+  const stack = h('div.hb-stack', { hidden: true }, list);
   const slots = SLOTS.map((label, i) => {
-    const icon = h('span.hb-icon');
     const status = h('span.hb-status');
     const count = h('span.hb-count', { 'aria-hidden': 'true' });
+    const labelEl = h('span.hb-label', { text: label });
     const el = h('button.hb-slot', { type: 'button', 'data-empty': '', disabled: true, title: label,
-      on: { click: () => onSelect?.(i) } }, h('span.hb-num', { text: slotKey(i) }), icon, count, status,
-      h('span.hb-label', { text: label }));
-    return { el, icon, status, count, label, text: '', defs: [], at: -1 };
+      on: { click: () => onSelect?.(i) } }, h('span.hb-num', { text: slotKey(i) }), labelEl, count, status);
+    const col = h('div.hb-col', {}, el);
+    return { el, col, status, count, label, labelEl, text: '', defs: [], at: -1 };
   });
-  const bar = h('div.hotbar', { inert: true }, stack, nameEl,
-    h('div.hb-row', { role: 'toolbar', 'aria-label': 'Tool slots' }, slots.map((s) => s.el)));
-  document.body.append(bar);
-  let stackTimer = 0, selected = -1;
+  const bar = h('div.hotbar', { inert: true, role: 'toolbar', 'aria-label': 'Tool slots' }, slots.map((s) => s.col));
+  document.body.append(bar, held);
+  let timer = 0, selected = -1, shown = false;
 
-  function deferClose() {
-    clearTimeout(stackTimer);
-    stackTimer = setTimeout(() => {
-      if (bar.matches(':hover') || bar.contains(document.activeElement)) return;
-      stack.hidden = true;
-    }, STACK_SHOW_MS);
+  // up for SHOW_MS after a pick, longer while the pointer or focus is on it, and
+  // for good while the mouse is free (touch screens never lock it: hotbar.css)
+  const touch = matchMedia('(hover: none) and (pointer: coarse)');
+  const free = () => !touch.matches && !document.pointerLockElement;
+  function open() {
+    if (!shown) return;
+    bar.classList.add('open');
+    clearTimeout(timer);
+    timer = setTimeout(close, SHOW_MS);
   }
-  bar.addEventListener('pointerenter', () => clearTimeout(stackTimer));
-  bar.addEventListener('pointerleave', deferClose);
-  bar.addEventListener('focusin', () => clearTimeout(stackTimer));
-  bar.addEventListener('focusout', deferClose);
+  function close() {
+    clearTimeout(timer);
+    if (free() || bar.matches(':hover') || bar.contains(document.activeElement)) return;
+    bar.classList.remove('open');
+  }
+  bar.addEventListener('pointerleave', () => { timer = setTimeout(close, SHOW_MS); });
+  bar.addEventListener('focusout', () => { timer = setTimeout(close, SHOW_MS); });
+  const onLock = () => (free() ? open() : close());
+  document.addEventListener('pointerlockchange', onLock);
 
   const iconFor = (def) => def.model
     ? h('img', { src: modelIcon(def.model), alt: '', draggable: 'false' })
@@ -53,8 +63,6 @@ export function createHotbar(onSelect, onSelectTool) {
   function showStack() {
     const s = slots[selected];
     if (!s?.defs.length) { stack.hidden = true; return; }
-    heading.textContent = `${slotKey(selected)}  ${s.label}`;
-    position.textContent = `${s.at + 1} / ${s.defs.length}`;
     list.setAttribute('aria-label', `${s.label} tools`);
     // Preserve keyboard focus when equipping a row rebuilds the list.
     const focused = list.contains(document.activeElement) ? document.activeElement.dataset.key : null;
@@ -62,18 +70,29 @@ export function createHotbar(onSelect, onSelectTool) {
       type: 'button', 'data-key': def.key, title: def.desc,
       'aria-label': def.name, 'aria-pressed': String(j === s.at),
       on: { click: () => onSelectTool?.(def.key) },
-    }, h('span.hb-icon', {}, iconFor(def)), h('span.hb-tool-name', { text: def.name }),
-    j === s.at ? h('span.hb-equipped', { text: 'Equipped' }) : null)));
-    hint.replaceChildren(
-      h('span.hb-key-hint', { text: s.defs.length > 1 ? `Press ${slotKey(selected)} again: next tool` : `Press ${slotKey(selected)}: equip` }),
-      h('span.hb-touch-hint', { text: 'Tap a tool to equip' }));
+    }, h('span.hb-icon', {}, iconFor(def)), h('span.hb-tool-name', { text: def.name }))));
+    s.col.append(stack);
     stack.hidden = false;
     if (focused) [...list.children].find((el) => el.dataset.key === focused)?.focus({ preventScroll: true });
-    deferClose();
+  }
+
+  function syncHeld() {
+    const s = slots[selected];
+    nameEl.textContent = s?.defs[s.at]?.name ?? '';
+    heldStatus.textContent = s?.text ?? '';
   }
 
   return {
     el: bar,
+    // the slots' labels: `labels` (a team game's carry: 'Primary', 'Secondary'), the slots past them
+    // hidden; null: the catalog's (SLOTS)
+    setLabels(labels) {
+      slots.forEach((s, i) => {
+        s.label = labels ? labels[i] ?? '' : SLOTS[i];
+        s.labelEl.textContent = s.label;
+        s.col.style.display = labels && i >= labels.length ? 'none' : '';
+      });
+    },
     // slot i holds `defs` ({ name, model, desc }, in order) and has `at` in hand (an index into them)
     setSlot(i, defs, at) {
       const s = slots[i];
@@ -86,28 +105,22 @@ export function createHotbar(onSelect, onSelectTool) {
         s.el.setAttribute('data-empty', '');
         s.el.setAttribute('aria-label', `${s.label}: empty`);
         s.el.title = `${s.label}: empty`;
-        s.icon.replaceChildren(); s.icon.dataset.model = '';
         s.status.textContent = s.text = '';
         return;
       }
       s.el.removeAttribute('data-empty');
       s.el.title = `${s.label}: ${def.name}${def.desc ? `. ${def.desc}` : ''}`;
       s.el.setAttribute('aria-label', `${slotKey(i)} ${s.label}: ${def.name}, ${at + 1} of ${defs.length}`);
-      if (s.icon.dataset.model === def.model) return;
-      s.icon.dataset.model = def.model ?? '';
-      s.icon.replaceChildren(iconFor(def));
     },
-    // Keep the equipped name visible after the stack closes.
     select(i) {
       selected = i;
       slots.forEach((s, j) => {
         s.el.classList.toggle('on', j === i);
         s.el.setAttribute('aria-pressed', String(j === i));
       });
-      const s = slots[i];
-      nameEl.textContent = s.defs[s.at]?.name ?? '';
-      bar.style.setProperty('--hb-slot', i);
+      syncHeld();
       showStack();
+      open();
     },
     setStatus(i, text) {
       const s = slots[i];
@@ -115,6 +128,14 @@ export function createHotbar(onSelect, onSelectTool) {
       if (s.text === text) return;
       s.text = text;
       s.status.textContent = text;
+      if (i === selected) heldStatus.textContent = text;
+    },
+    // a click while the selector is up: it closes, and the click is spent (true)
+    confirm() {
+      if (!bar.classList.contains('open') || free()) return false;
+      clearTimeout(timer);
+      bar.classList.remove('open');
+      return true;
     },
     shake(i) {
       const el = slots[i].el;
@@ -122,14 +143,20 @@ export function createHotbar(onSelect, onSelectTool) {
       void el.offsetWidth;   // restart the animation
       el.classList.add('shake');
       setTimeout(() => el.classList.remove('shake'), SHAKE_MS);
+      open();
     },
     setVisible(v) {
-      const opening = v && !bar.classList.contains('show');
-      bar.classList.toggle('show', !!v);
-      bar.inert = !v;
-      if (opening) showStack();
-      if (!v) { clearTimeout(stackTimer); stack.hidden = true; }
+      shown = !!v;
+      bar.classList.toggle('show', shown);
+      held.classList.toggle('show', shown);
+      bar.inert = !shown;
+      if (shown) { showStack(); if (free()) open(); }
+      else { clearTimeout(timer); bar.classList.remove('open'); }
     },
-    dispose() { clearTimeout(stackTimer); bar.remove(); },
+    dispose() {
+      clearTimeout(timer);
+      document.removeEventListener('pointerlockchange', onLock);
+      bar.remove(); held.remove();
+    },
   };
 }

@@ -9,6 +9,7 @@
 
 import { HUMAN, MASONRY, TAU, odd } from './shared.js';
 import { STRUCTURES } from './structures.js';
+import { light } from './lights.js';
 
 // ---------------------------------------------------------------- houses
 
@@ -24,6 +25,7 @@ const HOUSE = {
   BED: [7, 3], BED_HEAD: 2,       // a bed: 2.1 × 0.9 m, its headboard 0.6 m above the frame
   TABLE: [4, 3], TABLE_H: 3,      // a table: 1.2 × 0.9 m, its top 0.9 m up
   PLANT_EVERY: 3,                 // greenhouse beds: a plant over every third trough cell
+  LIGHT_W: 3,                     // the wall light over the back wall's middle: its strip of lamps
 };
 
 export function house({ put, box, footing, rnd, T }, variant) {
@@ -44,7 +46,7 @@ export function house({ put, box, footing, rnd, T }, variant) {
   if (cabin) logEnds();
   gableRoof();
   openings();
-  if (green) { if (hd >= 3) beds(); } else { chimney(); furnish(); }
+  if (green) { if (hd >= 3) beds(); } else { chimney(); furnish(); wallLight(); }
 
   // walls around an empty room; a greenhouse is glass on a steel frame over a low stone wall
   function walls() {
@@ -132,6 +134,18 @@ export function house({ put, box, footing, rnd, T }, variant) {
     box(x0 + 1, th, tz, x0 + tl, th, tz + tw - 1, 'WOOD');
     for (const [lx, lz] of [[x0 + 1, tz], [x0 + tl, tz], [x0 + 1, tz + tw - 1], [x0 + tl, tz + tw - 1]])
       box(lx, 1, lz, lx, th - 1, lz, 'WOOD');
+  }
+
+  // an electric wall light high on the back wall, between its windows: lamps
+  // on a battery set into the wall (a lamp touching a battery stays lit),
+  // under an insulator hood. Shoot a bulb and it goes out.
+  function wallLight() {
+    const a = (HOUSE.LIGHT_W - 1) / 2, y = H - 1, off = Math.round(hw * HOUSE.WINDOW_OFF);
+    if (off - HOUSE.WINDOW_W * T / 2 <= a + 1) return;   // no room between the windows
+    box(-a, y, -hd, a, y, -hd, 'BATTERY');
+    box(-a, y, -hd + 1, a, y, -hd + 1, 'LAMP');
+    box(-a - 1, y + 1, -hd + 1, a + 1, y + 1, -hd + 1, 'INSULATOR');
+    for (const x of [-a - 1, a + 1]) put(x, y, -hd + 1, 'INSULATOR');
   }
 
   // greenhouse beds: water troughs along both long walls, seeded with plants
@@ -494,5 +508,6 @@ export const BUILTINS = {
   AQUARIUM: aquarium,
   FOUNTAIN: fountain,
   SHRINE: shrine,
+  LIGHT: light,
   ...STRUCTURES,   // the World's structures (structures.js)
 };

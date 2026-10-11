@@ -96,17 +96,51 @@ const AER_VISIBLE_MIN = 0.01;
 const BUBBLE_RISE_MS = 0.23;      // m/s
 // Churned water decorrelates its bumps within ~1/3 s.
 const ROUGH_RATE_S = 3;           // noise units per physical second
-// A falling blob tears up once air drag beats surface tension: Weber number
-// We = ρ_air v² D / σ past ~12 (bag breakup), with D a cell (the sim's
-// smallest blob). It takes time: the blob is fully torn into spray after
-// T·t*, t* = (D / v)·√(ρ_liquid / ρ_air), T from Pilch & Erdman's (1987)
-// fit, piecewise in We; until then a blob falling a few metres is still
-// mostly glassy.
-const AIR_RHO = 1.2;              // kg/m³
-const WE_ONSET = 12;
-const PE_FIT = [                  // [We below which it applies, coefficient, exponent of (We − 12)]
-  [18, 6, -0.25], [45, 2.45, 0.25], [351, 14.1, -0.25], [2670, 0.766, 0.25], [Infinity, 5.5, 0],
-];
+// Falling water is a jet, not a lone drop: the sim's falling cells are
+// parcels of a stream a cell (30 cm) across, and a turbulent jet that thick
+// whitens as it falls. Its surface disturbances entrain air from the lip on,
+// the aerated outer layer thickens with the fall, and the jet is aerated
+// right through (white, breaking into spray) at its break-up length
+// L_b = 6·q^0.32 m, q its discharge per unit width in m²/s (Horeni 1956, the
+// rule for falling nappes used by Ervine, Falvey & Withers 1997 and Castillo
+// et al. 2015). The share of the jet that is aerated is taken as the height
+// fallen over L_b. (The old rule tore up a cell as a lone 30 cm drop in still
+// air, Pilch & Erdman's bag breakup: that takes seconds, so streams stayed
+// glassy and nearly invisible.)
+const JET_Q = 0.5;                // m²/s: a nappe a cell thick leaving its lip at ~1.7 m/s
+const JET_LB_M = 6 * JET_Q ** 0.32;   // m, break-up length (≈ 4.8 m)
+// Bubbly water in a broken jet: void fraction and bubble radius (Chanson
+// 1997, air-water flows: 1-5 mm bubbles, α ~ 0.1 in the spray region).
+const JET_VOID = 0.1;
+const JET_BUBBLE_R_M = 0.002;     // m
+// The jet's look (liquidFoam): its aerated outer layer is not an even white
+// skin but streaks drawn out along the fall, and its edge is a fringe of
+// spray that thickens as it falls: the outer edge of a turbulent jet in air
+// spreads by a few percent of the distance fallen (Ervine & Falvey 1987;
+// 3% here), so a fully broken jet is a soft-edged rope, not a hard tube.
+const JET_SPREAD = 0.03;
+// Its largest surface disturbances are a fraction of its thickness: streaks
+// ~6 cm across on a 30 cm jet, drawn out ~8× along the fall by its
+// acceleration (photographs of plunging nappes: streaks tens of cm long).
+const STREAK_ACROSS_M = 0.06;     // m
+const STREAK_STRETCH = 8;         // length over width
+// A parcel's wake: the sim draws a stream as parcels a few cells apart (a
+// one-cell hole lets one go every ~7 steps: 7 parcels in 30 cells of fall,
+// 2-8 cells apart, measured on tools/whitewater-shots.mjs's tank), so drawn
+// as they are it is a dotted line of glass beads. The air a falling parcel
+// (liquid off the ground) has just left keeps a record of it for
+// TRAIL_JOIN_STEPS steps (over the hole's spacing). What tells a jet from a
+// falling blob is the same cue a jet's continuity is: a parcel that falls
+// into the wake of the one before it, within those steps, is in a stream
+// (the sim's own path, no guess), and its wake is drawn for all of them, so
+// successive parcels join into one rope along the path they really took. A
+// parcel nothing follows (a blob, a drop of spray, a pour's leading head)
+// shows its wake for TRAIL_LONE_STEPS only: half a frame at the default 4
+// steps a frame, the motion blur of film's 180° shutter, not a tail.
+export const TRAIL_JOIN_STEPS = 10;
+export const TRAIL_LONE_STEPS = 2;
+// the wake record (aerationFrag) above which a lone parcel's wake still shows
+export const TRAIL_LONE_MIN = 1 - TRAIL_LONE_STEPS / TRAIL_JOIN_STEPS;
 
 const g = (x) => (Number.isInteger(x) ? x.toFixed(1) : x.toPrecision(6));
 const perLiquid = (fn) => ELEMENTS.map((e) => g(LIQ_PROPS[e.key] ? fn(LIQ_PROPS[e.key]) : 0));
@@ -197,7 +231,11 @@ vec3 liquidMeniscus(vec3 p, vec3 n, int id) {
 uniform sampler2D tAer;
 #define AER_PROBE 0.25         // cells into the liquid (against n) where the aeration is read
 #define AER_LIQ_MIN 0.02       // liquid weight below which the read is no liquid's
-vec3 aerTap(ivec3 c) { return outside(c) ? vec3(0.0) : texelFetch(tAer, atlas(c), 0).xyw; }
+vec3 aerTap(ivec3 c) {   // liquid cells only (air holds its wakes: aerationFrag)
+  if (outside(c)) return vec3(0.0);
+  vec4 f = texelFetch(tAer, atlas(c), 0);
+  return f.y > 0.5 ? vec3(f.x, 1.0, f.w) : vec3(0.0);   // (y is 2 in a stream)
+}
 vec2 aerationAt(vec3 p) {   // (aeration, grounded share), 0..1
 
   vec3 q = p - 0.5;
@@ -239,10 +277,7 @@ vec4 triNoiseD(vec3 p, vec3 n, float f, float t) {
 // the aeration decays the covered fraction shrinks, so patches thin into the
 // lace and streaks of old foam instead of fading as a whole. The pattern
 // reshapes as its bubbles burst: one noise unit per foam lifetime.
-// Aerated liquid in the air is not a raft but a spray of torn drops and
-// sheets: white streaks with clear water between, so it covers less.
 #define FOAM_COVER_MAX 0.7     // covered fraction at full aeration on resting liquid (open water still shows between)
-#define SPRAY_COVER_MAX 0.3    // ... and on liquid in the air or falling with it
 #define FOAM_PATCH_M 0.12      // m, foam patches between open water
 #define FOAM_CLUSTER_M 0.04    // m, bubble clusters within them (second octave)
 #define FOAM_FREQ (CELL_M / FOAM_PATCH_M)      // cycles/cell
@@ -253,17 +288,63 @@ vec4 triNoiseD(vec3 p, vec3 n, float f, float t) {
 #define FOAM_ALBEDO 0.55
 #define FOAM_WRAP 0.5          // diffuse wrap (0 = Lambert)
 #define FOAM_SHIFT 29.3        // lattice offset of the foam noise from the roughness noise
-void liquidFoam(vec3 p, inout vec3 n, int id, inout vec3 col, inout vec3 trans) {
+// Falling water (a stream, a waterfall, spray) is not a raft: it is bubbly
+// water, read from the field passes' jet channels (shaders/fields.js: tFT.y
+// is its aeration times its presence, tFT.z its presence, so their ratio is
+// the aeration at the surface, the parcels' wakes included). Its bubbles are
+// 1-3 mm across at void fractions ~0.1 (Chanson 1997), which makes it
+// optically thick: extinction 1.5·α/r (geometric optics, extinction
+// efficiency 2), ~75 per metre. A ray through a stream a cell across meets
+// its aerated part, and a chord through a round stream is shorter by the
+// cosine it comes in at. The aerated share W of the jet is drawn as how much
+// of its surface its white streaks cover (the way real-time waterfalls are
+// drawn, as flow-mapped streaks scrolling down a translucent sheet: Naughty
+// Dog's Uncharted 4 and The Last of Us Part II, Sea of Thieves, Frostbite's
+// and RDR2's rivers), each streak's opacity 1 − exp(−JET_TAU·cos), soft in
+// the spray fringe at the edge (JET_SPREAD). So a pour is clear, refracting
+// glass with a few streaks at the lip and white by its break-up length. The
+// streaks scroll down at the water's own speed, √(2g·W·L_b), in two phases
+// half a cycle apart, crossfaded (Vlachos 2010, Portal 2's flow maps), so
+// they never stretch. The body is drawn under the surface's reflection and
+// the sun's glint (liquidUnderSkin), as bubbly water lies under its skin.
+#define JET_TAU ${g((1.5 * JET_VOID / JET_BUBBLE_R_M) * CELL_M)}   // optical depth across a fully aerated stream
+#define JET_M_MIN 0.02         // jet presence below which there is none here
+#define JET_FRINGE ${g((2 * JET_SPREAD * JET_LB_M) / (CELL_M / 2))}   // (edge cosine)² of the spray fringe at W = 1: 2δ/R, δ = spread × fall
+#define JET_EDGE_MIN 0.05      // edge cosine over which even a glassy jet fades in (anti-aliasing)
+#define STREAK_FREQ ${g(CELL_M / STREAK_ACROSS_M)}   // cycles/cell across the streaks
+#define STREAK_STRETCH ${g(STREAK_STRETCH)}
+#define STREAK_EDGE 0.12       // threshold softness (noise units)
+#define STREAK_PERIOD 32.0     // steps per flow-map cycle
+#define STREAK_SHIFT 17.7      // lattice offset of the second phase
+#define JET_V_FULL ${g(Math.sqrt(2 * G_REAL * JET_LB_M) / MS_PER_CELL_STEP)}   // cells/step: the fall speed at the break-up length
+// streak pattern value (0..1) at world point wp on a jet aerated by w
+float jetStreaks(vec3 wp, float w) {
+  float ph = fract(uSimClock / STREAK_PERIOD);
+  float drift = sqrt(w) * JET_V_FULL * STREAK_PERIOD;   // cells a cycle: the water's speed
+  vec3 sc = vec3(STREAK_FREQ, STREAK_FREQ / STREAK_STRETCH, STREAK_FREQ);
+  float a = mNoiseD((wp + vec3(0.0, drift * ph, 0.0)) * sc).x;
+  float b = mNoiseD((wp + vec3(0.0, drift * fract(ph + 0.5), 0.0)) * sc + STREAK_SHIFT).x;
+  return mix(a, b, abs(2.0 * ph - 1.0));
+}
+// the jet's body as liquidFoam left it, for liquidUnderSkin
+float gJetC = 0.0;
+vec3 gJetL = vec3(0.0);
+void liquidFoam(vec3 p, inout vec3 n, int id, vec3 rd, inout vec3 col, inout vec3 trans) {
+  float chord = abs(dot(n, rd));   // (before the churn tilts n)
+  bool entering = dot(n, rd) < 0.0;
   vec2 aer = aerationAt(p - n * AER_PROBE);
-  float ag = aer.x;
+  vec2 jt = fieldTex(tFT, p).yz;
+  float jw = jt.y > JET_M_MIN && entering ? clamp(jt.x / jt.y, 0.0, 1.0) : 0.0;   // falling water's aeration (its whole crossing, on the way in)
+  float raft = aer.x * aer.y;   // aerated liquid at rest: a foam raft
+  float ag = max(raft, jw);
   if (ag <= 0.0) return;
   float fp = footprint(p);
   vec3 wp = worldPos(p);   // the churn and foam are anchored in the world
   vec4 r = triNoiseD(wp, n, ROUGH_FREQ, uSimClock * ROUGH_EVOLVE);
   n = tiltNormal(n, r.yzw * (ROUGH_SLOPE * ag * lodFade(ROUGH_FREQ, fp) / ROUGH_FREQ));
-  // covered fraction: the pattern where pixels resolve it, its mean beyond
-  float cover = mix(SPRAY_COVER_MAX, FOAM_COVER_MAX, aer.y) * ag;
-  float pw = lodFade(FOAM_FREQ, fp);
+  // the raft's covered fraction: the pattern where pixels resolve it, its mean beyond
+  float cover = FOAM_COVER_MAX * raft;
+  float pw = cover > 0.0 ? lodFade(FOAM_FREQ, fp) : 0.0;
   float c = cover;
   if (pw > 0.0) {
     vec3 q = wp + FOAM_SHIFT;
@@ -272,20 +353,34 @@ void liquidFoam(vec3 p, inout vec3 n, int id, inout vec3 col, inout vec3 trans) 
                   FOAM_OCT2_W * lodFade(FOAM_FREQ2, fp));
     c = mix(cover, smoothstep(1.0 - cover - FOAM_EDGE, 1.0 - cover + FOAM_EDGE, v), pw);
   }
-  if (c <= 0.0) return;
+  float cj = 0.0;
+  if (jw > 0.0) {
+    float sw = lodFade(STREAK_FREQ, fp);
+    float cov = sw > 0.0 ? mix(jw, smoothstep(1.0 - jw - STREAK_EDGE, 1.0 - jw + STREAK_EDGE, jetStreaks(wp, jw)), sw) : jw;
+    cj = cov * (1.0 - exp(-JET_TAU * chord)) * smoothstep(0.0, max(sqrt(JET_FRINGE * jw), JET_EDGE_MIN), chord);
+  }
+  if (c <= 0.0 && cj <= 0.0) return;
   vec3 sunVis = uShadows ? sunShadow(p + n * IFACE_PROBE) : vec3(1.0);
   float diff = max((dot(n, uSun) + FOAM_WRAP) / (1.0 + FOAM_WRAP), 0.0);
-  vec3 L = SUN_COL * sunVis * diff + skyAmbient(n) + sampleLight(p) * uLightGain;
-  col += trans * c * FOAM_ALBEDO * L;
+  vec3 L = FOAM_ALBEDO * (SUN_COL * sunVis * diff + skyAmbient(n) + sampleLight(p) * uLightGain);
+  col += trans * c * L;   // a raft floats on top
   trans *= 1.0 - c;
+  gJetC = cj;
+  gJetL = L;
+}
+// After the surface's reflection: the jet's bubbly body under it.
+void liquidUnderSkin(inout vec3 col, inout vec3 trans) {
+  col += trans * gJetC * gJetL;
+  trans *= 1.0 - gJetC;
+  gJetC = 0.0;
 }
 #endif
 
 #ifdef LIQ_DETAIL
 // The tracer's hook at a liquid surface event: hp, outward normal n (wind
-// ripples applied), liquid id. Returns the normal to refract/reflect with;
+// ripples applied), liquid id, ray direction rd. Returns the normal to refract/reflect with;
 // foam adds its light and covers what is behind it.
-vec3 liquidDetail(vec3 hp, vec3 n, int id, inout vec3 col, inout vec3 trans) {
+vec3 liquidDetail(vec3 hp, vec3 n, int id, vec3 rd, inout vec3 col, inout vec3 trans) {
   if (!liqDetailOn(id)) return n;
 #ifdef DETAIL_LIQ_RIPPLES
   n = liquidCapillary(hp, n);
@@ -294,7 +389,7 @@ vec3 liquidDetail(vec3 hp, vec3 n, int id, inout vec3 col, inout vec3 trans) {
   n = liquidMeniscus(hp, n, id);
 #endif
 #ifdef DETAIL_LIQ_FOAM
-  liquidFoam(hp, n, id, col, trans);
+  liquidFoam(hp, n, id, rd, col, trans);
 #endif
   return n;
 }
@@ -311,9 +406,9 @@ vec3 liquidDetail(vec3 hp, vec3 n, int id, inout vec3 col, inout vec3 trans) {
 //   bulk (liquid above it)    bubbles rise out at BUBBLE_RISE_MS: a share
 //                             AER_RISE of its aeration moves up a cell a step
 //   free surface              bubbles burst: × AER_KEEP a step (FOAM_TAU_S)
-//   airborne (nothing         a falling blob tears up: its aeration grows by
-//   under it)                 the share of its breakup time (Pilch & Erdman,
-//                             above) a step is
+//   off the ground (in the    a falling jet: at least the share of it its
+//   air, or on falling        fall has aerated (JET_LB_M, above)
+//   liquid)
 // and liquid that lands is white at once where it hit hard enough to entrain
 // air: the speed it came down at against a plunging jet's entrainment onset.
 // That speed is the fall the cell really made: each cell carries the speed
@@ -332,11 +427,14 @@ vec3 liquidDetail(vec3 hp, vec3 n, int id, inout vec3 col, inout vec3 trans) {
 // Chanson 1997); a jet past ~4 m/s is white with it.
 const FOAM_V_ONSET = 1.0;         // m/s
 const FOAM_V_FULL = 4.0;          // m/s
-// Output: (aeration, 1, fall speed, grounded) in liquid cells, 0 elsewhere,
-// so the renderer can average the aeration over liquid cells only
-// (aerationAt).
+// Output: (aeration, 1, fall speed, grounded) in liquid cells (y is 2 in a
+// stream: a parcel that fell into the wake of the one before it), so the
+// renderer can average the aeration over liquid cells only (aerationAt); in
+// air (or gas) a falling parcel has just left, its wake (TRAIL_JOIN_STEPS,
+// above): (1 if the parcel was in a stream, 0, its aeration, 1 fading to 0
+// over TRAIL_JOIN_STEPS steps); 0 elsewhere. The field passes draw a parcel off the ground and its wake as
+// one stream (shaders/fields.js jetAt).
 const AER_FOAMS = Object.keys(LIQ_PROPS).map((k) => `id == E_${k}`).join(' || ');
-const peFit = PE_FIT.map(([lim, c, e]) => `${lim === Infinity ? '' : `if (we < ${g(lim)}) `}return ${g(c)} * pow(x, ${g(e)});`).join('\n  ');
 export const aerationFrag = (grid) => /* glsl */ `
 ${prelude(grid)}
 uniform sampler2D tAerPrev;   // the aeration before this step (tA, tB: the state before its move)
@@ -351,16 +449,31 @@ vec4 aerPrev(ivec3 c) { return texelFetch(tAerPrev, atlas(c), 0); }
 #define AER_RISE ${g((BUBBLE_RISE_MS * STEP_S) / CELL_M)}          // share rising a cell per step
 #define FOAM_V_ONSET ${g(FOAM_V_ONSET)}   // m/s
 #define FOAM_V_FULL ${g(FOAM_V_FULL)}     // m/s
-#define AIR_RHO ${g(AIR_RHO)}          // kg/m³
-#define WE_ONSET ${g(WE_ONSET)}
-const float AER_SIGMA[NE] = float[NE](${perLiquid((p) => p.sigma).join(', ')});   // surface tension, N/m
-const float AER_RHO[NE] = float[NE](${perLiquid((p) => p.rho).join(', ')});       // density, kg/m³
+#define JET_FALL_FULL ${g(2 * G_REAL * JET_LB_M)}   // (m/s)²: v² of a jet that has fallen its break-up length
+#define TRAIL_FADE ${g(1 / TRAIL_JOIN_STEPS)}   // a wake record's fade per step
 bool supports(int id) { return id != E_EMPTY && KIND[id] != K_GAS; }
 bool foams(int id) { return ${AER_FOAMS}; }
-// Pilch & Erdman's total breakup time, in units of t* (We > WE_ONSET)
-float breakupT(float we) {
-  float x = we - WE_ONSET;
-  ${peFit}
+// the share of a jet falling at vDown cells/step that is aerated: the height
+// it has fallen, v²/2g, over its break-up length
+float jetAeration(float vDown) {
+  float v = vDown * MS_PER_CELL_STEP;
+  return clamp(v * v / JET_FALL_FULL, 0.0, 1.0);
+}
+// Air (or gas) at p, its content now from q: a falling parcel's wake if the
+// parcel just left it, else what wake it had, faded.
+vec4 wakeAt(ivec3 p, ivec3 q, int id) {
+  if (supports(id)) return vec4(0.0);   // (filled with something)
+  vec4 f = aerPrev(p);
+  if (f.y > 0.5) return q != p && f.w < 0.5 ? vec4(step(1.5, f.y), 0.0, f.x, 1.0) : vec4(0.0);   // liquid off the ground left it
+  return f.w > TRAIL_FADE ? vec4(f.x, 0.0, f.z, f.w - TRAIL_FADE) : vec4(0.0);
+}
+bool wakeRecord(ivec3 c) { if (!inGrid(c)) return false; vec4 f = aerPrev(c); return f.y < 0.5 && f.w > 0.0; }
+// Liquid off the ground that just moved from q into p: did it fall into a
+// parcel's wake (p, or beside it: the sim's parcels wander a cell)?
+bool followed(ivec3 p, ivec3 q) {
+  if (q == p) return false;
+  return wakeRecord(p) || wakeRecord(p + ivec3(1, 0, 0)) || wakeRecord(p - ivec3(1, 0, 0))
+      || wakeRecord(p + ivec3(0, 0, 1)) || wakeRecord(p - ivec3(0, 0, 1));
 }
 void main() {
   ivec3 p = cellFromFrag(ivec2(gl_FragCoord.xy));
@@ -369,9 +482,10 @@ void main() {
   // quiet brick (or every block, on an idle step) stayed put. Quiet bricks
   // can hold a resting pool, whose foam must still burst, so they run too.
   ivec3 q = p;
-  if (!uStill && !quietCell(blockBase(p))) slotOf(p, q);
+  if (!uStill && !quietCell(blockBase(p))) { slotOf(p, q); q = edgeCell(q); }   // (past a loop edge: the far side's)
+  if (!inGrid(q)) { oF = vec4(0.0); return; }   // (in from past a void edge: still air)
   int id = eid(fetchA(q));
-  if (!foams(id)) { oF = vec4(0.0); return; }
+  if (!foams(id)) { oF = wakeAt(p, q, id); return; }
   const ivec3 UP = ivec3(0, 1, 0);
   vec4 f0 = aerPrev(q);
   float F = f0.x, fall = f0.z;
@@ -382,7 +496,7 @@ void main() {
   // grounded: resting on the ground through whatever liquid is under it (a
   // pool) rather than on liquid that is itself falling. Propagates up a
   // liquid column a cell per step.
-  bool grounded = !airborne && (foams(below) ? fb.w > 0.5 : true);
+  bool grounded = !airborne && (foams(below) ? fb.y > 0.5 && fb.w > 0.5 : true);
   float vy = fetchB(q).y;   // cells/step, before the move
   // liquid new here (poured, melted, condensed since the last step): clear,
   // and falling as fast as it was made to
@@ -390,11 +504,7 @@ void main() {
   if (foams(above)) F -= AER_RISE * F;
   else if (!airborne) F *= AER_KEEP;
   if (foams(below)) F += AER_RISE * fb.x;
-  if (airborne) {
-    float v = abs(vy) * MS_PER_CELL_STEP;
-    float we = AIR_RHO * v * v * CELL_M / AER_SIGMA[id];
-    if (we > WE_ONSET) F += STEP_S * v / (breakupT(we) * CELL_M * sqrt(AER_RHO[id] / AIR_RHO));
-  }
+  if (!grounded) F = max(F, jetAeration(-vy));   // a falling jet, aerated by its fall
   // In free fall, or fell a cell: at this speed. Resting on falling liquid it
   // rides along with what it has (a blob's upper part; drops meeting in the
   // air merge rather than trap air). Resting on grounded matter it has
@@ -404,7 +514,8 @@ void main() {
     F = max(F, smoothstep(FOAM_V_ONSET, FOAM_V_FULL, fall * MS_PER_CELL_STEP));
     fall = 0.0;
   }
-  oF = vec4(min(F, 1.0), 1.0, fall, grounded ? 1.0 : 0.0);
+  bool stream = !grounded && f0.y > 0.5 && (f0.y > 1.5 || followed(p, q));   // in a stream: the wake of the parcel ahead
+  oF = vec4(min(F, 1.0), stream ? 2.0 : 1.0, fall, grounded ? 1.0 : 0.0);
 }
 `;
 

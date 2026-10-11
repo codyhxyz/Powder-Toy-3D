@@ -46,11 +46,12 @@ export const MODELS = {
   lantern: { fit: 'y', size: 0.85, anchor: [0.5, 1, 0.5], arm: ARM_UP, icon: { yaw: 0, tilt: 0.3, roll: 0 } },                    // a lantern hanging from its bail
   bomb: { fit: 'z', size: 0.8, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.35, roll: Q } },         // a capped pipe with a lit fuse
   knife: { fit: 'z', size: 0.95, anchor: [0.5, 0.5, 0.79], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.3, roll: Q } },       // blade forward, edge down, held by the handle
-  laser: { fit: 'z', size: 2.1, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.3, roll: 0.45 } },      // a Spartan-laser-style cannon, its charge strip glowing, centred
+  laser: { fit: 'z', size: 3.4, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.3, roll: 0.45 } },      // Halo's Spartan Laser: big and heavy, its charge strips glowing, centred
   burrower: { fit: 'z', size: 1.5, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.3, roll: 0.45 } },   // a stubby launcher with a drill bit in its mouth, centred
   drill: { fit: 'x', size: 1, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.3, roll: Q } },           // the burrower's drill in flight, a cell across (the tool scales it to its bore)
   pogo: { fit: 'y', size: 3.5, anchor: [0.5, 0.98, 0.5], arm: ARM_DOWN, icon: { yaw: 0, tilt: 0.3, roll: Q / 2 } },              // upright, held by the handlebar, the stick down out of view
   hook: { fit: 'z', size: 1.15, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.3, roll: 0.35 } },      // a grapple launcher, the claw in its mouth
+  toolgun: { fit: 'z', size: 1.2, anchor: [0.5, 0.5, 0.5], arm: ARM_DOWN, icon: { yaw: POINT_RIGHT, tilt: 0.3, roll: 0.35 } },   // GMod's tool gun: a boxy body, a thin barrel, a screen facing you
 };
 
 // RS2 stores a colour as 16-bit HSL: 6 bits of hue, 3 of saturation, 7 of lightness.
@@ -265,14 +266,30 @@ const PARTS = {
     ...FINS.map((a) => ({ geo: 'box', s: [0.02, 0.12, 0.16], p: [Math.sin(a) * 0.1, Math.cos(a) * 0.1, 0.28], rot: [0, 0, -a], m: 'oliveDark' })),
     { geo: 'sphere', r: 0.07, p: [0, 0, 0.4], m: 'spark' },
   ],
+  // Halo's Spartan Laser: a long slab of a cannon shouldered at the hip, a battery block at
+  // the back, a carry-handle sight on top, the barrel split into two prongs at the front with
+  // the emitter between them, and charge strips down its top and both flanks (named 'charge':
+  // the tool lights them with the charge)
   laser: [
-    { geo: 'box', s: [0.22, 0.26, 1.3], p: [0, 0.22, -0.35], m: 'metalDark' },
-    { geo: 'box', s: [0.14, 0.1, 0.5], p: [0, 0.4, -0.15], m: 'metal' },
-    { geo: 'cyl', r: 0.06, h: 0.06, p: [0, 0.4, -0.42], rot: [H, 0, 0], m: 'laser' },
-    { geo: 'cyl', r: 0.08, h: 0.45, p: [0, 0.22, -1.2], rot: [H, 0, 0], m: 'metal' },
-    { geo: 'cyl', r: 0.12, h: 0.1, p: [0, 0.22, -1.45], rot: [H, 0, 0], m: 'metalDark' },
-    { geo: 'box', s: [0.235, 0.05, 0.9], p: [0, 0.22, -0.4], m: 'laser', name: 'charge' },
-    { geo: 'box', s: [0.1, 0.22, 0.12], p: [0, 0.0, -0.6], rot: [0.15, 0, 0], m: 'grip' },
+    { geo: 'box', s: [0.34, 0.36, 1.6], p: [0, 0.26, -0.45], m: 'metalDark' },
+    { geo: 'box', s: [0.42, 0.46, 0.5], p: [0, 0.28, 0.45], m: 'metal' },
+    { geo: 'box', s: [0.32, 0.32, 0.06], p: [0, 0.28, 0.73], m: 'metalDark' },
+    { geo: 'box', s: [0.38, 0.12, 0.3], p: [0, 0.04, 0.42], m: 'metalDark' },
+    { geo: 'box', s: [0.12, 0.14, 0.62], p: [0, 0.52, -0.35], m: 'metal' },
+    { geo: 'box', s: [0.06, 0.12, 0.08], p: [0, 0.45, -0.1], m: 'metal' },
+    { geo: 'box', s: [0.06, 0.12, 0.08], p: [0, 0.45, -0.6], m: 'metal' },
+    { geo: 'cyl', r: 0.065, h: 0.05, p: [0, 0.52, -0.68], rot: [H, 0, 0], m: 'laser' },
+    ...[-0.75, -0.95, -1.15].map((z) => ({ geo: 'box', s: [0.38, 0.05, 0.06], p: [0, 0.46, z], m: 'metal' })),
+    { geo: 'box', s: [0.3, 0.09, 0.85], p: [0, 0.4, -1.65], m: 'metal' },
+    { geo: 'box', s: [0.3, 0.09, 0.85], p: [0, 0.12, -1.65], m: 'metal' },
+    { geo: 'box', s: [0.32, 0.12, 0.1], p: [0, 0.41, -2.03], m: 'metalDark' },
+    { geo: 'box', s: [0.32, 0.12, 0.1], p: [0, 0.11, -2.03], m: 'metalDark' },
+    { geo: 'cyl', r: 0.07, h: 0.55, p: [0, 0.26, -1.5], rot: [H, 0, 0], m: 'laser' },
+    { geo: 'cyl', r: 0.11, h: 0.08, p: [0, 0.26, -1.26], rot: [H, 0, 0], m: 'metalDark' },
+    { geo: 'box', s: [0.2, 0.05, 1.1], p: [0, 0.445, -0.35], m: 'laser', name: 'charge' },
+    { geo: 'box', s: [0.05, 0.1, 1.0], p: [0.175, 0.26, -0.6], m: 'laser', name: 'charge' },
+    { geo: 'box', s: [0.05, 0.1, 1.0], p: [-0.175, 0.26, -0.6], m: 'laser', name: 'charge' },
+    { geo: 'box', s: [0.12, 0.26, 0.14], p: [0, -0.02, -0.95], rot: [0.2, 0, 0], m: 'grip' },
     STOCK_GRIP,
   ],
   burrower: [
@@ -298,6 +315,18 @@ const PARTS = {
     { geo: 'cyl', rt: 0.09, rb: 0.13, h: 0.1, p: [0, 0.22, -0.56], rot: [-H, 0, 0], m: 'metalDark' },
     ...FINS.map((a) => ({ geo: 'cyl', rt: 0.012, rb: 0.03, h: 0.24, p: [Math.sin(a) * 0.08, 0.22 + Math.cos(a) * 0.08, -0.72], rot: [-H, 0, 0], m: 'metalDark' })),
     { geo: 'sphere', r: 0.05, p: [0, 0.22, -0.7], m: 'glow' },
+    STOCK_GRIP,
+  ],
+  // the tool gun (toolgun.tool.js): Garry's Mod's gmod_tool, a grey box of a gun with a thin
+  // barrel and a screen on its back; the tool lights the part named 'screen' in what it holds
+  toolgun: [
+    { geo: 'box', s: [0.2, 0.22, 0.6], p: [0, 0.2, -0.2], m: 'iron' },
+    { geo: 'box', s: [0.17, 0.13, 0.3], p: [0, 0.37, -0.06], m: 'metal' },
+    { geo: 'box', s: [0.15, 0.11, 0.02], p: [0, 0.37, 0.095], m: 'screen', name: 'screen' },
+    { geo: 'box', s: [0.025, 0.09, 0.34], p: [0.11, 0.2, -0.24], m: 'orange' },
+    { geo: 'cyl', r: 0.07, h: 0.06, p: [0, 0.2, -0.52], rot: [H, 0, 0], m: 'ironDark' },
+    { geo: 'cyl', r: 0.04, h: 0.4, p: [0, 0.2, -0.74], rot: [H, 0, 0], m: 'metalDark' },
+    { geo: 'sphere', r: 0.045, p: [0, 0.2, -0.95], m: 'glow' },
     STOCK_GRIP,
   ],
   // the hook (hook.tool.js): a stubby launcher with a spool of rope under it and a three-pronged
@@ -424,20 +453,24 @@ function normalised(key, withArm = true) {
     hand.position.copy(inner.position);   // the parts' origin is the grip
     outer.add(hand);
   }
-  return { obj: outer, size: size.multiplyScalar(k) };
+  return { obj: outer, size: size.multiplyScalar(k), grip: inner.position.clone(), unit: k };
 }
 
 // Add model `key` to `parent`; onLoad(obj, info) runs before this returns.
-// opts.arm: false leaves the forearm off. Returns { dispose(), get obj() }.
+// opts.arm: false leaves the forearm off. Returns { dispose(), get obj(), info }.
+// info: { size, grip, unit }: grip is the parts' origin (the grip) in the
+// model's space, unit the cells per PARTS unit (so a point given in PARTS
+// units p sits at grip + p × unit).
 export function attachModel(parent, key, onLoad, { arm: withArm = true } = {}) {
-  const { obj, size } = normalised(key, withArm);
+  const { obj, ...info } = normalised(key, withArm);
   obj.name = `viewmodel-${key}`;
   parent.add(obj);
-  onLoad?.(obj, { size });
+  onLoad?.(obj, info);
   globalThis.__app?.requestRender?.();
   let disposed = false;
   return {
     get obj() { return obj; },
+    info,
     dispose() {
       if (disposed) return;
       disposed = true;

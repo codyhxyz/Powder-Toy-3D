@@ -399,7 +399,7 @@ export function well({ put, box, footing, T }) {
 // A drift mine's mouth: a timber portal and a gallery driven straight into the
 // hillside behind it (the construction carves its own tunnel, so it works on
 // any slope steep enough to bury it), timber sets holding the roof and
-// crystal lamps hung from them, rails on a plank floor running out to a loaded
+// electric lamps hung from them, rails on a plank floor running out to a loaded
 // cart. Placed facing out of a slope; in the box it stands as a timber gallery
 // in the open.
 const MINE = {
@@ -409,7 +409,7 @@ const MINE = {
   SPUR: 9,        // rails run out past the portal this far, to a buffer (room to turn in past the cart)
   CART: [3, 3, 4],// the cart: width, height, length
   CRATE: 2,       // crates (0.6 m) at the gallery's end: two stacked on the left, one on the right
-  LAMP_EVERY: 2,  // a crystal lamp hangs under every this-many-th cap beam, above the body's head
+  LAMP_EVERY: 2,  // an electric lamp hangs under every this-many-th cap beam, above the body's head
 };
 
 export function mine({ put, box, footing, T }) {
@@ -424,7 +424,8 @@ export function mine({ put, box, footing, T }) {
   for (let z = 0; z >= -L; z -= every) {
     for (const s of [-1, 1]) box(s * x0, 1, z, s * x0, h, z, 'WOOD');
     box(-x0, h + 1, z, x0, h + 1, z, 'WOOD');
-    if ((-z / every) % MINE.LAMP_EVERY === 1) put(0, h, z, 'CRYSTAL');
+    // its battery in the beam: a lamp touching a battery stays lit (Noita's mines are lit by lamps that break)
+    if ((-z / every) % MINE.LAMP_EVERY === 1) { put(0, h + 1, z, 'BATTERY'); put(0, h, z, 'LAMP'); }
   }
   // the portal: heavier posts and a header with a little gable over it
   for (const s of [-1, 1]) box(s * x0, 0, 0, s * (x0 + 1), h + 1, 1, 'WOOD');

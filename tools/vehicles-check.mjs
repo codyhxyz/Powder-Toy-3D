@@ -14,6 +14,7 @@ const port = opt('port', '5402');
 const shotPath = opt('shot', null);
 const W = 960, H = 600;
 const DRIFT_SLIP_MIN = 15 * Math.PI / 180;   // rad: a hard turn at speed slides at least this far off the nose
+const FIRE_WINDOW_FRAMES = 60;               // frames the wreck's fire is watched over (spans several of its puffs)
 
 const b = await launchBrowser();
 const p = await pageGpu(await newTestPage(b, { mode: shotPath ? 'visual' : 'preview', viewport: { width: W, height: H } }));
@@ -223,7 +224,17 @@ try {
   await ev(() => { window.__destroyed = null; window.__app.pov.events.on('vehicle:destroyed', (e) => { window.__destroyed = e; }); });
   await ev(() => { const vs = window.__app.pov.vehicles; const v = vs.list.find((v) => v.kind === 'jeep' && v.alive); vs.damage(v, 100, 'Test'); });
   await settle(1200);
-  const fire1 = await ev(async () => { const { E } = await import('/src/elements.js'); const c = await window.__pageGpu.census(); return { fire: c[E.FIRE]?.n ?? 0, powder: c[E.GUNPOWDER]?.n ?? 0 }; });
+  // a wreck's puff burns out before the next (WRECK_FIRE_EVERY): one census can fall between two, so take the most over a window
+  const fire1 = await ev(async (frames) => {
+    const { E } = await import('/src/elements.js');
+    let fire = 0, powder = 0;
+    for (let i = 0; i < frames; i++) {
+      const c = await window.__pageGpu.census();
+      fire = Math.max(fire, c[E.FIRE]?.n ?? 0); powder = c[E.GUNPOWDER]?.n ?? 0;
+      await new Promise((r) => requestAnimationFrame(r));
+    }
+    return { fire, powder };
+  }, FIRE_WINDOW_FRAMES);
   if (shotPath) {
     await ev(() => { const a = window.__app.pov; const v = a.vehicles.list.find((v) => v.kind === 'jeep'); const t = v.impl.body.translation(); a.player.spawn(a.player.pos.clone().set(t.x / 0.3 - 16, 0, t.z / 0.3 - 16)); a.setLook(Math.atan2(16, 16) + Math.PI, -0.2); a.camera.third = true; });
     await settle(700);

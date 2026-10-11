@@ -166,13 +166,17 @@ ${copyThroughMain('burrow')}`;
 // enters costs the heat that takes the core's slice of that matter to VAPOR_T,
 //   cost = CAP · (VAPOR_T − T) · π · CORE_RADIUS²
 // in the engine's own heat units (latent heats left out). Air and gas cost
-// nothing. ENERGY 1.25 M gives (from 20 °C):
+// nothing. ENERGY 2.22 M through a CORE_RADIUS 2 core gives (from 20 °C):
 //   rock / glass (CAP 0.5)  ≈ 119 cells (36 m)    metal (0.85) ≈ 70 cells (21 m)
 //   wood (0.3) ≈ 198          water (1.0) ≈ 59
 // A solid that neither breaks, melts nor burns (WALL, CLONE) stops it, as does
 // the floor; the beam is at most LENGTH long.
 //
-// What it does where it reaches, by distance r from the axis:
+// What it does where it reaches, by distance r from the bore (the axis up to
+// where the beam stopped; past that, from the point it stopped, so the heated
+// end of the hole is round, as the bottom of a laser-drilled hole is. Cut flat
+// there instead, a surface met at a slant took only the near half of the
+// ring: a crescent):
 //   core (r ≤ CORE_RADIUS): vaporised. Water, ice and snow become STEAM, what
 //     burns becomes FIRE, everything else SMOKE (its vapour), all at VAPOR_T,
 //     blown back out of the hole at PLUME_SPEED. Gas in the core is heated to VAPOR_T.
@@ -187,23 +191,28 @@ ${copyThroughMain('burrow')}`;
 //     The rim's heat isn't charged to ENERGY. It is hot and thick because the
 //     engine's conduction is fast: a rim of 2400→1300 °C, 3 cells out, cooled
 //     below stone's melt in under a second (tested: 21 lava cells, now ~300).
+//     A solid the beam can't touch is heated but not vaporised (the spot it
+//     stops on glows), and the heat doesn't pass it: what lies behind it, seen
+//     from the bore, stays as it is (WALL insulates: elements.js).
 // Every power number is here, so the gun can be made weaker in one place.
 export const LASER = {
-  ENERGY: 1.25e6,     // heat units (CAP · °C) the beam delivers: see the reaches above
-  CORE_RADIUS: 1.5,   // cells vaporised round the axis (a 0.9 m bore)
-  RIM_RADIUS: 4,      // cells heated round the axis (the tunnel's wall)
+  ENERGY: 2.22e6,     // heat units (CAP · °C) the beam delivers: see the reaches above
+  CORE_RADIUS: 2,     // cells vaporised round the axis (a 1.2 m bore: Halo's beam is fat)
+  RIM_RADIUS: 5,      // cells heated round the axis (the tunnel's wall)
   LENGTH: 192,        // cells, the longest beam (58 m)
   VAPOR_T: 3000,      // °C the core's vapour is made at (iron boils at 2862, basalt about 2900)
   RIM_T: 4500,        // °C at the core's edge
   RIM_EDGE_T: 1600,   // °C at the rim's edge (over stone's 1200 °C and metal's 1500 °C melt)
   PLUME_SPEED: 0.3,   // cells/step the vapour leaves back along the beam (the ablation plume)
   DAMAGE: 2,          // health taken from a body in the beam (a full health and a full shield)
+  SHADOW_STEP: 0.25,  // cells between the looks along the line from the bore to a rim cell for a solid it can't touch
 };
 LASER.CORE_AREA = Math.PI * LASER.CORE_RADIUS ** 2;   // cells in the core's slice
 LASER.STEPS_MAX = Math.ceil(LASER.LENGTH * Math.sqrt(3)) + 2;   // DDA steps a LENGTH walk can take
+LASER.SHADOW_N = Math.ceil(LASER.RIM_RADIUS / LASER.SHADOW_STEP) + 1;   // looks along the longest such line
 
 const laserGLSL = /* glsl */ `
-${defines('LASER', LASER, ['STEPS_MAX'])}
+${defines('LASER', LASER, ['STEPS_MAX', 'SHADOW_N'])}
 uniform vec3 uFrom;   // grid cells: where the beam leaves the body
 uniform vec3 uDir;    // unit aim
 
@@ -268,26 +277,48 @@ ${laserGLSL}
 uniform vec3 uLo;   // the box round the beam's whole length
 uniform vec3 uHi;
 
+// Whether a solid the beam can't touch stands between the bore's point q and
+// the centre pc of cell p (p itself doesn't count): the heat doesn't get past it.
+bool laserShadowed(ivec3 p, vec3 q, vec3 pc) {
+  vec3 v = pc - q;
+  int n = int(ceil(length(v) / LASER_SHADOW_STEP));
+  for (int i = 1; i < LASER_SHADOW_N; i++) {
+    if (i >= n) break;
+    ivec3 c = ivec3(floor(q + v * (float(i) / float(n))));
+    if (c == p || !inGrid(c)) continue;
+    if (laserProof(eid(fetchA(c)))) return true;
+  }
+  return false;
+}
+
 void laser(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
   vec3 pc = vec3(p);
   if (any(lessThan(pc, uLo)) || any(greaterThan(pc, uHi))) return;
   vec3 d = pc + 0.5 - uFrom;
   float along = dot(d, uDir);
-  if (along < 0.0 || along > LASER_LENGTH) return;
+  if (along < 0.0 || along > LASER_LENGTH + LASER_RIM_RADIUS) return;
   float r = length(d - along * uDir);
   if (r > LASER_RIM_RADIUS) return;
   int stopId;
-  if (along > laserReach(stopId)) return;
+  float reach = laserReach(stopId);
+  // past where it stopped, r is from that point (the hole's round end); a beam that didn't stop just ends
+  bool past = along > reach;
+  if (past) {
+    if (reach >= LASER_LENGTH) return;
+    r = length(d - reach * uDir);
+    if (r > LASER_RIM_RADIUS) return;
+  }
   int id = eid(a);
-  if (r <= LASER_CORE_RADIUS) {
+  bool proof = laserProof(id);
+  if (!past && r <= LASER_CORE_RADIUS && !proof) {
     if (isGasLike(id)) { oA.y = max(a.y, LASER_VAPOR_T); return; }
-    if (laserProof(id)) return;
     int into = (id == E_WATER || id == E_ICE || id == E_SNOW) ? E_STEAM : IGNITE[id] > 0.0 ? E_FIRE : E_SMOKE;
     oA = vec4(float(into), LASER_VAPOR_T, SPAWNLIFE[into], fract(a.w));   // keeps the cell's seed, clears its ctype
     oB.xyz = -uDir * LASER_PLUME_SPEED;
     return;
   }
-  float T = mix(LASER_RIM_T, LASER_RIM_EDGE_T, (r - LASER_CORE_RADIUS) / (LASER_RIM_RADIUS - LASER_CORE_RADIUS));
+  if (!proof && laserShadowed(p, uFrom + uDir * min(along, reach), pc + 0.5)) return;
+  float T = mix(LASER_RIM_T, LASER_RIM_EDGE_T, clamp((r - LASER_CORE_RADIUS) / (LASER_RIM_RADIUS - LASER_CORE_RADIUS), 0.0, 1.0));
   int into = BREAKINTO[id];
   if (KIND[id] == K_SOLID && MELT[id] <= 0.0 && IGNITE[id] <= 0.0 && into >= 0 && MELT[into] > 0.0) {
     oA.x = float(into);
