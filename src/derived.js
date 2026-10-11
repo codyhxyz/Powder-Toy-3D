@@ -31,7 +31,7 @@ import { GI_BLEND } from './sim.js';
 //   await derived.ready;                // its pipelines (built asynchronously, B5)
 //   sim.step(); sim.updateBricks();     // the volume then binds derived.lightingEntries()
 //   volume.recordShadow();              // the realistic view: the GI after the shadow map
-//   sim.updateGI({ frame: frameUniformsOf(gpu).group, shadow: volume.shadowTextures });
+//   sim.updateGI(SUN, volume.shadowTextures, volume.shadowRes);   // (the WebGL call; FrameUniforms has the sun)
 //
 // Incremental, exactly (docs/scaling.md D9): each brick's age counts derived
 // frames since it last changed, and the passes run over GPU-built lists of
@@ -363,13 +363,27 @@ export class Derived {
    * size, the far field's switch. The kernels build on the first call, or on
    * prepareGI() (B5: no other view has GI); until they are ready this records
    * nothing and the probes stay as they are.
-   * @param {{ frame: GPUBindGroup, shadow?: { map: GPUTexture, x: GPUTexture } | null, shadows?: boolean }} opts
-   *   frame: group 0 of render kernels (gfx/uniforms.js frameUniformsOf(gpu).group);
-   *   shadow: the sun's shadow map, recorded earlier in the frame (gfx/volume.js volume.shadowTextures);
-   *   shadows: the sun is shadowed by it, as the WebGL updateGI's `shadows` (without a map: unshadowed)
+   *
+   * Two call shapes. The WebGL build's, which callers keep (docs/webgpu.md E):
+   * updateGI(sun, shadow, shadowRes, shadows), where the sun and shadowRes
+   * are FrameUniforms' now and are ignored here, and shadows defaults to true.
+   * Or updateGI({ frame, shadow, shadows }).
+   *   frame: group 0 of render kernels; by default the gpu's FrameUniforms
+   *     group (gfx/uniforms.js frameUniformsOf(gpu).group, which it keeps on
+   *     the gpu: no three import here). Throws if there is none at all.
+   *   shadow: the sun's shadow map, { map, x }, recorded earlier in the frame
+   *     (gfx/volume.js volume.shadowTextures);
+   *   shadows: the sun is shadowed by it, as the WebGL updateGI's `shadows`
+   *     (without a map: unshadowed)
+   * @param {...*} args
    * @returns {boolean} whether it recorded
    */
-  updateGI({ frame, shadow = null, shadows = true } = {}) {
+  updateGI(...args) {
+    const [a] = args;
+    const positional = args.length > 1 || typeof a?.x === 'number' || Array.isArray(a);
+    const {
+      frame = this.gpu._frameUniforms?.group, shadow = null, shadows = true,
+    } = positional ? { shadow: args[1] ?? null, shadows: args[3] ?? true } : (a ?? {});
     if (!frame) throw new Error('derived.updateGI: no frame group (gfx/uniforms.js frameUniformsOf(gpu).group, written this tick)');
     const k = this.giKernels();
     if (k.giSource.state !== 'ready' || k.giGather.state !== 'ready') {
@@ -377,7 +391,7 @@ export class Derived {
       return false;
     }
     const sim = this.sim, g = this.g, header = sim.header();
-    const sun = Boolean(shadows && shadow);
+    const sun = Boolean(shadows && shadow?.map);
     this._dispatch(k.giSource, giSourceDispatch(g), {
       bind: [frame, sim.bindRO, this._giGroup('LIGHTING_GISRC', shadow)], header, params: { shadows: sun },
     });
@@ -460,14 +474,17 @@ export class Derived {
     if (!group) {
       if (r.groups.size >= 8) r.groups.clear();   // (shadow maps and far fields come and go with grids and worlds)
       const b = (binding, buffer) => ({ binding, resource: { buffer } });
+      const layout = libLayouts(variant)[2], has = new Set(layout.map((e) => e.binding));
+      // every resource either variant can hold, kept where the layout has its
+      // binding (so a layout that drops one, as LIGHTING_GI drops 18 and 19,
+      // needs no change here)
       const entries = [
         ...this.lightingEntries(),
         ...parts.map((t, i) => ({ binding: [8, 9, 11, 12, 13][i], resource: view(t) })),
         { binding: 10, resource: r.noise.view }, { binding: 14, resource: r.clamp }, { binding: 15, resource: r.repeat },
-        b(20, this.giSrc),
-        ...(variant === 'LIGHTING_GI' ? [b(21, this.giHist)] : [b(18, sim.state.flow), b(19, this.noAer)]),
-      ];
-      group = gpu.bindGroup(gpu.layout(variant, libLayouts(variant)[2]), entries, `sim${sim.id} ${variant}`);
+        b(18, sim.state.flow), b(19, this.noAer), b(20, this.giSrc), b(21, this.giHist),
+      ].filter((e) => has.has(e.binding));
+      group = gpu.bindGroup(gpu.layout(variant, layout), entries, `sim${sim.id} ${variant}`);
       r.groups.set(key, group);
     }
     return group;
@@ -476,12 +493,16 @@ export class Derived {
   /**
    * The GI probe of brick b ([x, y, z] in bricks) as it is at this call
    * (the copy is recorded now, B7): its four bands, rgba each, band k's at
-   * 4k (what pov/viewmodel.js reads at the eye for the hands' light).
+   * 4k (what pov/viewmodel.js reads at the eye for the hands' light). Null
+   * for a brick outside the grid (any coordinate not an integer in [0, B) on
+   * its axis), which has no probe: the WebGL reader tested `inside` first.
    * @param {number[]} b
-   * @returns {Promise<Float32Array>}
+   * @returns {Promise<Float32Array | null>}
    */
   async readProbe([x, y, z]) {
     const g = this.g, n = g.nbricks, rb = this.gpu.readback;
+    const inside = (v, hi) => Number.isInteger(v) && v >= 0 && v < hi;
+    if (!(inside(x, g.bx) && inside(y, g.by) && inside(z, g.bz))) return null;
     const id = brickIdOf(g, x, y, z);
     const bands = await Promise.all([0, 1, 2, 3].map((k) => rb.buffer(this.giHist, (k * n + id) * 8, 8)));
     const out = new Float32Array(16);

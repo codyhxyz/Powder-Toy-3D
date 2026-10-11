@@ -4,7 +4,9 @@
 // scenarios drive it through window.__harness:
 //   gather   giGather alone over a made-up giSrc (open, blocking, partly
 //            blocking and buried bricks, lit faces every way) against a JS
-//            march of the same rays and its SH projection, under the real sky
+//            march of the same rays and its SH projection, under the real sky;
+//            then parity 0 and 1 trace exactly their checkerboards (gatherWide:
+//            the same on 64×32×48, three different brick counts)
 //   sky      an empty box under the sky: every probe against the JS
 //            projection of the sky and the floor; the open sky's visibility
 //   cube     a stone cube in a level sun with the sky off, and a wall slab
@@ -22,10 +24,14 @@
 //   lit      a lit room (the shadow map, sun, sky, hot metal, an overhang): the
 //            probes converge with their bounces; sky visibility under the
 //            overhang and in the open; the light near the hot metal is redder
+//   shade    the shadow map shades giSource's floor under an overhang and the
+//            box floor beyond() sees under it, and nothing in the open, through
+//            the app's call (sim.updateGI(sun, shadow, shadowRes, shadows))
 //   far      FrameUniforms.far on, with a stand-in far field: finite, the open
 //            sky's visibility exactly the box's
 //   lazy     a new Derived builds no GI pipeline until asked (B5); updateGI
-//            records nothing until they're ready
+//            records nothing until they're ready; its call shapes; readProbe
+//            outside the grid
 //   bench    ms per derived frame with and without the GI
 //   budget:* tools/budgets/gi.mjs
 // The JS references read what the kernels read (giSrc as stored, the GPU's own
@@ -67,9 +73,11 @@ function check(out, name, ok, detail = '') {
   log(`${ok ? 'ok  ' : 'FAIL'} ${name}${ok ? '' : ` ${detail}`}`);
 }
 
-// A simulation, its derived passes and their GI kernels, every pipeline ready.
+// A simulation, its derived passes and their GI kernels, every pipeline ready
+// (n: a cube's side, or [nx, ny, nz]).
 async function make(n = 32) {
-  const sim = new Simulation(gpu, n, n, n, { debug: false });
+  const [nx, ny, nz] = Array.isArray(n) ? n : [n, n, n];
+  const sim = new Simulation(gpu, nx, ny, nz, { debug: false });
   const derived = new Derived(sim);
   await Promise.all([sim.ready, derived.ready, derived.prepareGI()]);
   return { sim, derived, g: sim.g, dispose: () => { derived.dispose(); sim.dispose(); } };
@@ -363,11 +371,16 @@ function frame(sim, derived, opts = {}) {
 
 // giGather alone over a made-up giSrc: half the bricks open, some blocking,
 // some partly; a 3×3×3 block of blocking bricks buries its centre's probe;
-// light of every colour leaving every way.
-test('gather', async ({ seed = 7 } = {}) => {
+// light of every colour leaving every way. Then the checkerboard over the same
+// giSrc from zero history, replacing: parity 0 traces exactly its half, which
+// then holds what the full trace gave it, bit for bit; parity 1 the rest.
+// 'gather' at 32³, 'gatherWide' on a grid with three different brick counts
+// (16×8×12), where an axis taken for another shows.
+const gather = async ({ seed = 7, dims = 32 } = {}) => {
   const out = { checks: [] };
-  const { sim, derived, g, dispose } = await make(32);
+  const { sim, derived, g, dispose } = await make(dims);
   try {
+    out.info = { bricks: [g.bx, g.by, g.bz] };
     const v = skyValues(SKY_SUN);
     writeFU(v);
     let s = seed >>> 0;
@@ -401,10 +414,33 @@ test('gather', async ({ seed = 7 } = {}) => {
       cmp.bad === 0 && cmp.compared >= 0.9 * n && cmp.buried >= 1, cmp.bad ? `${cmp.bad} differ; ${cmp.first}` : `compared ${cmp.compared}, buried ${cmp.buried}`);
     const a = agree(g, r);
     check(out, 'the history and the band textures hold the same halves', a.bad === 0, `${a.bad} differ, ${a.first}`);
-    out.info = { compared: cmp.compared, skipped: cmp.skipped, buried: cmp.buried, dirDev: dev };
+    // the checkerboard, from zero history, blend 1 (each traced probe replaced by its new light)
+    derived.resetGI();
+    let board = true, detail = '';
+    for (const parity of [0, 1]) {
+      k.giGather.dispatch(gpu.frame, giGatherDispatch(g, parity), {
+        bind: [fu.group, sim.bindRO, derived._giGroup('LIGHTING_GI', null)], header: sim.header(),
+        params: { parity, count: giProbeCount(g, parity), blend: 1, shadows: false },
+      });
+      const p = await readGI(derived);
+      for (const [x, y, z, id] of bricks(g)) {
+        const done = parity === 1 || ((x + y + z + parity) & 1) === 1;   // traced at this parity or before
+        for (let i = id * 4; i < id * 4 + 4; i++) {
+          for (let b = 0; b < 4; b++) {
+            const at = b * r.n * 4 + i, want = done ? r.histBits[at] : 0;
+            if (p.histBits[at] !== want) { board = false; detail ||= `parity ${parity}: brick ${x},${y},${z} band ${b} holds ${p.histBits[at]}, want ${want}`; }
+          }
+        }
+      }
+      if (agree(g, p).bad) { board = false; detail ||= `parity ${parity}: the history and the textures differ`; }
+    }
+    check(out, 'parity 0 then 1: each traces exactly its checkerboard, to the full trace\'s values bit for bit', board, detail);
+    Object.assign(out.info, { compared: cmp.compared, skipped: cmp.skipped, buried: cmp.buried, dirDev: dev });
   } finally { dispose(); }
   return out;
-});
+};
+test('gather', (args) => gather(args));
+test('gatherWide', (args) => gather({ dims: [64, 32, 48], ...args }));
 
 // An empty box under the sky: the reset frame traces every probe, which sees
 // the sky above and the sunlit floor below.
@@ -630,6 +666,63 @@ test('lit', async ({ frames = 40 } = {}) => {
   return out;
 });
 
+// The shadow map shades the GI (sunShadowAt in giSource and in beyond()): a
+// floor one brick thick over z < 16 and none past it (rays leave through the
+// box's floor, where beyond() looks the sun up), an overhang over x < 16 and
+// a glass pane over x ≥ 20, z < 9 (a tinted shadow: only the map's full
+// texel, binding 8, says how much the glass lets through), the sun almost
+// overhead and the sky dark, so all light is the sun's. Once with the sun
+// shadowed and once not, through the app's call (the WebGL one:
+// sim.updateGI(sun, shadow, shadowRes, shadows)).
+test('shade', async () => {
+  const out = { checks: [] };
+  const { sim, derived, g, dispose } = await make(32);
+  const volume = createVolume(gpu, sim);
+  try {
+    await volume.ready;
+    const cells = load(sim, (box) => {
+      box([0, 0, 0], [32, 4, 16], E.STONE);    // the floor, one brick thick, over z < 16
+      box([0, 16, 0], [16, 20, 32], E.WALL);   // the overhang, over x < 16
+      box([20, 16, 0], [32, 20, 9], E.GLASS);  // the pane
+    });
+    const v = darkSky(norm([0.1, 1, 0.05]), [1, 1, 1]);
+    const SUN = new Vector3(...v.sun);
+    const run = async (shadows) => {
+      writeFU({ ...v, shadowRes: volume.shadowRes, shadows: true });
+      sim.updateBricks();
+      const drawn = volume.recordShadow();
+      sim.resetGI();
+      const rec = shadows ? sim.updateGI(SUN, volume.shadowTextures, volume.shadowRes) : sim.updateGI(SUN, volume.shadowTextures, volume.shadowRes, false);
+      const r = await readGI(derived);
+      return { drawn, rec, r, src: decodeSrc(r.src, g.nbricks) };
+    };
+    const on = await run(true), off = await run(false);
+    check(out, 'the shadow map recorded, and the app\'s positional updateGI recorded both times', on.drawn && off.drawn && on.rec === true && off.rec === true);
+    // giSource on the floor's top: under the overhang (brick 2,0,1), under the pane (6,0,1) and in the open (6,0,2),
+    // each with only its top face exposed
+    const at = (b) => (x) => mean3(x.src(brickIdOf(g, ...b)).rad);
+    const under = at([2, 0, 1]), glass = at([6, 0, 1]), open = at([6, 0, 2]);
+    check(out, `giSource, the sun shadowed: the floor under the overhang sends nothing (${under(on).toExponential(2)}), the open floor ${open(on).toExponential(2)}`,
+      open(on) > 0 && under(on) <= 1e-3 * open(on));
+    const pane = glass(on) / open(on);
+    check(out, `...the floor under the pane sends what the glass lets through: ${pane.toFixed(3)} of the open floor's`, pane > 0.05 && pane < 0.95, pane);
+    check(out, `...unshadowed: all three send the open floor's light (${under(off).toExponential(2)}, ${glass(off).toExponential(2)}, ${open(off).toExponential(2)})`,
+      open(off) > 0 && Math.abs(under(off) - open(off)) <= 1e-3 * open(off) && Math.abs(glass(off) - open(off)) <= 1e-3 * open(off));
+    check(out, '...and the open floor\'s light is the same either way', Math.abs(open(on) - open(off)) <= 1e-3 * open(off));
+    const s = compareSource(g, off.src, refSource(g, cells, zeroProbe, v));
+    check(out, `...unshadowed, every brick against the JS twin (${s.lit} bricks give light)`, s.bad === 0, `${s.bad} differ; ${s.first}`);
+    // beyond(): over the half without a floor the rays going down end on the box's
+    // floor, in the overhang's shadow beneath it (probe 2,0,6) and in the sun
+    // beside it (6,0,6), where only rays reaching far under the overhang lose any
+    const lum = (x, b) => mean3(probeOf(x.r, brickIdOf(g, ...b))[0]);
+    const shaded = lum(on, [2, 0, 6]) / lum(off, [2, 0, 6]), sunny = lum(on, [6, 0, 6]) / lum(off, [6, 0, 6]);
+    check(out, `beyond(): under the overhang the shadowed probe keeps ${shaded.toFixed(3)} of its unshadowed light, in the open ${sunny.toFixed(3)}`,
+      lum(off, [2, 0, 6]) > 0 && shaded < 0.5 && sunny > 0.8, `${lum(on, [2, 0, 6])} / ${lum(off, [2, 0, 6])}, ${lum(on, [6, 0, 6])} / ${lum(off, [6, 0, 6])}`);
+    out.info = { underOn: under(on), underOff: under(off), openOn: open(on), pane, shaded, sunny };
+  } finally { volume.dispose(); dispose(); }
+  return out;
+});
+
 // The far branch (FrameUniforms.far, a world's): with a stand-in far field (no
 // ground past the window, sea level 0) the probes stay finite, see the sky
 // exactly as the box does above the horizon, and see something else below it.
@@ -674,9 +767,18 @@ test('lazy', async () => {
     check(out, 'updateGI before they are ready records nothing and starts them', first === false && gpu.stats.dispatches === before.dispatches && k.giSource.state !== 'idle');
     await derived.prepareGI();
     check(out, 'once prepareGI resolves, updateGI records', derived.updateGI({ frame: fu.group }) === true && sim.giReset === false);
+    // the call shapes: the app's (the WebGL one, sim.updateGI(sun, shadow, shadowRes)), no arguments, and no frame group anywhere
+    const sun = new Vector3(...SKY_SUN);
+    check(out, 'sim.updateGI(sun, shadow, shadowRes), the WebGL call, records (the frame group: the gpu\'s FrameUniforms)',
+      sim.updateGI(sun, null, 1) === true && sim.updateGI(sun, { map: null, x: null }, 1, true) === true && derived.updateGI() === true);
+    const kept = gpu._frameUniforms;
     let threw = false;
-    try { derived.updateGI({}); } catch { threw = true; }
-    check(out, 'updateGI without the frame group throws', threw);
+    try { gpu._frameUniforms = undefined; derived.updateGI({}); } catch { threw = true; } finally { gpu._frameUniforms = kept; }
+    check(out, 'updateGI with no FrameUniforms group at all throws', threw);
+    // readProbe of a brick outside the grid: null, no copy
+    const outside = await Promise.all([[-1, 0, 0], [8, 0, 0], [0, 8, 0], [0, 0, 8], [0.5, 0, 0]].map((b) => derived.readProbe(b)));
+    const inside = await derived.readProbe([7, 7, 7]);
+    check(out, 'readProbe: null for a brick outside the grid, the probe inside it', outside.every((p) => p === null) && inside?.length === 16);
   } finally { derived.dispose(); sim.dispose(); }
   return out;
 });

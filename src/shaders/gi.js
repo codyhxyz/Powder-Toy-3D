@@ -65,6 +65,18 @@ export const GI = {
 };
 export const GI_RAYS = GI.RAYS;
 
+// The gather's workgroup is PER_GROUP probes of RAYS threads, summed over a
+// probe's rays by halves: 64 threads (W22) and a power-of-two ray count, or
+// the reduction leaves rays out. Checked where the kernel is generated, so a
+// retuned GI fails there and not in a mis-traced probe.
+function gatherShape() {
+  const { RAYS, PER_GROUP } = GI;
+  if (!(Number.isInteger(RAYS) && RAYS > 0 && (RAYS & (RAYS - 1)) === 0 && RAYS * PER_GROUP === 64)) {
+    throw new Error(`shaders/gi.js: GI.RAYS (${RAYS}) must be a power of two with GI.RAYS × GI.PER_GROUP (${PER_GROUP}) = 64`);
+  }
+}
+gatherShape();
+
 /**
  * The GI's params (group 3 binding 1 of both kernels): parity, the probes the
  * gather traces (-1: all, after a reset; else those with x + y + z + parity
@@ -270,20 +282,20 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
  * @param {{ nx: number, ny: number, nz: number }} g
  * @param {{ world?: number[] }} [opts]
  */
-export const giGatherFrag = (g, { world = WORLD_SIZE } = {}) => /* wgsl */ `
+export const giGatherFrag = (g, { world = WORLD_SIZE } = {}) => (gatherShape(), /* wgsl */ `
 ${lib(g, { variant: 'LIGHTING_GI', far: true, aeration: false })}
 ${farGIGLSL(farLayout(world))}
 ${giSrcWGSL}
 ${paramsWGSL}
 
-const GI_RAYS: i32 = ${GI.RAYS};
+const GI_RAYS: i32 = ${GI.RAYS};   // a power of two (gatherShape)
 const GI_STEPS: i32 = ${GI.STEPS};
 const GI_NEAR_STEPS: i32 = ${GI.NEAR_STEPS};
 const GI_FAR_STRIDE: f32 = ${glf(GI.FAR_STRIDE)};
 const GI_BURIED: f32 = ${glf(GI.BURIED)};
 const GI_T_MIN: f32 = ${glf(GI.T_MIN)};
 const GI_FACING: f32 = ${glf(GI.FACING)};
-const GI_PER_GROUP: u32 = ${GI.PER_GROUP}u;
+const GI_PER_GROUP: u32 = ${GI.PER_GROUP}u;   // GI_RAYS × GI_PER_GROUP = 64, the workgroup
 
 // Ray i of GI_RAYS spread evenly over the sphere (Fibonacci lattice, y up).
 fn giDir(i: i32) -> vec3f {
@@ -334,8 +346,8 @@ var<workgroup> wSH: array<array<vec4f, 4>, 64>;
 
 @compute @workgroup_size(64)
 fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
-  let probe = foldId(wg, nwg) * GI_PER_GROUP + (li >> 5u);
-  let ray = li & 31u;
+  let probe = foldId(wg, nwg) * GI_PER_GROUP + li / u32(GI_RAYS);
+  let ray = li % u32(GI_RAYS);
   let live = probe < P.count;   // (past the end on the last workgroup: it still reaches the barriers)
   var bc = vec3i(0);
   if (live) { bc = giProbe(probe); }
@@ -382,7 +394,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
     sh = array<vec4f, 4>(vec4f(L * y.x, vis * y.x), vec4f(L * y.y, vis * y.y), vec4f(L * y.z, vis * y.z), vec4f(L * y.w, vis * y.w));
   }
   wSH[li] = sh;
-  for (var s = 16u; s > 0u; s >>= 1u) {
+  for (var s = u32(GI_RAYS) / 2u; s > 0u; s >>= 1u) {
     workgroupBarrier();
     if (ray < s) { for (var k = 0; k < 4; k++) { wSH[li][k] += wSH[li + s][k]; } }
   }
@@ -395,7 +407,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
     textureStore(tGI3, bc, giBlend(3u, id, wSH[li][3] * w));
   }
 }
-`;
+`);
 
 // The gpu.layout names of each kernel's groups 0-2 (src/derived.js makes its
 // layouts under them, so a warm-up under the same names builds the very
@@ -407,7 +419,10 @@ export const GI_LAYOUT_NAMES = {
 
 /**
  * tools/check-wgsl.mjs, and the menu's warm-up (B5): both kernels, for a
- * session in the realistic view (the only one with GI, as the WebGL app ran it).
+ * session in the realistic view (the only one with GI, as the WebGL app ran it;
+ * warm() says so). The gather's code(g, { world }) takes the world the grid is
+ * a window of, as derived.giKernels() builds it (a box: WORLD_SIZE's), so a
+ * warm-up for a world session builds the very module the session then asks for.
  */
 export const WGSL_CHECK = () => [
   {
@@ -416,7 +431,7 @@ export const WGSL_CHECK = () => [
     dispatch: (g) => giSourceDispatch(g), warm: ({ view }) => view === 'realistic',
   },
   {
-    name: 'giGather', kind: 'compute', code: (g) => giGatherFrag(g), layouts: () => libLayouts('LIGHTING_GI'),
+    name: 'giGather', kind: 'compute', code: (g, { world } = {}) => giGatherFrag(g, { world }), layouts: () => libLayouts('LIGHTING_GI'),
     layoutNames: GI_LAYOUT_NAMES.giGather, params: GiParams, workgroupSize: [64, 1, 1],
     dispatch: (g) => [giGatherDispatch(g, -1), giGatherDispatch(g, 0)], warm: ({ view }) => view === 'realistic',
   },

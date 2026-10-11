@@ -2,17 +2,20 @@
 // updateGI), in the harness (tools/harness/gi-check.*: a Simulation, its
 // derived passes and their GI on their own device, no app). Stages, each a
 // few seconds to a minute on SwiftShader at 32³, in one browser:
-//   reference  the gather alone over a made-up giSrc, an empty box under the
-//              sky, a sunlit cube and its bounce, and giSource's coverage and
-//              light on small pieces of everything, against JS twins of the
-//              march, the SH projection and the source (the probes' energy and
-//              the light's direction checked on their own too)
+//   reference  the gather alone over a made-up giSrc (at 32³ and on a grid of
+//              16×8×12 bricks), an empty box under the sky, a sunlit cube and
+//              its bounce, and giSource's coverage and light on small pieces
+//              of everything, against JS twins of the march, the SH projection
+//              and the source (the probes' energy and the light's direction
+//              checked on their own too); the gather's checkerboards
 //   parity     the checkerboard, the blend into the history, convergence,
 //              history == textures, resetGI and the reset frame after it
 //   lit        a lit room with the shadow map, sky, hot metal and an
-//              overhang: convergence with bounces, sky visibility, colour
+//              overhang: convergence with bounces, sky visibility, colour;
+//              the shadow map shading giSource and the floor beyond the bricks
 //   far        FrameUniforms.far on with a stand-in far field
-//   lazy       no GI pipeline until asked (B5)
+//   lazy       no GI pipeline until asked (B5); updateGI's call shapes;
+//              readProbe outside the grid
 //   bench      ms per derived frame with and without the GI (--size N: N³, a
 //              multiple of 32; 32 by default)
 //
@@ -24,9 +27,9 @@ import { openHarness } from './harness/open.mjs';
 const argv = process.argv.slice(2);
 const opt = (k) => (argv.includes(`--${k}`) ? argv[argv.indexOf(`--${k}`) + 1] : null);
 const STAGES = {
-  reference: ['gather', 'sky', 'cube', 'bits'],
+  reference: ['gather', 'gatherWide', 'sky', 'cube', 'bits'],
   parity: ['parity'],
-  lit: ['lit'],
+  lit: ['lit', 'shade'],
   far: ['far'],
   lazy: ['lazy'],
   bench: ['bench'],
