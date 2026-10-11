@@ -2,6 +2,7 @@ import { descentTwin, descentConstants, descentWang, DS_LEVEL_DEFS, DS_SEED } fr
 import { pcg } from '../themedShared.js';
 import { E, ELEMENTS, K } from '../../../elements.js';
 import { MAT, GEOM } from '../../wang/index.js';
+import { passable } from '../../wang/kit.js';
 import { walkFlood } from '../../wang/walk.js';
 
 // levels.js's data, computed from the scenes' JS twins (scenes.js):
@@ -113,7 +114,7 @@ export function wangWalk(level, spawn) {
   return out;
 }
 // a kit code the walk keeps as is (liquids, timber, rubble...): passable ones stay, solid ones are ROCK
-const passableCode = (c) => (c === MAT.WATER || c === MAT.OIL ? c : MAT.ROCK);
+const passableCode = (c) => (passable(c) ? c : MAT.ROCK);
 
 // A Wang level's loot candidates: the kit's sites the walk reaches, each kind's preferred first.
 function wangCandidates(level, spawn, cell) {
