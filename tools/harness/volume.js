@@ -3,15 +3,19 @@
 // the brush and post on this page's device, no app. tools/volume-check.mjs,
 // tools/compile-bench.mjs and tools/detail-bench.mjs drive it through
 // window.__harness:
-//   views       each view module (or WGSL_CHECK entry) draws a known scene (build times, coverage, a shot)
+//   views       each view module (or WGSL_CHECK entry) draws a known scene (build times, coverage, a shot);
+//               the realistic variants also from a close camera, each against the one before
 //   inside      the camera inside the box: the box's back faces cover the screen (cull winding),
 //               the pixels left empty, from given eyes
 //   shadow      the shadow map of wall, glass and water slabs and smoke and steam puffs against a
 //               JS march of the same rays; its r32float copy equals its .x
 //   pick        a batch of rays against cells the scene puts there (hits, floor, misses)
+//   lazy        a volume for a view without shadows builds no shadow kernel until it is wanted;
+//               a pick that can't be recorded rejects with the reason
 //   overlays    the floor grid, the box's edges and the brush each draw into the scene pass
 //   meshes      three.js renders a box standing in a pool first; the march stops at it, the water
-//               in front tints it; without the cut (control) the water hides it
+//               in front tints it; without the cut (control) the water hides it. Through the
+//               front glass, and from above through the water's surface (the ray bends there)
 //   meshFront   a box outside the volume in front of cut-open sand, then water: left as three drew it
 //   gate        the detail gate's two variants by camera distance, async, and by view; the cold
 //               pipeline toast
@@ -252,11 +256,29 @@ const REALISTIC_FULL = () => REALISTIC_LEVELS.full();
 // ---------------------------------------------------------------- tests
 
 // entries: [{ name, view, detail }] (shaders/render.js WGSL_CHECK's volume
-// entries); or views (keys) with one detail for all
-test('views', async ({ entries = null, views = VIEWS.map((v) => v.key), detail = {}, scene = 'test', shots = false } = {}) => {
+// entries); or views (keys) with one detail for all. close: a camera [eye, at]
+// in grid cells near enough for the close-up detail (gfx/detail.js fadeM: from
+// the home camera every feature has faded out, so every variant draws the same
+// frame there): each realistic entry also draws from it, and reports how its
+// frame differs from the realistic entry's before it (diffPx: pixels whose
+// colour differs by more than DIFF_EPS; meanDiff: the mean of that difference).
+// The first draws it twice (repeatPx: the same count between the two: 0, or
+// the comparisons would see noise).
+const DIFF_EPS = 1e-3;
+function diff(a, b) {
+  let px = 0, sum = 0;
+  for (let i = 0; i < a.length; i += 4) {
+    const d = Math.max(Math.abs(a[i] - b[i]), Math.abs(a[i + 1] - b[i + 1]), Math.abs(a[i + 2] - b[i + 2]), Math.abs(a[i + 3] - b[i + 3]));
+    if (d > DIFF_EPS) px++;
+    sum += d;
+  }
+  return { diffPx: px, meanDiff: sum / (a.length / 4) };
+}
+test('views', async ({ entries = null, views = VIEWS.map((v) => v.key), detail = {}, scene = 'test', shots = false, close = null } = {}) => {
   await load(scene);
   home();
   const out = {};
+  let prev = null;   // the realistic entry before: { name, color }
   for (const { name, view, detail: d } of entries ?? views.map((view) => ({ name: view, view, detail }))) {
     const t0 = performance.now();
     await volume.viewReady(view, d);
@@ -265,6 +287,14 @@ test('views', async ({ entries = null, views = VIEWS.map((v) => v.key), detail =
     const f = await frame({ view, detail: d, size: view === 'realistic' ? SMALL : null });
     out[name] = { buildMs, drawMs: performance.now() - t1, ...stats(f), shot: shots ? await png(await f.cap) : null };
     log(name, JSON.stringify({ buildMs: Math.round(buildMs), ...stats(f) }));
+    if (close && view === 'realistic') {
+      lookFrom(toScene(...close[0]), toScene(...close[1]));
+      const fc = await frame({ view, detail: d, size: SMALL });
+      const repeatPx = prev ? null : diff((await frame({ view, detail: d, size: SMALL })).color, fc.color).diffPx;
+      home();
+      out[name].close = { ...stats(fc), pixels: fc.w * fc.h, vs: prev?.name ?? null, ...(prev ? diff(fc.color, prev.color) : { repeatPx }), shot: shots ? await png(await fc.cap) : null };
+      prev = { name, color: fc.color };
+    }
   }
   return { out, failures: [...h.failures] };
 });
@@ -429,6 +459,39 @@ test('pick', async () => {
   return { results, dispatches, failures: [...h.failures] };
 });
 
+// The volume's kernels on demand (docs/webgpu.md B5): a volume made for a view
+// without shadows (shadows: false) is ready without the shadow kernel; the
+// first recordShadow() records nothing and starts it, and once shadowReady()
+// resolves it records. A pick whose recording throws (the frame does after a
+// GraphicsFailure: stood in for by a frame getter that throws) rejects with
+// the reason instead of never settling, and a pick after it works.
+test('lazy', async () => {
+  await load('test');
+  const v = createVolume(gpu, sim, { shadows: false });
+  await v.ready;
+  const before = v.shadowState;
+  writeFrameUniforms(gpu, { camera, model, sun: SUN, shadowRes: v.shadowRes, lightGain: GLOW_GAIN });
+  const first = v.recordShadow();
+  const started = v.shadowState;
+  await v.shadowReady();
+  const second = v.recordShadow();
+  await fence();
+  const ray = [[10.5, g.ny + 5, 10.5], [0, -1, 0]];
+  Object.defineProperty(gpu, 'frame', { configurable: true, get() { throw new Error('test: no frame'); } });
+  let failed;
+  try {
+    failed = await Promise.race([
+      v.pick(...ray).then(() => 'resolved', (e) => `rejected: ${e.message}`),
+      new Promise((r) => setTimeout(() => r('never settled'), 2000)),
+    ]);
+  } finally {
+    delete gpu.frame;
+  }
+  const after = await v.pick(...ray);
+  v.dispose();
+  return { before, first, started, second, failed, after: { valid: after.valid, cell: after.cell, id: after.id }, failures: [...h.failures] };
+});
+
 // The floor grid, the box's edges and the brush, each alone over the same
 // frame: the pixels each changes.
 test('overlays', async ({ shots = false } = {}) => {
@@ -464,6 +527,10 @@ test('overlays', async ({ shots = false } = {}) => {
 // (the glass and a little water in front tint it: the volume's hit, nearer),
 // and water beside it (identical with and without the cut). The control
 // draws the same frame without the cut: the water then hides the box.
+// surface: the same from above the pool, looking down through the water's
+// free surface at the box's submerged back face. The ray bends there and the
+// cut is counted on along its path (render.js: tCut -= tEv); the points are
+// on that face, above the water and under it.
 test('meshes', async ({ detail = {}, shots = false } = {}) => {
   await load('pool');
   await volume.viewReady('realistic', detail);
@@ -481,17 +548,33 @@ test('meshes', async ({ detail = {}, shots = false } = {}) => {
   const control = await frame({ ...common, useCut: false });
   // the box's own depth there: three alone, no volume
   const alone = await frame({ ...common, useCut: true, volumeOn: false });
+  const visible = threeHasVisible(meshScene, camera);
+  // from above, through the water's surface
+  lookFrom(toScene(32, 34, 44), toScene(32, 6, 25));
+  const sTop = project(toScene(32, 18, 25), SMALL), sBelow = project(toScene(32, 6, 25), SMALL);
+  const sCut = await frame({ ...common, useCut: true });
+  const sControl = await frame({ ...common, useCut: false });
+  const sAlone = await frame({ ...common, useCut: true, volumeOn: false });
   home();
   body.geometry.dispose();
   body.material.dispose();
   const at = (f, p) => ({ color: px(f, p), depth: pxDepth(f, p) });
   return {
     points: { above: pAbove, below: pBelow, water: pWater },
-    visible: threeHasVisible(meshScene, camera),
+    visible,
     withCut: { above: at(withCut, pAbove), below: at(withCut, pBelow), water: at(withCut, pWater) },
     control: { above: at(control, pAbove), below: at(control, pBelow), water: at(control, pWater) },
     alone: { above: at(alone, pAbove), below: at(alone, pBelow), water: at(alone, pWater) },
-    shots: shots ? { withCut: await png(await withCut.cap), control: await png(await control.cap) } : null,
+    surface: {
+      points: { above: sTop, below: sBelow },
+      withCut: { above: at(sCut, sTop), below: at(sCut, sBelow) },
+      control: { above: at(sControl, sTop), below: at(sControl, sBelow) },
+      alone: { above: at(sAlone, sTop), below: at(sAlone, sBelow) },
+    },
+    shots: shots ? {
+      withCut: await png(await withCut.cap), control: await png(await control.cap),
+      surfaceCut: await png(await sCut.cap), surfaceControl: await png(await sControl.cap),
+    } : null,
     failures: [...h.failures],
   };
 });

@@ -5,7 +5,12 @@
 //             scene (the realistic view's variants at 160×100): its pipeline builds
 //             (time printed), it covers part of the screen with a picture that
 //             varies, no GPU errors. Entries on WGSL_MAC_ONLY are listed with
-//             their reason, not drawn (a software adapter loses the device on them)
+//             their reason, not drawn (a software adapter loses the device on them).
+//             The realistic variants also draw the pool from a close camera (CLOSE:
+//             from the home camera every close-up feature has faded out and they
+//             draw the same frame), where each differs from the one before it in
+//             more than CLOSE_MIN_SHARE of its pixels: the features it adds reach the
+//             image. The first, drawn twice, doesn't differ from itself
 //   inside    the camera inside the box looking down: the box's back faces cover
 //             the screen (the cull winding, F2), every pixel, from an eye off the
 //             brick planes; an eye on them is reported (core.js skipBrick, below)
@@ -17,13 +22,19 @@
 //   pick      12 rays in one call (two dispatches of 8): wall, water, sand, lava,
 //             glass and stone hits with their face codes, the floor through smoke,
 //             a miss
+//   lazy      a volume for a view without shadows: ready without the shadow kernel,
+//             which the first recordShadow() starts (recording nothing) and which then
+//             records; a pick whose recording throws rejects with the reason, the next
+//             one works; the shadow kernel's far casters take the world's layout
 //   overlays  the floor grid, the box's edges and the brush (a bubble, then a line
 //             preview of boxes) each change the frame; the brush draws over the volume
 //   meshes    Sync log S1: a three.js box standing in a pool, rendered first; with
 //             the cut the water in front tints it (its red shows, at the glass's
 //             depth), above the water it is untouched (pure red, the box's depth),
 //             water beside it is bit-identical with and without the cut; without
-//             the cut (control) the water hides it. A box outside the volume, in
+//             the cut (control) the water hides it. The same from above the pool,
+//             through the water's free surface, where the ray bends (the cut is
+//             counted on along its path). A box outside the volume, in
 //             front of sand (then water) the box wall cuts open, is left exactly
 //             as three drew it
 //   gate      the detail gate (gfx/detailGate.js) with the default settings: the base
@@ -40,11 +51,11 @@ import { join } from 'node:path';
 import { launchBrowser, gpuInfo } from './browser.mjs';
 import { startVite } from './vite-server.mjs';
 import { openHarness } from './harness/open.mjs';
-import { WGSL_CHECK, WGSL_MAC_ONLY, REALISTIC_LEVELS } from '../src/shaders/render.js';
+import { WGSL_CHECK, WGSL_MAC_ONLY, REALISTIC_LEVELS, shadowFrag } from '../src/shaders/render.js';
 
 const argv = process.argv.slice(2);
 const opt = (k, d = null) => { const i = argv.indexOf(`--${k}`); return i >= 0 ? argv[i + 1] : d; };
-const ONLY = opt('only')?.split(',') ?? ['views', 'inside', 'shadow', 'pick', 'overlays', 'meshes', 'gate'];
+const ONLY = opt('only')?.split(',') ?? ['views', 'inside', 'shadow', 'pick', 'lazy', 'overlays', 'meshes', 'gate'];
 const SHOTS = opt('shots');
 const SIZE = Number(opt('size', '64'));
 const DETAIL = opt('detail', 'off');
@@ -55,13 +66,17 @@ const check = (name, ok, detail = '') => {
   if (!ok) failures++;
   console.log(`${ok ? 'PASS' : 'FAIL'}: ${name}${detail ? ` (${detail})` : ''}`);
 };
+// the views stage's close camera [eye, at] (grid cells): over the test scene's
+// pool, near enough for ripples, the meniscus and smooth-up-close to draw at 160×100
+const CLOSE = [[44, 13, 30], [44, 9, 46]];
+const CLOSE_MIN_SHARE = 0.01;
 const shot = (name, b64) => { if (SHOTS && b64) writeFileSync(join(SHOTS, `${name}.png`), Buffer.from(b64, 'base64')); };
 const f3 = (a) => a.map((x) => x.toFixed(3)).join(', ');
 
 // Stages run in sessions of their own browser, each under ~3 minutes on
 // SwiftShader (the realistic view's frames run on the CPU there, and each
 // realistic module's first draw compiles for ~15 s).
-const SESSIONS = [['views'], ['inside', 'shadow', 'pick', 'overlays'], ['meshes', 'gate']]
+const SESSIONS = [['views'], ['inside', 'shadow', 'pick', 'lazy', 'overlays'], ['meshes', 'gate']]
   .map((list) => list.filter((st) => ONLY.includes(st))).filter((list) => list.length);
 
 const vite = await startVite({ harness: true, port: Number(opt('port', '5606')) });
@@ -96,11 +111,20 @@ async function session(stages) {
         .filter((e) => !want || want.includes(e.name));
       for (const e of all.filter((x) => WGSL_MAC_ONLY[x.check])) console.log(`SKIP: ${e.name}: WGSL_MAC_ONLY: ${WGSL_MAC_ONLY[e.check]}`);
       const entries = all.filter((x) => !WGSL_MAC_ONLY[x.check]).map(({ name, view, detail: d }) => ({ name, view, detail: d }));
-      const r = await run('views', { entries, shots: !!SHOTS });
+      const r = await run('views', { entries, shots: !!SHOTS, close: CLOSE });
       for (const [name, v] of Object.entries(r.out)) {
         shot(`view-${name}`, v.shot);
         check(`${name}: builds (${v.buildMs.toFixed(0)} ms) and draws the test scene (first frame ${v.drawMs.toFixed(0)} ms)`,
           v.covered > 0.05 && v.variance > 1e-6, `covered ${(v.covered * 100).toFixed(1)}%, mean ${v.mean.toFixed(4)}, variance ${v.variance.toExponential(2)}`);
+        const c = v.close;
+        if (!c) continue;
+        shot(`view-${name}-close`, c.shot);
+        const what = `covered ${(c.covered * 100).toFixed(1)}%, mean ${c.mean.toFixed(5)}`;
+        if (!c.vs) check(`${name} from the close camera, drawn twice: the same frame (the comparisons see no noise)`, c.repeatPx === 0, `${what}; ${c.repeatPx} px differ`);
+        else {
+          check(`${name} from the close camera differs from ${c.vs} (the close-up detail it adds reaches the image)`, c.diffPx > CLOSE_MIN_SHARE * c.pixels,
+            `${what}; ${c.diffPx} of ${c.pixels} px differ, mean difference ${c.meanDiff.toExponential(2)}`);
+        }
       }
       check(`views: every volume entry not on WGSL_MAC_ONLY drew (${Object.keys(r.out).length} of ${entries.length})`, Object.keys(r.out).length === entries.length && entries.length > 0);
       check('views: no GPU errors', r.failures.length === 0, r.failures.join(' | '));
@@ -147,6 +171,21 @@ async function session(stages) {
       check(`pick: ${r.results.length} rays in ${r.dispatches} dispatches`, r.dispatches === Math.ceil(r.results.length / 8));
     }
 
+    if (has('lazy')) {
+      lap('lazy');
+      const r = await run('lazy');
+      check('shadows: false: the volume is ready without its shadow kernel', r.before === 'idle', r.before);
+      check('…the first recordShadow() records nothing and starts it', r.first === false && r.started !== 'idle', `${r.first}, ${r.started}`);
+      check('…once shadowReady() resolves, recordShadow() records', r.second === true);
+      check('a pick whose recording throws rejects with the reason', r.failed === 'rejected: test: no frame', r.failed);
+      check('…and the next pick works', r.after.valid && r.after.id === 1 && r.after.cell.join() === '10,42,10', JSON.stringify(r.after));
+      check('lazy: no GPU errors', r.failures.length === 0, r.failures.join(' | '));
+      // (in Node) a world's own far layout reaches the shadow kernel's casters (sim.world)
+      const g = { nx: SIZE, ny: SIZE, nz: SIZE };
+      check('the shadow kernel\'s far casters take the world\'s layout (a box: WORLD_SIZE\'s)',
+        /WORLD_Y: i32 = 384;/.test(shadowFrag(g, { world: [1024, 384, 1024] })) && /WORLD_Y: i32 = 128;/.test(shadowFrag(g)));
+    }
+
     if (has('overlays')) {
       lap('overlays');
       const r = await run('overlays', { shots: !!SHOTS });
@@ -162,7 +201,7 @@ async function session(stages) {
     if (has('meshes')) {
       lap('meshes');
       const r = await run('meshes', { detail, shots: !!SHOTS });
-      if (r.shots) { shot('meshes-cut', r.shots.withCut); shot('meshes-control', r.shots.control); }
+      if (r.shots) for (const [k, v] of Object.entries({ cut: r.shots.withCut, control: r.shots.control, 'surface-cut': r.shots.surfaceCut, 'surface-control': r.shots.surfaceControl })) shot(`meshes-${k}`, v);
       const { withCut: w, control: c, alone: a } = r;
       console.log(`     points ${JSON.stringify(r.points)}; box alone: above ${f3(a.above.color)} @${a.above.depth.toFixed(5)}, below @${a.below.depth.toFixed(5)}`);
       console.log(`     cut: above ${f3(w.above.color)} @${w.above.depth.toFixed(5)}, below ${f3(w.below.color)} @${w.below.depth.toFixed(5)}, water ${f3(w.water.color)}`);
@@ -178,6 +217,20 @@ async function session(stages) {
         `${w.below.depth} vs the box's ${a.below.depth}`);
       check('water beside the box: identical with and without the cut', w.water.color.every((x, i) => x === c.water.color[i]) && w.water.depth === c.water.depth);
       check('control (no cut): the water hides the submerged box', share(c.below.color) < 0.6, `red share ${share(c.below.color).toFixed(3)}`);
+      // from above, through the water's free surface
+      const s = r.surface;
+      console.log(`     from above: points ${JSON.stringify(s.points)}; box alone: above ${f3(s.alone.above.color)} @${s.alone.above.depth.toFixed(5)}, below @${s.alone.below.depth.toFixed(5)}`);
+      console.log(`     cut: above ${f3(s.withCut.above.color)} @${s.withCut.above.depth.toFixed(5)}, below ${f3(s.withCut.below.color)} @${s.withCut.below.depth.toFixed(5)}; control: below ${f3(s.control.below.color)} @${s.control.below.depth.toFixed(5)}`);
+      const inFrame = ([x, y]) => x > 0 && y > 0 && x < 159 && y < 99;   // (project() clamps to the frame's edge)
+      check('the points lie inside the frames', [r.points.above, r.points.below, r.points.water, s.points.above, s.points.below].every(inFrame));
+      check('from above: the box over the water, untouched (red, at its own depth)',
+        s.withCut.above.color[0] > 0.9 && s.withCut.above.color[1] < 0.05 && s.withCut.above.color[2] < 0.05 && s.withCut.above.depth === s.alone.above.depth);
+      check('from above: the submerged box shows through the water\'s surface (its red share well above the control\'s)',
+        s.withCut.below.color[0] > s.control.below.color[0] + 0.05 && share(s.withCut.below.color) > share(s.control.below.color) + 0.1,
+        `red ${s.withCut.below.color[0].toFixed(3)} vs ${s.control.below.color[0].toFixed(3)}, share ${share(s.withCut.below.color).toFixed(3)} vs ${share(s.control.below.color).toFixed(3)}`);
+      check('…tinted by the water (not the bare box)', Math.abs(s.withCut.below.color[0] - 1) > 0.05 || s.withCut.below.color[1] > 0.02 || s.withCut.below.color[2] > 0.02);
+      check('…at the water surface\'s depth, nearer than the box', s.withCut.below.depth < s.alone.below.depth, `${s.withCut.below.depth} vs the box's ${s.alone.below.depth}`);
+      check('control (no cut): the pool hides the submerged box from above', share(s.control.below.color) < 0.6, `red share ${share(s.control.below.color).toFixed(3)}`);
       check('meshes: no GPU errors', r.failures.length === 0, r.failures.join(' | '));
 
       const fr = await run('meshFront', { detail, shots: !!SHOTS });
