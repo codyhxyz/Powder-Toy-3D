@@ -1,7 +1,11 @@
-import { lib } from './render.js';
+import { lib, libLayouts } from './gfx/lib.js';
+import { farGIGLSL, farLayout, WORLD_SIZE } from './farShared.js';
+import { uniformStruct } from '../gpu/params.js';
+import { fold } from '../gpu/kernels.js';
 
 // Coarse global illumination for the realistic view: one light probe per
-// 4×4×4 brick, rebuilt every frame in two small passes at brick resolution.
+// 4×4×4 brick, rebuilt every frame in two small compute passes at brick
+// resolution (docs/webgpu.md E). WGSL; the names are the GLSL version's (W2).
 //
 // giSourceFrag: what each brick does to light. How much of the light crossing
 //   it along x, y and z it blocks (the projected coverage of its opaque cells,
@@ -9,234 +13,411 @@ import { lib } from './render.js';
 //   depth of liquid, glass and smoke), and the light its exposed faces send
 //   back out: albedo × (sunlight from the shadow map + last frame's probe
 //   light at that brick), plus what they give off themselves (emission():
-//   lava, hot metal, luminous crystal). Feeding the probes back makes bounces
-//   add up over frames, so a glowing thing lights a room by bounce too.
+//   lava, hot metal, luminous crystal, a live wire, a lit lamp). Feeding the
+//   probes back makes bounces add up over frames, so a glowing thing lights a
+//   room by bounce too. A workgroup per brick, a thread per cell.
 // giGatherFrag: from each brick centre, march GI_RAYS fixed directions through
 //   those bricks, collecting the light of what each ray hits and the sky or
 //   ground beyond, and project it onto L1 spherical harmonics (rgb = radiance,
-//   a = sky visibility). The result is blended into the probe volume over a few
-//   frames (sim.js), which hides cells popping between bricks.
+//   a = sky visibility). Half the probes per frame, a checkerboard that
+//   alternates; the result is blended into the probe history over a few
+//   frames (GI_BLEND, src/sim.js), which hides cells popping between bricks.
+//   A thread per ray, two probes to a workgroup.
+//
+// Where it all lives (src/derived.js allocates it, updateGI records it):
+//   giSrc     a vec4u per brick, giSource's output (giSrcWGSL below)
+//   giHist    the probes' history: 4 bands of rgba as two pack2x16float words,
+//             band k of brick id at k·NBRICKS + id; the gather blends into it
+//   gi0..gi3  the same bands as rgba16float 3D textures, BX×BY×BZ, which the
+//             volume and the figures sample with hardware trilinear filtering.
+//             The gather stores the very halves it wrote to giHist, so the two
+//             always agree. (rgba16float can't be read and written as a
+//             storage texture in core WebGPU, hence the buffer.)
+// giSource reads the bands as textures (last frame's light at its brick); the
+// gather writes them: the L.LIGHTING_GISRC and L.LIGHTING_GI layouts
+// (shaders/bindings.js), so no texture is sampled and written in one dispatch.
+//
+// The GI's own uniforms of the WebGL build are params (GiParams): which probes
+// (parity), how much of the new light (blend) and whether the sun is shadowed
+// (shadows). The rest comes from FrameUniforms, written on the tick that
+// records the GI, with literal zeros where the WebGL GI left uCaustics, uTime
+// and uFrame unset (lib's GI variants, docs/webgpu.md E).
 
-// Metals reflect specularly; this share of their F0 is counted as diffuse bounce.
-const GI_METAL_DIFFUSE = 0.5;
-// An exposed cell's sunlight is looked up this far (cells) toward the sun from its centre.
-const GI_SUN_LIFT = 0.9;
-export const GI_RAYS = 32;
-// Steps a ray marches before it takes whatever lies beyond as open sky or
-// ground: one brick each for the first GI_NEAR_STEPS, then GI_FAR_STRIDE
-// bricks (distant blockers only need to be roughly right).
-const GI_STEPS = 12;
-const GI_NEAR_STEPS = 6;
-const GI_FAR_STRIDE = 2;
-// A probe whose own and six neighbouring bricks all block more than this along
-// every axis is buried: no surface reads it, so it isn't traced.
-const GI_BURIED = 0.99;
-// A ray stops once this little of its light can still get through.
-const GI_T_MIN = 0.02;
-// How strongly a brick's light favours the side its lit faces point to
-// (0 = the same seen from anywhere; 1 = nothing from behind its lit faces).
-const GI_FACING = 1.0;
+export const GI = {
+  METAL_DIFFUSE: 0.5,   // metals reflect specularly; this share of their F0 is counted as diffuse bounce
+  SUN_LIFT: 0.9,        // cells toward the sun from an exposed cell's centre that its sunlight is looked up
+  RAYS: 32,
+  // Steps a ray marches before it takes whatever lies beyond as open sky or
+  // ground: one brick each for the first NEAR_STEPS, then FAR_STRIDE bricks
+  // (distant blockers only need to be roughly right).
+  STEPS: 12,
+  NEAR_STEPS: 6,
+  FAR_STRIDE: 2,
+  // A probe whose own and six neighbouring bricks all block more than this
+  // along every axis is buried: no surface reads it, so it isn't traced.
+  BURIED: 0.99,
+  T_MIN: 0.02,          // a ray stops once this little of its light can still get through
+  // How strongly a brick's light favours the side its lit faces point to
+  // (0 = the same seen from anywhere; 1 = nothing from behind its lit faces).
+  FACING: 1.0,
+  PER_GROUP: 2,         // probes a gather workgroup traces: 64 threads, a ray each
+  DIR_STEPS: 511,       // giSrc's light direction: steps per unit (10 bits a component, giSrcWGSL)
+};
+export const GI_RAYS = GI.RAYS;
+
+/**
+ * The GI's params (group 3 binding 1 of both kernels): parity, the probes the
+ * gather traces (-1: all, after a reset; else those with x + y + z + parity
+ * odd), count, how many that is (giProbeCount), blend, the share of the new
+ * light (GI_BLEND, 1 after a reset), shadows, the sun is shadowed (the shadow
+ * map is bound; the WebGL GI's uShadows).
+ */
+export const GiParams = uniformStruct('GiParams', { parity: 'i32', count: 'u32', blend: 'f32', shadows: 'bool' });
+
+/** The probes the gather traces at a parity (-1: every brick's; else half of them: BX is even). */
+export const giProbeCount = (g, parity) => (parity < 0 ? g.nbricks : g.nbricks / 2);
+/** giSource's dispatch: a workgroup per brick. */
+export const giSourceDispatch = (g) => fold(g.nbricks);
+/** The gather's dispatch at a parity: PER_GROUP probes a workgroup. */
+export const giGatherDispatch = (g, parity) => fold(Math.ceil(giProbeCount(g, parity) / GI.PER_GROUP));
 
 const glf = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
 
-export const giSourceFrag = (g) => /* glsl */ `
-${lib(g)}
-layout(location = 0) out vec4 oRad;   // mean light leaving the brick's exposed faces (rgb)
-layout(location = 1) out vec4 oCov;   // share of light blocked crossing the brick along x, y, z
-layout(location = 2) out vec4 oDir;   // light-weighted mean normal of those faces
-
-const float GI_METAL_DIFFUSE = ${glf(GI_METAL_DIFFUSE)};
-const float GI_SUN_LIFT = ${glf(GI_SUN_LIFT)};
-#define BRICK_CELLS (BS * BS * BS)
-#define FACE_CELLS (BS * BS)
-
-bool giOpaque(ivec3 c) {
-  if (c.y < 0) return true;
-  if (outside(c)) return false;
-  return RCLASS[eid(fetchA(c))] == R_OPAQUE;
+// What giSource leaves per brick for the gather, in one vec4u: one 16-byte
+// load per ray step (the GLSL fetched three half-float texels):
+//   x, y  rad.rg, then rad.b and cov.x, as half floats (the GLSL's RGBA16F)
+//   z     cov.yz, as half floats
+//   w     dir, 10 bits a component: -1..1 in steps of 1/DIR_STEPS (a half
+//         float in the GLSL; it only weighs the light by facing, GI_FACING)
+// Values past a half float's range saturate (the GLSL's targets made them
+// infinite), and so do the probes' (giHalf2 in giBlend).
+const giSrcWGSL = /* wgsl */ `
+const GI_HALF_MAX: f32 = 65504.0;
+const GI_DIR_STEPS: f32 = ${glf(GI.DIR_STEPS)};
+fn giHalf2(v: vec2f) -> u32 { return pack2x16float(clamp(v, vec2f(-GI_HALF_MAX), vec2f(GI_HALF_MAX))); }
+fn giSrcPack(rad: vec3f, cov: vec3f, dir: vec3f) -> vec4u {
+  let q = vec3u(floor(clamp(dir, vec3f(-1.0), vec3f(1.0)) * GI_DIR_STEPS + GI_DIR_STEPS + 0.5));
+  return vec4u(giHalf2(rad.xy), giHalf2(vec2f(rad.z, cov.x)), giHalf2(cov.yz), q.x | (q.y << 10u) | (q.z << 20u));
 }
+fn giSrcRad(s: vec4u) -> vec3f { return vec3f(unpack2x16float(s.x), unpack2x16float(s.y).x); }
+fn giSrcCov(s: vec4u) -> vec3f { return vec3f(unpack2x16float(s.y).y, unpack2x16float(s.z)); }
+fn giSrcDir(s: vec4u) -> vec3f {
+  return (vec3f(vec3u(s.w, s.w >> 10u, s.w >> 20u) & vec3u(1023u)) - GI_DIR_STEPS) / GI_DIR_STEPS;
+}
+`;
 
-// Set bits in a 16-bit mask (no bitCount in GLSL ES 3.00).
-float popc16(uint v) {
-  v = v - ((v >> 1) & 0x5555u);
-  v = (v & 0x3333u) + ((v >> 2) & 0x3333u);
-  v = (v + (v >> 4)) & 0x0f0fu;
-  return float((v + (v >> 8)) & 0x1fu);
+const paramsWGSL = `${GiParams.wgsl}@group(3) @binding(1) var<uniform> P: GiParams;`;
+
+/**
+ * GI source for grid g: a 64-thread workgroup per brick (thread = cell, x
+ * fastest, then y, z: its index is the cell's bit in the opaque mask), over
+ * every brick (giSourceDispatch). Bricks without matter write zeros at once.
+ * The per-brick sums are reduced in workgroup memory by halves, a fixed order
+ * (the GLSL's one fragment summed the cells in turn).
+ * @param {{ nx: number, ny: number, nz: number }} g
+ */
+export const giSourceFrag = (g) => /* wgsl */ `
+${lib(g, { variant: 'LIGHTING_GISRC', far: false, aeration: false })}
+${giSrcWGSL}
+${paramsWGSL}
+
+const GI_METAL_DIFFUSE: f32 = ${glf(GI.METAL_DIFFUSE)};
+const GI_SUN_LIFT: f32 = ${glf(GI.SUN_LIFT)};
+const BRICK_CELLS: i32 = BS * BS * BS;
+const FACE_CELLS: i32 = BS * BS;
+
+fn giOpaque(c: vec3i) -> bool {
+  if (c.y < 0) { return true; }
+  if (outside(c)) { return false; }
+  return RCLASS(eid(fetchA(c))) == R_OPAQUE;
 }
 
 // Bit of local cell l in a brick's 64-bit opaque mask (x fastest, then y, z).
-int cellBit(ivec3 l) { return l.x + BS * l.y + FACE_CELLS * l.z; }
-bool maskHas(uvec2 m, int b) { return ((b < 32 ? m.x : m.y) & (1u << (b & 31))) != 0u; }
+fn cellBit(l: vec3i) -> u32 { return u32(l.x + BS * l.y + FACE_CELLS * l.z); }
+fn maskHas(m: vec2u, b: u32) -> bool { return ((select(m.y, m.x, b < 32u) >> (b & 31u)) & 1u) != 0u; }
 
-void main() {
-  ivec3 bc = brickFromFrag(ivec2(gl_FragCoord.xy));
-  oRad = vec4(0.0); oCov = vec4(0.0); oDir = vec4(0.0);
-  if (bc.y >= BY || brickOcc(bc) < 0.5) return;
-  ivec3 o = bc * BS;
-  // pass 1: which cells are opaque, and the extinction of the translucent ones
-  uvec2 m = uvec2(0u);
-  uint mx = 0u, my = 0u, mz = 0u;   // opaque cells projected along x, y, z
-  float tau = 0.0;
-  for (int i = 0; i < BRICK_CELLS; i++) {
-    ivec3 l = ivec3(i % BS, (i / BS) % BS, i / FACE_CELLS);
-    vec4 a = fetchA(o + l);
-    int id = eid(a);
-    if (id == E_EMPTY) continue;
-    if (RCLASS[id] != R_OPAQUE) {
-      tau += dot(SIGMA[id], vec3(1.0 / 3.0)) * (id == E_SMOKE ? clamp(a.z, 0.0, 1.0) : 1.0);
-      continue;
+// The workgroup's opaque mask (2 words) and its projections along x, y, z
+// (16 bits each), ORed in by the cells; then the same words and the
+// translucent cells' extinction (f32 bits), read back by every thread at once.
+var<workgroup> wOr: array<atomic<u32>, 5>;
+var<workgroup> wHead: array<u32, 6>;
+// Per-cell parts of the brick's sums, reduced into [0]: pass 1 the extinction
+// (wA.w); pass 2 the light leaving the exposed faces and their count (wA), and
+// the light-weighted normals (wB).
+var<workgroup> wA: array<vec4f, 64>;
+var<workgroup> wB: array<vec4f, 64>;
+
+fn giReduce(li: u32) {
+  for (var s = 32u; s > 0u; s >>= 1u) {
+    workgroupBarrier();
+    if (li < s) {
+      wA[li] += wA[li + s];
+      wB[li] += wB[li + s];
     }
-    if (i < 32) m.x |= 1u << i; else m.y |= 1u << (i - 32);
-    mx |= 1u << (l.y + BS * l.z);
-    my |= 1u << (l.x + BS * l.z);
-    mz |= 1u << (l.x + BS * l.y);
   }
-  vec3 cov = vec3(popc16(mx), popc16(my), popc16(mz)) / float(FACE_CELLS);
-  // translucent matter: mean extinction per cell times the brick's width
-  float trans = exp(-tau * float(BS) / float(BRICK_CELLS));
-  oCov = vec4(1.0 - (1.0 - cov) * trans, 0.0);
-  if (m == uvec2(0u)) return;
+  workgroupBarrier();
+}
 
-  // pass 2: light leaving the exposed faces (neighbours inside the brick come from the mask)
-  ivec2 ba = brickAtlas(bc);   // last frame's light here: sky and bounce on the faces
-  Probe pr = Probe(texelFetch(tGI0, ba, 0), texelFetch(tGI1, ba, 0), texelFetch(tGI2, ba, 0), texelFetch(tGI3, ba, 0));
-  vec3 rad = vec3(0.0), dir = vec3(0.0);
-  float nf = 0.0;
-  for (int i = 0; i < BRICK_CELLS; i++) {
-    if (!maskHas(m, i)) continue;
-    ivec3 l = ivec3(i % BS, (i / BS) % BS, i / FACE_CELLS);
-    ivec3 c = o + l;
-    vec3 alb = vec3(-1.0);   // fetched once, if a face is exposed
-    vec3 em = vec3(0.0);     // what the cell gives off (likewise)
-    float sunVis = -1.0;     // likewise
-    for (int f = 0; f < 6; f++) {
-      ivec3 fn = ivec3(0);
-      fn[f >> 1] = (f & 1) == 0 ? 1 : -1;
-      ivec3 ln = l + fn;
-      bool inBrick = all(greaterThanEqual(ln, ivec3(0))) && all(lessThan(ln, ivec3(BS)));
-      if (inBrick ? maskHas(m, cellBit(ln)) : giOpaque(c + fn)) continue;
-      if (alb.x < 0.0) {
-        vec4 a = fetchA(c);
-        int id = eid(a);
-        alb = ALBEDO[id] * (1.0 - METAL[id] * (1.0 - GI_METAL_DIFFUSE));
-        em = cellEmission(id, a.y) + sparkEmit(id, floor(a.w));   // a live conductor, a lit lamp
+@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
+  let id = foldId(wg, nwg);
+  if (id >= NBRICKS) { return; }
+  let bc = brickCoord(id);
+  gFragCoord = vec2f(f32(id) + 0.5, 0.5);   // (nothing GI calls reads it: no per-pixel jitter here)
+  // a brick without matter blocks nothing and sends nothing (the brick map is
+  // read-only, so this is the same for the whole workgroup)
+  if (!brickMatter(brickOcc(bc))) {
+    if (li == 0u) { giSrc[id] = giSrcPack(vec3f(0.0), vec3f(0.0), vec3f(0.0)); }
+    return;
+  }
+  let l = vec3i(i32(li & 3u), i32((li >> 2u) & 3u), i32(li >> 4u));
+  let c = bc * BS + l;
+
+  // pass 1: which cells are opaque, and the extinction of the translucent ones
+  let a = fetchA(c);
+  let cid = eid(a);
+  let opaque = cid != E_EMPTY && RCLASS(cid) == R_OPAQUE;
+  var tau = 0.0;
+  if (cid != E_EMPTY && !opaque) { tau = dot(SIGMA(cid), vec3f(1.0 / 3.0)) * select(1.0, clamp(a.z, 0.0, 1.0), cid == E_SMOKE); }
+  if (opaque) {
+    atomicOr(&wOr[li >> 5u], 1u << (li & 31u));
+    atomicOr(&wOr[2], 1u << u32(l.y + BS * l.z));   // projected along x
+    atomicOr(&wOr[3], 1u << u32(l.x + BS * l.z));   // along y
+    atomicOr(&wOr[4], 1u << u32(l.x + BS * l.y));   // along z
+  }
+  wA[li] = vec4f(0.0, 0.0, 0.0, tau);
+  wB[li] = vec4f(0.0);
+  giReduce(li);
+  if (li == 0u) {
+    for (var k = 0u; k < 5u; k++) { wHead[k] = atomicLoad(&wOr[k]); }
+    wHead[5] = bitcast<u32>(wA[0].w);
+  }
+  let head = workgroupUniformLoad(&wHead);
+  let m = vec2u(head[0], head[1]);
+  let cov = vec3f(f32(countOneBits(head[2])), f32(countOneBits(head[3])), f32(countOneBits(head[4]))) / f32(FACE_CELLS);
+  // translucent matter: mean extinction per cell times the brick's width
+  let trans = exp(-bitcast<f32>(head[5]) * f32(BS) / f32(BRICK_CELLS));
+  let covOut = 1.0 - (1.0 - cov) * trans;
+  if (all(m == vec2u(0u))) {
+    if (li == 0u) { giSrc[id] = giSrcPack(vec3f(0.0), covOut, vec3f(0.0)); }
+    return;
+  }
+
+  // pass 2: light leaving the exposed faces (neighbours inside the brick come
+  // from the mask). Last frame's light here: sky and bounce on the faces.
+  let pr = Probe(textureLoad(tGI0, bc, 0), textureLoad(tGI1, bc, 0), textureLoad(tGI2, bc, 0), textureLoad(tGI3, bc, 0));
+  var rad = vec3f(0.0);
+  var dir = vec3f(0.0);
+  var nf = 0.0;
+  if (opaque) {
+    var looked = false;      // albedo and emission: looked up once, if a face is exposed
+    var alb = vec3f(0.0);
+    var em = vec3f(0.0);     // what the cell gives off
+    var sunVis = -1.0;       // likewise
+    for (var f = 0; f < 6; f++) {
+      var nv = vec3i(0);
+      nv[f >> 1u] = select(-1, 1, (f & 1) == 0);
+      let ln = l + nv;
+      var covered: bool;
+      if (all(ln >= vec3i(0)) && all(ln < vec3i(BS))) { covered = maskHas(m, cellBit(ln)); } else { covered = giOpaque(c + nv); }
+      if (covered) { continue; }
+      if (!looked) {
+        looked = true;
+        alb = ALBEDO(cid) * (1.0 - METAL(cid) * (1.0 - GI_METAL_DIFFUSE));
+        em = cellEmission(cid, a.y) + sparkEmit(cid, floor(a.w));   // a live conductor, a lit lamp
       }
-      vec3 nrm = vec3(fn);
-      vec3 e = giIrradiance(pr, nrm);
-      float nl = dot(nrm, uSun);
+      let nrm = vec3f(nv);
+      var e = giIrradiance(pr, nrm);
+      let nl = dot(nrm, FU.sun);
       if (nl > 0.0) {
-        if (sunVis < 0.0) sunVis = uShadows ? dot(sunShadow(vec3(c) + 0.5 + uSun * GI_SUN_LIFT), vec3(1.0 / 3.0)) : 1.0;
-        e += SUN_COL * nl * sunVis;
+        if (sunVis < 0.0) {
+          sunVis = 1.0;
+          if (P.shadows != 0u) { sunVis = dot(sunShadowAt(vec3f(c) + 0.5 + FU.sun * GI_SUN_LIFT), vec3f(1.0 / 3.0)); }
+        }
+        e += FU.sunCol * nl * sunVis;
       }
-      vec3 L = alb * e + em;
+      let L = alb * e + em;
       rad += L;
-      dir += nrm * dot(L, vec3(1.0 / 3.0));
+      dir += nrm * dot(L, vec3f(1.0 / 3.0));
       nf += 1.0;
     }
   }
-  if (nf > 0.0) {
-    oRad = vec4(rad / nf, 0.0);
-    float lum = dot(rad, vec3(1.0 / 3.0));
-    oDir = vec4(lum > 0.0 ? dir / lum : vec3(0.0), 0.0);
+  wA[li] = vec4f(rad, nf);
+  wB[li] = vec4f(dir, 0.0);
+  giReduce(li);
+  if (li == 0u) {
+    let s = wA[0];
+    var radOut = vec3f(0.0);
+    var dirOut = vec3f(0.0);
+    if (s.w > 0.0) {
+      radOut = s.xyz / s.w;
+      let lum = dot(s.xyz, vec3f(1.0 / 3.0));
+      if (lum > 0.0) { dirOut = wB[0].xyz / lum; }
+    }
+    giSrc[id] = giSrcPack(radOut, covOut, dirOut);
   }
 }
 `;
 
-// far: GLSL defining farBeyond(P, Q, d, open), what a ray from P that ended
-// at Q sees past it toward d (a massive world's far field: shaders/far.js),
-// where open says whether the sky is open that way, used while uFar is on
-// (else, and without far: beyond, the sky or the floor around the box). The
-// simulation compiles it in for a box too, off, so a box and a world share it.
-export const giGatherFrag = (g, far = '') => /* glsl */ `
-${lib(g)}${far}${far && `
-uniform bool uFar;   // a world's far field is drawn: rays read it past their end`}
-uniform sampler2D tGIRad;
-uniform sampler2D tGICov;
-uniform sampler2D tGIDir;
-layout(location = 0) out vec4 oSH0;
-layout(location = 1) out vec4 oSHx;
-layout(location = 2) out vec4 oSHy;
-layout(location = 3) out vec4 oSHz;
+/**
+ * GI gather for grid g. world: the size of the world the grid is a window of
+ * (sim.world), whose far field a ray reads past its end while FrameUniforms.far
+ * is on (farBeyond, shaders/farShared.js); a box takes WORLD_SIZE's, off, so a
+ * box and a world share the pipeline (docs/webgpu.md E). A thread per ray,
+ * PER_GROUP probes a workgroup, over giProbeCount(g, parity) probes
+ * (giGatherDispatch); the probes off this frame's checkerboard aren't
+ * dispatched at all, and keep their history and textures.
+ * @param {{ nx: number, ny: number, nz: number }} g
+ * @param {{ world?: number[] }} [opts]
+ */
+export const giGatherFrag = (g, { world = WORLD_SIZE } = {}) => /* wgsl */ `
+${lib(g, { variant: 'LIGHTING_GI', far: true, aeration: false })}
+${farGIGLSL(farLayout(world))}
+${giSrcWGSL}
+${paramsWGSL}
 
-uniform int uParity;   // probes with (x + y + z + uParity) odd are traced this frame; -1 = all
-#define GI_RAYS ${GI_RAYS}
-#define GI_STEPS ${GI_STEPS}
-#define GI_NEAR_STEPS ${GI_NEAR_STEPS}
-const float GI_FAR_STRIDE = ${glf(GI_FAR_STRIDE)};
-const float GI_BURIED = ${glf(GI_BURIED)};
-const float GI_T_MIN = ${glf(GI_T_MIN)};
-const float GI_FACING = ${glf(GI_FACING)};
+const GI_RAYS: i32 = ${GI.RAYS};
+const GI_STEPS: i32 = ${GI.STEPS};
+const GI_NEAR_STEPS: i32 = ${GI.NEAR_STEPS};
+const GI_FAR_STRIDE: f32 = ${glf(GI.FAR_STRIDE)};
+const GI_BURIED: f32 = ${glf(GI.BURIED)};
+const GI_T_MIN: f32 = ${glf(GI.T_MIN)};
+const GI_FACING: f32 = ${glf(GI.FACING)};
+const GI_PER_GROUP: u32 = ${GI.PER_GROUP}u;
 
 // Ray i of GI_RAYS spread evenly over the sphere (Fibonacci lattice, y up).
-vec3 giDir(int i) {
-  float y = 1.0 - (2.0 * float(i) + 1.0) / float(GI_RAYS);
-  float r = sqrt(max(1.0 - y * y, 0.0));
-  float a = float(i) * GOLDEN_ANGLE;
-  return vec3(r * cos(a), y, r * sin(a));
+fn giDir(i: i32) -> vec3f {
+  let y = 1.0 - (2.0 * f32(i) + 1.0) / f32(GI_RAYS);
+  let r = sqrt(max(1.0 - y * y, 0.0));
+  let a = f32(i) * GOLDEN_ANGLE;
+  return vec3f(r * cos(a), y, r * sin(a));
 }
 
-// What a ray from P (cells) toward d sees once it has left the bricks: the
+// What a ray from p (cells) toward d sees once it has left the bricks: the
 // sky, or below the horizon the floor (in the box, with its sun shadow) and
 // the ground around it.
-vec3 beyond(vec3 P, vec3 d) {
-  if (d.y >= 0.0) return skyColor(d);
-  vec3 pf = P + d * (-P.y / d.y);
-  vec3 grid = vec3(GRID);
-  bool onFloor = pf.x >= 0.0 && pf.z >= 0.0 && pf.x < grid.x && pf.z < grid.z;
-  float sun = uShadows && onFloor ? dot(sunShadow(vec3(pf.x, 0.0, pf.z)), vec3(1.0 / 3.0)) : 1.0;
-  return GROUND_ALB * (SUN_COL * max(uSun.y, 0.0) * sun + uSkyUp);
+fn beyond(p: vec3f, d: vec3f) -> vec3f {
+  if (d.y >= 0.0) { return skyColor(d); }
+  let pf = p + d * (-p.y / d.y);
+  let grid = vec3f(GRID);
+  let onFloor = pf.x >= 0.0 && pf.z >= 0.0 && pf.x < grid.x && pf.z < grid.z;
+  var sun = 1.0;
+  if (P.shadows != 0u && onFloor) { sun = dot(sunShadowAt(vec3f(pf.x, 0.0, pf.z)), vec3f(1.0 / 3.0)); }
+  return GROUND_ALB * (FU.sunCol * max(FU.sun.y, 0.0) * sun + FU.skyUp);
 }
 
-void main() {
-  ivec3 bc = brickFromFrag(ivec2(gl_FragCoord.xy));
-  oSH0 = vec4(0.0); oSHx = vec4(0.0); oSHy = vec4(0.0); oSHz = vec4(0.0);
-  if (bc.y >= BY) return;
-  // half the probes per frame, alternating (the blend into the volume smooths it)
-  if (uParity >= 0 && ((bc.x + bc.y + bc.z + uParity) & 1) == 0) discard;
-  ivec3 bmax = ivec3(BX, BY, BZ);
-  float blk = 1.0;
-  for (int k = 0; k < 7; k++) {
-    ivec3 b = bc;
-    if (k > 0) b[(k - 1) >> 1] += (k & 1) == 1 ? 1 : -1;
-    if (any(lessThan(b, ivec3(0))) || any(greaterThanEqual(b, bmax))) { blk = 0.0; break; }
-    vec3 cv = texelFetch(tGICov, brickAtlas(b), 0).xyz;
+// The brick of this frame's i-th probe: every brick in turn after a reset,
+// else those with x + y + z + parity odd (half of each row along x: BX is even).
+fn giProbe(i: u32) -> vec3i {
+  if (P.parity < 0) { return vec3i(i32(i % u32(BX)), i32((i / u32(BX)) % u32(BY)), i32(i / u32(BX * BY))); }
+  let hx = u32(BX / 2);
+  let y = i32((i / hx) % u32(BY));
+  let z = i32(i / (hx * u32(BY)));
+  return vec3i(2 * i32(i % hx) + ((1 + P.parity + y + z) & 1), y, z);
+}
+
+// The new light blended into band k of probe id (in f32, as the WebGL
+// build's blend did): into the history, and the halves it now holds are what
+// the band's texture gets.
+fn giBlend(k: u32, id: u32, sh: vec4f) -> vec4f {
+  let i = k * NBRICKS + id;
+  let h = giHist[i];
+  let v = mix(vec4f(unpack2x16float(h.x), unpack2x16float(h.y)), sh, P.blend);
+  let w = vec2u(giHalf2(v.xy), giHalf2(v.zw));
+  giHist[i] = w;
+  return vec4f(unpack2x16float(w.x), unpack2x16float(w.y));
+}
+
+// Each thread's ray, projected (bands 0, 1x, 1y, 1z: rgb radiance, a sky
+// visibility), then summed over the probe's rays by halves.
+var<workgroup> wSH: array<array<vec4f, 4>, 64>;
+
+@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
+  let probe = foldId(wg, nwg) * GI_PER_GROUP + (li >> 5u);
+  let ray = li & 31u;
+  let live = probe < P.count;   // (past the end on the last workgroup: it still reaches the barriers)
+  var bc = vec3i(0);
+  if (live) { bc = giProbe(probe); }
+  gFragCoord = vec2f(f32(brickId(bc)) + 0.5, 0.5);   // (nothing GI calls reads it: no per-pixel jitter here)
+  let bmax = vec3i(BX, BY, BZ);
+  var blk = 1.0;
+  for (var k = 0; k < 7; k++) {
+    var b = bc;
+    if (k > 0) { b[(k - 1) >> 1u] += select(-1, 1, (k & 1) == 1); }
+    if (any(b < vec3i(0)) || any(b >= bmax)) { blk = 0.0; break; }
+    let cv = giSrcCov(giSrc[brickId(b)]);
     blk = min(blk, min(cv.x, min(cv.y, cv.z)));
   }
-  if (blk > GI_BURIED) return;
-  vec3 pc = vec3(bc) + 0.5;   // probe, in bricks
-  vec3 s0 = vec3(0.0), sx = vec3(0.0), sy = vec3(0.0), sz = vec3(0.0);
-  vec4 sv = vec4(0.0);
-  for (int i = 0; i < GI_RAYS; i++) {
-    vec3 d = giDir(i);
-    vec3 d2 = d * d;
-    float T = 1.0;
-    vec3 L = vec3(0.0);
-    vec3 q = pc;
+  var sh = array<vec4f, 4>(vec4f(0.0), vec4f(0.0), vec4f(0.0), vec4f(0.0));
+  // a buried probe gathers nothing: its light fades out of the history
+  if (live && blk <= GI_BURIED) {
+    let pc = vec3f(bc) + 0.5;   // probe, in bricks
+    let d = giDir(i32(ray));
+    let d2 = d * d;
+    var T = 1.0;
+    var L = vec3f(0.0);
+    var q = pc;
     // the probe's own brick is skipped: surfaces read the probes from in front of them
-    for (int k = 0; k < GI_STEPS; k++) {
-      q += k < GI_NEAR_STEPS ? d : d * GI_FAR_STRIDE;
-      ivec3 b = ivec3(floor(q));
-      if (any(lessThan(b, ivec3(0))) || any(greaterThanEqual(b, bmax))) break;
-      ivec2 ta = brickAtlas(b);
-      float a = dot(texelFetch(tGICov, ta, 0).xyz, d2);
-      if (a <= 0.0) continue;
-      vec3 nd = texelFetch(tGIDir, ta, 0).xyz;
-      if (k >= GI_NEAR_STEPS) a = 1.0 - pow(1.0 - a, GI_FAR_STRIDE);   // the stride crosses that many such bricks
-      L += T * a * texelFetch(tGIRad, ta, 0).rgb * max(1.0 - GI_FACING * dot(nd, d), 0.0);
+    for (var k = 0; k < GI_STEPS; k++) {
+      if (k < GI_NEAR_STEPS) { q += d; } else { q += d * GI_FAR_STRIDE; }
+      let b = vec3i(floor(q));
+      if (any(b < vec3i(0)) || any(b >= bmax)) { break; }
+      let s = giSrc[brickId(b)];
+      var a = dot(giSrcCov(s), d2);
+      if (a <= 0.0) { continue; }
+      let nd = giSrcDir(s);
+      if (k >= GI_NEAR_STEPS) { a = 1.0 - pow(1.0 - a, GI_FAR_STRIDE); }   // the stride crosses that many such bricks
+      L += T * a * giSrcRad(s) * max(1.0 - GI_FACING * dot(nd, d), 0.0);
       T *= 1.0 - a;
-      if (T < GI_T_MIN) break;
+      if (T < GI_T_MIN) { break; }
     }
-${far && `    float open = 1.0;
-`}    if (T >= GI_T_MIN) L += T * ${far ? '(uFar ? farBeyond(pc * float(BS), q * float(BS), d, open) : beyond(pc * float(BS), d))' : 'beyond(pc * float(BS), d)'};
-    float vis = d.y > 0.0 ? T${far && ' * open'} : 0.0;
-    vec4 y = vec4(SH_Y0, SH_Y1 * d);
-    s0 += L * y.x; sx += L * y.y; sy += L * y.z; sz += L * y.w;
-    sv += vis * y;
+    var open = 1.0;
+    if (T >= GI_T_MIN) {
+      if (FU.far != 0u) { L += T * farBeyond(pc * f32(BS), q * f32(BS), d, &open); } else { L += T * beyond(pc * f32(BS), d); }
+    }
+    var vis = 0.0;
+    if (d.y > 0.0) { vis = T * open; }
+    let y = vec4f(SH_Y0, SH_Y1 * d);
+    sh = array<vec4f, 4>(vec4f(L * y.x, vis * y.x), vec4f(L * y.y, vis * y.y), vec4f(L * y.z, vis * y.z), vec4f(L * y.w, vis * y.w));
   }
-  float w = 4.0 * PI_L / float(GI_RAYS);   // Monte Carlo weight: sphere area per ray
-  oSH0 = vec4(s0, sv.x) * w;
-  oSHx = vec4(sx, sv.y) * w;
-  oSHy = vec4(sy, sv.z) * w;
-  oSHz = vec4(sz, sv.w) * w;
+  wSH[li] = sh;
+  for (var s = 16u; s > 0u; s >>= 1u) {
+    workgroupBarrier();
+    if (ray < s) { for (var k = 0; k < 4; k++) { wSH[li][k] += wSH[li + s][k]; } }
+  }
+  if (ray == 0u && live) {
+    let w = 4.0 * PI_L / f32(GI_RAYS);   // Monte Carlo weight: sphere area per ray
+    let id = brickId(bc);
+    textureStore(tGI0, bc, giBlend(0u, id, wSH[li][0] * w));
+    textureStore(tGI1, bc, giBlend(1u, id, wSH[li][1] * w));
+    textureStore(tGI2, bc, giBlend(2u, id, wSH[li][2] * w));
+    textureStore(tGI3, bc, giBlend(3u, id, wSH[li][3] * w));
+  }
 }
 `;
+
+// The gpu.layout names of each kernel's groups 0-2 (src/derived.js makes its
+// layouts under them, so a warm-up under the same names builds the very
+// pipelines it then finds in the cache, B5).
+export const GI_LAYOUT_NAMES = {
+  giSource: ['FRAME', 'STATE_RO', 'LIGHTING_GISRC'],
+  giGather: ['FRAME', 'STATE_RO', 'LIGHTING_GI'],
+};
+
+/**
+ * tools/check-wgsl.mjs, and the menu's warm-up (B5): both kernels, for a
+ * session in the realistic view (the only one with GI, as the WebGL app ran it).
+ */
+export const WGSL_CHECK = () => [
+  {
+    name: 'giSource', kind: 'compute', code: (g) => giSourceFrag(g), layouts: () => libLayouts('LIGHTING_GISRC'),
+    layoutNames: GI_LAYOUT_NAMES.giSource, params: GiParams, workgroupSize: [64, 1, 1],
+    dispatch: (g) => giSourceDispatch(g), warm: ({ view }) => view === 'realistic',
+  },
+  {
+    name: 'giGather', kind: 'compute', code: (g) => giGatherFrag(g), layouts: () => libLayouts('LIGHTING_GI'),
+    layoutNames: GI_LAYOUT_NAMES.giGather, params: GiParams, workgroupSize: [64, 1, 1],
+    dispatch: (g) => [giGatherDispatch(g, -1), giGatherDispatch(g, 0)], warm: ({ view }) => view === 'realistic',
+  },
+];
