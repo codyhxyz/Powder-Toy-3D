@@ -239,7 +239,8 @@ The simulation stays a blocky cellular automaton; the renderer draws it as conti
 
 **Render fields** (`src/shaders/fields.js`, rebuilt once per frame, never read by the sim). Each element has a *look*
 (`src/gfx/materials.js`): liquids, lava, powders and natural solids (wood, plant, rock) belong to a smooth-surface channel;
-smoke, steam and fire are media; wall, metal, glass and clone stay crisp voxels. Per channel, cell occupancy is
+smoke, steam and fire are media; wall, metal, glass and clone stay crisp voxels. A look that names no channel gets its
+kind's (`KIND_LOOK`: powders a granular heap, liquids the liquid surface, gases a mist), so only solids are ever crisp by default. Per channel, cell occupancy is
 smoothed over time (so cells swapping every step don't shimmer), blurred with a per-channel Gaussian, and normalised by the
 blurred weight of non-crisp cells, so walls and the floor count neither way: a one-cell water film keeps its height and
 surfaces meet walls cleanly. Features the blur would dissolve (a lone drop or grain, a falling stream, a one-cell trunk)

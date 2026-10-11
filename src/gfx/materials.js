@@ -6,9 +6,12 @@
 //   ch     smooth-surface channel. Cells in a channel are drawn as one
 //          continuous surface (the 0.5 isosurface of a blurred, normalised
 //          occupancy field). Elements without a channel are "crisp": drawn
-//          as (bevelled) voxels.
+//          as (bevelled) voxels. Omitted, it is the element's kind's
+//          (KIND_LOOK): only solids are crisp unless they say otherwise.
+//          null opts out (a crisp powder, deliberately).
 //   media  participating-medium channel (drawn as a density volume). A gas
 //          needs one: without a channel it would be drawn as crisp voxels
+//          (KIND_LOOK gives it one)
 //   haze   the share of a full cell's density a cell of it adds to its
 //          media channel (default 1). Steam and cloud are water droplets,
 //          1; a clear gas a faint haze, a liberty so you can see where it is
@@ -25,7 +28,7 @@
 //          white ≈ 1.2): what a body of it shows. It adds to the thermal glow
 //          wherever matter's light is used (emission(), below).
 
-import { ELEMENTS } from '../elements.js';
+import { ELEMENTS, K } from '../elements.js';
 import { bandGlow } from './incandescence.js';
 
 // sRGB decoding (IEC 61966-2-1)
@@ -154,30 +157,40 @@ export const MEDIA_NOISE_CELLS = 64;
 // 0.3-0.4 (redder toward the red end), limestone 0.4-0.6, coal 0.04-0.05
 // (USGS spectral library, Clark et al. 2007). Metal F0 from measured complex
 // IORs (iron/steel 0.56-0.58, gold 1.0/0.77/0.34).
+const STEEL_F0 = [0.56, 0.57, 0.58];
 const LOOKS = {
   WALL: { rough: 0.85, alb: '#8f8c87' },
-  SAND: { ch: 'GRANULAR', rough: 0.9, ior: 1.54, alb: '#c4a77c', glint: 0.55 },
-  STONE: { ch: 'GRANULAR', rough: 0.75, alb: '#7f7c77' },
-  SNOW: { ch: 'GRANULAR', rough: 0.55, ior: 1.31, alb: '#f3f6fb', sss: 0.55, glint: 0.8 },
-  GUNPOWDER: { ch: 'GRANULAR', rough: 0.6, alb: '#38383d', glint: 0.7 },   // graphite glaze: a soft sheen, many glints
-  ASH: { ch: 'GRANULAR', rough: 0.98, alb: '#a29e97', sss: 0.3 },
+  SAND: { rough: 0.9, ior: 1.54, alb: '#c4a77c', glint: 0.55 },
+  STONE: { rough: 0.75, alb: '#7f7c77' },
+  SNOW: { rough: 0.55, ior: 1.31, alb: '#f3f6fb', sss: 0.55, glint: 0.8 },
+  GUNPOWDER: { rough: 0.6, alb: '#38383d', glint: 0.7 },   // graphite glaze: a soft sheen, many glints
+  ASH: { rough: 0.98, alb: '#a29e97', sss: 0.3 },
   // Liquids. Clean water absorbs red most (real ratios ~1 : 0.2 : 0.1 with a
   // little dissolved matter) and scatters a little, mostly blue: clear when
   // shallow, blue-green with depth. Both are exaggerated several-fold over
   // real water so a tank-sized body still shows them. Oil is amber (absorbs
   // blue hardest), dark when thick. Acid is a clear, slightly milky green.
-  WATER: { ch: 'LIQUID', ior: 1.333, rough: 0.02, scatter: [0.002, 0.003, 0.004] },
-  OIL: { ch: 'LIQUID', ior: 1.47, rough: 0.03, scatter: [0.012, 0.008, 0.003] },
-  ACID: { ch: 'LIQUID', ior: 1.36, rough: 0.03, scatter: [0.02, 0.03, 0.02] },
+  WATER: { ior: 1.333, rough: 0.02, scatter: [0.002, 0.003, 0.004] },
+  OIL: { ior: 1.47, rough: 0.03, scatter: [0.012, 0.008, 0.003] },
+  ACID: { ior: 1.36, rough: 0.03, scatter: [0.02, 0.03, 0.02] },
   LAVA: { ch: 'MOLTEN', rough: 0.35, alb: '#2a2522' },
-  STEAM: { media: 'STEAM' },
-  CLOUD: { media: 'STEAM' },   // the same water droplets (what you see of steam is condensed mist)
   SMOKE: { media: 'SMOKE' },
   FIRE: { media: 'FIRE' },
   WOOD: { ch: 'ORGANIC', rough: 0.8, alb: '#5a4637' },
   PLANT: { ch: 'ORGANIC', rough: 0.5, alb: '#4b7a2f', sss: 0.25 },
-  METAL: { rough: 0.32, metal: 1, alb: [0.56, 0.57, 0.58] },
+  METAL: { rough: 0.32, metal: 1, alb: STEEL_F0 },
   GLASS: { ior: 1.5, rough: 0.02, scatter: [0.005, 0.003, 0.004] },
+  // Debris (elements.js breakInto): heaps of fragments, powders as TPT's BGLA,
+  // SAWD and BRMT are. Crushed glass is near-white, as crushed ice is snow and
+  // crushed halite salt: the fracture faces scatter far more than the glass
+  // absorbs, leaving a faint green-blue where light runs through an edge
+  // (soda-lime glass's iron). Its conchoidal faces are glass-smooth, so it
+  // glints harder than salt. Sawdust is the pale inner wood (its UI colour),
+  // fibrous and matte, light wrapping into the thin chips as into leaves.
+  // Scrap is the same steel, torn and scuffed, glinting off its torn edges.
+  SHARDS: { rough: 0.4, ior: 1.5, alb: '#dce8e6', sss: 0.45, glint: 0.9 },
+  SAWDUST: { rough: 0.95, sss: 0.25 },
+  SCRAP: { rough: 0.5, metal: 1, alb: STEEL_F0, glint: 0.6 },
   // Ice shares the liquid surface: a clear surface between ice and water is
   // nearly invisible in real life too (n = 1.31 vs 1.33). Frozen ice is
   // cloudy (trapped air), so it scatters white and stays visible.
@@ -200,7 +213,7 @@ const LOOKS = {
     crag: { relief: 1, pits: 0.4, bands: 1.5, stain: 0.4 } },   // sharp solution runnels and pits, bedded
   COAL: { ch: 'ORGANIC', rough: 0.75, alb: '#3c3c3d', surf: 'CRAG',
     crag: { relief: 0.5, pits: 0, bands: 2, stain: 0 } },       // blocky cleat, bright and dull bands
-  BROKENCOAL: { ch: 'GRANULAR', rough: 0.75, alb: '#3c3c3d', glint: 0.5 },
+  BROKENCOAL: { rough: 0.75, alb: '#3c3c3d', glint: 0.5 },
   // Fluorite (elements.js CRYSTAL): n = 1.434, a vitreous luster from flat
   // growth faces (polished glass-smooth: GGX roughness at the floor). A cell
   // is drawn as a cluster of pointed prisms (shaders/gfx/crystal.js); their
@@ -209,7 +222,7 @@ const LOOKS = {
   // dust is pale, as any crushed coloured crystal is (scattering at the grain
   // faces swamps the absorption), and keeps the glow (powdered phosphors do).
   CRYSTAL: { rough: 0.04, ior: 1.434, alb: '#4a3478', sss: 0.3, emit: FLUORITE_GLOW },
-  CRYSTAL_DUST: { ch: 'GRANULAR', rough: 0.6, ior: 1.434, alb: '#b7a2d2', sss: 0.3, glint: 0.4, emit: FLUORITE_GLOW },
+  CRYSTAL_DUST: { rough: 0.6, ior: 1.434, alb: '#b7a2d2', sss: 0.3, glint: 0.4, emit: FLUORITE_GLOW },
   // Electronics (elements.js). A battery's printed steel can; silicon is
   // grey and mirror-like (n ≈ 3.9 in the visible: F0 ≈ 0.35), tinted as TPT
   // draws P and N; the switch a dark green relay; the insulator a pale,
@@ -226,29 +239,26 @@ const LOOKS = {
   // trapped between the grains, with bright glints off the facets. Uranium
   // tarnishes to a dark grey-black oxide (UO₂ is black); plutonium's oxide
   // skin is dull olive-grey.
-  URANIUM: { ch: 'GRANULAR', rough: 0.55, alb: '#3f413b', glint: 0.5 },
-  PLUTONIUM: { ch: 'GRANULAR', rough: 0.6, alb: '#45493a', glint: 0.4 },
+  URANIUM: { rough: 0.55, alb: '#3f413b', glint: 0.5 },
+  PLUTONIUM: { rough: 0.6, alb: '#45493a', glint: 0.4 },
   // Batch 3 (elements.js, el-mat). Void: matte black, a hole in the world.
   VOID: { rough: 1, alb: '#0d0809' },
   // Red brick reflects ~0.25 in the red, ~0.1 in the green and ~0.06 in the
   // blue (USGS spectral library, fired clay); built, so crisp like Wall.
   // Crushed, it is paler: the broken faces scatter more.
   BRICK: { rough: 0.9, alb: [0.25, 0.1, 0.06] },
-  RUBBLE: { ch: 'GRANULAR', rough: 0.95, alb: [0.3, 0.14, 0.09] },
+  RUBBLE: { rough: 0.95, alb: [0.3, 0.14, 0.09] },
   // Metals: F0 from measured complex indices (n, k at 450/550/650 nm;
   // refractiveindex.info): titanium (0.54, 0.50, 0.45), tungsten ~0.5 grey,
   // gold as Clone's, mercury ~0.75 flat (a liquid mirror).
   TITANIUM: { rough: 0.35, metal: 1, alb: [0.542, 0.497, 0.449] },
   TUNGSTEN: { rough: 0.3, metal: 1, alb: [0.5, 0.49, 0.46] },
   GOLD: { rough: 0.3, metal: 1, alb: [1.0, 0.766, 0.336] },
-  NUGGETS: { ch: 'GRANULAR', rough: 0.45, metal: 1, alb: [1.0, 0.766, 0.336], glint: 0.6 },
+  NUGGETS: { rough: 0.45, metal: 1, alb: [1.0, 0.766, 0.336], glint: 0.6 },
   // Liquid metal: an opaque mirror, smoothed like a melt (it shares lava's
   // channel; the two never meet, since mercury boils at 357 °C)
   MERCURY: { ch: 'MOLTEN', rough: 0.04, metal: 1, alb: [0.75, 0.75, 0.74] },
   SOLID_MERCURY: { rough: 0.35, metal: 1, alb: [0.75, 0.75, 0.74] },
-  // Mercury vapour is invisible; what shows where it meets cool air is a mist
-  // of condensed droplets, like steam's
-  MERCURY_VAPOR: { media: 'STEAM' },
   // Plasma draws as flame (its light, by the flame's temperature channel)
   PLASMA: { media: 'FIRE' },
   // Diamond: n = 2.417, so it sparkles far more than glass (n 1.5); a
@@ -257,23 +267,23 @@ const LOOKS = {
   // Batch 2, chemistry and cold (elements.js). Liquid nitrogen is clear and
   // colourless, n = 1.199 (CRC); its boiling fills it with bubbles that
   // scatter a little. Saturated brine is water with n = 1.378 (CRC, 26 % NaCl).
-  LIQUID_NITROGEN: { ch: 'LIQUID', ior: 1.199, rough: 0.03, scatter: [0.004, 0.004, 0.004] },
-  SALTWATER: { ch: 'LIQUID', ior: 1.378, rough: 0.02, scatter: [0.002, 0.003, 0.004] },
+  LIQUID_NITROGEN: { ior: 1.199, rough: 0.03, scatter: [0.004, 0.004, 0.004] },
+  SALTWATER: { ior: 1.378, rough: 0.02, scatter: [0.002, 0.003, 0.004] },
   // Salt: clear halite cubes (n = 1.544) crushed white, albedo ~0.8, light
   // wrapping into the grains and glinting off their cube faces.
-  SALT: { ch: 'GRANULAR', rough: 0.55, ior: 1.544, alb: '#e2e0da', sss: 0.35, glint: 0.7 },
+  SALT: { rough: 0.55, ior: 1.544, alb: '#e2e0da', sss: 0.35, glint: 0.7 },
   // Dry ice: pressed CO₂ snow, white and porous (n ~1.4), light bleeding into it.
   DRY_ICE: { rough: 0.8, ior: 1.4, alb: '#e4e8ec', sss: 0.5 },
   // Lithium is silvery cut, but dulls in air within minutes (nitride, hydroxide):
   // a grey, rough metal.
-  LITHIUM: { ch: 'GRANULAR', rough: 0.55, metal: 1, alb: [0.55, 0.55, 0.56] },
+  LITHIUM: { rough: 0.55, metal: 1, alb: [0.55, 0.55, 0.56] },
   // Clear gases (CO₂, hydrogen, oxygen) are invisible: a faint haze shows where
   // they are. Hydrogen chloride fumes in moist air, pulling the water vapour
   // out as a mist of acid droplets (real), so it shows more.
-  CO2: { media: 'STEAM', haze: 0.06 },
-  HYDROGEN: { media: 'STEAM', haze: 0.04 },
-  OXYGEN: { media: 'STEAM', haze: 0.05 },
-  CAUSTIC_GAS: { media: 'STEAM', haze: 0.3 },
+  CO2: { haze: 0.06 },
+  HYDROGEN: { haze: 0.04 },
+  OXYGEN: { haze: 0.05 },
+  CAUSTIC_GAS: { haze: 0.3 },
   // Batch 4. Flour reflects ~0.8, matte, and light bleeds into a loose heap.
   // Kaolin is as white (ISO brightness 80-90%); mud is darker, as any wet
   // soil is (water in the pores cuts the scattering: about half the
@@ -281,11 +291,11 @@ const LOOKS = {
   // with lava's opaque-liquid surface. Ceramic is matte white bisque.
   // Antimatter is a game substance: a pale lilac powder with a sheen, so it
   // reads apart from the other powders. The singularity reflects nothing.
-  DUST: { ch: 'GRANULAR', rough: 0.95, alb: '#ebe2cc', sss: 0.35 },
-  CLAY: { ch: 'GRANULAR', rough: 0.95, alb: '#e2dccf', sss: 0.2 },
+  DUST: { rough: 0.95, alb: '#ebe2cc', sss: 0.35 },
+  CLAY: { rough: 0.95, alb: '#e2dccf', sss: 0.2 },
   MUD: { ch: 'MOLTEN', rough: 0.3, alb: '#a49b8a' },
   CERAMIC: { rough: 0.6, alb: '#efeae0' },
-  ANTIMATTER: { ch: 'GRANULAR', rough: 0.4, alb: '#b9b0d9', glint: 0.6 },
+  ANTIMATTER: { rough: 0.4, alb: '#b9b0d9', glint: 0.6 },
   SINGULARITY: { rough: 1, alb: '#000000' },
   // Explosives (elements.js). C-4 is an off-white putty, moulded smooth, a
   // little waxy (light wraps into its edges). Nitroglycerin is a clear, pale
@@ -294,10 +304,9 @@ const LOOKS = {
   // safety fuse is a tarred cord. Propane is invisible: it borrows steam's
   // haze so you can see where it pools (a liberty).
   C4: { ch: 'ORGANIC', rough: 0.55, alb: '#d6d0bf', sss: 0.2 },
-  NITRO: { ch: 'LIQUID', ior: 1.479, rough: 0.03, scatter: [0.004, 0.004, 0.004] },
+  NITRO: { ior: 1.479, rough: 0.03, scatter: [0.004, 0.004, 0.004] },
   TNT: { rough: 0.7, alb: '#b9975a' },
-  THERMITE: { ch: 'GRANULAR', rough: 0.8, alb: '#6f4436', glint: 0.35 },
-  PROPANE: { media: 'STEAM' },
+  THERMITE: { rough: 0.8, alb: '#6f4436', glint: 0.35 },
   FUSE: { ch: 'ORGANIC', rough: 0.6, alb: '#2a4424' },
   // Noita's liquids (elements.js), each tinted by its sigma and scatter: the
   // scattered share sets the colour a deep body shows. Blood is near opaque
@@ -305,16 +314,16 @@ const LOOKS = {
   // scatter red): n ~1.35 (plasma). Sludge is a murky lime suspension; slime a
   // pink-purple gel, glossy but not mirror-smooth; whiskey a clear amber
   // (n = 1.356 for 40 % ethanol). The potions are clear tinctures (n ~1.34).
-  BLOOD: { ch: 'LIQUID', ior: 1.35, rough: 0.04, scatter: [0.7, 0.04, 0.04] },
-  TOXIC: { ch: 'LIQUID', ior: 1.36, rough: 0.08, scatter: [0.25, 0.4, 0.05], emit: tintGlow('#3fb52c', TOXIC_GLOW_LUM) },
-  SLIME: { ch: 'LIQUID', ior: 1.34, rough: 0.12, scatter: [0.12, 0.05, 0.12] },
-  WHISKEY: { ch: 'LIQUID', ior: 1.356, rough: 0.02, scatter: [0.002, 0.002, 0.002] },
-  TELEPORTATIUM: { ch: 'LIQUID', ior: 1.34, rough: 0.02, scatter: [0.004, 0.012, 0.014], emit: tintGlow('#3cc6e8', MAGIC_GLOW_LUM) },
-  LEVITATIUM: { ch: 'LIQUID', ior: 1.34, rough: 0.02, scatter: [0.02, 0.025, 0.012], emit: tintGlow('#a7ad7a', MAGIC_GLOW_LUM) },
-  HEALTHIUM: { ch: 'LIQUID', ior: 1.34, rough: 0.02, scatter: [0.02, 0.04, 0.008], emit: tintGlow('#c8f26a', MAGIC_GLOW_LUM) },
-  BERSERKIUM: { ch: 'LIQUID', ior: 1.34, rough: 0.02, scatter: [0.012, 0.006, 0.002], emit: tintGlow('#ef5a26', MAGIC_GLOW_LUM) },
-  POLYMORPHINE: { ch: 'LIQUID', ior: 1.34, rough: 0.02, scatter: [0.015, 0.006, 0.012], emit: tintGlow('#ee6fcf', MAGIC_GLOW_LUM) },
-  PHEROMONE: { ch: 'LIQUID', ior: 1.34, rough: 0.02, scatter: [0.015, 0.004, 0.006], emit: tintGlow('#ff3d62', MAGIC_GLOW_LUM) },
+  BLOOD: { ior: 1.35, rough: 0.04, scatter: [0.7, 0.04, 0.04] },
+  TOXIC: { ior: 1.36, rough: 0.08, scatter: [0.25, 0.4, 0.05], emit: tintGlow('#3fb52c', TOXIC_GLOW_LUM) },
+  SLIME: { ior: 1.34, rough: 0.12, scatter: [0.12, 0.05, 0.12] },
+  WHISKEY: { ior: 1.356, rough: 0.02, scatter: [0.002, 0.002, 0.002] },
+  TELEPORTATIUM: { ior: 1.34, rough: 0.02, scatter: [0.004, 0.012, 0.014], emit: tintGlow('#3cc6e8', MAGIC_GLOW_LUM) },
+  LEVITATIUM: { ior: 1.34, rough: 0.02, scatter: [0.02, 0.025, 0.012], emit: tintGlow('#a7ad7a', MAGIC_GLOW_LUM) },
+  HEALTHIUM: { ior: 1.34, rough: 0.02, scatter: [0.02, 0.04, 0.008], emit: tintGlow('#c8f26a', MAGIC_GLOW_LUM) },
+  BERSERKIUM: { ior: 1.34, rough: 0.02, scatter: [0.012, 0.006, 0.002], emit: tintGlow('#ef5a26', MAGIC_GLOW_LUM) },
+  POLYMORPHINE: { ior: 1.34, rough: 0.02, scatter: [0.015, 0.006, 0.012], emit: tintGlow('#ee6fcf', MAGIC_GLOW_LUM) },
+  PHEROMONE: { ior: 1.34, rough: 0.02, scatter: [0.015, 0.004, 0.006], emit: tintGlow('#ff3d62', MAGIC_GLOW_LUM) },
   // Moss: a dark, matte green mat (moss reflects ~0.05-0.1 in the visible,
   // greenest near 550 nm); light wraps into its leaves. Fungus: pale buff
   // mycelium over the wood, glowing green (foxfire).
@@ -325,8 +334,8 @@ const LOOKS = {
   // wraps into it as into skin); cooking browns and dries it (the Maillard
   // crust) and denatures the proteins, which scatter: matte, opaque, brown.
   // Saturated past the measured values, as the Castle Crashers look wants.
-  MEAT: { ch: 'GRANULAR', rough: 0.35, ior: 1.33, alb: '#b8424a', sss: 0.5 },
-  COOKED_MEAT: { ch: 'GRANULAR', rough: 0.7, alb: '#6e4126', sss: 0.15 },
+  MEAT: { rough: 0.35, ior: 1.33, alb: '#b8424a', sss: 0.5 },
+  COOKED_MEAT: { rough: 0.7, alb: '#6e4126', sss: 0.15 },
 };
 
 // Shared texture families (LOOKS surf). NONE: an element's own (or none).
@@ -339,6 +348,12 @@ export const SURFS = ['NONE', 'CRAG'];
 const CRAG_PARAMS = ['relief', 'pits', 'bands', 'stain'];
 const CRAG_DEFAULT = { relief: 1, pits: 1, bands: 1, stain: 1 };
 
+// The surface an element's kind gets where LOOKS gives it none: a powder is a
+// granular heap, a liquid the liquid surface, a gas steam's mist (steam and
+// cloud are water droplets; mercury vapour shows as the droplets it condenses
+// into in cool air; propane borrows it so you can see where it pools). Without
+// it a new powder (the debris a solid breaks into, say) drew as a pile of cubes.
+const KIND_LOOK = { [K.POWDER]: { ch: 'GRANULAR' }, [K.LIQUID]: { ch: 'LIQUID' }, [K.GAS]: { media: 'STEAM' } };
 // Defaults for elements LOOKS leaves out (the rest default to 0: none).
 const DEFAULT_ROUGH = 0.7;
 const DEFAULT_IOR = 1.5;
@@ -349,7 +364,7 @@ const chIndex = (k) => (k ? CHANNELS.findIndex((c) => c.key === k) : -1);
 const mediaIndex = (k) => (k ? MEDIA.findIndex((m) => m.key === k) : -1);
 
 export const LOOK = ELEMENTS.map((e) => {
-  const l = LOOKS[e.key] ?? {};
+  const l = { ...KIND_LOOK[e.kind], ...LOOKS[e.key] };
   return {
     ch: chIndex(l.ch), media: mediaIndex(l.media), haze: l.haze ?? 1, rough: l.rough ?? DEFAULT_ROUGH, metal: l.metal ?? 0, ior: l.ior ?? DEFAULT_IOR,
     alb: linearOf(l.alb ?? e.color).map((v) => +v.toFixed(GLSL_DIGITS)), sss: l.sss ?? 0, glint: l.glint ?? 0,
