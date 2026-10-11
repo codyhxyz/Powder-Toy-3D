@@ -350,16 +350,13 @@ fn liquidDetail(hp: vec3f, n0: vec3f, id: i32, col: ptr<function, vec3f>, trans:
 // so the renderer can average the aeration over liquid cells only
 // (aerationAt).
 //
-// The kernel is U12's to port (docs/webgpu.md J1, G4: a list of bricks, the
-// pre-move copy and moveSrc in place of the slots); its GLSL is aerationFrag
-// at the start of the WebGPU branch. The model's constants stay here for it.
+// The kernel is U12's to port, here (docs/webgpu.md J1, G4: a list of
+// bricks, the pre-move copy and moveSrc in place of the slots); its GLSL is
+// aerationFrag at the start of the WebGPU branch. Its inputs are the model's
+// constants in this file: MS_PER_CELL_STEP, STEP_S, FOAM_TAU_S,
+// BUBBLE_RISE_MS, AIR_RHO, WE_ONSET, PE_FIT, LIQ_PROPS and these two.
 const FOAM_V_ONSET = 1.0;         // m/s
 const FOAM_V_FULL = 4.0;          // m/s
-export const AERATION = {
-  MS_PER_CELL_STEP, STEP_S, FOAM_TAU_S, BUBBLE_RISE_MS, AIR_RHO, WE_ONSET, PE_FIT, LIQ_PROPS, FOAM_V_ONSET, FOAM_V_FULL,
-  AER_KEEP: Math.exp(-STEP_S / FOAM_TAU_S),           // per step at a free surface
-  AER_RISE: (BUBBLE_RISE_MS * STEP_S) / CELL_M,       // share rising a cell per step
-};
 // WEBGPU-STUB (docs/webgpu.md J3): the GLSL aeration pass, replaced by U12's WGSL kernel.
 export const aerationFrag = () => {
   throw new Error('aerationFrag removed in the WebGPU port: docs/webgpu.md G4');
