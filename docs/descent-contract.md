@@ -48,8 +48,24 @@ export const DESCENT_LEVELS = [{
 export const levelByScene = (key) => DESCENT_LEVELS.find((l) => l.key === key) ?? null;
 ```
 
-If a site is computed (from the scene's generator), export a function with the
-same shape instead and document it here.
+As built (A): the sites are computed from the scenes' JS twins
+(`src/world/scenes/descent/sites.js`) and written into `levels.js` as plain data
+by `node scripts/check-descent-levels.mjs --write` (the same script without
+`--write` checks them: in air, on a solid floor, temple sealed in WALL, a way down
+from the spawn to the temple). The levels are fixed (the world seed is unused), so
+the data never goes stale at runtime. `levels.js` also exports
+`nextLevel(key)` (the level after, or null) and `inBox(box, [x, y, z])`.
+Facts the shapes rely on:
+- every level is a 512 × 256 × 512 world (`DS_WORLD`); the temple is the same in
+  all three: box `[186, 14, 246, 330, 30, 266]`, exit pit `[318, 4, 246, 330, 10, 266]`
+  (you fall 10 cells into it), shop sites on BRICK pedestal tops (`y` 17), altars
+  and the refresher on the temple floor (`y` 14);
+- a site / spawn is the air cell the feet stand in, the cell under it solid;
+- loot: 5 wand, 6 spell, 10 gold per level, `tier` = the level's tier;
+- the scenes carry `shrine: false` (no world shrine; app.js `worldShrine`) and
+  `descentLevel` (0, 1, 2).
+- the tunnel layout is one GLSL function, `dsTunnel` in `descent/scenes.js`
+  (its header lists what a replacement must keep).
 
 ## Events (`src/pov/events.js` povEvents)
 

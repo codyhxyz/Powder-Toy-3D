@@ -472,7 +472,7 @@ const SHRINE_GLADE = 10;           // cells around its footprint the clearing re
 const SHRINE_TREE_COST = 2;        // a spot's score: cells of rise, plus this per tree to fell...
 const SHRINE_FAR_COST = 0.05;      // ...plus this per cell from the window's middle (lowest wins)
 function worldShrine() {
-  if (!win || !builds) return;
+  if (!win || !builds || win.scene.shrine === false) return;   // (Descent's temples have their own altars)
   const P = win.P, g = sim.g, o = sim.origin, [hx, hz] = SHRINE_HALF;
   // a scene with structures places its own (world/structures.js: generated, in a clearing): set its orbs
   const altars = worldShrineAltars(P);
