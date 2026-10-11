@@ -1,7 +1,6 @@
 import { prelude, BRICK } from './common.js';
 import { materialsGLSL, CHANNELS, MEDIA } from '../gfx/materials.js';
 import { blendFixedFrames } from '../gfx/pacing.js';
-import { TRAIL_LONE_MIN } from './gfx/liquidDetail.js';
 
 // Render fields: continuous versions of the blocky state, rebuilt once per
 // frame for the renderer only (the simulation never reads them).
@@ -30,7 +29,7 @@ import { TRAIL_LONE_MIN } from './gfx/liquidDetail.js';
 // apart, which drawn as they are make a dotted line of glass beads, nearly
 // invisible. While the whitewater runs (gfx/foam.js), its aeration field
 // marks liquid off the ground and the wake each falling parcel leaves for a
-// few steps (shaders/gfx/liquidDetail.js aerationFrag, TRAIL_JOIN_STEPS; a lone parcel's for TRAIL_LONE_STEPS). Those
+// few steps (shaders/gfx/liquidDetail.js aerationFrag, TRAIL_STEPS). Those
 // cells are drawn as liquid at full occupancy at once (the EMA pass), count
 // as current matter for the boost, so a stream is one even column a cell
 // across, and the thin mask's spare channels carry their aeration for the
@@ -49,7 +48,6 @@ import { TRAIL_LONE_MIN } from './gfx/liquidDetail.js';
 // Falling water and the wakes of its parcels, from whitewater's aeration
 // field (state atlas; its layout: liquidDetail.js aerationFrag).
 const jetGLSL = /* glsl */ `
-#define TRAIL_LONE_MIN ${TRAIL_LONE_MIN.toFixed(4)}
 uniform sampler2D tAer;
 uniform bool uAer;   // the aeration field runs (the Whitewater switch)
 // (aeration, presence) at p: liquid off the ground, or a falling parcel's wake
@@ -57,7 +55,7 @@ vec2 jetAt(ivec3 p) {
   if (!uAer) return vec2(0.0);
   vec4 f = texelFetch(tAer, atlas(p), 0);
   if (f.y > 0.5) return f.w < 0.5 ? vec2(f.x, 1.0) : vec2(0.0);
-  return f.w > (f.x > 0.5 ? 0.0 : TRAIL_LONE_MIN) ? vec2(f.z, 1.0) : vec2(0.0);   // a stream's wake, or a lone parcel's last steps
+  return f.w > 0.0 ? vec2(f.z, 1.0) : vec2(0.0);
 }
 `;
 

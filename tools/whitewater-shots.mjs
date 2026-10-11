@@ -6,7 +6,7 @@
 // kept full by a water clone, with a one-cell hole in its side 30 cells up (a
 // stream pouring out of a hole in a wall), and a ledge fed by a clone that
 // spills an 8-cell sheet 34 cells down (a waterfall). With --island, the same
-// two pours are built on the island (World) in its clearest dry spot.
+// two pours are painted onto the island (World) near the view's target.
 //
 // Shots (Realistic view, TAA converged, the world parked): per detail level
 // (Balanced = the default, Full) and camera, plus one live shot per level
@@ -37,7 +37,6 @@ mkdirSync(out, { recursive: true });
 const W = 1280, H = 800;
 const STEPS = 420;           // the tank's stream and the ledge's sheet are falling and have pooled
 const LIVE_MS = 1500;        // a running world before its live shot
-const ISLAND_SETTLE_MS = 3000;   // after the island's window has loaded (its trees go in as frames run)
 const VISIBLE_DE = 10;       // CIE76 ΔE a glance picks out (≈ 4× the 2.3 JND)
 const MASK_DIFF = 0.08;      // Plain-view change (max channel, 0..1) that marks the stream's pixels
 
@@ -70,10 +69,7 @@ const rows = [];
 try {
   await p.goto(`http://localhost:${port}/?${island ? 'size=world&scene=island' : 'size=128&preset=empty'}&paused=1`);
   await ready(p);
-  if (island) {
-    await p.waitForFunction(() => window.__app.win?.loaded, null, { polling: 250, timeout: 180000 });
-    await p.waitForTimeout(ISLAND_SETTLE_MS);
-  }
+  if (island) await p.waitForFunction(() => window.__app.win?.loaded ?? true, null, { polling: 250, timeout: 180000 }).catch(() => {});
   await p.evaluate(() => {
     const a = window.__app;
     a.autoRes.enabled = false;
@@ -87,57 +83,53 @@ try {
     const { E, ELEMENTS, K } = await import('/src/elements.js');
     const { SEED_MAX } = await import('/src/shaders/common.js');
     a.test.park();
-    const g = sim.g;
-    const TREE = new Set(['WOOD', 'PLANT', 'MOSS', 'FUNGUS', 'VINE', 'LEAF', 'LEAVES'].map((k) => E[k]).filter((v) => v !== undefined));
-    const [A, B] = island ? sim.readState() : sim.blankState();
-    const idAt = (x, y, z) => Math.round(A[sim.cellTexel(x, y, z) * 4]);
-    const terrain = (id) => id && ELEMENTS[id].kind !== K.GAS && !TREE.has(id);   // (a tree's crown is not the ground)
-    const ground = (x, z) => { for (let y = g.ny - 1; y >= 0; y--) if (terrain(idAt(x, y, z))) return y + 1; return 0; };
-    // where the scene goes: the lab's floor; on the island the dry spot in
-    // the window with the fewest trees round it (a beach, a clearing)
-    let o = [0, 0, 0];
-    if (island) {
-      const SPOT_STEP = 8, SPOT_REACH = 16, SPOT_LO = [8, 48], SPOT_HI = [g.nx - 80, g.nz - 24];   // the layout (x 20..104, z 14..84) stays in the window
-      let best = null;
-      for (let x = SPOT_LO[0]; x <= SPOT_HI[0]; x += SPOT_STEP)
-        for (let z = SPOT_LO[1]; z <= SPOT_HI[1]; z += SPOT_STEP) {
-          const y = ground(x + 32, z);
-          if (!y || ELEMENTS[idAt(x + 32, y - 1, z)].kind === K.LIQUID || y > g.ny - 50) continue;   // not over the sea, room above
-          let trees = 0;
-          for (let dx = 0; dx <= 64; dx += 4)
-            for (let dz = -SPOT_REACH; dz <= SPOT_REACH; dz += 4)
-              for (let yy = y; yy < Math.min(g.ny, y + 30); yy += 3) if (TREE.has(idAt(x + dx, yy, z + dz))) trees++;
-          if (!best || trees < best.trees) best = { x, z, y, trees };
-        }
-      o = [best.x - 24, best.y, best.z - 64];   // the lab layout's (24, 0, 64) lands here
+    if (!island) {
+      const [A, B] = sim.blankState();
+      const set = (x, y, z, id, ctype = 0) => {
+        const i = sim.cellTexel(x, y, z) * 4;
+        A[i] = id; A[i + 1] = ELEMENTS[id].temp; A[i + 2] = ELEMENTS[id].life; A[i + 3] = ctype + Math.random() * SEED_MAX;
+      };
+      const box = (x0, y0, z0, x1, y1, z1, id, ctype) => {
+        for (let y = y0; y < y1; y++) for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) set(x, y, z, id, ctype);
+      };
+      // the tank: walls, water, a clone lid keeping it full, a one-cell hole 30 up
+      box(24, 0, 56, 40, 46, 72, E.WALL);
+      box(25, 1, 57, 39, 44, 71, E.WATER);
+      box(25, 44, 57, 39, 45, 71, E.CLONE, E.WATER);
+      box(39, 30, 64, 40, 31, 65, E.EMPTY);
+      // the ledge: a channel 8 wide, a clone at its back, spilling off x = 96
+      box(72, 32, 22, 96, 34, 34, E.WALL);
+      box(72, 34, 22, 96, 37, 23, E.WALL);
+      box(72, 34, 33, 96, 37, 34, E.WALL);
+      box(72, 34, 23, 74, 37, 33, E.CLONE, E.WATER);
+      sim.load(A, B);
+      return LAB_CAMS;
     }
-    const set = (x, y, z, id, ctype = 0) => {
-      x += o[0]; y += o[1]; z += o[2];
-      if (x < 0 || y < 0 || z < 0 || x >= g.nx || y >= g.ny || z >= g.nz) return;
-      const i = sim.cellTexel(x, y, z) * 4;
-      A[i] = id; A[i + 1] = ELEMENTS[id].temp; A[i + 2] = ELEMENTS[id].life; A[i + 3] = ctype + Math.random() * SEED_MAX;
-      B[i] = B[i + 1] = B[i + 2] = 0;
+    // the island: the same pours, painted into the window around the view's target
+    const V = a.THREE.Vector3, g = sim.g;
+    const t = a.controls.target.clone().sub(a.volume.position).divideScalar(a.scale);
+    const cx = Math.round(t.x), cz = Math.round(t.z);
+    const [st] = sim.readState();
+    const ground = (x, z) => { for (let y = g.ny - 1; y >= 0; y--) { const id = Math.round(st[sim.cellTexel(x, y, z) * 4]); if (id && ELEMENTS[id].kind !== K.GAS) return y + 1; } return 0; };
+    const y0 = ground(cx, cz);
+    const paint = (tool, c, grow) => sim.paint({ center: new V(...c), radius: 0, shape: 1, tool, rate: 1, replace: false, grow });
+    const top = y0 + 30;
+    // a wall slab with a clone behind a one-cell hole, and a ledge spilling a sheet
+    paint(E.WALL, [cx - 8, top, cz], [0, 6, 6]);
+    paint(E.CLONE, [cx - 10, top, cz], [1, 5, 5]);
+    paint(E.WALL, [cx - 10, top + 7, cz], [2, 0, 7]);
+    paint(E.EMPTY, [cx - 8, top - 4, cz], [0, 0, 0]);
+    paint(E.WATER, [cx - 9, top, cz], [0, 4, 4]);
+    paint(E.WALL, [cx + 6, top + 4, cz], [6, 0, 4]);
+    paint(E.CLONE, [cx + 1, top + 5, cz], [0, 0, 3]);
+    paint(E.WATER, [cx + 2, top + 5, cz], [0, 0, 3]);
+    const w = (c) => c;   // cameras below are window cells
+    return {
+      god: null,
+      wallMid: [w([cx - 8, y0 + 18, cz + 32]), w([cx - 8, y0 + 14, cz])],
+      wallEye: [w([cx - 2, y0 + 5.5, cz + 14]), w([cx - 8, y0 + 12, cz])],
+      fallMid: [w([cx + 16, y0 + 20, cz + 32]), w([cx + 12, y0 + 16, cz])],
     };
-    const box = (x0, y0, z0, x1, y1, z1, id, ctype) => {
-      for (let y = y0; y < y1; y++) for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) set(x, y, z, id, ctype);
-    };
-    if (island) box(20, 1, 44, 64, 50, 84, E.EMPTY);   // a clearing round the tank's pour
-    if (island) box(66, 1, 14, 104, 50, 44, E.EMPTY);   // ... and the ledge's
-    // the tank: walls, water, a clone lid keeping it full, a one-cell hole 30 up
-    box(24, 0, 56, 40, 46, 72, E.WALL);
-    box(25, 1, 57, 39, 44, 71, E.WATER);
-    box(25, 44, 57, 39, 45, 71, E.CLONE, E.WATER);
-    box(39, 30, 64, 40, 31, 65, E.EMPTY);
-    // the ledge: a channel 8 wide, a clone at its back, spilling off x = 96
-    box(72, 32, 22, 96, 34, 34, E.WALL);
-    box(72, 34, 22, 96, 37, 23, E.WALL);
-    box(72, 34, 33, 96, 37, 34, E.WALL);
-    box(72, 34, 23, 74, 37, 33, E.CLONE, E.WATER);
-    sim.load(A, B);
-    if (!island) return LAB_CAMS;
-    // the lab's cameras moved with the scene, in scene units (a window shift doesn't move them off)
-    const s = (c) => a.volume.position.clone().addScaledVector({ x: c[0] + o[0], y: c[1] + o[1], z: c[2] + o[2] }, a.scale).toArray();
-    return Object.fromEntries(Object.entries(LAB_CAMS).map(([k, c]) => [k, c ? { scene: [s(c[0]), s(c[1])] } : null]));
   }, [island, LAB_CAMS]);
   await p.evaluate((n) => window.__app.test.step(n), STEPS);
 
@@ -150,10 +142,6 @@ try {
   const setCam = (cam) => p.evaluate((cam) => {
     const a = window.__app;
     if (!cam) { a.rig.reset(true); return; }
-    if (cam.scene) {   // scene units (the island's)
-      a.camera.position.fromArray(cam.scene[0]); a.controls.target.fromArray(cam.scene[1]); a.controls.update();
-      return;
-    }
     const g = (c) => a.volume.position.clone().addScaledVector({ x: c[0], y: c[1], z: c[2] }, a.scale);
     a.camera.position.copy(g(cam[0])); a.controls.target.copy(g(cam[1])); a.controls.update();
   }, cam);
@@ -172,7 +160,7 @@ try {
   // live: the world running, as a player sees the stream move
   for (const level of levels) {
     await setLevel(level);
-    await setCam(cams.tankMid);
+    await setCam(cams.tankMid ?? cams.wallMid);
     await render(p);
     await p.evaluate(() => { const a = window.__app; a.settings.paused = false; a.test.resume(); });
     await p.waitForTimeout(LIVE_MS);
@@ -243,7 +231,7 @@ if (!island) {
 }
 // contact sheets: one per level (cameras + live), downscaled
 for (const level of levels) {
-  const names = [...Object.keys(LAB_CAMS), 'live'];
+  const names = [...Object.keys(island ? { god: 0, wallMid: 0, wallEye: 0, fallMid: 0 } : LAB_CAMS), 'live'];
   execFileSync('montage', [...names.map((n) => `${out}/${level}-${n}.png`), '-tile', '3x', '-geometry', '640x400+2+2',
     '-title', `${island ? 'island' : 'lab'} ${level}`, `${out}/sheet-${level}.jpg`]);
 }
