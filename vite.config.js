@@ -13,4 +13,8 @@ export default defineConfig({
   // fonts stay files (src/fonts.css): a small subset inlined into the page's
   // CSS would be downloaded by every visitor, needed or not
   build: { assetsInlineLimit: (file) => (/\.woff2?$/.test(file) ? false : undefined) },
+  // fengari (the console's Lua, src/console/lua.js) reads process.env.FENGARICONF
+  // as it loads; the build replaces process.env, the dev server's pre-bundle
+  // doesn't, and the browser has no process: no config means its defaults
+  optimizeDeps: { rolldownOptions: { transform: { define: { 'process.env.FENGARICONF': 'undefined' } } } },
 });

@@ -10,6 +10,11 @@
   --mm-muted: #8d95a5;
   --mm-ui: 'Archivo', system-ui, -apple-system, 'Segoe UI', sans-serif;
   --mm-pixel: 'Silkscreen', 'Archivo', monospace;
+  --mm-amber: #ffcf6b;       /* the tip's bulb, a cold compile's note */
+  /* Halo 3's corner brackets, round an emblem or a panel: arm length, thickness, colour */
+  --mm-bracket-len: 9px;
+  --mm-bracket-w: 2px;
+  --mm-bracket: rgba(170, 205, 245, 0.75);
 }
 html, body { margin: 0; height: 100%; overflow: hidden; background: #0e1117; }
 .mm, .mm * { box-sizing: border-box; }
@@ -58,6 +63,25 @@ body { color: var(--mm-text); font: 400 13px/1.4 var(--mm-ui); -webkit-font-smoo
 .mm-resume:hover { background: rgba(255, 255, 255, 0.14); }
 .mm.in-game .mm-resume { display: block; }
 
+/* one-click Play in the top bar: the first entry big and blue, the others beside it */
+.mm-top-actions { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.mm-quick { display: flex; align-items: stretch; gap: 8px; }
+.mm-play {
+  display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 1px;
+  padding: 7px 16px 8px; border-radius: 8px; text-align: left;
+  background: rgba(255, 255, 255, 0.08); border: 1px solid var(--mm-line);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.3);
+}
+.mm-play:hover { background: rgba(255, 255, 255, 0.14); }
+.mm-play b { font-weight: 750; font-size: 15px; line-height: 1.1; }
+.mm-play small { color: var(--mm-muted); font-size: 11px; white-space: nowrap; }
+.mm-play.main { min-width: 168px; padding: 8px 22px 9px; border-color: transparent; background: var(--mm-blue);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25), 0 6px 18px rgba(0, 0, 0, 0.4); }
+.mm-play.main:hover { background: var(--mm-blue-hi); }
+.mm-play.main b { font-size: 19px; letter-spacing: 0.01em; font-variation-settings: 'wdth' 118; }
+.mm-play.main b::before { content: '▶'; font-size: 0.7em; margin-right: 8px; vertical-align: 0.12em; }
+.mm-play.main small { color: rgba(255, 255, 255, 0.82); }
+
 .mm-body { display: grid; grid-template-columns: 210px 1fr; gap: 18px; min-height: 0; }
 .mm-modes, .mm-main, .mm-bar {
   background: var(--mm-panel);
@@ -66,21 +90,55 @@ body { color: var(--mm-text); font: 400 13px/1.4 var(--mm-ui); -webkit-font-smoo
 }
 .mm-modes { display: flex; flex-direction: column; gap: 2px; padding: 10px; overflow: auto; }
 .mm-label { font: 400 10px/1 var(--mm-pixel); color: var(--mm-muted); letter-spacing: 0.06em; text-transform: uppercase; padding: 6px 10px 10px; }
+/* a baked icon (ui/modeicons.js, ui/tipicons.js): one flat shape in the text's colour */
+.mm-ico { display: block; width: 1em; height: 1em; fill: currentColor; flex: none; }
 .mm-mode {
-  display: flex; align-items: center; justify-content: space-between; gap: 10px;
-  padding: 9px 10px; border: 0; border-radius: 6px;
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 10px 7px 7px; border: 0; border-radius: 6px;
   background: transparent; text-align: left; font-weight: 550;
   box-shadow: inset 3px 0 0 transparent;
 }
+.mm-mode-ico {
+  display: grid; place-items: center; flex: none;
+  width: 26px; height: 26px; border-radius: 5px; font-size: 17px;
+  background: rgba(255, 255, 255, 0.06); color: #b9c1cf;
+}
+.mm-mode-name { flex: 1; min-width: 0; }
 .mm-mode small { color: var(--mm-muted); font-variant-numeric: tabular-nums; }
 .mm-mode:hover { background: rgba(255, 255, 255, 0.06); }
+.mm-mode:hover .mm-mode-ico { color: #fff; }
 .mm-mode[aria-pressed='true'] { background: rgba(61, 143, 224, 0.2); box-shadow: inset 3px 0 0 var(--mm-blue); }
+.mm-mode[aria-pressed='true'] .mm-mode-ico { background: var(--mm-blue); color: #fff; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3); }
 .mm-mode[aria-pressed='true'] small { color: var(--mm-text); }
 
+/* The gamemode's emblem: its icon on a lit tile in Halo 3's corner brackets,
+   the way Halo 3's lobby shows a gametype. */
+.mm-emblem {
+  position: relative; display: grid; place-items: center; flex: none;
+  width: 54px; height: 54px; border-radius: 4px; font-size: 34px; color: #fff;
+  background: radial-gradient(130% 130% at 28% 18%, #5aa4ee 0%, #2b67b4 42%, #142f58 100%);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.4), 0 6px 18px rgba(0, 0, 0, 0.45);
+}
+.mm-emblem .mm-ico { filter: drop-shadow(0 2px 2px rgba(0, 0, 0, 0.35)); }
+.mm-emblem::before, .mm-tip::before {
+  content: ''; position: absolute; inset: -6px; pointer-events: none;
+  background:
+    linear-gradient(var(--mm-bracket) 0 0) top left / var(--mm-bracket-len) var(--mm-bracket-w),
+    linear-gradient(var(--mm-bracket) 0 0) top left / var(--mm-bracket-w) var(--mm-bracket-len),
+    linear-gradient(var(--mm-bracket) 0 0) top right / var(--mm-bracket-len) var(--mm-bracket-w),
+    linear-gradient(var(--mm-bracket) 0 0) top right / var(--mm-bracket-w) var(--mm-bracket-len),
+    linear-gradient(var(--mm-bracket) 0 0) bottom left / var(--mm-bracket-len) var(--mm-bracket-w),
+    linear-gradient(var(--mm-bracket) 0 0) bottom left / var(--mm-bracket-w) var(--mm-bracket-len),
+    linear-gradient(var(--mm-bracket) 0 0) bottom right / var(--mm-bracket-len) var(--mm-bracket-w),
+    linear-gradient(var(--mm-bracket) 0 0) bottom right / var(--mm-bracket-w) var(--mm-bracket-len);
+  background-repeat: no-repeat;
+}
+
 .mm-main { display: flex; flex-direction: column; min-height: 0; padding: 16px 18px; overflow: auto; }
-.mm-mode-head { margin-bottom: 14px; }
-.mm-mode-head h2 { margin: 0; font-size: 22px; font-weight: 750; font-variation-settings: 'wdth' 112; }
-.mm-mode-head p { margin: 3px 0 0; color: var(--mm-muted); }
+.mm-mode-head { display: flex; align-items: center; gap: 16px; margin: 4px 0 16px 6px; }
+.mm-head-text { flex: 1; min-width: 0; }
+.mm-mode-head h2 { margin: 0; font-size: 24px; font-weight: 800; letter-spacing: 0.01em; text-transform: uppercase; font-variation-settings: 'wdth' 118; }
+.mm-mode-head p { margin: 2px 0 0; color: var(--mm-muted); }
 .mm-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); gap: 12px; }
 .mm-card { padding: 6px 6px 8px; border: 0; border-radius: 9px; background: transparent; text-align: center; }
 .mm-card:hover { background: rgba(255, 255, 255, 0.05); }
@@ -106,7 +164,8 @@ body { color: var(--mm-text); font: 400 13px/1.4 var(--mm-ui); -webkit-font-smoo
 .mm-pick { min-width: 0; }
 .mm-pick-line { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
 .mm-pick-name { font-weight: 800; font-size: 19px; font-variation-settings: 'wdth' 112; }
-.mm-pick-meta { color: var(--mm-muted); font-size: 12px; }
+.mm-pick-meta { display: inline-flex; align-items: center; gap: 6px; color: var(--mm-muted); font-size: 12px; }
+.mm-pick-meta .mm-ico { font-size: 13px; }
 .mm-pick-desc { margin-top: 3px; color: #c3c9d4; }
 .mm-start {
   padding: 13px 28px; border: 0; border-radius: 8px;
@@ -116,24 +175,157 @@ body { color: var(--mm-text); font: 400 13px/1.4 var(--mm-ui); -webkit-font-smoo
 }
 .mm-start:hover { background: var(--mm-blue-hi); }
 
-/* the loading screen: the map's preview, its name, what's happening */
-.mm-load { display: none; position: absolute; inset: 0; align-items: flex-end; padding: 48px; }
+/* ---- The loading screen (menu.js loading): a classic game's, from three of them.
+   The map's art drifts behind it, as Halo 3's menus drift over a map. Halo 3's
+   pre-game screen: the gametype's emblem and rules, the map's name, big. GMod's
+   loading screen: the steps it is really on, ticked as they finish. TF2's: a
+   tip in a box with an icon. And the player himself, standing at the side. */
+.mm-load {
+  display: none; position: absolute; inset: 0;
+  grid-template-rows: auto minmax(0, 1fr) auto; gap: 18px;
+  padding: 22px clamp(16px, 4vw, 52px) 28px;
+}
 .mm.loading .mm-shell { display: none; }
-.mm.loading .mm-load { display: flex; }
-.mm.loading .mm-backdrop { inset: 0; filter: brightness(0.55) saturate(1.1); }
-.mm-load-copy { max-width: 560px; }
-.mm-load-mode { font: 400 11px/1 var(--mm-pixel); color: #c3c9d4; letter-spacing: 0.08em; text-transform: uppercase; }
-.mm-load-name { margin-top: 8px; font-weight: 800; font-size: 56px; line-height: 1; letter-spacing: -0.015em;
-  font-variation-settings: 'wdth' 122; text-shadow: 0 2px 18px rgba(0, 0, 0, 0.55); }
-.mm-load-status { margin-top: 12px; color: #c3c9d4; font-size: 14px; }
-/* a transform animation runs on the compositor, so it keeps moving while the
-   main thread compiles the renderer's shaders */
-.mm-load-bar { position: relative; margin-top: 16px; width: 260px; height: 4px; border-radius: 2px; overflow: hidden; background: rgba(255, 255, 255, 0.15); }
-.mm-load-bar i { position: absolute; inset: 0; width: 40%; border-radius: 2px; background: var(--mm-blue-hi); animation: mm-slide 1.1s cubic-bezier(0.45, 0, 0.55, 1) infinite; }
-@keyframes mm-slide { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
+.mm.loading .mm-load { display: grid; }
+/* (a transform animation runs on the compositor: it keeps moving while the main thread compiles) */
+.mm.loading .mm-backdrop {
+  inset: 0; filter: blur(2px) brightness(0.62) saturate(1.15);
+  animation: mm-drift 26s ease-in-out infinite alternate;
+}
+@keyframes mm-drift { from { transform: scale(1.06) translate(-1.2%, 0.6%); } to { transform: scale(1.14) translate(1.2%, -0.8%); } }
+/* scanlines, a vignette, and dark at the top and bottom where the type sits */
+.mm-load-shade {
+  position: absolute; inset: 0; pointer-events: none;
+  background:
+    repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.16) 0 1px, transparent 1px 3px),
+    radial-gradient(125% 95% at 55% 40%, transparent 45%, rgba(4, 6, 10, 0.7) 100%),
+    linear-gradient(180deg, rgba(4, 6, 10, 0.6) 0%, transparent 16%, transparent 42%, rgba(4, 6, 10, 0.9) 100%);
+}
+.mm-load > :not(.mm-load-shade) { position: relative; min-width: 0; }
+.mm-load-top { display: flex; align-items: center; }
+.mm-load-top .mm-brand span { font-size: 16px; }
+
+.mm-load-stage { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 24px; min-height: 0; }
+.mm-load-copy { position: relative; z-index: 1; max-width: 720px; padding-bottom: 6px; }
+.mm-load-head { display: flex; align-items: center; gap: 18px; }
+/* Halo 3's medals: an icon on a coloured hexagon, lit from the top left, its
+   caption under it. The loading screen's own (the in-game medals are
+   src/game's): the gamemode big, the map's kind and size in a row. */
+.mm-medal-big, .mm-medal i, .mm-tip-icon {
+  display: grid; place-items: center; flex: none; aspect-ratio: 1; color: #fff;
+  clip-path: polygon(25% 4%, 75% 4%, 100% 50%, 75% 96%, 25% 96%, 0 50%);
+  background: linear-gradient(160deg, var(--mm-medal-hi), var(--mm-medal-lo));
+}
+.mm-medal-big .mm-ico, .mm-medal .mm-ico, .mm-tip-icon .mm-ico { width: 52%; height: 52%; filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.45)); }
+.mm-medal-big { --mm-medal-hi: #7fd0ff; --mm-medal-lo: #1a5cb5; width: 84px; filter: drop-shadow(0 6px 14px rgba(0, 0, 0, 0.5)); }
+.mm-medals { display: flex; flex-wrap: wrap; gap: 10px 22px; margin: 18px 0 0; padding: 0; list-style: none; }
+.mm-medals:empty, .mm-load-desc:empty { display: none; }
+.mm-medal {
+  display: grid; justify-items: center; gap: 6px; max-width: 132px; text-align: center;
+  font: 800 11px/1.15 var(--mm-ui); font-variation-settings: 'wdth' 75; letter-spacing: 0.06em; text-transform: uppercase;
+  color: #fff; text-shadow: 0 1px 2px #000;
+}
+.mm-medal i { width: 46px; filter: drop-shadow(0 3px 6px rgba(0, 0, 0, 0.5)); }
+/* the mockup's medal colours (light, dark) */
+.mm-medal.is-blue { --mm-medal-hi: #7fd0ff; --mm-medal-lo: #1a5cb5; }
+.mm-medal.is-green { --mm-medal-hi: #8ef0a4; --mm-medal-lo: #1d7a3c; }
+.mm-medal.is-purple { --mm-medal-hi: #c9a2ff; --mm-medal-lo: #5b2aa8; }
+.mm-medal.is-orange { --mm-medal-hi: #ffbf5a; --mm-medal-lo: #cc420a; }
+.mm-load-modeline { min-width: 0; }
+.mm-load-mode { font: 400 13px/1.2 var(--mm-pixel); letter-spacing: 0.12em; text-transform: uppercase; color: #fff;
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.6); }
+.mm-load-rules { margin-top: 5px; max-width: 460px; color: #c9d0db; font-size: 13px; text-shadow: 0 1px 6px rgba(0, 0, 0, 0.7); }
+.mm-load-rules:empty { display: none; }
+.mm-load-name {
+  margin: 18px 0 0; font-weight: 800; font-size: clamp(38px, 6.2vw, 84px); line-height: 0.95;
+  letter-spacing: 0.005em; text-transform: uppercase; font-variation-settings: 'wdth' 125;
+  text-shadow: 0 3px 24px rgba(0, 0, 0, 0.6), 0 1px 0 rgba(0, 0, 0, 0.4);
+}
+.mm-load-desc { margin: 12px 0 0; max-width: 580px; color: #dde2ea; font-size: 15px; line-height: 1.45; text-shadow: 0 1px 8px rgba(0, 0, 0, 0.75); }
+
+/* "This is you.": public/you.webp (tools/you-portrait.mjs), in a soft blue
+   light with a pool of it at his feet */
+.mm-you {
+  position: relative; margin: 0; height: clamp(240px, 60vh, 560px); display: flex; align-items: flex-end;
+  background: radial-gradient(closest-side at 50% 55%, rgba(90, 164, 238, 0.16), transparent);
+}
+.mm-you::before {
+  content: ''; position: absolute; left: -10%; right: -10%; bottom: -5%; height: 14%;
+  background: radial-gradient(closest-side, rgba(90, 164, 238, 0.42), transparent);
+}
+.mm-you img { position: relative; display: block; height: 100%; width: auto; filter: drop-shadow(0 10px 18px rgba(0, 0, 0, 0.55)); }
+.mm-you figcaption {
+  position: absolute; right: 100%; top: 34%; margin-right: 4px;
+  display: flex; align-items: center; gap: 8px; white-space: nowrap;
+  font-weight: 700; font-size: 15px; color: #fff; text-shadow: 0 1px 8px rgba(0, 0, 0, 0.8);
+}
+.mm-you figcaption::after { content: ''; width: 34px; height: 2px; background: linear-gradient(90deg, #fff, rgba(255, 255, 255, 0.2)); }
+
+.mm-load-foot { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 400px); align-items: end; gap: 32px; }
+/* GMod's status lines: done, under way (a spinner: it turns on the compositor
+   through a compile), still to come */
+.mm-steps { margin: 0; padding: 0; list-style: none; max-width: 560px; }
+.mm-steps li {
+  display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: baseline; column-gap: 8px;
+  padding: 2px 0; font-size: 13px; color: rgba(231, 234, 240, 0.4);
+}
+.mm-steps li.done { color: rgba(231, 234, 240, 0.72); }
+.mm-steps li.now { color: #fff; font-weight: 600; }
+.mm-step-mark { position: relative; align-self: center; width: 12px; height: 12px; }
+.mm-step-mark::before { content: ''; position: absolute; left: 4px; top: 4px; width: 4px; height: 4px; border-radius: 50%; background: currentColor; }
+.done .mm-step-mark::before {
+  left: 2px; top: 1px; width: 8px; height: 4px; border-radius: 0; background: none;
+  border: solid #6fd08c; border-width: 0 0 2px 2px; transform: rotate(-45deg);
+}
+.now .mm-step-mark::before {
+  left: 0; top: 0; width: 12px; height: 12px; box-sizing: border-box; background: none;
+  border: 2px solid rgba(90, 164, 238, 0.3); border-top-color: var(--mm-blue-hi);
+  animation: mm-spin 0.8s linear infinite;
+}
+@keyframes mm-spin { to { transform: rotate(360deg); } }
+.mm-step-text em { display: block; font-style: normal; font-weight: 400; font-size: 12px; color: var(--mm-amber); }
+.mm-step-time { font: 400 10px/1 var(--mm-pixel); color: var(--mm-muted); font-variant-numeric: tabular-nums; }
+.mm-load-status { margin-top: 12px; font-weight: 650; font-size: 16px; text-shadow: 0 1px 8px rgba(0, 0, 0, 0.7); }
+/* the bar: the share of the steps done, in blocks like Source's loading bar,
+   with a glint running along it on the compositor so it moves through a stall */
+.mm-load-bar {
+  position: relative; margin-top: 10px; max-width: 560px; height: 8px; overflow: hidden;
+  background: rgba(255, 255, 255, 0.1); box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+.mm-load-fill {
+  position: absolute; inset: 0; transform-origin: left; transform: scaleX(0);
+  background: linear-gradient(90deg, #2b6fc4, var(--mm-blue-hi));
+  transition: transform 400ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.mm-load-bar::after {
+  content: ''; position: absolute; inset: 0;
+  background: repeating-linear-gradient(90deg, transparent 0 10px, rgba(4, 6, 10, 0.85) 10px 12px);
+}
+.mm-load-shine {
+  position: absolute; inset: 0; width: 30%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.35), transparent);
+  animation: mm-slide 1.6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+@keyframes mm-slide { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+
+/* TF2's tip: a dark box, the subject's icon on the left, the fact beside it */
+.mm-tip {
+  position: relative; display: grid; grid-template-columns: 50px minmax(0, 1fr); align-items: center; gap: 14px;
+  padding: 12px 16px 12px 12px; border-radius: 3px;
+  background: rgba(10, 13, 19, 0.84); box-shadow: inset 0 0 0 1px var(--mm-line), 0 10px 28px rgba(0, 0, 0, 0.4);
+  opacity: 0; transition: opacity 300ms;
+}
+.mm.has-tip .mm-tip { opacity: 1; }
+.mm-tip-icon { --mm-medal-hi: #ffe39a; --mm-medal-lo: #b8740e; width: 50px; }
+.mm-tip-body b { display: block; font: 400 10px/1 var(--mm-pixel); letter-spacing: 0.12em; text-transform: uppercase; color: var(--mm-amber); }
+.mm-tip-text { margin: 5px 0 0; font-size: 14px; line-height: 1.4; color: #e7eaf0; }
 
 @media (max-width: 720px) {
   .mm-shell { padding: 12px 16px 14px; gap: 12px; }
+  .mm-brand span { display: none; }
+  .mm-play { padding: 6px 12px; }
+  .mm-play.main { min-width: 0; padding: 7px 16px; }
+  .mm-play small { display: none; }
   .mm-body { grid-template-columns: 1fr; grid-template-rows: auto 1fr; gap: 10px; }
   .mm-modes { flex-direction: row; overflow-x: auto; padding: 6px; scrollbar-width: none; }
   .mm-label { display: none; }
@@ -146,10 +338,46 @@ body { color: var(--mm-text); font: 400 13px/1.4 var(--mm-ui); -webkit-font-smoo
   .mm-pick-thumb, .mm-pick-desc { display: none; }
   .mm-pick-name { font-size: 16px; }
   .mm-start { padding: 12px 18px; }
-  .mm-load { padding: 24px 16px; }
-  .mm-load-name { font-size: 38px; }
-  .mm-load-bar { width: 100%; }
+  .mm-mode { padding: 6px 10px 6px 6px; }
+  .mm-mode-ico { width: 22px; height: 22px; font-size: 15px; }
+  .mm-load { padding: 14px 16px 18px; gap: 12px; }
+  .mm-load-top .mm-brand span { display: inline; }   /* (the menu hides it for its Play buttons; the loading screen has room) */
+  /* he stands behind the copy, top right */
+  .mm-load-stage { grid-template-columns: minmax(0, 1fr); }
+  .mm-you { position: absolute; right: 0; top: 0; height: min(40vh, 290px); }
+  .mm-you::before { left: 0; right: 0; }
+  .mm-you figcaption { top: 30%; font-size: 13px; }
+  .mm-medal-big { width: 60px; }
+  .mm-medals { gap: 8px 14px; margin-top: 14px; }
+  .mm-medal { max-width: 104px; font-size: 10px; }
+  .mm-medal i { width: 38px; }
+  .mm-load-head { gap: 14px; }
+  .mm-load-name { margin-top: 12px; font-size: 34px; }
+  .mm-load-desc { font-size: 14px; }
+  .mm-load-foot { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+  .mm-load-status { font-size: 15px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .mm-thumb img { transition: none; }
+  .mm.loading .mm-backdrop, .mm-load-shine { animation: none; }
+}
+
+/* Saves (Garry's Mod's main menu Saves): the games kept with ⌘S, Open file…, and per save Export and Delete */
+.mm-label-gap { margin-top: 12px; }
+.mm-head-line { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.mm-head-btn, .mm-side {
+  padding: 8px 14px; border-radius: 7px;
+  background: rgba(255, 255, 255, 0.08); border: 1px solid var(--mm-line);
+  font-weight: 600;
+}
+.mm-head-btn:hover, .mm-side:hover { background: rgba(255, 255, 255, 0.14); }
+.mm-head-btn, .mm-side { display: none; }
+.mm.saves-view .mm-head-btn, .mm.saves-view .mm-side { display: block; }
+.mm-actions { display: flex; align-items: center; gap: 8px; }
+.mm-start:disabled, .mm-side:disabled { opacity: 0.45; cursor: default; }
+.mm-date { margin-top: 2px; color: var(--mm-muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mm-empty { grid-column: 1 / -1; padding: 28px 8px; color: var(--mm-muted); text-align: center; }
+@media (max-width: 720px) {
+  .mm-label-gap { display: none; }
+  .mm.saves-view .mm-side { padding: 8px 10px; }
 }

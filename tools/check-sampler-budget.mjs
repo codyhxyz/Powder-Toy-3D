@@ -32,6 +32,7 @@ import * as windowPasses from '../src/shaders/window.js';
 import * as far from '../src/shaders/far.js';
 import { aerationFrag } from '../src/shaders/gfx/liquidDetail.js';
 import { islandGLSL, islandColumnFrag } from '../src/world/scenes/island.js';
+import { DESCENT_SCENES } from '../src/world/scenes/descent/scenes.js';
 import { figureFrag } from '../src/pov/figure.js';
 import { probeFrag as birdProbeFrag } from '../src/birds/probe.js';
 import { birdFrag } from '../src/birds/render.js';
@@ -95,6 +96,12 @@ check('farView', far.farFrag(gw, L));
 check('farMesh', far.farFrag(gw, L, true));
 check('detailCells', far.farSceneCellsFrag(gw, L, islandGLSL(), far.farSceneLayout(L, 40), true));
 check('farSceneCells-island', far.farSceneCellsFrag(gw, L, islandGLSL()));
+// Descent's Wang levels sample their tiling (wang/glsl.js: two more units)
+for (const sc of DESCENT_SCENES) {
+  for (const k of ['sceneFillFrag', 'sceneDiffFrag']) check(`${k}-${sc.key}`, generate[k](g, sc.glsl(g)));
+  check(`detailCells-${sc.key}`, far.farSceneCellsFrag(gw, L, sc.glsl(g), far.farSceneLayout(L, 40), true));
+  check(`farSceneCells-${sc.key}`, far.farSceneCellsFrag(gw, L, sc.glsl(g)));
+}
 check('farScene-trees', far.farSceneFrag(gw, L, true));
 for (const k of ['farTreeBandFrag', 'farWinFrag']) check(k, far[k](gw, L));
 check('islandColumns', islandColumnFrag());

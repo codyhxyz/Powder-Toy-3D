@@ -66,6 +66,16 @@ Facts the shapes rely on:
   `descentLevel` (0, 1, 2).
 - the tunnel layout is one GLSL function, `dsTunnel` in `descent/scenes.js`
   (its header lists what a replacement must keep).
+- Wang levels (`DS_LEVEL_DEFS[i].kit`, docs/wang-tiles.md; the Mines since
+  2026-10-11): `dsTunnel` returns the tiling's cell (`dsWang`: GPU `wangCell`,
+  twin `wangCellJS`; the kit's ROCK falls through to `dsRock`). The region starts
+  at `BIOME_Y0`, offset in x and z so its exit unit sits over the temple's entry
+  shaft, and holds 4 layers of 24 cells under the surface or roof. The way in
+  ends in an entry hall on the region's top over the entry shaft (unit
+  `ENTRY_I/ENTRY_K`); the bake checks both line up. Sites: the kit's sites the
+  body's walk (`wang/walk.js walkFlood`, `sites.js wangWalk`) reaches from the
+  spawn; the check also requires the walk to reach the temple. A deep level with
+  a kit spawns in its entry hall.
 
 ## Events (`src/pov/events.js` povEvents)
 

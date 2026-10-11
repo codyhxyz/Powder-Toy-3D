@@ -6,6 +6,7 @@
     "/assets/*",
     "/models/*",
     "/maps/*",
+    "/announcer/*",
     "/favicon.ico",
     "/favicon.svg",
     "/apple-touch-icon.png",

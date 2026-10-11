@@ -114,6 +114,17 @@ export class Spawners {
 
   clear() { for (const s of [...this.list]) this.remove(s); }
 
+  // The spawners for a save (saves/game.js), feet in world cells, and back.
+  toJSON() { return this.list.map((s) => ({ kind: s.kind, world: s.world.toArray() })); }
+  fromJSON(arr) {
+    this.clear();
+    const kinds = new Set(Object.values(SPAWNER)), origin = this.getSim().origin;
+    for (const s of arr ?? []) {
+      if (!kinds.has(s?.kind) || !Array.isArray(s.world) || this.of(s.kind).length >= MAX_PER_KIND) continue;
+      this.add(s.kind, new THREE.Vector3().fromArray(s.world).sub(origin));
+    }
+  }
+
   of(kind) { return this.list.filter((s) => s.kind === kind); }
 
   // a spawner's feet in grid cells (the window's), or null while it's outside the window

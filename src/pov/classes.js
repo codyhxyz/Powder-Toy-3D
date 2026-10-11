@@ -12,6 +12,9 @@ import { PERK } from './perks.js';
 
 export const CLASSES_ENABLED = true;   // the whole layer: the picker, its key, applying classes on spawn
 export const RESPAWN_ROOM_S = 6;       // s after a spawn in which a class change applies at once (TF2's respawn room)
+// The class you play when the picker opens on joining a team (Siege) and you
+// close it without picking: TF2's Soldier, the class its Basic Training teaches first.
+export const DEFAULT_CLASS = 'ROCKETEER';
 
 // ---- body scales (the class's "low health" / "slow"): hooks on the body, see docs/classes.md
 const FRAIL = 0.7;                     // × max health: the Runner dies to less

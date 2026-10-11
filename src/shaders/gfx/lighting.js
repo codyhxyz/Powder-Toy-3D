@@ -413,6 +413,14 @@ float giSkyVis(Probe g, vec3 n) {
   float v = SH_Y0 * g.c0.a + SH_COS1 * SH_Y1 * (g.cx.a * n.x + g.cy.a * n.y + g.cz.a * n.z);
   return clamp(v / max(0.5 + 0.5 * n.y, SKYVIS_MIN), 0.0, 1.0);
 }
+// Share of the open sky the air at p sees, over every direction (1 in the
+// open, 0 in a closed cave): band 0 against the open sky's, the sphere's upper
+// half. Past the window there are no probes: open.
+const float SKYVIS_OPEN_DC = 0.5;   // SH_Y0 * c0.a of the open sky
+float giAirSkyVis(vec3 p) {
+  if (any(lessThan(p, vec3(0.0))) || any(greaterThan(p, vec3(GRID)))) return 1.0;
+  return clamp(SH_Y0 * probeTex(tGI0, p).a / SKYVIS_OPEN_DC, 0.0, 1.0);
+}
 
 // Cold wand lights enter the same surface/media lighting path as local glow,
 // without spawning hot voxels.
