@@ -1,9 +1,11 @@
 import { h } from '../ui/dom.js';
 import { MODES, MODE_KEYS, TEAM_NAME, TEAM_CSS, KILLFEED_S, KILLFEED_MAX } from './rules.js';
+import { deathNotice, iconFor, KF_COLOR } from '../pov/killfeed.js';
 import './game.css';
 
 // The team game's screen, Halo's layout: the score, the clock and the
-// objective top-centre; the killfeed top-right; Tab holds up the scoreboard; M
+// objective top-centre, the match's news under them; kills go to the shared
+// killfeed top-right (GMod's, pov/killfeed.js); Tab holds up the scoreboard; M
 // opens the match menu (mode, side, Start/End: kept out of the main drawer);
 // the result at the end. update() only writes the DOM when a shown string changes.
 
@@ -76,16 +78,12 @@ export function createGameHud({ onStart, onEnd, onSide, onClose }) {
     holdBoard(v) { boardHeld = v; },
     setMenu(v) { menuOpen = v; },
     choose(mode) { chosen = mode; sync(); },
-    // a killfeed line: { killer, killerTeam, victim, victimTeam, cause }
-    kill(e, now) {
-      const el = h('div.game-kill', {},
-        e.killer ? h('b', { text: e.killer, style: { color: TEAM_CSS[e.killerTeam] ?? '' } }) : null,
-        h('span', { text: e.killer ? ` ${e.verb ?? 'killed'} ` : '' }),
-        h('b', { text: e.victim, style: { color: TEAM_CSS[e.victimTeam] ?? '' } }),
-        e.killer ? null : h('span', { text: ` ${e.cause ? e.cause.toLowerCase() : 'died'}` }));
-      feed.prepend(el);
-      lines.unshift({ el, at: now });
-      while (lines.length > KILLFEED_MAX) lines.pop().el.remove();
+    // a kill for the killfeed: { killer, killerTeam, victim, victimTeam, cause, held } (no killer: a suicide or the world)
+    kill(e) {
+      deathNotice({
+        attacker: e.killer, attackerColor: TEAM_CSS[e.killerTeam] ?? KF_COLOR.player,
+        icon: iconFor(e.cause, e.held), victim: e.victim, victimColor: TEAM_CSS[e.victimTeam] ?? KF_COLOR.player,
+      });
     },
     // a line across the screen for a moment (flag taken, hill moved, halftime)
     announce(text, now) {
