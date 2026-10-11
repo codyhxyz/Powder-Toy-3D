@@ -133,7 +133,10 @@ The dock groups elements like a periodic-table strip, each tile in the element's
 - **Liquids:** WATR, ACID, OIL, LAVA
 - **Gases:** WTRV (steam), CLOD (cloud), SMKE, FIRE
 - **Solids:** WALL, COAL, ROCK, LMST (limestone), SDST (sandstone), METL, GLAS, ICE, WOOD, PLNT, CLNE
-- **Tools:** HEAT, COOL, ERAS, PRES (pressure), SIGN
+- **Tools:** HEAT, COOL, ERAS, PRES (pressure), SIGN, and the rest of TPT's tools menu:
+  VAC (vacuum), WIND (blows the way you drag), CYCL (cyclone: spins air and matter about the brush, counterclockwise from above),
+  MIX (shuffles the powders, liquids and gases inside the brush, each with its own kind),
+  PGRV and NGRV (a gravity well and a repeller while held), AMBP and AMBM (warm or cool the air, not the matter in it)
 - **Constructions:** HOUS (cottage, log cabin, brick, greenhouse), TREE (oak, pine, birch, palm, willow, dead), CAMP, IGLO, BRRL (oil drum, powder keg), AQUA, FNTN, AI (your own, written by a model or pasted)
 
 All element properties live in one table (`src/elements.js`) that is baked into the shaders as GLSL constants,
@@ -374,3 +377,6 @@ Guests don't receive velocity, pressure or air temperature, so their pressure an
 - No incompressible pressure solve for liquids, so communicating vessels don't equalise.
 - A buried clone can't erupt: there's no magma pressure, and it only emits into empty neighbours.
 - The latent heat of vaporisation is real, but steam doesn't expand ~1600×. One cell of water makes one cell of steam.
+- There's no Newtonian gravity field or air advection. PGRV and NGRV pull or push matter inside the brush only, as a
+  ball of mass would, and WIND and CYCL push the cells themselves (air in full, matter by its density) instead of
+  moving the air for matter to follow. Negative pressure fades in one step, so VAC pulls only while it is held.

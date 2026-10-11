@@ -84,13 +84,20 @@ for (const scene of scenes) {
     };
     // the state writers, between stretches of steps
     const c = [g.nx / 2, g.ny * 0.6, g.nz / 2];
-    const tools = { erase: -1, heat: -2, cool: -3, blast: -4 };   // elements.js tool ids
+    const tools = { erase: -1, heat: -2, cool: -3, blast: -4, vacuum: -50, wind: -51, mix: -52, cyclone: -53, gravIn: -54, ambHeat: -56 };   // elements.js tool ids
     const V3 = sim.mats.paint.uniforms.uCenter.value.constructor;
-    const stroke = (tool, at, radius = 5, replace = false) => sim.paint({ center: new V3(...at), radius, shape: 0, tool, rate: 1, replace });
+    const stroke = (tool, at, radius = 5, replace = false, wind = null) => sim.paint({ center: new V3(...at), radius, shape: 0, tool, rate: 1, replace, wind });
     const writers = [
       () => { stroke(E.SAND, [c[0], c[1], c[2]]); stroke(E.WATER, [c[0] + 12, c[1], c[2]]); },
-      () => { stroke(tools.heat, [c[0], 6, c[2]], 8); stroke(tools.cool, [c[0] - 14, 6, c[2] + 6], 6); },
-      () => { stroke(tools.erase, [c[0], 4, c[2]], 6); stroke(tools.blast, [c[0] + 8, 8, c[2] - 8], 6); },
+      () => {
+        stroke(tools.heat, [c[0], 6, c[2]], 8); stroke(tools.cool, [c[0] - 14, 6, c[2] + 6], 6);
+        stroke(tools.mix, [c[0], 4, c[2]], 8); stroke(tools.ambHeat, [c[0] + 10, 10, c[2]], 6); stroke(tools.cyclone, [c[0], 8, c[2] + 10], 8);
+      },
+      () => {
+        stroke(tools.erase, [c[0], 4, c[2]], 6); stroke(tools.blast, [c[0] + 8, 8, c[2] - 8], 6);
+        stroke(tools.vacuum, [c[0] - 8, 8, c[2] + 8], 6); stroke(tools.wind, [c[0], 6, c[2] - 10], 6, false, [2, 0, 1]);
+        stroke(tools.gravIn, [c[0] + 10, 6, c[2] + 10], 6);
+      },
       () => { sim.snapshot(); stroke(E.STONE, [c[0], c[1] + 6, c[2]], 4, true); sim.undo(); },
       async () => {
         const packer = createPacker(R), unpacker = createUnpacker();

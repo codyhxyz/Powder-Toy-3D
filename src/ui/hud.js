@@ -125,7 +125,8 @@ export function createHelp(onClose) {
         row('Screenshot', 'P'),
         row('Close menus; with none open, the map menu', 'Esc'),
       ),
-      h('p', { text: 'Signs can show live values: write {t} for temperature, {p} for pressure and {e} for the element under the sign.' })));
+      h('p', { text: 'Signs can show live values: write {t} for temperature, {p} for pressure and {e} for the element under the sign.' }),
+      h('p', { text: 'Tools from The Powder Toy: Wind blows the way you drag the brush, Cyclone spins air and matter around it, Mix shuffles what is inside it, PGRV and NGRV pull matter in or push it out while held, and AMBP and AMBM warm or cool only the air.' })));
   document.body.append(el);
   return {
     setOpen: (v) => el.classList.toggle('open', v),

@@ -1162,6 +1162,25 @@ export const TOOLS = [
   // bolt from the top of the box down to the surface under the cursor.
   { id: -8, key: 'LIGHTNING', abbr: 'LIGH', name: 'Lightning', color: '#fff6b0',
     desc: 'Click a surface: a branching bolt strikes it from above, leaving a column of plasma, scorching heat and a pressure crack where it lands. Brush size sets how wide the strike is.' },
+  // The rest of TPT's Tools menu (src/simulation/simtools/*.cpp), applied by
+  // the paint shader (passes.js paintFrag; strengths: physics.js TOOL_*).
+  // Colours are TPT's, lightened where they would vanish on the dark dock.
+  { id: -50, key: 'VACUUM', abbr: 'VAC', name: 'Vacuum', color: '#8a8f99',
+    desc: 'Takes air pressure away, so air and loose matter rush in.' },
+  { id: -51, key: 'WIND', abbr: 'WIND', name: 'Wind', color: '#a9c1d4',
+    desc: 'Blows air and loose matter the way you drag the brush. Light things go furthest.' },
+  { id: -52, key: 'MIX', abbr: 'MIX', name: 'Mix', color: '#ffd090',
+    desc: 'Shuffles the powders, liquids and gases inside the brush, each with its own kind.' },
+  { id: -53, key: 'CYCLONE', abbr: 'CYCL', name: 'Cyclone', color: '#4a77c4',
+    desc: 'Spins air and loose matter around the brush like a tornado.' },
+  { id: -54, key: 'GRAV_IN', abbr: 'PGRV', name: 'Gravity well', color: '#ccccff',
+    desc: 'Pulls matter toward the middle of the brush while you hold it.' },
+  { id: -55, key: 'GRAV_OUT', abbr: 'NGRV', name: 'Gravity repeller', color: '#aaccff',
+    desc: 'Pushes matter out from the middle of the brush while you hold it.' },
+  { id: -56, key: 'AMB_HEAT', abbr: 'AMBP', name: 'Warm air', color: '#ffdd00',
+    desc: 'Warms the air inside the brush, not the matter in it. Warm air rises.' },
+  { id: -57, key: 'AMB_COOL', abbr: 'AMBM', name: 'Cool air', color: '#00ddff',
+    desc: 'Cools the air inside the brush, not the matter in it. Cold air sinks.' },
   // Magical birds (src/birds/): a flock that lives on this spot. (-30 to -32 are the creature spawners.)
   { id: -33, key: 'FLOCK', abbr: 'BIRD', name: 'Bird flock', color: '#b58cff',
     desc: 'Click a surface: a flock of magical birds lives here. They perch in trees and on roofs, take off when you come near or fire, roost and glow at night, and burn and fall like anything else. Click it again to remove it.' },
@@ -1255,7 +1274,7 @@ export const PALETTE = [
   { name: 'Electronics', items: ['SPARK', 'BATTERY', 'METAL', 'LAMP', 'PSCN', 'NSCN', 'SWITCH', 'INSULATOR', 'TSNS', 'PCLN'] },
   { name: 'Radioactive', items: ['PHOTON', 'NEUTRON', 'URANIUM', 'PLUTONIUM'] },
   { name: 'Exotic', items: ['ANTIMATTER', 'SINGULARITY'] },
-  { name: 'Tools', items: ['HEAT', 'COOL', 'ERASE', 'BLAST', 'LIGHTNING', 'SIGN', ...GEAR_ITEMS.map((g) => g.key), ...WAND_STARTERS.map((item) => item.key)] },
+  { name: 'Tools', items: ['HEAT', 'COOL', 'ERASE', 'BLAST', 'VACUUM', 'WIND', 'CYCLONE', 'MIX', 'GRAV_IN', 'GRAV_OUT', 'AMB_HEAT', 'AMB_COOL', 'LIGHTNING', 'SIGN', ...GEAR_ITEMS.map((g) => g.key), ...WAND_STARTERS.map((item) => item.key)] },
   { name: 'Entities', items: ['ENEMY', 'GUNNER', 'WORM', 'GIANTWORM', 'SPAWN', 'JEEPPAD', 'BIKEPAD', 'FLOCK'] },
   // Sections under headers, as Garry's Mod's spawnlists split their props
   // (and Halo Reach's Forge splits Structure into Buildings, Bridges and so on)

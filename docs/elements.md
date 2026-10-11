@@ -39,7 +39,7 @@ Element ids must hold at least 256 elements everywhere: there are about 100 on t
 | 9 | Force (9) | Pressure tool | Later. Accelerator and repeller are cheap; pistons and pipes are hard in 3D. |
 | 10 | Powered (10) | none | After electricity. |
 | 11 | Sensors (7) | none | After electricity. |
-| 12 | Tools | Heat, Cool, Erase, Pressure | Vacuum and wind are cheap brushes. Lightning comes in batch 3. |
+| 12 | Tools | Heat, Cool, Erase, Pressure, Spark, Lightning, Sign, Vacuum, Wind, Cyclone, Mix, PGRV, NGRV, AMBP, AMBM | Done: the paint shader's brushes, strengths from `simtools/*.cpp` in `physics.js` `TOOL_*`. Mix pairs cells the way reactions do (below). |
 | 13 | Walls | Wall | Skip. TPT's walls are a separate coarse layer (fans, e-walls). |
 | 14 | Life | none | Skip. It is 2D Game of Life. |
 
@@ -297,6 +297,16 @@ shared mechanism; anything else names its own code.
   singularities. TPT's full singularity turns its neighbours into new ones, which can eat a whole save.
 - **Mud** (TPT's paste) doesn't harden under pressure: that is cornstarch. A clay slurry thins as it is worked.
   Fired clay sinters into ceramic at ~1000 °C instead of melting.
+- **Tools** (`shaders/passes.js` paintFrag). TPT's air tools move its air maps and particles follow by their advection;
+  we have no advection, so Wind and Cyclone push the cells: air in full, loose matter by its inertia (the pressure
+  push's 1/ρ), solids not at all. Cyclone spins about the vertical through the brush, counterclockwise from above.
+  PGRV and NGRV can't feed a Newtonian gravity map (we have none): the brush is a ball of mass whose pull grows
+  toward its edge (4 g there), on matter inside the brush only, while held. Vacuum's negative pressure fades in one
+  step (react.js spreads only positive pressure), so it pulls only while held. AMBP and AMBM heat and cool air cells,
+  since we have no separate ambient-heat map. Mix can't swap per cell on the GPU: each paint splits the grid into 8³
+  blocks at an offset drawn for that paint, each block draws a mask m, and cell l pairs with l XOR m, so partners are
+  mutual; both cells test the same things and draw one coin, as reactions pair (above). It swaps loose matter of one
+  kind, as MIX.cpp does, at MIX.cpp's rate (`tools/brush-tools-check.mjs`).
 
 ## Noita materials (branch `nt-mat`)
 
