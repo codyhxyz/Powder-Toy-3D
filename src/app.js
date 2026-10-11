@@ -901,9 +901,13 @@ function setEditMode(patch) {
   hud.setEditMode(editModeText());
   save();
 }
+const EDIT_MODE_TOASTS = {
+  replace: ['Replace mode off', 'Replace mode on: paints over anything (Alt+click a tile to keep to one element)'],
+  specificDelete: ['Specific delete off', 'Specific delete on: the brush erases anything (Alt+click a tile to keep to one element)'],
+};
 function toggleEditMode(key) {
   setEditMode({ [key]: !settings[key] });
-  hud.toast(editModeText() ?? (key === 'replace' ? 'Replace mode off' : 'Specific delete off'));
+  hud.toast(settings[key] && settings.replaceTarget >= 0 ? editModeText() : EDIT_MODE_TOASTS[key][+settings[key]]);
 }
 // The target (TPT's Ctrl+Alt-click on an element button): picking one turns
 // replace mode on unless specific delete is; picking it again clears it.
