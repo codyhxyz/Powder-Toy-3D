@@ -699,6 +699,11 @@ let toolGunOut = false;    // the tool gun is in hand this frame (toolGun.aim)
 let dragY = 0;
 const brushCenter = new THREE.Vector3();
 let brushValid = false;
+// The Wind tool blows the way the brush moves (TPT WIND.cpp takes the mouse's
+// motion between frames): where the stroke last painted, in world cells, so a
+// moving World window (docs/scaling.md D11) doesn't count as a gust.
+const windFrom = new THREE.Vector3();
+let windFromValid = false;
 const invVolume = new THREE.Matrix4();
 
 function gridRay() {
@@ -1234,6 +1239,7 @@ function startStroke(tool) {
   }
   strokeTool = tool;
   painting = true;
+  windFromValid = false;
   hud.dismissHint();
 }
 
@@ -1518,13 +1524,17 @@ function tick(now, renderOnly = false) {
 
     prof.phase('paint');
     if (painting && brushValid) {
+      tmpV.copy(brushCenter).add(sim.origin);   // world cells
+      const wind = windFromValid ? [tmpV.x - windFrom.x, tmpV.y - windFrom.y, tmpV.z - windFrom.z] : null;
+      windFrom.copy(tmpV);
+      windFromValid = true;
       const stroke = {
         center: brushCenter, radius: settings.radius, shape: settings.shape,
-        tool: strokeTool, rate: settings.rate, replace: settings.replace,
+        tool: strokeTool, rate: settings.rate, replace: settings.replace, wind,
       };
       if (mp.isGuest) mp.paint(stroke); // the host paints it
       else sim.paint(stroke);
-    }
+    } else windFromValid = false;
   }
   // The world continues beyond its simulation window: don't outline the window.
   edges.visible = !win;

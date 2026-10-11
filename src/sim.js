@@ -376,6 +376,7 @@ export class Simulation {
       paint: rawMat(paintFrag(g), {
         ...state(), uFrame: { value: 0 }, uCenter: { value: new THREE.Vector3() }, uRadius: { value: 4 },
         uShape: { value: 0 }, uTool: { value: 2 }, uRate: { value: 1 }, uReplace: { value: false },
+        uWind: { value: new THREE.Vector3() },
       }),
       copy: rawMat(copyFrag(g), state()),
       moveFlow: stepMat(moveFlowFrag(g), { ...slots(), tQuiet: { value: null } }, SUPER_MAP.STEPS),
@@ -702,7 +703,8 @@ export class Simulation {
     this.stepping = false;
   }
 
-  paint({ center, radius, shape, tool, rate, replace }) {
+  // wind: [x, y, z] cells the brush moved since the stroke's last paint (the Wind tool's drag)
+  paint({ center, radius, shape, tool, rate, replace, wind }) {
     // particle tools paint into the particle list, not the grid
     if (this.rays.paint({ center, radius, shape, tool, rate })) return;
     this.rays.noteElement(tool);   // plutonium emits neutrons: the layer wakes
@@ -720,6 +722,8 @@ export class Simulation {
     u.uTool.value = tool;
     u.uRate.value = rate;
     u.uReplace.value = replace;
+    if (wind) u.uWind.value.fromArray(wind);
+    else u.uWind.value.set(0, 0, 0);
     // it changes cells within radius of its centre (either shape)
     const c = [center.x, center.y, center.z];
     this.touchCentres(c.map((x) => x - radius), c.map((x) => x + radius));
