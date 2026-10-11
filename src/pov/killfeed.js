@@ -21,6 +21,11 @@ import './killfeed.css';
 // blow landed, else what the death's cause names (vitals.js: 'Drowned in water' →
 // the drowning icon). A team game posts its own notices (src/game/index.js died: it
 // knows the teams), so the watch here stands down while a match runs.
+//
+// Every death the feed shows is also announced on povEvents as 'kill' (the
+// scoreboard and the medals listen), from here and from src/game alike:
+//   { id, victim, by, killer, cause, icon, held, self, team }   by/killer null: the
+//   world did it; self: a suicide; team: true from a team game (src/game/index.js)
 
 // ---- GMod's numbers
 const HOLD_S = 6;              // s a notice shows (hud_deathnotice_time)
@@ -155,7 +160,9 @@ export function createDeathWatch({ heldBy, bodies, quiet }) {
       if (quiet() || last.has(e.id)) return;
       last.set(e.id, { by, at: now(), held: null });
       setTimeout(() => last.delete(e.id), HOLD_S * 1000);
-      deathNotice({ attacker: nameOf(by), attackerColor: color(by, bodyOf.get(by)), icon: iconFor(e.cause, heldBy(by)), victim: NAMES.bird, victimColor: KF_COLOR.npc });
+      const icon = iconFor(e.cause, heldBy(by));
+      deathNotice({ attacker: nameOf(by), attackerColor: color(by, bodyOf.get(by)), icon, victim: NAMES.bird, victimColor: KF_COLOR.npc });
+      povEvents.emit('kill', { id: e.id, victim: NAMES.bird, by, killer: nameOf(by), cause: e.cause ?? '', icon, held: heldBy(by), self: false, team: false });
       return;
     }
     mark(e.id, by);
@@ -172,16 +179,14 @@ export function createDeathWatch({ heldBy, bodies, quiet }) {
     last.delete(id);
     const credited = h && now() - h.at <= KILL_CREDIT_S ? h : null;
     const cause = body.cause ?? '';
-    if (credited?.by === id) {   // its own blast: GMod's PlayerKilledSelf, the skull and no attacker
-      deathNotice({ icon: 'default', victim: nameOf(id), victimColor: color(id, body) });
-      return;
-    }
+    const self = credited?.by === id;   // its own blast: GMod's PlayerKilledSelf, the skull and no attacker
+    const by = self ? null : credited?.by ?? null;
+    const icon = self ? 'default' : iconFor(cause, credited?.held ?? null);
     deathNotice({
-      attacker: credited ? nameOf(credited.by) : null,
-      attackerColor: credited ? color(credited.by, bodyOf.get(credited.by)) : null,
-      icon: iconFor(cause, credited?.held ?? null),
-      victim: nameOf(id), victimColor: color(id, body),
+      attacker: by ? nameOf(by) : null, attackerColor: by ? color(by, bodyOf.get(by)) : null,
+      icon, victim: nameOf(id), victimColor: color(id, body),
     });
+    povEvents.emit('kill', { id, victim: nameOf(id), by, killer: by ? nameOf(by) : null, cause, icon, held: credited?.held ?? null, self, team: false });
   }
 
   return {

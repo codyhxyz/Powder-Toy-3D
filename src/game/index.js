@@ -9,6 +9,7 @@ import { labLayout, fitLayout } from './layout.js';
 import { ObjectiveEvaluator, WANT, NEAR } from './bots.js';
 import { createMarkers } from './markers.js';
 import { createGameHud } from './hud.js';
+import { iconFor } from '../pov/killfeed.js';
 
 // Team games in first person: Halo's Team Slayer, Capture the Flag, King of
 // the Hill and Infection, and a Siege (TF2's attack/defend with a halftime
@@ -328,6 +329,8 @@ export function createGame(shell) {
     const e = { killer: k?.name ?? null, killerTeam: k?.team ?? null, victim: v.name, victimTeam: v.team, cause, held, by: k?.id ?? null, id: v.id };
     hud.kill(e);
     povEvents.emit('game:kill', e);
+    // the killfeed's own event (pov/killfeed.js 'kill'): the scoreboard and the medals listen to both kinds of game alike
+    povEvents.emit('kill', { id: v.id, victim: v.name, by: e.by, killer: e.killer, cause, icon: iconFor(cause, held), held, self: false, team: true });
     // the mode's part
     if (mode === 'slayer') {
       if (k) { teamScore[k.team]++; k.score++; }
