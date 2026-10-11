@@ -92,9 +92,46 @@ const WAND_PARTS = {
 };
 const WAND_SIDES = 10;                // sides on the wand's round parts
 const GEM_GLOW = 1.6;                 // the gem's colour × this at rest (above 1 it reads as lit from within)
-const GEM_FLASH_GAIN = 2.5;           // on a cast its brightness rises by this × the flash...
-const GEM_FLASH_GROW = 0.6;           // ...and its size by this share...
+const GEM_FLASH_GAIN = 1.2;           // on a cast its brightness rises by this × the flash...
+const HALO_FLASH_GAIN = 0.6;          // ...its halo's by this (more and a close halo saturates to a flat disc)...
+const HALO_FLASH_GROW = 1.2;          // ...and the halo swells by this share: the flare is light spreading, not a bigger gem...
 const GEM_FLASH_DECAY = 8;            // ...falling off at this rate (1/s, exponential)
+// Gem and halo are lit from within, shaded by how squarely each point faces the eye (N·V), so close
+// up they read as a glowing orb with a soft halo rather than a flat polygon in a hard-edged disc.
+// The same core-in-a-halo as a spell's bolt (wands/visuals.js cores), after Noita's glowing spells.
+const GEM_DETAIL = 1;                 // icosphere subdivisions: still faceted, no longer a hexagon face-on
+const GEM_RIM = 0.45;                 // the gem's brightness at its silhouette, a share of its middle's
+const GEM_WHITE = 1.2;                // HDR: white-hot heat added at its middle...
+const GEM_WHITE_SHARP = 6;            // ...falling off as (N·V)^this
+const HALO_DETAIL = 3;                // icosphere subdivisions (a smooth falloff needs smooth normals)
+const HALO_SOFT = 3;                  // the halo's glow falls as (N·V)^this, to nothing at its silhouette
+
+// Something lit from within, bright where it faces the eye: the gem (opaque: { rim, white, whiteSharp })
+// or its additive halo ({ soft, opacity }). uColor is its colour (HDR); renderer tone mapping applies.
+function glowMaterial({ rim = 0, white = 0, whiteSharp = 1, soft = 1, opacity = 1 }) {
+  const halo = opacity < 1;
+  return new THREE.ShaderMaterial({
+    uniforms: { uColor: { value: new THREE.Color('#efcf79') } },
+    vertexShader: /* glsl */ `
+      varying vec3 vN, vV;
+      void main() {
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        vN = normalMatrix * normal; vV = -mv.xyz;
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: /* glsl */ `
+      uniform vec3 uColor;
+      varying vec3 vN, vV;
+      void main() {
+        float face = clamp(abs(dot(normalize(vN), normalize(vV))), 0.0, 1.0);
+        vec3 rgb = uColor * mix(${rim.toFixed(4)}, 1.0, pow(face, ${soft.toFixed(4)})) + vec3(pow(face, ${whiteSharp.toFixed(4)}) * ${white.toFixed(4)});
+        gl_FragColor = vec4(rgb * ${opacity.toFixed(4)}, 1.0);
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+      }`,
+    ...(halo ? { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending } : {}),
+  });
+}
 
 export function createToolbelt(env) {
   const hotbar = createHotbar((i) => pressSlot(i), (key) => select(key));
@@ -117,10 +154,9 @@ export function createToolbelt(env) {
     along(new THREE.CylinderGeometry(P.shaft.back, P.shaft.front, P.shaft.length, WAND_SIDES), P.shaft.color, P.shaft.z),
     along(new THREE.CylinderGeometry(P.cap.radius, P.cap.radius, P.cap.length, WAND_SIDES), P.cap.color, P.cap.z),
   ];
-  const gem = new THREE.Mesh(new THREE.IcosahedronGeometry(P.gem.radius, 0), new THREE.MeshBasicMaterial({ color: '#efcf79' }));
+  const gem = new THREE.Mesh(new THREE.IcosahedronGeometry(P.gem.radius, GEM_DETAIL), glowMaterial({ rim: GEM_RIM, white: GEM_WHITE, whiteSharp: GEM_WHITE_SHARP }));
   gem.position.z = P.gem.z;
-  const halo = new THREE.Mesh(new THREE.IcosahedronGeometry(P.halo.radius, 1), new THREE.MeshBasicMaterial({
-    color: '#efcf79', transparent: true, opacity: P.halo.opacity, depthWrite: false, blending: THREE.AdditiveBlending }));
+  const halo = new THREE.Mesh(new THREE.IcosahedronGeometry(P.halo.radius, HALO_DETAIL), glowMaterial({ soft: HALO_SOFT, opacity: P.halo.opacity }));
   halo.userData.vmLayer = VIEWMODEL_GLOW_LAYER;   // light round the gem goes on the glow pass (viewmodel.js), as the torch's flame does
   gem.add(halo);
   wandHand.add(...wandParts, gem);
@@ -141,10 +177,9 @@ export function createToolbelt(env) {
     const cards = wandRuntime.definition?.cards ?? null;
     if (cards !== gemCards) { gemCards = cards; gemLook = wandLook(cards ?? []); }
     gemFlash *= Math.exp(-GEM_FLASH_DECAY * dt);
-    const glow = GEM_GLOW * (1 + GEM_FLASH_GAIN * gemFlash);
-    gem.material.color.copy(gemLook.color).multiplyScalar(glow);
-    halo.material.color.copy(gemLook.color).multiplyScalar(glow);
-    gem.scale.setScalar(1 + GEM_FLASH_GROW * gemFlash);
+    gem.material.uniforms.uColor.value.copy(gemLook.color).multiplyScalar(GEM_GLOW * (1 + GEM_FLASH_GAIN * gemFlash));
+    halo.material.uniforms.uColor.value.copy(gemLook.color).multiplyScalar(GEM_GLOW * (1 + HALO_FLASH_GAIN * gemFlash));
+    halo.scale.setScalar(1 + HALO_FLASH_GROW * gemFlash);
   }
   let wandSelected = false, wandSlot = 0, wandId = null, custom = null;
   const editor = createWandEditor({
