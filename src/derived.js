@@ -56,6 +56,12 @@ import { fold } from './gpu/kernels.js';
 //   gi0..gi3   the GI bands, rgba16float BX×BY×BZ (the volume and figures sample them)  4 × 256 KB
 //   giSrc      vec4u per brick: GI sources (shaders/gi.js giSource writes them)            512 KB
 //   fieldsTmp  a copy of a final field, for its shift (made on a grid's first shift)      17 MB
+//   noAer      16 bytes: the aeration's stand-in while the whitewater doesn't run
+//
+// The field passes also read whitewater's aeration field (gfx/foam.js, attached
+// with sim.attachAeration: falling water and its wakes, shaders/fields.js
+// jetWGSL): its buffer (both copies) while it is active, its current copy in
+// their params.
 
 // Planes (u32 words a cell) of the field passes' buffers (shaders/fields.js), and the GI's bands.
 const EMA_PLANES = 3, TMP_PLANES = 3, BLURRED_PLANES = 4;
@@ -65,7 +71,7 @@ const GI_BANDS = 4;
 function derivedLayouts(gpu) {
   const L = {};
   for (const [name, entries] of Object.entries({
-    BOOK: DERIVED_LAYOUT.BOOK, FIELD: FIELD_LAYOUT.FIELD, PEAK: FIELD_LAYOUT.PEAK, BRICK: DERIVED_LAYOUT.BRICK,
+    BOOK: DERIVED_LAYOUT.BOOK, FIELD: FIELD_LAYOUT.FIELD, JET: FIELD_LAYOUT.JET, PEAK: FIELD_LAYOUT.PEAK, BRICK: DERIVED_LAYOUT.BRICK,
     PAIR: DERIVED_LAYOUT.PAIR, LIGHT: DERIVED_LAYOUT.LIGHT, GI_SHIFT: DERIVED_LAYOUT.GI_SHIFT,
   })) L[name] = gpu.layout(`DERIVED_${name}`, entries);
   return L;
@@ -96,9 +102,11 @@ export class Derived {
     this.far = null;              // the far field's textures (attachFar; the GI's far branch)
     this.shiftsBricks = true;     // sim.shift: this keeps the history across a move (no changedAll)
     // test only (gpu.testMode): dropFold leaves the changes pending at a shift
-    // where they are (tools/derived-check.mjs's negative control)
-    this.test = { dropFold: false };
+    // where they are, dropJetToggle doesn't rebuild every brick when the
+    // aeration starts or stops (tools/derived-check.mjs's negative controls)
+    this.test = { dropFold: false, dropJetToggle: false };
     this.lastSmoothing = null;
+    this.lastJet = false;         // the aeration was read at the last derived frame (_jet)
     const g = this.g, n = g.nbricks, slots = g.slots;
     this.lists = dirtyLists(g);
 
@@ -119,6 +127,7 @@ export class Derived {
     this.lightB = buf('light blur B', n * 16, S);
     this.giHist = buf('GI history', GI_BANDS * n * 8);
     this.giSrc = buf('GI sources', n * 16, S);
+    this.noAer = buf('no aeration', 16, S);
     const TB = GPUTextureUsage.TEXTURE_BINDING, SB = GPUTextureUsage.STORAGE_BINDING, TS = GPUTextureUsage.COPY_SRC, TD = GPUTextureUsage.COPY_DST;
     const tex = (name, size, usage = TB | SB | TS | TD) => gpu.createTexture({ label: label(name), size, dimension: '3d', format: FIELD_FORMAT, usage });
     const cells = [g.nx, g.ny, g.nz], bricks = [g.bx, g.by, g.bz];
@@ -143,13 +152,10 @@ export class Derived {
     const v = this.views;
     this.groups = {
       book: gpu.bindGroup(L.BOOK, [b(0, this.age), b(1, this.dlist)], 'derived book'),
-      ema: field('field EMA', this.age, this.ema),
       // the blur: x, y, then z normalised into the half-float planes
       blur: [field('blur x', this.ema, this.tmpA), field('blur y', this.tmpA, this.tmpB), field('blur z', this.tmpB, this.blurred)],
-      // the boost's smoothing: x from the blur, then y and z
-      boost: [field('boost x', this.blurred, this.tmpA), field('boost y', this.tmpA, this.tmpB), field('boost z', this.tmpB, this.tmpA)],
-      peak: gpu.bindGroup(L.PEAK, [b(0, this.dlist), b(1, this.tmpA), b(2, this.blurred),
-        t(3, v.fieldSurf), t(4, v.fieldMedia), t(5, v.fieldThin)], 'field peak'),
+      // the boost's smoothing: x from the blur (with the EMA and the peak, _jetGroups), then y and z
+      boost: [null, field('boost y', this.tmpA, this.tmpB), field('boost z', this.tmpB, this.tmpA)],
       brick: gpu.bindGroup(L.BRICK, [b(0, this.dlist), t(1, v.fieldSurf), t(2, v.fieldMedia), t(3, v.fieldThin), b(4, this.brick)], 'brick'),
       // empty-space distance: x from the brick map, y, z (ends in brickDist)
       dist: [pair('brickDist x', this.brick, this.brickDist), pair('brickDist y', this.brickDist, this.scratchB),
@@ -159,6 +165,8 @@ export class Derived {
         bToA: pair('light B→A', this.lightB, this.lightA),
         aToLight: gpu.bindGroup(L.LIGHT, [b(0, this.lightA), t(1, v.light)], 'light A→volume') },
     };
+    this._jetBuffer = null;
+    this._jetGroups(this.noAer);
 
     // ---- kernels (B5): built now; the shift's on a world's grid (else on first use: prepare) ----
     const SL = sim.L, E = gpu.L.EMPTY;
@@ -167,10 +175,10 @@ export class Derived {
       age: kernel('age', ageFrag(g), SL.STATE_BUILD, L.BOOK, AgeParams),
       dirty: kernel('dirty', dirtyFrag(g), E, L.BOOK),
       dirtyArgs: kernel('dirtyArgs', dirtyArgsFrag(g), E, L.BOOK),
-      fieldEma: kernel('fieldEma', fieldEmaFrag(g), SL.STATE_RO, L.FIELD, EmaParams),
+      fieldEma: kernel('fieldEma', fieldEmaFrag(g), SL.STATE_RO, L.JET, EmaParams),
       fieldBlur: kernel('fieldBlur', fieldBlurFrag(g, false), E, L.FIELD, FieldBlurParams),
       fieldFinal: kernel('fieldFinal', fieldBlurFrag(g, true), E, L.FIELD, FieldBlurParams),
-      fieldBoost0: kernel('fieldBoost0', fieldBoostFrag(g, 0), SL.STATE_RO, L.FIELD, BoostParams),
+      fieldBoost0: kernel('fieldBoost0', fieldBoostFrag(g, 0), SL.STATE_RO, L.JET, BoostParams),
       fieldBoost: kernel('fieldBoost', fieldBoostFrag(g, 1), E, L.FIELD, BoostParams),
       fieldPeak: kernel('fieldPeak', fieldPeakFrag(g), E, L.PEAK, PeakParams),
       brick: kernel('brick', brickFrag(g), SL.STATE_RO, L.BRICK),
@@ -211,6 +219,32 @@ export class Derived {
 
   passOf(name) { return (this.passes[name] ??= this._lazy[name]()); }
 
+  // The bind groups that hold the aeration buffer (the EMA, the boost's
+  // stage 0, the peak), made for `buffer`: the whitewater's, or noAer.
+  _jetGroups(buffer) {
+    const gpu = this.gpu, L = this.L, v = this.views;
+    const b = (binding, buf) => ({ binding, resource: { buffer: buf } });
+    const t = (binding, view) => ({ binding, resource: view });
+    const jet = (name, src, dst) => gpu.bindGroup(L.JET, [b(0, this.dlist), b(1, src), b(2, dst), b(3, buffer)], name);
+    this.groups.ema = jet('field EMA', this.age, this.ema);
+    this.groups.boost[0] = jet('boost x', this.blurred, this.tmpA);
+    this.groups.peak = gpu.bindGroup(L.PEAK, [b(0, this.dlist), b(1, this.tmpA), b(2, this.blurred),
+      t(3, v.fieldSurf), t(4, v.fieldMedia), t(5, v.fieldThin), b(6, buffer)], 'field peak');
+    this._jetBuffer = buffer;
+  }
+
+  // Falling water's input (shaders/fields.js jetWGSL), as the field passes'
+  // params take it: 0 while whitewater's aeration field doesn't run, else 1 +
+  // its current copy. sim.aeration (gfx/foam.js) is { active, buffer (both
+  // copies, array<vec2u>), cur }; the groups follow its buffer.
+  _jet() {
+    const aer = this.sim.aeration;
+    const on = Boolean(aer?.active && aer.buffer);
+    const buffer = on ? aer.buffer : this.noAer;
+    if (buffer !== this._jetBuffer) this._jetGroups(buffer);
+    return on ? 1 + (aer.cur ? 1 : 0) : 0;
+  }
+
   // Records a dispatch into the frame's compute pass and tells the profiler.
   _dispatch(kernel, size, opts) {
     kernel.dispatch(this.gpu.frame, size, opts);
@@ -232,9 +266,15 @@ export class Derived {
   updateDirty() {
     const sim = this.sim;
     this._carry();
-    // a new kernel or a reset changes the fields everywhere
+    // a new kernel or a reset changes the fields everywhere, and so does the
+    // aeration starting or stopping: falling water's input is read everywhere
+    // or nowhere (a choice the WebGL build didn't make: it kept what settled
+    // bricks held, so incremental and full could differ there)
     if (sim.smoothing !== this.lastSmoothing || sim.fieldReset) sim.changedAll = true;
     this.lastSmoothing = sim.smoothing;
+    const jet = this._jet() !== 0;
+    if (jet !== this.lastJet && !(this.gpu.testMode && this.test.dropJetToggle)) sim.changedAll = true;
+    this.lastJet = jet;
     const { age, dirty, dirtyArgs } = this.kernels;
     const book = this.groups.book, tables = sim.tables;
     this._dispatch(age, this._perBrick, {
@@ -266,9 +306,10 @@ export class Derived {
     const reset = sim.fieldReset;
     sim.fieldReset = false;
     const { w, bulk, s } = fieldWeights(sim.smoothing);
+    const aer = this._jet();   // (the groups below follow its buffer)
     this._dispatch(k.fieldEma, this._over(DIRTY.EMA), {
       bind: [tables, sim.bindRO, gr.ema], header: sim.header(),
-      params: { emaS: CHANNELS.map((c) => c.ema), emaM: MEDIA.map((m) => m.ema), reset },
+      params: { emaS: CHANNELS.map((c) => c.ema), emaM: MEDIA.map((m) => m.ema), reset, aer },
     });
     const work = this._over(DIRTY.WORK);
     for (let axis = 0; axis < 3; axis++) {
@@ -276,9 +317,9 @@ export class Derived {
     }
     for (let axis = 0; axis < 3; axis++) {
       const bind = axis ? [tables, empty, gr.boost[axis]] : [tables, sim.bindRO, gr.boost[0]];
-      this._dispatch(axis ? k.fieldBoost : k.fieldBoost0, work, { bind, header: sim.header(), params: { s, axis } });
+      this._dispatch(axis ? k.fieldBoost : k.fieldBoost0, work, { bind, header: sim.header(), params: { s, axis, aer } });
     }
-    this._dispatch(k.fieldPeak, this._over(DIRTY.FIELDS), { bind: [tables, empty, gr.peak], params: { bulk, reach: [1, 1, 1] } });
+    this._dispatch(k.fieldPeak, this._over(DIRTY.FIELDS), { bind: [tables, empty, gr.peak], params: { bulk, reach: [1, 1, 1], aer } });
   }
 
   /**
@@ -460,7 +501,7 @@ export class Derived {
     if (this.sim.derived === this) this.sim.attachDerived(null);
     if (!this.gpu.failure) this.gpu.flush('derived dispose');
     for (const x of [this.age, this.dlist, this.ema, this.tmpA, this.tmpB, this.blurred, this.brick, this.brickDist, this.scratchB,
-      this.lightA, this.lightB, this.giHist, this.giSrc, this.fieldSurf, this.fieldMedia, this.fieldThin, this.light,
+      this.lightA, this.lightB, this.giHist, this.giSrc, this.noAer, this.fieldSurf, this.fieldMedia, this.fieldThin, this.light,
       ...this.giTextures, this.fieldsTmp]) x?.destroy();
   }
 }

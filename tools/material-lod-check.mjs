@@ -22,17 +22,26 @@
 //            heading) holds at the centre and drifts off it, and an
 //            isotropic footprint is off everywhere, both by more than the
 //            check allows
-//   combos   every combination of the nine close-up detail switches
-//            (gfx/detail.js, 2^9 = 512 module texts of the realistic probe)
+//   deltas   main's sync-2 changes on the GPU, against JS twins: crispT (a
+//            crisp face's temperature, bilinear with its three neighbours in
+//            the face's plane, gas and cells past the grid left out) at
+//            points on three faces of a slab with a temperature ramp, and
+//            crispSurf's T is it; whitewater's aerationAt over liquid records
+//            only (the air holds the falling parcels' wakes), from the
+//            current copy; controls: a cell's own temperature, and taps that
+//            take the wakes, are off
+//   combos   every combination of the close-up detail switches (gfx/detail.js
+//            DETAIL: ten since smoothClose, 2^10 = 1024 module texts of the
+//            realistic probe)
 //            validates with Tint as check-wgsl (a) does (no error, no
 //            warning), and each switch alone builds within
 //            PIPELINE_BUDGET_MS as check-wgsl (b) does, with its time
 // check-wgsl itself lists the off, balanced and full levels and the plain
-// view (surface.js materialChecks); the 512 here would add about a minute of
-// SwiftShader to every check-wgsl run if they were built there.
+// view (surface.js materialChecks); the 1024 here (about two minutes of Tint
+// on SwiftShader, the builds aside) would weigh on every check-wgsl run.
 // It serves the harness pages from its own Vite (tools/vite-server.mjs: --port N,
 // else a free port) and launches Chromium through tools/browser.mjs.
-//   node tools/material-lod-check.mjs [--only leaf,values,floor,combos] [--port N] [--budget ms]
+//   node tools/material-lod-check.mjs [--only leaf,values,floor,deltas,combos] [--port N] [--budget ms]
 import assert from 'node:assert/strict';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -41,7 +50,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const src = (p) => import(pathToFileURL(join(ROOT, 'src', p)));
 const argv = process.argv.slice(2);
 const opt = (n) => (argv.includes(n) ? argv[argv.indexOf(n) + 1] : null);
-const ONLY = opt('--only')?.split(',') ?? ['leaf', 'values', 'floor', 'combos'];
+const ONLY = opt('--only')?.split(',') ?? ['leaf', 'values', 'floor', 'deltas', 'combos'];
 
 const surface = await src('shaders/gfx/surface.js');
 const { surfaceGLSL } = surface;
@@ -78,13 +87,13 @@ if (ONLY.includes('leaf')) {
 }
 
 // ---------------------------------------------------------------- GPU stages
-if (['values', 'floor', 'combos'].some((k) => ONLY.includes(k))) {
+if (['values', 'floor', 'deltas', 'combos'].some((k) => ONLY.includes(k))) {
   const { launchBrowser, gpuInfo } = await import('./browser.mjs');
   const { startVite } = await import('./vite-server.mjs');
   const { openHarness } = await import('./harness/open.mjs');
-  const [common, bindings, kernels, detailM, elementsM, materialsM, scaleM] = await Promise.all([
+  const [common, bindings, kernels, detailM, elementsM, materialsM, scaleM, liquidDetailM] = await Promise.all([
     src('shaders/common.js'), src('shaders/bindings.js'), src('gpu/kernels.js'), src('gfx/detail.js'),
-    src('elements.js'), src('gfx/materials.js'), src('scale.js')]);
+    src('elements.js'), src('gfx/materials.js'), src('scale.js'), src('shaders/gfx/liquidDetail.js')]);
   const BUDGET = Number(opt('--budget') ?? kernels.PIPELINE_BUDGET_MS);
   let gridLayout = null;
   try { ({ gridLayout } = await src('sim.js')); } catch { /* sizes alone */ }
@@ -373,6 +382,239 @@ ${(await src('gpu/wgsl.js')).fullscreenVert('vs')}
         fbOn.worst <= 0.12 && fbOff.worst > 0.3);
       check(`control: floorFwidth in the mirror (the straight distance from the eye, the derivatives unturned) is off by up to ${pct(straight)} (the check sees it: > 30%)`, straight.worst > 0.3);
       check(`control: an isotropic footprint/|rd.y| is off by up to ${(naive.worst * 100).toFixed(0)}% (the check sees it: > 50%)`, naive.worst > 0.5);
+      await page.close();
+    }
+
+    // ------------------------------------------------------------ deltas
+    if (ONLY.includes('deltas')) {
+      const page = await openHarness(browser, vite, '/tools/harness/lib.html', { errors });
+      console.log('\ndeltas: main\'s sync-2 changes to the materials, against JS twins');
+      const { cellSlot } = await src('sim.js');
+      const E = elementsM.E;
+      const S = g.nx * g.ny * g.nz;
+      // state A, copy 0 (the header reads it): a 6×6 metal slab at y = 10 on
+      // the grid's x = 0 face, its temperature a ramp; steam beside it (gas:
+      // left out), a hot metal cell on top of it (a neighbour of its x faces)
+      const A = new Float32Array(4 * S);
+      const cells = new Map();
+      const put = (x, y, z, id, T) => { A.set([id, T, 0, 0.25], 4 * cellSlot(g, x, y, z)); cells.set(`${x},${y},${z}`, { id, T }); };
+      for (let x = 0; x < 6; x++) for (let z = 8; z < 14; z++) put(x, 10, z, E.METAL, 100 + 37 * x + 11 * z);
+      put(6, 10, 10, E.STEAM, 900);
+      put(3, 11, 10, E.METAL, 500);
+      const at = (x, y, z) => cells.get(`${x},${y},${z}`) ?? { id: E.EMPTY, T: 0 };
+      const gasLike = (id) => id === E.EMPTY || elementsM.ELEMENTS[id].kind === elementsM.K.GAS;
+      const outside = (c) => c.some((v, k) => v < 0 || v >= [g.nx, g.ny, g.nz][k]);
+      // the JS twin of crispT (shaders/gfx/surface.js), in doubles
+      const crispT = (cell, T, hp, face) => {
+        const fa = face.map(Math.abs);
+        const u = fa[0] === 1 ? [0, 1, 0] : [1, 0, 0], v = fa[2] === 1 ? [0, 1, 0] : [0, 0, 1];
+        const f = hp.map((h, k) => Math.min(Math.max(h - cell[k] - 0.5, -0.5), 0.5));
+        const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        const fu = dot(f, u), fv = dot(f, v);
+        const su = fu < 0 ? u.map((x) => -x) : u, sv = fv < 0 ? v.map((x) => -x) : v;
+        const wu = Math.abs(fu), wv = Math.abs(fv), w0 = (1 - wu) * (1 - wv);
+        let sum = T * w0, wsum = w0;
+        const taps = [[su, wu * (1 - wv)], [sv, (1 - wu) * wv], [su.map((x, k) => x + sv[k]), wu * wv]];
+        for (const [d, w] of taps) {
+          const c = cell.map((x, k) => x + d[k]);
+          if (outside(c) || gasLike(at(...c).id)) continue;
+          sum += w * at(...c).T;
+          wsum += w;
+        }
+        return sum / wsum;
+      };
+      const rnd = (() => { let st = 0x2468ace; return () => { st = (Math.imul(st, 1664525) + 1013904223) >>> 0; return st / 4294967296; }; })();
+      const FACES = [[0, 1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, -1]];
+      const pts = [];
+      for (const [x, z] of [[0, 8], [0, 11], [2, 10], [3, 10], [5, 10], [5, 13], [4, 9]])
+        for (const face of FACES)
+          for (let k = 0; k < 6; k++) {
+            const cell = [x, 10, z], fu = rnd() - 0.5, fv = rnd() - 0.5;
+            const fa = face.map(Math.abs);
+            const u = fa[0] === 1 ? [0, 1, 0] : [1, 0, 0], v = fa[2] === 1 ? [0, 1, 0] : [0, 0, 1];
+            const hp = cell.map((c, j) => F(c + 0.5 + 0.5 * face[j] + fu * u[j] + fv * v[j]));
+            pts.push({ cell, face, hp, want: crispT(cell, at(...cell).T, hp, face), own: at(...cell).T });
+          }
+      // aeration (lighting group binding 19, two copies of vec2u per slot):
+      // copy 1 holds liquid records in a 4×4×4 block (y 1, or 2 in a stream)
+      // and falling parcels' wakes in the air beside it (y 0); copy 0 a decoy
+      const half = (x) => {
+        if (x === 0) return 0;
+        const bits = new Uint32Array(new Float32Array([x]).buffer)[0];
+        return ((bits >>> 16) & 0x8000) | ((((bits >>> 23) & 255) - 112) << 10) | ((bits >>> 13) & 1023);
+      };
+      const aerWords = new Uint32Array(4 * S);
+      const recs = new Map();
+      const rec = (x, y, z, f, copy = 1) => {
+        const i = 2 * (copy * S + cellSlot(g, x, y, z));
+        aerWords[i] = half(f[0]) | (half(f[1]) << 16);
+        aerWords[i + 1] = half(f[2]) | (half(f[3]) << 16);
+        if (copy === 1) recs.set(`${x},${y},${z}`, f);
+      };
+      for (let x = 20; x < 24; x++) for (let y = 18; y < 22; y++) for (let z = 20; z < 24; z++) {
+        rec(x, y, z, [((x + 2 * y + 3 * z) % 5) / 4, (x + z) % 3 ? 1 : 2, 0, (y + x) % 2]);
+      }
+      for (let y = 18; y < 24; y++) for (const [x, z] of [[24, 21], [19, 22], [22, 24]]) rec(x, y, z, [1, 0, 0.5, 0.75]);
+      for (let y = 22; y < 24; y++) for (let x = 20; x < 24; x++) rec(x, y, 22, [0, 0, 0.25, 0.875]);
+      for (let x = 18; x < 26; x++) for (let y = 16; y < 24; y++) for (let z = 18; z < 26; z++) rec(x, y, z, [0.5, 1, 0, 1], 0);
+      for (let x = 2; x <= 10; x++) for (let y = 2; y <= 10; y++) for (let z = 2; z <= 10; z++) rec(x, y, z, [0.625, 1, 0, 1]);   // a resting raft
+      // the JS twins of aerationAt: liquid taps only (main's), and every record's (x, y, w) (the control)
+      const aerAt = (p, liquidOnly) => {
+        const q = p.map((v) => v - 0.5), c = q.map(Math.floor), f = q.map((v, k) => v - c[k]);
+        const s = [0, 0, 0];
+        for (let dz = 0; dz < 2; dz++) for (let dy = 0; dy < 2; dy++) for (let dx = 0; dx < 2; dx++) {
+          const r = recs.get(`${c[0] + dx},${c[1] + dy},${c[2] + dz}`) ?? [0, 0, 0, 0];
+          const tap = liquidOnly ? (r[1] > 0.5 ? [r[0], 1, r[3]] : [0, 0, 0]) : [r[0], r[1], r[3]];
+          const w = (dx ? f[0] : 1 - f[0]) * (dy ? f[1] : 1 - f[1]) * (dz ? f[2] : 1 - f[2]);
+          tap.forEach((t, k) => { s[k] += w * t; });
+        }
+        return s[1] > 0.02 ? [Math.min(Math.max(s[0] / s[1], 0), 1), Math.min(Math.max(s[2] / s[1], 0), 1)] : [0, 0];
+      };
+      const apts = [];
+      for (let k = 0; k < 96; k++) {
+        const p = [19 + 6 * rnd(), 17.5 + 7 * rnd(), 19 + 6 * rnd()].map(F);
+        apts.push({ p, want: aerAt(p, true), old: aerAt(p, false) });
+      }
+      // whitewater v2's foam (liquidFoam, liquidUnderSkin) where pixels are far
+      // too big for the streaks and the raft's pattern (lodFade 0: their means),
+      // so it is the formulas alone: the thin mask's jet channels (fieldThin y,
+      // z) in three regions, a raft from the aeration above, rays entering and
+      // leaving at every angle
+      const wg = (name) => {
+        const m = new RegExp(`const ${name}: f32 = ([^;]+);`).exec(liquidDetailM.liquidDetailGLSL({ DETAIL_LIQ_FOAM: 1 }));
+        if (!m) throw new Error(`material-lod-check: no const ${name} in liquidDetailGLSL`);
+        return F(+m[1]);
+      };
+      const JET = { TAU: wg('JET_TAU'), FRINGE: wg('JET_FRINGE'), EDGE_MIN: wg('JET_EDGE_MIN'), M_MIN: wg('JET_M_MIN'), COVER: wg('FOAM_COVER_MAX') };
+      // fieldThin (lighting binding 2): (0, aeration × presence, presence, 0) by region
+      const REGIONS = { A: [0.5, 1], B: [0.375, 0.5], C: [0.0078125, 0.015625] };
+      const regionOf = (x, z) => (z >= 16 ? 'B' : x >= 24 ? 'C' : 'A');
+      const thin = new Uint16Array(4 * S);
+      for (let z = 0; z < g.nz; z++) for (let y = 0; y < g.ny; y++) for (let x = 0; x < g.nx; x++) {
+        const [ym, m] = REGIONS[regionOf(x, z)];
+        thin.set([0, half(ym), half(m), 0], 4 * (x + g.nx * (y + g.ny * z)));
+      }
+      const smooth = (e0, e1, x) => { const t = Math.min(Math.max((x - e0) / (e1 - e0), 0), 1); return t * t * (3 - 2 * t); };
+      const unit = () => { for (;;) { const v = [rnd() * 2 - 1, rnd() * 2 - 1, rnd() * 2 - 1], l = Math.hypot(...v); if (l > 0.2 && l < 1) return v.map((x) => x / l); } };
+      const fpts = [];
+      for (const [lo, hi] of [[[4, 4, 4], [8, 8, 8]], [[12, 12, 4], [20, 16, 12]], [[4, 3, 19], [12, 12, 28]], [[26, 12, 4], [30, 16, 12]]])
+        for (let k = 0; k < 24; k++) {
+          const p = lo.map((v, j) => F(v + (hi[j] - v) * rnd()));
+          const n = unit().map(F);
+          let rd = unit().map(F);
+          const d0 = n.reduce((a, v, j) => a + v * rd[j], 0);
+          if ((k & 1) === (d0 < 0 ? 1 : 0)) rd = rd.map((v) => -v);   // half entering, half leaving
+          const dot = n.reduce((a, v, j) => a + v * rd[j], 0), chord = Math.abs(dot);
+          const aer = aerAt(p.map((v, j) => v - n[j] * 0.25), true), raft = aer[0] * aer[1];
+          const [ym, m] = REGIONS[regionOf(p[0], p[2])];
+          const jw = m > JET.M_MIN && dot < 0 ? Math.min(Math.max(ym / m, 0), 1) : 0;
+          let t1 = 1, jc = 0;
+          if (Math.max(raft, jw) > 0) {
+            const c = JET.COVER * raft;
+            const cj = jw > 0 ? jw * (1 - Math.exp(-JET.TAU * chord)) * smooth(0, Math.max(Math.sqrt(JET.FRINGE * jw), JET.EDGE_MIN), chord) : 0;
+            if (c > 0 || cj > 0) { t1 = 1 - c; jc = cj; }
+          }
+          fpts.push({ p, n, rd, raft, jw, want: [t1, jc, t1 * (1 - jc), 0] });
+        }
+      const NP = pts.length, NA = apts.length, NF = fpts.length;
+      const io = new Float32Array(4 * (2 * NP + NP + 2 * NA + 4 * NF));
+      const faceIndex = (fc) => FACES.findIndex((x) => x.every((v, k) => v === fc[k]));
+      pts.forEach((pt, i) => { io.set([...pt.hp, faceIndex(pt.face)], 4 * i); io.set([...pt.cell, 0], 4 * (NP + i)); });
+      apts.forEach((pt, i) => io.set([...pt.p, 0], 4 * (3 * NP + i)));
+      fpts.forEach((pt, i) => io.set([...pt.p, 0, ...pt.n, 0, ...pt.rd, 0], 4 * (3 * NP + 2 * NA + 4 * i)));
+      const frame = new ArrayBuffer(bindings.FrameUniforms.size);
+      bindings.FrameUniforms.write(new DataView(frame), 0, { matDetail: 1, sun: [0.4, 0.8, 0.45], sunCol: [1, 1, 1], shadowRes: 128 });
+      const header = new ArrayBuffer(common.Header.size);
+      common.Header.write(new DataView(header), 0, { origin: [0, 0, 0], src: 0, dst: 0 });
+      const layouts = surface.materialProbeLayouts().map((e) => [...e]);
+      layouts[3] = [...layouts[3], { binding: 2, visibility: common.STAGE.COMPUTE, buffer: { type: 'storage' } }];
+      const fill = {
+        '0.0': { data: b64(new Uint8Array(common.tablesBuffer())) }, '0.1': { data: b64(new Uint8Array(frame)) },
+        '1.0': { data: b64(new Uint8Array(A.buffer)) }, '1.1': { size: 16 * S },
+        '2.19': { data: b64(new Uint8Array(aerWords.buffer)) },
+        '2.2': { tex: { format: 'rgba16float', size: [g.nx, g.ny, g.nz], data: b64(new Uint8Array(thin.buffer)) } },
+        '3.0': { data: b64(new Uint8Array(header)) }, '3.1': { size: 256 },
+        '3.2': { data: b64(new Uint8Array(io.buffer)), read: true }, '2.15': { samp: { address: 'repeat' } },
+      };
+      const groups = layouts.map((entries, gi) => entries.map((e) => ({ ...e, ...(fill[`${gi}.${e.binding}`] ?? {}) })));
+      const code = `${surface.materialModule(g, { DETAIL_LIQ_FOAM: 1 })}
+@group(3) @binding(2) var<storage, read_write> io: array<vec4f>;
+const NP: u32 = ${NP}u;
+const NA: u32 = ${NA}u;
+const NF: u32 = ${NF}u;
+var<private> FACE: array<vec3i, 4> = array<vec3i, 4>(${FACES.map((fc) => `vec3i(${fc.join(', ')})`).join(', ')});
+@compute @workgroup_size(64) fn main(@builtin(global_invocation_id) gid: vec3u) {
+  let i = gid.x;
+  gFragCoord = vec2f(0.5);
+  gAerCopy = 1u;
+  if (i < NP) {
+    let q = io[i];
+    let cell = vec3i(io[NP + i].xyz);
+    let face = FACE[u32(q.w)];
+    let a = fetchA(cell);
+    let t = crispT(cell, a.y, q.xyz, face);
+    let sf = crispSurf(cell, eid(a), a, q.xyz, vec3f(face));
+    io[2u * NP + i] = vec4f(t, sf.T, 0.0, 0.0);
+  } else if (i < NP + NA) {
+    let j = i - NP;
+    io[3u * NP + NA + j] = vec4f(aerationAt(io[3u * NP + j].xyz), 0.0, 0.0);
+  } else if (i < NP + NA + NF) {
+    let b = 3u * NP + 2u * NA + 4u * (i - NP - NA);   // p, n, rd in, the result out
+    let p = io[b].xyz;
+    gEye = p + vec3f(0.0, 1.0e4, 0.0);   // far: pixels a hundred metres across
+    gPixAng = 1.0;
+    var n = io[b + 1u].xyz;
+    var col = vec3f(0.0);
+    var trans = vec3f(1.0);
+    liquidFoam(p, &n, E_WATER, io[b + 2u].xyz, &col, &trans);
+    let t1 = trans.x;
+    let jc = gJetC;
+    liquidUnderSkin(&col, &trans);
+    io[b + 3u] = vec4f(t1, jc, trans.x, gJetC);
+  }
+}`;
+      const r = await page.evaluate((j) => window.__harness.run('run', j), {
+        label: 'material deltas', code, kind: 'compute', groups, dispatch: [Math.ceil((NP + NA + NF) / 64), 1, 1], budgetMs: BUDGET });
+      const msgs = r.messages.filter((m) => m.type !== 'info').map((m) => `${m.type} ${m.line}:${m.col} ${m.text}`).slice(0, 6).join(' | ');
+      if (check(`kernel: ${code.split('\n').length} lines, module ${r.moduleMs.toFixed(0)} ms, pipeline ${r.pipelineMs.toFixed(0)} ms`, r.ok && !msgs, r.ok ? msgs : `${r.stage}: ${r.error} ${msgs}`)) {
+        const out = f32s(r.outputs['3.2']);
+        let worst = 0, surfBad = 0, ownOff = 0;
+        const bad = [];
+        pts.forEach((pt, i) => {
+          const [t, st] = out.subarray(4 * (2 * NP + i), 4 * (2 * NP + i) + 2);
+          const e = Math.abs(t - pt.want) / Math.max(1, Math.abs(pt.want));
+          worst = Math.max(worst, e);
+          if (e > 1e-5 && bad.length < 4) bad.push(`cell ${pt.cell} face ${pt.face} hp ${pt.hp.map((v) => v.toFixed(3))}: ${t} want ${pt.want}`);
+          if (st !== t) surfBad++;
+          if (Math.abs(pt.own - pt.want) > 1) ownOff++;
+        });
+        check(`crispT: ${NP} points on four faces of a slab (its edge on the grid's face, steam and a hot cell beside it) == the JS twin within ${worst.toExponential(1)} relative (≤ 1e-5)`, worst <= 1e-5, bad.join('; '));
+        check('crispSurf\'s temperature is crispT\'s at every point', surfBad === 0, surfBad ? `${surfBad} points` : '');
+        check(`control: the cell's own temperature (the old crispSurf) is off by more than 1 °C at ${ownOff} of ${NP} points`, ownOff > NP / 2);
+        let aWorst = 0, oldOff = 0, liquid = 0;
+        const abad = [];
+        apts.forEach((pt, i) => {
+          const got = out.subarray(4 * (3 * NP + NA + i), 4 * (3 * NP + NA + i) + 2);
+          const e = Math.max(...pt.want.map((v, k) => Math.abs(got[k] - v)));
+          aWorst = Math.max(aWorst, e);
+          if (e > 1e-5 && abad.length < 4) abad.push(`p ${pt.p.map((v) => v.toFixed(3))}: ${Array.from(got)} want ${pt.want}`);
+          if (pt.want.some((v, k) => Math.abs(v - pt.old[k]) > 1e-3)) oldOff++;
+          if (pt.want[0] > 0 || pt.want[1] > 0) liquid++;
+        });
+        check(`aerationAt: ${NA} points (${liquid} over liquid) from the current copy, liquid records only, == the JS twin within ${aWorst.toExponential(1)} (≤ 1e-5)`, aWorst <= 1e-5 && liquid > NA / 4, abad.join('; '));
+        check(`control: taps that take the wakes (the old aerTap) differ at ${oldOff} of ${NA} points`, oldOff > 4);
+        let fWorst = 0;
+        const fbad = [], kinds = { raft: 0, jet: 0, both: 0, none: 0 };
+        fpts.forEach((pt, i) => {
+          const got = out.subarray(4 * (3 * NP + 2 * NA + 4 * i + 3), 4 * (3 * NP + 2 * NA + 4 * i + 4));
+          const e = Math.max(...pt.want.map((v, k) => Math.abs(got[k] - v)));
+          fWorst = Math.max(fWorst, e);
+          if (e > 1e-5 && fbad.length < 4) fbad.push(`p ${pt.p.map((v) => v.toFixed(2))} raft ${pt.raft} jet ${pt.jw}: ${Array.from(got).map((v) => v.toFixed(5))} want ${pt.want.map((v) => v.toFixed(5))}`);
+          kinds[pt.raft > 0 && pt.jw > 0 ? 'both' : pt.raft > 0 ? 'raft' : pt.jw > 0 ? 'jet' : 'none']++;
+        });
+        check(`liquidFoam + liquidUnderSkin: ${NF} points (raft and jet ${kinds.both}, raft ${kinds.raft}, jet ${kinds.jet}, neither ${kinds.none}): the raft's cover on top, the jet's body under the skin, == the JS twin within ${fWorst.toExponential(1)} (≤ 1e-5)`,
+          fWorst <= 1e-5 && Object.values(kinds).every((v) => v > 0), fbad.join('; '));
+      }
       await page.close();
     }
 

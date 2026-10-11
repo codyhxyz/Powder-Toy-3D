@@ -51,10 +51,13 @@ const SUN_IN_GAIN: f32 = 0.6;     // sunlight scattered per unit of sun elevatio
 // code without the probes: the far field's open sea.
 var<private> gSkyIn: f32 = 1.0;
 fn skyInAt(gi: Probe) -> f32 { return giSkyVis(gi, vec3f(0.0, 1.0, 0.0)); }
+// the light scattered inside at p, per unit of scattering albedo (gfx/deco.js scatters its paint in it too)
+fn interiorLight(p: vec3f, sunVis: vec3f) -> vec3f {
+  return skyAmbient(vec3f(0.0, 1.0, 0.0)) * gSkyIn * mix(vec3f(SKY_IN_FLOOR), vec3f(1.0), sunVis)
+       + FU.sunCol * sunVis * max(FU.sun.y, 0.0) * SUN_IN_GAIN + sampleLight(p) * FU.lightGain;
+}
 fn interiorScatter(id: i32, p: vec3f, sunVis: vec3f, T: f32) -> vec3f {
-  let L = skyAmbient(vec3f(0.0, 1.0, 0.0)) * gSkyIn * mix(vec3f(SKY_IN_FLOOR), vec3f(1.0), sunVis)
-        + FU.sunCol * sunVis * max(FU.sun.y, 0.0) * SUN_IN_GAIN + sampleLight(p) * FU.lightGain;
-  return SCATALB(id) * L + emission(id, T);
+  return SCATALB(id) * interiorLight(p, sunVis) + emission(id, T);
 }
 
 // Beer–Lambert through a segment of length seg inside element id.

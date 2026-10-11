@@ -1474,10 +1474,43 @@ fn crispHit(cell: vec3i, id: i32, ro: vec3f, rd: vec3f, tEnter: f32, tExit: f32,
   return true;
 }
 
+// A crisp cell's temperature at the point hp on its face: bilinear between its
+// own and its three neighbours' nearest hp in the face's plane, as gatherSurf
+// blends a smooth channel's cells. A cell holds one temperature, so taken
+// alone a hot patch glowed as one flat square per cell; blended, it glows as
+// one smooth spot. Gas doesn't count: the face's glow is the matter's.
+fn crispT(cell: vec3i, T: f32, hp: vec3f, face: vec3i) -> f32 {
+  let fa = abs(face);
+  let u = select(vec3i(1, 0, 0), vec3i(0, 1, 0), fa.x == 1);
+  let v = select(vec3i(0, 0, 1), vec3i(0, 1, 0), fa.z == 1);
+  let f = clamp(hp - vec3f(cell) - 0.5, vec3f(-0.5), vec3f(0.5));   // from the cell's centre
+  let fu = dot(f, vec3f(u));
+  let fv = dot(f, vec3f(v));
+  let su = select(u, -u, fu < 0.0);
+  let sv = select(v, -v, fv < 0.0);
+  let wu = abs(fu);
+  let wv = abs(fv);
+  let w0 = (1.0 - wu) * (1.0 - wv);
+  var sum = T * w0;
+  var wsum = w0;
+  for (var k = 0; k < 3; k++) {
+    var c = cell + su + sv;
+    var w = wu * wv;
+    if (k == 0) { c = cell + su; w = wu * (1.0 - wv); }
+    else if (k == 1) { c = cell + sv; w = (1.0 - wu) * wv; }
+    if (outside(c)) { continue; }
+    let b = fetchA(c);
+    if (isGasLike(eid(b))) { continue; }
+    sum += w * b.y;
+    wsum += w;
+  }
+  return sum / wsum;
+}
+
 // Surface record for a crisp voxel, or (with ch set by the caller) a grain.
 fn crispSurf(cell: vec3i, id: i32, a: vec4f, hp: vec3f, n: vec3f) -> Surf {
   var s: Surf;
-  s.p = hp; s.tp = hp; s.tp1 = hp; s.flowW = 0.0; s.n = n; s.ng = n; s.ch = -1; s.id = id; s.cell = cell; s.seed = fract(a.w); s.T = a.y;
+  s.p = hp; s.tp = hp; s.tp1 = hp; s.flowW = 0.0; s.n = n; s.ng = n; s.ch = -1; s.id = id; s.cell = cell; s.seed = fract(a.w);
   // a crystal inside its cell: the corner AO of the side it points out of
   var fd = n;
   if (id == E_CRYSTAL && gCrysOn) { fd = gCrys.d; }
@@ -1485,12 +1518,13 @@ fn crispSurf(cell: vec3i, id: i32, a: vec4f, hp: vec3f, n: vec3f) -> Surf {
   if (an.x >= an.y && an.x >= an.z) { s.face = vec3i(i32(sign(fd.x)), 0, 0); }
   else if (an.y >= an.z) { s.face = vec3i(0, i32(sign(fd.y)), 0); }
   else { s.face = vec3i(0, 0, i32(sign(fd.z))); }
+  s.T = crispT(cell, a.y, hp, s.face);
   // an isolated grain carries its texture with it (its seed moves with the grain);
   // a voxel's is anchored in the world
   const GRAIN_TEX_SPREAD: f32 = 61.0;   // cells of texture space the seed spreads grains over
   var tp = worldPos(hp);
   if (SURFCH(id) >= 0) { tp = hp - vec3f(cell) + s.seed * GRAIN_TEX_SPREAD; }
-  applyMat(&s, matOf(id, tp, n, a.y, floor(a.w), footprint(hp)));
+  applyMat(&s, matOf(id, tp, n, s.T, floor(a.w), footprint(hp)));
   return s;
 }
 
@@ -1848,8 +1882,9 @@ fn shadeFloorFw(hp: vec3f, fw: vec2f) -> vec3f {
 // The library at a detail level, in the order the tracer pastes it after
 // lib(g): surface (relief inside), liquid, liquid detail, media, grains. The
 // plain view adds plainGLSL. render.js defines what the material code calls
-// back (the march's event codes, softBlob, aces); a probe brings stand-ins
-// with the GLSL's definitions.
+// back (the march's event codes, softBlob, aces, meshCutT) and pastes the
+// decoration's lookups (shaders/gfx/deco.js); a probe brings stand-ins with
+// the GLSL's definitions (the mesh cut and the paint read from the frame).
 const materialLib = (detail) =>
   [surfaceGLSL(detail), liquidGLSL, liquidDetailGLSL(detail), mediaGLSL(detail), grainsGLSL(detail)].join('\n');
 const TRACER_STANDINS = /* wgsl */ `
@@ -1873,6 +1908,23 @@ const ACES_D: f32 = 0.59;
 const ACES_E: f32 = 0.14;
 fn aces(x: vec3f) -> vec3f {
   return clamp((x * (ACES_A * x + ACES_B)) / (x * (ACES_C * x + ACES_D) + ACES_E), vec3f(0.0), vec3f(1.0));
+}
+// the opaque meshes' cut (gfx/meshCut.js; the tracer reads the scene target's
+// depth): a value from the frame, through the library's meshCutAt
+fn meshCutT(rd: vec3f) -> f32 { return meshCutAt(fract(FU.time), FU.invViewProj, vec2f(f32(FU.shadowRes)), rd); }
+// ---- stand-ins for the decoration's lookups (shaders/gfx/deco.js decoViewGLSL,
+// pasted by the view before the materials; plain.js reads them) ----
+const DECO_SIGMA: f32 = 2.0;
+const DECO_DETAIL_MAX: f32 = 2.0;
+const DECO_LUM_MIN: f32 = 1e-3;
+const DECO_LUM: vec3f = vec3f(0.2126, 0.7152, 0.0722);
+// (the paint is the view's: here a pattern from the cell and the frame)
+fn decoAt(c: vec3i) -> vec4f { return select(vec4f(0.0), fract(vec4f(vec3f(c), FU.time) * 0.37), FU.view == 7); }
+fn decoLinear(c: vec3f) -> vec3f { return select(c / 12.92, pow((c + 0.055) / 1.055, vec3f(2.4)), c >= vec3f(0.04045)); }
+fn decoTint(alb: vec3f, base: vec3f, d: vec4f) -> vec3f {
+  if (d.a <= 0.0) { return alb; }
+  let detail = clamp(dot(alb, DECO_LUM) / max(dot(base, DECO_LUM), DECO_LUM_MIN), 0.0, DECO_DETAIL_MAX);
+  return mix(alb, decoLinear(d.rgb) * detail, d.a);
 }`;
 
 // The detail levels of gfx/detail.js (Settings → Detail up close): none, the
@@ -1923,8 +1975,9 @@ const realisticBody = (d) => /* wgsl */ `
   var ml = vec3f(1.0);
   let lid = liquidIdAt(p, E_WATER);
   var nl = liquidRipple(p, n);
-  nl = liquidDetail(p, nl, lid, &col, &trans);
+  nl = liquidDetail(p, nl, lid, rd, &col, &trans);
   let inside = liquidInterface(p, nl, s > 0.5, lid, true, &lro, &lrd, &col, &trans, &ml);
+  liquidUnderSkin(&col, &trans);   // a falling jet's body, under the reflection (as the tracer)
   absorbSegment(lid, lro, s, ml, AMBIENT, &col, &trans);
   acc += vec4f(col + trans + lro + lrd, select(0.0, 1.0, inside));
   acc.w += fresnelSchlick(s, IOR(lid)) + skyInAt(probeAt(p)) + gSkyIn + envReflect(p, nl, ml).x;
@@ -1991,7 +2044,7 @@ export const materialProbe = (g, detail, view = 'realistic') => [
 // its groups: the render library's (group 0 FRAME, 1 STATE_RO, 2 LIGHTING, 3 PARAMS)
 export const materialProbeLayouts = () => libLayouts('LIGHTING');
 
-// Every combination of the detail switches: 2^9 = 512 defines objects, in
+// Every combination of the detail switches: 2^n defines objects (n = 10, 1024), in
 // the order of gfx/detail.js's DETAIL (bit i: DETAIL[i]).
 export const detailCombination = (bits) => Object.fromEntries(DETAIL.filter((_, i) => (bits >> i) & 1).map((d) => [d.define, 1]));
 export const DETAIL_COMBINATIONS = 1 << DETAIL.length;
@@ -2015,7 +2068,7 @@ export const probeCheck = (name, detail, view = 'realistic', grids = true) => ({
 // What check-wgsl validates (every grid) and builds (at the smallest): the
 // realistic path at the three detail levels, and the plain view. Every
 // switch's code is in mat.full, every switch-off alternative in mat.off.
-// Each switch alone and all 512 combinations are validated, and each switch
+// Each switch alone and all 1024 combinations are validated, and each switch
 // alone built, by tools/material-lod-check.mjs (--only combos): built here
 // they would add about a minute of SwiftShader to every check-wgsl run.
 const CHECKS = {

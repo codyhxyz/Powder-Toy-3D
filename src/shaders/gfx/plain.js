@@ -9,11 +9,15 @@
 // render library and surfaceGLSL (floorFwidth, so surfView must have run, as
 // the tracer runs it before choosing a view). Like the GLSL it calls
 // softBlob(cell, ro, rd, t0, t1) -> f32 and aces(x) -> vec3f, which the
-// tracer (shaders/render.js) defines. A function can't discard for its
-// caller, so plainView returns what it drew (PlainOut): the caller discards
-// where nothing was hit and writes the colour and frag_depth. The depth is
-// that of the first thing hit through FU.viewProj · FU.model, the jittered
-// camera, in WebGPU's [0, 1] (docs/webgpu.md F2, F4).
+// tracer (shaders/render.js) defines, and meshCutT(rd) -> f32 (the distance
+// along the eye ray to the nearest opaque mesh, gfx/meshCut.js: the march
+// stops there; docs/webgpu.md Sync log S1) and the decoration's lookups
+// decoAt, decoTint, decoLinear and DECO_SIGMA (shaders/gfx/deco.js
+// decoViewGLSL), which the view pastes before it. A function can't discard
+// for its caller, so plainView returns what it drew (PlainOut): the caller
+// discards where nothing was hit and writes the colour and frag_depth. The
+// depth is that of the first thing hit through FU.viewProj · FU.model, the
+// jittered camera, in WebGPU's [0, 1] (docs/webgpu.md F2, F4).
 import { ELEMENTS } from '../../elements.js';
 import { materialChecks } from './surface.js';
 
@@ -22,7 +26,7 @@ import { materialChecks } from './surface.js';
 const PLAIN_SIGMA = {
   WATER: [0.30, 0.075, 0.035],
   OIL: [0.35, 0.55, 0.9],
-  ACID: [0.45, 0.04, 0.55],
+  ACID: [0.9, 0.06, 1.2],   // Noita's lime (elements.js ACID): green through, the rest stopped fast
   ICE: [0.12, 0.05, 0.025],
 };
 const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
@@ -111,7 +115,7 @@ fn plainLiquidNormal(c: vec3i, faceN: vec3f) -> vec3f {
 fn plainOpaque(cell: vec3i, id: i32, a: vec4f, hp: vec3f, n: vec3f, rd: vec3f) -> vec3f {
   let seed = fract(a.w);
   let T = a.y;
-  var alb = COLOR(id) * (1.0 + COLORVAR(id) * (seed * 2.0 - 1.0));
+  var alb = decoTint(COLOR(id) * (1.0 + COLORVAR(id) * (seed * 2.0 - 1.0)), COLOR(id), decoAt(cell));   // TPT's deco (gfx/deco.js)
   var emit: vec3f;
   if (id == E_LAVA) {
     alb = PLAIN_LAVA_ALB;
@@ -180,9 +184,12 @@ fn plainView(ro: vec3f, rd: vec3f, t0: f32, bh: vec3f) -> PlainOut {
   var mediumLight = vec3f(1.0);
   var lastB = vec3i(-1);
   var occ = 0u;
+  let tCut = meshCutT(rd);   // the nearest opaque mesh (gfx/meshCut.js): the march stops there
+  var cut = false;
 
   for (var i = 0; i < MAX_STEPS; i++) {
     if (outside(cell)) { break; }
+    if (tEnter >= tCut) { cut = true; break; }
     let bc = cell / BS;
     if (any(bc != lastB)) { lastB = bc; occ = brickOcc(bc); }
     if (!brickMatter(occ)) {
@@ -191,7 +198,7 @@ fn plainView(ro: vec3f, rd: vec3f, t0: f32, bh: vec3f) -> PlainOut {
       continue;
     }
     let tExit = min(tMax.x, min(tMax.y, tMax.z));
-    let seg = tExit - tEnter;
+    let seg = min(tExit, tCut) - tEnter;
     let a = fetchA(cell);
     let id = eid(a);
     var n = vec3f(0.0);
@@ -221,9 +228,10 @@ fn plainView(ro: vec3f, rd: vec3f, t0: f32, bh: vec3f) -> PlainOut {
           col += trans * F * (plainSky(r) + PLAIN_SUN * mediumLight * pow(max(dot(r, FU.sun), 0.0), PLAIN_GLINT_EXP) * PLAIN_GLINT_GAIN);
           trans *= 1.0 - F;
         }
-        let att = exp(-PLAIN_SIGMA(id) * seg);
+        let dp = decoAt(cell);   // painted: the deco colour, and opaque by its alpha (gfx/deco.js)
+        let att = exp(-mix(PLAIN_SIGMA(id), vec3f(DECO_SIGMA), dp.a) * seg);
         let amb = PLAIN_MEDIUM_AMB + PLAIN_SUN * mediumLight * max(FU.sun.y, 0.0) * PLAIN_MEDIUM_SUN + sampleLight(hp) * FU.lightGain;
-        let sc = COLOR(id) * amb * select(PLAIN_SCATTER_GLASS, PLAIN_SCATTER_LIQUID, rc == R_LIQUID) + plainEmit(id, a.y);
+        let sc = mix(COLOR(id), decoLinear(dp.rgb), dp.a) * amb * select(PLAIN_SCATTER_GLASS, PLAIN_SCATTER_LIQUID, rc == R_LIQUID) + plainEmit(id, a.y);
         col += trans * (1.0 - att) * sc;
         trans *= att;
       } else if (rc == R_GAS) {
@@ -231,7 +239,7 @@ fn plainView(ro: vec3f, rd: vec3f, t0: f32, bh: vec3f) -> PlainOut {
         let life = select(1.0, clamp(a.z, 0.0, 1.0), id == E_SMOKE);
         let dens = life * softBlob(cell, ro, rd, tEnter, tExit) * (PLAIN_GAS_LONE + PLAIN_GAS_DENSE * brickGas(occ));
         let alpha = 1.0 - exp(-SIGMA(id).x * seg * dens);
-        col += trans * alpha * COLOR(id) * (PLAIN_GAS_AMB + PLAIN_SUN * PLAIN_GAS_SUN + sampleLight(hp) * FU.lightGain);
+        col += trans * alpha * decoTint(COLOR(id), COLOR(id), decoAt(cell)) * (PLAIN_GAS_AMB + PLAIN_SUN * PLAIN_GAS_SUN + sampleLight(hp) * FU.lightGain);
         trans *= 1.0 - alpha;
       } else if (rc == R_FIRE) {
         let T = a.y;
@@ -250,7 +258,7 @@ fn plainView(ro: vec3f, rd: vec3f, t0: f32, bh: vec3f) -> PlainOut {
   }
 
   // floor of the box
-  if (max(trans.x, max(trans.y, trans.z)) >= PLAIN_OPAQUE && cell.y < 0 && rd.y < 0.0) {
+  if (!cut && max(trans.x, max(trans.y, trans.z)) >= PLAIN_OPAQUE && cell.y < 0 && rd.y < 0.0) {
     let tf = -ro.y / rd.y;
     if (tHit < 0.0) { tHit = tf; }
     col += trans * plainFloor(ro + rd * tf, rd);
