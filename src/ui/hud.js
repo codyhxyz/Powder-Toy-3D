@@ -9,7 +9,9 @@ export function createHud() {
   // stats below the toolbar
   const fps = h('b'), cells = h('b'), steps = h('b'), res = h('b');
   const fpsUnit = document.createTextNode(' fps');
-  const stats = h('div.stats', {}, h('span', {}, fps, fpsUnit), h('span', {}, steps, ' steps/s'), h('span', {}, cells, ' cells'), h('span', {}, res));
+  // replace mode or specific delete, as TPT's HUD line says [REPLACE MODE] (GameView.cpp)
+  const editMode = h('span.edit-mode');
+  const stats = h('div.stats', {}, h('span', {}, fps, fpsUnit), h('span', {}, steps, ' steps/s'), h('span', {}, cells, ' cells'), h('span', {}, res), editMode);
 
   // hover readout (follows the cursor)
   const chip = h('i'), name = h('b'), temp = h('span'), pres = h('span');
@@ -58,6 +60,7 @@ export function createHud() {
       setTimeout(() => t.remove(), ms);
     },
     dismissHint() { clearTimeout(hintTimer); hint.classList.add('gone'); },
+    setEditMode(text) { setText(editMode, text ?? ''); },
     setLegend(view) {
       const bars = [view?.legend, view?.legend2].filter(Boolean);
       legendBox.classList.toggle('show', bars.length > 0);
@@ -83,7 +86,14 @@ export function createHelp(onClose) {
         row('Brush size', '[', ']'),
         row('Brush size', 'Shift', 'Scroll'),
         row('Sphere or cube brush', 'B'),
-        row('Paint over existing material', 'X'),
+        row('Line (TPT\'s Shift-drag)', 'Shift', 'Left drag'),
+        row('Box: brush-tall, between the corners', '⌘', 'Left drag'),
+        row('Fill: open air up to the brush top, or what you click', '⌘', 'Shift', 'Click'),
+        row('Replace mode: paint over material', 'X'),
+        row('Specific delete: erase only the target', 'Delete'),
+        row('Target for both: an element tile', '⌥', 'Click'),
+        row('Target: the element under the cursor', '⌥', 'I'),
+        row('Property tool: set a value under the brush', '⌘', 'P'),
         row('Show or hide decoration (the Deco tab\'s paint)', 'Ctrl', 'B'),
         row('Eyedropper: pick element under cursor', 'I'),
         row('Undo last change', '⌘', 'Z'),

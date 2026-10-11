@@ -33,7 +33,13 @@ Press `?` in the app for the full list.
 |---|---|
 | Left-drag | paint with the selected element or tool (the brush stays at the height where you clicked) |
 | `[` `]` or Shift + scroll | brush size |
-| `B` / `X` | sphere or cube brush / paint over existing material |
+| Shift + left-drag | a line: the brush swept from where you pressed to where you let go (TPT's Shift-drag) |
+| ⌘ + left-drag (Ctrl on Windows) | a box between the two corners, as tall as the brush (TPT's Ctrl-drag) |
+| ⌘ + Shift + click | flood fill (TPT's Ctrl+Shift-click): see [Editing tools](#editing-tools) |
+| `B` / `X` | sphere or cube brush / replace mode: paint over existing material (also `;` or Insert, as in TPT) |
+| Delete | specific delete: the brush erases only the target element (also ⌘; as TPT's Ctrl+;) |
+| ⌥ + click a tile, or ⌥`I` | make that element the target that replace mode and specific delete keep to |
+| ⌘`P` | the Property tool: set the temperature, element, ctype, life, velocity or pressure under the brush |
 | `I` | eyedropper: pick the element under the cursor (or click the Eyedropper in the dock, then click the scene) |
 | ⌘Z / Ctrl+Z | undo the last stroke, clear or scene change |
 | `/` | find an element |
@@ -60,6 +66,29 @@ Press `?` in the app for the full list.
 | ⌘O / Ctrl+O | the Saves list: load a save, export it, open a file |
 
 Hovering shows the element, temperature and air pressure under the cursor. Settings are remembered between visits.
+
+## Editing tools
+
+The Powder Toy's editing tools, in 3D (TPT's `Editing.cpp`, `PropertyTool.cpp`, `GameView.cpp`):
+
+- **Line and box.** Shift-drag draws a line and ⌘-drag (Ctrl-drag) a box, put down when you let go, one undo step each.
+  Both stay on the paint plane, the height where you pressed. The line is the brush swept along it. The box spans the
+  two corners like a WorldEdit selection and is as tall as the brush, so it sits on the surface you clicked.
+  A ghost shows either while you drag; Escape drops it. They put every cell down at once, as TPT's do.
+- **Flood fill.** ⌘+Shift-click. With an element, it fills the open air you clicked into. Open air in 3D would fill the
+  sky, so the fill only rises to the top of the brush, the way a liquid finds its level: click inside a bowl to fill it.
+  With replace mode on, it replaces the connected cells of what you clicked instead. Erase, specific delete and the
+  Property tool take the connected cells of what you clicked. Heat, cool, pressure, spark and the particles don't fill,
+  as TPT's tools don't. A region over 262,144 cells (a 64³ cube) is refused, and so is one in World that runs on past the
+  simulated window.
+- **Replace mode and specific delete.** `X` (or TPT's `;`) paints over existing material. Delete (TPT's Delete, or ⌘;)
+  turns the brush into an eraser. ⌥-click an element tile, or point at one and press ⌥`I`, to make it the target: then
+  replace mode paints over only that element and specific delete erases only it (TPT's Ctrl+Alt-click). With no target,
+  `X` paints over anything, as before. One of the two modes is on at a time; the HUD and the menu say which.
+- **Property tool** (PROP, in Tools, or ⌘`P`). Pick a property and type a value in the menu: an element by name or
+  abbreviation for the element or ctype, a temperature in °C (or end it with K or F), a number for life, a velocity
+  in cells per step, or an air pressure. Values out of range turn red and paint nothing. It changes only matter, as TPT's
+  does; pressure also changes the air. Setting the element to air erases.
 
 ## First person
 
@@ -443,6 +472,7 @@ its Pages previews and local development (`SITE_HOSTS` and friends in `relay/wor
 To deploy it, run `wrangler deploy --config relay/wrangler.toml`. The production relay lives at `wss://tpt3d-relay.codyh.xyz` (set in `.env.production`).
 The site deploys itself: every push to `main` on GitHub builds it and ships it to the Cloudflare Pages project `tpt3d` (served at https://tpt3d.codyh.xyz; see `.github/workflows/deploy.yml`).
 Without `VITE_RELAY_URL`, production builds hide multiplayer.
+Guests' lines, boxes, fills, Property values and replace targets go to the host with their strokes; a fill is worked out on the host's world.
 Guests don't receive velocity, pressure or air temperature, so their pressure and flow views look empty, the heat view shows no warm air and flames look a little dimmer. Signs aren't shared.
 
 ## Known simplifications

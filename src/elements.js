@@ -1184,6 +1184,10 @@ export const TOOLS = [
   // Magical birds (src/birds/): a flock that lives on this spot. (-30 to -32 are the creature spawners.)
   { id: -33, key: 'FLOCK', abbr: 'BIRD', name: 'Bird flock', color: '#b58cff',
     desc: 'Click a surface: a flock of magical birds lives here. They perch in trees and on roofs, take off when you come near or fire, roost and glow at night, and burn and fall like anything else. Click it again to remove it.' },
+  // TPT's Property tool (src/gui/game/tool/PropertyTool.cpp, its colour): sets
+  // one property of the matter under the brush (src/editing.js PROP_FIELDS).
+  { id: -60, key: 'PROP', abbr: 'PROP', name: 'Property', color: '#fea900',
+    desc: 'Sets one property of the matter under the brush to a value: its element, ctype, temperature, life, velocity, or the air pressure. Pick the property and type the value in the menu.' },
 ];
 // TPT's decoration tools (src/gui/game/GameModel.cpp AllocTool(DecorationTool...),
 // src/simulation/Editing.cpp ApplyDecoration): paint a colour onto matter that
@@ -1210,6 +1214,7 @@ export const DECO_TOOLS = [
 TOOLS.push(...DECO_TOOLS);
 export const isDecoTool = (id) => id <= DECO_ID0 && id > DECO_ID0 - DECO_TOOLS.length;
 export const LIGHTNING_TOOL = -8;
+export const PROP_TOOL = -60;   // TPT's Property tool (src/editing.js)
 export const isSpawnerTool = (id) => id === -6 || id === -7 || id === -20 || id === -21 || id === -30 || id === -31 || id === -32 || id === -33;
 
 // Constructions: whole structures placed with one click (src/constructions.js
@@ -1298,7 +1303,7 @@ export const PALETTE = [
   { name: 'Electronics', items: ['SPARK', 'BATTERY', 'METAL', 'LAMP', 'PSCN', 'NSCN', 'SWITCH', 'INSULATOR', 'TSNS', 'PCLN'] },
   { name: 'Radioactive', items: ['PHOTON', 'NEUTRON', 'URANIUM', 'PLUTONIUM'] },
   { name: 'Exotic', items: ['ANTIMATTER', 'SINGULARITY'] },
-  { name: 'Tools', items: ['HEAT', 'COOL', 'ERASE', 'BLAST', 'VACUUM', 'WIND', 'CYCLONE', 'MIX', 'GRAV_IN', 'GRAV_OUT', 'AMB_HEAT', 'AMB_COOL', 'LIGHTNING', 'SIGN', ...GEAR_ITEMS.map((g) => g.key), ...WAND_STARTERS.map((item) => item.key)] },
+  { name: 'Tools', items: ['HEAT', 'COOL', 'ERASE', 'BLAST', 'VACUUM', 'WIND', 'CYCLONE', 'MIX', 'GRAV_IN', 'GRAV_OUT', 'AMB_HEAT', 'AMB_COOL', 'PROP', 'LIGHTNING', 'SIGN', ...GEAR_ITEMS.map((g) => g.key), ...WAND_STARTERS.map((item) => item.key)] },
   { name: 'Entities', items: ['ENEMY', 'GUNNER', 'WORM', 'GIANTWORM', 'SPAWN', 'JEEPPAD', 'BIKEPAD', 'FLOCK'] },
   // TPT's DECO menu (its tools in TPT's order)
   { name: 'Deco', items: DECO_TOOLS.map((t) => t.key) },

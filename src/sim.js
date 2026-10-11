@@ -19,7 +19,8 @@ import { shiftFrag, giShiftFrag, flowShiftFrag, undoShiftFrag } from './shaders/
 import { CHANNELS, MEDIA, gauss5, bulkPeak, bulkPeakCubic, CUBIC_LATTICE } from './gfx/materials.js';
 import { gfxUniforms } from './gfx/uniforms.js';
 import { RegionQuads, regionMaterial } from './gfx/regions.js';
-import { ELEMENTS, mechanisms } from './elements.js';
+import { ELEMENTS, mechanisms, PROP_TOOL } from './elements.js';
+import { strokeDabs, PROP } from './editing.js';
 import { Rays } from './raysLayer.js';
 import { isDecoTool } from './elements.js';
 import { ensureDeco } from './deco.js';
@@ -389,6 +390,8 @@ export class Simulation {
         ...state(), uFrame: { value: 0 }, uCenter: { value: new THREE.Vector3() }, uRadius: { value: 4 },
         uShape: { value: 0 }, uTool: { value: 2 }, uRate: { value: 1 }, uReplace: { value: false },
         uWind: { value: new THREE.Vector3() },
+        uEnd: { value: new THREE.Vector3() }, uGrow: { value: new THREE.Vector3() }, uMasked: { value: false }, tMask: { value: null },
+        uFilter: { value: -1 }, uDelete: { value: false }, uProp: { value: 0 }, uPropValue: { value: 0 },
       }),
       copy: rawMat(copyFrag(g), state()),
       moveFlow: stepMat(moveFlowFrag(g), { ...slots(), tQuiet: { value: null } }, SUPER_MAP.STEPS),
@@ -737,13 +740,24 @@ export class Simulation {
     this.stepping = false;
   }
 
+  // TPT's editing tools (src/editing.js) ride along: end, a line's far end (the
+  // brush swept from center to it); grow, a box's reach past the brush per axis
+  // ([x, y, z]); mask, a flood fill's region ({ texture, lo, hi }: editing.js
+  // runFill) instead of the brush; filter, the only element touched (-1: any);
+  // erase, specific delete; prop, the PROP tool's { field, value }.
   // wind: [x, y, z] cells the brush moved since the stroke's last paint (the Wind tool's drag)
-  paint({ center, radius, shape, tool, rate, replace, wind }) {
+  paint({ center, radius, shape, tool, rate, replace, wind, end = center, grow = null, mask = null, filter = -1, erase = false, prop = null }) {
+    if (tool === PROP_TOOL && !prop) return;
     // TPT's deco tools paint the decoration layer, not the cells (src/deco.js)
     if (isDecoTool(tool)) { ensureDeco(this).paint({ center, radius, shape, tool }); return; }
-    // particle tools paint into the particle list, not the grid
-    if (this.rays.paint({ center, radius, shape, tool, rate })) return;
+    // particle tools paint into the particle list, not the grid (a line or box: dabs along it)
+    const dabs = !mask && (end !== center || grow) ? strokeDabs(center, end, grow ?? undefined, radius) : [center];
+    if (this.rays.paint({ center: dabs[0], radius, shape, tool, rate })) {
+      for (const c of dabs.slice(1)) this.rays.paint({ center: c, radius, shape, tool, rate });
+      return;
+    }
     this.rays.noteElement(tool);   // plutonium emits neutrons: the layer wakes
+    if (prop?.field === PROP.TYPE) this.rays.noteElement(prop.value);
     const u = this.mats.paint.uniforms;
     // Its own random stream: this.frame counts steps only. The move pass
     // alternates its block partition by the step count's parity, so a paint
@@ -760,10 +774,22 @@ export class Simulation {
     u.uReplace.value = replace;
     if (wind) u.uWind.value.fromArray(wind);
     else u.uWind.value.set(0, 0, 0);
-    // it changes cells within radius of its centre (either shape)
-    const c = [center.x, center.y, center.z];
-    this.touchCentres(c.map((x) => x - radius), c.map((x) => x + radius));
+    u.uEnd.value.copy(end);
+    u.uGrow.value.set(...(grow ?? [0, 0, 0]));
+    u.uMasked.value = !!mask;
+    u.tMask.value = mask?.texture ?? null;
+    u.uFilter.value = filter;
+    u.uDelete.value = !!erase;
+    u.uProp.value = prop?.field ?? 0;
+    u.uPropValue.value = prop?.value ?? 0;
+    if (mask) this.touch(mask.lo, mask.hi);
+    else {
+      // it changes cells within radius of its centre (either shape), its line or its box
+      const a = [center.x, center.y, center.z], b = [end.x, end.y, end.z], reach = [0, 1, 2].map((k) => radius + Math.max(grow?.[k] ?? 0, 0));
+      this.touchCentres(a.map((x, k) => Math.min(x, b[k]) - reach[k]), a.map((x, k) => Math.max(x, b[k]) + reach[k]));
+    }
     this.pass(this.mats.paint);
+    u.tMask.value = null;   // (a fill's mask is disposed of after its pass)
     this.scrubDeco();
   }
 
@@ -771,6 +797,14 @@ export class Simulation {
   // element lose their decoration, as TPT's create_part resets it (src/deco.js).
   scrubDeco() {
     this.deco?.scrub(this.targets[1 - this.cur].textures[0]);
+  }
+
+  // State A read back without stalling (TPT's flood fill reads its pmap; editing.js
+  // runFill): a promise of the RGBA floats per atlas texel, as readState()'s first.
+  readStateAAsync() {
+    const { width, height } = this.g;
+    const a = new Float32Array(width * height * 4);
+    return this.renderer.readRenderTargetPixelsAsync(this.targets[this.cur], 0, 0, width, height, a, undefined, 0).then(() => a);
   }
 
   get flowTexture() { return this.flowV.texture; }

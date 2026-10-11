@@ -463,6 +463,24 @@ input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border-radius: 
 }
 .deco-only .material-control { justify-content: flex-start; }
 .deco-only kbd { margin-left: auto; }
+/* replace mode, specific delete and their target element (TPT's Ctrl+Alt-click tool) */
+.material-modes { display: flex; flex-wrap: wrap; gap: 2px; }
+.material-target { color: var(--faint, var(--muted)); }
+.material-target.set { color: #dedfe2; }
+.material-target-chip { width: 12px; height: 12px; border-radius: 3px; background: transparent; box-shadow: inset 0 0 0 1px #ffffff33; }
+.dock .material-swatch.target { outline: 2px dashed #eee9df; outline-offset: 2px; }
+/* the Property tool's window (TPT's PropertyTool.cpp), only while it is picked */
+.material-brush .prop-only { display: none; flex: 1 1 100%; flex-direction: column; gap: 6px; }
+.material-brush.prop .prop-only { display: flex; }
+.prop-row { display: grid; grid-template-columns: 38px 1fr; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); }
+.prop-field, .prop-value {
+  min-width: 0; height: 28px; padding: 0 8px; border: 1px solid #ffffff1a; border-radius: 5px;
+  background: #0e1116; color: #e7eaf0; font: inherit; font-size: 12px;
+}
+.prop-value:focus-visible, .prop-field:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.prop-value.bad { color: #ff8a8a; }
+.prop-note { margin: 0; font-size: 11px; line-height: 1.4; color: var(--muted); }
+.prop-note.bad { color: #ff8a8a; }
 body.eyedropper canvas { cursor: crosshair; }
 
 .search {
@@ -519,6 +537,8 @@ body.eyedropper canvas { cursor: crosshair; }
   pointer-events: none;
 }
 .stats b { color: #d9dde3; font-weight: 500; }
+.stats .edit-mode { color: #ffd28a; }   /* TPT's [REPLACE MODE] / [SPECIFIC DELETE] */
+.stats .edit-mode:empty { display: none; }
 
 .readout {
   position: fixed; z-index: 30; pointer-events: none;
