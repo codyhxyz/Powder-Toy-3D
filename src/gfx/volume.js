@@ -5,8 +5,8 @@
 // a world has its far field) and the bind groups, once per grid (B6), and
 // records the work into the open frame:
 //
-//   const volume = createVolume(gpu, sim);          // sim.derived attached (src/derived.js)
-//   await volume.ready;                             // shadow and pick; views build on first use
+//   const volume = createVolume(gpu, sim, { shadows: viewShadows(view) });   // sim.derived attached (src/derived.js)
+//   await volume.ready;                             // pick (and shadow); views build on first use
 //   post.render({
 //     prepare(p) { writeFrameUniforms(gpu, { camera, model, sun, shadowRes: volume.shadowRes, … }); },
 //     compute() { sim.updateBricks(); volume.recordShadow(); volume.recordPicks(); },
@@ -15,13 +15,16 @@
 //   }, camera);
 //   const hit = await volume.pick(ro, rd);          // { valid, cell, face, id, T, P, life }
 //
-// Pipelines (W18): every one asynchronous, with an explicit layout. The shadow
-// and pick kernels build at once (boot needs them); a view's module builds on
-// first use (build: 'now'), or ahead of it when prefetch() queues it for idle
-// time (the detail gate's near variant, B5). draw() draws nothing while its
-// pipeline is pending (the caller keeps the previous variant meanwhile:
-// gfx/detailGate.js).
+// Pipelines (W18): every one asynchronous, with an explicit layout. The pick
+// kernel builds at once, and the shadow kernel too when the session's view
+// reads the map (shadows: B5 builds it at boot only then); otherwise it
+// builds on the first recordShadow() or shadowReady() (a switch to a view with
+// shadows). A view's module builds on first use (build: 'now'), or ahead of it
+// when prefetch() queues it for idle time (the detail gate's near variant,
+// B5). draw() draws nothing while its pipeline is pending (the caller keeps
+// the previous variant meanwhile: gfx/detailGate.js).
 import { Matrix4 } from 'three/webgpu';
+import { WORLD_SIZE } from '../shaders/farShared.js';
 import {
   volumeFrag, volumePipeline, VOLUME_LAYOUTS, VolumeParams, VOLUME_VERTICES, VOLUME_VIEWS,
   shadowFrag, SHADOW_LAYOUTS, shadowRes as shadowResOf, shadowDispatch, SHADOW_WORKGROUP,
@@ -41,9 +44,12 @@ export const detailKey = (d = {}) => Object.keys(d).filter((k) => d[k]).sort().j
 /**
  * @param {object} gpu
  * @param {import('../sim.js').Simulation} sim with its derived passes attached (sim.derived)
+ * @param {{ shadows?: boolean }} [opts] shadows: the session's view reads the
+ *   shadow map (shaders/render.js viewShadows): its kernel builds now and
+ *   `ready` waits for it; false, it builds when first wanted
  * @returns the volume (see the file header)
  */
-export function createVolume(gpu, sim) {
+export function createVolume(gpu, sim, { shadows = true } = {}) {
   const g = sim.g;
   const derived = sim.derived;
   if (!derived) throw new Error('createVolume: the simulation has no derived passes (new Derived(sim) first)');
@@ -123,9 +129,10 @@ export function createVolume(gpu, sim) {
   }
 
   // ---- pipelines ----
+  // (a world's far casters read its own layout: sim.world; a box's are off)
   const shadowKernel = gpu.kernel({
-    name: 'shadow', code: shadowFrag(g), layouts: [L.FRAME, L.STATE_RO, L.LIGHTING_SHADOW],
-    workgroupSize: [SHADOW_WORKGROUP, SHADOW_WORKGROUP, 1],
+    name: 'shadow', code: shadowFrag(g, { world: sim.world ?? WORLD_SIZE }), layouts: [L.FRAME, L.STATE_RO, L.LIGHTING_SHADOW],
+    workgroupSize: [SHADOW_WORKGROUP, SHADOW_WORKGROUP, 1], build: shadows ? 'now' : 'manual',
   });
   const pickKernel = gpu.kernel({
     name: 'pick', code: pickFrag(g), layouts: [L.TABLES, L.STATE_RO, L.PICK], params: PickParams, workgroupSize: [PICK_BATCH, 1, 1],
@@ -149,6 +156,8 @@ export function createVolume(gpu, sim) {
   const pickGroup = gpu.bindGroup(L.PICK, [{ binding: 0, resource: { buffer: pickRing.buffer } }], label('picks'));
   const pickQueue = [];
   let pickScheduled = false;
+  // a pick that can't be marched (its kernel failed, the frame threw) fails with the reason
+  const failPicks = (e) => { for (const p of pickQueue.splice(0)) p.reject(e); };
   const meshInv = new Matrix4();
   let disposed = false;
 
@@ -160,8 +169,12 @@ export function createVolume(gpu, sim) {
     shadowTextures: { map: shadowMap, x: shadowX },
     /** The media noise (gfx/mediaNoise.js): resolves once its tile is in the texture. */
     noiseReady: noise.ready,
-    /** The shadow and pick kernels are built (views build on first use: viewReady). */
-    ready: Promise.all([shadowKernel.ready, pickKernel.ready]).then(() => volume),
+    /** The pick kernel is built, and the shadow kernel if `shadows` (views build on first use: viewReady). */
+    ready: Promise.all([pickKernel.ready, ...(shadows ? [shadowKernel.ready] : [])]).then(() => volume),
+    /** Builds the shadow kernel if it isn't yet (a switch to a view with shadows); resolves when it is ready. */
+    shadowReady() { return shadowKernel.build(); },
+    /** The shadow kernel's state: 'idle' (not wanted yet), 'pending', 'ready' or 'failed'. */
+    get shadowState() { return shadowKernel.state; },
 
     /**
      * The view's pipeline (a gpu.renderPipeline), made on first use.
@@ -217,11 +230,11 @@ export function createVolume(gpu, sim) {
     /**
      * Records the shadow map (every derived frame of a view with shadows, D9;
      * after FrameUniforms is written: it reads the sun and shadowRes). False
-     * while its kernel is building.
+     * while its kernel is building (the first call starts it).
      * @returns {boolean}
      */
     recordShadow() {
-      if (shadowKernel.state !== 'ready') return false;
+      if (shadowKernel.state !== 'ready') { shadowKernel.build(); return false; }
       shadowKernel.dispatch(gpu.frame, shadowDispatch(res), { bind: [fu.group, sim.bindRO, lightingGroup(L.LIGHTING_SHADOW)], header: sim.header() });
       return true;
     },
@@ -243,26 +256,38 @@ export function createVolume(gpu, sim) {
       const p = new Promise((resolve, reject) => pickQueue.push({ ro: v3(ro), rd: v3(rd), resolve, reject }));
       if (!pickScheduled) {
         pickScheduled = true;
-        queueMicrotask(() => { pickScheduled = false; if (!disposed && pickQueue.length) volume.recordPicks(); });
+        queueMicrotask(() => { pickScheduled = false; if (!disposed && pickQueue.length) recordPicksQuietly(); });
       }
       return p;
     },
-    /** Records the queued pick rays into the open frame (PICK_BATCH per dispatch). */
+    /**
+     * Records the queued pick rays into the open frame (PICK_BATCH per
+     * dispatch). If the pick kernel failed, or recording throws (a
+     * GraphicsFailure after the device is gone), every queued pick rejects
+     * with the reason, and a throw is rethrown to the caller.
+     */
     recordPicks() {
       if (!pickQueue.length) return;
-      if (pickKernel.state !== 'ready') { pickKernel.ready.then(() => volume.recordPicks(), () => {}); return; }
+      if (pickKernel.state !== 'ready') { pickKernel.ready.then(recordPicksQuietly, failPicks); return; }
       while (pickQueue.length) {
         const batch = pickQueue.splice(0, PICK_BATCH);
-        const slots = batch.map(() => pickRing.next());
-        const words = new Array(PICK_BATCH).fill(0);
-        slots.forEach((s, i) => { words[i] = s; });
-        pickKernel.dispatch(gpu.frame, [1, 1, 1], {
-          bind: [sim.tables, sim.bindRO, pickGroup], header: sim.header(),
-          params: {
-            ro: batch.map((b) => [...b.ro, 0]), rd: batch.map((b) => [...b.rd, 0]),
-            slot: [words.slice(0, 4), words.slice(4, 8)], n: batch.length,
-          },
-        });
+        let slots;
+        try {
+          slots = batch.map(() => pickRing.next());
+          const words = new Array(PICK_BATCH).fill(0);
+          slots.forEach((s, i) => { words[i] = s; });
+          pickKernel.dispatch(gpu.frame, [1, 1, 1], {
+            bind: [sim.tables, sim.bindRO, pickGroup], header: sim.header(),
+            params: {
+              ro: batch.map((b) => [...b.ro, 0]), rd: batch.map((b) => [...b.rd, 0]),
+              slot: [words.slice(0, 4), words.slice(4, 8)], n: batch.length,
+            },
+          });
+        } catch (e) {
+          for (const b of batch) b.reject(e);
+          failPicks(e);
+          throw e;
+        }
         batch.forEach((b, i) => pickRing.read(slots[i]).then((bytes) => {
           const f = new Float32Array(bytes);
           b.resolve({ valid: f[3] >= 0, cell: [f[0], f[1], f[2]], face: f[3], id: Math.round(f[4]), T: f[5], P: f[6], life: f[7], raw: f });
@@ -293,5 +318,9 @@ export function createVolume(gpu, sim) {
       lightingCache.clear();
     },
   };
+  // the microtask's and the kernel's late recordPicks: a throw has already rejected the picks it concerns
+  function recordPicksQuietly() {
+    try { volume.recordPicks(); } catch { /* (the picks carry it) */ }
+  }
   return volume;
 }

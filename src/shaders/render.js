@@ -1369,9 +1369,16 @@ export const SHADOW_WORKGROUP = 8;   // 8×8 threads, a texel each
 /** The map's size for a grid: texels per side. */
 export const shadowRes = (g) => Math.min(1024, 4 * Math.max(g.nx, g.ny, g.nz));
 
-export const shadowFrag = (g) => /* wgsl */ `
+/**
+ * The shadow kernel for grid g. world: the size of the world the grid is a
+ * window of (sim.world), whose far layout the far casters read; a box takes
+ * WORLD_SIZE's (its far branch is off, FrameUniforms.far).
+ * @param {{ nx: number, ny: number, nz: number }} g
+ * @param {{ world?: number[] }} [opts]
+ */
+export const shadowFrag = (g, { world = WORLD_SIZE } = {}) => /* wgsl */ `
 ${lib(g, { variant: 'LIGHTING_SHADOW', far: true, aeration: false })}
-${farCastersGLSL(farLayout(WORLD_SIZE))}
+${farCastersGLSL(farLayout(world))}
 // Texel encoding, decoded by sunMapShadow (gfx/lighting.js, which defines
 // SHADOW_TINT_ID_SCALE): w = tint element id * SHADOW_TINT_ID_SCALE + optical
 // depth (capped below it).
@@ -1514,8 +1521,11 @@ export const LAYOUT_NAMES = {
   shadow: ['FRAME', 'STATE_RO', 'LIGHTING_SHADOW'],
   pick: ['TABLES', 'STATE_RO', 'PICK'],
 };
-// The views that read the sun's shadow map (the data views light by clay, no shadows).
-const SHADOWED_VIEWS = ['realistic', 'plain'];
+// The views that read the sun's shadow map (src/views.js `shadows`; the data
+// views light by clay, no shadows): the app renders the map only for them.
+const SHADOWED_VIEWS = VIEWS.filter((v) => v.shadows).map((v) => v.key);
+/** Whether a view (a VOLUME_VIEWS key) reads the shadow map: gfx/volume.js builds its kernel at once then. */
+export const viewShadows = (view) => SHADOWED_VIEWS.includes(view);
 const keyOf = (d) => Object.keys(d).filter((k) => d[k]).sort().join(',');
 // The realistic variants the view draws for these detail settings: the gate's
 // base (drawn first) and near (prefetched), as gfx/volume.js builds them
