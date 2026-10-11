@@ -75,8 +75,20 @@ export const MAT = {
   METAL: 13,     // iron: carts, braces
   SAND: 14,
   ICE: 15,
+  // the Noita stuff a biome is dense with (each maps to the elements.js key of its name by default)
+  TOXIC: 16, BLOOD: 17, ACID: 18, LAVA: 19, SLIME: 20, MUD: 21, WHISKEY: 22,
+  TELEPORTATIUM: 23, LEVITATIUM: 24, BERSERKIUM: 25, HEALTHIUM: 26, POLYMORPHINE: 27,
+  GUNPOWDER: 28, TNT: 29, FUNGUS: 30, MEAT: 31, NUGGETS: 32, CLAY: 33, PLANT: 34, WOOD: 35,
+  // ...and the Coal Pits' and Snowy Depths' own (EMBER: coal laid down burning, the kit's temps)
+  SNOW: 36, SALTWATER: 37, LIQUID_NITROGEN: 38, DRY_ICE: 39, BRICK: 40, BROKENCOAL: 41, SCRAP: 42,
+  EMBER: 43,
 };
-export const MAT_COUNT = 16;
+export const MAT_COUNT = 44;
+// A kit's temps: { CODE: °C } lays those codes down at that temperature instead
+// of their element's spawn temperature (EMBER burning, a lake's water above
+// freezing in the Snowy Depths' cold). wangTemp (glsl.js) / tempJS (bake.js);
+// codes without one return WANG_NO_TEMP.
+export const WANG_NO_TEMP = -1000;
 export const MAT_NAMES = Object.keys(MAT);
 // codes the sampler returns outside the tiled region (the scene fills them)
 export const WANG_OUT = 255;
@@ -85,8 +97,14 @@ export const DEFAULT_PALETTE = {
   AIR: 'EMPTY', ROCK: 'ROCK', SOFT: 'LIMESTONE', BEAM: 'WOOD', RAIL: 'METAL', RUBBLE: 'RUBBLE',
   WATER: 'WATER', OIL: 'OIL', GOLD: 'GOLD', CRYSTAL: 'CRYSTAL', COAL: 'COAL', MOSS: 'MOSS',
   GRAVEL: 'STONE', METAL: 'METAL', SAND: 'SAND', ICE: 'ICE',
+  // WOOD: timber that isn't the kit's BEAM (crates, barrels, scaffolds) when BEAM is remapped
+  ...Object.fromEntries(Object.keys(MAT).filter((n) => MAT[n] >= 16).map((n) => [n, n])),
+  EMBER: 'COAL',
 };
-const LIQUIDS = [MAT.WATER, MAT.OIL];
+// liquids a body swims through (the walk checks); TOXIC, ACID, LAVA and
+// LIQUID_NITROGEN hurt, so the checks treat them as walls: a path never needs a swim through them
+const LIQUIDS = [MAT.WATER, MAT.OIL, MAT.BLOOD, MAT.SLIME, MAT.MUD, MAT.WHISKEY,
+  MAT.TELEPORTATIUM, MAT.LEVITATIUM, MAT.BERSERKIUM, MAT.HEALTHIUM, MAT.POLYMORPHINE, MAT.SALTWATER];
 // can a body pass through it (air or a liquid: you swim)
 export const passable = (m) => m === MAT.AIR || LIQUIDS.includes(m) || m === WANG_OUT;
 export const isLiquid = (m) => LIQUIDS.includes(m);
@@ -115,7 +133,19 @@ export const GEOM = {
   SHAFT_W: 6,         // a shaft's square side
   SHAFT_CUT: 2,       // a floor shaft cuts this far above the floor too (through a raised floor or a heap)
   JITTER: 1,          // cells a port's walls and roof wander (world hash), so seams aren't ruled lines
+  OPEN: 0,            // 1: an open kit (islands in a void, no border, no doorways; see openCap)
+  SPINE: 0,           // an open kit's walking height (kits/islands.js): its floor shafts cut down through it
 };
+// An open kit's region is closed only at its top and bottom: the top layer's top BORDER cells and
+// the bottom layer's cells under FLOOR are rock (the shafts still cut through them: the way in, the
+// way out), so the entry hall has a floor and the body lands on one at the bottom. Its sides are
+// the region's edge (rock outside). Shared by the sampler's twins (tiling.js, glsl.js).
+export function openCap(G, code, l, layers, cy) {
+  if (!G.OPEN) return code;
+  if (l === layers - 1 && cy >= G.H - G.BORDER) return MAT.ROCK;
+  if (l === 0 && cy < G.FLOOR) return MAT.ROCK;
+  return code;
+}
 
 // ---- the rasterizer
 const NOISE_SALT = 0x5a17;          // a tile's surface noise stream
@@ -201,7 +231,9 @@ const codeOf = (m) => {
 
 // One tile's cells in its canonical frame: Uint8Array, index x + 2U (y + H z).
 export function rasterTile(tile, index, G = GEOM) {
-  const X = 2 * G.U, Y = G.H, Z = G.U, out = new Uint8Array(X * Y * Z).fill(MAT.ROCK);
+  // an open kit's tiles (geom.OPEN: Noita's Coal Pits and Snowy Depths, islands in a void) start
+  // as air and keep no border: they meet their neighbours wherever their islands do
+  const X = 2 * G.U, Y = G.H, Z = G.U, out = new Uint8Array(X * Y * Z).fill(G.OPEN ? MAT.AIR : MAT.ROCK);
   const at = (x, y, z) => x + X * (y + Y * z);
   for (const pr of tile.prims) {
     const m = codeOf(pr.m ?? 'AIR');
@@ -226,7 +258,7 @@ export function rasterTile(tile, index, G = GEOM) {
     }
   }
   // the border: rock at every face, so a tile meets its neighbours only through its ports
-  for (let z = 0; z < Z; z++) for (let y = 0; y < Y; y++) for (let x = 0; x < X; x++) {
+  if (!G.OPEN) for (let z = 0; z < Z; z++) for (let y = 0; y < Y; y++) for (let x = 0; x < X; x++) {
     if (x < G.BORDER || x >= X - G.BORDER || z < G.BORDER || z >= Z - G.BORDER || y < G.BORDER || y >= Y - G.BORDER) {
       out[at(x, y, z)] = MAT.ROCK;
     }
@@ -260,7 +292,10 @@ export function portAccepts(tile) {
   });
 }
 
-// Check and normalize a kit: { name, palette, tiles }.
+// Check and normalize a kit: { name, palette, temps, tiles }. A tile may also carry
+//   layers: [lo, hi]   the layers it may be placed in, 0 the bottom (Coal Pits' lava: the lowest only)
+//   max: n             at most n placements in a region (Noita's rare pools: one a level)
+//   offPath: true      never on the main path (hazards: burning coal, liquid nitrogen)
 export function compileKit(kit) {
   if (!kit.tiles?.length) throw new Error(`wang: kit ${kit.name} has no tiles`);
   const palette = { ...DEFAULT_PALETTE, ...(kit.palette ?? {}) };

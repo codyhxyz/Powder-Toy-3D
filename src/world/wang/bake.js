@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { E } from '../../elements.js';
-import { compileKit, MAT_NAMES, MAT_COUNT, WANG_OUT } from './kit.js';
+import { compileKit, MAT_NAMES, MAT_COUNT, WANG_OUT, WANG_NO_TEMP } from './kit.js';
 import { generateTiling, bakeAtlas, packPlacement, makeSampler } from './tiling.js';
 import { wangGLSL } from './glsl.js';
 
@@ -24,6 +24,7 @@ import { wangGLSL } from './glsl.js';
 //   wangCellJS(w)   the CPU twin of GLSL wangCell: the material code at world
 //                   cell w [x, y, z] (or x, y, z)
 //   elementJS(code) the element id a code is (the palette's)
+//   tempJS(code)    the °C the kit lays it down at (its temps), else WANG_NO_TEMP
 //   entry, exit     world cells: the centre of the entry shaft's mouth at the
 //                   region's top, the exit shaft's at its bottom
 //   mainPath        the main path's bricks, entry to exit, as world boxes
@@ -44,6 +45,7 @@ export function bakeWang({ kit: rawKit, seed, size, origin = [0, 0, 0], entry, e
   const wangCellJS = (x, y, z) => (Array.isArray(x) ? sample(x[0] - origin[0], x[1] - origin[1], x[2] - origin[2]) : sample(x - origin[0], y - origin[1], z - origin[2]));
   const palette = MAT_NAMES.slice(0, MAT_COUNT).map((n) => E[kit.palette[n]]);
   const elementJS = (code) => (code >= 0 && code < MAT_COUNT ? palette[code] : E.ROCK);
+  const tempJS = (code) => kit.temps?.[MAT_NAMES[code]] ?? WANG_NO_TEMP;
   // a brick's world box, and a canonical point of a placed tile in world cells
   const brickBox = (b) => {
     const [i, k] = [b.ai, b.ak], w = b.longZ ? [1, 2] : [2, 1];
@@ -83,7 +85,7 @@ export function bakeWang({ kit: rawKit, seed, size, origin = [0, 0, 0], entry, e
         uWangOrigin: { value: new THREE.Vector3(...origin) }, uWangUnits: { value: new THREE.Vector3(...units) },
       };
     },
-    wangCellJS, elementJS,
+    wangCellJS, elementJS, tempJS,
     entry: shaftMouth(tiling.entryEdge, origin[1] + units[1] * G.H),
     exit: shaftMouth(tiling.exitEdge, origin[1]),
     mainPath: tiling.mainPath.map((id) => brickBox(tiling.bricks[id])),

@@ -51,7 +51,7 @@
 //      already coloured by a neighbour); a still-free open edge takes the
 //      tile's preferred colour. The kit's universal tile takes anything, so
 //      a pick always exists (compileKit insists on one).
-import { GEOM, COL, PORTS, SIDE_PORTS, MAT, WANG_OUT, rasterTile, compileKit } from './kit.js';
+import { GEOM, COL, PORTS, SIDE_PORTS, MAT, WANG_OUT, rasterTile, compileKit, openCap } from './kit.js';
 
 // ---- generation constants
 const P_LOOP = 0.32;          // chance a closed doorway between two bricks opens anyway (loops)
@@ -281,11 +281,15 @@ export function generateTiling({ kit: rawKit, seed, units, entry, exit }) {
   // 5. tiles
   const RT = rng(mix(seed, SALT_TILES));
   const place = new Array(bricks.length);
+  const onPath = new Set(mainPath), placed = new Map();   // a tile's placements so far (its max)
   for (const b of bricks) {
     const xfs = b.longZ ? [4, 5, 6, 7] : [0, 1, 2, 3];
     const cands = [];
     let total = 0;
     for (const t of kit.tiles) for (const xf of xfs) {
+      if (t.layers && (b.l < t.layers[0] || b.l > t.layers[1])) continue;
+      if (t.max !== undefined && (placed.get(t.index) ?? 0) >= t.max) continue;
+      if (t.offPath && onPath.has(b.id)) continue;
       // canonical port p sits on the edge PLACED[xf][p] points at; find it among b.edges
       const map = mapPorts(b, xf);
       let ok = true;
@@ -309,6 +313,7 @@ export function generateTiling({ kit: rawKit, seed, units, entry, exit }) {
       }
       return colour.get(e.key);
     });
+    placed.set(t.index, (placed.get(t.index) ?? 0) + 1);
     place[b.id] = { tile: t.index, xf, cols };
   }
   return { kit, units, pats, bricks, unitBrick, brickOfUnit, place, open, colour, mainPath, entryBrick, exitBrick, entryEdge, exitEdge };
@@ -353,7 +358,8 @@ export function packPlacement(T) {
     const br = T.bricks[b], pl = T.place[b];
     const second = br.units[1][0] === i && br.units[1][1] === k;
     let bits = 0;
-    for (let p = 0; p < SIDE_PORTS; p++) bits |= pl.cols[p] << (2 * p);
+    // an open kit cuts no doorways (its tiles meet where their islands do), only the shafts
+    if (!T.kit.geom.OPEN) for (let p = 0; p < SIDE_PORTS; p++) bits |= pl.cols[p] << (2 * p);
     for (let p = SIDE_PORTS; p < PORTS.length; p++) bits |= (pl.cols[p] ? 1 : 0) << (2 * SIDE_PORTS + p - SIDE_PORTS);
     data[o] = pl.tile;
     data[o + 1] = pl.xf | (second ? XF_SECOND : 0);
@@ -393,7 +399,8 @@ export function cutPorts(G, code, ports, cx, cy, cz, rx, ry, rz) {
     const unit = p & 1, up = p >= 2;
     const dx = cx - unit * U - U / 2, dz = cz - U / 2, sh = G.SHAFT_W / 2;
     if (dx < -sh || dx >= sh || dz < -sh || dz >= sh) continue;
-    if (up ? cy >= G.H - G.BORDER : cy < G.FLOOR + G.SHAFT_CUT) return MAT.AIR;
+    // (an open kit's floor shaft cuts down through its spine: its tiles ring every unit's centre with walkway)
+    if (up ? cy >= G.H - G.BORDER : cy < (G.OPEN ? G.SPINE + 1 : G.FLOOR + G.SHAFT_CUT)) return MAT.AIR;
   }
   return code;
 }
@@ -416,7 +423,7 @@ export function makeSampler({ kit, units, atlas, placement }) {
     const a = tr ? lz : lx, b = tr ? lx : lz;
     const cx = xf & 1 ? 2 * U - 1 - a : a, cz = xf & 2 ? U - 1 - b : b;
     const ty = Math.floor(tile / atlas.perCol) * G.H, tz = (tile % atlas.perCol) * U;
-    const code = atlas.data[cx + AX * (ty + ly + AY * (tz + cz))];
+    const code = openCap(G, atlas.data[cx + AX * (ty + ly + AY * (tz + cz))], l, ny, ly);
     return cutPorts(G, code, placement[o + 2] | (placement[o + 3] << 8), cx, ly, cz, rx, ry, rz);
   };
 }
