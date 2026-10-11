@@ -21,6 +21,7 @@ import { createClassPicker } from './classPicker.js';
 import { createVehicles } from './vehicles/index.js';
 import { createNightVision } from './nightVision.js';
 import { KICK_KEY, createKickLeg } from './kick.js';
+import { createCombat } from './combat.js';
 import { viewmodelRig, HIT } from './viewmodel.js';
 import { createGame } from '../game/index.js';
 import { SPAWNER, ENEMY_KINDS } from '../spawners.js';
@@ -115,7 +116,7 @@ const interact = createInteract();   // look + E (interact.js): perks, and Desce
     get body() { return player; },      // its statuses scale its weapons (targets.js dealtScale)
     hurt(amount, cause, d, opts) {
       povEvents.emit('player:hit', { amount });   // inside the attacker's povEvents.as(): carries its id
-      player.hurt(amount * PLAYER_DAMAGE_TAKEN, cause, opts);
+      player.hurt(amount * (opts?.exact ? 1 : PLAYER_DAMAGE_TAKEN), cause, opts);   // exact: Halo's numbers (halo.js)
       // d null: the weapon shoves by momentum itself (the kick: shove below)
       if (d) player.applyImpulse(d.clone().setY(Math.max(d.y, 0) + PLAYER_KNOCK_UP).normalize().multiplyScalar(PLAYER_KNOCKBACK));
     },
@@ -131,6 +132,12 @@ const interact = createInteract();   // look + E (interact.js): perks, and Desce
   viewmodel.name = 'pov-viewmodel';
   camera.add(viewmodel);
   viewmodel.visible = false;
+  // Halo's grenades (G), red reticle and hitmarker in a Halo match (combat.js; the melee is kick.js)
+  const combat = createCombat({
+    scene, viewmodel, hud: povHud, getSim: app.getSim, getVolume: app.getVolume, getScale: app.getScale,
+    ballistics: () => toolbelt?.ballistics ?? null, world: () => npcAi?.world ?? null,
+    active: () => mode === 'on', isTyping: app.isTyping,
+  });
 
   // the tool in hand, drawn on the body once the camera is out of the head (the
   // viewmodel shows it in first person): its model at the right hand, along the aim
@@ -757,6 +764,10 @@ const interact = createInteract();   // look + E (interact.js): perks, and Desce
       }
     }
     kickLeg?.update(dt);
+    combat.update({
+      dt, player, eye: ctx.eye, dir: ctx.dir, tool: toolbelt?.selectedKey ?? null,
+      live: live() && mode === 'on' && canUse() && !editing && !driving, stepsPerFrame: app.settings.paused ? 0 : app.settings.steps,
+    });
     buttons.primaryPressed = buttons.secondaryPressed = false;
     wheelNotches = 0;
 
@@ -873,6 +884,7 @@ const interact = createInteract();   // look + E (interact.js): perks, and Desce
     get npcs() { return [...npcs.values()]; },
     events: povEvents,           // the POV event bus (checks)
     game,                        // team games (src/game): start(mode), end(), useLayout(layout), state
+    combat,                      // Halo combat (combat.js): frags (frag.js), throw(), red
     get vfx() { return vfx; },
     feel,
     get ctx() { return ctx; },
@@ -894,6 +906,7 @@ const interact = createInteract();   // look + E (interact.js): perks, and Desce
       dropPoint.z -= dz;
       player?.windowShifted(dx, dz);
       toolbelt?.windowShifted(dx, dz);
+      combat.windowShifted(dx, dz);
     },
     aimRay,
     blocksKey,
