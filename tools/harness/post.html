@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Post</title>
+  <!-- the game's stylesheet: its body background is the sky the opaque canvas draws (F7) -->
+  <link rel="stylesheet" href="/src/ui/styles.css">
+  <style>
+    #view { position: fixed; inset: 0; width: 100%; height: 100%; }
+    #view.hidden { visibility: hidden; }
+    #log { display: none; }
+  </style>
+</head>
+<body>
+  <canvas id="view" width="400" height="250"></canvas>
+  <pre id="log"></pre>
+  <script type="module" src="./post.js"></script>
+</body>
+</html>

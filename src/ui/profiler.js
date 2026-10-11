@@ -19,11 +19,11 @@ const PCT = 100;
 const ms = (v) => (v == null ? '–' : v.toFixed(2));
 const pct = (v) => `${v * PCT}%`;
 const share = (v) => `${Math.round(v * PCT)}%`;
-const gridText = ([nx, ny, nz]) => (nx === ny && ny === nz ? `${nx}^3` : `${nx}×${ny}×${nz}`);
+const gridText = (g) => (!g ? 'no grid' : g[0] === g[1] && g[1] === g[2] ? `${g[0]}^3` : g.join('×'));
 const sceneSize = (s) => s.canvas.map((n) => Math.max(1, Math.round(n * s.renderScale))).join('×');
 const perStep = (s, v) => (s.steps && v != null ? v / s.steps : null);
 const simPhase = (s) => s.phases.find((p) => p.id === 'sim');
-const drawnText = (s, label) => (s.drawn == null ? '' : `${label}${share(s.drawn)}`);   // supertiles the step passes draw
+const drawnText = (s, label) => (s.drawn == null ? '' : `${label}${share(s.drawn)}`);   // bricks the step's kernels run over
 const rateText = (s) => `${s.fps == null ? '–' : s.fps.toFixed(0)} fps · ${s.stepsPerSec == null ? '–' : s.stepsPerSec.toFixed(0)} steps/s`
   + ` · ${ms(perStep(s, simPhase(s).gpu))} ms/step`;
 
@@ -34,13 +34,13 @@ function report(s) {
   const lines = [
     `Powder Toy 3D profile, ${new Date().toISOString().slice(0, 19).replace('T', ' ')}`,
     `GPU       ${s.gpuName}`,
-    `grid      ${s.grid.join('×')} (${(s.grid.reduce((a, b) => a * b, 1) / MILLION).toFixed(2)}M cells), awake bricks ${share(s.awake)}${drawnText(s, ', supertiles drawn ')}`,
+    `grid      ${s.grid ? `${s.grid.join('×')} (${(s.grid.reduce((a, b) => a * b, 1) / MILLION).toFixed(2)}M cells)` : 'none'}, awake bricks ${s.awake == null ? '–' : share(s.awake)}${drawnText(s, ', bricks drawn ')}`,
     `canvas    ${s.canvas.join('×')} at pixel ratio ${s.pixelRatio.toFixed(2)}; scene ${sceneSize(s)} (render scale ${s.renderScale.toFixed(2)})`,
     `rate      ${s.fps == null ? '–' : s.fps.toFixed(1)} fps, ${s.stepsPerSec == null ? '–' : s.stepsPerSec.toFixed(0)} steps/s; ${s.steps} steps in the sampled frame`,
     `sim step  ${ms(perStep(s, simPhase(s).gpu))} ms GPU, ${ms(perStep(s, simPhase(s).cpu))} ms CPU`,
-    `memory    ${(s.memory / MB).toFixed(0)} MB in render targets and the canvas (estimate)`,
-    `frame     ${ms(s.gpu)} ms GPU (one frame, each pass synced; ${ms(s.overhead)} ms sync cost subtracted per pass),`,
-    `          ${ms(s.cpu)} ms CPU (mean of the unsynced frames); the sampled frame took ${ms(s.wall)} ms with its syncs`,
+    `memory    ${(s.memory / MB).toFixed(0)} MB in our buffers and textures, three's targets and the canvas`,
+    `frame     ${ms(s.gpu)} ms GPU (one frame, timestamp queries${s.split ? ', every dispatch a pass of its own' : ''}; three's meshes untimed),`,
+    `          ${ms(s.cpu)} ms CPU (mean of the frames since the last sample); the sampled frame took ${ms(s.wall)} ms of CPU`,
     '',
     `${pad('phase', 9)}${'gpu ms'.padStart(7)}${'cpu ms'.padStart(8)}  passes: gpu ms`,
     ...s.phases.map((p) => `${pad(p.label, 9)}${num(p.gpu)} ${num(p.cpu)}  ${p.detail.map((d) => `${d.name}${d.count > 1 ? `×${d.count}` : ''} ${ms(d.gpu)}`).join(', ')}`),
@@ -52,8 +52,9 @@ function report(s) {
 }
 
 export function createProfilerPanel() {
-  const status = h('span.status', { title: 'Once a second one frame is measured: after each pass the CPU waits for the GPU,'
-    + ' and the cost of that wait (sync) is subtracted. Timings assume nothing else is using the GPU.' });
+  const status = h('span.status', { title: 'Once a second the latest frame whose GPU timestamps have come back is shown:'
+    + ' every pass of ours is timed, and while the profiler is on every dispatch runs as a pass of its own.'
+    + ' Timings assume nothing else is using the GPU.' });
   const copy = h('button.copy', { type: 'button', text: 'Copy', title: 'Copy a plain-text report' });
   const rates = h('div.line'), state = h('div.line');
   const rows = PHASES.map((p) => {
@@ -109,12 +110,12 @@ export function createProfilerPanel() {
       if (!s) { idle(); return; }
       last = s;
       el.classList.remove('idle');
-      status.textContent = `sampled · sync ${ms(s.overhead)} ms`;
+      status.textContent = s.gpu == null ? 'sampled · no GPU timestamps' : `sampled · timestamps${s.split ? ', split passes' : ''}`;
       lastRates = rateText(s);
       rates.textContent = lastRates;
-      state.textContent = `awake ${share(s.awake)}${drawnText(s, ' · drawn ')} · ${(s.memory / MB).toFixed(0)} MB · ${gridText(s.grid)} · ${s.canvas.join('×')}`
+      state.textContent = `awake ${s.awake == null ? '–' : share(s.awake)}${drawnText(s, ' · drawn ')} · ${(s.memory / MB).toFixed(0)} MB · ${gridText(s.grid)} · ${s.canvas.join('×')}`
         + (s.renderScale < 1 ? ` → ${sceneSize(s)}` : '');
-      const span = Math.max(s.gpu, BUDGET_MS);
+      const span = Math.max(s.gpu ?? 0, BUDGET_MS);
       rows.forEach((r, i) => {
         const p = s.phases[i];
         r.cpu.textContent = ms(p.cpu);
@@ -133,7 +134,7 @@ export function createProfilerPanel() {
       });
       totalCpu.textContent = ms(s.cpu);
       totalGpu.textContent = ms(s.gpu);
-      totalTrack.replaceChildren(h('i', { style: { width: pct(s.gpu / span) } }));
+      totalTrack.replaceChildren(h('i', { style: { width: pct((s.gpu ?? 0) / span) } }));
       // the frame budget, as a tick on every track and a line over the strip
       const top = Math.max(BUDGET_MS, ...s.totals);
       el.style.setProperty('--budget', pct(BUDGET_MS / span));
