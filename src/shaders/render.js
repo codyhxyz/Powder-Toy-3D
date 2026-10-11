@@ -951,6 +951,9 @@ void main() {
             bends++;
             // the scene shows in the reflection only off the first surface the eye ray meets
             bool inside = liquidInterface(hp, n, ev == EV_ENTER, lid, bends == 1, ro, rd, col, trans, mediumLight);
+#ifdef DETAIL_LIQ_FOAM
+            liquidUnderSkin(col, trans);   // a falling jet's bubbly body, under the reflection
+#endif
             tCut -= tEv;
             liq = inside ? lid : E_EMPTY;
             if (ev == EV_ENTER) { lightRef = mediumLight; lightY = hp.y; }
@@ -969,6 +972,9 @@ void main() {
             continue;
           }
           // out of bends: switch medium, keep straight
+#ifdef DETAIL_LIQ_FOAM
+          liquidUnderSkin(col, trans);
+#endif
           liq = ev == EV_ENTER ? lid : E_EMPTY;
           if (ev == EV_ENTER) { lightRef = uShadows ? sunShadow(hp + n * IFACE_PROBE) : vec3(1.0); lightY = hp.y; gSkyIn = skyInAt(surfProbe(hp, n)); }
         }
