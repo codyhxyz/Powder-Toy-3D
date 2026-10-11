@@ -62,7 +62,7 @@ export const MEDALS = {
   SPLATTER_SPREE: { name: 'Splatter Spree', kind: 'spree', glyph: '5' },
   VEHICULAR_MANSLAUGHTER: { name: 'Vehicular Manslaughter', kind: 'spree', glyph: '10' },
   KILLJOY: { name: 'Killjoy', kind: 'style', glyph: '✕' },
-  BEAT_DOWN: { name: 'Beat Down', kind: 'style', glyph: '✊' },
+  BEAT_DOWN: { name: 'Beat Down', kind: 'style', glyph: '✸' },
   ASSASSIN: { name: 'Assassin', kind: 'style', glyph: '†' },
   GRENADE_STICK: { name: 'Grenade Stick', kind: 'style', glyph: '✱' },
   GRENADE_KILL: { name: 'Grenade Kill', kind: 'style', glyph: '◉' },   // Halo 4's (Halo 3 has only the Stick)

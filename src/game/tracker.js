@@ -37,7 +37,7 @@ const SHOTS = ['gun:fire', 'wand:fire', 'flame', 'laser'];   // what counts as f
 export function createTracker() {
   const canvas = h('canvas.feel-tracker-canvas');
   const range = h('span.feel-tracker-range', { text: `${RADAR_M} m` });
-  const root = h('div.feel-tracker', {}, canvas, range);
+  const root = h('div.feel-tracker', { 'aria-hidden': 'true' }, canvas, range);
   document.body.append(root);
   const g = canvas.getContext('2d');
   let dpr = 0;

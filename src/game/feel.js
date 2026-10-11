@@ -22,6 +22,7 @@ import { createPowerups } from './powerups.js';
 
 const hdist = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
 const SHOT = 'Shot';   // a round's cause of death (ballistics.js)
+const HEADING_MIN = 0.05;   // the view's level share below which (looking straight up or down) the tracker turns by the camera's up instead
 
 // game: { shell, roster() → Map(id → entry), bodyOf(entry), alive(entry), clock() → game s }
 export function createFeel({ shell, roster, bodyOf, alive, clock }) {
@@ -38,7 +39,14 @@ export function createFeel({ shell, roster, bodyOf, alive, clock }) {
   const hud = createMedalHud();
   const tracker = createTracker();
   const powerups = createPowerups({ app: shell.app, scene: shell.scene });
-  const dir = new THREE.Vector3();
+  const dir = new THREE.Vector3(), quat = new THREE.Quaternion();
+  // the view's heading on the ground: its direction, or (looking straight down or up) its up, which points ahead (or behind)
+  function heading() {
+    shell.camera.getWorldDirection(dir);
+    if (Math.hypot(dir.x, dir.z) >= HEADING_MIN) return dir;
+    const down = dir.y < 0;
+    return dir.set(0, 1, 0).applyQuaternion(shell.camera.getWorldQuaternion(quat)).multiplyScalar(down ? 1 : -1);
+  }
 
   function awarded(list) {
     if (!list.length) return;
@@ -98,11 +106,10 @@ export function createFeel({ shell, roster, bodyOf, alive, clock }) {
     }
     // the tracker: yours while you're up and on a side
     if (!me?.team || !body || body.dead || !shell.active()) { tracker.update(null); return; }
-    shell.camera.getWorldDirection(dir);
     const humansLeft = mode === 'infection' ? living.filter((e) => e.team === R.HUMANS).length : 0;
     tracker.update({
       me: { pos: body.pos },
-      dir,
+      dir: heading(),
       bodies: living.filter((e) => e !== me).map((e) => {
         const b = bodyOf(e);
         return {

@@ -21,11 +21,13 @@ const VOICE_PITCH = 0.3;        // 0..2 (1 normal): deep
 const VOICE_VOLUME = 0.9;       // 0..1
 const VOICE_LANG = /^en/i;      // an English voice...
 const VOICE_DEEP = /daniel|fred|ralph|alex|male|bruce|aaron|arthur/i;   // ...a deeper one where the system has it
+const VOICE_AFTER_CANCEL_MS = 60;   // ms between cutting an older call and speaking (Chrome can drop a speak() in the cancel's tick)
+const TEXT_GLYPH = '\uFE0E';       // variation selector 15: a symbol drawn as text, not as a colour emoji
 
 export function createMedalHud() {
   const stack = h('div.feel-medals');
   const line = h('div.feel-line');
-  const root = h('div.feel-medal-hud', {}, stack, line);
+  const root = h('div.feel-medal-hud', { 'aria-hidden': 'true' }, stack, line);
   document.body.append(root);
   const shown = [];   // { el, at }
   let lineUntil = -Infinity;
@@ -41,14 +43,22 @@ export function createMedalHud() {
     } catch { voice = null; }
   }
   try { pickVoice(); speech?.addEventListener?.('voiceschanged', pickVoice); } catch { /* no voices */ }
+  let sayTimer = 0;
   function say(text) {
     if (!speech || document.hidden) return;
+    const speak = () => {
+      try {
+        const u = new SpeechSynthesisUtterance(text);
+        if (voice) u.voice = voice;
+        u.rate = VOICE_RATE; u.pitch = VOICE_PITCH; u.volume = VOICE_VOLUME;
+        speech.speak(u);
+      } catch { /* silent */ }
+    };
+    clearTimeout(sayTimer);
     try {
+      if (!speech.speaking && !speech.pending) { speak(); return; }
       speech.cancel();   // the newest medal, not a queue of old ones
-      const u = new SpeechSynthesisUtterance(text);
-      if (voice) u.voice = voice;
-      u.rate = VOICE_RATE; u.pitch = VOICE_PITCH; u.volume = VOICE_VOLUME;
-      speech.speak(u);
+      sayTimer = setTimeout(speak, VOICE_AFTER_CANCEL_MS);
     } catch { /* silent */ }
   }
 
@@ -62,7 +72,7 @@ export function createMedalHud() {
 
   function badge(m) {
     return h(`div.feel-medal.${m.kind}`, {},
-      h('span.feel-badge', {}, h('b', { text: m.glyph ?? '' })),
+      h('span.feel-badge', {}, h('b', { text: `${m.glyph ?? ''}${TEXT_GLYPH}` })),
       h('span.feel-name', { text: m.name }));
   }
 
@@ -73,6 +83,7 @@ export function createMedalHud() {
       shown.length = 0;
       lineUntil = -Infinity;
       line.classList.remove('on');
+      clearTimeout(sayTimer);
       try { speech?.cancel(); } catch { /* silent */ }
     },
     // the player's medals from one event ([{ key, name, kind, glyph }]), at wall time now (s)
