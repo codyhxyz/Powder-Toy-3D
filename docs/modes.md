@@ -81,6 +81,61 @@ HUD (`src/game/hud.js`, `game.css`): top-centre the mode, both scores, the clock
 taken / dropped; the hill's owner, when it moves and the leader's progress; survivors and infected; the half, the
 attackers and the core count); the killfeed and announcements top-right; the scoreboard on Tab; the result for 10 s.
 
+## Medals, tracker, power-ups (Halo matches)
+
+A Halo-style match (`style: 'halo'`: Slayer, CTF, KOTH, Infection; not Siege) gets Halo 3's layer of reward and
+awareness, `src/game/feel.js` over three modules. Sources: Halopedia ("List of Halo 3 and Halo 3: ODST medals",
+"Overshield", "Motion tracker", "MLG"); each number is a named constant citing its own.
+
+**Medals** (`medals.js`, pure; shown by `medalHud.js`). Every body earns them, bots too; the player's own pop in
+bottom-left, stacked above the tracker, newest at the bottom, each for 3 s (6 at most), with a synthesized sting per
+kind (`audio.js` `medalMulti | medalSpree | medalStyle | medalObjective`, a beat apart). A kill's rarest medal is
+called out by a deep, slow voice (the browser's `speechSynthesis`; silent where there is none) and, for a multi-kill
+or a spree, as a line high in the centre under the objective. No Halo audio or art: the badges are CSS hexagons.
+
+| Medal | When | Source |
+|---|---|---|
+| Double Kill … Overkill, Killtacular, Killtrocity, Killimanjaro, Killtastrophe, Killpocalypse, Killionaire | 2 … 10 kills, each within 4 s of the last (past 10, Killionaire again) | Halo 3 |
+| Killing Spree, Killing Frenzy, Running Riot, Rampage, Untouchable, Invincible | 5, 10 … 30 kills without dying (past 30, Invincible every 5) | Halo 3 |
+| Killjoy | end a spree of 5 or more | Halo 3 |
+| Beat Down, Assassin, Grenade Stick | the cause `melee`, `assassination`, a stuck grenade (combat's cause strings) | Halo 3 |
+| Grenade Kill | the cause `grenade` | Halo 4 (Halo 3 has only the Stick) |
+| Splatter, Splatter Spree (5), Vehicular Manslaughter (10) | run over (`Run over by a …`) | Halo 3 |
+| Sniper Kill, Sniper Spree (5), Sharpshooter (10) | shot with the sniper in hand (Halo 3 wants a headshot) | Halo 3 |
+| Laser Kill, Incineration | lasered; burned or torched | Halo 3 |
+| Death from the Grave | a kill credited after the killer died | Halo 3 |
+| First Strike | the match's first kill | Reach |
+| Extermination | the whole enemy side (4 or more) dead at once | Halo 3 |
+| Perfection | win Slayer with 15+ kills and no deaths | Halo 3 |
+| Flag Score, Killed Flag Carrier, Flag Kill | capture; kill their carrier; a melee kill with the flag in hand | Halo 3 |
+| Flag Returned | touch your dropped flag home | Halo 2 (Halo 3 has none) |
+| Hail to the King | 5 kills in a row from inside the hill, in one life, before it moves | Halo 3 |
+| Infection Spree, Mmmm... Brains; Zombie Killing Spree, Hell's Janitor; Last Man Standing | 5, 10 infections in one life; 5, 10 zombies killed; the lone survivor at the clock | Halo 3 |
+
+Each roster entry carries `medals` (its count this match) and `medalCounts` (`{ KEY: n }`) for the scoreboard.
+Events: `game:medal` `{ id, key, name, kind, mine, order }` for every award. `node tools/medals-check.mjs` checks the
+rules in node.
+
+**Motion tracker** (`tracker.js`), bottom-left beside the vitals: Halo 3's 25 m (`RADAR_M`, the bots' own), turned with
+the view so ahead is up. Teammates always show (yellow); an enemy shows (red) only while it moves faster than a
+crouch-walk (`player.js` `CROUCH_WALK_SPEED`) or for 1 s after it fires (`gun:fire`, `wand:fire`, `flame`, `laser`:
+the bots' shots too), then fades over 0.6 s. Infection's last survivor shows on every zombie's tracker. Halo 3 doesn't
+mark height; ours draws a body more than a storey (3 m) above or below as a triangle pointing up or down. A ping
+sweeps out every 1.5 s. It's a 2D canvas redrawn at 30 Hz at most; hidden while you're dead or watching.
+
+**Power-ups** (`powerups.js`): during a Halo match each shrine's Noita perks are put away and an **Overshield** floats
+over its middle altar (Dam Valley: four); the match's end puts the perks back. A body (player or bot) takes one by
+walking into it, Halo's way, and it returns 120 s later (Halopedia "MLG": "All Powerups spawn after 120 seconds";
+Halo 3 matchmaking's own isn't documented). The Overshield is Halo 3's: 200% of the shield, one green layer on the
+shield bar (Combat Evolved's and Reach's are 300%); it charges for 3 s, the body untouchable meanwhile but by a
+backstab, then the extra drains away over 60 s (Halopedia: "gradually depletes", no rate given: ours). A hit takes the
+extra first; the refill never brings it back; death takes it (`vitals.js` `giveOvershield`, `body.overshield()`).
+Events: `game:powerup` `{ id, kind, point, mine }` (a rising charge sound). Active Camo is not in yet.
+
+`node tools/feel-check.mjs [--url http://localhost:5424] [--preset damValley] [--shot file.jpg]` (AC power, a dev
+server) checks the pads, an Overshield pickup and its bar, the tracker's canvas, a melee Double Kill's medals, and
+that the match's end puts the perks back.
+
 ## API
 
 ```js
@@ -96,7 +151,8 @@ Options to `start` also override the mode's rules (`scoreToWin`, `timeLimit`, `h
 `teamSize`): the check uses them to fit a run in minutes; the menu never does (tuning values are constants).
 Events on `povEvents`: `game:start`, `game:end` `{ winner, score, why }`, `game:kill` `{ killer, victim, by, id, cause }`,
 `game:flag` `{ team, action: taken | dropped | returned | captured, by }`, `game:hill` `{ index, at }`,
-`game:infected` `{ id, by }`, `game:half` `{ half, attackers, captured, time, held }`, `game:team` `{ id, team }`.
+`game:infected` `{ id, by }`, `game:half` `{ half, attackers, captured, time, held }`, `game:team` `{ id, team }`,
+`game:medal` and `game:powerup` (above). `game.feel` is the medals, tracker and power-ups layer (`medalsOf(id)`, `powerups`).
 
 ## Layouts
 

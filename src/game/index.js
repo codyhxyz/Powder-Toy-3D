@@ -9,6 +9,7 @@ import { labLayout, fitLayout } from './layout.js';
 import { ObjectiveEvaluator, WANT, NEAR } from './bots.js';
 import { createMarkers } from './markers.js';
 import { createGameHud } from './hud.js';
+import { createFeel } from './feel.js';
 
 // Team games in first person: Halo's Team Slayer, Capture the Flag, King of
 // the Hill and Infection, and a Siege (TF2's attack/defend with a halftime
@@ -69,6 +70,8 @@ export function createGame(shell) {
   });
   const now = () => performance.now() / 1000;
   const sim = () => app.getSim();
+  // Halo's medals, motion tracker and power-ups (feel.js): it hears the match's events and reads the roster
+  const feel = createFeel({ shell, roster: () => roster, bodyOf: (e) => bodyOf(e), alive: (e) => alive(e), clock: () => time });
 
   // ---------------------------------------------------------------- roster
   const me = () => roster.get(PLAYER) ?? null;
@@ -551,6 +554,7 @@ export function createGame(shell) {
       });
     }
     hud.update(state());
+    feel.update();
   }
 
   function board() {
@@ -627,6 +631,7 @@ export function createGame(shell) {
     visible = v;
     markers.setVisible(v);
     hud.show(v);
+    feel.show(v);
     for (const e of bots()) e.bot.setVisible(v);
   }
   setVisible(false);
@@ -653,6 +658,7 @@ export function createGame(shell) {
     get roster() { return [...roster.values()]; },
     get bots() { return bots().map((e) => e.bot); },
     get botCount() { return running ? bots().length : 0; },
+    get feel() { return feel; },   // Halo's medals, tracker and power-ups (feel.js; checks)
     // the player's respawn while a match runs: Halo's delay, at a spawn of their side (null: the shell's own)
     get playerRespawn() {
       const p = me();
