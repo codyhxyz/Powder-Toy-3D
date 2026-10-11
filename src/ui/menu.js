@@ -114,6 +114,9 @@ export function createMenu({ modes, quick = [], map, mode, onStart, onResume, on
   const tipText = h('p.mm-tip-text');
   // (eager, at low priority: he must be there the moment Start is pressed, when the page is about to freeze compiling)
   const you = h('img', { src: YOU, alt: '', decoding: 'async', fetchpriority: 'low', draggable: false });
+  // decoded while the menu is up: a fast boot freezes the page (the map build, the shaders) before an
+  // undecoded image paints, and the caption then points at nothing
+  you.decode?.().catch(() => {});
   you.addEventListener('error', () => you.closest('figure')?.remove());
 
   const el = h('div.mm', { role: 'dialog', 'aria-label': 'Maps' },
