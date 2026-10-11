@@ -148,12 +148,9 @@ void plainView(vec3 ro, vec3 rd, float t0, vec3 bh) {
   vec3 mediumLight = vec3(1.0);
   ivec3 lastB = ivec3(-1);
   float occ = 0.0;
-  float tCut = meshCutT(rd);   // the nearest opaque mesh (gfx/meshCut.js): the march stops there
-  bool cut = false;
 
   for (int i = 0; i < ${g.maxSteps}; i++) {
     if (outside(cell)) break;
-    if (tEnter >= tCut) { cut = true; break; }
     ivec3 bc = cell / BS;
     if (bc != lastB) { lastB = bc; occ = brickOcc(bc); }
     if (occ < 0.5) {
@@ -162,7 +159,7 @@ void plainView(vec3 ro, vec3 rd, float t0, vec3 bh) {
       continue;
     }
     float tExit = min(tMax.x, min(tMax.y, tMax.z));
-    float seg = min(tExit, tCut) - tEnter;
+    float seg = tExit - tEnter;
     vec4 a = fetchA(cell);
     int id = eid(a);
     vec3 n = vec3(0.0);
@@ -219,7 +216,7 @@ void plainView(vec3 ro, vec3 rd, float t0, vec3 bh) {
   }
 
   // floor of the box
-  if (!cut && max(trans.x, max(trans.y, trans.z)) >= PLAIN_OPAQUE && cell.y < 0 && rd.y < 0.0) {
+  if (max(trans.x, max(trans.y, trans.z)) >= PLAIN_OPAQUE && cell.y < 0 && rd.y < 0.0) {
     float tf = -ro.y / rd.y;
     if (tHit < 0.0) tHit = tf;
     col += trans * plainFloor(ro + rd * tf);

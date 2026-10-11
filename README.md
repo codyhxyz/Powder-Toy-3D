@@ -97,6 +97,13 @@ draws the muzzle flash, sparks, dust and tracers. The held tools are low-poly an
 **Settings → First person** picks the body: the stickman, or a realistic one animated with
 [Quaternius](https://quaternius.com)'s CC0 animation library.
 
+Every death goes up in a killfeed in the top right, Garry's Mod's death notices with its layout, timing and colours
+(`src/pov/killfeed.js`): *Attacker* [weapon] *Victim*, or only the icon and the victim when you did it yourself or the world
+did. The icon is the killer's weapon, or what the death's cause names (fire, acid, drowning, a fall). The kill icons are
+from [game-icons.net](https://game-icons.net) by Lorc, Delapouite, Skoll, Sbed and Carl Olsen, under
+[CC BY 3.0](https://creativecommons.org/licenses/by/3.0/), recoloured and with their backgrounds removed
+(`tools/killicons.mjs` bakes them).
+
 ## Maps
 
 The site opens on a map menu, Garry's Mod's New Game screen: gamemodes down the left, a square preview of each
