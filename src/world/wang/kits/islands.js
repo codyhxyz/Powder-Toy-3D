@@ -24,12 +24,14 @@ export const MID = U / 2;                  // the W/E faces' middle, z; a unit's
 export const C0 = U / 2, C1 = U + U / 2;   // unit 0's and unit 1's centre, x
 export const SPINE = 8;                    // the spine's walking top, cells over the tile's bottom
 export const HEAD = 10;                    // cells kept clear over a walkway (a body is 6, a jump 2, and some)
-export const STRIP = 4;                    // a walkway's half-width (8 wide: room to pass what stands on it)
+export const STRIP = 3;                    // a walkway's half-width (6 wide: room to pass what stands on it)
+export const PLANK_W = 2;                  // a plank's half-width
+export const PLANK_SPUR = 0.4;             // chance a spur is a timber walkway over the void, not a ribbon of rock
 export const DECK_T = 3;                   // the walkway's crisp top slab, cells thick
-export const RING = 9;                     // a unit centre's ring of walkway, this far each way (round a SHAFT_W hole: 6 cells of walk)
+export const RING = 6;                     // a unit centre's ring of walkway, this far each way (round a SHAFT_W hole: 6 cells of walk)
 export const BODY_DROP = 5;                // a ribbon's body hangs this far under its top...
-export const BODY_R = [4, 6.5];            // ...as blobs of this half-width (cells), each its own
-export const ROUGH_BODY = 2.6;             // cells of noise on a ribbon's or a blob's underside
+export const BODY_R = [3.5, 5];            // ...as blobs of this half-width (cells), each its own: a ribbon, not a slab
+export const ROUGH_BODY = 2;             // cells of noise on a ribbon's or a blob's underside
 export const LUMP = 9;                     // cells of ribbon a blob covers
 
 // The tile's own seeded stream (mulberry32): the kit is data, the same every load.
@@ -53,41 +55,46 @@ let salt = SALT0;
 // The spine's rock: lumpy ribbons along x (z = MID) and along z at both units' centres (x = C0,
 // C1), their tops sliced flat at SPINE. m: the island material. holes: which units' centres open
 // down (D ports). gap: [x0, x1] where the x ribbon breaks (a plank crosses it; see plankX).
-export function spineBody(r, { m = 'ROCK', holes = [0, 1], gap = null, spurs = [0, 1] } = {}) {
+export function spineBody(r, { m = 'ROCK', holes = [0, 1], gap = null, spurs = [0, 1], planked = [] } = {}) {
   const s = salt++, out = [];
   const lumps = (a, b, along) => {
     for (let t = a; t < b; t += LUMP) {
       const c = t + r.between(0, LUMP);
       const rr = r.between(...BODY_R), drop = BODY_DROP + r.between(-1, 2);
-      if (along === 'x') out.push({ ball: [[c, SPINE - drop / 2, MID + r.between(-2, 2)], [LUMP * 0.75, drop, rr]], m, rough: ROUGH_BODY, salt: s });
+      if (along === 'x') out.push({ ball: [[c, SPINE - drop / 2, MID + r.between(-1, 1)], [LUMP * 0.75, drop, rr]], m, rough: ROUGH_BODY, salt: s });
       else out.push({ ball: [[along, SPINE - drop / 2, c], [rr, drop, LUMP * 0.75]], m, rough: ROUGH_BODY, salt: s });
     }
   };
   if (gap) { lumps(-3, gap[0] - 2, 'x'); lumps(gap[1] + 2, X + 3, 'x'); } else lumps(-3, X + 3, 'x');
-  for (const u of spurs) lumps(-3, U + 3, u ? C1 : C0);
+  for (const u of spurs) if (!planked.includes(u)) lumps(-3, U + 3, u ? C1 : C0);
   // the hole's ring: a broader blob round the unit's centre
-  for (const u of holes) out.push({ ball: [[u ? C1 : C0, SPINE - 3, MID], [RING + 2, BODY_DROP + 1, RING + 2]], m, rough: ROUGH_BODY, salt: s });
+  for (const u of holes) out.push({ ball: [[u ? C1 : C0, SPINE - 3, MID], [RING + 1, BODY_DROP + 1, RING + 1]], m, rough: ROUGH_BODY, salt: s });
   return out;
 }
 // ...its walking top: clear HEAD cells over the walkways, then their crisp slabs (after every
 // island, so nothing hangs into the headroom), then the holes
 // the walkways in plan, [[x0, z0], [x1, z1]] each
-export function spineStrips({ holes = [0, 1], gap = null, spurs = [0, 1] } = {}) {
+export function spineStrips({ holes = [0, 1], gap = null, spurs = [0, 1], planked = [] } = {}) {
   const strips = [];
   if (gap) strips.push([[-1, MID - STRIP], [gap[0], MID + STRIP]], [[gap[1], MID - STRIP], [X + 1, MID + STRIP]]);
   else strips.push([[-1, MID - STRIP], [X + 1, MID + STRIP]]);
-  for (const u of spurs) { const c = u ? C1 : C0; strips.push([[c - STRIP, -1], [c + STRIP, U + 1]]); }
+  for (const u of spurs) if (!planked.includes(u)) { const c = u ? C1 : C0; strips.push([[c - STRIP, -1], [c + STRIP, U + 1]]); }
   for (const u of holes) { const c = u ? C1 : C0; strips.push([[c - RING, MID - RING], [c + RING, MID + RING]]); }
   return strips;
 }
-export function spineDeck({ m = 'ROCK', holes = [0, 1], gap = null, spurs = [0, 1] } = {}) {
-  const out = [], strips = spineStrips({ holes, gap, spurs });
+export function spineDeck({ m = 'ROCK', holes = [0, 1], gap = null, spurs = [0, 1], planked = [] } = {}) {
+  const out = [], strips = spineStrips({ holes, gap, spurs, planked });
+  // a planked spur: a timber walkway from the ring out to the face, headroom over it
+  for (const u of planked) {
+    const c = u ? C1 : C0;
+    out.push({ box: [[c - PLANK_W, SPINE, -1], [c + PLANK_W, SPINE + HEAD, U + 1]], m: 'AIR' });
+    out.push({ box: [[c - PLANK_W, SPINE - 1, -1], [c + PLANK_W, SPINE, U + 1]], m: 'WOOD' });
+  }
   for (const [a, b] of strips) out.push({ box: [[a[0], SPINE, a[1]], [b[0], SPINE + HEAD, b[1]]], m: 'AIR' });
   for (const [a, b] of strips) out.push({ box: [[a[0], SPINE - DECK_T, a[1]], [b[0], SPINE, b[1]]], m });
   return out;
 }
 // a timber plank along x over a gap, its top the spine's (Noita's plank bridges)
-export const PLANK_W = 2;                  // half its width
 export const plankX = (x0, x1, z = MID, y = SPINE) => ({ box: [[x0, y - 1, z - PLANK_W], [x1, y, z + PLANK_W]], m: 'WOOD' });
 // a floating blob: a rough ellipsoid of island (its top flattened by a slab where it is walked on)
 export const blob = (c, r, m = 'ROCK', rough = ROUGH_BODY) => ({ ball: [c, r], m, rough, salt: salt++ });

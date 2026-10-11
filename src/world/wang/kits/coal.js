@@ -20,7 +20,7 @@
 import {
   X, MID, C0, C1, SPINE, STRIP, stream, spineBody, spineDeck, plankX, blob, vein, basin, pocket, heap,
   post, barrel, cage, cart, railsX, scaffold, swing, openTiles,
-  scatter,
+  scatter, PLANK_SPUR,
 } from './islands.js';
 
 // Quadrants: the voids between the spine's ribbons, where the floating blobs go (canonical x, z)
@@ -37,7 +37,8 @@ const FUNGUS_TUFTS = 3;                // red fungus tufts on the tops
 // the island stuff every tile has: the spine, its coal and gold, fungus on the tops
 function island(seed, { holes = [0, 1], gap = null, spurs = [0, 1], blobs = [], extra = [], dress = [] } = {}) {
   const r = stream(seed);
-  const body = spineBody(r, { holes, gap, spurs });
+  const planked = [0, 1].filter(() => r() < PLANK_SPUR);
+  const body = spineBody(r, { holes, gap, spurs, planked });
   const veins = [];
   for (let n = 0; n < COAL_SEAMS; n++) veins.push(vein([r.between(2, X - 2), SPINE - r.between(2, 5), r.between(4, 20)], [r.between(5, 10), 1.3, r.between(2, 4)], 'COAL'));
   for (let n = 0; n < GOLD_FLECKS; n++) veins.push(vein([r.between(1, X - 1), r.between(1, SPINE - 2), r.between(1, 23)], [FLECK_R, FLECK_R, FLECK_R], 'GOLD', ['ROCK', 'COAL'], 0.5));
@@ -46,7 +47,7 @@ function island(seed, { holes = [0, 1], gap = null, spurs = [0, 1], blobs = [], 
     // on the spine's edge (not the walkway's middle): x along it, either side
     tufts.push({ ball: [[r.between(3, X - 3), SPINE, MID + r.pick([-1, 1]) * (STRIP - 0.5)], [0.9, 1.4, 0.9]], m: 'FUNGUS', only: 'AIR' });
   }
-  return [...body, ...scatter(r, SCATTERED), ...blobs, ...veins, ...extra, ...spineDeck({ holes, gap, spurs }), ...dress, ...tufts];
+  return [...body, ...scatter(r, SCATTERED), ...blobs, ...veins, ...extra, ...spineDeck({ holes, gap, spurs, planked }), ...dress, ...tufts];
 }
 const low = (qx, qz, r = [6, 3, 5]) => blob([QX[qx], LOW - r[1] + 1, QZ[qz]], r);
 const high = (qx, qz, r = [6, 2.5, 4]) => blob([QX[qx], HIGH, QZ[qz]], r);

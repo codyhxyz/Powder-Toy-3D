@@ -19,7 +19,7 @@
 import {
   X, U, MID, C0, C1, SPINE, STRIP, stream, spineBody, spineDeck, plankX, blob, vein, basin, pocket, heap,
   post, barrel, openTiles, spineStrips,
-  scatter,
+  scatter, PLANK_SPUR,
 } from './islands.js';
 
 const QX = [4, 24, 44], QZ = [4, 20];   // the voids between the ribbons (canonical x, z)
@@ -40,7 +40,8 @@ const icicle = (x, z, y, len) => (nearShaft(x, z) ? null : { capsule: [[x, y, z]
 
 function island(seed, { gap = null, blobs = [], hangers = [], extra = [], dress = [] } = {}) {
   const r = stream(seed);
-  const body = spineBody(r, { gap });
+  const planked = [0, 1].filter(() => r() < PLANK_SPUR);
+  const body = spineBody(r, { gap, planked });
   const veins = [];
   for (let n = 0; n < MARBLE; n++) veins.push(vein([r.between(2, X - 2), r.between(1, SPINE - 2), r.between(3, 21)], [r.between(5, 10), 1, r.between(2, 4)], 'ICE', 'ROCK', 2));
   for (let n = 0; n < FLECKS; n++) veins.push(vein([r.between(1, X - 1), r.between(1, SPINE - 2), r.between(1, 23)], [0.8, 0.8, 0.8], 'GOLD', 'ROCK', 0.5));
@@ -52,8 +53,8 @@ function island(seed, { gap = null, blobs = [], hangers = [], extra = [], dress 
   }
   for (const [x, y, z, w] of hangers) for (let n = 0; n < 4; n++) ice.push(icicle(x + r.between(-w, w), z + r.between(-2, 2), y, r.between(...ICICLE_LEN)));
   // snow on the walked tops (over the deck, before what stands on it)
-  const snow = spineStrips({ gap }).map(([a, b]) => ({ box: [[a[0], SPINE, a[1]], [b[0], SPINE + SNOW_T, b[1]]], m: 'SNOW', only: 'AIR' }));
-  return [...body, ...scatter(r, SCATTERED), ...blobs, ...veins, ...extra, ...spineDeck({ gap }), ...ice.filter(Boolean), ...snow, ...dress];
+  const snow = spineStrips({ gap, planked }).map(([a, b]) => ({ box: [[a[0], SPINE, a[1]], [b[0], SPINE + SNOW_T, b[1]]], m: 'SNOW', only: 'AIR' }));
+  return [...body, ...scatter(r, SCATTERED), ...blobs, ...veins, ...extra, ...spineDeck({ gap, planked }), ...ice.filter(Boolean), ...snow, ...dress];
 }
 const lowBlob = (qx, qz, r = [6, 3, 5]) => blob([QX[qx], LOW - r[1] + 1, QZ[qz]], r);
 const highBlob = (qx, qz, r = [6, 2.5, 4]) => blob([QX[qx], HIGH, QZ[qz]], r);
