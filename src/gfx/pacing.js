@@ -65,7 +65,8 @@ export function blendFixedFrames(w) {
 }
 
 // viewSettle: a frame count, or a function returning one (it may change at run time).
-export function createPacer({ derivedSettle, viewSettle, presentHz = MAX_FPS }) {
+// onWake: called by wake(), so a loop that stopped (createFrameLoop) starts again.
+export function createPacer({ derivedSettle, viewSettle, presentHz = MAX_FPS, onWake = null }) {
   const viewFrames = typeof viewSettle === 'function' ? viewSettle : () => viewSettle;
   let last = -Infinity, lastPresent = -Infinity;
   let derivedKey = null, viewKey = null;
@@ -101,12 +102,182 @@ export function createPacer({ derivedSettle, viewSettle, presentHz = MAX_FPS }) 
       return true;
     },
     // Input or an outside change: render until settled again.
-    wake() { viewLeft = viewFrames(); },
+    wake() { viewLeft = viewFrames(); onWake?.(); },
   };
 }
 
+// Deep idle (docs/webgpu.md F7): the requestAnimationFrame loop that stops
+// itself. frame(now) returns false when there is nothing left to do (the view
+// settled, the simulation idle or paused, nothing pending or animating); then
+// no callback is scheduled after it, and a settled page costs no CPU at all.
+// wake() schedules one again (pacer.wake through onWake, input listeners,
+// resize, a resolving readback or pipeline); it is idempotent, and a wake
+// during frame() keeps the loop running. A frame that throws keeps it running
+// too, as the old loop re-requested before anything else.
+export function createFrameLoop(frame, { raf = (fn) => requestAnimationFrame(fn) } = {}) {
+  let scheduled = false;
+  const run = (now) => {
+    scheduled = false;
+    let keep = true;
+    try { keep = frame(now) !== false; } finally { if (keep) request(); }
+  };
+  function request() {
+    if (scheduled) return;
+    scheduled = true;
+    raf(run);
+  }
+  return {
+    /** No callback is scheduled: the loop sleeps until wake(). */
+    get asleep() { return !scheduled; },
+    start: request,
+    wake: request,
+  };
+}
+
+// The view's key, without building it. It used to be one string of the camera,
+// the canvas, JSON of the settings objects, every visible object's id and
+// matrixWorld (sceneKey below), and the far field's progress, built every
+// presentable tick; this compares each input with what the last call saw and
+// returns a number that changes exactly when that string would have
+// (tools/pacing-check.mjs checks it against the string over recorded inputs).
+//
+//   const viewKey = createViewKey();
+//   pacer.view(viewKey(camera, scene, pixelRatio, innerWidth, innerHeight,
+//     win?.far?.chunksDrawn, settings, gfx, post.settings), force);
+const MAT4 = 16;
+const OBJECT_SLOT = 1 + MAT4;   // id, matrixWorld
+export function createViewKey() {
+  let version = 0, primed = false;
+  const cameraSeen = new Float64Array(2 * MAT4);
+  const scalars = [], objects = [];
+  const sceneChanged = createSceneWatch();
+  const scalar = (i, v) => { const same = sameText(v, scalars[i]); scalars[i] = v; return !same; };
+  const object = (i, o) => {
+    const v = jsonValue(o, '');
+    if (sameJSONEntry(v, objects[i])) return false;
+    objects[i] = jsonCopy(v);
+    return true;
+  };
+  return (camera, scene, pixelRatio, width, height, extra, a, b, c) => {
+    let changed = !primed;
+    primed = true;
+    // (in the old string's order: the camera is read before the scene's world
+    // matrices are brought up to date, which moves it when it's in the scene)
+    if (storeNumbers(camera.matrixWorld.elements, cameraSeen, 0) | storeNumbers(camera.projectionMatrix.elements, cameraSeen, MAT4)) changed = true;
+    if (scalar(0, pixelRatio) | scalar(1, width) | scalar(2, height) | scalar(3, extra)) changed = true;
+    if (object(0, a) | object(1, b) | object(2, c)) changed = true;
+    if (sceneChanged(scene)) changed = true;
+    if (changed) version++;
+    return version;
+  };
+}
+
+// Equal as `${x}` would print them: 0 and -0 alike, NaN equal to NaN.
+const sameNumber = (x, y) => x === y || (x !== x && y !== y);
+const sameText = (x, y) => x === y
+  || (typeof x === 'number' && typeof y === 'number' ? x !== x && y !== y : String(x) === String(y));
+
+// Stores `values` at cache[at...]: did any differ (as text)? (It checks them
+// all: the cache always ends up holding the new values.)
+function storeNumbers(values, cache, at) {
+  let changed = false;
+  for (let i = 0; i < values.length; i++) {
+    if (!sameNumber(values[i], cache[at + i])) { changed = true; cache[at + i] = values[i]; }
+  }
+  return changed;
+}
+
+// Did the visible objects (in traversal order) or their world transforms change?
+function createSceneWatch() {
+  let cache = new Float64Array(OBJECT_SLOT * 256), count = 0, n = 0, changed = false;
+  const visit = (o) => {
+    const at = n++ * OBJECT_SLOT;
+    if (at + OBJECT_SLOT > cache.length) {
+      const grown = new Float64Array(cache.length * 2);
+      grown.set(cache);
+      cache = grown;
+    }
+    // (past the last call's count the cache holds older calls' objects: the
+    // count differs then, which marks the change)
+    if (cache[at] !== o.id) { changed = true; cache[at] = o.id; }
+    if (storeNumbers(o.matrixWorld.elements, cache, at + 1)) changed = true;
+  };
+  return (scene) => {
+    // matrixWorld is only current after this (the renderer would do it when it
+    // draws, which a frame that isn't drawn never does)
+    scene.updateMatrixWorld();
+    n = 0;
+    changed = false;
+    scene.traverseVisible(visit);
+    if (n !== count) changed = true;
+    count = n;
+    return changed;
+  };
+}
+
+// JSON.stringify's view of a value (ECMA-262 SerializeJSONProperty): a
+// primitive, OMIT (left out of an object, null in an array), or an object to
+// serialise field by field.
+const OMIT = Symbol('omit');
+function jsonValue(v, key) {
+  const type = typeof v;
+  if ((type === 'object' && v !== null || type === 'function' || type === 'bigint') && typeof v.toJSON === 'function') v = v.toJSON(String(key));
+  switch (typeof v) {
+    case 'number': return Number.isFinite(v) ? v : null;
+    case 'string': case 'boolean': return v;
+    case 'bigint': throw new TypeError('BigInt value can\'t be serialized in JSON');
+    case 'object':
+      if (v instanceof Number) return jsonValue(Number(v), key);
+      if (v instanceof String) return String(v);
+      if (v instanceof Boolean) return v.valueOf();
+      return v;   // (or null)
+    default: return OMIT;   // undefined, a function, a symbol
+  }
+}
+// A snapshot of an object as JSON sees it: { keys (null for an array), vals }.
+function jsonCopy(v) {
+  if (typeof v !== 'object' || v === null) return v;
+  const vals = [];
+  if (Array.isArray(v)) {
+    for (let i = 0; i < v.length; i++) { const x = jsonValue(v[i], i); vals.push(x === OMIT ? null : jsonCopy(x)); }
+    return { keys: null, vals };
+  }
+  const keys = [];
+  for (const k in v) {
+    if (!Object.hasOwn(v, k)) continue;
+    const x = jsonValue(v[k], k);
+    if (x !== OMIT) { keys.push(k); vals.push(jsonCopy(x)); }
+  }
+  return { keys, vals };
+}
+function sameJSONEntry(x, copy) {
+  if (typeof x !== 'object' || x === null) return x === copy;
+  if (typeof copy !== 'object' || copy === null) return false;
+  const { keys, vals } = copy;
+  if (Array.isArray(x)) {
+    if (keys !== null || x.length !== vals.length) return false;
+    for (let i = 0; i < x.length; i++) {
+      const y = jsonValue(x[i], i);
+      if (!sameJSONEntry(y === OMIT ? null : y, vals[i])) return false;
+    }
+    return true;
+  }
+  if (keys === null) return false;
+  let n = 0;
+  for (const k in x) {   // own enumerable keys in JSON.stringify's (Object.keys') order
+    if (!Object.hasOwn(x, k)) continue;
+    const y = jsonValue(x[k], k);
+    if (y === OMIT) continue;
+    if (n === keys.length || keys[n] !== k || !sameJSONEntry(y, vals[n])) return false;
+    n++;
+  }
+  return n === keys.length;
+}
+
 // Identity of what the scene's objects currently look like (visible ones and
-// their world transforms), for the view key.
+// their world transforms) as a string: the old view key's part, kept for
+// app.js until it moves to createViewKey, and the reference
+// tools/pacing-check.mjs compares createViewKey with.
 export function sceneKey(scene) {
   scene.updateMatrixWorld();
   const parts = [];
