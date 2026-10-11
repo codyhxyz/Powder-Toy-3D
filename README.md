@@ -244,6 +244,7 @@ host sets them.
 
 Radial gravity and void or loop edges switch off quiet-brick skipping (below): its rest test knows only vertical
 gravity and walls, so every brick is stepped. Photons and neutrons, the first-person body and constructions don't wrap.
+`tools/sim-modes-check.mjs` checks every mode on the GPU.
 
 **Quiet bricks** (`src/shaders/activity.js`). Most of the box is still air or resting matter, and stepping it only
 reshuffles the air's jitter. A cell is inert when stepping it could change nothing beyond the rest tolerances: air near
