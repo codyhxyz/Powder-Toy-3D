@@ -244,6 +244,9 @@ const interact = createInteract();   // look + E (interact.js): perks, and Desce
     app.requestRender();
   }
 
+  // a Halo match's spawn closes it (Q does nothing in one: the hands hold the match's guns, arsenal.js)
+  povEvents.on('game:spawn', ({ bot, style }) => { if (!bot && style === 'halo' && menuOpen) { setMenu(false); requestLock(); } });
+
   // F1: the HUD and the hand hidden (death and the mouse prompt still show)
   let hudHidden = false;
   const setHudHidden = (v) => { hudHidden = v; document.body.classList.toggle('pov-nohud', v); app.requestRender(); };
@@ -273,7 +276,8 @@ const interact = createInteract();   // look + E (interact.js): perks, and Desce
     if ((e.code === 'ShiftLeft' || e.code === 'ShiftRight') && !e.repeat && app.settings.sprintMode === 'toggle') sprintOn = !sprintOn;
     // F1, as in Minecraft: hide the HUD and the hand, for a clean view or a screenshot
     if (e.code === 'F1') { e.preventDefault(); if (!e.repeat) setHudHidden(!hudHidden); }
-    if (e.code === 'KeyQ' && !e.repeat && mode === 'on') {
+    // (not in a Halo match: no sandbox tools, no spawn menu, docs/halo-contract.md)
+    if (e.code === 'KeyQ' && !e.repeat && mode === 'on' && game.style !== 'halo') {
       if (menuOpen) { setMenu(false); requestLock(); } else setMenu(true);
     }
     // settings and help need the mouse
@@ -833,6 +837,7 @@ const interact = createInteract();   // look + E (interact.js): perks, and Desce
     app, scene, renderer, camera,
     get player() { return player; },
     get toolbelt() { return toolbelt; },
+    interact,                        // look + E: the power weapons' pads and dropped guns (arsenal.js)
     active,
     loadNpcs,
     env: () => ({ renderer, scene, getSim: app.getSim, getVolume: app.getVolume, getScale: app.getScale, ballistics: toolbelt.ballistics }),
