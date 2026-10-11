@@ -1,0 +1,63 @@
+/* The scoreboard (scoreboard.js): Garry's Mod's base gamemode's, in its own numbers
+   (cl_scoreboard.lua). The board is 700 px wide, centred, 100 px from the top and 200 px
+   shorter than the screen, with no background of its own. Its header is 100 px tall: the
+   server's name in a 40 px line, Helvetica 32 at weight 800, white with a 2 px shadow of
+   alpha 200. A player's row is 32 + 3 × 2 px tall with 3 px of padding, 2 px of margin
+   at the sides and below, a 4 px rounded box of (230, 230, 230); its avatar is 32 px, its
+   name Helvetica 22 at weight 800 in (93, 93, 93) 8 px from the avatar, and kills,
+   deaths and ping 50 px each, centred, in the same font. A dead player's row is
+   (230, 200, 200), an admin's (the host's) (230, 255, 230). The column labels, the line
+   under the name, the team edge and your row's outline are ours (the base board has
+   none of them); so is the checkered avatar, a stand-in for a Steam picture. */
+.sb {
+  position: fixed; z-index: 35; left: 50%; top: 100px; transform: translateX(-50%);
+  width: min(700px, calc(100vw - 32px)); max-height: calc(100vh - 200px);
+  display: none; flex-direction: column; pointer-events: none;
+  font: 800 22px/1 Helvetica, Arial, sans-serif; color: rgb(93, 93, 93);
+}
+.sb.on { display: flex; }
+.sb-header { min-height: 100px; flex: none; text-align: center; color: #fff; }
+.sb-host {
+  height: 40px; line-height: 40px; font-size: 32px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.78);
+}
+.sb-sub {
+  padding: 6px 8px 0; font: 600 15px/1.35 var(--ui); color: rgba(255, 255, 255, 0.88);
+  text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.9);
+}
+.sb-list { overflow-y: auto; min-height: 0; }
+.sb-row {
+  display: grid; grid-template-columns: 32px minmax(0, 1fr) repeat(var(--sb-cols, 3), 50px);
+  align-items: center; height: 38px; padding: 3px; margin: 0 2px 2px; border-radius: 4px;
+  background: rgb(230, 230, 230); box-sizing: border-box;
+}
+.sb-row.admin { background: rgb(230, 255, 230); }
+.sb-row.dead { background: rgb(230, 200, 200); }
+.sb-row.team { box-shadow: inset 4px 0 0 var(--sb-team); }
+.sb-row.me { outline: 2px solid #fff; outline-offset: -1px; }
+.sb-avatar {
+  width: 32px; height: 32px; border-radius: 2px; background-color: var(--sb-avatar);
+  background-image: linear-gradient(45deg, rgba(255, 255, 255, 0.25) 25%, transparent 25%, transparent 75%, rgba(255, 255, 255, 0.25) 75%),
+    linear-gradient(45deg, rgba(255, 255, 255, 0.25) 25%, transparent 25%, transparent 75%, rgba(255, 255, 255, 0.25) 75%);
+  background-size: 10px 10px; background-position: 0 0, 5px 5px;
+}
+.sb-row.team .sb-avatar { margin-left: 4px; width: 28px; }
+.sb-name { margin-left: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sb-n { text-align: center; font-variant-numeric: tabular-nums; }
+.sb-head {
+  height: auto; padding-top: 0; padding-bottom: 4px; background: none; box-shadow: none;
+  font: 700 11px/1 var(--ui); letter-spacing: 0.06em; text-transform: uppercase; color: rgba(255, 255, 255, 0.8);
+  text-shadow: 1px 1px 1px rgba(0, 0, 0, 0.9);
+}
+.sb-foot {
+  margin-top: 8px; text-align: center; font: 500 13px var(--ui); color: rgba(255, 255, 255, 0.8);
+  text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.9);
+}
+.sb-foot:empty { display: none; }
+
+/* a phone's width: the same rows, the numbers narrower */
+@media (max-width: 480px) {
+  .sb { top: 72px; font-size: 17px; }
+  .sb-host { font-size: 26px; }
+  .sb-row { grid-template-columns: 32px minmax(0, 1fr) repeat(var(--sb-cols, 3), 40px); }
+}

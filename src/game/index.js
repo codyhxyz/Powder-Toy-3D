@@ -8,7 +8,7 @@ import * as R from './rules.js';
 import { labLayout, fitLayout } from './layout.js';
 import { ObjectiveEvaluator, WANT, NEAR } from './bots.js';
 import { createMarkers } from './markers.js';
-import { createGameHud } from './hud.js';
+import { createGameHud, clock } from './hud.js';
 import { iconFor } from '../pov/killfeed.js';
 
 // Team games in first person: Halo's Team Slayer, Capture the Flag, King of
@@ -40,6 +40,7 @@ const SPAWN_LIFT_MAX = 40;           // cells a spawn rises at most to clear wha
 const BOT_MS_EASE = 0.05;            // the bots' CPU time per frame is shown as this running average (checks)
 const ROAM_SPAWN_R = 10;             // cells: an enemy spawn, as somewhere to roam to, is a zone this wide
 const ROAM_S = 30;                   // s a Slayer bot heads for one stretch of open ground before the next
+const BOARD_SCORE = { ctf: 'Caps', koth: 'Hill s', siege: 'Core s' };   // the scoreboard's column for a mode scored by more than kills
 const other = (t) => (t === 'red' ? 'blue' : 'red');
 const hdist = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
 const v3 = ([x, y, z]) => new THREE.Vector3(x, y, z);
@@ -202,7 +203,7 @@ export function createGame(shell) {
 
   async function start(m, opts = {}) {
     if (!R.MODES[m]) throw new Error(`game: no mode '${m}'`);
-    if (!shell.player || !sim()) { app.hud?.toast?.('Drop in first (F), then start a match'); return false; }
+    if (!shell.player || !sim()) { app.hud?.toast?.('Drop in first (F), then start a match', { kind: 'hint' }); return false; }
     if (starting) return starting;
     starting = (async () => {
       if (running) stop();
@@ -546,7 +547,25 @@ export function createGame(shell) {
   }
 
   function board() {
-    return [...roster.values()].filter((e) => e.team).map((e) => ({ id: e.id, name: e.name, team: e.team, kills: e.kills, deaths: e.deaths, score: e.score, me: e.id === PLAYER }));
+    return [...roster.values()].filter((e) => e.team).map((e) => ({ id: e.id, name: e.name, team: e.team, kills: e.kills, deaths: e.deaths, score: e.score, me: e.id === PLAYER, bot: !!e.bot, dead: !alive(e) }));
+  }
+
+  // the scoreboard's view while a match runs (ui/scoreboard.js): the mode's score
+  // line under the map's name, and a row per player edged in their team's colour.
+  // A bot's ping reads BOT, as in GMod; yours is the host's, 0.
+  function scoreboard() {
+    if (!running) return null;
+    const scoreLabel = BOARD_SCORE[mode] ?? null;
+    return {
+      map: layout.name,
+      sub: [rules.name, teams.map((t) => `${label(t)} ${Math.floor(teamScore[t] ?? 0)}`).join(' – '), objectiveText().text, `${clock(ends - time)} left`],
+      scoreLabel,
+      rows: board().map((r) => ({
+        key: r.id, name: r.name, avatar: R.TEAM_CSS[r.team], team: R.TEAM_CSS[r.team], kills: r.kills, deaths: r.deaths,
+        score: scoreLabel ? Math.floor(r.score) : null, ping: r.bot ? 'BOT' : 0, dead: r.dead, me: r.me, admin: false,
+      })),
+      foot: me()?.team && mode !== 'infection' ? '. switch team · M match menu' : 'M match menu',
+    };
   }
 
   function objectiveText() {
@@ -622,16 +641,13 @@ export function createGame(shell) {
   }
   setVisible(false);
 
-  // keys, in first person: Tab holds the scoreboard, M opens the match menu, '.' switches team
+  // keys, in first person: M opens the match menu, '.' switches team (Tab, the
+  // scoreboard, is ui/scoreboard.js's: scoreboard() below is what it shows)
   addEventListener('keydown', (e) => {
-    if (!shell.active() || app.isTyping() || e.metaKey || e.ctrlKey || e.altKey) return;
-    if (e.code === 'Tab') { e.preventDefault(); hud.holdBoard(true); return; }
-    if (e.repeat) return;
+    if (!shell.active() || app.isTyping() || e.metaKey || e.ctrlKey || e.altKey || e.repeat) return;
     if (e.code === 'KeyM') menu(!hud.menuOpen);
     else if (e.key === '.') switchTeam();
   });
-  addEventListener('keyup', (e) => { if (e.code === 'Tab') hud.holdBoard(false); });
-  addEventListener('blur', () => hud.holdBoard(false));
 
   return {
     start, end: () => end(), useLayout(l) { userLayout = l ?? null; },
@@ -639,6 +655,7 @@ export function createGame(shell) {
     get mode() { return mode; },
     get layout() { return layout ?? (sim() ? fitLayout(userLayout ?? app.getArena?.(), sim().g) ?? labLayout(sim().g) : null); },
     get state() { return state(); },
+    scoreboard,
     get lastResult() { return lastResult; },
     get roster() { return [...roster.values()]; },
     get bots() { return bots().map((e) => e.bot); },

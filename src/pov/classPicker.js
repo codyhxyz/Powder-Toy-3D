@@ -230,7 +230,7 @@ export function createClassPicker(env) {
   function spawned(body) {
     spawnAt = performance.now();
     if (chosen) return applyClassTo(body, chosen, env.getToolbelt());
-    if (!hinted) { hinted = true; env.toast?.('Press , to choose a class'); }
+    if (!hinted) { hinted = true; env.toast?.('Press , to choose a class', { kind: 'hint' }); }
     return null;
   }
 

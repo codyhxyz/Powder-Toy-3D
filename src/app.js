@@ -29,6 +29,7 @@ import { createDock } from './ui/dock.js';
 import { createCard } from './ui/card.js';
 import { createSettings } from './ui/settings.js';
 import { createHud, createHelp } from './ui/hud.js';
+import { createScoreboard } from './ui/scoreboard.js';
 import { h, inkFor, luminance } from './ui/dom.js';
 import { gfx, gfxUniforms, updateGfxUniforms } from './gfx/uniforms.js';
 import { DETAIL, settingKey, detailDefaults, detailDefines, detailRows } from './gfx/detail.js';
@@ -600,6 +601,7 @@ function openMap(key, mode = 'sandbox') {
   if (!isWorld(m) && settings.size === m.size) loadPreset(m.preset);   // (undoable, as any box scene)
   else { useMap(m); setSize(m.size); }
   hud.toast(`Loaded ${m.name}`);
+  scoreboard.reset();   // a new map: the sandbox's kills and deaths start over, as a GMod server's frags do
   startMode(mode);
   return true;
 }
@@ -627,10 +629,12 @@ if (WORLD_DIMS.some((n, i) => n !== WORLD_SIZE[i])) console.error('maps.js: WORL
 const dimsName = (d) => (d.every((n) => n === d[0]) ? `${d[0]}^3` : d.join(' × '));
 const millions = (d) => `${(d[0] * d[1] * d[2] / 1e6).toFixed(1)}M`;
 
+// what undoing a scene load names: its map ('Undone Lab'), and the Empty map, TPT's Clear
+function sceneLabel(preset) { return preset === 'empty' ? 'Clear' : MAPS.find((m) => m.preset === preset)?.name ?? preset; }
 function loadPreset(name, undoable = true) {
   if (graphicsFailure) throw graphicsFailure;
   if (undoable && mp.guard()) return false;
-  if (undoable && !win) sim.snapshot();
+  if (undoable && !win) sim.snapshot(sceneLabel(name));
   settings.preset = name;
   if (win) {
     // A world has one scene, its own: loading starts it over (and can't be
@@ -991,7 +995,7 @@ const actions = {
   firstPerson: () => { painting = false; pov?.toggle(); },
   // 'god' leaves the walking body; 'first' / 'third' drops in, or switches the camera if already in
   setCamera: (id) => {
-    if (!pov) { hud.toast('First person is still loading'); return; }
+    if (!pov) { hud.toast('Your body is still loading'); return; }
     if (id === 'god') { if (camState() !== 'god') pov.exit(); return; }
     pov.camera.third = id === 'third';
     if (camState() === 'god') { painting = false; pov.enter(); }
@@ -1004,7 +1008,21 @@ const actions = {
   renderThumb,
 };
 const toolbar = createToolbar({ views: VIEWS, settings, actions });
-const mp = createMultiplayer({ renderer, scene, camera, hud, getSim: () => sim, getVolume: () => volume, setGrid, inWorld: () => !!win });
+const mp = createMultiplayer({ renderer, scene, camera, hud, getSim: () => sim, getVolume: () => volume, setGrid, inWorld: () => !!win, score: () => scoreboard.mine });
+// Tab held: Garry's Mod's scoreboard (ui/scoreboard.js), in the body and in the god view, while
+// you're on the world: with the mouse held by the body, or nothing focused (a click on the world
+// lets go of the controls: press). With a control or a dialog focused, Tab moves through them.
+const scoreboard = createScoreboard({
+  wantsTab() {
+    if (isTyping() || pov?.editingWand) return false;
+    const a = document.activeElement;
+    return !!pov?.locked || !a || a === document.body || a === renderer.domElement;
+  },
+  map: () => mapOf(settings)?.name ?? null,
+  match: () => pov?.game?.scoreboard?.() ?? null,
+  session: () => mp.players,
+  dead: () => !!(pov?.active && pov.player?.dead),
+});
 
 const fmtSpeed = (v) => `${v}×`;
 // the drawer's Map row: the map's name and size, and Change map (the start menu)
@@ -1070,7 +1088,7 @@ const settingsPanel = createSettings({
       { type: 'seg', key: 'sprintMode', options: [['hold', 'Sprint: Hold'], ['toggle', 'Toggle']],
         onChange: (v) => { settings.sprintMode = v; save(); } },
     ] },
-    ...(accountsEnabled ? [accountSection({ toast: (text) => hud.toast(text) })] : []),
+    ...(accountsEnabled ? [accountSection({ toast: (text, opts) => hud.toast(text, opts) })] : []),
     // for working on the app itself (the frame loop applies it)
     { title: 'Developer', rows: [
       { type: 'seg', key: 'profiler', options: [[false, 'Profiler off'], [true, 'Profiler on']],
@@ -1112,7 +1130,7 @@ function resetSettings() {
   dock.sync();
   toolbar.sync();
   save();
-  hud.toast('Settings reset');
+  hud.toast('Settings reset', { kind: 'cleanup' });
 }
 
 function setSettingsOpen(v) {
@@ -1138,10 +1156,12 @@ function setView(id) {
 
 function undo() {
   if (mp.guard()) return;
-  const shrine = sim.history?.at(-1)?.note?.shrine;
-  if (sim.undo()) { if (shrine) perkOrbs?.removeShrine(shrine); pov?.worldReplaced(); hud.toast('Undone'); }
+  const { note, label } = sim.history?.at(-1) ?? {};
+  const shrine = note?.shrine;
+  // Garry's Mod's "Undone Prop": the notice names what was undone
+  if (sim.undo()) { if (shrine) perkOrbs?.removeShrine(shrine); pov?.worldReplaced(); hud.toast(label ? `Undone ${label}` : 'Undone', { kind: 'undo' }); }
   // (a world's window moved off all of it: it's kept for when the window comes back)
-  else hud.toast(sim.canUndo ? 'Too far away to undo that: go back to it first' : 'Nothing to undo');
+  else hud.toast(sim.canUndo ? 'Too far away to undo that: go back to it first' : 'Nothing to undo', { kind: 'error' });
   toolbar.setUndoEnabled(sim.canUndo);
 }
 
@@ -1205,7 +1225,7 @@ canvasEl.addEventListener('pointerdown', (e) => {
     // pick up what it aims at, Minecraft creative's pick block (TPT's middle click samples too)
     if (e.button === 1 && pov.locked && pov.toolbelt?.selectedKey === 'TOOLGUN') {
       e.preventDefault();
-      if (!pickHovered()) hud.toast('Nothing to pick there');
+      if (!pickHovered()) hud.toast('Nothing to pick there. That\'s air.', { kind: 'error' });
     }
     return;
   }
@@ -1218,7 +1238,7 @@ function press(e) {
   if (e.button !== 0 || e.altKey || wasEditing) return; // a click that just finishes editing a sign doesn't paint
   pointer.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
   if (eyedropper) {
-    if (!pickHovered()) hud.toast('Nothing to pick there');
+    if (!pickHovered()) hud.toast('Nothing to pick there. That\'s air.', { kind: 'error' });
     return;
   }
   if (clickTool() !== null) return;
@@ -1239,8 +1259,8 @@ function clickTool() {
   }
   if (settings.tool === LIGHTNING_TOOL) {
     if (mp.guard()) return false;
-    if (!hover.valid) { hud.toast('Click a surface to strike it'); return false; }
-    sim.snapshot();
+    if (!hover.valid) { hud.toast('Click a surface to strike it', { kind: 'error' }); return false; }
+    sim.snapshot(toolById(LIGHTNING_TOOL).name);
     toolbar.setUndoEnabled(true);
     lightning.strikeTool(sim, hover, settings.radius);
     pacer.wake();
@@ -1249,11 +1269,11 @@ function clickTool() {
   }
   if (isSpawnerTool(settings.tool)) {
     if (mp.guard()) return false;
-    if (!hover.valid) { hud.toast('Click a surface to set it on'); return false; }
+    if (!hover.valid) { hud.toast('Click a surface to set it on', { kind: 'error' }); return false; }
     const kind = SPAWNER_KIND[settings.tool];
     const r = spawners.toggle(kind, feetOnHit(hover));
     pacer.wake();
-    if (r === 'full') hud.toast('That many is the limit');
+    if (r === 'full') hud.toast('That many is the limit', { kind: 'error' });   // GMod's LimitHit
     else hud.toast(r === 'removed' ? 'Spawner removed' : SPAWNER_SET[ENEMY_KINDS.includes(kind) ? SPAWNER.ENEMY : kind]);
     return r !== 'full';
   }
@@ -1261,12 +1281,12 @@ function clickTool() {
     if (mp.guard()) return false;
     if (!builds) { hud.toast('Constructions are still loading'); return false; }
     if (!builds.ready) return false;
-    sim.snapshot();
+    sim.snapshot(toolById(settings.tool)?.name);
     toolbar.setUndoEnabled(true);
     lastShrine = 0;
     builds.place();
     // a shrine's orbs go with its snapshot: undoing it takes them away (undo)
-    if (lastShrine) { sim.history.at(-1).note = { shrine: lastShrine }; hud.toast('Shrine set: in first person (V), take one perk and the others vanish'); }
+    if (lastShrine) { sim.history.at(-1).note = { shrine: lastShrine }; hud.toast('Shrine set: in first person (V), take one perk and the others vanish', { kind: 'hint' }); }
     hud.dismissHint();
     return true;
   }
@@ -1276,7 +1296,7 @@ function clickTool() {
 // A brush stroke of `tool` from now until the button lets go (undone as one).
 function startStroke(tool) {
   if (!mp.isGuest) {
-    sim.snapshot();
+    sim.snapshot(toolById(tool)?.name);
     toolbar.setUndoEnabled(true);
   }
   strokeTool = tool;
@@ -1523,7 +1543,7 @@ function saveScreenshot() {
     });
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-    hud.toast('Screenshot saved');
+    hud.toast('Screenshot saved', { icon: 'camera' });
   });
 }
 
@@ -1540,7 +1560,7 @@ function frame(now) {
 function tick(now, renderOnly = false) {
   if (graphicsFailure) throw graphicsFailure;
   if (!renderOnly && coldShader.hold()) return;   // a cold-compile message is painting
-  if (!renderOnly && capCheck.feed(now, lastIdle)) hud.toast(CAP_NOTICE, CAP_NOTICE_MS);
+  if (!renderOnly && capCheck.feed(now, lastIdle)) hud.toast(CAP_NOTICE, { kind: 'hint', ms: CAP_NOTICE_MS });
   const t0 = performance.now();
   lastIdle = false;
   if (!renderOnly && !pacer.due(now)) { lastIdle = performance.now() - t0 < CAP_IDLE_MS; return; }
@@ -1796,7 +1816,7 @@ try {
     },
     snapshot: () => runSnapshot({ player: pov.player, gold: pov.descent?.gold ?? null, wands: descentWands }),
     overlay: createDescentOverlay(),
-    toast: (text) => hud.toast(text),
+    toast: (text, opts) => hud.toast(text, opts),
     finish: () => { pov.exit(); actions.openMenu(); },
     wait: (s) => new Promise((resolve) => setTimeout(resolve, s * 1000)),
     loadId: () => win,
@@ -1818,6 +1838,8 @@ try {
     setSize,         // switch the grid (a SIZES or WORLDS key), keeping the scene settings
     openMap,         // as the start menu's Start does (a maps.js key, a gamemode)
     undo,            // as ⌘Z does
+    hud,             // toast(text, { kind }): GMod's notices (ui/notices.js)
+    scoreboard,      // GMod's, on Tab (ui/scoreboard.js): show(v), shown, mine
     get worldFocus() { return worldFocus; }, set worldFocus(v) { worldFocus = v; },
     MOBILE, SUN, day, scene, settings, camera, controls, loadPreset, selectTool, setView, hover, renderer, rig, renderThumb, gfx, post, mp, autoRes, prof,
     applyDetail,   // after changing settings.detail_* by hand

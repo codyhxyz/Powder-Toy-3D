@@ -1,9 +1,7 @@
 import { h } from './dom.js';
 import { ICON } from './icons.js';
 import { CLASSES_ENABLED } from '../pov/classes.js';
-
-const TOAST_MS = 2300;        // on screen
-const TOAST_FADE_LEAD = 100;  // ms: its fade-out animation ends this long before it is removed
+import { createNotices } from './notices.js';
 
 export function createHud() {
   // stats below the toolbar
@@ -25,6 +23,7 @@ export function createHud() {
   const legendBox = h('div.legend-box.panel', { 'aria-live': 'polite' });
 
   document.body.append(stats, readout, toasts, hint, legendBox);
+  const notices = createNotices(toasts);
 
   const setText = (el, t) => { if (el.textContent !== t) el.textContent = t; };
   const READOUT_DX = 16, READOUT_DY = 14;   // px: the hover readout sits below-right of the pointer
@@ -52,11 +51,9 @@ export function createHud() {
       setText(temp, info.T == null ? (info.note ?? '') : `${info.T.toFixed(1)} °C`);
       setText(pres, info.P != null && Math.abs(info.P) >= PRESSURE_SHOWN ? `pressure ${info.P.toFixed(1)}` : '');
     },
-    toast(text, ms = TOAST_MS) {
-      const t = h('div.toast.panel', { text, style: { animationDuration: `${ms - TOAST_FADE_LEAD}ms` } });
-      toasts.append(t);
-      setTimeout(() => t.remove(), ms);
-    },
+    // a notice, GMod's (notices.js): opts { kind: 'generic' | 'error' | 'undo' | 'hint' | 'cleanup',
+    // ms (default: the kind's length), icon }, or a number: ms
+    toast(text, opts) { return notices.add(text, typeof opts === 'number' ? { ms: opts } : opts); },
     dismissHint() { clearTimeout(hintTimer); hint.classList.add('gone'); },
     setLegend(view) {
       const bars = [view?.legend, view?.legend2].filter(Boolean);
@@ -123,6 +120,7 @@ export function createHelp(onClose) {
         row('Chat, when playing together', 'T'),
         row(CLASSES_ENABLED ? 'Settings (in first person, the gear)' : 'Settings', ','),
         row('Screenshot', 'P'),
+        row('Scoreboard (hold)', 'Tab'),
         row('Close menus; with none open, the map menu', 'Esc'),
       ),
       h('p', { text: 'Signs can show live values: write {t} for temperature, {p} for pressure and {e} for the element under the sign.' }),

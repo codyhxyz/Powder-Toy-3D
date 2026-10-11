@@ -102,7 +102,11 @@ Every death goes up in a killfeed in the top right, Garry's Mod's death notices 
 did. The icon is the killer's weapon, or what the death's cause names (fire, acid, drowning, a fall). The kill icons are
 from [game-icons.net](https://game-icons.net) by Lorc, Delapouite, Skoll, Sbed and Carl Olsen, under
 [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/), recoloured and with their backgrounds removed
-(`tools/killicons.mjs` bakes them).
+(`tools/killicons.mjs` bakes them). So are the notices' icons (info, warning, undo, light bulb, broom and camera, by
+Delapouite and Lorc; `tools/noticeicons.mjs`): Garry's Mod's notices, dark tabs that slide in at the bottom right
+(`src/ui/notices.js`), with its "Undone Prop" habit of naming what an undo took back. Holding **Tab** shows Garry's
+Mod's scoreboard (`src/ui/scoreboard.js`): the map's name, then a row per player with kills, deaths and ping (BOT for
+bots), pink while dead.
 
 ## Maps
 
