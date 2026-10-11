@@ -375,20 +375,29 @@ export function createWandRuntime(env) {
     }
     projectiles = projectiles.filter((r) => r.alive);
     if (firing && selected && ctx.primary && current && !compiled.errors.length) {
+      // Noita's actions_per_round: a cast draws up to spellsPerCast roots, stopping
+      // at the deck's end (no wrap); shuffle reorders the deck every recharge.
+      const perCast = Math.max(1, Math.floor(finite(compiled.config.spellsPerCast, 1)));
       while (current.cooldown <= 0 && frameCasts < WAND_LIMITS.casts && events.length < WAND_LIMITS.events) {
-        const root = compiled.casts[current.index];
-        if (!root) break;
-        const cost = Math.max(0, finite(root.params.mana));
+        const order = deckOrder(current);
+        const picks = [];
+        for (let k = current.index; k < compiled.casts.length && picks.length < perCast; k++) picks.push(order[k]);
+        if (!picks.length) break;
+        const cost = picks.reduce((sum, i) => sum + Math.max(0, finite(compiled.casts[i].params.mana)), 0);
         if (current.mana < cost) { totals.rejected++; error('Not enough mana'); break; }
+        if (events.length + picks.length > WAND_LIMITS.events) break;
         const at = absolute(ctx.eye), dir = ctx.dir.clone().normalize();
         const cast = { owner: ctx.owner?.id ?? ctx.owner ?? env.owner ?? povEvents.actor?.id ?? PLAYER,
           player: ctx.player, load: current.load, origin: at.clone() };
-        if (!enqueue(clone(root), at, dir, cast)) break;
+        for (const i of picks) enqueue(clone(compiled.casts[i]), at, dir, cast);
         current.mana -= cost; frameCasts++; totals.casts++; lastError = '';
-        current.cooldown += Math.max(0.02, finite(compiled.stats.castDelays?.[current.index], compiled.config.castDelay));
-        current.index++;
+        current.cooldown += picks.length === 1
+          ? Math.max(0.02, finite(compiled.stats.castDelays?.[picks[0]], compiled.config.castDelay))
+          : clamp(finite(compiled.config.castDelay) + picks.reduce((sum, i) => sum + finite(compiled.casts[i].params.castDelay), 0), 0.02, 30);
+        current.index += picks.length;
         if (current.index >= compiled.casts.length) {
           current.index = 0;
+          current.order = null;   // reshuffled on the next draw
           current.cooldown += Math.max(0, finite(compiled.stats.recharge, compiled.config.recharge));
         }
       }
@@ -404,6 +413,17 @@ export function createWandRuntime(env) {
     world.flush(); // dig first, then exact collection reads the resulting debris
     runTransfers();
     draw(dt);
+  }
+  // the deck's draw order this cycle: in order, or (shuffle) a fresh permutation per recharge
+  function deckOrder(state) {
+    const n = compiled.casts.length;
+    if (state.order?.length === n) return state.order;
+    state.order = [...Array(n).keys()];
+    if (compiled.config.shuffle) {
+      const random = env.random ?? Math.random;
+      for (let i = n - 1; i > 0; i--) { const j = Math.floor(random() * (i + 1)); [state.order[i], state.order[j]] = [state.order[j], state.order[i]]; }
+    }
+    return state.order;
   }
   function applyDefinition(def) {
     const next = clone(def);
@@ -424,7 +444,7 @@ export function createWandRuntime(env) {
     current.manaMax = result.config.manaMax; current.manaRegen = result.config.manaRegen;
     current.mana = Math.min(current.mana, current.manaMax);
     const signature = JSON.stringify([next.cards, result.config]);
-    if (signature !== current.signature) { current.index = 0; current.signature = signature; }
+    if (signature !== current.signature) { current.index = 0; current.order = null; current.signature = signature; }
     return result;
   }
   function cancelEffects() {
@@ -447,6 +467,8 @@ export function createWandRuntime(env) {
     update(nextCtx) { advance(nextCtx, true); },
     tick(nextCtx) { advance(nextCtx, false); },
     deselect() { selected = false; },
+    // every wand this runtime has held back to full mana and ready to fire (Noita's spell refresher, Descent's temples)
+    refill() { for (const state of inventories.values()) { state.mana = state.manaMax; state.cooldown = Math.min(state.cooldown, 0); } },
     resetWorld,
     windowShifted(dx, dz) { offset.x += dx; offset.z += dz; world.windowShifted(dx, dz); visuals.windowShifted(dx, dz); },
     dispose() { if (disposed) return; cancelEffects(); disposed = true; world.dispose(); visuals.dispose(); },
