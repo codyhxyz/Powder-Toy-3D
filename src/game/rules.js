@@ -24,7 +24,13 @@ export const TEAM_LOOK = {
 // size. Measured on an M-series MacBook (tools/modes-check.mjs, docs/modes.md):
 // seven NPC bodies (each with its own GPU probe and brain) keep the lab playable.
 export const TEAM_SIZE = 4;
-export const BOT_NAMES = ['Ash', 'Birch', 'Cedar', 'Dune', 'Ember', 'Flint', 'Grove', 'Haze', 'Iris', 'Jade', 'Kestrel', 'Lark', 'Moss', 'Nova', 'Onyx', 'Pike'];
+// The bots' names: cryptography's cast. Alice and Bob are the two who talk in
+// Rivest, Shamir and Adleman's RSA paper (1978); the textbooks since added Carol
+// and Dave to the conversation, Eve who eavesdrops, Mallory who meddles, Trent
+// the trusted third party, Peggy who proves and Victor who verifies. Plain first
+// names that read well in the killfeed and on the scoreboard; Alice and Bob go
+// first (the first two bots dealt), and Jim is ours.
+export const BOT_NAMES = ['Alice', 'Bob', 'Carol', 'Dave', 'Eve', 'Frank', 'Grace', 'Heidi', 'Ivan', 'Jim', 'Mallory', 'Olivia', 'Peggy', 'Rupert', 'Trent', 'Victor'];
 
 // ---- life and death
 export const RESPAWN_S = 5;          // s dead before a respawn: Halo's matchmaking default
