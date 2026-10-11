@@ -138,7 +138,7 @@ earn Halo 3's medals, in the sandbox or a match (Double Kill, Killing Spree, Spl
 (Own Goal, Bored, Chain Reaction, Heavy Particles, Flooded); see [docs/modes.md](docs/modes.md). An announcer calls them, and the match's
 moments, in a voice from [ElevenLabs](https://elevenlabs.io) (its stock voice Brian on Eleven v4, directed to boom), read once
 by `tools/announcer-voice.mjs` into `public/announcer/`; a line without a clip yet is spoken by the browser's own voice. The kill icons, the
-medal badges' icons, and the map menu's gamemode, map and tip icons, are from [game-icons.net](https://game-icons.net)
+medal badges' icons, and the map menu's gamemode and map icons, are from [game-icons.net](https://game-icons.net)
 by Lorc, Delapouite, Skoll, Sbed and Carl Olsen, under [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/),
 recoloured and with their backgrounds removed (`tools/killicons.mjs`, `tools/medal-icons.mjs` and
 `tools/mode-icons.mjs` bake them). So are the notices' icons (info,
@@ -158,10 +158,8 @@ brings the menu back over the game. The maps are in `src/maps.js`. `tools/map-th
 into `public/maps`, and `tools/menu-check.mjs` checks the menu on the GPU. A link with a query (`?map=lab`,
 `?preset=…`, an invite) skips the menu.
 
-Start brings up a loading screen in the manner of Halo 3's, GMod's and TF2's. The map's art drifts behind it. It shows
-the gamemode's emblem and rules, and the map's name. The map's kind and its size in cells and metres sit below it as a
-row of Halo 3 style medals. The steps the boot is really on (download, build, shader compile, world, the match being set
-up) are ticked off with their times. A tip about the game sits in a box with its icon.
+Start brings up a plain loading screen over the map's art: the gamemode, the map's name, a bar, and the one step the
+boot is on now (download, build, shader compile, world, the match being set up), as GMod's loading screen names it.
 The player stands beside it: "This is you." He is a render of the real body (`tools/you-portrait.mjs`).
 `tools/loading-screen-check.mjs` checks the menu's icons and the loading screen on the GPU.
 
