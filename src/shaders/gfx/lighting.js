@@ -13,6 +13,11 @@ export { WAND_LIGHTS };
 export const SH_Y0 = 0.282095;          // Y00
 export const SH_Y1 = 0.488603;          // Y1m = SH_Y1 * (x, y, z)
 export const SKYVIS_OPEN_DC = 0.5;      // SH_Y0 * c0.a of the open sky: the sphere's upper half
+// The sun shadow map's layout and its test inside volumes (sunBasis, sunMapShadow
+// below), for CPU readers of the map too (pov/viewmodel.js: the sun on the hands).
+export const SHADOW_TINT_ID_SCALE = 256;   // w = tint element id * this + optical depth (see below)
+export const SHADOW_PAD = 1;               // voxels the map's disc reaches past the box's bounding sphere
+export const VOLUME_SHADOW_BIAS = 0.6;     // depth bias (voxels) for points inside volumes (no normal)
 
 // Soft-shadow taps per pass (blocker search, then filter).
 const PCSS_TAPS = 8;
@@ -139,15 +144,15 @@ fn skyAmbient(n: vec3f) -> vec3f {
 // SCALE - 1 lets no light through anyway (e^-255); it only flattens the
 // proportional share inside a medium that thick (~270 cells of oil along the
 // sun, 10,000 of water).
-const SHADOW_TINT_ID_SCALE: f32 = 256.0;
-const SHADOW_PAD: f32 = 1.0;               // voxels the map's disc reaches past the box's bounding sphere
+const SHADOW_TINT_ID_SCALE: f32 = ${SHADOW_TINT_ID_SCALE.toFixed(1)};
+const SHADOW_PAD: f32 = ${SHADOW_PAD.toFixed(1)};               // voxels the map's disc reaches past the box's bounding sphere
 const SHADOW_NORMAL_OFFSET: f32 = 0.002;   // voxels a surface lookup moves off the surface along its normal
 // Hard-map depth bias (voxels), see sunMapShadow: at least SHADOW_BIAS_MIN, else the
 // PCF slope term (n.sun floored at SHADOW_BIAS_NS_MIN) plus SHADOW_BIAS_PAD.
 const SHADOW_BIAS_MIN: f32 = 0.8;
 const SHADOW_BIAS_NS_MIN: f32 = 0.25;
 const SHADOW_BIAS_PAD: f32 = 0.1;
-const VOLUME_SHADOW_BIAS: f32 = 0.6;       // depth bias (voxels) for points inside volumes (no normal)
+const VOLUME_SHADOW_BIAS: f32 = ${VOLUME_SHADOW_BIAS.toFixed(1)};       // depth bias (voxels) for points inside volumes (no normal)
 // Exact sun rays: smooth opaque surfaces block them where their field is
 // inside (by SUN_RAY_ISO_MARGIN: trilinear creases wobble about the level),
 // except within SUN_RAY_SMOOTH_SKIP voxels of the start, which sits on one;

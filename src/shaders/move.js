@@ -126,6 +126,9 @@ const HEAT_Q_MAX = Math.floor((2 ** 24 / SLOTS - 1) / HEAT_QUANTA);
 // history): grains move a cell on some steps and not others, so the field
 // averages their speed over about 1 / FLOW_BLEND steps.
 export const FLOW_BLEND = 0.05;
+// Main's paced draws for a falling liquid's jets (sync 3, main 5551bd7): the
+// CPU tile engine reads these now; the WGSL move takes the rule in DP-E1.
+export const PACE = { Y: 3518319154, X: 2882110344, Z: 2360945575 };
 
 // Margolus blocks at partition offset 1 with a base coordinate of -1 (the
 // grid's low margin): the slab x = -1, then y = -1 (x ≥ 0), then z = -1
