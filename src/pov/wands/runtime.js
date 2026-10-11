@@ -455,11 +455,13 @@ export function createWandRuntime(env) {
       queuedTransfers: transfers.length, inventory: current?.load.count ?? 0, inventoryInFlight: current?.load.out ?? 0, inventoryTotals: current?.load.totals() ?? {},
       frameCommands, frameTransfers, frameNodes, frameCasts, frameRays, limits: WAND_LIMITS, lastError, lastScan,
       world: world.stats, visuals: visuals.stats }; },
+    get mana() { return current ? { mana: current.mana, manaMax: current.manaMax } : null; },
     status() {
       if (!compiled) return 'No wand';
       if (compiled.errors.length) return 'Invalid wand';
       const storage = current.load.status();
-      return `${Math.floor(current.mana)}/${current.manaMax} mana${storage ? ` · ${storage}` : ''}${lastError ? ` · ${lastError}` : ''}`;
+      // mana is the HUD's bar (hud.js), not this note
+      return [storage, lastError].filter(Boolean).join(' · ');
     },
   };
 }

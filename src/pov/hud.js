@@ -52,13 +52,19 @@ export function createPovHud() {
   const jetRow = h('div.pov-bar.pov-jet', { 'aria-label': 'Jetpack' },
     h('span.pov-ic', { html: '<svg viewBox="0 0 16 16"><path d="M8 1.5c.6 2.4 4 4.2 4 8a4 4 0 0 1-8 0c0-1.7.9-2.7 1.6-3.4.2 1.2.8 2 1.6 2.3C6.8 6 7.3 3.6 8 1.5z"/></svg>' }),
     h('div.pov-track', {}, jetFill));
+  // mana: Noita's wand mana bar, shown in the vitals like health while a wand is in hand
+  const manaFill = h('div.pov-fill');
+  const manaText = h('span.pov-val');
+  const manaRow = h('div.pov-bar.pov-mana', { 'aria-label': 'Mana' },
+    h('span.pov-ic', { html: '<svg viewBox="0 0 16 16"><path d="M8 1.5 12.5 8 8 14.5 3.5 8z"/></svg>' }),
+    h('div.pov-track', {}, manaFill), manaText);
   const shieldFill = h('div.pov-fill');
   const shieldRow = h('div.pov-bar.pov-shield', { 'aria-label': 'Shield' },
     h('span.pov-ic', { html: '<svg viewBox="0 0 16 16"><path d="M8 1.5 13.5 3.6v4.1c0 3.3-2.3 5.6-5.5 6.8-3.2-1.2-5.5-3.5-5.5-6.8V3.6z"/></svg>' }),
     h('div.pov-track', {}, shieldFill));
   const perkRow = h('div.pov-perks');   // above health, in the same panel
   const statusRow = h('div.pov-statuses');   // above the perks
-  const vitals = h('div.pov-vitals.panel', {}, statusRow, perkRow, shieldRow, healthRow, breathRow, jetRow);
+  const vitals = h('div.pov-vitals.panel', {}, statusRow, perkRow, shieldRow, healthRow, manaRow, breathRow, jetRow);
 
   const lock = h('div.pov-lock.panel', {}, h('b', { text: 'Click' }), ' to look around', h('span.pov-dot', { text: '·' }), key('V'), ' to leave');
 
@@ -121,7 +127,7 @@ export function createPovHud() {
       clearTimeout(hintTimer);
       hintTimer = setTimeout(() => set(hint, '.show', false), HINT_S * 1000);
     },
-    // s = { dt, health, breath, jetFuel (0..1), jetting, perks (pov/perks.js set), status (pov/status.js set), feel {heat, cold, acid, hurt},
+    // s = { dt, health, breath, jetFuel (0..1), jetting, mana ({ mana, manaMax } of the wand in hand, or null), perks (pov/perks.js set), status (pov/status.js set), feel {heat, cold, acid, hurt},
     //       shield, shieldMax (base lives; no bar while shieldMax is 0), shieldCharging,
     //       dead, cause, respawnIn (s), locked, swooping, aimInReach, aimValid, third }
     update(s) {
@@ -190,6 +196,11 @@ export function createPovHud() {
       set(breathRow, '.show', s.breath < BREATH_SHOWN_BELOW);
       set(breathFill, 'transform', `scaleX(${round(Math.max(0, s.breath))})`);
       set(breathRow, '.low', s.breath < HEALTH_LOW);
+      const manaMax = s.mana?.manaMax ?? 0, mana = manaMax > 0 ? Math.max(0, Math.min(1, s.mana.mana / manaMax)) : 0;
+      set(manaRow, '.show', manaMax > 0);
+      set(manaFill, 'transform', `scaleX(${round(mana)})`);
+      set(manaText, 'text', manaMax > 0 ? String(Math.floor(s.mana.mana)) : '');
+      set(manaRow, '.low', mana < HEALTH_LOW);
       const fuel = s.jetFuel ?? 1;
       set(jetRow, '.show', fuel < JET_SHOWN_BELOW || !!s.jetting);
       set(jetFill, 'transform', `scaleX(${round(Math.max(0, fuel))})`);

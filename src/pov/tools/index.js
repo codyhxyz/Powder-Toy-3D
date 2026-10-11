@@ -21,8 +21,9 @@ export { emptyLoads };
 // tool carried, in catalog order.
 //
 // Wands (src/pov/wands/, docs/wands.md) sit in their slot's stack after its
-// tools: a click on one there (or a starter wand in the palette) puts it in
-// hand; B edits it. Number keys and the wheel still cycle the tools only.
+// tools and are picked the same way: the number key and the wheel cycle
+// through them like any tool (as HL2 cycles a slot's weapons), a click on one
+// puts it in hand; B edits it.
 //
 // Tools get the shell's env plus:
 //   env.transfer   the shared exact cell transfer (transfer.js)
@@ -81,6 +82,7 @@ export function createToolbelt(env) {
       custom = { ...def, slot: clampSlot(def.slot ?? wandSlot + 1) + 1, name: def.name.trim() || 'Custom wand' };
       wandSlot = custom.slot - 1;
       wandSelected = true; wandId = 'custom';
+      lastIn[wandSlot] = WAND_KEY + wandId;
       refresh(); hotbar.select(wandSlot);
       env.requestRender?.();
     },
@@ -141,15 +143,24 @@ export function createToolbelt(env) {
     ...(custom && clampSlot(custom.slot) === i ? [{ key: `${WAND_KEY}custom`, name: `Wand: ${custom.name}`, desc: 'Your edited wand (B edits it).', color: WAND_COLOR }] : []),
   ];
 
+  // slot i's row keys: its carried tools, then its wands (only in a slot that carries a tool, so a class's empty slots stay empty)
+  const slotKeys = (i) => { const keys = inSlot(i); return keys.length ? [...keys, ...wandRows(i).map((r) => r.key)] : []; };
+  const rowDef = (k) => (k.startsWith(WAND_KEY) ? wandRows(wandSlotOf(k)).find((r) => r.key === k) : tools.get(k).def);
+  const wandSlotOf = (k) => {
+    const id = k.slice(WAND_KEY.length);
+    return clampSlot((id === 'custom' ? custom : PRESETS.find((p) => p.id === id))?.slot);
+  };
+  const slotOf = (k) => (k?.startsWith(WAND_KEY) ? wandSlotOf(k) : tools.get(k)?.slot);
+  const heldKey = () => (wandSelected ? WAND_KEY + wandId : selected);
+  // every row key, slot by slot (the wheel's order)
+  const allKeys = () => [...Array(HOTBAR_SLOTS).keys()].flatMap(slotKeys);
+
   // the bar from the inventory: each slot's tools (then its wands) and the one it holds now
   function refresh() {
     for (let i = 0; i < HOTBAR_SLOTS; i++) {
-      const keys = inSlot(i);
+      const keys = slotKeys(i);
       if (!keys.includes(lastIn[i])) lastIn[i] = keys[0] ?? null;
-      const rows = keys.length ? [...keys.map((k) => tools.get(k).def), ...wandRows(i)] : [];
-      const at = wandSelected && wandSlot === i && keys.length
-        ? rows.findIndex((r) => r.key === WAND_KEY + wandId) : keys.indexOf(lastIn[i]);
-      hotbar.setSlot(i, rows, at);
+      hotbar.setSlot(i, keys.map(rowDef), keys.indexOf(lastIn[i]));
     }
   }
 
@@ -170,6 +181,7 @@ export function createToolbelt(env) {
     const preset = PRESETS.some((p) => p.id === def.id);
     if (!preset) custom = { ...def, slot: wandSlot + 1, name: def.name?.trim?.() || 'Custom wand' };
     wandSelected = true; wandId = preset ? def.id : 'custom';
+    lastIn[wandSlot] = WAND_KEY + wandId;
     refresh(); hotbar.select(wandSlot);
     env.releaseInput?.(); env.requestRender?.();
     return true;
@@ -178,6 +190,7 @@ export function createToolbelt(env) {
   // hold tool `key` (or, given a number, the carried tool at that place in catalog order; a wand's row key equips it)
   function select(key) {
     if (typeof key === 'string' && key.startsWith(WAND_KEY)) {
+      if (key === heldKey()) { hotbar.select(wandSlot); return true; }   // already in hand
       const id = key.slice(WAND_KEY.length);
       return equipWand(id === 'custom' ? custom : id);
     }
@@ -194,18 +207,19 @@ export function createToolbelt(env) {
     return true;
   }
 
-  // slot i's key: the tool last held there, or the next one if it's in hand already
+  // slot i's key: the tool (or wand) last held there, or the next one if it's in hand already
   function pressSlot(i) {
-    const keys = inSlot(i);
+    const keys = slotKeys(i);
     if (!keys.length) { hotbar.shake(i); return; }
-    const cur = !wandSelected && tools.get(selected)?.slot === i ? keys.indexOf(selected) : -1;
+    const cur = slotOf(heldKey()) === i ? keys.indexOf(heldKey()) : -1;
     select(cur >= 0 ? keys[(cur + 1) % keys.length] : (lastIn[i] ?? keys[0]));
   }
 
-  // the wheel: the next (+1) or previous (−1) tool carried, across slots
+  // the wheel: the next (+1) or previous (−1) tool or wand carried, across slots
   function step(dir) {
-    const keys = carried();
-    const i = keys.indexOf(selected);
+    const keys = allKeys();
+    if (!keys.length) return;
+    const i = keys.indexOf(heldKey());
     select(keys[(((i < 0 ? 0 : i + dir) % keys.length) + keys.length) % keys.length]);
   }
 
@@ -240,6 +254,7 @@ export function createToolbelt(env) {
     get transfer() { return transfer; },
     get ballistics() { return ballistics; },
     get readout() { return readout; },
+    get mana() { return wandSelected ? wandRuntime.mana : null; },   // the held wand's { mana, manaMax } (the HUD's bar), else null
     get carried() { return carried(); },
     wandRuntime, editor, equipWand,
     openEditor: () => editor.show(),
