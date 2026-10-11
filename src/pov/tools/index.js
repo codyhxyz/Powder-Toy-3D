@@ -288,6 +288,8 @@ export function createToolbelt(env) {
       ballistics.update(ctx);
       for (let i = 0; i < HOTBAR_SLOTS; i++) hotbar.setStatus(i, tools.get(lastIn[i])?.inst.status?.() ?? '');
     },
+    // a click in play: true when it closed the slot selector instead (hotbar.js confirm)
+    confirmSelection: () => hotbar.confirm(),
     setVisible(v) {
       hotbar.setVisible(v);
       shown = v;

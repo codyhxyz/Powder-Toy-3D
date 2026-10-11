@@ -286,6 +286,7 @@ export function createPov(app) {
   canvas.addEventListener('mousedown', (e) => {
     if (editing || !active()) return;
     if (!isLocked()) { if (mode !== 'exiting') requestLock(); return; }   // the click that locks doesn't fire
+    if ((e.button === 0 || e.button === 2) && toolbelt?.confirmSelection?.()) return;   // picks from the slot selector, as in HL2
     if (e.button === 0) { buttons.primary = true; buttons.primaryPressed = true; }
     if (e.button === 2) { buttons.secondary = true; buttons.secondaryPressed = true; }
   });

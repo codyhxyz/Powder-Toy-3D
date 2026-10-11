@@ -8,6 +8,9 @@ import './hotbar.css';
 // small numbered box per slot and the chosen slot opened downward into one box
 // per tool, then it fades. The tool in hand stays bottom right, where HL2 keeps
 // its ammo. With the mouse free (or on a touch screen) it stays up to click.
+// While it is up, a click picks what it shows and closes it, and the click
+// doesn't fire (HL2 weapon_selection.cpp ProcessInput: IN_ATTACK or IN_ATTACK2
+// selects, the button is swallowed, the selection hides).
 
 export const HOTBAR_SLOTS = SLOTS.length;
 export const slotKey = (i) => String((i + 1) % 10);   // slot i's number key
@@ -116,6 +119,13 @@ export function createHotbar(onSelect, onSelectTool) {
       s.text = text;
       s.status.textContent = text;
       if (i === selected) heldStatus.textContent = text;
+    },
+    // a click while the selector is up: it closes, and the click is spent (true)
+    confirm() {
+      if (!bar.classList.contains('open') || free()) return false;
+      clearTimeout(timer);
+      bar.classList.remove('open');
+      return true;
     },
     shake(i) {
       const el = slots[i].el;
