@@ -235,7 +235,7 @@ body.pov-on.pov-nohud .pov-cross,
 body.pov-on.pov-nohud .pov-hitmark,
 body.pov-on.pov-nohud .pov-vitals,
 body.pov-on.pov-nohud .hotbar,
-body.pov-on.pov-nohud .hb-name,
+body.pov-on.pov-nohud .hb-held,
 body.pov-on.pov-nohud .brand,
 body.pov-on.pov-nohud .toolbar,
 body.pov-on.pov-nohud .stats,
@@ -246,7 +246,7 @@ body.pov-on.pov-nohud .legend-box { visibility: hidden !important; }
    back so its Tools group can give tools, GMod's spawn menu; the hotbar steps aside. */
 body.pov-on.pov-menu .dock { opacity: 1 !important; pointer-events: auto !important; transform: translateX(-50%); }
 body.pov-on.pov-menu .card { opacity: 1 !important; }
-body.pov-on.pov-menu .hotbar { opacity: 0; pointer-events: none; }
+body.pov-on.pov-menu .hotbar, body.pov-on.pov-menu .hb-held { opacity: 0; pointer-events: none; }
 body.pov-on.pov-menu .pov-lock { display: none; }
 
 /* ---- touch controls (touch.js): phones and tablets only. The thumbs sit at the

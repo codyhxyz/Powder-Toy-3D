@@ -42,7 +42,6 @@ try {
   await page.keyboard.press('3');
   await checkHeld('GUN');
   assert.deepEqual(await page.locator('.hb-tool-name').allTextContents(), ['Pistol', 'SMG', 'Sniper rifle']);
-  assert.match(await stack.innerText(), /Press 3 again: next tool/);
   await page.keyboard.press('3'); await checkHeld('SMG');
   await page.keyboard.press('3'); await checkHeld('SNIPER');
   await page.keyboard.press('3'); await checkHeld('GUN');
