@@ -149,12 +149,18 @@ of charge, an abortable charge and "approximately two seconds" of standby betwee
 (`CHARGE_S` 3), it fires itself when full, releasing early cancels, and you press again after `REFIRE_S` 2.
 - Energy model: heat, not impact. Every power number is in povBore.js `LASER`, so a nerf is one edit.
 - The reach is the lumped heat balance of laser drilling (Steen & Mazumder, *Laser Material Processing*).
-  Each cell on the axis costs CAP·(VAPOR_T − T)·π·CORE² of the beam's `ENERGY` (1.25 M), so it goes
+  Each cell on the axis costs CAP·(VAPOR_T − T)·π·CORE² of the beam's `ENERGY` (2.22 M), so it goes
   ~119 cells through rock, ~70 through metal and ~59 through water. WALL and the floor stop it.
-- Core (r ≤ 1.5): vaporised. It becomes STEAM (water, ice, snow), FIRE (burnables) or SMOKE (the rest), at
+- Core (r ≤ 2): vaporised. It becomes STEAM (water, ice, snow), FIRE (burnables) or SMOKE (the rest), at
   3000 °C, blown back.
-- Rim (r ≤ 4): heated from 4500 down to 1600 °C, and the engine melts metal, glass and stone, boils water and
+- Rim (r ≤ 5): heated from 4500 down to 1600 °C, and the engine melts metal, glass and stone, boils water and
   lights wood.
+- r is from the bore: the axis up to where the beam stopped, then from that point, so the hole's hot end is
+  round (2026-10-11). The rim used to be cut flat there, so a surface met at a slant got only the near half of
+  the ring, a crescent, and WALL hit square on got nothing.
+- WALL and CLONE are heated but not vaporised (the spot the beam stops on glows), and the heat doesn't pass
+  them: a cell with one between it and the bore stays as it is (`LASER.SHADOW_STEP`). Before, it heated the
+  lava behind the Lab pit's wall.
 - ROCK can't melt in this engine, so the rim spalls it into STONE first (thermal spallation, Rauenzahn &
   Tester 1989), which then melts into lava.
 - The rim's heat isn't charged to `ENERGY`.

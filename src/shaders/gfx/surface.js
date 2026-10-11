@@ -1240,19 +1240,46 @@ bool crispHit(ivec3 cell, int id, vec3 ro, vec3 rd, float tEnter, float tExit, i
   return true;
 }
 
+// A crisp cell's temperature at the point hp on its face: bilinear between its
+// own and its three neighbours' nearest hp in the face's plane, as gatherSurf
+// blends a smooth channel's cells. A cell holds one temperature, so taken
+// alone a hot patch glowed as one flat square per cell; blended, it glows as
+// one smooth spot. Gas doesn't count: the face's glow is the matter's.
+float crispT(ivec3 cell, float T, vec3 hp, ivec3 face) {
+  ivec3 fa = abs(face);
+  ivec3 u = fa.x == 1 ? ivec3(0, 1, 0) : ivec3(1, 0, 0);
+  ivec3 v = fa.z == 1 ? ivec3(0, 1, 0) : ivec3(0, 0, 1);
+  vec3 f = clamp(hp - vec3(cell) - 0.5, -0.5, 0.5);   // from the cell's centre
+  float fu = dot(f, vec3(u)), fv = dot(f, vec3(v));
+  ivec3 su = fu < 0.0 ? -u : u, sv = fv < 0.0 ? -v : v;
+  float wu = abs(fu), wv = abs(fv);
+  float w0 = (1.0 - wu) * (1.0 - wv), sum = T * w0, wsum = w0;
+  for (int k = 0; k < 3; k++) {
+    ivec3 c = cell + (k == 0 ? su : k == 1 ? sv : su + sv);
+    float w = k == 0 ? wu * (1.0 - wv) : k == 1 ? (1.0 - wu) * wv : wu * wv;
+    if (outside(c)) continue;
+    vec4 b = fetchA(c);
+    if (isGasLike(eid(b))) continue;
+    sum += w * b.y;
+    wsum += w;
+  }
+  return sum / wsum;
+}
+
 // Surface record for a crisp voxel, or (with ch set by the caller) a grain.
 Surf crispSurf(ivec3 cell, int id, vec4 a, vec3 hp, vec3 n) {
   Surf s;
-  s.p = hp; s.tp = hp; s.tp1 = hp; s.flowW = 0.0; s.n = n; s.ng = n; s.ch = -1; s.id = id; s.cell = cell; s.seed = fract(a.w); s.T = a.y;
+  s.p = hp; s.tp = hp; s.tp1 = hp; s.flowW = 0.0; s.n = n; s.ng = n; s.ch = -1; s.id = id; s.cell = cell; s.seed = fract(a.w);
   vec3 fn = id == E_CRYSTAL && gCrysOn ? gCrys.d : n;   // a crystal inside its cell: the corner AO of the side it points out of
   vec3 an = abs(fn);
   s.face = an.x >= an.y && an.x >= an.z ? ivec3(int(sign(fn.x)), 0, 0)
          : (an.y >= an.z ? ivec3(0, int(sign(fn.y)), 0) : ivec3(0, 0, int(sign(fn.z))));
+  s.T = crispT(cell, a.y, hp, s.face);
   // an isolated grain carries its texture with it (its seed moves with the grain);
   // a voxel's is anchored in the world
   const float GRAIN_TEX_SPREAD = 61.0;   // cells of texture space the seed spreads grains over
   vec3 tp = SURFCH[id] >= 0 ? hp - vec3(cell) + s.seed * GRAIN_TEX_SPREAD : worldPos(hp);
-  applyMat(s, matOf(id, tp, n, a.y, floor(a.w), footprint(hp)));
+  applyMat(s, matOf(id, tp, n, s.T, floor(a.w), footprint(hp)));
   return s;
 }
 
