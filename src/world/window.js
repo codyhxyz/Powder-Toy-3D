@@ -157,6 +157,7 @@ export class WorldWindow {
     const sim = this.sim, g = sim.g;
     this.epoch++;   // a slab of the old world still being read back is dropped
     this.store.clear();
+    sim.deco?.reset();   // the decoration and its store go too (src/deco.js)
     this.planted.fill(0);
     sim.origin.set(origin[0], 0, origin[2]);
     this.gen.fill(this.P, [origin[0], 0, origin[2]]);
@@ -196,7 +197,7 @@ export class WorldWindow {
   update(fx, fz) {
     if (!this.loaded) return null;
     this.far?.tick();
-    if (this.pending) return null;
+    if (this.pending || this.sim.deco?.pending) return null;
     const g = this.sim.g, o = this.sim.origin, lim = WIN_STEP + WIN_HYSTERESIS;
     const off = [fx - (o.x + g.nx / 2), fz - (o.z + g.nz / 2)];
     const at = [o.x, o.z], span = [g.nx, g.nz], world = [this.size[0], this.size[2]];
@@ -230,7 +231,10 @@ export class WorldWindow {
     u.uBricks.value.set(...bricks);
     sim.run(this.mats.stage, this.stage);
     this.gen.diff(this.P, leaveLo, bricks, this.diffTarget);
-    this.readBack([before.x / BRICK + leaveLo[0] / BRICK, 0, before.z / BRICK + leaveLo[2] / BRICK], bricks);
+    const leaveB = [before.x / BRICK + leaveLo[0] / BRICK, 0, before.z / BRICK + leaveLo[2] / BRICK];
+    this.readBack(leaveB, bricks);
+    // the decoration of the slab that leaves goes into its own store (src/deco.js)
+    sim.deco?.leave(leaveLo, bricks, (x, y, z) => this.store.key(leaveB[0] + x, leaveB[1] + y, leaveB[2] + z));
     this.far?.summarize(leaveLo, bricks);
     // 2.
     sim.shift(dx, dz);
@@ -238,6 +242,7 @@ export class WorldWindow {
     const o = sim.origin;
     this.gen.fill(this.P, [o.x, o.y, o.z], enterLo, enterHi);
     const restored = this.restore(enterLo, bricks);
+    sim.deco?.enter(enterLo, bricks, (x, y, z) => this.store.key(o.x / BRICK + enterLo[0] / BRICK + x, y, o.z / BRICK + enterLo[2] / BRICK + z));
     // 4.
     this.plantCost = { placeMs: 0, bakeMs: 0 };
     const trees = this.scene.trees ? this.plant(enterLo, enterHi) : 0;

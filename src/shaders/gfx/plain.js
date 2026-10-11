@@ -95,7 +95,7 @@ vec3 plainLiquidNormal(ivec3 c, vec3 faceN) {
 
 vec3 plainOpaque(ivec3 cell, int id, vec4 a, vec3 hp, vec3 n, vec3 rd) {
   float seed = fract(a.w), T = a.y;
-  vec3 alb = COLOR[id] * (1.0 + COLORVAR[id] * (seed * 2.0 - 1.0));
+  vec3 alb = decoTint(COLOR[id] * (1.0 + COLORVAR[id] * (seed * 2.0 - 1.0)), COLOR[id], decoAt(cell));   // TPT's deco (gfx/deco.js)
   vec3 emit;
   if (id == E_LAVA) {
     alb = PLAIN_LAVA_ALB;
@@ -187,9 +187,10 @@ void plainView(vec3 ro, vec3 rd, float t0, vec3 bh) {
           col += trans * F * (plainSky(r) + PLAIN_SUN * mediumLight * pow(max(dot(r, uSun), 0.0), PLAIN_GLINT_EXP) * PLAIN_GLINT_GAIN);
           trans *= 1.0 - F;
         }
-        vec3 att = exp(-PLAIN_SIGMA[id] * seg);
+        vec4 dp = decoAt(cell);   // painted: the deco colour, and opaque by its alpha (gfx/deco.js)
+        vec3 att = exp(-mix(PLAIN_SIGMA[id], vec3(DECO_SIGMA), dp.a) * seg);
         vec3 amb = PLAIN_MEDIUM_AMB + PLAIN_SUN * mediumLight * max(uSun.y, 0.0) * PLAIN_MEDIUM_SUN + sampleLight(hp) * uLightGain;
-        vec3 sc = COLOR[id] * amb * (rc == R_LIQUID ? PLAIN_SCATTER_LIQUID : PLAIN_SCATTER_GLASS) + plainEmit(id, a.y);
+        vec3 sc = mix(COLOR[id], decoLinear(dp.rgb), dp.a) * amb * (rc == R_LIQUID ? PLAIN_SCATTER_LIQUID : PLAIN_SCATTER_GLASS) + plainEmit(id, a.y);
         col += trans * (1.0 - att) * sc;
         trans *= att;
       } else if (rc == R_GAS) {
@@ -197,7 +198,7 @@ void plainView(vec3 ro, vec3 rd, float t0, vec3 bh) {
         float dens = (id == E_SMOKE ? clamp(a.z, 0.0, 1.0) : 1.0) * softBlob(cell, ro, rd, tEnter, tExit)
                    * (PLAIN_GAS_LONE + PLAIN_GAS_DENSE * brickGas(occ));
         float alpha = 1.0 - exp(-SIGMA[id].x * seg * dens);
-        col += trans * alpha * COLOR[id] * (PLAIN_GAS_AMB + PLAIN_SUN * PLAIN_GAS_SUN + sampleLight(hp) * uLightGain);
+        col += trans * alpha * decoTint(COLOR[id], COLOR[id], decoAt(cell)) * (PLAIN_GAS_AMB + PLAIN_SUN * PLAIN_GAS_SUN + sampleLight(hp) * uLightGain);
         trans *= 1.0 - alpha;
       } else if (rc == R_FIRE) {
         float T = a.y;

@@ -37,6 +37,7 @@ Press `?` in the app for the full list.
 | `I` | eyedropper: pick the element under the cursor (or click the Eyedropper in the dock, then click the scene) |
 | ⌘Z / Ctrl+Z | undo the last stroke, clear or scene change |
 | `/` | find an element |
+| Ctrl+B | show or hide decoration (TPT's key) |
 
 | Camera | |
 |---|---|
@@ -152,6 +153,30 @@ with the same table, the same constants from `src/physics.js`, and the game's gr
 The cursor uses the game's own tools: Pressure on powders and liquids, the element's own brush on gases, and Heat on solids.
 A new element with only a table row needs nothing else. One that gets its own special case in the GPU passes needs the same case
 in `src/ui/tiles/engine.js`; `node scripts/check-tile-engine.mjs` lists any that are missing.
+
+## Decoration
+
+The spawn menu's **Deco** tab is The Powder Toy's deco menu: paint a colour onto matter without changing what it is.
+*Decorate* (TPT's SET) paints the picker's colour, *Clear decoration* takes it off, *Add*, *Subtract*, *Multiply* and
+*Divide* nudge the colour a little per frame the button is held (TPT's 0.01 strength), and *Smudge* blends the paint
+around each cell, averaged in linear light as TPT does. The colour's alpha is how strongly the paint covers: TPT blends by
+it. **Ctrl+B** (or *Show decoration* under the picker) hides it all and shows it again; the paint stays either way.
+
+The paint belongs to the matter. Sand that falls keeps its colour, painted ice melts into painted water, painted sand melts
+and sets into painted glass, and painted wood burns down to painted ash, because TPT's transitions keep it
+(`part_change_type`). A cell that empties loses it, and so does a
+cell the brush or a construction gives a new element (TPT's `create_part` starts a particle fresh). Undo brings it back, and
+in World it travels with the window: bricks of paint that leave the window are kept and come back with it.
+
+It is stored as a third texture beside the state (`src/deco.js`): one RGBA8 texel per cell in the state's atlas, moved by
+its own pass right after the move's gather, which reads the same slots (`src/shaders/deco.js`). Nothing in the move or
+react passes changes, and the texture, its passes and their programs only exist from the first deco stroke, so a world
+nobody paints pays nothing. The renderer (`src/shaders/gfx/deco.js`) turns a painted surface's albedo toward the paint
+(keeping its texture's light and dark), makes painted liquid and glass scatter the paint's colour, and leaves glow alone,
+so hot metal still shines through its paint. Smooth surfaces take the colour of the cell their material comes from, so a
+paint edge on sand follows cells. Smoke, steam and fire don't show paint in the realistic view yet (the plain view tints
+them), reflections and bounced light don't see it, and guests in a multiplayer session neither see nor paint it: the host's
+stream doesn't carry it yet.
 
 ## Constructions
 

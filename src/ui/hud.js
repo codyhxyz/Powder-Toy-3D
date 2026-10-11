@@ -84,6 +84,7 @@ export function createHelp(onClose) {
         row('Brush size', 'Shift', 'Scroll'),
         row('Sphere or cube brush', 'B'),
         row('Paint over existing material', 'X'),
+        row('Show or hide decoration (the Deco tab\'s paint)', 'Ctrl', 'B'),
         row('Eyedropper: pick element under cursor', 'I'),
         row('Undo last change', '⌘', 'Z'),
         row('Find an element', '/'),
@@ -128,7 +129,8 @@ export function createHelp(onClose) {
         row('Close menus; with none open, the map menu', 'Esc'),
       ),
       h('p', { text: 'Signs can show live values: write {t} for temperature, {p} for pressure and {e} for the element under the sign.' }),
-      h('p', { text: 'Tools from The Powder Toy: Wind blows the way you drag the brush, Cyclone spins air and matter around it, Mix shuffles what is inside it, PGRV and NGRV pull matter in or push it out while held, and AMBP and AMBM warm or cool only the air.' })));
+      h('p', { text: 'Tools from The Powder Toy: Wind blows the way you drag the brush, Cyclone spins air and matter around it, Mix shuffles what is inside it, PGRV and NGRV pull matter in or push it out while held, and AMBP and AMBM warm or cool only the air.' }),
+      h('p', { text: 'Deco (as in The Powder Toy) paints a colour onto matter: pick the colour and its alpha in the spawn menu. Paint moves with the matter and lasts through melting and burning; the brush, a construction or emptying a cell wipes it.' })));
   document.body.append(el);
   return {
     setOpen: (v) => el.classList.toggle('open', v),

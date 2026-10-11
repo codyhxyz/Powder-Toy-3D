@@ -4,6 +4,7 @@ import './ui/styles.css';
 import { Simulation } from './sim.js';
 import { volumeVert, volumeFrag, pickFrag, shadowFrag } from './shaders/render.js';
 import { ELEMENTS, E, TOOLS, toolById, isBuild, isSpawnerTool, isGearTool, LIGHTNING_TOOL, wandPresetForTool } from './elements.js';
+import { isDecoTool } from './elements.js';
 import { createLightning } from './lightning.js';
 import { Spawners, SPAWNER, ENEMY_KINDS, feetOnHit } from './spawners.js';
 import { createBirdLife } from './birds/index.js';
@@ -35,12 +36,13 @@ import { createDetailGate } from './gfx/detailGate.js';
 import { createColdShaderGuard } from './gfx/coldShader.js';
 import { createGpuLossTracker, silentLinkFailure, processLossMessage, lossDetails } from './gfx/gpuLoss.js';
 import { setAeration } from './gfx/foam.js';
+import { decoView, prepareDeco, readDeco, uploadDeco, ensureDeco, DECO_BYTES } from './deco.js';
 import { claimPrograms } from './gfx/programs.js';
 import { createPost, createAutoResolution, UPSCALE } from './gfx/post.js';
 import { createPacer, settleFrames, sceneKey, createCapCheck, CAP_IDLE_MS, MAX_FPS } from './gfx/pacing.js';
 import { CHANNELS, MEDIA } from './gfx/materials.js';
 import { DAY, dayPhase, phaseSteps, keyLight, sunElevation } from './gfx/daylight.js';
-import { GI_BLEND } from './sim.js';
+import { GI_BLEND, cellTexel } from './sim.js';
 import { createMultiplayer } from './net/multiplayer.js';
 import { createProfiler } from './gfx/profiler.js';
 import { createProfilerPanel } from './ui/profiler.js';
@@ -59,6 +61,8 @@ import { launch } from './launch.js';
 import { MAPS, mapByKey, mapOf, isWorld, sizeTag, WORLD_DIMS } from './maps.js';
 import { createSaves, SaveRefused } from './saves/game.js';
 import { registerSaveSection, registerSavedSettings } from './saves/sections.js';
+import { packCells, unpackCells } from './saves/format.js';
+import { BRICK_CELLS } from './shaders/window.js';
 import { putSave, getSave, cleanName } from './saves/local.js';
 
 // Optional modules (built in parallel); the app works without them.
@@ -913,6 +917,7 @@ function selectTool(id) {
     return;   // Never save or send starter IDs to the paint shader.
   }
   if (!isBuild(id)) lastPaintTool = id;
+  if (isDecoTool(id) && sim) prepareDeco(sim);   // its passes compile while the colour is picked (src/deco.js)
   settings.tool = id;
   const it = toolById(id);
   const accent = accentFor(it.color);
@@ -962,7 +967,17 @@ const dock = createDock({
   onBrushChange: (patch) => { Object.assign(settings, patch); dock.sync(); save(); },
   onHover: (id) => card.show(id ?? settings.tool),
   onEyedropper: () => setEyedropper(!eyedropper),
+  onDecoToggle: () => toggleDeco(),
 });
+
+// TPT's Ctrl+B (src/gui/game/GameView.cpp): draw decoration or not. The paint
+// stays either way (src/deco.js); off, everything draws as if undecorated.
+function toggleDeco() {
+  decoView.show = !decoView.show;
+  dock.sync();
+  pacer.wake();
+  hud.toast(decoView.show ? 'Decoration shown' : 'Decoration hidden');
+}
 
 // Eyedropper: the next click on the scene selects whatever element it lands on.
 function setEyedropper(on) {
@@ -1163,6 +1178,40 @@ const SAVE_THUMB_TYPE = 'image/jpeg', SAVE_THUMB_QUALITY = 0.82;
 const MB = 1024 * 1024;
 // the gravity and speed a world was saved with come back with it (TPT keeps gravity in a save)
 registerSavedSettings(['gravity', 'steps']);
+// The decoration layer (src/deco.js) goes with its save, as TPT saves deco with
+// each particle: RGBA8 per cell in the save's cell order (format.js packCells),
+// and a World's painted bricks outside the window as [brick key u32, its
+// bytes] records. Both load after the cells, since Simulation.load wipes the paint.
+const DECO_KEY_BYTES = 4;
+registerSaveSection('deco', {
+  save: () => {
+    const data = readDeco(sim);   // (null while nothing is painted)
+    if (!data) return undefined;
+    const g = sim.g;
+    return packCells([g.nx, g.ny, g.nz], (x, y, z) => cellTexel(g, x, y, z), [data]);
+  },
+  load: (planes, h) => {
+    const g = sim.g, data = new Uint8Array(g.width * g.height * DECO_BYTES);
+    unpackCells(h.dims, (x, y, z) => cellTexel(g, x, y, z), planes, [data]);
+    uploadDeco(sim, data);
+  },
+});
+registerSaveSection('decoStore', {
+  save: () => {
+    const store = sim.deco?.store;
+    if (!store?.size) return undefined;
+    const rec = DECO_KEY_BYTES + store.values().next().value.length;
+    const out = new Uint8Array(store.size * rec), view = new DataView(out.buffer);
+    let at = 0;
+    for (const [k, b] of store) { view.setUint32(at, k, true); out.set(b, at + DECO_KEY_BYTES); at += rec; }
+    return out;
+  },
+  load: (bytes) => {
+    const store = ensureDeco(sim).store, view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const rec = DECO_KEY_BYTES + BRICK_CELLS * DECO_BYTES;
+    for (let at = 0; at + rec <= bytes.length; at += rec) store.set(view.getUint32(at, true), bytes.slice(at + DECO_KEY_BYTES, at + rec));
+  },
+});
 const saves = createSaves({
   renderer, settings, getSim: () => sim, getWin: () => win,
   header: () => {
@@ -1429,6 +1478,7 @@ function press(e) {
 // tool gun. true if it did something, false if it couldn't (it says why),
 // null if the tool paints a stroke instead.
 function clickTool() {
+  if (isDecoTool(settings.tool) && mp.guard()) return false;   // decoration isn't in the host's stream yet (src/deco.js)
   if (settings.tool === SIGN_TOOL) {
     if (signs && hover.valid) { signs.add({ cell: hover.cell.clone(), normal: faceNormal(hover.face) }); return true; }
     if (!signs) hud.toast('Signs are still loading');
@@ -1582,6 +1632,7 @@ addEventListener('keydown', (e) => {
   const fileMod = e.metaKey || (e.ctrlKey && !pov?.active);
   if (fileMod && e.key.toLowerCase() === 's') { e.preventDefault(); if (!e.repeat) actions.saveGame(); return; }
   if (fileMod && e.key.toLowerCase() === 'o') { e.preventDefault(); if (!e.repeat) actions.openSaves(); return; }
+  if (e.ctrlKey && !pov?.active && e.key.toLowerCase() === 'b') { e.preventDefault(); toggleDeco(); return; }   // TPT's key (in the body, Ctrl swims)
   if (mod) return;
   const k = e.key;
   // V switches between the god view and the body (Garry's Mod's noclip key). F drops

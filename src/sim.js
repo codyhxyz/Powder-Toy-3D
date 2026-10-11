@@ -21,6 +21,8 @@ import { gfxUniforms } from './gfx/uniforms.js';
 import { RegionQuads, regionMaterial } from './gfx/regions.js';
 import { ELEMENTS, mechanisms } from './elements.js';
 import { Rays } from './raysLayer.js';
+import { isDecoTool } from './elements.js';
+import { ensureDeco } from './deco.js';
 
 // cells/step² downward (the app's gravity setting overrides it)
 const GRAVITY_DEFAULT = 0.025;
@@ -258,6 +260,8 @@ export class Simulation {
     this.flowV = makeFieldTarget(g.width, g.height, 1, HALF, NEAR);
     // whitewater's aeration field (gfx/foam.js): made and stepped while that switch is on
     this.aeration = null;
+    // TPT's decoration layer (src/deco.js): made by the first deco stroke or a load that brings it
+    this.deco = null;
     this.fieldReset = true;
     this.smoothing = 1;
     // GI (shaders/gi.js): per-brick light sources and blockers, and the probe
@@ -692,6 +696,7 @@ export class Simulation {
     moveGather.uniforms.uFresh.value = this.actFresh;
     this.actFresh = false;
     this.pass(moveGather, quads);
+    this.deco?.step();   // the decoration follows the move (src/deco.js)
     this.run(moveFlow, this.flowV, quads);
     this.aeration?.step();   // whitewater's field follows the move (gfx/foam.js)
     react.uniforms.uFrame.value = this.frame;
@@ -705,6 +710,8 @@ export class Simulation {
 
   // wind: [x, y, z] cells the brush moved since the stroke's last paint (the Wind tool's drag)
   paint({ center, radius, shape, tool, rate, replace, wind }) {
+    // TPT's deco tools paint the decoration layer, not the cells (src/deco.js)
+    if (isDecoTool(tool)) { ensureDeco(this).paint({ center, radius, shape, tool }); return; }
     // particle tools paint into the particle list, not the grid
     if (this.rays.paint({ center, radius, shape, tool, rate })) return;
     this.rays.noteElement(tool);   // plutonium emits neutrons: the layer wakes
@@ -728,6 +735,13 @@ export class Simulation {
     const c = [center.x, center.y, center.z];
     this.touchCentres(c.map((x) => x - radius), c.map((x) => x + radius));
     this.pass(this.mats.paint);
+    this.scrubDeco();
+  }
+
+  // After a write that isn't a step (the brush, a stamp): cells it gave a new
+  // element lose their decoration, as TPT's create_part resets it (src/deco.js).
+  scrubDeco() {
+    this.deco?.scrub(this.targets[1 - this.cur].textures[0]);
   }
 
   get flowTexture() { return this.flowV.texture; }
@@ -899,6 +913,7 @@ export class Simulation {
     const m = this.mats.shift;
     m.uniforms.uShift.value.set(dx, 0, dz);
     this.pass(m);
+    this.deco?.shift(dx, dz);   // the decoration moves with its cells (src/deco.js)
     this.rays.reset();   // particles are in grid cells: v1 lets them go (docs/particles.md)
     this.origin.x += dx;
     this.origin.z += dz;
@@ -954,6 +969,7 @@ export class Simulation {
     u.tA.value = texA;
     u.tB.value = texB;
     this.run(this.mats.copy, this.targets[this.cur]);
+    this.deco?.reset();   // a new state: its decoration, if any, comes after (src/deco.js uploadDeco)
     this.fieldReset = true;
     this.giReset = true;
     this.stillFlow();
@@ -977,6 +993,8 @@ export class Simulation {
     u.tA.value = this.stateA;
     u.tB.value = this.stateB;
     this.run(this.mats.copy, t);
+    t.deco = null;
+    this.deco?.snapshot(t);   // and the decoration (src/deco.js)
     t.origin = this.origin.clone();
     t.note = null;   // the app's tag for what undoing this takes back besides cells (app.js: a shrine's orbs)
     this.history.push(t);
@@ -1014,6 +1032,7 @@ export class Simulation {
     mat.uniforms.tA.value = t.textures[0];
     mat.uniforms.tB.value = t.textures[1];
     this.run(mat, this.targets[this.cur]);
+    this.deco?.restore(t, dx, dz);
     this.stillFlow();
     this.rays.wake();   // it may bring plutonium back
     t.dispose();
@@ -1067,7 +1086,7 @@ export class Simulation {
   }
 
   // Every pass's material (the profiler's and the app's program bookkeeping).
-  materials() { return Object.values(this.mats).flat().concat(this.rays.materials()); }   // (fieldBoost, brickDist are arrays)
+  materials() { return Object.values(this.mats).flat().concat(this.rays.materials(), this.deco?.materials() ?? []); }   // (fieldBoost, brickDist are arrays)
 
   // retire: an array to put the materials in instead of disposing of them (the
   // app disposes of them once the next grid's have claimed their programs, so
@@ -1087,6 +1106,7 @@ export class Simulation {
     this.flowV.dispose();
     this.flowVTmp?.dispose();
     this.aeration?.dispose();
+    this.deco?.dispose();   // (its targets; its materials go with materials() below)
     this.brickDist.forEach((t) => t.dispose());
     this.actClass.dispose();
     this.actRows.dispose();
