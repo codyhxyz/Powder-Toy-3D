@@ -324,8 +324,9 @@ export function createGame(shell) {
     if (k) k.kills++;
     v.lastHit = null;
     const cause = bodyOf(v)?.cause ?? '';
-    const e = { killer: k?.name ?? null, killerTeam: k?.team ?? null, victim: v.name, victimTeam: v.team, cause, by: k?.id ?? null, id: v.id };
-    hud.kill(e, now());
+    const held = k ? shell.deaths?.heldOn(v.id, k.id) ?? null : null;   // the killer's weapon when the blow landed (the killfeed's icon)
+    const e = { killer: k?.name ?? null, killerTeam: k?.team ?? null, victim: v.name, victimTeam: v.team, cause, held, by: k?.id ?? null, id: v.id };
+    hud.kill(e);
     povEvents.emit('game:kill', e);
     // the mode's part
     if (mode === 'slayer') {

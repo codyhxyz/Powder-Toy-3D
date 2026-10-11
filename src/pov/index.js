@@ -23,6 +23,7 @@ import { createNightVision } from './nightVision.js';
 import { KICK_KEY, createKickLeg } from './kick.js';
 import { viewmodelRig, HIT } from './viewmodel.js';
 import { createGame } from '../game/index.js';
+import { createDeathWatch } from './killfeed.js';
 import { SPAWNER, ENEMY_KINDS } from '../spawners.js';
 import { createZoom, ZOOM_KEY } from './zoom.js';
 import { createTouchControls } from './touch.js';
@@ -103,6 +104,13 @@ export function createPov(app) {
   let figure = null, player = null, toolbelt = null;
   const npcs = new Map();   // enemy spawner id → its NPC (npc.js)
   let npcMod = null, npcAi = null, npcLoading = null;   // npc.js and what NPCs share, loaded on first use
+  // the killfeed's books (killfeed.js): who hurt whom last, and every body that can die
+  const bodyById = (id) => [...npcs.values(), ...game.bots].find((n) => n.id === id) ?? null;
+  const deaths = createDeathWatch({
+    heldBy: (id) => (id === PLAYER ? toolbelt?.selectedKey ?? null : bodyById(id)?.agent?.intent.tool ?? bodyById(id)?.agent?.weapon ?? null),
+    bodies: () => [...(player ? [[PLAYER, player]] : []), ...[...npcs.values()].map((n) => [n.id, n.body, n.kind])],
+    quiet: () => game.running,   // a team game posts its own (src/game/index.js died)
+  });
   const loadNpcs = () => (npcLoading ??= import('./npc.js').then((m) => { npcAi = m.createAi({ renderer, getSim: app.getSim }); npcMod = m; return { mod: m, ai: npcAi }; })
     .catch((err) => { console.error('NPCs failed to load', err); npcLoading = null; throw err; }));
   // the player as something weapons hit (an NPC's axe and gun; the player's own never hit it)
@@ -663,6 +671,7 @@ export function createPov(app) {
       } else for (const n of npcs.values()) n.reset();
     }
     game.update(dt, npcMod && npcsWanted ? npcFrame : null);   // the bots, the objectives, the HUD
+    deaths.update();   // the killfeed: who died this frame, and to what
 
     takePerks();
 
@@ -851,6 +860,7 @@ export function createPov(app) {
   const game = createGame({
     app, scene, renderer, camera,
     get player() { return player; },
+    deaths: { heldOn: (id, by) => deaths.heldOn(id, by) },   // the killfeed's books: a kill's weapon
     get toolbelt() { return toolbelt; },
     active,
     loadNpcs,
