@@ -1,72 +1,110 @@
-import * as THREE from 'three';
+import { STAGE } from '../gpu/kernels.js';
 
 // Meshes inside the volume (the player's body, NPCs, props) are opaque and
 // draw before it; the volume then marches each ray from its first surface on.
 // A body standing in water sat behind the water's surface, so the march went
-// on through it and painted the whole water column over the body. Right before
-// the volume draws, its hook copies the depth the opaque pass left, and the
-// march stops there (meshCutT): the water in front tints the body, as water
-// over a swimmer does, instead of hiding it.
+// on through it and painted the whole water column over the body. The march
+// now stops at the depth the opaque meshes left (meshCutT): the water in front
+// tints the body, as water over a swimmer does, instead of hiding it.
 //
-// Only a float depth texture copies (the scene target of gfx/post.js); any
-// other target (stills, a renderbuffer depth) draws without the cut.
+// WebGPU order (docs/webgpu.md Sync log S1): three.js renders the opaque meshes
+// into the scene target first (post.render's `opaque` hook); capture() then
+// copies the depth they left into a texture of ours, and the scene pass loads
+// the target and binds that copy (a texture_depth_2d at group 0 binding 2 of
+// the volume, beside the tables and FrameUniforms). The copy is needed because
+// the scene pass writes the target's depth (frag_depth, TAA's motion signal)
+// while the volume reads the meshes': one texture can't be both in one pass.
+// A frame whose meshes drew nothing (every box-mode frame) captures nothing,
+// and the volume marches without the cut.
 //
-// tMeshDepth takes the texture unit the view freed by reading its bricks'
-// empty-space distance from tLight (gfx/core.js BRICK_DIST_IN_LIGHT): with
-// whitewater on the view uses all 16 a GPU is sure to have, and one more
-// fails to link and blacks the screen (tools/check-sampler-budget.mjs).
+// The cut's values travel in the volume's params (shaders/render.js
+// VolumeParams holds MESH_CUT_FIELDS): meshCut (0: no cut this frame), meshInv
+// (clip → grid: inverse(viewProj · model) of the volume's own jittered
+// matrices) and meshRes (the target's size in pixels).
 
-// GLSL: meshCutT(rd) = distance along the eye ray (grid cells, from uCam)
-// to the nearest opaque mesh at this pixel, MESH_CUT_NONE if none.
-export const meshCutGLSL = /* glsl */ `
-uniform bool uMeshCut;
-uniform sampler2D tMeshDepth;
-uniform mat4 uMeshInv;    // clip → grid: inverse(projection · view · model)
-uniform vec2 uMeshRes;
-#define MESH_CUT_NONE 1e30
-float meshCutT(vec3 rd) {
-  if (!uMeshCut) return MESH_CUT_NONE;
-  float d = texelFetch(tMeshDepth, ivec2(gl_FragCoord.xy), 0).r;
-  if (d >= 1.0) return MESH_CUT_NONE;
-  vec4 p = uMeshInv * vec4(gl_FragCoord.xy / uMeshRes * 2.0 - 1.0, d * 2.0 - 1.0, 1.0);
-  return dot(p.xyz / p.w - uCam, rd);
+// WGSL fields of the volume's params struct
+export const MESH_CUT_FIELDS = { meshInv: 'mat4x4f', meshRes: 'vec2f', meshCut: 'u32' };
+
+// The volume's group 0 binding 2: the meshes' depth (copied, read with textureLoad)
+export const MESH_DEPTH_BINDING = 2;
+export const MESH_DEPTH_ENTRY = { binding: MESH_DEPTH_BINDING, visibility: STAGE.FRAGMENT, texture: { sampleType: 'depth', viewDimension: '2d' } };
+
+// WGSL (after the render library, core.js's meshCutAt and MESH_CUT_NONE, and
+// the volume's params P):
+//   meshCutT(rd)     distance along the unit eye ray rd (grid cells, from
+//                    FU.cam) to the nearest opaque mesh at this pixel
+//                    (gFragCoord), MESH_CUT_NONE if none
+//   meshCutDepth(d)  the nearer of clip depth d and the mesh's at this pixel:
+//                    the volume's frag_depth, so a hit behind the cut (a bent
+//                    ray's) never draws behind the mesh it stopped at
+export const meshCutGLSL = /* wgsl */ `
+@group(0) @binding(${MESH_DEPTH_BINDING}) var tMeshDepth: texture_depth_2d;
+fn meshDepthHere() -> f32 {
+  let hi = vec2i(textureDimensions(tMeshDepth)) - 1;
+  return textureLoad(tMeshDepth, clamp(vec2i(floor(gFragCoord)), vec2i(0), hi), 0);
+}
+fn meshCutT(rd: vec3f) -> f32 {
+  if (P.meshCut == 0u) { return MESH_CUT_NONE; }
+  return meshCutAt(meshDepthHere(), P.meshInv, P.meshRes, rd);
+}
+fn meshCutDepth(d: f32) -> f32 {
+  if (P.meshCut == 0u) { return d; }
+  return min(d, meshDepthHere());
 }
 `;
 
-export function createMeshCut(renderer) {
-  const depth = new THREE.DepthTexture(1, 1, THREE.FloatType);
-  const copy = new THREE.WebGLRenderTarget(1, 1, { depthBuffer: true, depthTexture: depth, type: THREE.UnsignedByteType });
-  const uniforms = {
-    uMeshCut: { value: false },
-    tMeshDepth: { value: depth },
-    uMeshInv: { value: new THREE.Matrix4() },
-    uMeshRes: { value: new THREE.Vector2(1, 1) },
+const TEX = { COPY_DST: 0x02, TEXTURE_BINDING: 0x04 };   // (GPUTextureUsage's bits, importable in Node)
+
+/**
+ * The depth hand-off: capture(depth) after three's opaque meshes rendered
+ * into the scene target, then take() in the volume's draw, once per frame:
+ *
+ *   const cut = createMeshCut(gpu);
+ *   post.render({
+ *     opaque(p) { …three renders the opaque meshes into p.sceneTarget.rt…; return cut.capture(p.sceneTarget.depth); },
+ *     draw(rp, p) { volume.draw(rp, { meshDepth: cut.take(), … }); },
+ *   }, camera);
+ * @param {object} gpu
+ */
+export function createMeshCut(gpu) {
+  let copy = null;      // our depth32float copy, sized as the target
+  let armed = false;    // capture() ran since the last take()
+  // bound while there is no cut: a 1×1 depth texture, never read (meshCut is 0)
+  const none = gpu.createTexture({ label: 'mesh depth (none)', size: [1, 1], format: 'depth32float', usage: TEX.TEXTURE_BINDING });
+
+  return {
+    /**
+     * Records the copy of `depth` (the scene target's, as three's meshes left
+     * it) into the open frame. Returns true: the `opaque` hook's "drew".
+     * @param {GPUTexture} depth a depth32float texture with COPY_SRC
+     * @returns {true}
+     */
+    capture(depth) {
+      if (!copy || copy.width !== depth.width || copy.height !== depth.height) {
+        if (copy) gpu.flush('mesh depth resize');   // (commands recorded with the old copy go first)
+        copy?.destroy();
+        copy = gpu.createTexture({
+          label: 'mesh depth', size: [depth.width, depth.height], format: 'depth32float',
+          usage: TEX.COPY_DST | TEX.TEXTURE_BINDING,
+        });
+      }
+      gpu.frame.direct().copyTextureToTexture({ texture: depth }, { texture: copy }, [depth.width, depth.height]);
+      armed = true;
+      return true;
+    },
+    /** The copy if capture() ran since the last take(), else null; clears it. */
+    take() {
+      const t = armed ? copy : null;
+      armed = false;
+      return t;
+    },
+    /** The texture the volume binds when there is no cut. */
+    get none() { return none; },
+    dispose() {
+      gpu.flush('mesh depth dispose');
+      copy?.destroy();
+      none.destroy();
+      copy = null;
+    },
   };
-  const gl = renderer.getContext();
-  let works = null;   // the first blit is checked: a failed one would leave depth 0, cutting every ray at the eye
-
-  /** Hook for the volume mesh: `volume.onBeforeRender = cut.hook`. */
-  function hook(r, scene, camera, geometry, material) {
-    const rt = r.getRenderTarget();
-    uniforms.uMeshCut.value = false;
-    if (works === false || !rt?.depthTexture || rt.depthTexture.type !== THREE.FloatType || rt.samples > 0 || rt.isWebGL3DRenderTarget || rt.isWebGLCubeRenderTarget) return;
-    const w = rt.width, h = rt.height;
-    if (copy.width !== w || copy.height !== h) copy.setSize(w, h);
-    r.initRenderTarget(copy);   // (once)
-    if (works === null) gl.getError();   // (clear anything earlier)
-    // three.js copies a depth texture with a blit, which obeys the scissor
-    // test and leaves no framebuffer bound: the volume draws into rt after it
-    const scissor = r.getScissorTest();
-    if (scissor) r.setScissorTest(false);
-    r.copyTextureToTexture(rt.depthTexture, depth);
-    r.setRenderTarget(rt, r.getActiveCubeFace(), r.getActiveMipmapLevel());
-    if (scissor) r.setScissorTest(true);
-    if (works === null && !(works = gl.getError() === gl.NO_ERROR)) { console.warn('meshCut: depth copy failed; bodies in water stay hidden'); return; }
-    uniforms.uMeshInv.value.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse).multiply(this.matrixWorld).invert();
-    uniforms.uMeshRes.value.set(w, h);
-    uniforms.uMeshCut.value = true;
-    material.uniformsNeedUpdate = true;   // (they upload after this hook, in the same draw)
-  }
-
-  return { uniforms, hook, dispose() { copy.dispose(); depth.dispose(); } };
 }
