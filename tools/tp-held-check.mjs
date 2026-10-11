@@ -4,11 +4,12 @@
 // gun's muzzle flash leaves from the gun on the body, an axe's swing moves the
 // held axe, first person puts the viewmodel back at the eye, and the stickman
 // holds tools too.
-// usage: node tools/tp-held-check.mjs [--port 5205]   (needs a dev server)
+// usage: node tools/tp-held-check.mjs [--port 5205 | --url https://tpt3d.codyh.xyz]   (a dev server, or the live site)
 import { launchBrowser, newTestPage } from './browser.mjs';
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
 const port = opt('port', '5205');
+const url = opt('url', `http://localhost:${port}`);
 const W = 900, H = 560;
 const SPAWN = [64, 0, 64.5];
 const YAW = -Math.PI / 2;
@@ -30,7 +31,7 @@ try {
   const check = (name, ok, info = '') => { if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${info ? `  ${info}` : ''}`); };
   const ev = (fn, arg) => p.evaluate(fn, arg);
   const wait = (ms) => p.waitForTimeout(ms);
-  await p.goto(`http://localhost:${port}/?preset=empty`, { timeout: 120000 });
+  await p.goto(`${url}/?preset=empty`, { timeout: 120000 });
   await p.waitForFunction(() => window.__app?.pov, null, { timeout: 120000 });
   await wait(1500);
   await p.mouse.move(W / 2, H / 2);
