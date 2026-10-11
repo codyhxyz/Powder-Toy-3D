@@ -600,11 +600,13 @@ function openMap(key, mode = 'sandbox') {
 }
 // the map and gamemode playing now, for the menu to open on
 function currentMap() {
-  return { map: mapOf(settings)?.key ?? null, mode: pov?.game?.running ? pov.game.mode : 'sandbox' };
+  const m = mapOf(settings);
+  return { map: m?.key ?? null, mode: pov?.game?.running ? pov.game.mode : m?.sandbox === false ? m.modes[0] : 'sandbox' };
 }
 // A team gamemode (src/game, where the build has it): in the body, a match of
 // it on the map just loaded. Sandbox ends any match running.
 function startMode(mode) {
+  if (mode === 'noita') { if (pov?.game?.running) pov.game.end(); if (pov && !pov.active) pov.enter(); return; }   // its rules are the map's (Descent)
   const game = pov?.game;
   if (!game) return;
   if (mode === 'sandbox') { if (game.running) game.end(); return; }
