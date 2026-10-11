@@ -1742,6 +1742,44 @@ a second code path (subgroups, `shader-f16`) has to be a clear win to earn its t
 - TAA and prefilter fused; a maximum-size scene target with a viewport; reversed Z; blur x/y fusion if U4 didn't.
 - If Dawn's `dump_shaders` shows override pipelines are pruned, fold the per-view modules back into `override VIEW`.
 
+## Sync log (main merged into the port while it runs)
+
+The user chose not to freeze `main` (no freeze, the port keeps up). At each wave boundary the orchestrator merges
+`origin/main` into the port on a `webgpu/syncN` branch: a GPU file the port already rewrote keeps its WGSL side, and
+`main`'s change to it (a diff from the last synced `main` commit) is re-applied by a delta-port unit, reviewed like any
+unit. Files the port hasn't reached yet take `main`'s version, and their unit ports that. Every new unit branches from
+the latest sync.
+
+### Sync 2 (`main` 82157d5 → ff7ee51)
+Delta-port units: **DP-A** (U1's files: elements, physics, electricity, materials), then **DP-B** (U2's: sim, move,
+react, activity, passes' sim part, shaders/window, and the new `src/simModes.js`, `src/editing.js`'s paint side) and
+**DP-C** (U3's: gfx/core, gfx/lighting, and the parts of far.js that live in farShared.js) in parallel. U4 and U5 were
+running on the pre-sync base; their files' deltas (fields, passes' derived part, liquid, liquidDetail, plain, surface)
+get a delta-port when they land. What else `main` brought, and where it goes:
+- **S1. Meshes before the volume** (`src/gfx/meshCut.js`; supersedes W15's and F1's order, and answers K2.1). `main`
+  now draws the opaque meshes first; the volume copies the depth they left and stops each ray there (`meshCutT`), so
+  water in front of a body tints it instead of painting over it. WebGPU order per view frame: E1 compute → three renders
+  the opaque meshes into the scene target (colour + depth) → our scene pass loads that colour, samples three's depth
+  (a `texture_depth_2d` binding of the scene target's depth, never the attachment it writes), and marches each ray to it,
+  writing premultiplied colour over and `frag_depth` = the nearer of its hit and the mesh → transparent meshes and
+  overlays. U6 implements the volume side, U8 the order, U7's `post.render` hook order follows (meshes before draw).
+- **S2. Simulation modes** (`src/simModes.js`: TPT's gravity mode (radial gravity turns each block into its pull's
+  frame), air mode, ambient heat, edge mode wall / loop / void): uniforms of the move and react, ported in DP-B. With
+  loop edges a block straddling an edge is reachable from both sides; the WebGL pass solved it twice harmlessly (each
+  fragment wrote its own slot), but the in-place move must give it **exactly one owner** (D8.8), or two threads write
+  the same cells.
+- **S3. Decoration** (`src/deco.js`, `shaders/deco.js`, `shaders/gfx/deco.js`: TPT's dcolour, an RGBA8 colour per cell
+  in a ping-pong pair that rides the move, survives element changes, is scrubbed when a cell empties or a writer gives
+  it a new element). New unit **U17** after DP-B: a `u32` per cell per copy; the move permutes it with the block's cells
+  (within the 8 storage-buffer budget, C4); its paint, undo, scrub, stage and edit kernels; the volume's drawing goes
+  with U6.
+- **S4.** The console's script write pass (`shaders/script.js`, `src/console/gpu.js`) and game saves
+  (`src/saves/game.js`, a full-state readback like the codec): **U12**. Editing tools (`src/editing.js`: PROP, line,
+  box) are brush writers: DP-B for the kernels, U6 for the cursor.
+- **S5.** New three.js material users: the held tool (`src/pov/held.js`) → **U13**; the camera spring arm's GPU trace
+  and readback (`src/pov/cameraArm.js`) → **U11**.
+- **S6.** New world scenes in the shared GLSL subset (`world/scenes/descent/*`, `world/wang/*`) → **U10**.
+
 ## Review log
 
 Three reviews of revision 1: **P** = performance per watt on Apple Silicon and tile-based GPUs, **S** = semantics
