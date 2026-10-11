@@ -3,7 +3,7 @@ import { ELEMENTS, E, K } from '../../elements.js';
 import { cellTexel } from '../../sim.js';
 import { BRICK } from '../../shaders/common.js';
 import { BODY_HEIGHT } from '../constants.js';
-import { deswizzle, ID_BITS } from './deswizzle.js';
+import { deswizzle, columnTops, ID_BITS } from './deswizzle.js';
 
 // The NPCs' picture of the world (and the vehicles' terrain, and Teleportitis's
 // safe spots): the sim's cells read back to the CPU a few times a second (the
@@ -34,6 +34,8 @@ import { deswizzle, ID_BITS } from './deswizzle.js';
 const REFRESH_S = 0.5;                 // s between readbacks
 export const OUTSIDE = -1;             // id of the box walls and floor
 const KIND = ELEMENTS.map((e) => e.kind);
+// what a body stands on, by id (standAt): anything but air and gases
+const STANDS = Uint8Array.from({ length: 256 }, (_, i) => (i !== E.EMPTY && KIND[i] !== K.GAS ? 1 : 0));
 const HOT_T = 300;                     // °C: hotter than this burns a body that touches it (lava, fire, a torch's mark)
 const TEMP_C = Float64Array.from({ length: 256 }, (_, code) => decodeTempCode(code));   // °C of each temperature code
 if (TEXEL_BYTES !== Uint32Array.BYTES_PER_ELEMENT) throw new Error('world model: deswizzle.js reads a packed texel as one 32-bit word');
@@ -80,14 +82,17 @@ const models = new WeakMap();          // renderer → its one shared model
 function createModel(renderer) {
   // cells: id | temperature code << 8 per cell, (y, z, x) row-major; words: the same buffer, two cells a word
   let cells = null, words = null, cellsKey = '', nx = 0, ny = 0, nz = 0;
+  // each column's stand height (deswizzle.js columnTops), made with the cells it goes with
+  let tops = null;
   let busy = false, epoch = 0, version = 0, idVersion = 0, packed = null;
   let rows = null, rowsKey = '';
   let worker = null, workerFailed = false, sentKey = '', spare = null, inflight = null;
   const rowsFor = (g) => { const key = gridKey(g); if (key !== rowsKey) { rows = atlasRows(g); rowsKey = key; } return rows; };
 
   // A capture has landed: the cells it made, what changed (deswizzle.js), the sim state it was of.
-  function take(next, key, dims, diff, state) {
+  function take(next, key, dims, diff, state, nextTops) {
     words = next; cells = new Uint16Array(next.buffer); cellsKey = key;
+    if (nextTops) tops = nextTops;   // (none: nothing changed, the last ones hold)
     [nx, ny, nz] = dims;
     if (diff) version++;
     if (diff & ID_BITS) idVersion++;
@@ -100,7 +105,12 @@ function createModel(renderer) {
     const next = fresh ? new Uint32Array((dims[0] * dims[1] * dims[2]) / 2) : words;
     const diff = deswizzle(new Uint32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength >> 2), rowsFor(g), dims, next);
     release();
-    take(next, key, dims, fresh ? ~0 : diff, state);
+    let nextTops = null;
+    if (fresh || diff) {
+      const cols = dims[0] * dims[2];
+      nextTops = columnTops(new Uint16Array(next.buffer), dims, STANDS, new Uint16Array(cols));
+    }
+    take(next, key, dims, fresh ? ~0 : diff, state, nextTops);
   }
 
   function startWorker() {
@@ -114,7 +124,7 @@ function createModel(renderer) {
       inflight = null;
       job.release(data.bytes);
       if (words?.length === data.out.length) spare = words;   // the cells nothing queries any more: the next capture's out
-      take(data.out, job.key, data.dims, data.diff, job.state);
+      take(data.out, job.key, data.dims, data.diff, job.state, data.tops);
       busy = false;
     };
     worker.onerror = worker.onmessageerror = (err) => { err.preventDefault?.(); fail(err); };
@@ -132,7 +142,7 @@ function createModel(renderer) {
     const key = gridKey(g), n = (dims[0] * dims[1] * dims[2]) / 2;
     const msg = { dims, bytes, out: spare?.length === n ? spare : new Uint32Array(n) };
     spare = null;
-    if (key !== sentKey) { msg.rows = rowsFor(g); sentKey = key; }
+    if (key !== sentKey) { msg.rows = rowsFor(g); msg.stands = STANDS; sentKey = key; }
     const job = { key, state, release, length: bytes.byteLength };   // (bytes is detached once sent)
     try {
       worker.postMessage(msg, [bytes.buffer, msg.out.buffer]);
@@ -219,7 +229,14 @@ function createModel(renderer) {
   // The highest cell a body could stand on in column (x, z) at or below y: the
   // feet's y (the top of what blocks, or of a liquid's surface), or -Infinity.
   function standAt(x, z, y = ny) {
-    for (let yy = Math.min(Math.floor(y), ny - 1); yy >= -1; yy--) {
+    const from = Math.min(Math.floor(y), ny - 1);
+    // the column's top (columnTops) is the answer when it is at or below where the search starts
+    x = Math.floor(x); z = Math.floor(z);
+    if (tops && x >= 0 && z >= 0 && x < nx && z < nz) {
+      const top = tops[z * nx + x];
+      if (top - 1 <= from) return top;
+    }
+    for (let yy = from; yy >= -1; yy--) {
       if (yy < 0) return 0;   // the floor
       const i = id(x, yy, z);
       if (i === E.EMPTY || kind(i) === K.GAS) continue;

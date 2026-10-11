@@ -40,7 +40,14 @@ const NDC = [-1, 0, 1, -1, 1, -1, 0, 1];
 const NDR = [-1, -1, -1, 0, 0, 1, 1, 1];
 const RUN = NDC.map((dc, k) => (dc && NDR[k] ? DIAG : 1) * NAV_CELL);   // cells walked along each
 
-export function createNav(world) {
+// clock: s, monotonic, for the rebuild throttle. Nav's own, not a caller's: the
+// map is shared by every bot, and a bot's clock (brain.js a.now) starts when the
+// bot is made and stops while it is dead (npc.js thinks only while alive), so
+// the bots' clocks disagree: a rebuild stamped by one far ahead held the map
+// stale for the others until their clocks caught up.
+const wallClock = () => performance.now() / 1000;
+
+export function createNav(world, clock = wallClock) {
   let cols = 0, rows = 0, n = 0, built = false, builtAt = -Infinity, builtVersion = -1;
   // the map: per node
   let heights = null, wet = null, blocked = null, links = null;
@@ -183,8 +190,8 @@ export function createNav(world) {
   return {
     NAV_CELL,
     // A path of waypoints ({ x, y, z } grid cells, feet) from a to b, or null if
-    // there is none. now: s, for the rebuild throttle.
-    path(a, b, now) {
+    // there is none. now: s on nav's clock (tests pass their own).
+    path(a, b, now = clock()) {
       if (!world.ready) return null;
       if (!built || (world.version !== builtVersion && now - builtAt >= REBUILD_S)) { derive(); built = true; builtAt = now; }
       const s = nodeAt(a.x, a.z), t = nodeAt(b.x, b.z);

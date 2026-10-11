@@ -291,6 +291,24 @@ sizes.forEach((s, k) => compare(`random ${s.join('×')} #${k}`, terrain(SEED * 1
   check('dynamic: a fresh nav per box agrees', !!nav2.path(...q, 0) === !!ref2.path(...q, 0));
 }
 
+// ---------------------------------------------------------------- the throttle runs on nav's own clock
+// (bots call path() with no time: their clocks, brain.js a.now, disagree, so a
+// rebuild stamped by one far ahead held the map stale for the others)
+{
+  const w = terrain(SEED + 52, 64, 48, 64);
+  let t = 1000;
+  const nav = createNav(w, () => t);
+  const a = { x: 3, y: 0, z: 30 }, b = { x: 60, y: 0, z: 30 };
+  for (let z = 0; z < 64; z++) for (let x = 0; x < 64; x++) for (let y = 0; y < 48; y++) w.set(x, y, z, y < 10 ? E.ROCK : E.EMPTY);
+  check('clock: built on the first ask', !!nav.path(a, b) && nav.stats.derived === 1);
+  for (let z = 0; z < 64; z++) for (let x = 30; x < 33; x++) for (let y = 10; y < 30; y++) w.set(x, y, z, E.WALL);
+  w.bump();
+  t += 1;
+  check('clock: a change within REBUILD_S waits', !!nav.path(a, b) && nav.stats.derived === 1);
+  t += 1.5;
+  check('clock: and shows once REBUILD_S has passed on nav\'s clock', !nav.path(a, b) && nav.stats.derived === 2, JSON.stringify(nav.stats));
+}
+
 // ---------------------------------------------------------------- bench: Dam Valley
 if (BENCH) {
   const w = dam, ref = createYukaNav(w), nav = createNav(w);

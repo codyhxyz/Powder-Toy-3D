@@ -106,7 +106,7 @@ function shoot(a) {
       const w = g.rate(a.dist3) + (Math.random() * 2 - 1) * WEAPON_NOISE;
       if (w > bw) { bw = w; best = k; }
     }
-    if (best !== a.weapon) { a.weapon = best; a.weaponAt = a.now; }
+    a.weapon = best; a.weaponAt = a.now;   // the hold starts over with every choice (brain.js chooseWeapon)
     key = best;
   }
   const g = GUNS[key];

@@ -12,12 +12,15 @@
 //   a sim nobody writes isn't read;
 // - while the worker holds a capture, queries read the previous one;
 // - a consumer gone leaves the others reading; one made later starts no read;
-// - a new sim's grid; a worker that breaks mid-capture (the main thread takes over).
-// usage: node tools/world-model-node-check.mjs
+// - a new sim's grid; a worker that breaks mid-capture (the main thread takes over);
+// - standAt() (the column tops, deswizzle.js columnTops) answers as the cell-by-cell
+//   scan it replaced, for every column and at random heights, in and out of the box.
+// usage: node tools/world-model-node-check.mjs [--bench]
 import { gridLayout, cellTexel } from '../src/sim.js';
 import { decodeTempCode } from '../src/net/codec.js';
-import { E, ELEMENTS } from '../src/elements.js';
+import { E, K, ELEMENTS } from '../src/elements.js';
 import { createWorldModel } from '../src/pov/ai/world.js';
+import { columnTops } from '../src/pov/ai/deswizzle.js';
 
 let fails = 0;
 const check = (label, cond, extra = '') => { console.log(`${cond ? 'ok  ' : 'FAIL'} ${label}${extra ? '  ' + extra : ''}`); if (!cond) fails++; };
@@ -85,6 +88,45 @@ function sameCells(m, sim, label) {
   check(label, bad === 0, `${nx * ny * nz} cells, ${bad} differ`);
 }
 
+// standAt() against the scan it replaced (world.js before columnTops), read off the sim's own cells
+function refStandAt(sim, x, z, y = sim.g.ny) {
+  const { nx, ny, nz } = sim.g;
+  x = Math.floor(x); z = Math.floor(z);
+  for (let yy = Math.min(Math.floor(y), ny - 1); yy >= -1; yy--) {
+    if (yy < 0) return 0;
+    if (x < 0 || z < 0 || x >= nx || z >= nz) return yy + 1;   // the box's walls
+    const i = sim.ids[(yy * nz + z) * nx + x];
+    if (i === E.EMPTY || ELEMENTS[i].kind === K.GAS) continue;
+    return yy + 1;
+  }
+  return 0;
+}
+function sameStand(m, sim, label) {
+  const { nx, ny, nz } = sim.g;
+  let bad = 0, n = 0, s = 11;
+  const rnd = () => (s = (s * 1103515245 + 12345) >>> 0) / 4294967296;
+  for (let z = 0; z < nz; z++) for (let x = 0; x < nx; x++, n++) if (m.standAt(x, z) !== refStandAt(sim, x, z)) bad++;
+  for (let k = 0; k < 20000; k++, n++) {
+    const x = rnd() * (nx + 8) - 4, z = rnd() * (nz + 8) - 4, y = rnd() * (ny + 8) - 4;
+    if (m.standAt(x, z, y) !== refStandAt(sim, x, z, y)) bad++;
+  }
+  check(label, bad === 0, `${n} queries, ${bad} differ`);
+}
+// a sim shaped like a world: ground of solids, powders and liquids under air with some gas
+function terrainSim(nx, ny, nz, seed) {
+  const sim = fakeSim(nx, ny, nz, seed);
+  const pick = (kind) => ELEMENTS.findIndex((e, i) => i !== E.EMPTY && e.kind === kind);
+  const ground = [pick(K.SOLID), pick(K.POWDER), pick(K.LIQUID)], gas = pick(K.GAS);
+  for (let z = 0; z < nz; z++) for (let x = 0; x < nx; x++) {
+    const h = Math.floor(ny * (0.3 + 0.12 * Math.sin(x / 9 + seed) + 0.1 * Math.cos(z / 7)));
+    for (let y = 0; y < ny; y++) {
+      const i = (y * nz + z) * nx + x;
+      sim.ids[i] = y < h ? ground[(x + z + y) % 3] : (y < h + 3 && (x * z + y) % 7 === 0 ? gas : E.EMPTY);
+    }
+  }
+  return sim;
+}
+
 async function suite(useWorker) {
   const how = useWorker ? 'worker' : 'main thread';
   console.log(`== ${how}`);
@@ -103,6 +145,7 @@ async function suite(useWorker) {
   await frame(4);
   check(`${how}: every view ready once it lands`, views.every((v) => v.ready));
   sameCells(npc, sim, `${how}: every cell's id and T`);
+  sameStand(npc, sim, `${how}: standAt, every column and random heights`);
 
   r.reads = 0;
   await frame(20 * 60, () => sim.write());
@@ -127,6 +170,7 @@ async function suite(useWorker) {
   check(`${how}: an id changes: version and idVersion +1`, npc.version === v0 + 1 && npc.idVersion === i0 + 1);
   check(`${how}: every view sees the same versions`, views.every((v) => v.version === npc.version && v.idVersion === npc.idVersion));
   sameCells(npc, sim, `${how}: every cell after the changes`);
+  sameStand(npc, sim, `${how}: standAt after the changes`);
 
   if (useWorker) {
     const at = sim.cell(4321), before = npc.id(...at), v = npc.version, seen = [];
@@ -153,6 +197,7 @@ async function suite(useWorker) {
   await frame(60);
   check(`${how}: a new sim's grid`, npc.dims.join() === '32,16,32' && npc.version > v0, npc.dims.join());
   sameCells(npc, sim, `${how}: every cell of the new grid`);
+  sameStand(npc, sim, `${how}: standAt on the new grid`);
 
   if (useWorker) {
     breakNext = true;
@@ -177,6 +222,34 @@ for (const useWorker of [false, true]) {
   const sim = fakeSim(256, 96, 128, 3), r = fakeRenderer(() => sim), m = createWorldModel({ renderer: r, getSim: () => sim });
   for (let i = 0; i < 6; i++) { m.update(DT); r.frame(); await settle(); }
   sameCells(m, sim, `256×96×128, ${useWorker ? 'worker' : 'main thread'}: every cell's id and T`);
+}
+
+// standAt on world-shaped ground, both ways: built, then a column dug out and one capped by a gas
+for (const useWorker of [false, true]) {
+  globalThis.Worker = useWorker ? FakeWorker : undefined;
+  const how = `terrain 256×96×128, ${useWorker ? 'worker' : 'main thread'}`;
+  const sim = terrainSim(256, 96, 128, useWorker ? 5 : 4), r = fakeRenderer(() => sim), m = createWorldModel({ renderer: r, getSim: () => sim });
+  for (let i = 0; i < 6; i++) { m.update(DT); r.frame(); await settle(); }
+  sameStand(m, sim, `${how}: standAt`);
+  for (let y = 0; y < 96; y++) sim.ids[(y * 128 + 40) * 256 + 100] = E.EMPTY;   // a shaft to the floor
+  sim.ids[(90 * 128 + 41) * 256 + 100] = ELEMENTS.findIndex((e) => e.kind === K.GAS);
+  sim.write();
+  for (let i = 0; i < 60; i++) { m.update(DT); r.frame(); await settle(); }
+  check(`${how}: a dug shaft stands at the floor`, m.standAt(100, 40) === 0 && refStandAt(sim, 100, 40) === 0);
+  sameStand(m, sim, `${how}: standAt after digging`);
+}
+
+if (process.argv.includes('--bench')) {
+  // nav's walk asks every column's standAt (no y): the scan it did vs the column tops
+  const sim = terrainSim(256, 96, 128, 4), { nx, ny, nz } = sim.g;
+  const cells = new Uint16Array(sim.ids.length);
+  for (let i = 0; i < cells.length; i++) cells[i] = sim.ids[i] | (sim.temps[i] << 8);
+  const stands = Uint8Array.from({ length: 256 }, (_, i) => (i !== E.EMPTY && ELEMENTS[i]?.kind !== K.GAS ? 1 : 0));
+  const tops = new Uint16Array(nx * nz);
+  const time = (fn) => { for (let i = 0; i < 3; i++) fn(); const t = []; for (let i = 0; i < 15; i++) { const t0 = performance.now(); fn(); t.push(performance.now() - t0); } return t.sort((a, b) => a - b)[7]; };
+  const scan = time(() => { let s = 0; for (let z = 0; z < nz; z++) for (let x = 0; x < nx; x++) s += refStandAt(sim, x, z); return s; });
+  const built = time(() => columnTops(cells, [nx, ny, nz], stands, tops));
+  console.log(`bench 256×96×128 terrain: every column's stand height, scan ${scan.toFixed(2)} ms, columnTops ${built.toFixed(2)} ms (median of 15)`);
 }
 
 console.log(fails ? `${fails} FAILED` : 'all ok');

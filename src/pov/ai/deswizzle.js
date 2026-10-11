@@ -41,3 +41,20 @@ export function deswizzle(src, rows, [nx, ny, nz], cells) {
   }
   return diff;
 }
+
+// Each column's stand height (world.js standAt with no y): 1 + the highest cell
+// of the column that a body stands on (`stands[id]`: not air, not a gas), or 0
+// when there's none. cells: Uint16Array over deswizzle's output (cell i at [i]).
+// tops: Uint16Array(nx·nz), column z·nx + x. Done once per capture that changed
+// something, in the worker: ~4 ms on a world-shaped Dam Valley in node, where
+// nav's walk scanned the same columns through standAt's id() calls on the main
+// thread (~6.6 ms) every time it rebuilt.
+export function columnTops(cells, [nx, ny, nz], stands, tops) {
+  const n = nx * nz;
+  for (let c = 0; c < n; c++) {
+    let top = 0;
+    for (let i = (ny - 1) * n + c, y = ny; y > 0; y--, i -= n) if (stands[cells[i] & 0xff]) { top = y; break; }
+    tops[c] = top;
+  }
+  return tops;
+}
