@@ -68,8 +68,11 @@ function warmFrom(e) {
   if (app) return;
   const card = e.target.closest?.('.mm-card[data-map]');
   if (card) warmMap(card.dataset.map);
-  // a click may have picked another map, or another mode whose maps start elsewhere
-  if (e.type === 'click') queueMicrotask(() => { const m = pickedMap(); if (m && !app) warmMap(m); });
+  // a click may have picked another map, or another mode whose maps start
+  // elsewhere: read the pick once the menu's own click handler has run (a
+  // task later; a microtask would still run before it, this listener being
+  // the document's capture-phase one)
+  if (e.type === 'click') setTimeout(() => { const m = pickedMap(); if (m && !app) warmMap(m); }, 0);
 }
 document.addEventListener('pointerover', warmFrom, { passive: true });
 document.addEventListener('click', warmFrom, { passive: true, capture: true });

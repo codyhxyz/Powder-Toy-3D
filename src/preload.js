@@ -179,6 +179,9 @@ async function startWarmer() {
   };
   const inSession = (e, g) => !e.tool && e.warm !== false && (!e.windowed || g.windowed);
   const listed = (mod) => (typeof mod.WGSL_CHECK === 'function' ? mod.WGSL_CHECK() : mod.WGSL_CHECK);
+  // sim.editKernel's two-phase writers (reads 'neighbours': TPT's Mix) have a
+  // second entry point, `apply`, that the game builds as '<name> apply'
+  const TWO_PHASE = new Set(['paintMix']);
 
   // the grid's own first (the simulation's kernels take longest), then post
   // (the canvas's composite and the stills'), the overlays and the brush
@@ -188,7 +191,13 @@ async function startWarmer() {
       g.windowed = windowed;
       if (!gpu.fits(g)) return;
       state.grids.push(key);
-      for (const mod of lists) for (const e of listed(mod)) if (inSession(e, g)) build(e, g);
+      for (const mod of lists) {
+        for (const e of listed(mod)) {
+          if (!inSession(e, g)) continue;
+          build(e, g);
+          if (TWO_PHASE.has(e.name)) build({ ...e, name: `${e.name} apply`, entry: 'apply' }, g);
+        }
+      }
       // the view's module (realistic: the detail gate's base variant, its near one last), the shadow kernel if it reads it, pick
       const volume = render.warmChecks(view, settings, { fallback });
       const own = (e) => (e.name === 'shadow' ? { ...e, code: (gg) => render.shadowFrag(gg, world ? { world } : {}) } : e);
@@ -216,13 +225,20 @@ function savedSettings({ detailDefaults, DETAIL, settingKey }) {
 }
 
 // The names the game makes its bind group layouts under (sim.js simLayouts,
-// sim.editKernel's group 2 for the brush, derived.js derivedLayouts), found by
-// their entries: gpu.layout keys a layout by its name, and the pipeline cache
-// a pipeline by its layout objects, so a layout made under another name would
-// build a pipeline the game never finds. Entries match when equal as
-// gpu.layout makes them, or, failing that, equal but for visibilities (a check
-// entry may name one the game leaves to the default); the game's own entries
-// are then used, so the layout is the game's.
+// sim.editKernel's group 2 for the brush, derived.js derivedLayouts), found
+// for a WGSL_CHECK entry's layout: gpu.layout keys a layout by its name, and
+// the pipeline cache a pipeline by its layout objects, so a layout made under
+// another name builds a pipeline the game never finds. Several names hold
+// equal entries (REF and CONVERT, REACT and the brush's, MOVE and
+// DERIVED_BOOK, FLOW_SHIFT and DERIVED_PAIR), so entries alone can't say
+// which: a WGSL_CHECK list names its layouts by the very arrays the game
+// makes them from (shaders/passes.js DERIVED_LAYOUT.BOOK, move.js
+// MOVE_LAYOUT…), and that identity decides first. An array made on the spot
+// (stateLayout's, the Mix's scratch) matches by its entries as gpu.layout
+// makes them, or failing that, equal but for visibilities (a check entry may
+// name one the game leaves to the default); the game's own entries are then
+// used, so the layout is the game's. tools/smoke.mjs's warm stage checks that
+// Start then builds nothing the menu built (a miss here builds it twice).
 async function layoutNames() {
   const [{ LAYOUT, stateLayout, EDIT_SCRATCH_BINDING }, { MOVE_LAYOUT }, { REACT_LAYOUT }, { BUILD_LAYOUT, REF_LAYOUT },
     { PAINT_LAYOUT, CONVERT_LAYOUT, DERIVED_LAYOUT }, { UNDO_LAYOUT, FLOW_SHIFT_LAYOUT }, { FIELD_LAYOUT }, { withVisibility }] = await Promise.all([
@@ -242,13 +258,14 @@ async function layoutNames() {
   };
   const exact = (entries) => JSON.stringify(entries.map(withVisibility));
   const loose = (entries) => JSON.stringify(entries.map(({ visibility, ...e }) => e));
-  const byExact = new Map(), byLoose = new Map();
+  const byArray = new Map(), byExact = new Map(), byLoose = new Map();
   for (const [name, entries] of Object.entries(table)) {
+    if (!byArray.has(entries)) byArray.set(entries, name);
     if (!byExact.has(exact(entries))) byExact.set(exact(entries), name);
     if (!byLoose.has(loose(entries))) byLoose.set(loose(entries), name);
   }
   return {
-    of: (entries) => byExact.get(exact(entries)) ?? byLoose.get(loose(entries)) ?? null,
+    of: (entries) => byArray.get(entries) ?? byExact.get(exact(entries)) ?? byLoose.get(loose(entries)) ?? null,
     entries: (name) => table[name] ?? null,
   };
 }
