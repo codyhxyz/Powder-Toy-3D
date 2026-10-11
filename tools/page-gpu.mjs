@@ -22,7 +22,8 @@
 //   readCell(x, y, z, sim) [a, b], Float32Array(4) each
 //   census(sim)            { [id]: { n, T, minY, maxY, Tmax } }
 //   fence(sim)             resolves when the GPU has done the work recorded so far
-//   drawCount()            draws and dispatches since the first call (which returns 0)
+//   drawCount()            draws and dispatches since its first call after boot
+//                          (which returns 0; 0 before boot)
 //   gpuName(), info()      the adapter (WebGPU) or the unmasked renderer (WebGL2)
 // `sim` defaults to window.__app.sim, read at the call (a rebuild replaces it).
 // readState, readCell, census and fence return promises in both builds, so a
@@ -55,11 +56,17 @@ function installPageGpu() {
   };
   // our device: the app's, the harness's (tools/harness/), or a standalone sim's
   const gpuOf = (sim) => sim?.gpu ?? app()?.gpu ?? window.__harness?.gpu ?? null;
+  // The old build's three.WebGLRenderer, by its flag: getContext() on three's
+  // WebGPURenderer would run the backend's lazy context getter, which configures
+  // the canvas (the side effect W7 and B10 keep to src/gpu/present.js).
+  const glRendererOf = (sim) => {
+    const r = sim?.renderer ?? app()?.renderer;
+    return r?.isWebGLRenderer === true ? r : null;
+  };
   const apiOf = (sim) => {
     if (gpuOf(sim)) return 'webgpu';
-    const r = sim?.renderer ?? app()?.renderer;
-    if (typeof r?.getContext === 'function' && typeof WebGL2RenderingContext === 'function'
-      && r.getContext() instanceof WebGL2RenderingContext) return 'webgl2';
+    const r = glRendererOf(sim);
+    if (r && typeof WebGL2RenderingContext === 'function' && r.getContext() instanceof WebGL2RenderingContext) return 'webgl2';
     return null;
   };
 
@@ -68,7 +75,10 @@ function installPageGpu() {
   // counted them); this one counts our draws and dispatches from gpu.stats
   // (an indirect dispatch once, though stats.dispatches counts it twice, B3)
   // plus three's mesh draws, through its Info.update (one call per draw).
-  let base = null;
+  // The count starts at drawCount's first call once there is a GPU, and again
+  // when the counted device or renderer changes (a reload of the app, a new
+  // harness device): a call before boot returns 0 and fixes nothing.
+  let base = 0, baseOf = null;
   const counted = new WeakMap();   // the patched object → its count
   const countCalls = (obj, method) => {
     if (!obj || typeof obj[method] !== 'function') return () => 0;
@@ -79,14 +89,15 @@ function installPageGpu() {
     }
     return () => counted.get(obj);
   };
+  // [what is counted (the device or the renderer), its count so far], or null before boot
   const draws = () => {
     const which = apiOf();
     if (which === 'webgpu') {
-      const s = gpuOf().stats, three = countCalls(app()?.renderer?.info, 'update');
-      return s.draws + s.dispatches - s.indirectDispatches + three();
+      const gpu = gpuOf(), s = gpu.stats, three = countCalls(app()?.renderer?.info, 'update');
+      return [gpu, s.draws + s.dispatches - s.indirectDispatches + three()];
     }
-    if (which === 'webgl2') return countCalls(app().renderer, 'renderBufferDirect')();
-    return 0;
+    if (which === 'webgl2') return [app().renderer, countCalls(app().renderer, 'renderBufferDirect')()];
+    return null;
   };
 
   const info = (sim) => {
@@ -99,7 +110,7 @@ function installPageGpu() {
         isFallbackAdapter: Boolean(i.isFallbackAdapter) };
     }
     if (which === 'webgl2') {
-      const gl = (sim?.renderer ?? app().renderer).getContext(), dbg = gl.getExtension('WEBGL_debug_renderer_info');
+      const gl = glRendererOf(sim).getContext(), dbg = gl.getExtension('WEBGL_debug_renderer_info');
       const renderer = gl.getParameter(dbg ? dbg.UNMASKED_RENDERER_WEBGL : gl.RENDERER);
       const vendor = gl.getParameter(dbg ? dbg.UNMASKED_VENDOR_WEBGL : gl.VENDOR);
       return { api: which, name: `WebGL2 ${renderer}`, vendor, architecture: '', description: renderer,
@@ -124,8 +135,10 @@ function installPageGpu() {
       throw new Error('page-gpu: nothing to fence on (no WebGPU device and no sim.gpuSync)');
     },
     drawCount() {
-      const n = draws();
-      base ??= n;
+      const now = draws();
+      if (!now) return 0;
+      const [of, n] = now;
+      if (of !== baseOf) { baseOf = of; base = n; }
       return n - base;
     },
     gpuName(sim) { return info(sim).name; },
@@ -163,7 +176,7 @@ export const gpuName = (page) => run(page, () => window.__pageGpu.gpuName());
 export const pageGpuInfo = (page) => run(page, () => window.__pageGpu.info());
 /** Resolves when the page's GPU has finished the work recorded so far. */
 export const fence = (page) => run(page, () => window.__pageGpu.fence());
-/** Draws and dispatches since the page's first drawCount (0 on that call). */
+/** Draws and dispatches since the page's first drawCount after boot (0 on that call). */
 export const drawCount = (page) => run(page, () => window.__pageGpu.drawCount());
 /** The current sim's census: { [id]: { n, T, minY, maxY, Tmax } }. */
 export const census = (page) => run(page, () => window.__pageGpu.census());
@@ -200,12 +213,17 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
       const gpu = await createGpu({ adapter: probe.adapter, label: 'page-gpu check', testMode: 'manual' });
       const A = new Float32Array([1, 20, 0, 0.5]), B = new Float32Array([0, -1, 0, 1.5]);
       const later = (v) => new Promise((r) => setTimeout(() => r(v), 5));
-      let updates = 0;
+      let updates = 0, touched = 0;
       const info = { update() { updates++; } };
-      window.__app = { gpu, renderer: { info }, sim: {
+      const P = window.__pageGpu, out = {};
+      // before boot: three's renderer without our device, whose getContext() would configure the canvas
+      window.__app = { renderer: { info, getContext() { touched++; return null; } } };
+      out.early = { api: P.api, count: P.drawCount(), name: P.gpuName() };
+      gpu.stats.draws += 4;   // boot work before the first count
+      window.__app = { gpu, renderer: { info, getContext() { touched++; return null; } }, sim: {
         readState: () => later([A, B]), readCell: () => later([A, B]), census: () => later({ 1: { n: 3, T: 20, minY: 0, maxY: 1, Tmax: 20 } }),
       } };
-      const P = window.__pageGpu, out = { api: P.api };
+      out.api = P.api;
       const [a] = await P.readState();
       out.readState = Array.from(a);
       out.census = (await P.census())[1].n;
@@ -216,16 +234,19 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
       out.later = P.drawCount();
       out.threeCalls = updates;
       out.info = P.info();
+      out.touched = touched;
       return out;
     });
     if (gpuSide.error) check('a WebGPU adapter (run with --enable-unsafe-webgpu)', false, gpuSide.error);
     else {
+      check('before boot: api null, drawCount 0, no getContext() on a renderer that isn\'t WebGL',
+        gpuSide.early.api === null && gpuSide.early.count === 0 && gpuSide.touched === 0, JSON.stringify({ ...gpuSide.early, getContext: gpuSide.touched }));
       check('webgpu: api', gpuSide.api === 'webgpu', gpuSide.api);
       check('webgpu: readState resolves to the sim\'s arrays', gpuSide.readState.join() === '1,20,0,0.5', gpuSide.readState.join());
       check('webgpu: census resolves', gpuSide.census === 3);
       check('webgpu: fence resolves through gpu.fence()', gpuSide.fence === 'done', gpuSide.fence);
-      check('webgpu: drawCount counts from its first call', gpuSide.first === 0 && gpuSide.later === 1 + 2 + 2,
-        `${gpuSide.first} then ${gpuSide.later} (want 0, then 1 draw + 2 dispatches + 2 three.js draws)`);
+      check('webgpu: drawCount counts from its first call after boot', gpuSide.first === 0 && gpuSide.later === 1 + 2 + 2,
+        `${gpuSide.first} then ${gpuSide.later} (want 0, then 1 draw + 2 dispatches + 2 three.js draws; 4 boot draws before)`);
       check('webgpu: three\'s Info.update still runs', gpuSide.threeCalls === 2);
       check('webgpu: gpuName names the adapter', /^WebGPU /.test(gpuSide.info.name), gpuSide.info.name);
       const node = { api: await api(page), name: await gpuName(page), census: await census(page), cell: await readCell(page, 1, 2, 3) };
@@ -243,7 +264,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
       if (!gl) return { error: 'no WebGL2 context' };
       const A = new Float32Array([2, 30, 0, 0.25]), B = new Float32Array(4);
       let syncs = 0;
-      const renderer = { getContext: () => gl, renderBufferDirect() {} };
+      const renderer = { isWebGLRenderer: true, getContext: () => gl, renderBufferDirect() {} };
       window.__app = { renderer, sim: {
         readState: () => [A, B], readCell: () => [A, B], census: () => ({ 2: { n: 5 } }), gpuSync: () => { syncs++; },
       } };
