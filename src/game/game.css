@@ -69,7 +69,7 @@
 
 /* ---- match menu (M): pointer events on, the mouse is free while it's open */
 .game-menu {
-  position: absolute; left: 50%; bottom: 96px; transform: translateX(-50%);   /* above the hotbar */
+  position: absolute; left: 50%; bottom: 24px; transform: translateX(-50%);
   width: min(640px, calc(100vw - 32px)); padding: 12px 14px; display: none; pointer-events: auto;
 }
 .game-menu.on { display: block; }

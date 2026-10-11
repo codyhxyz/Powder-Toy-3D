@@ -106,7 +106,7 @@ const DEFAULTS = {
   size: 'world', preset: 'lab', scene: 'island',
   tool: E.SAND, radius: 5, shape: 0, rate: 1, replace: false,
   steps: 4, gravity: 0.025, paused: false,
-  view: 0, camSpeed: 1, upscale: 'quality', dockCollapsed: false,
+  view: 0, camSpeed: 1, upscale: 'quality', dockCollapsed: true,
   character: 'real', povFov: POV_FOV, sensitivity: 1, viewBobbing: true, sprintMode: 'hold',
   nearGI: true, glowLights: true, caustics: true,
   ...detailDefaults(),
@@ -1610,7 +1610,8 @@ try {
     getArena: () => arenaLayout,                      // the loaded arena's layout, for the team games (src/game)
     requestRender: () => pacer.wake(),
     inWorld: () => !!win,
-    showToolsMenu: () => dock.reveal((it) => isGearTool(it.id)),   // Q in first person: the palette at its first-person tools
+    showToolsMenu: () => dock.reveal((it) => isGearTool(it.id)),
+    hideToolsMenu: () => dock.setCollapsed(true),   // Q in first person: the palette at its first-person tools
   });
   pov.vehicles.spawnLayout(arenaLayout);   // the scene loaded before the POV shell existed
   pov.game.useLayout(arenaLayout);

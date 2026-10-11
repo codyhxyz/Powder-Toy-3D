@@ -41,7 +41,10 @@ const CATEGORY_ICONS = {
   Exotic: ICON.exotic, Tools: ICON.tools, Entities: ICON.person, Constructions: ICON.constructions,
 };
 
-// A material drawer: categories above, swatches in the middle, brush below.
+// The element menu, Garry's Mod's spawn menu copied: closed until T (GMod's Q),
+// then a panel under the toolbar with a tab strip of categories, a grid of big
+// icons, and the tool-options pane on the right (what's selected, the brush).
+// Picking an element or clicking the world closes it, like letting go of Q.
 export function createDock({ settings, onSelect, onBrushChange, onHover, onEyedropper }) {
   setTileSettings(settings);
   let category = Math.max(0, PALETTE.findIndex((g) => g.items.some((key) => itemByKey(key).id === settings.tool)));
@@ -79,7 +82,7 @@ export function createDock({ settings, onSelect, onBrushChange, onHover, onEyedr
       filter();
       preview();
     } },
-  }, h('span', { html: CATEGORY_ICONS[g.name] ?? ICON.cube }), h('span.category-tip', { text: g.name })));
+  }, h('span', { html: CATEGORY_ICONS[g.name] ?? ICON.cube }), h('span.category-name', { text: g.name })));
   const rail = h('div.material-categories', { role: 'group', 'aria-label': 'Material categories' }, categories);
   rail.addEventListener('keydown', (e) => {
     const i = categories.indexOf(document.activeElement);
@@ -138,27 +141,40 @@ export function createDock({ settings, onSelect, onBrushChange, onHover, onEyedr
     e.stopPropagation();
   });
   const find = h('label.material-find', {}, h('span', { html: ICON.search }), search, h('kbd', { text: '/' }));
-  const collapse = iconButton(ICON.chevDown, 'Hide elements', 'Hide elements (T)', () => setCollapsed(true));
+  const collapse = iconButton(ICON.chevUp, 'Hide elements', 'Hide elements (T)', () => setCollapsed(true));
   const dock = h('section.dock.panel', { 'aria-label': 'Element picker' },
     h('div.material-top', {}, rail, find, collapse),
-    h('div.material-library#material-collection', {},
-      h('div.material-heading', { 'aria-live': 'polite', 'aria-atomic': 'true' }, categoryName, count),
-      collection, empty, detail),
-    brush);
+    h('div.material-body', {},
+      h('div.material-library#material-collection', {},
+        h('div.material-heading', { 'aria-live': 'polite', 'aria-atomic': 'true' }, categoryName, count),
+        collection, empty),
+      h('aside.material-side', {}, detail, brush)));
 
   const tabTile = h('span.dock-tab-swatch', { 'aria-hidden': 'true' });
   const tabName = h('b');
   const tab = h('button.dock-tab.panel', { type: 'button', title: 'Show elements (T)', on: { click: () => setCollapsed(false) } },
-    tabTile, tabName, h('span', { html: ICON.chevUp }), h('kbd', { text: 'T' }));
+    tabTile, tabName, h('span', { html: ICON.chevDown }), h('kbd', { text: 'T' }));
   // Space activates a focused control, not the simulation's global pause shortcut.
   for (const el of [dock, tab]) el.addEventListener('keydown', (e) => {
     if (e.code === 'Space') e.stopPropagation();
   });
   document.body.append(dock, tab);
+  // --dock-bottom (styles.css): the tab's bottom edge, which what sits under it
+  // clears. The open menu is an overlay, so it doesn't count.
+  const edge = () => document.documentElement.style.setProperty('--dock-bottom', `${tab.offsetTop + tab.offsetHeight}px`);
+  new ResizeObserver(edge).observe(tab);
+  // a click on the world closes the menu and is spent doing it, as no stray paint
+  // lands under where the menu was (first person runs its own Q menu: pov-menu)
+  addEventListener('pointerdown', (e) => {
+    if (settings.dockCollapsed || document.body.classList.contains('pov-on') || !e.target.closest?.('#app')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setCollapsed(true);
+  }, true);
 
   function select(it) {
     onSelect(it.id);
-    if (matchMedia('(hover: none) and (pointer: coarse)').matches) setCollapsed(true);
+    if (!document.body.classList.contains('pov-on')) setCollapsed(true);
   }
 
   function preview(it = toolById(settings.tool)) {
@@ -196,6 +212,7 @@ export function createDock({ settings, onSelect, onBrushChange, onHover, onEyedr
     tab.setAttribute('aria-expanded', String(!c));
     if (moveFocus) (c ? tab : categories[category]).focus({ preventScroll: true });
     if (c) preview();
+    edge();
   }
 
   function sync() {
@@ -231,7 +248,7 @@ export function createDock({ settings, onSelect, onBrushChange, onHover, onEyedr
   filter();
   sync();
   setEyedropper(false);
-  setCollapsed(!!settings.dockCollapsed);
+  setCollapsed(true);   // GMod starts with its spawn menu shut
   return {
     sync,
     setCollapsed,

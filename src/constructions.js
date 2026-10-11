@@ -58,8 +58,6 @@ const GHOST_ALPHA = 0.6;
 const GHOST_SHADE_MIN = 0.92;      // ghost cubes vary in brightness from this
 const GHOST_TEXTURE = 0.16;        // ... to this much brighter
 const HOLD_PX = 6;                 // pointer travel that brings the ghost back after placing
-const DOCK_MARGIN_PX = 14;         // the dock's gap to the bottom of the window
-const BAR_GAP_PX = 8;              // gap between the dock and the construction bar
 const IMPORT_NAME_CHARS = 60;
 // Points of a built-in construction the app hangs things on once it's placed
 // (local cells: y up, base on y = 0, front +z): the shrine's perk orbs.
@@ -629,20 +627,12 @@ export class Constructions {
 
   _syncBar(build) {
     this.bar.classList.toggle('show', !!build);
-    if (build) this._positionBar();
     const sel = this._barKey(build);
     if (sel === this.barFor) return;
     this.barFor = sel;
     this.bar.classList.toggle('prompt', build?.key === PROMPT);
     if (build?.key === PROMPT) this._promptBar();
     else if (build) this._variantBar(build);
-  }
-
-  // sit just above the dock (or its collapsed tab)
-  _positionBar() {
-    const dock = document.querySelector('.dock:not(.collapsed)') ?? document.querySelector('.dock-tab');
-    const top = dock ? dock.getBoundingClientRect().top : innerHeight - DOCK_MARGIN_PX;
-    this.bar.style.bottom = `${Math.round(innerHeight - top + BAR_GAP_PX)}px`;
   }
 
   // what the bar shows; it is rebuilt only when this changes

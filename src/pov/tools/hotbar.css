@@ -1,12 +1,13 @@
-/* Numbered slots and a Source-style vertical stack for the active category. */
+/* Numbered slots and a Source-style vertical stack for the active category, up top
+   under the toolbar like HL2/GMod's weapon selector; the stack drops down. */
 .hotbar {
   --hb-active: #ffd477;
   --hb-ink: #201b10;
   --hb-muted: #aeb5c1;
-  position: fixed; left: 50%; bottom: max(14px, env(safe-area-inset-bottom)); z-index: 12;
+  position: fixed; left: 50%; top: var(--bar-bottom); z-index: 12;
   width: 456px; max-width: calc(100% - 24px);
-  transform: translate(-50%, 12px);
-  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  transform: translate(-50%, -12px);
+  display: flex; flex-direction: column-reverse; align-items: center; gap: 6px;
   color: var(--text); font: 400 12px/1.4 var(--ui);
   opacity: 0; visibility: hidden; pointer-events: none;
   transition: opacity 200ms var(--ease), transform 200ms var(--ease), visibility 0s 200ms;
@@ -63,9 +64,9 @@
 }
 
 .hb-stack {
-  position: absolute; bottom: calc(100% + 8px);
+  position: absolute; top: calc(100% + 8px);
   left: clamp(0px, calc((var(--hb-slot, 0) + 0.5) * 100% / 6 - 144px), calc(100% - 288px));
-  width: 288px; max-width: 100%; max-height: calc(100dvh - 152px);
+  width: 288px; max-width: 100%; max-height: calc(100dvh - var(--bar-bottom) - 152px);
   overflow-y: auto; overscroll-behavior: contain;
   padding: 10px; border-radius: 8px;
   background: var(--panel-solid); box-shadow: var(--shadow);
@@ -96,7 +97,6 @@
   40%, 80% { transform: translateX(3px); }
 }
 @media (max-width: 560px) {
-  .hotbar { bottom: max(8px, env(safe-area-inset-bottom)); }
   .hb-slot { height: 68px; }
   .hb-icon { width: 32px; height: 32px; }
   .hb-label { font-size: 9px; }

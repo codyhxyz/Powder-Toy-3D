@@ -69,7 +69,7 @@ const PASS_KEYS = new Set(['Escape', '?', ...(CLASSES_ENABLED ? [] : [',']), 'p'
 // app = { renderer, scene, camera, controls, canvas, hud, settings, mp, isTyping, post (gfx/post.js: night vision),
 //         getSim, getVolume, getScale, hover, pointerHover (() => bool), pickRay (ro, rd → Promise<hit>),
 //         requestRender, inWorld (() => bool: the grid is a window of a larger world, docs/scaling.md D11),
-//         showToolsMenu (the palette's first-person tools brought into view: Q) }
+//         showToolsMenu (the palette's first-person tools brought into view: Q), hideToolsMenu (Q closed) }
 export function createPov(app) {
   const { renderer, scene, camera, controls, canvas, hud } = app;
   const createPlayer = playerModule?.createPlayer;
@@ -184,9 +184,11 @@ export function createPov(app) {
   // click on the world or a tool given closes it.
   let menuOpen = false;
   function setMenu(v) {
+    const was = menuOpen;
     menuOpen = !!v && active();
     document.body.classList.toggle('pov-menu', menuOpen);
     if (menuOpen) app.showToolsMenu?.();
+    else if (was) app.hideToolsMenu?.();
     if (menuOpen && document.pointerLockElement === canvas) document.exitPointerLock();
     app.requestRender();
   }
