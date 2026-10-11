@@ -46,6 +46,10 @@ import { createMultiplayer } from './net/multiplayer.js';
 import { createProfiler } from './gfx/profiler.js';
 import { createProfilerPanel } from './ui/profiler.js';
 import { createPov } from './pov/index.js';
+import { createDescentRunner, runSnapshot, LOAD_POLL_MS, LOAD_WAIT_MS } from './pov/descent/switch.js';
+import { createDescentOverlay } from './pov/descent/overlay.js';
+import { DESCENT_LEVELS, levelByScene } from './world/scenes/descent/levels.js';
+import { descentWands } from './pov/wands/descentRun.js';
 import { inventory } from './pov/tools/inventory.js';
 import { gearByKey, SLOTS } from './pov/tools/catalog.js';
 import { renderViewmodels } from './pov/viewmodel.js';
@@ -677,6 +681,44 @@ function resetSpawners(name) {
 // the loaded arena's layout (arenas/damValley.js DAM_VALLEY_LAYOUT), else null: __app.arena
 let arenaLayout = null;
 let arenaMarkers = null;   // its team banners (arenas/markers.js)
+
+// ---------------------------------------------------------------- Descent's level switch
+// Descent (docs/descent-contract.md, "D"): each level is its own world scene;
+// the temple's exit loads the next one here, in the same session, and drops
+// the body in at its spawn. The POV shell, the body (health, perks, statuses),
+// the toolbelt, the run's wands (wands/descentRun.js) and gold (pov.descent)
+// all outlive build(), so the run comes through: nothing is rebuilt but the world.
+let descent = null;   // pov/descent/switch.js createDescentRunner, made with the POV shell
+const descentFeet = new THREE.Vector3();
+// a level's spawn as grid feet (the middle of its cell), or null
+function descentSpawn(level) {
+  if (!level?.spawn || !sim) return null;
+  const [x, y, z] = level.spawn;
+  return new THREE.Vector3(x + 0.5, y, z + 0.5).sub(sim.origin);
+}
+// Load world scene `key` (as the map menu does a world map) and resolve once its window has filled.
+function descentLoad(key) {
+  settings.scene = key;
+  setSize('world');
+  const t0 = performance.now();
+  return new Promise((resolve, reject) => {
+    const check = () => {
+      if (win?.loaded && win.scene.key === key) resolve();
+      else if (performance.now() - t0 > LOAD_WAIT_MS) reject(new Error(`Descent: '${key}' took too long to load`));
+      else setTimeout(check, LOAD_POLL_MS);
+    };
+    check();
+  });
+}
+function descentFrame() {
+  const p = pov?.player;
+  const live = !!(win && p && pov.mode === 'on' && !p.dead);
+  descent.frame({
+    key: win ? settings.scene : null,
+    feet: live ? descentFeet.copy(p.pos).add(sim.origin) : null,
+    live, load: win,
+  });
+}
 
 // ---------------------------------------------------------------- signs (optional module)
 const signLayer = Object.assign(document.createElement('div'), { className: 'sign-layer' });
@@ -1509,7 +1551,8 @@ function tick(now, renderOnly = false) {
     const cam = camState();
     if (cam !== camShown) toolbar.setCamera(camShown = cam);
     if (pov?.active) pov.update(dt);
-    else {
+    if (descent) descentFrame();
+    if (!pov?.active) {
       rig.update(dt);
       controls.update();
     }
@@ -1723,6 +1766,7 @@ try {
     getPerkOrbs: () => perkOrbs,
     loadPreset: (name) => loadPreset(name, false),   // a team game's new round (src/game)
     getArena: () => arenaLayout,                      // the loaded arena's layout, for the team games (src/game)
+    dropAt: () => descentSpawn(levelByScene(win ? settings.scene : null)),   // a Descent level: you start (and respawn) at its spawn
     requestRender: () => pacer.wake(),
     inWorld: () => !!win,
     toolGun,   // the tool gun's click at the crosshair
@@ -1732,9 +1776,25 @@ try {
   });
   pov.vehicles.spawnLayout(arenaLayout);   // the scene loaded before the POV shell existed
   pov.game.useLayout(arenaLayout);
+  descent = createDescentRunner({
+    levels: DESCENT_LEVELS,
+    emit: (name, payload) => pov.events.emit(name, payload),
+    loadScene: descentLoad,
+    enterAt: async (spawn) => {
+      await pov.enter({ at: descentSpawn({ spawn }) });
+      if (!pov.active) throw new Error("the body didn't drop in");
+    },
+    snapshot: () => runSnapshot({ player: pov.player, gold: pov.descent?.gold ?? null, wands: descentWands }),
+    overlay: createDescentOverlay(),
+    toast: (text) => hud.toast(text),
+    finish: () => { pov.exit(); actions.openMenu(); },
+    wait: (s) => new Promise((resolve) => setTimeout(resolve, s * 1000)),
+    loadId: () => win,
+  });
   window.__app = {
     get sim() { return sim; }, get volume() { return volume; }, get scale() { return scale; }, get signs() { return signs; }, get builds() { return builds; },
     get pov() { return pov; },
+    get descent() { return descent; },   // Descent's level switch (pov/descent/switch.js): level, index, inside, busy
     get spawners() { return spawners; },
     get birds() { return birds; },
     get perkOrbs() { return perkOrbs; },
