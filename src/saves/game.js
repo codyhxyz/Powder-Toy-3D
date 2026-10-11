@@ -23,8 +23,9 @@ import { RAYS } from '../rays.js';
 // and resolves when the GPU gets there, so the frame never stalls and the
 // save is the state at the moment it was asked for.
 //
-// app: { renderer, settings, getSim, getWin, header(), prepare(header), finish(header), onSettings() }
-//   header()         the save's description of the scene: { map, mapName, size, preset, world: { scene, seed } | null, thumbnail }
+// app: { renderer, settings, getSim, getWin, header(), thumbnail(), prepare(header), finish(header), onSettings() }
+//   header()         the save's description of the scene: { map, mapName, size, preset, world: { scene, seed } | null }
+//   thumbnail()      resolves to the save's picture (a data URL) or null
 //   prepare(header)  gets the grid ready for a save (switching map or size, an undo snapshot): resolves false to refuse
 //   finish(header)   after everything is in (the volume, the view, the HUD)
 //   onSettings()     after the saved settings were set
@@ -72,7 +73,7 @@ export function createSaves(app) {
         reads.push(readTargetAsync(renderer, list, i, rays.subarray(i * RAY_SLOTS * CHANNELS, (i + 1) * RAY_SLOTS * CHANNELS)));
       }
     }
-    const scene = app.header();
+    const scene = app.header(), thumbnail = app.thumbnail?.() ?? null;
     const header = {
       name, created: new Date().toISOString(), ...scene,
       dims: [g.nx, g.ny, g.nz],
@@ -85,6 +86,7 @@ export function createSaves(app) {
     const extra = collectSections();
     // ---- (the moment ends) ----
     await Promise.all(reads);
+    header.thumbnail = await thumbnail;
     const cells = packCells(header.dims, (x, y, z) => cellTexel(g, x, y, z), [A, B]);
     const sections = [{ key: 'cells', data: cells }, ...core];
     if (rays) sections.push({ key: 'rays', data: rays }, { key: 'raysCursor', data: { cursor: raysCursor } });

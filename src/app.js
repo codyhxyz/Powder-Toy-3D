@@ -1129,9 +1129,9 @@ const saves = createSaves({
       map: m?.key ?? null, mapName: m?.name ?? null, size: settings.size, preset: win ? null : settings.preset,
       world: win ? { scene: settings.scene, seed: worldSeed ?? null } : null,
       guestCopy: mp.isGuest || undefined,   // a guest's copy of the host's world (no velocity or pressure: net/codec.js)
-      thumbnail: saveThumbnail(),
     };
   },
+  thumbnail: saveThumbnail,
   prepare: prepareSave,
   finish: () => {
     if (win) placeVolume();
@@ -1148,21 +1148,39 @@ const saves = createSaves({
   onSettings: () => { sim.gravity = settings.gravity; },
 });
 
-// The view as it is now, small, for the Saves list (the views menu's thumbnail render).
+// The save's picture for the Saves list: the next frame on screen, cropped and
+// scaled down, read from the canvas in the frame's own task as the screenshot
+// is (saveScreenshot). It draws nothing extra (no second render, no program to
+// build). Resolves to a data URL, or null if no frame comes (a parked test page).
+const SAVE_THUMB_SIZE = [320, 200];   // px: the views menu's thumbnails' size
+const SAVE_THUMB_WAIT_MS = 1500;
 function saveThumbnail() {
+  return new Promise((resolve) => {
+    thumbWaiters.push(resolve);
+    pacer.wake();
+    setTimeout(() => {
+      const i = thumbWaiters.indexOf(resolve);
+      if (i >= 0) { thumbWaiters.splice(i, 1); resolve(null); }
+    }, SAVE_THUMB_WAIT_MS);
+  });
+}
+function takeSaveThumbnail() {
+  const waiting = thumbWaiters;
+  thumbWaiters = [];
+  let url = null;
   try {
-    const shot = Object.assign(document.createElement('canvas'), { width: thumbTarget.width, height: thumbTarget.height });
-    renderThumb(settings.view, shot);
-    const out = Object.assign(document.createElement('canvas'), { width: shot.width, height: shot.height });
+    const src = renderer.domElement, [w, h] = SAVE_THUMB_SIZE;
+    const out = Object.assign(document.createElement('canvas'), { width: w, height: h });
     const ctx = out.getContext('2d');
     ctx.fillStyle = SAVE_THUMB_BG;
-    ctx.fillRect(0, 0, out.width, out.height);
-    ctx.drawImage(shot, 0, 0);
-    return out.toDataURL(SAVE_THUMB_TYPE, SAVE_THUMB_QUALITY);
+    ctx.fillRect(0, 0, w, h);
+    const k = Math.min(src.width / w, src.height / h);   // (cover: the middle of the view)
+    ctx.drawImage(src, (src.width - w * k) / 2, (src.height - h * k) / 2, w * k, h * k, 0, 0, w, h);
+    url = out.toDataURL(SAVE_THUMB_TYPE, SAVE_THUMB_QUALITY);
   } catch (err) {
     console.warn('save: no thumbnail', err);
-    return null;
   }
+  for (const resolve of waiting) resolve(url);
 }
 
 // Get the grid ready for a save: its map and size (a rebuild if they differ),
@@ -1505,6 +1523,8 @@ function setRadius(r) {
 let stepOnce = false;
 let timeShown = NaN;   // the time of day the drawer last showed
 let wantShot = false;
+let thumbWaiters = [];   // saves waiting for the next presented frame as their thumbnail (saveThumbnail)
+const wantFrame = () => wantShot || thumbWaiters.length > 0;
 
 addEventListener('keydown', (e) => {
   if (pov?.editingWand) return;
@@ -1747,14 +1767,14 @@ function tick(now, renderOnly = false) {
   lastVersion = sim.version;
   // Keep animation time tied to simulation, not the test preview's draw rate.
   if (worldChanged) volume.material.uniforms.uTime.value += dt;
-  const present = renderOnly || pacer.present(now, wantShot);
+  const present = renderOnly || pacer.present(now, wantFrame());
   const runDerived = present && pacer.derived(
     `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${KEY_LIGHT}|${settings.view}|${gfx.smoothing}|${detailVersion}`);
   let runView = present && pacer.view(
     `${camera.matrixWorld.elements}|${camera.projectionMatrix.elements}|${pixelRatio}|${innerWidth}x${innerHeight}`
     + `|${JSON.stringify(settings)}|${JSON.stringify(gfx)}|${JSON.stringify(post.settings)}|${sceneKey(scene)}`
     + `|${win?.far?.chunksDrawn}`,   // a world scene's far field filling in (world/far.js)
-    runDerived || wantShot || (!renderOnly && post.adapting));   // frozen-time snapshots cannot advance eye adaptation
+    runDerived || wantFrame() || (!renderOnly && post.adapting));   // frozen-time snapshots cannot advance eye adaptation
   if (present && !runView && autoRes.recover(clock.getElapsed())) {
     post.settings.resolutionScale = autoRes.scale;
     pacer.wake();   // settle the final full-quality still; don't wake auto resolution
@@ -1818,6 +1838,7 @@ function tick(now, renderOnly = false) {
     // own depth, so it never clips into walls); before the screenshot reads the canvas
     renderViewmodels(renderer, scene, camera, post);
     if (wantShot) { wantShot = false; saveScreenshot(); }
+    if (thumbWaiters.length) takeSaveThumbnail();
 
     signs?.update();
   }

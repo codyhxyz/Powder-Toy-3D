@@ -7,7 +7,7 @@
 // store), save, paint again, load: the window's cells and the store come back.
 // tools/saves-check.mjs checks the format itself on the CPU.
 import assert from 'node:assert/strict';
-import { launchBrowser, newTestPage, ready } from './browser.mjs';
+import { launchBrowser, newTestPage, ready, render } from './browser.mjs';
 
 const args = process.argv.slice(2);
 const port = args[args.indexOf('--port') + 1] || '5281';
@@ -37,6 +37,9 @@ try {
   // ---- a box ----
   await page.goto(`http://localhost:${port}/?map=lab`);
   await ready(page);
+  // a frame first, as in play (a parked page draws none: the save's thumbnail, the next
+  // frame on screen, then times out to none, which this check doesn't look at)
+  await render(page);
   const box = await page.evaluate(async (cellsSrc) => {
     const cells = eval(`(${cellsSrc})`);
     const app = window.__app, sim = app.sim, THREE = app.THREE, { E } = await import("/src/elements.js");
@@ -71,6 +74,7 @@ try {
   await page.goto(`http://localhost:${port}/?map=island`);
   await ready(page);
   await page.waitForFunction(() => window.__app.win?.loaded, null, { polling: 200, timeout: WORLD_WAIT_MS });
+  await render(page);
   const world = await page.evaluate(async ({ cellsSrc, waitMs }) => {
     const cells = eval(`(${cellsSrc})`);
     const app = window.__app, sim = app.sim, win = app.win, THREE = app.THREE, { E } = await import("/src/elements.js");
