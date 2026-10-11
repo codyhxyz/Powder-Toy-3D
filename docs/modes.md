@@ -182,7 +182,8 @@ spreads (Infection), a point is taken (Siege; `--strict`: the round ends); no pa
 `node tools/siege-check.mjs [--url http://localhost:5421] [--preset lab|damValley] [--shot file.jpg]` (AC power, a
 dev server): a short-fused Siege round with the player attacking. The picker opens on the start, a pick in setup
 applies at once, the setup gate holds, every bot has a class and its weapons, the gates open, the player takes A,
-the clock gains time; dead, comma picks for the respawn; Slayer has no classes; sandbox's comma opens the picker. `--sweep` measures the frame
+the clock gains time; dead, comma picks for the respawn; Slayer has no classes; sandbox's comma opens the picker.
+`node tools/siege-rules-check.mjs` needs nothing: Siege's rules, classes and bot objectives on the CPU with a fake game. `--sweep` measures the frame
 rate and the bots' CPU time per frame with that many bots; `--tour` screenshots a CTF match on red.
 
 Measured 2026-10-10 (M-series MacBook, headless Chromium on Metal, with other agents' GPU runs sharing the
