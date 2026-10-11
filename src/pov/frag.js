@@ -56,9 +56,10 @@ const R_OUTER = wu(1.75);                     // cells (≈ 18): Halopedia's "ki
 const VS_SPARTAN = 0.5;                       // "x0.5 vs spartan & elite health, x0.5 vs shields"
 export const FRAG_CARRY = 2;                  // "Reserve ammo capacity: 2 grenades"
 
-// ---- the bounce (by eye: Halopedia gives no figures; a steel ball on concrete keeps 0.4-0.6 of its speed)
-const RESTITUTION = 0.4;                      // share of the speed into a face it bounces back out with
-const FRICTION = 0.7;                         // share of the speed along the face it keeps per bounce
+// ---- the bounce (by eye: Halopedia gives no figures; Halo 3's frag skids on a few metres past
+// where it lands before its fuse runs out, and rolls to a stop soon after)
+const RESTITUTION = 0.3;                      // share of the speed into a face it bounces back out with
+const FRICTION = 0.35;                        // share of the speed along the face it keeps per bounce
 const REST_SPEED = 4;                         // cells/s: slower than this off a bounce, it lies still
 const UP_FACE = 0.5;                          // a face whose normal's y is above this is a floor it can lie on
 const BOUNCES_MAX = 12;                       // bounces before it lies still wherever it is

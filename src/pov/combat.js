@@ -130,7 +130,7 @@ export function createCombat(shell) {
         const team = who?.target.body?.team;
         red = !!team && team !== player.team;
       }
-      shell.hud.combat({ red, hit: Math.min(1, hitT / HITMARK_S), grenades: halo && player.grenades != null ? player.grenades : null });
+      shell.hud.combat({ red, hit: Math.min(1, hitT / HITMARK_S), grenades: halo && !player.dead && player.grenades != null ? player.grenades : null });
     },
     throw: throwOne,   // (checks) throw as the player now
     get red() { return red; },   // (checks) the reticle is red

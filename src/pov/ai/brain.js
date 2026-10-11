@@ -153,7 +153,7 @@ const WEAPONS = {
   PHYSGUN: { rate: distanceModule([['close', 'yes'], ['medium', 'yes'], ['far', 'no']]), needsSight: true },
   BUCKET: { rate: distanceModule([['close', 'very'], ['medium', 'yes'], ['far', 'no']]) },
   // Halo's frag grenade (frag.js): mid range only; the gun it carries stays in hand (holds)
-  FRAG: { rate: distanceModule([['close', 'no'], ['medium', 'very'], ['far', 'no']]), needsSight: true, holds: (a) => a.npc.body.carry?.[0] ?? 'GUN' },
+  FRAG: { rate: distanceModule([['close', 'no'], ['medium', 'very'], ['far', 'no']]), needsSight: true, holds: (a) => [...(a.npc.body.carry ?? [])][0] ?? 'GUN' },
 };
 
 // ---------------------------------------------------------------- the agent
