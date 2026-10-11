@@ -53,7 +53,7 @@ These rules make resting matter a true fixed point, so it can sleep without chan
   - it can't move: it is at rest, and for powders and liquids every place it could move into is blocked,
     including the diagonals the move pass topples into;
   - nothing can react: no ignition, melting, acid, plant growth, clone emission, fire, smoke or gas;
-  - it is thermally quiet: air within AIR_REST_T (1 °C) of ambient, and matter within MATTER_REST_T (0.01 °C)
+  - it is thermally quiet: air within AIR_REST_T (1 °C) of ambient, and matter within REST_FLUX / min(cond) °C (the heat a face carries: 0.01 °C at metal, 0.03 at rock, 0.1-0.2 at wood, moss and snow)
     of every matter face neighbour. A face touching air carries heat at air's conductance, so matter there
     takes air's tolerance instead (within AIR_REST_T of ambient).
 
