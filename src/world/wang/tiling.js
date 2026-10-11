@@ -248,7 +248,7 @@ export function generateTiling({ kit: rawKit, seed, units, entry, exit }) {
   for (const b of bricks) for (const e of b.edges) {
     if (e.nb < 0 || e.nb < b.id) continue;          // each edge once, between whole bricks
     if (open.has(e.key)) continue;
-    if (RO() < (e.dy ? P_SHAFT : P_LOOP) && shaftOk(e)) open.set(e.key, true);
+    if (RO() < (e.dy ? kit.shafts ?? P_SHAFT : kit.loops ?? P_LOOP) && shaftOk(e)) open.set(e.key, true);
   }
   // 4. repair: every brick reachable from the entry (doorways both ways, shafts down)
   const reached = new Uint8Array(bricks.length);
@@ -286,6 +286,7 @@ export function generateTiling({ kit: rawKit, seed, units, entry, exit }) {
     const cands = [];
     let total = 0;
     for (const t of kit.tiles) for (const xf of xfs) {
+      if (t.deepest !== undefined && b.l >= t.deepest) continue;   // a deep tile: only in the lowest layers
       // canonical port p sits on the edge PLACED[xf][p] points at; find it among b.edges
       const map = mapPorts(b, xf);
       let ok = true;

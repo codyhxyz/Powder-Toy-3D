@@ -64,6 +64,7 @@ Press `?` in the app for the full list.
 | `P` | save a screenshot |
 | ⌘S / Ctrl+S | save the game (in first person ⌘ only, Ctrl being the camera key there) |
 | ⌘O / Ctrl+O | the Saves list: load a save, export it, open a file |
+| `` ` `` | the Lua console (TPT's): run commands, or code every step |
 
 Hovering shows the element, temperature and air pressure under the cursor. Settings are remembered between visits.
 
@@ -134,8 +135,10 @@ Every death goes up in a killfeed in the top right, Garry's Mod's death notices 
 (`src/pov/killfeed.js`): *Attacker* [weapon] *Victim*, or only the icon and the victim when you did it yourself or the world
 did. The icon is the killer's weapon, or what the death's cause names (fire, acid, drowning, a fall). Your kills also
 earn Halo 3's medals, in the sandbox or a match (Double Kill, Killing Spree, Splatter…), plus five for the sim's chaos
-(Own Goal, Bored, Chain Reaction, Heavy Particles, Flooded); see [docs/modes.md](docs/modes.md). The kill icons, the
-medal badges' icons, and the map menu's gamemode, map and tip icons, are from [game-icons.net](https://game-icons.net)
+(Own Goal, Bored, Chain Reaction, Heavy Particles, Flooded); see [docs/modes.md](docs/modes.md). An announcer calls them, and the match's
+moments, in a voice from [ElevenLabs](https://elevenlabs.io) (its stock voice Brian on Eleven v4, directed to boom), read once
+by `tools/announcer-voice.mjs` into `public/announcer/`; a line without a clip yet is spoken by the browser's own voice. The kill icons, the
+medal badges' icons, and the map menu's gamemode and map icons, are from [game-icons.net](https://game-icons.net)
 by Lorc, Delapouite, Skoll, Sbed and Carl Olsen, under [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/),
 recoloured and with their backgrounds removed (`tools/killicons.mjs`, `tools/medal-icons.mjs` and
 `tools/mode-icons.mjs` bake them). So are the notices' icons (info,
@@ -155,10 +158,8 @@ brings the menu back over the game. The maps are in `src/maps.js`. `tools/map-th
 into `public/maps`, and `tools/menu-check.mjs` checks the menu on the GPU. A link with a query (`?map=lab`,
 `?preset=…`, an invite) skips the menu.
 
-Start brings up a loading screen in the manner of Halo 3's, GMod's and TF2's. The map's art drifts behind it. It shows
-the gamemode's emblem and rules, and the map's name. The map's kind and its size in cells and metres sit below it as a
-row of Halo 3 style medals. The steps the boot is really on (download, build, shader compile, world, the match being set
-up) are ticked off with their times. A tip about the game sits in a box with its icon.
+Start brings up a plain loading screen over the map's art: the gamemode, the map's name, a bar, and the one step the
+boot is on now (download, build, shader compile, world, the match being set up), as GMod's loading screen names it.
 The player stands beside it: "This is you." He is a render of the real body (`tools/you-portrait.mjs`).
 `tools/loading-screen-check.mjs` checks the menu's icons and the loading screen on the GPU.
 
@@ -348,7 +349,7 @@ smoothed over time (so cells swapping every step don't shimmer), blurred with a 
 blurred weight of non-crisp cells, so walls and the floor count neither way: a one-cell water film keeps its height and
 surfaces meet walls cleanly. Features the blur would dissolve (a lone drop or grain, a falling stream, a one-cell trunk)
 are scaled back up next to current matter so their surface sits half a cell from the cell centre; ghosts of cells that
-moved on still fade. `gfx.smoothing` (src/gfx/uniforms.js) scales every blur radius (0 = off).
+moved on still fade. The sim pours a stream as parcels a few cells apart; with Whitewater on, each falling parcel leaves a wake for a few steps (`aerationFrag` in `shaders/gfx/liquidDetail.js`) and the fields draw parcels and wakes as one column, so a pour or a waterfall is a continuous stream, white once it has fallen half a metre (a jet aerates by its fall over Horeni's break-up length). `gfx.smoothing` (src/gfx/uniforms.js) scales every blur radius (0 = off).
 
 **Tracer** (`src/shaders/render.js` + `src/shaders/gfx/*`). An Amanatides–Woo DDA walks the grid, skipping empty 4×4×4 bricks
 (the brick map is built from the blurred fields, so it's dilated for free). In each cell it root-finds where a field crosses
@@ -465,6 +466,18 @@ named fields that a reader skips when it doesn't know them, so old saves keep lo
 adds its own with `registerSaveSection(key, { save, load, absent })` (`src/saves/sections.js`), and settings that belong
 to a world with `registerSavedSettings(keys)`. A 128³ box is about 5–10 MB: the random per-cell colour seeds don't
 compress. `node tools/saves-check.mjs` checks the format on the CPU.
+
+## Console
+
+`` ` `` opens a Lua console, The Powder Toy's: real Lua 5.3 (through [fengari](https://github.com/fengari-lua/fengari),
+loaded the first time you open it) with TPT's API and a `z` on every position, so
+`sim.partCreate(-1, 64, 100, 64, elem.DEFAULT_PT_WATR)` makes a water cell and
+`event.register(event.beforesim, fn)` runs `fn` before every simulation step. Writes are queued and applied in one
+small GPU pass per step; a typed command reads the world exactly, and event handlers read a copy that refreshes
+asynchronously, so a script never stalls the GPU. A handler that errors or runs too long is removed with a message,
+and handlers share an 8 ms budget a frame. Only what you type or paste runs, and in multiplayer only the host's
+console runs scripts. Other features add functions through a registry (`src/console/registry.js`).
+The API, the limits and the registry are in [docs/console.md](docs/console.md).
 
 ## Multiplayer
 

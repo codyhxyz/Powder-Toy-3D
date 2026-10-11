@@ -260,6 +260,15 @@ shared mechanism; anything else names its own code.
 - Jokes and internal states: Bizarre, gravity dust, Lolz, Love, embers, dead yeast, and the hidden virus, paste and
   shield forms.
 
+## Elements the maps asked for
+
+New maps are where new elements come from: when a map needs a material we lack, it gets added, and one that TPT has
+can just be added.
+
+- **Basalt** (giant volcano, 2026-10-11): fresh lava rock, the dark flows and cinder cones on the volcano's flanks.
+  Minecraft's basalt and Noita's lava rock; not in TPT. ROCK is the same rock weathered. It melts at 1200 °C, and its
+  lava sets back into basalt. Moss grows on it.
+
 ## Where we differ from TPT
 
 - **Liquid nitrogen** boils into air (nitrogen *is* air) with a pressure puff of about 690 volumes. In TPT it just
@@ -376,7 +385,7 @@ branches' work (`nt-status` stains, `nt-flask` drinking). Two mechanisms came wi
   small flame, as cold spirit does; warmed, it always takes it.
 - **Growers** (`react.js`, `activity.js`; constants in `physics.js`): moss and fungus keep their damp in their ctype.
   It is `DAMP_REACH` (4) beside liquid water, else one less than the dampest moss or fungus beside it, and 0 at or above
-  100 °C. Moss creeps into an air cell that touches damp moss and bare rock (ROCK, STONE, LIMESTONE, SANDSTONE) on a
+  100 °C. Moss creeps into an air cell that touches damp moss and bare rock (ROCK, BASALT, STONE, LIMESTONE, SANDSTONE) on a
   face across from the moss's axis, so it makes a one-cell mat on the rock and never grows out into open air. Damp
   fungus rots WOOD, SAWDUST and PLANT into fungus. Both are rare random events (`MOSS_GROW`, `FUNGUS_GROW`). They stop
   for good once there's nowhere left to grow, and the activity map lets them sleep.

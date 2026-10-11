@@ -400,7 +400,7 @@ export class Simulation {
         tDirty: { value: this.dirty.texture },
       }),
       fieldEma: fieldMat(fieldEmaFrag(g), {
-        tA: { value: null }, tP0: { value: null }, tP1: { value: null },
+        tA: { value: null }, tP0: { value: null }, tP1: { value: null }, tAer: { value: null }, uAer: { value: false },
         uEmaS: { value: new THREE.Vector4() }, uEmaM: { value: new THREE.Vector4() }, uShift: { value: new THREE.Vector3() },
       }, DIRTY.EMA),
       fieldCopy: fieldMat(fieldCopyFrag(), { t0: { value: null }, t1: { value: null }, t2: { value: null } }, DIRTY.EMA),
@@ -408,6 +408,7 @@ export class Simulation {
       fieldFinal: fieldMat(fieldBlurFrag(g, true), fieldBlurUniforms(), DIRTY.WORK),
       fieldBoost: [...Array(BOOST_STAGES).keys()].map((stage) => fieldMat(fieldBoostFrag(g, stage), {
         tA: { value: null }, t0: { value: null }, t1: { value: null }, tPhi: { value: null }, tMed: { value: null },
+        tAer: { value: null }, uAer: { value: false },
         uS: { value: new THREE.Vector4(...CHANNELS.map((c) => (c.cubic ? CUBIC_LATTICE[1] : 1))) },
         uBulk: { value: new THREE.Vector4() }, tDirty: { value: this.dirty.texture },
       }, stage === BOOST_STAGES - 1 ? DIRTY.FIELDS : DIRTY.WORK)),
@@ -551,6 +552,24 @@ export class Simulation {
     this.renderer.readRenderTargetPixels(t, i % w, Math.floor(i / w), 1, 1, a, undefined, 0);
     this.renderer.readRenderTargetPixels(t, i % w, Math.floor(i / w), 1, 1, b, undefined, 1);
     return [a, b];
+  }
+
+  // A w × h rectangle of the state atlas at texel (x, y), read back into a
+  // and b (Float32Array RGBA per texel, row by row, in the fetchA/fetchB
+  // layout): synchronously (it stalls until the GPU is done), or with async a
+  // promise that resolves once the GPU has got there, without stalling (the
+  // console's reads, src/console/gpu.js).
+  readStateRect(x, y, w, h, a, b, async = false) {
+    const t = this.targets[this.cur];
+    if (!async) {
+      this.renderer.readRenderTargetPixels(t, x, y, w, h, a, undefined, 0);
+      this.renderer.readRenderTargetPixels(t, x, y, w, h, b, undefined, 1);
+      return null;
+    }
+    return Promise.all([
+      this.renderer.readRenderTargetPixelsAsync(t, x, y, w, h, a, undefined, 0),
+      this.renderer.readRenderTargetPixelsAsync(t, x, y, w, h, b, undefined, 1),
+    ]);
   }
 
   // Block until the GPU has done everything queued so far, by reading one
@@ -828,6 +847,12 @@ export class Simulation {
     u.uEmaS.value.set(...CHANNELS.map((c) => (reset ? 1 : c.ema)));
     u.uEmaM.value.set(...MEDIA.map((m) => (reset ? 1 : m.ema)));
     u.uShift.value.copy(this.fieldShift);   // the window moved (D11): the history follows its cells
+    // falling water's parcels and wakes (shaders/fields.js jetGLSL), while the whitewater runs
+    const aer = this.aeration?.enabled ? this.aeration.texture : null;
+    for (const m of [fieldEma, this.mats.fieldBoost[0], this.mats.fieldBoost[BOOST_STAGES - 1]]) {
+      m.uniforms.tAer.value = aer;
+      m.uniforms.uAer.value = !!aer;
+    }
     this.fieldShift.set(0, 0, 0);
     // into scratch, then copied back over the same regions
     this.run(fieldEma, tmpA, quads);

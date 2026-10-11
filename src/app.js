@@ -39,7 +39,7 @@ import { createDetailGate } from './gfx/detailGate.js';
 import { createColdShaderGuard } from './gfx/coldShader.js';
 import { createGpuLossTracker, silentLinkFailure, processLossMessage, lossDetails } from './gfx/gpuLoss.js';
 import { setAeration } from './gfx/foam.js';
-import { decoView, prepareDeco, readDeco, uploadDeco, ensureDeco, DECO_BYTES } from './deco.js';
+import { decoView, prepareDeco, readDeco, uploadDeco, ensureDeco, DECO_BYTES, setDecoColor } from './deco.js';
 import { claimPrograms } from './gfx/programs.js';
 import { createPost, createAutoResolution, UPSCALE } from './gfx/post.js';
 import { createPacer, settleFrames, sceneKey, createCapCheck, CAP_IDLE_MS, MAX_FPS } from './gfx/pacing.js';
@@ -67,7 +67,9 @@ import { registerSaveSection, registerSavedSettings } from './saves/sections.js'
 import { packCells, unpackCells } from './saves/format.js';
 import { BRICK_CELLS } from './shaders/window.js';
 import { putSave, getSave, cleanName } from './saves/local.js';
-import { SIM_MODE_DEFAULTS, SIM_MODE_KEYS, simModeRows, applySimModes, sanitizeModes, modeToast, MODE_KEYS, nextMode } from './simModes.js';
+import { SIM_MODE_DEFAULTS, SIM_MODE_KEYS, EDGE, simModeRows, applySimModes, sanitizeModes, modeToast, MODE_KEYS, nextMode } from './simModes.js';
+import { createConsole } from './console/index.js';
+import { registerConsoleApi } from './console/registry.js';
 
 // Optional modules (built in parallel); the app works without them.
 const optional = import.meta.glob(['./views.js', './signs.js', './constructions.js'], { eager: true });
@@ -113,6 +115,8 @@ const SPAWNER_SET = {
 };
 // the lab's own enemy spawner: its open south floor, as shares of the grid (the old lab NPC's arena)
 const LAB_ENEMY_AT = [0.555, 0.86];
+// the most gravity a script may set (sim.gravity): the Gravity slider's top
+const CONSOLE_GRAVITY_MAX = 0.06;
 
 // ---------------------------------------------------------------- settings
 // the box the Scene row goes back to from World, and phones' grid
@@ -760,6 +764,7 @@ document.body.append(signLayer);
 let signs = null;
 let builds = null; // constructions (optional module)
 let pov = null;    // first-person mode (src/pov)
+let scripts = null; // the scripting console, ` (src/console)
 
 // ---------------------------------------------------------------- picking & brush
 const pointer = new THREE.Vector2();
@@ -1363,6 +1368,45 @@ function setSimModes(modes) {
   settingsPanel.sync();
 }
 function resetSimModes() { setSimModes({ ...SIM_MODE_DEFAULTS, ...mapOf(settings)?.modes }); }
+
+// The Simulation options in the console by TPT's Lua names and numbers
+// (src/lua/LuaSimulation.cpp gravityMode, airMode, ambientHeatSim, edgeMode):
+// no argument reads, one sets. TPT numbers its edges void 0, solid 1, loop 2
+// (SimulationSettings.h EdgeMode); ours start at solid.
+const TPT_EDGES = [EDGE.VOID, EDGE.SOLID, EDGE.LOOP];
+function consoleMode(key, toOurs = (v) => v, toTpt = (v) => v) {
+  return function (v) {
+    if (v === undefined || v === null) return toTpt(settings[key]);
+    const ours = toOurs(v);
+    if (sanitizeModes({ ...settings, [key]: ours })[key] !== ours) throw new Error(`${key}: no mode ${v}`);
+    const lock = simModeLock(key);
+    if (lock) throw new Error(lock);
+    setSimMode(key, ours);
+    return toTpt(settings[key]);
+  };
+}
+registerConsoleApi('sim', 'gravityMode', consoleMode('gravityMode'),
+  { args: '[mode]', doc: 'Gravity: 0 vertical, 1 off, 2 radial (toward the box centre).', writes: true });
+registerConsoleApi('sim', 'airMode', consoleMode('airMode'),
+  { args: '[mode]', doc: 'Air: 0 on, 1 pressure off, 2 velocity off, 3 off, 4 no update.', writes: true });
+registerConsoleApi('sim', 'ambientHeatSim', consoleMode('ambientHeat', (v) => !!v),
+  { args: '[on]', doc: 'Ambient heat: whether air holds and trades heat.', writes: true });
+registerConsoleApi('sim', 'edgeMode', consoleMode('edgeMode', (v) => TPT_EDGES[v] ?? -1, (v) => TPT_EDGES.indexOf(v)),
+  { args: '[mode]', doc: 'Box edges (TPT numbering): 0 void, 1 solid, 2 loop. World keeps solid.', writes: true });
+// TPT's sim.decoColor: the deco tools' colour, read as a packed 0xAARRGGBB, set
+// packed or as r, g, b[, a] (0-255).
+const BYTE = 256;
+registerConsoleApi('sim', 'decoColor', function (r, g, b, a) {
+  if (r !== undefined && r !== null) {
+    const rgba = g === undefined || g === null
+      ? [(r >>> 16) & 0xff, (r >>> 8) & 0xff, r & 0xff, (r >>> 24) & 0xff]
+      : [r, g, b ?? 0, a ?? BYTE - 1];
+    setDecoColor(rgba);
+    dock.sync();
+  }
+  const [cr, cg, cb, ca] = decoView.color;
+  return ((ca * BYTE + cr) * BYTE + cg) * BYTE + cb;
+}, { args: '[packed | r, g, b[, a]]', doc: 'The deco tools\' colour, as 0xAARRGGBB.', writes: false });
 
 function setSettingsOpen(v) {
   settingsPanel.setOpen(v);
@@ -2092,13 +2136,15 @@ function tick(now, renderOnly = false) {
   edges.visible = !win;
   prof.phase('sim');
   const stepping = !renderOnly && !mp.isGuest && (!settings.paused || stepOnce);
+  if (!renderOnly) scripts?.tick();   // event.tick: every frame, paused too (TPT)
   if (stepping) {
-    for (let i = 0; i < settings.steps; i++) sim.step();
+    for (let i = 0; i < settings.steps; i++) { scripts?.beforeStep(); sim.step(); scripts?.afterStep(); }
     lightning.update(sim);   // storms: charged cloud strikes by itself (src/lightning.js)
     if (DAY.running) day.clock += settings.steps;
     animTime += dt;
     stepOnce = false;
   } else if (!renderOnly && mp.isGuest && DAY.running) day.clock += settings.steps;   // guests don't step: keep the day going at their own rate
+  if (!renderOnly) scripts?.endFrame();
   updateSun();
   if (birds) {
     prof.phase('other');   // (their probe pass, birdProbe, counts here)
@@ -2311,6 +2357,30 @@ try {
     hideToolsMenu: () => dock.setCollapsed(true),
   });
   pov.vehicles.spawnLayout(arenaLayout);   // the scene loaded before the POV shell existed
+  // the scripting console, ` (optional: the game runs without it)
+  try {
+    scripts = createConsole({
+      getSim: () => sim, isGuest: () => mp.isGuest,
+      paused: () => settings.paused, setPaused,
+      stepNow: (n) => { for (let i = 0; i < n; i++) sim.step(); if (DAY.running) day.clock += n; },
+      gravity: () => settings.gravity / DEFAULTS.gravity,
+      setGravity: (g) => {
+        settings.gravity = THREE.MathUtils.clamp(g * DEFAULTS.gravity, 0, CONSOLE_GRAVITY_MAX);
+        sim.gravity = settings.gravity;
+        if (settingsPanel.isOpen) settingsPanel.sync();
+        save();
+      },
+      brushRadius: () => settings.radius, setBrushRadius: setRadius,
+      brushShape: () => settings.shape, setBrushShape: (v) => { settings.shape = v; dock.sync(); save(); },
+      selected: () => settings.tool, select: selectTool,
+      paint: ({ x, y, z, radius, shape, tool }) => sim.paint({
+        center: new THREE.Vector3(x, y, z).addScalar(0.5), radius, shape, tool, rate: settings.rate, replace: false,
+      }),
+      snapshot: () => { sim.snapshot(); toolbar.setUndoEnabled(true); },
+      requestRender: () => pacer.wake(),
+      exitPointerLock: () => { if (document.pointerLockElement) document.exitPointerLock(); },
+    });
+  } catch (err) { console.error('Console unavailable', err); }
   pov.game.useLayout(arenaLayout);
   descent = createDescentRunner({
     levels: DESCENT_LEVELS,
@@ -2336,6 +2406,7 @@ try {
     get spawners() { return spawners; },
     get birds() { return birds; },
     get perkOrbs() { return perkOrbs; },
+    get scripts() { return scripts; },   // the console (src/console): .setOpen, .world
     lightning,     // the Lightning tool's and storms' bolts (src/lightning.js)
     // the loaded arena's layout (spawns, flags, hills, siege core, shrines, vehicles: arenas/damValley.js), else null
     get arena() { return arenaLayout; },

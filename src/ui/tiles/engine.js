@@ -80,7 +80,7 @@ const movable = (id) => KIND[id] !== K.SOLID;
 const acidEats = (id) => KIND[id] !== K.EMPTY && KIND[id] !== K.GAS && !ACIDPROOF[id];
 // growers: moss and fungus keep their damp in their ctype (activity.js grower, mossBed, fungusFood, dampOf)
 const grower = (id) => id === E.MOSS || id === E.FUNGUS;
-const mossBed = (id) => id === E.ROCK || id === E.STONE || id === E.LIMESTONE || id === E.SANDSTONE;
+const mossBed = (id) => id === E.ROCK || id === E.BASALT || id === E.STONE || id === E.LIMESTONE || id === E.SANDSTONE;
 const fungusFood = (id) => id === E.WOOD || id === E.SAWDUST || id === E.PLANT;
 function dampOf(T, nid, nW) {
   if (T >= PHYS.DAMP_DRY_T) return 0;

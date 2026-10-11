@@ -29,7 +29,7 @@ export const MAPS = [
     desc: 'An endless research facility: room after room of tanks, lava pits, towers and hanging sand.' },
   // (a world three times as tall: world/scenes/giantVolcano.js VOLC_SIZE, app.js checks)
   { key: 'giantVolcano', name: 'Giant Volcano', size: 'world', scene: 'giantVolcano', dims: [1024, 384, 1024],
-    desc: 'The Volcano blown up: one cone 105 m tall in the sea, lava pouring from its summit, snow on top, forest below.' },
+    desc: 'A stratovolcano 100 m tall in the sea: lava pouring from a vent on its crater down a collapse scar, old basalt flows, side cones, snow on top, forest below.' },
   // Noita's main path, three levels deep: world/scenes/descent (docs/descent-contract.md). It starts on its
   // first level's scene; the others are its too (scenes), each its own 512×256×512 world (descent/scenes.js DS_WORLD)
   // the Noita gamemode's map, and only its (sandbox: false): wands and nothing else in hand

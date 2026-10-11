@@ -43,6 +43,7 @@ export function runSnapshot({ player, gold = null, wands = null } = {}) {
     gold,
     wands: wands ? wands.wands.map((w) => w.id) : null,
     bag: wands ? wands.bag.length : null,
+    potions: wands?.potions ? wands.potions.map((p) => `${p.material}:${p.cells.length}`) : null,   // the run's flasks and how full
   };
 }
 // The fields that differ between two snapshots ([] when the run came through whole)

@@ -12,6 +12,9 @@ import { createDescentLoot, descentWands, wandLines } from '../wands/loot.js';
 import { levelByScene } from '../wands/descentSites.js';
 import { viewmodelRig, heldMaterial, HIT, VIEWMODEL_GLOW_LAYER } from '../viewmodel.js';
 import { wandLook } from '../wands/look.js';
+import { flaskLabel } from '../descent/items.js';
+import { potionColor } from '../descent/flasks.js';
+import { ELEMENTS } from '../../elements.js';
 
 export { emptyLoads };
 
@@ -30,10 +33,13 @@ export { emptyLoads };
 // held tool's name is (a power weapon's shots left, HL2's ammo corner).
 //
 // Wands (src/pov/wands/, docs/wands.md) exist only in the Noita gamemode (the
-// Descent map), and there they are all you carry: the run's wands sit in the
-// Guns slot and are picked like tools (the number key and the wheel cycle them,
-// as HL2 cycles a slot's weapons); B edits one at a Holy Mountain. Every other
-// map has the tools and no wands.
+// Descent map), and there they and Noita's potions are all you carry: the run's
+// wands sit in the Guns slot and are picked like tools (the number key and the
+// wheel cycle them, as HL2 cycles a slot's weapons); B edits one at a Holy
+// Mountain. The flasks the run has found (descent/items.js; Noita's four item
+// slots, descentRun.js potions) sit in the Gadgets slot, and the one in hand is
+// the flask tool, holding that flask's contents. Every other map has the tools
+// and no wands.
 //
 // Tools get the shell's env plus:
 //   env.transfer   the shared exact cell transfer (transfer.js)
@@ -66,6 +72,11 @@ const WAND = 'WAND';              // selectedKey while a wand is in hand
 const WAND_KEY = 'WAND:';
 const DESCENT_ID = 'descent:';    // a Descent wand's row id: DESCENT_ID + its inventory slot (wands/descentRun.js)
 const DESCENT_SLOT = 2;           // Descent's wands are its guns: the Guns slot, ahead of its tools         // a wand's row key in the hotbar stack: WAND_KEY + preset id (or 'custom')
+// Descent's potions (Noita's item slots) sit in the Gadgets slot (catalog.js SLOTS[4], key 5): their own
+// slot, apart from the wands (Noita keeps wands and items in separate rows), and free on Descent
+const POTION_KEY = 'POTION:';     // a carried flask's row key: POTION_KEY + its item slot (descentRun.js potions)
+const DESCENT_ITEM_SLOT = 4;
+const POTION_TOOL = 'FLASK';      // the tool that pours, throws and drinks the flask in hand
 const WAND_COLOR = '#b994ff';
 // The held wand, in cells along the hand (−z forward): pommel, wrapped handle, collar, a shaft
 // tapering to a capped gem that glows in the wand's main spell's colour (wands/look.js) and
@@ -81,9 +92,46 @@ const WAND_PARTS = {
 };
 const WAND_SIDES = 10;                // sides on the wand's round parts
 const GEM_GLOW = 1.6;                 // the gem's colour × this at rest (above 1 it reads as lit from within)
-const GEM_FLASH_GAIN = 2.5;           // on a cast its brightness rises by this × the flash...
-const GEM_FLASH_GROW = 0.6;           // ...and its size by this share...
+const GEM_FLASH_GAIN = 1.2;           // on a cast its brightness rises by this × the flash...
+const HALO_FLASH_GAIN = 0.6;          // ...its halo's by this (more and a close halo saturates to a flat disc)...
+const HALO_FLASH_GROW = 1.2;          // ...and the halo swells by this share: the flare is light spreading, not a bigger gem...
 const GEM_FLASH_DECAY = 8;            // ...falling off at this rate (1/s, exponential)
+// Gem and halo are lit from within, shaded by how squarely each point faces the eye (N·V), so close
+// up they read as a glowing orb with a soft halo rather than a flat polygon in a hard-edged disc.
+// The same core-in-a-halo as a spell's bolt (wands/visuals.js cores), after Noita's glowing spells.
+const GEM_DETAIL = 1;                 // icosphere subdivisions: still faceted, no longer a hexagon face-on
+const GEM_RIM = 0.45;                 // the gem's brightness at its silhouette, a share of its middle's
+const GEM_WHITE = 1.2;                // HDR: white-hot heat added at its middle...
+const GEM_WHITE_SHARP = 6;            // ...falling off as (N·V)^this
+const HALO_DETAIL = 3;                // icosphere subdivisions (a smooth falloff needs smooth normals)
+const HALO_SOFT = 3;                  // the halo's glow falls as (N·V)^this, to nothing at its silhouette
+
+// Something lit from within, bright where it faces the eye: the gem (opaque: { rim, white, whiteSharp })
+// or its additive halo ({ soft, opacity }). uColor is its colour (HDR); renderer tone mapping applies.
+function glowMaterial({ rim = 0, white = 0, whiteSharp = 1, soft = 1, opacity = 1 }) {
+  const halo = opacity < 1;
+  return new THREE.ShaderMaterial({
+    uniforms: { uColor: { value: new THREE.Color('#efcf79') } },
+    vertexShader: /* glsl */ `
+      varying vec3 vN, vV;
+      void main() {
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        vN = normalMatrix * normal; vV = -mv.xyz;
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: /* glsl */ `
+      uniform vec3 uColor;
+      varying vec3 vN, vV;
+      void main() {
+        float face = clamp(abs(dot(normalize(vN), normalize(vV))), 0.0, 1.0);
+        vec3 rgb = uColor * mix(${rim.toFixed(4)}, 1.0, pow(face, ${soft.toFixed(4)})) + vec3(pow(face, ${whiteSharp.toFixed(4)}) * ${white.toFixed(4)});
+        gl_FragColor = vec4(rgb * ${opacity.toFixed(4)}, 1.0);
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+      }`,
+    ...(halo ? { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending } : {}),
+  });
+}
 
 export function createToolbelt(env) {
   const hotbar = createHotbar((i) => pressSlot(i), (key) => select(key));
@@ -106,10 +154,9 @@ export function createToolbelt(env) {
     along(new THREE.CylinderGeometry(P.shaft.back, P.shaft.front, P.shaft.length, WAND_SIDES), P.shaft.color, P.shaft.z),
     along(new THREE.CylinderGeometry(P.cap.radius, P.cap.radius, P.cap.length, WAND_SIDES), P.cap.color, P.cap.z),
   ];
-  const gem = new THREE.Mesh(new THREE.IcosahedronGeometry(P.gem.radius, 0), new THREE.MeshBasicMaterial({ color: '#efcf79' }));
+  const gem = new THREE.Mesh(new THREE.IcosahedronGeometry(P.gem.radius, GEM_DETAIL), glowMaterial({ rim: GEM_RIM, white: GEM_WHITE, whiteSharp: GEM_WHITE_SHARP }));
   gem.position.z = P.gem.z;
-  const halo = new THREE.Mesh(new THREE.IcosahedronGeometry(P.halo.radius, 1), new THREE.MeshBasicMaterial({
-    color: '#efcf79', transparent: true, opacity: P.halo.opacity, depthWrite: false, blending: THREE.AdditiveBlending }));
+  const halo = new THREE.Mesh(new THREE.IcosahedronGeometry(P.halo.radius, HALO_DETAIL), glowMaterial({ soft: HALO_SOFT, opacity: P.halo.opacity }));
   halo.userData.vmLayer = VIEWMODEL_GLOW_LAYER;   // light round the gem goes on the glow pass (viewmodel.js), as the torch's flame does
   gem.add(halo);
   wandHand.add(...wandParts, gem);
@@ -130,10 +177,9 @@ export function createToolbelt(env) {
     const cards = wandRuntime.definition?.cards ?? null;
     if (cards !== gemCards) { gemCards = cards; gemLook = wandLook(cards ?? []); }
     gemFlash *= Math.exp(-GEM_FLASH_DECAY * dt);
-    const glow = GEM_GLOW * (1 + GEM_FLASH_GAIN * gemFlash);
-    gem.material.color.copy(gemLook.color).multiplyScalar(glow);
-    halo.material.color.copy(gemLook.color).multiplyScalar(glow);
-    gem.scale.setScalar(1 + GEM_FLASH_GROW * gemFlash);
+    gem.material.uniforms.uColor.value.copy(gemLook.color).multiplyScalar(GEM_GLOW * (1 + GEM_FLASH_GAIN * gemFlash));
+    halo.material.uniforms.uColor.value.copy(gemLook.color).multiplyScalar(GEM_GLOW * (1 + HALO_FLASH_GAIN * gemFlash));
+    halo.scale.setScalar(1 + HALO_FLASH_GROW * gemFlash);
   }
   let wandSelected = false, wandSlot = 0, wandId = null, custom = null;
   const editor = createWandEditor({
@@ -211,9 +257,23 @@ export function createToolbelt(env) {
   const clampSlot = (slot) => Math.max(0, Math.min(HOTBAR_SLOTS - 1, (Number.isInteger(slot) ? slot : 1) - 1));
   // slot i's wand rows: on Descent (wands/descentRun.js) the run's four wand slots, in the Guns slot;
   // anywhere else none (no presets, no custom wand: wands are the Noita gamemode's)
-  let descentLevel = null, descentKey;
+  let descentLevel = null, descentKey, offDescentFlask = true;   // (the sandbox flask's in-hand, kept while on Descent)
   const wandRows = (i) => (descentLevel && i === DESCENT_SLOT ? descentWands.wands.map((w, j) => ({ key: WAND_KEY + DESCENT_ID + j,
     name: `Wand ${j + 1}: ${w.name}`, desc: wandLines(w).join(' · '), color: WAND_COLOR })) : []);
+  // slot i's flask rows (Descent's item slots, in the Gadgets slot)
+  let potionSlot = -1, potionVersion = -1;   // the run's flask in hand (−1: none); the flask tool's load version last kept
+  const flaskTool = () => tools.get(POTION_TOOL)?.inst ?? null;
+  const potionRows = (i) => (descentLevel && i === DESCENT_ITEM_SLOT ? descentWands.potions.map((f, j) => ({ key: POTION_KEY + j,
+    name: `Item ${j + 1}: ${flaskLabel(f)}`, desc: 'Click pours or scoops · right-click throws · H drinks',
+    color: potionColor(f.material), model: 'flask' })) : []);
+  // a carried flask's hotbar status: what it mostly holds and how full
+  const flaskStatus = (f) => {
+    if (!f?.cells.length) return 'empty';
+    const n = new Map();
+    for (const c of f.cells) n.set(c[0], (n.get(c[0]) ?? 0) + 1);
+    const [id] = [...n].sort((a, b) => b[1] - a[1])[0];
+    return `${ELEMENTS[id].abbr}${n.size > 1 ? '+' : ''} ${Math.round((100 * f.cells.length) / (flaskTool()?.load?.capacity ?? f.cells.length))}%`;
+  };
 
   // slot i's row keys: its carried tools, then its wands (only in a slot that carries a tool, so a class's empty slots stay
   // empty; none while restricted)
@@ -221,17 +281,18 @@ export function createToolbelt(env) {
     const keys = inSlot(i);
     if (only) return keys;
     const wands = wandRows(i).map((r) => r.key);
-    if (descentLevel) return [...wands, ...keys];
+    if (descentLevel) return [...wands, ...potionRows(i).map((r) => r.key), ...keys];
     return keys.length ? [...keys, ...wands] : [];
   };
-  const rowDef = (k) => (k.startsWith(WAND_KEY) ? wandRows(wandSlotOf(k)).find((r) => r.key === k) : tools.get(k).def);
+  const rowDef = (k) => (k.startsWith(WAND_KEY) ? wandRows(wandSlotOf(k)).find((r) => r.key === k)
+    : k.startsWith(POTION_KEY) ? potionRows(DESCENT_ITEM_SLOT).find((r) => r.key === k) : tools.get(k).def);
   const wandSlotOf = (k) => {
     const id = k.slice(WAND_KEY.length);
     if (id.startsWith(DESCENT_ID)) return DESCENT_SLOT;
     return clampSlot((id === 'custom' ? custom : PRESETS.find((p) => p.id === id))?.slot);
   };
-  const slotOf = (k) => (k?.startsWith(WAND_KEY) ? wandSlotOf(k) : toolSlot(k));
-  const heldKey = () => (wandSelected ? WAND_KEY + wandId : selected);
+  const slotOf = (k) => (k?.startsWith(WAND_KEY) ? wandSlotOf(k) : k?.startsWith(POTION_KEY) ? DESCENT_ITEM_SLOT : toolSlot(k));
+  const heldKey = () => (wandSelected ? WAND_KEY + wandId : potionSlot >= 0 ? POTION_KEY + potionSlot : selected);
   // every row key, slot by slot (the wheel's order); restricted, the keys in their own order
   const allKeys = () => (only ? carried() : [...Array(HOTBAR_SLOTS).keys()].flatMap(slotKeys));
 
@@ -257,6 +318,7 @@ export function createToolbelt(env) {
     const def = typeof definition === 'string' ? PRESETS.find((p) => p.id === definition) : definition;
     if (!def || only) return false;
     putAway();
+    keepPotion(); potionSlot = -1;
     wandRuntime.equip(def);
     wandSlot = clampSlot(def.slot ?? wandSlot + 1);
     const run = descentLevel ? descentWands.wands.findIndex((w) => w.id === def.id) : -1;
@@ -276,8 +338,36 @@ export function createToolbelt(env) {
     return true;
   }
 
+  // the flask in hand's contents back into the run (descentRun.js), when they changed
+  function keepPotion() {
+    const load = flaskTool()?.load;
+    if (potionSlot < 0 || !load || load.version === potionVersion) return;
+    potionVersion = load.version;
+    descentWands.setPotionCells(potionSlot, load.cells);
+  }
+  // hold the run's flask in item slot j: the flask tool, filled with that flask's contents
+  function holdPotion(j) {
+    const f = descentWands.potions[j], tool = flaskTool();
+    if (!descentLevel || !f || !tool || only) return false;
+    if (potionSlot === j && !wandSelected) { hotbar.select(DESCENT_ITEM_SLOT); return true; }
+    if (tool.load?.busy) return false;   // a pour still in flight: its cells go back to the flask that sent them
+    if (wandSelected) { putAway(); wandSelected = false; wandId = null; descentWands.held = -1; }
+    else tools.get(selected)?.inst.deselect?.();
+    keepPotion();
+    potionSlot = j;
+    tool.holdCells(f.cells);
+    potionVersion = tool.load.version;
+    selected = POTION_TOOL;
+    lastIn[DESCENT_ITEM_SLOT] = POTION_KEY + j;
+    refresh();
+    hotbar.select(DESCENT_ITEM_SLOT);
+    env.requestRender?.();
+    return true;
+  }
+
   // hold tool `key` (or, given a number, the carried tool at that place in catalog order; a wand's row key equips it)
   function select(key) {
+    if (typeof key === 'string' && key.startsWith(POTION_KEY)) return holdPotion(Number(key.slice(POTION_KEY.length)));
     if (typeof key === 'string' && key.startsWith(WAND_KEY)) {
       if (key === heldKey()) { hotbar.select(wandSlot); return true; }   // already in hand
       const id = key.slice(WAND_KEY.length);
@@ -368,6 +458,7 @@ export function createToolbelt(env) {
   const offRun = [
     descentWands.on('change', () => {
       if (!descentLevel) return;
+      if (potionSlot >= descentWands.potions.length) potionSlot = -1;   // (a new run emptied the item slots)
       // the wand in hand changed under it (a swap, an edit): hold its new self
       if (wandSelected && wandId?.startsWith(DESCENT_ID)) {
         const w = descentWands.wands[Number(wandId.slice(DESCENT_ID.length))];
@@ -384,7 +475,13 @@ export function createToolbelt(env) {
     descentKey = key;
     descentLevel = levelByScene(key);
     // a new run starts when you arrive on Descent from elsewhere (A carries it between its levels)
-    if (descentLevel && !was) descentWands.reset();
+    if (descentLevel && !was) { descentWands.reset(); offDescentFlask = flaskTool()?.inHand ?? true; }
+    // out of the Noita gamemode: the flask is the sandbox's again (empty: the world was replaced), in hand as it was
+    if (!descentLevel && was) {
+      keepPotion(); potionSlot = -1;
+      const tool = flaskTool();
+      if (tool) { tool.holdCells([]); tool.inHand = offDescentFlask; }
+    }
     descentWands.inTemple = false;
     loot.setLevel(descentLevel);
     // in or out of the Noita gamemode: what was in hand may not be carried there
@@ -395,6 +492,23 @@ export function createToolbelt(env) {
       if (keys.length) select(keys[0]); else if (!descentLevel) select(DEFAULT_TOOL);
     }
     refresh();
+  }
+
+  // every frame on Descent with a flask in hand: its contents kept in the run (they outlive the level's
+  // world: a scene load empties the tools' loads); thrown, the flask is gone from the run (its glass broke)
+  // and the hand goes back to the first thing carried
+  function syncPotion() {
+    if (potionSlot < 0 || wandSelected) return;
+    const tool = flaskTool();
+    if (tool?.inHand) { keepPotion(); return; }
+    descentWands.removePotion(potionSlot);
+    potionSlot = -1;
+    tool?.deselect?.();
+    selected = null;
+    lastIn[DESCENT_ITEM_SLOT] = null;
+    refresh();
+    const keys = allKeys();
+    if (keys.length) select(keys[0]);
   }
 
   const held = () => (wandSelected ? null : tools.get(selected)?.inst);
@@ -414,6 +528,8 @@ export function createToolbelt(env) {
     // text shown after tool `key`'s status (null: none)
     setNote(key, text) { if (text) notes.set(key, String(text)); else notes.delete(key); },
     wandRuntime, editor, equipWand,
+    get potionSlot() { return potionSlot; },   // Descent: the run's flask in hand (−1: none)
+    holdPotion,
     openEditor,
     // a tool by key (or, given a number, the carried tool at that place), carried or not
     tool: (key) => tools.get(typeof key === 'number' ? carried()[key] : key)?.inst ?? null,
@@ -443,13 +559,14 @@ export function createToolbelt(env) {
         wandRuntime.tick(ctx);   // flights and fields keep going while a tool is in hand
         if (!helpless && !editor.open) held()?.update(ctx);
       }
+      syncPotion();
       tools.forEach((t) => t.inst.tick?.(ctx));   // what every tool keeps doing, held or not (a torch lying lit)
-      readout = wandSelected ? { name: wandRuntime.definition?.name ?? 'Wand', color: WAND_COLOR, note: String(wandRuntime.status() ?? '') }
-        : held()?.readout?.(ctx) ?? null;
+      readout = wandSelected ? null : held()?.readout?.(ctx) ?? null;   // a wand shows no name tag: Noita's HUD names the wand only in the inventory
       lastSteps = ctx.stepsPerFrame;
       ballistics.update(ctx);
       for (let i = 0; i < HOTBAR_SLOTS; i++) {
         const k = lastIn[i];
+        if (k?.startsWith(POTION_KEY)) { hotbar.setStatus(i, flaskStatus(descentWands.potions[Number(k.slice(POTION_KEY.length))])); continue; }
         hotbar.setStatus(i, [tools.get(k)?.inst.status?.(), notes.get(k)].filter(Boolean).join(' · '));
       }
     },
@@ -467,7 +584,13 @@ export function createToolbelt(env) {
     // D11): every tool, selected or not, moves the grid positions it keeps.
     windowShifted(dx, dz) { tools.forEach((t) => t.inst.windowShifted?.(dx, dz)); wandRuntime.windowShifted(dx, dz); },
     // the world was replaced (a scene load, undo, a new grid): what tools left in it is gone
-    worldReplaced() { tools.forEach((t) => t.inst.worldReplaced?.()); wandRuntime.resetWorld(); },
+    worldReplaced() {
+      tools.forEach((t) => t.inst.worldReplaced?.()); wandRuntime.resetWorld();
+      // Descent's level switch replaced the world, and emptyLoads() emptied the flask in hand: it's the run's,
+      // so it comes back full of what it held (Noita's flasks go down with you)
+      const f = potionSlot >= 0 ? descentWands.potions[potionSlot] : null, tool = flaskTool();
+      if (f && tool && tool.holdCells(f.cells)) potionVersion = tool.load.version;
+    },
     dispose() {
       removeEventListener('keydown', onKey, { capture: true });
       loot.dispose(); offTemple(); offRun.forEach((off) => off());

@@ -1,0 +1,52 @@
+/* The scripting console (src/console/index.js): Garry's Mod's console, hung
+   from the top bar like the dock (ui/styles.css --bar-bottom), over the dock. */
+.console {
+  position: fixed; z-index: 35;
+  left: 50%; top: calc(var(--bar-bottom) + 8px);
+  transform: translateX(-50%);
+  width: min(880px, calc(100vw - 32px));
+  height: min(46vh, 460px);
+  display: flex; flex-direction: column;
+  padding: 10px 12px 12px;
+  user-select: text;
+}
+.console[hidden] { display: none; }
+.console-head {
+  display: flex; align-items: center; gap: 10px;
+  padding-bottom: 8px; border-bottom: 1px solid var(--line);
+}
+.console-head h2 {
+  margin: 0; font: 400 12px/1 var(--pixel); letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted);
+}
+.console-status { flex: 1; color: var(--faint); font-size: 12px; }
+.console-stop[hidden] { display: none; }
+.console-close { width: 26px; height: 26px; padding: 0; line-height: 1; font-size: 18px; }
+.console-log, .console-input, .console-error, .console-prompt {
+  font: 400 12.5px/1.45 ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+.console-log {
+  flex: 1; min-height: 0; overflow-y: auto; padding: 8px 2px;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.console-row.row-cmd { color: var(--muted); }
+.console-row.row-out { color: var(--text); }
+.console-row.row-info { color: var(--faint); }
+.console-row.row-error { color: var(--danger); }
+.console-error { min-height: 1.45em; color: var(--danger); padding: 0 2px 6px; overflow-wrap: anywhere; }
+.console-line {
+  display: flex; align-items: flex-start; gap: 8px;
+  background: var(--raise); border: 1px solid var(--line); border-radius: var(--r-ctl);
+  padding: 6px 10px;
+}
+.console-line:focus-within { border-color: var(--line-hi); }
+.console-prompt { color: var(--accent); }
+.console-input {
+  flex: 1; resize: none; border: 0; outline: 0; padding: 0; margin: 0;
+  background: transparent; color: var(--text);
+  max-height: calc(8 * 1.45em);
+}
+.console-input::placeholder { color: var(--faint); }
+.console-input:disabled { opacity: 0.5; }
+@media (max-width: 600px) {
+  .console { top: calc(var(--bar-bottom) + 4px); height: 52vh; padding: 8px; }
+}
