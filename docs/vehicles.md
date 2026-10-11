@@ -116,5 +116,3 @@ them), as it resets the NPCs.
 - The body only meets a hull by being pushed back out sideways (`shoveOut`): you can't stand on a jeep's
   roof. Vehicles don't push cells (sand isn't ploughed, water isn't splashed by them).
 - Vehicle-on-vehicle crashes don't hurt; the hoverbike's fans don't blow dust.
-- The vehicles read the cells through their own copy (an `ai/world.js` model, one readback every 0.5 s)
-  beside the NPCs' one: sharing a single readback would halve that cost.

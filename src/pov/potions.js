@@ -48,13 +48,14 @@ const TELEPORT_HOT_REACH = 3;                                   // cells around 
 
 const KIND = ELEMENTS.map((e) => e.kind);
 
-// one picture of the world per renderer for Teleportitis's safe spots (ai/world.js, the NPCs'
-// readback), made when a body first gets it and refreshed only while some body has it
-const models = new WeakMap();
+// The picture of the world for Teleportitis's safe spots: a view of the renderer's world model
+// (ai/world.js, shared with the NPCs and vehicles), one per body (ctx is its status set's) so
+// that each ticks its view once a frame however many bodies have it; it reads only while some body does.
+const views = new WeakMap();
 function worldFor(ctx) {
   if (!ctx.renderer || !ctx.getSim) return null;
-  if (!models.has(ctx.renderer)) models.set(ctx.renderer, createWorldModel({ renderer: ctx.renderer, getSim: ctx.getSim }));
-  return models.get(ctx.renderer);
+  if (!views.has(ctx)) views.set(ctx, createWorldModel({ renderer: ctx.renderer, getSim: ctx.getSim }));
+  return views.get(ctx);
 }
 
 // A safe open spot for a body's feet within [TELEPORT_MIN, TELEPORT_MAX] of `from`: the topmost
