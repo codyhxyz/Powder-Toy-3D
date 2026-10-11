@@ -1,14 +1,17 @@
-import { prelude, stateOutGLSL } from './common.js';
-import { quietGLSL } from './activity.js';
+import { prelude, STATE_OPTS, LAYOUT, STAGE, gridDims, sleepUnitOf } from './common.js';
+import { uniformStruct } from '../gpu/params.js';
+import { fold } from '../gpu/kernels.js';
 
 // Movement pass: Margolus block cellular automaton.
 //
 // The grid is partitioned into 2×2×2 blocks; the partition shifts by one cell
-// on every step (uParity). Every fragment loads its whole block, runs the
-// *same* deterministic block update (all randomness is seeded from the block
-// coordinate + frame), then writes out its own cell. Because a block is only
-// ever permuted, mass is conserved exactly and two particles can never claim
-// the same cell — the classic GPU falling-sand race condition can't happen.
+// on every step (P.parity). One thread per block loads its whole block, runs
+// the block update (all randomness is seeded from the block's base cell and
+// the frame) and writes its 8 cells back. Because a block is only ever
+// permuted, mass is conserved exactly and two particles can never claim the
+// same cell: the classic GPU falling-sand race condition can't happen. And
+// because a block's thread reads and writes only its own 8 cells, the move
+// runs in place, in the current state copy (docs/webgpu.md D2, W11).
 //
 // Movement is velocity driven: each particle carries a velocity (cells/step)
 // integrated in the react pass (gravity, buoyancy, pressure, drag). Here a
@@ -17,86 +20,151 @@ import { quietGLSL } from './activity.js';
 // particles get collision responses: powders topple diagonally, liquids turn
 // their fall into horizontal flow, gases slide along ceilings.
 //
-// To avoid solving every block 8 times (once per cell), the block pass runs
-// at block resolution and writes, for each of the 8 destination slots, which
-// source cell lands there plus its new velocity (8 MRT attachments). A cheap
-// gather pass then rebuilds the state at cell resolution, each cell reading
-// its slot (slotGLSL postMove). (Folding the gather into the react pass, which
-// would read the moved state of the cell and its 6 neighbours through the
-// slots, was measured slower: 7 slot lookups of 3 fetches each per cell cost
-// more than writing the moved state once and reading it back.)
-//
 // Impacts on solids. A grain that slams into a solid (faster than COLLIDE_V,
 // the line between an impact and resting contact) stops, and the kinetic
 // energy it loses becomes heat (physics.js KE_TO_HEAT), shared between it and
 // the solid so both warm by the same amount. Liquids splash and flow on and
 // gases bounce, so their motion isn't counted. A grain whose impact would
 // break the solid isn't stopped at all: the react pass after this one breaks
-// the solid and charges the grain for it (react.js). The heat rides out of the
-// block pass packed into each slot's source index (see packSlot).
+// the solid and charges the grain for it (react.js). The heat is quantized as
+// the WebGL build's slot packing quantized it (HEAT_QUANTA).
 //
-// The block update is generated in JS with every cell index baked in as a
-// literal, and the 8 cells live in plain named variables (a0..a7 etc). GPU
-// compilers don't reliably inline helpers that index arrays, and dynamic
-// indexing spills the whole block to memory — this layout keeps it all in
-// registers and is several times faster.
+// Which blocks run (docs/webgpu.md D2, D5). The steps run over the sleeping
+// units the activity map draws (shaders/activity.js): a block runs if any of
+// its cells lies in a DRAWN unit, and every other thread returns at once. A
+// unit's home blocks (based in it) come from a list per partition offset:
+// at offset 0 a block lies in its home brick, so the list is DRAWN; at 1 it
+// reaches one cell into the next brick along each axis, so the list is MOVE1,
+// DRAWN dilated toward -x, -y, -z. The blocks based outside the grid at
+// offset 1 (a base coordinate of -1: the low margin) have no home brick and
+// are a direct dispatch of their own (P.margin).
+//
+// A block whose base cell is in a quiet brick (shaders/activity.js) lies
+// within that brick's inert halo: it stays put, velocities and all. Its cells
+// only lose DIRTY on a map's first step (P.fresh), and those in a brick that
+// isn't quiet blend still motion into the flow field.
+//
+// With Whitewater on, the same pipeline runs out of place (P.outOfPlace): it
+// writes the other copy, copies a quiet block's A and B through, and records
+// where each cell's content came from (moveSrc), which the aeration field
+// follows, reading the copy from before the move (gfx/foam.js). One pipeline,
+// so in place and out of place can't differ by how a compiler contracted two
+// modules' math (docs/webgpu.md D8.11).
+//
+// The flow field for the renderer (gfx/surface.js, flowing grains): how far
+// each cell's content moved this step, blended into the field over recent
+// steps (FLOW_BLEND). This is motion that happened, not velocity: grains
+// pressed against a pile want to fall but go nowhere, so a resting pile reads
+// 0. Quiet bricks hold only still air and solids, which the renderer doesn't
+// read flow for, so they keep what they have. Three half floats per cell.
+//
+// Code form (docs/webgpu.md D2, W23). The WebGL build generated the block
+// update unrolled, every cell index a literal and the 8 cells in named
+// registers (a0..a7 …), so GPU compilers keep the whole block in registers.
+// That form ships (MOVE_FORM): as WGSL it is about 3,100 lines, and it builds
+// on SwiftShader (the test device) in 11-14 s, within PIPELINE_BUDGET_MS, so
+// D2 keeps it. The loop form (the rules as functions over the block held in
+// arrays indexed at runtime) builds in about 1 s and runs about 3× faster on
+// SwiftShader, a CPU rasterizer; on a GPU those arrays are likely to spill.
+// It stays for the sim bench's A/B on the Mac (tools/harness/sim-bench.js,
+// docs/webgpu.md I4 M1), and sim-check's moves stage asserts that both forms
+// give the same state. tools/check-wgsl.mjs --time measures both builds.
 
-// Cell i lives at local (x, y, z) = (i & 1, (i >> 1) & 1, (i >> 2) & 1).
+// The block's cells: cell i at local (x, y, z) = (i & 1, (i >> 1) & 1, (i >> 2) & 1).
 const CELLS = [0, 1, 2, 3, 4, 5, 6, 7];
 
-// Impact heat leaves the block pass in each slot's first channel next to the
-// source index: n + SLOTS·round(q·HEAT_QUANTA), q in kinetic-energy units.
-// A float holds integers exactly up to 2^24, so with this resolution q tops
-// out at 2^24 / 8 / 1024 ≈ 2048, far above anything a step can deposit.
-export const SLOTS = 8;   // a block's cells, and so its slots
+// Impact heat travels with each cell as an amount of kinetic energy,
+// quantized as the WebGL build's slots packed it beside the source index
+// (n + 8·round(q·HEAT_QUANTA) in one float): resolution 1/HEAT_QUANTA, up to
+// HEAT_Q_MAX, far above anything a step can deposit.
+export const SLOTS = 8;   // a block's cells
 const HEAT_QUANTA = 1024;   // quanta per unit of kinetic energy (resolution ≈ 0.001)
 const HEAT_Q_MAX = Math.floor((2 ** 24 / SLOTS - 1) / HEAT_QUANTA);
-const heatGLSL = /* glsl */ `
-#define SLOTS ${SLOTS}
-#define HEAT_QUANTA ${HEAT_QUANTA}.0
-#define HEAT_Q_MAX ${HEAT_Q_MAX}.0
-`;
 
+// Share of each step's displacements blended into the flow field (the rest is
+// history): grains move a cell on some steps and not others, so the field
+// averages their speed over about 1 / FLOW_BLEND steps.
+export const FLOW_BLEND = 0.05;
+
+// Margolus blocks at partition offset 1 with a base coordinate of -1 (the
+// grid's low margin): the slab x = -1, then y = -1 (x ≥ 0), then z = -1
+// (x, y ≥ 0), with h = N/2 per axis.
+export function marginBlocks(g) {
+  const hx = g.nx / 2, hy = g.ny / 2, hz = g.nz / 2;
+  return (hy + 1) * (hz + 1) + hx * (hz + 1) + hx * hy;
+}
+
+export const MoveParams = uniformStruct('MoveParams', {
+  frame: 'u32',
+  parity: 'u32',      // the partition offset: frame & 1
+  gravity: 'f32',
+  fresh: 'u32',       // the first step under this activity map: DIRTY marks start over
+  outOfPlace: 'u32',  // Whitewater: write H.dst ≠ H.src, copy quiet blocks through, record moveSrc
+  margin: 'u32',      // the low margin's blocks (direct), not a list's
+  blockRev: 'u32',    // test (sim.test.blockOrder): reversed thread → block map
+  eight: 'u32',       // 8: the loops' bound at runtime, so compilers keep them loops
+});
+
+// Group 2 (docs/webgpu.md C4): the flow field and moveSrc, both read_write.
+export const MOVE_LAYOUT = [
+  { binding: 0, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } },
+  { binding: 1, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } },
+];
+
+// ---------------------------------------------------------------- the unrolled form
+// The WebGL build's block update, mechanically: cell i in registers a${i}
+// (state A), v${i} (velocity), k${i} (element), d${i} (density), n${i}
+// (where its content came from), q${i} (impact heat), m${i} (moved this step),
+// s${i} (stopped: it tried to fall or rise and hit something).
+//
+// QUIRK, kept for parity (docs/webgpu.md A goal 2): in the GLSL, the old
+// velocity saved for impactHeat was a block-local `vec3 v0 = v${i};`. For cell
+// 0 that declared `vec3 v0 = v0;`, which shadows cell 0's register, so cell 0
+// rising into a solid and cell 0 bouncing off one along x or z changed only the
+// dead local: it kept its velocity and took no heat (it is still marked
+// stopped when rising). Both forms do exactly that; fixing it is a physics
+// change (docs/webgpu.md K3).
 const swap = (i, j) => `{
-    vec4 ta = a${i}; a${i} = a${j}; a${j} = ta;
-    vec3 tv = v${i}; v${i} = v${j}; v${j} = tv;
-    int ti = k${i}; k${i} = k${j}; k${j} = ti;
-    int tn = n${i}; n${i} = n${j}; n${j} = tn;
-    float td = d${i}; d${i} = d${j}; d${j} = td;
-    float tq = q${i}; q${i} = q${j}; q${j} = tq;
+    let ta = a${i}; a${i} = a${j}; a${j} = ta;
+    let tv = v${i}; v${i} = v${j}; v${j} = tv;
+    let ti = k${i}; k${i} = k${j}; k${j} = ti;
+    let tn = n${i}; n${i} = n${j}; n${j} = tn;
+    let td = d${i}; d${i} = d${j}; d${j} = td;
+    let tq = q${i}; q${i} = q${j}; q${j} = tq;
     m${i} = true; m${j} = true;
   }`;
 // Collision between particles i and j along component c (i on the negative
 // side, j on the positive side). Fast impacts exchange momentum, weighted by
-// density as mass, with restitution 0.3 — this is what lets a blast or an
+// density as mass, with restitution 0.3: this is what lets a blast or an
 // impact travel through a pile like a Newton's cradle. Slow contact is just
 // support: the approaching velocity is cancelled.
 const collide = (i, j, c) => `{
-      float rel = v${i}.${c} - v${j}.${c};
+      let rel = v${i}.${c} - v${j}.${c};
       if (rel > COLLIDE_V) {
-        float mi = d${i}, mj = d${j}, inv = 1.0 / (mi + mj);
-        float vc = (mi * v${i}.${c} + mj * v${j}.${c}) * inv;
+        let mi = d${i};
+        let mj = d${j};
+        let inv = 1.0 / (mi + mj);
+        let vc = (mi * v${i}.${c} + mj * v${j}.${c}) * inv;
         v${i}.${c} = vc - RESTITUTION * mj * inv * rel;
         v${j}.${c} = vc + RESTITUTION * mi * inv * rel;
       } else if (rel > 0.0) {
-        if (v${i}.${c} > 0.0) v${i}.${c} = 0.0;
-        if (v${j}.${c} < 0.0) v${j}.${c} = 0.0;
+        if (v${i}.${c} > 0.0) { v${i}.${c} = 0.0; }
+        if (v${j}.${c} < 0.0) { v${j}.${c} = 0.0; }
       }
     }`;
-
 // Particle i (velocity before vOld) was stopped by solid j: its lost kinetic
 // energy, if it was a real impact by a grain, becomes heat shared by capacity.
 const impactHeat = (i, j, vOld, speed) => `
-      if (KIND[k${i}] == K_POWDER && ${speed} > COLLIDE_V) {
-        float lost = max(0.5 * d${i} * (dot(${vOld}, ${vOld}) - dot(v${i}, v${i})), 0.0);
-        float share = CAP[k${i}] / (CAP[k${i}] + CAP[k${j}]);
-        q${i} += lost * share; q${j} += lost * (1.0 - share);
+      if (KIND(k${i}) == K_POWDER && ${speed} > COLLIDE_V) {
+        let lost = max(0.5 * d${i} * (dot(${vOld}, ${vOld}) - dot(v${i}, v${i})), 0.0);
+        let share = CAP(k${i}) / (CAP(k${i}) + CAP(k${j}));
+        q${i} += lost * share;
+        q${j} += lost * (1.0 - share);
       }`;
 // Would particle i, moving at vn along the axis toward solid j, break it or
 // set off an explosive (common.js impactActs)? Then leave it be: the react
 // pass breaks j and charges i for it, or sets the explosive off.
 const breaks = (i, j, vn) => `impactActs(k${i}, k${j}, 0.5 * d${i} * ${vn} * ${vn})`;
-
 const can = (i, j, dir) => `canMove(k${i}, k${j}, d${i}, d${j}, ${dir})`;
 const drag = (i, j) => `dragF(k${i}, k${j}, d${i}, d${j})`;
 
@@ -106,39 +174,45 @@ const drag = (i, j) => `dragF(k${i}, k${j}, d${i}, d${j})`;
 // topple (2) like a falling one; it just doesn't land again every step.
 const vertical = (b, t) => `
   {
-    bool mt = movable(k${t}), mb = movable(k${b});
-    bool down = v${t}.y < 0.0, up = v${b}.y > 0.0;
-    bool held = v${t}.y == 0.0 && GRAV[k${t}] * uGravity > 0.0;
+    let mt = movable(k${t});
+    let mb = movable(k${b});
+    let down = v${t}.y < 0.0;
+    let up = v${b}.y > 0.0;
+    let held = v${t}.y == 0.0 && GRAV(k${t}) * P.gravity > 0.0;
     if (!mt || !mb) {
       if (mt && down && !${breaks(t, b, `v${t}.y`)}) {
-        vec3 v0 = v${t};
-        v${t} = land(v${t}, k${t}); s${t} = true;${impactHeat(t, b, 'v0', '-v0.y')}
-      } else if (mt && held) s${t} = true;
+        let vo = v${t};
+        v${t} = land(v${t}, k${t}, &rs);
+        s${t} = true;${impactHeat(t, b, 'vo', '-vo.y')}
+      } else if (mt && held) { s${t} = true; }
       if (mb && up && !${breaks(b, t, `v${b}.y`)}) {
-        vec3 v0 = v${b};
-        v${b}.y = 0.0; s${b} = true;${impactHeat(b, t, 'v0', 'v0.y')}
+        ${b === 0 ? '// (QUIRK: cell 0 keeps its velocity and takes no heat)' : `let vo = v${b};
+        v${b}.y = 0.0;`}
+        s${b} = true;${b === 0 ? '' : impactHeat(b, t, 'vo', 'vo.y')}
       }
     } else if (down || up) {
-      bool okDown = down && ${can(t, b, 0)};
-      bool okUp = up && ${can(b, t, 1)};
+      let okDown = down && ${can(t, b, 0)};
+      let okUp = up && ${can(b, t, 1)};
       if (okDown || okUp) {
-        float pr = max(okDown ? -v${t}.y : 0.0, okUp ? v${b}.y : 0.0) * ${drag(t, b)};
-        if (rnd(rs) < pr) ${swap(t, b)}
+        let pr = max(select(0.0, -v${t}.y, okDown), select(0.0, v${b}.y, okUp)) * ${drag(t, b)};
+        if (rnd(&rs) < pr) ${swap(t, b)}
       } else if (!(v${b}.y > v${t}.y && shockActs(k${t}, k${b}, hitKE(d${t}, d${b}, false, v${b}.y - v${t}.y)))) {
         // blocked by another particle: collide (bottom is on the -y side).
         // (A hit that sets off an explosive is left as it is: react.js sees it.)
-        float vt = v${t}.y;
+        let vt = v${t}.y;
         ${collide(b, t, 'y')}
-        if (down) { if (KIND[k${t}] == K_LIQUID) v${t} = land(vec3(v${t}.x, vt, v${t}.z), k${t}) + vec3(0.0, v${t}.y, 0.0); s${t} = true; }
-        else if (held) s${t} = true;
-        if (up) s${b} = true;
+        if (down) {
+          if (KIND(k${t}) == K_LIQUID) { v${t} = land(vec3f(v${t}.x, vt, v${t}.z), k${t}, &rs) + vec3f(0.0, v${t}.y, 0.0); }
+          s${t} = true;
+        } else if (held) { s${t} = true; }
+        if (up) { s${b} = true; }
       }
-    } else if (held && !${can(t, b, 0)}) s${t} = true;
+    } else if (held && !${can(t, b, 0)}) { s${t} = true; }
   }`;
 
 // 2. diagonal topple: a blocked top cell falls diagonally (powders/liquids),
-// a blocked bottom gas cell that is buoyant rises diagonally. Candidates are scored by the
-// particle's horizontal velocity plus noise; the best open one wins.
+// a blocked bottom gas cell that is buoyant rises diagonally. Candidates are
+// scored by the particle's horizontal velocity plus noise; the best open one wins.
 const diagonal = (i) => {
   const top = (i & 2) !== 0;
   const xi = i & 1, zi = (i >> 2) & 1;
@@ -149,16 +223,17 @@ const diagonal = (i) => {
   const ok = (c) => {
     const target = c + yo, path = c + po;
     const passable = top ? `isFluid(k${path}) && d${path} < d${i}` : `isFluid(k${path})`;
-    return `(!m${target} && ${passable} && ${can(i, target, top ? 0 : 1)})`;
+    return `!m${target} && ${passable} && ${can(i, target, top ? 0 : 1)}`;
   };
-  const kindOk = top ? `(kd == K_POWDER || kd == K_LIQUID)` : `(kd == K_GAS && GRAV[k${i}] < 0.0)`;   // buoyant gases (not cloud, which rides the air)
+  // buoyant gases (not cloud, which rides the air)
+  const kindOk = top ? '(kd == K_POWDER || kd == K_LIQUID)' : `(kd == K_GAS && GRAV(k${i}) < 0.0)`;
+  const score = (n) => `
+      var s${'ABC'[n]} = -9.0;
+      if (${ok(cols[n])}) { s${'ABC'[n]} = ${dirs[n]} + rnd(&rs) * DIAG_NOISE; }`;
   return `
   if (s${i} && !m${i}) {
-    int kd = KIND[k${i}];
-    if (${kindOk} && (kd != K_POWDER || rnd(rs) <= SLIDE[k${i}])) {
-      float sA = ${ok(cols[0])} ? ${dirs[0]} + rnd(rs) * DIAG_NOISE : -9.0;
-      float sB = ${ok(cols[1])} ? ${dirs[1]} + rnd(rs) * DIAG_NOISE : -9.0;
-      float sC = ${ok(cols[2])} ? ${dirs[2]} + rnd(rs) * DIAG_NOISE : -9.0;
+    let kd = KIND(k${i});
+    if (${kindOk} && (kd != K_POWDER || rnd(&rs) <= SLIDE(k${i}))) {${score(0)}${score(1)}${score(2)}
       if (max(sA, max(sB, sC)) > -8.0) {
         if (sA >= sB && sA >= sC) ${swap(i, cols[0] + yo)}
         else if (sB >= sC) ${swap(i, cols[1] + yo)}
@@ -171,210 +246,499 @@ const diagonal = (i) => {
 // 3. horizontal exchange between i and its +axis neighbour j
 const horizontal = (i, j, c) => `
   if (!m${i} && !m${j}) {
-    float h0 = v${i}.${c}, h1 = v${j}.${c};
-    bool w0 = h0 > 0.0, w1 = h1 < 0.0;
+    let h0 = v${i}.${c};
+    let h1 = v${j}.${c};
+    let w0 = h0 > 0.0;
+    let w1 = h1 < 0.0;
     if (w0 || w1) {
-      bool ok0 = w0 && ${can(i, j, 2)};
-      bool ok1 = w1 && ${can(j, i, 2)};
+      let ok0 = w0 && ${can(i, j, 2)};
+      let ok1 = w1 && ${can(j, i, 2)};
       if (ok0 || ok1) {
-        float pr = max(ok0 ? h0 : 0.0, ok1 ? -h1 : 0.0) * ${drag(i, j)};
-        if (rnd(rs) < pr) ${swap(i, j)}
+        let pr = max(select(0.0, h0, ok0), select(0.0, -h1, ok1)) * ${drag(i, j)};
+        if (rnd(&rs) < pr) ${swap(i, j)}
       } else if (movable(k${i}) && movable(k${j})) {
-        if (!(h0 > h1 && shockActs(k${i}, k${j}, hitKE(d${i}, d${j}, false, h0 - h1)))) {${collide(i, j, c)}
-        }
+        if (!(h0 > h1 && shockActs(k${i}, k${j}, hitKE(d${i}, d${j}, false, h0 - h1)))) ${collide(i, j, c)}
       } else {
-        if (w0 && !${breaks(i, j, 'h0')}) { vec3 v0 = v${i}; v${i}.${c} *= bounceR(k${i});${impactHeat(i, j, 'v0', 'h0')} }
-        if (w1 && !${breaks(j, i, 'h1')}) { vec3 v0 = v${j}; v${j}.${c} *= bounceR(k${j});${impactHeat(j, i, 'v0', '-h1')} }
+        if (w0 && !${breaks(i, j, 'h0')}) {${i === 0 ? ' /* (QUIRK: cell 0 keeps its velocity and takes no heat) */ ' : `
+          let vo = v${i};
+          v${i}.${c} *= bounceR(k${i});${impactHeat(i, j, 'vo', 'h0')}
+        `}}
+        if (w1 && !${breaks(j, i, 'h1')}) {
+          let vo = v${j};
+          v${j}.${c} *= bounceR(k${j});${impactHeat(j, i, 'vo', '-h1')}
+        }
       }
     }
   }`;
 const horizontalX = () => [[0, 1], [2, 3], [4, 5], [6, 7]].map(([i, j]) => horizontal(i, j, 'x')).join('');
 const horizontalZ = () => [[0, 4], [1, 5], [2, 6], [3, 7]].map(([i, j]) => horizontal(i, j, 'z')).join('');
 
-export const moveBlockFrag = (g) => /* glsl */ `
-${prelude(g)}
-uniform int uParity;
-uniform uint uFrame;
-uniform float uGravity;
-${CELLS.map((i) => `layout(location = ${i}) out vec4 o${i};`).join('\n')}
-${quietGLSL}
-${heatGLSL}
-uint rs;
-
-// Moving through a liquid is slower than through air.
-float dragF(int a, int b, float da, float db) {
-  bool la = KIND[a] == K_LIQUID, lb = KIND[b] == K_LIQUID;
-  if ((la && !isGasLike(b)) || (lb && !isGasLike(a)))
-    return DRAG_LIQUID_MIN + DRAG_LIQUID_SPAN * clamp(DRAG_LIQUID_DENS * abs(da - db) / max(da, db), 0.0, 1.0);
-  return 1.0;
-}
-
-// A particle tried to fall and hit something.
-vec3 land(vec3 v, int id) {
-  float vy = v.y;
-  v.y = 0.0;
-  if (KIND[id] == K_LIQUID && vy < -LAND_SPLASH_V) {
-    // A real impact: liquids convert vertical momentum into a sideways splash.
-    // (Resting liquid gets its flow from the react pass instead.)
-    vec2 h = v.xz;
-    float f = FLOW[id];
-    if (dot(h, h) < f * f * LAND_SPLASH_FLOW) {
-      float ang = rnd(rs) * 6.2831853;
-      h = vec2(cos(ang), sin(ang)) * f;
-    }
-    h += normalize(h) * (-vy) * LAND_SPLASH_GAIN;
-    v.xz = clamp(h, -V_MAX, V_MAX);
-  } else if (KIND[id] == K_POWDER) {
-    // Grains scatter a little when they land hard, then friction takes over.
-    float ang = rnd(rs) * 6.2831853;
-    v.xz = v.xz * LAND_POWDER_KEEP + vec2(cos(ang), sin(ang)) * (-vy) * LAND_POWDER_SCATTER;
-  }
-  return v;
-}
-
-float bounceR(int id) {
-  int k = KIND[id];
-  return k == K_LIQUID ? BOUNCE_LIQUID : (k == K_POWDER ? 0.0 : BOUNCE_GAS);
-}
-
-// A slot's source index (0..7) and the impact heat its cell picked up, in one float.
-float packSlot(int n, float q) {
-  return float(n + SLOTS * int(clamp(q, 0.0, HEAT_Q_MAX) * HEAT_QUANTA + 0.5));
-}
-
-void main() {
-  bool valid;
-  ivec3 j = blockFromFrag(ivec2(gl_FragCoord.xy), valid);
-  // a texel holding no block (the low margin's blocks exist at offset 1 only)
-  if (!valid || (uParity == 0 && any(lessThan(j, ivec3(0))))) {
-    ${CELLS.map((i) => `o${i} = vec4(0.0);`).join(' ')}
-    return;
-  }
-  ivec3 base = 2 * j + ivec3(uParity);
-  // A block whose base cell is in a quiet brick (shaders/activity.js) lies
-  // within that brick's inert halo: it stays put, velocities and all.
-  if (quietCell(base)) {
-    ${CELLS.map((i) => `{
-    ivec3 q = base + ivec3(${i & 1}, ${(i >> 1) & 1}, ${(i >> 2) & 1});
-    o${i} = vec4(float(${i}), inGrid(q) ? fetchB(q).xyz : vec3(0.0));
-    }`).join('\n    ')}
-    return;
-  }
-
-  ${CELLS.map((i) => `vec4 a${i}; vec3 v${i}; int k${i}; float d${i}; int n${i} = ${i}; float q${i} = 0.0; bool m${i} = false, s${i} = false;`).join('\n  ')}
+const unrolled = () => ({
+  decl: '',
+  load: `
+  ${CELLS.map((i) => `var a${i}: vec4f;
+  var v${i}: vec3f;
+  var k${i}: i32;
+  var d${i}: f32;
+  var n${i}: i32 = ${i};
+  var q${i}: f32 = 0.0;
+  var m${i} = false;
+  var s${i} = false;`).join('\n  ')}
   ${CELLS.map((i) => `{
-    ivec3 q = base + ivec3(${i & 1}, ${(i >> 1) & 1}, ${(i >> 2) & 1});
-    if (inGrid(q)) { a${i} = fetchA(q); v${i} = fetchB(q).xyz; }
-    else { a${i} = vec4(float(E_WALL), AMBIENT, 0.0, 0.0); v${i} = vec3(0.0); }
-    k${i} = eid(a${i}); d${i} = densityOf(k${i}, a${i}.y);
-  }`).join('\n  ')}
-  rs = seed3(base, uFrame, 0x51u);
-
+    let c = cellAt(base, ${i});
+    if (inGrid(c)) { a${i} = fetchA(c); v${i} = fetchB(c).xyz; }
+    else { a${i} = vec4f(f32(E_WALL), AMBIENT, 0.0, 0.0); v${i} = vec3f(0.0); }
+    k${i} = eid(a${i});
+    d${i} = densityOf(k${i}, a${i}.y);
+  }`).join('\n  ')}`,
+  solve: `
   // Columns are independent in the vertical phase, so a fixed order is fair.
   ${vertical(0, 2)}${vertical(1, 3)}${vertical(4, 6)}${vertical(5, 7)}
 
   // Diagonal order alternates so no direction is systematically favoured.
-  if (rnd(rs) < 0.5) {
+  if (rnd(&rs) < 0.5) {
     ${[2, 7, 3, 6, 0, 5, 1, 4].map(diagonal).join('')}
   } else {
     ${[6, 3, 7, 2, 4, 1, 5, 0].map(diagonal).join('')}
   }
 
-  if (rnd(rs) < 0.5) {
+  if (rnd(&rs) < 0.5) {
     ${horizontalX()}${horizontalZ()}
   } else {
     ${horizontalZ()}${horizontalX()}
+  }`,
+  // cell i's content after the solve: (state A, velocity, source index, impact heat)
+  out: (i) => ({ a: `a${i}`, v: `v${i}`, n: `n${i}`, q: `q${i}` }),
+  write: (body) => CELLS.map((i) => `{
+    let i = ${i};
+    let a = a${i};
+    let vv = v${i};
+    let src = n${i};
+    let q = q${i};
+    ${body}
+  }`).join('\n  '),
+});
+
+// ---------------------------------------------------------------- the loop form
+// The same rules, line for line and draw for draw, over the block held in
+// arrays (Blk) and indexed at runtime: one function per rule, called in loops
+// whose bounds the compiler doesn't know (P.eight), so each rule is compiled
+// once. m and s are bit sets. Tools only (the sim bench, sim-check): see
+// "Code form" above.
+const loopDecl = /* wgsl */ `
+struct Blk {
+  a: array<vec4f, 8>,   // state A
+  v: array<vec3f, 8>,   // velocity
+  k: array<i32, 8>,     // element
+  d: array<f32, 8>,     // density
+  n: array<i32, 8>,     // the cell its content came from
+  q: array<f32, 8>,     // impact heat (kinetic energy)
+  m: u32,               // moved this step (bit i)
+  s: u32,               // stopped: tried to fall or rise and hit something (bit i)
+}
+fn bit(i: i32) -> u32 { return 1u << u32(i); }
+fn isM(b: ptr<function, Blk>, i: i32) -> bool { return ((*b).m & bit(i)) != 0u; }
+fn isS(b: ptr<function, Blk>, i: i32) -> bool { return ((*b).s & bit(i)) != 0u; }
+fn stop(b: ptr<function, Blk>, i: i32) { (*b).s |= bit(i); }
+fn swapCells(b: ptr<function, Blk>, i: i32, j: i32) {
+  let ta = (*b).a[i]; (*b).a[i] = (*b).a[j]; (*b).a[j] = ta;
+  let tv = (*b).v[i]; (*b).v[i] = (*b).v[j]; (*b).v[j] = tv;
+  let ti = (*b).k[i]; (*b).k[i] = (*b).k[j]; (*b).k[j] = ti;
+  let tn = (*b).n[i]; (*b).n[i] = (*b).n[j]; (*b).n[j] = tn;
+  let td = (*b).d[i]; (*b).d[i] = (*b).d[j]; (*b).d[j] = td;
+  let tq = (*b).q[i]; (*b).q[i] = (*b).q[j]; (*b).q[j] = tq;
+  (*b).m |= bit(i) | bit(j);
+}
+fn can(b: ptr<function, Blk>, i: i32, j: i32, dir: i32) -> bool { return canMove((*b).k[i], (*b).k[j], (*b).d[i], (*b).d[j], dir); }
+fn dragOf(b: ptr<function, Blk>, i: i32, j: i32) -> f32 { return dragF((*b).k[i], (*b).k[j], (*b).d[i], (*b).d[j]); }
+fn breaks(b: ptr<function, Blk>, i: i32, j: i32, vn: f32) -> bool { return impactActs((*b).k[i], (*b).k[j], 0.5 * (*b).d[i] * vn * vn); }
+// Collision between particles i and j along component c (i on the negative
+// side, j on the positive side). Fast impacts exchange momentum, weighted by
+// density as mass, with restitution 0.3: this is what lets a blast or an
+// impact travel through a pile like a Newton's cradle. Slow contact is just
+// support: the approaching velocity is cancelled.
+fn collide(b: ptr<function, Blk>, i: i32, j: i32, c: i32) {
+  let rel = (*b).v[i][c] - (*b).v[j][c];
+  if (rel > COLLIDE_V) {
+    let mi = (*b).d[i];
+    let mj = (*b).d[j];
+    let inv = 1.0 / (mi + mj);
+    let vc = (mi * (*b).v[i][c] + mj * (*b).v[j][c]) * inv;
+    (*b).v[i][c] = vc - RESTITUTION * mj * inv * rel;
+    (*b).v[j][c] = vc + RESTITUTION * mi * inv * rel;
+  } else if (rel > 0.0) {
+    if ((*b).v[i][c] > 0.0) { (*b).v[i][c] = 0.0; }
+    if ((*b).v[j][c] < 0.0) { (*b).v[j][c] = 0.0; }
   }
+}
+// Particle i (velocity before vOld) was stopped by solid j: its lost kinetic
+// energy, if it was a real impact by a grain, becomes heat shared by capacity.
+fn impactHeat(b: ptr<function, Blk>, i: i32, j: i32, vOld: vec3f, speed: f32) {
+  if (KIND((*b).k[i]) == K_POWDER && speed > COLLIDE_V) {
+    let vi = (*b).v[i];
+    let lost = max(0.5 * (*b).d[i] * (dot(vOld, vOld) - dot(vi, vi)), 0.0);
+    let share = CAP((*b).k[i]) / (CAP((*b).k[i]) + CAP((*b).k[j]));
+    (*b).q[i] += lost * share;
+    (*b).q[j] += lost * (1.0 - share);
+  }
+}
 
-  ${CELLS.map((i) => `o${i} = vec4(packSlot(n${i}, q${i}), v${i});`).join('\n  ')}
+// 1. vertical exchange within one column (bo = bottom, t = top). A top cell
+// the react pass's normal force holds at rest (v.y = 0 under gravity) still
+// presses on what's below, so where that is a dead end it is blocked and may
+// topple (2) like a falling one; it just doesn't land again every step.
+fn vertical(b: ptr<function, Blk>, bo: i32, t: i32, rs: ptr<function, u32>) {
+  let mt = movable((*b).k[t]);
+  let mb = movable((*b).k[bo]);
+  let down = (*b).v[t].y < 0.0;
+  let up = (*b).v[bo].y > 0.0;
+  let held = (*b).v[t].y == 0.0 && GRAV((*b).k[t]) * P.gravity > 0.0;
+  if (!mt || !mb) {
+    if (mt && down && !breaks(b, t, bo, (*b).v[t].y)) {
+      let vo = (*b).v[t];
+      (*b).v[t] = land((*b).v[t], (*b).k[t], rs);
+      stop(b, t);
+      impactHeat(b, t, bo, vo, -vo.y);
+    } else if (mt && held) { stop(b, t); }
+    if (mb && up && !breaks(b, bo, t, (*b).v[bo].y)) {
+      if (bo != 0) {   // (QUIRK, above: cell 0 keeps its velocity and takes no heat)
+        let vo = (*b).v[bo];
+        (*b).v[bo].y = 0.0;
+        impactHeat(b, bo, t, vo, vo.y);
+      }
+      stop(b, bo);
+    }
+  } else if (down || up) {
+    let okDown = down && can(b, t, bo, 0);
+    let okUp = up && can(b, bo, t, 1);
+    if (okDown || okUp) {
+      let pr = max(select(0.0, -(*b).v[t].y, okDown), select(0.0, (*b).v[bo].y, okUp)) * dragOf(b, t, bo);
+      if (rnd(rs) < pr) { swapCells(b, t, bo); }
+    } else if (!((*b).v[bo].y > (*b).v[t].y && shockActs((*b).k[t], (*b).k[bo], hitKE((*b).d[t], (*b).d[bo], false, (*b).v[bo].y - (*b).v[t].y)))) {
+      // blocked by another particle: collide (bottom is on the -y side).
+      // (A hit that sets off an explosive is left as it is: react.js sees it.)
+      let vt = (*b).v[t].y;
+      collide(b, bo, t, 1);
+      if (down) {
+        if (KIND((*b).k[t]) == K_LIQUID) { (*b).v[t] = land(vec3f((*b).v[t].x, vt, (*b).v[t].z), (*b).k[t], rs) + vec3f(0.0, (*b).v[t].y, 0.0); }
+        stop(b, t);
+      } else if (held) { stop(b, t); }
+      if (up) { stop(b, bo); }
+    }
+  } else if (held && !can(b, t, bo, 0)) { stop(b, t); }
+}
+
+// 2. diagonal topple: a blocked top cell falls diagonally (powders/liquids),
+// a blocked bottom gas cell that is buoyant rises diagonally. Candidates are
+// scored by the particle's horizontal velocity plus noise; the best open one wins.
+// Candidate n of cell i (0: across x, 1: across z, 2: across both), in i's column's row.
+fn diagCol(i: i32, n: i32) -> i32 {
+  let xi = i & 1;
+  let zi = (i >> 2u) & 1;
+  if (n == 0) { return (1 - xi) + 4 * zi; }
+  if (n == 1) { return xi + 4 * (1 - zi); }
+  return (1 - xi) + 4 * (1 - zi);
+}
+// its score, or -9 if it isn't open (drawing noise only for an open one)
+fn diagScore(b: ptr<function, Blk>, i: i32, n: i32, rs: ptr<function, u32>) -> f32 {
+  let top = (i & 2) != 0;
+  let c = diagCol(i, n);
+  let to = c + select(2, 0, top);
+  let path = c + select(0, 2, top);
+  var passable = isFluid((*b).k[path]);
+  if (top) { passable = passable && (*b).d[path] < (*b).d[i]; }
+  if (!(!isM(b, to) && passable && can(b, i, to, select(1, 0, top)))) { return -9.0; }
+  let sx = f32(1 - 2 * (i & 1));
+  let sz = f32(1 - 2 * ((i >> 2u) & 1));
+  var dir = (*b).v[i].x * sx;
+  if (n == 1) { dir = (*b).v[i].z * sz; }
+  if (n == 2) { dir = ((*b).v[i].x * sx + (*b).v[i].z * sz) * 0.7071; }
+  return dir + rnd(rs) * DIAG_NOISE;
+}
+fn diagonal(b: ptr<function, Blk>, i: i32, rs: ptr<function, u32>) {
+  if (!isS(b, i) || isM(b, i)) { return; }
+  let top = (i & 2) != 0;
+  let kd = KIND((*b).k[i]);
+  // buoyant gases (not cloud, which rides the air)
+  var kindOk = kd == K_GAS && GRAV((*b).k[i]) < 0.0;
+  if (top) { kindOk = kd == K_POWDER || kd == K_LIQUID; }
+  if (!(kindOk && (kd != K_POWDER || rnd(rs) <= SLIDE((*b).k[i])))) { return; }
+  let sA = diagScore(b, i, 0, rs);
+  let sB = diagScore(b, i, 1, rs);
+  let sC = diagScore(b, i, 2, rs);
+  if (max(sA, max(sB, sC)) > -8.0) {
+    let yo = select(2, 0, top);
+    if (sA >= sB && sA >= sC) { swapCells(b, i, diagCol(i, 0) + yo); }
+    else if (sB >= sC) { swapCells(b, i, diagCol(i, 1) + yo); }
+    else { swapCells(b, i, diagCol(i, 2) + yo); }
+  }
+}
+
+// 3. horizontal exchange between i and its +axis neighbour j (axis c: 0 x, 2 z)
+fn horizontal(b: ptr<function, Blk>, i: i32, j: i32, c: i32, rs: ptr<function, u32>) {
+  if (isM(b, i) || isM(b, j)) { return; }
+  let h0 = (*b).v[i][c];
+  let h1 = (*b).v[j][c];
+  let w0 = h0 > 0.0;
+  let w1 = h1 < 0.0;
+  if (!(w0 || w1)) { return; }
+  let ok0 = w0 && can(b, i, j, 2);
+  let ok1 = w1 && can(b, j, i, 2);
+  if (ok0 || ok1) {
+    let pr = max(select(0.0, h0, ok0), select(0.0, -h1, ok1)) * dragOf(b, i, j);
+    if (rnd(rs) < pr) { swapCells(b, i, j); }
+  } else if (movable((*b).k[i]) && movable((*b).k[j])) {
+    if (!(h0 > h1 && shockActs((*b).k[i], (*b).k[j], hitKE((*b).d[i], (*b).d[j], false, h0 - h1)))) { collide(b, i, j, c); }
+  } else {
+    if (w0 && !breaks(b, i, j, h0) && i != 0) {   // (QUIRK, above: cell 0 keeps its velocity and takes no heat)
+      let vo = (*b).v[i];
+      (*b).v[i][c] *= bounceR((*b).k[i]);
+      impactHeat(b, i, j, vo, h0);
+    }
+    if (w1 && !breaks(b, j, i, h1)) {
+      let vo = (*b).v[j];
+      (*b).v[j][c] *= bounceR((*b).k[j]);
+      impactHeat(b, j, i, vo, -h1);
+    }
+  }
+}
+// The diagonal order (2, 7, 3, 6, 0, 5, 1, 4) a nibble each; the other order is it ^ 4.
+const DIAG_ORDER: u32 = 0x41506372u;`;
+
+const loop = () => ({
+  decl: loopDecl,
+  load: `
+  var blk: Blk;
+  for (var i = 0; i < i32(P.eight); i++) {
+    let c = cellAt(base, i);
+    if (inGrid(c)) { blk.a[i] = fetchA(c); blk.v[i] = fetchB(c).xyz; }
+    else { blk.a[i] = vec4f(f32(E_WALL), AMBIENT, 0.0, 0.0); blk.v[i] = vec3f(0.0); }
+    blk.k[i] = eid(blk.a[i]);
+    blk.d[i] = densityOf(blk.k[i], blk.a[i].y);
+    blk.n[i] = i;
+    blk.q[i] = 0.0;
+  }`,
+  solve: `
+  // Columns are independent in the vertical phase, so a fixed order is fair:
+  // (0, 2), (1, 3), (4, 6), (5, 7).
+  let four = i32(P.eight >> 1u);
+  for (var c = 0; c < four; c++) {
+    let lo = (c & 1) + 4 * (c >> 1u);
+    vertical(&blk, lo, lo + 2, &rs);
+  }
+  // Diagonal order alternates so no direction is systematically favoured.
+  // (The draw comes first: never inside a select, docs/webgpu.md D8.2.)
+  let rd = rnd(&rs);
+  let flip = select(4, 0, rd < 0.5);
+  for (var x = 0; x < i32(P.eight); x++) {
+    diagonal(&blk, i32((DIAG_ORDER >> (4u * u32(x))) & 15u) ^ flip, &rs);
+  }
+  // x pairs (0, 1), (2, 3), (4, 5), (6, 7) and z pairs (0, 4), (1, 5), (2, 6), (3, 7), in either order
+  let xFirst = rnd(&rs) < 0.5;
+  for (var h = 0; h < i32(P.eight); h++) {
+    let c = h & 3;
+    if ((h < four) == xFirst) { horizontal(&blk, 2 * c, 2 * c + 1, 0, &rs); }
+    else { horizontal(&blk, c, c + 4, 2, &rs); }
+  }`,
+  write: (body) => `for (var i = 0; i < i32(P.eight); i++) {
+    let a = blk.a[i];
+    let vv = blk.v[i];
+    let src = blk.n[i];
+    let q = blk.q[i];
+    ${body}
+  }`,
+});
+
+/** The code forms the generator knows (docs/webgpu.md D2): one ships, MOVE_FORM. */
+export const MOVE_FORMS = { unrolled, loop };
+export const MOVE_FORM = 'unrolled';
+
+/**
+ * The move kernel (docs/webgpu.md D2): the name is the WebGL block pass's (W2).
+ * @param {object} g grid
+ * @param {{ form?: string, debug?: boolean, raceProbe?: boolean }} [opts]
+ *   raceProbe: test only (sim.test.raceProbe, I2.10), a variant whose solve
+ *   also reads a cell of the next block along x, a race in place
+ */
+export const moveBlockFrag = (g, { form = MOVE_FORM, debug = false, raceProbe = false } = {}) => {
+  const f = MOVE_FORMS[form]();
+  const u = sleepUnitOf(g);
+  // the content's new state at cell c (heat-warmed), its flags, and where it came from
+  const body = /* wgsl */ `let c = cellAt(base, i);
+    if (inGrid(c)) {
+      // the thread's own cell before the move: untouched until written here
+      let aOld = fetchA(c);
+      let bOld = fetchB(c);
+      var fl = fetchF(c);
+      var na = a;
+      let heat = f32(i32(clamp(q, 0.0, HEAT_Q_MAX) * HEAT_QUANTA + 0.5)) / HEAT_QUANTA;   // impact energy this cell took
+      if (heat > 0.0) { na.y = min(na.y + heat * KE_TO_HEAT / CAP(eid(na)), CELL_TEMP_MAX); }
+      // activity flags are positional: the react pass after this one re-tests
+      // the cell; mark it dirty if the move changed what its neighbours' tests
+      // read (shaders/common.js FLAG)
+      if (P.fresh != 0u) { fl &= ~FLAG_DIRTY; }
+      if (nearChange(aOld, na)) { fl |= FLAG_DIRTY; }
+      // velocity moves with the content, pressure stays with the position
+      writeState(c, na, vec4f(vv, bOld.w), fl);
+      if (P.outOfPlace != 0u) { moveSrc[slotOf(c)] = u32(src); }
+      if (!quietCell(c)) { blendFlow(c, vec3f(c - cellAt(base, src))); }
+    }`;
+  return /* wgsl */ `
+${prelude(g, { ...STATE_OPTS.STATE_RW, debug })}
+${MoveParams.wgsl}
+@group(3) @binding(1) var<uniform> P: MoveParams;
+@group(2) @binding(0) var<storage, read_write> flow: array<vec2u>;   // per slot: 3 × f16 (pack2x16float) + 0
+@group(2) @binding(1) var<storage, read_write> moveSrc: array<u32>;  // per slot: the source cell 0..7 (out of place only)
+const HEAT_QUANTA: f32 = ${HEAT_QUANTA.toFixed(1)};
+const HEAT_Q_MAX: f32 = ${HEAT_Q_MAX.toFixed(1)};
+const FLOW_BLEND: f32 = ${FLOW_BLEND};
+const NMARGIN: u32 = ${marginBlocks(g)}u;
+const BLOCKS_PER_UNIT: u32 = ${8 * u.bricks}u;   // home blocks of a sleeping unit
+
+// Moving through a liquid is slower than through air.
+fn dragF(a: i32, b: i32, da: f32, db: f32) -> f32 {
+  let la = KIND(a) == K_LIQUID;
+  let lb = KIND(b) == K_LIQUID;
+  if ((la && !isGasLike(b)) || (lb && !isGasLike(a))) {
+    return DRAG_LIQUID_MIN + DRAG_LIQUID_SPAN * clamp(DRAG_LIQUID_DENS * abs(da - db) / max(da, db), 0.0, 1.0);
+  }
+  return 1.0;
+}
+
+// A particle tried to fall and hit something.
+fn land(vIn: vec3f, id: i32, rs: ptr<function, u32>) -> vec3f {
+  var v = vIn;
+  let vy = v.y;
+  v.y = 0.0;
+  if (KIND(id) == K_LIQUID && vy < -LAND_SPLASH_V) {
+    // A real impact: liquids convert vertical momentum into a sideways splash.
+    // (Resting liquid gets its flow from the react pass instead.)
+    var h = v.xz;
+    let f = FLOW(id);
+    if (dot(h, h) < f * f * LAND_SPLASH_FLOW) {
+      let ang = rnd(rs) * 6.2831853;
+      h = vec2f(cos(ang), sin(ang)) * f;
+    }
+    h += normalize(h) * (-vy) * LAND_SPLASH_GAIN;
+    h = clamp(h, vec2f(-V_MAX), vec2f(V_MAX));
+    v = vec3f(h.x, v.y, h.y);
+  } else if (KIND(id) == K_POWDER) {
+    // Grains scatter a little when they land hard, then friction takes over.
+    let ang = rnd(rs) * 6.2831853;
+    let h = v.xz * LAND_POWDER_KEEP + vec2f(cos(ang), sin(ang)) * (-vy) * LAND_POWDER_SCATTER;
+    v = vec3f(h.x, v.y, h.y);
+  }
+  return v;
+}
+
+fn bounceR(id: i32) -> f32 {
+  let k = KIND(id);
+  if (k == K_LIQUID) { return BOUNCE_LIQUID; }
+  if (k == K_POWDER) { return 0.0; }
+  return BOUNCE_GAS;
+}
+
+fn cellAt(base: vec3i, i: i32) -> vec3i { return base + vec3i(i & 1, (i >> 1u) & 1, (i >> 2u) & 1); }
+
+// The flow field: three half floats per slot, blended toward how far the
+// content at c moved this step.
+fn blendFlow(c: vec3i, moved: vec3f) {
+  let s = slotOf(c);
+  let w = flow[s];
+  let old = vec3f(unpack2x16float(w.x), unpack2x16float(w.y).x);
+  let nf = mix(old, moved, FLOW_BLEND);
+  flow[s] = vec2u(pack2x16float(nf.xy), pack2x16float(vec2f(nf.z, 0.0)));
+}
+
+// Low-margin block t's block coordinate j (its base cell is 2·j + 1).
+fn marginBlock(t: u32) -> vec3i {
+  let h = vec3i(NX, NY, NZ) / 2;
+  let ti = i32(t);
+  let ax = (h.y + 1) * (h.z + 1);
+  if (ti < ax) { return vec3i(-1, ti % (h.y + 1) - 1, ti / (h.y + 1) - 1); }
+  let t1 = ti - ax;
+  let ay = h.x * (h.z + 1);
+  if (t1 < ay) { return vec3i(t1 % h.x, -1, t1 / h.x - 1); }
+  let t2 = t1 - ay;
+  return vec3i(t2 % h.x, t2 / h.x, -1);
+}
+${f.decl}
+
+@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
+  let par = i32(P.parity);
+  let t = foldId(wg, nwg) * 64u + select(li, 63u - li, P.blockRev != 0u);
+  var base: vec3i;
+  if (P.margin != 0u) {
+    if (t >= NMARGIN) { return; }
+    base = 2 * marginBlock(t) + 1;
+  } else {
+    // entry e of the offset's list, and the unit's home block kb
+    let e = t / BLOCKS_PER_UNIT;
+    var list = ACT_DRAWNL;
+    var cnt = CNT_DRAWN;
+    if (par == 1) { list = ACT_MOVE1L; cnt = CNT_MOVE1; }
+    if (e >= act[ACT_COUNT + cnt]) { return; }
+    let kb = t % BLOCKS_PER_UNIT;
+    let brick = act[list + e] * UNIT_B + kb / 8u;
+    let k = i32(kb % 8u);
+    base = 4 * brickCoord(brick) + 2 * vec3i(k & 1, (k >> 1u) & 1, k >> 2u) + par;
+  }
+  // it runs if a cell of it lies in a unit this map's steps draw
+  var run = false;
+  for (var i = 0; i < 8; i++) {
+    let c = cellAt(base, i);
+    if (inGrid(c) && drawnUnit(unitOfCell(c))) { run = true; }
+  }
+  if (!run) { return; }
+
+  if (quietCell(base)) {
+    // it stays put: flags settle, flow blends toward still (in a brick that isn't quiet)
+    for (var i = 0; i < 8; i++) {
+      let c = cellAt(base, i);
+      if (!inGrid(c)) { continue; }
+      let f0 = fetchF(c);
+      var fl = f0;
+      if (P.fresh != 0u) { fl &= ~FLAG_DIRTY; }
+      if (P.outOfPlace != 0u) {
+        writeState(c, fetchA(c), fetchB(c), fl);
+        moveSrc[slotOf(c)] = u32(i);
+      } else if (fl != f0) {
+        writeFlags(c, fl);
+      }
+      if (!quietCell(c)) { blendFlow(c, vec3f(0.0)); }
+    }
+    return;
+  }
+  ${f.load}
+  var rs = seed3(base, P.frame, 0x51u);${raceProbe ? `
+  // RACE PROBE (test only, docs/webgpu.md I2.10): a cell of the next block
+  // along x, which its own thread may already have moved, feeds the stream
+  { let r = base + vec3i(2, 0, 0); if (inGrid(r)) { rs ^= bitcast<u32>(fetchA(r).y); } }` : ''}
+${f.solve}
+
+  ${f.write(body)}
 }
 `;
+};
 
-// The block pass's results, read per cell (the gather pass, the flow pass):
-// uniforms tSlots and uParity, and
-//   slotOf(c, q)     cell c's slot texel (its packed source and new velocity),
-//                    and q, the cell its content comes from
-//   postMove(c, a, b)  cell c's state after the move
-// The slots are the layers of one array texture, layer i holding slot i of
-// every block (Simulation.slots), so a cell's slot is one fetch whatever its
-// place in its block: picking among 8 textures per cell costs a fetch from
-// each, since the cells of a SIMD group sit at all 8 places.
-// The block pass draws only the supertiles whose slots a step reads (sleeping
-// supertiles, shaders/activity.js SUPER_MAP BLOCKS): those of blocks based in
-// a brick that isn't quiet (the gather and the flow pass), and those of quiet
-// blocks reaching into one (the flow pass reads their identity slots). The
-// rest hold an older step's slots, which nothing reads.
-export const slotGLSL = /* glsl */ `
-uniform highp sampler2DArray tSlots;
-uniform int uParity;
-${heatGLSL}
-// the base (lowest) cell of the block holding cell c
-ivec3 blockBase(ivec3 c) { ivec3 off = ivec3(uParity); return ((c + off) / 2) * 2 - off; }
-vec4 slotOf(ivec3 c, out ivec3 q) {
-  ivec3 off = ivec3(uParity);
-  ivec3 base = blockBase(c);
-  ivec3 lp = c - base;
-  int me = lp.x + 2 * lp.y + 4 * lp.z;
-  vec4 m = texelFetch(tSlots, ivec3(blockAtlas((base + off) / 2 - off), me), 0);
-  int src = int(m.x + 0.5) % SLOTS;
-  q = base + ivec3(src & 1, (src >> 1) & 1, (src >> 2) & 1);
-  return m;
-}
-// Cell c's state after this step's move: its source cell's state A, warmed by
-// the impact energy the slot carries (packSlot), and the slot's new velocity
-// with the pressure of c itself (pressure stays with the position). (A block
-// whose base is in a quiet brick stayed put: its slots give each cell its own
-// state, as fetchA and fetchB would.)
-void postMove(ivec3 c, out vec4 a, out vec4 b) {
-  ivec3 q;
-  vec4 m = slotOf(c, q);
-  a = fetchA(q);
-  float heat = float(int(m.x + 0.5) / SLOTS) / HEAT_QUANTA;   // impact energy this cell took
-  if (heat > 0.0) a.y = min(a.y + heat * KE_TO_HEAT / CAP[eid(a)], CELL_TEMP_MAX);
-  b = vec4(m.yzw, fetchB(c).w);
-}
-`;
+const layouts = () => [LAYOUT.TABLES, LAYOUT.STATE_RW, MOVE_LAYOUT];
+// the margin's direct dispatch (the lists' are indirect, at most every unit's home blocks)
+const dispatch = (g) => [fold(Math.ceil(marginBlocks(g) / 64)), fold(Math.ceil(gridDims(g).nbricks * 8 / 64))];
+/**
+ * tools/check-wgsl.mjs, and the pipeline a grid needs (the start menu's
+ * warm-up, docs/webgpu.md B5): the shipping form. The loop form only tools
+ * build (the sim bench, sim-check's moves stage), never a session: `tool`.
+ */
+export const WGSL_CHECK = [
+  { name: 'move', kind: 'compute', code: (g) => moveBlockFrag(g), layouts, dispatch },
+  { name: 'moveLoop', kind: 'compute', code: (g) => moveBlockFrag(g, { form: 'loop' }), layouts, dispatch, tool: true },
+];
 
-// Gather: every cell's state after the move. A block whose base is in a quiet
-// brick stayed put, so its cells copy themselves (as their slots would say).
-export const moveGatherFrag = (g) => /* glsl */ `
-${prelude(g)}
-${quietGLSL}
-${slotGLSL}
-uniform bool uFresh;   // the first step since the activity map was built: dirty marks start over
-${stateOutGLSL}
-void main() {
-  ivec3 p = cellFromFrag(ivec2(gl_FragCoord.xy));
-  if (!inGrid(p)) { writeState(vec4(0.0), vec4(0.0), 0u); return; }   // a texel holding no cell
-  vec4 a, b;
-  if (quietCell(blockBase(p))) { a = fetchA(p); b = fetchB(p); }
-  else postMove(p, a, b);
-  // activity flags: the react pass after this one re-tests the cell; mark it
-  // dirty if the move changed what its neighbours' tests read (shaders/common.js FLAG)
-  uint f = fetchF(p);
-  if (uFresh) f &= ~FLAG_DIRTY;
-  if (nearChange(fetchA(p), a)) f |= FLAG_DIRTY;
-  writeState(a, b, f);
-}
-`;
-
-// Flow field for the renderer (gfx/surface.js, flowing grains): how far each
-// cell's content moved this step (from q to p, as postMove reads it), which
-// the blend unit averages into the field over recent steps (Simulation's
-// FLOW_BLEND). This is motion that happened, not velocity: grains pressed
-// against a pile want to fall but go nowhere, so a resting pile reads 0.
-// Quiet bricks (shaders/activity.js) hold only still air and solids, which
-// the renderer doesn't read flow for, so they keep what they have.
-export const moveFlowFrag = (g) => /* glsl */ `
-${prelude(g)}
-out vec4 oV;
-${quietGLSL}
-${slotGLSL}
-void main() {
-  ivec3 p = cellFromFrag(ivec2(gl_FragCoord.xy));
-  if (!inGrid(p) || quietCell(p)) discard;
-  ivec3 q;
-  slotOf(p, q);
-  oV = vec4(vec3(p - q), 0.0);
-}
-`;
+// WEBGPU-STUB (docs/webgpu.md J3): the gather and flow passes are fused into
+// the move (D2); the slot array they read is gone.
+export const slotGLSL = '';
+// WEBGPU-STUB (docs/webgpu.md J3)
+export function moveGatherFrag() { throw new Error('moveGatherFrag removed in the WebGPU port: docs/webgpu.md D2'); }
+// WEBGPU-STUB (docs/webgpu.md J3)
+export function moveFlowFrag() { throw new Error('moveFlowFrag removed in the WebGPU port: docs/webgpu.md D2'); }

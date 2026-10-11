@@ -166,19 +166,26 @@ export class Readback {
 
   /**
    * A GPU-side result ring: `slots` slots of `slotBytes` that kernels write
-   * results into inside a pass. Made once per name.
+   * results into inside a pass. Made once per name. By default it has a
+   * buffer of its own; `buffer` puts it in a region of one the kernels
+   * already bind (from `offset` bytes, a multiple of 4; the buffer needs
+   * COPY_SRC), which saves a kernel a storage binding (the activity counts
+   * live in the sim's indirect-arguments buffer, docs/webgpu.md D4).
    * @param {string} name
    * @param {number} slotBytes a multiple of 4
    * @param {number} slots
+   * @param {{ buffer?: GPUBuffer, offset?: number }} [opts]
    * @returns {ResultRing}
    */
-  ring(name, slotBytes, slots) {
+  ring(name, slotBytes, slots, opts = {}) {
     for (const r of this.rings) {
       if (r.name !== name) continue;
-      if (r.slotBytes !== slotBytes || r.slots !== slots) throw new Error(`readback ring ${name} already exists with ${r.slotBytes} B × ${r.slots}`);
+      if (r.slotBytes !== slotBytes || r.slots !== slots || (opts.buffer && opts.buffer !== r.buffer)) {
+        throw new Error(`readback ring ${name} already exists with ${r.slotBytes} B × ${r.slots}`);
+      }
       return r;
     }
-    const r = new ResultRing(this, name, slotBytes, slots);
+    const r = new ResultRing(this, name, slotBytes, slots, opts);
     this.rings.add(r);
     return r;
   }
@@ -240,13 +247,17 @@ export class Readback {
  * which request a value belongs to.
  */
 export class ResultRing {
-  constructor(readback, name, slotBytes, slots) {
+  constructor(readback, name, slotBytes, slots, { buffer = null, offset = 0 } = {}) {
     if (slotBytes % 4 || slotBytes <= 0) throw new RangeError(`ring ${name}: slotBytes must be a positive multiple of 4`);
+    if (offset % 4) throw new RangeError(`ring ${name}: offset ${offset} must be a multiple of 4`);
+    if (buffer && offset + slotBytes * slots > buffer.size) throw new RangeError(`ring ${name}: ${slots} × ${slotBytes} B from ${offset} overruns its ${buffer.size}-byte buffer`);
     this.readback = readback;
     this.name = name;
     this.slotBytes = slotBytes;
     this.slots = slots;
-    this.buffer = readback.gpu.createBuffer({
+    /** the byte offset of slot 0 in `buffer` (0 for a ring with a buffer of its own) */
+    this.base = offset;
+    this.buffer = buffer ?? readback.gpu.createBuffer({
       label: `ring ${name}`, size: slotBytes * slots,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
     });
@@ -285,8 +296,8 @@ export class ResultRing {
     this.reserved.clear();
   }
 
-  /** @param {number} slot @returns {number} the slot's byte offset */
-  offset(slot) { return slot * this.slotBytes; }
+  /** @param {number} slot @returns {number} the slot's byte offset in `buffer` */
+  offset(slot) { return this.base + slot * this.slotBytes; }
 
   /**
    * The slot's bytes from its latest use.
@@ -310,7 +321,7 @@ export class ResultRing {
     const sb = this.slotBytes;
     const deferreds = new Map(this.used);
     this.used.clear();
-    const all = this.readback._copy(enc, this.buffer, lo * sb, (hi - lo + 1) * sb, (range) => {
+    const all = this.readback._copy(enc, this.buffer, this.base + lo * sb, (hi - lo + 1) * sb, (range) => {
       for (const [s, d] of deferreds) {
         const bytes = range.slice((s - lo) * sb, (s - lo + 1) * sb);
         this.last.set(s, bytes);
@@ -320,6 +331,13 @@ export class ResultRing {
     });
     all.catch((e) => { for (const d of deferreds.values()) d.reject(e); });
     for (const [s, d] of deferreds) this.inflight.set(s, d.promise);
+  }
+
+  /** Stops using the ring (its owner is gone): pending reads reject; a buffer of its own is destroyed. */
+  close() {
+    this.readback.rings.delete(this);
+    this._fail(new Error(`ring ${this.name} closed`));
+    if (!this.base && this.buffer.label === `ring ${this.name}`) this.buffer.destroy();
   }
 
   _fail(failure) {
