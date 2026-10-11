@@ -991,13 +991,19 @@ fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
           // the first surface crossed, channel by channel (one surfCross call
           // site: the root finding is inlined wherever it is called). In
           // liquid, its surface is crossed going out (channel CH_LIQUID = 0).
+          // A crossing right at the segment's end (t == tExit) is this
+          // segment's: where a field is 1 in the matter and 0 in the air, it
+          // is exactly SURF_ISO on the cell face the segment ends on, and the
+          // next segment starts inside, where no crossing is ever found. The
+          // ray then went on through the rock and out of the window, and the
+          // far field showed through: sunlit lines along cave floors' seams.
           let inLiq = liq != E_EMPTY;
           for (var c = 0; c < 4; c++) {
             let t = surfCross(ro, rd, c, !(inLiq && c == CH_LIQUID), tEnter, tM, tExit, phiA[c], phiM[c], phiB[c]);
             if (!inLiq) {
-              if (t < tEv) { tEv = t; evCh = c; ev = select(EV_OPAQUE, EV_ENTER, c == CH_LIQUID); }
+              if (t <= tEv) { tEv = t; evCh = c; ev = select(EV_OPAQUE, EV_ENTER, c == CH_LIQUID); }
             } else if (c == CH_LIQUID) {
-              if (t < tEv) {
+              if (t <= tEv) {
                 tEv = t; evCh = CH_LIQUID; ev = EV_EXIT;
               } else if (max(phiA.x, max(phiM.x, phiB.x)) < SURF_ISO) {
                 liq = E_EMPTY;   // lost the surface (grazing ray): quietly back in air

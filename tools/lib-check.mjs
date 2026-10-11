@@ -871,6 +871,135 @@ ${body}
       }
     }
 
+    // ---- main's sync-3 changes ----
+    // A world scene's ambient floor (FU.caveAmbient, Descent's caves) is
+    // added to giIrradiance and giRadiance, after their clamp; the GI passes
+    // take none (their GLSL material had no uCaveAmbient), so the GI variants
+    // hold a literal zero instead.
+    {
+      const strip = (code) => code.split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n');
+      const reads = (variant) => (strip(lib(g, { variant })).match(/FU\.caveAmbient\b/g) ?? []).length;
+      const giReads = ['LIGHTING_GI', 'LIGHTING_GISRC'].map((v) => reads(v));
+      check(`caveAmbient: the GI variants read no FU.caveAmbient (${giReads.join(', ')}), LIGHTING does (${reads('LIGHTING')})`,
+        giReads.every((n) => n === 0) && reads('LIGHTING') === 2);
+      const amb = [0.03125, 0.0625, 0.125];
+      const N = 128, io = new Float32Array(N * 4 * 7), cases = [];
+      for (let i = 0; i < N; i++) {
+        const c0 = [rand() * 4, rand() * 4, rand() * 4, rand() * 3], b = () => [0, 1, 2, 3].map(() => (rand() - 0.5) * 4);
+        // (half of them with a band 0 the clamp takes to 0 on some side)
+        if (i & 1) c0[0] = c0[1] = c0[2] = 0.1;
+        const cx = b(), cy = b(), cz = b(), n = norm([rand() - 0.5, rand() - 0.5, rand() - 0.5]), blur = rand();
+        io.set([...c0, ...cx, ...cy, ...cz, ...n, blur], 20 * i);
+        const r32 = (k) => Array.from(io.subarray(20 * i + 4 * k, 20 * i + 4 * k + 4));
+        cases.push({ c0: r32(0), cx: r32(1), cy: r32(2), cz: r32(3), n: r32(4).slice(0, 3), blur: io[20 * i + 19] });
+      }
+      const body = `  let g = Probe(io[5u * i], io[5u * i + 1u], io[5u * i + 2u], io[5u * i + 3u]);
+  let n = io[5u * i + 4u];
+  io[5u * NIN + 2u * i] = vec4f(giIrradiance(g, n.xyz), 0.0);
+  io[5u * NIN + 2u * i + 1u] = vec4f(giRadiance(g, n.xyz, n.w), 0.0);`;
+      for (const [variant, lay, add] of [['LIGHTING', layouts, amb], ['LIGHTING_GISRC', libProbeLayouts('lib.gisrc'), [0, 0, 0]]]) {
+        const r = await run({ label: `cave ambient ${variant}`, code: kernel(N, body, lib(g, { variant })),
+          groups: groupsFor(lay, { frame: { ...FRAME, caveAmbient: amb }, io: io.slice() }), dispatch: [N / 64, 1, 1] });
+        if (ranOk(`cave ambient kernel (${variant})`, r)) {
+          const out = f32s(r.outputs['3.2']);
+          const got = [], want = [];
+          let clamped = 0;
+          cases.forEach((c, i) => {
+            const o = 4 * (5 * N + 2 * i), w = shRef(c.c0, c.cx, c.cy, c.cz, c.n, c.blur);
+            if (w.irr.some((x) => x === 0) || w.rad.some((x) => x === 0)) clamped++;
+            got.push([...out.subarray(o, o + 3), ...out.subarray(o + 4, o + 7)]);
+            want.push([...w.irr.map((x, k) => x + add[k]), ...w.rad.map((x, k) => x + add[k])]);
+          });
+          const { max, at } = worst(got, want);
+          check(`caveAmbient ${amb.join(', ')}: ${variant}'s giIrradiance, giRadiance = the SH ${add[0] ? '+ the floor' : 'alone (the GI passes take none)'}, ${N} probes (${clamped} clamped at 0 somewhere), max |err| ${fmt(max)}${at >= 0 ? ` (probe ${at})` : ''}`,
+            max <= 2e-5 && clamped > 0);
+        }
+      }
+    }
+
+    // Fixed lamps (lampCol.w 1: a wall torch's, world/torchLights.js) in
+    // lampLight: lit only while their cell holds a wall torch, nothing on the
+    // torch's own head (within LAMP_FIXED_SELF of its centre on every axis),
+    // and the shadow ray stops LAMP_FIXED_PAD short of the centre, so the
+    // torch's own cell doesn't shade it. A torch in an empty box (every brick
+    // marked as matter, so the trace walks every cell), lit from points
+    // around it; the control: a hand lamp (w 0) in the same place is shaded
+    // by the torch's cell (LAMP_PAD), and a dug-out torch lights nothing.
+    {
+      const torch = elementsM.E.WALL_TORCH, slots = g.nx * g.ny * g.nz, nbricks = slots / 64;
+      const [{ cellSlot }, { LAMP_UNIT: U, LAMP_SOFT: S }] = await Promise.all([src('sim.js'), src('gfx/lamps.js')]);
+      const L = [10.5, 8.5, 12.5], R = 14, col = [1, 0.5, 0.25];
+      const state = (withTorch) => {
+        const a = new Float32Array(2 * slots * 4);
+        if (withTorch) {
+          for (const copy of [0, 1]) a.set([torch, 20, 0, 0.25], 4 * (copy * slots + cellSlot(g, ...L.map(Math.floor))));
+        }
+        return { data: b64(new Uint8Array(a.buffer)) };
+      };
+      const bricksBuf = new ArrayBuffer(nbricks * bindings.BrickInfo.size);
+      const dv = new DataView(bricksBuf);
+      for (let i = 0; i < nbricks; i++) bindings.BrickInfo.write(dv, i * bindings.BrickInfo.size, { emit: [0, 0, 0], info: bindings.packBrickInfo({ matter: true }) });
+      const lamps = (w) => {
+        const pos = Array.from({ length: bindings.LAMP_MAX }, () => [0, 0, 0, 0]), c = pos.map((v) => [...v]);
+        pos[0] = [...L, R];
+        c[0] = [...col, w];
+        return { ...FRAME, sunCol: [0, 0, 0], shadows: 0, lampCount: 1, lampPos: pos, lampCol: c };
+      };
+      const N = 128, io = new Float32Array(4 * 3 * N), pts = [];
+      for (let i = 0; i < N; i++) {
+        let p, n;
+        if (i < 16) {   // the torch's own head
+          p = L.map((v) => v + (rand() - 0.5) * 1.1);
+          n = norm([rand() - 0.5, rand() - 0.5, rand() - 0.5]);
+        } else {   // around it, 1.5 to 9 cells off, facing it give or take (some away)
+          const dir = norm([rand() - 0.5, rand() - 0.5, rand() - 0.5]), d = 1.5 + 7.5 * rand();
+          p = L.map((v, k) => v + dir[k] * d);
+          n = norm(dir.map((v) => -v + (rand() - 0.5) * (i % 5 === 0 ? 4 : 0.8)));
+        }
+        p = p.map(F); n = n.map(F);
+        io.set([...p, 0], 4 * i);
+        io.set([...n, 0], 4 * (N + i));
+        pts.push({ p, n });
+      }
+      const lampWant = ({ p, n }) => {
+        if (p.every((v, k) => Math.abs(v - L[k]) < 0.6)) return [0, 0, 0];
+        const ro = p.map((v, k) => v + n[k] * 0.55), dvec = L.map((v, k) => v - ro[k]);
+        const d2 = dvec.reduce((a, v) => a + v * v, 0);
+        if (d2 >= R * R) return [0, 0, 0];
+        const d = Math.sqrt(d2), l = dvec.map((v) => v / Math.max(d, 1e-4)), nl = n.reduce((a, v, k) => a + v * l[k], 0);
+        if (nl <= 0) return [0, 0, 0];
+        const x2 = d2 / (R * R), fade = 1 - x2 * x2;
+        const fall = ((U * U + S * S) / (d2 + S * S)) * fade * fade;
+        return col.map((c) => c * nl * fall);
+      };
+      const body = `  let p = io[i].xyz;
+  let n = io[NIN + i].xyz;
+  io[2u * NIN + i] = vec4f(lampLight(p, n, n), 0.0);`;
+      const res = {};
+      for (const [k, w, withTorch] of [['torch', 1, true], ['dug', 1, false], ['hand', 0, true]]) {
+        const r = await run({ label: `lampLight ${k}`, code: kernel(N, body),
+          groups: groupsFor(layouts, { frame: lamps(w), io: io.slice(), extra: { '1.0': state(withTorch), '2.16': { data: b64(new Uint8Array(bricksBuf)) } } }),
+          dispatch: [N / 64, 1, 1] });
+        if (ranOk(`lampLight kernel (${k})`, r)) res[k] = f32s(r.outputs['3.2']).slice(8 * N, 12 * N);
+      }
+      if (res.torch && res.dug && res.hand) {
+        let e = 0, lit = 0, head = 0, dark = 0, handLit = 0;
+        pts.forEach((pt, i) => {
+          const want = lampWant(pt), got = res.torch.subarray(4 * i, 4 * i + 3);
+          e = Math.max(e, ...want.map((v, k) => Math.abs(got[k] - v) / Math.max(1e-3, v)));
+          if (want[0] > 0) lit++;
+          if (i < 16 && want[0] === 0 && got[0] === 0) head++;
+          if (res.dug[4 * i] !== 0 || res.dug[4 * i + 1] !== 0 || res.dug[4 * i + 2] !== 0) dark++;
+          if (res.hand[4 * i] > 0) handLit++;
+        });
+        const heads = pts.slice(0, 16).filter((pt) => pt.p.every((v, k) => Math.abs(v - L[k]) < 0.6)).length;
+        check(`lampLight, a wall torch's lamp: ${N} points (${lit} lit; ${heads} on its head, dark) == the JS twin within ${fmt(e)} relative (≤ 1e-4)`,
+          e <= 1e-4 && lit > N / 2 && heads > 0 && head >= heads);
+        check(`lampLight: a dug-out torch lights nothing (${dark} of ${N} points lit)`, dark === 0);
+        check(`control: a hand lamp (w 0) in the torch's cell is shaded by it (LAMP_PAD): ${handLit} of ${N} points lit`, handLit === 0);
+      }
+    }
+
     // the far grid's texel: farUnpack / farPackTexel against the JS twins
     {
       const N = 128, words = new Uint32Array(N * 4 * 4), texels = [];
