@@ -35,8 +35,12 @@ export const MESH_DEPTH_ENTRY = { binding: MESH_DEPTH_BINDING, visibility: STAGE
 //                    FU.cam) to the nearest opaque mesh at this pixel
 //                    (gFragCoord), MESH_CUT_NONE if none
 //   meshCutDepth(d)  the nearer of clip depth d and the mesh's at this pixel:
-//                    the volume's frag_depth, so a hit behind the cut (a bent
-//                    ray's) never draws behind the mesh it stopped at
+//                    the volume's frag_depth (Sync log S1). The march draws
+//                    nothing past the cut (shaders/render.js tests every hit,
+//                    pane face, grain and relief against it), so this only
+//                    keeps a hit reported a hair past the mesh from failing
+//                    the depth test; it never lets something behind the mesh
+//                    paint over it (volume-check's meshes stage)
 export const meshCutGLSL = /* wgsl */ `
 @group(0) @binding(${MESH_DEPTH_BINDING}) var tMeshDepth: texture_depth_2d;
 fn meshDepthHere() -> f32 {

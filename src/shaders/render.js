@@ -833,8 +833,14 @@ fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
   var hitCell = vec3i(0);
   var hitA = vec4f(0.0);
 
-  // Entering the box inside a smooth material: the box wall cuts it open.
-  {
+  // Nothing is drawn past the cut: the march below stops there, and every
+  // surface, pane face, grain and relief hit is tested against it, so the
+  // nearer-depth rule (meshCutDepth) never lets something behind a mesh paint
+  // over it. (The GL build had the depth test of its plain hit depth for that.)
+
+  // Entering the box inside a smooth material: the box wall cuts it open
+  // (unless a mesh stands in front of the wall).
+  if (tEnter < tCut) {
     var ch = -1;
     var best = SURF_ISO;
     for (var c = 0; c < 4; c++) { if (phiA[c] >= best) { best = phiA[c]; ch = c; } }
@@ -886,6 +892,7 @@ fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
         var th = tEnter;
         var nh = nFace;
         if (crispHit(cell, id, ro, rd, tEnter, tExit, &th, &nh)) {
+          if (th > tCut) { cut = true; break; }   // (a bevelled voxel's face behind the mesh)
           let hp = ro + rd * th;
           if (!anyHit) { anyHit = true; hitPos = hp; }
           hitK = HIT_CRISP; hitP = hp; hitN = nh; hitCell = cell; hitId = id; hitA = a;
@@ -910,16 +917,17 @@ fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
           col += trans * F * paneEnv;
           trans *= 1.0 - F;
         }
-        absorbDeco(id, cell, hp, tExit - tEnter, mediumLight, a.y, &col, &trans);   // (stained glass: gfx/deco.js)
+        absorbDeco(id, cell, hp, min(tExit, tCut) - tEnter, mediumLight, a.y, &col, &trans);   // (stained glass: gfx/deco.js)
         // Leaving the pane, its far face reflects as much again (into air; less
         // into liquid; none against something opaque, which it touches, the
-        // floor included). A face parallel to the front one reflects the same view.
+        // floor included, nor behind a mesh). A face parallel to the front one
+        // reflects the same view.
         let xa = argmin3(tMax);
         var nc = cell;
         nc[xa] += istp[xa];
         var nid = E_EMPTY;
         if (!outside(nc)) { nid = eid(fetchA(nc)); }
-        if (nc.y >= 0 && RCLASS(nid) != R_GLASS && RCLASS(nid) != R_OPAQUE) {
+        if (tExit < tCut && nc.y >= 0 && RCLASS(nid) != R_GLASS && RCLASS(nid) != R_OPAQUE) {
           var nX = vec3f(0.0);
           nX[xa] = f32(istp[xa]);
           let hx = ro + rd * tExit;
@@ -991,10 +999,12 @@ fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
         phiStale = false;
       } else {
         phiStale = true;
-      }${grains ? `
-      grainEvent(cell, id, a, ro, rd, tEnter, tExit, col, trans, &ev, evCh, &tEv, &anyHit, &hitPos);   // gfx/grains.js` : ''}
+      }
 
-      if (tCut < tEv) { tEv = tCut; ev = EV_NONE; cut = true; }
+      if (tCut < tEv) { tEv = tCut; ev = EV_NONE; cut = true; }${grains ? `
+      // grains (gfx/grains.js), not past the cut either: geometry in front of it may still end the segment
+      grainEvent(cell, id, a, ro, rd, tEnter, min(tExit, tCut), col, trans, &ev, evCh, &tEv, &anyHit, &hitPos);
+      cut = ev == EV_NONE && tEv >= tCut;` : ''}
 
       // ---- what lies along [tEnter, tEv] ----
       if (liq != E_EMPTY) {
@@ -1027,7 +1037,8 @@ fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
         tEnter = 0.0; lastB = vec3i(-1); ax = argmin3(tMax);
         phiA = surfSample(ro); phiStale = false;
         continue;
-      }` : ''}
+      }
+      if (ev != EV_NONE && tEv > tCut) { ev = EV_NONE; cut = true; }   // the carved surface lies behind the mesh` : ''}
       if (cut) { break; }
       if (ev != EV_NONE) {
         let hp = ro + rd * tEv;
