@@ -520,6 +520,24 @@ export class Simulation {
     return [a, b];
   }
 
+  // A w × h rectangle of the state atlas at texel (x, y), read back into a
+  // and b (Float32Array RGBA per texel, row by row, in the fetchA/fetchB
+  // layout): synchronously (it stalls until the GPU is done), or with async a
+  // promise that resolves once the GPU has got there, without stalling (the
+  // console's reads, src/console/gpu.js).
+  readStateRect(x, y, w, h, a, b, async = false) {
+    const t = this.targets[this.cur];
+    if (!async) {
+      this.renderer.readRenderTargetPixels(t, x, y, w, h, a, undefined, 0);
+      this.renderer.readRenderTargetPixels(t, x, y, w, h, b, undefined, 1);
+      return null;
+    }
+    return Promise.all([
+      this.renderer.readRenderTargetPixelsAsync(t, x, y, w, h, a, undefined, 0),
+      this.renderer.readRenderTargetPixelsAsync(t, x, y, w, h, b, undefined, 1),
+    ]);
+  }
+
   // Block until the GPU has done everything queued so far, by reading one
   // texel of the current state back (wall-clock timing of GPU work).
   gpuSync() {

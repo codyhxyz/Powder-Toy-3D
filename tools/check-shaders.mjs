@@ -18,6 +18,7 @@ import { allDetailDefines } from '../src/gfx/detail.js';
 import { aerationFrag } from '../src/shaders/gfx/liquidDetail.js';
 import * as probe from '../src/shaders/probe.js';
 import * as stamp from '../src/shaders/stamp.js';
+import * as script from '../src/shaders/script.js';
 import * as gi from '../src/shaders/gi.js';
 import * as povBody from '../src/shaders/povBody.js';
 import * as transfer from '../src/shaders/transfer.js';
@@ -113,7 +114,7 @@ for (const [label, dims] of Object.entries(grids)) {
   for (let stage = 0; stage < fields.BOOST_STAGES; stage++) check(`fieldBoost${stage}-${label}`, raw + fields.fieldBoostFrag(g, stage), 'frag');
   check(`fieldCopy-${label}`, raw + fields.fieldCopyFrag(g), 'frag');
   for (const set of Object.values(fields.DIRTY)) check(`fieldRegionVert${set}-${label}`, raw + regionVert(fields.fieldRegionsGLSL(g, set)), 'vert');
-  for (const [k, v] of Object.entries({ ...move, ...react, ...probe, ...stamp, ...gi, ...povBody, ...transfer, ...windowPasses, ...lightning })) if (typeof v === 'function') check(`${k}-${label}`, raw + v(g), 'frag');
+  for (const [k, v] of Object.entries({ ...move, ...react, ...probe, ...stamp, ...script, ...gi, ...povBody, ...transfer, ...windowPasses, ...lightning })) if (typeof v === 'function') check(`${k}-${label}`, raw + v(g), 'frag');
   for (const k of ['axeFrag', 'pickaxeFrag', 'knifeFrag', 'wormFrag', 'wormGiantFrag', 'physgunComFrag', 'physgunFrag', 'blastFrag', 'flamerFrag', 'torchFireFrag', 'bodyFireFrag', 'rocketFrag']) check(`${k}-${label}`, raw + povTools[k](g), 'frag');
   for (const k of ['traceFrag', 'strikeFrag']) check(`${k}-${label}`, raw + povTrace[k](g), 'frag');
   for (const k of ['kickFrag', 'hookCellFrag']) check(`${k}-${label}`, raw + povKick[k](g), 'frag');
