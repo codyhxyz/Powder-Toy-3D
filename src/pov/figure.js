@@ -31,7 +31,7 @@ const LIMB_R = 0.17;                     // stick radius
 const TORSO_R = 0.24;
 const CAP_SEGMENTS = 4, RADIAL_SEGMENTS = 10;
 
-export const STICK_HAND = 'stick-hand_r';   // the stickman's right-hand point, by name (the mannequin's bone is hand_r)
+export const STICK_HAND = 'stick-hand_r';   // the stickman's right-hand point, by name (the realistic body's bone is hand_r)
 
 // Material: a light, slightly warm matte (albedo, linear).
 const ALBEDO = [0.72, 0.7, 0.66];
@@ -121,14 +121,43 @@ ${lib(g)}
 #define FIG_SHADOW_LIFT ${SHADOW_LIFT.toFixed(3)}
 #define FIG_GI_LIFT ${GI_LIFT.toFixed(3)}
 #define FIG_TOON_EDGE ${TOON_EDGE.toFixed(3)}
-uniform vec3 uAlbedo;
+uniform vec3 uAlbedo;   // with FIG_MAP, multiplies the map (a tint)
 uniform vec3 uEmit;
 uniform vec4 uTint;   // a stain over the albedo (status.js tint): rgb, share
 in vec3 vGrid;
 in vec3 vN;
+#if defined(FIG_MAP) || defined(FIG_NORMAL_MAP)
+in vec2 vFigUv;
+#endif
+#ifdef FIG_MAP
+uniform sampler2D uMap;   // albedo, sRGB (sampled linear)
+#endif
+#ifdef FIG_NORMAL_MAP
+uniform sampler2D uNormalMap;   // tangent space
+uniform vec2 uNormalScale;      // the loaded material's (GLTFLoader flips y for derivative tangents)
+in vec3 vFigWorld;
+// three.js's getTangentFrame (normalmap_pars_fragment): the tangent frame from
+// screen-space derivatives of the position and UV, for meshes with no tangents
+// (Mikkelsen, "Bump Mapping Unparametrized Surfaces on the GPU", 2010)
+vec3 figNormalMapped(vec3 n, float face) {
+  vec3 q0 = dFdx(vFigWorld), q1 = dFdy(vFigWorld);
+  vec2 st0 = dFdx(vFigUv), st1 = dFdy(vFigUv);
+  vec3 q1perp = cross(q1, n), q0perp = cross(n, q0);
+  vec3 T = q1perp * st0.x + q0perp * st1.x;
+  vec3 B = q1perp * st0.y + q0perp * st1.y;
+  float det = max(dot(T, T), dot(B, B));
+  float s = det == 0.0 ? 0.0 : face * inversesqrt(det);
+  vec3 m = texture(uNormalMap, vFigUv).xyz * 2.0 - 1.0;
+  m.xy *= uNormalScale;
+  return normalize(T * (m.x * s) + B * (m.y * s) + n * m.z);
+}
+#endif
 void main() {
-  vec3 n = normalize(vN);
-  if (!gl_FrontFacing) n = -n;
+  float face = gl_FrontFacing ? 1.0 : -1.0;
+  vec3 n = normalize(vN) * face;
+#ifdef FIG_NORMAL_MAP
+  n = figNormalMapped(n, face);
+#endif
   vec3 sh = uShadows ? sunShadow(vGrid + uSun * FIG_SHADOW_LIFT) : vec3(1.0);
   vec3 irr = giIrradiance(probeAt(vGrid + n * FIG_GI_LIFT), n);
   vec3 local = sampleLight(vGrid) * uLightGain;
@@ -137,7 +166,11 @@ void main() {
 #ifdef FIG_TOON
   ndl = smoothstep(0.0, FIG_TOON_EDGE, ndl);   // cel shading: lit or not, with a thin soft edge
 #endif
-  vec3 albedo = mix(uAlbedo, uTint.rgb, uTint.a);
+  vec3 base = uAlbedo;
+#ifdef FIG_MAP
+  base *= texture(uMap, vFigUv).rgb;
+#endif
+  vec3 albedo = mix(base, uTint.rgb, uTint.a);
   gl_FragColor = vec4(albedo * (SUN_COL * ndl * sh + irr + local) + uEmit, 1.0);
 }`;
 
@@ -479,11 +512,19 @@ export { ALBEDO as FIGURE_ALBEDO, HEAT_GLOW as FIGURE_HEAT_GLOW };
 // figureVert for a SkinnedMesh: three's skinning chunks pose the vertex and
 // its normal, then it goes to grid space like the stickman's. Pair it with
 // figureFrag(g) and the volume's uniforms (plus uAlbedo, uEmit, uWorldToGrid).
+// Defines FIG_MAP (uMap) and FIG_NORMAL_MAP (uNormalMap, uNormalScale) add a
+// textured mesh's maps, on its first UV set.
 export const figureSkinnedVert = /* glsl */ `
 #include <skinning_pars_vertex>
 uniform mat4 uWorldToGrid;
 out vec3 vGrid;
 out vec3 vN;
+#if defined(FIG_MAP) || defined(FIG_NORMAL_MAP)
+out vec2 vFigUv;
+#endif
+#ifdef FIG_NORMAL_MAP
+out vec3 vFigWorld;
+#endif
 void main() {
   #include <beginnormal_vertex>
   #include <skinbase_vertex>
@@ -493,6 +534,12 @@ void main() {
   vec4 w = modelMatrix * vec4(transformed, 1.0);
   vGrid = (uWorldToGrid * w).xyz;
   vN = mat3(modelMatrix) * objectNormal;   // uniform scale only
+#if defined(FIG_MAP) || defined(FIG_NORMAL_MAP)
+  vFigUv = uv;
+#endif
+#ifdef FIG_NORMAL_MAP
+  vFigWorld = w.xyz;
+#endif
   gl_Position = projectionMatrix * viewMatrix * w;
 }`;
 

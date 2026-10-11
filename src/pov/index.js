@@ -65,7 +65,7 @@ const VIEW_TAP_KEYS = new Set(['ControlLeft', 'ControlRight']);
 // Third person, the tool in hand on the body (Team Fortress 2's world models):
 // the viewmodel's model grown to read at a distance, as the NPCs' are (npc.js HELD_SCALE)
 const HELD_SCALE = 1.8;
-const REAL_HAND = 'hand_r';             // the mannequin's right-hand bone (figureReal.js)
+const REAL_HAND = 'hand_r';             // the realistic body's right-hand bone (figureReal.js)
 const VEHICLE_KEY = 'KeyE';             // get in, get out, or right a vehicle (vehicles/index.js; Halo's and most shooters' use key)
 // Driving, the chase camera swings back behind the vehicle once the mouse rests (GTA's and most driving games')
 const CHASE_PITCH = -0.22;              // rad, the look on getting in: a little down onto the vehicle

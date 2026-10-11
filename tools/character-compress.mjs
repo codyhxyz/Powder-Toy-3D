@@ -4,13 +4,13 @@
 // on every pack; run it alone to compress a GLB that isn't yet:
 //
 // usage: node tools/character-compress.mjs [in.glb] [out.glb]
-//   (default: public/models/character/mannequin.glb, in place; an input that is
+//   (default: public/models/character/body.glb, in place; an input that is
 //   already compressed is left alone)
 //
 // Every buffer goes through meshopt's codec, which is lossless and leaves the
 // file small even where the host sends it uncompressed (Cloudflare's default
 // compression doesn't cover model/gltf-binary). Lossy, and by how much on the
-// mannequin:
+// body:
 // - animation rotations: 16-bit quaternions (meshopt's filter), within 1e-4 rad
 //   of the float track; this is most of the file. The one translation track
 //   (the pelvis) keeps a 23-bit mantissa: float, in effect.
@@ -20,7 +20,8 @@
 //   every vertex under the same heaviest bone), within 2e-5 once three
 //   normalizes them.
 // Together: every vertex skinned at every keyframe of every clip lands within
-// 0.2 mm of where the float file puts it, on a 1.83 m body.
+// 0.2 mm of where the float file puts it, on a 1.82 m body. UVs come through
+// within UV_LIMIT; the textures (WebP) are copied as they are.
 // Kept exactly: positions stay float32, in metres, and the vertices keep their
 // order. garb.js fits the robe to the bind pose in metres and takes the hip
 // height from the first thigh vertex, and figureReal.js sizes the body from the
@@ -36,18 +37,19 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { NodeIO, MathUtils, Logger, Accessor } from '@gltf-transform/core';
-import { EXTMeshoptCompression, KHRMeshQuantization } from '@gltf-transform/extensions';
+import { EXTMeshoptCompression, KHRMeshQuantization, EXTTextureWebP } from '@gltf-transform/extensions';
 import { MeshoptEncoder } from 'meshoptimizer';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 
-const DEFAULT_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public/models/character/mannequin.glb');
+const DEFAULT_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public/models/character/body.glb');
 const WEIGHT_MAX = 0xffff;      // skin weights as normalized 16-bit
 const TRANSLATION_BITS = 23;   // meshopt's exponential filter: mantissa bits (glTF-Transform asks for 12)
-// Past any of these nothing is written. Distances in metres on the 1.83 m mannequin.
+// Past any of these nothing is written. Distances in metres on the 1.82 m body.
 export const CHECK_LIMITS = {
   restPose: 1e-6,            // bones' rest translation, rotation, scale: float noise only
   positionM: 0,              // positions are not quantized: bit-exact
   normalRad: 0.026,          // 8-bit octahedral: 1.5°
+  uv: 1 / 8192,              // an eighth of a texel of the 1024² maps
   weight: 1e-4,              // a few 16-bit steps
   rotationRad: 2e-4,         // any bone, any keyframe
   translationM: 1e-5,        // any bone, any keyframe
@@ -60,7 +62,7 @@ const encoder = {
   encodeFilterExp: (source, count, stride, _bits, mode) => MeshoptEncoder.encodeFilterExp(source, count, stride, TRANSLATION_BITS, mode),
 };
 const io = () => new NodeIO()
-  .registerExtensions([EXTMeshoptCompression, KHRMeshQuantization])
+  .registerExtensions([EXTMeshoptCompression, KHRMeshQuantization, EXTTextureWebP])
   .registerDependencies({ 'meshopt.encoder': encoder, 'meshopt.decoder': MeshoptDecoder });
 
 // a GLB's JSON chunk
@@ -140,7 +142,7 @@ function compare(a, b) {
   same(names(ra.listAnimations()), names(rb.listAnimations()), 'clip names');
   same(ra.listAnimations().map((x) => x.getExtras()), rb.listAnimations().map((x) => x.getExtras()), 'clip extras (speed)');
   same(ra.listSkins().map((s) => names(s.listJoints())), rb.listSkins().map((s) => names(s.listJoints())), 'skin joints');
-  const r = { restPose: 0, position: 0, normal: 0, weight: 0, jointSetsChanged: 0, mainBoneChanged: 0, vertices: 0, rotation: 0, translation: 0, clips: {} };
+  const r = { restPose: 0, position: 0, normal: 0, uv: 0, weight: 0, jointSetsChanged: 0, mainBoneChanged: 0, vertices: 0, rotation: 0, translation: 0, clips: {} };
   // glTF-Transform writes a scale within 1e-5 of 1 as 1 (the source's 0.99999994s)
   ra.listNodes().forEach((na, i) => {
     const nb = rb.listNodes()[i];
@@ -161,6 +163,7 @@ function compare(a, b) {
     if (ia.length !== ib.length || ia.some((t, i) => t !== ib[i])) fail('triangles differ');
     const [posA, posB] = [pa, pb].map((p) => elements(p.getAttribute('POSITION')));
     const [norA, norB] = [pa, pb].map((p) => elements(p.getAttribute('NORMAL')));
+    const [uvA, uvB] = [pa, pb].map((p) => (p.getAttribute('TEXCOORD_0') ? elements(p.getAttribute('TEXCOORD_0')) : null));
     const [jA, jB] = [pa, pb].map((p) => elements(p.getAttribute('JOINTS_0')));
     const [wA, wB] = [pa, pb].map((p) => elements(p.getAttribute('WEIGHTS_0')));
     if (posA.length !== posB.length) fail('vertex count differs');
@@ -168,6 +171,7 @@ function compare(a, b) {
     for (let i = 0; i < posA.length; i++) {
       r.position = Math.max(r.position, ...posA[i].map((v, k) => Math.abs(v - posB[i][k])));
       r.normal = Math.max(r.normal, vecAngle(norA[i], norB[i]));
+      if (uvA) r.uv = Math.max(r.uv, ...uvA[i].map((v, k) => Math.abs(v - uvB[i][k])));
       const ia = influences(jA, wA, i), ib = influences(jB, wB, i);
       for (const j of new Set([...ia.keys(), ...ib.keys()])) r.weight = Math.max(r.weight, Math.abs((ia.get(j) ?? 0) - (ib.get(j) ?? 0)));
       if ([...ia.keys()].sort().join() !== [...ib.keys()].sort().join()) r.jointSetsChanged++;
@@ -222,7 +226,7 @@ function compare(a, b) {
 
   const over = [
     ['rest pose', r.restPose, CHECK_LIMITS.restPose], ['position', r.position, CHECK_LIMITS.positionM],
-    ['normal', r.normal, CHECK_LIMITS.normalRad], ['weight', r.weight, CHECK_LIMITS.weight],
+    ['normal', r.normal, CHECK_LIMITS.normalRad], ['uv', r.uv, CHECK_LIMITS.uv], ['weight', r.weight, CHECK_LIMITS.weight],
     ['rotation', r.rotation, CHECK_LIMITS.rotationRad], ['translation', r.translation, CHECK_LIMITS.translationM],
     ['skinned vertex', r.skinned, CHECK_LIMITS.skinnedM],
   ].filter(([, v, lim]) => v > lim);
@@ -300,7 +304,7 @@ export function formatReport(r) {
   const deg = (rad) => `${(rad * 180 / Math.PI).toFixed(3)}°`;
   const mm = (m) => `${(m * 1000).toFixed(4)} mm`;
   const lines = [
-    `rest pose within ${r.restPose.toExponential(1)}; ${r.vertices} vertices: position error ${r.position} m, normals within ${deg(r.normal)}, weights within ${r.weight.toExponential(1)}`
+    `rest pose within ${r.restPose.toExponential(1)}; ${r.vertices} vertices: position error ${r.position} m, normals within ${deg(r.normal)}, UVs within ${r.uv.toExponential(1)}, weights within ${r.weight.toExponential(1)}`
       + ` (same joints and heaviest bone on every vertex)`,
     'clip      keys  worst rotation (bone)          worst translation (bone)        worst skinned vertex',
   ];

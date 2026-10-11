@@ -85,6 +85,7 @@ for (const [label, dims] of Object.entries(grids)) {
   check(`shadow-${label}`, raw + appShadow(g), 'frag');
   check(`giGather-far-${label}`, raw + appGather(g), 'frag');
   check(`povFigure-${label}`, shaderMatFrag + figureFrag(g), 'frag');
+  check(`povFigureMapped-${label}`, `${shaderMatFrag}#define FIG_MAP\n#define FIG_NORMAL_MAP\n${figureFrag(g)}`, 'frag');
   check(`birdProbe-${label}`, raw + birdProbeFrag(g), 'frag');
   // the same with every close-up detail feature compiled in (gfx/detail.js)
   const defs = Object.entries(allDetailDefines()).map(([k, v]) => `#define ${k} ${v}\n`).join('');
@@ -150,5 +151,7 @@ check('quadVert', raw + quadVert, 'vert');
 // the realistic body's skinned vertex shader, as three builds it for a SkinnedMesh
 const includes = (src) => src.replace(/^[ \t]*#include +<(\w+)>/gm, (_, k) => includes(ShaderChunk[k]));
 check('figureSkinnedVert', `${shaderMatVert}#define USE_SKINNING\nin vec3 normal;\nin vec4 skinIndex;\nin vec4 skinWeight;\n${includes(figureSkinnedVert)}`, 'vert');
+// ...and with a textured mesh's maps (figureReal.js)
+check('figureSkinnedVertMapped', `${shaderMatVert}#define USE_SKINNING\n#define FIG_MAP\n#define FIG_NORMAL_MAP\nin vec3 normal;\nin vec2 uv;\nin vec4 skinIndex;\nin vec4 skinWeight;\n${includes(figureSkinnedVert)}`, 'vert');
 console.log(failures ? `${failures} shader(s) failed` : 'all shaders OK');
 process.exit(failures ? 1 : 0);

@@ -5,15 +5,16 @@ import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js';
 import { BODY_HEIGHT } from './constants.js';
 import { BODY_MODEL_URL } from './bodyModel.js';
 import { buildGarb, GARB_COLORS } from './garb.js';
-import { bulkUp } from './physique.js';
 import {
   createFigure, createContactShadow, JET_NOZZLES, figureFrag, figureSkinnedVert, FIGURE_ALBEDO, FIGURE_HEAT_GLOW,
   CROUCH_POSE,
 } from './figure.js';
 
-// The realistic body: Quaternius's mannequin (Universal Animation Library,
-// CC0), skinned and played by an AnimationMixer, dressed as a wizard (a
-// pointed hat and a robe, garb.js). It is the default body; the stickman
+// The realistic body: Quaternius's Superhero Male (Universal Base Characters,
+// CC0), sculpted muscles in his mesh and normal map, playing clips from
+// Quaternius's Universal Animation Library retargeted onto his skeleton
+// (tools/character-pack.mjs) through an AnimationMixer. A wizard: his pointed
+// hat (garb.js) and purple boxers. It is the default body; the stickman
 // (figure.js) is the other setting, and stands in while the model loads or if
 // it fails to.
 //
@@ -21,15 +22,15 @@ import {
 // compile, update, setVisible, dispose), so the shell swaps them freely.
 // choice() is read every frame: 'stick' or 'real'.
 //
-// Lighting: the mannequin's meshes use figure.js's figureFrag, the world's own
-// lighting (sun and its shadow map, GI probes, glow from hot matter), with a
-// skinned version of its vertex shader. It glows when hot like the stickman.
+// Lighting: his meshes use figure.js's figureFrag, the world's own lighting
+// (sun and its shadow map, GI probes, glow from hot matter), with a skinned
+// version of its vertex shader, his albedo and normal maps read through it. He
+// glows when hot like the stickman.
 
-// Materials, by the glTF material name (albedo, linear): skin, not the
-// stickman's grey; the mannequin's joint bands a shade darker, like creases.
-const SKIN_ALBEDO = [0.75, 0.42, 0.26];  // linear of sRGB (224, 172, 138), a light-medium skin tone
-const JOINT_SHADE = 0.8;                 // the joint bands' share of the skin's albedo
-const ALBEDO_BY_MATERIAL = { M_Main: SKIN_ALBEDO, M_Joints: SKIN_ALBEDO.map((c) => c * JOINT_SHADE) };
+// Tints over each glTF material's albedo map (linear). The eyebrows' map is a
+// greyscale hair mask, tinted in the pack's engines by Quaternius's hair shader:
+// a dark brown here.
+const TINT_BY_MATERIAL = { MI_Superhero_Male: [1, 1, 1], MI_Eyes: [1, 1, 1], MI_Hair_1: [0.06, 0.035, 0.02] };
 const MODEL_YAW = Math.PI;               // rad: the glTF faces +z, the body's forward is -z at yaw 0
 
 // Locomotion. Clip speeds come from the file (extras.speed, metres/s of the
@@ -55,18 +56,16 @@ const approach = (rate, dt) => 1 - Math.exp(-rate * dt);
 let gltfPromise = null;   // one download for the page
 function loadModel() {
   // the file is meshopt-compressed (tools/character-compress.mjs)
-  // and jacked (physique.js) before anything is fit to it
-  gltfPromise ??= new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).loadAsync(BODY_MODEL_URL)
-    .then((gltf) => { bulkUp(gltf.scene); return gltf; });
+  gltfPromise ??= new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).loadAsync(BODY_MODEL_URL);
   return gltfPromise;
 }
-const garbByModel = new WeakMap();   // the clothes' geometry, built once per download and shared by every body
+const garbByModel = new WeakMap();   // the hat's geometry, built once per download and shared by every body
 function garbFor(gltf, meshes) {
   if (!garbByModel.has(gltf)) garbByModel.set(gltf, buildGarb(meshes));
   return garbByModel.get(gltf);
 }
 
-// The mannequin from a loaded glTF. Same per-frame state as the stickman.
+// The body from a loaded glTF. Same per-frame state as the stickman.
 function createRealFigure(gltf) {
   const uniforms = {
     uEmit: { value: new THREE.Vector3() },
@@ -79,23 +78,26 @@ function createRealFigure(gltf) {
   model.traverse((o) => {
     if (!o.isSkinnedMesh) return;
     o.frustumCulled = false;             // bounds are the bind pose; a fall or a swim leaves them
-    o.userData.albedo = ALBEDO_BY_MATERIAL[o.material.name] ?? FIGURE_ALBEDO;
+    // the maps GLTFLoader made (shared by every clone; the download owns them)
+    const { map, normalMap, normalScale } = o.material;
+    o.userData.look = { albedo: TINT_BY_MATERIAL[o.material.name] ?? FIGURE_ALBEDO, map, normalMap, normalScale, side: THREE.FrontSide };
     meshes.push(o);
   });
   if (!meshes.length) throw new Error('the character model has no skinned mesh');
+  const body = meshes.reduce((a, b) => (b.geometry.attributes.position.count > a.geometry.attributes.position.count ? b : a));
 
   // model units (metres) → body cells, from the bind pose's height (without the hat)
   const box = new THREE.Box3();
   for (const m of meshes) { m.geometry.computeBoundingBox(); box.union(m.geometry.boundingBox); }
 
-  // the wizard's clothes, on this body's own skeleton
+  // the wizard's hat, on this body's own skeleton
   for (const [name, geo] of Object.entries(garbFor(gltf, meshes))) {
-    const garment = new THREE.SkinnedMesh(geo, meshes[0].material);
+    const garment = new THREE.SkinnedMesh(geo, body.material);
     garment.name = name;
     garment.frustumCulled = false;
-    garment.bind(meshes[0].skeleton, meshes[0].bindMatrix);
-    garment.userData.albedo = GARB_COLORS[name];
-    meshes[0].parent.add(garment);
+    garment.bind(body.skeleton, body.bindMatrix);
+    garment.userData.look = { albedo: GARB_COLORS[name], side: THREE.DoubleSide };   // the brim is one sheet
+    body.parent.add(garment);
     meshes.push(garment);
   }
   const cellsPerUnit = BODY_HEIGHT / (box.max.y - box.min.y);
@@ -200,11 +202,18 @@ function createRealFigure(gltf) {
       boundTo = volume;
       for (const m of mats) m.dispose();
       mats = meshes.map((mesh) => {
+        const { albedo, map, normalMap, normalScale, side } = mesh.userData.look;
         const mat = new THREE.ShaderMaterial({
           vertexShader: figureSkinnedVert,
           fragmentShader: figureFrag(g),
-          side: THREE.DoubleSide,          // the robe is open at the hem
-          uniforms: { ...volume.material.uniforms, ...uniforms, uAlbedo: { value: new THREE.Vector3(...mesh.userData.albedo) } },
+          side,
+          defines: { ...(map && { FIG_MAP: '' }), ...(normalMap && { FIG_NORMAL_MAP: '' }) },
+          uniforms: {
+            ...volume.material.uniforms, ...uniforms,
+            uAlbedo: { value: new THREE.Vector3(...albedo) },
+            ...(map && { uMap: { value: map } }),
+            ...(normalMap && { uNormalMap: { value: normalMap }, uNormalScale: { value: normalScale } }),
+          },
         });
         mesh.material = mat;
         return mat;
@@ -274,8 +283,8 @@ function createRealFigure(gltf) {
   };
 }
 
-// The body the shell shows, by choice(): 'real' (the wizard mannequin) or
-// 'stick', with the stickman standing in until the mannequin is loaded and
+// The body the shell shows, by choice(): 'real' (the superhero wizard) or
+// 'stick', with the stickman standing in until the model is loaded and
 // compiled. (The Castle Crashers wizard, figureCrasher.js, now only draws NPCs.)
 export function createBody({ choice }) {
   const stick = createFigure();

@@ -20,10 +20,12 @@
   the room: under a low ceiling it stays crouched until it's out. In liquid `C` swims down instead. The
   stickman squats (figure.js `CROUCH_POSE`, the pelvis dropped so the feet stay down); the realistic body has
   no crouch clip, so figureReal.js bends its pelvis, spine, thighs, calves and feet on top of the clips.
-- **The body** (setting: Realistic | Stickman, key `character`): Realistic is the default, the skinned
-  mannequin dressed as a wizard, a pointed hat and a robe skinned to its skeleton (garb.js: the robe's
-  weights are transferred from the nearest body vertices and eased toward the pelvis below the hips).
-  Stickman stands in while it loads. The jet exhaust leaves from the small of the back (`JET_NOZZLES`).
+- **The body** (setting: Realistic | Stickman, key `character`): Realistic is the default: Quaternius's
+  Superhero Male (Universal Base Characters, CC0), his muscles sculpted into the mesh and its normal map,
+  playing Universal Animation Library clips retargeted onto his skeleton (`tools/character-pack.mjs`:
+  each bone keeps the mannequin's world-space turn off its rest pose). A wizard in a pointed hat skinned
+  to his head (garb.js) and boxers dyed the hat's purple when the model is packed. The robe was dropped
+  on 2026-10-11 so the abs show. Stickman stands in while it loads. The jet exhaust leaves from the small of the back (`JET_NOZZLES`).
   The Castle Crashers wizard (figureCrasher.js: the stickman's rig with a huge hooded head, glowing eyes,
   outlines and cel shading) was a choice and the default until 2026-10-10; now it only draws the NPCs and
   the class portraits.

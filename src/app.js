@@ -951,8 +951,8 @@ const settingsPanel = createSettings({
         fmt: (v) => `${v.toFixed(2)}×`, onChange: (v) => { rig.setSpeed(v); save(); } },
     ] },
     // The body you see in third person and when you die: Realistic (a
-    // skinned, animated mannequin in a wizard's hat and robe, the default) or
-    // Stickman (the TPT homage). It switches live, in POV too.
+    // skinned, animated, shredded superhero in a wizard's hat and purple
+    // boxers, the default) or Stickman (the TPT homage). It switches live, in POV too.
     { title: 'First person', rows: [
       { type: 'seg', key: 'character', options: [['real', 'Realistic'], ['stick', 'Stickman']],
         onChange: (v) => { settings.character = v; save(); pacer.wake(); } },
