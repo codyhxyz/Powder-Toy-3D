@@ -8,6 +8,7 @@ import { povEvents } from './events.js';
 import { JET_NOZZLES } from './figure.js';
 import { MELEE_SOURCES, BODY_WIDTH, BODY_HEIGHT } from './constants.js';
 import { lookOf } from './wands/look.js';
+import { PLAYER } from './targets.js';
 
 // POV effects, with three.quarks: muzzle flash (and a short light), sparks,
 // dust and chips, splash mist and tracers. Cosmetic only: the real debris,
@@ -172,6 +173,23 @@ const BLAST_SMOKE = 14;
 const BLAST_SMOKE_SPEED = [3, 9];       // cells/s, every way
 const BLAST_SMOKE_SIZE = [1.2, 2];      // cells across at birth
 const BLAST_LIGHT = 4;                  // times the muzzle light's strength
+
+// ---- the Energy Shield on a body ('body:shield', player.js): Halo 3's shimmer when a hit lands
+// on it (a flare over the body and motes over its skin), and its pop when it breaks (a bigger
+// flare and a burst of sparks). Halo 3's Spartan shield flares gold. Your own shows on the
+// screen's edge instead (hud.js).
+const SHIELD_COLOR = [4.5, 3.3, 1.1];   // HDR: the gold flare
+const SHIELD_FLARE_SIZE = 3.5;          // cells across, at the body's middle
+const SHIELD_FLARE_LIFE = 0.1;          // s
+const SHIELD_MOTES = 12;                // motes over the body's skin per hit
+const SHIELD_MOTE_SIZE = [0.3, 0.55];   // cells across
+const SHIELD_MOTE_LIFE = [0.1, 0.22];   // s
+const SHIELD_SKIN = 0.65;               // × the body's width: how far out from its middle the motes sit
+const SHIELD_GAP_S = 0.08;              // s between one body's flares (a blast hits the shield every frame)
+const SHIELD_POP_SIZE = 7;              // cells across, the break's flare
+const SHIELD_POP_LIFE = 0.2;            // s
+const SHIELD_POP_SPARKS = 30;
+const SHIELD_POP_SPEED = [12, 30];      // cells/s, every way
 
 // ---- the burrower's drill ('drill' event): cuttings sprayed back out of the face, tinted by what it cuts
 const DRILL_CHIP_RATE = 60;             // chips/s while it cuts
@@ -593,6 +611,30 @@ export function createVfx(env) {
     lightT = FLASH_LIGHT_TIME * BLAST_LIGHT;
   }
 
+  // the Energy Shield on a body whose feet are at `feet` (grid), `height` cells tall: a hit's shimmer or its pop
+  const shieldAt = new Map();   // body id → when its last flare was (s, performance clock)
+  function shield(id, state, feet, height = BODY_HEIGHT) {
+    const t = performance.now() / 1000;
+    if (state === 'hit' && t - (shieldAt.get(id) ?? -Infinity) < SHIELD_GAP_S) return;
+    shieldAt.set(id, t);
+    const s = env.getScale();
+    const mid = vC.copy(feet).setY(feet.y + height / 2);
+    toWorld(mid, vC);
+    const pop = state === 'break';
+    burst(fx.flash, 1, (p) => setP(p, vC, vT.set(0, 0, 0), (pop ? SHIELD_POP_SIZE : SHIELD_FLARE_SIZE) * s, SHIELD_COLOR, 1, pop ? SHIELD_POP_LIFE : SHIELD_FLARE_LIFE));
+    burst(fx.mote, SHIELD_MOTES, (p) => {
+      const a = Math.random() * TAU, r = BODY_WIDTH * SHIELD_SKIN * s;
+      vP.set(vC.x + Math.cos(a) * r, vC.y + (Math.random() - 0.5) * height * s, vC.z + Math.sin(a) * r);
+      setP(p, vP, vT.set(0, 0, 0), randIn(SHIELD_MOTE_SIZE) * s, SHIELD_COLOR, 1, randIn(SHIELD_MOTE_LIFE));
+    });
+    if (!pop) return;
+    fx.spark.sys.rendererEmitterSettings.speedFactor = SPARK_STREAK_S / (SPARK_WIDTH * s);
+    burst(fx.spark, SHIELD_POP_SPARKS, (p) => {
+      vV.randomDirection().multiplyScalar(randIn(SHIELD_POP_SPEED) * s);
+      setP(p, vC, vV, SPARK_WIDTH * s, SHIELD_COLOR, 1, randIn(SPARK_LIFE), SPARK_GRAVITY, SPARK_DRAG);
+    });
+  }
+
   // the burrower cutting for dt seconds at `at` (world), heading dir: chips and dust thrown back out of the face
   let drillChipAcc = 0, drillDustAcc = 0;
   function drillSpray(at, dir, id, dt) {
@@ -959,6 +1001,10 @@ export function createVfx(env) {
     }),
     povEvents.on('blast', (e) => {
       if (live() && e.point) blast(toWorld(e.point, vA));
+    }),
+    // a body's Energy Shield took a hit or broke (player.js); your own is the screen's edge (hud.js)
+    povEvents.on('body:shield', (e) => {
+      if (live() && e.point && e.id !== PLAYER && (e.state === 'hit' || e.state === 'break')) shield(e.id, e.state, e.point, e.height);
     }),
     povEvents.on('flame', (e) => {
       if (live() && !e.by) flameStream(e.muzzleWorld, e.dir, e.length, e.dt);

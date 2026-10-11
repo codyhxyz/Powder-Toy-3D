@@ -7,7 +7,9 @@ export function createHud() {
   // stats below the toolbar
   const fps = h('b'), cells = h('b'), steps = h('b'), res = h('b');
   const fpsUnit = document.createTextNode(' fps');
-  const stats = h('div.stats', {}, h('span', {}, fps, fpsUnit), h('span', {}, steps, ' steps/s'), h('span', {}, cells, ' cells'), h('span', {}, res));
+  // replace mode or specific delete, as TPT's HUD line says [REPLACE MODE] (GameView.cpp)
+  const editMode = h('span.edit-mode');
+  const stats = h('div.stats', {}, h('span', {}, fps, fpsUnit), h('span', {}, steps, ' steps/s'), h('span', {}, cells, ' cells'), h('span', {}, res), editMode);
 
   // hover readout (follows the cursor)
   const chip = h('i'), name = h('b'), temp = h('span'), pres = h('span');
@@ -55,6 +57,7 @@ export function createHud() {
     // ms (default: the kind's length), icon }, or a number: ms
     toast(text, opts) { return notices.add(text, typeof opts === 'number' ? { ms: opts } : opts); },
     dismissHint() { clearTimeout(hintTimer); hint.classList.add('gone'); },
+    setEditMode(text) { setText(editMode, text ?? ''); },
     setLegend(view) {
       const bars = [view?.legend, view?.legend2].filter(Boolean);
       legendBox.classList.toggle('show', bars.length > 0);
@@ -80,7 +83,15 @@ export function createHelp(onClose) {
         row('Brush size', '[', ']'),
         row('Brush size', 'Shift', 'Scroll'),
         row('Sphere or cube brush', 'B'),
-        row('Paint over existing material', 'X'),
+        row('Line (TPT\'s Shift-drag)', 'Shift', 'Left drag'),
+        row('Box: brush-tall, between the corners', '⌘', 'Left drag'),
+        row('Fill: open air up to the brush top, or what you click', '⌘', 'Shift', 'Click'),
+        row('Replace mode: paint over material', 'X'),
+        row('Specific delete: erase only the target', 'Delete'),
+        row('Target for both: an element tile', '⌥', 'Click'),
+        row('Target: the element under the cursor', '⌥', 'I'),
+        row('Property tool: set a value under the brush', '⌘', 'P'),
+        row('Show or hide decoration (the Deco tab\'s paint)', 'Ctrl', 'B'),
         row('Eyedropper: pick element under cursor', 'I'),
         row('Undo last change', '⌘', 'Z'),
         row('Find an element', '/'),
@@ -115,16 +126,21 @@ export function createHelp(onClose) {
         h('h3', { text: 'Simulation and interface' }),
         row('Pause or resume', 'Space'),
         row('Step one frame', '.'),
+        row('Air mode: on, pressure off, velocity off, off, no update', 'Y'),
+        row('Ambient heat on or off (gravity and edges: Settings)', 'U'),
         row('Switch view', '1', '–', '5'),
         row('Show or hide elements', 'T'),
         row('Chat, when playing together', 'T'),
         row(CLASSES_ENABLED ? 'Settings (in first person, the gear)' : 'Settings', ','),
         row('Screenshot', 'P'),
         row('Scoreboard (hold)', 'Tab'),
+        row('Save the game (in the body, ⌘ only)', '⌘', 'S'),
+        row('Saves: load one, export it, open a file', '⌘', 'O'),
         row('Close menus; with none open, the map menu', 'Esc'),
       ),
       h('p', { text: 'Signs can show live values: write {t} for temperature, {p} for pressure and {e} for the element under the sign.' }),
-      h('p', { text: 'Tools from The Powder Toy: Wind blows the way you drag the brush, Cyclone spins air and matter around it, Mix shuffles what is inside it, PGRV and NGRV pull matter in or push it out while held, and AMBP and AMBM warm or cool only the air.' })));
+      h('p', { text: 'Tools from The Powder Toy: Wind blows the way you drag the brush, Cyclone spins air and matter around it, Mix shuffles what is inside it, PGRV and NGRV pull matter in or push it out while held, and AMBP and AMBM warm or cool only the air.' }),
+      h('p', { text: 'Deco (as in The Powder Toy) paints a colour onto matter: pick the colour and its alpha in the spawn menu. Paint moves with the matter and lasts through melting and burning; the brush, a construction or emptying a cell wipes it.' })));
   document.body.append(el);
   return {
     setOpen: (v) => el.classList.toggle('open', v),

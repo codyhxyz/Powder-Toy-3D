@@ -23,10 +23,17 @@ export { emptyLoads };
 // slot is already in hand, the next one in it. The wheel steps through every
 // tool carried, in catalog order.
 //
-// Wands (src/pov/wands/, docs/wands.md) sit in their slot's stack after its
-// tools and are picked the same way: the number key and the wheel cycle
-// through them like any tool (as HL2 cycles a slot's weapons), a click on one
-// puts it in hand; B edits it.
+// A team game in Halo's style restricts it (restrict(keys), src/game/arsenal.js):
+// only those keys can be in hand, each in a slot of its own in their order
+// (1 Primary, 2 Secondary: Halo's two weapons), the wheel swaps between them,
+// no wands; restrict(null) gives everything back. setNote(key, text) shows text after a tool's status where the
+// held tool's name is (a power weapon's shots left, HL2's ammo corner).
+//
+// Wands (src/pov/wands/, docs/wands.md) exist only in the Noita gamemode (the
+// Descent map), and there they are all you carry: the run's wands sit in the
+// Guns slot and are picked like tools (the number key and the wheel cycle them,
+// as HL2 cycles a slot's weapons); B edits one at a Holy Mountain. Every other
+// map has the tools and no wands.
 //
 // Tools get the shell's env plus:
 //   env.transfer   the shared exact cell transfer (transfer.js)
@@ -54,6 +61,7 @@ const MS_PER_S = 1000;
 // the body holding the tools has a status that takes its hands (status.js noTools: Polymorph);
 // the player's ctx carries its body as ctx.player.body, an NPC's ctx.player is its body
 const noHands = (ctx) => !!(ctx.player?.body?.status ?? ctx.player?.status)?.noTools;
+const CARRY_LABELS = ['Primary', 'Secondary'];   // a restricted bar's slots (Halo's two weapons)
 const WAND = 'WAND';              // selectedKey while a wand is in hand
 const WAND_KEY = 'WAND:';
 const DESCENT_ID = 'descent:';    // a Descent wand's row id: DESCENT_ID + its inventory slot (wands/descentRun.js)
@@ -188,25 +196,31 @@ export function createToolbelt(env) {
     } catch (err) { console.error(`toolbelt: ${path} failed to start`, err); }
   }
 
-  const carried = () => inventory.owned.filter((k) => tools.has(k));
-  const inSlot = (i) => carried().filter((k) => tools.get(k).slot === i);
+  let only = null;   // restrict(): the only keys that can be in hand, in their order; null: every tool carried
+  const notes = new Map();   // key → setNote's text
+  // The Noita gamemode (Descent's levels) puts wands in hand and nothing else; every other map has
+  // the tools and no wands (the user's call, 2026-10-11)
+  const carried = () => (descentLevel ? [] : (only ?? inventory.owned).filter((k) => tools.has(k)));
+  // restricted, each key is a slot of its own, in order
+  const inSlot = (i) => (only ? carried().slice(i, i + 1) : carried().filter((k) => tools.get(k).slot === i));
+  const toolSlot = (k) => (only ? carried().indexOf(k) : tools.get(k)?.slot);
   const lastIn = Array(HOTBAR_SLOTS).fill(null);   // per slot, the tool last in hand there
   let selected = null;
   let readout = null;   // the selected tool's readout?.(ctx) from the last update
 
   const clampSlot = (slot) => Math.max(0, Math.min(HOTBAR_SLOTS - 1, (Number.isInteger(slot) ? slot : 1) - 1));
-  // slot i's wand rows: the starter presets for it, then the saved custom wand
-  // On Descent (wands/descentRun.js): only the run's four wand slots, in the Guns slot; no presets, no custom
+  // slot i's wand rows: on Descent (wands/descentRun.js) the run's four wand slots, in the Guns slot;
+  // anywhere else none (no presets, no custom wand: wands are the Noita gamemode's)
   let descentLevel = null, descentKey;
-  const wandRows = (i) => descentLevel ? (i === DESCENT_SLOT ? descentWands.wands.map((w, j) => ({ key: WAND_KEY + DESCENT_ID + j,
-    name: `Wand ${j + 1}: ${w.name}`, desc: wandLines(w).join(' · '), color: WAND_COLOR })) : []) : [
-    ...PRESETS.filter((p) => clampSlot(p.slot) === i).map((p) => ({ key: WAND_KEY + p.id, name: `Wand: ${p.name}`, desc: p.description, color: WAND_COLOR })),
-    ...(custom && clampSlot(custom.slot) === i ? [{ key: `${WAND_KEY}custom`, name: `Wand: ${custom.name}`, desc: 'Your edited wand (B edits it).', color: WAND_COLOR }] : []),
-  ];
+  const wandRows = (i) => (descentLevel && i === DESCENT_SLOT ? descentWands.wands.map((w, j) => ({ key: WAND_KEY + DESCENT_ID + j,
+    name: `Wand ${j + 1}: ${w.name}`, desc: wandLines(w).join(' · '), color: WAND_COLOR })) : []);
 
-  // slot i's row keys: its carried tools, then its wands (only in a slot that carries a tool, so a class's empty slots stay empty)
+  // slot i's row keys: its carried tools, then its wands (only in a slot that carries a tool, so a class's empty slots stay
+  // empty; none while restricted)
   const slotKeys = (i) => {
-    const keys = inSlot(i), wands = wandRows(i).map((r) => r.key);
+    const keys = inSlot(i);
+    if (only) return keys;
+    const wands = wandRows(i).map((r) => r.key);
     if (descentLevel) return [...wands, ...keys];
     return keys.length ? [...keys, ...wands] : [];
   };
@@ -216,10 +230,10 @@ export function createToolbelt(env) {
     if (id.startsWith(DESCENT_ID)) return DESCENT_SLOT;
     return clampSlot((id === 'custom' ? custom : PRESETS.find((p) => p.id === id))?.slot);
   };
-  const slotOf = (k) => (k?.startsWith(WAND_KEY) ? wandSlotOf(k) : tools.get(k)?.slot);
+  const slotOf = (k) => (k?.startsWith(WAND_KEY) ? wandSlotOf(k) : toolSlot(k));
   const heldKey = () => (wandSelected ? WAND_KEY + wandId : selected);
-  // every row key, slot by slot (the wheel's order)
-  const allKeys = () => [...Array(HOTBAR_SLOTS).keys()].flatMap(slotKeys);
+  // every row key, slot by slot (the wheel's order); restricted, the keys in their own order
+  const allKeys = () => (only ? carried() : [...Array(HOTBAR_SLOTS).keys()].flatMap(slotKeys));
 
   // the bar from the inventory: each slot's tools (then its wands) and the one it holds now
   function refresh() {
@@ -239,8 +253,9 @@ export function createToolbelt(env) {
 
   // hold wand `definition` (a preset id, or { name, cards, config, slot? })
   function equipWand(definition) {
+    if (!descentLevel) return false;   // wands are the Noita gamemode's
     const def = typeof definition === 'string' ? PRESETS.find((p) => p.id === definition) : definition;
-    if (!def) return false;
+    if (!def || only) return false;
     putAway();
     wandRuntime.equip(def);
     wandSlot = clampSlot(def.slot ?? wandSlot + 1);
@@ -271,13 +286,13 @@ export function createToolbelt(env) {
     }
     if (typeof key === 'number') key = carried()[key];
     const t = tools.get(key);
-    if (!t || !inventory.has(key)) return false;
+    if (!t || !inventory.has(key) || descentLevel || (only && !only.includes(key))) return false;
     if (wandSelected) { putAway(); wandSelected = false; wandId = null; descentWands.held = -1; }
     else if (key !== selected) tools.get(selected)?.inst.deselect?.();
     selected = key;
-    lastIn[t.slot] = key;
+    lastIn[toolSlot(key)] = key;
     refresh();
-    hotbar.select(t.slot);
+    hotbar.select(toolSlot(key));
     env.requestRender?.();
     return true;
   }
@@ -288,6 +303,21 @@ export function createToolbelt(env) {
     if (!keys.length) { hotbar.shake(i); return; }
     const cur = slotOf(heldKey()) === i ? keys.indexOf(heldKey()) : -1;
     select(cur >= 0 ? keys[(cur + 1) % keys.length] : (lastIn[i] ?? keys[0]));
+  }
+
+  // Restrict the hands to `keys` (in order) or, null, give everything back. `hold` goes in hand, else
+  // the first key when the tool in hand isn't one of them (with none allowed, nothing is in hand).
+  function restrict(keys, hold = null) {
+    only = keys ? [...keys] : null;
+    if (only && wandSelected) { editor.close(); putAway(); wandSelected = false; wandId = null; }
+    lastIn.fill(null);   // (the slots mean something else now)
+    hotbar.setLabels(only ? carried().map((_, i) => CARRY_LABELS[i] ?? '') : null);
+    refresh();
+    if (!only) { select(selected ?? DEFAULT_TOOL); return; }
+    const want = hold && only.includes(hold) ? hold : !only.includes(selected) ? carried()[0] : null;
+    if (want && select(want)) return;
+    if (!only.includes(selected)) { tools.get(selected)?.inst.deselect?.(); selected = null; }
+    env.requestRender?.();
   }
 
   // the wheel: the next (+1) or previous (−1) tool or wand carried, across slots
@@ -308,7 +338,7 @@ export function createToolbelt(env) {
     if (editor.open || !env.isActive?.() || e.metaKey || e.ctrlKey || e.altKey) return;
     const t = e.target;
     if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
-    if (e.code === 'KeyB') {   // edit the wand
+    if (e.code === 'KeyB' && descentLevel) {   // edit the wand (the Noita gamemode's)
       e.preventDefault(); e.stopImmediatePropagation(); if (!e.repeat) openEditor(); return;
     }
     const i = e.key.length === 1 ? [...Array(HOTBAR_SLOTS).keys()].find((j) => slotKey(j) === e.key) : undefined;
@@ -322,7 +352,7 @@ export function createToolbelt(env) {
   // B: the editor. On Descent, Noita's rule: only inside a Holy Mountain, only the wand in
   // hand, and only with the spells you carry (the bag); off it, the free sandbox editor.
   function openEditor() {
-    if (!descentLevel) { editor.show(); return; }
+    if (!descentLevel) return;   // no wands off the Noita gamemode
     if (!descentWands.inTemple) { env.hud?.toast?.('Edit wands at a Holy Mountain'); return; }
     const slot = wandSelected && wandId?.startsWith(DESCENT_ID) ? Number(wandId.slice(DESCENT_ID.length)) : -1;
     if (slot < 0 || !descentWands.wands[slot]) { env.hud?.toast?.('Hold a wand to edit it'); return; }
@@ -357,9 +387,12 @@ export function createToolbelt(env) {
     if (descentLevel && !was) descentWands.reset();
     descentWands.inTemple = false;
     loot.setLevel(descentLevel);
-    if (wandSelected && !allKeys().includes(heldKey())) {
+    // in or out of the Noita gamemode: what was in hand may not be carried there
+    if (!allKeys().includes(heldKey())) {
+      putAway();
+      wandSelected = false; wandId = null; descentWands.held = -1; selected = null;
       const keys = allKeys();
-      if (keys.length) select(keys[0]); else { putAway(); wandSelected = false; wandId = null; }
+      if (keys.length) select(keys[0]); else if (!descentLevel) select(DEFAULT_TOOL);
     }
     refresh();
   }
@@ -376,6 +409,10 @@ export function createToolbelt(env) {
     get readout() { return readout; },
     get mana() { return wandSelected ? wandRuntime.mana : null; },   // the held wand's { mana, manaMax } (the HUD's bar), else null
     get carried() { return carried(); },
+    get restricted() { return only ? [...only] : null; },   // restrict()'s keys, or null
+    restrict,
+    // text shown after tool `key`'s status (null: none)
+    setNote(key, text) { if (text) notes.set(key, String(text)); else notes.delete(key); },
     wandRuntime, editor, equipWand,
     openEditor,
     // a tool by key (or, given a number, the carried tool at that place), carried or not
@@ -411,7 +448,10 @@ export function createToolbelt(env) {
         : held()?.readout?.(ctx) ?? null;
       lastSteps = ctx.stepsPerFrame;
       ballistics.update(ctx);
-      for (let i = 0; i < HOTBAR_SLOTS; i++) hotbar.setStatus(i, tools.get(lastIn[i])?.inst.status?.() ?? '');
+      for (let i = 0; i < HOTBAR_SLOTS; i++) {
+        const k = lastIn[i];
+        hotbar.setStatus(i, [tools.get(k)?.inst.status?.(), notes.get(k)].filter(Boolean).join(' · '));
+      }
     },
     // a click in play: true when it closed the slot selector instead (hotbar.js confirm)
     confirmSelection: () => hotbar.confirm(),

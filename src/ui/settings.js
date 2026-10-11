@@ -7,7 +7,8 @@ import { ICON } from './icons.js';
 //   { type: 'switch', key, label, desc?, badge?, tier?, onChange }   (badge: a cost label, styled by tier)
 //   { type: 'more', label, rows }   rows tucked under a collapsed disclosure
 // A seg row may take value() instead of reading settings[key] (a derived setting),
-// and cols: its options in rows of that many (too many to fit side by side).
+// and cols: its options in rows of that many (too many to fit side by side),
+// and disabled(): a one-line reason it can't be changed now (shown under it), else falsy.
 //   { type: 'custom', el, sync }   an element the caller keeps up to date; sync runs with the others
 // Any row may take hidden(): it shows only while that is false (checked when the rows sync).
 export function createSettings({ settings, sections, footer, onClose }) {
@@ -27,7 +28,17 @@ export function createSettings({ settings, sections, footer, onClose }) {
         return b;
       });
       syncers.push(() => btns.forEach((b) => b.classList.toggle('on', String(r.value ? r.value() : settings[r.key]) === b.dataset.value)));
-      return h(r.cols ? 'div.seg.rows' : 'div.seg', { role: 'radiogroup', style: r.cols ? { '--cols': r.cols } : null }, btns);
+      const seg = h(r.cols ? 'div.seg.rows' : 'div.seg', { role: 'radiogroup', style: r.cols ? { '--cols': r.cols } : null }, btns);
+      if (!r.disabled) return seg;
+      // disabled(): a one-line reason while the row can't be changed, else falsy
+      const note = h('p.row-note');
+      syncers.push(() => {
+        const why = r.disabled();
+        btns.forEach((b) => { b.disabled = !!why; });
+        note.textContent = why || '';
+        note.hidden = !why;
+      });
+      return h('div', {}, seg, note);
     }
     if (r.type === 'slider') {
       const input = h('input', { type: 'range', min: r.min, max: r.max, step: r.step, 'aria-label': r.label });

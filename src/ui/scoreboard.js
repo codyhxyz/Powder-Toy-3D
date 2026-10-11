@@ -14,12 +14,13 @@ import './scoreboard.css';
 // What it lists:
 //   a team game (src/game, while a match runs): its roster, bots and all, each
 //     row edged in its team's colour, and under the map's name the mode's score
-//     line (game.scoreboard())
+//     line (game.scoreboard()); its extra columns (the mode's score, Halo's
+//     medals) go between deaths and ping
 //   the sandbox: you and the people playing with you (src/net/multiplayer.js
 //     players), your kills and deaths counted from the killfeed's povEvents 'kill'
 //
-// opts: wantsTab(e) whether Tab is the scoreboard's now (not typing, not moving
-// through a dialog); map() the map's name; match() the team game's scoreboard
+// opts: wantsTab(e) whether Tab is the scoreboard's now (you're on the world: not
+// typing, no control or dialog focused); map() the map's name; match() the team game's scoreboard
 // view while one runs, else null; session() the multiplayer players ([] solo);
 // dead() whether your body is dead now.
 
@@ -69,7 +70,7 @@ export function createScoreboard({ wantsTab, map, match, session, dead }) {
       ping: p.ping, dead: false, me: false, admin: p.role === 'host',
     }));
     const n = rows.length;
-    return { host: map() ?? HOST_NAME, sub: [SANDBOX, `${n} ${n === 1 ? 'player' : 'players'}`], rows, scoreLabel: null, foot: '' };
+    return { host: map() ?? HOST_NAME, sub: [SANDBOX, `${n} ${n === 1 ? 'player' : 'players'}`], rows, cols: [], foot: '' };
   }
 
   function view() {
@@ -89,13 +90,14 @@ export function createScoreboard({ wantsTab, map, match, session, dead }) {
     title.textContent = v.host;
     sub.textContent = v.sub.filter(Boolean).join(DOT);
     foot.textContent = v.foot ?? '';
-    const cols = v.scoreLabel ? ['Kills', 'Deaths', v.scoreLabel, 'Ping'] : ['Kills', 'Deaths', 'Ping'];
-    root.style.setProperty('--sb-cols', String(cols.length));
-    head.replaceChildren(h('span'), h('span.sb-name', { text: 'Name' }), ...cols.map((c) => h('span.sb-n', { text: c })));
+    const extra = v.cols ?? [];
+    const labels = ['Kills', 'Deaths', ...extra.map((c) => c.label), 'Ping'];
+    root.style.setProperty('--sb-cols', String(labels.length));
+    head.replaceChildren(h('span'), h('span.sb-name', { text: 'Name' }), ...labels.map((c) => h('span.sb-n', { text: c })));
     list.replaceChildren(...v.rows.map((r) => h(`div.sb-row${r.dead ? '.dead' : ''}${r.admin ? '.admin' : ''}${r.me ? '.me' : ''}${r.team ? '.team' : ''}`,
       { style: { '--sb-avatar': r.avatar ?? YOU_COLOR, '--sb-team': r.team ?? 'transparent' } },
       h('i.sb-avatar'), h('span.sb-name', { text: r.name }),
-      cell(r.kills), cell(r.deaths), v.scoreLabel ? cell(r.score) : null, cell(r.ping))));
+      cell(r.kills), cell(r.deaths), ...extra.map((c) => cell(r[c.key])), cell(r.ping))));
   }
 
   function frame() {
