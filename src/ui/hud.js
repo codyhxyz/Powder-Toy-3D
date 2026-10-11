@@ -123,6 +123,8 @@ export function createHelp(onClose) {
         row('Chat, when playing together', 'T'),
         row(CLASSES_ENABLED ? 'Settings (in first person, the gear)' : 'Settings', ','),
         row('Screenshot', 'P'),
+        row('Save the game (in the body, ⌘ only)', '⌘', 'S'),
+        row('Saves: load one, export it, open a file', '⌘', 'O'),
         row('Close menus; with none open, the map menu', 'Esc'),
       ),
       h('p', { text: 'Signs can show live values: write {t} for temperature, {p} for pressure and {e} for the element under the sign.' })));
