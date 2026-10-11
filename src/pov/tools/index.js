@@ -21,6 +21,12 @@ export { emptyLoads };
 // slot is already in hand, the next one in it. The wheel steps through every
 // tool carried, in catalog order.
 //
+// A team game in Halo's style restricts it (restrict(keys), src/game/arsenal.js):
+// only those keys can be in hand, number key k holds the k-th of them and the
+// wheel swaps between them (Halo's two weapons), no wands; restrict(null) gives
+// everything back. setNote(key, text) shows text after a tool's status where the
+// held tool's name is (a power weapon's shots left, HL2's ammo corner).
+//
 // Wands (src/pov/wands/, docs/wands.md) sit in their slot's stack after its
 // tools and are picked the same way: the number key and the wheel cycle
 // through them like any tool (as HL2 cycles a slot's weapons), a click on one
@@ -183,7 +189,9 @@ export function createToolbelt(env) {
     } catch (err) { console.error(`toolbelt: ${path} failed to start`, err); }
   }
 
-  const carried = () => inventory.owned.filter((k) => tools.has(k));
+  let only = null;   // restrict(): the only keys that can be in hand, in their order; null: every tool carried
+  const notes = new Map();   // key → setNote's text
+  const carried = () => (only ?? inventory.owned).filter((k) => tools.has(k));
   const inSlot = (i) => carried().filter((k) => tools.get(k).slot === i);
   const lastIn = Array(HOTBAR_SLOTS).fill(null);   // per slot, the tool last in hand there
   let selected = null;
@@ -196,8 +204,9 @@ export function createToolbelt(env) {
     ...(custom && clampSlot(custom.slot) === i ? [{ key: `${WAND_KEY}custom`, name: `Wand: ${custom.name}`, desc: 'Your edited wand (B edits it).', color: WAND_COLOR }] : []),
   ];
 
-  // slot i's row keys: its carried tools, then its wands (only in a slot that carries a tool, so a class's empty slots stay empty)
-  const slotKeys = (i) => { const keys = inSlot(i); return keys.length ? [...keys, ...wandRows(i).map((r) => r.key)] : []; };
+  // slot i's row keys: its carried tools, then its wands (only in a slot that carries a tool, so a class's empty slots stay
+  // empty; none while restricted)
+  const slotKeys = (i) => { const keys = inSlot(i); return keys.length && !only ? [...keys, ...wandRows(i).map((r) => r.key)] : keys; };
   const rowDef = (k) => (k.startsWith(WAND_KEY) ? wandRows(wandSlotOf(k)).find((r) => r.key === k) : tools.get(k).def);
   const wandSlotOf = (k) => {
     const id = k.slice(WAND_KEY.length);
@@ -205,8 +214,8 @@ export function createToolbelt(env) {
   };
   const slotOf = (k) => (k?.startsWith(WAND_KEY) ? wandSlotOf(k) : tools.get(k)?.slot);
   const heldKey = () => (wandSelected ? WAND_KEY + wandId : selected);
-  // every row key, slot by slot (the wheel's order)
-  const allKeys = () => [...Array(HOTBAR_SLOTS).keys()].flatMap(slotKeys);
+  // every row key, slot by slot (the wheel's order); restricted, the keys in their own order
+  const allKeys = () => (only ? carried() : [...Array(HOTBAR_SLOTS).keys()].flatMap(slotKeys));
 
   // the bar from the inventory: each slot's tools (then its wands) and the one it holds now
   function refresh() {
@@ -227,7 +236,7 @@ export function createToolbelt(env) {
   // hold wand `definition` (a preset id, or { name, cards, config, slot? })
   function equipWand(definition) {
     const def = typeof definition === 'string' ? PRESETS.find((p) => p.id === definition) : definition;
-    if (!def) return false;
+    if (!def || only) return false;
     putAway();
     wandRuntime.equip(def);
     wandSlot = clampSlot(def.slot ?? wandSlot + 1);
@@ -249,7 +258,7 @@ export function createToolbelt(env) {
     }
     if (typeof key === 'number') key = carried()[key];
     const t = tools.get(key);
-    if (!t || !inventory.has(key)) return false;
+    if (!t || !inventory.has(key) || (only && !only.includes(key))) return false;
     if (wandSelected) { putAway(); wandSelected = false; wandId = null; }
     else if (key !== selected) tools.get(selected)?.inst.deselect?.();
     selected = key;
@@ -266,6 +275,26 @@ export function createToolbelt(env) {
     if (!keys.length) { hotbar.shake(i); return; }
     const cur = slotOf(heldKey()) === i ? keys.indexOf(heldKey()) : -1;
     select(cur >= 0 ? keys[(cur + 1) % keys.length] : (lastIn[i] ?? keys[0]));
+  }
+
+  // number key i: slot i, or, restricted, the i-th key allowed (Halo's 1 and 2: primary and secondary)
+  function pressKey(i) {
+    if (!only) { pressSlot(i); return; }
+    const k = carried()[i];
+    if (k) select(k); else hotbar.shake(slotOf(selected) ?? i);
+  }
+
+  // Restrict the hands to `keys` (in order) or, null, give everything back. `hold` goes in hand, else
+  // the first key when the tool in hand isn't one of them (with none allowed, nothing is in hand).
+  function restrict(keys, hold = null) {
+    only = keys ? [...keys] : null;
+    if (only && wandSelected) { editor.close(); putAway(); wandSelected = false; wandId = null; }
+    refresh();
+    if (!only) { select(selected ?? DEFAULT_TOOL); return; }
+    const want = hold && only.includes(hold) ? hold : !only.includes(selected) ? carried()[0] : null;
+    if (want && select(want)) return;
+    if (!only.includes(selected)) { tools.get(selected)?.inst.deselect?.(); selected = null; }
+    env.requestRender?.();
   }
 
   // the wheel: the next (+1) or previous (−1) tool or wand carried, across slots
@@ -286,14 +315,14 @@ export function createToolbelt(env) {
     if (editor.open || !env.isActive?.() || e.metaKey || e.ctrlKey || e.altKey) return;
     const t = e.target;
     if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
-    if (e.code === 'KeyB') {   // edit the wand
+    if (e.code === 'KeyB' && !only) {   // edit the wand (not while restricted: no wands then)
       e.preventDefault(); e.stopImmediatePropagation(); if (!e.repeat) editor.show(); return;
     }
     const i = e.key.length === 1 ? [...Array(HOTBAR_SLOTS).keys()].find((j) => slotKey(j) === e.key) : undefined;
     if (i === undefined) return;
     e.preventDefault();
     e.stopImmediatePropagation();
-    if (!e.repeat) pressSlot(i);
+    if (!e.repeat) pressKey(i);
   }
   addEventListener('keydown', onKey, { capture: true });
 
@@ -309,6 +338,10 @@ export function createToolbelt(env) {
     get readout() { return readout; },
     get mana() { return wandSelected ? wandRuntime.mana : null; },   // the held wand's { mana, manaMax } (the HUD's bar), else null
     get carried() { return carried(); },
+    get restricted() { return only ? [...only] : null; },   // restrict()'s keys, or null
+    restrict,
+    // text shown after tool `key`'s status (null: none)
+    setNote(key, text) { if (text) notes.set(key, String(text)); else notes.delete(key); },
     wandRuntime, editor, equipWand,
     openEditor: () => editor.show(),
     // a tool by key (or, given a number, the carried tool at that place), carried or not
@@ -342,7 +375,10 @@ export function createToolbelt(env) {
         : held()?.readout?.(ctx) ?? null;
       lastSteps = ctx.stepsPerFrame;
       ballistics.update(ctx);
-      for (let i = 0; i < HOTBAR_SLOTS; i++) hotbar.setStatus(i, tools.get(lastIn[i])?.inst.status?.() ?? '');
+      for (let i = 0; i < HOTBAR_SLOTS; i++) {
+        const k = lastIn[i];
+        hotbar.setStatus(i, [tools.get(k)?.inst.status?.(), notes.get(k)].filter(Boolean).join(' · '));
+      }
     },
     // a click in play: true when it closed the slot selector instead (hotbar.js confirm)
     confirmSelection: () => hotbar.confirm(),
