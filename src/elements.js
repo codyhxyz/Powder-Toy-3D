@@ -1303,7 +1303,7 @@ export const PALETTE = [
   { name: 'Electronics', items: ['SPARK', 'BATTERY', 'METAL', 'LAMP', 'PSCN', 'NSCN', 'SWITCH', 'INSULATOR', 'TSNS', 'PCLN'] },
   { name: 'Radioactive', items: ['PHOTON', 'NEUTRON', 'URANIUM', 'PLUTONIUM'] },
   { name: 'Exotic', items: ['ANTIMATTER', 'SINGULARITY'] },
-  { name: 'Tools', items: ['HEAT', 'COOL', 'ERASE', 'BLAST', 'VACUUM', 'WIND', 'CYCLONE', 'MIX', 'GRAV_IN', 'GRAV_OUT', 'AMB_HEAT', 'AMB_COOL', 'PROP', 'LIGHTNING', 'SIGN', ...GEAR_ITEMS.map((g) => g.key), ...WAND_STARTERS.map((item) => item.key)] },
+  { name: 'Tools', items: ['HEAT', 'COOL', 'ERASE', 'BLAST', 'VACUUM', 'WIND', 'CYCLONE', 'MIX', 'GRAV_IN', 'GRAV_OUT', 'AMB_HEAT', 'AMB_COOL', 'PROP', 'LIGHTNING', 'SIGN', ...GEAR_ITEMS.map((g) => g.key)] },   // (no starter wands: wands are the Noita gamemode's alone)
   { name: 'Entities', items: ['ENEMY', 'GUNNER', 'WORM', 'GIANTWORM', 'SPAWN', 'JEEPPAD', 'BIKEPAD', 'FLOCK'] },
   // TPT's DECO menu (its tools in TPT's order)
   { name: 'Deco', items: DECO_TOOLS.map((t) => t.key) },

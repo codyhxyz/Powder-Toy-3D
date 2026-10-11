@@ -319,6 +319,7 @@ ${prelude(g)}
 #define LIGHT_BLUR_W 0.10, 0.22, 0.36, 0.22, 0.10
 #define LIGHT_BLUR_GAIN 1.15
 uniform sampler2D tSrc;
+uniform sampler2D tDist;   // the empty-space distance (brickDistFrag), carried in alpha
 uniform int uAxis;
 out vec4 oC;
 void main() {
@@ -333,7 +334,9 @@ void main() {
     if (any(lessThan(q, ivec3(0))) || any(greaterThan(q, hi))) continue;
     s += texelFetch(tSrc, brickAtlas(q), 0).rgb * W[i];
   }
-  oC = vec4(s * LIGHT_BLUR_GAIN, 1.0);
+  // alpha: the brick's empty-space distance, so the realistic view reads both
+  // from one texture (gfx/core.js BRICK_DIST_IN_LIGHT)
+  oC = vec4(s * LIGHT_BLUR_GAIN, texelFetch(tDist, brickAtlas(bc), 0).x);
 }
 `;
 

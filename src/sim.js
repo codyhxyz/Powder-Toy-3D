@@ -419,7 +419,7 @@ export class Simulation {
       dirty: rawMat(dirtyFrag(g), { tAge: { value: null } }),
       regionMap: rawMat(fieldRegionMapFrag(g), { tDirty: { value: this.dirty.texture } }),
       regionShare: rawMat(regionShareFrag(g), { tRegion: { value: this.regionMap.texture } }),
-      blur: rawMat(blurFrag(g), { tSrc: { value: null }, uAxis: { value: 0 } }),
+      blur: rawMat(blurFrag(g), { tSrc: { value: null }, tDist: { value: null }, uAxis: { value: 0 } }),
       brickDist: [0, 1, 2].map((axis) => rawMat(brickDistFrag(g, axis), { tSrc: { value: null } })),
       giSource: rawMat(giSourceFrag(g), { ...giUniforms(), ...giProbeUniforms() }),
       // the far field's part is in for a box too, off (shaders/far.js WORLD_SIZE; world/far.js attach turns it on)
@@ -915,6 +915,7 @@ export class Simulation {
     dz.uniforms.tSrc.value = this.brickDist[1].texture;
     this.run(dz, this.brickDist[0]);
     const blur = this.mats.blur;
+    blur.uniforms.tDist.value = this.brickDist[0].texture;   // carried in the light volume's alpha (passes.js blurFrag)
     let src = this.brick.texture;
     for (let i = 0; i < LIGHT_BLUR_PASSES; i++) {
       blur.uniforms.tSrc.value = src;

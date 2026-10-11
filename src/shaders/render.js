@@ -14,6 +14,7 @@ import { plainGLSL } from './gfx/plain.js';
 import { grainsGLSL } from './gfx/grains.js';
 import { crystalGLSL } from './gfx/crystal.js';
 import { decoViewGLSL, decoSurfGLSL } from './gfx/deco.js';
+import { meshCutGLSL } from '../gfx/meshCut.js';
 
 
 // Hybrid raymarcher. Rays walk the voxel grid with an Amanatides–Woo DDA
@@ -183,6 +184,7 @@ ${flush}
       break;`;
 
   return /* glsl */ `
+#define BRICK_DIST_IN_LIGHT   // the empty-space distance from tLight's alpha (gfx/core.js): a texture unit for meshCut
 ${lib(g)}
 ${decoViewGLSL}
 ${surfaceGLSL}
@@ -195,6 +197,7 @@ uniform vec3 uCam;
 uniform mat4 projectionMatrix;
 uniform mat4 modelMatrix;
 in vec3 vGrid;
+${meshCutGLSL}
 
 // The view is picked at run time from uView. Defining VIEW (e.g.
 // material.defines = { VIEW: 2 }) compiles a program specialised to one view.
@@ -720,6 +723,10 @@ void main() {
   vec3 liqDither = (hash33(vec3(gl_FragCoord.xy, float(uFrame))) - 0.5) * LIQ_ID_DITHER;
   int bends = 0;
   bool stop = false;
+  // the nearest opaque mesh (gfx/meshCut.js), counted along the ray's path:
+  // tCut is in the current ray's t, which restarts at every bend
+  float tCut = meshCutT(rd);
+  bool cut = false;
 
   ivec3 lastB = ivec3(-1);
   int flags = 0;
@@ -749,6 +756,7 @@ void main() {
         if (liquidInterface(hp, n0, true, lid, false, ro, rd, col, trans, mediumLight)) liq = lid;
         lightRef = uShadows ? sunShadow(hp - n0 * IFACE_PROBE) : vec3(1.0);   // inside: the map carries the liquid above
         lightY = hp.y;
+        tCut -= tEnter;
         rd = safeDir(rd); istp = ivec3(sign(rd)); tDelta = abs(1.0 / rd);
         cell = ivec3(floor(ro)); tMax = (vec3(cell) + step(0.0, rd) - ro) / rd;
         tEnter = 0.0; phiA = surfSample(ro);
@@ -758,6 +766,7 @@ void main() {
 
   for (int i = 0; i < ${g.maxSteps + BEND_EXTRA_STEPS}; i++) {
     if (stop || outside(cell)) break;
+    if (tEnter >= tCut) { cut = true; break; }
     ivec3 bc = cell / BS;
     if (bc != lastB) { lastB = bc; flags = brickInfo(bc); gThin = brickThin(flags); }
     if (flags == 0) {
@@ -882,6 +891,8 @@ void main() {
       grainEvent(cell, id, a, ro, rd, tEnter, tExit, col, trans, ev, evCh, tEv, anyHit, hitPos);   // gfx/grains.js
 #endif
 
+      if (tCut < tEv) { tEv = tCut; ev = EV_NONE; cut = true; }
+
       // ---- what lies along [tEnter, tEv] ----
       if (liq != E_EMPTY) {
         vec3 pm = ro + rd * (0.5 * (tEnter + tEv));
@@ -908,13 +919,14 @@ void main() {
       // up close the hit moves onto the carved relief (gfx/relief.js), or the
       // ray passes through a groove: its march restarts where it leaves
       if (ev == EV_OPAQUE && dot(evN, evN) == 0.0 && !reliefHit(ro, rd, evCh, tEv)) {
-        ro += rd * tEv; mNext -= tEv;
+        ro += rd * tEv; mNext -= tEv; tCut -= tEv;
         cell = ivec3(floor(ro)); tMax = (vec3(cell) + step(0.0, rd) - ro) / rd;
         tEnter = 0.0; lastB = ivec3(-1); ax = argmin3(tMax);
         phiA = surfSample(ro); phiStale = false;
         continue;
       }
 #endif
+      if (cut) break;
       if (ev != EV_NONE) {
         vec3 hp = ro + rd * tEv;
         if (!anyHit) { anyHit = true; hitPos = hp; }
@@ -935,6 +947,7 @@ void main() {
             bends++;
             // the scene shows in the reflection only off the first surface the eye ray meets
             bool inside = liquidInterface(hp, n, ev == EV_ENTER, lid, bends == 1, ro, rd, col, trans, mediumLight);
+            tCut -= tEv;
             liq = inside ? lid : E_EMPTY;
             if (ev == EV_ENTER) { lightRef = mediumLight; lightY = hp.y; }
             rd = safeDir(rd); istp = ivec3(sign(rd)); tDelta = abs(1.0 / rd);
@@ -1000,7 +1013,7 @@ void main() {
     if (pass == 0) {
       if (hitK != HIT_NONE) { col += trans * c; trans = vec3(0.0); }
       // floor of the box
-      if (max(trans.x, max(trans.y, trans.z)) >= RAY_MIN_TRANS && cell.y < 0 && rd.y < 0.0) {
+      if (!cut && max(trans.x, max(trans.y, trans.z)) >= RAY_MIN_TRANS && cell.y < 0 && rd.y < 0.0) {
         float tf = -ro.y / rd.y;
         vec3 hp = ro + rd * tf;
         if (!anyHit) { anyHit = true; hitPos = hp; }
