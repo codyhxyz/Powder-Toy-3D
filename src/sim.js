@@ -49,6 +49,11 @@ const TOUCH_MARGIN = 1;
 // Undo snapshots kept, at most (each is the current A and B: ~67 MB at 128³).
 const UNDO_LIMIT = 3;
 
+// Bind groups an edit kernel keeps for its group 2, at most. Bindings are
+// meant to be long-lived (B6: a pooled upload buffer and its sub-ranges); a
+// caller binding a new buffer per edit would otherwise grow the cache forever.
+const EDIT_GROUPS_MAX = 64;
+
 // Share of each update's new GI probes blended into the probe volume (the rest
 // is history): smooths cells popping between bricks over a few frames. Each
 // probe is updated every other frame. (The GI is src/derived.js's, U9; the
@@ -553,8 +558,9 @@ export class Simulation {
    * @param {{ lo: number[], hi: number[] }} box inclusive grid cells (clipped to the grid)
    * @param {object} [values] the params' other fields
    * @param {{ bind?: GPUBindingResource[] }} [opts] the kernel's own group-2 resources: one per entry of
-   *   editKernel's `layout`, in order ({ buffer } for a buffer); the sim adds the two-phase scratch and
-   *   makes the bind group (once per set of resources)
+   *   editKernel's `layout`, in order ({ buffer, offset?, size? } for a buffer); the sim adds the two-phase
+   *   scratch and makes the bind group once per set of resources (a buffer's range included). Bind
+   *   long-lived buffers (B6): a kernel keeps at most EDIT_GROUPS_MAX groups
    */
   edit(kernel, { lo, hi }, values = {}, { bind = [] } = {}) {
     const box = this._clip(lo, hi);
@@ -578,12 +584,19 @@ export class Simulation {
   }
 
   // An edit kernel's group 2 for these resources (its own bindings, then the
-  // scratch), made once per set of buffers (B6), not per edit.
+  // scratch), made once per set of resources (B6), not per edit. A buffer
+  // binding is keyed by its range too: two sub-ranges of one pooled buffer
+  // are two groups.
   _editGroup(kernel, res) {
-    const key = res.map((r) => idOf(r.buffer ?? r)).join(',');
+    const key = res.map((r) => (r.buffer ? `${idOf(r.buffer)}@${r.offset ?? 0}+${r.size ?? 'all'}` : idOf(r))).join(',');
     kernel.groups ??= new Map();
     let group = kernel.groups.get(key);
     if (!group) {
+      // past the bound the cache starts over (and forgets which of its groups held the scratch)
+      if (kernel.groups.size >= EDIT_GROUPS_MAX) {
+        kernel.groups.clear();
+        this._scratchGroups = this._scratchGroups.filter(([groups]) => groups !== kernel.groups);
+      }
       const bindings = [...kernel.extra.map((e) => e.binding), ...(kernel.reads === 'neighbours' ? [EDIT_SCRATCH_BINDING] : [])];
       group = this.gpu.bindGroup(kernel.layout, bindings.map((binding, i) => ({ binding, resource: res[i] })), `${kernel.name} group`);
       kernel.groups.set(key, group);

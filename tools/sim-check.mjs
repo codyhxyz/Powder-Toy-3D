@@ -14,8 +14,10 @@
 //                       at rest certifies idle
 //   moves         I2.5  the move in place and out of place: identical; and its two
 //                       code forms (D2: unrolled ships, loop is the sim bench's A/B)
-//   io            I2.7  readState/load, syncCopies/readCopies, undo; a two-phase
-//                       edit, an edit with bindings of its own, a probe (D6)
+//   io            I2.7  readState/load, syncCopies/readCopies, undo; two-phase
+//                       edits (one outgrowing the scratch of the other, still in
+//                       the open encoder), edits bound to two ranges of one
+//                       buffer, a probe (D6)
 //   shift         I2.9  shift + slab edit + 50 steps: identical without syncCopies
 //   timing              GPU ms per step per kernel (timestamps) at 32³ and 64³
 // Every stage's sims run the debug prelude: an out-of-grid access fails it (I2.8).

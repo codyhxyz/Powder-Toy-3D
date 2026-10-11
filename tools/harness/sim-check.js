@@ -517,21 +517,31 @@ const STAGES = {
 }`,
       });
       await lift.ready;
-      // (a one-brick edit first: the box below outgrows its scratch, which is
-      // then retired without a flush, and the bind group that held it dropped)
-      sim.edit(lift, { lo: [8, 8, 8], hi: [9, 9, 9] });
-      const g = sim.g, lo = [3, 2, 5], hi = [g.nx - 6, Math.floor(g.ny / 2), g.nz - 3];
-      const [A0, B0] = await sim.readState();   // (everything before it submitted)
-      const flushes = gpu.stats.flushes;
+      // A one-brick edit, then at once (same task: the encoder holding the
+      // first is still open) one over a box that outgrows its scratch. The
+      // scratch the first used is retired without a flush, and the bind group
+      // that held it dropped; both lifts land.
+      const g = sim.g, small = { lo: [8, 8, 8], hi: [9, 9, 9] }, lo = [3, 2, 5], hi = [g.nx - 6, Math.floor(g.ny / 2), g.nz - 3];
+      const [A0, B0] = await sim.readState();
+      sim.edit(lift, small);
+      const scratch = sim.editScratch, open = gpu.frame.open, flushes = gpu.stats.flushes;
       sim.edit(lift, { lo, hi });
-      const grown = { groups: lift.groups.size, flushes: gpu.stats.flushes - flushes };
+      const grown = { open, regrown: sim.editScratch !== scratch, groups: lift.groups.size, flushes: gpu.stats.flushes - flushes };
       const [A1, B1] = await sim.readState();
+      // the reference: both lifts on the CPU, each reading the state before it
+      const liftRef = ([A, B], l, u) => {
+        const [A2, B2] = [A.slice(), B.slice()];
+        for (let y = l[1]; y <= u[1]; y++) for (let z = l[2]; z <= u[2]; z++) for (let x = l[0]; x <= u[0]; x++) {
+          if (y === 0) continue;   // (the cell below is outside the grid: kept)
+          const t = cellTexel(g, x, y, z) * 4, src = cellTexel(g, x, y - 1, z) * 4;
+          A2.set(A.subarray(src, src + 4), t);
+          B2.set(B.subarray(src, src + 4), t);
+        }
+        return [A2, B2];
+      };
+      const [AR, BR] = liftRef(liftRef([A0, B0], small.lo, small.hi), lo, hi);
       let wrong = 0;
-      for (let y = 0; y < g.ny; y++) for (let z = 0; z < g.nz; z++) for (let x = 0; x < g.nx; x++) {
-        const inBox = x >= lo[0] && x <= hi[0] && y >= lo[1] && y <= hi[1] && z >= lo[2] && z <= hi[2];
-        const t = cellTexel(g, x, y, z) * 4, src = cellTexel(g, x, inBox ? y - 1 : y, z) * 4;
-        for (let c = 0; c < 4; c++) if (!Object.is(A1[t + c], A0[src + c]) || !Object.is(B1[t + c], B0[src + c])) wrong++;
-      }
+      for (let i = 0; i < AR.length; i++) if (!Object.is(A1[i], AR[i]) || !Object.is(B1[i], BR[i])) wrong++;
       // a probe (sim.probe, D6): a kernel reads cells into slots of a ring of
       // the caller's; each slot holds what readCell reads
       const PP = uniformStruct('ProbeCheckParams', { cell: 'vec3i', slot: 'u32' });
@@ -567,33 +577,62 @@ ${PP.wgsl}
 }`,
       });
       await stamp.ready;
-      const slo = [5, 3, 6], shi = [14, 9, 11], sn = shi.map((v, k) => v - slo[k] + 1);
-      const values = new Float32Array(sn[0] * sn[1] * sn[2] * 4);
-      const ids = [E.STONE, E.WATER, E.SAND, E.EMPTY, E.OIL];
-      for (let i = 0; i < values.length / 4; i++) values.set([ids[i % ids.length], 20 + (i % 7), 0, (i * 0.37) % 1], i * 4);
-      const stampBuf = gpu.createBuffer({ label: 'sim-check stamp', size: values.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-      gpu.write(stampBuf, 0, values);
+      // Three boxes of one size, from two ranges of one buffer (a pooled
+      // upload buffer's sub-ranges, B6): the first from the range at 0, the
+      // second and third from the range after it. Two bind groups, one per range.
+      const sn = [10, 7, 6], boxes = [[5, 3, 6], [5, 3, 18], [17, 3, 6]].map((l) => ({ lo: l, hi: l.map((v, k) => v + sn[k] - 1) }));
+      const cellsIn = sn[0] * sn[1] * sn[2], bytes = cellsIn * 16, range = Math.ceil(bytes / 256) * 256;
+      const values = [0, 1].map((r) => {
+        const v = new Float32Array(cellsIn * 4);
+        const ids = r ? [E.WATER, E.OIL, E.STONE] : [E.STONE, E.WATER, E.SAND, E.EMPTY, E.OIL];
+        for (let i = 0; i < cellsIn; i++) v.set([ids[i % ids.length], 20 + r * 30 + (i % 7), 0, ((i + r) * 0.37) % 1], i * 4);
+        return v;
+      });
+      const stampBuf = gpu.createBuffer({ label: 'sim-check stamp', size: 2 * range, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+      gpu.write(stampBuf, 0, values[0]);
+      gpu.write(stampBuf, range, values[1]);
       const [S0, T0] = await sim.readState();
-      sim.edit(stamp, { lo: slo, hi: shi }, {}, { bind: [{ buffer: stampBuf }] });
+      boxes.forEach((box, i) => sim.edit(stamp, box, {}, { bind: [{ buffer: stampBuf, offset: i ? range : 0, size: bytes }] }));
+      const stampGroups = stamp.groups.size;
       const [S1, T1] = await sim.readState();
       let stampWrong = 0;
       for (let y = 0; y < g.ny; y++) for (let z = 0; z < g.nz; z++) for (let x = 0; x < g.nx; x++) {
-        const t = cellTexel(g, x, y, z) * 4, q = [x - slo[0], y - slo[1], z - slo[2]];
-        const inBox = q.every((v, k) => v >= 0 && v < sn[k]);
-        const want = inBox ? values.subarray((q[0] + sn[0] * (q[1] + sn[1] * q[2])) * 4) : S0.subarray(t);
+        const t = cellTexel(g, x, y, z) * 4;
+        const i = boxes.findIndex((b) => [x, y, z].every((v, k) => v >= b.lo[k] && v <= b.hi[k]));
+        const q = i < 0 ? null : [x, y, z].map((v, k) => v - boxes[i].lo[k]);
+        const want = q ? values[i ? 1 : 0].subarray((q[0] + sn[0] * (q[1] + sn[1] * q[2])) * 4) : S0.subarray(t);
         for (let c = 0; c < 4; c++) if (!Object.is(S1[t + c], want[c]) || !Object.is(T1[t + c], T0[t + c])) stampWrong++;
       }
       stampBuf.destroy();
+      // more ranges than a kernel keeps groups for (EDIT_GROUPS_MAX, 64): 70
+      // one-cell edits, each from a range of its own, still each write its value
+      const many = 70, cellAt = (i) => [2 + (i % 10) * 2, 12, 2 + Math.floor(i / 10) * 2];
+      const manyBuf = gpu.createBuffer({ label: 'sim-check ranges', size: many * 256, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+      const manyVal = (i) => [[E.STONE, E.SAND, E.WATER][i % 3], 100 + i, 0, 0.5];
+      for (let i = 0; i < many; i++) gpu.write(manyBuf, i * 256, new Float32Array(manyVal(i)));
+      for (let i = 0; i < many; i++) sim.edit(stamp, { lo: cellAt(i), hi: cellAt(i) }, {}, { bind: [{ buffer: manyBuf, offset: i * 256, size: 16 }] });
+      const manyGroups = stamp.groups.size;
+      const [S2] = await sim.readState();
+      let manyWrong = 0;
+      for (let i = 0; i < many; i++) {
+        const t = cellTexel(g, ...cellAt(i)) * 4, want = manyVal(i);
+        for (let c = 0; c < 4; c++) if (!Object.is(S2[t + c], Math.fround(want[c]))) manyWrong++;
+      }
+      manyBuf.destroy();
       return {
         exact, sameState: before.state === after.state, copiesEqual, painted: painted.state !== pre.state, undone: undone.state === pre.state,
-        wrong, probeWrong, stampWrong, grown,
+        wrong, probeWrong, stampWrong, stampGroups, manyWrong, manyGroups, grown,
       };
     });
-    check(out, 'a two-phase edit reads the state before it: a box lifted by one cell, exactly', r.r.wrong === 0, `${r.r.wrong} values wrong`);
-    check(out, `a two-phase edit outgrowing its scratch: no flush, one bind group left (${r.r.grown.flushes} flushes, ${r.r.grown.groups} group)`,
-      r.r.grown.flushes === 0 && r.r.grown.groups === 1);
+    check(out, 'two-phase edits read the state before them: two boxes lifted by one cell, exactly', r.r.wrong === 0, `${r.r.wrong} values wrong`);
+    const gr = r.r.grown;
+    check(out, `a two-phase edit outgrowing the scratch of one still in the open encoder: no flush, one bind group left (open ${gr.open}, regrown ${gr.regrown}, ${gr.flushes} flushes, ${gr.groups} group)`,
+      gr.open && gr.regrown && gr.flushes === 0 && gr.groups === 1);
     check(out, 'a probe (sim.probe) reads what readCell reads, at 4 cells', r.r.probeWrong === 0, `${r.r.probeWrong} cells differ`);
-    check(out, 'an edit with bindings of its own writes the box from them, and nothing else', r.r.stampWrong === 0, `${r.r.stampWrong} values wrong`);
+    check(out, 'edits with bindings of their own write their boxes from them, and nothing else', r.r.stampWrong === 0, `${r.r.stampWrong} values wrong`);
+    check(out, `edits bound to two ranges of one buffer get a bind group a range (${r.r.stampGroups})`, r.r.stampGroups === 2);
+    check(out, `70 edits from 70 ranges: each writes its own, the kernel keeps ≤ 64 groups (${r.r.manyGroups})`,
+      r.r.manyWrong === 0 && r.r.manyGroups <= 64, `${r.r.manyWrong} values wrong`);
     check(out, 'readState → load → readState: every float bit for bit', r.r.exact && r.r.sameState);
     check(out, 'readCopies after syncCopies: both copies equal, flags included', r.r.copiesEqual);
     check(out, 'snapshot, paint, undo restores the state exactly', r.r.painted && r.r.undone);
