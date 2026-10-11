@@ -65,6 +65,8 @@ export const FRAME_UNIFORMS = [
   ['caustics', 'u32', 'uCaustics (bool)'],
   ['clouds', 'u32', 'uClouds (bool)'],
   ['far', 'u32', 'uFar (bool): a world\'s far field is drawn (box and world share pipelines, E)'],
+  // appended (F6) at Sync 3: a world scene's ambient floor (Descent's caves), in giIrradiance and giRadiance
+  ['caveAmbient', 'vec3f', 'uCaveAmbient'],
 ];
 // { name: type }, the field list src/gpu/params.js uniformStruct takes.
 export const FRAME_UNIFORM_FIELDS = Object.fromEntries(FRAME_UNIFORMS.map(([n, t]) => [n, t]));

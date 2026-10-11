@@ -168,6 +168,6 @@ export function writeFrameUniforms(gpu, { camera, model, sun, view = 0, shadowRe
     bevel: u.uBevel.value, glints: u.uGlints.value, view, frame: u.uFrame.value, shadowRes,
     lampCount: u.uLampCount.value, wandLightCount: u.uWandLightCount.value,
     shadows: !!shadows, nearGI: !!u.uNearGI.value, glowLights: !!u.uGlowLights.value, caustics: !!u.uCaustics.value,
-    clouds: !!u.uClouds.value, far: !!far,
+    clouds: !!u.uClouds.value, far: !!far, caveAmbient: u.uCaveAmbient.value,
   });
 }

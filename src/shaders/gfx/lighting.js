@@ -1,6 +1,6 @@
 import { skyGLSL } from '../../gfx/sky.js';
 import { cloudDeckGLSL } from './clouds.js';
-import { LAMP_UNIT, LAMP_SOFT } from '../../gfx/lamps.js';
+import { LAMP_UNIT, LAMP_SOFT, LAMP_FIXED_PAD } from '../../gfx/lamps.js';
 import { WAND_LIGHTS } from '../bindings.js';
 import { libChecks } from './lib.js';
 
@@ -60,11 +60,12 @@ const vogel = (n) => Array.from({ length: n }, (_, i) => {
  * out what reads the shadow map (the shadow kernel writes it); probes: false
  * what samples the GI bands (GI gather writes them). nearField needs both.
  * giUniforms: the GI passes' uniforms. Their GLSL material (sim.js
- * giUniforms) set no uCaustics, uTime or uFrame, so those read 0 there; GI
- * binds the shared FrameUniforms, so here the three are literal zeros in the
- * text instead (docs/webgpu.md E): no caustics in the sun lookups (sunShadow
- * and sunShadowAt as GI calls them), causticGain at time 0, frame 0 in the
- * per-frame jitter (PCSS, pixRand, the glow candidates).
+ * giUniforms) set no uCaustics, uTime, uFrame or uCaveAmbient, so those read
+ * 0 there; GI binds the shared FrameUniforms, so here the four are literal
+ * zeros in the text instead (docs/webgpu.md E): no caustics in the sun
+ * lookups (sunShadow and sunShadowAt as GI calls them), causticGain at time
+ * 0, frame 0 in the per-frame jitter (PCSS, pixRand, the glow candidates), no
+ * ambient floor in giIrradiance and giRadiance.
  * @param {{ shadowMap?: boolean, probes?: boolean, giUniforms?: boolean }} [opts]
  */
 export const lightingGLSL = ({ shadowMap = true, probes = true, giUniforms = false } = {}) => {
@@ -72,6 +73,9 @@ export const lightingGLSL = ({ shadowMap = true, probes = true, giUniforms = fal
   const caustics = giUniforms ? 'false' : 'FU.caustics != 0u';
   const time = giUniforms ? '0.0' : 'FU.time';
   const frame = giUniforms ? '0.0' : 'f32(FU.frame)';
+  // FU.caveAmbient, or the GI passes' zero: their material had no uCaveAmbient
+  // (main's sim.js giUniforms), so giSource's bounce took none
+  const caveAmbient = giUniforms ? 'vec3f(0.0)' : 'FU.caveAmbient';
   return /* wgsl */ `
 const PI_L: f32 = 3.14159265;
 // Lighting upgrades, each switchable at run time (Settings → Lighting):
@@ -80,7 +84,10 @@ const PI_L: f32 = 3.14159265;
 // Hand lamps (src/pov/lamps.js): point lights the first-person body carries or
 // throws, the torch and the lantern: FU.lampPos[i] (xyz grid cells, w its
 // reach in cells), FU.lampCol[i] (rgb: linear colour × intensity, in the
-// sunlight's units at LAMP_UNIT cells), FU.lampCount of them lit (0 costs nothing).
+// sunlight's units at LAMP_UNIT cells; w 1: fixed, a wall torch's),
+// FU.lampCount of them lit (0 costs nothing).
+// FU.caveAmbient: a scene's ambient floor, radiance (gfx/uniforms.js; a world
+// scene's ambient), 0 elsewhere.
 
 // ---- sun and sky: a clear-sky atmosphere (gfx/sky.js) ----
 // Values that only depend on the sun are computed once per frame in JS:
@@ -476,14 +483,16 @@ fn surfProbe(p: vec3f, n: vec3f) -> Probe { return probeAt(p + n * GI_OFFSET); }
 // (no probe readers here: this pipeline writes the bands)`}
 
 // Indirect irradiance / pi on a surface facing unit n.
+// FU.caveAmbient: a scene's floor of light everywhere (world scene ambient:
+// the Descent's caves, which Noita never draws pitch black); 0 elsewhere.
 fn giIrradiance(g: Probe, n: vec3f) -> vec3f {
-  return max(SH_Y0 * g.c0.rgb + SH_COS1 * SH_Y1 * (g.cx.rgb * n.x + g.cy.rgb * n.y + g.cz.rgb * n.z), vec3f(0.0));
+  return max(SH_Y0 * g.c0.rgb + SH_COS1 * SH_Y1 * (g.cx.rgb * n.x + g.cy.rgb * n.y + g.cz.rgb * n.z), vec3f(0.0)) + ${caveAmbient};
 }
 // Indirect radiance arriving from unit direction d, as blurry as L1 allows;
 // blur in [0, 1] widens it further, to the irradiance lobe (rough reflections).
 fn giRadiance(g: Probe, d: vec3f, blur: f32) -> vec3f {
   let k1 = SH_Y1 * mix(1.0, SH_COS1, blur);
-  return max(SH_Y0 * g.c0.rgb + k1 * (g.cx.rgb * d.x + g.cy.rgb * d.y + g.cz.rgb * d.z), vec3f(0.0));
+  return max(SH_Y0 * g.c0.rgb + k1 * (g.cx.rgb * d.x + g.cy.rgb * d.y + g.cz.rgb * d.z), vec3f(0.0)) + ${caveAmbient};
 }
 // Share of the open sky a surface facing n sees (1 in the open, less under
 // overhangs, in pits and between tall things).
@@ -783,6 +792,8 @@ const LAMP_SOFT: f32 = ${LAMP_SOFT.toFixed(1)};        // cells: the soft core's
 const LAMP_START: f32 = 0.55;      // cells off the surface a shadow ray starts
 const LAMP_SELF_SKIP: f32 = 1.0;   // smooth-surface cells ignored this close to its start
 const LAMP_PAD: f32 = 0.3;         // cells short of the lamp the shadow ray stops (it hangs in air)
+const LAMP_FIXED_PAD: f32 = ${LAMP_FIXED_PAD.toFixed(2)};   // ...a fixed lamp's: its light is in a solid cell (gfx/lamps.js)
+const LAMP_FIXED_SELF: f32 = 0.6;  // cells: a surface this close to a fixed lamp's centre (each axis) is its own cell's
 fn lampLight(p: vec3f, ng: vec3f, n: vec3f) -> vec3f {
   var sum = vec3f(0.0);
   for (var i = 0; i < LAMP_MAX; i++) {
@@ -792,6 +803,12 @@ fn lampLight(p: vec3f, ng: vec3f, n: vec3f) -> vec3f {
     let d2 = dot(dv, dv);
     let R = FU.lampPos[i].w;
     if (d2 >= R * R) { continue; }
+    let fixedLamp = FU.lampCol[i].w > 0.5;
+    if (fixedLamp) {   // a wall torch's: lit while its cell is still a torch (dug out, burnt, it goes dark)
+      let lc = vec3i(floor(FU.lampPos[i].xyz));
+      if (outside(lc) || eid(fetchA(lc)) != E_WALL_TORCH) { continue; }
+      if (all(abs(p - FU.lampPos[i].xyz) < vec3f(LAMP_FIXED_SELF))) { continue; }   // the torch's own head: its glow is its emission
+    }
     let d = sqrt(d2);
     let l = dv / max(d, 1e-4);
     let nl = dot(n, l);
@@ -801,7 +818,8 @@ fn lampLight(p: vec3f, ng: vec3f, n: vec3f) -> vec3f {
     let fall = (LAMP_UNIT * LAMP_UNIT + LAMP_SOFT * LAMP_SOFT) / (d2 + LAMP_SOFT * LAMP_SOFT) * fade * fade;
     var hc: vec3i;
     var hn: vec3f;
-    if (traceNear(ro, l, max(d - LAMP_PAD, 0.0), true, LAMP_SELF_SKIP, &hc, &hn) >= 0.0) { continue; }
+    let pad = select(LAMP_PAD, LAMP_FIXED_PAD, fixedLamp);
+    if (traceNear(ro, l, max(d - pad, 0.0), true, LAMP_SELF_SKIP, &hc, &hn) >= 0.0) { continue; }
     sum += FU.lampCol[i].rgb * nl * fall;
   }
   return sum;

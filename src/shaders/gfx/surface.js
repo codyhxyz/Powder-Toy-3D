@@ -1663,6 +1663,7 @@ fn orenNayar(nl: f32, nv: f32, lv: f32, sigma: f32) -> f32 {
 // Reflections go from a sharp sky to the probes' blurred light over this roughness range.
 const ENV_SHARP_ROUGH: f32 = 0.25;
 const ENV_BLUR_ROUGH: f32 = 0.9;
+const LOCAL_METAL_DIFFUSE: f32 = 0.5;  // share of a metal's F0 lit by the local lights as diffuse (gi.js GI_METAL_DIFFUSE)
 const LOCAL_PROBE_LIFT: f32 = 0.75;   // cells off the surface where the glow volume is sampled
 // Glow-volume light: this much reaches even fully occluded spots, plus LOCAL_AO_GAIN × AO.
 const LOCAL_AO_MIN: f32 = 0.35;
@@ -1784,8 +1785,12 @@ fn shadeSurf(s0: Surf, rd: vec3f) -> vec3f {
   let specAO = clamp(pow(nv + aoT, exp2(-16.0 * s.rough - 1.0)) - 1.0 + aoT, 0.0, 1.0);
   c += (envL * FssEss * hor * hor + irr * Fms * Ems) * specAO;
   // indirect (sky + bounce) and glow volume: diffuse
-  c += kD * (ind + local * (LOCAL_AO_MIN + LOCAL_AO_GAIN * aoT));
-  if (FU.lampCount > 0) { c += kD * lampLight(s.p, ng, n); }   // a torch or lantern (traced shadows, so no AO)
+  // the local lights (glow volume, lamps) have no direction to reflect: a metal takes
+  // a share of its F0 as diffuse from them (as the GI does: gi.js GI_METAL_DIFFUSE), so
+  // iron by a torch catches its light instead of staying a black slab
+  let kL = kD + F0 * (s.metal * LOCAL_METAL_DIFFUSE);
+  c += kD * ind + kL * local * (LOCAL_AO_MIN + LOCAL_AO_GAIN * aoT);
+  if (FU.lampCount > 0) { c += kL * lampLight(s.p, ng, n); }   // a torch or lantern (traced shadows, so no AO)
   return c + s.emit;
 }
 
@@ -1975,10 +1980,9 @@ const realisticBody = (d) => /* wgsl */ `
   var ml = vec3f(1.0);
   let lid = liquidIdAt(p, E_WATER);
   var nl = liquidRipple(p, n);
-  nl = liquidDetail(p, nl, lid, rd, &col, &trans);
+  nl = liquidDetail(p, nl, lid, &col, &trans);
   let inside = liquidInterface(p, nl, s > 0.5, lid, true, &lro, &lrd, &col, &trans, &ml);
-  liquidUnderSkin(&col, &trans);   // a falling jet's body, under the reflection (as the tracer)
-  absorbSegment(lid, lro, s, ml, AMBIENT, &col, &trans);
+  absorbSegment(lid, lro, thinBodySeg(p, s), ml, AMBIENT, &col, &trans);   // (drops and pours show their colour, as the tracer)
   acc += vec4f(col + trans + lro + lrd, select(0.0, 1.0, inside));
   acc.w += fresnelSchlick(s, IOR(lid)) + skyInAt(probeAt(p)) + gSkyIn + envReflect(p, nl, ml).x;
   // a media segment, the media lattice carrying on from the ray's jitter
