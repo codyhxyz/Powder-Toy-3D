@@ -20,7 +20,8 @@ import { prelude, inertSelfGLSL, SUPER, SUPER_TEX, BLOCK_TILE } from './common.j
 //     move touching void, nothing a singularity touches (it never rests
 //     itself: it holds a vacuum), no moss or fungus whose damp is settling or
 //     that can grow (growers, below);
-//   - thermally quiet: within MATTER_REST_T of each matter face neighbour,
+//   - thermally quiet: each matter face carrying at most REST_FLUX of heat
+//     (within REST_FLUX / min(cond) of the neighbour: physics.js),
 //     and within AIR_REST_T of ambient where it touches air.
 // A change a neighbour sets off on its own (a flame catching in the air by
 // burning wood) makes that neighbour non-inert instead.
@@ -127,7 +128,9 @@ bool inertNear(ivec3 c, vec4 a, vec4 nA[6]) {
     int j = eid(n);
     // thermally quiet; a face touching air carries heat at air's conductance, so it takes air's tolerance
     // (a face with no conductance, a temperature sensor's, carries none)
-    if (min(COND[id], COND[j]) > 0.0 && (j == E_EMPTY ? abs(T - uAirT) > AIR_REST_T : abs(T - n.y) > MATTER_REST_T)) return false;
+    // (a matter face: the heat it carries, physics.js REST_FLUX)
+    float cf = min(COND[id], COND[j]);
+    if (cf > 0.0 && (j == E_EMPTY ? abs(T - uAirT) > AIR_REST_T : abs(T - n.y) > min(REST_FLUX / cf, AIR_REST_T))) return false;
     if (!electricQuietNear(id, a, j, n)) return false;   // src/electricity.js
     if (ACIDIC[j] ? acidEats(id) : ACIDIC[id] && acidEats(j)) return false;   // acid, caustic gas (elements.js acid)
     if ((id == E_WATER && j == E_PLANT) || (id == E_PLANT && j == E_WATER)) return false;
