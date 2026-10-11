@@ -30,9 +30,11 @@ h.seed = (seed) => {
   };
 };
 
+// (sim-check --unit super sets h.sleepUnit: every sim then sleeps by supertiles, D5.2's A/B)
+h.sleepUnit = null;
 h.make = async (n, opts = {}) => {
   const [nx, ny, nz] = Array.isArray(n) ? n : [n, n, n];
-  const sim = new Simulation(gpu, nx, ny, nz, { debug: true, ...opts });
+  const sim = new Simulation(gpu, nx, ny, nz, { debug: true, sleepUnit: h.sleepUnit, ...opts });
   await sim.ready;
   return sim;
 };
@@ -248,7 +250,7 @@ async function kernelTimes(sim, steps) {
 const STAGES = {
   // I2.1, I2.10: two runs with the same seed, and the lists and the thread →
   // block map permuted, give the same hashes at every checkpoint
-  async determinism({ size = 32, steps = 96, every = 24, scene = 'lab' } = {}) {
+  async determinism({ size = 32, steps = size > 32 ? 36 : 96, every = size > 32 ? 12 : 24, scene = 'lab' } = {}) {
     const out = { checks: [], ms: {} };
     const variants = [
       ['repeat', {}], ['listOrder reverse', { listOrder: 'reverse' }], ['listOrder shuffle:7', { listOrder: 'shuffle:7' }],
@@ -276,7 +278,7 @@ const STAGES = {
 
   // I2.2: skipping exact (every brick dispatched vs the sleeping rules), and
   // DRAWN bounded with one-step maps and a write every step
-  async sleep({ size = 32, steps = 60, every = 15, scenes = ['lab', 'pile', 'pool', 'idle'] } = {}) {
+  async sleep({ size = 32, steps = size > 32 ? 30 : 60, every = 15, scenes = size > 32 ? ['lab', 'pile'] : ['lab', 'pile', 'pool', 'idle'] } = {}) {
     const out = { checks: [], ms: {} };
     for (const scene of scenes) {
       const a = await run(size, scene, {}, (sim) => script(sim, { steps, every }));
@@ -287,7 +289,7 @@ const STAGES = {
       check(out, `${scene}: no out-of-grid access`, a.dbg === 0 && b.dbg === 0, `dbgOob ${a.dbg}, ${b.dbg}`);
     }
     // writes between single steps: a paint after every step, so every map gets one step (the case D5.3 exists for)
-    const single = (sim) => script(sim, { steps: 24, every: 1 });
+    const single = (sim) => script(sim, { steps: size > 32 ? 12 : 24, every: 1 });
     const a = await run(size, 'pile', {}, single);
     const b = await run(size, 'pile', { setup: (sim) => { sim.skipSleeping = false; } }, single);
     const diffs = a.r.map((x, i) => same(x, b.r[i], LINES).map((k) => `${k}@${i + 1}`)).flat();
@@ -300,7 +302,7 @@ const STAGES = {
       const last = new Map();
       const bad = [];
       let maxDrawn = 0;
-      for (let k = 0; k < 40; k++) {
+      for (let k = 0; k < (size > 32 ? 16 : 40); k++) {
         sim.paint({ center: c, radius: r, shape: 1, tool: k & 1 ? -3 : -2, rate: 1, replace: false });   // heat, cool: always a change
         sim.step();
         const m = await sim.readMaps();
@@ -312,17 +314,17 @@ const STAGES = {
           const bx = i % g.bx, by = Math.floor(i / g.bx) % g.by, bz = Math.floor(i / (g.bx * g.by));
           if (k > 2 && !inBox(bx, by, bz) && k - (last.get(i) ?? -1e9) > 2) bad.push(`brick ${i} at map ${k}`);
         }
-        maxDrawn = Math.max(maxDrawn, drawn);
+        if (k > 2) maxDrawn = Math.max(maxDrawn, drawn);   // (past the load's forced maps)
       }
       return { bad, maxDrawn };
     });
-    check(out, `one-step maps with a write every step: DRAWN bounded (max ${bounded.r.maxDrawn} bricks)`, !bounded.r.bad.length, bounded.r.bad.slice(0, 5).join(', '));
+    check(out, `one-step maps with a write every step: DRAWN bounded (at most ${bounded.r.maxDrawn} of ${size ** 3 / 64} bricks)`, !bounded.r.bad.length, bounded.r.bad.slice(0, 5).join(', '));
     return out;
   },
 
   // I2.3: cells per element exact where the rules conserve them; Σ cap·T in
   // a closed metal world within 1e-5 relative
-  async conservation({ size = 32, steps = 300, every = 50 } = {}) {
+  async conservation({ size = 32, steps = size > 32 ? 100 : 300, every = 50 } = {}) {
     const out = { checks: [], ms: {} };
     const keep = [E.SAND, E.WATER, E.STONE, E.WALL, E.OIL];
     const r = await run(size, 'mix', {}, async (sim) => {
@@ -336,7 +338,7 @@ const STAGES = {
     });
     out.ms.mix = r.ms / steps;
     check(out, `cells per element exact over ${steps} steps (${keep.map((id) => `${ELEMENTS[id].key} ${r.r.c0[id] ?? 0}`).join(', ')})`, !r.r.bad.length, r.r.bad.join('; '));
-    const hs = 100;
+    const hs = size > 32 ? 40 : 100;
     const heat = await run(size, 'heat', {}, async (sim) => {
       const e0 = (await h.census(sim)).heat, rel = [];
       for (let k = 0; k < 4; k++) {
@@ -437,7 +439,7 @@ const STAGES = {
   },
 
   // I2.5: the move in place and out of place (whitewater's mode, one pipeline) give the same state and flow
-  async moves({ size = 32, steps = 60, every = 15, scene = 'lab' } = {}) {
+  async moves({ size = 32, steps = size > 32 ? 30 : 60, every = 15, scene = 'lab' } = {}) {
     const out = { checks: [], ms: {} };
     const a = await run(size, scene, {}, (sim) => script(sim, { steps, every }));
     // an aeration field that does nothing but asks for the out-of-place move (gfx/foam.js attaches the real one)
@@ -472,8 +474,29 @@ const STAGES = {
       const painted = await h.hashes(sim);
       sim.undo();
       const undone = await h.hashes(sim);
-      return { exact, sameState: before.state === after.state, copiesEqual, painted: painted.state !== pre.state, undone: undone.state === pre.state };
+      // a two-phase edit (reads: 'neighbours', D6): every cell of the box takes
+      // the state of the cell below it, every read seeing the state before the edit
+      const lift = sim.editKernel('liftCheck', {
+        reads: 'neighbours',
+        update: /* wgsl */ `fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<function, vec4f>) {
+  let q = p - vec3i(0, 1, 0);
+  if (inGrid(q)) { *oA = fetchA(q); *oB = fetchB(q); }
+}`,
+      });
+      await lift.ready;
+      const g = sim.g, lo = [3, 2, 5], hi = [g.nx - 6, Math.floor(g.ny / 2), g.nz - 3];
+      const [A0, B0] = await sim.readState();
+      sim.edit(lift, { lo, hi });
+      const [A1, B1] = await sim.readState();
+      let wrong = 0;
+      for (let y = 0; y < g.ny; y++) for (let z = 0; z < g.nz; z++) for (let x = 0; x < g.nx; x++) {
+        const inBox = x >= lo[0] && x <= hi[0] && y >= lo[1] && y <= hi[1] && z >= lo[2] && z <= hi[2];
+        const t = cellTexel(g, x, y, z) * 4, src = cellTexel(g, x, inBox ? y - 1 : y, z) * 4;
+        for (let c = 0; c < 4; c++) if (!Object.is(A1[t + c], A0[src + c]) || !Object.is(B1[t + c], B0[src + c])) wrong++;
+      }
+      return { exact, sameState: before.state === after.state, copiesEqual, painted: painted.state !== pre.state, undone: undone.state === pre.state, wrong };
     });
+    check(out, 'a two-phase edit reads the state before it: a box lifted by one cell, exactly', r.r.wrong === 0, `${r.r.wrong} values wrong`);
     check(out, 'readState → load → readState: every float bit for bit', r.r.exact && r.r.sameState);
     check(out, 'readCopies after syncCopies: both copies equal, flags included', r.r.copiesEqual);
     check(out, 'snapshot, paint, undo restores the state exactly', r.r.painted && r.r.undone);
@@ -483,7 +506,7 @@ const STAGES = {
 
   // I2.9: after a shift, an edit over the entering slab and 50 steps, the state
   // and flow are the same with and without syncCopies after the fill
-  async shift({ size = 32, steps = 50 } = {}) {
+  async shift({ size = 32, steps = size > 32 ? 30 : 50 } = {}) {
     const out = { checks: [] };
     const go = (sync) => run(size, 'lab', { sim: { windowed: true } }, async (sim) => {
       const fill = sim.editKernel('slabFill', {

@@ -658,6 +658,7 @@ export class Simulation {
     this._dispatch(this.passes.fromAtlas, fold(Math.ceil(this.g.slots / 64)), {
       bind: [this.tables, this.bindRW, this._convertGroup], header: this.header(),
     });
+    this._dropAtlasScratch();
     this.noteWrite();
     this.fieldReset = true;
     this.giReset = true;
@@ -669,7 +670,15 @@ export class Simulation {
     this.load(...this.blankState());
   }
 
-  // The atlas-order scratch (load, readState, readCopies): A then B, or flags.
+  // The atlas-order scratch (load, readState, readCopies): A then B, or
+  // flags. 32 bytes a cell (67 MB at 128³), so a session lets it go once the
+  // copies that use it are submitted; tools, which read back often, keep it.
+  _dropAtlasScratch() {
+    if (this.gpu.testMode || !this.atlasScratch) return;
+    this._retire(this.atlasScratch);
+    this.atlasScratch = this._convertGroup = null;
+  }
+
   _atlasScratch() {
     if (!this.atlasScratch) {
       const texels = this.g.width * this.g.height;
@@ -796,6 +805,9 @@ export class Simulation {
     this.version++;
     this.forceAll = true;
     this.actFull = true;
+    // the derived passes shift their own history by whole bricks and re-age
+    // only the slab and the edges (docs/webgpu.md E); without that, all of it
+    if (!this.derived?.shiftsBricks) this.changedAll = true;
     this.wake();
   }
 
@@ -856,7 +868,9 @@ export class Simulation {
     const texels = this.g.width * this.g.height;
     await this._readyFor('toAtlas');
     this._toAtlas(this.cur, false);
-    const bytes = await this.gpu.readback.buffer(this.atlasScratch, 0, texels * 32);
+    const read = this.gpu.readback.buffer(this.atlasScratch, 0, texels * 32);
+    this._dropAtlasScratch();
+    const bytes = await read;
     return [new Float32Array(bytes, 0, texels * 4), new Float32Array(bytes, texels * 16, texels * 4)];
   }
 
@@ -874,6 +888,7 @@ export class Simulation {
       this._toAtlas(c, true);
       reads.push(rb.buffer(this.atlasScratch, 0, texels * 4));
     }
+    this._dropAtlasScratch();
     const [ab0, f0, ab1, f1] = await Promise.all(reads);
     const ab = (x, k) => new Float32Array(x, k * texels * 16, texels * 4);
     return { A: [ab(ab0, 0), ab(ab1, 0)], B: [ab(ab0, 1), ab(ab1, 1)], F: [new Uint32Array(f0), new Uint32Array(f1)] };

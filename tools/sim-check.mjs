@@ -17,11 +17,17 @@
 // Every stage's sims run the debug prelude: an out-of-grid access fails it (I2.8).
 // I2.6 (aeration over its list vs every brick) is U12's: the aeration kernel is its.
 //
-// Step budgets (SwiftShader, measured by the timing stage, see the U2 hand-back):
-// determinism 6 runs × 96 steps at 32³, sleep 4 scenes × 2 × 60 + 2 × 24 + 40,
-// conservation 300 + 100, behaviour about 1,000, moves 2 × 60, io 26, shift 2 × 60.
+// Step budgets, set from the timing stage on SwiftShader (GPU ms per step: 32³
+// lab 105 wall = inert 19 + move 25 + react 60; 64³ lab 386 = 91 + 72 + 217), so
+// a stage stays within ~3 minutes: at 32³ determinism 6 runs × 96 steps, sleep 4
+// scenes × 2 × 60 + 2 × 24 + 40, conservation 300 + 100, behaviour about 1,000,
+// moves 2 × 60, io 26, shift 2 × 60; at --size 64 about half, over fewer scenes
+// (behaviour stays a 32³ stage: its scenes are sized for it).
 //
-// usage: node tools/sim-check.mjs [--stage determinism,sleep,…] [--size 32] [--port N]
+// --unit super runs every stage's sims with supertile sleeping units (SLEEP_UNIT =
+// SUPER, docs/scaling.md D8's granularity, the A/B docs/webgpu.md W12 keeps).
+//
+// usage: node tools/sim-check.mjs [--stage determinism,sleep,…] [--size 32] [--unit brick|super] [--port N]
 import { launchBrowser, gpuInfo } from './browser.mjs';
 import { startVite } from './vite-server.mjs';
 import { openHarness } from './harness/open.mjs';
@@ -31,6 +37,8 @@ const opt = (k) => (argv.includes(`--${k}`) ? argv[argv.indexOf(`--${k}`) + 1] :
 const ALL = ['determinism', 'sleep', 'conservation', 'behaviour', 'moves', 'io', 'shift'];
 const stages = opt('stage')?.split(',') ?? ALL;
 const size = opt('size') ? Number(opt('size')) : undefined;
+const SUPER = { x: 4, y: 2, z: 2 };   // shaders/common.js SUPER
+const unit = opt('unit') === 'super' ? SUPER : null;
 
 const vite = await startVite({ harness: true });
 let failures = 0, printedGpu = false;
@@ -46,7 +54,7 @@ try {
         console.log(`gpu: ${info.vendor} ${info.architecture}${info.isFallbackAdapter ? ' (fallback adapter)' : ''}`);
         printedGpu = true;
       }
-      const r = await page.evaluate(([s, o]) => window.__harness.run(`stage:${s}`, o), [stage, size ? { size } : {}]);
+      const r = await page.evaluate(([s, o, u]) => { window.__harness.sleepUnit = u; return window.__harness.run(`stage:${s}`, o); }, [stage, size ? { size } : {}, unit]);
       const secs = ((Date.now() - t0) / 1000).toFixed(0);
       console.log(`\n${stage} (${secs} s)`);
       for (const c of r.checks) {
