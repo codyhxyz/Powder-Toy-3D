@@ -60,11 +60,15 @@ import { fold } from '../gpu/kernels.js';
 //
 // Code form (docs/webgpu.md D2, W23). The WebGL build generated the block
 // update unrolled, every cell index a literal and the 8 cells in named
-// registers (a0..a7 …), 2,377 lines at 64³, so GPU compilers kept it in
-// registers. As WGSL that form outgrows SwiftShader's compiler (the test
-// device): see MOVE_FORMS. The form that ships is a loop over the rules with
-// the 8 cells in arrays and the rules as functions taking a cell index,
-// MOVE_FORM below; tools/check-wgsl.mjs --time measures its creation.
+// registers (a0..a7 …), so GPU compilers keep the whole block in registers.
+// That form ships (MOVE_FORM): as WGSL it is about 3,100 lines, and it builds
+// on SwiftShader (the test device) in 11-14 s, within PIPELINE_BUDGET_MS, so
+// D2 keeps it. The loop form (the rules as functions over the block held in
+// arrays indexed at runtime) builds in about 1 s and runs about 3× faster on
+// SwiftShader, a CPU rasterizer; on a GPU those arrays are likely to spill.
+// It stays for the sim bench's A/B on the Mac (tools/harness/sim-bench.js,
+// docs/webgpu.md I4 M1), and sim-check's moves stage asserts that both forms
+// give the same state. tools/check-wgsl.mjs --time measures both builds.
 
 // The block's cells: cell i at local (x, y, z) = (i & 1, (i >> 1) & 1, (i >> 2) & 1).
 const CELLS = [0, 1, 2, 3, 4, 5, 6, 7];
@@ -319,7 +323,8 @@ const unrolled = () => ({
 // The same rules, line for line and draw for draw, over the block held in
 // arrays (Blk) and indexed at runtime: one function per rule, called in loops
 // whose bounds the compiler doesn't know (P.eight), so each rule is compiled
-// once. m and s are bit sets.
+// once. m and s are bit sets. Tools only (the sim bench, sim-check): see
+// "Code form" above.
 const loopDecl = /* wgsl */ `
 struct Blk {
   a: array<vec4f, 8>,   // state A
@@ -522,7 +527,9 @@ const loop = () => ({
     vertical(&blk, lo, lo + 2, &rs);
   }
   // Diagonal order alternates so no direction is systematically favoured.
-  let flip = select(4, 0, rnd(&rs) < 0.5);
+  // (The draw comes first: never inside a select, docs/webgpu.md D8.2.)
+  let rd = rnd(&rs);
+  let flip = select(4, 0, rd < 0.5);
   for (var x = 0; x < i32(P.eight); x++) {
     diagonal(&blk, i32((DIAG_ORDER >> (4u * u32(x))) & 15u) ^ flip, &rs);
   }
@@ -544,7 +551,7 @@ const loop = () => ({
 
 /** The code forms the generator knows (docs/webgpu.md D2): one ships, MOVE_FORM. */
 export const MOVE_FORMS = { unrolled, loop };
-export const MOVE_FORM = 'loop';
+export const MOVE_FORM = 'unrolled';
 
 /**
  * The move kernel (docs/webgpu.md D2): the name is the WebGL block pass's (W2).
@@ -720,12 +727,12 @@ const layouts = () => [LAYOUT.TABLES, LAYOUT.STATE_RW, MOVE_LAYOUT];
 const dispatch = (g) => [fold(Math.ceil(marginBlocks(g) / 64)), fold(Math.ceil(gridDims(g).nbricks * 8 / 64))];
 /**
  * tools/check-wgsl.mjs, and the pipeline a grid needs (the start menu's
- * warm-up, docs/webgpu.md B5). The unrolled form only the sim bench builds
- * (tools/harness/sim-bench.js, Mac checkpoint M1), never a session: `tool`.
+ * warm-up, docs/webgpu.md B5): the shipping form. The loop form only tools
+ * build (the sim bench, sim-check's moves stage), never a session: `tool`.
  */
 export const WGSL_CHECK = [
   { name: 'move', kind: 'compute', code: (g) => moveBlockFrag(g), layouts, dispatch },
-  { name: 'moveUnrolled', kind: 'compute', code: (g) => moveBlockFrag(g, { form: 'unrolled' }), layouts, dispatch, tool: true },
+  { name: 'moveLoop', kind: 'compute', code: (g) => moveBlockFrag(g, { form: 'loop' }), layouts, dispatch, tool: true },
 ];
 
 // WEBGPU-STUB (docs/webgpu.md J3): the gather and flow passes are fused into

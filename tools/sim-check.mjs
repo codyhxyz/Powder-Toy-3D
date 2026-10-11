@@ -6,28 +6,39 @@
 //                       checkpoint; I2.10's race probe reported, not asserted
 //   sleep         I2.2  every brick dispatched (skipSleeping = false) vs the sleeping
 //                       rules: identical state, flow, copies, maps (inert, quiet,
-//                       awake), in four scenes and with a write between single steps;
-//                       DRAWN bounded with one-step maps and a write every step
+//                       awake), in four scenes and with a write between single steps,
+//                       each sleeping run having skipped units; DRAWN bounded with
+//                       one-step maps and a write every step
 //   conservation  I2.3  cells per element exact over 300 steps; Σ cap·T within 1e-5
-//   behaviour     I2.4  sand piles, water levels, wood burns, heat diffuses, rest → idle
-//   moves         I2.5  the move in place and out of place: identical
-//   io            I2.7  readState/load, syncCopies/readCopies, undo
+//   behaviour     I2.4  sand piles, water levels, wood burns, heat diffuses, a world
+//                       at rest certifies idle
+//   moves         I2.5  the move in place and out of place: identical; and its two
+//                       code forms (D2: unrolled ships, loop is the sim bench's A/B)
+//   io            I2.7  readState/load, syncCopies/readCopies, undo; a two-phase
+//                       edit, an edit with bindings of its own, a probe (D6)
 //   shift         I2.9  shift + slab edit + 50 steps: identical without syncCopies
 //   timing              GPU ms per step per kernel (timestamps) at 32³ and 64³
 // Every stage's sims run the debug prelude: an out-of-grid access fails it (I2.8).
 // I2.6 (aeration over its list vs every brick) is U12's: the aeration kernel is its.
 //
-// Step budgets, set from the timing stage on SwiftShader (GPU ms per step: 32³
-// lab 105 wall = inert 19 + move 25 + react 60; 64³ lab 386 = 91 + 72 + 217), so
-// a stage stays within ~3 minutes: at 32³ determinism 6 runs × 96 steps, sleep 4
-// scenes × 2 × 60 + 2 × 24 + 40, conservation 300 + 100, behaviour about 1,000,
-// moves 2 × 60, io 26, shift 2 × 60; at --size 64 about half, over fewer scenes
-// (behaviour stays a 32³ stage: its scenes are sized for it).
+// Step budgets, set from the timing stage on SwiftShader with the unrolled move
+// (GPU ms per step: 32³ lab 192 wall = inert 21 + move 97 + react 72; 64³ lab
+// 640 = 88 + 321 + 225), so a stage stays within ~3 minutes: at 32³ determinism
+// 7 runs × 72 steps, sleep 4 scenes × 2 × 48 + 2 × 20 + 32, conservation 300 +
+// 100, behaviour about 1,000, moves 3 × 60, io 28, shift 2 × 60 (156, 129, 93,
+// 165, 64, 33 and 49 s); at --size 64 a third to a half of that, over fewer
+// scenes, and determinism without I2.10's reported-only race probe (behaviour
+// stays a 32³ stage: its scenes are sized for it).
 //
 // --unit super runs every stage's sims with supertile sleeping units (SLEEP_UNIT =
-// SUPER, docs/scaling.md D8's granularity, the A/B docs/webgpu.md W12 keeps).
+// SUPER, docs/scaling.md D8's granularity, the A/B docs/webgpu.md W12 keeps),
+// at 64³ unless --size says otherwise.
 //
-// usage: node tools/sim-check.mjs [--stage determinism,sleep,…] [--size 32] [--unit brick|super] [--port N]
+// --steps N runs the stages that script steps (determinism, sleep, conservation,
+// moves, shift) for N steps instead of the budget above: on the Mac (I4.0),
+// --steps 300 gives I2's counts.
+//
+// usage: node tools/sim-check.mjs [--stage determinism,sleep,…] [--size 32|64|128] [--unit brick|super] [--steps N] [--port N]
 import { launchBrowser, gpuInfo } from './browser.mjs';
 import { startVite } from './vite-server.mjs';
 import { openHarness } from './harness/open.mjs';
@@ -36,9 +47,13 @@ const argv = process.argv.slice(2);
 const opt = (k) => (argv.includes(`--${k}`) ? argv[argv.indexOf(`--${k}`) + 1] : null);
 const ALL = ['determinism', 'sleep', 'conservation', 'behaviour', 'moves', 'io', 'shift'];
 const stages = opt('stage')?.split(',') ?? ALL;
-const size = opt('size') ? Number(opt('size')) : undefined;
 const SUPER = { x: 4, y: 2, z: 2 };   // shaders/common.js SUPER
 const unit = opt('unit') === 'super' ? SUPER : null;
+// (the 32³ grid has 32 supertiles and the lab draws them all, so the sleep
+// stage would compare nothing there: supertile units default to 64³)
+const size = opt('size') ? Number(opt('size')) : unit ? 64 : undefined;
+const steps = opt('steps') ? Number(opt('steps')) : undefined;
+const stageOpts = { ...(size && { size }), ...(steps && { steps }) };
 
 const vite = await startVite({ harness: true });
 let failures = 0, printedGpu = false;
@@ -54,7 +69,7 @@ try {
         console.log(`gpu: ${info.vendor} ${info.architecture}${info.isFallbackAdapter ? ' (fallback adapter)' : ''}`);
         printedGpu = true;
       }
-      const r = await page.evaluate(([s, o, u]) => { window.__harness.sleepUnit = u; return window.__harness.run(`stage:${s}`, o); }, [stage, size ? { size } : {}, unit]);
+      const r = await page.evaluate(([s, o, u]) => { window.__harness.sleepUnit = u; return window.__harness.run(`stage:${s}`, o); }, [stage, stageOpts, unit]);
       const secs = ((Date.now() - t0) / 1000).toFixed(0);
       console.log(`\n${stage} (${secs} s)`);
       for (const c of r.checks) {

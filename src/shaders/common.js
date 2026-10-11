@@ -166,8 +166,10 @@ export function sleepUnitOf(g) {
 //   aerSeen  per brick, the aeration list's history (G4, its own kernel's)
 //   drawnL, move1L, inertL, aerL   the lists: unit numbers (DRAWN, MOVE1),
 //            brick numbers (INERT, AER)
-//   count    the lists' lengths (ACT_COUNTS), and the units AWAKE
-export const ACT_COUNTS = { DRAWN: 0, MOVE1: 1, INERT: 2, AER: 3, AWAKE: 4 };
+//   count    the lists' lengths (ACT_COUNTS), the units AWAKE, and the last
+//            build's INERT length (INERT_LAST: the args kernel keeps it when
+//            it starts the INERT list over for the next build)
+export const ACT_COUNTS = { DRAWN: 0, MOVE1: 1, INERT: 2, AER: 3, AWAKE: 4, INERT_LAST: 5 };
 export const ACT_MAP = { AWAKE: 1, DRAWN: 2, RUN_SHIFT: 8, RUN_MAX: 255 };
 export function actLayout(g) {
   const { nbricks } = gridDims(g);

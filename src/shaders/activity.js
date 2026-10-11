@@ -558,7 +558,8 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
 // 65535)): react a workgroup per brick of DRAWN, the move 64 blocks a
 // workgroup (8 a brick) over DRAWN (offset 0) and MOVE1 (offset 1); and the
 // counts for the CPU into its ring slot. Then the INERT list starts over for
-// the next build (the inert kernel has run).
+// the next build (the inert kernel has run), its length kept in INERT_LAST
+// (sim.readCounts).
 export const argsFrag = (g) => /* wgsl */ `
 ${buildHead(g)}
 fn writeFold(at: u32, n: u32) {
@@ -577,7 +578,9 @@ fn main() {
   atomicStore(&args[P.slot], actLoad(ACT_COUNT + CNT_AWAKE));
   atomicStore(&args[P.slot + 1u], nD);
   atomicStore(&args[P.slot + 2u], nM);
-  atomicStore(&args[P.slot + 3u], actLoad(ACT_COUNT + CNT_INERT));
+  let nI = actLoad(ACT_COUNT + CNT_INERT);
+  atomicStore(&args[P.slot + 3u], nI);
+  actStore(ACT_COUNT + CNT_INERT_LAST, nI);
   actStore(ACT_COUNT + CNT_INERT, 0u);
   atomicStore(&args[ARGS_INERT], 0u);
 }

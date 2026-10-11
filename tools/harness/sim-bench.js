@@ -1,9 +1,10 @@
 // The sim bench (Mac checkpoint M1, docs/webgpu.md I4): pipeline creation
 // times of the sim's kernels and ms per step per kernel, from timestamp
 // queries, per grid and scene. The move runs in both code forms D2 weighed
-// (MOVE_FORMS: the loop form ships; the unrolled one is the WebGL build's
-// shape, measured here for K3's Apple-only variant), alternating A B B A in
-// chunks at the same states, since both give the same state.
+// (MOVE_FORMS: the unrolled one, the WebGL build's shape, ships; the loop
+// one is the alternative should the unrolled form cost on the Mac),
+// alternating A B B A in chunks at the same states, since both give the same
+// state (tools/sim-check.mjs --stage moves asserts it).
 // Run it from the page's button, or from a tool: __harness.run('bench', opts).
 
 import { boot, ready, test, log } from './harness.js';

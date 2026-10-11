@@ -180,7 +180,8 @@ export class Simulation {
    *   windowed: the grid is a window of a larger world (docs/scaling.md D11);
    *   world: that world's size (the GI's far layout, src/derived.js);
    *   sleepUnit: the sleeping unit in bricks (shaders/common.js SLEEP_UNIT; SUPER for an A/B);
-   *   debug: every state access tests its cell and counts misses (readDebug; I2.8)
+   *   debug: every state access tests its cell and counts misses (readDebug; I2.8);
+   *   form: the move's code form (shaders/move.js MOVE_FORMS; tools compare them, D2)
    */
   constructor(gpu, nx, ny, nz, { windowed = false, world = null, sleepUnit = null, debug = gpu.debug, form = MOVE_FORM } = {}) {
     this.gpu = gpu;
@@ -550,7 +551,9 @@ export class Simulation {
    * @param {ReturnType<Simulation['editKernel']>} kernel
    * @param {{ lo: number[], hi: number[] }} box inclusive grid cells (clipped to the grid)
    * @param {object} [values] the params' other fields
-   * @param {{ bind?: GPUBindGroup[] }} [opts] the kernel's own group-2 resources (its layout's bindings, in order)
+   * @param {{ bind?: GPUBindingResource[] }} [opts] the kernel's own group-2 resources: one per entry of
+   *   editKernel's `layout`, in order ({ buffer } for a buffer); the sim adds the two-phase scratch and
+   *   makes the bind group (once per set of resources)
    */
   edit(kernel, { lo, hi }, values = {}, { bind = [] } = {}) {
     const box = this._clip(lo, hi);
@@ -583,23 +586,37 @@ export class Simulation {
       const bindings = [...kernel.extra.map((e) => e.binding), ...(kernel.reads === 'neighbours' ? [EDIT_SCRATCH_BINDING] : [])];
       group = this.gpu.bindGroup(kernel.layout, bindings.map((binding, i) => ({ binding, resource: res[i] })), `${kernel.name} group`);
       kernel.groups.set(key, group);
+      // (a group holding the scratch goes when the scratch does)
+      if (kernel.reads === 'neighbours') this._scratchGroups.push([kernel.groups, key]);
     }
     return group;
   }
 
   // The two-phase edits' scratch (two vec4f per cell of the brick-aligned
-  // box), grown as needed; a buffer it outgrew is destroyed after the frames
-  // that may hold it are done.
+  // box), grown as needed; a buffer it outgrew is destroyed once the queue is
+  // done with it, and the bind groups that held it are dropped.
   _editScratch(bytes) {
     if (!this.editScratch || this.editScratch.size < bytes) {
       if (this.editScratch) this._retire(this.editScratch);
+      for (const [groups, key] of this._scratchGroups ?? []) groups.delete(key);
+      this._scratchGroups = [];
       this.editScratch = this.gpu.createBuffer({ label: `sim${this.id} edit scratch`, size: Math.max(bytes, 64 * 32), usage: GPUBufferUsage.STORAGE });
     }
     return this.editScratch;
   }
 
+  // Destroys a buffer once the queue is done with it, without flushing the
+  // open encoder (which may still use it): every encoder is submitted by the
+  // end of the task that opened it (its microtask flush, gpu/frame.js), so
+  // wait for that submit, then for the queue.
   _retire(buffer) {
-    this.gpu.fence().then(() => buffer.destroy(), () => {});
+    const gpu = this.gpu;
+    if (gpu.failure) { buffer.destroy(); return; }
+    const done = () => gpu.queue.onSubmittedWorkDone().then(() => buffer.destroy(), () => buffer.destroy());
+    if (!gpu.frame.open) { done(); return; }
+    const flushes = gpu.stats.flushes;
+    const wait = () => (gpu.stats.flushes !== flushes || gpu.failure ? done() : setTimeout(wait, 0));
+    queueMicrotask(wait);
   }
 
   // The box an edit covers for a write that changes only cells whose centres
@@ -642,10 +659,13 @@ export class Simulation {
   /**
    * Fresh flags (freshFlags: the next map redoes every neighbour test) on
    * every cell of the current copy, for a whole-grid writer that stored A and B
-   * only (D6); then noteWrite(). Its kernel is built on demand: sim.prepare('fresh').
+   * only (D6, the codec's unpack), and the whole-grid write noted (noteWrite:
+   * the next map draws every unit). Its kernel is built on demand:
+   * sim.prepare('fresh').
    */
   freshFlags() {
     this._dispatch(this.passOf('fresh'), fold(Math.ceil(this.g.slots / 64)), { bind: [this.tables, this.bindRW], header: this.header() });
+    this.noteWrite();
   }
 
   // Upload CPU-built state (Float32Array RGBA per atlas texel: cellTexel)
@@ -947,13 +967,13 @@ export class Simulation {
   }
 
   /**
-   * The current map's list lengths (units AWAKE, DRAWN, MOVE1; bricks the
-   * inert kernel redid), as they are at this call.
+   * The current map's list lengths (units AWAKE, DRAWN, MOVE1; bricks its
+   * build's inert kernel redid), as they are at this call.
    * @returns {Promise<{ awake: number, drawn: number, move1: number, inert: number, units: number }>}
    */
   async readCounts() {
     const c = new Uint32Array(await this.gpu.readback.buffer(this.act, this.actLayout.count * 4, 32));
-    return { awake: c[ACT_COUNTS.AWAKE], drawn: c[ACT_COUNTS.DRAWN], move1: c[ACT_COUNTS.MOVE1], inert: c[ACT_COUNTS.INERT], units: this.unit.units };
+    return { awake: c[ACT_COUNTS.AWAKE], drawn: c[ACT_COUNTS.DRAWN], move1: c[ACT_COUNTS.MOVE1], inert: c[ACT_COUNTS.INERT_LAST], units: this.unit.units };
   }
 
   /**
@@ -991,7 +1011,13 @@ export class Simulation {
   /**
    * A read-only probe (docs/webgpu.md D6): `kernel` writes its result into a
    * slot of `ring` (a gpu.readback.ring, its buffer bound in the kernel's own
-   * groups), whose index it gets in its params as `slot`.
+   * group), whose index it gets in its params as `slot`; the promise is that
+   * slot's bytes. The caller owns the ring (its slot size is the probe's) and
+   * gives every bind group but the params: groups 0-2, e.g. [sim.tables,
+   * sim.bindRO (or bindAct), its own group holding ring.buffer].
+   * @param {object} kernel a gpu.kernel whose params struct has a `slot: u32`
+   * @param {number[]} size its dispatch size
+   * @param {{ ring: object, bind: GPUBindGroup[], params?: object }} opts
    * @returns {Promise<ArrayBuffer>}
    */
   probe(kernel, size, { ring, bind = [], params = {} }) {

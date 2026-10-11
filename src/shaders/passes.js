@@ -222,7 +222,8 @@ const perBox = (g) => fold(gridDims(g).nbricks);
 export const WGSL_CHECK = [
   { name: 'paint', kind: 'compute', code: (g) => paintKernelWGSL(g), layouts: rw, dispatch: perBox },
   { name: 'fresh', kind: 'compute', code: (g) => freshFrag(g), layouts: rw, dispatch: perSlot, tool: true },
-  { name: 'copy', kind: 'compute', code: (g) => copyFrag(g), layouts: rw, dispatch: perSlot, tool: true, windowed: true },
+  // (a world's window syncs its copies until world/window.js stops, G1; elsewhere tools only)
+  { name: 'copy', kind: 'compute', code: (g) => copyFrag(g), layouts: rw, dispatch: perSlot, windowed: true },
   { name: 'toAtlas', kind: 'compute', code: toAtlasFrag, dispatch: perSlot, tool: true,
     layouts: () => [LAYOUT.TABLES, stateLayout({ state: 'read', flags: true }), CONVERT_LAYOUT] },
   { name: 'fromAtlas', kind: 'compute', code: (g) => fromAtlasFrag(g), dispatch: perSlot, layouts: () => [...rw(), CONVERT_LAYOUT] },
