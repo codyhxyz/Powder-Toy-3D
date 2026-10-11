@@ -32,7 +32,11 @@ try {
   const page = await newTestPage(browser, { mode: 'manual' });
   const errors = [];
   page.on('pageerror', (e) => errors.push(String(e)));
-  page.on('console', (m) => { if (m.type() === 'error' || /GL_INVALID|WebGL:/.test(m.text())) errors.push(m.text()); });
+  // (a dev page without `npm run relay` fails to reach it: not an error of ours, as in activity-check)
+  page.on('console', (m) => {
+    const t = m.text();
+    if ((m.type() === 'error' && !t.startsWith('Failed to load resource')) || /GL_INVALID|WebGL:/.test(t)) errors.push(t);
+  });
 
   // ---- a box ----
   await page.goto(`http://localhost:${port}/?map=lab`);
