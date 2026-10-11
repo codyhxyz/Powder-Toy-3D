@@ -1,0 +1,69 @@
+import * as THREE from 'three';
+import { h } from '../ui/dom.js';
+import { HAND_REACH } from './constants.js';
+
+// Look at a thing and press E: Noita's pick-up rule (wands, potions, a Holy
+// Mountain's perks and shop) and Garry's Mod's +use key. Whatever is under the
+// crosshair within reach shows its name and what it does, so you know what you
+// take before you take it; walking into it does nothing.
+//
+// Things are offered by providers: interact.provide(() => [{ id, position
+// (grid cells, Vector3), radius (cells), title, lines: [string], verb, use() }])
+// returns a function that removes the provider. use() returns false when it
+// refuses (too poor, full hands): the prompt stays up.
+
+const REACH = HAND_REACH * 1.5;   // cells from the eye: a bit past the hands (Noita picks up from a step away)
+const MIN_RADIUS = 0.75;          // cells: the smallest target the crosshair has to land on
+
+export function createInteract() {
+  const providers = new Set();
+  const title = h('b.pov-use-title');
+  const lines = h('span.pov-use-lines');
+  const verb = h('span.pov-use-verb');
+  const prompt = h('div.pov-use.panel', { role: 'status', 'aria-live': 'polite' }, title, lines,
+    h('span.pov-use-key', {}, h('kbd', { text: 'E' }), verb));
+  document.body.append(prompt);
+  const to = new THREE.Vector3();
+  let focus = null, shownKey = '';
+
+  function show(t) {
+    const key = t ? `${t.id}|${t.title}|${t.lines?.join('|')}|${t.verb}` : '';
+    if (key === shownKey) return;
+    shownKey = key;
+    prompt.classList.toggle('show', !!t);
+    if (!t) return;
+    title.textContent = t.title;
+    lines.replaceChildren(...(t.lines ?? []).map((l) => h('span', { text: l })));
+    verb.textContent = ` ${t.verb ?? 'Take'}`;
+  }
+
+  return {
+    provide(fn) { providers.add(fn); return () => providers.delete(fn); },
+    // every frame: the thing nearest along the look ray from `eye` (grid cells) in `dir`,
+    // not past `blocked` (the distance to the matter under the crosshair)
+    update(eye, dir, blocked, on) {
+      focus = null;
+      if (on) {
+        let best = Infinity;
+        for (const fn of providers) for (const t of fn()) {
+          to.subVectors(t.position, eye);
+          const along = to.dot(dir);
+          if (along <= 0 || along > REACH || along > blocked + t.radius) continue;
+          const off = to.addScaledVector(dir, -along).length();
+          if (off > Math.max(MIN_RADIUS, t.radius) || along >= best) continue;
+          best = along; focus = t;
+        }
+      }
+      show(focus);
+    },
+    get focus() { return focus; },
+    // E: use the thing in focus; false when there is none (E does its other jobs)
+    use() {
+      if (!focus) return false;
+      focus.use();
+      shownKey = '';   // its label may have changed (a price, a stack)
+      return true;
+    },
+    dispose() { providers.clear(); prompt.remove(); },
+  };
+}
