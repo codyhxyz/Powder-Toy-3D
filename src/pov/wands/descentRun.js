@@ -10,12 +10,16 @@ import { starterWand, bombWand } from './generate.js';
 
 export const WAND_SLOTS = 4;   // Noita: four wand slots in the inventory
 export const BAG_MAX = 64;     // spells carried loose (Noita: 16 inventory slots; ours holds a run's worth)
+export const POTION_SLOTS = 4; // Noita: four item slots beside the wands; ours hold potion flasks only
 
-const listeners = { change: new Set(), drop: new Set(), refresh: new Set() };
+const listeners = { change: new Set(), drop: new Set(), refresh: new Set(), place: new Set(), reset: new Set() };
 const emit = (name, payload) => { for (const fn of listeners[name]) { try { fn(payload); } catch (err) { console.error(`descentWands ${name} listener failed`, err); } } };
 const copyWand = (w) => ({ ...w, cards: [...w.cards], config: { ...w.config }, ...(w.look ? { look: { ...w.look } } : {}) });
 
-const run = { wands: [], bag: [], held: -1, inTemple: false, taken: new Set(), seed: 0 };
+// potions: the run's flasks, { id, material (element key it was found with), name, cells: [[id, T, life, seed]] }
+// (descent/flasks.js makeFlask); the flask tool pours, drinks and throws the one in hand (tools/index.js)
+const run = { wands: [], bag: [], potions: [], held: -1, inTemple: false, taken: new Set(), seed: 0 };
+const copyFlask = (f) => ({ ...f, cells: f.cells.map((c) => [...c]) });
 
 export const descentWands = {
   get wands() { return run.wands; },
@@ -34,8 +38,9 @@ export const descentWands = {
   reset(seed = Date.now()) {
     run.seed = seed;
     run.wands = [starterWand(seed), bombWand(seed)];
-    run.bag = []; run.held = 0; run.inTemple = false; run.taken.clear();
+    run.bag = []; run.potions = []; run.held = 0; run.inTemple = false; run.taken.clear();
     emit('change');
+    emit('reset');
   },
 
   // Give wand `wand` ({ id, name, cards, config, ... }, generate.js's shape).
@@ -82,6 +87,31 @@ export const descentWands = {
     emit('change');
     return w ?? null;
   },
-  // listen: 'change' (wands or bag), 'drop' (a wand left the inventory), 'refresh'; returns an unsubscribe
+  // ---- potions: Noita's item slots (POTION_SLOTS), flasks found lying about or in chests
+  get potions() { return run.potions; },
+  get potionsFull() { return run.potions.length >= POTION_SLOTS; },
+  // take flask `flask` (flasks.js makeFlask's shape): its slot, or -1 with every item slot full
+  givePotion(flask) {
+    if (!flask?.cells || run.potions.length >= POTION_SLOTS) return -1;
+    const slot = run.potions.push(copyFlask(flask)) - 1;
+    emit('change', { potion: slot });
+    return slot;
+  },
+  // the flask in slot `slot` now holds `cells` (poured, drunk, scooped into): kept quietly, no 'change'
+  setPotionCells(slot, cells) {
+    const f = run.potions[slot];
+    if (!f) return false;
+    f.cells = cells.map((c) => [...c]);
+    return true;
+  },
+  // flask `slot` is gone (thrown: its glass broke); returns it
+  removePotion(slot) {
+    const [f] = run.potions.splice(slot, 1);
+    if (f) emit('change', { potion: -1 });
+    return f ?? null;
+  },
+  // put a wand or spell pickup at a world point (a chest's spill): { kind: 'wand' | 'spell', wand?, spell?, world: [x, y, z], site }
+  place(item) { emit('place', item); },
+  // listen: 'change' (wands, bag or potions), 'drop' (a wand left the inventory), 'refresh', 'place', 'reset' (a new run); returns an unsubscribe
   on(name, fn) { listeners[name].add(fn); return () => listeners[name].delete(fn); },
 };
