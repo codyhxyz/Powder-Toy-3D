@@ -777,6 +777,9 @@ void main() {
 // (exact for the ground: the field is 0.5 + (h - y) / 8 there). What floats
 // above that (a crown, a roof) isn't a column: it would shade the ground under
 // it from every side, as a pillar.
+// roof (y): the top of the column's highest matter, the same way down from the
+// world's top. Where it stands well over below, the column holds caves under a
+// roof (gi.js: no sky reaches their air: farBeyond).
 export const farTopFrag = (L) => /* glsl */ `
 precision highp float;
 precision highp int;
@@ -798,7 +801,18 @@ void main() {
       }
       below = v;
     }
-  oC = vec4(h, 0.0, 0.0, 1.0);
+  float above = texelFetch(tFar, farTexel(ivec3(c.x, WBY - 1, c.y)), 0).r;
+  float roof = above >= FAR_ISO ? float(WBY * FAR_BRICK) : 0.0;
+  if (above < FAR_ISO)
+    for (int y = WBY - 2; y >= 0; y--) {
+      float v = texelFetch(tFar, farTexel(ivec3(c.x, y, c.y)), 0).r;
+      if (v >= FAR_ISO) {
+        roof = (float(y) + 0.5 + (v - FAR_ISO) / max(v - above, FAR_TOP_EPS)) * float(FAR_BRICK);
+        break;
+      }
+      above = v;
+    }
+  oC = vec4(h, roof, 0.0, 1.0);
 }
 `;
 
@@ -938,8 +952,17 @@ float farCasterDepth(vec3 ro, vec3 rd, float t0, float t1) {
 // and send back the light of their ground (its element's albedo, the sun
 // through the shadow heights, the sky over it); a ray going down past the
 // coast meets the sea (the sky in it by Fresnel, and its body); else the sky.
+// Underground (a column whose roof, its highest matter, stands FAR_GI_ROOF over
+// its lowest open cell, and the ray under that roof) it meets a cave's air or
+// its rock: no sun or sky reaches either, so it brings back no light and sees
+// no sky. (Without this, every Descent tunnel's probes saw the sunlit ground or
+// the open sky down their length, lighting the caves a deep sky blue that the
+// eyes adjusting to the dark then raised 16×.) Noita's caves are black but for
+// what glows in them.
 export const FAR_GI_STEPS = 6;       // reads along the ray past its end...
 export const FAR_GI_STEP0 = 8;       // ...the first this many cells out, each next twice as far (~500 cells in all)
+export const FAR_GI_ROOF = 32;       // cells: a roof over a void this far over the column's bottom matter is a cave's
+                                     // (more than a tree's crown over its ground: under a crown stays open)
 export const farGIGLSL = (L) => /* glsl */ `
 ${farLayoutGLSL(L)}
 uniform sampler2D tFar;
@@ -948,6 +971,7 @@ uniform sampler2D tFarShadow;
 uniform float uSea;
 #define FAR_GI_STEPS ${FAR_GI_STEPS}
 #define FAR_GI_STEP0 ${glf(FAR_GI_STEP0)}
+#define FAR_GI_ROOF ${glf(FAR_GI_ROOF)}
 #define FAR_SHADOW_SOFT ${glf(FAR_SHADOW_SOFT)}
 #define FAR_SHADOW_BIAS ${glf(FAR_SHADOW_BIAS)}
 #define FAR_SEA_F0 0.02   // water's reflectance face on ((1.333 - 1) / (1.333 + 1))²
@@ -964,13 +988,23 @@ vec3 farSea(vec3 d) {
 }
 // a world without a sea (uSea 0: world/scenes) has a rock plain past its edge (the far view's)
 vec3 farPlain() { return ALBEDO[E_ROCK] * (SUN_COL * max(uSun.y, 0.0) + uSkyUp); }
+// is r under the roof of a column holding caves (FAR_GI_ROOF)? tr: its farTop
+bool farUnderRoof(vec3 r, vec2 tr) { return tr.y > tr.x + FAR_GI_ROOF && r.y < tr.y; }
 vec3 farBeyond(vec3 P, vec3 Q, vec3 d, inout float open) {
   vec3 w = Q + vec3(uOrigin);
+  bool out = any(lessThan(w.xz, vec2(0.0))) || any(greaterThanEqual(w.xz, vec2(WORLD.xz)))
+          || !farUnderRoof(w, texture(tFarTop, w.xz / vec2(WORLD.xz)).xy);   // the ray left the window in the open air
   float s = FAR_GI_STEP0;
   for (int i = 0; i < FAR_GI_STEPS; i++) {
     vec3 r = w + d * s;
     if (any(lessThan(r.xz, vec2(0.0))) || any(greaterThanEqual(r.xz, vec2(WORLD.xz)))) break;
-    float top = texture(tFarTop, r.xz / vec2(WORLD.xz)).x;
+    vec2 tr = texture(tFarTop, r.xz / vec2(WORLD.xz)).xy;
+    float top = tr.x;
+    if (farUnderRoof(r, tr)) {   // a cave's roof over it (FAR_GI_ROOF): coming from the open air, its top; from under one, the dark
+      open = 0.0;
+      return out ? farGround(r, tr.y) : vec3(0.0);
+    }
+    out = true;
     if (r.y < max(top, uSea)) {
       open = 0.0;
       return top >= uSea ? farGround(r, top) : farSea(d);
