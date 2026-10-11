@@ -11,6 +11,7 @@
 //   overlays    the floor grid, the box's edges and the brush each draw into the scene pass
 //   meshes      three.js renders a box standing in a pool first; the march stops at it, the water
 //               in front tints it; without the cut (control) the water hides it
+//   gate        the detail gate's two variants by camera distance, async; the cold pipeline toast
 //   bench       one view's pipeline creation (a module no cache has seen), the main thread's longest gap
 //   benchScene, benchCam, gpuTime, stepTime   tools/detail-bench.mjs: a scene, a camera, the
 //               scene pass's GPU ms (timestamps), ms per simulation step
@@ -31,9 +32,12 @@ import { createVolume } from '/src/gfx/volume.js';
 import { createOverlays, FLOOR_Y, EDGE_OPACITY } from '/src/gfx/overlays.js';
 import { createBrushCursor } from '/src/brush.js';
 import { createMeshCut } from '/src/gfx/meshCut.js';
+import { createDetailGate, gateVariants } from '/src/gfx/detailGate.js';
+import { createColdShaderGuard, COLD_TOAST_MS } from '/src/gfx/coldShader.js';
+import { detailDefaults } from '/src/gfx/detail.js';
 import { writeFrameUniforms, updateGfxUniforms, gfxUniforms } from '/src/gfx/uniforms.js';
 import { VIEWS } from '/src/views.js';
-import { volumeFrag, volumePipeline, VOLUME_LAYOUTS } from '/src/shaders/render.js';
+import { volumeFrag, volumePipeline, VOLUME_LAYOUTS, REALISTIC_LEVELS } from '/src/shaders/render.js';
 import { boot, ready, test, log } from './harness.js';
 
 const h = await boot({ label: 'volume' });
@@ -230,6 +234,7 @@ function project(p, [w, h] = [W, H]) {
 }
 // the realistic view's frames here (SwiftShader runs it on the CPU)
 const SMALL = [160, 100];
+const REALISTIC_FULL = () => REALISTIC_LEVELS.full();
 
 // ---------------------------------------------------------------- tests
 
@@ -450,6 +455,44 @@ test('bench', async ({ view = 'plain', detail = {}, runs = 1, grid = null } = {}
     out.push({ ms, moduleMs: tModule, maxGapMs: gap, ticks, lines: code.split('\n').length });
   }
   return { out, failures: [...h.failures] };
+});
+
+// The detail gate (gfx/detailGate.js) with the default settings (Balanced:
+// Smooth up close is gated): far from the box the base variant; inside it
+// the near one is wanted, and until its pipeline is ready the base one is
+// drawn (onCompile says so); once ready, near (onReady). Then the cold
+// pipeline toast (gfx/coldShader.js): a view pipeline still building
+// COLD_TOAST_MS after the view wanted it gets the message, one that is
+// ready doesn't.
+test('gate', async () => {
+  const settings = detailDefaults();
+  const { base, near } = gateVariants(settings);
+  const key = (d) => Object.keys(d).sort().join(',');
+  let readyCalls = 0, compileCalls = 0;
+  const gate = createDetailGate(gpu, () => readyCalls++, () => compileCalls++);
+  gate.configure(volume, settings);
+  await volume.viewReady('realistic', base);
+  const dims = [g.nx, g.ny, g.nz];
+  const farShown = key(gate.update(camera, [g.nx / 2, g.ny * 40, g.nz / 2], dims, H));
+  const firstNear = key(gate.update(camera, [g.nx / 2, g.ny / 2, g.nz / 2], dims, H));
+  const pendingThen = gate.pending;
+  await volume.pipeline('realistic', near).ready;
+  const secondNear = key(gate.update(camera, [g.nx / 2, g.ny / 2, g.nz / 2], dims, H));
+  const backFar = key(gate.update(camera, [g.nx / 2, g.ny * 40, g.nz / 2], dims, H));
+  gate.dispose();
+  // the toast
+  let warned = 0;
+  const cold = createColdShaderGuard(() => warned++);
+  const slow = volume.pipeline('realistic', REALISTIC_FULL());   // ~15 s on SwiftShader
+  cold.watch(slow);
+  cold.watch(volume.pipeline('realistic', base));                // ready: no message
+  await new Promise((r) => setTimeout(r, COLD_TOAST_MS + 100));
+  const warnedWhileBuilding = warned;
+  await slow.ready;
+  return {
+    base: key(base), near: key(near), farShown, firstNear, pendingThen, secondNear, backFar,
+    readyCalls, compileCalls, warnedWhileBuilding, held: cold.hold(), failures: [...h.failures],
+  };
 });
 
 // ---------------------------------------------------------------- tools/detail-bench.mjs

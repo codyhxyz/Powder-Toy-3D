@@ -21,8 +21,7 @@
 //   near  base plus the rest, prefetched at idle time a moment after start-up
 //         or a settings change, and shown when the camera is close and it is
 //         ready: detail shows up late rather than the frame waiting.
-// With the default (Balanced) switches every feature is in base: no second
-// pipeline at all.
+// With the default (Balanced) switches only Smooth up close is gated.
 import { DETAIL, settingKey } from './detail.js';
 import { CELL_M } from '../scale.js';
 
@@ -40,6 +39,19 @@ const VIEW = 'realistic';   // the view the detail is part of
 
 const alwaysIn = (f) => f.cost === 'low' || f.fadeM === undefined || f.fadeM >= GATE_ALWAYS_M;
 const definesOf = (features) => Object.fromEntries(features.map((f) => [f.define, 1]));
+
+/**
+ * The two variants for `settings` (detail_* switches): base and near (their
+ * defines objects), and the footprint (m per pixel) below which near is
+ * wanted (0: nothing gated). shaders/render.js's WGSL_CHECK lists the
+ * default settings' pair, so the start menu warms what the view draws first.
+ * @param {object} settings
+ */
+export function gateVariants(settings) {
+  const on = DETAIL.filter((f) => settings[settingKey(f)]);
+  const gated = on.filter((f) => !alwaysIn(f));
+  return { base: definesOf(on.filter(alwaysIn)), near: definesOf(on), nearFadeM: Math.max(0, ...gated.map((f) => f.fadeM)) };
+}
 const keyOf = (d) => Object.keys(d).sort().join(',');
 const component = (v, i) => (v.getComponent ? v.getComponent(i) : v[i]);
 
@@ -76,11 +88,8 @@ export function createDetailGate(gpu, onReady = () => {}, onCompile = () => {}) 
     configure(vol, settings) {
       const fresh = vol !== volume;
       volume = vol;
-      const on = DETAIL.filter((f) => settings[settingKey(f)]);
-      const gated = on.filter((f) => !alwaysIn(f));
-      const nextBase = definesOf(on.filter(alwaysIn));
-      const nextNear = definesOf(on);
-      nearFadeM = Math.max(0, ...gated.map((f) => f.fadeM));
+      const { base: nextBase, near: nextNear, nearFadeM: fade } = gateVariants(settings);
+      nearFadeM = fade;
       if (fresh || keyOf(nextNear) !== keyOf(near)) { nearPipe = null; told = false; }
       near = nextNear;
       if (fresh || keyOf(nextBase) !== keyOf(base)) {
@@ -96,7 +105,7 @@ export function createDetailGate(gpu, onReady = () => {}, onCompile = () => {}) 
         }
       }
       clearTimeout(timer);
-      if (gated.length) timer = setTimeout(() => { if (volume === vol && !nearPipe) askNear('idle'); }, PREWARM_DELAY_MS);
+      if (nearFadeM) timer = setTimeout(() => { if (volume === vol && !nearPipe) askNear('idle'); }, PREWARM_DELAY_MS);
     },
 
     /**

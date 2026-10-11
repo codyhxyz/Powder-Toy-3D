@@ -20,6 +20,10 @@
 //             depth), above the water it is untouched (pure red, the box's depth),
 //             water beside it is bit-identical with and without the cut; without
 //             the cut (control) the water hides it
+//   gate      the detail gate (gfx/detailGate.js) with the default settings: the base
+//             variant far away; up close the base one until near's pipeline is ready
+//             (onCompile), then near (onReady); the cold pipeline toast fires for a
+//             pipeline still building, never for a ready one, and nothing holds a frame
 // --shots DIR saves the frames as PNGs for review.
 //
 // usage: node tools/volume-check.mjs [--port 5606] [--only views,shadow] [--views plain,heat] [--detail off] [--shots DIR] [--size 64]
@@ -31,7 +35,7 @@ import { openHarness } from './harness/open.mjs';
 
 const argv = process.argv.slice(2);
 const opt = (k, d = null) => { const i = argv.indexOf(`--${k}`); return i >= 0 ? argv[i + 1] : d; };
-const ONLY = opt('only')?.split(',') ?? ['views', 'inside', 'shadow', 'pick', 'overlays', 'meshes'];
+const ONLY = opt('only')?.split(',') ?? ['views', 'inside', 'shadow', 'pick', 'overlays', 'meshes', 'gate'];
 const SHOTS = opt('shots');
 const SIZE = Number(opt('size', '64'));
 const DETAIL = opt('detail', 'off');
@@ -47,7 +51,7 @@ const f3 = (a) => a.map((x) => x.toFixed(3)).join(', ');
 
 // Stages run in sessions of their own browser, each under ~3 minutes on
 // SwiftShader (the realistic view's frames run on the CPU there).
-const SESSIONS = [['views', 'inside', 'shadow', 'pick', 'overlays'], ['meshes']]
+const SESSIONS = [['views', 'inside', 'shadow', 'pick', 'overlays'], ['meshes', 'gate']]
   .map((list) => list.filter((st) => ONLY.includes(st))).filter((list) => list.length);
 
 const vite = await startVite({ harness: true, port: Number(opt('port', '5606')) });
@@ -139,6 +143,17 @@ async function session(stages) {
       check('water beside the box: identical with and without the cut', w.water.color.every((x, i) => x === c.water.color[i]) && w.water.depth === c.water.depth);
       check('control (no cut): the water hides the submerged box', share(c.below.color) < 0.6, `red share ${share(c.below.color).toFixed(3)}`);
       check('meshes: no GPU errors', r.failures.length === 0, r.failures.join(' | '));
+    }
+    if (has('gate')) {
+      lap('gate');
+      const r = await run('gate');
+      console.log(`     base ${r.base || '(none)'}; near ${r.near}`);
+      check('detail gate: far from the box, the base variant', r.farShown === r.base);
+      check('detail gate: up close, the base variant while near builds (pending, the toast asked for)', r.firstNear === r.base && r.pendingThen >= 1 && r.compileCalls >= 1,
+        `shown ${r.firstNear}, pending ${r.pendingThen}, onCompile ${r.compileCalls}`);
+      check('detail gate: near once its pipeline is ready (onReady), base again far away', r.secondNear === r.near && r.backFar === r.base && r.readyCalls >= 1, `onReady ${r.readyCalls}`);
+      check('cold pipeline toast: once for the variant still building, none for a ready one; no frame held', r.warnedWhileBuilding === 1 && r.held === false, `warned ${r.warnedWhileBuilding}`);
+      check('gate: no GPU errors', r.failures.length === 0, r.failures.join(' | '));
     }
     check('no page errors', errors.length === 0, errors.slice(0, 5).join(' | '));
     lap('done');

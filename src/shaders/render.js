@@ -15,7 +15,8 @@ import { farHazeGLSL, farCastersGLSL, farLayout, WORLD_SIZE } from './farShared.
 import { MESH_CUT_FIELDS, MESH_DEPTH_ENTRY, meshCutGLSL } from '../gfx/meshCut.js';
 import { uniformStruct } from '../gpu/params.js';
 import { STAGE } from '../gpu/kernels.js';
-import { DETAIL, COST } from '../gfx/detail.js';
+import { DETAIL, COST, detailDefaults } from '../gfx/detail.js';
+import { gateVariants } from '../gfx/detailGate.js';
 
 // Hybrid raymarcher. Rays walk the voxel grid with an Amanatides–Woo DDA
 // (4×4×4 bricks skip empty space). What they hit depends on the element's look
@@ -1456,23 +1457,35 @@ export const shadowDispatch = (res) => [Math.ceil(res / SHADOW_WORKGROUP), Math.
 // import; shaders/gfx/lib.js is where it lives now).
 export { lib };
 
-// ---- check-wgsl (docs/webgpu.md I1) ----
-// The realistic view at the settings' detail levels: none, the cost-tier
-// defaults (Balanced: everything in the base variant), every switch. Each
-// detail combination of the materials alone is validated by
+// ---- check-wgsl (docs/webgpu.md I1) and the menu's warm-up (B5) ----
+// The realistic view at the settings' detail levels: none, the default
+// settings' two variants (gfx/detailGate.js: base, which the view draws
+// first, and near, which is the cost-tier defaults, Balanced), every switch.
+// Each detail combination of the materials alone is validated by
 // tools/material-lod-check.mjs; these are the whole tracer.
 const levelDefines = (keep) => Object.fromEntries(DETAIL.filter(keep).map((f) => [f.define, 1]));
 export const REALISTIC_LEVELS = {
   off: () => ({}),
+  base: () => gateVariants(detailDefaults()).base,
   balanced: () => levelDefines((f) => COST[f.cost].on),
   full: () => levelDefines(() => true),
 };
 
+// The gpu.layout names each pipeline's groups are made under (gfx/volume.js
+// uses them), so a warm-up that makes its layouts under the same names builds
+// the very pipelines the game then finds in the cache.
+export const LAYOUT_NAMES = {
+  volume: ['VOLUME_FRAME', 'STATE_RO', 'LIGHTING'],
+  shadow: ['FRAME', 'STATE_RO', 'LIGHTING_SHADOW'],
+  pick: ['TABLES', 'STATE_RO', 'PICK'],
+};
 const volumeCheck = (name, view, detail = {}) => ({
   name,
   kind: 'render',
   code: (g) => volumeFrag(g, { view, detail }),
   layouts: () => VOLUME_LAYOUTS(),
+  layoutNames: LAYOUT_NAMES.volume,
+  params: VolumeParams,
   ...volumePipeline(),
 });
 /** tools/check-wgsl.mjs and the menu's warm-up (src/preload.js, docs/webgpu.md B5) */
@@ -1480,10 +1493,13 @@ export const WGSL_CHECK = () => [
   ...VOLUME_VIEWS.filter((v) => v !== 'realistic').map((v) => volumeCheck(`volume.${v}`, v)),
   ...Object.entries(REALISTIC_LEVELS).map(([k, d]) => volumeCheck(`volume.realistic.${k}`, 'realistic', d())),
   {
-    name: 'shadow', kind: 'compute', code: (g) => shadowFrag(g), layouts: () => SHADOW_LAYOUTS(),
+    name: 'shadow', kind: 'compute', code: (g) => shadowFrag(g), layouts: () => SHADOW_LAYOUTS(), layoutNames: LAYOUT_NAMES.shadow,
     workgroupSize: [SHADOW_WORKGROUP, SHADOW_WORKGROUP, 1], dispatch: (g) => shadowDispatch(shadowRes(g)),
   },
-  { name: 'pick', kind: 'compute', code: (g) => pickFrag(g), layouts: () => PICK_LAYOUTS(), workgroupSize: [PICK_BATCH, 1, 1], dispatch: () => [1, 1, 1] },
+  {
+    name: 'pick', kind: 'compute', code: (g) => pickFrag(g), layouts: () => PICK_LAYOUTS(), layoutNames: LAYOUT_NAMES.pick, params: PickParams,
+    workgroupSize: [PICK_BATCH, 1, 1], dispatch: () => [1, 1, 1],
+  },
 ];
 // Filled in from check-wgsl (b)'s measurements on SwiftShader (W23): the
 // modules that miss PIPELINE_BUDGET_MS there, each with why. The container's

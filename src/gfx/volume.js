@@ -25,7 +25,7 @@ import { Matrix4 } from 'three/webgpu';
 import {
   volumeFrag, volumePipeline, VOLUME_LAYOUTS, VolumeParams, VOLUME_VERTICES, VOLUME_VIEWS,
   shadowFrag, SHADOW_LAYOUTS, shadowRes as shadowResOf, shadowDispatch, SHADOW_WORKGROUP,
-  pickFrag, PICK_LAYOUTS, PickParams, PICK_BATCH, PICK_RESULT_BYTES,
+  pickFrag, PICK_LAYOUTS, PickParams, PICK_BATCH, PICK_RESULT_BYTES, LAYOUT_NAMES,
 } from '../shaders/render.js';
 import { frameUniformsOf } from './uniforms.js';
 import { createMediaNoise } from './mediaNoise.js';
@@ -47,15 +47,11 @@ export function createVolume(gpu, sim) {
   const derived = sim.derived;
   if (!derived) throw new Error('createVolume: the simulation has no derived passes (new Derived(sim) first)');
   const fu = frameUniformsOf(gpu);
-  const [volFrame, stateRO, lighting] = VOLUME_LAYOUTS();
-  const L = {
-    VOLUME_FRAME: gpu.layout('VOLUME_FRAME', volFrame),
-    STATE_RO: gpu.layout('STATE_RO', stateRO),
-    LIGHTING: gpu.layout('LIGHTING', lighting),
-    LIGHTING_SHADOW: gpu.layout('LIGHTING_SHADOW', SHADOW_LAYOUTS()[2]),
-    TABLES: gpu.layout('TABLES', PICK_LAYOUTS()[0]),
-    PICK: gpu.layout('PICK', PICK_LAYOUTS()[2]),
-  };
+  // the layouts under the names WGSL_CHECK gives them (shaders/render.js LAYOUT_NAMES)
+  const L = {};
+  for (const [names, groups] of [[LAYOUT_NAMES.volume, VOLUME_LAYOUTS()], [LAYOUT_NAMES.shadow, SHADOW_LAYOUTS()], [LAYOUT_NAMES.pick, PICK_LAYOUTS()]]) {
+    names.forEach((name, i) => { L[name] = gpu.layout(name, groups[i]); });
+  }
   const label = (x) => `sim${sim.id} ${x}`;
 
   // ---- resources (once per grid) ----
@@ -127,7 +123,7 @@ export function createVolume(gpu, sim) {
 
   // ---- pipelines ----
   const shadowKernel = gpu.kernel({
-    name: 'shadow', code: shadowFrag(g), layouts: [fu.layout, L.STATE_RO, L.LIGHTING_SHADOW],
+    name: 'shadow', code: shadowFrag(g), layouts: [L.FRAME, L.STATE_RO, L.LIGHTING_SHADOW],
     workgroupSize: [SHADOW_WORKGROUP, SHADOW_WORKGROUP, 1],
   });
   const pickKernel = gpu.kernel({
