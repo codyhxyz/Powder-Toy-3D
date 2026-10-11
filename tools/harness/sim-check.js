@@ -839,12 +839,20 @@ const MODE_STAGES = {
         box(c - 3, n - 7, c - 3, c + 3, n - 5, c + 3, 'WATER');
       });
       const r0 = await tally(sim);
-      go(220);
+      // (where the water's centre of mass is, every 10 steps: since main's
+      // sync 3 a liquid in free fall feels no drag, so the water falls in,
+      // through the centre and out again, and keeps sloshing round it, |v| ≈
+      // 0.5, instead of settling: its mean distance from the centre stays
+      // near where it started, its centre of mass doesn't)
+      const com = (w) => (w ? Math.hypot(w.x + 0.5 - c, w.y + 0.5 - c, w.z + 0.5 - c) : n);
+      const wr = [];
+      for (let k = 0; k < 22; k++) { go(10); wr.push(com((await tally(sim)).WATER)); }
       t = await tally(sim);
       check(out, `radial: sand gathers at the centre (mean r ${r0.SAND.r.toFixed(1)} → ${t.SAND.r.toFixed(1)})`, t.SAND.r < 0.5 * r0.SAND.r);
       check(out, `radial: no cell made or lost (sand ${count(r0, 'SAND')} → ${count(t, 'SAND')}, water ${count(r0, 'WATER')} → ${count(t, 'WATER')})`,
         count(t, 'SAND') === 8 * 27 && count(t, 'WATER') === count(r0, 'WATER'));
-      check(out, `radial: water falls in too (mean r ${r0.WATER.r.toFixed(1)} → ${t.WATER?.r.toFixed(1)})`, t.WATER?.r < 0.6 * r0.WATER.r);
+      check(out, `radial: water falls in too (its centre of mass ${com(r0.WATER).toFixed(1)} from the centre → ${wr.map((r) => r.toFixed(1)).join(', ')})`,
+        Math.min(...wr) < 0.4 * com(r0.WATER));
       out.ms.step = (performance.now() - t0) / steps;
       check(out, 'no out-of-grid access', (await sim.readDebug()) === 0);
     } finally { sim.dispose(); }
@@ -881,20 +889,30 @@ const MODE_STAGES = {
         if (count(t, 'SAND') !== SAND) lost++;
       }
       check(out, `loop: sand falls through the floor and in at the top (highest ${top}), none lost`, top > n - 6 && !lost);
-      // ...and water thrown out of +x comes in at -x
+      // ...and water thrown out of +x comes in at -x. (Paced since main's sync
+      // 3, a falling blob pushed at 0.8 cells a step crosses a cell on every
+      // one of its first 30 steps, so by the last it has gone round the whole
+      // box: judged at every push, from the lowest mean x it reached.)
       boxes(sim, (box) => box(n - 4, c - 2, c - 2, n, c + 2, c + 2, 'WATER'));
+      let xMin = n;
+      lost = 0;
       for (let i = 0; i < 12; i++) {
         const [A, B] = await sim.readState();
+        let k = 0, sx = 0;
         for (let y = 0; y < n; y++) for (let z = 0; z < n; z++) for (let x = 0; x < n; x++) {
           const q = cellTexel(sim.g, x, y, z) * 4;
-          if (Math.round(A[q]) === E.WATER) B[q] = 0.8;   // keep pushing it toward +x
+          if (Math.round(A[q]) !== E.WATER) continue;
+          B[q] = 0.8;   // keep pushing it toward +x
+          k++; sx += x;
         }
+        if (i > 0) xMin = Math.min(xMin, sx / k);
+        if (k !== 64) lost++;
         sim.load(A, B);
         go(3);
       }
       t = await tally(sim);
-      check(out, `loop: water thrown out of +x comes in at -x (mean x ${t.WATER?.x.toFixed(1)}), none lost (${count(t, 'WATER')})`,
-        count(t, 'WATER') === 64 && t.WATER.x < n / 2);
+      check(out, `loop: water thrown out of +x comes in at -x (mean x down to ${xMin.toFixed(1)}), none lost (${count(t, 'WATER')})`,
+        count(t, 'WATER') === 64 && !lost && xMin < n / 2);
       out.ms.step = (performance.now() - t0) / steps;
       check(out, 'no out-of-grid access', (await sim.readDebug()) === 0);
     } finally { sim.dispose(); }
