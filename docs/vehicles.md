@@ -1,8 +1,8 @@
 # Vehicles: a jeep and a hoverbike (Big Team Battle)
 
 Halo's Big Team Battle in the falling-sand world: a Warthog-style **jeep** and a drifty **hoverbike**,
-rigid bodies in [Rapier](https://rapier.rs) (`@dimforge/rapier3d-compat`, pinned at 0.21.0) that drive on
-the sim's own cells. Code: `src/pov/vehicles/`. Boxes only for now (not World's moving window).
+rigid bodies in [Rapier](https://rapier.rs) (`@dimforge/rapier3d-simd`, the WASM SIMD build, pinned at
+0.21.0) that drive on the sim's own cells. Code: `src/pov/vehicles/`. Boxes only for now (not World's moving window).
 
 ## Playing
 
@@ -28,8 +28,8 @@ the sim's own cells. Code: `src/pov/vehicles/`. Boxes only for now (not World's 
 
 | Part | How | Where |
 |---|---|---|
-| Rigid bodies | Rapier in metres/kg/s, fixed 1/60 s steps (≤ 4 a frame), stepped in the POV frame loop | `physics.js` |
-| What the hulls hit | one **Voxels** collider (Rapier ≥ 0.19's sparse voxel shape): voxel (x, y, z) at size 0.30 m is exactly cell (x, y, z). Solids and powders are voxels, liquids aren't. Only a region (48 × 28 × 48 cells) around each vehicle is filled, from the CPU copy of the cells (`ai/world.js`: the multiplayer packer's readback, ≤ 0.5 s old); each refresh toggles only the cells that changed (`setVoxel`), so a dug pit or a new wall shows up within half a second. The box's walls and floor are voxels too. | `physics.js` |
+| Rigid bodies | Rapier in metres/kg/s, fixed 1/60 s steps (≤ 4 a frame), stepped in the POV frame loop. Loaded on the first vehicle: a 0.3 MB chunk and its 3.3 MB `.wasm` (0.84 MB brotli, 1.15 MB gzip), compiled as it streams in (`vite-plugin-wasm`, `vite.config.js`) | `physics.js` |
+| What the hulls hit | one **Voxels** collider (Rapier ≥ 0.19's sparse voxel shape): voxel (x, y, z) at size 0.30 m is exactly cell (x, y, z). Solids and powders are voxels, liquids aren't. Only a region (48 × 28 × 48 cells) around each vehicle is filled, from the CPU copy of the cells (`ai/world.js`: the multiplayer packer's readback, ≤ 0.5 s old); each refresh toggles only the cells that changed (`setVoxel`), so a dug pit or a new wall shows up within half a second. The box's walls and floor are voxels too. The sync is incremental: a region that moves reads only the cells entering it (a per-cell count of the regions covering it empties the ones that leave all of them), a readback re-reads each covered cell once, and a vehicle's heightfield is rebuilt only when its corner or a column top under it changed. With Dam Valley's six vehicles a readback costs ~3 ms parked, a moving vehicle's re-centring ~3 ms (both ~40 ms before). | `physics.js` |
 | What the wheels see | **not** the voxels: a raycast wheel sees only the ground straight under its axle, so the grid's 0.3 m risers are walls it bottoms out on. Each vehicle gets a heightfield (40 × 40 cells around it) of the column tops **dilated by the tyre's circle** (a rigid wheel of radius r touches a step's edge √(r² − (r − h)²) ahead of its axle); a step higher than r is a wall, left to the voxels. It collides with nothing; only that vehicle's rays query it. The jeep climbs 27° stairs this way; before, it stopped dead at 18°. | `physics.js` `buildGround` |
 | Jeep | Rapier's `DynamicRayCastVehicleController` (Bullet's btRaycastVehicle port), 4 wheels, 4WD | `jeep.js` |
 | Hoverbike | four ray springs (spring–damper, 1.6 Hz, ζ 0.45) on the same kind of heightfield, whose tops include liquids': it skims lakes. Yaw rate steering, thrust along the nose, low sideways grip (3 /s, 2 /s boosting): hard turns at speed drift ~30–40° | `hoverbike.js` |
@@ -97,6 +97,11 @@ them), as it resets the NPCs.
 
 - `node tools/vehicles-node-check.mjs`: CPU only (Rapier in node, a stand-in for the cells' copy): the jeep
   climbs 27° stairs, the hoverbike 18°, sand slows the jeep ≥ 3× harder than stone.
+- `node tools/vehicles-terrain-check.mjs`: CPU only, Dam Valley with six vehicles driving, circling and
+  parked while the cells are dug, walled, sanded and flooded: after every sync the incremental collider
+  equals a from-scratch one (voxels, through a shadow of the `setVoxel` calls, and every ray ground), with
+  no wasted `setVoxel`; then times the syncs. Both node checks load the game's Rapier package through
+  `tools/rapier-node.mjs` (node hooks for its bundler-style imports and `.wasm` module).
 - `node tools/vehicles-check.mjs --port <yours> [--shot prefix]`: the real app on the GPU (a dev server; AC
   power). A test yard (a stone run into a rock ramp, a sand lane, a walled lake); E in and out; W drives;
   a body walked into a hull is pushed out; D steers right; the ramp; sand vs stone; a run-over hurts an enemy and not a teammate; a blast shoves it;
@@ -111,8 +116,3 @@ them), as it resets the NPCs.
 - The body only meets a hull by being pushed back out sideways (`shoveOut`): you can't stand on a jeep's
   roof. Vehicles don't push cells (sand isn't ploughed, water isn't splashed by them).
 - Vehicle-on-vehicle crashes don't hurt; the hoverbike's fans don't blow dust.
-- Rapier's `-compat` build inlines its WASM as base64 (a 4.3 MB chunk, 1.65 MB gzipped, loaded on the first
-  vehicle). The plain `@dimforge/rapier3d` package ships a binary .wasm (~1 MB gzipped) but needs a Vite
-  WASM plugin.
-- The terrain re-syncs on the copy's `version`, which also bumps when only temperatures changed;
-  `physics.js` reads only ids, so `idVersion` (bumped only when an id changed) would spare those re-syncs.

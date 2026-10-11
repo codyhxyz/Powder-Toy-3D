@@ -504,7 +504,7 @@ player's body, the player's tools and a mind built from textbook game AI, each a
 | Hands | `createKit(env)`: every tool, headless, its own pack and bucket (`env.owner`), the shared projectiles | `tools/index.js` |
 | What's in the world | the multiplayer packer reads the cells back to the CPU every 0.5 s (id + temperature), one copy per renderer shared with the vehicles and Teleportitis, de-swizzled in a worker | `ai/world.js` (`readCells`), `ai/deswizzle.js` |
 | Seeing and aiming | Amanatides & Woo voxel traversal (1987) over that copy; the tools' `ctx.aim` comes from it | `ai/world.js` |
-| Getting there | a height map on a 2-cell grid as a Yuka `Graph`, searched with Yuka's `AStar` | `ai/nav.js` |
+| Getting there | a height map on a 2-cell grid in typed arrays, searched with Yuka's `AStar` step for step on them (same paths, no garbage); derived again after a readback at most every 2 s, relinked only if it changed | `ai/nav.js` |
 | What to do | Buckland's goal-driven agent (Yuka `Think` + `GoalEvaluator`s, composite `Goal`s) | `ai/brain.js` |
 | Which weapon | Buckland/Raven fuzzy weapon selection (Yuka `FuzzyModule` over distance), gated by sight and ammo | `ai/brain.js` |
 | Where it saw you | Yuka `MemorySystem` (12 s), plus touch within 4 cells | `ai/brain.js` |
@@ -531,7 +531,10 @@ or `from`. `targets.js` holds everything weapons can hit that isn't cells (the p
 each NPC); a weapon never hits its own wielder. The player takes half damage from NPC weapons.
 
 Checks: `__app.pov.npc.debug` (goal, weapon, tool, sees, pack, last refusal), `__app.pov.npc.agent`,
-`__app.pov.events`.
+`__app.pov.events`, `__app.pov.npc.agent.npc.nav.stats` (map derivations, relinks, A* runs).
+`node --expose-gc tools/nav-check.mjs` (CPU only): the walk map's A* against the Yuka graph search it replaced
+on Dam Valley and random height maps (same reachability and path costs), the map following the world, and the
+old vs new rebuild/search times and garbage.
 
 **Fair and fun (2026-10-09).** The standard shooter-AI rules, in `ai/brain.js`: a 0.7 s reaction before it
 attacks something it just saw (Halo and Doom AI); its first shot after spotting you is a deliberate near miss

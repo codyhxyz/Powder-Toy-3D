@@ -27,6 +27,16 @@ Pending results cannot overwrite surviving CPU edits, and failed uploads retain 
 An optional bird probe stops after one readback failure instead of retrying indefinitely.
 These safeguards do not identify the cause of a driver reset.
 
+A dead GPU process first shows up as a link failure with empty logs, not as a lost context.
+The context-lost event arrives a task later, and whichever program is linked next takes the blame.
+The October 2026 birdProbe report was this case.
+Chrome's exit code 512 is the raw wait status of exit(2), the hung-GPU code.
+At the time, the react pass's cold pipeline build took 62 s on ANGLE/Metal (c0a65ed).
+`src/gfx/gpuLoss.js` reports such a failure as a lost GPU process.
+The report gives the wait since the last finished frame and the programs first used in that time.
+It is kept as `__app.lastGpuFailure` across reloads.
+`tools/program-bench.mjs --budget-s 8` fails when any program's cold build exceeds the budget.
+
 ## Checks
 
 Run the CPU checks:
@@ -53,6 +63,7 @@ Run the browser checks:
 node tools/idle-check.mjs 5493
 node tools/world-detail-check.mjs 5493 /tmp/world-detail
 node tools/gpu-failure-check.mjs 5493
+node tools/gpu-process-loss-check.mjs 5493
 ```
 
 The detail check measures coarse versus cached rendering, saves screenshots, and checks edit preservation after a window shift.

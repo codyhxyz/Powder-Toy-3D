@@ -3,11 +3,12 @@ import { ELEMENTS, K, R } from '../elements.js';
 const opaque = Uint8Array.from({ length: 256 }, (_, id) =>
   +(id !== 0 && !!ELEMENTS[id] && ELEMENTS[id].kind !== K.GAS && ELEMENTS[id].render !== R.LIQUID));
 const corners = Array.from({ length: 8 }, (_, i) => [i & 1, (i >> 1) & 1, i >> 2]);
-const cross = (a, b, c) => [
-  (b[1] - a[1]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[1] - a[1]),
-  (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]),
-  (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]),
-];
+// (b - a) × (c - a) of the points at offsets a, b, c of p, into out.
+function cross(out, p, a, b, c) {
+  out[0] = (p[b + 1] - p[a + 1]) * (p[c + 2] - p[a + 2]) - (p[b + 2] - p[a + 2]) * (p[c + 1] - p[a + 1]);
+  out[1] = (p[b + 2] - p[a + 2]) * (p[c] - p[a]) - (p[b] - p[a]) * (p[c + 2] - p[a + 2]);
+  out[2] = (p[b] - p[a]) * (p[c + 1] - p[a + 1]) - (p[b + 1] - p[a + 1]) * (p[c] - p[a]);
+}
 
 // Surface nets: one vertex per mixed cube, the mean of its crossed edge midpoints.
 // Binary occupancy makes these 256 positions independent of the input volume.
@@ -23,33 +24,12 @@ const vertices = Array.from({ length: 256 }, (_, mask) => {
   return crossings ? point.map(v => v / crossings) : null;
 });
 
-function clip(points, bounds) {
-  for (let axis = 0; axis < 3; axis++) {
-    for (let side = 0; side < 2; side++) {
-      const plane = bounds[axis + side * 3];
-      // Keep shared edge vertices, but do not own a face lying on the high plane.
-      if (side && points.every(p => p[axis] === plane)) return [];
-      const output = [];
-      for (let i = 0; i < points.length; i++) {
-        const a = points[i], b = points[(i + 1) % points.length];
-        const aIn = side ? a[axis] <= plane : a[axis] >= plane;
-        const bIn = side ? b[axis] <= plane : b[axis] >= plane;
-        if (aIn) output.push(a);
-        if (aIn !== bIn) {
-          // Identical arithmetic on either traversal of a shared triangle edge.
-          const [lo, hi] = a[axis] < b[axis] ? [a, b] : [b, a];
-          const t = (plane - lo[axis]) / (hi[axis] - lo[axis]);
-          const p = lo.map((v, k) => v + t * (hi[k] - v));
-          p[axis] = plane;
-          output.push(p);
-        }
-      }
-      points = output;
-      if (points.length < 3) return [];
-    }
-  }
-  return points;
-}
+// three's mergeVertices hash of one attribute value, at its default 1e-4 tolerance.
+const bucket = v => Math.trunc(v * 1e4 + 0.5);
+
+// Each ownership plane can at most double a polygon (a kept corner and a crossing
+// per edge), so a clipped triangle always fits. A convex one gains one per plane.
+const RING = 3 << 6;
 
 /**
  * Binary surface nets over cell-centred opaque occupancy.
@@ -62,10 +42,13 @@ function clip(points, bounds) {
  * The extra block on each side supplies central-difference occupancy gradients.
  * Missing padding throws, rather than creating artificial chunk-border surfaces.
  *
- * Returns NONINDEXED {positions: Float32Array, normals: Float32Array, ids: Uint8Array}.
+ * Returns INDEXED {positions: Float32Array, normals: Float32Array, ids: Uint8Array,
+ * indices: Uint16Array, or Uint32Array past 65535 vertices (as three's setIndex)}.
  * Positions are world coordinates; normals are outward unit occupancy gradients
- * (face normals where the gradient vanishes); ids has
- * one unnormalized material ID per vertex, constant across each triangle.
+ * (face normals where the gradient vanishes); ids has one unnormalized material
+ * ID per vertex. Vertices are unique (position, normal, ID) tuples: a net vertex
+ * is split per material of the faces around it, and per face where its gradient
+ * vanishes, so each triangle keeps one material and its face normal fallback.
  * Geometry is clipped to half-open ownership bounds (shared boundary vertices are
  * retained; faces entirely on a high boundary are excluded). Same-step chunks with
  * identical halo data meet exactly. Mixed-step seams need caller-side transitions.
@@ -115,9 +98,13 @@ export function buildSurfaceMesh(ids, { size, origin, bounds, step = 1 }) {
       gradients[index * 3 + a] = +!!samples[index - strides[a]] - +!!samples[index + strides[a]];
     }
   }
-  const positions = [], normals = [], materials = [];
+  // Net vertex of each mixed cube, in float64 world coordinates: slots[cube]
+  // numbers the mixed cubes x-fast, and points holds theirs in that order.
+  const grow = (array, length) => { const out = new array.constructor(length); out.set(array); return out; };
   const offsets = corners.map(([x, y, z]) => x + nx * (y + ny * z));
-  const points = new Array(samples.length);
+  const first = start.map(v => v / step);
+  const slots = new Int32Array(samples.length);
+  let points = new Float64Array(3 << 12), mixed = 0;
   // The outer cubes supply the other side of quads crossing ownership bounds.
   // Their gradients are not needed: normals are sampled only after clipping.
   for (let z = 0; z < nz - 1; z++) for (let y = 0; y < ny - 1; y++) for (let x = 0; x < nx - 1; x++) {
@@ -125,36 +112,167 @@ export function buildSurfaceMesh(ids, { size, origin, bounds, step = 1 }) {
     let mask = 0;
     for (let i = 0; i < 8; i++) if (samples[index + offsets[i]]) mask |= 1 << i;
     const point = vertices[mask];
-    if (point) points[index] = point.map((v, a) => (start[a] / step + [x, y, z][a] + 0.5 + v) * step);
+    if (!point) continue;
+    if (mixed * 3 === points.length) points = grow(points, points.length * 2);
+    points[mixed * 3] = (first[0] + x + 0.5 + point[0]) * step;
+    points[mixed * 3 + 1] = (first[1] + y + 0.5 + point[1]) * step;
+    points[mixed * 3 + 2] = (first[2] + z + 0.5 + point[2]) * step;
+    slots[index] = mixed++;
   }
-  function emit(face, material) {
-    const normal = cross(...face);
-    const length = Math.hypot(...normal);
+
+  // Indexed output, grown geometrically. A vertex is a (position, material,
+  // normal) as three's mergeVertices told them apart: a net vertex splits per
+  // material of the faces around it, and per face normal where its gradient
+  // vanishes (flat[v]). The vertices at one position chain from heads[slot], or
+  // boundary[position] on ownership planes: 1 + the newest, then next[v] is 1 +
+  // the one before it (0 ends the chain).
+  let capacity = Math.max(64, mixed), vertexCount = 0, indexCount = 0;
+  let positions = new Float32Array(capacity * 3), normals = new Float32Array(capacity * 3);
+  let materials = new Uint8Array(capacity), next = new Int32Array(capacity), flat = new Uint8Array(capacity);
+  let indices = new Uint32Array(capacity * 6);
+  const heads = new Int32Array(mixed), boundary = new Map(), planes = bounds.map(Math.fround);
+  // Face scratch: polygon corners and their cube slots (-1: clipped), clipping into spare.
+  let ring = new Float64Array(RING * 3), ringSlot = new Int32Array(RING);
+  let spare = new Float64Array(RING * 3), spareSlot = new Int32Array(RING);
+  const normal = new Float64Array(3), product = new Float64Array(3);
+  const sampled = new Float64Array(3), fraction = new Float64Array(3);
+
+  // Clip the ring's n corners to the ownership bounds, plane by plane through
+  // spare. Returns the corners left in the ring, 0 when the face isn't owned.
+  function clip(n) {
+    for (let axis = 0; axis < 3; axis++) {
+      for (let side = 0; side < 2; side++) {
+        const plane = bounds[axis + side * 3];
+        // Keep shared edge vertices, but do not own a face lying on the high plane.
+        if (side) {
+          let on = true;
+          for (let i = 0; i < n && on; i++) on = ring[i * 3 + axis] === plane;
+          if (on) return 0;
+        }
+        let m = 0;
+        for (let i = 0; i < n; i++) {
+          const a = i * 3, b = (i + 1) % n * 3;
+          const aIn = side ? ring[a + axis] <= plane : ring[a + axis] >= plane;
+          const bIn = side ? ring[b + axis] <= plane : ring[b + axis] >= plane;
+          if (aIn) {
+            for (let k = 0; k < 3; k++) spare[m * 3 + k] = ring[a + k];
+            spareSlot[m++] = ringSlot[i];
+          }
+          if (aIn !== bIn) {
+            // Identical arithmetic on either traversal of a shared triangle edge.
+            const lo = ring[a + axis] < ring[b + axis] ? a : b, hi = lo === a ? b : a;
+            const t = (plane - ring[lo + axis]) / (ring[hi + axis] - ring[lo + axis]);
+            for (let k = 0; k < 3; k++) spare[m * 3 + k] = ring[lo + k] + t * (ring[hi + k] - ring[lo + k]);
+            spare[m * 3 + axis] = plane;
+            spareSlot[m++] = -1;
+          }
+        }
+        const done = ring, doneSlot = ringSlot;
+        ring = spare; ringSlot = spareSlot; spare = done; spareSlot = doneSlot;
+        n = m;
+        if (n < 3) return 0;
+      }
+    }
+    return n;
+  }
+  // The outward normal at the ring corner at offset at, into sampled: the
+  // WORLD-aligned gradient field, not the quad's originating cube (a net triangle
+  // spans several cubes, as can its clipped vertices), or the face normal where
+  // the gradient vanishes. Returns 1 for that fallback.
+  function normalAt(at) {
+    let index = 0;
+    for (let a = 0; a < 3; a++) {
+      const p = ring[at + a], cell = Math.floor(p / step - 0.5);
+      fraction[a] = p / step - 0.5 - cell;
+      index += (cell - first[a]) * strides[a];
+    }
+    let gx = 0, gy = 0, gz = 0;
+    for (let c = 0; c < 8; c++) {
+      const corner = corners[c], g = (index + offsets[c]) * 3;
+      const weight = (corner[0] ? fraction[0] : 1 - fraction[0]) *
+        (corner[1] ? fraction[1] : 1 - fraction[1]) * (corner[2] ? fraction[2] : 1 - fraction[2]);
+      gx += weight * gradients[g];
+      gy += weight * gradients[g + 1];
+      gz += weight * gradients[g + 2];
+    }
+    const length = Math.hypot(gx, gy, gz);
+    if (length > 1e-12) {
+      sampled[0] = gx / length;
+      sampled[1] = gy / length;
+      sampled[2] = gz / length;
+      return 0;
+    }
+    sampled.set(normal);
+    return 1;
+  }
+  // The vertex for ring corner r: an existing one with the same material and
+  // normal, else a new one. A cube vertex has one position, so one gradient
+  // normal: only face normal fallbacks are compared. A corner on an ownership
+  // plane is found by position: every clipped corner lies on one, a cube vertex
+  // lying on one comes back from clipping as a copy of itself, and one on two
+  // planes can be off the second by roundoff (0 against -3e-17), so these merge
+  // in mergeVertices' buckets and compare normals too.
+  function vertex(r, material) {
+    const at = r * 3, slot = ringSlot[r];
+    let key = null;
+    for (let a = 0; a < 3 && key === null; a++) {
+      if (ring[at + a] === planes[a] || ring[at + a] === planes[a + 3]) {
+        key = `${bucket(ring[at])},${bucket(ring[at + 1])},${bucket(ring[at + 2])}`;
+      }
+    }
+    const head = key === null ? heads[slot] : boundary.get(key) ?? 0;
+    const shared = key === null && head > 0 && !flat[head - 1];
+    const fallback = shared ? 0 : normalAt(at);
+    for (let v = head - 1; v >= 0; v = next[v] - 1) {
+      if (materials[v] === material && (shared || sameNormal(v))) return v;
+    }
+    if (vertexCount === capacity) {
+      capacity *= 2;
+      positions = grow(positions, capacity * 3);
+      normals = grow(normals, capacity * 3);
+      materials = grow(materials, capacity);
+      next = grow(next, capacity);
+      flat = grow(flat, capacity);
+    }
+    const v = vertexCount++;
+    for (let a = 0; a < 3; a++) {
+      positions[v * 3 + a] = ring[at + a];
+      normals[v * 3 + a] = shared ? normals[(head - 1) * 3 + a] : sampled[a];
+    }
+    flat[v] = fallback;
+    materials[v] = material;
+    next[v] = head;
+    if (key === null) heads[slot] = v + 1;
+    else boundary.set(key, v + 1);
+    return v;
+  }
+  // Normals match in mergeVertices' buckets of their Float32 values: coplanar
+  // faces' fallback normals differ by roundoff (0 against 6e-16).
+  function sameNormal(v) {
+    for (let a = 0; a < 3; a++) if (bucket(normals[v * 3 + a]) !== bucket(Math.fround(sampled[a]))) return false;
+    return true;
+  }
+  function emit(q0, q1, q2, material) {
+    cross(normal, points, q0 * 3, q1 * 3, q2 * 3);
+    const length = Math.hypot(normal[0], normal[1], normal[2]);
     if (!length) return;
     for (let a = 0; a < 3; a++) normal[a] /= length;
-    let polygon = face;
-    if (face.some(p => p.some((v, a) => v < bounds[a] || v >= bounds[a + 3]))) polygon = clip(face, bounds);
+    let n = 3, outside = false;
+    ringSlot[0] = q0; ringSlot[1] = q1; ringSlot[2] = q2;
+    for (let i = 0; i < 3; i++) for (let a = 0; a < 3; a++) {
+      const v = ring[i * 3 + a] = points[ringSlot[i] * 3 + a];
+      outside ||= v < bounds[a] || v >= bounds[a + 3];
+    }
+    if (outside) n = clip(n);
     // Cull triangles that collapse in the public Float32 representation, too.
-    polygon = polygon.map(p => p.map(Math.fround));
-    for (let i = 1; i + 1 < polygon.length; i++) {
-      const triangle = [polygon[0], polygon[i], polygon[i + 1]];
-      if (Math.hypot(...cross(...triangle)) === 0) continue;
-      for (const p of triangle) {
-        positions.push(...p);
-        // Sample the WORLD-aligned gradient field, not the quad's originating
-        // cube: a net triangle spans several cubes, as can its clipped vertices.
-        const cell = p.map(v => Math.floor(v / step - 0.5));
-        const t = p.map((v, a) => v / step - 0.5 - cell[a]);
-        const index = cell.reduce((sum, v, a) => sum + (v - start[a] / step) * strides[a], 0);
-        const gradient = [0, 0, 0];
-        for (let c = 0; c < 8; c++) {
-          const weight = corners[c].reduce((w, v, a) => w * (v ? t[a] : 1 - t[a]), 1);
-          for (let a = 0; a < 3; a++) gradient[a] += weight * gradients[(index + offsets[c]) * 3 + a];
-        }
-        const length = Math.hypot(...gradient);
-        normals.push(...(length > 1e-12 ? gradient.map(v => v / length) : normal));
-        materials.push(material);
-      }
+    for (let i = 0; i < n * 3; i++) ring[i] = Math.fround(ring[i]);
+    for (let i = 1; i + 1 < n; i++) {
+      cross(product, ring, 0, i * 3, (i + 1) * 3);
+      if (Math.hypot(product[0], product[1], product[2]) === 0) continue;
+      if (indexCount + 3 > indices.length) indices = grow(indices, indices.length * 2);
+      indices[indexCount++] = vertex(0, material);
+      indices[indexCount++] = vertex(i, material);
+      indices[indexCount++] = vertex(i + 1, material);
     }
   }
   // Each sign-changing sample edge owns a quad of its four incident cube vertices.
@@ -165,11 +283,18 @@ export function buildSurfaceMesh(ids, { size, origin, bounds, step = 1 }) {
       const near = samples[index], far = samples[index + strides[a]];
       if (!!near === !!far) continue;
       const b = strides[(a + 1) % 3], c = strides[(a + 2) % 3];
-      const quad = [points[index - b - c], points[index - c], points[index], points[index - b]];
-      if (!near) [quad[1], quad[3]] = [quad[3], quad[1]];
-      emit([quad[0], quad[1], quad[2]], near || far);
-      emit([quad[0], quad[2], quad[3]], near || far);
+      // Quad of cubes index - b - c, index - c, index, index - b (1 and 3 swap if near is empty).
+      const zero = slots[index - b - c], two = slots[index];
+      const one = slots[near ? index - c : index - b], three = slots[near ? index - b : index - c];
+      emit(zero, one, two, near || far);
+      emit(zero, two, three, near || far);
     }
   }
-  return { positions: new Float32Array(positions), normals: new Float32Array(normals), ids: new Uint8Array(materials) };
+  return {
+    positions: positions.slice(0, vertexCount * 3),
+    normals: normals.slice(0, vertexCount * 3),
+    ids: materials.slice(0, vertexCount),
+    // 0xFFFF is WebGL's primitive restart index, so Uint16 holds 65535 vertices.
+    indices: vertexCount > 0xffff ? indices.slice(0, indexCount) : Uint16Array.from(indices.subarray(0, indexCount)),
+  };
 }
