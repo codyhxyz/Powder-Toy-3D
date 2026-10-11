@@ -222,6 +222,15 @@ fn drawnUnit(un: u32) -> bool { return (unitMap(un) & MAP_DRAWN) != 0u; }`;
 // and FOAMS_FIELD, gfx/incandescence.js INCAND_KNOTS), so the two can't drift;
 // tools/tables-check.mjs reads every field back through its accessor. Built
 // on demand: tools add test rows to ELEMENTS before they ask.
+//
+// After the tables, one value that isn't a table: the scene's ambient air
+// temperature, °C (airT; TPT's "ambient air temperature" option), what the air
+// relaxes to and rests at in every sim kernel. It is the WebGL build's uAirT,
+// one value for every pass and every simulation (only one world is live at a
+// time), so it lives in the one buffer they all bind: tablesBuffer writes
+// PHYS.AMBIENT, and Simulation.airT (src/sim.js) rewrites the word when a
+// world scene sets its own (scene.airT: the Snowy Depths are frozen through).
+// The prelude reads it as airT().
 function tableStructs() {
   const t = mechanismTables(), ne = ELEMENTS.length;
   const elemFields = [...ELEMENT_FIELDS, ...ELEC_FIELDS, FOAMS_FIELD];
@@ -236,6 +245,7 @@ function tableStructs() {
     { name: 'outs', type: 'vec2f', count: t.outs.length, countWGSL: 'NOUT' },
     { name: 'specs', type: 'vec2i', count: t.specs.length, countWGSL: 'NSPEC' },
     { name: 'rx', type: 'u32', count: ne * ne, countWGSL: 'NE * NE' },
+    { name: 'airT', type: 'f32' },
   ], { structs: { Element, Material, RxDef } });
   return { Element, Material, RxDef, Tables, elemFields, t };
 }
@@ -262,9 +272,12 @@ export function tablesBuffer() {
     outs: t.outs,
     specs: t.specs,
     rx: Array.from(t.lookup),
+    airT: PHYS.AMBIENT,
   });
   return buffer;
 }
+// The byte offset of the ambient air temperature in that buffer (Simulation.airT writes it there).
+export const tablesAirTOffset = () => tableStructs().Tables.offsetOf('airT');
 
 // ---------------------------------------------------------------- bindings
 // Shader stages, as GPUShaderStage numbers (Node has no GPUShaderStage).
@@ -435,6 +448,10 @@ const AIR_T_IN_NEAR: bool = ${AIR_T_IN_NEAR};   // an air cell's temperature can
 // ---- the element tables (docs/webgpu.md C6) ----
 ${elementsGLSL()}
 ${tablesWGSL()}
+// The scene's ambient air temperature, °C (the tables' airT; the WebGL build's
+// uAirT): what the air relaxes to and rests at. PHYS.AMBIENT unless a world
+// scene sets its own (Simulation.airT).
+fn airT() -> f32 { return TB.airT; }
 
 // ---- the header and the state (docs/webgpu.md B4, C1, C4) ----
 ${Header.wgsl}
@@ -523,7 +540,7 @@ fn rnd(rs: ptr<function, u32>) -> f32 {
 }
 
 // ---- the shared physics tests ----
-fn airDensity(T: f32) -> f32 { return 1.0 - clamp((T - AMBIENT) / AIR_DENS_SPAN, AIR_DENS_LO, AIR_DENS_HI); }
+fn airDensity(T: f32) -> f32 { return 1.0 - clamp((T - airT()) / AIR_DENS_SPAN, AIR_DENS_LO, AIR_DENS_HI); }
 // Gases thin with heat the way air does (ideal gas): a gas's DENS is its density
 // at its spawn temperature, so hot smoke rises through the hot air around a fire.
 fn densityOf(id: i32, T: f32) -> f32 {
@@ -633,7 +650,7 @@ fn inertSelf(a: vec4f, b: vec4f) -> bool {
   let T = a.y;
   if (id == E_EMPTY) {
     let v = abs(b.xyz);
-    return abs(T - AMBIENT) <= AIR_REST_T && abs(b.w) <= REST_P && max(v.x, max(v.y, v.z)) <= AIR_JITTER_V + REST_V_SLOP;
+    return abs(T - airT()) <= AIR_REST_T && abs(b.w) <= REST_P && max(v.x, max(v.y, v.z)) <= AIR_JITTER_V + REST_V_SLOP;
   }
   let k = KIND(id);
   if (k == K_GAS) { return false; }   // smoke, steam and flames rise, fade and burn
@@ -647,9 +664,20 @@ fn inertSelf(a: vec4f, b: vec4f) -> bool {
   if (INTO(id)[PH_HOT] >= 0 && (T > HOT(id).x || (T == HOT(id).x && HOT(id).y == 0.0))) { return false; }
   if (INTO(id)[PH_COLD] >= 0 && (T < COLD(id).x || (T == COLD(id).x && COLD(id).y == 0.0))) { return false; }
   if (LIFE_BANK(id) && (HOT(id).y > 0.0 || COLD(id).y > 0.0) && a.z != 0.0) { return false; }
-  // latent heat: water and ice at rest have nothing banked and sit within their phase
-  if (id == E_WATER) { return a.z == 0.0 && T >= 0.0 && T <= 100.0; }
-  if (id == E_ICE || id == E_SNOW) { return a.z == 0.0 && T <= 0.0; }
+  // latent heat: water and ice at rest sit within their phase with nothing
+  // banked, or with some banked but pinned at the phase point (react.js latent()
+  // holds them there): then only heat flowing in or out changes them, and that
+  // takes a neighbour off the rest test (or is drift under its tolerances). So
+  // snow in freezing air, warmed a little by its grains settling, rests.
+  // (water's life: + banked toward boiling, - toward freezing)
+  if (id == E_WATER) {
+    if (a.z == 0.0) { return T >= 0.0 && T <= 100.0; }
+    return T == select(0.0, 100.0, a.z > 0.0);
+  }
+  if (id == E_ICE || id == E_SNOW) {
+    if (a.z == 0.0) { return T <= 0.0; }
+    return T == 0.0;
+  }
   if (id == E_FUSE) { return a.z >= 1.0; }   // lit: burning down (react.js)
   if (id == E_LAVA) {
     var ct = i32(floor(a.w));

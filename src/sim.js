@@ -1,6 +1,6 @@
 import {
   BRICK, SEED_MAX, TILE, SUPER, SUPER_TEX, SUPER_CELLS, LAYOUT, STATE_OPTS, gridDims, atlasDims, sleepUnitOf,
-  marksLayout, actLayout, ACT_COUNTS, ACT_MAP, tablesBuffer, cellSlot, slotCell, brickIdOf, brickCoordOf,
+  marksLayout, actLayout, ACT_COUNTS, ACT_MAP, tablesBuffer, tablesAirTOffset, cellSlot, slotCell, brickIdOf, brickCoordOf,
   editKernelWGSL, EDIT_FIELDS, EDIT_SCRATCH_BINDING,
 } from './shaders/common.js';
 import {
@@ -20,6 +20,7 @@ import { fold } from './gpu/kernels.js';
 import { TOOLS, PROP_TOOL, isDecoTool } from './elements.js';
 import { strokeDabs, PROP } from './editing.js';
 import { GRAV, EDGE, SIM_MODE_DEFAULTS } from './simModes.js';
+import { PHYS } from './physics.js';
 
 // The simulation on the GPU (docs/webgpu.md C, D): the state buffers, the
 // step (the move in place, then react: shaders/move.js, react.js), the
@@ -180,15 +181,30 @@ function simLayouts(gpu) {
   return L;
 }
 
-// The element tables' buffer (C6): one per device, made on first use.
+// The element tables' buffer (C6): one per device, made on first use. It
+// also holds the ambient air temperature every sim kernel reads (airT: shaders/
+// common.js), one value for every simulation on the device, as the WebGL
+// build's uAirT was one uniform for all.
 function tablesOf(gpu) {
   if (!gpu._simTables) {
     const bytes = tablesBuffer();
     const buffer = gpu.createBuffer({ label: 'tables', size: Math.ceil(bytes.byteLength / 16) * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     gpu.queue.writeBuffer(buffer, 0, bytes);
-    gpu._simTables = { buffer, group: gpu.bindGroup(simLayouts(gpu).TABLES, [{ binding: 0, resource: { buffer } }], 'tables') };
+    gpu._simTables = { buffer, group: gpu.bindGroup(simLayouts(gpu).TABLES, [{ binding: 0, resource: { buffer } }], 'tables'), airT: PHYS.AMBIENT };
   }
   return gpu._simTables;
+}
+
+// Sets the ambient air temperature (°C) in the tables' buffer. A queue write
+// lands before the open frame's submit, so a frame that has recorded anything
+// is flushed first: what it recorded keeps the value it was recorded with (as
+// FrameUniforms' writes do, docs/webgpu.md B3).
+function setAirT(gpu, v) {
+  const t = tablesOf(gpu);
+  if (v === t.airT) return;
+  if (gpu.frame.open) gpu.flush('air temperature');
+  gpu.queue.writeBuffer(t.buffer, tablesAirTOffset(), new Float32Array([v]));
+  t.airT = v;
 }
 
 // GPU simulation driver: owns the state buffers and records the passes.
@@ -421,6 +437,23 @@ export class Simulation {
   }
   get skipSleeping() { return this._skipSleeping; }
   set skipSleeping(v) { if (v !== this._skipSleeping) { this._skipSleeping = v; this.wake(); } }
+  // The ambient air temperature, °C (TPT's "ambient air temperature" option):
+  // what the air relaxes to and rests at (shaders/common.js airT()). One value
+  // for every simulation on the device, as the WebGL build's airTUniform was;
+  // app.js sets the world scene's (scene.airT) when it builds a simulation,
+  // before the blank state is written (on ready). The rest test reads it, and
+  // a cell's flags hold the test as it was written: set later, on a state
+  // already written, every cell's flags are redone (freshFlags, a whole-grid
+  // write; once its kernel is built, if it wasn't).
+  get airT() { return tablesOf(this.gpu).airT; }
+  set airT(v) {
+    if (v === this.airT) return;
+    setAirT(this.gpu, v);
+    if (this.version === 0) return;
+    const fresh = this.passOf('fresh');
+    if (fresh.state === 'ready') this.freshFlags();
+    else fresh.ready.then(() => { if (!this.disposed && !this.gpu.failure) this.freshFlags(); }, () => {});
+  }
 
   wake() {
     this.idleEpoch++;

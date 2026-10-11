@@ -115,7 +115,8 @@ fn edgeCell(q: vec3i) -> vec3i {
   return q;
 }
 // what a cell outside the box holds, past a void edge: still air at ambient
-const VOID_AIR_A: vec4f = vec4f(f32(E_EMPTY), AMBIENT, 0.0, 0.0);
+// (the scene's, common.js airT(): a function, as the GLSL's was a macro)
+fn VOID_AIR_A() -> vec4f { return vec4f(f32(E_EMPTY), airT(), 0.0, 0.0); }
 // Which way gravity pulls at x (grid cells): down, or with radial gravity
 // toward the box's centre (none at the centre itself).
 fn gravDir(x: vec3f) -> vec3f {

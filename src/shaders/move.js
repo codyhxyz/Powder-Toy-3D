@@ -345,8 +345,8 @@ const unrolled = () => ({
   ${CELLS.map((i) => `{
     let c = blockCell(base, ${i});
     if (inGrid(c)) { a${i} = fetchA(c); v${i} = intoFrame(fetchB(c).xyz); }
-    else if (P.edge == EDGE_VOID) { a${i} = VOID_AIR_A; v${i} = vec3f(0.0); }
-    else { a${i} = vec4f(f32(E_WALL), AMBIENT, 0.0, 0.0); v${i} = vec3f(0.0); }
+    else if (P.edge == EDGE_VOID) { a${i} = VOID_AIR_A(); v${i} = vec3f(0.0); }
+    else { a${i} = vec4f(f32(E_WALL), airT(), 0.0, 0.0); v${i} = vec3f(0.0); }
     k${i} = eid(a${i});
     d${i} = densityOf(k${i}, a${i}.y);
   }`).join('\n  ')}`,
@@ -571,8 +571,8 @@ const loop = () => ({
   for (var i = 0; i < i32(P.eight); i++) {
     let c = blockCell(base, i);
     if (inGrid(c)) { blk.a[i] = fetchA(c); blk.v[i] = intoFrame(fetchB(c).xyz); }
-    else if (P.edge == EDGE_VOID) { blk.a[i] = VOID_AIR_A; blk.v[i] = vec3f(0.0); }
-    else { blk.a[i] = vec4f(f32(E_WALL), AMBIENT, 0.0, 0.0); blk.v[i] = vec3f(0.0); }
+    else if (P.edge == EDGE_VOID) { blk.a[i] = VOID_AIR_A(); blk.v[i] = vec3f(0.0); }
+    else { blk.a[i] = vec4f(f32(E_WALL), airT(), 0.0, 0.0); blk.v[i] = vec3f(0.0); }
     blk.k[i] = eid(blk.a[i]);
     blk.d[i] = densityOf(blk.k[i], blk.a[i].y);
     blk.n[i] = i;

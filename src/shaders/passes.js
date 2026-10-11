@@ -184,7 +184,7 @@ fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<functi
     let vy = select(0.0, SPAWN_DROP_V, KIND(tool) == K_POWDER || KIND(tool) == K_LIQUID);
     *oB = vec4f(0.0, vy, 0.0, b.w);
   } else if (tool == T_ERASE || tool >= 0 || propErases) {   // (tool >= 0 here: specific delete)
-    *oA = vec4f(f32(E_EMPTY), AMBIENT, 0.0, rnd(&rs) * SEED_MAX);
+    *oA = vec4f(f32(E_EMPTY), airT(), 0.0, rnd(&rs) * SEED_MAX);
     *oB = vec4f(0.0, 0.0, 0.0, b.w);
   } else if (tool == T_HEAT) {
     (*oA).y = min(a.y + TOOL_HEAT * falloff, CELL_TEMP_MAX);
@@ -600,7 +600,7 @@ ${listMainWGSL('LIST_FIELDS')}
   let a = fetchAs(s);
   let id = eid(a);
   if (id != E_EMPTY) { atomicOr(&wgOcc, 1u); }
-  else if (abs(a.y - AMBIENT) > AIR_FLAG_T) { atomicOr(&wgFlags, AIR_HOT); }
+  else if (abs(a.y - airT()) > AIR_FLAG_T) { atomicOr(&wgFlags, AIR_HOT); }
   if (id == E_STEAM || id == E_CLOUD || id == E_SMOKE) { atomicAdd(&wgGas, 1u); }
   let sf = textureLoad(tFS, p, 0);
   let mf = textureLoad(tFM, p, 0);

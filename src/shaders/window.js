@@ -49,7 +49,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
 export const shiftFrag = (g, { debug = false } = {}) => /* wgsl */ `
 ${prelude(g, { ...STATE_OPTS.STATE_RW, debug })}
 ${slotMain}
-  var a = vec4f(f32(E_EMPTY), AMBIENT, 0.0, 0.0);
+  var a = vec4f(f32(E_EMPTY), airT(), 0.0, 0.0);
   var b = vec4f(0.0);
   if (inGrid(q)) { a = fetchA(q); b = fetchB(q); }
   writeStateS(s, a, b, freshFlags(a, b));

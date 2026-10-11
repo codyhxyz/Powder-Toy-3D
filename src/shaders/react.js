@@ -29,7 +29,7 @@ export const ReactParams = uniformStruct('ReactParams', {
   // simulation modes (src/simModes.js): gravMode, edge, and
   ...SIM_MODE_FIELDS,
   airMode: 'u32',       // AIR_*
-  ambientHeat: 'u32',   // heat in the air (off: air holds AMBIENT and matter trades no heat with it)
+  ambientHeat: 'u32',   // heat in the air (off: air holds its ambient, airT(), and matter trades no heat with it)
 });
 
 // Group 2 (docs/webgpu.md C4, D3): what fast particles left in each cell this
@@ -277,7 +277,7 @@ fn reactCell(p: vec3i, quiet: bool) -> bool {
       na[i] = fetchA(q);
       nb[i] = fetchB(q);
     } else if (P.edge == EDGE_VOID) {
-      na[i] = VOID_AIR_A;   // open: still air at ambient, no pressure (simModes.js)
+      na[i] = VOID_AIR_A();   // open: still air at ambient, no pressure (simModes.js)
       nb[i] = vec4f(0.0);
     } else {
       na[i] = vec4f(f32(E_WALL), T, 0.0, 0.0);   // insulating, pressure-reflecting box
@@ -414,7 +414,7 @@ fn reactCell(p: vec3i, quiet: bool) -> bool {
   }
   T += (dE + rayDep.x) / C;   // (and what particles left: photons absorbed, fissions)
   // the open world above the box slowly pulls air back to ambient; gases radiate
-  T += (AMBIENT - T) * select(RAD(id), AIR_AMBIENT_PULL, id == E_EMPTY);
+  T += (airT() - T) * select(RAD(id), AIR_AMBIENT_PULL, id == E_EMPTY);
 
   // ---- air pressure ----
   let solid = KIND(id) == K_SOLID;
@@ -469,7 +469,7 @@ fn reactCell(p: vec3i, quiet: bool) -> bool {
     }
     // air, and cloud (air carrying droplets), is buoyant by its temperature
     if (id == E_EMPTY || id == E_CLOUD) {
-      let lift = P.gravity * clamp((T - AMBIENT) / (AMBIENT + KELVIN), AIR_BUOY_LO, AIR_BUOY_HI);
+      let lift = P.gravity * clamp((T - airT()) / (airT() + KELVIN), AIR_BUOY_LO, AIR_BUOY_HI);
       if (radial) { v -= gv * lift; } else { v.y += lift; }
     }
     if (id != E_EMPTY) {
@@ -658,7 +658,7 @@ fn reactCell(p: vec3i, quiet: bool) -> bool {
       // thick cloud coalesces into raindrops; the edges evaporate into the
       // unsaturated air, the faster the warmer (saturation vapour pressure)
       let rain = CLOUD_RAIN * max(f32(nCloud) - CLOUD_RAIN_NB, 0.0);
-      let es = exp(MAGNUS_A * (T / (T + MAGNUS_B) - AMBIENT / (AMBIENT + MAGNUS_B)));
+      let es = exp(MAGNUS_A * (T / (T + MAGNUS_B) - airT() / (airT() + MAGNUS_B)));
       let r = rnd(&rs);
       if (r < rain) { nidOut = E_WATER; life = 0.0; }
       else if (r < rain + CLOUD_EVAP * max(f32(nAir) - CLOUD_EVAP_NB, 0.0) * es) { nidOut = E_EMPTY; reset = true; T -= CLOUD_EVAP_COOL; }
@@ -869,11 +869,11 @@ fn reactCell(p: vec3i, quiet: bool) -> bool {
 
   // swallowed by the singularity it is partnered with (the draw above); its
   // heat goes in with it
-  if (swallow && id != E_SINGULARITY) { nidOut = E_EMPTY; reset = true; T = AMBIENT; ctype = 0.0; }
+  if (swallow && id != E_SINGULARITY) { nidOut = E_EMPTY; reset = true; T = airT(); ctype = 0.0; }
 
   // Void (elements.js VOID) drains whatever can move the step it touches it
   if (nVoid > 0 && id != E_EMPTY && KIND(id) != K_SOLID) {
-    nidOut = E_EMPTY; reset = true; T = AMBIENT; v = vec3f(0.0); ctype = 0.0;
+    nidOut = E_EMPTY; reset = true; T = airT(); v = vec3f(0.0); ctype = 0.0;
   }
 
   if (nidOut != id) {
@@ -885,7 +885,7 @@ fn reactCell(p: vec3i, quiet: bool) -> bool {
   }
 
   // simModes.js: ambient heat off holds the air at ambient; pressure off holds it at 0
-  if (P.ambientHeat == 0u && nidOut == E_EMPTY) { T = AMBIENT; }
+  if (P.ambientHeat == 0u && nidOut == E_EMPTY) { T = airT(); }
   if (P.airMode == AIR_PRESSURE_OFF || P.airMode == AIR_OFF) { Pr = 0.0; }
   T = clamp(T, CELL_TEMP_MIN, CELL_TEMP_MAX);
   let outA = vec4f(f32(nidOut), T, life, ctype + seed);
