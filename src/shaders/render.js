@@ -861,10 +861,12 @@ void main() {
           }
         }
         phiB = surfSample(ro + rd * tExit);
-        // smooth matter in this cell may be a lone droplet or grain
+        // smooth matter in this cell may be a lone droplet or grain, or (air
+        // in a brick with thin liquid) a pour drawn through the wake between
+        // its parcels (shaders/fields.js jetGLSL)
         float tM = tExit;
         vec4 phiM = phiB;
-        if (SURFCH[id] >= 0) {
+        if (SURFCH[id] >= 0 || (gThin && id == E_EMPTY)) {
           tM = tClosest(cell, ro, rd, tEnter, tExit);
           phiM = surfSample(ro + rd * tM);
         }
@@ -1165,7 +1167,7 @@ void main() {
       vec4 phiB = surfSample(ro + rd * tExit);
       float tM = tExit;
       vec4 phiM = phiB;
-      if (SURFCH[id] >= 0) { tM = tClosest(cell, ro, rd, tEnter, tExit); phiM = surfSample(ro + rd * tM); }
+      if (SURFCH[id] >= 0 || (gThin && id == E_EMPTY)) { tM = tClosest(cell, ro, rd, tEnter, tExit); phiM = surfSample(ro + rd * tM); }   // (as the view's)
       float tOp = NO_HIT;
       for (int c = 1; c < 4; c++)
         tOp = min(tOp, surfCross(ro, rd, c, true, tEnter, tM, tExit, phiA[c], phiM[c], phiB[c]));

@@ -1,6 +1,7 @@
 import { prelude, BRICK } from './common.js';
 import { materialsGLSL, CHANNELS, MEDIA } from '../gfx/materials.js';
 import { blendFixedFrames } from '../gfx/pacing.js';
+import { JOIN_REACH } from './gfx/liquidDetail.js';
 
 // Render fields: continuous versions of the blocky state, rebuilt once per
 // frame for the renderer only (the simulation never reads them).
@@ -25,6 +26,16 @@ import { blendFixedFrames } from '../gfx/pacing.js';
 //    trunks, films, streams. Ghosts of cells that moved on hold no matter now,
 //    so they still fade with the EMA.
 //
+// Pours (jetGLSL): the sim pours a stream as parcels a few cells apart along
+// one path, which drawn as they are make a dotted line of glass beads. While
+// the whitewater runs (gfx/foam.js), its aeration field marks the parcels
+// that follow another's path and the wakes they are following
+// (shaders/gfx/liquidDetail.js aerationFrag, pours). Those cells are drawn as
+// liquid at full occupancy at once (the EMA pass) and count as current matter
+// for the boost, so a pour is one rope of clear water a cell across along
+// the path its parcels really take. Nothing else changes: a lone parcel, a
+// falling blob or spray has no such wake and looks as it always did.
+//
 // Attachments (RGBA): 0 = surface channels (liquid, molten, granular,
 // organic), 1 = media (smoke, steam, fire, flame temperature), 2 = non-crisp weight, one
 // copy per surface channel since each channel has its own blur radius (the
@@ -33,6 +44,28 @@ import { blendFixedFrames } from '../gfx/pacing.js';
 // 2 = thin mask, rising from 0 to 1 with a channel's boost (THIN_MASK_LO..HI).
 // Only cubic channels need it: the tracer reads them cubic only there (bulk
 // surfaces read the same either way, and trilinear is 8x cheaper).
+
+// A pour's parcels and the wakes between them, from whitewater's aeration
+// field (state atlas; its layout: liquidDetail.js aerationFrag).
+const jetGLSL = /* glsl */ `
+#define JOIN_REACH ${JOIN_REACH}
+uniform sampler2D tAer;
+uniform bool uAer;   // the aeration field runs (the Whitewater switch)
+vec4 aerAt(ivec3 c) { return inGrid(c) ? texelFetch(tAer, atlas(c), 0) : vec4(0.0); }
+// a pour's parcel, or a wake with one coming up behind it (along the way its
+// maker went)
+bool jetAt(ivec3 p) {
+  if (!uAer) return false;
+  vec4 f = aerAt(p);
+  if (f.y > 1.5) return true;
+  if (f.y >= 0.0) return false;
+  for (int k = 1; k <= JOIN_REACH; k++) {
+    vec4 b = aerAt(p - ivec3(round(f.xzw * float(k))));
+    if (b.y > 1.5) return true;   // a pour's parcel
+  }
+  return false;
+}
+`;
 
 export const fieldEmaFrag = (g) => /* glsl */ `
 ${prelude(g)}
@@ -50,6 +83,7 @@ uniform vec4 uEmaM;
 // grid cells the window moved since the last update (docs/scaling.md D11): a
 // cell's history is at p + uShift; cells shifted in from outside start over
 uniform ivec3 uShift;
+${jetGLSL}
 layout(location = 0) out vec4 o0;
 layout(location = 1) out vec4 o1;
 layout(location = 2) out vec4 o2;
@@ -74,6 +108,7 @@ void main() {
   ivec2 h = fieldAtlas(q);
   bool hist = inGrid(q);
   o0 = hist ? mix(texelFetch(tP0, h, 0), s, uEmaS) : s;
+  if (jetAt(p)) o0.x = 1.0;   // a pour: full now (jetGLSL)
   o1 = hist ? mix(texelFetch(tP1, h, 0), m, uEmaM) : m;
   o2 = vec4(crisp ? 0.0 : 1.0);
 }
@@ -144,6 +179,7 @@ ${materialsGLSL()}
 uniform sampler2D t0;   // stage 0: φ, else the previous stage's field
 ${stage > 0 ? 'uniform sampler2D t1;   // the occupancy so far (stage 0 reads the state instead)' : ''}
 ${stage < 3 ? 'uniform vec4 uS;      // per-channel centre weight of the lattice smoothing (1 = none)' : ''}
+${stage === 0 ? jetGLSL : ''}
 ${stage === LAST ? `uniform sampler2D tPhi;
 uniform sampler2D tMed;
 uniform vec4 uBulk;     // per-channel bulk peak
@@ -167,7 +203,8 @@ ${stage < 3 ? `    // clamped to the edge, like the tracer's cubic sample
     ivec2 t = fieldAtlas(q);
     acc += (i == 0 ? uS : 0.5 * (1.0 - uS)) * texelFetch(t0, t, 0);
 ${stage === 0 ? `    int ch = SURFCH[eid(fetchA(q))];
-    if (ch >= 0) occ[ch] = 1.0;` : '    occ = max(occ, texelFetch(t1, t, 0));'}` : `    ivec3 q = p + dir * i;
+    if (ch >= 0) occ[ch] = 1.0;
+    if (jetAt(q)) occ.x = 1.0;   // a pour's wake is current liquid (jetGLSL)` : '    occ = max(occ, texelFetch(t1, t, 0));'}` : `    ivec3 q = p + dir * i;
     if (inGrid(q)) acc = max(acc, texelFetch(t0, fieldAtlas(q), 0));`}
   }
 ${stage >= 3 ? '  occ = texelFetch(t1, f, 0);' : ''}

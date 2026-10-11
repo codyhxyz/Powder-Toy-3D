@@ -189,7 +189,8 @@ vec3 liquidMeniscus(vec3 p, vec3 n, int id) {
 // the simulation by gfx/foam.js): per liquid cell, the share of its surface
 // white with entrained air, which rides with the liquid, bursts at the free
 // surface and rises out of the bulk. tAer holds (aeration, 1, fall, grounded)
-// in liquid cells and 0 elsewhere, laid out like the state, so it is read
+// in liquid cells (y is 2 in a pour's parcel, and air holds wakes: aerationFrag;
+// only the liquid cells are read here), laid out like the state, so it is read
 // trilinearly by hand (8 taps), and x / y is the aeration averaged over the
 // liquid cells around a point only (the air beside a surface doesn't thin
 // it), w / y the share of them that rest on the ground (a pool, not liquid
@@ -197,7 +198,10 @@ vec3 liquidMeniscus(vec3 p, vec3 n, int id) {
 uniform sampler2D tAer;
 #define AER_PROBE 0.25         // cells into the liquid (against n) where the aeration is read
 #define AER_LIQ_MIN 0.02       // liquid weight below which the read is no liquid's
-vec3 aerTap(ivec3 c) { return outside(c) ? vec3(0.0) : texelFetch(tAer, atlas(c), 0).xyw; }
+vec3 aerTap(ivec3 c) {
+  vec4 f = outside(c) ? vec4(0.0) : texelFetch(tAer, atlas(c), 0);
+  return f.y > 0.5 ? vec3(f.x, 1.0, f.w) : vec3(0.0);
+}
 vec2 aerationAt(vec3 p) {   // (aeration, grounded share), 0..1
 
   vec3 q = p - 0.5;
@@ -331,10 +335,37 @@ vec3 liquidDetail(vec3 hp, vec3 n, int id, inout vec3 col, inout vec3 trans) {
 // Air entrainment by a plunging jet starts at ~1 m/s (Ervine et al. 1980;
 // Chanson 1997); a jet past ~4 m/s is white with it.
 const FOAM_V_ONSET = 1.0;         // m/s
+// Pours: a wake lasts TRAIL_JOIN_STEPS steps, and is drawn where a parcel is
+// coming up behind it within JOIN_REACH cells (pours, below). The parcels of
+// tools/jet-check.mjs's pour come 2-4 cells apart at ~0.8 cells/step, so the
+// next one reaches a wake within ~5 steps and 4 cells.
+export const TRAIL_JOIN_STEPS = 6;
+export const JOIN_REACH = 4;
+const JOIN_COS = 0.9;   // cos 25°: the most a pour's next parcel turns from the last one's way
 const FOAM_V_FULL = 4.0;          // m/s
 // Output: (aeration, 1, fall speed, grounded) in liquid cells, 0 elsewhere,
 // so the renderer can average the aeration over liquid cells only
 // (aerationAt).
+//
+// Pours (shaders/fields.js jetAt). The sim pours a stream as parcels a few
+// cells apart along one path (2-4 cells on tools/jet-check.mjs's hole: the
+// block automaton moves a stream a cell a step only every other cell), so
+// drawn as they are a pour is a dotted line of glass beads. So the field also
+// keeps the wake a parcel off the ground leaves in the air it just left, for
+// TRAIL_JOIN_STEPS steps: (way it went, as x, z, w; −record in y, 1 fading to
+// 0). The field passes draw a wake as water only where a parcel is coming up
+// behind it, along the way its maker went, within JOIN_REACH cells: between
+// the parcels of a pour, which then read as one rope of water. A parcel of a
+// pour (y is 2) is liquid off the ground, touching no other liquid (a blob's
+// cells touch), that has just moved into a wake (or beside one: the path
+// wanders a cell) going the way that wake's maker went (within JOIN_COS: on
+// one path two parcels a few cells apart differ only by its curvature,
+// ~0.1 rad, where spray flies every way), and stays one while it flies on
+// alone; the field passes draw it at once, without the blend that smears a
+// moving cell (a rope, not beads). The wake behind a pour's last parcel, a
+// falling blob or spray has no such parcel behind it, so those look as they
+// always did, without tails.
+
 const AER_FOAMS = Object.keys(LIQ_PROPS).map((k) => `id == E_${k}`).join(' || ');
 const peFit = PE_FIT.map(([lim, c, e]) => `${lim === Infinity ? '' : `if (we < ${g(lim)}) `}return ${g(c)} * pow(x, ${g(e)});`).join('\n  ');
 export const aerationFrag = (grid) => /* glsl */ `
@@ -355,8 +386,27 @@ vec4 aerPrev(ivec3 c) { return texelFetch(tAerPrev, atlas(c), 0); }
 #define WE_ONSET ${g(WE_ONSET)}
 const float AER_SIGMA[NE] = float[NE](${perLiquid((p) => p.sigma).join(', ')});   // surface tension, N/m
 const float AER_RHO[NE] = float[NE](${perLiquid((p) => p.rho).join(', ')});       // density, kg/m³
+#define TRAIL_FADE ${g(1 / TRAIL_JOIN_STEPS)}   // a wake record's fade per step
 bool supports(int id) { return id != E_EMPTY && KIND[id] != K_GAS; }
 bool foams(int id) { return ${AER_FOAMS}; }
+// Air (or gas) at p, its content now from q: a wake if liquid off the ground
+// just left it, else what wake it had, faded (pours, above).
+vec4 wakeAt(ivec3 p, ivec3 q, int id) {
+  if (supports(id)) return vec4(0.0);   // (filled with something)
+  vec4 f = aerPrev(p);
+  if (f.y > 0.5) {
+    vec3 v = fetchB(p).xyz;   // the parcel's velocity before it left
+    if (q == p || f.w > 0.5 || dot(v, v) == 0.0) return vec4(0.0);   // (it was on the ground)
+    v = normalize(v);
+    return vec4(v.x, -1.0, v.y, v.z);
+  }
+  float rec = -f.y - TRAIL_FADE;
+  return f.y < 0.0 && rec > 0.0 ? vec4(f.x, -rec, f.z, f.w) : vec4(0.0);
+}
+#define JOIN_COS ${g(JOIN_COS)}
+// a wake at c whose maker went the way dir does
+bool wake(ivec3 c, vec3 dir) { if (!inGrid(c)) return false; vec4 f = aerPrev(c); return f.y < 0.0 && dot(f.xzw, dir) > JOIN_COS; }
+bool wet(ivec3 c) { return inGrid(c) && foams(eid(fetchA(c))); }
 // Pilch & Erdman's total breakup time, in units of t* (We > WE_ONSET)
 float breakupT(float we) {
   float x = we - WE_ONSET;
@@ -372,7 +422,7 @@ void main() {
   if (!uStill && !quietCell(blockBase(p))) { slotOf(p, q); q = edgeCell(q); }   // (past a loop edge: the far side's)
   if (!inGrid(q)) { oF = vec4(0.0); return; }   // (in from past a void edge: still air)
   int id = eid(fetchA(q));
-  if (!foams(id)) { oF = vec4(0.0); return; }
+  if (!foams(id)) { oF = wakeAt(p, q, id); return; }
   const ivec3 UP = ivec3(0, 1, 0);
   vec4 f0 = aerPrev(q);
   float F = f0.x, fall = f0.z;
@@ -405,7 +455,14 @@ void main() {
     F = max(F, smoothstep(FOAM_V_ONSET, FOAM_V_FULL, fall * MS_PER_CELL_STEP));
     fall = 0.0;
   }
-  oF = vec4(min(F, 1.0), 1.0, fall, grounded ? 1.0 : 0.0);
+  // a pour's parcel (pours, above): alone off the ground, it followed one
+  // (moved into a wake going its way, or beside one), or did before
+  bool alone = airborne && !foams(above) && !wet(q + ivec3(1, 0, 0)) && !wet(q - ivec3(1, 0, 0))
+    && !wet(q + ivec3(0, 0, 1)) && !wet(q - ivec3(0, 0, 1));
+  vec3 dir = dot(fetchB(q).xyz, fetchB(q).xyz) > 0.0 ? normalize(fetchB(q).xyz) : vec3(0.0);
+  bool pour = alone && f0.y > 0.5 && (f0.y > 1.5 || (q != p && (wake(p, dir) || wake(p + ivec3(1, 0, 0), dir)
+    || wake(p - ivec3(1, 0, 0), dir) || wake(p + ivec3(0, 0, 1), dir) || wake(p - ivec3(0, 0, 1), dir))));
+  oF = vec4(min(F, 1.0), pour ? 2.0 : 1.0, fall, grounded ? 1.0 : 0.0);
 }
 `;
 
