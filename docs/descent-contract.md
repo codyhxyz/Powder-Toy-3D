@@ -166,3 +166,30 @@ exists (imported through a glob in `descentSites.js`), no scene is Descent.
   price, gold }`, `descent:refuse { price, gold }`, `descent:heal`, `descent:refresh`.
 - HUD: `povHud.update({ gold })`, null hides the "$ n" row (pov.css `.pov-gold`).
 - Check: `node scripts/check-descent-temple.mjs`.
+
+## D: level switching (src/pov/descent/switch.js, app.js "Descent's level switch")
+
+- Events, now emitted by D (payload `level` = index into `DESCENT_LEVELS`, 0 first):
+  `descent:temple { level, inside }` when the body starts or stops overlapping
+  `temple.box` (a dead body is in no temple; dropping into the exit pit leaves it,
+  the pit is under the floor), `descent:exit { level }` once per arrival when the
+  body overlaps `temple.exit`, `descent:level { level, key }` once the body stands
+  at a level's spawn: after a switch, and on the first live POV frame of a Descent
+  world entered by hand (the map menu's Descent, then F). Box test: the body's
+  upright box (BODY_WIDTH, BODY_HEIGHT) overlaps the cell box, max inclusive, as C's.
+- Switch: `settings.scene = next.key; setSize('world')` (the map menu's world load:
+  build(), programs shared), wait for `win.loaded`, then `pov.enter({ at })` with the
+  spawn cell's middle. `enter({ at })` teleports the existing body instead of
+  `spawn()`ing it, so health, fuel and statuses carry; perks, the toolbelt,
+  `descentWands` (module state) and C's purse (`pov.descent`) are never rebuilt.
+  `runSnapshot()` is compared before/after and a loss is console.warn'd.
+- A name card (Noita's biome title) for 2 s on every arrival; "Descending…" covers the load.
+  After the last level's exit: "You reached the bottom", 4 s, out of POV, map menu.
+- Death: `findDropPoint` asks `app.dropAt()` first; on a Descent level that's the
+  level's spawn, so dropping in by hand and every respawn land there (Noita would
+  end the run; perks are lost on death as everywhere: vitals.js).
+- `__app.descent`: `{ level, index, inside, busy, frame() }`.
+- Checks: `node scripts/check-descent-switch.mjs` (box tests, event order, run
+  carry-over, failure path). Headless (2026-10-11, AC): Mines → Coal → Snow → won →
+  menu, ~2 s per switch warm; health 0.7, a perk and 120 gold came through.
+- Known: the switch drops pointer lock (build() exits POV) and re-requests it without a gesture; not checked in a real window.
