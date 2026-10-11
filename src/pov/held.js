@@ -16,7 +16,10 @@ import { liveFlame, fanFlame } from './tools/lamp.js';
 // viewmodel itself, never drawn in third person, is moved onto the held model:
 // what a tool works out in the world from its viewmodel (the muzzle a flash and
 // a tracer leave from, a beam's start, the hook's claw) is then where the body
-// holds it.
+// holds it. What a tool adds to its viewmodel (the shovel's heap, the bucket's
+// and the flask's contents, the physgun's tip glow) is drawn in the world where
+// the viewmodel now puts it, and parts a tool gives a glow of its own (the
+// laser's charge strips, the tool gun's screen) show it on the body too.
 //
 //   const held = createHeld({ scene });
 //   held.bind(volume, g);                       // the world's light (once per grid)
@@ -51,15 +54,15 @@ export function createHeld({ scene }) {
   const frameM = new THREE.Matrix4();   // the grip's rest frame this frame (world), × the model's scale
   const restInv = new THREE.Matrix4();
 
-  // a lit material per albedo (figure.js's light), for this grid
+  // a lit material (figure.js's light) for this grid, with its own albedo
+  const litMaterial = (albedo) => new THREE.ShaderMaterial({
+    vertexShader: figureVert, fragmentShader: figureFrag(grid), side: THREE.DoubleSide,
+    uniforms: { ...boundTo.material.uniforms, ...uniforms, uAlbedo: { value: new THREE.Vector3(...albedo) } },
+  });
+  // one per albedo, shared by the models' parts
   function lit(albedo) {
     const k = albedo.join();
-    if (!mats.has(k)) {
-      mats.set(k, new THREE.ShaderMaterial({
-        vertexShader: figureVert, fragmentShader: figureFrag(grid), side: THREE.DoubleSide,
-        uniforms: { ...boundTo.material.uniforms, ...uniforms, uAlbedo: { value: new THREE.Vector3(...albedo) } },
-      }));
-    }
+    if (!mats.has(k)) mats.set(k, litMaterial(albedo));
     return mats.get(k);
   }
   function light(r) {
@@ -112,6 +115,42 @@ export function createHeld({ scene }) {
       if (obj) return { root, hand, obj };
     }
     return null;
+  }
+
+  // What the tool has added to its viewmodel (not the model's own parts, not the first-person arm,
+  // not the light it adds over the finished frame), each copied into the world where the viewmodel
+  // puts it: the same geometry and, unlit, the same material; lit, the world's light in its colour.
+  const extras = new Map();             // a viewmodel mesh or sprite → its copy
+  const shownIn = (o, top) => { for (; o && o !== top; o = o.parent) if (!o.visible) return false; return true; };
+  function copyOf(o) {
+    let c = extras.get(o);
+    if (!c) {
+      c = o.isSprite ? new THREE.Sprite(o.material) : new THREE.Mesh(o.geometry, o.material);
+      c.matrixAutoUpdate = false;
+      group.add(c);
+      extras.set(o, c);
+    }
+    return c;
+  }
+  function showExtras(fp) {
+    for (const c of extras.values()) c.visible = false;
+    if (!fp || !boundTo) return;
+    fp.hand.traverse((o) => {
+      if (!(o.isMesh || o.isSprite) || o.userData.part || o.userData.arm || o.userData.vmLayer != null) return;
+      if (!shownIn(o, fp.hand)) return;
+      const c = copyOf(o);
+      c.visible = true;
+      if (o.isMesh) c.geometry = o.geometry;   // (the flask's contents are rebuilt as its level changes)
+      if (o.material.isMeshLambertMaterial) {
+        if (c.userData.litFor !== boundTo) { c.userData.lit?.dispose(); c.userData.lit = litMaterial([0, 0, 0]); c.userData.litFor = boundTo; }
+        c.material = c.userData.lit;
+        const col = o.material.color;
+        c.material.uniforms.uAlbedo.value.set(col.r, col.g, col.b);
+      } else c.material = o.material;
+      o.updateWorldMatrix(true, false);
+      c.matrix.copy(o.matrixWorld);
+      c.matrixWorldNeedsUpdate = true;
+    });
   }
 
   function resetViewmodel(viewmodel) {
@@ -196,8 +235,15 @@ export function createHeld({ scene }) {
         rec.model.obj.visible = fp.obj.visible;
         const named = [];
         fp.obj.traverse((o) => { if (o !== fp.obj && o.name) named.push(o); });
-        rec.named.forEach((o, i) => { if (named[i]?.name === o.name && !(rec.flame && o.name === 'flame')) o.visible = named[i].visible; });
+        rec.named.forEach((o, i) => {
+          const v = named[i];
+          if (v?.name !== o.name || (rec.flame && o.name === 'flame')) return;
+          o.visible = v.visible;
+          // a glow the tool gave this part (the laser's charge, the tool gun's screen): the same on the body
+          if (v.material && !v.material.isMeshLambertMaterial && o.material !== v.material) o.material = v.material;
+        });
       }
+      showExtras(fp);
       if (rec.flame) fanFlame(rec.flame, dt, 1);
       if (!rec.model.obj.visible) return;   // nothing in hand to hold
       const q = qA.setFromRotationMatrix(mB.extractRotation(m));
@@ -221,11 +267,13 @@ export function createHeld({ scene }) {
     },
     get holding() { return active ? rec.key : null; },   // checks: the model held on the body,
     get reached() { return active ? last : null; },      // where its hands and feet were sent (world),
-    get model() { return active ? rec.model.obj : null; },   // and the model itself
+    get model() { return active ? rec.model.obj : null; },   // the model itself,
+    get extras() { return [...extras.values()].filter((c) => c.visible); },   // and what the tool added, shown
     get weight() { return weight; },
     dispose() {
       for (const r of models.values()) { r?.flame?.dispose(); r?.model.dispose(); }
       for (const m of mats.values()) m.dispose();
+      for (const c of extras.values()) c.userData.lit?.dispose();   // (geometry and the rest are the viewmodel's)
       group.removeFromParent();
     },
   };

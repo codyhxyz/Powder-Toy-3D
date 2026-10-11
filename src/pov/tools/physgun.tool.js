@@ -88,6 +88,7 @@ function buildModel(env) {
   const mesh = attachModel(hand, 'physgun');
   // the beam and reach ball: world space, sized in cells by the world's scale
   const root = new THREE.Group();
+  root.name = 'pov-physgun-beam';
   const beam = new THREE.Mesh(
     new THREE.CylinderGeometry(BEAM_END_RADIUS, BEAM_TIP_RADIUS, 1, 8, 1, true),
     new THREE.MeshBasicMaterial({ color: BEAM_COLOR, transparent: true, opacity: BEAM_OPACITY,
@@ -259,9 +260,10 @@ export default {
           } else if (ctx.stepsPerFrame > 0) run(ctx, PHYS_MODE.HOLD);
         } else if (ctx.secondaryPressed && blastWait === 0) blast(ctx);
         model.tip.material.opacity = holding || flash > 0 ? 1 : TIP_IDLE;
-        // the beam shows with the gun (not in third person, where the viewmodel is hidden)
-        model.beam.visible = (holding || flash > 0) && env.viewmodel.visible;
-        model.sphere.visible = holding && env.viewmodel.visible;
+        // the beam shows with the gun: in first person, and on the body in third (held.js puts the tip there)
+        const shown = env.viewmodel.visible || !!env.heldOnBody?.();
+        model.beam.visible = (holding || flash > 0) && shown;
+        model.sphere.visible = holding && shown;
         if (!holding && flash > 0) {
           drawBeam();
           model.beam.material.opacity = BEAM_OPACITY * flash / BLAST_FLASH_S;
