@@ -577,7 +577,16 @@ ${wangGLSL(kit)}
 int dsWang(int x, int y, int z) {
   int c = wangCell(ivec3(x, y, z));
   return c == WANG_OUT || c == WANG_ROCK ? -1 : wangElement(c);
-}` : 'int dsWang(int x, int y, int z) { return -1; }');
+}
+// the temperature the kit lays the cell at w down at (its temps: burning coal, a lake's water), if
+// the cell is the tile's (id is what dsCell made of it); else T
+float dsWangT(ivec3 w, int id, float T) {
+  int c = wangCell(w);
+  if (c == WANG_OUT || c == WANG_ROCK || wangElement(c) != id) return T;
+  float t = wangTemp(c);
+  return t > WANG_NO_TEMP ? t : T;
+}` : `int dsWang(int x, int y, int z) { return -1; }
+float dsWangT(ivec3 w, int id, float T) { return T; }`);
 
 // ---- the JS twins, one per level
 const twins = new Map();
@@ -606,6 +615,7 @@ void sceneCell(ivec3 w, out vec4 A, out vec4 B) {
   float T = SPAWNT[id] == AMBIENT ? DS_AIR_T : SPAWNT[id];
   if ((id == E_SNOW || id == E_ICE) && DS_AIR_T <= 0.0) T = max(T, DS_AIR_T);
   if (DS_LEVEL == 2) T = min(T, DS_COLD_T);   // the Snowy Depths are frozen through
+  if (dsTemple(w.x, w.y, w.z) < 0) T = dsWangT(w, id, T);   // ...but for what a kit lays down warm (or burning)
   float seed = float(seedWorld(w, uSceneSeed, DS_SALT_CELL)) * UINT_TO_UNIT * SEED_MAX;
   A = vec4(float(id), T, SPAWNLIFE[id], seed);
   B = vec4(0.0);

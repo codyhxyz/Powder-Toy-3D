@@ -861,12 +861,10 @@ void main() {
           }
         }
         phiB = surfSample(ro + rd * tExit);
-        // smooth matter in this cell may be a lone droplet or grain, or (air
-        // in a brick with thin liquid) the stream a falling parcel draws
-        // through it (shaders/fields.js jetGLSL)
+        // smooth matter in this cell may be a lone droplet or grain
         float tM = tExit;
         vec4 phiM = phiB;
-        if (SURFCH[id] >= 0 || (gThin && id == E_EMPTY)) {
+        if (SURFCH[id] >= 0) {
           tM = tClosest(cell, ro, rd, tEnter, tExit);
           phiM = surfSample(ro + rd * tM);
         }
@@ -946,15 +944,12 @@ void main() {
           vec3 n = liquidRipple(hp, surfNormal(hp, CH_LIQUID, ev == EV_ENTER ? -rd : rd));
           int lid = ev == EV_ENTER ? liquidIdAt(hp - n * IFACE_PROBE, E_WATER) : liq;
 #ifdef LIQ_DETAIL
-          n = liquidDetail(hp, n, lid, rd, col, trans);   // close-up detail (gfx/liquidDetail.js)
+          n = liquidDetail(hp, n, lid, col, trans);   // close-up detail (gfx/liquidDetail.js)
 #endif
           if (bends < MAX_BENDS) {
             bends++;
             // the scene shows in the reflection only off the first surface the eye ray meets
             bool inside = liquidInterface(hp, n, ev == EV_ENTER, lid, bends == 1, ro, rd, col, trans, mediumLight);
-#ifdef DETAIL_LIQ_FOAM
-            liquidUnderSkin(col, trans);   // a falling jet's bubbly body, under the reflection
-#endif
             tCut -= tEv;
             liq = inside ? lid : E_EMPTY;
             if (ev == EV_ENTER) { lightRef = mediumLight; lightY = hp.y; }
@@ -973,9 +968,6 @@ void main() {
             continue;
           }
           // out of bends: switch medium, keep straight
-#ifdef DETAIL_LIQ_FOAM
-          liquidUnderSkin(col, trans);
-#endif
           liq = ev == EV_ENTER ? lid : E_EMPTY;
           if (ev == EV_ENTER) { lightRef = uShadows ? sunShadow(hp + n * IFACE_PROBE) : vec3(1.0); lightY = hp.y; gSkyIn = skyInAt(surfProbe(hp, n)); }
         }
@@ -1173,7 +1165,7 @@ void main() {
       vec4 phiB = surfSample(ro + rd * tExit);
       float tM = tExit;
       vec4 phiM = phiB;
-      if (SURFCH[id] >= 0 || (gThin && id == E_EMPTY)) { tM = tClosest(cell, ro, rd, tEnter, tExit); phiM = surfSample(ro + rd * tM); }   // (as the view's)
+      if (SURFCH[id] >= 0) { tM = tClosest(cell, ro, rd, tEnter, tExit); phiM = surfSample(ro + rd * tM); }
       float tOp = NO_HIT;
       for (int c = 1; c < 4; c++)
         tOp = min(tOp, surfCross(ro, rd, c, true, tEnter, tM, tExit, phiA[c], phiM[c], phiB[c]));

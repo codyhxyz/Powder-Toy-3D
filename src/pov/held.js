@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { attachModel } from './models.js';
-import { holdFor } from './holds.js';
+import { holdFor, gesturePose, SHOULDER_DROP } from './holds.js';
 import { figureVert, figureFrag } from './figure.js';
 import { liveFlame, fanFlame } from './tools/lamp.js';
 
@@ -10,13 +10,21 @@ import { liveFlame, fanFlame } from './tools/lamp.js';
 // 2's world models), with the arms reaching for it and the fists closed round
 // its grips (the body's reach(), limbs.js).
 //
-// It moves as the first-person tool does. Every frame the viewmodel's model is
-// read against its hand's rest pose (the swing, the kick, the throw, a lamp
-// gone from the hand) and played on the held model about its grip. And the
+// It moves as the first-person tool does, made big enough to see from behind.
+// Every frame the viewmodel's model is read against its hand (the throw, a
+// lamp gone from the hand) and played on the held model about its grip, with
+// the hand's recoil spring on top, TP_KICK_POS and TP_KICK_ROT times the first
+// person's (a shot shoves the arms back and flips the muzzle; the hand's sway,
+// bob and breathing stay first person's). A melee swing plays its gesture
+// (holds.js GESTURES: overhead and down, a stab) round the shoulder instead of
+// the first person's flick of the wrist, and the arms follow the grip. And the
 // viewmodel itself, never drawn in third person, is moved onto the held model:
 // what a tool works out in the world from its viewmodel (the muzzle a flash and
 // a tracer leave from, a beam's start, the hook's claw) is then where the body
-// holds it.
+// holds it. What a tool adds to its viewmodel (the shovel's heap, the bucket's
+// and the flask's contents, the physgun's tip glow) is drawn in the world where
+// the viewmodel now puts it, and parts a tool gives a glow of its own (the
+// laser's charge strips, the tool gun's screen) show it on the body too.
 //
 //   const held = createHeld({ scene });
 //   held.bind(volume, g);                       // the world's light (once per grid)
@@ -25,13 +33,20 @@ import { liveFlame, fanFlame } from './tools/lamp.js';
 //   held.place({ figure, dt });                 // after the tools: the model, then the hands
 
 const REACH_RATE = 14;                  // 1/s: the arms go to a tool just drawn (and the body onto a pogo's pegs)
-const RIDE_SHARE = 0.5;                 // stood on the pegs this far, the body takes its standing pose (holds.js feet)
+const RIDE_SHARE = 0.5;
+// the recoil spring (viewmodel.js kick) on the body, × the first person's: a viewmodel's kick is a few
+// cm under the eye, lost at third person's distance (Garry's Mod's player models play a fire gesture
+// that throws the arms back about this far)
+const TP_KICK_POS = 3;
+const TP_KICK_ROT = 2;                 // stood on the pegs this far, the body takes its standing pose (holds.js feet)
 
 const approach = (rate, dt) => 1 - Math.exp(-rate * dt);
 const euler = new THREE.Euler(), eulerAim = new THREE.Euler(0, 0, 0, 'YXZ');
 const qA = new THREE.Quaternion();
 const vA = new THREE.Vector3(), vB = new THREE.Vector3(), vS = new THREE.Vector3();
-const mA = new THREE.Matrix4(), mB = new THREE.Matrix4();
+const mA = new THREE.Matrix4(), mB = new THREE.Matrix4(), mC = new THREE.Matrix4();
+const kickEuler = new THREE.Euler();
+const gesture = [0, 0, 0];
 
 export function createHeld({ scene }) {
   const group = new THREE.Group();
@@ -51,15 +66,15 @@ export function createHeld({ scene }) {
   const frameM = new THREE.Matrix4();   // the grip's rest frame this frame (world), × the model's scale
   const restInv = new THREE.Matrix4();
 
-  // a lit material per albedo (figure.js's light), for this grid
+  // a lit material (figure.js's light) for this grid, with its own albedo
+  const litMaterial = (albedo) => new THREE.ShaderMaterial({
+    vertexShader: figureVert, fragmentShader: figureFrag(grid), side: THREE.DoubleSide,
+    uniforms: { ...boundTo.material.uniforms, ...uniforms, uAlbedo: { value: new THREE.Vector3(...albedo) } },
+  });
+  // one per albedo, shared by the models' parts
   function lit(albedo) {
     const k = albedo.join();
-    if (!mats.has(k)) {
-      mats.set(k, new THREE.ShaderMaterial({
-        vertexShader: figureVert, fragmentShader: figureFrag(grid), side: THREE.DoubleSide,
-        uniforms: { ...boundTo.material.uniforms, ...uniforms, uAlbedo: { value: new THREE.Vector3(...albedo) } },
-      }));
-    }
+    if (!mats.has(k)) mats.set(k, litMaterial(albedo));
     return mats.get(k);
   }
   function light(r) {
@@ -114,6 +129,42 @@ export function createHeld({ scene }) {
     return null;
   }
 
+  // What the tool has added to its viewmodel (not the model's own parts, not the first-person arm,
+  // not the light it adds over the finished frame), each copied into the world where the viewmodel
+  // puts it: the same geometry and, unlit, the same material; lit, the world's light in its colour.
+  const extras = new Map();             // a viewmodel mesh or sprite → its copy
+  const shownIn = (o, top) => { for (; o && o !== top; o = o.parent) if (!o.visible) return false; return true; };
+  function copyOf(o) {
+    let c = extras.get(o);
+    if (!c) {
+      c = o.isSprite ? new THREE.Sprite(o.material) : new THREE.Mesh(o.geometry, o.material);
+      c.matrixAutoUpdate = false;
+      group.add(c);
+      extras.set(o, c);
+    }
+    return c;
+  }
+  function showExtras(fp) {
+    for (const c of extras.values()) c.visible = false;
+    if (!fp || !boundTo) return;
+    fp.hand.traverse((o) => {
+      if (!(o.isMesh || o.isSprite) || o.userData.part || o.userData.arm || o.userData.vmLayer != null) return;
+      if (!shownIn(o, fp.hand)) return;
+      const c = copyOf(o);
+      c.visible = true;
+      if (o.isMesh) c.geometry = o.geometry;   // (the flask's contents are rebuilt as its level changes)
+      if (o.material.isMeshLambertMaterial) {
+        if (c.userData.litFor !== boundTo) { c.userData.lit?.dispose(); c.userData.lit = litMaterial([0, 0, 0]); c.userData.litFor = boundTo; }
+        c.material = c.userData.lit;
+        const col = o.material.color;
+        c.material.uniforms.uAlbedo.value.set(col.r, col.g, col.b);
+      } else c.material = o.material;
+      o.updateWorldMatrix(true, false);
+      c.matrix.copy(o.matrixWorld);
+      c.matrixWorldNeedsUpdate = true;
+    });
+  }
+
   function resetViewmodel(viewmodel) {
     if (!moved) return;
     viewmodel.position.set(0, 0, 0);
@@ -122,14 +173,18 @@ export function createHeld({ scene }) {
     moved = false;
   }
 
-  // the model's world matrix: the grip's rest frame, then the viewmodel's motion
-  function modelMatrix(fp, out) {
+  // the model's world matrix: the grip's frame (with a swing's gesture), the hand's recoil made
+  // bigger, then the model's own motion in its hand (a gestured swing's pivot left out: the gesture is it)
+  function modelMatrix(fp, rig, out) {
     out.copy(frameM);
     if (!fp) return out;
     fp.obj.updateWorldMatrix(true, false);
-    mA.copy(fp.root.matrixWorld).invert().multiply(fp.obj.matrixWorld);   // the model in the rig (cells, camera axes)
-    restInv.makeTranslation(-fp.hand.userData.rest.x, -fp.hand.userData.rest.y, -fp.hand.userData.rest.z);
-    return out.multiply(restInv).multiply(mA);
+    const sp = rig.state.spring;
+    out.multiply(mA.makeTranslation(sp.x * TP_KICK_POS, sp.y * TP_KICK_POS, sp.z * TP_KICK_POS))
+      .multiply(mC.makeRotationFromEuler(kickEuler.set(sp.pitch * TP_KICK_ROT, sp.yaw * TP_KICK_ROT, sp.roll * TP_KICK_ROT)));
+    if (fp.hand.userData.gesture && fp.obj.parent !== fp.hand) return out.multiply(fp.obj.matrix);
+    fp.hand.updateWorldMatrix(true, false);
+    return out.multiply(mA.copy(fp.hand.matrixWorld).invert().multiply(fp.obj.matrixWorld));
   }
 
   return {
@@ -169,14 +224,23 @@ export function createHeld({ scene }) {
       const at = h.feet ? vA.copy(feet) : figure.anchor(vA);
       eulerAim.set(pitch * h.pitch, yaw, 0);
       frameM.compose(at, qA.setFromEuler(eulerAim), vS.setScalar(scale));
+      // a melee swing's gesture: the grip round the shoulder and along the aim, the tool about its grip
+      const fp = firstPerson(viewmodel);
+      const gs = fp?.hand.userData.gesture;
+      const [raise, tip, drive] = gs ? gesturePose(h.type, gs.since, gs.span, gesture) : gesture.fill(0);
+      if (raise || drive) {
+        frameM.multiply(mA.makeTranslation(h.at[0], -SHOULDER_DROP, -drive))
+          .multiply(mA.makeRotationX(raise))
+          .multiply(mA.makeTranslation(-h.at[0], SHOULDER_DROP, 0));
+      }
       if (h.feet) frameM.multiply(mA.makeTranslation(h.at[0], rec.gripHeight, h.at[2]));
       else frameM.multiply(mA.makeTranslation(...h.at));
       if (h.turn) frameM.multiply(mA.makeRotationFromEuler(euler.set(...h.turn)));
       frameM.multiply(mA.makeScale(h.scale, h.scale, h.scale));
+      if (tip) frameM.multiply(mA.makeRotationX(tip));
       const g = rec.model.info.grip;
       frameM.multiply(mA.makeTranslation(-g.x, -g.y, -g.z));
       // the viewmodel onto the held model: camera · viewmodel · rig root · (its hand's rest) = the frame
-      const fp = firstPerson(viewmodel);
       if (!fp) { resetViewmodel(viewmodel); return; }
       const rest = fp.hand.userData.rest;
       mB.copy(camera.matrixWorld).invert().multiply(frameM).multiply(restInv.makeTranslation(-rest.x, -rest.y, -rest.z))
@@ -188,7 +252,7 @@ export function createHeld({ scene }) {
     place({ figure, viewmodel, dt }) {
       if (!active) return;
       const fp = firstPerson(viewmodel);
-      const m = modelMatrix(fp, rec.holder.matrix);
+      const m = modelMatrix(fp, viewmodel.userData.rig, rec.holder.matrix);
       rec.holder.matrixWorldNeedsUpdate = true;
       rec.holder.updateMatrixWorld(true);
       // what the first-person tool shows or hides (a thrown lamp, the hook's claw out)
@@ -196,8 +260,15 @@ export function createHeld({ scene }) {
         rec.model.obj.visible = fp.obj.visible;
         const named = [];
         fp.obj.traverse((o) => { if (o !== fp.obj && o.name) named.push(o); });
-        rec.named.forEach((o, i) => { if (named[i]?.name === o.name && !(rec.flame && o.name === 'flame')) o.visible = named[i].visible; });
+        rec.named.forEach((o, i) => {
+          const v = named[i];
+          if (v?.name !== o.name || (rec.flame && o.name === 'flame')) return;
+          o.visible = v.visible;
+          // a glow the tool gave this part (the laser's charge, the tool gun's screen): the same on the body
+          if (v.material && !v.material.isMeshLambertMaterial && o.material !== v.material) o.material = v.material;
+        });
       }
+      showExtras(fp);
       if (rec.flame) fanFlame(rec.flame, dt, 1);
       if (!rec.model.obj.visible) return;   // nothing in hand to hold
       const q = qA.setFromRotationMatrix(mB.extractRotation(m));
@@ -221,11 +292,13 @@ export function createHeld({ scene }) {
     },
     get holding() { return active ? rec.key : null; },   // checks: the model held on the body,
     get reached() { return active ? last : null; },      // where its hands and feet were sent (world),
-    get model() { return active ? rec.model.obj : null; },   // and the model itself
+    get model() { return active ? rec.model.obj : null; },   // the model itself,
+    get extras() { return [...extras.values()].filter((c) => c.visible); },   // and what the tool added, shown
     get weight() { return weight; },
     dispose() {
       for (const r of models.values()) { r?.flame?.dispose(); r?.model.dispose(); }
       for (const m of mats.values()) m.dispose();
+      for (const c of extras.values()) c.userData.lit?.dispose();   // (geometry and the rest are the viewmodel's)
       group.removeFromParent();
     },
   };

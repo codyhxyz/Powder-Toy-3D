@@ -10,10 +10,8 @@ bot from the other side takes your place). Picking Sandbox on the start menu end
 
 ## Joining
 
-- **One click**: the start menu's top bar has **Play** (Team Slayer on Dam Valley) and **Siege** (TF2's classes; the
-  class picker opens on joining), `maps.js QUICK_PLAY`: the team is picked for you (auto-balance), Halo 3
-  matchmaking's way. The gamemode categories and their maps are still there for any other pick; Start on a team
-  mode's map starts that match.
+- Pick a team gamemode and its map on the start menu and press Start: the team is picked for you (auto-balance), Halo 3
+  matchmaking's way. Siege's class picker opens on joining.
 - **A link**: `?mode=slayer` boots straight into a match on the mode's Play map (Dam Valley), `?map=lab&mode=ctf` on
   that map (a map not built for the mode, or a mode the build lacks, is Sandbox). The loading screen shows for it.
 - **Behind the loading screen** (app.js `bootReady`, `startMode`): the bots' module (`npc.js`, Yuka) starts loading
@@ -426,7 +424,7 @@ a frame for a moment at a Dam Valley start, while every bot tries its bearings t
 
 - Siege on Dam Valley stalls (browser run 2026-10-11): the attackers' bots reach the valley floor under point A (on
   red's abutment top, 20 cells up) and burn in the forest the Pyros light; in 75 s none stood on it. On the Lab red
-  took A in 44 s. The start menu's Siege button plays the Lab (`maps.js QUICK_PLAY`) until A and B move somewhere
+  took A in 44 s. Play Siege on the Lab until A and B move somewhere
   the nav reaches, or the bots learn to keep out of fire.
 - A bot with a power weapon doesn't save it for a fight worth it, and bots can't reach the ridges' snipers (no
   jetpack in the nav): a bot seeking one gives up and leaves that pad alone for 60 s.

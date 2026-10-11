@@ -177,6 +177,32 @@ shape. Three additive tools give a kit that:
 The atlas holds up to 100 tiles (variants count), and a kit with none of these
 bakes byte-identical to before.
 
+## Open kits: islands in a void
+
+The Coal Pits and the Snowy Depths are not tunnels through rock: Noita draws
+them as a dark void full of floating ribbons and blobs (docs/descent-reference.md).
+A kit with `geom: { OPEN: 1, SPINE }` builds that way (`kits/islands.js` has
+the pieces; `coal.js` and `snow.js` use them):
+
+- its tiles start as air and keep no border; no doorways are cut (a side's
+  colour means nothing), so tiles meet wherever their islands do;
+- the promise is the **spine**: a ribbon whose walking top is `y = SPINE`
+  reaching the middle of all six faces (W, E at `z = MID`; N, S at both
+  units' centres), and a ring of walkway round both units' centres. A floor
+  shaft the tiling opens is cut down through the spine there (the ring walks
+  round it); `check-wang` walks each open tile's spine to every face, with
+  both shafts cut, as authored and mirrored;
+- the region is closed only at its top (the top layer's top `BORDER` cells,
+  so the entry hall has a floor) and its bottom (under `FLOOR`), shafts cut
+  through both (`kit.js openCap`); everything else falls through the voids
+  to the layer below.
+
+Also for any kit: `temps: { CODE: °C }` lays a code down at that temperature
+(`HOTCOAL`, coal laid down burning; a Snowy Depths lake's water above freezing:
+`wangTemp` / `tempJS`, applied by the Descent scenes), and tiles may say
+`max: n` (at most n a region: a rare pool) and `offPath: true` (never on the
+main path: hazards).
+
 ## Habits that pass the check first time
 
 - Cut a gallery the tile's full length (`galleryX(IN[0], IN[1])`): the end

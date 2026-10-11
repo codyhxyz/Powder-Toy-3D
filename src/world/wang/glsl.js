@@ -1,5 +1,5 @@
 import { E } from '../../elements.js';
-import { MAT, MAT_NAMES, MAT_COUNT, COL, SIDE_PORTS, WANG_OUT, compileKit } from './kit.js';
+import { MAT, MAT_NAMES, MAT_COUNT, COL, SIDE_PORTS, WANG_OUT, WANG_NO_TEMP, compileKit } from './kit.js';
 import { SOLID_TILE } from './tiling.js';
 
 // The GPU sampler of a baked Wang tiling (bake.js): GLSL to include after the
@@ -9,6 +9,7 @@ import { SOLID_TILE } from './tiling.js';
 //                              texel fetches (the unit's placement, the tile's
 //                              cell) and a few compares for the ports
 //   int wangElement(int code)  the element (elements.js id) a code is, by the kit's palette
+//   float wangTemp(int code)   the °C the kit lays it down at (its temps), else WANG_NO_TEMP
 // and declares the uniforms bakeWang's uniforms() binds:
 //   tWangAtlas   usampler3D R8UI: every tile's cells in its canonical frame
 //   tWangPlace   usampler3D RGBA8UI: per unit (x, k, layer) its tile, transform, ports
@@ -24,6 +25,7 @@ export function wangGLSL(rawKit) {
     return id;
   };
   const palette = MAT_NAMES.slice(0, MAT_COUNT).map(elemOf);
+  const temps = MAT_NAMES.slice(0, MAT_COUNT).map((n) => (kit.temps?.[n] ?? WANG_NO_TEMP).toFixed(1));
   return /* glsl */ `
 precision highp usampler3D;
 uniform usampler3D tWangAtlas;
@@ -44,6 +46,8 @@ uniform ivec3 uWangUnits;
 #define WANG_SHAFT_W ${G.SHAFT_W}
 #define WANG_SHAFT_CUT ${G.SHAFT_CUT}
 #define WANG_JITTER ${G.JITTER}
+#define WANG_OPEN ${G.OPEN ? 1 : 0}
+#define WANG_SPINE ${G.SPINE ?? 0}
 #define WANG_JITTER_BIT 16u
 #define WANG_SIDE_PORTS ${SIDE_PORTS}
 #define WANG_COL_RAIL ${COL.RAIL}
@@ -56,6 +60,10 @@ uniform ivec3 uWangUnits;
 ${MAT_NAMES.map((n) => `#define WANG_${n} ${MAT[n]}`).join('\n')}
 const int WANG_PALETTE[${MAT_COUNT}] = int[${MAT_COUNT}](${palette.join(', ')});
 int wangElement(int code) { return code >= 0 && code < ${MAT_COUNT} ? WANG_PALETTE[code] : ${E.ROCK}; }
+#define WANG_NO_TEMP ${WANG_NO_TEMP.toFixed(1)}
+const float WANG_TEMP[${MAT_COUNT}] = float[${MAT_COUNT}](${temps.join(', ')});
+// the temperature the kit lays a code down at (its temps), WANG_NO_TEMP for its element's own
+float wangTemp(int code) { return code >= 0 && code < ${MAT_COUNT} ? WANG_TEMP[code] : WANG_NO_TEMP; }
 
 uint wangHash(ivec3 r) {
   uint h = (uint(r.x) * 0x8da6b343u) ^ (uint(r.y) * 0xd8163841u) ^ (uint(r.z) * 0xcb1ab31fu);
@@ -86,7 +94,7 @@ int wangPorts(int code, int ports, ivec3 c, ivec3 r) {
     int unit = p & 1;
     int dx = c.x - unit * WANG_U - WANG_U / 2, dz = c.z - WANG_U / 2, sh = WANG_SHAFT_W / 2;
     if (dx < -sh || dx >= sh || dz < -sh || dz >= sh) continue;
-    if (p >= 2 ? c.y >= WANG_H - WANG_BORDER : c.y < WANG_FLOOR + WANG_SHAFT_CUT) return WANG_AIR;
+    if (p >= 2 ? c.y >= WANG_H - WANG_BORDER : c.y < (WANG_OPEN == 1 ? WANG_SPINE + 1 : WANG_FLOOR + WANG_SHAFT_CUT)) return WANG_AIR;
   }
   return code;
 }
@@ -107,6 +115,8 @@ int wangCell(ivec3 w) {
   int tile = int(q.r);
   ivec3 t0 = ivec3(0, (tile / WANG_ATLAS_PER_COL) * WANG_H, (tile % WANG_ATLAS_PER_COL) * WANG_U);
   int code = int(texelFetch(tWangAtlas, t0 + c, 0).r);
+  // an open kit's caps (kit.js openCap)
+  if (WANG_OPEN == 1 && ((u.y == uWangUnits.y - 1 && c.y >= WANG_H - WANG_BORDER) || (u.y == 0 && c.y < WANG_FLOOR))) code = WANG_ROCK;
   return wangPorts(code, int(q.b) | (int(q.a) << 8), c, r);
 }
 `;
