@@ -13,6 +13,7 @@ import { ELEMENTS, E, K, meltInto, breakInto, meltPoint, mechanisms, PH } from '
 import { PHYS } from '../../physics.js';
 import { BOLT, STORM, boltPath, stormColumns, pickStrike } from '../../bolt.js';
 import { GRAV as GRAV_MODE } from '../../simModes.js';
+import { PACE } from '../../shaders/move.js';
 import { ELEC, SPARK_BORN, CONDUCTS, SPARK_COST, sparkPhase, sparkLevel, packSpark, takesSpark, conductsInto, tsnsSenses, powered, cloneable, LAMP_DC } from '../../electricity.js';
 
 // ---- element table, as the GLSL arrays (elements.js elementsGLSL) ----
@@ -76,6 +77,8 @@ export const AMBIENT = PHYS.AMBIENT;
 const isGasLike = (id) => KIND[id] === K.GAS || id === E.EMPTY;
 const isFluid = (id) => KIND[id] === K.LIQUID || isGasLike(id);
 const movable = (id) => KIND[id] !== K.SOLID;
+// a liquid and a gas: a jet's parcel and the air it moves into (move.js jet)
+const jet = (a, b) => (KIND[a] === K.LIQUID && isGasLike(b)) || (KIND[b] === K.LIQUID && isGasLike(a));
 // what acid eats: matter that isn't acid-proof (activity.js acidEats)
 const acidEats = (id) => KIND[id] !== K.EMPTY && KIND[id] !== K.GAS && !ACIDPROOF[id];
 // growers: moss and fungus keep their damp in their ctype (activity.js grower, mossBed, fungusFood, dampOf)
@@ -465,6 +468,14 @@ export class World {
       this.vx[j] = sw ? fs * vy[i] : vx[i]; this.vy[j] = sw ? vx[i] : fs * vy[i];
     }
   }
+  // a pair's draw against its move's chance: a liquid crossing into a gas is
+  // paced by the R3 sequence at step n (its fall age, or the frame), other
+  // matter draws at random (move.js draw, PACE)
+  draw(a, b, n, pace) { return jet(a, b) ? (Math.imul(n, pace) >>> 0) / 2 ** 32 : rnd(); }
+  fallAge(id, vy) {
+    const g = this.gravity * GRAV[id];
+    return vy < 0 && vy > -PHYS.V_MAX && g > 0 ? Math.floor(-vy / g + 0.5) : this.frame;
+  }
   // block cells i and j trade places
   swap(i, j) {
     const { bk: k, bn: n, bvx: vx, bvy: vy, bd: d, bm: m } = this;
@@ -506,12 +517,14 @@ export class World {
     }
   }
   // i on the negative side, j on the positive side, along v (bvx or bvy)
-  collide(i, j, v) {
-    const d = this.bd, rel = v[i] - v[j];
+  collide(i, j, v, flow = false) {
+    const d = this.bd, k = this.bk, rel = v[i] - v[j];
+    const mi = d[i], mj = d[j], inv = 1 / (mi + mj), vc = (mi * v[i] + mj * v[j]) * inv;
     if (rel > PHYS.COLLIDE_V) {
-      const mi = d[i], mj = d[j], inv = 1 / (mi + mj), vc = (mi * v[i] + mj * v[j]) * inv;
       v[i] = vc - PHYS.RESTITUTION * mj * inv * rel;
       v[j] = vc + PHYS.RESTITUTION * mi * inv * rel;
+    } else if (flow && rel > 0 && KIND[k[i]] === K.LIQUID && KIND[k[j]] === K.LIQUID) {
+      v[i] = vc; v[j] = vc;   // side by side, liquid flows on together, momentum kept (move.js collide)
     } else if (rel > 0) {
       if (v[i] > 0) v[i] = 0;
       if (v[j] < 0) v[j] = 0;
@@ -540,7 +553,7 @@ export class World {
       const okUp = up && canMove(k[b], k[t], d[b], d[t], 1);
       if (okDown || okUp) {
         const pr = Math.max(okDown ? -vy[t] : 0, okUp ? vy[b] : 0) * dragF(k[t], k[b], d[t], d[b]);
-        if (rnd() < pr) this.swap(t, b);
+        if (this.draw(k[t], k[b], okDown ? this.fallAge(k[t], vy[t]) : this.frame, PACE.Y) < pr) this.swap(t, b);
       } else if (!(vy[b] > vy[t] && shockActs(k[t], k[b], hitKE(d[t], d[b], false, vy[b] - vy[t])))) {
         // (a hit that sets off an explosive is left as it is: react sees it)
         const vt = vy[t];
@@ -567,17 +580,18 @@ export class World {
   }
   // 3. horizontal exchange between i and its +x neighbour j
   horizontal(i, j) {
-    const { bk: k, bvx: vx, bd: d, bm: m } = this;
-    if (m[i] || m[j]) return;
+    const { bk: k, bvx: vx, bvy: vyB, bd: d, bm: m } = this;
+    if ((m[i] || m[j]) && !jet(k[i], k[j])) return;   // (a liquid into a gas may step diagonally: move.js)
     const h0 = vx[i], h1 = vx[j], w0 = h0 > 0, w1 = h1 < 0;
     if (!w0 && !w1) return;
     const ok0 = w0 && canMove(k[i], k[j], d[i], d[j], 2);
     const ok1 = w1 && canMove(k[j], k[i], d[j], d[i], 2);
     if (ok0 || ok1) {
       const pr = Math.max(ok0 ? h0 : 0, ok1 ? -h1 : 0) * dragF(k[i], k[j], d[i], d[j]);
-      if (rnd() < pr) this.swap(i, j);
+      const n = KIND[k[i]] === K.LIQUID ? this.fallAge(k[i], vyB[i]) : this.fallAge(k[j], vyB[j]);
+      if (this.draw(k[i], k[j], n, PACE.X) < pr) this.swap(i, j);
     } else if (movable(k[i]) && movable(k[j])) {
-      if (!(h0 > h1 && shockActs(k[i], k[j], hitKE(d[i], d[j], false, h0 - h1)))) this.collide(i, j, vx);
+      if (!(h0 > h1 && shockActs(k[i], k[j], hitKE(d[i], d[j], false, h0 - h1)))) this.collide(i, j, vx, true);
     } else {
       const vy = this.bvy;
       if (w0 && !this.breaks(i, j, h0)) { const v0y = vy[i]; vx[i] *= bounceR(k[i]); this.impactHeat(i, j, h0, v0y, h0); }
@@ -733,8 +747,6 @@ export class World {
             vx -= pull.x * buoy; vy -= pull.y * buoy;
           }
           if (id !== E.EMPTY) { vx += pull.x * g * GRAV[id]; vy += pull.y * g * GRAV[id]; }
-          vx *= 1 - DRAG[id];
-          vy *= 1 - DRAG[id];
           // the rules below in the frame (react.js F): fd is the face below, fr its +x
           const { sw, s: fs } = frame, fd = frameDown(), fr = frameRight();
           if (sw) { const t = vx; vx = vy; vy = fs * t; } else vy *= fs;
@@ -743,20 +755,39 @@ export class World {
           const held = (KIND[id] === K.POWDER || KIND[id] === K.LIQUID) && fs * (sw ? VX[i] : VY[i]) >= 0 && (KIND[nid[fd]] === K.SOLID
             || (!canMove(id, nid[fd], d, densityOf(nid[fd], nT[fd]), 0) && fs * (sw ? nVX[fd] : nVY[fd]) >= 0));
           if (held) vy = Math.max(vy, 0);
+          // no drag on a liquid in free fall (react.js)
+          const flying = KIND[id] === K.LIQUID && !held && (isGasLike(nid[fd]) || (KIND[nid[fd]] === K.LIQUID && fs * (sw ? nVX[fd] : nVY[fd]) < 0));
+          if (!flying) { vx *= 1 - DRAG[id]; vy *= 1 - DRAG[id]; }
           const below = KIND[nid[fd]];
           // (pressed on what's below by gravity: none, no friction, no head)
           const supported = g > 0 && (below === K.SOLID || below === K.POWDER);
           if (supported) vx *= 1 - FRICTION[id];
-          if (KIND[id] === K.LIQUID && g > 0 && (supported || below === K.LIQUID)) {
-            // pushed sideways only where it can go (react.js)
-            const open = canMove(id, nid[fr], d, densityOf(nid[fr], nT[fr]), 2) || canMove(id, nid[fr ^ 1], d, densityOf(nid[fr ^ 1], nT[fr ^ 1]), 2);
+          if (KIND[id] === K.LIQUID && g > 0 && held) {
+            // pushed sideways only where it can go, toward it, at Torricelli's speed under a head (react.js)
+            const oR = canMove(id, nid[fr], d, densityOf(nid[fr], nT[fr]), 2), oL = canMove(id, nid[fr ^ 1], d, densityOf(nid[fr ^ 1], nT[fr ^ 1]), 2);
+            const open = oR || oL, dir = (oR ? 1 : 0) - (oL ? 1 : 0);
             const up = KIND[nid[fd ^ 1]];
             const head = up === K.LIQUID || up === K.POWDER;
             const onLiquid = !supported;
             const f = FLOW[id];
             if (head || onLiquid) {
-              const want = head ? f : f * PHYS.FLOW_SURFACE;
-              if (open && Math.abs(vx) < want * PHYS.FLOW_KICK) vx = randDir() * want;
+              let want = f * PHYS.FLOW_SURFACE;
+              if (head && open) {
+                const gh = g * GRAV[id], ux = DX[fd ^ 1], uy = DY[fd ^ 1];
+                let h = 0.5;
+                for (let qx = x + ux, qy = y + uy; qx >= 0 && qy >= 0 && qx < nx && qy < ny && 2 * gh * h < f * f; qx += ux, qy += uy) {
+                  const e = ID[qy * nx + qx];
+                  if (KIND[e] !== K.LIQUID && KIND[e] !== K.POWDER) break;
+                  h += DENS[e] / d;
+                }
+                want = Math.min(PHYS.ORIFICE_CV * Math.sqrt(2 * gh * h), f);
+              }
+              if (dir !== 0) { if (vx * dir < want) vx = dir * want; }
+              else if (open && Math.abs(vx) < want * PHYS.FLOW_KICK) vx = randDir() * want;
+            } else if (!movable(nid[fd ^ 1])) {
+              // pipe flow: the walls turn it along the pipe (react.js)
+              if (!movable(nid[fr]) && vx > 0) vx = 0;
+              if (!movable(nid[fr ^ 1]) && vx < 0) vx = 0;
             } else {
               const l = KIND[nid[fr]] === K.LIQUID, r = KIND[nid[fr ^ 1]] === K.LIQUID;
               vx = vx * PHYS.FILM_KEEP + (open ? ((l ? 1 : 0) - (r ? 1 : 0)) * f * PHYS.FILM_COHESION : 0);

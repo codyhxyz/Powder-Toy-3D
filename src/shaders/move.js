@@ -130,7 +130,7 @@ bool jet(int a, int b) { return (KIND[a] == K_LIQUID && isGasLike(b)) || (KIND[b
 float draw(int a, int b, uint n, uint pace) { return jet(a, b) ? float(n * pace) * UINT_TO_UNIT : rnd(rs); }
 // the steps a liquid falling at vy has been falling (its velocity is g a step
 // in free fall: react.js keeps drag off it), or else the frame
-uint fallAge(int k, float vy) { float g = uGravity * GRAV[k]; return vy < 0.0 && g > 0.0 ? uint(-vy / g + 0.5) : uFrame; }
+uint fallAge(int k, float vy) { float g = uGravity * GRAV[k]; return vy < 0.0 && vy > -V_MAX && g > 0.0 ? uint(-vy / g + 0.5) : uFrame; }
 `;
 
 const can = (i, j, dir) => `canMove(k${i}, k${j}, d${i}, d${j}, ${dir})`;
@@ -214,7 +214,7 @@ const horizontal = (i, j, c) => `
       bool ok1 = w1 && ${can(j, i, 2)};
       if (ok0 || ok1) {
         float pr = max(ok0 ? h0 : 0.0, ok1 ? -h1 : 0.0) * ${drag(i, j)};
-        if (draw(k${i}, k${j}, uFrame, PACE_${c.toUpperCase()}) < pr) ${swap(i, j)}
+        if (draw(k${i}, k${j}, KIND[k${i}] == K_LIQUID ? fallAge(k${i}, v${i}.y) : fallAge(k${j}, v${j}.y), PACE_${c.toUpperCase()}) < pr) ${swap(i, j)}
       } else if (movable(k${i}) && movable(k${j})) {
         if (!(h0 > h1 && shockActs(k${i}, k${j}, hitKE(d${i}, d${j}, false, h0 - h1)))) {${collide(i, j, c, true)}
         }

@@ -1,5 +1,5 @@
 // Debug companion of tools/jet-check.mjs: the same tank, and a trace of the
-// water around its hole, step by step (cells and velocities), to see what a
+// water below its hole on its plane (z = 64), step by step (x,y: vy), to see what a
 // parcel does on its way out. usage: node tools/jet-trace.mjs [--port 5287] [--warm 240] [--steps 16]
 import { launchBrowser, newTestPage, ready } from './browser.mjs';
 
