@@ -1107,6 +1107,17 @@ const defs = [
     cond: 0.015, cap: 0.5, melt: 1400, meltInto: 'GLASS', hard: 3, breakInto: 'SHARDS', acidProof: true, sound: 'shatter',
     conducts: true, elec: 1.8e7,
     desc: 'Lamp. An electric light: it shines while sparks reach it and goes out a moment after they stop. Touch it to a battery to keep it on. Fragile: a shot or a kick smashes the bulb.' },
+  // Basalt: fresh lava rock, the dark flows a volcano's eruptions leave on its
+  // flanks (the giant volcano's). Minecraft's basalt and Noita's lava rock.
+  // ROCK is the same rock weathered. Unlike ROCK it melts, at stone's 1200 °C
+  // (basalt's solidus ~1100 °C, liquidus ~1250 °C), and its lava sets back
+  // into basalt. Young flows are vesicular, so weaker than dense basalt
+  // (100-350 MPa, Goodman 1989; ROCK's hard 30 is ~150 MPa): ~100 MPa, hard 20
+  // (hard ≈ UCS / 5 MPa, as the rocks above). Heat: ~1.7 W/m·K like ROCK's
+  // basalt (Robertson 1988); 2.9 g/cm³ × 0.84 J/g·K over water's 4.18 → cap 0.58.
+  { key: 'BASALT', abbr: 'BSLT', name: 'Basalt', kind: K.SOLID, render: R.OPAQUE, color: '#353331', var: 0.1,
+    cond: 0.03, cap: 0.58, melt: 1200, hard: 20, breakInto: 'STONE', sound: 'crack',
+    desc: 'Dark lava rock, the flows a volcano leaves on its slopes. Melts back into lava at 1200 °C. Moss grows on it.' },
 ];
 
 // σ (S/m) of a conductor given as conducts: true with no elec: a metal. The
@@ -1305,7 +1316,7 @@ export const PALETTE = [
   // Noita's magical liquids
   { name: 'Potions', items: ['TELEPORTATIUM', 'LEVITATIUM', 'HEALTHIUM', 'BERSERKIUM', 'POLYMORPHINE', 'PHEROMONE'] },
   { name: 'Gases', items: ['STEAM', 'CLOUD', 'HYDROGEN', 'OXYGEN', 'CO2', 'PROPANE', 'CAUSTIC_GAS', 'SMOKE', 'FIRE', 'PLASMA', 'MERCURY_VAPOR'] },
-  { name: 'Solids', items: ['WALL', 'COAL', 'ROCK', 'LIMESTONE', 'SANDSTONE', 'METAL', 'GLASS', 'CERAMIC', 'ICE', 'DRY_ICE', 'CRYSTAL', 'WOOD', 'FUNGUS', 'PLANT', 'MOSS', 'CLONE', 'BRICK', 'TITANIUM', 'TUNGSTEN', 'GOLD', 'SOLID_MERCURY', 'DIAMOND', 'VOID'] },
+  { name: 'Solids', items: ['WALL', 'COAL', 'ROCK', 'BASALT', 'LIMESTONE', 'SANDSTONE', 'METAL', 'GLASS', 'CERAMIC', 'ICE', 'DRY_ICE', 'CRYSTAL', 'WOOD', 'FUNGUS', 'PLANT', 'MOSS', 'CLONE', 'BRICK', 'TITANIUM', 'TUNGSTEN', 'GOLD', 'SOLID_MERCURY', 'DIAMOND', 'VOID'] },
   // TPT's Explosives menu (propane stays a gas)
   { name: 'Explosives', items: ['GUNPOWDER', 'FUSE', 'THERMITE', 'NITRO', 'TNT', 'C4'] },
   { name: 'Electronics', items: ['SPARK', 'BATTERY', 'METAL', 'LAMP', 'PSCN', 'NSCN', 'SWITCH', 'INSULATOR', 'TSNS', 'PCLN'] },

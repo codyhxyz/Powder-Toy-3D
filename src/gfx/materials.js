@@ -209,6 +209,11 @@ const LOOKS = {
   // shows the same faces fresh, glinting where they catch the sun.
   SANDSTONE: { ch: 'ORGANIC', rough: 0.9, ior: 1.54, alb: '#b39c7c', glint: 0.25, surf: 'CRAG',
     crag: { relief: 0.6, pits: 0, bands: 2.5, stain: 1.5 } },   // rounded by weathering, bedded, iron-stained
+  // Basalt: fresh lava rock, darker than ROCK's weathered face, its gas
+  // bubbles frozen in as pits (vesicles), clinkery and unbedded (fresh flows
+  // ~0.03-0.05 albedo, below the weathered 0.08-0.15).
+  BASALT: { ch: 'ORGANIC', rough: 0.9, alb: '#353331', surf: 'CRAG',
+    crag: { relief: 1, pits: 1, bands: 0, stain: 0.2 } },
   LIMESTONE: { ch: 'ORGANIC', rough: 0.8, ior: 1.6, alb: '#bcb8af', surf: 'CRAG',
     crag: { relief: 1, pits: 0.4, bands: 1.5, stain: 0.4 } },   // sharp solution runnels and pits, bedded
   COAL: { ch: 'ORGANIC', rough: 0.75, alb: '#3c3c3d', surf: 'CRAG',
