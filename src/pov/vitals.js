@@ -226,6 +226,7 @@ export function createVitals(emit, perks = null) {
     if (v.dead) return false;
     const max = shieldMax(), target = Math.max(max, OVER_BASE_MIN) * layers;
     over = { from: Math.min(v.shield, target), target, charge: chargeS, chargeS, rate: (target - max) / drainS };
+    if (!(chargeS > 0)) v.shield = target;   // no charge-up: at once
     v.shieldWait = 0; v.shieldCharging = false;
     return true;
   };
