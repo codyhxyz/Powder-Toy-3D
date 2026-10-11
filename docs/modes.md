@@ -130,6 +130,7 @@ Halo 3 matchmaking's own isn't documented). The Overshield is Halo 3's: 200% of 
 shield bar (Combat Evolved's and Reach's are 300%); it charges for 3 s, the body untouchable meanwhile but by a
 backstab, then the extra drains away over 60 s (Halopedia: "gradually depletes", no rate given: ours). A hit takes the
 extra first; the refill never brings it back; death takes it (`vitals.js` `giveOvershield`, `body.overshield()`).
+Whoever wears one glows green (brighter while it charges), as in Halo; your own glow isn't drawn over your view.
 Events: `game:powerup` `{ id, kind, point, mine }` (a rising charge sound). Active Camo is not in yet.
 
 `node tools/feel-check.mjs [--url http://localhost:5424] [--preset damValley] [--shot file.jpg]` (AC power, a dev

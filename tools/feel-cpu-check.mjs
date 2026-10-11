@@ -109,6 +109,13 @@ povEvents.on('game:powerup', (e) => { got = e; });
 feel.update();
 assert(got?.mine && player.os?.layers === 2, `walking into it gives the Overshield (${JSON.stringify(player.os)})`);
 assert(feel.powerups[0].readyAt === t + 120, 'and it waits 120 s');
+// an overshielded bot glows; the player's own body (the camera's) doesn't
+roster.get('r1').bot.body.overshielded = 'charging';
+player.overshielded = 'on';
+feel.update();
+const root3d = shell.scene.getObjectByName('halo-powerups');
+const glows = root3d.children.filter((o) => o.isMesh && o.visible);
+assert(glows.length === 1 && Math.abs(glows[0].position.x - 120) < 1e-6, `one glow, round the overshielded bot (${glows.length})`);
 
 // the end: perks back, pads gone, tracker off
 povEvents.emit('game:stop', { mode: 'slayer', style: 'halo' });

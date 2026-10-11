@@ -99,7 +99,7 @@ export function createFeel({ shell, roster, bodyOf, alive, clock }) {
     if (!halo) return;
     const me = entry(PLAYER), body = shell.player;
     const living = [...roster().values()].filter((e) => e.team && bodyOf(e) && alive(e));
-    for (const p of powerups.update(clock(), living.map((e) => ({ id: e.id, body: bodyOf(e) })))) {
+    for (const p of powerups.update(clock(), living.map((e) => ({ id: e.id, body: bodyOf(e) })), PLAYER)) {
       const mine = p.id === PLAYER;
       povEvents.emit('game:powerup', { ...p, mine });
       if (mine) hud.note('Overshield', wall());

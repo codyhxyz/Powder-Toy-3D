@@ -12,6 +12,7 @@ import { BODY_HEIGHT } from '../pov/constants.js';
 // charges for about 3 s, the body untouchable meanwhile but by a melee to the
 // back (every Halo from Combat Evolved to Halo 4), then the extra "gradually
 // depletes over prolonged duration". vitals.js runs it (body.overshield()).
+// Whoever wears one glows green, so the others can see it coming.
 
 export const OVERSHIELD = {
   layers: 2,          // × the shield (Halo 3's 200%)
@@ -34,6 +35,14 @@ const ORB_OPACITY = 0.38;
 const CORE_OPACITY = 0.85;
 const RING_OPACITY = 0.7;
 const RING_WAITING = 0.18;        // the ring's opacity while the power-up is away
+
+// an overshielded body glows green all over (Halo: the wearer glows, which also gives away a camouflaged one)
+const AURA_R = 1.6;               // cells, the glow's radius round the body (its width is ~1.2)...
+const AURA_STRETCH = 2.2;         // ...stretched this much up and down: the body's height
+const AURA_OPACITY = 0.16;        // its opacity once charged...
+const AURA_CHARGING = 0.4;        // ...and while it charges
+const AURA_PULSE = 0.35;          // ± share the opacity pulses by...
+const AURA_PULSE_HZ = 1.5;        // ...this many times a second
 
 const basic = (opacity, extra = {}) => new THREE.MeshBasicMaterial({ color: GLOW, transparent: true, opacity, depthWrite: false, ...extra });
 
@@ -59,6 +68,7 @@ export function createPowerups({ app, scene }) {
   root.name = 'halo-powerups';
   scene.add(root);
   let pads = [];     // { kind, feet (grid cells), obj, readyAt (game s) }
+  const auras = new Map();   // body id → its glow mesh (made the first time it's overshielded)
   let parked = [];   // the shrines' Noita orbs while a match runs: { key, feet, shrine }
   const v = new THREE.Vector3();
 
@@ -86,13 +96,28 @@ export function createPowerups({ app, scene }) {
   function end() {
     for (const p of pads) { p.obj.removeFromParent(); p.obj.traverse((m) => { m.geometry?.dispose(); m.material?.dispose(); }); }
     pads = [];
+    for (const a of auras.values()) { a.removeFromParent(); a.geometry.dispose(); a.material.dispose(); }
+    auras.clear();
     const orbs = app.getPerkOrbs?.();
     if (orbs && parked.length && !orbs.list.some((o) => o.shrine)) for (const p of parked) orbs.add(p.key, p.feet, p.shrine);
     parked = [];
   }
 
-  // every frame of a Halo match: pickups (bodies: [{ id, body }] of the living), then the orbs' look
-  function update(t, bodies) {
+  // an overshielded body's glow, made on first use
+  function aura(id) {
+    let a = auras.get(id);
+    if (!a) {
+      a = new THREE.Mesh(new THREE.SphereGeometry(1, 20, 14), basic(AURA_OPACITY, { blending: THREE.AdditiveBlending }));
+      a.renderOrder = 1;
+      root.add(a);
+      auras.set(id, a);
+    }
+    return a;
+  }
+
+  // every frame of a Halo match: pickups (bodies: [{ id, body }] of the living), then the orbs' and
+  // the overshielded bodies' look; self: the body whose eye the camera is (no glow over the view)
+  function update(t, bodies, self = null) {
     const picked = [];
     for (const p of pads) {
       if (t < p.readyAt) continue;
@@ -116,6 +141,17 @@ export function createPowerups({ app, scene }) {
         ball.position.y = ORB_LIFT + BOB * Math.sin(t * BOB_HZ * Math.PI * 2);
         ball.rotation.y = t * SPIN_HZ * Math.PI * 2;
         ring.material.opacity = ready ? RING_OPACITY : RING_WAITING;
+      }
+      for (const a of auras.values()) a.visible = false;
+      const pulse = 1 + AURA_PULSE * Math.sin(t * AURA_PULSE_HZ * Math.PI * 2);
+      for (const { id, body } of bodies) {
+        const state = id !== self && body.overshielded;
+        if (!state) continue;
+        const a = aura(id);
+        a.visible = true;
+        a.position.copy(v.copy(body.pos).setY(body.pos.y + (body.height ?? BODY_HEIGHT) / 2).multiplyScalar(scale).add(vol.position));
+        a.scale.set(AURA_R * scale, AURA_R * AURA_STRETCH * scale, AURA_R * scale);
+        a.material.opacity = (state === 'charging' ? AURA_CHARGING : AURA_OPACITY) * pulse;
       }
     }
     return picked;
