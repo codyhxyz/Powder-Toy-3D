@@ -1,10 +1,10 @@
 // CPU previews of the themed world scenes (src/world/scenes/labWorld.js,
-// volcanoWorld.js) from their JS twins: a top-down map of a region (each
+// volcanoWorld.js, giantVolcano.js) from their JS twins: a top-down map of a region (each
 // column's topmost matter, shaded by its height) and vertical cross-sections,
 // as PNGs, plus a census of what the region holds. No GPU: fine on battery.
 //
-//   node tools/scene-themed-preview.mjs [lab|volcano] [outDir] [x0 z0 size]
-// (default: both scenes, the whole world, into ./scene-previews)
+//   node tools/scene-themed-preview.mjs [lab|volcano|giant|all] [outDir] [x0 z0 size]
+// (default: lab and volcano, the whole world, into ./scene-previews)
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { deflateSync } from 'node:zlib';
 import { join } from 'node:path';
@@ -12,9 +12,11 @@ import { ELEMENTS, E } from '../src/elements.js';
 import { WORLD_SIZE } from '../src/shaders/far.js';
 import { labWorld, labTwin, LAB } from '../src/world/scenes/labWorld.js';
 import { volcanoWorld, volcanoTwin, VOL } from '../src/world/scenes/volcanoWorld.js';
+import { giantVolcano, giantTwin, GIANT, VOLC_SIZE } from '../src/world/scenes/giantVolcano.js';
 
 const SEED = 20261008;           // the default world seed (world/generator.js WORLD_SEED)
-const SECTION_Y = 128;           // cross-sections show the world's whole height
+const SECTION_Y = 128;           // cross-sections show the world's whole height (the giant volcano's: VOLC_SIZE)
+const GIANT_PX = 512;            // the giant volcano's map: this many pixels a side (its columns are tall to scan)
 const SHADE_LO = 0.45;           // map shading: the lowest column's brightness...
 const SHADE_SPAN = 0.55;         // ...rising to 1 at the top of the world
 const SECTIONS = 3;              // cross-sections per scene, evenly through the region
@@ -53,10 +55,11 @@ function png(path, w0, h0, rgb0) {
 const colour = ELEMENTS.map((e) => { const n = parseInt(e.color.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; });
 const SKY = [200, 225, 245];
 
-// column(x, z): the cell function of world column (x, z), y → element id
-function preview(name, column, top, region) {
+// column(x, z): the cell function of world column (x, z), y → element id;
+// top: the height to scan down from, or a function of (x, z) giving it
+function preview(name, column, top, region, height = SECTION_Y, px = 1024) {
   const [x0, z0, n] = region;
-  const step = Math.max(1, Math.round(n / 1024));   // at most 1024 pixels a side
+  const step = Math.max(1, Math.round(n / px));   // at most px pixels a side
   const w = Math.floor(n / step);
   const map = Buffer.alloc(w * w * 3);
   const census = new Map();
@@ -65,10 +68,10 @@ function preview(name, column, top, region) {
     for (let i = 0; i < w; i++) {
       const x = x0 + i * step, z = z0 + j * step;
       const cell = column(x, z);
-      let y = top - 1, id = E.EMPTY;
+      let y = (typeof top === 'function' ? top(x, z) : top) - 1, id = E.EMPTY;
       for (; y >= 0; y--) { id = cell(y); if (id !== E.EMPTY) break; }
       census.set(id, (census.get(id) ?? 0) + 1);
-      const k = SHADE_LO + SHADE_SPAN * (y + 1) / SECTION_Y;
+      const k = SHADE_LO + SHADE_SPAN * (y + 1) / height;
       const c = id === E.EMPTY ? SKY : colour[id];
       for (let ch = 0; ch < 3; ch++) map[(j * w + i) * 3 + ch] = Math.min(255, c[ch] * k);
     }
@@ -76,33 +79,42 @@ function preview(name, column, top, region) {
   png(join(outDir, `${name}-map.png`), w, w, map);
   for (let s = 0; s < SECTIONS; s++) {
     const z = z0 + Math.floor((n * (s + 0.5)) / SECTIONS);
-    const sec = Buffer.alloc(w * SECTION_Y * 3);
+    const sec = Buffer.alloc(w * height * 3);
     for (let i = 0; i < w; i++) {
       const cell = column(x0 + i * step, z);
-      for (let y = 0; y < SECTION_Y; y++) {
+      for (let y = 0; y < height; y++) {
         const id = cell(y);
         const c = id === E.EMPTY ? SKY : colour[id];
-        for (let ch = 0; ch < 3; ch++) sec[((SECTION_Y - 1 - y) * w + i) * 3 + ch] = c[ch];
+        for (let ch = 0; ch < 3; ch++) sec[((height - 1 - y) * w + i) * 3 + ch] = c[ch];
       }
     }
-    png(join(outDir, `${name}-section-z${z}.png`), w, SECTION_Y, sec);
+    png(join(outDir, `${name}-section-z${z}.png`), w, height, sec);
   }
   const tops = [...census].sort((a, b) => b[1] - a[1]).map(([id, c]) => `${ELEMENTS[id].key} ${(100 * c / (w * w)).toFixed(1)}%`);
   console.log(`${name}: map ${w}² (every ${step}) in ${(ms / 1000).toFixed(1)} s; tops: ${tops.join(', ')}`);
 }
 
 const region = rest.length === 3 ? rest.map(Number) : [0, 0, WORLD_SIZE[0]];
-if (which !== 'volcano') {
+const want = (name) => which === name || which === 'all' || (which === 'both' && name !== 'giant');
+if (want('lab')) {
   const P = labWorld.params({ size: WORLD_SIZE, seed: SEED });
   const T = labTwin(P);
   preview('lab', (x, z) => (y) => T.labCell(x, y, z), LAB.SKY, region);
   const s = labWorld.start(P, [128, 128]);
   console.log(`lab start ${s}, ground there ${labWorld.ground(...s, P)}`);
 }
-if (which !== 'lab') {
+if (want('volcano')) {
   const P = volcanoWorld.params({ size: WORLD_SIZE, seed: SEED });
   const T = volcanoTwin(P);
   preview('volcano', (x, z) => { const col = T.volColumn(x, z); return (y) => T.volCellIn(x, y, z, col); }, VOL.SKY, region);
   const s = volcanoWorld.start(P, [128, 128]);
   console.log(`volcano start ${s.map(Math.round)}, ground there ${volcanoWorld.ground(...s, P)}`);
+}
+if (want('giant')) {
+  const P = giantVolcano.params({ size: VOLC_SIZE, seed: SEED });
+  const T = giantTwin(P);
+  const top = (x, z) => giantVolcano.ground(x, z, P);
+  preview('giant', (x, z) => { const t = T.gvTop(x, z); return (y) => T.gvCellIn(x, y, z, t); }, top, region, GIANT.SKY, GIANT_PX);
+  const s = giantVolcano.start(P, [128, 128]);
+  console.log(`giant start ${s.map(Math.round)}, ground there ${giantVolcano.ground(...s, P)}`);
 }
