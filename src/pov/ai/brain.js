@@ -314,7 +314,7 @@ class ClimbEvaluator extends GoalEvaluator {
     if (!a.knows || !a.ready('CLIMB')) return 0;
     const up = a.lastSeen.y - a.feet.y;
     if (up <= JUMP_UP) return 0;
-    if (a.dist > 2 * BLOCK + 2 && a.npc.nav.path(a.feet, a.lastSeen, a.now)) return 0;   // there's a way round: walk it
+    if (a.dist > 2 * BLOCK + 2 && a.npc.nav.path(a.feet, a.lastSeen)) return 0;   // there's a way round: walk it
     return 0.75;
   }
   setGoal(a) { if (!(a.brain.currentSubgoal() instanceof ClimbGoal)) { a.brain.clearSubgoals(); a.brain.addSubgoal(new ClimbGoal(a)); } }
@@ -352,7 +352,7 @@ class GoToGoal extends Goal {
   activate() { this.t = 0; this.plan(); this.best = Infinity; this.bestAt = 0; }
   plan() {
     const a = this.owner;
-    this.path = a.npc.nav.path(a.feet, this.dest, a.now);
+    this.path = a.npc.nav.path(a.feet, this.dest);
     this.i = 0; this.planned = this.t;
     if (!this.path) { a.blockedAt = a.now; this.status = Goal.STATUS.FAILED; }
   }
@@ -554,7 +554,11 @@ function chooseWeapon(a) {
     const d = w.rate(a.dist3) + (Math.random() * 2 - 1) * WEAPON_NOISE;
     if (d > bw) { bw = d; best = key; }
   }
-  if (best !== a.weapon) { a.weapon = best; a.weaponAt = a.now; }
+  // the hold starts over with every choice, the same weapon's too: kept only when it
+  // changed, the choice above ran every frame once WEAPON_SWITCH_S had passed (the
+  // whim re-rolled 60 times a second, and PHYSGUN and BUCKET's usable() scans of
+  // thousands of cells with it) instead of once per WEAPON_SWITCH_S
+  a.weapon = best; a.weaponAt = a.now;
   return best;
 }
 // can weapon `key` be used from here, now?
