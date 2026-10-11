@@ -91,10 +91,12 @@ Every number is a named constant; borrow Noita's numbers and cite them.
 - `deps.js` is the only seam: it globs A's `levels.js`, B's `wands/generate.js`
   (`generateWand`, `randomSpell`, `wandPrice`, `spellPrice`), B's `descentWands`
   (exported `descentWands` from `wands/loot.js` or `wands/generate.js`, or
-  `toolbelt.descentWands`) and `src/pov/interact.js` (`interact.register`, or a
-  default export). Missing ones fall back to stand-ins (`stubs.js`; a bought wand is
-  equipped with `toolbelt.equipWand`, a spell is only announced; a proximity + E
-  stand-in for interact). Nothing else needs editing when they land.
+  `toolbelt.descentWands`). Missing ones fall back to stand-ins (`stubs.js`; a bought
+  wand is equipped with `toolbelt.equipWand`, a spell is only announced). Nothing else
+  needs editing when they land.
+- Look + E: the shell's `interact` (src/pov/interact.js) is passed to `createDescent`;
+  the shop's items (verb Buy) and the refresher (verb Use) are offered through
+  `interact.provide()`. The altar's perks come through perkOrbs' own provider.
 - `pov.descent` (pov/index.js): `{ gold, goldShown, purse, level, shop, shrine,
   nuggets, refresher, arrive(key) }`. Runs every frame on a Descent scene
   (`levelByScene(settings.scene)` while in a world).
@@ -103,7 +105,7 @@ Every number is a named constant; borrow Noita's numbers and cite them.
   Per arrival: the shop is rolled (seed = run seed × level key), one shrine is placed
   with `perkOrbs.shrineAt(altars)`, 'gold' loot sites get nuggets.
 - Shop: `temple.shop` pedestals; Noita's coin flip: a wand shop (2 wands + 3 spells)
-  or a spell shop. Look + E buys (interact.js); too little gold → toast, nothing taken.
+  or a spell shop. Look + E buys; too little gold → `use()` false, a toast, nothing taken.
   Price: Noita's `max(floor((cost × 0.30 + 70 × tier) / 10) × 10, 10)` (stubs.js
   `shopPrice`, for B to reuse).
 - Gold: nuggets 10 / 50 / 200 (Noita's), walk-in; 3 per 'gold' site, bigger by tier.

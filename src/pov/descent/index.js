@@ -1,7 +1,7 @@
 import * as THREE from 'three';
-import { BODY_HEIGHT, BODY_WIDTH, HAND_REACH } from '../constants.js';
+import { BODY_HEIGHT, BODY_WIDTH } from '../constants.js';
 import { SPELL_BY_ID } from '../wands/catalog.js';
-import { DESCENT_LEVELS, levelByScene, generator, descentWands, interact, interactIsStub, fallbackPick } from './deps.js';
+import { DESCENT_LEVELS, levelByScene, generator, descentWands } from './deps.js';
 import { createPurse, siteNuggets, splitGold, enemyGold, DROP_LIFETIME_S, DROP_BLINK_S, NUGGET } from './gold.js';
 import { rollShop, buy } from './shop.js';
 import { hashString, mixSeed } from './rng.js';
@@ -31,7 +31,7 @@ const ITEM_LIFT = BODY_HEIGHT * 0.5;     // cells over a pedestal top to an item
 const ITEM_SIZE = 2.2;                   // cells across an item's icon (perkOrbs.js ORB_SIZE)
 const PRICE_LIFT = 1.8;                  // cells over the icon's centre to its price tag
 const PRICE_W = 3.2, PRICE_H = 1.0;      // cells, the price tag's sprite
-const USE_RADIUS = HAND_REACH;           // cells: look + E reaches as far as the hands (Minecraft's reach)
+const TARGET_R = ITEM_SIZE / 2;          // cells: the look target's radius (interact.js), the icon's
 const BOB = 0.2, BOB_HZ = 0.5;           // cells and Hz an item floats up and down (perkOrbs.js)
 const NUGGET_REACH = 1.2;                // cells beyond the body's box that still pick up a nugget (walk-in)
 const NUGGET_LIFT = 0.35;                // cells a nugget's centre sits over its cell
@@ -74,8 +74,8 @@ const spellName = (id) => SPELL_BY_ID[id]?.name ?? id;
 const spellDesc = (id) => SPELL_BY_ID[id]?.description ?? '';
 
 // app: the POV's app (getSim, getVolume, getScale, getPerkOrbs, settings, inWorld, requestRender);
-// hud: the god view's (toast); events: povEvents
-export function createDescent({ app, scene, hud, events, getToolbelt = () => null }) {
+// hud: the god view's (toast); interact: the shell's look + E (interact.js); events: povEvents
+export function createDescent({ app, scene, hud, interact, events, getToolbelt = () => null }) {
   const purse = createPurse();
   const root = new THREE.Group();
   root.name = 'descent';
@@ -86,13 +86,9 @@ export function createDescent({ app, scene, hud, events, getToolbelt = () => nul
   let runSeed = (Math.random() * 2 ** 32) >>> 0;
   let level = null, levelSeed = 0, pendingArrive = null;
   let shop = [], refresher = null, nuggets = [], shrine = 0, healed = false;
-  const unregs = [];
   const npcDead = new Map();   // NPC id → was dead last frame
-  let ePressed = false, lastPick = null;
 
   const offs = [events.on('descent:level', ({ key }) => { pendingArrive = key; })];
-  const onKey = (e) => { if (e.code === 'KeyE' && !e.repeat) ePressed = true; };
-  if (interactIsStub) addEventListener('keydown', onKey);
 
   const toGrid = (world, out = new THREE.Vector3()) => out.copy(world).sub(app.getSim().origin);
   const toWorld = (grid, out = new THREE.Vector3()) => out.copy(grid).add(app.getSim().origin);
@@ -114,7 +110,7 @@ export function createDescent({ app, scene, hud, events, getToolbelt = () => nul
     root.add(g);
     return { world, obj: g };
   }
-  function dropItem(it) { if (!it?.obj) return; it.obj.removeFromParent(); disposeObj(it.obj); it.obj = null; it.unreg?.(); }
+  function dropItem(it) { if (!it?.obj) return; it.obj.removeFromParent(); disposeObj(it.obj); it.obj = null; }
 
   function addNugget(world, value, life = Infinity) {
     const m = new THREE.Mesh(nuggetGeo, nuggetMat);
@@ -132,13 +128,12 @@ export function createDescent({ app, scene, hud, events, getToolbelt = () => nul
   }
 
   function leave() {
-    for (const u of unregs.splice(0)) u();
     shop.forEach(dropItem); shop = [];
     dropItem(refresher); refresher = null;
     for (const n of nuggets) n.obj.removeFromParent();
     nuggets = [];
     npcDead.clear();
-    level = null; shrine = 0; healed = false; lastPick = null;
+    level = null; shrine = 0; healed = false;
   }
 
   function arrive(lv) {
@@ -152,30 +147,13 @@ export function createDescent({ app, scene, hud, events, getToolbelt = () => nul
       shop = rollShop(tier, mixSeed(levelSeed, SHOP_SALT), t.shop.length, generator).map((s) => {
         const at = site(t.shop[s.slot]);
         const icon = labelTexture(s.kind === 'wand' ? [WAND_ICON] : [SPELL_ICON], { back: null, font: 0.6 });
-        const it = Object.assign(s, addItem(at, icon, `$ ${s.price}`));
-        it.unreg = interact.register({
-          id: `descent-shop-${s.slot}`,
-          position: () => toGrid(at).setY(at.y + ITEM_LIFT),
-          radius: USE_RADIUS,
-          label: () => itemLabel(it),
-          onUse: () => buyItem(it),
-        });
-        unregs.push(it.unreg);
-        return it;
+        return Object.assign(s, addItem(at, icon, `$ ${s.price}`));
       });
     }
     // the refresher
     if (t?.refresher) {
       const at = site(t.refresher);
       refresher = addItem(at, labelTexture([REFRESH_ICON], { back: null, font: 0.6 }), null);
-      refresher.unreg = interact.register({
-        id: 'descent-refresher',
-        position: () => toGrid(at).setY(at.y + ITEM_LIFT),
-        radius: USE_RADIUS,
-        label: () => ({ title: 'Spell refresher', lines: ['Refills your wands\' limited spells, mana and storage', 'E to use'] }),
-        onUse: useRefresher,
-      });
-      unregs.push(refresher.unreg);
     }
     // the perk altar: the shrine's offers, one perk over each altar
     const orbs = app.getPerkOrbs?.();
@@ -191,15 +169,26 @@ export function createDescent({ app, scene, hud, events, getToolbelt = () => nul
     app.requestRender?.();
   }
 
+  // look + E (interact.js): the shop's items and the refresher while they stand, in grid cells
+  const offInteract = interact.provide(() => {
+    if (!level) return [];
+    const out = [];
+    for (const it of shop) if (it.obj?.visible) out.push({ id: `descent-shop-${it.slot}`, position: itemAt(it), radius: TARGET_R, ...itemLabel(it), verb: 'Buy', use: () => buyItem(it) });
+    if (refresher?.obj?.visible) out.push({ id: 'descent-refresher', position: itemAt(refresher), radius: TARGET_R,
+      title: `${REFRESH_ICON} Spell refresher`, lines: ['Refills your wands\' limited spells, mana and storage. Once.'], verb: 'Use', use: useRefresher });
+    return out;
+  });
+  const itemAt = (it) => { const p = toGrid(it.world); p.y += ITEM_LIFT; return p; };
+
   function itemLabel(it) {
-    const can = purse.canAfford(it.price) ? 'E to buy' : `Not enough gold (you have $ ${purse.gold})`;
+    const poor = purse.canAfford(it.price) ? [] : [`Not enough gold: you have $ ${purse.gold}`];
     if (it.kind === 'wand') {
       const c = it.wand.config ?? {};
       const spells = (it.wand.cards ?? []).map(spellName).join(', ');
       return { title: `${WAND_ICON} ${it.wand.name ?? 'Wand'}  $ ${it.price}`,
-        lines: [`Mana ${c.manaMax ?? '?'} · regen ${c.manaRegen ?? '?'}/s · cast delay ${c.castDelay ?? '?'} s · recharge ${c.recharge ?? '?'} s`, spells && `Spells: ${spells}`, can].filter(Boolean) };
+        lines: [`Mana ${c.manaMax ?? '?'} · regen ${c.manaRegen ?? '?'}/s · cast delay ${c.castDelay ?? '?'} s · recharge ${c.recharge ?? '?'} s`, ...(spells ? [`Spells: ${spells}`] : []), ...poor] };
     }
-    return { title: `${SPELL_ICON} ${spellName(it.spell)}  $ ${it.price}`, lines: [spellDesc(it.spell), can].filter(Boolean) };
+    return { title: `${SPELL_ICON} ${spellName(it.spell)}  $ ${it.price}`, lines: [...(spellDesc(it.spell) ? [spellDesc(it.spell)] : []), ...poor] };
   }
 
   function buyItem(it) {
@@ -237,11 +226,11 @@ export function createDescent({ app, scene, hud, events, getToolbelt = () => nul
     if (!sim || !vol) return;
     const key = app.inWorld?.() ? app.settings.scene : null;
     const lv = key ? levelByScene(key) : null;
-    if (!lv) { if (level) leave(); pendingArrive = null; ePressed = false; return; }
+    if (!lv) { if (level) leave(); pendingArrive = null; return; }
     // arrive on A's descent:level, or (before it lands) the first live frame on a new level
     if (pendingArrive === lv.key && lv === level) pendingArrive = null;   // already set up (the live frame came first): keep what was bought
     if (pendingArrive === lv.key || (lv !== level && f.live)) { pendingArrive = null; arrive(lv); }
-    if (!level) { ePressed = false; return; }
+    if (!level) return;
     const p = f.player, g = sim.g, v = new THREE.Vector3();
 
     // the healing pool: full health once a visit (Noita's)
@@ -292,14 +281,6 @@ export function createDescent({ app, scene, hud, events, getToolbelt = () => nul
       it.obj.userData.icon.position.y = ITEM_LIFT + BOB * Math.sin(f.time * BOB_HZ * Math.PI * 2 + it.world.x);
     }
 
-    // look + E, until src/pov/interact.js lands: the nearest item in reach, its label as a toast
-    if (interactIsStub) {
-      const pick = f.live ? fallbackPick(v.copy(p.pos).setY(p.pos.y + ITEM_LIFT)) : null;
-      if (pick && pick !== lastPick) { const l = pick.label(); hud.toast([l.title, ...l.lines].join(' · ')); }
-      lastPick = pick;
-      if (ePressed && pick) pick.onUse();
-    }
-    ePressed = false;
   }
 
   return {
@@ -317,7 +298,7 @@ export function createDescent({ app, scene, hud, events, getToolbelt = () => nul
     dispose() {
       leave();
       offs.forEach((o) => o());
-      removeEventListener('keydown', onKey);
+      offInteract();
       root.removeFromParent();
       nuggetGeo.dispose(); nuggetMat.dispose();
     },

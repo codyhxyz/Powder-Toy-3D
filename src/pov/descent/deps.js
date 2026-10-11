@@ -1,5 +1,6 @@
 // The Holy Mountain's one seam with the other Descent agents (docs/descent-contract.md):
-// A's level data, B's wand generator and B's descentWands API. Each is looked up
+// A's level data, B's wand generator and B's descentWands API (look + E is the
+// shell's interact.js, passed in by pov/index.js). Each is looked up
 // by an optional glob, so this builds before they land and picks them up the
 // moment they do; anything missing falls back to a stand-in. Integration is
 // this one file.
@@ -22,32 +23,6 @@ export const generator = {
   spellPrice: genMod?.spellPrice ?? stubs.spellPrice,
 };
 export const generatorIsStub = !genMod?.generateWand;
-
-// Look + E (Noita's rule: look at an item, read its name, price and text, press E to
-// take or buy it). The shared helper is src/pov/interact.js (coordinator, on main):
-//   interact.register({ id, position: () => Vector3 (grid cells), radius,
-//                       label: () => ({ title, lines }), onUse: () => bool }) → unregister
-// Until it lands, a stand-in with the same register(): the nearest item within its
-// radius of the body's chest is the one looked at (fallbackPick), its label goes up
-// as a toast, and E uses it (createDescent drives it).
-const interactMod = one(import.meta.glob('../interact.js', { eager: true }));
-const fallbackItems = new Map();
-export const interact = interactMod?.interact ?? interactMod?.default ?? {
-  stub: true,
-  register(spec) { fallbackItems.set(spec.id, spec); return () => fallbackItems.delete(spec.id); },
-};
-export const interactIsStub = !!interact.stub;
-// the stand-in's pick: the registered item nearest `at` (grid cells) within its radius, or null
-export function fallbackPick(at) {
-  let best = null, bestD = Infinity;
-  for (const s of fallbackItems.values()) {
-    const p = s.position();
-    if (!p) continue;
-    const d = p.distanceTo(at);
-    if (d <= s.radius && d < bestD) { best = s; bestD = d; }
-  }
-  return best;
-}
 
 // B: descentWands { give(wand), giveSpell(id), refresh() }, exported by one of its
 // modules or hung on the toolbelt. Until then: a bought wand goes straight into

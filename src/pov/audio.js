@@ -3,6 +3,7 @@ import { ELEMENTS, E, K } from '../elements.js';
 import { povEvents } from './events.js';
 import { CELL_METERS } from './vitals.js';
 import { MELEE_SOURCES } from './constants.js';
+import { lookOf } from './wands/look.js';
 
 // POV sound. Every noise in first person comes from an event (docs/pov.md,
 // "Gunplay v2"): the gun, the tools and the shell announce what happened on
@@ -183,6 +184,13 @@ const PRESETS = {
   laserCharge: [.35, 0, 240, , 1, 0, 2, 1, , , , , , , 6, , , .8, , .4, -2500],
   // the laser's shot: a bright saw zap diving from 1.2 kHz, FM'd, crushed, with a slapback (the Spartan Laser's crack)
   laserFire: [1.6, .05, 1200, .01, .2, .7, 2, 1.5, -6, , , , , 2, 20, .3, .05, .6, .1, , -3000],
+  // -- wands (wands/runtime.js; pitched per spell by wands/look.js)
+  // a cast: a bright sine chirp rising, FM'd into a shimmer with a short slapback (Noita's cast "pew")
+  wandCast: [.45, .05, 640, .005, .03, .16, 0, 1, 4, , , , , , 9, , .03, .6],
+  // a spell landing: a soft fizzling pop of noise sliding down
+  wandImpact: [.55, .15, 420, , .02, .14, 4, 1, -3, , , , , 2.5, , , , .5, , .2],
+  // a teleport: a saw sweeping up through a low-pass, FM'd, a rushing blink
+  wandTeleport: [.6, .05, 220, .02, .08, .3, 2, 1, 14, , , , , , 10, , , .6, , , -2000],
   // a backstab: a hard metallic ring over the stab (TF2's crit), FM'd like the metal ping
   backstab: [1, .02, 1600, , .03, .45, 0, 1, , , -400, .05, , , 22, , .06, .6],
 
@@ -459,6 +467,20 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
     play('boom', { at: point ?? null });
     play('shotEcho', { at: point ?? null, delay: ECHO_DELAY_S });
   });
+
+  // wands (wands/runtime.js): your cast from you, an impact where it lands, a wand's blast as a bomb's boom
+  povEvents.on('wand:fire', ({ by, origin, effect, material }) => {
+    if (live()) play('wandCast', { at: by ? origin ?? null : null, rate: lookOf(effect, material).pitch });
+  });
+  povEvents.on('wand:impact', ({ point, effect, material }) => {
+    if (live()) play('wandImpact', { at: point ?? null, rate: lookOf(effect, material).pitch });
+  });
+  povEvents.on('wand:blast', ({ point }) => {
+    if (!live()) return;
+    play('boom', { at: point ?? null });
+    play('shotEcho', { at: point ?? null, delay: ECHO_DELAY_S });
+  });
+  povEvents.on('wand:teleport', ({ by, to }) => { if (live()) play('wandTeleport', { at: by ? to ?? null : null }); });
 
   // a perk taken (pov/index.js), yours up close, an NPC's where it stands; an Extra Life spent sounds the same
   povEvents.on('perk:take', ({ point, by }) => { if (live()) play('perk', { at: by ? point ?? null : null }); });

@@ -83,6 +83,11 @@ const HIT_TIME = 0.18;                  // s the hitmarker shows
 const HIT_FADE = 0.08;                  // s at the end of HIT_TIME over which it fades out
 const BLOOM_PER_SHOT = 1;               // crosshair bloom added per shot (0..1 scale)
 const BLOOM_DECAY = 5;                  // bloom lost per second (linear)
+const BLOOM_PER_CAST = 0.5;             // crosshair bloom per wand cast: half a shot's (a cast has no recoil to recover from)
+// sources whose hits into a body show the hitmarker (TF2's hit sound: blocks and terrain don't ding)
+const HITMARKER_SOURCES = new Set(['gun', 'wand']);
+// a wand's blast ('wand:blast', wands/runtime.js): the bomb's trauma, scaled by its radius against the bomb's
+const WAND_BLAST_RADIUS_FULL = 6;       // cells: a blast this wide shakes like a bomb (catalog.js explosion)
 
 const clamp01 = (x) => Math.min(1, Math.max(0, x));
 const smooth01 = (x) => { const t = clamp01(x); return t * t * (3 - 2 * t); };
@@ -125,12 +130,20 @@ export function createFeel({ hud }) {
         addTrauma(TRAUMA_IMPACT * clamp01((e.energy ?? 0) / IMPACT_ENERGY_FULL) * near);
       }
       // the hitmarker is the player's shots into a body only (TF2's hit sound: blocks and terrain don't ding)
-      if (e.source === 'gun' && e.body && !e.by) { hitT = HIT_TIME; hitBroke = e.broke === true; }
+      if (HITMARKER_SOURCES.has(e.source) && e.body && !e.by) { hitT = HIT_TIME; hitBroke = e.broke === true; }
     }),
     povEvents.on('blast', ({ point }) => {
       if (!live || !point) return;
       const d = Math.hypot(point.x - eye.x, point.y - eye.y, point.z - eye.z);
       addTrauma(TRAUMA_BOMB * (1 - smooth01((d - IMPACT_NEAR) / (BOMB_FAR - IMPACT_NEAR))));
+    }),
+    povEvents.on('wand:fire', ({ by }) => {
+      if (live && !by) bloom = Math.min(1, bloom + BLOOM_PER_CAST);
+    }),
+    povEvents.on('wand:blast', ({ point, radius = WAND_BLAST_RADIUS_FULL }) => {
+      if (!live || !point) return;
+      const d = Math.hypot(point.x - eye.x, point.y - eye.y, point.z - eye.z);
+      addTrauma(TRAUMA_BOMB * clamp01(radius / WAND_BLAST_RADIUS_FULL) * (1 - smooth01((d - IMPACT_NEAR) / (BOMB_FAR - IMPACT_NEAR))));
     }),
     // a tool's own screen shake (the laser cannon's beam): trauma 0..1 of rumble, the player's only
     povEvents.on('shake', ({ trauma: x = 0, by }) => { if (live && !by) addRumble(x); }),

@@ -78,6 +78,7 @@ export const HIT = {
   KICK: { punch: { pitch: [-1.5 * DEG, -0.5 * DEG], yaw: [-0.5 * DEG, 0.5 * DEG] } },   // the boot landed (kick.js): the view jolts, the hands stay put
   LASER: { kick: 4 },                                                                  // the laser cannon's beam: the heaviest shove in the hands, but no view punch (Halo 3's Spartan Laser never throws the view), so the crosshair stays on the lingering beam
   BURROWER: { kick: 1.2, punch: { pitch: [1.5 * DEG, 2.5 * DEG] } },                   // the burrower's drill leaving the tube
+  WAND: { kick: 0.4, punch: { pitch: [0.2 * DEG, 0.5 * DEG], yaw: [-0.2 * DEG, 0.2 * DEG] } },   // a wand's cast: a flick of the wrist and a small nod, under the SMG's (Noita's wands have no recoil of their own)
 };
 const randIn = ([lo, hi] = [0, 0]) => lo + Math.random() * (hi - lo);
 

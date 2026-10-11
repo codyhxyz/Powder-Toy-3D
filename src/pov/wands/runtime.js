@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { compileWand } from './compiler.js';
 import { createWandWorld } from './world.js';
 import { createWandVisuals } from './visuals.js';
+import { lookOf, mainNode } from './look.js';
 import { E, ELEMENTS, K } from '../../elements.js';
 import { Load, sharedTransfer, cellsNear, outsideBody, toStepVelocity, TRANSFER_SLOTS } from '../tools/transfer.js';
 import { areaTargets, segmentTarget, PLAYER } from '../targets.js';
@@ -14,6 +15,25 @@ export const WAND_LIMITS = Object.freeze({
   rays: 128, traceBatches: 2, commands: 64, transfers: 2, transferQueue: 128,
   lights: 8, beamSamples: 16, inventory: 4096, dt: 0.1, flightStep: 0.25, traceFailures: 8,
 });
+// ---- how casts look (visual only: nothing here changes what a spell does)
+// A cast starts at the eye (the physics origin), but is drawn from the wand's tip
+// (update's view.tip): a bolt's drawn offset (tip − eye) shrinks to nothing over
+// this much flight, so it leaves the wand and joins its true path, as a gun's
+// tracer leaves the muzzle; a beam is drawn from the tip to its true end.
+const WAND_CONVERGE_CELLS = 12;
+// Lights fed to world.setLights (at most WAND_LIMITS.lights, in this priority):
+// lanterns, then short impact flashes (newest first), then bolts in flight. After
+// Noita, where every spell lights what it passes. Intensities near the lantern's (1).
+const IMPACT_LIGHT_LIFE = 0.15;          // s an impact's flash lights the world, fading
+const IMPACT_LIGHT_INTENSITY = 2;
+const IMPACT_LIGHT_REACH = 2.5;          // its radius: the spell's radius × this...
+const IMPACT_LIGHT_RADIUS = [4, 20];     // ...cells, at least / at most
+const BLAST_LIGHT_LIFE = 0.3;            // s, a blast's (longer, wider)
+const BLAST_LIGHT_REACH = 3;
+const FLIGHT_LIGHT_RADIUS = 6;           // cells, a bolt in flight
+const FLIGHT_LIGHT_INTENSITY = 1;
+const LANTERN_COLOR = [1, 0.85, 0.55];
+const PULSE_RADIUS_MAX = 12;             // cells: an impact's drawn flash and shock reach at most this
 const stores = new WeakMap();
 const finite = (x, fallback = 0) => Number.isFinite(x) ? x : fallback;
 const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
@@ -38,12 +58,31 @@ export function createWandRuntime(env) {
   let frameCommands = 0, frameTransfers = 0, frameNodes = 0, frameCasts = 0, frameRays = 0;
   let projectiles = [], fields = [], events = [], rayJobs = [], answers = [], transfers = [];
   let lastError = '', lastScan = null;
+  let flashes = [];   // impact lights: { at (world cell), rgb, radius, life, left }
   const totals = { casts: 0, rejected: 0, dropped: 0, traceErrors: 0, transferErrors: 0, teleports: 0 };
   const grid = (p) => p.clone().sub(offset);
   const absolute = (p) => p.clone().add(offset);
   const valid = (g, s) => !disposed && g === generation && s === sim && (!env.getSim || env.getSim() === s);
   const active = () => !!(projectiles.length || fields.length || events.length || rayJobs.length
-    || answers.length || transfers.length || tracePending || transferPending || clearancePending || visuals.active);
+    || answers.length || transfers.length || tracePending || transferPending || clearancePending || visuals.active
+    || flashes.length);
+  // the drawn offset of a cast from its physics origin (the wand's tip − the eye); none for a
+  // payload, which starts where its carrier was
+  const tipOffset = (cast) => (cast.payloadOrigin ? null : cast.visualOffset ?? null);
+  const materialOf = (node, cargo = null) => node.params?.material ?? cargo?.load.cells[0]?.[0] ?? null;
+  function flash(at, look, radius, blast = false) {
+    const life = blast ? BLAST_LIGHT_LIFE : IMPACT_LIGHT_LIFE;
+    if (flashes.length >= WAND_LIMITS.lights) flashes.shift();
+    flashes.push({ at: at.clone(), rgb: look.rgb, life, left: life,
+      radius: clamp(finite(radius, 1) * (blast ? BLAST_LIGHT_REACH : IMPACT_LIGHT_REACH), IMPACT_LIGHT_RADIUS[0], IMPACT_LIGHT_RADIUS[1]) });
+  }
+  // where a flight or beam landed: the impact's light and its event (vfx.js, audio.js)
+  function impacted(node, at, hit, cargo = null) {
+    const material = materialOf(node, cargo);
+    flash(at, lookOf(node.effect, material), node.params?.radius);
+    povEvents.emit('wand:impact', { point: grid(at), normal: hit?.normal?.clone() ?? null, effect: node.effect, material,
+      radius: finite(node.params?.radius, 1), id: hit?.id ?? -1, body: !!hit?.target });
+  }
   function error(message) { lastError = message; }
   function refund(cargo) {
     if (!cargo) return;
@@ -73,6 +112,8 @@ export function createWandRuntime(env) {
     povEvents.as({ id: cast.owner, at: grid(cast.origin) }, () => {
       for (const { target } of hits) target.hurt(amount, `Wand: ${node.id ?? node.effect}`, dir.clone());
     });
+    // the hitmarker (feel.js): emitted outside the owner's as(), so it isn't tagged as an NPC's hit
+    if (hits.length) povEvents.emit('impact', { source: 'wand', body: true, id: -1, point: grid(at) });
   }
   function commandFor(node, at, dir, dt) {
     const p = node.params;
@@ -83,10 +124,10 @@ export function createWandRuntime(env) {
   }
   function addField(node, at, dir, cast) {
     if (fields.length >= WAND_LIMITS.fields) { totals.dropped++; return; }
-    fields.push({ node, at: at.clone(), dir: dir.clone(), cast,
+    fields.push({ node, at: at.clone(), dir: dir.clone(), cast, born: time, seed: Math.random() * 100,
       until: time + clamp(finite(node.params.lifetime, 1), 0.02, 60), next: time });
   }
-  function leaf(node, at, dir, cast, { hit = null, cargo = null, field = false, dt = 1 } = {}) {
+  function leaf(node, at, dir, cast, { hit = null, cargo = null, field = false, dt = 1, sample = false } = {}) {
     const p = node.params;
     if (!cast.payloadOrigin && (node.op === 'beam' || node.op === 'touch')
         && (node.effect === 'place' || node.effect === 'emit') && cast.player?.pos) {
@@ -134,7 +175,12 @@ export function createWandRuntime(env) {
       if (p.collect && node.effect === 'dig') {
         transferJob({ node, at: at.clone(), dir: dir.clone(), cast, take: true, debris: true, expires: time + 1 });
       }
-      if (!field) visuals.pulse(grid(at), node.effect, Math.min(p.radius ?? 1, 3));
+      // a beam's samples draw nothing of their own: the beam and its end flash are consumeRay's
+      if (!field && !sample) visuals.pulse(grid(at), node.effect, Math.min(p.radius ?? 1, PULSE_RADIUS_MAX), null, { material: materialOf(node, cargo) });
+      if (node.effect === 'pressure' && finite(p.power) > 0 && node.op !== 'self' && !field) {
+        flash(at, lookOf('pressure'), p.radius, true);
+        povEvents.emit('wand:blast', { point: grid(at), radius: finite(p.radius, 1), power: finite(p.power) });
+      }
     }
     refund(cargo);
   }
@@ -173,6 +219,7 @@ export function createWandRuntime(env) {
       if (cargo && !cargo.load.cells.length) { error('Stored material depleted'); return; }
       projectiles.push({ node, at: at.clone(), velocity: dir.clone().multiplyScalar(clamp(finite(p.speed, 60), 0, 1200)),
         cast, cargo, age: 0, started: time - clamp(finite(ctx.dt), 0, WAND_LIMITS.dt),
+        start: at.clone(), offset: tipOffset(cast)?.clone() ?? null, drawn: null,
         pending: false, triggered: false, alive: true, traceFailures: 0,
         bounces: Math.max(0, finite(p.bounces)), pierce: Math.max(0, finite(p.pierce)), ignored: new Set() });
       return;
@@ -194,6 +241,7 @@ export function createWandRuntime(env) {
   }
   function endFlight(r, hit, expiry = false) {
     const dir = r.velocity.clone().normalize();
+    impacted(r.node, r.at, hit, r.cargo);
     leaf(r.node, r.at, dir, r.cast, { hit, cargo: r.cargo });
     r.cargo = null;
     triggerPayload(r, expiry ? 'expiry' : 'impact', hit);
@@ -218,7 +266,7 @@ export function createWandRuntime(env) {
         if (r.bounces > 0 && !actor) {
           r.bounces--; r.velocity.reflect(hit.normal); r.at.addScaledVector(hit.normal, 0.15);
         } else if (r.pierce > 0 && !r.cargo) {
-          r.pierce--; leaf(r.node, r.at, job.dir, r.cast, { hit });
+          r.pierce--; impacted(r.node, r.at, hit); leaf(r.node, r.at, job.dir, r.cast, { hit });
           triggerPayload(r, 'impact', hit);
           if (actor) r.ignored.add(actor.target.id);
           r.at.addScaledVector(job.dir, 0.6);
@@ -226,17 +274,23 @@ export function createWandRuntime(env) {
       }
       if (r.node.trigger === 'timer' && r.age + 1e-6 >= finite(r.node.params.delay, 0.5)) triggerPayload(r, 'timer');
       if (r.age + 1e-6 >= finite(r.node.params.lifetime, 2)) { endFlight(r, null, true); return; }
-      if (r.node.params.trail) queue({ ...commandFor(r.node, r.at, job.dir, job.dt), effect: 'emit', radius: 0.6, material: r.node.params.trail });
+      // the trail is made at its own material's temperature (fire's), not the bolt's (acid's, water's)
+      const trail = r.node.params.trail;
+      if (trail) queue({ ...commandFor(r.node, r.at, job.dir, job.dt), effect: 'emit', radius: 0.6, material: trail, temperature: ELEMENTS[E[trail]]?.temp });
       return;
     }
     const end = hit?.point ?? job.to;
-    visuals.pulse(grid(end), job.node.effect, 0.3, grid(job.from));
+    const offset = tipOffset(job.cast), material = materialOf(job.node), radius = finite(job.node.params.radius, 1);
+    visuals.pulse(grid(end), job.node.effect, radius, grid(job.from), { offset, material });
+    povEvents.emit('wand:beam', { from: grid(job.from).add(offset ?? zero), to: grid(end), dir: job.dir.clone(),
+      effect: job.node.effect, op: job.node.op, material, radius, hit: !!hit, normal: hit?.normal?.clone() ?? null, id: hit?.id ?? -1 });
+    if (hit) impacted(job.node, end, hit);
     if (job.node.op === 'beam' && !['teleport', 'scan', 'absorb', 'light'].includes(job.node.effect) && !job.node.params.stored) {
       const length = end.distanceTo(job.from);
       const n = Math.min(WAND_LIMITS.beamSamples, Math.max(1, Math.ceil(length / Math.max(1, job.node.params.radius ?? 1))));
       for (let i = 1; i <= n; i++) {
         if (enqueue(job.node, job.from.clone().lerp(end, i / n), job.dir, job.cast)) {
-          Object.assign(events.at(-1), { apply: true, options: { hit: i === n ? hit : null, dt: 1 / n } });
+          Object.assign(events.at(-1), { apply: true, options: { hit: i === n ? hit : null, dt: 1 / n, sample: true } });
         }
       }
     } else leaf(job.node, end, job.dir, job.cast, { hit });
@@ -339,20 +393,39 @@ export function createWandRuntime(env) {
     }
   }
   function draw(dt) {
-    const items = [], lights = [];
-    for (const r of projectiles) if (r.alive) {
-      items.push({ position: grid(r.at), effect: r.node.effect, radius: Math.min(r.node.params.radius ?? 0.3, 0.65) });
-    }
+    const items = [], lights = [], flights = [];
+    const room = () => lights.length < WAND_LIMITS.lights;
     for (const f of fields) {
-      items.push({ position: grid(f.at), effect: f.node.effect, radius: Math.min(f.node.params.radius ?? 1, 2) });
-      if (f.node.effect === 'light' && lights.length < WAND_LIMITS.lights) lights.push({ position: grid(f.at),
-        color: [1, 0.85, 0.55], radius: f.node.params.radius ?? 12, intensity: f.node.params.power ?? 2 });
+      items.push({ position: grid(f.at), effect: f.node.effect, material: f.node.params.material, kind: 'field',
+        radius: f.node.params.radius ?? 1, age: time - f.born, left: f.until - time, seed: f.seed });
+      if (f.node.effect === 'light' && room()) lights.push({ position: grid(f.at),
+        color: LANTERN_COLOR, radius: f.node.params.radius ?? 12, intensity: f.node.params.power ?? 2 });
     }
+    flashes = flashes.filter((fl) => (fl.left -= dt) > 0);
+    for (let i = flashes.length - 1; i >= 0 && room(); i--) {
+      const fl = flashes[i];
+      lights.push({ position: grid(fl.at), color: fl.rgb, radius: fl.radius, intensity: IMPACT_LIGHT_INTENSITY * fl.left / fl.life });
+    }
+    for (const r of projectiles) if (r.alive) {
+      // drawn from the tip, converging on the physics position (which items keep as `position`)
+      const k = r.offset ? Math.max(0, 1 - r.at.distanceTo(r.start) / WAND_CONVERGE_CELLS) : 0;
+      const offset = k > 0 ? r.offset.clone().multiplyScalar(k) : null;
+      const material = materialOf(r.node, r.cargo), look = lookOf(r.node.effect, material);
+      items.push({ position: grid(r.at), offset, velocity: r.velocity.clone(), effect: r.node.effect, material,
+        radius: r.node.params.radius, kind: 'bolt' });
+      const seen = offset ? r.at.clone().add(offset) : r.at.clone();
+      if (r.drawn && !r.drawn.equals(seen)) flights.push({ from: grid(r.drawn), to: grid(seen), effect: r.node.effect, material });
+      r.drawn = seen;
+      if (room()) lights.push({ position: grid(seen), color: look.rgb, radius: FLIGHT_LIGHT_RADIUS, intensity: FLIGHT_LIGHT_INTENSITY });
+    }
+    // one trail event per frame for every bolt that moved (vfx.js's trail particles)
+    if (flights.length) povEvents.emit('wand:flight', { flights, dt });
     world.setLights(lights);
     visuals.update(items, dt);
     if (active()) env.requestRender?.();
   }
-  function advance(nextCtx, firing) {
+  // view (optional, visual only): { tip: the wand's tip in grid cells, tipWorld: in world units }
+  function advance(nextCtx, firing, view = null) {
     if (disposed) return;
     if (nextCtx.sim !== sim) { sim = nextCtx.sim; resetWorld(); }
     ctx = nextCtx;
@@ -371,7 +444,12 @@ export function createWandRuntime(env) {
     while (answers.length && nodesLeft > 0) {
       const answer = answers.shift(); nodesLeft--; frameNodes++;
       if (answer.job) consumeRay(answer.job, answer.hit);
-      else if (answer.teleport) { answer.cast.player.teleport(grid(answer.teleport)); totals.teleports++; }
+      else if (answer.teleport) {
+        const from = answer.cast.player.pos?.clone?.() ?? null, to = grid(answer.teleport);
+        answer.cast.player.teleport(to); totals.teleports++;
+        visuals.pulse(to.clone().setY(to.y + BODY_HEIGHT / 2), 'teleport', BODY_HEIGHT / 2);
+        povEvents.emit('wand:teleport', { from, to });
+      }
     }
     projectiles = projectiles.filter((r) => r.alive);
     if (firing && selected && ctx.primary && current && !compiled.errors.length) {
@@ -382,8 +460,12 @@ export function createWandRuntime(env) {
         if (current.mana < cost) { totals.rejected++; error('Not enough mana'); break; }
         const at = absolute(ctx.eye), dir = ctx.dir.clone().normalize();
         const cast = { owner: ctx.owner?.id ?? ctx.owner ?? env.owner ?? povEvents.actor?.id ?? PLAYER,
-          player: ctx.player, load: current.load, origin: at.clone() };
+          player: ctx.player, load: current.load, origin: at.clone(),
+          visualOffset: view?.tip ? absolute(view.tip).sub(at) : null };
         if (!enqueue(clone(root), at, dir, cast)) break;
+        const main = mainNode(root);
+        povEvents.emit('wand:fire', { origin: grid(at), muzzle: view?.tip?.clone() ?? grid(at), muzzleWorld: view?.tipWorld?.clone() ?? null,
+          dir: dir.clone(), effect: main?.effect ?? 'spark', material: main?.params?.material ?? null });
         current.mana -= cost; frameCasts++; totals.casts++; lastError = '';
         current.cooldown += Math.max(0.02, finite(compiled.stats.castDelays?.[current.index], compiled.config.castDelay));
         current.index++;
@@ -430,7 +512,7 @@ export function createWandRuntime(env) {
   function cancelEffects() {
     for (const r of projectiles) refund(r.cargo);
     for (const job of transfers) refund(job.cargo);
-    projectiles = []; fields = []; events = []; rayJobs = []; answers = []; transfers = [];
+    projectiles = []; fields = []; events = []; rayJobs = []; answers = []; transfers = []; flashes = [];
     generation++; tracePending = transferPending = clearancePending = 0;
     visuals.clear(); world.setLights([]);
   }
@@ -444,7 +526,7 @@ export function createWandRuntime(env) {
   return {
     equip(def) { const result = applyDefinition(def); selected = true; return result; },
     setDefinition: applyDefinition,
-    update(nextCtx) { advance(nextCtx, true); },
+    update(nextCtx, view) { advance(nextCtx, true, view); },
     tick(nextCtx) { advance(nextCtx, false); },
     deselect() { selected = false; },
     resetWorld,
