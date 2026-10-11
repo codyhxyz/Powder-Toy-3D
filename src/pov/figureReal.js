@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js';
 import { BODY_HEIGHT } from './constants.js';
 import { BODY_MODEL_URL } from './bodyModel.js';
@@ -50,7 +51,8 @@ const approach = (rate, dt) => 1 - Math.exp(-rate * dt);
 
 let gltfPromise = null;   // one download for the page
 function loadModel() {
-  gltfPromise ??= new GLTFLoader().loadAsync(BODY_MODEL_URL);
+  // the file is meshopt-compressed (tools/character-compress.mjs)
+  gltfPromise ??= new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).loadAsync(BODY_MODEL_URL);
   return gltfPromise;
 }
 const garbByModel = new WeakMap();   // the clothes' geometry, built once per download and shared by every body

@@ -1,7 +1,8 @@
 // Builds public/models/character/mannequin.glb from Quaternius's Universal
 // Animation Library (CC0): the mannequin mesh and its skin, plus only the clips
-// the realistic body plays (figureReal.js). Plain glTF surgery, no
-// dependencies: the source file is read as data, never run.
+// the realistic body plays (figureReal.js). Plain glTF surgery (the source file
+// is read as data, never run), then tools/character-compress.mjs compresses the
+// result with meshopt and checks it against the uncompressed one.
 //
 // usage: node tools/character-pack.mjs <UAL1_Standard.glb> <UAL1_Standard_RM.glb> [out.glb]
 //   (both from the Standard zip's Unreal-Godot folder; the _RM twin has root
@@ -13,6 +14,7 @@
 // extras.speed: how fast its root travels, in model units (metres) per second.
 import fs from 'node:fs';
 import path from 'node:path';
+import { compressCharacter, formatReport, sizes } from './character-compress.mjs';
 
 const [srcPath, rmPath, outArg] = process.argv.slice(2);
 if (!srcPath || !rmPath) {
@@ -176,7 +178,11 @@ const total = 12 + 8 + jsonBuf.length + 8 + bin.length;
 header.writeUInt32LE(GLB_MAGIC, 0); header.writeUInt32LE(GLB_VERSION, 4); header.writeUInt32LE(total, 8);
 jh.writeUInt32LE(jsonBuf.length, 0); jh.writeUInt32LE(CHUNK_JSON, 4);
 bh.writeUInt32LE(bin.length, 0); bh.writeUInt32LE(CHUNK_BIN, 4);
+const packed = Buffer.concat([header, jh, jsonBuf, bh, bin]);
+const { output, report: check } = await compressCharacter(packed);
 fs.mkdirSync(path.dirname(outPath), { recursive: true });
-fs.writeFileSync(outPath, Buffer.concat([header, jh, jsonBuf, bh, bin]));
+fs.writeFileSync(outPath, output);
 console.log(report.join('\n'));
-console.log(`moving tracks ${moving.size} of ${J.nodes.length * 3}; wrote ${outPath} (${(total / 1024).toFixed(0)} KB)`);
+console.log(formatReport(check));
+console.log(`moving tracks ${moving.size} of ${J.nodes.length * 3}; uncompressed ${sizes(packed)}`);
+console.log(`wrote ${outPath}: ${sizes(Buffer.from(output))}`);
