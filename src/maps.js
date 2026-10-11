@@ -68,7 +68,8 @@ export const GAMEMODES = [
 //   name, desc   the button's label and its line
 export const QUICK_PLAY = [
   { key: 'slayer', mode: 'slayer', map: 'damValley', name: 'Play', desc: 'Team Slayer · Dam Valley' },
-  { key: 'siege', mode: 'siege', map: 'damValley', name: 'Siege', desc: 'Classes · attack and defend' },
+  // (the Lab: on Dam Valley the attackers' bots don't reach point A up on the dam's end yet, docs/modes.md)
+  { key: 'siege', mode: 'siege', map: 'lab', name: 'Siege', desc: 'Classes · attack and defend · Lab' },
 ];
 
 export const mapByKey = (key) => MAPS.find((m) => m.key === key) ?? null;

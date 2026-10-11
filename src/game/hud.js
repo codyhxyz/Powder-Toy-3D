@@ -1,5 +1,5 @@
 import { h } from '../ui/dom.js';
-import { MODES, MODE_KEYS, TEAM_NAME, TEAM_CSS, KILLFEED_S, KILLFEED_MAX } from './rules.js';
+import { MODES, MODE_KEYS, TEAM_NAME, TEAM_CSS, KILLFEED_S, KILLFEED_MAX, styleOf } from './rules.js';
 import { deathNotice, iconFor, KF_COLOR } from '../pov/killfeed.js';
 import './game.css';
 
@@ -152,7 +152,7 @@ export function createGameHud({ onStart, onEnd, onSide, onClose, onLeave }) {
     get reportOpen() { return reportOn; },
     show(v) {
       root.classList.toggle('on', v);
-      if (!v) { bodyClass('game-live', false); bodyClass('game-on', false); }
+      if (!v) for (const c of ['game-live', 'game-on', 'game-halo', 'game-reporting']) bodyClass(c, false);
     },
     holdBoard(v) { boardHeld = v; },
     setMenu(v) { menuOpen = v; },
@@ -192,7 +192,9 @@ export function createGameHud({ onStart, onEnd, onSide, onClose, onLeave }) {
       for (let i = lines.length - 1; i >= 0; i--) if (now - lines[i].at > KILLFEED_S) { lines[i].el.remove(); lines.splice(i, 1); }
       reportOn = now < reportUntil;
       bodyClass('game-live', st.running);
+      bodyClass('game-halo', st.running && styleOf(st.mode) === 'halo');
       bodyClass('game-on', st.running || reportOn);
+      bodyClass('game-reporting', reportOn);
       toggle(top, 'on', st.running);
       toggle(chip, 'on', !st.running && !menuOpen && now >= endUntil && !reportOn);
       toggle(end, 'on', now < endUntil && !reportOn);

@@ -13,6 +13,11 @@
    the death screen's drop-point line and cause */
 body.game-on .pov-hint, body.game-on .pov-lock { display: none; }
 body.game-live .pov-respawn, body.game-live .pov-cause { display: none; }
+/* the carnage report has the screen: the weapon bar (z-index above the HUD's) would cover Leave */
+body.game-reporting .hotbar, body.game-reporting .hb-held { display: none !important; }
+/* Halo has no weapon selector: two guns swap on 1 / 2 or the wheel, the one in hand shows bottom-right
+   (.hb-held), and the selector would hang over the score top-centre */
+body.game-halo .hotbar { display: none !important; }
 
 /* ---- top centre: Halo's score, clock and objective */
 .game-top {

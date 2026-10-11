@@ -78,11 +78,15 @@ try {
   })));
   check(bots.length > 0, 'bots in the match', bots.length);
   for (const b of bots) {
-    check(b.carry?.join() === 'SMG,GUN' && b.grenades === 2 && b.shields === 1, `bot ${b.id}: carry, grenades, shield`, b);
-    check(b.weapons?.join() === 'SMG,GUN' || (b.carry && b.weapons?.join() === b.carry.join()), `bot ${b.id}: weapons are its carry`, b.weapons);
+    // (a bot may have swapped its SMG for a power weapon off a pad already)
+    check(b.carry?.length === 2 && b.carry[1] === 'GUN' && b.grenades === 2 && b.shields === 1, `bot ${b.id}: carry, grenades, shield`, b);
+    check(b.carry && b.weapons?.join() === [...b.carry, 'FRAG'].join(), `bot ${b.id}: weapons are its carry and its frags`, b.weapons);
   }
 
-  // ---- a pad pickup: stand by the rocket launcher, look at it, press E
+  // ---- a pad pickup: stand by the rocket launcher, look at it, press E. A fresh match with one bot,
+  // far off, so no bot takes the launcher first (they go for pads: arsenal.js)
+  await p.evaluate(() => window.__app.pov.game.start('slayer', { side: 'red', teamSize: 1 }));
+  await p.waitForTimeout(300);
   const pad = await p.evaluate(() => window.__app.pov.game.arsenal.pads.find((x) => x.key === 'ROCKET'));
   check(pad?.ready, 'the lab has a ready rocket pad', pad);
   if (pad) {

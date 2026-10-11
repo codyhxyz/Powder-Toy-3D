@@ -406,6 +406,10 @@ a frame for a moment at a Dam Valley start, while every bot tries its bearings t
 
 ## Not yet
 
+- Siege on Dam Valley stalls (browser run 2026-10-11): the attackers' bots reach the valley floor under point A (on
+  red's abutment top, 20 cells up) and burn in the forest the Pyros light; in 75 s none stood on it. On the Lab red
+  took A in 44 s. The start menu's Siege button plays the Lab (`maps.js QUICK_PLAY`) until A and B move somewhere
+  the nav reaches, or the bots learn to keep out of fire.
 - A bot with a power weapon doesn't save it for a fight worth it, and bots can't reach the ridges' snipers (no
   jetpack in the nav): a bot seeking one gives up and leaves that pad alone for 60 s.
 - Siege (2026-10-11 rework) is unplayed in a browser: the balance (setup 20 s, 12 s captures, 4 s / 8 s respawns,
