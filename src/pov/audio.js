@@ -90,6 +90,9 @@ const SHIELD_BEEP_S = 0.5;              // s between beeps of the empty-shield a
 const POGO_PITCH_STEP = 0.12;           // × playback rate per timed step up: each climb boings higher
 const KNIFE_SWING_RATE = 1.35;          // the knife's swing is the axe's whoosh, quicker and thinner
 const LASER_CHARGE_RATE = [0.6, 2.2];     // the laser's charge whine plays at this playback rate empty → full: it climbs as it fills
+// Halo's medals (game/feel.js 'game:medal'): the player's own, a sting per kind, one after another
+const MEDAL_STING = { multi: 'medalMulti', spree: 'medalSpree', style: 'medalStyle', objective: 'medalObjective' };
+const MEDAL_STING_GAP_S = 0.18;         // s between the stings of one kill's medals, so a stack reads as a stack
 
 // ---- presets
 // ZzFX parameter order (paste any of these into https://killedbyapixel.github.io/ZzFX/ to retune):
@@ -219,6 +222,17 @@ const PRESETS = {
   eat: [.6, .2, 260, , .03, .07, 4, 1.5, -1, , , , .09, 3, , , , .55, , , -1100],
   // a body bursting into meat: a heavy, wet splat sliding down
   gib: [1.2, .15, 110, , .05, .35, 4, 1.8, -2, , , , , 4, , .15, .03, .5, .05, , -900],
+  // -- Halo's layer (game/feel.js): our own synths, no Halo audio
+  // a multi-kill: a saw stab that jumps a fifth up, bright and punchy
+  medalMulti: [.7, 0, 330, .005, .07, .3, 2, 1.2, , , 165, .07, , , , , .03, .6, .02],
+  // a spree: a low brass swell with a slow wobble, a jump up an octave
+  medalSpree: [.8, 0, 110, .02, .25, .5, 2, 1.6, , , 110, .12, , , 3, , .05, .7, , .15],
+  // a style medal (a beat down, a splatter): a clean sine chime with a jump up
+  medalStyle: [.55, 0, 880, .002, .05, .3, 0, 1, , , 440, .05, , , , , .04, .6],
+  // an objective medal (a flag score): a triangle two-note call
+  medalObjective: [.6, 0, 523, .005, .1, .35, 1, 1, , , 262, .1, , , , , .03, .6],
+  // an Overshield taken: a rising, wavering charge as long as its charge-up (powerups.js, 3 s)
+  overshield: [.6, 0, 140, .1, 2.5, .4, 0, 1, .7, , , , , , 9, , , .7, , .25],
 };
 // presets that play as seamless loops (one render each)
 const LOOPS = new Set(['pourLoop', 'physHum', 'torchLoop', 'jetLoop', 'laserCharge']);
@@ -488,6 +502,11 @@ export function createPovAudio({ camera, getVolume, getScale, state }) {
   povEvents.on('body:eat', ({ point, by }) => { if (live()) play('eat', { at: by ? point ?? null : null }); });
   povEvents.on('body:gib', ({ point }) => { if (live()) play('gib', { at: point ?? null }); });
   povEvents.on('perk:revive', () => { if (live()) play('perk'); });
+  // Halo's layer (game/feel.js): your medals' stings, a beat apart; an Overshield taken, yours close, a bot's where it is
+  povEvents.on('game:medal', ({ mine, kind, order = 0 }) => {
+    if (live() && mine) play(MEDAL_STING[kind] ?? MEDAL_STING.style, { delay: order * MEDAL_STING_GAP_S });
+  });
+  povEvents.on('game:powerup', ({ mine, point }) => { if (live()) play('overshield', { at: mine ? null : point ?? null }); });
 
   povEvents.on('impact', ({ source, point, id, energy, broke, body, backstab }) => {
     if (!live()) return;
