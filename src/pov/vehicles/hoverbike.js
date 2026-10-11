@@ -100,7 +100,7 @@ export function buildHoverbike(R, phys, look, { at, yaw, team, key }) {
   const state = { speed: 0, slip: 0, grounded: 0, overLiquid: false, boost: 1, wet: 0, hot: false };
   let yawRate = 0, hopWait = 0, boostIdle = 0, slope = 0, lean = 0, pitch = 0;
   const q = new THREE.Quaternion(), fwd = new THREE.Vector3(), right = new THREE.Vector3(), o = new THREE.Vector3();
-  const ray = new R.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: -1, z: 0 });
+  const ray = new R.Ray(o, { x: 0, y: -1, z: 0 });   // from o (Rapier copies the origin into each cast)
 
   return {
     spec: HOVERBIKE, body, collider, root, driver, samples, state,
@@ -112,18 +112,18 @@ export function buildHoverbike(R, phys, look, { at, yaw, team, key }) {
       const m = HOVERBIKE.MASS;
       // the springs: each ray from a corner, down through the cells' copy
       let grounded = 0, liquid = 0, front = 0, back = 0, nf = 0, nb = 0, Fy = 0;
-      if (!input.dead) RAYS.forEach(([x, z]) => {   // a wreck's fans are dead
+      for (let i = 0; i < RAYS.length && !input.dead; i++) {   // a wreck's fans are dead
+        const x = RAYS[i][0], z = RAYS[i][1];
         o.set(x, 0, z).applyQuaternion(q).add(t);
-        ray.origin = { x: o.x, y: o.y, z: o.z };
         const hit = world.castRay(ray, RAY_MAX, true, undefined, undefined, undefined, undefined, ground);
-        if (!hit) return;
+        if (!hit) continue;
         const d = hit.timeOfImpact;
         grounded++;
         if (overLiquid(cells, o.x / CELL_M, (o.y - d) / CELL_M, o.z / CELL_M)) liquid++;
         if (z > 0) { front += d; nf++; } else { back += d; nb++; }
         const f = K_RAY * (HOVER_HEIGHT - d) - C_RAY * lv.y;
         Fy += THREE.MathUtils.clamp(f, 0, MAX_RAY_FORCE);
-      });
+      }
       state.grounded = grounded;
       state.overLiquid = liquid > 0;
       if (nf && nb) slope = Math.atan2(back / nb - front / nf, 2 * RAYS[0][1]);
