@@ -6,7 +6,8 @@
 // and the jeep blowing up into a burning wreck and coming back.
 // usage: node tools/vehicles-check.mjs [--port 5402] [--shot prefix]   (needs a dev server; AC power)
 //   --shot writes prefix-jeep.jpg, prefix-bike.jpg and prefix-wreck.jpg
-import { chromium } from 'playwright';
+import { launchBrowser, newTestPage } from './browser.mjs';
+import { pageGpu } from './page-gpu.mjs';
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
 const port = opt('port', '5402');
@@ -14,8 +15,8 @@ const shotPath = opt('shot', null);
 const W = 960, H = 600;
 const DRIFT_SLIP_MIN = 15 * Math.PI / 180;   // rad: a hard turn at speed slides at least this far off the nose
 
-const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
-const p = await b.newPage({ viewport: { width: W, height: H } });
+const b = await launchBrowser();
+const p = await pageGpu(await newTestPage(b, { mode: shotPath ? 'visual' : 'preview', viewport: { width: W, height: H } }));
 const errs = [];
 p.on('console', (m) => { if (m.type() === 'error' && !/ERR_CONNECTION_REFUSED/.test(m.text())) errs.push(m.text().slice(0, 400)); });
 p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 600)));
@@ -218,11 +219,11 @@ try {
   await settle(300);
 
   // ---- the jeep goes up: a wreck, fire, and a new one later
-  const fire0 = await ev(async () => { const { E } = await import('/src/elements.js'); return window.__app.sim.census()[E.FIRE]?.n ?? 0; });
+  const fire0 = await ev(async () => { const { E } = await import('/src/elements.js'); return (await window.__pageGpu.census())[E.FIRE]?.n ?? 0; });
   await ev(() => { window.__destroyed = null; window.__app.pov.events.on('vehicle:destroyed', (e) => { window.__destroyed = e; }); });
   await ev(() => { const vs = window.__app.pov.vehicles; const v = vs.list.find((v) => v.kind === 'jeep' && v.alive); vs.damage(v, 100, 'Test'); });
   await settle(1200);
-  const fire1 = await ev(async () => { const { E } = await import('/src/elements.js'); const c = window.__app.sim.census(); return { fire: c[E.FIRE]?.n ?? 0, powder: c[E.GUNPOWDER]?.n ?? 0 }; });
+  const fire1 = await ev(async () => { const { E } = await import('/src/elements.js'); const c = await window.__pageGpu.census(); return { fire: c[E.FIRE]?.n ?? 0, powder: c[E.GUNPOWDER]?.n ?? 0 }; });
   if (shotPath) {
     await ev(() => { const a = window.__app.pov; const v = a.vehicles.list.find((v) => v.kind === 'jeep'); const t = v.impl.body.translation(); a.player.spawn(a.player.pos.clone().set(t.x / 0.3 - 16, 0, t.z / 0.3 - 16)); a.setLook(Math.atan2(16, 16) + Math.PI, -0.2); a.camera.third = true; });
     await settle(700);

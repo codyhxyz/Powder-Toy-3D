@@ -7,7 +7,8 @@
 //   - a coal block lit at the top: how hot it burns, how much is left
 // Prints the numbers as JSON and writes the stills to <outDir>.
 // usage: node tools/rock-check.mjs <outDir> [--port 5392] [--walls-only]
-import { chromium } from 'playwright';
+import { launchBrowser, newTestPage } from './browser.mjs';
+import { pageGpu } from './page-gpu.mjs';
 import { mkdirSync } from 'fs';
 import { DETAIL, settingKey } from '../src/gfx/detail.js';
 
@@ -28,8 +29,8 @@ const ACID_SAMPLES = 6;               // ...this many, then the acid's still
 const ACID_STEPS = 400;               // sim steps of acid in the pit in all
 const FIRE_STEPS = 1200;              // sim steps of the coal fire before its still
 
-const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
-const p = await b.newPage({ viewport: VIEW });
+const b = await launchBrowser();
+const p = await pageGpu(await newTestPage(b, { mode: 'visual', viewport: VIEW }));   // stills at the app's own cadence
 const errs = [];
 p.on('console', (m) => { if (m.type() === 'error') errs.push(m.text().slice(0, 1000)); });
 p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 1000)));
@@ -79,8 +80,8 @@ const res = await p.evaluate(async ([SLABS, L, SUN]) => {
 
   // census of boxes of cells [x0, x1, y0, y1, z0, z1), from one read of the
   // state: per box, element counts, the hottest cell of each, the highest air pressure
-  window.__census = (boxes) => {
-    const [SA, SB] = sim.readState();
+  window.__census = async (boxes) => {
+    const [SA, SB] = await window.__pageGpu.readState(sim);
     return boxes.map(([x0, x1, y0, y1, z0, z1]) => {
       const n = {}, Tmax = {};
       let Pmax = 0;

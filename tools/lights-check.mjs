@@ -3,7 +3,8 @@
 // sets wood alight, the lantern switches and lands lit, and the flamethrower's
 // stream fills its reach with fire.
 // usage: node tools/lights-check.mjs [--port 5371] [--shots dir]   (needs a dev server)
-import { chromium } from 'playwright';
+import { launchBrowser, newTestPage } from './browser.mjs';
+import { pageGpu } from './page-gpu.mjs';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -15,8 +16,9 @@ const shots = opt('shots', null);
 const W = 960, H = 600;
 const MIDNIGHT_STEPS = 42000;   // the day clock at midnight (gfx/daylight.js: phaseSteps(0) with the 10 am start)
 
-const b = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
-const p = await b.newPage({ viewport: { width: W, height: H } });
+const b = await launchBrowser();
+// visual: the checks measure the lamps' light in screenshots, at the app's own cadence
+const p = await pageGpu(await newTestPage(b, { mode: 'visual', viewport: { width: W, height: H } }));
 const errs = [];
 p.on('console', (m) => { if (m.type() === 'error') errs.push(m.text().slice(0, 300)); });
 p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 500)));
@@ -34,7 +36,7 @@ const wait = (ms) => p.waitForTimeout(ms);
 const shot = async (name) => { if (shots) await p.screenshot({ path: `${shots}/${name}.jpg`, type: 'jpeg', quality: 70 }); };
 const census = () => ev(async () => {
   const { ELEMENTS } = await import('/src/elements.js');
-  return Object.fromEntries(Object.entries(window.__app.sim.census()).map(([k, v]) => [ELEMENTS[k].key, v.n]));
+  return Object.fromEntries(Object.entries(await window.__pageGpu.census()).map(([k, v]) => [ELEMENTS[k].key, v.n]));
 });
 const hold = (key) => ev((k) => window.__app.pov.toolbelt.select(k), key);
 const lampCount = () => ev(async () => (await import('/src/gfx/uniforms.js')).gfxUniforms.uLampCount.value);

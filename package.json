@@ -11,6 +11,7 @@
     "check:imports": "node tools/check-imports.mjs",
     "check:gpu": "node tools/gpu-foundation-check.mjs",
     "check:budget": "node tools/budget-check.mjs",
+    "check:async": "node tools/check-async-reads.mjs",
     "relay": "wrangler dev --config relay/wrangler.toml",
     "construct": "node scripts/construct.mjs",
     "mcp:construct": "node scripts/mcp-construct.mjs"
