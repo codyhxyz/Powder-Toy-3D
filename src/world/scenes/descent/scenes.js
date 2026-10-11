@@ -1,6 +1,6 @@
 import { helpersGLSL, definesGLSL, jsConstants, compileShared, groundScan } from '../themedShared.js';
 import { E } from '../../../elements.js';
-import { bakeWang, wangGLSL, minesKit, MAT, GEOM, WANG_OUT } from '../../wang/index.js';
+import { bakeWang, wangGLSL, minesKit, coalKit, snowKit, MAT, GEOM, WANG_OUT } from '../../wang/index.js';
 
 // Descent (docs/descent-contract.md): the starting mountain and the first three
 // biomes of Noita's main path, one world scene per level, each ending at the
@@ -164,8 +164,8 @@ const COMMON_SALTS = {
 
 // Each level's own: its biome's tunnels and features. kit: a Wang tile kit
 // (src/world/wang/kits/) tiles the biome band instead of the lattice: swapping
-// the Coal Pits' or Snowy Depths' in is `kit: coalKit` / `kit: snowKit` here
-// (then node scripts/check-descent-levels.mjs --write regenerates levels.js).
+// another kit in is one `kit:` here (then node scripts/check-descent-levels.mjs
+// --write regenerates levels.js). All three levels are Wang now (2026-10-11).
 export const DS_LEVEL_DEFS = [
   { key: 'descentMines', label: 'Descent: Mines', name: 'Mines', tier: 1, kit: minesKit, ints: {
     LEVEL: 0, LAYERS: 5, TUN_HALF: 4, TUN_H: 10, BUMP_H: 2,   // 7 wide, 10 tall (+2): Noita's mine galleries
@@ -174,13 +174,13 @@ export const DS_LEVEL_DEFS = [
     ROOF: 0,
     ENTRY_I: 8, ENTRY_K: 10 } },                               // Wang levels: the top layer's unit the way in drops into
                                                                // (Mines: just east of where the ramp from the mouth bottoms out)
-  { key: 'descentCoal', label: 'Descent: Coal Pits', name: 'Coal Pits', tier: 2, kit: null, ints: {
+  { key: 'descentCoal', label: 'Descent: Coal Pits', name: 'Coal Pits', tier: 2, kit: coalKit, ints: {
     LEVEL: 1, LAYERS: 7, TUN_HALF: 5, TUN_H: 11, BUMP_H: 1,   // 9 wide, 11 tall (+1)
     SEG_ON: 560, SHAFT_ON: 150, SUMP_ON: 300, OIL_ON: 0, FEATURE_ON: 350,   // rubble heaps
     HALL_ON: 450, HALL_R2: 121, HALL_H: 14, ORE: 25,           // caverns of radius 11 at crossings; coal pockets
     ROOF: 168,
     ENTRY_I: 12, ENTRY_K: 10 } },                              // (under the level above's exit pit, as the lattice's spawn)
-  { key: 'descentSnow', label: 'Descent: Snowy Depths', name: 'Snowy Depths', tier: 3, kit: null, ints: {
+  { key: 'descentSnow', label: 'Descent: Snowy Depths', name: 'Snowy Depths', tier: 3, kit: snowKit, ints: {
     LEVEL: 2, LAYERS: 7, TUN_HALF: 4, TUN_H: 11, BUMP_H: 1,
     SEG_ON: 600, SHAFT_ON: 130, SUMP_ON: 280, OIL_ON: 0, FEATURE_ON: 300,   // brick ruins
     HALL_ON: 250, HALL_R2: 81, HALL_H: 13, ORE: 2,             // smaller ice halls; crystal pockets
