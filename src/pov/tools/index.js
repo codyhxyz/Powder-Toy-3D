@@ -40,10 +40,10 @@ export { emptyLoads };
 //   env.ballistics the shared projectiles (ballistics.js: the guns' rounds, the bomb, the rocket): the toolbelt
 //                  flies them every frame whichever tool is held, and on its own clock while hidden
 //   env.feedback   the shared "can't" responses, the same for every tool:
-//                    toast(text)         a toast
-//                    notice(text)        a toast, at most once per NOTICE_INTERVAL per tool
+//                    toast(text, opts)   a toast (opts: ui/hud.js toast's, { kind })
+//                    notice(text, opts)  a toast, at most once per NOTICE_INTERVAL per tool
 //                    shake()             a shake of the tool's slot
-//                    refuse(text, extra) a notice, a shake and tool:action 'refuse' (extra: { id, point })
+//                    refuse(text, extra) an error notice, a shake and tool:action 'refuse' (extra: { id, point })
 
 const modules = import.meta.glob('./*.tool.js', { eager: true });
 // every tool's definition, with where it came from, in catalog order
@@ -175,17 +175,18 @@ export function createToolbelt(env) {
     const slot = gearByKey(def.key).slot;
     let lastNotice = -Infinity;
     const feedback = {
-      toast: (text) => env.hud?.toast?.(text),
+      toast: (text, opts) => env.hud?.toast?.(text, opts),
       shake: () => hotbar.shake(slot),
-      notice(text) {
+      notice(text, opts) {
         const now = performance.now() / MS_PER_S;
         if (now - lastNotice < NOTICE_INTERVAL) return false;
         lastNotice = now;
-        feedback.toast(text);
+        feedback.toast(text, opts);
         return true;
       },
+      // a tool that can't: GMod's error notice (ui/notices.js), the slot's shake
       refuse(text, extra) {
-        if (!feedback.notice(text)) return;
+        if (!feedback.notice(text, { kind: 'error' })) return;
         feedback.shake();
         povEvents.emit('tool:action', { tool: def.key.toLowerCase(), action: 'refuse', ...extra });
       },

@@ -319,7 +319,7 @@ export function createPov(app) {
     lock: requestLock,
     unlock: () => { if (document.pointerLockElement === canvas) document.exitPointerLock(); },
     isLocked: () => locked,
-    toast: (text) => hud.toast(text),
+    toast: (text, opts) => hud.toast(text, opts),
     allowed: () => !(game.running && game.style === 'halo'),   // a Halo match: no classes (docs/halo-contract.md)
     inRoom: () => game.inSpawnRoom(),                         // Siege: the side's respawn room, or setup (TF2)
   }) : null;
@@ -456,14 +456,14 @@ export function createPov(app) {
   async function dropIn(opts = {}) {
     const { swoop = SWOOP_S, hint = true } = opts;
     if (mode === 'on' || mode === 'entering' || starting) return;
-    if (app.mp.isGuest) { hud.toast("POV isn't available as a guest yet"); return; }
+    if (app.mp.isGuest) { hud.toast("POV isn't available as a guest yet", { kind: 'error' }); return; }
     if (mode === 'exiting') {   // changed our mind halfway out: fly back in
       mode = 'entering';
       povCam.startSwoop('in', camPose());
       requestLock();
       return;
     }
-    if (!createPlayer) { hud.toast('First-person mode is still being built'); return; }
+    if (!createPlayer) { hud.toast('First-person mode is still being built', { kind: 'error' }); return; }
     requestLock();   // while the key press still counts as a user gesture
     starting = true;
     const foundAt = new THREE.Vector3();   // the window's origin when the drop point was found (docs/scaling.md D11)
@@ -476,7 +476,7 @@ export function createPov(app) {
       dropPoint.z += foundAt.z - o.z;
     } catch (err) {
       console.error('POV failed to start', err);
-      hud.toast("Couldn't drop in here");
+      hud.toast("Couldn't drop in here", { kind: 'error' });
       starting = false;
       if (document.pointerLockElement === canvas) document.exitPointerLock();
       return;

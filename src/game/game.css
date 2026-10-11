@@ -68,13 +68,11 @@ body.game-halo .hotbar { display: none !important; }
 .game-chip { position: absolute; top: 64px; left: 50%; transform: translateX(-50%); padding: 4px 10px; font: 500 12px var(--ui); display: none; opacity: 0.8; }
 .game-chip.on { display: block; }
 
-/* ---- scoreboard (Tab) and the carnage report's tables */
-.game-board {
-  position: absolute; left: 50%; top: 150px; transform: translateX(-50%);
-  width: min(640px, calc(100vw - 32px)); padding: 14px 16px; display: none;
-}
-.game-board.on { display: block; }
-.game-board-title { font: 600 13px var(--ui); margin-bottom: 10px; text-align: center; opacity: 0.85; }
+/* (the scoreboard on Tab is GMod's, ui/scoreboard.css): while it's up, its header has the
+   score and the clock, so the top centre (and the first spawn's keys card) steps aside for it */
+body.sb-on .game-top, body.sb-on .game-feed, body.sb-on .game-card { visibility: hidden; }
+
+/* ---- the carnage report's tables */
 .game-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 .game-col { padding: 4px 6px 6px; border-radius: 8px; }
 .game-col.mine { background: rgba(255, 255, 255, 0.04); }
@@ -87,7 +85,6 @@ body.game-halo .hotbar { display: none !important; }
 .game-line span:not(:first-child) { text-align: right; }
 .game-line.head { opacity: 0.55; font-size: 11px; }
 .game-line.me { color: var(--accent-ink); background: var(--accent); font-weight: 700; }
-.game-keys { margin-top: 12px; text-align: center; font: 500 12px var(--ui); opacity: 0.7; }
 
 /* ---- match menu (M), up top under the score as every menu here (Garry's Mod's): pointer events
    on, the mouse is free while it's open */
@@ -187,7 +184,6 @@ body.game-halo .hotbar { display: none !important; }
 .game-card kbd { color: var(--text); }
 
 @media (max-width: 560px) {
-  .game-cols { grid-template-columns: 1fr; }
   .game-feed { top: 150px; }
   .game-report-title { font-size: 34px; }
 }

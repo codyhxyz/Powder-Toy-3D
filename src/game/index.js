@@ -10,7 +10,7 @@ import * as R from './rules.js';
 import { labLayout, fitLayout } from './layout.js';
 import { ObjectiveEvaluator, WANT, NEAR } from './bots.js';
 import { createMarkers } from './markers.js';
-import { createGameHud } from './hud.js';
+import { createGameHud, clock } from './hud.js';
 import { createSiege } from './siege.js';
 import { canFight } from '../pov/ai/brain.js';
 import { createArsenal } from './arsenal.js';
@@ -256,7 +256,7 @@ export function createGame(shell) {
 
   async function start(m, opts = {}) {
     if (!R.MODES[m]) throw new Error(`game: no mode '${m}'`);
-    if (!shell.player || !sim()) { app.hud?.toast?.('Drop in first (F), then start a match'); return false; }
+    if (!shell.player || !sim()) { app.hud?.toast?.('Drop in first (F), then start a match', { kind: 'hint' }); return false; }
     if (starting) return starting;
     const { fresh = false, ...over } = opts;
     next = null;
@@ -614,7 +614,33 @@ export function createGame(shell) {
 
   // the scoreboard's rows; medals: a count or list the feel agent's medals.js may keep on the entry (e.medals)
   function board() {
-    return [...roster.values()].filter((e) => e.team).map((e) => ({ id: e.id, name: e.name, team: e.team, kills: e.kills, deaths: e.deaths, score: e.score, me: e.id === PLAYER, medals: e.medals ?? null }));
+    return [...roster.values()].filter((e) => e.team).map((e) => ({ id: e.id, name: e.name, team: e.team, kills: e.kills, deaths: e.deaths, score: e.score, me: e.id === PLAYER, medals: e.medals ?? null, bot: !!e.bot, dead: !alive(e) }));
+  }
+
+  // the scoreboard's view while a match runs (ui/scoreboard.js): the mode's score
+  // line under the map's name, and a row per player edged in their team's colour.
+  // A bot's ping reads BOT, as in GMod; yours is the host's, 0. Extra columns
+  // between deaths and ping: the mode's score when it isn't kills, and the medals
+  // this match in a Halo match (feel.js keeps the count on the entry; Halo 3's
+  // scoreboard has the column, and GMod's base board doesn't mind one more).
+  function scoreboard() {
+    if (!running) return null;
+    const rows = board();
+    const cols = [];
+    if (scoreLabel() !== 'Kills') cols.push({ key: 'score', label: scoreLabel() });
+    if (rules.style === 'halo' || rows.some((r) => r.medals != null)) cols.push({ key: 'medals', label: 'Medals' });   // (feel.js runs in Halo's style)
+    return {
+      map: layout.name,
+      sub: [rules.name, teams.map((t) => `${label(t)} ${Math.floor(teamScore[t] ?? 0)}`).join(' – '), objectiveText().text,
+        `${clock(siege ? siege.timeLeft : ends - time)} left`],
+      cols,
+      rows: rows.map((r) => ({
+        key: r.id, name: r.name, avatar: R.TEAM_CSS[r.team], team: R.TEAM_CSS[r.team], kills: r.kills, deaths: r.deaths,
+        score: cols.some((c) => c.key === 'score') ? Math.floor(r.score) : null, medals: r.medals ?? 0,
+        ping: r.bot ? 'BOT' : 0, dead: r.dead, me: r.me, admin: false,
+      })),
+      foot: me()?.team && mode !== 'infection' ? '. switch team · M match menu' : 'M match menu',
+    };
   }
   const scoreLabel = () => ({ slayer: 'Kills', ctf: 'Caps', koth: 'Hill s', infection: 'Kills', siege: 'Points' }[mode] ?? 'Score');
 
@@ -708,16 +734,13 @@ export function createGame(shell) {
     e.stopPropagation();
     menu(false);
   }, true);
-  // keys, in first person: Tab holds the scoreboard, M opens the match menu, '.' switches team
+  // keys, in first person: M opens the match menu, '.' switches team (Tab, the
+  // scoreboard, is ui/scoreboard.js's: scoreboard() is what it shows)
   addEventListener('keydown', (e) => {
-    if (!shell.active() || app.isTyping() || e.metaKey || e.ctrlKey || e.altKey) return;
-    if (e.code === 'Tab') { e.preventDefault(); hud.holdBoard(true); return; }
-    if (e.repeat) return;
+    if (!shell.active() || app.isTyping() || e.metaKey || e.ctrlKey || e.altKey || e.repeat) return;
     if (e.code === 'KeyM') menu(!hud.menuOpen);
     else if (e.key === '.') switchTeam();
   });
-  addEventListener('keyup', (e) => { if (e.code === 'Tab') hud.holdBoard(false); });
-  addEventListener('blur', () => hud.holdBoard(false));
 
   return {
     start, prepare, end: () => end(), leave, useLayout(l) { userLayout = l ?? null; },
@@ -726,6 +749,7 @@ export function createGame(shell) {
     get style() { return running ? rules.style : null; },   // 'halo' | 'tf2' while a match runs (rules.js MODES)
     get layout() { return layout ?? (sim() ? fitLayout(userLayout ?? app.getArena?.(), sim().g) ?? labLayout(sim().g) : null); },
     get state() { return state(); },
+    scoreboard,
     get lastResult() { return lastResult; },
     get nextIn() { return next ? next.at - now() : null; },   // s to the next match (the report's countdown), else null
     get roster() { return [...roster.values()]; },

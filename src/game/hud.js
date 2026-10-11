@@ -8,11 +8,12 @@ import './game.css';
 // bar under each filling toward the score to win: Halo 3's score meter, which
 // sits bottom-right there; docs/halo-contract.md puts ours top-centre), the
 // match's news under them; kills go to the shared killfeed top-right (GMod's,
-// pov/killfeed.js); Tab holds up the scoreboard; M opens the match
-// menu (mode, side, Start/End: kept out of the main drawer). At the end, Halo
-// 3's post-game carnage report (every player's kills, deaths and score) under
-// Halo Infinite's Victory / Defeat banner, counting down to the next match, with Leave. While you're dead,
-// who killed you with what and the respawn count; while the mouse isn't
+// pov/killfeed.js); Tab holds up the scoreboard (GMod's, ui/scoreboard.js:
+// index.js scoreboard() is its view); M opens the match menu (mode, side,
+// Start/End: kept out of the main drawer). At the end, Halo 3's post-game
+// carnage report (every player's kills, deaths and score) under Halo
+// Infinite's Victory / Defeat banner, counting down to the next match, with
+// Leave. While you're dead, who killed you with what and the respawn count; while the mouse isn't
 // captured, "Click to play"; on the first spawn of a session, a card of the
 // match's keys. update() only writes the DOM when a shown string changes.
 // docs/halo-contract.md: this file owns top-centre and top-right; bottom-left
@@ -23,7 +24,7 @@ const CARD_FADE_S = 0.6;    // s it fades out (game.css .game-card transition)
 const SCORE_LABEL_W = 52;   // px a scoreboard number column takes (game.css .game-line)
 
 const key = (k) => h('kbd', { text: k });
-const clock = (s) => { s = Math.max(0, Math.ceil(s)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+export const clock = (s) => { s = Math.max(0, Math.ceil(s)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
 // your team first (Halo puts yours on top); watching: the mode's order
 const ordered = (teams, mine) => (mine && teams.includes(mine) ? [mine, ...teams.filter((t) => t !== mine)] : teams);
 const dot = () => h('span.game-dot', { text: '·' });
@@ -55,11 +56,6 @@ export function createGameHud({ onStart, onEnd, onSide, onClose, onLeave }) {
   const top = h('div.game-top', {}, modeName, h('div.game-row', {}, sideA.el, timer, sideB.el), objective, bar);
   const feed = h('div.game-feed');
   const chip = h('div.game-chip.panel', {}, key('M'), ' Match');
-
-  // the scoreboard (Tab)
-  const boardBody = h('div.game-cols');
-  const boardTitle = h('div.game-board-title');
-  const board = h('div.game-board.panel', {}, boardTitle, boardBody, h('div.game-keys', {}, key('Tab'), ' scores', dot(), key('.'), ' switch team', dot(), key('M'), ' match menu'));
 
   // the match menu (M)
   let chosen = 'slayer', side = 'auto';
@@ -104,7 +100,7 @@ export function createGameHud({ onStart, onEnd, onSide, onClose, onLeave }) {
   // the first spawn's controls card
   const card = h('div.game-card.panel');
 
-  const root = h('div.game-hud', {}, top, feed, chip, board, menu, end, report, death, play, card);
+  const root = h('div.game-hud', {}, top, feed, chip, menu, end, report, death, play, card);
   document.body.append(root);
 
   const shown = {};
@@ -113,7 +109,7 @@ export function createGameHud({ onStart, onEnd, onSide, onClose, onLeave }) {
   // the body's classes for the first-person HUD to give way (game.css): game-live while a match runs, game-on with the report too
   const bodyClass = (cls, on) => { if (shown[cls] !== on) { shown[cls] = on; document.body.classList.toggle(cls, on); } };
   const lines = [];
-  let boardHeld = false, menuOpen = false, endUntil = -Infinity;
+  let menuOpen = false, endUntil = -Infinity;
   let reportUntil = -Infinity, reportOn = false;
   let cardUntil = -Infinity;
   const cardsShown = new Set();   // the styles whose card this session has shown (once each)
@@ -133,13 +129,6 @@ export function createGameHud({ onStart, onEnd, onSide, onClose, onLeave }) {
         rows.map((r) => row(r.me ? '.me' : '', [r.name, String(Math.floor(r.score)), String(r.kills), String(r.deaths), ...(medals ? [String(r.medals?.length ?? r.medals ?? 0)] : [])])));
     });
   }
-  function drawBoard(st) {
-    const sig = JSON.stringify(st.roster.map((r) => [r.name, r.team, r.kills, r.deaths, r.score, r.me, r.medals?.length ?? r.medals])) + st.scoreLine + st.myTeam;
-    if (shown.board === sig) return;
-    shown.board = sig;
-    boardTitle.textContent = st.scoreLine;
-    boardBody.replaceChildren(...columns({ ...st, winner: null }));
-  }
 
   function line(el, now) {
     feed.prepend(el);
@@ -154,7 +143,6 @@ export function createGameHud({ onStart, onEnd, onSide, onClose, onLeave }) {
       root.classList.toggle('on', v);
       if (!v) for (const c of ['game-live', 'game-on', 'game-halo', 'game-reporting']) bodyClass(c, false);
     },
-    holdBoard(v) { boardHeld = v; },
     setMenu(v) { menuOpen = v; },
     choose(mode) { chosen = mode; sync(); },
     // a kill for the killfeed: { killer, killerTeam, victim, victimTeam, cause, held } (no killer: a suicide or the world)
@@ -201,7 +189,6 @@ export function createGameHud({ onStart, onEnd, onSide, onClose, onLeave }) {
       toggle(report, 'on', reportOn);
       toggle(report, 'free', reportOn && !st.locked);   // the mouse is free: Leave can be clicked
       toggle(menu, 'on', menuOpen);
-      toggle(board, 'on', boardHeld && !menuOpen && st.running);
       toggle(endBtn, 'off', !st.running);
       startBtn.textContent = st.running ? 'Restart' : 'Start match';
       if (reportOn) set(repNext, 'next', st.nextIn != null ? String(Math.max(1, Math.ceil(st.nextIn))) : '');
@@ -241,7 +228,6 @@ export function createGameHud({ onStart, onEnd, onSide, onClose, onLeave }) {
         }
         set(deathCount, 'respawn', String(Math.max(1, Math.ceil(st.respawnIn))));
       }
-      if (boardHeld && st.running) drawBoard(st);
     },
   };
 }
