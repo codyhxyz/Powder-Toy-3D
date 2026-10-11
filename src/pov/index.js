@@ -233,9 +233,10 @@ export function createPov(app) {
     touch.reset();
   }
 
-  // Q: the tools menu, Garry's Mod's spawn menu: the mouse is freed and the
-  // palette shows, its Tools group giving tools (app.js giveGear). Q again, a
-  // click on the world or a tool given closes it.
+  // Q: the spawn menu, Garry's Mod's: the mouse is freed and the palette shows
+  // where it was left. A tool picked goes in hand (app.js giveGear); anything
+  // else loads the tool gun (app.js loadToolGun). Q again, a click on the world
+  // or a pick closes it.
   let menuOpen = false;
   function setMenu(v) {
     const was = menuOpen;
@@ -378,6 +379,7 @@ export function createPov(app) {
           hud, viewmodel, handWorld,
           interact,                            // Descent's wand and spell pickups (wands/loot.js)
           getScene: () => (app.inWorld?.() ? app.settings.scene : null),   // the world scene loaded (Descent levels are world scenes)
+          toolGun: app.toolGun,   // the god view's click at the crosshair (app.js), for the tool gun
           isActive: () => live() && !editing,
           getStepsPerFrame: () => app.settings.paused ? 0 : app.settings.steps,
           requestRender: app.requestRender,

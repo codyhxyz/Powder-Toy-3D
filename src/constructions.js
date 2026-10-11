@@ -198,12 +198,15 @@ export class Constructions {
   get maxSpan() { const g = this.getSim().g; return Math.min(g.nx, g.ny, g.nz); }
 
   // Call every frame. `active`: a construction is selected and the pointer is over the scene.
-  update({ hover, active }) {
+  // `crosshair`: hover follows the first-person crosshair (the tool gun), which has no
+  // pointer to move off what was just placed, so the ghost comes straight back.
+  update({ hover, active, crosshair = false }) {
     const id = this.settings.tool;
     const build = isBuild(id) ? BUILDS.find((b) => b.id === id) : null;
     this._syncBar(build);
     this.valid = false;
     this.group.visible = false;
+    if (crosshair) this.hold = null;
     if (!build || !active || !hover.valid || this.hold) return;
     const key = this._loadCells(build);
     if (!key || !this._bakeFacingCamera(key)) return;

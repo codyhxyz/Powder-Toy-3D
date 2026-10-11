@@ -3,11 +3,11 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import './ui/styles.css';
 import { Simulation } from './sim.js';
 import { volumeVert, volumeFrag, pickFrag, shadowFrag } from './shaders/render.js';
-import { ELEMENTS, E, toolById, isBuild, isSpawnerTool, isGearTool, LIGHTNING_TOOL, wandPresetForTool } from './elements.js';
+import { ELEMENTS, E, TOOLS, toolById, isBuild, isSpawnerTool, isGearTool, LIGHTNING_TOOL, wandPresetForTool } from './elements.js';
 import { createLightning } from './lightning.js';
 import { Spawners, SPAWNER, ENEMY_KINDS, feetOnHit } from './spawners.js';
 import { createBirdLife } from './birds/index.js';
-import { BODY_HEIGHT } from './pov/constants.js';
+import { BODY_HEIGHT, HAND_REACH } from './pov/constants.js';
 import { PerkOrbs } from './perkOrbs.js';
 import { buildPreset, ARENA_PRESETS } from './presets.js';
 import { ArenaMarkers } from './arenas/markers.js';
@@ -693,6 +693,9 @@ let pointerClient = [0, 0];
 const raycaster = new THREE.Raycaster();
 const hover = { valid: false, cell: new THREE.Vector3(), face: 0, id: -1, T: 0, P: 0 };
 let painting = false;
+let strokeTool = E.SAND;   // what the stroke under way paints: the selected tool, or the tool gun's eraser
+let strokeDist = 0;        // cells from the eye along the aim that a tool gun stroke of an element pours at
+let toolGunOut = false;    // the tool gun is in hand this frame (toolGun.aim)
 let dragY = 0;
 const brushCenter = new THREE.Vector3();
 let brushValid = false;
@@ -757,11 +760,12 @@ const faceNormal = (face) => {
   return n;
 };
 
-function hoverBrushCenter(out) {
+// an element's brush sits on the hovered face; a brush tool's (erase, heat) is centred in the hovered cell
+function hoverBrushCenter(out, tool = settings.tool) {
   const axis = Math.floor(hover.face / 2);
   const sign = hover.face % 2 === 0 ? 1 : -1;
   out.copy(hover.cell).addScalar(0.5);
-  if (!isTool() || hover.id < 0) out.setComponent(axis, out.getComponent(axis) + sign * (settings.radius + 0.5));
+  if (tool >= 0 || hover.id < 0) out.setComponent(axis, out.getComponent(axis) + sign * (settings.radius + 0.5));
   return out;
 }
 
@@ -770,12 +774,8 @@ const tmpV = new THREE.Vector3();
 function updateBrush() {
   const g = sim.g;
   brushValid = false;
-  if (pov?.active) {
-    brush.set({ visible: false });
-    builds?.update({ hover, active: false });
-    return;
-  }
-  if (settings.tool !== SIGN_TOOL && !isBuild(settings.tool) && !isSpawnerTool(settings.tool)) {
+  if (pov?.active) { updateGunBrush(); return; }
+  if (isBrush(settings.tool)) {
     if (painting) {
       // a box's brush stops at its walls; a world's window has none, so beyond it there's no brush
       plane.constant = -dragY;
@@ -798,6 +798,46 @@ function updateBrush() {
     color: toolById(settings.tool).color,
   });
   builds?.update({ hover, active: isBuild(settings.tool) && pointerInside && !uiHover && !eyedropper });
+}
+
+// Whether the brush shows for `id`: everything but signs, spawners and constructions (lightning's sets its width).
+const isBrush = (id) => id !== SIGN_TOOL && !isBuild(id) && !isSpawnerTool(id);
+
+// First person: the brush and the construction ghost only show with the tool gun
+// out, at the crosshair (the pick follows it there: requestPick). An element's
+// stroke stays at the distance it started at, along the aim, as the god view's
+// stays on its drag plane, so a held pour doesn't climb up its own heap toward
+// you; a brush tool's (erase, heat) follows the crosshair into what it works on.
+function updateGunBrush() {
+  const g = sim.g;
+  const out = toolGunOut;
+  toolGunOut = false;   // the gun says so again next frame (toolGun.aim), while it's in hand
+  if (!out) painting = false;
+  const tool = painting ? strokeTool : settings.tool;
+  if (out && isBrush(tool)) {
+    if (painting && tool >= 0) {
+      if (pov.aimRay(povRay.origin, povRay.direction)) {
+        brushCenter.copy(povRay.origin).addScaledVector(povRay.direction, strokeDist);
+        brushValid = !win || inWindow(brushCenter);
+      }
+    } else if (hover.valid) {
+      hoverBrushCenter(brushCenter, tool);
+      brushValid = true;
+    }
+  }
+  if (brushValid) {
+    brushCenter.x = THREE.MathUtils.clamp(brushCenter.x, 0, g.nx);
+    brushCenter.y = THREE.MathUtils.clamp(brushCenter.y, 0, g.ny);
+    brushCenter.z = THREE.MathUtils.clamp(brushCenter.z, 0, g.nz);
+  }
+  brush.set({
+    visible: brushValid,
+    position: tmpV.copy(brushCenter).multiplyScalar(scale).add(volume.position),
+    radius: settings.radius * scale,
+    shape: settings.shape,
+    color: toolById(tool).color,
+  });
+  builds?.update({ hover, active: out && isBuild(settings.tool), crosshair: true });
 }
 
 // ---------------------------------------------------------------- UI
@@ -850,12 +890,29 @@ function giveGear(id) {
   } else hud.toast(`${it.name} is in your tools: press V, then ${slot}`);
 }
 
+// Anything else picked from the spawn menu in first person loads the tool gun
+// (toolGun below) and puts it in hand, as Garry's Mod's Q menu does with a tool.
+function loadToolGun() {
+  const it = toolById(settings.tool), g = gearByKey('TOOLGUN');
+  inventory.give(g.key);
+  pov.closeMenu();
+  hud.toast(`${it.name} in the ${g.name}: left-click spawns, right-click erases (key ${g.slot + 1})`);
+}
+
 // Closing a construction's options goes back to the last element or tool.
 function leaveBuild() { if (isBuild(settings.tool)) selectTool(lastPaintTool); }
 
+let menuPick = null;   // the spawn menu's last pick: Q in first person opens the menu where it was left
 const dock = createDock({
   settings,
-  onSelect: (id) => (isGearTool(id) ? giveGear(id) : selectTool(id)),
+  onSelect: (id) => {
+    menuPick = id;
+    if (isGearTool(id)) giveGear(id);
+    else {
+      selectTool(id);
+      if (pov?.active && !wandPresetForTool(id)) loadToolGun();
+    }
+  },
   onBrushChange: (patch) => { Object.assign(settings, patch); dock.sync(); save(); },
   onHover: (id) => card.show(id ?? settings.tool),
   onEyedropper: () => setEyedropper(!eyedropper),
@@ -1097,7 +1154,14 @@ canvasEl.addEventListener('pointermove', (e) => {
 canvasEl.addEventListener('pointerleave', () => { pointerInside = false; });
 canvasEl.addEventListener('pointerdown', (e) => {
   toolbar.close();
-  if (pov?.active) return;   // POV handles its own mouse buttons
+  if (pov?.active) {   // POV handles its own mouse buttons, but for the tool gun's middle one:
+    // pick up what it aims at, Minecraft creative's pick block (TPT's middle click samples too)
+    if (e.button === 1 && pov.locked && pov.toolbelt?.selectedKey === 'TOOLGUN') {
+      e.preventDefault();
+      if (!pickHovered()) hud.toast('Nothing to pick there');
+    }
+    return;
+  }
   if (e.pointerType === 'touch') touchDown(e);
   else press(e);
 });
@@ -1110,54 +1174,100 @@ function press(e) {
     if (!pickHovered()) hud.toast('Nothing to pick there');
     return;
   }
+  if (clickTool() !== null) return;
+  dragY = hover.valid ? hoverBrushCenter(tmpV).y : (isTool() ? 0.5 : settings.radius);
+  startStroke(settings.tool);
+  if (e.pointerType !== 'touch') canvasEl.setPointerCapture(e.pointerId);   // (a touch is captured already)
+}
+
+// A click with a one-click tool (a sign, lightning, a spawner, a construction)
+// at `hover`: under the cursor in the god view, under the crosshair through the
+// tool gun. true if it did something, false if it couldn't (it says why),
+// null if the tool paints a stroke instead.
+function clickTool() {
   if (settings.tool === SIGN_TOOL) {
-    if (signs && hover.valid) signs.add({ cell: hover.cell.clone(), normal: faceNormal(hover.face) });
-    else if (!signs) hud.toast('Signs are still loading');
-    return;
+    if (signs && hover.valid) { signs.add({ cell: hover.cell.clone(), normal: faceNormal(hover.face) }); return true; }
+    if (!signs) hud.toast('Signs are still loading');
+    return false;
   }
   if (settings.tool === LIGHTNING_TOOL) {
-    if (mp.guard()) return;
-    if (!hover.valid) { hud.toast('Click a surface to strike it'); return; }
+    if (mp.guard()) return false;
+    if (!hover.valid) { hud.toast('Click a surface to strike it'); return false; }
     sim.snapshot();
     toolbar.setUndoEnabled(true);
     lightning.strikeTool(sim, hover, settings.radius);
     pacer.wake();
     hud.dismissHint();
-    return;
+    return true;
   }
   if (isSpawnerTool(settings.tool)) {
-    if (mp.guard()) return;
-    if (!hover.valid) { hud.toast('Click a surface to set it on'); return; }
+    if (mp.guard()) return false;
+    if (!hover.valid) { hud.toast('Click a surface to set it on'); return false; }
     const kind = SPAWNER_KIND[settings.tool];
     const r = spawners.toggle(kind, feetOnHit(hover));
     pacer.wake();
     if (r === 'full') hud.toast('That many is the limit');
     else hud.toast(r === 'removed' ? 'Spawner removed' : SPAWNER_SET[ENEMY_KINDS.includes(kind) ? SPAWNER.ENEMY : kind]);
-    return;
+    return r !== 'full';
   }
   if (isBuild(settings.tool)) {
-    if (mp.guard()) return;
-    if (!builds) hud.toast('Constructions are still loading');
-    else if (builds.ready) {
-      sim.snapshot();
-      toolbar.setUndoEnabled(true);
-      lastShrine = 0;
-      builds.place();
-      // a shrine's orbs go with its snapshot: undoing it takes them away (undo)
-      if (lastShrine) { sim.history.at(-1).note = { shrine: lastShrine }; hud.toast('Shrine set: in first person (V), take one perk and the others vanish'); }
-      hud.dismissHint();
-    }
-    return;
+    if (mp.guard()) return false;
+    if (!builds) { hud.toast('Constructions are still loading'); return false; }
+    if (!builds.ready) return false;
+    sim.snapshot();
+    toolbar.setUndoEnabled(true);
+    lastShrine = 0;
+    builds.place();
+    // a shrine's orbs go with its snapshot: undoing it takes them away (undo)
+    if (lastShrine) { sim.history.at(-1).note = { shrine: lastShrine }; hud.toast('Shrine set: in first person (V), take one perk and the others vanish'); }
+    hud.dismissHint();
+    return true;
   }
-  dragY = hover.valid ? hoverBrushCenter(tmpV).y : (isTool() ? 0.5 : settings.radius);
+  return null;
+}
+
+// A brush stroke of `tool` from now until the button lets go (undone as one).
+function startStroke(tool) {
   if (!mp.isGuest) {
     sim.snapshot();
     toolbar.setUndoEnabled(true);
   }
+  strokeTool = tool;
   painting = true;
   hud.dismissHint();
-  if (e.pointerType !== 'touch') canvasEl.setPointerCapture(e.pointerId);   // (a touch is captured already)
 }
+
+// The tool gun (pov/tools/toolgun.tool.js, Garry's Mod's gmod_tool): the god
+// view's click at the crosshair, with whatever the spawn menu picked last. In
+// first person the pick follows the crosshair (requestPick), so `hover` is
+// what the gun points at.
+const ERASE_TOOL = TOOLS.find((t) => t.key === 'ERASE').id;   // its right button: TPT's right mouse paints its secondary element, nothing by default
+const GUN_AIR_DIST = HAND_REACH;   // cells: a stroke started at the sky pours a hand's reach (Minecraft's) in front of you
+const toolGun = {
+  get item() { return toolById(settings.tool); },
+  // it's in hand this frame: the brush and the construction ghost follow the crosshair (updateGunBrush)
+  aim() { toolGunOut = true; },
+  // a button went down: 'stroke' while a stroke runs until release(), 'click' for one-click tools, null if nothing happened
+  press({ erase = false } = {}) {
+    if (signs?.editing) { document.activeElement?.blur?.(); return null; }   // as in the god view, the click that ends a sign's edit does nothing else
+    if (!erase) {
+      const done = clickTool();
+      if (done !== null) {
+        // a sign takes typing: free the mouse for it (V or a click on the world takes it back)
+        if (done && settings.tool === SIGN_TOOL && document.pointerLockElement) document.exitPointerLock();
+        return done ? 'click' : null;
+      }
+    }
+    const tool = erase ? ERASE_TOOL : settings.tool;
+    if (tool >= 0) {
+      if (!pov.aimRay(povRay.origin, povRay.direction)) return null;
+      strokeDist = hover.valid ? hoverBrushCenter(tmpV, tool).distanceTo(povRay.origin) : GUN_AIR_DIST;
+    }
+    startStroke(tool);
+    return 'stroke';
+  },
+  release() { painting = false; },
+};
 addEventListener('pointerup', (e) => { if (e.button === 0) painting = false; });
 
 // Touch: one finger paints, two fingers turn and zoom (controls.touches). A finger
@@ -1410,7 +1520,7 @@ function tick(now, renderOnly = false) {
     if (painting && brushValid) {
       const stroke = {
         center: brushCenter, radius: settings.radius, shape: settings.shape,
-        tool: settings.tool, rate: settings.rate, replace: settings.replace,
+        tool: strokeTool, rate: settings.rate, replace: settings.replace,
       };
       if (mp.isGuest) mp.paint(stroke); // the host paints it
       else sim.paint(stroke);
@@ -1615,8 +1725,10 @@ try {
     getArena: () => arenaLayout,                      // the loaded arena's layout, for the team games (src/game)
     requestRender: () => pacer.wake(),
     inWorld: () => !!win,
-    showToolsMenu: () => dock.reveal((it) => isGearTool(it.id)),
-    hideToolsMenu: () => dock.setCollapsed(true),   // Q in first person: the palette at its first-person tools
+    toolGun,   // the tool gun's click at the crosshair
+    // Q in first person: the spawn menu where it was left (at first, at what's selected)
+    showToolsMenu: () => dock.reveal((it) => it.id === (menuPick ?? settings.tool)) || dock.reveal((it) => isGearTool(it.id)),
+    hideToolsMenu: () => dock.setCollapsed(true),
   });
   pov.vehicles.spawnLayout(arenaLayout);   // the scene loaded before the POV shell existed
   pov.game.useLayout(arenaLayout);

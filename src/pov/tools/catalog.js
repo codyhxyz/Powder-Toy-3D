@@ -60,6 +60,9 @@ export const GEAR = [
     desc: 'A very bright white light. Left-click switches it off and on; right-click throws it, and it lands unbroken and keeps shining.' },
   { key: 'HOOK', slot: 4, name: 'Hook', model: 'hook', abbr: 'HOOK', color: '#b0884a', touch: ['Fire / reel', 'Let go'],
     desc: 'Fires a grappling hook up to 30 m. Hold left-click to reel in: a wall pulls you to it, loose matter comes to you, an enemy and you meet in the middle. Let go to hang and swing; right-click lets go.' },
+  // (last, so the palette ids of the tools before it, elements.js GEAR_ITEMS, stay put)
+  { key: 'TOOLGUN', slot: 1, name: 'Tool gun', model: 'toolgun', abbr: 'TOOL', color: '#c9ced6', touch: ['Spawn', 'Erase'],
+    desc: 'Garry\'s Mod\'s tool gun: it spawns whatever you last picked in the spawn menu (Q) where you aim. Hold left-click to pour an element; click to set a construction or a spawner. Hold right-click to erase; middle-click picks up what you aim at.' },
 ];
 
 const BY_KEY = new Map(GEAR.map((g) => [g.key, g]));
