@@ -5,6 +5,14 @@
 // one is the alternative should the unrolled form cost on the Mac),
 // alternating A B B A in chunks at the same states, since both give the same
 // state (tools/sim-check.mjs --stage moves asserts it).
+//
+// Two kinds of creation time. The cold start: new Simulation() to sim.ready,
+// with each of its pipelines' time from request to ready while all of them
+// build at once (so a small kernel's figure is mostly waiting its turn). And
+// each M1 pipeline alone (react, the move in each form): after the sim's
+// builds have settled, one at a time, each from a module text no cache has
+// seen (a trailing comment), timed from request to ready (module, layout,
+// pipeline). The A/B of the forms reads the second.
 // Run it from the page's button, or from a tool: __harness.run('bench', opts).
 
 import { boot, ready, test, log } from './harness.js';
@@ -30,7 +38,24 @@ const seed = (s0) => {
 const median = (xs) => { const s = [...xs].sort((a, b) => a - b); return s[Math.floor((s.length - 1) / 2)] ?? NaN; };
 const nextFrame = () => new Promise((r) => setTimeout(r, 0));
 
-// ms per step per kernel over `steps` steps (split timestamps), and wall ms per step
+// Unseen module texts: this page load's mark, then a count (Chrome keeps
+// compiled pipelines on disk across loads, keyed by the source)
+const RUN = Date.now().toString(36);
+let builds = 0;
+
+// One pipeline built alone from `desc` (a gpu.kernel descriptor): the kernel
+// and its ms from request to ready
+async function buildAlone(name, desc) {
+  await gpu.settled();
+  const n = builds++;
+  const t0 = performance.now();
+  const kernel = gpu.kernel({ ...desc, name: `${name} (bench ${n})`, code: `${desc.code}\n// bench ${RUN} ${n}\n` });
+  await kernel.ready;
+  return { kernel, ms: performance.now() - t0 };
+}
+
+// ms per step per kernel over `steps` steps (split timestamps), and wall ms
+// per step; the move in whichever form under its own name, 'move'
 async function timeChunk(sim, steps) {
   const timing = gpu.timing;
   await sim.gpuSync();
@@ -46,7 +71,7 @@ async function timeChunk(sim, steps) {
   timing.enabled = false;
   timing.split = false;
   const per = {};
-  for (const [name, ms] of Object.entries(timing.last)) per[name] = ms / steps;
+  for (const [name, ms] of Object.entries(timing.last)) per[name === sim.kernels.move.name ? 'move' : name] = ms / steps;
   return { wall, per };
 }
 
@@ -56,21 +81,24 @@ async function timeChunk(sim, steps) {
 async function bench({ sizes = [64, 128], scenes = ['empty', 'lab', 'volcano'], steps = 30, chunks = 4, forms = Object.keys(MOVE_FORMS) } = {}) {
   const out = { gpu: gpu.adapterInfo, timestamps: gpu.timing.supported, shipping: MOVE_FORM, grids: [] };
   for (const n of sizes) {
+    await gpu.settled();
+    const times = new Map(gpu.pipelines.times);
     const t0 = performance.now();
     const sim = new Simulation(gpu, n, n, n, { debug: false });
     await sim.ready;
-    const grid = { n, readyMs: performance.now() - t0, pipelineMs: {}, scenes: [] };
-    // the move in each form (the shipping one is sim's own)
+    const grid = { n, readyMs: performance.now() - t0, concurrentMs: {}, aloneMs: {}, scenes: [] };
+    // the pipelines the sim built (not found in the cache), each's time while all built at once
+    for (const [name, ms] of gpu.pipelines.times) if (times.get(name) !== ms) grid.concurrentMs[name] = ms;
+    // each M1 pipeline alone; the move's forms timed in the steps below are these
+    grid.aloneMs.react = (await buildAlone('react', sim.kernels.react.desc)).ms;
     const moves = {};
     for (const form of forms) {
-      if (form === MOVE_FORM) { moves[form] = sim.kernels.move; continue; }
-      moves[form] = gpu.kernel({
-        name: `move (${form})`, code: moveBlockFrag(sim.g, { form }), params: MoveParams,
-        layouts: sim.kernels.move.desc.layouts,
-      });
-      await moves[form].ready;
+      const desc = { ...sim.kernels.move.desc, code: moveBlockFrag(sim.g, { form }), params: MoveParams };
+      const b = await buildAlone(`move (${form})`, desc);
+      grid.aloneMs[`move (${form})`] = b.ms;
+      moves[form] = b.kernel;
     }
-    for (const [name, ms] of gpu.pipelines.times) grid.pipelineMs[name] = ms;
+    const shipping = sim.kernels.move;
     for (const scene of scenes) {
       seed(12345);
       if (scene === 'empty') sim.clear(); else buildPreset(scene, sim);
@@ -82,7 +110,7 @@ async function bench({ sizes = [64, 128], scenes = ['empty', 'lab', 'volcano'], 
           rows[form].push(await timeChunk(sim, steps));
         }
       }
-      sim.kernels.move = moves[MOVE_FORM];
+      sim.kernels.move = shipping;
       const counts = await sim.readCounts();
       const res = { scene, units: counts.units, drawn: counts.drawn, awake: counts.awake, forms: {} };
       for (const form of forms) {
@@ -103,8 +131,10 @@ function show(r) {
   const fmt = (x) => (x === undefined ? '' : x.toFixed(x < 1 ? 3 : 1));
   let html = `<p>${r.gpu.vendor} ${r.gpu.architecture} ${r.gpu.description}${r.timestamps ? '' : ' (no timestamp-query: GPU columns empty)'}; shipping move form: ${r.shipping}</p>`;
   for (const g of r.grids) {
-    html += `<h3>${g.n}³ — ready in ${fmt(g.readyMs)} ms</h3><table><tr><th>pipeline</th><th>ms</th></tr>`;
-    for (const [k, v] of Object.entries(g.pipelineMs)) html += `<tr><td>${k}</td><td>${fmt(v)}</td></tr>`;
+    html += `<h3>${g.n}³</h3><table><tr><th>alone, one at a time</th><th>ms</th></tr>`;
+    for (const [k, v] of Object.entries(g.aloneMs)) html += `<tr><td>${k}</td><td>${fmt(v)}</td></tr>`;
+    html += `</table><table><tr><th>cold start: ready in ${fmt(g.readyMs)} ms; each built at once with the others</th><th>ms</th></tr>`;
+    for (const [k, v] of Object.entries(g.concurrentMs)) html += `<tr><td>${k}</td><td>${fmt(v)}</td></tr>`;
     html += '</table>';
     for (const s of g.scenes) {
       const forms = Object.keys(s.forms), kernels = [...new Set(forms.flatMap((f) => Object.keys(s.forms[f].gpuMsPerStep)))];
