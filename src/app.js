@@ -1226,6 +1226,7 @@ function resetSettings() {
   applyDetail();
   dock.sync();
   toolbar.sync();
+  hud.setEditMode(editModeText());
   save();
   hud.toast('Settings reset');
 }
@@ -1919,6 +1920,7 @@ try {
     setSize,         // switch the grid (a SIZES or WORLDS key), keeping the scene settings
     openMap,         // as the start menu's Start does (a maps.js key, a gamemode)
     undo,            // as ⌘Z does
+    fill: (req) => runFill(sim, req, { openSides: !!win }),   // a flood fill on the current grid (editing.js runFill), for tools
     get worldFocus() { return worldFocus; }, set worldFocus(v) { worldFocus = v; },
     MOBILE, SUN, day, scene, settings, camera, controls, loadPreset, selectTool, setView, hover, renderer, rig, renderThumb, gfx, post, mp, autoRes, prof,
     applyDetail,   // after changing settings.detail_* by hand

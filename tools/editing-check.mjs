@@ -6,9 +6,10 @@
 import { gridLayout, cellTexel } from '../src/sim.js';
 import { E, ELEMENTS } from '../src/elements.js';
 import { PHYS } from '../src/physics.js';
+import * as THREE from 'three';
 import {
   PROP, PROP_FIELDS, parseProp, parseElement, propRangeError, boxFromCorners, strokeDabs, RAY_DABS_MAX,
-  floodRegion, regionMask, MASK_ON, FLOOD_MAX_CELLS, oneShotRate,
+  floodRegion, regionMask, MASK_ON, FLOOD_MAX_CELLS, oneShotRate, runFill,
 } from '../src/editing.js';
 
 let failed = 0;
@@ -120,6 +121,33 @@ check(oneShotRate(E.SAND, 1) * ELEMENTS[E.SAND].spawn >= 1 && oneShotRate(-2, 0.
   const moved = regionMask(g, texel, sand.cells, [-21, 0]);
   check(moved.count === 3 * 3 * 5 && moved.lo.join() === '0,0,20' && moved.data[texel(0, 0, 20)] === MASK_ON && moved.data[texel(3, 0, 20)] === 0, 'a moved window shifts the mask and drops what left it');
   check(FLOOD_MAX_CELLS === 64 ** 3, 'the cap is a 64³ cube');
+
+  // runFill against a stand-in simulation: the readback, the region, the pass it asks for
+  const fake = (shiftBy = null) => {
+    const sim = {
+      g, origin: new THREE.Vector3(), disposed: false, painted: [], snapshots: 0,
+      cellTexel: (x, y, z) => cellTexel(g, x, y, z),
+      readStateAAsync: async () => { if (shiftBy) sim.origin.x += shiftBy; return a; },
+      paint(stroke) { sim.painted.push({ ...stroke, data: stroke.mask.texture.image.data.slice() }); },
+    };
+    return sim;
+  };
+  const stroke = { radius: 3, shape: 0, tool: E.WATER, rate: 4, replace: false, erase: false, prop: null };
+  const sim = fake();
+  const r = await runFill(sim, { cell: [7, 1, 7], id: E.EMPTY, maxY: 3, stroke }, { before: () => sim.snapshots++ });
+  const p0 = sim.painted[0];
+  check(r.count === inner * 3 && sim.snapshots === 1 && sim.painted.length === 1, 'runFill: one snapshot, one pass, the region\'s count');
+  check(p0.filter === E.EMPTY && p0.tool === E.WATER && p0.mask.lo.join() === '5,1,5' && p0.mask.hi.join() === '10,3,10', 'runFill: filtered to the region\'s element, touching only its box');
+  check(p0.data[texel(7, 2, 7)] === MASK_ON && p0.data[texel(7, 4, 7)] === 0 && p0.data[texel(4, 2, 7)] === 0, 'runFill: the mask holds the bowl to its level');
+  const shifted = fake(8);
+  const rm = await runFill(shifted, { cell: [7, 1, 7], id: E.EMPTY, maxY: 3, stroke });
+  check(rm.count === 3 * 6 * 3 && shifted.painted[0].data[texel(0, 2, 7)] === MASK_ON && shifted.painted[0].data[texel(7, 2, 7)] === 0 && shifted.painted[0].mask.lo[0] === 0,
+    'runFill: a window that moved during the read shifts the region with it');
+  const gone = fake();
+  gone.readStateAAsync = async () => { gone.disposed = true; return a; };
+  check((await runFill(gone, { cell: [7, 1, 7], id: E.EMPTY, maxY: 3, stroke })).error === 'gone' && !gone.painted.length, 'runFill: a simulation replaced during the read is left alone');
+  const big = fake();
+  check((await runFill(big, { cell: [7, 1, 7], id: E.EMPTY, maxY: 6, stroke }, { openSides: true })).error === 'edge' && !big.painted.length, 'runFill: a refused region paints nothing');
 }
 
 console.log(failed ? `\n${failed} FAILED` : '\nall editing checks passed');
