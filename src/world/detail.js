@@ -107,14 +107,32 @@ export class WorldDetail {
   // Called before a leaving slab is replaced, and when the window is swept.
   // A readback/worker job started before the edit can never publish afterward.
   invalidate(lo, size) {
+    for (const key of this.chunksAround(lo, size)) {
+      this.revisions[key]++;
+      this.blocked.delete(key);
+      this.drop(key);
+    }
+  }
+
+  // Called when a sweep re-reads live cells that chunks may pad into. Their
+  // meshes are only out of date at the window's edge, not wrong: they stay
+  // shown, and are rebuilt (tick: a step that matches no candidate's) and
+  // swapped in whole by accept. Older jobs for them are still rejected.
+  stale(lo, size) {
+    for (const key of this.chunksAround(lo, size)) {
+      this.revisions[key]++;
+      this.blocked.delete(key);
+      const entry = this.entries.get(key);
+      if (entry) entry.step = 0;
+    }
+  }
+
+  // Keys of the chunks whose meshes (with their padding) read cells in [lo, lo + size).
+  *chunksAround(lo, size) {
     const C = DETAIL_CHUNK;
     for (let z = Math.max(0, Math.floor((lo[2] - PAD) / C)); z < Math.min(this.nz, Math.ceil((lo[2] + size[2] + PAD) / C)); z++)
-      for (let x = Math.max(0, Math.floor((lo[0] - PAD) / C)); x < Math.min(this.nx, Math.ceil((lo[0] + size[0] + PAD) / C)); x++) {
-        const key = x + z * this.nx;
-        this.revisions[key]++;
-        this.blocked.delete(key);
-        this.drop(key);
-      }
+      for (let x = Math.max(0, Math.floor((lo[0] - PAD) / C)); x < Math.min(this.nx, Math.ceil((lo[0] + size[0] + PAD) / C)); x++)
+        yield x + z * this.nx;
   }
 
   view(camera, visible) {
@@ -148,14 +166,49 @@ export class WorldDetail {
     }
     candidates.sort((a, b) => a.distance - b.distance);
     this.wanted = candidates;
+    // A cached chunk the view no longer wants stays as a spare (evicted first,
+    // oldest first: makeRoom) unless the live window now covers it. Dropping it
+    // would cost a fresh readback and mesh the moment the camera turns back.
     const keep = new Set(this.wanted.map((c) => c.key));
-    for (const key of this.entries.keys()) if (!keep.has(key)) this.drop(key);
+    for (const key of this.entries.keys()) {
+      if (keep.has(key)) continue;
+      const x = (key % this.nx) * C, z = Math.floor(key / this.nx) * C;
+      if (x + C > o.x && x < o.x + g.nx && z + C > o.z && z < o.z + g.nz) this.drop(key);
+    }
+  }
+
+  // Is the cache full for a mesh `bytes` big (0: any mesh at all)?
+  full(bytes = 0) {
+    return this.entries.size >= MAX_CHUNKS || this.bytes + bytes > MAX_BYTES || (!bytes && this.bytes >= MAX_BYTES);
+  }
+
+  // Evict until a mesh `bytes` big (0: just a slot) fits for a chunk at
+  // `distance`: spares first, then wanted chunks farther than it, farthest
+  // first. With `dry`, only report whether it would.
+  makeRoom(distance, bytes, dry = false) {
+    const wanted = new Set(this.wanted.map((c) => c.key));
+    const victims = [...this.entries.keys()].filter((key) => !wanted.has(key));
+    for (let i = this.wanted.length - 1; i >= 0 && this.wanted[i].distance > distance; i--)
+      if (this.entries.has(this.wanted[i].key)) victims.push(this.wanted[i].key);
+    if (dry) return !this.full(bytes) || victims.length > 0;
+    for (const key of victims) {
+      if (!this.full(bytes)) break;
+      this.drop(key);
+      if (wanted.has(key)) this.blocked.add(key);
+    }
+    return !this.full(bytes);
   }
 
   tick() {
     if (this.failed || this.pending || !this.far.ready || !this.group.visible || this.win.pending) return;
     const job = this.wanted.find((c) => !this.blocked.has(c.key) && this.entries.get(c.key)?.step !== c.step);
     if (!job) return;
+    // A chunk that couldn't be kept isn't built: before this check the nearest
+    // one past the budget was read back, meshed and thrown away on every camera move.
+    if (!this.entries.has(job.key) && !this.makeRoom(job.distance, 0, true)) {   // (a stale one replaces its own)
+      for (const c of this.wanted) if (c.distance >= job.distance && !this.entries.has(c.key)) this.blocked.add(c.key);
+      return;
+    }
     const sim = this.far.sim, o = sim.origin, g = sim.g;
     const token = { ...job, epoch: this.epoch, revision: this.revisions[job.key] };
     this.pending = token;
@@ -203,12 +256,7 @@ export class WorldDetail {
     this.drop(token.key);
     // Keep the nearest chunks, never cycle through them forever when the
     // budget is full. Reconsider rejected chunks only after the view changes.
-    for (const candidate of [...this.wanted].reverse()) {
-      if (this.bytes + bytes <= MAX_BYTES && this.entries.size < MAX_CHUNKS) break;
-      if (candidate.distance <= token.distance) break;
-      if (this.entries.has(candidate.key)) { this.drop(candidate.key); this.blocked.add(candidate.key); }
-    }
-    if (this.bytes + bytes > MAX_BYTES || this.entries.size >= MAX_CHUNKS) {
+    if (!this.makeRoom(token.distance, bytes)) {
       for (const c of this.wanted) if (c.distance >= token.distance && !this.entries.has(c.key)) this.blocked.add(c.key);
       return;
     }

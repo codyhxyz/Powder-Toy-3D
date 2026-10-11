@@ -299,6 +299,20 @@ export const flamerFrag = flameFrag(FLAMER);
 export const torchFireFrag = flameFrag(TORCH_FIRE);
 export const bodyFireFrag = flameFrag(BODY_FIRE);
 
+// The box of cell centres a flame pass (flameFrag, tuning P) may change, for
+// sim.touchCentres: the cone's axis out to uReach + BITE, widened by its
+// radius there. Without it the pass wakes every supertile and rebuilds every brick.
+export function flameBox(P, nozzle, dir, reach) {
+  const len = reach + P.BITE, r = P.RADIUS0 + P.SPREAD * len;
+  const lo = [], hi = [];
+  for (const k of ['x', 'y', 'z']) {
+    const a = nozzle[k], b = nozzle[k] + dir[k] * len;
+    lo.push(Math.min(a, b) - r);
+    hi.push(Math.max(a, b) + r);
+  }
+  return [lo, hi];
+}
+
 const physGLSL = /* glsl */ `
 ${defines('PHYS', PHYS)}
 ${Object.entries(PHYS_MODE).map(([k, v]) => `#define PHYS_MODE_${k} ${v}`).join('\n')}

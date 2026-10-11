@@ -239,6 +239,7 @@ export function createTransfer({ renderer, getSim }) {
     probe.uniforms.tA.value = sim.stateA;
     probe.uniforms.tB.value = sim.stateB;
     sim.run(probe, target);
+    sim.touch(box.slice(0, 3), box.slice(3));   // apply copies every cell outside the box through
     sim.pass(apply);
 
     const buf = new Float32Array(count * SLOT_COMPONENTS);

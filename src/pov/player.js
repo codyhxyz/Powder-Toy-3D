@@ -1029,6 +1029,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
   function dispose() {
     generation++;
     bodyWorld.dispose();
+    kicker.dispose();   // its povEvents listeners would keep the body alive and run every round:move
     slots.forEach((s) => s.target.dispose());
     mats?.probe.dispose();
     mats?.couple.dispose();

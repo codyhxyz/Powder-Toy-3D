@@ -346,10 +346,13 @@ export class FarField {
   // aligned; bricks along x, y, z) into the far grid, at the window's origin:
   // the slab about to leave on a move (before the shift), a slab of a sweep,
   // or all of it. derive: rebuild what derives from the grid before the next view.
-  summarize(lo, bricks, derive = true) {
+  // sweep: the slab stays in the window, so detail chunks padded into it keep
+  // their meshes until rebuilt ones replace them (WorldDetail.stale), rather
+  // than popping back to the coarse field next to the player every sweep.
+  summarize(lo, bricks, derive = true, sweep = false) {
     if (!this.built) return;
     const o = this.sim.origin, m = this.mats.farWin;
-    this.detail.invalidate([o.x + lo[0], o.y + lo[1], o.z + lo[2]], bricks.map((n) => n * BRICK));
+    this.detail[sweep ? 'stale' : 'invalidate']([o.x + lo[0], o.y + lo[1], o.z + lo[2]], bricks.map((n) => n * BRICK));
     const at = [(o.x + lo[0]) / BRICK, (o.z + lo[2]) / BRICK], size = [bricks[0], bricks[2]];
     m.uniforms.tA.value = this.sim.stateA;
     this.drawRegion(m, at, size);
@@ -384,7 +387,7 @@ export class FarField {
       this.version = this.sim.version;
     }
     const x = this.sweep * SWEEP_CELLS, last = x + SWEEP_CELLS >= g.nx;
-    this.summarize([x, 0, 0], [SWEEP_CELLS / BRICK, g.ny / BRICK, g.nz / BRICK], last);
+    this.summarize([x, 0, 0], [SWEEP_CELLS / BRICK, g.ny / BRICK, g.nz / BRICK], last, true);
     this.sweep = last ? -1 : this.sweep + 1;
   }
 

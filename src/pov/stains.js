@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { E } from '../elements.js';
-import { bodyFireFrag, toolPass, BODY_FIRE } from '../shaders/povTools.js';
+import { bodyFireFrag, flameBox, toolPass, BODY_FIRE } from '../shaders/povTools.js';
 import { SEED_MAX } from '../shaders/common.js';
 import { BODY_WIDTH, BODY_HEIGHT } from './constants.js';
 import { VITALS } from './vitals.js';
@@ -180,6 +180,7 @@ export function createBodyWorld({ renderer, getSim }) {
       u.uReach.value = BODY_HEIGHT;
       u.uDt.value = BURN_FIRE_INTERVAL;
       u.uFrame.value = ++frame;
+      sim.touchCentres(...flameBox(BODY_FIRE, nozzle, up, BODY_HEIGHT));
       sim.pass(mat);
     },
     // spill n cells of element id at temperature t from the body's chest into the air

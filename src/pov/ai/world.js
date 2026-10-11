@@ -34,12 +34,14 @@ function brickOffsets(g) {
 export function createWorldModel({ renderer, getSim }) {
   const packer = createPacker(renderer);
   let ids = null, temps = null, nx = 0, ny = 0, nz = 0;
-  let age = Infinity, busy = false, version = 0;
+  let age = Infinity, busy = false, version = 0, packed = null;
 
+  // → whether any cell's id or temperature changed
   function ingest({ bytes, dims }, g) {
     [nx, ny, nz] = dims;
     const n = nx * ny * nz;
-    if (!ids || ids.length !== n) { ids = new Uint8Array(n); temps = new Uint8Array(n); }
+    let changed = false;
+    if (!ids || ids.length !== n) { ids = new Uint8Array(n); temps = new Uint8Array(n); changed = true; }
     // the bytes are in the state's atlas layout (brick-major, sim.js cellTexel):
     // a brick at a time, its first cell's texel plus each cell's offset in it
     const off = brickOffsets(g);
@@ -50,11 +52,16 @@ export function createWorldModel({ renderer, getSim }) {
         const out = ((y + ly) * nz + z + lz) * nx + x;
         for (let lx = 0; lx < BRICK; lx++) {
           const t = (t0 + off[k++]) * TEXEL_BYTES;
-          ids[out + lx] = bytes[t + ID_BYTE];
-          temps[out + lx] = bytes[t + TEMP_BYTE];
+          const id = bytes[t + ID_BYTE], temp = bytes[t + TEMP_BYTE];
+          if (ids[out + lx] !== id || temps[out + lx] !== temp) {
+            ids[out + lx] = id;
+            temps[out + lx] = temp;
+            changed = true;
+          }
         }
       }
     }
+    return changed;
   }
 
   const inBox = (x, y, z) => x >= 0 && z >= 0 && y >= 0 && x < nx && y < ny && z < nz;
@@ -160,16 +167,19 @@ export function createWorldModel({ renderer, getSim }) {
       if (busy || age < REFRESH_S) return;
       const sim = getSim();
       if (!sim) return;
+      // nothing written since the last capture: no readback
+      const state = `${sim.id}:${sim.version}:${sim.origin.toArray()}`;
+      if (state === packed) { age = 0; return; }
       const job = packer.pack(sim);
       if (!job) return;
       busy = true;
       const g = sim.g;
-      job.then((r) => { ingest(r, g); r.release(); age = 0; version++; })
+      job.then((r) => { if (ingest(r, g)) version++; r.release(); age = 0; packed = state; })
         .catch((err) => console.error('NPC world readback failed', err))
         .finally(() => { busy = false; });
     },
     get ready() { return !!ids; },
-    get version() { return version; },   // bumps with every readback
+    get version() { return version; },   // bumps when a readback finds any cell changed
     get dims() { return [nx, ny, nz]; },
     id, kind, blocks, isLiquid, T, raycast, sees, standAt, hotNear, nearest,
   };
