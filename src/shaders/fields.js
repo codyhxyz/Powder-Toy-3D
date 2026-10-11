@@ -1,6 +1,8 @@
-import { prelude, BRICK } from './common.js';
+import { prelude, STATE_OPTS, LAYOUT, STAGE, BRICK, gridDims } from './common.js';
 import { materialsGLSL, CHANNELS, MEDIA } from '../gfx/materials.js';
 import { blendFixedFrames } from '../gfx/pacing.js';
+import { uniformStruct } from '../gpu/params.js';
+import { fold } from '../gpu/kernels.js';
 
 // Render fields: continuous versions of the blocky state, rebuilt once per
 // frame for the renderer only (the simulation never reads them).
@@ -13,258 +15,414 @@ import { blendFixedFrames } from '../gfx/pacing.js';
 //    walls, the floor and the box sides count neither way: a liquid film one
 //    cell deep keeps its height, and surfaces meet walls at a clean angle.
 //
-// 3. Thin-feature boost: six separable passes over the 3-cell neighbourhood.
-//    The first three (x, y, z) smooth the cubic channels (liquids) with the
+// 3. Thin-feature boost: three separable passes over the 3-cell
+//    neighbourhood (x, y, z) smooth the cubic channels (liquids) with the
 //    B-spline's lattice weights, which is what the tracer's cubic sample reads
 //    at a cell centre (other channels pass through), and find whether the
-//    channel holds any of the 3³ cells right now. The last three find each
-//    channel's local peak of that. Next to current matter, a feature whose
-//    peak is under the channel's bulk peak (gfx/materials.js bulkPeak,
+//    channel holds any of the 3³ cells right now. Then one pass finds each
+//    channel's local peak of that over the 3³ cells (the separable x, y, z
+//    maximum the WebGL build ran as three more passes, fused: a maximum is
+//    exact in any order, docs/webgpu.md E). Next to current matter, a feature
+//    whose peak is under the channel's bulk peak (gfx/materials.js bulkPeak,
 //    bulkPeakCubic) is scaled up so its surface sits THIN_RADIUS from the cell
 //    centre instead of blurring away: lone grains and droplets, one-cell
 //    trunks, films, streams. Ghosts of cells that moved on hold no matter now,
 //    so they still fade with the EMA.
 //
-// Attachments (RGBA): 0 = surface channels (liquid, molten, granular,
-// organic), 1 = media (smoke, steam, fire, flame temperature), 2 = non-crisp weight, one
-// copy per surface channel since each channel has its own blur radius (the
-// media share the liquid kernel and its weight).
-// Final output: 0 = surface φ (0.5 is the surface), 1 = media densities,
-// 2 = thin mask, rising from 0 to 1 with a channel's boost (THIN_MASK_LO..HI).
-// Only cubic channels need it: the tracer reads them cubic only there (bulk
+// Channels (vec4f): surface = liquid, molten, granular, organic; media =
+// smoke, steam, fire, flame temperature; non-crisp weight, one copy per
+// surface channel since each channel has its own blur radius (the media share
+// the liquid kernel and its weight).
+// Final output, three rgba16float 3D textures the renderer samples with
+// hardware trilinear filtering (docs/webgpu.md W14): fieldSurf = surface φ
+// (0.5 is the surface), fieldMedia = media densities, fieldThin = the thin
+// mask, rising from 0 to 1 with a channel's boost (THIN_MASK_LO..HI). Only
+// cubic channels need it: the tracer reads them cubic only there (bulk
 // surfaces read the same either way, and trilinear is 8x cheaper).
+//
+// Every stage is a compute kernel over a brick list (src/derived.js): a
+// 64-thread workgroup per listed brick, a thread per cell. In between, the
+// stages keep their values in storage buffers of u32 words, one plane of
+// SLOTS words per vec4f (word k of slot s at k·SLOTS + s), packed as the
+// WebGL build's targets held them (docs/webgpu.md E): pack4x8unorm where the
+// target was RGBA8 (the EMA, the blur's and the boost's scratch),
+// pack2x16float where it was half float (the normalised blur).
 
-export const fieldEmaFrag = (g) => /* glsl */ `
-${prelude(g)}
-${materialsGLSL()}
-// Rubble (STONE) is a heap of chips up to ~11 cm, so its surface is lumpy at
-// the cell's scale, not smooth like sand: each cell fills its channel by a
-// share of its own (from its seed, so it moves with the cell), and the blurred
-// surface bulges over the full cells and dips over the sparse ones.
-#define RUBBLE_LUMP 0.45        // most a rubble cell's occupancy falls short of 1
-#define RUBBLE_LUMP_HASH 7.13   // spreads the seed (a.w) into a fresh uniform
-uniform sampler2D tP0;
-uniform sampler2D tP1;
-uniform vec4 uEmaS;
-uniform vec4 uEmaM;
-// grid cells the window moved since the last update (docs/scaling.md D11): a
-// cell's history is at p + uShift; cells shifted in from outside start over
-uniform ivec3 uShift;
-layout(location = 0) out vec4 o0;
-layout(location = 1) out vec4 o1;
-layout(location = 2) out vec4 o2;
-void main() {
-  ivec2 f = ivec2(gl_FragCoord.xy);
-  ivec3 p = fieldCellFromFrag(f);
-  if (!inGrid(p)) { o0 = o1 = o2 = vec4(0.0); return; }
-  vec4 a = fetchA(p);
-  int id = eid(a);
-  vec4 s = vec4(0.0), m = vec4(0.0);
-  int ch = SURFCH[id], md = MEDIACH[id];
-  bool crisp = id != E_EMPTY && ch < 0 && md < 0;
-  if (ch >= 0) s[ch] = id == E_STONE ? 1.0 - RUBBLE_LUMP * fract(fract(a.w) * RUBBLE_LUMP_HASH) : 1.0;
-  if (md == MD_SMOKE) m.x = clamp(a.z, 0.0, 1.0);
-  else if (md == MD_STEAM) m.y = HAZE[id];   // droplets 1, a clear gas a faint haze (gfx/materials.js)
-  else if (md == MD_FIRE) {
-    m.z = mix(FIRE_BASE, 1.0, clamp(a.z, 0.0, 1.0));
-    // flame temperature, weighted by density (see MEDIA in gfx/materials.js)
-    m.w = m.z * clamp((a.y - AMBIENT) / HEAT_RANGE, 0.0, 1.0);
-  }
-  ivec3 q = p + uShift;
-  ivec2 h = fieldAtlas(q);
-  bool hist = inGrid(q);
-  o0 = hist ? mix(texelFetch(tP0, h, 0), s, uEmaS) : s;
-  o1 = hist ? mix(texelFetch(tP1, h, 0), m, uEmaM) : m;
-  o2 = vec4(crisp ? 0.0 : 1.0);
-}
-`;
+// ---- the dirty sets (docs/scaling.md D9, docs/webgpu.md E) ----
+// The passes run only over the bricks that may have changed (src/derived.js
+// updateDirty; shaders/passes.js dirtyFrag builds the lists):
+//   EMA     the EMA may still change: the brick changed within the last
+//           FIELD_EMA_SETTLE derived frames
+//   FIELDS  the final fields and the brick map may change: an EMA brick
+//           within FIELDS_DILATE bricks (FIELD_REACH)
+//   WORK    the passes in between must run: an EMA brick within WORK_DILATE
+//           (their scratch's reach on top)
+// Each list is one run of brick numbers in the lists buffer (dirtyLists).
+export const DIRTY = { EMA: 0, FIELDS: 1, WORK: 2 };
+// Frames a cell's EMA keeps changing after its state last did: the slowest
+// channel's blend reaches its 8-bit fixed point by then (gfx/pacing.js
+// blendFixedFrames; 13 for the liquid's 0.35), and the EMA pass may skip it.
+export const FIELD_EMA_SETTLE = Math.max(...[...new Set([...CHANNELS, ...MEDIA].map((c) => c.ema))].map(blendFixedFrames));
 
 // Taps of the separable Gaussian (gfx/materials.js gauss5), centred: each pass
 // reads BLUR_REACH cells to either side along its axis.
 export const BLUR_TAPS = 5;
 export const BLUR_REACH = (BLUR_TAPS - 1) / 2;
-export const fieldBlurFrag = (g, final) => /* glsl */ `
-${prelude(g)}
-#define BLUR_TAPS ${BLUR_TAPS}
-#define BLUR_REACH ${BLUR_REACH}
-uniform sampler2D t0;
-uniform sampler2D t1;
-uniform sampler2D t2;
-uniform int uAxis;
-uniform vec4 uW[BLUR_TAPS];   // per-tap weights, one per surface channel (media use .x)
-// below this blurred non-crisp weight (deep inside crisp solids) there is nothing to normalise by
-#define NORM_FLOOR 0.02
-layout(location = 0) out vec4 o0;
-layout(location = 1) out vec4 o1;
-${final ? '' : 'layout(location = 2) out vec4 o2;'}
-void main() {
-  ivec3 p = fieldCellFromFrag(ivec2(gl_FragCoord.xy));
-  if (!inGrid(p)) { o0 = o1 = vec4(0.0); ${final ? '' : 'o2 = vec4(0.0);'} return; }
-  ivec3 dir = uAxis == 0 ? ivec3(1, 0, 0) : (uAxis == 1 ? ivec3(0, 1, 0) : ivec3(0, 0, 1));
-  vec4 s = vec4(0.0), m = vec4(0.0), d = vec4(0.0);
-  for (int i = 0; i < BLUR_TAPS; i++) {
-    ivec3 q = p + dir * (i - BLUR_REACH);
-    if (!inGrid(q)) continue;   // outside the box = crisp
-    ivec2 t = fieldAtlas(q);
-    vec4 w = uW[i];
-    s += w * texelFetch(t0, t, 0);
-    m += w.x * texelFetch(t1, t, 0);
-    d += w * texelFetch(t2, t, 0);
-  }
-${final ? `
-  // normalise; deep inside crisp solids there is nothing to normalise by
-  vec4 ok = step(vec4(NORM_FLOOR), d);
-  o0 = ok * s / max(d, vec4(NORM_FLOOR));
-  o1 = ok.x * m / max(d.x, NORM_FLOOR);
-` : `
-  o0 = s; o1 = m; o2 = d;
-`}
-}
-`;
-
-// Stages 0-2 (x, y, z): lattice smoothing of φ (stage 0 reads φ and the
-// state, later stages their predecessor) and the occupancy, dilated.
-// Stages 3-5 (x, y, z): local peak of the smoothed field, occupancy passed
-// along; stage 5 applies the boost to φ, passes the media through and writes
-// the thin mask.
+// The boost's stages as the WebGL build counted them: 0-2 the lattice
+// smoothing (x, y, z), 3-5 the local peak (x, y, z), each reaching a cell to
+// either side along its axis, so the whole boost reaches two along each axis.
+// (Stages 3-5 are one kernel now, fieldPeakFrag, with the same reach.)
 export const BOOST_STAGES = 6;
-const LAST = BOOST_STAGES - 1;
-// The dirty sets of the incremental passes (docs/scaling.md D9; built by
-// shaders/passes.js dirtyFrag): the channel of the dirty map, the region map
-// and the share that holds each.
-export const DIRTY = { EMA: 0, FIELDS: 1, WORK: 2 };
 const AXES = 3;
-// Cells each boost stage reads to either side along its axis, and so the whole
-// boost along each axis (two stages per axis).
 const BOOST_STAGE_REACH = 1;
 export const BOOST_REACH = (BOOST_STAGES / AXES) * BOOST_STAGE_REACH;
-export const fieldBoostFrag = (g, stage) => /* glsl */ `
-${prelude(g)}
-${materialsGLSL()}
-uniform sampler2D t0;   // stage 0: φ, else the previous stage's field
-${stage > 0 ? 'uniform sampler2D t1;   // the occupancy so far (stage 0 reads the state instead)' : ''}
-${stage < 3 ? 'uniform vec4 uS;      // per-channel centre weight of the lattice smoothing (1 = none)' : ''}
-${stage === LAST ? `uniform sampler2D tPhi;
-uniform sampler2D tMed;
-uniform vec4 uBulk;     // per-channel bulk peak
-uniform sampler2D tDirty;   // dirty sets, per brick` : ''}
-layout(location = 0) out vec4 o0;
-layout(location = 1) out vec4 o1;
-layout(location = 2) out vec4 o2;   // ${stage < LAST ? 'the scratch targets have three attachments: unused' : 'thin mask'}
-void main() {
-  ivec2 f = ivec2(gl_FragCoord.xy);
-  ivec3 p = fieldCellFromFrag(f);
-  o2 = vec4(0.0);
-  if (!inGrid(p)) { o0 = o1 = vec4(0.0); return; }
-${stage === LAST ? `  // Only bricks whose fields may change are written. The regions drawn reach
-  // past them, to cells whose inputs this frame's passes didn't all compute.
-  if (texelFetch(tDirty, brickAtlas(p / BS), 0)[${DIRTY.FIELDS}] < 0.5) discard;` : ''}
-  const ivec3 dir = ivec3(${['1, 0, 0', '0, 1, 0', '0, 0, 1'][stage % 3]});
-  vec4 acc = vec4(0.0), occ = vec4(0.0);
-  for (int i = -1; i <= 1; i++) {
-${stage < 3 ? `    // clamped to the edge, like the tracer's cubic sample
-    ivec3 q = clamp(p + dir * i, ivec3(0), ivec3(NX, NY, NZ) - 1);
-    ivec2 t = fieldAtlas(q);
-    acc += (i == 0 ? uS : 0.5 * (1.0 - uS)) * texelFetch(t0, t, 0);
-${stage === 0 ? `    int ch = SURFCH[eid(fetchA(q))];
-    if (ch >= 0) occ[ch] = 1.0;` : '    occ = max(occ, texelFetch(t1, t, 0));'}` : `    ivec3 q = p + dir * i;
-    if (inGrid(q)) acc = max(acc, texelFetch(t0, fieldAtlas(q), 0));`}
-  }
-${stage >= 3 ? '  occ = texelFetch(t1, f, 0);' : ''}
-${stage === LAST ? `  vec4 k = max(vec4(1.0), uBulk / max(acc, vec4(THIN_MIN_PEAK)));
-  vec4 boosted = step(0.5, occ);
-  o0 = texelFetch(tPhi, f, 0) * mix(vec4(1.0), k, boosted);
-  o1 = texelFetch(tMed, f, 0);
-  o2 = boosted * smoothstep(vec4(THIN_MASK_LO), vec4(THIN_MASK_HI), k);` : `  o0 = acc;
-  o1 = occ;`}
-}
-`;
-
-// ---- incremental updates (docs/scaling.md D9) ----
-// The passes above run only over the bricks that may have changed (sim.js
-// updateBricks; the dirty sets are built by shaders/passes.js dirtyFrag).
-//
-// Frames a cell's EMA keeps changing after its state last did: the slowest
-// channel's blend reaches its 8-bit fixed point by then (gfx/pacing.js
-// blendFixedFrames; 13 for the liquid's 0.35), and the EMA pass may skip it.
-export const FIELD_EMA_SETTLE = Math.max(...[...new Set([...CHANNELS, ...MEDIA].map((c) => c.ema))].map(blendFixedFrames));
 // Cells a change in the EMA (or the state) reaches into the final fields
 // along each axis: the blur's taps, then the boost's stages.
 export const FIELD_REACH = BLUR_REACH + BOOST_REACH;
-// The passes between the EMA and the final fields share scratch targets, which
-// outside this frame's regions hold some other pass's output: each must cover
+// The passes between the EMA and the final fields share scratch buffers,
+// which outside this frame's WORK bricks hold stale values: each must cover
 // every cell the passes after it read. The first blur's output (x) is read
 // farthest from a final field cell: along y (or z) by one more blur and the
 // boost's stages.
 export const FIELD_SCRATCH_REACH = BLUR_REACH + BOOST_REACH;
+// The same reaches in bricks (shaders/passes.js dirtyFrag dilates by them).
+export const FIELDS_DILATE = Math.ceil(FIELD_REACH / BRICK);
+export const WORK_DILATE = Math.ceil((FIELD_REACH + FIELD_SCRATCH_REACH) / BRICK);
 
-// The field atlas in regions (gfx/regions.js): a region is FIELD_REGION_BRICKS
-// bricks square in x and z, in one Y-slice; instance i is region
-// (i % rx, (i / rx) % rz) of slice i / (rx · rz). Its flag is the region map's
-// texel (rx + RX · rz, brick layer) (shaders/passes.js fieldRegionMapFrag).
-// Measured (M5, 128³, per-pass p10 while running): 4- and 8-brick regions
-// cost the same within noise and 16 a little more; 2 lost (32k instances a
-// pass, and a slow share pass). 8 matches the hardware tile and draws a
-// quarter of 4's instances.
-export const FIELD_REGION_BRICKS = 8;   // 32 cells: one hardware tile of a slice
-// Share of regions flagged above which one full-screen quad is drawn instead.
-// Regions still beat it at the highest share measured (92%, volcano: 2.0 ms
-// for the field passes against 2.3), and cost about as much at 100%.
+// A brick's age word (shaders/passes.js ageFrag): derived frames since it
+// last changed in bits 0-7, and two bits for the bricks a window shift brings
+// in (shaders/passes.js brickShiftFrag sets SHIFTED; the next age pass turns
+// it into FRESH, which the EMA pass reads): their cells came from outside the
+// window and have no history, so the EMA starts them over at their targets,
+// as the WebGL build's EMA pass did for cells shifted in.
+export const AGE = { MAX: 255, MASK: 255, FRESH: 256, SHIFTED: 512 };
+
+// The lists buffer (src/derived.js), in u32 words: the three lists (a run of
+// NBRICKS brick numbers each, in DIRTY order), their append counters, their
+// lengths as the last dirty pass left them (what a kernel dispatched over a
+// list reads), and each list's indirect dispatch arguments [x, y, z, pad]
+// (fold()ed: a workgroup per entry).
+export function dirtyLists(g) {
+  const { nbricks } = gridDims(g), n = 3 * nbricks;
+  return { list: (l) => l * nbricks, count: n, last: n + 4, args: n + 8, words: n + 20 };
+}
+
+// The lists' WGSL: their offsets, the age bits and the dilations. Each kernel
+// declares the buffer itself: read_write atomics where it appends, read-only
+// where it is dispatched over a list.
+export const dirtyListsWGSL = (g) => {
+  const d = dirtyLists(g);
+  return /* wgsl */ `
+// ---- the dirty sets' lists (shaders/fields.js DIRTY, dirtyLists) ----
+const LIST_EMA: u32 = ${DIRTY.EMA}u;
+const LIST_FIELDS: u32 = ${DIRTY.FIELDS}u;
+const LIST_WORK: u32 = ${DIRTY.WORK}u;
+const DL_COUNT: u32 = ${d.count}u;   // words: the append counters, one per list
+const DL_LAST: u32 = ${d.last}u;     // the lists' lengths
+const DL_ARGS: u32 = ${d.args}u;     // the indirect arguments, four words per list
+const AGE_MAX: u32 = ${AGE.MAX}u;
+const AGE_MASK: u32 = ${AGE.MASK}u;
+const AGE_FRESH: u32 = ${AGE.FRESH}u;
+const AGE_SHIFTED: u32 = ${AGE.SHIFTED}u;
+const EMA_SETTLE: u32 = ${FIELD_EMA_SETTLE}u;   // frames
+const FIELDS_DILATE: i32 = ${FIELDS_DILATE};    // bricks
+const WORK_DILATE: i32 = ${WORK_DILATE};
+fn brickInGrid(b: vec3i) -> bool { return all(b >= vec3i(0)) && all(b < vec3i(BX, BY, BZ)); }`;
+};
+
+// main() of a kernel dispatched over one of the lists: a workgroup per entry
+// (fold()ed), a thread per cell of its brick. Declares e (the entry), b (the
+// brick), s (the cell's slot) and p (the cell). A workgroup past the list's
+// end returns, uniformly: the length comes from a read-only binding.
+export const listMainWGSL = (list) => /* wgsl */ `@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
+  let e = foldId(wg, nwg);
+  if (e >= dlist[DL_LAST + ${list}]) { return; }
+  let b = dlist[${list} * NBRICKS + e];
+  let s = b * 64u + li;
+  let p = cellOf(s);`;
+
+// The group-2 layouts of the field kernels (src/derived.js makes them):
+//   FIELD  the lists, a source and a destination (the EMA pass: the lists,
+//          the ages and the EMA, which it updates in place)
+//   PEAK   the lists, the boost's last smoothing stage, the normalised blur,
+//          and the three final fields as storage textures
+//   PAIR   a source and a destination (the window shift of the EMA)
+const ro = (binding) => ({ binding, visibility: STAGE.COMPUTE, buffer: { type: 'read-only-storage' } });
+const rw = (binding) => ({ binding, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } });
+const out3d = (binding) => ({ binding, visibility: STAGE.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float', viewDimension: '3d' } });
+const tex3d = (binding) => ({ binding, visibility: STAGE.COMPUTE, texture: { sampleType: 'float', viewDimension: '3d' } });
+// (shaders/passes.js builds its layouts from the same entries)
+export const LAYOUT_ENTRY = { ro, rw, out3d, tex3d };
+export const FIELD_LAYOUT = {
+  FIELD: [ro(0), ro(1), rw(2)],
+  PEAK: [ro(0), ro(1), ro(2), out3d(3), out3d(4), out3d(5)],
+  PAIR: [ro(0), rw(1)],
+};
+// The format of the final fields (src/derived.js allocates them).
+export const FIELD_FORMAT = 'rgba16float';
+
+// ---- 1. the EMA ----
+// emaS, emaM: each channel's blend weight (CHANNELS[i].ema, MEDIA[i].ema);
+// reset: every cell starts over at its target (a load, a new smoothing:
+// sim.fieldReset), as the cells of FRESH bricks do.
+export const EmaParams = uniformStruct('EmaParams', { emaS: 'vec4f', emaM: 'vec4f', reset: 'u32' });
+export const fieldEmaFrag = (g) => /* wgsl */ `
+${prelude(g, STATE_OPTS.STATE_RO)}
+${materialsGLSL()}
+${dirtyListsWGSL(g)}
+// Rubble (STONE) is a heap of chips up to ~11 cm, so its surface is lumpy at
+// the cell's scale, not smooth like sand: each cell fills its channel by a
+// share of its own (from its seed, so it moves with the cell), and the blurred
+// surface bulges over the full cells and dips over the sparse ones.
+const RUBBLE_LUMP: f32 = 0.45;        // most a rubble cell's occupancy falls short of 1
+const RUBBLE_LUMP_HASH: f32 = 7.13;   // spreads the seed (a.w) into a fresh uniform
+${EmaParams.wgsl}
+@group(3) @binding(1) var<uniform> P: EmaParams;
+@group(2) @binding(0) var<storage, read> dlist: array<u32>;
+@group(2) @binding(1) var<storage, read> age: array<u32>;
+// the EMA, in place (each cell reads only its own history): planes surface,
+// media, non-crisp weight (the weight has no history: it is the state's)
+@group(2) @binding(2) var<storage, read_write> ema: array<u32>;
+${listMainWGSL('LIST_EMA')}
+  let a = fetchAs(s);
+  let id = eid(a);
+  var sv = vec4f(0.0);
+  var m = vec4f(0.0);
+  let ch = SURFCH(id);
+  let md = MEDIACH(id);
+  let crisp = id != E_EMPTY && ch < 0 && md < 0;
+  if (ch >= 0) {
+    var v = 1.0;
+    if (id == E_STONE) { v = 1.0 - RUBBLE_LUMP * fract(fract(a.w) * RUBBLE_LUMP_HASH); }
+    sv[ch] = v;
+  }
+  if (md == MD_SMOKE) { m.x = clamp(a.z, 0.0, 1.0); }
+  else if (md == MD_STEAM) { m.y = HAZE(id); }   // droplets 1, a clear gas a faint haze (gfx/materials.js)
+  else if (md == MD_FIRE) {
+    m.z = mix(FIRE_BASE, 1.0, clamp(a.z, 0.0, 1.0));
+    // flame temperature, weighted by density (see MEDIA in gfx/materials.js)
+    m.w = m.z * clamp((a.y - AMBIENT) / HEAT_RANGE, 0.0, 1.0);
+  }
+  // a cell with history blends toward its target; one without takes it
+  if (P.reset == 0u && (age[b] & AGE_FRESH) == 0u) {
+    sv = mix(unpack4x8unorm(ema[s]), sv, P.emaS);
+    m = mix(unpack4x8unorm(ema[SLOTS + s]), m, P.emaM);
+  }
+  ema[s] = pack4x8unorm(sv);
+  ema[SLOTS + s] = pack4x8unorm(m);
+  ema[2u * SLOTS + s] = pack4x8unorm(vec4f(select(1.0, 0.0, crisp)));
+}
+`;
+
+// ---- 2. the blur ----
+// w: per-tap weights, one per surface channel (media use .x); axis 0, 1, 2.
+export const FieldBlurParams = uniformStruct('FieldBlurParams', { w: `array<vec4f, ${BLUR_TAPS}>`, axis: 'u32' });
+// final: the last axis, which normalises and writes the blurred fields in
+// half floats (planes φ.xy, φ.zw, media.xy, media.zw); else the source's
+// three planes (surface, media, weight) blurred along one axis, in 8 bits.
+export const fieldBlurFrag = (g, final) => /* wgsl */ `
+${prelude(g, { state: false })}
+${dirtyListsWGSL(g)}
+const BLUR_TAPS: i32 = ${BLUR_TAPS};
+const BLUR_REACH: i32 = ${BLUR_REACH};
+// below this blurred non-crisp weight (deep inside crisp solids) there is nothing to normalise by
+const NORM_FLOOR: f32 = 0.02;
+${FieldBlurParams.wgsl}
+@group(3) @binding(1) var<uniform> P: FieldBlurParams;
+@group(2) @binding(0) var<storage, read> dlist: array<u32>;
+@group(2) @binding(1) var<storage, read> src: array<u32>;
+@group(2) @binding(2) var<storage, read_write> dst: array<u32>;
+${listMainWGSL('LIST_WORK')}
+  var dir = vec3i(0);
+  dir[P.axis] = 1;
+  var sv = vec4f(0.0);
+  var m = vec4f(0.0);
+  var d = vec4f(0.0);
+  for (var i = 0; i < BLUR_TAPS; i++) {
+    let q = p + dir * (i - BLUR_REACH);
+    if (!inGrid(q)) { continue; }   // outside the box = crisp
+    let t = slotOf(q);
+    let w = P.w[i];
+    sv += w * unpack4x8unorm(src[t]);
+    m += w.x * unpack4x8unorm(src[SLOTS + t]);
+    d += w * unpack4x8unorm(src[2u * SLOTS + t]);
+  }
+${final ? `  // normalise; deep inside crisp solids there is nothing to normalise by
+  let ok = step(vec4f(NORM_FLOOR), d);
+  let o0 = ok * sv / max(d, vec4f(NORM_FLOOR));
+  let o1 = ok.x * m / max(d.x, NORM_FLOOR);
+  dst[s] = pack2x16float(o0.xy);
+  dst[SLOTS + s] = pack2x16float(o0.zw);
+  dst[2u * SLOTS + s] = pack2x16float(o1.xy);
+  dst[3u * SLOTS + s] = pack2x16float(o1.zw);` : `  dst[s] = pack4x8unorm(sv);
+  dst[SLOTS + s] = pack4x8unorm(m);
+  dst[2u * SLOTS + s] = pack4x8unorm(d);`}
+}
+`;
+
+// ---- 3. the thin-feature boost ----
+// Stages 0-2 (x, y, z): lattice smoothing of φ (stage 0 reads the blurred φ
+// and the state, later stages their predecessor) and the occupancy, dilated:
+// planes smoothed φ, occupancy, 8 bits each. Stage 0 is a kernel of its own
+// (it reads the half-float blur and the state); stages 1 and 2 share one
+// (fieldBoostFrag(g, 1), axis 1 then 2).
+// s: per-channel centre weight of the lattice smoothing (1 = none).
+export const BoostParams = uniformStruct('BoostParams', { s: 'vec4f', axis: 'u32' });
+export const fieldBoostFrag = (g, stage) => /* wgsl */ `
+${prelude(g, stage === 0 ? STATE_OPTS.STATE_RO : { state: false })}
+${dirtyListsWGSL(g)}
+${BoostParams.wgsl}
+@group(3) @binding(1) var<uniform> P: BoostParams;
+@group(2) @binding(0) var<storage, read> dlist: array<u32>;
+// ${stage === 0 ? 'the blurred fields (φ in planes 0 and 1)' : 'the last stage: smoothed φ, occupancy'}
+@group(2) @binding(1) var<storage, read> src: array<u32>;
+@group(2) @binding(2) var<storage, read_write> dst: array<u32>;
+${listMainWGSL('LIST_WORK')}
+  var dir = vec3i(0);
+  dir[P.axis] = 1;
+  var acc = vec4f(0.0);
+  var occ = vec4f(0.0);
+  for (var i = -1; i <= 1; i++) {
+    // clamped to the edge, like the tracer's cubic sample
+    let q = clamp(p + dir * i, vec3i(0), vec3i(NX, NY, NZ) - 1);
+    let t = slotOf(q);
+    var w = 0.5 * (1.0 - P.s);
+    if (i == 0) { w = P.s; }
+${stage === 0 ? `    acc += w * vec4f(unpack2x16float(src[t]), unpack2x16float(src[SLOTS + t]));
+    let ch = SURFCH(eid(fetchAs(t)));
+    if (ch >= 0) { occ[ch] = 1.0; }` : `    acc += w * unpack4x8unorm(src[t]);
+    occ = max(occ, unpack4x8unorm(src[SLOTS + t]));`}
+  }
+  dst[s] = pack4x8unorm(acc);
+  dst[SLOTS + s] = pack4x8unorm(occ);
+}
+`;
+
+// The local peak and the boost (the WebGL build's stages 3-5): each channel's
+// maximum of the smoothed field over the 3³ cells around (those in the grid),
+// then the last stage's arithmetic, into the final fields; only FIELDS bricks
+// are written. The maximum over the box ∩ grid is what three separable passes
+// skipping out-of-grid taps per axis computed: a maximum is exact in any
+// order. reach: cells to either side along each axis the maximum takes (1, 1,
+// 1; tools/derived-check.mjs's separable reference gives 0, 0, 1 after its
+// own x and y passes, fieldMaxFrag).
+export const PeakParams = uniformStruct('PeakParams', { bulk: 'vec4f', reach: 'vec3i' });
+export const fieldPeakFrag = (g) => /* wgsl */ `
+${prelude(g, { state: false })}
+${materialsGLSL()}
+${dirtyListsWGSL(g)}
+${PeakParams.wgsl}
+@group(3) @binding(1) var<uniform> P: PeakParams;   // bulk: each channel's bulk peak
+@group(2) @binding(0) var<storage, read> dlist: array<u32>;
+@group(2) @binding(1) var<storage, read> src: array<u32>;       // stage 2: smoothed φ, occupancy
+@group(2) @binding(2) var<storage, read> blurred: array<u32>;   // φ, media (half floats)
+@group(2) @binding(3) var fieldSurf: texture_storage_3d<rgba16float, write>;
+@group(2) @binding(4) var fieldMedia: texture_storage_3d<rgba16float, write>;
+@group(2) @binding(5) var fieldThin: texture_storage_3d<rgba16float, write>;
+${listMainWGSL('LIST_FIELDS')}
+  var acc = vec4f(0.0);
+  for (var z = -P.reach.z; z <= P.reach.z; z++) {
+    for (var y = -P.reach.y; y <= P.reach.y; y++) {
+      for (var x = -P.reach.x; x <= P.reach.x; x++) {
+        let q = p + vec3i(x, y, z);
+        if (inGrid(q)) { acc = max(acc, unpack4x8unorm(src[slotOf(q)])); }
+      }
+    }
+  }
+  let occ = unpack4x8unorm(src[SLOTS + s]);   // stage 2's, passed along
+  let k = max(vec4f(1.0), P.bulk / max(acc, vec4f(THIN_MIN_PEAK)));
+  let boosted = step(vec4f(0.5), occ);
+  let phi = vec4f(unpack2x16float(blurred[s]), unpack2x16float(blurred[SLOTS + s]));
+  let med = vec4f(unpack2x16float(blurred[2u * SLOTS + s]), unpack2x16float(blurred[3u * SLOTS + s]));
+  textureStore(fieldSurf, p, phi * mix(vec4f(1.0), k, boosted));
+  textureStore(fieldMedia, p, med);
+  textureStore(fieldThin, p, boosted * smoothstep(vec4f(THIN_MASK_LO), vec4f(THIN_MASK_HI), k));
+}
+`;
+
+// Test only (tools/derived-check.mjs): the WebGL build's separable peak
+// stages 3 and 4, one axis each (the maximum along it, taps outside the grid
+// skipped, the occupancy passed along), so the fused kernel can be held
+// against them: fieldPeakFrag with reach (0, 0, 1) is then stage 5.
+export const MaxParams = uniformStruct('MaxParams', { axis: 'u32' });
+export const fieldMaxFrag = (g) => /* wgsl */ `
+${prelude(g, { state: false })}
+${dirtyListsWGSL(g)}
+${MaxParams.wgsl}
+@group(3) @binding(1) var<uniform> P: MaxParams;
+@group(2) @binding(0) var<storage, read> dlist: array<u32>;
+@group(2) @binding(1) var<storage, read> src: array<u32>;
+@group(2) @binding(2) var<storage, read_write> dst: array<u32>;
+${listMainWGSL('LIST_WORK')}
+  var dir = vec3i(0);
+  dir[P.axis] = 1;
+  var acc = vec4f(0.0);
+  for (var i = -1; i <= 1; i++) {
+    let q = p + dir * i;
+    if (inGrid(q)) { acc = max(acc, unpack4x8unorm(src[slotOf(q)])); }
+  }
+  dst[s] = pack4x8unorm(acc);
+  dst[SLOTS + s] = src[SLOTS + s];
+}
+`;
+
+// ---- the window's shift (docs/webgpu.md E, D8.12) ----
+// The EMA follows its cells: cell p takes the history of p + shift, out of
+// place (into a scratch that src/derived.js copies back). Cells shifted in
+// from outside get none (their bricks are SHIFTED: the EMA starts them over).
+export const FieldShiftParams = uniformStruct('FieldShiftParams', { shift: 'vec3i' });
+export const fieldShiftFrag = (g) => /* wgsl */ `
+${prelude(g, { state: false })}
+${FieldShiftParams.wgsl}
+@group(3) @binding(1) var<uniform> P: FieldShiftParams;
+@group(2) @binding(0) var<storage, read> src: array<u32>;
+@group(2) @binding(1) var<storage, read_write> dst: array<u32>;
+@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
+  let s = foldThread(wg, nwg, li);
+  if (s >= SLOTS) { return; }
+  let q = cellOf(s) + P.shift;
+  let inside = inGrid(q);
+  var t = 0u;
+  if (inside) { t = slotOf(q); }
+  for (var k = 0u; k < 3u; k++) {
+    var w = 0u;
+    if (inside) { w = src[k * SLOTS + t]; }
+    dst[k * SLOTS + s] = w;
+  }
+}
+`;
+
+// WEBGPU-STUB (docs/webgpu.md J3): the EMA is updated in place (each cell
+// reads only its own history), so nothing copies it back.
+export function fieldCopyFrag() { throw new Error('fieldCopyFrag removed in the WebGPU port: docs/webgpu.md E (fieldEmaFrag, in place)'); }
+// WEBGPU-STUB (docs/webgpu.md J3): the field passes run over brick lists, not
+// regions of a field atlas (docs/webgpu.md E).
+export const FIELD_REGION_BRICKS = 8;
+// WEBGPU-STUB (docs/webgpu.md J3)
 export const FIELD_FULL_SHARE = 0.95;
-const glslFloat = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
-export function fieldRegions(g) {
-  const side = FIELD_REGION_BRICKS;
-  const rx = Math.ceil(g.nx / BRICK / side), rz = Math.ceil(g.nz / BRICK / side);
-  return { side, rx, rz, count: rx * rz * g.ny, mapWidth: rx * rz, mapHeight: g.ny / BRICK };
-}
-// regionVert's GLSL for a field pass over dirty set `set` (shaders/passes.js DIRTY).
-export function fieldRegionsGLSL(g, set) {
-  const { side, rx, rz, count } = fieldRegions(g);
-  const fty = Math.round(g.fheight / g.nz);
-  return /* glsl */ `
-#define REGION_COUNT ${count}
-#define NX ${g.nx}
-#define NZ ${g.nz}
-#define BS ${BRICK}
-#define FTX ${g.ftx}          // field atlas: Y-slices per row
-#define FTY ${fty}          // …and rows
-#define RX ${rx}          // regions per slice along x, z
-#define RZ ${rz}
-#define REGION_CELLS ${side * BRICK}   // region side (cells = texels)
-#define SET ${set}            // dirty set (channel of the region map and the share)
-#define FULL_SHARE ${glslFloat(FIELD_FULL_SHARE)}
-uniform sampler2D tRegion;   // region flags, per dirty set
-uniform sampler2D tShare;    // share of regions flagged, per dirty set
-vec2 regionTarget() { return vec2(FTX * NX, FTY * NZ); }
-bool regionsFull() { return texelFetch(tShare, ivec2(0), 0)[SET] > FULL_SHARE; }
-bool regionOn(int i) {
-  int y = i / (RX * RZ), r = i - y * (RX * RZ);
-  return texelFetch(tRegion, ivec2(r, y / BS), 0)[SET] > 0.5;
-}
-vec4 regionRect(int i) {
-  int y = i / (RX * RZ), r = i - y * (RX * RZ);
-  ivec2 slice = ivec2((y % FTX) * NX, (y / FTX) * NZ);
-  ivec2 lo = slice + ivec2(r % RX, r / RX) * REGION_CELLS;
-  return vec4(lo, min(lo + REGION_CELLS, slice + ivec2(NX, NZ)));
-}
-`;
-}
+// WEBGPU-STUB (docs/webgpu.md J3)
+export function fieldRegions() { throw new Error('fieldRegions removed in the WebGPU port: docs/webgpu.md E (brick lists)'); }
+// WEBGPU-STUB (docs/webgpu.md J3)
+export function fieldRegionsGLSL() { throw new Error('fieldRegionsGLSL removed in the WebGPU port: docs/webgpu.md E (brick lists)'); }
 
-// Copy of the EMA (three attachments) from the pass's output into the
-// persistent EMA target, over the regions the EMA pass drew.
-export const fieldCopyFrag = () => /* glsl */ `
-precision highp float;
-precision highp sampler2D;
-uniform sampler2D t0;
-uniform sampler2D t1;
-uniform sampler2D t2;
-layout(location = 0) out vec4 o0;
-layout(location = 1) out vec4 o1;
-layout(location = 2) out vec4 o2;
-void main() {
-  ivec2 f = ivec2(gl_FragCoord.xy);
-  o0 = texelFetch(t0, f, 0);
-  o1 = texelFetch(t1, f, 0);
-  o2 = texelFetch(t2, f, 0);
-}
-`;
+// windowed: a world's grid only; tool: built only by the tools that run it
+// (docs/webgpu.md B5; src/derived.js builds them on first use otherwise).
+const perList = (g) => fold(gridDims(g).nbricks);   // the longest list: every brick
+const fieldLayouts = (state) => () => [LAYOUT.TABLES, state ? LAYOUT.STATE_RO : 'EMPTY', FIELD_LAYOUT.FIELD];
+/**
+ * tools/check-wgsl.mjs, and the pipelines a grid's derived passes need (the
+ * start menu's warm-up, docs/webgpu.md B5).
+ */
+export const WGSL_CHECK = [
+  { name: 'fieldEma', kind: 'compute', code: fieldEmaFrag, layouts: fieldLayouts(true), dispatch: perList },
+  { name: 'fieldBlur', kind: 'compute', code: (g) => fieldBlurFrag(g, false), layouts: fieldLayouts(false), dispatch: perList },
+  { name: 'fieldFinal', kind: 'compute', code: (g) => fieldBlurFrag(g, true), layouts: fieldLayouts(false), dispatch: perList },
+  { name: 'fieldBoost0', kind: 'compute', code: (g) => fieldBoostFrag(g, 0), layouts: fieldLayouts(true), dispatch: perList },
+  { name: 'fieldBoost', kind: 'compute', code: (g) => fieldBoostFrag(g, 1), layouts: fieldLayouts(false), dispatch: perList },
+  { name: 'fieldPeak', kind: 'compute', code: fieldPeakFrag, layouts: () => [LAYOUT.TABLES, 'EMPTY', FIELD_LAYOUT.PEAK], dispatch: perList },
+  { name: 'fieldShift', kind: 'compute', code: fieldShiftFrag, layouts: () => [LAYOUT.TABLES, 'EMPTY', FIELD_LAYOUT.PAIR],
+    dispatch: (g) => fold(Math.ceil(gridDims(g).slots / 64)), windowed: true },
+  { name: 'fieldMax', kind: 'compute', code: fieldMaxFrag, layouts: fieldLayouts(false), dispatch: perList, tool: true },
+];
