@@ -130,12 +130,52 @@ what's carved, `only: 'ROCK'` threads a vein through rock), `salt` (share one
 noise field between primitives, as a gallery's overlapping slices do).
 
 Materials are codes, not elements (`kit.js MAT`): `AIR ROCK SOFT BEAM RAIL
-RUBBLE WATER OIL GOLD CRYSTAL COAL MOSS GRAVEL METAL SAND ICE`. The kit's
+RUBBLE WATER OIL GOLD CRYSTAL COAL MOSS GRAVEL METAL SAND ICE`, and the
+Noita stuff a biome is dense with, each the element of its name by default:
+`TOXIC BLOOD ACID LAVA SLIME MUD WHISKEY TELEPORTATIUM LEVITATIUM BERSERKIUM
+HEALTHIUM POLYMORPHINE GUNPOWDER TNT FUNGUS MEAT NUGGETS CLAY PLANT WOOD`
+(`WOOD` is timber that stays wood when a kit remaps `BEAM`). The kit's
 `palette` maps them to `elements.js` keys, so the Coal Pits can make `ROCK`
-coal-streaked stone and the Snowy Depths `ROCK` ice without new codes.
+coal-streaked stone and the Snowy Depths `ROCK` ice without new codes. The
+walk checks swim through the harmless liquids; `TOXIC`, `ACID` and `LAVA`
+count as walls, so a path never needs a swim through them.
+
+The scene spawns every cell at its element's spawn temperature: keep `LAVA`
+away from timber, `OIL`, `GUNPOWDER` and `TNT` (nothing may burn on load).
 
 `sites: [{ kind, at: [x, y, z] }]` mark places on a floor (the scene decides
 what goes there).
+
+## Filling a tile: variants, coats, scatters
+
+Noita's rooms differ placement to placement in what they hold, not their
+shape. Three additive tools give a kit that:
+
+- **Variants.** `variants: N` on a tile makes N rasterized versions, weight
+  `weight / N` each; the tiling picks one per placement from the bake's seed.
+  Each variant resolves the tile's random prims with its own stream (fixed by
+  the kit, so `check-wang` walks every variant), keeping the tile's rock noise:
+  - `{ ..., chance: p }`: kept in about p of the variants;
+  - `{ ..., m: { WATER: 6, OIL: 2, BLOOD: 1 } }`: a material picked by weight;
+  - `{ any: [[prims], [prims], []], weights: [3, 1, 2] }`: one of the lists;
+  - a nested `[prims]` list is flattened (helpers can return lists).
+  A tile with any of these and no `variants` is resolved once.
+- **Coat** `{ coat: [a, b], m, face, cover, depth, only }`: growth on the
+  surfaces in a box, in noise patches (moss and grass on floors, fungus on
+  ceilings, a blood splash). A cell of `only` (default `ROCK`) with air on
+  `face` (`up` floors, `down` ceilings, `side` walls, `any`) within `depth`
+  cells becomes `m`, over about `cover` (0..1) of them. A solid coat survives
+  the border (the floor *is* the border).
+- **Scatter** `{ scatter: [a, b], n, put: [prims], on }`: n copies of `put`
+  (prims relative to the spot) at random columns of the box: `on: 'floor'`
+  (default) the first air cell standing on solid scanning down from the box's
+  top, `on: 'ceiling'` the first air cell under solid scanning up (a chain
+  hangs down from it). Each variant scatters differently.
+- **`deepest: n`** on a tile: it's placed only in the region's n lowest layers
+  (lava lies low in Noita).
+
+The atlas holds up to 100 tiles (variants count), and a kit with none of these
+bakes byte-identical to before.
 
 ## Habits that pass the check first time
 

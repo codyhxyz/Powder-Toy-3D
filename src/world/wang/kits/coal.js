@@ -196,7 +196,7 @@ const tiles = openTiles([
   },
   // ---- a lava pocket in a blob of bare rock: the lowest layer only, off the main path
   {
-    name: 'lava pocket', weight: 1.5, layers: [0, 0], offPath: true,
+    name: 'lava pocket', weight: 1.5, deepest: 1, offPath: true,
     prims: [
       ...island(115, { blobs: [blob([24, LOW - 1, 20], [9, 4, 4.5])] }),
       vein([24, LOW, 20], [EMBER_CLEAR + 4, EMBER_CLEAR, EMBER_CLEAR], 'ROCK', ['COAL', 'GOLD', 'FUNGUS'], 0),

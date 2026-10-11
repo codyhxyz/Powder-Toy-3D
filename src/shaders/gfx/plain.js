@@ -11,7 +11,7 @@ import { ELEMENTS } from '../../elements.js';
 const PLAIN_SIGMA = {
   WATER: [0.30, 0.075, 0.035],
   OIL: [0.35, 0.55, 0.9],
-  ACID: [0.45, 0.04, 0.55],
+  ACID: [0.9, 0.06, 1.2],   // Noita's lime (elements.js ACID): green through, the rest stopped fast
   ICE: [0.12, 0.05, 0.025],
 };
 const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));

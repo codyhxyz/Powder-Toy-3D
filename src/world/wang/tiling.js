@@ -287,9 +287,9 @@ export function generateTiling({ kit: rawKit, seed, units, entry, exit }) {
     const cands = [];
     let total = 0;
     for (const t of kit.tiles) for (const xf of xfs) {
-      if (t.layers && (b.l < t.layers[0] || b.l > t.layers[1])) continue;
-      if (t.max !== undefined && (placed.get(t.index) ?? 0) >= t.max) continue;
-      if (t.offPath && onPath.has(b.id)) continue;
+      if (t.deepest !== undefined && b.l >= t.deepest) continue;   // a deep tile: only in the lowest layers
+      if (t.max !== undefined && (placed.get(t.index) ?? 0) >= t.max) continue;   // a rare tile: at most max a region
+      if (t.offPath && onPath.has(b.id)) continue;                  // a hazard: never on the main path
       // canonical port p sits on the edge PLACED[xf][p] points at; find it among b.edges
       const map = mapPorts(b, xf);
       let ok = true;

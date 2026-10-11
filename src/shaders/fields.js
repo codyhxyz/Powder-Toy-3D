@@ -25,14 +25,39 @@ import { blendFixedFrames } from '../gfx/pacing.js';
 //    trunks, films, streams. Ghosts of cells that moved on hold no matter now,
 //    so they still fade with the EMA.
 //
+// Falling water (jetGLSL): the sim draws a stream as parcels a few cells
+// apart, which drawn as they are make a dotted line of glass beads, nearly
+// invisible. While the whitewater runs (gfx/foam.js), its aeration field
+// marks liquid off the ground and the wake each falling parcel leaves for a
+// few steps (shaders/gfx/liquidDetail.js aerationFrag, TRAIL_STEPS). Those
+// cells are drawn as liquid at full occupancy at once (the EMA pass), count
+// as current matter for the boost, so a stream is one even column a cell
+// across, and the thin mask's spare channels carry their aeration for the
+// view (y: aeration × presence, z: presence; liquidDetail.js liquidFoam).
+//
 // Attachments (RGBA): 0 = surface channels (liquid, molten, granular,
 // organic), 1 = media (smoke, steam, fire, flame temperature), 2 = non-crisp weight, one
 // copy per surface channel since each channel has its own blur radius (the
 // media share the liquid kernel and its weight).
 // Final output: 0 = surface φ (0.5 is the surface), 1 = media densities,
-// 2 = thin mask, rising from 0 to 1 with a channel's boost (THIN_MASK_LO..HI).
-// Only cubic channels need it: the tracer reads them cubic only there (bulk
-// surfaces read the same either way, and trilinear is 8x cheaper).
+// 2 = thin mask, rising from 0 to 1 with a channel's boost (THIN_MASK_LO..HI),
+// in x (only cubic channels need it: the tracer reads them cubic only there;
+// bulk surfaces read the same either way, and trilinear is 8x cheaper); y, z:
+// falling water's aeration × presence and presence (above).
+
+// Falling water and the wakes of its parcels, from whitewater's aeration
+// field (state atlas; its layout: liquidDetail.js aerationFrag).
+const jetGLSL = /* glsl */ `
+uniform sampler2D tAer;
+uniform bool uAer;   // the aeration field runs (the Whitewater switch)
+// (aeration, presence) at p: liquid off the ground, or a falling parcel's wake
+vec2 jetAt(ivec3 p) {
+  if (!uAer) return vec2(0.0);
+  vec4 f = texelFetch(tAer, atlas(p), 0);
+  if (f.y > 0.5) return f.w < 0.5 ? vec2(f.x, 1.0) : vec2(0.0);
+  return f.w > 0.0 ? vec2(f.z, 1.0) : vec2(0.0);
+}
+`;
 
 export const fieldEmaFrag = (g) => /* glsl */ `
 ${prelude(g)}
@@ -50,6 +75,7 @@ uniform vec4 uEmaM;
 // grid cells the window moved since the last update (docs/scaling.md D11): a
 // cell's history is at p + uShift; cells shifted in from outside start over
 uniform ivec3 uShift;
+${jetGLSL}
 layout(location = 0) out vec4 o0;
 layout(location = 1) out vec4 o1;
 layout(location = 2) out vec4 o2;
@@ -74,6 +100,7 @@ void main() {
   ivec2 h = fieldAtlas(q);
   bool hist = inGrid(q);
   o0 = hist ? mix(texelFetch(tP0, h, 0), s, uEmaS) : s;
+  if (jetAt(p).y > 0.0) o0.x = 1.0;   // falling water and its wakes: full now (jetGLSL)
   o1 = hist ? mix(texelFetch(tP1, h, 0), m, uEmaM) : m;
   o2 = vec4(crisp ? 0.0 : 1.0);
 }
@@ -144,6 +171,7 @@ ${materialsGLSL()}
 uniform sampler2D t0;   // stage 0: φ, else the previous stage's field
 ${stage > 0 ? 'uniform sampler2D t1;   // the occupancy so far (stage 0 reads the state instead)' : ''}
 ${stage < 3 ? 'uniform vec4 uS;      // per-channel centre weight of the lattice smoothing (1 = none)' : ''}
+${stage === 0 || stage === LAST ? jetGLSL : ''}
 ${stage === LAST ? `uniform sampler2D tPhi;
 uniform sampler2D tMed;
 uniform vec4 uBulk;     // per-channel bulk peak
@@ -167,7 +195,8 @@ ${stage < 3 ? `    // clamped to the edge, like the tracer's cubic sample
     ivec2 t = fieldAtlas(q);
     acc += (i == 0 ? uS : 0.5 * (1.0 - uS)) * texelFetch(t0, t, 0);
 ${stage === 0 ? `    int ch = SURFCH[eid(fetchA(q))];
-    if (ch >= 0) occ[ch] = 1.0;` : '    occ = max(occ, texelFetch(t1, t, 0));'}` : `    ivec3 q = p + dir * i;
+    if (ch >= 0) occ[ch] = 1.0;
+    if (jetAt(q).y > 0.0) occ.x = 1.0;   // a falling parcel's wake is current liquid` : '    occ = max(occ, texelFetch(t1, t, 0));'}` : `    ivec3 q = p + dir * i;
     if (inGrid(q)) acc = max(acc, texelFetch(t0, fieldAtlas(q), 0));`}
   }
 ${stage >= 3 ? '  occ = texelFetch(t1, f, 0);' : ''}
@@ -175,7 +204,9 @@ ${stage === LAST ? `  vec4 k = max(vec4(1.0), uBulk / max(acc, vec4(THIN_MIN_PEA
   vec4 boosted = step(0.5, occ);
   o0 = texelFetch(tPhi, f, 0) * mix(vec4(1.0), k, boosted);
   o1 = texelFetch(tMed, f, 0);
-  o2 = boosted * smoothstep(vec4(THIN_MASK_LO), vec4(THIN_MASK_HI), k);` : `  o0 = acc;
+  o2 = boosted * smoothstep(vec4(THIN_MASK_LO), vec4(THIN_MASK_HI), k);
+  vec2 jet = jetAt(p);
+  o2.yz = vec2(jet.x * jet.y, jet.y);   // falling water's aeration (jetGLSL)` : `  o0 = acc;
   o1 = occ;`}
 }
 `;

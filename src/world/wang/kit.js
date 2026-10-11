@@ -230,40 +230,115 @@ const codeOf = (m) => {
 };
 
 // One tile's cells in its canonical frame: Uint8Array, index x + 2U (y + H z).
+// A variant (compileKit) rasterizes with its authored tile's noise (tile.noise),
+// so every variant of a tile has the same rock and only its contents differ.
 export function rasterTile(tile, index, G = GEOM) {
   // an open kit's tiles (geom.OPEN: Noita's Coal Pits and Snowy Depths, islands in a void) start
   // as air and keep no border: they meet their neighbours wherever their islands do
   const X = 2 * G.U, Y = G.H, Z = G.U, out = new Uint8Array(X * Y * Z).fill(G.OPEN ? MAT.AIR : MAT.ROCK);
-  const at = (x, y, z) => x + X * (y + Y * z);
-  for (const pr of tile.prims) {
-    const m = codeOf(pr.m ?? 'AIR');
-    const only = pr.only === undefined ? null : new Set([].concat(pr.only).map(codeOf));
-    const rough = pr.rough ?? 0;
-    const salt = NOISE_SALT + index * NOISE_TILE_STRIDE + (pr.salt ?? tile.prims.indexOf(pr)) * NOISE_PRIM_STRIDE;
-    // the primitive's box, padded by its roughness (a cheap bound)
-    const lo = [0, 0, 0], hi = [X, Y, Z];
-    const bb = boundsOf(pr);
-    for (let i = 0; i < 3; i++) {
-      lo[i] = Math.max(0, Math.floor(bb[0][i] - rough - 1));
-      hi[i] = Math.min([X, Y, Z][i], Math.ceil(bb[1][i] + rough + 1));
-    }
-    for (let z = lo[2]; z < hi[2]; z++) for (let y = lo[1]; y < hi[1]; y++) for (let x = lo[0]; x < hi[0]; x++) {
-      const p = [x + 0.5, y + 0.5, z + 0.5];
-      let d = sdf(pr, p);
-      if (rough) d += rough * surfNoise(p, salt);
-      if (d >= 0) continue;
-      const i = at(x, y, z);
-      if (only && !only.has(out[i])) continue;
-      out[i] = m;
-    }
-  }
+  const dims = [X, Y, Z], noiseIndex = tile.noise ?? index;
+  coated = new Set();
+  tile.prims.forEach((pr, pi) => applyPrim(out, dims, pr, NOISE_SALT + noiseIndex * NOISE_TILE_STRIDE + (pr.salt ?? tile.prims.indexOf(pr)) * NOISE_PRIM_STRIDE, tile.vseed ?? 0, pr.salt ?? pi));
   // the border: rock at every face, so a tile meets its neighbours only through its ports
+  // (but a solid coat stays: the floor is the border, and moss grows on it)
   if (!G.OPEN) for (let z = 0; z < Z; z++) for (let y = 0; y < Y; y++) for (let x = 0; x < X; x++) {
     if (x < G.BORDER || x >= X - G.BORDER || z < G.BORDER || z >= Z - G.BORDER || y < G.BORDER || y >= Y - G.BORDER) {
-      out[at(x, y, z)] = MAT.ROCK;
+      const i = x + X * (y + Y * z);
+      if (!coated.has(i)) out[i] = MAT.ROCK;
     }
   }
+  coated = null;
   return out;
+}
+const onlySet = (pr, dflt) => {
+  const o = pr.only ?? dflt;
+  return o === undefined ? null : new Set([].concat(o).map(codeOf));
+};
+// one primitive onto out (dims [X, Y, Z]); salt: its noise stream; vseed, pi: its variant's random stream
+function applyPrim(out, [X, Y, Z], pr, salt, vseed, pi) {
+  const at = (x, y, z) => x + X * (y + Y * z);
+  if (pr.coat) return coat(out, [X, Y, Z], pr, salt);
+  if (pr.scatter) return scatter(out, [X, Y, Z], pr, salt, vseed, pi);
+  const m = codeOf(pr.m ?? 'AIR');
+  const only = onlySet(pr);
+  const rough = pr.rough ?? 0;
+  // the primitive's box, padded by its roughness (a cheap bound)
+  const lo = [0, 0, 0], hi = [X, Y, Z];
+  const bb = boundsOf(pr);
+  for (let i = 0; i < 3; i++) {
+    lo[i] = Math.max(0, Math.floor(bb[0][i] - rough - 1));
+    hi[i] = Math.min([X, Y, Z][i], Math.ceil(bb[1][i] + rough + 1));
+  }
+  for (let z = lo[2]; z < hi[2]; z++) for (let y = lo[1]; y < hi[1]; y++) for (let x = lo[0]; x < hi[0]; x++) {
+    const p = [x + 0.5, y + 0.5, z + 0.5];
+    let d = sdf(pr, p);
+    if (rough) d += rough * surfNoise(p, salt);
+    if (d >= 0) continue;
+    const i = at(x, y, z);
+    if (only && !only.has(out[i])) continue;
+    out[i] = m;
+  }
+}
+// { coat: [a, b], m, face, cover, only, depth }: growth on the surfaces in box
+// a..b (Noita's moss and fungus, a blood splash): a cell of `only` (default
+// ROCK) with AIR within `depth` cells (default 1) on `face` becomes m, in
+// patches covering about `cover` (0..1, default 0.5) of them. face: 'up' (the
+// floors), 'down' (the ceilings), 'side' (the walls), 'any'.
+let coated = null;                      // the cells a solid coat made, this rasterTile (kept through the border)
+const COAT_SCALE = 2.2;                 // patch noise is this much coarser than the surface noise (patches a couple of metres across)
+const FACES = { up: [[0, 1, 0]], down: [[0, -1, 0]], side: [[1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1]] };
+FACES.any = [...FACES.up, ...FACES.down, ...FACES.side];
+const COAT_SPREAD = 2;                  // the patch noise's usual span is about ±1/COAT_SPREAD: cover maps over it
+function coat(out, [X, Y, Z], pr, salt) {
+  const [a, b] = pr.coat, m = codeOf(pr.m), only = onlySet(pr, 'ROCK'), dirs = FACES[pr.face ?? 'any'];
+  const cover = pr.cover ?? 0.5, depth = pr.depth ?? 1, at = (x, y, z) => x + X * (y + Y * z);
+  const thresh = (1 - 2 * cover) / COAT_SPREAD;
+  const hits = [];
+  for (let z = Math.max(0, a[2]); z < Math.min(Z, b[2]); z++) for (let y = Math.max(0, a[1]); y < Math.min(Y, b[1]); y++) for (let x = Math.max(0, a[0]); x < Math.min(X, b[0]); x++) {
+    if (!only.has(out[at(x, y, z)])) continue;
+    if (surfNoise([x / COAT_SCALE, y / COAT_SCALE, z / COAT_SCALE], salt) < thresh) continue;
+    for (const [dx, dy, dz] of dirs) {
+      let ok = false;
+      for (let d = 1; d <= depth && !ok; d++) {
+        const nx = x + dx * d, ny = y + dy * d, nz = z + dz * d;
+        ok = nx >= 0 && ny >= 0 && nz >= 0 && nx < X && ny < Y && nz < Z && out[at(nx, ny, nz)] === MAT.AIR;
+      }
+      if (ok) { hits.push(at(x, y, z)); break; }
+    }
+  }
+  for (const i of hits) { out[i] = m; if (!passable(m)) coated.add(i); }
+}
+// { scatter: [a, b], n, put: [prims], on }: n copies of `put` (prims in cells
+// relative to their spot) at random columns of box a..b. on 'floor' (default)
+// the spot is the first AIR cell standing on something solid, scanning down
+// from b's y; on 'ceiling' the first AIR cell under solid, scanning up from
+// a's y (hang a chain from it: prims going down). The columns come from the
+// variant's random stream (compileKit `variants`), so each variant scatters
+// differently; a column with no such surface is skipped.
+const SCATTER_SALT = 0x5ca7;
+function scatter(out, [X, Y, Z], pr, salt, vseed, pi) {
+  const [a, b] = pr.scatter, n = pr.n ?? 1, ceiling = pr.on === 'ceiling', at = (x, y, z) => x + X * (y + Y * z);
+  const solidAt = (x, y, z) => { const c = out[at(x, y, z)]; return c !== MAT.AIR && !isLiquid(c); };
+  for (let k = 0; k < n; k++) {
+    const x = a[0] + Math.floor(hash3(vseed, pi, 3 * k, SCATTER_SALT) * (b[0] - a[0]));
+    const z = a[2] + Math.floor(hash3(vseed, pi, 3 * k + 1, SCATTER_SALT) * (b[2] - a[2]));
+    if (x < 1 || z < 1 || x >= X - 1 || z >= Z - 1) continue;
+    let y = -1;
+    if (ceiling) { for (let yy = Math.max(1, a[1]); yy < Math.min(Y - 1, b[1]); yy++) if (out[at(x, yy, z)] === MAT.AIR && solidAt(x, yy + 1, z)) { y = yy; break; } }
+    else for (let yy = Math.min(Y - 2, b[1] - 1); yy >= Math.max(1, a[1]); yy--) if (out[at(x, yy, z)] === MAT.AIR && solidAt(x, yy - 1, z)) { y = yy; break; }
+    if (y < 0) continue;
+    (pr.put ?? []).forEach((q, qi) => applyPrim(out, [X, Y, Z], shiftPrim(q, [x, y, z]), salt + qi + 1, vseed, pi * 64 + k));
+  }
+}
+// a primitive moved by o (cells)
+const add = (p, o) => p.map((v, i) => v + o[i]);
+export function shiftPrim(pr, o) {
+  const q = { ...pr };
+  for (const k of ['box', 'ramp', 'stairs', 'coat', 'scatter']) if (pr[k]) q[k] = pr[k].map((p) => add(p, o));
+  if (pr.ball) q.ball = [add(pr.ball[0], o), pr.ball[1]];
+  if (pr.cyl) q.cyl = [add(pr.cyl[0], o), pr.cyl[1], pr.cyl[2]];
+  if (pr.capsule) q.capsule = [add(pr.capsule[0], o), add(pr.capsule[1], o), pr.capsule[2]];
+  return q;
 }
 function boundsOf(pr) {
   if (pr.box) return pr.box;
@@ -292,14 +367,70 @@ export function portAccepts(tile) {
   });
 }
 
-// Check and normalize a kit: { name, palette, temps, tiles }. A tile may also carry
-//   layers: [lo, hi]   the layers it may be placed in, 0 the bottom (Coal Pits' lava: the lowest only)
-//   max: n             at most n placements in a region (Noita's rare pools: one a level)
-//   offPath: true      never on the main path (hazards: burning coal, liquid nitrogen)
+// ---- variants: one authored tile, several rasterized versions (Noita's rooms
+// vary per placement in what they hold, not in their shape). A tile with
+// `variants: N` becomes N tiles of weight / N, each with its prims resolved by
+// its own random stream (fixed by the kit, so the checks walk every variant);
+// the tiling picks among them per placement, by the bake's seed. Resolved:
+//   { ..., chance: p }                  kept in about p of the variants
+//   { ..., m: { WATER: 6, OIL: 1 } }    a material picked by weight
+//   { any: [[prims], [prims], ...], weights }   one of the lists (a list may be [])
+//   [prims]                             a nested list, flattened
+// and scatter prims draw their spots from the variant's stream (tile.vseed).
+const VARIANT_SALT = 0x7a71;
+const VSEED_STRIDE = 4099;              // a tile's variants' streams, apart from the next tile's
+const pickWeighted = (w, r) => {
+  let pick = r() * w.reduce((s, v) => s + v, 0), i = 0;
+  while (i < w.length - 1 && (pick -= w[i]) >= 0) i++;
+  return i;
+};
+// Each resolved prim keeps the salt of its authored place (its noise stream),
+// so a variant's rock is its tile's whatever the variant drops.
+const NEST_SALT = 64;                   // a nested list's prims' salts: its place's × this + theirs
+const isRandom = (pr) => Array.isArray(pr) || pr.chance !== undefined || pr.any || (pr.m && typeof pr.m === 'object') || pr.scatter;
+function resolvePrims(prims, r, base = 0) {
+  const out = [];
+  for (const [i, pr] of prims.entries()) {
+    const salt = base * NEST_SALT + i;
+    if (Array.isArray(pr)) { out.push(...resolvePrims(pr, r, salt + 1)); continue; }
+    if (pr.chance !== undefined && r() >= pr.chance) { if (pr.any) r(); continue; }
+    if (pr.any) { const k = pickWeighted(pr.weights ?? pr.any.map(() => 1), r); out.push(...resolvePrims(pr.any[k], r, (salt + 1) * NEST_SALT + k)); continue; }
+    const q = { salt, ...pr };
+    delete q.chance;
+    if (q.m && typeof q.m === 'object') { const ent = Object.entries(q.m); q.m = ent[pickWeighted(ent.map(([, v]) => v), r)][0]; }
+    if (q.put) q.put = resolvePrims(q.put, r);
+    out.push(q);
+  }
+  return out;
+}
+function expandVariants(tiles) {
+  return tiles.flatMap((t, ai) => {
+    const n = t.variants ?? 1;
+    // a plain tile (or one already compiled) stays as it is
+    if (t.noise !== undefined || (n === 1 && !t.prims.some(isRandom))) return [{ ...t, noise: t.noise ?? ai }];
+    return Array.from({ length: n }, (_, v) => {
+      // mulberry32 (tiling.js rng) seeded by the tile and variant: an even stream
+      let a = Math.floor(hash3(ai, v, 0, VARIANT_SALT) * 4294967296) >>> 0;
+      const r = () => {
+        a = (a + 0x6d2b79f5) >>> 0;
+        let q = Math.imul(a ^ (a >>> 15), a | 1);
+        q ^= q + Math.imul(q ^ (q >>> 7), q | 61);
+        return ((q ^ (q >>> 14)) >>> 0) / 4294967296;
+      };
+      return { ...t, name: n > 1 ? `${t.name} ~${v}` : t.name, weight: (t.weight ?? 1) / n, variants: undefined, prims: resolvePrims(t.prims, r), noise: ai, vseed: ai * VSEED_STRIDE + v + 1 };
+    });
+  });
+}
+
+// Check and normalize a kit: { name, palette, temps, tiles }. A tile may also say
+// `deepest: n`: placed only in the region's n lowest layers (Noita's lava lies
+// low), `variants` (above), `max: n`: at most n placements in a region (Noita's
+// rare pools: one a level), and `offPath: true`: never on the main path
+// (hazards: burning coal, liquid nitrogen).
 export function compileKit(kit) {
   if (!kit.tiles?.length) throw new Error(`wang: kit ${kit.name} has no tiles`);
   const palette = { ...DEFAULT_PALETTE, ...(kit.palette ?? {}) };
-  const tiles = kit.tiles.map((t, i) => ({ ...t, index: i, weight: t.weight ?? 1, accepts: portAccepts(t), sites: t.sites ?? [] }));
+  const tiles = expandVariants(kit.tiles).map((t, i) => ({ ...t, index: i, weight: t.weight ?? 1, accepts: portAccepts(t), sites: t.sites ?? [] }));
   // a kit must have a tile that takes every colour on every port, so a slot always has a tile
   const universal = tiles.filter((t) => t.accepts.every((cols, i) => (i < SIDE_PORTS ? [0, 1, 2, 3] : [0, 1]).every((c) => cols.includes(c))));
   if (!universal.length) throw new Error(`wang: kit ${kit.name} needs a tile accepting every colour on every port (its fallback)`);
