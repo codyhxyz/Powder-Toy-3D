@@ -153,7 +153,6 @@ async function startWarmer() {
   const names = await layoutNames();
   const settings = savedSettings(detail);
   const view = views.viewKey(settings.view);
-  const format = navigator.gpu.getPreferredCanvasFormat();
   const fallback = gpu.adapterInfo.isFallbackAdapter;
   const pipes = [];
   const state = launch.warm = {
@@ -199,7 +198,10 @@ async function startWarmer() {
   };
   for (const grid of wanted.splice(0)) warmer.grid(grid);
   for (const e of listed(post)) {
-    if (e.name.startsWith('composite ') && e.name !== `composite ${format}` && e.name !== 'composite rgba8unorm') continue;
+    // the canvas's composite (the preferred canvas format is one of these two:
+    // src/gpu/present.js asks for it, and only src/gpu/ talks to navigator.gpu)
+    // and a still's (rgba8unorm: thumbnails, saves)
+    if (e.name.startsWith('composite ') && e.name !== 'composite bgra8unorm' && e.name !== 'composite rgba8unorm') continue;
     build(e, null);
   }
   for (const e of [...listed(overlays), ...listed(brush)]) build(e, null);
