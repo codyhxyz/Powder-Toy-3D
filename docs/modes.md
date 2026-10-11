@@ -55,14 +55,15 @@ scale (Attack 0.6 when an enemy is in sight, Hunt 0.45):
 | carry | it has their flag: run home | 0.9 |
 | return | our flag is on the ground | 0.7 |
 | getFlag (near) | their flag within 20 cells | 0.65 |
-| hill / attackCore, inside | on the zone already: stay | 0.65 |
+| hill / attackPoint, inside | on the zone already: stay | 0.65 |
+| setup | Siege attackers wait in their spawn during setup | 0.65 |
 | getFlag | CTF attackers (half of each side, Raven / Quake III roles) | 0.62 |
-| hill / attackCore | go to the zone | 0.55 |
-| escort / defend / defendCore | follow our carrier / guard our stand / guard the core | 0.5 |
+| hill / attackPoint / retake | go to the zone (Siege: defenders retake a point being captured) | 0.55 |
+| escort / defend / anchor / guard | follow our carrier / guard our stand / hold the Siege point / a guard post in front of it | 0.5 |
 | roam | Slayer, and Infection's survivors: the open ground, a new stretch every 30 s | 0.3 |
 
 Loadouts: a carrier and the infected fight with the axe only (`agent.weapons`, Halo's flag melee and zombies);
-the infected run 1.25× (`body.speedScale`, on top of a class's).
+the infected run 1.25× (`body.speedScale`, on top of a class's). In Siege every bot plays a class (below).
 
 ## Modes
 
@@ -72,14 +73,66 @@ the infected run 1.25× (`body.speedScale`, on top of a class's).
 | Capture the Flag | touch their flag to carry it; it drops where the carrier dies; touching your own dropped flag returns it, and a dropped flag goes home after 30 s; capture by touching your stand with their flag while yours is home | 3 captures, else the most at 15 min | Halo CTF |
 | King of the Hill | a team alone in the hill scores a point a second; two teams in it: contested, no one scores; the hill moves every 60 s through the map's hills | 100 points, else the most at 12 min | Halo 3 KOTH (Crazy King moves every 30 s) |
 | Infection | one random body starts infected (Halo's alpha zombie); anyone who dies a survivor comes back infected (green, axe only, faster, 3× melee) | the infected when no survivor is left; the survivors when 3 min run out | Halo 3 Infection |
-| Siege | the attackers hold the defenders' core alone for 30 s in all (a defender inside stops the count); at the half's end (captured or 4 min) the preset reloads and the sides swap: the other team attacks from the first attackers' spawns | a capture beats none; two captures, the faster; none, the longer hold | TF2 attack/defend, stopwatch |
+| Siege | after a 20 s setup, the attackers take the control points in order (A, B, C) before the clock runs out; below | the attackers by taking the last point, the defenders when time runs out | TF2 attack/defend (Dustbowl, Gravel Pit) |
 
-Each new match (and Siege's halftime) reloads the current preset (`app.loadPreset`, as a new scene: not undoable),
+Each new match reloads the current preset (`app.loadPreset`, as a new scene: not undoable),
 so the terrain is fresh. The lab's own enemy spawner sleeps during a match.
 
 HUD (`src/game/hud.js`, `game.css`): top-centre the mode, both scores, the clock and the objective (flags home /
-taken / dropped; the hill's owner, when it moves and the leader's progress; survivors and infected; the half, the
-attackers and the core count); the killfeed and announcements top-right; the scoreboard on Tab; the result for 10 s.
+taken / dropped; the hill's owner, when it moves and the leader's progress; survivors and infected; Siege's setup,
+the point, who's on it and its capture bar); the killfeed and announcements top-right; the scoreboard on Tab; the result for 10 s.
+
+## Siege (`src/game/siege.js`): TF2's attack/defend
+
+Siege plays by TF2's rules (`style: 'tf2'`), every number from the TF2 wiki and cited in `siege.js`. One round,
+no halftime: one side attacks a row of control points, the other holds them.
+
+- **Setup, 20 s** (TF2: 60 s on Dustbowl, cut to a third: our points are a short run and the class pick is one key).
+  The attackers are held in their spawn by an invisible ring just past their farthest spawn point (TF2's setup
+  gates); the defenders take their posts. The class picker is open (below). The clock shows setup's countdown.
+- **Capturing** (wiki: Control point timing): attackers alone on the point fill its bar in 12 s (Gravel Pit's C),
+  faster the more stand on it, by TF2's harmonic rate (2: 1.5×, 3: 1.83×, 4: 2.08×, so 5.8 s). A Runner counts as
+  two (TF2's Scout). Any living defender on the point blocks it: the bar holds ("contested"). With no attacker on
+  it the bar drains, full to empty in 30 s (TF2's default is 90 s for 6–60 s points; a third for our 12 s ones).
+- **The next point**: taking a point unlocks the next, adds 1:30 to the clock (Dustbowl adds 4:30 for points three
+  times as far apart) and moves the spawns: the attackers come back nearer the front, the defenders fall back.
+- **The clock**: 3:00 after setup for the first point (`MODES.siege.timeLimit`), plus each capture's time.
+  **Overtime**: at 0:00 with progress on the point or an attacker on it, the round goes on until the bar drains,
+  6× faster (TF2: 90 s becomes 15 s) or the point falls.
+- **Win**: the attackers by taking the last point; the defenders when time (and overtime) runs out.
+- **Respawns**: attackers 4 s, defenders 8 s (Dustbowl's waves are 2 s and 10 s plus ~5 s of death cam: about
+  half each, for our short walk back), then the usual 2 s of spawn protection.
+- **Score**: the teams' scores are points taken and points still held. A capture is 2 points to each capper and a
+  defense (killing an attacker on or near the point) 1, TF2's scoreboard.
+- **The ring** is the defenders' colour, the attackers' while they capture alone, flashing while contested. HUD:
+  "Setup · Red attack point A of 3 when the gates open", then "Point B of 3 · Red capturing ×3 · A taken", the bar
+  under it, "Overtime!" ahead of it in overtime.
+
+**Classes in Siege** (`docs/classes.md`): the class picker opens when the match starts and when you switch team
+(TF2's class menu on joining a team). A pick applies at once during setup or in your side's respawn room (within 8
+cells of one of its spawn points: TF2 swaps you on the spot there), else at your next spawn; dead, `,` picks for the
+respawn. Closing the picker without ever having picked plays the Rocketeer (TF2's Soldier). Bots are dealt classes
+per side, the first ones when the player takes a place: attackers Rocketeer, Runner, Pyro, Skyjack; defenders
+Bulwark, Pyro, Skyjack, Rocketeer. A bot puts its class on at every spawn and fights with the class's tools its brain
+knows (`agent.weapons`; `brain.js` `canFight`; a class with none fights with the gun). The Halo modes have no
+classes: comma does nothing and a spawn takes the class off.
+
+**Bots' objectives**: attackers wait in spawn during setup, then go for the current point and hold it (a bot with no
+gun to shoot from the point, a Pyro or a Runner, fights an enemy it sees within 40 cells first). Defenders split: the
+first defender bot (the Bulwark) anchors on the point, the others stand guard 10 cells out in front of it toward the
+attackers' spawn, on three posts 0.6 rad apart, moving to the next post every 25 s (or when there's no way to one).
+While attackers are on the point, every defender goes to retake it.
+
+**Maps** (`layout.siege`, below): Dam Valley has three points, red attacking: A on red's end of the dam (its
+abutment top), B on blue's end, C on the plateau at blue's front door. Blue first spawns forward on its abutment
+top; when A falls red's spawn moves up onto red's abutment and blue's back to its fortress; when B falls red takes
+blue's abutment spawn. The lab has two, red attacking: A in the gap between the tank and the lava pit, B past the
+wooden tower toward blue's corner; once A falls red spawns north of the pit, clear of the sand heap.
+
+Events: `game:setup` `{ open: true }` when the gates open, `game:point` `{ index, letter, team, by: [ids] }` for a
+capture, `game:overtime` `{ index }`. `game.state.siege`: `{ attackers, defenders, points, stage, letter, taken,
+progress, cappers, contested, overtime, setup, setupLeft, point }`. `game.inSpawnRoom()`: the player is in their
+respawn room (the class picker asks it).
 
 ## API
 
@@ -92,11 +145,11 @@ game.state;   // { running, mode, time, timeLeft, teamScore, objective, flags, h
 game.roster;  // [{ id, name, team, bot, kills, deaths, score, role, ... }]
 ```
 
-Options to `start` also override the mode's rules (`scoreToWin`, `timeLimit`, `hillMoveS`, `holdToWin`, `alphas`,
-`teamSize`): the check uses them to fit a run in minutes; the menu never does (tuning values are constants).
+Options to `start` also override the mode's rules (`scoreToWin`, `timeLimit`, `hillMoveS`, `alphas`, `teamSize`;
+Siege's `setupS`, `captureS`, `timeBonus`): the check uses them to fit a run in minutes; the menu never does (tuning values are constants).
 Events on `povEvents`: `game:start`, `game:end` `{ winner, score, why }`, `game:kill` `{ killer, victim, by, id, cause }`,
 `game:flag` `{ team, action: taken | dropped | returned | captured, by }`, `game:hill` `{ index, at }`,
-`game:infected` `{ id, by }`, `game:half` `{ half, attackers, captured, time, held }`, `game:team` `{ id, team }`.
+`game:infected` `{ id, by }`, `game:setup`, `game:point`, `game:overtime` (Siege, above), `game:team` `{ id, team }`.
 
 ## Layouts
 
@@ -105,22 +158,31 @@ Events on `povEvents`: `game:start`, `game:end` `{ winner, score, why }`, `game:
 ```
 { name, size: [nx, ny, nz],
   spawns: { red: [[x, y, z], ...], blue: [...] }, flags: { red: [x, y, z], blue: [x, y, z] },
-  hills: [[x, y, z, r], ...], siege: { attackers: 'red', core: [x, y, z, r] },
+  hills: [[x, y, z, r], ...],
+  siege: { attackers: 'red', points: [[x, y, z, r], ...], spawns: [{ attack: [[x, y, z]], defend: [...] }, ...], core },
   shrines: [...], vehicles: [...] }          // shrines and vehicles: other modules'
 ```
+
+`siege.points` are taken in order; `siege.spawns[i]` is where each side spawns while point i is the live one (a
+stage without one keeps the last stage's, the first falls back on the team spawns). `core` is the last point, kept
+for older readers; a layout with only `core` plays as one point.
 
 Without one, the loaded arena's (Dam Valley: `arenas/damValley.js` `DAM_VALLEY_LAYOUT`, `app.getArena()`); without
 an arena (or with a layout that doesn't fit the box) the lab's is used (`labLayout`, any box size): red's base in the
 open north-east corner, blue's in the south-west past the wooden tower; hills between the tank and the pit, the tank
-and the tower, and south of the pit; the core in the open south of the tank, a run from blue's spawns (on top of
-them the defenders contest it forever).
+and the tower, and south of the pit; Siege's points as above.
 
 ## Check
 
 `node tools/modes-check.mjs [--url http://localhost:5405] [--preset lab|damValley] [--modes slayer,ctf] [--side spectate|red] [--strict] [--sweep 0,2,4,6,8] [--tour prefix]`
 (AC power, a dev server). Bots only by default; each mode runs until it has done its thing or a game-time box:
 kills score (Slayer), a flag is taken and captured or returned (CTF), the hill scores (KOTH), the infection
-spreads (Infection), the first half ends and the sides swap (Siege); no page errors. `--sweep` measures the frame
+spreads (Infection), a point is taken (Siege; `--strict`: the round ends); no page errors.
+
+`node tools/siege-check.mjs [--url http://localhost:5421] [--preset lab|damValley] [--shot file.jpg]` (AC power, a
+dev server): a short-fused Siege round with the player attacking. The picker opens on the start, a pick in setup
+applies at once, the setup gate holds, every bot has a class and its weapons, the gates open, the player takes A,
+the clock gains time; dead, comma picks for the respawn; Slayer has no classes; sandbox's comma opens the picker. `--sweep` measures the frame
 rate and the bots' CPU time per frame with that many bots; `--tour` screenshots a CTF match on red.
 
 Measured 2026-10-10 (M-series MacBook, headless Chromium on Metal, with other agents' GPU runs sharing the
@@ -137,10 +199,13 @@ a frame for a moment at a Dam Valley start, while every bot tries its bearings t
 
 - The player carrying a flag keeps the whole hotbar (bots melee only); an infected player too. Classes could give
   the infected a loadout (`applyClass`).
-- Siege swaps who attacks, not where the core is: the core stays by the first defenders' base and the second
-  attackers spawn on the first attackers' side, as in TF2.
-- Siege is hard on the attackers: with 4v4 on the lab the defenders nearly always stand on the core, so holds are a
-  second or two and halves end on the clock. TF2 balances this with respawn waves; ours are equal.
+- Siege (2026-10-11 rework) is unplayed in a browser: the balance (setup 20 s, 12 s captures, 4 s / 8 s respawns,
+  3:00 + 1:30 a point) is TF2's numbers scaled by reasoning, not by watching bots play. `tools/siege-check.mjs` and
+  `modes-check.mjs --modes siege --strict` are the first things to run.
+- Siege's setup gate is invisible (a ring that pushes attackers back), not a door you can see; the respawn waves are
+  per-body delays, not TF2's shared wave clock. One round per match: the sides don't swap (TF2 swaps between rounds).
+- Siege bots don't use the Runner's pogo, the Spy's knife or the Sapper's pickaxe as weapons (`brain.js` has no
+  entries for them); none of those classes are dealt to bots.
 - The POV entry hint (the first 7 s in first person) sits over the objective line.
 - Not in worlds (the window): NPCs don't follow it, so team games are box presets only.
 - The NPC nav is one height-map layer: roofed halls, tunnels (Dam Valley's pump room) and the crest shrine's hill are
