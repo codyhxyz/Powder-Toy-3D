@@ -18,7 +18,12 @@ const foam = {
     setAeration(app.sim, !!app.settings[settingKey(DETAIL_FOAM)]);
     app.vol.attachAeration(app.sim.aeration?.active ? app.sim.aeration.buffer : null);
   },
-  busy(app) { return !!app.sim.aeration?.active && !app.sim.idleCertified; },
+  // While whitewater runs, the frame loop keeps ticking: even a certified-idle
+  // step runs aeration's idle step, so the foam left on still water bursts
+  // (sim.js step; docs/webgpu.md D1, G4), and a sleeping loop would freeze it
+  // mid-burst. U12: narrow this to "the field still holds foam" (a count its
+  // list kernel reads back), so a settled box with whitewater on can sleep.
+  busy(app) { return !!app.sim.aeration?.active; },
 };
 
 export default foam;

@@ -45,10 +45,11 @@ const world = {
   order: -1,   // the far field draws before the volume (docs/webgpu.md F1)
 
   // A world's grid: the window over it (app.worldMode set by build()), its far field.
+  // The window's size is the simulation's: build() made it worldMode.win, ?win= applied.
   attach(app) {
     const { sim } = app;
     if (!app.worldMode) return;
-    const win = app.win = new WorldWindow(app.renderer, sim, { size: app.worldMode.size, seed: app.worldSeed, scene: app.sceneByKey(app.settings.scene), winSize: app.winSize });
+    const win = app.win = new WorldWindow(app.renderer, sim, { size: app.worldMode.size, seed: app.worldSeed, scene: app.sceneByKey(app.settings.scene) });
     sim.origin.fromArray(world.worldStart(app));
     win.far = new FarField(app.renderer, win, { sun: app.sun, time: app.viewTimeUniform });
     win.far.attach(app.vol, app.derived);   // its haze and shadows on the window

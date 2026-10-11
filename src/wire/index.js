@@ -33,9 +33,13 @@
 //                 loop must keep ticking for (birds, POV, a session, rays):
 //                 otherwise a settled app stops its loop (deep idle, F7)
 //   invalidate(app)   graphics stopped: reject its outstanding reads
-// `app` is app.js's context (wireContext there): the gpu, three, the grid's
-// sim, derived passes and volume, the scene, camera, settings, pacer, post,
-// the UI, and the subsystems' slots (app.pov, app.mp, …), which a wire fills.
+// `app` is app.js's context (`ctx` there): J3's { gpu, three, sim, derived,
+// scene, camera, settings, pacer, post } (three is three.js's renderer, also
+// app.renderer), the grid's volume (app.vol), the UI (app.hud, app.dock, …),
+// app.js's own entry points (app.build, app.setSize, app.loadPreset, …), and
+// the subsystems' slots (app.pov, app.mp, app.signs, …), which a wire fills.
+// A new kind of mesh is compiled with app.gpu.three.prepare(object) before it
+// joins app.scene (B5, F8): app.js sets its camera, scene and target.
 // The hooks named in J3 are boot's to scene's; overlay, compute, detail,
 // busy and invalidate are app.js's additions (deep idle, the meshes-first
 // frame of the Sync log's S1).

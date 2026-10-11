@@ -47,7 +47,7 @@ export function createToolbar({ views, settings, actions, available = {} }) {
   const unavailable = (el, what) => {
     el.disabled = true;
     el.style.opacity = 0.4;
-    el.title = `${what} isn't in this WebGPU version yet`;
+    el.title = `${what}: not in this WebGPU version yet`;   // (app.js notYet)
   };
   if (available.camera === false) for (const b of walk.querySelectorAll('button[data-cam="first"], button[data-cam="third"]')) unavailable(b, 'Walking in first or third person');
   if (available.saves === false) unavailable(saveGame, 'Saving the game');

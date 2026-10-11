@@ -12,7 +12,9 @@
 // waited since its last finished frame, and the pipelines still building
 // then (a cold build is what most often holds a GPU process long enough to be
 // killed), kept across a reload for the bug report (__app.lastGpuFailure;
-// tools/gpu-process-loss-check.mjs kills a real GPU process to check it).
+// tools/gpu-process-loss-check.mjs kills a real GPU process to check it). A
+// settled page stops its frame loop (deep idle, docs/webgpu.md F7), so a long
+// wait can also be a page with nothing to draw: the report says which.
 
 const STORE = 'powder-toy-3d:lastGpuFailure';
 
@@ -34,6 +36,7 @@ export function failureKind(message) {
  */
 export function createGpuLossTracker(gpu) {
   let settledAt = performance.now();
+  let asleep = false;            // the frame loop stopped with nothing to do since the last frame
   const building = new Map();   // pipeline name → builds of it in flight
   const cache = gpu.pipelines;
   const pipeline = cache.pipeline.bind(cache);
@@ -47,11 +50,15 @@ export function createGpuLossTracker(gpu) {
   };
   return {
     // after each frame (and boot) completes
-    settle() { settledAt = performance.now(); },
+    settle() { settledAt = performance.now(); asleep = false; },
+    // after the frame that stopped the loop because the page had settled
+    // (deep idle): the wait from here on is sleep, not a hang
+    sleep() { asleep = true; },
     // what the page was doing when it failed: the ms since the last finished
-    // frame (a GPU hang shows as a long wait) and the pipelines building then
+    // frame (a GPU hang shows as a long wait, unless the loop was asleep) and
+    // the pipelines building then
     snapshot() {
-      return { msSinceLastFrame: Math.round(performance.now() - settledAt), pendingPipelines: [...new Set(building.values())] };
+      return { msSinceLastFrame: Math.round(performance.now() - settledAt), asleep, pendingPipelines: [...new Set(building.values())] };
     },
     // kept across a reload, for the bug report (__app.lastGpuFailure)
     record(report) {
@@ -64,8 +71,10 @@ export function createGpuLossTracker(gpu) {
 }
 
 // What the page had been waiting on (a snapshot()), as lines for a message.
-export function lossDetails({ msSinceLastFrame, pendingPipelines }) {
-  return `The page had waited ${(msSinceLastFrame / 1000).toFixed(1)} s since the last finished frame.\n`
+export function lossDetails({ msSinceLastFrame, asleep = false, pendingPipelines }) {
+  const s = (msSinceLastFrame / 1000).toFixed(1);
+  if (asleep && !pendingPipelines.length) return `The scene had settled: nothing was drawn for ${s} s before it, and nothing was building.`;
+  return `The page had waited ${s} s since the last finished frame${asleep ? ' (the scene had settled: nothing to draw)' : ''}.\n`
     + `Pipelines still building then: ${pendingPipelines.join(', ') || 'none'}.\n`
     + 'A long wait points to a GPU hang (e.g. a cold pipeline build) that the browser stopped.';
 }
