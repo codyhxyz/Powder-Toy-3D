@@ -229,7 +229,8 @@ fn drawnUnit(un: u32) -> bool { return (unitMap(un) & MAP_DRAWN) != 0u; }`;
 // one value for every pass and every simulation (only one world is live at a
 // time), so it lives in the one buffer they all bind: tablesBuffer writes
 // PHYS.AMBIENT, and Simulation.airT (src/sim.js) rewrites the word when a
-// world scene sets its own (scene.airT: the Snowy Depths are frozen through).
+// world scene sets its own (scene.airT: the Snowy Depths are frozen through),
+// in gfx/uniforms.js's render copy of the buffer too when there is one.
 // The prelude reads it as airT().
 function tableStructs() {
   const t = mechanismTables(), ne = ELEMENTS.length;

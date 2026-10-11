@@ -184,26 +184,33 @@ function simLayouts(gpu) {
 // The element tables' buffer (C6): one per device, made on first use. It
 // also holds the ambient air temperature every sim kernel reads (airT: shaders/
 // common.js), one value for every simulation on the device, as the WebGL
-// build's uAirT was one uniform for all.
+// build's uAirT was one uniform for all; its word's offset is kept with the
+// buffer it was laid out for.
 function tablesOf(gpu) {
   if (!gpu._simTables) {
     const bytes = tablesBuffer();
     const buffer = gpu.createBuffer({ label: 'tables', size: Math.ceil(bytes.byteLength / 16) * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     gpu.queue.writeBuffer(buffer, 0, bytes);
-    gpu._simTables = { buffer, group: gpu.bindGroup(simLayouts(gpu).TABLES, [{ binding: 0, resource: { buffer } }], 'tables'), airT: PHYS.AMBIENT };
+    gpu._simTables = {
+      buffer, group: gpu.bindGroup(simLayouts(gpu).TABLES, [{ binding: 0, resource: { buffer } }], 'tables'),
+      airT: PHYS.AMBIENT, airTOffset: tablesAirTOffset(),
+    };
   }
   return gpu._simTables;
 }
 
-// Sets the ambient air temperature (°C) in the tables' buffer. A queue write
-// lands before the open frame's submit, so a frame that has recorded anything
-// is flushed first: what it recorded keeps the value it was recorded with (as
-// FrameUniforms' writes do, docs/webgpu.md B3).
+// Sets the ambient air temperature (°C) in the tables' buffer, through the
+// device's ordered write: a frame that has recorded anything is flushed first,
+// so what it recorded keeps the value it was recorded with (as FrameUniforms'
+// writes do, docs/webgpu.md B3). The render side's own copy of the tables
+// (gfx/uniforms.js, made when FrameUniforms came before any simulation) gets
+// it too, so an L.FRAME kernel reading airT() agrees with the sim's.
 function setAirT(gpu, v) {
   const t = tablesOf(gpu);
   if (v === t.airT) return;
-  if (gpu.frame.open) gpu.flush('air temperature');
-  gpu.queue.writeBuffer(t.buffer, tablesAirTOffset(), new Float32Array([v]));
+  const word = new Float32Array([v]);
+  gpu.write(t.buffer, t.airTOffset, word);
+  if (gpu._renderTables) gpu.write(gpu._renderTables, t.airTOffset, word);
   t.airT = v;
 }
 
