@@ -85,3 +85,33 @@ same shape instead and document it here.
   refresher (refills limited-use spells; until those exist, refills mana and storage).
 
 Every number is a named constant; borrow Noita's numbers and cite them.
+
+## C: Holy Mountain API notes (src/pov/descent/)
+
+- `deps.js` is the only seam: it globs A's `levels.js`, B's `wands/generate.js`
+  (`generateWand`, `randomSpell`, `wandPrice`, `spellPrice`), B's `descentWands`
+  (exported `descentWands` from `wands/loot.js` or `wands/generate.js`, or
+  `toolbelt.descentWands`) and `src/pov/interact.js` (`interact.register`, or a
+  default export). Missing ones fall back to stand-ins (`stubs.js`; a bought wand is
+  equipped with `toolbelt.equipWand`, a spell is only announced; a proximity + E
+  stand-in for interact). Nothing else needs editing when they land.
+- `pov.descent` (pov/index.js): `{ gold, goldShown, purse, level, shop, shrine,
+  nuggets, refresher, arrive(key) }`. Runs every frame on a Descent scene
+  (`levelByScene(settings.scene)` while in a world).
+- Arrival: on `descent:level`, or (before A lands) the first live POV frame on a
+  Descent scene. Arriving at `DESCENT_LEVELS[0]` starts a new run: gold 0, new run seed.
+  Per arrival: the shop is rolled (seed = run seed × level key), one shrine is placed
+  with `perkOrbs.shrineAt(altars)`, 'gold' loot sites get nuggets.
+- Shop: `temple.shop` pedestals; Noita's coin flip: a wand shop (2 wands + 3 spells)
+  or a spell shop. Look + E buys (interact.js); too little gold → toast, nothing taken.
+  Price: Noita's `max(floor((cost × 0.30 + 70 × tier) / 10) × 10, 10)` (stubs.js
+  `shopPrice`, for B to reuse).
+- Gold: nuggets 10 / 50 / 200 (Noita's), walk-in; 3 per 'gold' site, bigger by tier.
+  Killed spawner NPCs spill `ENEMY_GOLD[kind]` split into nuggets that vanish after
+  15 s (blink the last 3). Death keeps gold for now (Noita ends the run).
+- Healing: full heal (`player.heal(1)`) once per arrival on entering `temple.box`
+  or `temple.pool`. Refresher: look + E → `descentWands.refresh()`, then it's gone.
+- Events emitted: `descent:gold { amount, gold, point }`, `descent:buy { kind, id,
+  price, gold }`, `descent:refuse { price, gold }`, `descent:heal`, `descent:refresh`.
+- HUD: `povHud.update({ gold })`, null hides the "$ n" row (pov.css `.pov-gold`).
+- Check: `node scripts/check-descent-temple.mjs`.

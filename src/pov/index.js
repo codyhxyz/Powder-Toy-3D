@@ -24,6 +24,7 @@ import { createGame } from '../game/index.js';
 import { SPAWNER, ENEMY_KINDS } from '../spawners.js';
 import { createZoom, ZOOM_KEY } from './zoom.js';
 import { createTouchControls } from './touch.js';
+import { createDescent } from './descent/index.js';
 
 // First-person (POV) mode: drop into the world with V (Garry's Mod's noclip
 // key; F drops in too), walk around in it, pop back out to the god view's
@@ -89,6 +90,8 @@ export function createPov(app) {
   });
   const zoom = createZoom();   // C (zoom.js)
   const povHud = createPovHud();
+  // the Descent map's Holy Mountain and gold (descent/index.js); idle off that map
+  const descent = createDescent({ app, scene, hud, events: povEvents, getToolbelt: () => toolbelt });
   // feedback: everything here hears povEvents (events.js) and the body's events
   const feel = createFeel({ hud: povHud });
   const nightVision = app.post ? createNightVision(app.post) : null;   // the Night Vision perk's goggles (the local player's view)
@@ -562,6 +565,7 @@ export function createPov(app) {
       live: live(), tool: toolbelt?.selectedKey, inLiquid: !!player?.inLiquid,
       wantsWheel: !!toolbelt?.wantsWheel, driving: !!vehicles.seated, vehicles: vehicles.list.length > 0,
     });
+    descentFrame(dt);
     if (!active()) return;
     const sim = app.getSim(), vol = app.getVolume(), scale = app.getScale();
     const g = sim.g;
@@ -754,9 +758,20 @@ export function createPov(app) {
       dt, health: player.health, breath: player.breath, feel: player.feel,
       shield: player.shield, shieldMax: player.shieldMax, shieldCharging: player.shieldCharging,
       jetFuel: player.jetFuel, jetting: player.jetting, mana: toolbelt?.mana ?? null, perks: player.perks, status: player.status,
+      gold: descent.goldShown,
       dead: deadSeen, cause: player.cause, respawnIn: (match?.delay ?? RESPAWN_DELAY) - deadTime,
       locked: canUse(), swooping: mode !== 'on',
       aimValid: aim.valid, aimInReach: aim.valid && aim.dist <= HAND_REACH, third: povCam.third,
+    });
+  }
+
+  // The Descent map (descent/index.js): every frame, in the body or not (its
+  // nuggets and shop items follow the window in the god view too)
+  function descentFrame(dt) {
+    const sp = npcs.size ? app.getSpawners?.() : null;
+    descent.update({
+      dt, time: performance.now() / 1000, player, live: mode === 'on' && live(),
+      npcs: [...npcs].map(([id, n]) => ({ id, body: n.body, kind: sp?.list.find((s) => s.id === id)?.kind })),
     });
   }
 
@@ -829,6 +844,7 @@ export function createPov(app) {
     get locked() { return isLocked(); },
     get player() { return player; },
     get toolbelt() { return toolbelt; },
+    descent,                     // the Descent map's gold, shop, altar, pool and refresher (descent/index.js)
     vehicles,                    // the jeep and the hoverbike (vehicles/index.js): spawnLayout(layout), list, seated
     get classes() { return classes; },   // the class picker (classPicker.js), or null with CLASSES_ENABLED off
     get editingWand() { return editing; },
