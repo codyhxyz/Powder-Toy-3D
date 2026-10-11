@@ -10,7 +10,8 @@ nuclear table), `src/shaders/rays.js` (its passes). Checked on the CPU by `tools
 
 Our constraints: WebGL2 fragment shaders only (no compute, no atomics); the state is read through `fetchA`/`fetchB`
 (docs/scaling.md D5); a step is a block pass and a react pass over awake supertiles (D8); an empty world must cost
-nothing.
+nothing. WebGPU port: compute and integer atomics exist there, and the list stays; the notes below say which of its
+mechanisms change (see docs/webgpu.md G3).
 
 | | (a) A second per-cell layer | (b) A fixed-capacity list (chosen) |
 | --- | --- | --- |
@@ -27,7 +28,8 @@ every step, so a dead slot j asks only its K candidate parents (j − k·S) mod 
 That is the hard limit of a runaway: at most N particles and K children per slot per step, so nothing can hang the
 GPU. Matter that emits on its own (plutonium's spontaneous fission) uses a stripe: dead slot j examines atlas texel
 j + N·(t mod M), so every cell is examined once per M = ⌈texels / N⌉ steps (32 at 128³) and emits with probability
-p·M then. The rate per cell stays p while slots are free, and falls when the list is full.
+p·M then. The rate per cell stays p while slots are free, and falls when the list is full. WebGPU port: the stripe
+walks state slots instead of atlas texels, M = ⌈SLOTS / N⌉ (see docs/webgpu.md G3, C2).
 
 Coupling back to the grid. Pass A also leaves a deposit: the cell it interacted in, the heat and the pressure. A
 point draw adds the deposits into a target laid out like the state (additive blend), the react pass adds them to its
@@ -36,11 +38,14 @@ zero between steps without a full clear. A second point draw marks the bricks th
 resolution); the quiet map (shaders/activity.js) treats them like bricks that aren't inert, so the bricks around a
 particle stay awake and the D8/D9 machinery (supertiles drawn, derived passes rebuilt) follows unchanged. That needs
 a particle to move at most one brick (4 cells) in the two steps a map lives: speeds are capped at
-`BRICK / ACTIVITY_PERIOD` = 2 cells/step (`RAY_V_MAX`).
+`BRICK / ACTIVITY_PERIOD` = 2 cells/step (`RAY_V_MAX`). WebGPU port: no point draws. The deposit is two fixed-point
+`i32`s per cell, added with `atomicAdd` and zeroed by `settle`; the occupied bricks are an `atomicOr` bitset the
+quiet kernel reads; and the unit drawn around them is a brick, not a supertile (see docs/webgpu.md G3, D3, D5).
 
 When the layer runs. `Rays.active` turns on when particles or plutonium are painted, and on load and undo (they can
 bring plutonium back). Every stripe cycle an async read (PBO and fence, no stall) counts live slots and the dead
-slots that saw plutonium in the cycle; when both are 0 it turns off and clears the brick map.
+slots that saw plutonium in the cycle; when both are 0 it turns off and clears the brick map. WebGPU port: both
+counts are atomics, read back once per sweep through the readback service (see docs/webgpu.md G3, B7).
 
 ## Interaction rules (v1)
 
@@ -99,6 +104,8 @@ critical far smaller: a real hazard (criticality accidents happened in plutonium
 
 ## Measured (v1, `tools/rays-gpu.mjs`, headless M5, ANGLE Metal, 128³, 2026-10-10)
 
+These are the WebGL2 build's numbers; the WebGPU build's start a new series.
+
 - **Photons**, 171 white packets painted inside each of three closed 14-cell boxes: the wood box soaked them all up
   within 10 steps (wood to 753 °C, 61 cells of fire; 233 by step 60); the metal box still held all 171 at step 10
   (metal to 86 °C) and none by step 60 (faded below `PHOTON_E_MIN` after ~7 bounces); the glass box let them all
@@ -118,7 +125,9 @@ critical far smaller: a real hazard (criticality accidents happened in plutonium
 Not yet: multiplayer guests don't see particles (the list isn't streamed); a World window move lets them go (their
 positions are grid cells); a supertile asleep when a particle is born inside it may miss that particle's deposits
 for one step (the quiet map is rebuilt every second step); the passes' fixed cost while awake (above) could be cut
-by skipping the point draws when the last count found none.
+by skipping the point draws when the last count found none. WebGPU port: the unit there is a brick, the point draws
+go, and the view draws only live particles, compacted after each step into one `drawIndirect` of instanced quads
+(see docs/webgpu.md G3).
 
 ## The rest of the Radioactive group, in order
 

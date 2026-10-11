@@ -27,6 +27,11 @@ actually decided, which in places differs from that page; where they disagree, t
 ## Decisions
 
 ### D1. We stay on WebGL2
+**Superseded by docs/webgpu.md**, which ports every one of these passes to WebGPU at once and keeps the last WebGL2
+build at `/legacy/` (its W5). D2–D11 still hold: that document refers to them by number and restates them where the
+port changes their form (bricks and storage buffers where they say atlases and render targets). What follows is why
+we stayed, at the time.
+
 WebGL2 and WebGPU can't share textures, so moving the simulation means moving every pass that reads it. That
 covers the raymarcher, fields, shadows, GI, picking, signs, POV body/tools/trace, the transfer pass, the codec
 and stamps: about 7,600 lines of shaders. It also covers post and the three.js scene (POV viewmodels, three.quarks
