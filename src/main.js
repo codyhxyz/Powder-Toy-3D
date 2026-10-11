@@ -9,12 +9,11 @@ import './ui/menu.css';
 import { createMenu } from './ui/menu.js';
 import { launch, mark } from './launch.js';
 import { preloadGame, gameFetched } from './preload.js';
-import { GAMEMODES, QUICK_PLAY, mapOf, mapByKey, mapsFor, DEFAULT_MAP, MOBILE_MAP } from './maps.js';
+import { GAMEMODES, mapOf, mapByKey, mapsFor, DEFAULT_MAP, MOBILE_MAP } from './maps.js';
 
 // The team gamemodes exist only in builds that have them (src/game: the Big Team Battle modes).
 const TEAM_GAMES = Object.keys(import.meta.glob('./game/index.js')).length > 0;
 const MODES = GAMEMODES.filter((m) => !m.team || TEAM_GAMES);
-const QUICK = TEAM_GAMES ? QUICK_PLAY : [];   // one-click Play needs the team games
 const SETTINGS_STORE = 'powder-toy-3d:settings';   // app.js STORE: the map last played
 const MOBILE = matchMedia('(hover: none) and (pointer: coarse)').matches;   // app.js MOBILE
 // the most it waits for the loading screen's next step to paint before the
@@ -27,7 +26,6 @@ try { lastPlayed = mapOf(JSON.parse(localStorage.getItem(SETTINGS_STORE) || '{}'
 let app = null;   // app.js, once booted
 const menu = createMenu({
   modes: MODES,
-  quick: QUICK,
   map: lastPlayed ?? (MOBILE ? MOBILE_MAP : DEFAULT_MAP),
   onStart: start,
   onResume: () => menu.close(),
@@ -77,12 +75,11 @@ const painted = () => new Promise((resolve) => {
   setTimeout(resolve, PAINT_WAIT_MS);
 });
 
-// ?mode=<a team mode>: a match on ?map= when that map is built for it, else on the mode's Play map
-// (maps.js QUICK_PLAY) or its first; a mode this build doesn't have, or a map not built for it, is Sandbox
+// ?mode=<a team mode>: a match on ?map= when that map is built for it, else on the mode's first; a mode this build doesn't have, or a map not built for it, is Sandbox
 function linkMode(params) {
   const mode = params.get('mode');
   if (!MODES.some((m) => m.key === mode) || mode === 'sandbox') return;
-  const map = params.get('map') ?? QUICK.find((q) => q.mode === mode)?.map ?? mapsFor(mode)[0]?.key;
+  const map = params.get('map') ?? mapsFor(mode)[0]?.key;
   if (!mapByKey(map)?.modes?.includes(mode)) return;
   mark('click');
   launch.mode = mode;

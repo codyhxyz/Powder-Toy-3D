@@ -60,20 +60,6 @@ export const GAMEMODES = [
   { key: 'siege', name: 'Siege', team: true, desc: 'TF2 attack/defend: take the control points in turn before time runs out, or hold them.' },
 ];
 
-// One-click Play: the start menu's top bar (ui/menu.js), a gamemode on the map
-// built for it, with the team picked for you (src/game auto-balance). Halo 3
-// matchmaking's way: you pick a playlist, not a map and a side. Shown only in
-// builds with the team games (src/main.js). ?mode=<a team mode> without ?map=
-// boots into its entry here too.
-//   key          its id (the button's data-play)
-//   mode, map    a GAMEMODES key, a MAPS key that lists it
-//   name, desc   the button's label and its line
-export const QUICK_PLAY = [
-  { key: 'slayer', mode: 'slayer', map: 'damValley', name: 'Play', desc: 'Team Slayer · Dam Valley' },
-  // (the Lab: on Dam Valley the attackers' bots don't reach point A up on the dam's end yet, docs/modes.md)
-  { key: 'siege', mode: 'siege', map: 'lab', name: 'Siege', desc: 'Classes · attack and defend · Lab' },
-];
-
 export const mapByKey = (key) => MAPS.find((m) => m.key === key) ?? null;
 export const mapsFor = (mode) => (mode === 'sandbox' ? MAPS.filter((m) => m.sandbox !== false) : MAPS.filter((m) => m.modes?.includes(mode)));
 export const isWorld = (m) => !m.preset;

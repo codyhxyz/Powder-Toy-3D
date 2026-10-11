@@ -8,12 +8,9 @@ import { MODEICONS, MODEICON_BOX } from './modeicons.js';
 // The start menu, Garry's Mod's New Game screen: gamemodes down the left, each
 // with its icon, the maps built for the chosen one as square previews (public/maps, rendered by
 // tools/map-thumbs.mjs) with each map's size tagged in its corner, and the
-// picked map with Start along the bottom. One-click Play sits in the top bar
-// (maps.js QUICK_PLAY): a match with your team picked, Halo 3 matchmaking's
-// way. The landing page (src/main.js), and over the game from the toolbar's
-// Maps or Esc, with Resume.
+// picked map with Start along the bottom. The landing page (src/main.js), and
+// over the game from the toolbar's Maps or Esc, with Resume.
 //   modes                 the gamemodes to list (maps.js GAMEMODES, filtered by the build)
-//   quick                 the one-click Play entries (maps.js QUICK_PLAY; [] without the team games)
 //   map, mode             the pick it opens on
 //   onStart(map, mode)    Start (or a double-click, or Enter)
 //   onResume()            Resume / Esc, over a running game
@@ -69,7 +66,7 @@ const MB = 1024 * 1024;
 const fmtDate = (iso) => { const d = new Date(iso); return Number.isNaN(+d) ? '' : d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }); };
 const SAVES_DESC = 'Games you saved with ⌘S or the toolbar\'s Save, kept in this browser. Export one to keep it as a file.';
 
-export function createMenu({ modes, quick = [], map, mode, onStart, onResume, onLoadSave }) {
+export function createMenu({ modes, map, mode, onStart, onResume, onLoadSave }) {
   let saved = {};
   try { saved = JSON.parse(localStorage.getItem(STORE) || '{}'); } catch { /* storage unavailable */ }
   let modeKey = modes.some((m) => m.key === (mode ?? saved.mode)) ? mode ?? saved.mode : modes[0].key;
@@ -91,10 +88,6 @@ export function createMenu({ modes, quick = [], map, mode, onStart, onResume, on
   const pickDesc = h('div.mm-pick-desc');
   const startBtn = h('button.mm-start', { type: 'button', on: { click: () => start() } });
   const resumeBtn = h('button.mm-resume', { type: 'button', text: 'Resume', on: { click: () => onResume?.() } });
-  // one-click Play: the first entry is the big one
-  const quickBtns = quick.filter((q) => modes.some((m) => m.key === q.mode) && mapByKey(q.map)).map((q, i) =>
-    h(`button.mm-play${i ? '' : '.main'}`, { type: 'button', 'data-play': q.key, title: `${q.name}: ${q.desc}`, on: { click: () => play(q) } },
-      h('b', { text: q.name }), h('small', { text: q.desc })));
   const openFileBtn = h('button.mm-head-btn', { type: 'button', text: 'Open file…', title: 'Load a .tpt3d save file', on: { click: () => openFile() } });
   const exportBtn = h('button.mm-side', { type: 'button', text: 'Export', title: 'Download this save as a .tpt3d file', on: { click: () => exportPicked() } });
   const deleteBtn = h('button.mm-side', { type: 'button', text: 'Delete', on: { click: () => deletePicked() } });
@@ -117,7 +110,7 @@ export function createMenu({ modes, quick = [], map, mode, onStart, onResume, on
     h('div.mm-shell', {},
       h('header.mm-top', {},
         h('div.mm-brand', { html: `${logoMark(30)}<span>Powder Toy 3D</span>` }),
-        h('div.mm-top-actions', {}, quickBtns.length ? h('div.mm-quick', {}, quickBtns) : null, resumeBtn)),
+        resumeBtn),
       h('div.mm-body', {},
         nav,
         h('section.mm-main', {},
@@ -273,15 +266,6 @@ export function createMenu({ modes, quick = [], map, mode, onStart, onResume, on
     }
     try { localStorage.setItem(STORE, JSON.stringify({ mode: modeKey, map: pick.key })); } catch { /* ignore */ }
     onStart(pick.key, modeKey);
-  }
-  // one-click Play: its gamemode and map picked (the loading screen names them), then Start
-  function play(q) {
-    if (busy) return;
-    modeKey = q.mode;
-    pick = mapByKey(q.map);
-    renderModes();
-    renderMaps();
-    start();
   }
 
   // arrows walk the grid (by its columns), Enter starts, Esc resumes
