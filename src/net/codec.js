@@ -129,6 +129,8 @@ export function createPacker(renderer) {
   return {
     // Starts a capture of the sim's current state; resolves to { bytes, dims, release }
     // (call release() once done with bytes). Returns null while all slots are busy.
+    // bytes may be transferred to a worker: pass what comes back to release(back)
+    // and the slot reads into it next time.
     pack(sim) {
       if (!sameGrid(g, sim.g)) reset(sim.g);
       const slot = free.pop();
@@ -137,7 +139,10 @@ export function createPacker(renderer) {
       sim.run(mat, slot.target);
       renderer.setRenderTarget(null);
       const gen = generation, dims = [g.nx, g.ny, g.nz];
-      const release = () => { if (gen === generation) free.push(slot); else slot.target.dispose(); };
+      const release = (back) => {
+        if (back) slot.bytes = back;
+        if (gen === generation) free.push(slot); else slot.target.dispose();
+      };
       return renderer.readRenderTargetPixelsAsync(slot.target, 0, 0, g.width, g.height, slot.bytes)
         .then(() => ({ bytes: slot.bytes, dims, release }), (err) => { release(); throw err; });
     },

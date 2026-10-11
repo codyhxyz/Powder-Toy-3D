@@ -114,5 +114,5 @@ them), as it resets the NPCs.
 - Rapier's `-compat` build inlines its WASM as base64 (a 4.3 MB chunk, 1.65 MB gzipped, loaded on the first
   vehicle). The plain `@dimforge/rapier3d` package ships a binary .wasm (~1 MB gzipped) but needs a Vite
   WASM plugin.
-- The vehicles read the cells through their own copy (an `ai/world.js` model, one readback every 0.5 s)
-  beside the NPCs' one: sharing a single readback would halve that cost.
+- The terrain re-syncs on the copy's `version`, which also bumps when only temperatures changed;
+  `physics.js` reads only ids, so `idVersion` (bumped only when an id changed) would spare those re-syncs.

@@ -502,7 +502,7 @@ player's body, the player's tools and a mind built from textbook game AI, each a
 |---|---|---|
 | Body | a second `createPlayer({ quiet: true })`: same movement, swimming, burning, drowning | `npc.js` |
 | Hands | `createKit(env)`: every tool, headless, its own pack and bucket (`env.owner`), the shared projectiles | `tools/index.js` |
-| What's in the world | the multiplayer packer reads the cells back to the CPU every 0.5 s (id + temperature) | `ai/world.js` |
+| What's in the world | the multiplayer packer reads the cells back to the CPU every 0.5 s (id + temperature), one copy per renderer shared with the vehicles and Teleportitis, de-swizzled in a worker | `ai/world.js` (`readCells`), `ai/deswizzle.js` |
 | Seeing and aiming | Amanatides & Woo voxel traversal (1987) over that copy; the tools' `ctx.aim` comes from it | `ai/world.js` |
 | Getting there | a height map on a 2-cell grid as a Yuka `Graph`, searched with Yuka's `AStar` | `ai/nav.js` |
 | What to do | Buckland's goal-driven agent (Yuka `Think` + `GoalEvaluator`s, composite `Goal`s) | `ai/brain.js` |
