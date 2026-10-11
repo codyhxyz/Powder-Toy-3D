@@ -161,7 +161,7 @@ try {
       const g = window.__pogo;
       g.top = Math.max(g.top, pl.pos.y);
       // a tap: held for the one frame that reads it (longer, a slow frame could carry it past the
-      // pogo's window, and a held jump flies the jetpack, which holds gravity off)
+      // pogo's window and into the next landing)
       if (g.pressFrames >= 0 && --g.pressFrames < 0) key(false);
       // timed: press when the body will reach the floor (y = 0) within about the next frame, so the
       // press is read on the landing frame or the one before, whatever the frame rate
