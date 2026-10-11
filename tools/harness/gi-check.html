@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GI check</title>
+<style>
+  body { font: 13px/1.45 ui-monospace, monospace; margin: 16px; background: #111; color: #ddd; }
+</style>
+</head>
+<body>
+<!-- tools/gi-check.mjs and budget-check (gi) drive this page: a simulation,
+     its derived passes and their GI probes on their own WebGPU device, no app
+     (docs/webgpu.md E, I1). -->
+<pre id="log"></pre>
+<script type="module" src="./gi-check.js"></script>
+</body>
+</html>

@@ -10,18 +10,27 @@ import {
 } from './shaders/passes.js';
 import { CHANNELS, MEDIA, gauss5, bulkPeak, bulkPeakCubic, CUBIC_LATTICE } from './gfx/materials.js';
 import { fold } from './gpu/kernels.js';
+import {
+  giSourceFrag, giGatherFrag, GiParams, giProbeCount, giSourceDispatch, giGatherDispatch, GI_LAYOUT_NAMES,
+} from './shaders/gi.js';
+import { libLayouts } from './shaders/gfx/lib.js';
+import { WORLD_SIZE } from './shaders/farShared.js';
+import { createMediaNoise } from './gfx/mediaNoise.js';
+import { GI_BLEND } from './sim.js';
 
 // The derived passes (docs/webgpu.md E): what the renderer reads of the
 // simulation, rebuilt from its state once per derived frame, in the open
 // frame's compute pass. The render fields (shaders/fields.js), the brick map,
 // its empty-space distance and the glow volume (shaders/passes.js), and the
-// GI probes' storage, which shaders/gi.js fills (updateGI; zeros until then).
-// The simulation delegates to it: sim.updateBricks(), sim.updateGI(),
+// GI probes (shaders/gi.js: updateGI, the realistic view's, after the shadow
+// map). The simulation delegates to it: sim.updateBricks(), sim.updateGI(),
 // sim.resetGI() and the getters (sim.fieldSurf, sim.brick, …).
 //
 //   const derived = new Derived(sim);   // attaches itself (sim.attachDerived)
 //   await derived.ready;                // its pipelines (built asynchronously, B5)
 //   sim.step(); sim.updateBricks();     // the volume then binds derived.lightingEntries()
+//   volume.recordShadow();              // the realistic view: the GI after the shadow map
+//   sim.updateGI({ frame: frameUniformsOf(gpu).group, shadow: volume.shadowTextures });
 //
 // Incremental, exactly (docs/scaling.md D9): each brick's age counts derived
 // frames since it last changed, and the passes run over GPU-built lists of
@@ -126,7 +135,7 @@ export class Derived {
     this.lightA = buf('light blur A', n * 16, S);
     this.lightB = buf('light blur B', n * 16, S);
     this.giHist = buf('GI history', GI_BANDS * n * 8);
-    this.giSrc = buf('GI sources', n * 16, S);
+    this.giSrc = buf('GI sources', n * 16);   // (copyable: tools/gi-check.mjs seeds and reads it)
     this.noAer = buf('no aeration', 16, S);
     const TB = GPUTextureUsage.TEXTURE_BINDING, SB = GPUTextureUsage.STORAGE_BINDING, TS = GPUTextureUsage.COPY_SRC, TD = GPUTextureUsage.COPY_DST;
     const tex = (name, size, usage = TB | SB | TS | TD) => gpu.createTexture({ label: label(name), size, dimension: '3d', format: FIELD_FORMAT, usage });
@@ -342,15 +351,130 @@ export class Derived {
     }
   }
 
+  // ---- the GI probes (shaders/gi.js; docs/webgpu.md E) ----
+
   /**
-   * The GI probes (realistic view; after the shadow map, which it reads for
-   * sunlight): shaders/gi.js's, which fills this in (docs/webgpu.md J1 U9).
-   * Until then the probes stay as they are (zeros), and this records nothing.
+   * The GI probes (the realistic view; after the shadow map, which it reads
+   * for sunlight): giSource over every brick, then giGather over half the
+   * probes, alternating (all of them, replacing, after a reset: sim.giReset),
+   * blended into the history and the four band textures. FrameUniforms must
+   * have been written on this tick (B3): the sun, the sky, the shadow map's
+   * size, the far field's switch. The kernels build on the first call, or on
+   * prepareGI() (B5: no other view has GI); until they are ready this records
+   * nothing and the probes stay as they are.
+   * @param {{ frame: GPUBindGroup, shadow?: { map: GPUTexture, x: GPUTexture } | null, shadows?: boolean }} opts
+   *   frame: group 0 of render kernels (gfx/uniforms.js frameUniformsOf(gpu).group);
+   *   shadow: the sun's shadow map, recorded earlier in the frame (gfx/volume.js volume.shadowTextures);
+   *   shadows: the sun is shadowed by it, as the WebGL updateGI's `shadows` (without a map: unshadowed)
+   * @returns {boolean} whether it recorded
    */
-  updateGI() {}
+  updateGI({ frame, shadow = null, shadows = true } = {}) {
+    if (!frame) throw new Error('derived.updateGI: no frame group (gfx/uniforms.js frameUniformsOf(gpu).group, written this tick)');
+    const k = this.giKernels();
+    if (k.giSource.state !== 'ready' || k.giGather.state !== 'ready') {
+      this.prepareGI().catch(() => {});   // (a kernel that fails stops graphics through gpu.fail)
+      return false;
+    }
+    const sim = this.sim, g = this.g, header = sim.header();
+    const sun = Boolean(shadows && shadow);
+    this._dispatch(k.giSource, giSourceDispatch(g), {
+      bind: [frame, sim.bindRO, this._giGroup('LIGHTING_GISRC', shadow)], header, params: { shadows: sun },
+    });
+    // after a reset trace every probe and replace; else half of them, blended in
+    sim.giFrame = (sim.giFrame ?? 0) + 1;
+    const parity = sim.giReset ? -1 : sim.giFrame & 1;
+    const blend = sim.giReset ? 1 : GI_BLEND;
+    sim.giReset = false;
+    this._dispatch(k.giGather, giGatherDispatch(g, parity), {
+      bind: [frame, sim.bindRO, this._giGroup('LIGHTING_GI', shadow)], header,
+      params: { parity, count: giProbeCount(g, parity), blend, shadows: sun },
+    });
+    return true;
+  }
+
+  /**
+   * The GI's kernels, { giSource, giGather } (gpu.kernels, made on first use
+   * and built by prepareGI or updateGI). The gather holds the far layout of
+   * the world this grid is a window of (a box: WORLD_SIZE's, off), as the
+   * shadow kernel does.
+   */
+  giKernels() {
+    if (!this._giKernels) {
+      const gpu = this.gpu, g = this.g;
+      const kernel = (name, code, variant) => gpu.kernel({
+        name, code, params: GiParams, workgroupSize: [64, 1, 1], build: 'manual',
+        layouts: GI_LAYOUT_NAMES[name].map((n, i) => gpu.layout(n, libLayouts(variant)[i])),
+      });
+      this._giKernels = {
+        giSource: kernel('giSource', giSourceFrag(g), 'LIGHTING_GISRC'),
+        giGather: kernel('giGather', giGatherFrag(g, { world: this.world ?? WORLD_SIZE }), 'LIGHTING_GI'),
+      };
+    }
+    return this._giKernels;
+  }
+
+  /** Builds the GI's kernels (booting in the realistic view, or switching to it); resolves when they're ready. */
+  prepareGI() {
+    const k = this.giKernels();
+    return Promise.all([k.giSource.build(), k.giGather.build()]);
+  }
+
+  // Group 2 of a GI kernel (shaders/bindings.js L.LIGHTING_GISRC or
+  // L.LIGHTING_GI): this module's resources (the fields, light, the bands,
+  // the brick map, giSrc, the history), the shadow map (stand-ins without one:
+  // never read then), the media noise (the clouds' shadow), the far field's
+  // textures (attachFar; stand-ins in a box: FrameUniforms.far keeps them
+  // unread), the samplers, and for the source the flow and a stand-in for the
+  // aeration, which no GI code reads. One per variant, shadow map and far field.
+  _giGroup(variant, shadow) {
+    const gpu = this.gpu, sim = this.sim;
+    if (!this._gi) {
+      const T = GPUTextureUsage.TEXTURE_BINDING;
+      const dummy = (gpu._giDummies ??= {
+        map: gpu.createTexture({ label: 'GI shadow map (none)', size: [1, 1], format: 'rgba32float', usage: T }),
+        x: gpu.createTexture({ label: 'GI shadow map x (none)', size: [1, 1], format: 'r32float', usage: T }),
+        grid: gpu.createTexture({ label: 'GI far grid (none)', size: [1, 1, 1], dimension: '3d', format: 'rgba16uint', usage: T }),
+        flat: gpu.createTexture({ label: 'GI far 2d (none)', size: [1, 1], format: 'rgba16float', usage: T }),
+      });
+      const sampler = (address) => gpu.device.createSampler({
+        label: `GI linear ${address}`, magFilter: 'linear', minFilter: 'linear', addressModeU: address, addressModeV: address, addressModeW: address,
+      });
+      this._gi = {
+        dummy, noise: createMediaNoise(gpu), clamp: sampler('clamp-to-edge'), repeat: sampler('repeat'),
+        groups: new Map(), views: new WeakMap(), ids: new WeakMap(), next: 1,
+      };
+    }
+    const r = this._gi;
+    const view = (t) => {
+      if (!(t instanceof GPUTexture)) return t;   // (a view already)
+      let v = r.views.get(t);
+      if (!v) r.views.set(t, v = t.createView({ label: t.label, ...(t.dimension === '3d' ? { dimension: '3d' } : {}) }));
+      return v;
+    };
+    const far = this.far;
+    const parts = [shadow?.map ?? r.dummy.map, shadow?.x ?? r.dummy.x, far?.grid ?? r.dummy.grid, far?.top ?? r.dummy.flat, far?.shadow ?? r.dummy.flat];
+    const idOf = (o) => { let id = r.ids.get(o); if (!id) r.ids.set(o, id = r.next++); return id; };
+    const key = `${variant}|${parts.map(idOf).join('|')}`;
+    let group = r.groups.get(key);
+    if (!group) {
+      if (r.groups.size >= 8) r.groups.clear();   // (shadow maps and far fields come and go with grids and worlds)
+      const b = (binding, buffer) => ({ binding, resource: { buffer } });
+      const entries = [
+        ...this.lightingEntries(),
+        ...parts.map((t, i) => ({ binding: [8, 9, 11, 12, 13][i], resource: view(t) })),
+        { binding: 10, resource: r.noise.view }, { binding: 14, resource: r.clamp }, { binding: 15, resource: r.repeat },
+        b(20, this.giSrc),
+        ...(variant === 'LIGHTING_GI' ? [b(21, this.giHist)] : [b(18, sim.state.flow), b(19, this.noAer)]),
+      ];
+      group = gpu.bindGroup(gpu.layout(variant, libLayouts(variant)[2]), entries, `sim${sim.id} ${variant}`);
+      r.groups.set(key, group);
+    }
+    return group;
+  }
 
   /** Starts the GI probes over: their history and their four textures to zeros. */
   resetGI() {
+    this.sim.giFrame = 0;   // (and the checkerboard from its start, as a new Derived)
     const f = this.gpu.frame, g = this.g;
     f.clear(this.giHist);
     // the textures from a zeroed run of the scratch (rows padded to 256 bytes, as copies want)
