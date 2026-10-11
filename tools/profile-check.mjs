@@ -1,82 +1,109 @@
-// Profiler check (src/gfx/profiler.js, Settings → Developer). Runs the lab and
-// compares the profiler's phase times with references taken right after each
-// sample (the same work with a single forced sync at the end), then the frame
-// rate with the profiler off and on. Run it on an otherwise idle GPU: other GPU
-// work inflates every number, and unevenly.
-// usage: node tools/profile-check.mjs [--port N] [--pairs N]
-import { launchBrowser, newTestPage } from './browser.mjs';
+// Profiler check (src/gfx/profiler.js, Settings → Developer). The profiler reads
+// GPU time from timestamp queries in split mode (every dispatch its own pass,
+// docs/webgpu.md B8); this runs frames with it off and on and checks:
+//   - its samples keep the report's shape (ui/profiler.js reads it): every phase,
+//     passes in order with their phase, per-name detail, totals, memory, GPU name;
+//   - the passes it attributes are the frame's (by name and phase);
+//   - its frame total against a reference: the same frames timed by gpu.timing
+//     alone, not split (one compute pass), so the ratio is split mode's own cost;
+//   - the frame rate with it off and on.
+// Run it on an otherwise idle GPU: other GPU work inflates every number, unevenly.
+//
+// --harness (the default until the app boots on WebGPU): post's harness page,
+// a synthetic scene and post at 400×250 (phases view and post).
+// --app: the lab in the app (?preset=lab): the profiler as Settings → Developer
+// turns it on (U8's app.js wires prof.phase and gpu.endFrame as before).
+// usage: node tools/profile-check.mjs [--harness | --app] [--port N] [--ms N]
+import { launchBrowser, newTestPage, gpuInfo } from './browser.mjs';
+import { startVite } from './vite-server.mjs';
+import { openHarness } from './harness/open.mjs';
+
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
-const port = opt('port', '5191');
-const PAIRS = +opt('pairs', '8');   // samples, each with its references
-const LOAD_MS = 3000;               // page load and first frames
-const SETTLE_MS = 1500;             // after switching the profiler, before a window
-const WINDOW_MS = 4000;             // frame-rate window per mode
-const SYNC_REPS = 5;                // timed syncs per reference (median: the sync's own cost)
+const APP = args.includes('--app');
+const MS = Number(opt('ms', '3000'));       // per mode
+let failures = 0;
+const check = (ok, line) => { if (!ok) failures++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${line}`); };
+const ms = (v) => (v == null ? '–' : v.toFixed(2));
 
-const b = await launchBrowser();
-const p = await newTestPage(b, { mode: 'visual', viewport: { width: 1280, height: 800 } });
-const errs = [];
-p.on('pageerror', (e) => errs.push(String(e)));
-await p.goto(`http://localhost:${port}/?preset=lab`);
-await p.waitForTimeout(LOAD_MS);
-
-const r = await p.evaluate(async ({ PAIRS, SETTLE_MS, WINDOW_MS, SYNC_REPS }) => {
-  const a = window.__app, R = a.renderer;
-  const MS_PER_S = 1000;
-  a.autoRes.enabled = false;
-  const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
-  const med = (xs) => { const s = [...xs].sort((x, y) => x - y); return s[s.length >> 1]; };
-  // the frame rate and sim rate with the profiler off and on
-  let renders = 0;
-  const render = a.post.render.bind(a.post);
-  a.post.render = (...rest) => { renders++; return render(...rest); };
-  const rates = [];
-  for (const on of [false, true, false, true]) {
-    a.settings.profiler = on;
-    await sleep(SETTLE_MS);
-    const f0 = a.sim.frame, r0 = renders, t0 = performance.now();
-    await sleep(WINDOW_MS);
-    const s = (performance.now() - t0) / MS_PER_S;
-    rates.push({ on, fps: (renders - r0) / s, stepsPerSec: (a.sim.frame - f0) / s, sampleWall: on ? a.prof.last?.wall : null });
+const vite = await startVite({ harness: !APP });
+const browser = await launchBrowser();
+try {
+  let sample, ref, offFps, onFps, frames;
+  if (!APP) {
+    const page = await openHarness(browser, vite, '/tools/harness/post.html', { viewport: { width: 400, height: 250 } });
+    const info = await gpuInfo(page);
+    console.log(`gpu: ${info.vendor} ${info.architecture}${info.isFallbackAdapter ? ' (fallback adapter)' : ''}; harness: post at 400×250`);
+    const run = (name, arg) => page.evaluate(([n, a]) => window.__harness.run(n, a), [name, arg]);
+    const off = await run('profiler', { ms: MS, on: false });
+    const on = await run('profiler', { ms: MS, on: true });
+    ref = (await run('timing', { split: false })).last;
+    sample = on.last;
+    offFps = off.fps; onFps = on.fps; frames = on.frames;
+    check(/Post/.test(on.panel ?? '') && /taa|View/.test(on.panel ?? ''), `the overlay (ui/profiler.js) shows the sample: ${JSON.stringify((on.panel ?? '').split('\n').slice(0, 3).join(' | '))}`);
+    if (!on.supported) console.log('note: no timestamp-query on this device: GPU times are null');
+  } else {
+    const page = await newTestPage(browser, { mode: 'visual', viewport: { width: 1280, height: 800 } });
+    await page.goto(vite.url('/?preset=lab'));
+    await page.waitForFunction(() => window.__app?.sim && window.__app?.gpu, null, { polling: 100, timeout: 120000 });
+    const info = await gpuInfo(page);
+    console.log(`gpu: ${info.vendor} ${info.architecture}${info.isFallbackAdapter ? ' (fallback adapter)' : ''}; app: the lab`);
+    const r = await page.evaluate(async (MS) => {
+      const a = window.__app, gpu = a.gpu;
+      a.autoRes.enabled = false;
+      const sleep = (t) => new Promise((res) => setTimeout(res, t));
+      const rate = async (on) => {
+        a.settings.profiler = on;
+        await sleep(500);
+        const f0 = gpu.frameNo, t0 = performance.now();
+        await sleep(MS);
+        return (gpu.frameNo - f0) / ((performance.now() - t0) / 1000);
+      };
+      const offFps = await rate(false);
+      const onFps = await rate(true);
+      const sample = a.prof.last && JSON.parse(JSON.stringify(a.prof.last));
+      a.settings.profiler = false;
+      await sleep(200);
+      gpu.timing.enabled = true;   // the reference: timestamps, not split
+      await sleep(1000);
+      const ref = { ...gpu.timing.last };
+      gpu.timing.enabled = false;
+      return { offFps, onFps, sample, ref };
+    }, MS);
+    ({ sample, ref, offFps, onFps } = r);
   }
-  a.post.render = render;
-  // pairs: a sample, then the references right away (synchronous: no frame runs in between)
-  const cal = new a.sim.actQuiet.constructor(1, 1, { depthBuffer: false });
-  const u8 = new Uint8Array(4), f32 = new Float32Array(4);
-  const syncCal = () => { const prev = R.getRenderTarget(); R.setRenderTarget(cal); R.clear(); R.readRenderTargetPixels(cal, 0, 0, 1, 1, u8); R.setRenderTarget(prev); };
-  const time = (fn) => { syncCal(); const t = performance.now(); fn(); return performance.now() - t; };
-  const pairs = [];
-  let seen = a.prof.last;
-  while (pairs.length < PAIRS) {
-    await sleep(20);
-    const s = a.prof.last;
-    if (!s || s === seen) continue;
-    seen = s;
-    const sim = a.sim, gpu = (id) => s.phases.find((ph) => ph.id === id).gpu;
-    const sync = med([...Array(SYNC_REPS)].map(() => time(syncCal)));
-    pairs.push({
-      sim: [gpu('sim'), time(() => { for (let i = 0; i < s.steps; i++) sim.step(); sim.gpuSync(); }) - sync],
-      derived: [gpu('derived'), time(() => { sim.updateBricks(); R.readRenderTargetPixels(sim.light[1], 0, 0, 1, 1, f32); }) - sync],
-      viewPost: [gpu('view') + gpu('post'), time(() => { a.post.render(a.scene, a.camera); syncCal(); }) - sync],
-      sync: [s.overhead, sync], wall: s.wall, passes: s.passes.length,
-    });
-  }
-  cal.dispose();
-  a.settings.profiler = false;
-  return { rates, pairs };
-}, { PAIRS, SETTLE_MS, WINDOW_MS, SYNC_REPS });
 
-const f = (v) => (v == null ? '–' : v.toFixed(2)).padStart(7);
-console.log('profiler   fps   steps/s   sampled frame ms');
-for (const x of r.rates) console.log(`${x.on ? 'on ' : 'off'}    ${f(x.fps)} ${f(x.stepsPerSec)}   ${f(x.sampleWall)}`);
-console.log('\nGPU ms, profiler vs reference:');
-console.log('    sim (prof  ref)   derived (prof  ref)   view+post (prof  ref)   sync (prof  ref)   sampled frame');
-for (const x of r.pairs) {
-  console.log(`${f(x.sim[0])}${f(x.sim[1])}   ${f(x.derived[0])}${f(x.derived[1])}       ${f(x.viewPost[0])}${f(x.viewPost[1])}     ${f(x.sync[0])}${f(x.sync[1])}   ${f(x.wall)} ms, ${x.passes} passes`);
+  console.log(`\nframe rate: profiler off ${offFps.toFixed(1)} fps, on ${onFps.toFixed(1)} fps${frames ? ` (${frames} frames)` : ''}`);
+  check(Boolean(sample), 'the profiler produced a sample');
+  if (sample) {
+    const ids = sample.phases.map((p) => p.id).join(',');
+    check(ids === 'paint,sim,derived,shadow,gi,view,post,other', `phases in the report's order: ${ids}`);
+    const sum = sample.phases.reduce((s, p) => s + (p.gpu ?? 0), 0);
+    check(sample.gpu != null && Math.abs(sum - sample.gpu) < 1e-6 && Math.abs(sample.passes.reduce((s, p) => s + p.gpu, 0) - sample.gpu) < 1e-6,
+      `the phases and passes add up to the frame: ${ms(sample.gpu)} ms GPU`);
+    let ordered = true;
+    sample.passes.forEach((p, i) => { if (i && Math.abs(p.start - (sample.passes[i - 1].start + sample.passes[i - 1].gpu)) > 1e-9) ordered = false; });
+    check(ordered, `${sample.passes.length} passes laid end to end on the timeline`);
+    check(typeof sample.memory === 'number' && sample.memory > 0 && sample.gpuName && Array.isArray(sample.totals) && sample.totals.length > 0,
+      `memory ${(sample.memory / 2 ** 20).toFixed(1)} MB, gpu "${sample.gpuName}", ${sample.totals.length} totals`);
+    console.log('\nphase      gpu ms   cpu ms   passes');
+    for (const p of sample.phases) {
+      console.log(`${p.label.padEnd(9)}${ms(p.gpu).padStart(8)} ${ms(p.cpu).padStart(8)}   ${p.detail.map((d) => `${d.name}${d.count > 1 ? `×${d.count}` : ''} ${ms(d.gpu)}`).join(', ')}`);
+    }
+    if (!APP) {
+      const post = sample.phases.find((p) => p.id === 'post'), view = sample.phases.find((p) => p.id === 'view');
+      const names = post.detail.map((d) => `${d.name}${d.count > 1 ? `×${d.count}` : ''}`).join(' ');
+      check(names === 'taa prefilter bloomDown×5 bloomUp×4 postReduce bloomUp0 canvas', `post's passes, split: ${names}`);
+      check(view.detail.map((d) => d.name).join(' ') === 'scene', 'the scene pass is the view phase');
+    }
+    const refTotal = Object.values(ref).reduce((s, x) => s + x, 0);
+    const ratio = sample.gpu / refTotal;
+    console.log(`\nreference (timestamps, not split): ${Object.entries(ref).map(([k, v]) => `${k} ${ms(v)}`).join(', ')}`);
+    check(refTotal > 0 && ratio > 0.5 && ratio < 2, `profiler frame ${ms(sample.gpu)} ms vs reference ${ms(refTotal)} ms: ratio ${ratio.toFixed(2)} (split mode's own cost and frame-to-frame noise)`);
+  }
+} finally {
+  await browser.close();
+  await vite.close();
 }
-const med = (xs) => { const s = [...xs].sort((x, y) => x - y); return s[s.length >> 1]; };
-const ratio = (k) => med(r.pairs.map((x) => x[k][0] / x[k][1])).toFixed(2);
-console.log(`\nmedian profiler/reference: sim ${ratio('sim')}, derived ${ratio('derived')}, view+post ${ratio('viewPost')}`);
-console.log(errs.length ? errs.join('\n') : 'no page errors');
-await b.close();
+console.log(`\nprofile-check: ${failures ? `${failures} failed` : 'all passed'}`);
+process.exit(failures ? 1 : 0);
