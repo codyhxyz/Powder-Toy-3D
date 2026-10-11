@@ -1,11 +1,13 @@
 // Lint for docs/webgpu.md W6: every GPU→CPU read of the simulation is a
-// promise now (C7), so a call to readState, readCell, census, gpuSync,
+// promise now (C7), and so is every fence (B8's gpu.fence(), page-gpu's
+// fence), so a call to readState, readCell, census, gpuSync, fence,
 // readCopies, readMaps or readFlow in tools/ or scripts/ must be awaited or
 // .then'ed. A missed await doesn't throw, it turns
 //   check('rock painted', sim.census()[E.ROCK]?.n > 0)
-// into a comparison of undefined that fails quietly, and
+// into a comparison of undefined that fails quietly,
 //   const [A] = sim.readState()
-// into a TypeError only if it's lucky.
+// into a TypeError only if it's lucky, and a timing loop's fence into a
+// number that times the recording, not the GPU.
 //
 // A call counts as consumed when the call itself (not an index or a field of
 // its promise) is
@@ -14,19 +16,24 @@
 //   - handed to the caller:     return sim.census(); () => sim.census()
 //   - an element of an array given to Promise.all, allSettled, race or any
 //     that is itself consumed: await Promise.all([a.readState(), b.readState()])
-// A function of the file that hands a read to its caller, or is async and
-// reads, joins the list: its own calls must be consumed too, so
+// A function of the file that hands a read to its caller (the call, or a
+// .then chain of it), or is async and reads, joins the list: its own calls
+// must be consumed too, so
 //   const cell = (x, y, z) => sim.readCell(x, y, z);
 //   check(cell(8, 8, 8)[0][0] === E.ROCK, ...)
 // fails at the check (bare calls for `const cell`, `.ids(` calls for
 // `H.ids = async ...`). Definitions don't count (function census(...),
 // async readState() { ... }), nor bare calls of a function the file defines
-// synchronously (a CPU twin's own census(w) { ... }). The scan reads code
-// only: comments, strings, template text and regex literals are blanked
-// first, ${...} kept.
-// It also fails an async predicate given to Playwright's waitForFunction (or
-// to a function of the file that calls it): waitForFunction doesn't await the
-// predicate, so a pending promise counts as true and the wait passes at once.
+// synchronously (a CPU twin's own census(w) { ... }), unless that function
+// hands a read back itself (function census() { return sim.census(); }). The
+// scan reads code only: comments, strings, template text and regex literals
+// are blanked first, ${...} kept.
+// It also fails a predicate given to Playwright's waitForFunction (or to a
+// function of the file that calls it) that returns a promise: an async one,
+// one that hands a read back (() => sim.census(), .then chains included), or
+// a function of the file named there that does either. waitForFunction
+// doesn't await the predicate, so a pending promise counts as true and the
+// wait passes at once.
 // Its blind spots: a promise kept in a variable and awaited later is flagged
 // (await the call itself); an anonymous arrow that returns a read is trusted
 // whatever its caller does with it (xs.map((x) => sim.readCell(...x)) needs
@@ -36,16 +43,19 @@
 //
 // PENDING lists the files other units still port (docs/webgpu.md J1): they are
 // reported, not failed, until their unit converts them. A clean one is noted;
-// U16 deletes the list. Never add a file of your own to it.
+// U16 deletes the list. Never add a file of your own to it. A converting unit
+// runs its J4 gate with --unit <its id>, which fails its own pending files
+// like any other; --strict fails every pending file (U16, at the end).
 // A self-test runs first: known misses must be caught, known good forms not.
-// usage: node tools/check-async-reads.mjs [--verbose]   (--verbose: every pending site)
+// usage: node tools/check-async-reads.mjs [--unit U11 | --strict] [--verbose]
+//        (--verbose: every pending site)
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DIRS = ['tools', 'scripts'];
-export const NAMES = ['readState', 'readCell', 'census', 'gpuSync', 'readCopies', 'readMaps', 'readFlow'];
+export const NAMES = ['readState', 'readCell', 'census', 'gpuSync', 'fence', 'readCopies', 'readMaps', 'readFlow'];
 const IGNORE = 'check-async-reads: ignore';
 
 /** @type {Record<string, string>} file → the unit that converts it (J1), or why it waits */
@@ -202,9 +212,10 @@ const CHAINED = /^\??\.\s*(then|catch|finally)\s*\(/;
 const COMBINATOR = /\bPromise\s*\.\s*(all|allSettled|race|any)\s*$/;
 /**
  * How the call whose chain starts at `start` and whose argument list closes
- * at `close` is consumed: { how: 'await' | 'then' }, { how: 'return' | 'arrow',
- * at } (handed to the caller; `at` is the return keyword or the arrow's =),
- * or null when it isn't.
+ * at `close` is consumed: { how: 'await' }, { how: 'return' | 'arrow', at }
+ * (handed to the caller; `at` is the return keyword or the arrow's =),
+ * { how: 'then', back } (back: how the .then chain is handed to the caller,
+ * as above, or null), or null when it isn't.
  */
 function consumption(code, start, close) {
   // parentheses around the call, (sim.census()), are closed right after it
@@ -213,13 +224,25 @@ function consumption(code, start, close) {
   let a = ahead(code, close + 1);
   for (let w = 0; w < wraps && code[a] === ')'; w++) a = ahead(code, a + 1);
   const rest = code.slice(a, a + 32);
-  if (CHAINED.test(rest)) return { how: 'then' };
+  const w = wordBefore(code, k), arrow = code[k] === '>' && code[k - 1] === '=';
+  // nothing but the call (or its chain) up to e is handed back
+  const whole = (e) => e >= code.length || /^[;)\]},]/.test(code[e]);
+  if (CHAINED.test(rest)) {
+    // past every .then(...), .catch(...) and .finally(...): a function that
+    // returns the chain hands the read back as surely as one returning the call
+    let e = a;
+    for (let m; (m = CHAINED.exec(code.slice(e, e + 32)));) {
+      const c = match(code, e + m[0].length - 1);
+      if (c < 0) break;
+      e = ahead(code, c + 1);
+    }
+    const handed = !whole(e) ? null : w === 'return' ? { how: 'return', at: k - 5 } : arrow ? { how: 'arrow', at: k - 1 } : null;
+    return { how: 'then', back: handed };
+  }
   const used = /^(\?\.|[.[(`])/.test(rest);           // the promise itself indexed, read or called
-  const whole = a >= code.length || /^[;)\]},]/.test(rest);   // nothing but the call is handed back
-  const w = wordBefore(code, k);
   if (w === 'await') return used ? null : { how: 'await' };
-  if (w === 'return') return whole ? { how: 'return', at: k - 5 } : null;
-  if (code[k] === '>' && code[k - 1] === '=') return whole ? { how: 'arrow', at: k - 1 } : null;
+  if (w === 'return') return whole(a) ? { how: 'return', at: k - 5 } : null;
+  if (arrow) return whole(a) ? { how: 'arrow', at: k - 1 } : null;
   // an element of an array literal handed to a Promise combinator
   for (let j = start - 1, d = 0; j >= 0; j--) {
     const c = code[j];
@@ -343,17 +366,21 @@ export function scan(src, html = false) {
   if (html) src = src.replace(/(<script\b[^>]*>)([\s\S]*?)(<\/script>)|[^\n]/g, (all, open) => (open ? all : ' '));
   const code = codeOnly(src), lines = src.split('\n');
   const local = syncLocals(code), { ranges, defs } = functions(code);
-  const innermost = (p) => {
+  // the innermost function body around p (a range: { start, end, def? })
+  const around = (p) => {
     let best = null;
     for (const r of ranges) if (r.start < p && p < r.end && (!best || r.end - r.start < best.end - best.start)) best = r;
-    return best?.def ?? null;
+    return best;
   };
+  const innermost = (p) => around(p)?.def ?? null;
   // the file's functions that hand a read back or read while async: name → { member, via }
   const derived = new Map();
-  let found = [];
+  let found = [], handBacks = [];
   for (let pass = 0; pass < 8; pass++) {
     found = [];
+    handBacks = [];   // how each read handed to a caller was handed: { how: 'return' | 'arrow', at }
     const known = derived.size;
+    let unhid = false;
     const names = [...NAMES, ...derived.keys()];
     const call = new RegExp(`(?<![\\w$])(${names.map((n) => n.replace(/\$/g, '\\$')).join('|')})\\s*(\\?\\.\\s*)?\\(`, 'g');
     for (const m of code.matchAll(call)) {
@@ -372,29 +399,85 @@ export function scan(src, html = false) {
         found.push({ line, col, name: via ? `${name} (reads with ${via.via})` : name, text: lines[line - 1].trim() });
         continue;
       }
-      const handed = used.how === 'arrow' ? defs.find((d) => d.arrow === used.at)
-        : used.how === 'return' ? innermost(used.at) : null;
+      const h = used.how === 'then' ? used.back : used;
+      if (h?.how === 'arrow' || h?.how === 'return') handBacks.push(h);
+      const handed = h?.how === 'arrow' ? defs.find((d) => d.arrow === h.at)
+        : h?.how === 'return' ? innermost(h.at) : null;
       const own = innermost(s);
       for (const d of [handed, own?.async ? own : null]) {
-        if (d && !NAMES.includes(d.name) && !derived.has(d.name)) derived.set(d.name, { member: d.member, via: via?.via ?? name });
+        if (!d) continue;
+        // a function named after a read that hands one back is no CPU twin: its bare calls count
+        if (NAMES.includes(d.name)) { if (!d.member && local.delete(d.name)) unhid = true; continue; }
+        if (!derived.has(d.name)) derived.set(d.name, { member: d.member, via: via?.via ?? name });
       }
     }
-    if (derived.size === known) break;
+    if (derived.size === known && !unhid) break;
   }
-  // Playwright's waitForFunction doesn't await its predicate: an async one returns a pending
-  // promise, which is truthy, so the wait ends at once and the check it guards always passes.
-  // Flag one given to waitForFunction, or to a function of the file that hands its own
+  // Playwright's waitForFunction doesn't await its predicate: a promise is truthy, so the
+  // wait ends at once and the check it guards always passes. Flag a predicate that returns
+  // one (async, or handing a read back, or a function of the file named there that does
+  // either) given to waitForFunction, or to a function of the file that hands its own
   // parameter to waitForFunction as the predicate.
   const hands = (d) => d.params.some((q) => new RegExp(`\\bwaitForFunction\\s*\\(\\s*${q.replace(/\$/g, '\\$')}\\b`).test(code.slice(d.start, d.end)));
   const waiters = new Set(['waitForFunction', ...defs.filter(hands).map((d) => d.name)]);
-  const wait = new RegExp(`(?<![\\w$])(${[...waiters].map((n) => n.replace(/\$/g, '\\$')).join('|')})\\s*\\(\\s*async\\b`, 'g');
+  // why the predicate starting at p returns a promise, or null
+  const promising = (p) => {
+    const w = wordAt(code, p);
+    if (w === 'async') return 'an async predicate';
+    // an arrow's => (a concise body hands back what it reads) or a brace body's {
+    let arrow = -1, body = -1;
+    if (w === 'function') {
+      const o = code.indexOf('(', p), c = o < 0 ? -1 : match(code, o);
+      body = c < 0 ? -1 : ahead(code, c + 1);
+    } else {
+      const c = code[p] === '(' ? match(code, p) : w ? p + w.length - 1 : -1;
+      const q = c < 0 ? -1 : ahead(code, c + 1);
+      if (code[q] === '=' && code[q + 1] === '>') {
+        arrow = q;
+        body = ahead(code, q + 2);
+      } else if (w && /[,)]/.test(code[q] ?? '')) {
+        // a function of the file, named
+        const d = derived.get(w);
+        if ((d && !d.member) || defs.some((f) => f.name === w && f.async && !f.member)) return `${w}, which returns a promise`;
+        return null;
+      }
+    }
+    if (body < 0) return null;
+    const braced = code[body] === '{';
+    const hit = handBacks.some((h) => (h.how === 'arrow' && h.at === arrow && !braced)
+      || (h.how === 'return' && braced && around(h.at)?.start === body));
+    return hit ? 'a predicate that hands back a read\'s promise' : null;
+  };
+  const wait = new RegExp(`(?<![\\w$])(${[...waiters].map((n) => n.replace(/\$/g, '\\$')).join('|')})\\s*\\(`, 'g');
   for (const m of code.matchAll(wait)) {
+    const open = m.index + m[0].length - 1, close = match(code, open);
+    if (close < 0 || wordBefore(code, back(code, m.index - 1)) === 'function' || code[ahead(code, close + 1)] === '{') continue;
+    const why = promising(ahead(code, open + 1));
+    if (!why) continue;
     const line = code.slice(0, m.index).split('\n').length;
     if (lines[line - 1].includes(IGNORE)) continue;
     found.push({ line, col: m.index - code.lastIndexOf('\n', m.index - 1),
-      name: `${m[1]} with an async predicate, which it doesn't await (poll through evaluate)`, text: lines[line - 1].trim() });
+      name: `${m[1]} with ${why}, which it doesn't await (poll through evaluate)`, text: lines[line - 1].trim() });
   }
   return found.sort((a, b) => a.line - b.line || a.col - b.col);
+}
+
+/**
+ * Splits scanned files into failed, pending (another unit's port, reported
+ * only) and clean pending ones. A pending file fails like any other with
+ * `strict`, or when `unit` is the unit that ports it (its J4 gate).
+ * @param {[string, object[]][]} results [file, its unconsumed calls]
+ * @param {{ unit?: string | null, strict?: boolean, pending?: Record<string, string> }} [opts]
+ */
+export function classify(results, { unit = null, strict = false, pending = PENDING } = {}) {
+  const failed = [], waiting = [], clean = [];
+  for (const [rel, found] of results) {
+    const owner = pending[rel];
+    if (owner && !strict && owner !== unit) (found.length ? waiting : clean).push([rel, found]);
+    else if (found.length) failed.push([rel, found]);
+    else if (owner) clean.push([rel, found]);
+  }
+  return { failed, pending: waiting, clean };
 }
 
 // ---------------------------------------------------------------- self-test
@@ -430,6 +513,21 @@ const BAD = [
   'const cell = (x) => sim.readCell(x, 0, 0);\nconst id = () => cell(1);\ncheck(id()[0] === 3);',
   'await p.waitForFunction(async () => (await sim.census())[1] > 0);',
   'const until = (fn, ms) => p.waitForFunction(fn, null, { timeout: ms });\nawait until(async () => true, 100);',
+  'window.__pageGpu.fence();',
+  'gpu.fence();',
+  "import { fence } from './page-gpu.mjs';\nfence(page);",
+  'await ev(() => { sim.step(); window.__pageGpu.fence(); return performance.now(); });',
+  'await p.waitForFunction(() => window.__pageGpu.census().then((c) => c[1].n > 0));',
+  'await p.waitForFunction(() => window.__app.sim.census());',
+  'await p.waitForFunction((id) => sim.census().then((c) => c[id].n > 0), 3);',
+  'await p.waitForFunction(function () { return sim.census(); });',
+  'const pred = async () => (await sim.census())[1].n > 0;\nawait p.waitForFunction(pred);',
+  'async function ready() { return window.x; }\nawait p.waitForFunction(ready, null, { timeout: 5000 });',
+  'const until = (fn) => p.waitForFunction(fn);\nawait until(() => sim.census().then((c) => c[1]));',
+  'function census() { return window.__app.sim.census(); }\nconst c = census()[1];',
+  'const readCell = (x, y, z) => { return sim.readCell(x, y, z); };\nconst id = readCell(1, 2, 3)[0][0];',
+  'const n = () => sim.census().then((c) => c[1].n);\ncheck(n() > 0);',
+  'function water() { return sim.census().then((c) => c[1].n).catch(() => 0); }\nconst w = water() + 1;',
 ];
 const GOOD = [
   'const [A] = await sim.readState();',
@@ -464,12 +562,32 @@ const GOOD = [
   'await p.waitForFunction(() => window.__app.sim.frame > 10);',
   'const until = (fn, ms) => p.waitForFunction(fn, null, { timeout: ms });\nawait until(() => window.x, 100);',
   'const withLab = async (fn) => { await p.waitForFunction(() => window.ready); return fn(1); };\nawait withLab(async (lab) => lab);',
+  'await gpu.fence();',
+  'await window.__pageGpu.fence(sim);',
+  'const t0 = performance.now(); sim.step(); await gpu.fence(); out.push(performance.now() - t0);',
+  'const pred = () => window.ready;\nawait p.waitForFunction(pred);',
+  'await p.waitForFunction(() => { const f = () => sim.census(); return window.x > 1; });',
+  'await p.waitForFunction((n) => window.__app.sim.frame > n, 10);',
+  "await p.waitForFunction('window.__app?.sim');",
+  'function census(w) { let n = 0; for (const k in w) n++; return n; }\nconst c = census(w);',
+  'const n = () => sim.census().then((c) => c[1].n);\ncheck((await n()) > 0);',
+  'sim.census().then((c) => { window.c = c; });',
 ];
 const selfFails = [];
 for (const s of BAD) if (scan(s).length !== 1) selfFails.push(`should catch exactly one (got ${scan(s).length}): ${s}`);
 for (const s of GOOD) if (scan(s).length) selfFails.push(`should pass: ${s}`);
 if (scan('<p>sim.census()</p>\n<script type="module">\nconst c = sim.census();\n</script>', true).length !== 1) {
   selfFails.push('should catch the one call in an HTML page\'s script');
+}
+{
+  const results = [['tools/a.mjs', [{}]], ['tools/b.mjs', [{}]], ['tools/c.mjs', []]];
+  const sorted = (opts) => {
+    const c = classify(results, { ...opts, pending: { 'tools/a.mjs': 'U11', 'tools/c.mjs': 'U11' } });
+    return [c.failed, c.pending, c.clean].map((l) => l.map(([rel]) => rel).join()).join(' | ');
+  };
+  const want = [[{}, 'tools/b.mjs | tools/a.mjs | tools/c.mjs'], [{ unit: 'U10' }, 'tools/b.mjs | tools/a.mjs | tools/c.mjs'],
+    [{ unit: 'U11' }, 'tools/a.mjs,tools/b.mjs |  | tools/c.mjs'], [{ strict: true }, 'tools/a.mjs,tools/b.mjs |  | tools/c.mjs']];
+  for (const [opts, w] of want) if (sorted(opts) !== w) selfFails.push(`classify ${JSON.stringify(opts)}: ${sorted(opts)}, want ${w}`);
 }
 if (selfFails.length) {
   console.error(`check-async-reads self-test failed:\n  ${selfFails.join('\n  ')}`);
@@ -479,18 +597,27 @@ if (selfFails.length) {
 // ---------------------------------------------------------------- the run
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
-  const verbose = process.argv.includes('--verbose');
+  const argv = process.argv.slice(2);
+  const verbose = argv.includes('--verbose'), strict = argv.includes('--strict');
+  const u = argv.findIndex((x) => x === '--unit' || x.startsWith('--unit='));
+  const unit = u < 0 ? null : argv[u].includes('=') ? argv[u].slice(7) : argv[u + 1];
+  if (u >= 0 && !/^U\d+[a-z]?$/.test(unit ?? '')) {
+    console.error(`--unit wants a unit id of docs/webgpu.md J1 (U11, U14b), got ${unit ?? 'nothing'}`);
+    process.exit(2);
+  }
   const walk = (dir) => readdirSync(dir).flatMap((n) => {
     const p = join(dir, n);
     if (n === 'node_modules') return [];
     return statSync(p).isDirectory() ? walk(p) : /\.(mjs|js|cjs|html)$/.test(n) ? [p] : [];
   });
   const files = DIRS.flatMap((d) => walk(join(ROOT, d))).map((f) => relative(ROOT, f).split('\\').join('/')).sort();
-  const failed = [], pending = [], clean = [];
-  for (const rel of files) {
-    const found = scan(readFileSync(join(ROOT, rel), 'utf8'), rel.endsWith('.html'));
-    if (PENDING[rel]) (found.length ? pending : clean).push([rel, found]);
-    else if (found.length) failed.push([rel, found]);
+  const results = files.map((rel) => [rel, scan(readFileSync(join(ROOT, rel), 'utf8'), rel.endsWith('.html'))]);
+  const { failed, pending, clean } = classify(results, { unit, strict });
+  if (strict) console.log('--strict: every pending file fails like any other');
+  else if (unit) {
+    const own = Object.keys(PENDING).filter((rel) => PENDING[rel] === unit);
+    console.log(own.length ? `--unit ${unit}: its ${own.length} pending file${own.length === 1 ? '' : 's'} fail like any other`
+      : `--unit ${unit}: no pending file is ${unit}'s; its tools are checked like every other file`);
   }
   for (const [rel] of clean) console.log(`note: ${rel} awaits every read now; delete it from PENDING`);
   for (const rel of Object.keys(PENDING)) if (!files.includes(rel)) console.log(`note: ${rel} is gone; delete it from PENDING`);
