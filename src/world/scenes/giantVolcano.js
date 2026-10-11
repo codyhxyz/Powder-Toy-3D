@@ -154,6 +154,14 @@ const VIEW_ELEVATION = 12;        // degrees the camera looks down from
 const VIEW_DIST = 576;            // cells from the orbit target
 const VIEW_LIFT = 150;            // cells the orbit target hangs over the shore (the camera looks up the cone)
 const DEG = Math.PI / 180;
+// Far field chunks a frame while it builds (world/far.js). At far.js's one a
+// frame, its 256 chunks took 256 of this tall window's slow frames, and the
+// cone filled in outward from the window as a round, flat-sided slab: a
+// cylinder for half a minute or more. Its whole build costs ~1.5–1.7× the
+// island's (M5, all chunks at once: 1.4 s against 0.73–0.95 s; three times as
+// tall, its cells a cheap formula), so this many make each frame of the build
+// cost what the island's 64 do: the cone is whole within 7 frames of load.
+const FAR_CHUNKS_PER_FRAME = 40;
 
 // ---- the JS twin (sceneCell's, step for step) ----
 
@@ -361,4 +369,5 @@ export const giantVolcano = {
     for (let y = Math.min(columnTop(topAt(d), d), WY - 1); y >= 0; y--) if (volcCell(cx, y, cz, P.seed) !== E.EMPTY) return y + 1;
     return 0;
   },
+  farChunksPerFrame: FAR_CHUNKS_PER_FRAME,
 };

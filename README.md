@@ -33,10 +33,17 @@ Press `?` in the app for the full list.
 |---|---|
 | Left-drag | paint with the selected element or tool (the brush stays at the height where you clicked) |
 | `[` `]` or Shift + scroll | brush size |
-| `B` / `X` | sphere or cube brush / paint over existing material |
+| Shift + left-drag | a line: the brush swept from where you pressed to where you let go (TPT's Shift-drag) |
+| ⌘ + left-drag (Ctrl on Windows) | a box between the two corners, as tall as the brush (TPT's Ctrl-drag) |
+| ⌘ + Shift + click | flood fill (TPT's Ctrl+Shift-click): see [Editing tools](#editing-tools) |
+| `B` / `X` | sphere or cube brush / replace mode: paint over existing material (also `;` or Insert, as in TPT) |
+| Delete | specific delete: the brush erases only the target element (also ⌘; as TPT's Ctrl+;) |
+| ⌥ + click a tile, or ⌥`I` | make that element the target that replace mode and specific delete keep to |
+| ⌘`P` | the Property tool: set the temperature, element, ctype, life, velocity or pressure under the brush |
 | `I` | eyedropper: pick the element under the cursor (or click the Eyedropper in the dock, then click the scene) |
 | ⌘Z / Ctrl+Z | undo the last stroke, clear or scene change |
 | `/` | find an element |
+| Ctrl+B | show or hide decoration (TPT's key) |
 
 | Camera | |
 |---|---|
@@ -50,12 +57,38 @@ Press `?` in the app for the full list.
 | Everything else | |
 |---|---|
 | Space / `.` | pause / step one frame |
+| `Y` / `U` | cycle the air mode / turn ambient heat on or off (The Powder Toy's keys; see Simulation modes) |
 | `1`–`5` | switch view |
 | `T` | show or hide the element dock |
 | `,` | settings |
 | `P` | save a screenshot |
+| ⌘S / Ctrl+S | save the game (in first person ⌘ only, Ctrl being the camera key there) |
+| ⌘O / Ctrl+O | the Saves list: load a save, export it, open a file |
 
 Hovering shows the element, temperature and air pressure under the cursor. Settings are remembered between visits.
+
+## Editing tools
+
+The Powder Toy's editing tools, in 3D (TPT's `Editing.cpp`, `PropertyTool.cpp`, `GameView.cpp`):
+
+- **Line and box.** Shift-drag draws a line and ⌘-drag (Ctrl-drag) a box, put down when you let go, one undo step each.
+  Both stay on the paint plane, the height where you pressed. The line is the brush swept along it. The box spans the
+  two corners like a WorldEdit selection and is as tall as the brush, so it sits on the surface you clicked.
+  A ghost shows either while you drag; Escape drops it. They put every cell down at once, as TPT's do.
+- **Flood fill.** ⌘+Shift-click. With an element, it fills the open air you clicked into. Open air in 3D would fill the
+  sky, so the fill only rises to the top of the brush, the way a liquid finds its level: click inside a bowl to fill it.
+  With replace mode on, it replaces the connected cells of what you clicked instead. Erase, specific delete and the
+  Property tool take the connected cells of what you clicked. Heat, cool, pressure, spark and the particles don't fill,
+  as TPT's tools don't. A region over 262,144 cells (a 64³ cube) is refused, and so is one in World that runs on past the
+  simulated window.
+- **Replace mode and specific delete.** `X` (or TPT's `;`) paints over existing material. Delete (TPT's Delete, or ⌘;)
+  turns the brush into an eraser. ⌥-click an element tile, or point at one and press ⌥`I`, to make it the target: then
+  replace mode paints over only that element and specific delete erases only it (TPT's Ctrl+Alt-click). With no target,
+  `X` paints over anything, as before. One of the two modes is on at a time; the HUD and the menu say which.
+- **Property tool** (PROP, in Tools, or ⌘`P`). Pick a property and type a value in the menu: an element by name or
+  abbreviation for the element or ctype, a temperature in °C (or end it with K or F), a number for life, a velocity
+  in cells per step, or an air pressure. Values out of range turn red and paint nothing. It changes only matter, as TPT's
+  does; pressure also changes the air. Setting the element to air erases.
 
 ## First person
 
@@ -151,6 +184,30 @@ The cursor uses the game's own tools: Pressure on powders and liquids, the eleme
 A new element with only a table row needs nothing else. One that gets its own special case in the GPU passes needs the same case
 in `src/ui/tiles/engine.js`; `node scripts/check-tile-engine.mjs` lists any that are missing.
 
+## Decoration
+
+The spawn menu's **Deco** tab is The Powder Toy's deco menu: paint a colour onto matter without changing what it is.
+*Decorate* (TPT's SET) paints the picker's colour, *Clear decoration* takes it off, *Add*, *Subtract*, *Multiply* and
+*Divide* nudge the colour a little per frame the button is held (TPT's 0.01 strength), and *Smudge* blends the paint
+around each cell, averaged in linear light as TPT does. The colour's alpha is how strongly the paint covers: TPT blends by
+it. **Ctrl+B** (or *Show decoration* under the picker) hides it all and shows it again; the paint stays either way.
+
+The paint belongs to the matter. Sand that falls keeps its colour, painted ice melts into painted water, painted sand melts
+and sets into painted glass, and painted wood burns down to painted ash, because TPT's transitions keep it
+(`part_change_type`). A cell that empties loses it, and so does a
+cell the brush or a construction gives a new element (TPT's `create_part` starts a particle fresh). Undo brings it back, and
+in World it travels with the window: bricks of paint that leave the window are kept and come back with it.
+
+It is stored as a third texture beside the state (`src/deco.js`): one RGBA8 texel per cell in the state's atlas, moved by
+its own pass right after the move's gather, which reads the same slots (`src/shaders/deco.js`). Nothing in the move or
+react passes changes, and the texture, its passes and their programs only exist from the first deco stroke, so a world
+nobody paints pays nothing. The renderer (`src/shaders/gfx/deco.js`) turns a painted surface's albedo toward the paint
+(keeping its texture's light and dark), makes painted liquid and glass scatter the paint's colour, and leaves glow alone,
+so hot metal still shines through its paint. Smooth surfaces take the colour of the cell their material comes from, so a
+paint edge on sand follows cells. Smoke, steam and fire don't show paint in the realistic view yet (the plain view tints
+them), reflections and bounced light don't see it, and guests in a multiplayer session neither see nor paint it: the host's
+stream doesn't carry it yet.
+
 ## Constructions
 
 Constructions are whole structures placed with one click (`src/constructions.js`). Unlike TPT's stamps they are generators:
@@ -232,6 +289,28 @@ Density decides whether it can displace its neighbour, so sand sinks through wat
   rock chips only right beside one, and metal never breaks.
 
 **3. Brush** (only while painting).
+
+**Simulation modes** (`src/simModes.js`): The Powder Toy's Simulation Options, in the Settings drawer's Simulation
+section. They belong to the world: a new scene or map starts them over (vertical, on, on, solid), and in multiplayer the
+host sets them.
+- **Gravity**: vertical; off (nothing falls, topples, settles or spreads downhill: the first-person body floats too, as
+  TPT's stickman does; loose matter still drifts a little with the air's jitter); radial, toward the centre of the box, at
+  full strength (TPT's `GetGravityField`). The move pass's rules are written for down = −y, so each 2×2×2 block is solved
+  turned so that −y is the dominant axis of its pull, and the react pass applies the full vector, with its normal force,
+  friction and liquid flow along that axis. A pool has no level in radial gravity, so a drop's surface keeps churning.
+- **Air** (`Y`): on; pressure off (held at 0: blasts heat and burn but throw nothing); velocity off (still air: no wind or
+  convection, and matter isn't pushed by pressure, since in TPT particles feel pressure only through the air's velocity);
+  off (both); no update (pressure and wind stay where they are, without spreading or fading).
+- **Ambient heat** (`U`): off holds the air at 20 °C, and matter trades no heat with it, so nothing cools in air and
+  convection carries no heat. TPT starts with it off; here it starts on, as the world always was.
+- **Edges**: solid (walls); void (whatever leaves the box is gone, and the air outside is still, at ambient, with no
+  pressure, so blasts vent out of the sides); loop (what leaves comes back on the far side, along all three axes, air,
+  heat and reactions included: TPT's air doesn't wrap, but ours lives on the same cells as matter). World keeps solid
+  edges: its window's edge is where the stored island goes on.
+
+Radial gravity and void or loop edges switch off quiet-brick skipping (below): its rest test knows only vertical
+gravity and walls, so every brick is stepped. Photons and neutrons, the first-person body and constructions don't wrap.
+`tools/sim-modes-check.mjs` checks every mode on the GPU.
 
 **Quiet bricks** (`src/shaders/activity.js`). Most of the box is still air or resting matter, and stepping it only
 reshuffles the air's jitter. A cell is inert when stepping it could change nothing beyond the rest tolerances: air near
@@ -349,6 +428,30 @@ Pick the SIGN tool and click any surface to pin a label (Enter to save, Escape t
 Signs can show live values from the cell they're attached to: `{t}` temperature, `{p}` pressure, `{e}` element.
 A small GPU probe pass reads those values and dims signs that are hidden behind voxels.
 
+## Saves
+
+⌘S (Ctrl+S) or the floppy in the toolbar saves the game, named for its map and the time, with a picture of the view.
+The map menu (Esc, or ⌘O) lists your saves under **Saves**, Garry's Mod's menu item: load one, export it as a
+`.tpt3d` file, delete it, or *Open file…* to load a file (it joins the list). Saves live in the browser (IndexedDB),
+so export the ones you want to keep elsewhere.
+
+A save is exact: every cell's element, temperature, life, ctype and colour seed, its velocity and pressure, as the
+GPU holds them. It also keeps the signs, the spawners and perk orbs, the fast particles in flight, the time of day,
+gravity and speed, and where the god camera was. What derives from the cells (activity, render fields, light) is
+rebuilt on load. The body, NPCs, birds and vehicles are left out: you come back in the god view.
+
+In a box, loading is a scene change, so ⌘Z takes it back (as TPT snapshots its history before opening a local save).
+In a World, a save holds the seed and scene, the window as it was and every edited brick the island keeps, so loading
+puts you back on your island as you left it; like any world load, it can't be undone. Edits you made away from the
+window show from afar again once you pass back over them. When playing together, only the host loads; a guest can save
+a copy of what it sees (without velocity or pressure, which guests aren't sent).
+
+The file is a short JSON header (version, name, date, map, size, thumbnail) and deflated sections, TPT's own design:
+named fields that a reader skips when it doesn't know them, so old saves keep loading as features are added. A feature
+adds its own with `registerSaveSection(key, { save, load, absent })` (`src/saves/sections.js`), and settings that belong
+to a world with `registerSavedSettings(keys)`. A 128³ box is about 5–10 MB: the random per-cell colour seeds don't
+compress. `node tools/saves-check.mjs` checks the format on the CPU.
+
 ## Multiplayer
 
 Click the players button in the toolbar to host the current world. This copies an invite link.
@@ -369,6 +472,7 @@ its Pages previews and local development (`SITE_HOSTS` and friends in `relay/wor
 To deploy it, run `wrangler deploy --config relay/wrangler.toml`. The production relay lives at `wss://tpt3d-relay.codyh.xyz` (set in `.env.production`).
 The site deploys itself: every push to `main` on GitHub builds it and ships it to the Cloudflare Pages project `tpt3d` (served at https://tpt3d.codyh.xyz; see `.github/workflows/deploy.yml`).
 Without `VITE_RELAY_URL`, production builds hide multiplayer.
+Guests' lines, boxes, fills, Property values and replace targets go to the host with their strokes; a fill is worked out on the host's world.
 Guests don't receive velocity, pressure or air temperature, so their pressure and flow views look empty, the heat view shows no warm air and flames look a little dimmer. Signs aren't shared.
 
 ## Known simplifications

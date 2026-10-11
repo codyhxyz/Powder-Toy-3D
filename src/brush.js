@@ -45,20 +45,54 @@ export function createBrushCursor() {
   });
   const sphere = new THREE.SphereGeometry(1, 48, 24);
   const box = new THREE.BoxGeometry(2, 2, 2);
-  const mesh = new THREE.Mesh(sphere, mat);
-  mesh.renderOrder = 10;
-  mesh.visible = false;
-  mesh.frustumCulled = false;
+  const tube = new THREE.CylinderGeometry(1, 1, 2, 48, 1, true);   // a line's body between its two ends
+  const ghost = (geometry) => Object.assign(new THREE.Mesh(geometry, mat), { renderOrder: 10, visible: false, frustumCulled: false });
+  const mesh = ghost(sphere);
+  // A line's other end and its body (TPT's Shift-drag preview, GameView.cpp RenderLine).
+  const start = ghost(sphere), body = ghost(tube);
+  const up = new THREE.Vector3(0, 1, 0), dir = new THREE.Vector3();
+  const show = (m, shape, at, radius) => {
+    m.visible = true;
+    m.geometry = shape === 1 ? box : sphere;
+    m.position.copy(at);
+    m.quaternion.identity();
+    m.scale.setScalar(radius);
+  };
+  const paint = (shape, color) => {
+    mat.uniforms.uCube.value = shape;
+    mat.uniforms.uColor.value.set(color).convertSRGBToLinear();
+  };
   return {
     mesh,
+    extras: [start, body],   // (the scene holds them beside mesh)
     set({ visible, position, radius, shape, color }) {
       mesh.visible = visible;
+      start.visible = body.visible = false;
       if (!visible) return;
-      mesh.geometry = shape === 1 ? box : sphere;
-      mat.uniforms.uCube.value = shape;
-      mesh.position.copy(position);
-      mesh.scale.setScalar(radius);
-      mat.uniforms.uColor.value.set(color).convertSRGBToLinear();
+      show(mesh, shape, position, radius);
+      paint(shape, color);
+    },
+    // a line being dragged (scene units): the brush at both ends and swept between
+    setLine({ from, to, radius, shape, color }) {
+      show(mesh, shape, to, radius);
+      show(start, shape, from, radius);
+      dir.subVectors(to, from);
+      const len = dir.length();
+      body.visible = len > 0;
+      if (len > 0) {
+        body.geometry = shape === 1 ? box : tube;
+        body.position.addVectors(from, to).multiplyScalar(0.5);
+        body.quaternion.setFromUnitVectors(up, dir.divideScalar(len));
+        body.scale.set(radius, len / 2, radius);
+      }
+      paint(shape, color);
+    },
+    // a box being dragged (TPT's Ctrl-drag preview, RenderRect): its centre and half size (scene units)
+    setBox({ position, half, color }) {
+      start.visible = body.visible = false;
+      show(mesh, 1, position, 1);
+      mesh.scale.copy(half);
+      paint(1, color);
     },
   };
 }
