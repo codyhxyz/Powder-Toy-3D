@@ -1,4 +1,3 @@
-import * as THREE from 'three';
 import { ELEMENTS, E } from './elements.js';
 import { PHYS } from './physics.js';
 
@@ -9,15 +8,16 @@ import { PHYS } from './physics.js';
 //   box           Ctrl/⌘-drag: a cuboid between the drag's corners
 //   flood fill    Ctrl/⌘+Shift-click: a connected region
 //   replace mode / specific delete, with a target element
-// The paint pass (shaders/passes.js paintFrag) applies all of them per cell;
-// this file holds the rules the app and multiplayer share, kept free of the DOM
-// so tools/editing-check.mjs can test them in node.
+// The brush's kernel (shaders/passes.js paintUpdateWGSL, an edit: sim.paint)
+// applies all of them per cell; this file holds the rules the app and
+// multiplayer share, kept free of the DOM and of the GPU so
+// tools/editing-check.mjs can test them in node.
 
 // ---- PROP (TPT's PropertyTool) ----
 // The properties worth setting here, in the dialog's order: TPT's particle
 // properties that the 3D state holds (type, ctype, temp, life, vx/vy, plus vz),
 // and the cell's air pressure, which TPT keeps outside its particles. The
-// index of each is its PROP_* in the paint shader.
+// index of each is its PROP_* in the brush's kernel.
 export const PROP_FIELDS = [
   { key: 'type', label: 'Element (type)', hint: 'An element name or abbreviation: water, WATR, LAVA' },
   { key: 'ctype', label: 'ctype', hint: 'An element (what lava melted from, what clone copies) or a number' },
@@ -39,7 +39,8 @@ export const PROP_LIFE_MAX = 1e6;
 const KELVIN = 273.15;       // °C at 0 K
 const F_PER_C = 1.8, F_AT_0C = 32;
 
-export const propGLSL = () => PROP_FIELDS.map((f, i) => `#define PROP_${f.key.toUpperCase()} ${i}`).join('\n');
+// (WGSL consts; the name is the GLSL version's, docs/webgpu.md W2)
+export const propGLSL = () => PROP_FIELDS.map((f, i) => `const PROP_${f.key.toUpperCase()}: u32 = ${i}u;`).join('\n');
 
 // An element by TPT's rules (AccessPropertyParse.cpp: GetParticleType, then a
 // plain number): its key, abbreviation or name in any case, or its id.
@@ -199,7 +200,9 @@ export function floodRegion(a, g, texel, start, { id, maxY = g.ny - 1, cap = FLO
 }
 
 // The region as a mask over the state atlas (one byte per texel, MASK_ON in
-// the region's cells), for the paint pass's tMask. shift: grid cells [dx, dz]
+// the region's cells), for the brush's kernel (sim.paint's mask: it uploads the
+// bytes as they are; the kernel finds a cell's byte by its atlas texel, as
+// every CPU-built array is laid out, docs/webgpu.md C2). shift: grid cells [dx, dz]
 // to move it by (a World window that moved since the read: app.js pickedNow);
 // cells it moves out of the grid are dropped.
 export const MASK_ON = 255;
@@ -219,8 +222,8 @@ export function regionMask(g, texel, cells, [dx, dz] = [0, 0]) {
   return { data, lo, hi, count };
 }
 
-// Fill: read the state back, find the region from req.cell and run the paint
-// pass over it with req.stroke (the brush's tool, filters and PROP value;
+// Fill: read the state back, find the region from req.cell and run the brush
+// over it with req.stroke (the brush's tool, filters and PROP value;
 // filter is set to the region's element, so cells that changed since the read
 // are left alone). before() runs right before the pass (the app's undo
 // snapshot). Resolves to { count } or { error } (floodRegion's, or 'gone' when
@@ -234,15 +237,8 @@ export async function runFill(sim, req, { openSides = false, before } = {}) {
   if (r.error) return r;
   const m = regionMask(sim.g, texel, r.cells, [o.x - sim.origin.x, o.z - sim.origin.z]);
   if (!m.count) return { error: 'gone' };
-  const texture = new THREE.DataTexture(m.data, sim.g.width, sim.g.height, THREE.RedFormat, THREE.UnsignedByteType);
-  texture.unpackAlignment = 1;
-  texture.needsUpdate = true;
   before?.();
-  try {
-    sim.paint({ ...req.stroke, center: { x: 0, y: 0, z: 0 }, filter: req.id, mask: { texture, lo: m.lo, hi: m.hi } });
-  } finally {
-    texture.dispose();
-  }
+  sim.paint({ ...req.stroke, center: { x: 0, y: 0, z: 0 }, filter: req.id, mask: { data: m.data, lo: m.lo, hi: m.hi } });
   return { count: m.count };
 }
 

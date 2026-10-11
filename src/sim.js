@@ -7,15 +7,19 @@ import {
   activityPeriod, inertListFrag, inertFrag, quietFrag, drawnFrag, move1Frag, argsFrag, permuteFrag, inertRefFrag,
   BuildParams, BUILD_LAYOUT, REF_LAYOUT, ARGS, ARGS_BYTES, COUNTS_SLOTS, COUNTS_BYTES, inertFold, SUPER_SETTLE_STEPS,
 } from './shaders/activity.js';
-import { moveBlockFrag, MoveParams, MOVE_LAYOUT, marginBlocks, MOVE_FORM } from './shaders/move.js';
+import { moveBlockFrag, MoveParams, MOVE_LAYOUT, marginBlocks, MOVE_FORM, ownerLayout } from './shaders/move.js';
 import { reactFrag, ReactParams, REACT_LAYOUT, FACES } from './shaders/react.js';
 import {
-  paintUpdateWGSL, PaintParams, freshFrag, copyFrag, toAtlasFrag, fromAtlasFrag, ConvertParams, CONVERT_LAYOUT, awakeFrag, AwakeParams,
+  paintUpdateWGSL, PaintParams, PAINT_LAYOUT, paintDeclsWGSL, freshFrag, copyFrag, toAtlasFrag, fromAtlasFrag, ConvertParams, CONVERT_LAYOUT,
+  awakeFrag, AwakeParams,
 } from './shaders/passes.js';
 import { shiftFrag, undoShiftFrag, flowShiftFrag, ShiftParams, UNDO_LAYOUT, FLOW_SHIFT_LAYOUT } from './shaders/window.js';
 import { stateLayout } from './shaders/common.js';
 import { uniformStruct } from './gpu/params.js';
 import { fold } from './gpu/kernels.js';
+import { TOOLS, PROP_TOOL, isDecoTool } from './elements.js';
+import { strokeDabs, PROP } from './editing.js';
+import { GRAV, EDGE, SIM_MODE_DEFAULTS } from './simModes.js';
 
 // The simulation on the GPU (docs/webgpu.md C, D): the state buffers, the
 // step (the move in place, then react: shaders/move.js, react.js), the
@@ -32,11 +36,19 @@ import { fold } from './gpu/kernels.js';
 //
 // The derived passes (render fields, the brick map, light, GI) are
 // src/derived.js's (docs/webgpu.md E): sim.attachDerived(d) and the
-// delegating methods below. Fast particles and whitewater plug in the same
-// way (attachRays, attachAeration; J3).
+// delegating methods below. Fast particles, whitewater and TPT's decoration
+// layer plug in the same way (attachRays, attachAeration, attachDeco; J3).
+//
+// TPT's simulation options (src/simModes.js: gravity, air, ambient heat and
+// edge modes) are per-dispatch params of the move and react (B4), set by the
+// setters below; switching one builds nothing. Radial gravity and void or loop
+// edges switch quiet skipping off (quietOk), so the sleeping rules stay exact.
 
 // cells/step² downward (the app's gravity setting overrides it)
 const GRAVITY_DEFAULT = 0.025;
+
+// TPT's Mix tool (elements.js TOOLS): its stroke reads other cells, so it is a two-phase edit (passes.js).
+const MIX_TOOL = TOOLS.find((t) => t.key === 'MIX').id;
 
 // Steps an activity map stays valid (shaders/activity.js).
 const ACTIVITY_PERIOD = activityPeriod(BRICK);
@@ -204,6 +216,11 @@ export class Simulation {
     this.idleEpoch = 0;
     this.idleCertified = false;
     this.idleRead = null;   // at most one asynchronous read of the activity counts
+    // simulation modes (src/simModes.js), set through their setters below
+    this._gravityMode = SIM_MODE_DEFAULTS.gravityMode;
+    this._airMode = SIM_MODE_DEFAULTS.airMode;
+    this._ambientHeat = SIM_MODE_DEFAULTS.ambientHeat;
+    this._edgeMode = SIM_MODE_DEFAULTS.edgeMode;
     this.gravity = GRAVITY_DEFAULT;
     // bumped by every write to the state (steps, edits, loads, undo, network
     // updates), so callers can tell when the world changed
@@ -213,16 +230,20 @@ export class Simulation {
     // that is its whole world stays at 0; shift() moves it.
     this.origin = new Vec3();
     this.originUniform = { value: this.origin };   // (for the render setup until it reads the header)
-    // fast particles and whitewater (attachRays, attachAeration), the derived passes (attachDerived)
+    // fast particles and whitewater (attachRays, attachAeration), the derived
+    // passes (attachDerived), TPT's decoration layer (attachDeco: src/deco.js, U17)
     this.rays = NO_RAYS;
     this.aeration = null;
     this.derived = null;
+    this.deco = null;
     // profiling hook (gfx/profiler.js): onPass(name, { kind, gpuMs }) after every dispatch
     this.onPass = null;
     // test knobs (docs/webgpu.md C7, I2); test mode only
     //   logCounts: every build's counts go through the ring, into countsLog
     //   ({ frame, counts: Promise<ArrayBuffer> }: nAWAKE, nDRAWN, nMOVE1, nINERT), for budget-check
-    this.test = { listOrder: null, blockOrder: null, raceProbe: false, syncAfterShift: false, logCounts: false };
+    //   loopMargin: with loop edges, run the move's low-margin blocks too: every
+    //   block straddling an edge gets a second owner (the owner check's negative control)
+    this.test = { listOrder: null, blockOrder: null, raceProbe: false, syncAfterShift: false, logCounts: false, loopMargin: false };
     this.countsLog = [];
     this._shiftListeners = [];
     this._scratchGroups = [];   // [edit kernel's group cache, key] of the groups holding the edit scratch
@@ -234,14 +255,18 @@ export class Simulation {
     this.cur = 0;
     const A = buf('A', 2 * slots * 16), B = buf('B', 2 * slots * 16), F = buf('F', 2 * slots * 4);
     this.flow = buf('flow', slots * 8);
+    // moveSrc's buffer: whitewater's moveSrc plane and the decoration's (_side)
     this.moveSrc = buf('moveSrc (none)', 16);
-    this.marks = buf('marks', marksLayout(g).words * 4);
+    this.sideDeco = false;   // it holds the decoration's plane (attachDeco)
+    // (a debug build's move stamps its cells after the marks' own words: the owner check, shaders/move.js ownerLayout)
+    this.marks = buf('marks', (this.debug ? ownerLayout(g).words : marksLayout(g).words) * 4);
     this.actLayout = actLayout(g);
     this.act = buf('act', this.actLayout.words * 4);
     this.args = buf('args', ARGS_BYTES, S | CS | CD | GPUBufferUsage.INDIRECT);
     // dummies for the rays layer's deposit and brick bits while none is attached
     this.noDeposit = buf('rays deposit (none)', 16);
     this.noRayBricks = buf('rays bricks (none)', 16);
+    this.noMask = buf('paint mask (none)', 16);   // the brush's group 2 when it isn't a fill (passes.js PAINT_LAYOUT)
     const sim = this;
     this.state = {
       A, B, F, flow: this.flow, slots,
@@ -282,8 +307,10 @@ export class Simulation {
     // the simulation's other passes (docs/webgpu.md D6, D7, C2): what a session
     // writes with (the brush, load, undo, the derived passes' note) built now
     // too, so a write never waits; the rest on first use (passOf, prepare)
+    const brush = { update: paintUpdateWGSL, params: PaintParams, decls: paintDeclsWGSL(g), layout: PAINT_LAYOUT };
     this.passes = {
-      paint: this.editKernel('paint', { update: paintUpdateWGSL, params: PaintParams, reads: 'own' }),
+      paint: this.editKernel('paint', { ...brush, reads: 'own' }),
+      paintMix: this.editKernel('paintMix', { ...brush, reads: 'neighbours' }),   // TPT's Mix tool reads its partner cell
       fromAtlas: kernel('fromAtlas', fromAtlasFrag(g, dbg), [L.STATE_RW, L.CONVERT], ConvertParams),
       undoShift: kernel('undoShift', undoShiftFrag(g, dbg), [L.STATE_RW, L.UNDO], ShiftParams),
       awake: kernel('awake', awakeFrag(g), [L.STATE_BUILD], AwakeParams),
@@ -352,10 +379,36 @@ export class Simulation {
   prepare(...names) { return Promise.all(names.map((n) => this.passOf(n).ready)); }
 
   // Settings can change while asleep (including away and back during a readback).
-  get gravity() { return this._gravity; }
+  // gravity: cells/step², as the app's setting has it; read back, what pulls
+  // (none with the gravity mode off: the first-person body, shots and the
+  // physgun read it too, so they float as TPT's stickman does, STKM.cpp)
+  get gravity() { return this._gravityMode === GRAV.OFF ? 0 : this._gravity; }
   set gravity(v) { if (v !== this._gravity) { this._gravity = v; this.wake(); } }
+  // Simulation modes (src/simModes.js). World's window keeps solid edges:
+  // its edge is the store's boundary, not the world's.
+  get gravityMode() { return this._gravityMode; }
+  set gravityMode(v) { this._setMode('_gravityMode', v); }
+  get airMode() { return this._airMode; }
+  set airMode(v) { this._setMode('_airMode', v); }
+  get ambientHeat() { return this._ambientHeat; }
+  set ambientHeat(v) { this._setMode('_ambientHeat', v); }
+  get edgeMode() { return this._edgeMode; }
+  set edgeMode(v) { this._setMode('_edgeMode', this.g.windowed ? EDGE.SOLID : v); }
+  // May quiet bricks be skipped? Not where a resting cell could still move:
+  // the rest test (shaders/activity.js) knows only vertical gravity and solid
+  // edges, so radial gravity and open or looping edges step every brick.
+  get quietOk() { return this._skipQuiet && this._gravityMode !== GRAV.RADIAL && this._edgeMode === EDGE.SOLID; }
   get skipQuiet() { return this._skipQuiet; }
   set skipQuiet(v) { if (v !== this._skipQuiet) { this._skipQuiet = v; this.actFull = true; this.wake(); } }
+  // A mode change wakes the world; one that turns quiet skipping on or off
+  // rebuilds every brick's inert bit, as a skipQuiet toggle does (docs/webgpu.md D4).
+  _setMode(key, v) {
+    if (v === this[key]) return;
+    const quiet = this.quietOk;
+    this[key] = v;
+    if (this.quietOk !== quiet) this.actFull = true;
+    this.wake();
+  }
   get skipSleeping() { return this._skipSleeping; }
   set skipSleeping(v) { if (v !== this._skipSleeping) { this._skipSleeping = v; this.wake(); } }
 
@@ -388,7 +441,7 @@ export class Simulation {
   // result (the epoch); ordinary steps and map rebuilds need not (a map built
   // from the same state is the same fixed point), so a slow read can finish.
   _wantIdleRead() {
-    return !this.idleRead && !this.idleCertified && this.skipQuiet && this.skipSleeping && !this.rays.active && !this.disposed;
+    return !this.idleRead && !this.idleCertified && this.quietOk && this.skipSleeping && !this.rays.active && !this.disposed;
   }
 
   _readIdle(slot) {
@@ -411,7 +464,7 @@ export class Simulation {
     const order = this.gpu.testMode ? this.test.listOrder : null;
     const log = this.gpu.testMode && this.test.logCounts;
     const params = {
-      full: this.actFull, enabled: this.skipQuiet, rays: this.rays.active, carry, noted: this.actNoted,
+      full: this.actFull, enabled: this.quietOk, rays: this.rays.active, carry, noted: this.actNoted,
       forceAll: this.forceAll, nPrev: this.actSteps, all: !this.skipSleeping, slot: 0,
     };
     const bind = [this.tables, this.bindBuild, this.buildGroup];
@@ -471,7 +524,7 @@ export class Simulation {
     // Certified idle: every unit settled in both copies, no unit AWAKE or DRAWN,
     // and that's a fixed point until something writes (docs/webgpu.md D4).
     if (this.idleCertified && !this.actDirty && !this.actFresh && this.actSteps >= SUPER_SETTLE_STEPS
-        && this.skipQuiet && this.skipSleeping && !this.rays.active) {
+        && this.quietOk && this.skipSleeping && !this.rays.active) {
       this.aeration?.idle?.(f);   // nothing moves, but the foam left on it still bursts
       return;
     }
@@ -487,23 +540,32 @@ export class Simulation {
     const cur = this.cur, other = 1 - cur;
     const testing = this.gpu.testMode;
     const move = testing && this.test.raceProbe ? this.passOf('moveRace') : this.kernels.move;
+    const modes = { gravMode: this._gravityMode, edge: this._edgeMode };
+    const loop = this._edgeMode === EDGE.LOOP, loopMargin = testing && this.test.loopMargin;
     const mp = {
       frame: this.frame, parity, gravity: this.gravity, fresh, outOfPlace, margin: 0,
-      blockRev: testing && this.test.blockOrder === 'reverse', eight: 8,
+      blockRev: testing && this.test.blockOrder === 'reverse', eight: 8, ...modes,
+      deco: this.sideDeco, decoAt: 0, srcAt: this.moveSrcAt, loopMargin,
     };
     // the move: in place (or into the other copy, for whitewater), over the
-    // offset's list, then at offset 1 the low margin's blocks
+    // offset's list, then at offset 1 the low margin's blocks; with loop edges
+    // those are the lists' blocks seen from the far side, which own them (one
+    // owner per block, shaders/move.js), so they don't run
     const mh = this.header(cur, outOfPlace ? other : cur);
     const mb = [this.tables, this.bindRW, this.moveGroup];
     this._dispatch(move, { indirect: this.args, offset: parity ? ARGS.MOVE1 : ARGS.MOVE0 }, { bind: mb, header: mh, params: mp });
-    if (parity) this._dispatch(move, fold(Math.ceil(marginBlocks(this.g) / 64)), { bind: mb, header: mh, params: { ...mp, margin: 1 } });
-    // whitewater's field follows the move (gfx/foam.js): it reads the copy from before it
-    if (outOfPlace) this.aeration.step(f, { pre: cur, post: other, moveSrc: this.moveSrc });
+    if (parity && (!loop || loopMargin)) this._dispatch(move, fold(Math.ceil(marginBlocks(this.g) / 64)), { bind: mb, header: mh, params: { ...mp, margin: 1 } });
+    // whitewater's field follows the move (gfx/foam.js): it reads the copy from
+    // before it, and moveSrc's plane at word moveSrcAt of its buffer
+    if (outOfPlace) this.aeration.step(f, { pre: cur, post: other, moveSrc: this.moveSrc, moveSrcAt: this.moveSrcAt });
     // react, from the moved state into the other copy
     const rh = outOfPlace ? this.header(other, cur) : this.header(cur, other);
     this._dispatch(this.kernels.react, { indirect: this.args, offset: ARGS.REACT }, {
       bind: [this.tables, this.bindRW, this.reactGroup], header: rh,
-      params: { frame: this.frame, gravity: this.gravity, faces: FACES, rays: Boolean(this.rays.stepped) },
+      params: {
+        frame: this.frame, gravity: this.gravity, faces: FACES, rays: Boolean(this.rays.stepped), ...modes,
+        airMode: this._airMode, ambientHeat: this._ambientHeat,
+      },
     });
     if (!outOfPlace) this.cur = other;
     if (this.rays.active) this.rays.settle(f);
@@ -641,20 +703,64 @@ export class Simulation {
   // (kept for callers that declared boxes before their pass: marking is the GPU's now, D6)
   touch(lo, hi) { return { lo, hi }; }
 
-  paint({ center, radius, shape, tool, rate, replace }) {
-    // particle tools paint into the particle list, not the grid
-    if (this.rays.paint({ center, radius, shape, tool, rate })) return;
+  // TPT's editing tools (src/editing.js) ride along: end, a line's far end (the
+  // brush swept from center to it); grow, a box's reach past the brush per axis
+  // ([x, y, z]); mask, a flood fill's region ({ data, lo, hi }: editing.js
+  // runFill, a byte per atlas texel) instead of the brush; filter, the only
+  // element touched (-1: any); erase, specific delete; prop, the PROP tool's
+  // { field, value }. wind: [x, y, z] cells the brush moved since the stroke's
+  // last paint (the Wind tool's drag). One edit (docs/webgpu.md D6): Mix, whose
+  // cells read their partners, a two-phase one.
+  paint({ center, radius, shape, tool, rate, replace, wind = null, end = center, grow = null, mask = null, filter = -1, erase = false, prop = null }) {
+    if (tool === PROP_TOOL && !prop) return;
+    // TPT's deco tools paint the decoration layer, not the cells (src/deco.js; nothing until one is attached)
+    if (isDecoTool(tool)) { this.deco?.paint?.({ center, radius, shape, tool }); return; }
+    // particle tools paint into the particle list, not the grid (a line or box: dabs along it)
+    const dabs = !mask && (end !== center || grow) ? strokeDabs(center, end, grow ?? undefined, radius) : [center];
+    if (this.rays.paint({ center: dabs[0], radius, shape, tool, rate })) {
+      for (const c of dabs.slice(1)) this.rays.paint({ center: c, radius, shape, tool, rate });
+      return;
+    }
     this.rays.noteElement(tool);   // plutonium emits neutrons: the layer wakes
+    if (prop?.field === PROP.TYPE) this.rays.noteElement(prop.value);
     // Its own random stream: this.frame counts steps only. The move pass
     // alternates its block partition by the step count's parity, so a paint
     // bumping it would lock the partition when one step runs per paint (Speed
     // 1 while painting: poured matter could never leave its 2×2×2 block); the
     // POV body and the media drift clock also read it as steps taken.
     this.paints++;
-    const c = [center.x, center.y, center.z];
-    this.edit(this.passes.paint, this.touchCentres(c.map((x) => x - radius), c.map((x) => x + radius)), {
-      center: c, radius, shape, tool, rate, replace: Boolean(replace), frame: this.paints,
-    });
+    let box;
+    if (mask) box = { lo: mask.lo, hi: mask.hi };
+    else {
+      // it changes cells within radius of its centre (either shape), its line or its box
+      const a = [center.x, center.y, center.z], b = [end.x, end.y, end.z], reach = [0, 1, 2].map((k) => radius + Math.max(grow?.[k] ?? 0, 0));
+      box = this.touchCentres(a.map((x, k) => Math.min(x, b[k]) - reach[k]), a.map((x, k) => Math.max(x, b[k]) + reach[k]));
+    }
+    this.edit(tool === MIX_TOOL ? this.passes.paintMix : this.passes.paint, box, {
+      center: [center.x, center.y, center.z], radius, shape, tool, rate, replace: Boolean(replace), frame: this.paints,
+      wind: wind ? [wind[0], wind[1], wind[2]] : [0, 0, 0], end: [end.x, end.y, end.z], grow: grow ?? [0, 0, 0],
+      masked: Boolean(mask), filter_: filter, del: Boolean(erase), prop: prop?.field ?? 0, propValue: prop?.value ?? 0,
+    }, { bind: [{ buffer: mask ? this._paintMask(mask.data) : this.noMask }] });
+    this.scrubDeco();
+  }
+
+  // A fill's mask on the GPU (editing.js regionMask's bytes, a byte per atlas
+  // texel): one buffer the size of the atlas, made on the first fill. The
+  // write is ordered (gpu.write): an earlier fill recorded in the open frame
+  // still reads its own mask.
+  _paintMask(data) {
+    const bytes = Math.ceil((this.g.width * this.g.height) / 4) * 4;
+    this.paintMask ??= this.gpu.createBuffer({ label: `sim${this.id} paint mask`, size: bytes, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    const padded = new Uint8Array(bytes);
+    padded.set(data.subarray(0, bytes));
+    this.gpu.write(this.paintMask, 0, padded);
+    return this.paintMask;
+  }
+
+  // After a write that isn't a step (the brush, a stamp): cells it gave a new
+  // element lose their decoration, as TPT's create_part resets it (src/deco.js, U17).
+  scrubDeco() {
+    this.deco?.scrub?.(this.gpu.frame);
   }
 
   /**
@@ -698,6 +804,7 @@ export class Simulation {
     this.giReset = true;
     this.stillFlow();
     this.rays.reset();   // a new state: the old particles go, and it may hold plutonium
+    this.deco?.reset?.();   // a new state: its decoration, if any, comes after (src/deco.js uploadDeco)
   }
 
   clear() {
@@ -738,8 +845,10 @@ export class Simulation {
   // ---- undo history: GPU copies of the state, newest last ----
   // Each snapshot is the current A and B (~67 MB at 128³), so keep only a few.
   // Each remembers the window's origin it was taken at (t.origin): after the
-  // window moves (docs/scaling.md D11) it still holds the cells where they were.
-  snapshot(limit = UNDO_LIMIT) {
+  // window moves (docs/scaling.md D11) it still holds the cells where they were,
+  // and what it was taken before (t.label: 'Sand', 'House'), for the undo
+  // notice's "Undone Sand" (Garry's Mod's "Undone Prop").
+  snapshot(label = null, limit = UNDO_LIMIT) {
     const f = this.gpu.frame, bytes = this.g.slots * 16, { A, B } = this.state;
     let t = this.history.length >= limit ? this.history.shift() : null;
     if (!t) {
@@ -749,7 +858,10 @@ export class Simulation {
     }
     f.copy(A, this.cur * bytes, t.A, 0, bytes);
     f.copy(B, this.cur * bytes, t.B, 0, bytes);
+    t.deco = null;
+    this.deco?.snapshot?.(t);   // and the decoration (src/deco.js)
     t.origin = this.origin.clone();
+    t.label = label;
     t.note = null;   // the app's tag for what undoing this takes back besides cells (app.js: a shrine's orbs)
     this.history.push(t);
   }
@@ -777,6 +889,7 @@ export class Simulation {
     this._dispatch(this.passes.undoShift, fold(Math.ceil(this.g.slots / 64)), {
       bind: [this.tables, this.bindRW, t.group], header: this.header(), params: { shift: [dx, 0, dz] },
     });
+    this.deco?.restore?.(t, dx, dz);
     this.noteWrite();
     this.stillFlow();
     this.rays.wake();   // it may bring plutonium back
@@ -831,6 +944,7 @@ export class Simulation {
     this.origin.x += dx;
     this.origin.z += dz;
     for (const fn of this._shiftListeners) fn(dx, dz, f);
+    this.deco?.shift?.(dx, dz, f);   // the decoration moves with its cells (src/deco.js)
     if (!this.shiftKeepsHistory) {
       this.fieldReset = this.giReset = true;
       this.stillFlow();
@@ -906,6 +1020,39 @@ export class Simulation {
     this._dropAtlasScratch();
     const bytes = await read;
     return [new Float32Array(bytes, 0, texels * 4), new Float32Array(bytes, texels * 16, texels * 4)];
+  }
+
+  /**
+   * State A as it is at this call, as readState's first (TPT's flood fill reads
+   * its pmap: editing.js runFill).
+   * @returns {Promise<Float32Array>}
+   */
+  readStateAAsync() { return this.readState().then(([a]) => a); }
+
+  /**
+   * A w × h rectangle of the state atlas at texel (x, y), as it is at this
+   * call, read into a and b (Float32Array RGBA per texel, row by row, in the
+   * fetchA/fetchB layout): the console's reads (src/console/gpu.js). Only
+   * asynchronously (docs/webgpu.md W6): async must be true, and the promise
+   * resolves once a and b hold it.
+   * @returns {Promise<void>}
+   */
+  readStateRect(x, y, w, h, a, b, async = false) {
+    if (!async) throw new Error('readStateRect: synchronous reads removed in the WebGPU port: docs/webgpu.md W6 (pass async = true)');
+    if (x < 0 || y < 0 || x + w > this.g.width || y + h > this.g.height) throw new Error(`readStateRect: ${w} × ${h} at ${x}, ${y} is outside the atlas`);
+    return (async () => {
+      const { width } = this.g, texels = width * this.g.height, rb = this.gpu.readback;
+      await this._readyFor('toAtlas');
+      this._toAtlas(this.cur, false);
+      // the rows the rectangle spans, A then B
+      const rows = [rb.buffer(this.atlasScratch, y * width * 16, h * width * 16), rb.buffer(this.atlasScratch, (texels + y * width) * 16, h * width * 16)];
+      this._dropAtlasScratch();
+      const [ra, rbk] = (await Promise.all(rows)).map((x) => new Float32Array(x));
+      for (let r = 0; r < h; r++) {
+        a.set(ra.subarray((r * width + x) * 4, (r * width + x + w) * 4), r * w * 4);
+        b.set(rbk.subarray((r * width + x) * 4, (r * width + x + w) * 4), r * w * 4);
+      }
+    })();
   }
 
   /**
@@ -1016,6 +1163,20 @@ export class Simulation {
     return out;
   }
 
+  /**
+   * The move's owner check (debug builds, shaders/move.js ownerLayout): how many
+   * cells some block covered a second time in one step, and each slot's stamp
+   * (the last frame a running block covered it), as they are at this call;
+   * null without debug.
+   * @returns {Promise<{ dup: number, stamps: Uint32Array } | null>}
+   */
+  async readOwners() {
+    if (!this.debug) return null;
+    const o = ownerLayout(this.g);
+    const w = new Uint32Array(await this.gpu.readback.buffer(this.marks, o.dup * 4, (o.words - o.dup) * 4));
+    return { dup: w[0], stamps: w.subarray(1) };
+  }
+
   /** The debug prelude's count of out-of-grid accesses (I2.8; 0 without debug). */
   async readDebug() {
     const at = marksLayout(this.g).dbg * 4;
@@ -1072,19 +1233,50 @@ export class Simulation {
 
   /**
    * Whitewater's aeration field (gfx/foam.js, U12): { active, step(f, { pre,
-   * post, moveSrc }), idle(f), reset(f) }. While active the move runs out of
-   * place and records moveSrc.
+   * post, moveSrc, moveSrcAt }), idle(f), reset(f) }. While active the move
+   * runs out of place and records moveSrc: a u32 per slot at word moveSrcAt of
+   * the moveSrc buffer (0, or past the decoration's plane when there is one).
    */
   attachAeration(aer) {
     this.aeration = aer ?? null;
-    const want = aer ? this.g.slots * 4 : 16;
-    if (this.moveSrc.size < want || (!aer && this.moveSrc.size > 16)) {
-      this._retire(this.moveSrc);
-      this.moveSrc = this.gpu.createBuffer({ label: `sim${this.id} moveSrc`, size: want, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
-      this._groups();
-    }
+    this._side();
   }
 
+  /**
+   * TPT's decoration layer (src/deco.js, U17; docs/webgpu.md Sync log S3):
+   * { paint(stroke), scrub(f), snapshot(t), restore(t, dx, dz), shift(dx, dz,
+   * f), reset(), dispose() }, each optional. The move carries its plane, a u32
+   * per slot (0: none), with the cells (shaders/move.js): sim.decoPlane says
+   * where it is ({ buffer, offset, size } in bytes; it moves when whitewater
+   * comes or goes, keeping its words: bind it again then). null detaches it.
+   * (Attach through here, not by setting sim.deco: the plane is made here.)
+   */
+  attachDeco(deco) {
+    this.deco = deco ?? null;
+    this._side();
+  }
+  get decoPlane() { return this.sideDeco ? { buffer: this.moveSrc, offset: 0, size: this.g.slots * 4 } : null; }
+  // moveSrc's plane: after the decoration's when there is one
+  get moveSrcAt() { return this.sideDeco ? this.g.slots : 0; }
+
+  // The move's moveSrc buffer (its group 2, binding 1): the decoration plane at
+  // word 0 and whitewater's moveSrc plane at moveSrcAt, a plane (one u32 per
+  // slot) for each that is attached, or a 16-byte dummy. Remade when that
+  // changes; the decoration plane is state, so it comes along.
+  _side() {
+    const slots = this.g.slots, deco = Boolean(this.deco);
+    const size = Math.max(16, ((deco ? slots : 0) + (this.aeration ? slots : 0)) * 4);
+    const had = this.sideDeco;
+    this.sideDeco = deco;
+    if (size === this.moveSrc.size && had === deco) return;
+    const old = this.moveSrc;
+    this.moveSrc = this.gpu.createBuffer({
+      label: `sim${this.id} moveSrc${deco ? ' + deco' : ''}`, size, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+    });
+    if (had && deco) this.gpu.frame.copy(old, 0, this.moveSrc, 0, slots * 4);
+    this._retire(old);
+    this._groups();
+  }
   /** The derived passes (src/derived.js, U4): fields, bricks, light, GI. */
   attachDerived(derived) { this.derived = derived ?? null; }
 
@@ -1122,8 +1314,9 @@ export class Simulation {
     // once the queue is done with it
     if (!this.gpu.failure) this.gpu.flush('sim dispose');
     const { A, B, F } = this.state;
-    for (const b of [A, B, F, this.flow, this.moveSrc, this.marks, this.act, this.args, this.noDeposit, this.noRayBricks,
-      this.flowTmp, this.atlasScratch, this.editScratch, this.refInert]) b?.destroy();
+    this.deco?.dispose?.();   // (its own buffers; its plane is moveSrc's, below)
+    for (const b of [A, B, F, this.flow, this.moveSrc, this.marks, this.act, this.args, this.noDeposit, this.noRayBricks, this.noMask,
+      this.paintMask, this.flowTmp, this.atlasScratch, this.editScratch, this.refInert]) b?.destroy();
     this.counts.close();
     for (const t of this.history) { t.A.destroy(); t.B.destroy(); }
     this.history = [];

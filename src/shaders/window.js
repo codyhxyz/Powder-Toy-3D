@@ -19,6 +19,16 @@ export const STAGE_BRICKS_PER_ROW = 16;                // bricks per staging-tex
 export const STAGE_W = BRICK_CELLS * STAGE_BRICKS_PER_ROW;
 export const SLOT_W = 64;                              // slots per row of the slot list (WebGL; U10)
 
+// A slab's cell order, for the kernels that exchange slabs with the store (the
+// world's stage and edit, U10; the decoration's, U17): local cell l of a brick
+// (x fastest, then y, then z) and back. WGSL, for a module with the prelude
+// (BS); the name is the GLSL version's (docs/webgpu.md W2).
+export const slabGLSL = /* wgsl */ `
+const BRICK_CELLS: i32 = ${BRICK_CELLS};
+fn slabCell(l: i32) -> vec3i { return vec3i(l % BS, (l / BS) % BS, l / (BS * BS)); }
+fn slabIndex(c: vec3i) -> i32 { return c.x + BS * (c.y + BS * c.z); }
+`;
+
 export const ShiftParams = uniformStruct('ShiftParams', { shift: 'vec3i' });
 const perSlot = (g) => fold(Math.ceil(gridDims(g).slots / 64));
 const slotMain = /* wgsl */ `${ShiftParams.wgsl}
@@ -105,4 +115,12 @@ export const WGSL_CHECK = [
   { name: 'shift', kind: 'compute', code: (g) => shiftFrag(g), layouts: rw, dispatch: perSlot, windowed: true },
   { name: 'undoShift', kind: 'compute', code: (g) => undoShiftFrag(g), layouts: () => [...rw(), UNDO_LAYOUT], dispatch: perSlot },
   { name: 'flowShift', kind: 'compute', code: flowShiftFrag, layouts: () => [LAYOUT.TABLES, 'EMPTY', FLOW_SHIFT_LAYOUT], dispatch: perSlot, windowed: true },
+  // slabGLSL on its own (its kernels are U10's and U17's): validated, never warmed
+  { name: 'slabProbe', kind: 'compute', tool: true, layouts: () => [LAYOUT.TABLES], dispatch: () => [1, 1, 1],
+    code: (g) => `${prelude(g, { state: false })}
+${slabGLSL}
+@compute @workgroup_size(64)
+fn main(@builtin(local_invocation_index) li: u32) {
+  _ = slabIndex(slabCell(i32(li) % BRICK_CELLS));
+}` },
 ];

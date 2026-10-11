@@ -1,7 +1,10 @@
-import { prelude, STATE_OPTS, LAYOUT, STAGE, BRICK, TILE, SUPER, SUPER_TEX, gridDims, atlasDims, stateLayout, EDIT_FIELDS, editKernelWGSL } from './common.js';
+import {
+  prelude, STATE_OPTS, LAYOUT, STAGE, BRICK, TILE, SUPER, SUPER_TEX, gridDims, atlasDims, stateLayout, EDIT_FIELDS, EDIT_SCRATCH_BINDING, editKernelWGSL,
+} from './common.js';
 import { FIELD_REACH, FIELD_SCRATCH_REACH } from './fields.js';
 import { uniformStruct } from '../gpu/params.js';
 import { fold } from '../gpu/kernels.js';
+import { propGLSL } from '../editing.js';
 
 // The simulation's own passes besides the step (docs/webgpu.md D6, D7, C2):
 // the brush (an edit), fresh flags over the whole grid, the conversions
@@ -20,6 +23,12 @@ export const brickGLSL = '';
 // Spawns elements or applies tools inside a sphere or cube: an edit that reads
 // only its own cell, in place (sim.paint; docs/webgpu.md D6, D7). Its own
 // random stream: frame is sim.paints, not the step count (sim.js paint).
+// TPT's editing tools ride along (src/editing.js): a line sweeps the brush
+// from center to end, a box grows it by grow along each axis, a flood fill
+// paints the cells its mask marks instead of the brush's (the fill's region,
+// a byte per atlas texel, group 2); filter touches only one element (replace
+// mode's target, a fill's region), del makes an element brush erase (TPT's
+// specific delete), and the PROP tool sets one property (prop, propValue).
 export const PaintParams = uniformStruct('PaintParams', {
   ...EDIT_FIELDS,
   center: 'vec3f',
@@ -29,23 +38,136 @@ export const PaintParams = uniformStruct('PaintParams', {
   rate: 'f32',      // spawn density multiplier
   replace: 'u32',
   frame: 'u32',
+  wind: 'vec3f',    // Wind: cells the brush moved since the stroke's last paint
+  end: 'vec3f',     // a line (Shift-drag): the brush swept from center to here (center for a dab)
+  grow: 'vec3f',    // a box (Ctrl-drag): the brush grown by this much along each axis (0 for a dab)
+  masked: 'u32',    // a flood fill (Ctrl+Shift-click): the cells the mask marks, not the brush's
+  filter_: 'i32',   // only cells of this element; -1: any ('filter' is reserved in WGSL)
+  del: 'u32',       // specific delete: an element brush erases instead (TPT's SPECIFIC_DELETE)
+  prop: 'u32',      // the PROP tool: which property (PROP_*), and its value
+  propValue: 'f32',
 });
+// Group 2 of the brush's kernels: the fill's mask, a byte per atlas texel
+// (editing.js regionMask), 4 to a word (a 16-byte dummy when not filling).
+export const PAINT_LAYOUT = [{ binding: 0, visibility: STAGE.COMPUTE, buffer: { type: 'read-only-storage' } }];
+export const paintDeclsWGSL = (g) => /* wgsl */ `
+@group(2) @binding(0) var<storage, read> paintMask: array<u32>;
+${atlasIndexWGSL(g)}`;
+
+// The Mix tool pairs cells inside blocks of 2^MIX_BITS cells a side: up to 7
+// cells apart, as MIX.cpp's reach of 10 pixels (±5) at strength 1.
+export const MIX_BITS = 3;
+const MIX_SALT = 0x4d, MIX_PAIR_SALT = 0x4e;   // the Mix tool's random streams (seedWorld salts)
+
+// TPT's air tools on our cells (elements.js TOOLS -50..-57, physics.js TOOL_*).
+// TPT moves its air and lets particles follow it by their advection; we have
+// no advection, so the tools push the cells themselves: air in full, loose
+// matter by its inertia, as the pressure push does (react.js: a = −∇P·P_ACCEL/ρ),
+// solids not at all.
+// Mix (TPT MIX.cpp swaps a particle with a random one within reach) can't swap
+// per cell on the GPU: two cells could pick the same partner. So each paint
+// splits the grid into blocks at an offset drawn for that paint, and each block
+// draws one mask m: cell l of the block (its coordinates in it) pairs with
+// cell l XOR m. That is its own inverse, so partners are mutual, and both
+// cells test the same things (both inside the brush, loose matter of one kind,
+// as MIX.cpp: powder with powder, liquid with liquid, gas with gas) and draw
+// one coin seeded at the pair's lower cell: they swap together or not at all.
+// No cell is lost or copied (tools/brush-tools-check.mjs runs a twin of it).
+// A cell reads its partner, so Mix is a two-phase edit (sim.js paint: every
+// read sees the state before the stroke, docs/webgpu.md D6).
+const brushToolsWGSL = /* wgsl */ `
+const MIX_BITS: u32 = ${MIX_BITS}u;
+const MIX_MASK: u32 = ${(1 << MIX_BITS) - 1}u;
+const MIX_SALT: u32 = ${MIX_SALT}u;
+const MIX_PAIR_SALT: u32 = ${MIX_PAIR_SALT}u;
+// Is the fill's mask off at cell p (its byte below half of MASK_ON)?
+fn maskOff(p: vec3i) -> bool {
+  let t = atlasIndex(p);
+  return ((paintMask[t >> 2u] >> ((t & 3u) * 8u)) & 255u) < 128u;
+}
+// How far cell p lies outside the stroke (inside: at most P.radius): the brush
+// at P.center, swept to P.end (a line), grown by P.grow (a box), or the cells
+// the mask marks (a fill, all at distance 0). src/editing.js
+fn strokeDist(p: vec3i) -> f32 {
+  if (P.masked != 0u) {
+    if (maskOff(p)) { return P.radius + 1.0; }
+    return 0.0;
+  }
+  var d = vec3f(p) + 0.5 - P.center;
+  let s = P.end - P.center;
+  d -= s * clamp(dot(d, s) / max(dot(s, s), SEGMENT_EPS), 0.0, 1.0);   // from the line's nearest point
+  d = max(abs(d) - P.grow, vec3f(0.0));                                  // from the box's core
+  if (P.shape == 0u) { return length(d); }
+  return max(d.x, max(d.y, d.z));
+}
+fn inBrush(p: vec3i) -> bool { return strokeDist(p) <= P.radius; }
+// a push dv given to the air, as the cell (id at T) takes it, capped at V_MAX
+fn pushed(id: i32, T: f32, v: vec3f, dv: vec3f) -> vec3f {
+  if (KIND(id) == K_SOLID) { return v; }
+  return clamp(v + dv * RHO_MIN / max(densityOf(id, T) * RHO_SCALE, RHO_MIN), vec3f(-V_MAX), vec3f(V_MAX));
+}
+// TPT CYCL.cpp turns the brush's pull a quarter turn. Ours spins about the
+// vertical through the brush centre, counterclockwise seen from above, as a
+// northern-hemisphere cyclone and most tornadoes do: the unit tangent at d.
+fn cyclone(d: vec3f) -> vec3f {
+  let r = length(d.xz);
+  if (r > 0.0) { return vec3f(d.z, 0.0, -d.x) / r; }
+  return vec3f(0.0);   // TPT skips the centre too
+}
+// A ball of mass filling the brush (physics.js TOOL_GRAVITY): the pull at d
+// grows as |d| / radius, toward the centre (sign 1) or away (-1), on matter.
+fn gravityWell(id: i32, v: vec3f, d: vec3f, sgn: f32) -> vec3f {
+  if (id == E_EMPTY || KIND(id) == K_SOLID) { return v; }
+  return clamp(v - sgn * TOOL_GRAVITY * d / max(P.radius, BRUSH_EDGE_EPS), vec3f(-V_MAX), vec3f(V_MAX));
+}
+// what Mix moves (MIX.cpp: TYPE_PART | TYPE_LIQUID | TYPE_GAS)
+fn mixes(id: i32) -> bool { let k = KIND(id); return k == K_POWDER || k == K_LIQUID || k == K_GAS; }
+// a cell's index in its block (x, then y, then z bits)
+fn mixIndex(l: vec3i) -> i32 { return l.x | (l.y << MIX_BITS) | (l.z << (2u * MIX_BITS)); }
+fn mixCell(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<function, vec4f>) {
+  let fs = pcg(P.frame * LCG_MUL + MIX_SALT);   // this paint's block offset
+  let off = vec3i(vec3u(fs, fs >> MIX_BITS, fs >> (2u * MIX_BITS)) & vec3u(MIX_MASK));
+  let w = p + H.origin + off;              // world cell, so blocks don't follow the window
+  let l = w & vec3i(i32(MIX_MASK));        // the cell in its block (two's complement: fine below 0)
+  let base = w - l;
+  let hs = seedWorld(base, P.frame, MIX_SALT);
+  let m = vec3i(vec3u(hs, hs >> MIX_BITS, hs >> (2u * MIX_BITS)) & vec3u(MIX_MASK));   // the block's mask
+  let lq = l ^ m;
+  let q = p + lq - l;
+  if (all(m == vec3i(0)) || !inGrid(q) || !inBrush(p) || !inBrush(q)) { return; }
+  let qa = fetchA(q);
+  let id = eid(a);
+  if (!mixes(id) || KIND(eid(qa)) != KIND(id)) { return; }
+  var ps = seedWorld(base + select(lq, l, mixIndex(l) < mixIndex(lq)), P.frame, MIX_PAIR_SALT);
+  if (rnd(&ps) >= TOOL_MIX_SWAP) { return; }
+  *oA = qa;
+  *oB = vec4f(fetchB(q).xyz, b.w);   // the cell moves with its velocity; the air's pressure stays
+}
+`;
+
 // The update editMain calls (shaders/common.js): fn update(p, a, b, oA, oB).
 export const paintUpdateWGSL = /* wgsl */ `
 const PAINT_RNG_SALT: u32 = 0xb7u;    // salt that gives the brush its own random stream (seed3)
 const BRUSH_EDGE_EPS: f32 = 0.001;    // keeps smoothstep's edges apart at radius 0
+const SEGMENT_EPS: f32 = 1e-6;        // a line's squared length below which it is a dab
+${propGLSL()}
+${brushToolsWGSL}
 fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<function, vec4f>) {
-  let d = vec3f(p) + 0.5 - P.center;
-  var r = max(abs(d.x), max(abs(d.y), abs(d.z)));
-  if (P.shape == 0u) { r = length(d); }
+  let tool = P.tool;
+  if (tool == T_MIX) { mixCell(p, a, b, oA, oB); return; }   // before the shape test: both cells of a pair test inBrush alike
+  let r = strokeDist(p);
   if (r > P.radius) { return; }
+  let d = vec3f(p) + 0.5 - P.center;   // from the brush's centre: Cyclone and the gravity wells turn about it
   let falloff = 1.0 - smoothstep(P.radius * TOOL_FALLOFF, P.radius + BRUSH_EDGE_EPS, r);
 
   var rs = seed3(p, P.frame, PAINT_RNG_SALT);
   let id = eid(a);
-  let tool = P.tool;
+  if (P.filter_ >= 0 && id != P.filter_) { return; }
+  // TPT's PropertyTool sets particles only (SetProperty skips empty pixels); pressure is the air's own
+  if (tool == T_PROP && id == E_EMPTY && P.prop != PROP_PRESSURE) { return; }
+  let propErases = tool == T_PROP && P.prop == PROP_TYPE && P.propValue == f32(E_EMPTY);   // TPT: type NONE kills the particle
 
-  if (tool >= 0) {
+  if (tool >= 0 && P.del == 0u) {
     if (id == tool) { return; }
     if (id != E_EMPTY && P.replace == 0u) { return; }
     if (rnd(&rs) > SPAWNDENS(tool) * P.rate) { return; }
@@ -54,7 +176,7 @@ fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<functi
     *oA = vec4f(f32(tool), T, SPAWNLIFE(tool), ctype + rnd(&rs) * SEED_MAX);
     let vy = select(0.0, SPAWN_DROP_V, KIND(tool) == K_POWDER || KIND(tool) == K_LIQUID);
     *oB = vec4f(0.0, vy, 0.0, b.w);
-  } else if (tool == T_ERASE) {
+  } else if (tool == T_ERASE || tool >= 0 || propErases) {   // (tool >= 0 here: specific delete)
     *oA = vec4f(f32(E_EMPTY), AMBIENT, 0.0, rnd(&rs) * SEED_MAX);
     *oB = vec4f(0.0, 0.0, 0.0, b.w);
   } else if (tool == T_HEAT) {
@@ -65,6 +187,28 @@ fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<functi
     (*oB).w = b.w + TOOL_PRESSURE * falloff;
   } else if (tool == T_SPARK) {
     sparkCell(oA);   // conductors only, and only when ready (src/electricity.js)
+  } else if (tool == T_VACUUM) {
+    (*oB).w = max(b.w - TOOL_PRESSURE * falloff, P_MIN);   // TPT VAC.cpp: AIR.cpp's pressure, taken away
+  } else if (tool == T_WIND) {
+    *oB = vec4f(pushed(id, a.y, b.xyz, P.wind * TOOL_WIND * falloff), b.w);
+  } else if (tool == T_CYCLONE) {
+    *oB = vec4f(pushed(id, a.y, b.xyz, cyclone(d) * TOOL_CYCLONE * falloff), b.w);
+  } else if (tool == T_GRAV_IN || tool == T_GRAV_OUT) {
+    *oB = vec4f(gravityWell(id, b.xyz, d, select(-1.0, 1.0, tool == T_GRAV_IN)), b.w);
+  } else if (tool == T_AMB_HEAT) {
+    if (id == E_EMPTY) { (*oA).y = min(a.y + TOOL_HEAT * falloff, CELL_TEMP_MAX); }   // TPT AMBP.cpp: the air only
+  } else if (tool == T_AMB_COOL) {
+    if (id == E_EMPTY) { (*oA).y = max(a.y - TOOL_HEAT * falloff, CELL_TEMP_MIN); }   // TPT AMBM.cpp
+  } else if (tool == T_PROP) {
+    let v = P.propValue;
+    if (P.prop == PROP_PRESSURE) { (*oB).w = v; }
+    else if (P.prop == PROP_TYPE) { (*oA).x = v; }
+    else if (P.prop == PROP_CTYPE) { (*oA).w = v + fract(a.w); }
+    else if (P.prop == PROP_TEMP) { (*oA).y = v; }
+    else if (P.prop == PROP_LIFE) { (*oA).z = v; }
+    else if (P.prop == PROP_VX) { (*oB).x = v; }
+    else if (P.prop == PROP_VY) { (*oB).y = v; }
+    else if (P.prop == PROP_VZ) { (*oB).z = v; }
   }
 }`;
 // WEBGPU-STUB (docs/webgpu.md J3): the brush is an edit (sim.editKernel with
@@ -96,18 +240,15 @@ ${slotMain}
 // (bitcast), so every float comes back as it is, -0 and all.
 export const ConvertParams = uniformStruct('ConvertParams', { flags: 'u32' });
 export const CONVERT_LAYOUT = [{ binding: 0, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } }];
-const atlasWGSL = (g) => {
+// Cell p's texel in the atlas (sim.js cellTexel): supertile i's square at
+// (i % STW, i / STW), its brick k's tile at (k.x, k.z + SUPER.z·k.y), the cell
+// at (x + BRICK·(y & 1), z + BRICK·(y >> 1)) in the tile.
+const atlasIndexWGSL = (g) => {
   const at = atlasDims(g);
   return /* wgsl */ `
-${ConvertParams.wgsl}
-@group(3) @binding(1) var<uniform> P: ConvertParams;
-@group(2) @binding(0) var<storage, read_write> scratch: array<u32>;
 const STW: i32 = ${at.stw};   // supertiles per atlas row (shaders/common.js atlasDims)
 const ATLAS_W: i32 = ${at.width};
 const TEXELS: u32 = ${at.width * at.height}u;
-// cell p's texel in the atlas (sim.js cellTexel): supertile i's square at
-// (i % STW, i / STW), its brick k's tile at (k.x, k.z + SUPER.z·k.y), the cell
-// at (x + BRICK·(y & 1), z + BRICK·(y >> 1)) in the tile
 fn atlasIndex(p: vec3i) -> u32 {
   let b = p >> vec3u(2u);
   let st = b / SUPER_B;
@@ -119,6 +260,11 @@ fn atlasIndex(p: vec3i) -> u32 {
   return u32(v * ATLAS_W + u);
 }`;
 };
+const atlasWGSL = (g) => /* wgsl */ `
+${ConvertParams.wgsl}
+@group(3) @binding(1) var<uniform> P: ConvertParams;
+@group(2) @binding(0) var<storage, read_write> scratch: array<u32>;
+${atlasIndexWGSL(g)}`;
 // toAtlas: the copy H.src into the scratch: A and B, or the flags.
 export const toAtlasFrag = (g) => /* wgsl */ `
 ${prelude(g, { state: 'read', flags: true })}
@@ -210,8 +356,8 @@ export const fieldRegionMapFrag = derivedStub('fieldRegionMapFrag');
 export const regionShareFrag = derivedStub('regionShareFrag');
 
 const rw = () => [LAYOUT.TABLES, LAYOUT.STATE_RW];
-// The brush's kernel as sim.editKernel assembles it.
-export const paintKernelWGSL = (g, opts = {}) => editKernelWGSL(g, { update: paintUpdateWGSL, params: PaintParams, reads: 'own', ...opts });
+// The brush's kernel as sim.editKernel assembles it (Mix's: reads 'neighbours').
+export const paintKernelWGSL = (g, opts = {}) => editKernelWGSL(g, { update: paintUpdateWGSL, params: PaintParams, reads: 'own', decls: paintDeclsWGSL(g), ...opts });
 // One 64-thread workgroup per brick of a box (editMain), at most the grid's.
 const perBox = (g) => fold(gridDims(g).nbricks);
 /**
@@ -220,7 +366,10 @@ const perBox = (g) => fold(gridDims(g).nbricks);
  * when a tool or a writer asks: sim.prepare) and `windowed` (a world's grid only).
  */
 export const WGSL_CHECK = [
-  { name: 'paint', kind: 'compute', code: (g) => paintKernelWGSL(g), layouts: rw, dispatch: perBox },
+  { name: 'paint', kind: 'compute', code: (g) => paintKernelWGSL(g), layouts: () => [...rw(), PAINT_LAYOUT], dispatch: perBox },
+  // Mix: two-phase (main, then apply), the scratch after the mask
+  { name: 'paintMix', kind: 'compute', code: (g) => paintKernelWGSL(g, { reads: 'neighbours' }), dispatch: perBox,
+    layouts: () => [...rw(), [...PAINT_LAYOUT, { binding: EDIT_SCRATCH_BINDING, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } }]] },
   { name: 'fresh', kind: 'compute', code: (g) => freshFrag(g), layouts: rw, dispatch: perSlot, tool: true },
   // (a world's window syncs its copies until world/window.js stops, G1; elsewhere tools only)
   { name: 'copy', kind: 'compute', code: (g) => copyFrag(g), layouts: rw, dispatch: perSlot, windowed: true },
