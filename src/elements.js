@@ -1190,8 +1190,37 @@ export const TOOLS = [
   // Magical birds (src/birds/): a flock that lives on this spot. (-30 to -32 are the creature spawners.)
   { id: -33, key: 'FLOCK', abbr: 'BIRD', name: 'Bird flock', color: '#b58cff',
     desc: 'Bird flock. Click a surface: a flock of magical birds lives here. They perch in trees and on roofs, take off when you come near or fire, roost and glow at night, and burn and fall like anything else. Click it again to remove it.' },
+  // TPT's Property tool (src/gui/game/tool/PropertyTool.cpp, its colour): sets
+  // one property of the matter under the brush (src/editing.js PROP_FIELDS).
+  { id: -60, key: 'PROP', abbr: 'PROP', name: 'Property', color: '#fea900',
+    desc: 'Property. Use to alter the properties of elements in the field: sets one property of the matter under the brush to a value, its element, ctype, temperature, life, velocity, or the air pressure. Pick the property and type the value in the menu.' },
 ];
+// TPT's decoration tools (src/gui/game/GameModel.cpp AllocTool(DecorationTool...),
+// src/simulation/Editing.cpp ApplyDecoration): paint a colour onto matter that
+// moves with it (src/deco.js). Ids run in TPT's mode order from DECO_ID0
+// (shaders/deco.js DECO_MODE); the brush routes them to the deco pass
+// (Simulation.paint), never to the paint shader.
+export const DECO_ID0 = -70;
+export const DECO_TOOLS = [
+  { id: -70, key: 'DECO_SET', abbr: 'SET', name: 'Decorate', color: '#c86432',
+    desc: 'Decorate. Draw decoration, no blending: paints the picker\'s colour onto everything inside the brush. The paint moves with the matter and stays through melting, freezing and burning; the brush, a construction or emptying the cell wipes it. Alpha is how strongly it covers.' },
+  { id: -71, key: 'DECO_CLEAR', abbr: 'CLR', name: 'Clear decoration', color: '#3a3f47',
+    desc: 'Clear decoration. Erases any set decoration inside the brush.' },
+  { id: -72, key: 'DECO_ADD', abbr: 'ADD', name: 'Add colour', color: '#5f9e5a',
+    desc: 'Add colour. Adds a little of the picker\'s colour to the decoration inside the brush, more the longer you hold it. Cells with no decoration need some alpha first (Decorate).' },
+  { id: -73, key: 'DECO_SUB', abbr: 'SUB', name: 'Subtract colour', color: '#9e5a5a',
+    desc: 'Subtract colour. Takes a little of the picker\'s colour away from the decoration inside the brush.' },
+  { id: -74, key: 'DECO_MUL', abbr: 'MUL', name: 'Multiply colour', color: '#5a7a9e',
+    desc: 'Multiply colour. Brightens the decoration inside the brush in proportion to the picker\'s colour.' },
+  { id: -75, key: 'DECO_DIV', abbr: 'DIV', name: 'Divide colour', color: '#7a5a9e',
+    desc: 'Divide colour. Darkens the decoration inside the brush in proportion to the picker\'s colour.' },
+  { id: -76, key: 'DECO_SMUDGE', abbr: 'SMDG', name: 'Smudge', color: '#9e8a5a',
+    desc: 'Smudge. Blends surrounding decoration together, around each cell inside the brush.' },
+];
+TOOLS.push(...DECO_TOOLS);
+export const isDecoTool = (id) => id <= DECO_ID0 && id > DECO_ID0 - DECO_TOOLS.length;
 export const LIGHTNING_TOOL = -8;
+export const PROP_TOOL = -60;   // TPT's Property tool (src/editing.js)
 export const isSpawnerTool = (id) => id === -6 || id === -7 || id === -20 || id === -21 || id === -30 || id === -31 || id === -32 || id === -33;
 
 // Constructions: whole structures placed with one click (src/constructions.js
@@ -1282,8 +1311,10 @@ export const PALETTE = [
   { name: 'Electronics', items: ['SPARK', 'BATTERY', 'METAL', 'LAMP', 'PSCN', 'NSCN', 'SWITCH', 'INSULATOR', 'TSNS', 'PCLN'] },
   { name: 'Radioactive', items: ['PHOTON', 'NEUTRON', 'URANIUM', 'PLUTONIUM'] },
   { name: 'Exotic', items: ['ANTIMATTER', 'SINGULARITY'] },
-  { name: 'Tools', items: ['HEAT', 'COOL', 'ERASE', 'BLAST', 'VACUUM', 'WIND', 'CYCLONE', 'MIX', 'GRAV_IN', 'GRAV_OUT', 'AMB_HEAT', 'AMB_COOL', 'LIGHTNING', 'SIGN', ...GEAR_ITEMS.map((g) => g.key), ...WAND_STARTERS.map((item) => item.key)] },
+  { name: 'Tools', items: ['HEAT', 'COOL', 'ERASE', 'BLAST', 'VACUUM', 'WIND', 'CYCLONE', 'MIX', 'GRAV_IN', 'GRAV_OUT', 'AMB_HEAT', 'AMB_COOL', 'PROP', 'LIGHTNING', 'SIGN', ...GEAR_ITEMS.map((g) => g.key)] },   // (no starter wands: wands are the Noita gamemode's alone)
   { name: 'Entities', items: ['ENEMY', 'GUNNER', 'WORM', 'GIANTWORM', 'SPAWN', 'JEEPPAD', 'BIKEPAD', 'FLOCK'] },
+  // TPT's DECO menu (its tools in TPT's order)
+  { name: 'Deco', items: DECO_TOOLS.map((t) => t.key) },
   // Sections under headers, as Garry's Mod's spawnlists split their props
   // (and Halo Reach's Forge splits Structure into Buildings, Bridges and so on)
   { name: 'Constructions', sections: [

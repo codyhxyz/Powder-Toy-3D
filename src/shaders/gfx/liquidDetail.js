@@ -369,7 +369,8 @@ void main() {
   // quiet brick (or every block, on an idle step) stayed put. Quiet bricks
   // can hold a resting pool, whose foam must still burst, so they run too.
   ivec3 q = p;
-  if (!uStill && !quietCell(blockBase(p))) slotOf(p, q);
+  if (!uStill && !quietCell(blockBase(p))) { slotOf(p, q); q = edgeCell(q); }   // (past a loop edge: the far side's)
+  if (!inGrid(q)) { oF = vec4(0.0); return; }   // (in from past a void edge: still air)
   int id = eid(fetchA(q));
   if (!foams(id)) { oF = vec4(0.0); return; }
   const ivec3 UP = ivec3(0, 1, 0);

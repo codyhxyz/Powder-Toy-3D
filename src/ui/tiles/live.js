@@ -8,6 +8,7 @@ import { K } from '../../elements.js';
 import { CONDUCTS } from '../../electricity.js';
 import { makeScene, TILE, CELL } from './scenes.js';
 import { drawScene } from './render.js';
+import { GRAV } from '../../simModes.js';
 
 const RUN = {
   FRAME_HZ: 60,              // scene frames per second (the game's tool + steps cadence)
@@ -93,7 +94,9 @@ class LiveTile {
     }
     if (on) this.tool();
     const w = this.scene.world;
-    w.gravity = settings.gravity;
+    // the game's gravity and its mode (simModes.js; settings carries the world's)
+    w.gravityMode = settings.gravityMode ?? GRAV.VERTICAL;
+    w.gravity = w.gravityMode === GRAV.OFF ? 0 : settings.gravity;
     for (let i = 0; i < settings.steps; i++) w.step();
     return true;
   }

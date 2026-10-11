@@ -332,7 +332,7 @@ The rule:
 `node tools/check-descriptions.mjs` checks the shape (a desc on every tile, the name first, whole sentences): run it
 after adding or rewording a tile. Whether the facts are true is the author's check.
 
-Before and after (2026-10-11, all 168 tiles):
+Before and after (2026-10-11, all 176 tiles):
 
 | Tile | Before | After | From TPT |
 | --- | --- | --- | --- |
@@ -360,8 +360,8 @@ it doesn't on the GPU); whiskey taking "any flame" (only past its 26 °C flash p
 missing void.
 
 Sources: The Powder Toy's `src/simulation/elements/*.cpp` (`Description`), `src/simulation/simtools/*.cpp`, the wall
-table in `src/simulation/SimulationData.cpp` and `src/gui/game/tool/SignTool.h`, at commit c205becb (read
-2026-10-11). The Powder Toy is GPL-3.0; we quote only short descriptive phrases from it, never its code.
+table in `src/simulation/SimulationData.cpp`, `src/gui/game/tool/SignTool.h` and `PropertyTool.h`, and the
+decoration tools in `src/gui/game/GameModel.cpp`, at commit c205becb (read 2026-10-11). The Powder Toy is GPL-3.0; we quote only short descriptive phrases from it, never its code.
 
 ## Noita materials (branch `nt-mat`)
 

@@ -153,3 +153,23 @@ body { color: var(--mm-text); font: 400 13px/1.4 var(--mm-ui); -webkit-font-smoo
 @media (prefers-reduced-motion: reduce) {
   .mm-thumb img { transition: none; }
 }
+
+/* Saves (Garry's Mod's main menu Saves): the games kept with ⌘S, Open file…, and per save Export and Delete */
+.mm-label-gap { margin-top: 12px; }
+.mm-head-line { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.mm-head-btn, .mm-side {
+  padding: 8px 14px; border-radius: 7px;
+  background: rgba(255, 255, 255, 0.08); border: 1px solid var(--mm-line);
+  font-weight: 600;
+}
+.mm-head-btn:hover, .mm-side:hover { background: rgba(255, 255, 255, 0.14); }
+.mm-head-btn, .mm-side { display: none; }
+.mm.saves-view .mm-head-btn, .mm.saves-view .mm-side { display: block; }
+.mm-actions { display: flex; align-items: center; gap: 8px; }
+.mm-start:disabled, .mm-side:disabled { opacity: 0.45; cursor: default; }
+.mm-date { margin-top: 2px; color: var(--mm-muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mm-empty { grid-column: 1 / -1; padding: 28px 8px; color: var(--mm-muted); text-align: center; }
+@media (max-width: 720px) {
+  .mm-label-gap { display: none; }
+  .mm.saves-view .mm-side { padding: 8px 10px; }
+}
