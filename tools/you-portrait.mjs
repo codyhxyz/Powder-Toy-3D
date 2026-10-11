@@ -1,4 +1,5 @@
-// The loading screen's "This is you." (src/ui/menu.js): the realistic body in
+// The loading screen's "This is you." still (src/ui/menu.js), shown until the live
+// one (src/ui/youViewer.js) is up: the realistic body in
 // his wizard hat and purple boxers, rendered once on the GPU by
 // tools/you-portrait.page.js and saved as a transparent WebP at public/you.webp.
 // Rerun after changing the body's model or the hat.
