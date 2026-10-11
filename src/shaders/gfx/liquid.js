@@ -46,10 +46,13 @@ vec3 envReflectGI(Probe gi, vec3 r, vec3 sunVis) {
 // code without the probes: the far field's open sea.
 float gSkyIn = 1.0;
 float skyInAt(Probe gi) { return giSkyVis(gi, vec3(0.0, 1.0, 0.0)); }
+// the light scattered inside at p, per unit of scattering albedo (gfx/deco.js scatters its paint in it too)
+vec3 interiorLight(vec3 p, vec3 sunVis) {
+  return skyAmbient(vec3(0.0, 1.0, 0.0)) * gSkyIn * mix(vec3(SKY_IN_FLOOR), vec3(1.0), sunVis)
+       + SUN_COL * sunVis * max(uSun.y, 0.0) * SUN_IN_GAIN + sampleLight(p) * uLightGain;
+}
 vec3 interiorScatter(int id, vec3 p, vec3 sunVis, float T) {
-  vec3 L = skyAmbient(vec3(0.0, 1.0, 0.0)) * gSkyIn * mix(vec3(SKY_IN_FLOOR), vec3(1.0), sunVis)
-         + SUN_COL * sunVis * max(uSun.y, 0.0) * SUN_IN_GAIN + sampleLight(p) * uLightGain;
-  return SCATALB[id] * L + emission(id, T);
+  return SCATALB[id] * interiorLight(p, sunVis) + emission(id, T);
 }
 
 // Beer–Lambert through a segment of length seg inside element id.

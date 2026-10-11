@@ -42,8 +42,8 @@ import { bodyExit } from './transfer.js';
 // frame it charges (vfx.js's thin red sighting beam, which thickens as it fills,
 // as the Spartan Laser's does in Halo 3); shake { trauma }.
 
-const CHARGE_S = 3;            // s to full charge (Halo's Spartan Laser, about three)
-const REFIRE_S = 2;            // s of standby after a shot before it charges again (Halo's, about two)
+export const CHARGE_S = 3;     // s to full charge (Halo's Spartan Laser, about three)
+export const REFIRE_S = 2;     // s of standby after a shot before it charges again (Halo's, about two)
 const BODY_CLEARANCE = 0.3;    // cells: the beam starts this far outside the body
 const SHAKE = 1;               // rumble a shot adds to the screen shake (0..1, feel.js, roll only): all of it
 const TREMBLE = 0.035;         // cells the gun shudders in the hands at full charge (it grows as the square of the charge)

@@ -348,6 +348,11 @@ int labRoomScore(int rx, int rz) {
 // start(): the room corners tried, within this many rooms of the world's centre
 // (the window, centred on a corner, shows the four rooms around it).
 const START_SEARCH = 3;
+// Far field chunks a frame while it builds (world/far.js): its whole build
+// costs ~0.75× the island's (M5, all chunks at once: 0.55 s against 0.73 s),
+// so it goes as fast as the island's (island.js FAR_CHUNKS_PER_FRAME), not
+// far.js's one a frame, which left the rooms filling in for 256 frames.
+const FAR_CHUNKS_PER_FRAME = 64;
 
 const twins = new Map();   // the JS twin per world (seed and size)
 function twin(P) {
@@ -399,4 +404,5 @@ void sceneCell(ivec3 w, out vec4 A, out vec4 B) {
     return best;
   },
   ground: (x, z, P) => groundScan(twin(P).labCell, x, z, L.ints.SKY),
+  farChunksPerFrame: FAR_CHUNKS_PER_FRAME,
 };

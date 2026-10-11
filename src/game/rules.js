@@ -2,7 +2,7 @@ import { CELL_METERS } from '../pov/vitals.js';
 
 // The rules of the team games, each borrowed from the game that made it
 // (Halo for Slayer, CTF, King of the Hill and Infection; TF2's attack/defend
-// with a halftime swap for Siege). Tuning values live here as constants, not
+// for Siege, whose own rules are in siege.js). Tuning values live here as constants, not
 // settings. Distances are grid cells (CELL_METERS a cell), times seconds.
 
 export const TEAMS = ['red', 'blue'];
@@ -47,44 +47,56 @@ export const TOUCH_R = 3;            // cells (horizontal): a body this near a f
 export const TOUCH_UP = 6;           // cells: ...within this height of it
 export const FLAG_RESET_S = 30;      // s a dropped flag lies before it goes home on its own (Halo's flag reset)
 export const ZONE_UP = 8;            // cells: a body this far above a zone's floor is still in it (a hill, the core)
-export const CARRIER_WEAPONS = ['AXE'];      // Halo: the flag carrier can only melee (bots; the player keeps the hotbar)
+export const CARRIER_WEAPONS = ['AXE'];      // Halo: the flag carrier can only melee (bots; the player too in a Halo match: arsenal.js)
 export const INFECTED_WEAPONS = ['AXE', 'PICKAXE'];   // Infection: the infected melee only
 export const INFECTED_SPEED = 1.25;  // × run speed: Halo's zombies outrun the survivors
 export const INFECTED_MELEE = 3;     // × a melee blow's damage from an infected: two blows kill (Halo's zombie sword one-hits)
 export const LAST_HUMAN_REVEAL = true;  // Halo: the last survivor shows on every zombie's tracker
 
 // ---- the modes (Halo's defaults where Halo has one; the time limits fit a lab-sized map)
+// style: whose rules a match plays by. 'halo': Halo 3's equal start (everyone
+// shielded, the same guns and grenades, no classes); 'tf2': Team Fortress 2's
+// classes (the class picker opens on joining). docs/halo-contract.md.
 export const MODES = {
   slayer: {
+    style: 'halo',
     name: 'Team Slayer', short: 'Slayer',
     desc: 'First team to the kill limit, or the most kills when time runs out.',
     scoreToWin: 50, timeLimit: 12 * 60,      // Halo 3 Team Slayer: 50 kills, 12 min
   },
   ctf: {
+    style: 'halo',
     name: 'Capture the Flag', short: 'CTF',
     desc: 'Take their flag from its stand and bring it to yours while yours is home.',
     scoreToWin: 3, timeLimit: 15 * 60,       // Halo: 3 captures
   },
   koth: {
+    style: 'halo',
     name: 'King of the Hill', short: 'KOTH',
     desc: 'Hold the hill alone to score a point a second. It moves every minute.',
     scoreToWin: 100, timeLimit: 12 * 60,     // Halo 3: 100 points (seconds held)
     hillMoveS: 60,                           // s the hill stays put (Halo's moving hill; Crazy King moves it every 30 s)
   },
   infection: {
+    style: 'halo',
     name: 'Infection', short: 'Infection',
     desc: 'One starts infected. Whoever they kill joins them. Survive the clock.',
     timeLimit: 3 * 60,                       // a Halo round's length
     alphas: 1,                               // Halo's alpha zombies at the start
   },
   siege: {
+    style: 'tf2',
     name: 'Siege', short: 'Siege',
-    desc: 'Attackers hold the core; then the teams swap sides. Faster capture wins.',
-    holdToWin: 30,                           // s the attackers must hold the core in all (a TF2 point's capture, slowed for one zone)
-    timeLimit: 4 * 60,                       // s a half lasts (TF2's attack/defend round timer, shortened)
+    desc: 'Attackers take the control points in turn before the clock runs out. Defenders hold them.',
+    // s on the clock once setup ends, for the first point; each capture adds more (siege.js:
+    // TF2's attack/defend rules, its setup, capture and respawn numbers). Our pick: Dustbowl
+    // adds 4:30 a point, so three minutes for a point a third of its walk away is generous.
+    timeLimit: 3 * 60,
   },
 };
 export const MODE_KEYS = Object.keys(MODES);
+export const styleOf = (mode) => MODES[mode]?.style ?? null;
+export const isHalo = (mode) => styleOf(mode) === 'halo';
 
 export const END_SCREEN_S = 10;      // s the result stays up (Halo's post-game carnage report, briefly)
 export const KILLFEED_S = 6;         // s a killfeed line stays

@@ -415,6 +415,12 @@ int volCell(int x, int y, int z) { return y >= VOL_SKY ? E_EMPTY : volCellIn(x, 
 // shore and flank up to the lava), but no more than this share of the window.
 const START_OUT = 0.45;
 const START_WIN = 0.3;
+// Far field chunks a frame while it builds (world/far.js): at far.js's one a
+// frame, the volcanoes filled in outward from the window as flat-sided slabs
+// for 256 frames. Its whole build costs ~1.6× the island's (M5, all chunks at
+// once: 1.2 s against 0.73 s), so this many make each frame of it cost what
+// the island's 64 do (island.js FAR_CHUNKS_PER_FRAME).
+const FAR_CHUNKS_PER_FRAME = 40;
 
 const twins = new Map();   // the JS twin per world seed
 function twin(P) {
@@ -471,4 +477,5 @@ void sceneCell(ivec3 w, out vec4 A, out vec4 B) {
     for (let y = V.ints.SKY - 1; y >= 0; y--) if (T.volCellIn(xi, y, zi, col) !== E.EMPTY) return y + 1;
     return 0;
   },
+  farChunksPerFrame: FAR_CHUNKS_PER_FRAME,
 };
