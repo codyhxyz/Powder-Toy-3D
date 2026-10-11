@@ -28,7 +28,8 @@ const MAX_TABLE_KEYS = 100000;          // and keys per table
 
 const LUA_PRELUDE = `
 -- TPT's compatibility layer (src/lua/luascripts/compat.lua), in 3D
-print = tpt.log
+sim, tpt, elem, ui = sim or {}, tpt or {}, elem or {}, ui or {}
+print = tpt.log or print
 event.tick, event.beforesim, event.aftersim = event.TICK, event.BEFORESIM, event.AFTERSIM
 evt, simulation, elements, interface = event, sim, elem, ui
 function tpt.register_step(f) event.register(event.tick, f) end

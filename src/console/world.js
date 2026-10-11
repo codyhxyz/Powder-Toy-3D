@@ -194,6 +194,7 @@ export class ScriptWorld {
     this.epoch = backend.epoch();
     this.cell = blankCell();
     this.passes = 0;            // GPU passes run (tests, the status line)
+    this.onEdit = null;         // called before each edit is queued
   }
 
   get size() { return this.backend.size(); }
@@ -238,6 +239,7 @@ export class ScriptWorld {
     for (const [bit, s] of [[EDIT.VX, 4], [EDIT.VY, 5], [EDIT.VZ, 6]]) if (mask & bit) v[s] = clamp(v[s], LIMITS.v);
     if (mask & EDIT.PRESSURE) v[7] = clamp(v[7], LIMITS.pressure);
     const next = { mask, v };
+    this.onEdit?.();   // (console/index.js: a typed command's first write takes an undo snapshot)
     const k = this.key(x, y, z);
     const prev = this.edits.get(k);
     let e = next;

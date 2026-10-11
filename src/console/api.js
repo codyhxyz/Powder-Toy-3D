@@ -18,8 +18,9 @@ import { EDIT, FIELDS } from './world.js';
 //   paint({ x, y, z, radius, shape, tool })   one dab of the brush pass
 //   origin()                    the window's world cell (0, 0, 0 outside World)
 
-// Most simulation steps one sim.step call runs.
-export const MAX_SCRIPT_STEPS = 1000;
+// Most simulation steps one sim.step call runs: about a second of the
+// simulation at its usual ~240 steps/s (README), queued on the GPU at once.
+export const MAX_SCRIPT_STEPS = 240;
 // Largest brush radius createParts takes (the dock's slider max, app.js setRadius).
 const MAX_BRUSH_RADIUS = 24;
 

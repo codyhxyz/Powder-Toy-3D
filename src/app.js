@@ -54,6 +54,7 @@ import { finishSignIn, account, accountsEnabled } from './account.js';
 import { accountSection } from './ui/account-section.js';
 import { launch } from './launch.js';
 import { MAPS, mapByKey, mapOf, isWorld, sizeTag, WORLD_DIMS } from './maps.js';
+import { createConsole } from './console/index.js';
 
 // Optional modules (built in parallel); the app works without them.
 const optional = import.meta.glob(['./views.js', './signs.js', './constructions.js'], { eager: true });
@@ -99,6 +100,8 @@ const SPAWNER_SET = {
 };
 // the lab's own enemy spawner: its open south floor, as shares of the grid (the old lab NPC's arena)
 const LAB_ENEMY_AT = [0.555, 0.86];
+// the most gravity a script may set (sim.gravity): the Gravity slider's top
+const CONSOLE_GRAVITY_MAX = 0.06;
 
 // ---------------------------------------------------------------- settings
 // the box the Scene row goes back to from World, and phones' grid
@@ -685,6 +688,7 @@ document.body.append(signLayer);
 let signs = null;
 let builds = null; // constructions (optional module)
 let pov = null;    // first-person mode (src/pov)
+let scripts = null; // the scripting console, ` (src/console)
 
 // ---------------------------------------------------------------- picking & brush
 const pointer = new THREE.Vector2();
@@ -1530,13 +1534,15 @@ function tick(now, renderOnly = false) {
   edges.visible = !win;
   prof.phase('sim');
   const stepping = !renderOnly && !mp.isGuest && (!settings.paused || stepOnce);
+  if (!renderOnly) scripts?.tick();   // event.tick: every frame, paused too (TPT)
   if (stepping) {
-    for (let i = 0; i < settings.steps; i++) sim.step();
+    for (let i = 0; i < settings.steps; i++) { scripts?.beforeStep(); sim.step(); scripts?.afterStep(); }
     lightning.update(sim);   // storms: charged cloud strikes by itself (src/lightning.js)
     if (DAY.running) day.clock += settings.steps;
     animTime += dt;
     stepOnce = false;
   } else if (!renderOnly && mp.isGuest && DAY.running) day.clock += settings.steps;   // guests don't step: keep the day going at their own rate
+  if (!renderOnly) scripts?.endFrame();
   updateSun();
   if (birds) {
     prof.phase('other');   // (their probe pass, birdProbe, counts here)
@@ -1731,6 +1737,30 @@ try {
     hideToolsMenu: () => dock.setCollapsed(true),
   });
   pov.vehicles.spawnLayout(arenaLayout);   // the scene loaded before the POV shell existed
+  // the scripting console, ` (optional: the game runs without it)
+  try {
+    scripts = createConsole({
+      getSim: () => sim, isGuest: () => mp.isGuest,
+      paused: () => settings.paused, setPaused,
+      stepNow: (n) => { for (let i = 0; i < n; i++) sim.step(); if (DAY.running) day.clock += n; },
+      gravity: () => settings.gravity / DEFAULTS.gravity,
+      setGravity: (g) => {
+        settings.gravity = THREE.MathUtils.clamp(g * DEFAULTS.gravity, 0, CONSOLE_GRAVITY_MAX);
+        sim.gravity = settings.gravity;
+        if (settingsPanel.isOpen) settingsPanel.sync();
+        save();
+      },
+      brushRadius: () => settings.radius, setBrushRadius: setRadius,
+      brushShape: () => settings.shape, setBrushShape: (v) => { settings.shape = v; dock.sync(); save(); },
+      selected: () => settings.tool, select: selectTool,
+      paint: ({ x, y, z, radius, shape, tool }) => sim.paint({
+        center: new THREE.Vector3(x, y, z).addScalar(0.5), radius, shape, tool, rate: settings.rate, replace: false,
+      }),
+      snapshot: () => { sim.snapshot(); toolbar.setUndoEnabled(true); },
+      requestRender: () => pacer.wake(),
+      exitPointerLock: () => { if (document.pointerLockElement) document.exitPointerLock(); },
+    });
+  } catch (err) { console.error('Console unavailable', err); }
   pov.game.useLayout(arenaLayout);
   window.__app = {
     get sim() { return sim; }, get volume() { return volume; }, get scale() { return scale; }, get signs() { return signs; }, get builds() { return builds; },
@@ -1738,6 +1768,7 @@ try {
     get spawners() { return spawners; },
     get birds() { return birds; },
     get perkOrbs() { return perkOrbs; },
+    get scripts() { return scripts; },   // the console (src/console): .setOpen, .world
     lightning,     // the Lightning tool's and storms' bolts (src/lightning.js)
     // the loaded arena's layout (spawns, flags, hills, siege core, shrines, vehicles: arenas/damValley.js), else null
     get arena() { return arenaLayout; },
