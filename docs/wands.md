@@ -13,7 +13,8 @@ The sandbox exposes every implemented spell without a discovery requirement.
 6. Add, remove, or move cards. Select **Save & equip** to apply the deck.
 
 The tool chooser groups wands with the existing hotbar tools.
-Keys **1–9** and **0** still select the original tools.
+Keys **1–9** and **0** and the wheel cycle wands like tools: a slot's wands follow its tools.
+Mana is a bar under health while a wand is in hand.
 Escape cancels editor changes. Closing the editor does not fire the wand.
 The editor saves one custom deck, its settings, and its tool slot locally.
 World matter and inventory are not part of that saved deck.
