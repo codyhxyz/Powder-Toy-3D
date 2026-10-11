@@ -33,6 +33,12 @@ const BLAST_LIGHT_REACH = 3;
 const FLIGHT_LIGHT_RADIUS = 6;           // cells, a bolt in flight
 const FLIGHT_LIGHT_INTENSITY = 1;
 const LANTERN_COLOR = [1, 0.85, 0.55];
+// The gem of the wand in hand glows and lights the rock a little round the
+// body (Noita: a wand's sparks and spells are the light you carry): first in
+// the list, so it holds its slot. Dim, so a torch's pool still reads as one.
+const GEM_LIGHT_RADIUS = 8;              // cells
+const GEM_LIGHT_INTENSITY = 0.3;
+const GEM_LIGHT_COLOR = [0.75, 0.85, 1];  // the gem's pale blue-white
 const PULSE_RADIUS_MAX = 12;             // cells: an impact's drawn flash and shock reach at most this
 const stores = new WeakMap();
 const finite = (x, fallback = 0) => Number.isFinite(x) ? x : fallback;
@@ -392,9 +398,11 @@ export function createWandRuntime(env) {
       nodesLeft--; frameNodes++; execute(event);
     }
   }
+  let gemTip = null;   // the wand in hand's tip (grid cells), while the view gives it
   function draw(dt) {
     const items = [], lights = [], flights = [];
     const room = () => lights.length < WAND_LIMITS.lights;
+    if (selected && gemTip) lights.push({ position: gemTip, color: GEM_LIGHT_COLOR, radius: GEM_LIGHT_RADIUS, intensity: GEM_LIGHT_INTENSITY });
     for (const f of fields) {
       items.push({ position: grid(f.at), effect: f.node.effect, material: f.node.params.material, kind: 'field',
         radius: f.node.params.radius ?? 1, age: time - f.born, left: f.until - time, seed: f.seed });
@@ -427,6 +435,7 @@ export function createWandRuntime(env) {
   // view (optional, visual only): { tip: the wand's tip in grid cells, tipWorld: in world units }
   function advance(nextCtx, firing, view = null) {
     if (disposed) return;
+    if (firing) gemTip = view?.tip ?? null;   // (update: the wand in hand; tick keeps the last)
     if (nextCtx.sim !== sim) { sim = nextCtx.sim; resetWorld(); }
     ctx = nextCtx;
     frameCommands = frameTransfers = frameNodes = frameCasts = frameRays = 0;

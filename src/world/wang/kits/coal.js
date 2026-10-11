@@ -228,8 +228,9 @@ const tiles = openTiles([
 export default {
   name: 'coal',
   geom: { OPEN: 1, SPINE },
-  // wall torches (kit.js placeTorches) where an island has a face to hang one on
-  torches: { every: 16, max: 3, lights: ['TORCH'] },
+  // wall torches (kit.js placeTorches) where an island has a face to hang one on, and
+  // torches on posts at the islands' rims where none has: one every ~20 cells of walk
+  torches: { every: 20, max: 4, lights: ['TORCH'], posts: true },
   palette: {
     ROCK: 'ROCK', COAL: 'COAL', BEAM: 'WOOD', RAIL: 'METAL', METAL: 'METAL',
     RUBBLE: 'RUBBLE', GRAVEL: 'STONE', SAND: 'BROKENCOAL', WATER: 'WATER', GOLD: 'GOLD',

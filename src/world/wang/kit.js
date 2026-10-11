@@ -277,7 +277,12 @@ export function rasterTile(tile, index, G = GEOM) {
 // and there, darkness between.
 export const TORCH_Y = 7;              // a light's head this far over the floor: over a body's head (5.5)
 const TORCH_HASH = 0x9e3779b1;
-function placeTorches(out, { every = 16, max = 3, lights = ['TORCH'] }, index, G) {
+// posts: true (the open kits' islands, which have few walls to hang one on): where
+// no wall will take one, a torch on a timber post at an island's rim, the post
+// POST_H cells tall (Noita's Coal Pits light their ledges with torches on poles).
+// It stands at the rim, off the walkway's middle, where nothing walks into it.
+export const POST_H = 5;               // the post's timber, cells: the head at a body's head height (5.5)
+function placeTorches(out, { every = 16, max = 3, lights = ['TORCH'], posts = false }, index, G) {
   const X = 2 * G.U, Y = G.H, Z = G.U;
   const at = (x, y, z) => x + X * (y + Y * z);
   const solid = (c) => !passable(c) && c !== MAT.BEAM;
@@ -294,6 +299,20 @@ function placeTorches(out, { every = 16, max = 3, lights = ['TORCH'] }, index, G
       if (wall) cand.push({ x, y, z, wall, h: Math.imul((x * 73856093) ^ (y * 19349663) ^ (z * 83492791) ^ index, TORCH_HASH) >>> 0 });
     }
   cand.sort((a, b) => a.h - b.h);
+  // then the posts (after every wall spot: a wall torch is the first choice)
+  const postCand = [];
+  if (posts) for (let z = G.BORDER + 1; z < Z - G.BORDER - 1; z++) for (let x = G.BORDER + 1; x < X - G.BORDER - 1; x++)
+    for (let y = G.BORDER; y < Y - G.BORDER - POST_H - 2; y++) {
+      // rock (no timber: a plank won't hold it) with air POST_H + 2 over it, at the rim: a side open down to under the floor
+      if (!solid(out[at(x, y, z)]) || out[at(x, y, z)] === MAT.TORCH) continue;
+      let ok = true;
+      for (let k = 1; k <= POST_H + 2 && ok; k++) ok = out[at(x, y + k, z)] === MAT.AIR;
+      if (!ok) continue;
+      const rim = SIDES.some(([dx, dz]) => out[at(x + dx, y, z + dz)] === MAT.AIR && out[at(x + dx, y - 1, z + dz)] === MAT.AIR);
+      if (rim) postCand.push({ x, y: y + POST_H + 1, z, post: true, h: Math.imul((x * 73856093) ^ (y * 19349663) ^ (z * 83492791) ^ index, TORCH_HASH) >>> 0 });
+    }
+  postCand.sort((a, b) => a.h - b.h);
+  cand.push(...postCand);
   const lit = [];
   for (let z = 0; z < Z; z++) for (let y = 0; y < Y; y++) for (let x = 0; x < X; x++) {
     const c = out[at(x, y, z)];
@@ -301,11 +320,15 @@ function placeTorches(out, { every = 16, max = 3, lights = ['TORCH'] }, index, G
   }
   const far = (x, y, z) => lit.every(([a, b, c]) => (a - x) ** 2 + (b - y) ** 2 + (c - z) ** 2 >= every * every);
   let n = 0;
-  for (const { x, y, z, wall: [dx, dz] } of cand) {
+  for (const { x, y, z, wall, post } of cand) {
     if (n >= max) break;
     if (!far(x, y, z)) continue;
     const kind = lights[n % lights.length];
-    if (kind === 'TORCH') {
+    if (post) {   // (always a torch: a crystal doesn't grow on a pole)
+      for (let k = 1; k <= POST_H; k++) out[at(x, y - k, z)] = MAT.BEAM;
+      out[at(x, y, z)] = MAT.TORCH;
+    } else if (kind === 'TORCH') {
+      const [dx, dz] = wall;
       out[at(x + dx, y - 1, z + dz)] = MAT.BEAM;
       out[at(x, y - 1, z)] = MAT.BEAM;
       out[at(x, y, z)] = MAT.TORCH;

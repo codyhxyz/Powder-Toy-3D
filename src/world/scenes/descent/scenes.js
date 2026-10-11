@@ -608,6 +608,12 @@ void sceneCell(ivec3 w, out vec4 A, out vec4 B) {
 }
 `;
 
+// A low neutral light everywhere (radiance, as the GI probes' irradiance / π):
+// Noita never draws a cave pitch black, its rock faintly visible between the
+// torches, so a body can find its way and see the shapes round it. Faintly
+// cool, as moonlight's grey reads in the dark (the torches are the warm).
+const CAVE_AMBIENT = [0.008, 0.009, 0.011];
+
 // the god view: from the west (the mouth's side), over the spawn
 const VIEW_DIR = [-11, 7, 6];
 const VIEW_DIST = 150;            // cells from the orbit target
@@ -625,6 +631,12 @@ function makeScene(level) {
     size: DS_WORLD,
     descentLevel: level,
     shrine: false,     // app.js worldShrine: the temple's altar is its shrine
+    ambient: CAVE_AMBIENT,   // the caves' ambient floor (gfx/uniforms.js uCaveAmbient)
+    // the wall torches' heads, world cells (world/torchLights.js lights the nearest): the tiling's and the entry hall's
+    torches: () => {
+      const hall = [C.EHALL_X0 + C.EHALL_LIGHT, C.EHALL_X1 - 1 - C.EHALL_LIGHT].map((x) => [x, C.WANG_TOP + C.TUN_H, C.ENTRY_CZ]);
+      return def.kit ? [...descentWang(level).torches, ...hall] : [];
+    },
     view: { dir: VIEW_DIR, dist: VIEW_DIST, lift: VIEW_LIFT },
     params: ({ size, seed }) => ({ size, seed: seed >>> 0, sea: 0, floor: COMMON.FLOOR }),
     glsl: glsl(level),

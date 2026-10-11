@@ -7,10 +7,15 @@ import { LAMP_MAX } from '../gfx/lamps.js';
 // when it goes out. Past LAMP_MAX the thrown ones set longest ago are left
 // dark; a lamp in hand always shines.
 //
+// The wall torches nearest the eye (world/torchLights.js) take the slots left over,
+// nearest first: fixed lamps, each lit only while its cell is still a torch.
+//
 //   lamps.set(key, { pos, range, color, held })   // pos: grid cells (Vector3-like); range: cells; color: [r, g, b] linear × intensity
 //   lamps.remove(key)
+//   lamps.setFixed([{ pos: [x, y, z], range, color }, ...])   // the wall torches' (pos: grid cells, the head cell's centre)
 
 const lit = new Map();   // key → { pos: [x, y, z], range, color, held }, oldest first
+let fixed = [];
 
 function write() {
   const P = gfxUniforms.uLampPos.value, C = gfxUniforms.uLampCol.value;
@@ -18,9 +23,11 @@ function write() {
   const held = all.filter((l) => l.held).slice(0, LAMP_MAX);
   const thrown = all.filter((l) => !l.held);
   const list = [...thrown.slice(Math.max(0, thrown.length - (LAMP_MAX - held.length))), ...held];
+  const n = list.length;
+  list.push(...fixed.slice(0, LAMP_MAX - n));
   list.forEach((l, i) => {
     P.set([l.pos[0], l.pos[1], l.pos[2], l.range], i * 4);
-    C.set([l.color[0], l.color[1], l.color[2], 0], i * 4);
+    C.set([l.color[0], l.color[1], l.color[2], i >= n ? 1 : 0], i * 4);   // w 1: a fixed lamp (lighting.js lampLight)
   });
   gfxUniforms.uLampCount.value = list.length;
   globalThis.__app?.requestRender?.();
@@ -32,5 +39,6 @@ export const lamps = {
     write();
   },
   remove(key) { if (lit.delete(key)) write(); },
+  setFixed(list) { fixed = list; write(); },
   get count() { return lit.size; },
 };

@@ -23,6 +23,8 @@
 //          sigma give the colour a deep body of it glows with.
 //   bevel  crisp voxels: share of the global edge radius (gfx.bevel) its
 //          edges are rounded by (default 1)
+//   shed   × its emit in the light it casts round it (the glow volume; default 1):
+//          small light sources' (see TORCH_SHED)
 //   emit   light it gives off by itself at any temperature (luminescence), as
 //          linear RGB radiance in the incandescence's scene units (sunlit
 //          white ≈ 1.2): what a body of it shows. It adds to the thermal glow
@@ -101,17 +103,29 @@ const tintGlow = (hex, lum) => {
 export const LAMP_GLOW = tintGlow(LAMP_TINT, LAMP_LUM);
 // A wall torch (elements.js WALL_TORCH): a pitch flame's ~1,900 K orange (the
 // hand torch's colour, pov/tools/torch.tool.js), its glow lighting the gallery
-// round it through the glow volume. Dim on purpose: Noita's torches light a
-// small warm pool and leave the rest of the cave dark.
+// round it through the glow volume. Noita's torches light a warm pool a few
+// metres round them and leave the rest of the cave dark.
 const TORCH_TINT = '#ff8a3c';
-const TORCH_LUM = 0.15;
+const TORCH_LUM = 0.06;   // a body of flame seen in the dark: orange once the eyes adjust, not a white box
 const TORCH_GLOW = tintGlow(TORCH_TINT, TORCH_LUM);
-// Embers (elements.js EMBER): coal glowing at ~800 °C, a dull red-orange
-// (Charity's blackbody table, ≈ #ff6a28). A clump of them lights the Coal Pits'
-// roof and seams round it warmly; a third of a torch's, so they read as embers.
-const EMBER_TINT = '#ff6a28';
+// Embers (elements.js EMBER): coal glowing at ~800-900 °C, a dull orange
+// (Charity's blackbody table, ≈ #ff7a30 at 900 °C: the deeper red of 800 °C
+// washed the Coal Pits murky red). A clump of them lights the rock round it.
+const EMBER_TINT = '#ff7a30';
 const EMBER_LUM = 0.04;
 const EMBER_GLOW = tintGlow(EMBER_TINT, EMBER_LUM);
+
+// Light shed on the surroundings (LOOK shed): the glow volume (shaders/passes.js
+// brickFrag) averages each 4³ brick and blurs it over ~±2 bricks, so a light
+// one cell across is spread over hundreds of cells: a lone torch lit nothing
+// round it (~1/1700 of its radiance at its own brick), while a lava pool's
+// many cells add up. Small light sources therefore shed this many times their
+// radiance, as LAMP_ROOM_GAIN does for a lamp: a game liberty, as Noita's
+// torches and glowing ores light the rock round them. Tuned in the Descent's
+// caves (a warm pool ~6-10 cells across round a torch, darkness between).
+const TORCH_SHED = 20;      // a torch: a faint warm glow round it (world/torchLights.js lights the nearest as lamps)
+const EMBER_SHED = 10;      // a clump of embers (many cells): a dull glow round it, not a wash
+const CRYSTAL_SHED = 0.6;   // fluorite: the cold light of a cluster, modest (it flooded the Snowy Depths violet)
 
 // Smooth-surface channels. sigma = blur radius in cells (how much the
 // blockiness is smoothed away), ema = per-frame blend toward the new state
@@ -249,10 +263,10 @@ const LOOKS = {
   // (crystalLook); alb is the mean. Its
   // dust is pale, as any crushed coloured crystal is (scattering at the grain
   // faces swamps the absorption), and keeps the glow (powdered phosphors do).
-  CRYSTAL: { rough: 0.04, ior: 1.434, alb: '#4a3478', sss: 0.3, emit: FLUORITE_GLOW },
-  WALL_TORCH: { rough: 0.9, alb: '#ffb25e', emit: TORCH_GLOW },
-  EMBER: { rough: 0.8, alb: '#3a1c12', glint: 0.3, emit: EMBER_GLOW },
-  CRYSTAL_DUST: { rough: 0.6, ior: 1.434, alb: '#b7a2d2', sss: 0.3, glint: 0.4, emit: FLUORITE_GLOW },
+  CRYSTAL: { rough: 0.04, ior: 1.434, alb: '#4a3478', sss: 0.3, emit: FLUORITE_GLOW, shed: CRYSTAL_SHED },
+  WALL_TORCH: { rough: 0.9, alb: '#d0702a', emit: TORCH_GLOW, shed: TORCH_SHED },   // a burning pitch head: deep orange, not a pale box once the eyes adjust
+  EMBER: { rough: 0.8, alb: '#3a1c12', glint: 0.3, emit: EMBER_GLOW, shed: EMBER_SHED },
+  CRYSTAL_DUST: { rough: 0.6, ior: 1.434, alb: '#b7a2d2', sss: 0.3, glint: 0.4, emit: FLUORITE_GLOW, shed: CRYSTAL_SHED },
   // Electronics (elements.js). A battery's printed steel can; silicon is
   // grey and mirror-like (n ≈ 3.9 in the visible: F0 ≈ 0.35), tinted as TPT
   // draws P and N; the switch a dark green relay; the insulator a pale,
@@ -401,6 +415,7 @@ export const LOOK = ELEMENTS.map((e) => {
     alb: linearOf(l.alb ?? e.color).map((v) => +v.toFixed(GLSL_DIGITS)), sss: l.sss ?? 0, glint: l.glint ?? 0,
     bevel: l.bevel ?? 1,
     emit: (l.emit ?? [0, 0, 0]).map((v) => +v.toFixed(GLSL_DIGITS)),
+    shed: l.shed ?? 1,
     surf: SURFS.indexOf(l.surf ?? 'NONE'),
     crag: l.surf === 'CRAG' ? CRAG_PARAMS.map((k) => (l.crag ?? CRAG_DEFAULT)[k] ?? CRAG_DEFAULT[k]) : CRAG_PARAMS.map(() => 0),
     // single-scattering albedo: the scattered share of the extinction
@@ -513,6 +528,7 @@ export function materialsGLSL() {
     floats('SSS', 'sss'),
     floats('GLINT', 'glint'),
     floats('BEVEL', 'bevel'),
+    floats('SHED', 'shed'),
     `const vec3 ALBEDO[NE] = vec3[NE](${LOOK.map((l) => `vec3(${l.alb.map(f).join(', ')})`).join(', ')});`,
     `const vec3 SCATALB[NE] = vec3[NE](${LOOK.map((l) => `vec3(${l.scatAlb.map(f).join(', ')})`).join(', ')});`,
     `const vec3 EMIT[NE] = vec3[NE](${LOOK.map((l) => `vec3(${l.emit.map(f).join(', ')})`).join(', ')});`,

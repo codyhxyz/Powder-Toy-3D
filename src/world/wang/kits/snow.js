@@ -202,8 +202,9 @@ const tiles = openTiles([
 export default {
   name: 'snow',
   geom: { OPEN: 1, SPINE },
-  // wall lights (kit.js placeTorches): a torch and the crystals' cold light in turn
-  torches: { every: 16, max: 3, lights: ['CRYSTAL', 'TORCH'] },
+  // wall lights (kit.js placeTorches): a torch and the crystals' cold light in turn, and
+  // torches on posts at the islands' rims where no wall takes one: one every ~20 cells of walk
+  torches: { every: 20, max: 4, lights: ['TORCH', 'CRYSTAL'], posts: true },
   palette: {
     ROCK: 'ROCK', SOFT: 'SNOW', BEAM: 'WOOD', RAIL: 'METAL', RUBBLE: 'RUBBLE', SAND: 'SNOW',
     ICE: 'ICE', CRYSTAL: 'CRYSTAL', COAL: 'COAL', GRAVEL: 'STONE',

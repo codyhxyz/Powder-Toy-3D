@@ -63,6 +63,7 @@ export const gfxUniforms = {
   uLampCount: { value: 0 },   // hand lamps (gfx/lamps.js; src/pov/lamps.js sets them)
   uLampPos: { value: new Float32Array(4 * LAMP_MAX) },
   uLampCol: { value: new Float32Array(4 * LAMP_MAX) },
+  uCaveAmbient: { value: [0, 0, 0] },   // the scene's ambient floor (a world scene's `ambient`: Descent's caves), radiance
 };
 
 const sky = { sunExt: null, sunCol: null, skyUp: null, ground: null };
