@@ -300,6 +300,8 @@ export function createDock({ settings, onSelect, onBrushChange, onHover, onEyedr
     if (propField.value !== settings.propField) propField.value = settings.propField;
     if (document.activeElement !== propValue && propValue.value !== settings.propText) propValue.value = settings.propText;
     const parsed = propParsed();
+    // the closed menu's tab names what the Property tool sets
+    if (settings.tool === PROP_TOOL) tabName.textContent = parsed.ok ? `${it.name}: ${PROP_FIELDS[propIndex(settings.propField)].label} ${parsed.shown}` : `${it.name}: no value`;
     propValue.classList.toggle('bad', !parsed.ok);
     propNote.classList.toggle('bad', !parsed.ok);
     propNote.textContent = parsed.ok ? `Sets it to ${parsed.shown}. ${PROP_FIELDS[propIndex(settings.propField)].hint}.`
