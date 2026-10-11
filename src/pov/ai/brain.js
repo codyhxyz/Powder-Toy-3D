@@ -143,6 +143,8 @@ const WEAPONS = {
   PHYSGUN: { rate: distanceModule([['close', 'yes'], ['medium', 'yes'], ['far', 'no']]), needsSight: true },
   BUCKET: { rate: distanceModule([['close', 'very'], ['medium', 'yes'], ['far', 'no']]) },
 };
+// Can a bot fight with tool `key`? (A game's loadout, game/siege.js's classes, falls back when none of its tools can.)
+export const canFight = (key) => Object.hasOwn(WEAPONS, key);
 
 // ---------------------------------------------------------------- the agent
 

@@ -297,6 +297,8 @@ const interact = createInteract();   // look + E (interact.js): perks, and Desce
     unlock: () => { if (document.pointerLockElement === canvas) document.exitPointerLock(); },
     isLocked: () => locked,
     toast: (text) => hud.toast(text),
+    allowed: () => !(game.running && game.style === 'halo'),   // a Halo match: no classes (docs/halo-contract.md)
+    inRoom: () => game.inSpawnRoom(),                         // Siege: the side's respawn room, or setup (TF2)
   }) : null;
 
   canvas.addEventListener('mousedown', (e) => {
@@ -848,11 +850,17 @@ const interact = createInteract();   // look + E (interact.js): perks, and Desce
     respawnPlayer(at) {
       if (!player) return;
       player.spawn(at.clone());
+      classes?.spawned(player);   // the class back on (none in a Halo match), before the game's game:spawn
       if (deadSeen) { deadSeen = false; toolbelt?.setVisible(mode === 'on'); }
       feel.reset();
     },
     freeMouse: () => { if (document.pointerLockElement === canvas) document.exitPointerLock(); },
   });
+  // TF2's class menu opens when you join a team: a Siege match's start and a team switch
+  // ('.'). A Halo match has no classes: the picker shuts (docs/halo-contract.md).
+  const joinedTf2 = () => { if (game.running && game.style === 'tf2' && player?.team) classes?.open({ joined: true }); };
+  povEvents.on('game:start', () => { if (game.style === 'halo') classes?.close({ relock: false }); else joinedTf2(); });
+  povEvents.on('game:team', ({ id }) => { if (id === PLAYER && game.running) joinedTf2(); });
 
   // god-mode keys POV takes over (app.js skips them while active)
   const blocksKey = (e) => editing || (active() && !PASS_KEYS.has(e.key) && !(e.metaKey || e.ctrlKey));

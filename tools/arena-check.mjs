@@ -76,6 +76,8 @@ const points = [
   ['red flag', layout.flags.red], ['blue flag', layout.flags.blue],
   ...layout.hills.map((h, i) => [`hill ${i}`, h.slice(0, 3)]),
   ['siege core', layout.siege.core.slice(0, 3)],
+  ...(layout.siege.points ?? []).map((q, i) => [`siege point ${'ABCDEFGH'[i]}`, q.slice(0, 3)]),
+  ...(layout.siege.spawns ?? []).flatMap((st, i) => Object.entries(st).flatMap(([role, pts]) => pts.map((q, j) => [`siege stage ${i} ${role} spawn ${j}`, q]))),
   ...layout.shrines.map((s, i) => [`shrine ${i} floor`, [s[0], s[1], s[2] + 3]]),   // (its middle is a plinth)
 ];
 const bad = points.map(([name, p]) => [name, p, standable(p)]).filter(([, , why]) => why);
@@ -148,6 +150,7 @@ while (queue.length) {
 }
 const reach = ([x, y, z]) => seen[key(Math.floor(x), y, Math.floor(z))] === 1;
 const walk = [['blue flag', layout.flags.blue], ['siege core', layout.siege.core], ...layout.hills.map((h, i) => [`hill ${i}`, h]),
+  ...(layout.siege.points ?? []).map((q, i) => [`siege point ${'ABCDEFGH'[i]}`, q]),
   ['crest shrine', [layout.shrines[0][0], layout.shrines[0][1], layout.shrines[0][2] + 3]],
   ['pump room shrine', [layout.shrines[1][0], layout.shrines[1][1], layout.shrines[1][2] + 3]], ['blue spawn', layout.spawns.blue[0]]];
 const cut = walk.filter(([, p]) => !reach(p));

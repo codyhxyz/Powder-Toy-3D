@@ -117,7 +117,7 @@ export function createAi({ renderer, getSim }) {
 // style: its LOOK and mind ('axeman' | 'gunner'). A team game (src/game) also
 // passes: team ('red' | 'blue' | 'infected', on body.team), opponents() (who it
 // fights: [{ id, pos, vel, alive, holding }]; without it, the player), respawnS
-// (s dead before it comes back) and name.
+// (s dead before it comes back, or a function giving it: Siege's differ by side) and name.
 export function createNpc({ env, ai, home = () => null, style = 'axeman', team = null, opponents = null, respawnS = RESPAWN_S, name = null }) {
   const id = `npc${nextId++}`;
   const body = createPlayer({ renderer: env.renderer, getSim: env.getSim, quiet: true, id });
@@ -245,7 +245,7 @@ export function createNpc({ env, ai, home = () => null, style = 'axeman', team =
       if (body.dead) {
         deadTime += dt;
         kit.putAway();
-        if (deadTime >= respawnS) spawn(sim);
+        if (deadTime >= (typeof respawnS === 'function' ? respawnS() : respawnS)) spawn(sim);
       }
       const alive = !body.dead;
 

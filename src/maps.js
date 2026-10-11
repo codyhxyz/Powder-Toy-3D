@@ -49,7 +49,7 @@ export const GAMEMODES = [
   { key: 'ctf', name: 'Capture the Flag', team: true, desc: 'Take their flag from its stand and bring it home while yours is there.' },
   { key: 'koth', name: 'King of the Hill', team: true, desc: 'Hold the hill alone to score. It moves every minute.' },
   { key: 'infection', name: 'Infection', team: true, desc: 'One starts infected. Whoever they kill joins them. Survive the clock.' },
-  { key: 'siege', name: 'Siege', team: true, desc: 'Attack the core, then swap sides. The faster capture wins.' },
+  { key: 'siege', name: 'Siege', team: true, desc: 'TF2 attack/defend: take the control points in turn before time runs out, or hold them.' },
 ];
 
 // One-click Play: the start menu's top bar (ui/menu.js), a gamemode on the map
