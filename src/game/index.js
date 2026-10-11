@@ -10,6 +10,7 @@ import { ObjectiveEvaluator, WANT, NEAR } from './bots.js';
 import { createMarkers } from './markers.js';
 import { createGameHud } from './hud.js';
 import { iconFor } from '../pov/killfeed.js';
+import { play as voice } from '../pov/announcer.js';
 
 // Team games in first person: Halo's Team Slayer, Capture the Flag, King of
 // the Hill and Infection, and a Siege (TF2's attack/defend with a halftime
@@ -40,6 +41,7 @@ const SPAWN_LIFT_MAX = 40;           // cells a spawn rises at most to clear wha
 const BOT_MS_EASE = 0.05;            // the bots' CPU time per frame is shown as this running average (checks)
 const ROAM_SPAWN_R = 10;             // cells: an enemy spawn, as somewhere to roam to, is a zone this wide
 const ROAM_S = 30;                   // s a Slayer bot heads for one stretch of open ground before the next
+const LAST_MINUTE_S = 60;            // s left when Halo's announcer calls "One minute remaining"
 const other = (t) => (t === 'red' ? 'blue' : 'red');
 const hdist = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
 const v3 = ([x, y, z]) => new THREE.Vector3(x, y, z);
@@ -257,6 +259,8 @@ export function createGame(shell) {
       count();
       povEvents.emit('game:start', { mode: m, layout: layout.name, teams: Object.fromEntries(teams.map((t) => [t, members(t).map((e) => e.id)])) });
       hud.announce(`${rules.name}${pe.team ? `: you're on ${label(pe.team)}` : ''}`, now());
+      voice(m);   // the announcer names the mode (pov/announcer.js)
+      if (pe.team === R.INFECTED) voice('youAreInfected');
       hud.choose(m);
       return true;
     })();
@@ -288,6 +292,8 @@ export function createGame(shell) {
     const result = { mode, winner: winner ?? null, score: { ...teamScore }, why, roster: board() };
     if (winner !== undefined) {
       const title = winner ? `${label(winner)} ${winner === R.INFECTED ? 'win' : 'wins'}` : 'Draw';   // (the Infected win)
+      voice('gameOver');
+      voice(!winner ? 'draw' : winner === R.INFECTED ? 'infectedWin' : mode === 'infection' ? 'survivorsWin' : `${winner}Wins`);
       const you = p?.team ? (winner === p.team ? 'You win. ' : winner ? 'You lose. ' : '') : '';
       hud.result(title, `${you}${why}`, now(), R.END_SCREEN_S);
     } else hud.result('Match ended', '', now(), R.END_SCREEN_S / 2);
@@ -342,6 +348,7 @@ export function createGame(shell) {
         setTeam(v, R.INFECTED);
         povEvents.emit('game:infected', { id: v.id, by: k?.id ?? null });
         hud.announce(`${v.name} ${v.id === PLAYER ? 'are' : 'is'} infected`, now());
+        if (v.id === PLAYER) voice('youAreInfected');
       }
     }
     if (mode === 'ctf') {
@@ -357,6 +364,7 @@ export function createGame(shell) {
     const text = { taken: `${who}took the ${label(f.team)} flag`, dropped: `${label(f.team)} flag dropped`,
       returned: `${who}${e ? 'returned' : ''}${e ? ' the ' : ''}${label(f.team)} flag${e ? '' : ' returned'}`, captured: `${who}captured the ${label(f.team)} flag` }[action];
     hud.announce(text, now());
+    voice({ taken: 'flagTaken', dropped: 'flagDropped', returned: 'flagReturned', captured: 'flagCaptured' }[action]);
   }
   function dropFlag(f, at) {
     f.state = 'dropped'; f.carrier = null; f.droppedAt = time;
@@ -406,7 +414,7 @@ export function createGame(shell) {
     hill.zone = zoneOf(layout.hills[i]);
     markers.zone(hill.zone);
     povEvents.emit('game:hill', { index: i, at: hill.zone });
-    if (!first) hud.announce('The hill moved', now());
+    if (!first) { hud.announce('The hill moved', now()); voice('hillMoved'); }
   }
   function tickKoth(dt) {
     moveHill();
@@ -438,6 +446,7 @@ export function createGame(shell) {
     povEvents.emit('game:half', { half: siege.half, ...r });
     if (siege.half === 1) {
       hud.announce(`${label(r.attackers)} ${captured ? `took the core in ${Math.round(r.time)} s` : `held it ${Math.round(r.held)} s`}. Halftime: sides swap`, now());
+      voice('halftime');
       siege.half = 2; siege.attackers = other(siege.attackers); siege.held = 0; siege.halfStart = time;
       ends = time + rules.timeLimit;
       shell.loadPreset();
@@ -507,6 +516,7 @@ export function createGame(shell) {
     if (!visible) setVisible(true);
     if (running) {
       time += dt;
+      if (ends - time <= LAST_MINUTE_S && ends - time + dt > LAST_MINUTE_S) voice('oneMinute');
       const t0 = performance.now();
       if (frame) for (const e of bots()) { loadout(e); e.bot.bind(app.getVolume(), sim().g); e.bot.update(dt, frame); }
       botMs += (performance.now() - t0 - botMs) * BOT_MS_EASE;
