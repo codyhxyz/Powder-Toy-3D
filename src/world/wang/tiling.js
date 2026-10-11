@@ -286,6 +286,7 @@ export function generateTiling({ kit: rawKit, seed, units, entry, exit }) {
     const cands = [];
     let total = 0;
     for (const t of kit.tiles) for (const xf of xfs) {
+      if (t.deepest !== undefined && b.l >= t.deepest) continue;   // a deep tile: only in the lowest layers
       // canonical port p sits on the edge PLACED[xf][p] points at; find it among b.edges
       const map = mapPorts(b, xf);
       let ok = true;
