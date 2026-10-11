@@ -1,0 +1,384 @@
+// Kernels, render pipelines, bind group layouts and cold start (docs/webgpu.md B5).
+//
+//   const react = gpu.kernel({ name: 'react', code: reactFrag(g),
+//     layouts: [L.TABLES, L.STATE_RW, L.REACT, L.PARAMS], params: ReactParams, workgroupSize: [64, 1, 1] });
+//   await react.ready;
+//   react.dispatch(f, { indirect: sim.args, offset: ARGS.REACT }, { bind, header, params });
+//
+// Every pipeline is created with create*PipelineAsync and an explicit layout
+// (W18): layouts are named GPUBindGroupLayouts (gpu.L, made by gpu.layout), so
+// bind groups are shared across pipelines and made once per grid. Shader
+// modules are cached by source text and pipelines by module, entry points,
+// layouts, constants and targets, so a rebuilt grid of the same size reuses
+// every pipeline. A pipeline that fails stops graphics with
+// `GPU shader failed: <name>.` and the compiler's messages (B9).
+
+import { shaderFailure, GraphicsFailure } from './errors.js';
+
+/** GPUShaderStage's bits, importable where there is no WebGPU (Node tools, generators). */
+export const STAGE = Object.freeze({ VERTEX: 1, FRAGMENT: 2, COMPUTE: 4 });
+/** A kernel must build on the test device (SwiftShader) within this many ms, or be split (W23). */
+export const PIPELINE_BUDGET_MS = 30000;
+/** Background pipeline builds running at once (B5). */
+export const PIPELINE_CONCURRENCY = 2;
+/** The spec's maxComputeWorkgroupsPerDimension: fold() keeps every dimension within it. */
+export const MAX_WORKGROUPS = 65535;
+
+/**
+ * A 1-D count of workgroups as a dispatch size every device accepts:
+ * [ceil(n / y), y, 1] with y = ceil(n / 65535), so fewer than y workgroups are
+ * spare. The kernel's index is `wg.x + wg.y * num_workgroups.x` and it returns
+ * past the end (B5).
+ * @param {number} n workgroups
+ * @returns {[number, number, number]}
+ */
+export function fold(n) {
+  if (!(n >= 0) || !Number.isInteger(n)) throw new RangeError(`fold(${n}): a workgroup count is a non-negative integer`);
+  const y = Math.max(1, Math.ceil(n / MAX_WORKGROUPS));
+  return [Math.ceil(n / y), y, 1];
+}
+
+/**
+ * A layout entry with its default visibility filled in: compute and fragment,
+ * plus vertex for everything a vertex shader may bind (uniforms, read-only
+ * storage, sampled and read-only storage textures, samplers).
+ * @param {GPUBindGroupLayoutEntry} e
+ * @returns {GPUBindGroupLayoutEntry}
+ */
+export function withVisibility(e) {
+  if (e.visibility !== undefined) return e;
+  const writable = e.buffer?.type === 'storage' || (e.storageTexture && e.storageTexture.access !== 'read-only');
+  return { ...e, visibility: STAGE.COMPUTE | STAGE.FRAGMENT | (writable ? 0 : STAGE.VERTEX) };
+}
+
+const ids = new WeakMap();
+let nextId = 1;
+const idOf = (o) => { let id = ids.get(o); if (!id) ids.set(o, id = nextId++); return id; };
+
+// Values sorted by key, so equal descriptors make equal cache keys.
+const stable = (v) => JSON.stringify(v, (k, x) => (x && typeof x === 'object' && !Array.isArray(x)
+  ? Object.fromEntries(Object.keys(x).sort().map((key) => [key, x[key]])) : x));
+
+/**
+ * Shader modules, pipeline layouts and pipelines for one device, the
+ * background build queue, and the counts gpu.stats reports.
+ */
+export class PipelineCache {
+  /** @param {object} gpu */
+  constructor(gpu) {
+    this.gpu = gpu;
+    this.modules = new Map();
+    this.layouts = new Map();
+    this.pipelines = new Map();
+    this.pending = new Set();
+    this.queue = [];
+    this.running = 0;
+    /** @type {Map<string, number>} ms each named pipeline took to create */
+    this.times = new Map();
+  }
+
+  /**
+   * The module for this source text (cached).
+   * @param {string} code
+   * @param {string} label
+   */
+  module(code, label) {
+    let m = this.modules.get(code);
+    if (!m) {
+      // in an error scope, so a WGSL error fails as `GPU shader failed: <name>.`
+      // with the compiler's lines, not as an anonymous uncaptured error
+      const device = this.gpu.device;
+      device.pushErrorScope('validation');
+      m = device.createShaderModule({ label, code });
+      const module = m;
+      device.popErrorScope().then(async (error) => {
+        if (error) this.gpu.fail(await shaderFailure(label, module, error));
+      }, () => {});
+      this.modules.set(code, m);
+    }
+    return m;
+  }
+
+  // The pipeline layout for these group layouts, created inside an error scope
+  // so a per-stage limit overrun names its pipeline instead of reaching
+  // uncapturederror anonymously.
+  async pipelineLayout(name, groups) {
+    const key = groups.map(idOf).join(',');
+    let p = this.layouts.get(key);
+    if (!p) {
+      const device = this.gpu.device;
+      device.pushErrorScope('validation');
+      const layout = device.createPipelineLayout({ label: `${name} layout`, bindGroupLayouts: groups });
+      p = device.popErrorScope().then((error) => {
+        if (error) throw new GraphicsFailure(`GPU shader failed: ${name}.\nPipeline layout: ${error.message}`);
+        return layout;
+      });
+      this.layouts.set(key, p);
+    }
+    return p;
+  }
+
+  /**
+   * Creates (or reuses) a pipeline; resolves to it, or fails graphics and rejects.
+   * @param {'compute' | 'render'} kind
+   * @param {string} name
+   * @param {string} key everything but the layouts that identifies the pipeline
+   * @param {GPUBindGroupLayout[]} groups
+   * @param {GPUShaderModule} module
+   * @param {(layout: GPUPipelineLayout) => object} descriptor
+   */
+  pipeline(kind, name, key, groups, module, descriptor) {
+    const full = `${kind}|${idOf(module)}|${groups.map(idOf).join(',')}|${key}`;
+    let p = this.pipelines.get(full);
+    if (p) return p;
+    const { gpu } = this;
+    const stats = gpu.stats;
+    stats.pipelinesPending++;
+    const t0 = performance.now();
+    p = this.pipelineLayout(name, groups).then((layout) => {
+      const d = { label: name, layout, ...descriptor(layout) };
+      return kind === 'compute' ? gpu.device.createComputePipelineAsync(d) : gpu.device.createRenderPipelineAsync(d);
+    }).then((pipeline) => {
+      stats.pipelinesCreated++;
+      this.times.set(name, performance.now() - t0);
+      return pipeline;
+    }, async (error) => {
+      const failure = error instanceof GraphicsFailure ? error : await shaderFailure(name, module, error);
+      this.pipelines.delete(full);   // a retry after a fix in dev builds again
+      gpu.fail(failure);
+      throw failure;
+    }).finally(() => {
+      stats.pipelinesPending--;
+      this.pending.delete(p);
+    });
+    this.pending.add(p);
+    p.catch(() => {});   // the failure is reported through gpu.fail; awaiting callers still see it
+    this.pipelines.set(full, p);
+    return p;
+  }
+
+  /**
+   * Queues a build for idle time: at most PIPELINE_CONCURRENCY at once,
+   * through requestIdleCallback (setTimeout where there is none: Safari 26).
+   * @param {{ build: () => Promise<unknown> }} job
+   */
+  idle(job) {
+    this.queue.push(job);
+    this.pump();
+  }
+
+  pump() {
+    while (this.running < PIPELINE_CONCURRENCY && this.queue.length) {
+      const job = this.queue.shift();
+      this.running++;
+      idleCallback(() => {
+        Promise.resolve(job.build()).catch(() => {}).finally(() => { this.running--; this.pump(); });
+      });
+    }
+  }
+
+  /** Resolves when every build started or queued so far has settled. */
+  async settled() {
+    while (this.pending.size || this.queue.length || this.running) {
+      await Promise.allSettled([...this.pending]);
+      if (!this.pending.size && (this.queue.length || this.running)) await new Promise((r) => setTimeout(r, 16));
+    }
+  }
+}
+
+/** requestIdleCallback where it exists (not in Safari 26), else setTimeout (detailGate.js idle()). */
+export function idleCallback(fn) {
+  if (typeof requestIdleCallback === 'function') requestIdleCallback(() => fn(), { timeout: 1000 });
+  else setTimeout(fn, 0);
+}
+
+// Group layouts for a pipeline: as given, then group 3 is always L.PARAMS
+// (B4) and any gap is L.EMPTY.
+function groupsFor(gpu, layouts = []) {
+  const groups = [...layouts];
+  while (groups.length < 4) groups.push(undefined);
+  if (groups.length > 4) throw new Error('a pipeline has at most 4 bind groups (maxBindGroups)');
+  groups[3] ??= gpu.L.PARAMS;
+  if (groups[3] !== gpu.L.PARAMS) throw new Error('group 3 is always L.PARAMS (docs/webgpu.md B4)');
+  for (let i = 0; i < 3; i++) groups[i] ??= gpu.L.EMPTY;
+  return groups;
+}
+
+class Pipe {
+  constructor(gpu, desc, kind) {
+    if (!desc?.name) throw new Error(`gpu.${kind === 'compute' ? 'kernel' : 'renderPipeline'}: a name is required`);
+    if (typeof desc.code !== 'string') throw new Error(`${desc.name}: code must be a WGSL string`);
+    this.gpu = gpu;
+    this.kind = kind;
+    this.name = desc.name;
+    this.desc = desc;
+    this.params = desc.params ?? null;
+    this.groups = groupsFor(gpu, desc.layouts);
+    this.pipeline = null;
+    /** 'idle' (not started), 'pending', 'ready' or 'failed' */
+    this.state = 'idle';
+    this._started = null;
+    let resolve, reject;
+    this.ready = new Promise((res, rej) => { resolve = res; reject = rej; });
+    this.ready.catch(() => {});
+    this._settle = { resolve, reject };
+    this.when = desc.build ?? 'now';
+    if (!['now', 'idle', 'manual'].includes(this.when)) throw new Error(`${desc.name}: build is 'now', 'idle' or 'manual'`);
+  }
+
+  // called at the end of each subclass constructor, once key() can run
+  schedule() {
+    if (this.when === 'now') this.build();
+    else if (this.when === 'idle') this.gpu.pipelines.idle(this);
+    return this;
+  }
+
+  /** Starts creating the pipeline (once); returns `ready`. */
+  build() {
+    if (this._started) return this.ready;
+    this.state = 'pending';
+    const module = this.gpu.pipelines.module(this.desc.code, this.name);
+    this._started = this.gpu.pipelines.pipeline(this.kind, this.name, this.key(), this.groups, module, () => this.descriptor(module))
+      .then((p) => { this.pipeline = p; this.state = 'ready'; this._settle.resolve(this); },
+        (e) => { this.state = 'failed'; this._settle.reject(e); });
+    return this.ready;
+  }
+
+  // the ms this pipeline took to create (null until it is ready)
+  get buildMs() { return this.gpu.pipelines.times.get(this.name) ?? null; }
+
+  check() {
+    this.gpu._frameOrThrow();
+    if (!this.pipeline) throw new Error(`${this.name} used before its pipeline was ready (await .ready first)`);
+  }
+
+  // Binds groups 0–2 and the params group on a pass encoder.
+  bind(f, pass, bind, header, params) {
+    const gpu = this.gpu;
+    if (pass.__pipeline !== this.pipeline) { pass.setPipeline(this.pipeline); pass.__pipeline = this.pipeline; }
+    for (let i = 0; i < 3; i++) {
+      const g = bind[i] ?? (this.groups[i] === gpu.L.EMPTY ? gpu.emptyGroup : null);
+      if (!g) throw new Error(`${this.name}: no bind group for group ${i}`);
+      pass.setBindGroup(i, g);
+      f._noteGroup(g);
+    }
+    const { group, offsets } = f._params(header ?? gpu.nullHeader, this.params, params, this.name);
+    pass.setBindGroup(3, group, offsets);
+  }
+}
+
+/** A compute pipeline of ours: gpu.kernel(desc). */
+export class Kernel extends Pipe {
+  /**
+   * @param {object} gpu
+   * @param {{ name: string, code: string, entry?: string, layouts?: GPUBindGroupLayout[], params?: object,
+   *   constants?: Record<string, number>, workgroupSize?: number[], build?: 'now' | 'idle' | 'manual' }} desc
+   *   build: 'now' starts at once (boot and a mode just entered), 'idle' queues it
+   *   behind PIPELINE_CONCURRENCY, 'manual' waits for build()
+   */
+  constructor(gpu, desc) {
+    super(gpu, desc, 'compute');
+    this.entry = desc.entry ?? 'main';
+    this.workgroupSize = desc.workgroupSize ?? [64, 1, 1];
+    this.schedule();
+  }
+
+  key() { return `${this.entry}|${stable(this.desc.constants ?? {})}`; }
+
+  descriptor(module) {
+    return { compute: { module, entryPoint: this.entry, constants: this.desc.constants ?? {} } };
+  }
+
+  /**
+   * Records one dispatch into the frame's compute pass.
+   * @param {object} f gpu.frame
+   * @param {number[] | { indirect: GPUBuffer, offset?: number }} size workgroups [x, y, z]
+   *   (each ≤ maxComputeWorkgroupsPerDimension: use fold()), or indirect args
+   * @param {{ bind?: GPUBindGroup[], header?: object, params?: object }} [opts] groups 0–2 (L.EMPTY
+   *   groups may be left out), the header (gpu.nullHeader by default) and the params values
+   */
+  dispatch(f, size, { bind = [], header, params } = {}) {
+    this.check();
+    f._command();
+    const pass = f.compute(this.name, { dispatch: true });
+    this.bind(f, pass, bind, header, params);
+    const stats = this.gpu.stats;
+    if (Array.isArray(size)) {
+      const limit = this.gpu.device.limits.maxComputeWorkgroupsPerDimension;
+      const [x, y = 1, z = 1] = size;
+      for (const n of [x, y, z]) {
+        if (!Number.isInteger(n) || n < 0 || n > limit) throw new RangeError(`${this.name}: dispatch [${size}] is outside 0..${limit} per dimension (use fold())`);
+      }
+      pass.dispatchWorkgroups(x, y, z);
+      stats.dispatches++;
+      stats.workgroupsDirect += x * y * z;
+    } else if (size?.indirect) {
+      const offset = size.offset ?? 0;
+      pass.dispatchWorkgroupsIndirect(size.indirect, offset);
+      // Chrome validates each indirect dispatch with a dispatch of its own (B3)
+      stats.dispatches += 2;
+      stats.indirectDispatches++;
+      if (this.gpu.indirectLog) this.gpu.indirectLog.push({ kernel: this.name, buffer: size.indirect, offset });
+    } else {
+      throw new Error(`${this.name}: dispatch size is [x, y, z] or { indirect, offset }`);
+    }
+    f._commandDone(this.name);
+  }
+}
+
+/** A render pipeline of ours: gpu.renderPipeline(desc). */
+export class RenderPipe extends Pipe {
+  /**
+   * @param {object} gpu
+   * @param {{ name: string, code: string, layouts?: GPUBindGroupLayout[], params?: object,
+   *   vertex?: { entry?: string, buffers?: GPUVertexBufferLayout[] },
+   *   fragment?: { entry?: string, targets: GPUColorTargetState[] } | null,
+   *   primitive?: GPUPrimitiveState, depthStencil?: GPUDepthStencilState, multisample?: GPUMultisampleState,
+   *   constants?: Record<string, number>, build?: 'now' | 'idle' | 'manual' }} desc
+   */
+  constructor(gpu, desc) {
+    super(gpu, desc, 'render');
+    this.schedule();
+  }
+
+  key() {
+    const { vertex = {}, fragment, primitive, depthStencil, multisample, constants } = this.desc;
+    return stable({ vertex, fragment, primitive, depthStencil, multisample, constants });
+  }
+
+  descriptor(module) {
+    const { vertex = {}, fragment, primitive, depthStencil, multisample, constants = {} } = this.desc;
+    const d = {
+      vertex: { module, entryPoint: vertex.entry ?? 'vs', buffers: vertex.buffers ?? [], constants },
+      primitive: primitive ?? { topology: 'triangle-list' },
+    };
+    if (fragment !== null) d.fragment = { module, entryPoint: fragment?.entry ?? 'fs', targets: fragment?.targets ?? [], constants };
+    if (depthStencil) d.depthStencil = depthStencil;
+    if (multisample) d.multisample = multisample;
+    return d;
+  }
+
+  /**
+   * Records one draw into an open render pass of ours (from gpu.frame.render).
+   * @param {GPURenderPassEncoder} rp
+   * @param {{ bind?: GPUBindGroup[], header?: object, params?: object, count?: number, instances?: number,
+   *   first?: number, firstInstance?: number, vertexBuffers?: GPUBuffer[], index?: { buffer: GPUBuffer, format?: GPUIndexFormat },
+   *   indirect?: { buffer: GPUBuffer, offset?: number } }} [opts] count: vertices (or indices with `index`); 3 = the full-screen triangle
+   */
+  draw(rp, { bind = [], header, params, count = 3, instances = 1, first = 0, firstInstance = 0, vertexBuffers = [], index, indirect } = {}) {
+    this.check();
+    const f = rp.frame;
+    if (!f || f._pass !== rp) throw new Error(`${this.name}: draw into a render pass that isn't open (gpu.frame.render)`);
+    f._command();
+    this.bind(f, rp, bind, header, params);
+    vertexBuffers.forEach((b, i) => rp.setVertexBuffer(i, b));
+    if (index) rp.setIndexBuffer(index.buffer, index.format ?? 'uint16');
+    if (indirect) {
+      if (index) rp.drawIndexedIndirect(indirect.buffer, indirect.offset ?? 0);
+      else rp.drawIndirect(indirect.buffer, indirect.offset ?? 0);
+    } else if (index) rp.drawIndexed(count, instances, first, 0, firstInstance);
+    else rp.draw(count, instances, first, firstInstance);
+    this.gpu.stats.draws++;
+    f._commandDone(this.name);
+  }
+}
