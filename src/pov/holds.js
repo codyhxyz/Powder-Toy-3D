@@ -85,11 +85,45 @@ export const HELD = {
   pogo: { hold: 'pogo', scale: 1.4, right: BAR(0.24), left: BAR(-0.24), pegs: [[0.14, -1.27, 0], [-0.14, -1.27, 0]] },
 };
 
+// A swing seen from outside (third person). The first-person swing is a flick of the wrist under
+// the eye (melee.js); on the body it would be one too, and the arms would stay put. So a melee
+// tool's swing plays its own gesture here, the way Garry's Mod's player models play
+// ACT_HL2MP_GESTURE_RANGE_ATTACK_MELEE over the hold: the grip goes round the shoulder, the arms after it (limbs.js reach), the head over the top and
+// down. Keys [s after the swing, raise, tip, drive]: raise (rad) turns the grip up about the
+// shoulder (the aim's right axis), tip (rad) turns the tool about its grip, head back (+) or
+// down (−), drive (cells) pushes it along the aim. Eased between keys; a tool that swings faster
+// than its gesture plays it faster (melee.js refire).
+export const SHOULDER_DROP = 0.85;       // cells the shoulder sits below the eye (the grip turns about it, at the hold's right)
+export const GESTURES = {
+  // overhead and down: up past the head, then through the aim to arm's length (Garry's Mod's melee2)
+  chop: [[0, 0, 0, 0], [0.13, 2.2, 0.9, 0], [0.24, 0.55, -1.8, 0.4], [0.6, 0, 0, 0]],
+  // a stab: drawn back, then driven in at the aim, as far as the arm reaches (TF2's knife)
+  stab: [[0, 0, 0, 0], [0.07, 0.15, 0.2, -0.4], [0.15, 0.6, -0.15, 0.45], [0.45, 0, 0, 0]],
+};
+const GESTURE_BY_HOLD = { melee: 'chop', melee2: 'chop', knife: 'stab' };
+
+// The gesture's pose [raise, tip, drive] `since` s after a swing, played over at most `span` s.
+export function gesturePose(hold, since, span, out) {
+  out[0] = out[1] = out[2] = 0;
+  const keys = GESTURES[GESTURE_BY_HOLD[hold]];
+  if (!keys) return out;
+  const t = since / Math.min(1, span / keys[keys.length - 1][0]);
+  for (let i = 1; i < keys.length; i++) {
+    const a = keys[i - 1], b = keys[i];
+    if (t > b[0]) continue;
+    const u = Math.max(0, (t - a[0]) / (b[0] - a[0]));
+    const k = u * u * (3 - 2 * u);
+    for (let j = 0; j < 3; j++) out[j] = a[j + 1] + (b[j + 1] - a[j + 1]) * k;
+    return out;
+  }
+  return out;
+}
+
 export const HELD_SCALE = 1.2;           // × a viewmodel's size, unless HELD says otherwise
 
 // the hold for model `key`: the type's fields with the model's own on top, or null (no model)
 export function holdFor(key) {
   const m = key && HELD[key];
   if (!m) return null;
-  return { ...HOLDS[m.hold], ...m, right: m.right ?? FIST, left: m.left ?? null, scale: m.scale ?? HELD_SCALE };
+  return { ...HOLDS[m.hold], ...m, type: m.hold, right: m.right ?? FIST, left: m.left ?? null, scale: m.scale ?? HELD_SCALE };
 }
