@@ -29,3 +29,5 @@ twin `UAL1_Standard_RM.glb`, which is used only to measure each clip's ground sp
 
 The UV sets, the other clips and the tracks that never leave their rest pose are
 removed. Each clip's `extras.speed` is its root's ground speed in metres per second.
+The file is compressed with `EXT_meshopt_compression` by `tools/character-compress.mjs`
+(16-bit rotations, 8-bit octahedral normals, 16-bit weights; positions stay float).
