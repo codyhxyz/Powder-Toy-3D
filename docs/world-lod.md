@@ -22,6 +22,8 @@ External writes and relevant settings invalidate that confirmation.
 
 A context loss or shader link failure stops rendering and simulation.
 Browser context restoration does not restore GPU simulation contents or custom framebuffer attachments.
+WebGPU port: a lost device, an uncaptured WebGPU error or a pipeline that fails to build stops them the same way.
+A lost WebGPU device has no restore at all (see docs/webgpu.md B9).
 The app therefore requires an explicit reload instead of continuing with invalid state.
 Pending results cannot overwrite surviving CPU edits, and failed uploads retain their stored edits.
 An optional bird probe stops after one readback failure instead of retrying indefinitely.
@@ -37,7 +39,8 @@ node tools/detail-worker-check.mjs
 node tools/far-lod-check.mjs
 node tools/material-lod-check.mjs
 node tools/resolution-check.mjs
-node tools/check-shaders.mjs
+node tools/check-shaders.mjs     # WebGPU port: replaced by check-imports.mjs here and check-wgsl.mjs,
+                                 # which validates WGSL in headless Chromium (see docs/webgpu.md I1)
 node tools/gpu-readback-check.mjs
 ```
 
