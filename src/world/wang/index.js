@@ -7,3 +7,4 @@ export { bakeWang } from './bake.js';
 export { wangGLSL } from './glsl.js';
 export { MAT, MAT_NAMES, WANG_OUT, GEOM, compileKit } from './kit.js';
 export { default as minesKit } from './kits/mines.js';
+export { default as coalKit } from './kits/coal.js';
