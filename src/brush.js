@@ -148,6 +148,12 @@ export function createBrushCursor(gpu) {
     ready: pipe.ready,
     /** The parts, for tools: { visible, shape, position, quaternion, scale } each. */
     parts: { mesh, start, body },
+    /**
+     * The brush (a line's end), as the three.js mesh was for its callers'
+     * visibility toggles (app.js hides it for thumbnails): .visible works; it
+     * is no Object3D, so nothing adds it to a scene.
+     */
+    get mesh() { return mesh; },
     get visible() { return mesh.visible || start.visible || body.visible; },
     set({ visible, position, radius, shape, color: c }) {
       mesh.visible = visible;

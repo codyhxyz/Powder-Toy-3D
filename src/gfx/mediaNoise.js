@@ -10,6 +10,8 @@
 // the shader can modulate density around its mean without biasing it.
 // It is a 64³ rgba8unorm 3D texture in the render kernels' lighting group
 // (shaders/bindings.js binding 10, sampled with linearRepeat).
+import { idleCallback } from '../gpu/kernels.js';
+
 export const MEDIA_NOISE_SIZE = 64;   // texels per side
 
 // Lattice periods (cells per tile) of each channel's octaves, coarse to fine,
@@ -84,51 +86,72 @@ function perlin(gr, p, x, y, z) {
   return s;
 }
 
-// fBm of noise fn over the whole tile (N^3 texels), sign = +1 or -1.
-function fbmTile(N, fn, makeTable, periods, seed, sign) {
-  const out = new Float32Array(N * N * N);
-  periods.forEach((p, o) => {
+// fBm of noise fn over the whole tile (N^3 texels), sign = +1 or -1, into
+// out; a generator that yields after every z plane of an octave (~1-2 ms of
+// Worley), so the tile can be built in short tasks (createMediaNoise).
+function* fbmTile(N, fn, makeTable, periods, seed, sign, out) {
+  for (let o = 0; o < periods.length; o++) {
+    const p = periods[o];
     const t = makeTable(p, seed + o), k = p / N, wgt = sign * OCTAVE_WEIGHTS[o];
-    for (let z = 0, i = 0; z < N; z++)
+    for (let z = 0, i = 0; z < N; z++) {
       for (let y = 0; y < N; y++)
         for (let x = 0; x < N; x++, i++) out[i] += wgt * fn(t, p, (x + 0.5) * k, (y + 0.5) * k, (z + 0.5) * k);
-  });
-  return out;
+      yield;
+    }
+  }
 }
 
-// Remap values to their rank: uniform on [0, 1].
-function equalise(vals) {
+// Remap values to their rank: uniform on [0, 1] (a generator: it yields between its passes).
+function* equalise(vals) {
   let lo = Infinity, hi = -Infinity;
   for (const v of vals) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
   const k = (HIST_BINS - 1) / (hi - lo || 1);
   const cdf = new Float64Array(HIST_BINS);
   for (const v of vals) cdf[Math.round((v - lo) * k)]++;
+  yield;
   let acc = 0;
   for (let i = 0; i < HIST_BINS; i++) { const c = cdf[i]; cdf[i] = (acc + 0.5 * c) / vals.length; acc += c; }
-  return vals.map((v) => cdf[Math.round((v - lo) * k)]);
+  const eq = vals.map((v) => cdf[Math.round((v - lo) * k)]);
+  yield;
+  return eq;
 }
 
-// The tile's texels, x fastest, 4 bytes each (r, g, b, a as above).
-export function mediaNoiseData() {
+// The tile's texels, x fastest, 4 bytes each (r, g, b, a as above), as a
+// generator of steps of a few ms each; its return value is the bytes.
+function* mediaNoiseSteps() {
   const N = MEDIA_NOISE_SIZE, n3 = N * N * N;
-  const ch = [
-    fbmTile(N, worley, featurePoints, BILLOW_PERIODS, BILLOW_SEED, -1),   // inverted: puffs around the feature points
-    fbmTile(N, perlin, gradients, WISP_PERIODS, WISP_SEED, 1),
-    fbmTile(N, perlin, gradients, TONGUE_PERIODS, TONGUE_SEED, 1),
-    fbmTile(N, perlin, gradients, FLICKER_PERIODS, FLICKER_SEED, 1),
+  const channels = [
+    [worley, featurePoints, BILLOW_PERIODS, BILLOW_SEED, -1],   // inverted: puffs around the feature points
+    [perlin, gradients, WISP_PERIODS, WISP_SEED, 1],
+    [perlin, gradients, TONGUE_PERIODS, TONGUE_SEED, 1],
+    [perlin, gradients, FLICKER_PERIODS, FLICKER_SEED, 1],
   ];
-  const eq = ch.map(equalise);
   const data = new Uint8Array(n3 * 4);
-  for (let i = 0; i < n3; i++)
-    for (let c = 0; c < 4; c++) data[i * 4 + c] = Math.round(eq[c][i] * TEXEL_MAX);
+  for (let c = 0; c < channels.length; c++) {
+    const [fn, makeTable, periods, seed, sign] = channels[c];
+    const raw = new Float32Array(n3);
+    yield* fbmTile(N, fn, makeTable, periods, seed, sign, raw);
+    const eq = yield* equalise(raw);
+    for (let i = 0; i < n3; i++) data[i * 4 + c] = Math.round(eq[i] * TEXEL_MAX);
+    yield;
+  }
   return data;
 }
 
-// Building the tile takes a few hundred ms of CPU, so it happens after
-// startup; until then every texel is neutral (each channel at its mean) and
-// the gas draws without detail. The texture is made at its full size at once
-// and filled in place, so the bind groups holding it never change.
+// The tile's texels at once (x fastest, 4 bytes each).
+export function mediaNoiseData() {
+  const steps = mediaNoiseSteps();
+  for (;;) { const r = steps.next(); if (r.done) return r.value; }
+}
+
+// Building the tile takes about half a second of CPU, so it happens after
+// startup, in tasks of at most TASK_MS at idle time (docs/webgpu.md goal 4:
+// no long main-thread task while pipelines build); until then every texel is
+// neutral (each channel at its mean) and the gas draws without detail. The
+// texture is made at its full size at once and filled in place, so the bind
+// groups holding it never change.
 const NEUTRAL = 128;
+const TASK_MS = 8;
 const TEX = { COPY_DST: 0x02, TEXTURE_BINDING: 0x04 };   // (GPUTextureUsage's bits)
 
 /**
@@ -145,10 +168,19 @@ export function createMediaNoise(gpu) {
   const write = (data) => gpu.queue.writeTexture({ texture }, data, { bytesPerRow: N * 4, rowsPerImage: N }, [N, N, N]);
   write(new Uint8Array(N * N * N * 4).fill(NEUTRAL));
   // (a write lands before the next submit: a frame already recorded draws the tile a frame early, harmlessly)
-  const ready = new Promise((resolve) => setTimeout(() => {
-    if (!gpu.failure && !gpu.lost) write(mediaNoiseData());
-    resolve();
-  }, 0));
+  const ready = new Promise((resolve) => {
+    const steps = mediaNoiseSteps();
+    const pump = () => {
+      if (gpu.failure || gpu.lost) { resolve(); return; }
+      const t0 = performance.now();
+      let r;
+      do r = steps.next(); while (!r.done && performance.now() - t0 < TASK_MS);
+      if (!r.done) { idleCallback(pump); return; }
+      write(r.value);
+      resolve();
+    };
+    idleCallback(pump);
+  });
   gpu._mediaNoise = { texture, view: texture.createView({ label: 'media noise', dimension: '3d' }), ready };
   return gpu._mediaNoise;
 }

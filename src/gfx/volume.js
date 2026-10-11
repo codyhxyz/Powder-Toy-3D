@@ -29,6 +29,7 @@ import {
 } from '../shaders/render.js';
 import { frameUniformsOf } from './uniforms.js';
 import { createMediaNoise } from './mediaNoise.js';
+import { DETAIL, SOFTWARE_UNDRAWABLE, drawableDetail } from './detail.js';
 
 // slots of the pick ring: a hover pick every frame plus a few one-off rays in flight
 const PICK_RING_SLOTS = 64;
@@ -130,6 +131,20 @@ export function createVolume(gpu, sim) {
     name: 'pick', code: pickFrag(g), layouts: [L.TABLES, L.STATE_RO, L.PICK], params: PickParams, workgroupSize: [PICK_BATCH, 1, 1],
   });
   const pipes = new Map();
+  // A software adapter (SwiftShader: the container, ?software=1) can't draw
+  // some detail features (gfx/detail.js SOFTWARE_UNDRAWABLE): the view leaves
+  // them out there, and says so once.
+  const fallback = !!gpu.adapterInfo?.isFallbackAdapter;
+  let toldUndrawable = false;
+  const drawable = (detail) => {
+    const d = drawableDetail(detail, fallback);
+    if (fallback && !toldUndrawable && SOFTWARE_UNDRAWABLE.some((k) => detail[k])) {
+      toldUndrawable = true;
+      const names = DETAIL.filter((f) => SOFTWARE_UNDRAWABLE.includes(f.define) && detail[f.define]).map((f) => f.label);
+      console.warn(`volume: a software adapter can't draw ${names.join(', ')} (its GPU process crashes compiling them); the view draws without them`);
+    }
+    return d;
+  };
   const pickRing = gpu.readback.ring(label('picks'), PICK_RESULT_BYTES, PICK_RING_SLOTS);
   const pickGroup = gpu.bindGroup(L.PICK, [{ binding: 0, resource: { buffer: pickRing.buffer } }], label('picks'));
   const pickQueue = [];
@@ -151,12 +166,13 @@ export function createVolume(gpu, sim) {
     /**
      * The view's pipeline (a gpu.renderPipeline), made on first use.
      * @param {string} view a VOLUME_VIEWS key ('realistic', 'heat', … 'plain')
-     * @param {object} [detail] the realistic view's detail defines (gfx/detail.js)
+     * @param {object} [detail] the realistic view's detail defines (gfx/detail.js;
+     *   on a software adapter without SOFTWARE_UNDRAWABLE)
      * @param {'now' | 'idle' | 'manual'} [build] when to build it if it isn't yet
      */
     pipeline(view, detail = {}, build = 'now') {
       if (!VOLUME_VIEWS.includes(view)) throw new Error(`volume: no view ${view}`);
-      const d = view === 'realistic' ? detail : {};
+      const d = view === 'realistic' ? drawable(detail) : {};
       const key = `${view}|${detailKey(d)}`;
       let p = pipes.get(key);
       if (!p) {

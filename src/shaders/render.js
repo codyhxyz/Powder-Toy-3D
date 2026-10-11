@@ -15,7 +15,7 @@ import { farHazeGLSL, farCastersGLSL, farLayout, WORLD_SIZE } from './farShared.
 import { MESH_CUT_FIELDS, MESH_DEPTH_ENTRY, meshCutGLSL } from '../gfx/meshCut.js';
 import { uniformStruct } from '../gpu/params.js';
 import { STAGE } from '../gpu/kernels.js';
-import { DETAIL, COST, detailDefaults } from '../gfx/detail.js';
+import { DETAIL, COST, detailDefaults, SOFTWARE_UNDRAWABLE, drawableDetail } from '../gfx/detail.js';
 import { gateVariants } from '../gfx/detailGate.js';
 
 // Hybrid raymarcher. Rays walk the voxel grid with an Amanatides–Woo DDA
@@ -1471,15 +1471,17 @@ export { lib };
 // ---- check-wgsl (docs/webgpu.md I1) and the menu's warm-up (B5) ----
 // The realistic view at the settings' detail levels: none, the default
 // settings' two variants (gfx/detailGate.js: base, which the view draws
-// first, and near, which is the cost-tier defaults, Balanced), every switch.
-// Each detail combination of the materials alone is validated by
-// tools/material-lod-check.mjs; these are the whole tracer.
+// first, and near, which is the cost-tier defaults, Balanced), every switch;
+// and alone, each feature a software adapter can't draw (gfx/detail.js
+// SOFTWARE_UNDRAWABLE). Each detail combination of the materials alone is
+// validated by tools/material-lod-check.mjs; these are the whole tracer.
 const levelDefines = (keep) => Object.fromEntries(DETAIL.filter(keep).map((f) => [f.define, 1]));
 export const REALISTIC_LEVELS = {
   off: () => ({}),
   base: () => gateVariants(detailDefaults()).base,
   balanced: () => levelDefines((f) => COST[f.cost].on),
   full: () => levelDefines(() => true),
+  ...Object.fromEntries(DETAIL.filter((f) => SOFTWARE_UNDRAWABLE.includes(f.define)).map((f) => [f.key, () => ({ [f.define]: 1 })])),
 };
 
 // The gpu.layout names each pipeline's groups are made under (gfx/volume.js
@@ -1490,8 +1492,24 @@ export const LAYOUT_NAMES = {
   shadow: ['FRAME', 'STATE_RO', 'LIGHTING_SHADOW'],
   pick: ['TABLES', 'STATE_RO', 'PICK'],
 };
-const volumeCheck = (name, view, detail = {}) => ({
+// The views that read the sun's shadow map (the data views light by clay, no shadows).
+const SHADOWED_VIEWS = ['realistic', 'plain'];
+const keyOf = (d) => Object.keys(d).filter((k) => d[k]).sort().join(',');
+// The realistic variants the view draws for these detail settings: the gate's
+// base (drawn first) and near (prefetched), as gfx/volume.js builds them
+// (fallback: a software adapter, which leaves SOFTWARE_UNDRAWABLE out).
+const gateDetails = (settings, fallback) => {
+  const { base, near } = gateVariants(settings);
+  return { base: drawableDetail(base, fallback), near: drawableDetail(near, fallback) };
+};
+// A volume entry; view and detail say what it draws, and warm({ view,
+// settings, fallback }) whether the session's view and detail settings use it
+// (the warm-up's selector: below).
+const volumeCheck = (name, view, detail = {}, warm = (s) => s.view === view) => ({
   name,
+  view,
+  detail,
+  warm,
   kind: 'render',
   code: (g) => volumeFrag(g, { view, detail }),
   layouts: () => VOLUME_LAYOUTS(),
@@ -1499,20 +1517,63 @@ const volumeCheck = (name, view, detail = {}) => ({
   params: VolumeParams,
   ...volumePipeline(),
 });
-/** tools/check-wgsl.mjs and the menu's warm-up (src/preload.js, docs/webgpu.md B5) */
+// a realistic level's entry is used when it is the settings' base or near variant
+const realisticWarm = (detail) => ({ view, settings, fallback = false }) => {
+  if (view !== 'realistic' || !settings) return false;
+  const { base, near } = gateDetails(settings, fallback);
+  return keyOf(detail) === keyOf(base) || keyOf(detail) === keyOf(near);
+};
+const SHADOW_CHECK = {
+  name: 'shadow', kind: 'compute', code: (g) => shadowFrag(g), layouts: () => SHADOW_LAYOUTS(), layoutNames: LAYOUT_NAMES.shadow,
+  workgroupSize: [SHADOW_WORKGROUP, SHADOW_WORKGROUP, 1], dispatch: (g) => shadowDispatch(shadowRes(g)),
+  warm: ({ view }) => SHADOWED_VIEWS.includes(view),
+};
+const PICK_CHECK = {
+  name: 'pick', kind: 'compute', code: (g) => pickFrag(g), layouts: () => PICK_LAYOUTS(), layoutNames: LAYOUT_NAMES.pick, params: PickParams,
+  workgroupSize: [PICK_BATCH, 1, 1], dispatch: () => [1, 1, 1], warm: () => true,
+};
+/**
+ * tools/check-wgsl.mjs, and the menu's warm-up (src/preload.js, docs/webgpu.md
+ * B5). Every entry carries warm({ view, settings, fallback }): whether a
+ * session in that view (a VOLUME_VIEWS key) with those detail settings
+ * (detail_* switches) uses it. Building every entry would cost the menu about
+ * 40 s of SwiftShader pipeline time for nothing; warmChecks() below is the
+ * warm-up's list, including detail settings no entry here matches.
+ */
 export const WGSL_CHECK = () => [
   ...VOLUME_VIEWS.filter((v) => v !== 'realistic').map((v) => volumeCheck(`volume.${v}`, v)),
-  ...Object.entries(REALISTIC_LEVELS).map(([k, d]) => volumeCheck(`volume.realistic.${k}`, 'realistic', d())),
-  {
-    name: 'shadow', kind: 'compute', code: (g) => shadowFrag(g), layouts: () => SHADOW_LAYOUTS(), layoutNames: LAYOUT_NAMES.shadow,
-    workgroupSize: [SHADOW_WORKGROUP, SHADOW_WORKGROUP, 1], dispatch: (g) => shadowDispatch(shadowRes(g)),
-  },
-  {
-    name: 'pick', kind: 'compute', code: (g) => pickFrag(g), layouts: () => PICK_LAYOUTS(), layoutNames: LAYOUT_NAMES.pick, params: PickParams,
-    workgroupSize: [PICK_BATCH, 1, 1], dispatch: () => [1, 1, 1],
-  },
+  ...Object.entries(REALISTIC_LEVELS).map(([k, d]) => volumeCheck(`volume.realistic.${k}`, 'realistic', d(), realisticWarm(d()))),
+  SHADOW_CHECK,
+  PICK_CHECK,
 ];
-// Filled in from check-wgsl (b)'s measurements on SwiftShader (W23): the
-// modules that miss PIPELINE_BUDGET_MS there, each with why. The container's
-// tests draw the other views; these are validated by (a) only.
-export const WGSL_MAC_ONLY = {};
+
+/**
+ * What the warm-up builds for a session (docs/webgpu.md B5): the view's module
+ * (for the realistic view the detail gate's base variant), the near variant
+ * marked idle (the gate prefetches it), the shadow kernel if the view reads
+ * it, the pick kernel. Entries are WGSL_CHECK-shaped (code(g), layouts,
+ * layoutNames, the pipeline description), so the warm-up builds them as
+ * check-wgsl does; their sources are the ones gfx/volume.js then builds.
+ * @param {string} view a VOLUME_VIEWS key
+ * @param {object} settings the app's settings (detail_* switches)
+ * @param {{ fallback?: boolean }} [opts] fallback: the device is a software adapter
+ * @returns {object[]}
+ */
+export function warmChecks(view, settings, { fallback = false } = {}) {
+  const out = [];
+  if (view === 'realistic') {
+    const { base, near } = gateDetails(settings, fallback);
+    out.push(volumeCheck(`volume.realistic(${keyOf(base) || 'off'})`, 'realistic', base));
+    if (keyOf(near) !== keyOf(base)) out.push({ ...volumeCheck(`volume.realistic(${keyOf(near)})`, 'realistic', near), idle: true });
+  } else out.push(volumeCheck(`volume.${view}`, view));
+  if (SHADOWED_VIEWS.includes(view)) out.push(SHADOW_CHECK);
+  out.push(PICK_CHECK);
+  return out;
+}
+
+// check-wgsl (b)'s exceptions on SwiftShader (W23), each with why. These are
+// validated by (a); the container's tests draw every other volume entry.
+const UNDRAWABLE = 'builds in 9-13 s, but SwiftShader\'s GPU process crashes (SIGSEGV) compiling it at its first draw (gfx/detail.js SOFTWARE_UNDRAWABLE): validated by (a), drawn on a real GPU';
+export const WGSL_MAC_ONLY = Object.fromEntries(Object.entries(REALISTIC_LEVELS)
+  .filter(([, d]) => Object.keys(d()).some((k) => SOFTWARE_UNDRAWABLE.includes(k)))
+  .map(([k]) => [`volume.realistic.${k}`, UNDRAWABLE]));

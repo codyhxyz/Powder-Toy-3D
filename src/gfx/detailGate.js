@@ -22,7 +22,11 @@
 //         or a settings change, and shown when the camera is close and it is
 //         ready: detail shows up late rather than the frame waiting.
 // With the default (Balanced) switches only Smooth up close is gated.
+// Only the realistic view has detail: in any other view nothing builds
+// (docs/webgpu.md B5: boot builds the current view's module only), and the
+// variants build when the view becomes realistic (setView).
 import { DETAIL, settingKey } from './detail.js';
+import { VIEWS } from '../views.js';
 import { CELL_M } from '../scale.js';
 
 // m per pixel. The god view's nearest surfaces are ~100 cells away (~2.7 cm
@@ -33,9 +37,16 @@ const GATE_ALWAYS_M = 0.05;
 // camera hovering at the threshold doesn't flip variants every frame.
 const GATE_HYSTERESIS = 1.25;
 // ms after start-up (or a settings change) before the near variant starts building
-const PREWARM_DELAY_MS = 1500;
+export const PREWARM_DELAY_MS = 1500;
 const DEG = Math.PI / 180;
 const VIEW = 'realistic';   // the view the detail is part of
+// a view as a VIEWS key; the app's settings.view is its id
+function viewKey(view) {
+  if (typeof view === 'string' && VIEWS.some((v) => v.key === view)) return view;
+  const v = VIEWS.find((x) => x.id === view);
+  if (!v) throw new Error(`detailGate: view ${view} is neither a src/views.js key nor an id (configure(volume, settings, view))`);
+  return v.key;
+}
 
 const alwaysIn = (f) => f.cost === 'low' || f.fadeM === undefined || f.fadeM >= GATE_ALWAYS_M;
 const definesOf = (features) => Object.fromEntries(features.map((f) => [f.define, 1]));
@@ -62,8 +73,10 @@ const component = (v, i) => (v.getComponent ? v.getComponent(i) : v[i]);
  */
 export function createDetailGate(gpu, onReady = () => {}, onCompile = () => {}) {
   let volume = null;                // gfx/volume.js: its pipeline(view, detail, build)
+  let view = VIEW;                  // the view drawn now (a VIEWS key)
   let base = {}, near = {};         // define sets of the two variants
   let applied = {};                 // the base the view draws (a changed base waits for its pipeline)
+  let stale = null;                 // base isn't asked for yet: 'fresh' (a new volume) or 'changed' (a switch)
   let nearFadeM = 0;                // footprint below which near is wanted
   let wantNear = false;
   let nearPipe = null;              // the near variant's pipeline, once asked for
@@ -78,34 +91,58 @@ export function createDetailGate(gpu, onReady = () => {}, onCompile = () => {}) 
     p.ready.then(() => { if (volume === v && nearPipe === p && wantNear) onReady(); }, () => {});
   }
   const showNear = () => wantNear && nearPipe?.state === 'ready' && applied === base;
+  // the realistic view is up: its base variant builds now (if it isn't yet),
+  // its near one a moment later at idle time
+  function enter() {
+    if (stale) {
+      const p = volume.pipeline(VIEW, base, 'now');
+      if (stale === 'fresh' || p.state === 'ready') applied = base;
+      else {
+        // a switch changed: the base variant builds; the view keeps the old one until then
+        onCompile();
+        const v = volume, b = base;
+        p.ready.then(() => { if (volume === v && base === b) { applied = b; onReady(); } }, () => {});
+      }
+      stale = null;
+    }
+    clearTimeout(timer);
+    const vol = volume;
+    if (nearFadeM) timer = setTimeout(() => { if (volume === vol && view === VIEW && !nearPipe) askNear('idle'); }, PREWARM_DELAY_MS);
+  }
 
   return {
     /**
-     * A new volume (grid rebuilt) or new feature switches.
+     * A new volume (grid rebuilt), new feature switches, or another view.
      * @param {object} vol gfx/volume.js's volume
-     * @param {object} settings the app's settings (detail_* switches)
+     * @param {object} next the app's settings (detail_* switches)
+     * @param {string | number} [nextView] the view drawn now: a src/views.js key or id (settings.view)
      */
-    configure(vol, settings) {
+    configure(vol, next, nextView = view) {
+      view = viewKey(nextView);
       const fresh = vol !== volume;
       volume = vol;
-      const { base: nextBase, near: nextNear, nearFadeM: fade } = gateVariants(settings);
+      const { base: nextBase, near: nextNear, nearFadeM: fade } = gateVariants(next);
       nearFadeM = fade;
       if (fresh || keyOf(nextNear) !== keyOf(near)) { nearPipe = null; told = false; }
       near = nextNear;
       if (fresh || keyOf(nextBase) !== keyOf(base)) {
         base = nextBase;
         wantNear = false;
-        const p = volume.pipeline(VIEW, base, 'now');
-        if (fresh || p.state === 'ready') applied = base;
-        else {
-          // a switch changed: the base variant builds; the view keeps the old one until then
-          onCompile();
-          const v = volume, b = base;
-          p.ready.then(() => { if (volume === v && base === b) { applied = b; onReady(); } }, () => {});
-        }
+        stale = fresh || stale === 'fresh' ? 'fresh' : 'changed';
       }
       clearTimeout(timer);
-      if (nearFadeM) timer = setTimeout(() => { if (volume === vol && !nearPipe) askNear('idle'); }, PREWARM_DELAY_MS);
+      if (view === VIEW) enter();
+    },
+    /**
+     * The view changed (settings.view): the detail's variants build when it becomes realistic.
+     * @param {string | number} nextView a src/views.js key or id
+     */
+    setView(nextView) {
+      const was = view;
+      view = viewKey(nextView);
+      if (view === was || !volume) return;
+      if (view === VIEW) enter();
+      else { clearTimeout(timer); wantNear = false; }
     },
 
     /**
@@ -118,7 +155,7 @@ export function createDetailGate(gpu, onReady = () => {}, onCompile = () => {}) 
      * @returns {object}
      */
     update(camera, camGrid, dims, heightPx) {
-      if (!volume || !nearFadeM) return applied;
+      if (!volume || !nearFadeM || view !== VIEW) return applied;
       let d2 = 0;
       for (let i = 0; i < 3; i++) {
         const c = component(camGrid, i);
@@ -135,8 +172,13 @@ export function createDetailGate(gpu, onReady = () => {}, onCompile = () => {}) 
 
     /** 1 while the camera wants the near variant. */
     get level() { return wantNear ? 1 : 0; },
-    /** Variants building: a changed base, and the near one. */
-    get pending() { return Number(!!volume && applied !== base) + Number(!!nearPipe && nearPipe.state !== 'ready' && nearPipe.state !== 'failed'); },
+    /** Variants building: a changed base, and the near one (none outside the realistic view). */
+    get pending() {
+      if (view !== VIEW) return 0;
+      return Number(!!volume && applied !== base) + Number(!!nearPipe && nearPipe.state !== 'ready' && nearPipe.state !== 'failed');
+    },
+    /** The view the gate is configured for (a src/views.js key). */
+    get view() { return view; },
     /** The key of the variant update() returns now. */
     get shown() { return keyOf(showNear() ? near : applied); },
     dispose() { clearTimeout(timer); volume = nearPipe = null; },

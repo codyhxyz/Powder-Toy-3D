@@ -115,6 +115,18 @@ export const DETAIL = [
     desc: 'Liquid that plunges or lands hard turns white with foam that drifts on the flow and bursts over a few seconds; pouring and falling water is drawn as one stream, white as it falls' },
 ];
 
+// Features whose realistic module SwiftShader (the software adapter: the test
+// container, ?software=1) builds within budget but can't draw: its GPU
+// process crashes (SIGSEGV, exit code 11) compiling the shader at the first
+// draw, ~15 s in, and the device is lost (Chromium 141, 2026-10-11; each of
+// these alone does it, every other feature draws). On a fallback adapter the
+// volume leaves them out (gfx/volume.js), and shaders/render.js lists the
+// variants holding them on WGSL_MAC_ONLY; a real GPU draws them.
+export const SOFTWARE_UNDRAWABLE = ['DETAIL_RELIEF', 'DETAIL_GRAINS', 'DETAIL_GRAIN_CLUSTERS'];
+/** A defines object as a device draws it: on a software adapter (fallback) without SOFTWARE_UNDRAWABLE. */
+export const drawableDetail = (detail, fallback) =>
+  (fallback ? Object.fromEntries(Object.entries(detail).filter(([k]) => !SOFTWARE_UNDRAWABLE.includes(k))) : detail);
+
 export const settingKey = (f) => `detail_${f.key}`;
 
 // settings defaults for every feature, by cost tier
