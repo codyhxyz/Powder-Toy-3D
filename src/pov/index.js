@@ -373,6 +373,8 @@ const interact = createInteract();   // look + E (interact.js): perks, and Desce
           renderer, scene,
           getSim: app.getSim, getVolume: app.getVolume, getScale: app.getScale,
           hud, viewmodel, handWorld,
+          interact,                            // Descent's wand and spell pickups (wands/loot.js)
+          getScene: () => (app.inWorld?.() ? app.settings.scene : null),   // the world scene loaded (Descent levels are world scenes)
           isActive: () => live() && !editing,
           getStepsPerFrame: () => app.settings.paused ? 0 : app.settings.steps,
           requestRender: app.requestRender,

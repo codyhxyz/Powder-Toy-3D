@@ -4,7 +4,10 @@ export const LIMITS = Object.freeze({ cards: 64, depth: 16, nodes: 256, minCoold
 export const CONFIG_BOUNDS = Object.freeze({
   manaMax: [1, 10000], manaRegen: [0, 10000], castDelay: [0.02, 30],
   recharge: [0.02, 60], capacity: [1, LIMITS.cards],
+  // Noita's shuffle_deck_when_empty (0 = in order, 1 = reshuffled every recharge) and actions_per_round
+  shuffle: [0, 1], spellsPerCast: [1, LIMITS.cards],
 });
+const WHOLE = ['capacity', 'shuffle', 'spellsPerCast'];   // integer settings
 const PARAM_BOUNDS = {
   radius: [0.25, 24], power: [0, 10000], damage: [0, 1000], speed: [1, 240],
   lifetime: [0.05, 30], gravity: [-120, 120], spread: [0, Math.PI], recoil: [0, 80],
@@ -45,7 +48,7 @@ export function compileWand(cards, input = {}) {
     }
     config[key] = clamp(input[key], bounds);
   }
-  config.capacity = Math.floor(config.capacity);
+  for (const key of WHOLE) config[key] = Math.floor(config[key]);
   // totalMana: one entire deck; maxCastMana: largest prepaid root including payloads.
   // castDelays/recharge: FINAL seconds (base + subtree card contributions, floored).
   // nodeCount/maxDepth: expanded output tree, not input card count or parser depth.

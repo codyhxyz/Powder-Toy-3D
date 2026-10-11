@@ -85,3 +85,36 @@ same shape instead and document it here.
   refresher (refills limited-use spells; until those exist, refills mana and storage).
 
 Every number is a named constant; borrow Noita's numbers and cite them.
+
+## B's API (wands, as built)
+
+`src/pov/wands/generate.js` (plain data, safe to import anywhere):
+
+- `generateWand(tier, seed)` → `{ id, name, tier, cards, config, look, noita }`.
+  `config` is the compiler's: `manaMax, manaRegen` (Noita's mana and mana/s),
+  `castDelay, recharge` (seconds: Noita frames ÷ 60), `capacity`, `shuffle` (0/1),
+  `spellsPerCast`. Rolled from Noita's `gun_procedural.lua` budget (tier 1/2/3 =
+  `generate_gun(30/40/60, level)`), preloaded from the tier's spell pool. Same seed,
+  same wand; every generated deck compiles.
+- `starterWand(seed)`, `bombWand(seed)`: the run's two starting wands.
+- `randomSpell(tier, seed)` → spell id (any kind, weighted as Noita's shops).
+- `spellPrice(tier, id, { sale })`, `wandPrice(tier, wand, { sale })`: gold, by
+  `generate_shop_item.lua` (spell: `max(floor((price·0.3 + 70·tier²)/10)·10, 10)`;
+  wand: `50 + 210·(tier/2 + tier²/2) ± 150`; a sale halves).
+
+`src/pov/wands/loot.js` re-exports `descentWands` (state in `descentRun.js`,
+which survives level loads):
+
+- `descentWands.give(wand)` → `{ slot, dropped }` or null (a deck that doesn't
+  compile). With four wands it replaces the held one and drops it at the player's feet.
+- `descentWands.giveSpell(id)` → bool: into the spell bag (editor's library on Descent).
+- `descentWands.refresh()`: every carried wand to full mana and ready (the refresher).
+- Also: `wands`, `bag`, `held`, `inTemple`, `full`, `on('change' | 'drop' | 'refresh', fn)`.
+- `wandLines(wand)` → the stat lines the pickup label shows (reuse for shop labels).
+
+A run starts (`reset`: Bolt staff + bomb wand, empty bag) when a Descent level loads
+from a non-Descent map. Wands sit in the Guns slot (key 3), ahead of its tools; B
+edits only the held wand, only while `descent:temple` inside is true, from the bag.
+Pickups (kind `wand`/`spell` sites) are look + E via `interact.provide` (the POV
+shell passes `interact` and `getScene` into the toolbelt env). Until `levels.js`
+exists (imported through a glob in `descentSites.js`), no scene is Descent.
