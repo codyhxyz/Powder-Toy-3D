@@ -81,6 +81,52 @@ HUD (`src/game/hud.js`, `game.css`): top-centre the mode, both scores, the clock
 taken / dropped; the hill's owner, when it moves and the leader's progress; survivors and infected; the half, the
 attackers and the core count); the killfeed and announcements top-right; the scoreboard on Tab; the result for 10 s.
 
+## Halo combat: grenades, melee and feedback (2026-10-11)
+
+Halo's golden triangle, guns, grenades and melee, in a Halo-style match (`game.style === 'halo'`; `src/pov/halo.js`
+`haloMatch()` follows `game:spawn` / `game:stop`). Halo 3's numbers, against Halo 3's 70 shield over 45 health
+(one base life = 45 points: `halo.js points()`); the sources are cited beside each constant.
+
+- **Frag grenade, `G`** (`src/pov/frag.js`, the player's key in `src/pov/combat.js`): thrown from the eye along the
+  aim without putting the gun away (a lob of the left hand in the viewmodel), spending `body.grenades` (the arsenal
+  gives 2 at every spawn; Halo 3 carries at most 2). It flies on the shared projectiles at Halo 3's 10 wu/s (30 m/s)
+  and 90% gravity, plus the thrower's own speed, bounces off cells and bodies (keeps 0.3 of its speed into a face,
+  0.35 along it, by eye: it skids on a few metres) and rolls to a stop. Fuse: 0.5 s after its first bounce, never sooner than 1.3 s after the
+  throw (Halopedia "H3:Frag Grenade"), so one thrown at a wall goes off on the rebound; one that touches nothing goes
+  off at 4 s. Going off is the **sim's own blast** (the rocket's pass, `rocketFrag`: crater, fireball, a pressure wave
+  that throws loose matter and bodies and hurts every body, teammates and the thrower too; `blast` event with `by`,
+  so kills are credited) **plus Halo's shrapnel**: 160 points within 0.5 wu falling to 60 at 1.75 wu (1.5 m to 5.3 m),
+  ×0.5 against a Spartan, on the hit rules (no teammates; nobody behind a wall when the bots' world model is loaded),
+  cause `'grenade'`. The shrapnel alone pops a full shield within about 2.3 m; with the blast's pressure, a body near
+  the centre dies. **The dead drop their grenades** where they fall (Halo 3); a live body walking within 3 cells of one
+  picks it up, to 2. Dropped ones go after 30 s or at the match's end.
+- **Bots throw frags**: `ai/brain.js` `WEAPONS.FRAG` (fuzzy: mid range only, 12-45 cells, never point-blank; 6 s
+  between; the gun stays in hand, `holds`), a 0.6 s wind-up (the arm up: the tell), then the bomb's low-arc lob at
+  the frag's speed and gravity to land at the target's feet (σ 12% of the distance). `npc.js` throws it
+  (`intent.frag`). The arsenal's bot loadout (`agent.weapons`) must include `'FRAG'` (or be null) for them to.
+- **Melee, `F`** (`src/pov/kick.js`; outside a Halo match F is still the Noita kick): a body within the lunge (0.8 wu,
+  2.4 m from the eye along the aim, no wall between) takes Halo 3's blow: 70 points (Halopedia "H3:Melee"), so one pops
+  a full shield and the second kills ("two blows to a normally-shielded opponent's body were sufficient to kill").
+  From behind (the knife's TF2 backstab test, `knife.tool.js behind`) it is Halo's **assassination**: it kills through
+  any shield. You lunge into a body beyond the boot's reach (8 m/s); 0.8 s between blows (lunge range and recovery
+  by eye: Halopedia gives none). No body in reach: the boot kicks the cells as ever. **Bots melee the same way**: an
+  enemy in the lunge, in sight past the reaction delay, gets the bot's kick, turned to it (`brain.js wantsMelee`).
+  Halo's blows (melee, shrapnel) are dealt exactly (`hurt` opts `{ exact }`), not scaled by the bodies' sandbox
+  damage-taken shares (npc.js 0.6, the player's 0.5).
+- **Causes** (`body.cause` → `game:kill` `cause`, the medals read them): `'melee'`, `'assassination'`, `'grenade'`.
+  Everything else keeps its sandbox cause: a gun's round (pistol, SMG, sniper) `'Shot'`; the laser cannon
+  `'Lasered'`; a rocket, a bomb and a frag's overpressure `'Blown up'` (vitals.js pressure damage), or a slam
+  `'Slammed into …'` / `'Fell N m'`; the knife `'Stabbed'` / `'Backstabbed'`; the axe `'Axed'`, the pickaxe `'Picked apart'`; the burrower `'Bored'`; the kick
+  `'Kicked'`; a vehicle `'Run over by a …'`. A rocket never hits a body itself: it kills by its blast.
+- **Feedback** (`pov/hud.js`, centre): Halo's **red reticle** while the crosshair is on an enemy within the held gun's
+  red-reticle range (Halo 3's auto-aim range: Assault Rifle 15 wu, Battle Rifle 17, SMG 12; the sniper and the laser
+  across the map; melee tools the lunge); the **hitmarker** for any blow of yours that landed (`body:hit`: shots,
+  melee, shrapnel); the **grenade count** beside the held tool's readout.
+- **Shields on any body** (any match or the sandbox, `body:shield` from player.js): a gold flare and motes over a body
+  whose shield takes a hit (Halo 3's shimmer), a bigger flare, sparks and the pop sound when it breaks (vfx.js,
+  audio.js); for the player, a gold flare on the screen's edge (hud.js) on top of the shield's existing crackle,
+  pop, recharge hum and empty beeping.
+
 ## API
 
 ```js
@@ -116,6 +162,13 @@ and the tower, and south of the pit; the core in the open south of the tank, a r
 them the defenders contest it forever).
 
 ## Check
+
+`tools/halo-combat-check.mjs --url http://localhost:PORT` (default port 5423; `tools/combat-check.mjs` is Big Team
+Battle's shield, perks, knife and pogo check) starts a Team Slayer and checks Halo
+combat on the GPU: G throws a frag (the count drops, a blast goes off where it lands, its shrapnel hurts a bot
+there), F's melee does Halo's 70 points (one pops a bot's full shield, a second kills it, from behind one kills),
+the reticle reddens on an enemy and the shield's events reach the bus.
+
 
 `node tools/modes-check.mjs [--url http://localhost:5405] [--preset lab|damValley] [--modes slayer,ctf] [--side spectate|red] [--strict] [--sweep 0,2,4,6,8] [--tour prefix]`
 (AC power, a dev server). Bots only by default; each mode runs until it has done its thing or a game-time box:
