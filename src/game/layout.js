@@ -5,7 +5,8 @@
 //   { name, size: [nx, ny, nz],
 //     spawns: { red: [[x, y, z], ...], blue: [...] }, flags: { red: [x, y, z], blue: [x, y, z] },
 //     hills: [[x, y, z, r], ...], siege: { attackers: 'red', core: [x, y, z, r] },
-//     shrines: [...], vehicles: [...] }          (shrines and vehicles are other modules')
+//     shrines: [...], vehicles: [...],           (shrines and vehicles are other modules')
+//     weapons: [{ key, at: [x, y, z], respawnS? }] }   (power weapons' pads: arsenal.js, Halo-style matches)
 //
 // labLayout is the lab preset's (presets.js 'lab', any box size): red holds the
 // open north-east corner, blue the south-west one past the wooden tower. The
@@ -24,6 +25,9 @@ const LAB = {
   // the core: out in the open south of the tank, a run from blue's spawns (on top of them,
   // the defenders contest it forever: a capture needs the point cleared, TF2's rule)
   siege: { attackers: 'red', core: [58, 0, 84, 8] },
+  // the rocket launcher in the open middle, by the first hill (between the tank and the pit), as
+  // Halo 3 puts its rockets where both sides must fight for them
+  weapons: [{ key: 'ROCKET', at: [68, 0, 62] }],
 };
 
 export function labLayout(g) {
@@ -39,6 +43,7 @@ export function labLayout(g) {
     siege: { attackers: LAB.siege.attackers, core: zone(LAB.siege.core) },
     shrines: [],
     vehicles: [],
+    weapons: LAB.weapons.map((w) => ({ ...w, at: at(w.at) })),
   };
 }
 
