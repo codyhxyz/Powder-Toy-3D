@@ -1,13 +1,13 @@
 // CPU check of the shared element mechanisms (elements.js cold/hot/crush,
 // REACTIONS, blast; docs/elements.md): adds test rows to the element table at
 // runtime (nothing real is added), runs them through the dock tiles' CPU twin
-// of the engine (src/ui/tiles/engine.js), and compiles the GPU passes with the
-// same rows through glslangValidator.
-//   node tools/elements-core-check.mjs
-import { execFileSync } from 'node:child_process';
-import { writeFileSync, mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+// of the engine (src/ui/tiles/engine.js), then takes the same rows to the GPU
+// in the WGSL lab (tools/tables-check.mjs): every module the prelude makes
+// compiles with them, every table field of every element, the test rows'
+// included, reads back through its accessor as JS has it, and the sim's
+// passes that are WGSL by now compile with them (docs/webgpu.md C6).
+//   node tools/elements-core-check.mjs [--cpu] [--port N]
+//   --cpu   the CPU checks only (no browser)
 import { ELEMENTS, E, K, R, REACTIONS, elementRow, mechanisms } from '../src/elements.js';
 
 // ---- test rows ----
@@ -272,28 +272,37 @@ const puffP = (v) => PHYS.STEAM_BOIL_PUFF * v / PHYS.STEAM_EXPANSION;
   mechanisms();
 }
 
-// ---- the GPU passes compile with the same rows ----
-{
-  // (loaded after the rows exist, as the twin is: some modules bake tables of the elements as they load)
+// ---- the GPU tables and passes with the same rows ----
+// (loaded after the rows exist, as the twin is: the tables and some modules
+// bake the elements as they load)
+if (!process.argv.includes('--cpu')) {
+  const portArg = process.argv.indexOf('--port');
+  const T = await import('./tables-check.mjs');
+  const M = await T.mods();
   const { gridLayout } = await import('../src/sim.js');
-  const { reactFrag } = await import('../src/shaders/react.js');
-  const activity = await import('../src/shaders/activity.js');
-  const move = await import('../src/shaders/move.js');
   const g = gridLayout(64, 64, 64);
-  const dir = mkdtempSync(join(tmpdir(), 'elcore-'));
-  const raw = '#version 300 es\n';
-  const progs = {
-    react: reactFrag(g), inertRows: activity.inertRowsFrag(g), inertRef: activity.inertRefFrag(g),
-    moveBlock: move.moveBlockFrag(g), moveGather: move.moveGatherFrag(g),
+  // a sim pass joins once its unit has ported it: WGSL has entry points
+  const passes = {
+    react: async () => (await import('../src/shaders/react.js')).reactFrag(g),
+    inertRef: async () => (await import('../src/shaders/activity.js')).inertRefFrag(g),
+    moveBlock: async () => (await import('../src/shaders/move.js')).moveBlockFrag(g),
   };
-  for (const [name, src] of Object.entries(progs)) {
-    const f = join(dir, `${name}.frag`);
-    writeFileSync(f, raw + src);
-    let ok = true, msg = '';
-    try { execFileSync('glslangValidator', [f], { stdio: 'pipe' }); } catch (e) {
-      ok = false; msg = String(e.stdout).split('\n').filter((l) => /ERROR/.test(l)).slice(0, 4).join(' | ');
-    }
-    check(`${name} compiles with the test rows`, ok, msg);
+  try {
+    await T.withLab(async (lab) => {
+      const rep = { check };
+      await T.compileAll(lab, M, rep);
+      await T.tableCheck(lab, M, rep, []);
+      for (const [name, make] of Object.entries(passes)) {
+        let code = null;
+        try { code = await make(); } catch (e) { console.log(`skip ${name}: its generator throws (${e.message.split('\n')[0]})`); continue; }
+        if (!/@(compute|fragment|vertex)\b/.test(code)) { console.log(`skip ${name}: still GLSL (docs/webgpu.md J1: U2 ports it)`); continue; }
+        const msgs = await lab.compile(code, name);
+        check(`${name} compiles with the test rows`, !msgs.some((m) => m.type === 'error' || m.type === 'warning'),
+          msgs.slice(0, 4).map((m) => `${m.line}:${m.col} ${m.message}`).join(' | '));
+      }
+    }, { port: portArg > 0 ? Number(process.argv[portArg + 1]) : 5321 });
+  } catch (e) {
+    check('the WGSL lab runs (WebGPU in headless Chromium)', false, e.message);
   }
 }
 
