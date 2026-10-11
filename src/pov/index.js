@@ -3,7 +3,7 @@ import { BODY_HEIGHT, BODY_WIDTH, HAND_REACH } from './constants.js';
 import { createPovCamera, ENTRY_PITCH, FIGURE_HIDE_DIST, RESPAWN_SWOOP_S, SWOOP_S } from './camera.js';
 import { createBody } from './figureReal.js';
 import { STICK_HAND } from './figure.js';
-import { attachModel } from './models.js';
+import { createHeld } from './held.js';
 import { gearByKey } from './tools/catalog.js';
 import { createPovHud } from './hud.js';
 import { createPovAudio } from './audio.js';
@@ -67,9 +67,6 @@ const MOVE_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ShiftLeft',
 // tap of Ctrl on its own (a laptop's F5 hides behind fn; Ctrl is free in the body)
 const VIEW_KEY = 'F5';
 const VIEW_TAP_KEYS = new Set(['ControlLeft', 'ControlRight']);
-// Third person, the tool in hand on the body (Team Fortress 2's world models):
-// the viewmodel's model grown to read at a distance, as the NPCs' are (npc.js HELD_SCALE)
-const HELD_SCALE = 1.8;
 const REAL_HAND = 'hand_r';             // the realistic body's right-hand bone (figureReal.js)
 const VEHICLE_KEY = 'KeyE';             // get in, get out, or right a vehicle (vehicles/index.js; Halo's and most shooters' use key)
 // Driving, the chase camera swings back behind the vehicle once the mouse rests (GTA's and most driving games')
@@ -144,14 +141,9 @@ export function createPov(app) {
   viewmodel.visible = false;
 
   // the tool in hand, drawn on the body once the camera is out of the head (the
-  // viewmodel shows it in first person): its model at the right hand, along the aim
-  const heldProp = new THREE.Group();
-  heldProp.name = 'pov-held';
-  heldProp.visible = false;
-  scene.add(heldProp);
-  const heldModels = new Map();          // tool key → its model, built the first time it's held
+  // viewmodel shows it in first person): held.js, the body's arms on it
+  const held = createHeld({ scene });
   const hands = new WeakMap();           // a body's root → its right hand
-  const vAim = new THREE.Vector3();
   let figureShown = false;               // the figure is drawn this frame (the camera is out of the head)
   // the shown figure's right hand (a bone), or null
   function rightHand() {
@@ -165,20 +157,6 @@ export function createPov(app) {
     if (!hand) return null;
     hand.updateWorldMatrix(true, false);
     return hand.getWorldPosition(out);
-  }
-  function showHeld(show, size) {
-    const key = show ? toolbelt?.selectedKey : null;
-    const model = key ? gearByKey(key)?.model : null;   // the wand has no model
-    if (model && !heldModels.has(key)) heldModels.set(key, attachModel(heldProp, model, null, { arm: false }).obj);
-    for (const [k, obj] of heldModels) obj.visible = k === key;
-    const hand = rightHand();
-    heldProp.visible = !!(model && hand);
-    if (!heldProp.visible) return;
-    hand.updateWorldMatrix(true, false);
-    hand.getWorldPosition(heldProp.position);
-    povCam.dir(vAim);
-    heldProp.rotation.set(Math.asin(THREE.MathUtils.clamp(vAim.y, -1, 1)), povCam.look.yaw, 0, 'YXZ');
-    heldProp.scale.setScalar(size * HELD_SCALE);
   }
 
   let mode = 'off';                      // off | entering | on | exiting
@@ -384,7 +362,7 @@ export function createPov(app) {
         toolbelt = createToolbelt({
           renderer, scene,
           getSim: app.getSim, getVolume: app.getVolume, getScale: app.getScale,
-          hud, viewmodel, handWorld,
+          hud, viewmodel, handWorld, heldOnBody: () => held.holding !== null,
           interact,                            // Descent's wand and spell pickups (wands/loot.js)
           getScene: () => (app.inWorld?.() ? app.settings.scene : null),   // the world scene loaded (Descent levels are world scenes)
           toolGun: app.toolGun,   // the god view's click at the crosshair (app.js), for the tool gun
@@ -500,7 +478,8 @@ export function createPov(app) {
     vehicles.reset(player);
     setMenu(false);
     toolbelt?.setVisible(false);
-    viewmodel.visible = heldProp.visible = false;
+    viewmodel.visible = false;
+    held.drop(viewmodel);
     classes?.close({ relock: false });
     if (document.pointerLockElement === canvas) document.exitPointerLock();
     releaseInput();
@@ -536,7 +515,8 @@ export function createPov(app) {
     for (const n of npcs.values()) n.reset();
     vehicles.reset(player);
     game.setVisible(false);
-    viewmodel.visible = heldProp.visible = false;
+    viewmodel.visible = false;
+    held.drop(viewmodel);
     povHud.show(false);
     feel.reset();
     nightVision?.reset();
@@ -718,18 +698,22 @@ export function createPov(app) {
     // the figure: shown once the camera is out of the head
     figureShown = pose.eyeDist > FIGURE_HIDE_DIST && !driving && !player.gibbed;
     figure.setVisible(figureShown);   // the vehicle draws its driver; a body burst into meat has nothing left to draw
+    // the tool in hand on it (held.js; the wand has no model)
+    const holding = held.pick(figureShown && mode === 'on' && !deadSeen ? gearByKey(toolbelt?.selectedKey)?.model ?? null : null, dt);
     figure.update(dt, {
       // Shrink: the figure at the body's size, its gait timed at the plain figure's speed for the size
       feet: vFeet, scale: scale * player.size, yaw: povCam.look.yaw, worldToGrid,
       speedH: speedH / player.size, velY: player.vel.y, onGround: player.onGround, inLiquid: player.inLiquid, headInLiquid: player.headInLiquid,
       dead: deadSeen, deadTime, heat: player.feel?.heat ?? 0, jetting: player.jetting, status: player.status, kick: player.kickPose, crouch: player.crouch,
+      look: { pitch: povCam.look.pitch, spine: holding.spine }, lift: holding.lift, ride: holding.ride,
     });
+    held.bind(vol, g);
+    held.frame({ figure, yaw: povCam.look.yaw, pitch: povCam.look.pitch, scale: scale * player.size, feet: vFeet, worldToGrid, camera, viewmodel });
     if (player.jetting && mode === 'on') vfx?.jet(player.pos, povCam.look.yaw, dt, figure.nozzles);
     // flames licking off burning bodies (status.js BURNING), the player's and the NPCs'
     if (player.status.has('BURNING') && !player.dead) vfx?.burn(player.pos, dt);
     for (const n of npcs.values()) if (n.body.status?.has('BURNING') && !n.body.dead) vfx?.burn(n.body.pos, dt);
     viewmodel.visible = mode === 'on' && !deadSeen && pose.eyeDist <= FIGURE_HIDE_DIST && !hudHidden && !driving;
-    showHeld(mode === 'on' && !deadSeen && pose.eyeDist > FIGURE_HIDE_DIST && !driving && !player.gibbed, scale * player.size);
 
     // the toolbelt
     const aim = ctx.aim, hv = app.hover;
@@ -768,6 +752,7 @@ export function createPov(app) {
       ctx.player.body = player;   // the body itself, for a tool that hangs it on a rope (the hook: player.tether)
       try { toolbelt.update(ctx); } catch (err) { console.error('POV toolbelt update failed', err); }
     }
+    held.place({ figure, viewmodel, dt });   // the tools have moved: the held model, and the hands on it
     // the kick: the body's (player.kick), along the aim; the leg and the view's jolt are the shell's
     if (kickQueued) {
       kickQueued = false;
@@ -904,6 +889,7 @@ export function createPov(app) {
     // what the held tool shows next to the crosshair ({ name, color, T?, P?, note? } for ui/hud.js showReadout), or null
     get readout() { return live() && mode === 'on' && toolbelt ? toolbelt.readout : null; },
     get figure() { return figure; },
+    held,                        // the tool in hand on the body (held.js): holding, weight (checks)
     get npc() { return npcs.values().next().value ?? null; },   // the first NPC, once loaded (checks)
     get npcs() { return [...npcs.values()]; },
     events: povEvents,           // the POV event bus (checks)

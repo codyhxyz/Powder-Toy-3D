@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { lib } from '../shaders/render.js';
 import { BODY_HEIGHT, BODY_WIDTH } from './constants.js';
+import { limb as ikLimb, solveLimb } from './limbs.js';
 
 // The body you see in third person and when you die, built from three.js
 // primitives in grid cells and scaled into the world. createFigure(build)
@@ -101,11 +102,19 @@ const KICK_EXTEND_END = 0.45;            // ...then extending; the rest retracts
 const KICK_CHAMBER = [1.35, -1.9];       // rad: hip forward, knee folded
 const KICK_EXTEND = [1.5, -0.05];        // rad: leg straight out, about level
 const KICK_LEAN = -0.25;                 // rad: torso back, against the kick
+// Looking up and down (s.look: the look's pitch, and the share of it the torso
+// takes for a held tool's aim, holds.js): the head follows most of what's left
+export const HEAD_LOOK = 0.8;            // share of the look's pitch the head turns
+export const HEAD_LOOK_MAX = 1.1;        // rad the head turns at most, up or down
+// Reaching (reach(): a held tool's grips, a pogo stick's pegs): where the joints point, cells
+// from the shoulder or hip in the body's frame (right, up, back); the left side mirrors right
+export const ELBOW_POLE = [1, -1.5, 0.6];   // down, out to the side, a little back
+export const KNEE_POLE = [0, -0.5, -2];      // ahead
 
 const smooth01 = (x) => { const t = Math.min(Math.max(x, 0), 1); return t * t * (3 - 2 * t); };
 const approach = (rate, dt) => 1 - Math.exp(-rate * dt);
 
-const figureVert = /* glsl */ `
+export const figureVert = /* glsl */ `
 uniform mat4 uWorldToGrid;
 out vec3 vGrid;
 out vec3 vN;
@@ -303,6 +312,13 @@ export function createFigure(build = buildStick) {
   let phase = 0, clock = 0, pitch = 0, facing = 0;
 
   function setTarget(k, v, weight) { T[k] += v * weight; }
+  // the limbs reach() bends (the stickman's lengths, unless the look has its own): the elbows bend forward (+x), the knees back (−x)
+  const hand = new THREE.Vector3(0, -(rig.forearm ?? FOREARM), 0), foot = new THREE.Vector3(0, -(rig.shin ?? SHIN), 0);
+  const limbs = {
+    armR: ikLimb(shR, elR, hand, 1), armL: ikLimb(shL, elL, hand, 1),
+    legR: ikLimb(hipR, knR, foot, -1), legL: ikLimb(hipL, knL, foot, -1),
+  };
+  const vPole = new THREE.Vector3();
 
   return {
     root,
@@ -338,10 +354,15 @@ export function createFigure(build = buildStick) {
     },
     // s = { feet (world), scale, yaw, worldToGrid (Matrix4), speedH (cells/s), velY (cells/s),
     //       onGround, inLiquid, dead, deadTime (s), heat (0..1), jetting, status (status.js set: its stains tint the body),
-    //       crouch (0 standing … 1 crouched) }
+    //       crouch (0 standing … 1 crouched), look ({ pitch, spine }: the head and the torso follow the look),
+    //       lift (cells the body rides up off its feet: a pogo stick's pegs), ride (on a pogo stick) }
     update(dt, s) {
       clock += dt;
+      // riding (a pogo stick: s.ride): standing still on its pegs, whatever the body is doing under it
+      const riding = !!s.ride && !s.dead;
+      if (riding) s = { ...s, onGround: true, inLiquid: false, speedH: 0 };
       root.position.copy(s.feet);
+      root.position.y += (s.lift ?? 0) * s.scale;
       root.scale.setScalar(s.scale);
       uniforms.uWorldToGrid.value.copy(s.worldToGrid);
       uniforms.uEmit.value.set(...HEAT_GLOW).multiplyScalar(s.heat ?? 0);
@@ -453,8 +474,10 @@ export function createFigure(build = buildStick) {
       shR.rotation.set(J.shR, 0, J.armOut);
       elL.rotation.x = J.elL;
       elR.rotation.x = J.elR;
-      torso.rotation.x = -J.lean;
-      neck.rotation.x = J.headPitch;
+      const look = !s.dead && s.look ? s.look : null;
+      const aimLean = look ? look.pitch * look.spine : 0;
+      torso.rotation.x = -J.lean + aimLean;
+      neck.rotation.x = J.headPitch + (look ? THREE.MathUtils.clamp((look.pitch - aimLean) * HEAD_LOOK, -HEAD_LOOK_MAX, HEAD_LOOK_MAX) : 0);
       body.position.y = HIP - J.drop;
 
       // swim pitch about the hips; death topples the whole body backward about the feet
@@ -484,15 +507,33 @@ export function createFigure(build = buildStick) {
         knR.rotation.x = at(J.knR, 1);
         torso.rotation.x = -J.lean - KICK_LEAN * (chamber - back);
       }
-      contact.visible = s.onGround && !s.dead;
+      contact.visible = s.onGround && !s.dead && !riding;
       for (const f of flames) {
         f.visible = !!s.jetting && !s.dead;
         f.scale.set(1, 1 + (Math.random() * 2 - 1) * FLAME_FLICKER, 1);
       }
     },
     setVisible(v) { root.visible = v; },
-    // where this body's jetpack exhaust leaves (vfx.js), JET_NOZZLES' shape
-    nozzles: rig.nozzles ?? JET_NOZZLES,
+    // the eye (world), riding the torso: a held tool's aim frame hangs from it (held.js)
+    anchor(out) {
+      neck.updateWorldMatrix(true, false);
+      return neck.localToWorld(out.set(0, NECK + HEAD / 2, 0));
+    },
+    // Hands and feet to points (world), after update(): { right, left } grips ({ pos },
+    // the stickman has no wrist to turn), feet [right, left], weight 0..1 of the reach over the pose
+    reach({ right = null, left = null, feet = null, weight = 1 }) {
+      if (!(weight > 0)) return;
+      const go = (L, at, pole, side) => {
+        const q0 = L.upper.quaternion.clone(), q1 = L.lower.quaternion.clone();
+        L.upper.parent.localToWorld(vPole.set(side * pole[0], pole[1], pole[2]).add(L.upper.position));
+        solveLimb(L, at, vPole);
+        if (weight < 1) { L.upper.quaternion.copy(q0.slerp(L.upper.quaternion, weight)); L.lower.quaternion.copy(q1.slerp(L.lower.quaternion, weight)); }
+      };
+      root.updateWorldMatrix(true, true);
+      if (right) go(limbs.armR, right.pos, ELBOW_POLE, 1);
+      if (left) go(limbs.armL, left.pos, ELBOW_POLE, -1);
+      if (feet) { go(limbs.legR, feet[0], KNEE_POLE, 1); go(limbs.legL, feet[1], KNEE_POLE, -1); }
+    },
     dispose() {
       for (const m of mats) m.dispose();
       for (const m of glowMats) m.dispose();
