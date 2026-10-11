@@ -11,12 +11,17 @@
 //            within that weight of it, so the hand-off doesn't pop; lodFade
 //            against its JS formula
 //   floor    the floor's grid lines, shaded after the march where WGSL has
-//            no derivatives, take fwidth analytically from the pixel's
-//            footprint (surface.js floorFwidth): in a fragment shader whose
-//            every pixel sees the floor, against fwidth() itself (uniform
-//            control flow) for cameras at several elevations and headings,
-//            and surfView's pixel angle (dpdx/dpdy of the ray) against the
-//            camera's
+//            no derivatives, take fwidth from the ray derivatives surfView
+//            kept (surface.js floorFwidth): in a fragment shader whose every
+//            pixel sees the floor, against fwidth() itself (uniform control
+//            flow), at the image centre for cameras at several elevations
+//            and headings and across the screen (edges, corners) of 60° and
+//            90° views; the same through a plane mirror (floorFwidthMirror,
+//            reflectTrace's floor); surfView's pixel angle against each
+//            pixel's own; controls: the no-derivative fallback (the ray's
+//            heading) holds at the centre and drifts off it, and an
+//            isotropic footprint is off everywhere, both by more than the
+//            check allows
 //   combos   every combination of the nine close-up detail switches
 //            (gfx/detail.js, 2^9 = 512 module texts of the realistic probe)
 //            validates with Tint as check-wgsl (a) does (no error, no
@@ -215,18 +220,39 @@ const NL: u32 = 64u;
     // ------------------------------------------------------------ floor
     if (ONLY.includes('floor')) {
       const page = await openHarness(browser, vite, '/tools/harness/lib.html', { errors });
-      console.log('\nfloor: the grid lines\' analytic fwidth against fwidth(), 4×4 pixels per camera');
-      // pinhole cameras without roll: eye height, elevation of the view
-      // (degrees below the horizon), heading (degrees about y), pixel angle
-      const cams = [];
-      for (const el of [8, 20, 45, 70, 89]) for (const hd of [0, 37, 90, 211]) cams.push({ el, hd, h: 40, pix: 1e-3 });
-      cams.push({ el: 30, hd: 15, h: 300, pix: 2e-4 }, { el: 60, hd: 300, h: 5, pix: 4e-3 });
+      console.log('\nfloor: the grid lines\' fwidth from the ray derivatives against fwidth(), a 4×4 patch per run');
+      // Pinhole cameras without roll: eye height h, elevation of the view el
+      // (degrees below the horizon), heading hd (degrees about y), pix =
+      // tan(fovY/2) / (half the screen's height): radians per pixel at the
+      // image centre. A run renders a 4×4 patch whose centre sits off (x, y)
+      // pixels from the image centre (y down).
+      const runs = [];
+      for (const el of [8, 20, 45, 70, 89]) for (const hd of [0, 37, 90, 211]) runs.push({ el, hd, h: 40, pix: 1e-3, off: [0, 0] });
+      runs.push({ el: 30, hd: 15, h: 300, pix: 2e-4, off: [0, 0] }, { el: 60, hd: 300, h: 5, pix: 4e-3, off: [0, 0] });
+      // across a 1600×900 screen: its edges' midpoints and corners
+      const W = 800, H = 450;
+      const offs = [[W, 0], [-W, 0], [0, H], [0, -H], [W, H], [-W, H], [W, -H], [-W, -H]];
+      const views = [];
+      for (const el of [20, 45, 70]) for (const hd of [37, 211]) views.push({ el, hd, fov: 60 });
+      views.push({ el: 30, hd: 120, fov: 90 }, { el: 60, hd: 120, fov: 90 });
+      for (const v of views) {
+        const pix = Math.tan((v.fov * Math.PI) / 360) / H;
+        for (const off of [[0, 0], ...offs]) runs.push({ ...v, h: 40, pix, off });
+      }
+      const PIX_SCALE = 1.5;   // a render scale, so the factor GLSL applied to fwidth is checked too
       const frame = new ArrayBuffer(bindings.FrameUniforms.size);
-      bindings.FrameUniforms.write(new DataView(frame), 0, { pixScale: 1, sun: [0.4, 0.8, 0.45] });
+      bindings.FrameUniforms.write(new DataView(frame), 0, { pixScale: PIX_SCALE, sun: [0.4, 0.8, 0.45] });
       const header = new ArrayBuffer(common.Header.size);
       common.Header.write(new DataView(header), 0, { origin: [0, 0, 0], src: 0, dst: 0 });
       const layouts = surface.materialProbeLayouts().map((e) => [...e]);
       layouts[3] = [...layouts[3], { binding: 2, visibility: common.STAGE.FRAGMENT, buffer: { type: 'storage' } }];
+      // io: [0] eye, pix; [1] forward; [2] the patch's offset; [3] the
+      // mirror's plane (unit normal facing the eye, d: n·p = d); then 16
+      // pixels each of: [4+] fwidth (x, z), floorFwidth; [20+] surfView's
+      // angle, the no-derivative fallback, an isotropic footprint/|rd.y|;
+      // [36+] through the mirror: fwidth, floorFwidthMirror; [52+] rd.y,
+      // the mirror point's height, the reflected ray's y, its distance;
+      // [68+] floorFwidth of the reflected floor point
       const code = `${surface.materialModule(g, {})}
 ${(await src('gpu/wgsl.js')).fullscreenVert('vs')}
 @group(3) @binding(2) var<storage, read_write> io: array<vec4f>;
@@ -237,52 +263,116 @@ ${(await src('gpu/wgsl.js')).fullscreenVert('vs')}
   let fwd = io[1].xyz;
   let right = normalize(cross(fwd, vec3f(0.0, 1.0, 0.0)));
   let up = cross(right, fwd);
-  let px = frag.position.xy - 2.0;   // from the 4×4 target's centre, y down
+  let px = frag.position.xy - 2.0 + io[2].xy;   // from the image centre, y down
   let rd = normalize(fwd + (px.x * right - px.y * up) * pix);
   surfView(eye, rd);
+  // (uniform control flow throughout: nothing branches, so fwidth() is exact)
   let hp = eye + rd * (-eye.y / rd.y);
-  let fw = fwidth(worldPos(hp).xz);   // (uniform control flow: nothing has branched)
+  let fw = fwidth(worldPos(hp).xz) * FU.pixScale;   // the GLSL's fwidth(q) * uPixScale, q in cells
   let i = u32(frag.position.x) + 4u * u32(frag.position.y);
-  io[2u + i] = vec4f(fw, floorFwidth(hp, rd));
-  io[18u + i] = vec4f(gPixAng, footprint(hp), footprint(hp) / max(abs(rd.y), 1e-3), 0.0);
+  io[4u + i] = vec4f(fw, floorFwidth(hp, rd));
+  let fallback = floorFwidthRay(distance(hp, eye), rd, vec3f(0.0), vec3f(0.0));
+  io[20u + i] = vec4f(gPixAng, fallback, footprint(hp) / max(abs(rd.y), 1e-3));
+  // a plane mirror between the eye and the floor, as reflectTrace starts off it
+  let nm = io[3].xyz;
+  let tm = (io[3].w - dot(nm, eye)) / dot(nm, rd);
+  let m = eye + rd * tm;
+  let r = reflect(rd, nm);
+  let ro = m + nm * REFL_START;
+  let hr = ro - r * (ro.y / r.y);
+  io[36u + i] = vec4f(fwidth(worldPos(hr).xz) * FU.pixScale, floorFwidthMirror(hr, r, ro));
+  io[52u + i] = vec4f(rd.y, m.y, r.y, tm);
+  io[68u + i] = vec4f(floorFwidth(hr, r), 0.0, 0.0);   // (the control: as if the ray came straight from the eye)
   return vec4f(0.0);
 }`;
       const fill = {
         '0.0': { data: b64(new Uint8Array(common.tablesBuffer())) }, '0.1': { data: b64(new Uint8Array(frame)) },
         '3.0': { data: b64(new Uint8Array(header)) }, '3.1': { size: 256 }, '2.15': { samp: { address: 'repeat' } },
       };
-      let worstFw = 0, worstAng = 0, worstNaive = 0, ran = 0;
+      // each pixel's own angle, as dpdx/dpdy take it: the step to its quad
+      // neighbour of the unit ray, the larger of the two axes
+      const norm = (v) => { const l = Math.hypot(...v); return v.map((x) => x / l); };
+      const rayAt = (c, f, r, u, x, y) => norm([0, 1, 2].map((k) => f[k] + (x * r[k] - y * u[k]) * c.pix));
+      const STEEP = 0.05;   // |rd.y| below this the floor is so foreshortened that fwidth's one-pixel difference isn't a derivative
+      const stat = () => ({ worst: 0, n: 0, at: '' });
+      const on = stat(), offAxis = stat(), mirror = stat(), straight = stat(), ang = stat(), fbOn = stat(), fbOff = stat(), naive = stat();
+      const note = (s, e, at) => { s.n++; if (e > s.worst) { s.worst = e; s.at = at; } };
       const bad = [];
-      for (const c of cams) {
+      let ran = 0, mirrorRuns = 0, skipped = 0;
+      for (const c of runs) {
         const el = (c.el * Math.PI) / 180, hd = (c.hd * Math.PI) / 180;
         const fwdv = [Math.cos(el) * Math.sin(hd), -Math.sin(el), Math.cos(el) * Math.cos(hd)];
-        const io = new Float32Array(34 * 4);
-        io.set([7.3, c.h, -11.9, c.pix, ...fwdv, 0]);
+        const right = norm([-fwdv[2], 0, fwdv[0]]);   // cross(fwd, y)
+        const up = [right[1] * fwdv[2] - right[2] * fwdv[1], right[2] * fwdv[0] - right[0] * fwdv[2], right[0] * fwdv[1] - right[1] * fwdv[0]];
+        // the patch's centre ray; the mirror: a plane through its point at 40%
+        // of the way to the floor, facing back along the view's heading and
+        // tipped down 10° (the ray turns down, so it still meets the floor),
+        // upright for steep views
+        const eye = [7.3, c.h, -11.9];
+        const rc = rayAt(c, fwdv, right, up, c.off[0], c.off[1]);
+        const pm = eye.map((e, k) => e + rc[k] * 0.4 * (-eye[1] / rc[1]));
+        const tip = c.el >= 45 ? 0 : -Math.sin(Math.PI / 18);
+        const hv = norm([rc[0], 0, rc[2]]);
+        const nm = norm([-hv[0], tip, -hv[2]]);
+        const io = new Float32Array(84 * 4);
+        io.set([...eye, c.pix, ...fwdv, 0, ...c.off, 0, 0, ...nm, nm[0] * pm[0] + nm[1] * pm[1] + nm[2] * pm[2]]);
         const groups = layouts.map((entries, gi) => entries.map((e) => ({ ...e,
           ...(gi === 3 && e.binding === 2 ? { data: b64(new Uint8Array(io.buffer)), read: true } : fill[`${gi}.${e.binding}`] ?? {}) })));
-        const r = await page.evaluate((j) => window.__harness.run('run', j), { label: `floor ${c.el}/${c.hd}`, code, kind: 'render', groups, budgetMs: BUDGET });
-        if (!r.ok) { bad.push(`camera ${c.el}°/${c.hd}°: ${r.stage}: ${r.error}`); continue; }
+        const where = `${c.fov ? `${c.fov}° view ` : ''}el ${c.el}° hd ${c.hd}° patch (${c.off})`;
+        const r = await page.evaluate((j) => window.__harness.run('run', j), { label: `floor ${where}`, code, kind: 'render', groups, budgetMs: BUDGET });
+        if (!r.ok) { bad.push(`${where}: ${r.stage}: ${r.error}`); continue; }
         ran++;
         const out = f32s(r.outputs['3.2']);
-        for (let i = 0; i < 16; i++) {
-          const [fx, fz, ax, az] = out.subarray(4 * (2 + i), 4 * (3 + i));
-          const [ang, , naive] = out.subarray(4 * (18 + i), 4 * (19 + i));
+        const px = (i) => [(i & 3) - 1.5 + c.off[0], (i >> 2) - 1.5 + c.off[1]];
+        const at = (i, k) => out.subarray(4 * (k + i), 4 * (k + i + 1));
+        const rows = [...Array(16).keys()];
+        if (!rows.every((i) => at(i, 52)[0] < -STEEP)) { skipped++; continue; }   // part of the patch above or near the horizon
+        const centre = c.off[0] === 0 && c.off[1] === 0;
+        for (const i of rows) {
+          const [fx, fz, ax, az] = at(i, 4);
+          const [ga, hx, hz, nv] = at(i, 20);
           const e = Math.max(Math.abs(ax / fx - 1), Math.abs(az / fz - 1));
-          worstNaive = Math.max(worstNaive, Math.abs(naive / fx - 1), Math.abs(naive / fz - 1));
-          worstFw = Math.max(worstFw, e);
-          worstAng = Math.max(worstAng, Math.abs(ang / c.pix - 1));
-          if (!(e <= 0.12) && bad.length < 6) bad.push(`camera ${c.el}°/${c.hd}° pixel ${i}: fwidth (${fx.toPrecision(4)}, ${fz.toPrecision(4)}) analytic (${ax.toPrecision(4)}, ${az.toPrecision(4)})`);
+          note(centre ? on : offAxis, e, `${where} pixel ${i}`);
+          if (!(e <= 0.03) && bad.length < 6) bad.push(`${where} pixel ${i}: fwidth (${fx.toPrecision(4)}, ${fz.toPrecision(4)}) floorFwidth (${ax.toPrecision(4)}, ${az.toPrecision(4)})`);
+          note(centre ? fbOn : fbOff, Math.max(Math.abs(hx / fx - 1), Math.abs(hz / fz - 1)), `${where} pixel ${i}`);
+          note(naive, Math.max(Math.abs(nv / fx - 1), Math.abs(nv / fz - 1)), where);
+          // the pixel's angle: forward differences within its 2×2 quad
+          const [x, y] = px(i), qx = x - (i & 1), qy = y - ((i >> 2) & 1);
+          const d = (a, b) => Math.hypot(...a.map((v, k) => v - b[k]));
+          const want = PIX_SCALE * Math.max(d(rayAt(c, fwdv, right, up, qx + 1, y), rayAt(c, fwdv, right, up, qx, y)),
+            d(rayAt(c, fwdv, right, up, x, qy + 1), rayAt(c, fwdv, right, up, x, qy)));
+          note(ang, Math.abs(ga / want - 1), `${where} pixel ${i}`);
+        }
+        // through the mirror, where every pixel's ray meets it in front of the
+        // eye above the floor and leaves it steeply enough down (and not for
+        // the 89° views, whose rays would graze the upright mirror)
+        if (c.el <= 70 && rows.every((i) => at(i, 52)[3] > 0 && at(i, 52)[1] > 0 && at(i, 52)[2] < -STEEP)) {
+          mirrorRuns++;
+          for (const i of rows) {
+            const [fx, fz, ax, az] = at(i, 36);
+            const e = Math.max(Math.abs(ax / fx - 1), Math.abs(az / fz - 1));
+            note(mirror, e, `${where} pixel ${i}`);
+            const [sx, sz] = at(i, 68);
+            note(straight, Math.max(Math.abs(sx / fx - 1), Math.abs(sz / fz - 1)), `${where} pixel ${i}`);
+            if (!(e <= 0.03) && bad.length < 6) bad.push(`${where} mirror pixel ${i}: fwidth (${fx.toPrecision(4)}, ${fz.toPrecision(4)}) floorFwidthMirror (${ax.toPrecision(4)}, ${az.toPrecision(4)})`);
+          }
         }
       }
-      // fwidth is a difference between neighbouring pixels (exact to first
-      // order); the analytic form takes one pixel angle for both screen axes
-      // (the larger, as surfView does), so off-centre pixels and grazing
-      // views differ by a few percent
-      check(`${ran}/${cams.length} cameras (elevation 8-89°, four headings, eye 5-300 cells up): analytic/fwidth within ${(worstFw * 100).toFixed(1)}% (≤ 12%), surfView's pixel angle within ${(worstAng * 100).toFixed(2)}% of the camera's`,
-        ran === cams.length && worstFw <= 0.12 && worstAng <= 0.01, bad.join('; '));
-      // control: the footprint stretched by 1/|rd.y| on both axes (no heading)
-      // is off by several times across the view, so the check can tell
-      check(`control: an isotropic footprint/|rd.y| is off by up to ${(worstNaive * 100).toFixed(0)}% (the check sees it: > 50%)`, worstNaive > 0.5);
+      const pct = (s) => `${(s.worst * 100).toFixed(1)}%`;
+      // fwidth is a difference between neighbouring pixels, the analytic form
+      // the derivative at the pixel: they agree to first order, and differ by
+      // about a pixel's change of the derivative, most at grazing views
+      check(`${ran}/${runs.length} runs (${skipped} patches near the horizon left out): floorFwidth/fwidth within ${pct(on)} at the image centre (${on.n} pixels: elevation 8-89°, four headings, eye 5-300 cells up) and ${pct(offAxis)} off it (${offAxis.n} pixels: edges and corners of 60° and 90° views) (≤ 3%)`,
+        ran === runs.length && on.n > 0 && offAxis.n > 0 && on.worst <= 0.03 && offAxis.worst <= 0.03, bad.join('; '));
+      check(`through a plane mirror (reflectTrace's floor): floorFwidthMirror/fwidth within ${pct(mirror)} (${mirror.n} pixels, ${mirrorRuns} patches) (≤ 3%)`, mirrorRuns >= 20 && mirror.worst <= 0.03, `worst at ${mirror.at}`);
+      check(`surfView's pixel angle within ${(ang.worst * 100).toFixed(2)}% of each pixel's own (≤ 1%)`, ang.worst <= 0.01, `worst at ${ang.at}`);
+      // controls: the fallback (no derivatives, surfViewAng) takes the screen's
+      // axes as across and along the ray's heading, true only near the image
+      // centre; an isotropic footprint is off everywhere. The check sees both.
+      check(`control: the no-derivative fallback within ${pct(fbOn)} at the image centre (≤ 12%), off by up to ${pct(fbOff)} off it (${fbOff.at}; the check sees it: > 30%)`,
+        fbOn.worst <= 0.12 && fbOff.worst > 0.3);
+      check(`control: floorFwidth in the mirror (the straight distance from the eye, the derivatives unturned) is off by up to ${pct(straight)} (the check sees it: > 30%)`, straight.worst > 0.3);
+      check(`control: an isotropic footprint/|rd.y| is off by up to ${(naive.worst * 100).toFixed(0)}% (the check sees it: > 50%)`, naive.worst > 0.5);
       await page.close();
     }
 

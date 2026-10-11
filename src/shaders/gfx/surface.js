@@ -31,7 +31,7 @@ import { DETAIL, DETAIL_FADE_LO, DETAIL_FADE_HI, COST } from '../../gfx/detail.j
 // uniform control flow: the tracer calls it at the top of its entry point,
 // before any branch (docs/webgpu.md F2). Everything after the march is in
 // non-uniform control flow, where WGSL has no derivatives, so the floor's
-// grid lines take their fwidth analytically from that pixel size
+// grid lines take their fwidth analytically from those ray derivatives
 // (floorFwidth). Nothing here samples with an implicit level.
 const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
 export const surfaceGLSL = (detail = {}) => {
@@ -77,17 +77,25 @@ const PIX_ANG_MIN: f32 = 1e-5;     // clamp on a pixel's angular size (radians)
 const PIX_ANG_MAX: f32 = 0.05;
 var<private> gEye: vec3f = vec3f(0.0);
 var<private> gPixAng: f32 = PIX_ANG_INIT;
+var<private> gRdDx: vec3f = vec3f(0.0);   // the ray direction's screen derivatives (surfView; zero after surfViewAng)
+var<private> gRdDy: vec3f = vec3f(0.0);
 // The eye and a pixel's angular size (radians per rendered pixel, from the
-// ray direction's screen derivatives). Fragment shaders only, at the top of
-// the entry point in uniform control flow.
+// ray direction's screen derivatives, which are kept for floorFwidth).
+// Fragment shaders only, at the top of the entry point in uniform control flow.
 fn surfView(eye: vec3f, rd: vec3f) {
-  surfViewAng(eye, max(length(dpdx(rd)), length(dpdy(rd))));
+  let dx = dpdx(rd);
+  let dy = dpdy(rd);
+  surfViewAng(eye, max(length(dx), length(dy)));
+  gRdDx = dx;
+  gRdDy = dy;
 }
 // The same with the angular size already known (radians per rendered pixel):
 // for code that has no derivatives (a compute kernel tracing its own pixels).
 fn surfViewAng(eye: vec3f, pixAng: f32) {
   gEye = eye;
   gPixAng = clamp(pixAng * FU.pixScale, PIX_ANG_MIN, PIX_ANG_MAX);
+  gRdDx = vec3f(0.0);
+  gRdDy = vec3f(0.0);
 }
 // size of a pixel at p, in grid units
 fn footprint(p: vec3f) -> f32 { return distance(p, gEye) * gPixAng; }
@@ -1751,27 +1759,63 @@ fn shadeSurf(s0: Surf, rd: vec3f) -> vec3f {
 // per pixel along x and z, what fwidth(worldPos(hp).xz) * uPixScale was in
 // GLSL. The floor is shaded after the march, in non-uniform control flow,
 // where WGSL has no derivatives (docs/webgpu.md F2), so it is worked out from
-// the pixel's footprint (footprint(hp): its size across the ray), which a
-// floor seen at elevation asin|rd.y| stretches by 1/|rd.y| along the ray's
-// heading h. For a camera without roll, the screen's x axis runs across the
-// heading and its y axis along it, so fwidth (|d/dx| + |d/dy|) of x is
-// fp·|h.z| + fp·|h.x|/|rd.y|, and of z the same with h's parts swapped. A
-// render-only change: within a pixel of the GLSL's except where the floor
+// the ray direction's screen derivatives, which surfView took at the top of
+// the entry point. A ray that has come a path t meets the floor at
+// hp = o + rd·t with t = −o.y / rd.y, so one pixel to the side moves hp by
+// t·(drd − rd·drd.y / rd.y): the plane's own derivative, which fwidth's
+// difference between neighbouring pixels is to first order, anywhere on the
+// screen and for any camera. The ray is taken as straight from the eye
+// (hazeBend and refraction bend it a little; the quad difference saw that).
+// A render-only change: within a pixel of the GLSL's except where the floor
 // meets other geometry, where the derivative across the edge was meaningless.
 const FLOOR_FW_SIN_MIN: f32 = 1e-3;   // floor on |rd.y| (a ray along the floor sees it infinitely stretched)
-fn floorFwidth(hp: vec3f, rd: vec3f) -> vec2f {
-  let fp = footprint(hp);
-  let lh = length(rd.xz);
-  var h = vec2f(1.0, 0.0);   // looking straight down: any heading
-  if (lh > 1e-6) { h = rd.xz / lh; }
-  return fp * (abs(h.yx) + abs(h) / max(abs(rd.y), FLOOR_FW_SIN_MIN));
+// t: the ray's path from the eye; dx, dy: its direction's change per pixel
+fn floorFwidthRay(t: f32, rd: vec3f, dx: vec3f, dy: vec3f) -> vec2f {
+  let ry = select(-1.0, 1.0, rd.y > 0.0) * max(abs(rd.y), FLOOR_FW_SIN_MIN);
+  if (dot(dx, dx) + dot(dy, dy) == 0.0) {
+    // No derivatives (surfViewAng): the pixel's footprint across the ray,
+    // stretched by 1/|rd.y| along the ray's heading h. Near the image centre
+    // of a camera without roll the screen's x axis runs across the heading
+    // and its y axis along it, so fwidth of x is t·pix·(|h.z| + |h.x|/|rd.y|),
+    // and of z the same with h's parts swapped. Off the axis that drifts
+    // (1.9x at the side edges of a 60° view), so it is only the fallback.
+    let lh = length(rd.xz);
+    var h = vec2f(1.0, 0.0);   // looking straight down: any heading
+    if (lh > 1e-6) { h = rd.xz / lh; }
+    return t * gPixAng * (abs(h.yx) + abs(h) / abs(ry));
+  }
+  let ex = t * (dx - rd * (dx.y / ry));
+  let ey = t * (dy - rd * (dy.y / ry));
+  return (abs(ex.xz) + abs(ey.xz)) * FU.pixScale;
+}
+fn floorFwidth(hp: vec3f, rd: vec3f) -> vec2f { return floorFwidthRay(distance(hp, gEye), rd, gRdDx, gRdDy); }
+// The same for a ray a mirror at m turned into rd (reflectTrace's floor). A
+// plane mirror reflects the whole path: hp is the mirror image of a point on
+// the eye's straight ray as far as eye → m → hp, and the ray's derivatives
+// turn as the ray does, by I − 2·nm·nmᵀ; with that path and those derivatives
+// the plane form above holds. nm lies along the difference of the two
+// directions, the incoming one taken straight from the eye. A ripple's
+// curvature, which spread the GLSL's quad difference too, is left out.
+fn floorFwidthMirror(hp: vec3f, rd: vec3f, m: vec3f) -> vec2f {
+  let v = m - gEye;
+  let k = rd - v / max(length(v), 1e-6);
+  var dx = gRdDx;
+  var dy = gRdDy;
+  if (dot(k, k) > 1e-8) {   // (else a grazing hit that hardly turned the ray)
+    let nm = normalize(k);
+    dx -= 2.0 * dot(nm, dx) * nm;
+    dy -= 2.0 * dot(nm, dy) * nm;
+  }
+  return floorFwidthRay(length(v) + distance(m, hp), rd, dx, dy);
 }
 
 const FLOOR_LINE_ALB: vec3f = vec3f(0.075, 0.078, 0.085);   // the grid's seams, darker than the floor
 const FLOOR_LINE_CELLS: f32 = 8.0;   // cells between the floor's grid lines
-fn shadeFloor(hp: vec3f, rd: vec3f) -> vec3f {
+fn shadeFloor(hp: vec3f, rd: vec3f) -> vec3f { return shadeFloorFw(hp, floorFwidth(hp, rd)); }
+// fw: the grid lines' fwidth there (floorFwidth, or floorFwidthMirror in a reflection)
+fn shadeFloorFw(hp: vec3f, fw: vec2f) -> vec3f {
   let q = worldPos(hp).xz / FLOOR_LINE_CELLS;
-  let gq = abs(fract(q - 0.5) - 0.5) / max(floorFwidth(hp, rd) / FLOOR_LINE_CELLS, vec2f(1e-4));
+  let gq = abs(fract(q - 0.5) - 0.5) / max(fw / FLOOR_LINE_CELLS, vec2f(1e-4));
   let line = 1.0 - min(min(gq.x, gq.y), 1.0);
   let alb = mix(GROUND_ALB, FLOOR_LINE_ALB, line);
   let n = vec3f(0.0, 1.0, 0.0);

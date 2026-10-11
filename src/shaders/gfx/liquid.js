@@ -1,7 +1,7 @@
 
 // Transparent media: liquids (smooth surfaces) and crisp glass. WGSL (the
 // names are the GLSL version's, docs/webgpu.md W2), pasted after surfaceGLSL
-// (reflectTrace shades what it meets with crispHit and shadeFloor). The
+// (reflectTrace shades what it meets with crispHit and shadeFloorFw). The
 // GLSL's inout parameters are pointers; sunShadow(p) of a point inside a
 // volume is lighting.js's sunShadowAt.
 export const liquidGLSL = /* wgsl */ `
@@ -199,7 +199,11 @@ fn reflectTrace(ro: vec3f, rd0: vec3f, env: vec3f) -> vec3f {
     cell[ax] += istp[ax];
     tMax[ax] += tDelta[ax];
   }
-  if (cell.y < 0 && rd.y < 0.0) { return shadeFloor(ro - rd * (ro.y / rd.y), rd); }
+  if (cell.y < 0 && rd.y < 0.0) {
+    // the floor, its grid lines as wide as the whole path from the eye makes them
+    let hp = ro - rd * (ro.y / rd.y);
+    return shadeFloorFw(hp, floorFwidthMirror(hp, rd, ro));
+  }
   return env;
 }
 
