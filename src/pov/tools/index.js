@@ -444,8 +444,7 @@ export function createToolbelt(env) {
         if (!helpless && !editor.open) held()?.update(ctx);
       }
       tools.forEach((t) => t.inst.tick?.(ctx));   // what every tool keeps doing, held or not (a torch lying lit)
-      readout = wandSelected ? { name: wandRuntime.definition?.name ?? 'Wand', color: WAND_COLOR, note: String(wandRuntime.status() ?? '') }
-        : held()?.readout?.(ctx) ?? null;
+      readout = wandSelected ? null : held()?.readout?.(ctx) ?? null;   // a wand shows no name tag: Noita's HUD names the wand only in the inventory
       lastSteps = ctx.stepsPerFrame;
       ballistics.update(ctx);
       for (let i = 0; i < HOTBAR_SLOTS; i++) {
