@@ -1353,27 +1353,64 @@ const SYNC3_STAGES = {
     const sim = await h.make(n);
     const frozen = (T = -15) => boxes(sim, (box) => box(0, 0, 0, n, n, n, 'EMPTY', { T }));
     const airRange = (t) => `${t.air.Tmin.toFixed(3)}..${t.air.Tmax.toFixed(3)}`;
+    // (airT set on a written state redoes the flags once their kernel is
+    // built: built here first, so each redo records at the set)
+    await sim.prepare('fresh');
     try {
       // air at -15 °C: at room temperature's airT it isn't at rest and warms
       frozen();
       let r = await settle(sim, 24);
       let t = await tally(sim);
       check(out, `airT ${PHYS.AMBIENT}: air at -15 °C doesn't rest and warms (idle ${r.idle} after ${r.steps} steps, air ${airRange(t)})`, !r.idle && t.air.Tmin > -15);
-      // ...and at airT -15 it rests, exactly where it is. Set on a live state:
-      // every cell's flags are redone (they hold the rest test as written)
-      frozen();
+      // ...and at airT -15, set before the state is written (as app.js sets a
+      // world scene's), the same air rests, exactly where it is
       sim.airT = -15;
-      await sim.prepare('fresh');   // (the redo waits for its kernel, then records)
+      frozen();
       r = await settle(sim, 40);
       t = await tally(sim);
       check(out, `airT -15: the same air rests (idle after ${r.steps} steps) and keeps -15 °C (${airRange(t)})`, r.idle && t.air.Tmin === -15 && t.air.Tmax === -15);
-      // set back on the idle world: it wakes, and the air warms toward the new airT
+      // Set on a written state, every cell's flags are redone (a flag holds
+      // the rest test as it was written). On the idle world: it wakes, and the
+      // air warms toward the new airT
       sim.airT = PHYS.AMBIENT;
-      await sim.prepare('fresh');
       const woke = !sim.idleCertified;
       stepN(sim, 16);
       t = await tally(sim);
       check(out, `airT set back on the idle world: it wakes (${woke}) and the air warms (${airRange(t)})`, woke && t.air.Tmax > -15);
+      // On a live world, part of it asleep: room-temperature air settled at
+      // airT 20, then a block of sand painted high in one corner (an edit, not
+      // a load: the bricks round it are drawn, the far ones stay asleep), then
+      // airT -15. The air in the far quarter (x and z from 5n/8) is pulled
+      // toward -15 at the next step. The negative control writes the word
+      // straight into the tables, skipping the redo: the far air sleeps on at
+      // 20 °C. (Not for long: the drawn air is now off its rest and wakes two
+      // bricks further at each map, but the far quarter is out of reach for
+      // the two steps read here.)
+      const lively = async (setAirT) => {
+        boxes(sim, () => {});
+        const calm = await settle(sim, 40);
+        sim.paint({ center: V(4, n - 4, 4), radius: 2, shape: 1, tool: E.SAND, rate: oneShotRate(E.SAND, 1), replace: true });
+        stepN(sim, 2);
+        const live = !sim.idleCertified;
+        setAirT(-15);
+        stepN(sim, 2);
+        const [A] = await sim.readState();
+        let lo = Infinity, hi = -Infinity;
+        for (let y = 0; y < n; y++) for (let z = n * 5 / 8; z < n; z++) for (let x = n * 5 / 8; x < n; x++) {
+          const i = cellTexel(sim.g, x, y, z) * 4;
+          if (Math.round(A[i]) === E.EMPTY) { lo = Math.min(lo, A[i + 1]); hi = Math.max(hi, A[i + 1]); }
+        }
+        return { calm: calm.idle, live, lo, hi, range: `${lo.toFixed(3)}..${hi.toFixed(3)}` };
+      };
+      const word = (v) => gpu.write(gpu._simTables.buffer, gpu._simTables.airTOffset, new Float32Array([v]));
+      const set = await lively((v) => { sim.airT = v; });
+      sim.airT = PHYS.AMBIENT;
+      const skip = await lively(word);
+      word(PHYS.AMBIENT);
+      check(out, `airT set on a live world (idle ${set.calm} before the sand, live ${set.live} after): the far air, asleep, is pulled toward -15 at once (${set.range} after 2 steps)`,
+        set.calm && set.live && set.hi < PHYS.AMBIENT);
+      check(out, `negative control: airT written without the redo leaves that air asleep at ${PHYS.AMBIENT} °C (${skip.range})`,
+        skip.calm && skip.live && skip.lo === PHYS.AMBIENT && skip.hi === PHYS.AMBIENT);
       // void edges bring in still air at airT: no heat crosses the box's sides
       sim.airT = -15;
       setModes(sim, { edgeMode: EDGE.VOID });
@@ -1501,6 +1538,53 @@ const SYNC3_STAGES = {
       check(out, `a falling slab of water stays one layer (heights at steps 9, 18, 27, 36: ${layers.map((l) => l.join('/')).join(', ')})`,
         layers.every((l) => l.length === 1) && last[0] < y0 - 6);
       check(out, 'no out-of-grid access', (await sim.readDebug()) === 0);
+      // The fall is paced by the liquid's own fall age (move.js fallAge: the
+      // steps it has fallen, -vy/g), not by the frame, so a parcel falls alike
+      // whenever it left. The slab can't tell the two apart (its cells leave
+      // together, so any sequence they share keeps it one layer): here a
+      // 4×2×4 blob, moving across at 0.3 so the paced x draws count too, is
+      // released on a new grid at its first step and 6 steps later (the same
+      // parity), and its heights after each of 34 steps are the same. The
+      // negative control paces the fall by the frame (a move whose fallAge
+      // returns P.frame) and is caught.
+      const release = async (delay, move) => {
+        const s = await h.make(n);
+        try {
+          if (move) s.kernels.move = move;
+          stepN(s, delay);
+          h.seed(12345);
+          const [A, B] = s.blankState();
+          for (let y = n - 6; y < n - 4; y++) for (let z = c - 2; z < c + 2; z++) for (let x = c - 2; x < c + 2; x++) {
+            const i = cellTexel(s.g, x, y, z) * 4;
+            A[i] = E.WATER; A[i + 1] = water.temp; A[i + 2] = water.life;
+            B[i] = 0.3;
+          }
+          s.load(A, B);
+          const ys = [];
+          for (let k = 0; k < 34; k++) {
+            s.step();
+            const [S] = await s.readState();
+            let lo = n, hi = -1;
+            for (let y = 0; y < n; y++) for (let z = 0; z < n; z++) for (let x = 0; x < n; x++) {
+              if (Math.round(S[cellTexel(s.g, x, y, z) * 4]) === E.WATER) { lo = Math.min(lo, y); hi = Math.max(hi, y); }
+            }
+            ys.push(`${lo}-${hi}`);
+          }
+          return { ys, lo: Number(ys.at(-1).split('-')[0]), dbg: await s.readDebug() };
+        } finally { s.dispose(); }
+      };
+      const differ = (a, b) => a.ys.findIndex((y, k) => y !== b.ys[k]);
+      const a = await release(0), b = await release(6);
+      check(out, `the same blob released 6 steps later falls alike, step for step (heights ${a.ys.filter((_, k) => k % 6 === 5).join(', ')} at steps 6, 12, …, 30${differ(a, b) < 0 ? '' : `; ${b.ys[differ(a, b)]} at step ${differ(a, b) + 1}`})`,
+        differ(a, b) < 0 && a.lo < n - 6 - 8 && a.dbg === 0 && b.dbg === 0);
+      const code = sim.kernels.move.desc.code;
+      if (code.split('fn fallAge(').length !== 2) throw new Error('jets: move.js fallAge not found for the negative control');
+      const byFrame = gpu.kernel({ ...sim.kernels.move.desc, name: 'move (fall paced by the frame)',
+        code: `${code.replace('fn fallAge(', 'fn fallAgeShipped(')}\nfn fallAge(k: i32, vy: f32) -> u32 { return P.frame; }\n` });
+      await byFrame.ready;
+      const fa = await release(0, byFrame), fb = await release(6, byFrame);
+      check(out, `negative control: a fall paced by the frame is caught (released 6 steps later: ${differ(fa, fb) < 0 ? 'the same heights' : `${fb.ys[differ(fa, fb)]} for ${fa.ys[differ(fa, fb)]} at step ${differ(fa, fb) + 1}`})`,
+        differ(fa, fb) >= 0);
     } finally { sim.dispose(); }
     return out;
   },
