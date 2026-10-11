@@ -1,0 +1,39 @@
+/* Notices (notices.js): Garry's Mod's NoticePanel. A tab of Color(20, 20, 20, 255 × 0.6)
+   with 3 px of padding; the label is Arial at weight 500 (the GModNotify font), white with
+   a 1 px shadow of alpha 200, centred, padded by a quarter of the text height top to bottom
+   and three quarters side to side; the icon is 1.25 × the text height with a tenth of
+   itself around it. --nt-text and --nt-icon come from notices.js (ScreenScaleH(9)). The
+   colours per kind are ours: GMod's notice materials are its own pictures. */
+.toasts .nt {
+  display: flex; align-items: center; padding: 3px; border-radius: 4px;
+  background: rgba(20, 20, 20, 0.6); color: #fff;
+  font: 500 13px/1.2 Arial, Helvetica, sans-serif; text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.78);
+  white-space: nowrap; text-align: center;
+  --nt-color: #4fa3ff;
+}
+.nt-text { padding: calc(var(--nt-text, 13px) * 0.125) calc(var(--nt-text, 13px) * 0.375); }
+.nt-icon {
+  flex: none; width: var(--nt-icon, 16px); height: var(--nt-icon, 16px);
+  margin: calc(var(--nt-icon, 16px) * 0.1); fill: var(--nt-color);
+  filter: drop-shadow(1px 1px 0 rgba(0, 0, 0, 0.6));
+}
+.toasts .nt-error { --nt-color: #ff5a4a; }
+.toasts .nt-undo { --nt-color: #ffb14a; }
+.toasts .nt-hint { --nt-color: #ffe066; }
+.toasts .nt-cleanup { --nt-color: #6fdc8c; }
+
+/* the narrow layout (phones, small windows): a column under the toolbar, as styles.css
+   places .toasts, fading in and out over the notice's length */
+.toasts:not(.nt-free) .nt { white-space: normal; animation-duration: var(--nt-ms, 2200ms); }
+.toasts:not(.nt-free) .nt { --nt-text: 13px; --nt-icon: 16px; }
+
+/* the desktop: notices.js places each one, GMod's spring and all */
+.toasts.nt-free {
+  left: 0; top: 0; bottom: auto; width: 0; height: 0; transform: none; display: block;
+}
+.toasts.nt-free .nt {
+  position: absolute; left: 0; top: 0; animation: none; will-change: transform;
+  font-size: var(--nt-text);
+  width: max-content; max-width: min(36em, 60vw); white-space: normal;   /* ours: GMod's are one line; our longest wrap */
+}
+.toasts.nt-free .nt-text { text-wrap: balance; }

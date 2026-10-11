@@ -8,6 +8,17 @@
 }
 .game-dot { opacity: 0.5; margin: 0 6px; }
 
+/* the first-person HUD's own prompts give way to the match's (game/hud.js): the
+   sandbox key hint (it sat over the objective line), "Click to look around", and
+   the death screen's drop-point line and cause */
+body.game-on .pov-hint, body.game-on .pov-lock { display: none; }
+body.game-live .pov-respawn, body.game-live .pov-cause { display: none; }
+/* the carnage report has the screen: the weapon bar (z-index above the HUD's) would cover Leave */
+body.game-reporting .hotbar, body.game-reporting .hb-held { display: none !important; }
+/* Halo has no weapon selector: two guns swap on 1 / 2 or the wheel, the one in hand shows bottom-right
+   (.hb-held), and the selector would hang over the score top-centre */
+body.game-halo .hotbar { display: none !important; }
+
 /* ---- top centre: Halo's score, clock and objective */
 .game-top {
   position: absolute; top: 64px; left: 50%; transform: translateX(-50%);
@@ -17,14 +28,22 @@
 .game-top.on { display: flex; }
 .game-mode { font: 600 11px var(--ui); letter-spacing: 0.12em; text-transform: uppercase; opacity: 0.75; }
 .game-row { display: flex; align-items: stretch; gap: 6px; }
-.game-score {
-  min-width: 52px; padding: 3px 10px; border-radius: 6px; text-align: center;
-  font: 700 22px var(--ui); font-variant-numeric: tabular-nums;
-  background: rgba(20, 22, 30, 0.6); border: 2px solid var(--line-hi);
+/* a team's score: yours filled in its colour, theirs outlined; a bar under each toward the score to win */
+.game-team {
+  --c: #e8e2d0;
+  position: relative; min-width: 64px; padding: 3px 12px 6px; border-radius: 6px; text-align: center;
+  background: rgba(20, 22, 30, 0.6); border: 2px solid var(--c);
 }
-.game-score.red { border-color: #e8483d; color: #ffb3ad; }
-.game-score.blue { border-color: #3d8bff; color: #b1d0ff; }
-.game-score.infected { border-color: #86d64a; color: #d2f5b8; }
+.game-team.red { --c: #e8483d; }
+.game-team.blue { --c: #3d8bff; }
+.game-team.infected { --c: #86d64a; }
+.game-team b { display: block; font: 700 22px/1.1 var(--ui); font-variant-numeric: tabular-nums; color: color-mix(in srgb, var(--c) 45%, white); }
+.game-team.mine { background: color-mix(in srgb, var(--c) 72%, rgba(10, 12, 18, 0.6)); box-shadow: 0 0 14px color-mix(in srgb, var(--c) 45%, transparent); }
+.game-team.mine b { color: #fff; font-size: 25px; }
+.game-team-bar { display: none; position: absolute; left: 6px; right: 6px; bottom: 3px; height: 3px; border-radius: 2px; background: rgba(255, 255, 255, 0.16); overflow: hidden; }
+.game-team.barred .game-team-bar { display: block; }
+.game-team-bar i { display: block; height: 100%; width: 0; background: var(--c); transition: width 300ms var(--ease); }
+.game-team.mine .game-team-bar i { background: #fff; }
 .game-timer {
   padding: 3px 12px; border-radius: 6px; align-self: center;
   font: 600 18px var(--ui); font-variant-numeric: tabular-nums;
@@ -45,61 +64,97 @@
 .game-kill.note { color: #f2e2b0; }
 @keyframes game-in { from { opacity: 0; transform: translateY(-6px); } }
 
-/* ---- "M Match" when no match is on */
-.game-chip { position: absolute; top: 64px; left: 50%; transform: translateX(-50%); padding: 4px 10px; font: 500 12px var(--ui); display: none; opacity: 0.8; }
-.game-chip.on { display: block; }
+/* (the scoreboard on Tab is GMod's, ui/scoreboard.css): while it's up, its header has the
+   score and the clock, so the top centre (and the first spawn's keys card) steps aside for it */
+body.sb-on .game-top, body.sb-on .game-feed, body.sb-on .game-card { visibility: hidden; }
 
-/* ---- scoreboard */
-.game-board {
-  position: absolute; left: 50%; top: 150px; transform: translateX(-50%);
-  width: min(640px, calc(100vw - 32px)); padding: 14px 16px; display: none;
-}
-.game-board.on { display: block; }
-.game-board-title { font: 600 13px var(--ui); margin-bottom: 10px; text-align: center; opacity: 0.85; }
+/* ---- the carnage report's tables */
 .game-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.game-col { padding: 4px 6px 6px; border-radius: 8px; }
+.game-col.mine { background: rgba(255, 255, 255, 0.04); }
 .game-col-head { display: flex; justify-content: space-between; font: 700 15px var(--ui); padding-bottom: 6px; margin-bottom: 4px; border-bottom: 2px solid currentColor; }
 .game-col.red .game-col-head { color: #ff8a80; }
 .game-col.blue .game-col-head { color: #8bb8ff; }
 .game-col.infected .game-col-head { color: #a8e57b; }
-.game-line { display: grid; grid-template-columns: 1fr 52px 28px 28px; gap: 4px; font: 500 13px var(--ui); padding: 2px 0; font-variant-numeric: tabular-nums; }
+.game-line { display: grid; grid-template-columns: 1fr 52px 28px 28px; gap: 4px; font: 500 13px var(--ui); padding: 2px 4px; border-radius: 4px; font-variant-numeric: tabular-nums; }
+.game-line span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .game-line span:not(:first-child) { text-align: right; }
 .game-line.head { opacity: 0.55; font-size: 11px; }
-.game-line.me { color: var(--accent); font-weight: 700; }
-.game-keys { margin-top: 12px; text-align: center; font: 500 12px var(--ui); opacity: 0.7; }
+.game-line.me { color: var(--accent-ink); background: var(--accent); font-weight: 700; }
 
-/* ---- match menu (M): pointer events on, the mouse is free while it's open */
-.game-menu {
-  position: absolute; left: 50%; bottom: 24px; transform: translateX(-50%);
-  width: min(640px, calc(100vw - 32px)); padding: 12px 14px; display: none; pointer-events: auto;
-}
-.game-menu.on { display: block; }
-.game-menu-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 15px; }
-.game-x { background: none; border: 0; color: var(--muted); font-size: 22px; cursor: pointer; line-height: 1; }
-.game-picks { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 6px; }
-.game-pick {
-  display: flex; flex-direction: column; gap: 2px; text-align: left; cursor: pointer;
-  padding: 7px 9px; border-radius: var(--r-ctl); color: var(--text);
-  background: var(--raise); border: 1px solid var(--line);
-}
-.game-pick b { font: 600 13px var(--ui); }
-.game-pick span { font: 400 11px var(--ui); color: var(--muted); }
-.game-pick.on { border-color: var(--accent); background: var(--raise-hi); }
-.game-sides { display: flex; align-items: center; gap: 6px; margin: 10px 0; font: 500 12px var(--ui); color: var(--muted); }
-.game-side { padding: 4px 10px; border-radius: var(--r-ctl); cursor: pointer; color: var(--text); background: var(--raise); border: 1px solid var(--line); font: 500 12px var(--ui); }
-.game-side.on { border-color: var(--accent); }
-.game-actions { display: flex; gap: 8px; justify-content: flex-end; }
-.game-go, .game-stop { padding: 6px 14px; border-radius: var(--r-ctl); cursor: pointer; font: 600 13px var(--ui); border: 1px solid var(--line-hi); }
-.game-go { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
-.game-stop { background: var(--raise); color: var(--text); }
-.game-stop.off { display: none; }
-
-/* ---- the result */
+/* ---- a match ended by hand */
 .game-end { position: absolute; left: 50%; top: 30%; transform: translateX(-50%); text-align: center; display: none; text-shadow: 0 2px 6px rgba(0, 0, 0, 0.85); }
 .game-end.on { display: block; animation: game-in 300ms var(--ease); }
 .game-end-title { font: 800 44px var(--ui); letter-spacing: 0.02em; }
 .game-end-sub { font: 500 16px var(--ui); opacity: 0.9; margin-top: 6px; }
 
+/* ---- the carnage report (Halo 3's post-game screen): Victory / Defeat, the tables, the next match */
+.game-report {
+  position: absolute; left: 50%; top: 64px; transform: translateX(-50%);
+  width: min(680px, calc(100vw - 32px)); padding: 16px 18px 14px; display: none; text-align: center;
+}
+.game-report.on { display: block; animation: game-drop 320ms var(--ease); }
+.game-report.free { pointer-events: auto; }
+@keyframes game-drop { from { opacity: 0; transform: translate(-50%, -10px); } }
+.game-report-title { font: 800 46px/1 var(--ui); letter-spacing: 0.04em; text-transform: uppercase; font-variation-settings: 'wdth' 118; }
+.game-report[data-outcome='win'] .game-report-title { color: #ffe08a; text-shadow: 0 0 24px rgba(255, 210, 90, 0.45); }
+.game-report[data-outcome='loss'] .game-report-title { color: #ff8a80; }
+.game-report-sub { margin: 6px 0 14px; font: 500 15px var(--ui); color: var(--muted); }
+.game-report .game-cols { text-align: left; }
+.game-col.won .game-col-head b::before { content: '★ '; }
+.game-report-foot { display: flex; align-items: center; justify-content: center; gap: 2px; margin-top: 14px; font: 500 13px var(--ui); color: var(--muted); }
+.game-report-foot b { color: var(--text); font-variant-numeric: tabular-nums; }
+.game-report-foot.nonext .game-report-next, .game-report-foot.nonext .game-report-next + .game-dot { display: none; }
+.game-leave {
+  margin-left: 14px; padding: 5px 14px; border-radius: var(--r-ctl); cursor: pointer;
+  font: 600 13px var(--ui); color: var(--text); background: var(--raise-hi); border: 1px solid var(--line-hi);
+}
+.game-leave:hover { background: rgba(255, 255, 255, 0.16); }
+.game-report:not(.free) .game-leave { opacity: 0.45; }
+
+/* ---- while dead: who, with what, the respawn count (under pov.css's "You died") */
+.game-death {
+  position: absolute; left: 50%; top: calc(50% + 22px); transform: translateX(-50%);
+  display: none; flex-direction: column; align-items: center; gap: 8px; text-align: center;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.7);
+}
+.game-death.on { display: flex; animation: game-in-up 600ms 250ms var(--ease) both; }
+@keyframes game-in-up { from { opacity: 0; transform: translate(-50%, 8px); } }
+.game-death-who { font: 700 26px var(--ui); font-variation-settings: 'wdth' 112; max-width: calc(100vw - 48px); }
+.game-death-who:empty { display: none; }
+.game-death-who span { color: #c9ced8; font-weight: 500; }
+.game-death-count { font: 500 15px var(--ui); color: #c9ced8; font-variant-numeric: tabular-nums; }
+.game-death-count b { color: var(--text); font-size: 18px; }
+
+/* ---- the mouse isn't captured: one click puts you in */
+.game-play {
+  position: absolute; left: 50%; top: calc(50% - 132px); transform: translateX(-50%);
+  display: none; flex-direction: column; align-items: center; gap: 6px;
+  padding: 12px 26px 11px; border-radius: 12px;
+  background: rgba(14, 16, 22, 0.78); border: 1px solid var(--line-hi); box-shadow: var(--shadow);
+}
+.game-play.on { display: flex; animation: game-pulse 1.6s ease-in-out infinite; }
+.game-play b { font: 800 24px var(--ui); letter-spacing: 0.06em; text-transform: uppercase; }
+.game-play span { font: 500 12px var(--ui); color: var(--muted); }
+@keyframes game-pulse { 50% { border-color: var(--accent); } }
+
+/* ---- the first spawn's controls card, under the score */
+.game-card {
+  position: absolute; left: 50%; top: 150px; transform: translateX(-50%);
+  display: none; flex-wrap: wrap; justify-content: center; gap: 6px 14px;
+  width: max-content; max-width: min(620px, calc(100vw - 32px)); padding: 9px 16px;
+  font: 500 13px var(--ui); color: #c9ced8;
+  opacity: 1; transition: opacity 600ms;
+}
+.game-card.on { display: flex; animation: game-drop 400ms var(--ease); }
+.game-card.fading { opacity: 0; }
+.game-card span { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
+.game-card kbd { color: var(--text); }
+
 @media (max-width: 560px) {
-  .game-cols { grid-template-columns: 1fr; }
   .game-feed { top: 150px; }
+  .game-report-title { font-size: 34px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .game-play.on, .game-report.on, .game-card.on, .game-death.on { animation: none; }
 }

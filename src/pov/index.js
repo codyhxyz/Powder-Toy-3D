@@ -1,12 +1,14 @@
 import * as THREE from 'three';
 import { BODY_HEIGHT, BODY_WIDTH, HAND_REACH } from './constants.js';
 import { createPovCamera, ENTRY_PITCH, FIGURE_HIDE_DIST, RESPAWN_SWOOP_S, SWOOP_S } from './camera.js';
+import { createCameraArm } from './cameraArm.js';
+import { ELEMENTS } from '../elements.js';
 import { createBody } from './figureReal.js';
 import { STICK_HAND } from './figure.js';
 import { createHeld } from './held.js';
 import { gearByKey } from './tools/catalog.js';
 import { createPovHud } from './hud.js';
-import { createPovAudio } from './audio.js';
+import { createPovAudio, voiceBus } from './audio.js';
 import { createFeel } from './feel.js';
 import { createVfx } from './vfx.js';
 import { povEvents } from './events.js';
@@ -21,9 +23,12 @@ import { createClassPicker } from './classPicker.js';
 import { createVehicles } from './vehicles/index.js';
 import { createNightVision } from './nightVision.js';
 import { KICK_KEY, createKickLeg } from './kick.js';
+import { createCombat } from './combat.js';
 import { viewmodelRig, HIT } from './viewmodel.js';
 import { createGame } from '../game/index.js';
 import { createDeathWatch } from './killfeed.js';
+import { createSandboxMedals } from './sandboxMedals.js';
+import { connectAnnouncer, announceMatches } from './announcer.js';
 import { SPAWNER, ENEMY_KINDS } from '../spawners.js';
 import { createZoom, ZOOM_KEY } from './zoom.js';
 import { createTouchControls } from './touch.js';
@@ -51,6 +56,15 @@ const PREWARM_DELAY_MS = 2000;          // ms after start-up before the figure's
 const RESPAWN_DELAY = 3.5;              // s from death to respawning at the drop point on its own
 const RESPAWN_MIN = 1;                  // s after death before a click or Space respawns early (Minecraft-style: no forced wait)
 const POV_NEAR = 0.08;                  // cells: near plane in POV (a held item sits close to the eye)
+// cells: in the eyes, the march (render.js uMarchNear) draws nothing closer, so grains
+// falling past the face aren't drawn as sheets across the view. Source's VIEW_NEARZ, 7
+// units against its hull's 16-unit half-width, on this body's half-width.
+const EYE_CLIP = (7 / 16) * (BODY_WIDTH / 2);
+// Buried (the head in powder or solid: player.js buriedId), the first-person view is
+// Minecraft's in-wall overlay: the matter's colour at its 0.1 brightness (ScreenEffectRenderer)
+const BURIED_SHADE = 0.1;
+const shadeHex = (hex, k) => `#${[1, 3, 5].map((i) => Math.round(parseInt(hex.slice(i, i + 2), 16) * k).toString(16).padStart(2, '0')).join('')}`;
+const BURIED_COLOR = ELEMENTS.map((e) => shadeHex(e.color, BURIED_SHADE));
 // Wheel → notches: the first event of a gesture is one notch at once (mice
 // report anything from a few px to 120 per click), then every WHEEL_NOTCH_PX
 // more in the same direction (fast spins, trackpad swipes) is another.
@@ -89,6 +103,14 @@ export function createPov(app) {
   const povCam = createPovCamera({
     fov: () => app.settings.povFov, sensitivity: () => app.settings.sensitivity, bobbing: () => app.settings.viewBobbing,
   });
+  // the third-person and death cameras' spring arms, traced in the grid (cameraArm.js)
+  const cameraArm = createCameraArm({ renderer, cellAt: (x, y, z) => player.cellAt(x, y, z), top: () => app.getSim().g.ny });
+  const armFrom = new THREE.Vector3(), armTo = new THREE.Vector3();
+  const arm = {
+    want: (k, from, to) => cameraArm.want(k, armFrom.copy(from).applyMatrix4(worldToGrid), armTo.copy(to).applyMatrix4(worldToGrid), player.size),
+    share: (k) => cameraArm.share(k),
+  };
+  let marchNear = 0;          // cells (render.js uMarchNear), this frame's
   const zoom = createZoom();   // C (zoom.js)
   const povHud = createPovHud();
   const interact = createInteract();   // look + E (interact.js): perks, and Descent's pickups and shop
@@ -108,6 +130,8 @@ export function createPov(app) {
     bodies: () => [...(player ? [[PLAYER, player]] : []), ...[...npcs.values()].map((n) => [n.id, n.body, n.kind])],
     quiet: () => game.running,   // a team game posts its own (src/game/index.js died)
   });
+  // Halo 3's medals outside a match (sandboxMedals.js; a match's are src/game/feel.js's)
+  const medals = createSandboxMedals({ quiet: () => game.running, isPlayerDead: () => !!player?.dead });
   const loadNpcs = () => (npcLoading ??= import('./npc.js').then((m) => { npcAi = m.createAi({ renderer, getSim: app.getSim }); npcMod = m; return { mod: m, ai: npcAi }; })
     .catch((err) => { console.error('NPCs failed to load', err); npcLoading = null; throw err; }));
   // the player as something weapons hit (an NPC's axe and gun; the player's own never hit it)
@@ -123,7 +147,7 @@ export function createPov(app) {
     get body() { return player; },      // its statuses scale its weapons (targets.js dealtScale)
     hurt(amount, cause, d, opts) {
       povEvents.emit('player:hit', { amount });   // inside the attacker's povEvents.as(): carries its id
-      player.hurt(amount * PLAYER_DAMAGE_TAKEN, cause, opts);
+      player.hurt(amount * (opts?.exact ? 1 : PLAYER_DAMAGE_TAKEN), cause, opts);   // exact: Halo's numbers (halo.js)
       // d null: the weapon shoves by momentum itself (the kick: shove below)
       if (d) player.applyImpulse(d.clone().setY(Math.max(d.y, 0) + PLAYER_KNOCK_UP).normalize().multiplyScalar(PLAYER_KNOCKBACK));
     },
@@ -139,6 +163,12 @@ export function createPov(app) {
   viewmodel.name = 'pov-viewmodel';
   camera.add(viewmodel);
   viewmodel.visible = false;
+  // Halo's grenades (G), red reticle and hitmarker in a Halo match (combat.js; the melee is kick.js)
+  const combat = createCombat({
+    scene, viewmodel, hud: povHud, getSim: app.getSim, getVolume: app.getVolume, getScale: app.getScale,
+    ballistics: () => toolbelt?.ballistics ?? null, world: () => npcAi?.world ?? null,
+    active: () => mode === 'on', isTyping: app.isTyping,
+  });
 
   // the tool in hand, drawn on the body once the camera is out of the head (the
   // viewmodel shows it in first person): held.js, the body's arms on it
@@ -194,6 +224,8 @@ export function createPov(app) {
   });
   const canUse = () => isLocked() || touch.enabled;   // the tools and the kick take input
   createPovAudio({ camera, getVolume: app.getVolume, getScale: app.getScale, state: () => ({ active: active(), player, toolbelt }) });
+  connectAnnouncer(voiceBus);   // the announcer (announcer.js) speaks through the same chain...
+  announceMatches();            // ...and calls the matches' moments
 
   // ---- grid ↔ world
   const toWorld = (g, out) => out.copy(g).multiplyScalar(app.getScale()).add(app.getVolume().position);
@@ -234,6 +266,9 @@ export function createPov(app) {
     app.requestRender();
   }
 
+  // a Halo match's spawn closes it (Q does nothing in one: the hands hold the match's guns, arsenal.js)
+  povEvents.on('game:spawn', ({ bot, style }) => { if (!bot && style === 'halo' && menuOpen) { setMenu(false); requestLock(); } });
+
   // F1: the HUD and the hand hidden (death and the mouse prompt still show)
   let hudHidden = false;
   const setHudHidden = (v) => { hudHidden = v; document.body.classList.toggle('pov-nohud', v); app.requestRender(); };
@@ -263,7 +298,8 @@ export function createPov(app) {
     if ((e.code === 'ShiftLeft' || e.code === 'ShiftRight') && !e.repeat && app.settings.sprintMode === 'toggle') sprintOn = !sprintOn;
     // F1, as in Minecraft: hide the HUD and the hand, for a clean view or a screenshot
     if (e.code === 'F1') { e.preventDefault(); if (!e.repeat) setHudHidden(!hudHidden); }
-    if (e.code === 'KeyQ' && !e.repeat && mode === 'on') {
+    // (not in a Halo match: no sandbox tools, no spawn menu, docs/halo-contract.md)
+    if (e.code === 'KeyQ' && !e.repeat && mode === 'on' && game.style !== 'halo') {
       if (menuOpen) { setMenu(false); requestLock(); } else setMenu(true);
     }
     // settings and help need the mouse
@@ -286,7 +322,9 @@ export function createPov(app) {
     lock: requestLock,
     unlock: () => { if (document.pointerLockElement === canvas) document.exitPointerLock(); },
     isLocked: () => locked,
-    toast: (text) => hud.toast(text),
+    toast: (text, opts) => hud.toast(text, opts),
+    allowed: () => !(game.running && game.style === 'halo'),   // a Halo match: no classes (docs/halo-contract.md)
+    inRoom: () => game.inSpawnRoom(),                         // Siege: the side's respawn room, or setup (TF2)
   }) : null;
 
   canvas.addEventListener('mousedown', (e) => {
@@ -410,18 +448,25 @@ export function createPov(app) {
 
   const camPose = () => ({ pos: camera.position.clone(), quat: camera.quaternion.clone(), fov: camera.fov });
 
+  // Drop in. A call while a drop-in is under way waits for it (app.js startMode
+  // starts a match once the player exists). opts.swoop: s of the flight down from
+  // the god view (a match: 0, Halo's cut straight to the eyes); opts.hint: the
+  // keys' hint on the first drop-in (a match shows its own card, game/hud.js);
   // opts.at: drop in with the feet here (grid cells) and keep the body as it
   // is, health, fuel and statuses (player.teleport): a Descent level change
-  async function enter(opts = {}) {
+  let dropping = null;
+  function enter(opts) { return starting ? dropping : (dropping = dropIn(opts)); }
+  async function dropIn(opts = {}) {
+    const { swoop = SWOOP_S, hint = true } = opts;
     if (mode === 'on' || mode === 'entering' || starting) return;
-    if (app.mp.isGuest) { hud.toast("POV isn't available as a guest yet"); return; }
+    if (app.mp.isGuest) { hud.toast("POV isn't available as a guest yet", { kind: 'error' }); return; }
     if (mode === 'exiting') {   // changed our mind halfway out: fly back in
       mode = 'entering';
       povCam.startSwoop('in', camPose());
       requestLock();
       return;
     }
-    if (!createPlayer) { hud.toast('First-person mode is still being built'); return; }
+    if (!createPlayer) { hud.toast('First-person mode is still being built', { kind: 'error' }); return; }
     requestLock();   // while the key press still counts as a user gesture
     starting = true;
     const foundAt = new THREE.Vector3();   // the window's origin when the drop point was found (docs/scaling.md D11)
@@ -434,7 +479,7 @@ export function createPov(app) {
       dropPoint.z += foundAt.z - o.z;
     } catch (err) {
       console.error('POV failed to start', err);
-      hud.toast("Couldn't drop in here");
+      hud.toast("Couldn't drop in here", { kind: 'error' });
       starting = false;
       if (document.pointerLockElement === canvas) document.exitPointerLock();
       return;
@@ -462,14 +507,14 @@ export function createPov(app) {
     classes?.spawned(player);
     enteredAt.copy(dropPoint).add(app.getSim().origin);
     deadSeen = false;
-    povCam.startSwoop('in', camPose(), { duration: SWOOP_S });
+    povCam.startSwoop('in', camPose(), { duration: swoop });
     camera.near = POV_NEAR * app.getScale();
     camera.updateProjectionMatrix();
     mode = 'entering';
     document.body.classList.add('pov-on');
     hud.dismissHint();
     povHud.show(true);
-    if (firstEntry) { povHud.showHint(); firstEntry = false; }
+    if (firstEntry && hint) { povHud.showHint(); firstEntry = false; }
     app.requestRender();
   }
 
@@ -657,6 +702,7 @@ export function createPov(app) {
     }
     game.update(dt, npcMod && npcsWanted ? npcFrame : null);   // the bots, the objectives, the HUD
     deaths.update();   // the killfeed: who died this frame, and to what
+    medals.update();   // the sandbox's medal stack (its fades)
 
     takePerks();
 
@@ -673,8 +719,11 @@ export function createPov(app) {
     const pose = povCam.update({
       dt, eye: vEye, feet: vFeet, scale, speedH,
       onGround: player.onGround, inLiquid: player.inLiquid, sprinting: input.sprint && !player.crouch,
-      dead: deadSeen, deadTime, box, shake,
+      dead: deadSeen, deadTime, box, shake, arm,
     });
+    cameraArm.trace(sim);
+    const inEyes = pose.eyeDist <= FIGURE_HIDE_DIST && !driving;   // (driving, the chase camera has the view)
+    marchNear = inEyes ? EYE_CLIP * player.size : 0;
     if (pose.footfall && mode === 'on' && !deadSeen) povEvents.emit('player:step', { speed: speedH, inLiquid: player.inLiquid });
     camera.position.copy(pose.pos);
     camera.quaternion.copy(pose.quat);
@@ -764,6 +813,10 @@ export function createPov(app) {
       }
     }
     kickLeg?.update(dt);
+    combat.update({
+      dt, player, eye: ctx.eye, dir: ctx.dir, tool: toolbelt?.selectedKey ?? null,
+      live: live() && mode === 'on' && canUse() && !editing && !driving, stepsPerFrame: app.settings.paused ? 0 : app.settings.steps,
+    });
     buttons.primaryPressed = buttons.secondaryPressed = false;
     wheelNotches = 0;
 
@@ -783,6 +836,7 @@ export function createPov(app) {
       dead: deadSeen, cause: player.cause, respawnIn: (match?.delay ?? RESPAWN_DELAY) - deadTime,
       locked: canUse(), swooping: mode !== 'on',
       aimValid: aim.valid, aimInReach: aim.valid && aim.dist <= HAND_REACH, third: povCam.third,
+      buried: mode === 'on' && !deadSeen && inEyes && player.buriedId >= 0 ? BURIED_COLOR[player.buriedId] : null,
     });
   }
 
@@ -852,7 +906,9 @@ export function createPov(app) {
     get player() { return player; },
     deaths: { heldOn: (id, by) => deaths.heldOn(id, by) },   // the killfeed's books: a kill's weapon
     get toolbelt() { return toolbelt; },
+    interact,                        // look + E: the power weapons' pads and dropped guns (arsenal.js)
     active,
+    locked: canUse,   // the mouse is captured (or touch): a match's "Click to play" (game/hud.js)
     loadNpcs,
     env: () => ({ renderer, scene, getSim: app.getSim, getVolume: app.getVolume, getScale: app.getScale, ballistics: toolbelt.ballistics }),
     loadPreset: () => app.loadPreset?.(app.settings.preset),
@@ -860,11 +916,17 @@ export function createPov(app) {
     respawnPlayer(at) {
       if (!player) return;
       player.spawn(at.clone());
+      classes?.spawned(player);   // the class back on (none in a Halo match), before the game's game:spawn
       if (deadSeen) { deadSeen = false; toolbelt?.setVisible(mode === 'on'); }
       feel.reset();
     },
     freeMouse: () => { if (document.pointerLockElement === canvas) document.exitPointerLock(); },
   });
+  // TF2's class menu opens when you join a team: a Siege match's start and a team switch
+  // ('.'). A Halo match has no classes: the picker shuts (docs/halo-contract.md).
+  const joinedTf2 = () => { if (game.running && game.style === 'tf2' && player?.team) classes?.open({ joined: true }); };
+  povEvents.on('game:start', () => { if (game.style === 'halo') classes?.close({ relock: false }); else joinedTf2(); });
+  povEvents.on('game:team', ({ id }) => { if (id === PLAYER && game.running) joinedTf2(); });
 
   // god-mode keys POV takes over (app.js skips them while active)
   const blocksKey = (e) => editing || (active() && !PASS_KEYS.has(e.key) && !(e.metaKey || e.ctrlKey));
@@ -888,12 +950,15 @@ export function createPov(app) {
     openWandEditor() { if (active()) toolbelt?.openEditor(); },
     // what the held tool shows next to the crosshair ({ name, color, T?, P?, note? } for ui/hud.js showReadout), or null
     get readout() { return live() && mode === 'on' && toolbelt ? toolbelt.readout : null; },
+    get marchNear() { return active() ? marchNear : 0; },   // cells: the view's near clip (render.js uMarchNear)
     get figure() { return figure; },
     held,                        // the tool in hand on the body (held.js): holding, weight (checks)
     get npc() { return npcs.values().next().value ?? null; },   // the first NPC, once loaded (checks)
     get npcs() { return [...npcs.values()]; },
     events: povEvents,           // the POV event bus (checks)
+    medals,                      // the sandbox's medals (sandboxMedals.js): medals() the player's counts
     game,                        // team games (src/game): start(mode), end(), useLayout(layout), state
+    combat,                      // Halo combat (combat.js): frags (frag.js), throw(), red
     get vfx() { return vfx; },
     feel,
     get ctx() { return ctx; },
@@ -915,6 +980,7 @@ export function createPov(app) {
       dropPoint.z -= dz;
       player?.windowShifted(dx, dz);
       toolbelt?.windowShifted(dx, dz);
+      combat.windowShifted(dx, dz);
     },
     aimRay,
     blocksKey,

@@ -14,7 +14,7 @@ export const BRICK_CELLS = 64;                         // cells per 4³ brick
 export const STAGE_BRICKS_PER_ROW = 16;                // bricks per staging-texture row
 export const STAGE_W = BRICK_CELLS * STAGE_BRICKS_PER_ROW;   // texels per staging-texture row
 
-const slabGLSL = /* glsl */ `
+export const slabGLSL = /* glsl */ `
 #define BRICK_CELLS ${BRICK_CELLS}
 #define STAGE_W ${STAGE_W}
 // local cell l of a brick (x fastest, then y, then z) and back

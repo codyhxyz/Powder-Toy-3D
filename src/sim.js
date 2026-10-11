@@ -19,8 +19,12 @@ import { shiftFrag, giShiftFrag, flowShiftFrag, undoShiftFrag } from './shaders/
 import { CHANNELS, MEDIA, gauss5, bulkPeak, bulkPeakCubic, CUBIC_LATTICE } from './gfx/materials.js';
 import { gfxUniforms } from './gfx/uniforms.js';
 import { RegionQuads, regionMaterial } from './gfx/regions.js';
-import { ELEMENTS, mechanisms } from './elements.js';
+import { ELEMENTS, mechanisms, PROP_TOOL } from './elements.js';
+import { strokeDabs, PROP } from './editing.js';
 import { Rays } from './raysLayer.js';
+import { isDecoTool } from './elements.js';
+import { ensureDeco } from './deco.js';
+import { GRAV, EDGE, SIM_MODE_DEFAULTS } from './simModes.js';
 
 // cells/step² downward (the app's gravity setting overrides it)
 const GRAVITY_DEFAULT = 0.025;
@@ -224,6 +228,11 @@ export class Simulation {
     this.idleEpoch = 0;
     this.idleCertified = false;
     this.idleRead = null;   // at most one asynchronous one-texel readback
+    // simulation modes (src/simModes.js), set through their setters below
+    this._gravityMode = SIM_MODE_DEFAULTS.gravityMode;
+    this._airMode = SIM_MODE_DEFAULTS.airMode;
+    this._ambientHeat = SIM_MODE_DEFAULTS.ambientHeat;
+    this._edgeMode = SIM_MODE_DEFAULTS.edgeMode;
     this.gravity = GRAVITY_DEFAULT;
     // bumped by every write to the state (steps, painting, loads, undo, network
     // updates), so callers can tell when the world changed
@@ -258,6 +267,8 @@ export class Simulation {
     this.flowV = makeFieldTarget(g.width, g.height, 1, HALF, NEAR);
     // whitewater's aeration field (gfx/foam.js): made and stepped while that switch is on
     this.aeration = null;
+    // TPT's decoration layer (src/deco.js): made by the first deco stroke or a load that brings it
+    this.deco = null;
     this.fieldReset = true;
     this.smoothing = 1;
     // GI (shaders/gi.js): per-brick light sources and blockers, and the probe
@@ -357,11 +368,13 @@ export class Simulation {
     this.mats = {
       moveBlock: stepMat(moveBlockFrag(g), {
         ...state(), uParity: { value: 0 }, uFrame: { value: 0 }, uGravity: { value: this.gravity }, tQuiet: { value: null },
+        uGravMode: { value: 0 }, uEdge: { value: 0 },
       }, SUPER_MAP.BLOCKS, true),
-      moveGather: stepMat(moveGatherFrag(g), { ...state(), ...slots(), tQuiet: { value: null }, uFresh: { value: false } }, SUPER_MAP.DRAWN),
+      moveGather: stepMat(moveGatherFrag(g), { ...state(), ...slots(), tQuiet: { value: null }, uFresh: { value: false }, uEdge: { value: 0 } }, SUPER_MAP.DRAWN),
       react: stepMat(reactFrag(g), {
         ...state(), uFrame: { value: 0 }, uGravity: { value: this.gravity }, tQuiet: { value: null }, tRx: { value: this.reactionTable },
         tRayDep: { value: null }, uRays: { value: false }, uFaces: { value: FACES },
+        uGravMode: { value: 0 }, uEdge: { value: 0 }, uAirMode: { value: 0 }, uAmbientHeat: { value: true },
       }, SUPER_MAP.DRAWN),
       inert: rawMat(inertFrag(g), { tF: { value: null } }),
       inertRows: rawMat(inertRowsFrag(g), { tA: { value: null }, tF: { value: null }, tClass: { value: null }, tRx: { value: this.reactionTable } }),
@@ -377,6 +390,8 @@ export class Simulation {
         ...state(), uFrame: { value: 0 }, uCenter: { value: new THREE.Vector3() }, uRadius: { value: 4 },
         uShape: { value: 0 }, uTool: { value: 2 }, uRate: { value: 1 }, uReplace: { value: false },
         uWind: { value: new THREE.Vector3() },
+        uEnd: { value: new THREE.Vector3() }, uGrow: { value: new THREE.Vector3() }, uMasked: { value: false }, tMask: { value: null },
+        uFilter: { value: -1 }, uDelete: { value: false }, uProp: { value: 0 }, uPropValue: { value: 0 },
       }),
       copy: rawMat(copyFrag(g), state()),
       moveFlow: stepMat(moveFlowFrag(g), { ...slots(), tQuiet: { value: null } }, SUPER_MAP.STEPS),
@@ -385,7 +400,7 @@ export class Simulation {
         tDirty: { value: this.dirty.texture },
       }),
       fieldEma: fieldMat(fieldEmaFrag(g), {
-        tA: { value: null }, tP0: { value: null }, tP1: { value: null },
+        tA: { value: null }, tP0: { value: null }, tP1: { value: null }, tAer: { value: null }, uAer: { value: false },
         uEmaS: { value: new THREE.Vector4() }, uEmaM: { value: new THREE.Vector4() }, uShift: { value: new THREE.Vector3() },
       }, DIRTY.EMA),
       fieldCopy: fieldMat(fieldCopyFrag(), { t0: { value: null }, t1: { value: null }, t2: { value: null } }, DIRTY.EMA),
@@ -393,6 +408,7 @@ export class Simulation {
       fieldFinal: fieldMat(fieldBlurFrag(g, true), fieldBlurUniforms(), DIRTY.WORK),
       fieldBoost: [...Array(BOOST_STAGES).keys()].map((stage) => fieldMat(fieldBoostFrag(g, stage), {
         tA: { value: null }, t0: { value: null }, t1: { value: null }, tPhi: { value: null }, tMed: { value: null },
+        tAer: { value: null }, uAer: { value: false },
         uS: { value: new THREE.Vector4(...CHANNELS.map((c) => (c.cubic ? CUBIC_LATTICE[1] : 1))) },
         uBulk: { value: new THREE.Vector4() }, tDirty: { value: this.dirty.texture },
       }, stage === BOOST_STAGES - 1 ? DIRTY.FIELDS : DIRTY.WORK)),
@@ -404,7 +420,7 @@ export class Simulation {
       dirty: rawMat(dirtyFrag(g), { tAge: { value: null } }),
       regionMap: rawMat(fieldRegionMapFrag(g), { tDirty: { value: this.dirty.texture } }),
       regionShare: rawMat(regionShareFrag(g), { tRegion: { value: this.regionMap.texture } }),
-      blur: rawMat(blurFrag(g), { tSrc: { value: null }, uAxis: { value: 0 } }),
+      blur: rawMat(blurFrag(g), { tSrc: { value: null }, tDist: { value: null }, uAxis: { value: 0 } }),
       brickDist: [0, 1, 2].map((axis) => rawMat(brickDistFrag(g, axis), { tSrc: { value: null } })),
       giSource: rawMat(giSourceFrag(g), { ...giUniforms(), ...giProbeUniforms() }),
       // the far field's part is in for a box too, off (shaders/far.js WORLD_SIZE; world/far.js attach turns it on)
@@ -458,8 +474,25 @@ export class Simulation {
   }
 
   // Settings can change while asleep (including away and back during a readback).
-  get gravity() { return this._gravity; }
+  // gravity: cells/step², as the app's setting has it; read back, what pulls
+  // (none with the gravity mode off: the first-person body, shots and the
+  // physgun read it too, so they float as TPT's stickman does, STKM.cpp)
+  get gravity() { return this._gravityMode === GRAV.OFF ? 0 : this._gravity; }
   set gravity(v) { if (v !== this._gravity) { this._gravity = v; this.wake(); } }
+  // Simulation modes (src/simModes.js). World's window keeps solid edges:
+  // its edge is the store's boundary, not the world's.
+  get gravityMode() { return this._gravityMode; }
+  set gravityMode(v) { if (v !== this._gravityMode) { this._gravityMode = v; this.wake(); } }
+  get airMode() { return this._airMode; }
+  set airMode(v) { if (v !== this._airMode) { this._airMode = v; this.wake(); } }
+  get ambientHeat() { return this._ambientHeat; }
+  set ambientHeat(v) { if (v !== this._ambientHeat) { this._ambientHeat = v; this.wake(); } }
+  get edgeMode() { return this._edgeMode; }
+  set edgeMode(v) { v = this.g.windowed ? EDGE.SOLID : v; if (v !== this._edgeMode) { this._edgeMode = v; this.wake(); } }
+  // May quiet bricks be skipped? Not where a resting cell could still move:
+  // the rest test (shaders/activity.js) knows only vertical gravity and solid
+  // edges, so radial gravity and open or looping edges step every brick.
+  get quietOk() { return this._skipQuiet && this._gravityMode !== GRAV.RADIAL && this._edgeMode === EDGE.SOLID; }
   get skipQuiet() { return this._skipQuiet; }
   set skipQuiet(v) { if (v !== this._skipQuiet) { this._skipQuiet = v; this.wake(); } }
   get skipSleeping() { return this._skipSleeping; }
@@ -476,7 +509,7 @@ export class Simulation {
   // this state themselves. External writes/settings invalidate even a late
   // result; ordinary steps/map rebuilds need not, so a slow read can finish.
   checkIdle() {
-    if (this.idleRead || this.idleCertified || !this.skipQuiet || !this.skipSleeping || this.rays.active || this.disposed) return;
+    if (this.idleRead || this.idleCertified || !this.quietOk || !this.skipSleeping || this.rays.active || this.disposed) return;
     const epoch = this.idleEpoch;
     const pixels = new Float32Array(4).fill(NaN);   // a failed/unsupported read must not certify sleep
     this.idleRead = this.renderer.readRenderTargetPixelsAsync(this.superShare, 0, 0, 1, 1, pixels)
@@ -519,6 +552,24 @@ export class Simulation {
     this.renderer.readRenderTargetPixels(t, i % w, Math.floor(i / w), 1, 1, a, undefined, 0);
     this.renderer.readRenderTargetPixels(t, i % w, Math.floor(i / w), 1, 1, b, undefined, 1);
     return [a, b];
+  }
+
+  // A w × h rectangle of the state atlas at texel (x, y), read back into a
+  // and b (Float32Array RGBA per texel, row by row, in the fetchA/fetchB
+  // layout): synchronously (it stalls until the GPU is done), or with async a
+  // promise that resolves once the GPU has got there, without stalling (the
+  // console's reads, src/console/gpu.js).
+  readStateRect(x, y, w, h, a, b, async = false) {
+    const t = this.targets[this.cur];
+    if (!async) {
+      this.renderer.readRenderTargetPixels(t, x, y, w, h, a, undefined, 0);
+      this.renderer.readRenderTargetPixels(t, x, y, w, h, b, undefined, 1);
+      return null;
+    }
+    return Promise.all([
+      this.renderer.readRenderTargetPixelsAsync(t, x, y, w, h, a, undefined, 0),
+      this.renderer.readRenderTargetPixelsAsync(t, x, y, w, h, b, undefined, 1),
+    ]);
   }
 
   // Block until the GPU has done everything queued so far, by reading one
@@ -611,7 +662,7 @@ export class Simulation {
     inertJoin.uniforms.tRows.value = this.actRows.texture;
     this.run(inertJoin, this.actInert);
     quiet.uniforms.tInert.value = this.actInert.texture;
-    quiet.uniforms.uEnabled.value = this.skipQuiet;
+    quiet.uniforms.uEnabled.value = this.quietOk;
     // bricks holding a particle stay awake, and their neighbours (raysLayer.js)
     quiet.uniforms.uRays.value = this.rays.active;
     quiet.uniforms.tRays.value = this.rays.bricks.texture;
@@ -657,7 +708,7 @@ export class Simulation {
     // Finish fresh flags and both ping-pong histories before sleeping. A quiet
     // flow pass already discards every cell, so its EMA needs no further work.
     if (this.idleCertified && !this.actDirty && !this.actFresh && this.actSteps >= SUPER_SETTLE_STEPS
-        && this.skipQuiet && this.skipSleeping && !this.rays.active) {
+        && this.quietOk && this.skipSleeping && !this.rays.active) {
       this.aeration?.idle();   // nothing moves, but the foam left on it still bursts
       return;
     }
@@ -682,6 +733,10 @@ export class Simulation {
     moveBlock.uniforms.uParity.value = parity;
     moveBlock.uniforms.uFrame.value = this.frame;
     moveBlock.uniforms.uGravity.value = this.gravity;
+    moveBlock.uniforms.uGravMode.value = react.uniforms.uGravMode.value = this._gravityMode;
+    moveBlock.uniforms.uEdge.value = moveGather.uniforms.uEdge.value = react.uniforms.uEdge.value = this._edgeMode;
+    react.uniforms.uAirMode.value = this._airMode;
+    react.uniforms.uAmbientHeat.value = this._ambientHeat;
     moveBlock.uniforms.tA.value = this.stateA;
     moveBlock.uniforms.tB.value = this.stateB;
     this.run(moveBlock, this.blocks, quads);
@@ -692,6 +747,7 @@ export class Simulation {
     moveGather.uniforms.uFresh.value = this.actFresh;
     this.actFresh = false;
     this.pass(moveGather, quads);
+    this.deco?.step();   // the decoration follows the move (src/deco.js)
     this.run(moveFlow, this.flowV, quads);
     this.aeration?.step();   // whitewater's field follows the move (gfx/foam.js)
     react.uniforms.uFrame.value = this.frame;
@@ -703,11 +759,24 @@ export class Simulation {
     this.stepping = false;
   }
 
+  // TPT's editing tools (src/editing.js) ride along: end, a line's far end (the
+  // brush swept from center to it); grow, a box's reach past the brush per axis
+  // ([x, y, z]); mask, a flood fill's region ({ texture, lo, hi }: editing.js
+  // runFill) instead of the brush; filter, the only element touched (-1: any);
+  // erase, specific delete; prop, the PROP tool's { field, value }.
   // wind: [x, y, z] cells the brush moved since the stroke's last paint (the Wind tool's drag)
-  paint({ center, radius, shape, tool, rate, replace, wind }) {
-    // particle tools paint into the particle list, not the grid
-    if (this.rays.paint({ center, radius, shape, tool, rate })) return;
+  paint({ center, radius, shape, tool, rate, replace, wind, end = center, grow = null, mask = null, filter = -1, erase = false, prop = null }) {
+    if (tool === PROP_TOOL && !prop) return;
+    // TPT's deco tools paint the decoration layer, not the cells (src/deco.js)
+    if (isDecoTool(tool)) { ensureDeco(this).paint({ center, radius, shape, tool }); return; }
+    // particle tools paint into the particle list, not the grid (a line or box: dabs along it)
+    const dabs = !mask && (end !== center || grow) ? strokeDabs(center, end, grow ?? undefined, radius) : [center];
+    if (this.rays.paint({ center: dabs[0], radius, shape, tool, rate })) {
+      for (const c of dabs.slice(1)) this.rays.paint({ center: c, radius, shape, tool, rate });
+      return;
+    }
     this.rays.noteElement(tool);   // plutonium emits neutrons: the layer wakes
+    if (prop?.field === PROP.TYPE) this.rays.noteElement(prop.value);
     const u = this.mats.paint.uniforms;
     // Its own random stream: this.frame counts steps only. The move pass
     // alternates its block partition by the step count's parity, so a paint
@@ -724,10 +793,37 @@ export class Simulation {
     u.uReplace.value = replace;
     if (wind) u.uWind.value.fromArray(wind);
     else u.uWind.value.set(0, 0, 0);
-    // it changes cells within radius of its centre (either shape)
-    const c = [center.x, center.y, center.z];
-    this.touchCentres(c.map((x) => x - radius), c.map((x) => x + radius));
+    u.uEnd.value.copy(end);
+    u.uGrow.value.set(...(grow ?? [0, 0, 0]));
+    u.uMasked.value = !!mask;
+    u.tMask.value = mask?.texture ?? null;
+    u.uFilter.value = filter;
+    u.uDelete.value = !!erase;
+    u.uProp.value = prop?.field ?? 0;
+    u.uPropValue.value = prop?.value ?? 0;
+    if (mask) this.touch(mask.lo, mask.hi);
+    else {
+      // it changes cells within radius of its centre (either shape), its line or its box
+      const a = [center.x, center.y, center.z], b = [end.x, end.y, end.z], reach = [0, 1, 2].map((k) => radius + Math.max(grow?.[k] ?? 0, 0));
+      this.touchCentres(a.map((x, k) => Math.min(x, b[k]) - reach[k]), a.map((x, k) => Math.max(x, b[k]) + reach[k]));
+    }
     this.pass(this.mats.paint);
+    u.tMask.value = null;   // (a fill's mask is disposed of after its pass)
+    this.scrubDeco();
+  }
+
+  // After a write that isn't a step (the brush, a stamp): cells it gave a new
+  // element lose their decoration, as TPT's create_part resets it (src/deco.js).
+  scrubDeco() {
+    this.deco?.scrub(this.targets[1 - this.cur].textures[0]);
+  }
+
+  // State A read back without stalling (TPT's flood fill reads its pmap; editing.js
+  // runFill): a promise of the RGBA floats per atlas texel, as readState()'s first.
+  readStateAAsync() {
+    const { width, height } = this.g;
+    const a = new Float32Array(width * height * 4);
+    return this.renderer.readRenderTargetPixelsAsync(this.targets[this.cur], 0, 0, width, height, a, undefined, 0).then(() => a);
   }
 
   get flowTexture() { return this.flowV.texture; }
@@ -751,6 +847,12 @@ export class Simulation {
     u.uEmaS.value.set(...CHANNELS.map((c) => (reset ? 1 : c.ema)));
     u.uEmaM.value.set(...MEDIA.map((m) => (reset ? 1 : m.ema)));
     u.uShift.value.copy(this.fieldShift);   // the window moved (D11): the history follows its cells
+    // falling water's parcels and wakes (shaders/fields.js jetGLSL), while the whitewater runs
+    const aer = this.aeration?.enabled ? this.aeration.texture : null;
+    for (const m of [fieldEma, this.mats.fieldBoost[0], this.mats.fieldBoost[BOOST_STAGES - 1]]) {
+      m.uniforms.tAer.value = aer;
+      m.uniforms.uAer.value = !!aer;
+    }
     this.fieldShift.set(0, 0, 0);
     // into scratch, then copied back over the same regions
     this.run(fieldEma, tmpA, quads);
@@ -838,6 +940,7 @@ export class Simulation {
     dz.uniforms.tSrc.value = this.brickDist[1].texture;
     this.run(dz, this.brickDist[0]);
     const blur = this.mats.blur;
+    blur.uniforms.tDist.value = this.brickDist[0].texture;   // carried in the light volume's alpha (passes.js blurFrag)
     let src = this.brick.texture;
     for (let i = 0; i < LIGHT_BLUR_PASSES; i++) {
       blur.uniforms.tSrc.value = src;
@@ -899,6 +1002,7 @@ export class Simulation {
     const m = this.mats.shift;
     m.uniforms.uShift.value.set(dx, 0, dz);
     this.pass(m);
+    this.deco?.shift(dx, dz);   // the decoration moves with its cells (src/deco.js)
     this.rays.reset();   // particles are in grid cells: v1 lets them go (docs/particles.md)
     this.origin.x += dx;
     this.origin.z += dz;
@@ -954,6 +1058,7 @@ export class Simulation {
     u.tA.value = texA;
     u.tB.value = texB;
     this.run(this.mats.copy, this.targets[this.cur]);
+    this.deco?.reset();   // a new state: its decoration, if any, comes after (src/deco.js uploadDeco)
     this.fieldReset = true;
     this.giReset = true;
     this.stillFlow();
@@ -969,15 +1074,20 @@ export class Simulation {
   // ---- undo history: full GPU copies of the state, newest last ----
   // Each snapshot is two RGBA32F atlases (~70 MB at 128³), so keep only a few.
   // Each remembers the window's origin it was taken at (t.origin): after the
-  // window moves (docs/scaling.md D11) it still holds the cells where they were.
-  snapshot(limit = 3) {
+  // window moves (docs/scaling.md D11) it still holds the cells where they were,
+  // and what it was taken before (t.label: 'Sand', 'House'), for the undo
+  // notice's "Undone Sand" (Garry's Mod's "Undone Prop").
+  snapshot(label = null, limit = 3) {
     this.history ??= [];
     const t = this.history.length >= limit ? this.history.shift() : makeTarget(this.g.width, this.g.height);
     const u = this.mats.copy.uniforms;
     u.tA.value = this.stateA;
     u.tB.value = this.stateB;
     this.run(this.mats.copy, t);
+    t.deco = null;
+    this.deco?.snapshot(t);   // and the decoration (src/deco.js)
     t.origin = this.origin.clone();
+    t.label = label;
     t.note = null;   // the app's tag for what undoing this takes back besides cells (app.js: a shrine's orbs)
     this.history.push(t);
   }
@@ -1014,6 +1124,7 @@ export class Simulation {
     mat.uniforms.tA.value = t.textures[0];
     mat.uniforms.tB.value = t.textures[1];
     this.run(mat, this.targets[this.cur]);
+    this.deco?.restore(t, dx, dz);
     this.stillFlow();
     this.rays.wake();   // it may bring plutonium back
     t.dispose();
@@ -1067,7 +1178,7 @@ export class Simulation {
   }
 
   // Every pass's material (the profiler's and the app's program bookkeeping).
-  materials() { return Object.values(this.mats).flat().concat(this.rays.materials()); }   // (fieldBoost, brickDist are arrays)
+  materials() { return Object.values(this.mats).flat().concat(this.rays.materials(), this.deco?.materials() ?? []); }   // (fieldBoost, brickDist are arrays)
 
   // retire: an array to put the materials in instead of disposing of them (the
   // app disposes of them once the next grid's have claimed their programs, so
@@ -1087,6 +1198,7 @@ export class Simulation {
     this.flowV.dispose();
     this.flowVTmp?.dispose();
     this.aeration?.dispose();
+    this.deco?.dispose();   // (its targets; its materials go with materials() below)
     this.brickDist.forEach((t) => t.dispose());
     this.actClass.dispose();
     this.actRows.dispose();

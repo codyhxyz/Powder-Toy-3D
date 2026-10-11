@@ -12,7 +12,8 @@
   view `F` drops in too), `F5` first or third person (Minecraft), `Z` held zooms (Minecraft's zoom mods,
   `zoom.js`, with Zoomify's defaults: ÷4 eased in over 1 s and out over 0.5 s, the wheel ×1.5 a notch while
   held, the look slowed with the view, a scope's zoom multiplied in), `C` held crouches (PUBG's and Apex's key,
-  Source's duck: below), `F` kicks.
+  Source's duck: below), `F` kicks (in a Halo match: Halo's melee), `G` throws a frag grenade in a Halo match
+  (Halo: MCC's PC key; `docs/modes.md` "Halo combat").
 - **Crouch** (`C` held, player.js `crouchStep`, Source's gamemovement.cpp numbers): the body goes to half its
   height (hull 36 of 72) and the eye to 28/64 of its height, in 0.4 s down and 0.2 s up; on the ground it
   moves at a third of the speed and can't sprint. On the ground it shrinks from the top; in the air the feet
@@ -97,7 +98,15 @@ first person; nothing changes on desktop. The topbar's God / 1st / 3rd camera ch
   a tool picked in the god view is in hand at the next drop-in.
 - Picking from the palette: the Tools group lists every tool (elements.js `GEAR_ITEMS`, ids −300…). A click
   puts it in hand (app.js `giveGear`). In first person, `Q` frees the mouse and shows the palette where it was
-  last left (at first, at what's selected): GMod's spawn menu. Anything that isn't a tool loads the tool gun.
+  last left (at first, at what's selected): GMod's spawn menu. Anything that isn't a tool loads the tool gun. `Q` does nothing in a Halo-style match
+  (`docs/modes.md` "Halo rules").
+- **A restricted hotbar** (2026-10-11, a Halo match's two guns): `toolbelt.restrict(keys, hold?)` lets only `keys`
+  be in hand, each in a slot of its own in their order (the bar shows `1 Primary`, `2 Secondary` and hides the
+  rest: `hotbar.setLabels`), so `1` and `2` hold Halo's primary and secondary; the wheel steps between them, there are no wands (`B` and `equipWand` refuse) and `select()` refuses anything else, so the palette, a
+  class or the spawn menu can't put another tool in hand. `hold` (else the first key, if the tool in hand isn't
+  one of them) goes in hand. `restrict(null)` gives every tool back; `toolbelt.restricted` reads the keys.
+  `toolbelt.setNote(key, text)` shows text after the tool's status in the held-tool corner (a power weapon's
+  shots left); null clears it. Owner: `src/game/arsenal.js`.
 
 ## Tool gun (2026-10-11): Garry's Mod's `gmod_tool`
 
@@ -254,7 +263,9 @@ of charge, an abortable charge and "approximately two seconds" of standby betwee
 - Shows: the figure's front kick (`figure.js s.kick`: chamber, extend, retract), a boot swung up into the
   viewmodel (`createKickLeg`), `HIT.KICK`'s view jolt, `kick` event and sounds (whoosh, a thud on a body or
   an anchored kick-off; the material's own through `impact` with source `kick`, a `MELEE_SOURCES` member).
-- Not done: a touch button (`touch.js` isn't on main yet); the NPC brain kicking; a pose for the Realistic body.
+- In a Halo match the kick is Halo 3's melee on a body in the lunge (2.4 m from the eye: 70 points, from behind an
+  assassination), and the bots use it (`brain.js wantsMelee`, `npc.js`); see `docs/modes.md` "Halo combat".
+- Not done: a touch button (`touch.js` isn't on main yet); a pose for the Realistic body.
 
 ## Hook (2026-10-10): one rope, mass decides which way things move
 
@@ -513,7 +524,9 @@ say world. Emitters own their event names. Listeners never mutate payloads.
 
 | Event | Emitted by | Payload |
 |---|---|---|
-| `blast` | bomb, rocket | `{ point }` grid. A charge or rocket went off there (sound, shake, fireball; with no `by`, the player's own: less blast damage). |
+| `blast` | bomb, rocket, frag | `{ point, kind? }` grid. A charge, rocket or frag (`kind: 'frag'`) went off there (sound, shake, fireball; with no `by`, the player's own: less blast damage). |
+| `frag` | frag.js | `{ action: 'throw'\|'bounce'\|'pickup', point, speed? }`. A frag grenade left a hand, bounced (speed in cells/s) or was picked up off the ground. Its flight is `round:move` / `round:end` with kind `'frag'`. |
+| `body:shield` | player.js (any body) | `{ id, state: 'hit'\|'break'\|'recharge'\|'full', amount?, point, height }`. A body's Energy Shield event (vitals.js), on the bus: point its feet (grid), height its own (vfx.js's shimmer and pop, audio.js). |
 | `punch` | `rig.hit` (viewmodel.js `HIT`) | `{ pitch, yaw }` rad, + up and + left. Throws the view punch (feel.js). |
 | `gun:fire` | pistol, SMG, sniper, rocket | `{ origin, dir, muzzleWorld, gun, sound }`. The round left the muzzle (origin grid, dir unit; muzzleWorld is the viewmodel muzzle in world space, for the flash; gun the tool key; sound `{ rate, gain, thump, voice }` scales the pistol's shot). |
 | `gun:dry` | gun | `{}`. The trigger clicked but nothing fired (muzzle blocked). |
@@ -524,7 +537,7 @@ say world. Emitters own their event names. Listeners never mutate payloads.
 | `drunk` | ingest.js (whiskey) | `{ seconds }`. Seconds of Drunk added to the player (feel.js sways the view; an NPC's has `by`). |
 | `player:step` | shell (camera bob cycle) | `{ speed, inLiquid }`. A footfall. |
 | `player:jet` | player | `{ on }`. The jetpack lit or went out. |
-| `kick` | a body's kick (kick.js) | `{ hit: 'cell'\|'body'\|null, point, normal, dir, id, broke, mass, dv }`. A kick, landed or not: mass is what it met (kg, Infinity when anchored), dv the kicker's own Δv (cells/s). |
+| `kick` | a body's kick (kick.js) | `{ hit: 'cell'\|'body'\|null, point, normal, dir, id, broke, mass, dv, melee?, assassination? }`. A kick, landed or not: mass is what it met (kg, Infinity when anchored), dv the kicker's own Δv (cells/s); melee: it was Halo's melee (a Halo match), assassination: from behind. |
 | `perk:take` | shell | `{ key, keys, point, by? }`. A body took a perk orb: key is the orb's, keys what it gained (Gamble's two). |
 | `perk:revive` | shell | `{ point }`. Extra Life brought the player back. |
 | `status:on` / `status:off` | a body's status set (`status.js`) | `{ key, cause }`. A status came on or went off (cause: an element key, the status that cancelled it, `'add'`, `'faded'`, `'died'`; an NPC's carry `by`). See "Status effects". |

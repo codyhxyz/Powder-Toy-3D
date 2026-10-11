@@ -8,7 +8,8 @@ import { povEvents } from './events.js';
 import { createKit } from './tools/index.js';
 import { gearByKey } from './tools/catalog.js';
 import { pack, persistentLoad, ownedKey } from './tools/transfer.js';
-import { Agent } from './ai/brain.js';
+import { Agent, wantsMelee } from './ai/brain.js';
+import { throwFrag } from './frag.js';
 import { GunnerAgent } from './ai/gunner.js';
 import { createWorldModel } from './ai/world.js';
 import { createNav } from './ai/nav.js';
@@ -73,7 +74,8 @@ const LOOK = { axeman: { palette: PALETTE, eyeGlow: EYE_GLOW }, gunner: { palett
 const HELD_SCALE = 1.8;           // the viewmodels (cells, sized for the camera) grown to read in its big mitten
 const CHOP_S = 0.25;              // s the chop's follow-through shows after a blow
 // the tool's model for each tool the brain uses (models.js, by the catalog)
-const MODEL_OF = Object.fromEntries(['SHOVEL', 'BUCKET', 'AXE', 'GUN', 'SMG', 'SNIPER', 'PHYSGUN', 'TROWEL', 'SCANNER', 'BLOWTORCH', 'BOMB', 'PICKAXE'].map((k) => [k, gearByKey(k).model]));
+const MODEL_OF = Object.fromEntries(['SHOVEL', 'BUCKET', 'AXE', 'GUN', 'SMG', 'SNIPER', 'PHYSGUN', 'TROWEL', 'SCANNER', 'BLOWTORCH', 'BOMB', 'PICKAXE',
+  'ROCKET', 'LASER'].map((k) => [k, gearByKey(k).model]));   // (the rocket launcher and laser: a Halo match's power weapons, game/arsenal.js)
 
 const AIM_REACH = 256;            // cells the tools' pick looks along
 let nextId = 1;
@@ -117,7 +119,7 @@ export function createAi({ renderer, getSim }) {
 // style: its LOOK and mind ('axeman' | 'gunner'). A team game (src/game) also
 // passes: team ('red' | 'blue' | 'infected', on body.team), opponents() (who it
 // fights: [{ id, pos, vel, alive, holding }]; without it, the player), respawnS
-// (s dead before it comes back) and name.
+// (s dead before it comes back, or a function giving it: Siege's differ by side) and name.
 export function createNpc({ env, ai, home = () => null, style = 'axeman', team = null, opponents = null, respawnS = RESPAWN_S, name = null }) {
   const id = `npc${nextId++}`;
   const body = createPlayer({ renderer: env.renderer, getSim: env.getSim, quiet: true, id });
@@ -166,7 +168,7 @@ export function createNpc({ env, ai, home = () => null, style = 'axeman', team =
     facing: (out) => out.copy(dir),   // where it looks (the knife's backstab test)
     body,                             // its statuses scale its weapons (targets.js dealtScale)
     hurt(amount, cause, d, opts) {
-      body.hurt(amount * DAMAGE_TAKEN, cause, opts);
+      body.hurt(amount * (opts?.exact ? 1 : DAMAGE_TAKEN), cause, opts);   // exact: Halo's numbers (halo.js)
       agent.stagger();   // a hit stops its wind-up
       // d null: the weapon shoves it itself (the kick, by momentum: shove below)
       if (d) body.applyImpulse(tmp.set(d.x, Math.max(d.y, 0) + KNOCK_UP, d.z).normalize().multiplyScalar(HIT_KNOCKBACK));
@@ -245,7 +247,7 @@ export function createNpc({ env, ai, home = () => null, style = 'axeman', team =
       if (body.dead) {
         deadTime += dt;
         kit.putAway();
-        if (deadTime >= respawnS) spawn(sim);
+        if (deadTime >= (typeof respawnS === 'function' ? respawnS() : respawnS)) spawn(sim);
       }
       const alive = !body.dead;
 
@@ -284,6 +286,15 @@ export function createNpc({ env, ai, home = () => null, style = 'axeman', team =
       if (dir.lengthSq() < 1e-9) dir.set(0, 0, -1);
       dir.normalize();
       yaw = Math.atan2(-dir.x, -dir.z);
+
+      // Halo's in a Halo match: a frag from the eye, whatever is in hand (frag.js), and the melee: the
+      // body's kick (kick.js), turned to the enemy first (Halo's melee magnetism)
+      if (alive && it.frag && body.grenades > 0 && povEvents.as(actor, () => throwFrag(body, eye, dir))) body.grenades--;
+      if (alive && wantsMelee(agent)) {
+        const c = agent.chest();
+        tmp.set(c.x - eye.x, c.y - eye.y, c.z - eye.z).normalize();
+        povEvents.as(actor, () => body.kick(tmp));
+      }
 
       // the hands: the tool the brain wants, with its buttons, as this NPC
       if (alive && it.tool) {

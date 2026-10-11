@@ -92,8 +92,16 @@ int skipBrick(ivec3 bc, vec3 ro, vec3 rd, ivec3 istp, inout ivec3 cell, inout ve
 // the ray crosses that whole cube in one step. Same contract as skipBrick.
 // Only for walks that treat "brick alpha < 0.5" as empty (not the data views,
 // which also visit flagged air).
+// The realistic view (BRICK_DIST_IN_LIGHT) reads the distance from the light
+// volume's alpha, where passes.js blurFrag copies it: one texture unit fewer
+// in a program at the 16-unit limit (tools/check-sampler-budget.mjs).
+#ifdef BRICK_DIST_IN_LIGHT
+#define BRICK_DIST(bc) texelFetch(tLight, brickAtlas(bc), 0).a
+#else
+#define BRICK_DIST(bc) texelFetch(tBrickDist, brickAtlas(bc), 0).x
+#endif
 int skipEmpty(ivec3 bc, vec3 ro, vec3 rd, ivec3 istp, inout ivec3 cell, inout vec3 tMax, inout float tEnter) {
-  int r = max(int(texelFetch(tBrickDist, brickAtlas(bc), 0).x * BRICK_DIST_SCALE + 0.5) - 1, 0);
+  int r = max(int(BRICK_DIST(bc) * BRICK_DIST_SCALE + 0.5) - 1, 0);
   // kept inside the box: a ray leaving it must leave through the face it
   // really crosses (the floor below all, which the callers shade)
   vec3 bmin = vec3(max(bc - r, ivec3(0)) * BS), bmax = vec3(min(bc + r + 1, ivec3(BX, BY, BZ)) * BS);

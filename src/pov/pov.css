@@ -8,6 +8,7 @@ body.pov-on .hint { opacity: 0 !important; pointer-events: none !important; }
 /* the hover readout stays: in POV it's the held tool's (app.js shows it only then) */
 body.pov-on .dock { transform: translate(-50%, calc(-100% - 30px)); }
 body.pov-on .brand { opacity: 0.35; transition: opacity 300ms; }
+body.pov-on .toolbar { z-index: 5; }   /* over the HUD's screen effects (a buried view is opaque), as Minecraft's HUD is over its in-wall overlay */
 body.pov-locked canvas { cursor: none; }
 
 .pov-hud {
@@ -19,6 +20,13 @@ body.pov-locked canvas { cursor: none; }
 
 /* ---- screen effects (opacity driven by what the body feels) */
 .pov-fx { position: absolute; inset: 0; opacity: 0; transition: opacity 120ms linear; }
+/* the head buried in matter (index.js buried): its colour, darkened, with a little grain, over the whole view */
+.pov-buried {
+  --c: #000;
+  background:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.7' numOctaves='2' seed='3'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.6 -0.25'/%3E%3C/filter%3E%3Crect width='240' height='240' filter='url(%23n)'/%3E%3C/svg%3E"),
+    var(--c);
+}
 .pov-heat {
   background: radial-gradient(120% 95% at 50% 55%, transparent 48%, rgba(255, 120, 30, 0.35) 72%, rgba(255, 70, 10, 0.75) 100%);
   mix-blend-mode: screen;
@@ -246,6 +254,25 @@ body.pov-locked canvas { cursor: none; }
   background: #fff;
   box-shadow: 0 0 3px rgba(0, 0, 0, 0.8), 0 0 7px rgba(255, 255, 255, 0.9);
 }
+
+/* ---- Halo combat (combat.js): the red reticle on an enemy in range, the grenade count, the shield's edge flare */
+.pov-cross.enemy i, .pov-cross.enemy b { background: #ff3b30; }
+.pov-cross.enemy b { opacity: 1; }
+.pov-nades {
+  position: absolute; right: calc(50% + 16px); top: calc(50% + 14px);
+  display: none; align-items: center; gap: 4px;
+  font: 600 13px/1 var(--font, system-ui); color: #fff;
+  filter: drop-shadow(0 0 1.5px rgba(0, 0, 0, 0.9));
+}
+.pov-nades.show { display: flex; }
+.pov-nades .pov-ic svg { width: 14px; height: 14px; fill: #b9c97a; display: block; }
+.pov-nades.empty { opacity: 0.45; }
+.pov-shieldfx {
+  background: radial-gradient(120% 95% at 50% 50%, transparent 55%, rgba(255, 205, 90, 0.35) 82%, rgba(255, 225, 140, 0.7) 100%);
+  mix-blend-mode: screen;
+  transition: none;
+}
+body.pov-on.pov-nohud .pov-nades { display: none; }
 
 /* F1 (as in Minecraft): the HUD and the hand hidden. Screen effects, the death
    screen and the click-to-look prompt stay. */

@@ -1028,6 +1028,10 @@ export const FAR_VIEW = {
 // over d cells along rd, the air's extinction (the sky's spectral shape, scaled
 // to the haze's visibility) and its in-scatter, the sky's own radiance toward
 // rd, held at the horizon for rays going down, so distance fades into the sky.
+// The in-scatter is the sky's light on the air, so it takes the share of the
+// open sky the air on the way sees (the GI probes': farAirLit): a cave's air,
+// which no sky reaches, adds none, and the eyes adjusting to the dark don't
+// raise it into a blue fog.
 export const farHazeGLSL = /* glsl */ `
 #define FAR_HAZE ${FAR_VIEW.HAZE.toExponential(4)}
 const vec3 FAR_HAZE_RGB = FAR_HAZE * TAU_AIR / TAU_AIR.g;
@@ -1036,16 +1040,25 @@ vec3 farAir(vec3 rd) {
   h = dot(h, h) > 1e-8 ? normalize(h) : vec3(1.0, 0.0, 0.0);
   return skyRadiance(rd.y > 0.0 ? rd : h);
 }
-vec3 farHaze(vec3 col, vec3 rd, float d) {
+// Share of the open sky's light on the air from a to b (window cells): the
+// probes' sky visibility at its ends and middle, by Simpson's rule, the far end
+// GI_OFFSET back out of the matter it lies on (whose brick's probe is buried).
+float farAirLit(vec3 a, vec3 b) {
+  vec3 v = b - a;
+  float d = length(v);
+  vec3 bo = b - v * (min(GI_OFFSET, d) / max(d, 1e-6));
+  return (giAirSkyVis(a) + 4.0 * giAirSkyVis(0.5 * (a + bo)) + giAirSkyVis(bo)) / 6.0;
+}
+vec3 farHaze(vec3 col, vec3 rd, float d, float lit) {
   vec3 T = exp(-FAR_HAZE_RGB * d);
-  return col * T + farAir(rd) * (1.0 - T);
+  return col * T + lit * farAir(rd) * (1.0 - T);
 }
 // premultiplied colour (the volume's): the share alpha it covers takes the air's light
 vec3 farHazePremul(vec3 col, float alpha, vec3 eye, vec3 p) {
   vec3 v = p - eye;
   float d = length(v);
   vec3 T = exp(-FAR_HAZE_RGB * d);
-  return col * T + alpha * farAir(v / max(d, 1e-6)) * (1.0 - T);
+  return col * T + alpha * farAirLit(eye, p) * farAir(v / max(d, 1e-6)) * (1.0 - T);
 }
 `;
 
@@ -1362,7 +1375,7 @@ void main() {
   // The coarse crown's density is not this leaf's shadow: sampling it here
   // would turn detailed branches black inside the old, inflated silhouette.
   vec3 col = farShadeMaterial(p, n, rd, sunVis, int(vElement + 0.5));
-  gl_FragColor = vec4(farHaze(col, rd, length(p - ro)), 1.0);
+  gl_FragColor = vec4(farHaze(col, rd, length(p - ro), farAirLit(ro - vec3(uWinLo), p - vec3(uWinLo))), 1.0);
 }
 ` : `
 void main() {
@@ -1407,17 +1420,19 @@ void main() {
   if (ocean) {
     col = plain ? farShadeBed(FAR_OCEAN_BED, ps, vec3(0.0, 1.0, 0.0), 0.0, E_WATER, farSunLit(ps, 0))
                 : farLiquid(ps, rd, E_WATER, farSunLit(ps, 0), seaOut ? uFloor : -1.0);
-    col = farHaze(col, rd, tSea);
+    col = farHaze(col, rd, tSea, farAirLit(ro - vec3(uWinLo), ps - vec3(uWinLo)));
     depth = farDepth(ps);
   } else if (tHit < NO_HIT) {
     vec3 p = ro + rd * tHit;
     if (cut) {
       // came out of the window inside matter. Behind the window's ground: hidden
-      // (but for a dug-out side), so flat and unlit by the sun. In its water,
-      // which the volume draws see-through: the water body's own light, as
-      // deep water shows, so the window's water carries on past its side.
+      // (but for a dug-out side or a tunnel the window cuts), so flat, unlit by
+      // the sun, in the probes' light just inside the window (none in a cave).
+      // In its water, which the volume draws see-through: the water body's own
+      // light, as deep water shows, so the window's water carries on past its side.
       vec4 v = farSample(p);
-      col = v.r >= v.g ? ALBEDO[farIds(p).x] * skyAmbient(-rd) : farInScatter(farLiquidOf(farIds(p).y), farSunLit(p, 0));
+      col = v.r >= v.g ? ALBEDO[farIds(p).x] * giIrradiance(probeAt(p - vec3(uWinLo) - rd * GI_OFFSET), -rd)
+                       : farInScatter(farLiquidOf(farIds(p).y), farSunLit(p, 0));
     } else {
       vec4 v = farSample(p);
       float sunVis = farSunLit(p, 0);
@@ -1427,7 +1442,7 @@ void main() {
       col = farShadeMaterial(p, n, rd, sunVis * (sunVis > 0.0 && dot(n, uSun) > 0.0 ? farSunRay(p, n) : 1.0), farElement(p, n));
     }
     }
-    col = farHaze(col, rd, tHit);
+    col = farHaze(col, rd, tHit, farAirLit(ro - vec3(uWinLo), p - vec3(uWinLo)));
     depth = farDepth(p);
   } else {
     col = farSky(ro, rd);

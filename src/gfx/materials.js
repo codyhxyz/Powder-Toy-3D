@@ -86,6 +86,12 @@ const FOXFIRE_GLOW = bandGlow(FOXFIRE_BAND.peak, FOXFIRE_BAND.fwhm, FOXFIRE_BAND
 // units: a fifth of fluorite's, enough to pick a pool out of a dark cave.
 const MAGIC_GLOW_LUM = 0.01;
 const TOXIC_GLOW_LUM = 0.01;
+// Noita's acid glows a touch too (its pools read in a dark cave): half again
+// sludge's, in acid's lime, so it stays a glow and not a lamp.
+const ACID_GLOW_LUM = 0.015;
+const ACID_GLOW_TINT = '#55ff00';     // Noita's acid green (elements.js ACID colour)
+// Sludge's glow is murkier, a yellow-olive, so it never reads as acid.
+const TOXIC_GLOW_TINT = '#8fa832';
 const REC709_LUMA = [0.2126, 0.7152, 0.0722];   // luminance weights of linear sRGB
 // A glow with the chromaticity of colour hex at luminance lum.
 const tintGlow = (hex, lum) => {
@@ -169,10 +175,13 @@ const LOOKS = {
   // little dissolved matter) and scatters a little, mostly blue: clear when
   // shallow, blue-green with depth. Both are exaggerated several-fold over
   // real water so a tank-sized body still shows them. Oil is amber (absorbs
-  // blue hardest), dark when thick. Acid is a clear, slightly milky green.
+  // blue hardest), dark when thick. Acid is Noita's (elements.js ACID): it
+  // scatters nearly all the green it stops (albedo ~0.95) and almost none of
+  // the red and blue, so a body of it is a saturated, near-opaque lime; a
+  // little rougher than water, so its sheen is broader and less of a mirror.
   WATER: { ior: 1.333, rough: 0.02, scatter: [0.002, 0.003, 0.004] },
   OIL: { ior: 1.47, rough: 0.03, scatter: [0.012, 0.008, 0.003] },
-  ACID: { ior: 1.36, rough: 0.03, scatter: [0.02, 0.03, 0.02] },
+  ACID: { ior: 1.36, rough: 0.1, scatter: [0.09, 0.47, 0.02], emit: tintGlow(ACID_GLOW_TINT, ACID_GLOW_LUM) },
   LAVA: { ch: 'MOLTEN', rough: 0.35, alb: '#2a2522' },
   SMOKE: { media: 'SMOKE' },
   FIRE: { media: 'FIRE' },
@@ -209,6 +218,11 @@ const LOOKS = {
   // shows the same faces fresh, glinting where they catch the sun.
   SANDSTONE: { ch: 'ORGANIC', rough: 0.9, ior: 1.54, alb: '#b39c7c', glint: 0.25, surf: 'CRAG',
     crag: { relief: 0.6, pits: 0, bands: 2.5, stain: 1.5 } },   // rounded by weathering, bedded, iron-stained
+  // Basalt: fresh lava rock, darker than ROCK's weathered face, its gas
+  // bubbles frozen in as pits (vesicles), clinkery and unbedded (fresh flows
+  // ~0.03-0.05 albedo, below the weathered 0.08-0.15).
+  BASALT: { ch: 'ORGANIC', rough: 0.9, alb: '#353331', surf: 'CRAG',
+    crag: { relief: 1, pits: 1, bands: 0, stain: 0.2 } },
   LIMESTONE: { ch: 'ORGANIC', rough: 0.8, ior: 1.6, alb: '#bcb8af', surf: 'CRAG',
     crag: { relief: 1, pits: 0.4, bands: 1.5, stain: 0.4 } },   // sharp solution runnels and pits, bedded
   COAL: { ch: 'ORGANIC', rough: 0.75, alb: '#3c3c3d', surf: 'CRAG',
@@ -311,11 +325,12 @@ const LOOKS = {
   // Noita's liquids (elements.js), each tinted by its sigma and scatter: the
   // scattered share sets the colour a deep body shows. Blood is near opaque
   // (haemoglobin absorbs blue and green within a millimetre; red cells
-  // scatter red): n ~1.35 (plasma). Sludge is a murky lime suspension; slime a
+  // scatter red): n ~1.35 (plasma). Sludge is a murky yellow-olive suspension
+  // (dull: it scatters a quarter of what it stops; acid, the vivid lime, ~all); slime a
   // pink-purple gel, glossy but not mirror-smooth; whiskey a clear amber
   // (n = 1.356 for 40 % ethanol). The potions are clear tinctures (n ~1.34).
   BLOOD: { ior: 1.35, rough: 0.04, scatter: [0.7, 0.04, 0.04] },
-  TOXIC: { ior: 1.36, rough: 0.08, scatter: [0.25, 0.4, 0.05], emit: tintGlow('#3fb52c', TOXIC_GLOW_LUM) },
+  TOXIC: { ior: 1.36, rough: 0.12, scatter: [0.24, 0.25, 0.04], emit: tintGlow(TOXIC_GLOW_TINT, TOXIC_GLOW_LUM) },
   SLIME: { ior: 1.34, rough: 0.12, scatter: [0.12, 0.05, 0.12] },
   WHISKEY: { ior: 1.356, rough: 0.02, scatter: [0.002, 0.002, 0.002] },
   TELEPORTATIUM: { ior: 1.34, rough: 0.02, scatter: [0.004, 0.012, 0.014], emit: tintGlow('#3cc6e8', MAGIC_GLOW_LUM) },

@@ -119,4 +119,35 @@ export class BrickStore {
   drop(key) { this.take(key); }
 
   clear() { this.map.clear(); this.bytes = 0; }
+
+  // Every stored brick as one byte string, for a save (saves/game.js): a
+  // count, then per brick its key, its length and its coded bytes (u32s little-endian).
+  toBytes() {
+    const out = new Uint8Array(U32 + this.map.size * 2 * U32 + this.bytes);
+    const view = new DataView(out.buffer);
+    view.setUint32(0, this.map.size, true);
+    let at = U32;
+    for (const [key, b] of this.map) {
+      view.setUint32(at, key, true);
+      view.setUint32(at + U32, b.length, true);
+      out.set(b, at + 2 * U32);
+      at += 2 * U32 + b.length;
+    }
+    return out;
+  }
+
+  // toBytes back: the store holds exactly those bricks.
+  fromBytes(bytes) {
+    this.clear();
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const n = view.getUint32(0, true);
+    let at = U32;
+    for (let i = 0; i < n; i++) {
+      const key = view.getUint32(at, true), len = view.getUint32(at + U32, true);
+      if (at + 2 * U32 + len > bytes.length) throw new Error('stored bricks: cut short');
+      this.put(key, bytes.slice(at + 2 * U32, at + 2 * U32 + len));
+      at += 2 * U32 + len;
+    }
+  }
 }
+const U32 = 4;   // bytes of a key or a length in toBytes
