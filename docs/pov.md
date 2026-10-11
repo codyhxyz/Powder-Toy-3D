@@ -598,8 +598,10 @@ Perks come from shrines, Noita's Holy Mountain: the Shrine construction (`constr
 fixed-size stone pavilion with three plinths) with a random perk orb floating over each plinth
 (`SHRINE_ALTARS`; `constructions.js` hands their grid cells to `onPlaced`, and app.js sets the orbs). The orbs
 (`src/perkOrbs.js`) are markers pinned to world cells, like the spawners: the perk's icon at chest height over a
-pad. A body (the player's or an NPC's) that walks into one, or stands against its plinth, gains the perk
-(`pov/index.js` `takePerks`), and the shrine's other orbs vanish. Undoing a placed shrine takes its orbs too (the
+pad. The player looks at one, sees its name and what it does under the crosshair, and presses **E** to take it
+(Noita's pick-up rule; `pov/interact.js`, the shared look + E for every pickup); walking into one takes nothing.
+An NPC walks into one, or stands against its plinth (`pov/index.js` `takePerks`). Either way the shrine's other
+orbs vanish. Undoing a placed shrine takes its orbs too (the
 undo snapshot's `note`). A new scene clears the orbs.
 
 Every world gets a shrine (app.js `worldShrine`) once its first window loads: on flat dry ground near the window's

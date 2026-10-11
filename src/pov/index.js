@@ -14,6 +14,8 @@ import './pov.css';
 import './potions.js';   // Noita's potion statuses: stains and drinks (registers them)
 import { addTarget, PLAYER } from './targets.js';
 import { grant, PERK } from './perks.js';
+import { createInteract } from './interact.js';
+import { ORB_LIFT } from '../perkOrbs.js';
 import { CLASSES_ENABLED } from './classes.js';
 import { createClassPicker } from './classPicker.js';
 import { createVehicles } from './vehicles/index.js';
@@ -41,6 +43,7 @@ const PLAYER_KNOCKBACK = 18;   // cells/s a blow from an NPC throws the player
 const PLAYER_KNOCK_UP = 0.4;   // its upward share
 const PLAYER_DAMAGE_TAKEN = 0.5;   // share of a weapon's damage the player takes from NPCs (the hero is tougher)
 const perkName = (key) => `${PERK[key].icon} ${PERK[key].name}`;
+const PERK_TARGET_R = 1.1;   // cells: a perk orb's look-at target (its icon is perkOrbs.js ORB_SIZE 2.2 across)
 
 const PREWARM_DELAY_MS = 2000;          // ms after start-up before the figure's shader compiles in the background
 const RESPAWN_DELAY = 3.5;              // s from death to respawning at the drop point on its own
@@ -89,6 +92,7 @@ export function createPov(app) {
   });
   const zoom = createZoom();   // C (zoom.js)
   const povHud = createPovHud();
+const interact = createInteract();   // look + E (interact.js): perks, and Descent's pickups and shop
   // feedback: everything here hears povEvents (events.js) and the body's events
   const feel = createFeel({ hud: povHud });
   const nightVision = app.post ? createNightVision(app.post) : null;   // the Night Vision perk's goggles (the local player's view)
@@ -251,7 +255,7 @@ export function createPov(app) {
       e.preventDefault();
       if (!e.repeat) swapView();
     }
-    if (e.code === VEHICLE_KEY && !e.repeat) useVehicle();
+    if (e.code === VEHICLE_KEY && !e.repeat && !(mode === 'on' && interact.use())) useVehicle();   // E: the thing looked at first
     if (e.code === KICK_KEY && !e.repeat && mode === 'on') kickQueued = true;   // the kick (kick.js): always to hand, no slot
     // Sprint: Toggle (the setting): Shift flips sprinting on and off instead of being held
     if ((e.code === 'ShiftLeft' || e.code === 'ShiftRight') && !e.repeat && app.settings.sprintMode === 'toggle') sprintOn = !sprintOn;
@@ -706,6 +710,7 @@ export function createPov(app) {
         THREE.MathUtils.clamp(ctx.eye.z, hv.cell.z, hv.cell.z + 1));
       aim.dist = closest.distanceTo(ctx.eye);
     } else aim.dist = Infinity;
+    interact.update(ctx.eye, ctx.dir, aim.dist, live() && mode === 'on' && !deadSeen && !driving && !editing);
     if (live() && toolbelt && !driving) {
       ctx.sim = sim;
       ctx.dt = dt;
@@ -760,15 +765,24 @@ export function createPov(app) {
     });
   }
 
-  // Perk orbs (perkOrbs.js): a body that walks into one gains its perk, the
-  // player's and the NPCs' alike.
+  // Perk orbs (perkOrbs.js): the player looks at one and presses E (interact.js),
+  // seeing what it is first; an NPC walks into one.
+  interact.provide(() => {
+    const orbs = app.getPerkOrbs?.();
+    if (!orbs?.list.length || !player || player.dead) return [];
+    return orbs.list.map((o) => {
+      const p = orbs.feet(o, new THREE.Vector3());
+      if (!p) return null;
+      p.y += ORB_LIFT;
+      const have = player.perks.count(o.key);
+      return { id: `perk${o.id}`, position: p, radius: PERK_TARGET_R, title: `${perkName(o.key)}${have ? ` (have ×${have})` : ''}`,
+        lines: [PERK[o.key].desc, ...(o.shrine ? ['Taking it takes the others away.'] : [])], verb: 'Take',
+        use: () => { const got = orbs.take(o); if (got) gainPerk(player, got); return !!got; } };
+    }).filter(Boolean);
+  });
   function takePerks() {
     const orbs = app.getPerkOrbs?.();
     if (!orbs?.list.length) return;
-    if (mode === 'on' && !player.dead) {
-      const got = orbs.takeAt(player.pos);
-      if (got) gainPerk(player, got);
-    }
     for (const n of npcs.values()) {
       if (n.body.dead || !n.body.perks) continue;   // a worm takes no perks
       const got = orbs.takeAt(n.body.pos);
@@ -829,6 +843,7 @@ export function createPov(app) {
     get locked() { return isLocked(); },
     get player() { return player; },
     get toolbelt() { return toolbelt; },
+    interact,                    // look + E (interact.js): focus, use()
     vehicles,                    // the jeep and the hoverbike (vehicles/index.js): spawnLayout(layout), list, seated
     get classes() { return classes; },   // the class picker (classPicker.js), or null with CLASSES_ENABLED off
     get editingWand() { return editing; },
