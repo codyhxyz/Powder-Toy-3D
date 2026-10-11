@@ -355,6 +355,12 @@ test('shiftModel', async ({ shift = [16, -8] } = {}) => {
     }
     check(out, `the slab's ${fresh} bricks are FRESH after the next age pass`, fresh > 0 && !notFresh, `${notFresh} not`);
     check(out, `the slab's ${sand} sand cells start at full occupancy (no blend from a history they lack)`, sand > 0 && !blended, `${blended} blended`);
+    // resetGI: the probes (history and the textures the shift wrote) back to zeros
+    const giBefore = [0, 1, 2, 3].some((k) => words(after[`gi${k}`]).some((x) => x !== 0));
+    derived.resetGI();
+    const z = await derived.read();
+    const zero = (x) => words(x).every((w) => w === 0);
+    check(out, 'resetGI zeroes the GI history and its four textures', giBefore && zero(z.giHist) && [0, 1, 2, 3].every((k) => zero(z[`gi${k}`])));
   } finally { dispose(); }
   return out;
 });

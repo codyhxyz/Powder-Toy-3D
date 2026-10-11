@@ -105,7 +105,7 @@ export class Derived {
     this.dlist = buf('dirty lists', this.lists.words * 4, S | CS | GPUBufferUsage.INDIRECT);
     this.ema = buf('field EMA', EMA_PLANES * slots * 4);
     this.tmpA = buf('field scratch A', TMP_PLANES * slots * 4, S | CS);
-    this.tmpB = buf('field scratch B', TMP_PLANES * slots * 4, S | CS);
+    this.tmpB = buf('field scratch B', TMP_PLANES * slots * 4, S | CS | CD);   // (resetGI clears a run of it)
     this.blurred = buf('fields blurred', BLURRED_PLANES * slots * 4, S);
     this.brick = buf('brick', n * 16);
     this.brickDist = buf('brickDist', n * 4);
