@@ -48,15 +48,20 @@ jobs:
       - run: npm run build   # first: it empties dist/
 
       # The legacy build: its own checkout, lockfile and node_modules, built
-      # with base /legacy/ into dist/legacy/. Vite copies that commit's public/
-      # into dist/legacy/ as well, so its page's icons and manifest, the
-      # mannequin (BASE_URL) and every chunk and worker load from /legacy/.
-      # Three paths in its code are root-absolute and load the root build's
-      # copies instead: /maps/<key>.webp (menu thumbnails), /privacy.html and
-      # /favicon.svg (the screenshot mark). The WebGPU build ships the same
-      # public/ files; if it ever drops one, the legacy build loses a thumbnail
-      # or a link, not the game. functions/_middleware.js treats /legacy/ like
-      # any other path (the alias redirect keeps it; invite cards still work).
+      # by that commit's own build script (hooks included) with base /legacy/
+      # into dist/legacy/. Vite copies that commit's public/ into dist/legacy/
+      # as well, so its page's icons and manifest, the mannequin (BASE_URL) and
+      # every chunk and worker load from /legacy/. Three paths in its code are
+      # root-absolute and load the root build's copies instead: /maps/<key>.webp
+      # (menu thumbnails), /privacy.html and /favicon.svg (the screenshot mark).
+      # The copied manifest's content is root-absolute too: its start_url,
+      # scope and icons point at /, so an app installed from /legacy/ opens the
+      # WebGPU build (which sends it back here if it can't run; each launch is
+      # a new session, so the once-per-tab guard allows it) with the root's
+      # icons. The WebGPU build ships the same public/ files; if it ever drops
+      # one, the legacy build loses a thumbnail or a link, not the game.
+      # functions/_middleware.js treats /legacy/ like any other path (the alias
+      # redirect keeps it; invite cards still work).
       - name: Check out the legacy build (LEGACY_SHA)
         run: |
           git fetch --no-tags --depth=1 origin "$LEGACY_SHA"
@@ -68,7 +73,7 @@ jobs:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
       - name: Build the legacy build into dist/legacy/
         working-directory: ${{ runner.temp }}/legacy
-        run: ./node_modules/.bin/vite build --base /legacy/ --outDir "$GITHUB_WORKSPACE/dist/legacy" --emptyOutDir
+        run: npm run build -- --base /legacy/ --outDir "$GITHUB_WORKSPACE/dist/legacy" --emptyOutDir
       # Without dist/legacy/index.html, Pages answers /legacy/ with the root
       # page. main.js's guards stop a redirect loop there, but a browser with
       # no WebGPU would get an error page instead of the game.
