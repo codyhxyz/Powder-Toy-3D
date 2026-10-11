@@ -21,6 +21,7 @@ import { gfxUniforms } from './gfx/uniforms.js';
 import { RegionQuads, regionMaterial } from './gfx/regions.js';
 import { ELEMENTS, mechanisms } from './elements.js';
 import { Rays } from './raysLayer.js';
+import { GRAV, EDGE, SIM_MODE_DEFAULTS } from './simModes.js';
 
 // cells/step² downward (the app's gravity setting overrides it)
 const GRAVITY_DEFAULT = 0.025;
@@ -224,6 +225,11 @@ export class Simulation {
     this.idleEpoch = 0;
     this.idleCertified = false;
     this.idleRead = null;   // at most one asynchronous one-texel readback
+    // simulation modes (src/simModes.js), set through their setters below
+    this._gravityMode = SIM_MODE_DEFAULTS.gravityMode;
+    this._airMode = SIM_MODE_DEFAULTS.airMode;
+    this._ambientHeat = SIM_MODE_DEFAULTS.ambientHeat;
+    this._edgeMode = SIM_MODE_DEFAULTS.edgeMode;
     this.gravity = GRAVITY_DEFAULT;
     // bumped by every write to the state (steps, painting, loads, undo, network
     // updates), so callers can tell when the world changed
@@ -357,11 +363,13 @@ export class Simulation {
     this.mats = {
       moveBlock: stepMat(moveBlockFrag(g), {
         ...state(), uParity: { value: 0 }, uFrame: { value: 0 }, uGravity: { value: this.gravity }, tQuiet: { value: null },
+        uGravMode: { value: 0 }, uEdge: { value: 0 },
       }, SUPER_MAP.BLOCKS, true),
-      moveGather: stepMat(moveGatherFrag(g), { ...state(), ...slots(), tQuiet: { value: null }, uFresh: { value: false } }, SUPER_MAP.DRAWN),
+      moveGather: stepMat(moveGatherFrag(g), { ...state(), ...slots(), tQuiet: { value: null }, uFresh: { value: false }, uEdge: { value: 0 } }, SUPER_MAP.DRAWN),
       react: stepMat(reactFrag(g), {
         ...state(), uFrame: { value: 0 }, uGravity: { value: this.gravity }, tQuiet: { value: null }, tRx: { value: this.reactionTable },
         tRayDep: { value: null }, uRays: { value: false }, uFaces: { value: FACES },
+        uGravMode: { value: 0 }, uEdge: { value: 0 }, uAirMode: { value: 0 }, uAmbientHeat: { value: true },
       }, SUPER_MAP.DRAWN),
       inert: rawMat(inertFrag(g), { tF: { value: null } }),
       inertRows: rawMat(inertRowsFrag(g), { tA: { value: null }, tF: { value: null }, tClass: { value: null }, tRx: { value: this.reactionTable } }),
@@ -457,8 +465,25 @@ export class Simulation {
   }
 
   // Settings can change while asleep (including away and back during a readback).
-  get gravity() { return this._gravity; }
+  // gravity: cells/step², as the app's setting has it; read back, what pulls
+  // (none with the gravity mode off: the first-person body, shots and the
+  // physgun read it too, so they float as TPT's stickman does, STKM.cpp)
+  get gravity() { return this._gravityMode === GRAV.OFF ? 0 : this._gravity; }
   set gravity(v) { if (v !== this._gravity) { this._gravity = v; this.wake(); } }
+  // Simulation modes (src/simModes.js). World's window keeps solid edges:
+  // its edge is the store's boundary, not the world's.
+  get gravityMode() { return this._gravityMode; }
+  set gravityMode(v) { if (v !== this._gravityMode) { this._gravityMode = v; this.wake(); } }
+  get airMode() { return this._airMode; }
+  set airMode(v) { if (v !== this._airMode) { this._airMode = v; this.wake(); } }
+  get ambientHeat() { return this._ambientHeat; }
+  set ambientHeat(v) { if (v !== this._ambientHeat) { this._ambientHeat = v; this.wake(); } }
+  get edgeMode() { return this._edgeMode; }
+  set edgeMode(v) { v = this.g.windowed ? EDGE.SOLID : v; if (v !== this._edgeMode) { this._edgeMode = v; this.wake(); } }
+  // May quiet bricks be skipped? Not where a resting cell could still move:
+  // the rest test (shaders/activity.js) knows only vertical gravity and solid
+  // edges, so radial gravity and open or looping edges step every brick.
+  get quietOk() { return this._skipQuiet && this._gravityMode !== GRAV.RADIAL && this._edgeMode === EDGE.SOLID; }
   get skipQuiet() { return this._skipQuiet; }
   set skipQuiet(v) { if (v !== this._skipQuiet) { this._skipQuiet = v; this.wake(); } }
   get skipSleeping() { return this._skipSleeping; }
@@ -475,7 +500,7 @@ export class Simulation {
   // this state themselves. External writes/settings invalidate even a late
   // result; ordinary steps/map rebuilds need not, so a slow read can finish.
   checkIdle() {
-    if (this.idleRead || this.idleCertified || !this.skipQuiet || !this.skipSleeping || this.rays.active || this.disposed) return;
+    if (this.idleRead || this.idleCertified || !this.quietOk || !this.skipSleeping || this.rays.active || this.disposed) return;
     const epoch = this.idleEpoch;
     const pixels = new Float32Array(4).fill(NaN);   // a failed/unsupported read must not certify sleep
     this.idleRead = this.renderer.readRenderTargetPixelsAsync(this.superShare, 0, 0, 1, 1, pixels)
@@ -610,7 +635,7 @@ export class Simulation {
     inertJoin.uniforms.tRows.value = this.actRows.texture;
     this.run(inertJoin, this.actInert);
     quiet.uniforms.tInert.value = this.actInert.texture;
-    quiet.uniforms.uEnabled.value = this.skipQuiet;
+    quiet.uniforms.uEnabled.value = this.quietOk;
     // bricks holding a particle stay awake, and their neighbours (raysLayer.js)
     quiet.uniforms.uRays.value = this.rays.active;
     quiet.uniforms.tRays.value = this.rays.bricks.texture;
@@ -656,7 +681,7 @@ export class Simulation {
     // Finish fresh flags and both ping-pong histories before sleeping. A quiet
     // flow pass already discards every cell, so its EMA needs no further work.
     if (this.idleCertified && !this.actDirty && !this.actFresh && this.actSteps >= SUPER_SETTLE_STEPS
-        && this.skipQuiet && this.skipSleeping && !this.rays.active) {
+        && this.quietOk && this.skipSleeping && !this.rays.active) {
       this.aeration?.idle();   // nothing moves, but the foam left on it still bursts
       return;
     }
@@ -681,6 +706,10 @@ export class Simulation {
     moveBlock.uniforms.uParity.value = parity;
     moveBlock.uniforms.uFrame.value = this.frame;
     moveBlock.uniforms.uGravity.value = this.gravity;
+    moveBlock.uniforms.uGravMode.value = react.uniforms.uGravMode.value = this._gravityMode;
+    moveBlock.uniforms.uEdge.value = moveGather.uniforms.uEdge.value = react.uniforms.uEdge.value = this._edgeMode;
+    react.uniforms.uAirMode.value = this._airMode;
+    react.uniforms.uAmbientHeat.value = this._ambientHeat;
     moveBlock.uniforms.tA.value = this.stateA;
     moveBlock.uniforms.tB.value = this.stateB;
     this.run(moveBlock, this.blocks, quads);
