@@ -2044,7 +2044,7 @@ export const materialProbe = (g, detail, view = 'realistic') => [
 // its groups: the render library's (group 0 FRAME, 1 STATE_RO, 2 LIGHTING, 3 PARAMS)
 export const materialProbeLayouts = () => libLayouts('LIGHTING');
 
-// Every combination of the detail switches: 2^9 = 512 defines objects, in
+// Every combination of the detail switches: 2^n defines objects (n = 10, 1024), in
 // the order of gfx/detail.js's DETAIL (bit i: DETAIL[i]).
 export const detailCombination = (bits) => Object.fromEntries(DETAIL.filter((_, i) => (bits >> i) & 1).map((d) => [d.define, 1]));
 export const DETAIL_COMBINATIONS = 1 << DETAIL.length;
@@ -2068,7 +2068,7 @@ export const probeCheck = (name, detail, view = 'realistic', grids = true) => ({
 // What check-wgsl validates (every grid) and builds (at the smallest): the
 // realistic path at the three detail levels, and the plain view. Every
 // switch's code is in mat.full, every switch-off alternative in mat.off.
-// Each switch alone and all 512 combinations are validated, and each switch
+// Each switch alone and all 1024 combinations are validated, and each switch
 // alone built, by tools/material-lod-check.mjs (--only combos): built here
 // they would add about a minute of SwiftShader to every check-wgsl run.
 const CHECKS = {
