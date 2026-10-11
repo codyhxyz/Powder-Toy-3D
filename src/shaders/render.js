@@ -129,16 +129,38 @@ export const VOLUME_VIEWS = VIEWS.map((v) => v.key);
 const DATA_VIEWS = ['heat', 'pressure', 'flow', 'xray'];
 
 // The decoration layer (TPT's deco colour, src/deco.js) in the view: U17
-// ports shaders/gfx/deco.js to WGSL and turns this on. Off, its hooks are the
-// stand-ins below, which draw what an undecorated cell looks like, exactly as
-// uDeco off did.
+// ports shaders/gfx/deco.js to WGSL and turns this on. Off, the view pastes
+// the stand-ins below for everything deco.js gives it: decoViewGLSL's
+// lookups (decoAt, decoLinear, decoTint and their constants; plain.js calls
+// them) and decoSurfGLSL's hooks (decoSurf, absorbDeco; the realistic
+// tracer calls them). They draw what an undecorated cell looks like, exactly
+// as uDeco off did: decoAt reads no paint, so decoTint keeps the albedo.
 export const DECO_VIEW = false;
-const DECO_STANDINS = /* wgsl */ `
-// ---- the decoration's hooks (gfx/deco.js), off: no cell is painted ----
-fn decoSurf(s: ptr<function, Surf>) {}
-fn absorbDeco(id: i32, c: vec3i, p: vec3f, seg: f32, sunVis: vec3f, T: f32, col: ptr<function, vec3f>, trans: ptr<function, vec3f>) {
+// [name, declaration]; the constants' values are deco.js's.
+const DECO_STANDINS = [
+  ['DECO_SIGMA', 'const DECO_SIGMA: f32 = 2.0;'],
+  ['DECO_DETAIL_MAX', 'const DECO_DETAIL_MAX: f32 = 2.0;'],
+  ['DECO_LUM_MIN', 'const DECO_LUM_MIN: f32 = 1e-3;'],
+  ['DECO_LUM', 'const DECO_LUM: vec3f = vec3f(0.2126, 0.7152, 0.0722);   // Rec. 709 luminance weights'],
+  ['decoAt', 'fn decoAt(c: vec3i) -> vec4f { return vec4f(0.0); }'],
+  ['decoLinear', 'fn decoLinear(c: vec3f) -> vec3f { return select(c / 12.92, pow((c + 0.055) / 1.055, vec3f(2.4)), c >= vec3f(0.04045)); }'],
+  ['decoTint', /* wgsl */ `fn decoTint(alb: vec3f, base: vec3f, d: vec4f) -> vec3f {
+  if (d.a <= 0.0) { return alb; }
+  let detail = clamp(dot(alb, DECO_LUM) / max(dot(base, DECO_LUM), DECO_LUM_MIN), 0.0, DECO_DETAIL_MAX);
+  return mix(alb, decoLinear(d.rgb) * detail, d.a);
+}`],
+  ['decoSurf', 'fn decoSurf(s: ptr<function, Surf>) {}'],
+  ['absorbDeco', /* wgsl */ `fn absorbDeco(id: i32, c: vec3i, p: vec3f, seg: f32, sunVis: vec3f, T: f32, col: ptr<function, vec3f>, trans: ptr<function, vec3f>) {
   absorbSegment(id, p, seg, sunVis, T, col, trans);
-}`;
+}`],
+];
+// The stand-ins a module's other parts don't already declare at module scope
+// (a material module that brings its own keeps it: WGSL rejects a second).
+const decoStandins = (text) => {
+  const declared = (name) => new RegExp(`(^|\\n)(const|override|alias)\\s+${name}\\b|\\bfn\\s+${name}\\s*\\(`).test(text);
+  const own = DECO_STANDINS.filter(([name]) => !declared(name)).map(([, decl]) => decl);
+  return own.length ? `// ---- the decoration's lookups and hooks (gfx/deco.js), off: no cell is painted ----\n${own.join('\n')}` : '';
+};
 
 // The volume's own values (group 3 binding 1): the meshes' cut (gfx/meshCut.js),
 // the first-person eye clip and Whitewater's current aeration copy.
@@ -1224,12 +1246,12 @@ export const volumeFrag = (g, { view = 'realistic', detail = {}, debug = false }
     liquidDetailGLSL(d),
     mediaGLSL(d),
     grainsGLSL(d),
-    DECO_VIEW ? '' : DECO_STANDINS,
   ];
   if (view === 'realistic') parts.push(farHazeGLSL, realistic(d));
   else if (view === 'plain') parts.push(plainGLSL(g), plainView());
   else parts.push(DATA_COMMON, DATA_CODE[view](), dataView(view));
   parts.push(volumeVert, volumeEntry(view, view === 'realistic' || plainCut));
+  if (!DECO_VIEW) parts.push(decoStandins(parts.join('\n')));
   return parts.join('\n');
 };
 
