@@ -134,7 +134,9 @@ Every death goes up in a killfeed in the top right, Garry's Mod's death notices 
 (`src/pov/killfeed.js`): *Attacker* [weapon] *Victim*, or only the icon and the victim when you did it yourself or the world
 did. The icon is the killer's weapon, or what the death's cause names (fire, acid, drowning, a fall). Your kills also
 earn Halo 3's medals, in the sandbox or a match (Double Kill, Killing Spree, Splatter…), plus five for the sim's chaos
-(Own Goal, Bored, Chain Reaction, Heavy Particles, Flooded); see [docs/modes.md](docs/modes.md). The kill icons, the
+(Own Goal, Bored, Chain Reaction, Heavy Particles, Flooded); see [docs/modes.md](docs/modes.md). An announcer calls them, and the match's
+moments, in a voice from [ElevenLabs](https://elevenlabs.io) (its stock voice Brian on Eleven v4, directed to boom), read once
+by `tools/announcer-voice.mjs` into `public/announcer/`; a line without a clip yet is spoken by the browser's own voice. The kill icons, the
 medal badges' icons, and the map menu's gamemode, map and tip icons, are from [game-icons.net](https://game-icons.net)
 by Lorc, Delapouite, Skoll, Sbed and Carl Olsen, under [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/),
 recoloured and with their backgrounds removed (`tools/killicons.mjs`, `tools/medal-icons.mjs` and
