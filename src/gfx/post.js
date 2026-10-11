@@ -1582,7 +1582,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
     }
   }
 
-  // The jittered camera's own projection back (endScene)
+  // The jittered camera's own projection back (endScene, or beginScene after a scene left unended)
   function restore(camera) {
     camera.projectionMatrix.copy(savedProj);
     camera.projectionMatrixInverse.copy(savedProjInv);
