@@ -12,23 +12,28 @@
 //         disposal, a late valid one still can, and a failed or empty read
 //         never does; a fresh map runs both its settling steps first
 //   app   the app's deep idle on a 64³ box (?preset=empty, plain view, TAA
-//         off): once settled, no submits and no animation frames over a
-//         second; each waker (an input event, a resize, requestRender, a
+//         off), paused: once settled, no submits and no animation frames over
+//         a second; each waker (an input event, a resize, requestRender, a
 //         setting, a stroke, a view whose pipeline isn't built yet) runs the
 //         loop again, and it goes back to sleep
+//   run   the same box with the simulation running (unpaused, a step a
+//         frame: the player's default): it certifies idle and the loop
+//         sleeps, with no submits, no animation frames and no steps over a
+//         second and the HUD reading idle; a stroke wakes it, the steps run
+//         again, and it sleeps again once the stroke has settled
 //
 // The particle layer's checks (a photon stroke wakes the world, the layer
 // keeps it awake, a stale read after a particle stroke) wait for its port
 // (src/wire/rays.js, U12): the stage says they're skipped.
 //
-//   node tools/idle-check.mjs [--port N] [--stage sim,app]
+//   node tools/idle-check.mjs [--stage sim,app,run]
 import assert from 'node:assert/strict';
 import { launchBrowser, newTestPage } from './browser.mjs';
 import { startVite } from './vite-server.mjs';
 import { openHarness } from './harness/open.mjs';
 
 const argv = process.argv.slice(2);
-const STAGES = (argv.includes('--stage') ? argv[argv.indexOf('--stage') + 1] : 'sim,app').split(',');
+const STAGES = (argv.includes('--stage') ? argv[argv.indexOf('--stage') + 1] : 'sim,app,run').split(',');
 let failures = 0;
 
 async function simStage(browser) {
@@ -221,9 +226,10 @@ async function appStage(browser) {
       const m = await page.evaluate(async () => {
         const a = window.__app, s0 = a.gpu.stats.submits, c0 = a.loop.callbacks;
         await new Promise((r) => setTimeout(r, 1000));
-        return { submits: a.gpu.stats.submits - s0, callbacks: a.loop.callbacks - c0, asleep: a.loop.asleep };
+        return { submits: a.gpu.stats.submits - s0, callbacks: a.loop.callbacks - c0, asleep: a.loop.asleep, hud: document.querySelector('.stats b')?.textContent };
       });
-      ok(m.submits === 0 && m.callbacks === 0 && m.asleep, `${after}: asleep, then ${m.submits} submits and ${m.callbacks} animation frames over 1 s (${secs()})`);
+      ok(m.submits === 0 && m.callbacks === 0 && m.asleep && m.hud === 'idle',
+        `${after}: asleep, then ${m.submits} submits and ${m.callbacks} animation frames over 1 s, the HUD reading '${m.hud}' (${secs()})`);
     };
     await settled('the box settled');
     const wakers = [
@@ -250,8 +256,64 @@ async function appStage(browser) {
       const s1 = await stats();
       console.log(`     (${s1.callbacks - s0.callbacks} animation frames, ${s1.submits - s0.submits} submits, ${s1.pipelinesCreated - s0.pipelinesCreated} pipelines built)`);
       // (the view's: built while the loop waited on it, then drawn)
-      if (label.startsWith('a view')) ok(s1.pipelinesCreated > s0.pipelinesCreated && await page.evaluate(() => window.__app.settings.view) !== 0, `${label}: its pipeline built, and the view drawn with it`);
+      if (label.startsWith('a view')) {
+        const v = await page.evaluate(() => ({ view: window.__app.settings.view, drawn: window.__app.view.volumeDrawn }));
+        ok(s1.pipelinesCreated > s0.pipelinesCreated && v.view !== 0 && v.drawn, `${label}: its pipeline built, and the last frame before sleep drew the volume with it`);
+      }
     }
+    await page.evaluate(() => window.__app.test.park());
+    ok(!errors.length, `no page errors${errors.length ? `:\n  ${errors.join('\n  ')}` : ''}`);
+    await page.close();
+  } finally {
+    await vite.close();
+  }
+}
+
+// The box with the simulation running: certified idle, the loop asleep; a stroke wakes it, then it sleeps again.
+async function runStage(browser) {
+  const vite = await startVite();
+  const t0 = Date.now(), secs = () => `${((Date.now() - t0) / 1000).toFixed(0)} s`;
+  try {
+    const page = await newTestPage(browser, { mode: 'manual', viewport: { width: 320, height: 200 } });
+    const errors = [];
+    page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
+    page.on('console', (m) => { if (m.type() === 'error' && !/ERR_CONNECTION_REFUSED/.test(m.text())) errors.push(`console: ${m.text()}`); });
+    await page.goto(vite.url('/?size=64&preset=empty&view=plain'));
+    await page.waitForFunction(() => window.__app?.sim, null, { polling: 250, timeout: 150000 });
+    await page.evaluate(() => { const a = window.__app; a.post.settings.taa = false; return a.test.ready(); });
+    // running, as a player's session runs: unpaused, a step a frame (manual mode boots paused and parked)
+    await page.evaluate(() => { const a = window.__app; a.settings.steps = 1; a.test.resume(); a.settings.paused = false; });
+    const ok = (cond, what) => { if (!cond) failures++; console.log(`${cond ? 'ok  ' : 'FAIL'} ${what}`); };
+    const asleep = async (after) => {
+      const t = Date.now();
+      await page.waitForFunction(() => window.__app.loop.asleep, null, { polling: 250, timeout: 150000 });
+      const m = await page.evaluate(async () => {
+        const a = window.__app, s0 = a.gpu.stats.submits, c0 = a.loop.callbacks, f0 = a.sim.frame;
+        await new Promise((r) => setTimeout(r, 1000));
+        return {
+          submits: a.gpu.stats.submits - s0, callbacks: a.loop.callbacks - c0, steps: a.sim.frame - f0, asleep: a.loop.asleep,
+          paused: a.settings.paused, certified: a.sim.idleCertified, hud: document.querySelector('.stats b')?.textContent,
+        };
+      });
+      ok(m.submits === 0 && m.callbacks === 0 && m.steps === 0 && m.asleep && !m.paused && m.certified && m.hud === 'idle',
+        `${after}: running, certified idle, asleep after ${((Date.now() - t) / 1000).toFixed(0)} s; then ${m.submits} submits, ${m.callbacks} animation frames, ${m.steps} steps over 1 s, the HUD reading '${m.hud}' (${secs()})`);
+    };
+    await asleep('the empty box');
+    const before = await page.evaluate(() => ({ frame: window.__app.sim.frame, version: window.__app.sim.version, callbacks: window.__app.loop.callbacks }));
+    // a rock on the floor (it settles in a few steps)
+    await page.evaluate(async () => {
+      const a = window.__app, { E } = await import('/src/elements.js');
+      a.sim.paint({ center: new a.THREE.Vector3(32, 2, 32), radius: 2, shape: 0, tool: E.ROCK, rate: 1, replace: false });
+    });
+    const woke = await page.waitForFunction((f) => window.__app.sim.frame > f, before.frame, { polling: 100, timeout: 20000 }).then(() => true, () => false);
+    ok(woke, 'a stroke wakes it: the steps run again');
+    await asleep('the stroke settled');
+    const after = await page.evaluate(async () => {
+      const a = window.__app, { E } = await import('/src/elements.js');
+      const c = await a.sim.census();
+      return { frame: a.sim.frame, version: a.sim.version, callbacks: a.loop.callbacks, rock: c[E.ROCK]?.n ?? 0 };
+    });
+    ok(after.rock > 0 && after.version > before.version, `between: ${after.frame - before.frame} steps, ${after.callbacks - before.callbacks} animation frames, ${after.rock} rock cells`);
     await page.evaluate(() => window.__app.test.park());
     ok(!errors.length, `no page errors${errors.length ? `:\n  ${errors.join('\n  ')}` : ''}`);
     await page.close();
@@ -267,6 +329,9 @@ try {
   }
   if (STAGES.includes('app')) {
     try { await appStage(browser); } catch (e) { failures++; console.log(`FAIL app: ${e.message}`); }
+  }
+  if (STAGES.includes('run')) {
+    try { await runStage(browser); } catch (e) { failures++; console.log(`FAIL run: ${e.message}`); }
   }
 } finally {
   await browser.close();
