@@ -49,6 +49,7 @@ import { DAY, dayPhase, phaseSteps, keyLight, sunElevation } from './gfx/dayligh
 import { GI_BLEND, cellTexel } from './sim.js';
 import { createMultiplayer } from './net/multiplayer.js';
 import { createProfiler } from './gfx/profiler.js';
+import { PHYS } from './physics.js';
 import { createProfilerPanel } from './ui/profiler.js';
 import { createPov } from './pov/index.js';
 import { createDescentRunner, runSnapshot, LOAD_POLL_MS, LOAD_WAIT_MS } from './pov/descent/switch.js';
@@ -365,6 +366,7 @@ function build() {
   win = null;
   sim = new Simulation(renderer, nx, ny, nz, { windowed: !!worldMode, world: worldMode?.size });
   sim.gravity = settings.gravity;
+  sim.airT = worldMode ? sceneByKey(settings.scene).airT ?? PHYS.AMBIENT : PHYS.AMBIENT;   // (a box: room temperature)
   applySimModes(sim, settings);
   sim.onPass = prof.on ? simPass : null;
   scale = 10 / Math.max(nx, nz);

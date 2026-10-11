@@ -127,7 +127,7 @@ bool inertNear(ivec3 c, vec4 a, vec4 nA[6]) {
     int j = eid(n);
     // thermally quiet; a face touching air carries heat at air's conductance, so it takes air's tolerance
     // (a face with no conductance, a temperature sensor's, carries none)
-    if (min(COND[id], COND[j]) > 0.0 && (j == E_EMPTY ? abs(T - AMBIENT) > AIR_REST_T : abs(T - n.y) > MATTER_REST_T)) return false;
+    if (min(COND[id], COND[j]) > 0.0 && (j == E_EMPTY ? abs(T - uAirT) > AIR_REST_T : abs(T - n.y) > MATTER_REST_T)) return false;
     if (!electricQuietNear(id, a, j, n)) return false;   // src/electricity.js
     if (ACIDIC[j] ? acidEats(id) : ACIDIC[id] && acidEats(j)) return false;   // acid, caustic gas (elements.js acid)
     if ((id == E_WATER && j == E_PLANT) || (id == E_PLANT && j == E_WATER)) return false;

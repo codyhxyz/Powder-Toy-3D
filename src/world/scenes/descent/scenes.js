@@ -1,5 +1,6 @@
 import { helpersGLSL, definesGLSL, jsConstants, compileShared, groundScan } from '../themedShared.js';
 import { E } from '../../../elements.js';
+import { PHYS } from '../../../physics.js';
 import { bakeWang, wangGLSL, minesKit, coalKit, snowKit, MAT, GEOM, WANG_OUT } from '../../wang/index.js';
 
 // Descent (docs/descent-contract.md): the starting mountain and the first three
@@ -166,21 +167,31 @@ const COMMON_SALTS = {
 // (src/world/wang/kits/) tiles the biome band instead of the lattice: swapping
 // another kit in is one `kit:` here (then node scripts/check-descent-levels.mjs
 // --write regenerates levels.js). All three levels are Wang now (2026-10-11).
+//
+// floats.AIR_T: the level's ambient air temperature, °C (scene.airT; shaders/common.js
+// uAirT): what its air relaxes to and rests at. Cells only rest near it
+// (activity.js), so a level whose snow and ice sat in room-temperature air
+// melted for ever and kept its whole window stepping every frame. Noita's snow
+// and ice never melt by themselves; Minecraft keeps snow where the biome is
+// below freezing. So the Mines, under a snowy mountain, sit at freezing (the
+// one temperature where snow, ice and water all rest), the Coal Pits at room
+// temperature, and the Snowy Depths frozen through.
+const MINES_AIR_T = 0.0;
 export const DS_LEVEL_DEFS = [
-  { key: 'descentMines', label: 'Descent: Mines', name: 'Mines', tier: 1, kit: minesKit, ints: {
+  { key: 'descentMines', label: 'Descent: Mines', name: 'Mines', tier: 1, kit: minesKit, floats: { AIR_T: MINES_AIR_T }, ints: {
     LEVEL: 0, LAYERS: 5, TUN_HALF: 4, TUN_H: 10, BUMP_H: 2,   // 7 wide, 10 tall (+2): Noita's mine galleries
     SEG_ON: 620, SHAFT_ON: 120, SUMP_ON: 220, OIL_ON: 300, FEATURE_ON: 0,
     HALL_ON: 0, HALL_R2: 0, HALL_H: 0, ORE: 6,                 // gold: blocks of 3³ in this many per mille of the rock
     ROOF: 0,
     ENTRY_I: 8, ENTRY_K: 10 } },                               // Wang levels: the top layer's unit the way in drops into
                                                                // (Mines: just east of where the ramp from the mouth bottoms out)
-  { key: 'descentCoal', label: 'Descent: Coal Pits', name: 'Coal Pits', tier: 2, kit: coalKit, ints: {
+  { key: 'descentCoal', label: 'Descent: Coal Pits', name: 'Coal Pits', tier: 2, kit: coalKit, floats: { AIR_T: PHYS.AMBIENT }, ints: {
     LEVEL: 1, LAYERS: 7, TUN_HALF: 5, TUN_H: 11, BUMP_H: 1,   // 9 wide, 11 tall (+1)
     SEG_ON: 560, SHAFT_ON: 150, SUMP_ON: 300, OIL_ON: 0, FEATURE_ON: 350,   // rubble heaps
     HALL_ON: 450, HALL_R2: 121, HALL_H: 14, ORE: 25,           // caverns of radius 11 at crossings; coal pockets
     ROOF: 168,
     ENTRY_I: 12, ENTRY_K: 10 } },                              // (under the level above's exit pit, as the lattice's spawn)
-  { key: 'descentSnow', label: 'Descent: Snowy Depths', name: 'Snowy Depths', tier: 3, kit: snowKit, ints: {
+  { key: 'descentSnow', label: 'Descent: Snowy Depths', name: 'Snowy Depths', tier: 3, kit: snowKit, floats: { AIR_T: COMMON_F.COLD_T }, ints: {
     LEVEL: 2, LAYERS: 7, TUN_HALF: 4, TUN_H: 11, BUMP_H: 1,
     SEG_ON: 600, SHAFT_ON: 130, SUMP_ON: 280, OIL_ON: 0, FEATURE_ON: 300,   // brick ruins
     HALL_ON: 250, HALL_R2: 81, HALL_H: 13, ORE: 2,             // smaller ice halls; crystal pockets
@@ -251,7 +262,7 @@ function derived(ints, kit) {
 function tables(level) {
   const def = DS_LEVEL_DEFS[level];
   const salts = Object.fromEntries(Object.entries(COMMON_SALTS).map(([k, v]) => [k, (v + level * SALT_LEVEL_STEP) >>> 0]));
-  return { ints: { ...COMMON, ...def.ints, ...derived(def.ints, def.kit) }, floats: COMMON_F, salts };
+  return { ints: { ...COMMON, ...def.ints, ...derived(def.ints, def.kit) }, floats: { ...COMMON_F, ...def.floats }, salts };
 }
 const PREFIX = 'DS';
 
@@ -599,7 +610,10 @@ ${dsWangGLSL(DS_LEVEL_DEFS[level].kit)}
 ${SRC}
 void sceneCell(ivec3 w, out vec4 A, out vec4 B) {
   int id = dsCell(w.x, w.y, w.z);
-  float T = SPAWNT[id];
+  // room-temperature matter (and the air) at the level's air temperature; at or
+  // under freezing, snow and ice no colder than it (they rest there, chilling nothing)
+  float T = SPAWNT[id] == AMBIENT ? DS_AIR_T : SPAWNT[id];
+  if ((id == E_SNOW || id == E_ICE) && DS_AIR_T <= 0.0) T = max(T, DS_AIR_T);
   if (DS_LEVEL == 2) T = min(T, DS_COLD_T);   // the Snowy Depths are frozen through
   if (dsTemple(w.x, w.y, w.z) < 0) T = dsWangT(w, id, T);   // ...but for what a kit lays down warm (or burning)
   float seed = float(seedWorld(w, uSceneSeed, DS_SALT_CELL)) * UINT_TO_UNIT * SEED_MAX;
@@ -630,6 +644,7 @@ function makeScene(level) {
     label: def.label,
     size: DS_WORLD,
     descentLevel: level,
+    airT: def.floats.AIR_T,   // the sim's ambient air temperature here (app.js build)
     shrine: false,     // app.js worldShrine: the temple's altar is its shrine
     ambient: CAVE_AMBIENT,   // the caves' ambient floor (gfx/uniforms.js uCaveAmbient)
     // the wall torches' heads, world cells (world/torchLights.js lights the nearest): the tiling's and the entry hall's

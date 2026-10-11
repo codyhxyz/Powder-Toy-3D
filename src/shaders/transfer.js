@@ -94,7 +94,7 @@ void transfer(ivec3 p, vec4 a, vec4 b, inout vec4 oA, inout vec4 oB) {
     oB = vec4(uVel, b.w);
   } else {
     // air at ambient, keeping the cell's random seed and the air pressure
-    oA = vec4(float(E_EMPTY), AMBIENT, 0.0, fract(a.w));
+    oA = vec4(float(E_EMPTY), uAirT, 0.0, fract(a.w));
     oB = vec4(0.0, 0.0, 0.0, b.w);
   }
 }
