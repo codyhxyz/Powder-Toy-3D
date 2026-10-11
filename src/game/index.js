@@ -25,7 +25,9 @@ import { createGameHud } from './hud.js';
 // modules (vehicles, classes) read it. Blows through targets.js don't hurt
 // teammates (setHitRules); the sim's damage (fire, blasts, lava) can't tell
 // teams apart and hurts everyone. Events on povEvents: game:start, game:end,
-// game:kill, game:flag, game:hill, game:infected, game:half, game:team.
+// game:kill, game:flag, game:hill, game:infected, game:half, game:team,
+// game:spawn (a body enters play: set it up for the mode's style) and
+// game:stop (the match is over, ended or not: undo it). docs/halo-contract.md.
 //
 // shell (pov/index.js): { app, scene, renderer, camera, player, toolbelt,
 //   loadNpcs() → Promise<{ mod, ai }>, env(), loadPreset(), respawnPlayer(at), freeMouse() }
@@ -179,7 +181,16 @@ export function createGame(shell) {
       e.protect = R.SPAWN_PROTECT_S; e.lastHit = null; e.wasDead = false;
       if (e.bot) e.bot.placeAt(spawnFor(e));
       else if (e.team) shell.respawnPlayer(spawnFor(e));
+      spawned(e);
     }
+  }
+  // a body entered play (the match's start, a respawn, a team switch, Siege's
+  // halftime): the style's modules set it up (shield, loadout, class).
+  // Fires after the shell has put the player's class on (pov/index.js).
+  function spawned(e) {
+    const body = bodyOf(e);
+    if (!body || !e.team) return;
+    povEvents.emit('game:spawn', { id: e.id, team: e.team, bot: !!e.bot, body, mode, style: rules.style });
   }
 
   // ---------------------------------------------------------------- the match
@@ -270,6 +281,7 @@ export function createGame(shell) {
 
   // stop without a result
   function stop() {
+    povEvents.emit('game:stop', { mode, style: rules?.style ?? null });
     running = false;
     removeBots();
     const p = me();
@@ -512,7 +524,7 @@ export function createGame(shell) {
         e.protect = Math.max(0, e.protect - dt);
         pace(e, b);
         if (b.dead && !e.wasDead) died(e);
-        else if (!b.dead && e.wasDead) e.protect = R.SPAWN_PROTECT_S;   // back: a moment's protection
+        else if (!b.dead && e.wasDead) { e.protect = R.SPAWN_PROTECT_S; spawned(e); }   // back: a moment's protection
         e.wasDead = b.dead;
       }
       count();
@@ -601,6 +613,7 @@ export function createGame(shell) {
     for (const f of Object.values(flags ?? {})) if (f.carrier === p.id) dropFlag(f, shell.player.pos);
     shell.respawnPlayer(spawnFor(p));
     p.protect = R.SPAWN_PROTECT_S;
+    spawned(p);
     hud.announce(`You joined ${label(dest)}`, now());
     return true;
   }
@@ -633,6 +646,7 @@ export function createGame(shell) {
     start, end: () => end(), useLayout(l) { userLayout = l ?? null; },
     get running() { return running; },
     get mode() { return mode; },
+    get style() { return running ? rules.style : null; },   // 'halo' | 'tf2' while a match runs (rules.js MODES)
     get layout() { return layout ?? (sim() ? fitLayout(userLayout ?? app.getArena?.(), sim().g) ?? labLayout(sim().g) : null); },
     get state() { return state(); },
     get lastResult() { return lastResult; },

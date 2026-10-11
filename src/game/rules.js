@@ -54,30 +54,38 @@ export const INFECTED_MELEE = 3;     // × a melee blow's damage from an infecte
 export const LAST_HUMAN_REVEAL = true;  // Halo: the last survivor shows on every zombie's tracker
 
 // ---- the modes (Halo's defaults where Halo has one; the time limits fit a lab-sized map)
+// style: whose rules a match plays by. 'halo': Halo 3's equal start (everyone
+// shielded, the same guns and grenades, no classes); 'tf2': Team Fortress 2's
+// classes (the class picker opens on joining). docs/halo-contract.md.
 export const MODES = {
   slayer: {
+    style: 'halo',
     name: 'Team Slayer', short: 'Slayer',
     desc: 'First team to the kill limit, or the most kills when time runs out.',
     scoreToWin: 50, timeLimit: 12 * 60,      // Halo 3 Team Slayer: 50 kills, 12 min
   },
   ctf: {
+    style: 'halo',
     name: 'Capture the Flag', short: 'CTF',
     desc: 'Take their flag from its stand and bring it to yours while yours is home.',
     scoreToWin: 3, timeLimit: 15 * 60,       // Halo: 3 captures
   },
   koth: {
+    style: 'halo',
     name: 'King of the Hill', short: 'KOTH',
     desc: 'Hold the hill alone to score a point a second. It moves every minute.',
     scoreToWin: 100, timeLimit: 12 * 60,     // Halo 3: 100 points (seconds held)
     hillMoveS: 60,                           // s the hill stays put (Halo's moving hill; Crazy King moves it every 30 s)
   },
   infection: {
+    style: 'halo',
     name: 'Infection', short: 'Infection',
     desc: 'One starts infected. Whoever they kill joins them. Survive the clock.',
     timeLimit: 3 * 60,                       // a Halo round's length
     alphas: 1,                               // Halo's alpha zombies at the start
   },
   siege: {
+    style: 'tf2',
     name: 'Siege', short: 'Siege',
     desc: 'Attackers hold the core; then the teams swap sides. Faster capture wins.',
     holdToWin: 30,                           // s the attackers must hold the core in all (a TF2 point's capture, slowed for one zone)
@@ -85,6 +93,8 @@ export const MODES = {
   },
 };
 export const MODE_KEYS = Object.keys(MODES);
+export const styleOf = (mode) => MODES[mode]?.style ?? null;
+export const isHalo = (mode) => styleOf(mode) === 'halo';
 
 export const END_SCREEN_S = 10;      // s the result stays up (Halo's post-game carnage report, briefly)
 export const KILLFEED_S = 6;         // s a killfeed line stays
