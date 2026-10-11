@@ -22,7 +22,11 @@
 //            (farSkyOpen; farBeyond gated by it and blocked under a cave's
 //            roof), the lit haze (farAirLit, farHaze, farHazePremul), the
 //            mesh cut's depth to ray distance (meshCutAt, WebGPU's clip depth
-//            and y-down pixels) and the near field's bounce off a lit lamp
+//            and y-down pixels) and the near field's bounce off a lit lamp;
+//            and main's sync-3 changes: a scene's ambient floor in
+//            giIrradiance and giRadiance (none in the GI variants), the wall
+//            torches' fixed lamps in lampLight (lit while the torch is there,
+//            not on its own head, not shaded by its own cell)
 // It serves tools/harness/lib.html from its own Vite (tools/vite-server.mjs:
 // --port N, else a free port) and launches Chromium through tools/browser.mjs.
 //   node tools/lib-check.mjs [--port N] [--only probes,values] [--budget ms]
@@ -897,7 +901,7 @@ ${body}
   let n = io[5u * i + 4u];
   io[5u * NIN + 2u * i] = vec4f(giIrradiance(g, n.xyz), 0.0);
   io[5u * NIN + 2u * i + 1u] = vec4f(giRadiance(g, n.xyz, n.w), 0.0);`;
-      for (const [variant, lay, add] of [['LIGHTING', layouts, amb], ['LIGHTING_GISRC', libProbeLayouts('lib.gisrc'), [0, 0, 0]]]) {
+      for (const [variant, lay, add] of [['LIGHTING', layouts, amb], ['LIGHTING_GI', libProbeLayouts('lib.gi'), [0, 0, 0]]]) {
         const r = await run({ label: `cave ambient ${variant}`, code: kernel(N, body, lib(g, { variant })),
           groups: groupsFor(lay, { frame: { ...FRAME, caveAmbient: amb }, io: io.slice() }), dispatch: [N / 64, 1, 1] });
         if (ranOk(`cave ambient kernel (${variant})`, r)) {
