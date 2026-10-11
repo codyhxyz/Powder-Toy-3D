@@ -1055,13 +1055,14 @@ function createSceneTarget(gpu, label) {
 
 /**
  * @param {object} gpu the gpu from createGpu (src/gpu/device.js)
- * @param {{ presenter?: object, pixScale?: { value: number }, sky?: object }} [opts]
+ * @param {{ presenter?: object, pixScale?: { value: number }, sky?: object, readable?: boolean }} [opts]
  *   presenter: the canvas's (src/gpu/present.js), for render(…, null) and screenshots;
  *   pixScale: set to an output pixel's size in rendered pixels before each scene
- *   (the shaders' LOD bias, FrameUniforms.pixScale); sky: skyColours() to use
+ *   (the shaders' LOD bias, FrameUniforms.pixScale); sky: skyColours() to use;
+ *   readable: tests only, the history and bloom levels get COPY_SRC so a tool can read them
  * @returns post-processing pipeline; see the file header.
  */
-export function createPost(gpu, { presenter = null, pixScale = null, sky = skyColours() } = {}) {
+export function createPost(gpu, { presenter = null, pixScale = null, sky = skyColours(), readable = false } = {}) {
   const L = Object.fromEntries(Object.entries(POST_LAYOUTS).map(([k, entries]) => [k, gpu.layout(`POST_${k}`, entries)]));
   const fsTarget = (entry = 'fs', format = HDR) => ({ entry, targets: [{ format }] });
   const pipes = {
@@ -1125,8 +1126,10 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
   const samplerEntry = (binding) => ({ binding, resource: sampler });
 
   const make = (label, [w, h], usage) => gpu.createTexture({ label, size: [w, h], format: HDR, usage });
-  const ATTACH = TEX.RENDER_ATTACHMENT | TEX.TEXTURE_BINDING;
-  const STORE = TEX.STORAGE_BINDING | TEX.TEXTURE_BINDING;
+  // (F7: attachments are RENDER_ATTACHMENT | TEXTURE_BINDING only, so they stay compressible)
+  const COPY = readable ? TEX.COPY_SRC : 0;
+  const ATTACH = TEX.RENDER_ATTACHMENT | TEX.TEXTURE_BINDING | COPY;
+  const STORE = TEX.STORAGE_BINDING | TEX.TEXTURE_BINDING | COPY;
 
   const settingsOf = () => ({ ...POST_DEFAULTS, ...post.settings });
   const ready = Promise.all(allPipes().map((p) => p.ready)).then(() => post);
