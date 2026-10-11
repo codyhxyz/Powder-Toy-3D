@@ -19,7 +19,8 @@ import { deflateSync } from 'node:zlib';
 import { gridLayout } from '../src/sim.js';
 import { prelude } from '../src/shaders/common.js';
 import { bakeWang, minesKit, coalKit, snowKit, MAT, WANG_OUT } from '../src/world/wang/index.js';
-import { MAT_NAMES, rasterTile, passable, isLiquid, PORTS, SIDE_PORTS, COL } from '../src/world/wang/kit.js';
+import { MAT_NAMES, DEFAULT_PALETTE, openCap, rasterTile, passable, isLiquid, PORTS, SIDE_PORTS, COL } from '../src/world/wang/kit.js';
+import { ELEMENTS, E } from '../src/elements.js';
 import { cutPorts } from '../src/world/wang/tiling.js';
 import { walkFlood, BODY_W, BODY_H, JUMP } from '../src/world/wang/walk.js';
 
@@ -83,9 +84,9 @@ function check(kit, seed) {
     if (pl.xf & 2) c = G.U - 1 - c;
     const code = tileCells.get(pl.tile)[a + 2 * G.U * (ly + G.H * c)];
     let ports = 0;
-    for (let p = 0; p < SIDE_PORTS; p++) ports |= pl.cols[p] << (2 * p);
+    if (!G.OPEN) for (let p = 0; p < SIDE_PORTS; p++) ports |= pl.cols[p] << (2 * p);
     for (let p = SIDE_PORTS; p < PORTS.length; p++) ports |= (pl.cols[p] ? 1 : 0) << (2 * SIDE_PORTS + p - SIDE_PORTS);
-    return cutPorts(G, code, ports, a, ly, c, x, y, z);
+    return cutPorts(G, openCap(G, code, l, W.units[1], ly), ports, a, ly, c, x, y, z);
   };
   const [RX, RY, RZ] = [W.units[0] * G.U, W.units[1] * G.H, W.units[2] * G.U];
   let s = 12345;
@@ -191,9 +192,16 @@ const COLOURS = {
   [MAT.GUNPOWDER]: [60, 60, 70], [MAT.TNT]: [220, 40, 40], [MAT.FUNGUS]: [200, 170, 120], [MAT.MEAT]: [200, 90, 90],
   [MAT.NUGGETS]: [255, 220, 90], [MAT.CLAY]: [180, 120, 90], [MAT.PLANT]: [60, 170, 60], [MAT.WOOD]: [150, 95, 45], [MAT.GLASS]: [200, 230, 230],
 };
-// a kit's palette can make a code another element: preview it as that element
+// a kit's palette can make a code another element: preview it as that element (its elements.js colour
+// where the table above has no say; the base codes keep theirs unless remapped)
 const ELEMENT_COLOURS = { TOXIC: [120, 170, 40], BROKENCOAL: [50, 46, 44], STONE: [125, 125, 120] };
-const paletteColours = (kit) => Object.fromEntries(Object.entries(COLOURS).map(([c, rgb]) => [c, ELEMENT_COLOURS[kit.palette[MAT_NAMES[c]]] ?? rgb]));
+const hexRGB = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+const elementRGB = (key) => ELEMENT_COLOURS[key] ?? (ELEMENTS[E[key]]?.color ? hexRGB(ELEMENTS[E[key]].color) : null);
+const paletteColours = (kit) => Object.fromEntries(MAT_NAMES.map((n, c) => {
+  const key = kit.palette[n];
+  const remapped = key !== DEFAULT_PALETTE[n];
+  return [c, (COLOURS[c] && !remapped ? null : elementRGB(key)) ?? COLOURS[c] ?? [255, 0, 255]];
+}));
 function png(path, w, h, rgb) {
   const raw = Buffer.alloc((w * 3 + 1) * h);
   for (let y = 0; y < h; y++) { raw[y * (w * 3 + 1)] = 0; rgb.copy(raw, y * (w * 3 + 1) + 1, y * w * 3, (y + 1) * w * 3); }
@@ -347,8 +355,54 @@ function inMouth(G, p, c, x, y, z) {
   if (name[0] === 'S') return z >= U - G.BORDER - 2 && near(x, xc - G.DOOR_W / 2, xc + G.DOOR_W / 2) && Math.abs(y - yb) <= 1;
   return y === -1 && near(x, xc - G.SHAFT_W / 2 - 1, xc + G.SHAFT_W / 2) ;   // D: fell out through the floor
 }
+// ---- an open kit's tiles (geom.OPEN): no doorways, so the promise is the spine's: from the W
+// face's middle, standing on the spine (its top at geom.SPINE), the body walks to every face's
+// middle (E, and N and S at both units' centres), as authored and mirrored. Every tile meets its
+// neighbours there, so the layer is one walk; the voids drop it to the layer below.
+const SPINE_SLACK = 2;   // cells the spine's top may sit off SPINE at a face
+function checkOpenTiles(rawKit) {
+  const W = bakeWang({ kit: rawKit, seed: 1, size: [rawKit.geom.U * 4 || 96, 24, 96] });
+  const kit = W.kit, G = kit.geom, X = 2 * G.U, Y = G.H, Z = G.U, S = G.SPINE;
+  let bad = 0;
+  kit.tiles.forEach((t, ti) => {
+    // with both floor shafts cut (where the tiling opens one, the ring walks round it)
+    const raw = rasterTile(t, ti, G), grid = new Uint8Array(raw.length);
+    const shafts = (1 << (2 * SIDE_PORTS)) | (1 << (2 * SIDE_PORTS + 1));
+    for (let z = 0; z < Z; z++) for (let y = 0; y < Y; y++) for (let x = 0; x < X; x++) {
+      grid[x + X * (y + Y * z)] = cutPorts(G, raw[x + X * (y + Y * z)], shafts, x, y, z, x, y, z);
+    }
+    for (let mir = 0; mir < MIRRORS; mir++) {
+      const mx = mir & 1, mz = mir & 2;
+      const mg = new Uint8Array(X * Y * Z);
+      for (let z = 0; z < Z; z++) for (let y = 0; y < Y; y++) for (let x = 0; x < X; x++) {
+        mg[(mx ? X - 1 - x : x) + X * (y + Y * (mz ? Z - 1 - z : z))] = grid[x + X * (y + Y * z)];
+      }
+      const f = walkFlood(mg, [X, Y, Z], [[0, S + 1, Z / 2 - 1]]);
+      const near = (v, c) => Math.abs(v - c) <= G.DOOR_W / 2;
+      const faces = { E: false, N0: false, N1: false, S0: false, S1: false };
+      let start = false;
+      for (const i of f.list) {
+        const x = i % X, y = Math.floor(i / X) % Y, z = Math.floor(i / (X * Y));
+        if (Math.abs(y - S) > SPINE_SLACK) continue;
+        if (x < 2 && near(z, Z / 2)) start = true;
+        if (x >= X - 3 && near(z, Z / 2)) faces.E = true;
+        for (const u of [0, 1]) {
+          if (z < 2 && near(x, u * G.U + G.U / 2)) faces[`N${u}`] = true;
+          if (z >= Z - 3 && near(x, u * G.U + G.U / 2)) faces[`S${u}`] = true;
+        }
+      }
+      const miss = Object.keys(faces).filter((k) => !faces[k]);
+      if (!start || miss.length) {
+        bad++; failures++;
+        console.log(`FAIL tile ${t.name}${mir ? ` (mirrored ${['', 'x', 'z', 'x and z'][mir]})` : ''}: ${start ? `W -> ${miss.join(' ')} not walkable on the spine` : 'no spine at its W face'}`);
+        break;
+      }
+    }
+  });
+  if (!bad) console.log(`${kit.name}: all ${kit.tiles.length} open tiles walk their spine to every face`);
+}
 for (const kit of KITS) {
-  checkTiles(kit);
+  if (kit.geom?.OPEN) checkOpenTiles(kit); else checkTiles(kit);
   compileGLSL(kit);
   for (let s = 1; s <= SEEDS; s++) check(kit, s * 7919);
 }

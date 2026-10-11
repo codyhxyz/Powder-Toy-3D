@@ -1,518 +1,215 @@
-// The Snowy Depths kit (Noita's Lumen alla, the third biome down): icy caverns
-// with snow drifted on every floor, ice-lined walls and icicles, frozen ponds,
-// the brick ruins of an older people (walls with arched doorways, pillars),
-// rubble, and the cold blue-violet light of crystal. "Better than Noita": it
-// uses the third dimension: an ice bridge spans a chasm you can see across, a
-// collapsed brick cathedral has a nave, an arcade and a gallery under fallen
-// ribs, a frozen waterfall hangs down a shaft, and one warm brick nook (a
-// hearth stocked with coal and firewood: light it) hides behind a crawl.
+// The Snowy Depths kit (Noita's Lumen alla, the third biome down), an open kit
+// (geom.OPEN; kits/islands.js): a dark void full of floating islands of rock
+// marbled with ice, snow on every top, every underside fringed with long
+// icicles; dark water held in pockets inside them; wooden cabins hung on
+// chains in the void with gold and a frozen body inside (treasure rooms);
+// plank bridges, snow drifts, the brick ruins of an older people
+// (docs/descent-reference.md, from the Noita map).
 //
-// Format: kit.js (docs/wang-tiles.md); kits/mines.js is the worked example.
-// Canonical frame: x 0..48 (two units), y 0..24, z 0..24, cells of 0.30 m; a
-// body is 5.5 tall and 1.6 wide, steps a cell and jumps about two. The border
-// (2) is rock whatever a tile does; the floor is y = 2 and a high gallery's
-// floor y = 13. The Snowy Depths scene holds every cell below freezing
-// (descent/scenes.js COLD_T), so the ice keeps and the snow stays powder.
+// The Snowy Depths scene holds every cell at −15 °C (descent/scenes.js COLD_T),
+// so what is liquid here is what stays liquid at −15: saltwater (it freezes at
+// −21 °C), whiskey (−23 °C), liquid nitrogen. Water and the potions would
+// freeze, so the kit lays them down above freezing (temps): a frozen lake's
+// water under its ice lid, Noita's whiskey and healthium caches in timber
+// barrels (timber insulates), the rare pool in a timber-lined basin. Liquid
+// nitrogen and dry ice lie in pockets off the main path.
 //
-// Codes reuse kit.js MAT through the palette: BEAM is brick here (the ruins,
-// and the doorway sets the sampler cuts become brick jambs and lintels), SAND
-// is snow (a powder: drifts), MOSS is the nook's firewood.
-import { GEOM } from '../kit.js';
+// Canonical frame: x 0..48, y 0..24, z 0..24, cells of 0.30 m; a body is 5.5
+// tall and 1.6 wide, steps a cell and jumps about two.
+import {
+  X, U, MID, C0, C1, SPINE, STRIP, stream, spineBody, spineDeck, plankX, blob, vein, basin, pocket, heap,
+  post, barrel, openTiles, spineStrips,
+  scatter, PLANK_SPUR,
+} from './islands.js';
 
-const { U, H, BORDER: B, FLOOR: F, HIGH_FLOOR: HF, DOOR_W, DOOR_H, SHAFT_W } = GEOM;
-const X = 2 * U;                       // a tile's length
-const IN = [B, X - B];                 // the tile's inside, x
-const INZ = [B, U - B];                // ...and z
-const TOP = H - B;                     // the ceiling's underside
-const MID = U / 2;                     // a long side's door centre, z (W, E); a unit's centre
-const C0 = U / 2, C1 = U + U / 2;      // unit 0's and unit 1's centre, x
-const DH = DOOR_W / 2;                 // half a doorway
-const GAL_Z = [MID - DH, MID + DH];    // a tunnel along x lines up with the W and E doorways
-const DECK = HF - 1;                   // a brick deck's cell: its top is the high floor
-const HIGH_TOP = HF + DOOR_H;          // a high gallery's ceiling
-const TUNNEL_H = DOOR_H + 3;           // an ice tunnel is taller than its doorways: headroom over snow and under icicles
-const SNOW_T = 1;                      // cells of snow on a floor (Noita's Snowy Depths: a white rind on every ledge)
-const DRIFT_H = 2;                     // a drift's height over the floor: a jump (walk.js JUMP)
-const LINING = 1;                      // cells of ice lining a cave's walls (noise eats it to patches)
-const ROUGH_WALL = 1.2;                // cells of noise on an ice tunnel's walls
-const ROUGH_ROOM = 2.2;                // ...a cave room's
-const ROUGH_CAVE = 3.2;                // ...a cavern's
-const ROUGH_LINING = 2.0;              // ...the ice lining's (more than the cave's: it shows in patches)
-const ROUGH_BRICK = 0;                 // brickwork is crisp
-const WAVE = 3;                        // cells a tunnel's line swings in z
-const LIFT = 1;                        // cells its floor rises over a hump (+ SNOW_T: a doorway cut to the bare floor is at most a jump below it)
-const SLICE = 2;                       // a tunnel's slices (its floor steps a cell at a time)
-const ICICLE_R = 0.9;                  // an icicle's radius at its root
-const ICICLE_LEN = 2.5;                // ...its length in a tunnel (TUNNEL_H leaves a body room under it)
-const ICICLE_LEN_HALL = 6;             // ...in a tall room, over the middle
-const PILLAR_R = 1.4;                  // a brick pillar's radius
-const ARCH_W = 6;                      // an arched doorway in a ruin wall: its width...
-const ARCH_SPRING = 6;                 // ...the height its arch springs from
-const WALL_T = 2;                      // a ruin wall's thickness
-const CRYSTAL_R = 1.4;
+const QX = [4, 24, 44], QZ = [4, 20];   // the voids between the ribbons (canonical x, z)
+const SCATTERED = 3;                     // extra blobs a tile scatters through its voids (islands.js scatter)
+const LOW = SPINE - 4;                   // a low blob's top: a drop off the spine
+const HIGH = 19;                         // a high blob's middle, over a void
+const MARBLE = 5;                        // streaks of ice through a tile's rock (Noita's marbled islands)
+const ICICLES = 14;                      // icicles hung under a tile's ribbons and blobs
+const ICICLE_LEN = [3, 8];               // ...their length (cells): long, as Noita's
+const ICICLE_R = 0.8;
+const SNOW_T = 1;                        // cells of snow on every walked top
+const SHAFT_CLEAR = 6;                   // nothing hangs within this of a unit's centre (a shaft's fall)
+const FLECKS = 4;                        // gold specks through the rock
 
-// a small seeded generator for the scattered detail (icicles): the kit is data, the same every load
-function lcg(seed) {
-  let s = seed >>> 0;
-  return () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
-}
+const nearShaft = (x, z) => Math.abs(z - MID) < SHAFT_CLEAR && (Math.abs(x - C0) < SHAFT_CLEAR || Math.abs(x - C1) < SHAFT_CLEAR);
+// an icicle hanging from whatever is over (x, z) at y: a spindle of ice grown down out of the island
+const icicle = (x, z, y, len) => (nearShaft(x, z) ? null : { capsule: [[x, y, z], [x, y - len, z], ICICLE_R], m: 'ICE', only: 'AIR' });
 
-// ---- helpers: each returns a list of primitives
-const SALT0 = 1000;                    // shared noise streams start here (past any prim index)
-let salt = SALT0;
-// an ice tunnel along x: a natural cave, ice-lined, snow on its floor, icicles
-// on its roof. It meanders (WAVE in z, LIFT up) pinned straight at its ends,
-// where the doorways meet it.
-function tunnelX(x0, x1, { zr = GAL_Z, y0 = F, h = TUNNEL_H, rough = ROUGH_WALL, wave = WAVE, lift = LIFT, phase = 0, icicles = 5, seed = 1 } = {}) {
-  const lining = [], air = [], floor = [], snow = [];
-  const len = x1 - x0, s = salt++, sl = salt++;
-  const pad = Math.ceil(rough) + 1;
-  const tops = [];
-  for (let x = x0; x < x1; x += SLICE) {
-    const t = (x + SLICE / 2 - x0) / len, pin = Math.sin(Math.PI * t);
-    const dz = Math.round(wave * pin * Math.sin(2 * Math.PI * t + phase));
-    const dy = Math.max(0, Math.round(lift * pin * Math.sin(3 * Math.PI * t + phase * 2)));
-    const xe = Math.min(x + SLICE, x1);
-    const a = [Math.max(x0, x - pad), y0 + dy, zr[0] + dz], b = [Math.min(x1, xe + pad), y0 + dy + h, zr[1] + dz];
-    lining.push({ box: [[a[0], a[1] - 1, a[2] - LINING], [b[0], b[1] + LINING, b[2] + LINING]], m: 'ICE', only: 'ROCK', rough: ROUGH_LINING, salt: sl });
-    air.push({ box: [a, b], m: 'AIR', rough, salt: s });
-    floor.push({ box: [[x, y0 - 1, zr[0] + dz], [xe, y0 + dy, zr[1] + dz]], m: 'ROCK' });
-    snow.push({ box: [[x, y0 + dy, zr[0] + dz - 1], [xe, y0 + dy + SNOW_T, zr[1] + dz + 1]], m: 'SAND', only: 'AIR' });
-    tops.push([x + 1, y0 + dy + h, (zr[0] + zr[1]) / 2 + dz]);
+function island(seed, { gap = null, blobs = [], hangers = [], extra = [], dress = [] } = {}) {
+  const r = stream(seed);
+  const planked = [0, 1].filter(() => r() < PLANK_SPUR);
+  const body = spineBody(r, { gap, planked });
+  const veins = [];
+  for (let n = 0; n < MARBLE; n++) veins.push(vein([r.between(2, X - 2), r.between(1, SPINE - 2), r.between(3, 21)], [r.between(5, 10), 1, r.between(2, 4)], 'ICE', 'ROCK', 2));
+  for (let n = 0; n < FLECKS; n++) veins.push(vein([r.between(1, X - 1), r.between(1, SPINE - 2), r.between(1, 23)], [0.8, 0.8, 0.8], 'GOLD', 'ROCK', 0.5));
+  // icicles: under the ribbon's edges (where its body thins) and under the high blobs
+  const ice = [];
+  for (let n = 0; n < ICICLES; n++) {
+    const x = r.between(1, X - 1), z = MID + r.pick([-1, 1]) * r.between(STRIP + 1, STRIP + 4);
+    ice.push(icicle(x, z, SPINE - 2, r.between(...ICICLE_LEN)));
   }
-  const r = lcg(seed * 7 + x0), ic = [];
-  for (let n = 0; n < icicles; n++) {
-    const [x, y, z] = tops[Math.floor(r() * tops.length)];
-    ic.push(icicle([x, y, z + (r() - 0.5) * (zr[1] - zr[0] - 2)], ICICLE_LEN * (0.6 + 0.4 * r())));
-  }
-  return [...lining, ...air, ...floor, ...snow, ...ic.filter(Boolean)];
+  for (const [x, y, z, w] of hangers) for (let n = 0; n < 4; n++) ice.push(icicle(x + r.between(-w, w), z + r.between(-2, 2), y, r.between(...ICICLE_LEN)));
+  // snow on the walked tops (over the deck, before what stands on it)
+  const snow = spineStrips({ gap, planked }).map(([a, b]) => ({ box: [[a[0], SPINE, a[1]], [b[0], SPINE + SNOW_T, b[1]]], m: 'SNOW', only: 'AIR' }));
+  return [...body, ...scatter(r, SCATTERED), ...blobs, ...veins, ...extra, ...spineDeck({ gap, planked }), ...ice.filter(Boolean), ...snow, ...dress];
 }
-// a straight tunnel along z through x = xc
-function tunnelZ(z0, z1, xc, { y0 = F, h = TUNNEL_H, w = DOOR_W, rough = ROUGH_WALL } = {}) {
-  const xr = [xc - w / 2, xc + w / 2];
+const lowBlob = (qx, qz, r = [6, 3, 5]) => blob([QX[qx], LOW - r[1] + 1, QZ[qz]], r);
+const highBlob = (qx, qz, r = [6, 2.5, 4]) => blob([QX[qx], HIGH, QZ[qz]], r);
+const highHang = (qx, qz, w = 5) => [QX[qx], HIGH - 2, QZ[qz], w];
+const drift = (x, y, z, rx, rz = rx * 0.7) => ({ ball: [[x, y, z], [rx, 2, rz]], m: 'SNOW', only: 'AIR', rough: 0.5 });
+const onSpine = (x, side = -1) => ({ kind: 'loot', at: [x, SPINE + SNOW_T, MID + side * 2] });
+
+// a cabin hung on chains in the void beside the spine (Noita's treasure cabins): timber walls, a
+// doorway onto the walkway, gold and a frozen body inside, chains up to the tile's top
+const CABIN = { x0: 18, x1: 30, z0: MID + 5, z1: MID + 11, h: 8 };
+function cabin() {
+  const { x0, x1, z0, z1, h } = CABIN, y0 = SPINE - 1;
   return [
-    { box: [[xr[0] - LINING, y0 - 1, z0], [xr[1] + LINING, y0 + h + LINING, z1]], m: 'ICE', only: 'ROCK', rough: ROUGH_LINING },
-    { box: [[xr[0], y0, z0], [xr[1], y0 + h, z1]], m: 'AIR', rough },
-    { box: [[xr[0], y0 - 1, z0], [xr[1], y0, z1]], m: 'ROCK' },
-    { box: [[xr[0] - 1, y0, z0], [xr[1] + 1, y0 + SNOW_T, z1]], m: 'SAND', only: 'AIR' },
+    { box: [[x0, y0, z0], [x1, y0 + h, z1]], m: 'WOOD' },
+    { box: [[x0 + 1, y0 + 1, z0 + 1], [x1 - 1, y0 + h - 1, z1 - 1]], m: 'AIR' },
+    { box: [[x0 + 4, y0 + 1, z0 - 1], [x0 + 8, y0 + 7, z0 + 1]], m: 'AIR' },                 // its doorway, onto the walkway
+    { box: [[x0 + 3, y0 - 2, z0 - 1], [x0 + 9, y0 + 1, z0 + 1]], m: 'WOOD', only: 'AIR' },    // ...and a sill bridging the step to it
+    { box: [[x1 - 4, y0 + 1, z1 - 3], [x1 - 1, y0 + 3, z1 - 1]], m: 'GOLD' },
+    { ball: [[x1 - 6, y0 + 1, z1 - 2], [1.5, 0.8, 1]], m: 'NUGGETS', only: 'AIR' },
+    { box: [[x0 + 1, y0 + 1, z1 - 3], [x0 + 4, y0 + 3, z1 - 1]], m: 'ICE' },                  // a body frozen in a block of ice
+    { box: [[x0 + 2, y0 + 1, z1 - 2], [x0 + 3, y0 + 2, z1 - 1]], m: 'MEAT' },
+    post(x0 + 1, z0 + 2, y0 + h, 24, 'METAL'), post(x1 - 2, z1 - 2, y0 + h, 24, 'METAL'),
   ];
 }
-// a cave room: an ice-lined box of air, its floor flat and snowed
-function room(a, b, { rough = ROUGH_ROOM, lined = true, snowed = true } = {}) {
-  return [
-    ...(lined ? [{ box: [[a[0] - LINING, a[1] - 1, a[2] - LINING], [b[0] + LINING, b[1] + LINING, b[2] + LINING]], m: 'ICE', only: 'ROCK', rough: ROUGH_LINING }] : []),
-    { box: [a, b], m: 'AIR', rough },
-    { box: [[a[0], a[1] - 1, a[2]], [b[0], a[1], b[2]]], m: 'ROCK' },
-    ...(snowed ? [{ box: [[a[0] - 1, a[1], a[2] - 1], [b[0] + 1, a[1] + SNOW_T, b[2] + 1]], m: 'SAND', only: 'AIR' }] : []),
-  ];
-}
-// a short passage from a side port's face (for a port the tile accepts but whose room stops short)
-const STUB_DEPTH = 10;
-function stub(port, { y0 = F, depth = STUB_DEPTH, rough = ROUGH_WALL } = {}) {
-  const top = y0 + DOOR_H + 1;
-  const x = port.endsWith('1') ? C1 : C0;
-  const flat = (a, b) => [{ box: [a, b], m: 'AIR', rough }, { box: [[a[0], y0 - 1, a[2]], [b[0], y0, b[2]]], m: 'ROCK' }];
-  if (port === 'W') return flat([IN[0], y0, GAL_Z[0]], [IN[0] + depth, top, GAL_Z[1]]);
-  if (port === 'E') return flat([IN[1] - depth, y0, GAL_Z[0]], [IN[1], top, GAL_Z[1]]);
-  if (port[0] === 'N') return flat([x - DH, y0, INZ[0]], [x + DH, top, INZ[0] + depth]);
-  return flat([x - DH, y0, INZ[1] - depth], [x + DH, top, INZ[1]]);
-}
-// an icicle hanging from a roof at (x, y, z): a spindle half in the rock, half hanging.
-// None hangs in a shaft's column (a unit's centre): a body falling in from above lands on the floor.
-const SHAFT_CLEAR = SHAFT_W / 2 + 2;
-const inShaftColumn = (x, z) => Math.abs(z - MID) < SHAFT_CLEAR && (Math.abs(x - C0) < SHAFT_CLEAR || Math.abs(x - C1) < SHAFT_CLEAR);
-const icicle = ([x, y, z], len, r = ICICLE_R) => (inShaftColumn(x, z) ? null : { ball: [[x, y + 1, z], [r, len + 1, r]], m: 'ICE', only: 'AIR' });
-// a row of them along x under a roof at y
-function icicleRow(x0, x1, y, zs, len, seed) {
-  const rr = lcg(seed), out = [];
-  for (let x = x0; x < x1; x += 2 + Math.floor(rr() * 3)) out.push(icicle([x + 0.5, y, zs[Math.floor(rr() * zs.length)] + rr() * 2 - 1], len * (0.5 + 0.5 * rr()), ICICLE_R * (0.7 + 0.5 * rr())));
-  return out.filter(Boolean);
-}
-// an ice stalagmite on a floor
-const stalagmite = ([x, y, z], hgt, r = 1.3) => ({ ball: [[x, y, z], [r, hgt, r]], m: 'ICE', only: ['AIR', 'SAND'] });
-// a snow drift on a floor at (x, z), banked against whatever is there
-const drift = (x, z, rx, rz = rx * 0.7, y = F) => ({ ball: [[x, y, z], [rx, DRIFT_H + 0.5, rz]], m: 'SAND', only: 'AIR', rough: 0.5 });
-// a crystal cluster (the cold light) at c
-const crystal = (c, r = CRYSTAL_R) => ({ ball: [c, [r, r * 1.6, r]], m: 'CRYSTAL', only: ['ROCK', 'AIR', 'ICE'] });
-// a brick deck (its top at the high floor) over x0..x1 × z0..z1
-const deck = (x0, x1, z0, z1, y = DECK) => ({ box: [[x0, y, z0], [x1, y + 1, z1]], m: 'BEAM' });
-// a brick pillar at (x, z), from y0 up h cells
-const pillar = (x, z, h, y0 = F, r = PILLAR_R) => ({ cyl: [[x, y0, z], r, h], axis: 'y', m: 'BEAM', rough: ROUGH_BRICK });
-// a ruin wall across an x tunnel at x (filling only what is open there), with an arched doorway at zc
-function ruinWall(x, zc = MID, { y0 = F, gap = true } = {}) {
-  const out = [{ box: [[x, y0, INZ[0]], [x + WALL_T, TOP, INZ[1]]], m: 'BEAM', only: ['AIR', 'SAND', 'ICE'] }];
-  if (gap) out.push(
-    { box: [[x, y0, zc - ARCH_W / 2], [x + WALL_T, y0 + ARCH_SPRING, zc + ARCH_W / 2]], m: 'AIR' },
-    { cyl: [[x, y0 + ARCH_SPRING, zc], ARCH_W / 2, WALL_T], axis: 'x', m: 'AIR' },
-  );
-  return out;
-}
-// a brick ruin wall along x at z (a room's arcade side), arched openings every `bay` cells
-function arcade(x0, x1, z, { y0 = F, top = 18, bay = 8, spring = 10 } = {}) {
-  const out = [{ box: [[x0, y0, z - 1], [x1, top, z + 1]], m: 'BEAM', only: ['AIR', 'SAND'] }];
-  for (let x = x0 + bay / 2; x < x1; x += bay) {
-    const w = bay - 2 * PILLAR_R;
-    out.push({ box: [[x - w / 2, y0, z - 1], [x + w / 2, y0 + spring, z + 1]], m: 'AIR', only: 'BEAM' });
-    out.push({ cyl: [[x, y0 + spring, z - 1], w / 2, 2], axis: 'z', m: 'AIR', only: 'BEAM' });
-  }
-  return out;
-}
-// a bay round a floor shaft at a unit's centre: walkways past the hole on both sides
-const BAY_WALK = 4;
-function bay(xc) {
-  const hw = SHAFT_W / 2 + BAY_WALK;
-  return room([xc - hw, F, MID - hw], [xc + hw, F + TUNNEL_H, MID + hw], { rough: ROUGH_WALL });
-}
-// a chimney: open from a tunnel up to the ceiling at a unit's centre, so a shaft from above lands in it
-const CHIMNEY_W = SHAFT_W + 4;
-const chimney = (xc, y0 = F) => ({ box: [[xc - CHIMNEY_W / 2, y0, MID - CHIMNEY_W / 2], [xc + CHIMNEY_W / 2, TOP, MID + CHIMNEY_W / 2]], m: 'AIR', rough: ROUGH_WALL });
-const rubble = (x, z, r, y = F) => ({ ball: [[x, y, z], [r, r * 0.55, r]], m: 'RUBBLE', only: ['AIR', 'SAND'], rough: 0.6 });
 
-const tiles = [
-  // ---- the universal tile: a frozen brick hall of two storeys, a brick balcony all
-  // round at the gallery level, stairs up both long sides, icicles from its vault.
-  // It takes any colour on any port.
+const tiles = openTiles([
+  // ---- the universal tile: ribbons and rings, a high blob over the void, icicles
   {
-    name: 'frozen hall', weight: 0.6,
-    ports: { W: 'DH-R', E: 'DH-R', N0: 'DH-R', N1: 'DH-R', S0: 'DH-R', S1: 'DH-R', D0: 'S-', D1: 'S-', U0: 'S-', U1: 'S-' },
-    prims: [
-      ...room([IN[0], F, INZ[0]], [IN[1], TOP, INZ[1]], { rough: ROUGH_WALL, lined: false }),
-      deck(IN[0], IN[1], INZ[0], INZ[0] + 5), deck(IN[0], IN[1], INZ[1] - 5, INZ[1]),
-      deck(IN[0], IN[0] + 5, INZ[0], INZ[1]), deck(IN[1] - 5, IN[1], INZ[0], INZ[1]),
-      ...[8, 16, 24, 32, 40].flatMap((x) => [pillar(x + 0.5, INZ[0] + 4.5, DECK - F, F, 0.9), pillar(x + 0.5, INZ[1] - 4.5, DECK - F, F, 0.9)]),
-      { stairs: [[18, F, INZ[0] + 5], [18 + HF - F, HF, INZ[0] + 8]], m: 'BEAM', axis: 'x', rise: -1 },
-      { stairs: [[30 - (HF - F), F, INZ[1] - 8], [30, HF, INZ[1] - 5]], m: 'BEAM', axis: 'x', rise: 1 },
-      // snow blown onto the balcony's open edge, icicles off its lip and from the vault
-      { box: [[IN[0], HF, INZ[0]], [IN[1], HF + SNOW_T, INZ[0] + 2]], m: 'SAND', only: 'AIR' },
-      ...icicleRow(10, 40, DECK, [INZ[0] + 5, INZ[1] - 5], 1.5, 11),
-      ...icicleRow(10, 40, TOP, [MID - 3, MID + 3], 3, 12),
-      crystal([C0, TOP, MID - 6]), crystal([C1, TOP, MID + 6]),
-      drift(24, MID, 4),
-    ],
-    sites: [{ kind: 'loot', at: [24, HF, INZ[0] + 2] }],
+    name: 'ice rings', weight: 0.6,
+    prims: island(201, { blobs: [highBlob(1, 0), lowBlob(1, 1)], hangers: [highHang(1, 0)], dress: [drift(24, LOW + 1, 20, 3)] }),
+    sites: [onSpine(24)],
   },
-  // ---- ice tunnel: the common piece, side doors where it may open
+  // ---- plain ribbons, marbled, a drift and a high blob
   {
-    name: 'ice tunnel', weight: 3,
-    ports: { W: 'D-', E: 'D-', N0: '-D', N1: '-D', S0: '-D', S1: '-D' },
-    prims: [...tunnelX(IN[0], IN[1], { phase: 0.4, seed: 2 }), drift(C0 - 8, GAL_Z[0], 3), crystal([C1 + 4, F + TUNNEL_H, GAL_Z[1]])],
+    name: 'ice ribbons', weight: 2.2,
+    prims: island(202, { blobs: [lowBlob(0, 0), highBlob(1, 1), lowBlob(2, 1)], hangers: [highHang(1, 1)], dress: [drift(4, LOW + 1, 4, 3), drift(30, SPINE + 1, MID - 3, 2.5, 1.2)] }),
   },
-  // ---- a long drift tunnel: the snow banks up against one wall the whole way
+  // ---- a plank bridge over a break, saltwater (dark water) in a blob under it
   {
-    name: 'drift tunnel', weight: 2,
-    ports: { W: 'D-', E: 'D-', N0: '-D', S1: '-D' },
-    prims: [
-      ...tunnelX(IN[0], IN[1], { phase: 2.4, seed: 3, zr: [GAL_Z[0] - 2, GAL_Z[1]] }),
-      drift(14, GAL_Z[0] - 2, 6, 2.5), drift(32, GAL_Z[0] - 1, 7, 2.5), drift(40, GAL_Z[1], 4, 2),
-      crystal([24, F + TUNNEL_H, GAL_Z[0]]),
-    ],
+    name: 'plank bridge', weight: 1.8,
+    prims: island(203, {
+      gap: [18, 30],
+      blobs: [lowBlob(1, 1, [7, 3.5, 5]), highBlob(1, 0)],
+      hangers: [highHang(1, 0)],
+      extra: [basin(24, LOW, 20, 4.5, 2, 3, 'SALTWATER'), pocket([22, LOW - 3, 4], [2.5, 1.5, 2], 'SALTWATER')],
+      dress: [plankX(16, 32, MID, SPINE + 1)],
+    }),
   },
-  // ---- ice crossroads: tunnels along x and along z through unit 0, a bay round unit 1's floor
+  // ---- the frozen lake: a great blob holding water (laid down above freezing) under a lid of ice
   {
-    name: 'ice crossroads', weight: 1.4,
-    ports: { W: 'D-', E: 'D-', N0: 'D-', S0: 'D-', N1: '-D', S1: '-D', D1: '-S' },
-    prims: [
-      ...tunnelX(IN[0], IN[1], { phase: 4.0, seed: 4, wave: 1 }), ...tunnelZ(INZ[0], INZ[1], C0), ...bay(C1),
-      stalagmite([C1 + 8, F, MID - 7], 3), icicle([C0 + 4, F + TUNNEL_H, MID + 5], 3), crystal([C1 - 9, F + TUNNEL_H, MID + 8]),
-    ],
+    name: 'frozen lake', weight: 1.2,
+    prims: island(204, {
+      blobs: [blob([24, LOW - 2, 20], [11, 4, 5])],
+      extra: [basin(24, LOW, 20, 8, 3, 3.5, 'WATER'), { ball: [[24, LOW, 20], [8.5, 0.9, 4]], m: 'ICE', only: 'WATER' }],
+      dress: [drift(14, LOW + 1, 20, 2.5)],
+    }),
+    sites: [onSpine(10, 1)],
   },
-  // ---- the ice bridge: a chasm the tile's length, crossed at the high floor by a
-  // bridge of ice between two cliffs; the chasm's floor is a frozen pond, and brick
-  // stairs climb from it to the west cliff. You see the far side as you cross.
+  // ---- thin ice: the walkway itself is a skin of ice over deep water for a stretch
   {
-    name: 'ice bridge', weight: 1.3,
-    ports: { W: 'H', E: 'H', N0: '-D', N1: '-D', S0: '-', S1: '-D', D1: '-S', U0: '-S', U1: '-S' },
-    prims: [
-      { box: [[IN[0] - 1, F - 1, INZ[0] - 1], [IN[1] + 1, TOP + 1, INZ[1] + 1]], m: 'ICE', only: 'ROCK', rough: ROUGH_LINING },
-      { box: [[IN[0], F, INZ[0]], [IN[1], TOP, INZ[1]]], m: 'AIR', rough: ROUGH_ROOM },
-      { box: [[IN[0], F - 1, INZ[0]], [IN[1], F, INZ[1]]], m: 'ROCK' },
-      // the cliffs, ice-faced
-      { box: [[IN[0], F, INZ[0]], [8, HF, INZ[1]]], m: 'ROCK', rough: 1 },
-      { box: [[40, F, INZ[0]], [IN[1], HF, INZ[1]]], m: 'ROCK', rough: 1 },
-      { box: [[IN[0], F, INZ[0]], [8, HF, INZ[1]]], m: 'ROCK' },
-      { box: [[40, F, INZ[0]], [IN[1], HF, INZ[1]]], m: 'ROCK' },
-      { box: [[8, F, INZ[0]], [9, HF - 1, INZ[1]]], m: 'ICE', only: 'AIR', rough: 1 },
-      { box: [[39, F, INZ[0]], [40, HF - 1, INZ[1]]], m: 'ICE', only: 'AIR', rough: 1 },
-      // the bridge: a slab of ice at the high floor, sagging beneath, hung with icicles
-      { box: [[7, DECK - 1, MID - 3], [41, HF, MID + 3]], m: 'ICE' },
-      { ball: [[24, DECK - 1, MID], [15, 3, 2.5]], m: 'ICE', only: 'AIR' },
-      ...icicleRow(10, 38, DECK - 2, [MID - 2, MID + 2], 3, 21),
-      // the pond, frozen flush with the chasm's snow
-      { box: [[14, F, 6], [34, F + SNOW_T, 18]], m: 'ICE' },
-      { box: [[9, F, INZ[0]], [39, F + SNOW_T, INZ[1]]], m: 'SAND', only: 'AIR' },
-      drift(36, INZ[0] + 2, 4, 3), drift(12, INZ[1] - 2, 3, 2),
-      // brick stairs from the chasm floor to the west cliff, along its south wall
-      { stairs: [[8, F, INZ[1] - 4], [8 + HF - F + 1, HF, INZ[1]]], m: 'BEAM', axis: 'x', rise: -1 },
-      { box: [[8, F, INZ[1] - 4], [8 + HF - F + 1, F + SNOW_T, INZ[1]]], m: 'BEAM' },
-      crystal([IN[0] + 1, 18, 5]), crystal([IN[1] - 1, 17, 19]), crystal([24, F + 1, INZ[0]], 1.8),
-    ],
-    sites: [{ kind: 'loot', at: [24, F + SNOW_T, 15] }],
+    name: 'thin ice', weight: 0.9,
+    prims: island(205, {
+      blobs: [lowBlob(1, 0)],
+      extra: [{ box: [[18, 1, MID - 4], [30, SPINE, MID + 4]], m: 'WATER', only: 'ROCK' }],
+      dress: [{ box: [[18, SPINE - 1, MID - 4], [30, SPINE, MID + 4]], m: 'ICE' }, { box: [[18, SPINE, MID - 4], [30, SPINE + 1, MID + 4]], m: 'AIR', only: 'SNOW' }],
+    }),
   },
-  // ---- the frozen waterfall: a shaft down through unit 0 with a fall of ice
-  // down its north wall into a frozen plunge pool, ice ledges round it, the tunnel past it
+  // ---- a cabin hung on chains: gold and a frozen body inside
   {
-    name: 'frozen waterfall', weight: 1.4,
-    ports: { W: 'D-', E: 'D-', S1: '-D', D0: 'S', U0: 'S-' },
-    prims: [
-      ...tunnelX(IN[0], IN[1], { phase: 2.6, lift: 0, seed: 6 }),
-      { box: [[C0 - 8, F, MID - 8], [C0 + 8, TOP, MID + 8]], m: 'AIR', rough: ROUGH_ROOM },
-      { box: [[C0 - 8, F - 1, MID - 8], [C0 + 8, F, MID + 8]], m: 'ROCK' },
-      // the fall: a sheet of ice from the roof to the floor, bulging, fluted
-      { box: [[C0 - 5, F, MID - 9], [C0 + 5, TOP, MID - 6]], m: 'ICE', rough: 1.5 },
-      ...[-3, 0, 3].map((dx) => ({ capsule: [[C0 + dx, TOP, MID - 6], [C0 + dx * 1.3, F, MID - 5], 1.2], m: 'ICE', only: 'AIR' })),
-      { ball: [[C0, F, MID - 5], [7, 1.5, 2.5]], m: 'ICE', only: ['AIR', 'SAND'] },
-      // ledges stepping round the other walls (out of the drop's line)
-      { box: [[C0 + 4, 9, MID - 2], [C0 + 8, 10, MID + 8]], m: 'ICE' },
-      { box: [[C0 - 8, 15, MID + 3], [C0, 16, MID + 8]], m: 'ICE' },
-      { box: [[C0 + 4, 10, MID - 2], [C0 + 8, 10 + SNOW_T, MID + 8]], m: 'SAND', only: 'AIR' },
-      ...icicleRow(C0 + 4, C0 + 8, 9, [MID + 2, MID + 6], 2, 61),
-      crystal([C0 + 8, 18, MID - 7]), crystal([C0 - 8, 6, MID + 7]),
-    ],
+    name: 'hanging cabin', weight: 0.9,
+    prims: island(206, { blobs: [lowBlob(0, 0), highBlob(2, 0)], hangers: [highHang(2, 0)], dress: cabin() }),
+    sites: [{ kind: 'treasure', at: [26, SPINE, CABIN.z1 - 3] }, { kind: 'gold', at: [23, SPINE, CABIN.z0 + 3] }],
   },
-  // ---- the ruin: two brick walls across an ice tunnel, arched doorways through
-  // them, a broken pillar between, brick rubble and snow where the roof came in
+  // ---- brick ruins on the ribbon's flank, rubble, an arch
   {
-    name: 'brick ruin', weight: 1.6,
-    ports: { W: 'D-', E: 'D-', N0: '-D', S1: '-D' },
-    prims: [
-      ...tunnelX(IN[0], IN[1], { phase: 1.5, seed: 7, wave: 1, lift: 0, zr: [GAL_Z[0] - 2, GAL_Z[1] + 2], h: TUNNEL_H + 2 }),
-      ...ruinWall(17, MID), ...ruinWall(31, MID + 1),
-      // a breach in the second wall's top
-      { ball: [[32, TOP - 3, MID - 4], [3, 4, 3]], m: 'AIR', only: 'BEAM' },
-      pillar(24, MID - 4, 7), pillar(24, MID + 5, 3),
-      rubble(26, MID + 3, 3), rubble(34, MID - 4, 2.5), drift(10, GAL_Z[1] + 1, 4, 2),
-      crystal([24, F + TUNNEL_H + 2, MID]),
-    ],
-    sites: [{ kind: 'loot', at: [24, F + SNOW_T, MID] }],
+    name: 'brick ruin', weight: 1.4,
+    prims: island(207, {
+      blobs: [lowBlob(1, 1, [9, 3, 5]), highBlob(0, 0)],
+      hangers: [highHang(0, 0)],
+      dress: [{ box: [[17, LOW, 17], [31, LOW + 7, 19]], m: 'BRICK' }, { box: [[21, LOW, 17], [25, LOW + 5, 19]], m: 'AIR' },
+        { cyl: [[23, LOW + 5, 17], 2, 2], axis: 'z', m: 'AIR', only: 'BRICK' }, { box: [[26, LOW + 5, 17], [31, LOW + 7, 19]], m: 'AIR' },
+        heap(28, LOW, 21, 2.5, 'RUBBLE'), heap(19, LOW, 21, 1.8, 'RUBBLE'), { box: [[2, SPINE, MID + 3], [6, SPINE + 4, MID + 4]], m: 'BRICK' }],
+    }),
+    sites: [onSpine(24, -1), { kind: 'loot', at: [23, LOW, 20] }],
   },
-  // ---- the collapsed cathedral: a brick nave under a vault of ribs, an arcade each
-  // side, a gallery along the north wall reached by stairs, ribs fallen across the
-  // floor, an ice rose window lit from behind; the roof is open to the layer above.
+  // ---- Noita's caches: whiskey and healthium in timber barrels (laid down above freezing), slime in a pot
   {
-    name: 'collapsed cathedral', weight: 0.7,
-    ports: { W: 'D-', E: 'D-', N0: 'H-', N1: '-', S0: '-D', S1: '-D', U0: '-S', U1: '-S' },
-    prims: [
-      { box: [[4, F, INZ[0]], [44, TOP, INZ[1]]], m: 'AIR', rough: 1 },
-      { ball: [[24, 10, MID], [22, 13, 11]], m: 'AIR', rough: ROUGH_ROOM },
-      { box: [[4, F - 1, INZ[0]], [44, F, INZ[1]]], m: 'BEAM' },          // the paving
-      ...stub('W'), ...stub('E'),
-      // the vault's ribs: brick rings across the nave, hollowed (before the arcades)
-      ...[16, 24, 32, 40].flatMap((x) => [
-        { cyl: [[x, 7, MID], 13, 1], axis: 'x', m: 'BEAM', only: 'AIR' },
-        { cyl: [[x, 7, MID], 12, 1], axis: 'x', m: 'AIR', only: 'BEAM' },
-      ]),
-      { box: [[4, F, INZ[0]], [44, 14, INZ[1]]], m: 'AIR', only: 'BEAM' },   // ribs spring from the arcades, not the floor...
-      { box: [[4, HF, INZ[0]], [44, TOP, 6]], m: 'AIR', only: 'BEAM' },      // ...nor over the gallery
-      { box: [[4, F - 1, INZ[0]], [44, F, INZ[1]]], m: 'BEAM' },
-      // two ribs fell: one broken at its crown, one lying across the nave
-      { ball: [[32, 19, MID + 2], [2, 4, 5]], m: 'AIR', only: 'BEAM' },
-      { box: [[23, 13, INZ[0]], [26, TOP, INZ[1]]], m: 'AIR', only: 'BEAM' },
-      { capsule: [[20, F + 1, 9], [27, F + 1, 16], 1], m: 'BEAM' },
-      // the arcades: pillars and arches each side of the nave
-      ...arcade(4, 44, 7, { top: 17, spring: 10 }), ...arcade(4, 44, 17, { top: 17, spring: 10 }),
-      { box: [[36, 12, 16], [44, 17, 18]], m: 'AIR', only: 'BEAM' },        // a fallen stretch
-      // the gallery over the north aisle, and its stairs (high at the west end)
-      deck(IN[0], 28, INZ[0], 6),
-      { stairs: [[28, F, INZ[0]], [28 + HF - F, HF, 6]], m: 'BEAM', axis: 'x', rise: -1 },
-      // brick rubble, snow fallen through the roof
-      rubble(30, 12, 4), rubble(38, 15, 3), rubble(10, 19, 2.5),
-      drift(26, 12, 5, 3), { box: [[4, F, 8], [44, F + SNOW_T, 16]], m: 'SAND', only: 'AIR' },
-      // the rose window: a disc of ice in the east wall, a crystal behind it
-      { cyl: [[44, 14, MID], 4, 2], axis: 'x', m: 'ICE', only: 'ROCK' },
-      crystal([45.5, 14, MID], 1.2),
-      crystal([6, 20, MID]), crystal([24, TOP, MID], 1.8),
-      ...icicleRow(6, 42, TOP - 1, [MID - 4, MID + 4], 4, 81),
-    ],
-    sites: [{ kind: 'loot', at: [10, HF, 4] }, { kind: 'wand', at: [40, F + SNOW_T, MID] }],
+    name: 'cellar', weight: 1,
+    prims: island(208, {
+      blobs: [lowBlob(1, 0, [8, 3, 5])],
+      dress: [...barrel(20, LOW, 4, 'WHISKEY'), ...barrel(24, LOW, 4, 'WHISKEY'), ...barrel(28, LOW, 5, 'HEALTHIUM'),
+        ...barrel(44, SPINE + 1, MID - 3, 'SLIME'), { box: [[17, LOW, 2], [31, LOW + 1, 3]], m: 'WOOD' }],
+    }),
+    sites: [{ kind: 'loot', at: [24, LOW, 8] }],
   },
-  // ---- the frozen pond: a low cave room, the pond iced flush with its snow, an ice column in it
+  // ---- a cold pocket off the main path: liquid nitrogen in a blob's basin, blocks of dry ice
   {
-    name: 'frozen pond', weight: 1.2,
-    ports: { W: 'D-', E: 'D-', N0: '-D', N1: '-D', S0: '-D', S1: '-D', D0: '-S' },
-    prims: [
-      ...room([4, F, 4], [44, 15, 20]), ...stub('W'), ...stub('E'),
-      { ball: [[28, F, 12], [11, 1, 6]], m: 'ICE', only: ['AIR', 'SAND', 'ROCK'] },
-      { box: [[17, F - 1, 6], [39, F, 18]], m: 'ICE' },
-      { cyl: [[34, F, 12], 1.6, 13], axis: 'y', m: 'ICE', rough: 0.6 },
-      { ball: [[34, 15, 12], [3, 3, 3]], m: 'ICE', only: ['AIR', 'ROCK'] },
-      drift(8, 6, 4, 2.5), drift(42, 18, 4, 2.5),
-      ...icicleRow(6, 42, 15, [8, 16], 3, 91),
-      crystal([6, 14, 18]), crystal([44, 12, 5]),
-    ],
+    name: 'cold pocket', weight: 0.3, offPath: true,
+    prims: island(209, {
+      blobs: [blob([24, LOW - 1, 20], [8, 3.5, 4.5])],
+      extra: [basin(24, LOW, 20, 4, 2, 2.5, 'LIQUID_NITROGEN')],
+      dress: [{ box: [[16, LOW, 18], [18, LOW + 2, 21]], m: 'DRY_ICE' }, { box: [[30, LOW, 19], [32, LOW + 3, 21]], m: 'DRY_ICE' }],
+    }),
   },
-  // ---- the icicle hall: a tall cave, a forest of icicles and stalagmites, shafts in its roof
+  // ---- gold in the ice: veins, nuggets spilled, a TNT cache someone left to get at it
   {
-    name: 'icicle hall', weight: 1.1,
-    ports: { W: 'D-', E: 'D-', N0: '-D', N1: '-D', S0: '-D', S1: '-D', U0: '-S', U1: '-S' },
-    prims: [
-      ...room([4, F, 4], [44, 12, 20]), { ball: [[24, 12, 12], [21, 10, 9]], m: 'AIR', rough: ROUGH_CAVE }, chimney(C0), chimney(C1),
-      { box: [[4, F - 1, 4], [44, F, 20]], m: 'ROCK' }, { box: [[3, F, 3], [45, F + SNOW_T, 21]], m: 'SAND', only: 'AIR' },
-      ...stub('W'), ...stub('E'),
-      ...icicleRow(8, 40, TOP - 1, [6, 9, 15, 18], ICICLE_LEN_HALL, 101),
-      ...icicleRow(18, 30, TOP, [MID], ICICLE_LEN_HALL + 2, 102),
-      stalagmite([17, F, 7], 4), stalagmite([31, F, 17], 5), stalagmite([40, F, 8], 3), stalagmite([8, F, 16], 3),
-      crystal([5, 9, 5]), crystal([43, 15, 19]), crystal([24, TOP, 4], 1.8),
-    ],
+    name: 'gold vein', weight: 1.1,
+    prims: island(210, {
+      blobs: [lowBlob(1, 0, [7, 3, 5]), lowBlob(2, 1)],
+      extra: [{ capsule: [[18, 1, 2], [30, LOW, 6], 1], m: 'GOLD', only: ['ROCK', 'ICE'], rough: 1 }],
+      dress: [heap(24, LOW, 4, 2, 'NUGGETS'), { box: [[42, LOW, 19], [45, LOW + 3, 22]], m: 'TNT' }, { box: [[41, LOW, 18], [46, LOW + 1, 23]], m: 'WOOD', only: 'AIR' }],
+    }),
+    sites: [{ kind: 'gold', at: [24, LOW + 1, 6] }],
   },
-  // ---- a ruined stair: brick steps climb a storey through a broken stairwell, low at W, high at E
+  // ---- saltwater pools in the blobs, a frozen body in the ice by them
   {
-    name: 'ruined stair', weight: 1,
-    ports: { W: 'D', E: 'H', N0: '-D', N1: '-', S0: '-', S1: '-' },
-    prims: [
-      { box: [[IN[0] - 1, F - 1, GAL_Z[0] - 2], [IN[1] + 1, HIGH_TOP + 2, GAL_Z[1] + 2]], m: 'ICE', only: 'ROCK', rough: ROUGH_LINING },
-      { box: [[IN[0], F, GAL_Z[0] - 1], [IN[1], HIGH_TOP + 1, GAL_Z[1] + 1]], m: 'AIR', rough: ROUGH_WALL },
-      { stairs: [[10, F, GAL_Z[0] - 1], [10 + 2 * (HF - F), HF, GAL_Z[1] + 1]], m: 'BEAM', axis: 'x', rise: 1 },
-      { box: [[10 + 2 * (HF - F), F, GAL_Z[0] - 1], [IN[1], HF, GAL_Z[1] + 1]], m: 'BEAM' },
-      { box: [[IN[0], F - 1, GAL_Z[0] - 1], [10, F, GAL_Z[1] + 1]], m: 'ROCK' },
-      { box: [[IN[0], F, GAL_Z[0] - 1], [10, F + SNOW_T, GAL_Z[1] + 1]], m: 'SAND', only: 'AIR' },
-      // arches over the flight, one fallen
-      ...ruinWall(16, MID, { y0: F + 3 }).map((p) => ({ ...p, only: p.m === 'AIR' ? undefined : ['AIR', 'SAND'] })),
-      ...ruinWall(28, MID, { y0: F + 9 }).map((p) => ({ ...p, only: p.m === 'AIR' ? undefined : ['AIR', 'SAND'] })),
-      rubble(6, GAL_Z[1], 2.5), { capsule: [[38, HF + 1, GAL_Z[0]], [44, HF + 1, GAL_Z[0] + 2], 0.9], m: 'BEAM' },
-      crystal([22, HIGH_TOP, MID]),
-    ],
+    name: 'brine pools', weight: 1,
+    prims: island(211, {
+      blobs: [lowBlob(0, 1, [7, 3, 4]), lowBlob(2, 0, [7, 3, 4]), highBlob(1, 1)],
+      hangers: [highHang(1, 1)],
+      extra: [basin(4, LOW, 20, 3.5, 2, 2.5, 'SALTWATER'), basin(44, LOW, 4, 3.5, 2, 2.5, 'SALTWATER'),
+        { box: [[22, SPINE - 3, MID + 5], [25, SPINE - 1, MID + 7]], m: 'MEAT', only: 'ROCK' }],
+    }),
   },
-  // ---- two storeys: a brick gallery over an ice tunnel, a stairwell between; either end high or low
+  // ---- the rare pool (Noita's): one a level, levitatium in a timber-lined basin, a crystal over it
   {
-    name: 'two storeys', weight: 1.1,
-    ports: { W: 'DH-', E: 'HD-', S0: '-D', N1: '-H' },
-    prims: [
-      ...tunnelX(IN[0], IN[1], { wave: 0, lift: 0, h: DOOR_H + 1, icicles: 0, seed: 12 }),
-      { box: [[IN[0], HF, GAL_Z[0]], [IN[1], HIGH_TOP, GAL_Z[1]]], m: 'AIR', rough: ROUGH_WALL },
-      deck(IN[0], IN[1], GAL_Z[0], GAL_Z[1]),
-      ...[8, 18, 30, 40].map((x) => ({ box: [[x, HF, GAL_Z[0]], [x + 1, HIGH_TOP, GAL_Z[0] + 1]], m: 'BEAM' })),
-      ...[8, 18, 30, 40].map((x) => ({ box: [[x, HF, GAL_Z[1] - 1], [x + 1, HIGH_TOP, GAL_Z[1]]], m: 'BEAM' })),
-      // the stairwell, beside the galleries
-      ...room([16, F, INZ[0]], [34, HIGH_TOP, GAL_Z[0]], { rough: ROUGH_WALL }),
-      { stairs: [[16, F, INZ[0]], [16 + HF - F + 2, HF, GAL_Z[0]]], m: 'BEAM', axis: 'x', rise: -1 },
-      ...icicleRow(10, 40, DECK, [GAL_Z[0] + 2, GAL_Z[1] - 2], 1.5, 121),
-      crystal([30, HIGH_TOP, INZ[0] + 2]), crystal([6, F + DOOR_H, GAL_Z[1]]),
-    ],
+    name: 'rare pool', weight: 0.5, max: 1,
+    prims: island(212, {
+      blobs: [blob([24, LOW - 1, 20], [8, 3.5, 4.5])],
+      extra: [basin(24, LOW, 20, 5.5, 2.5, 3.5, 'WOOD'), basin(24, LOW, 20, 4.5, 1.8, 2.7, 'LEVITATIUM', 'WOOD')],
+      dress: [{ ball: [[24, 23, 20], [1.4, 2, 1.4]], m: 'CRYSTAL' }],
+    }),
+    sites: [onSpine(24, 1)],
   },
-  // ---- a snowed-in room: the roof came down on a brick room and the snow came with it
+  // ---- a snowed-in ledge: deep drifts that slide off into the void when disturbed
   {
-    name: 'snowed-in room', weight: 1.2,
-    ports: { W: 'D-', E: 'D-', N0: '-D', N1: '-D', S0: '-D', S1: '-D', D1: '-S' },
-    prims: [
-      ...room([4, F, 4], [44, 16, 20], { lined: false }),
-      ...stub('W'), ...stub('E'),
-      // what's left of its brick walls
-      { box: [[4, F, 4], [44, 9, 5]], m: 'BEAM' }, { box: [[4, F, 19], [22, 7, 20]], m: 'BEAM' },
-      { box: [[10, F, 4], [16, 9, 5]], m: 'AIR', only: 'BEAM' },
-      drift(14, 9, 5), drift(30, 15, 6, 4), drift(40, 7, 3),
-      { ball: [[22, 17, 12], [7, 3, 5]], m: 'SAND', only: 'ROCK', rough: 1 },     // more snow in the roof: dig, and it falls
-      rubble(24, 6, 3), { capsule: [[8, F, 6], [16, 11, 9], 0.9], m: 'BEAM' },
-      crystal([40, 14, 18]),
-    ],
-    sites: [{ kind: 'loot', at: [24, F + SNOW_T, 10] }],
+    name: 'snow drifts', weight: 1.2,
+    prims: island(213, {
+      blobs: [lowBlob(1, 1, [9, 3, 5]), lowBlob(0, 0)],
+      dress: [drift(22, LOW + 1, 20, 6, 3.5), drift(4, LOW + 1, 4, 3.5), heap(28, SPINE + 1, MID + 3, 1.2, 'SNOW')],
+    }),
   },
-  // ---- the ice chimney: a tunnel with chimneys up both units: shafts from above land here
-  {
-    name: 'ice chimney', weight: 1.3,
-    ports: { W: 'D-', E: 'D-', N0: '-D', S1: '-D', D0: 'S-', D1: '-S', U0: 'S-', U1: '-S' },
-    prims: [
-      ...tunnelX(IN[0], IN[1], { phase: 2.1, lift: 0, seed: 14 }), chimney(C0), chimney(C1),
-      { box: [[C0 - 5, 14, MID - 5], [C0 - 2, 15, MID + 5]], m: 'ICE' },
-      ...icicleRow(C1 + 6, C1 + 9, TOP, [MID - 3, MID + 3], 5, 141),
-      drift(C1 + 7, MID, 3),
-      crystal([C0 + 5, 18, MID + 5]),
-    ],
-  },
-  // ---- thin ice: a room whose floor gives way into the layer below in both units
-  {
-    name: 'thin ice', weight: 0.8,
-    ports: { W: 'D-', E: '-D', N1: '-D', D0: 'S-', D1: 'S-', U1: '-S' },
-    prims: [
-      ...room([IN[0], F, 6], [IN[1], 15, 18]), chimney(C1), ...stub('W'), ...stub('E'),
-      { box: [[20, F, 6], [28, F + 1, 18]], m: 'ICE' },          // a sheet of ice between the holes
-      drift(24, 7, 3, 1.5),
-      ...icicleRow(6, 42, 15, [8, 16], 3, 151),
-      crystal([IN[0] + 1, 12, 7]),
-    ],
-  },
-  // ---- the great ice cavern: a natural vault, a frozen lake, ice columns, crystals, a brick scaffold
-  {
-    name: 'great ice cavern', weight: 0.7,
-    ports: { W: 'D-', E: 'D-', N0: '-D', N1: '-D', S0: '-D', S1: '-D', D0: '-S', D1: '-S', U0: '-S', U1: '-S' },
-    prims: [
-      { ball: [[24, 12, 12], [26, 15, 14]], m: 'ICE', only: 'ROCK', rough: ROUGH_CAVE },
-      { ball: [[24, 12, 12], [24, 13, 12]], m: 'AIR', rough: ROUGH_CAVE },
-      ...room([3, F, 3], [45, 10, 21], { lined: false }),
-      ...stub('W'), ...stub('E'),
-      { box: [[26, F - 1, 15], [42, F + SNOW_T, 20]], m: 'ICE' },
-      { cyl: [[30, F, 18], 1.5, 20], axis: 'y', m: 'ICE', rough: 0.6 }, { cyl: [[8, F, 6], 1.2, 20], axis: 'y', m: 'ICE', rough: 0.6 },
-      { ramp: [[4, F, 3], [16, 10, 8]], m: 'ROCK', axis: 'x', rise: -1 },
-      { box: [[4, 10, 3], [10, 10 + SNOW_T, 8]], m: 'SAND', only: 'AIR' },
-      crystal([6, 18, 12], 2), crystal([42, 16, 6], 1.8), crystal([24, 22, 12], 2),
-      ...icicleRow(10, 40, 22, [8, 12, 16], ICICLE_LEN_HALL, 161),
-      drift(18, 16, 4),
-      { box: [[32, 15, 4], [44, 16, 9]], m: 'BEAM' },
-    ],
-    sites: [{ kind: 'loot', at: [8, 10 + SNOW_T, 5] }],
-  },
-  // ---- the warm nook (hidden): one way in, a crooked crawl, a brick-lined room with a
-  // hearth stocked with coal and firewood (light it), gold, and no snow or ice at all
-  {
-    name: 'warm nook', weight: 1.6,
-    ports: { E: 'D', W: '-', N0: '-', N1: '-', S0: '-', S1: '-' },
-    prims: [
-      ...tunnelX(32, IN[1], { icicles: 1, seed: 17, wave: 0, lift: 0 }),
-      { capsule: [[33, F + 3, MID], [22, F + 3, MID - 6], 3.2], m: 'AIR', rough: 0.8 },
-      { box: [[7, F - 1, 2], [25, 13, 14]], m: 'BEAM', only: ['ROCK', 'ICE'] },     // the brick lining
-      { box: [[8, F, 3], [24, 12, 13]], m: 'AIR' },
-      { box: [[20, F - 1, 4], [32, F, 12]], m: 'ROCK' },
-      { capsule: [[22, F + 3, MID - 6], [26, F + 3, MID - 5], 3], m: 'AIR' },       // the crawl breaks through the brick
-      // the hearth against the west wall: a brick firebox, coal in it, firewood stacked by it
-      { box: [[8, F, 5], [11, 9, 11]], m: 'BEAM' },
-      { box: [[8, F + 1, 6], [10, F + 4, 10]], m: 'AIR' },
-      { box: [[8, F + 1, 6], [10, F + 2, 10]], m: 'COAL' },
-      { box: [[12, F, 11], [16, F + 3, 13]], m: 'MOSS' },
-      { box: [[18, F, 3], [22, F + 2, 6]], m: 'GOLD' },
-      crystal([23, 11, 12], 1.1),
-    ],
-    sites: [{ kind: 'treasure', at: [20, F + 2, 4] }, { kind: 'wand', at: [16, F, 8] }],
-  },
-  // ---- a frozen cache: a side cave, a chest's worth of gold frozen into a block of ice
-  {
-    name: 'frozen cache', weight: 1.3,
-    ports: { S1: 'D', W: '-', E: '-', N0: '-', N1: '-', S0: '-' },
-    prims: [
-      ...room([10, F, 4], [42, 12, 15]),
-      { box: [[14, F, 5], [20, F + 5, 9]], m: 'ICE' },
-      { box: [[16, F + 1, 6], [18, F + 3, 8]], m: 'GOLD' },
-      stalagmite([26, F, 6], 3), drift(38, 6, 4, 2.5),
-      ...icicleRow(12, 40, 12, [7, 11], 2.5, 181),
-      crystal([28, 12, 5]),
-    ],
-    sites: [{ kind: 'loot', at: [26, F + SNOW_T, 11] }, { kind: 'gold', at: [17, F + 1, 7] }],
-  },
-  // ---- the hermit's cell: a brick room off the tunnel, up two steps, a bed of brick and a lamp of crystal
-  {
-    name: 'hermit cell', weight: 1,
-    ports: { W: 'D-', E: 'D-', S0: '-D', S1: '-D' },
-    prims: [
-      ...tunnelX(IN[0], IN[1], { phase: 0.9, lift: 0, seed: 19 }),
-      { box: [[17, F + 2 - 1, INZ[0]], [39, 15, GAL_Z[0] + 1]], m: 'BEAM', only: ['ROCK', 'ICE'] },
-      { box: [[18, F + 2, INZ[0]], [38, 14, GAL_Z[0]]], m: 'AIR' },
-      { stairs: [[22, F, GAL_Z[0] - 2], [28, F + 2, GAL_Z[0] + 1]], m: 'BEAM', axis: 'z', rise: -1 },
-      { box: [[22, F + 2, GAL_Z[0]], [28, 12, GAL_Z[0] + 1]], m: 'AIR' },
-      { box: [[30, F + 2, INZ[0]], [36, F + 4, INZ[0] + 3]], m: 'BEAM' },
-      { box: [[18, F + 2, INZ[0]], [38, F + 2 + SNOW_T, INZ[0] + 1]], m: 'SAND', only: 'AIR' },
-      crystal([20, 14, INZ[0] + 1], 1.1),
-    ],
-    sites: [{ kind: 'loot', at: [33, F + 4, INZ[0] + 1] }],
-  },
-];
+]);
 
 export default {
   name: 'snow',
-  // wall lights (kit.js placeTorches): a torch in a brick sconce and the crystals' cold light in turn
+  geom: { OPEN: 1, SPINE },
+  // wall lights (kit.js placeTorches): a torch and the crystals' cold light in turn
   torches: { every: 16, max: 3, lights: ['CRYSTAL', 'TORCH'] },
-  // Noita's Snowy Depths: dark stone with ice through it, snow on every floor,
-  // brick ruins, crystal's cold light
   palette: {
-    ROCK: 'ROCK', SOFT: 'SNOW', BEAM: 'BRICK', RAIL: 'METAL', RUBBLE: 'RUBBLE', SAND: 'SNOW',
-    ICE: 'ICE', CRYSTAL: 'CRYSTAL', COAL: 'COAL', MOSS: 'WOOD', GRAVEL: 'STONE',
+    ROCK: 'ROCK', SOFT: 'SNOW', BEAM: 'WOOD', RAIL: 'METAL', RUBBLE: 'RUBBLE', SAND: 'SNOW',
+    ICE: 'ICE', CRYSTAL: 'CRYSTAL', COAL: 'COAL', GRAVEL: 'STONE',
   },
+  // laid down above freezing in the Snowy Depths' −15 °C (scenes.js COLD_T): they freeze from
+  // their edges in, slowly (timber and their own ice insulate them)
+  temps: { WATER: 2, HEALTHIUM: 4, SLIME: 4, LEVITATIUM: 4 },
   tiles,
 };
