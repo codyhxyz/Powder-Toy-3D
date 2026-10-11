@@ -15,8 +15,8 @@ import { boot, ready, log, test } from './harness.js';
 import { Simulation, cellTexel, cellSlot, slotCell } from '/src/sim.js';
 import { Derived, fieldWeights } from '/src/derived.js';
 import { buildPreset } from '/src/presets.js';
-import { E, ELEMENTS } from '/src/elements.js';
-import { SEED_MAX, brickIdOf, brickCoordOf } from '/src/shaders/common.js';
+import { E, ELEMENTS, TOOLS } from '/src/elements.js';
+import { SEED_MAX, BRICK, brickIdOf, brickCoordOf } from '/src/shaders/common.js';
 import { AGE, DIRTY } from '/src/shaders/fields.js';
 import { unpackBrickInfo, BRICK_INFO, AIR } from '/src/shaders/bindings.js';
 import { LOOK } from '/src/gfx/materials.js';
@@ -70,6 +70,12 @@ const SCENES = {
       for (let z = c - w / 2; z < c + w / 2; z++)
         for (let x = c - w / 2; x < c + w / 2; x++) set(x, y, z, E.SAND);
     for (let x = 2; x < g.nx - 2; x += 7) set(x, 0, g.nz / 2, E.STONE);
+  },
+  // a wall floor and wall pillars: nothing moves, so the lists of a running
+  // world hold only what its writes set moving (shiftPending)
+  calm(set, g) {
+    for (let z = 0; z < g.nz; z++) for (let x = 0; x < g.nx; x++) set(x, 0, z, E.WALL);
+    for (let x = 5; x < g.nx; x += 11) for (let y = 1; y < g.ny / 2; y++) set(x, y, g.nz / 2, E.WALL);
   },
   // wall pillars, sand and rubble falling, water and oil, a lava pocket and a puff of steam
   mix(set, g) {
@@ -126,6 +132,7 @@ h.scene = (sim, name, seed = 12345) => {
   return null;
 };
 
+const ERASE = TOOLS.find((t) => t.key === 'ERASE').id;
 const check = (out, name, ok, detail = '') => { out.checks.push({ name, ok: Boolean(ok), detail }); return ok; };
 const V = (x, y, z) => ({ x, y, z });
 const words = (x) => new Uint32Array(x.buffer, x.byteOffset, x.byteLength >>> 2);
@@ -142,7 +149,8 @@ const differ = (a, b) => { let n = 0; for (let i = 0; i < a.length; i++) if (a[i
 // so the load's rebuild ages out and the lists can shrink), then per frame the
 // steps (none in the second half with pause), the writes, the window's
 // shifts, a derived frame; every derived resource read at checkpoints (each
-// COMPARE_EVERY frames and the last).
+// COMPARE_EVERY frames and the last, or with checkMoves each move's frame and
+// the one after).
 const COMPARE_EVERY = 6;
 const PAINT_DRIFT = 1;   // cells per frame the brush moves along x
 const SETTLE = 14;       // derived frames: past FIELD_EMA_SETTLE (13)
@@ -177,20 +185,65 @@ const CASES = {
     scene: 'mix', size: [64, 32, 32], warm: 8, settle: SETTLE, frames: 26, spf: 0, windowed: true,
     shifts: { 2: [[16, 0]], 8: [[0, -8]], 14: [[-16, 8], [16, 0]], 20: [[-16, 0]] },
   },
+  // moves in a settled, running world, each tick in the app's order (docs/webgpu.md
+  // B3): an edit, the steps, an edit after them, the move, the slab's fill (static
+  // ground, as a world's generator mostly fills it), the derived frame. Every move
+  // finds changes the age pass hasn't counted yet: the edits' marks, and the
+  // steps' `changed` map, with sand falling into a settled brick that only the
+  // steps changed (pendingWrites). Compared at each move's frame and the next,
+  // where the lists must skip bricks (one axis a move, far enough apart for the
+  // last one's bricks to settle: in this window two at once re-age nearly every
+  // brick, and the cases above have them); and dropping the fold before the
+  // shift (src/derived.js) must make incremental differ from full.
+  shiftPending: {
+    scene: 'calm', size: [64, 32, 32], warm: 8, settle: SETTLE, frames: 32, spf: 1, windowed: true, writes: 'pending',
+    slab: E.WALL, shifts: { 2: [[16, 0]], 16: [[0, -8]], 30: [[-16, 0]] },
+    checkMoves: true, mustSkip: true, control: 'dropFold',
+  },
 };
+// The grid of a case at --size n (tools/derived-check.mjs): n³, or a window
+// twice as wide for the moving cases (as 64×32×32 is to 32); else its own.
+const caseDims = (spec, n) => (!n ? spec.size : spec.windowed ? [2 * n, n, n] : n);
+
+// A shiftPending tick around a move m, away from the grid's faces and the
+// slab: at m - 1 a tick with no steps (the pacer's, at a low speed) that
+// pours sand into the air, its bottom row on a brick's, so its derived frame
+// counts the sand's bricks (marks) but not the one below; m's tick takes four
+// steps (catching up), in which the sand falls into that settled brick: a
+// change only the steps' `changed` map holds. Around those steps a block of
+// wall into the air before (POV edits, the brush) and one after (lightning:
+// a write the steps never saw). At m + 1 the sand, wherever it fell, is
+// erased before it piles up (a pile's edge stays unsettled for a long time,
+// 80 steps and more here, and its bricks young with it).
+const PENDING_STEPS = 4;
+const pendingSteps = (spec, f) => (spec.shifts[f + 1] ? 0 : spec.shifts[f] ? PENDING_STEPS : spec.spf);
+function pendingWrites(sim, spec, f, when) {
+  const g = sim.g;
+  const yb = BRICK * Math.floor((0.65 * g.ny) / BRICK);   // the sand's bottom row
+  const sand = [Math.floor(g.nx * 0.4) + 0.5, Math.floor(g.nz * 0.4) + 0.5];
+  const box = (x, y, z, radius, tool, replace = false) => sim.paint({ center: V(x, y, z), radius, shape: 1, tool, rate: 4, replace });
+  if (when === 'before' && spec.shifts[f + 1]) box(sand[0], yb + 1.5, sand[1], 1.5, E.SAND);   // (rate 4: every cell)
+  if (when === 'before' && spec.shifts[f]) box(g.nx * 0.5, g.ny * 0.3, g.nz * 0.55, 1.5, E.WALL);
+  if (when === 'after' && spec.shifts[f]) box(g.nx * 0.56, g.ny * 0.42, g.nz * 0.45, 1.5, E.WALL);
+  // (the sand moved with the window: it is at its old place less the move)
+  const [[dx, dz] = []] = spec.shifts[f - 1] ?? [];
+  if (when === 'before' && dx !== undefined) box(sand[0] - dx, yb + 0.5, sand[1] - dz, 4.5, ERASE, true);
+}
 
 // The slab a shift by (dx, dz) brought in, filled the way a world fills it:
-// an edit over it (a cube of sand, part of the slab).
-function fillSlab(sim, dx, dz) {
+// an edit over it (a cube of sand, or of tool, part of the slab).
+function fillSlab(sim, dx, dz, tool = E.SAND) {
   const g = sim.g;
   const x0 = dx > 0 ? g.nx - dx : 0, x1 = dx > 0 ? g.nx : dx < 0 ? -dx : g.nx;
   const z0 = dz > 0 ? g.nz - dz : 0, z1 = dz > 0 ? g.nz : dz < 0 ? -dz : g.nz;
   const c = V((x0 + x1) / 2, 3, (z0 + z1) / 2);
-  sim.paint({ center: c, radius: Math.min(x1 - x0, z1 - z0) / 2, shape: 1, tool: E.SAND, rate: 0.6, replace: false });
+  sim.paint({ center: c, radius: Math.min(x1 - x0, z1 - z0) / 2, shape: 1, tool, rate: 0.6, replace: false });
 }
 
-async function scripted(sim, derived, spec, incremental) {
+// test: derived.test's switches for this run (the negative controls)
+async function scripted(sim, derived, spec, incremental, test = {}) {
   const g = sim.g;
+  Object.assign(derived.test, { dropFold: false }, test);
   sim.origin.set(0, 0, 0);   // (seeds hash world cells: a run starts where the last began)
   h.scene(sim, spec.scene);
   sim.frame = 0;
@@ -201,7 +254,10 @@ async function scripted(sim, derived, spec, incremental) {
   for (let i = 0; i < spec.settle; i++) derived.updateBricks();
   const snaps = [], lists = [];
   for (let f = 0; f < spec.frames; f++) {
-    if (!(spec.writes === 'pause' && f >= spec.frames / 2)) for (let s = 0; s < spec.spf; s++) sim.step();
+    if (spec.writes === 'pending') pendingWrites(sim, spec, f, 'before');
+    const steps = spec.writes === 'pause' && f >= spec.frames / 2 ? 0 : spec.writes === 'pending' ? pendingSteps(spec, f) : spec.spf;
+    for (let s = 0; s < steps; s++) sim.step();
+    if (spec.writes === 'pending') pendingWrites(sim, spec, f, 'after');
     if (spec.writes === 'paint' || (spec.writes === 'smoothing' && f % 3 === 0)) {
       sim.paint({ center: V(g.nx * 0.3 + f * PAINT_DRIFT, g.ny * 0.6, g.nz * 0.4), radius: 3, shape: f & 1, tool: E.WATER, rate: 1, replace: false });
     }
@@ -214,40 +270,63 @@ async function scripted(sim, derived, spec, incremental) {
     if (spec.writes === 'smoothing' && f === 6) sim.smoothing = 1.5;
     for (const [dx, dz] of spec.shifts?.[f] ?? []) {
       sim.shift(dx, dz);
-      fillSlab(sim, dx, dz);
+      fillSlab(sim, dx, dz, spec.slab);
     }
     derived.updateBricks();
-    if (f % COMPARE_EVERY === COMPARE_EVERY - 1 || f === spec.frames - 1) {
+    const due = spec.checkMoves ? Boolean(spec.shifts[f] || spec.shifts[f - 1]) : f % COMPARE_EVERY === COMPARE_EVERY - 1;
+    if (due || f === spec.frames - 1) {
       snaps.push(await derived.read());
       lists.push(await derived.readLists());
     }
   }
+  Object.assign(derived.test, { dropFold: false });
   return { snaps, lists };
 }
 
-test('case', async (name) => {
+// Every derived resource of two runs' checkpoints compared: [key@checkpoint: n words].
+function compareRuns(A, B) {
+  const diffs = [];
+  let compared = 0, total = 0;
+  A.snaps.forEach((snap, c) => {
+    for (const [key, a] of Object.entries(snap)) {
+      compared++;
+      const d = differ(words(a), words(B.snaps[c][key]));
+      total += d;
+      if (d) diffs.push(`${key}@${c}: ${d} words`);
+    }
+  });
+  return { diffs, compared, words: total };
+}
+
+// size: tools/derived-check.mjs --size (caseDims)
+test('case', async (name, { size = null } = {}) => {
   const spec = CASES[name];
   if (!spec) throw new Error(`derived-check: no case ${name} (have: ${Object.keys(CASES).join(', ')})`);
   const out = { checks: [], lists: [] };
   const t0 = performance.now();
-  const { sim, derived, dispose } = await h.make(spec.size, { windowed: Boolean(spec.windowed) });
+  const { sim, derived, dispose } = await h.make(caseDims(spec, size), { windowed: Boolean(spec.windowed) });
   try {
+    const g = sim.g;
+    out.grid = `${g.nx}×${g.ny}×${g.nz}`;
     const A = await scripted(sim, derived, spec, true);
     const B = await scripted(sim, derived, spec, false);
-    const n = sim.g.nbricks, diffs = [];
-    let compared = 0;
-    A.snaps.forEach((snap, c) => {
-      for (const [key, a] of Object.entries(snap)) {
-        const b = B.snaps[c][key];
-        compared++;
-        const d = differ(words(a), words(b));
-        if (d) diffs.push(`${key}@${c}: ${d} words`);
-      }
-      out.lists.push({ ema: A.lists[c].ema, fields: A.lists[c].fields, work: A.lists[c].work, full: B.lists[c].work, bricks: n });
-    });
+    const n = g.nbricks, { diffs, compared } = compareRuns(A, B);
+    A.lists.forEach((l, c) => out.lists.push({ ema: l.ema, fields: l.fields, work: l.work, full: B.lists[c].work, bricks: n }));
     check(out, `${name}: incremental == full, ${compared} resource comparisons (${A.snaps.length} checkpoints)`, !diffs.length, diffs.join(', '));
     // (the full run's lists hold every brick; a run whose incremental lists did too compared nothing)
     check(out, `${name}: the full run's lists hold every brick`, B.lists.every((l) => l.ema === n && l.fields === n && l.work === n));
+    if (spec.mustSkip) {
+      const all = A.lists.filter((l) => l.work >= n).length;
+      check(out, `${name}: the incremental lists skipped bricks at every checkpoint`, !all, `${all} of ${A.lists.length} checkpoints listed every brick`);
+    }
+    // the negative control: the same run with a part of the incremental scheme switched off must differ
+    if (spec.control) {
+      const C = await scripted(sim, derived, spec, true, { [spec.control]: true });
+      const c = compareRuns(C, B);
+      check(out, `${name}: negative control (derived.test.${spec.control}): incremental != full`, c.diffs.length > 0,
+        'no difference: the case doesn\'t exercise what the control drops');
+      out.control = { words: c.words, first: c.diffs.slice(0, 6).join(', ') };
+    }
     out.skipped = A.lists.some((l) => l.work < n);
     out.minWork = Math.min(...A.lists.map((l) => l.work));
   } finally { dispose(); }
@@ -262,18 +341,48 @@ test('shiftModel', async ({ shift = [16, -8] } = {}) => {
   try {
     const g = sim.g, n = g.nbricks, [dx, dz] = shift, sb = [dx / 4, 0, dz / 4];
     h.scene(sim, 'mix');
-    for (let f = 0; f < 6; f++) { sim.step(); derived.updateBricks(); }
+    for (let f = 0; f < 5; f++) { sim.step(); derived.updateBricks(); }
     // the GI history (zeros until shaders/gi.js) gets a pattern of finite halves, every brick's its own
     const pat = new Uint32Array(4 * n * 2);
     for (let i = 0; i < pat.length; i++) pat[i] = ((i * 7) & 0x3bff) | ((((i * 13) + 5) & 0x3bff) << 16);
     gpu.write(derived.giHist, 0, pat);
     sim.giReset = false;   // (the probes shift only when they don't start over)
+    // changes pending at the move: a step after the last derived frame, under
+    // the map that frame's age pass already counted (the fold's carry notes it
+    // again), and rubble into the air (an edit's marks: the bricks where A or B
+    // changed). The fold before the shift gives each of their bricks CHANGED,
+    // which it carries with it.
+    sim.step();
+    const [A0, B0] = await sim.readState();
+    sim.paint({ center: V(g.nx * 0.6, g.ny * 0.6, g.nz * 0.4), radius: 2, shape: 1, tool: E.STONE, rate: 1, replace: true });
+    const [A1, B1] = await sim.readState();
+    const marked = new Set();
+    for (let z = 0; z < g.nz; z++)
+      for (let y = 0; y < g.ny; y++)
+        for (let x = 0; x < g.nx; x++) {
+          const i = cellTexel(g, x, y, z) * 4;
+          for (let c = 0; c < 4; c++) {
+            if (A0[i + c] !== A1[i + c] || B0[i + c] !== B1[i + c]) marked.add(brickIdOf(g, Math.floor(x / BRICK), Math.floor(y / BRICK), Math.floor(z / BRICK)));
+          }
+        }
+    // what the fold counts (src/derived.js shift, passes.js ageFrag at tick 0):
+    // the carry's note of the current map (sim.noteAwake: changed = !quiet, or
+    // over what `changed` holds when it is noted), then `changed` if noted
+    const AL = sim.actLayout;
+    const act = new Uint32Array(await gpu.readback.buffer(sim.act, 0, AL.map * 4));
+    const carry = sim.actCarry !== null && sim.actAge > sim.actCarry;
+    const noted = carry || sim.actNoted;
+    const pending = (b) => {
+      if (marked.has(b)) return true;
+      const was = act[AL.changed + b] !== 0, woke = act[AL.quiet + b] === 0;
+      return noted && (carry ? woke || (sim.actNoted && was) : was);
+    };
     const before = await derived.read(), agesBefore = (await derived.readLists()).ages;
     sim.shift(dx, dz);
     const after = await derived.read(), agesAfter = (await derived.readLists()).ages;
     const inBricks = (q) => q.every((v, k) => v >= 0 && v < [g.bx, g.by, g.bz][k]);
-    // ages: moved; shifted in: SHIFTED; at a face on a moving axis: age 0, bits kept
-    let bad = 0, entering = 0, edges = 0;
+    // ages: moved, with CHANGED where a change was pending; shifted in: SHIFTED; at a face on a moving axis: age 0, bits kept
+    let bad = 0, entering = 0, edges = 0, carried = 0, edited = 0;
     const brickW = (arr, id, words) => arr.subarray(id * words, id * words + words);
     let badBrick = 0, badDist = 0, badGi = 0, badGiTex = 0;
     const bw = words(before.brick), aw = words(after.brick), bd = words(before.brickDist), ad = words(after.brickDist);
@@ -282,7 +391,10 @@ test('shiftModel', async ({ shift = [16, -8] } = {}) => {
       const bc = brickCoordOf(g, id), q = bc.map((v, k) => v + sb[k]);
       let want;
       if (!inBricks(q)) { want = AGE.SHIFTED; entering++; } else {
-        want = agesBefore[brickIdOf(g, ...q)];
+        const qi = brickIdOf(g, ...q);
+        want = agesBefore[qi] | (pending(qi) ? AGE.CHANGED : 0);
+        if (pending(qi)) carried++;
+        if (marked.has(qi)) edited++;
         const edge = (sb[0] && (bc[0] < 1 || bc[0] >= g.bx - 1)) || (sb[2] && (bc[2] < 1 || bc[2] >= g.bz - 1));
         if (edge) { want &= ~AGE.MASK; edges++; }
       }
@@ -302,7 +414,9 @@ test('shiftModel', async ({ shift = [16, -8] } = {}) => {
         if (want4.some((v, j) => t[4 * texel + j] !== v)) badGiTex++;
       }
     }
-    check(out, `ages: moved, ${entering} shifted in (SHIFTED), ${edges} at the moving faces re-aged`, !bad, `${bad} of ${n} bricks`);
+    check(out, `ages: moved, ${entering} shifted in (SHIFTED), ${edges} at the moving faces re-aged, ${carried} CHANGED `
+      + `(${edited} of the edit's ${marked.size} bricks, the rest the steps'; carry ${carry ? 'noted' : 'not needed'})`,
+    !bad && edited > 0 && carried > edited && carry, `${bad} of ${n} bricks${carry ? '' : '; no carry: the step started a map'}`);
     check(out, 'brick map: moved by whole bricks, zeros shifted in', !badBrick, `${badBrick} bricks`);
     check(out, 'brickDist: moved by whole bricks, zeros shifted in', !badDist, `${badDist} bricks`);
     check(out, 'GI history: from the clamped brick', !badGi, `${badGi} band words`);
@@ -339,10 +453,14 @@ test('shiftModel', async ({ shift = [16, -8] } = {}) => {
     derived.updateBricks();
     const [A] = await sim.readState();
     const ema = words((await derived.read()).ema), ages = (await derived.readLists()).ages;
-    let fresh = 0, notFresh = 0;
+    let fresh = 0, notFresh = 0, counted = 0, notCounted = 0, left = 0;
     for (let id = 0; id < n; id++) {
+      if (ages[id] & AGE.CHANGED) left++;
       const q = brickCoordOf(g, id).map((v, k) => v + sb[k]);
-      if (inBricks(q)) continue;
+      if (inBricks(q)) {
+        if (agesAfter[id] & AGE.CHANGED) { if ((ages[id] & AGE.MASK) === 0) counted++; else notCounted++; }
+        continue;
+      }
       if ((ages[id] & AGE.FRESH) && !(ages[id] & AGE.SHIFTED)) fresh++; else notFresh++;
     }
     let sand = 0, blended = 0;
@@ -354,6 +472,8 @@ test('shiftModel', async ({ shift = [16, -8] } = {}) => {
       if (((ema[s] >>> 16) & 255) !== 255) blended++;   // byte 2: the granular channel
     }
     check(out, `the slab's ${fresh} bricks are FRESH after the next age pass`, fresh > 0 && !notFresh, `${notFresh} not`);
+    check(out, `the next age pass counts the ${counted} CHANGED bricks (age 0) and clears the bit`, counted > 0 && !notCounted && !left,
+      `${notCounted} older, ${left} CHANGED left`);
     check(out, `the slab's ${sand} sand cells start at full occupancy (no blend from a history they lack)`, sand > 0 && !blended, `${blended} blended`);
     // resetGI: the probes (history and the textures the shift wrote) back to zeros
     const giBefore = [0, 1, 2, 3].some((k) => words(after[`gi${k}`]).some((x) => x !== 0));

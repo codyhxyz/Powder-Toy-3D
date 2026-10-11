@@ -15,7 +15,13 @@
 //           derived passes have settled: the derived history shifts by whole bricks
 //           and re-ages only the slab and the moving faces; and the shift's kernels and
 //           copies against a CPU model (ages, brick map, brickDist, EMA, final
-//           fields, GI history and textures)
+//           fields, GI history and textures, an edit's change pending at the move)
+//   pending moves in a settled, running world, each tick in the app's order (an edit,
+//           the steps, an edit after them, the move, the slab's fill, the derived
+//           frame), so every move finds changes the age pass hasn't counted (writer
+//           marks, the steps' `changed` map): compared at each move's frame and the
+//           next, where the lists must skip bricks; and its negative control, the
+//           same run without the fold before the shift, must differ
 //   units   the fused peak (boost stages 3-5) against the separable stages, bit for
 //           bit; the brick map's info words: the WGSL decoders against their JS twins
 //           on every combination, and a scene's bricks against what they hold
@@ -23,8 +29,11 @@
 // a pass read a value its list didn't cover. Each stage also shows that the
 // incremental lists skipped bricks, so a comparison isn't vacuous.
 //
-// usage: node tools/derived-check.mjs [--stage steps,writes,shift,units] [--case name,…] [--port N]
+// usage: node tools/derived-check.mjs [--stage steps,writes,shift,pending,units] [--case name,…] [--size N] [--port N]
 //   --case runs only those cases (the harness's CASES), in one browser
+//   --size N runs the cases at N³, the moving ones in an N×… window twice as wide (2N×N×N);
+//           else at their own (32³, 64×32×32: the container's). On the Mac (docs/webgpu.md
+//           I4.0): --size 64, then --size 128 (one stage at a time: each takes longer)
 import { launchBrowser, gpuInfo } from './browser.mjs';
 import { startVite } from './vite-server.mjs';
 import { openHarness } from './harness/open.mjs';
@@ -36,8 +45,11 @@ const STAGES = {
   steps: [['lab', 'paint'], []],
   writes: [['heat', 'undo', 'pause', 'still', 'smoothing'], []],
   shift: [['shift', 'shiftStill'], ['shiftModel']],
+  pending: [['shiftPending'], []],
   units: [[], ['fused', 'bits']],
 };
+const size = opt('size') ? Number(opt('size')) : null;
+if (size !== null && !(size >= 16 && size % 16 === 0)) throw new Error(`--size ${opt('size')}: a multiple of 16 (whole supertiles)`);
 if (opt('case')) STAGES.cases = [opt('case').split(','), []];
 const stages = opt('case') ? ['cases'] : opt('stage')?.split(',') ?? Object.keys(STAGES).filter((k) => k !== 'cases');
 
@@ -66,11 +78,12 @@ try {
         }
       };
       for (const name of cases) {
-        const r = await page.evaluate((n) => window.__harness.run('case', n), name);
+        const r = await page.evaluate(([n, s]) => window.__harness.run('case', n, { size: s }), [name, size]);
         print(r);
         skipped ||= r.skipped;
         const l = r.lists.map((x) => `${x.ema}/${x.fields}/${x.work}`).join(' ');
-        console.log(`     ${(r.ms / 1000).toFixed(0)} s; incremental lists EMA/FIELDS/WORK at the checkpoints: ${l} (of ${r.lists[0].bricks} bricks)`);
+        console.log(`     ${r.grid}, ${(r.ms / 1000).toFixed(0)} s; incremental lists EMA/FIELDS/WORK at the checkpoints: ${l} (of ${r.lists[0].bricks} bricks)`);
+        if (r.control) console.log(`     the control differs in ${r.control.words} words: ${r.control.first}`);
       }
       if (cases.length) {
         const ok = skipped;
