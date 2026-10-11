@@ -2,6 +2,10 @@
 # to the Cloudflare Pages project tpt3d (https://tpt3d.codyh.xyz). GitHub main
 # is the only source of production, so to deploy, push main.
 #
+# The site is two builds (docs/webgpu.md W5): this commit's WebGPU build at /,
+# and the last WebGL2 build, frozen at LEGACY_SHA, at /legacy/. src/main.js
+# sends a browser with no usable WebGPU adapter there, query and hash kept (G5).
+#
 # The token lives in the `production` environment, which only main can use,
 # and it can only deploy Pages (account token "tpt3d GitHub Actions: Pages deploy").
 name: Deploy
@@ -15,6 +19,13 @@ on:
 concurrency:
   group: production
   cancel-in-progress: false
+
+env:
+  # The WebGL2 build served at /legacy/. Set at merge time to the last WebGL2
+  # commit of main, then never changed (docs/webgpu.md W5). Provisional: 9b075ae,
+  # the commit the WebGPU port started from. All 40 digits: a fetch by commit
+  # needs the full SHA.
+  LEGACY_SHA: 9b075aeaa021c695a159978e7ac6a8cca3b874df
 
 jobs:
   deploy:
@@ -34,7 +45,44 @@ jobs:
         env:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1   # playwright is only for local headless checks
       - run: node tools/check-browser-launch.mjs   # headless tests launch through tools/browser.mjs (CLAUDE.md)
-      - run: npm run build
+      - run: npm run build   # first: it empties dist/
+
+      # The legacy build: its own checkout, lockfile and node_modules, built
+      # with base /legacy/ into dist/legacy/. Vite copies that commit's public/
+      # into dist/legacy/ as well, so its page's icons and manifest, the
+      # mannequin (BASE_URL) and every chunk and worker load from /legacy/.
+      # Three paths in its code are root-absolute and load the root build's
+      # copies instead: /maps/<key>.webp (menu thumbnails), /privacy.html and
+      # /favicon.svg (the screenshot mark). The WebGPU build ships the same
+      # public/ files; if it ever drops one, the legacy build loses a thumbnail
+      # or a link, not the game. functions/_middleware.js treats /legacy/ like
+      # any other path (the alias redirect keeps it; invite cards still work).
+      - name: Check out the legacy build (LEGACY_SHA)
+        run: |
+          git fetch --no-tags --depth=1 origin "$LEGACY_SHA"
+          git worktree add --detach "$RUNNER_TEMP/legacy" "$LEGACY_SHA"
+      - name: Install the legacy build's dependencies
+        working-directory: ${{ runner.temp }}/legacy
+        run: npm ci
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+      - name: Build the legacy build into dist/legacy/
+        working-directory: ${{ runner.temp }}/legacy
+        run: ./node_modules/.bin/vite build --base /legacy/ --outDir "$GITHUB_WORKSPACE/dist/legacy" --emptyOutDir
+      # Without dist/legacy/index.html, Pages answers /legacy/ with the root
+      # page. main.js's guards stop a redirect loop there, but a browser with
+      # no WebGPU would get an error page instead of the game.
+      - name: Check dist/legacy/
+        run: |
+          if [ ! -f dist/legacy/index.html ]; then
+            echo "::error::dist/legacy/index.html is missing: /legacy/ would serve the WebGPU build's page"
+            exit 1
+          fi
+          if ! grep -q 'src="/legacy/assets/' dist/legacy/index.html; then
+            echo "::error::dist/legacy/index.html doesn't load its scripts from /legacy/assets/ (built without --base /legacy/?)"
+            exit 1
+          fi
+
       - name: Deploy to Cloudflare Pages
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
