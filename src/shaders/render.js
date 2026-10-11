@@ -915,7 +915,7 @@ void main() {
         if (SURFCH[lj] == CH_LIQUID) liq = lj;
         else if (SURFCH[id] == CH_LIQUID) liq = id;
         mediumLight = lightRef * exp(-SIGMA[liq] * max(lightY - pm.y, 0.0) / max(uSun.y, LIQ_SUN_Y_MIN));
-        absorbDeco(liq, SURFCH[id] == CH_LIQUID ? cell : ivec3(-1), ro + rd * tEnter, tEv - tEnter, mediumLight, SURFCH[id] == CH_LIQUID ? a.y : AMBIENT, col, trans);   // (painted liquid: gfx/deco.js)
+        absorbDeco(liq, SURFCH[id] == CH_LIQUID ? cell : ivec3(-1), ro + rd * tEnter, thinBodySeg(pm, tEv - tEnter), mediumLight, SURFCH[id] == CH_LIQUID ? a.y : AMBIENT, col, trans);   // (painted liquid: gfx/deco.js; drops and pours show their colour: gfx/liquid.js thinBodySeg)
       } else if (brickMedia(flags)) {
         float al = mediaSegment(ro, rd, tEnter, tEv, mNext, col, trans);
         // until something is hit, hitPos tracks the first gas, and the gas

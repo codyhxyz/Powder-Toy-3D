@@ -55,6 +55,21 @@ vec3 interiorScatter(int id, vec3 p, vec3 sunVis, float T) {
   return SCATALB[id] * interiorLight(p, sunVis) + emission(id, T);
 }
 
+// Liquid in the air shows its colour. Water is clear (elements.js sigma: a
+// cell of it lets 95-99% through), so a lone drop, a pour or spray, drawn
+// truly, is a clear bead against the sky: from a player's view nearly
+// invisible, a cloud of glass bubbles. Noita and The Powder Toy draw every
+// liquid pixel in its body colour, however small, which is why their pours
+// always read. So where the fields mark liquid a thin feature (the thin mask,
+// shaders/fields.js: drops, streams, spray; never a pool's bulk), the light
+// crossing it is absorbed and scattered as through THIN_BODY_CELLS of it: the
+// blue-green a pool shows a few metres deep. Pools are left as they are.
+#define THIN_BODY_CELLS 24.0   // cells (7 m): water's body colour, the depth a deep pool shows
+float thinBodySeg(vec3 p, float seg) {
+  float thin = gThin ? fieldTex(tFT, p)[CH_LIQUID] : 0.0;
+  return mix(seg, max(seg, THIN_BODY_CELLS), thin);
+}
+
 // Beer–Lambert through a segment of length seg inside element id.
 void absorbSegment(int id, vec3 p, float seg, vec3 sunVis, float T, inout vec3 col, inout vec3 trans) {
   vec3 att = exp(-SIGMA[id] * seg);
