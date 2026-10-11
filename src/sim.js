@@ -10,7 +10,7 @@ import {
 import { moveBlockFrag, MoveParams, MOVE_LAYOUT, marginBlocks, MOVE_FORM } from './shaders/move.js';
 import { reactFrag, ReactParams, REACT_LAYOUT, FACES } from './shaders/react.js';
 import {
-  paintUpdateWGSL, PaintParams, freshFrag, toAtlasFrag, fromAtlasFrag, ConvertParams, CONVERT_LAYOUT, awakeFrag, AwakeParams,
+  paintUpdateWGSL, PaintParams, freshFrag, copyFrag, toAtlasFrag, fromAtlasFrag, ConvertParams, CONVERT_LAYOUT, awakeFrag, AwakeParams,
 } from './shaders/passes.js';
 import { shiftFrag, undoShiftFrag, flowShiftFrag, ShiftParams, UNDO_LAYOUT, FLOW_SHIFT_LAYOUT } from './shaders/window.js';
 import { stateLayout } from './shaders/common.js';
@@ -270,6 +270,7 @@ export class Simulation {
     this.passes = {
       paint: this.editKernel('paint', { update: paintUpdateWGSL, params: PaintParams, reads: 'own' }),
       fresh: kernel('fresh', freshFrag(g, dbg), [L.STATE_RW]),
+      copy: kernel('copy', copyFrag(g, dbg), [L.STATE_RW]),
       toAtlas: kernel('toAtlas', toAtlasFrag(g), [L.STATE_FLAGS_RO, L.CONVERT], ConvertParams),
       fromAtlas: kernel('fromAtlas', fromAtlasFrag(g, dbg), [L.STATE_RW, L.CONVERT], ConvertParams),
       undoShift: kernel('undoShift', undoShiftFrag(g, dbg), [L.STATE_RW, L.UNDO], ShiftParams),
@@ -282,6 +283,8 @@ export class Simulation {
       shift: () => kernel('shift', shiftFrag(g, dbg), [L.STATE_RW], ShiftParams),
       flowShift: () => kernel('flowShift', flowShiftFrag(g), [gpu.L.EMPTY, L.FLOW_SHIFT], ShiftParams),
     };
+    // a window of a larger world moves: its shift kernels are built now too
+    if (windowed) { this.passOf('shift'); this.passOf('flowShift'); }
     // (the state starts blank once they are: load() needs its kernel)
     this.ready = Promise.all([...Object.values(this.kernels), ...Object.values(this.passes)].map((k) => k.ready))
       .then(() => { if (!this.disposed && this.version === 0) this.clear(); return this; });
@@ -316,8 +319,17 @@ export class Simulation {
     this.buildGroup = gpu.bindGroup(L.BUILD, [b(0, this.args), b(1, this.rays.bricks ?? this.noRayBricks)], 'build');
   }
 
-  // A tool's kernel, made on first use.
+  // A tool's kernel, made on first use; recording it needs it ready (prepare).
   passOf(name) { return (this.passes[name] ??= this._lazy[name]()); }
+
+  /**
+   * Builds kernels the simulation makes only on demand: 'inertRef',
+   * 'permute' (sim.test.listOrder), 'moveRace' (sim.test.raceProbe), 'shift'
+   * and 'flowShift' (a grid made without `windowed`). Resolves when they are
+   * ready to record.
+   * @param {...string} names
+   */
+  prepare(...names) { return Promise.all(names.map((n) => this.passOf(n).ready)); }
 
   // Settings can change while asleep (including away and back during a readback).
   get gravity() { return this._gravity; }
@@ -639,12 +651,12 @@ export class Simulation {
 
   // Copy the current state into the other copy, so both hold it (tools; after
   // a shift and its fill nothing needs it: docs/webgpu.md D6). An exact copy of
-  // A, B and F keeps the sleeping invariant, so it forces nothing.
+  // A, B and F keeps the sleeping invariant, so it forces nothing. (One
+  // dispatch: WebGPU copies no range of a buffer into another range of it.)
   syncCopies() {
-    const f = this.gpu.frame, slots = this.g.slots, { A, B, F } = this.state, from = this.cur, to = 1 - this.cur;
-    f.copy(A, from * slots * 16, A, to * slots * 16, slots * 16);
-    f.copy(B, from * slots * 16, B, to * slots * 16, slots * 16);
-    f.copy(F, from * slots * 4, F, to * slots * 4, slots * 4);
+    this._dispatch(this.passes.copy, fold(Math.ceil(this.g.slots / 64)), {
+      bind: [this.tables, this.bindRW], header: this.header(this.cur, 1 - this.cur),
+    });
   }
 
   // ---- undo history: GPU copies of the state, newest last ----

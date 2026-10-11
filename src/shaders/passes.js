@@ -154,9 +154,16 @@ ${slotMain}
   writeStateS(s, fa, fb, freshFlags(fa, fb));
 }
 `;
-// WEBGPU-STUB (docs/webgpu.md J3): the copies are buffer copies and the two
-// conversion kernels above.
-export function copyFrag() { throw new Error('copyFrag removed in the WebGPU port: docs/webgpu.md C2, D6'); }
+// The copy H.src into the copy H.dst, flags and all (syncCopies: an exact
+// copy keeps the sleeping invariant, docs/webgpu.md D6). A kernel, not
+// copyBufferToBuffer: WebGPU doesn't copy between two ranges of one buffer,
+// and the copies are halves of A, B and F.
+export const copyFrag = (g, { debug = false } = {}) => /* wgsl */ `
+${prelude(g, { ...STATE_OPTS.STATE_RW, debug })}
+${slotMain}
+  writeStateS(s, fetchAs(s), fetchBs(s), fetchFs(s));
+}
+`;
 
 // ---- the derived passes' note of the quiet map (docs/webgpu.md D4 noteAwake) ----
 // The bricks the current quiet map doesn't skip may change: changed[b] =
@@ -211,6 +218,7 @@ const perBox = (g) => fold(gridDims(g).nbricks);
 export const WGSL_CHECK = [
   { name: 'paint', kind: 'compute', code: (g) => paintKernelWGSL(g), layouts: rw, dispatch: perBox },
   { name: 'fresh', kind: 'compute', code: (g) => freshFrag(g), layouts: rw, dispatch: perSlot },
+  { name: 'copy', kind: 'compute', code: (g) => copyFrag(g), layouts: rw, dispatch: perSlot },
   { name: 'toAtlas', kind: 'compute', code: toAtlasFrag, dispatch: perSlot,
     layouts: () => [LAYOUT.TABLES, stateLayout({ state: 'read', flags: true }), CONVERT_LAYOUT] },
   { name: 'fromAtlas', kind: 'compute', code: (g) => fromAtlasFrag(g), dispatch: perSlot, layouts: () => [...rw(), CONVERT_LAYOUT] },
