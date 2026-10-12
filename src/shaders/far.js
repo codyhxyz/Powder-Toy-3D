@@ -691,11 +691,23 @@ export const nodeDispatch = (level) => fold(Math.ceil(level.n[0] * level.n[1] * 
 // The occupancy levels live in one buffer, a word a node (1: set), L1's
 // nodes then L2's, each x fastest, then y, then z (a buffer: the view's
 // fragment stage has no sampled texture left for them, W14's 16).
-/** Words of the occupancy buffer for layout L. */
-export const occupancyWords = (L) => L.l1.n[0] * L.l1.n[1] * L.l1.n[2] + L.l2.n[0] * L.l2.n[1] * L.l2.n[2];
+/** Words of the occupancy buffer for layout L (the levels, then the detail mask: detailMaskAt). */
+export const occupancyWords = (L) => detailMaskAt(L) + detailChunks(L)[0] * detailChunks(L)[1];
+// The detail meshes' chunks (world/detail.js): DETAIL_CHUNK² world columns,
+// every height, a word of the occupancy buffer each after the levels: 0 none,
+// 1 a dry mesh drawn there, 2 one with liquids. The view leaves a meshed
+// chunk's opaque field to its mesh (and crosses a dry one whole).
+export const DETAIL_CHUNK = 32;
+export const DETAIL_PAD = 4;   // cells of the chunk's neighbours its cells take in (the mesh's normals and seams)
+export const detailChunks = (L) => [Math.ceil(L.size[0] / DETAIL_CHUNK), Math.ceil(L.size[2] / DETAIL_CHUNK)];
+/** The detail mask's first word in the occupancy buffer. */
+export const detailMaskAt = (L) => L.l1.n[0] * L.l1.n[1] * L.l1.n[2] + L.l2.n[0] * L.l2.n[1] * L.l2.n[2];
 const occupancyGLSL = (access) => /* wgsl */ `
 @group(${access === 'read' ? 0 : 2}) @binding(${access === 'read' ? 3 : 1}) var<storage, ${access}> farOcc: array<u32>;
 const FAR_OCC2_AT: i32 = F1X * F1Y * F1Z;   // L2's first word
+const FAR_DETAIL_AT: i32 = FAR_OCC2_AT + F2X * F2Y * F2Z;   // the detail mask's
+const DETAIL_CHUNK: i32 = ${DETAIL_CHUNK};
+const DETAIL_NX: i32 = (WORLD_X + DETAIL_CHUNK - 1) / DETAIL_CHUNK;
 fn farOcc1At(n: vec3i) -> i32 { return n.x + F1X * (n.y + F1Y * n.z); }
 fn farOcc2At(n: vec3i) -> i32 { return FAR_OCC2_AT + n.x + F2X * (n.y + F2Y * n.z); }`;
 
@@ -936,7 +948,6 @@ export const FarViewParams = uniformStruct('FarViewParams', {
 // looks' worldPos() is the identity, and what reads the window (the GI probes'
 // sky share and light) takes p - winLo.
 export const farFrag = (g, L, mesh = false) => {
-  if (mesh) throw new Error('farFrag: the detail meshes are not drawn on WebGPU yet (world/detail.js)');
   return /* wgsl */ `
 // far view
 ${lib(g, { variant: 'LIGHTING', far: true, aeration: false })}
@@ -956,7 +967,20 @@ fn farAirSky(q: vec3f) -> f32 {
 }
 ${farHazeFor('farAirSky')}
 ${cloudsGLSL}
-fn farTraceMatter(p: vec3f) -> f32 { return farMatter(p); }
+// the detail mesh state of the chunk holding world point p (0: none, 1: dry, 2: with liquids)
+fn detailAt(p: vec3f) -> u32 {
+  if (any(p.xz < vec2f(0.0)) || any(p.xz >= vec2f(WORLD.xz))) { return 0u; }
+  let c = vec2i(p.xz) / DETAIL_CHUNK;
+  return farOcc[FAR_DETAIL_AT + c.x + DETAIL_NX * c.y];
+}
+// The field a ray stops at: a meshed chunk's opaque matter is its mesh's
+// (drawn first, in front); its liquid surface, shallow water included
+// (opaque .3 + liquid .4), stays the field's.
+fn farTraceMatter(p: vec3f) -> f32 {
+  let v = farSample(p);
+  if (detailAt(p) > 0u && v.r >= v.g) { return 0.0; }
+  return v.r + v.g;
+}
 
 const FAR_MAX_STEPS: i32 = ${L.size.reduce((n, side) => n + side / BRICK, 16)};
 const FAR_NUDGE: f32 = ${glf(FAR_VIEW.NUDGE)};
@@ -1039,10 +1063,21 @@ fn farMarch(ro: vec3f, rd: vec3f, t0: f32, t1: f32, w0: f32, w1: f32, cut: ptr<f
   var n1Last = vec3i(-1);
   var o2 = false;
   var o1 = false;
+  var lastDetail = 0xffffffffu;
   for (var i = 0; i < FAR_MAX_STEPS; i++) {
     if (t >= t1) { break; }
     if (t >= w0 && t < w1) { t = w1 + FAR_NUDGE; f = -1.0; continue; }
     let p = ro + rd * t;
+    // a dry meshed chunk is the mesh's: crossed whole
+    let detail = detailAt(p);
+    if (detail != lastDetail) { f = -1.0; lastDetail = detail; }
+    if (detail == 1u) {
+      let lo = floor(p.xz / f32(DETAIL_CHUNK)) * f32(DETAIL_CHUNK);
+      let tf = (lo + step(vec2f(0.0), inv.xz) * f32(DETAIL_CHUNK) - ro.xz) * inv.xz;
+      t = min(tf.x, tf.y) + FAR_NUDGE;
+      f = -1.0;
+      continue;
+    }
     let c = clamp(vec3i(floor(p)), vec3i(0), WORLD - 1);
     let n2 = c / FAR_L2_CELLS;
     if (any(n2 != n2Last)) { n2Last = n2; o2 = farOcc2(n2); }
@@ -1133,7 +1168,7 @@ fn farGlowT(p: vec3f, n: vec3f) -> f32 {
 fn farShadeMaterial(p: vec3f, n: vec3f, rd: vec3f, sunVis: f32, id: i32) -> vec3f {
   let fp = footprint(p);
   var m = matOf(id, p, n, farGlowT(p, n), 0.0, fp);
-  if (id == E_PLANT) {
+  if (id == E_PLANT${mesh ? ' && false' : ''}) {
     // foliage: its leaves have faded into the far look; clumps of them still show (fading in turn)
     let cl = mFbmD(p, FAR_CLUMP_F, FAR_CLUMP_OCT, fp);
     m.g += FAR_CLUMP_H * cl.yzw;
@@ -1156,7 +1191,7 @@ fn farShadeMaterial(p: vec3f, n: vec3f, rd: vec3f, sunVis: f32, id: i32) -> vec3
   let dSun = kD * mix(vec3f(lam), wrap * m.sssCol, m.sss);
   let cav = clamp(m.cav, 0.0, 1.0);
   let c = FU.sunCol * sunVis * (dSun * (SUN_CAV_MIN + SUN_CAV_GAIN * cav) + PI_S * ggxSpec(ns, v, FU.sun, rough, F0));
-  let ambient = skyAmbient(ns) * farAO(p, n) * cav * farSkyOpen(p + n * FAR_SKY_LIFT);
+  let ambient = skyAmbient(ns) * ${mesh ? '1.0' : 'farAO(p, n)'} * cav * farSkyOpen(p + n * FAR_SKY_LIFT);
   return c + kD * ambient + m.emit;
 }
 
@@ -1232,7 +1267,7 @@ fn farDepth(p: vec3f) -> f32 {
   return clamp(clip.z / clip.w, 0.0, 1.0);
 }
 
-struct FarVarying {
+${mesh ? FAR_MESH_ENTRY : `struct FarVarying {
   @builtin(position) position: vec4f,
   @location(0) ndc: vec2f,
 }
@@ -1319,9 +1354,43 @@ struct FarOut {
   }
   o.color = vec4f(col, 1.0);
   return o;
-}
+}`}
 `;
 };
+
+// The detail meshes (world/detail.js): a chunk's surface, world cells, shaded
+// as the far view shades its surfaces (no field AO, no foliage clumps: the
+// mesh has the real cells), hazed, its depth the rasterized one. Inside the
+// window's columns the volume draws instead.
+const FAR_MESH_ENTRY = /* wgsl */ `
+struct MeshVarying {
+  @builtin(position) position: vec4f,
+  @location(0) world: vec3f,
+  @location(1) normal: vec3f,
+  @location(2) @interpolate(flat) element: u32,
+}
+@vertex fn vs(@location(0) pos: vec3f, @location(1) nor: vec3f, @location(2) element: u32) -> MeshVarying {
+  var o: MeshVarying;
+  o.position = P.worldToClip * vec4f(pos, 1.0);
+  o.world = pos;
+  o.normal = nor;
+  o.element = element;
+  return o;
+}
+@fragment fn fs(v: MeshVarying) -> @location(0) vec4f {
+  gFragCoord = v.position.xy;
+  let p = v.world;
+  let ro = P.eye;
+  let rd = safeDir(normalize(p - ro));
+  surfView(ro, rd);   // pixel footprint for material LOD (uniform control flow)
+  let winLo = vec3f(P.winLo);
+  if (all(p.xz >= winLo.xz) && all(p.xz < winLo.xz + vec2f(GRID.xz))) { discard; }
+  let n = normalize(v.normal);
+  // the coarse crown's density is not this leaf's shadow: sampling it here
+  // would turn detailed branches black inside the old, inflated silhouette
+  let col = farShadeMaterial(p, n, rd, farSunLit(p, 0), i32(v.element));
+  return vec4f(farHaze(col, rd, length(p - ro), farAirLit(ro - winLo, p - winLo)), 1.0);
+}`;
 
 // What the view's materials need of the tracer's (shaders/render.js), which
 // the far view doesn't paste: none of it runs here (no grid state is read).
@@ -1351,9 +1420,24 @@ export const farViewPipeline = () => ({
   depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'less-equal' },
 });
 
-// WEBGPU-STUB (docs/webgpu.md J3): the WebGL region quads and the detail
-// meshes' vertex stage; the far passes are compute kernels now, and the
-// detail meshes aren't drawn on WebGPU yet (world/detail.js)
+/** The detail meshes' pipeline (farFrag's mesh variant): positions, normals (float32x3) and element (uint32) buffers. */
+export const farMeshPipeline = () => ({
+  vertex: {
+    entry: 'vs',
+    buffers: [
+      { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }] },
+      { arrayStride: 12, attributes: [{ shaderLocation: 1, offset: 0, format: 'float32x3' }] },
+      { arrayStride: 4, attributes: [{ shaderLocation: 2, offset: 0, format: 'uint32' }] },
+    ],
+  },
+  fragment: { entry: 'fs', targets: [{ format: 'rgba16float' }] },
+  primitive: { topology: 'triangle-list', cullMode: 'none' },
+  depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'less-equal' },
+});
+
+// WEBGPU-STUB (docs/webgpu.md J3): the WebGL region quads, full-screen pass
+// and the meshes' vertex stage; the far passes are compute kernels now, and
+// the view's and meshes' vertex stages are in farFrag's module
 export const farRegionVert = null;
 export const farVert = null;
 export const farMeshVert = null;
@@ -1365,6 +1449,7 @@ export const farMeshVert = null;
 // the volume's realistic pipeline (B5: built in the background; the far
 // field shows once it is ready).
 const Lw = farLayout(WORLD_SIZE);
+const DETAIL_S = (L) => farSceneLayout(L, DETAIL_CHUNK + 2 * DETAIL_PAD);
 const CHECK_LAYOUTS = (g2, state = 'EMPTY') => () => [LAYOUT.TABLES, state === 'EMPTY' ? 'EMPTY' : LAYOUT[state], g2];
 const SCENE_CELLS_LAYOUT = (s) => [...sceneLayout({ data: !!s.data }), buf(SCENE_CELLS_BINDING, 'storage')];
 export const SCENE_CELLS_LAYOUT_OF = SCENE_CELLS_LAYOUT;
@@ -1394,6 +1479,11 @@ export const WGSL_CHECK = () => [
         name: `${s.key} farSceneCells`, kind: 'compute', grids, warm: false, code: (g) => farSceneCellsFrag(g, L, s.glsl(g), S),
         layouts: CHECK_LAYOUTS(SCENE_CELLS_LAYOUT(s)), params: SceneCellsParams, dispatch: () => sceneCellsDispatch(S),
       },
+      {
+        // the detail meshes' cells (world/detail.js): the live window's state where it is
+        name: `${s.key} detailCells`, kind: 'compute', grids, warm: false, code: (g) => farSceneCellsFrag(g, L, s.glsl(g), DETAIL_S(L), true),
+        layouts: CHECK_LAYOUTS(SCENE_CELLS_LAYOUT(s), 'STATE_RO'), params: SceneCellsParams, dispatch: () => sceneCellsDispatch(DETAIL_S(L)),
+      },
       ...(s.trees ? [
         { name: `${s.key} farTreeCand`, kind: 'compute', grids, warm: false, code: (g) => farTreeCandFrag(g, L, null, s.trees.glsl()), layouts: CHECK_LAYOUTS(TREE_CAND_LAYOUT(s)), dispatch: () => columnDispatch(L) },
         { name: `${s.key} farTreeThin`, kind: 'compute', grids, warm: false, code: (g) => farTreeThinFrag(g, L, null, s.trees.glsl()), layouts: CHECK_LAYOUTS(TREE_THIN_LAYOUT(s)), dispatch: () => columnDispatch(L) },
@@ -1403,5 +1493,9 @@ export const WGSL_CHECK = () => [
   {
     name: 'far view', kind: 'render', grids: ['64', '128'], warm: false, code: (g) => farFrag(g, Lw),
     layouts: () => FAR_VIEW_LAYOUTS(), params: FarViewParams, ...farViewPipeline(),
+  },
+  {
+    name: 'far detail', kind: 'render', grids: ['64'], warm: false, code: (g) => farFrag(g, Lw, true),
+    layouts: () => FAR_VIEW_LAYOUTS(), params: FarViewParams, ...farMeshPipeline(),
   },
 ];

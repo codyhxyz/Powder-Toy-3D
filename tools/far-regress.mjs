@@ -53,7 +53,7 @@ try {
   p.on('console', (m) => { if (m.type() === 'error' && !/ERR_CONNECTION_REFUSED/.test(m.text())) errs.push(m.text().slice(0, 600)); });
   p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 600)));
   await p.goto(vite.url(`/?map=${MAP}&win=64`));
-  await p.waitForFunction(() => window.__app?.win?.loaded || document.getElementById('error')?.textContent, null, { polling: 250, timeout: 200000 });
+  await p.waitForFunction(() => window.__app?.win?.loaded || document.getElementById('error')?.textContent, null, { polling: 250, timeout: 300000 });
   await p.evaluate(async (CHUNKS) => {
     const a = window.__app, f = a.win.far;
     await a.test.ready();

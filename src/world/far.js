@@ -63,9 +63,9 @@ import { WorldDetail } from './detail.js';
 // pipeline builds in the background (it is as big as the volume's): the far
 // field shows once it is ready.
 //
-// The detail meshes (world/detail.js, docs/world-lod.md: render-only meshes of
-// the chunks near the window) aren't drawn on WebGPU yet: WorldDetail is a
-// stand-in, and the view marches the coarse field everywhere.
+// Near the window the detail meshes (world/detail.js, docs/world-lod.md:
+// render-only meshes of the chunks' cells) replace the coarse field: drawn
+// just before the view, which leaves their chunks' opaque field to them.
 
 const SWEEP_FRAMES = 120;        // frames between sweeps over the window's own region while the sim changes it (its copy only casts the far shadows and feeds the window's GI)
 const SWEEP_CELLS = 16;          // ...summarizing this many cells of it along x per frame
@@ -113,7 +113,7 @@ export class FarField {
     this.field = tex3('far field', FAR_FORMATS.field);   // what the view draws (farBoostFrag)
     this.top = tex2('far tops', FAR_FORMATS.top);
     this.shadow = tex2('far shadow heights', FAR_FORMATS.shadow);
-    this.occ = gpu.createBuffer({ label: 'far occupancy', size: occupancyWords(L) * 4, usage: BUFFER.STORAGE | BUFFER.COPY_SRC });
+    this.occ = gpu.createBuffer({ label: 'far occupancy', size: occupancyWords(L) * 4, usage: BUFFER.STORAGE | BUFFER.COPY_SRC | BUFFER.COPY_DST });   // (written: the detail mask, world/detail.js)
     this.views = {
       grid: this.grid.createView({ label: 'far grid', dimension: '3d' }),
       field: this.field.createView({ label: 'far field', dimension: '3d' }),
@@ -193,7 +193,7 @@ export class FarField {
       { binding: 2, resource: v.field }, { binding: 3, resource: { buffer: this.occ } },
     ], 'far view frame');
     this.viewParams = { clipToWorld: new Matrix4(), worldToClip: new Matrix4(), eye: [0, 0, 0], sea: this.sea, winLo: [0, 0, 0], floor: this.floor };
-    this._m = { toWorld: new Matrix4(), eye: new Vector3() };
+    this._m = { toWorld: new Matrix4(), eye: new Vector3(), worldToScene: new Matrix4() };
     this.detail = new WorldDetail(this);
     this.ready = false;   // (the build kernels: whenReady)
     this.disposed = false;
@@ -443,14 +443,17 @@ export class FarField {
   // transforms; draw reads FrameUniforms' camera.)
   view(volume, visible, camera) {
     this.visible = visible && this.built && this.viewReady;
-    if (camera) this.detail.view(camera, this.visible);
+    const o = this.sim.origin, m = this._m;
+    if (volume?.matrixWorld) m.worldToScene.copy(volume.matrixWorld).multiply(m.toWorld.makeTranslation(-o.x, -o.y, -o.z));
+    this.detail.view(camera, this.visible, volume?.matrixWorld ? m.worldToScene : null);
     if (this.built) this.refresh();
   }
 
   /**
    * Draws the view into our scene pass (the world wire's scene hook, before
-   * the volume), after FrameUniforms is written this frame: its camera is
-   * the view's. Nothing while it isn't visible (view) or its pipeline builds.
+   * the volume), the detail meshes first, after FrameUniforms is written this
+   * frame: its camera is the view's. Nothing while it isn't visible (view) or
+   * its pipeline builds.
    * @param {GPURenderPassEncoder} rp
    * @returns {boolean} whether it drew
    */
@@ -464,9 +467,10 @@ export class FarField {
     m.eye.copy(last.eye).applyMatrix4(m.toWorld.copy(last.model).invert());
     p.eye = [m.eye.x + o.x, m.eye.y + o.y, m.eye.z + o.z];
     p.winLo = [o.x, o.y, o.z];
+    const bind = [this.viewFrameGroup, sim.bindRO, this.vol.lightingGroup];
+    this.detail.draw(rp, p, bind);   // (first: the view depth-tests against the meshes)
     this.viewPipe.draw(rp, {
-      bind: [this.viewFrameGroup, sim.bindRO, this.vol.lightingGroup],
-      header: { origin: [0, 0, 0], src: sim.cur, dst: sim.cur },   // (world cells throughout: worldPos() is the identity)
+      bind, header: { origin: [0, 0, 0], src: sim.cur, dst: sim.cur },   // (world cells throughout: worldPos() is the identity)
       params: p, count: 3,
     });
     return true;
