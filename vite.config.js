@@ -10,8 +10,10 @@ import { appPreloadPlugin } from './scripts/app-preload-plugin.mjs';
 // own, fetched and compiled as it streams, on the first vehicle).
 //
 // The dev server also serves the GPU harness pages (tools/harness/*.html,
-// docs/webgpu.md I1) like any file under the root. The build ships only the
-// game: its one input is index.html, so no harness page reaches dist/. Mode
+// docs/webgpu.md I1) like any file under the root. The build ships the game
+// (index.html) and the v2 raster bench (bench/raster.html, a standalone page
+// that imports nothing from src/: dist/bench/raster.html), so no harness page
+// reaches dist/. Mode
 // 'harness' (tools/vite-server.mjs) bakes the World only when a page imports
 // 'virtual:world-bake' (a world harness page), not when the server starts:
 // most harness pages never import it, and the bake keeps a CPU busy a while.
@@ -26,7 +28,7 @@ export default defineConfig(({ mode }) => ({
     rolldownOptions: { transform: { define: { 'process.env.FENGARICONF': 'undefined' } } },
   },
   build: {
-    rollupOptions: { input: 'index.html' },
+    rollupOptions: { input: { main: 'index.html', raster: 'bench/raster.html' } },
     // fonts stay files (src/fonts.css): a small subset inlined into the page's
     // CSS would be downloaded by every visitor, needed or not
     assetsInlineLimit: (file) => (/\.woff2?$/.test(file) ? false : undefined),
