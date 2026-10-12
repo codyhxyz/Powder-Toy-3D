@@ -18,8 +18,10 @@
 //   run(seconds, { render }) game time, at the game's own tick (60 a second here)
 //   look(camera)             the camera: { pos, target, fov } in cells, or { pov }
 //   converge()               the view settled on what it shows (a still)
+//   startClip()              the clip's clock starts (its keys are timed from here)
 //   present()                the current game time drawn, for a clip's frame
-//   span, cell, fill, erase, heat, keys   what setups use
+//   live, quality            a player's page or the tool's; 'full' or 'draft'
+//   span, cell, len, fill, ball, erase, heat, keys   what setups use
 //
 // Positions are cells of the shot's scene. A box scene's are given on its
 // nominal grid (scene.grid, 128 for the menu's boxes) and scaled to the grid
@@ -43,6 +45,8 @@
 export const TICK_HZ = 60;
 /** A box's cells per edge that the menu's box maps use (maps.js): the shot list's nominal grid for box scenes. */
 export const NOMINAL_BOX = 128;
+// the cubic boxes today's build boots (app.js SIZES): a link with another size boots the World
+const BOXES = ['64', '96', '128'];
 // steps a batch of game time runs before the GPU is waited on (keeps a command buffer bounded)
 const STEP_BATCH = 64;
 // renders a draft still makes: one runs the derived passes over the new state, one shows it
@@ -103,7 +107,9 @@ export function bootQuery(scene, { box = null, win = null } = {}) {
     return q;
   }
   if (scene.arena) return { preset: scene.arena };
-  return { size: String(box ?? scene.size ?? NOMINAL_BOX), preset: 'empty' };
+  const size = String(box ?? scene.size ?? NOMINAL_BOX);
+  if (!BOXES.includes(size)) throw new Error(`a box of ${size}: today's build has boxes of ${BOXES.join(', ')} (app.js SIZES)`);
+  return { size, preset: 'empty' };
 }
 
 /** The link a player opens for a shot (?shot=, src/shot.js): the shot's own scene, not the shared empty box. */
@@ -145,6 +151,9 @@ export async function createEngine(app, { live = false, quality = 'full', tables
 
   let shot = null, k = 1, t = 0, ticks = 0, clipT0 = null, held = new Set(), rendered = false;
   const notes = [];
+  // progress for the tool's log (it forwards console lines that start [sbs])
+  const say = (msg) => { if (!live) console.log(`[sbs] ${shot?.name ?? ''}: ${msg}`); };
+  const since = (t0) => `${((performance.now() - t0) / 1000).toFixed(1)} s`;
   const sim = () => app.sim;
   const test = live ? null : app.test;
 
@@ -213,6 +222,7 @@ export async function createEngine(app, { live = false, quality = 'full', tables
     const target = Math.round(t * TICK_HZ);
     const n = target - ticks;
     if (n <= 0) return;
+    const t0 = performance.now();
     const per = app.settings.steps;
     const pov = !live && app.pov?.active;
     const scripted = !live && clipT0 !== null && shot?.clip?.keys?.length;
@@ -220,6 +230,7 @@ export async function createEngine(app, { live = false, quality = 'full', tables
       await steps(n * per);
       ticks = target;
       rendered = false;
+      if (n > 1) say(`${n} ticks (${n * per} steps) in ${since(t0)}`);
       return;
     }
     for (let i = 0; i < n; i++) {
@@ -233,6 +244,7 @@ export async function createEngine(app, { live = false, quality = 'full', tables
       if (render) await test.renderOnce();
     }
     rendered = render;
+    if (n > 1) say(`${n} ticks (${n * per} steps${render ? ', a frame each' : ''}${pov ? ', the body' : ''}) in ${since(t0)}`);
   }
 
   // ---- the camera
@@ -305,14 +317,18 @@ export async function createEngine(app, { live = false, quality = 'full', tables
     sim().resetGI();
     if (s.build) await s.build(api);
     await app.gpu.fence();
+    say(`loaded (grid ${sim().g.nx}×${sim().g.ny}×${sim().g.nz}, ×${k})`);
   }
 
   // ---- frames
   async function converge() {
     if (live) return;
-    if (quality === 'draft') { for (let i = 0; i < DRAFT_STILL_FRAMES; i++) await test.renderOnce(); }
-    else await test.render();
+    const t0 = performance.now();
+    let n = DRAFT_STILL_FRAMES;
+    if (quality === 'draft') { for (let i = 0; i < n; i++) await test.renderOnce(); }
+    else n = await test.render();
     rendered = true;
+    say(`view converged: ${n} frames in ${since(t0)}`);
   }
   async function present() {
     if (live || rendered) return;
@@ -352,6 +368,7 @@ export async function createEngine(app, { live = false, quality = 'full', tables
     span, cell, len, fill, ball, erase, heat,
     get time() { return t; },
     get live() { return live; },
+    get quality() { return quality; },
   };
   return api;
 }
@@ -359,18 +376,20 @@ export async function createEngine(app, { live = false, quality = 'full', tables
 /**
  * A shot played up to its capture (the tool) or up to where the player takes
  * over (?shot=): the scene loaded and built, its game time run, the camera
- * set; a clip's setup made and run to the clip's start. Returns the engine
- * time at each mark, s.
+ * set; a clip's setup made and run to the clip's start. timeScale shortens
+ * the shot's times (the container's smoke runs, where a game second of steps
+ * is minutes): both sides get the same, and the sheet says so.
  */
-export async function prepareShot(engine, shot) {
+export async function prepareShot(engine, shot, { timeScale = 1 } = {}) {
   await engine.load(shot);
-  await engine.run(shot.time ?? 0);
+  await engine.run((shot.time ?? 0) * timeScale);
   await engine.look(shot.camera);
   if (!shot.clip) return;
-  if (!engine.live) await engine.converge();   // the screen as a player's has it when the action starts
+  // the screen as a player's has it when the action starts (TAA's history; a draft has none)
+  if (!engine.live && engine.quality === 'full') await engine.converge();
   await shot.setup?.(engine);
   engine.startClip();
-  await engine.run(shot.clip.start ?? 0, { render: true });
+  await engine.run((shot.clip.start ?? 0) * timeScale, { render: true });
 }
 
 /** The engine a page uses: its own (window.__shotEngine), else today's on __app. */

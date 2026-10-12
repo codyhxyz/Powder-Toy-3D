@@ -35,7 +35,11 @@
 //                     iPhone's look: app.js MOBILE_DEFAULTS) or a JSON object
 //   --box N           run box scenes on an N³ box instead of their own (their
 //                     positions scale); --win N: world windows N wide (?win=)
-//   --out <dir>       where the run goes (default .tmp-side-by-side/<time>)
+//   --time-scale f    every shot's game time before its capture (and a clip's
+//                     lead-in) times f: the container's smoke runs only, where a
+//                     game second of steps takes minutes
+//   --out <dir>       where the run goes (default .tmp-side-by-side/<time>);
+//                     --append keeps the shots an earlier run left there on the sheet
 //   --serial          one side after the other (default: both at once; the
 //                     frames don't depend on it, the timings do)
 //   --fresh           a new page for every shot (default: one page per boot
@@ -126,10 +130,15 @@ const WIN = opt('win');
 const SETTINGS_ARG = opt('settings', 'default');
 const SETTINGS = PROFILES[SETTINGS_ARG] ?? JSON.parse(SETTINGS_ARG);
 const SHOT_TIMEOUT_MS = Number(opt('timeout', 900)) * 1000;
+const TIME_SCALE = Number(opt('time-scale', 1));
 const PORT = Number(opt('port', DEFAULT_PORT));
 const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
 const OUT = resolve(opt('out', join(ROOT, '.tmp-side-by-side', stamp)));
 mkdirSync(OUT, { recursive: true });
+
+for (const s of wanted) {
+  try { bootQuery(s.scene, { box: boxFor(s), win: WIN }); } catch (e) { console.error(`${s.name}: ${e.message}`); process.exit(2); }
+}
 
 const t0 = Date.now();
 const elapsed = () => `${((Date.now() - t0) / 1000).toFixed(0)} s`;
@@ -209,10 +218,11 @@ async function routeShotCode(page) {
   });
 }
 
-function watchPage(page, errors) {
+function watchPage(page, errors, side) {
   page.on('pageerror', (e) => errors.push(`pageerror: ${String(e.stack || e).slice(0, 500)}`));
   page.on('console', (m) => {
     const t = m.text();
+    if (t.startsWith('[sbs] ')) { log(`${side.key.toUpperCase()}: ${t.slice(6)}`); return; }
     if (IGNORE.some((r) => r.test(t))) return;
     if (m.type() === 'error' || (m.type() === 'warning' && /WebGPU|GPU (validation|internal|out-of-memory)|shader failed/i.test(t))) errors.push(`${m.type()}: ${t.slice(0, 500)}`);
   });
@@ -222,7 +232,7 @@ function watchPage(page, errors) {
 async function openPage(browser, side, query) {
   const page = await newTestPage(browser, { mode: 'manual', viewport: { width: W, height: H } });
   const errors = [];
-  watchPage(page, errors);
+  watchPage(page, errors, side);
   await page.routeWebSocket(/.*/, () => {});   // no relay, no reloads
   await routeShotCode(page);
   await page.addInitScript(({ store, settings }) => {
@@ -241,7 +251,9 @@ async function openPage(browser, side, query) {
   await page.waitForFunction(() => window.__app?.sim || document.getElementById('error')?.textContent, null, { polling: 250, timeout: BOOT_TIMEOUT_MS });
   const failed = await page.evaluate(() => document.getElementById('error')?.textContent || null);
   if (failed) throw new Error(`boot failed at ${url}: ${failed.slice(0, 400)}`);
+  log(`${side.key.toUpperCase()}: booted in ${((Date.now() - t) / 1000).toFixed(1)} s`);
   await page.evaluate(() => { window.__app.test.park(); return window.__app.test.ready(); });
+  log(`${side.key.toUpperCase()}: pipelines ready at ${((Date.now() - t) / 1000).toFixed(1)} s`);
   return { page, errors, url, bootMs: Date.now() - t };
 }
 
@@ -254,13 +266,13 @@ async function captureShot(page, side, shot) {
   const dir = join(OUT, shot.name);
   mkdirSync(dir, { recursive: true });
   const t = Date.now();
-  const describe = await page.evaluate(async ({ name, quality }) => {
+  const describe = await page.evaluate(async ({ name, quality, timeScale }) => {
     const sbs = await import('/__sbs/engine.mjs');
     const { shotByName } = await import('/__sbs/shots.mjs');
     window.__sbsEngine ??= await sbs.pageEngine({ quality });
-    await sbs.prepareShot(window.__sbsEngine, shotByName(name));
+    await sbs.prepareShot(window.__sbsEngine, shotByName(name), { timeScale });
     return window.__sbsEngine.describe();
-  }, { name: shot.name, quality: QUALITY });
+  }, { name: shot.name, quality: QUALITY, timeScale: TIME_SCALE });
   const prepare = Date.now() - t;
   const t1 = Date.now();
   let frames = 0;
@@ -283,7 +295,8 @@ async function captureShot(page, side, shot) {
 // Every wanted shot on one side: a page per boot query (or per shot with
 // --fresh), in shot-list order. Results go into results[shot][side].
 async function runSide(side, results) {
-  const browser = await launchBrowser();
+  // (the launcher's default lifetime is 10 minutes; a whole run is longer)
+  const browser = await launchBrowser({ lifetimeMs: BOOT_TIMEOUT_MS * 3 + wanted.length * SHOT_TIMEOUT_MS });
   side.browserVersion = browser.version();
   let open = null;
   const closePage = async () => { if (open) { await open.page.close().catch(() => {}); open = null; } };
@@ -419,19 +432,27 @@ const meta = {
   quality: QUALITY === 'full' ? 'full: stills converged, clips drawn every game tick (TAA on)' : 'draft: TAA off, 2 frames a still, 1 a clip frame',
   clipSeconds: CLIP_S, fps: FPS,
   settings: SETTINGS_ARG,
-  box: BOX, win: WIN,
+  box: BOX, win: WIN, timeScale: TIME_SCALE,
   nondeterminism: [
     'the sides\' timings (both pages run at once unless --serial)',
   ],
   sides: {},
 };
+// --append: the shots an earlier run left in --out stay on the sheet (a run
+// split into groups, as the container's are), each with its own capture settings
+const previous = has('append') && existsSync(join(OUT, 'run.json')) ? JSON.parse(readFileSync(join(OUT, 'run.json'), 'utf8')) : null;
+const capture = { size: `${W}×${H}`, quality: QUALITY, timeScale: TIME_SCALE, box: BOX, win: WIN, settings: SETTINGS_ARG, run: stamp };
 function writeRun(results) {
   meta.ms = Date.now() - t0;
   for (const k of ['a', 'b']) meta.sides[k] = { label: sides[k].label, url: sides[k].url, dir: sides[k].dir, adapter: sides[k].adapter, browser: sides[k].browserVersion };
-  const shots = wanted.map((s) => ({
-    name: s.name, kind: s.kind, title: s.title, look: s.look, seconds: CLIP_S, fps: FPS, ...results[s.name],
+  const now = wanted.map((s) => ({
+    name: s.name, kind: s.kind, title: s.title, look: s.look, seconds: CLIP_S, fps: FPS, capture, ...results[s.name],
   }));
-  const run = { meta, shots };
+  const kept = (previous?.shots ?? []).filter((p) => !now.some((n) => n.name === p.name));
+  const order = (x) => SHOTS.findIndex((s) => s.name === x.name);
+  const shots = [...kept, ...now].sort((x, y) => order(x) - order(y));
+  const runs = [...(previous?.meta.runs ?? []), { started: meta.started, shots: wanted.map((s) => s.name), ms: meta.ms }];
+  const run = { meta: { ...meta, runs }, shots };
   writeFileSync(join(OUT, 'run.json'), JSON.stringify(run, null, 1));
   writeFileSync(join(OUT, 'index.html'), sheetHtml(run));
 }

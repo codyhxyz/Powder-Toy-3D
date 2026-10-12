@@ -88,8 +88,11 @@ export const SHOTS = [
   {
     name: 'island', kind: 'still', title: 'The island, god view',
     look: 'the World map players start on, from its first camera: shore, sea, forest, far field',
-    scene: { world: 'island', seed: 20261008, focus: [460, 600] }, seed: SEED, time: 0.25,   // (world/generator.js WORLD_SEED)
-    camera: { pos: [611.6, 162, 779.2], target: [460, 31, 600], fov: FOV },
+    // the default world (world/generator.js WORLD_SEED) and its first window's home view: the
+    // orbit target on the ground at the window's middle (720, 752: island.start for a 128 window),
+    // the eye 21 scene units back along (11, 9.5, 13) (wire/world.js homeOver)
+    scene: { world: 'island', seed: 20261008, focus: [720, 752] }, seed: SEED, time: 0.25,
+    camera: { pos: [871.6, 154, 931.2], target: [720, 23, 752], fov: FOV },
   },
   {
     name: 'descent-corridor', kind: 'still', title: 'A Descent corridor',
@@ -169,7 +172,7 @@ export const SHOTS = [
     name: 'pour-hole', kind: 'clip', title: 'A pour from a hole',
     look: 'a full tank with a 1-cell hole 30 cells up: one arcing jet, or scattered cells (audit-liquids: "single cells scattered over 20 cells of floor"; the prototype: "one parabolic arc")',
     scene: { preset: 'empty', size: '128', grid: 128 }, seed: SEED, time: 0.25,
-    camera: { pos: [52, 26, 108], target: [48, 14, 64], fov: FOV },   // the jet side-on
+    camera: { pos: [66, 32, 150], target: [52, 18, 64], fov: FOV },   // the jet's arc side-on, the tank at the left
     // tools/whitewater-shots.mjs's tank: walls, water, a clone lid that keeps it full
     build(e) {
       const tank = box(e, [24, 0, 56], [40, 46, 72], 'WALL');

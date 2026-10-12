@@ -38,7 +38,7 @@ function diffTable(d, clip) {
 function sideTimes(shot) {
   const cell = (s) => (s?.error
     ? `<td class="err">${esc(s.error)}</td>`
-    : `<td>${secs(s?.ms?.prepare)} prepare · ${secs(s?.ms?.capture)} capture${s?.frames ? ` · ${s.frames} frames` : ''}</td>`);
+    : `<td>${secs(s?.ms?.prepare)} prepare · ${secs(s?.ms?.capture)} capture${s?.frames ? ` · ${s.frames} frames` : ''}${s?.bootMs ? ` (after a ${secs(s.bootMs)} boot)` : ''}${s?.errors?.length ? `<br><span class="err">${s.errors.length} page errors: ${esc(s.errors[0])}</span>` : ''}</td>`);
   return `<table class="kv"><tr><th>A</th>${cell(shot.a)}</tr><tr><th>B</th>${cell(shot.b)}</tr></table>`;
 }
 
@@ -62,6 +62,14 @@ function media(shot) {
   return '<p class="err">no frames</p>';
 }
 
+// a shot captured by an earlier run (--append) with other settings than the sheet's header says
+function captureNote(sh, meta) {
+  const c = sh.capture;
+  if (!c || meta.runs?.length < 2) return '';
+  const bits = [c.size, c.quality, c.timeScale !== 1 && `time ×${c.timeScale}`, c.box && `box ${c.box}`, c.win && `window ${c.win}`].filter(Boolean);
+  return ` · ${esc(bits.join(', '))}`;
+}
+
 /**
  * The sheet's HTML for a run: { meta, shots } as tools/side-by-side.mjs keeps
  * them in run.json.
@@ -76,7 +84,7 @@ export function sheetHtml(run) {
   const firstDescribe = shots.find((sh) => sh.a?.describe)?.a.describe;
   const body = shots.map((sh) => `
     <section id="${esc(sh.name)}">
-      <h2>${esc(sh.title)} <span class="muted">${esc(sh.name)} · ${sh.kind === 'clip' ? `${sh.seconds} s clip at ${sh.fps} fps` : 'still'}</span> ${verdict(sh.diff)}</h2>
+      <h2>${esc(sh.title)} <span class="muted">${esc(sh.name)} · ${sh.kind === 'clip' ? `${sh.seconds} s clip at ${sh.fps} fps` : 'still'}${captureNote(sh, meta)}</span> ${verdict(sh.diff)}</h2>
       <p class="look">${esc(sh.look)}</p>
       ${media(sh)}
       <div class="cols">
@@ -132,6 +140,7 @@ export function sheetHtml(run) {
         <tr><th>quality</th><td>${esc(meta.quality)}</td></tr>
         <tr><th>clips</th><td>${esc(meta.clipSeconds)} s at ${esc(meta.fps)} fps</td></tr>
         <tr><th>settings</th><td>${esc(meta.settings)}</td></tr>
+        ${meta.timeScale !== 1 ? `<tr><th>game time</th><td class="err">every shot's lead-in ×${esc(meta.timeScale)} (a smoke run, not the shot list's times)</td></tr>` : ''}
         <tr><th>boxes, worlds</th><td>${esc(meta.box ? `boxes at ${meta.box}³` : 'boxes at their own size')}, ${esc(meta.win ? `world windows ${meta.win} wide` : 'world windows at their own size')}</td></tr>
         <tr><th>engine</th><td>${esc(firstDescribe ? `${firstDescribe.engine}; a game second = ${firstDescribe.gameSecond}` : '–')}</td></tr>
         <tr><th>tool</th><td>${esc(meta.tool)}</td></tr>
