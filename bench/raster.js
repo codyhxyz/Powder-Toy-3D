@@ -28,6 +28,7 @@
 // URL options (the form's, for links and tools/raster-bench.mjs):
 //   ?scene=lab|volcano|lab,volcano   ?res=both|device|v2   ?frames=300   ?warmup=60
 //   ?shadow=1024|2048   ?cold=1|0   ?dpr=<number> (instead of devicePixelRatio)
+//   ?pace=raf|free (a frame per animation frame, or back to back: the GPU at saturated clocks)
 //   ?still=msaa|taau ?stillFrame=<i> (the still drawn after the runs)
 //   ?only=msaa-1,taau-1 (some configurations)   ?timestamps=0 (time by submit-to-done, as without
 //   timestamp-query)   ?auto=1 (start at once)
@@ -111,8 +112,14 @@ function ratios(option) {
   return device === v2 ? all.slice(0, 1) : all;
 }
 
-/** Runs one configuration: warm-up, then `frames` measured frames. */
-function runConfig(r, cfg, { warmup, frames }, errors, label) {
+/**
+ * Runs one configuration: warm-up, then `frames` measured frames, one per
+ * animation frame (pace 'raf'), or as fast as the frames-in-flight limit
+ * lets them go (pace 'free': the GPU never idles, so it runs at the clocks a
+ * saturated GPU holds rather than the ones a 60 or 120 Hz cadence settles at).
+ */
+function runConfig(r, cfg, { warmup, frames, pace }, errors, label) {
+  const next = pace === 'free' ? (fn) => setTimeout(() => fn(performance.now()), 0) : requestAnimationFrame;
   return new Promise((resolve, reject) => {
     const recs = [];
     let i = 0, inFlight = 0, pending = 0, skipped = 0;
@@ -120,13 +127,13 @@ function runConfig(r, cfg, { warmup, frames }, errors, label) {
     const tick = (now) => {
       if (errors.length) { reject(new Error(errors[0])); return; }
       if (i >= total) {
-        if (inFlight || pending) requestAnimationFrame(tick);
+        if (inFlight || pending) next(tick);
         else resolve({ recs, skipped });
         return;
       }
       if (inFlight >= cfg.inflight) {
         if (i >= warmup) skipped++;
-        requestAnimationFrame(tick);
+        next(tick);
         return;
       }
       const f = r.frame(i, i === 0);
@@ -138,9 +145,9 @@ function runConfig(r, cfg, { warmup, frames }, errors, label) {
       if (i >= warmup) recs.push(rec);
       i++;
       if (i % 20 === 0 || i === total) hud.textContent = `${label} · ${cfg.key} · ${Math.max(0, i - warmup)}/${frames}`;
-      requestAnimationFrame(tick);
+      next(tick);
     };
-    requestAnimationFrame(tick);
+    next(tick);
   });
 }
 
@@ -203,6 +210,7 @@ async function run() {
     shadow: Number(form.elements.shadow.value) || 1024,
     cold: form.elements.cold.checked,
     only: params.get('only')?.split(',') ?? null,
+    pace: params.get('pace') === 'free' ? 'free' : 'raf',
   };
   const result = {
     version: VERSION, date: new Date().toISOString(), url: location.href, userAgent: navigator.userAgent,
@@ -244,6 +252,7 @@ async function run() {
     result.device.raf = await measureRaf();
     result.device.queueFloorMs = await queueFloor(device);
 
+    try { wake = await navigator.wakeLock?.request('screen'); } catch { /* not granted: the run goes on */ }
     const nonce = opts.cold ? 0.1 + 0.8 * Math.random() : 0.5;
     result.scenes = [];
     let renderer = null;
@@ -284,7 +293,6 @@ async function run() {
         { key: 'taau-2', aa: 'taau', inflight: 2, transient: false },
         ...(transientUsage ? [{ key: 'msaaT-2', aa: 'msaa', inflight: 2, transient: true }] : []),
       ].filter((c) => !opts.only || opts.only.includes(c.key));
-      try { wake = await navigator.wakeLock?.request('screen'); } catch { /* not granted: the run goes on */ }
       for (const { label, ratio } of ratios(opts.res)) {
         document.body.classList.add('running');
         const cssW = innerWidth, cssH = innerHeight;
