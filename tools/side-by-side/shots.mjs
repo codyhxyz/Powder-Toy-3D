@@ -15,6 +15,11 @@
 //            { world, seed?, focus? }   a world scene, world cells; the window is centred
 //              on focus ([x, z]) before the shot
 //   seed     Math.random's seed before the scene loads (cell seeds, ids)
+//   settle   game seconds the scene runs right after it's built, before `time`
+//            (--time-scale never shortens it): a fresh fill of water is foam for
+//            about 1.5 s (gfx/foam.js, its aeration bursting on the sim's clock),
+//            which a player sees once, where they painted it, and isn't what a
+//            pool looks like; every shot with painted water settles for 2 s
 //   time     game seconds the scene runs before the camera is set (and a clip's setup)
 //   camera   { pos, target, fov } in cells (fov 40 is the game's), or
 //            { pov: { feet, yaw, pitch } }: first person, feet in cells, yaw 0 facing -z
@@ -37,6 +42,9 @@ const FOV = 40;              // the god view's (app.js camera)
 
 // ---- builders shared by the box shots (cells of the 128 box; the engine scales them)
 const add = (v, d) => v.map((x, i) => x + (Array.isArray(d) ? d[i] : d));
+// game seconds a freshly painted pool takes to stop reading as foam (see settle above)
+const SETTLE = 2;
+
 // fill a box of the shot's cells; returns it on this grid
 function box(e, lo, hi, key, opts) {
   const [a, b] = e.span(lo, hi);
@@ -58,13 +66,13 @@ export const SHOTS = [
   {
     name: 'lab', kind: 'still', title: 'The lab, god view',
     look: 'the default box from the default camera: the tank, the lava pit, the wood tower, the sand that fell (audit-render 7.2: "flat clay primitives on a tiled floor in a dark void")',
-    scene: { preset: 'lab', size: '128', grid: 128 }, seed: SEED, time: 1.25,
+    scene: { preset: 'lab', size: '128', grid: 128 }, seed: SEED, settle: SETTLE, time: 1.25,   // (its tank is filled at load)
     camera: { pos: [204.8, 153.6, 230.4], target: [64, 32, 64], fov: FOV },   // the box's home view (app.js build)
   },
   {
     name: 'lab-tank', kind: 'still', title: 'The lab tank, through its glass',
     look: 'water, the oil slick and the ice from the side at eye height (audit-render 7.2: one teal haze, the oil an opaque plank, speckle at the oil/water line)',
-    scene: { preset: 'lab', size: '128', grid: 128 }, seed: SEED, time: 1.25,
+    scene: { preset: 'lab', size: '128', grid: 128 }, seed: SEED, settle: SETTLE, time: 1.25,
     camera: { pos: [36, 22, -14], target: [36, 16, 30], fov: FOV },   // the audit's tank camera
   },
   {
@@ -171,7 +179,7 @@ export const SHOTS = [
   {
     name: 'pour-hole', kind: 'clip', title: 'A pour from a hole',
     look: 'a full tank with a 1-cell hole 30 cells up: one arcing jet, or scattered cells (audit-liquids: "single cells scattered over 20 cells of floor"; the prototype: "one parabolic arc")',
-    scene: { preset: 'empty', size: '128', grid: 128 }, seed: SEED, time: 0.25,
+    scene: { preset: 'empty', size: '128', grid: 128 }, seed: SEED, settle: SETTLE, time: 0.25,
     camera: { pos: [66, 32, 150], target: [52, 18, 64], fov: FOV },   // the jet's arc side-on, the tank at the left
     // tools/whitewater-shots.mjs's tank: walls, water, a clone lid that keeps it full
     build(e) {
@@ -206,7 +214,7 @@ export const SHOTS = [
   {
     name: 'lava-water', kind: 'clip', title: 'Lava meeting water',
     look: 'a lava flow off a rock shelf into a pool: steam, quench crust, what it cools into (judge-0 6.1)',
-    scene: { preset: 'empty', size: '128', grid: 128 }, seed: SEED, time: 0.1,
+    scene: { preset: 'empty', size: '128', grid: 128 }, seed: SEED, settle: SETTLE, time: 0.1,
     camera: { pos: [104, 44, 150], target: [52, 12, 64], fov: FOV },
     build(e) {
       floor(e, 2);
@@ -227,7 +235,7 @@ export const SHOTS = [
     name: 'pov-swim', kind: 'clip', title: 'A first-person swim',
     look: 'swimming forward at the surface, diving past rock pillars, coming back up: the water from inside (docs/v2.md 4.1: tinted by real depth)',
     // first person keeps its body's size: the pool is built at 64³ size in the box's low corner, unscaled
-    scene: { preset: 'empty', size: '128', grid: null, minBox: 64 }, seed: SEED, time: 0.1,
+    scene: { preset: 'empty', size: '128', grid: null, minBox: 64 }, seed: SEED, settle: SETTLE, time: 0.1,
     camera: { pov: { feet: [10, 17, 32], yaw: -Math.PI / 2, pitch: -0.15 } },
     build(e) {
       e.fill([4, 0, 4], [60, 26, 60], 'WALL');

@@ -8,7 +8,8 @@
 // this grid), fill, erase, heat, look and keys. createEngine below is that
 // engine for today's build, on window.__app. A build whose engine is another
 // (v2, behind ?engine=v2) sets window.__shotEngine to an object with the same
-// methods, and the runner uses it instead, so the shot list and the tool
+// methods (or a function of the options that makes one), and shotEngine()
+// picks it for the tool and for ?shot= alike, so the shot list and the tool
 // don't change.
 //
 // What an engine is, in plain terms (bootQuery and linkQuery below are this
@@ -21,6 +22,7 @@
 //   converge()               the view settled on what it shows (a still)
 //   startClip()              the clip's clock starts (its keys are timed from here)
 //   present()                the current game time drawn, for a clip's frame
+//   release()                a player's page: the tool-only state given back
 //   live, quality            a player's page or the tool's; 'full' or 'draft'
 //   span, cell, len, fill, ball, erase, heat, keys   what setups use
 //
@@ -35,14 +37,20 @@
 // Determinism (both sides of an identical build must give identical frames):
 // Math.random is seeded before each load (three.js draws ids from it, and the
 // cells their seeds); the sim's step and stroke counters, the GI and the day
-// clock start over; the view's clocks reset when the camera is set; nothing
-// runs on the wall clock: steps through __app.test.step, the first-person body
-// through pov.update with a fixed dt, frames through test.render/renderOnce.
-// Wires that run only in the app's own tick (birds, lightning, the world's
-// window following the camera) don't run, so no bird flies and no storm
-// strikes; the scene's own animations (perk orbs) are run on game time, and a
-// world's shrine perks, rolled at boot, are rolled again from the seed. What
-// can still differ is listed in describe().nondeterminism.
+// clock start over; nothing runs on the wall clock: steps through
+// __app.test.step, the first-person body through pov.update with a fixed dt,
+// frames through test.render/renderOnce. The scene's animations run on the
+// shot's game time (the clocks below: the app advances its own only in its
+// loop's ticks, which a parked page doesn't run, and three.js's on the wall
+// clock). A mesh three.js hasn't compiled yet is left out of the frames until
+// it has (gfx/meshLight.js guardMeshes), for as long as the compile takes;
+// so every camera's first frame is drawn and thrown away, and every frame
+// that parks a mesh waits for it before the next, which shows it on both
+// sides at the same frame. Wires that run only in the app's own tick (birds,
+// lightning, the world's window following the camera) don't run, so no bird
+// flies and no storm strikes; a world's shrine perks, rolled at boot, are
+// rolled again from the seed. What still differs, or stands still, is listed
+// in describe().nondeterminism.
 
 /** Game ticks a second: today's game steps on every frame, frames at 60 a second (gfx/pacing.js MAX_FPS). */
 export const TICK_HZ = 60;
@@ -56,6 +64,11 @@ const STEP_BATCH = 64;
 const DRAFT_STILL_FRAMES = 2;
 // ticks the first-person body gets to come in at its spot (its swoop is 0 s)
 const POV_ENTER_TICKS = 30;
+// the layer mask of a mesh parked while three.js compiles it (gfx/meshLight.js
+// PENDING_MASK): the fallback for a page without /src
+const V1_PENDING_MASK = (1 << 31) >>> 0;
+// how long a parked mesh may take to compile (SwiftShader: minutes for the first person's)
+const MESH_WAIT_MS = 300000;
 
 // The element ids of today's build for the elements the shot list uses: the
 // fallback when the page can't import /src/elements.js (a production build,
@@ -129,6 +142,7 @@ export function linkQuery(scene) {
 export async function createEngine(app, { live = false, quality = 'full', tables = null } = {}) {
   const THREE = app.THREE;
   let E = null, PROP_TOOL = V1_TOOLS.PROP, PROP_TEMP = V1_PROP.TEMP, PROP_CTYPE = V1_PROP.CTYPE, ids = 'the dev server';
+  let PENDING_MASK = V1_PENDING_MASK;
   if (tables) {   // the build's own (src/shot.js)
     ({ E, PROP_TOOL } = tables);
     PROP_TEMP = tables.PROP.TEMP; PROP_CTYPE = tables.PROP.CTYPE;
@@ -141,6 +155,7 @@ export async function createEngine(app, { live = false, quality = 'full', tables
       E = els.E; PROP_TOOL = els.PROP_TOOL; PROP_TEMP = ed.PROP.TEMP; PROP_CTYPE = ed.PROP.CTYPE;
       const wrong = Object.entries(V1_IDS).filter(([key, id]) => E[key] !== id).map(([key]) => key);
       if (wrong.length) ids = `the dev server (differs from the built-in table for ${wrong.join(', ')})`;
+      PENDING_MASK = (await import(/* @vite-ignore */ '/src/gfx/meshLight.js')).PENDING_MASK ?? PENDING_MASK;
     } catch {
       E = V1_IDS;
       ids = 'the built-in table (no /src on this server)';
@@ -151,6 +166,9 @@ export async function createEngine(app, { live = false, quality = 'full', tables
     if (id === undefined) throw new Error(`no element ${key} in this build`);
     return id;
   };
+  // the page's own Math.random, given back to a player (release); kept once a
+  // page, since an engine made after another finds the seeded one in its place
+  globalThis.__sbsRandom ??= Math.random;
 
   let shot = null, k = 1, t = 0, ticks = 0, clipT0 = null, held = new Set(), rendered = false;
   const notes = [];
@@ -208,10 +226,92 @@ export async function createEngine(app, { live = false, quality = 'full', tables
   }
   const keysAt = (clipTime) => (shot?.clip?.keys ?? []).filter((h) => clipTime >= h.from && clipTime < h.to).map((h) => h.key);
 
-  // The scene's own animations on game time, as the app's tick runs them
-  // (wire/mesh.js afterStep: perk orbs bob on the simulation's clock); they
-  // were last placed on the wall clock (perkOrbs.add), which differs per page.
-  const animate = () => app.perkOrbs?.update(ticks / TICK_HZ);
+  // ---- the clocks: the scene's animations on the shot's game time (the tool's pages)
+  // The app runs its view's clock (FrameUniforms.time: ripples, caustics,
+  // lava's skin and flicker) and the scene's (perk orbs) in its own loop's
+  // ticks only, the view's while the world changes (app.js tick), and
+  // three.js runs its own (flames: pov/flame.js) on the wall clock. A parked
+  // page runs none of them, so the tool's frames would show every animation at
+  // its first pose. Here they run on the shot's game time, by the app's rules:
+  // view, the seconds of ticks in which the world changed (a batch of ticks
+  // counts whole); anim, every game second. They are driven through what
+  // today's build exposes (its FrameUniforms writer, three's node frame, the
+  // perk orbs), so a frozen build without a hook for it runs them too.
+  const clocks = { view: 0, anim: 0 };
+  const frozen = [];   // the clocks that can't be driven here (describe)
+  function driveClocks() {
+    if (live || clocks.driven) return;
+    clocks.driven = true;
+    // FrameUniforms.time (gfx/uniforms.js writeFrameUniforms: every frame writes the app's view clock)
+    const wrap = (fu) => {
+      if (typeof fu?.write !== 'function') return false;
+      const write = fu.write;
+      fu.write = function (values) { return write.call(this, 'time' in values ? { ...values, time: clocks.view } : values); };
+      return true;
+    };
+    const gpu = app.gpu;
+    if (gpu && !gpu.frameUniforms) {   // (made by the first frame: wrapped as it's made)
+      let fu;
+      Object.defineProperty(gpu, 'frameUniforms', { configurable: true, enumerable: true, get: () => fu, set: (v) => { fu = v; wrap(v); } });
+    } else if (!wrap(gpu?.frameUniforms)) frozen.push('the view\'s animation clock stays at 0 (ripples, caustics, lava\'s skin static): no FrameUniforms writer to drive it');
+    // three.js's time node (gfx: the flames' cards), from its node frame
+    const nodeFrame = app.renderer?._nodes?.nodeFrame;
+    if (typeof nodeFrame?.update === 'function') {
+      nodeFrame.update = function () {
+        this.frameId++;
+        this.lastTime = performance.now();
+        this.deltaTime = Math.max(0, clocks.anim - this.time);
+        this.time = clocks.anim;
+      };
+    } else frozen.push('three.js\'s time (flames) runs on the wall clock: its node frame isn\'t reachable');
+    // the perk orbs bob on the app's animation clock (wire/mesh.js afterStep), which only its loop advances
+    const orbs = app.perkOrbs;
+    if (typeof orbs?.update === 'function') {
+      const update = orbs.update.bind(orbs);
+      orbs.update = () => update(clocks.anim);
+    }
+  }
+  // n ticks went by; `changed`: the world changed in them
+  function clockTicks(n, changed) {
+    clocks.anim += n / TICK_HZ;
+    if (changed) clocks.view += n / TICK_HZ;
+  }
+
+  // ---- frames: a mesh three.js hasn't compiled is parked off every camera
+  // until it has (gfx/meshLight.js guardMeshes, in each frame), so a frame
+  // shows it or not by how long its compile took; after a frame that parked
+  // one, the next waits until it is compiled, on both sides alike
+  const meshWaits = [];   // { at, meshes, s }: describe
+  function parkedMeshes() {
+    let n = 0;
+    app.scene.traverse((o) => { if (o.layers.mask === PENDING_MASK) n++; });
+    return n;
+  }
+  async function meshesCompiled(at) {
+    const meshes = parkedMeshes();
+    if (!meshes) return;
+    const t0 = performance.now();
+    while (parkedMeshes() && performance.now() - t0 < MESH_WAIT_MS) await new Promise((r) => setTimeout(r, 50));
+    const left = parkedMeshes();
+    meshWaits.push({ at, meshes, s: +((performance.now() - t0) / 1000).toFixed(1), ...(left ? { stillParked: left } : {}) });
+    say(`${meshes} meshes compiled after ${at} in ${since(t0)}${left ? ` (${left} still parked)` : ''}`);
+  }
+  let frameNo = 0;   // frames drawn since the shot's camera was set
+  async function draw() {
+    driveClocks();
+    await test.renderOnce();
+    frameNo++;
+    await meshesCompiled(frameNo === 1 ? 'the first frame' : `frame ${frameNo}`);
+  }
+  // A new camera's first frame, thrown away: it parks what's new to it, which
+  // compiles before the shot's frames start; the view's history drops it.
+  async function firstFrame() {
+    if (live) return;
+    frameNo = 0;
+    await draw();
+    test.resetView();
+    rendered = false;
+  }
 
   // ---- game time
   async function steps(n) {
@@ -235,7 +335,9 @@ export async function createEngine(app, { live = false, quality = 'full', tables
     const pov = !live && app.pov?.active;
     const scripted = !live && clipT0 !== null && shot?.clip?.keys?.length;
     if (!pov && !render && !scripted) {   // nothing per tick: the steps in batches
+      const v0 = sim().version;
       await steps(n * per);
+      clockTicks(n, sim().version !== v0);
       ticks = target;
       rendered = false;
       if (n > 1) say(`${n} ticks (${n * per} steps) in ${since(t0)}`);
@@ -243,13 +345,15 @@ export async function createEngine(app, { live = false, quality = 'full', tables
     }
     for (let i = 0; i < n; i++) {
       ticks++;
+      const v0 = sim().version;
       if (scripted) keys(keysAt(ticks / TICK_HZ - clipT0));
       if (pov) {
         app.pov.update(1 / TICK_HZ);
         await new Promise((r) => setTimeout(r, 0));   // (the body's probes land)
       }
       await steps(per);
-      if (render) { animate(); await test.renderOnce(); }
+      clockTicks(1, sim().version !== v0);
+      if (render) await draw();
     }
     rendered = render;
     if (n > 1) say(`${n} ticks (${n * per} steps${render ? ', a frame each' : ''}${pov ? ', the body' : ''}) in ${since(t0)}`);
@@ -266,8 +370,7 @@ export async function createEngine(app, { live = false, quality = 'full', tables
     app.controls.target.copy(toScene(cam.target));
     if (cam.fov) { app.camera.fov = cam.fov; app.camera.updateProjectionMatrix(); }
     app.controls.update();
-    test?.resetView();
-    rendered = false;
+    await firstFrame();
   }
   // First person: in at feet (cells), looking along yaw (0 faces -z, -π/2 +x)
   // and pitch (up +), the body's own model loaded.
@@ -286,8 +389,7 @@ export async function createEngine(app, { live = false, quality = 'full', tables
     pov.player.spawn(at());
     pov.setLook(yaw, pitch);
     if (!live) pov.update(0);   // the camera onto the body and the look, with no time passing
-    test?.resetView();
-    rendered = false;
+    await firstFrame();
   }
 
   // ---- loading
@@ -299,11 +401,13 @@ export async function createEngine(app, { live = false, quality = 'full', tables
   async function load(s) {
     shot = s;
     t = 0; ticks = 0; clipT0 = null; rendered = false;
+    clocks.view = clocks.anim = 0;
+    meshWaits.length = 0;
     keys([]);
     if (test) { test.park(); await test.ready(); }
     app.settings.paused = true;
     if (app.pov?.active) app.pov.exit(true);
-    app.autoRes.enabled = false;
+    if (!live) app.autoRes.enabled = false;   // (a player's page keeps the game's own)
     if (quality === 'draft' && !live) app.post.settings.taa = false;
     app.day.clock = 0;
     Math.random = seeded(s.seed ?? 1);
@@ -341,21 +445,26 @@ export async function createEngine(app, { live = false, quality = 'full', tables
   async function converge() {
     if (live) return;
     const t0 = performance.now();
-    animate();
+    driveClocks();
     let n = DRAFT_STILL_FRAMES;
-    if (quality === 'draft') { for (let i = 0; i < n; i++) await test.renderOnce(); }
-    else n = await test.render();
+    if (quality === 'draft') { for (let i = 0; i < n; i++) await draw(); }
+    else {
+      n = await test.render();
+      // (its frames run back to back: a mesh one of them parked misses them all)
+      if (parkedMeshes()) { await meshesCompiled('converging'); n += await test.render(); }
+    }
     rendered = true;
     say(`view converged: ${n} frames in ${since(t0)}`);
   }
   async function present() {
     if (live || rendered) return;
-    animate();
-    await test.renderOnce();
+    await draw();
     rendered = true;
   }
   // the clip's clock starts: keys from now on are the clip's
   function startClip() { clipT0 = ticks / TICK_HZ; rendered = false; }
+  // a player's page, once the shot is theirs: the page's own Math.random back
+  function release() { if (globalThis.__sbsRandom) Math.random = globalThis.__sbsRandom; }
 
   function describe() {
     const g = sim().g;
@@ -374,17 +483,24 @@ export async function createEngine(app, { live = false, quality = 'full', tables
       detailShown: app.view?.detailShown ?? null,
       elementIds: ids,
       gameSecond: `${TICK_HZ} ticks × ${app.settings.steps} steps`,
+      clocks: { view: +clocks.view.toFixed(3), anim: +clocks.anim.toFixed(3), three: app.renderer?._nodes?.nodeFrame?.time ?? null },
+      meshWaits: [...meshWaits],
       nondeterminism: [
-        'TAA history: the post pass\'s jitter index counts every frame the page drew (not resettable); manual mode draws none before the shot, so both sides start at the same index',
-        ...(app.pov?.active ? ['first person: the body\'s probes are read back asynchronously; each tick waits one task for them'] : []),
-        ...(app.arena ? ['the arena\'s team banners sway from the wall clock of the moment they were placed (arenas/markers.js; not reachable from __app)'] : []),
+        'TAA history: the post pass\'s jitter index counts every frame the page drew (not resettable); manual mode draws none before the shot, so both sides start at the same index if they ran the same shots before it',
+        ...frozen,
+        ...(app.pov?.active ? [
+          'first person: the body\'s probes are read back asynchronously; each tick waits one task for them',
+          'first person: the hands\' light eases toward the eye\'s light probe on the wall clock (pov/viewmodel.js eyeLight): a fast GPU can catch it mid-ease, differently on each side',
+          'first person: the caustic ripples on the hands stay at their first pose (gfx/meshLight.js reads the app\'s view clock, which only its loop advances)',
+        ] : []),
+        ...(app.arena ? ['the arena\'s team banners hang at their first pose (arenas/markers.js sways them on the app\'s animation clock, which only its loop advances; not reachable from __app)'] : []),
         ...notes,
       ],
     };
   }
 
   const api = {
-    TICK_HZ, describe, load, run, look, converge, present, startClip, keys, notes,
+    TICK_HZ, describe, load, run, look, converge, present, startClip, release, keys, notes,
     span, cell, len, fill, ball, erase, heat,
     get time() { return t; },
     get live() { return live; },
@@ -395,13 +511,16 @@ export async function createEngine(app, { live = false, quality = 'full', tables
 
 /**
  * A shot played up to its capture (the tool) or up to where the player takes
- * over (?shot=): the scene loaded and built, its game time run, the camera
- * set; a clip's setup made and run to the clip's start. timeScale shortens
- * the shot's times (the container's smoke runs, where a game second of steps
- * is minutes): both sides get the same, and the sheet says so.
+ * over (?shot=): the scene loaded and built and settled, its game time run,
+ * the camera set; a clip's setup made and run to the clip's start. timeScale
+ * shortens the shot's time and a clip's lead-in (the container's smoke runs,
+ * where a game second of steps is minutes): both sides get the same, and the
+ * sheet says so. It never shortens settle, the scene's own start (a fresh
+ * fill's foam bursting), which the shot list never shows.
  */
 export async function prepareShot(engine, shot, { timeScale = 1 } = {}) {
   await engine.load(shot);
+  await engine.run(shot.settle ?? 0);
   await engine.run((shot.time ?? 0) * timeScale);
   await engine.look(shot.camera);
   if (!shot.clip) return;
@@ -412,8 +531,15 @@ export async function prepareShot(engine, shot, { timeScale = 1 } = {}) {
   await engine.run((shot.clip.start ?? 0) * timeScale, { render: true });
 }
 
-/** The engine a page uses: its own (window.__shotEngine), else today's on __app. */
-export async function pageEngine(opts) {
-  if (window.__shotEngine) return typeof window.__shotEngine === 'function' ? window.__shotEngine(opts) : window.__shotEngine;
-  return createEngine(window.__app, opts);
+/**
+ * The engine a page plays shots on: its own (window.__shotEngine: an engine,
+ * or a function of the options that makes one), else today's on `app`. The
+ * tool and ?shot= both choose through here.
+ */
+export async function shotEngine(app, opts) {
+  const own = globalThis.__shotEngine;
+  if (own) return typeof own === 'function' ? own(opts) : own;
+  return createEngine(app, opts);
 }
+/** The tool's page's engine (shotEngine on window.__app). */
+export const pageEngine = (opts) => shotEngine(globalThis.__app, opts);
