@@ -7,6 +7,7 @@ import { island } from './scenes/island.js';
 import { runGenerator, bake } from '../constructions/runtime.js';
 import { BUILTINS } from '../constructions/builtins.js';
 import { BrickStore, encodeBrick, decodeBrick, BRICK_FLOATS } from './store.js';
+import { farLayout, farSceneLayout } from '../shaders/far.js';
 
 // The window over a massive world (docs/scaling.md D11, phases W1 and W2;
 // docs/webgpu.md G1).
@@ -79,7 +80,9 @@ export class WorldWindow {
     this.scene = scene;
     this.P = scene.params({ size, seed });
     // its own generator, not generatorFor's shared one: tools run two windows
-    this.gen = new WorldGenerator(sim, scene, this.P);
+    // (its prepass room covers the far field's chunks too: world/far.js)
+    const S = farSceneLayout(farLayout(size));
+    this.gen = new WorldGenerator(sim, scene, this.P, { regions: [[S.side, size[1], S.side]] });
     this.wb = size.map((n) => n / BRICK);                          // the world in bricks
     this.store = new BrickStore(this.wb);
     this.planted = new Uint8Array(this.wb[0] * this.wb[2]);       // brick columns whose trees are in

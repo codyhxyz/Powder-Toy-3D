@@ -1,5 +1,5 @@
 import { E } from '../../elements.js';
-import { WORLD_SIZE } from '../../shaders/far.js';
+import { WORLD_SIZE } from '../../shaders/farShared.js';
 import { helpersGLSL, definesGLSL, definesTypes, jsConstants, compileShared } from './themedShared.js';
 import { toWgsl } from './subsetWgsl.js';
 import { sceneStruct, sceneHeadWGSL } from './sceneGpu.js';

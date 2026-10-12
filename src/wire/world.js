@@ -13,7 +13,6 @@ import { gfxUniforms } from '../gfx/uniforms.js';
 import '../world/bakeClient.js';   // the World's build-time bake (world/bake.js), before any world is made
 
 const torchLights = createTorchLights();
-const FAR_ON = false;
 const NO_AMBIENT = [0, 0, 0];   // a scene without an ambient floor (world scene `ambient`)
 
 // God view over a world: the orbit target on the ground, the camera this far
@@ -51,10 +50,8 @@ const world = {
     if (!app.worldMode) return;
     const win = app.win = new WorldWindow(app.renderer, sim, { size: app.worldMode.size, seed: app.worldSeed, scene: app.sceneByKey(app.settings.scene) });
     sim.origin.fromArray(world.worldStart(app));
-    if (FAR_ON) {
-      win.far = new FarField(app.renderer, win, { sun: app.sun, time: app.viewTimeUniform });
-      win.far.attach(app.vol, app.derived);   // its haze and shadows on the window
-    }
+    win.far = new FarField(app.renderer, win, { sun: app.sun });
+    win.far.attach(app.vol, app.derived);   // its haze, shadows and GI on the window
   },
   detach(app) {
     releaseGenerator(app.sim);   // the Island scene's, made for this grid

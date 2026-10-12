@@ -664,6 +664,19 @@ ${regionMain(/* wgsl */ `
                                   select(0.0, 1.0, nm >= FAR_THIN_MIN), 1.0));`)}
 `;
 
+// A fresh build starts from an empty grid and field (the world before it was
+// built: what the view draws there is the plain or sea beyond).
+// Group 2: the grid and the field, written.
+export const FAR_CLEAR_LAYOUT = [store(0, FAR_FORMATS.grid), store(1, FAR_FORMATS.field)];
+export const farClearFrag = (g, L) => /* wgsl */ `
+${prelude(g, { state: false })}
+${farLayoutGLSL(L)}
+@group(2) @binding(0) var farOut: texture_storage_3d<rgba16uint, write>;
+@group(2) @binding(1) var farField: texture_storage_3d<rgba8unorm, write>;
+${regionMain(`  textureStore(farOut, b, vec4u(0u));
+  textureStore(farField, b, vec4f(0.0));`)}
+`;
+
 // A node kernel's thread per node of an occupancy level (n nodes per axis).
 const nodeMain = (n, body) => /* wgsl */ `
 @compute @workgroup_size(64)
@@ -1366,6 +1379,7 @@ export const WGSL_CHECK = () => [
     name: `farScene${trees ? ' trees' : ''}`, kind: 'compute', grids: ['128'], warm: false, code: (g) => farSceneFrag(g, Lw, trees),
     layouts: CHECK_LAYOUTS(FAR_SCENE_LAYOUT(trees)), params: RegionParams, dispatch: () => regionDispatch([16, Lw.bricks.n[1], 16]),
   })),
+  { name: 'farClear', kind: 'compute', grids: ['128'], warm: false, code: (g) => farClearFrag(g, Lw), layouts: CHECK_LAYOUTS(FAR_CLEAR_LAYOUT), params: RegionParams, dispatch: () => regionDispatch(Lw.bricks.n) },
   { name: 'farBoost', kind: 'compute', grids: ['128'], warm: false, code: (g) => farBoostFrag(g, Lw), layouts: CHECK_LAYOUTS(FAR_BOOST_LAYOUT), params: RegionParams, dispatch: () => regionDispatch([18, Lw.bricks.n[1], 18]) },
   { name: 'farMip1', kind: 'compute', grids: ['128'], warm: false, code: (g) => farMip1Frag(g, Lw), layouts: CHECK_LAYOUTS(FAR_MIP1_LAYOUT), dispatch: () => nodeDispatch(Lw.l1) },
   { name: 'farMip2', kind: 'compute', grids: ['128'], warm: false, code: (g) => farMip2Frag(g, Lw), layouts: CHECK_LAYOUTS(FAR_MIP2_LAYOUT), dispatch: () => nodeDispatch(Lw.l2) },

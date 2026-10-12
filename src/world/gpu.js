@@ -41,10 +41,11 @@ export class SceneGpu {
    * @param {import('../sim.js').Simulation} sim the grid it generates for (its device, tables)
    * @param {object} scene a world scene (world/scenes)
    * @param {object} P its world parameters (scene.params)
-   * @param {{ preCells?: number }} [opts] preCells: the largest prepass region asked
-   *   for (the grid and a margin by default; the far field's chunks may want more)
+   * @param {{ regions?: number[][] }} [opts] regions: the sizes (cells along x, y,
+   *   z) of the regions its sceneCell kernels cover besides the grid (the far
+   *   field's chunks): the prepass makes room for the largest with its margin
    */
-  constructor(sim, scene, P, { preCells = 0 } = {}) {
+  constructor(sim, scene, P, { regions = [] } = {}) {
     this.sim = sim;
     this.gpu = sim.gpu;
     this.scene = scene;
@@ -54,8 +55,8 @@ export class SceneGpu {
     this.uniforms = this.gpu.uniforms(scene.uniformStruct, `scene ${scene.key}`);
     const g = sim.g;
     this.preMargin = scene.pre?.margin?.(P) ?? [PRE_MARGIN, PRE_MARGIN, PRE_MARGIN];
-    const m = this.preMargin.map((v) => 2 * v);
-    this.preCells = scene.pre ? Math.max(preCells, (g.nx + m[0]) * (g.ny + m[1]) * (g.nz + m[2])) : 0;
+    const cells = (r) => r.reduce((n, v, i) => n * (v + 2 * this.preMargin[i]), 1);
+    this.preCells = scene.pre ? Math.max(...[[g.nx, g.ny, g.nz], ...regions].map(cells)) : 0;
     this.data = null;
     this.disposed = false;
     // the bake's and the prepass's kernels build while the scene prepares
@@ -226,12 +227,13 @@ export class WorldGenerator {
    * @param {import('../sim.js').Simulation} sim
    * @param {object} scene a world scene (world/scenes)
    * @param {object} P its world parameters
+   * @param {{ regions?: number[][] }} [opts] the far field's regions (SceneGpu)
    */
-  constructor(sim, scene, P) {
+  constructor(sim, scene, P, opts = {}) {
     this.sim = sim;
     this.scene = scene;
     this.P = P;
-    this.res = new SceneGpu(sim, scene, P);
+    this.res = new SceneGpu(sim, scene, P, opts);
     this.code = scene.glsl(sim.g);
     // the fill now; the leaving slab's kernel when the window asks (prepareDiff)
     this.kernels = { fill: sim.editKernel(`${scene.key} fill`, fillEdit(this.code, this.res.has)) };

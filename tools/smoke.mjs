@@ -18,12 +18,13 @@
 //           the canvas, and the volume drawn (__app.view.volumeDrawn). The
 //           negative control: Empty drawn again differs from its first frame
 //           by less than that
-//   worlds  every World map: with the world's wiring ready (src/wire/world.js,
-//           U10) each boots at ?win=64, simulates a 64-wide window and draws;
-//           until then a World map falls back to a box with a toast (a boot
-//           from ?map=), and the menu's openMap refuses it, and nothing
-//           throws. The giant volcano's window is 384 tall: only check-wgsl
-//           (a) covers it
+//   worlds  every World map and Descent level: with the world's wiring ready
+//           (src/wire/world.js, U10) the first boots from its link at
+//           ?win=64 and each next is loaded as the map menu loads it (--fresh:
+//           each boots from its link), simulates a 64-wide window (the giant
+//           volcano's 384 tall) and draws; until then a World map falls back
+//           to a box with a toast (a boot from ?map=), and the menu's openMap
+//           refuses it, and nothing throws
 //   arenas  every box map on a grid of its own (maps.js: Dam Valley, an
 //           arena on 256×96×128), booted from its ?map= link: its grid, its
 //           arena layout, the scene drawn, no GPU error. About a minute here
@@ -53,7 +54,13 @@ const STAGES = arg('stage', 'boxes,worlds').split(',');
 const OUT = arg('out', join(ROOT, '.tmp-smoke'));   // (ignored by git: .tmp-*)
 const VIEWPORT = { width: 400, height: 250 };
 const BOXES = ['empty', 'lab', 'volcano', 'island'];   // (Empty first: the others are measured against it)
-const WORLD_MAPS = ['island', 'volcanoWorld', 'labWorld', 'descent'];
+// the World maps and Descent's levels: [name, link, how the map menu loads it in a running page]
+const WORLD_MAPS = [
+  ...['island', 'volcanoWorld', 'labWorld', 'giantVolcano', 'descent'].map((m) => [m, `?map=${m}`, new Function(`__app.openMap('${m}')`)]),
+  ...['descentCoal', 'descentSnow'].map((k) => [k, `?size=world&scene=${k}`, new Function(`__app.settings.scene = '${k}'; __app.setSize('world')`)]),
+];
+// the scene each loads (maps.js)
+const sceneOf = { island: 'island', volcanoWorld: 'volcanoWorld', labWorld: 'labWorld', giantVolcano: 'giantVolcano', descent: 'descentMines', descentCoal: 'descentCoal', descentSnow: 'descentSnow' };
 const BOX_DIMS = '128,128,128';   // the menu's box maps' grid; a box map on another is an arena (app.js ARENA_GRID)
 // A scene drawn: the share of the canvas's pixels that differ by more than
 // DIFF levels (0-255) in some channel from a reference frame (the same frame
@@ -213,7 +220,7 @@ try {
             let opened, threw = null;
             try { opened = __app.openMap(m); } catch (e) { threw = e.message; }
             return { m, opened, threw, same: __app.settings.size === before[0] && __app.sim.id === before[1] };
-          }), WORLD_MAPS);
+          }), WORLD_MAPS.filter(([, q]) => q.startsWith('?map=')).map(([m]) => m));
           for (const x of r) ok(x.opened === false && !x.threw && x.same, `${x.m}: World maps aren't wired yet: openMap refuses it, the box stays${x.threw ? ` (threw ${x.threw})` : ''}`);
         }
       }
@@ -249,19 +256,30 @@ try {
       ok(drewScene(s), `the fallback box draws the lab: ${drewText(s)}`);
     } else {
       await page.close();
-      for (const m of WORLD_MAPS) {
-        const b = await boot(browser, vite, `?map=${m}&view=plain&win=64`);
-        ok(!b.failed, `${m}: boots at ?win=64${b.failed ? `: ${b.failed.slice(0, 300)}` : ''}`);
-        if (!b.failed) {
-          const dims = await b.page.evaluate(() => [__app.sim.g.nx, __app.sim.g.ny, __app.sim.g.nz]);
-          ok(dims[0] === 64 && dims[2] === 64 && await b.page.evaluate(() => !!__app.win), `${m}: a window 64 wide (${dims.join('×')})`);
-          await b.page.waitForFunction(() => __app.win?.loaded, null, { polling: 250, timeout: 120000 });
-          const s = await draw(b.page, `world-${m}`);
-          ok(drewScene(s), `${m}: ${drewText(s)} (${secs()})`);
-          ok(!b.errors.length, `${m}: no page or GPU errors${b.errors.length ? `:\n  ${b.errors.join('\n  ')}` : ''}`);
+      // every World map and every Descent level (world/scenes): the first booted
+      // from its link, the rest loaded in the same page as the map menu loads
+      // one (--fresh: each booted from its own link, a minute or so each here)
+      const fresh = argv.includes('--fresh');
+      let b = null;
+      for (const [i, [m, query, load]] of WORLD_MAPS.entries()) {
+        if (fresh || i === 0) {
+          if (b) await b.page.close();
+          b = await boot(browser, vite, `${query}&view=plain&win=64`);
+          ok(!b.failed, `${m}: boots from ${query} at ?win=64${b.failed ? `: ${b.failed.slice(0, 300)}` : ''} (${secs()})`);
+          if (b.failed) { b = null; continue; }
+        } else {
+          await b.page.evaluate(load);
+          ok(true, `${m}: loaded as the map menu does (${secs()})`);
         }
-        await b.page.close();
+        await b.page.waitForFunction((k) => __app.win?.loaded && __app.win.scene.key === k, sceneOf[m], { polling: 250, timeout: 150000 });
+        await b.page.evaluate(() => __app.test.ready());
+        const dims = await b.page.evaluate(() => [__app.sim.g.nx, __app.sim.g.ny, __app.sim.g.nz]);
+        ok(dims[0] === 64 && dims[2] === 64, `${m}: a window 64 wide (${dims.join('×')})`);
+        const s = await draw(b.page, `world-${m}`);
+        ok(drewScene(s), `${m}: ${drewText(s)} (${secs()})`);
+        ok(!b.errors.length, `${m}: no page or GPU errors${b.errors.length ? `:\n  ${b.errors.splice(0).join('\n  ')}` : ''}`);
       }
+      if (b) await b.page.close();
     }
     if (!wired) ok(!errors.length, `no page or GPU errors in the fallback${errors.length ? `:\n  ${errors.join('\n  ')}` : ''}`);
     if (!page.isClosed()) await page.close();
