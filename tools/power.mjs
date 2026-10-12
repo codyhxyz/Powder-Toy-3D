@@ -27,7 +27,8 @@
 // simSteps } and keeps the URL parameters (?size, ?preset, ?paused, ?map,
 // ?seed).
 //
-// On the Mac (Apple Silicon), from a checkout with node_modules installed:
+// On the Mac (Apple Silicon), from a checkout with node_modules installed
+// (and Playwright's Chromium: npx playwright install chromium):
 //
 //   1. sudo powermetrics --samplers gpu_power,cpu_power -i 500 -o /tmp/tpt3d-power.txt
 //      (in another terminal; or let the tool start it when `sudo -n` works,
@@ -287,9 +288,10 @@ async function startPowermetrics() {
     file ??= '/tmp/tpt3d-power.txt';
     console.log(`powermetrics: run this in another terminal, then leave it running:\n\n  sudo ${POWERMETRICS.join(' ')} -o ${file}\n`);
   }
+  // a sample from now on (a file left from an earlier run doesn't count; the headers' times are whole seconds)
   const t0 = Date.now();
-  while (!(existsSync(file) && parseSamples(readFileSync(file, 'utf8')).length)) {
-    if (Date.now() - t0 > (child ? 30000 : 600000)) throw new Error(`no powermetrics samples in ${file}`);
+  while (!(existsSync(file) && parseSamples(readFileSync(file, 'utf8')).some((x) => x.t >= t0 - 2000))) {
+    if (Date.now() - t0 > (child ? 30000 : 600000)) throw new Error(`no new powermetrics samples in ${file}`);
     await sleep(1000);
   }
   console.log(`powermetrics: sampling into ${file}`);
@@ -452,6 +454,7 @@ try {
   })();
   results.adapter = gpu;
   console.log(`build: ${server.base}  adapter: ${JSON.stringify(gpu)}${gpu?.isFallbackAdapter ? ' (software: not a power measurement)' : ''}`);
+  if (!DRY && (!gpu || gpu.isFallbackAdapter)) throw new Error('no hardware WebGPU adapter in this browser: power on a software adapter measures nothing');
   for (const name of O.scenarios) {
     console.log(`\n${name}: ${SCENARIOS[name]?.about ?? '?'}`);
     const r = await measure(browser, name, server.base);
