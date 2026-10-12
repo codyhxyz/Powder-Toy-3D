@@ -6,7 +6,8 @@
 //
 //   node tools/smoke.mjs [--stage boxes,meshes,worlds,arenas,views,warm] [--views heat,realistic] [--out dir]
 //
-// Stages (default: boxes,meshes,worlds, two to three minutes here; each well under 3 minutes):
+// Stages (default: boxes,worlds, one to two minutes here; each well under 3 minutes; meshes
+// goes in a run of its own, node tools/smoke.mjs --stage meshes, about 2.5 minutes with the boot):
 //   boxes   one boot at 64³; each box scene (Empty, the lab, the volcano,
 //           the Islet) loaded and drawn with test.renderOnce: no GPU error,
 //           and the scene drawn. The canvas is opaque (F7): the sky, the floor
@@ -56,7 +57,7 @@ import { startVite } from './vite-server.mjs';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const argv = process.argv.slice(2);
 const arg = (k, d) => (argv.includes(`--${k}`) ? argv[argv.indexOf(`--${k}`) + 1] : d);
-const STAGES = arg('stage', 'boxes,meshes,worlds').split(',');
+const STAGES = arg('stage', 'boxes,worlds').split(',');
 const OUT = arg('out', join(ROOT, '.tmp-smoke'));   // (ignored by git: .tmp-*)
 const VIEWPORT = { width: 400, height: 250 };
 const BOXES = ['empty', 'lab', 'volcano', 'island'];   // (Empty first: the others are measured against it)

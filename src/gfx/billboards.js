@@ -41,6 +41,7 @@ import {
 export const FADE = { OUT: 0, SHARP: 1 };
 const DRAG_EPS = 1e-4;       // 1/s: below this the path is the drag-free parabola
 const VEL_EPS = 1e-6;        // a streak's speed below which it has no direction
+const MAX_RANGES = 16;       // upload ranges per attribute before they merge into one
 
 // ---- the sprites: a soft dot and the flash's spiky star (vfx.js's), 64 px
 const TEX_SIZE = 64;
@@ -176,7 +177,8 @@ export function createBillboards({ name, capacity, texture: tex = 'dot', blendin
   const tags = new Array(capacity).fill(null);
   let cursor = 0;
   let lastDeath = -Infinity;    // when the last one alive dies
-  const dirty = [];             // slots written since the last upload
+  const dirty = [];             // slots written since the last update
+  const pending = [];           // slots whose upload ranges three hasn't consumed yet
   const rec = new Float32Array(20);
   const view4 = SLOTS.map((_, i) => rec.subarray(4 * i, 4 * i + 4));
   // what init(p) fills in: p.set(...) or the fields one by one
@@ -240,19 +242,33 @@ export function createBillboards({ name, capacity, texture: tex = 'dot', blendin
       lastDt = dt;
       clock.value = now;
       if (dirty.length) {
-        // contiguous runs of written slots, one upload range each
-        dirty.sort((a, b) => a - b);
-        for (const k of SLOTS) arrays[k].clearUpdateRanges();
-        let start = dirty[0], prev = start;
-        const flush = (a, b) => { for (const k of SLOTS) arrays[k].addUpdateRange(4 * a, 4 * (b - a + 1)); };
-        for (const i of dirty.slice(1)) {
-          if (i === prev) continue;
-          if (i !== prev + 1) { flush(start, prev); start = i; }
-          prev = i;
-        }
-        flush(start, prev);
-        for (const k of SLOTS) arrays[k].needsUpdate = true;
+        // three uploads an attribute's ranges at the mesh's next draw and only
+        // then clears them (WebGPUAttributeUtils updateAttribute). Ranges still
+        // there were never uploaded (two updates with no draw between: a tick
+        // that doesn't present, preview's 10 Hz, a pool guardMeshes parked), so
+        // this update's slots join them instead of replacing them.
+        if (arrays[SLOTS[0]].updateRanges.length === 0) pending.length = 0;
+        for (const i of dirty) pending.push(i);
         dirty.length = 0;
+        pending.sort((a, b) => a - b);
+        // contiguous runs of written slots, one upload range each (a slot once)
+        const runs = [];
+        let n = 0;
+        for (const i of pending) {
+          if (n && pending[n - 1] === i) continue;
+          pending[n++] = i;
+          const run = runs[runs.length - 1];
+          if (run && run[1] === i - 1) run[1] = i;
+          else runs.push([i, i]);
+        }
+        pending.length = n;
+        // many runs (a long wait for a draw): one range over them all
+        if (runs.length > MAX_RANGES) runs.splice(0, runs.length, [pending[0], pending[n - 1]]);
+        for (const k of SLOTS) {
+          arrays[k].clearUpdateRanges();
+          for (const [a, b] of runs) arrays[k].addUpdateRange(4 * a, 4 * (b - a + 1));
+          arrays[k].needsUpdate = true;
+        }
       }
       mesh.visible = lastDeath > now;
     },
@@ -260,14 +276,19 @@ export function createBillboards({ name, capacity, texture: tex = 'dot', blendin
     count(tag = null) { return alive(tag); },
     /** Whether any is still alive. */
     get busy() { return lastDeath > now; },
-    /** Drops every particle. */
+    /**
+     * Drops every particle. The zeroed records go up with the next update, as
+     * one range over every slot: an upload with no ranges (all of it) would
+     * become a partial one if a spawn's ranges joined it before a draw, and
+     * the records in flight would show again with the next burst.
+     */
     clear() {
       death.fill(-Infinity);
       tags.fill(null);
       lastDeath = -Infinity;
       for (const k of SLOTS) arrays[k].array.fill(0);
-      for (const k of SLOTS) { arrays[k].clearUpdateRanges(); arrays[k].needsUpdate = true; }
       dirty.length = 0;
+      for (let i = 0; i < capacity; i++) dirty.push(i);
       mesh.visible = false;
     },
     dispose() {

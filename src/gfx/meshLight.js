@@ -18,7 +18,9 @@
 // giIrradiance, sampleLight, wandLight), with what those read from
 // FrameUniforms, the header and the tables passed as parameters instead:
 // three.js's node builder declares the bindings, so a function it calls can't
-// name ours. tools/mesh-check.mjs compares the two on the GPU at random points.
+// name ours. Their numbers are taken from those modules' WGSL (SHARED below),
+// and tools/mesh-check.mjs's light stage evaluates both on the GPU at random
+// points of a lit scene and compares them.
 //
 // Also here, for every module that adds meshes: the app's device (setMeshGpu,
 // from src/wire/mesh.js), and prepareMesh(object), which compiles a new kind of
@@ -34,14 +36,11 @@ import { glslMod } from '../gpu/wgsl.js';
 import { gfxUniforms, WAND_LIGHTS } from './uniforms.js';
 import { createMediaNoise } from './mediaNoise.js';
 import { noiseGLSL } from '../shaders/gfx/noise.js';
-import { SH_Y0, SH_Y1, SHADOW_TINT_ID_SCALE, SHADOW_PAD, VOLUME_SHADOW_BIAS } from '../shaders/gfx/lighting.js';
-import { CLOUD } from '../shaders/gfx/clouds.js';
+import { lightingGLSL } from '../shaders/gfx/lighting.js';
+import { cloudDeckGLSL } from '../shaders/gfx/clouds.js';
 import { BRICK } from '../shaders/common.js';
 import { ELEMENTS, R } from '../elements.js';
-import { CELL_M } from '../scale.js';
 
-// The glow volume's gain: FrameUniforms.lightGain, as app.js writes it (its GLOW_GAIN)
-export const MESH_GLOW_GAIN = 1.6;
 // Figures sit in the window's light at these offsets (cells): shadow lookups
 // move toward the sun (off the body's own cells), GI probes are read out along
 // the normal (figure.js's FIG_SHADOW_LIFT, FIG_GI_LIFT)
@@ -52,6 +51,24 @@ const f = (x) => { const s = String(+(+x).toPrecision(7)); return /[.e]/.test(s)
 
 // ---------------------------------------------------------------- the WGSL
 
+// The numbers these functions share with lighting.js and clouds.js (the sun's
+// disc, the ripples and their caustics, the probes' SH, the shadow map's
+// encoding, the cloud deck), taken from those modules' own WGSL under a FIG_
+// prefix, so the two copies can't drift apart on a number.
+const SHARED_FROM = lightingGLSL({ shadowMap: true, probes: true }) + cloudDeckGLSL;
+const SHARED = [
+  ['FIG_PI', 'PI_L'], 'SH_Y0', 'SH_Y1', 'SH_COS1', ['FIG_TINT_ID_SCALE', 'SHADOW_TINT_ID_SCALE'], 'SHADOW_PAD', 'VOLUME_SHADOW_BIAS',
+  'SUN_TAN_RADIUS', 'RIPPLE_FREQ', 'RIPPLE_DRIFT', 'RIPPLE_OCT2', 'RIPPLE_OCT2_AMP', 'RIPPLE_OCT2_DRIFT', 'RIPPLE_OCT2_SHIFT',
+  'CAUSTIC_BEND', 'CAUSTIC_SLOPE', 'CAUSTIC_EPS', 'CAUSTIC_BED_GAP', 'CAUSTIC_FILL', 'CAUSTIC_MAX', 'CAUSTIC_MIN',
+  'CLOUD_BASE', 'CLOUD_THICK', 'CLOUD_COVER', 'CLOUD_SHAPE_A_F', 'CLOUD_SHAPE_B_F', 'CLOUD_SHAPE_B_W', 'CLOUD_SLICE_A', 'CLOUD_SLICE_B',
+  'CLOUD_ERODE', 'CLOUD_NOISE_MEAN', 'CLOUD_ROUND_LO', 'CLOUD_ROUND_HI', 'CLOUD_DOME', 'CLOUD_SIGMA', 'CLOUD_SHADOW_N', 'CLOUD_SHADOW_SKIP',
+].map((n) => {
+  const [ours, theirs] = Array.isArray(n) ? n : [`FIG_${n}`, n];
+  const m = SHARED_FROM.match(new RegExp(`const ${theirs}: (\\w+) = ([^;]+);`));
+  if (!m) throw new Error(`meshLight: lighting.js and clouds.js declare no const ${theirs}`);
+  return `const ${ours}: ${m[1]} = ${m[2]};`;
+}).join('\n');
+
 // lighting.js's, with FrameUniforms' fields as parameters: sun (xyz, w: the
 // shadows switch), grid (nx, ny, nz, shadowRes), origin (the window's, cells;
 // w: the animation clock, FU.time), cave (the scene's ambient floor; w: the
@@ -59,44 +76,8 @@ const f = (x) => { const s = String(+(+x).toPrecision(7)); return /[.e]/.test(s)
 const LIGHT_WGSL = /* wgsl */ `
 ${glslMod}
 ${noiseGLSL}
-const FIG_PI: f32 = 3.14159265;
+${SHARED}
 const FIG_BS: f32 = ${f(BRICK)};
-const FIG_SH_Y0: f32 = ${SH_Y0.toFixed(6)};
-const FIG_SH_Y1: f32 = ${SH_Y1.toFixed(6)};
-const FIG_SH_COS1: f32 = 2.0 / 3.0;
-const FIG_TINT_ID_SCALE: f32 = ${f(SHADOW_TINT_ID_SCALE)};
-const FIG_SHADOW_PAD: f32 = ${f(SHADOW_PAD)};
-const FIG_VOLUME_SHADOW_BIAS: f32 = ${f(VOLUME_SHADOW_BIAS)};
-const FIG_SUN_TAN_RADIUS: f32 = 0.021;
-const FIG_RIPPLE_FREQ: f32 = 0.3;
-const FIG_RIPPLE_DRIFT: f32 = 0.6;
-const FIG_RIPPLE_OCT2: f32 = 2.1;
-const FIG_RIPPLE_OCT2_AMP: f32 = 0.5;
-const FIG_RIPPLE_OCT2_DRIFT: f32 = 1.3;
-const FIG_RIPPLE_OCT2_SHIFT: f32 = 7.3;
-const FIG_CAUSTIC_BEND: f32 = 0.25;
-const FIG_CAUSTIC_SLOPE: f32 = 0.18;
-const FIG_CAUSTIC_EPS: f32 = 0.35;
-const FIG_CAUSTIC_BED_GAP: f32 = 2.0;
-const FIG_CAUSTIC_FILL: f32 = 0.7;
-const FIG_CAUSTIC_MAX: f32 = 4.0;
-const FIG_CAUSTIC_MIN: f32 = 0.3;
-const FIG_CLOUD_BASE: f32 = ${f(CLOUD.baseM / CELL_M)};
-const FIG_CLOUD_THICK: f32 = ${f(CLOUD.thickM / CELL_M)};
-const FIG_CLOUD_COVER: f32 = ${f(CLOUD.cover)};
-const FIG_CLOUD_SHAPE_A_F: f32 = ${f(CELL_M / CLOUD.shapeAM)};
-const FIG_CLOUD_SHAPE_B_F: f32 = ${f(CELL_M / CLOUD.shapeBM)};
-const FIG_CLOUD_SHAPE_B_W: f32 = ${f(CLOUD.shapeBW)};
-const FIG_CLOUD_SLICE_A: f32 = ${f(CLOUD.sliceA)};
-const FIG_CLOUD_SLICE_B: f32 = ${f(CLOUD.sliceB)};
-const FIG_CLOUD_ERODE: f32 = ${f(CLOUD.erode)};
-const FIG_CLOUD_NOISE_MEAN: f32 = 0.5;
-const FIG_CLOUD_ROUND_LO: f32 = ${f(CLOUD.roundLo)};
-const FIG_CLOUD_ROUND_HI: f32 = ${f(CLOUD.roundHi)};
-const FIG_CLOUD_DOME: f32 = ${f(CLOUD.dome)};
-const FIG_CLOUD_SIGMA: f32 = ${f(CLOUD.sigmaM * CELL_M)};
-const FIG_CLOUD_SHADOW_N: i32 = ${CLOUD.shadowSamples};
-const FIG_CLOUD_SHADOW_SKIP: f32 = ${f(CLOUD.shadowSkip)};
 
 // sigma (rgb) and the liquid flag (a) of element id: the tables' SIGMA and RCLASS == R_LIQUID
 fn figSigma(sig: texture_2d<f32>, id: i32) -> vec4f {
@@ -216,6 +197,8 @@ fn figWandLight(p: vec3f, wand: texture_2d<f32>, count: i32) -> vec3f {
 }
 `;
 const lightCode = code(LIGHT_WGSL, [], 'wgsl');
+/** The figures' light WGSL as emitted (tools/bake-icons.mjs keys the baked sprites on it). */
+export const meshLightWGSL = LIGHT_WGSL;
 
 // The sunlight falling on grid point p: FU.sunCol × sunShadowAt(p) (lighting.js:
 // the clouds' shadow, and the map if light gets through them), or the whole of
@@ -322,7 +305,7 @@ export const meshLight = {
   light: texture3D(stand.band),
   noise: texture3D(stand.noise),
   sun: uniform(new Vector4(0, 1, 0, 0)),        // toward the key light; w: the shadow map is read
-  sunCol: uniform(new Vector4(1, 1, 1, MESH_GLOW_GAIN)),   // FU.sunCol; w: the glow's gain
+  sunCol: uniform(new Vector4(1, 1, 1, 1)),    // FU.sunCol; w: the glow's gain, FU.lightGain
   grid: uniform(new Vector4(64, 64, 64, 1)),    // the grid (cells); w: the shadow map's texels per side
   origin: uniform(new Vector4(0, 0, 0, 0)),     // the window's origin (cells); w: the animation clock (s)
   cave: uniform(new Vector4(0, 0, 0, 0)),       // the scene's ambient floor; w: caustics on
@@ -342,21 +325,36 @@ export const meshLight = {
  * @param {{ albedo: object, n?: object, grid?: object, emit?: object | null, toon?: boolean, toonEdge?: number }} o
  */
 export function litColor({ albedo, n = normalWorld, grid = null, emit = null, toon = false, toonEdge = 0.08 }) {
-  const L = meshLight;
   const p = grid ?? gridPosition();
-  const sunDir = L.sun.xyz;
-  const sun = figSunFn({
-    p: p.add(sunDir.mul(SHADOW_LIFT)), sm: L.shadow, sig: L.sigma, noise: L.noise, rep: sampler(L.noise),
-    sun: L.sun, sunCol: L.sunCol, grid: L.grid, origin: L.origin, cave: L.cave, cloud: L.cloud,
-  });
-  const ambient = figAmbientFn({
-    p, q: p.add(n.mul(GI_LIFT)), n, gi0: L.gi[0], gi1: L.gi[1], gi2: L.gi[2], gi3: L.gi[3], light: L.light, s: sampler(L.light),
-    wand: L.wand, wandCount: L.wandCount, sunCol: L.sunCol, grid: L.grid, cave: L.cave,
-  });
+  const sunDir = meshLight.sun.xyz;
+  const { sun, ambient } = meshLightTerms({ p: p.add(sunDir.mul(SHADOW_LIFT)), q: p.add(n.mul(GI_LIFT)), n, glowAt: p });
   let ndl = max(dot(n, sunDir), float(0));
   if (toon) ndl = smoothstep(float(0), float(toonEdge), ndl);
   const lit = albedo.mul(sun.mul(ndl).add(ambient));
   return emit ? lit.add(emit) : lit;
+}
+
+/**
+ * The two terms of the light at grid points (TSL vec3 nodes): `sun`, the
+ * sunlight reaching p (lighting.js FU.sunCol × sunShadowAt(p), or the whole
+ * of it with the map off), and `ambient`, the GI probes' irradiance on a
+ * surface facing n read at q (giIrradiance(probeAt(q), n)) plus the glow
+ * volume and wand lights at glowAt (sampleLight × FU.lightGain).
+ * tools/mesh-check.mjs's light stage compares both with lighting.js's own
+ * functions on the GPU.
+ * @param {{ p: object, q: object, n: object, glowAt?: object }} o
+ */
+export function meshLightTerms({ p, q, n, glowAt = p }) {
+  const L = meshLight;
+  const sun = figSunFn({
+    p, sm: L.shadow, sig: L.sigma, noise: L.noise, rep: sampler(L.noise),
+    sun: L.sun, sunCol: L.sunCol, grid: L.grid, origin: L.origin, cave: L.cave, cloud: L.cloud,
+  });
+  const ambient = figAmbientFn({
+    p: glowAt, q, n, gi0: L.gi[0], gi1: L.gi[1], gi2: L.gi[2], gi3: L.gi[3], light: L.light, s: sampler(L.light),
+    wand: L.wand, wandCount: L.wandCount, sunCol: L.sunCol, grid: L.grid, cave: L.cave,
+  });
+  return { sun, ambient };
 }
 
 /**
@@ -405,7 +403,8 @@ export function updateMeshLight(app) {
   sunV.copy(app.sun ?? sunV.set(0, 1, 0)).normalize();
   L.sun.value.set(sunV.x, sunV.y, sunV.z, shadows ? 1 : 0);
   const sc = u.uSunCol.value;
-  L.sunCol.value.set(sc[0], sc[1], sc[2], MESH_GLOW_GAIN);
+  // the glow's gain as the app last wrote it into FrameUniforms (app.js GLOW_GAIN; 1 before the first write, writeFrameUniforms's default)
+  L.sunCol.value.set(sc[0], sc[1], sc[2], app.gpu?.frameUniforms?.values.lightGain ?? 1);
   const g = sim?.g;
   if (g) L.grid.value.set(g.nx, g.ny, g.nz, vol?.shadowRes ?? 1);
   const o = sim?.origin;
