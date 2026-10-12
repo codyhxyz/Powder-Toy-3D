@@ -27,5 +27,20 @@ export default {
         cellsDispatches: 1, cellsAllocated: 0,
       },
     },
+    {
+      // A body's frame (B3: one command buffer of ours a tick), wading so its
+      // coupling runs: its probe and its coupling's edit (D6), then the
+      // frame's steps, one submit and one compute pass with them; a kick that
+      // breaks a pane adds its one edit. (What the app's tick adds, the view,
+      // three and post, is tools/budgets/app.mjs's.)
+      name: 'a wading body\'s frame: two dispatches of its own (probe, coupling), one submit and one compute pass with the frame\'s steps, '
+        + 'nothing allocated; a kick that breaks glass one more',
+      run: (page) => page.evaluate(() => window.__harness.run('budget:povFrame')),
+      expect: {
+        coupled: 1, bodyDispatches: 2, bodyAllocated: 0,
+        frameSubmits: 1, frameComputePasses: 1, frameRenderPasses: 0, frameAllocated: 0,
+        kickBroke: 1, kickDispatches: 1,
+      },
+    },
   ],
 };

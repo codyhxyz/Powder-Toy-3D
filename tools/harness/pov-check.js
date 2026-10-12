@@ -28,6 +28,7 @@
 //   recipes   every preset wand cast on a small world, its effects in the cells
 //             (scripts/check-wand-recipes.mjs's checks on WebGPU)
 //   budget:pov  what each costs in gpu.stats (tools/budgets/pov.mjs)
+//   budget:povFrame  a body's frame, wading, and one with a kick (tools/budgets/pov.mjs)
 
 import { boot, ready, test, log, measure } from './harness.js';
 import { Simulation, cellTexel } from '/src/sim.js';
@@ -650,8 +651,8 @@ test('stage:cells', async ({ size = [64, 32, 48] } = {}) => {
     for (let y = 0; y < g.ny; y++) for (let z = 0; z < g.nz; z++) for (let x = 0; x < g.nx; x++) {
       const t = cellTexel(g, x, y, z) * TEXEL_BYTES;
       const id = S.id(x, y, z), T = id === E.EMPTY ? SIM_PHYS.AMBIENT : S.a(x, y, z)[1];
-      const [b0, b1, b2, b3] = r.bytes.subarray(t, t + 4);
-      if (b0 !== id || b2 !== 0 || b3 !== 0) { badId++; first ||= `(${x},${y},${z}) id ${b0} want ${id}`; }
+      const [b0, b1] = r.bytes.subarray(t, t + 4);   // (bytes 2 and 3: what a guest renders, the codec's; not the model's)
+      if (b0 !== id) { badId++; first ||= `(${x},${y},${z}) id ${b0} want ${id}`; }
       const eps = 1e-4 * Math.abs(T) + 1e-3;
       if (!(T >= lowEdge(b1) - eps && T < highEdge(b1) + eps)) { badT++; first ||= `(${x},${y},${z}) T ${T} code ${b1} [${lowEdge(b1)}, ${highEdge(b1)})`; }
     }
@@ -1089,6 +1090,43 @@ test('budget:pov', async () => {
       cellsDispatches: cells.dispatches, cellsAllocated: cells.bytesAllocated,
     };
   } finally { sim.dispose(); }
+});
+
+// A first-person frame (tools/budgets/pov.mjs): a body wading in a 32³ world
+// (water to its knees, so its coupling runs), then the frame's update (the
+// body's probe and its coupling's edit), its 4 steps and the GPU done with
+// them; then the same frame with a kick that breaks a glass pane at the hip
+// (the kick's edit). What the app's tick adds to it (the view, three, post)
+// is tools/budgets/app.mjs's.
+test('budget:povFrame', async () => {
+  const sim = await make(32, { debug: false });
+  const THREE = await import('three');
+  const { createPlayer } = await import('/src/pov/player.js');
+  const pl = createPlayer({ renderer: null, getSim: () => sim });
+  const STEPS = 4, DT = 1 / 60;
+  try {
+    load(sim, (set, g) => {
+      box(set, [0, 0, 0], [g.nx, 1, g.nz], E.WALL);
+      box(set, [0, 1, 0], [g.nx, 3, g.nz], E.WATER);   // two cells deep
+      box(set, [18, 1, 14], [19, 7, 19], E.GLASS);     // a pane across the way, three cells ahead
+    });
+    pl.spawn(new THREE.Vector3(15.5, 1, 16.5));
+    const frame = async (fn) => { fn?.(); pl.update(DT, {}); for (let i = 0; i < STEPS; i++) sim.step(); await gpu.fence(); await tick(); };
+    for (let i = 0; i < 30; i++) await frame();   // standing, its probes landing
+    const body = await measure(gpu, () => { pl.update(DT, {}); });
+    for (let i = 0; i < STEPS; i++) sim.step();
+    await gpu.fence(); await tick();
+    const whole = await measure(gpu, () => frame());
+    for (let i = 0; i < 30; i++) await frame();   // (the kick's refire wait)
+    let kick = null;
+    const kicked = await measure(gpu, () => { kick = pl.kick(new THREE.Vector3(1, 0, 0)); });
+    await frame();
+    return {
+      bodyDispatches: body.dispatches, bodyAllocated: body.bytesAllocated, coupled: pl.inLiquid ? 1 : 0,
+      frameSubmits: whole.submits, frameComputePasses: whole.computePasses, frameRenderPasses: whole.renderPasses, frameAllocated: whole.bytesAllocated,
+      kickDispatches: kicked.dispatches, kickBroke: kick?.hit === 'cell' && kick.broke ? 1 : 0,   // (budget-check compares numbers)
+    };
+  } finally { pl.dispose?.(); sim.dispose(); }
 });
 
 ready();
