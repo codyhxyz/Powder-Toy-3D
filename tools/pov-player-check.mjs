@@ -6,7 +6,9 @@
 // drowning, lava, a blast, a fire, and how a wading body pushes water (the
 // old floor test is `falls`: a test named like Math.floor trips
 // check-async-reads). Two
-// browsers by default, each well under 3 minutes here.
+// browsers by default. Their scenes keep the grid awake (sand, water, lava,
+// a blast, a fire), which costs SwiftShader seconds a frame at 64³: under a
+// loaded host a group runs past 20 minutes (--only picks tests).
 // usage: node tools/pov-player-check.mjs [--port N] [--only name,name]   (its own Vite: tools/vite-server.mjs)
 import { runStages, TOOLS_PAGE } from './pov-gpu-check.mjs';
 

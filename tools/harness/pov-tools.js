@@ -405,8 +405,11 @@ test('stage:flask', async () => {
 // pov-tools-b's scenes on 32³: the axe's slabs narrower and closer (its patch,
 // AXE.RADIUS 3, still reaches no neighbour), the physgun's basin nearer the
 // origin. The axe's swing lands by its own clock (the world isn't stepped);
-// the physgun's frames are TOOL_DT of tool time and STEPS steps (its spring
-// works per step).
+// the physgun's frames are the old pov-tools-b's, the app's tick: DT and
+// STEPS steps (its spring works per step), 0.5 s gathering, 2 s raising, 3 s
+// holding. It holds a ball, not the pool: the falloff's full-strength core
+// (PHYS.CORE of its RADIUS, PHYS.PACKING of it matter) is ~140 cells, and the
+// check asks for at least half that above the basin, round the hold point.
 test('stage:hand', async ({ only = ['axe', 'phys'], mats: physMats = ['SAND', 'WATER'] } = {}) => {
   const out = { checks: [], ms: {}, numbers: {} };
   const sim = await make(32);
@@ -453,6 +456,8 @@ test('stage:hand', async ({ only = ['axe', 'phys'], mats: physMats = ['SAND', 'W
     }
     if (only.includes('phys')) {
       const phys = (await import('/src/pov/tools/physgun.tool.js')).default;
+      const { PHYS } = await import('/src/shaders/povTools.js');
+      const BALL = Math.round(4 / 3 * Math.PI * (PHYS.CORE * PHYS.RADIUS) ** 3 * PHYS.PACKING);   // cells: the core's matter
       out.numbers.phys = {};
       for (const mat of physMats) {
         const t0 = performance.now();
@@ -469,17 +474,17 @@ test('stage:hand', async ({ only = ['axe', 'phys'], mats: physMats = ['SAND', 'W
         const eye = V(4.5, 8.5, 15), surface = V(19, 5.5, 15), target = V(19, 18, 15);
         const player = { pos: V(4.5, 3.5, 15), vel: V(), applyImpulse() {} };
         let dir = surface.clone().sub(eye).normalize();
-        const ctx = (over) => ({ sim, dt: TOOL_DT, stepsPerFrame: STEPS, eye, dir,
+        const ctx = (over) => ({ sim, dt: DT, stepsPerFrame: STEPS, eye, dir,
           primary: true, secondary: false, primaryPressed: false, secondaryPressed: false, wheel: 0,
           aim: { valid: true, cell: V(19, 5, 15), face: 2, id, dist: surface.distanceTo(eye) }, player, ...over });
         await frame(sim, () => tool.update(ctx({ primaryPressed: true })));
         // gather for 0.5 s, raise the aim over 2 s to a point 12 cells up, then hold 3 s
-        const gather = 15, raise = 60, hold = 90;
+        const gather = Math.round(0.5 / DT), raise = Math.round(2 / DT), hold = Math.round(3 / DT);
         for (let f = 1; f <= gather + raise + hold; f++) {
           const k = THREE.MathUtils.clamp((f - gather) / raise, 0, 1);
           dir = surface.clone().lerp(target, k).sub(eye).normalize();
           await frame(sim, () => tool.update(ctx({})));
-          if (f % 30 === 0) progress(`physgun ${mat}: frame ${f}`);
+          if (f % 60 === 0) progress(`physgun ${mat}: frame ${f} of ${gather + raise + hold}`);
         }
         const holdAt = tool.hold, com = await tool.readCom();
         const cells = (await snap(sim)).cells(id);
@@ -492,10 +497,10 @@ test('stage:hand', async ({ only = ['axe', 'phys'], mats: physMats = ['SAND', 'W
         for (let i = 0; i < 25; i++) await frame(sim);
         const n1 = (await count())[id];
         const r = out.numbers.phys[mat] = {
-          hold: holdAt?.toArray().map((v) => +v.toFixed(1)), com: com?.map((v) => +v.toFixed(1)), lifted: lifted.length, of: n0,
+          hold: holdAt?.toArray().map((v) => +v.toFixed(1)), com: com?.map((v) => +v.toFixed(1)), lifted: lifted.length, of: n0, ball: BALL,
           meanDistFromHold: +dist.toFixed(2), flingV: vFling.toArray().map((v) => +v.toFixed(2)), along: +vFling.dot(dir).toFixed(2), census: [n0, n1],
         };
-        check(out, `physgun: lifts ${mat} to the hold point 12 cells up (a ball round it)`, holdAt && holdAt.y > 14 && lifted.length > n0 * 0.3 && dist < 4, r);
+        check(out, `physgun: lifts ${mat} to the hold point 12 cells up (a ball round it)`, holdAt && holdAt.y > 14 && lifted.length >= BALL / 2 && dist < PHYS.CORE * PHYS.RADIUS, r);
         check(out, `physgun: flings the ${mat} along the aim`, r.along > 0, r);
         check(out, `physgun: ${mat} conserved`, n0 === n1, r.census);
         tool.deselect?.(); tool.dispose?.();
