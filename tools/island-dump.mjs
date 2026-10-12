@@ -69,7 +69,7 @@ try {
   };
   const boot = async (query) => {
     await p.goto(vite.url(query));
-    await p.waitForFunction(() => window.__app?.sim || document.getElementById('error')?.textContent, null, { polling: 250, timeout: 150000 });
+    await p.waitForFunction(() => window.__app?.sim || document.getElementById('error')?.textContent, null, { polling: 250, timeout: 300000 });
     const failed = await p.evaluate(() => document.getElementById('error')?.textContent || null);
     if (failed) throw new Error(`boot ${query}: ${failed.slice(0, 400)}`);
     await p.evaluate(() => window.__app.test.ready());
@@ -96,7 +96,7 @@ try {
 
   // ---- world: cells at load, after moves, and the far grid around the window
   await boot(`/?map=island&view=plain&win=${win}`);
-  await p.waitForFunction(() => window.__app.win?.loaded, null, { polling: 250, timeout: 150000 });
+  await p.waitForFunction(() => window.__app.win?.loaded, null, { polling: 250, timeout: 300000 });
   result.world = await p.evaluate(async (FAR_CHUNKS) => {
     const a = window.__app, w = a.win, sim = a.sim, g = sim.g, f = w.far;
     const o0 = [sim.origin.x, sim.origin.z];

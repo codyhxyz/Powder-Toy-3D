@@ -10,7 +10,9 @@
 // (farBoost), the shift (the state, the flow and its copy back, the derived
 // passes' own: src/derived.js), the fill (an edit), nothing restored. The
 // first move after load allocates the readback's staging; the next ones
-// allocate nothing and build no pipeline.
+// allocate nothing and build no pipeline. Measured here: 7 compute passes, 11
+// dispatches, 139268 bytes read back (the head and the prefix: no brick of
+// the Lab's leaving slab differs from its scene).
 const delta = (a, b) => Object.fromEntries(Object.keys(b).filter((k) => typeof b[k] === 'number').map((k) => [k, b[k] - a[k]]));
 export default {
   unit: 'world',
@@ -18,7 +20,7 @@ export default {
   mode: 'manual',
   viewport: { width: 320, height: 200 },
   async ready(page) {
-    await page.waitForFunction(() => window.__app?.win?.loaded || document.getElementById('error')?.textContent, null, { polling: 250, timeout: 200000 });
+    await page.waitForFunction(() => window.__app?.win?.loaded || document.getElementById('error')?.textContent, null, { polling: 250, timeout: 300000 });
     await page.evaluate(() => window.__app.test.ready());
   },
   scenarios: [
@@ -38,7 +40,7 @@ export default {
         }, delta.toString());
       },
       expect: {
-        submits: 1, computePasses: { max: 12 }, dispatches: { max: 16 }, pipelinesCreated: 0, bytesAllocated: 0,
+        submits: 1, computePasses: { max: 7 }, dispatches: { max: 11 }, pipelinesCreated: 0, bytesAllocated: 0,
         bytesReadBack: { max: 140000 }, kept: 0, restored: 0,
       },
     },

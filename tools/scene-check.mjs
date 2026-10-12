@@ -25,7 +25,7 @@ const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
 const only = opt('scenes', null)?.split(',');
 const WIN = +opt('win', 64);
-const LOAD_TIMEOUT = 150000;   // ms a scene may take to compile and load
+const LOAD_TIMEOUT = 300000;   // ms a scene may take to compile and load (minutes here when the container is busy)
 
 const { WORLD_SCENES } = await import('../src/world/scenes/index.js');
 const keys = WORLD_SCENES.map((s) => s.key).filter((k) => !only || only.includes(k));

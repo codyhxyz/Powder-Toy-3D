@@ -38,7 +38,7 @@ try {
   p.on('console', (m) => { if (m.type() === 'error' && !/ERR_CONNECTION_REFUSED/.test(m.text())) errs.push(m.text().slice(0, 600)); });
   p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e.stack || e).slice(0, 600)));
   await p.goto(vite.url(`/?map=island&view=plain&win=${WIN}`));
-  await p.waitForFunction(() => window.__app?.win?.loaded || document.getElementById('error')?.textContent, null, { polling: 250, timeout: 150000 });
+  await p.waitForFunction(() => window.__app?.win?.loaded || document.getElementById('error')?.textContent, null, { polling: 250, timeout: 300000 });
   const failed = await p.evaluate(() => document.getElementById('error')?.textContent || null);
   if (failed) throw new Error(`boot: ${failed.slice(0, 400)}`);
   await p.evaluate(() => window.__app.test.ready());

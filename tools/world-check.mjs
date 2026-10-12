@@ -28,7 +28,7 @@ const WIN = +opt('win', 64);
 const STAGES = opt('stage', '1,2').split(',').map(Number);
 const WALK = 1;               // window widths the walk goes out along x (the edits, within 20 cells of its centre, leave it entirely)
 const SETTLE_STEPS = 20;      // sim steps the edits get to start settling before the walk (each is ~1 s of SwiftShader here)
-const LOAD_TIMEOUT = 150000;  // ms the world may take to boot and compile
+const LOAD_TIMEOUT = 300000;  // ms the world may take to boot and compile (minutes here when the container is busy)
 const VERBOSE = args.includes('--verbose');   // the page's progress, timed
 
 const vite = await startVite();
