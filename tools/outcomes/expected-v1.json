@@ -1,6 +1,7 @@
 {
  "engine": "v1",
  "adapter": "google swiftshader SwiftShader Device (Subzero) (fallback adapter: SwiftShader numbers, not representative)",
+ "clock": "240 steps a game second (physics.js NOMINAL_STEP_RATE: 4 a frame at 60 fps)",
  "recorded": "2026-10-12",
  "tests": {
   "utube": {
@@ -19,7 +20,8 @@
      "measured": "never",
      "unit": "s",
      "threshold": "≤ 10",
-     "ok": false
+     "ok": false,
+     "note": "read every 0.5 s"
     },
     {
      "name": "mass exact",
@@ -46,7 +48,8 @@
      "measured": "never",
      "unit": "s",
      "threshold": "≤ 8",
-     "ok": false
+     "ok": false,
+     "note": "read every 0.5 s"
     },
     {
      "name": "mass exact",
@@ -66,7 +69,8 @@
      "measured": "never",
      "unit": "s",
      "threshold": "≤ 6",
-     "ok": false
+     "ok": false,
+     "note": "read every 0.5 s"
     },
     {
      "name": "has an edge (cells to the nearest wall)",
@@ -106,20 +110,40 @@
   },
   "hole": {
    "status": "fail",
-   "headline": "3.5 s: head 13.14 cells; no water crossing y = 7 (√(2gh) parabola: 19.18); broken from the hole to the floor",
+   "headline": "3.5 s ± 0.125 s (61 steps): head 13.19…12.93 cells; the stream 16.84 % off the √(2gh) parabola; unbroken from the hole to the floor in 0 of 61 reads",
    "criteria": [
     {
-     "name": "one unbroken stream at every checkpoint",
-     "measured": "no",
+     "name": "one unbroken stream (worst window: share of its reads)",
+     "measured": 0,
      "unit": "",
-     "threshold": "yes",
+     "threshold": "≥ 0.9",
      "ok": false
     },
     {
-     "name": "reach off the √(2gh) parabola (worst checkpoint)",
-     "measured": 100,
+     "name": "reach off the √(2gh) parabola (worst window)",
+     "measured": 20.19,
      "unit": "%",
      "threshold": "≤ 5",
+     "ok": false
+    },
+    {
+     "name": "mass exact",
+     "measured": 0,
+     "unit": "cells",
+     "threshold": "0",
+     "ok": true
+    }
+   ]
+  },
+  "splash": {
+   "status": "fail",
+   "headline": "the block met the pool at 41.71 m/s (free fall: 39.44); at its peak, 0.04 s after contact, the splash carried 1.47 of that energy (32 cells); all liquid at most 6.36",
+   "criteria": [
+    {
+     "name": "splash kinetic energy / incoming (peak)",
+     "measured": 1.47,
+     "unit": "",
+     "threshold": "≤ 0.3",
      "ok": false
     },
     {
@@ -136,10 +160,10 @@
    "headline": "after 5 s a 4³ block stands 1 cells tall as mud over 64 columns, 1 as water over 64",
    "criteria": [
     {
-     "name": "mud mound height",
-     "measured": 1,
-     "unit": "cells",
-     "threshold": "≥ 2",
+     "name": "mud stands taller than water",
+     "measured": 0,
+     "unit": "cm",
+     "threshold": "> 1",
      "ok": false
     },
     {
@@ -148,13 +172,6 @@
      "unit": "cells",
      "threshold": "≤ 1",
      "ok": true
-    },
-    {
-     "name": "mud stands taller than water",
-     "measured": 0,
-     "unit": "cells",
-     "threshold": "> 0",
-     "ok": false
     }
    ]
   },
@@ -194,18 +211,18 @@
   },
   "heapSand": {
    "status": "fail",
-   "headline": "456 grains: peak 7, reach 6.25 along the axes and 8.49 on the diagonals (×1.36), slope 1.12; not idle",
+   "headline": "432 grains: peak 7, footprint 144 columns (radius 6.77), slope 1.03; diagonal / axis reach ×1.28 (×1.33 of a round one); not idle",
    "criteria": [
     {
-     "name": "round: diagonal reach / axis reach",
-     "measured": 1.36,
+     "name": "round: diagonal / axis reach, of a round footprint's",
+     "measured": 1.33,
      "unit": "",
      "threshold": "1 ± 0.15",
      "ok": false
     },
     {
-     "name": "slope (peak / axis reach) in its class",
-     "measured": 1.12,
+     "name": "slope (peak / footprint radius) in its class",
+     "measured": 1.03,
      "unit": "",
      "threshold": "0.7…1.3",
      "ok": true
@@ -215,31 +232,32 @@
      "measured": "never",
      "unit": "s",
      "threshold": "≤ 2.5",
-     "ok": false
+     "ok": false,
+     "note": "read every 0.1 s"
     },
     {
      "name": "grains kept",
-     "measured": 456,
+     "measured": 432,
      "unit": "",
-     "threshold": "456",
+     "threshold": "432",
      "ok": true
     }
    ]
   },
   "heapFlour": {
    "status": "fail",
-   "headline": "432 grains: peak 6, reach 6 along the axes and 8.49 on the diagonals (×1.41), slope 1; not idle",
+   "headline": "432 grains: peak 7, footprint 145 columns (radius 6.79), slope 1.03; diagonal / axis reach ×1.26 (×1.28 of a round one); not idle",
    "criteria": [
     {
-     "name": "round: diagonal reach / axis reach",
-     "measured": 1.41,
+     "name": "round: diagonal / axis reach, of a round footprint's",
+     "measured": 1.28,
      "unit": "",
      "threshold": "1 ± 0.15",
      "ok": false
     },
     {
-     "name": "slope (peak / axis reach) in its class",
-     "measured": 1,
+     "name": "slope (peak / footprint radius) in its class",
+     "measured": 1.03,
      "unit": "",
      "threshold": "1.4…2.6",
      "ok": false
@@ -249,7 +267,8 @@
      "measured": "never",
      "unit": "s",
      "threshold": "≤ 2.5",
-     "ok": false
+     "ok": false,
+     "note": "read every 0.1 s"
     },
     {
      "name": "grains kept",
@@ -289,13 +308,13 @@
   },
   "flameWood": {
    "status": "fail",
-   "headline": "not lit after 2 s: 2 s: wood 64 (0 burning, hottest 25.57 °C), flames 0, smoke 0, ash 0",
+   "headline": "0 of 6 blocks lit within 2 s; last: 2 s: wood 64 (0 burning, hottest 26.42 °C), flames 0, smoke 0, ash 0 (bay 1)",
    "criteria": [
     {
-     "name": "wood lit",
-     "measured": "never",
-     "unit": "s",
-     "threshold": "≤ 2",
+     "name": "blocks lit within 2 s",
+     "measured": 0,
+     "unit": "",
+     "threshold": "≥ 5 of 6",
      "ok": false
     }
    ]
@@ -315,18 +334,18 @@
   },
   "blast": {
    "status": "fail",
-   "headline": "212 bricks broken; the crater reaches 7.5 along the axes and 5.3 on the diagonals (×0.71)",
+   "headline": "212 bricks broken; the crater (113 columns) reaches 6.89 along the axes and 5.37 on the diagonals (×0.78; ×0.76 of a round one)",
    "criteria": [
     {
      "name": "a crater (axis reach)",
-     "measured": 7.5,
+     "measured": 6.89,
      "unit": "cells",
      "threshold": "≥ 2",
      "ok": true
     },
     {
-     "name": "round: diagonal reach / axis reach",
-     "measured": 0.71,
+     "name": "round: diagonal / axis reach, of a round footprint's",
+     "measured": 0.76,
      "unit": "",
      "threshold": "1 ± 0.15",
      "ok": false
@@ -335,11 +354,11 @@
   },
   "vessel": {
    "status": "fail",
-   "headline": "mean overpressure inside 2.99 at 0.25 s, 0 10 s later (0.01 % kept); outside at most 0",
+   "headline": "mean overpressure inside 4.66 at 0.25 s, 0 10 s later (0 % kept); outside at most 0",
    "criteria": [
     {
      "name": "a blast at all (overpressure at 0.25 s)",
-     "measured": 2.99,
+     "measured": 4.66,
      "unit": "engine units",
      "threshold": "> 0",
      "ok": true
@@ -360,9 +379,9 @@
     },
     {
      "name": "vessel intact (wall cells)",
-     "measured": 728,
+     "measured": 296,
      "unit": "",
-     "threshold": "728",
+     "threshold": "296",
      "ok": true
     }
    ]
@@ -409,7 +428,7 @@
   },
   "tankStill": {
    "status": "pass",
-   "headline": "surface 4…4 (4 is full), idle at 0.25 s",
+   "headline": "surface 4…4 (4 is full), idle at 0.1 s",
    "criteria": [
     {
      "name": "stays full (lowest surface)",
@@ -427,10 +446,11 @@
     },
     {
      "name": "rests (certified idle)",
-     "measured": 0.25,
+     "measured": 0.1,
      "unit": "s",
      "threshold": "≤ 4",
-     "ok": true
+     "ok": true,
+     "note": "read every 0.1 s"
     },
     {
      "name": "mass exact",

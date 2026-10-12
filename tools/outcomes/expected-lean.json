@@ -1,6 +1,7 @@
 {
  "engine": "lean",
  "adapter": "lean-sim World (CPU prototype, 60 Hz, 2 g)",
+ "clock": "60 ticks a game second (Speed 1×)",
  "recorded": "2026-10-12",
  "tests": {
   "utube": {
@@ -19,7 +20,8 @@
      "measured": 5.63,
      "unit": "s",
      "threshold": "≤ 10",
-     "ok": true
+     "ok": true,
+     "note": "read every 0.017 s"
     },
     {
      "name": "mass exact",
@@ -46,7 +48,8 @@
      "measured": 4.1,
      "unit": "s",
      "threshold": "≤ 8",
-     "ok": true
+     "ok": true,
+     "note": "read every 0.017 s"
     },
     {
      "name": "mass exact",
@@ -66,7 +69,8 @@
      "measured": 4.07,
      "unit": "s",
      "threshold": "≤ 6",
-     "ok": true
+     "ok": true,
+     "note": "read every 0.017 s"
     },
     {
      "name": "has an edge (cells to the nearest wall)",
@@ -106,18 +110,18 @@
   },
   "hole": {
    "status": "fail",
-   "headline": "3.5 s: head 6.32 cells; the stream 12 cells out at y = 7 (√(2gh) parabola: 13.31, 9.81 % off); unbroken from the hole to the floor",
+   "headline": "3.5 s ± 0.125 s (16 steps): head 5.5…4.87 cells; the stream 12.78 % off the √(2gh) parabola; unbroken from the hole to the floor in 16 of 16 reads",
    "criteria": [
     {
-     "name": "one unbroken stream at every checkpoint",
-     "measured": "yes",
+     "name": "one unbroken stream (worst window: share of its reads)",
+     "measured": 1,
      "unit": "",
-     "threshold": "yes",
+     "threshold": "≥ 0.9",
      "ok": true
     },
     {
-     "name": "reach off the √(2gh) parabola (worst checkpoint)",
-     "measured": 9.81,
+     "name": "reach off the √(2gh) parabola (worst window)",
+     "measured": 12.78,
      "unit": "%",
      "threshold": "≤ 5",
      "ok": false
@@ -130,6 +134,11 @@
      "ok": true
     }
    ]
+  },
+  "splash": {
+   "status": "n/a",
+   "headline": "lean reports no cell velocities",
+   "criteria": []
   },
   "yield": {
    "status": "n/a",
@@ -172,68 +181,70 @@
   },
   "heapSand": {
    "status": "pass",
-   "headline": "435 grains: peak 6, reach 7 along the axes and 7.07 on the diagonals (×1.01), slope 0.86; idle 0.93 s after the pour",
+   "headline": "432 grains: peak 6, footprint 163 columns (radius 7.2), slope 0.83; diagonal / axis reach ×0.98 (×0.96 of a round one); idle 1.18 s after the pour",
    "criteria": [
     {
-     "name": "round: diagonal reach / axis reach",
-     "measured": 1.01,
+     "name": "round: diagonal / axis reach, of a round footprint's",
+     "measured": 0.96,
      "unit": "",
      "threshold": "1 ± 0.15",
      "ok": true
     },
     {
-     "name": "slope (peak / axis reach) in its class",
-     "measured": 0.86,
+     "name": "slope (peak / footprint radius) in its class",
+     "measured": 0.83,
      "unit": "",
      "threshold": "0.7…1.3",
      "ok": true
     },
     {
      "name": "rests after the pour ends",
-     "measured": 0.93,
+     "measured": 1.18,
      "unit": "s",
      "threshold": "≤ 2.5",
-     "ok": true
+     "ok": true,
+     "note": "read every 0.017 s"
     },
     {
      "name": "grains kept",
-     "measured": 435,
+     "measured": 432,
      "unit": "",
-     "threshold": "435",
+     "threshold": "432",
      "ok": true
     }
    ]
   },
   "heapFlour": {
    "status": "pass",
-   "headline": "435 grains: peak 10, reach 6 along the axes and 5.66 on the diagonals (×0.94), slope 1.67; idle 1.57 s after the pour",
+   "headline": "432 grains: peak 10, footprint 111 columns (radius 5.94), slope 1.68; diagonal / axis reach ×1 (×0.99 of a round one); idle 1.6 s after the pour",
    "criteria": [
     {
-     "name": "round: diagonal reach / axis reach",
-     "measured": 0.94,
+     "name": "round: diagonal / axis reach, of a round footprint's",
+     "measured": 0.99,
      "unit": "",
      "threshold": "1 ± 0.15",
      "ok": true
     },
     {
-     "name": "slope (peak / axis reach) in its class",
-     "measured": 1.67,
+     "name": "slope (peak / footprint radius) in its class",
+     "measured": 1.68,
      "unit": "",
      "threshold": "1.4…2.6",
      "ok": true
     },
     {
      "name": "rests after the pour ends",
-     "measured": 1.57,
+     "measured": 1.6,
      "unit": "s",
      "threshold": "≤ 2.5",
-     "ok": true
+     "ok": true,
+     "note": "read every 0.017 s"
     },
     {
      "name": "grains kept",
-     "measured": 435,
+     "measured": 432,
      "unit": "",
-     "threshold": "435",
+     "threshold": "432",
      "ok": true
     }
    ]
@@ -318,7 +329,8 @@
      "measured": 2.55,
      "unit": "s",
      "threshold": "≤ 4",
-     "ok": true
+     "ok": true,
+     "note": "read every 0.017 s"
     },
     {
      "name": "mass exact",
