@@ -145,6 +145,9 @@ export function createBallistics() {
 
   function requestTrace(sim) {
     if (tracing >= TRACE_INFLIGHT) return;
+    // its kernel still building (B5: a new grid while in POV): the rounds wait
+    // untraced, shown no further than their last clear stretch, until it is
+    if (!povGpu(sim).probeReady('povTrace')) return;
     const jobs = [];
     const want = (latency + LOOKAHEAD_FRAMES) * frameTime;
     for (let i = 0; i < TRACE.ROUNDS; i++) starts[i][3] = 0;
@@ -163,12 +166,7 @@ export function createBallistics() {
       r.tTraced = tTo;
     });
     if (!jobs.length) return;
-    const read = povGpu(sim).probe('povTrace', { starts, ends });
-    if (!read) {
-      // (its kernel is still building: B5) the stretches count as clear rather than stall the rounds
-      for (const j of jobs) settle(j);
-      return;
-    }
+    const read = povGpu(sim).probe('povTrace', { starts, ends });   // (built: probeReady above)
     tracing++;
     const f0 = frameNo, mySim = simId, asked = shifted.clone();
     read.then((bytes) => {

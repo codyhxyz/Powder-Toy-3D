@@ -564,6 +564,11 @@ export const POV_TOOL_EDITS = {
   povBlast: { update: blastWGSL, params: BlastParams },
   povRocket: { update: rocketWGSL, params: RocketParams },
 };
+// WEBGPU-STUB (docs/webgpu.md J3): a tool's pass is pov/gpu.js toolPass(tool)
+// now, an edit of its family; this module can't re-export it (pov/gpu.js
+// imports this one, and the cycle would leave POV_TOOL_EDITS unset there).
+export function toolPass() { throw new Error('toolPass removed in the WebGPU port: docs/webgpu.md G2'); }
+
 const perBox = (g) => fold(gridDims(g).nbricks);
 const editCheck = ([name, e]) => ({
   name, kind: 'compute', dispatch: perBox, layouts: () => [LAYOUT.TABLES, LAYOUT.STATE_RW, ...(e.layout ? [e.layout] : [])],

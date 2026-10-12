@@ -374,8 +374,9 @@ export function createPov(app) {
     return figure.compile(renderer, camera, scene);
   }
   // The body's and the tools' kernels (pov/gpu.js), built for each grid the
-  // body is in (docs/webgpu.md B5): until they are, its edits and probes are
-  // skipped, so the drop-in waits for them as it does for the figure.
+  // body is in, on entering POV (docs/webgpu.md B5, W18): a session that
+  // never drops in builds none of them. Until they are built, its edits and
+  // probes are skipped, so the drop-in waits for them as it does for the figure.
   let kernelsFor = null, kernelsBuilt = null;
   function ensureKernels() {
     const sim = app.getSim();
@@ -386,10 +387,10 @@ export function createPov(app) {
     }
     return kernelsBuilt;
   }
-  // compile the figure's shader and build the kernels once the page has settled, not on the first F
+  // compile the figure's shader once the page has settled, not on the first F
   if (createPlayer) {
     const idle = globalThis.requestIdleCallback ?? ((fn) => setTimeout(fn, PREWARM_DELAY_MS));
-    setTimeout(() => idle(() => { if (app.getSim()) { ensureFigure(); ensureKernels(); } }), PREWARM_DELAY_MS);
+    setTimeout(() => idle(() => { if (app.getSim()) ensureFigure(); }), PREWARM_DELAY_MS);
   }
   function ensureParts() {
     if (!player) {
@@ -422,6 +423,7 @@ export function createPov(app) {
           isActive: () => live() && !editing,
           getStepsPerFrame: () => app.settings.paused ? 0 : app.settings.steps,
           requestRender: app.requestRender,
+          getPost: () => app.post,   // its settings: the wand's halo tone maps itself by them (tools/index.js)
           releaseInput,
           onEditorOpenChange(open) { editing = open; releaseInput(); sprintOn = false; app.requestRender(); },
         });

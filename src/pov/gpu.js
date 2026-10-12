@@ -146,6 +146,15 @@ class PovGpu {
   }
 
   /**
+   * Whether probe `name` can be recorded now (its kernel, started if it
+   * wasn't, has built): for a caller that must not commit to a question it
+   * can't ask yet (the rounds' traces).
+   * @param {string} name a PROBES entry
+   * @returns {boolean}
+   */
+  probeReady(name) { return ready(this._probeKernel(name)); }
+
+  /**
    * A read-only probe: its kernel writes an answer into a slot of its ring,
    * recorded now over the state as it is (sim.probe).
    * @param {string} name a PROBES entry
