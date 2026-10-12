@@ -763,8 +763,9 @@ void main() {
   int bends = 0;
   bool stop = false;
   // the nearest opaque mesh (gfx/meshCut.js), counted along the ray's path:
-  // tCut is in the current ray's t, which restarts at every bend
-  float tCut = meshCutT(rd);
+  // tCut is in the current ray's t, which restarts at every bend. Curved (the rolling log) the march
+  // restarts t at every chord and meshCutT measures a straight ray: no cut there
+  float tCut = curved ? MESH_CUT_NONE : meshCutT(rd);
   bool cut = false;
 
   ivec3 lastB = ivec3(-1);

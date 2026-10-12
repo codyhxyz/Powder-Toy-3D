@@ -50,7 +50,7 @@ void warpAdvance(inout WarpWalk w) {
   w.axis = w.boundary ? w.endAxis : warpEntryAxis(w.ray,w.t);
 }
 void warpSkip(inout WarpWalk w, ivec3 bc, bool distanceSkip) {
-  int r = distanceSkip ? max(int(texelFetch(tBrickDist, brickAtlas(bc), 0).x * BRICK_DIST_SCALE + 0.5)-1,0) : 0;
+  int r = distanceSkip ? max(int(BRICK_DIST(bc) * BRICK_DIST_SCALE + 0.5)-1,0) : 0;
   vec3 lo = vec3(max(bc-r,ivec3(0))*BS), hi = vec3(min(bc+r+1,ivec3(BX,BY,BZ))*BS);
   vec2 ex = warpExit(w.ray,lo,hi,w.t);
   w.t = ex.x; w.axis = int(ex.y); w.boundary = true;

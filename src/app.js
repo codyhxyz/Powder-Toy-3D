@@ -433,12 +433,14 @@ function build() {
   // Clockwise: volume material uses BackSide in both modes.
   screen.setAttribute('position', new THREE.Float32BufferAttribute([-1,-1,0, -1,3,0, 3,-1,0],3));
   volume.userData.screenGeometry = screen;
-  volume.onBeforeRender = (_r, _s, cam) => {
+  // right before it draws: the curved view's matrices, and the meshes' depth for the cut (gfx/meshCut.js)
+  volume.onBeforeRender = (...args) => {
+    const cam = args[2];
     volume.material.uniforms.uWarpInvProjection.value.copy(cam.projectionMatrixInverse);
     volume.material.uniforms.uWarpViewToGrid.value.copy(volume.matrixWorld).invert().multiply(cam.matrixWorld);
+    meshCut.hook.apply(volume, args);   // (it reads this.matrixWorld)
   };
   volume.scale.setScalar(scale);
-  volume.onBeforeRender = meshCut.hook;
   volume.frustumCulled = false;
   scene.add(volume);
   volume.add(sim.rays.view);   // photons and neutrons as points, in grid cells (raysLayer.js)
