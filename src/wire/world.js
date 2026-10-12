@@ -1,8 +1,7 @@
 // World mode's wiring (docs/scaling.md D11; docs/webgpu.md G1, U10): the
 // window over a world, its far field, the god view's home over it, the window
 // following the focus, the shrine every world gets, and the Island box
-// scene's generator. Moved here from app.js as it was (WebGL): U10 ports it.
-// Until then app.js builds a box for a world map and says so.
+// scene's generator.
 import * as THREE from 'three';
 import { structureClear, shrineAltars as worldShrineAltars } from '../world/structures.js';
 import { loadIsland, releaseGenerator } from '../world/gpu.js';
@@ -14,6 +13,7 @@ import { gfxUniforms } from '../gfx/uniforms.js';
 import '../world/bakeClient.js';   // the World's build-time bake (world/bake.js), before any world is made
 
 const torchLights = createTorchLights();
+const FAR_ON = false;
 const NO_AMBIENT = [0, 0, 0];   // a scene without an ambient floor (world scene `ambient`)
 
 // God view over a world: the orbit target on the ground, the camera this far
@@ -41,7 +41,7 @@ const SHRINE_FAR_COST = 0.05;      // ...plus this per cell from the window's mi
 
 const world = {
   name: 'world',
-  ready: false,
+  ready: true,
   order: -1,   // the far field draws before the volume (docs/webgpu.md F1)
 
   // A world's grid: the window over it (app.worldMode set by build()), its far field.
@@ -51,8 +51,10 @@ const world = {
     if (!app.worldMode) return;
     const win = app.win = new WorldWindow(app.renderer, sim, { size: app.worldMode.size, seed: app.worldSeed, scene: app.sceneByKey(app.settings.scene) });
     sim.origin.fromArray(world.worldStart(app));
-    win.far = new FarField(app.renderer, win, { sun: app.sun, time: app.viewTimeUniform });
-    win.far.attach(app.vol, app.derived);   // its haze and shadows on the window
+    if (FAR_ON) {
+      win.far = new FarField(app.renderer, win, { sun: app.sun, time: app.viewTimeUniform });
+      win.far.attach(app.vol, app.derived);   // its haze and shadows on the window
+    }
   },
   detach(app) {
     releaseGenerator(app.sim);   // the Island scene's, made for this grid
@@ -64,9 +66,9 @@ const world = {
     const { win } = app;
     gfxUniforms.uCaveAmbient.value = win?.scene.ambient ?? NO_AMBIENT;   // a world scene's ambient floor (Descent's caves)
     torchLights.update(win?.scene ?? null, app.camGrid, app.sim.origin);   // the nearest wall torches lit as lamps (world/torchLights.js)
-    win?.far.view(app.volume, app.settings.view === 0, app.camera);
+    win?.far?.view(app.volume, app.settings.view === 0, app.camera);
   },
-  scene(app, rp) { app.win?.far.draw?.(rp); },
+  scene(app, rp) { app.win?.far?.draw?.(rp); },
   invalidate(app) {
     const { win } = app;
     if (win) {
