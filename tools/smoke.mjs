@@ -4,9 +4,9 @@
 // cheapest view to build: realistic and the data views are --views'), and a
 // shot of every scene is saved for review.
 //
-//   node tools/smoke.mjs [--stage boxes,worlds,views,warm] [--views heat,realistic] [--out dir]
+//   node tools/smoke.mjs [--stage boxes,worlds,arenas,views,warm] [--views heat,realistic] [--out dir]
 //
-// Stages (default: boxes,worlds; each well under 3 minutes here):
+// Stages (default: boxes,worlds, about 110 s here; each well under 3 minutes):
 //   boxes   one boot at 64³; each box scene (Empty, the lab, the volcano,
 //           the Islet) loaded and drawn with test.renderOnce: no GPU error,
 //           and the scene drawn. The canvas is opaque (F7): the sky, the floor
@@ -24,6 +24,10 @@
 //           from ?map=), and the menu's openMap refuses it, and nothing
 //           throws. The giant volcano's window is 384 tall: only check-wgsl
 //           (a) covers it
+//   arenas  every box map on a grid of its own (maps.js: Dam Valley, an
+//           arena on 256×96×128), booted from its ?map= link: its grid, its
+//           arena layout, the scene drawn, no GPU error. About a minute here
+//           (its own grid's pipelines), so not in the default run
 //   views   the booted lab in each view of --views (default: every view),
 //           each one's pipeline built on first use as the app builds it, and
 //           drawn: the volume drew, and changed MIN_CHANGED of the canvas
@@ -50,6 +54,7 @@ const OUT = arg('out', join(ROOT, '.tmp-smoke'));   // (ignored by git: .tmp-*)
 const VIEWPORT = { width: 400, height: 250 };
 const BOXES = ['empty', 'lab', 'volcano', 'island'];   // (Empty first: the others are measured against it)
 const WORLD_MAPS = ['island', 'volcanoWorld', 'labWorld', 'descent'];
+const BOX_DIMS = '128,128,128';   // the menu's box maps' grid; a box map on another is an arena (app.js ARENA_GRID)
 // A scene drawn: the share of the canvas's pixels that differ by more than
 // DIFF levels (0-255) in some channel from a reference frame (the same frame
 // without the volume, or the empty box's). At 64³ in this viewport the empty
@@ -260,6 +265,23 @@ try {
     }
     if (!wired) ok(!errors.length, `no page or GPU errors in the fallback${errors.length ? `:\n  ${errors.join('\n  ')}` : ''}`);
     if (!page.isClosed()) await page.close();
+  }
+
+  if (STAGES.includes('arenas')) {
+    const { MAPS, isWorld } = await import('../src/maps.js');
+    for (const m of MAPS.filter((x) => !isWorld(x) && x.dims.join() !== BOX_DIMS)) {
+      const b = await boot(browser, vite, `?map=${m.key}&view=plain`);
+      ok(!b.failed, `${m.key}: boots from ?map=${m.key} (${secs()})${b.failed ? `: ${b.failed.slice(0, 300)}` : ''}`);
+      if (!b.failed) {
+        const r = await b.page.evaluate(() => ({ dims: [__app.sim.g.nx, __app.sim.g.ny, __app.sim.g.nz], preset: __app.settings.preset, arena: !!__app.arena }));
+        ok(r.dims.join() === m.dims.join() && r.preset === m.preset && r.arena,
+          `${m.key}: its own ${r.dims.join('×')} grid, the ${r.preset} scene, ${r.arena ? 'its arena layout set' : 'NO arena layout'}`);
+        const s = await draw(b.page, `arena-${m.key}`);
+        ok(drewScene(s), `${m.key}: ${drewText(s)} (${secs()})`);
+        ok(!b.errors.length, `${m.key}: no page or GPU errors${b.errors.length ? `:\n  ${b.errors.join('\n  ')}` : ''}`);
+      }
+      await b.page.close();
+    }
   }
 
   if (STAGES.includes('warm')) await warmStage(browser, vite, secs);
