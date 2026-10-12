@@ -35,20 +35,28 @@
 //                     iPhone's look: app.js MOBILE_DEFAULTS) or a JSON object
 //   --box N           run box scenes on an N³ box instead of their own (their
 //                     positions scale); --win N: world windows N wide (?win=)
-//   --time-scale f    every shot's game time before its capture (and a clip's
-//                     lead-in) times f: the container's smoke runs only, where a
-//                     game second of steps takes minutes
+//   --time-scale f    every shot's time and a clip's lead-in times f (never its
+//                     settle: shots.mjs): the container's smoke runs only, where
+//                     a game second of steps takes minutes
 //   --out <dir>       where the run goes (default .tmp-side-by-side/<time>);
 //                     --append keeps the shots an earlier run left there on the sheet;
 //                     --recompose composites and encodes an earlier run's frames
 //                     there again and rebuilds its sheet (no builds, no capture)
 //   --serial          one side after the other (default: both at once; the
 //                     frames don't depend on it, the timings do)
+//   --side a|b        capture that side only, into an --out that keeps the
+//                     other side's frames from an earlier run; the pairs are
+//                     composited once both sides are there. Run both sides
+//                     with the same --shots and capture options: a page's
+//                     earlier shots shape its later ones (TAA's jitter index,
+//                     three's ids), and frames captured with other options
+//                     aren't paired (the sheet says so)
 //   --fresh           a new page for every shot (default: one page per boot
 //                     query, the shot loading its own scene, as regress.mjs does)
 //   --port N          the first port for --a-dir/--b-dir servers (default 5641)
 //   --timeout S       a side's limit per shot (default 900)
 //   --real-gpu        refuse a software adapter (tools/browser.mjs; the default on macOS)
+//   TPT_TEST_TIMEOUT_MS   a browser's lifetime (default: 30 min and 15 min a shot)
 //
 // The Mac (full quality: 1280×720, 5 s clips at 30 fps, every shot), with
 // today's build checked out beside this one (git worktree add ../v1 c953a6c,
@@ -57,18 +65,26 @@
 //   open ~/Desktop/sbs/index.html
 // A shot group at a time into one sheet (--append), e.g. the stills first:
 //   node tools/side-by-side.mjs --a-dir ../v1 --b-dir . --shots stills --out ~/Desktop/sbs --append
+// And once on the Mac, the build against itself at full quality (no builds
+// given), to see how close an identical build comes on a fast GPU, where a
+// wall-clock ease the container never catches mid-way can show:
+//   node tools/side-by-side.mjs --shots clips --out ~/Desktop/sbs-self
 // This container (SwiftShader: a 64³ step is ~1 s and a 320×180 frame
-// 15-80 s, so everything is cut down, and its timings aren't a GPU's): one
-// group per run, each side in turn, as the Week 0 sweep ran it:
+// 15-80 s, so everything is cut down, and its timings aren't a GPU's): a
+// shot or two a run, as the Week 0 sweep ran it:
 //   node tools/side-by-side.mjs --a-dir /home/user/wt/v1 --b-dir . --shots lab,lab-tank \
 //     --size 320x180 --quality draft --box 64 --win 64 --time-scale 0.1 \
-//     --clip-seconds 0.25 --fps 8 --serial --append --out <dir>
+//     --clip-seconds 1 --fps 8 --append --out <dir>
+// and a browser run half as long, one side a run: the same with --side a,
+// then with --side b.
 //
 // Pages run in 'manual' test mode (CLAUDE.md): the loop is parked from boot,
 // so neither side draws a frame or steps the grid on its own time, and both
 // start their TAA jitter at the same index. Every step, body update and frame
-// is the shot runner's (tools/side-by-side/engine.mjs), in game time; so the
-// frames are the same on a fast and a slow machine. The shot code is served
+// is the shot runner's (tools/side-by-side/engine.mjs), in game time, and so
+// are the scene's animations (water, lava, flames, perk orbs); a mesh still
+// compiling is waited for between frames. So the frames are the same on a
+// fast and a slow machine, but for what the sheet lists. The shot code is served
 // from this checkout to both pages (/__sbs/), so a build without it (a frozen
 // one) runs the same shots. A page that sets window.__shotEngine (a v2 engine)
 // is driven through it instead of today's.
@@ -122,8 +138,10 @@ const wanted = (() => {
 
 if (has('list') || has('links')) {
   const base = opt('links');
+  // (the base's own query stays: ?engine=v2)
+  const linkTo = (name) => { const u = new URL(base); u.searchParams.set('shot', name); return u.href; };
   for (const s of SHOTS) {
-    const link = base ? `  ${new URL(`?shot=${s.name}`, base).href}` : '';
+    const link = base ? `  ${linkTo(s.name)}` : '';
     console.log(`${s.name.padEnd(18)} ${s.kind.padEnd(5)} ${s.title}${link}`);
   }
   process.exit(0);
@@ -143,6 +161,8 @@ const SETTINGS = PROFILES[SETTINGS_ARG] ?? JSON.parse(SETTINGS_ARG);
 const SHOT_TIMEOUT_MS = Number(opt('timeout', 900)) * 1000;
 const TIME_SCALE = Number(opt('time-scale', 1));
 const PORT = Number(opt('port', DEFAULT_PORT));
+const ONLY = opt('side');
+if (ONLY && !['a', 'b'].includes(ONLY)) { console.error('--side a or b'); process.exit(2); }
 const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
 const OUT = resolve(opt('out', join(ROOT, '.tmp-side-by-side', stamp)));
 for (const s of wanted) {
@@ -193,21 +213,22 @@ for (const k of ['a', 'b']) {
   sides[k] = { key: k, url, dir: dir ? resolve(dir) : null, label: opt(`${k}-label`), server: null, extra: {} };
 }
 if (!has('recompose') && !opt('a') && !opt('a-dir') && !opt('b') && !opt('b-dir')) log('no builds given: this checkout against itself (the determinism check)');
+// the sides this run captures (--side: one; the other's frames are an earlier run's)
+const running = ONLY ? [sides[ONLY]] : [sides.a, sides.b];
 
 const servers = [];
 async function startServers() {
-  let port = PORT;
   // a server per side, even when both are the same checkout (the self-check): nothing shared
-  for (const s of Object.values(sides)) {
+  for (const s of running) {
     if (!s.dir) continue;
     if (!existsSync(join(s.dir, 'vite.config.js'))) throw new Error(`${s.dir}: not a checkout of this game (no vite.config.js)`);
-    s.server = await serveCheckout(s.dir, port++, s.key);
+    s.server = await serveCheckout(s.dir, PORT + (s.key === 'b' ? 1 : 0), s.key);
     servers.push(s.server);
     s.url = s.server.url;
     s.label ??= checkoutLabel(s.dir);
     log(`${s.key.toUpperCase()}: ${s.dir} on ${s.url} (${s.label})`);
   }
-  for (const s of Object.values(sides)) {
+  for (const s of running) {
     const u = new URL(s.url);
     for (const [k, v] of u.searchParams) s.extra[k] = v;   // a URL's own query: on every page of that side
     u.search = '';
@@ -305,8 +326,8 @@ async function captureShot(page, side, shot) {
 // Every wanted shot on one side: a page per boot query (or per shot with
 // --fresh), in shot-list order. Results go into results[shot][side].
 async function runSide(side, results) {
-  // (the launcher's default lifetime is 10 minutes; a whole run is longer)
-  const browser = await launchBrowser({ lifetimeMs: BOOT_TIMEOUT_MS * 3 + wanted.length * SHOT_TIMEOUT_MS });
+  // (the launcher's default lifetime is 10 minutes; a whole run is longer, unless TPT_TEST_TIMEOUT_MS says otherwise)
+  const browser = await launchBrowser(process.env.TPT_TEST_TIMEOUT_MS ? {} : { lifetimeMs: BOOT_TIMEOUT_MS * 3 + wanted.length * SHOT_TIMEOUT_MS });
   side.browserVersion = browser.version();
   let open = null;
   const closePage = async () => { if (open) { await open.page.close().catch(() => {}); open = null; } };
@@ -314,7 +335,7 @@ async function runSide(side, results) {
     for (const shot of wanted) {
       const query = bootQuery(shot.scene, { box: boxFor(shot), win: WIN });
       const key = JSON.stringify(query);
-      const r = results[shot.name][side.key] = { query };
+      const r = results[shot.name][side.key] = { query, capture };
       try {
         if (!open || open.key !== key || has('fresh')) {
           await closePage();
@@ -381,7 +402,19 @@ async function composite(shotResults, list = wanted) {
     const { run } = await compositor(browser);
     for (const shot of list) {
       const r = shotResults[shot.name];
-      if (r.a?.error || r.b?.error || !r.a || !r.b) continue;
+      delete r.unpaired;
+      if (r.a?.error || r.b?.error) continue;
+      if (!r.a || !r.b) {   // (--side: the other side not captured yet)
+        if (r.a || r.b) log(`${shot.name}: side ${r.a ? 'B' : 'A'} not captured yet (--side ${r.a ? 'b' : 'a'})`);
+        continue;
+      }
+      // (a run before sides kept their own: the shot's)
+      const ca = r.a.capture ?? r.capture, cb = r.b.capture ?? r.capture;
+      if (!ca || !cb || captureKey(ca) !== captureKey(cb)) {
+        r.unpaired = `the sides were captured with other options (A: ${ca ? captureKey(ca) : 'unknown'}; B: ${cb ? captureKey(cb) : 'unknown'})`;
+        log(`${shot.name}: not paired: ${r.unpaired}`);
+        continue;
+      }
       const s = shot.name;
       r.files = {};
       if (shot.kind === 'still') {
@@ -467,9 +500,15 @@ const meta = {
 // split into groups, as the container's are), each with its own capture settings
 // --recompose: an earlier run's frames composited and encoded again (the sheet
 // rebuilt: after installing ffmpeg, say), no browser for the builds
+// --side: the other side's frames, and what it was, are an earlier run's
 const RECOMPOSE = has('recompose');
-const previous = (has('append') || RECOMPOSE) && existsSync(join(OUT, 'run.json')) ? JSON.parse(readFileSync(join(OUT, 'run.json'), 'utf8')) : null;
-const capture = { size: `${W}×${H}`, quality: QUALITY, timeScale: TIME_SCALE, box: BOX, win: WIN, settings: SETTINGS_ARG, run: stamp };
+const previous = (has('append') || RECOMPOSE || ONLY) && existsSync(join(OUT, 'run.json')) ? JSON.parse(readFileSync(join(OUT, 'run.json'), 'utf8')) : null;
+// how a side's frames were captured (each side keeps its own: --side); the pair needs the same
+const capture = { size: `${W}×${H}`, quality: QUALITY, timeScale: TIME_SCALE, box: BOX, win: WIN, settings: SETTINGS_ARG, clipSeconds: CLIP_S, fps: FPS, run: stamp };
+function captureKey(c) {
+  const { run, ...rest } = c;
+  return Object.entries(rest).map(([k, v]) => `${k} ${v}`).join(', ');
+}
 function writeRun(results, list = wanted) {
   meta.ms = Date.now() - t0;
   for (const k of ['a', 'b']) meta.sides[k] = { label: sides[k].label, url: sides[k].url, dir: sides[k].dir, adapter: sides[k].adapter, browser: sides[k].browserVersion };
@@ -487,6 +526,13 @@ function writeRun(results, list = wanted) {
 
 // ---------------------------------------------------------------- main
 const results = Object.fromEntries(wanted.map((s) => [s.name, {}]));
+if (ONLY) {   // the other side as the earlier run left it
+  const other = ONLY === 'a' ? 'b' : 'a';
+  const was = previous?.meta.sides?.[other];
+  if (was) Object.assign(sides[other], { label: sides[other].label ?? was.label, url: was.url, dir: was.dir, adapter: was.adapter, browserVersion: was.browser });
+  else sides[other].label ??= sides[other].dir ? checkoutLabel(sides[other].dir) : sides[other].url;
+  for (const p of previous?.shots ?? []) if (results[p.name] && p[other]) results[p.name][other] = p[other];
+}
 let code = 0;
 if (RECOMPOSE) {
   if (!previous) { console.error(`--recompose: no run.json in ${OUT}`); process.exit(2); }
@@ -502,15 +548,15 @@ if (RECOMPOSE) {
 }
 try {
   await startServers();
-  log(`${wanted.length} shots, ${W}×${H}, ${QUALITY}, clips ${CLIP_S} s at ${FPS} fps → ${OUT}`);
-  if (has('serial')) { await runSide(sides.a, results); await runSide(sides.b, results); }
-  else await Promise.all([runSide(sides.a, results), runSide(sides.b, results)]);
+  log(`${wanted.length} shots, ${W}×${H}, ${QUALITY}, clips ${CLIP_S} s at ${FPS} fps${ONLY ? `, side ${ONLY.toUpperCase()} only` : ''} → ${OUT}`);
+  if (has('serial') || ONLY) { for (const side of running) await runSide(side, results); }
+  else await Promise.all(running.map((side) => runSide(side, results)));
   if (Object.values(sides).some((s) => /swiftshader|fallback/i.test(s.adapter ?? ''))) {
     meta.warning = 'Software adapter (SwiftShader): the images are right, the timings are not representative of any GPU.';
   }
   await composite(results);
   writeRun(results);
-  const failed = wanted.filter((s) => results[s.name].a?.error || results[s.name].b?.error);
+  const failed = wanted.filter((s) => running.some((side) => results[s.name][side.key]?.error));
   log(`done: ${wanted.length - failed.length} of ${wanted.length} shots${failed.length ? `; failed: ${failed.map((s) => s.name).join(', ')}` : ''}`);
   log(`sheet: ${join(OUT, 'index.html')}`);
   if (failed.length) code = 1;

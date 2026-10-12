@@ -1,9 +1,9 @@
 // The side-by-side run's contact sheet (tools/side-by-side.mjs writes it as
 // index.html beside the shots): every pair, A left and B right, with what to
-// judge in it, the pixel difference between the sides, each side's timings,
-// and the run's metadata (commits, devices, settings, what isn't
-// deterministic). Self-contained: relative links to the run's own files,
-// no scripts but the clip flipbook's (used when ffmpeg made no video).
+// judge in it, the pixel difference between the sides, how long the harness
+// took over each side, and the run's metadata (commits, devices, settings,
+// what isn't deterministic). Self-contained: relative links to the run's own
+// files, no scripts but the clip flipbook's (used when ffmpeg made no video).
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const pct = (x) => (x == null ? '–' : `${(100 * x).toFixed(x < 0.001 && x > 0 ? 3 : 1)}%`);
@@ -35,15 +35,20 @@ function diffTable(d, clip) {
   return `<table class="kv">${rows.map(([k, v]) => `<tr><th>${esc(k)}</th><td>${esc(v)}</td></tr>`).join('')}</table>`;
 }
 
+// the harness's wall time over each side: compiles, readbacks and the other
+// side's load in it, so it is no measure of either build's speed
 function sideTimes(shot) {
+  const waits = (s) => (s?.describe?.meshWaits ?? []).map((w) => `${w.at}: ${w.meshes} in ${w.s} s${w.stillParked ? `, ${w.stillParked} never` : ''}`).join('; ');
   const cell = (s) => (s?.error
     ? `<td class="err">${esc(s.error)}</td>`
-    : `<td>${secs(s?.ms?.prepare)} prepare · ${secs(s?.ms?.capture)} capture${s?.frames ? ` · ${s.frames} frames` : ''}${s?.bootMs ? ` (after a ${secs(s.bootMs)} boot)` : ''}${s?.errors?.length ? `<br><span class="err">${s.errors.length} page errors: ${esc(s.errors[0])}</span>` : ''}</td>`);
+    : !s ? '<td class="muted">not captured</td>'
+    : `<td>${secs(s?.ms?.prepare)} prepare · ${secs(s?.ms?.capture)} capture${s?.frames ? ` · ${s.frames} frames` : ''}${s?.bootMs ? ` (after a ${secs(s.bootMs)} boot)` : ''}${waits(s) ? `<br><span class="muted">meshes compiled before the next frame: ${esc(waits(s))}</span>` : ''}${s?.errors?.length ? `<br><span class="err">${s.errors.length} page errors: ${esc(s.errors[0])}</span>` : ''}</td>`);
   return `<table class="kv"><tr><th>A</th>${cell(shot.a)}</tr><tr><th>B</th>${cell(shot.b)}</tr></table>`;
 }
 
 function media(shot) {
   const s = shot.name;
+  if (shot.unpaired) return `<p class="err">not paired: ${esc(shot.unpaired)}</p>`;
   if (shot.kind === 'still') {
     if (!shot.files?.ab) return '<p class="err">no composite</p>';
     return `<a href="${s}/ab.png"><img class="pair" src="${s}/ab.png" alt="${esc(shot.title)}: A left, B right"></a>
@@ -98,7 +103,7 @@ export function sheetHtml(run) {
       ${media(sh)}
       <div class="cols">
         <div><h3>A vs B</h3>${diffTable(sh.diff, sh.kind === 'clip')}</div>
-        <div><h3>Time</h3>${sideTimes(sh)}</div>
+        <div><h3>Harness time</h3>${sideTimes(sh)}<p class="muted">The tool's wall time over each side, with pipeline compiles, screenshot readbacks and, unless --serial, the other side's load on the same GPU: not frame or step cost. Speed is the raster bench's and power.mjs's to measure (docs/v2.md 11, Week 0).</p></div>
         <div><h3>On a phone</h3><p><code>?shot=${esc(sh.name)}</code> on either build (src/shot.js): the same scene, camera and time, then it's yours</p></div>
       </div>
     </section>`).join('\n');
@@ -149,7 +154,7 @@ export function sheetHtml(run) {
         <tr><th>quality</th><td>${esc(meta.quality)}</td></tr>
         <tr><th>clips</th><td>${esc(meta.clipSeconds)} s at ${esc(meta.fps)} fps</td></tr>
         <tr><th>settings</th><td>${esc(meta.settings)}</td></tr>
-        ${meta.timeScale !== 1 ? `<tr><th>game time</th><td class="err">every shot's lead-in ×${esc(meta.timeScale)} (a smoke run, not the shot list's times)</td></tr>` : ''}
+        ${meta.timeScale !== 1 ? `<tr><th>game time</th><td class="err">every shot's time and a clip's lead-in ×${esc(meta.timeScale)}, its settle in full (a smoke run, not the shot list's times)</td></tr>` : ''}
         <tr><th>boxes, worlds</th><td>${esc(meta.box ? `boxes at ${meta.box}³` : 'boxes at their own size')}, ${esc(meta.win ? `world windows ${meta.win} wide` : 'world windows at their own size')}</td></tr>
         <tr><th>engine</th><td>${esc(firstDescribe ? `${firstDescribe.engine}; a game second = ${firstDescribe.gameSecond}` : '–')}</td></tr>
         <tr><th>tool</th><td>${esc(meta.tool)}</td></tr>
