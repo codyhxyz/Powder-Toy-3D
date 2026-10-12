@@ -595,7 +595,7 @@ export class Simulation {
     const mp = {
       frame: this.frame, parity, gravity: this.gravity, fresh, outOfPlace, margin: 0,
       blockRev: testing && this.test.blockOrder === 'reverse', eight: 8, ...modes,
-      deco: this.sideDeco, decoAt: 0, srcAt: this.moveSrcAt, loopMargin,
+      deco: this.decoCarried, decoAt: 0, srcAt: this.moveSrcAt, loopMargin,
     };
     // the move: in place (or into the other copy, for whitewater), over the
     // offset's list, then at offset 1 the low margin's blocks; with loop edges
@@ -1341,8 +1341,9 @@ export class Simulation {
    * skipped block keeps the word it had (main's gather rewrote every cell
    * each step). null detaches it. (Attach through here, not by setting
    * sim.deco: the plane is made here. Once attached, every running block of
-   * the move reads and writes 8 more words, so make it on first use:
-   * decoFactory, ensureDeco.)
+   * the move reads and writes 8 more words while the layer's `active` isn't
+   * false (decoCarried: an inactive layer keeps its plane all 0), so make it
+   * on first use: decoFactory, ensureDeco.)
    */
   attachDeco(deco) {
     this.deco = deco ?? null;
@@ -1354,6 +1355,10 @@ export class Simulation {
     return this.deco;
   }
   get decoPlane() { return this.sideDeco ? { buffer: this.moveSrc, offset: 0, size: this.g.slots * 4 } : null; }
+  // Whether the move carries the plane this step: while the layer may hold
+  // paint (deco.active; a layer without the flag always). An inactive
+  // layer's plane is all 0, which the move would only permute.
+  get decoCarried() { return this.sideDeco && this.deco?.active !== false; }
   // moveSrc's plane: after the decoration's when there is one
   get moveSrcAt() { return this.sideDeco ? this.g.slots : 0; }
 
