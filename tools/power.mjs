@@ -14,45 +14,68 @@
 //   world-flight  the island's god view flying a 60 s circle over the world
 //                 (~17 cells/s: the window shifts a slab about every second)
 //
+// Every scenario checks that it did what its name says, on every run, and a
+// scenario that fails its checks is marked FAIL in the table and the JSON
+// (ok: false) and makes the tool exit non-zero, power numbers or not:
+//   box-settled   no submits, no rAF callbacks and no presents while settled
+//   lab-running   the sim steps advance and frames are presented
+//   island-still  the world is loaded, the camera stays put, frames are presented
+//   island-walk   the player moves across the ground every second (each 1 s leg
+//                 more than ¼ cell) and at least 1 cell/s on average: a walk
+//                 stalled by focus, water or a wall fails (--dry: more than
+//                 1 cell in all, since SwiftShader draws a frame every few seconds)
+//   world-flight  the camera moves, frames are presented, and the world window
+//                 follows: its origin moves in at least half the seconds (about
+//                 every second is expected; --dry: at least once)
+// island-walk is verified on the island only on the Mac: --dry walks in an
+// empty box (on SwiftShader the island's load plus the first-person kernels'
+// compile take longer than a container browser run should).
+//
 // Every page gets the same seed: Math.random is a seeded PRNG from before the
 // app loads (the presets' per-cell seeds come from it), and --seed N also sets
 // the world's (?seed=N; without it, the island's default world).
 //
 // Engine-agnostic: the tool reads only __app.gpu.stats.submits,
-// __app.loop.callbacks, __app.sim.frame, __app.camera, __app.controls,
-// __app.pov (enter, setLook, test.assumeLocked, player.pos), __app.sim.origin
-// and __app.win.loaded, and counts presents itself (each
-// GPUCanvasContext.getCurrentTexture call). A candidate build that names
+// __app.loop.callbacks, __app.loop.asleep, __app.sim.frame, __app.camera,
+// __app.controls, __app.pov (enter, setLook, test.assumeLocked, player.pos),
+// __app.sim.origin and __app.win.loaded, and counts presents itself: a present
+// is a canvas texture it has not seen before (GPUCanvasContext
+// .getCurrentTexture returns one texture per presented frame, however often a
+// frame asks for it; today's build asks twice). A candidate build that names
 // these differently provides __app.powerStats() -> { submits, rafCallbacks,
-// simSteps } and keeps the URL parameters (?size, ?preset, ?paused, ?map,
-// ?seed).
+// simSteps, presents?, asleep? } and keeps the URL parameters (?size, ?preset,
+// ?paused, ?map, ?seed). A check whose counter a build lacks fails: it doesn't
+// pass on no data.
 //
 // On the Mac (Apple Silicon), from a checkout with node_modules installed
 // (and Playwright's Chromium: npx playwright install chromium):
 //
 //   1. sudo powermetrics --samplers gpu_power,cpu_power -i 500 -o /tmp/tpt3d-power.txt
-//      (in another terminal; or let the tool start it when `sudo -n` works,
-//      e.g. right after another sudo command)
+//      (in another terminal: it asks for your password; leave it running)
 //   2. node tools/power.mjs --power-file /tmp/tpt3d-power.txt --out power-today.json
 //
-// It builds the checkout (vite build) and serves it with vite preview: the
-// production build players get. --url measures any served build instead
+// The tool never starts powermetrics itself (it needs root and your terminal):
+// it prints the command and waits for samples newer than its own start in the
+// file. It builds the checkout (vite build) and serves it with vite preview:
+// the production build players get. --url measures any served build instead
 // (the live site, /v1/, a candidate's preview), --root another checkout
 // (today's build: a checkout of the frozen port). The browser is a headed
 // window on the real GPU (Playwright's Chromium, or --channel chrome for the
-// installed Chrome), 1512×982 CSS pixels (the 14" MacBook Pro's default) at
+// installed Chrome) of --window 1512×982 (the 14" MacBook Pro's default) at
 // the display's devicePixelRatio, in front, on mains power, other apps quit.
+// The page gets the window less the browser's own toolbars: the JSON records
+// each scenario's real viewport, devicePixelRatio and canvas size.
 // Leave the machine alone while it runs: ~10 minutes for all scenarios.
+// Ctrl-C stops the servers and the browser it started.
 //
 // In the container (no powermetrics, no GPU): --dry runs every scenario for a
-// few seconds without powermetrics and checks it does what it says:
-// box-settled makes no submits and no rAF callbacks, lab-running steps the
-// sim, island-still's camera stays put while it presents, island-walk moves
-// the player across the ground, world-flight moves the camera. It runs in
-// preview test mode on a private dev server, scaled down so SwiftShader can
-// draw it at all: a 64³ box, a 64-wide world window, the plain view, TAA off
-// in the settled box, and the walk in an empty box. Give each scenario its own
-// run there (--scenarios island-walk): each takes 1-3 minutes on SwiftShader.
+// few seconds without powermetrics, with the same checks. It runs in preview
+// test mode on a private dev server, scaled down so SwiftShader can draw it at
+// all: a 64³ box (the smallest box today's build has), a 64-wide world window,
+// the plain view, TAA off in the settled box, and the walk in an empty box.
+// Give each scenario its own run there (--scenarios island-walk): each takes
+// 1-3 minutes on SwiftShader, and needs an otherwise idle container (with
+// another GPU suite sharing the CPUs, the settled box can miss its 170 s boot).
 //
 // usage: node tools/power.mjs [--scenarios blank,box-settled,lab-running,island-still,island-walk,world-flight]
 //          [--seconds 60] [--settle 5] [--cool 5] [--url <base url>] [--root <checkout>] [--serve build|dev]
@@ -63,7 +86,7 @@
 //   --mode   none (the default): the page as a player gets it, no test mode; visual: tools/browser.mjs's
 //            full-cadence test mode (it adds the port's test-mode checks, a little CPU)
 import { spawn, execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync, statSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -103,7 +126,9 @@ const O = {
 };
 const POWERMETRICS = ['powermetrics', '--samplers', 'gpu_power,cpu_power', '-i', '500'];
 
-// ---- the scenarios: a URL, when the page is ready, what drives it, and what the dry run checks
+// ---- the scenarios: a URL, when the page is ready, what drives it, and what it checks
+// check(a, b, path): a and b the snapshots at the measured window's ends, path every snapshot (a, one a
+// second, b) for the scenarios that follow one (trail); each check is [what, ok, info]
 const SCENARIOS = {
   blank: { url: null, about: 'about:blank: the browser alone' },
   'box-settled': {
@@ -111,17 +136,21 @@ const SCENARIOS = {
     about: `the lab at ${O.size}³, paused, camera still`,
     ready: async (page) => {
       if (DRY) await waitFor(page, () => window.__app?.post, 'the app').then(() => page.evaluate(() => { window.__app.post.settings.taa = false; }));
-      await waitFor(page, () => window.__app?.sim && window.__app.loop?.asleep, 'the loop asleep (deep idle)');
+      await waitFor(page, () => window.__app?.sim && (window.__app.powerStats?.().asleep ?? window.__app.loop?.asleep), 'the loop asleep (deep idle)');
     },
-    check: (a, b) => [['no submits and no rAF callbacks while settled', b.submits - a.submits === 0 && b.rafCallbacks - a.rafCallbacks === 0,
-      `${b.submits - a.submits} submits, ${b.rafCallbacks - a.rafCallbacks} rAF callbacks`]],
+    check: (a, b) => [counted(a, b, ['submits', 'rafCallbacks', 'presents'], 'no submits, rAF callbacks or presents while settled',
+      () => delta(a, b, 'submits') === 0 && delta(a, b, 'rafCallbacks') === 0 && delta(a, b, 'presents') === 0,
+      () => `${delta(a, b, 'submits')} submits, ${delta(a, b, 'rafCallbacks')} rAF callbacks, ${delta(a, b, 'presents')} presents`)],
   },
   'lab-running': {
     query: `?size=${O.size}&preset=lab`,
     about: `the lab at ${O.size}³ running`,
     ready: (page) => waitFor(page, () => window.__app?.sim?.frame > 0, 'the sim stepping'),
-    until: (a, b) => b?.simSteps > a.simSteps,
-    check: (a, b) => [['the sim steps advance', b.simSteps > a.simSteps, `${b.simSteps - a.simSteps} steps`]],
+    until: (a, b) => b?.simSteps > a.simSteps && b?.presents > a.presents,
+    check: (a, b) => [
+      counted(a, b, ['simSteps'], 'the sim steps advance', () => delta(a, b, 'simSteps') > 0, () => `${delta(a, b, 'simSteps')} steps`),
+      presented(a, b),
+    ],
   },
   'island-still': {
     query: `?map=island${O.win ? `&win=${O.win}` : ''}`,
@@ -130,8 +159,8 @@ const SCENARIOS = {
     until: (a, b) => b?.presents > a.presents,
     check: (a, b) => [
       ['the world is loaded', b.loaded === true, `win.loaded ${b.loaded}`],
-      ['the camera stays put', dist(a.cam, b.cam) < 1e-3, `moved ${dist(a.cam, b.cam).toFixed(4)} units`],
-      ['it presents frames', b.presents > a.presents, `${b.presents - a.presents} presents`],
+      ['the camera stays put', dist(a.cam, b.cam) < 1e-3, `moved ${fixed(dist(a.cam, b.cam), 4)} units`],
+      presented(a, b),
     ],
   },
   'island-walk': {
@@ -139,6 +168,7 @@ const SCENARIOS = {
     // take longer than a container browser run should)
     query: DRY ? `?size=${O.size}&preset=empty` : `?map=island${O.win ? `&win=${O.win}` : ''}`,
     about: DRY ? `first person in an empty ${O.size}³ box (--dry), walking a square` : 'the island in first person, walking a square',
+    trail: true,
     ready: async (page) => {
       if (DRY) await waitFor(page, () => window.__app?.pov, 'the app');
       else await waitWorld(page);
@@ -154,12 +184,24 @@ const SCENARIOS = {
     // a quarter turn every 4 s, from the wall clock: a square, back near the start
     tick: (page, t) => page.evaluate((k) => window.__app.pov.setLook(k * Math.PI / 2, 0), Math.floor(t / 4)),
     stop: (page) => page.keyboard.up('w'),
-    until: (a, b, legs) => legs.filter(Number.isFinite).reduce((t, x) => t + x, 0) > 1,
-    check: (a, b) => [['the player walks', b.walked > 1, `${b.walked.toFixed(1)} cells walked across the ground (sum of 1 s legs)`]],
+    until: (a, b, path) => walkLegs(path).reduce((t, x) => t + (Number.isFinite(x) ? x : 0), 0) > 1,
+    check: (a, b, path) => {
+      // the 1 s legs: the samples a second apart (the last, b, comes right after the last of them)
+      const legs = walkLegs(path.slice(0, -1)), known = legs.filter(Number.isFinite);
+      const total = known.reduce((t, x) => t + x, 0), secs = (b.t - a.t) / 1000;
+      if (!known.length || known.length < legs.length) return [['the player walks', false, `no player position in ${legs.length - known.length} of ${legs.length} samples (__app.pov.player.pos)`]];
+      if (DRY) return [['the player walks', total > 1, `${fixed(total, 1)} cells across the ground in ${legs.length} legs of 1 s`]];
+      const slowest = Math.min(...known);
+      return [
+        ['the player walks every second', slowest > 0.25, `the slowest 1 s leg ${fixed(slowest, 2)} cells (of ${legs.length})`],
+        ['the player covers ground', total >= secs, `${fixed(total, 1)} cells in ${fixed(secs, 1)} s (${fixed(total / secs, 2)} cells/s; walking is ~9.5)`],
+      ];
+    },
   },
   'world-flight': {
     query: `?map=island${O.win ? `&win=${O.win}` : ''}`,
     about: 'the island god view flying a circle',
+    trail: true,
     ready: waitWorld,
     // the orbit target (and the camera with it) once round a circle of 160 cells in 60 s from where it was:
     // ~17 cells/s (5 m/s, a drone's cruise), so the window shifts a slab about every second; well under
@@ -179,14 +221,41 @@ const SCENARIOS = {
       requestAnimationFrame(step);
     }),
     stop: (page) => page.evaluate(() => { if (window.__powerFlight) window.__powerFlight.on = false; }),
-    until: (a, b) => dist(a.cam, b?.cam) > 1e-3,
-    check: (a, b) => [
-      ['the camera moves', dist(a.cam, b.cam) > 1e-3,
-        `moved ${dist(a.cam, b.cam).toFixed(2)} units; the window's origin ${a.origin?.join(',')} → ${b.origin?.join(',')}`],
-    ],
+    until: (a, b, path) => windowMoves(path).shifts > 0 && b?.presents > a.presents,
+    check: (a, b, path) => {
+      const m = windowMoves(path), secs = Math.round((b.t - a.t) / 1000);
+      const need = DRY ? 1 : Math.ceil(secs / 2);
+      return [
+        ['the camera moves', dist(a.cam, b.cam) > 1e-3, `moved ${fixed(dist(a.cam, b.cam), 2)} units (the tool moves it)`],
+        presented(a, b),
+        m.known ? ['the window follows the flight', m.shifts >= need,
+          `its origin moved in ${m.shifts} of ${path.length - 1} samples (${m.cells} cells; needs ${need}): ${a.origin.join(',')} → ${b.origin.join(',')}`]
+          : ['the window follows the flight', false, 'no window origin in this build (__app.sim.origin)'],
+      ];
+    },
   },
 };
 const dist = (p, q) => (p && q ? Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]) : NaN);
+const fixed = (x, d) => (Number.isFinite(x) ? x.toFixed(d) : String(x));
+const delta = (a, b, k) => b[k] - a[k];
+// a check over counters both ends must have: a build without one fails the check instead of passing it on nulls
+const counted = (a, b, keys, what, ok, info) => {
+  const missing = keys.filter((k) => a[k] == null || b[k] == null);
+  return missing.length ? [what, false, `no ${missing.join(', ')} counter in this build (a candidate provides __app.powerStats())`] : [what, ok(), info()];
+};
+const presented = (a, b) => counted(a, b, ['presents'], 'it presents frames', () => delta(a, b, 'presents') > 0, () => `${delta(a, b, 'presents')} presents`);
+// the distance across the ground (x and z: a fall isn't a walk) between consecutive samples
+const walkLegs = (path) => path.slice(1).map((s, i) => (s.player && path[i].player ? Math.hypot(s.player[0] - path[i].player[0], s.player[2] - path[i].player[2]) : NaN));
+// how often the window's origin moved between consecutive samples, and how far (cells, x + z)
+function windowMoves(path) {
+  if (path.some((s) => !s?.origin)) return { known: false, shifts: 0, cells: 0 };
+  let shifts = 0, cells = 0;
+  for (let i = 1; i < path.length; i++) {
+    const d = Math.abs(path[i].origin[0] - path[i - 1].origin[0]) + Math.abs(path[i].origin[2] - path[i - 1].origin[2]);
+    if (d) { shifts++; cells += d; }
+  }
+  return { known: true, shifts, cells };
+}
 
 async function waitFor(page, fn, what, timeout = O.bootTimeout) {
   try {
@@ -217,33 +286,50 @@ function initPage(seed) {
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
+  // a present is a canvas texture not seen before: the context hands out one texture per presented
+  // frame, and a frame may ask for it more than once (today's build: post.js's texture() then attachment())
   window.__powerPresents = 0;
   if (window.GPUCanvasContext) {
-    const get = GPUCanvasContext.prototype.getCurrentTexture;
-    GPUCanvasContext.prototype.getCurrentTexture = function (...a) { window.__powerPresents++; return get.apply(this, a); };
+    const get = GPUCanvasContext.prototype.getCurrentTexture, seen = new WeakSet();
+    GPUCanvasContext.prototype.getCurrentTexture = function (...a) {
+      const t = get.apply(this, a);
+      if (!seen.has(t)) { seen.add(t); window.__powerPresents++; }
+      return t;
+    };
   }
 }
 const snapshot = (page) => page.evaluate(() => {
   const a = window.__app;
   const own = a?.powerStats?.() ?? {};
   const pos = a?.pov?.player?.pos, o = a?.sim?.origin;
+  // the page's biggest canvas: the one the game draws in
+  const canvas = [...document.querySelectorAll('canvas')].sort((x, y) => y.width * y.height - x.width * x.height)[0];
   return {
     t: performance.now(), wall: Date.now(),
     submits: own.submits ?? a?.gpu?.stats?.submits ?? null,
     rafCallbacks: own.rafCallbacks ?? a?.loop?.callbacks ?? null,
     simSteps: own.simSteps ?? a?.sim?.frame ?? null,
-    presents: window.__powerPresents ?? null,
+    presents: own.presents ?? window.__powerPresents ?? null,
     cam: a?.camera ? a.camera.position.toArray() : null,
     origin: o ? [o.x, o.y, o.z] : null,
     player: pos ? [pos.x + (o?.x ?? 0), pos.y + (o?.y ?? 0), pos.z + (o?.z ?? 0)] : null,
     loaded: a?.win ? Boolean(a.win.loaded) : null,
+    viewport: { css: [innerWidth, innerHeight], devicePixelRatio, canvas: canvas ? [canvas.width, canvas.height] : null },
   };
 });
 
 // ---- the server: a URL, or a private vite (build + preview, or dev) of a checkout, killed at exit
-const children = new Set();
+// (with the build's temporary directory)
+const children = new Set(), tempDirs = new Set();
 const killAll = () => { for (const c of children) { try { process.kill(-c.pid, 'SIGTERM'); } catch { /* gone */ } } children.clear(); };
-process.on('exit', killAll);
+process.on('exit', () => {
+  killAll();
+  for (const d of tempDirs) { try { rmSync(d, { recursive: true, force: true }); } catch { /* left for the OS */ } }
+});
+// Ctrl-C before the browser is up (the build, the wait for powermetrics): stop the servers and leave.
+// Once it is up, tools/browser.mjs's handlers close it and exit, and 'exit' stops the servers.
+let browser = null;
+for (const [sig, code] of [['SIGINT', 130], ['SIGTERM', 143], ['SIGHUP', 129]]) process.on(sig, () => { if (!browser) { killAll(); process.exit(code); } });
 function run(cmd, argv, cwd, { wait = null } = {}) {
   return new Promise((ok, fail) => {
     const c = spawn(cmd, argv, { cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -263,6 +349,7 @@ async function serve() {
   let started;
   if (O.serve === 'build') {
     const outDir = mkdtempSync(join(tmpdir(), 'tpt3d-power-'));
+    tempDirs.add(outDir);
     console.log(`building ${O.root} → ${outDir}`);
     await run(vite, ['build', '--outDir', outDir, '--emptyOutDir', '--logLevel', 'warn'], O.root);
     started = await run(vite, ['preview', '--outDir', outDir, '--port', String(port), '--strictPort', '--host', '127.0.0.1'], O.root, { wait: /Local:/ });
@@ -272,30 +359,20 @@ async function serve() {
   return { base: `http://127.0.0.1:${port}/`, close: async () => { try { process.kill(-started.child.pid, 'SIGTERM'); } catch { /* gone */ } children.delete(started.child); } };
 }
 
-// ---- powermetrics: started here when sudo -n is allowed, else the user's, read from its -o file
+// ---- powermetrics: the user's (it needs root and a terminal for the password), read from its -o file
 async function startPowermetrics() {
   if (!O.powermetrics) return null;
   if (!MAC) throw new Error('powermetrics is macOS only: run with --dry here, or on the Mac');
-  let file = O.powerFile, child = null;
-  let sudo = false;
-  try { execFileSync('sudo', ['-n', 'true'], { stdio: 'ignore' }); sudo = true; } catch { /* needs a password */ }
-  if (!file && sudo) {
-    file = join(mkdtempSync(join(tmpdir(), 'tpt3d-pm-')), 'powermetrics.txt');
-    child = spawn('sudo', ['-n', ...POWERMETRICS, '-o', file], { detached: true, stdio: 'ignore' });
-    children.add(child);
-    console.log(`powermetrics: started (sudo -n), writing ${file}`);
-  } else {
-    file ??= '/tmp/tpt3d-power.txt';
-    console.log(`powermetrics: run this in another terminal, then leave it running:\n\n  sudo ${POWERMETRICS.join(' ')} -o ${file}\n`);
-  }
+  const file = O.powerFile ?? '/tmp/tpt3d-power.txt';
+  console.log(`powermetrics: run this in another terminal (it asks for your password), then leave it running:\n\n  sudo ${POWERMETRICS.join(' ')} -o ${file}\n`);
   // a sample from now on (a file left from an earlier run doesn't count; the headers' times are whole seconds)
   const t0 = Date.now();
   while (!(existsSync(file) && parseSamples(readFileSync(file, 'utf8')).some((x) => x.t >= t0 - 2000))) {
-    if (Date.now() - t0 > (child ? 30000 : 600000)) throw new Error(`no new powermetrics samples in ${file}`);
+    if (Date.now() - t0 > 600000) throw new Error(`no new powermetrics samples in ${file} in 10 minutes`);
     await sleep(1000);
   }
   console.log(`powermetrics: sampling into ${file}`);
-  return { file, child };
+  return { file };
 }
 // powermetrics' text: '*** Sampled system activity (Mon Oct 12 13:00:00 2026 -0700) (502.31ms elapsed) ***',
 // then 'CPU Power: 812 mW', 'GPU Power: 102 mW', 'ANE Power: 0 mW', 'Combined Power (CPU + GPU + ANE): 914 mW',
@@ -354,41 +431,38 @@ async function measure(browser, name, base) {
     }
     await sleep(O.settle * 1000);
     const a = await snapshot(page);
-    const legs = [];
-    let last = a.player, util = [];
+    const trail = [];   // a snapshot a second (the scenarios that follow a path, and --dry's waits)
+    const util = [];
     const t0 = Date.now();
-    // --dry: past its seconds, a window goes on (up to a minute) until its check can tell: SwiftShader's
+    // --dry: past its seconds, a window goes on (up to a minute) until its checks can tell: SwiftShader's
     // frames of an awake grid take seconds each
-    let b = null;
-    for (let s = 0; s < O.seconds || (DRY && sc.until && s < O.seconds + 60 && !sc.until(a, b, legs)); s++) {
+    for (let s = 0; s < O.seconds || (DRY && sc.until && s < O.seconds + 60 && !sc.until(a, trail.at(-1) ?? null, [a, ...trail])); s++) {
       await sleep(Math.max(0, t0 + (s + 1) * 1000 - Date.now()));
       if (sc.tick) await sc.tick(page, s + 1);
-      if (name === 'island-walk') {   // across the ground: x and z (a fall isn't a walk)
-        const p = (await snapshot(page)).player;
-        legs.push(p && last ? Math.hypot(p[0] - last[0], p[2] - last[2]) : NaN);
-        last = p;
-      }
+      if (sc.trail || (DRY && sc.until)) trail.push(await snapshot(page));
       if (MAC && !DRY) util.push(ioreg());
-      if (DRY && sc.until) b = await snapshot(page);
     }
-    b = await snapshot(page);
+    const b = await snapshot(page);
     await sc.stop?.(page);
-    b.walked = legs.filter(Number.isFinite).reduce((s, x) => s + x, 0);
+    const path = [a, ...trail, b];
     const secs = (b.t - a.t) / 1000;
     const rate = (k) => (a[k] == null || b[k] == null ? null : r1((b[k] - a[k]) / secs, 2));
     Object.assign(r, {
       window: { start: a.wall, end: b.wall, seconds: r1(secs, 2) },
+      viewport: b.viewport,
       counts: Object.fromEntries(['submits', 'rafCallbacks', 'simSteps', 'presents'].map((k) => [k, a[k] == null || b[k] == null ? null : b[k] - a[k]])),
       perSecond: { submits: rate('submits'), rafCallbacks: rate('rafCallbacks'), simSteps: rate('simSteps'), presents: rate('presents') },
       ioAccelerator: util.length ? {
         device: r1(mean(util.map((u) => u?.device))), renderer: r1(mean(util.map((u) => u?.renderer))), tiler: r1(mean(util.map((u) => u?.tiler))),
       } : null,
     });
-    if (sc.check) r.checks = sc.check(a, b).map(([what, ok, info]) => ({ what, ok: Boolean(ok), info }));
+    if (sc.trail) r.path = path.map((x) => ({ t: r1(x.t - a.t, 0), cam: x.cam?.map((v) => r1(v, 2)), origin: x.origin, player: x.player?.map((v) => r1(v, 2)) }));
+    if (sc.check) r.checks = sc.check(a, b, path).map(([what, ok, info]) => ({ what, ok: Boolean(ok), info }));
   } catch (e) {
     r.error = String(e.message || e);
   } finally {
     r.errors = errors;
+    r.ok = !r.error && (r.checks ?? []).every((c) => c.ok);
     await page.close().catch(() => {});
   }
   return r;
@@ -425,13 +499,14 @@ if (opt('parse-power', null)) {
 
 // ---- the run
 const results = {
-  tool: 'tools/power.mjs', version: 1, date: new Date().toISOString(), dry: DRY, options: O,
+  tool: 'tools/power.mjs', version: 2,   // 2: presents are distinct canvas textures (1 counted getCurrentTexture calls); checks on every run
+  date: new Date().toISOString(), dry: DRY, options: O,
   machine: MAC ? (() => { try { return execFileSync('sysctl', ['-n', 'machdep.cpu.brand_string'], { encoding: 'utf8' }).trim(); } catch { return null; } })() : process.platform,
   powermetrics: null, scenarios: [],
 };
 let failures = 0;
 const server = await serve();
-let pm = null, browser = null;
+let pm = null;
 try {
   pm = await startPowermetrics();
   results.powermetrics = pm ? { command: `sudo ${POWERMETRICS.join(' ')} -o ${pm.file}`, file: pm.file } : null;
@@ -459,12 +534,11 @@ try {
     console.log(`\n${name}: ${SCENARIOS[name]?.about ?? '?'}`);
     const r = await measure(browser, name, server.base);
     results.scenarios.push(r);
-    if (r.error) { failures++; console.log(`  FAIL ${r.error}`); }
+    if (!r.ok) failures++;
+    if (r.error) console.log(`  FAIL ${r.error}`);
     if (r.counts) console.log(`  ${r.window.seconds} s${r.bootS != null ? ` (booted in ${r.bootS} s)` : ''}: ${Object.entries(r.perSecond).map(([k, v]) => `${k}/s ${v ?? '–'}`).join(', ')}`);
-    for (const c of r.checks ?? []) {
-      if (DRY && !c.ok) failures++;
-      if (DRY) console.log(`  ${c.ok ? 'ok  ' : 'FAIL'} ${c.what}: ${c.info}`);
-    }
+    if (r.viewport) console.log(`  viewport ${r.viewport.css.join('×')} CSS px at devicePixelRatio ${r.viewport.devicePixelRatio}, canvas ${r.viewport.canvas?.join('×') ?? '–'}`);
+    for (const c of r.checks ?? []) console.log(`  ${c.ok ? 'ok  ' : 'FAIL'} ${c.what}: ${c.info}`);
     if (r.errors.length) console.log(`  page errors: ${r.errors.slice(0, 3).join(' | ')}`);
     if (O.cool) await sleep(O.cool * 1000);
   }
@@ -478,26 +552,27 @@ try {
       if (samples.some((s) => s.t > end + 1000)) break;
       await sleep(1000);
     }
-    if (pm.child) { try { process.kill(-pm.child.pid, 'SIGINT'); } catch { /* gone */ } }
-    else console.log(`\npowermetrics: done with ${pm.file}; stop it (Ctrl-C in its terminal)`);
+    console.log(`\npowermetrics: done with ${pm.file}; stop it (Ctrl-C in its terminal)`);
     results.powermetrics.samples = samples.length;
     results.powermetrics.bytes = statSync(pm.file).size;
     for (const r of results.scenarios) attachPower(r, samples);
   }
 } finally {
   await browser?.close();
+  browser = null;
   await server.close();
   killAll();
 }
 
 // ---- the report
-console.log('\nscenario         s   GPU mW  CPU mW  pkg mW  mJ/step  mJ/frame  submits/s  rAF/s  steps/s  presents/s');
+// (a scenario that failed its checks or errored is marked FAIL: its numbers are not what its name says)
+console.log('\nscenario         s   GPU mW  CPU mW  pkg mW  mJ/step  mJ/frame  submits/s  rAF/s  steps/s  presents/s  checks');
 for (const r of results.scenarios) {
   const p = r.power?.mW ?? {}, j = r.power?.mJ ?? {}, f = r.perSecond ?? {};
   const c = (v, n) => String(v ?? '–').padStart(n);
-  console.log(`${r.scenario.padEnd(15)}${c(r.window?.seconds != null ? Math.round(r.window.seconds) : null, 4)}${c(p.gpu, 8)}${c(p.cpu, 8)}${c(p.package, 8)}${c(j.perSimStep, 9)}${c(j.perPresent, 10)}${c(f.submits, 11)}${c(f.rafCallbacks, 7)}${c(f.simSteps, 9)}${c(f.presents, 12)}`);
+  console.log(`${r.scenario.padEnd(15)}${c(r.window?.seconds != null ? Math.round(r.window.seconds) : null, 4)}${c(p.gpu, 8)}${c(p.cpu, 8)}${c(p.package, 8)}${c(j.perSimStep, 9)}${c(j.perPresent, 10)}${c(f.submits, 11)}${c(f.rafCallbacks, 7)}${c(f.simSteps, 9)}${c(f.presents, 12)}  ${r.ok ? 'ok' : 'FAIL'}`);
 }
 if (!pm) console.log(DRY ? '\n(--dry: no power numbers; SwiftShader in a container, the rates are not representative either)' : '\n(no powermetrics: rates only)');
 if (O.out) { writeFileSync(O.out, JSON.stringify(results, null, 1)); console.log(`\nJSON: ${O.out}`); }
-console.log(failures ? `\npower: ${failures} failed` : `\npower: ${DRY ? 'dry run ok' : 'done'}`);
+console.log(failures ? `\npower: ${failures} scenario${failures > 1 ? 's' : ''} failed` : `\npower: ${DRY ? 'dry run ok' : 'done'}`);
 process.exit(failures ? 1 : 0);
