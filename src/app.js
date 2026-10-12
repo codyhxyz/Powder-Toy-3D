@@ -1914,11 +1914,13 @@ function tick(now, renderOnly = false) {
   if (!renderOnly) {
     const cam = camState();
     if (cam !== camShown) toolbar.setCamera(camShown = cam);
+    for (const w of live) w.beforeStep?.(ctx, dt);   // the body, Descent's level switch
+    // (after the body's update, which can leave it: then the god view moves this tick)
     if (!pov?.active) {
       rig.update(dt);
       controls.update();
     }
-    for (const w of live) w.beforeStep?.(ctx, dt);   // the body, Descent, the window following the focus
+    for (const w of live) w.follow?.(ctx, dt);   // the world's window following the focus
     updateBrush();
 
     prof.phase('paint');

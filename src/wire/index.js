@@ -18,7 +18,12 @@
 //                 exist and before its scene loads (a world's window sets
 //                 sim.origin here)
 //   detach(app)   in build(), before the grid goes
-//   beforeStep(app, dt)   each tick, before the steps (POV's body and edits, the window move)
+//   beforeStep(app, dt)   each tick, before the god camera moves and the steps
+//                 (POV's body and edits, Descent's level switch)
+//   follow(app, dt)   each tick, once the camera has moved (the body's or the
+//                 god view's: app.js updates the god view after beforeStep, and
+//                 only while the body isn't active), before the steps: the
+//                 world's window following the focus
 //   afterStep(app, dt)    each tick, after them (app.stepping: whether it stepped;
 //                         lightning, birds and their probe, multiplayer)
 //   compute(app)  in a presented frame, after FrameUniforms is written: E1
@@ -40,9 +45,9 @@
 // the subsystems' slots (app.pov, app.mp, app.signs, …), which a wire fills.
 // A new kind of mesh is compiled with app.gpu.three.prepare(object) before it
 // joins app.scene (B5, F8): app.js sets its camera, scene and target.
-// The hooks named in J3 are boot's to scene's; overlay, compute, detail,
-// busy and invalidate are app.js's additions (deep idle, the meshes-first
-// frame of the Sync log's S1).
+// The hooks named in J3 are boot's to scene's; follow, overlay, compute,
+// detail, busy and invalidate are app.js's additions (the old tick's order,
+// deep idle, the meshes-first frame of the Sync log's S1).
 import world from './world.js';
 import pov from './pov.js';
 import descent from './descent.js';
@@ -57,7 +62,12 @@ import deco from './deco.js';
 import console_ from './console.js';
 import saves from './saves.js';
 
-/** Every wire, in the order their hooks run. */
+/**
+ * Every wire, in the order their hooks run. The world attaches first (its
+ * window sets sim.origin before the body or Descent see the grid), and its
+ * window follows the focus in `follow`, so a tick keeps the old one's order:
+ * the body, Descent, the god camera, the window, the brush.
+ */
 export const WIRES = [world, pov, descent, rays, lightning, signs, birds, mp, mesh, foam, deco, console_, saves];
 
 /** A wire by name, or null. */

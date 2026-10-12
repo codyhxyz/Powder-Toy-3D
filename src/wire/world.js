@@ -59,7 +59,7 @@ const world = {
     app.win?.dispose();
     app.win = null;
   },
-  beforeStep(app) { if (app.win) world.moveWindow(app); },
+  follow(app) { if (app.win) world.moveWindow(app); },
   beforeView(app) {
     const { win } = app;
     gfxUniforms.uCaveAmbient.value = win?.scene.ambient ?? NO_AMBIENT;   // a world scene's ambient floor (Descent's caves)
