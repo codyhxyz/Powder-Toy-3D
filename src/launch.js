@@ -12,7 +12,8 @@
 // WebGPU (docs/webgpu.md B2, B5, G5):
 //   adapter      set by main.js: the adapter its probe found (probeWebGPU), for createGpu
 //   gpu          set by preload.js: a promise of the device it made while the menu was up
-//                (createGpu), which app.js then uses; null when the page booted from a link
+//                (createGpu), which app.js then uses (unless it was lost meanwhile: app.js
+//                then makes and sets its own); null when the page booted from a link
 //   deviceError  set by app.js: the rejection of its device request (createGpu), which it
 //                rethrows, so main.js can tell a refused device (the WebGPU error page)
 //                from an ordinary bug in app.js (the stack-trace page)

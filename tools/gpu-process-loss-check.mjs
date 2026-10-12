@@ -11,6 +11,15 @@
 //   2. the app: the error names the lost device, not a shader, and the
 //      report (__app.lastGpuFailure) survives a reload with the time since
 //      the last frame and the pipelines building then.
+//   3. the app's boot, killed while its pipelines build (the cold build that
+//      most often gets a GPU process killed): every pipeline then rejects
+//      with its own 'GPU shader failed', and the page must still name the
+//      lost device, from the first failure.
+//   4. the start menu: its warm-up's device (src/preload.js) lost while the
+//      menu is up, before any game exists; Start then boots the game on a
+//      new device instead of stopping for good.
+// Cases 3 and 4 each get a browser of their own: Chrome gives up on a GPU
+// process that keeps dying.
 // Only this browser's processes are touched (found by walking our own process tree).
 import assert from 'node:assert/strict';
 import { execSync } from 'node:child_process';
@@ -33,7 +42,21 @@ function killOwnGpuProcess() {
   for (const g of gpu) process.kill(g.pid, 'SIGKILL');
 }
 
-const browser = await launchBrowser(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {});
+const launchOpts = process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {};
+// a page's console errors and uncaught errors (the relay the UI asks for quota isn't running here)
+function watch(page) {
+  const errors = [];
+  page.on('console', (m) => { if (m.type() === 'error' && !/ERR_CONNECTION_REFUSED/.test(m.text())) errors.push(m.text()); });
+  page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
+  return errors;
+}
+// the device app.js boots on, from the page (launch.gpu: null until it asks for one)
+const launchGpu = (page) => page.evaluate(async () => {
+  const { launch } = await import('/src/launch.js');
+  return launch.gpu ? (await launch.gpu).stats.pipelinesPending : -1;
+}).catch(() => -1);
+
+const browser = await launchBrowser(launchOpts);
 try {
   // 1. the signature, on a bare device
   const page = await newTestPage(browser, { mode: 'manual', viewport: { width: 64, height: 64 } });
@@ -91,4 +114,78 @@ try {
   console.log(`PASS: the app reports a killed GPU process as a lost device, with what it was waiting on (${report.msSinceLastFrame} ms since the last frame; building: ${report.pendingPipelines.join(', ') || 'none'})`);
 } finally {
   await browser.close();
+}
+
+// 3. the boot, killed with its pipelines building
+{
+  const browser = await launchBrowser(launchOpts);
+  try {
+    const page = await newTestPage(browser, { mode: 'manual', viewport: { width: 320, height: 200 } });
+    const errors = watch(page);
+    await page.goto(`${base}/?size=64&preset=lab&view=plain`, { waitUntil: 'domcontentloaded' });
+    let pending = -1;
+    for (const t = Date.now(); (pending = await launchGpu(page)) <= 0;) {
+      assert(Date.now() - t < 60000, 'the boot built no pipelines within 60 s');
+      await page.waitForTimeout(20);
+    }
+    killOwnGpuProcess();
+    await page.waitForFunction(() => document.getElementById('error').textContent, null, { timeout: 30000 });
+    await page.waitForTimeout(1000);   // (every pipeline in flight rejects, and the boot's catch runs)
+    const r = await page.evaluate(() => ({
+      text: document.getElementById('error').textContent, app: !!window.__app,
+      report: JSON.parse(localStorage.getItem('powder-toy-3d:lastGpuFailure') || 'null'),
+    }));
+    assert(!r.app, 'the boot finished before the kill: no pipelines were building');
+    assert.match(r.text, /lost the WebGPU device/, r.text);
+    assert.doesNotMatch(r.text, /GPU shader failed/, r.text);
+    assert(!errors.some((s) => /GPU shader failed/.test(s)), errors.join('\n'));
+    assert(r.report?.kind === 'deviceLost' && r.report.pendingPipelines.length, JSON.stringify(r.report));
+    console.log(`PASS: a GPU process killed during the boot (${pending} pipelines building) is reported as a lost device, not as one of them (building then: ${r.report.pendingPipelines.length}, e.g. ${r.report.pendingPipelines.slice(0, 3).join(', ')})`);
+  } finally {
+    await browser.close();
+  }
+}
+
+// 4. the menu's device lost before Start
+{
+  const t0 = Date.now();
+  const browser = await launchBrowser(launchOpts);
+  try {
+    const page = await newTestPage(browser, { mode: 'manual', viewport: { width: 400, height: 250 } });
+    const errors = watch(page);
+    // the Lab last played, in the plain view (app.js STORE), as tools/smoke.mjs's warm stage
+    const { VIEWS } = await import('../src/views.js');
+    await page.addInitScript((v) => {
+      try { localStorage.setItem('powder-toy-3d:settings', JSON.stringify({ size: '128', preset: 'lab', view: v, rev: 2 })); } catch { /* storage unavailable */ }
+    }, VIEWS.find((v) => v.key === 'plain').id);
+    await page.goto(`${base}/`);
+    // the warm-up under way: its device made, a few of its pipelines built
+    for (const t = Date.now(); !await page.evaluate(async () => ((await import('/src/launch.js')).launch.warm?.built ?? 0) >= 4);) {
+      assert(Date.now() - t < 90000, 'the menu warmed nothing within 90 s');
+      await page.waitForTimeout(250);
+    }
+    await page.evaluate(async () => { window.__menuGpu = await (await import('/src/launch.js')).launch.gpu; });
+    killOwnGpuProcess();
+    await page.waitForFunction(() => window.__menuGpu.lost, null, { timeout: 15000 });
+    const dropped = await page.evaluate(async () => (await import('/src/launch.js')).launch.warm === null);
+    assert(dropped, 'the warm-up kept its state for a lost device');
+    await page.waitForTimeout(1000);   // (the GPU process restarts)
+    await page.click('.mm-start');
+    await page.waitForFunction(() => window.__app?.sim || document.getElementById('error')?.textContent, null, { polling: 250, timeout: 150000 });
+    const r = await page.evaluate(async () => {
+      const failed = document.getElementById('error')?.textContent || null;
+      if (failed) return { failed };
+      // (__app exists once the grid's own pipelines are built: a step can be recorded)
+      return { failed, fresh: __app.gpu !== window.__menuGpu, lost: __app.gpu.lost, frame: __app.sim.frame, dims: [__app.sim.g.nx, __app.sim.g.ny, __app.sim.g.nz] };
+    });
+    assert(!r.failed, `Start stopped on the lost menu device: ${r.failed}`);
+    assert(r.fresh && !r.lost, JSON.stringify(r));
+    // it runs: a step on the new device
+    await page.evaluate(async () => { __app.test.step(2); await __app.gpu.fence(); });
+    assert.equal(await page.evaluate(() => __app.sim.frame), r.frame + 2);
+    assert(!errors.some((s) => /GPU shader failed|Graphics stopped/.test(s)), errors.join('\n'));
+    console.log(`PASS: a device lost on the start menu is replaced at Start: the ${r.dims.join('×')} Lab boots on a new device and steps (${((Date.now() - t0) / 1000).toFixed(0)} s)`);
+  } finally {
+    await browser.close();
+  }
 }

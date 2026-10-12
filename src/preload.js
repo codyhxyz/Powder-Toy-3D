@@ -24,7 +24,9 @@
 // one app.js uses (launch.gpu), and pipelines are cached by their source and
 // descriptor (gpu/kernels.js), so new Simulation and the renderer then find
 // them built or building: Start waits only for what is still pending, behind
-// the loading screen, which shows only if Start comes first.
+// the loading screen, which shows only if Start comes first. A device lost
+// while the menu is up (no game on it yet) is dropped: the next warm-up, or
+// Start, makes a new one.
 import { BODY_MODEL_URL } from './pov/bodyModel.js';
 import { launch } from './launch.js';
 import { mapByKey, isWorld } from './maps.js';
@@ -90,25 +92,41 @@ export function preloadGame({ map = null } = {}) {
 // ---------------------------------------------------------------- warm-up
 
 let device = null;          // the device's promise, once asked for
+let spent = null;           // the last device's promise, once that device was lost
 let warmer = null;          // the warm-up, once its modules are in
 const warmed = new Set();   // grids (keys) whose set was started
 const wanted = [];          // grids asked for before the modules came in
 
 /**
  * The device app.js will use (launch.gpu): made once, on the adapter main.js's
- * probe found. A refused device rejects here and again in app.js, which shows
+ * probe found, and again on a new adapter after it was lost (an adapter makes
+ * one device). A refused device rejects here and again in app.js, which shows
  * the WebGPU error page (G5).
  * @returns {Promise<object>}
  */
 export function warmDevice() {
-  if (!device && launch.gpu) device = launch.gpu;   // (app.js asked first: an adapter makes one device)
+  if (!device && launch.gpu && launch.gpu !== spent) device = launch.gpu;   // (app.js asked first)
   if (!device) {
     if (!launch.adapter) return Promise.reject(new Error('preload: no WebGPU adapter (main.js probes first)'));
-    device = import('./gpu/device.js').then(({ createGpu }) => createGpu({ adapter: launch.adapter, label: 'tpt3d' }));
-    launch.gpu = device;
-    device.catch(() => {});   // (app.js reports it)
+    const adapter = spent ? undefined : launch.adapter;   // (none: createGpu asks for a new one)
+    const p = device = import('./gpu/device.js').then(({ createGpu }) => createGpu({ adapter, label: 'tpt3d' }));
+    launch.gpu = p;
+    p.then((gpu) => gpu.device.lost.then(() => deviceLost(p)), () => {});   // (a refusal: app.js reports it)
   }
   return device;
+}
+
+// The menu's device lost (the GPU process restarted, a phone put the tab
+// away) took its pipelines with it: the warm-up starts over on a new device
+// at the next warmMap, and Start, finding launch.gpu's device lost, makes
+// its own (app.js). Nothing is rebuilt at once: the build in progress may be
+// what got the GPU process killed.
+function deviceLost(p) {
+  if (device !== p) return;
+  spent = p;
+  device = warmer = launch.warm = null;
+  warmed.clear();
+  wanted.length = 0;
 }
 
 /**
@@ -136,9 +154,10 @@ function gridOf(m) {
 
 // The device, the modules that list pipelines, then each grid's set as it is asked for.
 async function startWarmer() {
+  const made = warmDevice();
   let gpu, mods;
   try {
-    gpu = await warmDevice();
+    gpu = await made;
     mods = await Promise.all([
       import('./sim.js'), import('./shaders/render.js'), import('./gfx/post.js'), import('./gfx/overlays.js'),
       import('./brush.js'), import('./gfx/detail.js'), import('./views.js'),
@@ -151,6 +170,7 @@ async function startWarmer() {
   }
   const [sim, render, post, overlays, brush, detail, views, ...lists] = mods;
   const names = await layoutNames();
+  if (device !== made) return;   // (lost meanwhile: the next warmMap starts over)
   const settings = savedSettings(detail);
   const view = views.viewKey(settings.view);
   const fallback = gpu.adapterInfo.isFallbackAdapter;

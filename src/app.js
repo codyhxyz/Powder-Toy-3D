@@ -271,6 +271,15 @@ function save() {
 let gpu;
 try {
   gpu = await (launch.gpu ??= createGpu({ adapter: launch.adapter ?? undefined, label: 'tpt3d' }));
+  // The menu's device lost (or stopped) while the menu was up: the GPU
+  // process restarted, a phone put the tab away. Nothing of the game lived on
+  // it yet (B9's "no restore" is about the state on the GPU, which starts
+  // here), so the game starts on a new one, on a new adapter: an adapter
+  // makes one device.
+  if (gpu.lost || gpu.failure) {
+    gpu.destroy();
+    gpu = await (launch.gpu = createGpu({ label: 'tpt3d' }));
+  }
 } catch (err) {
   launch.deviceError = err;
   throw err;
@@ -2257,12 +2266,18 @@ try {
   loop.start();
   bootReady(launch.save ? openSave(launch.save) : null);   // a save picked on the menu's Saves before the game had loaded
 } catch (err) {
-  if (err !== graphicsFailure) {
+  // A stop of graphics is stopGraphics's to explain, with the first failure,
+  // which is the cause: a lost device rejects every pipeline still building,
+  // each with its own 'GPU shader failed', and the one the boot awaited can
+  // be any of them (gpu.fail keeps the first). The stack-trace page is for a
+  // bug in here.
+  if (err?.name === 'GraphicsFailure') gpu.fail(err);
+  if (!graphicsFailure) {
     const el = document.getElementById('error');
     el.style.display = 'flex';
     el.textContent = String(err.stack || err);
   }
-  throw err;
+  throw graphicsFailure ?? err;
 }
 
 // for the start menu (src/main.js)
